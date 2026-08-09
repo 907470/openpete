@@ -6786,7 +6786,10 @@ static bool compose_variant(int variant, bool have_ref)
         draw_mod_overlay();                       /* mod HUD (content — records too) */
         if (s_overlay_live) draw_fps_overlay();   /* on the resolved 1× offscreen, crisp */
         if (s_overlay_live) draw_menu_overlay();  /* settings menu on top */
-        if (s_overlay_live) openpete_devui_render(s_nr.dev);  /* dev overlay topmost */
+        /* Dev overlay: under a live COMPOSITE chain, drawn post-chain
+         * instead so screen filters never render over the panel. */
+        if (s_overlay_live && !native_postfx_point_active(0))
+            openpete_devui_render(s_nr.dev);      /* dev overlay topmost */
         rhi_end_offscreen(s_nr.dev);
         /* The freeze snapshot lives in the fall-through path below, which this SSAA
          * branch skips — so capture it here too, from the box-resolved 1× offscreen
@@ -6841,7 +6844,12 @@ static bool compose_variant(int variant, bool have_ref)
      * stay clean, and off screenshots/dumps where s_overlay_live is 0). */
     if (variant == NRV_VK && s_overlay_live) draw_fps_overlay();
     if (variant == NRV_VK && s_overlay_live) draw_menu_overlay();
-    if (variant == NRV_VK && s_overlay_live) openpete_devui_render(s_nr.dev);
+    /* Dev overlay: when a COMPOSITE postfx chain is live it would filter
+     * the panel into illegibility (CRT masks) — skip here and re-draw on
+     * TOP of the chain's output instead (present_native, post-chain load
+     * pass). One imgui frame either way. */
+    if (variant == NRV_VK && s_overlay_live && !native_postfx_point_active(0))
+        openpete_devui_render(s_nr.dev);
 
     rhi_end_offscreen(s_nr.dev);
 
@@ -7643,6 +7651,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     rhi_gpu_zone_begin(s_nr.dev, "compose");
     bool did_diff = compose_variant(variant, have_ref);
     rhi_gpu_zone_end(s_nr.dev);
+    const int overlay_was_live = s_overlay_live;
     s_overlay_live = 0;                       /* screenshot/dump composes must not draw it */
 
     /* Mod postfx chain (COMPOSITE point) — vk variant only; the ab/diff
@@ -7655,7 +7664,19 @@ void openpete_native_render_frame(uint64_t record_pts_us)
         pfx_drain_retired();
         int pw = 0, ph = 0;
         rhi_swapchain_extent(s_nr.dev, &pw, &ph);
-        native_postfx_run(0 /* COMPOSITE */, NULL, pw, ph);
+        (void)native_postfx_run(0 /* COMPOSITE */, NULL, pw, ph);
+        /* Dev overlay over the FILTERED composite: compose_variant skips
+         * it whenever this chain is active (same predicate), so screen
+         * filters (CRT masks) never render over the config panel — draw
+         * it here in a load pass on the chain's output. A chain whose
+         * passes all failed still lands here: off_image was restored for
+         * the blit and the load pass draws on that. */
+        if (native_postfx_point_active(0) && overlay_was_live &&
+            openpete_devui_is_open()) {
+            rhi_begin_offscreen_load(s_nr.dev);
+            openpete_devui_render(s_nr.dev);
+            rhi_end_offscreen(s_nr.dev);
+        }
     }
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_COMPOSE, pt_t1 - pt_t0); pt_t0 = pt_t1;
                  openpete_phase_set_count(OPPC_TRIS, s_scene_n); }

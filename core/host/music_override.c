@@ -25,6 +25,7 @@ static struct {
 
     op_wav_pcm cache[MO_MAX_TRACKS];
     uint8_t    cache_state[MO_MAX_TRACKS];
+    unsigned   cache_epoch[MO_MAX_TRACKS]; /* modset epoch at cache time */
 
     int    al_ready;
     ALuint source;
@@ -96,6 +97,17 @@ void music_override_init(void)
 
 static const op_wav_pcm* load_track(int track)
 {
+    /* A modset toggle can change which root (or whether any) serves this
+     * track: re-resolve a cache entry stamped under an older modset. Safe
+     * to free here — the track is being STARTED, so nothing is streaming
+     * from its PCM yet; other tracks' entries refresh at their own next
+     * start. */
+    unsigned ep = openpete_mods_toggle_epoch();
+    if (s.cache_state[track] != MO_UNLOADED && s.cache_epoch[track] != ep) {
+        if (s.cache_state[track] == MO_LOADED) op_wav_free(&s.cache[track]);
+        s.cache_state[track] = MO_UNLOADED;
+    }
+    s.cache_epoch[track] = ep;
     if (s.cache_state[track] == MO_LOADED) return &s.cache[track];
     if (s.cache_state[track] == MO_FAILED) return NULL;
 
@@ -106,8 +118,12 @@ static const op_wav_pcm* load_track(int track)
     int found = 0;
     for (int r = openpete_mods_asset_root_count() - 1; r >= 0 && !found;
          r--) {
-        const char* root = openpete_mods_asset_root(r, NULL);
+        const char* owner = NULL;
+        const char* root = openpete_mods_asset_root(r, &owner);
         if (!root) continue;
+        /* Live toggle: a disabled mod's root stops serving (probed per
+         * track start, so the flip lands at the next track change). */
+        if (owner && *owner && !openpete_mods_is_enabled(owner)) continue;
         snprintf(path, sizeof(path), "%s/music/track_%02d.wav", root,
                  track);
         FILE* mf = fopen(path, "rb");

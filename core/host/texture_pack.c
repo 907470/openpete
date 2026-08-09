@@ -95,7 +95,28 @@ static int  s_repl_active = 0;
  * entry at scan time (last-writer-wins — the overlay's single priority
  * truth), logged for the resolved-asset assert. */
 #define TP_SRC_MAX 17
-static struct { char dir[560]; char label[64]; } s_srcs[TP_SRC_MAX];
+static struct {
+    char dir[560];
+    char label[64];
+    char owner[64];  /* mod id; "" = base pack (always enabled) */
+} s_srcs[TP_SRC_MAX];
+
+/* A source serves only while its owning mod is enabled (live toggle);
+ * the base pack always serves. */
+static int tp_src_enabled(int src) {
+    return !s_srcs[src].owner[0] ||
+           openpete_mods_is_enabled(s_srcs[src].owner);
+}
+
+/* Live-toggle awareness: a modset change flips which sources serve, so
+ * every memoized resolution/match is stale. Bump the generation both
+ * caches key on. Polled at the two query entry points (cheap: one
+ * extern read + compare). */
+static void tp_poll_modset(void) {
+    static unsigned s_seen_epoch = 0;
+    unsigned ep = openpete_mods_toggle_epoch();
+    if (ep != s_seen_epoch) { s_seen_epoch = ep; s_gen++; }
+}
 static int s_src_n = 0;
 static char s_dir_override[512];   /* --texpack-dir; empty = unset (see set_dir_override) */
 
@@ -107,7 +128,7 @@ void texture_pack_set_dir_override(const char *dir)
 
 /* memo: identity key -> pack entry index (or -1 = no match) */
 #define TP_MATCH_SLOTS 8192
-typedef struct { uint64_t key; int entry; } tp_match_slot;
+typedef struct { uint64_t key; uint32_t gen; int entry; } tp_match_slot;
 static tp_match_slot s_match[TP_MATCH_SLOTS];
 
 /* Scan one source dir into s_pack. A duplicate identity REPLACES the
@@ -165,17 +186,16 @@ static int tp_scan_dir(int src)
                                 s_pack[i].bw == tmp.bw &&
                                 s_pack[i].bh == tmp.bh)) { hit = i; break; }
         }
-        if (hit >= 0) {
+        if (hit >= 0)
+            /* Same identity from an earlier source: BOTH entries stay
+             * resident and the match loops pick the later (higher-
+             * priority) ENABLED one — so a live toggle can fall back to
+             * the earlier source's file. The log is still the resolved-
+             * asset table: with both mods enabled, this one wins. */
             fprintf(stderr, "[texpack] %s overrides \"%s\" (was %s)\n",
                     s_srcs[src].label, tmp.name,
                     s_srcs[s_pack[hit].src].label);
-            if (s_pack[hit].px) { /* identity re-resolved: drop stale pixels */
-                stbi_image_free(s_pack[hit].px);
-            }
-            tmp.w = tmp.h = 0;
-            s_pack[hit] = tmp;
-            touched++;
-        } else if (s_pack_n < TP_PACK_MAX) {
+        if (s_pack_n < TP_PACK_MAX) {
             s_pack[s_pack_n++] = tmp;
             touched++;
         }
@@ -215,6 +235,8 @@ static void tp_repl_scan(void)
                  "%s/textures/replacements", root);
         snprintf(s_srcs[si].label, sizeof s_srcs[si].label, "mod %s",
                  owner ? owner : "?");
+        snprintf(s_srcs[si].owner, sizeof s_srcs[si].owner, "%s",
+                 owner ? owner : "");
         int before = s_pack_n;
         s_src_n++;
         int added = tp_scan_dir(si);
@@ -424,6 +446,7 @@ int texture_pack_resolve(int tpage_x, int tpage_y, int clut_x, int clut_y,
                          texture_pack_id *out)
 {
     if (!s_inited || u1 < u0 || v1 < v0) return 0;
+    tp_poll_modset();
     /* Cache key: material + box packed. Coordinates all fit their fields
      * (VRAM is 1024x512, boxes are <=256 texels). */
     uint64_t key = ((uint64_t)(uint16_t)tpage_x << 48) ^ ((uint64_t)(uint16_t)tpage_y << 32) ^
@@ -490,6 +513,7 @@ static void tp_id_filename(const texture_pack_id *id, const char *dir,
 int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out)
 {
     if (!s_repl_active || !id) return 0;
+    tp_poll_modset();
     uint64_t key = tp_id_key(id);
     uint64_t base = key * 0xff51afd7ed558ccdull >> 32;
     tp_match_slot *m = NULL;
@@ -498,34 +522,38 @@ int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out)
         if (c->key == key || c->key == 0) { m = c; break; }
     }
     int ei;
-    if (m && m->key == key) {
+    if (m && m->key == key && m->gen == s_gen) {
         ei = m->entry;                          /* memoized (incl. -1 = no match) */
     } else {
         /* Symbolic first (plan: asset-ID primary): an annotated upload whose
          * name matches a <asset>.png entry. Falls back to hash containment:
          * same thash/bpp/phash, file box contains the query box; smallest
-         * containing file wins. */
+         * containing file wins. Only sources whose owning mod is enabled
+         * serve; same-identity duplicates across sources resolve to the
+         * later (higher-priority) source, so toggling one off falls back
+         * to the other. */
         ei = -1;
         long best = 0;
         if (id->asset) {
             for (int i = 0; i < s_pack_n; i++)
-                if (s_pack[i].symbolic && strcmp(s_pack[i].name, id->asset) == 0) {
-                    ei = i;
-                    break;
-                }
+                if (s_pack[i].symbolic && tp_src_enabled(s_pack[i].src) &&
+                    strcmp(s_pack[i].name, id->asset) == 0)
+                    ei = i;                     /* keep last = later source */
         }
         if (ei < 0) for (int i = 0; i < s_pack_n; i++) {
             const tp_pack_entry *e = &s_pack[i];
             if (e->symbolic) continue;
+            if (!tp_src_enabled(e->src)) continue;
             if (e->thash != id->thash || e->bpp != id->bpp || e->phash != id->phash)
                 continue;
             if (id->box_x < e->bx || id->box_y < e->by ||
                 id->box_x + id->box_w > e->bx + e->bw ||
                 id->box_y + id->box_h > e->by + e->bh) continue;
             long area = (long)e->bw * e->bh;
-            if (ei < 0 || area < best) { ei = i; best = area; }
+            if (ei < 0 || area < best ||
+                (area == best && i > ei)) { ei = i; best = area; }
         }
-        if (m) { m->key = key; m->entry = ei; }
+        if (m) { m->key = key; m->gen = s_gen; m->entry = ei; }
     }
     if (ei < 0) return 0;
     tp_pack_entry *e = &s_pack[ei];

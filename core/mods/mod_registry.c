@@ -284,8 +284,16 @@ void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on) {
         if (strcmp(s_levels[i].mod_id, mod_id) == 0)
             s_levels[i].disabled = !on;
     for (int i = 0; i < s_level_hook_count; i++)
-        if (strcmp(s_level_hooks[i].mod_id, mod_id) == 0)
+        if (strcmp(s_level_hooks[i].mod_id, mod_id) == 0) {
             s_level_hooks[i].disabled = !on;
+            /* Enable = (re)apply: clear the once-per-level latch so the
+             * hook fires for the level IN PROGRESS on the next live tick.
+             * Level hooks are once-per-EVERY-level by contract, so they
+             * are already written idempotent; a re-enabled mod re-runs
+             * its per-level work instead of staying silently inert until
+             * the next level change. */
+            if (on) s_level_hooks[i].fired_level = 0;
+        }
 }
 
 int openpete_mods_level_register(const char* mod_id, const char* name,

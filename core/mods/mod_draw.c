@@ -252,7 +252,7 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
     if (canonical && openpete_mods_count() > 0) {
         static unsigned s_canonical_ticks = 0;
         static unsigned s_report_ticks = 0;
-        openpete_mods_tick_boundary(++s_canonical_ticks);
+        openpete_mods_tick_boundary(cpu, ++s_canonical_ticks);
         if (++s_report_ticks >= 512) {
             openpete_mods_time_report(s_report_ticks);
             s_report_ticks = 0;

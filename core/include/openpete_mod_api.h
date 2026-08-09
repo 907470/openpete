@@ -100,6 +100,14 @@ typedef struct openpete_mod_ui {
 typedef void (*openpete_mod_ui_fn)(const openpete_mod_ui_t* ui,
                                    void* user);
 
+/* Live enable/disable notification (see register_toggle_hook). Runs at
+ * the tick boundary, AFTER the mod's registration surfaces flipped —
+ * tick context, so guest reads/writes are legal. on=0 is the place to
+ * UNDO apply-once guest effects (repointed tables, patched colours);
+ * on=1 rarely needs work — level-scoped apply re-runs automatically
+ * (the level-ready hook re-fires for the level in progress). */
+typedef void (*openpete_mod_toggle_fn)(CPUState* cpu, int on);
+
 /* Savestate participation (see register_savestate_hooks): serialize the
  * mod's own non-canonical state alongside the engine snapshot. save
  * returns bytes written into buf (<= cap, cap is 64 KiB) or -1; load
@@ -271,7 +279,7 @@ typedef struct openpete_mod_material_selector {
 typedef int (*openpete_mod_material_fn)(CPUState* cpu, uint32_t moby_vaddr,
                                         void* uniform_out, uint32_t cap);
 
-#define OPENPETE_MOD_API_VERSION 3u
+#define OPENPETE_MOD_API_VERSION 4u
 
 typedef struct openpete_mod_api {
     uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION */
@@ -775,6 +783,19 @@ typedef struct openpete_mod_api {
      * mod (re-register replaces). Entry/tick context. Returns 0. */
     int (*register_ui)(openpete_mod_t* self, openpete_mod_ui_fn fn,
                        void* user);
+
+    /* ── Live-toggle notification (api v4) ───────────────────────────
+     * Called at the tick boundary each time THIS mod's live toggle
+     * actually flips (not for no-op requests), after the flip: chains/
+     * hooks/registry rows already reflect the new state. The engine
+     * freezes a disabled mod's registrations but never rewinds guest
+     * state — a mod whose entry or level hook WROTE guest state (table
+     * repoints, patched colours) restores the stock bytes in on=0.
+     * Enable-side reapply is usually free: level-ready hooks re-fire
+     * for the level in progress on re-enable. Entry/tick context;
+     * one registration per mod (re-register replaces). Returns 0. */
+    int (*register_toggle_hook)(openpete_mod_t* self,
+                                openpete_mod_toggle_fn fn);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

@@ -152,6 +152,7 @@ struct openpete_mod {
     int   has_assets;    /* assets/ overlay root exists (boot-scoped) */
     openpete_mod_ui_fn ui_fn; /* register_ui section body (NULL = none) */
     void* ui_user;
+    openpete_mod_toggle_fn toggle_fn; /* live-toggle notification */
     void* dl;
 
     /* State-ABI descriptor (openpete_mod_stateabi symbol, resolved at
@@ -408,6 +409,14 @@ static int api_register_ui(openpete_mod_t* self, openpete_mod_ui_fn fn,
     return 0;
 }
 
+static int api_register_toggle_hook(openpete_mod_t* self,
+                                    openpete_mod_toggle_fn fn) {
+    if (!self) return -1;
+    if (purity_violation("register_toggle_hook")) return -1;
+    self->toggle_fn = fn;
+    return 0;
+}
+
 /* ---- engine services (P2 contract) ----------------------------------- */
 
 static int api_savestate_request(openpete_mod_t* self, int op,
@@ -565,6 +574,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     exports_remove_owner(mod->id);
     mod->ui_fn   = NULL; /* re-entry re-registers the UI section */
     mod->ui_user = NULL;
+    mod->toggle_fn = NULL;
 
     mod->n_deps = mod->n_above = mod->n_below = mod->n_bindings = 0;
     char dir_copy[MOD_PATH_MAX];
@@ -779,7 +789,7 @@ static void toggle_parse_env(void) {
                    s_toggle_sched_n, s_toggle_sched_n == 1 ? "y" : "ies");
 }
 
-void openpete_mods_tick_boundary(unsigned canonical_tick) {
+void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
     for (int i = 0; i < s_toggle_sched_n; i++) {
         if (s_toggle_sched[i].tick == canonical_tick)
             (void)openpete_mods_set_mod_enabled(s_toggle_sched[i].id,
@@ -811,6 +821,10 @@ void openpete_mods_tick_boundary(unsigned canonical_tick) {
         s_toggle_epoch++;
         OPL_INFO_F("mods", "live toggle: %s %s (tick %u)",
                    id, on ? "ENABLED" : "DISABLED", canonical_tick);
+        /* Notify AFTER the flip: tick context, so the mod may undo (or
+         * re-stage) its guest-side effects with the surfaces already in
+         * the new state. */
+        if (mod->toggle_fn) mod->toggle_fn(cpu, on);
     }
     s_toggle_n = 0;
 }
@@ -1110,6 +1124,7 @@ static const openpete_mod_api_t s_api = {
     .read_level_data     = api_read_level_data,
     .texpack_fog_shift   = api_texpack_fog_shift,
     .register_ui         = api_register_ui,
+    .register_toggle_hook = api_register_toggle_hook,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

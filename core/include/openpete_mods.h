@@ -175,7 +175,9 @@ struct openpete_mod_ui;
 void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui);
 
 int  openpete_mods_set_mod_enabled(const char* id, int on);
-void openpete_mods_tick_boundary(unsigned canonical_tick);
+/* cpu: live game CPU — applied toggles notify the mod's toggle hook in
+ * tick context (guest access legal). */
+void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick);
 /* Bumped once per APPLIED toggle (state actually changed). The run loop
  * polls it to invalidate timeline-derived state: rewind history recorded
  * under the old modset must not replay into the new one, and runahead
