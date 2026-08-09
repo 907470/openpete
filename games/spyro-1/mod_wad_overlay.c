@@ -7,8 +7,8 @@
 //   assets/wad/level<ID>.data.bin      (ID = logical level id, e.g. 10)
 // and every CdRead that lands inside that level's Data entry is served
 // the mod's bytes instead of the disc's (same size required in v1 —
-// resizing is P3 capacity work). Later-enabled mods win, same single
-// priority truth as every other namespace.
+// resizing is P3 capacity work). The highest-priority ENABLED mod wins,
+// same single priority truth as every other namespace.
 //
 // Mechanism: psyq_thunks snoops CdlSetloc to track the head position,
 // psyq_CdRead calls mod_wad_apply() after the drain — the guest buffer
@@ -16,6 +16,11 @@
 // the CdRead chokepoint exactly as the plan specified. The TOC is read
 // host-side from the user's own disc image (cue -> bin, WAD at the
 // game's wad_sector), lazily on first use.
+//
+// Live enable/disable: the winning override is resolved against the
+// current enabled set, but only ONCE PER LEVEL LOAD — see the latch in
+// mod_wad_apply(). A toggle therefore lands at the next level load and
+// can never splice stock and override bytes into one level image.
 //
 // Legal posture note: mods may NOT ship derived game data. This
 // namespace exists for (a) locally-derived blobs (generated on the
@@ -44,9 +49,8 @@ typedef struct {
     uint32_t start_sector;  /* absolute disc sector of the Data entry */
     uint32_t n_sectors;
     uint32_t length;        /* entry byte length */
-    char     path[1088];    /* override file ("" = none) */
-    char     owner[64];
-    int      announced;     /* one log per load */
+    int      latched;       /* live_root decided for the current load */
+    int      live_root;     /* asset root serving this load, -1 = the disc */
 } wad_level_t;
 
 static char        s_disc_path[1024];
@@ -127,43 +131,60 @@ static int level_index_to_id(int idx) {
     return (idx / 6 + 1) * 10 + idx % 6;
 }
 
-static void scan_mod_roots(void) {
-    int n = openpete_mods_asset_root_count();
-    for (int r = 0; r < n; r++) {
+/* Build the override path level `idx` would take from asset root `root`.
+ * Root indices are stable for the session (the loader only ever appends
+ * roots; a disabled mod keeps its slot), so an index may be latched. */
+static int wad_override_path(int idx, int root, char* out, size_t cap,
+                             const char** owner_out) {
+    const char* owner = NULL;
+    const char* dir = openpete_mods_asset_root(root, &owner);
+    if (!dir) return -1;
+    snprintf(out, cap, "%s/wad/level%02d.data.bin", dir,
+             level_index_to_id(idx));
+    if (owner_out) *owner_out = owner;
+    return 0;
+}
+
+/* Resolve the winning override for level `idx` against the CURRENT enabled
+ * set: the highest-priority (= last-registered) asset root whose owner is
+ * enabled and which ships a correctly-sized assets/wad/level<ID>.data.bin.
+ * Returns that root index, or -1 for "no override — serve the disc".
+ * path_out/owner_out are optional. */
+static int wad_find_override(int idx, char* path_out, size_t cap,
+                             const char** owner_out) {
+    for (int r = openpete_mods_asset_root_count() - 1; r >= 0; r--) {
         const char* owner = NULL;
-        const char* root = openpete_mods_asset_root(r, &owner);
-        if (!root) continue;
-        for (int i = 0; i < WAD_LEVELS; i++) {
-            if (!s_levels[i].present) continue;
-            char p[1088];
-            snprintf(p, sizeof p, "%s/wad/level%02d.data.bin", root,
-                     level_index_to_id(i));
-            struct stat st;
-            if (stat(p, &st) != 0) continue;
-            if ((uint32_t)st.st_size != s_levels[i].length) {
-                OPL_WARN_F("wadmod", "%s: %s is %ld bytes but the level %d "
-                           "Data entry is %u — size must match (v1); "
-                           "skipped", owner ? owner : "?", p,
-                           (long)st.st_size, level_index_to_id(i),
-                           s_levels[i].length);
-                continue;
-            }
-            if (s_levels[i].path[0])
-                OPL_INFO_F("wadmod", "%s overrides level %d data (was %s)",
-                           owner ? owner : "?", level_index_to_id(i),
-                           s_levels[i].owner);
-            snprintf(s_levels[i].path, sizeof s_levels[i].path, "%s", p);
-            snprintf(s_levels[i].owner, sizeof s_levels[i].owner, "%s",
-                     owner ? owner : "?");
+        char p[1088];
+        if (wad_override_path(idx, r, p, sizeof p, &owner) != 0) continue;
+        /* A live-disabled mod's assets must not reach the guest; the slot
+         * falls through to the next enabled mod that supplies this level. */
+        if (owner && owner[0] && !openpete_mods_is_enabled(owner)) continue;
+        if (!owner || !owner[0]) owner = "?";
+        struct stat st;
+        if (stat(p, &st) != 0) continue;
+        if ((uint32_t)st.st_size != s_levels[idx].length) {
+            OPL_WARN_F("wadmod", "%s: %s is %ld bytes but the level %d "
+                       "Data entry is %u — size must match (v1); skipped",
+                       owner, p, (long)st.st_size, level_index_to_id(idx),
+                       s_levels[idx].length);
+            continue;
         }
+        if (path_out) snprintf(path_out, cap, "%s", p);
+        if (owner_out) *owner_out = owner;
+        return r;
     }
+    return -1;
 }
 
 static void wad_init(void) {
     if (s_state != 1) return;
-    s_state = -1; /* until proven otherwise */
 
-    if (openpete_mods_asset_root_count() == 0) return; /* nothing to do */
+    /* No mod has an assets/ root yet: stay PENDING rather than failing.
+     * A boot-disabled mod registers its root only when it is first
+     * enabled (deferred entry), and the TOC still has to be parsed then. */
+    if (openpete_mods_asset_root_count() == 0) return;
+
+    s_state = -1; /* until proven otherwise */
 
     char bin[1200];
     if (resolve_bin(bin, sizeof bin) != 0) {
@@ -200,14 +221,15 @@ static void wad_init(void) {
         s_levels[i].start_sector = wad_sector + off / SEC_DATA;
         s_levels[i].n_sectors = (len + SEC_DATA - 1) / SEC_DATA;
         s_levels[i].length = len;
+        s_levels[i].live_root = -1;
         usable++;
     }
-    scan_mod_roots();
     int overrides = 0;
     for (int i = 0; i < WAD_LEVELS; i++)
-        if (s_levels[i].path[0]) overrides++;
+        if (s_levels[i].present &&
+            wad_find_override(i, NULL, 0, NULL) >= 0) overrides++;
     OPL_INFO_F("wadmod", "WAD TOC: %d level data entries; %d override%s "
-               "registered", usable, overrides, overrides == 1 ? "" : "s");
+               "available", usable, overrides, overrides == 1 ? "" : "s");
     s_state = 2;
 }
 
@@ -231,13 +253,41 @@ void mod_wad_apply(uint8_t* host_buf, int sectors) {
 
     for (int i = 0; i < WAD_LEVELS; i++) {
         wad_level_t* L = &s_levels[i];
-        if (!L->path[0]) continue;
+        if (!L->present) continue;
         uint32_t lo = L->start_sector, hi = L->start_sector + L->n_sectors;
         uint32_t a = start > lo ? start : lo;
         uint32_t b = (start + (uint32_t)sectors) < hi
                          ? (start + (uint32_t)sectors) : hi;
         if (a >= b) continue;
-        FILE* f = fopen(L->path, "rb");
+
+        /* Per-load serve latch. The game streams one level's Data entry
+         * across a dozen separate CdReads spread over many ticks
+         * (LoadLevel stages 3..11) and keeps reading the same entry
+         * in-level for the dragon cutscenes, so resolving the override
+         * per read would splice stock and mod bytes into one level image
+         * whenever an enable/disable landed between two of them. Resolve
+         * once instead, at the read that starts at the entry's FIRST
+         * sector — the level-header read that begins every load of that
+         * level — and hold it for every later read of the entry. A read
+         * that lands mid-entry with nothing latched (savestate restore,
+         * level-slot clone) latches there. */
+        char path[1088];
+        const char* owner = NULL;
+        if (!L->latched || start == lo) {
+            L->latched = 1;
+            L->live_root = wad_find_override(i, path, sizeof path, &owner);
+            if (L->live_root >= 0)
+                OPL_INFO_F("wadmod", "wad overlay: level %d data served "
+                           "from %s (%s)", level_index_to_id(i), owner,
+                           path);
+        }
+        if (L->live_root < 0) continue;
+        if (wad_override_path(i, L->live_root, path, sizeof path, NULL) != 0)
+            continue;
+        if (getenv("OPENPETE_WADMOD_TRACE"))
+            OPL_INFO_F("wadmod", "level %d serve [%u..%u)",
+                       level_index_to_id(i), a, b);
+        FILE* f = fopen(path, "rb");
         if (!f) continue;
         for (uint32_t s = a; s < b; s++) {
             uint32_t rel = (s - lo) * SEC_DATA;
@@ -249,11 +299,6 @@ void mod_wad_apply(uint8_t* host_buf, int sectors) {
             (void)got;
         }
         fclose(f);
-        if (!L->announced) {
-            L->announced = 1;
-            OPL_INFO_F("wadmod", "wad overlay: level %d data served from "
-                       "%s (%s)", level_index_to_id(i), L->owner, L->path);
-        }
     }
 }
 

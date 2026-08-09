@@ -423,8 +423,12 @@ static void mod_row_tooltip(const openpete_mods_menu_info_t *mi)
         ImGui::TextDisabled("not started yet — enabling runs the mod at "
                             "the next tick boundary");
     if (mi->has_assets)
-        ImGui::TextDisabled("asset overlay: music applies immediately; "
-                            "texture packs need a restart");
+        ImGui::TextDisabled("asset overlay: textures/music follow the "
+                            "toggle; level data applies at the next "
+                            "level load");
+    if (mi->enabled && openpete_mods_registry_owner_busy(mi->id))
+        ImGui::TextDisabled("can't be turned off while you're inside "
+                            "its level");
     if (mi->enabled && !mi->has_ui)
         ImGui::TextDisabled("no controls registered");
     ImGui::PopTextWrapPos();
@@ -463,13 +467,19 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
 
         /* The checkbox queues through the live-toggle path; the loader
          * applies it at the next tick boundary and the row reads the
-         * applied state back — no local shadow to go stale. */
+         * applied state back — no local shadow to go stale. Grayed while
+         * the mod owns the level the player is inside (a disable would
+         * strand them; the loader would defer it anyway). */
+        const bool busy =
+            mi.enabled && openpete_mods_registry_owner_busy(mi.id) != 0;
         bool on = mi.enabled != 0;
+        if (busy) ImGui::BeginDisabled();
         if (ImGui::Checkbox("##en", &on)) {
             if (openpete_mods_set_mod_enabled(mi.id, on ? 1 : 0) == 0)
                 OPL_INFO_F("devui", "mod %s -> %s", mi.id,
                            on ? "enabled" : "disabled");
         }
+        if (busy) ImGui::EndDisabled();
         mod_row_tooltip(&mi);
         ImGui::SameLine();
 

@@ -22,6 +22,24 @@
 //     resolve it.
 //   - Arena data readable by gameplay is divergence, as with any guest
 //     write — content mods only; the modset save tag covers the rest.
+//
+// Live toggle posture: FREEZE, never tear down. Disabling a mod does not
+// free, unregister, or rewind anything here, and that is a safety
+// requirement rather than laziness — an allocation's vaddr may already be
+// stored in guest structures (a model row pointing at a parked payload),
+// so dropping the region would turn those into reads of unmapped memory
+// while the game still chases them. So:
+//   - a disabled mod's regions stay guest-readable and its bytes stay put;
+//   - undoing the guest-side WRITES that point at them is the mod's job,
+//     in its on_toggle hook (the engine cannot know which stock bytes a
+//     mod overwrote unless the mod saved them);
+//   - re-enable reuses the same vaddr the mod already holds — nothing is
+//     re-allocated, so a mod must keep its handle across a toggle cycle
+//     rather than allocating per enable, which would walk the bump cursor
+//     forward on every cycle with no way to reclaim.
+// Allocation itself is legal at a first enable: the region registers
+// lazily on the first successful call, and the tick boundary that runs a
+// deferred entry is a quiescent guest-access point like any other.
 
 #include "openpete_mods.h"
 #include "openpete_log.h"

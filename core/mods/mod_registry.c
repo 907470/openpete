@@ -47,6 +47,20 @@ static const openpete_moby_ops_t* s_ops = NULL;
 static int s_hooked = 0;
 static int s_level  = -1;
 
+/* Level id of an in-flight transition INTO a registered slot (0 = none).
+ * The transition window is invisible to s_level — the game ops report
+ * level 0 for every non-GS_Playing tick — yet it is exactly when the
+ * id-keyed loader functions run, so the busy query below needs it. */
+static int s_slot_entering = 0;
+
+/* Last level that was LIVE, regardless of the current gamestate. The
+ * ops report level 0 for every non-GS_Playing tick — pause, demo
+ * rollover, level teardown — which are exactly the windows where the
+ * id-keyed loaders may still run against the old id, so residency only
+ * moves when a DIFFERENT level goes live. The busy query keys on this,
+ * never on the instantaneous playing-state view. */
+static int s_resident_level = 0;
+
 /* ── Level-ready event (api->on_level) ───────────────────────────────
  * Fires each hook once per level, on the first master-update tick with
  * gameplay live (level_id > 0): the model table is installed, the CD
@@ -101,6 +115,9 @@ static void registry_tick(CPUState* cpu) {
     level_slots_tick(cpu);
 
     int lvl = s_ops->level_id(cpu);
+    /* Any live level ends an in-flight slot transition: either we arrived
+     * (lvl == the slot id) or the load went somewhere else. */
+    if (lvl > 0) { s_slot_entering = 0; s_resident_level = lvl; }
     if (lvl != s_level) {
         /* Level changed: the loader repopulates the model table, so
          * every claimed id is stale (its row may now be a REAL class of
@@ -272,9 +289,24 @@ void openpete_mods_registry_remove_owner(const char* mod_id) {
 }
 
 /* Live toggle: gate a mod's registry rows (moby types + level slots).
- * A disabled moby type stops claiming and dispatching (live instances
- * freeze harmlessly — the game's default arm never ran for them); a
- * disabled level slot stops claiming and refuses spawn/enter. */
+ *
+ * A disabled moby type stops claiming, stops dispatching, and refuses
+ * spawns. Its already-live instances stay in the pool as inert donor
+ * lookalikes: the class id keeps its seeded g_Models row (so the render
+ * walk still finds a model) and the level overlay's update switch has no
+ * case for the id, so nothing else in the game drives them — they freeze
+ * where they stand rather than misbehaving. Removing them is the MOD's
+ * job from its on_toggle hook, which runs after this flip in tick
+ * context; openpete_mods_moby_type_id deliberately keeps answering while
+ * disabled so the hook can still find its instances. Re-enable resumes
+ * dispatch on the same instances (the claimed id survives), or re-claims
+ * a fresh id if the level changed meanwhile.
+ *
+ * A disabled level slot stops claiming and refuses entry. It does NOT
+ * unclaim: the cloned TOC entry and the donor alias are what make the id
+ * loadable at all, and the player may be standing in the level — see
+ * openpete_mods_registry_owner_busy, which callers must consult before
+ * applying a toggle-off. */
 void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on) {
     if (!mod_id) return;
     for (int i = 0; i < s_type_count; i++)
@@ -337,7 +369,57 @@ int openpete_mods_level_slot_id(const char* mod_id, const char* name) {
 
 int openpete_mods_level_enter(CPUState* cpu, int level_id) {
     if (!s_level_ops || !cpu || level_id <= 0) return -1;
-    return s_level_ops->enter_level(cpu, level_id);
+    /* Entering a slot commits the session to a level its owner defines.
+     * With the owner disabled the id still loads — the donor alias that
+     * services the id-keyed load functions is engine-owned, not mod-owned
+     * — but it arrives stripped of the mod's content and of any load-path
+     * hooks the mod installs, i.e. as a bare clone of the donor. Refuse
+     * the warp instead of shipping the player a half-level. Retail ids
+     * match no slot row and pass straight through. */
+    for (int i = 0; i < s_level_count; i++) {
+        if (s_levels[i].slot_id != level_id) continue;
+        if (s_levels[i].disabled) {
+            OPL_ERROR_F("mods", "level %d belongs to disabled mod \"%s\" — "
+                        "entry refused", level_id, s_levels[i].mod_id);
+            return -1;
+        }
+        break;
+    }
+    int rc = s_level_ops->enter_level(cpu, level_id);
+    if (rc == 0) {
+        for (int i = 0; i < s_level_count; i++)
+            if (s_levels[i].slot_id == level_id) {
+                s_slot_entering = level_id;
+                break;
+            }
+    }
+    return rc;
+}
+
+/* Engine-facing toggle guard: 1 while disabling mod_id would strand the
+ * session. The one such state is a registered LEVEL SLOT the player is
+ * currently inside, or loading into. The engine's donor alias keeps the
+ * slot id serviceable whatever the owner's state, but everything that
+ * makes the slot ITS level — the owner's chain links on the load path,
+ * its level-ready hook, its registered content — stops dead at the flip,
+ * leaving the player inside a level the live mod set no longer defines.
+ * No on_toggle hook can undo it: a mod cannot un-enter a level from
+ * inside it. Callers must refuse or defer the toggle-off until the
+ * player has left the slot.
+ *
+ * Host-side statics only (the level id is the one the per-tick driver
+ * last observed), so the menu thread may call it without guest access. */
+int openpete_mods_registry_owner_busy(const char* mod_id);
+int openpete_mods_registry_owner_busy(const char* mod_id) {
+    if (!mod_id) return 0;
+    for (int i = 0; i < s_level_count; i++) {
+        const level_slot_t* s = &s_levels[i];
+        if (!s->slot_id || strcmp(s->mod_id, mod_id) != 0) continue;
+        if (s_resident_level == s->slot_id ||
+            s_slot_entering == s->slot_id)
+            return 1;
+    }
+    return 0;
 }
 
 int openpete_mods_read_level_data(int level_id, void* buf, uint32_t cap) {

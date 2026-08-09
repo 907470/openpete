@@ -136,9 +136,28 @@ static int ops_sfx_def_repoint(CPUState* cpu, uint16_t model_class,
     return 0;
 }
 
+/* Reader twin of the repoint: same (class, slot) -> live-def resolve,
+ * returning the def's current sample address. Lets the engine capture
+ * the word it is about to overwrite, so a live disable can restore the
+ * stock sound instead of waiting for the next level load. */
+static int ops_sfx_def_read(CPUState* cpu, uint16_t model_class,
+                            uint8_t sound_slot, uint32_t* out_addr) {
+    if (model_class >= MODEL_COUNT || sound_slot >= 16 || !out_addr)
+        return -1;
+    uint32_t defs = cpu->read_word(ADDR_G_SPU_DEFS);
+    uint32_t model = cpu->read_word(ADDR_G_MODELS +
+                                    4u * (uint32_t)model_class);
+    if (!defs || !model) return -1;
+    uint32_t idx = cpu->read_byte((model | 0x80000000u) + 4u + sound_slot);
+    if (idx == 0xFFu) return -1;
+    *out_addr = cpu->read_word(defs + idx * SOUNDDEF_STRIDE);
+    return 0;
+}
+
 void spyro1_moby_ops_register(void) {
     openpete_mods_set_moby_ops(&s_spyro1_moby_ops);
     openpete_mods_sfx_set_def_repoint(ops_sfx_def_repoint);
+    openpete_mods_sfx_set_def_reader(ops_sfx_def_read);
     /* Low park window for guest_alloc_low: kernel area below the EXE
      * image (0x80010000). Bounds are EMPIRICAL, not the whole kernel
      * region: a payload at 0x80008000 fed the game's twinkle-particle

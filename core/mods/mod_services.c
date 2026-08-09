@@ -15,6 +15,20 @@
 // Section framing (after the engine's fixed header/cpu/ram/scratch/vram
 // sections):  u32 payload_len | payload
 // payload = u32 count, then per mod: char id[64] | u32 len | bytes.
+//
+// Live toggle and savestate participation: a DISABLED mod keeps its
+// state hooks registered and keeps participating — write, verdict,
+// dispatch and the reinit-signal sweep all run over every registered
+// hook, with no enabled filter. That is the freeze-not-teardown posture
+// the toggle machinery is built on (openpete_mods_tick_boundary flips
+// owner-keyed flags; nothing is unregistered): a state file written
+// while a mod is off still carries its blob, so re-enabling it lands on
+// host state that matches the restored world instead of a blob-shaped
+// hole. Any state load moves the guest world under every mod, enabled
+// or not, so every hook must hear about it. What a disabled mod must
+// NOT do is push guest-side effects back out from its load_fn — a mod
+// learns its enable state from its on_toggle hook and gates its own
+// guest writes on it.
 
 #include "openpete_mods.h"
 #include "openpete_mod_api.h"
@@ -38,11 +52,27 @@ typedef struct {
 static state_hook_t s_hooks[STATE_HOOKS_MAX];
 static int          s_hook_count = 0;
 
-static int      s_pending_op = 0; /* 0 none, 1 save, 2 load */
-static unsigned s_pending_slot = 0;
+/* Index of the hook able to RECEIVE a blob for `id` (-1 = none). Ids are
+ * compared over the on-disk field width, so a truncated id in a state
+ * file still resolves. */
+static int state_hook_load_index(const char* id) {
+    if (!id) return -1;
+    for (int i = 0; i < s_hook_count; i++)
+        if (s_hooks[i].load && s_hooks[i].id &&
+            strncmp(s_hooks[i].id, id, STATE_ID_LEN) == 0)
+            return i;
+    return -1;
+}
+
+static int         s_pending_op = 0; /* 0 none, 1 save, 2 load */
+static unsigned    s_pending_slot = 0;
+static const char* s_pending_owner = NULL; /* loader-owned mod id */
 
 /* bk2 status mirror: run.c publishes per sim frame while a movie is
- * loaded; zero-initialized = "no movie" for movie-less sessions. */
+ * loaded; zero-initialized = "no movie" for movie-less sessions. The
+ * mirror is owner-free and read-only, so live toggles neither change
+ * what it reports nor leave anything to undo — a disabled mod simply
+ * stops running the hooks that would query it. */
 static openpete_mods_bk2_status_t s_bk2_status;
 
 void openpete_mods_bk2_publish(const openpete_mods_bk2_status_t* st) {
@@ -99,16 +129,33 @@ int openpete_mods_savestate_request(int op, unsigned slot,
     }
     s_pending_op = op;
     s_pending_slot = slot;
+    s_pending_owner = owner;
     OPL_INFO_F("mods", "%s queued savestate %s on slot %u",
                owner ? owner : "?", op == 1 ? "SAVE" : "LOAD", slot);
     return 0;
 }
 
-/* run.c consumes exactly one pending op per host iteration. */
+/* run.c consumes exactly one pending op per host iteration.
+ *
+ * A queue-then-toggle race is possible: the request is made from a tick
+ * hook, the tick boundary can disable the requesting mod, and only then
+ * does the host loop reach this consume point. Executing it anyway would
+ * let a mod that is already off rewind or overwrite the timeline, so the
+ * op is dropped when its owner is a loaded mod that is no longer
+ * enabled. Non-mod owners (no loader entry) are never filtered. */
 int openpete_mods_pending_state_op(unsigned* out_slot) {
-    int op = s_pending_op;
+    int         op    = s_pending_op;
+    const char* owner = s_pending_owner;
+    s_pending_op    = 0;
+    s_pending_owner = NULL;
+    if (op && owner && openpete_mods_build_key(owner) &&
+        !openpete_mods_is_enabled(owner)) {
+        OPL_INFO_F("mods", "%s was disabled before its queued savestate "
+                   "%s on slot %u ran — dropped", owner,
+                   op == 1 ? "SAVE" : "LOAD", s_pending_slot);
+        return 0;
+    }
     if (out_slot) *out_slot = s_pending_slot;
-    s_pending_op = 0;
     return op;
 }
 
@@ -152,6 +199,10 @@ static void state_entry_meta_fill(const char* id, state_entry_meta_t* m) {
     if (bk) snprintf(m->bkey, sizeof(m->bkey), "%.15s", bk);
 }
 
+/* Every registered save hook contributes, including one owned by a
+ * currently DISABLED mod: its host state is frozen, not discarded, so
+ * the blob has to travel with the state file for a later re-enable to
+ * land coherently on the restored world. */
 int openpete_mods_state_write_section(FILE* fp) {
     /* Compose the payload first so the length prefix is exact. */
     size_t cap = 12;
@@ -268,6 +319,17 @@ int openpete_mods_state_verdict(void) {
         state_verdict_t* v = &s_verdicts[s_verdict_n++];
         v->id = id; v->blob = blob; v->len = len;
 
+        /* Nothing can receive this blob: the mod is absent, it is loaded
+         * with its entry deferred (a boot-disabled mod registers no
+         * hooks and resolves no state-ABI descriptor until its first
+         * enable), or it registered save-only. Skip the entry BEFORE the
+         * ABI ladder — undeliverable data cannot corrupt anything, while
+         * a REFUSE here would reject every state load in a session where
+         * the mod is simply turned off. */
+        if (state_hook_load_index(id) < 0) {
+            v->action = SV_NOT_LOADED;
+            continue;
+        }
         state_entry_meta_t now;
         state_entry_meta_fill(id, &now);
         const char* bk_now = openpete_mods_build_key(id);
@@ -324,14 +386,7 @@ void openpete_mods_state_dispatch(void) {
     char delivered[STATE_HOOKS_MAX] = {0};
     for (int e = 0; e < s_verdict_n; e++) {
         const state_verdict_t* v = &s_verdicts[e];
-        int hook = -1;
-        for (int i = 0; i < s_hook_count; i++) {
-            if (s_hooks[i].load && s_hooks[i].id &&
-                strncmp(s_hooks[i].id, v->id, STATE_ID_LEN) == 0) {
-                hook = i;
-                break;
-            }
-        }
+        int hook = state_hook_load_index(v->id);
         switch (v->action) {
         case SV_DELIVER:
             if (hook >= 0) { s_hooks[hook].load(v->blob, (int)v->len);
@@ -342,16 +397,21 @@ void openpete_mods_state_dispatch(void) {
                              delivered[hook] = 1; }
             break;
         case SV_NOT_LOADED:
-            OPL_WARN_F("mods", "state file carries data for mod \"%.*s\" "
-                       "which is not loaded — skipped", STATE_ID_LEN, v->id);
+            OPL_WARN_F("mods", "state file carries data for mod \"%.*s\", "
+                       "which has no state-load hook (not loaded, or "
+                       "loaded with its entry deferred) — skipped",
+                       STATE_ID_LEN, v->id);
             break;
         }
     }
-    /* Enabled hook-mods with NO delivered blob: the restored world has no
-     * memory of them (state predates the mod, or their blob was dropped/
+    /* Hook-mods with NO delivered blob: the restored world has no memory
+     * of them (state predates the mod, or their blob was dropped/
      * absent). Reinit-signal so their host statics don't stay coherent
-     * with the WRONG timeline. Unconditional — any state load means the
-     * guest world changed under every mod. */
+     * with the WRONG timeline. Unconditional, and deliberately blind to
+     * the live-toggle state — any state load means the guest world
+     * changed under every mod, disabled ones included, and a disabled
+     * mod that re-enables later must not wake up holding host state from
+     * the abandoned timeline. */
     for (int i = 0; i < s_hook_count; i++) {
         if (!s_hooks[i].load || delivered[i]) continue;
         OPL_WARN_F("mods", "state file has no blob for mod \"%s\" — "
@@ -368,9 +428,21 @@ void openpete_mods_state_dispatch(void) {
 }
 
 /* ---- asset-overlay roots (P2: logical-ID asset overlay v1) ----------- */
-/* One root per enabled mod with an assets/ dir, registered by the loader
+/* One root per entered mod with an assets/ dir, registered by the loader
  * in ENABLED ORDER (= priority; later wins). Consumers (texture pack,
- * music override) layer these over their base directories. */
+ * music override) layer these over their base directories.
+ *
+ * The table is append-only and deliberately NOT filtered by live-toggle
+ * state: a root outlives its owner's disable so the priority order (and
+ * every index derived from it) stays stable, and so a re-enable needs no
+ * re-registration. Owner enablement is a CONSUME-TIME question, and each
+ * consumer answers it itself — carry the owner returned here alongside
+ * the resolved asset, skip it while openpete_mods_is_enabled(owner) is
+ * false, and key any memo of the resolution on
+ * openpete_mods_toggle_epoch() so a flip invalidates it. A consumer that
+ * instead bakes the roots into a one-shot scan is restart-scoped, and
+ * its Mods-panel row has to say so. A first enable during the session
+ * appends its root here at the tail (= highest priority). */
 
 #define ASSET_ROOTS_MAX 16
 

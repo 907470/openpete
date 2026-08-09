@@ -142,8 +142,10 @@ int openpete_mod_sound_play(const char* path, float gain);
 /* Live modset toggle (P2): queue an enable/disable; it applies at the
  * NEXT tick boundary by flipping owner-keyed disabled flags across all
  * registration surfaces (nothing is torn down — re-enable restores the
- * mod exactly where it was). Asset overlays are boot-scoped ("restart"
- * tier). openpete_mods_tick_boundary is the apply point, called at the
+ * mod exactly where it was). Asset overlays follow the toggle at their
+ * consumers' own boundaries: textures at the next resolve, music at the
+ * next track start, level data at the next level load.
+ * openpete_mods_tick_boundary is the apply point, called at the
  * canonical present commit with the running canonical-tick counter;
  * OPENPETE_MODS_TOGGLE="tick:id:0|1[,...]" schedules for CI/dev. */
 /* Loaded-mod enumeration (the mod menu's data source). */
@@ -178,6 +180,26 @@ int  openpete_mods_set_mod_enabled(const char* id, int on);
 /* cpu: live game CPU — applied toggles notify the mod's toggle hook in
  * tick context (guest access legal). */
 void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick);
+/* 1 while disabling this owner would corrupt the session: it holds a
+ * claimed level slot and the player is inside (or entering) that level.
+ * The apply loop DEFERS such a disable until the player leaves; the
+ * menu greys the switch. */
+int  openpete_mods_registry_owner_busy(const char* mod_id);
+/* SFX owner sweep (mod_sfx.c): restores engine-written SoundDefinition
+ * words on disable (when the game registered a def reader) and clears
+ * the owner's rows' latches so re-enable re-applies at level-ready.
+ * Runs from the apply loop with the live cpu. */
+void openpete_mods_sfx_set_owner_enabled(CPUState* cpu, const char* owner,
+                                         int on);
+/* Game-registered def READER (counterpart of the repoint op): resolve
+ * (model class, m_Sounds slot) and read the live def's sample address.
+ * Registering it upgrades sfx-def disables from next-level to a true
+ * live restore. */
+typedef int (*openpete_mods_sfx_def_read_fn)(CPUState* cpu,
+                                             uint16_t model_class,
+                                             uint8_t sound_slot,
+                                             uint32_t* out_addr);
+void openpete_mods_sfx_set_def_reader(openpete_mods_sfx_def_read_fn fn);
 /* Bumped once per APPLIED toggle (state actually changed). The run loop
  * polls it to invalidate timeline-derived state: rewind history recorded
  * under the old modset must not replay into the new one, and runahead

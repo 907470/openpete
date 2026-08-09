@@ -934,7 +934,14 @@ static mat_slot_t s_mat_slots[MOD_MATERIAL_SLOTS];
 static int s_mat_slot_n = 1;    /* next free; 0 is the reserved sentinel */
 
 /* native_render arms the batcher tag-split while any selector lives;
- * s_mat_has_instance gates the moby walk's per-instance resolve. */
+ * s_mat_has_instance gates the moby walk's per-instance resolve.
+ *
+ * Arming keys on REGISTRATION (live), never on the owner's live-toggle
+ * state: entry — and therefore material_register — runs before the
+ * loader marks a mod enabled, so an enabled-keyed arm would read 0 at
+ * boot and never re-arm. A disabled owner's selectors therefore still
+ * cost a batch split and a winner scan, but can produce no override:
+ * every winner/resolve path consults openpete_mods_is_enabled. */
 static void material_rearm_split(void) {
     int any = 0, inst = 0;
     for (int i = 0; i < s_mat_count; i++)
@@ -1156,6 +1163,19 @@ int openpete_mods_material_terrain_untex_slot(CPUState* cpu) {
     return s;
 }
 
+/* An interned slot can outlive its winner's usability: extraction interns
+ * the slot, the tick boundary (live-toggle apply AND hot-reload sweep)
+ * runs next, and only then does this present draw. A disabled owner must
+ * stop THIS present, not the next one; a swept selector is worse — its
+ * SPIR-V is freed and its retired pipeline slot is one no later sweep
+ * revisits, so a rebuild through it would cache a pipeline nothing can
+ * ever destroy. Both cases fall back to the stock draw. */
+static int material_slot_usable(int slot) {
+    int m = s_mat_slots[slot].mat;
+    return m >= 0 && m < s_mat_count && s_mats[m].live &&
+           openpete_mods_is_enabled(s_mats[m].owner);
+}
+
 /* Fill `out` from selector index `best` + per-instance uniform slot. */
 static int material_fill_gpu(int best, int uniform_slot,
                              openpete_mod_material_gpu_t* out) {
@@ -1187,6 +1207,7 @@ int openpete_mods_material_resolve(uint32_t tag,
         if (slot == OPENPETE_MATERIAL_SLOT_STOCK) return -1;   /* declined */
         if (slot != 0) {
             if (slot >= s_mat_slot_n) return -1;    /* stale (post-reset) */
+            if (!material_slot_usable(slot)) return -1;   /* toggled/swept */
             return material_fill_gpu(s_mat_slots[slot].mat, slot, out);
         }
         /* slot 0 → fall through to declarative class resolve */
@@ -1198,6 +1219,7 @@ int openpete_mods_material_resolve(uint32_t tag,
         if (slot == OPENPETE_MATERIAL_TERRAIN_STOCK) return -1;   /* declined */
         if (slot != 0) {
             if (slot >= s_mat_slot_n) return -1;    /* stale (post-reset) */
+            if (!material_slot_usable(slot)) return -1;   /* toggled/swept */
             return material_fill_gpu(s_mat_slots[slot].mat, slot, out);
         }
         /* slot 0 → fall through to declarative resolve */

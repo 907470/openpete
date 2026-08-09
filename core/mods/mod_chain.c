@@ -29,6 +29,7 @@
 #include "openpete_log.h"
 #include "openpete_time.h" /* per-mod time instrument */
 
+#include <stdio.h>  /* snprintf — owner-state table */
 #include <stdlib.h> /* getenv — timer dump toggle */
 #include <string.h>
 
@@ -56,6 +57,60 @@ typedef struct {
 
 static mod_chain_t s_chains[MOD_CHAIN_MAX];
 static int         s_chain_count = 0;
+
+/* Number of links across all chains that are NOT disabled. Zero = every
+ * registered chain is toggled off, and dispatch must behave exactly like
+ * a build with no chains at all: one branch, no table scan, no re-entry
+ * through call_by_address. openpete_mods_active deliberately STAYS set
+ * (it is also the gate other subsystems read for "a mod could be live
+ * this session", and a re-enable must be seen) — this counter is what
+ * makes the all-disabled hot path free. */
+static int s_live_links = 0;
+
+/* Owner enable state, held OUTSIDE the links so it survives their
+ * removal and re-registration. Two paths depend on it:
+ *   - hot reload drops a mod's links and re-runs its entry, which
+ *     re-adds them; a mod that is toggled OFF must come back dormant.
+ *   - a link is inserted at the FRONT of its chain, so its `disabled`
+ *     flag must be seeded from its owner, never inherited from whatever
+ *     link previously sat at the head (which may belong to an unrelated,
+ *     toggled-off mod).
+ * Owners never toggled — including engine-internal ones like the content
+ * registry's driver link — default to enabled. */
+#define MOD_OWNER_STATE_MAX 32
+#define MOD_OWNER_ID_MAX    64 /* mirrors the loader's MOD_ID_MAX */
+
+static struct {
+    char owner[MOD_OWNER_ID_MAX];
+    int  disabled;
+} s_owner_state[MOD_OWNER_STATE_MAX];
+static int s_owner_state_n = 0;
+
+static int owner_disabled(const char* owner_id) {
+    if (!owner_id) return 0;
+    for (int i = 0; i < s_owner_state_n; i++)
+        if (strcmp(s_owner_state[i].owner, owner_id) == 0)
+            return s_owner_state[i].disabled;
+    return 0;
+}
+
+static void owner_state_set(const char* owner_id, int disabled) {
+    for (int i = 0; i < s_owner_state_n; i++)
+        if (strcmp(s_owner_state[i].owner, owner_id) == 0) {
+            s_owner_state[i].disabled = disabled;
+            return;
+        }
+    if (s_owner_state_n >= MOD_OWNER_STATE_MAX) {
+        OPL_ERROR_F("mods", "override owner-state table full (%d) — \"%s\" "
+                    "will re-register its links ENABLED after a reload",
+                    MOD_OWNER_STATE_MAX, owner_id);
+        return;
+    }
+    snprintf(s_owner_state[s_owner_state_n].owner, MOD_OWNER_ID_MAX, "%s",
+             owner_id);
+    s_owner_state[s_owner_state_n].disabled = disabled;
+    s_owner_state_n++;
+}
 
 /* Per-call frame: which link of which chain is currently executing, so
  * base() knows its continuation. Sim-thread only; TLS for safety. */
@@ -138,8 +193,10 @@ void openpete_mods_chain_remove_owner(const char* owner_id) {
         int w = 0;
         for (int j = 0; j < c->count; j++) {
             if (c->links[j].owner_id &&
-                strcmp(c->links[j].owner_id, owner_id) == 0)
+                strcmp(c->links[j].owner_id, owner_id) == 0) {
+                if (!c->links[j].disabled) s_live_links--;
                 continue;
+            }
             c->links[w++] = c->links[j];
         }
         c->count = w;
@@ -151,11 +208,16 @@ void openpete_mods_chain_remove_owner(const char* owner_id) {
  * it was. Call only at a tick boundary (the loader's apply point). */
 void openpete_mods_chain_set_owner_enabled(const char* owner_id, int on) {
     if (!owner_id) return;
+    const int want = !on;
+    owner_state_set(owner_id, want); /* outlives the links themselves */
     for (int i = 0; i < s_chain_count; i++)
-        for (int j = 0; j < s_chains[i].count; j++)
-            if (s_chains[i].links[j].owner_id &&
-                strcmp(s_chains[i].links[j].owner_id, owner_id) == 0)
-                s_chains[i].links[j].disabled = !on;
+        for (int j = 0; j < s_chains[i].count; j++) {
+            mod_link_t* l = &s_chains[i].links[j];
+            if (!l->owner_id || strcmp(l->owner_id, owner_id) != 0) continue;
+            if (l->disabled == want) continue;
+            l->disabled = want;
+            s_live_links += want ? -1 : 1;
+        }
 }
 
 /* ── Per-mod time instrument ────────────────────────────────────────────
@@ -225,9 +287,19 @@ int openpete_mods_dispatch(CPUState* cpu, uint32_t addr) {
         s_bypass_armed = 0; /* base() bottoming out: run the real body */
         return 0;
     }
+    if (s_live_links == 0) return 0;
     mod_chain_t* chain = chain_find(addr);
-    if (!chain || chain->count == 0) return 0;
-    run_link(cpu, chain, 0);
+    if (!chain) return 0;
+    int idx = 0;
+    while (idx < chain->count && chain->links[idx].disabled) idx++;
+    /* Every link toggled off: run the recompiled body IN PLACE. Entering
+     * run_link here would still produce the right result (it bottoms out
+     * on the original), but only by re-calling the function through
+     * call_by_address — a second pass over every dispatch arm of the
+     * prologue (freecam freeze, native decomp, feature registry) for a
+     * call no mod is servicing. */
+    if (idx >= chain->count) return 0;
+    run_link(cpu, chain, idx);
     return 1;
 }
 
@@ -290,7 +362,20 @@ int openpete_mods_chain_add(uint32_t addr, openpete_mod_override_fn fn,
             (size_t)chain->count * sizeof(mod_link_t));
     chain->links[0].fn       = fn;
     chain->links[0].owner_id = owner_id;
+    /* Seed from the OWNER, never from the slot: the memmove leaves the
+     * previous head link's bytes in [0], so an inherited flag would make
+     * a fresh link dead (registering behind a toggled-off mod) or live
+     * (a toggled-off mod re-registering on hot reload). */
+    chain->links[0].disabled = owner_disabled(owner_id);
+    if (!chain->links[0].disabled) s_live_links++;
     chain->count++;
+    /* The insert shifted every existing link up one slot, but live
+     * frames hold link INDICES. Registration from inside a running chain
+     * is a normal path (the content registry's on_level hooks fire from
+     * its own driver link), and without this re-anchor base() would
+     * re-enter the link that is currently executing. */
+    for (int f = 0; f < s_frame_depth; f++)
+        if (s_frames[f].chain == chain) s_frames[f].link++;
     openpete_mods_active = 1;
     return 0;
 }

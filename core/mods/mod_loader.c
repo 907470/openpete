@@ -167,6 +167,7 @@ struct openpete_mod {
 
 static struct openpete_mod s_mods[MODS_MAX];
 static int                 s_mod_count = 0;
+static unsigned            s_toggle_epoch; /* defined with the queue below */
 
 /* Where the enabled set came from, so "fix your load order" messages
  * name the list the user actually controls: the mods dir's enabled.txt,
@@ -389,6 +390,7 @@ static void api_call_addr(CPUState* cpu, uint32_t addr) {
 static int api_register_present_hook(openpete_mod_t* self,
                                      openpete_mod_present_fn fn) {
     if (!self) return -1;
+    if (purity_violation("register_present_hook")) return -1;
     int rc = openpete_mods_register_present_hook(fn, self->id);
     if (rc == 0)
         OPL_INFO_F(self->log_tag, "present hook registered");
@@ -644,8 +646,19 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     mod_resolve_stateabi(mod, dl);
     if (blen >= 0)
         openpete_mods_state_restore(mod->id, blob, blen);
-    OPL_INFO_F("mods", "hot reload: %s live (state %s)", mod->id,
-               blen >= 0 ? "carried" : "fresh");
+    /* Re-entry registered every surface in its default (enabled) state;
+     * a live-disabled mod must come back disabled, not resurrected. And
+     * a reload changes what the active registration set means, so the
+     * timeline-derived state (rewind ring, runahead snapshot) is stale
+     * either way — bump the modset epoch. */
+    openpete_mods_chain_set_owner_enabled(mod->id, mod->enabled);
+    openpete_mods_draw_set_owner_enabled(mod->id, mod->enabled);
+    openpete_mods_site_set_enabled(mod->id, mod->enabled);
+    openpete_mods_registry_set_owner_enabled(mod->id, mod->enabled);
+    s_toggle_epoch++;
+    OPL_INFO_F("mods", "hot reload: %s live (state %s%s)", mod->id,
+               blen >= 0 ? "carried" : "fresh",
+               mod->enabled ? "" : "; still disabled");
 }
 
 /* Watch: every 64 canonical ticks, recompute each loaded mod's content
@@ -702,7 +715,11 @@ static void hot_reload_poll(void) {
 void openpete_mods_chain_set_owner_enabled(const char* owner_id, int on);
 void openpete_mods_draw_set_owner_enabled(const char* owner_id, int on);
 
-typedef struct { char id[MOD_ID_MAX]; int on; } toggle_req_t;
+typedef struct {
+    char id[MOD_ID_MAX];
+    int  on;
+    int  defer_logged; /* one deferral notice per request, not per tick */
+} toggle_req_t;
 static toggle_req_t s_toggle_q[16];
 static int          s_toggle_n = 0;
 static unsigned     s_toggle_epoch = 0; /* bumped per applied change */
@@ -797,6 +814,7 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
     }
     hot_reload_poll();
 
+    int kept = 0;
     for (int q = 0; q < s_toggle_n; q++) {
         const char* id = s_toggle_q[q].id;
         int on = s_toggle_q[q].on;
@@ -808,6 +826,19 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
             continue;
         }
         if (mod->enabled == on) continue; /* no-op: don't bump the epoch */
+        /* A disable that would strand the player (the mod owns the level
+         * they are inside) DEFERS: the request stays queued and lands
+         * the moment they leave the slot. The epoch must not bump until
+         * it actually applies. */
+        if (!on && openpete_mods_registry_owner_busy(id)) {
+            if (!s_toggle_q[q].defer_logged) {
+                OPL_INFO_F("mods", "live toggle: \"%s\" deferred — can't "
+                           "be turned off while inside its level", id);
+                s_toggle_q[q].defer_logged = 1;
+            }
+            s_toggle_q[kept++] = s_toggle_q[q];
+            continue;
+        }
         if (on && !mod->entered && mod_enter_deferred(mod) != 0) {
             OPL_ERROR_F("mods", "live toggle: \"%s\" failed to start — "
                         "staying disabled", id);
@@ -817,6 +848,7 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
         openpete_mods_draw_set_owner_enabled(id, on);
         openpete_mods_site_set_enabled(id, on);
         openpete_mods_registry_set_owner_enabled(id, on);
+        openpete_mods_sfx_set_owner_enabled(cpu, id, on);
         mod->enabled = on;
         s_toggle_epoch++;
         OPL_INFO_F("mods", "live toggle: %s %s (tick %u)",
@@ -826,7 +858,7 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
          * the new state. */
         if (mod->toggle_fn) mod->toggle_fn(cpu, on);
     }
-    s_toggle_n = 0;
+    s_toggle_n = kept;
 }
 
 /* State-ABI queries (savestate P2b — consumed by mod_services' verdict
@@ -2393,6 +2425,17 @@ int openpete_mods_init(const openpete_options_t* opts) {
         s_mod_count++;
         loaded++;
         if (mod->enabled) enabled++;
+        /* Boot-disabled rows: make every registration surface agree.
+         * Matters for entered-but-disabled deps (their entry registered
+         * chains/hooks, which default to enabled) and for sticky state
+         * the surfaces keep outside registrations (baked sites of a
+         * disabled mod must not arm on attach). */
+        if (!mod->enabled) {
+            openpete_mods_chain_set_owner_enabled(mod->id, 0);
+            openpete_mods_draw_set_owner_enabled(mod->id, 0);
+            openpete_mods_site_set_enabled(mod->id, 0);
+            openpete_mods_registry_set_owner_enabled(mod->id, 0);
+        }
     }
 
     /* Declared-bindings conflict scan: two enabled mods claiming the

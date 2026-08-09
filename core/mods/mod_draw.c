@@ -137,6 +137,29 @@ void openpete_mods_draw_set_owner_enabled(const char* owner_id, int on) {
             s_phooks[i].disabled = !on;
 }
 
+/* A hook registered by a mod the loader already publishes comes up in
+ * that mod's current live-toggle state. Hot reload sweeps a mod's
+ * registrations and re-runs its entry without consulting the toggle
+ * state, so a re-registration by a currently-disabled mod would
+ * otherwise silently resume presenting.
+ *
+ * An owner the loader does not list yet is a mod inside its own entry:
+ * boot load (the row is published only after entry returns) and a
+ * deferred-entry mod's first enable (the row still reads disabled until
+ * the apply completes). Both register enabled — the apply's
+ * set_owner_enabled(id, 1) immediately follows the deferred entry, and
+ * boot entry means the mod is in the enabled set by construction. */
+static int owner_starts_disabled(const char* owner_id) {
+    if (!owner_id) return 0;
+    const int n = openpete_mods_count();
+    for (int i = 0; i < n; i++) {
+        const char* id = openpete_mods_id(i);
+        if (id && strcmp(id, owner_id) == 0)
+            return !openpete_mods_is_enabled(owner_id);
+    }
+    return 0;
+}
+
 int openpete_mods_register_present_hook(openpete_mod_present_fn fn,
                                         const char* owner_id) {
     if (!fn) return -1;
@@ -147,6 +170,7 @@ int openpete_mods_register_present_hook(openpete_mod_present_fn fn,
     }
     s_phooks[s_phook_count].fn = fn;
     s_phooks[s_phook_count].owner_id = owner_id;
+    s_phooks[s_phook_count].disabled = owner_starts_disabled(owner_id);
     s_phook_count++;
     s_any_draw = 1;
     return 0;
@@ -260,15 +284,30 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
     }
 
     if (!s_any_draw) return;
-    if (!openpete_native_render_enabled()) return;
 
     /* Commit the tick buffer once per canonical present: the sim tick
      * that just ran wrote staging; it becomes the displayed set for this
-     * tick's presents (and clears — immediate mode per tick). */
+     * tick's presents (and clears — immediate mode per tick).
+     *
+     * ABOVE the renderer gate, so staging drains even when nothing
+     * consumes it (--renderer og, or any run without a native renderer).
+     * An undrained staging buffer pins every command ever submitted: the
+     * text/rect/actor caps fill for the rest of the session (further
+     * draw_actor calls fail) and the whole backlog would replay at once
+     * if the renderer came up. Same lifecycle rule as the draw_mesh
+     * queue below.
+     *
+     * Live toggle: the apply above runs BEFORE this commit, so a mod
+     * disabled at this boundary still displays the tick it drew while
+     * enabled — then goes quiet. Its hooks no longer run, staging stays
+     * empty, and the next canonical commit clears the display set;
+     * nothing of a disabled mod survives past that one tick. */
     if (canonical) {
         s_tick_committed = s_tick_staging;
         memset(&s_tick_staging, 0, sizeof s_tick_staging);
     }
+
+    if (!openpete_native_render_enabled()) return;
 
     /* Present hooks: render-pure by API shape (see header comment). The
      * ctx is computed unconditionally — the postfx engine UBO reads the
