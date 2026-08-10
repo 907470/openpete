@@ -31,6 +31,7 @@
 
 #include "features/freecam_native.h"
 #include "openpete_freecam.h"
+#include "openpete_fillpick.h"  /* scripted engage of the LP fill-tag inspector */
 #include "openpete_log.h"
 #include "psx_runtime.h"        /* CPUState + its read/write callbacks */
 
@@ -304,6 +305,19 @@ static void freecam_apply_pose(CPUState* cpu, const char* s) {
  * UpdateSpyro while the level is still setting up and leave it un-rendered.
  * Interactive use (F / stick-click) is independent of this. */
 void freecam_native_maybe_autoengage(CPUState* cpu) {
+    /* The fill-tag inspector rides the same "level is live" gate — a scripted
+     * pick run sets OPENPETE_FILLPICK=1 alongside OPENPETE_FREECAM_POSE and
+     * reads the [fillpick] lines off stderr. */
+    {
+        static int s_fp_done = 0;
+        if (!s_fp_done && (int32_t)cpu->read_word(ADDR_LEVEL_LOAD_STATE) < 0) {
+            s_fp_done = 1;
+            const char* e = getenv("OPENPETE_FILLPICK");
+            if (e && *e && *e != '0') openpete_fillpick_set_active(1);
+            e = getenv("OPENPETE_FILLPICK_PREVIEW");
+            if (e && *e && *e != '0') openpete_fillpick_set_preview(1);
+        }
+    }
     static int s_done = 0;
     if (s_done) return;
     const char* pose = getenv("OPENPETE_FREECAM_POSE");

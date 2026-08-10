@@ -10,8 +10,16 @@
 #          the haunted lp-bridge cluster is NOFILL by review (the HP bridge
 #          alone reads correctly at distance).
 #
-# Regenerate candidates with the sweep; NEVER hand-add a FILL without a strip
-# review. A sweep face absent here is unreviewed — new candidates fail loud.
+# Two sanctioned ways to reach this file, both ending in a reviewed verdict:
+#   1. the coverage sweep (scripts/terrain-fill-sweep.sh) + a per-face strip
+#      review — the origin of every measured need-px row below;
+#   2. the in-game inspector (P key, notes/plans/openpete-fill-tag-inspector.md):
+#      aim at a face, read its identity and whether authored HP covers that
+#      sightline, flip the verdict live, then fold the session file in with
+#      scripts/fill-tags-apply.py. Rows it adds carry provenance `pick` and
+#      need-px 0 — judged against the live scene, not a pixel measurement.
+# NEVER hand-edit a FILL in without one of those. A sweep face absent here is
+# unreviewed — new candidates fail loud.
 NOFILL artisans 12 0 64 spawn:64
 NOFILL artisans 29 1 110 spawn:84,outer-wall:26
 NOFILL artisans 35 9 99 spawn:99

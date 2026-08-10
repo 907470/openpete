@@ -35,6 +35,8 @@
 #include "openpete_interp_objs.h"    /* per-descriptor scroll snapshots */
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "features/no_lod.h"  /* openpete_no_lod + openpete_fog_scale (--fog-scale) */
+#include "features/levelwarp_native.h" /* level-id -> verdicts-file spelling (fill-tag pick) */
+#include "openpete_fillpick.h"       /* LP fill-tag inspector (P): session verdicts + pick */
 
 #include "portal_native.h" /* portal-guard gate + the sky-plane provider (OT-conformance clamp) */
 #include "texture_pack.h"           /* identity resolve for the record dumper */
@@ -298,6 +300,7 @@ typedef struct {
     uint8_t guard;                                 /* .s-deferred face (portal-guard dup) */
     uint8_t nearband;                              /* .s near-band classified: no og key (P6b) */
     uint8_t fill;                                  /* LP hole-fill backing (W2.6-c) -> WORLD_FILL */
+    uint8_t fptag;                                 /* fill-tag inspector: 1 = listed FILL, 2 = preview candidate */
     int16_t sec, face;                             /* source identity (fardbg attribution) */
     uint8_t env;                                   /* env-anim tile member (provenance tag) */
     float otkey;                                   /* parent face's .s OT key (full-world mean
@@ -309,6 +312,7 @@ typedef struct {
 static int s_emit_noHP = 0;     /* tier of the sector currently being emitted */
 static int s_emit_guard = 0;    /* current face is .s-DEFERRED (near band) -> portal-guard dup */
 static int s_emit_fill = 0;     /* current pass is the LP hole-fill backing (W2.6-c) */
+static int s_emit_fptag = 0;    /* current LP face's fill-tag class (inspector tint) */
 static int s_emit_sec = -1, s_emit_face = -1;  /* fardbg identity of the current face */
 static int s_emit_env = 0;      /* current face is in the env-anim rewrite set */
 static float s_emit_otkey = 0.0f;  /* current face's .s OT key (portal conformance) */
@@ -492,6 +496,132 @@ static uint32_t terrain_color(CPUState* cpu, int noHP, uint32_t lpBase,
  * camera-space (m1,m2,m3) for near-plane clipping + the projected screen sx,sy. */
 typedef struct { float sx, sy; double m1, m2, m3, vz; int ok; } lvert;
 
+/* ---- LP fill-tag inspector: the crosshair pick (openpete_fillpick.h) -------
+ * "Which face am I looking at, and does authored HP cover this sightline?" —
+ * answered in the walk's own projected space rather than by a world-space ray.
+ * The pick point is the projection centre (OFX, OFY): that IS the optical
+ * axis, so it lands on the window centre at any aspect and under the 240->224
+ * overscan crop, and nothing has to reconstruct the (non-orthonormal) Spyro
+ * camera basis. Every face the walk projects is tested, drawn or dropped, so
+ * the LP face that WOULD cover a hole is pickable before it is tagged.
+ *
+ * Two winners are kept per present: the nearest LP face (the fill-tag
+ * candidate) and the nearest HP face (the coverage question). Their depths
+ * settle the verdict — no HP hit means nothing authored covers the sightline
+ * (FILL); an HP hit BEHIND the LP means the coarse LP is punching through
+ * cover that already exists (NOFILL). */
+/* The pick point set. Point 0 is the crosshair, published to the overlay;
+ * OPENPETE_FILLPICK_GRID="COLSxROWS" adds a grid over the visible frame so one
+ * pose enumerates every fill-needed sightline in view instead of one at a
+ * time. Frame extents come from the projection itself: OFX is the horizontal
+ * centre (so the half-width is OFX) and the visible band is the 224 lines
+ * centred on OFY, after the 240->224 overscan crop. */
+#define FP_MAX_PTS 4096
+typedef struct {
+    double px, py;
+    int    lp_sec, lp_face, lp_quad, lp_cand;
+    double lp_z;
+    int    hp_sec, hp_face;
+    double hp_z;
+} fp_point;
+
+static int      s_fp_on;                  /* inspector engaged for this walk */
+static fp_point s_fp_pt[FP_MAX_PTS];
+static int      s_fp_np;
+static double   s_fp_bx0, s_fp_by0, s_fp_bx1, s_fp_by1;   /* bbox of the point set */
+static int      s_fp_grid_cols, s_fp_grid_rows;
+
+/* Lay out this walk's pick points. Point 0 sits at the crosshair, moved by
+ * OPENPETE_FILLPICK_XY="dx,dy" — offsets in [-1,1] of the visible half-frame,
+ * so a scripted aim needs no knowledge of the frame width at this aspect. */
+static void fp_begin(void) {
+    double hw = s_ofx, hh = 112.0;        /* visible half-extents, walk frame */
+    s_fp_np = 0;
+    fp_point* p0 = &s_fp_pt[s_fp_np++];
+    memset(p0, 0, sizeof *p0);
+    p0->px = s_ofx; p0->py = s_ofy;
+    const char* xy = getenv("OPENPETE_FILLPICK_XY");
+    if (xy && *xy) {
+        double dx, dy;
+        if (sscanf(xy, "%lf,%lf", &dx, &dy) == 2) {
+            p0->px = s_ofx + dx * hw;
+            p0->py = s_ofy + dy * hh;
+        }
+    }
+    s_fp_grid_cols = s_fp_grid_rows = 0;
+    const char* g = getenv("OPENPETE_FILLPICK_GRID");
+    if (g && *g) {
+        int cols = 0, rows = 0;
+        if (sscanf(g, "%dx%d", &cols, &rows) == 2 && cols > 0 && rows > 0) {
+            if ((long)cols * rows > FP_MAX_PTS - 1) { rows = (FP_MAX_PTS - 1) / cols; }
+            s_fp_grid_cols = cols; s_fp_grid_rows = rows;
+            /* Cell centres, so a sample never lands on a shared edge. */
+            for (int r = 0; r < rows; r++)
+                for (int c = 0; c < cols; c++) {
+                    fp_point* p = &s_fp_pt[s_fp_np++];
+                    memset(p, 0, sizeof *p);
+                    p->px = s_ofx + (2.0 * (c + 0.5) / cols - 1.0) * hw;
+                    p->py = s_ofy + (2.0 * (r + 0.5) / rows - 1.0) * hh;
+                }
+        }
+    }
+    s_fp_bx0 = s_fp_by0 = 1e30; s_fp_bx1 = s_fp_by1 = -1e30;
+    for (int k = 0; k < s_fp_np; k++) {
+        fp_point* p = &s_fp_pt[k];
+        p->lp_sec = p->lp_face = p->hp_sec = p->hp_face = -1;
+        if (p->px < s_fp_bx0) s_fp_bx0 = p->px;
+        if (p->px > s_fp_bx1) s_fp_bx1 = p->px;
+        if (p->py < s_fp_by0) s_fp_by0 = p->py;
+        if (p->py > s_fp_by1) s_fp_by1 = p->py;
+    }
+}
+
+/* Keep each point's nearest hit of one projected triangle. Perspective-correct
+ * depth: 1/z interpolates linearly in screen space, so the reciprocal of the
+ * barycentric-weighted reciprocals is the exact surface view-Z at the sample
+ * for a planar triangle. */
+static void fp_hit_tri(int lp, int sec, int face, int quad, int cand,
+                       const lvert* A, const lvert* B, const lvert* C) {
+    if (A->m3 <= 1e-6 || B->m3 <= 1e-6 || C->m3 <= 1e-6) return;  /* straddles the camera plane */
+    double ax = A->sx, ay = A->sy, bx = B->sx, by = B->sy, cx = C->sx, cy = C->sy;
+    /* Screen bbox reject against the whole point set first: with a grid armed
+     * this is what keeps the sweep from costing points x faces. */
+    double tx0 = ax < bx ? ax : bx; if (cx < tx0) tx0 = cx;
+    double tx1 = ax > bx ? ax : bx; if (cx > tx1) tx1 = cx;
+    double ty0 = ay < by ? ay : by; if (cy < ty0) ty0 = cy;
+    double ty1 = ay > by ? ay : by; if (cy > ty1) ty1 = cy;
+    if (tx1 < s_fp_bx0 || tx0 > s_fp_bx1 || ty1 < s_fp_by0 || ty0 > s_fp_by1) return;
+    double d = (by - cy) * (ax - cx) + (cx - bx) * (ay - cy);
+    if (d > -1e-9 && d < 1e-9) return;                            /* degenerate on screen */
+    for (int k = 0; k < s_fp_np; k++) {
+        fp_point* P = &s_fp_pt[k];
+        if (P->px < tx0 || P->px > tx1 || P->py < ty0 || P->py > ty1) continue;
+        double w0 = ((by - cy) * (P->px - cx) + (cx - bx) * (P->py - cy)) / d;
+        double w1 = ((cy - ay) * (P->px - cx) + (ax - cx) * (P->py - cy)) / d;
+        double w2 = 1.0 - w0 - w1;
+        if (w0 < 0.0 || w1 < 0.0 || w2 < 0.0) continue;
+        double inv = w0 / A->m3 + w1 / B->m3 + w2 / C->m3;
+        if (inv <= 1e-12) continue;
+        double z = 1.0 / inv;
+        if (lp) {
+            if (P->lp_sec < 0 || z < P->lp_z) {
+                P->lp_sec = sec; P->lp_face = face;
+                P->lp_quad = quad; P->lp_cand = cand; P->lp_z = z;
+            }
+        } else if (P->hp_sec < 0 || z < P->hp_z) {
+            P->hp_sec = sec; P->hp_face = face; P->hp_z = z;
+        }
+    }
+}
+
+/* Both strip triangles of a quad, matching the emit's (i0,i1,i2)+(i1,i2,i3)
+ * triangulation so the picked region is exactly the drawn region. */
+static void fp_test_face(int lp, int sec, int face, int cand, const lvert* sv,
+                         int i0, int i1, int i2, int i3, int quad) {
+    fp_hit_tri(lp, sec, face, quad, cand, &sv[i0], &sv[i1], &sv[i2]);
+    if (quad) fp_hit_tri(lp, sec, face, quad, cand, &sv[i1], &sv[i2], &sv[i3]);
+}
+
 /* A face corner: native colour + page-relative texel UV. */
 typedef struct { uint32_t rgb; float u, v; } lcorner;
 /* A face's texture material (decoded from the Tiledef; VRAM-pixel units).
@@ -631,6 +761,7 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     t->tier = s_emit_noHP;
     t->guard = (uint8_t)s_emit_guard;
     t->fill = (uint8_t)s_emit_fill;
+    t->fptag = (uint8_t)s_emit_fptag;
     t->sec = (int16_t)s_emit_sec; t->face = (int16_t)s_emit_face;
     t->env = (uint8_t)s_emit_env;
     t->otkey = s_emit_otkey;
@@ -1015,6 +1146,7 @@ typedef struct {
     uint16_t c0, c1, c2, c3;                       /* colour byte-offsets */
     uint8_t  fogbias, trirot, hq_idx, abe;         /* HP: w3&1, w2>>8&3, w2&0x7F, w2&0x80 */
     uint8_t  gapfill;                              /* LP only: frozen fill-tag face (terrain_fill_tags.h) */
+    uint8_t  fillcand;                             /* LP only: gapfill set by the inspector preview, not the list */
     uint8_t  floorf;                               /* LP only: up-facing floor by winding (n_z < 0, |n_z| > 0.8) */
     uint8_t  admit;                                /* LP only: authored admission field w0 & 0x1F */
     uint8_t  otbias;                               /* authored OT-bias field: LP (w1>>3)&0x1F,
@@ -1064,6 +1196,7 @@ typedef struct {
     uint32_t lastUse;                        /* s_tsc_stamp at last hit — LRU eviction key */
     int nLpV, nLpF, nHpV, nHpF, flags;
     int nGapfill;                            /* LP faces classified HP-coverage-gap fillers */
+    unsigned fillGen;                        /* openpete_fillpick_generation() at last tagging */
     int originX, originY, originZ;
     int centreX, centreY, centreZ, radius;   /* header bounding sphere (w0/w1) — the .s LP/HP binning inputs */
     uint32_t lpColBase, nearBase, farBase, lpFaces, hpFaces;
@@ -1244,7 +1377,7 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
  * v1-v12, each version patching a newly discovered misprediction). */
 #include "terrain_fill_tags.h"
 
-static int tft_fill(int level, int sec, int face) {
+static int tft_frozen(int level, int sec, int face) {
     int lo = 0, hi = (int)(sizeof(k_terrain_fill_tags)/sizeof(k_terrain_fill_tags[0])) - 1;
     long q = ((long)level << 20) | ((long)sec << 8) | face;
     while (lo <= hi) {
@@ -1255,6 +1388,116 @@ static int tft_fill(int level, int sec, int face) {
         if (k < q) lo = mid + 1; else hi = mid - 1;
     }
     return 0;
+}
+
+/* The effective verdict: an in-game inspector session (P key) overrides the
+ * frozen table for the faces it has re-judged, so a Y/N press re-renders the
+ * scene with the new verdict on the next present and the audit runs against
+ * the live image instead of a rebuild. Inert — and free — with no session
+ * verdicts recorded. */
+static int tft_fill(int level, int sec, int face) {
+    int ov = openpete_fillpick_lookup(level, sec, face);
+    if (ov != OPENPETE_FILLPICK_NONE) return ov == OPENPETE_FILLPICK_FILL;
+    return tft_frozen(level, sec, face);
+}
+
+/* Grid sweep report (OPENPETE_FILLPICK_GRID) — one shot per pose, tallying the
+ * sample cells each LP face owns and how they split on cover:
+ *   bare   = an LP face is the nearest terrain and NO authored HP is on the
+ *            sightline. This is the fill case: at og's LOD the LP is what
+ *            covers those pixels, and without a FILL tag nothing does.
+ *   behind = an HP face is on the sightline but FARTHER than the LP, i.e. the
+ *            coarse LP is in front of cover that already exists (the
+ *            punch-through class a wrong FILL tag ships).
+ *   cover  = HP is nearer; the LP is hidden whatever its tag says.
+ * A pose's report is a candidate list, not a verdict: the cells are samples,
+ * so a face with a handful of `bare` cells along a silhouette is the sliver
+ * class the frozen list rejects, while a face with a broad bare region is the
+ * og-terrain-over-void class it accepts. */
+static void fp_grid_report(int level, const char* level_name) {
+    if (!s_fp_grid_cols) return;
+    static int s_done;
+    if (s_done) return;
+    s_done = 1;
+    struct { int sec, face, bare, behind, cover, tagged; } acc[512];
+    int n = 0;
+    for (int k = 1; k < s_fp_np; k++) {
+        const fp_point* P = &s_fp_pt[k];
+        if (P->lp_sec < 0) continue;
+        int j = 0;
+        for (; j < n; j++) if (acc[j].sec == P->lp_sec && acc[j].face == P->lp_face) break;
+        if (j == n) {
+            if (n >= (int)(sizeof acc / sizeof acc[0])) continue;
+            acc[n].sec = P->lp_sec; acc[n].face = P->lp_face;
+            acc[n].bare = acc[n].behind = acc[n].cover = 0;
+            acc[n].tagged = tft_fill(level, P->lp_sec, P->lp_face);
+            n++;
+        }
+        if (P->hp_sec < 0)          acc[j].bare++;
+        else if (P->hp_z > P->lp_z) acc[j].behind++;
+        else                        acc[j].cover++;
+    }
+    fprintf(stderr, "[fillgrid-hdr] %s grid=%dx%d faces=%d\n",
+            level_name, s_fp_grid_cols, s_fp_grid_rows, n);
+    for (int j = 0; j < n; j++)
+        fprintf(stderr, "[fillgrid] %s %d %d tag=%s bare=%d behind=%d cover=%d\n",
+                level_name, acc[j].sec, acc[j].face,
+                acc[j].tagged ? "FILL" : "NOFILL",
+                acc[j].bare, acc[j].behind, acc[j].cover);
+}
+
+/* Hand this walk's crosshair winners to the host (overlay + key bindings), and
+ * log every change so a scripted/headless run is a transcript. The level name
+ * is the verdicts-file spelling, so a logged line is one column short of being
+ * a verdicts row. */
+static void fp_publish(CPUState* cpu) {
+    openpete_fillpick_hit h;
+    memset(&h, 0, sizeof h);
+    h.level = (int)(int32_t)rd(cpu, 0x8007596C);   /* g_LevelId */
+    size_t nlv = 0;
+    const spyro1_level_t* lv = spyro1_level_table(&nlv);
+    snprintf(h.level_name, sizeof h.level_name, "level%d", h.level);
+    for (size_t k = 0; k < nlv; k++)
+        if (lv[k].id == h.level) {
+            snprintf(h.level_name, sizeof h.level_name, "%s", lv[k].name);
+            break;
+        }
+    const fp_point* X = &s_fp_pt[0];
+    if (X->lp_sec >= 0) {
+        h.valid = 1;
+        h.sec = X->lp_sec; h.face = X->lp_face;
+        h.quad = X->lp_quad; h.vz = X->lp_z;
+        /* The face's own tag bit is unreliable here: preview sets it on
+         * everything. Ask the list. */
+        h.verdict = tft_fill(h.level, h.sec, h.face) ? OPENPETE_FILLPICK_FILL
+                                                     : OPENPETE_FILLPICK_NOFILL;
+        h.overridden = openpete_fillpick_lookup(h.level, h.sec, h.face)
+                       != OPENPETE_FILLPICK_NONE;
+    }
+    if (X->hp_sec >= 0) {
+        h.hp_valid = 1;
+        h.hp_sec = X->hp_sec; h.hp_face = X->hp_face; h.hp_vz = X->hp_z;
+    }
+    openpete_fillpick_publish(&h);
+    fp_grid_report(h.level, h.level_name);
+
+    static int last_sec = -2, last_face = -2, last_lvl = -2, last_verdict = -2;
+    if (h.valid && (h.sec != last_sec || h.face != last_face ||
+                    h.level != last_lvl || h.verdict != last_verdict)) {
+        last_sec = h.sec; last_face = h.face;
+        last_lvl = h.level; last_verdict = h.verdict;
+        fprintf(stderr, "[fillpick] %s %d %d  tag=%s%s  lp_vz=%.0f  hp=%s",
+                h.level_name, h.sec, h.face,
+                h.verdict == OPENPETE_FILLPICK_FILL ? "FILL" : "NOFILL",
+                h.overridden ? "*" : "", h.vz,
+                h.hp_valid ? "" : "none");
+        if (h.hp_valid)
+            fprintf(stderr, "s%d/f%d vz=%.0f (%s LP by %.0f)",
+                    h.hp_sec, h.hp_face, h.hp_vz,
+                    h.hp_vz < h.vz ? "in front of" : "behind",
+                    fabs(h.hp_vz - h.vz));
+        fputc('\n', stderr);
+    }
 }
 
 /* ---- authored-data art corrections (native display only) -----------------
@@ -1408,8 +1651,39 @@ static void tsc_tag_gapfill(CPUState* cpu, tscache_t* C,
         }
         if (secIdx >= 0) {
             F->gapfill = (uint8_t)tft_fill(level, secIdx, f);
+            /* Inspector preview: force every LP face through the gapfill
+             * exemptions so the UNTAGGED candidates are visible too — an
+             * under-fill site is a hole the covering face does not draw into
+             * until it is tagged, so it cannot be found by looking at the
+             * tagged set. `fillcand` keeps the two apart for the tint (and
+             * keeps the pick honest about what the shipped list says).
+             * Deliberately rides `gapfill` rather than a parallel gate: every
+             * exemption the tags already have — the sector-level lpGapOnly
+             * arm, the authored LP admission, the handoff far-only drop — is
+             * then exercised exactly as a real tag would be. */
+            F->fillcand = 0;
+            if (!F->gapfill && openpete_fillpick_preview()) {
+                F->gapfill = 1;
+                F->fillcand = 1;
+            }
             C->nGapfill += F->gapfill;
         }
+    }
+}
+
+/* Re-derive a CACHED sector's fill tags. The tags are static level data, so
+ * they are normally decoded once — but the inspector's session verdicts and
+ * preview mode change what the list says while the level is live, and a
+ * sector already in the cache would otherwise keep the old tagging until it
+ * is evicted. Keyed on the inspector's generation counter, so this costs one
+ * integer compare per cache hit when nothing has changed. */
+static void tsc_retag_fill(CPUState* cpu, tscache_t* C,
+                           uint32_t sectorPtr, uint32_t sectorCnt) {
+    C->fillGen = openpete_fillpick_generation();
+    tsc_tag_gapfill(cpu, C, sectorPtr, sectorCnt);
+    if (C->polyanim && C->lpF) {          /* stale-bank guard: see tsc_sector_polyanim */
+        for (int f = 0; f < C->nLpF; f++) C->lpF[f].gapfill = 0;
+        C->nGapfill = 0;
     }
 }
 
@@ -1461,7 +1735,10 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         tscache_t* W = &s_tsc[(h + k) & (TSC_SLOTS - 1)];
         if (W->s == s && W->sig[0]==g[0] && W->sig[1]==g[1] && W->sig[2]==g[2]
             && W->sig[3]==g[3] && W->sig[4]==g[4]) {
-            s_tsc_hit++; W->lastUse = s_tsc_stamp; return W;
+            s_tsc_hit++; W->lastUse = s_tsc_stamp;
+            if (W->fillGen != openpete_fillpick_generation())
+                tsc_retag_fill(cpu, W, sectorPtr, sectorCnt);
+            return W;
         }
     }
     {
@@ -1509,6 +1786,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
                            if (C->hpF) tsc_decode_faces(cpu, C->hpFaces, C->nHpF, 16,
                                                         lqTable, hqTable, texTblMode, hiDetail, C->hpF); }
         C->lpg_state = 0;              /* re-decoded sector: re-derive the LP grade */
+        C->fillGen = openpete_fillpick_generation();
         tsc_tag_gapfill(cpu, C, sectorPtr, sectorCnt);
         C->polyanim = tsc_sector_polyanim(cpu, s, sectorPtr, sectorCnt);
         if (C->polyanim && C->lpF) {   /* stale-bank guard: see tsc_sector_polyanim */
@@ -2439,6 +2717,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
     s_ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
     s_H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    /* Arm the fill-tag inspector's pick point set for this walk (see fp_begin:
+     * the crosshair, plus an optional grid sweep). */
+    s_fp_on = openpete_fillpick_active();
+    if (s_fp_on) fp_begin();
     /* Camera position in world/16 units at FRACTIONAL precision (÷16.0, not >>4).
      * The .s projects terrain in world/16 to fit the GTE's 16-bit range, so it
      * truncates the camera to 16-unit steps — fine at the 30 Hz lockstep, but under
@@ -2562,6 +2844,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * on, verified at 4:3 and 21:9. OPENPETE_TERRAIN_OCCL=0 disables (A/B). */
         static tn_envvbl_t tocc_c;
         int s_tocc = tn_env_vbl(&tocc_c, "OPENPETE_TERRAIN_OCCL", 1, 1);
+        /* The fill-tag inspector must see every sector the frustum keeps: a
+         * culled sector's faces never project, so they would be silently
+         * unpickable. The cull is a conservative perf skip, so dropping it
+         * costs only frame rate. */
+        if (s_fp_on) s_tocc = 0;
         if (s_tocc) {
             double oc1, oc2, oc3;
             ngte_mac(M, camy - SC->centreY, camz - SC->centreZ,
@@ -2766,7 +3053,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         int passLP = (pass != 1);                 /* 0 = WORLD LP (behind HP), 1 = HP, 2 = fill LP */
         int fmDumpOnly = 0;                       /* facemap: project + dump, never emit */
         if (pass == 0 && !drawLP) {
-            if (s_facemap_active && !(flags & 0x2000) && nLpF > 0) fmDumpOnly = 1;
+            /* The inspector forces the same dump-only walk facemap uses, so an
+             * LP face is pickable even in a sector whose LP tier never draws —
+             * aiming at a hole then names the face that would cover it. */
+            if ((s_facemap_active || s_fp_on) && !(flags & 0x2000) && nLpF > 0) fmDumpOnly = 1;
             else continue;
         }
         if (pass == 1 && !drawHP) continue;
@@ -2848,6 +3138,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             int quad = F->quad;
             s_dbg_faces++;
             s_emit_sec = (int)i; s_emit_face = f;   /* fardbg attribution identity */
+            /* Inspector tint class: a listed FILL tag vs a face preview forced
+             * through (the untagged candidates). HP faces carry neither. */
+            s_emit_fptag = (passLP && F->gapfill) ? (F->fillcand ? 2 : 1) : 0;
             s_emit_env = (F->tgen != 0);            /* env-anim member (rewrite set) */
             /* Portal OT-conformance key: the face's .s OT bucket base — the
              * raw 4-corner view-Z sum ((Σ4 SZ)>>7 in the walk; .s tris sum
@@ -3074,6 +3367,13 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 }
                 fputc('\n', stderr);
             }
+            /* Fill-tag inspector pick — BEFORE every drop gate, so a face the
+             * gates reject is still identifiable (that is the under-fill case:
+             * the surface that should cover the hole is the one not drawn).
+             * The fill pass is skipped: it re-walks faces pass 0 already
+             * offered. */
+            if (s_fp_on && !passFill)
+                fp_test_face(passLP, (int)i, f, F->fillcand, sv, i0, i1, i2, i3, quad);
             if (fmDumpOnly) continue;
             /* fardbg verdict trail: every face dropped AFTER its [fardbg-face]
              * row announces itself, so the offline face-set join can subtract
@@ -3694,6 +3994,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_facemap_done = 1;
         s_facemap_active = 0;
     }
+    if (s_fp_on) fp_publish(cpu);
 }
 
 /* Feed the built tris to the native scene. Textured faces sample the PSX VRAM
@@ -4311,6 +4612,15 @@ static void terrain_feed_native(CPUState* cpu) {
             fclose(fp);
         }
       } }
+    /* Fill-tag inspector tint: the listed FILL faces green, the preview's
+     * untagged candidates magenta, the face under the crosshair yellow. LP is
+     * untextured gouraud, so a flat colour replaces the whole surface and the
+     * tag set reads at a glance while the HP scene around it stays normal. */
+    openpete_fillpick_hit fp_hit;
+    int fp_show = openpete_fillpick_active() && openpete_fillpick_get(&fp_hit);
+    if (!fp_show) memset(&fp_hit, 0, sizeof fp_hit);
+    int fp_tint = openpete_fillpick_active();
+
     for (int i = 0; i < s_tri_n; i++) {
         ttri* t = &s_tri[i];
         if (s_tieronly == 1 && !t->tier) continue;   /* LP only */
@@ -4324,7 +4634,15 @@ static void terrain_feed_native(CPUState* cpu) {
          * preserved by construction). */
         if (s_pplane_n && t->blend && t->textured && portal_sky_covers(t)) continue;
         openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));
+        uint32_t fp_col = 0;
+        if (fp_tint) {
+            if (fp_show && t->tier && t->sec == fp_hit.sec && t->face == fp_hit.face)
+                fp_col = 0xFF00FFFFu;                          /* yellow: under the crosshair */
+            else if (t->fptag == 1) fp_col = 0xFF00FF00u;      /* green:   listed FILL tag */
+            else if (t->fptag == 2) fp_col = 0xFFFF00FFu;      /* magenta: preview candidate */
+        }
         int tex = (!s_flat && !s_notex && !s_tiercolor) ? t->textured : 0;
+        if (fp_col) tex = 0;
         /* blend rides for untextured faces too: LP semi-transparent gouraud
          * (face w1 bit 2) has no texture but still routes to the ALPHA/ADD
          * scene groups, mirroring the .s's 0x32/0x3A prim codes. */
@@ -4418,7 +4736,8 @@ static void terrain_feed_native(CPUState* cpu) {
              * pipeline does tex*colour/128, so feed the full RGB). Untextured:
              * the gouraud colour; s_flat = a debug coverage colour;
              * s_tiercolor = LP red / HP blue / fill green. */
-            tri.v[k].rgba = s_tiercolor ? (t->fill ? 0xFF00FF00u
+            tri.v[k].rgba = fp_col       ? fp_col
+                          : s_tiercolor  ? (t->fill ? 0xFF00FF00u
                                          : t->tier ? 0xFF0000FFu : 0xFFFF0000u)
                           : s_flat       ? 0xFF20C040u
                           : (0xFF000000u | (t->rgb[k] & 0xFFFFFFu));

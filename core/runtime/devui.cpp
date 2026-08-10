@@ -27,6 +27,7 @@ extern "C" {
 }
 #include "openpete.h"
 #include "openpete_devui.h"
+#include "openpete_fillpick.h"
 #include "openpete_knobs.h"
 #include "openpete_log.h"
 #include "openpete_mods.h"
@@ -663,9 +664,115 @@ static void draw_panel(void)
     s_open = open;
 }
 
+/* ------------------------------------------------------------------ */
+/* LP fill-tag inspector (P) — see openpete_fillpick.h                 */
+/* ------------------------------------------------------------------ */
+
+/* Crosshair marking the pick point. It is the window centre by construction:
+ * the terrain walk picks at the projection centre (OFX/OFY), which is the
+ * optical axis at every aspect. Drawn on the foreground list so it sits over
+ * the scene without a window. */
+static void draw_fillpick_crosshair(void)
+{
+    ImGuiIO &io = ImGui::GetIO();
+    ImDrawList *dl = ImGui::GetForegroundDrawList();
+    float cx = io.DisplaySize.x * 0.5f, cy = io.DisplaySize.y * 0.5f;
+    const float r0 = 4.0f, r1 = 14.0f;
+    const ImU32 col = IM_COL32(255, 255, 0, 220);
+    const ImU32 shadow = IM_COL32(0, 0, 0, 200);
+    for (int pass = 0; pass < 2; pass++) {
+        ImU32 c = pass ? col : shadow;
+        float o = pass ? 0.0f : 1.0f;
+        dl->AddLine(ImVec2(cx - r1 + o, cy + o), ImVec2(cx - r0 + o, cy + o), c, 1.5f);
+        dl->AddLine(ImVec2(cx + r0 + o, cy + o), ImVec2(cx + r1 + o, cy + o), c, 1.5f);
+        dl->AddLine(ImVec2(cx + o, cy - r1 + o), ImVec2(cx + o, cy - r0 + o), c, 1.5f);
+        dl->AddLine(ImVec2(cx + o, cy + r0 + o), ImVec2(cx + o, cy + r1 + o), c, 1.5f);
+    }
+}
+
+static const char *fp_verdict_word(int v)
+{
+    return v == OPENPETE_FILLPICK_FILL   ? "FILL"
+         : v == OPENPETE_FILLPICK_NOFILL ? "NOFILL"
+                                         : "clear";
+}
+
+static void draw_fillpick_panel(void)
+{
+    ImGuiIO &io = ImGui::GetIO();
+    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - 400.0f, 24.0f),
+                            ImGuiCond_FirstUseEver);
+    ImGui::SetNextWindowSize(ImVec2(376, 340), ImGuiCond_FirstUseEver);
+    if (!ImGui::Begin("fill-tag inspector (P)", nullptr,
+                      ImGuiWindowFlags_NoNavInputs | ImGuiWindowFlags_NoNavFocus)) {
+        ImGui::End();
+        return;
+    }
+
+    bool preview = openpete_fillpick_preview() != 0;
+    if (ImGui::Checkbox("preview untagged LP candidates (H)", &preview))
+        openpete_fillpick_set_preview(preview);
+    ImGui::TextDisabled("green = listed FILL   magenta = candidate   yellow = picked");
+    ImGui::Separator();
+
+    openpete_fillpick_hit h;
+    if (!openpete_fillpick_get(&h)) {
+        ImGui::TextDisabled("no terrain face under the crosshair");
+    } else {
+        ImGui::Text("%s  sector %d  face %d%s", h.level_name, h.sec, h.face,
+                    h.quad ? "  (quad)" : "  (tri)");
+        ImGui::Text("verdict: %s%s", fp_verdict_word(h.verdict),
+                    h.overridden ? "   [session]" : "   [frozen list]");
+        ImGui::Text("LP view-Z at crosshair: %.0f", h.vz);
+        /* The FILL question in one line: FILL means og draws this LP over a
+         * sightline no authored HP covers, so "no HP here" argues for it and
+         * "HP already covers, nearer or behind" argues against. */
+        if (!h.hp_valid) {
+            ImGui::TextColored(ImVec4(0.5f, 1.0f, 0.5f, 1.0f),
+                               "no HP on this sightline -> LP is the only cover");
+        } else if (h.hp_vz > h.vz) {
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.4f, 1.0f),
+                               "HP s%d/f%d is %.0f BEHIND the LP -> LP punches through",
+                               h.hp_sec, h.hp_face, h.hp_vz - h.vz);
+        } else {
+            ImGui::TextColored(ImVec4(0.8f, 0.8f, 0.8f, 1.0f),
+                               "HP s%d/f%d is %.0f in front -> LP is hidden anyway",
+                               h.hp_sec, h.hp_face, h.vz - h.hp_vz);
+        }
+        ImGui::Separator();
+        if (ImGui::Button("FILL (Y)"))   openpete_fillpick_mark(OPENPETE_FILLPICK_FILL);
+        ImGui::SameLine();
+        if (ImGui::Button("NOFILL (N)")) openpete_fillpick_mark(OPENPETE_FILLPICK_NOFILL);
+        ImGui::SameLine();
+        if (ImGui::Button("clear (B)"))  openpete_fillpick_mark(OPENPETE_FILLPICK_NONE);
+    }
+
+    ImGui::Separator();
+    int n = openpete_fillpick_count();
+    ImGui::Text("session: %d verdict(s)", n);
+    ImGui::SameLine();
+    if (ImGui::Button("undo (U)")) openpete_fillpick_undo();
+    ImGui::TextDisabled("%s", openpete_fillpick_session_path());
+    if (ImGui::BeginChild("##fpsession", ImVec2(0, 0), ImGuiChildFlags_Borders)) {
+        for (int i = n - 1; i >= 0; i--) {
+            const char *name = "?";
+            int sec = 0, face = 0, verdict = OPENPETE_FILLPICK_NONE;
+            if (!openpete_fillpick_entry(i, nullptr, &name, &sec, &face, &verdict))
+                continue;
+            ImGui::Text("%-6s %s %d %d", fp_verdict_word(verdict), name, sec, face);
+        }
+    }
+    ImGui::EndChild();
+    ImGui::End();
+}
+
 void openpete_devui_render(struct rhi_device *dev)
 {
-    if (!s_inited || !s_open) return;
+    /* The inspector's crosshair + panel ride the same imgui frame as the
+     * config overlay, but must show with the overlay closed (aiming a camera
+     * behind a 540px panel is not the workflow). */
+    bool fillpick = openpete_fillpick_active() != 0;
+    if (!s_inited || (!s_open && !fillpick)) return;
     if (dev != s_dev) return;
     void *cb = rhi_current_command_buffer(dev);
     if (!cb) return;
@@ -677,7 +784,8 @@ void openpete_devui_render(struct rhi_device *dev)
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplSDL3_NewFrame();
     ImGui::NewFrame();
-    draw_panel();
+    if (s_open) draw_panel();
+    if (fillpick) { draw_fillpick_crosshair(); draw_fillpick_panel(); }
     ImGui::Render();
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)cb);
 }

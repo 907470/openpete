@@ -16,6 +16,7 @@
 #include "openpete_log.h"
 #include "openpete_native_render.h"
 #include "openpete_camlock.h"
+#include "openpete_fillpick.h"
 #include "openpete_freecam.h"
 #include "openpete_rewind.h"
 #include "features/no_lod.h"
@@ -326,6 +327,20 @@ static int freecam_set(knob_desc_t *k, double v) {
     (void)k;
     if ((v != 0.0) != (openpete_freecam_active() != 0))
         openpete_freecam_toggle();
+    return 0;
+}
+
+static double fillpick_get(const knob_desc_t *k) { (void)k; return openpete_fillpick_active() ? 1.0 : 0.0; }
+static int fillpick_set(knob_desc_t *k, double v) {
+    (void)k;
+    openpete_fillpick_set_active(v != 0.0);
+    return 0;
+}
+
+static double fillpick_prev_get(const knob_desc_t *k) { (void)k; return openpete_fillpick_preview() ? 1.0 : 0.0; }
+static int fillpick_prev_set(knob_desc_t *k, double v) {
+    (void)k;
+    openpete_fillpick_set_preview(v != 0.0);
     return 0;
 }
 
@@ -752,6 +767,21 @@ static const knob_desc_t g_builtin[] = {
         "Colour terrain by LOD tier."),
     ENVROW_LIVE("TERRAIN_TIERONLY", "Debug", "0",
         "Draw only LP (1) or only HP (2) tier."),
+
+    { "fillpick", "Fill-tag inspector", "Debug", NULL, "OPENPETE_FILLPICK",
+      "Pick the terrain face under the crosshair and re-judge its LP fill "
+      "tag live (P key). Display-only audit tool for the frozen list in "
+      "tests/freecam/fill-tags.verdicts; verdicts land in a session file.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      fillpick_get, fillpick_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "fillpick_preview", "Fill-tag preview", "Debug", NULL, "OPENPETE_FILLPICK_PREVIEW",
+      "With the inspector engaged, draw every LP face - not just the tagged "
+      "ones - tinting the untagged candidates magenta (H key). This is how a "
+      "face that should be filling a hole is found before it is tagged.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      fillpick_prev_get, fillpick_prev_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
     ENVROW_LATCHED("MOBY_OTBIAS", "Debug", "1",
         "Mirror the .s OT depth pull for moby + Spyro (two latches)."),
     ENVROW_LATCHED("SHADED_OTBIAS", "Debug", "1",

@@ -27,6 +27,10 @@ int    openpete_freecam_active(void)           { return 0; }
 void   openpete_freecam_toggle(void)           { }
 int    openpete_camlock_active(void)           { return 0; }
 void   openpete_camlock_toggle(void)           { }
+int    openpete_fillpick_active(void)          { return 0; }
+void   openpete_fillpick_set_active(int on)    { (void)on; }
+int    openpete_fillpick_preview(void)         { return 0; }
+void   openpete_fillpick_set_preview(int on)   { (void)on; }
 int    openpete_get_mute(void)                 { return 0; }
 void   openpete_set_mute(int on)               { (void)on; }
 int    openpete_get_render_fps(void)           { return 60; }

@@ -30,6 +30,7 @@
 #include "openpete_devui.h"
 #include "openpete_camlock.h"
 #include "openpete_freecam.h"
+#include "openpete_fillpick.h"
 #include "feature_registry.h"
 #include "openpete_mods.h"
 #include "features/no_lod.h"
@@ -1618,6 +1619,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool prev_freecam_lb = false, prev_freecam_rb = false;
     bool prev_freecam_l2 = false, prev_freecam_r2 = false;
 
+    /* LP fill-tag inspector (P). Edge state for the toggle, the preview cycle
+     * and the four verdict keys. */
+    bool prev_p_key = false, prev_h_key = false;
+    bool prev_y_key = false, prev_n_key = false;
+    bool prev_b_key = false, prev_u_key = false;
+
     /* In-game settings menu (O). Edge state for the toggle + arrow-key nav, and
      * a latch so we clear the pad override exactly once when the menu closes. */
     bool prev_o_key   = false;
@@ -2280,6 +2287,37 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 openpete_no_lod_set(!openpete_no_lod, -1.0f);
             }
             prev_l_key = l_k;
+
+            /* P: the LP fill-tag inspector. Engaged, it picks the terrain face
+             * under the crosshair each present and tints the fill-tag set, so
+             * the frozen list in tests/freecam/fill-tags.verdicts can be
+             * audited against the live scene. H toggles the preview (draw the
+             * untagged candidates too — an under-fill site's covering face is
+             * invisible until it is tagged); Y/N/B record FILL / NOFILL /
+             * "no session verdict" for the picked face and re-render with it
+             * immediately; U undoes. Verdict keys are gated on engaged so they
+             * stay free while it is off. */
+            bool p_k = kbd_pre && kbd_pre[SDL_SCANCODE_P];
+            if (p_k && !prev_p_key) openpete_fillpick_toggle();
+            prev_p_key = p_k;
+            if (openpete_fillpick_active()) {
+                bool h_k = kbd_pre && kbd_pre[SDL_SCANCODE_H];
+                bool y_k = kbd_pre && kbd_pre[SDL_SCANCODE_Y];
+                bool n_k = kbd_pre && kbd_pre[SDL_SCANCODE_N];
+                bool b_k = kbd_pre && kbd_pre[SDL_SCANCODE_B];
+                bool u_k = kbd_pre && kbd_pre[SDL_SCANCODE_U];
+                if (h_k && !prev_h_key)
+                    openpete_fillpick_set_preview(!openpete_fillpick_preview());
+                if (y_k && !prev_y_key) openpete_fillpick_mark(OPENPETE_FILLPICK_FILL);
+                if (n_k && !prev_n_key) openpete_fillpick_mark(OPENPETE_FILLPICK_NOFILL);
+                if (b_k && !prev_b_key) openpete_fillpick_mark(OPENPETE_FILLPICK_NONE);
+                if (u_k && !prev_u_key) openpete_fillpick_undo();
+                prev_h_key = h_k; prev_y_key = y_k; prev_n_key = n_k;
+                prev_b_key = b_k; prev_u_key = u_k;
+            } else {
+                prev_h_key = prev_y_key = prev_n_key = false;
+                prev_b_key = prev_u_key = false;
+            }
 
             /* Debug free camera. Toggle with F or a left-stick click. While
              * engaged: WASD / left stick move, arrows / right stick look,

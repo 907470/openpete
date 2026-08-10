@@ -58,6 +58,7 @@ add_library(openpete_core STATIC
 
     runtime/camlock.c
     runtime/freecam.c
+    runtime/fillpick.c
     runtime/feature_registry.c
 
     # Modding framework P1: per-address override chains riding the
