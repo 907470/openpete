@@ -108,14 +108,32 @@ static int tp_src_enabled(int src) {
            openpete_mods_is_enabled(s_srcs[src].owner);
 }
 
+static int tp_add_root_source(int r);
+static int s_seen_roots = 0; /* asset roots already turned into sources */
+
 /* Live-toggle awareness: a modset change flips which sources serve, so
  * every memoized resolution/match is stale. Bump the generation both
  * caches key on. Polled at the two query entry points (cheap: one
- * extern read + compare). */
+ * extern read + compare).
+ *
+ * Late asset roots: a deferred-entry mod registers its root at its
+ * FIRST in-game enable — long after the boot scan enumerated sources.
+ * Turn every root that appeared since into a source here, so enabling
+ * a texture-pack mod mid-session serves without a restart. */
 static void tp_poll_modset(void) {
     static unsigned s_seen_epoch = 0;
     unsigned ep = openpete_mods_toggle_epoch();
     if (ep != s_seen_epoch) { s_seen_epoch = ep; s_gen++; }
+    int n = openpete_mods_asset_root_count();
+    if (n > s_seen_roots) {
+        int grew = 0;
+        for (int r = s_seen_roots; r < n; r++) grew |= tp_add_root_source(r);
+        s_seen_roots = n;
+        if (grew) {
+            s_gen++;
+            s_repl_active = s_pack_n > 0;
+        }
+    }
 }
 static int s_src_n = 0;
 static char s_dir_override[512];   /* --texpack-dir; empty = unset (see set_dir_override) */
@@ -204,6 +222,31 @@ static int tp_scan_dir(int src)
     return touched;
 }
 
+/* Turn asset root r into a pack source and scan it. Returns nonzero if
+ * anything was added/overridden. */
+static int tp_add_root_source(int r)
+{
+    if (s_src_n >= TP_SRC_MAX) return 0;
+    const char* owner = NULL;
+    const char* root = openpete_mods_asset_root(r, &owner);
+    if (!root) return 0;
+    int si = s_src_n;
+    snprintf(s_srcs[si].dir, sizeof s_srcs[si].dir,
+             "%s/textures/replacements", root);
+    snprintf(s_srcs[si].label, sizeof s_srcs[si].label, "mod %s",
+             owner ? owner : "?");
+    snprintf(s_srcs[si].owner, sizeof s_srcs[si].owner, "%s",
+             owner ? owner : "");
+    int before = s_pack_n;
+    s_src_n++;
+    int added = tp_scan_dir(si);
+    if (added > 0 || s_pack_n != before)
+        fprintf(stderr, "[texpack] + %s: %d entr%s (%s)\n",
+                s_srcs[si].label, added, added == 1 ? "y" : "ies",
+                s_srcs[si].dir);
+    return added > 0 || s_pack_n != before;
+}
+
 static void tp_repl_scan(void)
 {
     s_repl_active = 0; s_pack_n = 0;
@@ -226,25 +269,8 @@ static void tp_repl_scan(void)
     tp_scan_dir(0);
     /* Mod asset roots, enabled order = priority (later wins). */
     int n_roots = openpete_mods_asset_root_count();
-    for (int r = 0; r < n_roots && s_src_n < TP_SRC_MAX; r++) {
-        const char* owner = NULL;
-        const char* root = openpete_mods_asset_root(r, &owner);
-        if (!root) continue;
-        int si = s_src_n;
-        snprintf(s_srcs[si].dir, sizeof s_srcs[si].dir,
-                 "%s/textures/replacements", root);
-        snprintf(s_srcs[si].label, sizeof s_srcs[si].label, "mod %s",
-                 owner ? owner : "?");
-        snprintf(s_srcs[si].owner, sizeof s_srcs[si].owner, "%s",
-                 owner ? owner : "");
-        int before = s_pack_n;
-        s_src_n++;
-        int added = tp_scan_dir(si);
-        if (added > 0 || s_pack_n != before)
-            fprintf(stderr, "[texpack] + %s: %d entr%s (%s)\n",
-                    s_srcs[si].label, added, added == 1 ? "y" : "ies",
-                    s_srcs[si].dir);
-    }
+    for (int r = 0; r < n_roots; r++) (void)tp_add_root_source(r);
+    s_seen_roots = n_roots;
     s_repl_active = s_pack_n > 0;
     if (s_repl_active)
         fprintf(stderr, "[texpack] replacement pack active: %d entries "
@@ -319,7 +345,11 @@ void texture_pack_shutdown(void)
     s_ent_n = 0; s_annot_n = 0; s_gen++; s_inited = 0; s_repl_active = 0;
 }
 
-int texture_pack_replacements_active(void) { return s_repl_active; }
+int texture_pack_replacements_active(void)
+{
+    if (s_inited) tp_poll_modset(); /* late roots can activate the pack */
+    return s_repl_active;
+}
 
 static int tp_overlap(const tp_entry *e, int x, int y, int w, int h)
 {
@@ -512,8 +542,9 @@ static void tp_id_filename(const texture_pack_id *id, const char *dir,
 
 int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out)
 {
-    if (!s_repl_active || !id) return 0;
-    tp_poll_modset();
+    if (!id) return 0;
+    tp_poll_modset(); /* before the active check: a late root activates */
+    if (!s_repl_active) return 0;
     uint64_t key = tp_id_key(id);
     uint64_t base = key * 0xff51afd7ed558ccdull >> 32;
     tp_match_slot *m = NULL;
