@@ -2540,6 +2540,15 @@ static void terrain_animdbg(CPUState* cpu) {
     have = 1;
 }
 
+/* Per-sector view-space bounding sphere, stamped each walk (s_vanim_pres).
+ * Shared input of the occlusion cull and the portal-rim sector broadphase
+ * (rim_sector_cands): sector-table index -> centre through the projection
+ * matrix (world/16 units), header radius, poly-anim membership. */
+static float    s_secv[1024][4];
+static uint8_t  s_secv_anim[1024];
+static uint32_t s_secv_stamp[1024];
+static double   s_rim_rowmax = 1.0;   /* max ||M row||/4096 — world->view scale bound */
+
 static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_vanim_pres++;                /* new build → prior lerp/roll bank stamps go stale */
     terrain_texrecords(cpu);
@@ -2714,6 +2723,18 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_facemap_active = s_facemap && !s_facemap_done && openpete_frame >= (unsigned)s_facemap;
     int M[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x00, M);   /* m_ProjectionMatrix */
     int Mbin[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x14, Mbin); /* .s sector-binning matrix (LP/HP LOD lists) */
+    {   /* World->view scale bound for the rim broadphase's sphere radius: M is
+         * not orthonormal (the Y row bakes a ~0.625 squash), so a world-space
+         * radius is only valid in view space scaled by the largest row norm. */
+        double rm = 0.0;
+        for (int r = 0; r < 3; r++) {
+            double n2 = (double)M[r][0]*M[r][0] + (double)M[r][1]*M[r][1]
+                      + (double)M[r][2]*M[r][2];
+            if (n2 > rm) rm = n2;
+        }
+        s_rim_rowmax = sqrt(rm) / 4096.0;
+        if (s_rim_rowmax < 1e-6) s_rim_rowmax = 1.0;
+    }
     s_ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
     s_ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
     s_H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
@@ -2849,10 +2870,21 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * unpickable. The cull is a conservative perf skip, so dropping it
          * costs only frame rate. */
         if (s_fp_on) s_tocc = 0;
+        /* View-space bounding sphere — consumed by the occlusion cull below
+         * and stamped for the portal-rim sector broadphase (rim_sector_cands),
+         * which needs it for every walked sector, culled or not (a culled
+         * sector emits nothing, so its candidacy is moot, but the stamp must
+         * cover every sector that CAN emit this walk). */
+        double oc1, oc2, oc3;
+        ngte_mac(M, camy - SC->centreY, camz - SC->centreZ,
+                 SC->centreX - camx, &oc1, &oc2, &oc3);
+        if (i < 1024u) {
+            s_secv[i][0] = (float)oc1; s_secv[i][1] = (float)oc2;
+            s_secv[i][2] = (float)oc3; s_secv[i][3] = (float)SC->radius;
+            s_secv_anim[i] = (uint8_t)(SC->polyanim != 0);
+            s_secv_stamp[i] = s_vanim_pres;
+        }
         if (s_tocc) {
-            double oc1, oc2, oc3;
-            ngte_mac(M, camy - SC->centreY, camz - SC->centreZ,
-                     SC->centreX - camx, &oc1, &oc2, &oc3);
             if (oc3 > (double)SC->radius + 1.0) {   /* wholly in front of camera */
                 double inv = s_H / oc3;
                 float sx  = (float)(s_ofx + oc1 * inv);
@@ -4193,26 +4225,129 @@ static int rim_uv_contains(const rim_uv* poly, int pn, double u, double v) {
     }
     return in;
 }
+/* Per-present frame of an opening plane — everything portal_rim_classify
+ * needs that depends only on the PLANE, not the face under test: the unit
+ * view-space normal, the in-plane 2D basis, the outline dropped onto it and
+ * that outline's UV bbox. Derived once per feed (rim_frames_derive) instead
+ * of per classified triangle: with a portal sky active every WORLD tri runs
+ * the classifier, and rebuilding the basis per tri (two sqrts + the outline
+ * projection) dominated the whole terrain feed on portal-heavy scenes. */
+typedef struct {
+    int    valid;
+    double n[3];                      /* unit view-space plane normal */
+    double O[3], U[3], W[3];          /* in-plane basis (rim_plane_basis) */
+    rim_uv pv[16];                    /* outline in (U,W) coords */
+    double pulo, puhi, pvlo, pvhi;    /* outline UV bbox */
+} rim_frame_t;
+static rim_frame_t s_rimfr[6];
+static double s_rim_ofx, s_rim_ofy, s_rim_H;
+
+static void rim_frames_derive(CPUState* cpu) {
+    s_rim_ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
+    s_rim_ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
+    s_rim_H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    for (int pi = 0; pi < s_pplane_n; pi++) {
+        rim_frame_t* rf = &s_rimfr[pi];
+        const openpete_portal_skyplane* pp = &s_pplane[pi];
+        rf->valid = 0;
+        if (s_rim_H < 1.0 || pp->vn < 3) continue;
+        /* Unit view-space normal of the opening plane, recovered from the
+         * inv-vz fit: the fit is inv = (n.x/(H k))x + (n.y/(H k))y +
+         * (n.z - n.x ofx/H - n.y ofy/H)/k, so n is proportional to
+         * (a H, b H, c + a ofx + b ofy). */
+        double nx = pp->a * s_rim_H, ny = pp->b * s_rim_H;
+        double nz = pp->c + pp->a * s_rim_ofx + pp->b * s_rim_ofy;
+        double nn = sqrt(nx*nx + ny*ny + nz*nz);
+        if (nn < 1e-12) continue;
+        rf->n[0] = nx / nn; rf->n[1] = ny / nn; rf->n[2] = nz / nn;
+        if (!rim_plane_basis(pp, rf->n, rf->O, rf->U, rf->W, rf->pv, 16)) continue;
+        rf->pulo = rf->pv[0].u; rf->puhi = rf->pv[0].u;
+        rf->pvlo = rf->pv[0].v; rf->pvhi = rf->pv[0].v;
+        for (int i = 1; i < pp->vn; i++) {
+            if (rf->pv[i].u < rf->pulo) rf->pulo = rf->pv[i].u;
+            if (rf->pv[i].u > rf->puhi) rf->puhi = rf->pv[i].u;
+            if (rf->pv[i].v < rf->pvlo) rf->pvlo = rf->pv[i].v;
+            if (rf->pv[i].v > rf->pvhi) rf->pvhi = rf->pv[i].v;
+        }
+        rf->valid = 1;
+    }
+}
+
+/* Portal-rim sector BROADPHASE — conservative, exact by the subset property.
+ *
+ * With any portal sky active, every WORLD tri runs portal_rim_classify; on
+ * portal-heavy scenes that per-tri work dominated the feed even after the
+ * per-plane frame hoist. But the classifier's candidate gates are spatial
+ * (within RIM_CAND_WINDOW of the plane, in-plane bbox within
+ * RIM_CAND_MARGIN), so a SECTOR whose whole bounding sphere provably fails
+ * a gate for every plane cannot contain a rim candidate: every emitted tri
+ * (both quad halves, near-band sub-quads, near-clip fragments — all subsets
+ * of the sector's geometry) would return "not a candidate", and skipping
+ * the classifier for it draws exactly the same picture.
+ *
+ * Conservative inflation of the sphere: rowmax covers the non-orthonormal
+ * projection matrix; the vz/H term covers the classifier reconstructing
+ * view verts from (possibly integer-snapped) SCREEN coords, an error that
+ * grows with view-Z; poly-anim sectors always classify (animated verts can
+ * leave the header sphere).
+ *
+ * OPENPETE_PORTAL_RIM_BROAD: 1 (default) on, 0 off, 2 = verify — classify
+ * every tri live (old behaviour) and report any rim verdict the broadphase
+ * would have skipped. */
+static uint8_t s_sec_rimcand[1024];
+static int s_rimbroad = -1;
+
+static int rim_sec_cand(int sec) {
+    return (sec >= 0 && sec < 1024) ? s_sec_rimcand[sec] : 1;
+}
+
+static void rim_sector_cands(void) {
+    if (s_rimbroad < 0) { const char* e = getenv("OPENPETE_PORTAL_RIM_BROAD");
+                          s_rimbroad = (e && *e) ? atoi(e) : 1; }
+    if (!s_pplane_n) return;
+    for (int i = 0; i < 1024; i++) {
+        if (s_secv_stamp[i] != s_vanim_pres) { s_sec_rimcand[i] = 0; continue; }
+        if (s_secv_anim[i]) { s_sec_rimcand[i] = 1; continue; }
+        const double cx = (double)s_secv[i][0] * 16.0;
+        const double cy = (double)s_secv[i][1] * 16.0;
+        const double cz = (double)s_secv[i][2] * 16.0;
+        const double rv = (double)s_secv[i][3] * 16.0 * s_rim_rowmax;
+        double slack = rv * 0.05 + 64.0;
+        if (s_rim_H >= 1.0) {
+            double vzmax = cz + rv; if (vzmax < 16.0) vzmax = 16.0;
+            slack += 4.0 * vzmax / s_rim_H;   /* ~4 px of screen-snap reconstruction */
+        }
+        const double r = rv + slack;
+        int cand = 0;
+        for (int pi = 0; pi < s_pplane_n && !cand; pi++) {
+            const rim_frame_t* rf = &s_rimfr[pi];
+            if (!rf->valid) continue;
+            const double dx = cx - rf->O[0], dy = cy - rf->O[1], dz = cz - rf->O[2];
+            const double dperp = fabs(dx*rf->n[0] + dy*rf->n[1] + dz*rf->n[2]);
+            if (dperp - r > RIM_CAND_WINDOW) continue;   /* sphere wholly beyond the window */
+            const double cu = dx*rf->U[0] + dy*rf->U[1] + dz*rf->U[2];
+            const double cv = dx*rf->W[0] + dy*rf->W[1] + dz*rf->W[2];
+            if (cu + r < rf->pulo - RIM_CAND_MARGIN || cu - r > rf->puhi + RIM_CAND_MARGIN ||
+                cv + r < rf->pvlo - RIM_CAND_MARGIN || cv - r > rf->pvhi + RIM_CAND_MARGIN)
+                continue;                                /* sphere wholly outside the in-plane bbox */
+            cand = 1;
+        }
+        s_sec_rimcand[i] = (uint8_t)cand;
+    }
+}
+
 static int portal_rim_classify(CPUState* cpu, const ttri* t) {
+    (void)cpu;   /* per-present camera constants come from rim_frames_derive */
     if (!s_pplane_n) return -1;
-    const double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
-    const double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
-    const double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    const double ofx = s_rim_ofx, ofy = s_rim_ofy, H = s_rim_H;
     if (H < 1.0) return -1;
     const double eps = portal_rim_eps(), reach = portal_rim_reach();
     int best = -1;
     for (int pi = 0; pi < s_pplane_n; pi++) {
         const openpete_portal_skyplane* pp = &s_pplane[pi];
-        if (pp->vn < 3) continue;
-        /* Unit view-space normal of the opening plane, recovered from the
-         * inv-vz fit: the fit is inv = (n.x/(H k))x + (n.y/(H k))y +
-         * (n.z - n.x ofx/H - n.y ofy/H)/k, so n is proportional to
-         * (a H, b H, c + a ofx + b ofy). */
-        double nx = pp->a * H, ny = pp->b * H;
-        double nz = pp->c + pp->a * ofx + pp->b * ofy;
-        double nn = sqrt(nx*nx + ny*ny + nz*nz);
-        if (nn < 1e-12) continue;
-        nx /= nn; ny /= nn; nz /= nn;
+        const rim_frame_t* rf = &s_rimfr[pi];
+        if (!rf->valid) continue;
+        const double nx = rf->n[0], ny = rf->n[1], nz = rf->n[2];
         /* perpendicular distances + view-space verts. Along the pixel ray
          * v = (x-ofx, y-ofy, H), a view-Z offset dz from the plane is a
          * perpendicular offset dz * (n.v)/H. */
@@ -4244,15 +4379,11 @@ static int portal_rim_classify(CPUState* cpu, const ttri* t) {
          * overlap the opening's, grown by RIM_CAND_MARGIN world units. The
          * plane is infinite, so some spatial bound is needed — this one is a
          * property of the geometry rather than of the viewpoint. */
-        double O[3], U[3], W[3]; rim_uv pv[16];
-        const double nn3[3] = { nx, ny, nz };
-        if (!rim_plane_basis(pp, nn3, O, U, W, pv, 16)) continue;
+        const double *O = rf->O, *U = rf->U, *W = rf->W;
+        const rim_uv* pv = rf->pv;
         if (dmin > RIM_CAND_WINDOW) continue;
-        double pulo = pv[0].u, puhi = pv[0].u, pvlo = pv[0].v, pvhi = pv[0].v;
-        for (int i = 1; i < pp->vn; i++) {
-            if (pv[i].u < pulo) pulo = pv[i].u; if (pv[i].u > puhi) puhi = pv[i].u;
-            if (pv[i].v < pvlo) pvlo = pv[i].v; if (pv[i].v > pvhi) pvhi = pv[i].v;
-        }
+        const double pulo = rf->pulo, puhi = rf->puhi;
+        const double pvlo = rf->pvlo, pvhi = rf->pvhi;
         rim_uv fuv[3];
         double fulo = 1e30, fuhi = -1e30, fvlo = 1e30, fvhi = -1e30;
         for (int k = 0; k < 3; k++) {
@@ -4346,6 +4477,8 @@ static void terrain_feed_native(CPUState* cpu) {
     /* Active portal-sky opening planes, derived against THIS present's camera
      * bracket (canonical or sub-tick interpolated) so plane and verts agree. */
     s_pplane_n = s_pconform ? openpete_portal_sky_planes(cpu, s_pplane, 6) : 0;
+    rim_frames_derive(cpu);
+    rim_sector_cands();
     if (s_pconform_dbg > 0 && s_pplane_n > 0) {
         static int lines = 0;
         if (lines < 24) {
@@ -4831,7 +4964,20 @@ static void terrain_feed_native(CPUState* cpu) {
         {   static int s_cull = -1;
             if (s_cull < 0) { const char* e = getenv("OPENPETE_PORTAL_RIM_CULL");
                               s_cull = (e && *e) ? (*e != '0') : 1; }
-            if (s_cull && portal_rim_face(cpu, t)) continue;
+            if (s_cull) {
+                if (s_rimbroad == 2) {          /* verify: classify live, audit the broadphase */
+                    const int rim = portal_rim_face(cpu, t);
+                    if (rim && !rim_sec_cand(t->sec)) {
+                        static int logged = 0;
+                        if (logged < 32) { logged++;
+                            fprintf(stderr, "[rim-broad] VIOLATION f=%u sec=%d face=%d "
+                                    "(rim face in a sector the broadphase rejected)\n",
+                                    openpete_frame, t->sec, t->face); }
+                    }
+                    if (rim) continue;
+                } else if ((s_rimbroad != 1 || rim_sec_cand(t->sec))
+                           && portal_rim_face(cpu, t)) continue;
+            }
         }
         /* OPENPETE_PORTAL_RIM_SHOW=1: paint classified faces one colour per
          * failure COMBINATION, so the picture says which TERM is responsible
