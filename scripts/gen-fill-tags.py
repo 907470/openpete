@@ -47,8 +47,12 @@ typedef struct {{ unsigned short level, sec, face; }} tft_entry_t;
 
 static const tft_entry_t k_terrain_fill_tags[{len(rows)}] = {{
 """)
+    prev = None
     for lvl, sec, face, name in rows:
-        f.write(f"    {{ {lvl:2d}, {sec:3d}, {face:2d} }},  /* {name} */\n")
+        if name != prev:                       # one banner per level, not per row
+            f.write(f"{'' if prev is None else chr(10)}    /* {name} */\n")
+            prev = name
+        f.write(f"    {{ {lvl:2d}, {sec:3d}, {face:2d} }},\n")
     f.write("""};
 
 #endif /* TERRAIN_FILL_TAGS_H */

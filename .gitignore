@@ -49,3 +49,9 @@ docs/modding/pages/reference/
 # Custom levels: derived locally from the xdelta + your own disc (tools/derive.py)
 mods/grim-garden/assets/
 mods/spyro15-cliff-town/assets/
+
+# In-game fill-tag pick sessions (P-key inspector). Working files: fold them
+# into tests/freecam/fill-tags.verdicts with scripts/fill-tags-apply.py, which
+# is what gets committed.
+fill-tags.session
+tests/freecam/__pycache__/

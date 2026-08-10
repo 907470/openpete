@@ -1,14 +1,15 @@
-# Frozen terrain fill-face verdicts — the reviewed output of the fill-tag
-# sweep (scripts/terrain-fill-sweep.sh; measurement provenance per line).
-# verdict level sector face need-px provenance
+# Frozen terrain fill-face list — the reviewed LP faces that may back-fill
+# sightlines no authored HP covers (water planes, level-boundary channels).
+# One row per FILL face; the columns are
+#     FILL <level> <sector> <face> <need-px> <provenance>
+# and need-px/provenance record how the face earned its place.
 #
-# FILL   = og draws this LP surface over sightlines no authored HP covers
-#          (water planes, level-boundary channels); the fill pass may draw it.
-# NOFILL = the need is a silhouette sliver between the coarse/alternate LP
-#          shape and the HP silhouette (or an island-rim fringe); filling
-#          paints LP wedges over sky around detailed HP. Reviewed 2026-08-05;
-#          the haunted lp-bridge cluster is NOFILL by review (the HP bridge
-#          alone reads correctly at distance).
+# MEMBERSHIP IS THE VERDICT. The runtime consults a static list generated from
+# this file (scripts/gen-fill-tags.py -> terrain_fill_tags.h), so a face that is
+# absent simply does not fill — there is nothing for a rejected row to guard
+# against, and the rejected-candidate rows the threshold classifiers needed are
+# gone. Every candidate the sweep raises still has to be reviewed before it is
+# written here; that review just leaves no residue when the answer is no.
 #
 # Two sanctioned ways to reach this file, both ending in a reviewed verdict:
 #   1. the coverage sweep (scripts/terrain-fill-sweep.sh) + a per-face strip
@@ -18,14 +19,10 @@
 #      sightline, flip the verdict live, then fold the session file in with
 #      scripts/fill-tags-apply.py. Rows it adds carry provenance `pick` and
 #      need-px 0 — judged against the live scene, not a pixel measurement.
-# NEVER hand-edit a FILL in without one of those. A sweep face absent here is
-# unreviewed — new candidates fail loud.
-NOFILL artisans 12 0 64 spawn:64
-NOFILL artisans 29 1 110 spawn:84,outer-wall:26
-NOFILL artisans 35 9 99 spawn:99
+# NEVER hand-edit a row in without one of those.
 FILL   artisans 43 0 4991 water-y283:1558,water-y284:1528,water-y260:1905
 FILL   artisans 43 2 8019 water-y283:2701,water-y284:2732,water-y260:2586
-NOFILL artisans 48 5 52 outer-wall:52
+FILL   artisans 48 5 52 outer-wall:52
 FILL   artisans 57 0 4286 water-y283:1511,water-y284:1525,water-y260:1113,waterline-psx-repro:137
 FILL   artisans 57 1 8016 water-y283:2643,water-y284:2621,water-y260:2752
 FILL   artisans 57 2 1702 water-y284:18,waterline-psx-repro:1684
@@ -44,23 +41,6 @@ FILL   artisans 103 7 3295 outer-wall:3295
 FILL   artisans 107 0 10516 water-y283:3488,water-y284:3410,water-y260:3618
 FILL   artisans 107 1 14264 water-y283:4646,water-y284:4716,water-y260:4902
 FILL   artisans 124 1 3639 outer-wall:3639
-NOFILL blowhard 60 5 27 spawn:27
-NOFILL blowhard 60 6 21 spawn:21
-NOFILL blowhard 60 13 29 spawn:29
-NOFILL blowhard 60 14 29 spawn:29
-NOFILL dream_weavers 46 23 45 spawn:45
-NOFILL dream_weavers 46 24 45 spawn:45
-NOFILL dream_weavers 66 3 64 spawn:64
-NOFILL dream_weavers 66 4 64 spawn:64
-NOFILL dream_weavers 66 7 39 spawn:39
-NOFILL dream_weavers 66 8 34 spawn:34
-NOFILL dream_weavers 80 24 63 spawn:63
-NOFILL dream_weavers 80 25 73 spawn:73
-NOFILL dream_weavers 85 3 80 spawn:80
-NOFILL dream_weavers 85 14 80 spawn:80
-NOFILL dream_weavers 88 6 17 spawn:17
-NOFILL dream_weavers 88 7 25 spawn:25
-NOFILL dream_weavers 88 8 42 spawn:42
 FILL   gnorc_cove 122 0 88 water-plane:88
 FILL   gnorc_cove 122 1 2188 water-plane:2188
 FILL   gnorc_cove 122 3 460 water-plane:460
@@ -78,50 +58,9 @@ FILL   gnorc_cove 161 2 601 water-plane:601
 FILL   gnorc_cove 161 3 654 water-plane:654
 FILL   gnorc_cove 161 4 152 water-plane:152
 FILL   gnorc_cove 224 5 4614 water-plane:4614
-NOFILL haunted_towers 12 2 27 topdown-rims:27
-NOFILL haunted_towers 22 12 420 topdown-rims:420
-NOFILL haunted_towers 31 1 42 lp-bridge:42
-NOFILL haunted_towers 31 18 17 topdown-rims:17
-NOFILL haunted_towers 31 19 192 lp-bridge:40,topdown-rims:152
-NOFILL haunted_towers 31 20 143 lp-bridge:94,topdown-rims:49
-NOFILL haunted_towers 32 0 25 topdown-rims:25
-NOFILL haunted_towers 32 1 64 lp-bridge:64
-NOFILL haunted_towers 32 4 233 topdown-rims:233
-NOFILL haunted_towers 32 5 421 topdown-rims:421
-NOFILL haunted_towers 32 6 142 lp-bridge:85,topdown-rims:57
-NOFILL haunted_towers 32 7 115 lp-bridge:69,topdown-rims:46
-NOFILL haunted_towers 32 8 175 lp-bridge:71,topdown-rims:104
-NOFILL haunted_towers 32 9 164 topdown-rims:164
-NOFILL haunted_towers 32 10 32 topdown-rims:32
-NOFILL haunted_towers 32 11 239 lp-bridge:130,topdown-rims:109
-NOFILL haunted_towers 32 16 30 spawn:30
-NOFILL haunted_towers 32 18 56 spawn:28,lp-bridge:28
-NOFILL haunted_towers 32 19 206 lp-bridge:28,topdown-rims:178
-NOFILL haunted_towers 32 20 55 topdown-rims:55
-NOFILL haunted_towers 44 0 58 topdown-rims:58
-NOFILL haunted_towers 51 10 126 lp-bridge:94,topdown-rims:32
-NOFILL haunted_towers 51 11 105 lp-bridge:35,topdown-rims:70
-NOFILL haunted_towers 56 0 125 topdown-rims:125
-NOFILL haunted_towers 56 3 125 topdown-rims:125
-NOFILL haunted_towers 56 7 20 topdown-rims:20
-NOFILL haunted_towers 60 6 125 topdown-rims:125
-NOFILL haunted_towers 60 7 125 topdown-rims:125
-NOFILL haunted_towers 83 0 43 topdown-rims:43
-NOFILL haunted_towers 92 0 85 topdown-rims:85
-NOFILL haunted_towers 93 0 86 topdown-rims:86
-NOFILL haunted_towers 93 9 86 topdown-rims:86
-NOFILL haunted_towers 95 2 64 lp-bridge:47,topdown-rims:17
-NOFILL haunted_towers 107 1 77 topdown-rims:77
-NOFILL ice_cavern 41 16 16 spawn:16
 FILL   peace_keepers 151 0 4124 water-quad:4124
 FILL   peace_keepers 151 1 5746 water-quad:5746
 FILL   stone_hill 126 2 16 user-spot:16
-NOFILL stone_hill 221 0 34 spawn:34
-NOFILL stone_hill 221 2 37 spawn:37
-NOFILL stone_hill 221 3 34 spawn:34
-NOFILL stone_hill 221 4 37 spawn:37
-NOFILL wizard_peak 230 0 21 spawn:21
-# --- original-mode need additions (MO leg; reviewed 2026-08-05) ---
 FILL   artisans 101 0 94 waterline-psx-repro:94
 FILL   artisans 101 2 144 waterline-psx-repro:144
 FILL   artisans 107 2 262 water-y283:100,water-y284:70,water-y260:92
@@ -147,68 +86,7 @@ FILL   toasty 15 0 556 spawn:556
 FILL   toasty 15 1 1032 spawn:1032
 FILL   toasty 46 0 73 spawn:73
 FILL   toasty 46 1 68 spawn:68
-NOFILL alpine_ridge 111 31 19 spawn:19
-NOFILL alpine_ridge 5 33 19 spawn:19
-NOFILL artisans 27 3 55 arch:55
-NOFILL artisans 27 4 156 arch:156
-NOFILL blowhard 60 21 16 spawn:16
-NOFILL blowhard 70 33 19 spawn:19
-NOFILL blowhard 89 0 49 plateau:49
-NOFILL blowhard 89 2 33 plateau:33
-NOFILL blowhard 89 22 65 plateau:65
-NOFILL blowhard 89 7 85 plateau:85
-NOFILL blowhard 89 9 63 plateau:63
-NOFILL crystal_flight 15 10 32 spawn:32
-NOFILL crystal_flight 15 15 34 spawn:34
-NOFILL crystal_flight 15 17 32 spawn:32
-NOFILL crystal_flight 15 18 34 spawn:34
-NOFILL crystal_flight 15 2 105 spawn:105
-NOFILL crystal_flight 21 1 105 spawn:105
-NOFILL crystal_flight 28 0 29 spawn:29
-NOFILL crystal_flight 28 10 18 spawn:18
-NOFILL crystal_flight 28 11 32 spawn:32
-NOFILL crystal_flight 28 2 30 spawn:30
-NOFILL crystal_flight 35 0 18 spawn:18
-NOFILL crystal_flight 35 1 17 spawn:17
-NOFILL dark_hollow 28 15 19 spawn:19
-NOFILL dark_hollow 28 4 38 spawn:38
-NOFILL doctor_shemp 101 17 19 spawn:19
-NOFILL doctor_shemp 62 14 19 spawn:19
-NOFILL doctor_shemp 78 13 36 spawn:36
-NOFILL doctor_shemp 78 37 71 spawn:71
-NOFILL doctor_shemp 78 9 36 spawn:36
-NOFILL doctor_shemp 84 15 71 spawn:71
-NOFILL dream_weavers 87 33 16 spawn:16
-NOFILL dream_weavers 87 34 16 spawn:16
-NOFILL gnorc_gnexus 1 5 41 spawn:41
-NOFILL gnorc_gnexus 16 9 21 spawn:21
-NOFILL haunted_towers 119 0 25 spawn:25
-NOFILL haunted_towers 119 1 28 spawn:28
-NOFILL haunted_towers 119 5 28 spawn:28
-NOFILL haunted_towers 119 7 25 spawn:25
-NOFILL ice_cavern 13 18 277 spawn:277
-NOFILL ice_cavern 13 22 301 spawn:301
-NOFILL ice_cavern 13 23 24 spawn:24
-NOFILL ice_cavern 41 22 51 spawn:51
-NOFILL jacques 157 15 63 wall-base:63
-NOFILL jacques 63 1 20 wall-base:20
-NOFILL jacques 63 3 43 wall-base:43
-NOFILL stone_hill 213 3 48 spawn:48
-NOFILL stone_hill 213 4 48 spawn:48
-NOFILL stone_hill 33 0 28 spawn:28
-NOFILL toasty 162 16 25 spawn:25
-NOFILL toasty 41 0 22 spawn:22
-NOFILL toasty 41 1 35 spawn:35
-NOFILL twilight_harbor 146 17 31 spawn:31
-NOFILL twilight_harbor 146 21 31 spawn:31
-# artisans s43 f4: og-culling carve-out — the interior of the corpus-validated
-# water wedge (the s43 FILL cluster); og never draws it at any swept pose (the
-# .s culls it for detached cameras) so it never became a sweep candidate, but
-# the yaw-283 ON-leg hole is 6,875 px under exactly this face (bg-max
-# attribution 2026-08-05).
 FILL   artisans 43 4 6875 y283-onleg-bgmax
-# --- NW water plane (user-reported top-down hole; strip-reviewed: og water
-# --- over og-sat/native void across every quad) ---
 FILL   artisans 111 0 1836 water-nw-topdown:1836
 FILL   artisans 111 2 1860 water-nw-topdown:1860
 FILL   artisans 120 0 2742 water-nw-topdown:2742
@@ -226,17 +104,11 @@ FILL   artisans 68 2 1854 water-nw-topdown:1854
 FILL   artisans 78 0 1830 water-nw-topdown:1830
 FILL   artisans 78 2 1860 water-nw-topdown:1860
 FILL   artisans 94 2 54 water-nw-topdown:54
-# --- user-audit poses 2 & 3 (strip-reviewed): artisans east water quads
-# --- (s7/s172, og water over void) FILL; tree/arch silhouette slivers
-# --- NOFILL; cliff_town mesa-top ground quads (s2/s3/s5/s7/s14, og ground
-# --- over sky from above — the crest family) all FILL ---
 FILL   artisans 172 1 779 user-east:779
 FILL   artisans 172 3 2211 user-east:2211
 FILL   artisans 7 16 183 user-east:183
 FILL   artisans 7 2 7718 user-east:7718
 FILL   artisans 7 3 3661 user-east:3661
-FILL   artisans 7 4 122 user-east:122
-FILL   artisans 7 5 484 user-east:484
 FILL   cliff_town 14 10 161 user-topdown:161
 FILL   cliff_town 14 2 2419 user-topdown:2419
 FILL   cliff_town 14 9 103 user-topdown:103
@@ -264,45 +136,6 @@ FILL   cliff_town 7 1 2128 user-topdown:2128
 FILL   cliff_town 7 3 2007 user-topdown:2007
 FILL   cliff_town 7 4 2106 user-topdown:2106
 FILL   cliff_town 7 6 2011 user-topdown:2011
-NOFILL artisans 151 0 35 user-east:35
-NOFILL artisans 151 1 23 user-east:23
-NOFILL artisans 169 1 38 user-east:38
-NOFILL artisans 169 2 42 user-east:42
-NOFILL artisans 49 4 102 user-east:102
-NOFILL artisans 49 5 102 user-east:102
-NOFILL artisans 56 6 82 user-east:82
-NOFILL artisans 99 2 138 user-east:138
-
-# ============================================================================
-# NOFILL re-classification (found in testing): NOFILL rows conflated three classes.
-# The fill mechanism reads only FILL rows, so behaviour is unchanged — but the
-# semantics below bind future reviews and P2's acceptance gate:
-#
-# P2-PENDING — need is ORIG-ONLY: og draws the face under the authored per-face
-#   admission field; native-original drops it because the fog-corner handoff
-#   approximation disagrees. These are artifacts of OUR admission stand-in, not
-#   level-data facts. P2 (authored admission port) must dissolve them:
-#   acceptance metric = orig-need at these faces goes to ~0.
-#     artisans s27 f3,f4 · blowhard s89 f0,f2,f7,f9,f22 · jacques s63 f1,f3 · s157 f15
-#
-# PHANTOM — candidates born only under the corrupted full-saturation og-sat
-#   legs (pre-0x10000); they measure data=0 orig=0 today and drop out on the
-#   next sweep regeneration:
-#     dream_weavers s66 f3,f4,f7,f8 · s85 f3,f14 · blowhard s60 f5,f6,f13,f14
-#     toasty s41 f0,f1 · ice_cavern s41 f16,f22 · doctor_shemp s84 f15 · stone_hill s33 f0
-#
-# All remaining NOFILL rows are DESIGN: data-backed LP-only sightlines where
-# extended mode deliberately shows HP-true silhouettes (island-rim fringes,
-# LP-alternate shapes).
-# ============================================================================
-# --- gnorc_cove water BORDER ring (user attestation: the level has a
-# --- circular LP border; class = z=1088 LP faces with a vertex OUTSIDE the
-# --- HP water footprint in XY — exact polygon coverage on level data, no
-# --- thresholds. Interior z=1088 LP is HP-covered and stays untagged.) ---
-# --- gnorc_cove water BORDER ring (user attestation: the level has a
-# --- circular LP border; class = z=1088 LP faces with a vertex OUTSIDE the
-# --- HP water footprint in XY — exact polygon coverage on level data, no
-# --- thresholds. Interior z=1088 LP is HP-covered and stays untagged.) ---
 FILL   gnorc_cove 32 0 0 z1088-border
 FILL   gnorc_cove 88 0 0 z1088-border
 FILL   gnorc_cove 88 1 0 z1088-border
@@ -451,3 +284,33 @@ FILL   gnorc_cove 239 4 0 z1088-border
 FILL   gnorc_cove 239 5 0 z1088-border
 FILL   gnorc_cove 239 6 0 z1088-border
 FILL   gnorc_cove 239 7 0 z1088-border
+FILL   peace_keepers 151 2 0 pick
+FILL   peace_keepers 151 4 0 pick
+FILL   peace_keepers 151 3 0 pick
+FILL   peace_keepers 151 7 0 pick
+FILL   peace_keepers 151 6 0 pick
+FILL   peace_keepers 158 0 0 pick
+FILL   peace_keepers 158 1 0 pick
+FILL   peace_keepers 158 3 0 pick
+FILL   peace_keepers 158 6 0 pick
+FILL   peace_keepers 158 7 0 pick
+FILL   peace_keepers 58 2 0 pick
+FILL   peace_keepers 150 0 0 pick
+FILL   peace_keepers 150 1 0 pick
+FILL   peace_keepers 150 2 0 pick
+FILL   peace_keepers 29 0 0 pick
+FILL   peace_keepers 29 1 0 pick
+FILL   peace_keepers 29 2 0 pick
+FILL   peace_keepers 29 5 0 pick
+FILL   peace_keepers 29 8 0 pick
+FILL   peace_keepers 33 2 0 pick
+FILL   peace_keepers 33 5 0 pick
+FILL   peace_keepers 33 8 0 pick
+FILL   peace_keepers 33 7 0 pick
+FILL   peace_keepers 33 4 0 pick
+FILL   peace_keepers 33 1 0 pick
+FILL   peace_keepers 29 7 0 pick
+FILL   peace_keepers 29 4 0 pick
+FILL   peace_keepers 29 3 0 pick
+FILL   peace_keepers 150 5 0 pick
+FILL   peace_keepers 159 0 0 pick

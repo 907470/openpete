@@ -6,14 +6,23 @@
 # Each case boots headless (software Vulkan — deterministic), jumps the
 # freecam to a recorded pose, screenshots at `frame`, and asserts metric
 # expectations — never golden images, so unrelated renderer changes don't
-# break it.  Check kinds:
-#   ab-identical  gapfill ON vs OFF must differ by <= max_px (in bbox if set)
-#                 -> encodes "the classifier must NOT paint here" (punch-through spots)
+# break it.  Check kinds (A/B knob = `ab_env`, default OPENPETE_TERRAIN_GAPFILL):
+#   ab-identical  ON vs OFF must differ by <= max_px (in bbox if set)
+#                 -> encodes "this feature must NOT paint here"
 #   ab-active     ON vs OFF must differ by >= min_px (in bbox if set)
 #                 -> guards against the feature silently dying
-#   bg-max        with gapfill ON, pixels matching the background colour
+#   bg-max        with the feature ON, pixels matching the background colour
 #                 (sampled at `probe`, default [2,2]) inside bbox <= max_px
 #                 -> encodes "the hole here must stay filled"
+#
+# WHAT THIS FILE DOES NOT COVER ANY MORE: the fill set is a static generated
+# list, so there is no threshold left that could admit a face nobody reviewed.
+# The dozen gapfill ab-identical "must not paint here" spots that guarded the
+# v1-v12 classifier against exactly that are gone.  A wrongly-added ROW can
+# still punch LP through HP — that is now the presentation golden's job, and it
+# does it better: the golden named the two artisans s7 wedges by tile, which no
+# threshold spot had caught.  Add spots here for fill that must HAPPEN; adjudicate
+# fill that must not against the og reference.
 #
 # To add a spot: fly there windowed (F key freecam), read the pose off the
 # `freecam: pos=(...) yaw=... pitch=...` log line, add a case, run
@@ -49,17 +58,6 @@ mode  = "terrain"
   bbox   = [330, 200, 620, 340]
   max_px = 200
 
-# Portal-arch opening: the stencil-fill dead-end's regression case.  The
-# classifier must not touch this pose at all (arch LP is HP-redundant).
-[[case]]
-name  = "artisans-arch-untouched"
-level = "artisans"
-pose  = "78657,80237,7024,-885,-47"
-mode  = "terrain"
-  [[case.check]]
-  kind   = "ab-identical"
-  max_px = 0
-
 # From-above water pose: the originally-reported gap (green cyclorama
 # bands across the water).  Fill must stay active here.
 [[case]]
@@ -70,19 +68,6 @@ mode  = "full"
   [[case.check]]
   kind   = "ab-active"
   min_px = 30000
-
-# sunny_flight cave wall: LP "shortcut skin" punch-through (found in testing
-# 2026-07-09; sectors 8:12/8:13, unbacked dmed ~105 walls).  The classifier
-# must not paint anywhere near this wall.
-[[case]]
-name  = "sunny-wall-no-punchthrough"
-level = "sunny_flight"
-pose  = "118328,132884,12580,953,32"
-mode  = "full"
-  [[case.check]]
-  kind   = "ab-identical"
-  bbox   = [250, 120, 420, 280]
-  max_px = 0
 
 # gnorc_cove water plane (z=1088 LP grid over sparse HP): the fills that
 # shrink the user-reported water wedge must stay active.  (The residual
@@ -96,44 +81,6 @@ mode  = "full"
   [[case.check]]
   kind   = "ab-active"
   min_px = 8000
-
-# Canonical-camera guard: the attract demo at the three historic gate
-# ticks must be pixel-identical with the classifier on vs off.
-[[case]]
-name  = "attract-demo-ticks-untouched"
-level = ""
-ticks = [2694, 4888, 9775]
-mode  = "full"
-  [[case.check]]
-  kind   = "ab-identical"
-  max_px = 0
-
-# haunted_towers "LP bridge" pose: the flat plane spanning the island gap
-# is the GAME's own far-LP verdict (PsyCross og renders it identically —
-# faithful, not a native bug).  Guard: the gapfill classifier must stay
-# entirely uninvolved at this pose.
-[[case]]
-name  = "haunted-bridge-gapfill-neutral"
-level = "haunted_towers"
-pose  = "106236,143423,35847,-1180,227"
-mode  = "full"
-  [[case.check]]
-  kind   = "ab-identical"
-  max_px = 0
-
-# artisans waterfall-notch slivers (pale gaps left of the castle): a WATER
-# feeder coverage bug (og covers the notches with waterfall geometry) —
-# survives gapfill/LPKEEP/holefill/handoff toggles, open investigation.
-# Guard: the gapfill classifier must stay uninvolved in the sliver region.
-[[case]]
-name  = "artisans-waterfall-notch-gapfill-neutral"
-level = "artisans"
-pose  = "30400,127062,11872,-922,66"
-mode  = "full"
-  [[case.check]]
-  kind   = "ab-identical"
-  bbox   = [150, 140, 320, 230]
-  max_px = 0
 
 # haunted_towers top-down pose pair (found in testing): under EXTENDED LOD the
 # stencil holefill used to paint each far sector's fully-fogged LP
@@ -173,33 +120,6 @@ mode  = "terrain"
   bbox   = [285, 180, 340, 300]
   max_px = 300
 
-# magic_crafters ceiling skin (found in testing): the coarse LP room lids
-# (z=1770 flat quads, signed n_z=+1.00, unbacked dmed 103-128 -- the exact
-# sunny-skin band) were admitted by v4's UNSIGNED horizontal rule AND the
-# near-noHP rule, painting a flat slab across the ornate HP ceiling.  v5:
-# the horizontal exemption is floor-only (game winding: up-facing floors
-# have n_z < 0; all 197 needed horizontal fillers in artisans/gnorc are
-# n_z <= -0.85) and near-noHP requires wall-like orientation.  Interior
-# room -- NO fill may ever appear in this view.
-[[case]]
-name  = "magic-ceiling-no-skin"
-level = "magic_crafters"
-pose  = "63187,89684,26826,4146,-159"
-mode  = "terrain"
-  [[case.check]]
-  kind   = "ab-identical"
-  max_px = 0
-
-[[case]]
-name  = "magic-ceiling-no-skin-extended"
-level = "magic_crafters"
-pose  = "63187,89684,26826,4146,-159"
-lod   = "extended"
-mode  = "terrain"
-  [[case.check]]
-  kind   = "ab-identical"
-  max_px = 0
-
 # peace_keepers missing water quad (found in testing, extended-only visible): a
 # 512x512 LP water quad over an authored ONE-CELL hole in the same
 # sector's HP mesh measures cov = 27/30 = 0.900 exactly -- knife-edge
@@ -224,89 +144,11 @@ mode  = "terrain"
   bbox   = [250, 145, 380, 212]
   max_px = 100
 
-# tree_tops mid-band poke-through guard (a v6 regression found in testing): three
-# tree_tops LP faces sit in the [0.9,0.97) cov band (s47 branch-floor
-# sliver + s155/s180 wall slivers).  Admitting them (as the plain cov-gate
-# widening did) makes the s47 sliver POKE THROUGH the trunk HP at the
-# default camera -- every unbacked sample touches other geometry (d_any=0)
-# or has the trunk 31 units behind it, so the void test must reject all
-# three.  Default camera, gapfill on/off must be pixel-identical.
-[[case]]
-name  = "treetops-midband-no-pokethrough"
-level = "tree_tops"
-  [[case.check]]
-  kind   = "ab-identical"
-  max_px = 0
-
-# artisans grass poke-through (found in testing): LP floor tri s12 f#21 slices
-# through the HP grass mound by the stone platform -- admitted by the bare
-# floor rule (cov<0.9, nz=-0.99), its "void" samples are UNDER the grass
-# surface (inside the hill: geometrically empty, visually solid).  v8:
-# floor-rule admissions also require the void test, and the void test is
-# TWO-SIDED (both normal directions clear within 256) -- the front ray
-# from an under-grass sample hits the surface above.  Gapfill on/off must
-# be pixel-identical at this pose.
-[[case]]
-name  = "artisans-grass-no-pokethrough"
-level = "artisans"
-pose  = "86800,69542,10184,243,447"
-mode  = "terrain"
-  [[case.check]]
-  kind   = "ab-identical"
-  max_px = 0
-
 # cliff_town crest strip: the v9 near-floor fill backstop that served it is
 # retired — the strip's sightlines measured as COVERED by authored HP in the
 # pure-HP og reference (og with m_LodDistance doubled), i.e. the visible gap
 # is a native HP coverage deficit, not missing LP. Tracked as a renderer bug,
 # not a fill concern.
-
-# haunted_towers tunnel-interior LP wall slabs (found in testing): four LP
-# walls (s143/s139/s82/s89, dmed 112-144, all two-sided-void-rejected)
-# were admitted by the near-noHP wall rule keying off a DEGENERATE 2-tri
-# no-HP sliver sector, drawing dark slabs across the corridor.  v10: the
-# rule requires a substantial pool (>=32 tris; real boundary levels have
-# 178-310, degenerate slivers 1-7).  Interior corridor -- no fill may
-# ever appear at this pose.
-[[case]]
-name  = "haunted-tunnel-no-wall-slab"
-level = "haunted_towers"
-pose  = "120133,79584,30936,3928,52"
-mode  = "terrain"
-  [[case.check]]
-  kind   = "ab-identical"
-  max_px = 0
-
-# blowhard: the LP tier is an authored ALTERNATE, not a coarse mirror --
-# it has a portal ARCH where the HP world has the exit vortex.  Under the
-# frozen fill tags this needs no special-casing: the pure-HP og reference
-# covers every sightline og-original covers here, so no blowhard face ever
-# enters the fill table.  The old threshold classifier needed a level-wide
-# kill list for exactly this; the guard stays to prove the arch never
-# materializes.
-[[case]]
-name  = "blowhard-no-fill-faces"
-level = "blowhard"
-pose  = "89820,73764,23253,2337,166"
-mode  = "terrain"
-  [[case.check]]
-  kind   = "ab-identical"
-  max_px = 0
-
-# jacques LP wall poke (found in testing): a fully LP-exclusive wall tri
-# (s16 f#5, cov=0.00, dmed=308) poked out of the wall base, admitted by
-# the bare far_gap arm -- dmed alone cannot distinguish a deep VOID from
-# deeply DIFFERENT alternate LP geometry.  v12: far_gap admissions also
-# require the two-sided void test (true artisans holes all carry void
-# samples; the outer-wall cliffs stay admitted via near-noHP).
-[[case]]
-name  = "jacques-no-wall-poke"
-level = "jacques"
-pose  = "86273,68249,29528,2609,289"
-mode  = "terrain"
-  [[case.check]]
-  kind   = "ab-identical"
-  max_px = 0
 
 # magic_crafters waterfall room (found in testing, 2026-07-09): the outside
 # waterfall sheet and the room's inner wall are back-to-back surfaces a
