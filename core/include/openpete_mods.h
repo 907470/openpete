@@ -408,7 +408,8 @@ void openpete_mods_set_level_ops(const openpete_level_ops_t* ops);
 int  openpete_mods_custom_register(const char* mod_id, const char* name,
                                    const char* stem, const char* dir,
                                    const char* donor, int replace,
-                                   const char* music, const char* log_tag);
+                                   const char* music, const char* title,
+                                   const char* log_tag);
 typedef struct {
     const char* name;   /* human name (sort key) */
     const char* owner;  /* mod id */

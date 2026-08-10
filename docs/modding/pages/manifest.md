@@ -69,6 +69,8 @@ replace = true             # optional: serve over the donor's own level
                            # instead of the shared free slot
 music = "grim_garden.wav"  # optional: the level's own song, from
                            # assets/music/ (PCM 16-bit, 44100 Hz)
+title = "GRIM GARDEN"      # optional: in-game title if it should differ
+                           # from name (e.g. a portal-safe A-Z spelling)
 ```
 
 - `<stem>.data.bin` is the level's WAD data segment (any size);
@@ -81,9 +83,11 @@ music = "grim_garden.wav"  # optional: the level's own song, from
   into RAM — a few minutes of 44.1 kHz stereo is ~50 MB.
 - The level's `name` is also its **in-game title**: the inventory rows,
   the entry title card, and the homeworld portal's floating letters all
-  show it (in `replace` mode, in place of the donor's name). The portal
-  letter arc only has A–Z glyphs — digits and punctuation render as
-  apostrophes there; the inventory and title card render them fine.
+  show it (in `replace` mode, in place of the donor's name). Supported
+  characters everywhere, portal arc included: `A-Z`, `0-9`, space, and
+  `. '` (other punctuation — `! , ?` — works in the inventory and title
+  card but shows as an apostrophe at the portal). Set `title` to show a
+  different in-game string than the menu `name`.
 - In `replace` mode the donor's homeworld **portal preview** also shows
   your level's own skybox (parsed from your `data.bin`) instead of the
   stock preview baked into the homeworld.

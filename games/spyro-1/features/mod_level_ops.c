@@ -201,6 +201,9 @@ static int level_index_of(int level_id) {
     return (level_id / 10 - 1) * 6 + level_id % 10;
 }
 
+static uint8_t s_name_override[37]; /* indices our titles occupy */
+static void leveltext_hook_install(void);
+
 static int ops_set_level_name(CPUState* cpu, int level_id,
                               const char* name) {
     static uint32_t s_stock[37];
@@ -217,6 +220,7 @@ static int ops_set_level_name(CPUState* cpu, int level_id,
     }
     if (!name) {
         cpu->write_word(entry, s_stock[idx]);
+        s_name_override[idx] = 0;
         return 0;
     }
     /* Uppercase; keep the glyphs the text renderers map; drop the rest.
@@ -250,9 +254,169 @@ static int ops_set_level_name(CPUState* cpu, int level_id,
         }
     }
     cpu->write_word(entry, gaddr);
+    s_name_override[idx] = 1;
+    leveltext_hook_install();
     OPL_INFO_F("mods", "level title: index %d -> \"%s\" (@0x%08X)", idx,
                clean, gaddr);
     return 0;
+}
+
+/* ── Portal-text glyphs beyond A-Z ────────────────────────────────────
+ * The portal name arc (func_8003C358) maps only 'A'-'Z' to glyph mobys;
+ * every other character spawns the apostrophe glyph. The digit/period
+ * glyph MODELS exist (the inventory/title-card renderer uses them), so
+ * for names WE installed this post-pass rebrands the apostrophe mobys
+ * the stock function just spawned to the right glyph class — matched by
+ * MobyLetterProps {m_Parent @+0, m_Index @+6} — and undoes the
+ * apostrophe's +256 z lift. Stock names never enter the pass. */
+#define ADDR_LEVELTEXT_FN 0x8003C358u
+#define ADDR_G_LEVELMOBYS 0x80075828u
+#define ADDR_G_MODELS     0x80076378u
+#define ADDR_INIT_NORMAL  0x800526A8u
+#define ADDR_INIT_SHADED  0x800529CCu
+#define MOBY_STRIDE       0x58u
+#define MOBY_OFF_PROPS    0x00u
+#define MOBY_OFF_POS_Z    0x14u
+#define MOBY_OFF_CLASS    0x36u
+#define MOBY_OFF_STATE    0x48u
+#define MOBY_POOL_CAP     512
+#define CLASS_APOSTROPHE  76
+#define CLASS_DIGIT_0     260
+#define CLASS_PERIOD      327
+#define CLASS_LETTER_A    426
+
+#define ADDR_G_PORTALS     0x80078640u
+#define ADDR_G_PORTALCOUNT 0x800758BCu
+#define PORTAL_M_SKYBOX    0u
+#define PORTAL_M_LEVELID   28u
+
+static int glyph_class_for(char c) {
+    if (c >= '0' && c <= '9') return CLASS_DIGIT_0 + (c - '0');
+    if (c == '.') return CLASS_PERIOD;
+    return 0;
+}
+
+static void leveltext_hook(CPUState* cpu) {
+    uint32_t parent  = cpu->a0;
+    uint32_t is_name = cpu->a1;
+    openpete_mods_base(cpu);
+    if (!is_name || !parent) return;
+    uint32_t pprops = cpu->read_word(parent + MOBY_OFF_PROPS);
+    if (!pprops) return;
+    uint32_t idx = cpu->read_word(pprops);
+    if (idx > 36u || !s_name_override[idx]) return;
+    uint32_t str = cpu->read_word(ADDR_G_LEVELNAMES + 4u * idx);
+    if (!str) return;
+    char name[40];
+    int len = 0;
+    while (len < (int)sizeof name - 1) {
+        char c = (char)cpu->read_byte(str + (uint32_t)len);
+        if (!c) break;
+        name[len++] = c;
+    }
+    /* Letter-class transplant. Rebranding straight to the HUD digit
+     * classes (260+) KILLS the moby — their update cases in the homeworld
+     * overlays are HUD-only and self-destruct as level mobys (m_State
+     * 0xFE) — and classes outside the letter family miss the letter pose
+     * update (the period rendered flat). So: claim letter classes UNUSED
+     * by any portal name in this level, transplant the digit/period
+     * glyph MODEL onto their g_Models rows, and rebrand to those — full
+     * letter behavior (alive, posed) with the digit's look. Rows and the
+     * claim map are level-scoped. */
+    static uint32_t s_claim_level = 0xFFFFFFFFu;
+    static char     s_claim_ch[12];
+    static int      s_claim_cls[12];
+    static int      s_claim_n = 0;
+    uint32_t cur_level = cpu->read_word(ADDR_G_LEVELID);
+    if (cur_level != s_claim_level) {
+        s_claim_level = cur_level;
+        s_claim_n = 0;
+    }
+
+    /* Letters any portal name here (or RETURN HOME) actually uses. */
+    uint8_t used[26];
+    memset(used, 0, sizeof used);
+    uint32_t np = cpu->read_word(ADDR_G_PORTALCOUNT);
+    for (uint32_t p = 0; p <= 6u; p++) {
+        uint32_t nstr;
+        if (p < np && np <= 6u) {
+            uint32_t portal = cpu->read_word(ADDR_G_PORTALS + 4u * p);
+            if (!portal) continue;
+            int lid = (int)cpu->read_word(portal + PORTAL_M_LEVELID);
+            int li = level_index_of(lid);
+            if (li < 0) continue;
+            nstr = cpu->read_word(ADDR_G_LEVELNAMES + 4u * (uint32_t)li);
+        } else if (p == 6u) {
+            nstr = cpu->read_word(ADDR_G_LEVELNAMES + 4u * 36u); /* RETURN HOME */
+        } else {
+            continue;
+        }
+        for (int k = 0; k < 40 && nstr; k++) {
+            char c = (char)cpu->read_byte(nstr + (uint32_t)k);
+            if (!c) break;
+            if (c >= 'A' && c <= 'Z') used[c - 'A'] = 1;
+        }
+    }
+    for (int k = 0; k < s_claim_n; k++)
+        used[s_claim_cls[k] - CLASS_LETTER_A] = 1;
+
+    uint32_t pool = cpu->read_word(ADDR_G_LEVELMOBYS);
+    if (!pool) return;
+    int rebrands = 0;
+    for (int s = 0; s < MOBY_POOL_CAP; s++, pool += MOBY_STRIDE) {
+        uint8_t state = cpu->read_byte(pool + MOBY_OFF_STATE);
+        if (state == 0xFFu) break;
+        if (state >= 0x80u) continue;
+        if (cpu->read_half(pool + MOBY_OFF_CLASS) != CLASS_APOSTROPHE)
+            continue;
+        uint32_t lp = cpu->read_word(pool + MOBY_OFF_PROPS);
+        if (!lp || cpu->read_word(lp) != parent) continue;
+        int ci = (int)(int16_t)cpu->read_half(lp + 6u);
+        if (ci < 0 || ci >= len) continue;
+        int src = glyph_class_for(name[ci]);
+        if (!src) continue; /* a genuine apostrophe (or unmapped) */
+
+        int cls = 0;
+        for (int k = 0; k < s_claim_n && !cls; k++)
+            if (s_claim_ch[k] == name[ci]) cls = s_claim_cls[k];
+        if (!cls) {
+            uint32_t mdl = cpu->read_word(ADDR_G_MODELS + 4u * (uint32_t)src);
+            if (!mdl) continue; /* glyph model not resident here */
+            /* Rarity-ordered free-letter scan. */
+            static const char order[] = "QZXJVKWYGPBFUMDHCLNRTOAISE";
+            for (int k = 0; order[k] && !cls; k++) {
+                int L = order[k] - 'A';
+                if (!used[L]) {
+                    cls = CLASS_LETTER_A + L;
+                    used[L] = 1;
+                }
+            }
+            if (!cls) continue; /* no free letter class (unlikely) */
+            cpu->write_word(ADDR_G_MODELS + 4u * (uint32_t)cls, mdl);
+            if (s_claim_n < (int)sizeof s_claim_ch) {
+                s_claim_ch[s_claim_n] = name[ci];
+                s_claim_cls[s_claim_n] = cls;
+                s_claim_n++;
+            }
+        }
+        cpu->write_half(pool + MOBY_OFF_CLASS, (uint16_t)cls);
+        cpu->write_word(pool + MOBY_OFF_POS_Z,
+                        cpu->read_word(pool + MOBY_OFF_POS_Z) - 256u);
+        rebrands++;
+    }
+    if (rebrands)
+        OPL_INFO_F("mods", "portal text: %d glyph%s rebranded for level "
+                   "index %u (%d letter row%s claimed)", rebrands,
+                   rebrands == 1 ? "" : "s", idx, s_claim_n,
+                   s_claim_n == 1 ? "" : "s");
+}
+
+static void leveltext_hook_install(void) {
+    static int s_installed = 0;
+    if (s_installed) return;
+    if (openpete_mods_chain_add(ADDR_LEVELTEXT_FN, leveltext_hook,
+                                "level-registry") == 0)
+        s_installed = 1;
 }
 
 /* ── Replace-mode portal skybox ───────────────────────────────────────
@@ -268,10 +432,6 @@ static int ops_set_level_name(CPUState* cpu, int level_id,
  * and repoints the donor portal's three preview fields at it. The
  * native portal feeder re-derives from these same guest structures, so
  * the substitution flows through both render paths. */
-#define ADDR_G_PORTALS     0x80078640u
-#define ADDR_G_PORTALCOUNT 0x800758BCu
-#define PORTAL_M_SKYBOX    0u
-#define PORTAL_M_LEVELID   28u
 #define SKY_SECTORCOUNT    0u
 #define SKY_SECTORS        4u
 #define SKY_BGCOLOR        16u
@@ -338,6 +498,9 @@ static const sky_park_t* sky_park_get(const char* dir, const char* stem) {
     return pk;
 }
 
+static void replace_transition_sky(CPUState* cpu, int donor_id,
+                                   const char* dir, const char* stem);
+
 static int ops_replace_sky_tick(CPUState* cpu, int donor_id,
                                 const char* dir, const char* stem,
                                 int on) {
@@ -351,6 +514,8 @@ static int ops_replace_sky_tick(CPUState* cpu, int donor_id,
 
     uint32_t lvl = cpu->read_word(ADDR_G_LEVELID);
     if (s_patched && lvl != s_level) s_patched = 0;
+
+    if (on) replace_transition_sky(cpu, donor_id, dir, stem);
 
     uint32_t n = cpu->read_word(ADDR_G_PORTALCOUNT);
     if (n > 6u) return 0; /* portals not live (mid-load) */
@@ -389,6 +554,37 @@ static int ops_replace_sky_tick(CPUState* cpu, int donor_id,
     OPL_INFO_F("mods", "portal sky: donor %d portal now renders %s "
                "(%u sectors)", donor_id, stem, pk->count);
     return 0;
+}
+
+/* Portal-ENTRY transition sky. Load stage 0 of a portal entry Memcpy's
+ * the portal's RAW baked blob into scratch and points g_Cyclorama at
+ * the blob's TAIL copy of the preview (bg word / count / inline ptr
+ * array) — a second, unpatched copy of the STOCK sky that fills the
+ * screen for the ~1 s transition. Patching the blob's inline pointers
+ * is unsafe (stage 0 rebases them assuming they point inside the
+ * blob), so instead re-point g_Cyclorama at the arena copy every tick
+ * while transitioning into the donor. Idempotent; once the loaded
+ * (custom) level's own cyclorama takes over the writes are
+ * content-identical. */
+#define ADDR_G_CYCLORAMA     0x80078A40u
+#define ADDR_ENTERED_PORTAL  0x8007576Cu /* D_8007576C: portal idx, -1 = none */
+
+static void replace_transition_sky(CPUState* cpu, int donor_id,
+                                   const char* dir, const char* stem) {
+    if (cpu->read_word(ADDR_G_GAMESTATE) != 1u) return; /* transition? */
+    if (cpu->read_word(ADDR_G_NEXTLEVELID) != (uint32_t)donor_id) return;
+    /* Portal entries only (D_8007576C = entered-portal index, -1 when
+     * the transition came from a menu/cheat fade — those correctly show
+     * the PREVIOUS level's sky, not the destination's). */
+    if ((int32_t)cpu->read_word(ADDR_ENTERED_PORTAL) < 0) return;
+    const sky_park_t* pk = sky_park_get(dir, stem);
+    if (!pk) return;
+    if (cpu->read_word(ADDR_G_CYCLORAMA + 4u) == pk->gaddr + 8u) return;
+    cpu->write_word(ADDR_G_CYCLORAMA + 0u, pk->count);
+    cpu->write_word(ADDR_G_CYCLORAMA + 4u, pk->gaddr + 8u);
+    cpu->write_word(ADDR_G_CYCLORAMA + 16u, pk->bgword);
+    OPL_INFO_F("mods", "portal sky: transition into %d riding %s",
+               donor_id, stem);
 }
 
 static const openpete_level_ops_t s_spyro1_level_ops = {

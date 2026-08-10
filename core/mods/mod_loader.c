@@ -136,7 +136,7 @@ struct openpete_mod {
     /* [[level]] blocks: declarative custom levels (registered with the
      * content registry at load; the engine owns slot/TOC/warp). */
     struct { char name[64]; char files[64]; char donor[24]; int replace;
-             char music[64]; }
+             char music[64]; char title[40]; }
           levels[4];
     int   n_levels;
     char  build_key[65]; /* content-hash build key (hot-reload watch) */
@@ -1322,6 +1322,7 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
             toml_datum_t ld = toml_string_in(lt, "donor");
             toml_datum_t lr = toml_bool_in(lt, "replace");
             toml_datum_t lm = toml_string_in(lt, "music");
+            toml_datum_t lti = toml_string_in(lt, "title");
             if (ln.ok && lf.ok && ld.ok) {
                 snprintf(mod->levels[mod->n_levels].name,
                          sizeof mod->levels[0].name, "%s", ln.u.s);
@@ -1333,6 +1334,9 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
                 snprintf(mod->levels[mod->n_levels].music,
                          sizeof mod->levels[0].music, "%s",
                          lm.ok ? lm.u.s : "");
+                snprintf(mod->levels[mod->n_levels].title,
+                         sizeof mod->levels[0].title, "%s",
+                         lti.ok ? lti.u.s : "");
                 mod->n_levels++;
             } else {
                 OPL_ERROR_F("mods", "%s: [[level]] needs name, files and "
@@ -1342,6 +1346,7 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
             if (lf.ok) free(lf.u.s);
             if (ld.ok) free(ld.u.s);
             if (lm.ok) free(lm.u.s);
+            if (lti.ok) free(lti.u.s);
         }
     }
     rc = 0;
@@ -1725,6 +1730,7 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
                                                 mod->levels[i].donor,
                                                 mod->levels[i].replace,
                                                 mod->levels[i].music,
+                                                mod->levels[i].title,
                                                 mod->log_tag);
     }
     if (!mod->has_src) {

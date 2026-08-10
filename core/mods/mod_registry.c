@@ -439,6 +439,7 @@ typedef struct {
     int  declared_replace; /* donor entry currently carries our length */
     char music[1088];      /* custom song WAV, "" = none */
     double music_sec;      /* its duration; 0 = file missing/bad */
+    char title[40];        /* in-game title override; "" = use name */
 } custom_level_t;
 
 static custom_level_t s_customs[CUSTOM_MAX];
@@ -451,7 +452,8 @@ static int s_custom_warp = -1;         /* queued warp (real row index) */
 int openpete_mods_custom_register(const char* mod_id, const char* name,
                                   const char* stem, const char* dir,
                                   const char* donor, int replace,
-                                  const char* music, const char* log_tag) {
+                                  const char* music, const char* title,
+                                  const char* log_tag) {
     if (!mod_id || !name || !name[0] || !stem || !stem[0] || !dir)
         return -1;
     if (s_custom_count >= CUSTOM_MAX) {
@@ -482,6 +484,8 @@ int openpete_mods_custom_register(const char* mod_id, const char* name,
     if (!r->data_size)
         OPL_WARN_F(log_tag, "level \"%s\": %s missing — listed but not "
                    "playable until derived", name, p);
+    snprintf(r->title, sizeof r->title, "%s",
+             title && title[0] ? title : "");
     r->music[0] = '\0';
     r->music_sec = 0.0;
     if (music && music[0]) {
@@ -621,8 +625,9 @@ static void custom_tick(CPUState* cpu) {
                                               r->data_size) == 0) {
                 r->declared_replace = 1;
                 if (s_level_ops->set_level_name)
-                    (void)s_level_ops->set_level_name(cpu, r->donor_id,
-                                                      r->name);
+                    (void)s_level_ops->set_level_name(
+                        cpu, r->donor_id,
+                        r->title[0] ? r->title : r->name);
                 OPL_INFO_F("mods", "custom level \"%s\": replacing level "
                            "%d (data %u)", r->name, r->donor_id,
                            r->data_size);
@@ -674,7 +679,9 @@ static void custom_tick(CPUState* cpu) {
         (void)s_level_ops->declare_data_len(cpu, s_custom_slot_id,
                                             r->data_size);
     if (s_level_ops->set_level_name)
-        (void)s_level_ops->set_level_name(cpu, s_custom_slot_id, r->name);
+        (void)s_level_ops->set_level_name(cpu, s_custom_slot_id,
+                                          r->title[0] ? r->title
+                                                      : r->name);
     if (s_level_ops->enter_level(cpu, s_custom_slot_id) == 0) {
         s_slot_entering = s_custom_slot_id;
         s_custom_warp = -1;
