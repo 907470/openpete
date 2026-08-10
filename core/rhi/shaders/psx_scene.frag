@@ -27,6 +27,11 @@ layout(location = 2) in float vQ;     /* perspective ratio (see psx_scene.vert) 
 
 layout(location = 0) out vec4 outColor;
 
+/* Untextured lighting view (rhi_set_notex): replace the texel colour with the
+ * modulation-neutral grey (128/255) so out = the raw gouraud vertex colour —
+ * texel alpha/discard keep real silhouettes. */
+layout(constant_id = 2) const bool NOTEX = false;
+
 uint vram_at(int x, int y) { return texelFetch(u_vram, ivec2(x, y), 0).r; }
 
 float expand5(uint v) { return float((v << 3) | (v >> 2)) / 255.0; }
@@ -61,6 +66,7 @@ void main()
     vec4 col = vColor / vQ;
     vec4 c = decode555(sample_word(int(uv.x), int(uv.y)));
     if (c.a == 0.0) discard;
+    if (NOTEX) c.rgb = vec3(128.0 / 255.0);
     /* PSX texture modulation: texel * vertexColour / 128 (clamped). */
     vec3 rgb = clamp(c.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0);
     outColor = vec4(rgb, c.a);

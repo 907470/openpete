@@ -2869,6 +2869,14 @@ void rhi_set_depth_affine(int on) { s_vs_depth_affine = on ? VK_TRUE : VK_FALSE;
 static VkBool32 s_vs_affine_uv = VK_FALSE;
 void rhi_set_affine_uv(int on) { s_vs_affine_uv = on ? VK_TRUE : VK_FALSE; }
 
+/* Fragment-stage specialization constant 2 (`NOTEX`): untextured lighting
+ * view — the textured scene fragments replace the sampled texel colour with
+ * the modulation-neutral grey (128/255), so the output is the raw gouraud
+ * vertex colour while transparency cutouts keep their real texel shapes.
+ * Debug view; live toggle via rhi_rebuild_pipelines like the others. */
+static VkBool32 s_fs_notex = VK_FALSE;
+void rhi_set_notex(int on) { s_fs_notex = on ? VK_TRUE : VK_FALSE; }
+
 /* Compile a pipeline's Vulkan objects from its stored sources (desc + shader
  * names/words) without touching the rhi_pipeline's live handles: the create
  * path assigns the result to a fresh pipeline, the rebuild path swaps it into
@@ -2890,13 +2898,14 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     }
     VkPipelineLayout layout = VK_NULL_HANDLE;
 
-    VkSpecializationMapEntry vsSpecMap[2] = {
-        { .constantID = 0, .offset = 0,                .size = sizeof(VkBool32) },
-        { .constantID = 1, .offset = sizeof(VkBool32), .size = sizeof(VkBool32) },
+    VkSpecializationMapEntry vsSpecMap[3] = {
+        { .constantID = 0, .offset = 0,                    .size = sizeof(VkBool32) },
+        { .constantID = 1, .offset = sizeof(VkBool32),     .size = sizeof(VkBool32) },
+        { .constantID = 2, .offset = 2 * sizeof(VkBool32), .size = sizeof(VkBool32) },
     };
-    VkBool32 vsSpecData[2] = { s_vs_depth_affine, s_vs_affine_uv };
+    VkBool32 vsSpecData[3] = { s_vs_depth_affine, s_vs_affine_uv, s_fs_notex };
     VkSpecializationInfo vsSpec = {
-        .mapEntryCount = 2, .pMapEntries = vsSpecMap,
+        .mapEntryCount = 3, .pMapEntries = vsSpecMap,
         .dataSize = sizeof(vsSpecData), .pData = vsSpecData,
     };
     VkPipelineShaderStageCreateInfo stages[2] = {

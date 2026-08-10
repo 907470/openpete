@@ -306,6 +306,13 @@ void          rhi_set_depth_affine(int on);
  * rhi_rebuild_pipelines. Default 0 = perspective-correct. */
 void          rhi_set_affine_uv(int on);
 
+/* Untextured lighting view (fragment spec-constant 2): the textured scene
+ * fragments replace the sampled texel with modulation-neutral grey so the
+ * output is the raw gouraud vertex colour; transparency cutouts keep their
+ * real texel shapes. Applied to pipelines created after this call; live
+ * toggle via rhi_rebuild_pipelines. Default 0. */
+void          rhi_set_notex(int on);
+
 /* Re-bake EVERY live pipeline on the device from its stored desc + shader
  * sources, capturing the current spec-constant values (rhi_set_depth_affine /
  * rhi_set_affine_uv) — the live-toggle path for constants that are otherwise

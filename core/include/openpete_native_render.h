@@ -145,6 +145,13 @@ void openpete_native_set_texture_mapping(int affine);
  * next present applies it). */
 int  openpete_native_get_texture_mapping(void);
 
+/* Untextured lighting view: textured scene fragments output the raw gouraud
+ * vertex colour (texel replaced with modulation-neutral grey; transparency
+ * cutouts keep real silhouettes). Same queued-rebuild contract as
+ * openpete_native_set_texture_mapping. Debug view; display-only. */
+void openpete_native_set_notex(int on);
+int  openpete_native_get_notex(void);
+
 /* One vertex of game-supplied FPS-overlay geometry, in a resolution-independent
  * overlay space: x/y are in units of WINDOW HEIGHT (origin = top-left, +y down,
  * so x and y share one scale → digits stay square at any aspect); z is a depth

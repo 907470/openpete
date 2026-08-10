@@ -104,6 +104,17 @@ static int rquant_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+/* Live getter (queued like texmap): untextured lighting view. */
+static double notex_get(const knob_desc_t *k) {
+    (void)k;
+    return openpete_native_get_notex();
+}
+static int notex_set(knob_desc_t *k, double v) {
+    (void)k;
+    openpete_native_set_notex(v != 0.0);
+    return 0;
+}
+
 /* Live getter: the O-menu DITHER row moves the same renderer flag. */
 static double dither_get(const knob_desc_t *k) {
     (void)k;
@@ -380,6 +391,13 @@ static const knob_desc_t g_builtin[] = {
       "always aligned with the integer vertex snap. Display-only.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 16,
       get_stored, rquant_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "notex", "Untextured (lighting)", "Display", NULL, "OPENPETE_NOTEX",
+      "Debug view: draw the 3D scene with textures replaced by neutral grey, "
+      "showing the raw gouraud vertex lighting. Cutout silhouettes stay real. "
+      "Applying re-bakes every scene pipeline (one-time hitch). Display-only.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      notex_get, notex_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "dither", "Dither (15-bit)", "Display", "--dither", NULL,
       "PS1 15-bit colour: quantize the 3D scene to RGB555 with the GPU's 4x4 "

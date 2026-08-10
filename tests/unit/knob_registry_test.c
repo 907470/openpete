@@ -50,6 +50,8 @@ void   openpete_native_set_dither(int on)          { (void)on; }
 void   widescreen_set_fov(float deg)           { (void)deg; }
 int    openpete_native_get_texture_mapping(void)   { return 0; }
 void   openpete_native_set_texture_mapping(int m)  { (void)m; }
+int    openpete_native_get_notex(void)             { return 0; }
+void   openpete_native_set_notex(int on)           { (void)on; }
 int    openpete_log_get_format(void)           { return 0; }
 void   openpete_log_set_format(int f)          { (void)f; }
 const char *openpete_log_get_spec(void)        { return ""; }
