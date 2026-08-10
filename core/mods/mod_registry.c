@@ -620,6 +620,9 @@ static void custom_tick(CPUState* cpu) {
                 s_level_ops->declare_data_len(cpu, r->donor_id,
                                               r->data_size) == 0) {
                 r->declared_replace = 1;
+                if (s_level_ops->set_level_name)
+                    (void)s_level_ops->set_level_name(cpu, r->donor_id,
+                                                      r->name);
                 OPL_INFO_F("mods", "custom level \"%s\": replacing level "
                            "%d (data %u)", r->name, r->donor_id,
                            r->data_size);
@@ -628,10 +631,19 @@ static void custom_tick(CPUState* cpu) {
             if (s_level_ops->declare_data_len &&
                 s_level_ops->declare_data_len(cpu, r->donor_id, 0) == 0) {
                 r->declared_replace = 0;
+                if (s_level_ops->set_level_name)
+                    (void)s_level_ops->set_level_name(cpu, r->donor_id,
+                                                      NULL);
                 OPL_INFO_F("mods", "custom level \"%s\": level %d back "
                            "to stock", r->name, r->donor_id);
             }
         }
+        /* Portal preview: while the replace is declared, the donor's
+         * homeworld portal shows the custom level's own sky. */
+        if (r->replace_mode && s_level_ops->replace_sky_tick)
+            (void)s_level_ops->replace_sky_tick(cpu, r->donor_id, r->dir,
+                                                r->stem,
+                                                r->declared_replace);
     }
 
     if (s_custom_warp < 0) return;
@@ -661,6 +673,8 @@ static void custom_tick(CPUState* cpu) {
     if (s_level_ops->declare_data_len)
         (void)s_level_ops->declare_data_len(cpu, s_custom_slot_id,
                                             r->data_size);
+    if (s_level_ops->set_level_name)
+        (void)s_level_ops->set_level_name(cpu, s_custom_slot_id, r->name);
     if (s_level_ops->enter_level(cpu, s_custom_slot_id) == 0) {
         s_slot_entering = s_custom_slot_id;
         s_custom_warp = -1;

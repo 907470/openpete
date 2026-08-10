@@ -385,6 +385,17 @@ typedef struct {
     /* Read a level's raw Data WAD entry host-side from the user's disc.
      * buf=NULL probes length. Returns byte length or -1. */
     int (*read_level_data)(int level_id, void* buf, uint32_t cap);
+    /* Show `name` as level_id's in-game title (guest name table:
+     * inventory, entry title card, portal name arc). NULL restores the
+     * stock name. 0 ok. */
+    int (*set_level_name)(CPUState* cpu, int level_id, const char* name);
+    /* Per-tick driver: while `on`, the donor level's homeworld portal
+     * renders the custom level's own skybox (parsed from
+     * <dir>/levels/<stem>.data.bin, parked in the guest arena);
+     * restores the baked preview when `on` drops or the level changes.
+     * Idempotent, cheap when nothing changes. */
+    int (*replace_sky_tick)(CPUState* cpu, int donor_id, const char* dir,
+                            const char* stem, int on);
 } openpete_level_ops_t;
 
 void openpete_mods_set_level_ops(const openpete_level_ops_t* ops);

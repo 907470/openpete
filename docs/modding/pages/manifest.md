@@ -79,6 +79,14 @@ music = "grim_garden.wav"  # optional: the level's own song, from
   engine plays your WAV whenever the level starts its music, and sizes
   the game's loop bookkeeping to the WAV's length. The file loads whole
   into RAM — a few minutes of 44.1 kHz stereo is ~50 MB.
+- The level's `name` is also its **in-game title**: the inventory rows,
+  the entry title card, and the homeworld portal's floating letters all
+  show it (in `replace` mode, in place of the donor's name). The portal
+  letter arc only has A–Z glyphs — digits and punctuation render as
+  apostrophes there; the inventory and title card render them fine.
+- In `replace` mode the donor's homeworld **portal preview** also shows
+  your level's own skybox (parsed from your `data.bin`) instead of the
+  stock preview baked into the homeworld.
 - Multiple `[[level]]` blocks per mod are legal.
 - Custom levels share the game's one free level slot (id 65) until the
   capacity work lands, so per-level progress (gems/dragons) is shared
