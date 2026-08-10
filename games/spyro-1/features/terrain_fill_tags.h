@@ -10,7 +10,7 @@
 
 typedef struct { unsigned short level, sec, face; } tft_entry_t;
 
-static const tft_entry_t k_terrain_fill_tags[294] = {
+static const tft_entry_t k_terrain_fill_tags[285] = {
     /* artisans */
     { 10,   7,  2 },
     { 10,   7,  3 },
@@ -65,15 +65,6 @@ static const tft_entry_t k_terrain_fill_tags[294] = {
     { 10, 153,  3 },
     { 10, 172,  1 },
     { 10, 172,  3 },
-
-    /* stone_hill */
-    { 11, 126,  2 },
-
-    /* toasty */
-    { 14,  15,  0 },
-    { 14,  15,  1 },
-    { 14,  46,  0 },
-    { 14,  46,  1 },
 
     /* peace_keepers */
     { 20,  29,  0 },
@@ -143,10 +134,6 @@ static const tft_entry_t k_terrain_fill_tags[294] = {
     { 22,   7,  8 },
     { 22,  14,  1 },
     { 22,  14,  2 },
-    { 22,  14,  9 },
-    { 22,  14, 10 },
-    { 22,  63,  2 },
-    { 22,  63,  3 },
 
     /* gnorc_cove */
     { 61,  32,  0 },

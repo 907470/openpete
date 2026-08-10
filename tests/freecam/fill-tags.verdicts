@@ -60,7 +60,6 @@ FILL   gnorc_cove 161 4 152 water-plane:152
 FILL   gnorc_cove 224 5 4614 water-plane:4614
 FILL   peace_keepers 151 0 4124 water-quad:4124
 FILL   peace_keepers 151 1 5746 water-quad:5746
-FILL   stone_hill 126 2 16 user-spot:16
 FILL   artisans 101 0 94 waterline-psx-repro:94
 FILL   artisans 101 2 144 waterline-psx-repro:144
 FILL   artisans 107 2 262 water-y283:100,water-y284:70,water-y260:92
@@ -82,10 +81,6 @@ FILL   peace_keepers 151 5 381 water-quad:381
 FILL   peace_keepers 58 0 128 water-quad:128
 FILL   peace_keepers 58 1 122 water-quad:122
 FILL   peace_keepers 58 3 156 water-quad:156
-FILL   toasty 15 0 556 spawn:556
-FILL   toasty 15 1 1032 spawn:1032
-FILL   toasty 46 0 73 spawn:73
-FILL   toasty 46 1 68 spawn:68
 FILL   artisans 43 4 6875 y283-onleg-bgmax
 FILL   artisans 111 0 1836 water-nw-topdown:1836
 FILL   artisans 111 2 1860 water-nw-topdown:1860
@@ -109,9 +104,7 @@ FILL   artisans 172 3 2211 user-east:2211
 FILL   artisans 7 16 183 user-east:183
 FILL   artisans 7 2 7718 user-east:7718
 FILL   artisans 7 3 3661 user-east:3661
-FILL   cliff_town 14 10 161 user-topdown:161
 FILL   cliff_town 14 2 2419 user-topdown:2419
-FILL   cliff_town 14 9 103 user-topdown:103
 FILL   cliff_town 2 0 137 user-topdown:137
 FILL   cliff_town 2 1 317 user-topdown:317
 FILL   cliff_town 2 3 1838 user-topdown:1838
@@ -129,8 +122,6 @@ FILL   cliff_town 5 1 1045 user-topdown:1045
 FILL   cliff_town 5 3 2126 user-topdown:2126
 FILL   cliff_town 5 4 1059 user-topdown:1059
 FILL   cliff_town 5 6 2254 user-topdown:2254
-FILL   cliff_town 63 2 85 user-topdown:85
-FILL   cliff_town 63 3 78 user-topdown:78
 FILL   cliff_town 7 0 2048 user-topdown:2048
 FILL   cliff_town 7 1 2128 user-topdown:2128
 FILL   cliff_town 7 3 2007 user-topdown:2007
