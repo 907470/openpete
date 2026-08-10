@@ -4268,36 +4268,10 @@ static int tp_tri_match(const scene_tri_t* st, const psx_material* m,
  * affine for the whole pack) retargets that only on average — a pack whose
  * grade varies by region lands visibly wrong per texture. The exact per-
  * texture correction follows from modelling the pack as an affine of stock,
- * p ~= g(x) = P*x + Q, fitted per channel over this texture's own (stock
- * texel, pack texel) pairs: the pack-side rung transform is
- * g(a*g^-1(p) + b) = a*p + (P*b + (1-a)*Q) — same slope, offset re-derived
- * from the texture's own art. Falls back to the global shift when the fit
- * has no signal (too few opaque pairs). */
-typedef struct {
-    uint64_t key; unsigned gen;
-    float p[3], q[3];
-    uint8_t state;                       /* 0 empty, 1 fit, 2 no-signal */
-} tp_fit_slot;
-#define TP_FIT_SLOTS 512
-static tp_fit_slot s_tp_fit[TP_FIT_SLOTS];
-
-static uint16_t tp_vram_texel(const uint16_t* vr, const psx_material* m,
-                              int cly, int u, int v)
-{
-    int row = (m->tpage_y + v) & 0x1FF;
-    uint16_t w;
-    if (m->bpp == 16)
-        return vr[(size_t)row * OPENPETE_VRAM_W + ((m->tpage_x + u) & 0x3FF)];
-    if (m->bpp == 8) {
-        w = vr[(size_t)row * OPENPETE_VRAM_W + ((m->tpage_x + (u >> 1)) & 0x3FF)];
-        return vr[(size_t)cly * OPENPETE_VRAM_W + m->clut_x + ((w >> (8 * (u & 1))) & 0xFF)];
-    }
-    w = vr[(size_t)row * OPENPETE_VRAM_W + ((m->tpage_x + (u >> 2)) & 0x3FF)];
-    return vr[(size_t)cly * OPENPETE_VRAM_W + m->clut_x + ((w >> (4 * (u & 3))) & 0xF)];
-}
-
-/* Fit P/Q for one (file, base palette) pair; memoized. pu0/pv0 = the FILE
- * box origin in page texel coords. Returns 1 and fills p/q on signal. */
+ * p ~= g(x) = P*x + Q (texture_pack_grade_fit): the pack-side rung transform
+ * is g(a*g^-1(p) + b) = a*p + (P*b + (1-a)*Q) — same slope, offset
+ * re-derived from the texture's own art. Falls back to the global shift
+ * when the fit has no signal (too few opaque pairs). */
 static int tp_pack_fit(const psx_material* m, int cly,
                        const texture_pack_id* id, const texture_pack_repl* repl,
                        float pu0, float pv0, float p[3], float q[3])
@@ -4305,62 +4279,10 @@ static int tp_pack_fit(const psx_material* m, int cly,
     static int s_fit_en = -1;   /* OPENPETE_TEXPACK_FOG_FIT=0: global shift only (A/B) */
     if (s_fit_en < 0) { const char* e = getenv("OPENPETE_TEXPACK_FOG_FIT");
                         s_fit_en = !(e && *e == '0'); }
-    if (!s_fit_en || !repl->pixels || repl->box_w <= 0 || repl->box_h <= 0)
-        return 0;
-    uint64_t key = (uint64_t)(uintptr_t)repl->pixels
-                 ^ (id->phash * 0x9E3779B97F4A7C15ull);
-    unsigned gen = texture_pack_generation();
-    tp_fit_slot* sl = NULL;
-    uint64_t base = key * 0xff51afd7ed558ccdull >> 32;
-    for (int pr = 0; pr < 8; pr++) {
-        tp_fit_slot* c = &s_tp_fit[(base + (uint64_t)pr) & (TP_FIT_SLOTS - 1)];
-        if ((c->key == key && c->gen == gen) || c->state == 0) { sl = c; break; }
-    }
-    if (sl && sl->key == key && sl->gen == gen && sl->state) {
-        if (sl->state != 1) return 0;
-        for (int c = 0; c < 3; c++) { p[c] = sl->p[c]; q[c] = sl->q[c]; }
-        return 1;
-    }
-    const uint16_t* vr = openpete_vram_data();
-    if (!vr) return 0;
-    double sx[3] = {0}, sy[3] = {0}, sxx[3] = {0}, sxy[3] = {0};
-    int cnt = 0;
-    for (int ty = 0; ty < repl->box_h; ty++) {
-        int v = (int)pv0 + ty;
-        int hy = (int)(((float)ty + 0.5f) * (float)repl->h / (float)repl->box_h);
-        for (int tx = 0; tx < repl->box_w; tx++) {
-            uint16_t word = tp_vram_texel(vr, m, cly, (int)pu0 + tx, v);
-            if (word == 0) continue;                 /* transparency sentinel */
-            int hx = (int)(((float)tx + 0.5f) * (float)repl->w / (float)repl->box_w);
-            const unsigned char* hp = repl->pixels + ((size_t)hy * repl->w + hx) * 4;
-            if (hp[3] < 128) continue;               /* pack cut this texel out */
-            for (int c = 0; c < 3; c++) {
-                double x = (double)((word >> (c * 5)) & 0x1F) / 31.0;
-                double y = (double)hp[c] / 255.0;
-                sx[c] += x; sy[c] += y; sxx[c] += x * x; sxy[c] += x * y;
-            }
-            cnt++;
-        }
-    }
-    int ok = cnt >= 64;
-    if (ok) {
-        for (int c = 0; c < 3; c++) {
-            double den = cnt * sxx[c] - sx[c] * sx[c];
-            if (den > 1e-6) {
-                double a = (cnt * sxy[c] - sx[c] * sy[c]) / den;
-                p[c] = (float)a;
-                q[c] = (float)((sy[c] - a * sx[c]) / cnt);
-            } else {                                 /* flat stock: offset model */
-                p[c] = 1.0f;
-                q[c] = (float)((sy[c] - sx[c]) / cnt);
-            }
-        }
-    }
-    if (sl) {
-        sl->key = key; sl->gen = gen; sl->state = ok ? 1 : 2;
-        if (ok) for (int c = 0; c < 3; c++) { sl->p[c] = p[c]; sl->q[c] = q[c]; }
-    }
-    return ok;
+    if (!s_fit_en) return 0;
+    return texture_pack_grade_fit(id, repl, m->tpage_x, m->tpage_y,
+                                  m->clut_x, cly, m->bpp,
+                                  (int)pu0, (int)pv0, p, q);
 }
 
 /* Fog transforms for a replaced draw. Flat model (pc->a/b): the affine of

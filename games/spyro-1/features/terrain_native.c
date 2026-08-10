@@ -1078,11 +1078,88 @@ typedef struct {
     float* lpVf; float* hpVf;
     uint32_t vrollPres, vfracPres;
     int polyanim;   /* named by an env poly-anim descriptor (vert banks animate) */
+    /* Pack-aware LP grade (tsc_lp_grade): face-weighted mean stock->pack
+     * affine of this sector's HP textures. 0 = uncomputed, 1 = fit,
+     * 2 = no signal (untextured/unmatched sector — level mean applies). */
+    float lpg_p[3], lpg_q[3];
+    uint8_t lpg_state; unsigned lpg_gen;
 } tscache_t;
 #define TSC_SLOTS 512
 static tscache_t s_tsc[TSC_SLOTS];
 static uint32_t s_tsc_stamp;                 /* bumped once per terrain_build call */
 static long s_tsc_hit, s_tsc_miss;
+
+/* ---- pack-aware LP grade ---------------------------------------------------
+ * LP colours are AUTHORED against the sector's stock textures: raw at every
+ * distance, they read seamlessly against fully-fogged stock HP — the .s
+ * LP/HP handoff is invisible purely by that colour agreement. A replacement
+ * pack regrades the textured tiers and breaks it: the handoff contour shows
+ * as a stepped bright-vs-dark seam. Restore the authoring relationship by
+ * regrading LP the way the pack regraded THIS sector's own ground: the
+ * face-weighted mean of the sector's HP textures' stock->pack affine fits
+ * (texture_pack_grade_fit). Sectors with no textured/matched HP (the LP-only
+ * 0x4000 hedges) take the level mean of the fitted sectors, accumulated per
+ * walk (one-present lag on the very first frame). Display-only; inert
+ * without an active pack. OPENPETE_TEXPACK_LP_FIT=0 disables (A/B). */
+static int    s_lpg_en = -1;
+static int    s_lpg_active;                  /* this walk: enabled && pack active */
+static double s_lpg_acc[6];                  /* this walk's Σp,Σq (level mean) */
+static int    s_lpg_acc_n;
+static float  s_lpg_mean[6];                 /* last walk's mean (p,q) */
+static int    s_lpg_mean_ok;
+
+static void tsc_lp_grade(tscache_t* C) {
+    unsigned gen = texture_pack_generation();
+    if (C->lpg_state && C->lpg_gen == gen) return;
+    C->lpg_gen = gen; C->lpg_state = 2;
+    if (!C->hpF) return;
+    double sp[3] = {0}, sq[3] = {0};
+    int n = 0;
+    for (int f = 0; f < C->nHpF; f++) {
+        const tsface_t* F = &C->hpF[f];
+        const tmat* m = &F->mat;
+        if (!m->textured) continue;
+        float u0 = F->tu[0], v0 = F->tv[0], u1 = u0, v1 = v0;
+        for (int k = 1; k < 4; k++) {
+            if (F->tu[k] < u0) u0 = F->tu[k];
+            if (F->tu[k] > u1) u1 = F->tu[k];
+            if (F->tv[k] < v0) v0 = F->tv[k];
+            if (F->tv[k] > v1) v1 = F->tv[k];
+        }
+        texture_pack_id id; texture_pack_repl repl;
+        if (!texture_pack_resolve(m->tpx, m->tpy, m->clx, m->cly, m->bpp,
+                                  (int)u0, (int)v0, (int)u1, (int)v1, &id)) continue;
+        if (!texture_pack_match(&id, &repl)) continue;
+        float p[3], q[3];
+        if (!texture_pack_grade_fit(&id, &repl, m->tpx, m->tpy, m->clx, m->cly,
+                                    m->bpp, (int)u0 - (id.box_x - repl.box_x),
+                                    (int)v0 - (id.box_y - repl.box_y), p, q)) continue;
+        for (int c = 0; c < 3; c++) { sp[c] += p[c]; sq[c] += q[c]; }
+        n++;
+    }
+    if (n > 0) {
+        for (int c = 0; c < 3; c++) {
+            C->lpg_p[c] = (float)(sp[c] / n);
+            C->lpg_q[c] = (float)(sq[c] / n);
+        }
+        C->lpg_state = 1;
+    }
+}
+
+/* Apply a sector's grade (or the level mean) to one 0x00BBGGRR colour word. */
+static uint32_t lp_grade_apply(const tscache_t* C, uint32_t rgb) {
+    const float* p; const float* q;
+    if (C->lpg_state == 1) { p = C->lpg_p; q = C->lpg_q; }
+    else if (s_lpg_mean_ok) { p = s_lpg_mean; q = s_lpg_mean + 3; }
+    else return rgb;
+    uint32_t out = 0;
+    for (int c = 0; c < 3; c++) {
+        int v = (int)(p[c] * (float)((rgb >> (8 * c)) & 0xFF) + q[c] * 255.0f + 0.5f);
+        if (v < 0) v = 0; if (v > 255) v = 255;
+        out |= (uint32_t)v << (8 * c);
+    }
+    return out;
+}
 static long s_tocc_culled;   /* sectors occlusion-culled this window (census) */
 static void tsc_census(void) {   /* OPENPETE_TERRAIN_CACHE_DBG: ~1/sec hit/miss */
     static int on = -1, n;
@@ -1431,6 +1508,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         if (C->nHpF > 0) { C->hpF = (tsface_t*)malloc(sizeof(tsface_t) * (size_t)C->nHpF);
                            if (C->hpF) tsc_decode_faces(cpu, C->hpFaces, C->nHpF, 16,
                                                         lqTable, hqTable, texTblMode, hiDetail, C->hpF); }
+        C->lpg_state = 0;              /* re-decoded sector: re-derive the LP grade */
         tsc_tag_gapfill(cpu, C, sectorPtr, sectorCnt);
         C->polyanim = tsc_sector_polyanim(cpu, s, sectorPtr, sectorCnt);
         if (C->polyanim && C->lpF) {   /* stale-bank guard: see tsc_sector_polyanim */
@@ -2393,6 +2471,17 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     texture_pack_fog_ladder_set(
         s_clutfog ? (float)(s_fogscale / (16.0 * 3840.0)) : 0.0f,
         s_clutfog ? (float)((4096.0 - (double)fogRefBase) / 3840.0) : 0.0f);
+    /* Pack-aware LP grade (tsc_lp_grade): fold the previous walk's level mean
+     * for no-signal sectors, then arm and reset this walk's accumulator. */
+    if (s_lpg_en < 0) { const char* e = getenv("OPENPETE_TEXPACK_LP_FIT");
+                        s_lpg_en = !(e && *e == '0'); }
+    s_lpg_active = s_lpg_en && texture_pack_replacements_active();
+    if (s_lpg_acc_n > 0) {
+        for (int c = 0; c < 6; c++) s_lpg_mean[c] = (float)(s_lpg_acc[c] / s_lpg_acc_n);
+        s_lpg_mean_ok = 1;
+    }
+    memset(s_lpg_acc, 0, sizeof s_lpg_acc);
+    s_lpg_acc_n = 0;
     /* .s LP far cull threshold, slot units (r_environment.s:637-642: the walk
      * precomputes s2 = m_CullingDistance >> 7 once, before the sector loop). */
     int cullRefS2 = (int32_t)rd(cpu, G_ENVIRONMENT + ENV_CULLDIST) >> 7;
@@ -2693,6 +2782,16 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             faces = SC->lpFaces; faceStride = 8;
             lpColBase = SC->lpColBase;                     /* LP colours (4B, no fog) */
             if (SC->vfracPres == s_vanim_pres) cvF = SC->lpVf;
+            if (s_lpg_active) {
+                tsc_lp_grade(SC);
+                if (!passFill && SC->lpg_state == 1) {     /* level-mean accumulator */
+                    for (int c = 0; c < 3; c++) {
+                        s_lpg_acc[c]     += SC->lpg_p[c];
+                        s_lpg_acc[3 + c] += SC->lpg_q[c];
+                    }
+                    s_lpg_acc_n++;
+                }
+            }
         } else {
             cverts = SC->hpV; cfaces = SC->hpF; nv = nHpV; nf = nHpF;
             faces = SC->hpFaces; faceStride = 16;
@@ -3326,6 +3425,15 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 uint32_t fixrgb;
                 if (lp_artfix_lookup(cpu, (int)i, f, &fixrgb))
                     rc0 = rc1 = rc2 = rc3 = fixrgb;
+            }
+            /* Pack-aware LP grade: regrade the authored (stock-space) LP
+             * colours the way the pack regraded this sector's own textures,
+             * restoring the colour agreement the .s handoff relies on. */
+            if (passLP && s_lpg_active) {
+                rc0 = lp_grade_apply(SC, rc0);
+                rc1 = lp_grade_apply(SC, rc1);
+                rc2 = lp_grade_apply(SC, rc2);
+                if (quad) rc3 = lp_grade_apply(SC, rc3);
             }
             /* Sub-tick UV scroll (env texture anim): translate every corner V by
              * the tile's fractional offset. One block covers GT4, GT3 (the

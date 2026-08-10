@@ -658,6 +658,92 @@ int texture_pack_fog_ladder_get(float *t_scale, float *t_bias)
 
 unsigned texture_pack_generation(void) { return s_gen; }
 
+/* ---- per-texture stock->pack grade fit (see header) ----------------------- */
+
+typedef struct {
+    uint64_t key; unsigned gen;
+    float p[3], q[3];
+    uint8_t state;                       /* 0 empty, 1 fit, 2 no-signal */
+} tp_fit_slot;
+#define TP_FIT_SLOTS 512
+static tp_fit_slot s_fit[TP_FIT_SLOTS];
+
+static uint16_t tp_vram_texel(const uint16_t *vr, int tpage_x, int tpage_y,
+                              int clut_x, int clut_y, int bpp, int u, int v)
+{
+    int row = (tpage_y + v) & 0x1FF;
+    uint16_t w;
+    if (bpp == 16)
+        return vr[(size_t)row * OPENPETE_VRAM_W + ((tpage_x + u) & 0x3FF)];
+    if (bpp == 8) {
+        w = vr[(size_t)row * OPENPETE_VRAM_W + ((tpage_x + (u >> 1)) & 0x3FF)];
+        return vr[(size_t)clut_y * OPENPETE_VRAM_W + clut_x + ((w >> (8 * (u & 1))) & 0xFF)];
+    }
+    w = vr[(size_t)row * OPENPETE_VRAM_W + ((tpage_x + (u >> 2)) & 0x3FF)];
+    return vr[(size_t)clut_y * OPENPETE_VRAM_W + clut_x + ((w >> (4 * (u & 3))) & 0xF)];
+}
+
+int texture_pack_grade_fit(const texture_pack_id *id, const texture_pack_repl *repl,
+                           int tpage_x, int tpage_y, int clut_x, int clut_y,
+                           int bpp, int pu0, int pv0, float p[3], float q[3])
+{
+    if (!repl->pixels || repl->box_w <= 0 || repl->box_h <= 0) return 0;
+    uint64_t key = (uint64_t)(uintptr_t)repl->pixels
+                 ^ (id->phash * 0x9E3779B97F4A7C15ull);
+    tp_fit_slot *sl = NULL;
+    uint64_t base = key * 0xff51afd7ed558ccdull >> 32;
+    for (int pr = 0; pr < 8; pr++) {
+        tp_fit_slot *c = &s_fit[(base + (uint64_t)pr) & (TP_FIT_SLOTS - 1)];
+        if ((c->key == key && c->gen == s_gen) || c->state == 0) { sl = c; break; }
+    }
+    if (sl && sl->key == key && sl->gen == s_gen && sl->state) {
+        if (sl->state != 1) return 0;
+        for (int c = 0; c < 3; c++) { p[c] = sl->p[c]; q[c] = sl->q[c]; }
+        return 1;
+    }
+    const uint16_t *vr = openpete_vram_data();
+    if (!vr) return 0;
+    double sx[3] = {0}, sy[3] = {0}, sxx[3] = {0}, sxy[3] = {0};
+    int cnt = 0;
+    for (int ty = 0; ty < repl->box_h; ty++) {
+        int v = pv0 + ty;
+        int hy = (int)(((float)ty + 0.5f) * (float)repl->h / (float)repl->box_h);
+        for (int tx = 0; tx < repl->box_w; tx++) {
+            uint16_t word = tp_vram_texel(vr, tpage_x, tpage_y, clut_x, clut_y,
+                                          bpp, pu0 + tx, v);
+            if (word == 0) continue;                 /* transparency sentinel */
+            int hx = (int)(((float)tx + 0.5f) * (float)repl->w / (float)repl->box_w);
+            const unsigned char *hp = repl->pixels + ((size_t)hy * repl->w + hx) * 4;
+            if (hp[3] < 128) continue;               /* pack cut this texel out */
+            for (int c = 0; c < 3; c++) {
+                double x = (double)((word >> (c * 5)) & 0x1F) / 31.0;
+                double y = (double)hp[c] / 255.0;
+                sx[c] += x; sy[c] += y; sxx[c] += x * x; sxy[c] += x * y;
+            }
+            cnt++;
+        }
+    }
+    int ok = cnt >= 64;
+    if (ok) {
+        for (int c = 0; c < 3; c++) {
+            double den = cnt * sxx[c] - sx[c] * sx[c];
+            if (den > 1e-6) {
+                double a = (cnt * sxy[c] - sx[c] * sy[c]) / den;
+                p[c] = (float)a;
+                q[c] = (float)((sy[c] - a * sx[c]) / cnt);
+            } else {                                 /* flat stock: offset model */
+                p[c] = 1.0f;
+                q[c] = (float)((sy[c] - sx[c]) / cnt);
+            }
+        }
+    }
+    if (sl) {
+        sl->key = key; sl->gen = s_gen; sl->state = ok ? 1 : 2;
+        if (ok) for (int c = 0; c < 3; c++) { sl->p[c] = p[c]; sl->q[c] = q[c]; }
+    }
+    return ok;
+}
+
 /* ---- identity/provenance census (temporary instrument) -------------------- */
 
 #define TP_CENSUS_SLOTS 16384

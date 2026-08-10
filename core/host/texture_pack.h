@@ -198,6 +198,20 @@ int  texture_pack_fog_ladder_get(float *t_scale, float *t_bias);
  * pointers. */
 unsigned texture_pack_generation(void);
 
+/* Per-texture stock->pack grade: least-squares affine fit `pack ~= p*stock+q`
+ * per channel (0..1 units) over this file's own (stock texel, pack pixel)
+ * pairs — the pack's regrade of THIS texture, exact where the pack is an
+ * affine of stock and the best local approximation elsewhere. Consumers:
+ * fog-offset retarget (fogged = a*pack + (p*b + (1-a)*q)) and pack-aware
+ * recolouring of untextured geometry authored against the stock texels.
+ * tpage/clut in VRAM pixel units, clut_y the BASE (unfogged) row; pu0/pv0 =
+ * the FILE box origin in page texel coords. Memoized per (file, palette);
+ * transparent/cutout texels excluded; returns 1 on signal (>= 64 pairs),
+ * 0 = caller falls back (e.g. the global fog shift). */
+int texture_pack_grade_fit(const texture_pack_id *id, const texture_pack_repl *repl,
+                           int tpage_x, int tpage_y, int clut_x, int clut_y,
+                           int bpp, int pu0, int pv0, float p[3], float q[3]);
+
 /* ---- lifecycle / diagnostics -------------------------------------------- */
 
 void texture_pack_init(void);      /* idempotent; reads env gates */
