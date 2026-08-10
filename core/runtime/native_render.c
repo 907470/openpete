@@ -129,7 +129,25 @@ typedef struct {
 /* Push constants for the HD texture-replacement pipes: the replaced texel box,
  * plus the per-channel fog transform applied to the sampled replacement
  * (see tp_fog_affine). a/b are vec4-aligned; the shaders read .rgb. */
-typedef struct { float u0, v0, uw, vh; float a[4]; float b[4]; } hd_pc;
+/* Push block for the hd_tex*.frag pipes (must match their HdRect layout).
+ * a/b = the per-face CLUT-ladder rung affine (identity when unfogged) — the
+ * flat model. aN/bN/lad drive the CONTINUOUS model: aN.rgb/bN.rgb are the
+ * affine at the DEEPEST authored row, aN[3] > 0 enables the mode, and the
+ * shader fades identity->deepest by t = clamp(w*lad[0] + lad[1], 0, 1) per
+ * fragment (w = true view-Z) — the same ramp og's per-face rows quantize. */
+typedef struct {
+    float u0, v0, uw, vh;
+    float a[4]; float b[4];
+    float aN[4]; float bN[4];
+    float lad[4];
+} hd_pc;
+
+/* fog_delta channel: bits 7:0 = the face's CLUT-ladder row (0..15), plus the
+ * feeder-declared flags for the continuous model above (values shared with
+ * feeders via texture_pack.h). */
+#define TP_FOG_DELTA_RUNG    0xFF
+#define TP_FOG_DELTA_CONT    OPENPETE_TP_FOG_CONT
+#define TP_FOG_DELTA_FOGBIAS OPENPETE_TP_FOG_FOGBIAS
 
 /* Per-draw material for MOD MATERIAL pipelines — psx_material plus the HD
  * texture-pack fields (must match the op_psx_material push block in
@@ -266,7 +284,14 @@ void openpete_native_scene_set_tag(uint32_t tag) { s_cur_tag = tag; }
  * struct member would read as garbage everywhere except the one feeder that
  * sets it — the layout assert catches a missing MIRROR, not a missing init. */
 void openpete_native_scene_set_fog_delta(int delta) {
-    s_cur_fog_delta = (delta > 0 && delta <= TP_FOG_DELTA_MAX) ? delta : 0;
+    /* Row in bits 7:0 as documented; feeders may add the TP_FOG_DELTA_CONT /
+     * _FOGBIAS flags above the row byte (continuous pack-fog model). An
+     * out-of-range row still zeroes the whole value, flags included. */
+    int rung = delta & TP_FOG_DELTA_RUNG;
+    s_cur_fog_delta = (rung <= TP_FOG_DELTA_MAX)
+                      ? (delta & (TP_FOG_DELTA_RUNG | TP_FOG_DELTA_CONT |
+                                  TP_FOG_DELTA_FOGBIAS))
+                      : 0;
 }
 /* S8 arms this when material selectors register (0 selectors ⇒ inert key). */
 void openpete_native_set_tag_split(int on) { s_tag_split_ext = on ? 1 : 0; }
@@ -4216,7 +4241,7 @@ static int tp_tri_match(const scene_tri_t* st, const psx_material* m,
         if (st->v[j].v < v0) v0 = st->v[j].v;
         if (st->v[j].v > v1) v1 = st->v[j].v;
     }
-    const int cly = (m->clut_y - st->fog_delta) & 0x1FF;
+    const int cly = (m->clut_y - (st->fog_delta & TP_FOG_DELTA_RUNG)) & 0x1FF;
     *cly_out = cly; *u0_out = u0; *v0_out = v0;
     int hit = texture_pack_resolve(m->tpage_x, m->tpage_y, m->clut_x, cly,
                                    m->bpp, (int)u0, (int)v0, (int)u1, (int)v1, id);
@@ -4237,23 +4262,161 @@ static int tp_tri_match(const scene_tri_t* st, const psx_material* m,
     return hit && want_replace && texture_pack_match(id, repl);
 }
 
-/* Fog transform for a replaced draw — the affine derived from the texture's
- * own ladder rows plus the pack fog-shift retarget (b' = s*b + (1-a)*o, so a
- * re-graded pack fogs toward colours it actually contains). Identity when
- * unfogged. This is exactly what the HD pipes push. */
-static void tp_pack_fog(const psx_material* m, int cly, int fog_delta,
-                        float a[4], float b[4])
+/* ---- per-texture pack retarget (stock -> pack affine fit) ------------------
+ * The ladder affine maps STOCK base texels to STOCK fogged texels; applying
+ * it to pack art fogs toward the STOCK ambience. The global fog shift (one
+ * affine for the whole pack) retargets that only on average — a pack whose
+ * grade varies by region lands visibly wrong per texture. The exact per-
+ * texture correction follows from modelling the pack as an affine of stock,
+ * p ~= g(x) = P*x + Q, fitted per channel over this texture's own (stock
+ * texel, pack texel) pairs: the pack-side rung transform is
+ * g(a*g^-1(p) + b) = a*p + (P*b + (1-a)*Q) — same slope, offset re-derived
+ * from the texture's own art. Falls back to the global shift when the fit
+ * has no signal (too few opaque pairs). */
+typedef struct {
+    uint64_t key; unsigned gen;
+    float p[3], q[3];
+    uint8_t state;                       /* 0 empty, 1 fit, 2 no-signal */
+} tp_fit_slot;
+#define TP_FIT_SLOTS 512
+static tp_fit_slot s_tp_fit[TP_FIT_SLOTS];
+
+static uint16_t tp_vram_texel(const uint16_t* vr, const psx_material* m,
+                              int cly, int u, int v)
 {
-    a[0] = a[1] = a[2] = 1.f; a[3] = 0.f;
-    b[0] = b[1] = b[2] = b[3] = 0.f;
-    if (fog_delta <= 0) return;
-    tp_fog_xform fx;
-    tp_fog_affine(m->clut_x, cly, fog_delta, m->bpp, &fx);
-    for (int c = 0; c < 3; c++) { a[c] = fx.a[c]; b[c] = fx.b[c]; }
+    int row = (m->tpage_y + v) & 0x1FF;
+    uint16_t w;
+    if (m->bpp == 16)
+        return vr[(size_t)row * OPENPETE_VRAM_W + ((m->tpage_x + u) & 0x3FF)];
+    if (m->bpp == 8) {
+        w = vr[(size_t)row * OPENPETE_VRAM_W + ((m->tpage_x + (u >> 1)) & 0x3FF)];
+        return vr[(size_t)cly * OPENPETE_VRAM_W + m->clut_x + ((w >> (8 * (u & 1))) & 0xFF)];
+    }
+    w = vr[(size_t)row * OPENPETE_VRAM_W + ((m->tpage_x + (u >> 2)) & 0x3FF)];
+    return vr[(size_t)cly * OPENPETE_VRAM_W + m->clut_x + ((w >> (4 * (u & 3))) & 0xF)];
+}
+
+/* Fit P/Q for one (file, base palette) pair; memoized. pu0/pv0 = the FILE
+ * box origin in page texel coords. Returns 1 and fills p/q on signal. */
+static int tp_pack_fit(const psx_material* m, int cly,
+                       const texture_pack_id* id, const texture_pack_repl* repl,
+                       float pu0, float pv0, float p[3], float q[3])
+{
+    static int s_fit_en = -1;   /* OPENPETE_TEXPACK_FOG_FIT=0: global shift only (A/B) */
+    if (s_fit_en < 0) { const char* e = getenv("OPENPETE_TEXPACK_FOG_FIT");
+                        s_fit_en = !(e && *e == '0'); }
+    if (!s_fit_en || !repl->pixels || repl->box_w <= 0 || repl->box_h <= 0)
+        return 0;
+    uint64_t key = (uint64_t)(uintptr_t)repl->pixels
+                 ^ (id->phash * 0x9E3779B97F4A7C15ull);
+    unsigned gen = texture_pack_generation();
+    tp_fit_slot* sl = NULL;
+    uint64_t base = key * 0xff51afd7ed558ccdull >> 32;
+    for (int pr = 0; pr < 8; pr++) {
+        tp_fit_slot* c = &s_tp_fit[(base + (uint64_t)pr) & (TP_FIT_SLOTS - 1)];
+        if ((c->key == key && c->gen == gen) || c->state == 0) { sl = c; break; }
+    }
+    if (sl && sl->key == key && sl->gen == gen && sl->state) {
+        if (sl->state != 1) return 0;
+        for (int c = 0; c < 3; c++) { p[c] = sl->p[c]; q[c] = sl->q[c]; }
+        return 1;
+    }
+    const uint16_t* vr = openpete_vram_data();
+    if (!vr) return 0;
+    double sx[3] = {0}, sy[3] = {0}, sxx[3] = {0}, sxy[3] = {0};
+    int cnt = 0;
+    for (int ty = 0; ty < repl->box_h; ty++) {
+        int v = (int)pv0 + ty;
+        int hy = (int)(((float)ty + 0.5f) * (float)repl->h / (float)repl->box_h);
+        for (int tx = 0; tx < repl->box_w; tx++) {
+            uint16_t word = tp_vram_texel(vr, m, cly, (int)pu0 + tx, v);
+            if (word == 0) continue;                 /* transparency sentinel */
+            int hx = (int)(((float)tx + 0.5f) * (float)repl->w / (float)repl->box_w);
+            const unsigned char* hp = repl->pixels + ((size_t)hy * repl->w + hx) * 4;
+            if (hp[3] < 128) continue;               /* pack cut this texel out */
+            for (int c = 0; c < 3; c++) {
+                double x = (double)((word >> (c * 5)) & 0x1F) / 31.0;
+                double y = (double)hp[c] / 255.0;
+                sx[c] += x; sy[c] += y; sxx[c] += x * x; sxy[c] += x * y;
+            }
+            cnt++;
+        }
+    }
+    int ok = cnt >= 64;
+    if (ok) {
+        for (int c = 0; c < 3; c++) {
+            double den = cnt * sxx[c] - sx[c] * sx[c];
+            if (den > 1e-6) {
+                double a = (cnt * sxy[c] - sx[c] * sy[c]) / den;
+                p[c] = (float)a;
+                q[c] = (float)((sy[c] - a * sx[c]) / cnt);
+            } else {                                 /* flat stock: offset model */
+                p[c] = 1.0f;
+                q[c] = (float)((sy[c] - sx[c]) / cnt);
+            }
+        }
+    }
+    if (sl) {
+        sl->key = key; sl->gen = gen; sl->state = ok ? 1 : 2;
+        if (ok) for (int c = 0; c < 3; c++) { sl->p[c] = p[c]; sl->q[c] = q[c]; }
+    }
+    return ok;
+}
+
+/* Fog transforms for a replaced draw. Flat model (pc->a/b): the affine of
+ * the face's own ladder rung. Continuous model (pc->aN/bN/lad, HD pipes
+ * only): the deepest-row affine plus the per-fragment ramp, enabled when the
+ * feeder marked the face ladder-eligible (TP_FOG_DELTA_CONT) and published
+ * the frame's ramp. Both offsets are retargeted per texture via tp_pack_fit
+ * (global fog shift as fallback). pu0/pv0 anchor the FILE box in page texel
+ * coords — the same values the shader rect uses. */
+static void tp_pack_fog(const psx_material* m, int cly, int fog_delta,
+                        const texture_pack_id* id, const texture_pack_repl* repl,
+                        float pu0, float pv0, hd_pc* pc)
+{
+    static int s_cont_en = -1;  /* OPENPETE_TEXPACK_FOG_CONT=0: per-face rungs (A/B) */
+    if (s_cont_en < 0) { const char* e = getenv("OPENPETE_TEXPACK_FOG_CONT");
+                         s_cont_en = !(e && *e == '0'); }
+    pc->a[0] = pc->a[1] = pc->a[2] = 1.f; pc->a[3] = 0.f;
+    pc->b[0] = pc->b[1] = pc->b[2] = pc->b[3] = 0.f;
+    memset(pc->aN, 0, sizeof pc->aN);
+    memset(pc->bN, 0, sizeof pc->bN);
+    memset(pc->lad, 0, sizeof pc->lad);
+
+    float fp[3], fq[3];
+    int   fit = tp_pack_fit(m, cly, id, repl, pu0, pv0, fp, fq);
     float fs[3], fo[3];
-    if (texture_pack_fog_shift_get(fs, fo))
-        for (int c = 0; c < 3; c++)   /* o is 0..255; b is 0..1 */
-            b[c] = fs[c] * b[c] + (1.0f - a[c]) * (fo[c] / 255.0f);
+    int   shift = fit ? 0 : texture_pack_fog_shift_get(fs, fo);
+
+    int rung = fog_delta & TP_FOG_DELTA_RUNG;
+    if (rung > 0) {
+        tp_fog_xform fx;
+        tp_fog_affine(m->clut_x, cly, rung, m->bpp, &fx);
+        for (int c = 0; c < 3; c++) {
+            pc->a[c] = fx.a[c];
+            pc->b[c] = fit   ? fp[c] * fx.b[c] + (1.0f - fx.a[c]) * fq[c]
+                     : shift ? fs[c] * fx.b[c] + (1.0f - fx.a[c]) * (fo[c] / 255.0f)
+                     :         fx.b[c];
+        }
+    }
+
+    float ts, tb;
+    if (s_cont_en && (fog_delta & TP_FOG_DELTA_CONT) &&
+        texture_pack_fog_ladder_get(&ts, &tb)) {
+        tp_fog_xform fN;
+        tp_fog_affine(m->clut_x, cly, TP_FOG_DELTA_MAX, m->bpp, &fN);
+        for (int c = 0; c < 3; c++) {
+            pc->aN[c] = fN.a[c];
+            pc->bN[c] = fit   ? fp[c] * fN.b[c] + (1.0f - fN.a[c]) * fq[c]
+                      : shift ? fs[c] * fN.b[c] + (1.0f - fN.a[c]) * (fo[c] / 255.0f)
+                      :         fN.b[c];
+        }
+        pc->aN[3] = 1.0f;
+        pc->lad[0] = ts;
+        /* The face's fog reference may carry the authored +0x2000 bias —
+         * shift the ramp by the equivalent 8192/3840 in t. */
+        pc->lad[1] = tb - ((fog_delta & TP_FOG_DELTA_FOGBIAS) ? 8192.0f / 3840.0f : 0.0f);
+    }
 }
 
 /* allow_override: 0 = stock only; 1 = material overrides via the plain
@@ -4403,8 +4566,16 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                                     mh.hd_v0 = bv0 - (float)(id.box_y - repl.box_y);
                                     mh.hd_uw = (float)repl.box_w;
                                     mh.hd_vh = (float)repl.box_h;
-                                    tp_pack_fog(&m, cly, st->fog_delta,
-                                                mh.fog_a, mh.fog_b);
+                                    /* Mod-material pipes carry only the flat
+                                     * per-rung affine (their fragment contract
+                                     * has no perspective-W varying for the
+                                     * continuous ramp) — they still get the
+                                     * per-texture retarget. */
+                                    hd_pc fpc;
+                                    tp_pack_fog(&m, cly, st->fog_delta, &id, &repl,
+                                                mh.hd_u0, mh.hd_v0, &fpc);
+                                    memcpy(mh.fog_a, fpc.a, sizeof fpc.a);
+                                    memcpy(mh.fog_b, fpc.b, sizeof fpc.b);
                                 }
                             }
                             if (want && want != pack_bound) {
@@ -4521,9 +4692,10 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                         u0 - (float)(id.box_x - repl.box_x),
                         v0 - (float)(id.box_y - repl.box_y),
                         (float)repl.box_w, (float)repl.box_h,
-                        { 0 }, { 0 },
+                        { 0 }, { 0 }, { 0 }, { 0 }, { 0 },
                     };
-                    tp_pack_fog(&m, cly, st->fog_delta, pc.a, pc.b);
+                    tp_pack_fog(&m, cly, st->fog_delta, &id, &repl,
+                                pc.u0, pc.v0, &pc);
                     if (hd_defer_ok) {
                         hd_defer_push(tex, &pc, (uint32_t)(g * 3),
                                       (uint32_t)(first_vert + (i + t) * 3));

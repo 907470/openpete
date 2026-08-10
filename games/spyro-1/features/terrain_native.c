@@ -2384,6 +2384,15 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
           camz = (double)(int32_t)rd(cpu, G_CAMERA + 0x30) / 16.0;
       } }
     int fogRefBase = (int32_t)rd(cpu, G_ENVIRONMENT + ENV_LODDIST) >> 2;  /* §10 */
+    /* Publish this walk's fog-ladder ramp for the CONTINUOUS pack-fog model
+     * (HD-replaced draws only; see texture_pack_fog_ladder_set): the .s row
+     * select is Δ = (key − fogRef + 4096) >> 8 with key ≈ face-mean
+     * m3·fogscale and 16 authored rows, so in full-world view-Z (16·m3)
+     * t = Δ/15 = vz·fogscale/(16·3840) + (4096 − fogRef)/3840. Face-level
+     * +0x2000 fogRef bias rides the per-draw fog_delta flags. */
+    texture_pack_fog_ladder_set(
+        s_clutfog ? (float)(s_fogscale / (16.0 * 3840.0)) : 0.0f,
+        s_clutfog ? (float)((4096.0 - (double)fogRefBase) / 3840.0) : 0.0f);
     /* .s LP far cull threshold, slot units (r_environment.s:637-642: the walk
      * precomputes s2 = m_CullingDistance >> 7 once, before the sector loop). */
     int cullRefS2 = (int32_t)rd(cpu, G_ENVIRONMENT + ENV_CULLDIST) >> 7;
@@ -2855,6 +2864,13 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                         mat = &matSel;
                     }
                 }
+                /* Every face that reached this select fades on the published
+                 * ladder ramp — mark it (plus its fogRef bias) for the
+                 * CONTINUOUS pack-fog model. Copy-on-mark: `mat` may still
+                 * point into the shared sector cache. */
+                if (mat != &matSel) { matSel = *mat; mat = &matSel; }
+                matSel.fog_delta = (matSel.fog_delta & 0xFF) | OPENPETE_TP_FOG_CONT
+                                 | (F->fogbias ? OPENPETE_TP_FOG_FOGBIAS : 0);
             }
             /* NCLIP back-face sign (2D cross product == GTE MAC0; flip negates it,
              * word3 & 0x2). front = nclip > 0. The GTE saturates SX/SY to

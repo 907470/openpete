@@ -636,6 +636,28 @@ int texture_pack_fog_shift_get(float scale_rgb[3], float offset_rgb[3])
     return 1;
 }
 
+/* ---- terrain fog-ladder ramp (see header) --------------------------------- */
+
+static int   s_fogladder_on;
+static float s_fogladder_ts, s_fogladder_tb;
+
+void texture_pack_fog_ladder_set(float t_scale, float t_bias)
+{
+    s_fogladder_ts = t_scale;
+    s_fogladder_tb = t_bias;
+    s_fogladder_on = (t_scale != 0.0f || t_bias != 0.0f);
+}
+
+int texture_pack_fog_ladder_get(float *t_scale, float *t_bias)
+{
+    if (!s_fogladder_on) return 0;
+    *t_scale = s_fogladder_ts;
+    *t_bias  = s_fogladder_tb;
+    return 1;
+}
+
+unsigned texture_pack_generation(void) { return s_gen; }
+
 /* ---- identity/provenance census (temporary instrument) -------------------- */
 
 #define TP_CENSUS_SLOTS 16384

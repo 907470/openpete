@@ -166,6 +166,38 @@ void texture_pack_fog_shift_set(const float scale_rgb[3], const float offset_rgb
 /* Returns 1 (and fills s/o) when a shift is active. */
 int  texture_pack_fog_shift_get(float scale_rgb[3], float offset_rgb[3]);
 
+/* ---- terrain fog-ladder ramp (continuous pack fog) ----------------------- */
+
+/* Spyro's terrain selects one pre-fogged CLUT row PER FACE (row Δ from the
+ * face-mean fog key). Replaced draws re-create the row as an affine on the
+ * pack texels — but quantized per face, the affine's rung steps show on art
+ * whose grade differs from the stock rows. The HD pipes therefore evaluate
+ * the ladder CONTINUOUSLY: t = clamp(w*t_scale + t_bias, 0, 1) per fragment
+ * (w = true view-Z), interpolating the identity->deepest-row affine — the
+ * same fade og's rows quantize, minus the per-face steps. Display-only, HD
+ * replaced draws only; stock draws keep the authentic per-face rows.
+ *
+ * The terrain feeder publishes the ramp each walk from the level's fog
+ * reference and the --fog-scale curve (t = (viewZ*fogscale - fogRef + 4096)
+ * / (16 rows * 256 key units)); (0,0) = no ladder this frame (ladder off /
+ * fog saturated away), which drops the HD pipes back to per-face rungs. */
+void texture_pack_fog_ladder_set(float t_scale, float t_bias);
+/* Returns 1 (and fills out) when a ramp is published this frame. */
+int  texture_pack_fog_ladder_get(float *t_scale, float *t_bias);
+
+/* Flags a feeder may OR above the row byte (bits 7:0) of the value it passes
+ * to openpete_native_scene_set_fog_delta(): CONT marks a face that went
+ * through the ladder select (fades on the published ramp); FOGBIAS marks a
+ * face whose fog reference carries the authored +0x2000 bias. */
+#define OPENPETE_TP_FOG_CONT    0x100
+#define OPENPETE_TP_FOG_FOGBIAS 0x200
+
+/* Registry generation counter: bumps whenever the pack index rescans or the
+ * enabled modset changes, i.e. whenever `texture_pack_repl.pixels` borrowed
+ * from the cache may have been freed. For caller-side caches keyed on those
+ * pointers. */
+unsigned texture_pack_generation(void);
+
 /* ---- lifecycle / diagnostics -------------------------------------------- */
 
 void texture_pack_init(void);      /* idempotent; reads env gates */
