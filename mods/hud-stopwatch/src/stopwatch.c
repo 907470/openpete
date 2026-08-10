@@ -32,9 +32,11 @@ static float g_cap_h  = 0.026f;
 static int g_reset_request;
 
 /* "M:SS.hh" for an elapsed count of sim ticks (fractional ticks give the
- * sub-tick hundredths). Time base: sim ticks / 29.97 — gameplay time. */
+ * sub-tick hundredths). Time base: sim ticks / the canonical NTSC tick rate
+ * — gameplay time, so it matches what the engine paces to rather than
+ * drifting against it. */
 static void format_elapsed(char* buf, size_t cap, double ticks) {
-    double   t    = ticks / 29.97;
+    double   t    = ticks / OPENPETE_TICK_HZ;
     unsigned mins = (unsigned)(t / 60.0);
     double   secs = t - (double)mins * 60.0;
     snprintf(buf, cap, "%u:%05.2f", mins, secs);

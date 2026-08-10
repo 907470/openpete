@@ -163,7 +163,7 @@ int openpete_psycross_renders = 1;
 
 /* Master interpolation/frame-gen toggle ('I' key). Gates the native
  * sub-tick intermediate presents; 1 = smooth (default), 0 = canonical
- * ~29.97 fps only. (Moved here from the deleted screen-space render
+ * ~29.913 fps only. (Moved here from the deleted screen-space render
  * matcher, whose substitute path it also used to gate.) */
 int g_openpete_interp_enabled = 1;
 
@@ -764,9 +764,9 @@ static void ftl_record_present(openpete_frame_time_log_t* log,
  * catch-up burst. Display-only: pacing, never gameplay. Initialised from
  * the RESOLVED launch target just before the loop (an unset --render-fps
  * defaults to the display refresh rate, windowed; 0, headless). */
-static int       s_render_fps       = 0;
-static op_time_t s_render_period_ns = 0;
-static int       s_render_fps_dirty = 0;
+static int         s_render_fps       = 0;
+static op_period_t s_render_period    = { 0, 0, 1 };
+static int         s_render_fps_dirty = 0;
 
 /* Slip ledger for the pacer's deadline clamps below. A clamp fires when the
  * loop has fallen more than slip_threshold_ns behind and snaps the deadline
@@ -1319,10 +1319,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * condvar-drain race that left Phase 1a ~3 % rate-hot.
      *
      * Period choices:
-     *   sim_period_ns    = NTSC PSX VBL (1001/60000 s = 16683333 ns,
-     *                      matches core/runtime/ticker.c constant)
-     *   render_period_ns = 1/render_fps when --render-fps>0, else
-     *                      sim_period_ns (one present per sim tick).
+     *   sim_period    = the PSX 240p VBL, exactly 37609/2250000 s
+     *                   (59.8261054… Hz — see OP_VBL_* in openpete_time.h)
+     *   render_period = 1/render_fps when --render-fps>0, else
+     *                   sim_period (one present per sim tick).
+     *
+     * Both are op_period_t, so the fractional nanosecond each period carries
+     * (a VBL is 16715111 + 1/9 ns) accrues on the deadline instead of being
+     * truncated away every step. Deadlines land on floor(n * period) for all
+     * n: under a nanosecond off the true grid, and never drifting further.
      *
      * Invariant (locked in by openpete-fps-unlock.md "vbl-counter
      * loops"): the inner sim block yields the game fiber at most once
@@ -1331,31 +1336,39 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * Universal logo waits in initialization.c. The slip-clamp resets
      * the deadline forward without firing extra yields. */
     /* --tick-scale F slows/speeds the WHOLE engine by dividing both the sim and
-     * the render period by F: sim_rate = F*29.97 Hz, present_rate = F*render_fps,
+     * the render period by F: sim_rate = F*29.913 Hz, present_rate = F*render_fps,
      * so the count of sub-tick presents PER tick (present_rate/sim_rate) is
      * invariant — a slow-motion view of the SAME interpolation. Pacing only: the
      * sim still executes identical ticks (the interp alpha is wall-clock-derived
      * from the actual tick timestamps, so it auto-stretches), and the deadlines
-     * are reset to now under unlock/headless, so this is inert in the oracle. */
+     * are reset to now under unlock/headless, so this is inert in the oracle.
+     *
+     * F == 1 keeps the exact rational VBL; any other F is a debug slow-mo that
+     * scales through a double and lands on a whole-ns period, so it leaves the
+     * exact grid by design. */
     double tick_scale = (opts->tick_scale > 0.0) ? opts->tick_scale : 1.0;
-    op_time_t sim_period_ns    =
-        (op_time_t)((double)((OP_NS_PER_SEC * 1001) / 60000) / tick_scale);
-    const op_time_t render_period_ns = (render_fps > 0)
-        ? (op_time_t)((double)(OP_NS_PER_SEC / (op_time_t)render_fps) / tick_scale)
-        : sim_period_ns;   /* sim_period_ns is already tick-scaled */
+    op_period_t sim_period = op_scaled_vbl_period(tick_scale);
+    op_time_t   sim_period_ns = op_period_ns(sim_period);
+    const op_period_t render_period = (render_fps > 0)
+        ? op_period_from_ns((op_time_t)((double)(OP_NS_PER_SEC / (op_time_t)render_fps)
+                                        / tick_scale))
+        : sim_period;   /* sim_period is already tick-scaled */
     /* Seed the live pacer state (openpete_set_render_fps /
      * openpete_set_tick_scale mutate it; the loop reads s_render_fps /
-     * s_render_period_ns / s_tick_scale instead of the values above). */
+     * s_render_period / s_tick_scale instead of the values above). */
     s_render_fps       = render_fps;
-    s_render_period_ns = render_period_ns;
+    s_render_period    = render_period;
     s_render_fps_dirty = 0;
     s_tick_scale       = tick_scale;
     s_tick_scale_dirty = 0;
     /* One WALL-time tick for every sub-tick alpha denominator (ring +
      * per-object phase lerps). Must stretch with --tick-scale: interp alphas
      * are wall-clock-derived, so an unscaled (NTSC) cap makes every sweep run
-     * 1/tick_scale× too fast and pin at the clamp for the rest of the tick. */
-    g_openpete_tick_period_ns = 2 * sim_period_ns;   /* tick = 2 VBLs, scaled */
+     * 1/tick_scale× too fast and pin at the clamp for the rest of the tick.
+     * Rounded to whole ns: it is an alpha denominator, not a deadline, so the
+     * carried ninth would be noise below the resolution of any alpha. */
+    op_period_t tick_period = op_period_mul(sim_period, OP_TICK_VBLS);
+    g_openpete_tick_period_ns = op_period_ns(tick_period);
     op_time_t slip_threshold_ns = 4 * sim_period_ns; /* ~67 ms (scaled) */
 
     /* --record-cfr: offline capture. `capture_mult` presents are produced per
@@ -1365,40 +1378,46 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * makes two captures at different rates cover the same span of game time.
      *
      * The render period is derived from the tick period rather than from an
-     * integer --render-fps: 60 Hz against a 59.94 Hz VBL is a 2.002 ratio,
+     * integer --render-fps: 60 Hz against a 59.826 Hz VBL is a 2.0058 ratio,
      * which hands some ticks two intermediates and others three. Dividing the
      * tick period gives exactly `capture_mult` evenly spaced presents per tick.
+     * op_period_div keeps that division exact — a tick split three ways is
+     * 11143407 + 11/27 ns, which no whole-ns period can express — so the
+     * capture grid stays even however long the capture runs.
+     *
      * A multiplier of 1 wants no sub-tick presents at all, which is precisely
      * the legacy match-sim pacer (s_render_fps == 0). */
     const int capture_mult = (opts->record_cfr > 0.0)
-        ? (int)(opts->record_cfr * 1001.0 / 30000.0 + 0.5) : 0;
+        ? (int)(opts->record_cfr / OP_TICK_HZ + 0.5) : 0;
     if (capture_mult > 0) {
         if (capture_mult > 1) {
-            s_render_fps       = (int)(opts->record_cfr + 0.5);  /* nominal, for logs + the "paced" test */
-            s_render_period_ns = g_openpete_tick_period_ns / capture_mult;
+            s_render_fps    = (int)(opts->record_cfr + 0.5);  /* nominal, for logs + the "paced" test */
+            s_render_period = op_period_div(tick_period, capture_mult);
         } else {
-            s_render_fps       = 0;
-            s_render_period_ns = sim_period_ns;
+            s_render_fps    = 0;
+            s_render_period = sim_period;
         }
         op_virtual_clock_enable(OP_NS_PER_SEC);
         OPL_INFO_F("pacer",
                    "--record-cfr %.5f: offline capture clock, %d present(s) per tick "
                    "(%.4f ms), sim %.4f ms",
                    opts->record_cfr, capture_mult,
-                   (double)s_render_period_ns / 1e6, (double)sim_period_ns / 1e6);
+                   (double)op_period_ns(s_render_period) / 1e6,
+                   (double)sim_period_ns / 1e6);
     }
 
-    op_time_t start_ns      = op_now();
-    op_time_t next_sim_ns    = start_ns;
-    op_time_t next_render_ns = start_ns;
+    op_time_t     start_ns = op_now();
+    op_deadline_t next_sim, next_render;
+    op_deadline_anchor(&next_sim, start_ns);
+    op_deadline_anchor(&next_render, start_ns);
     if (s_render_fps > 0) {
-        OPL_INFO_F("pacer", "wall-clock dual-pacer: sim=%.4f ms render=%.4f ms (render-fps=%d, --tick-scale=%.3f)",
-                   (double)sim_period_ns / 1e6,
-                   (double)s_render_period_ns / 1e6,
+        OPL_INFO_F("pacer", "wall-clock dual-pacer: sim=%.6f ms (%.6f Hz) render=%.6f ms (render-fps=%d, --tick-scale=%.3f)",
+                   (double)sim_period_ns / 1e6, op_period_hz(sim_period),
+                   (double)op_period_ns(s_render_period) / 1e6,
                    s_render_fps, tick_scale);
     } else {
-        OPL_INFO_F("pacer", "legacy pacer: sim=%.4f ms NTSC (--render-fps=0, --tick-scale=%.3f)",
-                   (double)sim_period_ns / 1e6, tick_scale);
+        OPL_INFO_F("pacer", "legacy pacer: sim=%.6f ms NTSC (%.6f Hz VBL, --render-fps=0, --tick-scale=%.3f)",
+                   (double)sim_period_ns / 1e6, op_period_hz(sim_period), tick_scale);
     }
 
     /* fps-unlock Phase 2 (scaffolding): bring up the interpolation
@@ -1410,9 +1429,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * read-only PSX-RAM memcpy on the host fiber while the game
      * fiber is yielded inside VSync(0). */
     if (openpete_interp_init() == 0) {
+        const op_time_t render_period_ns = op_period_ns(s_render_period);
         const op_time_t sim_hz_x1000 = (OP_NS_PER_SEC * 1000) / sim_period_ns;
-        const op_time_t render_hz_x1000 = (s_render_period_ns > 0)
-            ? (OP_NS_PER_SEC * 1000) / s_render_period_ns
+        const op_time_t render_hz_x1000 = (render_period_ns > 0)
+            ? (OP_NS_PER_SEC * 1000) / render_period_ns
             : 0;
         if (s_render_fps > 0 && render_hz_x1000 > sim_hz_x1000) {
             openpete_interp_set_enabled(1);
@@ -1547,22 +1567,20 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * This is platform-agnostic and pacer-agnostic — it tells us how
      * the *actual* present time drifts from a perfectly-paced clock,
      * regardless of whether the legacy SDL_AddTimer pacer or a future
-     * high-res pacer is driving the loop. The target period is the
-     * sim cadence today (30 fps = 33.333 ms), upgraded to 29.97 once
-     * Phase 1 lands the NTSC-correct ticker. See
-     * notes/plans/openpete-frame-pacing.md. */
+     * high-res pacer is driving the loop. The target period is the sim
+     * cadence. See notes/plans/openpete-frame-pacing.md. */
     if (opts->frame_time_log_path && *opts->frame_time_log_path) {
-        /* Default target: NTSC present cadence = 1001/30000 sec per
-         * present (= 1/2 of 59.94 Hz VBL). When the render-fps target is
-         * set (explicit --render-fps N, or the unset windowed default =
+        /* Default target: the PSX tick cadence, one present per tick
+         * (= 1/2 of the 59.8261054 Hz 240p VBL). When the render-fps target
+         * is set (explicit --render-fps N, or the unset windowed default =
          * display refresh) the dual-pacer drives the loop at N Hz instead,
-         * so use that. See plan §1: "ship --vbl-rate=59.94 as default". */
+         * so use that. Whole ns: the log's ideal-cadence baseline is a
+         * measurement reference, not a deadline the pacer steps. */
         if (render_fps > 0) {
             frame_time_log_target_period_ns =
                 (int64_t)((double)OP_NS_PER_SEC / (double)render_fps / tick_scale);
         } else {
-            frame_time_log_target_period_ns =
-                (int64_t)((double)((OP_NS_PER_SEC * (int64_t)1001) / (int64_t)30000) / tick_scale);
+            frame_time_log_target_period_ns = (int64_t)g_openpete_tick_period_ns;
         }
         if (openpete_frame_time_log_open(&frame_time_log,
                                          opts->frame_time_log_path,
@@ -1687,13 +1705,15 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         if (s_tick_scale_dirty) {
             s_tick_scale_dirty = 0;
             tick_scale = s_tick_scale;
-            sim_period_ns =
-                (op_time_t)((double)((OP_NS_PER_SEC * 1001) / 60000) / tick_scale);
-            g_openpete_tick_period_ns = 2 * sim_period_ns;
+            sim_period    = op_scaled_vbl_period(tick_scale);
+            sim_period_ns = op_period_ns(sim_period);
+            tick_period   = op_period_mul(sim_period, OP_TICK_VBLS);
+            g_openpete_tick_period_ns = op_period_ns(tick_period);
             slip_threshold_ns = 4 * sim_period_ns;
             s_render_fps_dirty = 1;
-            OPL_INFO_F("pacer", "tick-scale -> %.3f (sim %.4f ms)",
-                       tick_scale, (double)sim_period_ns / 1e6);
+            OPL_INFO_F("pacer", "tick-scale -> %.3f (sim %.6f ms, %.6f Hz)",
+                       tick_scale, (double)sim_period_ns / 1e6,
+                       op_period_hz(sim_period));
         }
         /* A modset toggle changes what the timeline means: rewind history
          * recorded under the old set must not replay into the new one, and
@@ -1763,22 +1783,24 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         }
         if (s_render_fps_dirty) {
             s_render_fps_dirty = 0;
-            s_render_period_ns = (s_render_fps > 0)
-                ? (op_time_t)((double)(OP_NS_PER_SEC / (op_time_t)s_render_fps) / tick_scale)
-                : sim_period_ns;
+            s_render_period = (s_render_fps > 0)
+                ? op_period_from_ns((op_time_t)((double)(OP_NS_PER_SEC / (op_time_t)s_render_fps)
+                                                / tick_scale))
+                : sim_period;
+            const op_time_t render_period_ns = op_period_ns(s_render_period);
             op_time_t anchor = op_now();
-            next_sim_ns    = anchor;
-            next_render_ns = anchor;
+            op_deadline_anchor(&next_sim, anchor);
+            op_deadline_anchor(&next_render, anchor);
             const op_time_t sim_hz_x1000  = (OP_NS_PER_SEC * 1000) / sim_period_ns;
-            const op_time_t rend_hz_x1000 = (s_render_period_ns > 0)
-                ? (OP_NS_PER_SEC * 1000) / s_render_period_ns : 0;
+            const op_time_t rend_hz_x1000 = (render_period_ns > 0)
+                ? (OP_NS_PER_SEC * 1000) / render_period_ns : 0;
             openpete_interp_set_enabled(s_render_fps > 0 && rend_hz_x1000 > sim_hz_x1000 ? 1 : 0);
             OPL_INFO_F("pacer", "render-fps -> %d (%.4f ms/present)",
-                       s_render_fps, (double)s_render_period_ns / 1e6);
+                       s_render_fps, (double)render_period_ns / 1e6);
         }
         op_time_t iter_now_ns = op_now();
         bool   sim_due = (s_render_fps == 0) || unlock_now ||
-                         (iter_now_ns >= next_sim_ns);
+                         (iter_now_ns >= next_sim.at);
 
         /* --bk2: stamp this frame's bitfield into PsyCross's pad-override
          * slot. PsyX_Pad_InternalPadUpdates uses it instead of polling SDL.
@@ -2763,7 +2785,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                         double a = 0.0;
                         const openpete_interp_snapshot_t *pv = NULL, *cv = NULL;
                         int paired = openpete_interp_query(
-                            op_now(), (op_time_t)((OP_NS_PER_SEC * 1001) / 30000), &a, &pv, &cv);
+                            op_now(), g_openpete_tick_period_ns, &a, &pv, &cv);
                         fprintf(stderr, "[interp-query f=%u] paired=%d captures=%llu dedupe=%llu\n",
                                 openpete_frame, paired,
                                 (unsigned long long)openpete_interp_total_captures(),
@@ -3120,9 +3142,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          *  - Not headless / unlock mode (no display target).
          *  - openpete_interp_enabled(): the render rate genuinely exceeds the
          *    sim rate. This is the SAME gate that arms capture (render_hz >
-         *    VBL 59.94, kept in sync at startup + on every live render-fps
+         *    VBL 59.826, kept in sync at startup + on every live render-fps
          *    change), NOT the weaker s_render_fps > 0. At/below sim parity —
-         *    e.g. render-fps 30 vs the ~29.97 Hz sim — sub-tick interpolation
+         *    e.g. render-fps 30 vs the ~29.913 Hz sim — sub-tick interpolation
          *    is degenerate: the near-1:1 ratio duplicates/freezes frames
          *    (mobys "stick") while capture is off and the ring is stale. So
          *    30 fps presents canonical frames only, exactly like 'I'-toggle
@@ -3426,28 +3448,28 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * here so ESC closes the window promptly. */
         if (unlock_fps || g_shutdown_requested) {
             op_time_t anchor = op_now();
-            next_sim_ns    = anchor;
-            next_render_ns = anchor;
+            op_deadline_anchor(&next_sim, anchor);
+            op_deadline_anchor(&next_render, anchor);
         } else if (s_render_fps == 0) {
             /* Legacy "match sim cadence" pacer. One present per VBL
              * cadence, advanced only when the game fiber actually
              * yielded with a frame bump (ticked_this_iter). dispatch.c
              * no-tick stub yields skip the pace step so a frame full
-             * of stubs doesn't park us for 16.67 ms per stub. */
+             * of stubs doesn't park us for 16.72 ms per stub. */
             if (ticked_this_iter) {
-                next_sim_ns += sim_period_ns;
+                op_deadline_advance(&next_sim, sim_period, 1);
                 op_time_t now2 = op_now();
-                if (now2 - next_sim_ns > slip_threshold_ns) {
-                    op_time_t behind = now2 - next_sim_ns;
+                if (now2 - next_sim.at > slip_threshold_ns) {
+                    op_time_t behind = now2 - next_sim.at;
                     op_time_t skip = behind / sim_period_ns;
-                    next_sim_ns += skip * sim_period_ns;
+                    op_deadline_advance(&next_sim, sim_period, skip);
                     s_sim_slip_events++;
                     s_sim_slip_periods += (uint64_t)skip;
                     OPL_WARN_F("pacer",
                                "sim slip: host stalled %.1f ms (dropped %lld tick period(s) "
                                "of wall time)", (double)behind / 1e6, (long long)skip);
                 }
-                op_sleep_until(next_sim_ns);
+                op_sleep_until(next_sim.at);
             }
         } else {
             /* Wall-clock dual-pacer. sim deadline advances on sim-due
@@ -3456,11 +3478,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * doesn't starve the sim or vice-versa. */
             op_time_t now2 = op_now();
             if (sim_due) {
-                next_sim_ns += sim_period_ns;
-                if (now2 - next_sim_ns > slip_threshold_ns) {
-                    op_time_t behind = now2 - next_sim_ns;
+                op_deadline_advance(&next_sim, sim_period, 1);
+                if (now2 - next_sim.at > slip_threshold_ns) {
+                    op_time_t behind = now2 - next_sim.at;
                     op_time_t skip = behind / sim_period_ns;
-                    next_sim_ns += skip * sim_period_ns;
+                    op_deadline_advance(&next_sim, sim_period, skip);
                     s_sim_slip_events++;
                     s_sim_slip_periods += (uint64_t)skip;
                     OPL_WARN_F("pacer",
@@ -3468,15 +3490,18 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                                "of wall time)", (double)behind / 1e6, (long long)skip);
                 }
             }
-            next_render_ns += s_render_period_ns;
-            if (now2 - next_render_ns > slip_threshold_ns) {
-                op_time_t skip = (now2 - next_render_ns) / s_render_period_ns;
-                next_render_ns += skip * s_render_period_ns;
-                s_render_slip_events++;
-                s_render_slip_periods += (uint64_t)skip;
+            op_deadline_advance(&next_render, s_render_period, 1);
+            {
+                const op_time_t rp = op_period_ns(s_render_period);
+                if (rp > 0 && now2 - next_render.at > slip_threshold_ns) {
+                    op_time_t skip = (now2 - next_render.at) / rp;
+                    op_deadline_advance(&next_render, s_render_period, skip);
+                    s_render_slip_events++;
+                    s_render_slip_periods += (uint64_t)skip;
+                }
             }
-            op_time_t next = (next_sim_ns < next_render_ns)
-                             ? next_sim_ns : next_render_ns;
+            op_time_t next = (next_sim.at < next_render.at)
+                             ? next_sim.at : next_render.at;
             op_sleep_until(next);
         }
 

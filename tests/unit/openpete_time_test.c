@@ -5,6 +5,10 @@
  *      SLA — CI runners are noisy, so the bound is generous; the
  *      `pacing_quality` slow target is where we gate real numbers).
  *   4. op_pacer_slack_ns honours OPENPETE_PACER_SLACK_US.
+ *   5. The exact NTSC period arithmetic (op_period_t / op_deadline_t):
+ *      deadlines land on floor(n * period) forever, 2 VBL == 1 tick, a
+ *      multi-step slip advance == the same number of single steps, and
+ *      every --record-cfr subdivision reconstitutes the tick exactly.
  *
  * Compiled directly from the .c source (no openpete_core link) per the
  * pattern in psx_region_test.c — keeps the test binary SDL-free. */
@@ -95,9 +99,137 @@ static int test_slack_env_override(void) {
     return 0;
 }
 
+/* ---- exact NTSC period arithmetic --------------------------------------
+ *
+ * The pacer's deadline chain must be the correctly-rounded-down image of the
+ * true grid at EVERY step, not merely close on average: a period that sheds
+ * its truncated remainder (as the old whole-ns 1001/60000 constant did) walks
+ * away from the real rate without bound. */
+
+/* Reference: floor(n * num/den seconds) in ns, computed independently of
+ * op_period_t so a bug in the header cannot hide behind itself. Splitting
+ * the multiply keeps it exact in 64-bit for any n the test uses. */
+static op_time_t ref_deadline_ns(op_time_t num, op_time_t den, uint64_t n) {
+    const op_time_t total = num * OP_NS_PER_SEC;   /* ns per period, exact */
+    const op_time_t q = total / den, r = total % den;
+    return (op_time_t)((uint64_t)q * n + ((uint64_t)r * n) / (uint64_t)den);
+}
+
+static int check_grid(const char* what, op_period_t p,
+                      op_time_t num, op_time_t den, uint64_t steps) {
+    op_deadline_t d;
+    op_deadline_anchor(&d, 0);
+    for (uint64_t n = 1; n <= steps; ++n) {
+        op_deadline_advance(&d, p, 1);
+        const op_time_t want = ref_deadline_ns(num, den, n);
+        if (d.at != want) {
+            FAIL("%s: deadline %" PRIu64 " = %" PRId64 " ns, want %" PRId64 "\n",
+                 what, n, (int64_t)d.at, (int64_t)want);
+        }
+        if (d.acc < 0 || d.acc >= p.den)
+            FAIL("%s: accumulator out of range at %" PRIu64 "\n", what, n);
+    }
+    return 0;
+}
+
+static int test_ntsc_periods_are_exact(void) {
+    const op_period_t vbl  = OP_VBL_PERIOD();
+    const op_period_t tick = OP_TICK_PERIOD();
+
+    /* A VBL is 16715111 + 1/9 ns; a tick is twice that. */
+    if (vbl.whole != 16715111 || vbl.rem != 1 || vbl.den != 9)
+        FAIL("VBL period is %" PRId64 " + %" PRId64 "/%" PRId64 ", want 16715111 + 1/9\n",
+             (int64_t)vbl.whole, (int64_t)vbl.rem, (int64_t)vbl.den);
+    if (tick.whole != 33430222 || tick.rem * 9 != 2 * tick.den)
+        FAIL("tick period is %" PRId64 " + %" PRId64 "/%" PRId64 ", want 33430222 + 2/9\n",
+             (int64_t)tick.whole, (int64_t)tick.rem, (int64_t)tick.den);
+
+    /* One million VBLs is ~4.6 hours of play: long enough that a dropped
+     * remainder (0.11 ns/step) would show as a 111 us error. */
+    if (check_grid("VBL", vbl, OP_VBL_HZ_DEN, OP_VBL_HZ_NUM, 1000000)) return 1;
+    if (check_grid("tick", tick, OP_VBL_HZ_DEN,
+                   OP_VBL_HZ_NUM / OP_TICK_VBLS, 1000000)) return 1;
+
+    /* Two VBLs must land exactly on one tick — the sim and the interp
+     * denominator would otherwise drift apart. */
+    op_deadline_t a, b;
+    op_deadline_anchor(&a, 0);
+    op_deadline_anchor(&b, 0);
+    for (uint64_t n = 0; n < 100000; ++n) {
+        op_deadline_advance(&a, vbl, 2);
+        op_deadline_advance(&b, tick, 1);
+        if (a.at != b.at)
+            FAIL("2 VBL != 1 tick at %" PRIu64 ": %" PRId64 " vs %" PRId64 "\n",
+                 n, (int64_t)a.at, (int64_t)b.at);
+    }
+    return 0;
+}
+
+/* A multi-step advance must land where the same number of single steps
+ * would — the slip clamp advances by `skip` periods at once. */
+static int test_multi_step_matches_single(void) {
+    const op_period_t p = OP_VBL_PERIOD();
+    for (op_time_t skip = 1; skip <= 64; ++skip) {
+        op_deadline_t one, many;
+        op_deadline_anchor(&one, 0);
+        op_deadline_anchor(&many, 0);
+        for (op_time_t i = 0; i < skip; ++i) op_deadline_advance(&one, p, 1);
+        op_deadline_advance(&many, p, skip);
+        if (one.at != many.at || one.acc != many.acc)
+            FAIL("skip %" PRId64 ": %" PRId64 "/%" PRId64 " vs %" PRId64 "/%" PRId64 "\n",
+                 (int64_t)skip, (int64_t)one.at, (int64_t)one.acc,
+                 (int64_t)many.at, (int64_t)many.acc);
+    }
+    return 0;
+}
+
+/* --record-cfr divides a tick into `mult` presents. Every divisor must stay
+ * exact, and `mult` of them must reconstitute the tick precisely — otherwise
+ * an offline capture's presents-per-tick drifts over a long recording. */
+static int test_cfr_subdivisions_are_exact(void) {
+    const op_period_t tick = OP_TICK_PERIOD();
+    for (op_time_t mult = 1; mult <= 16; ++mult) {
+        const op_period_t part = op_period_div(tick, mult);
+        op_deadline_t a, b;
+        op_deadline_anchor(&a, 0);
+        op_deadline_anchor(&b, 0);
+        for (uint64_t n = 0; n < 100000; ++n) {
+            op_deadline_advance(&a, part, mult);
+            op_deadline_advance(&b, tick, 1);
+            if (a.at != b.at) {
+                FAIL("cfr x%" PRId64 ": %" PRIu64 " tick(s) drifted %" PRId64 " ns\n",
+                     (int64_t)mult, n + 1, (int64_t)(a.at - b.at));
+            }
+        }
+    }
+    return 0;
+}
+
+/* The rate the rest of the codebase quotes must agree with the periods the
+ * pacer steps, to well inside a part per billion. */
+static int test_rate_constants_agree(void) {
+    const double vbl_hz  = op_period_hz(OP_VBL_PERIOD());
+    const double tick_hz = op_period_hz(OP_TICK_PERIOD());
+    if (vbl_hz < OP_VBL_HZ - 1e-6 || vbl_hz > OP_VBL_HZ + 1e-6)
+        FAIL("OP_VBL_HZ %.9f disagrees with the stepped period %.9f\n",
+             OP_VBL_HZ, vbl_hz);
+    if (tick_hz < OP_TICK_HZ - 1e-6 || tick_hz > OP_TICK_HZ + 1e-6)
+        FAIL("OP_TICK_HZ %.9f disagrees with the stepped period %.9f\n",
+             OP_TICK_HZ, tick_hz);
+    /* Guard the actual hardware figure, so a future edit to the constants
+     * cannot quietly reintroduce the interlaced 59.94. */
+    if (vbl_hz < 59.8261054 || vbl_hz > 59.8261055)
+        FAIL("VBL rate %.7f is not the PSX 240p rate 59.8261054\n", vbl_hz);
+    return 0;
+}
+
 int main(void) {
     op_time_init();
 
+    if (test_ntsc_periods_are_exact())       return 1;
+    if (test_multi_step_matches_single())    return 1;
+    if (test_cfr_subdivisions_are_exact())   return 1;
+    if (test_rate_constants_agree())         return 1;
     if (test_monotonic())                    return 1;
     if (test_sleep_reaches_deadline())       return 1;
     if (test_sleep_in_the_past_returns_fast()) return 1;

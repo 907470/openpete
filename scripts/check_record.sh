@@ -163,18 +163,18 @@ fi
 # Asserts the opposite of Run 1: a fixed NTSC rational rate, a PTS grid with
 # ONE delta, the exact frame budget from --record-frames, and no audio track.
 # .mp4 (not .mkv) because mkv's millisecond timescale cannot represent
-# 1001/30000 exactly and would quantise the grid.
+# 37609/1125000 exactly and would quantise the grid.
 OUT3="$OUT_DIR/cfr.mp4"
 LOG3="$OUT_DIR/cfr.log"
 CFR_FRAMES=90
 rm -f "$OUT3"
 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 --mute 1 \
-       --record-cfr 29.97 --record-frames "$CFR_FRAMES" \
+       --record-cfr 29.913 --record-frames "$CFR_FRAMES" \
        --record "$OUT3" >"$LOG3" 2>&1
 
 if [[ -s "$OUT3" ]]; then
     rate="$(probe -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "$OUT3")"
-    [[ "$rate" == "30000/1001" ]] || bad "cfr: expected r_frame_rate 30000/1001, got '$rate'"
+    [[ "$rate" == "1125000/37609" ]] || bad "cfr: expected r_frame_rate 1125000/37609, got '$rate'"
 
     dec3="$(probe -count_frames -select_streams v:0 -show_entries stream=nb_read_frames -of csv=p=0 "$OUT3")"
     (( ${dec3:-0} == CFR_FRAMES )) || bad "cfr: expected $CFR_FRAMES frames, got ${dec3:-0}"

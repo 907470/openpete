@@ -6,7 +6,7 @@
 // QPC spin) lands within microseconds of the target. See the pacer at
 // the bottom of the host loop in run.c.
 //
-// A dedicated 59.94 Hz ticker thread used to sleep to those deadlines
+// A dedicated VBL-rate ticker thread used to sleep to those deadlines
 // and broadcast a condvar for the host loop to wait on. The host loop
 // never adopted it — it paces inline instead — so the thread spun
 // (op_sleep_until's spin tail, ~15% of a core) and signalled a condvar

@@ -769,7 +769,7 @@ void openpete_native_render_frame(uint64_t record_pts_us);
 
 /* --- sub-tick re-feed spine (high-FPS, native-renderer plan §Movement) ----
  *
- * For smooth presentation above the 29.97 Hz sim, the host loop presents
+ * For smooth presentation above the 29.913 Hz sim, the host loop presents
  * intermediate (sub-tick) frames. Each one rebuilds the native scene against
  * an INTERPOLATED view of gamestate (camera re-run / object lerp / animation
  * clock-advance), keyed off the openpete_interp snapshot ring. The rebuild is

@@ -32,6 +32,7 @@
 #include "openpete_log.h"
 #include "openpete_native_render.h"
 #include "openpete_interp.h"
+#include "openpete_interp_objs.h"   /* g_openpete_tick_period_ns */
 #include "openpete_time.h"
 #include "openpete_fiber.h" /* openpete_frame */
 
@@ -263,7 +264,7 @@ static int emit_buf(const cmd_buf_t* b, int n) {
 }
 
 void openpete_mods_present_flush(CPUState* cpu, int canonical) {
-    /* Per-mod time report window: every 512 sim ticks (~17 s at 29.97),
+    /* Per-mod time report window: every 512 sim ticks (~17 s at 29.913),
      * counted at the canonical commit. ABOVE the draw gates — tick-hook
      * timing must report in headless runs too.
      *
@@ -334,8 +335,9 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
          * interpolation isn't running. */
         double a = 0.0;
         const openpete_interp_snapshot_t *prev, *curr;
-        const op_time_t sim_period =
-            (op_time_t)((OP_NS_PER_SEC * 1001 * 2) / 60000); /* 29.97 Hz */
+        /* The canonical tick period, matching what run.c paces to — never a
+         * local literal, or a mod's alpha drifts against the engine's. */
+        const op_time_t sim_period = g_openpete_tick_period_ns;
         if (!canonical &&
             openpete_interp_query(now, sim_period, &a, &prev, &curr))
             ctx.alpha = (float)a;

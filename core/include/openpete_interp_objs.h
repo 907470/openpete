@@ -123,7 +123,10 @@ void openpete_interp_objs_stats(int* tracked, int* paired,
 
 /* One sim tick in WALL time — the interp denominator cap shared by every
  * sub-tick consumer (the DIRECT ring's interp_period_ns and the per-object
- * phase lerps). Defaults to one NTSC tick (1001/30000 s); run.c rescales it
+ * phase lerps). Defaults to one NTSC tick (37609/1125000 s = 29.9130527 Hz,
+ * rounded to whole ns — this is an alpha denominator, not a deadline the
+ * pacer steps, so the fractional 2/9 ns is far below any alpha's
+ * resolution); run.c rescales it
  * by 1/tick_scale at startup so --tick-scale slow-motion stretches every
  * alpha denominator with the real tick cadence — a hardcoded NTSC cap makes
  * phase sweeps run 1/tick_scale× too fast and pin at the clamp for the rest

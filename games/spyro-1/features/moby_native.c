@@ -3815,7 +3815,7 @@ static double lerp_byte_angle(int prev_b, int curr_b, double t) {
     return (double)prev_b + (double)d * t;
 }
 
-/* One game-logic tick in WALL time (nominally NTSC 1001/30000 s = 33.3667 ms;
+/* One game-logic tick in WALL time (nominally NTSC 37609/1125000 s = 33.4302 ms;
  * run.c rescales the global by 1/tick_scale so --tick-scale slow-motion keeps
  * every gap-vs-tick comparison honest). The interp denominator cap; same
  * global as TICK_PERIOD_NS in spyro_native_reextract.c. (The measured
@@ -3932,7 +3932,7 @@ static int gem_idle_frozen(CPUState* cpu, uint32_t m, uint32_t props) {
 
 /* Host wobble phase per frozen gem: seeded from the frozen RAM phase byte (so
  * the outward crossing is continuous), advanced +1 byte-angle per VBL (the
- * canonical +2 per 29.97 Hz tick). Entry lifetime == one frozen stretch: any
+ * canonical +2 per 29.913 Hz tick). Entry lifetime == one frozen stretch: any
  * not-frozen verdict drops it, so a re-freeze re-seeds from RAM. cls+base
  * mismatch re-seeds too (self-heals slot reuse across level loads). */
 typedef struct { uint32_t moby; uint16_t cls; uint8_t base_ticks; uint32_t t0_frame; } gem_idle_ent;

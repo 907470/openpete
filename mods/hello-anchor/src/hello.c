@@ -2,7 +2,7 @@
  *
  * Overrides CameraUpdate (the game's per-frame camera driver, decomp
  * name for func_80037BD4) as a pure observer: log every 300th call
- * (~10s at 29.97 sim ticks/s), then base() through to the original.
+ * (~10s at 29.913 sim ticks/s), then base() through to the original.
  * MUST NOT touch guest state — this mod enabled is the framework's
  * observer-neutrality gate.
  */

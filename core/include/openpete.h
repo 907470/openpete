@@ -599,19 +599,20 @@ typedef struct openpete_options {
     int         record_fps_overlay;
 
     /* --record-cfr RATE: capture at a constant frame rate instead of true VFR.
-     * RATE must be an integer multiple of the NTSC sim-tick rate (30000/1001 =
-     * 29.97): 29.97, 59.94, 119.88, ... Any other value is rejected, because a
-     * non-integer ratio makes the sub-tick interpolator emit an uneven number
-     * of intermediate presents per tick — the very cadence jitter CFR exists to
-     * remove. 0 = off (VFR).
+     * RATE must be an integer multiple of the NTSC sim-tick rate (1125000/37609
+     * = 29.913052…): 29.913, 59.826, 119.652, ... Any other value is rejected,
+     * because a non-integer ratio makes the sub-tick interpolator emit an
+     * uneven number of intermediate presents per tick — the very cadence jitter
+     * CFR exists to remove. Rounded spellings (30, 60, 120) are accepted and
+     * snapped to their true neighbour. 0 = off (VFR).
      *
      * The mode is more than a timestamping change: it drives the host clock
-     * from the pacer (op_virtual_clock_enable) so exactly RATE/29.97 presents
+     * from the pacer (op_virtual_clock_enable) so exactly RATE/29.913 presents
      * are produced per sim tick regardless of how fast the machine renders, and
      * stamps frame N at exactly N/RATE. Two captures of the same window at
      * different rates therefore cover the identical span of game time.
      * Wall-clock never enters the output. */
-/* Largest accepted --record-cfr multiple of the tick rate (16x = 479.5 fps).
+/* Largest accepted --record-cfr multiple of the tick rate (16x = 478.6 fps).
  * Presents-per-tick above this is well past any display and just multiplies
  * encode cost. */
 #define OPENPETE_RECORD_CFR_MAX_MULT 16

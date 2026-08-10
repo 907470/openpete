@@ -65,7 +65,7 @@ static const char* s_wob_labels[] = { "OFF", "1X", "2X", "4X", "8X" };
 /* FPS ladder, built from the monitor refresh at init. The final entry is an
  * UNLIMITED sentinel: a render-fps so high the wall-clock pacer never sleeps on
  * the render deadline, so presenting is GPU-bound (uncapped). It's a normal
- * render-fps value to the pacer — the sim still ticks at its fixed ~29.97 Hz;
+ * render-fps value to the pacer — the sim still ticks at its fixed ~29.913 Hz;
  * only presentation is uncapped (subject to vsync). Displayed as "UNLIMITED". */
 #define FPS_UNLIMITED 1000000
 static int s_fps_vals[16];

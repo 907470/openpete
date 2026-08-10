@@ -244,7 +244,7 @@ static double clamp16(double v) { return v < -32768.0 ? -32768.0 : (v > 32767.0 
  * The g_Particles position bracket (spyro_native_reextract.c) lerps only X/Y/Z;
  * every other per-tick-animated channel — billboard SPIN (B byte3) and SIZE
  * (B byte2), sel-3 rect half-extents, sel-1/4 line FAR endpoints (B.hi + word C)
- * — was read raw-curr and stepped at 29.97 Hz while the position glided (same
+ * — was read raw-curr and stepped at 29.913 Hz while the position glided (same
  * class as the gem-sparkle twinkle phase, fixed 2026-07-14). When the re-extract
  * pass is active (s_phase_now latched by particle_native_reextract) the build
  * walks lerp those channels between the slot's prev/curr interp-objs snapshots
@@ -266,7 +266,7 @@ static op_time_t s_phase_now = 0;   /* present clock; 0 = phase interp off
  * that tick's PLL grid stamp, so their raw alpha is slightly negative;
  * clamping the phase at 0 while positions extrapolate backward freezes the
  * twinkle for those presents and delivers the clipped tail as a jump at
- * every roll — a 29.97 Hz hitch riding an otherwise smooth sweep, sized by
+ * every roll — a 29.913 Hz hitch riding an otherwise smooth sweep, sized by
  * the (machine-dependent) present-clock-vs-stamp skew. Backward
  * extrapolation on the pair's slope is continuous across the roll by
  * construction. Never above 1 (the future is unsimulated). */
@@ -1085,7 +1085,7 @@ static void glow_build(CPUState* cpu) {
         /* Sub-tick phase: lerp size/colour/offset between the slot's prev/curr
          * interp-objs snapshots (captured in spyro_interp_regions.c). The Sparx
          * aura RAMPS size +32/tick over ~18 ticks on spawn (censused
-         * 2026-07-14) and stepped at 29.97 Hz. Guards: same owner (+0x08),
+         * 2026-07-14) and stepped at 29.913 Hz. Guards: same owner (+0x08),
          * template (+0x04) and ring count — a slot reused for a different glow
          * snaps. Colour is additive light, so a per-byte linear lerp is safe. */
         double sizef = (double)size;
@@ -1321,7 +1321,7 @@ static const uint32_t k_s3_glint[6][3] = {
 #define S3_GLINT_NEAR_M3 4096.0
 
 /* Sub-tick twinkle-PHASE interpolation (user report 2026-07-14: gem sparkles
- * animate at 29.97 Hz regardless of --render-fps). A sparkle's position is
+ * animate at 29.913 Hz regardless of --render-fps). A sparkle's position is
  * static for its whole life — what steps is the ANIMATION phase: m_Life
  * (pulse scale) decremented per tick and m_0x0E (spin) advanced ~3·dt per
  * tick by the .s. The interp-objs table captures live g_Sparkles slots per

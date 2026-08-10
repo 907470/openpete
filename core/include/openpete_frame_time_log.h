@@ -7,7 +7,7 @@
  *   header (32 bytes):
  *     u32 magic            'OFTL' = 0x4C54464F  (LE)
  *     u32 version          1
- *     i64 target_period_ns nominal pacing period (e.g. 33366667 for 29.97)
+ *     i64 target_period_ns nominal pacing period (e.g. 33430222 for 29.913)
  *     i64 created_unix_ns
  *     u32 record_size      32
  *     u32 reserved         0

@@ -1,7 +1,7 @@
 /* core/include/openpete_interp.h — render-side state interpolation ring.
  *
  * Phase 2 scaffolding of notes/plans/openpete-fps-unlock.md. Captures
- * gameplay-transform state at the end of each PSX sim tick (29.97 Hz)
+ * gameplay-transform state at the end of each PSX sim tick (29.913 Hz)
  * so the render path can later lerp between snapshots N-1 and N and
  * re-emit DrawOTag at host refresh cadence (60/144/unlimited Hz).
  *

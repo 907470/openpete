@@ -57,6 +57,6 @@ void openpete_camlock_get_pose(double* x, double* y, double* z,
 bool openpete_camlock_moved(void);
 
 /* Advance the pose from the latched freecam axes. dt_ticks is the elapsed
- * time in sim ticks (29.97 Hz) since the previous call, so fly speed matches
+ * time in sim ticks (29.913 Hz) since the previous call, so fly speed matches
  * the freecam's per-tick steps at any present rate. */
 void openpete_camlock_integrate(double dt_ticks);

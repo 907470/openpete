@@ -5,6 +5,7 @@
 
 #include "openpete.h"
 #include "openpete_log.h"
+#include "openpete_time.h"  /* OP_TICK_HZ — --record-cfr NTSC-multiple snap */
 #include "game_extras.h"  /* game_resolve_level_arg (--skip-to-level names),
                            * game_validate_cheats_arg (--cheats names) */
 
@@ -466,7 +467,7 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --record-fps-overlay 0|1   burn the native FPS overlay into --record video (default 0 = clean\n"
         "                             capture; on|off also accepted). Display-only.\n"
         "  --record-cfr RATE          capture at a constant frame rate instead of true VFR. RATE must be an\n"
-        "                             integer multiple of the NTSC tick rate: 29.97, 59.94, 119.88, ...\n"
+        "                             integer multiple of the NTSC tick rate: 29.913, 59.826, 119.652, ...\n"
         "                             Drives the host clock from the pacer, so the same span of GAME time is\n"
         "                             captured however slowly the machine renders. Implies --no-record-audio.\n"
         "  --record-frames N          finish the recording and exit after exactly N encoded frames (with\n"
@@ -1085,22 +1086,25 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
              * whole number of presents per sim tick; anything else would have
              * the interpolator emit 2 intermediates on some ticks and 3 on
              * others. Reject rather than round, so a typo is loud. */
-            double mult = rate * 1001.0 / 30000.0;
+            double mult = rate / OP_TICK_HZ;
             long   k    = lround(mult);
             /* Relative tolerance so the rounded spellings people actually type
              * — 30, 60, 120 — all land on their NTSC neighbour, while a genuine
-             * non-multiple like 45 is refused. */
+             * non-multiple like 45 is refused. 60 sits 0.29 % above 2x (the
+             * true tick rate is 29.913, not 30), so the window has to clear
+             * that; 0.5 % does, and still rejects 45 (50 % out) and 61 (2 %). */
             if (rate <= 0.0 || k < 1 || k > OPENPETE_RECORD_CFR_MAX_MULT ||
-                fabs(mult - (double)k) > 0.0015 * (double)k) {
+                fabs(mult - (double)k) > 0.005 * (double)k) {
                 fprintf(stderr,
                         "openpete: --record-cfr expects an integer multiple of the NTSC "
-                        "tick rate 30000/1001 (29.97, 59.94, 119.88, ... up to %dx), got: %s\n",
+                        "tick rate 1125000/37609 (29.913, 59.826, 119.652, ... up to %dx), "
+                        "got: %s\n",
                         OPENPETE_RECORD_CFR_MAX_MULT, v);
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
-            opts->record_cfr = (double)k * 30000.0 / 1001.0;
+            opts->record_cfr = (double)k * OP_TICK_HZ;
             if (fabs(opts->record_cfr - rate) > 0.001)
-                fprintf(stderr, "openpete: --record-cfr %s -> %.5f fps (NTSC %ldx)\n",
+                fprintf(stderr, "openpete: --record-cfr %s -> %.6f fps (NTSC %ldx)\n",
                         v, opts->record_cfr, k);
             i++;
         } else if (strcmp(a, "--record-frames") == 0) {

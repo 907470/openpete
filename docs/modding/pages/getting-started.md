@@ -46,7 +46,7 @@ static openpete_mod_t* SELF;
 static unsigned calls;
 
 static void on_camera_update(CPUState* cpu) {
-    if ((++calls % 300u) == 0u)   /* ~every 10 s at 29.97 ticks/s */
+    if ((++calls % 300u) == 0u)   /* ~every 10 s at 29.913 ticks/s */
         A->log(SELF, OP_MOD_LOG_INFO, "CameraUpdate call #%u", calls);
     A->base(cpu);                 /* pre-hook: us first, original last */
 }

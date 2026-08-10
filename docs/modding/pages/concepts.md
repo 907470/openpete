@@ -28,7 +28,7 @@ collector and compare the counter before/after.
 
 ## Tick vs present
 
-openpete simulates at the PSX's canonical 29.97 ticks/s but can present
+openpete simulates at the PSX's canonical 29.913 ticks/s but can present
 many frames per tick (high-fps interpolation). That split is the most
 important contract in the API:
 

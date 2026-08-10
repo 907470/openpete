@@ -571,7 +571,7 @@ static const knob_desc_t g_builtin[] = {
       NULL, NULL, path_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "record_cfr", "Constant-rate capture", "Recording", "--record-cfr", NULL,
-      "Capture at a fixed frame rate (an integer multiple of the 29.97 Hz "
+      "Capture at a fixed frame rate (an integer multiple of the 29.913 Hz "
       "tick rate) on an offline clock, instead of true VFR. 0 = VFR. "
       "Latched at boot.",
       KNOB_FLOAT, KNOB_RESTART_ONLY, NULL, 0, 0.0f, 480.0f,

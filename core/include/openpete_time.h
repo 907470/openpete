@@ -34,6 +34,167 @@ typedef int64_t op_time_t; /* nanoseconds since arbitrary monotonic epoch */
 #define OP_NS_PER_MS   ((op_time_t)1000000)
 #define OP_NS_PER_US   ((op_time_t)1000)
 
+/* ---- PSX NTSC vertical rate (240p, non-interlaced) ----------------------
+ *
+ * The rate the console's video output actually locks to, derived from the
+ * NTSC colour subcarrier:
+ *
+ *     fsc = 315/88 MHz             = 3 579 545.4545… Hz
+ *     fH  = fsc * 2/455            = 15 734.26573… Hz  (line rate)
+ *     VBI = fH / 263 lines         = 2 250 000/37 609 Hz = 59.8261054… Hz
+ *
+ * 263 lines because Spyro runs 240p: the GPU emits a full frame of 263
+ * scanlines and never drops the half-line that produces the familiar 59.94.
+ * That figure is the *interlaced* (480i) field rate — 262.5 lines — and does
+ * not apply here. Using it ran the engine 0.19 % fast (~6.9 s/hour).
+ *
+ * A tick is two VBLs: the game calls VSync(2), so gameplay advances at
+ * 1 125 000/37 609 Hz = 29.9130527… Hz.
+ *
+ * Both decimals repeat with period 37 608, so the rational is the only
+ * lossless spelling — hence op_period_t below carries num/den rather than
+ * collapsing to a double.
+ *
+ * Neither period is a whole number of nanoseconds — a VBL is
+ * 16 715 111 + 1/9 ns. op_vbl_step()/op_tick_step() carry that ninth in an
+ * integer accumulator, so a deadline chain stays exact indefinitely instead
+ * of shedding 0.11 ns per step.
+ *
+ * (A PAL path would be fH = 15 625 Hz over 314 lines = 15 625/314 Hz.)
+ */
+#define OP_VBL_HZ_NUM      ((op_time_t)2250000)   /* VBL rate numerator   */
+#define OP_VBL_HZ_DEN      ((op_time_t)37609)     /* VBL rate denominator */
+#define OP_TICK_VBLS       ((op_time_t)2)         /* VSync(2): 2 VBL/tick */
+
+/* Whole-ns part of one period; the remainder is carried by the steppers. */
+#define OP_VBL_PERIOD_NS   ((op_time_t)16715111)  /* + 1/9 ns */
+#define OP_TICK_PERIOD_NS  ((op_time_t)33430222)  /* + 2/9 ns */
+
+/* Canonical rates as doubles, for logging and for consumers that genuinely
+ * need a float (mod time bases, encoder rate reports). Never step a deadline
+ * with these — use op_period_t below, which does not round. */
+#define OP_VBL_HZ   (2250000.0 / 37609.0)   /* 59.8261054… */
+#define OP_TICK_HZ  (1125000.0 / 37609.0)   /* 29.9130527… */
+
+/* ---- exact periodic deadlines -------------------------------------------
+ *
+ * A period is `whole` nanoseconds plus the exact fraction `rem/den`, and a
+ * deadline carries the running fraction alongside it. Advancing never
+ * rounds, so a deadline chain tracks the true rate for as long as the
+ * process lives rather than shedding the truncated remainder every step
+ * (a plain integer-ns VBL period loses 0.11 ns per VBL).
+ *
+ * This matters beyond the VBL itself: --record-cfr divides a tick into
+ * `mult` presents, and 33 430 222 + 2/9 over 3 is 11 143 407 + 11/27 — a
+ * denominator the VBL's ninth cannot express. Hence the general rational
+ * rather than a fixed carry.
+ *
+ * Re-anchoring (slip clamp, fast-forward exit, a live --render-fps change)
+ * abandons the old grid deliberately, so op_deadline_anchor() clears the
+ * accumulator with the timestamp.
+ */
+typedef struct {
+    op_time_t whole;   /* whole ns per period                */
+    op_time_t rem;     /* remainder numerator, 0 <= rem < den */
+    op_time_t den;     /* remainder denominator, >= 1         */
+} op_period_t;
+
+typedef struct {
+    op_time_t at;      /* the deadline itself                       */
+    op_time_t acc;     /* accrued remainder numerator, 0 <= acc < den */
+} op_deadline_t;
+
+static inline op_time_t op_gcd(op_time_t a, op_time_t b) {
+    while (b) { const op_time_t t = a % b; a = b; b = t; }
+    return a ? a : 1;
+}
+
+/* Reduce rem/den to lowest terms. Keeps denominators small enough to read in
+ * a debugger and keeps op_period_mul/div from compounding a denominator
+ * across repeated use. */
+static inline op_period_t op_period_reduce(op_period_t p) {
+    if (p.rem == 0) { p.den = 1; return p; }
+    const op_time_t g = op_gcd(p.rem, p.den);
+    p.rem /= g; p.den /= g;
+    return p;
+}
+
+/* Build a period of exactly num/den seconds. */
+static inline op_period_t op_period_from_secs(op_time_t num, op_time_t den) {
+    op_period_t p;
+    const op_time_t total = num * OP_NS_PER_SEC;
+    p.whole = total / den;
+    p.rem   = total % den;
+    p.den   = den;
+    return op_period_reduce(p);
+}
+
+/* Build a period of exactly `ns` nanoseconds (no fractional part). */
+static inline op_period_t op_period_from_ns(op_time_t ns) {
+    op_period_t p; p.whole = ns; p.rem = 0; p.den = 1; return p;
+}
+
+/* Divide a period into `n` equal parts, exactly. */
+static inline op_period_t op_period_div(op_period_t p, op_time_t n) {
+    op_period_t q;
+    const op_time_t num = p.whole * p.den + p.rem;   /* period = num/den ns */
+    const op_time_t den = p.den * n;
+    q.whole = num / den;
+    q.rem   = num % den;
+    q.den   = den;
+    return op_period_reduce(q);
+}
+
+/* Multiply a period by `n`, exactly (n >= 1). */
+static inline op_period_t op_period_mul(op_period_t p, op_time_t n) {
+    op_period_t q;
+    const op_time_t num = (p.whole * p.den + p.rem) * n;
+    q.whole = num / p.den;
+    q.rem   = num % p.den;
+    q.den   = p.den;
+    return op_period_reduce(q);
+}
+
+/* Nominal length in ns, rounded — for logs, ratios and threshold math only. */
+static inline op_time_t op_period_ns(op_period_t p) {
+    return p.whole + (p.rem * 2 >= p.den ? 1 : 0);
+}
+
+static inline double op_period_hz(op_period_t p) {
+    return (double)OP_NS_PER_SEC * (double)p.den
+         / ((double)p.whole * (double)p.den + (double)p.rem);
+}
+
+/* Reset a deadline to `at`, dropping any accrued fraction. Use whenever the
+ * grid is deliberately abandoned (slip, unlock, live rate change). */
+static inline void op_deadline_anchor(op_deadline_t* d, op_time_t at) {
+    d->at = at; d->acc = 0;
+}
+
+/* Advance a deadline by `steps` exact periods (steps >= 1). */
+static inline void op_deadline_advance(op_deadline_t* d, op_period_t p,
+                                       op_time_t steps) {
+    d->at  += p.whole * steps;
+    d->acc += p.rem * steps;
+    if (d->acc >= p.den) { d->at += d->acc / p.den; d->acc %= p.den; }
+}
+
+/* The exact NTSC periods, as op_period_t. */
+#define OP_VBL_PERIOD()   op_period_from_secs(OP_VBL_HZ_DEN, OP_VBL_HZ_NUM)
+#define OP_TICK_PERIOD()  op_period_from_secs(OP_VBL_HZ_DEN, \
+                                              OP_VBL_HZ_NUM / OP_TICK_VBLS)
+
+/* The VBL period under --tick-scale. F == 1 keeps the exact rational; any
+ * other F is a debug slow-mo whose whole point is to leave the canonical
+ * rate, so it collapses to a rounded whole-ns period. */
+static inline op_period_t op_scaled_vbl_period(double tick_scale) {
+    const op_period_t p = OP_VBL_PERIOD();
+    if (tick_scale == 1.0) return p;
+    const double ns = ((double)p.whole * (double)p.den + (double)p.rem)
+                      / (double)p.den / tick_scale;
+    return op_period_from_ns((op_time_t)(ns + 0.5));
+}
+
 /* Current monotonic time, nanoseconds. Strictly increasing across calls
  * on the same thread (we never lie even if the OS source has rounding —
  * the previous-return clamp guarantees it). */

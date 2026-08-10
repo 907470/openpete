@@ -31,6 +31,7 @@
 
 #include "openpete_record.h"
 #include "openpete_log.h"
+#include "openpete_time.h"   /* OP_VBL_HZ_DEN / OP_VBL_HZ_NUM / OP_TICK_HZ */
 
 #ifdef OPENPETE_HAS_LIBAV
 
@@ -143,8 +144,9 @@ static struct {
     int          pbo_depth;
 
     /* Constant-frame-rate capture (--record-cfr). `cfr_mult` is the number of
-     * presents per NTSC sim tick (1 = 29.97 fps, 2 = 59.94, 4 = 119.88); zero
-     * means true VFR. Under CFR the encoder time_base is 1001/(30000*mult), a
+     * presents per NTSC sim tick (1 = 29.913 fps, 2 = 59.826, 4 = 119.652);
+     * zero means true VFR. Under CFR the encoder time_base is
+     * 37609/(1125000*mult), a
      * frame's PTS is simply its ordinal, and the ring applies backpressure
      * instead of dropping — a dropped frame would silently shift every later
      * frame's game time. */
@@ -438,12 +440,18 @@ static int rec_lazy_init(int native_w, int native_h, int top_down, uint64_t firs
     g_rec.codec->pix_fmt   = pixfmt;
     g_rec.codec->gop_size  = g_rec.gop;
     if (g_rec.cfr_mult > 0) {
-        /* Exact NTSC rational: one tick is 1001/30000 s, split into cfr_mult
-         * presents. A frame's PTS is its ordinal, so the cadence is perfectly
-         * even by construction and the container advertises the true rate
-         * (29.97 / 59.94 / 119.88) rather than a rounded 30 / 60 / 120. */
-        g_rec.codec->time_base = (AVRational){ 1001, 30000 * g_rec.cfr_mult };
-        g_rec.codec->framerate = (AVRational){ 30000 * g_rec.cfr_mult, 1001 };
+        /* Exact NTSC rational: one tick is 37609/1125000 s (the PSX 240p VBL
+         * halved), split into cfr_mult presents. A frame's PTS is its ordinal,
+         * so the cadence is perfectly even by construction and the container
+         * advertises the true rate (29.913052… / 59.826105… / 119.652210…)
+         * rather than a rounded 30 / 60 / 120 — or the 29.97 that belongs to
+         * interlaced NTSC and not to anything this game outputs. */
+        g_rec.codec->time_base = (AVRational){ (int)OP_VBL_HZ_DEN,
+                                               (int)(OP_VBL_HZ_NUM / OP_TICK_VBLS)
+                                                   * g_rec.cfr_mult };
+        g_rec.codec->framerate = (AVRational){ (int)(OP_VBL_HZ_NUM / OP_TICK_VBLS)
+                                                   * g_rec.cfr_mult,
+                                               (int)OP_VBL_HZ_DEN };
         g_rec.start_us = 0;   /* PTS is an ordinal, not an offset from t0 */
     } else {
         /* Microsecond timestamps; true VFR (no fixed framerate). */
@@ -548,8 +556,8 @@ static int rec_lazy_init(int native_w, int native_h, int top_down, uint64_t firs
                g_rec.pixfmt_name,
                g_rec.cfr_mult > 0 ? "cfr" : "vfr");
     if (g_rec.cfr_mult > 0)
-        OPL_INFO_F("record", "cfr %.5f fps (%dx the NTSC tick rate), budget %llu frame(s)",
-                   30000.0 * g_rec.cfr_mult / 1001.0, g_rec.cfr_mult,
+        OPL_INFO_F("record", "cfr %.6f fps (%dx the NTSC tick rate), budget %llu frame(s)",
+                   OP_TICK_HZ * g_rec.cfr_mult, g_rec.cfr_mult,
                    (unsigned long long)g_rec.max_frames);
     return 0;
 }
@@ -572,7 +580,7 @@ int openpete_record_init(const openpete_options_t* opts) {
     g_rec.max_frames         = (opts->record_frames > 0)
                                ? (uint64_t)opts->record_frames : 0u;
     if (opts->record_cfr > 0.0) {
-        g_rec.cfr_mult = (int)(opts->record_cfr * 1001.0 / 30000.0 + 0.5);
+        g_rec.cfr_mult = (int)(opts->record_cfr / OP_TICK_HZ + 0.5);
         if (g_rec.cfr_mult < 1) g_rec.cfr_mult = 1;
         /* CFR frames are timed in game ticks, not wall-clock seconds, so the
          * capture runs as fast (or as slow) as the machine renders. There is no

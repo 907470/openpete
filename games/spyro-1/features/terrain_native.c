@@ -80,7 +80,7 @@ extern unsigned openpete_frame;
 
 /* Sub-tick UV-scroll offsets (see tsc_scroll_refresh). The scrolling-texture
  * animation writes WHOLE TEXELS into the tiledef V bytes once per canonical
- * tick, so waterfalls step at 29.97 Hz while the world around them interpolates.
+ * tick, so waterfalls step at 29.913 Hz while the world around them interpolates.
  * These tables carry the fractional V offset — in texels, relative to the
  * integer decode the game committed — for the tiles that scrolled this tick.
  * They are filled only on sub-tick re-extract builds and zeroed on the canonical
@@ -1871,7 +1871,7 @@ static void md_dump_all(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt,
  * by an LP/HP poly-anim descriptor (u16 sector index at desc+4) gets its cached
  * verts re-decoded once per canonical tick (rolling the old decode into a prev
  * bank), and on sub-tick presents lerped prev→cur at the spine's alpha so the
- * geometry moves at present rate, not 29.97 Hz. A handful of descriptors per
+ * geometry moves at present rate, not 29.913 Hz. A handful of descriptors per
  * level, ≤256 words per sector — negligible next to the walk itself. Colours
  * already read live; texmats are covered by tsc_tile_gens/tsc_refresh_anim. */
 /* Sub-tick vert interp state (set around terrain_build by terrain_native_reextract;
@@ -5269,7 +5269,7 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
  * poly-anim sectors (the Sunny-Flight wall) have their verts INTPL-rewritten in
  * RAM once per canonical tick — those lerp prev→cur decoded banks at the
  * spine's `alpha` (tsc_vert_anim_refresh) so they move every present instead
- * of stepping at 29.97 Hz. `interp_on` = camera bracketed (else snap to cur,
+ * of stepping at 29.913 Hz. `interp_on` = camera bracketed (else snap to cur,
  * matching the rest of the scene on unpaired/camera-cut presents). */
 void terrain_native_reextract(CPUState* cpu, double alpha, int interp_on) {
     if (!openpete_native_render_enabled()) return;

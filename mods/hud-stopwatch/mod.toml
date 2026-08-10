@@ -9,7 +9,7 @@
 #
 # Draws: a dark backdrop rect (tick context, persists per tick) and the
 # "M:SS.hh" gameplay stopwatch (present context, one present each).
-# Time base: sim ticks / 29.97 — a gameplay-time stopwatch.
+# Time base: sim ticks / 29.913 — a gameplay-time stopwatch.
 
 [mod]
 id      = "hud-stopwatch"

@@ -498,8 +498,8 @@ void text_moby_native_menu(CPUState* cpu) {
         openpete_native_set_menu_glyphs(NULL, 0);
         return;
     }
-    /* Advance the wobble at the game's LOGIC rate (~29.97 Hz). This builder runs
-     * once per sim tick — which openpete paces per-VBL (~59.94 Hz) — but the PSX
+    /* Advance the wobble at the game's LOGIC rate (~29.913 Hz). This builder runs
+     * once per sim tick — which openpete paces per-VBL (~59.826 Hz) — but the PSX
      * pause menu bumps its rotation tick once per *drawn* frame (30 fps, draw.c
      * ++D_800758B8). So advance every other call to match the game's speed. */
     static unsigned s_menu_call = 0;

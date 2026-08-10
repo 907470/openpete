@@ -279,6 +279,21 @@ typedef struct openpete_mod_material_selector {
 typedef int (*openpete_mod_material_fn)(CPUState* cpu, uint32_t moby_vaddr,
                                         void* uniform_out, uint32_t cap);
 
+/* Canonical sim-tick rate in Hz — exactly 1125000/37609 = 29.9130527… .
+ *
+ * The PSX runs 240p non-interlaced, so a frame is a full 263 scanlines and
+ * the vertical rate is 2250000/37609 = 59.8261054… Hz; the game calls
+ * VSync(2), so gameplay advances at half that. This is NOT 29.97 — that
+ * figure derives from the interlaced 262.5-line field rate, which nothing
+ * this engine outputs uses. A mod that converts ticks to seconds with 29.97
+ * runs 0.19 % fast against game time (~1.1 s over a ten-minute run).
+ *
+ * A compile-time constant rather than an api entry: it never varies at
+ * runtime, and pinning it in the header keeps mods from pasting a literal.
+ * (--tick-scale stretches WALL time only; a tick is still a tick.) */
+#define OPENPETE_TICK_HZ  (1125000.0 / 37609.0)
+#define OPENPETE_VBL_HZ   (2250000.0 / 37609.0)
+
 #define OPENPETE_MOD_API_VERSION 4u
 
 typedef struct openpete_mod_api {

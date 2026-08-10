@@ -12,7 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 
-#define RING  1024 /* ~34 s of poses at 29.97 Hz */
+#define RING  1024 /* ~34 s of poses at 29.913 Hz */
 #define DELAY 90   /* trail ghost runs ~3 s behind the player */
 #define LEAD  45   /* prior-run PACE ghost runs ~1.5 s ahead — on identical
                     * inputs (the attract demo) a lockstep replay overlaps
