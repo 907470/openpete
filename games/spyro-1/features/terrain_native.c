@@ -4493,14 +4493,25 @@ static int portal_rim_face(CPUState* cpu, const ttri* t) {
  *
  * Mirror the walk instead of fighting the depth buffer: a transparent face the
  * sky covers is simply not drawn. */
-static int portal_sky_covers_at(const ttri* t, double keyoff) {
+/* whole_face: require every vertex inside the outline, not just the
+ * centroid. A whole-face verdict needs the whole face covered — the native
+ * outline's bottom edge sits a few px below og's real opening (the sill
+ * overrun), so a sill face straddling that edge has its centroid inside
+ * while og still draws it; dropping it eats the sill bar the original
+ * shows. Fully-interior faces are covered under either footprint. */
+static int portal_sky_covers_at(const ttri* t, double keyoff, int whole_face) {
     for (int pi = 0; pi < s_pplane_n; pi++) {
         const openpete_portal_skyplane* pp = &s_pplane[pi];
         if (pp->ot_vz <= 0.0 || pp->pn < 3) continue;
         const float cx = (t->sx[0] + t->sx[1] + t->sx[2]) / 3.0f;
         const float cy = (t->sy[0] + t->sy[1] + t->sy[2]) / 3.0f;
         if (cx < pp->x0 || cx > pp->x1 || cy < pp->y0 || cy > pp->y1) continue;
-        if (!skyplane_contains(pp, cx, cy)) continue;
+        if (whole_face) {
+            int in = 1;
+            for (int k = 0; k < 3 && in; k++)
+                in = skyplane_contains(pp, t->sx[k], t->sy[k]);
+            if (!in) continue;
+        } else if (!skyplane_contains(pp, cx, cy)) continue;
         const double mean = (t->otkey > 0.0f) ? (double)t->otkey
                                               : (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
         if (mean + keyoff >= pp->ot_vz + 64.0) return 1;
@@ -4510,7 +4521,7 @@ static int portal_sky_covers_at(const ttri* t, double keyoff) {
 static int portal_sky_covers(const ttri* t) {
     /* The face's .s OT index carries its authored slot offset — both
      * sides of the contest compare at their true insertion depth. */
-    return portal_sky_covers_at(t, 128.0 * (double)t->otslots);
+    return portal_sky_covers_at(t, 128.0 * (double)t->otslots, 0);
 }
 
 
@@ -4824,11 +4835,16 @@ static void terrain_feed_native(CPUState* cpu) {
          * LP) cover-test at og's insertion key — the LP twin's 0x40-slot far
          * push — not their HP offsets: og sorts this surface behind the sky
          * bucket at this distance, so the preview covers it whole. Dropping
-         * the face (draw AND key) mirrors that verdict; HP granularity keeps
-         * the whole-face drop tight against the aperture edge. Opaque only —
-         * blended faces take the authored-slot rule above. */
+         * the face (draw AND key) mirrors that verdict. Centroid containment,
+         * matching the boundary the original-LOD per-pixel contest resolves
+         * to (the native fan footprint) — the whole-face form was tried for
+         * the sill faces straddling the opening's bottom edge and traded the
+         * clean edge for a jagged tongues-and-bays mix; the residual there is
+         * the native outline sitting ~2px below og's own fan geometry, which
+         * no face-set choice can fix. Opaque only — blended faces take the
+         * authored-slot rule above. */
         if (s_pplane_n && t->ogsub && !t->blend &&
-            portal_sky_covers_at(t, 128.0 * 0x40)) continue;
+            portal_sky_covers_at(t, 128.0 * 0x40, 0)) continue;
         openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));
         uint32_t fp_col = 0;
         if (fp_tint) {
