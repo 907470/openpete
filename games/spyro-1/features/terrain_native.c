@@ -308,6 +308,9 @@ typedef struct {
     uint16_t otslots;                              /* .s OT-slot depth offset for the TEST depth:
                                                     * LP 0x40+8*((w1>>3)&0x1F), HP 4*((w3>>3)&0x7);
                                                     * 1 slot = 128 world units (P4) */
+    uint8_t ogsub;                                 /* extended-LOD substitution: HP drawn past the
+                                                    * .s binning distance, where og inserts the LP
+                                                    * twin at the 0x40-slot push (portal-sky cover) */
 } ttri;
 static int s_emit_noHP = 0;     /* tier of the sector currently being emitted */
 static int s_emit_guard = 0;    /* current face is .s-DEFERRED (near band) -> portal-guard dup */
@@ -321,6 +324,8 @@ static uint8_t  s_emit_nearband = 0; /* current face is .s near-band (defer/HQ c
                                       * NEVER an OT face, so it neither emits nor contests
                                       * the og key raster (P6b) — near geometry resolves by
                                       * TRUE depth, like the mask-bit-protected defer queues */
+static uint8_t  s_emit_ogsub = 0;    /* current HP face is an extended-LOD substitution
+                                      * (og would bin this sector LP at this distance) */
 /* Local terrain-triangle cap (before the scene feed). Under --no-lod every
  * foreground cell is forced through the 2x2 HQ subdivide, so terrain peaks at
  * ~29k tris (beast_makers) vs ~9k at stock LOD; 65536 is ~2x the measured worst
@@ -768,6 +773,7 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     t->otkey = s_emit_otkey;
     t->otslots = s_emit_otslots;
     t->nearband = s_emit_nearband;
+    t->ogsub = s_emit_ogsub;
     if (m->textured) s_tex_tris++;
 }
 
@@ -2946,6 +2952,22 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             drawLP = !(flags & 0x2000) && nLpF > 0 &&
                      ((flags & 0x8000) || (double)lodThr < cbin + SC->radius + 0x100);
         }
+        /* Extended-LOD substitution flag: past the .s binning distance the
+         * original inserts this surface as its LP twin at the 0x40-slot far
+         * push — an HP face drawn there under extended is a substitution
+         * whose og OT insertion is the LP key, ~8192 world farther than its
+         * HP offsets suggest. Used ONLY for the portal-sky cover test: at
+         * og's key such a face sorts behind the sky bucket, so the preview
+         * covers it (the extended-HP hillside eating an arch's preview).
+         * It must NOT reshape the shared key channel itself: og's whole
+         * LP-behind-HP cross-sector ordering is hidden by fog and coarse LP
+         * silhouettes, and mirroring it onto detailed substituted geometry
+         * paints nearer-sector faces over a far tower they merely overlap
+         * in the key raster. Original mode is untouched (the HP pass only
+         * runs where og bins HP). */
+        int ogWouldHP = !openpete_no_lod ||
+                        (!(flags & 0x4000) && nHpF > 0 &&
+                         (double)lodThr > cbin - SC->radius);
         if (s_fardbg_active)
             fprintf(stderr, "[fardbg-sec] s=%d flags=%04X cbin=%.1f rad=%d lodThr=%d fogRefBase=%d "
                             "drawHP=%d drawLP=%d nLpF=%d nHpF=%d\n",
@@ -3194,6 +3216,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             s_emit_nearband = 0;
             s_emit_otslots = passLP ? (uint16_t)(0x40u + 8u * F->otbias)
                                     : (uint16_t)(4u * F->otbias);
+            s_emit_ogsub = !passLP && !ogWouldHP;
             /* EXCEPT any face in the .s's FOREGROUND band (corner-depth sum
              * < 0x2000).
              *
@@ -4470,7 +4493,7 @@ static int portal_rim_face(CPUState* cpu, const ttri* t) {
  *
  * Mirror the walk instead of fighting the depth buffer: a transparent face the
  * sky covers is simply not drawn. */
-static int portal_sky_covers(const ttri* t) {
+static int portal_sky_covers_at(const ttri* t, double keyoff) {
     for (int pi = 0; pi < s_pplane_n; pi++) {
         const openpete_portal_skyplane* pp = &s_pplane[pi];
         if (pp->ot_vz <= 0.0 || pp->pn < 3) continue;
@@ -4480,11 +4503,14 @@ static int portal_sky_covers(const ttri* t) {
         if (!skyplane_contains(pp, cx, cy)) continue;
         const double mean = (t->otkey > 0.0f) ? (double)t->otkey
                                               : (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
-        /* The face's .s OT index carries its authored slot offset — both
-         * sides of the contest compare at their true insertion depth. */
-        if (mean + 128.0 * (double)t->otslots >= pp->ot_vz + 64.0) return 1;
+        if (mean + keyoff >= pp->ot_vz + 64.0) return 1;
     }
     return 0;
+}
+static int portal_sky_covers(const ttri* t) {
+    /* The face's .s OT index carries its authored slot offset — both
+     * sides of the contest compare at their true insertion depth. */
+    return portal_sky_covers_at(t, 128.0 * (double)t->otslots);
 }
 
 
@@ -4794,6 +4820,15 @@ static void terrain_feed_native(CPUState* cpu) {
          * below it (the sill-bar class the old stored-depth conformance sink
          * preserved by construction). */
         if (s_pplane_n && t->blend && t->textured && portal_sky_covers(t)) continue;
+        /* Extended-LOD substituted faces (HP drawn where og bins the sector
+         * LP) cover-test at og's insertion key — the LP twin's 0x40-slot far
+         * push — not their HP offsets: og sorts this surface behind the sky
+         * bucket at this distance, so the preview covers it whole. Dropping
+         * the face (draw AND key) mirrors that verdict; HP granularity keeps
+         * the whole-face drop tight against the aperture edge. Opaque only —
+         * blended faces take the authored-slot rule above. */
+        if (s_pplane_n && t->ogsub && !t->blend &&
+            portal_sky_covers_at(t, 128.0 * 0x40)) continue;
         openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));
         uint32_t fp_col = 0;
         if (fp_tint) {
