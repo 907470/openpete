@@ -64,3 +64,9 @@ typedef struct {
  * sub-tick presents each get the plane matching their own camera bracket.
  * Returns the count (0 when no portal sky is active). */
 int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int max);
+
+/* Plane-cover near margin M in world units (OPENPETE_PORTAL_PLANE_MARGIN,
+ * default 256): inside an opening's footprint the preview covers everything
+ * at or behind plane − M. Shared by the portal depth construction, the
+ * terrain feeder's transparent-cover drop, and the cover-check instrument. */
+float openpete_portal_plane_margin(void);

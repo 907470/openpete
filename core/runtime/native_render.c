@@ -4879,6 +4879,115 @@ static void draw_backdrop_fills(uint32_t bg, const int* ut_first,
 }
 
 
+/* ── Portal plane-cover invariant sweep ─────────────────────────────────
+ * The plane-cover rule (plans/openpete-portal-plane-cover.md): inside an
+ * opening's footprint every pixel must resolve to the preview or to content
+ * NEARER than plane − M. This sweep verifies it against the complete scene
+ * list (terrain, actors, fills), independent of the feeders' own drop
+ * logic: per interior pixel, the nearest pre-portal opaque
+ * (WORLD/ACTOR/ACTOR_FRONT/WORLD_FILL) that sits BEHIND plane − M must be
+ * beaten by a PORTAL_CYCLORAMA tri covering that pixel. PLAYER is exempt
+ * (Spyro crossing the plane mid-entry legitimately overlaps the preview).
+ * A scene-list mirror: feeder drops, category routing, and footprint
+ * coverage are attested here; GPU stencil/pass wiring is the presentation
+ * golden's job. */
+static openpete_native_cover_plane s_cvp[8];
+static int   s_cvp_n = 0;
+static float s_cvp_m = 0.0f;
+void openpete_native_set_cover_planes(const openpete_native_cover_plane *planes,
+                                      int n, float margin_world)
+{
+    if (n > 8) n = 8;
+    if (n > 0) memcpy(s_cvp, planes, sizeof(*planes) * (size_t)n);
+    s_cvp_n = n;
+    s_cvp_m = margin_world;
+}
+static void portal_cover_check(const scene_tri_t* sc, int n)
+{
+    static long chk = -2;
+    if (chk == -2) { const char* e = getenv("OPENPETE_PORTAL_COVER_CHECK");
+                     chk = (e && *e) ? atol(e) : -1; }
+    if (chk < 0 || s_scene_frame != (unsigned)chk || s_cvp_n <= 0) return;
+    for (int pi = 0; pi < s_cvp_n; pi++) {
+        const openpete_native_cover_plane* P = &s_cvp[pi];
+        if (P->pn < 3) continue;
+        float bx0 = 1e9f, by0 = 1e9f, bx1 = -1e9f, by1 = -1e9f;
+        for (int k = 0; k < P->pn; k++) {
+            if (P->px[k] < bx0) bx0 = P->px[k];
+            if (P->px[k] > bx1) bx1 = P->px[k];
+            if (P->py[k] < by0) by0 = P->py[k];
+            if (P->py[k] > by1) by1 = P->py[k];
+        }
+        /* Candidate tris: bbox-overlap prefilter, split opaque vs preview. */
+        static int cand[MAX_SCENE_TRIS]; int cn = 0;
+        for (int t = 0; t < n && cn < MAX_SCENE_TRIS; t++) {
+            const scene_tri_t* T = &sc[t];
+            const int c = T->category;
+            const int opaque = (c == OPENPETE_SCENE_WORLD || c == OPENPETE_SCENE_ACTOR ||
+                                c == OPENPETE_SCENE_ACTOR_FRONT || c == OPENPETE_SCENE_WORLD_FILL)
+                               && T->blend == 0;
+            if (!opaque && c != OPENPETE_SCENE_PORTAL_CYCLORAMA) continue;
+            float tx0 = 1e9f, ty0 = 1e9f, tx1 = -1e9f, ty1 = -1e9f;
+            for (int k = 0; k < 3; k++) {
+                if (T->v[k].sx < tx0) tx0 = T->v[k].sx;
+                if (T->v[k].sx > tx1) tx1 = T->v[k].sx;
+                if (T->v[k].sy < ty0) ty0 = T->v[k].sy;
+                if (T->v[k].sy > ty1) ty1 = T->v[k].sy;
+            }
+            if (tx1 < bx0 || tx0 > bx1 || ty1 < by0 || ty0 > by1) continue;
+            cand[cn++] = t;
+        }
+        int in_px = 0, prev_px = 0, front_px = 0, empty_px = 0, viol = 0;
+        float vpx = 0.0f, vpy = 0.0f;
+        for (int py = (int)by0; py <= (int)(by1 + 1.0f); py++)
+        for (int px = (int)bx0; px <= (int)(bx1 + 1.0f); px++) {
+            const float X = (float)px + 0.5f, Y = (float)py + 0.5f;
+            int in = 0;
+            for (int a = 0, b = P->pn - 1; a < P->pn; b = a++) {
+                if ((P->py[a] > Y) != (P->py[b] > Y) &&
+                    X < (P->px[b] - P->px[a]) * (Y - P->py[a]) /
+                        (P->py[b] - P->py[a]) + P->px[a])
+                    in = !in;
+            }
+            if (!in) continue;
+            in_px++;
+            const double inv = P->a * X + P->b * Y + P->c;
+            if (inv <= 1e-9) continue;                  /* plane behind camera here */
+            double pvz = 1.0 / inv - (double)s_cvp_m;
+            if (pvz < 1.0) pvz = 1.0;
+            const float zlim = openpete_native_depth_from_viewz(
+                                   openpete_worldvz_full((float)pvz));
+            float zw = 2.0f, zc = 2.0f;
+            for (int ci = 0; ci < cn; ci++) {
+                const scene_tri_t* T = &sc[cand[ci]];
+                const float ax = T->v[0].sx, ay = T->v[0].sy;
+                const float e1x = T->v[1].sx - ax, e1y = T->v[1].sy - ay;
+                const float e2x = T->v[2].sx - ax, e2y = T->v[2].sy - ay;
+                const float det = e1x * e2y - e2x * e1y;
+                if (det > -1e-6f && det < 1e-6f) continue;
+                const float rx = X - ax, ry = Y - ay;
+                const float b1 = (rx * e2y - e2x * ry) / det;
+                const float b2 = (e1x * ry - rx * e1y) / det;
+                const float b0 = 1.0f - b1 - b2;
+                if (b0 < -0.001f || b1 < -0.001f || b2 < -0.001f) continue;
+                const float z = b0 * T->v[0].z + b1 * T->v[1].z + b2 * T->v[2].z;
+                if (T->category == OPENPETE_SCENE_PORTAL_CYCLORAMA) {
+                    if (z < zc) zc = z;
+                } else if (z < zw) zw = z;
+            }
+            if (zw >= 2.0f) { empty_px++; continue; }   /* no opaque content */
+            if (zw <= zlim + 1e-6f) { front_px++; continue; }  /* legit front */
+            if (zc <= zw + 1e-6f) { prev_px++; continue; }     /* preview covers */
+            if (!viol) { vpx = X; vpy = Y; }
+            viol++;
+        }
+        fprintf(stderr, "[pcover f=%u] pi=%d pn=%d M=%.0f in=%d preview=%d "
+                "front=%d empty=%d VIOL=%d first=(%.1f,%.1f)\n",
+                s_scene_frame, pi, P->pn, (double)s_cvp_m, in_px, prev_px,
+                front_px, empty_px, viol, (double)vpx, (double)vpy);
+    }
+}
+
 /* Per-PRESENT scene instruments. Hosted here rather than in
  * openpete_native_scene_begin_frame because that block is gated on the VBL
  * number changing, and sub-tick presents REUSE the current VBL number — so a
@@ -4982,6 +5091,7 @@ static void scene_probes(scene_tri_t* sc, int n)
                 s_scene_frame, (double)spx, (double)spy, hits, (double)best,
                 bestc, (bestc >= 0 && bestc < 14) ? CATN[bestc] : "none");
       } }
+    portal_cover_check(sc, n);
 }
 
 static bool draw_native_scene(bool full_extent)

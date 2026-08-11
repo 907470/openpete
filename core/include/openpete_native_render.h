@@ -616,6 +616,22 @@ void openpete_native_set_player_suppress(int on);
  * emit loop so the value cannot leak into another feeder's tris. */
 void openpete_native_scene_set_fog_delta(int delta);
 
+/* ── Portal cover invariant (plane-cover rule) ────────────────────────
+ * The portal feeder's opening planes, republished per feed in core terms so
+ * the OPENPETE_PORTAL_COVER_CHECK sweep can verify the plane-cover rule
+ * against the COMPLETE scene (terrain AND actors): every pixel inside an
+ * opening's footprint must resolve to the preview or to content nearer than
+ * plane − margin. 1/view-Z of the plane at screen (x,y) = a·x + b·y + c. */
+typedef struct {
+    double a, b, c;            /* screen-space inv-vz field of the plane */
+    float  px[16], py[16];     /* projected opening polygon (walk coords) */
+    int    pn;
+} openpete_native_cover_plane;
+/* Replaces the previous set (call once per feed; n=0 clears). margin_world
+ * is the plane-cover near margin M in world units. */
+void openpete_native_set_cover_planes(const openpete_native_cover_plane *planes,
+                                      int n, float margin_world);
+
 void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, int carry);
 /* add_tri with an explicit grouping id (stored on the renderer's internal
  * tri — plain add_tri stores 0). Used by the portal feeder to associate each

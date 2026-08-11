@@ -702,8 +702,35 @@ static int sky_otpush_enabled(void) {
 static double sky_ot_push_for(double ot_vz) {
     return (ot_vz >= 128.0 * 320.0 && sky_otpush_enabled()) ? 128.0 * 64.0 : 0.0;
 }
+/* Plane-cover near margin M (world units): the preview covers everything at
+ * or behind plane − M inside the opening footprint. Sized by the 2026-08-11
+ * fail-fast sweep: 256 clears every measured intruder class (doorway moby,
+ * extended terrain band, the eaec jamb slit) at every battery pose in both
+ * --lod modes; inner-frame erosion begins at 512 — a 2x safety band. */
+float openpete_portal_plane_margin(void) {
+    static float m = -1.0f;
+    if (m < 0.0f) {
+        const char* e = getenv("OPENPETE_PORTAL_PLANE_MARGIN");
+        m = (e && *e) ? (float)atof(e) : 256.0f;
+        if (m < 0.0f) m = 0.0f;
+    }
+    return m;
+}
 static float portal_cyclorama_depth(double vz) {
-    double v = vz + s_sky_push_vz - portal_sky_eps_vz();
+    /* OPENPETE_PORTAL_PLANE_MARGIN=<world units>: plane-cover probe (see
+     * plans/openpete-portal-plane-cover.md). Tests the aperture mask and
+     * preview colours at plane − M instead of the og-OT mirroring
+     * (far-portal +64-slot push, eps): inside the footprint the preview
+     * covers everything at or behind plane − M. Probe only — 0/unset is
+     * bit-identical stock. */
+    static double s_plane_m = -1.0;
+    if (s_plane_m < 0.0) {
+        const char* e = getenv("OPENPETE_PORTAL_PLANE_MARGIN");
+        s_plane_m = (e && *e) ? atof(e) : 0.0;
+        if (s_plane_m < 0.0) s_plane_m = 0.0;
+    }
+    double v = (s_plane_m > 0.0) ? vz - s_plane_m
+                                 : vz + s_sky_push_vz - portal_sky_eps_vz();
     if (v < 1.0) v = 1.0;
     return openpete_native_depth_from_viewz(openpete_worldvz_full((float)v));
 }

@@ -4603,6 +4603,21 @@ static void terrain_feed_native(CPUState* cpu) {
     /* Active portal-sky opening planes, derived against THIS present's camera
      * bracket (canonical or sub-tick interpolated) so plane and verts agree. */
     s_pplane_n = s_pconform ? openpete_portal_sky_planes(cpu, s_pplane, 6) : 0;
+    /* Republish the openings for the core-side plane-cover invariant sweep
+     * (OPENPETE_PORTAL_COVER_CHECK) — core sees the complete scene but not
+     * the game-side plane provider. */
+    {
+        openpete_native_cover_plane cvp[6];
+        int cn = 0;
+        for (int pi = 0; pi < s_pplane_n && cn < 6; pi++) {
+            const openpete_portal_skyplane* pp = &s_pplane[pi];
+            if (pp->pn < 3) continue;
+            openpete_native_cover_plane* o = &cvp[cn++];
+            o->a = pp->a; o->b = pp->b; o->c = pp->c; o->pn = pp->pn;
+            for (int k = 0; k < pp->pn; k++) { o->px[k] = pp->px[k]; o->py[k] = pp->py[k]; }
+        }
+        openpete_native_set_cover_planes(cvp, cn, openpete_portal_plane_margin());
+    }
     rim_frames_derive(cpu);
     rim_sector_cands();
     if (s_pconform_dbg > 0 && s_pplane_n > 0) {
