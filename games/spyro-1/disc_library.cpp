@@ -15,6 +15,7 @@
 // — engine updates rebuild the module from the library's own copy.
 #include "openpete.h"
 #include "openpete_log.h"
+#include "openpete_psx.h"   /* openpete_psx_read_disc_serial */
 #include "sha256.h"
 
 #include <cstdint>
@@ -205,6 +206,65 @@ int boot_entry(openpete_options_t* opts, Meta& m,
 }
 
 }  // namespace
+
+/* Which image openpete.toml's [disc.*] scopes should describe, resolved
+ * before the flag parser runs and therefore long before the library has
+ * actually booted anything. Cheap by contract:
+ *
+ *   - the SERIAL comes from the image's own SYSTEM.CNF (a few sectors), so
+ *     it works for a dev --disc the library has never seen;
+ *   - the SHA is only ever READ BACK from a library entry's meta.toml,
+ *     recorded when the image was ingested. Hashing here would mean
+ *     digesting half a gigabyte on every launch.
+ *
+ * A raw --disc outside the library therefore resolves a serial and no
+ * hash, and [disc.<sha>] simply doesn't apply to it. */
+extern "C" int spyro1_config_disc_identity(const char* disc_path,
+                                           char* serial, size_t serial_cap,
+                                           char* sha, size_t sha_cap) {
+    if (serial && serial_cap) serial[0] = '\0';
+    if (sha && sha_cap) sha[0] = '\0';
+
+    std::string image;
+    if (disc_path && *disc_path) {
+        image = disc_path;
+        /* An ingest source or a dev path: no library entry to consult, but
+         * if the same content is already installed we know its hash. */
+        std::error_code ec;
+        for (auto& e : fs::directory_iterator(library_root(), ec)) {
+            Meta m;
+            if (!e.is_directory() || !read_meta(e.path(), m)) continue;
+            if (fs::equivalent(m.dir / "disc.cue", fs::path(image), ec) ||
+                fs::equivalent(m.dir / "disc.bin", fs::path(image), ec)) {
+                if (sha && sha_cap) std::snprintf(sha, sha_cap, "%s", m.sha.c_str());
+                break;
+            }
+        }
+    } else {
+        /* No disc named: the library will pick the most recently played,
+         * so that is the entry whose settings apply. Mirrors the choice
+         * spyro1_library_resolve makes below (minus the selector UI, which
+         * has not run yet — a user who picks a different version in the
+         * splash gets that version's scopes on the NEXT launch). */
+        std::vector<Meta> entries;
+        std::error_code ec;
+        for (auto& e : fs::directory_iterator(library_root(), ec)) {
+            Meta m;
+            if (e.is_directory() && read_meta(e.path(), m)) entries.push_back(m);
+        }
+        if (entries.empty()) return -1;
+        Meta* pick = &entries[0];
+        for (auto& m : entries)
+            if (m.last_played > pick->last_played) pick = &m;
+        if (sha && sha_cap) std::snprintf(sha, sha_cap, "%s", pick->sha.c_str());
+        image = (pick->dir / "disc.cue").string();
+    }
+
+    if (serial && serial_cap && !image.empty())
+        (void)openpete_psx_read_disc_serial(image.c_str(), serial, serial_cap);
+
+    return (serial && serial[0]) || (sha && sha[0]) ? 0 : -1;
+}
 
 extern "C" int spyro1_library_resolve(openpete_options_t* opts,
                                       char* module_path_out,

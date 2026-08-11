@@ -86,11 +86,12 @@ explicit CLI args still override (e.g. passing `--skip-to-level 20`
 on the command line wins over a sidecar's `10`). Missing sidecar is
 not an error; it's the common case.
 
-The sidecar sits in the middle of a three-tier precedence ladder:
-`openpete.opts` (persistent defaults next to the executable) < this
-`.bk2.args` sidecar < explicit CLI. So a sidecar overrides a global
-default but yields to anything typed on the command line. See the
-"Options file" section of the top-level `README.md` for `openpete.opts`.
+The sidecar sits near the top of the precedence ladder: every
+`openpete.toml` layer < exported environment variables < this
+`.bk2.args` sidecar < explicit CLI. So a sidecar overrides the machine's
+own settings — deliberately, since a movie's scenario must not shift with
+whoever's config it replays under — but yields to anything typed on the
+command line. See the "Config file" section of the top-level `README.md`.
 
 ## Current corpus
 

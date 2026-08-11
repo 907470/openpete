@@ -651,6 +651,12 @@ typedef struct openpete_options {
      * presets; also pre-warms a dist install's compile-on-boot cache. */
     int         compile_mods;
 
+    /* openpete.toml utility modes — resolve, do the one thing, exit 0.
+     * Handled by game main alongside --compile-mods, so the whole config
+     * stack is already resolved by the time they run. */
+    int         config_report;   /* --config-report: print the resolution table */
+    int         config_convert;  /* --convert-config: legacy .opts/.env -> .toml */
+
     /* Host-backed memory card (save/load). The game reaches the card only
      * through the PSYQ MemCard* wrappers, which openpete backs with real
      * 128 KiB .mcr images under $XDG_STATE_HOME/openpete/cards (or

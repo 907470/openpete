@@ -75,6 +75,65 @@ extern "C" uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
     return buf;
 }
 
+/* The disc's own serial ("SCUS-94228"), read out of SYSTEM.CNF's
+ * BOOT=cdrom:\SCUS_942.28;1 line. A few sectors, so it is cheap enough to
+ * run at every boot — which is what lets openpete.toml carry per-release
+ * settings ([disc.SCUS-94228]) for an image the library has never seen and
+ * whose content hash we therefore don't know. Returns 0 on success. */
+extern "C" int openpete_psx_read_disc_serial(const char* image_path,
+                                             char* out, size_t out_cap) {
+    if (!image_path || !out || out_cap < 12) return -1;
+    out[0] = '\0';
+
+    PS1::ISOReader reader;
+    if (!reader.Open(image_path)) {
+        std::filesystem::path given(image_path);
+        std::error_code ec;
+        bool opened = false;
+        for (auto& e : std::filesystem::directory_iterator(given.parent_path(), ec)) {
+            auto p = e.path();
+            if ((p.extension() == ".bin" || p.extension() == ".BIN") &&
+                reader.Open(p.string())) { opened = true; break; }
+        }
+        if (!opened) return -1;
+    }
+
+    PS1::ISOFileEntry entry{};
+    if (!reader.FindFile("SYSTEM.CNF", entry) || entry.size == 0 ||
+        entry.size > 4096)
+        return -1;
+    std::vector<uint8_t> buf(entry.size + 1, 0);
+    if (reader.ReadFile("SYSTEM.CNF", buf.data(), entry.size) != entry.size)
+        return -1;
+    const char* text = reinterpret_cast<const char*>(buf.data());
+
+    /* BOOT = cdrom:\SCUS_942.28;1  ->  SCUS-94228. Tolerant of the spacing
+     * and slash direction variations real images use. */
+    const char* boot = strstr(text, "BOOT");
+    if (!boot) return -1;
+    const char* eq = strchr(boot, '=');
+    if (!eq) return -1;
+    const char* p = eq + 1;
+    while (*p == ' ' || *p == '\t') p++;
+    if (!strncmp(p, "cdrom:", 6)) p += 6;
+    while (*p == '\\' || *p == '/') p++;
+
+    size_t o = 0;
+    for (; *p && *p != ';' && *p != '\r' && *p != '\n' && o + 1 < out_cap; p++) {
+        if (*p == '.' || *p == '_') { out[o++] = '-'; continue; }
+        out[o++] = *p;
+    }
+    out[o] = '\0';
+    /* "SCUS-942-28" -> "SCUS-94228": the dot inside the numeric half is
+     * 8.3 padding, not part of the serial. */
+    char* second = strchr(out, '-');
+    if (second) {
+        char* third = strchr(second + 1, '-');
+        if (third) memmove(third, third + 1, strlen(third));
+    }
+    return out[0] ? 0 : -1;
+}
+
 extern "C" uint8_t* openpete_psx_read_file(const char* path, size_t* out_size) {
     if (!path) return nullptr;
     std::ifstream f(path, std::ios::binary | std::ios::ate);

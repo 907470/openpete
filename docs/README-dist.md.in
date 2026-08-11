@@ -23,8 +23,10 @@ again.
 Useful flags: `--aspect 16:9`, `--fov 90`, `--no-lod`, `--window WxH`,
 `--cheats 99_lives,unlock_all_levels` (the game's own codes, applied for
 you).
-Run with `--help` for everything else. Persistent defaults go in an
-`openpete.opts` file next to the program (one flag per line).
+Run with `--help` for everything else. Persistent settings go in an
+`openpete.toml` next to the program, or in your config dir — the in-game
+menus (`O`, `M`) can write it for you. `--config-report` shows what is
+set and where it came from.
 
 ## What first run does
 

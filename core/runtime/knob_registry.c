@@ -13,6 +13,8 @@
 
 #include "openpete_knobs.h"
 #include "openpete.h"
+#include "openpete_config.h"
+#include "config_schema.h"
 #include "openpete_log.h"
 #include "openpete_native_render.h"
 #include "openpete_camlock.h"
@@ -994,6 +996,24 @@ int openpete_knob_add(const knob_desc_t *row) {
 /* boot resolution: value + source stamping                           */
 /* ------------------------------------------------------------------ */
 
+/* Where this row's value came from, straight from the config resolver's
+ * decision table — the one place the layer order is implemented.
+ *
+ * The overlay's three-way source tag predates openpete.toml, so a file
+ * layer has to land in one of its buckets: an [args]-or-bare-key layer
+ * reads as CLI and an [env] layer reads as ENV, matching the spelling
+ * that was actually materialized. The precise layer name (and whether a
+ * launch-tier override is pinning the row) is shown separately, from
+ * openpete_config_knob_layer / _pinned. */
+static knob_src_t knob_src_from_config(const knob_desc_t *k) {
+    const char *layer = openpete_config_knob_layer(k->id);
+    if (!layer || !strcmp(layer, "default")) return KNOB_SRC_DEFAULT;
+    if (!strcmp(layer, "env")) return KNOB_SRC_ENV;
+    size_t n = strlen(layer);
+    if (n >= 4 && !strcmp(layer + n - 4, ".env")) return KNOB_SRC_ENV;
+    return KNOB_SRC_CLI;
+}
+
 static int nearest_enum_idx(const float *vals, int n, float v) {
     int best = 0;
     float bd = 1e30f;
@@ -1011,19 +1031,20 @@ void knob_registry_init(const struct openpete_options *opts) {
     knob_desc_t *ks = knob_registry(&n);
     for (size_t i = 0; i < n; i++) {
         knob_desc_t *k = &ks[i];
-        k->boot_src = KNOB_SRC_DEFAULT;
+        k->boot_src = knob_src_from_config(k);
 
-        /* Seed stored values + source per knob. CLI beats env beats default —
-         * detected via each field's documented unset sentinel, mirroring the
-         * consumer-side resolution (never re-inventing it). */
+        /* Seed the row's displayed value from the parsed options. WHERE the
+         * value came from is not decided here: config.c resolved the whole
+         * layer stack at boot, and re-deriving it from each field's unset
+         * sentinel would be a second implementation of the precedence rules,
+         * free to drift from the first. The post-pass below asks the
+         * resolver. */
         if (!strcmp(k->id, "fullscreen")) {
             k->stored_num = opts->fullscreen ? 1 : 0;
-            if (opts->fullscreen) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "aspect")) {
             if (opts->aspect_w_over_h > 0.0f) {
                 k->stored_num = nearest_enum_idx(k_aspect_vals + 1, 5,
                                                  opts->aspect_w_over_h) + 1;
-                k->boot_src = KNOB_SRC_CLI;
             } else {
                 k->stored_num = 0;   /* auto (also the default) */
             }
@@ -1031,112 +1052,69 @@ void knob_registry_init(const struct openpete_options *opts) {
             int f = opts->ssaa > 0 ? opts->ssaa : 1, idx = 0;
             while ((1 << idx) < f && idx < 4) idx++;
             k->stored_num = idx;
-            if (opts->ssaa > 1) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "vsync")) {
             if (opts->vsync != -1) {
                 k->stored_num = opts->vsync ? 1 : 0;
-                k->boot_src = KNOB_SRC_CLI;
             } else {
                 const char *e = getenv("OPENPETE_PRESENT_MODE");
                 if (e && (!strcmp(e, "immediate") || !strcmp(e, "mailbox"))) {
                     k->stored_num = 0;
-                    k->boot_src = KNOB_SRC_ENV;
                 } else {
                     k->stored_num = 1;   /* default FIFO */
                 }
             }
         } else if (!strcmp(k->id, "show_fps")) {
             k->stored_num = opts->fps_overlay ? 1 : 0;
-            if (!opts->fps_overlay) k->boot_src = KNOB_SRC_CLI; /* default ON */
         } else if (!strcmp(k->id, "vertex_precision")) {
             k->stored_num = (opts->vertex_precision == OPENPETE_VERTEX_PRECISION_INTEGER);
-            if (k->stored_num != 0) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "raster_quantize")) {
             /* mirror the renderer's auto-pair resolve (-1 = 1x iff integer snap) */
             k->stored_num = (opts->raster_quantize >= 0) ? opts->raster_quantize
                           : (opts->vertex_precision == OPENPETE_VERTEX_PRECISION_INTEGER ? 1 : 0);
-            if (opts->raster_quantize >= 0) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "dither")) {
             k->stored_num = opts->dither ? 1 : 0;
-            if (k->stored_num != 0) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "texture_mapping")) {
             k->stored_num = (opts->texture_mapping == OPENPETE_TEXTURE_MAPPING_AFFINE);
-            if (k->stored_num != 0) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "lod")) {
             k->stored_num = (opts->lod != OPENPETE_LOD_ORIGINAL);
-            if (k->stored_num != 0) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "fog")) {
             k->stored_num = openpete_fog_enabled() ? 1 : 0;
-            if (opts->fog_scale > 0.0f) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "fog_scale")) {
             k->stored_num = openpete_fog_scale;
-            if (opts->fog_scale > 0.0f) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "render_fps")) {
             k->stored_num = opts->render_fps;
-            if (opts->render_fps != -1) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "rewind")) {
             k->stored_num = opts->rewind_window;
-            if (opts->rewind_window > 0) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "tick_scale")) {
             k->stored_num = opts->tick_scale;
-            if (opts->tick_scale != 1.0) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "runahead")) {
             k->stored_num = opts->runahead;
-            if (opts->runahead > 0) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "fov")) {
             k->stored_num = opts->fov_deg;
-            if (opts->fov_deg > 0.0f) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "mute")) {
             k->stored_num = opts->mute ? 1 : 0;
-            if (opts->mute) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "record_cfr")) {
             k->stored_num = opts->record_cfr;
-            if (opts->record_cfr > 0.0) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "record_frames")) {
             k->stored_num = opts->record_frames;
-            if (opts->record_frames > 0) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "record_fps_overlay")) {
             if (opts->record_fps_overlay >= 0) {
                 k->stored_num = opts->record_fps_overlay ? 1 : 0;
-                k->boot_src = KNOB_SRC_CLI;
             } else {
                 const char *e = getenv("OPENPETE_FPS_IN_RECORD");
                 k->stored_num = (e && *e && *e != '0') ? 1 : 0;
-                if (e) k->boot_src = KNOB_SRC_ENV;
             }
         } else if (!strcmp(k->id, "renderer")) {
             k->stored_num = opts->renderer;
-            if (opts->renderer != OPENPETE_RENDERER_VK) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "skip_to_level")) {
             k->stored_num = opts->skip_to_level;
-            if (opts->skip_to_level > 0) k->boot_src = KNOB_SRC_CLI;
         } else if (!strcmp(k->id, "log_format")) {
             k->stored_num = opts->log_format;
-            if (opts->log_format != OPENPETE_LOG_PLAIN) k->boot_src = KNOB_SRC_CLI;
-        } else if (!strcmp(k->id, "freecam")) {
+        } else if (!strcmp(k->id, "freecam") || !strcmp(k->id, "camlock")) {
+            /* Both start disengaged whatever armed them: the env var (or
+             * OPENPETE_CAMLOCK_POSE) requests engagement later, at a point
+             * the feature itself picks. */
             k->stored_num = 0;
-            { const char *e = getenv("OPENPETE_FREECAM");
-              if (e && *e && *e != '0') k->boot_src = KNOB_SRC_ENV; }
-        } else if (!strcmp(k->id, "camlock")) {
-            k->stored_num = 0;
-            { const char *e = getenv("OPENPETE_CAMLOCK");
-              const char *p = getenv("OPENPETE_CAMLOCK_POSE");
-              if ((e && *e && *e != '0') || (p && *p)) k->boot_src = KNOB_SRC_ENV; }
-        } else if (k->type == KNOB_STRING) {
-            /* Path-style rows: CLI field non-NULL beats env beats default. */
-            char buf[KNOB_STR_MAX];
-            path_get_str(k, buf, sizeof buf);
-            const char *cli = NULL;
-            if      (!strcmp(k->id, "disc"))        cli = opts->disc_path;
-            else if (!strcmp(k->id, "texpack_dir")) cli = opts->texpack_dir;
-            else if (!strcmp(k->id, "mods_dir"))    cli = opts->mods_dir;
-            else if (!strcmp(k->id, "card_dir"))    cli = opts->card_dir;
-            else if (!strcmp(k->id, "record"))      cli = opts->record_path;
-            else if (!strcmp(k->id, "bk2"))         cli = opts->bk2_path;
-            else if (!strcmp(k->id, "log_level"))   cli = opts->log_level_spec;
-            else if (!strcmp(k->id, "render_paths")) cli = opts->render_paths;
-            if (cli)                          k->boot_src = KNOB_SRC_CLI;
-            else if (k->env && getenv(k->env)) k->boot_src = KNOB_SRC_ENV;
         }
 
         /* Stamp the boot value for the "reset to boot" affordance. Actions
@@ -1164,6 +1142,55 @@ int openpete_knob_bind_str(const char *id,
         return 0;
     }
     return -1;   /* row absent (compiled out) — nothing to bind */
+}
+
+int knob_config_value_str(const knob_desc_t *k, char *buf, size_t cap) {
+    if (!k || k->type == KNOB_ACTION) return -1;
+    if (cfg_schema_find_id(k->id) < 0) return -1;   /* not a config knob */
+
+    /* The SSAA row is an enum of "1x".."16x" because that is what reads well
+     * in a menu; the flag takes the factor. Every other enum row already
+     * displays the CLI's own words. */
+    if (!strcmp(k->id, "ssaa")) {
+        int idx = (int)(k->get_num ? k->get_num(k) : k->stored_num);
+        if (idx < 0) idx = 0;
+        snprintf(buf, cap, "%d", 1 << idx);
+        return 0;
+    }
+
+    knob_value_str(k, buf, cap);
+    /* get_str placeholders ("(default)", "(none)", "(unset - 1)") describe
+     * the absence of a value; writing one back as a literal would turn it
+     * into a real setting on the next boot. */
+    if (buf[0] == '(') return -1;
+    return 0;
+}
+
+int knob_registry_save_edited(void) {
+    size_t n;
+    knob_desc_t *ks = knob_registry(&n);
+    int saved = 0;
+    for (size_t i = 0; i < n; i++) {
+        knob_desc_t *k = &ks[i];
+        if (k->type == KNOB_ACTION) continue;
+
+        /* Only what the user actually moved. Saving unchanged rows would
+         * bake this launch's whole resolved state into the file, so a knob
+         * they never touched would stop following its default. */
+        char now[KNOB_STR_MAX];
+        if (k->type == KNOB_STRING) {
+            if (!k->get_str) continue;
+            k->get_str(k, now, sizeof now);
+            if (!strcmp(now, k->boot_str)) continue;
+        } else {
+            double v = k->get_num ? k->get_num(k) : k->stored_num;
+            if (v == k->boot_num) continue;
+        }
+        if (knob_config_value_str(k, now, sizeof now) != 0) continue;
+        if (openpete_config_save_knob(k->id, now) == 0) saved++;
+    }
+    if (openpete_config_save_flush() != 0) return -1;
+    return saved;
 }
 
 void knob_registry_late_stamp(void) {

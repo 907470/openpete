@@ -2,10 +2,13 @@
  * M-key dev config overlay — Dear ImGui panel over the knob registry.
  *
  * One window, sections as collapsing headers, a text filter, per-row source
- * tag (cli/env/default + edited), tooltips carrying each knob's help text and
- * flag spellings, and a right-click context menu (reset to boot / copy as CLI
- * flag / copy as env line — the copy items are the WSLENV pain relief: tune
- * live, paste the line into openpete.opts / openpete.env yourself).
+ * tag (cli/env/default + edited + the winning openpete.toml layer), tooltips
+ * carrying each knob's help text and flag spellings, a Save bar that writes
+ * the session's edits into the config file's managed [saved] block, and a
+ * right-click context menu (reset to boot / copy as CLI flag / copy as env
+ * line — the copy items predate the Save bar and remain the way to move a
+ * setting to ANOTHER machine, or across the WSL→Windows boundary env vars
+ * don't cross).
  *
  * Rendering: records into the offscreen pass (off_rp) at the live-present
  * compose point, after the SSAA resolve — so the panel is always at 1x window
@@ -29,6 +32,7 @@ extern "C" {
 #include "openpete_devui.h"
 #include "openpete_fillpick.h"
 #include "openpete_knobs.h"
+#include "openpete_config.h"
 #include "openpete_log.h"
 #include "openpete_mods.h"
 
@@ -328,6 +332,77 @@ static void draw_row(knob_desc_t *k)
         ImGui::SameLine();
         ImGui::TextDisabled("(restart)");
     }
+
+    /* A launch-tier override outranks anything in the file, so saving this
+     * row would look like it did nothing next launch. Say so on the row
+     * rather than letting the user discover it by restarting. */
+    const char *pin = openpete_config_knob_pin_spelling(k->id);
+    if (pin) {
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.55f, 0.75f, 1.0f, 1.0f), "pinned");
+        if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+            ImGui::SetTooltip("%s is set for this launch, which outranks\n"
+                              "openpete.toml. A saved value applies once that\n"
+                              "override is gone.", pin);
+    } else {
+        const char *layer = openpete_config_knob_layer(k->id);
+        if (layer && strcmp(layer, "default") != 0) {
+            ImGui::SameLine();
+            ImGui::TextDisabled("[%s]", layer);
+        }
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Save bar                                                           */
+/* ------------------------------------------------------------------ */
+
+/* Persisting is explicit, never on close: a config file that changes
+ * behind your back is exactly what the old "did I leave a .env lying
+ * around?" confusion was made of. */
+static void draw_save_bar(void) {
+    static char s_status[256];
+
+    int edited = 0;
+    size_t n = 0;
+    knob_desc_t *ks = knob_registry(&n);
+    for (size_t i = 0; i < n; i++)
+        if (ks[i].type != KNOB_ACTION && row_edited(&ks[i])) edited++;
+
+    if (edited == 0) ImGui::BeginDisabled();
+    if (ImGui::Button("Save settings")) {
+        int saved = knob_registry_save_edited();
+        if (saved < 0)
+            snprintf(s_status, sizeof s_status, "save FAILED (see the log)");
+        else
+            snprintf(s_status, sizeof s_status, "saved %d setting(s) to %s",
+                     saved, openpete_config_save_path());
+    }
+    if (edited == 0) ImGui::EndDisabled();
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("Write every row you changed this session into the\n"
+                          "[saved] block of %s.\n\n"
+                          "Saved settings beat everything else in the file, but\n"
+                          "still lose to a flag you type or a variable you export\n"
+                          "— rows in that position are marked 'pinned by ...'.",
+                          openpete_config_save_path());
+
+    ImGui::SameLine();
+    if (ImGui::Button("Reset saved")) {
+        if (openpete_config_reset_saved() == 0)
+            snprintf(s_status, sizeof s_status,
+                     "cleared the saved block (restart to see the effect)");
+        else
+            snprintf(s_status, sizeof s_status, "reset FAILED (see the log)");
+    }
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+        ImGui::SetTooltip("Empty the [saved] block. Hand-written config above\n"
+                          "the managed marker is untouched.");
+
+    if (s_status[0]) {
+        ImGui::SameLine();
+        ImGui::TextDisabled("%s", s_status);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -599,6 +674,8 @@ static void draw_panel(void)
         ImGui::SetTooltip("Live rows apply immediately; grayed rows need a "
                           "restart. Right-click a row to copy it as a CLI "
                           "flag / env line.");
+
+    draw_save_bar();
 
     size_t n = 0;
     knob_desc_t *ks = knob_registry(&n);

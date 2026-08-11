@@ -13,6 +13,8 @@
 #include "openpete.h"                /* openpete_options_t, openpete_set_render_fps */
 #include "openpete_native_render.h"  /* set_aspect / set_ssaa / set_vsync */
 #include "openpete_log.h"
+#include "openpete_config.h"        /* saved-settings persistence (SETTINGS row) */
+#include "openpete_knobs.h"         /* knob_registry_save_edited */
 #include "openpete_freecam.h"        /* freecam active/toggle (FREECAM row) */
 #include "openpete_mods.h"           /* loaded-mod enumeration (MOD rows) */
 #include "features/no_lod.h"         /* openpete_no_lod_set */
@@ -22,7 +24,8 @@
 
 /* --- rows ---------------------------------------------------------------- */
 enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
-       ROW_WOBBLE, ROW_TEXMAP, ROW_DITHER, ROW_LOD, ROW_FREECAM, ROW_COUNT,
+       ROW_WOBBLE, ROW_TEXMAP, ROW_DITHER, ROW_LOD, ROW_FREECAM, ROW_SAVE,
+       ROW_COUNT,
        /* MODSEL/MODEN and FOG are parked past ROW_COUNT: hidden from display
         * + navigation for now, but all their plumbing stays live and
         * compiled — the case labels below, the mod enumeration, s_fog_idx,
@@ -33,8 +36,15 @@ enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
     "DISPLAY", "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE",
-    "TEXTURES", "DITHER", "LOD", "FREECAM",
+    "TEXTURES", "DITHER", "LOD", "FREECAM", "SETTINGS",
 };
+
+/* SETTINGS is an action row, not a value: left/right pick what pressing it
+ * will do, and the press does it. Persisting is explicit — closing the menu
+ * must never rewrite the user's config file behind them. */
+enum { SAVE_IDLE, SAVE_DO, SAVE_CLEAR };
+static int s_save_idx;      /* SAVE_* */
+static int s_save_result;   /* 0 none, >0 saved n, -1 failed, -2 cleared */
 
 /* Aspect presets (label + width/height). */
 static const struct { const char* label; float wh; } s_aspect[] = {
@@ -160,6 +170,14 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_LOD: return s_lod_idx ? "EXTENDED" : "ORIGINAL";
     case ROW_FOG:      return s_fog_idx ? "ON" : "OFF";
     case ROW_FREECAM:  return s_freecam_idx ? "ON" : "OFF";
+    case ROW_SAVE:
+        if (s_save_result == -1) return "FAILED";
+        if (s_save_result == -2) return "CLEARED";
+        if (s_save_result > 0) {
+            snprintf(buf, (size_t)buflen, "SAVED %d", s_save_result);
+            return buf;
+        }
+        return s_save_idx == SAVE_CLEAR ? "CLEAR SAVED" : "SAVE";
     case ROW_MODSEL: {
         const char* id = openpete_mods_id(s_modsel_idx);
         return id ? id : "NONE";
@@ -206,6 +224,17 @@ static void apply_row(int row) {
         s_fog_idx = openpete_fog_enabled();
         break;
     case ROW_FOG:      openpete_fog_set(s_fog_idx);                           break;
+    case ROW_SAVE:
+        /* Fires on apply (the same keypress every other row uses), so the
+         * file is only ever written when the user asked for it. */
+        if (s_save_idx == SAVE_CLEAR) {
+            s_save_result = (openpete_config_reset_saved() == 0) ? -2 : -1;
+        } else if (s_save_idx == SAVE_DO) {
+            int n = knob_registry_save_edited();
+            s_save_result = (n < 0) ? -1 : (n > 0 ? n : -2);
+        }
+        s_save_idx = SAVE_IDLE;
+        break;
     case ROW_FREECAM:
         /* The freecam API is a toggle (shared with the F key), not a setter:
          * flip only when the row disagrees with the live state. The toggle
@@ -382,6 +411,12 @@ void openpete_menu_adjust(int dx) {
     case ROW_LOD:      s_lod_idx    = wrap_idx(s_lod_idx    + step, 2);           break;
     case ROW_FOG:      s_fog_idx    = wrap_idx(s_fog_idx    + step, 2);           break;
     case ROW_FREECAM:  s_freecam_idx = wrap_idx(s_freecam_idx + step, 2);         break;
+    case ROW_SAVE:
+        /* Cycling only chooses which action the next apply performs; it
+         * writes nothing. Any move also clears a stale result string. */
+        s_save_idx    = wrap_idx(s_save_idx + step, 3);
+        s_save_result = 0;
+        break;
     case ROW_MODSEL:
         if (openpete_mods_count() > 0)
             s_modsel_idx = wrap_idx(s_modsel_idx + step,

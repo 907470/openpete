@@ -4,12 +4,13 @@
 // and §11.7. Unknown flags exit with OPENPETE_EXIT_SETUP_ERROR (3).
 
 #include "openpete.h"
+#include "openpete_config.h"  /* openpete.toml — the layered config file */
 #include "openpete_log.h"
 #include "openpete_time.h"  /* OP_TICK_HZ — --record-cfr NTSC-multiple snap */
 #include "game_extras.h"  /* game_resolve_level_arg (--skip-to-level names),
                            * game_validate_cheats_arg (--cheats names) */
 
-#include <SDL3/SDL.h>     /* SDL_GetBasePath — locate openpete.opts next to the exe */
+#include <SDL3/SDL.h>     /* SDL_GetBasePath — default --bk2-record directory */
 
 #include <math.h>       /* lround/fabs — --record-cfr NTSC-multiple validation */
 #include <stdio.h>
@@ -134,116 +135,11 @@ static int expand_bk2_sidecar(int argc, char** argv, int* out_argc, char*** out_
     return rc;
 }
 
-/* If "openpete.opts" sits next to the executable, splice its tokens in
- * after argv[0]. These are the lowest-priority source — the bk2 sidecar
- * and explicit CLI both override (see openpete_options_parse for the
- * splice order). Lets a packaged build ship, or a user drop, persistent
- * flags (renderer, FOV, aspect, …) next to the binary without retyping
- * them every launch. Resolved via SDL_GetBasePath (the executable dir),
- * the same convention as the music wav-override search path. */
-static int expand_options_file(int argc, char** argv, int* out_argc, char*** out_argv) {
-    const char* base = SDL_GetBasePath(); /* SDL3: owned by SDL, do not free */
-    if (!base) return 0; /* can't resolve exe dir — silently skip */
-
-    static const char name[] = "openpete.opts";
-    size_t blen = strlen(base);
-    char* path = (char*)malloc(blen + sizeof(name)); /* sizeof includes NUL */
-    if (!path) return -1;
-    memcpy(path, base, blen);
-    memcpy(path + blen, name, sizeof(name));
-
-    int rc = splice_args_file(path, "options file", argc, argv, out_argc, out_argv);
-    free(path);
-    return rc;
-}
-
-/* Env file next to the executable ("openpete.env", or ".env" if that
- * doesn't exist): KEY=VALUE lines applied to the process environment
- * before anything reads getenv. Same location convention as
- * openpete.opts; the split of duties is opts = CLI flags, env = the
- * OPENPETE_* debug/feature toggles that would otherwise need shell
- * plumbing (WSLENV forwarding when launching the Windows exe from WSL).
- *
- * Precedence: the REAL environment wins — a variable already set is
- * never overridden by the file, so per-launch shell overrides keep
- * working on top of a persistent file. Syntax: one KEY=VALUE per line;
- * blank lines and #-comments ignored; an optional leading "export " is
- * tolerated; one pair of surrounding quotes on the value is stripped.
- * Every applied/kept var is logged so a forgotten file can't silently
- * change behavior. */
-static void portable_setenv(const char* k, const char* v) {
-#ifdef _WIN32
-    _putenv_s(k, v);          /* CRT env — same getenv the features read */
-#else
-    setenv(k, v, 0);
-#endif
-}
-
-static void apply_env_line(char* line, const char* path, int lineno,
-                           int* applied, int* kept) {
-    char* p = line;
-    while (*p == ' ' || *p == '\t') p++;
-    if (*p == '\0' || *p == '#' || *p == '\n' || *p == '\r') return;
-    if (strncmp(p, "export ", 7) == 0) p += 7;
-
-    char* eq = strchr(p, '=');
-    if (!eq || eq == p) {
-        fprintf(stderr, "openpete: %s:%d ignored (expected KEY=VALUE)\n", path, lineno);
-        return;
-    }
-    char* ke = eq;                                   /* trim key's trailing ws */
-    while (ke > p && (ke[-1] == ' ' || ke[-1] == '\t')) ke--;
-    *ke = '\0';
-
-    char* v = eq + 1;                                /* trim value both ends */
-    while (*v == ' ' || *v == '\t') v++;
-    char* ve = v + strlen(v);
-    while (ve > v && (ve[-1] == '\n' || ve[-1] == '\r' || ve[-1] == ' ' || ve[-1] == '\t')) ve--;
-    *ve = '\0';
-    if (ve - v >= 2 && (v[0] == '"' || v[0] == '\'') && ve[-1] == v[0]) {
-        ve[-1] = '\0'; v++;                          /* strip one quote pair */
-    }
-
-    if (getenv(p)) {
-        fprintf(stderr, "openpete: env file %s=... kept from environment\n", p);
-        (*kept)++;
-    } else {
-        portable_setenv(p, v);
-        fprintf(stderr, "openpete: env file %s=%s\n", p, v);
-        (*applied)++;
-    }
-}
-
-static void load_env_file(void) {
-    const char* base = SDL_GetBasePath(); /* SDL3: owned by SDL, do not free */
-    if (!base) return;
-
-    static const char* const names[] = { "openpete.env", ".env" };
-    FILE* f = NULL;
-    char* path = NULL;
-    size_t blen = strlen(base);
-    for (size_t i = 0; i < sizeof(names) / sizeof(names[0]) && !f; i++) {
-        size_t nlen = strlen(names[i]);
-        free(path);
-        path = (char*)malloc(blen + nlen + 1);
-        if (!path) return;
-        memcpy(path, base, blen);
-        memcpy(path + blen, names[i], nlen + 1);
-        f = fopen(path, "r");
-    }
-    if (!f) { free(path); return; }
-
-    char line[1024];
-    int lineno = 0, applied = 0, kept = 0;
-    while (fgets(line, sizeof(line), f)) {
-        lineno++;
-        apply_env_line(line, path, lineno, &applied, &kept);
-    }
-    fclose(f);
-    fprintf(stderr, "openpete: env file %s -> %d var(s) applied, %d kept from environment\n",
-            path, applied, kept);
-    free(path);
-}
+/* openpete.opts and openpete.env used to be read here — an argv splice and
+ * a setenv pass with no defined relationship to each other. Both are now
+ * layers of openpete.toml, resolved by core/runtime/config.c, which is
+ * also what still reads the legacy files (at the bottom of the stack)
+ * until they are retired. */
 
 /* --bk2-record args sidecar helpers -----------------------------------
  *
@@ -357,10 +253,13 @@ static void print_help(const char* display_name, const char* argv0) {
     fprintf(stderr,
         "OpenPete %s\n"
         "Usage: %s [options]\n"
-        "  An 'openpete.opts' file next to the executable supplies default flags\n"
-        "  (whitespace/newline-separated, '#' comments). Explicit CLI flags override it.\n"
-        "  An 'openpete.env' (or '.env') file next to the executable supplies KEY=VALUE\n"
-        "  environment variables ('#' comments); already-set variables win over the file.\n"
+        "  An 'openpete.toml' next to the executable and one in your config dir supply\n"
+        "  persistent settings, in layers: global < [game.ID] < [disc.SERIAL] < [disc.SHA]\n"
+        "  < [saved] < environment < bk2 sidecar < the flags you type. Inside a layer,\n"
+        "  bare keys < [env] < [args]. --config-report shows what won and what it beat.\n"
+        "  --config PATH  use only this file      --no-config  ignore every config file\n"
+        "  --config-report  print the resolution table and exit\n"
+        "  --convert-config  rewrite legacy openpete.opts/.env as openpete.toml and exit\n"
         "  --disc PATH                disc image (BIN/CUE)\n"
         "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields (defaults to the game's entry point)\n"
         "  --renderer MODE            display renderer: vk (native, full-window — default) | psycross (legacy GL) |\n"
@@ -621,14 +520,9 @@ void openpete_options_init(openpete_options_t* opts) {
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
-    /* Env file (openpete.env / .env next to the exe) first, before ANY
-     * getenv consumer — features lazy-cache getenv on first read, so the
-     * file must be in the environment before parsing/boot proceeds. */
-    load_env_file();
-
-    /* Snapshot the command line as typed, before the sidecar / options-file
+    /* Snapshot the command line as typed, before the sidecar / config
      * splices below rewrite argv. --bk2-record captures this (and not the
-     * spliced-in openpete.opts defaults) into its .args sidecar. */
+     * machine's own config defaults) into its .args sidecar. */
     int    orig_argc = argc;
     char** orig_argv = argv;
 
@@ -651,15 +545,22 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
     if (sidecar_rc < 0) return OPENPETE_EXIT_SETUP_ERROR;
     if (sidecar_rc == 1) { argc = sidecar_argc; argv = sidecar_argv; }
 
-    /* Options file next to the executable (openpete.opts): persistent
-     * default flags. Spliced after the bk2 splice but still before argv[0]'s
-     * trailing args, so the resulting precedence (left parsed first, last
-     * write wins) is: options file < bk2 sidecar < explicit CLI. */
-    int optfile_argc = 0;
-    char** optfile_argv = NULL;
-    int optfile_rc = expand_options_file(argc, argv, &optfile_argc, &optfile_argv);
-    if (optfile_rc < 0) return OPENPETE_EXIT_SETUP_ERROR;
-    if (optfile_rc == 1) { argc = optfile_argc; argv = optfile_argv; }
+    /* openpete.toml. Resolves every configured layer, applies the winning
+     * [env] entries to the environment — which must happen before ANY
+     * getenv consumer, since features lazy-cache their env reads on first
+     * use — and hands back the winning flags to splice.
+     *
+     * Spliced after the bk2 splice and so left of it, giving the argv
+     * order [config][sidecar][typed]: left is parsed first and the last
+     * write wins, which is the file < sidecar < CLI half of the chain.
+     * The other half (which of two config layers wins, and args-vs-env)
+     * was already decided inside the resolver — see openpete_config.h. */
+    int cfg_argc = 0;
+    char** cfg_argv = NULL;
+    int cfg_rc = openpete_config_apply(argc, argv, orig_argc, &cfg_argc, &cfg_argv);
+    if (cfg_rc < 0) return OPENPETE_EXIT_SETUP_ERROR;
+    if (cfg_rc == 1) { argc = cfg_argc; argv = cfg_argv; }
+
 
     for (int i = 1; i < argc; i++) {
         const char* a = argv[i];
@@ -1125,6 +1026,17 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->mods_enabled = v; i++;
         } else if (strcmp(a, "--compile-mods") == 0) {
             opts->compile_mods = 1;
+        } else if (strcmp(a, "--config") == 0) {
+            /* Consumed by the config loader before this parse; accepted
+             * here so it isn't an unknown flag. */
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            i++;
+        } else if (strcmp(a, "--no-config") == 0) {
+            /* likewise */
+        } else if (strcmp(a, "--config-report") == 0) {
+            opts->config_report = 1;
+        } else if (strcmp(a, "--convert-config") == 0) {
+            opts->config_convert = 1;
         } else if (strcmp(a, "--card-dir") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->card_dir = v; i++;
@@ -1209,7 +1121,14 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             print_help(opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
         } else {
-            fprintf(stderr, "openpete: unknown arg: %s\n", a);
+            /* Config-spliced tokens were never typed, so pointing at the
+             * command line would send the user hunting in the wrong place. */
+            const char* src = openpete_config_token_source(a);
+            if (src)
+                fprintf(stderr, "openpete: unknown arg: %s (from openpete.toml "
+                                "[%s])\n", a, src);
+            else
+                fprintf(stderr, "openpete: unknown arg: %s\n", a);
             return OPENPETE_EXIT_SETUP_ERROR;
         }
     }

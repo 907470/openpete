@@ -6,6 +6,7 @@
 
 #include <SDL3/SDL_main.h>
 #include "openpete.h"
+#include "openpete_config.h"
 #include "game_extras.h"
 #include "openpete_mods.h"
 #include "recomp_attach.h"
@@ -45,6 +46,9 @@ static void openpete_attach_parent_console(void) {}
 
 extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
                                             const char* out_dir);
+extern "C" int spyro1_config_disc_identity(const char* disc_path,
+                                           char* serial, size_t serial_cap,
+                                           char* sha, size_t sha_cap);
 extern "C" int spyro1_library_resolve(openpete_options_t* opts,
                                       char* module_path_out,
                                       size_t module_path_cap);
@@ -104,8 +108,18 @@ int main(int argc, char** argv) {
      * almost always wants to dispatch. */
     opts.run_recomp_hint_addr = 0x80012204u;
 
+    /* openpete.toml scopes, registered before the parse: the config stack
+     * is resolved inside openpete_options_parse and needs to know which
+     * game it is configuring and how to identify the disc that will boot. */
+    openpete_config_set_game_id(game_get_id());
+    openpete_config_set_disc_identity_fn(spyro1_config_disc_identity);
+
     int rc = openpete_options_parse(&opts, argc, argv);
     if (rc != OPENPETE_EXIT_OK) return rc;
+
+    /* Config utility modes: the stack is resolved, so answer and exit. */
+    if (opts.config_report) { openpete_config_report(stdout); return 0; }
+    if (opts.config_convert) return openpete_config_convert_legacy();
 
     /* Mod framework: hand the loader this game's symbol table so mods
      * override by name ("CameraUpdate") instead of raw vaddr. The loader

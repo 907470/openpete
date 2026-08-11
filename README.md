@@ -53,27 +53,79 @@ cmake --build build/windows-mingw -j
     --screenshot-output ./shot.bmp --max-runtime-seconds 30 --log-format json
 ```
 
-## Options file
+## Config file
 
-Drop an `openpete.opts` file **next to the executable** to supply default
-command-line flags, so you don't retype your preferences every launch.
-Tokens are whitespace/newline-separated and `#` starts a comment:
+Settings live in `openpete.toml`, so you don't retype your preferences
+every launch. Two are read: one **next to the executable** (what a build
+or a download ships with) and one in your config dir
+(`~/.config/openpete/openpete.toml`, or `%APPDATA%\openpete\` on Windows —
+your own, and where the in-game menus save).
+
+```toml
+# openpete.toml
+aspect = "21:9"
+window = "1920x1080"
+fov    = 90
+
+[game.spyro-1]
+disc = "games/spyro-1/spyro-1/build/SCUS-94228.cue"
+lod  = "extended"
+
+[disc.SCUS-94228]        # just this release
+vertex_precision = "integer"
+```
+
+Key names are the flag names without the dashes (`--fog-scale` →
+`fog_scale`); `--help` lists them all. Two escape hatches for anything
+that has no key of its own:
+
+```toml
+[args]                    # keys are flags, exactly as you'd type them
+"--screenshot-on-tick" = "1200"
+[env]                     # keys are OPENPETE_* variables
+OPENPETE_TERRAIN_TIMERS = "1"
+```
+
+### Which setting wins
+
+Lowest first:
 
 ```
-# openpete.opts — persistent defaults
---disc games/spyro-1/spyro-1/build/SCUS-94228.cue
---aspect 21:9
---window 1920x1080
---fov 90
+openpete.toml global  <  [game.ID]  <  [disc.SERIAL]  <  [disc.SHA]  <  [saved]
+  <  environment variables  <  a movie's .bk2.args sidecar  <  the flags you type
 ```
 
-Explicit command-line flags always override the file (e.g. a `--fov 70`
-on the CLI beats the file's `90`). A per-movie `<name>.bk2.args` sidecar
-sits between the two — the full precedence is `openpete.opts` < `.bk2.args`
-sidecar < explicit CLI. The entry point now defaults to SCUS-94228's `main`
-at `0x80012204` (no `--run-recomp` needed), so an `openpete.opts` that
-supplies the still-required `--disc` makes `./openpete-spyro1` runnable
-with no command-line arguments.
+Two rules cover everything else. **A more specific section always beats a
+less specific one**, however either is written — a `[args]` line in the
+global scope never overrides a plain key under `[disc.…]`. And **inside a
+section, `[args]` beats `[env]` beats a bare key**, mirroring the way a
+typed flag beats an exported variable, so moving a line between the file
+and your shell never changes which setting wins. Where two files set the
+same thing at the same scope, yours beats the shipped one.
+
+`--config-report` prints the whole resolution — every setting, which layer
+won it, and what that layer beat. `--config PATH` uses one file and
+nothing else; `--no-config` ignores all of them.
+
+### Saved settings
+
+The in-game menus (`O`, and `M` for the full list) can write what you
+changed into a `[saved]` block at the bottom of your config file.
+Everything above the managed marker is left exactly as you wrote it,
+comments included.
+
+Saved settings beat everything else in the file, but still lose to a flag
+you type or a variable you export for that launch — so scripts and movie
+replays stay reproducible. When a row is in that position the menu marks
+it *pinned*, naming the override.
+
+### Upgrading from openpete.opts / openpete.env
+
+Both still work, ranked below every `openpete.toml` layer, and warn once
+per launch. `--convert-config` rewrites them as an equivalent
+`openpete.toml` (their flags become `[args]`, their variables `[env]`),
+renames the originals to `.bak`, and leaves you to check
+`--config-report` before deleting them.
 
 ## Recording gameplay video
 

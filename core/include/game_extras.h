@@ -28,6 +28,7 @@ uint32_t    game_get_entry_point(void);
 const char* game_get_exe_filename(void);      /* e.g. "SCUS_942.28" */
 uint32_t    game_get_expected_crc32(void);    /* sanity check against user's dump */
 const char* game_get_display_name(void);      /* "Spyro the Dragon" */
+const char* game_get_id(void);                /* "spyro-1" — the [game.<id>] config scope */
 
 /* --- Memory layout ---
  * compiled_range / overlay_range are PSX-side virtual addresses; the

@@ -186,10 +186,13 @@ cmake --build --preset windows-mingw
 build/windows-mingw/games/spyro-1/openpete-spyro1.exe [--args]
 ```
 
-Run these **from the repo root** — the staged `openpete.opts` beside the
-exe supplies `--disc` as a repo-relative path. An explicit `--disc` on
+Run these **from the repo root** — the staged `openpete.toml` beside the
+exe supplies `disc` as a repo-relative path. An explicit `--disc` on
 the command line overrides it and bypasses the disc library entirely, so
-the dev loop never touches the first-boot machinery.
+the dev loop never touches the first-boot machinery. `--config-report`
+prints the resolved settings; `--no-config` ignores the file entirely,
+which is what the gate scripts do so a personal config can't change a
+verdict.
 
 Output binary: `build/<preset>/games/spyro-1/openpete-spyro1[.exe]`.
 

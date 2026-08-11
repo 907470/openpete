@@ -109,7 +109,10 @@ LIMIT="${OPENPETE_FRAME_LIMIT:-200000}"
 set +e
 # --mute 1 sits before PASSTHRU so a forwarded `-- --mute 0` still wins
 # (the options parser takes the last occurrence).
+# --no-config: the gate's verdict must not depend on whatever openpete.toml
+# happens to sit next to the exe or in the runner's home directory.
 "$BIN" --headless \
+    --no-config \
     --disc "$DISC" \
     --run-recomp 0x80012204 \
     --mute 1 \

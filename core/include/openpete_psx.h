@@ -183,6 +183,12 @@ uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
                                          const char* exe_filename,
                                          size_t* out_size);
 
+/* The image's release serial ("SCUS-94228") from its SYSTEM.CNF BOOT line.
+ * Cheap (a few sectors) — it is read at boot to select the [disc.SERIAL]
+ * scope in openpete.toml. Returns 0 on success. */
+int openpete_psx_read_disc_serial(const char* image_path,
+                                  char* out, size_t out_cap);
+
 #ifdef __cplusplus
 }
 #endif

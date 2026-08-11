@@ -48,6 +48,12 @@ const char* game_get_display_name(void) {
     return "Spyro the Dragon";
 }
 
+const char* game_get_id(void) {
+    /* Stable machine id, not the display name: it keys the [game.spyro-1]
+     * scope in openpete.toml, so it has to survive a title-casing whim. */
+    return "spyro-1";
+}
+
 /* --- Memory layout (PSX defaults; overrides come in Phase 1b) --- */
 
 uint32_t game_get_ram_size(void)             { return 2u * 1024u * 1024u; }

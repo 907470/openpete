@@ -10,6 +10,7 @@
 
 #include "openpete.h"
 #include "openpete_knobs.h"
+#include "../../core/runtime/config_schema.h"
 
 #include <stdio.h>
 #include <string.h>
@@ -174,6 +175,47 @@ int main(void) {
     }
     if (added >= 64) rc |= fail("capacity never refused an add");
     if (!find_row("test_action", NULL)) rc |= fail("overflow clobbered a row");
+
+    /* The registry and the config schema are two tables describing the same
+     * knobs, and they have to agree or a flag silently loses its
+     * openpete.toml bare key — and, when it also has an env twin, loses the
+     * flattening that keeps the two spellings from fighting.
+     *
+     * Checked in the direction that catches the mistake people actually
+     * make: adding a CLI flag with a registry row and forgetting the schema.
+     * The reverse (a schema row with no registry row) is checked too, so the
+     * schema can't grow knobs the M overlay never lists.
+     *
+     * ENVROW_* rows are exempt: they are the ~150 debug-only OPENPETE_* vars,
+     * which have no flag to conflict with and no bare key by design. Their
+     * ids are the SHOUTING var name minus the prefix, which is what tells
+     * them apart from the hand-written env-only rows. */
+    {
+        size_t n;
+        const knob_desc_t *ks = knob_registry(&n);
+        for (size_t i = 0; i < n; i++) {
+            if (!ks[i].cli) continue;
+            int si = cfg_schema_find_cli(ks[i].cli);
+            if (si < 0) {
+                rc |= fail("knob has no config schema row");
+                fprintf(stderr, "       %s (%s) — add it to config_schema.c\n",
+                        ks[i].id, ks[i].cli);
+            } else if (strcmp(cfg_schema(NULL)[si].id, ks[i].id) != 0) {
+                rc |= fail("schema/registry id mismatch for a flag");
+                fprintf(stderr, "       %s vs %s for %s\n",
+                        cfg_schema(NULL)[si].id, ks[i].id, ks[i].cli);
+            }
+        }
+        size_t sn;
+        const cfg_knob_t *sch = cfg_schema(&sn);
+        for (size_t i = 0; i < sn; i++) {
+            if (!find_row(sch[i].id, NULL)) {
+                rc |= fail("config schema names a knob the registry lacks");
+                fprintf(stderr, "       %s — add its row to knob_registry.c\n",
+                        sch[i].id);
+            }
+        }
+    }
 
     printf(rc ? "knob_registry_test: FAILED\n" : "knob_registry_test: ok\n");
     return rc;

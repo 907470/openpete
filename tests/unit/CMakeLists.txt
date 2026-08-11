@@ -78,14 +78,36 @@ add_test(NAME psx_region_test COMMAND psx_region_test)
 # (openpete_knob_add) landing inside their section, capacity refusal, and
 # KNOB_ACTION button rows. Compiles knob_registry.c directly and stubs the
 # renderer/host setters it writes through, so no SDL in a console test.
+# config.c comes along because the registry now asks the resolver where each
+# row's value came from instead of re-deriving it — and having both tables in
+# one binary is what lets this test assert they agree (see the schema
+# cross-check in main).
 add_executable(knob_registry_test
     knob_registry_test.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/knob_registry.c)
+    ${CMAKE_SOURCE_DIR}/core/runtime/knob_registry.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/config.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/config_schema.c
+    ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
 target_include_directories(knob_registry_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
 set_target_properties(knob_registry_test PROPERTIES C_STANDARD 11)
 add_test(NAME knob_registry_test COMMAND knob_registry_test)
+
+# config_resolve_test — openpete.toml precedence. The resolver decides which
+# of ~10 layers wins each knob and then materializes exactly one spelling of
+# it; this pins that ordering down so an edit can't quietly re-order the
+# tiers. config.c is deliberately SDL-free so it compiles straight in
+# alongside tomlc99. See notes/plans/openpete-config-consolidation.md.
+add_executable(config_resolve_test
+    config_resolve_test.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/config.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/config_schema.c
+    ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
+target_include_directories(config_resolve_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include)
+set_target_properties(config_resolve_test PROPERTIES C_STANDARD 11)
+add_test(NAME config_resolve_test COMMAND config_resolve_test)
 
 # record_encode_bench — encode-throughput validation for --record (plan
 # openpete-record-video.md Phase 7). Drives the swscale RGBA->yuv420p ->
