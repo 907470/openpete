@@ -386,12 +386,15 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
  * real Z instead of being painted over. Tagged by the moby feeder via pointer
  * match against g_DragonCutscene (the game's own actor set — no heuristic). */
 #define OPENPETE_SCENE_ACTOR_FRONT 13
-/* TERRAIN_KEY: never drawn — consumed ONLY by the terrain HP key pass (P6c).
- * The portal feeder emits the revealed-aperture outline as a fan of these
- * with koff = the sky bucket's ABSOLUTE og key (bucket + 64 world; the
- * half-bucket margin of the .s painter contest), so og-covered opaque
- * terrain loses the per-pixel key contest exactly where the sky rasters —
- * replacing the old stored-depth conformance sink. */
+/* TERRAIN_KEY: never drawn as colour. Two consumers: (1) the terrain HP key
+ * pass (P6c) — the portal feeder emits the revealed-aperture outline as a
+ * fan of these with koff = the sky bucket's ABSOLUTE og key (bucket + 64
+ * world; the half-bucket margin of the .s painter contest), so og-covered
+ * opaque terrain loses the per-pixel key contest exactly where the sky
+ * rasters — replacing the old stored-depth conformance sink; (2) an
+ * invisible stencil MARK just before the WORLD_FILL pass, so the LP
+ * hole-fill can never repaint an og-key-discarded face inside the aperture
+ * (og's preview backs every pixel of the fan footprint). */
 #define OPENPETE_SCENE_TERRAIN_KEY 14
 /* carry: 1 = a tri is screen-space 2D-UI that the sub-tick re-extract canNOT
  * re-derive (it has no 2D-prim chokepoint to hook), so it must be snapshotted

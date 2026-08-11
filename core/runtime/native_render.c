@@ -1079,6 +1079,7 @@ static struct {
     rhi_pipeline *gouraud_mark_pipe;  /* W2.6-c: WORLD-opaque untextured + stencil-MARK coverage (may be NULL → plain pipe, no hole-fill) */
     rhi_pipeline *scene_tex_mark_pipe;/* W2.6-c: WORLD-opaque textured + stencil-MARK coverage (may be NULL → plain pipe, no hole-fill) */
     rhi_pipeline *gouraud_fill_pipe;  /* W2.6-c: WORLD_FILL LP backing, stencil TEST_ZERO (paints only unmarked pixels; may be NULL → no hole-fill) */
+    rhi_pipeline *skyfan_mask_pipe;   /* portal sky fans (TERRAIN_KEY) → invisible stencil MARK, no depth test: the og preview backs every pixel of the fan, so the FILL layer must never paint there (may be NULL → no suppression) */
     rhi_pipeline *scene_tex_pipe;     /* 3a.3: opaque textured scene tris (VRAM sampler) */
     rhi_pipeline *scene_tex_blend_pipe; /* 3a.3: semi-transparent (ABE) textured tris (alpha, ABR mode 0) */
     rhi_pipeline *scene_tex_add_pipe; /* 3b.1: additive (ABR mode 1, B+F) textured tris — flame */
@@ -1598,6 +1599,24 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = true, .stencil = RHI_STENCIL_TEST_ZERO,
         .uses_vram = false, .push_const_size = 0,
     };
+    /* Sky-fan fill mask: rasterize the portal sky's TERRAIN_KEY fans invisibly,
+     * marking stencil=1 across the whole fan footprint, depth test OFF. On the
+     * original the preview fan is painted before anything nearer, so inside its
+     * footprint the preview backs EVERY pixel — a pixel any terrain face misses
+     * (or loses to the sky's og key) shows the preview, never a hole. Marking
+     * the footprint before the FILL layer draws gives the fill the same rule:
+     * it can only repair seams the preview would not already cover. Without
+     * this, a fill twin repaints its og-key-discarded LP parent at true depth
+     * inside the aperture (the hill behind an arch punching through the
+     * preview once the terrain drops to LP), and — because the fill writes
+     * depth — also punches that region out of the depth-tested aperture mask. */
+    rhi_pipeline_desc skyfan_mask_desc = {
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .stencil = RHI_STENCIL_MARK, .color_write_off = true,
+        .uses_vram = false, .push_const_size = 0,
+    };
     /* Semi-transparent UNTEXTURED gouraud pipeline (3b.2): the Spyro silhouette
      * shadow (func_80059A48) is a POLY_G3 strip with ABE set (ABR mode 0,
      * (B+F)/2) — untextured, so it can't go through the textured-blend pipe.
@@ -1981,10 +2000,12 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *gouraud_mark_pipe = rhi_create_pipeline(dev, &gouraud_mark_desc);
     rhi_pipeline *scene_tex_mark_pipe = rhi_create_pipeline(dev, &scene_tex_mark_desc);
     rhi_pipeline *gouraud_fill_pipe = rhi_create_pipeline(dev, &gouraud_fill_desc);
-    if (!gouraud_mark_pipe || !scene_tex_mark_pipe || !gouraud_fill_pipe) {
+    rhi_pipeline *skyfan_mask_pipe = rhi_create_pipeline(dev, &skyfan_mask_desc);
+    if (!gouraud_mark_pipe || !scene_tex_mark_pipe || !gouraud_fill_pipe || !skyfan_mask_pipe) {
         if (gouraud_mark_pipe)   { rhi_destroy_pipeline(dev, gouraud_mark_pipe);   gouraud_mark_pipe = NULL; }
         if (scene_tex_mark_pipe) { rhi_destroy_pipeline(dev, scene_tex_mark_pipe); scene_tex_mark_pipe = NULL; }
         if (gouraud_fill_pipe)   { rhi_destroy_pipeline(dev, gouraud_fill_pipe);   gouraud_fill_pipe = NULL; }
+        if (skyfan_mask_pipe)    { rhi_destroy_pipeline(dev, skyfan_mask_pipe);    skyfan_mask_pipe = NULL; }
         OPL_ERROR_F("native", "hole-fill pipelines unavailable; terrain LP hole-fill disabled");
     }
     rhi_texture  *occl_grid = rhi_create_render_target(dev, OCCL_GW, OCCL_GH);
@@ -2082,6 +2103,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (gouraud_mark_pipe)   rhi_destroy_pipeline(dev, gouraud_mark_pipe);
         if (scene_tex_mark_pipe) rhi_destroy_pipeline(dev, scene_tex_mark_pipe);
         if (gouraud_fill_pipe)   rhi_destroy_pipeline(dev, gouraud_fill_pipe);
+        if (skyfan_mask_pipe)    rhi_destroy_pipeline(dev, skyfan_mask_pipe);
         if (gouraud_add_pipe) rhi_destroy_pipeline(dev, gouraud_add_pipe);
         if (gouraud_sub_pipe) rhi_destroy_pipeline(dev, gouraud_sub_pipe);
         if (gouraud_blend_pipe) rhi_destroy_pipeline(dev, gouraud_blend_pipe);
@@ -2118,6 +2140,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.gouraud_mark_pipe = gouraud_mark_pipe;     /* may be NULL → no hole-fill */
     s_nr.scene_tex_mark_pipe = scene_tex_mark_pipe; /* may be NULL → no hole-fill */
     s_nr.gouraud_fill_pipe = gouraud_fill_pipe;     /* may be NULL → no hole-fill */
+    s_nr.skyfan_mask_pipe = skyfan_mask_pipe;       /* may be NULL → no hole-fill */
     s_nr.scene_tex_pipe = scene_tex_pipe;
     s_nr.scene_tex_blend_pipe = scene_tex_blend_pipe;
     s_nr.scene_tex_add_pipe = scene_tex_add_pipe;
@@ -5112,8 +5135,11 @@ static bool draw_native_scene(bool full_extent)
      * after a depth clear). Groups 6/7/8 are depth-test off; 9 is depth-on.
      * 11 = SKY (cyclorama dome — WORLD-like, drawn FIRST with the PLAIN pipe so
      * it never stencil-marks; see OPENPETE_SCENE_SKY); 12 = WORLD_FILL (terrain
-     * LP hole-fill, stencil TEST_ZERO, right after the WORLD group). */
-    int ut_first[15], ut_count[15];
+     * LP hole-fill, stencil TEST_ZERO, right after the WORLD group); 15 = the
+     * portal sky's TERRAIN_KEY fans, drawn invisibly through skyfan_mask_pipe
+     * just before slot 12 (stencil MARK, no depth test) so the fill can never
+     * paint inside a footprint the og preview backs. */
+    int ut_first[16], ut_count[16];
     /* ACTOR_FRONT screen bbox (scene sx/sy) — the depth-clear scissor for the
      * dragon-rescue front pass. Accumulated across the ut[14]/txg[9] builds. */
     float af_x0 = 1e30f, af_y0 = 1e30f, af_x1 = -1e30f, af_y1 = -1e30f;
@@ -5445,6 +5471,26 @@ static bool draw_native_scene(bool full_extent)
         n += 3; af_n++;
     }
     ut_count[14] = n - ut_first[14];
+    /* Slot 15: the portal sky's TERRAIN_KEY aperture fans — never drawn as
+     * colour; rasterized through skyfan_mask_pipe (invisible stencil MARK,
+     * no depth test) right before the WORLD_FILL slot so the fill layer
+     * cannot paint inside a footprint the og preview backs per-pixel. */
+    ut_first[15] = n;
+    for (int t = 0; t < scene_n; t++) {
+        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_TERRAIN_KEY ||
+            n + 3 > SCENE_VB_VERTS) continue;
+        for (int k = 0; k < 3; k++) {
+            float cx, cy;
+            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+            rhi_vertex *o = &buf[n + k];
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
+            o->u = 0.0f; o->v = 0.0f;
+            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+        }
+        n += 3;
+    }
+    ut_count[15] = n - ut_first[15];
     /* PORTAL buckets (W2.6): sky colours (PORTAL_CYCLORAMA) + their stencil
      * aperture masks (PORTAL_MASK), collected per-portal via the feeder's group
      * id. Draw site (after the WORLD group): per group — clear stencil →
@@ -5986,6 +6032,24 @@ static bool draw_native_scene(bool full_extent)
          * actors draw at gi==3 and don't mark — cutscene draw lists carry no
          * fill-backed decor, so the seam fill stays correct there.) */
         if (gi == 2 && holefill_on && ut_count[12] > 0) {
+            /* Sky-fan fill mask: stamp the portal preview's aperture fans into
+             * the stencil (invisible, no depth test) so the fill below reads
+             * them as covered. og paints the preview fan before anything
+             * nearer, so inside its footprint the preview backs every pixel —
+             * a seam there resolves to the preview on the original, never to
+             * the LP backing. Without this, a fill twin repaints its
+             * og-key-discarded parent at true depth through the aperture (the
+             * hill behind an arch, once the terrain drops to LP) and its depth
+             * write also punches the region out of the aperture mask.
+             * OPENPETE_PORTAL_SKY_FILLMASK=0 restores the old behaviour. */
+            static int s_sfm = -1;
+            if (s_sfm < 0) { const char* e = getenv("OPENPETE_PORTAL_SKY_FILLMASK");
+                             s_sfm = (e && *e) ? (*e != '0') : 1; }
+            if (s_sfm && ut_count[15] > 0 && s_nr.skyfan_mask_pipe) {
+                bind_scene_pipe(s_nr.skyfan_mask_pipe);
+                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                rhi_draw(s_nr.dev, (uint32_t)ut_count[15], (uint32_t)ut_first[15]);
+            }
             bind_scene_pipe(s_nr.gouraud_fill_pipe);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[12], (uint32_t)ut_first[12]);
@@ -8320,6 +8384,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.gouraud_mark_pipe)   rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_mark_pipe);
     if (s_nr.scene_tex_mark_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_mark_pipe);
     if (s_nr.gouraud_fill_pipe)   rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_fill_pipe);
+    if (s_nr.skyfan_mask_pipe)    rhi_destroy_pipeline(s_nr.dev, s_nr.skyfan_mask_pipe);
     if (s_nr.gouraud_add_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_add_pipe);
     if (s_nr.gouraud_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_sub_pipe);
     if (s_nr.gouraud_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_blend_pipe);

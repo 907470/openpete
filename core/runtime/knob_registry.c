@@ -697,6 +697,9 @@ static const knob_desc_t g_builtin[] = {
         "Outward margin on the portal aperture, in WORLD units (default 40; negative erodes)."),
     ENVROW_LATCHED("PORTAL_RIM_CULL", "Debug", "1",
         "Cull terrain lying in a portal's opening plane (the inner rim). 0 = keep."),
+    ENVROW_LATCHED("PORTAL_SKY_FILLMASK", "Debug", "1",
+        "Stencil the sky-fan footprint before the LP hole-fill so fills never repaint "
+        "og-key-discarded terrain inside the aperture (0 = old behaviour)."),
     ENVROW_LATCHED("PORTAL_RIM_BROAD", "Debug", "1",
         "Portal-rim sector broadphase: skip rim classification for sectors provably "
         "clear of every opening (1 on, 0 off, 2 = classify live + audit the broadphase)."),
