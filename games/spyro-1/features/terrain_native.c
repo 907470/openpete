@@ -369,13 +369,14 @@ static void terrain_dbg_init(void) {
      * exact two-half quad rule, see the emit-site comment — is the canonical
      * visibility rule; the old "dropped ~half the faces" failure was the
      * single-triple mirror missing the second-half acceptance.
-     * OPENPETE_TERRAIN_CULL is a bitmask: bit0 = HP cull (default), bit1 = LP
-     * cull (EXPERIMENTAL — mixed winding in visible LP sets made both signs
-     * regress at default cameras; needs the LP walk's own two-NCLIP rule read
-     * from the .s before enabling), bit2 = invert LP sign (probe). "0"
-     * disables everything. */
+     * OPENPETE_TERRAIN_CULL is a bitmask: bit0 = HP cull, bit1 = LP cull,
+     * both default ON. Each tier mirrors its own walk's exact per-half NCLIP
+     * rule (HP: (i0,i1,i3)/(i2,i1,i3) with the w3 flip/two-sided bits; LP:
+     * (i0,i1,i2)/(i3,i1,i2), fixed strict signs, w0 bit7 double-sided — see
+     * the emit-site comment). The old "mixed winding" LP failure was the HP
+     * corner order and sign applied to the LP walk. "0" disables everything. */
     static tn_envvbl_t cc, fc;
-    s_cull = tn_env_vbl(&cc, "OPENPETE_TERRAIN_CULL", 1, 0);
+    s_cull = tn_env_vbl(&cc, "OPENPETE_TERRAIN_CULL", 3, 0);
     s_flat = tn_env_vbl(&fc, "OPENPETE_TERRAIN_FLAT", 0, 1);
 }
 
@@ -1149,6 +1150,7 @@ typedef struct {
     uint8_t  fillcand;                             /* LP only: gapfill set by the inspector preview, not the list */
     uint8_t  floorf;                               /* LP only: up-facing floor by winding (n_z < 0, |n_z| > 0.8) */
     uint8_t  admit;                                /* LP only: authored admission field w0 & 0x1F */
+    uint8_t  dside;                                /* LP only: w0 & 0x80 — double-sided, emits past both NCLIP halves */
     uint8_t  otbias;                               /* authored OT-bias field: LP (w1>>3)&0x1F,
                                                     * HP (w3>>3)&0x7 (slot units before x8/x4) */
     int8_t   tb;                                   /* HP texByte (int8 of w2; -1 = untextured) */
@@ -1344,6 +1346,7 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
             F->i0 = (uint8_t)(((w0 >> 23) & 0x1F8) >> 3); F->i1 = (uint8_t)(((w0 >> 17) & 0x1F8) >> 3);
             F->i2 = (uint8_t)(((w0 >> 11) & 0x1F8) >> 3); F->i3 = (uint8_t)(((w0 >> 5) & 0x1F8) >> 3);
             F->admit = (uint8_t)(w0 & 0x1F);       /* authored LP admission (crossover in 1024-world steps) */
+            F->dside = (w0 & 0x80) != 0;           /* double-sided: draw regardless of facing */
             F->otbias = (uint8_t)((w1 >> 3) & 0x1F);
             F->c0 = (uint16_t)((w1 >> 24) & 0xFC); F->c1 = (uint16_t)((w1 >> 18) & 0xFC);
             F->c2 = (uint16_t)((w1 >> 12) & 0xFC); F->c3 = (uint16_t)((w1 >> 6) & 0xFC);
@@ -3343,23 +3346,49 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             #define NSAT(v) (unrOvf ? (double)(v) : GTE_SAT(v))
             double nx0 = NSAT(sv[i0].sx), ny0 = NSAT(sv[i0].sy);
             double nx1 = NSAT(sv[i1].sx), ny1 = NSAT(sv[i1].sy);
-            int h1 = quad ? i3 : i2;
-            double nxA = NSAT(sv[h1].sx), nyA = NSAT(sv[h1].sy);
-            double nclip = (nx1 - nx0) * (nyA - ny0) - (nxA - nx0) * (ny1 - ny0);
-            if (flip) nclip = -nclip;
-            int front = (nclip >= 0.0);
-            int front2 = 0;
-            if (quad) {
+            double nclip;
+            int front, front2 = 0;
+            if (faceStride == 8) {
+                /* LP walk (block_80026404 quad / block_80026604 tri): no flip
+                 * bit, fixed signs, and the corner ORDER differs from HP —
+                 *  - HALF 1: NCLIP over (i0, i1, i2) (scanline order, not the
+                 *    GT4 slot order), accepted STRICTLY positive.
+                 *  - HALF 2 (quads, half 1 flunked): SXY0 re-loaded with i3 →
+                 *    NCLIP over (i3, i1, i2), accepted STRICTLY negative (the
+                 *    triple's orientation inverts vs half 1).
+                 *  - w0 bit 7 = double-sided: the quad path jumps past the
+                 *    half-2 verdict straight to the far-cull/admission gates
+                 *    (block_80026448→80026484); the tri path adds bit7<<23 =
+                 *    0x40000000 to MAC0, which dwarfs any saturated cross.
+                 * (The old EXPERIMENTAL LP cull mirrored HP's (i0,i1,i3) order
+                 * and sign — the "mixed winding" both-signs regression.) */
                 double nx2 = NSAT(sv[i2].sx), ny2 = NSAT(sv[i2].sy);
-                double nx3 = NSAT(sv[i3].sx), ny3 = NSAT(sv[i3].sy);
-                double nclip2 = (nx1 - nx2) * (ny3 - ny2) - (nx3 - nx2) * (ny1 - ny2);
-                int dside = (faceStride == 16) && (F->w3 & 0x4) != 0;
-                front2 = dside || (flip ? (nclip2 >= 0.0) : (nclip2 <= 0.0));
+                nclip = (nx1 - nx0) * (ny2 - ny0) - (nx2 - nx0) * (ny1 - ny0);
+                front = (nclip > 0.0);
+                if (quad) {
+                    double nx3 = NSAT(sv[i3].sx), ny3 = NSAT(sv[i3].sy);
+                    double nclip2 = (nx1 - nx3) * (ny2 - ny3) - (nx2 - nx3) * (ny1 - ny3);
+                    front2 = (nclip2 < 0.0);
+                }
+                if (F->dside) front2 = 1;
+            } else {
+                int h1 = quad ? i3 : i2;
+                double nxA = NSAT(sv[h1].sx), nyA = NSAT(sv[h1].sy);
+                nclip = (nx1 - nx0) * (nyA - ny0) - (nxA - nx0) * (ny1 - ny0);
+                if (flip) nclip = -nclip;
+                front = (nclip >= 0.0);
+                if (quad) {
+                    double nx2 = NSAT(sv[i2].sx), ny2 = NSAT(sv[i2].sy);
+                    double nx3 = NSAT(sv[i3].sx), ny3 = NSAT(sv[i3].sy);
+                    double nclip2 = (nx1 - nx2) * (ny3 - ny2) - (nx3 - nx2) * (ny1 - ny2);
+                    int dside = (F->w3 & 0x4) != 0;
+                    front2 = dside || (flip ? (nclip2 >= 0.0) : (nclip2 <= 0.0));
+                }
             }
             /* Far-band identity dump: full per-face record for the offline
              * whole-face join vs captured prims. Backfaces included (fr=0 —
-             * the .s NCLIP-culls them but native emit-all draws them; the
-             * attribution needs them); fill pass skipped (duplicate of pass 0). */
+             * dumped BEFORE the cull gate so the attribution can name faces
+             * neither side draws); fill pass skipped (duplicate of pass 0). */
             if (s_fardbg_active && !passFill) {
                 const int ci[4] = { i0, i1, i2, i3 };
                 const int cc[4] = { c0, c1, c2, c3 };
@@ -3698,16 +3727,15 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              *    waive (Z-buffer owns those; same waiver as the near/HQ gate).
              *  - fill passes: native-only hole cover with no .s counterpart,
              *    stencil-gated to pixels nothing else drew — stay emit-all.
-             * LP quads are culled per-tri below (the .s LP loop NCLIPs
-             * tri(i0,i1,i2) then tri(i3,i1,i2) — a saddle quad can be half
-             * front-facing); everything else uses the whole-face verdict. */
-            /* OPENPETE_TERRAIN_CULL is a bitmask while the per-tier NCLIP
-             * convention is being validated: bit0 = cull HP faces, bit1 =
-             * cull LP faces, bit2 = invert the LP front sign. */
+             * Both tiers are whole-face verdicts: the .s emits the full
+             * GT4/GT3 when either half accepts (LP: block_80026490's emit
+             * path is shared by the front, double-sided and half-2 routes). */
+            /* OPENPETE_TERRAIN_CULL bitmask: bit0 = cull HP faces, bit1 =
+             * cull LP faces (both default on; each mirrors its walk's exact
+             * per-half NCLIP rule above). */
             int cullable = ((faceStride == 16) ? (s_cull & 1) : (s_cull & 2))
                            && !straddle && !passFill;
-            int cfront = ((faceStride == 8 && (s_cull & 4)) ? (nclip < 0.0) : front)
-                         || front2;
+            int cfront = front || front2;
             {   /* OPENPETE_TERRAIN_CULLDBG="frame,x0,y0,x1,y1" (PSX screen rect):
                  * log every back-verdict face whose bbox intersects the rect. */
                 static int s_cdbg = -2; static long s_cd[5];
