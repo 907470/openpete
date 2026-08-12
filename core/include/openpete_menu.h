@@ -45,7 +45,7 @@ int  openpete_menu_cursor(void);
 typedef struct {
     float panel_x0, panel_y0, panel_x1, panel_y1;  /* panel rect */
     int   row_count;
-    float row_y[12];       /* per-row center y (capacity >= ROW_COUNT) */
+    float row_y[16];       /* per-row center y (capacity >= ROW_COUNT) */
     float row_h;           /* selection-bar height */
     float title_y, title_cap_h;
     float row_cap_h;       /* glyph cap height for a row */
@@ -59,6 +59,13 @@ const char* openpete_menu_title(void);
 const char* openpete_menu_row_label(int row);
 const char* openpete_menu_row_value(int row, char* buf, int buflen);
 unsigned    openpete_menu_wobble_phase(void);
+
+/* 1 for an action row drawn CENTERED in the panel with no value column (EXIT
+ * GAME): the glyph builder centres its label instead of splitting it across the
+ * label/value columns. Its label carries the row's state — EXIT arms on the
+ * first press and reads "REALLY EXIT?" until it is pressed again or the cursor
+ * moves off it. */
+int         openpete_menu_row_centered(int row);
 
 /* Move the row cursor: dy < 0 = up, dy > 0 = down (wraps). No-op unless open. */
 void openpete_menu_nav(int dy);

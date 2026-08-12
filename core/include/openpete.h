@@ -710,6 +710,12 @@ int openpete_options_require_exe_source(const openpete_options_t* opts);
 /* Run the main loop. Returns one of OPENPETE_EXIT_*. */
 int  openpete_run(const openpete_options_t* opts);
 
+/* Ask for a clean shutdown from anywhere (settings-menu EXIT row, the RHI on an
+ * unrecoverable device loss, the SDL window-close path). Sets the cooperative
+ * flag the host-fiber loop polls once per iteration, so teardown runs through
+ * the normal drain instead of exiting from inside a scene. */
+void openpete_request_shutdown(void);
+
 /* Live-set the render-fps target (present pacing) at runtime — e.g. from the
  * in-game settings menu. 0 = match sim (~30 Hz). The host loop recomputes the
  * pacer period and re-anchors its deadlines on the next iteration (no catch-up

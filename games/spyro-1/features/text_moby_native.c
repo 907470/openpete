@@ -555,6 +555,20 @@ void text_moby_native_menu(CPUState* cpu) {
         char vb[16];
         const char* label = openpete_menu_row_label(r);
         const char* value = openpete_menu_row_value(r, vb, sizeof vb);
+        /* Action rows (EXIT GAME) have no value: centre the label on the panel
+         * so it reads as a button rather than a setting whose value went
+         * missing. Shrunk if the armed text outgrows the panel width. */
+        if (openpete_menu_row_centered(r)) {
+            float ccap = row_cap;
+            const float cavail = (L.panel_x1 - 0.015f) - (L.panel_x0 + 0.015f);
+            const float cw0 = measure_string(label, ccap);
+            if (cw0 > cavail && cw0 > 0.0f) ccap *= cavail / cw0;
+            const float cw = measure_string(label, ccap);
+            n += emit_string(label, pcx - 0.5f * cw,
+                             L.row_y[r] - ccap * 0.5f, ccap,
+                             MENU_TXT_TINT, wob, s_menu_buf + n, MENU_TXT_MAX - n);
+            continue;
+        }
         const float lw = measure_string(label, row_cap);
         n += emit_string(label, L.label_x - lw,
                          L.row_y[r] - row_cap * 0.5f, row_cap,

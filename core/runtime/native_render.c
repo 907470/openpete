@@ -1522,7 +1522,6 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     }
     /* On an unrecoverable device-loss (acquire/present), flag a clean shutdown
      * rather than spin failed frames forever (W0.6 RHI robustness). */
-    extern void openpete_request_shutdown(void);
     rhi_set_device_lost_handler(openpete_request_shutdown);
     /* Live-window supersampling (--ssaa N, default 1=no-op): the ss_rtt + resolve
      * pass are set up lazily (ensure_ss_rtt) once the window size is known. */

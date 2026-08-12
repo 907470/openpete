@@ -137,6 +137,14 @@ windows)
         mkdir -p "$T"
         cp -a "$TOOLCHAIN"/bin "$TOOLCHAIN"/lib "$TOOLCHAIN"/include \
               "$TOOLCHAIN"/x86_64-w64-mingw32 "$T/" 2>/dev/null || true
+        # Upstream llvm-mingw's bin/ is FLAT — every entry is a driver binary,
+        # wrapper script or config. Anything that is a directory got there by
+        # accident (a build run with its cwd inside the toolchain leaves a whole
+        # tree behind, which then rides into the archive: 372MB of stale objects
+        # and a recursive copy of the toolchain itself shipped this way once).
+        # Prune them so a polluted source tree can't quietly bloat a release.
+        find "$T/bin" -mindepth 1 -maxdepth 1 -type d -print -exec rm -rf {} + \
+            | sed 's|^|[package] dropped stray dir from toolchain bin: |'
         # x86_64 + C-focused trim (see plan D3.1 measurements)
         ( cd "$T/bin" && ls | grep -E "^(aarch64|armv7|i686)" | xargs -r rm -f \
           && rm -f lldb* clang-tidy* clang-format* clang-scan-deps* \

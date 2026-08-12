@@ -25,6 +25,7 @@
 /* --- rows ---------------------------------------------------------------- */
 enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
        ROW_WOBBLE, ROW_TEXMAP, ROW_DITHER, ROW_LOD, ROW_FREECAM, ROW_SAVE,
+       ROW_QUIT,
        ROW_COUNT,
        /* MODSEL/MODEN and FOG are parked past ROW_COUNT: hidden from display
         * + navigation for now, but all their plumbing stays live and
@@ -36,8 +37,18 @@ enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
     "DISPLAY", "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE",
-    "TEXTURES", "DITHER", "LOD", "FREECAM", "SETTINGS",
+    "TEXTURES", "DITHER", "LOD", "FREECAM", "SETTINGS", "EXIT GAME",
 };
+
+/* EXIT is a CENTERED row: no value column, its label spans the panel centre
+ * (openpete_menu_row_centered), and it sits below a gap so it reads as an
+ * action separate from the settings above it.
+ *
+ * It arms on the first press and quits on the second. "Increase value" is the
+ * same input the player uses on every other row (Right / d-pad / cross) and the
+ * cursor wraps, so a one-press exit sits one stray keypress away from throwing
+ * out the progress since their last save. Moving the cursor disarms. */
+static int s_quit_armed;
 
 /* SETTINGS is an action row, not a value: left/right pick what pressing it
  * will do, and the press does it. Persisting is explicit — closing the menu
@@ -178,6 +189,7 @@ static const char* value_str(int row, char* buf, int buflen) {
             return buf;
         }
         return s_save_idx == SAVE_CLEAR ? "CLEAR SAVED" : "SAVE";
+    case ROW_QUIT:     return "";   /* centered: the label IS the row */
     case ROW_MODSEL: {
         const char* id = openpete_mods_id(s_modsel_idx);
         return id ? id : "NONE";
@@ -241,6 +253,14 @@ static void apply_row(int row) {
          * clears the latched axes, so no stale intent carries over. */
         if ((s_freecam_idx != 0) != (openpete_freecam_active() ? 1 : 0))
             openpete_freecam_toggle();
+        break;
+    case ROW_QUIT:
+        /* Cooperative: the host-fiber loop drains and tears down on its next
+         * iteration, so the memory card flushes like any other exit. */
+        if (s_quit_armed >= 2) {
+            OPL_INFO_F("menu", "%s", "exit requested");
+            openpete_request_shutdown();
+        }
         break;
     default: break;
     }
@@ -321,6 +341,7 @@ int openpete_menu_toggle(void) {
         s_wobble_idx  = wobble_idx_from_live();   /* M-overlay knobs move the pair */
         s_texmap_idx  = openpete_native_get_texture_mapping();   /* M-overlay row moves it */
         s_dither_idx  = openpete_native_get_dither();            /* M-overlay row moves it */
+        s_quit_armed  = 0;   /* never re-open onto a primed EXIT */
         log_state("opened");
     } else {
         OPL_INFO_F("menu", "%s", "closed");
@@ -357,13 +378,15 @@ void openpete_menu_get_layout(openpete_menu_layout_t* out) {
     const float spacing   = 0.050f;   /* row-to-row (tightened from the pause-menu 0.072 with the font shrink) */
     const float top_pad   = 0.055f;   /* panel top → title top */
     const float title_gap = 0.070f;   /* title top → first row (larger header needs more) */
+    const float quit_gap  = 0.030f;   /* extra space above EXIT: it acts, it doesn't set */
     out->title_cap_h = title_cap;
     out->title_y     = out->panel_y0 + top_pad + title_cap * 0.5f;
     out->row_cap_h   = row_cap;
     out->row_h       = spacing;        /* (selection bar removed; kept ≈ line pitch) */
     const float first = out->panel_y0 + top_pad + title_cap + title_gap + row_cap * 0.5f;
     for (int i = 0; i < N; i++)
-        out->row_y[i] = first + spacing * (float)i;
+        out->row_y[i] = first + spacing * (float)i
+                      + (i >= ROW_QUIT ? quit_gap : 0.0f);
     /* Split point (labels right-align to label_x, values left-align at value_x).
      * Kept left of centre — reduces the left padding and gives the widest row's
      * value ("EXTENDED") room before the right border. */
@@ -374,8 +397,11 @@ void openpete_menu_get_layout(openpete_menu_layout_t* out) {
 const char* openpete_menu_title(void) { return "SETTINGS"; }
 
 const char* openpete_menu_row_label(int row) {
+    if (row == ROW_QUIT && s_quit_armed) return "REALLY EXIT?";
     return (row >= 0 && row < ROW_COUNT) ? ROW_LABEL[row] : "";
 }
+
+int openpete_menu_row_centered(int row) { return row == ROW_QUIT; }
 
 const char* openpete_menu_row_value(int row, char* buf, int buflen) {
     if (row < 0 || row >= ROW_COUNT) return "";
@@ -387,6 +413,7 @@ unsigned openpete_menu_wobble_phase(void) { return s_tick; }
 void openpete_menu_nav(int dy) {
     if (!s_open) return;
     s_cursor = wrap_idx(s_cursor + (dy > 0 ? 1 : -1), ROW_COUNT);
+    s_quit_armed = 0;   /* leaving the row (or arriving) always re-arms safe */
     log_state("cursor");
 }
 
@@ -432,6 +459,11 @@ void openpete_menu_adjust(int dx) {
                 id, !openpete_mods_is_enabled(id));
         break;
     }
+    case ROW_QUIT:
+        /* Either direction counts as a press: the first arms, the second (seen
+         * by apply_row below) quits. */
+        if (s_quit_armed < 2) s_quit_armed++;
+        break;
     default: break;
     }
     apply_row(s_cursor);
