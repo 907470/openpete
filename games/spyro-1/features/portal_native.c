@@ -363,14 +363,19 @@ static void dump_portal_table(CPUState* cpu) {
 }
 
 /* Resolve the flat-fill colour a leaf carries in a0 (see feed_portal_quad): the
- * far/medium leaves pass a pointer whose [0] IS the colour (high bytes set); the
- * close DOME leaf passes the skybox struct whose colour is at +0x18. Returns the
- * raw 0x00BBGGRR (pre-fog); 0 if a0 isn't a RAM pointer. Shared by the canonical
- * feed and the sub-tick capture so both resolve the colour identically. */
-static uint32_t portal_flat_raw_rgb(CPUState* cpu, uint32_t a0) {
+ * FLAT/BLENDED leaves pass a pointer whose [0] IS the colour; the close DOME
+ * leaf (func_8004F4BC) passes the skybox struct whose colour is at +0x18. The
+ * caller states which via a0_is_skybox — the leaf hook knows the leaf. (A
+ * magnitude sniff, w0 >= 0x10000 ? colour : struct, used to discriminate; the
+ * ANIMATED flat colour dips below 0x10000 at its cycle trough — blue and green
+ * reach zero while red persists — and the sniff then read a0+0x18 of a STACK
+ * colour pointer: junk 0x18 past the leaf's temp, a one-frame flicker to
+ * whatever lived there, black to lime, at exactly the darkest cycle phase.)
+ * Returns the raw 0x00BBGGRR (pre-fog); 0 if a0 isn't a RAM pointer. Shared by
+ * the canonical feed and the sub-tick capture so both resolve identically. */
+static uint32_t portal_flat_raw_rgb(CPUState* cpu, uint32_t a0, int a0_is_skybox) {
     if (a0 < 0x80010000u || a0 >= 0x80200000u) return 0;
-    uint32_t w0 = cpu->read_word(a0) & 0xFFFFFF;
-    return (w0 >= 0x10000u) ? w0 : (cpu->read_word(a0 + 0x18) & 0xFFFFFF);
+    return cpu->read_word(a0 + (a0_is_skybox ? 0x18u : 0u)) & 0xFFFFFF;
 }
 
 /* Decode the GTE rotation registers (gte_ctrl[0..4], Q12) into a 3x3 — the dome
@@ -1037,22 +1042,22 @@ static int portal_repr_skip(int is_dome) {
     return (m >= 0) && ((m == 1) != (is_dome != 0));
 }
 
-static int feed_portal_quad(CPUState* cpu, uint32_t a0, uint32_t portal_hint,
+static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
+                            uint32_t portal_hint,
                             uint32_t rgb_override, uint32_t ot_b_hint,
                             uint32_t fog_rgb, double fog_t) {
     if (portal_repr_skip(0)) return 0;
     if (rgb_override == PORTAL_RGB_RESOLVE &&
         (a0 < 0x80010000u || a0 >= 0x80200000u)) return 0;   /* canonical: a0 must be a RAM pointer */
-    /* The flat-fill colour. Far/medium leaves (func_8004FEA0/80050240) pass a
+    /* The flat-fill colour. FLAT/BLENDED leaves (func_8004FEA0/80050240) pass a
      * pointer whose [0] IS the colour (stack fog colour, &D_800757D4 blend, or
-     * the close-pass skybox+0x10 bg colour) — all have high bytes set. The close
-     * DOME leaf (func_8004F4BC) passes the skybox struct itself, whose [0] is the
-     * small sector COUNT, not a colour; there the m_BackgroundColor lives at
-     * skybox+0x18. portal_flat_raw_rgb discriminates by magnitude. On the reextract
-     * a0/D_800757D4 are stale, so the captured raw colour is passed in directly. */
+     * the close-pass skybox+0x10 bg colour); the close DOME leaf (func_8004F4BC)
+     * passes the skybox struct itself, whose m_BackgroundColor lives at +0x18 —
+     * a0_is_skybox comes from the leaf hook's kind. On the reextract a0 /
+     * D_800757D4 are stale, so the captured raw colour is passed in directly. */
     uint32_t rgb = (rgb_override != PORTAL_RGB_RESOLVE)
                        ? (rgb_override & 0xFFFFFF)
-                       : portal_flat_raw_rgb(cpu, a0);
+                       : portal_flat_raw_rgb(cpu, a0, a0_is_skybox);
     rgb = blend_to_fog(rgb, fog_rgb, fog_t);     /* blended-medium: fade the base toward the fog colour */
     uint32_t rgba = rgb | 0xFF000000u;
 
@@ -2095,7 +2100,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
             if (sb >= 0x80010000u && sb < 0x80200000u) {
                 forced_fp = fp;
                 forced_sb = sb;   /* provisional; cleared if the dome feed fails below */
-                uint32_t cb = portal_flat_raw_rgb(cpu, sb + 0x10);
+                uint32_t cb = portal_flat_raw_rgb(cpu, sb + 0x10, 0);
                 if (cb) flat_rgb_override = cb;
             }
         }
@@ -2105,7 +2110,8 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
          * PORTAL_CYCLORAMA (passed to add_tri inside feed_portal_quad/_dome) so the
          * renderer draws it depth-test-on / depth-WRITE-off in its own pass before
          * the actors. */
-        feed_portal_quad(cpu, a0, forced_fp, flat_rgb_override, 0, fog, fog_t);
+        feed_portal_quad(cpu, a0, kind == PORTAL_DOME, forced_fp,
+                         flat_rgb_override, 0, fog, fog_t);
         if (forced_sb) {
             uint32_t sb = forced_sb; forced_sb = 0;
             { static int fd=-1; if(fd<0){const char*e=getenv("OPENPETE_NOLOD_DOME_DBG");fd=(e&&*e&&*e!='0');}
@@ -2164,7 +2170,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                  * colour with the destination close-base (below-horizon fill) */
                 c->flat_rgb      = (flat_rgb_override != PORTAL_RGB_RESOLVE)
                                        ? flat_rgb_override
-                                       : portal_flat_raw_rgb(cpu, a0);
+                                       : portal_flat_raw_rgb(cpu, a0, kind == PORTAL_DOME);
                 c->is_dome       = (is_dome && is_skybox_a0) || forced_dome;
                 c->skybox        = (is_dome && is_skybox_a0) ? a0 : forced_sb;
                 c->ot_b          = cpu->read_word(D_PORTAL_DEPTH);
@@ -2555,7 +2561,7 @@ void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
          * PORTAL_CYCLORAMA so the sub-tick previews stay depth-write-off too (never
          * occlude Spyro flying/walking through). PORTAL_CYCLORAMA is passed to add_tri
          * inside feed_portal_quad/_dome. */
-        feed_portal_quad(cpu, c->flat_a0, c->portal, c->flat_rgb, c->ot_b,
+        feed_portal_quad(cpu, c->flat_a0, 0 /* rgb_override set */, c->portal, c->flat_rgb, c->ot_b,
                          c->fog_rgb, c->fog_t);
         if (c->is_dome)
             feed_portal_dome(cpu, c->skybox, c->ot_b, /*canonical=*/0,
