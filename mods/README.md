@@ -56,9 +56,9 @@ tier    = "raw"           # declare when using raw func_* addresses
 sim_neutral = true        # observer/presentation-only: excluded from
                           # the save modset tag
 
-[[binding]]               # declared host keys (conflicts are reported)
-name = "warp"
-key  = "F6"
+[[binding]]               # declared host keys (conflicts are reported).
+name = "warp"             # Users rebind these in openpete.toml via
+key  = "F6"               # [keys.mod.<id>] without editing the mod.
 purpose = "warp home"
 
 [[site]]                  # instruction-site hooks (the escape hatch);

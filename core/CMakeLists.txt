@@ -16,6 +16,14 @@ add_library(openpete_core STATIC
     # See notes/plans/openpete-config-consolidation.md.
     runtime/config.c
     runtime/config_schema.c
+
+    # [keys]: the input binding registry. Split the same way and for the
+    # same reason as config.c — keymap.c holds the registry, the layered
+    # store and the edge latches with no SDL in sight (so it links into
+    # tests/unit/keymap_test.c), and keymap_sdl.c is the SDL glue that
+    # turns binding names into codes and reads whether they are held.
+    runtime/keymap.c
+    runtime/keymap_sdl.c
     runtime/screenshot.c
     runtime/run.c
     runtime/psxtrace_verify.c

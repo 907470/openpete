@@ -31,6 +31,7 @@
 #include "openpete_camlock.h"
 #include "openpete_freecam.h"
 #include "openpete_fillpick.h"
+#include "openpete_keymap.h"  /* [keys] — every host hotkey below */
 #include "feature_registry.h"
 #include "openpete_mods.h"
 #include "features/no_lod.h"
@@ -205,46 +206,54 @@ static bool openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
         g_shutdown_requested = 1;
         return false;
     }
-    /* Escape quits. (We used to gate this on !SDL_HasGamepad() so a
-     * Steam-Input phantom keystroke couldn't kill the game, but that also
-     * broke Escape-to-quit for everyone playing on a normal controller — see
-     * openpete_keyboard_state below for the trade-off we re-accepted.) The
-     * window-close path above quits too. */
-    if (ev->type == SDL_EVENT_KEY_DOWN &&
-        ev->key.scancode == SDL_SCANCODE_ESCAPE) {
-        /* While an overlay is open, Escape closes it instead of quitting.
-         * (The filter runs during the main-thread event pump, same thread as the
-         * host loop, so reading the open flags here is race-free.) */
-        if (openpete_devui_is_open()) { openpete_devui_close(); return false; }
-        if (openpete_menu_is_open()) { openpete_menu_toggle(); return false; }
-        g_shutdown_requested = 1;
-        return false;
+    /* Quit-by-key, and Escape's overlay dismiss.
+     *
+     * Handled here rather than through the polled hotkey block because the
+     * filter sees one key event at a time: polling would have to re-derive
+     * "was this press already consumed by closing the menu?" from held
+     * state, and get it wrong the first time a user presses Escape to
+     * close the menu and quits the game instead.
+     *
+     * (We used to gate quitting on !SDL_HasGamepad() so a Steam-Input
+     * phantom keystroke couldn't kill the game, but that also broke
+     * Escape-to-quit for everyone playing on a normal controller — see
+     * km_sdl_key_down in keymap_sdl.c for the trade-off we re-accepted.
+     * `quit = "none"` is now the supported cure.) The window-close path
+     * above quits regardless of any binding. */
+    if (ev->type == SDL_EVENT_KEY_DOWN) {
+        const bool esc = (ev->key.scancode == SDL_SCANCODE_ESCAPE);
+
+        /* Escape dismisses an open overlay whatever `quit` is bound to —
+         * a UI convention rather than a binding, and it keeps unbinding
+         * quit from stranding a panel open. (The filter runs during the
+         * main-thread event pump, same thread as the host loop, so
+         * reading the open flags here is race-free.)
+         *
+         * Consuming the key is what stops the dismiss fighting a polled
+         * binding on the same key: with `menu` bound to Escape the poll
+         * would otherwise still see it held and immediately reopen what
+         * this just closed. Consumed until release, so pressing Escape
+         * again reopens — the dismiss and the toggle compose. */
+        if (esc && openpete_devui_is_open()) {
+            openpete_devui_close();
+            openpete_keymap_consume_key(ev->key.scancode);
+            return false;
+        }
+        if (esc && openpete_menu_is_open()) {
+            openpete_menu_toggle();
+            openpete_keymap_consume_key(ev->key.scancode);
+            return false;
+        }
+
+        if (openpete_keymap_key_binds(OPK_QUIT, ev->key.scancode)) {
+            g_shutdown_requested = 1;
+            return false;
+        }
+        /* Escape with quit unbound or rebound elsewhere: swallow it anyway
+         * so it can't reach PsyCross's debug-key dispatch. */
+        if (esc) return false;
     }
     return true;  /* keep everything else in queue for PsyCross */
-}
-
-/* Host hotkeys (Tab fast-forward, 1/2/3 savestates, F7-F10, I) read the
- * keyboard directly. This is a pass-through: the real keyboard always drives
- * the hotkeys, including while a gamepad is connected.
- *
- * We previously zeroed the keyboard (allowlisting only Tab) whenever a gamepad
- * was present, so a Steam-Input desktop config couldn't fire a hotkey via a
- * phantom keystroke (SDL surfaces those with which==0, so the *polled*
- * SDL_GetKeyboardState array can't tell them from a real press). But that
- * penalised every controller user — testers reported keyboard hotkeys dead
- * whenever any pad was plugged in — to defend an esoteric, Steam-only
- * misconfiguration. Re-accepted trade-off: a Steam Input config that maps a
- * button to a keyboard key can trip a hotkey; the cure is Steam-side (remap
- * the button / disable Steam Input), as run.c's earlier revert (036381d) noted.
- * Note the PSX *gameplay* pad is unaffected either way — PsyCross already gates
- * keyboard-as-pad to gamepad-free slots, so phantom keys can't reach gameplay.
- *
- * Kept as the seam for the correct fix if this ever bites a real user: build
- * keyboard state from the SDL_EVENT_KEY_* stream and drop events whose `which`
- * is not a physical keyboard, instead of polling the merged array. Returns a
- * buffer indexed like SDL_GetKeyboardState's; callers already null-check. */
-static const bool* openpete_keyboard_state(void) {
-    return SDL_GetKeyboardState(NULL);
 }
 
 static void openpete_on_sigint(int sig) {
@@ -571,6 +580,153 @@ extern PsyXPostRenderOverlayFunc g_psyx_postRenderOverlay;
  * SDL's offscreen driver gives back a context with NULL function pointers
  * and we segfault on the first gl* call from GR_InitialisePSX). */
 extern SDL_Window* g_window;
+
+/* Push the resolved [keys.pad] bindings into PsyCross's pad maps.
+ *
+ * PsyCross reads g_cfg_keyboardMapping / g_cfg_controllerMapping on every
+ * internal pad update, but only ever fills them from its own hardcoded
+ * table in PsyX_Sys_InitialiseInput. They are exported C globals, so
+ * stamping them right after PsyX_Initialise makes the PSX pad
+ * configurable without touching PsyCross at all.
+ *
+ * Structural limit: each field holds exactly ONE keyboard scancode or ONE
+ * gamepad button/axis, so an action bound to several of either keeps the
+ * first and warns about the rest. Lifting that means openpete synthesizing
+ * the pad bits itself through the g_PsyX_Pad_InputOverride channel — a
+ * change to the replay-critical path, deliberately not folded in here.
+ *
+ * `[keys.pad2]` is accepted by the config but inert: PsyCross uses the one
+ * g_cfg_controllerMapping for both slots (see the "TODO: separate mapping
+ * for Pad 2" in PsyX_Pad_UpdateGameControllerInput), so a P2 map has
+ * nowhere to land. Say so rather than pretend it took. */
+static void stamp_psx_pad_bindings(void) {
+    /* Every field of both structs, paired with the action that feeds it.
+     * A table rather than 20 assignments so a new pad action is one row. */
+    static const struct {
+        openpete_action_t action;
+        size_t kbd_off;    /* offset into PsyXKeyboardMapping */
+        size_t pad_off;    /* offset into PsyXControllerMapping */
+        int    kbd_only;   /* pad_off is shared with another row: don't write */
+        const char* name;
+    } map[] = {
+#define KM_PAD_FIELD(act, kfield, gfield, nm) \
+        { act, offsetof(PsyXKeyboardMapping, kfield), \
+               offsetof(PsyXControllerMapping, gfield), 0, nm }
+#define KM_PAD_KEYONLY(act, kfield, gfield, nm) \
+        { act, offsetof(PsyXKeyboardMapping, kfield), \
+               offsetof(PsyXControllerMapping, gfield), 1, nm }
+        KM_PAD_FIELD(OPK_PAD_CROSS,      kc_cross,      gc_cross,      "cross"),
+        KM_PAD_FIELD(OPK_PAD_CIRCLE,     kc_circle,     gc_circle,     "circle"),
+        KM_PAD_FIELD(OPK_PAD_SQUARE,     kc_square,     gc_square,     "square"),
+        KM_PAD_FIELD(OPK_PAD_TRIANGLE,   kc_triangle,   gc_triangle,   "triangle"),
+        KM_PAD_FIELD(OPK_PAD_L1,         kc_l1,         gc_l1,         "l1"),
+        KM_PAD_FIELD(OPK_PAD_L2,         kc_l2,         gc_l2,         "l2"),
+        KM_PAD_FIELD(OPK_PAD_L3,         kc_l3,         gc_l3,         "l3"),
+        KM_PAD_FIELD(OPK_PAD_R1,         kc_r1,         gc_r1,         "r1"),
+        KM_PAD_FIELD(OPK_PAD_R2,         kc_r2,         gc_r2,         "r2"),
+        KM_PAD_FIELD(OPK_PAD_R3,         kc_r3,         gc_r3,         "r3"),
+        KM_PAD_FIELD(OPK_PAD_START,      kc_start,      gc_start,      "start"),
+        KM_PAD_FIELD(OPK_PAD_SELECT,     kc_select,     gc_select,     "select"),
+        KM_PAD_FIELD(OPK_PAD_DPAD_UP,    kc_dpad_up,    gc_dpad_up,    "dpad_up"),
+        KM_PAD_FIELD(OPK_PAD_DPAD_DOWN,  kc_dpad_down,  gc_dpad_down,  "dpad_down"),
+        KM_PAD_FIELD(OPK_PAD_DPAD_LEFT,  kc_dpad_left,  gc_dpad_left,  "dpad_left"),
+        KM_PAD_FIELD(OPK_PAD_DPAD_RIGHT, kc_dpad_right, gc_dpad_right, "dpad_right"),
+        /* The WASD-as-left-stick synthesis. Keyboard-only: all four share
+         * the two gc_axis_left_* fields with each other and with the
+         * left_x / left_y actions below, so a pad source here would fight
+         * its opposite number. Bind the stick itself with pad.left_x. */
+        KM_PAD_KEYONLY(OPK_PAD_STICK_UP,    kc_axis_left_up,    gc_axis_left_y, "stick_up"),
+        KM_PAD_KEYONLY(OPK_PAD_STICK_DOWN,  kc_axis_left_down,  gc_axis_left_y, "stick_down"),
+        KM_PAD_KEYONLY(OPK_PAD_STICK_LEFT,  kc_axis_left_left,  gc_axis_left_x, "stick_left"),
+        KM_PAD_KEYONLY(OPK_PAD_STICK_RIGHT, kc_axis_left_right, gc_axis_left_x, "stick_right"),
+#undef KM_PAD_KEYONLY
+#undef KM_PAD_FIELD
+    };
+
+    unsigned char* kbd = (unsigned char*)&g_cfg_keyboardMapping;
+    unsigned char* pad = (unsigned char*)&g_cfg_controllerMapping;
+
+    for (size_t i = 0; i < sizeof map / sizeof map[0]; i++) {
+        km_source_t src[KM_MAX_SOURCES];
+        int n = openpete_keymap_sources(map[i].action, src, KM_MAX_SOURCES);
+        int have_kbd = 0, have_pad = 0;
+
+        for (int s = 0; s < n; s++) {
+            if (src[s].kind == KM_SRC_KEY) {
+                if (have_kbd++) continue;
+                *(int*)(kbd + map[i].kbd_off) = src[s].code;
+            } else {
+                if (map[i].kbd_only) {
+                    OPL_WARN_F("keys", "pad.%s takes a keyboard key only "
+                               "(bind the stick itself with pad.left_x / "
+                               "pad.left_y)", map[i].name);
+                    continue;
+                }
+                if (have_pad++) continue;
+                int code = src[s].code;
+                if (src[s].kind == KM_SRC_PADAXIS) {
+                    code |= CONTROLLER_MAP_FLAG_AXIS;
+                    if (src[s].invert < 0) code |= CONTROLLER_MAP_FLAG_INVERSE;
+                }
+                *(int*)(pad + map[i].pad_off) = code;
+            }
+        }
+        /* An unbound half must be cleared, not left at PsyCross's default —
+         * otherwise `cross = "pad:south"` would silently keep C bound too.
+         * Both sentinels are PsyCross's own "NONE" values, the ones
+         * PsyX_LookupKeyboardMapping / PsyX_LookupGameControllerMapping
+         * hand back, so its readers already treat them as unbound: scancode
+         * 0 indexes a key that is never down, and button -1 matches no
+         * gamepad binding and reads 0. */
+        if (!have_kbd) *(int*)(kbd + map[i].kbd_off) = SDL_SCANCODE_UNKNOWN;
+        if (!have_pad && !map[i].kbd_only)
+            *(int*)(pad + map[i].pad_off) = SDL_GAMEPAD_BUTTON_INVALID;
+
+        if (have_kbd > 1 || have_pad > 1)
+            OPL_WARN_F("keys", "pad.%s: PsyCross holds one keyboard and one "
+                       "gamepad binding per button; the extra source%s "
+                       "%s ignored", map[i].name,
+                       (have_kbd + have_pad > 3) ? "s" : "",
+                       (have_kbd + have_pad > 3) ? "are" : "is");
+    }
+
+    /* The four analog-stick axes are their own actions, and unlike the
+     * buttons they only accept a gamepad axis. */
+    static const struct { openpete_action_t action; size_t off; const char* name; }
+    axes[] = {
+        { OPK_PAD_LEFT_X,  offsetof(PsyXControllerMapping, gc_axis_left_x),  "left_x"  },
+        { OPK_PAD_LEFT_Y,  offsetof(PsyXControllerMapping, gc_axis_left_y),  "left_y"  },
+        { OPK_PAD_RIGHT_X, offsetof(PsyXControllerMapping, gc_axis_right_x), "right_x" },
+        { OPK_PAD_RIGHT_Y, offsetof(PsyXControllerMapping, gc_axis_right_y), "right_y" },
+    };
+    for (size_t i = 0; i < sizeof axes / sizeof axes[0]; i++) {
+        km_source_t src[KM_MAX_SOURCES];
+        int n = openpete_keymap_sources(axes[i].action, src, KM_MAX_SOURCES);
+        int done = 0;
+        for (int s = 0; s < n && !done; s++) {
+            if (src[s].kind != KM_SRC_PADAXIS) {
+                OPL_WARN_F("keys", "pad.%s needs a gamepad axis "
+                           "(e.g. \"pad:leftx\"); ignoring", axes[i].name);
+                continue;
+            }
+            int code = src[s].code | CONTROLLER_MAP_FLAG_AXIS;
+            if (src[s].invert < 0) code |= CONTROLLER_MAP_FLAG_INVERSE;
+            *(int*)(pad + axes[i].off) = code;
+            done = 1;
+        }
+    }
+
+    /* P2 is a valid namespace but has nowhere to land; only say so if the
+     * user actually bound something there. */
+    for (int a = OPK_PAD2_CROSS; a < OPK_ACTION_COUNT; a++) {
+        km_source_t src[KM_MAX_SOURCES];
+        if (openpete_keymap_sources((openpete_action_t)a, src, KM_MAX_SOURCES)) {
+            OPL_WARN_F("keys", "[keys.pad2] is inert: PsyCross shares one "
+                       "controller map across both pad slots");
+            break;
+        }
+    }
+}
 #endif
 
 /* Given a .cue path, build the sibling .bin path. Caller frees.
@@ -634,6 +790,9 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
     OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window", WIN_W, WIN_H);
     PsyX_Initialise((char*)opts->display_name, WIN_W, WIN_H, /*fullscreen=*/0,
                     /*startHidden=*/opts->headless ? 1 : 0);
+    /* PsyX_Sys_InitialiseInput just wrote its hardcoded pad maps; replace
+     * them with the resolved [keys.pad] bindings. */
+    stamp_psx_pad_bindings();
 
     /* Wire PsyCross's CDFS to the disc .bin so CdRead has real data.
      * --disc PATH.cue derives the sibling .bin; otherwise we skip and
@@ -1035,6 +1194,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     bool native_renderer = (opts->renderer != OPENPETE_RENDERER_PSYCROSS);
     PsyX_Initialise((char*)opts->display_name, win_w, win_h, /*fullscreen=*/0,
                     /*startHidden=*/(opts->headless || native_renderer) ? 1 : 0);
+    /* PsyX_Sys_InitialiseInput just wrote its hardcoded pad maps; replace
+     * them with the resolved [keys.pad] bindings. */
+    stamp_psx_pad_bindings();
 
     /* App icon decoded at build time from the PSX save-file header
      * (the red gem from the BIOS memory-card screen). The Win32 .rc
@@ -1604,56 +1766,36 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * game polls — skipping pumps means the game reads a stale override.
      * Pump every iter; the cost is tolerable. */
 
-    /* Save-state hotkey state. Edge-triggered against the previous host-loop
-     * iteration so a held key fires once per press. Number-row 1=save,
-     * 2=load, 3=cycle active slot through 0..9. (The plan's original F2/F4
-     * choices collide with PsyCross's debug bindings — F4 in particular
-     * cycles g_activeKeyboardControllers, which silently kicks the keyboard
-     * off pad 1 and looks identical to a save-state regression.) */
-    bool prev_save = false, prev_load = false, prev_cycle = false;
+    /* Host hotkeys all come from the keymap (openpete_keymap.h), which
+     * owns the bindings AND the press edges: openpete_keymap_poll() once
+     * per host iteration advances one latch bit per action, so a held key
+     * fires exactly once. That replaces the ~25 prev_*_key bools this
+     * function used to carry, and it is what makes every hotkey below
+     * rebindable from [keys.host] in openpete.toml.
+     *
+     * The savestate keys are number-row 1/2/3 by default rather than the
+     * F2/F4 they started as, because F4 collides with PsyCross's own
+     * debug binding — it cycles g_activeKeyboardControllers, which
+     * silently kicks the keyboard off pad 1 and looks exactly like a
+     * save-state regression. */
     unsigned active_slot = 0;
 
-    /* Frame-step state. F7 toggles pause; F8 advances exactly one game
-     * tick (hold to repeat at host-loop rate). While paused the host loop
-     * pumps SDL events, sleeps the deadline, and skips the co_switch into
-     * the game fiber — so g_ram / CPUState stay frozen and PsyCross keeps
-     * presenting the last completed frame. SPU is muted on enter to avoid
-     * the held-voice drone (Cubeb runs on its own callback thread; without
-     * new SPU register writes voices loop their current sample). */
+    /* Frame-step state. Pause toggles; frame-step advances exactly one
+     * game tick (hold to repeat at host-loop rate). While paused the host
+     * loop pumps SDL events, sleeps the deadline, and skips the co_switch
+     * into the game fiber — so g_ram / CPUState stay frozen and PsyCross
+     * keeps presenting the last completed frame. SPU is muted on enter to
+     * avoid the held-voice drone (Cubeb runs on its own callback thread;
+     * without new SPU register writes voices loop their current sample). */
     bool g_paused = false;
     bool g_step_one = false;
-    bool prev_pause_key = false;
-    bool prev_i_key = false;
-    bool prev_l_key = false;
     bool prev_alt_enter = false;
 
-    /* Debug free camera (F / left-stick click). Edge state for the toggles and
-     * the [ / ] / L2 / R2 speed steps; the WASD/arrow/Space/Shift + analog
-     * stick movement is level-held (latched each iteration while engaged). */
-    bool prev_f_key = false;
-    bool prev_g_key = false;
-    bool prev_freecam_pad_toggle = false;
-    bool prev_t_key = false;
-    bool prev_freecam_lb = false, prev_freecam_rb = false;
-    bool prev_freecam_l2 = false, prev_freecam_r2 = false;
-
-    /* LP fill-tag inspector (P). Edge state for the toggle, the preview cycle
-     * and the four verdict keys. */
-    bool prev_p_key = false, prev_h_key = false;
-    bool prev_y_key = false, prev_n_key = false;
-    bool prev_b_key = false, prev_u_key = false;
-
-    /* In-game settings menu (O). Edge state for the toggle + arrow-key nav, and
-     * a latch so we clear the pad override exactly once when the menu closes. */
-    bool prev_o_key   = false;
-    bool prev_menu_up = false, prev_menu_dn = false;
-    bool prev_menu_lf = false, prev_menu_rt = false;
-    bool prev_menu_close = false;   /* controller Start/Circle → close menu */
+    /* Menu / overlay latches that are NOT key edges: these track the
+     * open/closed state itself so the pad override is cleared exactly
+     * once on the closing transition. */
+    bool prev_menu_close = false;   /* Start/Circle closes on RELEASE */
     bool prev_menu_open = false;
-
-    /* Dev config overlay (M). Edge state for the toggle + a latch to clear the
-     * pad override exactly once when imgui releases the keyboard. */
-    bool prev_m_key = false;
     bool prev_devui_kb = false;
 
     /* Seed the in-game settings menu from the launch flags, and build its FPS
@@ -1671,16 +1813,19 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * keyboard cache and AFTER the present has consumed the previous
          * iter's swap-interval flag — preserving the original semantics
          * the GL present path was tested under. */
-        const bool* kbd_top = openpete_keyboard_state();
         /* See OPENPETE_FORCE_PACING note below. The bottom of the loop
          * caches it; mirror the same gate here so the sim-due predicate
          * follows the pacer when measurement mode is on. Re-read each
          * iter — cheap, and getenv on Linux is a libc env-pointer lookup. */
         const char* fp_env = getenv("OPENPETE_FORCE_PACING");
         bool force_pacing = (fp_env && *fp_env && *fp_env != '0');
+        /* The turbo read here is the PREVIOUS iteration's keymap sample —
+         * this peek runs before the poll below. That is what a peek is for;
+         * the authoritative unlock write at the bottom of the loop re-reads
+         * after the poll, so a press costs at most one iteration of lag. */
         bool unlock_now = (opts->headless && !force_pacing) ||
                           openpete_skip_present_until_level ||
-                          (kbd_top && kbd_top[SDL_SCANCODE_TAB]) ||
+                          openpete_key_down(OPK_TURBO) ||
                           (opts->unlock_ranges_count > 0 &&
                            unlock_frame_in_ranges(opts, openpete_frame));
 
@@ -1891,84 +2036,64 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             prev_devui_kb = devui_kb;
         }
 
-        /* Drain SDL events + refresh pad state before the game runs. PsyCross's
-         * libpad reads keyboard via SDL_GetKeyboardState (pumped here) and
-         * writes the bitfield into the buffer registered by PadInitDirect, so
-         * the recompiled PadGetState sees live input. Our SDL_SetEventFilter
-         * already swallows QUIT/CLOSE/ESC before this poll, so PsyCross's own
-         * exit-on-quit path inside PsyX_Sys_DoPollEvent never fires.
-         *
-         * Tab-held throttle: cap the event pump at ~120 Hz so per-iteration
-         * cost drops at unlocked frame rate. We still pump *some* events so
-         * the Tab-release transition gets seen and we can drop back to 60Hz. */
-        const bool* kbd_pre = openpete_keyboard_state();
+        /* While imgui owns the keyboard, every KEYBOARD-sourced hotkey goes
+         * inert in one stroke. Pad sources stay live on purpose: mouse-only
+         * interaction with the dev panel is meant to leave the game
+         * playable, and the same override block above only neutralises the
+         * PSX pad while imgui actually wants typing. Esc-close and the
+         * overlay toggle still work: Esc via the event filter, the toggle
+         * once the text field loses focus (or via the panel's close
+         * button). */
+        openpete_keymap_suspend_keyboard(openpete_devui_wants_keyboard() ? 1 : 0);
 
-        /* While imgui owns the keyboard, every polled host hotkey goes inert
-         * in one stroke — they all null-check kbd_pre. Esc-close and the M
-         * toggle-off still work: Esc via the event filter, M again once the
-         * text field loses focus (or via the panel's close button). */
-        if (openpete_devui_wants_keyboard()) kbd_pre = NULL;
+        /* Sample every binding once per iteration; openpete_key_pressed()
+         * below reads the edge this computed. Reads SDL's keyboard/gamepad
+         * state caches, which the previous iteration's PsyX_UpdateInput
+         * refreshed — so this must run before the first hotkey test, and
+         * the turbo peek at the top of the loop deliberately sees the
+         * previous sample. Our SDL_SetEventFilter swallows QUIT/CLOSE/ESC
+         * before the pump, so PsyCross's own exit-on-quit path inside
+         * PsyX_Sys_DoPollEvent never fires. */
+        openpete_keymap_poll();
 
-        /* M: toggle the dev config overlay. Mutually exclusive with the O
-         * menu — two input-owning overlays with different capture models is
+        /* Dev config overlay. Mutually exclusive with the settings menu —
+         * two input-owning overlays with different capture models is
          * complexity with no payoff. */
-        {
-            bool m_k = kbd_pre && kbd_pre[SDL_SCANCODE_M];
-            if (m_k && !prev_m_key) {
-                if (openpete_devui_toggle() && openpete_menu_is_open())
-                    openpete_menu_toggle();   /* close the O menu underneath */
-            }
-            prev_m_key = m_k;
+        if (openpete_key_pressed(OPK_DEVUI)) {
+            if (openpete_devui_toggle() && openpete_menu_is_open())
+                openpete_menu_toggle();   /* close the settings menu underneath */
         }
 
-        /* O: toggle the in-game settings menu. While open it captures the arrow
-         * keys (Up/Down move the cursor, Left/Right change the value) and the
-         * game pad is neutralised below, so the other hotkeys and gameplay input
-         * stay inert. Esc-closes is handled in the SDL event filter. */
+        /* The in-game settings menu. While open it captures the nav keys and
+         * the game pad is neutralised above, so the other hotkeys and
+         * gameplay input stay inert. Esc-closes is handled in the SDL event
+         * filter. */
         {
-            bool o_k = kbd_pre && kbd_pre[SDL_SCANCODE_O];
-            if (o_k && !prev_o_key) {
+            if (openpete_key_pressed(OPK_MENU)) {
                 openpete_menu_toggle();
                 if (openpete_menu_is_open()) openpete_devui_close();
             }
-            prev_o_key = o_k;
 
             if (openpete_menu_is_open()) {
-                bool up_k = kbd_pre && kbd_pre[SDL_SCANCODE_UP];
-                bool dn_k = kbd_pre && kbd_pre[SDL_SCANCODE_DOWN];
-                bool lf_k = kbd_pre && kbd_pre[SDL_SCANCODE_LEFT];
-                bool rt_k = kbd_pre && kbd_pre[SDL_SCANCODE_RIGHT];
-                /* Controller (P1): digital d-pad AND the left analog stick drive
-                 * the same nav; X (cross) also acts as Right. Read raw from SDL —
-                 * the game's pad view is held neutral while the menu is open, so
-                 * this is independent of it. OR-ing into the keyboard bools means
-                 * one shared edge-trigger (prev_menu_*): holding a direction (key
-                 * or stick) steps once until released, matching the keyboard feel. */
-                bool close_k = false;   /* Start / Circle held (closes on release; open stays on O) */
-                PsyX_RawPad rp;
-                if (PsyX_Pad_GetRawP1(&rp)) {
-                    const int DZ = 16000;   /* ~half-throw left-stick deadzone */
-                    if (rp.dpad_up    || rp.lstick_y < -DZ)             up_k = true;
-                    if (rp.dpad_down  || rp.lstick_y >  DZ)             dn_k = true;
-                    if (rp.dpad_left  || rp.lstick_x < -DZ)             lf_k = true;
-                    if (rp.dpad_right || rp.lstick_x >  DZ || rp.cross) rt_k = true;
-                    close_k = rp.start || rp.circle;
-                }
+                /* Keyboard and pad both drive nav through one binding per
+                 * direction, so holding a direction — key, d-pad or stick —
+                 * steps once until released, the same feel either way. The
+                 * pad's own view of these buttons is held neutral while the
+                 * menu is open, so this cannot double up with gameplay. */
+                bool close_k = openpete_key_down(OPK_MENU_CLOSE);
                 if (!close_k && prev_menu_close) {
-                    /* Close on the RELEASE edge of Start/Circle. The game pad is held
-                     * neutral only while the menu is open, so closing on the press
-                     * would let the still-held button bleed into the game next frame
-                     * (Start → the game's pause menu); by release it's already up.
-                     * Temporary binding — a fuller open/close scheme lands later. */
+                    /* Close on the RELEASE edge of Start/Circle. The game pad
+                     * is held neutral only while the menu is open, so closing
+                     * on the press would let the still-held button bleed into
+                     * the game next frame (Start → the game's pause menu); by
+                     * release it's already up. */
                     openpete_menu_toggle();   /* closes it */
                 } else {
-                    if (up_k && !prev_menu_up) openpete_menu_nav(-1);
-                    if (dn_k && !prev_menu_dn) openpete_menu_nav(+1);
-                    if (lf_k && !prev_menu_lf) openpete_menu_adjust(-1);
-                    if (rt_k && !prev_menu_rt) openpete_menu_adjust(+1);
+                    if (openpete_key_pressed(OPK_MENU_UP))    openpete_menu_nav(-1);
+                    if (openpete_key_pressed(OPK_MENU_DOWN))  openpete_menu_nav(+1);
+                    if (openpete_key_pressed(OPK_MENU_LEFT))  openpete_menu_adjust(-1);
+                    if (openpete_key_pressed(OPK_MENU_RIGHT)) openpete_menu_adjust(+1);
                 }
-                prev_menu_up = up_k; prev_menu_dn = dn_k;
-                prev_menu_lf = lf_k; prev_menu_rt = rt_k;
                 prev_menu_close = close_k;
 
                 /* Freecam axes are level-held and consumed every game tick,
@@ -1980,15 +2105,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                     openpete_freecam_set_axes(&ax);
                 }
             } else {
-                prev_menu_up = prev_menu_dn = prev_menu_lf = prev_menu_rt = false;
                 prev_menu_close = false;
             }
         }
 
         bool rewound_this_iter = false;   /* rewind driver stepped: skip
                                            * this iteration's forward tick */
-        /* Save-state hotkeys: 1 quick-save, 2 quick-load, 3 cycle slot.
-         * Edge-triggered (one action per keypress). The game fiber is
+        /* Save-state hotkeys (default 1 quick-save, 2 quick-load, 3 cycle
+         * slot). Edge-triggered, one action per press. The game fiber is
          * yielded right now, so g_game.cpu and g_ram are quiescent — we can
          * snapshot or restore without racing the recompiled code.
          *
@@ -1998,18 +2122,17 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * stale buttons from the saved RAM and feels like input has stopped
          * registering until the next iter.
          *
-         * Skipped while the settings menu is open (it owns the keyboard): the
-         * prev_* edge state freezes at its pre-menu value, so no held key
-         * misfires when the menu closes. */
+         * Skipped while the settings menu is open — it owns input. The
+         * keymap latch keeps advancing underneath, so a key held across the
+         * close is already latched and cannot misfire on the first iteration
+         * after it, and a press made while the menu was up is swallowed
+         * rather than replayed into the game. */
         if (!openpete_menu_is_open()) {
-            bool save_k  = kbd_pre && kbd_pre[SDL_SCANCODE_1];
-            bool load_k  = kbd_pre && kbd_pre[SDL_SCANCODE_2];
-            bool cycle_k = kbd_pre && kbd_pre[SDL_SCANCODE_3];
-            if (save_k && !prev_save) {
+            if (openpete_key_pressed(OPK_STATE_SAVE)) {
                 (void)openpete_state_save(active_slot, &g_game.cpu,
                                           openpete_frame);
             }
-            if (load_k && !prev_load) {
+            if (openpete_key_pressed(OPK_STATE_LOAD)) {
                 unsigned loaded_frame = openpete_frame;
                 if (openpete_state_load(active_slot, &g_game.cpu,
                                         &loaded_frame) == 0) {
@@ -2020,16 +2143,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                     openpete_frame = loaded_frame;
                 }
             }
-            if (cycle_k && !prev_cycle) {
+            if (openpete_key_pressed(OPK_STATE_CYCLE)) {
                 active_slot = (active_slot + 1u) % OPENPETE_STATE_NUM_SLOTS;
                 OPL_INFO_F("savestate", "active slot -> %u%s",
                            active_slot,
                            openpete_state_slot_present(active_slot)
                                ? " (occupied)" : " (empty)");
             }
-            prev_save  = save_k;
-            prev_load  = load_k;
-            prev_cycle = cycle_k;
 
             /* Mod-requested savestate ops (api->savestate_request)
              * execute here — the same quiescent point as the hotkeys
@@ -2131,17 +2251,17 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 /* Backspace with no --rewind window: say so once instead
                  * of silently doing nothing. */
                 static bool hinted = false;
-                if (!hinted && kbd_pre && kbd_pre[SDL_SCANCODE_BACKSPACE]) {
+                if (!hinted && openpete_key_down(OPK_REWIND)) {
                     hinted = true;
-                    OPL_WARN_F("rewind", "Backspace pressed but rewind is "
-                               "disabled — launch with --rewind 30 to "
-                               "enable a 30 s window");
+                    OPL_WARN_F("rewind", "the rewind key was pressed but "
+                               "rewind is disabled — launch with --rewind 30 "
+                               "to enable a 30 s window");
                 }
             }
             if (openpete_rewind_enabled()) {
                 int rw_live = game_is_gameplay_live(&g_game.cpu);
                 openpete_rewind_on_iter(&g_game.cpu, openpete_frame, rw_live);
-                bool rw_k = kbd_pre && kbd_pre[SDL_SCANCODE_BACKSPACE];
+                bool rw_k = openpete_key_down(OPK_REWIND);
                 /* --rewind-hold A:N — headless driver harness: simulate
                  * holding Backspace for N iterations once frame A is
                  * reached (the P4 determinism gate). */
@@ -2265,13 +2385,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 g_PsyX_Pad_OverrideActive = ovr;
             }
 
-            /* Frame-step hotkeys. F7 edge-triggered toggle; F8 sets
-             * g_step_one whenever held while paused, so the natural
+            /* Frame-step hotkeys. Pause is an edge-triggered toggle; step
+             * sets g_step_one whenever HELD while paused, so the natural
              * key-repeat behavior is "step every host iter while held"
              * without needing an OS-level repeat-rate dependency. */
-            bool pause_k = kbd_pre && kbd_pre[SDL_SCANCODE_F7];
-            bool step_k  = kbd_pre && kbd_pre[SDL_SCANCODE_F8];
-            if (pause_k && !prev_pause_key) {
+            bool step_k = openpete_key_down(OPK_FRAME_STEP);
+            if (openpete_key_pressed(OPK_PAUSE)) {
                 g_paused = !g_paused;
                 /* Enter: mute. Exit: restore the live mute baseline (boot
                  * --mute, possibly toggled since via the dev overlay). */
@@ -2285,165 +2404,144 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             if (g_paused && step_k) {
                 g_step_one = true;
             }
-            prev_pause_key = pause_k;
 
-            /* I: live on/off A/B for interpolation itself. Off =
-             * intermediate renders present the lagged frame unchanged
-             * (clean "is frame-gen doing anything perceptible?" test). */
-            bool i_k = kbd_pre && kbd_pre[SDL_SCANCODE_I];
-            if (i_k && !prev_i_key) {
+            /* Live on/off A/B for interpolation itself. Off = intermediate
+             * renders present the lagged frame unchanged (a clean "is
+             * frame-gen doing anything perceptible?" test). A development
+             * instrument: unbound unless [keys.host] asks for it. */
+            if (openpete_key_pressed(OPK_INTERP_TOGGLE)) {
                 g_openpete_interp_enabled = !g_openpete_interp_enabled;
                 OPL_INFO_F("render", "interpolation -> %s",
                            g_openpete_interp_enabled ? "ON" : "OFF");
             }
-            prev_i_key = i_k;
 
-            /* L: live toggle sector LOD original <-> extended (the O-menu LOD
-             * row / --lod flag). Mirrors I. Goes through openpete_no_lod_set so
-             * openpete_fog_scale follows the mode — a raw openpete_no_lod poke
-             * would leave the terrain fog latched. The setter logs the new
-             * state. Native-renderer display policy; inert under PsyCross. The
-             * menu re-syncs its LOD row from openpete_no_lod when next opened. */
-            bool l_k = kbd_pre && kbd_pre[SDL_SCANCODE_L];
-            if (l_k && !prev_l_key) {
+            /* Live toggle of sector LOD original <-> extended (the settings
+             * menu's LOD row / --lod flag). Goes through openpete_no_lod_set
+             * so openpete_fog_scale follows the mode — a raw openpete_no_lod
+             * poke would leave the terrain fog latched. The setter logs the
+             * new state. Native-renderer display policy; inert under
+             * PsyCross. The menu re-syncs its LOD row from openpete_no_lod
+             * when next opened. */
+            if (openpete_key_pressed(OPK_LOD_TOGGLE))
                 openpete_no_lod_set(!openpete_no_lod, -1.0f);
-            }
-            prev_l_key = l_k;
 
-            /* P: the LP fill-tag inspector. Engaged, it picks the terrain face
+            /* The LP fill-tag inspector. Engaged, it picks the terrain face
              * under the crosshair each present and tints the fill-tag set, so
              * the frozen list in tests/freecam/fill-tags.verdicts can be
-             * audited against the live scene. H toggles the preview (draw the
-             * untagged candidates too — an under-fill site's covering face is
-             * invisible until it is tagged); Y/N/B record FILL / NOFILL /
-             * "no session verdict" for the picked face and re-render with it
-             * immediately; U undoes. Verdict keys are gated on engaged so they
-             * stay free while it is off. */
-            bool p_k = kbd_pre && kbd_pre[SDL_SCANCODE_P];
-            if (p_k && !prev_p_key) openpete_fillpick_toggle();
-            prev_p_key = p_k;
+             * audited against the live scene. Preview draws the untagged
+             * candidates too — an under-fill site's covering face is
+             * invisible until it is tagged. FILL / NOFILL / "no session
+             * verdict" record against the picked face and re-render with it
+             * immediately; undo steps back. The verdict keys are gated on
+             * engaged so their bindings stay free while it is off. */
+            if (openpete_key_pressed(OPK_FILLPICK)) openpete_fillpick_toggle();
             if (openpete_fillpick_active()) {
-                bool h_k = kbd_pre && kbd_pre[SDL_SCANCODE_H];
-                bool y_k = kbd_pre && kbd_pre[SDL_SCANCODE_Y];
-                bool n_k = kbd_pre && kbd_pre[SDL_SCANCODE_N];
-                bool b_k = kbd_pre && kbd_pre[SDL_SCANCODE_B];
-                bool u_k = kbd_pre && kbd_pre[SDL_SCANCODE_U];
-                if (h_k && !prev_h_key)
+                if (openpete_key_pressed(OPK_FILLPICK_PREVIEW))
                     openpete_fillpick_set_preview(!openpete_fillpick_preview());
-                if (y_k && !prev_y_key) openpete_fillpick_mark(OPENPETE_FILLPICK_FILL);
-                if (n_k && !prev_n_key) openpete_fillpick_mark(OPENPETE_FILLPICK_NOFILL);
-                if (b_k && !prev_b_key) openpete_fillpick_mark(OPENPETE_FILLPICK_NONE);
-                if (u_k && !prev_u_key) openpete_fillpick_undo();
-                prev_h_key = h_k; prev_y_key = y_k; prev_n_key = n_k;
-                prev_b_key = b_k; prev_u_key = u_k;
-            } else {
-                prev_h_key = prev_y_key = prev_n_key = false;
-                prev_b_key = prev_u_key = false;
+                if (openpete_key_pressed(OPK_FILLPICK_FILL))
+                    openpete_fillpick_mark(OPENPETE_FILLPICK_FILL);
+                if (openpete_key_pressed(OPK_FILLPICK_NOFILL))
+                    openpete_fillpick_mark(OPENPETE_FILLPICK_NOFILL);
+                if (openpete_key_pressed(OPK_FILLPICK_NONE))
+                    openpete_fillpick_mark(OPENPETE_FILLPICK_NONE);
+                if (openpete_key_pressed(OPK_FILLPICK_UNDO))
+                    openpete_fillpick_undo();
             }
 
-            /* Debug free camera. Toggle with F or a left-stick click. While
-             * engaged: WASD / left stick move, arrows / right stick look,
-             * Space+LShift / R1+L1 raise+lower, [ ] / L2 R2 step the speed,
-             * T teleports Spyro here and hands the camera back. We
-             * own only the toggle + input latch here; the camera write and the
+            /* Debug free camera. While engaged: the fly keys / left stick
+             * move, the look keys / right stick aim, rise+descend raise and
+             * lower, the speed keys / triggers step the speed, and teleport
+             * drops Spyro here and hands the camera back. We own only the
+             * toggle + input latch here; the camera write and the
              * CameraFollowSpyro / UpdateSpyro freeze are game-side
              * (games/spyro-1/features/freecam_native.c). Latched as level-held
              * axes so movement continues while held, consumed once per game
              * tick in game_on_frame_pre. Keyboard and pad sum (then clamp), so
              * either or both drive it. */
-            PsyX_RawPad fc_pad;
-            bool fc_have_pad = PsyX_Pad_GetRawP1(&fc_pad);
+            if (openpete_key_pressed(OPK_FREECAM)) openpete_freecam_toggle();
 
-            bool f_k = kbd_pre && kbd_pre[SDL_SCANCODE_F];
-            bool pad_tog = fc_have_pad && fc_pad.l3;
-            if (f_k && !prev_f_key) openpete_freecam_toggle();
-            if (pad_tog && !prev_freecam_pad_toggle) openpete_freecam_toggle();
-            prev_f_key = f_k;
-            prev_freecam_pad_toggle = pad_tog;
-
-            /* G: render camera lock (openpete_camlock.h) — holds/flies the
+            /* Render camera lock (openpete_camlock.h) — holds/flies the
              * PRESENTED view while the sim (cutscenes included) continues
              * untouched. Shares the freecam's fly axes and speed step, so the
              * two are mutually exclusive: engaging one disengages the other. */
-            bool g_k = kbd_pre && kbd_pre[SDL_SCANCODE_G];
-            if (g_k && !prev_g_key) {
+            if (openpete_key_pressed(OPK_CAMLOCK)) {
                 if (!openpete_camlock_active() && openpete_freecam_active())
                     openpete_freecam_toggle();
                 openpete_camlock_toggle();
             }
-            prev_g_key = g_k;
             if (openpete_freecam_active() && openpete_camlock_active())
-                openpete_camlock_toggle();   /* F engaged while locked: F wins */
+                openpete_camlock_toggle();   /* freecam engaged while locked wins */
 
-            /* T: drop Spyro at the camera and hand the camera back to the game.
+            /* Drop Spyro at the camera and hand the camera back to the game.
              * Latched as a one-shot request — the move needs the game fiber, so
              * freecam_native applies it (and disengages) on the next tick; the
              * request is dropped if the camera isn't engaged. Edge-tracked out
-             * here rather than under the engaged branch so a T already held
-             * when the camera engages doesn't count as a press. */
-            bool t_k = kbd_pre && kbd_pre[SDL_SCANCODE_T];
-            if (t_k && !prev_t_key) openpete_freecam_request_teleport();
-            prev_t_key = t_k;
+             * here rather than under the engaged branch so a teleport key
+             * already held when the camera engages doesn't count as a press. */
+            if (openpete_key_pressed(OPK_TELEPORT))
+                openpete_freecam_request_teleport();
 
             if (openpete_freecam_active() || openpete_camlock_active()) {
-                /* Normalise a signed SDL stick axis to [-1, 1] past a small
-                 * deadzone. */
-                #define FC_STICK_DZ  8000.0f
-                #define FC_NORM(v)   ( (v) >  FC_STICK_DZ || (v) < -FC_STICK_DZ \
-                                        ? (float)(v) / 32767.0f : 0.0f )
-                float k_fwd = 0, k_str = 0, k_up = 0, k_yaw = 0, k_pit = 0;
-                if (kbd_pre) {
-                    k_fwd = (float)((int)kbd_pre[SDL_SCANCODE_W]     - (int)kbd_pre[SDL_SCANCODE_S]);
-                    k_str = (float)((int)kbd_pre[SDL_SCANCODE_D]     - (int)kbd_pre[SDL_SCANCODE_A]);
-                    k_up  = (float)((int)kbd_pre[SDL_SCANCODE_SPACE] - (int)kbd_pre[SDL_SCANCODE_LSHIFT]);
-                    k_yaw = (float)((int)kbd_pre[SDL_SCANCODE_RIGHT] - (int)kbd_pre[SDL_SCANCODE_LEFT]);
-                    k_pit = (float)((int)kbd_pre[SDL_SCANCODE_UP]    - (int)kbd_pre[SDL_SCANCODE_DOWN]);
-                }
-                float p_fwd = 0, p_str = 0, p_up = 0, p_yaw = 0, p_pit = 0;
-                if (fc_have_pad) {
-                    p_fwd = -FC_NORM(fc_pad.lstick_y);   /* stick up = forward */
-                    p_str =  FC_NORM(fc_pad.lstick_x);
-                    p_yaw =  FC_NORM(fc_pad.rstick_x);   /* stick right = turn right */
-                    p_pit = -FC_NORM(fc_pad.rstick_y);   /* stick up = look up */
-                    p_up  = (float)(fc_pad.r1 - fc_pad.l1);
-                }
+                /* Digital fly/look keys and the analog stick axes are separate
+                 * bindings that SUM (then clamp) — so a key and a stick both
+                 * drive the camera, and either can be rebound or unbound
+                 * without disturbing the other. */
+                float k_fwd = (float)(openpete_key_down(OPK_FLY_FORWARD)
+                                    - openpete_key_down(OPK_FLY_BACK));
+                float k_str = (float)(openpete_key_down(OPK_FLY_RIGHT)
+                                    - openpete_key_down(OPK_FLY_LEFT));
+                float k_up  = (float)(openpete_key_down(OPK_FLY_UP)
+                                    - openpete_key_down(OPK_FLY_DOWN));
+                float k_yaw = (float)(openpete_key_down(OPK_LOOK_RIGHT)
+                                    - openpete_key_down(OPK_LOOK_LEFT));
+                float k_pit = (float)(openpete_key_down(OPK_LOOK_UP)
+                                    - openpete_key_down(OPK_LOOK_DOWN));
+                /* The stick axes carry their own sign convention in the
+                 * binding: fly_axis_y and look_axis_y default to the INVERTED
+                 * axis ("pad:-lefty"), because SDL reports stick-up as
+                 * negative and the camera wants stick-up = forward / look up.
+                 * Anyone who prefers the other convention flips it in
+                 * openpete.toml instead of in this file. */
+                float p_fwd = openpete_key_axis(OPK_FLY_AXIS_Y);
+                float p_str = openpete_key_axis(OPK_FLY_AXIS_X);
+                float p_yaw = openpete_key_axis(OPK_LOOK_AXIS_X);
+                float p_pit = openpete_key_axis(OPK_LOOK_AXIS_Y);
+
                 openpete_freecam_axes ax;
                 #define FC_CLAMP(x)  ( (x) > 1.0f ? 1.0f : ((x) < -1.0f ? -1.0f : (x)) )
                 ax.move_fwd    = FC_CLAMP(k_fwd + p_fwd);
                 ax.move_strafe = FC_CLAMP(k_str + p_str);
-                ax.move_up     = FC_CLAMP(k_up  + p_up);
+                ax.move_up     = FC_CLAMP(k_up);
                 ax.look_yaw    = FC_CLAMP(k_yaw + p_yaw);
                 ax.look_pitch  = FC_CLAMP(k_pit + p_pit);
                 #undef FC_CLAMP
-                #undef FC_NORM
-                #undef FC_STICK_DZ
                 openpete_freecam_set_axes(&ax);
 
-                /* Speed step: [ / ] keys or L2 / R2 (edge-triggered). */
-                bool lb = kbd_pre && kbd_pre[SDL_SCANCODE_LEFTBRACKET];
-                bool rb = kbd_pre && kbd_pre[SDL_SCANCODE_RIGHTBRACKET];
-                bool l2 = fc_have_pad && fc_pad.l2;
-                bool r2 = fc_have_pad && fc_pad.r2;
-                if ((lb && !prev_freecam_lb) || (l2 && !prev_freecam_l2))
+                /* Speed step, edge-triggered. The shoulder buttons that used
+                 * to be read separately are now just extra sources on the
+                 * same two actions. */
+                if (openpete_key_pressed(OPK_SPEED_DOWN))
                     openpete_freecam_adjust_speed(-1);
-                if ((rb && !prev_freecam_rb) || (r2 && !prev_freecam_r2))
+                if (openpete_key_pressed(OPK_SPEED_UP))
                     openpete_freecam_adjust_speed(+1);
-                prev_freecam_lb = lb; prev_freecam_rb = rb;
-                prev_freecam_l2 = l2; prev_freecam_r2 = r2;
-            } else {
-                prev_freecam_lb = prev_freecam_rb = false;
-                prev_freecam_l2 = prev_freecam_r2 = false;
             }
 
-            /* Alt+Enter (either Alt) or a window double-click toggles the
-             * native window between windowed and borderless fullscreen. Moved
-             * here from PsyCross, which only ever drove its now-hidden GL
-             * window; openpete_native_toggle_fullscreen is a no-op in headless
-             * / PsyCross-only runs. The PsyCross g_altKeyState gate still stops
-             * the Enter from registering as Start while Alt is held. */
-            bool alt_enter = kbd_pre && kbd_pre[SDL_SCANCODE_RETURN] &&
+            /* Alt+Enter (either Alt), the `fullscreen` binding, or a window
+             * double-click toggles the native window between windowed and
+             * borderless fullscreen. Moved here from PsyCross, which only ever
+             * drove its now-hidden GL window; openpete_native_toggle_fullscreen
+             * is a no-op in headless / PsyCross-only runs. The PsyCross
+             * g_altKeyState gate still stops the Enter from registering as
+             * Start while Alt is held.
+             *
+             * Alt+Enter is hardcoded rather than a binding because the keymap
+             * has no chord vocabulary; `fullscreen` is the rebindable single
+             * key for it and ships unbound so nothing changes by default. */
+            bool alt_enter = openpete_keymap_scancode_down(SDL_SCANCODE_RETURN) &&
                              (SDL_GetModState() & SDL_KMOD_ALT) != 0;
-            if ((alt_enter && !prev_alt_enter) || g_native_fs_toggle_request) {
+            if ((alt_enter && !prev_alt_enter) ||
+                openpete_key_pressed(OPK_FULLSCREEN) ||
+                g_native_fs_toggle_request) {
                 g_native_fs_toggle_request = 0;
                 openpete_native_toggle_fullscreen();
             }
@@ -3392,12 +3490,13 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 
         /* No PsyX_BeginScene here — DrawOTag starts the scene on demand. */
 
-        /* Sample Tab for the host loop's own pacing + GL swap-interval
-         * bypass. vbl is yield-driven so this only affects wall-clock
-         * speed, not game state — fast-forward is invisible to BK2
-         * replay determinism. Scheduled --unlock-frames windows (test
-         * harness) OR into the same flag. */
-        const bool* kbd = openpete_keyboard_state();
+        /* The turbo binding drives the host loop's own pacing + the GL
+         * swap-interval bypass. vbl is yield-driven so this only affects
+         * wall-clock speed, not game state — fast-forward is invisible to
+         * BK2 replay determinism. Scheduled --unlock-frames windows (test
+         * harness) OR into the same flag. Read from this iteration's
+         * keymap poll, so it is a tick newer than the peek at the top of
+         * the loop; this one is authoritative. */
         /* OPENPETE_FORCE_PACING=1 (read once, then cached) keeps the
          * legacy / dual-pacer cadence active even under --headless. Used
          * by scripts/measure-pacing.py to capture before/after numbers
@@ -3412,7 +3511,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                        s_force_pacing, v ? v : "<unset>");
         }
         bool tab_unlock = (opts->headless && !s_force_pacing) ||
-                          (kbd && kbd[SDL_SCANCODE_TAB]);
+                          openpete_key_down(OPK_TURBO);
         bool sched_unlock = opts->unlock_ranges_count > 0 &&
                             unlock_frame_in_ranges(opts, openpete_frame);
         bool unlock_fps = tab_unlock || sched_unlock ||

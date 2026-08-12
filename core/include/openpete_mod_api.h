@@ -547,9 +547,21 @@ typedef struct openpete_mod_api {
      * Resolve a [[binding]] declared in this mod's mod.toml
      * ({name, key, purpose}) to the live host key state. Declaring
      * bindings (instead of raw host_key_down) surfaces conflicts across
-     * the enabled set at load time and lets a future mod menu rebind
-     * without touching the mod. Same tick-context divergence caveats as
-     * host_key_down. Undeclared name = error log + 0. */
+     * the enabled set at load time and lets the user rebind without
+     * touching the mod. Same tick-context divergence caveats as
+     * host_key_down. Undeclared name = error log + 0.
+     *
+     * The user's openpete.toml overrides the declared `key` by name:
+     *
+     *     [keys.mod.supercharge-anywhere]
+     *     toggle = "F6"
+     *
+     * That override wins over mod.toml, reaches gamepad sources the
+     * `key` spelling cannot ("pad:north"), and takes "none" to disable
+     * the binding outright. The cross-mod conflict scan compares the
+     * EFFECTIVE binding, so rebinding to resolve a reported clash
+     * actually silences it. Like every [keys] table it is scope-local —
+     * [game.spyro-1.keys.mod.<id>] works too. */
     int (*binding_down)(openpete_mod_t* self, const char* name);
 
     /* ── Guest scratch arena (op_guest_alloc, P3) ────────────────────

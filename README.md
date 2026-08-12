@@ -86,6 +86,54 @@ that has no key of its own:
 OPENPETE_TERRAIN_TIMERS = "1"
 ```
 
+`[args]` and `[env]` are **not global-only** — like every sub-table here
+they belong to whichever section they're written under, so per-game and
+per-disc overrides work the same way plain keys do:
+
+```toml
+[game.spyro-1.args]
+"--screenshot-on-tick" = "1200"
+[disc.SCUS-94228.env]
+OPENPETE_TERRAIN_TIMERS = "1"
+```
+
+### Controls
+
+Every key and pad button is rebindable, under `[keys.pad]` (the PSX
+controller) and `[keys.host]` (openpete's own hotkeys) — again in any
+section, so a binding can be global or per-game:
+
+```toml
+[keys.pad]
+cross = ["C", "pad:south"]     # any of these presses it
+l2    = "Left Ctrl"
+
+[keys.host]
+savestate_save = "F5"
+savestate_load = "F9"
+quit           = "none"        # stop Escape quitting the game
+rewind         = "none"        # unbind it entirely
+
+[game.spyro-1.keys.host]
+freecam = "F"                  # just for this game
+```
+
+Keyboard bindings are key names as SDL spells them (`"F5"`,
+`"Left Shift"`, `"Keypad 5"`) and are **positional** — on AZERTY, `"A"`
+is the key where a US layout has A. Pad bindings take a `pad:` prefix
+(`"pad:south"`, `"pad:leftshoulder"`, `"pad:-leftx"` to invert an axis).
+A list binds several sources to one action; `"none"` or `[]` unbinds.
+
+Escape quits by default; `quit = "none"` turns that off, and Escape still
+dismisses an open menu or overlay. The window close button always quits
+whatever `quit` is bound to.
+
+`--keys-report` prints every action, what it's bound to, which section
+bound it, and the label your keyboard layout gives each key. Development
+instruments (the fill-tag inspector, the interpolation and LOD A/B
+toggles, the dev overlay) ship **unbound** and show up there as `dev` —
+bind one in your own config if you want it.
+
 ### Which setting wins
 
 Lowest first:

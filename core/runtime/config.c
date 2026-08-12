@@ -17,6 +17,7 @@
 
 #include "openpete_config.h"
 #include "config_schema.h"
+#include "openpete_keymap.h"
 
 #include "../../third_party/tomlc99/toml.h"
 
@@ -488,7 +489,135 @@ static int harvest_args(const toml_table_t *tab, int tier, int file,
     return 0;
 }
 
-/* One scope = its bare keys, then its [env] and [args] sub-tables. */
+/* [<scope>.keys.<domain>] — input bindings. Unlike knobs, these do not
+ * flow through the contribution table: the keymap owns its own layered
+ * store (it merges per ACTION and replaces within one, which the knob
+ * resolver's single-winner-per-key model cannot express), so this walk
+ * just forwards each row with the scope's rank and lets keymap.c decide.
+ *
+ * A value is a string or an array of strings; arrays are legal HERE only
+ * — harvest_base still rejects them for scalars. */
+static int harvest_keys_domain(const toml_table_t *tab, const char *domain,
+                               int rank, const char *origin,
+                               const char *where) {
+    for (int i = 0;; i++) {
+        const char *key = toml_key_in(tab, i);
+        if (!key) break;
+
+        const toml_array_t *arr = toml_array_in(tab, key);
+        if (arr) {
+            const char *toks[KM_MAX_SOURCES * 2];
+            char bufs[KM_MAX_SOURCES * 2][CFG_KEY_MAX];
+            int n = toml_array_nelem(arr);
+            if (n > (int)(sizeof toks / sizeof toks[0]))
+                n = (int)(sizeof toks / sizeof toks[0]);
+            for (int j = 0; j < n; j++) {
+                toml_datum_t d = toml_string_at(arr, j);
+                if (!d.ok) {
+                    fprintf(stderr, "openpete: config: %s: [keys.%s] '%s' "
+                                    "array must hold strings\n",
+                            where, domain, key);
+                    return -1;
+                }
+                snprintf(bufs[j], CFG_KEY_MAX, "%s", d.u.s);
+                free(d.u.s);
+                toks[j] = bufs[j];
+            }
+            /* n == 0 is an empty array: the same statement as "none". */
+            if (openpete_keymap_set(domain, key, toks, n, rank, origin,
+                                    where) != 0)
+                return -1;
+            continue;
+        }
+
+        toml_raw_t raw = toml_raw_in(tab, key);
+        if (!raw) {
+            fprintf(stderr, "openpete: config: %s: [keys.%s] '%s' must be a "
+                            "string or an array of strings\n",
+                    where, domain, key);
+            return -1;
+        }
+        char val[CFG_VALUE_MAX];
+        int is_bool = 0, bool_val = 0;
+        if (toml_scalar_to_string(raw, val, sizeof val, &is_bool, &bool_val) != 0) {
+            fprintf(stderr, "openpete: config: %s: [keys.%s] '%s' has a value "
+                            "this config cannot use\n", where, domain, key);
+            return -1;
+        }
+        const char *tok = val;
+        if (openpete_keymap_set(domain, key, &tok, 1, rank, origin, where) != 0)
+            return -1;
+    }
+    return 0;
+}
+
+static int harvest_keys(const toml_table_t *keys, int tier, int file,
+                        const char *origin, const char *where) {
+    /* Keys have no [env]/[args] twin, so the spelling sub-sort never
+     * applies and every binding ranks at SP_BASE for its scope. */
+    const int rank = RANK(tier, file, SP_BASE);
+
+    static const char *const domains[] = { "pad", "pad2", "host" };
+    for (size_t d = 0; d < sizeof domains / sizeof domains[0]; d++) {
+        const toml_table_t *tab = toml_table_in(keys, domains[d]);
+        if (tab && harvest_keys_domain(tab, domains[d], rank, origin, where) != 0)
+            return -1;
+    }
+
+    /* [keys.mod.<id>] — one more level, and the ids are not knowable
+     * here (mods are discovered after the config is read), so these are
+     * forwarded by name without validation. */
+    const toml_table_t *mods = toml_table_in(keys, "mod");
+    if (mods) {
+        for (int i = 0;; i++) {
+            const char *mod_id = toml_key_in(mods, i);
+            if (!mod_id) break;
+            const toml_table_t *mt = toml_table_in(mods, mod_id);
+            if (!mt) {
+                fprintf(stderr, "openpete: config: %s: [keys.mod] '%s' must be "
+                                "a table of binding names\n", where, mod_id);
+                return -1;
+            }
+            for (int j = 0;; j++) {
+                const char *name = toml_key_in(mt, j);
+                if (!name) break;
+                toml_raw_t raw = toml_raw_in(mt, name);
+                char val[CFG_VALUE_MAX];
+                int is_bool = 0, bool_val = 0;
+                if (!raw ||
+                    toml_scalar_to_string(raw, val, sizeof val,
+                                          &is_bool, &bool_val) != 0) {
+                    fprintf(stderr, "openpete: config: %s: [keys.mod.%s] '%s' "
+                                    "must be a string\n", where, mod_id, name);
+                    return -1;
+                }
+                const char *tok = val;
+                if (openpete_keymap_set_mod(mod_id, name, &tok, 1, rank,
+                                            where) != 0)
+                    return -1;
+            }
+        }
+    }
+
+    /* Anything else under [keys] is a typo. Silence here is how the
+     * scoping got lost for [args]/[env] in the docs — name it instead. */
+    for (int i = 0;; i++) {
+        const char *key = toml_key_in(keys, i);
+        if (!key) break;
+        if (!strcmp(key, "pad") || !strcmp(key, "pad2") ||
+            !strcmp(key, "host") || !strcmp(key, "mod")) continue;
+        fprintf(stderr, "openpete: config: %s: unknown [keys.%s] — expected "
+                        "pad, pad2, host or mod.<id>\n", where, key);
+        return -1;
+    }
+    return 0;
+}
+
+/* One scope = its bare keys, then its [env], [args] and [keys]
+ * sub-tables. EVERY scope goes through here — global, [game.<id>],
+ * [disc.<serial>], [disc.<sha>] and [saved] — which is why a new
+ * sub-table is added here and nowhere else: a scope either harvests all
+ * of them or none, so one of them cannot quietly end up global-only. */
 static int harvest_scope(const toml_table_t *tab, int tier, int file,
                          const char *origin) {
     char where[CFG_PATH_MAX + 64];
@@ -501,6 +630,9 @@ static int harvest_scope(const toml_table_t *tab, int tier, int file,
 
     const toml_table_t *args = toml_table_in(tab, "args");
     if (args && harvest_args(args, tier, file, origin, where) != 0) return -1;
+
+    const toml_table_t *keys = toml_table_in(tab, "keys");
+    if (keys && harvest_keys(keys, tier, file, origin, where) != 0) return -1;
     return 0;
 }
 
@@ -532,7 +664,7 @@ static int load_toml(int file) {
 }
 
 /* Global scope: the document's own bare keys (minus the reserved
- * sub-tables) plus top-level [env] / [args]. */
+ * sub-tables) plus top-level [env] / [args] / [keys]. */
 static int harvest_global(int file) {
     toml_table_t *doc = s_doc[file];
     if (!doc) return 0;
@@ -546,6 +678,8 @@ static int harvest_global(int file) {
     if (env && harvest_env(env, TIER_GLOBAL, file, "global", where) != 0) return -1;
     const toml_table_t *args = toml_table_in(doc, "args");
     if (args && harvest_args(args, TIER_GLOBAL, file, "global", where) != 0) return -1;
+    const toml_table_t *keys = toml_table_in(doc, "keys");
+    if (keys && harvest_keys(keys, TIER_GLOBAL, file, "global", where) != 0) return -1;
     return 0;
 }
 
@@ -600,6 +734,16 @@ static int harvest_saved(int file) {
     char where[CFG_PATH_MAX + 32];
     snprintf(where, sizeof where, "%s [saved]", s_file_path[file]);
     if (harvest_base(tab, TIER_SAVED, file, "saved", where, 0) != 0) return -1;
+
+    /* [saved.keys.*] reads like any other scope, so the ladder has no
+     * hole at its top. Nothing WRITES it yet — the managed-zone writer is
+     * knob-id keyed and there is no rebind UI — and note that anything
+     * hand-written below the managed marker is regenerated away on the
+     * next menu save, so a hand-edited binding belongs in a normal scope
+     * (global, [game.*], [disc.*]) rather than here. */
+    const toml_table_t *keys = toml_table_in(tab, "keys");
+    if (keys && harvest_keys(keys, TIER_SAVED, file, "saved", where) != 0)
+        return -1;
 
     /* Keep a copy so a later save rewrites the whole zone rather than
      * dropping the knobs this session didn't touch. */
@@ -1019,9 +1163,16 @@ int openpete_config_apply(int argc, char **argv, int typed_argc,
                           int *out_argc, char ***out_argv) {
     const char *explicit_path = NULL;
 
+    /* Seed the keymap from its registry defaults before any [keys] table
+     * is read, so config rows layer on top of a populated store rather
+     * than defining it. Idempotent, and a no-op for a caller that never
+     * uses the keymap. */
+    openpete_keymap_init();
+
     for (int i = 1; i < argc; i++) {
         if (!strcmp(argv[i], "--no-config")) s_no_config = 1;
         else if (!strcmp(argv[i], "--config-report")) s_report_requested = 1;
+        else if (!strcmp(argv[i], "--keys-report")) openpete_keymap_request_report();
         else if (!strcmp(argv[i], "--config") && i + 1 < argc) explicit_path = argv[i + 1];
         /* Converting is a file operation, not a launch: reading the legacy
          * files here would warn about them twice and apply settings to a
@@ -1107,6 +1258,11 @@ int openpete_config_apply(int argc, char **argv, int typed_argc,
 
     if (s_write_file >= 0 && s_file_path[s_write_file][0])
         snprintf(s_save_path, sizeof s_save_path, "%s", s_file_path[s_write_file]);
+
+    /* Every [keys] layer is in; pick winners and run the conflict +
+     * reachability scans. Never fails a boot — a clash is a warning, and
+     * an unreachable control is the user's call to make. */
+    (void)openpete_keymap_resolve();
 
     materialize();
 

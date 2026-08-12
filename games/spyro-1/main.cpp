@@ -7,6 +7,7 @@
 #include <SDL3/SDL_main.h>
 #include "openpete.h"
 #include "openpete_config.h"
+#include "openpete_keymap.h"
 #include "game_extras.h"
 #include "openpete_mods.h"
 #include "recomp_attach.h"
@@ -119,6 +120,7 @@ int main(int argc, char** argv) {
 
     /* Config utility modes: the stack is resolved, so answer and exit. */
     if (opts.config_report) { openpete_config_report(stdout); return 0; }
+    if (opts.keys_report)   { openpete_keymap_report(stdout); return 0; }
     if (opts.config_convert) return openpete_config_convert_legacy();
 
     /* Mod framework: hand the loader this game's symbol table so mods

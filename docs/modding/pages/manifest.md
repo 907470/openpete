@@ -23,8 +23,9 @@ sim_neutral = true        # observer/presentation-only: never diverges
 
 [[binding]]               # declared host keys — conflicts across the
 name    = "warp"          # enabled set are reported at load; resolve
-key     = "F6"            # with api->binding_down(self, "warp")
-purpose = "warp home"
+key     = "F6"            # with api->binding_down(self, "warp").
+purpose = "warp home"     # Users rebind via [keys.mod.<id>] in
+                          # openpete.toml without editing the mod.
 
 [[site]]                  # instruction-site hooks (the escape hatch):
 name = "fade-bound"       # one guest instruction, replaced or appended.

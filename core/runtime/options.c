@@ -5,6 +5,7 @@
 
 #include "openpete.h"
 #include "openpete_config.h"  /* openpete.toml — the layered config file */
+#include "openpete_keymap.h"  /* [keys] — install the SDL name lookups */
 #include "openpete_log.h"
 #include "openpete_time.h"  /* OP_TICK_HZ — --record-cfr NTSC-multiple snap */
 #include "game_extras.h"  /* game_resolve_level_arg (--skip-to-level names),
@@ -260,6 +261,11 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --config PATH  use only this file      --no-config  ignore every config file\n"
         "  --config-report  print the resolution table and exit\n"
         "  --convert-config  rewrite legacy openpete.opts/.env as openpete.toml and exit\n"
+        "  Keys and pad buttons rebind the same way, under [keys.pad] / [keys.host]\n"
+        "  in any scope (e.g. [game.spyro-1.keys.host]). Bind a key by its name\n"
+        "  (\"F5\", \"Left Shift\"), a pad input with the pad: prefix (\"pad:south\",\n"
+        "  \"pad:-leftx\"), several with an array, or none with \"none\" to unbind.\n"
+        "  --keys-report    print every action, its binding and where it came from, and exit\n"
         "  --disc PATH                disc image (BIN/CUE)\n"
         "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields (defaults to the game's entry point)\n"
         "  --renderer MODE            display renderer: vk (native, full-window — default) | psycross (legacy GL) |\n"
@@ -555,6 +561,12 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
      * write wins, which is the file < sidecar < CLI half of the chain.
      * The other half (which of two config layers wins, and args-vs-env)
      * was already decided inside the resolver — see openpete_config.h. */
+    /* Give the keymap its SDL-backed name lookups before the config runs:
+     * openpete_config_apply seeds the registry defaults, and parsing them
+     * needs the lookup live. Pure string tables in SDL, so this is safe
+     * long before SDL_Init. */
+    openpete_keymap_install_sdl();
+
     int cfg_argc = 0;
     char** cfg_argv = NULL;
     int cfg_rc = openpete_config_apply(argc, argv, orig_argc, &cfg_argc, &cfg_argv);
@@ -1035,6 +1047,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             /* likewise */
         } else if (strcmp(a, "--config-report") == 0) {
             opts->config_report = 1;
+        } else if (strcmp(a, "--keys-report") == 0) {
+            opts->keys_report = 1;
         } else if (strcmp(a, "--convert-config") == 0) {
             opts->config_convert = 1;
         } else if (strcmp(a, "--card-dir") == 0) {

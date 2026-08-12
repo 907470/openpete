@@ -37,6 +37,7 @@
 #include "../host/texture_pack.h"   /* texpack_fog_shift */
 #include "openpete_mod_api.h"
 #include "openpete_log.h"
+#include "openpete_keymap.h"     /* [keys.mod.<id>] binding overrides */
 #include "../host/sha256.h"     /* content-hash build cache key */
 #include "../host/host_spawn.h" /* silent compiler spawn + cc identity */
 #include "miniz.h"              /* zip mods (folder or zip, identical) */
@@ -985,10 +986,26 @@ static int api_texpack_fog_shift(openpete_mod_t* self,
     return 0;
 }
 
-/* Declared-binding resolve: name → this mod's [[binding]] key →
- * host_key_down. Same tick-context caveats as host_key_down itself. */
+/* Declared-binding resolve: name → [keys.mod.<id>] if the config rebound
+ * it, else this mod's own [[binding]] key → host_key_down. Same
+ * tick-context caveats as host_key_down itself.
+ *
+ * The config override is what lets a user resolve a clash between two
+ * mods (or between a mod and a host hotkey) without editing either mod —
+ * the registry is the thing you rebind, not the mod. It also reaches
+ * gamepad sources, which the mod.toml `key` spelling cannot. */
 static int api_binding_down(openpete_mod_t* self, const char* name) {
     if (!self || !name) return 0;
+
+    km_source_t src[KM_MAX_SOURCES];
+    int n = 0;
+    if (openpete_keymap_mod_binding(self->id, name, src, KM_MAX_SOURCES, &n)) {
+        for (int i = 0; i < n; i++)
+            if (openpete_keymap_source_down(&src[i]))
+                return 1;
+        return 0;
+    }
+
     for (int i = 0; i < self->n_bindings; i++)
         if (strcmp(self->bindings[i].name, name) == 0)
             return api_host_key_down(self->bindings[i].key);
@@ -2494,20 +2511,35 @@ int openpete_mods_init(const openpete_options_t* opts) {
 
     /* Declared-bindings conflict scan: two enabled mods claiming the
      * same host key is legal (reads are non-exclusive) but surprising —
-     * name both, with purposes, so the user can re-order or rebind. */
+     * name both, with purposes, so the user can re-order or rebind.
+     *
+     * Compares the EFFECTIVE binding, not the declared one: rebinding a
+     * mod's key in [keys.mod.<id>] is the documented way to resolve one
+     * of these, so a scan blind to the override would keep warning about
+     * a clash the user has already fixed. */
     for (int i = 0; i < s_mod_count; i++)
-        for (int bi = 0; bi < s_mods[i].n_bindings; bi++)
+        for (int bi = 0; bi < s_mods[i].n_bindings; bi++) {
+            char key_i[80];
+            snprintf(key_i, sizeof key_i, "%s",
+                     openpete_keymap_mod_effective_key(
+                         s_mods[i].id, s_mods[i].bindings[bi].name,
+                         s_mods[i].bindings[bi].key));
+            if (strcmp(key_i, "(unbound)") == 0) continue;
             for (int j = i + 1; j < s_mod_count; j++)
-                for (int bj = 0; bj < s_mods[j].n_bindings; bj++)
-                    if (strcmp(s_mods[i].bindings[bi].key,
-                               s_mods[j].bindings[bj].key) == 0)
+                for (int bj = 0; bj < s_mods[j].n_bindings; bj++) {
+                    const char* key_j = openpete_keymap_mod_effective_key(
+                        s_mods[j].id, s_mods[j].bindings[bj].name,
+                        s_mods[j].bindings[bj].key);
+                    if (strcmp(key_i, key_j) == 0)
                         OPL_WARN_F("mods", "key \"%s\" bound by both %s "
                                    "(%s) and %s (%s)",
-                                   s_mods[i].bindings[bi].key,
+                                   key_i,
                                    s_mods[i].id,
                                    s_mods[i].bindings[bi].purpose,
                                    s_mods[j].id,
                                    s_mods[j].bindings[bj].purpose);
+                }
+        }
 
     if (enabled > 0)
         OPL_INFO_F("mods", "%d mod%s active (dir: %s)", enabled,

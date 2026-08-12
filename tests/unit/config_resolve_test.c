@@ -11,6 +11,7 @@
  */
 
 #include "openpete_config.h"
+#include "openpete_keymap.h"
 #include "../../core/runtime/config_schema.h"
 
 #include <stdio.h>
@@ -459,10 +460,226 @@ static void case_writer_round_trip(void) {
           "reset ate the hand-written zone");
 }
 
+/* ---- [keys] --------------------------------------------------------- */
+
+/* `keys` is a scope-local sub-table like `env` and `args`, harvested by
+ * harvest_scope for EVERY scope. These cases are the reason that is one
+ * call site: the failure they exist to catch is a [keys] that quietly
+ * works at global scope only — which is exactly how the scoped spelling
+ * of [args]/[env] came to be believed missing.
+ *
+ * Assertions read the keymap store rather than the argv splice: keys
+ * never materialize as flags, so the resolved binding IS the result. */
+
+/* keymap.c reaches SDL only through a lookup seam, and this test links no
+ * SDL — so stand in a table with just the names these cases use, plus
+ * every name the registry's own defaults are spelled with (they are
+ * parsed at init, and an unresolvable default would read as a spurious
+ * "unbound"). Codes are arbitrary but stable. */
+static const struct { int kind; const char *name; int code; } g_fake_names[] = {
+    { KM_SRC_KEY, "A", 1 },  { KM_SRC_KEY, "B", 2 },  { KM_SRC_KEY, "C", 3 },
+    { KM_SRC_KEY, "D", 4 },  { KM_SRC_KEY, "F", 5 },  { KM_SRC_KEY, "G", 6 },
+    { KM_SRC_KEY, "H", 7 },  { KM_SRC_KEY, "I", 8 },  { KM_SRC_KEY, "L", 9 },
+    { KM_SRC_KEY, "M", 10 }, { KM_SRC_KEY, "N", 11 }, { KM_SRC_KEY, "O", 12 },
+    { KM_SRC_KEY, "P", 13 }, { KM_SRC_KEY, "S", 14 }, { KM_SRC_KEY, "T", 15 },
+    { KM_SRC_KEY, "U", 16 }, { KM_SRC_KEY, "V", 17 }, { KM_SRC_KEY, "W", 18 },
+    { KM_SRC_KEY, "X", 19 }, { KM_SRC_KEY, "Y", 20 }, { KM_SRC_KEY, "Z", 21 },
+    { KM_SRC_KEY, "1", 22 }, { KM_SRC_KEY, "2", 23 }, { KM_SRC_KEY, "3", 24 },
+    { KM_SRC_KEY, "F5", 25 }, { KM_SRC_KEY, "F6", 26 }, { KM_SRC_KEY, "F7", 27 },
+    { KM_SRC_KEY, "F8", 28 }, { KM_SRC_KEY, "F9", 29 },
+    { KM_SRC_KEY, "Up", 30 }, { KM_SRC_KEY, "Down", 31 },
+    { KM_SRC_KEY, "Left", 32 }, { KM_SRC_KEY, "Right", 33 },
+    { KM_SRC_KEY, "Space", 34 }, { KM_SRC_KEY, "Return", 35 },
+    { KM_SRC_KEY, "Tab", 36 },   { KM_SRC_KEY, "Backspace", 37 },
+    { KM_SRC_KEY, "Left Shift", 38 },  { KM_SRC_KEY, "Right Shift", 39 },
+    { KM_SRC_KEY, "Left Ctrl", 40 },   { KM_SRC_KEY, "Right Ctrl", 41 },
+    { KM_SRC_KEY, "[", 42 },  { KM_SRC_KEY, "]", 43 },
+
+    { KM_SRC_PADBTN, "south", 100 }, { KM_SRC_PADBTN, "east", 101 },
+    { KM_SRC_PADBTN, "west", 102 },  { KM_SRC_PADBTN, "north", 103 },
+    { KM_SRC_PADBTN, "start", 104 }, { KM_SRC_PADBTN, "back", 105 },
+    { KM_SRC_PADBTN, "leftshoulder", 106 },
+    { KM_SRC_PADBTN, "rightshoulder", 107 },
+    { KM_SRC_PADBTN, "leftstick", 108 },
+    { KM_SRC_PADBTN, "rightstick", 109 },
+    { KM_SRC_PADBTN, "dpup", 110 },   { KM_SRC_PADBTN, "dpdown", 111 },
+    { KM_SRC_PADBTN, "dpleft", 112 }, { KM_SRC_PADBTN, "dpright", 113 },
+
+    { KM_SRC_PADAXIS, "leftx", 200 },  { KM_SRC_PADAXIS, "lefty", 201 },
+    { KM_SRC_PADAXIS, "rightx", 202 }, { KM_SRC_PADAXIS, "righty", 203 },
+    { KM_SRC_PADAXIS, "lefttrigger", 204 },
+    { KM_SRC_PADAXIS, "righttrigger", 205 },
+};
+
+static int fake_name_to_code(int kind, const char *name) {
+    for (size_t i = 0; i < sizeof g_fake_names / sizeof g_fake_names[0]; i++)
+        if (g_fake_names[i].kind == kind && !strcmp(g_fake_names[i].name, name))
+            return g_fake_names[i].code;
+    return -1;
+}
+
+static const char *fake_code_to_name(int kind, int code) {
+    for (size_t i = 0; i < sizeof g_fake_names / sizeof g_fake_names[0]; i++)
+        if (g_fake_names[i].kind == kind && g_fake_names[i].code == code)
+            return g_fake_names[i].name;
+    return NULL;
+}
+
+static void install_fake_key_names(void) {
+    openpete_keymap_set_lookup(fake_name_to_code, fake_code_to_name, NULL);
+}
+
+static int key_bound_to(openpete_action_t a, const char *name) {
+    km_source_t s[KM_MAX_SOURCES];
+    int n = openpete_keymap_sources(a, s, KM_MAX_SOURCES);
+    for (int i = 0; i < n; i++) {
+        if (s[i].kind != KM_SRC_KEY) continue;
+        const char *nm = fake_code_to_name(KM_SRC_KEY, s[i].code);
+        if (nm && !strcmp(nm, name)) return 1;
+    }
+    return 0;
+}
+
+static int key_source_count(openpete_action_t a) {
+    km_source_t s[KM_MAX_SOURCES];
+    return openpete_keymap_sources(a, s, KM_MAX_SOURCES);
+}
+
+static void case_keys_every_scope(void) {
+    /* Each scope in turn must be able to set a binding, and the more
+     * specific one must win — the same ladder the knobs obey. */
+    run("keys: global scope",
+        "[keys.host]\n"
+        "teleport = \"F5\"\n", NULL, 0);
+    CHECK(key_bound_to(OPK_TELEPORT, "F5"), "global [keys.host] ignored");
+
+    run("keys: game scope beats global",
+        "[keys.host]\n"
+        "teleport = \"F5\"\n"
+        "[game.spyro-1.keys.host]\n"
+        "teleport = \"F6\"\n", NULL, 0);
+    CHECK(key_bound_to(OPK_TELEPORT, "F6"),
+          "[game.spyro-1.keys.host] must beat the global [keys.host]");
+
+    run("keys: disc serial beats game",
+        "[game.spyro-1.keys.host]\n"
+        "teleport = \"F6\"\n"
+        "[disc.SCUS-94228.keys.host]\n"
+        "teleport = \"F7\"\n", NULL, 1);
+    CHECK(key_bound_to(OPK_TELEPORT, "F7"),
+          "[disc.SERIAL.keys.host] must beat [game.*]");
+
+    run("keys: disc sha beats serial",
+        "[disc.SCUS-94228.keys.host]\n"
+        "teleport = \"F7\"\n"
+        "[disc.95f03abf.keys.host]\n"
+        "teleport = \"F8\"\n", NULL, 1);
+    CHECK(key_bound_to(OPK_TELEPORT, "F8"),
+          "[disc.SHA.keys.host] must beat [disc.SERIAL]");
+
+    run("keys: saved beats every file scope",
+        "[disc.95f03abf.keys.host]\n"
+        "teleport = \"F8\"\n"
+        "[saved.keys.host]\n"
+        "teleport = \"F9\"\n", NULL, 1);
+    CHECK(key_bound_to(OPK_TELEPORT, "F9"),
+          "[saved.keys.host] must beat every file scope");
+
+    /* The pad namespace scopes identically — it is the same walk. */
+    run("keys: pad scopes too",
+        "[game.spyro-1.keys.pad]\n"
+        "cross = \"Space\"\n", NULL, 0);
+    CHECK(key_bound_to(OPK_PAD_CROSS, "Space"),
+          "[game.spyro-1.keys.pad] ignored");
+}
+
+/* Merge is per ACTION. A scope that names one binding must leave every
+ * other one alone — the regression this guards is a scope being made to
+ * replace a whole table, which would silently reset 40 bindings. */
+static void case_keys_per_action_merge(void) {
+    run("keys: per-action merge",
+        "[keys.host]\n"
+        "teleport = \"F5\"\n"
+        "pause    = \"F6\"\n"
+        "[game.spyro-1.keys.host]\n"
+        "teleport = \"F7\"\n", NULL, 0);
+    CHECK(key_bound_to(OPK_TELEPORT, "F7"), "the named action must change");
+    CHECK(key_bound_to(OPK_PAUSE, "F6"),
+          "an action the higher scope did not name must survive");
+}
+
+/* Unbinding: "none" and [] both clear, and a higher scope can unbind
+ * something a lower scope bound. This is the "don't ship the P shortcut"
+ * path end to end. */
+static void case_keys_unbind(void) {
+    run("keys: unbind with none",
+        "[keys.host]\n"
+        "rewind = \"none\"\n", NULL, 0);
+    CHECK(key_source_count(OPK_REWIND) == 0, "\"none\" must unbind");
+
+    run("keys: unbind with an empty array",
+        "[keys.host]\n"
+        "rewind = []\n", NULL, 0);
+    CHECK(key_source_count(OPK_REWIND) == 0, "[] must unbind");
+
+    run("keys: a higher scope unbinds a lower one's binding",
+        "[keys.host]\n"
+        "teleport = \"F5\"\n"
+        "[game.spyro-1.keys.host]\n"
+        "teleport = \"none\"\n", NULL, 0);
+    CHECK(key_source_count(OPK_TELEPORT) == 0,
+          "a higher scope's unbind must win");
+
+    /* KM_DEV rows are unbound with no config at all, and bindable back. */
+    run("keys: dev actions are off by default", "", NULL, 0);
+    CHECK(key_source_count(OPK_FILLPICK) == 0,
+          "a dev instrument must not be live in a stock config");
+    run("keys: dev actions can be bound back",
+        "[keys.host]\n"
+        "fillpick = \"P\"\n", NULL, 0);
+    CHECK(key_bound_to(OPK_FILLPICK, "P"), "a dev key must be bindable");
+}
+
+/* Arrays and comma-separated scalars are one spelling of one binding,
+ * and a bad row is an error rather than a silently dropped line. */
+static void case_keys_values(void) {
+    run("keys: array of sources",
+        "[keys.host]\n"
+        "teleport = [\"F5\", \"pad:north\"]\n", NULL, 0);
+    CHECK(key_source_count(OPK_TELEPORT) == 2, "an array must bind both");
+
+    run("keys: comma scalar equals an array",
+        "[keys.host]\n"
+        "teleport = \"F5,pad:north\"\n", NULL, 0);
+    CHECK(key_source_count(OPK_TELEPORT) == 2,
+          "a comma scalar must bind both");
+
+    run_t r;
+    r = run("keys: unknown action is an error",
+            "[keys.host]\n"
+            "telepart = \"F5\"\n", NULL, 0);
+    CHECK(r.rc < 0, "an unknown action must abort startup, not be ignored");
+
+    r = run("keys: unknown namespace is an error",
+            "[keys.padd]\n"
+            "cross = \"C\"\n", NULL, 0);
+    CHECK(r.rc < 0, "an unknown [keys.*] namespace must be named");
+
+    r = run("keys: unknown key name is an error",
+            "[keys.host]\n"
+            "teleport = \"Nonexistent\"\n", NULL, 0);
+    CHECK(r.rc < 0, "an unknown key name must abort startup");
+}
+
 int main(void) {
     const char *tmp = getenv("TMPDIR");
     snprintf(g_toml_path, sizeof g_toml_path, "%s/openpete-config-test.toml",
              (tmp && *tmp) ? tmp : "/tmp");
+
+    /* The keymap's name lookups are an SDL seam; this test links no SDL,
+     * so install the same minimal fake table the binding assertions read
+     * back through. Only the names these cases actually use. */
+    install_fake_key_names();
 
     case_spelling_mirror();
     case_specificity_beats_notation();
@@ -478,6 +695,10 @@ int main(void) {
     case_unregistered_flags();
     case_writer_round_trip();
     case_schema_sanity();
+    case_keys_every_scope();
+    case_keys_per_action_merge();
+    case_keys_unbind();
+    case_keys_values();
 
     remove(g_toml_path);
     if (g_fail) {

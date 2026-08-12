@@ -62,6 +62,21 @@ target_compile_definitions(openpete_hook_test_openpete PRIVATE OPENPETE_BUILD)
 set_target_properties(openpete_hook_test_openpete PROPERTIES C_STANDARD 99)
 add_test(NAME openpete_hook_test_openpete COMMAND openpete_hook_test_openpete)
 
+# keymap_test — the [keys] action registry, token parser, layered store
+# and conflict scan. keymap.c reaches SDL only through the lookup/input
+# seams, so this installs fakes for both: the link line stays SDL-free
+# like every other console test here, and the fake input state is what
+# lets the edge latch and the keyboard-suspend rule be exercised at all.
+# log.c comes along for OPL_WARN_F.
+add_executable(keymap_test
+    keymap_test.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/keymap.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/log.c)
+target_include_directories(keymap_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include)
+set_target_properties(keymap_test PROPERTIES C_STANDARD 11)
+add_test(NAME keymap_test COMMAND keymap_test)
+
 # psx_region_test — verifies the PSX RAM virtualization region table
 # (registration / lookup / overlap-rejection). Compiles psx_region.c
 # directly so we don't drag openpete_core's SDL2 dependency into a
@@ -87,6 +102,9 @@ add_executable(knob_registry_test
     ${CMAKE_SOURCE_DIR}/core/runtime/knob_registry.c
     ${CMAKE_SOURCE_DIR}/core/runtime/config.c
     ${CMAKE_SOURCE_DIR}/core/runtime/config_schema.c
+    # keymap.c rides along because config.c now seeds and resolves the
+    # binding store. No log.c: this test stubs the log entry points itself.
+    ${CMAKE_SOURCE_DIR}/core/runtime/keymap.c
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
 target_include_directories(knob_registry_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
@@ -103,6 +121,8 @@ add_executable(config_resolve_test
     config_resolve_test.c
     ${CMAKE_SOURCE_DIR}/core/runtime/config.c
     ${CMAKE_SOURCE_DIR}/core/runtime/config_schema.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/keymap.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/log.c
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
 target_include_directories(config_resolve_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include)

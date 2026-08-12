@@ -656,6 +656,7 @@ typedef struct openpete_options {
      * stack is already resolved by the time they run. */
     int         config_report;   /* --config-report: print the resolution table */
     int         config_convert;  /* --convert-config: legacy .opts/.env -> .toml */
+    int         keys_report;     /* --keys-report: print the resolved keymap */
 
     /* Host-backed memory card (save/load). The game reaches the card only
      * through the PSYQ MemCard* wrappers, which openpete backs with real
