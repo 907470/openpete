@@ -704,33 +704,34 @@ static double sky_ot_push_for(double ot_vz) {
 }
 /* Plane-cover near margin M (world units): the preview covers everything at
  * or behind plane − M inside the opening footprint. Sized by the 2026-08-11
- * fail-fast sweep: 256 clears every measured intruder class (doorway moby,
- * extended terrain band, the eaec jamb slit) at every battery pose in both
- * --lod modes; inner-frame erosion begins at 512 — a 2x safety band. */
+ * sweeps: with the og +64-slot push retired the plane ALONE covers every
+ * measured behind/at-plane intruder (doorway moby, extended terrain band —
+ * identical cover counts at M 0..256); the margin only widens cover into the
+ * near band, where the eaec jamb slit keeps opening toward og's width up to
+ * ~256. The ceiling is portal-name text mobys hovering ~192-256 in FRONT of
+ * the plane (wild-flight/exit letters lose chunks at 256) and inner-frame
+ * erosion from ~512. 128 sits below the text band with the jamb mostly
+ * recovered. */
 float openpete_portal_plane_margin(void) {
     static float m = -1.0f;
     if (m < 0.0f) {
         const char* e = getenv("OPENPETE_PORTAL_PLANE_MARGIN");
-        m = (e && *e) ? (float)atof(e) : 256.0f;
+        m = (e && *e) ? (float)atof(e) : 128.0f;
         if (m < 0.0f) m = 0.0f;
     }
     return m;
 }
 static float portal_cyclorama_depth(double vz) {
-    /* OPENPETE_PORTAL_PLANE_MARGIN=<world units>: plane-cover probe (see
-     * plans/openpete-portal-plane-cover.md). Tests the aperture mask and
-     * preview colours at plane − M instead of the og-OT mirroring
-     * (far-portal +64-slot push, eps): inside the footprint the preview
-     * covers everything at or behind plane − M. Probe only — 0/unset is
-     * bit-identical stock. */
-    static double s_plane_m = -1.0;
-    if (s_plane_m < 0.0) {
-        const char* e = getenv("OPENPETE_PORTAL_PLANE_MARGIN");
-        s_plane_m = (e && *e) ? atof(e) : 0.0;
-        if (s_plane_m < 0.0) s_plane_m = 0.0;
-    }
-    double v = (s_plane_m > 0.0) ? vz - s_plane_m
-                                 : vz + s_sky_push_vz - portal_sky_eps_vz();
+    /* Plane-cover rule: the aperture mask and preview colours TEST at
+     * plane − M, covering everything at or behind it inside the footprint
+     * (plans/openpete-portal-plane-cover.md). This replaces the og-OT
+     * mirroring here (the far-portal +64-slot push and the retired sky
+     * eps) — the margin lives ONLY in this test depth; nothing writes a
+     * non-true depth, and the preview's own drawn depth never moves (the
+     * PORTAL_SKY_EPS silhouette lesson). The behind-plane constructions
+     * (spill, correction band, outer ring) keep their own explicit
+     * push-back — they want to LOSE honest contests. */
+    double v = vz - (double)openpete_portal_plane_margin();
     if (v < 1.0) v = 1.0;
     return openpete_native_depth_from_viewz(openpete_worldvz_full((float)v));
 }

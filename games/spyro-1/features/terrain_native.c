@@ -308,9 +308,6 @@ typedef struct {
     uint16_t otslots;                              /* .s OT-slot depth offset for the TEST depth:
                                                     * LP 0x40+8*((w1>>3)&0x1F), HP 4*((w3>>3)&0x7);
                                                     * 1 slot = 128 world units (P4) */
-    uint8_t ogsub;                                 /* extended-LOD substitution: HP drawn past the
-                                                    * .s binning distance, where og inserts the LP
-                                                    * twin at the 0x40-slot push (portal-sky cover) */
 } ttri;
 static int s_emit_noHP = 0;     /* tier of the sector currently being emitted */
 static int s_emit_guard = 0;    /* current face is .s-DEFERRED (near band) -> portal-guard dup */
@@ -324,8 +321,6 @@ static uint8_t  s_emit_nearband = 0; /* current face is .s near-band (defer/HQ c
                                       * NEVER an OT face, so it neither emits nor contests
                                       * the og key raster (P6b) — near geometry resolves by
                                       * TRUE depth, like the mask-bit-protected defer queues */
-static uint8_t  s_emit_ogsub = 0;    /* current HP face is an extended-LOD substitution
-                                      * (og would bin this sector LP at this distance) */
 /* Local terrain-triangle cap (before the scene feed). Under --no-lod every
  * foreground cell is forced through the 2x2 HQ subdivide, so terrain peaks at
  * ~29k tris (beast_makers) vs ~9k at stock LOD; 65536 is ~2x the measured worst
@@ -501,14 +496,6 @@ static uint32_t terrain_color(CPUState* cpu, int noHP, uint32_t lpBase,
 /* Per-sector local projected vertex (indexed by face vertex index). Carries the
  * camera-space (m1,m2,m3) for near-plane clipping + the projected screen sx,sy. */
 typedef struct { float sx, sy; double m1, m2, m3, vz; int ok; } lvert;
-/* Portal-intruder census (OPENPETE_PORTAL_INTRUDE_DBG=<frame>): LP-side leg,
- * called from the build walk where LP geometry is decoded. Definition lives
- * with the skyplane machinery below. */
-static uint32_t s_pintrude_f = (uint32_t)-1;
-static void pintrude_lp_census(int sec, int face, int quad, int ogWouldHP,
-                               int front, const lvert* sv,
-                               int i0, int i1, int i2, int i3,
-                               float otkey, uint16_t otslots);
 
 /* ---- LP fill-tag inspector: the crosshair pick (openpete_fillpick.h) -------
  * "Which face am I looking at, and does authored HP cover this sightline?" —
@@ -781,7 +768,6 @@ static void push_tri(cvert a, cvert b, cvert c, const tmat* m) {
     t->otkey = s_emit_otkey;
     t->otslots = s_emit_otslots;
     t->nearband = s_emit_nearband;
-    t->ogsub = s_emit_ogsub;
     if (m->textured) s_tex_tris++;
 }
 
@@ -2960,22 +2946,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             drawLP = !(flags & 0x2000) && nLpF > 0 &&
                      ((flags & 0x8000) || (double)lodThr < cbin + SC->radius + 0x100);
         }
-        /* Extended-LOD substitution flag: past the .s binning distance the
-         * original inserts this surface as its LP twin at the 0x40-slot far
-         * push — an HP face drawn there under extended is a substitution
-         * whose og OT insertion is the LP key, ~8192 world farther than its
-         * HP offsets suggest. Used ONLY for the portal-sky cover test: at
-         * og's key such a face sorts behind the sky bucket, so the preview
-         * covers it (the extended-HP hillside eating an arch's preview).
-         * It must NOT reshape the shared key channel itself: og's whole
-         * LP-behind-HP cross-sector ordering is hidden by fog and coarse LP
-         * silhouettes, and mirroring it onto detailed substituted geometry
-         * paints nearer-sector faces over a far tower they merely overlap
-         * in the key raster. Original mode is untouched (the HP pass only
-         * runs where og bins HP). */
-        int ogWouldHP = !openpete_no_lod ||
-                        (!(flags & 0x4000) && nHpF > 0 &&
-                         (double)lodThr > cbin - SC->radius);
         if (s_fardbg_active)
             fprintf(stderr, "[fardbg-sec] s=%d flags=%04X cbin=%.1f rad=%d lodThr=%d fogRefBase=%d "
                             "drawHP=%d drawLP=%d nLpF=%d nHpF=%d\n",
@@ -3120,13 +3090,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         if (pass == 0 && !drawLP) {
             /* The inspector forces the same dump-only walk facemap uses, so an
              * LP face is pickable even in a sector whose LP tier never draws —
-             * aiming at a hole then names the face that would cover it. The
-             * portal-intruder census rides the same walk for substituted
-             * sectors: og's insertion there is the LP face, so its key must be
-             * read off LP geometry, which extended never otherwise decodes. */
-            if ((s_facemap_active || s_fp_on ||
-                 (s_pintrude_f + 1u > 1u && openpete_frame == s_pintrude_f && !ogWouldHP))
-                && !(flags & 0x2000) && nLpF > 0) fmDumpOnly = 1;
+             * aiming at a hole then names the face that would cover it. */
+            if ((s_facemap_active || s_fp_on) && !(flags & 0x2000) && nLpF > 0) fmDumpOnly = 1;
             else continue;
         }
         if (pass == 1 && !drawHP) continue;
@@ -3229,7 +3194,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             s_emit_nearband = 0;
             s_emit_otslots = passLP ? (uint16_t)(0x40u + 8u * F->otbias)
                                     : (uint16_t)(4u * F->otbias);
-            s_emit_ogsub = !passLP && !ogWouldHP;
             /* EXCEPT any face in the .s's FOREGROUND band (corner-depth sum
              * < 0x2000).
              *
@@ -3471,9 +3435,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * offered. */
             if (s_fp_on && !passFill)
                 fp_test_face(passLP, (int)i, f, F->fillcand, sv, i0, i1, i2, i3, quad);
-            if (passLP && !passFill)
-                pintrude_lp_census((int)i, f, quad, ogWouldHP, front, sv,
-                                   i0, i1, i2, i3, s_emit_otkey, s_emit_otslots);
             if (fmDumpOnly) continue;
             /* fardbg verdict trail: every face dropped AFTER its [fardbg-face]
              * row announces itself, so the offline face-set join can subtract
@@ -4103,34 +4064,24 @@ static int s_notex = -1;   /* OPENPETE_TERRAIN_NOTEX: force untextured (debug) *
 static int s_tiercolor = -1;  /* OPENPETE_TERRAIN_TIERCOLOR: LP=red, HP=blue */
 static int s_tieronly = -2;   /* OPENPETE_TERRAIN_TIERONLY: 1=LP only, 2=HP only */
 
-/* ---- portal sky KEY contest (the PSX per-face painter verdict) -------------
- * The .s draws the portal sky at ONE OT bucket; a terrain face whose OT key
- * (corner-mean view-Z + authored slot offset) sorts BEHIND it is drawn
- * BEFORE the sky in the walk, so the sky covers ALL of it — including any
- * part that pokes through the opening plane toward the camera (the
- * threshold/walkway at a portal base: one face spanning from just in front
- * of the plane deep into the throat). Native's per-PIXEL true depth would
- * let its near lip beat the sky (portal-ground-disocclusion f2440).
+/* ---- portal sky cover (the plane-cover rule) -------------------------------
+ * Inside an opening's footprint the destination preview covers everything at
+ * or behind the opening plane − M (openpete_portal_plane_margin, default
+ * 256 world). The portal feeder's aperture mask and preview colours test at
+ * plane − M, so covered OPAQUE terrain needs no CPU treatment: it draws at
+ * TRUE depth and the preview repaints over it per pixel — including the
+ * threshold-pad class (a face spanning from just in front of the plane into
+ * the throat, depth-coincident with the plane at the base: its coincident
+ * and behind portions fall inside M and are covered; only a genuinely-near
+ * lip shows, the portal-ground-disocclusion f2440 requirement). Transparent
+ * covered terrain keeps a CPU whole-face drop (it blends AFTER the portal
+ * sequence, over the preview) — same predicate, applied at the centroid.
  *
- * The verdict rides the SAME key-resolve machinery as the LP↔HP tier
- * contest: the feeder emits the revealed aperture outline into the HP key
- * image at the sky's absolute key (bucket + the half-bucket margin,
- * OPENPETE_SCENE_TERRAIN_KEY); covered opaque faces need no special mark —
- * they carry their own og key like all keyed terrain, so they discard
- * exactly where the sky's nearer key wins the pixel, keep drawing at TRUE
- * depth below the outline (the sill bar the .s shows peeking under the
- * preview), and never write a lied depth anywhere (the strict-by-half-slot
- * rule means a face never loses to its own emitted key). Transparent
- * covered terrain keeps the CPU whole-face drop (no depth writes to
- * protect; a per-pixel discard needs an opaque pipe).
- *
- * Why the bucket comparison and not a geometric plane-straddle rule: the
- * threshold pad can be DEPTH-COINCIDENT with the opening plane at every
- * vertex while its .s key sorts strictly behind the sky's — B comes from
- * the OUTLINE MEAN, several hundred units nearer than the plane's depth at
- * the base under an angled view. Actors are deliberately NOT conformed:
- * their native depth is true per-pixel and the sky's rendered plane depth
- * preserves their layering exactly. */
+ * This replaces the og-OT key mirror (the sky-bucket TERRAIN_KEY fan + the
+ * face-insertion comparison): the .s's tier-asymmetric OT pushes make that
+ * verdict an artifact wherever tier and distance decouple — measured via
+ * the saturated-LOD baseline, where og's own engine paints HP terrain over
+ * its own preview fan. See plans/openpete-portal-plane-cover.md. */
 static int s_pconform = -1;        /* OPENPETE_TERRAIN_PORTAL_CONFORM=0 disables (A/B) */
 static int s_otbias_on = 1;        /* OPENPETE_TERRAIN_OT_BIAS this VBL (shared: the
                                     * emit-site pull and the conform front cap must
@@ -4509,70 +4460,30 @@ static int portal_rim_face(CPUState* cpu, const ttri* t) {
  *
  * Mirror the walk instead of fighting the depth buffer: a transparent face the
  * sky covers is simply not drawn. */
-/* whole_face: require every vertex inside the outline, not just the
- * centroid. A whole-face verdict needs the whole face covered — the native
- * outline's bottom edge sits a few px below og's real opening (the sill
- * overrun), so a sill face straddling that edge has its centroid inside
- * while og still draws it; dropping it eats the sill bar the original
- * shows. Fully-interior faces are covered under either footprint. */
-static int portal_sky_covers_at(const ttri* t, double keyoff, int whole_face) {
+/* Plane-cover rule (plans/openpete-portal-plane-cover.md): a transparent face
+ * is covered iff its screen centroid lies inside an opening's footprint and
+ * its mean view-Z sits at or behind the opening plane − M at that point. The
+ * former og-OT key comparison (face insertion vs the sky bucket) is retired:
+ * the .s's tier-asymmetric OT pushes make that verdict a rendering artifact
+ * once tier and distance decouple (measured via the saturated-LOD baseline —
+ * og's own engine paints HP terrain over its own fan), so the aperture is
+ * defined geometrically instead, in both --lod modes. */
+static int portal_sky_covers(const ttri* t) {
+    const double M = (double)openpete_portal_plane_margin();
     for (int pi = 0; pi < s_pplane_n; pi++) {
         const openpete_portal_skyplane* pp = &s_pplane[pi];
-        if (pp->ot_vz <= 0.0 || pp->pn < 3) continue;
+        if (pp->pn < 3) continue;
         const float cx = (t->sx[0] + t->sx[1] + t->sx[2]) / 3.0f;
         const float cy = (t->sy[0] + t->sy[1] + t->sy[2]) / 3.0f;
         if (cx < pp->x0 || cx > pp->x1 || cy < pp->y0 || cy > pp->y1) continue;
-        if (whole_face) {
-            int in = 1;
-            for (int k = 0; k < 3 && in; k++)
-                in = skyplane_contains(pp, t->sx[k], t->sy[k]);
-            if (!in) continue;
-        } else if (!skyplane_contains(pp, cx, cy)) continue;
-        const double mean = (t->otkey > 0.0f) ? (double)t->otkey
-                                              : (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
-        if (mean + keyoff >= pp->ot_vz + 64.0) return 1;
+        if (!skyplane_contains(pp, cx, cy)) continue;
+        const double inv = pp->a * (double)cx + pp->b * (double)cy + pp->c;
+        if (inv <= 1e-9) continue;                /* plane behind the camera here */
+        const double mean = (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
+        if (mean >= 1.0 / inv - M) return 1;
     }
     return 0;
 }
-static int portal_sky_covers(const ttri* t) {
-    /* The face's .s OT index carries its authored slot offset — both
-     * sides of the contest compare at their true insertion depth. */
-    return portal_sky_covers_at(t, 128.0 * (double)t->otslots, 0);
-}
-/* Census leg for og's REAL insertion in a substituted sector: the LP face.
- * Logs every LP face of an og-LP-binned sector whose projected footprint
- * touches a portal opening, with the key og would insert it at
- * (LP 4-corner mean + authored 0x40+8*bias slots). */
-static void pintrude_lp_census(int sec, int face, int quad, int ogWouldHP,
-                               int front, const lvert* sv,
-                               int i0, int i1, int i2, int i3,
-                               float otkey, uint16_t otslots) {
-    if (s_pintrude_f + 1u <= 1u || openpete_frame != s_pintrude_f) return;
-    if (ogWouldHP || !s_pplane_n) return;
-    const int ci[4] = { i0, i1, i2, quad ? i3 : i2 };
-    const int nc = quad ? 4 : 3;
-    for (int pi = 0; pi < s_pplane_n; pi++) {
-        const openpete_portal_skyplane* pp = &s_pplane[pi];
-        if (pp->ot_vz <= 0.0 || pp->pn < 3) continue;
-        float cx = 0.f, cy = 0.f; int vin = 0, frontv = 0;
-        for (int k = 0; k < nc; k++) {
-            const lvert* V = &sv[ci[k]];
-            cx += V->sx; cy += V->sy;
-            if (V->m3 > 0.0) frontv++;
-            if (skyplane_contains(pp, V->sx, V->sy)) vin++;
-        }
-        cx /= (float)nc; cy /= (float)nc;
-        int cin = skyplane_contains(pp, cx, cy) ? 1 : 0;
-        if (!vin && !cin) continue;
-        const double key = (double)otkey + 128.0 * (double)otslots;
-        fprintf(stderr, "[pintrude-lp f=%u] pi=%d sec=%d face=%d q=%d fr=%d "
-                "frontv=%d/%d vin=%d cin=%d key=%.0f sky=%.0f cov=%d "
-                "c=(%.1f,%.1f)\n",
-                openpete_frame, pi, sec, face, quad, front, frontv, nc, vin,
-                cin, key, pp->ot_vz, key >= pp->ot_vz + 64.0 ? 1 : 0, cx, cy);
-    }
-}
-
 
 static void terrain_feed_native(CPUState* cpu) {
     {
@@ -4587,18 +4498,6 @@ static void terrain_feed_native(CPUState* cpu) {
         const char* e = getenv("OPENPETE_TERRAIN_PORTAL_CONFORM_DBG");
         s_pconform_dbg = 0;
         if (e && *e && sscanf(e, "%f,%f", &s_pcdbg_x, &s_pcdbg_y) == 2) s_pconform_dbg = 1;
-    }
-    if (s_pintrude_f == (uint32_t)-1) {
-        const char* e = getenv("OPENPETE_PORTAL_INTRUDE_DBG");
-        s_pintrude_f = (e && *e) ? (uint32_t)strtoul(e, NULL, 0) : 0;
-    }
-    if (s_pintrude_f && openpete_frame == s_pintrude_f && s_pplane_n > 0) {
-        for (int i = 0; i < s_pplane_n; i++)
-            fprintf(stderr, "[pintrude-plane f=%u] pi=%d p=%08X skyot=%.0f back=%.0f "
-                    "bbox=(%.0f,%.0f)-(%.0f,%.0f)\n",
-                    openpete_frame, i, s_pplane[i].portal, s_pplane[i].ot_vz,
-                    s_pplane[i].back_vz, s_pplane[i].x0, s_pplane[i].y0,
-                    s_pplane[i].x1, s_pplane[i].y1);
     }
     /* Active portal-sky opening planes, derived against THIS present's camera
      * bracket (canonical or sub-tick interpolated) so plane and verts agree. */
@@ -4899,57 +4798,14 @@ static void terrain_feed_native(CPUState* cpu) {
         ttri* t = &s_tri[i];
         if (s_tieronly == 1 && !t->tier) continue;   /* LP only */
         if (s_tieronly == 2 &&  t->tier) continue;   /* HP only */
-        /* Transparent terrain the preview covers: drop it (portal_sky_covers).
-         * Opaque covered faces need no CPU treatment any more: the portal
-         * feeder emits the aperture outline into the HP key image at the sky
-         * bucket's key (TERRAIN_KEY), so they lose the per-pixel key contest
-         * exactly where the sky rasters — and keep drawing at TRUE depth
-         * below it (the sill-bar class the old stored-depth conformance sink
-         * preserved by construction). */
+        /* Transparent terrain the preview covers (plane-cover rule): drop it.
+         * Opaque covered faces need no CPU treatment: they draw at TRUE
+         * depth behind the opening plane, and the preview — mask and colours
+         * testing at plane − M — repaints over them per pixel. Transparent
+         * classes draw AFTER the portal sequence and would blend on top of
+         * the preview (a waterfall shining through the arch), so the mirror
+         * of the cover is not drawing them at all. */
         if (s_pplane_n && t->blend && t->textured && portal_sky_covers(t)) continue;
-        /* Extended-LOD substituted faces (HP drawn where og bins the sector
-         * LP) cover-test at og's insertion key — the LP twin's 0x40-slot far
-         * push — not their HP offsets: og sorts this surface behind the sky
-         * bucket at this distance, so the preview covers it whole. Dropping
-         * the face (draw AND key) mirrors that verdict. Centroid containment,
-         * matching the boundary the original-LOD per-pixel contest resolves
-         * to (the native fan footprint) — the whole-face form was tried for
-         * the sill faces straddling the opening's bottom edge and traded the
-         * clean edge for a jagged tongues-and-bays mix; the residual there is
-         * the native outline sitting ~2px below og's own fan geometry, which
-         * no face-set choice can fix. Opaque only — blended faces take the
-         * authored-slot rule above. */
-        if (s_pplane_n && t->ogsub && !t->blend &&
-            portal_sky_covers_at(t, 128.0 * 0x40, 0)) continue;
-        /* OPENPETE_PORTAL_INTRUDE_DBG=<frame>: census of every DRAWN opaque
-         * face whose screen footprint touches a portal opening polygon while
-         * its emitted key survives the sky bucket — i.e. the exact population
-         * able to paint over the preview. vin = vertices inside, cin =
-         * centroid inside; key = emitted contest key, oglp = the face at og's
-         * LP insertion (0x40 slots). */
-        if (s_pintrude_f && openpete_frame == s_pintrude_f &&
-            s_pplane_n && !t->blend) {
-            for (int pi = 0; pi < s_pplane_n; pi++) {
-                const openpete_portal_skyplane* pp = &s_pplane[pi];
-                if (pp->ot_vz <= 0.0 || pp->pn < 3) continue;
-                const float cx = (t->sx[0] + t->sx[1] + t->sx[2]) / 3.0f;
-                const float cy = (t->sy[0] + t->sy[1] + t->sy[2]) / 3.0f;
-                int vin = 0, cin = skyplane_contains(pp, cx, cy) ? 1 : 0;
-                for (int k = 0; k < 3; k++)
-                    if (skyplane_contains(pp, t->sx[k], t->sy[k])) vin++;
-                if (!vin && !cin) continue;
-                const double mean = (t->otkey > 0.0f) ? (double)t->otkey
-                    : (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
-                const double key = mean + 128.0 * (double)t->otslots;
-                if (key >= pp->ot_vz + 64.0) continue;   /* sky covers: no paint */
-                fprintf(stderr, "[pintrude f=%u] pi=%d sec=%d face=%d tier=%d "
-                        "ogsub=%d fill=%d vin=%d cin=%d key=%.0f oglp=%.0f sky=%.0f "
-                        "c=(%.1f,%.1f)\n",
-                        openpete_frame, pi, t->sec, t->face, (int)t->tier,
-                        (int)t->ogsub, (int)t->fill, vin, cin, key,
-                        mean + 128.0 * 0x40, pp->ot_vz, cx, cy);
-            }
-        }
         openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));
         uint32_t fp_col = 0;
         if (fp_tint) {
@@ -5216,29 +5072,12 @@ static void terrain_feed_native(CPUState* cpu) {
         openpete_native_scene_set_fog_delta(0);   /* never leak past this feeder */
     }
     openpete_native_scene_set_presnap(0);   /* never leak past this feeder */
-    /* P6c: emit each revealed aperture outline into the HP key image at the
-     * sky's ABSOLUTE og key (bucket + the half-bucket contest margin). The
-     * TERRAIN_KEY category is consumed ONLY by the key pass — never drawn —
-     * so this adds no visible geometry; covered opaque faces (contest-mode
-     * koff above) discard exactly where this fan's key wins their pixel. */
-    if (openpete_native_key_resolve_on()) {
-        for (int pi = 0; pi < s_pplane_n; pi++) {
-            const openpete_portal_skyplane* pp = &s_pplane[pi];
-            if (pp->ot_vz <= 0.0 || pp->pn < 3) continue;
-            openpete_scene_tri kt; memset(&kt, 0, sizeof(kt));
-            kt.koff = (float)(pp->ot_vz + 64.0 + 0.5);
-            float kz = openpete_native_depth_from_viewz(
-                openpete_worldvz_full((float)pp->ot_vz));
-            for (int i = 1; i + 1 < pp->pn; i++) {
-                const int idx[3] = { 0, i, i + 1 };
-                for (int k = 0; k < 3; k++) {
-                    kt.v[k].sx = pp->px[idx[k]]; kt.v[k].sy = pp->py[idx[k]];
-                    kt.v[k].z = kz; kt.v[k].rgba = 0xFF000000u;
-                }
-                openpete_native_scene_add_tri(&kt, OPENPETE_SCENE_TERRAIN_KEY, 0);
-            }
-        }
-    }
+    /* The former P6c TERRAIN_KEY aperture fan (the sky bucket's og key rastered
+     * into the key image, discarding og-covered opaque terrain per pixel) is
+     * RETIRED with the plane-cover rule: opaque terrain behind the opening
+     * draws at true depth and the preview repaints over it at plane − M. See
+     * plans/openpete-portal-plane-cover.md for the og-arithmetic measurement
+     * behind the retirement. */
     {   /* guard census (debug, stderr-throttled) */
         static int cen = -1; static int lines;
         if (cen < 0) { const char* e = getenv("OPENPETE_PORTAL_GUARD_DBG"); cen = (e && *e && *e != '0'); }
