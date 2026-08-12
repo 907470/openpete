@@ -4468,6 +4468,14 @@ static int portal_rim_face(CPUState* cpu, const ttri* t) {
  * distance decouple (with LOD forced off, the .s itself paints HP terrain
  * over its own fan) — the aperture is defined geometrically instead, in
  * both --lod modes. */
+/* OPENPETE_PORTAL_TRANSP_COVER=0: disable the transparent-terrain cover drop
+ * (A/B lever — shows blended terrain through the preview again). */
+static int transp_cover_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_PORTAL_TRANSP_COVER");
+                 v = (e && *e) ? (*e != '0') : 1; }
+    return v;
+}
 static int portal_sky_covers(const ttri* t) {
     const double M = (double)openpete_portal_plane_margin();
     for (int pi = 0; pi < s_pplane_n; pi++) {
@@ -4804,8 +4812,12 @@ static void terrain_feed_native(CPUState* cpu) {
          * testing at plane − M — repaints over them per pixel. Transparent
          * classes draw AFTER the portal sequence and would blend on top of
          * the preview (a waterfall shining through the arch), so the mirror
-         * of the cover is not drawing them at all. */
-        if (s_pplane_n && t->blend && t->textured && portal_sky_covers(t)) continue;
+         * of the cover is not drawing them at all. Both tiers: the HP
+         * waterfall is textured but its LP twin is blended UNTEXTURED
+         * gouraud (LP has no textures), and it needs the same drop — the
+         * per-pixel key discard that used to catch it went with the
+         * TERRAIN_KEY fan. */
+        if (s_pplane_n && t->blend && transp_cover_on() && portal_sky_covers(t)) continue;
         openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));
         uint32_t fp_col = 0;
         if (fp_tint) {

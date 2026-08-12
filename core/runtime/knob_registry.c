@@ -697,6 +697,9 @@ static const knob_desc_t g_builtin[] = {
         "Outward margin on the portal aperture, in WORLD units (default 40; negative erodes)."),
     ENVROW_LATCHED("PORTAL_RIM_CULL", "Debug", "1",
         "Cull terrain lying in a portal's opening plane (the inner rim). 0 = keep."),
+    ENVROW_LATCHED("PORTAL_TRANSP_COVER", "Debug", "1",
+        "Drop blended terrain (waterfalls, both tiers) the portal preview covers "
+        "(0 = let it blend through the preview)."),
     ENVROW_LATCHED("PORTAL_PLANE_MARGIN", "Debug", "128",
         "Plane-cover near margin M (world units): inside an opening the preview covers "
         "everything at or behind plane - M. Portal-name text floats ~192-256 in front; "

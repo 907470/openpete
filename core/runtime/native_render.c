@@ -4898,10 +4898,9 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
         for (int t = 0; t < n && cn < MAX_SCENE_TRIS; t++) {
             const scene_tri_t* T = &sc[t];
             const int c = T->category;
-            const int opaque = (c == OPENPETE_SCENE_WORLD || c == OPENPETE_SCENE_ACTOR ||
-                                c == OPENPETE_SCENE_ACTOR_FRONT || c == OPENPETE_SCENE_WORLD_FILL)
-                               && T->blend == 0;
-            if (!opaque && c != OPENPETE_SCENE_PORTAL_CYCLORAMA) continue;
+            const int terr = (c == OPENPETE_SCENE_WORLD || c == OPENPETE_SCENE_ACTOR ||
+                              c == OPENPETE_SCENE_ACTOR_FRONT || c == OPENPETE_SCENE_WORLD_FILL);
+            if (!terr && c != OPENPETE_SCENE_PORTAL_CYCLORAMA) continue;
             float tx0 = 1e9f, ty0 = 1e9f, tx1 = -1e9f, ty1 = -1e9f;
             for (int k = 0; k < 3; k++) {
                 if (T->v[k].sx < tx0) tx0 = T->v[k].sx;
@@ -4912,8 +4911,8 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
             if (tx1 < bx0 || tx0 > bx1 || ty1 < by0 || ty0 > by1) continue;
             cand[cn++] = t;
         }
-        int in_px = 0, prev_px = 0, front_px = 0, empty_px = 0, viol = 0;
-        float vpx = 0.0f, vpy = 0.0f;
+        int in_px = 0, prev_px = 0, front_px = 0, empty_px = 0, viol = 0, tviol = 0;
+        float vpx = 0.0f, vpy = 0.0f, tvx = 0.0f, tvy = 0.0f;
         for (int py = (int)by0; py <= (int)(by1 + 1.0f); py++)
         for (int px = (int)bx0; px <= (int)(bx1 + 1.0f); px++) {
             const float X = (float)px + 0.5f, Y = (float)py + 0.5f;
@@ -4932,7 +4931,7 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
             if (pvz < 1.0) pvz = 1.0;
             const float zlim = openpete_native_depth_from_viewz(
                                    openpete_worldvz_full((float)pvz));
-            float zw = 2.0f, zc = 2.0f;
+            float zw = 2.0f, zc = 2.0f, zb = 2.0f;
             for (int ci = 0; ci < cn; ci++) {
                 const scene_tri_t* T = &sc[cand[ci]];
                 const float ax = T->v[0].sx, ay = T->v[0].sy;
@@ -4948,7 +4947,16 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
                 const float z = b0 * T->v[0].z + b1 * T->v[1].z + b2 * T->v[2].z;
                 if (T->category == OPENPETE_SCENE_PORTAL_CYCLORAMA) {
                     if (z < zc) zc = z;
+                } else if (T->blend != 0) {
+                    if (z < zb) zb = z;
                 } else if (z < zw) zw = z;
+            }
+            /* Transparent terrain draws AFTER the portal sequence and blends
+             * over the preview — a behind-plane blended tri at this pixel
+             * means the feeder's cover drop failed. */
+            if (zb < 2.0f && zb > zlim + 1e-6f) {
+                if (!tviol) { tvx = X; tvy = Y; }
+                tviol++;
             }
             if (zw >= 2.0f) { empty_px++; continue; }   /* no opaque content */
             if (zw <= zlim + 1e-6f) { front_px++; continue; }  /* legit front */
@@ -4957,9 +4965,10 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
             viol++;
         }
         fprintf(stderr, "[pcover f=%u] pi=%d pn=%d M=%.0f in=%d preview=%d "
-                "front=%d empty=%d VIOL=%d first=(%.1f,%.1f)\n",
+                "front=%d empty=%d VIOL=%d first=(%.1f,%.1f) TVIOL=%d tfirst=(%.1f,%.1f)\n",
                 s_scene_frame, pi, P->pn, (double)s_cvp_m, in_px, prev_px,
-                front_px, empty_px, viol, (double)vpx, (double)vpy);
+                front_px, empty_px, viol, (double)vpx, (double)vpy,
+                tviol, (double)tvx, (double)tvy);
     }
 }
 
