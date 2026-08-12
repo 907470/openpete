@@ -389,10 +389,11 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
 /* TERRAIN_KEY: RETIRED (number reserved — do not reuse). Formerly the
  * portal-aperture og-key fan (P6c): the sky bucket's key rastered into the
  * HP key image to discard og-covered terrain, plus the WORLD_FILL stencil
- * pre-mark. Replaced by the plane-cover rule (the aperture mask and preview
+ * pre-mark. Replaced by the plane-cover rule: the aperture mask and preview
  * colours test at opening plane − margin, covering everything behind it per
- * pixel) — see plans/openpete-portal-plane-cover.md for the retirement
- * measurement. No feeder emits this category any more. */
+ * pixel — the .s's OT pushes are tier-asymmetric (fan +64 slots, LP +64+8b,
+ * HP only +4b), so the og-key verdict breaks wherever tier and distance
+ * decouple. No feeder emits this category any more. */
 #define OPENPETE_SCENE_TERRAIN_KEY 14
 /* carry: 1 = a tri is screen-space 2D-UI that the sub-tick re-extract canNOT
  * re-derive (it has no 2D-prim chokepoint to hook), so it must be snapshotted

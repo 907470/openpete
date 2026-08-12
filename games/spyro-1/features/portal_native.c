@@ -723,14 +723,15 @@ float openpete_portal_plane_margin(void) {
 }
 static float portal_cyclorama_depth(double vz) {
     /* Plane-cover rule: the aperture mask and preview colours TEST at
-     * plane − M, covering everything at or behind it inside the footprint
-     * (plans/openpete-portal-plane-cover.md). This replaces the og-OT
-     * mirroring here (the far-portal +64-slot push and the retired sky
-     * eps) — the margin lives ONLY in this test depth; nothing writes a
-     * non-true depth, and the preview's own drawn depth never moves (the
-     * PORTAL_SKY_EPS silhouette lesson). The behind-plane constructions
-     * (spill, correction band, outer ring) keep their own explicit
-     * push-back — they want to LOSE honest contests. */
+     * plane − M, covering everything at or behind it inside the footprint.
+     * This replaces the og-OT mirroring here (the far-portal +64-slot push
+     * and the retired sky eps). The margin lives ONLY in this test depth:
+     * nothing writes a non-true depth, and the preview's own DRAWN depth
+     * never moves — pulling the whole sky forward wins ties against the
+     * coincident inner rim but breaks the portal silhouette against the
+     * arch everywhere else. The behind-plane constructions (spill,
+     * correction band, outer ring) keep their own explicit push-back —
+     * they want to LOSE honest contests. */
     double v = vz - (double)openpete_portal_plane_margin();
     if (v < 1.0) v = 1.0;
     return openpete_native_depth_from_viewz(openpete_worldvz_full((float)v));

@@ -4856,9 +4856,8 @@ static void draw_backdrop_fills(uint32_t bg, const int* ut_first,
 
 
 /* ── Portal plane-cover invariant sweep ─────────────────────────────────
- * The plane-cover rule (plans/openpete-portal-plane-cover.md): inside an
- * opening's footprint every pixel must resolve to the preview or to content
- * NEARER than plane − M. This sweep verifies it against the complete scene
+ * The plane-cover rule: inside an opening's footprint every pixel must
+ * resolve to the preview or to content NEARER than plane − M. This sweep verifies it against the complete scene
  * list (terrain, actors, fills), independent of the feeders' own drop
  * logic: per interior pixel, the nearest pre-portal opaque
  * (WORLD/ACTOR/ACTOR_FRONT/WORLD_FILL) that sits BEHIND plane − M must be
@@ -6099,7 +6098,7 @@ static bool draw_native_scene(bool full_extent)
              * plane-cover rule: fills that land inside an aperture draw at
              * TRUE depth behind the opening plane, and the preview — testing
              * at plane − M — repaints over them like any other covered
-             * opaque. See plans/openpete-portal-plane-cover.md.) */
+             * opaque.) */
             bind_scene_pipe(s_nr.gouraud_fill_pipe);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[12], (uint32_t)ut_first[12]);

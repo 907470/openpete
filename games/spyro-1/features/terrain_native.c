@@ -4078,10 +4078,10 @@ static int s_tieronly = -2;   /* OPENPETE_TERRAIN_TIERONLY: 1=LP only, 2=HP only
  * sequence, over the preview) — same predicate, applied at the centroid.
  *
  * This replaces the og-OT key mirror (the sky-bucket TERRAIN_KEY fan + the
- * face-insertion comparison): the .s's tier-asymmetric OT pushes make that
- * verdict an artifact wherever tier and distance decouple — measured via
- * the saturated-LOD baseline, where og's own engine paints HP terrain over
- * its own preview fan. See plans/openpete-portal-plane-cover.md. */
+ * face-insertion comparison): the .s's OT pushes are tier-asymmetric (fan
+ * mean+64 slots, LP mean+64+8·bias, HP mean+4·bias), so the og verdict is a
+ * rendering artifact wherever tier and distance decouple — with LOD forced
+ * off, the .s itself paints HP terrain over its own preview fan. */
 static int s_pconform = -1;        /* OPENPETE_TERRAIN_PORTAL_CONFORM=0 disables (A/B) */
 static int s_otbias_on = 1;        /* OPENPETE_TERRAIN_OT_BIAS this VBL (shared: the
                                     * emit-site pull and the conform front cap must
@@ -4460,14 +4460,14 @@ static int portal_rim_face(CPUState* cpu, const ttri* t) {
  *
  * Mirror the walk instead of fighting the depth buffer: a transparent face the
  * sky covers is simply not drawn. */
-/* Plane-cover rule (plans/openpete-portal-plane-cover.md): a transparent face
- * is covered iff its screen centroid lies inside an opening's footprint and
- * its mean view-Z sits at or behind the opening plane − M at that point. The
- * former og-OT key comparison (face insertion vs the sky bucket) is retired:
- * the .s's tier-asymmetric OT pushes make that verdict a rendering artifact
- * once tier and distance decouple (measured via the saturated-LOD baseline —
- * og's own engine paints HP terrain over its own fan), so the aperture is
- * defined geometrically instead, in both --lod modes. */
+/* Plane-cover rule: a transparent face is covered iff its screen centroid
+ * lies inside an opening's footprint and its mean view-Z sits at or behind
+ * the opening plane − M at that point. The former og-OT key comparison
+ * (face insertion vs the sky bucket) is retired: the .s's OT pushes are
+ * tier-asymmetric, so that verdict is a rendering artifact once tier and
+ * distance decouple (with LOD forced off, the .s itself paints HP terrain
+ * over its own fan) — the aperture is defined geometrically instead, in
+ * both --lod modes. */
 static int portal_sky_covers(const ttri* t) {
     const double M = (double)openpete_portal_plane_margin();
     for (int pi = 0; pi < s_pplane_n; pi++) {
@@ -5075,9 +5075,7 @@ static void terrain_feed_native(CPUState* cpu) {
     /* The former P6c TERRAIN_KEY aperture fan (the sky bucket's og key rastered
      * into the key image, discarding og-covered opaque terrain per pixel) is
      * RETIRED with the plane-cover rule: opaque terrain behind the opening
-     * draws at true depth and the preview repaints over it at plane − M. See
-     * plans/openpete-portal-plane-cover.md for the og-arithmetic measurement
-     * behind the retirement. */
+     * draws at true depth and the preview repaints over it at plane − M. */
     {   /* guard census (debug, stderr-throttled) */
         static int cen = -1; static int lines;
         if (cen < 0) { const char* e = getenv("OPENPETE_PORTAL_GUARD_DBG"); cen = (e && *e && *e != '0'); }
