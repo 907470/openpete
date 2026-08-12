@@ -1634,71 +1634,24 @@ static int band_dbg(void) {
     return s_band_dbg;
 }
 
-/* Fan-emit `poly` split by the outline: the inside piece at PLANE depth, the
- * outside pieces on that plane pushed BEHIND it. Falls back to plane-depth-only
- * when no outline is registered. */
+/* Fan-emit `poly` at PLANE depth, UNSPLIT. The dome's confinement to the
+ * opening is the stencil mask alone: the mask's admission depth already
+ * discriminates per pixel — the interior fan marks at plane depth, the
+ * dilation ring and correction band mark at their behind-plane skirt depth,
+ * so a marked pixel is either the opening proper or a genuine through-gap
+ * (stone depth-fails the skirt and stays unmarked). Painting every marked
+ * pixel at plane depth is therefore safe, and it makes the dome cover
+ * exactly the pixels the mask (and the flat base fan, which shares the
+ * mask's fan construction) covers. The former inside/outside geometric
+ * split re-derived the outline boundary with float clips; where its raster
+ * disagreed with the mask's by a pixel, the flat base showed as a rim
+ * around the dome — an edge that cannot exist when there is only ONE
+ * boundary rasterization. (The split's behind-plane spill depth protected
+ * nothing the mask admission doesn't already: a world surface nearer than
+ * the skirt never gets marked in the first place.) */
 static void emit_split_by_outline(const pgv* poly, int n, float depth,
                                   int use_plane, double pa, double pb, double pc) {
-    if (s_skyout_n < 3 || !use_plane) {
-        fan_emit_poly(poly, n, depth, use_plane, pa, pb, pc);
-        return;
-    }
-    pgv a[24], b[24];
-    /* inside piece: successive keep-left clips vs every outline edge */
-    int m = n;
-    const pgv* src = poly;
-    for (int e = 0; e < s_skyout_n && m >= 3; e++) {
-        const pgv* p0 = &s_skyout[e];
-        const pgv* p1 = &s_skyout[(e + 1) % s_skyout_n];
-        m = clip_dir(src, m, (src == a) ? b : a, p0->x, p0->y, p1->x, p1->y, 1);
-        src = (src == a) ? b : a;
-    }
-    if (m >= 3) fan_emit_poly(src, m, depth, use_plane, pa, pb, pc);
-    /* With an aperture marked and no dilation the spill is stencil-killed, so
-     * emitting it would be dead geometry. Under DILATION the aperture reaches
-     * outside the opening, and these are the only colours that can fill that
-     * band — skipping them makes the dilation knob inert. */
-    if (s_aperture_ok && portal_aperture_margin_world() <= 0.0) return;
-    /* outside pieces: for edge i keep RIGHT of edge i and LEFT of edges 0..i-1
-     * (a disjoint decomposition of the outline's complement) */
-    for (int i = 0; i < s_skyout_n; i++) {
-        pgv u[24], w[24];
-        memcpy(u, poly, sizeof(pgv) * (size_t)n);
-        int k = n;
-        const pgv* cur = u;
-        {
-            const pgv* p0 = &s_skyout[i];
-            const pgv* p1 = &s_skyout[(i + 1) % s_skyout_n];
-            k = clip_dir(cur, k, w, p0->x, p0->y, p1->x, p1->y, 0);
-            cur = w;
-        }
-        for (int e = 0; e < i && k >= 3; e++) {
-            const pgv* p0 = &s_skyout[e];
-            const pgv* p1 = &s_skyout[(e + 1) % s_skyout_n];
-            k = clip_dir(cur, k, (cur == w) ? u : w, p0->x, p0->y, p1->x, p1->y, 1);
-            cur = (cur == w) ? u : w;
-        }
-        if (k >= 3) {
-            if (band_dbg()) s_band_tint = 0xFF00FF00u;   /* GREEN = dome spill */
-            /* PER-VERTEX behind-plane depth, not one constant for the whole spill.
-             *
-             * That constant was the FARTHEST outline point plus the bias. On a
-             * tilted opening the near jamb's spill then sits far behind the
-             * plane, loses the depth test to the through-hole world, and never
-             * rasters — while the flat base's dilation ring, which follows the
-             * plane per vertex, does raster there. The result is the level's
-             * background colour tracing the arch's inner edge in the dilation
-             * band, brightest where the two depths diverge most (a near-white
-             * line down dream_weavers' jambs). Matching the ring's construction
-             * makes the two cover the same pixels, so the dome — submitted
-             * after the base — paints its own sky over it.
-             *
-             * The spill stays BEHIND the plane, so the world still wins every
-             * honest contest; only the constant was wrong, not the policy. */
-            fan_emit_poly(cur, k, 0.0f, 2, pa, pb, pc);
-            s_band_tint = 0;
-        }
-    }
+    fan_emit_poly(poly, n, depth, use_plane, pa, pb, pc);
 }
 
 /* Clip a gouraud face to the portal CLIP RECT and fan-emit it. This is what the
