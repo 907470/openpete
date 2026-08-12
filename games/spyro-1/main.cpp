@@ -29,9 +29,25 @@
 static void reconnect_std(DWORD which, FILE* stream) {
     HANDLE h = GetStdHandle(which);
     if (!h || h == INVALID_HANDLE_VALUE) return;
+    int target = _fileno(stream);
+
+    /* Leave a stream that is ALREADY wired to this handle alone. A
+     * console-subsystem build — and any build whose CRT inherited its
+     * handles, which is every WSL-interop launch — arrives here with
+     * working stdio, and "reconnecting" it is destructive: _open_osfhandle
+     * takes a SECOND CRT reference to the same HANDLE, then _dup2 closes
+     * the destination fd first, which shuts that one handle for both
+     * references. The stream is left pointing at a closed handle and every
+     * write is silently dropped. That is what made stdout-based output
+     * (--config-report, --keys-report) vanish while stderr-based output
+     * (--help, the log) kept working. */
+    if (target >= 0 && (HANDLE)_get_osfhandle(target) == h) {
+        setvbuf(stream, NULL, _IONBF, 0);
+        return;
+    }
+
     int fd = _open_osfhandle((intptr_t)h, _O_TEXT);
     if (fd == -1) return;
-    int target = _fileno(stream);
     if (fd != target) { _dup2(fd, target); _close(fd); }
     setvbuf(stream, NULL, _IONBF, 0);
 }
