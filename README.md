@@ -58,8 +58,8 @@ cmake --build build/windows-mingw -j
 Settings live in `openpete.toml`, so you don't retype your preferences
 every launch. Two are read: one **next to the executable** (what a build
 or a download ships with) and one in your config dir
-(`~/.config/openpete/openpete.toml`, or `%APPDATA%\openpete\` on Windows —
-your own, and where the in-game menus save).
+(`~/.config/openpete/openpete.toml`, or `%APPDATA%\openpete\` on Windows).
+Which one the in-game menus save to depends on the layout below.
 
 ```toml
 # openpete.toml
@@ -96,6 +96,36 @@ per-disc overrides work the same way plain keys do:
 [disc.SCUS-94228.env]
 OPENPETE_TERRAIN_TIMERS = "1"
 ```
+
+### Where your files go
+
+On **Windows** an install is portable: everything openpete writes stays in
+the game folder, next to the exe.
+
+```
+openpete-spyro1.exe
+openpete.toml     your settings (what the in-game menus save)
+cards/            memory cards — card1.mcr, card2.mcr
+states/           savestate slots
+library/          ingested discs and their compiled modules
+mods/
+```
+
+On **Linux** the first three go to the per-user directories instead
+(`~/.config/openpete` for the config, `~/.local/state/openpete` for cards
+and states), because that is where a Linux install is expected to put
+them. `library/` and `mods/` are always next to the exe on both.
+
+Either platform will do either — say so at the top of `openpete.toml`:
+
+```toml
+portable = true    # settings, cards and states in the game folder
+portable = false   # settings, cards and states in the per-user directories
+```
+
+A portable install whose folder isn't writable — under `Program Files`,
+say — falls back to the per-user directories and says so at startup.
+`--config-report` always prints the three resolved paths.
 
 ### Controls
 

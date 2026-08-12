@@ -19,6 +19,7 @@
 
 #include "openpete_memcard.h"
 #include "openpete_log.h"
+#include "openpete_paths.h"
 #include "openpete_mods.h" /* openpete_mods_modset_tag — save safety */
 
 extern int openpete_speculative; /* openpete_fiber.h — runahead lookahead */
@@ -93,8 +94,10 @@ static int     s_mc_status = MC_SYNC_NOTHING;
 
 /* --- directory / image helpers -------------------------------------------- */
 
-/* Resolve the cards directory, creating it as needed. Mirrors savestate.c's
- * resolve_state_dir but for a `cards` sibling of `states`. Returns 0 ok. */
+/* Resolve the cards directory, creating it as needed. `cards` is a sibling
+ * of savestate.c's `states` under whichever layout openpete_paths.h
+ * resolved — the game folder for a portable install, the per-user state
+ * directory otherwise. Returns 0 ok. */
 static int mc_resolve_card_dir(char* out, size_t out_size)
 {
     if (s_dir_override[0]) {
@@ -108,45 +111,7 @@ static int mc_resolve_card_dir(char* out, size_t out_size)
         snprintf(out, out_size, "%s", env);
         return 0;
     }
-
-    const char* base = NULL;
-    char        fallback[1024];
-#ifdef _WIN32
-    base = getenv("LOCALAPPDATA");
-    if (!base || !*base) {
-        const char* up = getenv("USERPROFILE");
-        if (!up || !*up) {
-            OPL_ERROR_F("memcard", "%s", "neither LOCALAPPDATA nor USERPROFILE set");
-            return -1;
-        }
-        snprintf(fallback, sizeof(fallback), "%s\\AppData\\Local", up);
-        base = fallback;
-    }
-#else
-    base = getenv("XDG_STATE_HOME");
-    if (!base || !*base) {
-        const char* home = getenv("HOME");
-        if (!home || !*home) {
-            OPL_ERROR_F("memcard", "%s", "neither XDG_STATE_HOME nor HOME set");
-            return -1;
-        }
-        snprintf(fallback, sizeof(fallback), "%s/.local/state", home);
-        base = fallback;
-    }
-#endif
-
-    char level1[1280];
-    snprintf(level1, sizeof(level1), "%s%copenpete", base, MC_SEP);
-    (void)OPENPETE_MKDIR(base);        /* fallback path may not exist yet */
-    (void)OPENPETE_MKDIR(level1);
-
-    int n = snprintf(out, out_size, "%s%ccards", level1, MC_SEP);
-    if (n < 0 || (size_t)n >= out_size) {
-        OPL_ERROR_F("memcard", "%s", "card-dir path too long");
-        return -1;
-    }
-    (void)OPENPETE_MKDIR(out);
-    return 0;
+    return openpete_paths_state_dir("cards", out, out_size, 1);
 }
 
 /* Fill s_path[slot] with the image path for this slot. */

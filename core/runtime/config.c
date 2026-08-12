@@ -9,15 +9,15 @@
  * themselves config knobs — so diagnostics here go straight to stderr,
  * the same convention options.c uses.
  *
- * Deliberately SDL-free: the exe directory is resolved with the platform
- * call directly (the same thing SDL_GetBasePath does, and the same thing
- * disc_library.cpp already does) so the resolver can be linked into a
+ * Deliberately SDL-free: directories come from openpete_paths.h, which
+ * calls the platform directly, so the resolver can be linked into a
  * standalone unit test without dragging SDL into the link line.
  */
 
 #include "openpete_config.h"
 #include "config_schema.h"
 #include "openpete_keymap.h"
+#include "openpete_paths.h"
 
 #include "../../third_party/tomlc99/toml.h"
 
@@ -27,16 +27,10 @@
 #include <string.h>
 
 #ifdef _WIN32
-#include <windows.h>
-#include <direct.h>
-#define OPCFG_MKDIR(p) _mkdir(p)
 #define OPCFG_SEP '\\'
 #else
-#include <sys/stat.h>
-#include <sys/types.h>
 #include <unistd.h>
 #include <limits.h>
-#define OPCFG_MKDIR(p) mkdir((p), 0777)
 #define OPCFG_SEP '/'
 #endif
 
@@ -135,59 +129,6 @@ static void path_join(char *out, size_t cap, const char *dir, const char *leaf) 
         snprintf(out, cap, "%s%s", dir, leaf);
     else
         snprintf(out, cap, "%s%c%s", dir, OPCFG_SEP, leaf);
-}
-
-static int exe_dir(char *out, size_t cap) {
-#ifdef _WIN32
-    char buf[CFG_PATH_MAX];
-    DWORD n = GetModuleFileNameA(NULL, buf, (DWORD)sizeof buf);
-    if (n == 0 || n >= sizeof buf) return -1;
-    char *slash = strrchr(buf, '\\');
-    if (!slash) slash = strrchr(buf, '/');
-    if (!slash) return -1;
-    *slash = '\0';
-    snprintf(out, cap, "%s", buf);
-    return 0;
-#else
-    char buf[CFG_PATH_MAX];
-    ssize_t n = readlink("/proc/self/exe", buf, sizeof buf - 1);
-    if (n <= 0) return -1;
-    buf[n] = '\0';
-    char *slash = strrchr(buf, '/');
-    if (!slash) return -1;
-    *slash = '\0';
-    snprintf(out, cap, "%s", buf);
-    return 0;
-#endif
-}
-
-/* $XDG_CONFIG_HOME/openpete (or %APPDATA%\openpete), created as needed.
- * Mirrors savestate.c's resolve_state_dir, but under config rather than
- * state: savestates and memory cards are data, this is preference. */
-static int user_config_dir(char *out, size_t cap) {
-    const char *base = NULL;
-    char fallback[CFG_PATH_MAX];
-#ifdef _WIN32
-    base = getenv("APPDATA");
-    if (!base || !*base) {
-        const char *up = getenv("USERPROFILE");
-        if (!up || !*up) return -1;
-        snprintf(fallback, sizeof fallback, "%s\\AppData\\Roaming", up);
-        base = fallback;
-    }
-#else
-    base = getenv("XDG_CONFIG_HOME");
-    if (!base || !*base) {
-        const char *home = getenv("HOME");
-        if (!home || !*home) return -1;
-        snprintf(fallback, sizeof fallback, "%s/.config", home);
-        base = fallback;
-    }
-#endif
-    (void)OPCFG_MKDIR(base);
-    path_join(out, cap, base, "openpete");
-    (void)OPCFG_MKDIR(out);
-    return 0;
 }
 
 static int file_exists(const char *p) {
@@ -656,10 +597,13 @@ static int load_toml(int file) {
     s_doc[file] = doc;
     s_file_present[file] = 1;
 
-    /* A portable install keeps its settings next to the exe. */
+    /* A portable install keeps everything it writes — this file's [saved]
+     * zone, memory cards, savestates — next to the exe. Files load in
+     * ascending precedence, so a user-dir directive beats the shipped one,
+     * matching how the rest of the layering resolves. */
     toml_raw_t p = toml_raw_in(doc, "portable");
     int b = 0;
-    if (p && toml_rtob(p, &b) == 0 && b) s_write_file = 0;
+    if (p && toml_rtob(p, &b) == 0) openpete_paths_set_portable(b);
     return 1;
 }
 
@@ -744,6 +688,17 @@ static int harvest_saved(int file) {
     const toml_table_t *keys = toml_table_in(tab, "keys");
     if (keys && harvest_keys(keys, TIER_SAVED, file, "saved", where) != 0)
         return -1;
+
+    /* A managed zone in a file that outranks the write target would beat
+     * everything the menus save from here on — the settings screen would
+     * appear to do nothing. Ranks are fixed by file (user-dir beats
+     * exe-dir), so this can only happen when the layout puts the target in
+     * the lower-ranked file; say so rather than let saves vanish. */
+    if (file > s_write_file)
+        fprintf(stderr, "openpete: config: %s has a [saved] section that "
+                        "outranks the save target %s — settings saved from "
+                        "the menus will not take effect until it is removed\n",
+                s_file_path[file], s_file_path[s_write_file]);
 
     /* Keep a copy so a later save rewrites the whole zone rather than
      * dropping the knobs this session didn't touch. */
@@ -1157,6 +1112,7 @@ void openpete_config_reset_for_test(void) {
     s_save_path[0] = s_scope_serial[0] = s_scope_sha[0] = '\0';
     s_no_config = s_report_requested = 0;
     s_disc_identity = NULL;
+    openpete_paths_set_portable(-1);   /* drop the last run's directive */
 }
 
 int openpete_config_apply(int argc, char **argv, int typed_argc,
@@ -1201,7 +1157,7 @@ int openpete_config_apply(int argc, char **argv, int typed_argc,
     scan_launch(argc, argv, typed_from);
 
     char exedir[CFG_PATH_MAX] = "";
-    int have_exedir = (exe_dir(exedir, sizeof exedir) == 0);
+    int have_exedir = (openpete_exe_dir(exedir, sizeof exedir) == 0);
 
     if (!s_no_config) {
         if (explicit_path) {
@@ -1215,8 +1171,11 @@ int openpete_config_apply(int argc, char **argv, int typed_argc,
         } else {
             if (have_exedir)
                 path_join(s_file_path[0], CFG_PATH_MAX, exedir, "openpete.toml");
+            /* Named, not created: the per-user file is read whether or not
+             * it is the write target, and a portable install must not leave
+             * an empty directory behind in AppData just for having looked. */
             char userdir[CFG_PATH_MAX];
-            if (user_config_dir(userdir, sizeof userdir) == 0)
+            if (openpete_paths_user_config_dir(userdir, sizeof userdir, 0) == 0)
                 path_join(s_file_path[1], CFG_PATH_MAX, userdir, "openpete.toml");
             s_file_n = 2;
         }
@@ -1232,6 +1191,20 @@ int openpete_config_apply(int argc, char **argv, int typed_argc,
             if (!s_file_path[f][0]) continue;
             if (load_toml(f) < 0) return -1;
         }
+
+        /* Both files are now parsed, so the `portable` directive (if any)
+         * has landed and the layout is decided. --config pins its own file
+         * as the target and is not up for a vote. */
+        if (!explicit_path) {
+            s_write_file = openpete_paths_portable() ? 0 : 1;
+            if (s_write_file == 1) {
+                /* The write target has to exist before the [saved] flush;
+                 * naming it above deliberately did not create it. */
+                char userdir[CFG_PATH_MAX];
+                (void)openpete_paths_user_config_dir(userdir, sizeof userdir, 1);
+            }
+        }
+
         for (int f = 0; f < s_file_n; f++) {
             if (!s_doc[f]) continue;
             if (harvest_global(f) != 0) return -1;
@@ -1312,6 +1285,19 @@ void openpete_config_report(FILE *out) {
             s_scope_serial[0] ? s_scope_serial : "-",
             s_scope_sha[0] ? s_scope_sha : "-");
     fprintf(out, "  save target: %s\n", s_save_path[0] ? s_save_path : "(none)");
+
+    /* Where cards and savestates go, which the knob table below never
+     * shows: they are directories, not knobs. */
+    {
+        char cards[CFG_PATH_MAX], states[CFG_PATH_MAX];
+        fprintf(out, "  layout: %s\n",
+                openpete_paths_portable() ? "portable (next to the exe)"
+                                          : "per-user directories");
+        if (openpete_paths_state_dir("cards", cards, sizeof cards, 0) == 0)
+            fprintf(out, "  cards: %s\n", cards);
+        if (openpete_paths_state_dir("states", states, sizeof states, 0) == 0)
+            fprintf(out, "  states: %s\n", states);
+    }
 
     fprintf(out, "\n  %-22s %-14s %-26s %s\n", "knob", "value", "won at", "shadowed");
     for (int i = 0; i < s_decision_n; i++) {
@@ -1491,7 +1477,7 @@ static int rename_bak(const char *path) {
 
 int openpete_config_convert_legacy(void) {
     char dir[CFG_PATH_MAX];
-    if (exe_dir(dir, sizeof dir) != 0) {
+    if (openpete_exe_dir(dir, sizeof dir) != 0) {
         fprintf(stderr, "openpete: --convert-config: cannot locate the executable\n");
         return 3;
     }

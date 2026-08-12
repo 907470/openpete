@@ -17,6 +17,11 @@ add_library(openpete_core STATIC
     runtime/config.c
     runtime/config_schema.c
 
+    # Where the files openpete writes actually live: the game folder for a
+    # portable install (the Windows default), the platform's per-user
+    # directories otherwise. SDL-free for the same reason config.c is.
+    runtime/paths.c
+
     # [keys]: the input binding registry. Split the same way and for the
     # same reason as config.c — keymap.c holds the registry, the layered
     # store and the edge latches with no SDL in sight (so it links into
@@ -386,6 +391,8 @@ if(NOT CMAKE_HOST_WIN32)
     #   - openpete_frame_time_log.c  FILETIME / GetSystemTimeAsFileTime
     #   - mods/mod_loader.c   LoadLibrary/GetProcAddress (prebuilt mod
     #                         DLL loading — Windows' dlopen analog)
+    #   - runtime/paths.c     GetModuleFileNameA (the exe directory, which
+    #                         is the root of the portable data layout)
     # The rest of core/ must remain game-agnostic AND platform-agnostic,
     # so keep the grep-guard but list the exempt TUs by name. New core
     # TUs that need Win32 APIs MUST be added here AND keep their
@@ -402,7 +409,7 @@ if(NOT CMAKE_HOST_WIN32)
     add_custom_target(openpete_core_purity_check ALL
         COMMAND ${CMAKE_COMMAND} -E echo "Checking core/ purity..."
         COMMAND bash -c "! grep -rE '0x800[0-9a-fA-F]{4}' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' | grep -vE '^[^:]+:[[:space:]]*#[[:space:]]*define'"
-        COMMAND bash -c "! grep -rE 'CreateFiber|<windows.h>' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' --exclude='crash.c' --exclude='openpete_time.c' --exclude='openpete_frame_time_log.c' --exclude='mod_loader.c' --exclude='host_spawn.c' --exclude='config.c'"
+        COMMAND bash -c "! grep -rE 'CreateFiber|<windows.h>' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' --exclude='crash.c' --exclude='openpete_time.c' --exclude='openpete_frame_time_log.c' --exclude='mod_loader.c' --exclude='host_spawn.c' --exclude='paths.c'"
         COMMENT "core/ purity check: no Spyro addresses, no Win32-only APIs"
         VERBATIM)
 endif()

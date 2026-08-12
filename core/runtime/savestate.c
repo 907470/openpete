@@ -61,6 +61,7 @@
 #include "openpete_fiber.h"  /* openpete_vbl — saved/restored via hdr.vbl */
 #include "openpete_log.h"
 #include "openpete_mods.h"   /* per-mod state participation + modset tag */
+#include "openpete_paths.h"
 #include "openpete_psx.h"
 #include "openpete_recomp_module.h"  /* codegen_stamp / rom_sha256 identity */
 #include "game_extras.h"
@@ -107,12 +108,8 @@ extern int g_cdXaStartVBL;
 #include <sys/stat.h>
 #include <sys/types.h>
 
-#ifdef _WIN32
-  #include <direct.h>
-  #define OPENPETE_MKDIR(path) _mkdir(path)
-#else
+#ifndef _WIN32
   #include <unistd.h>
-  #define OPENPETE_MKDIR(path) mkdir((path), 0755)
 #endif
 
 #define OPENPETE_STATE_MAGIC    0x3176534Fu  /* 'OSv1' little-endian */
@@ -228,56 +225,13 @@ static void ident_fill(char out[OPENPETE_STATE_HASH_LEN]) {
     /* 15 bytes of digest as 30 hex chars + NUL padding to 32. */
 }
 
-/* Resolve $XDG_STATE_HOME/openpete/states (or %LOCALAPPDATA%/openpete/states
- * on Windows; fall back to $HOME/.local/state on POSIX). Creates the
- * intermediate directories as needed. Writes the directory into `out`
- * with no trailing separator. Returns 0 on success. */
+/* Resolve the states directory, creating the intermediate directories as
+ * needed. A sibling of memcard.c's `cards` under whichever layout
+ * openpete_paths.h resolved — the game folder for a portable install, the
+ * per-user state directory otherwise. Writes the directory into `out` with
+ * no trailing separator. Returns 0 on success. */
 static int resolve_state_dir(char* out, size_t out_size) {
-    const char* base = NULL;
-    char        fallback[1024];
-
-#ifdef _WIN32
-    base = getenv("LOCALAPPDATA");
-    if (!base || !*base) {
-        const char* up = getenv("USERPROFILE");
-        if (!up || !*up) {
-            OPL_ERROR_F("savestate", "neither LOCALAPPDATA nor USERPROFILE set");
-            return -1;
-        }
-        snprintf(fallback, sizeof(fallback), "%s\\AppData\\Local", up);
-        base = fallback;
-    }
-#else
-    base = getenv("XDG_STATE_HOME");
-    if (!base || !*base) {
-        const char* home = getenv("HOME");
-        if (!home || !*home) {
-            OPL_ERROR_F("savestate", "neither XDG_STATE_HOME nor HOME set");
-            return -1;
-        }
-        snprintf(fallback, sizeof(fallback), "%s/.local/state", home);
-        base = fallback;
-    }
-#endif
-
-#ifdef _WIN32
-    const char sep = '\\';
-#else
-    const char sep = '/';
-#endif
-
-    char level1[2048];
-    snprintf(level1, sizeof(level1), "%s%copenpete", base, sep);
-    (void)OPENPETE_MKDIR(base);     /* fallback path may not exist yet */
-    (void)OPENPETE_MKDIR(level1);
-
-    int n = snprintf(out, out_size, "%s%cstates", level1, sep);
-    if (n < 0 || (size_t)n >= out_size) {
-        OPL_ERROR_F("savestate", "state-dir path too long");
-        return -1;
-    }
-    (void)OPENPETE_MKDIR(out);
-    return 0;
+    return openpete_paths_state_dir("states", out, out_size, 1);
 }
 
 static int slot_path(unsigned slot, char* out, size_t out_size) {

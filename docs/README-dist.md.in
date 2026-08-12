@@ -24,9 +24,28 @@ Useful flags: `--aspect 16:9`, `--fov 90`, `--no-lod`, `--window WxH`,
 `--cheats 99_lives,unlock_all_levels` (the game's own codes, applied for
 you).
 Run with `--help` for everything else. Persistent settings go in an
-`openpete.toml` next to the program, or in your config dir — the in-game
-menus (`O`, `M`) can write it for you. `--config-report` shows what is
-set and where it came from.
+`openpete.toml` — the in-game menus (`O`, `M`) can write it for you.
+`--config-report` shows what is set and where it came from.
+
+## Where your files go
+
+Windows keeps everything in the program's own folder, next to
+`openpete-spyro1.exe`:
+
+```
+openpete.toml   your settings
+cards/          memory cards (the game's own saves)
+states/         savestate slots
+library/        your ingested disc and its compiled code
+```
+
+Back it up by copying the folder; move it by moving the folder. Linux
+uses `~/.config/openpete` and `~/.local/state/openpete` instead, which is
+where a Linux install is expected to put them. Either platform can be
+told which to use with `portable = true` or `portable = false` at the top
+of `openpete.toml`. If the program folder isn't writable — installed
+under `Program Files`, say — the per-user folders are used instead and
+OpenPete says so at startup.
 
 ## What first run does
 
@@ -44,6 +63,7 @@ offline. Modified discs (romhacks) are detected and run best-effort.
   anyway". If in doubt, verify the download against the published
   `.sha256` checksum first.
 - Do not share your `library/` folder — it contains your game data.
+  `cards/` and `states/` are yours to keep and copy freely.
 - Windows: install to a reasonably short path (e.g. `C:\Games\OpenPete`);
   very deep folders can hit Windows' path-length limit during first run.
 - Custom music: drop WAVs in `assets/music/` (see `manifest.txt`).

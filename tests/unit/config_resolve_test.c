@@ -12,11 +12,20 @@
 
 #include "openpete_config.h"
 #include "openpete_keymap.h"
+#include "openpete_paths.h"
 #include "../../core/runtime/config_schema.h"
 
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#ifdef _WIN32
+  #include <direct.h>
+  #define rmdir_quiet(p) ((void)_rmdir(p))
+#else
+  #include <unistd.h>
+  #define rmdir_quiet(p) ((void)rmdir(p))
+#endif
 
 void openpete_config_reset_for_test(void);
 
@@ -671,6 +680,44 @@ static void case_keys_values(void) {
     CHECK(r.rc < 0, "an unknown key name must abort startup");
 }
 
+/* The `portable` directive decides where openpete writes: the game folder
+ * or the platform's per-user directories. It is the one top-level word
+ * that is a directive rather than a knob, so it appears in no decision
+ * table — these assertions are the only thing pinning it down. */
+static void case_portable_layout(void) {
+    char exedir[512], dir[512];
+    CHECK(openpete_exe_dir(exedir, sizeof exedir) == 0,
+          "the test binary's directory must resolve");
+
+#ifdef _WIN32
+    const int platform_default = 1;
+#else
+    const int platform_default = 0;
+#endif
+
+    run("portable: platform default with no directive", "", NULL, 0);
+    CHECK(openpete_paths_portable() == platform_default,
+          "no directive must leave the platform default in force");
+
+    run("portable: true", "portable = true\n", NULL, 0);
+    CHECK(openpete_paths_portable() == 1, "portable = true must select portable");
+    CHECK(openpete_paths_state_dir("cards", dir, sizeof dir, 1) == 0, "cards must resolve");
+    CHECK(strstr(dir, exedir) == dir, "a portable install keeps cards next to the exe");
+    rmdir_quiet(dir);
+
+    run("portable: false", "portable = false\n", NULL, 0);
+    CHECK(openpete_paths_portable() == 0, "portable = false must select per-user");
+    CHECK(openpete_paths_state_dir("states", dir, sizeof dir, 0) == 0, "states must resolve");
+    CHECK(strstr(dir, exedir) != dir,
+          "the per-user layout must not land in the game folder");
+
+    /* A directive must not outlive the config that carried it, or a
+     * second resolve in one process inherits the first one's layout. */
+    run("portable: directive does not persist", "", NULL, 0);
+    CHECK(openpete_paths_portable() == platform_default,
+          "dropping the directive must restore the platform default");
+}
+
 int main(void) {
     const char *tmp = getenv("TMPDIR");
     snprintf(g_toml_path, sizeof g_toml_path, "%s/openpete-config-test.toml",
@@ -699,6 +746,7 @@ int main(void) {
     case_keys_per_action_merge();
     case_keys_unbind();
     case_keys_values();
+    case_portable_layout();
 
     remove(g_toml_path);
     if (g_fail) {

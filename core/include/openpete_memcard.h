@@ -4,10 +4,11 @@
  * wrappers, which openpete intercepts as psyq_MemCard* thunks
  * (games/spyro-1/psyq_thunks.cpp). Those thunks marshal the MIPS ABI and
  * call into this module, which owns two real 128 KiB PSX memory-card
- * images (.mcr) persisted to disk under the same per-user state dir the
- * save-states use ($XDG_STATE_HOME/openpete/cards, %LOCALAPPDATA%\openpete\
- * cards on Windows). The images are standard raw cards — portable to
- * DuckStation / PCSX / real hardware.
+ * images (.mcr) persisted to disk in a `cards` directory beside the
+ * `states` one the save-states use — in the game folder for a portable
+ * install, under the per-user state dir otherwise (openpete_paths.h). The
+ * images are standard raw cards — portable to DuckStation / PCSX / real
+ * hardware.
  *
  * See notes/plans/openpete-memcard-host-backed.md.
  */
@@ -20,8 +21,8 @@ extern "C" {
 
 /* --- configuration (call from run.c before the game's MemCardInit runs) --- */
 
-/* Override the directory holding cardN.mcr. NULL/"" = default appdir.
- * Precedence: this override > OPENPETE_CARD_DIR env > default. */
+/* Override the directory holding cardN.mcr. NULL/"" = the resolved
+ * `cards` dir. Precedence: this override > OPENPETE_CARD_DIR env > default. */
 void openpete_memcard_set_dir_override(const char* dir);
 
 /* Explicit per-card image paths (--card1 / --card2). NULL = default

@@ -660,10 +660,10 @@ typedef struct openpete_options {
 
     /* Host-backed memory card (save/load). The game reaches the card only
      * through the PSYQ MemCard* wrappers, which openpete backs with real
-     * 128 KiB .mcr images under $XDG_STATE_HOME/openpete/cards (or
-     * %LOCALAPPDATA%\openpete\cards). Pure host-side save I/O — never
-     * touches gameplay-readable state. See openpete_memcard.h. */
-    const char* card_dir;      /* --card-dir PATH: dir holding cardN.mcr (NULL = default appdir; env OPENPETE_CARD_DIR) */
+     * 128 KiB .mcr images in the `cards` directory openpete_paths.h
+     * resolves. Pure host-side save I/O — never touches gameplay-readable
+     * state. See openpete_memcard.h. */
+    const char* card_dir;      /* --card-dir PATH: dir holding cardN.mcr (NULL = the resolved cards dir; env OPENPETE_CARD_DIR) */
     const char* card1_path;    /* --card1 PATH: explicit port-A image (NULL = <card_dir>/card1.mcr) */
     const char* card2_path;    /* --card2 PATH: explicit port-B image (NULL = <card_dir>/card2.mcr) */
     int         card_a_present;/* card in port A (default 1) */
