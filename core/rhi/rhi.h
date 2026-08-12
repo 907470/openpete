@@ -313,6 +313,13 @@ void          rhi_set_affine_uv(int on);
  * toggle via rhi_rebuild_pipelines. Default 0. */
 void          rhi_set_notex(int on);
 
+/* Free-camera key-contest scoping (fragment spec-constant 3): moby og-key
+ * yields additionally require the key to beat the covering fragment's own
+ * TRUE view-Z — og's authored OT compounding only orders correctly for the
+ * canonical camera. Applied to pipelines created after this call; live
+ * toggle via rhi_rebuild_pipelines. Default 0 = og painter. */
+void          rhi_set_moby_truescope(int on);
+
 /* Re-bake EVERY live pipeline on the device from its stored desc + shader
  * sources, capturing the current spec-constant values (rhi_set_depth_affine /
  * rhi_set_affine_uv) — the live-toggle path for constants that are otherwise

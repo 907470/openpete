@@ -29,6 +29,8 @@
 #include "openpete_log.h"
 #include "openpete_time.h"   /* op_now — overlay's own sub-tick alpha (camera-independent) */
 #include "openpete_interp.h" /* deterministic present clock for the overlay sub-tick alpha */
+#include "openpete_freecam.h" /* freecam engage state drives the MOBY_TRUESCOPE re-bake */
+#include "openpete_camlock.h" /* the render camlock is off-rail too — same re-bake */
 #include "openpete_record.h" /* native --record capture seam */
 #include "rhi.h"
 #include "screenshot.h"  /* openpete_write_png_rgba */
@@ -1234,8 +1236,14 @@ static struct {
                                          * exist only on opaque texels */
     rhi_buffer   *terrain_key_vb;     /* HP-opaque clip geometry, per-present ring */
     rhi_texture  *terrain_key_depth;  /* terrain og-key image (set 2) */
-    rhi_texture  *moby_key_depth;     /* moby og-key image (set 3) — split so the
-                                       * near-band embed rule sees moby keys only */
+    rhi_texture  *moby_key_depth;     /* prop TRUE-depth image (set 3) — split so
+                                       * the near-band embed rule sees curated
+                                       * prop faces only */
+    rhi_texture  *actor_key_depth;    /* moby og-key image (set 1): opaque ACTOR
+                                       * keys, split from set 2 so fragments can
+                                       * scope a moby's paint-over by their own
+                                       * TRUE depth while terrain-vs-terrain
+                                       * keeps contesting authored keys */
     rhi_texture  *moby_rank_rt;       /* moby og-RANK image (set 4): RGBA8
                                        * (rank lo, rank hi, moby ordinal) of the
                                        * LAST-painted ranked face per pixel —
@@ -3000,25 +3008,29 @@ int openpete_native_key_resolve_on(void)
 static void ensure_terrain_key_depth(int w, int h)
 {
     if (w <= 0 || h <= 0) return;
-    if (s_nr.terrain_key_depth && s_nr.moby_key_depth && s_nr.moby_rank_rt &&
-        s_nr.tk_w >= w && s_nr.tk_h >= h) return;
+    if (s_nr.terrain_key_depth && s_nr.moby_key_depth && s_nr.actor_key_depth &&
+        s_nr.moby_rank_rt && s_nr.tk_w >= w && s_nr.tk_h >= h) return;
     if (w < s_nr.tk_w) w = s_nr.tk_w;
     if (h < s_nr.tk_h) h = s_nr.tk_h;
     rhi_wait_idle(s_nr.dev);
     if (s_nr.terrain_key_depth) { rhi_destroy_texture(s_nr.dev, s_nr.terrain_key_depth); s_nr.terrain_key_depth = NULL; }
     if (s_nr.moby_key_depth)    { rhi_destroy_texture(s_nr.dev, s_nr.moby_key_depth);    s_nr.moby_key_depth = NULL; }
+    if (s_nr.actor_key_depth)   { rhi_destroy_texture(s_nr.dev, s_nr.actor_key_depth);   s_nr.actor_key_depth = NULL; }
     if (s_nr.moby_rank_rt)      { rhi_destroy_texture(s_nr.dev, s_nr.moby_rank_rt);      s_nr.moby_rank_rt = NULL; }
     s_nr.terrain_key_depth = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
     s_nr.moby_key_depth    = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
+    s_nr.actor_key_depth   = rhi_create_render_target_depth_sampled(s_nr.dev, (uint32_t)w, (uint32_t)h);
     s_nr.moby_rank_rt      = rhi_create_render_target(s_nr.dev, (uint32_t)w, (uint32_t)h);
-    if (s_nr.terrain_key_depth && s_nr.moby_key_depth && s_nr.moby_rank_rt)
+    if (s_nr.terrain_key_depth && s_nr.moby_key_depth && s_nr.actor_key_depth &&
+        s_nr.moby_rank_rt)
         rhi_texture_extent(s_nr.terrain_key_depth, &s_nr.tk_w, &s_nr.tk_h);
     else {
-        /* All-or-nothing: the scene pipes' layouts sample sets 2/3/4 as one
+        /* All-or-nothing: the scene pipes' layouts sample sets 1/2/3/4 as one
          * contract — a partial allocation must read as "contest off", never
          * a half-bound draw. */
         if (s_nr.terrain_key_depth) { rhi_destroy_texture(s_nr.dev, s_nr.terrain_key_depth); s_nr.terrain_key_depth = NULL; }
         if (s_nr.moby_key_depth)    { rhi_destroy_texture(s_nr.dev, s_nr.moby_key_depth);    s_nr.moby_key_depth = NULL; }
+        if (s_nr.actor_key_depth)   { rhi_destroy_texture(s_nr.dev, s_nr.actor_key_depth);   s_nr.actor_key_depth = NULL; }
         if (s_nr.moby_rank_rt)      { rhi_destroy_texture(s_nr.dev, s_nr.moby_rank_rt);      s_nr.moby_rank_rt = NULL; }
         s_nr.tk_w = s_nr.tk_h = 0;
     }
@@ -3029,11 +3041,17 @@ static void ensure_terrain_key_depth(int w, int h)
  * key pass and the OPENPETE_TERRAIN_KEY_IDENT instrument, which repacks at
  * scene-draw time and byte-compares to prove pass and draw consumed the
  * same snapshot (the draw fetches scene_present_buf independently). */
-/* prop_class 0 = og KEYS (the set-2 image): every keyed face — terrain,
- * TERRAIN_KEY sky fans, AND moby faces — as its ABSOLUTE og key laid FLAT,
- * og's per-pixel OT occupancy (the P6b/P6g painter select).
+/* prop_class 0 = TERRAIN og KEYS (the set-2 image): keyed WORLD faces as
+ * their ABSOLUTE og key laid FLAT, og's per-pixel OT occupancy (the P6b
+ * painter select).
  * prop_class 1 = PROP TRUE DEPTH (the set-3 image): curated embedded-prop
  * faces only (openpete_scene_tri.prop), per-vertex TRUE view-Z, no bias.
+ * prop_class 2 = MOBY og KEYS (the set-1 image): keyed opaque ACTOR faces
+ * as their ABSOLUTE og key laid FLAT (P6g). Split from set 2 so fragments
+ * can hold a moby's paint-over to keys in front of their own TRUE surface
+ * while terrain-vs-terrain keeps contesting authored (pushed) keys — a
+ * moby pull and a terrain push must not compound into a punch-through
+ * window wider than either authored intent.
  * The near-band embed rule reads it: no geometric quantity separates "prop
  * set into its ground" from "actor just behind a crest" — flat keys,
  * per-pixel keys, biased and unbiased margins all overlap across the two
@@ -3068,7 +3086,7 @@ static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
             tv = sz < 1.0f ? OPENPETE_DEPTH_VIEWZ_SCALE * sz / (1.0f - sz) : 0.0f;
         }
         float z = zflat;
-        if (prop_class)
+        if (prop_class == 1)
             z = tv > 0.0f ? tv / (tv + OPENPETE_DEPTH_VIEWZ_SCALE)
                           : T->v[k].z;
         o->x = cx; o->y = cy; o->z = z; o->w = tex ? tv : 0.0f;
@@ -3098,9 +3116,9 @@ static int pack_terrain_key_batch(const scene_tri_t* scene, int scene_n,
     *nspans = 0;
     for (int t = 0; t < scene_n && m + 3 <= SCENE_VB_VERTS; t++) {
         if (scene[t].blend != 0) continue;                       /* opaque only */
-        if (prop_class ? !scene[t].prop
-                       : (scene[t].category != OPENPETE_SCENE_WORLD &&
-                          scene[t].category != OPENPETE_SCENE_ACTOR)) continue;
+        if (prop_class == 1 ? !scene[t].prop
+            : prop_class == 2 ? scene[t].category != OPENPETE_SCENE_ACTOR
+                              : scene[t].category != OPENPETE_SCENE_WORLD) continue;
         if (scene[t].koff <= 0.25f) continue;   /* keyed faces / sky fans only */
         if (scene[t].textured) {
             if (tex_n < MAX_SCENE_TRIS) s_ktex_idx[tex_n++] = t;
@@ -3222,14 +3240,15 @@ static int pack_moby_rank_batch(const scene_tri_t* scene, int scene_n,
     return m;
 }
 
-/* The last key-pass packs (terrain + moby), recorded for the identity
+/* The last key-pass packs (terrain + prop + actor), recorded for the identity
  * instrument in draw_native_scene (m == -1 until a pass has run). */
 static struct {
     const scene_tri_t* scene;
-    int scene_n, full_extent, m, mm;
+    int scene_n, full_extent, m, mm, am;
     const rhi_vertex* buf;
     const rhi_vertex* mbuf;
-} s_tk_last = { NULL, 0, -1, -1, -1, NULL, NULL };
+    const rhi_vertex* abuf;
+} s_tk_last = { NULL, 0, -1, -1, -1, -1, NULL, NULL, NULL };
 
 /* Draw one packed key batch into the currently-open key render pass:
  * untextured prefix through the flat full-footprint pipe, textured material
@@ -3308,22 +3327,25 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
 {
     if (!openpete_native_key_resolve_on()) return;
     ensure_terrain_key_depth(vw, vh);
-    if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth) return;
+    if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth || !s_nr.actor_key_depth) return;
     if (vw > s_nr.tk_w) vw = s_nr.tk_w;
     if (vh > s_nr.tk_h) vh = s_nr.tk_h;
     int scene_n; uint32_t bg_, fade_, freeze_; int hud_;
     const scene_tri_t* scene = scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_, NULL);
     static rhi_vertex kbuf[SCENE_VB_VERTS];
     static rhi_vertex mkbuf[SCENE_VB_VERTS];
+    static rhi_vertex akbuf[SCENE_VB_VERTS];
     static rhi_vertex rbuf[SCENE_VB_VERTS];
     static keytex_span_t kspans[KEYTEX_MAX_SPANS], mspans[KEYTEX_MAX_SPANS],
-                         rspans[KEYTEX_MAX_SPANS];
-    int k_untex = 0, m_untex = 0, r_untex = 0,
-        k_nspans = 0, m_nspans = 0, r_nspans = 0;
+                         aspans[KEYTEX_MAX_SPANS], rspans[KEYTEX_MAX_SPANS];
+    int k_untex = 0, m_untex = 0, a_untex = 0, r_untex = 0,
+        k_nspans = 0, m_nspans = 0, a_nspans = 0, r_nspans = 0;
     int m  = pack_terrain_key_batch(scene, scene_n, full_extent, 0, kbuf,
                                     &k_untex, kspans, &k_nspans);
     int mm = pack_terrain_key_batch(scene, scene_n, full_extent, 1, mkbuf,
                                     &m_untex, mspans, &m_nspans);
+    int am = pack_terrain_key_batch(scene, scene_n, full_extent, 2, akbuf,
+                                    &a_untex, aspans, &a_nspans);
     int rr = (s_nr.moby_rank_rt && s_nr.moby_rank_pipe)
            ? pack_moby_rank_batch(scene, scene_n, full_extent, rbuf,
                                   &r_untex, rspans, &r_nspans)
@@ -3340,6 +3362,7 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     s_tk_last.full_extent = full_extent ? 1 : 0;
     s_tk_last.m = m; s_tk_last.buf = kbuf;
     s_tk_last.mm = mm; s_tk_last.mbuf = mkbuf;
+    s_tk_last.am = am; s_tk_last.abuf = akbuf;
     { static int kdbg = -1;
       if (kdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_KEY_DBG"); kdbg = (e && *e && *e != '0'); }
       if (kdbg) {
@@ -3403,7 +3426,7 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     static int s_tk_base = 0;
     uint64_t serial = rhi_frame_serial(s_nr.dev);
     if (serial != s_tk_serial) { s_tk_serial = serial; s_tk_base = 0; }
-    if (m + mm + rr > 0 && s_tk_base + m + mm + rr > SCENE_VB_VERTS) {
+    if (m + mm + am + rr > 0 && s_tk_base + m + mm + am + rr > SCENE_VB_VERTS) {
         /* Ring slot exhausted (several huge batches in one frame). The
          * earlier batches are recorded but NOT yet submitted, so resetting
          * the bump offset would clobber data a recorded pass still reads at
@@ -3413,10 +3436,10 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
          * resolve at true depth), and say so loudly — a silent skip would
          * read as coverage. */
         extern unsigned openpete_frame;
-        fprintf(stderr, "[keypass f=%u] key VB exhausted (base=%d + m=%d+%d+%d > %d): "
+        fprintf(stderr, "[keypass f=%u] key VB exhausted (base=%d + m=%d+%d+%d+%d > %d): "
                         "contest OFF for this target\n",
-                openpete_frame, s_tk_base, m, mm, rr, (int)SCENE_VB_VERTS);
-        m = mm = rr = 0;
+                openpete_frame, s_tk_base, m, mm, am, rr, (int)SCENE_VB_VERTS);
+        m = mm = am = rr = 0;
     }
     if (m > 0)
         rhi_update_buffer_range(s_nr.terrain_key_vb, kbuf,
@@ -3426,9 +3449,13 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
         rhi_update_buffer_range(s_nr.terrain_key_vb, mkbuf,
                                 sizeof(rhi_vertex) * (size_t)(s_tk_base + m),
                                 sizeof(rhi_vertex) * (size_t)mm);
+    if (am > 0)
+        rhi_update_buffer_range(s_nr.terrain_key_vb, akbuf,
+                                sizeof(rhi_vertex) * (size_t)(s_tk_base + m + mm),
+                                sizeof(rhi_vertex) * (size_t)am);
     if (rr > 0)
         rhi_update_buffer_range(s_nr.terrain_key_vb, rbuf,
-                                sizeof(rhi_vertex) * (size_t)(s_tk_base + m + mm),
+                                sizeof(rhi_vertex) * (size_t)(s_tk_base + m + mm + am),
                                 sizeof(rhi_vertex) * (size_t)rr);
     /* Even empty batches render: the cleared far depth reads as "no cover",
      * which is the correct contest input — never a stale image. */
@@ -3440,15 +3467,19 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     rhi_set_viewport(s_nr.dev, vw, vh);
     draw_key_batch(s_tk_base + m, mm, m_untex, mspans, m_nspans);
     rhi_end_render_target(s_nr.dev, s_nr.moby_key_depth);
+    rhi_begin_render_target(s_nr.dev, s_nr.actor_key_depth, 0.0f, 0.0f, 0.0f, 1.0f);
+    rhi_set_viewport(s_nr.dev, vw, vh);
+    draw_key_batch(s_tk_base + m + mm, am, a_untex, aspans, a_nspans);
+    rhi_end_render_target(s_nr.dev, s_nr.actor_key_depth);
     if (s_nr.moby_rank_rt) {
         /* Rank image: colour clears to 0 (decodes rank 0 = "no cover"), depth
          * to far (rank -1); an empty batch still renders the clear. */
         rhi_begin_render_target(s_nr.dev, s_nr.moby_rank_rt, 0.0f, 0.0f, 0.0f, 0.0f);
         rhi_set_viewport(s_nr.dev, vw, vh);
-        draw_rank_batch(s_tk_base + m + mm, rr, r_untex, rspans, r_nspans);
+        draw_rank_batch(s_tk_base + m + mm + am, rr, r_untex, rspans, r_nspans);
         rhi_end_render_target(s_nr.dev, s_nr.moby_rank_rt);
     }
-    s_tk_base += m + mm + rr;
+    s_tk_base += m + mm + am + rr;
 }
 
 /* Bind a pipeline for scene drawing; the key-resolve pipes (layouts carrying
@@ -3458,10 +3489,13 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
 static void bind_scene_pipe(rhi_pipeline* p)
 {
     rhi_bind_pipeline(s_nr.dev, p);
-    if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth) return;
+    if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth || !s_nr.actor_key_depth) return;
     if (p == s_nr.gouraud_pipe || p == s_nr.gouraud_mark_pipe ||
         p == s_nr.scene_tex_pipe || p == s_nr.scene_tex_mark_pipe ||
-        p == s_nr.hd_cutout_pipe || p == s_nr.hd_cutout_mark_pipe) {
+        p == s_nr.hd_cutout_pipe || p == s_nr.hd_cutout_mark_pipe ||
+        p == s_nr.gouraud_blend_pipe || p == s_nr.gouraud_add_pipe ||
+        p == s_nr.scene_tex_blend_pipe || p == s_nr.scene_tex_add_pipe) {
+        rhi_bind_depth_sampler(s_nr.dev, s_nr.actor_key_depth, 1);
         rhi_bind_depth_sampler(s_nr.dev, s_nr.terrain_key_depth, 2);
         rhi_bind_depth_sampler(s_nr.dev, s_nr.moby_key_depth, 3);
         if (s_nr.moby_rank_rt)
@@ -5097,9 +5131,10 @@ static bool draw_native_scene(bool full_extent)
           && s_tk_last.full_extent == (full_extent ? 1 : 0)) {
           static rhi_vertex ibuf[SCENE_VB_VERTS];
           static keytex_span_t ispans[KEYTEX_MAX_SPANS];
-          for (int cls = 0; cls < 2; cls++) {
-              int lm = cls ? s_tk_last.mm : s_tk_last.m;
-              const rhi_vertex* lb = cls ? s_tk_last.mbuf : s_tk_last.buf;
+          for (int cls = 0; cls < 3; cls++) {
+              int lm = cls == 1 ? s_tk_last.mm : cls == 2 ? s_tk_last.am : s_tk_last.m;
+              const rhi_vertex* lb = cls == 1 ? s_tk_last.mbuf
+                                   : cls == 2 ? s_tk_last.abuf : s_tk_last.buf;
               int iuntex = 0, inspans = 0;
               int im = pack_terrain_key_batch(scene, scene_n, full_extent ? 1 : 0, cls, ibuf,
                                               &iuntex, ispans, &inspans);
@@ -6425,6 +6460,30 @@ static void texmap_apply_pending(void) {
                s_texmap_affine ? "affine (PSX screen-linear)" : "perspective");
     if (fails)
         OPL_ERROR_F("native", "texture-mapping: %d pipeline(s) failed to rebuild (kept previous mode)", fails);
+}
+
+/* Free-camera key-contest scoping (MOBY_TRUESCOPE, fragment spec-constant 3):
+ * derived from the freecam engage state each present, no setter — og's
+ * authored OT compounding (moby pull + terrain push) is the correct look for
+ * the canonical camera, and reads as moby-through-terrain punch-through from
+ * poses the game camera can never reach. Same re-bake shape as
+ * texture-mapping; OPENPETE_MOBY_TRUESCOPE overrides (0 = never, 1 = always,
+ * unset/auto = follow freecam). */
+static int s_moby_truescope = 0;   /* currently-baked value (pipelines start at 0) */
+static void truescope_apply_pending(void) {
+    if (!s_nr.dev) return;
+    int want;
+    const char* e = getenv("OPENPETE_MOBY_TRUESCOPE");
+    if (e && *e) want = (*e != '0');
+    else want = (openpete_freecam_active() || openpete_camlock_active()) ? 1 : 0;
+    if (want == s_moby_truescope) return;
+    rhi_set_moby_truescope(want);
+    int fails = rhi_rebuild_pipelines(s_nr.dev);
+    s_moby_truescope = want;
+    OPL_INFO_F("native", "moby key contest -> %s (pipelines re-baked)",
+               want ? "true-depth scoped (free camera)" : "og painter (canonical camera)");
+    if (fails)
+        OPL_ERROR_F("native", "moby-truescope: %d pipeline(s) failed to rebuild (kept previous mode)", fails);
 }
 
 /* Untextured lighting view — same queued-rebuild shape as texture-mapping. */
@@ -7758,6 +7817,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
      * frame, before any command buffer records against them. No-op normally. */
     texmap_apply_pending();
     notex_apply_pending();
+    truescope_apply_pending();
 
     /* Rolling 0.5s FPS window for the overlay. Counts actual presents (canonical
      * + sub-tick intermediates), so it reflects the true on-screen present rate. */
@@ -8070,6 +8130,9 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf)
  * returns can't leak it into the live present path. */
 int openpete_native_render_screenshot_all(const char *base)
 {
+    /* Headless never runs openpete_native_render_frame, so the freecam-mode
+     * re-bake must happen here, outside the compose's command recording. */
+    truescope_apply_pending();
     s_scene_shot_compose = 1;
     s_scene_shot_lag = s_nr.headless ? 1 : 0;
     int r = native_render_screenshot_all_impl(base);
@@ -8394,6 +8457,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.prepass_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.prepass_pipe);
     if (s_nr.terrain_key_depth) rhi_destroy_texture(s_nr.dev, s_nr.terrain_key_depth);
     if (s_nr.moby_key_depth)    rhi_destroy_texture(s_nr.dev, s_nr.moby_key_depth);
+    if (s_nr.actor_key_depth)   rhi_destroy_texture(s_nr.dev, s_nr.actor_key_depth);
     if (s_nr.moby_rank_rt)      rhi_destroy_texture(s_nr.dev, s_nr.moby_rank_rt);
     if (s_nr.terrain_key_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.terrain_key_vb);
     if (s_nr.terrain_key_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.terrain_key_pipe);

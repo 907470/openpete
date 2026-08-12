@@ -3257,11 +3257,17 @@ static void push_scene_moby(void) {
          * each moby face at its average-Z slot minus the authored
          * m_DepthOffset (moby+0x47, the byte the cull packs into record
          * w0 bits 16-23 / the shaded walk's rot>>24) — an ordering KEY,
-         * never stored depth. Emitting the face's ABSOLUTE key into the
-         * key image makes keyed terrain within the authored bias yield
-         * per-pixel (a dragon-pedestal disc set into a sloped ground
-         * paints over it, exactly og's painter) and the moby face
-         * contests nearer keys symmetrically. Blend/FRONT/HUD classes
+         * never stored depth. The face's ABSOLUTE key rasters into the
+         * MOBY key image (set 1, split from the terrain keys), where the
+         * contest applies og's painter for the canonical camera — keyed
+         * terrain within the authored bias yields per-pixel (a pedestal
+         * disc set into sloped ground, Delvin's wing over the tower) —
+         * while free-camera mode additionally scopes the yield by the
+         * covering face's own TRUE view-Z (MOBY_TRUESCOPE,
+         * psx_scene_key.frag): off the canonical rail, the pull+push
+         * compound reads as punch-through, and a wall genuinely in front
+         * keeps occluding by TRUE depth. The moby face contests nearer
+         * keys symmetrically. Blend/FRONT/HUD classes
          * stay unkeyed — and so do MANGLED faces (near-plane fixup /
          * coordinate saturation): their screen footprint is not the true
          * projection, so a flat key stamped across one discards terrain

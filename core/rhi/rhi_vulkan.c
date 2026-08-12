@@ -2877,6 +2877,14 @@ void rhi_set_affine_uv(int on) { s_vs_affine_uv = on ? VK_TRUE : VK_FALSE; }
 static VkBool32 s_fs_notex = VK_FALSE;
 void rhi_set_notex(int on) { s_fs_notex = on ? VK_TRUE : VK_FALSE; }
 
+/* Fragment-stage specialization constant 3 (`MOBY_TRUESCOPE`): scopes the
+ * key-contest's moby og-key yields by the covering fragment's own TRUE
+ * view-Z (free-camera mode — og's authored OT compounding only orders
+ * correctly for the canonical camera). Live toggle via
+ * rhi_rebuild_pipelines like the others. Default 0 = og painter. */
+static VkBool32 s_fs_moby_truescope = VK_FALSE;
+void rhi_set_moby_truescope(int on) { s_fs_moby_truescope = on ? VK_TRUE : VK_FALSE; }
+
 /* Compile a pipeline's Vulkan objects from its stored sources (desc + shader
  * names/words) without touching the rhi_pipeline's live handles: the create
  * path assigns the result to a fresh pipeline, the rebuild path swaps it into
@@ -2898,14 +2906,16 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     }
     VkPipelineLayout layout = VK_NULL_HANDLE;
 
-    VkSpecializationMapEntry vsSpecMap[3] = {
+    VkSpecializationMapEntry vsSpecMap[4] = {
         { .constantID = 0, .offset = 0,                    .size = sizeof(VkBool32) },
         { .constantID = 1, .offset = sizeof(VkBool32),     .size = sizeof(VkBool32) },
         { .constantID = 2, .offset = 2 * sizeof(VkBool32), .size = sizeof(VkBool32) },
+        { .constantID = 3, .offset = 3 * sizeof(VkBool32), .size = sizeof(VkBool32) },
     };
-    VkBool32 vsSpecData[3] = { s_vs_depth_affine, s_vs_affine_uv, s_fs_notex };
+    VkBool32 vsSpecData[4] = { s_vs_depth_affine, s_vs_affine_uv, s_fs_notex,
+                               s_fs_moby_truescope };
     VkSpecializationInfo vsSpec = {
-        .mapEntryCount = 3, .pMapEntries = vsSpecMap,
+        .mapEntryCount = 4, .pMapEntries = vsSpecMap,
         .dataSize = sizeof(vsSpecData), .pData = vsSpecData,
     };
     VkPipelineShaderStageCreateInfo stages[2] = {

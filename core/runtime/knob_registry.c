@@ -796,6 +796,8 @@ static const knob_desc_t g_builtin[] = {
 
     ENVROW_LATCHED("MOBY_OTBIAS", "Debug", "1",
         "Mirror the .s OT depth pull for moby + Spyro (two latches)."),
+    ENVROW_LIVE("MOBY_TRUESCOPE", "Debug", "",
+        "Scope moby og-key yields by true depth (unset = follow freecam)."),
     ENVROW_LATCHED("SHADED_OTBIAS", "Debug", "1",
         "Same pull for the SHADED walk."),
     ENVROW_LATCHED("TRUE_W", "Debug", "7",
