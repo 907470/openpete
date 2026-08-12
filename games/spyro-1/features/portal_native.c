@@ -363,8 +363,9 @@ static void dump_portal_table(CPUState* cpu) {
 }
 
 /* Resolve the flat-fill colour a leaf carries in a0 (see feed_portal_quad): the
- * FLAT/BLENDED leaves pass a pointer whose [0] IS the colour; the close DOME
- * leaf (func_8004F4BC) passes the skybox struct whose colour is at +0x18. The
+ * FLAT leaf passes a pointer whose [0] IS the colour; BOTH dome-family leaves
+ * (DOME func_8004F4BC and BLENDED func_80050240) pass the skybox struct, whose
+ * m_BackgroundColor is at +0x18 — the same a0 the dome feed consumes. The
  * caller states which via a0_is_skybox — the leaf hook knows the leaf. (A
  * magnitude sniff, w0 >= 0x10000 ? colour : struct, used to discriminate; the
  * ANIMATED flat colour dips below 0x10000 at its cycle trough — blue and green
@@ -1049,12 +1050,13 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
     if (portal_repr_skip(0)) return 0;
     if (rgb_override == PORTAL_RGB_RESOLVE &&
         (a0 < 0x80010000u || a0 >= 0x80200000u)) return 0;   /* canonical: a0 must be a RAM pointer */
-    /* The flat-fill colour. FLAT/BLENDED leaves (func_8004FEA0/80050240) pass a
-     * pointer whose [0] IS the colour (stack fog colour, &D_800757D4 blend, or
-     * the close-pass skybox+0x10 bg colour); the close DOME leaf (func_8004F4BC)
-     * passes the skybox struct itself, whose m_BackgroundColor lives at +0x18 —
-     * a0_is_skybox comes from the leaf hook's kind. On the reextract a0 /
-     * D_800757D4 are stale, so the captured raw colour is passed in directly. */
+    /* The flat-fill colour. The FLAT leaf (func_8004FEA0) passes a pointer
+     * whose [0] IS the colour (stack fog colour, &D_800757D4 blend, or the
+     * close-pass skybox+0x10 bg colour); the dome-family leaves (func_8004F4BC
+     * close, func_80050240 blended-medium) pass the skybox struct itself, whose
+     * m_BackgroundColor lives at +0x18 — a0_is_skybox comes from the leaf
+     * hook's kind. On the reextract a0 / D_800757D4 are stale, so the captured
+     * raw colour is passed in directly. */
     uint32_t rgb = (rgb_override != PORTAL_RGB_RESOLVE)
                        ? (rgb_override & 0xFFFFFF)
                        : portal_flat_raw_rgb(cpu, a0, a0_is_skybox);
@@ -2110,7 +2112,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
          * PORTAL_CYCLORAMA (passed to add_tri inside feed_portal_quad/_dome) so the
          * renderer draws it depth-test-on / depth-WRITE-off in its own pass before
          * the actors. */
-        feed_portal_quad(cpu, a0, kind == PORTAL_DOME, forced_fp,
+        feed_portal_quad(cpu, a0, is_dome, forced_fp,
                          flat_rgb_override, 0, fog, fog_t);
         if (forced_sb) {
             uint32_t sb = forced_sb; forced_sb = 0;
@@ -2170,7 +2172,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                  * colour with the destination close-base (below-horizon fill) */
                 c->flat_rgb      = (flat_rgb_override != PORTAL_RGB_RESOLVE)
                                        ? flat_rgb_override
-                                       : portal_flat_raw_rgb(cpu, a0, kind == PORTAL_DOME);
+                                       : portal_flat_raw_rgb(cpu, a0, is_dome);
                 c->is_dome       = (is_dome && is_skybox_a0) || forced_dome;
                 c->skybox        = (is_dome && is_skybox_a0) ? a0 : forced_sb;
                 c->ot_b          = cpu->read_word(D_PORTAL_DEPTH);
