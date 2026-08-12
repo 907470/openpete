@@ -262,6 +262,7 @@ static void apply_row(int row) {
             openpete_request_shutdown();
         }
         break;
+
     default: break;
     }
 }
@@ -459,15 +460,21 @@ void openpete_menu_adjust(int dx) {
                 id, !openpete_mods_is_enabled(id));
         break;
     }
-    case ROW_QUIT:
-        /* Either direction counts as a press: the first arms, the second (seen
-         * by apply_row below) quits. */
-        if (s_quit_armed < 2) s_quit_armed++;
-        break;
+    /* Action rows have no value to cycle — left/right are inert on them.
+     * openpete_menu_activate() is the only way in. */
+    case ROW_QUIT: return;
     default: break;
     }
     apply_row(s_cursor);
     log_state("set");
+}
+
+void openpete_menu_activate(void) {
+    if (!s_open) return;
+    if (!openpete_menu_row_centered(s_cursor)) return;   /* value rows: no-op */
+    if (s_quit_armed < 2) s_quit_armed++;   /* first press arms, second fires */
+    apply_row(s_cursor);
+    log_state("activate");
 }
 
 void openpete_menu_tick(void) { s_tick++; }

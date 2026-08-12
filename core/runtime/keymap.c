@@ -405,6 +405,11 @@ static int km_overlap_is_intentional(int a, int b, const char** why) {
                "debug camera";
         return 1;
     }
+    if (lo == OPK_MENU_RIGHT && hi == OPK_MENU_SELECT) {
+        *why = "cross is 'increase' on a value row and 'activate' on an "
+               "action row; a row is only ever one of the two";
+        return 1;
+    }
     return 0;
 }
 

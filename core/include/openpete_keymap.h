@@ -107,6 +107,12 @@ typedef enum {
         "settings menu: increase value")                                       \
   X(MENU_CLOSE,"menu_close",KM_DIGITAL, KM_CTX_MENU,     0,                    \
         "pad:start,pad:east", "settings menu: close (on release)")             \
+  /* Activates ACTION rows (EXIT GAME), which ignore left/right entirely —
+   * cycling a value must never be able to fire a button. Cross doubles as
+   * "increase value" on the ordinary rows; the two never contend, because a
+   * row is either a value or an action, never both. */                        \
+  X(MENU_SELECT,"menu_select",KM_DIGITAL, KM_CTX_MENU,   0,                    \
+        "Return,pad:south",   "settings menu: activate the selected action")   \
   /* --- savestates / rewind / pacing --------------------------------- */     \
   X(STATE_SAVE, "savestate_save",  KM_DIGITAL, KM_CTX_GAMEPLAY, 0,             \
         "1",              "quick-save to the active slot")                     \

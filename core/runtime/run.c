@@ -2093,6 +2093,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                     if (openpete_key_pressed(OPK_MENU_DOWN))  openpete_menu_nav(+1);
                     if (openpete_key_pressed(OPK_MENU_LEFT))  openpete_menu_adjust(-1);
                     if (openpete_key_pressed(OPK_MENU_RIGHT)) openpete_menu_adjust(+1);
+                    if (openpete_key_pressed(OPK_MENU_SELECT)) openpete_menu_activate();
                 }
                 prev_menu_close = close_k;
 

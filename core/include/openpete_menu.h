@@ -71,8 +71,13 @@ int         openpete_menu_row_centered(int row);
 void openpete_menu_nav(int dy);
 
 /* Change the focused row's value: dx < 0 = previous, dx > 0 = next (wraps), and
- * apply it live via the matching setter. No-op unless open. */
+ * apply it live via the matching setter. No-op unless open, and on an ACTION
+ * row (openpete_menu_row_centered) — cycling a value must never fire a button. */
 void openpete_menu_adjust(int dx);
+
+/* Press the focused ACTION row (EXIT GAME): arms on the first call, fires on
+ * the second. No-op unless open and the row is an action row. */
+void openpete_menu_activate(void);
 
 /* Advance the selected-item wobble / border-shimmer phase. Call once per
  * presented frame from the draw step. */
