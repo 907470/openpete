@@ -24,6 +24,12 @@ artisans | pos=(80732, 61082, 9500) yaw=0 pitch=-992
 artisans | pos=(84992, 45582, 9948) yaw=1024 pitch=160
 artisans | pos=(86800, 69542, 10184) yaw=243 pitch=447
 artisans | pos=(90094, 104721, 11484) yaw=260 pitch=227
+# High above the level looking down, past the .s's own LP culling distance, so
+# the original renderer emits ZERO prims. The extended-LOD leg is the one that
+# matters: the native feed used to run only when the .s had drawn something, so
+# the whole level vanished and only mobys (a different producer) remained. The
+# original-LOD leg is legitimately empty and pins that mirroring.
+beast_makers | pos=(140463, 168509, 65348) yaw=3019 pitch=634
 beast_makers | pos=(148149, 179144, 19417) yaw=2326 pitch=105
 blowhard | pos=(89820, 73764, 23253) yaw=2337 pitch=166
 cliff_town | pos=(138997, 98065, 22037) yaw=1370 pitch=8

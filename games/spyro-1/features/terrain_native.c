@@ -5452,7 +5452,22 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
 
     if ((feed || verify) && endp > startp) capture_prims(cpu, startp, endp);
 
-    if (feed && endp > startp && render_path_enabled(RP_TERRAIN)) {
+    /* `endp > startp` = the .s renderer emitted at least one prim, i.e. it had
+     * something visible. Under EXTENDED LOD that is the wrong gate: the native
+     * walk draws past the .s's LP culling distance by design, and a viewpoint
+     * where EVERY sector is beyond that distance (freecam high above a level)
+     * leaves the .s emitting nothing at all — so the feed never ran and the
+     * level vanished while mobys, fed by their own producer, still drew.
+     * Being inside this hook is the state signal that matters: during a level
+     * transition the game stops calling func_800258F0 entirely, which is what
+     * keeps a stale level out of the scene. */
+    if (feed && (endp > startp || openpete_no_lod) && render_path_enabled(RP_TERRAIN)) {
+        /* Canon-drawn is latched from the polybuf intervals, so an .s that
+         * emitted nothing reads as NOT drawn and the sub-tick re-extract would
+         * skip terrain — painting it on canonical presents and dropping it on
+         * the intermediates. Mark it explicitly: the frame DID paint terrain,
+         * natively. */
+        if (endp <= startp) render_path_mark_drawn(RP_TERRAIN);
         terrain_build(cpu, occGroup);               /* native walk + tris */
         openpete_native_scene_begin_frame(openpete_frame);  /* frame-keyed (composes) */
         terrain_feed_native(cpu);                   /* push tris to the scene */
