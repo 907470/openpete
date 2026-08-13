@@ -2782,6 +2782,19 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     if (s_lpg_en < 0) { const char* e = getenv("OPENPETE_TEXPACK_LP_FIT");
                         s_lpg_en = !(e && *e == '0'); }
     s_lpg_active = s_lpg_en && texture_pack_replacements_active();
+    /* The mean is a stand-in for sectors of THIS level that yielded no fit; it
+     * must not survive a level change. A pack covering one level leaves every
+     * sector of the next unmatched, so the accumulator stays empty there and
+     * the fold below would pin the old level's mean over its whole LP tier
+     * indefinitely. */
+    { int lvl = (int)(int32_t)rd(cpu, 0x8007596C);   /* g_LevelId */
+      static int s_lpg_lvl = -1;
+      if (lvl != s_lpg_lvl) {
+          s_lpg_lvl = lvl;
+          s_lpg_mean_ok = 0;
+          s_lpg_acc_n = 0;
+          memset(s_lpg_acc, 0, sizeof s_lpg_acc);
+      } }
     if (s_lpg_acc_n > 0) {
         for (int c = 0; c < 6; c++) s_lpg_mean[c] = (float)(s_lpg_acc[c] / s_lpg_acc_n);
         s_lpg_mean_ok = 1;

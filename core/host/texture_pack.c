@@ -690,12 +690,23 @@ int texture_pack_grade_fit(const texture_pack_id *id, const texture_pack_repl *r
     if (!repl->pixels || repl->box_w <= 0 || repl->box_h <= 0) return 0;
     uint64_t key = (uint64_t)(uintptr_t)repl->pixels
                  ^ (id->phash * 0x9E3779B97F4A7C15ull);
-    tp_fit_slot *sl = NULL;
+    /* Probe the window for a live hit; failing that, take a slot to overwrite.
+     * Stale-generation slots MUST be reusable: s_gen bumps on every VRAM
+     * upload, so each epoch would otherwise strand a fresh slot per live key
+     * and never reclaim it. Once all eight filled, the lookup fell through
+     * with no slot at all and every call re-ran the full per-texel fit — a
+     * permanent cliff on this path, which runs per replaced draw per frame. */
+    tp_fit_slot *sl = NULL, *empty = NULL, *stale = NULL;
     uint64_t base = key * 0xff51afd7ed558ccdull >> 32;
     for (int pr = 0; pr < 8; pr++) {
         tp_fit_slot *c = &s_fit[(base + (uint64_t)pr) & (TP_FIT_SLOTS - 1)];
-        if ((c->key == key && c->gen == s_gen) || c->state == 0) { sl = c; break; }
+        if (c->key == key && c->gen == s_gen) { sl = c; break; }
+        if (c->state == 0) { if (!empty) empty = c; }
+        /* Prefer evicting this key's own stale slot — it is the one entry in
+         * the window guaranteed not to be some other texture's live fit. */
+        else if (c->gen != s_gen && (!stale || c->key == key)) stale = c;
     }
+    if (!sl) sl = empty ? empty : stale;   /* NULL only if all eight are live */
     if (sl && sl->key == key && sl->gen == s_gen && sl->state) {
         if (sl->state != 1) return 0;
         for (int c = 0; c < 3; c++) { p[c] = sl->p[c]; q[c] = sl->q[c]; }
