@@ -171,3 +171,9 @@ cliff_town | pos=(70291, 89616, 68904) yaw=6171 pitch=784
 blowhard | pos=(86047, 74782, 25143) yaw=2938 pitch=212
 # gnorc_cove circular water border (z=1088 border class, 167 faces)
 gnorc_cove | pos=(75462, -34396, 81807) yaw=5021 pitch=426
+
+# gnastys_loot chest behind the wall lip (moby true-scope guard): the fanning
+# chest sits ~1300 world behind this wall's near lip; og's pull+push OT
+# compound paints it through, MOBY_TRUESCOPE occludes it. Broken = the chest's
+# white base visible through the dark wall band.
+gnastys_loot | pos=(70303, 47226, 16489) yaw=3047 pitch=-24

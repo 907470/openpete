@@ -46,9 +46,9 @@ layout(location = 0) out vec4 outColor;
  * near-band per-pixel contest key. */
 layout(constant_id = 0) const bool DEPTH_AFFINE = false;
 
-/* Free-camera mode: scope moby og-key yields by the fragment's own TRUE
- * view-Z (see the contest block). Canonical camera = false = og painter. */
-layout(constant_id = 3) const bool MOBY_TRUESCOPE = false;
+/* Scope moby og-key yields by the fragment's own TRUE view-Z (see the
+ * contest block). Default true; false restores og's compound painter. */
+layout(constant_id = 3) const bool MOBY_TRUESCOPE = true;
 
 /* Untextured lighting view — see psx_scene.frag. */
 layout(constant_id = 2) const bool NOTEX = false;
@@ -120,22 +120,24 @@ void main()
          * POSITIVE koff (OT-band terrain + moby faces): strict
          * less-by-half-slot painter select vs both key images; ties inside
          * og's 128-world quantum fall through to true depth. Under
-         * MOBY_TRUESCOPE (free camera), the select vs MOBY keys is
+         * MOBY_TRUESCOPE (the default), the select vs MOBY keys is
          * additionally scoped by the fragment's own TRUE view-Z (stored
          * depth is true for every keyed face): a moby's key claims the
          * pixel only if it is also in front of the surface that is
          * actually there. og's OT genuinely COMPOUNDS a moby's authored
-         * pull (-128*dofs) with a terrain face's authored push — Delvin's
-         * wing paints whole over a tower up to ~1000 world nearer, and
-         * that IS the correct canonical-camera look — but the same
-         * arithmetic at a free-camera pose lets a chest paint through a
-         * wall lip 1300 world in front of it (its key beats the wall's
-         * +8-slot-pushed key while sitting BEHIND the wall's true
-         * surface). No constant margin separates the two classes (wing
-         * claim up to +450 behind its tower's true surface, chest +88
-         * behind its wall's), so the discriminator is the camera: og's
-         * ordering is authored for poses the game camera can reach;
-         * off-rail exploration keeps physical occlusion instead.
+         * pull (-128*dofs) with a terrain face's authored push — at
+         * gnastys_loot a chest paints through a wall lip 1300 world in
+         * front of it (its key beats the wall's +8-slot-pushed key while
+         * sitting BEHIND the wall's true surface), and the class shows
+         * from ordinary gameplay angles, not just off-rail. The scope
+         * keeps every yield within the moby's own authored pull (an
+         * embedded pedestal disc's key sits in FRONT of its ground's true
+         * surface, so it still paints complete); only the terrain push's
+         * widening of the window is removed. Authored inside-terrain
+         * cutscene actors (Delvin's wing through the tower) are outside
+         * this rule entirely: the ACTOR_FRONT class never emits keys and
+         * draws through the scissored front pass. MOBY_TRUESCOPE=false
+         * restores og's compound painter for A/B.
          *
          * NEGATIVE koff = NEAR-BAND terrain, contest-only, per-pixel own
          * key (og subdivides the near band into pieces at PIECE-LOCAL
@@ -159,10 +161,19 @@ void main()
         float mkey = mk < 0.999999 ? 4096.0 * mk / max(1.0 - mk, 1e-9) : 1e30;
         float own = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
                                  : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
+        bool actor = vRank.x < -0.5;   /* unranked moby faces mark rank -1 */
         if (vKoff > 0.0) {
             if (tkey < (vKoff - 0.5) - 64.0) discard;
             if (akey < (vKoff - 0.5) - 64.0 &&
                 (!MOBY_TRUESCOPE || akey < own - 64.0)) discard;
+            /* Prop EMBED rule on the OT band (terrain fragments only, the
+             * near-band rule's twin): a curated embedded prop within 1024
+             * world behind this terrain's TRUE surface wins the pixel.
+             * Under the true-depth scope this is what carries the
+             * dofs-0 pedestal discs at mid/far range — og floated them on
+             * the ground's own authored push, which the scope no longer
+             * mirrors. */
+            if (MOBY_TRUESCOPE && !actor && mkey < own + 1024.0) discard;
         } else {
             if (tkey < own - 64.0 || akey < own - 64.0 || mkey < own + 1024.0) discard;
         }

@@ -3259,15 +3259,14 @@ static void push_scene_moby(void) {
          * w0 bits 16-23 / the shaded walk's rot>>24) — an ordering KEY,
          * never stored depth. The face's ABSOLUTE key rasters into the
          * MOBY key image (set 1, split from the terrain keys), where the
-         * contest applies og's painter for the canonical camera — keyed
-         * terrain within the authored bias yields per-pixel (a pedestal
-         * disc set into sloped ground, Delvin's wing over the tower) —
-         * while free-camera mode additionally scopes the yield by the
-         * covering face's own TRUE view-Z (MOBY_TRUESCOPE,
-         * psx_scene_key.frag): off the canonical rail, the pull+push
-         * compound reads as punch-through, and a wall genuinely in front
-         * keeps occluding by TRUE depth. The moby face contests nearer
-         * keys symmetrically. Blend/FRONT/HUD classes
+         * contest scopes the yield by the covering face's own TRUE view-Z
+         * (MOBY_TRUESCOPE, psx_scene_key.frag): keyed terrain within the
+         * moby's own authored pull yields per-pixel (a pedestal disc set
+         * into sloped ground paints complete), while og's pull+push
+         * compound — which paints a chest through the wall lip genuinely
+         * in front of it — is not mirrored: a wall in front keeps
+         * occluding by TRUE depth. The moby face contests nearer keys
+         * symmetrically. Blend/FRONT/HUD classes
          * stay unkeyed — and so do MANGLED faces (near-plane fixup /
          * coordinate saturation): their screen footprint is not the true
          * projection, so a flat key stamped across one discards terrain
@@ -3325,6 +3324,12 @@ static void push_scene_moby(void) {
                 if (rord_moby[oi] == s_wtri_moby[i]) break;
             if (oi == rord_n && rord_n < 256) rord_moby[rord_n++] = s_wtri_moby[i];
             if (oi < 255) { t.rank = (float)rank; t.mordinal = oi + 1; }
+        } else if (cat == OPENPETE_SCENE_ACTOR && t.blend == 0) {
+            /* Actor-fragment marker (rank -1, still "unranked" to every
+             * rank consumer): the key contest's prop-embed rule must fire
+             * on TERRAIN fragments only — a statue standing on its disc
+             * must never yield the pixel to it (psx_scene_key.frag). */
+            t.rank = -1.0f;
         }
         openpete_native_scene_set_tag(
             OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], s_wtri_matslot[i]));

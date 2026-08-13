@@ -29,8 +29,6 @@
 #include "openpete_log.h"
 #include "openpete_time.h"   /* op_now — overlay's own sub-tick alpha (camera-independent) */
 #include "openpete_interp.h" /* deterministic present clock for the overlay sub-tick alpha */
-#include "openpete_freecam.h" /* freecam engage state drives the MOBY_TRUESCOPE re-bake */
-#include "openpete_camlock.h" /* the render camlock is off-rail too — same re-bake */
 #include "openpete_record.h" /* native --record capture seam */
 #include "rhi.h"
 #include "screenshot.h"  /* openpete_write_png_rgba */
@@ -6462,26 +6460,28 @@ static void texmap_apply_pending(void) {
         OPL_ERROR_F("native", "texture-mapping: %d pipeline(s) failed to rebuild (kept previous mode)", fails);
 }
 
-/* Free-camera key-contest scoping (MOBY_TRUESCOPE, fragment spec-constant 3):
- * derived from the freecam engage state each present, no setter — og's
- * authored OT compounding (moby pull + terrain push) is the correct look for
- * the canonical camera, and reads as moby-through-terrain punch-through from
- * poses the game camera can never reach. Same re-bake shape as
- * texture-mapping; OPENPETE_MOBY_TRUESCOPE overrides (0 = never, 1 = always,
- * unset/auto = follow freecam). */
-static int s_moby_truescope = 0;   /* currently-baked value (pipelines start at 0) */
+/* Key-contest scoping (MOBY_TRUESCOPE, fragment spec-constant 3), DEFAULT ON:
+ * a moby og key claims a pixel only when it also beats the covering
+ * fragment's own TRUE view-Z. og's authored OT compounding (moby pull +
+ * terrain push) paints mobys through terrain genuinely in front of them —
+ * visible from ordinary gameplay angles (chests through the ledge lip they
+ * sit behind), not just off-rail — so true depth is the standing rule and
+ * OPENPETE_MOBY_TRUESCOPE=0 restores og's painter for A/B. Cutscene actors
+ * are unaffected either way: the ACTOR_FRONT class never emits keys, and
+ * their authored inside-terrain look (Delvin's wing through the tower) is
+ * carried by the scissored ACTOR_FRONT pass. Same re-bake shape as
+ * texture-mapping. */
+static int s_moby_truescope = 1;   /* currently-baked value (pipelines start at 1) */
 static void truescope_apply_pending(void) {
     if (!s_nr.dev) return;
-    int want;
     const char* e = getenv("OPENPETE_MOBY_TRUESCOPE");
-    if (e && *e) want = (*e != '0');
-    else want = (openpete_freecam_active() || openpete_camlock_active()) ? 1 : 0;
+    int want = (e && *e) ? (*e != '0') : 1;
     if (want == s_moby_truescope) return;
     rhi_set_moby_truescope(want);
     int fails = rhi_rebuild_pipelines(s_nr.dev);
     s_moby_truescope = want;
     OPL_INFO_F("native", "moby key contest -> %s (pipelines re-baked)",
-               want ? "true-depth scoped (free camera)" : "og painter (canonical camera)");
+               want ? "true-depth scoped" : "og compound painter (A/B)");
     if (fails)
         OPL_ERROR_F("native", "moby-truescope: %d pipeline(s) failed to rebuild (kept previous mode)", fails);
 }
@@ -8130,7 +8130,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf)
  * returns can't leak it into the live present path. */
 int openpete_native_render_screenshot_all(const char *base)
 {
-    /* Headless never runs openpete_native_render_frame, so the freecam-mode
+    /* Headless never runs openpete_native_render_frame, so the truescope
      * re-bake must happen here, outside the compose's command recording. */
     truescope_apply_pending();
     s_scene_shot_compose = 1;

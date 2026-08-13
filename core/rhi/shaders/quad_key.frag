@@ -22,9 +22,9 @@ layout(location = 0) out vec4 outColor;
 /* gl_FragCoord.z encoding — see psx_scene_key.frag. */
 layout(constant_id = 0) const bool DEPTH_AFFINE = false;
 
-/* Free-camera mode: scope moby og-key yields by the fragment's own TRUE
- * view-Z (see the contest block). Canonical camera = false = og painter. */
-layout(constant_id = 3) const bool MOBY_TRUESCOPE = false;
+/* Scope moby og-key yields by the fragment's own TRUE view-Z (see the
+ * contest block). Default true; false restores og's compound painter. */
+layout(constant_id = 3) const bool MOBY_TRUESCOPE = true;
 
 void main()
 {
@@ -52,10 +52,19 @@ void main()
         float mkey = mk < 0.999999 ? 4096.0 * mk / max(1.0 - mk, 1e-9) : 1e30;
         float own = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
                                  : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
+        bool actor = vRank.x < -0.5;   /* unranked moby faces mark rank -1 */
         if (vKoff > 0.0) {
             if (tkey < (vKoff - 0.5) - 64.0) discard;
             if (akey < (vKoff - 0.5) - 64.0 &&
                 (!MOBY_TRUESCOPE || akey < own - 64.0)) discard;
+            /* Prop EMBED rule on the OT band (terrain fragments only, the
+             * near-band rule's twin): a curated embedded prop within 1024
+             * world behind this terrain's TRUE surface wins the pixel.
+             * Under the true-depth scope this is what carries the
+             * dofs-0 pedestal discs at mid/far range — og floated them on
+             * the ground's own authored push, which the scope no longer
+             * mirrors. */
+            if (MOBY_TRUESCOPE && !actor && mkey < own + 1024.0) discard;
         } else {   /* near-band: per-pixel own key; +1024 embed rule vs props */
             if (tkey < own - 64.0 || akey < own - 64.0 || mkey < own + 1024.0) discard;
         }

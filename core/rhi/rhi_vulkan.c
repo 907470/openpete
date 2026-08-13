@@ -2879,10 +2879,11 @@ void rhi_set_notex(int on) { s_fs_notex = on ? VK_TRUE : VK_FALSE; }
 
 /* Fragment-stage specialization constant 3 (`MOBY_TRUESCOPE`): scopes the
  * key-contest's moby og-key yields by the covering fragment's own TRUE
- * view-Z (free-camera mode — og's authored OT compounding only orders
- * correctly for the canonical camera). Live toggle via
- * rhi_rebuild_pipelines like the others. Default 0 = og painter. */
-static VkBool32 s_fs_moby_truescope = VK_FALSE;
+ * view-Z. Default 1 — og's pull+push OT compounding reads as
+ * moby-through-terrain punch-through from ordinary gameplay angles too;
+ * 0 restores og's painter for A/B. Live toggle via rhi_rebuild_pipelines
+ * like the others. */
+static VkBool32 s_fs_moby_truescope = VK_TRUE;
 void rhi_set_moby_truescope(int on) { s_fs_moby_truescope = on ? VK_TRUE : VK_FALSE; }
 
 /* Compile a pipeline's Vulkan objects from its stored sources (desc + shader
