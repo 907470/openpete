@@ -701,6 +701,8 @@ void openpete_record_capture_frame(uint64_t pts_us) {
     }
 }
 
+int openpete_record_supported(void) { return 1; }
+
 int openpete_record_active(void) {
     return g_rec.enabled && !g_rec.failed && !g_rec.finished;
 }
@@ -831,6 +833,8 @@ int openpete_record_init(const openpete_options_t* opts)
 }
 
 void openpete_record_capture_frame(uint64_t pts_us) { (void)pts_us; }
+
+int  openpete_record_supported(void) { return 0; }
 
 int  openpete_record_active(void) { return 0; }
 

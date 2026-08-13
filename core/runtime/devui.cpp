@@ -643,8 +643,19 @@ static void draw_custom_level_rows(const char *mod_id)
     }
 }
 
-static bool row_matches(const ImGuiTextFilter &f, const knob_desc_t *k)
+/* A row the run has no use for (see knob_desc_t::visible) is left out of the
+ * panel entirely — including from the "does this section have anything to
+ * show" scan, so its header goes with it. */
+static bool row_visible(const knob_desc_t *k)
 {
+    return !k->visible || k->visible(k) != 0;
+}
+
+/* Does this row appear in the panel at all: relevant to the run, then
+ * matching the text filter. */
+static bool row_shown(const ImGuiTextFilter &f, const knob_desc_t *k)
+{
+    if (!row_visible(k)) return false;
     if (!f.IsActive()) return true;
     return f.PassFilter(k->id) || f.PassFilter(k->label) ||
            (k->cli && f.PassFilter(k->cli)) || (k->env && f.PassFilter(k->env));
@@ -695,7 +706,7 @@ static void draw_panel(void)
         size_t end = i;
         bool any = false;
         while (end < n && strcmp(ks[end].section, section) == 0) {
-            if (row_matches(s_filter, &ks[end]) &&
+            if (row_shown(s_filter, &ks[end]) &&
                 (!s_live_only || ks[end].mut == KNOB_LIVE))
                 any = true;
             end++;
@@ -722,7 +733,7 @@ static void draw_panel(void)
                 ImGui::TableSetupColumn("source", ImGuiTableColumnFlags_WidthStretch, 0.16f);
                 for (size_t j = i; j < end; j++) {
                     knob_desc_t *k = &ks[j];
-                    if (!row_matches(s_filter, k)) continue;
+                    if (!row_shown(s_filter, k)) continue;
                     if (s_live_only && k->mut != KNOB_LIVE) continue;
                     ImGui::PushID(k->id);
                     draw_row(k);

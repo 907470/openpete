@@ -104,6 +104,15 @@ typedef struct knob_desc {
 
     /* KNOB_ACTION only: button caption ("Apply" when NULL). */
     const char *action_label;
+
+    /* Optional: 0 = leave this row out of the overlay for this run. For knobs
+     * that act on something the run does not have — a capture that was never
+     * started, a device that is absent — where a disabled row would just be a
+     * question the user has to answer twice. The row still exists everywhere
+     * else (--config-report, the config schema, saving), so this is display
+     * only. NULL = always shown. A section whose rows are all hidden emits no
+     * header. */
+    int (*visible)(const struct knob_desc *k);
 } knob_desc_t;
 
 /* The table (mutable: boot stamps + stored values live in the rows). */

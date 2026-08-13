@@ -57,10 +57,10 @@ static const cfg_knob_t g_schema[] = {
     { "cheats",           "--cheats",           NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "freecam",          NULL,                 "OPENPETE_FREECAM",      CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "camlock",          NULL,                 "OPENPETE_CAMLOCK",      CFG_BOOL,   NULL,       NULL,       NULL,       0 },
+    { "bk2",              "--bk2",              NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
 
     /* -------- Recording -------- */
     { "record",           "--record",           NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
-    { "bk2",              "--bk2",              NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "record_cfr",       "--record-cfr",       NULL,                    CFG_FLOAT,  NULL,       NULL,       NULL,       0 },
     { "record_frames",    "--record-frames",    NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "record_fps_overlay", "--record-fps-overlay", "OPENPETE_FPS_IN_RECORD", CFG_BOOL, NULL,    NULL,       NULL,       0 },

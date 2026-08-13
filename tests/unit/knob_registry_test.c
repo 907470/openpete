@@ -34,6 +34,8 @@ int    openpete_fillpick_preview(void)         { return 0; }
 void   openpete_fillpick_set_preview(int on)   { (void)on; }
 int    openpete_get_mute(void)                 { return 0; }
 void   openpete_set_mute(int on)               { (void)on; }
+static int s_record_supported = 1;
+int    openpete_record_supported(void)         { return s_record_supported; }
 int    openpete_get_sfx_volume(void)           { return -1; }
 void   openpete_set_sfx_volume(int v)          { (void)v; }
 int    openpete_get_music_volume(void)         { return -1; }
@@ -163,6 +165,45 @@ int main(void) {
     if (s_fired != 1) rc |= fail("action did not fire");
     knob_value_str(k, buf, sizeof buf);
     if (strcmp(buf, "applied") != 0) rc |= fail("status string not reported");
+
+    /* Rows the run has no use for report themselves hidden, so the overlay
+     * drops them — and, since every Recording row is one of them, drops the
+     * section header with them. The predicate reads two things: whether the
+     * build can encode at all, and whether this run was launched recording. */
+    {
+        static const char *const rec_rows[] = {
+            "record", "record_cfr", "record_frames", "record_fps_overlay", NULL
+        };
+        openpete_options_t ropts;
+        memset(&ropts, 0, sizeof ropts);
+        ropts.vsync = -1; ropts.render_fps = -1; ropts.tick_scale = 1.0;
+
+        for (int pass = 0; pass < 3; pass++) {
+            /* pass 0: no --record. 1: recording. 2: recording, no encoder. */
+            ropts.record_path  = pass ? "clip.mkv" : NULL;
+            s_record_supported = (pass != 2);
+            knob_registry_init(&ropts);
+            for (int r = 0; rec_rows[r]; r++) {
+                const knob_desc_t *rk = find_row(rec_rows[r], NULL);
+                if (!rk || !rk->visible) {
+                    rc |= fail("a Recording row carries no visibility rule");
+                    continue;
+                }
+                if (!!rk->visible(rk) != (pass == 1)) {
+                    rc |= fail("Recording row visibility ignored the run");
+                    fprintf(stderr, "       %s, pass %d\n", rec_rows[r], pass);
+                }
+            }
+        }
+        s_record_supported = 1;
+
+        /* bk2 replay drives the pad, so it is not one of them: it stays
+         * listed whether or not the run records. */
+        const knob_desc_t *bk2 = find_row("bk2", NULL);
+        if (!bk2 || bk2->visible) rc |= fail("bk2 row hides with the recording rows");
+        if (bk2 && strcmp(bk2->section, "Gameplay") != 0)
+            rc |= fail("bk2 row left the Gameplay section");
+    }
 
     /* Capacity is finite and refuses politely rather than corrupting. */
     int added = 0;

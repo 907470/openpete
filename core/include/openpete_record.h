@@ -36,6 +36,12 @@ int  openpete_record_init(const openpete_options_t* opts);
  * present FBO's native dimensions and spawns the encoder thread. */
 void openpete_record_capture_frame(uint64_t pts_us);
 
+/* True when this build can encode video at all: false for targets built
+ * without libav* (OPENPETE_ENABLE_RECORD=OFF, or a cross-compile with no
+ * target FFmpeg), where --record only warns and every recording knob is
+ * inert. A build-time constant, safe to call before init. */
+int  openpete_record_supported(void);
+
 /* True while recording is armed, not failed, and still accepting frames — gate
  * the (non-trivial) native offscreen readback on this so it only runs when
  * actually recording. Goes false once a --record-frames budget is spent. */

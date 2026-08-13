@@ -20,6 +20,7 @@
 #include "openpete_camlock.h"
 #include "openpete_fillpick.h"
 #include "openpete_freecam.h"
+#include "openpete_record.h"
 #include "openpete_rewind.h"
 #include "features/no_lod.h"
 #include "features/widescreen.h"
@@ -209,6 +210,18 @@ static double sfxvol_get(const knob_desc_t *k) { (void)k; return (double)openpet
 static int sfxvol_set(knob_desc_t *k, double v) { (void)k; openpete_set_sfx_volume((int)v); return 0; }
 static double musicvol_get(const knob_desc_t *k) { (void)k; return (double)openpete_get_music_volume(); }
 static int musicvol_set(knob_desc_t *k, double v) { (void)k; openpete_set_music_volume((int)v); return 0; }
+
+/* ---- Recording ---- */
+
+/* --record is latched at boot, so with no path this run will never encode a
+ * frame and every row in the section is inert — as is all of it on a build
+ * with no video encoder, where --record only warns. Hidden rather than
+ * disabled: there is nothing the user could do about either from here. */
+static int recording_visible(const knob_desc_t *k) {
+    (void)k;
+    if (!openpete_record_supported()) return 0;
+    return g_opts && g_opts->record_path && g_opts->record_path[0];
+}
 
 static int recfps_set(knob_desc_t *k, double v) {
     openpete_native_set_fps_in_record(v != 0.0);
@@ -573,6 +586,13 @@ static const knob_desc_t g_builtin[] = {
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       camlock_get, camlock_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
+    /* A movie drives the pad, so it belongs with what shapes the session
+     * rather than with the video-capture rows it used to sit among. */
+    { "bk2", "bk2 replay", "Gameplay", "--bk2", NULL,
+      "Replay a BizHawk movie into the pad (loaded at loop start).",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, path_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
     /* Last row of the section on purpose: the game module contributes one
      * button row per cheat through openpete_knob_add, and those land after
      * the section's last built-in — directly under this launch summary. */
@@ -583,37 +603,38 @@ static const knob_desc_t g_builtin[] = {
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, cheats_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
-    /* -------- Recording -------- */
+    /* -------- Recording --------
+     * Every row here is hidden unless this run is recording; see
+     * recording_visible. The trailing NULLs are def_str + action_label,
+     * which these rows do not use. */
     { "record", "Record video", "Recording", "--record", NULL,
       "True-VFR gameplay capture to a video file (latched at boot).",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
-      NULL, NULL, path_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
-
-    { "bk2", "bk2 replay", "Recording", "--bk2", NULL,
-      "Replay a BizHawk movie into the pad (loaded at loop start).",
-      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
-      NULL, NULL, path_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      NULL, NULL, path_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      NULL, NULL, recording_visible },
 
     { "record_cfr", "Constant-rate capture", "Recording", "--record-cfr", NULL,
       "Capture at a fixed frame rate (an integer multiple of the 29.913 Hz "
       "tick rate) on an offline clock, instead of true VFR. 0 = VFR. "
       "Latched at boot.",
       KNOB_FLOAT, KNOB_RESTART_ONLY, NULL, 0, 0.0f, 480.0f,
-      get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      NULL, NULL, recording_visible },
 
     { "record_frames", "Capture frame budget", "Recording", "--record-frames", NULL,
       "Finish the recording and exit after this many encoded frames. "
       "0 = until the run ends. Latched at boot.",
       KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 1000000,
-      get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      NULL, NULL, recording_visible },
 
     { "record_fps_overlay", "FPS overlay in recording", "Recording",
       "--record-fps-overlay", "OPENPETE_FPS_IN_RECORD",
       "Burn the FPS overlay into --record video output. Live: re-resolved "
-      "on the next recorded frame. Only meaningful while a recording is "
-      "active.",
+      "on the next recorded frame.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
-      get_stored, recfps_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      get_stored, recfps_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0,
+      NULL, NULL, recording_visible },
 
 #ifndef OPENPETE_HIDE_DEBUG_FLAGS
     /* -------- Debug (toggles / tunables) -------- */
