@@ -491,6 +491,19 @@ typedef struct openpete_options {
      * so a headless run with no audio device is silent either way. */
     bool mute;
 
+    /* Preset the game's own in-game volume sliders at boot, on the scale its
+     * options menu uses (0 = OFF .. 10 = max). -1 leaves each slider alone,
+     * which is the default: the game picks its own value (and a loaded save
+     * file restores the player's).
+     *
+     * Unlike --mute these are *gameplay-side* values, written into the game's
+     * volume globals by the per-game audio-volume feature at a tick boundary.
+     * The preset survives the clobbers the game does on its own (title-screen
+     * init, save-file load) and is released the moment the player edits that
+     * slider in the game's options menu. */
+    int sfx_volume;     /* --sfx   0..10, -1 = leave the game's slider alone */
+    int music_volume;   /* --music 0..10, -1 = leave the game's slider alone */
+
     /* Content for the "<bk2_record_path>.args" sidecar written next to a
      * --bk2-record capture. Holds the launch flags passed *directly* on
      * the command line (excluding every --bk2-* flag and anything sourced
@@ -749,6 +762,16 @@ int  openpete_runahead_get(void);
  * F7 pause exit restores this baseline. */
 void openpete_set_mute(int on);
 int  openpete_get_mute(void);
+
+/* Live in-game volume-slider presets (0..10, -1 = leave the game's slider
+ * alone) — the --sfx / --music values, re-settable at runtime. These hold a
+ * host-side REQUEST only: the per-game audio-volume feature reads them on its
+ * own tick hook and performs every guest write there, so a UI-thread edit
+ * never touches gameplay-readable RAM off-schedule. */
+void openpete_set_sfx_volume(int v);
+int  openpete_get_sfx_volume(void);
+void openpete_set_music_volume(int v);
+int  openpete_get_music_volume(void);
 
 #ifdef __cplusplus
 }

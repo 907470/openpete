@@ -202,6 +202,14 @@ static int rewind_set(knob_desc_t *k, double v) {
 static double mute_get(const knob_desc_t *k) { (void)k; return openpete_get_mute() ? 1.0 : 0.0; }
 static int mute_set(knob_desc_t *k, double v) { (void)k; openpete_set_mute(v != 0.0); return 0; }
 
+/* The two in-game slider presets. Both setters only move a host-side request
+ * — the guest write happens on the game's own tick hook — so they satisfy the
+ * live-row contract despite the value ending up in gameplay-readable RAM. */
+static double sfxvol_get(const knob_desc_t *k) { (void)k; return (double)openpete_get_sfx_volume(); }
+static int sfxvol_set(knob_desc_t *k, double v) { (void)k; openpete_set_sfx_volume((int)v); return 0; }
+static double musicvol_get(const knob_desc_t *k) { (void)k; return (double)openpete_get_music_volume(); }
+static int musicvol_set(knob_desc_t *k, double v) { (void)k; openpete_set_music_volume((int)v); return 0; }
+
 static int recfps_set(knob_desc_t *k, double v) {
     openpete_native_set_fps_in_record(v != 0.0);
     k->stored_num = (v != 0.0);
@@ -503,6 +511,20 @@ static const knob_desc_t g_builtin[] = {
       "override). Live; the F7 pause exit restores this baseline.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       mute_get, mute_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "sfx", "SFX volume", "Audio", "--sfx", NULL,
+      "Preset the game's own SOUND EFFECTS slider, 0 (OFF) to 10 (max); "
+      "-1 leaves it alone. Stamped at a tick boundary and re-stamped over "
+      "the title screen / save-file load, until the player moves that "
+      "slider in the game's options menu.",
+      KNOB_INT, KNOB_LIVE, NULL, 0, -1, 10,
+      sfxvol_get, sfxvol_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "music", "Music volume", "Audio", "--music", NULL,
+      "Preset the game's own MUSIC slider, 0 (OFF) to 10 (max); -1 leaves "
+      "it alone. Same stamping rules as the SFX row.",
+      KNOB_INT, KNOB_LIVE, NULL, 0, -1, 10,
+      musicvol_get, musicvol_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     /* -------- Paths -------- */
     { "disc", "Disc image", "Paths", "--disc", NULL,
@@ -1102,6 +1124,10 @@ void knob_registry_init(const struct openpete_options *opts) {
             k->stored_num = opts->fov_deg;
         } else if (!strcmp(k->id, "mute")) {
             k->stored_num = opts->mute ? 1 : 0;
+        } else if (!strcmp(k->id, "sfx")) {
+            k->stored_num = opts->sfx_volume;
+        } else if (!strcmp(k->id, "music")) {
+            k->stored_num = opts->music_volume;
         } else if (!strcmp(k->id, "record_cfr")) {
             k->stored_num = opts->record_cfr;
         } else if (!strcmp(k->id, "record_frames")) {

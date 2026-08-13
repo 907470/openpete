@@ -68,8 +68,9 @@ window = "1920x1080"
 fov    = 90
 
 [game.spyro-1]
-disc = "games/spyro-1/spyro-1/build/SCUS-94228.cue"
-lod  = "extended"
+disc  = "games/spyro-1/spyro-1/build/SCUS-94228.cue"
+lod   = "extended"
+music = 0                # the game's own MUSIC slider, 0 (OFF) .. 10; sfx = N likewise
 
 [disc.SCUS-94228]        # just this release
 vertex_precision = "integer"

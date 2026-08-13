@@ -1006,6 +1006,26 @@ void openpete_set_mute(int on) {
 
 int openpete_get_mute(void) { return s_mute; }
 
+/* --sfx / --music: the requested in-game slider levels, 0..10, or -1 for
+ * "leave the game's own slider alone". These are a host-side REQUEST, not a
+ * write: the per-game audio-volume feature reads them from its tick hook and
+ * stamps the game's volume globals there. Keeping the guest write on the sim's
+ * schedule is what lets the dev overlay edit them safely (north-star: nothing
+ * outside the tick touches gameplay-readable RAM). */
+static int s_sfx_volume   = -1;
+static int s_music_volume = -1;
+
+static int clamp_volume(int v) {
+    if (v < 0)  return -1;
+    if (v > 10) return 10;
+    return v;
+}
+
+void openpete_set_sfx_volume(int v)   { s_sfx_volume   = clamp_volume(v); }
+int  openpete_get_sfx_volume(void)    { return s_sfx_volume; }
+void openpete_set_music_volume(int v) { s_music_volume = clamp_volume(v); }
+int  openpete_get_music_volume(void)  { return s_music_volume; }
+
 int openpete_get_render_fps(void) {
     return s_render_fps;
 }
@@ -1014,6 +1034,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
     memset(&g_game, 0, sizeof(g_game));
     openpete_psx_runtime_init(&g_game.cpu);
     openpete_psx_set_diag_cpu(&g_game.cpu);
+
+    /* --sfx / --music: seed the slider presets the per-game audio-volume
+     * feature stamps into the game's own volume globals (-1 = leave the
+     * game's slider alone, the default). Seeded here rather than beside the
+     * --mute apply below because the knob registry stamps its boot values
+     * from the live getters during renderer init, which happens first. */
+    openpete_set_sfx_volume(opts->sfx_volume);
+    openpete_set_music_volume(opts->music_volume);
 
     uint8_t* bytes = NULL;
     size_t   len   = 0;

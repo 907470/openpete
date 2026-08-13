@@ -34,6 +34,10 @@ int    openpete_fillpick_preview(void)         { return 0; }
 void   openpete_fillpick_set_preview(int on)   { (void)on; }
 int    openpete_get_mute(void)                 { return 0; }
 void   openpete_set_mute(int on)               { (void)on; }
+int    openpete_get_sfx_volume(void)           { return -1; }
+void   openpete_set_sfx_volume(int v)          { (void)v; }
+int    openpete_get_music_volume(void)         { return -1; }
+void   openpete_set_music_volume(int v)        { (void)v; }
 int    openpete_get_render_fps(void)           { return 60; }
 void   openpete_set_render_fps(int fps)        { (void)fps; }
 double openpete_get_tick_scale(void)           { return 1.0; }

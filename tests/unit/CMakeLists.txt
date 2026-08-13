@@ -114,6 +114,22 @@ target_include_directories(knob_registry_test PRIVATE
 set_target_properties(knob_registry_test PROPERTIES C_STANDARD 11)
 add_test(NAME knob_registry_test COMMAND knob_registry_test)
 
+# audio_volume_test — the --sfx / --music slider presets: stamping, the
+# re-stamp over the game's own reseeds (title screen, SpuInitialize, save
+# load), and the release when the player moves that slider in the options
+# menu. The module is a state machine over guest RAM, so a fake CPUState over
+# a small array covers it without a controller replay.
+add_executable(audio_volume_test
+    audio_volume_test.c
+    ${CMAKE_SOURCE_DIR}/games/spyro-1/features/audio_volume_native.c)
+target_include_directories(audio_volume_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/games/spyro-1
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/host
+    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+set_target_properties(audio_volume_test PROPERTIES C_STANDARD 99)
+add_test(NAME audio_volume_test COMMAND audio_volume_test)
+
 # config_resolve_test — openpete.toml precedence. The resolver decides which
 # of ~10 layers wins each knob and then materializes exactly one spelling of
 # it; this pins that ordering down so an edit can't quietly re-order the

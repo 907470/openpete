@@ -28,6 +28,25 @@ static int needs_value(const char* flag, int argc, char** argv, int i, const cha
     return 0;
 }
 
+/* --sfx / --music: the game's own volume-slider scale, 0 (OFF) .. 10 (max),
+ * with on|off as the ends of it and -1 meaning "don't preset this slider".
+ * Writes the level to *out and returns 0, or prints the vocabulary and
+ * returns -1. */
+static int parse_volume_arg(const char* flag, const char* v, int* out) {
+    if (strcmp(v, "off") == 0)      { *out = 0;  return 0; }
+    if (strcmp(v, "on")  == 0)      { *out = 10; return 0; }
+    char* end = NULL;
+    long n = strtol(v, &end, 10);
+    if (end == v || *end != '\0' || n < -1 || n > 10) {
+        fprintf(stderr, "openpete: %s expects 0..10 (on|off also accepted, "
+                        "-1 = leave the game's slider alone), got: %s\n",
+                flag, v);
+        return -1;
+    }
+    *out = (int)n;
+    return 0;
+}
+
 /* Tokenize a sidecar args-file buffer in place. Whitespace separates
  * tokens; '#' to end-of-line is a comment. Modifies buf (NUL-inserts
  * after each token). Returns token count, or -1 on overflow. */
@@ -342,6 +361,10 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --adopt-saves              re-tag memory-card saves to the RUNNING modset (save safety: a card played\n"
         "                             under a different modset warns on load until explicitly adopted)\n"
         "  --mute 0|1                 mute all audio at the OpenAL layer (default 0 = audio on; on|off also accepted)\n"
+        "  --sfx N                    preset the game's SOUND EFFECTS slider: 0 (OFF) .. 10 (max), or on|off.\n"
+        "                             Survives the title screen and a save-file load; the game's own options\n"
+        "                             menu takes it back the moment you move that slider. -1 = don't preset\n"
+        "  --music N                  preset the game's MUSIC slider, same scale and rules as --sfx\n"
         "  --skip-to-level L          load directly into level L: numeric id (10=Artisans, 63=Gnasty) or\n"
         "                             lower_snake_case name (stone_hill, doctor_shemp, gnasty_gnorc, ...);\n"
         "                             an unknown name prints the full list. Windowed runs fast-forward the\n"
@@ -489,6 +512,8 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->log_format          = OPENPETE_LOG_PLAIN;
     opts->renderer            = OPENPETE_RENDERER_VK;  /* native Vulkan is the default display (windowed); --renderer psycross for the legacy GL path. Inert under --headless (native disabled → PsyCross). */
     opts->mute                = false; /* audio on by default; --mute 1 to silence */
+    opts->sfx_volume          = -1;    /* -1 = unset; the game's own slider stands */
+    opts->music_volume        = -1;
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
     opts->fps_overlay         = true;  /* native vk FPS overlay on by default; --show-fps 0 / O-menu SHOW FPS row */
     opts->vsync               = -1;    /* -1 = unset; default vsync ON (FIFO) unless OPENPETE_PRESENT_MODE */
@@ -1131,6 +1156,16 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 fprintf(stderr, "openpete: --mute expects 0|1 (on|off also accepted), got: %s\n", v);
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
+            i++;
+        } else if (strcmp(a, "--sfx") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            if (parse_volume_arg(a, v, &opts->sfx_volume) != 0)
+                return OPENPETE_EXIT_SETUP_ERROR;
+            i++;
+        } else if (strcmp(a, "--music") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            if (parse_volume_arg(a, v, &opts->music_volume) != 0)
+                return OPENPETE_EXIT_SETUP_ERROR;
             i++;
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
             print_help(opts->display_name, argv[0]);

@@ -42,6 +42,8 @@ static const cfg_knob_t g_schema[] = {
 
     /* -------- Audio -------- */
     { "mute",             "--mute",             NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       0 },
+    { "sfx",              "--sfx",              NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
+    { "music",            "--music",            NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
 
     /* -------- Paths -------- */
     { "disc",             "--disc",             NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },

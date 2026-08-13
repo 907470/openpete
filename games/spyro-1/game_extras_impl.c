@@ -16,6 +16,7 @@
 #include "openpete_fiber.h"
 #include "psx_runtime.h"
 #include "features/text_moby_native.h"
+#include "features/audio_volume_native.h"
 #include "features/cheats_native.h"
 #include "features/freecam_native.h"
 #include "features/levelwarp_native.h"
@@ -484,6 +485,13 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * live, re-armed at the title screen so each new session gets them. Inert
      * without the flag. */
     spyro1_cheats_on_tick(cpu);
+
+    /* --sfx / --music: hold the game's own volume sliders at the requested
+     * levels (re-stamped over the title screen's and a save load's reseeds,
+     * released when the player moves that slider), and mirror the music
+     * slider onto the XA / music-WAV gain so it acts as a level rather than
+     * an on/off switch. Inert without the flags apart from that mirror. */
+    spyro1_audio_volume_on_tick(cpu);
 
     /* Dev-overlay level warp (M menu): drives the game's own exit-level ->
      * load sequence toward a chosen level. Inert until the Jump button is
