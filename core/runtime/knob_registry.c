@@ -60,10 +60,14 @@ static int aspect_set(knob_desc_t *k, double v) {
     return 0;
 }
 
-static const char *const k_ssaa_names[] = { "1x", "2x", "4x", "8x", "16x" };
+/* Enum index i is the factor's log2 (i -> 1 << i), so the last index is the
+ * log2 of OPENPETE_SSAA_MAX. The ladder stops there because the supersampled
+ * render targets outgrow an 8GB card beyond it (see openpete.h). */
+static const char *const k_ssaa_names[] = { "1x", "2x", "4x" };
+#define K_SSAA_MAX_IDX ((int)(sizeof(k_ssaa_names)/sizeof(k_ssaa_names[0])) - 1)
 static int ssaa_set(knob_desc_t *k, double v) {
     int i = (int)v;
-    if (i < 0 || i > 4) return -1;
+    if (i < 0 || i > K_SSAA_MAX_IDX) return -1;
     openpete_native_set_ssaa(1 << i);
     k->stored_num = i;
     return 0;
@@ -1113,7 +1117,7 @@ void knob_registry_init(const struct openpete_options *opts) {
             }
         } else if (!strcmp(k->id, "ssaa")) {
             int f = opts->ssaa > 0 ? opts->ssaa : 1, idx = 0;
-            while ((1 << idx) < f && idx < 4) idx++;
+            while ((1 << idx) < f && idx < K_SSAA_MAX_IDX) idx++;
             k->stored_num = idx;
         } else if (!strcmp(k->id, "vsync")) {
             if (opts->vsync != -1) {

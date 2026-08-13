@@ -2482,13 +2482,18 @@ static rhi_texture *ensure_shot_rtt(int w, int h)
 }
 
 /* (Re)create ss_rtt — the SSAA supersampled scene target — at the EFFECTIVE
- * factor × the window. The requested --ssaa factor is capped to the GPU's max
- * 2D image dimension and stepped down on an allocation failure (to 1 = SSAA
- * off). No-op when --ssaa is 1, the window size is unknown, or it already
- * matches. Runs OUTSIDE a frame (creates GPU resources / waits idle). */
+ * factor × the window. The requested --ssaa factor is capped to
+ * OPENPETE_SSAA_MAX and to the GPU's max 2D image dimension, then stepped down
+ * on an allocation failure (to 1 = SSAA off). No-op when --ssaa is 1, the
+ * window size is unknown, or it already matches. Runs OUTSIDE a frame (creates
+ * GPU resources / waits idle).
+ *
+ * NB the scene target is only a fifth of what the factor costs: the key-contest
+ * targets are allocated at this same extent (native_terrain_key_pass). */
 static void ensure_ss_rtt(void)
 {
     int req = (s_nr.ssaa > 1) ? s_nr.ssaa : 1;
+    if (req > OPENPETE_SSAA_MAX) req = OPENPETE_SSAA_MAX;   /* VRAM ceiling (openpete.h) */
     int win_w = s_nr.win_w, win_h = s_nr.win_h;
     if (req <= 1 || win_w <= 0 || win_h <= 0) {              /* SSAA off → drop any RT */
         if (s_nr.ss_rtt) {
@@ -6391,7 +6396,8 @@ void openpete_native_set_aspect(float w_over_h) {
 }
 
 void openpete_native_set_ssaa(int factor) {
-    if (factor < 1) factor = 1; else if (factor > 32) factor = 32;
+    if (factor < 1) factor = 1;
+    else if (factor > OPENPETE_SSAA_MAX) factor = OPENPETE_SSAA_MAX;
     s_nr.ssaa = factor;   /* ensure_ss_rtt() reallocs the scene RT on the next present */
     OPL_INFO_F("native", "ssaa -> %dx (effective factor capped to GPU max next present)", factor);
 }

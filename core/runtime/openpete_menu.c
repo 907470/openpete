@@ -68,8 +68,10 @@ static const struct { const char* label; float wh; } s_aspect[] = {
 };
 #define N_ASPECT ((int)(sizeof(s_aspect) / sizeof(s_aspect[0])))
 
-static const int   s_ssaa_vals[]   = { 1, 2, 4, 8, 16 };
-static const char* s_ssaa_labels[] = { "1X", "2X", "4X", "8X", "16X" };
+/* Ladder stops at OPENPETE_SSAA_MAX — 8X/16X ask for more render-target VRAM
+ * than an 8GB card has (see openpete.h). */
+static const int   s_ssaa_vals[]   = { 1, 2, 4 };
+static const char* s_ssaa_labels[] = { "1X", "2X", "4X" };
 #define N_SSAA ((int)(sizeof(s_ssaa_vals) / sizeof(s_ssaa_vals[0])))
 
 /* WOBBLE ladder: one row drives the PS1-look PAIR — the integer vertex snap

@@ -294,9 +294,11 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             shape, filling it live on resize; W:H (e.g. 16:9, 21:9) = fixed\n"
         "                             render aspect (sizes the window; bars when the window mismatches)\n"
         "  --fov DEG                  horizontal FOV override (PsyCross reference mode only; default ~50°, range 30-140)\n"
-        "  --ssaa N                   native vk supersampling 1..32 (default 1=off); renders the live\n"
-        "                             window at NxN res and box-downsamples. Auto-capped to the GPU's\n"
-        "                             max image size / VRAM. Display-only.\n"
+        "  --ssaa N                   native vk supersampling 1..4 (default 1=off); renders the live\n"
+        "                             window at NxN res and box-downsamples. The 4x ceiling keeps the\n"
+        "                             render targets inside an 8GB card at 1080p; higher factors are\n"
+        "                             clamped, and the extent is further capped to the GPU's max image\n"
+        "                             size. Display-only.\n"
         "  --vsync 0|1                native vk present mode (default 1 = vsync on / FIFO; 0 = vsync off\n"
         "                             for uncapped fps / low latency; on|off also accepted). Display-only.\n"
         "  --fullscreen 0|1           launch in borderless-desktop fullscreen (default 0 = windowed;\n"
@@ -629,9 +631,18 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--ssaa") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->ssaa = atoi(v); i++;
-            if (opts->ssaa < 1 || opts->ssaa > 32) {
-                fprintf(stderr, "openpete: --ssaa expects 1..32 (1 = off), got: %s\n", v);
+            if (opts->ssaa < 1) {
+                fprintf(stderr, "openpete: --ssaa expects 1..%d (1 = off), got: %s\n",
+                        OPENPETE_SSAA_MAX, v);
                 return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            /* Clamp rather than reject: a config file may carry a higher
+             * factor, and refusing to start is worse than rendering at the
+             * highest safe one. */
+            if (opts->ssaa > OPENPETE_SSAA_MAX) {
+                fprintf(stderr, "openpete: --ssaa %s exceeds the %dx maximum (VRAM); using %dx\n",
+                        v, OPENPETE_SSAA_MAX, OPENPETE_SSAA_MAX);
+                opts->ssaa = OPENPETE_SSAA_MAX;
             }
         } else if (strcmp(a, "--render-stats") == 0) {
             opts->render_stats = true;

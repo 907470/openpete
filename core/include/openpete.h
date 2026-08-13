@@ -20,6 +20,18 @@ extern "C" {
 #define OPENPETE_EXIT_DIVERGENCE   2  /* state-divergence detected (Phase 1c+) */
 #define OPENPETE_EXIT_SETUP_ERROR  3  /* disc not found, unknown flag, etc. */
 
+/* Highest accepted --ssaa factor. The supersampled extent drives FIVE
+ * device-local render targets — the scene target plus the four key-contest
+ * targets (terrain/moby/actor key depth + the moby rank RT) — and each carries
+ * a colour image AND a depth image, ~60 bytes per supersampled pixel on a
+ * D32_SFLOAT_S8_UINT device. Since the factor is PER AXIS, the footprint grows
+ * as N²: at 1080p, 4× is ~2.0 GB but 8× is ~8.0 GB, which exceeds an 8 GB card
+ * outright. maxImageDimension2D alone is no guard (32768 permits 16× at 1080p,
+ * ~32 GB), and drivers that oversubscribe device-local memory turn the overrun
+ * into multi-second passes and a lost device rather than a clean allocation
+ * failure the render-target step-down could catch. */
+#define OPENPETE_SSAA_MAX 4
+
 /* Log format. */
 typedef enum {
     OPENPETE_LOG_PLAIN = 0,
@@ -421,7 +433,7 @@ typedef struct openpete_options {
      * The offscreen render target is allocated at N× the swapchain extent per
      * axis (N² samples/pixel) and the present blit box-downsamples to the
      * window. 1 = no-op (the offscreen matches the swapchain, a 1:1 blit).
-     * Range 1..32, auto-capped to the GPU's max image size / device-local VRAM
+     * Range 1..OPENPETE_SSAA_MAX, further capped to the GPU's max image size
      * (so a large value degrades gracefully). Display-only — no gameplay effect;
      * under --headless and on --renderer psycross. The native_rtt that backs
      * the -vk/-ab/-diff screenshots + DIFF mode stays at reference resolution
