@@ -747,6 +747,17 @@ static const knob_desc_t g_builtin[] = {
         "Plane-cover near margin M (world units): inside an opening the preview covers "
         "everything at or behind plane - M. Portal-name text floats ~192-256 in front; "
         "frame erosion begins near 512."),
+    ENVROW_LATCHED("PORTAL_RIM_NEAR", "Debug", "128",
+        "Rim predicate: how far the NEAREST vertex may sit from the opening plane, in "
+        "world units — the rim must touch the plane, an arch's front wall must not."),
+    ENVROW_LATCHED("PORTAL_RIM_EPS", "Debug", "384",
+        "Rim predicate: how far the FARTHEST vertex may stray from the opening plane, "
+        "in world units."),
+    ENVROW_LATCHED("PORTAL_RIM_REACH", "Debug", "128",
+        "Rim predicate: how far OUTSIDE the opening polygon a face may reach and still "
+        "count as rim, measured in the plane, in world units."),
+    ENVROW_LATCHED("PORTAL_RIM_ANGLE", "Debug", "30",
+        "Rim predicate: max angle between a rim face and the opening plane, in degrees."),
     ENVROW_LATCHED("PORTAL_RIM_BROAD", "Debug", "1",
         "Portal-rim sector broadphase: skip rim classification for sectors provably "
         "clear of every opening (1 on, 0 off, 2 = classify live + audit the broadphase)."),

@@ -4126,10 +4126,35 @@ static int skyplane_contains(const openpete_portal_skyplane* pp, float x, float 
  * move: an earlier version classified the same face as rim head-on and as
  * frame at an angle. Screen-space size is unusable for the same reason — the
  * same faces measure 3.6 px and 29.8 px from two cameras. */
-static double portal_rim_eps(void) {     /* max |perp distance|, world units */
+/* Max |perp distance| of a rim face's FARTHEST vertex from the opening plane,
+ * in world units. Paired with portal_rim_near below, which bounds the NEAREST:
+ * this one alone bounds a face's extent, not where it sits. */
+static double portal_rim_eps(void) {
     static double v = -1.0;
     if (v < 0.0) { const char* e = getenv("OPENPETE_PORTAL_RIM_EPS");
                    v = (e && *e) ? atof(e) : 384.0; if (v < 0.0) v = 0.0; }
+    return v;
+}
+/* How far the NEAREST vertex of a rim face may sit from the opening plane, in
+ * world units. The rim lies IN the plane, so some part of it must touch the
+ * plane; RIM_EPS above only bounds how far the face's FAR side may stray, which
+ * lets a face that is wholly offset from the plane through as long as it is
+ * small — exactly what an arch's front wall face is. The peace_keepers 25 jamb
+ * (sec=180 face=25, 287..377 units in FRONT of the plane, 8 deg off parallel,
+ * dropping inside the opening) was culled for that reason and left a hole in
+ * the arch at pos=(15962,121384,50254) yaw=1420 pitch=228.
+ *
+ * The populations are far apart, so the bound is not delicate: censused over
+ * every arch from both a near and a far camera, 401 of 421 culled faces sit
+ * within 12.5 units of the plane and the other 20 are all beyond 240 — 16 of
+ * them on gnorc_gnexus levelId=61, an arch with no rim at all and nothing to
+ * cull. 128 sits an order of magnitude clear of the real rims and
+ * matches the in-plane reach, so it absorbs the same authoring drift
+ * perpendicular to the plane that reach absorbs within it. */
+static double portal_rim_near(void) {
+    static double v = -1.0;
+    if (v < 0.0) { const char* e = getenv("OPENPETE_PORTAL_RIM_NEAR");
+                   v = (e && *e) ? atof(e) : 128.0; if (v < 0.0) v = 0.0; }
     return v;
 }
 /* Max angle between a rim face and the opening plane, in degrees; returned as
@@ -4175,7 +4200,9 @@ static double portal_rim_reach(void) {
  * candidate at all (not over an opening, or nowhere near its plane); otherwise
  * a BITMASK of the terms it fails, so 0 means accepted as inner rim:
  *   bit0 RIMFAIL_CONTAIN  does not intrude into the opening polygon
- *   bit1 RIMFAIL_DIST     a vertex further than eps from the opening plane
+ *   bit1 RIMFAIL_DIST     does not straddle the plane's band: the nearest
+ *                         vertex is further than `near`, or the farthest
+ *                         further than `eps`
  *   bit2 RIMFAIL_ANGLE    face not within the angle tolerance of parallel
  * Reporting the exact combination (rather than a yes/no) is what lets a miss be
  * pointed at directly instead of inferred from a pixel count. */
@@ -4360,6 +4387,7 @@ static int portal_rim_classify(CPUState* cpu, const ttri* t) {
     const double ofx = s_rim_ofx, ofy = s_rim_ofy, H = s_rim_H;
     if (H < 1.0) return -1;
     const double eps = portal_rim_eps(), reach = portal_rim_reach();
+    const double near = portal_rim_near();
     int best = -1;
     for (int pi = 0; pi < s_pplane_n; pi++) {
         const openpete_portal_skyplane* pp = &s_pplane[pi];
@@ -4429,7 +4457,9 @@ static int portal_rim_classify(CPUState* cpu, const ttri* t) {
             for (int k = 0; k < 3 && !touches; k++)
                 if (rim_uv_edge_dist(pv, pp->vn, fuv[k].u, fuv[k].v) <= reach) touches = 1;
         if (!touches) flags |= RIMFAIL_CONTAIN;
-        if (dmax > eps) flags |= RIMFAIL_DIST;
+        /* dist: the face must both REACH the plane (nearest vertex within
+         * `near`) and not stray past `eps` on its far side. */
+        if (dmax > eps || dmin > near) flags |= RIMFAIL_DIST;
         const double u[3] = { V[1][0]-V[0][0], V[1][1]-V[0][1], V[1][2]-V[0][2] };
         const double w[3] = { V[2][0]-V[0][0], V[2][1]-V[0][1], V[2][2]-V[0][2] };
         double fx = u[1]*w[2]-u[2]*w[1], fy = u[2]*w[0]-u[0]*w[2], fz = u[0]*w[1]-u[1]*w[0];
