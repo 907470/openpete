@@ -118,26 +118,24 @@ void main()
          * 64-world margin beyond kv~46k — far faces discarded themselves).
          *
          * POSITIVE koff (OT-band terrain + moby faces): strict
-         * less-by-half-slot painter select vs both key images; ties inside
-         * og's 128-world quantum fall through to true depth. Under
-         * MOBY_TRUESCOPE (the default), the select vs MOBY keys is
-         * additionally scoped by the fragment's own TRUE view-Z (stored
-         * depth is true for every keyed face): a moby's key claims the
-         * pixel only if it is also in front of the surface that is
-         * actually there. og's OT genuinely COMPOUNDS a moby's authored
-         * pull (-128*dofs) with a terrain face's authored push — at
-         * gnastys_loot a chest paints through a wall lip 1300 world in
-         * front of it (its key beats the wall's +8-slot-pushed key while
-         * sitting BEHIND the wall's true surface), and the class shows
-         * from ordinary gameplay angles, not just off-rail. The scope
-         * keeps every yield within the moby's own authored pull (an
-         * embedded pedestal disc's key sits in FRONT of its ground's true
-         * surface, so it still paints complete); only the terrain push's
-         * widening of the window is removed. Authored inside-terrain
-         * cutscene actors (Delvin's wing through the tower) are outside
-         * this rule entirely: the ACTOR_FRONT class never emits keys and
-         * draws through the scissored front pass. MOBY_TRUESCOPE=false
-         * restores og's compound painter for A/B.
+         * less-by-half-slot painter select vs the terrain key image; ties
+         * inside og's 128-world quantum fall through to true depth. Under
+         * MOBY_TRUESCOPE (the default), TERRAIN fragments never yield to
+         * general MOBY keys AT ALL: og's authored pulls (-128*dofs) exist
+         * to float pickups and decor over whatever the OT sorts them
+         * against, and any per-pixel window derived from them re-admits
+         * the punch-through classes — a chest through the gnastys_loot
+         * wall lip via pull+push compounding, a rotating gem through a
+         * near wall it sits 300 world behind (the pull is baked into the
+         * key, so key-vs-own-true cannot tell 300-behind-a-wall from
+         * contact with sloped ground; measured cases overlap at every
+         * margin). Terrain-over-moby is decided by TRUE depth plus the
+         * -127 stored tie pull (contact), the curated PROP EMBED rule
+         * below (authored embedded decor), and the ACTOR_FRONT pass
+         * (authored inside-terrain cutscene actors). MOBY fragments still
+         * honour moby keys as og's cross-moby painter, scoped by their
+         * own TRUE view-Z. MOBY_TRUESCOPE=false restores og's full
+         * compound painter for A/B.
          *
          * NEGATIVE koff = NEAR-BAND terrain, contest-only, per-pixel own
          * key (og subdivides the near band into pieces at PIECE-LOCAL
@@ -164,7 +162,8 @@ void main()
         bool actor = vRank.x < -0.5;   /* unranked moby faces mark rank -1 */
         if (vKoff > 0.0) {
             if (tkey < (vKoff - 0.5) - 64.0) discard;
-            if (akey < (vKoff - 0.5) - 64.0 &&
+            if ((actor || !MOBY_TRUESCOPE) &&
+                akey < (vKoff - 0.5) - 64.0 &&
                 (!MOBY_TRUESCOPE || akey < own - 64.0)) discard;
             /* Prop EMBED rule on the OT band (terrain fragments only, the
              * near-band rule's twin): a curated embedded prop within 1024
@@ -174,8 +173,10 @@ void main()
              * the ground's own authored push, which the scope no longer
              * mirrors. */
             if (MOBY_TRUESCOPE && !actor && mkey < own + 1024.0) discard;
-        } else {
-            if (tkey < own - 64.0 || akey < own - 64.0 || mkey < own + 1024.0) discard;
+        } else {   /* near-band: per-pixel own key; +1024 embed rule vs props */
+            if (tkey < own - 64.0 ||
+                (!MOBY_TRUESCOPE && akey < own - 64.0) ||
+                mkey < own + 1024.0) discard;
         }
     }
     vec2 uv = vUV / vQ;

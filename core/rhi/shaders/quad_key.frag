@@ -55,7 +55,8 @@ void main()
         bool actor = vRank.x < -0.5;   /* unranked moby faces mark rank -1 */
         if (vKoff > 0.0) {
             if (tkey < (vKoff - 0.5) - 64.0) discard;
-            if (akey < (vKoff - 0.5) - 64.0 &&
+            if ((actor || !MOBY_TRUESCOPE) &&
+                akey < (vKoff - 0.5) - 64.0 &&
                 (!MOBY_TRUESCOPE || akey < own - 64.0)) discard;
             /* Prop EMBED rule on the OT band (terrain fragments only, the
              * near-band rule's twin): a curated embedded prop within 1024
@@ -66,7 +67,9 @@ void main()
              * mirrors. */
             if (MOBY_TRUESCOPE && !actor && mkey < own + 1024.0) discard;
         } else {   /* near-band: per-pixel own key; +1024 embed rule vs props */
-            if (tkey < own - 64.0 || akey < own - 64.0 || mkey < own + 1024.0) discard;
+            if (tkey < own - 64.0 ||
+                (!MOBY_TRUESCOPE && akey < own - 64.0) ||
+                mkey < own + 1024.0) discard;
         }
     }
     outColor = vColor / vQ;

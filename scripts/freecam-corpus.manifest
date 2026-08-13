@@ -177,3 +177,9 @@ gnorc_cove | pos=(75462, -34396, 81807) yaw=5021 pitch=426
 # compound paints it through, MOBY_TRUESCOPE occludes it. Broken = the chest's
 # white base visible through the dark wall band.
 gnastys_loot | pos=(70303, 47226, 16489) yaw=3047 pitch=-24
+
+# artisans rotating green gem behind the castle wall (near-band moby-yield
+# guard): the gem sits ~300 world behind this wall; its authored -512 pull
+# used to win the near-band contest and poke it through. Broken = green
+# pixels on the wall's top face.
+artisans | pos=(99608, 40719, 8382) yaw=-1338 pitch=-181
