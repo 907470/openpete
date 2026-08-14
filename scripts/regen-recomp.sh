@@ -218,27 +218,56 @@ process_overlay() {
         --emit-external-jals="$OUT/$name/external_jals.txt" \
         "${extra_args[@]}"
 
-    # Third pass: extract jal-cont split targets from the second-pass
-    # output and re-run with them as forced entries. External JALs whose
-    # target isn't a known external/manual/in-range symbol get split into
-    # `call_by_address(cpu, jal+8); /* jal cont: split */`; without an
-    # entry at jal+8 the cont stub-misses at runtime (e.g. level_55's
-    # 0x8007E024 fall-through after the GTE helper jal).
-    # Invalidate the previous run's combined list: it is only rewritten
-    # when THIS run's third pass fires, and a stale one poisons the
-    # converged-manifest emission (level_43 lesson, D2.1).
+    # Split-target convergence: promote every cross-piece control transfer
+    # to a real entry, re-run, repeat until nothing new appears.
+    #
+    # A guest function often can't be emitted as one C function — an external
+    # JAL needs its continuation separately dispatchable, and a forced entry
+    # can land inside an existing range. Transfers that cross a piece boundary
+    # can only be written as `call_by_address(<target>); return;`, and a target
+    # with no registered entry stub-misses at runtime. The stub *returns*
+    # rather than transferring control, so the guest epilogue never runs and
+    # cpu->sp leaks one stack frame per call until it walks out of RAM
+    # (level_52's 0x800809B4, reached by unlocking Lofty Castle's chest, leaked
+    # 0x280 bytes a call; level_55's 0x8007E024 is the external-JAL variant).
+    #
+    # One pass isn't enough: promoting a target splits its containing function,
+    # which can expose further cross-piece transfers. The accumulated list is
+    # cumulative because a resolved target stops being reported.
+    #
+    # Invalidate the previous run's combined list: it is only rewritten when
+    # THIS run's loop fires, and a stale one poisons the converged-manifest
+    # emission (level_43 lesson, D2.1).
     rm -f "$OUT/$name/extra_funcs.combined.txt"
-    local cont_funcs="$OUT/$name/extra_funcs.third.txt"
-    python3 tools/extract_jal_cont_targets.py \
-        "$OUT/$name/$name.bin_full.c" "$cont_funcs"
-    if [[ -s "$cont_funcs" ]] && grep -q '^0x' "$cont_funcs"; then
-        local third_funcs="$OUT/$name/extra_funcs.combined.txt"
-        cat "$second_funcs" "$cont_funcs" > "$third_funcs"
-        echo "[regen] $name: third-pass recomp with jal-cont entries"
+    local split_found="$OUT/$name/split_targets.txt"
+    local split_accum="$OUT/$name/extra_funcs.split.txt"
+    local combined="$OUT/$name/extra_funcs.combined.txt"
+    local converged=0 pass
+    : > "$split_accum"
+    for pass in 1 2 3 4 5; do
+        python3 tools/extract_split_targets.py \
+            "$OUT/$name/$name.bin_full.c" "$split_found" \
+            --binary="$ovl_path" --load-addr="$load_addr" 2>&1 | sed 's/^/  /'
+        if ! grep -q '^0x' "$split_found"; then converged=1; break; fi
+        echo "[regen] $name: split-target pass $pass" \
+             "($(grep -c '^0x' "$split_found") unresolved)"
+        { grep '^0x' "$split_accum" || true; grep '^0x' "$split_found"; } \
+            | sort -u > "$split_accum.tmp"
+        mv "$split_accum.tmp" "$split_accum"
+        cat "$second_funcs" "$split_accum" > "$combined"
         "$PSXRECOMP" "$ovl_path" "${base_args[@]}" \
-            --extra-funcs="$third_funcs" \
+            --extra-funcs="$combined" \
             --emit-external-jals="$OUT/$name/external_jals.txt" \
             "${extra_args[@]}"
+    done
+    # An in-image target we can't resolve is a correctness defect, not a
+    # warning: at runtime it stub-misses and leaks a guest stack frame per
+    # call. Abort rather than register an overlay that will corrupt RAM.
+    if (( converged == 0 )); then
+        echo "[regen] ERROR: $name still has unresolved split targets after" \
+             "$((pass)) passes:" >&2
+        grep '^0x' "$split_found" >&2
+        exit 1
     fi
     sed -i "s/\bpsx_dispatch_compiled\b/psx_dispatch_${name}/g" \
         "$OUT/$name/$name.bin_dispatch.c"

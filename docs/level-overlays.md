@@ -112,7 +112,8 @@ dispatcher `psx_dispatch_compiled` is then `sed`-renamed to
 
 Because overlay entry points are reached *indirectly* (function-pointer slots,
 jump tables, handwritten `jr` returns), psxrecomp can't find them all
-statically. `process_overlay` runs up to three passes:
+statically. `process_overlay` runs two seeding passes, then loops a third until
+it converges:
 
 1. **Pass 1** — seed with handwritten-asm dispatch targets
    (`extract_asm_dispatch_targets.py` / `extract_handwritten_ra_returns.py`)
@@ -122,10 +123,16 @@ statically. `process_overlay` runs up to three passes:
    to drop entries landing on delay slots in *this* overlay's bytes.
 2. **Pass 2** — add jump-table targets discovered from pass-1 output
    (`extract_jumptable_targets.py`), and emit `external_jals.txt`.
-3. **Pass 3** — add jal-continuation split targets
-   (`extract_jal_cont_targets.py`): external JALs whose target isn't a known
-   symbol get split into `call_by_address(cpu, jal+8)`, which needs a forced
-   entry at `jal+8` or it stub-misses at runtime.
+3. **Pass 3+** — add cross-piece split targets (`extract_split_targets.py`),
+   repeating until no new target appears (5 passes max). psxrecomp emits a
+   guest function as several C pieces when a piece boundary is forced — an
+   external JAL needs its continuation separately dispatchable, a forced entry
+   can land mid-range — and writes every transfer across such a boundary as
+   `call_by_address(<target>); return;`. Each target needs a forced entry or it
+   stub-misses at runtime, and the stub *returns* instead of transferring, so
+   the guest epilogue never runs and `cpu->sp` leaks a stack frame per call.
+   The loop is required because promoting a target splits its containing
+   function, which can expose further cross-piece transfers.
 
 Out-of-range forced entries are silently dropped by psxrecomp, so a single
 union list of fn-pointer targets can be fed to every overlay.
