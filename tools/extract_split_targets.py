@@ -31,9 +31,12 @@ Usage:
         [--binary=<raw-bytes> --load-addr=0xADDR]
 
 Passing the binary enables range filtering, which is what makes convergence
-reachable: psxrecomp decodes non-code bytes (the overlay-id header word at the
-load address, trailing data sections) as instructions, yielding branch targets
-past the end of the image. Those can never be resolved and are never executed.
+reachable. Every level overlay opens with a 0x254-byte header struct — id word,
+pointer table, balloonist dialogue strings — and the fn-pointer harvester can't
+distinguish the overlay base (the CdRead destination) from a callback, so it
+forces an entry there and psxrecomp decodes the header as MIPS. The resulting
+branch targets land past the end of the image; they can never be resolved and
+are never executed.
 """
 
 from __future__ import annotations
