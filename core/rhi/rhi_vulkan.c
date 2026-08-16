@@ -26,7 +26,6 @@
 #include <string.h>
 #include <stdint.h>
 #include <stddef.h>
-#include <math.h>       /* floorf/ceilf — rhi_clear_depth_rect_ndc */
 
 #define RHI_FRAMES_IN_FLIGHT 2
 #define RHI_MAX_SC_IMAGES    8
@@ -2277,34 +2276,6 @@ void rhi_clear_depth(rhi_device *dev)
     vkCmdClearAttachments(dev->cmd[dev->frame], 1, &att, 1, &rect);
 }
 
-void rhi_clear_depth_rect_ndc(rhi_device *dev, float x0, float y0,
-                              float x1, float y1)
-{
-    if (!dev->frame_active) return;
-    float W = (float)dev->cur_extent.width, H = (float)dev->cur_extent.height;
-    /* NDC → framebuffer px (Y-flipped viewport: see rhi_set_viewport). */
-    float px0 = (x0 + 1.0f) * 0.5f * W, px1 = (x1 + 1.0f) * 0.5f * W;
-    float py0 = (1.0f - y0) * 0.5f * H, py1 = (1.0f - y1) * 0.5f * H;
-    int xlo = (int)floorf(px0 < px1 ? px0 : px1);
-    int xhi = (int)ceilf (px0 < px1 ? px1 : px0);
-    int ylo = (int)floorf(py0 < py1 ? py0 : py1);
-    int yhi = (int)ceilf (py0 < py1 ? py1 : py0);
-    if (xlo < 0) xlo = 0; if (ylo < 0) ylo = 0;
-    if (xhi > (int)dev->cur_extent.width)  xhi = (int)dev->cur_extent.width;
-    if (yhi > (int)dev->cur_extent.height) yhi = (int)dev->cur_extent.height;
-    if (xhi <= xlo || yhi <= ylo) return;   /* empty after clamp */
-    VkClearAttachment att = {
-        .aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT,
-        .clearValue = { .depthStencil = { .depth = 1.0f, .stencil = 0 } },
-    };
-    VkClearRect rect = {
-        .rect = { .offset = { xlo, ylo },
-                  .extent = { (uint32_t)(xhi - xlo), (uint32_t)(yhi - ylo) } },
-        .baseArrayLayer = 0, .layerCount = 1,
-    };
-    vkCmdClearAttachments(dev->cmd[dev->frame], 1, &att, 1, &rect);
-}
-
 /* Clear the STENCIL aspect to 0 within the current pass — between per-object
  * stencil-mask groups (fixed reference 1 + clear = per-object isolation). */
 void rhi_clear_stencil(rhi_device *dev)
@@ -3020,12 +2991,16 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     /* Depth: the offscreen target always carries a depth attachment (3a.3);
      * a pipeline opts into testing/writing it via desc->depth_test. The 2D
      * panels (depth_test=false) ignore it and never write it. LESS_OR_EQUAL so
-     * equal-depth later draws (e.g. coincident prims) still paint. */
+     * equal-depth later draws (e.g. coincident prims) still paint.
+     * depth_overwrite swaps the compare for ALWAYS (unconditional replace);
+     * the test stays ENABLED because Vulkan forces depth writes off whenever
+     * depthTestEnable is VK_FALSE. */
     VkPipelineDepthStencilStateCreateInfo dss = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_DEPTH_STENCIL_STATE_CREATE_INFO,
         .depthTestEnable  = desc->depth_test ? VK_TRUE : VK_FALSE,
         .depthWriteEnable = (desc->depth_test && !desc->depth_write_off) ? VK_TRUE : VK_FALSE,
-        .depthCompareOp = VK_COMPARE_OP_LESS_OR_EQUAL,
+        .depthCompareOp = desc->depth_overwrite ? VK_COMPARE_OP_ALWAYS
+                                                : VK_COMPARE_OP_LESS_OR_EQUAL,
     };
     /* Stencil roles (W2.6): MARK writes 1 where the fragment passes the depth
      * test (depth-fail keeps 0, so nearer world geometry punches the mask

@@ -268,3 +268,29 @@ ab_env = "OPENPETE_ACTOR_FRONT"
   kind   = "ab-identical"
   max_px = 100
   bbox   = [60, 300, 340, 430]
+
+# Semi-transparent terrain unoccluded during a dragon-rescue cutscene (user
+# repro, 2026-08-15): the front pass used to clear depth over the cutscene
+# actors' whole screen BBOX, and the ALPHA / ADDITIVE / SUBTRACT-WORLD groups
+# draw after it -- so every transparent face inside that rect tested wiped depth
+# and passed.  In Dream Weavers that painted additive terrain slabs buried
+# behind the ground over the ground AND over the rescued dragon (~14k px).
+# Fixed structurally: the actors PUNCH depth per pixel (colour-write-off twins,
+# depth compare ALWAYS) instead of clearing a rect, so nothing outside their own
+# silhouettes ever loses its depth.  Guard: toggling OPENPETE_ACTOR_FRONT leaves
+# the ground left of the dragon pixel-identical -- the front pass may not reach
+# it.  A regression to the rect clear re-leaks ~10.4k px in this bbox; the
+# dragon's own front-pass delta sits at x>=414, outside it.  Companion to
+# townsquare-delvin-wing-front (the pass still fires) and
+# dark-hollow-alban-rescue-nolod-noleak (opaque mobys at extended LOD).
+[[case]]
+name   = "dream-weavers-lateef-transparent-terrain-noleak"
+level  = "dream_weavers"
+bk2    = "games/spyro-1/bk2/dream-weavers-lateef-rescue.bk2"
+frame  = 2755
+mode   = "full"
+ab_env = "OPENPETE_ACTOR_FRONT"
+  [[case.check]]
+  kind   = "ab-identical"
+  max_px = 100
+  bbox   = [236, 240, 400, 410]

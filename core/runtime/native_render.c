@@ -1091,6 +1091,15 @@ static struct {
     rhi_pipeline *hd_tex_pipe;        /* HD replacement, HUD overlay: RGBA sampler, alpha blend, depth OFF */
     rhi_pipeline *hd_cutout_pipe;     /* HD replacement, opaque scene: depth-tested, alpha-cutout */
     rhi_pipeline *hd_cutout_mark_pipe;/* cutout twin with stencil MARK (WORLD group when hole-fill is on) */
+    /* Dragon-rescue front pass: colour-write-off twins of the three ACTOR_FRONT
+     * opaque pipes that REPLACE the stored depth (compare ALWAYS) — the
+     * cutscene actors evict the terrain from their own pixels and nowhere
+     * else. Same shaders as the twins they mirror, so the punched coverage is
+     * texel-exact (identical key/cutout discards). Any NULL → the front pass
+     * degrades to a plain in-place actor draw (normal terrain occlusion). */
+    rhi_pipeline *gouraud_punch_pipe;
+    rhi_pipeline *scene_tex_punch_pipe;
+    rhi_pipeline *hd_cutout_punch_pipe;
     rhi_pipeline *hd_scene_blend_pipe;/* HD replacement, alpha scene group (ABR 0): ztest, no zwrite */
     rhi_pipeline *hd_scene_add_pipe;  /* HD replacement, additive scene group (ABR 1): ztest, no zwrite */
     rhi_texture  *mat_pack_dummy;     /* 1x1 opaque white bound at set 1 for material
@@ -1866,6 +1875,34 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .stencil = RHI_STENCIL_MARK,
         .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(hd_pc),
     };
+    /* Dragon-rescue front pass, step 1 of 2 — the DEPTH PUNCH twins of the
+     * three ACTOR_FRONT opaque pipes: same shaders (so the same fragments
+     * survive the key/cutout discards), colour writes off, depth compare
+     * ALWAYS. Rasterizing the actors through these replaces the stored depth
+     * on exactly the pixels they cover; the normal draw that follows then wins
+     * over terrain it interpenetrates, while every pixel the actors do NOT
+     * cover keeps its true depth for the transparent groups drawn later. */
+    rhi_pipeline_desc gouraud_punch_desc = {
+        .vert_spv = "quad.vert.spv",
+        .frag_spv = "quad_key.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_overwrite = true,
+        .color_write_off = true,
+        .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
+    };
+    rhi_pipeline_desc scene_tex_punch_desc = {
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "psx_scene_key.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_overwrite = true,
+        .color_write_off = true,
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
+    };
+    rhi_pipeline_desc hd_cutout_punch_desc = {
+        .vert_spv = "psx_scene.vert.spv",
+        .frag_spv = "hd_tex_cutout.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true, .depth_overwrite = true,
+        .color_write_off = true,
+        .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(hd_pc),
+    };
     /* HD twins of the transparent scene pipes (Phase 5): alpha (ABR 0) and
      * additive (ABR 1) — depth-tested, no depth write, mirroring their SD
      * counterparts. STP encoding: dumps bake STP texels at alpha 128, so
@@ -1958,6 +1995,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *hd_tex_pipe = rhi_create_pipeline(dev, &hd_tex_desc);   /* HD pipes: allowed to fail (NULL = feature off) */
     rhi_pipeline *hd_cutout_pipe = rhi_create_pipeline(dev, &hd_cutout_desc);
     rhi_pipeline *hd_cutout_mark_pipe = rhi_create_pipeline(dev, &hd_cutout_mark_desc);
+    rhi_pipeline *gouraud_punch_pipe   = rhi_create_pipeline(dev, &gouraud_punch_desc);
+    rhi_pipeline *scene_tex_punch_pipe = rhi_create_pipeline(dev, &scene_tex_punch_desc);
+    rhi_pipeline *hd_cutout_punch_pipe = rhi_create_pipeline(dev, &hd_cutout_punch_desc);
     rhi_pipeline *hd_scene_blend_pipe = rhi_create_pipeline(dev, &hd_scene_blend_desc);
     rhi_pipeline *hd_scene_add_pipe   = rhi_create_pipeline(dev, &hd_scene_add_desc);
     rhi_pipeline *diff_pipe = rhi_create_pipeline(dev, &diff_desc);
@@ -2074,6 +2114,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (hd_tex_pipe) rhi_destroy_pipeline(dev, hd_tex_pipe);
         if (hd_cutout_pipe) rhi_destroy_pipeline(dev, hd_cutout_pipe);
         if (hd_cutout_mark_pipe) rhi_destroy_pipeline(dev, hd_cutout_mark_pipe);
+        if (gouraud_punch_pipe) rhi_destroy_pipeline(dev, gouraud_punch_pipe);
+        if (scene_tex_punch_pipe) rhi_destroy_pipeline(dev, scene_tex_punch_pipe);
+        if (hd_cutout_punch_pipe) rhi_destroy_pipeline(dev, hd_cutout_punch_pipe);
         if (hd_scene_blend_pipe) rhi_destroy_pipeline(dev, hd_scene_blend_pipe);
         if (hd_scene_add_pipe) rhi_destroy_pipeline(dev, hd_scene_add_pipe);
         if (gouraud_hud_pipe)   rhi_destroy_pipeline(dev, gouraud_hud_pipe);
@@ -2135,6 +2178,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.hd_tex_pipe  = hd_tex_pipe;
     s_nr.hd_cutout_pipe = hd_cutout_pipe;
     s_nr.hd_cutout_mark_pipe = hd_cutout_mark_pipe;
+    s_nr.gouraud_punch_pipe = gouraud_punch_pipe;       /* may be NULL → front pass draws in place */
+    s_nr.scene_tex_punch_pipe = scene_tex_punch_pipe;
+    s_nr.hd_cutout_punch_pipe = hd_cutout_punch_pipe;
     s_nr.hd_scene_blend_pipe = hd_scene_blend_pipe;
     s_nr.hd_scene_add_pipe = hd_scene_add_pipe;
     /* Material draws bind op_pack_tex (set 1) unconditionally — a shader that
@@ -3497,7 +3543,9 @@ static void bind_scene_pipe(rhi_pipeline* p)
         p == s_nr.scene_tex_pipe || p == s_nr.scene_tex_mark_pipe ||
         p == s_nr.hd_cutout_pipe || p == s_nr.hd_cutout_mark_pipe ||
         p == s_nr.gouraud_blend_pipe || p == s_nr.gouraud_add_pipe ||
-        p == s_nr.scene_tex_blend_pipe || p == s_nr.scene_tex_add_pipe) {
+        p == s_nr.scene_tex_blend_pipe || p == s_nr.scene_tex_add_pipe ||
+        p == s_nr.gouraud_punch_pipe || p == s_nr.scene_tex_punch_pipe ||
+        p == s_nr.hd_cutout_punch_pipe) {
         rhi_bind_depth_sampler(s_nr.dev, s_nr.actor_key_depth, 1);
         rhi_bind_depth_sampler(s_nr.dev, s_nr.terrain_key_depth, 2);
         rhi_bind_depth_sampler(s_nr.dev, s_nr.moby_key_depth, 3);
@@ -5268,10 +5316,6 @@ static bool draw_native_scene(bool full_extent)
      * it never stencil-marks; see OPENPETE_SCENE_SKY); 12 = WORLD_FILL (terrain
      * LP hole-fill, stencil TEST_ZERO, right after the WORLD group). */
     int ut_first[15], ut_count[15];
-    /* ACTOR_FRONT screen bbox (scene sx/sy) — the depth-clear scissor for the
-     * dragon-rescue front pass. Accumulated across the ut[14]/txg[9] builds. */
-    float af_x0 = 1e30f, af_y0 = 1e30f, af_x1 = -1e30f, af_y1 = -1e30f;
-    int   af_n = 0;
     /* CPU attribution (--profile-out): the compose phase splits into
      * build_ut (untextured bucketing incl. portal-run collection),
      * build_tex (textured bucketing + material sort), vb_tex (textured
@@ -5577,7 +5621,7 @@ static bool draw_native_scene(bool full_extent)
     ut_count[13] = n - ut_first[13];
     /* ACTOR_FRONT untextured (opaque): the rescue actors' flat-shaded faces.
      * Same content class as ACTOR (blend 0, depth-tested opaque); split out so the
-     * dragon-rescue pass can front-pass ONLY these, scissored to their bbox. */
+     * dragon-rescue pass can front-pass ONLY these. */
     ut_first[14] = n;
     for (int t = 0; t < scene_n; t++) {
         if (scene[t].textured || scene[t].category != OPENPETE_SCENE_ACTOR_FRONT ||
@@ -5585,18 +5629,15 @@ static bool draw_native_scene(bool full_extent)
         int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
         if (b != 0) continue;   /* transparent rescue-actor faces route by blend (ALPHA/ADD) */
         for (int k = 0; k < 3; k++) {
-            float sx = scene[t].v[k].sx, sy = scene[t].v[k].sy;
-            if (sx < af_x0) af_x0 = sx; if (sx > af_x1) af_x1 = sx;
-            if (sy < af_y0) af_y0 = sy; if (sy > af_y1) af_y1 = sy;
             float cx, cy;
-            scene_to_clip(sx, sy, &cx, &cy);
+            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
             rhi_vertex *o = &buf[n + k];
             o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
             o->u = 0.0f; o->v = 0.0f;
             o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
                 o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
         }
-        n += 3; af_n++;
+        n += 3;
     }
     ut_count[14] = n - ut_first[14];
     /* PORTAL buckets (W2.6): sky colours (PORTAL_CYCLORAMA) + their stencil
@@ -5670,17 +5711,9 @@ static bool draw_native_scene(bool full_extent)
             else if (b == 9) {
                 /* ACTOR_FRONT (opaque): the rescue actors' textured faces — same
                  * class as the ACTOR textured group (b==2), split for the front
-                 * pass. Accumulate the front-pass bbox here too. */
+                 * pass. */
                 int bl = scene[t].blend; if (bl < 0 || bl > 3) bl = 0;
                 belongs = cat == OPENPETE_SCENE_ACTOR_FRONT && bl == 0;
-                if (belongs) {
-                    for (int k = 0; k < 3; k++) {
-                        float sx = scene[t].v[k].sx, sy = scene[t].v[k].sy;
-                        if (sx < af_x0) af_x0 = sx; if (sx > af_x1) af_x1 = sx;
-                        if (sy < af_y0) af_y0 = sy; if (sy > af_y1) af_y1 = sy;
-                    }
-                    af_n++;
-                }
             }
             else if (b == 7) belongs = (cat == OPENPETE_SCENE_PORTAL_GUARD);
             else if (b == 8) {
@@ -5929,28 +5962,51 @@ static bool draw_native_scene(bool full_extent)
         rhi_gpu_zone_begin(s_nr.dev, k_scene_zone[gi]);
         const struct scene_group *g = &groups[gi];
         /* Dragon-rescue cutscene (actor_front): just BEFORE the PLAYER group,
-         * depth-isolate the cutscene actors to their own screen bbox and draw
-         * them there so they win over terrain they interpenetrate (Delvin's wing
-         * inside the tower). Scissored so terrain depth elsewhere stays intact
-         * (distant level mobys keep true occlusion under --lod extended), and
-         * BEFORE the player so Spyro sorts against the dragon by real Z. The
-         * regular ACTOR group already drew normally at gi==2. */
-        if (gi == 3 && actor_front && af_n > 0) {
-            float cx0, cy0, cx1, cy1;
-            scene_to_clip(af_x0, af_y0, &cx0, &cy0);
-            scene_to_clip(af_x1, af_y1, &cx1, &cy1);
-            rhi_clear_depth_rect_ndc(s_nr.dev, cx0, cy0, cx1, cy1);
-            if (s_nr.gouraud_pipe && ut_count[14] > 0) {
-                bind_scene_pipe(s_nr.gouraud_pipe);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                rhi_draw(s_nr.dev, (uint32_t)ut_count[14], (uint32_t)ut_first[14]);
-            }
-            if (txg_count[9] > 0 && s_nr.vram_tex && s_nr.scene_tex_pipe) {
-                bind_scene_pipe(s_nr.scene_tex_pipe);
-                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                draw_tex_runs(txg_first[9], txg_count[9], tx_start, scene,
-                              s_nr.scene_tex_pipe, s_nr.hd_cutout_pipe, 1);
+         * depth-isolate the cutscene actors and draw them there so they win
+         * over terrain they interpenetrate (Delvin's wing inside the tower).
+         * BEFORE the player, so Spyro still sorts against the dragon by real Z.
+         * The regular ACTOR group already drew normally at gi==2.
+         *
+         * Two passes over the SAME two buckets:
+         *  1. PUNCH — the colour-write-off twins (depth compare ALWAYS) replace
+         *     the stored depth on exactly the pixels the actors rasterize, so
+         *     whatever terrain occluded them is evicted from those pixels and
+         *     nowhere else. Texel-exact: same shaders, same discards.
+         *  2. COLOUR — the ordinary opaque pipes. Every actor fragment nearer
+         *     than the punched value passes, and the usual LESS_OR_EQUAL
+         *     ordering picks the nearest of them, so the actors keep exact
+         *     self-occlusion (the punched value is one of their own depths, so
+         *     the nearest is never rejected).
+         *
+         * The depth left behind is min(true actor depth, world depth) — the
+         * actors' own, on their own pixels; untouched everywhere else. That is
+         * what the transparent groups at gi==4/5 test against, so semi-
+         * transparent terrain buried behind the ground stays buried during a
+         * cutscene, and distant level mobys keep true occlusion at any LOD.
+         * (The predecessor cleared depth over the actors' whole screen bbox,
+         * which handed every later-drawn transparent face a free pass through
+         * the terrain inside that rect.) */
+        if (gi == 3 && actor_front) {
+            const int punch_ok = s_nr.gouraud_punch_pipe && s_nr.scene_tex_punch_pipe;
+            for (int pass = punch_ok ? 0 : 1; pass < 2; pass++) {
+                rhi_pipeline* upipe = pass ? s_nr.gouraud_pipe   : s_nr.gouraud_punch_pipe;
+                rhi_pipeline* tpipe = pass ? s_nr.scene_tex_pipe : s_nr.scene_tex_punch_pipe;
+                rhi_pipeline* hpipe = pass ? s_nr.hd_cutout_pipe : s_nr.hd_cutout_punch_pipe;
+                if (upipe && ut_count[14] > 0) {
+                    bind_scene_pipe(upipe);
+                    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                    rhi_draw(s_nr.dev, (uint32_t)ut_count[14], (uint32_t)ut_first[14]);
+                }
+                if (txg_count[9] > 0 && s_nr.vram_tex && tpipe) {
+                    bind_scene_pipe(tpipe);
+                    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+                    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+                    /* The punch pass keeps mod material overrides OFF: its job
+                     * is depth only, and a mod pipe would bring its own (and
+                     * possibly different) discard rule to the coverage. */
+                    draw_tex_runs(txg_first[9], txg_count[9], tx_start, scene,
+                                  tpipe, hpipe, pass);
+                }
             }
         }
         /* SUBTRACT (shadow decal) group: engage the hardware slope-scaled
@@ -6269,8 +6325,9 @@ static bool draw_native_scene(bool full_extent)
         if (gi == 2 && hud_under)
             draw_hud_flat_layer(scene, scene_n, ut_first, ut_count, tx_start, txg_first[6], txg_count[6]);
         /* (Dragon-rescue front pass now runs at the TOP of gi==3, before PLAYER —
-         * bbox-scissored so it never wipes terrain depth for the transparent
-         * groups below, and so Spyro sorts against the dragon by real Z.) */
+         * per-pixel depth punch, so it never wipes terrain depth for the
+         * transparent groups below, and Spyro sorts against the dragon by
+         * real Z.) */
         rhi_gpu_zone_end(s_nr.dev);
         /* Deferred backdrops: right after the WORLD opaques so early-Z spares
          * every covered pixel; still before the shadow/actor/portal layers,
@@ -6475,7 +6532,7 @@ static void texmap_apply_pending(void) {
  * OPENPETE_MOBY_TRUESCOPE=0 restores og's painter for A/B. Cutscene actors
  * are unaffected either way: the ACTOR_FRONT class never emits keys, and
  * their authored inside-terrain look (Delvin's wing through the tower) is
- * carried by the scissored ACTOR_FRONT pass. Same re-bake shape as
+ * carried by the ACTOR_FRONT depth-punch pass. Same re-bake shape as
  * texture-mapping. */
 static int s_moby_truescope = 1;   /* currently-baked value (pipelines start at 1) */
 static void truescope_apply_pending(void) {
@@ -8493,6 +8550,9 @@ void openpete_native_render_shutdown(void)
     if (s_nr.hd_tex_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_tex_pipe);
     if (s_nr.hd_cutout_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_cutout_pipe);
     if (s_nr.hd_cutout_mark_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_cutout_mark_pipe);
+    if (s_nr.gouraud_punch_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_punch_pipe);
+    if (s_nr.scene_tex_punch_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_punch_pipe);
+    if (s_nr.hd_cutout_punch_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_cutout_punch_pipe);
     if (s_nr.hd_scene_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_scene_blend_pipe);
     if (s_nr.hd_scene_add_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_scene_add_pipe);
     hd_cache_shutdown();

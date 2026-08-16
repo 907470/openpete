@@ -1478,8 +1478,8 @@ static uint8_t s_wtri_fogsup[MAX_NTRI]; /* 1 = --no-lod suppressed this record's
 static uint8_t s_wtri_front[MAX_NTRI]; /* 1 = this tri's moby is a dragon-rescue CUTSCENE actor
                                         * (matches a g_DragonCutscene pointer): route to
                                         * OPENPETE_SCENE_ACTOR_FRONT so draw_native_scene front-
-                                        * passes ONLY the rescue actors (bbox-scissored depth
-                                        * clear), leaving every other moby's terrain occlusion
+                                        * passes ONLY the rescue actors (per-pixel depth punch),
+                                        * leaving every other moby's terrain occlusion
                                         * intact — the --lod extended leak fix. */
 static int     s_cur_ui;              /* set per-record by the walks before emitting its tris */
 static int     s_cur_front;           /* per-record: 1 = a g_DragonCutscene actor (front-pass) */

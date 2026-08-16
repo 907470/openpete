@@ -376,15 +376,18 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
 /* ACTOR_FRONT: the dragon-rescue CUTSCENE actors — the mobys the game keeps in
  * g_DragonCutscene (m_RescuedDragonMoby / m_CutsceneDragon / m_CutsceneSpyro).
  * They render like ACTOR (opaque, depth-tested) EXCEPT during a rescue cutscene,
- * when draw_native_scene clears depth WITHIN THEIR SCREEN BBOX (a scissored
- * rhi_clear_depth_rect_ndc, not the whole frame) and re-draws them there so they
- * win over terrain they interpenetrate (Delvin's spread wing inside the tower).
- * The bbox scissor is what keeps the fix local: terrain depth everywhere else is
- * intact, so distant level mobys (--lod extended un-culls statues / chests / the
- * level-end vortex + critters) — opaque AND transparent — keep true occlusion,
- * and the pass runs BEFORE the PLAYER group so Spyro sorts against the dragon by
- * real Z instead of being painted over. Tagged by the moby feeder via pointer
- * match against g_DragonCutscene (the game's own actor set — no heuristic). */
+ * when draw_native_scene front-passes them: a colour-write-off PUNCH pass
+ * (depth compare ALWAYS) replaces the stored depth on exactly the pixels they
+ * rasterize, then the ordinary opaque draw wins over the terrain it
+ * interpenetrates (Delvin's spread wing inside the tower) while keeping exact
+ * self-occlusion. Punching per PIXEL, not over a screen bbox, is what keeps the
+ * fix local: every pixel the actors do not cover keeps its true depth, so
+ * distant level mobys (--lod extended un-culls statues / chests / the level-end
+ * vortex + critters) and semi-transparent terrain — both drawn after — keep
+ * true occlusion. The pass runs BEFORE the PLAYER group so Spyro sorts against
+ * the dragon by real Z instead of being painted over. Tagged by the moby feeder
+ * via pointer match against g_DragonCutscene (the game's own actor set — no
+ * heuristic). */
 #define OPENPETE_SCENE_ACTOR_FRONT 13
 /* TERRAIN_KEY: RETIRED (number reserved — do not reuse). Formerly the
  * portal-aperture og-key fan (P6c): the sky bucket's key rastered into the
