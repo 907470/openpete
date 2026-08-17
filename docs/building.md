@@ -110,7 +110,7 @@ What the preset files pin (beyond `CMAKE_BUILD_TYPE`):
 | Variable | Set by preset file | Why |
 |----------------|-----------|-----|
 | `OPENPETE_SKIP_DECOMP=ON` | `linux-release`, `windows-mingw*`, `wasm` | full-recompilation mode; only `linux-debug` builds the WIP hybrid decomp path |
-| `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS=-march=x86-64-v3` | `windows-mingw*` | portable perf floor for distributable Windows binaries |
+| `CMAKE_C_FLAGS`/`CMAKE_CXX_FLAGS=-march=x86-64` | `windows-mingw*` | pinned to the baseline ISA so the distributable runs on any x86-64 CPU. Raising it to `x86-64-v3` (AVX2/FMA/BMI2) measures flat — the hot path is the recompiled game's scalar integer code, which has no vectorizable loops — so the compatibility cutoff would buy nothing. |
 | `CMAKE_INTERPROCEDURAL_OPTIMIZATION=ON` | `linux-release-shared` | LTO. **No Windows preset enables it** — the shared (distributed) exe cannot: GNU LTO DCEs the `.def`-exported `psyq_*` thunks (exports are not liveness roots) and ld silently emits absolute-0 exports → DEP crash at the first PSYQ call. `games/spyro-1/CMakeLists.txt` forces it OFF on that target as a guard. |
 | `OPENPETE_HIDE_DEBUG_FLAGS=ON` | `*-shared` | `--help` shows only the user-facing flag block (display-only — every flag still parses) |
 | `OPENPETE_RECOMP_LINKAGE=shared` | `*-shared` | the linkage axis (see above) |
