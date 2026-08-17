@@ -1707,6 +1707,11 @@ void rhi_set_vsync(rhi_device *dev, int vsync)
     if (!dev->headless) dev->needs_recreate = true;  /* rebuild swapchain next begin_frame */
 }
 
+int rhi_get_vsync(const rhi_device *dev)
+{
+    return dev ? dev->vsync_pref : -1;
+}
+
 bool rhi_get_imgui_info(rhi_device *dev, rhi_imgui_info *out)
 {
     if (!dev || !out || dev->headless) return false;

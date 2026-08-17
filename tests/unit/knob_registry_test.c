@@ -12,6 +12,7 @@
 #include "openpete_knobs.h"
 #include "../../core/runtime/config_schema.h"
 
+#include <stdbool.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -49,18 +50,39 @@ void   openpete_runahead_set(int n)            { (void)n; }
 void   openpete_rewind_configure(int w)        { (void)w; }
 int    openpete_native_fullscreen_active(void) { return 0; }
 void   openpete_native_toggle_fullscreen(void) { }
-void   openpete_native_set_aspect(float a)     { (void)a; }
-void   openpete_native_set_ssaa(int n)         { (void)n; }
-void   openpete_native_set_vsync(int on)       { (void)on; }
-void   openpete_native_set_fps_overlay(int on) { (void)on; }
+
+/* The renderer's live display state. Display rows read it back rather than
+ * shadowing their value, because the O menu drives these setters directly
+ * (never the rows'), so the stub keeps real state for those rows to find. */
+static bool  s_native_up     = false;
+static float s_native_aspect = 0.0f;   /* AUTO */
+static int   s_native_ssaa   = 1;
+static int   s_native_vsync  = -1;     /* unset */
+static int   s_native_showfps = 1;
+static int   s_native_vsnap  = 0;
+static int   s_native_rquant = 0;
+static int   s_native_dither = 0;
+static int   s_native_texmap = 0;
+
+bool   openpete_native_render_enabled(void)    { return s_native_up; }
+void   openpete_native_set_aspect(float a)     { s_native_aspect = (a > 0.0f) ? a : 0.0f; }
+float  openpete_native_get_aspect(void)        { return s_native_aspect; }
+void   openpete_native_set_ssaa(int n)         { s_native_ssaa = n; }
+int    openpete_native_get_ssaa(void)          { return s_native_ssaa; }
+void   openpete_native_set_vsync(int on)       { s_native_vsync = on ? 1 : 0; }
+int    openpete_native_get_vsync(void)         { return s_native_vsync; }
+void   openpete_native_set_fps_overlay(int on) { s_native_showfps = on ? 1 : 0; }
+int    openpete_native_fps_overlay_enabled(void) { return s_native_showfps; }
 void   openpete_native_set_fps_in_record(int on) { (void)on; }
-void   openpete_native_set_vertex_precision(int m) { (void)m; }
-void   openpete_native_set_raster_quantize(int n)  { (void)n; }
-int    openpete_native_get_dither(void)            { return 0; }
-void   openpete_native_set_dither(int on)          { (void)on; }
+void   openpete_native_set_vertex_precision(int m) { s_native_vsnap = m ? 1 : 0; }
+int    openpete_native_vertex_snap_active(void)    { return s_native_vsnap; }
+void   openpete_native_set_raster_quantize(int n)  { s_native_rquant = n; }
+int    openpete_native_get_raster_quantize(void)   { return s_native_rquant; }
+int    openpete_native_get_dither(void)            { return s_native_dither; }
+void   openpete_native_set_dither(int on)          { s_native_dither = on ? 1 : 0; }
 void   widescreen_set_fov(float deg)           { (void)deg; }
-int    openpete_native_get_texture_mapping(void)   { return 0; }
-void   openpete_native_set_texture_mapping(int m)  { (void)m; }
+int    openpete_native_get_texture_mapping(void)   { return s_native_texmap; }
+void   openpete_native_set_texture_mapping(int m)  { s_native_texmap = m ? 1 : 0; }
 int    openpete_native_get_notex(void)             { return 0; }
 void   openpete_native_set_notex(int on)           { (void)on; }
 int    openpete_log_get_format(void)           { return 0; }
@@ -203,6 +225,78 @@ int main(void) {
         if (!bk2 || bk2->visible) rc |= fail("bk2 row hides with the recording rows");
         if (bk2 && strcmp(bk2->section, "Gameplay") != 0)
             rc |= fail("bk2 row left the Gameplay section");
+    }
+
+    /* A pick made in the O menu must register as an edit. That menu keeps its
+     * own row state and calls the renderer's setters directly, so a row that
+     * reported a registry-side shadow instead of the renderer's live value
+     * would stay at its boot value forever — and "save edited settings" skips
+     * unedited rows, so the pick would silently never persist. */
+    {
+        static const struct { const char *id; const char *want; } picks[] = {
+            { "ssaa",             "4"     },
+            { "aspect",           "16:9"  },
+            { "vsync",            "off"   },
+            { "show_fps",         "off"   },
+            { "vertex_precision", "integer" },
+            { "raster_quantize",  "1"     },
+        };
+        openpete_options_t mopts;
+        memset(&mopts, 0, sizeof mopts);
+        mopts.vsync = -1; mopts.render_fps = -1; mopts.tick_scale = 1.0;
+        mopts.ssaa = 1; mopts.fps_overlay = 1; mopts.raster_quantize = -1;
+        knob_registry_init(&mopts);
+        s_native_up = true;   /* the renderer comes up after the boot stamp */
+
+        /* the setter calls the O menu makes on its own rows */
+        openpete_native_set_ssaa(4);
+        openpete_native_set_aspect(16.0f / 9.0f);
+        openpete_native_set_vsync(0);
+        openpete_native_set_fps_overlay(0);
+        openpete_native_set_vertex_precision(1);
+        openpete_native_set_raster_quantize(1);
+
+        for (size_t i = 0; i < sizeof picks / sizeof picks[0]; i++) {
+            const knob_desc_t *pk = find_row(picks[i].id, NULL);
+            if (!pk) { rc |= fail("display row missing from the registry"); continue; }
+            if (pk->get_num(pk) == pk->boot_num) {
+                rc |= fail("an O-menu pick did not register as an edit");
+                fprintf(stderr, "       %s still reads its boot value\n", picks[i].id);
+                continue;
+            }
+            char got[KNOB_STR_MAX];
+            if (knob_config_value_str(pk, got, sizeof got) != 0) {
+                rc |= fail("an O-menu pick has no persistable value");
+                fprintf(stderr, "       %s\n", picks[i].id);
+            } else if (strcmp(got, picks[i].want) != 0) {
+                rc |= fail("an O-menu pick persists the wrong value");
+                fprintf(stderr, "       %s: %s, want %s\n", picks[i].id, got, picks[i].want);
+            }
+        }
+
+        /* The SSAA ladder is a factor TABLE, not a 1<<index mapping: an odd
+         * rung has to survive the round trip to the flag's vocabulary. */
+        {
+            openpete_native_set_ssaa(3);
+            const knob_desc_t *sk = find_row("ssaa", NULL);
+            char got[KNOB_STR_MAX];
+            if (!sk || knob_config_value_str(sk, got, sizeof got) != 0 ||
+                strcmp(got, "3") != 0)
+                rc |= fail("3x SSAA did not round-trip to --ssaa 3");
+            openpete_native_set_ssaa(4);
+        }
+
+        /* Before the renderer is up (and in headless / PsyCross-only runs, where
+         * it never comes up) the rows fall back to their stamped boot value
+         * instead of reading a renderer that has no state yet. */
+        s_native_up = false;
+        for (size_t i = 0; i < sizeof picks / sizeof picks[0]; i++) {
+            const knob_desc_t *pk = find_row(picks[i].id, NULL);
+            if (pk && pk->get_num(pk) != pk->boot_num) {
+                rc |= fail("a display row read the renderer before it was up");
+                fprintf(stderr, "       %s\n", picks[i].id);
+            }
+        }
     }
 
     /* Capacity is finite and refuses politely rather than corrupting. */

@@ -69,9 +69,17 @@ static const struct { const char* label; float wh; } s_aspect[] = {
 #define N_ASPECT ((int)(sizeof(s_aspect) / sizeof(s_aspect[0])))
 
 /* Ladder stops at OPENPETE_SSAA_MAX — 8X/16X ask for more render-target VRAM
- * than an 8GB card has (see openpete.h). */
-static const int   s_ssaa_vals[]   = { 1, 2, 4 };
-static const char* s_ssaa_labels[] = { "1X", "2X", "4X" };
+ * than an 8GB card has (see openpete.h). 3X is a genuine rung, not a
+ * power-of-two gap-filler: the resolve pass box-filters the exact NxN source
+ * block, so an odd factor is as well defined as an even one, and 3X costs
+ * ~44% less render-target area than 4X.
+ *
+ * Factor 1 reads OFF, not "1X": it is not a supersampling amount but the
+ * absence of one — no supersampled target, no resolve pass. (The WOBBLE
+ * ladder below spells its own no-op step the same way, where 1X IS a
+ * setting.) */
+static const int   s_ssaa_vals[]   = { 1, 2, 3, 4 };
+static const char* s_ssaa_labels[] = { "OFF", "2X", "3X", "4X" };
 #define N_SSAA ((int)(sizeof(s_ssaa_vals) / sizeof(s_ssaa_vals[0])))
 
 /* WOBBLE ladder: one row drives the PS1-look PAIR — the integer vertex snap

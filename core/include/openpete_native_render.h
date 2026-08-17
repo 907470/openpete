@@ -84,16 +84,27 @@ int  openpete_native_fps_value(void);
  * letterboxes/pillarboxes the fixed aspect (vk-only Hor+). Forces a layout
  * recompute so the fitted panel rect updates next present. */
 void openpete_native_set_aspect(float w_over_h);
+/* The aspect as last requested (0 = AUTO). The config-knob row reads it so an
+ * O-menu pick registers as an edit — same reason as the SSAA/VSync getters. */
+float openpete_native_get_aspect(void);
 
 /* SSAA supersampling factor (1 = off, 2/4/8/16). Clamped to [1,32]; ensure_ss_rtt
  * caps it to the GPU max image dimension and reallocs the supersampled scene
  * render target on the next present (a one-time wait-idle, like a window resize). */
 void openpete_native_set_ssaa(int factor);
+/* The requested factor (not the GPU-capped effective one), 1 when unset. Both
+ * the O menu and the M overlay move this state, so the knob row must read it
+ * back here rather than shadow it — otherwise a pick made in one surface is
+ * invisible to the other (and to saving settings). */
+int openpete_native_get_ssaa(void);
 
 /* VSync on/off (1 = FIFO / vsync ON, 0 = immediate|mailbox / vsync OFF). Forwards
  * to the RHI, which flags the swapchain for recreation and rebuilds it (with the
  * new present mode) on the next frame. No-op until the native device is up. */
 void openpete_native_set_vsync(int on);
+/* Current vsync preference: 1 = FIFO, 0 = vsync-OFF, -1 = unset (no device yet,
+ * or launched without --vsync so the env/surface decides). */
+int openpete_native_get_vsync(void);
 
 /* Vertex screen-coordinate precision (0 = smooth sub-pixel, 1 = PSX integer-grid
  * snap = the original polygon wobble). Rounds only 3D-world display geometry in

@@ -6452,6 +6452,8 @@ void openpete_native_set_aspect(float w_over_h) {
                s_nr.aspect_wh > 0.0f ? "Hor+ widen (fixed)" : "AUTO (follow window)");
 }
 
+float openpete_native_get_aspect(void) { return s_nr.aspect_wh; }
+
 void openpete_native_set_ssaa(int factor) {
     if (factor < 1) factor = 1;
     else if (factor > OPENPETE_SSAA_MAX) factor = OPENPETE_SSAA_MAX;
@@ -6459,9 +6461,15 @@ void openpete_native_set_ssaa(int factor) {
     OPL_INFO_F("native", "ssaa -> %dx (effective factor capped to GPU max next present)", factor);
 }
 
+int openpete_native_get_ssaa(void) { return (s_nr.ssaa > 0) ? s_nr.ssaa : 1; }
+
 void openpete_native_set_vsync(int on) {
     if (s_nr.dev) rhi_set_vsync(s_nr.dev, on ? 1 : 0);   /* swapchain rebuilds next frame */
     OPL_INFO_F("native", "vsync -> %s", on ? "ON (FIFO)" : "OFF (immediate/mailbox)");
+}
+
+int openpete_native_get_vsync(void) {
+    return s_nr.dev ? rhi_get_vsync(s_nr.dev) : -1;
 }
 
 int openpete_native_vertex_snap_active(void) {

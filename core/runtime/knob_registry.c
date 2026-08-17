@@ -38,6 +38,25 @@ static const openpete_options_t *g_opts;
 
 static double get_stored(const knob_desc_t *k) { return k->stored_num; }
 
+static int nearest_enum_idx(const float *vals, int n, float v) {
+    int best = 0;
+    float bd = 1e30f;
+    for (int i = 0; i < n; i++) {
+        float d = fabsf(vals[i] - v);
+        if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+}
+
+/* Rows the O menu moves through the renderer's own setters must read the
+ * renderer back, not a registry-side shadow: the menu bypasses set_num, so a
+ * shadowed row would still report its boot value and "save edited settings"
+ * would skip the pick entirely. Until the renderer is up (its state settles
+ * after the registry stamps boot values, and never at all in headless /
+ * PsyCross-only runs) the stored boot value is the live value. */
+#define KNOB_LIVE_OR_STORED(k) \
+    do { if (!openpete_native_render_enabled()) return (k)->stored_num; } while (0)
+
 /* ---- Display ---- */
 
 static double fullscreen_get(const knob_desc_t *k) {
@@ -52,6 +71,14 @@ static int fullscreen_set(knob_desc_t *k, double v) {
 
 static const char *const k_aspect_names[] = { "auto", "4:3", "16:10", "16:9", "21:9", "32:9" };
 static const float       k_aspect_vals[]  = { 0.0f, 4.f/3.f, 16.f/10.f, 16.f/9.f, 21.f/9.f, 32.f/9.f };
+/* Index 0 is AUTO, whose 0.0 is a sentinel rather than a ratio — the nearest
+ * match runs over the fixed ratios only (the same +1 offset init uses). */
+static double aspect_get(const knob_desc_t *k) {
+    KNOB_LIVE_OR_STORED(k);
+    float wh = openpete_native_get_aspect();
+    if (wh <= 0.0f) return 0;
+    return nearest_enum_idx(k_aspect_vals + 1, 5, wh) + 1;
+}
 static int aspect_set(knob_desc_t *k, double v) {
     int i = (int)v;
     if (i < 0 || i >= (int)(sizeof(k_aspect_vals)/sizeof(k_aspect_vals[0]))) return -1;
@@ -60,25 +87,54 @@ static int aspect_set(knob_desc_t *k, double v) {
     return 0;
 }
 
-/* Enum index i is the factor's log2 (i -> 1 << i), so the last index is the
- * log2 of OPENPETE_SSAA_MAX. The ladder stops there because the supersampled
- * render targets outgrow an 8GB card beyond it (see openpete.h). */
-static const char *const k_ssaa_names[] = { "1x", "2x", "4x" };
-#define K_SSAA_MAX_IDX ((int)(sizeof(k_ssaa_names)/sizeof(k_ssaa_names[0])) - 1)
+/* An explicit factor table, not a power-of-two series: the resolve pass box-
+ * filters the exact NxN source block, so every integer factor is well defined
+ * and 3x is a real rung (9 samples/pixel, ~44% less render-target area than
+ * 4x). The ladder stops at OPENPETE_SSAA_MAX because the supersampled targets
+ * outgrow an 8GB card beyond it (see openpete.h). */
+static const int         k_ssaa_vals[]  = { 1, 2, 3, 4 };
+static const char *const k_ssaa_names[] = { "off", "2x", "3x", "4x" };
+#define K_SSAA_N ((int)(sizeof(k_ssaa_vals)/sizeof(k_ssaa_vals[0])))
+/* Nearest rung to a factor (an --ssaa the ladder doesn't list still has to
+ * land on a row). */
+static int ssaa_idx_of(int factor) {
+    int best = 0, bd = 1 << 30;
+    for (int i = 0; i < K_SSAA_N; i++) {
+        int d = k_ssaa_vals[i] - factor;
+        if (d < 0) d = -d;
+        if (d < bd) { bd = d; best = i; }
+    }
+    return best;
+}
+static double ssaa_get(const knob_desc_t *k) {
+    KNOB_LIVE_OR_STORED(k);
+    return ssaa_idx_of(openpete_native_get_ssaa());
+}
 static int ssaa_set(knob_desc_t *k, double v) {
     int i = (int)v;
-    if (i < 0 || i > K_SSAA_MAX_IDX) return -1;
-    openpete_native_set_ssaa(1 << i);
+    if (i < 0 || i >= K_SSAA_N) return -1;
+    openpete_native_set_ssaa(k_ssaa_vals[i]);
     k->stored_num = i;
     return 0;
 }
 
+/* -1 = the device never got an explicit preference (the env/surface picked the
+ * present mode), which is what the boot value already records. */
+static double vsync_get(const knob_desc_t *k) {
+    KNOB_LIVE_OR_STORED(k);
+    int pref = openpete_native_get_vsync();
+    return (pref < 0) ? k->stored_num : (pref ? 1 : 0);
+}
 static int vsync_set(knob_desc_t *k, double v) {
     openpete_native_set_vsync(v != 0.0);
     k->stored_num = (v != 0.0);
     return 0;
 }
 
+static double showfps_get(const knob_desc_t *k) {
+    KNOB_LIVE_OR_STORED(k);
+    return openpete_native_fps_overlay_enabled() ? 1.0 : 0.0;
+}
 static int showfps_set(knob_desc_t *k, double v) {
     openpete_native_set_fps_overlay(v != 0.0);
     k->stored_num = (v != 0.0);
@@ -87,6 +143,10 @@ static int showfps_set(knob_desc_t *k, double v) {
 
 static const char *const k_vprec_names[] = { "subpixel", "integer" };
 static const char *const k_texmap_names[] = { "perspective", "affine" };
+static double vprec_get(const knob_desc_t *k) {
+    KNOB_LIVE_OR_STORED(k);
+    return openpete_native_vertex_snap_active() ? 1.0 : 0.0;
+}
 static int vprec_set(knob_desc_t *k, double v) {
     openpete_native_set_vertex_precision((int)v == 1);
     k->stored_num = (int)v;
@@ -97,7 +157,7 @@ static int vprec_set(knob_desc_t *k, double v) {
  * renderer applies it (full pipeline re-bake) at the next present — and the
  * O-menu row moves it too, so the row must read the renderer's state. */
 static double texmap_get(const knob_desc_t *k) {
-    (void)k;
+    KNOB_LIVE_OR_STORED(k);
     return openpete_native_get_texture_mapping();
 }
 static int texmap_set(knob_desc_t *k, double v) {
@@ -106,6 +166,10 @@ static int texmap_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+static double rquant_get(const knob_desc_t *k) {
+    KNOB_LIVE_OR_STORED(k);
+    return openpete_native_get_raster_quantize();
+}
 static int rquant_set(knob_desc_t *k, double v) {
     openpete_native_set_raster_quantize((int)v);
     k->stored_num = (int)v;
@@ -125,7 +189,7 @@ static int notex_set(knob_desc_t *k, double v) {
 
 /* Live getter: the O-menu DITHER row moves the same renderer flag. */
 static double dither_get(const knob_desc_t *k) {
-    (void)k;
+    KNOB_LIVE_OR_STORED(k);
     return openpete_native_get_dither();
 }
 static int dither_set(knob_desc_t *k, double v) {
@@ -401,30 +465,30 @@ static const knob_desc_t g_builtin[] = {
       "Hor+ render aspect; auto follows the window shape. Picking a fixed "
       "ratio windowed resizes the window to match.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_aspect_names), 0, 0,
-      get_stored, aspect_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      aspect_get, aspect_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "ssaa", "Supersampling", "Display", "--ssaa", NULL,
       "Native supersampling factor. Applying reallocates the render target "
       "next present (brief hitch at large factors; GPU-max capped).",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_ssaa_names), 0, 0,
-      get_stored, ssaa_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      ssaa_get, ssaa_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "vsync", "VSync", "Display", "--vsync", "OPENPETE_PRESENT_MODE",
       "FIFO (on) vs immediate/mailbox (off). Applying rebuilds the swapchain "
       "on the next frame.",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
-      get_stored, vsync_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      vsync_get, vsync_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "show_fps", "FPS overlay", "Display", "--show-fps", NULL,
       "Top-left FPS counter (native renderer).",
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
-      get_stored, showfps_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      showfps_get, showfps_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "vertex_precision", "Vertex precision", "Display", "--vertex-precision", NULL,
       "PSX integer-grid vertex snap (authentic polygon wobble) vs smooth "
       "subpixel. Display-only.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_vprec_names), 0, 0,
-      get_stored, vprec_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      vprec_get, vprec_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "raster_quantize", "Raster quantize", "Display", "--raster-quantize", NULL,
       "Point-resample the 3D scene to N x the PSX raster (1 = the authentic "
@@ -432,7 +496,7 @@ static const knob_desc_t g_builtin[] = {
       "0 = off). One sample per cell, as the hardware rasterizer produced, "
       "always aligned with the integer vertex snap. Display-only.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 16,
-      get_stored, rquant_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+      rquant_get, rquant_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "notex", "Untextured (lighting)", "Display", NULL, "OPENPETE_NOTEX",
       "Debug view: draw the 3D scene with textures replaced by neutral grey, "
@@ -1081,16 +1145,6 @@ static knob_src_t knob_src_from_config(const knob_desc_t *k) {
     return KNOB_SRC_CLI;
 }
 
-static int nearest_enum_idx(const float *vals, int n, float v) {
-    int best = 0;
-    float bd = 1e30f;
-    for (int i = 0; i < n; i++) {
-        float d = fabsf(vals[i] - v);
-        if (d < bd) { bd = d; best = i; }
-    }
-    return best;
-}
-
 void knob_registry_init(const struct openpete_options *opts) {
     g_opts = opts;
 
@@ -1116,9 +1170,7 @@ void knob_registry_init(const struct openpete_options *opts) {
                 k->stored_num = 0;   /* auto (also the default) */
             }
         } else if (!strcmp(k->id, "ssaa")) {
-            int f = opts->ssaa > 0 ? opts->ssaa : 1, idx = 0;
-            while ((1 << idx) < f && idx < K_SSAA_MAX_IDX) idx++;
-            k->stored_num = idx;
+            k->stored_num = ssaa_idx_of(opts->ssaa > 0 ? opts->ssaa : 1);
         } else if (!strcmp(k->id, "vsync")) {
             if (opts->vsync != -1) {
                 k->stored_num = opts->vsync ? 1 : 0;
@@ -1219,13 +1271,13 @@ int knob_config_value_str(const knob_desc_t *k, char *buf, size_t cap) {
     if (!k || k->type == KNOB_ACTION) return -1;
     if (cfg_schema_find_id(k->id) < 0) return -1;   /* not a config knob */
 
-    /* The SSAA row is an enum of "1x".."16x" because that is what reads well
-     * in a menu; the flag takes the factor. Every other enum row already
-     * displays the CLI's own words. */
+    /* The SSAA row is an enum of "off"/"2x"/"3x"/"4x" because that is what
+     * reads well in a menu; the flag takes the factor (1 = off). Every other
+     * enum row already displays the CLI's own words. */
     if (!strcmp(k->id, "ssaa")) {
         int idx = (int)(k->get_num ? k->get_num(k) : k->stored_num);
-        if (idx < 0) idx = 0;
-        snprintf(buf, cap, "%d", 1 << idx);
+        if (idx < 0 || idx >= K_SSAA_N) idx = 0;
+        snprintf(buf, cap, "%d", k_ssaa_vals[idx]);
         return 0;
     }
 
