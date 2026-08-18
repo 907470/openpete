@@ -26,7 +26,9 @@ WORK=$(mktemp -d "${TMPDIR:-/tmp}/openpete-dist-gate.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
 
 echo "[dist-gate] packaging..."
-scripts/package-dist.sh linux --out "$WORK/dist" >/dev/null
+# --with-mod-sdk: releases ship without the mod SDK, but the boot-time
+# mod compiler is still a supported path, so the gate packages it in.
+scripts/package-dist.sh linux --with-mod-sdk --out "$WORK/dist" >/dev/null
 
 archive=$(ls "$WORK"/dist/*.tar.xz)
 echo "[dist-gate] extracting $(basename "$archive") into a clean dir..."
@@ -55,6 +57,7 @@ echo "[dist-gate] full 20k oracle on the dist exe + self-built module..."
          tail -20 "$WORK/oracle.log" >&2; exit 2; }
 
 echo "[dist-gate] drop-in source mod compiles + loads on boot..."
+mkdir -p "$appdir/mods"
 cp -r mods/hello-anchor "$appdir/mods/"
 rm -rf "$appdir/mods/hello-anchor/.build"
 ( cd "$appdir" && ./openpete-spyro1 --headless --frame-limit 300 \

@@ -9,6 +9,10 @@
 #   scripts/package-dist.sh linux   [--out DIR]
 #   scripts/package-dist.sh windows [--out DIR] [--toolchain DIR]
 #
+# --with-mod-sdk additionally stages the mod SDK headers + a mods/ drop
+# folder, which the boot-time mod compiler needs. Releases ship without
+# it; the dist gate passes it to keep that path exercised.
+#
 # Inputs: the corresponding *-shared preset build (linux-release-shared /
 # windows-mingw-shared) with its staged recomp/ directory. For Windows,
 # --toolchain points at an UNPACKED llvm-mingw (ucrt x86_64) to bundle;
@@ -22,6 +26,7 @@ PLATFORM="${1:-}"
 shift || true
 OUT=dist
 TOOLCHAIN=""
+WITH_MOD_SDK=0
 # --sign '<command>' — Authenticode hook, Windows platform only. Invoked
 # once per first-party PE (openpete-spyro1.exe, PSXRecomp.exe) with the
 # file path appended; a nonzero exit fails the package. Evaluated per
@@ -44,6 +49,7 @@ while [[ $# -gt 0 ]]; do
         --out) OUT="$2"; shift 2 ;;
         --toolchain) TOOLCHAIN="$2"; shift 2 ;;
         --sign) SIGN_CMD="$2"; shift 2 ;;
+        --with-mod-sdk) WITH_MOD_SDK=1; shift ;;
         *) echo "unknown arg: $1" >&2; exit 64 ;;
     esac
 done
@@ -63,23 +69,37 @@ stage_common() {  # stage_common <build-game-dir>
     mkdir -p "$STAGE/recomp"
     cp -a "$B/recomp/manifest" "$STAGE/recomp/"
     cp -a "$B/recomp/src"      "$STAGE/recomp/"
-    # Mod SDK + drop-in mod dir (openpete-mod-compile-on-boot): mods
-    # ship mod.toml + src/ and compile at boot against <exe>/sdk with
-    # the bundled toolchain. The SDK is a handful of headers.
-    cp -a "$B/sdk" "$STAGE/sdk"
-    mkdir -p "$STAGE/mods"
-    printf '%s\n' \
-        "Drop mods here: mods/<id>/ (or mods/<id>.zip) containing" \
-        "mod.toml, plus src/*.c (compiled automatically at boot) and/or" \
-        "assets/. mods/enabled.txt (one id per line) fixes the load" \
-        "order; without it every mod loads, alphabetically." \
-        > "$STAGE/mods/README.txt"
-    mkdir -p "$STAGE/assets/music"
-    cp games/spyro-1/assets/music/manifest.txt "$STAGE/assets/music/" 2>/dev/null || true
+    # The kit is compiled on the user's machine, so it ships as readable
+    # C — but its comments are engineering notes about the host tree.
+    scripts/strip-comments.py "$STAGE"/recomp/src/*
+    if [[ $WITH_MOD_SDK -eq 1 ]]; then
+        # Mod SDK + drop-in mod dir (openpete-mod-compile-on-boot): mods
+        # ship mod.toml + src/ and compile at boot against <exe>/sdk with
+        # the bundled toolchain. The SDK is a handful of headers.
+        cp -a "$B/sdk" "$STAGE/sdk"
+        mkdir -p "$STAGE/mods"
+        printf '%s\n' \
+            "Drop mods here: mods/<id>/ (or mods/<id>.zip) containing" \
+            "mod.toml, plus src/*.c (compiled automatically at boot) and/or" \
+            "assets/. mods/enabled.txt (one id per line) fixes the load" \
+            "order; without it every mod loads, alphabetically." \
+            > "$STAGE/mods/README.txt"
+    fi
     cp gamecontrollerdb.txt "$STAGE/" 2>/dev/null || true
     cp LICENSE NOTICE.md "$STAGE/"
-    sed -e "s/@VERSION@/$VERSION/g" -e "s/@PLATFORM@/$PLATFORM/g" \
-        docs/README-dist.md.in > "$STAGE/README.md"
+    # Preconfigured settings, so a first run looks the way we intend
+    # rather than falling back to bare defaults. Both in-game menus
+    # rewrite this file, so anything here is only a starting point.
+    cp docs/openpete-dist.toml "$STAGE/openpete.toml"
+    # The README template carries both platforms' wording; keep only the
+    # blocks for the one being packaged.
+    awk -v want="@$PLATFORM" '
+        /^<!-- @(windows|linux) -->$/ { skip = ($2 != want); next }
+        /^<!-- @end -->$/             { skip = 0; next }
+        !skip
+    ' docs/README-dist.md.in \
+        | sed -e "s/@VERSION@/$VERSION/g" -e "s/@PLATFORM@/$PLATFORM/g" \
+        > "$STAGE/README.md"
 }
 
 case "$PLATFORM" in
