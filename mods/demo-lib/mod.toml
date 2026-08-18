@@ -9,4 +9,6 @@
 id      = "demo-lib"
 name    = "Demo Library"
 version = "0.1.0"
-api     = 3
+api     = 1
+state    = "none"      # entry log only
+runahead = "pure"      # no hooks

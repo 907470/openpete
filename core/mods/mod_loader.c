@@ -36,6 +36,7 @@
 #include "openpete_mods.h"
 #include "../host/texture_pack.h"   /* texpack_fog_shift */
 #include "openpete_mod_api.h"
+#include "openpete_mod_ui.h"
 #include "openpete_log.h"
 #include "openpete_keymap.h"     /* [keys.mod.<id>] binding overrides */
 #include "../host/sha256.h"     /* content-hash build cache key */
@@ -180,8 +181,6 @@ struct openpete_mod {
                           * defer it to their first enable so a
                           * boot-disabled mod runs zero code */
     int   has_assets;    /* assets/ overlay root exists (boot-scoped) */
-    openpete_mod_ui_fn ui_fn; /* register_ui section body (NULL = none) */
-    void* ui_user;
     openpete_mod_ui_body_fn ui_body; /* UI-annex descriptor body
                                       * (openpete_mod_ui_section symbol,
                                       * resolved at dlopen, ABI-checked;
@@ -304,10 +303,6 @@ static const openpete_sdk_symbol_t* sym_find(const char* name) {
     return NULL;
 }
 
-static uint32_t api_resolve(const char* name) {
-    const openpete_sdk_symbol_t* s = sym_find(name);
-    return s ? s->addr : 0;
-}
 
 /* Render-purity guard: present hooks may only draw. Presents are
  * non-deterministic in count/timing, so guest access / game calls /
@@ -475,15 +470,6 @@ static int api_register_present_hook(openpete_mod_t* self,
  * invoked by the dev overlay's Mods panel while the mod is enabled.
  * Registration is entry/tick context (the callback itself runs under
  * the render-purity guard — see openpete_mods_ui_draw). */
-static int api_register_ui(openpete_mod_t* self, openpete_mod_ui_fn fn,
-                           void* user) {
-    if (!self) return -1;
-    if (purity_violation("register_ui")) return -1;
-    self->ui_fn   = fn;
-    self->ui_user = user;
-    if (fn) OPL_INFO_F(self->log_tag, "UI section registered");
-    return 0;
-}
 
 /* Canonical tick counter mirror for the ui_status lazy reset; advanced
  * by openpete_mods_tick_boundary. */
@@ -518,26 +504,8 @@ static int api_register_toggle_hook(openpete_mod_t* self,
 
 /* ---- engine services (P2 contract) ----------------------------------- */
 
-static int api_savestate_request(openpete_mod_t* self, int op,
-                                 unsigned slot) {
-    if (!self) return -1;
-    if (purity_violation("savestate_request")) return -1;
-    return openpete_mods_savestate_request(op, slot, self->id);
-}
 
-static int api_savestate_slot_present(unsigned slot) {
-    return openpete_state_slot_present(slot);
-}
 
-static int api_register_savestate_hooks(openpete_mod_t* self,
-                                        openpete_mod_state_save_fn save,
-                                        openpete_mod_state_load_fn load) {
-    if (!self) return -1;
-    int rc = openpete_mods_state_register(save, load, self->id);
-    if (rc == 0)
-        OPL_INFO_F(self->log_tag, "savestate participation registered");
-    return rc;
-}
 
 static const char* api_data_dir(openpete_mod_t* self) {
     if (!self) return NULL;
@@ -558,31 +526,9 @@ static int api_host_key_down(const char* key_name) {
     return (state && (int)sc < nkeys) ? (state[sc] ? 1 : 0) : 0;
 }
 
-/* Actor render service (rung 16). Capture reads sim state — tick
- * context only; draw is pure render output, legal in both contexts. */
-static int api_capture_actor_pose(int kind, void* buf, int cap) {
-    if (purity_violation("capture_actor_pose")) return -1;
-    return openpete_mods_capture_actor_pose(kind, buf, cap);
-}
 
-static int api_draw_actor(int kind, const void* pose, int len,
-                          uint32_t tint_rgba) {
-    return openpete_mods_draw_actor(kind, pose, len, tint_rgba);
-}
 
-static void api_suppress_player_draw(void) {
-    openpete_mods_suppress_player_draw();
-}
 
-/* Instruction-site hook tier (rung 14). Handlers run mid-sim (tick
- * semantics); attaching is entry-time only — present hooks are render-
- * pure and may not mutate the dispatch surface. */
-static int api_site_handler(openpete_mod_t* self, const char* name,
-                            void (*fn)(CPUState* cpu, uint32_t site_addr)) {
-    if (!self || !name || !fn) return -1;
-    if (purity_violation("site_handler")) return -1;
-    return openpete_mods_site_attach(self->id, name, fn, self->log_tag);
-}
 
 /* Content registry: moby types (rung 11). Registration is entry-time;
  * spawning mutates sim state — tick context only. */
@@ -607,27 +553,8 @@ static uint32_t api_spawn_moby(openpete_mod_t* self, CPUState* cpu,
     return openpete_mods_moby_spawn(cpu, self->id, name);
 }
 
-static int api_on_level(openpete_mod_t* self, openpete_mod_level_fn fn) {
-    if (!self || !fn) return -1;
-    if (purity_violation("on_level")) return -1;
-    return openpete_mods_on_level(self->id, fn, self->log_tag);
-}
 
-static int api_sfx_def_replace(openpete_mod_t* self, uint16_t model_class,
-                               uint8_t sound_slot, const void* body,
-                               uint32_t len) {
-    if (!self) return -1;
-    if (purity_violation("sfx_def_replace")) return -1;
-    return openpete_mods_sfx_def_replace(self, model_class, sound_slot,
-                                         body, len);
-}
 
-static uint32_t api_guest_alloc_low(openpete_mod_t* self, uint32_t size,
-                                    uint32_t align, void** host_view) {
-    if (!self) return 0;
-    if (purity_violation("guest_alloc_low")) return 0;
-    return openpete_mods_guest_alloc_low(size, align, host_view, self->id);
-}
 
 static char s_sdk_dir[MOD_PATH_MAX];
 
@@ -671,8 +598,6 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     openpete_mods_material_remove_owner(mod->id);
     openpete_mods_shader_remove_owner(mod->id);
     exports_remove_owner(mod->id);
-    mod->ui_fn   = NULL; /* re-entry re-registers the UI section */
-    mod->ui_user = NULL;
     mod->ui_body = NULL; /* re-resolved from the fresh object below */
     mod->toggle_fn = NULL;
 
@@ -850,8 +775,7 @@ int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out) {
     out->enabled     = m->enabled;
     out->entered     = m->entered;
     out->sim_neutral = m->sim_neutral;
-    out->has_ui      = m->ui_fn != NULL || m->ui_body != NULL ||
-                       m->status_n > 0;
+    out->has_ui      = m->ui_body != NULL || m->status_n > 0;
     out->has_assets  = m->has_assets;
     out->has_src     = m->has_src;
     out->has_cfg     = m->n_cfg;
@@ -926,10 +850,9 @@ void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui) {
         ui->text("%s", m->status[l]);
     if (m->status_trunc)
         ui->text_disabled("… (ui_status block truncated)");
-    if (!m->ui_fn && !m->ui_body) return;
+    if (!m->ui_body) return;
     openpete_mods_in_present = 1;
-    if (m->ui_body) m->ui_body(ui);
-    if (m->ui_fn) m->ui_fn(ui, m->ui_user);
+    m->ui_body(ui);
     openpete_mods_in_present = 0;
 }
 
@@ -1066,15 +989,33 @@ const char* openpete_mods_build_key(const char* id) {
     return NULL;
 }
 
-/* 1 iff every ENABLED mod declares a runahead capability (RA_PURE or
- * RA_HOST_FX). Mods without a descriptor, or with one lacking RA bits,
- * make runahead unarmable; *offender names the first one. */
+/* 1 iff every ENABLED code mod declares a runahead posture (manifest
+ * runahead = "pure" | "host-fx"; a binary mod's legacy descriptor RA
+ * bits also count). Assets-only mods run zero code and are trivially
+ * capable. An undeclared code mod makes runahead unarmable; *offender
+ * names the first one. */
 int openpete_mods_runahead_capable(const char** offender) {
     for (int i = 0; i < s_mod_count; i++) {
-        if (!s_mods[i].enabled) continue;
+        if (!s_mods[i].enabled || !s_mods[i].has_src) continue;
         uint32_t fl = s_mods[i].has_stateabi ? s_mods[i].st_flags : 0;
         if (!s_mods[i].ra_decl &&
             !(fl & (OP_MOD_RA_PURE | OP_MOD_RA_HOST_FX))) {
+            if (offender) *offender = s_mods[i].id;
+            return 0;
+        }
+    }
+    if (offender) *offender = NULL;
+    return 1;
+}
+
+/* 1 iff every ENABLED code mod declares a host-state posture (manifest
+ * state = "none" | "rebuildable") — the gate for timeline jumps
+ * (rewind): an undeclared mod's host state may silently desync when the
+ * guest world moves under it. Assets-only mods hold no host state. */
+int openpete_mods_state_safe(const char** offender) {
+    for (int i = 0; i < s_mod_count; i++) {
+        if (!s_mods[i].enabled || !s_mods[i].has_src) continue;
+        if (!s_mods[i].state_decl) {
             if (offender) *offender = s_mods[i].id;
             return 0;
         }
@@ -1123,42 +1064,10 @@ const char* openpete_mods_modset_tag(void) {
     return s_tag;
 }
 
-/* Content registry: level slots (rung 12). */
-static int api_register_level_slot(openpete_mod_t* self, const char* name,
-                                   int donor_level_id) {
-    if (!self || !name) return -1;
-    if (purity_violation("register_level_slot")) return -1;
-    return openpete_mods_level_register(self->id, name, donor_level_id,
-                                        self->log_tag);
-}
 
-static int api_level_slot_id(openpete_mod_t* self, const char* name) {
-    if (!self || !name) return -1;
-    return openpete_mods_level_slot_id(self->id, name);
-}
 
-static int api_enter_level(openpete_mod_t* self, CPUState* cpu,
-                           int level_id) {
-    if (!self || !cpu) return -1;
-    if (purity_violation("enter_level")) return -1;
-    return openpete_mods_level_enter(cpu, level_id);
-}
 
-static int api_read_level_data(openpete_mod_t* self, int level_id,
-                               void* buf, uint32_t cap) {
-    if (!self) return -1;
-    if (purity_violation("read_level_data")) return -1;
-    return openpete_mods_read_level_data(level_id, buf, cap);
-}
 
-static int api_texpack_fog_shift(openpete_mod_t* self,
-                                 const float scale_rgb[3],
-                                 const float offset_rgb[3]) {
-    if (!self) return -1;
-    if (purity_violation("texpack_fog_shift")) return -1;
-    texture_pack_fog_shift_set(scale_rgb, offset_rgb);
-    return 0;
-}
 
 /* Declared-binding resolve: name → [keys.mod.<id>] if the config rebound
  * it, else this mod's own [[binding]] key → host_key_down. Same
@@ -1190,24 +1099,22 @@ static int api_binding_down(openpete_mod_t* self, const char* name) {
 
 /* Guest scratch arena: sim-visible state — tick context only. */
 static uint32_t api_guest_alloc(openpete_mod_t* self, uint32_t size,
-                                uint32_t align, void** host_view) {
+                                uint32_t align, uint32_t flags,
+                                void** host_view) {
     if (host_view) *host_view = NULL;
     if (!self) return 0;
     if (purity_violation("guest_alloc")) return 0;
+    if (flags & ~(uint32_t)OP_GALLOC_LOW) {
+        OPL_ERROR_F("mods", "%s: guest_alloc: unknown flags %#x", self->id,
+                    flags);
+        return 0;
+    }
+    if (flags & OP_GALLOC_LOW)
+        return openpete_mods_guest_alloc_low(size, align, host_view,
+                                             self->id);
     return openpete_mods_guest_alloc(size, align, host_view, self->id);
 }
 
-/* bk2 status: read-only mirror published by run.c per sim frame. */
-static void api_bk2_status(openpete_mod_t* self, int* active, int* frame,
-                           int* frame_count, int* overriding) {
-    (void)self;
-    openpete_mods_bk2_status_t st;
-    openpete_mods_bk2_query(&st);
-    if (active)      *active      = st.active;
-    if (frame)       *frame       = st.frame;
-    if (frame_count) *frame_count = st.frame_count;
-    if (overriding)  *overriding  = st.overriding;
-}
 
 /* One-shot sound: host-side additive — no purity gate (sim-neutral by
  * construction; presentation, not render output). */
@@ -1247,38 +1154,7 @@ static void exports_remove_owner(const char* id) {
 }
 
 
-static int api_export_sym(openpete_mod_t* self, const char* name, void* ptr) {
-    if (!self || !name || !ptr) return -1;
-    char q[sizeof s_exports[0].name];
-    snprintf(q, sizeof q, "%s:%s", self->id, name);
-    for (int i = 0; i < s_export_count; i++) {
-        if (strcmp(s_exports[i].name, q) == 0) {
-            OPL_ERROR_F(self->log_tag, "duplicate export \"%s\"", q);
-            return -1;
-        }
-    }
-    if (s_export_count >= MOD_EXPORTS_MAX) {
-        OPL_ERROR_F(self->log_tag, "export table full (%d)", MOD_EXPORTS_MAX);
-        return -1;
-    }
-    snprintf(s_exports[s_export_count].name,
-             sizeof s_exports[s_export_count].name, "%s", q);
-    s_exports[s_export_count].ptr = ptr;
-    s_export_count++;
-    OPL_INFO_F(self->log_tag, "exported \"%s\"", q);
-    return 0;
-}
 
-static void* api_import_sym(openpete_mod_t* self, const char* qualified) {
-    if (!qualified) return NULL;
-    for (int i = 0; i < s_export_count; i++) {
-        if (strcmp(s_exports[i].name, qualified) == 0)
-            return s_exports[i].ptr;
-    }
-    OPL_DEBUG_F(self ? self->log_tag : "mod:?",
-                "import \"%s\": not found", qualified);
-    return NULL;
-}
 
 const char* openpete_mods_id_of(openpete_mod_t* self) {
     return self ? self->id : NULL;
@@ -1300,61 +1176,43 @@ const char* openpete_mods_sdk_dir(void) {
 
 static const openpete_mod_api_t s_api = {
     .api_version   = OPENPETE_MOD_API_VERSION,
+    /* pillar 1: the override chain */
     .override_addr = api_override_addr,
     .override_name = api_override_name,
     .base          = openpete_mods_base,
-    .resolve       = api_resolve,
-    .log           = api_log,
+    .call          = api_call_addr,
+    /* pillar 2: guest memory */
     .guest         = api_guest,
-    .export_sym    = api_export_sym,
-    .import_sym    = api_import_sym,
     .guest_addr    = api_guest_addr,
-    .call_addr     = api_call_addr,
-    .draw_text     = openpete_mods_draw_text,
-    .draw_rect     = openpete_mods_draw_rect,
-    .register_present_hook = api_register_present_hook,
-    .savestate_request        = api_savestate_request,
-    .savestate_slot_present   = api_savestate_slot_present,
-    .register_savestate_hooks = api_register_savestate_hooks,
+    .guest_alloc   = api_guest_alloc,
+    /* pillar 3: lifecycle and identity */
+    .log           = api_log,
     .data_dir      = api_data_dir,
-    .host_key_down = api_host_key_down,
-    .capture_actor_pose = api_capture_actor_pose,
-    .draw_actor         = api_draw_actor,
-    .suppress_player_draw = api_suppress_player_draw,
-    .site_handler       = api_site_handler,
-    .register_moby_type = api_register_moby_type,
-    .moby_type_id       = api_moby_type_id,
-    .spawn_moby         = api_spawn_moby,
-    .register_level_slot = api_register_level_slot,
-    .level_slot_id       = api_level_slot_id,
-    .enter_level         = api_enter_level,
-    .sfx_play            = api_sfx_play,
-    .binding_down        = api_binding_down,
-    .guest_alloc         = api_guest_alloc,
-    .bk2_status          = api_bk2_status,
-    .sfx_replace   = openpete_mods_sfx_replace,
-    .sfx_hook      = openpete_mods_sfx_hook,
-    .texture_register = openpete_mods_texture_register,
-    .sfx_stage     = openpete_mods_sfx_stage,
+    .register_toggle_hook = api_register_toggle_hook,
+    /* pillar 4: settings */
     .config_bool   = openpete_mods_config_bool,
     .config_int    = openpete_mods_config_int,
     .config_float  = openpete_mods_config_float,
     .config_str    = openpete_mods_config_str,
-    .on_level        = api_on_level,
-    .sfx_def_replace = api_sfx_def_replace,
-    .guest_alloc_low = api_guest_alloc_low,
+    .ui_status     = api_ui_status,
+    /* pillar 5: present and screen-space draw */
+    .register_present_hook = api_register_present_hook,
+    .draw_text     = openpete_mods_draw_text,
+    .draw_rect     = openpete_mods_draw_rect,
+    /* pillar 6: post-process shaders */
     .shader_register     = openpete_mods_shader_register,
     .postfx_register     = openpete_mods_postfx_register,
     .postfx_enable       = openpete_mods_postfx_enable,
     .postfx_set_uniforms = openpete_mods_postfx_set_uniforms,
-    .pipeline_register   = openpete_mods_pipeline_register,
-    .draw_mesh           = openpete_mods_draw_mesh,
-    .material_register   = openpete_mods_material_register,
-    .read_level_data     = api_read_level_data,
-    .texpack_fog_shift   = api_texpack_fog_shift,
-    .register_ui         = api_register_ui,
-    .register_toggle_hook = api_register_toggle_hook,
-    .ui_status            = api_ui_status,
+    /* pillar 7: content */
+    .register_moby_type = api_register_moby_type,
+    .moby_type_id       = api_moby_type_id,
+    .spawn_moby         = api_spawn_moby,
+    /* pillar 8: audio */
+    .sfx_replace   = openpete_mods_sfx_replace,
+    .sfx_play      = api_sfx_play,
+    /* declared input bindings */
+    .binding_down  = api_binding_down,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

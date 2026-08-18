@@ -10,5 +10,7 @@
 id      = "raw-probe"
 name    = "Raw Probe"
 version = "0.1.0"
-api     = 3
+api     = 1
+state    = "none"      # counters + last-seen registers
+runahead = "host-fx"   # periodic logs — suppressible
 sim_neutral = true  # observer/presentation-only: excluded from the save modset tag

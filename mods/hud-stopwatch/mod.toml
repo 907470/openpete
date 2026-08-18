@@ -15,7 +15,7 @@
 id      = "hud-stopwatch"
 name    = "HUD Stopwatch"
 version = "0.1.0"
-api     = 5
+api     = 1
 sim_neutral = true  # observer/presentation-only: excluded from the save modset tag
 
 [[binding]]

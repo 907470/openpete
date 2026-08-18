@@ -10,5 +10,7 @@
 id      = "lib-and-client"
 name    = "Lib And Client"
 version = "0.1.0"
-api     = 3
+api     = 1
+state    = "none"    # entry log only
+runahead = "pure"      # no hooks
 deps    = ["demo-lib"]

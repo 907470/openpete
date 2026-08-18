@@ -180,8 +180,8 @@ static uint32_t inject_authentic_anim(uint32_t model) {
     if (!g_have_blob || !model) return 0;
 
     if (!g_park_vaddr) {
-        g_park_vaddr = g_api->guest_alloc_low(g_self, g_blob_len, 16,
-                                              &g_park_host);
+        g_park_vaddr = g_api->guest_alloc(g_self, g_blob_len, 16,
+                                          OP_GALLOC_LOW, &g_park_host);
         if (!g_park_vaddr || !g_park_host) { g_park_vaddr = 0; return 0; }
     }
 

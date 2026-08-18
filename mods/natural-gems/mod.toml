@@ -14,4 +14,6 @@
 id      = "natural-gems"
 name    = "Natural Gems"
 version = "0.1.0"
-api     = 3
+api     = 1
+state    = "none"      # counters only
+runahead = "host-fx"   # logs on pickup — suppressible

@@ -437,7 +437,7 @@ def main():
                            ("gallery.md", ga_md)):
         (args.out / fname).write_text(content, encoding="utf-8")
 
-    if n_api < 30:
+    if n_api < 25:  # 28 entries + api_version at api v1
         sys.exit(f"gen_mod_docs: only {n_api} API members parsed — the "
                  "header layout changed; fix the extractor")
     print(f"[gen_mod_docs] api: {n_api} members | functions: {n_fn} "

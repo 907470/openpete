@@ -13,10 +13,6 @@ static const openpete_mod_api_t* g_api;
 static openpete_mod_t*           g_self;
 static unsigned                  g_calls;
 
-/* Runahead capability: the hook only counts calls and logs — a host side
- * effect the engine can suppress during speculative ticks. */
-OPENPETE_MOD_RA_CAPS(OP_MOD_RA_HOST_FX)
-
 /* Status lines, repainted from the hook each call; the entry paint's
  * "waiting" line stands until the first call. */
 static void publish_status(void) {

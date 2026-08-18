@@ -14,6 +14,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 HEADER = ROOT / "core/include/openpete_mod_api.h"
+UI_HEADER = ROOT / "core/include/openpete_mod_ui.h"
 MODS = ROOT / "mods"
 OUT = ROOT / "docs/modding/audit.md"
 
@@ -51,7 +52,8 @@ def main() -> int:
     text = HEADER.read_text()
     api_entries = struct_members(text, "typedef struct openpete_mod_api {",
                                  "} openpete_mod_api_t;")
-    ui_entries = struct_members(text, "typedef struct openpete_mod_ui {",
+    ui_entries = struct_members(UI_HEADER.read_text(),
+                                "typedef struct openpete_mod_ui {",
                                 "} openpete_mod_ui_t;")
     typedefs = file_scope_callback_typedefs(text)
     api_version = re.search(r"OPENPETE_MOD_API_VERSION\s+(\d+)", text).group(1)
@@ -114,7 +116,8 @@ def main() -> int:
     w("")
     w(f"- The api struct (`openpete_mod_api_t`) has **{len(api_entries)}** "
       "function-pointer entries; the UI vtable (`openpete_mod_ui_t`) has "
-      f"**{len(ui_entries)}**; **{len(typedefs)}** file-scope callback "
+      f"**{len(ui_entries)}** (openpete_mod_ui.h, the separately-versioned "
+      f"annex); **{len(typedefs)}** file-scope callback "
       "typedefs exist alongside. Counts of \"the API surface\" must name "
       "which of these they include.")
     w(f"- Header version: api v{api_version}.")

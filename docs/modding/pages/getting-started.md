@@ -91,9 +91,9 @@ the log — it never bricks the launch.
    `op_call_Foo(cpu, ...)` with typed args and guest↔host pointer
    marshalling (`openpete_sdk_wrappers.h`).
 3. **Raw tier** — `api->override_addr` on any address; args in
-   `cpu->a0..a3`, return in `cpu->v0`. Declare `tier = "raw"` in the
-   manifest: raw addresses are region-pinned and can drift across
-   decomp updates.
+   `cpu->a0..a3`, return in `cpu->v0`. Raw addresses are region-pinned
+   and can drift across decomp updates — the loader warns once per mod
+   on the first raw registration.
 
 ## Iterating
 
@@ -110,7 +110,7 @@ the log — it never bricks the launch.
 
 ## Rules of the road
 
-- **Sim-thread only**: guest reads/writes, `call_addr`, registrations —
+- **Sim-thread only**: guest reads/writes, `call`, registrations —
   all belong in tick context (inside overrides or entry). Present hooks
   are render-pure and the loader *enforces* it.
 - **Divergence is a choice, not an accident.** If your mod perturbs

@@ -35,6 +35,7 @@ extern "C" {
 #include "openpete_config.h"
 #include "openpete_log.h"
 #include "openpete_mods.h"
+#include "openpete_mod_ui.h"
 
 #include <stdarg.h>
 #include <stdio.h>

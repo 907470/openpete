@@ -39,7 +39,7 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     if (api->api_version != OPENPETE_MOD_API_VERSION) return -1;
 
     void* host = 0;
-    uint32_t va = api->guest_alloc(self, 256, 16, &host);
+    uint32_t va = api->guest_alloc(self, 256, 16, 0, &host);
     if (!va || !host) {
         g_api->log(g_self, OP_MOD_LOG_ERROR, "arena-probe: alloc FAILED");
         return -1;
@@ -57,7 +57,7 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     }
     /* second allocation must not overlap the first */
     void* host2 = 0;
-    uint32_t va2 = api->guest_alloc(self, 64, 64, &host2);
+    uint32_t va2 = api->guest_alloc(self, 64, 64, 0, &host2);
     if (!va2 || va2 < va + 256 || (va2 & 63u)) ok = 0;
     g_va = va;
     g_va2 = va2;

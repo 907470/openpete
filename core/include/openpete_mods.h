@@ -28,6 +28,89 @@ extern "C" {
 #endif
 
 struct CPUState;
+
+/* ── Parked former-ABI types ─────────────────────────────────────────
+ * These left the mod-facing header at the api-v1 cut but their ENGINE
+ * machinery survives (actor render, custom pipelines, materials,
+ * SoundDefinition plumbing, level-ready driving, state blobs). They
+ * live here, engine-internal, until their surfaces re-land as
+ * append-only pillars. */
+
+typedef void (*openpete_mod_level_fn)(struct CPUState* cpu, int level_id);
+
+typedef struct openpete_sfx_event {
+    const char* name;        /* game-registered sound name */
+    uint16_t pitch;          /* SPU units, 0x1000 = 44.1 kHz; writable */
+    uint8_t  suppress;       /* set nonzero to mute this play */
+    uint32_t play_index;     /* nth play of this name this session */
+    uint32_t ms_since_prev;  /* host ms since the previous play */
+} openpete_sfx_event_t;
+
+typedef int  (*openpete_mod_state_save_fn)(void* buf, int cap);
+typedef void (*openpete_mod_state_load_fn)(const void* buf, int len);
+
+enum {
+    OP_MOD_STATE_DROP_OK = 1u << 0,
+    OP_MOD_RA_PURE       = 1u << 1,
+    OP_MOD_RA_HOST_FX    = 1u << 2,
+};
+
+/* Binary-mod descriptor (openpete_mod_stateabi symbol): still resolved
+ * at dlopen for prebuilt objects that carry one; source mods declare
+ * state/runahead in the manifest instead. */
+typedef struct openpete_mod_stateabi {
+    uint32_t magic;              /* 'SABI' = 0x53414249 */
+    uint32_t abi_version;
+    uint32_t abi_size;
+    uint32_t flags;              /* OP_MOD_STATE_* | OP_MOD_RA_* */
+    uint32_t n_fields;
+    const uint32_t (*fields)[2];
+} openpete_mod_stateabi_t;
+
+enum { OP_VTX_POS_UV_RGBA = 0 };
+
+typedef struct openpete_mod_vertex {
+    float    x, y, z;
+    float    u, v;
+    uint32_t rgba;
+} openpete_mod_vertex_t;
+
+enum {
+    OP_BLEND_OPAQUE = 0,
+    OP_BLEND_AVG    = 1,
+    OP_BLEND_ADD    = 2,
+    OP_BLEND_SUB    = 3,
+    OP_BLEND_ADD4   = 4,
+};
+
+typedef struct openpete_mod_pipeline_desc {
+    int      vert_shader;
+    int      frag_shader;
+    int      vertex_format;  /* OP_VTX_* */
+    int      blend;          /* OP_BLEND_* */
+    int      depth_test;
+    int      depth_write;
+    uint32_t _reserved[4];
+} openpete_mod_pipeline_desc_t;
+
+enum { OP_RP_MOBY = 0, OP_RP_TERRAIN = 1 };
+enum {
+    OP_SEL_ENV_ANIM   = 1u << 0,
+    OP_SEL_HP_TIER    = 1u << 1,
+    OP_SEL_LP_TIER    = 1u << 2,
+    OP_SEL_UNTEXTURED = 1u << 3,
+};
+
+typedef struct openpete_mod_material_selector {
+    int      path;        /* OP_RP_* ; -1 = any path */
+    int      moby_class;  /* -1 = any (terrain: ignored) */
+    int      texture;     /* terrain texture-record id 0..127; -1 = any */
+    unsigned flags;       /* OP_SEL_* refinements */
+} openpete_mod_material_selector_t;
+
+typedef int (*openpete_mod_material_fn)(struct CPUState* cpu,
+                                        uint32_t moby_vaddr,
+                                        void* uniform_out, uint32_t cap);
 typedef struct CPUState CPUState;
 
 /* Name→vaddr symbol table (generated from manifest/symbols.toml by
@@ -774,6 +857,10 @@ const char* openpete_mods_build_key(const char* id);
 /* 1 iff every enabled mod declares OP_MOD_RA_PURE or OP_MOD_RA_HOST_FX
  * (runahead arming gate); else 0 with *offender = first blocker's id. */
 int openpete_mods_runahead_capable(const char** offender);
+/* Rewind gate: every enabled code mod declares a manifest state
+ * posture. 0 = refuse timeline jumps; *offender names the first
+ * undeclared mod. */
+int openpete_mods_state_safe(const char** offender);
 
 /* Low-park arena ledger (savestate P2b): serialized with the engine
  * state so a restored guest RAM's parked payloads can never be clobbered

@@ -111,15 +111,18 @@ expect_log    = ["my-mod: it worked"]   # single line — parser is line-based
 
 `openpete_mod_entry(api, self)` runs at load. Override game functions
 by name (`api->override_name`) or raw address; `api->base(cpu)` calls
-down the chain. Read/write guest RAM via `api->guest` + the typed
-structs in `openpete_game_structs.h` (layout-pinned at compile time).
-Draw HUD text/rects and replay actors through the native renderer
-(never guest prims). Services: savestate trigger + participation,
-`sfx_play`/`sfx_replace`/`sfx_hook`, `binding_down`, `bk2_status`, `guest_alloc`, content
-registries (`register_moby_type`, `register_level_slot`,
-`enter_level`), and instruction sites (`site_handler`). Present hooks
-are render-pure — sim work belongs in tick hooks; the loader enforces
-it. Full contracts live in `sdk/openpete_mod_api.h` next to the exe.
+down the chain, `api->call` invokes game code. Read/write guest RAM
+via `api->guest` + the typed structs in `openpete_game_structs.h`
+(layout-pinned at compile time). Draw HUD text/rects through the
+native renderer (never guest prims). Services: `sfx_replace`/
+`sfx_play`, `guest_alloc`, post-process shaders (`shader_register` +
+`postfx_*`), new moby types (`register_moby_type`/`spawn_moby`),
+settings ([[config]] schema + `config_*`), `ui_status` lines, and
+`binding_down`. Present hooks are render-pure — sim work belongs in
+tick hooks; the loader enforces it. The api struct is **v1 and
+append-only**. Full contracts live in `sdk/openpete_mod_api.h` next
+to the exe; the widget annex (`openpete_mod_ui.h`) is separately
+versioned and carries no stability promise.
 
 ## The gallery is the documentation
 

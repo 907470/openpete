@@ -2291,6 +2291,25 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 int rw_live = game_is_gameplay_live(&g_game.cpu);
                 openpete_rewind_on_iter(&g_game.cpu, openpete_frame, rw_live);
                 bool rw_k = openpete_key_down(OPK_REWIND);
+                /* Timeline jumps need every enabled code mod to declare
+                 * its host-state posture (mod.toml state=) — an
+                 * undeclared mod's host state desyncs silently when the
+                 * world moves under it. */
+                if (rw_k) {
+                    const char* st_offender = NULL;
+                    if (!openpete_mods_state_safe(&st_offender)) {
+                        static bool st_hinted = false;
+                        if (!st_hinted) {
+                            st_hinted = true;
+                            OPL_WARN_F("rewind", "refused: mod \"%s\" "
+                                       "declares no state posture (add "
+                                       "state = \"none\" or "
+                                       "\"rebuildable\" to its mod.toml)",
+                                       st_offender ? st_offender : "?");
+                        }
+                        rw_k = false;
+                    }
+                }
                 /* --rewind-hold A:N — headless driver harness: simulate
                  * holding Backspace for N iterations once frame A is
                  * reached (the P4 determinism gate). */

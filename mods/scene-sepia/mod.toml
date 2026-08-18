@@ -8,7 +8,9 @@
 id = "scene-sepia"
 name = "Scene Sepia"
 version = "0.1.0"
-api     = 5
+api     = 1
+state    = "none"      # GPU-only postfx + present hook
+runahead = "pure"      # no tick hooks
 sim_neutral = true
 
 [[config]]

@@ -271,7 +271,7 @@ static inline void op__restore(CPUState* c, const uint32_t* s) {
             "    uint32_t s__[7];\n"
             "    op__save(cpu, s__);\n"
             + (f"    {pack_s}\n" if pack_s else "")
-            + f"    op__api_slot->call_addr(cpu, 0x{addr:08X}u);\n"
+            + f"    op__api_slot->call(cpu, 0x{addr:08X}u);\n"
             + ret_grab
             + "    op__restore(cpu, s__);\n"
             + ret_stmt + "}\n")

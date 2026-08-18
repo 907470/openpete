@@ -33,7 +33,7 @@ many frames per tick (high-fps interpolation). That split is the most
 important contract in the API:
 
 - **Tick context** (overrides, entry, registry update fns): the sim is
-  live. Guest reads/writes, `call_addr`, spawning, registration — all
+  live. Guest reads/writes, `call`, spawning, registration — all
   legal here, and only here.
 - **Present context** (`register_present_hook`): render-pure by
   contract *and enforcement*. Guest access, game calls and
@@ -91,23 +91,21 @@ below the EXE base at `0x80010000`.)
 | Need | Service | Neutral? |
 |---|---|---|
 | Draw HUD text/rects | `draw_text` / `draw_rect` | yes |
-| Replay/ghost actors | `capture_actor_pose` / `draw_actor` | yes |
-| Replace a sound | `sfx_replace` / `sfx_hook` | yes |
+| Replace a game sound | `sfx_replace` | voice names yes; def-shaped names no |
 | Play your own WAV | `sfx_play` | yes |
-| Custom textures on your models | `texture_register` | yes |
-| Stage SPU samples yourself | `sfx_stage` (+ guest def repoint) | no |
-| Savestates | `savestate_request` + participation hooks | n/a |
-| New moby types / level slots | content registries | no |
-| User settings | `config_bool/int/float/str` | n/a |
+| Custom textures on your models | `assets/textures/own/<hexid>.png` | yes |
+| Post-process shaders | `shader_register` + `postfx_*` | yes |
+| New moby types | `register_moby_type` / `spawn_moby` | no |
+| Custom levels | `[[level]]` + `assets/levels/` | no |
+| User settings | `[[config]]` schema + `config_*` | n/a |
+| Status lines | `ui_status` | yes |
 | Hotkeys | `[[binding]]` + `binding_down` | divergent if read in ticks |
-| Single-instruction surgery | `[[site]]` + `site_handler` | inert until attached |
 
 Full contracts: [API reference](reference/api.md).
 
-## Cross-mod composition
+## Ordering across mods
 
-Libraries export function pointers (`export_sym`) under
-`"modid:name"`; clients list the lib in `deps` (topo-sorted, so the
-lib's entry has already run) and `import_sym` them. `above`/`below`
-declare advisory ordering against other mods; violations produce an
-actionable move-this-mod error at load.
+Hard dependencies (`deps = [...]`) topo-sort ahead of the enabled-list
+order, so a library's entry always runs before its dependents'. For
+everything else, `enabled.txt` order IS the priority — later mods run
+first on shared overrides and `base()` descends toward earlier ones.
