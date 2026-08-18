@@ -64,6 +64,25 @@ static int           s_stat_count;
 static openpete_mods_sfx_resolver_fn s_resolve;
 static openpete_mods_sfx_upload_fn   s_upload;
 
+/* Game-registered names for per-level SoundDefinition sounds (the ones
+ * the voice-layer resolver can never name — chest breaks reference a
+ * model's m_Sounds[] def directly). A name in this table routes
+ * sfx_replace into the def-repoint machinery below, so mods keep ONE
+ * verb for "substitute a game sound" while the game layer owns the
+ * knowledge of which names are def-shaped. */
+static const openpete_mods_sfx_def_name_t* s_def_names;
+static int                                 s_def_name_count;
+
+void openpete_mods_sfx_set_def_names(const openpete_mods_sfx_def_name_t* rows,
+                                     int n) {
+    s_def_names = rows;
+    s_def_name_count = n;
+}
+
+static int sfx_def_register(const char* owner, uint16_t model_class,
+                            uint8_t sound_slot, const void* body,
+                            uint32_t len);
+
 void openpete_mods_sfx_set_fns(openpete_mods_sfx_resolver_fn resolve,
                                openpete_mods_sfx_upload_fn upload) {
     s_resolve = resolve;
@@ -103,6 +122,27 @@ int openpete_mods_sfx_replace(openpete_mod_t* self, const char* name,
     if (!name || !body || !len || len > (1u << 20) ||
         strlen(name) >= SFX_NAME_MAX)
         return -1;
+
+    /* Def-shaped names route to the SoundDefinition machinery. NOTE:
+     * that path rewrites guest def words — unlike the voice overlay it
+     * is sim-DIVERGENT by design; the log line says so. */
+    for (int i = 0; i < s_def_name_count; i++) {
+        const openpete_mods_sfx_def_name_t* dn = &s_def_names[i];
+        if (strcmp(dn->name, name) != 0) continue;
+        if (pitch)
+            OPL_WARN_F("mods", "sfx: \"%s\": pitch ignored on a "
+                       "SoundDefinition sound (defs carry their own)",
+                       name);
+        const char* owner = openpete_mods_id_of(self);
+        int rc = sfx_def_register(owner ? owner : "?", dn->model_class,
+                                  dn->sound_slot, body, len);
+        if (rc == 0)
+            OPL_INFO_F("mods", "sfx: \"%s\" replaced by %s via def "
+                       "repoint (class %u slot %u, %u bytes; "
+                       "sim-divergent)", name, owner ? owner : "?",
+                       dn->model_class, dn->sound_slot, len);
+        return rc;
+    }
 
     sfx_replace_t* r = NULL;
     for (int i = 0; i < s_repl_count; i++)
@@ -222,24 +262,23 @@ static void sfx_defs_bank_reset(void) {
     s_defs_level = 0;
 }
 
-int openpete_mods_sfx_def_replace(openpete_mod_t* self,
-                                  uint16_t model_class, uint8_t sound_slot,
-                                  const void* body, uint32_t len) {
+static int sfx_def_register(const char* owner, uint16_t model_class,
+                            uint8_t sound_slot, const void* body,
+                            uint32_t len) {
     if (!body || !len || len > (1u << 20)) return -1;
     if (!s_def_repoint) {
-        OPL_ERROR_F("mods", "sfx_def_replace: no game def-repoint op "
+        OPL_ERROR_F("mods", "sfx def replace: no game def-repoint op "
                     "registered");
         return -1;
     }
     /* rows apply from the registry's level-ready tick — arm its driver */
     if (openpete_mods_registry_ensure_driver("mods") != 0) return -1;
-    const char* owner = openpete_mods_id_of(self);
 
     sfx_def_t* d = NULL;
     for (int i = 0; i < s_def_count; i++)
         if (s_defs[i].model_class == model_class &&
             s_defs[i].sound_slot == sound_slot &&
-            strcmp(s_defs[i].owner, owner ? owner : "?") == 0) {
+            strcmp(s_defs[i].owner, owner) == 0) {
             d = &s_defs[i];
             break;
         }
@@ -248,7 +287,7 @@ int openpete_mods_sfx_def_replace(openpete_mod_t* self,
         d = &s_defs[s_def_count];
         d->model_class = model_class;
         d->sound_slot = sound_slot;
-        snprintf(d->owner, sizeof d->owner, "%s", owner ? owner : "?");
+        snprintf(d->owner, sizeof d->owner, "%s", owner);
         s_def_count++;
     }
     void* copy = malloc(len);
@@ -259,9 +298,20 @@ int openpete_mods_sfx_def_replace(openpete_mod_t* self,
     d->len = len;
     d->applied_level = 0; /* (re)apply at the next level-ready tick —
                            * including the level already in progress */
-    OPL_INFO_F("mods", "sfx: def for class %u slot %u replaced by %s "
-               "(%u bytes)", model_class, sound_slot, d->owner, len);
     return 0;
+}
+
+int openpete_mods_sfx_def_replace(openpete_mod_t* self,
+                                  uint16_t model_class, uint8_t sound_slot,
+                                  const void* body, uint32_t len) {
+    const char* owner = openpete_mods_id_of(self);
+    int rc = sfx_def_register(owner ? owner : "?", model_class, sound_slot,
+                              body, len);
+    if (rc == 0)
+        OPL_INFO_F("mods", "sfx: def for class %u slot %u replaced by %s "
+                   "(%u bytes)", model_class, sound_slot,
+                   owner ? owner : "?", len);
+    return rc;
 }
 
 /* Driven from the registry's level-ready point (master-update tick,

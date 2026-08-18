@@ -668,6 +668,18 @@ typedef int (*openpete_mods_sfx_def_repoint_fn)(CPUState* cpu,
                                                 uint8_t sound_slot,
                                                 uint32_t spu_addr);
 void openpete_mods_sfx_set_def_repoint(openpete_mods_sfx_def_repoint_fn fn);
+
+/* Game-registered names for per-level SoundDefinition sounds: a
+ * sfx_replace() call on one of these names routes into the def-repoint
+ * machinery (sim-DIVERGENT — guest def words change), so mods keep one
+ * verb for "substitute a game sound". Rows must be static-lifetime. */
+typedef struct {
+    const char* name;
+    uint16_t    model_class;
+    uint8_t     sound_slot;
+} openpete_mods_sfx_def_name_t;
+void openpete_mods_sfx_set_def_names(const openpete_mods_sfx_def_name_t* rows,
+                                     int n);
 int  openpete_mods_sfx_def_replace(openpete_mod_t* self,
                                    uint16_t model_class,
                                    uint8_t sound_slot,
@@ -706,6 +718,10 @@ int openpete_mods_config_write(const char* mod_dir, const char* log_tag,
 int openpete_mods_texture_register(openpete_mod_t* self, uint16_t id,
                                    const void* rgba, int w, int h);
 const unsigned char* openpete_mods_texture_get(uint16_t id, int* w, int* h);
+/* Scan an asset root's textures/own/ for <hexid>.png files and register
+ * each under its filename id (the declarative own-texture road). Called
+ * by the asset-root registrar; returns the count registered. */
+int openpete_mods_texture_scan_root(const char* dir, const char* owner);
 
 /* ── Engine services (core/mods/mod_services.c) ────────────────────── */
 

@@ -158,6 +158,15 @@ void spyro1_moby_ops_register(void) {
     openpete_mods_set_moby_ops(&s_spyro1_moby_ops);
     openpete_mods_sfx_set_def_repoint(ops_sfx_def_repoint);
     openpete_mods_sfx_set_def_reader(ops_sfx_def_read);
+    /* Named handles for the def-shaped sounds (m_Sounds[] slot 0 of the
+     * chest classes — no stable SoundTable name exists for these). */
+    static const openpete_mods_sfx_def_name_t k_def_names[] = {
+        { "chest_break_wooden",  194, 0 },
+        { "chest_break_metal",   195, 0 },
+        { "chest_break_armored", 401, 0 },
+    };
+    openpete_mods_sfx_set_def_names(
+        k_def_names, (int)(sizeof k_def_names / sizeof k_def_names[0]));
     /* Low park window for guest_alloc_low: kernel area below the EXE
      * image (0x80010000). Bounds are EMPIRICAL, not the whole kernel
      * region: a payload at 0x80008000 fed the game's twinkle-particle

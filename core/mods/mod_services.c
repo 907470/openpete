@@ -464,6 +464,16 @@ int openpete_mods_register_asset_root(const char* dir, const char* owner) {
     s_root_n++;
     OPL_INFO_F("mods", "asset root registered: %s (%s)", dir,
                owner ? owner : "?");
+    /* Declarative own-textures ride the root registration (boot-scoped,
+     * like every asset overlay). The owner string passed here is the
+     * loader's session-lifetime id — the registry keeps that pointer. */
+    {
+        int n = openpete_mods_texture_scan_root(
+            s_roots[s_root_n - 1].dir, s_roots[s_root_n - 1].owner);
+        if (n > 0)
+            OPL_INFO_F("mods", "asset root %s: %d own-texture PNG(s)",
+                       s_roots[s_root_n - 1].dir, n);
+    }
     return 0;
 }
 

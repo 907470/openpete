@@ -41,8 +41,17 @@
 #include "openpete_mods.h"
 #include "openpete_log.h"
 
+#include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <dirent.h>
+
+/* Static PNG-only decoder instance, same pattern as texture_pack.c —
+ * the stb implementation is file-local in each consumer. */
+#define STB_IMAGE_STATIC
+#define STB_IMAGE_IMPLEMENTATION
+#define STBI_ONLY_PNG
+#include "../../third_party/stb/stb_image.h"
 
 #define MOD_TEXTURE_MAX 64
 #define MOD_TEXTURE_DIM_MAX 1024
@@ -116,8 +125,8 @@ static void tex_poll_owner(mod_texture_t* t) {
     t->warned = 0;
 }
 
-int openpete_mods_texture_register(openpete_mod_t* self, uint16_t id,
-                                   const void* rgba, int w, int h) {
+static int tex_register_owned(const char* owner, uint16_t id,
+                              const void* rgba, int w, int h) {
     if (!rgba || w <= 0 || h <= 0 ||
         w > MOD_TEXTURE_DIM_MAX || h > MOD_TEXTURE_DIM_MAX)
         return -1;
@@ -145,11 +154,66 @@ int openpete_mods_texture_register(openpete_mod_t* self, uint16_t id,
     t->w = w;
     t->h = h;
     t->drawn = 0;
-    t->owner = openpete_mods_id_of(self);
+    t->owner = owner;
     t->owner_epoch = 0;           /* re-take the enabled verdict on next draw */
     OPL_INFO_F("mods", "texture: id %#06x %dx%d registered by %s",
                id, w, h, t->owner ? t->owner : "?");
     return 0;
+}
+
+int openpete_mods_texture_register(openpete_mod_t* self, uint16_t id,
+                                   const void* rgba, int w, int h) {
+    return tex_register_owned(openpete_mods_id_of(self), id, rgba, w, h);
+}
+
+/* ── Declarative own-textures: assets/textures/own/<hexid>.png ───────
+ * The zero-C road for mod-owned texture content: each PNG under a
+ * mod's assets/textures/own/ registers under the 16-bit id its
+ * filename spells in hex ("53c1.png"). Faceblocks select it with the
+ * same PSX-reserved mode-3 Tiledef encoding as the runtime entry;
+ * generators derive the pixels from the user's disc into this
+ * directory, so no game-derived data ships. Boot-scoped, like every
+ * asset overlay. `owner` must be a session-lifetime string (the asset
+ * root registry's copy). */
+int openpete_mods_texture_scan_root(const char* dir, const char* owner) {
+    char path[1200];
+    snprintf(path, sizeof path, "%s/textures/own", dir);
+    DIR* d = opendir(path);
+    if (!d) return 0;
+    int added = 0;
+    struct dirent* de;
+    while ((de = readdir(d))) {
+        const char* dot = strrchr(de->d_name, '.');
+        if (!dot || strcmp(dot, ".png") != 0) continue;
+        unsigned id;
+        char tail;
+        char stem[16];
+        size_t sl = (size_t)(dot - de->d_name);
+        if (sl == 0 || sl >= sizeof stem) continue;
+        memcpy(stem, de->d_name, sl);
+        stem[sl] = '\0';
+        if (sscanf(stem, "%4x%c", &id, &tail) != 1 || id > 0xFFFFu) {
+            OPL_WARN_F("mods", "texture: %s/%s: filename is not a 16-bit "
+                       "hex id — skipped", path, de->d_name);
+            continue;
+        }
+        char file[1440];
+        snprintf(file, sizeof file, "%s/%s", path, de->d_name);
+        int w = 0, h = 0, comp = 0;
+        unsigned char* px = stbi_load(file, &w, &h, &comp, 4);
+        if (!px) {
+            OPL_ERROR_F("mods", "texture: %s: PNG decode failed — skipped",
+                        file);
+            continue;
+        }
+        int rc = tex_register_owned(owner, (uint16_t)id, px, w, h);
+        stbi_image_free(px);
+        if (rc == 0) added++;
+        else OPL_ERROR_F("mods", "texture: %s: register failed (dims/"
+                         "table)", file);
+    }
+    closedir(d);
+    return added;
 }
 
 const unsigned char* openpete_mods_texture_get(uint16_t id, int* w, int* h) {
