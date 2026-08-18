@@ -108,6 +108,25 @@ typedef struct {
     char key[24];     /* host key name (host_key_down vocabulary) */
     char purpose[64]; /* human text for conflict messages / mod menu */
 } mod_binding_t;
+
+/* One [[config]] schema row from mod.toml — what the engine renders in
+ * the Mods panel for this mod. Values themselves live in config.toml. */
+#define MOD_CFG_ROWS_MAX  32
+#define MOD_CFG_ITEMS_MAX 8
+typedef struct {
+    char    key[96];   /* dotted config path */
+    char    type;      /* 'b' bool, 'i' int, 'd' float, 's' string */
+    char    label[64];
+    char    group[32];
+    char    help[128];
+    double  min, max;  /* numeric range; min >= max = free input */
+    char    items[MOD_CFG_ITEMS_MAX][24];
+    const char* item_ptrs[MOD_CFG_ITEMS_MAX]; /* stable combo view */
+    int     n_items;
+    int64_t def_i;     /* default: bool/int */
+    double  def_d;     /* default: float */
+    char    def_s[64]; /* default: string */
+} mod_cfg_row_t;
 #define MOD_PATH_MAX      1024
 #define MOD_SRCS_MAX      64
 #define MOD_DEPS_MAX      8
@@ -134,6 +153,10 @@ struct openpete_mod {
                         * tag. Advisory, like tier. */
     mod_binding_t bindings[MOD_BINDINGS_MAX]; /* declared host keys */
     int   n_bindings;
+    mod_cfg_row_t cfg_rows[MOD_CFG_ROWS_MAX]; /* [[config]] schema */
+    int   n_cfg;
+    int   cfg_reload_pending; /* Apply wrote config.toml; reload at the
+                               * next tick boundary re-reads it */
     /* [[level]] blocks: declarative custom levels (registered with the
      * content registry at load; the engine owns slot/TOC/warp). */
     struct { char name[64]; char files[64]; char donor[24]; int replace;
@@ -159,6 +182,17 @@ struct openpete_mod {
     int   has_assets;    /* assets/ overlay root exists (boot-scoped) */
     openpete_mod_ui_fn ui_fn; /* register_ui section body (NULL = none) */
     void* ui_user;
+    openpete_mod_ui_body_fn ui_body; /* UI-annex descriptor body
+                                      * (openpete_mod_ui_section symbol,
+                                      * resolved at dlopen, ABI-checked;
+                                      * NULL = none) */
+    /* ui_status line block: accumulates within a tick, lazily reset on
+     * the mod's first call in a NEW tick — a one-shot line printed at
+     * entry or on a level event persists until repainted. */
+    char     status[24][120];
+    int      status_n;
+    int      status_trunc;
+    unsigned status_tick;
     openpete_mod_toggle_fn toggle_fn; /* live-toggle notification */
     void* dl;
 
@@ -189,6 +223,29 @@ static uint64_t stateabi_fnv1a64(const void* data, size_t len, uint64_t h) {
     const uint8_t* p = (const uint8_t*)data;
     for (size_t i = 0; i < len; i++) { h ^= p[i]; h *= 0x100000001b3ull; }
     return h;
+}
+
+/* Resolve the UI annex's registration descriptor (see
+ * openpete_mod_ui.h). The abi check runs at LOAD so the prebuilt-DLL
+ * fallback path (which compile-on-load cannot rebuild) fails loudly
+ * instead of calling through a stale vtable shape: on mismatch the
+ * section is refused with a log line and the mod itself keeps running. */
+static void mod_resolve_ui_section(struct openpete_mod* mod, void* dl) {
+    mod->ui_body = NULL;
+    const openpete_mod_ui_section_t* d = (const openpete_mod_ui_section_t*)
+        mod_dlsym(dl, "openpete_mod_ui_section");
+    if (!d) return;
+    if (d->magic != 0x4F505549u || d->abi != OPENPETE_MOD_UI_ABI ||
+        !d->body) {
+        OPL_ERROR_F("mods", "%s: UI annex ABI mismatch (mod built for "
+                    "abi %u, engine has %u) — section refused; the mod "
+                    "itself still runs. Rebuild the mod against the "
+                    "current SDK.", mod->id,
+                    d->magic == 0x4F505549u ? d->abi : 0u,
+                    (unsigned)OPENPETE_MOD_UI_ABI);
+        return;
+    }
+    mod->ui_body = d->body;
 }
 
 static void mod_resolve_stateabi(struct openpete_mod* mod, void* dl) {
@@ -418,6 +475,29 @@ static int api_register_ui(openpete_mod_t* self, openpete_mod_ui_fn fn,
     return 0;
 }
 
+/* Canonical tick counter mirror for the ui_status lazy reset; advanced
+ * by openpete_mods_tick_boundary. */
+static unsigned s_current_tick;
+
+static void api_ui_status(openpete_mod_t* self, const char* fmt, ...) {
+    if (!self || !fmt) return;
+    struct openpete_mod* m = self;
+    if (m->status_tick != s_current_tick) {
+        m->status_n = 0;
+        m->status_trunc = 0;
+        m->status_tick = s_current_tick;
+    }
+    if (m->status_n >= (int)(sizeof m->status / sizeof m->status[0])) {
+        m->status_trunc = 1;
+        return;
+    }
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(m->status[m->status_n], sizeof m->status[0], fmt, ap);
+    va_end(ap);
+    m->status_n++;
+}
+
 static int api_register_toggle_hook(openpete_mod_t* self,
                                     openpete_mod_toggle_fn fn) {
     if (!self) return -1;
@@ -567,7 +647,7 @@ static const openpete_mod_api_t s_api;
  * re-parse + rebuild + dlopen a FRESH object (unique .hotN name — the
  * old object stays resident by design), re-run entry, restore state. */
 static void mod_hot_reload(struct openpete_mod* mod) {
-    OPL_INFO_F("mods", "hot reload: %s (sources changed)", mod->id);
+    OPL_INFO_F("mods", "hot reload: %s (source or config change)", mod->id);
     static unsigned char blob[64 * 1024];
     int blen = openpete_mods_state_capture(mod->id, blob, sizeof blob);
 
@@ -583,9 +663,11 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     exports_remove_owner(mod->id);
     mod->ui_fn   = NULL; /* re-entry re-registers the UI section */
     mod->ui_user = NULL;
+    mod->ui_body = NULL; /* re-resolved from the fresh object below */
     mod->toggle_fn = NULL;
 
     mod->n_deps = mod->n_above = mod->n_below = mod->n_bindings = 0;
+    mod->n_cfg = 0;
     char dir_copy[MOD_PATH_MAX];
     snprintf(dir_copy, sizeof dir_copy, "%s", mod->dir);
     if (parse_manifest(dir_copy, mod) != 0) {
@@ -651,6 +733,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     }
     mod->dl = dl; /* old object deliberately stays resident */
     mod_resolve_stateabi(mod, dl);
+    mod_resolve_ui_section(mod, dl);
     if (blen >= 0)
         openpete_mods_state_restore(mod->id, blob, blen);
     /* Re-entry registered every surface in its default (enabled) state;
@@ -756,10 +839,68 @@ int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out) {
     out->enabled     = m->enabled;
     out->entered     = m->entered;
     out->sim_neutral = m->sim_neutral;
-    out->has_ui      = m->ui_fn != NULL;
+    out->has_ui      = m->ui_fn != NULL || m->ui_body != NULL ||
+                       m->status_n > 0;
     out->has_assets  = m->has_assets;
     out->has_src     = m->has_src;
+    out->has_cfg     = m->n_cfg;
     return 1;
+}
+
+/* ── Config-schema accessors (the Mods panel's data source) ────────── */
+
+int openpete_mods_cfg_row_count(int mod_index) {
+    if (mod_index < 0 || mod_index >= s_mod_count) return 0;
+    return s_mods[mod_index].n_cfg;
+}
+
+int openpete_mods_cfg_row(int mod_index, int row,
+                          openpete_mods_cfg_row_t* out) {
+    if (mod_index < 0 || mod_index >= s_mod_count || !out) return 0;
+    struct openpete_mod* m = &s_mods[mod_index];
+    if (row < 0 || row >= m->n_cfg) return 0;
+    const mod_cfg_row_t* r = &m->cfg_rows[row];
+    out->key     = r->key;
+    out->type    = r->type;
+    out->label   = r->label[0] ? r->label : r->key;
+    out->group   = r->group;
+    out->help    = r->help;
+    out->min     = r->min;
+    out->max     = r->max;
+    out->items   = r->n_items ? r->item_ptrs : NULL;
+    out->n_items = r->n_items;
+    out->ival    = 0;
+    out->fval    = 0.0;
+    out->sval    = "";
+    static char sbuf[128];
+    switch (r->type) {
+    case 'b':
+        out->ival = openpete_mods_config_bool(m, r->key, r->def_i != 0);
+        break;
+    case 'i':
+        out->ival = openpete_mods_config_int(m, r->key, r->def_i);
+        break;
+    case 'd':
+        out->fval = openpete_mods_config_float(m, r->key, r->def_d);
+        break;
+    case 's':
+        (void)openpete_mods_config_str(m, r->key, r->def_s, sbuf,
+                                       (int)sizeof sbuf);
+        out->sval = sbuf;
+        break;
+    }
+    return 1;
+}
+
+int openpete_mods_cfg_apply(int mod_index, int n,
+                            const openpete_mods_cfg_edit_t* edits) {
+    if (mod_index < 0 || mod_index >= s_mod_count || n <= 0 || !edits)
+        return -1;
+    struct openpete_mod* m = &s_mods[mod_index];
+    if (openpete_mods_config_write(m->dir, m->log_tag, n, edits) != 0)
+        return -1;
+    m->cfg_reload_pending = 1;
+    return 0;
 }
 
 /* Overlay-side invocation of a mod's UI section. The render-purity
@@ -769,9 +910,15 @@ int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out) {
 void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui) {
     if (i < 0 || i >= s_mod_count || !ui) return;
     struct openpete_mod* m = &s_mods[i];
-    if (!m->ui_fn || !m->enabled) return;
+    if (!m->enabled) return;
+    for (int l = 0; l < m->status_n; l++)
+        ui->text("%s", m->status[l]);
+    if (m->status_trunc)
+        ui->text_disabled("… (ui_status block truncated)");
+    if (!m->ui_fn && !m->ui_body) return;
     openpete_mods_in_present = 1;
-    m->ui_fn(ui, m->ui_user);
+    if (m->ui_body) m->ui_body(ui);
+    if (m->ui_fn) m->ui_fn(ui, m->ui_user);
     openpete_mods_in_present = 0;
 }
 
@@ -814,12 +961,27 @@ static void toggle_parse_env(void) {
 }
 
 void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
+    s_current_tick = canonical_tick;
     for (int i = 0; i < s_toggle_sched_n; i++) {
         if (s_toggle_sched[i].tick == canonical_tick)
             (void)openpete_mods_set_mod_enabled(s_toggle_sched[i].id,
                                                 s_toggle_sched[i].on);
     }
     hot_reload_poll();
+
+    /* Apply-committed config changes: reload the mod so its entry
+     * re-reads the fresh values (build key unchanged, so the compile is
+     * a cache hit). A mod that never entered (deferred row / assets-
+     * only) just re-parses the file — entry reads it on first enable. */
+    for (int i = 0; i < s_mod_count; i++) {
+        struct openpete_mod* mod = &s_mods[i];
+        if (!mod->cfg_reload_pending) continue;
+        mod->cfg_reload_pending = 0;
+        if (mod->dl && mod->has_src && mod->entered)
+            mod_hot_reload(mod);
+        else
+            openpete_mods_config_load(mod, mod->dir, mod->log_tag);
+    }
 
     int kept = 0;
     for (int q = 0; q < s_toggle_n; q++) {
@@ -1180,6 +1342,7 @@ static const openpete_mod_api_t s_api = {
     .texpack_fog_shift   = api_texpack_fog_shift,
     .register_ui         = api_register_ui,
     .register_toggle_hook = api_register_toggle_hook,
+    .ui_status            = api_ui_status,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */
@@ -1327,6 +1490,104 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
             if (bk.ok) free(bk.u.s);
             if (bp.ok) free(bp.u.s);
         }
+    }
+    /* [[config]] schema rows: key + type (+ default/label/group/help,
+     * numeric min/max, string items). The engine renders these in the
+     * Mods panel; a row with a bad or missing type/key is skipped with
+     * an error rather than guessing. */
+    toml_array_t* cfgs = toml_array_in(root, "config");
+    if (cfgs) {
+        int n = toml_array_nelem(cfgs);
+        for (int i = 0; i < n; i++) {
+            if (mod->n_cfg >= MOD_CFG_ROWS_MAX) {
+                OPL_ERROR_F("mods", "%s: more than %d [[config]] rows — "
+                            "the rest are ignored", path, MOD_CFG_ROWS_MAX);
+                break;
+            }
+            toml_table_t* c = toml_table_at(cfgs, i);
+            if (!c) continue;
+            toml_datum_t ck = toml_string_in(c, "key");
+            toml_datum_t ct = toml_string_in(c, "type");
+            if (!ck.ok || !ct.ok) {
+                OPL_ERROR_F("mods", "%s: [[config]] needs key and type",
+                            path);
+                if (ck.ok) free(ck.u.s);
+                if (ct.ok) free(ct.u.s);
+                continue;
+            }
+            char type = 0;
+            if (strcmp(ct.u.s, "bool") == 0)        type = 'b';
+            else if (strcmp(ct.u.s, "int") == 0)    type = 'i';
+            else if (strcmp(ct.u.s, "float") == 0)  type = 'd';
+            else if (strcmp(ct.u.s, "string") == 0) type = 's';
+            if (!type) {
+                OPL_ERROR_F("mods", "%s: [[config]] \"%s\": unknown type "
+                            "\"%s\"", path, ck.u.s, ct.u.s);
+                free(ck.u.s);
+                free(ct.u.s);
+                continue;
+            }
+            mod_cfg_row_t* r = &mod->cfg_rows[mod->n_cfg];
+            memset(r, 0, sizeof *r);
+            snprintf(r->key, sizeof r->key, "%s", ck.u.s);
+            r->type = type;
+            free(ck.u.s);
+            free(ct.u.s);
+            toml_datum_t d;
+            if ((d = toml_string_in(c, "label")).ok) {
+                snprintf(r->label, sizeof r->label, "%s", d.u.s);
+                free(d.u.s);
+            }
+            if ((d = toml_string_in(c, "group")).ok) {
+                snprintf(r->group, sizeof r->group, "%s", d.u.s);
+                free(d.u.s);
+            }
+            if ((d = toml_string_in(c, "help")).ok) {
+                snprintf(r->help, sizeof r->help, "%s", d.u.s);
+                free(d.u.s);
+            }
+            if ((d = toml_double_in(c, "min")).ok) r->min = d.u.d;
+            if ((d = toml_double_in(c, "max")).ok) r->max = d.u.d;
+            switch (type) {
+            case 'b':
+                if ((d = toml_bool_in(c, "default")).ok)
+                    r->def_i = d.u.b ? 1 : 0;
+                break;
+            case 'i':
+                if ((d = toml_int_in(c, "default")).ok) r->def_i = d.u.i;
+                break;
+            case 'd':
+                if ((d = toml_double_in(c, "default")).ok) r->def_d = d.u.d;
+                else if ((d = toml_int_in(c, "default")).ok)
+                    r->def_d = (double)d.u.i;
+                break;
+            case 's':
+                if ((d = toml_string_in(c, "default")).ok) {
+                    snprintf(r->def_s, sizeof r->def_s, "%s", d.u.s);
+                    free(d.u.s);
+                }
+                break;
+            }
+            toml_array_t* it = toml_array_in(c, "items");
+            if (it && type == 's') {
+                int ni = toml_array_nelem(it);
+                for (int k = 0; k < ni && r->n_items < MOD_CFG_ITEMS_MAX;
+                     k++) {
+                    toml_datum_t iv = toml_string_at(it, k);
+                    if (!iv.ok) continue;
+                    snprintf(r->items[r->n_items], sizeof r->items[0],
+                             "%s", iv.u.s);
+                    free(iv.u.s);
+                    r->n_items++;
+                }
+            }
+            for (int k = 0; k < r->n_items; k++)
+                r->item_ptrs[k] = r->items[k];
+            mod->n_cfg++;
+        }
+        if (mod->n_cfg)
+            OPL_INFO_F("mods", "%s: %d config schema row(s)", mod->id,
+                       mod->n_cfg);
     }
     {   /* [[level]] — declarative custom levels */
         toml_array_t* la = toml_array_in(root, "level");
@@ -1503,7 +1764,7 @@ static int mod_compute_key(const char* mod_dir, const char* sdk_dir,
         openpete_sha256_update(&hc, ident, strlen(ident));
     }
     static const char* const sdk_inputs[] = {
-        "openpete_mod_api.h", "openpete_sdk_symbols.h",
+        "openpete_mod_api.h", "openpete_mod_ui.h", "openpete_sdk_symbols.h",
         "openpete_sdk_wrappers.h", "psx_runtime.h",
         "openpete_game_structs.h", "spyro1_actor_pose.h",
     };
@@ -1708,6 +1969,7 @@ static int mod_run_entry(struct openpete_mod* mod) {
         return -1;
     }
     mod_resolve_stateabi(mod, mod->dl);
+    mod_resolve_ui_section(mod, mod->dl);
     mod->entered = 1;
     return 0;
 }

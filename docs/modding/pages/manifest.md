@@ -146,6 +146,45 @@ Why not env vars? They don't cross process/interop boundaries (notably
 WSL→Windows), they aren't discoverable, and they can't ship defaults.
 `config.toml` does all three.
 
+## `[[config]]` — settings the engine renders for you
+
+Declare your settings as schema rows in `mod.toml` and the engine
+draws them in the Mods panel (M key) — checkbox, slider, or combo per
+row, grouped and tooltipped. The user's committed edits are written
+back into `config.toml` **with their comments preserved**, and the mod
+reloads at the next tick boundary so entry re-reads the fresh values
+through the same `config_*` getters. The mod declares *what* is
+configurable; the engine owns *how it looks*.
+
+``` toml
+[[config]]
+key     = "gems.sfx"      # the config.toml path this row edits
+type    = "bool"          # bool | int | float | string
+default = true            # shown when config.toml has no value
+label   = "S3 collect chime"
+group   = "Gems"          # section header within the mod's block
+help    = "Spyro 3 collect chime (canonical flat pitch)"
+
+[[config]]
+key   = "spawn.scale"
+type  = "float"
+default = 1.0
+min   = 0.25              # min < max renders a slider;
+max   = 4.0               # omit for a free input box
+
+[[config]]
+key   = "render.mode"
+type  = "string"
+default = "fast"
+items = ["fast", "fancy"] # string + items renders a combo
+```
+
+A mod whose whole UI is settings plus status lines
+(`api->ui_status`) needs no widget code at all. For a genuinely
+custom panel — live graphs, tables — see the UI annex
+(`openpete_mod_ui.h`), which is separately versioned and carries no
+stability promise.
+
 ## enabled.txt
 
 One mod id per line. **Order is priority**: later mods run first on

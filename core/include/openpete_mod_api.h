@@ -71,32 +71,17 @@ typedef struct openpete_sfx_event {
 /* A level-ready callback (see on_level below). */
 typedef void (*openpete_mod_level_fn)(CPUState* cpu, int level_id);
 
-/* ── Per-mod UI (see register_ui below) ──────────────────────────────
- * Immediate-mode widget vtable the engine's dev overlay implements —
- * mods never see the underlying UI library. Widgets returning int
- * report 1 when the value changed this frame (checkbox/slider/combo
- * write through their pointer), buttons report 1 on click. tooltip()
- * annotates the PREVIOUS widget on hover. The vtable is engine-owned
- * and append-only, like the api struct. */
-typedef struct openpete_mod_ui {
-    void (*text)(const char* fmt, ...);          /* printf-style line   */
-    void (*text_disabled)(const char* fmt, ...); /* dimmed line         */
-    int  (*button)(const char* label);
-    int  (*checkbox)(const char* label, int* v);
-    int  (*slider_int)(const char* label, int* v, int min, int max);
-    int  (*slider_float)(const char* label, float* v, float min,
-                         float max);
-    int  (*combo)(const char* label, int* idx, const char* const* items,
-                  int count);
-    int  (*input_text)(const char* label, char* buf, int cap);
-    void (*separator)(void);
-    void (*same_line)(void);
-    void (*tooltip)(const char* text);
-    void* _reserved[8]; /* future widgets; always NULL today */
-} openpete_mod_ui_t;
+/* ── Per-mod UI ──────────────────────────────────────────────────────
+ * The widget vtable lives in the separately-versioned UI ANNEX
+ * (openpete_mod_ui.h — NO stability promise; registration via the
+ * OPENPETE_MOD_UI_SECTION exported descriptor, ABI-checked at load).
+ * The kernel's own UI surface is [[config]] schema rows in mod.toml
+ * (engine-rendered; values read back through config_*) plus the
+ * ui_status line service at the end of this struct.
+ * Transitional until the api-v1 cut: register_ui below still accepts
+ * the legacy (ui, user) body. */
+#include "openpete_mod_ui.h"
 
-/* The mod's section body. Runs only while the overlay is open AND the
- * mod is enabled; draw with `ui`, `user` is the register_ui cookie. */
 typedef void (*openpete_mod_ui_fn)(const openpete_mod_ui_t* ui,
                                    void* user);
 
@@ -294,7 +279,7 @@ typedef int (*openpete_mod_material_fn)(CPUState* cpu, uint32_t moby_vaddr,
 #define OPENPETE_TICK_HZ  (1125000.0 / 37609.0)
 #define OPENPETE_VBL_HZ   (2250000.0 / 37609.0)
 
-#define OPENPETE_MOD_API_VERSION 4u
+#define OPENPETE_MOD_API_VERSION 5u
 
 typedef struct openpete_mod_api {
     uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION */
@@ -823,6 +808,18 @@ typedef struct openpete_mod_api {
      * one registration per mod (re-register replaces). Returns 0. */
     int (*register_toggle_hook)(openpete_mod_t* self,
                                 openpete_mod_toggle_fn fn);
+
+    /* ── Status lines (api v5) ───────────────────────────────────────
+     * Print a status line into this mod's section of the dev overlay's
+     * Mods panel — the kernel's answer to "my UI is just text". Legal
+     * from any context (host-side only). Lines ACCUMULATE within a
+     * tick and persist until the next tick in which the mod calls
+     * ui_status again — so a one-shot line printed at entry or on a
+     * level event stays visible, and a per-tick printer repaints its
+     * whole block each tick. No fixed line budget to design around;
+     * past ~24 lines the block truncates with an ellipsis marker
+     * (genuinely large panels belong to the UI annex). */
+    void (*ui_status)(openpete_mod_t* self, const char* fmt, ...);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

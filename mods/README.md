@@ -88,6 +88,14 @@ name = "warp"             # Users rebind these in openpete.toml via
 key  = "F6"               # [keys.mod.<id>] without editing the mod.
 purpose = "warp home"
 
+[[config]]                # settings schema: the ENGINE renders these in
+key     = "gems.sfx"      # the Mods panel and writes committed edits
+type    = "bool"          # back into config.toml (comments preserved);
+default = true            # entry re-reads them via api->config_* after
+label   = "S3 collect chime"   # the queued reload. types: bool | int |
+group   = "Gems"          # float | string; min/max = slider, items =
+help    = "tooltip text"  # combo.
+
 [[site]]                  # instruction-site hooks (the escape hatch);
 name = "fade-bound"       # baked by scripts/regen-mod-sites.sh
 addr = 0x800128EC

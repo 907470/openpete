@@ -505,10 +505,148 @@ static void mod_row_tooltip(const openpete_mods_menu_info_t *mi)
     if (mi->enabled && openpete_mods_registry_owner_busy(mi->id))
         ImGui::TextDisabled("can't be turned off while you're inside "
                             "its level");
-    if (mi->enabled && !mi->has_ui)
+    if (mi->enabled && !mi->has_ui && !mi->has_cfg)
         ImGui::TextDisabled("no controls registered");
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
+}
+
+/* ── Engine-rendered config schema ([[config]] rows) ────────────────
+ * The engine draws each mod's settings from its manifest schema; edits
+ * buffer here (per mod id) and commit through openpete_mods_cfg_apply,
+ * which writes config.toml and queues a reload so the mod's entry
+ * re-reads the values. Nothing applies until the user hits Apply — a
+ * half-dragged slider never half-configures a mod. */
+
+struct mod_cfg_edit_state {
+    char id[64];
+    int  n;
+    bool seeded;
+    struct { int64_t i; double d; char s[128]; } v[32];
+};
+static mod_cfg_edit_state s_cfg_edit[64];
+
+static mod_cfg_edit_state *cfg_edit_slot(const char *id)
+{
+    mod_cfg_edit_state *free_slot = nullptr;
+    for (auto &e : s_cfg_edit) {
+        if (e.id[0] && strcmp(e.id, id) == 0) return &e;
+        if (!e.id[0] && !free_slot) free_slot = &e;
+    }
+    if (free_slot) {
+        snprintf(free_slot->id, sizeof free_slot->id, "%s", id);
+        free_slot->seeded = false;
+    }
+    return free_slot;
+}
+
+static void cfg_seed(mod_cfg_edit_state *st, int mod_index, int rows)
+{
+    st->n = rows;
+    for (int r = 0; r < rows && r < 32; r++) {
+        openpete_mods_cfg_row_t row;
+        if (!openpete_mods_cfg_row(mod_index, r, &row)) continue;
+        st->v[r].i = row.ival;
+        st->v[r].d = row.fval;
+        snprintf(st->v[r].s, sizeof st->v[r].s, "%s", row.sval);
+    }
+    st->seeded = true;
+}
+
+static void draw_mod_config_rows(int mod_index,
+                                 const openpete_mods_menu_info_t *mi)
+{
+    const int rows = openpete_mods_cfg_row_count(mod_index);
+    if (rows <= 0) return;
+    mod_cfg_edit_state *st = cfg_edit_slot(mi->id);
+    if (!st) return;
+    if (!st->seeded || st->n != rows) cfg_seed(st, mod_index, rows);
+
+    bool dirty = false;
+    const char *open_group = "";
+    for (int r = 0; r < rows && r < 32; r++) {
+        openpete_mods_cfg_row_t row;
+        if (!openpete_mods_cfg_row(mod_index, r, &row)) continue;
+        if (row.group[0] && strcmp(row.group, open_group) != 0) {
+            ImGui::SeparatorText(row.group);
+            open_group = row.group;
+        }
+        ImGui::PushID(row.key);
+        switch (row.type) {
+        case 'b': {
+            bool b = st->v[r].i != 0;
+            if (ImGui::Checkbox(row.label, &b)) st->v[r].i = b ? 1 : 0;
+            dirty |= (st->v[r].i != row.ival);
+            break;
+        }
+        case 'i': {
+            int iv = (int)st->v[r].i;
+            if (row.min < row.max) {
+                if (ImGui::SliderInt(row.label, &iv, (int)row.min,
+                                     (int)row.max))
+                    st->v[r].i = iv;
+            } else if (ImGui::InputInt(row.label, &iv)) {
+                st->v[r].i = iv;
+            }
+            dirty |= (st->v[r].i != row.ival);
+            break;
+        }
+        case 'd': {
+            float f = (float)st->v[r].d;
+            if (row.min < row.max) {
+                if (ImGui::SliderFloat(row.label, &f, (float)row.min,
+                                       (float)row.max))
+                    st->v[r].d = f;
+            } else if (ImGui::InputFloat(row.label, &f)) {
+                st->v[r].d = f;
+            }
+            dirty |= (st->v[r].d != row.fval);
+            break;
+        }
+        case 's': {
+            if (row.items && row.n_items > 0) {
+                int idx = 0;
+                for (int k = 0; k < row.n_items; k++)
+                    if (strcmp(row.items[k], st->v[r].s) == 0) idx = k;
+                if (ImGui::Combo(row.label, &idx, row.items, row.n_items))
+                    snprintf(st->v[r].s, sizeof st->v[r].s, "%s",
+                             row.items[idx]);
+            } else {
+                ImGui::InputText(row.label, st->v[r].s,
+                                 sizeof st->v[r].s);
+            }
+            dirty |= (strcmp(st->v[r].s, row.sval) != 0);
+            break;
+        }
+        }
+        if (row.help[0] &&
+            ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
+            ImGui::SetTooltip("%s", row.help);
+        ImGui::PopID();
+    }
+
+    if (dirty) {
+        if (ImGui::Button("Apply")) {
+            openpete_mods_cfg_edit_t edits[32];
+            int n = 0;
+            for (int r = 0; r < rows && r < 32; r++) {
+                openpete_mods_cfg_row_t row;
+                if (!openpete_mods_cfg_row(mod_index, r, &row)) continue;
+                edits[n].key  = row.key;
+                edits[n].type = row.type;
+                edits[n].ival = st->v[r].i;
+                edits[n].fval = st->v[r].d;
+                edits[n].sval = st->v[r].s;
+                n++;
+            }
+            if (openpete_mods_cfg_apply(mod_index, n, edits) == 0)
+                OPL_INFO_F("devui", "mod %s: config applied", mi->id);
+        }
+        ImGui::SameLine();
+        if (ImGui::Button("Revert")) cfg_seed(st, mod_index, rows);
+        ImGui::SameLine();
+        ImGui::TextDisabled("(pending)");
+    }
 }
 
 static bool mod_row_matches(const ImGuiTextFilter &f,
@@ -563,10 +701,11 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
         ImGui::SameLine();
 
         const bool has_levels = mod_owns_custom_levels(mi.id);
-        if (mi.enabled && (mi.has_ui || has_levels)) {
+        if (mi.enabled && (mi.has_ui || mi.has_cfg || has_levels)) {
             if (ImGui::TreeNodeEx(mi.name,
                                   ImGuiTreeNodeFlags_SpanAvailWidth)) {
                 mod_row_tooltip(&mi);
+                draw_mod_config_rows(i, &mi);
                 if (mi.has_ui) openpete_mods_ui_draw(i, &s_mod_ui);
                 if (has_levels) draw_custom_level_rows(mi.id);
                 ImGui::TreePop();

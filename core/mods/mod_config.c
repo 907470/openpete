@@ -190,3 +190,220 @@ int openpete_mods_config_str(openpete_mod_t* self, const char* key,
     snprintf(buf, (size_t)cap, "%s", def ? def : "");
     return 0;
 }
+
+/* ── Comment-preserving writer (the Mods panel's Apply path) ─────────
+ * config.toml is the USER's file — hand-written comments document what
+ * each key means, so a rewrite that drops them is unacceptable. This
+ * writer edits the file as text: for each edit it finds the dotted
+ * path's section header and the `leaf = value` line inside it, and
+ * replaces only the value span, keeping indentation and any trailing
+ * comment. Missing keys append at the end of their section; missing
+ * sections append at EOF. Scalars only — exactly the shapes the
+ * [[config]] schema can declare. */
+
+#define CFGW_MAX (64 * 1024)
+
+static void cfgw_format_value(char* out, size_t cap,
+                              const openpete_mods_cfg_edit_t* e) {
+    switch (e->type) {
+    case 'b': snprintf(out, cap, "%s", e->ival ? "true" : "false"); break;
+    case 'i': snprintf(out, cap, "%lld", (long long)e->ival); break;
+    case 'd':
+        snprintf(out, cap, "%g", e->fval);
+        /* TOML requires a float to carry '.' or an exponent — "%g" of
+         * 2.0 prints "2", which would silently retype the key. */
+        if (!strpbrk(out, ".eE") && strlen(out) + 2 < cap)
+            strcat(out, ".0");
+        break;
+    case 's': {
+        size_t o = 0;
+        if (o < cap - 1) out[o++] = '"';
+        for (const char* c = e->sval ? e->sval : ""; *c && o < cap - 3; c++) {
+            if (*c == '"' || *c == '\\') out[o++] = '\\';
+            out[o++] = *c;
+        }
+        out[o++] = '"';
+        out[o] = '\0';
+        break;
+    }
+    default: out[0] = '\0'; break;
+    }
+}
+
+/* Line starts of `text` are walked repeatedly; all spans are byte
+ * offsets into the buffer. Returns 0 on success. */
+static int cfgw_apply_one(char* text, size_t* len, size_t cap,
+                          const openpete_mods_cfg_edit_t* e) {
+    char section[96] = "", leaf[96];
+    const char* dot = strrchr(e->key, '.');
+    if (dot) {
+        size_t sl = (size_t)(dot - e->key);
+        if (sl >= sizeof section) return -1;
+        memcpy(section, e->key, sl);
+        section[sl] = '\0';
+        snprintf(leaf, sizeof leaf, "%s", dot + 1);
+    } else {
+        snprintf(leaf, sizeof leaf, "%s", e->key);
+    }
+
+    char value[192];
+    cfgw_format_value(value, sizeof value, e);
+
+    /* Locate the section's span: [sec_start, sec_end). Root section is
+     * everything before the first header. */
+    size_t sec_start = 0, sec_end = *len;
+    int in_target = section[0] == '\0'; /* root keys start in-section */
+    size_t pos = 0;
+    int found_section = in_target;
+    while (pos < *len) {
+        size_t eol = pos;
+        while (eol < *len && text[eol] != '\n') eol++;
+        const char* line = text + pos;
+        size_t llen = eol - pos;
+        /* A header line: optional ws, '[', name, ']' */
+        size_t w = 0;
+        while (w < llen && (line[w] == ' ' || line[w] == '\t')) w++;
+        if (w < llen && line[w] == '[' && (w + 1 >= llen || line[w+1] != '[')) {
+            char name[96] = "";
+            size_t n = 0, q = w + 1;
+            while (q < llen && line[q] != ']' && n < sizeof name - 1)
+                name[n++] = line[q++];
+            name[n] = '\0';
+            if (in_target) { sec_end = pos; break; } /* target section ended */
+            if (section[0] && strcmp(name, section) == 0) {
+                in_target = 1;
+                found_section = 1;
+                sec_start = eol < *len ? eol + 1 : eol;
+                sec_end = *len;
+            }
+        }
+        pos = eol < *len ? eol + 1 : eol;
+    }
+
+    if (found_section) {
+        /* Find `leaf =` inside [sec_start, sec_end). */
+        size_t p2 = sec_start;
+        while (p2 < sec_end) {
+            size_t eol = p2;
+            while (eol < sec_end && text[eol] != '\n') eol++;
+            char* line = text + p2;
+            size_t llen = eol - p2;
+            size_t w = 0;
+            while (w < llen && (line[w] == ' ' || line[w] == '\t')) w++;
+            size_t kl = strlen(leaf);
+            if (w + kl <= llen && memcmp(line + w, leaf, kl) == 0) {
+                size_t a = w + kl;
+                while (a < llen && (line[a] == ' ' || line[a] == '\t')) a++;
+                if (a < llen && line[a] == '=') {
+                    a++;
+                    while (a < llen && (line[a] == ' ' || line[a] == '\t'))
+                        a++;
+                    /* Value span: quoted string or bare token, up to a
+                     * trailing comment. */
+                    size_t b = a;
+                    if (b < llen && line[b] == '"') {
+                        b++;
+                        while (b < llen &&
+                               !(line[b] == '"' && line[b-1] != '\\'))
+                            b++;
+                        if (b < llen) b++;
+                    } else {
+                        while (b < llen && line[b] != '#') b++;
+                        while (b > a && (line[b-1] == ' ' ||
+                                         line[b-1] == '\t'))
+                            b--;
+                    }
+                    size_t vlen = strlen(value);
+                    size_t old_span = b - a;
+                    if (*len - old_span + vlen >= cap) return -1;
+                    memmove(text + p2 + a + vlen, text + p2 + b,
+                            *len - (p2 + b) + 1);
+                    memcpy(text + p2 + a, value, vlen);
+                    *len = *len - old_span + vlen;
+                    return 0;
+                }
+            }
+            p2 = eol < sec_end ? eol + 1 : eol;
+        }
+        /* Key missing: insert at the section's end (before the next
+         * header), after trimming trailing blank lines of the span. */
+        size_t ins = sec_end;
+        while (ins > sec_start &&
+               (text[ins-1] == '\n' || text[ins-1] == ' ' ||
+                text[ins-1] == '\t')) {
+            if (text[ins-1] == '\n' && ins >= 2 && text[ins-2] != '\n')
+                break;
+            ins--;
+        }
+        char add[320];
+        int alen = snprintf(add, sizeof add, "%s = %s\n", leaf, value);
+        if (alen < 0 || *len + (size_t)alen >= cap) return -1;
+        memmove(text + ins + alen, text + ins, *len - ins + 1);
+        memcpy(text + ins, add, (size_t)alen);
+        *len += (size_t)alen;
+        return 0;
+    }
+
+    /* Section missing: append it. */
+    char add[448];
+    int alen = snprintf(add, sizeof add, "%s%s[%s]\n%s = %s\n",
+                        *len && text[*len-1] != '\n' ? "\n" : "",
+                        *len ? "\n" : "", section, leaf, value);
+    if (alen < 0 || *len + (size_t)alen >= cap) return -1;
+    memcpy(text + *len, add, (size_t)alen + 1);
+    *len += (size_t)alen;
+    return 0;
+}
+
+int openpete_mods_config_write(const char* mod_dir, const char* log_tag,
+                               int n, const openpete_mods_cfg_edit_t* e) {
+    static char text[CFGW_MAX];
+    char path[1200];
+    snprintf(path, sizeof path, "%s/config.toml", mod_dir);
+
+    size_t len = 0;
+    FILE* fp = fopen(path, "rb");
+    if (fp) {
+        len = fread(text, 1, sizeof text - 1, fp);
+        fclose(fp);
+        if (len >= sizeof text - 1) {
+            OPL_ERROR_F(log_tag, "config.toml too large to edit (%d KiB "
+                        "cap)", CFGW_MAX / 1024);
+            return -1;
+        }
+    }
+    text[len] = '\0';
+
+    for (int i = 0; i < n; i++) {
+        if (cfgw_apply_one(text, &len, sizeof text, &e[i]) != 0) {
+            OPL_ERROR_F(log_tag, "config.toml: failed to write \"%s\" — "
+                        "file left unchanged", e[i].key);
+            return -1;
+        }
+    }
+
+    char tmp[1220];
+    snprintf(tmp, sizeof tmp, "%s.tmp", path);
+    FILE* out = fopen(tmp, "wb");
+    if (!out) {
+        OPL_ERROR_F(log_tag, "config.toml: cannot open %s for writing", tmp);
+        return -1;
+    }
+    size_t wrote = fwrite(text, 1, len, out);
+    fclose(out);
+    if (wrote != len) {
+        remove(tmp);
+        OPL_ERROR_F(log_tag, "config.toml: short write — original kept");
+        return -1;
+    }
+#ifdef _WIN32
+    remove(path); /* rename() refuses to clobber on Windows */
+#endif
+    if (rename(tmp, path) != 0) {
+        remove(tmp);
+        OPL_ERROR_F(log_tag, "config.toml: rename failed — original kept");
+        return -1;
+    }
+    OPL_INFO_F(log_tag, "config.toml: %d key(s) written", n);
+    return 0;
+}

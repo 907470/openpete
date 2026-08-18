@@ -414,6 +414,7 @@ add_custom_command(
             --site-dir ${CMAKE_CURRENT_BINARY_DIR}/moddocs/site
     COMMAND ${CMAKE_COMMAND} -E touch ${_mod_docs_stamp}
     DEPENDS ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
+            ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_ui.h
             ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
             ${CMAKE_CURRENT_SOURCE_DIR}/manifest/globals.toml
             ${CMAKE_CURRENT_SOURCE_DIR}/manifest/prototypes.toml
@@ -444,6 +445,7 @@ add_custom_command(TARGET openpete-spyro1 POST_BUILD
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
+            ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_ui.h
             ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
             ${CMAKE_CURRENT_SOURCE_DIR}/spyro1_actor_pose.h
             ${_mod_sdk_gen}/openpete_sdk_symbols.h
@@ -495,6 +497,7 @@ if(OPENPETE_COMPILE_MODS)
         # list, so an SDK change re-cross-compiles every staged mod.
         set(_mod_sdk_deps
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
+            ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_ui.h
             ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
             ${CMAKE_CURRENT_SOURCE_DIR}/spyro1_actor_pose.h
             ${_mod_sdk_gen}/openpete_sdk_symbols.h

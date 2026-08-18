@@ -164,11 +164,52 @@ typedef struct {
                           * load-all: boot-disabled mods enter on first
                           * enable) */
     int sim_neutral;     /* manifest declaration (observer tier) */
-    int has_ui;          /* register_ui was called */
+    int has_ui;          /* a UI section (register_ui / annex descriptor)
+                          * or a live ui_status block */
     int has_assets;      /* assets/ overlay root (boot-scoped tier) */
     int has_src;
+    int has_cfg;         /* [[config]] schema rows in the manifest */
 } openpete_mods_menu_info_t;
 int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out);
+
+/* ── Config schema ([[config]] rows in mod.toml) ─────────────────────
+ * The author declares what is configurable; the ENGINE renders each
+ * mod's settings section in the Mods panel from these rows. Values
+ * live in the user's config.toml (written back with a comment-
+ * preserving surgical edit) and reach the mod through the config_*
+ * getters when its entry re-runs after the queued reload. */
+typedef struct {
+    const char* key;    /* dotted config path ("gems.sfx") */
+    char        type;   /* 'b' bool, 'i' int, 'd' float, 's' string */
+    const char* label;  /* row label (falls back to key) */
+    const char* group;  /* section header within the mod's block, "" = none */
+    const char* help;   /* tooltip text, "" = none */
+    double      min, max;   /* numeric range; min >= max = free input */
+    const char* const* items; /* string type: combo choices (else NULL) */
+    int         n_items;
+    /* Current effective value: config.toml if present, else the schema
+     * default. sval is loader-owned and valid until the next row call. */
+    int64_t     ival;   /* bool/int */
+    double      fval;   /* float */
+    const char* sval;   /* string */
+} openpete_mods_cfg_row_t;
+
+typedef struct {
+    const char* key;
+    char        type;   /* same encoding as the row */
+    int64_t     ival;
+    double      fval;
+    const char* sval;
+} openpete_mods_cfg_edit_t;
+
+int openpete_mods_cfg_row_count(int mod_index);
+int openpete_mods_cfg_row(int mod_index, int row,
+                          openpete_mods_cfg_row_t* out);
+/* Write the edits into the mod's config.toml and queue a reload at the
+ * next tick boundary (entry re-reads the fresh values through
+ * config_*). 0 = written; the reload itself is asynchronous. */
+int openpete_mods_cfg_apply(int mod_index, int n,
+                            const openpete_mods_cfg_edit_t* edits);
 
 /* Run mod i's registered UI section with the overlay's widget vtable.
  * Sets the render-purity guard (openpete_mods_in_present) around the
@@ -649,6 +690,13 @@ double  openpete_mods_config_float(openpete_mod_t* self, const char* key,
                                    double def);
 int     openpete_mods_config_str(openpete_mod_t* self, const char* key,
                                  const char* def, char* buf, int cap);
+
+/* Comment-preserving config.toml writer (the Mods panel's Apply): each
+ * edit rewrites the value of `leaf = ...` inside its dotted-path
+ * section, keeping every comment; missing keys/sections are appended.
+ * Returns 0 when the file was rewritten. */
+int openpete_mods_config_write(const char* mod_dir, const char* log_tag,
+                               int n, const openpete_mods_cfg_edit_t* e);
 
 /* Mod-owned RGBA8 textures (mod_texture.c): registered under a
  * mod-chosen 16-bit id; model faces select them with the PSX-reserved
