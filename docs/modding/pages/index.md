@@ -2,10 +2,34 @@
 
 openpete is a PC port of Spyro the Dragon whose non-negotiable floor is
 **bit-identical gameplay with original PSX hardware** — and whose mod
-framework is designed to be the deepest of any unofficial port. Mods
-are plain C, compiled on load against a generated SDK, and hook the
-game through a per-function override chain that intercepts *every*
-call with zero patching.
+framework is designed to be the deepest of any unofficial port.
+
+The primary road needs no C at all. This is a complete, working mod:
+
+```
+mods/my-music/
+  mod.toml
+  assets/music/track_20.wav
+```
+
+``` toml
+[mod]
+id      = "my-music"
+name    = "My title theme"
+version = "1.0.0"
+api     = 1
+```
+
+Add `my-music` to `mods/enabled.txt` and the title screen plays your
+track. Texture replacements, sound packs, and whole custom levels
+(`[[level]]`) work the same way: a manifest plus files under
+`assets/`, picked up by convention. A pure-asset mod has **no ABI**
+— nothing about it can break when the engine updates.
+
+When you need behavior, the code tier goes as deep as any unofficial
+port has gone — plain C, compiled on load against a generated SDK,
+hooking the game through a per-function override chain that
+intercepts *every* call with zero patching:
 
 ``` c
 #include <openpete_mod_api.h>
@@ -25,10 +49,9 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
 }
 ```
 
-That is a complete, working mod. Drop it in `mods/hello/src/hello.c`
-with a three-line `mod.toml`, add `hello` to `mods/enabled.txt`, and
-the engine compiles and loads it at boot — on every platform, with the
-bundled toolchain.
+Drop that in `mods/hello/src/hello.c` with a three-line `mod.toml`
+and the engine compiles and loads it at boot — on every platform,
+with the bundled toolchain.
 
 ## Where to go
 

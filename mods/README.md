@@ -23,21 +23,48 @@ There is no sandbox and (as yet) no signing. **Install only mods you
 trust**, exactly as you would any other program. Crash reports name the
 offending mod, the per-mod time instrument names slow ones, and the
 save-safety tag warns when a card was played under a different modset —
-but none of that is a security boundary.
+but none of that is a security boundary. (A pure-asset mod with no
+`src/` never loads code, which shrinks what trust has to cover to the
+assets themselves.)
 
 Mods may not ship game-derived data (models, textures, audio ripped
 from any Spyro disc). Ship a **generator** that derives assets from the
 user's own disc instead — see `recolored-artisans` for the pattern.
+
+## Most mods are files, not programs
+
+The primary way to mod the game is **declarative**: a `mod.toml` plus
+files under `assets/`. No C, no compile step, no API to version — a
+pure-asset mod cannot break across engine updates because it has no
+ABI at all. The engine picks the files up by convention:
+
+```
+assets/textures/replacements/*.png    HD texture replacement (native renderer)
+assets/music/*.wav                    per-track music replacement
+assets/sounds/*.wav                   mod-local one-shots (sfx_play / [[binding]])
+assets/levels/<stem>.data.bin
+assets/levels/<stem>.ovl.bin          custom level payloads, wired by [[level]]
+```
+
+`[[level]]` in the manifest turns a pair of level payloads into a
+playable custom level (slot claim, TOC serving, the M-overlay warp row
+— all engine-side; see `grim-garden`). `[[binding]]` declares
+user-rebindable keys. Five in-tree mods ship exactly this way:
+`music-swap`, `hd-single-texture`, `recolored-artisans`, `grim-garden`,
+`spyro15-cliff-town` — start there, not at the C API.
 
 ## Anatomy
 
 ```
 mods/<id>/
   mod.toml          manifest (below)
-  src/*.c           compiled on load against <exe>/sdk/ (Linux; Windows
-                    loads a prebuilt .build/<id>.dll)
-  assets/           optional overlay root (textures/, music/, sounds/,
-                    wad/) — pure-asset mods need no src/
+  assets/           overlay root (see conventions above) — pure-asset
+                    mods need nothing else
+  config.toml       optional user-editable settings
+  src/*.c           optional code tier: compiled on load against
+                    <exe>/sdk/ by the bundled toolchain (all platforms;
+                    a prebuilt .build/<id>.dll is only the fallback
+                    when no toolchain is available)
   data/             per-mod persistent dir (created on demand)
   test/             self-contained inputs for the [test] block (bk2s)
 ```
@@ -74,7 +101,7 @@ args          = "--skip-to-level artisans"
 expect_log    = ["my-mod: it worked"]   # single line — parser is line-based
 ```
 
-### The API in one breath
+### The code tier in one breath
 
 `openpete_mod_entry(api, self)` runs at load. Override game functions
 by name (`api->override_name`) or raw address; `api->base(cpu)` calls
@@ -91,11 +118,14 @@ it. Full contracts live in `sdk/openpete_mod_api.h` next to the exe.
 ## The gallery is the documentation
 
 Every mechanism ships with a working, CI-tested example in this
-directory — start from the one nearest your idea (`hello-anchor` for
+directory — start from the one nearest your idea. Declarative:
+`music-swap` (one WAV), `hd-single-texture` (one PNG),
+`recolored-artisans` (generated texture pack), `grim-garden` /
+`spyro15-cliff-town` (custom levels). Code tier: `hello-anchor` for
 observers, `double-gems` for gameplay taps, `hud-stopwatch` for HUD,
 `ghost-lite` for actor replay, `new-moby`/`mirror-level` for content,
 `fade-skip` for instruction sites, `triangle-flutter` for the full
-flagship treatment). `scripts/check_mods.sh` runs the whole ladder.
+flagship treatment. `scripts/check_mods.sh` runs the whole ladder.
 
 ## Installing from a mod-sources manifest
 

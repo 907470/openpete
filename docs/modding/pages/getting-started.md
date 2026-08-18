@@ -7,8 +7,8 @@ mods/<id>/
   mod.toml          manifest — see [Manifest & config](manifest.md)
   config.toml       optional user-editable settings (api->config_*)
   src/*.c           compiled on load against <exe>/sdk/
-  assets/           optional overlay root (textures/, music/, sounds/,
-                    wad/) — pure-asset mods need no src/ at all
+  assets/           overlay root (textures/replacements/, music/,
+                    sounds/, levels/) — pure-asset mods need no src/
   data/             per-mod persistent dir (created on demand)
   test/             self-contained inputs for the [test] block (bk2s)
   .build/           the engine's compile cache (never commit)
@@ -22,6 +22,23 @@ the priority**: mods later in the list run first on shared overrides,
 and `base()` descends toward earlier mods, then the game's original
 code. To try a different set without editing the install, pass
 `--mods hello,other-mod` (same ordering rule; `--mods ""` runs vanilla).
+
+## Your first mod: files, not code
+
+Start declarative. A manifest plus an `assets/` tree is a complete
+mod, and it is how most mods should ship — no compile step, no API
+version to pin, nothing that can break across engine updates:
+
+- `assets/music/track_20.wav` replaces the title theme
+  (see `music-swap`).
+- `assets/textures/replacements/<name>.png` replaces a texture in the
+  native renderer (see `hd-single-texture`; the texture-dump tooling
+  names the files).
+- `assets/levels/<stem>.data.bin` + `.ovl.bin` plus a `[[level]]`
+  manifest block is a playable custom level — slot claim, warp row and
+  disc serving are all engine-side (see `grim-garden`).
+
+Reach for `src/*.c` when you need *behavior*, not content.
 
 ## Hello, override chain
 
