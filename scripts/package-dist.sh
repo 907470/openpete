@@ -178,7 +178,10 @@ windows)
     # only (see --sign notes above).
     sign_pe "$STAGE/openpete-spyro1.exe"
     sign_pe "$STAGE/recomp/tools/PSXRecomp.exe"
-    ( cd "$OUT" && python3 -m zipfile -c "$NAME.zip" "$NAME" )
+    # Zipped from INSIDE the stage dir, so the archive has no wrapping
+    # folder: Windows' "Extract All" already creates one named after the
+    # zip, and a second level leaves users an install nested one deep.
+    ( cd "$STAGE" && python3 -m zipfile -c "../$NAME.zip" . )
     ( cd "$OUT" && sha256sum "$NAME.zip" > "$NAME.zip.sha256" )
     ;;
 *)
