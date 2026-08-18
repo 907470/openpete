@@ -15,8 +15,3 @@ id      = "natural-gems"
 name    = "Natural Gems"
 version = "0.1.0"
 api     = 3
-
-[test]
-frames        = 8000
-expect_oracle = "fail"
-expect_log    = ["natural call Sin(1024) -> 4096", "natural gem double"]

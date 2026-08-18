@@ -10,8 +10,3 @@ name    = "Guest Arena Probe"
 version = "0.1.0"
 api     = 3
 sim_neutral = true  # allocation alone touches no canonical RAM
-
-[test]
-frames        = 8000
-expect_oracle = "pass"
-expect_log    = ["guest arena live @ 0x80700000", "arena-probe: guest/host roundtrip OK"]

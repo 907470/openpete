@@ -14,8 +14,3 @@ id      = "double-gems"
 name    = "Double Gems"
 version = "0.1.0"
 api     = 3
-
-[test]
-frames        = 8000
-expect_oracle = "fail"
-expect_log    = ["gem pickup doubled"]

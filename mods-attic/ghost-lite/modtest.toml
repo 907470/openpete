@@ -1,0 +1,6 @@
+# modtest.toml — this repo's CI declaration for tools/modtest.py.
+# Engine-repo concern, not part of the mod manifest format.
+[test]
+frames        = 8000
+expect_oracle = "pass"
+expect_log    = ["ghost-lite: recording", "ghost-lite: ghost armed"]

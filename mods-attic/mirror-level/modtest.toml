@@ -1,0 +1,10 @@
+# modtest.toml — this repo's CI declaration for tools/modtest.py.
+# Engine-repo concern, not part of the mod manifest format.
+[test]
+# --skip-to-level artisans reaches gameplay ~frame 1700; SETTLE_TICKS
+# (90) + a full 14-stage level load (~600 frames) + verification needs
+# ~3000 frames; 8000 leaves margin. Divergent by design — oracle skip.
+frames        = 8000
+expect_oracle = "skip"
+args          = "--skip-to-level artisans"
+expect_log    = ["level slot mirror-level:mirror-artisans live (id=65", "mirror-level: entering slot 65", "mirror-level: reached gameplay id=65 index=35 magic=11 flight=0", "mirror-level: clone verified"]

@@ -21,6 +21,20 @@ static int32_t                   g_sin = -1;
 static uint32_t                  g_doubled;
 static uint32_t                  g_bonus_gems;
 
+/* Status lines: repainted from the pickup hook and once at entry.
+ * Sin(1024) is the game's own sine at 90 degrees on the PSX 4096-unit
+ * circle — 4096 is the expected result. */
+static void publish_status(void) {
+    if (g_sin < 0)
+        g_api->ui_status(g_self, "natural call not made yet "
+                         "(runs on the first gem pickup)");
+    else
+        g_api->ui_status(g_self, "Sin(1024) -> %d%s", (int)g_sin,
+                         g_sin == 4096 ? " (expected)" : " (UNEXPECTED)");
+    g_api->ui_status(g_self, "pickups doubled: %u", g_doubled);
+    g_api->ui_status(g_self, "bonus gems granted: %u", g_bonus_gems);
+}
+
 OP_OVERRIDE_IMPL_CollectItem(my_collect) {
     if (g_first) {
         g_first = 0;
@@ -44,29 +58,13 @@ OP_OVERRIDE_IMPL_CollectItem(my_collect) {
                    "natural gem double: +%u twice, total %u -> %u",
                    delta, after, after + delta);
     }
+    publish_status();
 }
 
-static void ui_draw(const openpete_mod_ui_t* ui, void* user) {
-    (void)user;
-    if (g_sin < 0) {
-        ui->text_disabled("natural call not made yet "
-                          "(runs on the first gem pickup)");
-    } else {
-        ui->text("Sin(1024) -> %d%s", (int)g_sin,
-                 g_sin == 4096 ? " (expected)" : " (UNEXPECTED)");
-        ui->tooltip("The game's own sine, called with natural arguments; "
-                    "1024 is 90 degrees on the PSX 4096-unit circle.");
-    }
-    ui->separator();
-    ui->text("pickups doubled: %u", g_doubled);
-    ui->tooltip("CollectItem calls that raised g_GemTotal; the same delta "
-                "is then added a second time.");
-    ui->text("bonus gems granted: %u", g_bonus_gems);
-}
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api;
     g_self = self;
-    api->register_ui(self, ui_draw, NULL);
+    publish_status();
     return OP_REGISTER_OVERRIDE_CollectItem(api, self, my_collect);
 }

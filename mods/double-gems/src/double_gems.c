@@ -17,6 +17,15 @@ static openpete_mod_t*           g_self;
 static uint32_t g_doubled;
 static uint32_t g_bonus_gems;
 
+/* Status lines: repainted from the pickup hook (the only event that
+ * changes them) and once at entry. */
+static void publish_status(void) {
+    g_api->ui_status(g_self, "pickups doubled: %u", g_doubled);
+    g_api->ui_status(g_self, "bonus gems granted: %u", g_bonus_gems);
+    if (!g_doubled)
+        g_api->ui_status(g_self, "no gem pickup seen yet this session");
+}
+
 static void on_collect_item(CPUState* cpu) {
     uint32_t before = op_read_u32(g_api, OP_GADDR_g_GemTotal);
     g_api->base(cpu);
@@ -30,21 +39,13 @@ static void on_collect_item(CPUState* cpu) {
                    "gem pickup doubled: +%u twice, total %u -> %u",
                    delta, after, after + delta);
     }
+    publish_status();
 }
 
-static void ui_draw(const openpete_mod_ui_t* ui, void* user) {
-    (void)user;
-    ui->text("pickups doubled: %u", g_doubled);
-    ui->tooltip("CollectItem calls that raised g_GemTotal; the same "
-                "delta is then added a second time.");
-    ui->text("bonus gems granted: %u", g_bonus_gems);
-    if (!g_doubled)
-        ui->text_disabled("no gem pickup seen yet this session");
-}
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api;
     g_self = self;
-    api->register_ui(self, ui_draw, NULL);
+    publish_status();
     return api->override_name(self, "CollectItem", on_collect_item);
 }

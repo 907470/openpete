@@ -1,0 +1,13 @@
+# modtest.toml — this repo's CI declaration for tools/modtest.py.
+# Engine-repo concern, not part of the mod manifest format.
+[test]
+# --skip-to-level artisans lands in gameplay ~frame 1700; the type goes
+# live on the first GS_Playing tick, the spawn follows, and 256 orbit
+# ticks need ~512 more frames. 6000 leaves margin. Gameplay-divergent by
+# design (a new object exists) — oracle skip.
+frames        = 6000
+expect_oracle = "skip"
+args          = "--skip-to-level artisans"
+# (needles avoid embedded quotes — modtest's parser is a line-based
+#  restricted-TOML reader)
+expect_log    = ["registered (donor class 16)", "new-moby: spawned orbiter @0x", "new-moby: rendered (m_WasDrawn=1)", "new-moby: ticking (t=256)"]

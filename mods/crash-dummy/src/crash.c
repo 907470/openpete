@@ -13,7 +13,23 @@ static unsigned                  g_calls;
  * the override — attribution only names the mod when the fault happens
  * on the chain frame, so the UI never dereferences anything itself. */
 static int g_auto_armed = 1;
-static int g_crash_request;
+static int g_crash_held;
+
+/* Status lines, repainted from the override (per tick). */
+static void publish_status(void) {
+    g_api->ui_status(g_self, "CameraUpdate calls: %u", g_calls);
+    if (g_auto_armed) {
+        if (g_calls < AUTO_CRASH_AT)
+            g_api->ui_status(g_self, "armed: crashing on call %u (%u to go)",
+                             AUTO_CRASH_AT, AUTO_CRASH_AT - g_calls);
+        else
+            g_api->ui_status(g_self, "auto crash point already passed");
+    } else {
+        g_api->ui_status(g_self, "auto crash disarmed (crash.auto_arm)");
+    }
+    g_api->ui_status(g_self, "\"crash\" binding faults on the next "
+                     "CameraUpdate — the report must name this mod");
+}
 
 static void crash_now(const char* why) {
     g_api->log(g_self, OP_MOD_LOG_WARN,
@@ -22,51 +38,27 @@ static void crash_now(const char* why) {
 }
 
 static void on_camera_update(CPUState* cpu) {
+    int down;
     g_calls++;
-    if (g_crash_request) {
-        g_crash_request = 0;
-        crash_now("attribution test (requested from the overlay)");
+    /* Crash on the binding's press edge — a held key must not re-fault
+     * a recovering process. */
+    down = g_api->binding_down(g_self, "crash");
+    if (down && !g_crash_held) {
+        crash_now("attribution test (crash binding)");
     }
+    g_crash_held = down;
     if (g_auto_armed && g_calls == AUTO_CRASH_AT) {
         crash_now("attribution test");
     }
     g_api->base(cpu);
+    publish_status();
 }
 
-static void ui_draw(const openpete_mod_ui_t* ui, void* user) {
-    (void)user;
-
-    ui->text("CameraUpdate calls: %u", g_calls);
-    if (g_auto_armed) {
-        if (g_calls < AUTO_CRASH_AT) {
-            ui->text("Armed: crashing on call %u (%u to go)", AUTO_CRASH_AT,
-                     AUTO_CRASH_AT - g_calls);
-        } else {
-            ui->text_disabled("Auto crash point already passed");
-        }
-    } else {
-        ui->text_disabled("Auto crash disarmed");
-    }
-
-    ui->checkbox("Auto-crash on call 100", &g_auto_armed);
-    ui->tooltip("Uncheck to keep playing and pick the crash moment "
-                "yourself.");
-
-    ui->separator();
-
-    if (ui->button("CRASH THE GAME NOW (null dereference)")) {
-        g_crash_request = 1;
-    }
-    ui->tooltip("Kills the process on the next CameraUpdate. The crash "
-                "report must name this mod. Unsaved progress is lost.");
-    if (g_crash_request) {
-        ui->text("Crash requested — faulting on the next CameraUpdate.");
-    }
-}
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api;
     g_self = self;
-    api->register_ui(self, ui_draw, NULL);
+    g_auto_armed = api->config_bool(self, "crash.auto_arm", 1);
+    publish_status();
     return api->override_name(self, "CameraUpdate", on_camera_update);
 }

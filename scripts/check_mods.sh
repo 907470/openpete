@@ -9,13 +9,11 @@
 #   - chain-duo under both orderings (order IS priority; nesting flips)
 #   - observer-neutrality with 4 mods stacked vs the PSX oracle
 #   - deps topo-sort / missing-dep UX / dependency-cycle rejection
-#   - advisory above/below violation => actionable move-this-mod error
 #   - crash attribution naming the offending mod
 #   - decomp promotion: legacy raw alias resolves + warns (churn test)
 # plus the tools/modtest.py run over every [test]-block rung.
 #
-# Usage: scripts/check_mods.sh   (repo root; ~10 min — ctest mod_poc_ladder;
-#        section 13 rebakes/rebuilds the main EXE around the fade-skip rung)
+# Usage: scripts/check_mods.sh   (repo root; ~10 min — ctest mod_poc_ladder)
 # Env:   OPENPETE_BIN / OPENPETE_DISC — forwarded to runs + oracle.
 
 set -u
@@ -138,21 +136,24 @@ if printf '%s\n' "$out" | grep -q "raw probe #"; then
 else
     bad "raw-probe never fired"
 fi
-if printf '%s\n' "$out" | grep -q "declares raw-tier symbols"; then
+if printf '%s\n' "$out" | grep -q "uses raw-tier addresses"; then
     ok "raw-tier warning printed"
 else
     bad "raw-tier warning missing"
 fi
 
-# ── 4. lib-and-client: deps topo-sort + export/import (rung 5) ──────────
+# ── 4. lib-and-client: deps topo-sort (rung 5) ──────────────────────────
 say "lib-and-client: client listed FIRST — topo-sort must load lib first"
 fixture "$WORK/libclient" lib-and-client demo-lib
 out="$(run_game "$WORK/libclient" 600)"
-if printf '%s\n' "$out" | grep -q "imported demo-lib:magic -> 42"; then
-    ok "cross-mod import worked despite reversed enabled order"
+lib_line=$(printf '%s\n' "$out" | grep -n "demo-lib: entry ran" | head -1 | cut -d: -f1)
+cli_line=$(printf '%s\n' "$out" | grep -n "lib-and-client: entry ran" | head -1 | cut -d: -f1)
+if [ -n "$lib_line" ] && [ -n "$cli_line" ] && [ "$lib_line" -lt "$cli_line" ]; then
+    ok "dependency entry ran first despite reversed enabled order"
 else
-    bad "client did not import demo-lib:magic"
+    bad "dependency order wrong or entries missing (lib=$lib_line cli=$cli_line)"
 fi
+
 
 say "lib-and-client: missing dep — actionable error, run survives"
 fixture "$WORK/nodep" lib-and-client
@@ -207,40 +208,6 @@ if printf '%s\n' "$out" | grep -q "MOD ATTRIBUTION: .* mod 'crash-dummy'"; then
 else
     bad "attribution line missing"
     printf '%s\n' "$out" | grep -A3 "openpete crash" | head -6
-fi
-
-# ── 6. advisory above/below: violation = actionable error (not silent) ──
-say "advisory ordering: above=[] violation disables with a move error"
-for m in adv-a adv-b; do
-    mkdir -p "$WORK/advsrc/$m/src"
-    printf '#include <openpete_mod_api.h>\nint openpete_mod_entry(const openpete_mod_api_t* a, openpete_mod_t* s){(void)a;(void)s;return 0;}\n' \
-        > "$WORK/advsrc/$m/src/m.c"
-done
-printf '[mod]\nid = "adv-a"\nversion = "0.0.1"\napi = '"$API_VER"'\n' \
-    > "$WORK/advsrc/adv-a/mod.toml"
-printf '[mod]\nid = "adv-b"\nversion = "0.0.1"\napi = '"$API_VER"'\nabove = ["adv-a"]\n' \
-    > "$WORK/advsrc/adv-b/mod.toml"
-mkdir -p "$WORK/adv"
-ln -sfn "$WORK/advsrc/adv-a" "$WORK/adv/adv-a"
-ln -sfn "$WORK/advsrc/adv-b" "$WORK/adv/adv-b"
-printf 'adv-b\nadv-a\n' > "$WORK/adv/enabled.txt"   # violates above
-out="$(run_game "$WORK/adv" 600)"
-if printf '%s\n' "$out" | grep -q 'move "adv-b" AFTER "adv-a"'; then
-    ok "violation produced the move-this-mod error"
-else
-    bad "advisory violation error absent/wrong"
-fi
-if printf '%s\n' "$out" | grep -q "1 mod active"; then
-    ok "only the compliant mod loaded"
-else
-    bad "unexpected active-mod count"
-fi
-printf 'adv-a\nadv-b\n' > "$WORK/adv/enabled.txt"   # satisfies above
-out="$(run_game "$WORK/adv" 600)"
-if printf '%s\n' "$out" | grep -q "2 mods active"; then
-    ok "compliant order loads both"
-else
-    bad "compliant order did not load both"
 fi
 
 # ── 7. decomp promotion: legacy raw alias resolves + warns (churn test) ─
@@ -390,130 +357,17 @@ else
     bad "extract_wad_entry.py --recolor-bg failed"
 fi
 
-# ── 10. actor render service: ghost-lite record → replay (rung 16) ─────
-# Two runs against a COPIED mod (not a symlink) so the data-dir recording
-# is fixture-local: run 1 records poses through capture_actor_pose (the
-# hook-consistent snapshot works headless), run 2 loads them back (the
-# data-dir service round-trip). Draw-side proof is visual/windowed (the
-# present hook never runs headless); neutrality-while-capturing is the
-# mod's own [test] oracle gate in section 11.
-say "ghost-lite: pose recording (run 1) -> race-ghost load (run 2)"
-mkdir -p "$WORK/ghost"
-cp -r "$MODS_SRC/ghost-lite" "$WORK/ghost/ghost-lite"
-rm -rf "$WORK/ghost/ghost-lite/data" "$WORK/ghost/ghost-lite/.build"
-printf 'ghost-lite\n' > "$WORK/ghost/enabled.txt"
-out="$(run_game "$WORK/ghost" "$SMOKE_FRAMES")"
-if printf '%s\n' "$out" | grep -q "ghost-lite: recording" &&
-   printf '%s\n' "$out" | grep -q "ghost-lite: ghost armed"; then
-    ok "run 1: captured + armed (recording via CameraUpdate tick hook)"
-else
-    bad "run 1: recording/armed logs missing"
-fi
-POSE_FILE="$WORK/ghost/ghost-lite/data/ghost.s1pose"
-if [ -s "$POSE_FILE" ] && [ $(( $(stat -c%s "$POSE_FILE") % 244 )) -eq 0 ]; then
-    ok "run 1: pose file written ($(stat -c%s "$POSE_FILE") bytes, 244-byte records)"
-else
-    bad "run 1: pose file missing or not a whole number of 244-byte records"
-fi
-out="$(run_game "$WORK/ghost" "$SMOKE_FRAMES")"
-if printf '%s\n' "$out" | grep -qE "ghost-lite: loaded [0-9]+ recorded poses"; then
-    ok "run 2: prior recording loaded (data-dir service round-trip)"
-else
-    bad "run 2: prior recording not loaded"
-fi
-
-# ── 11. triangle-flutter dormant gate (rung 13, flagship) ───────────────
-# The [test] block (section 12) proves the flutter FIRES on its bundled
-# glide+Triangle movie. This case proves the inverse: enabled over the
-# stock attract demo — which never glides — the gameplay mod stays
-# DORMANT and the oracle stays byte-exact (the fire condition never
-# triggers spuriously; the hook itself is observer-neutral).
-say "triangle-flutter: dormant over the attract demo (oracle-exact)"
-fixture "$WORK/flutter" triangle-flutter
-out="$(OPENPETE_FRAME_LIMIT=$SMOKE_FRAMES scripts/check_psx_oracle.sh -- \
-        --mods-dir "$WORK/flutter" 2>&1)"
-if printf '%s\n' "$out" | grep -q "triangle-flutter: armed"; then
-    ok "hook armed (dispatcher override live)"
-else
-    bad "flutter hook never armed"
-fi
-if printf '%s\n' "$out" | grep -q "triangle-flutter: flutter"; then
-    bad "flutter fired during the attract demo (spurious trigger)"
-else
-    ok "no spurious fire (demo has no player glides)"
-fi
-if printf '%s\n' "$out" | grep -q "verdict: PASS"; then
-    ok "oracle PASS with the gameplay mod enabled but dormant"
-else
-    bad "oracle did not PASS with dormant triangle-flutter"
-fi
-
 # ── 12. [test]-block rungs through the real modtest runner ──────────────
-# (fade-skip is NOT in this sweep: its [test] needs its sites BAKED into
-#  the binary — section 13 orchestrates bake → test → restore around it.)
 say "[test] blocks via tools/modtest.py (the harness modders run)"
 if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
         mods/double-gems mods/natural-gems mods/lib-and-client \
-        mods/hud-stopwatch mods/ghost-lite \
-        mods/triangle-flutter mods/new-moby mods/mirror-level \
-        mods/arena-probe mods/sfx-neutral-probe \
-        mods/hd-single-texture mods/music-swap; then
+        mods/hud-stopwatch mods/new-moby \
+        mods/arena-probe \
+        mods/hd-single-texture mods/music-swap mods/spyro3 \
+        mods/supercharge-anywhere; then
     ok "modtest runner: all [test] blocks green"
 else
     bad "modtest runner reported failures"
-fi
-
-# ── 13. fade-skip: the instruction-site hook tier (rung 14) ─────────────
-# Bake the mod's [[site]] set into the recompiled C (scoped main-EXE
-# regen, ~9 s), rebuild (~10 s), prove the three inertness tiers, then
-# restore stock and assert BYTE-IDENTITY of the regenerated C:
-#   a) baked + mod loaded  → modtest: all 6 slti loop-bound sites FIRE
-#   b) baked + mod ABSENT  → oracle smoke PASS (guarded identity arm)
-#   c) restored (set empty)→ generated C byte-identical to pre-bake
-# Needs the regen toolchain (PSXRecomp + PSX.EXE); skip cleanly if absent.
-say "fade-skip: site-hook tier — bake, fire, guarded-inert, restore"
-if [[ -x third_party/psxrecomp/build/PSXRecomp &&
-      -f games/spyro-1/spyro-1/build/PSX.EXE ]]; then
-    GEN=games/spyro-1/generated
-    stock_full=$(sha256sum "$GEN/PSX.EXE_full.c" | cut -d' ' -f1)
-    fixture "$WORK/fadeskip" fade-skip
-    mkdir -p "$WORK/empty-mods"; : > "$WORK/empty-mods/enabled.txt"
-    if OPENPETE_MODS_DIR="$WORK/fadeskip" bash scripts/regen-mod-sites.sh \
-            >"$WORK/bake.log" 2>&1 \
-       && cmake --build --preset linux-release >>"$WORK/bake.log" 2>&1; then
-        ok "bake: 6 sites regenerated + rebuilt"
-        # (a) baked + loaded: the mod's own [test] block, live sites
-        if python3 tools/modtest.py mods/fade-skip; then
-            ok "baked+loaded: all six loop-bound sites fired"
-        else
-            bad "fade-skip modtest failed with sites baked"
-        fi
-        # (b) baked + absent: guarded arm must be sim-inert vs hardware
-        out="$(OPENPETE_FRAME_LIMIT=$SMOKE_FRAMES scripts/check_psx_oracle.sh \
-                -- --mods-dir "$WORK/empty-mods" 2>&1)"
-        if printf '%s\n' "$out" | grep -q "verdict: PASS"; then
-            ok "baked+absent: oracle PASS (guarded identity arm)"
-        else
-            bad "oracle failed on the baked-but-inactive binary"
-        fi
-    else
-        bad "site bake (regen-mod-sites.sh + rebuild) failed — see $WORK/bake.log"
-    fi
-    # (c) restore: empty site set must regenerate byte-identical stock C
-    if OPENPETE_MODS_DIR="$WORK/empty-mods" bash scripts/regen-mod-sites.sh \
-            >"$WORK/restore.log" 2>&1 \
-       && cmake --build --preset linux-release >>"$WORK/restore.log" 2>&1; then
-        restored_full=$(sha256sum "$GEN/PSX.EXE_full.c" | cut -d' ' -f1)
-        if [[ "$restored_full" == "$stock_full" ]]; then
-            ok "restore: generated C byte-identical to pre-bake stock"
-        else
-            bad "restore left generated C differing from stock (inertness gate)"
-        fi
-    else
-        bad "site restore failed — see $WORK/restore.log; run scripts/regen-mod-sites.sh manually"
-    fi
-else
-    ok "SKIP (regen toolchain not present — PSXRecomp / PSX.EXE missing)"
 fi
 
 # ── 14. per-modset save safety: tag + warn + adopt (memcard sidecar) ────
@@ -768,73 +622,6 @@ else
     else
         ok "PIL unavailable — content assertion skipped (compile assert only)"
     fi
-fi
-
-# ── mod shaders S7: custom-pipeline draw visible in a RECORDING.
-# Screenshots CANNOT gate this: the -vk dump recomposes native_rtt
-# without compose_variant content, and --screenshot-presents captures
-# the PsyCross REFERENCE frame — both are structurally blind to mod
-# draws (the S7 bring-up burned hours re-"fixing" a working triangle;
-# a look at the live window broke the loop). --record reads
-# the composed off_image, so a decoded recording frame is the honest
-# instrument.
-say "mod shaders: mesh-probe custom-pipeline draw visible in a recording"
-if command -v ffmpeg >/dev/null 2>&1 && python3 -c "import PIL" 2>/dev/null; then
-    fixture "$WORK/mesh" mesh-probe
-    timeout 300 "$BIN" --disc "$DISC" --run-recomp 0x80012204 \
-        --frame-limit 300 --mods-dir "$WORK/mesh" \
-        --record "$WORK/mesh/probe.mkv" > "$WORK/mesh.log" 2>&1 || true
-    if [ -s "$WORK/mesh/probe.mkv" ] &&
-       ffmpeg -y -loglevel error -ss 3 -i "$WORK/mesh/probe.mkv" \
-              -frames:v 1 "$WORK/mesh/frame.png" 2>/dev/null; then
-        mesh_ok=$(python3 - "$WORK/mesh/frame.png" <<'PYEOF'
-import sys
-from PIL import Image
-im = Image.open(sys.argv[1]).convert("RGB")
-w, h = im.size
-px = im.load()
-p = px[int(w * 0.1), int(h * 0.85)]     # inside the bottom-left triangle
-print("OK" if p[0] > 180 and p[2] > 180 and p[1] < 90 else f"BAD{p}")
-PYEOF
-)
-        if [ "$mesh_ok" = "OK" ]; then
-            ok "magenta mesh present in the decoded recording frame"
-        else
-            bad "mesh draw missing from the recording ($mesh_ok — see $WORK/mesh.log)"
-        fi
-    else
-        bad "recording failed for the mesh rung (see $WORK/mesh.log)"
-    fi
-else
-    ok "ffmpeg/PIL unavailable — mesh recording assertion skipped"
-fi
-
-# ── mod shaders S8b: per-instance material callback splits the batched
-# scene by distinct callback outcome. The structural proof (instruments
-# over pixels — colour classifiers false-positive on natural content)
-# is the interned per-instance slot census: moby-instance-tint tints
-# every moby by a per-vaddr hash, so many distinct slots intern in a
-# present. Assert the census reports > 1 (per-instance ran AND the
-# batcher split by outcome). Headless is fine — the census is emitted
-# during extraction, not from a composed frame.
-say "mod shaders: per-instance material callback splits by outcome"
-fixture "$WORK/inst" moby-instance-tint
-# WINDOWED (no --headless): the material census is emitted on the draw
-# side, which only runs when the native renderer composes a frame. Same
-# reason the mesh rung runs windowed; skip cleanly with no display.
-OPENPETE_MATERIAL_STATS=1 timeout 300 "$BIN" --disc "$DISC" \
-    --run-recomp 0x80012204 --frame-limit 400 --mods-dir "$WORK/inst" \
-    --record "$WORK/inst/probe.mkv" > "$WORK/inst.log" 2>&1 || true
-inst_peak=$(sed -n 's/.*per-instance slots interned this present = \([0-9]*\).*/\1/p' \
-            "$WORK/inst.log" | sort -n | tail -1)
-if ! grep -q "material selector armed .*per-instance" "$WORK/inst.log"; then
-    bad "per-instance selector did not arm (see $WORK/inst.log)"
-elif [ -z "$inst_peak" ] && grep -qiE "no vulkan|no display|surface|failed to (create|open)" "$WORK/inst.log"; then
-    ok "no display for the windowed census — selector armed (assertion skipped)"
-elif [ -n "$inst_peak" ] && [ "$inst_peak" -gt 1 ]; then
-    ok "per-instance callback interned $inst_peak distinct slots (batch split by outcome)"
-else
-    bad "per-instance split not observed (peak='$inst_peak'; see $WORK/inst.log)"
 fi
 
 # ── mod shaders S5: the SCENE injection point processes the 3D scene

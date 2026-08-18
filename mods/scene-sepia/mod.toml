@@ -8,9 +8,23 @@
 id = "scene-sepia"
 name = "Scene Sepia"
 version = "0.1.0"
-api = 3
+api     = 5
 sim_neutral = true
 
-[test]
-frames = 4000
-gameplay_neutral = true
+[[config]]
+key = "sepia.strength"
+type = "float"
+default = 1.0
+min = 0.0
+max = 1.0
+label = "Sepia strength"
+group = "Sepia"
+help = "Blend between the untouched scene (0) and the full sepia tone (1)"
+
+[[config]]
+key = "sepia.marker"
+type = "bool"
+default = true
+label = "Under-HUD proof marker"
+group = "Sepia"
+help = "Yellow square drawn after the SCENE pass; stays full-colour, which is what distinguishes SCENE from COMPOSITE"

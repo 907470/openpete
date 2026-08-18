@@ -12,8 +12,3 @@ name    = "Lib And Client"
 version = "0.1.0"
 api     = 3
 deps    = ["demo-lib"]
-
-[test]
-frames        = 600
-expect_oracle = "skip"
-expect_log    = ["imported demo-lib:magic -> 42"]

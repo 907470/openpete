@@ -19,6 +19,21 @@ static unsigned                  g_calls;
  * once every 500 calls, the status section shows every one. */
 static unsigned g_last_a0, g_last_a1, g_last_sp, g_last_ra;
 
+/* Status lines: repainted from the render-function hook (the values
+ * change per call; ui_status is cheap host-side formatting). */
+static void publish_status(void) {
+    g_api->ui_status(g_self, "func_80023AC4 calls: %u", g_calls);
+    if (g_calls == 0u) {
+        g_api->ui_status(g_self, "waiting for Spyro to be rendered");
+        return;
+    }
+    g_api->ui_status(g_self, "a0 = 0x%08X   a1 = 0x%08X", g_last_a0,
+                     g_last_a1);
+    g_api->ui_status(g_self, "sp = 0x%08X   ra = 0x%08X", g_last_sp,
+                     g_last_ra);
+    g_api->ui_status(g_self, "logged on the 1st call and every 500th");
+}
+
 static void on_spyro_render(CPUState* cpu) {
     g_calls++;
     g_last_a0 = cpu->a0;
@@ -30,26 +45,15 @@ static void on_spyro_render(CPUState* cpu) {
                    "raw probe #%u: a0=0x%08X a1=0x%08X sp=0x%08X ra=0x%08X",
                    g_calls, cpu->a0, cpu->a1, cpu->sp, cpu->ra);
     g_api->base(cpu);
+    publish_status();
 }
 
 /* Overlay status. Render-pure: reads the statics the hook publishes,
  * touches no guest state. */
-static void ui_draw(const openpete_mod_ui_t* ui, void* user) {
-    (void)user;
-
-    ui->text("func_80023AC4 calls: %u", g_calls);
-    if (g_calls == 0u) {
-        ui->text_disabled("waiting for Spyro to be rendered");
-        return;
-    }
-    ui->text("a0 = 0x%08X   a1 = 0x%08X", g_last_a0, g_last_a1);
-    ui->text("sp = 0x%08X   ra = 0x%08X", g_last_sp, g_last_ra);
-    ui->text_disabled("logged on the 1st call and every 500th");
-}
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api;
     g_self = self;
-    api->register_ui(self, ui_draw, NULL);
+    publish_status();
     return api->override_addr(self, OP_FNADDR_func_80023AC4, on_spyro_render);
 }

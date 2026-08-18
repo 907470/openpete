@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""modtest.py — the mod test runner ([test] block in mod.toml).
+"""modtest.py — the mod test runner ([test] block in modtest.toml).
 
 The P1 "modtest harness" of notes/plans/openpete-modding-framework.md:
 a mod declares its own regression test in its manifest; this runner
@@ -9,7 +9,7 @@ harness locally:
 
     tools/modtest.py mods/my-mod
 
-mod.toml schema:
+modtest.toml schema (CI-side, next to mod.toml):
 
     [test]
     args = "--skip-to-level artisans" # optional extra engine flags
@@ -72,6 +72,9 @@ def strip_comment(line: str) -> str:
 def parse_manifest(mod_dir: Path):
     """Tiny targeted parse: [mod] id/deps + [test] block keys."""
     text = (mod_dir / "mod.toml").read_text(encoding="utf-8")
+    mt = mod_dir / "modtest.toml"
+    if mt.exists():
+        text += "\n" + mt.read_text(encoding="utf-8")
     section = None
     m = {"id": mod_dir.name, "deps": [], "test": None}
     for line in text.splitlines():

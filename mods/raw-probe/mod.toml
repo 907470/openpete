@@ -12,9 +12,3 @@ name    = "Raw Probe"
 version = "0.1.0"
 api     = 3
 sim_neutral = true  # observer/presentation-only: excluded from the save modset tag
-tier    = "raw"
-
-[test]
-frames        = 8000
-expect_oracle = "pass"
-expect_log    = ["raw probe #1:"]

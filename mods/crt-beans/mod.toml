@@ -11,9 +11,75 @@
 id      = "crt-beans"
 name    = "CRT (crt-beans)"
 version = "1.0.0"
-api     = 3
+api     = 5
 sim_neutral = true  # GPU-only presentation: excluded from the save modset tag
 
-[test]
-frames        = 4000
-gameplay_neutral = true
+[[config]]
+key = "crt.max_spot_size"
+type = "float"
+default = 0.90
+min = 0.6
+max = 1.0
+label = "Max spot size"
+group = "CRT"
+help = "Electron-beam spot size at full white, as a proportion of one scanline; lower = deeper scanline gaps"
+
+[[config]]
+key = "crt.min_spot_size"
+type = "float"
+default = 0.40
+min = 0.3
+max = 1.0
+label = "Min spot size"
+group = "CRT"
+help = "Spot size floor at black, as a proportion of the max; raising it flattens the intensity-to-width response"
+
+[[config]]
+key = "crt.mask_type"
+type = "int"
+default = 2
+min = 0
+max = 2
+label = "Phosphor mask"
+group = "CRT"
+help = "0 = off, 1 = subpixel grille, 2 = dynamic grille"
+
+[[config]]
+key = "crt.subpixel_pattern"
+type = "int"
+default = 0
+min = 0
+max = 1
+label = "Subpixel order"
+group = "CRT"
+help = "0 = RGB, 1 = BGR — your monitor's physical subpixel layout; the mask lights individual subpixels, so a mismatch tints it (mask_type 1 only)"
+
+[[config]]
+key = "crt.subpixel_triad_px"
+type = "int"
+default = 4
+min = 2
+max = 5
+label = "Triad width (px)"
+group = "CRT"
+help = "Monitor pixels per phosphor triad (mask_type 1 only)"
+
+[[config]]
+key = "crt.mask_triads"
+type = "int"
+default = 550
+min = 400
+max = 800
+label = "Triads across screen"
+group = "CRT"
+help = "Phosphor triads across the screen width; resampled to the output resolution, so it is subpixel-agnostic (mask_type 2 only)"
+
+[[config]]
+key = "crt.output_gamma"
+type = "int"
+default = 1
+min = 0
+max = 1
+label = "Output encode"
+group = "CRT"
+help = "0 = sRGB, 1 = 2.2 gamma"

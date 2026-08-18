@@ -17,17 +17,32 @@
 id      = "new-moby"
 name    = "New Moby (orbiter)"
 version = "0.1.0"
-api     = 3
-tier    = "raw"   # pokes moby fields by offset; region-pinned
+api     = 5
 
-[test]
-# --skip-to-level artisans lands in gameplay ~frame 1700; the type goes
-# live on the first GS_Playing tick, the spawn follows, and 256 orbit
-# ticks need ~512 more frames. 6000 leaves margin. Gameplay-divergent by
-# design (a new object exists) — oracle skip.
-frames        = 6000
-expect_oracle = "skip"
-args          = "--skip-to-level artisans"
-# (needles avoid embedded quotes — modtest's parser is a line-based
-#  restricted-TOML reader)
-expect_log    = ["registered (donor class 16)", "new-moby: spawned orbiter @0x", "new-moby: rendered (m_WasDrawn=1)", "new-moby: ticking (t=256)"]
+[[binding]]
+name    = "spawn"
+key     = "N"
+purpose = "queue an orbiter spawn at Spyro's position"
+
+# Settings schema — the engine renders these rows in the Mods panel and
+# writes committed edits into config.toml; entry re-reads them through
+# api->config_int after the queued reload.
+[[config]]
+key = "orbit.radius"
+type = "int"
+default = 600
+min = 100
+max = 4000
+label = "Orbit radius"
+group = "Orbit"
+help = "World units around the spawn center (Spyro's jump apex is ~506)"
+
+[[config]]
+key = "orbit.speed"
+type = "int"
+default = 24
+min = 1
+max = 256
+label = "Orbit speed"
+group = "Orbit"
+help = "Angle units per tick; 4096 = a full circle"

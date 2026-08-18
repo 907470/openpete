@@ -141,12 +141,12 @@ struct openpete_mod {
     char  log_tag[MOD_ID_MAX + 8]; /* "mod:<id>" */
     char  deps[MOD_DEPS_MAX][MOD_ID_MAX];
     int   n_deps;
-    char  above[MOD_DEPS_MAX][MOD_ID_MAX]; /* advisory: must be HIGHER
-                                            * priority (later in
-                                            * enabled.txt) than these */
-    int   n_above;
-    char  below[MOD_DEPS_MAX][MOD_ID_MAX]; /* advisory: lower priority */
-    int   n_below;
+    int   raw_warned;  /* raw-tier warning issued (once per mod) */
+    char  state_decl;  /* manifest state: 0 undeclared, 'n' none,
+                        * 'r' rebuildable (host state re-derives from
+                        * guest RAM) — gates savestate/rewind arming */
+    char  ra_decl;     /* manifest runahead: 0 undeclared, 'p' pure,
+                        * 'h' host-fx — gates speculative re-execution */
     int   sim_neutral; /* [mod] sim_neutral=true: author declares the mod
                         * never diverges gameplay state (observers/HUD/
                         * presentation) — excluded from the save modset
@@ -373,6 +373,16 @@ static int api_override_addr(openpete_mod_t* self, uint32_t addr,
     int rc = openpete_mods_chain_add(addr, fn, self->id);
     if (rc == 0) {
         OPL_INFO_F(self->log_tag, "override registered at 0x%08X", addr);
+        /* Raw addresses are region-pinned and drift across decomp
+         * progress — warn from the actual use, once per mod (the old
+         * manifest tier="raw" declaration said the same thing but could
+         * lie in either direction). */
+        if (!self->raw_warned) {
+            self->raw_warned = 1;
+            OPL_WARN_F("mods", "%s uses raw-tier addresses: unstable "
+                       "across engine/decomp updates and region-pinned",
+                       self->id);
+        }
         warn_render_bypassed(self, addr);
     }
     return rc;
@@ -666,8 +676,9 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     mod->ui_body = NULL; /* re-resolved from the fresh object below */
     mod->toggle_fn = NULL;
 
-    mod->n_deps = mod->n_above = mod->n_below = mod->n_bindings = 0;
+    mod->n_deps = mod->n_bindings = 0;
     mod->n_cfg = 0;
+    mod->state_decl = mod->ra_decl = 0;
     char dir_copy[MOD_PATH_MAX];
     snprintf(dir_copy, sizeof dir_copy, "%s", mod->dir);
     if (parse_manifest(dir_copy, mod) != 0) {
@@ -1062,7 +1073,8 @@ int openpete_mods_runahead_capable(const char** offender) {
     for (int i = 0; i < s_mod_count; i++) {
         if (!s_mods[i].enabled) continue;
         uint32_t fl = s_mods[i].has_stateabi ? s_mods[i].st_flags : 0;
-        if (!(fl & (OP_MOD_RA_PURE | OP_MOD_RA_HOST_FX))) {
+        if (!s_mods[i].ra_decl &&
+            !(fl & (OP_MOD_RA_PURE | OP_MOD_RA_HOST_FX))) {
             if (offender) *offender = s_mods[i].id;
             return 0;
         }
@@ -1409,19 +1421,6 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
         if (!mod->name[0])
             snprintf(mod->name, sizeof mod->name, "%s", mod->id);
     }
-    /* Symbol-tier declaration: "named" (default) or "raw". Raw-tier
-     * addresses (func_XXXXXXXX / bare vaddrs) are unstable across
-     * decomp/recomp progress and pinned to this binary/region — warn so
-     * breakage is a known trade, not a mystery (plan: two-tier symbol
-     * stability). */
-    toml_datum_t tier = toml_string_in(t, "tier");
-    if (tier.ok) {
-        if (strcmp(tier.u.s, "raw") == 0)
-            OPL_WARN_F("mods", "%s declares raw-tier symbols: unstable "
-                       "across engine/decomp updates and region-pinned",
-                       mod->id);
-        free(tier.u.s);
-    }
     /* sim_neutral = true: author-declared observer/presentation-only —
      * excluded from the save modset tag (per-modset save safety). */
     toml_datum_t sn = toml_bool_in(t, "sim_neutral");
@@ -1439,28 +1438,30 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
             free(d.u.s);
         }
     }
-    /* Advisory ordering relations (validated against the enabled-list
-     * order, never silently reordered — the user's list is the truth;
-     * violations produce an actionable "move this mod" error). */
-    toml_array_t* above = toml_array_in(t, "above");
-    if (above) {
-        int n = toml_array_nelem(above);
-        for (int i = 0; i < n && mod->n_above < MOD_DEPS_MAX; i++) {
-            toml_datum_t d = toml_string_at(above, i);
-            if (!d.ok) continue;
-            snprintf(mod->above[mod->n_above++], MOD_ID_MAX, "%s", d.u.s);
-            free(d.u.s);
-        }
+    /* State + runahead declarations (savestate/rewind/runahead gates).
+     * state: "none" (no host state derived from guest history) or
+     * "rebuildable" (host state re-derives from guest RAM within a
+     * tick). runahead: "pure" (tick hooks touch guest state only) or
+     * "host-fx" (host side effects the engine suppresses during
+     * speculative ticks). Unknown values are an error: a wrong claim
+     * here corrupts timelines, so it must not parse quietly. */
+    toml_datum_t st = toml_string_in(t, "state");
+    if (st.ok) {
+        if (strcmp(st.u.s, "none") == 0)             mod->state_decl = 'n';
+        else if (strcmp(st.u.s, "rebuildable") == 0) mod->state_decl = 'r';
+        else OPL_ERROR_F("mods", "%s: unknown state = \"%s\" (want "
+                         "\"none\" or \"rebuildable\") — ignored",
+                         mod->id, st.u.s);
+        free(st.u.s);
     }
-    toml_array_t* below = toml_array_in(t, "below");
-    if (below) {
-        int n = toml_array_nelem(below);
-        for (int i = 0; i < n && mod->n_below < MOD_DEPS_MAX; i++) {
-            toml_datum_t d = toml_string_at(below, i);
-            if (!d.ok) continue;
-            snprintf(mod->below[mod->n_below++], MOD_ID_MAX, "%s", d.u.s);
-            free(d.u.s);
-        }
+    toml_datum_t ra = toml_string_in(t, "runahead");
+    if (ra.ok) {
+        if (strcmp(ra.u.s, "pure") == 0)          mod->ra_decl = 'p';
+        else if (strcmp(ra.u.s, "host-fx") == 0)  mod->ra_decl = 'h';
+        else OPL_ERROR_F("mods", "%s: unknown runahead = \"%s\" (want "
+                         "\"pure\" or \"host-fx\") — ignored",
+                         mod->id, ra.u.s);
+        free(ra.u.s);
     }
     /* Declared input bindings ([[binding]] name/key/purpose): the
      * registry that makes host-key use visible — conflicts across the
@@ -2650,55 +2651,6 @@ int openpete_mods_init(const openpete_options_t* opts) {
      * Deferred-entry load-all rows sit outside the enabled order
      * (appended lexicographically) — relations involving one are
      * skipped, never error-disable a mod nobody enabled. */
-    {
-        int keep = 0;
-        for (int i = 0; i < n_pending; i++) {
-            int ok_adv = 1;
-            for (int a = 0; a < pending[i].n_above && ok_adv; a++) {
-                if (!pending[i].boot_on) break;
-                for (int j = 0; j < n_pending; j++) {
-                    if (!pending[j].boot_on) continue;
-                    if (strcmp(pending[j].id, pending[i].above[a]) != 0)
-                        continue;
-                    if (j > i) {
-                        OPL_ERROR_F("mods", "\"%s\" declares "
-                                    "above=[\"%s\"] (must run first): "
-                                    "move \"%s\" AFTER \"%s\" in "
-                                    "%s — disabled",
-                                    pending[i].id, pending[j].id,
-                                    pending[i].id, pending[j].id,
-                                    s_order_src);
-                        ok_adv = 0;
-                    }
-                    break;
-                }
-            }
-            for (int b = 0; b < pending[i].n_below && ok_adv; b++) {
-                if (!pending[i].boot_on) break;
-                for (int j = 0; j < n_pending; j++) {
-                    if (!pending[j].boot_on) continue;
-                    if (strcmp(pending[j].id, pending[i].below[b]) != 0)
-                        continue;
-                    if (j < i) {
-                        OPL_ERROR_F("mods", "\"%s\" declares "
-                                    "below=[\"%s\"] (must run last): "
-                                    "move \"%s\" BEFORE \"%s\" in "
-                                    "%s — disabled",
-                                    pending[i].id, pending[j].id,
-                                    pending[i].id, pending[j].id,
-                                    s_order_src);
-                        ok_adv = 0;
-                    }
-                    break;
-                }
-            }
-            if (ok_adv) {
-                if (keep != i) pending[keep] = pending[i];
-                keep++;
-            }
-        }
-        n_pending = keep;
-    }
 
     /* Phase B: topo-sort by hard deps (see topo_visit above). */
     topo_ctx_t tc;

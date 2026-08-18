@@ -8,7 +8,6 @@ typedef struct { float strength; } sepia_params_t;
 static int   g_fx = -1;          /* postfx handle, -1 = never armed      */
 static const char* g_why = "not armed";  /* why, when g_fx < 0           */
 static float g_strength = 1.0f;  /* 0 = untouched scene, 1 = full sepia  */
-static int   g_strength_dirty;   /* set by the UI, consumed at present   */
 static int   g_marker = 1;       /* draw the under-HUD proof marker      */
 static unsigned g_presents;
 
@@ -24,41 +23,44 @@ static void push_strength(void) {
 static void on_present(const openpete_present_ctx_t* ctx) {
     (void)ctx;
     g_presents++;
-    if (g_strength_dirty) { g_strength_dirty = 0; push_strength(); }
     if (g_marker) g_api->draw_rect(0.04f, 0.04f, 0.10f, 0.10f, 0xFF00FFFFu);
 }
 
-static void ui_draw(const openpete_mod_ui_t* ui, void* user) {
-    (void)user;
-    if (g_fx < 0) { ui->text_disabled("%s", g_why); return; }
-    ui->text("SCENE grade armed — %u presents", g_presents);
-    if (ui->slider_float("Sepia strength", &g_strength, 0.0f, 1.0f))
-        g_strength_dirty = 1;
-    ui->tooltip("Blend between the untouched scene (0) and the full "
-                "sepia tone (1).");
-    ui->checkbox("Under-HUD proof marker", &g_marker);
-    ui->tooltip("The yellow square drawn after the SCENE pass. It stays "
-                "full-colour, which is what distinguishes SCENE from "
-                "COMPOSITE.");
+/* Status lines: the armed/unavailable verdict settles at entry and
+ * never changes, so one paint suffices. */
+static void publish_status(void) {
+    if (g_fx < 0) {
+        g_api->ui_status(g_self, "%s", g_why);
+        return;
+    }
+    g_api->ui_status(g_self, "SCENE grade armed (sepia %.2f%s)",
+                     (double)g_strength,
+                     g_marker ? ", proof marker on" : "");
 }
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api; g_self = self;
     if (api->api_version != OPENPETE_MOD_API_VERSION) return -1;
-    api->register_ui(self, ui_draw, NULL);
+    g_strength = (float)api->config_float(self, "sepia.strength", 1.0);
+    if (g_strength < 0.0f) g_strength = 0.0f;
+    if (g_strength > 1.0f) g_strength = 1.0f;
+    g_marker = api->config_bool(self, "sepia.marker", 1);
     int fs = api->shader_register(self, "shaders/sepia.frag");
     if (fs < 0) {
         g_why = "sepia.frag failed to compile";
-        api->log(self, OP_MOD_LOG_ERROR, "sepia.frag failed"); return 0;
+        api->log(self, OP_MOD_LOG_ERROR, "sepia.frag failed");
+        publish_status(); return 0;
     }
     int fx = api->postfx_register(self, fs, OP_POSTFX_SCENE, 0);
     if (fx < 0) {
         g_why = "SCENE point unavailable in this engine build";
-        api->log(self, OP_MOD_LOG_INFO, "SCENE point unavailable"); return 0;
+        api->log(self, OP_MOD_LOG_INFO, "SCENE point unavailable");
+        publish_status(); return 0;
     }
     g_fx = fx;
     push_strength();
     api->postfx_enable(self, fx, 1);
     api->log(self, OP_MOD_LOG_INFO, "scene sepia armed (SCENE point)");
+    publish_status();
     return api->register_present_hook(self, on_present);
 }

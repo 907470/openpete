@@ -18,6 +18,3 @@ version = "0.1.0"
 api = 3
 sim_neutral = true
 
-[test]
-frames = 4000
-gameplay_neutral = true

@@ -1,0 +1,13 @@
+# modtest.toml — this repo's CI declaration for tools/modtest.py.
+# Engine-repo concern, not part of the mod manifest format.
+[test]
+# Boot from power-on; the splash sequence stock lasts ~450+ frames, so a
+# 1500-frame window covers skip + title handoff with margin. Gameplay
+# timeline shifts by design (boot is ~450 frames shorter) — oracle skip.
+# NOTE: this test only passes with the sites BAKED (regen-mod-sites.sh);
+# scripts/check_mods.sh orchestrates bake → test → restore, and excludes
+# this mod from the stock-binary modtest sweep.
+frames        = 1500
+expect_oracle = "skip"
+# (single line — modtest's parser is line-based)
+expect_log    = ["fade-skip: 6/6 sites live", "fade-skip: skipped loop @ 0x800128EC", "fade-skip: skipped loop @ 0x800129D4", "fade-skip: skipped loop @ 0x80012A70", "fade-skip: skipped loop @ 0x80012B08", "fade-skip: skipped loop @ 0x80012B54", "fade-skip: skipped loop @ 0x80012BD8"]

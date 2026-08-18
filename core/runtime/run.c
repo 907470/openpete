@@ -1925,8 +1925,8 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                 if (!openpete_mods_runahead_capable(&ra_offender)) {
                     OPL_ERROR_F("runahead",
                                 "disabled: mod \"%s\" declares no runahead "
-                                "capability (add OPENPETE_MOD_STATE flags or "
-                                "OPENPETE_MOD_RA_CAPS)",
+                                "capability (add runahead = \"pure\" or "
+                                "\"host-fx\" to its mod.toml)",
                                 ra_offender ? ra_offender : "?");
                     ra_depth = s_runahead_req = 0;
                 } else {

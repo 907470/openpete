@@ -96,38 +96,16 @@ static const char* const g_anim_kind_name[] = {
 static uint32_t g_park_vaddr = 0;
 static void*    g_park_host  = 0;
 
-/* ---- savestate participation (reference OPENPETE_MOD_STATE adoption) ----
- * The park vaddr is host state the restored guest RAM depends on (the
- * model's anim slot in that RAM points at it). Declaring the state ABI
- * makes saves survive recompiles that keep this layout; DROP_OK because
- * losing the park is safe (we re-park lazily); RA_HOST_FX because the
- * toggle path logs/reads bindings (engine-suppressible under runahead). */
-typedef struct { uint32_t park_vaddr; } sca_state_t;
-OPENPETE_MOD_STATE(sca_state_t, 1, OP_MOD_STATE_DROP_OK | OP_MOD_RA_HOST_FX,
-    OP_STATE_FIELD(sca_state_t, park_vaddr))
+/* Host-state posture (manifest: state = "rebuildable"): the only host
+ * fact the guest world depends on is the park vaddr, and the park's
+ * BYTES live in the low 2MB — canonical RAM, savestate-carried. A
+ * restored world either matches the cached vaddr (park intact) or the
+ * next inject re-parks lazily, so nothing needs a load notification. */
 
-static int sca_state_save(void* buf, int cap) {
-    if (cap < (int)sizeof(sca_state_t)) return -1;
-    sca_state_t st = { g_park_vaddr };
-    memcpy(buf, &st, sizeof(st));
-    return (int)sizeof(st);
-}
+static int s_level_seen; /* last level the anim status was logged for */
+static void publish_status(void);
+static void on_level_ready(CPUState* cpu, int level_id);
 
-static void sca_state_load(const void* buf, int len) {
-    if (buf && len >= (int)sizeof(sca_state_t)) {
-        sca_state_t st;
-        memcpy(&st, buf, sizeof(st));
-        g_park_vaddr = st.park_vaddr;
-        g_park_host  = st.park_vaddr ? g_api->guest(st.park_vaddr) : NULL;
-        if (g_park_vaddr && !g_park_host) g_park_vaddr = 0; /* paranoia */
-    } else {
-        /* Reinit signal: restored world has no memory of our park. Drop
-         * the cached vaddr — the next inject re-parks (arena ledger keeps
-         * the cursor safe either way). */
-        g_park_vaddr = 0;
-        g_park_host  = NULL;
-    }
-}
 
 static uint32_t anim_slot(uint32_t model, uint32_t idx) {
     return model + MODEL_ANIM_TABLE + idx * 4u;
@@ -262,8 +240,26 @@ static int ensure_supercharge_anim(void) {
 
 /* ---- per-frame trigger -------------------------------------------------- */
 
+static unsigned g_pub_state = 0xFFFFFFFFu, g_pub_triggers = 0xFFFFFFFFu;
+static int      g_pub_enabled = -1, g_pub_anim = -1;
+
+static void publish_if_changed(void) {
+    if (g_last_state == g_pub_state && g_triggers == g_pub_triggers &&
+        g_enabled == g_pub_enabled && g_anim_kind == g_pub_anim)
+        return;
+    publish_status();
+}
+
 static void on_spyro_update(CPUState* cpu) {
-    int down = g_api->binding_down(g_self, "toggle");
+    int down;
+    if (op_read_u32(g_api, OP_GADDR_g_Gamestate) == 0) { /* GS_Playing */
+        int id = (int)op_read_u32(g_api, OP_GADDR_g_LevelId);
+        if (id > 0 && id != s_level_seen) {
+            s_level_seen = id;
+            on_level_ready(cpu, id);
+        }
+    }
+    down = g_api->binding_down(g_self, "toggle");
     if (down && !g_prev_down) {
         g_enabled = !g_enabled;
         g_api->log(g_self, OP_MOD_LOG_INFO, "supercharge-anywhere: %s",
@@ -283,8 +279,10 @@ static void on_spyro_update(CPUState* cpu) {
     g_last_state = st;
     g_last_air   = air;
 
-    if (!g_enabled)
+    if (!g_enabled) {
+        publish_if_changed();
         return;
+    }
 
     if (g_debug) {
         static uint32_t prev = 0xFFFFFFFFu;
@@ -303,8 +301,12 @@ static void on_spyro_update(CPUState* cpu) {
             g_triggers++;
         }
     }
+    publish_if_changed();
 }
 
+/* "Level ready" the doctrine way: the physics post-hook above diffs
+ * g_LevelId under g_Gamestate == GS_Playing (0) — the same gameplay-
+ * live condition the engine's old level-ready service keyed on. */
 static void on_level_ready(CPUState* cpu, int level_id) {
     (void)cpu;
     int r = g_enabled ? ensure_supercharge_anim()
@@ -317,44 +319,31 @@ static void on_level_ready(CPUState* cpu, int level_id) {
                level_id, g_anim_kind_name[g_anim_kind]);
 }
 
-/* ---- dev-overlay section ------------------------------------------------
- * Render-pure: reads only the host-side statics the tick hook publishes,
- * and writes the ones it consumes (the force switch, the diagnostics flag,
- * the fallback animation index). */
+/* ---- status lines --------------------------------------------------
+ * Repainted from the physics post-hook whenever a shown value changes
+ * (and once at entry). The force switch itself is the "toggle" binding;
+ * the boot posture and the debug/fallback knobs are [[config]] rows. */
 
-static void ui_draw(const openpete_mod_ui_t* ui, void* user) {
-    (void)user;
-
-    ui->checkbox("Force supercharge", &g_enabled);
-    ui->tooltip("Every ground charge is promoted to a real supercharge. "
-                "Same switch as the toggle binding (default G).");
-
+static void publish_status(void) {
     const char* note = g_last_state == STATE_SUPERCHARGE  ? " supercharging"
                      : g_last_state == STATE_CHARGE_GROUND ? " ground charge"
                      : "";
-    ui->text("Spyro: m_State %u%s, airTime %u", g_last_state, note,
-             g_last_air);
-    ui->text("charges promoted: %u", g_triggers);
-
-    ui->separator();
-
-    ui->text("animation: %s", g_anim_kind_name[g_anim_kind]);
-    if (g_have_blob) {
-        ui->text("authentic anim-45 cached: %u bytes", g_blob_len);
-        ui->tooltip("Captured from your own disc on a supercharge-ramp "
-                    "level and replayed on every other level.");
-    } else {
-        ui->text_disabled("no authentic anim cached — enter a ramp level "
-                          "once (Wizard Peak, Tree Tops) to capture it");
-    }
-
-    ui->slider_int("Fallback anim index", &g_sub_idx, 0,
-                   (int)ANIM_SUPERCHARGE - 1);
-    ui->tooltip("Locomotion animation aliased to slot 45 until the "
-                "authentic one is captured (3 = walk/run).");
-    ui->text_disabled("fallback takes effect on the next level load");
-
-    ui->checkbox("Log state transitions", &g_debug);
+    g_pub_state    = g_last_state;
+    g_pub_triggers = g_triggers;
+    g_pub_enabled  = g_enabled;
+    g_pub_anim     = g_anim_kind;
+    g_api->ui_status(g_self, "force supercharge: %s (toggle binding, "
+                     "default G)", g_enabled ? "ON" : "OFF");
+    g_api->ui_status(g_self, "Spyro: m_State %u%s, airTime %u",
+                     g_last_state, note, g_last_air);
+    g_api->ui_status(g_self, "charges promoted: %u", g_triggers);
+    g_api->ui_status(g_self, "animation: %s", g_anim_kind_name[g_anim_kind]);
+    if (g_have_blob)
+        g_api->ui_status(g_self, "authentic anim-45 cached: %u bytes",
+                         g_blob_len);
+    else
+        g_api->ui_status(g_self, "no authentic anim cached — enter a ramp "
+                         "level once (Wizard Peak, Tree Tops)");
 }
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
@@ -369,12 +358,9 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
 
     blob_load(); /* authentic anim from a previous session, if captured */
 
-    api->register_savestate_hooks(self, sca_state_save, sca_state_load);
-    api->register_ui(self, ui_draw, NULL);
-
     op_sdk_bind(api);
     OP_REGISTER_OVERRIDE_PatchInSpyroAnimations(api, self, sc_capture);
-    api->on_level(self, on_level_ready);
+    publish_status();
     return api->override_name(self, "UpdateSpyroPhysicsAndSurfaces",
                               on_spyro_update);
 }

@@ -12,7 +12,7 @@
  * The PoC spawns ONE orbiter next to Spyro in Artisans (the spawn goes
  * through the game's own g_SpawnMoby with full donor init, then is
  * rebranded) and drives it in a circle at head height, spinning; the
- * overlay section can queue more. The render proof is structural, not
+ * spawn binding can queue more. The render proof is structural, not
  * visual: the game's own render walk sets m_WasDrawn (+0x51) on the
  * moby when it actually draws — reading it back as 1 proves the novel
  * type went through the vanilla pipeline end to end (pool → update list
@@ -49,17 +49,48 @@ typedef struct {
 } orbiter_t;
 
 static orbiter_t g_orbiters[MAX_ORBITERS];
-static int       g_live;      /* instances updated in the last full tick */
-static int       g_seen;      /* accumulator for the tick in progress */
-static int       g_spawn_req; /* pending spawns, consumed one per tick */
+static int       g_live;       /* instances updated in the last full tick */
+static int       g_seen;       /* accumulator for the tick in progress */
+static int       g_spawn_req;  /* pending spawns, consumed one per tick */
+static int       g_spawn_held; /* "spawn" binding level, for edge detect */
 static int       g_last_id = -1;
 static int       g_logged_draw, g_logged_tick;
 
-/* Live orbit parameters, seeded from the defaults above and edited by
- * the overlay section; only the update below reads them, so writes from
- * the render-pure UI callback land in tick context. */
+/* Orbit parameters: the ORBIT_* defaults, overridden by the [[config]]
+ * rows at entry only — a committed settings edit reloads the mod, so
+ * entry re-reads them. Constant for the life of the load; the update
+ * below is the only reader. */
 static int g_radius = ORBIT_RADIUS;
 static int g_step   = ORBIT_STEP;
+
+/* Values as of the last ui_status repaint, so the per-tick check can
+ * skip repainting when nothing displayed has moved. */
+static int g_pub_id, g_pub_live, g_pub_req;
+
+/* Status lines for the Mods panel. ui_status lines persist until the
+ * mod prints again, so this single publisher repaints the WHOLE block
+ * every time any of it changes. */
+static void status_publish(void) {
+    g_pub_id   = g_last_id;
+    g_pub_live = g_live;
+    g_pub_req  = g_spawn_req;
+    if (g_last_id > 0)
+        g_api->ui_status(g_self, "orbiter class id: %d", g_last_id);
+    else
+        g_api->ui_status(g_self,
+                         "orbiter class id: not claimed in this level");
+    g_api->ui_status(g_self, "live instances: %d / %d",
+                     g_live, MAX_ORBITERS);
+    if (g_spawn_req > 0)
+        g_api->ui_status(g_self, "%d spawn(s) queued", g_spawn_req);
+}
+
+static void status_repaint_if_changed(void) {
+    if (g_last_id == g_pub_id && g_live == g_pub_live &&
+        g_spawn_req == g_pub_req)
+        return;
+    status_publish();
+}
 
 static void orbiter_update(CPUState* cpu, uint32_t moby_va) {
     orbiter_t* o = NULL;
@@ -104,6 +135,15 @@ static void orbiter_update(CPUState* cpu, uint32_t moby_va) {
  * id changes; the old instances died with the pool). */
 static void on_gamestate_update(CPUState* cpu) {
     g_api->base(cpu);
+    /* "spawn" binding ([[binding]] in mod.toml, user-rebindable via
+     * [keys.mod.new-moby]): edge-detect the key here in tick context
+     * and queue; the spawn section below consumes one per tick. */
+    {
+        int down = g_api->binding_down(g_self, "spawn");
+        if (down && !g_spawn_held && g_spawn_req < MAX_ORBITERS)
+            g_spawn_req++;
+        g_spawn_held = down;
+    }
     int id = g_api->moby_type_id(g_self, "orbiter");
     if (id != g_last_id) {
         g_last_id = id;
@@ -118,6 +158,9 @@ static void on_gamestate_update(CPUState* cpu) {
         if (!g_orbiters[i].seen) g_orbiters[i].moby = 0;
         g_orbiters[i].seen = 0;
     }
+    /* One repaint check per tick; a spawn later this tick shows up on
+     * the next tick's check. */
+    status_repaint_if_changed();
 
     if (id <= 0 || g_spawn_req <= 0) return;
     orbiter_t* o = NULL;
@@ -148,39 +191,16 @@ static void on_gamestate_update(CPUState* cpu) {
                "new-moby: spawned orbiter @0x%08X (class %d)", mva, id);
 }
 
-/* Overlay section. Render-pure: it only reads state the tick hook
- * published and writes statics the tick hook consumes. */
-static void ui_draw(const openpete_mod_ui_t* ui, void* user) {
-    (void)user;
-    if (g_last_id > 0)
-        ui->text("orbiter class id: %d", g_last_id);
-    else
-        ui->text_disabled("orbiter class id: not claimed in this level");
-    ui->text("live instances: %d / %d", g_live, MAX_ORBITERS);
-
-    ui->separator();
-    if (ui->button("Spawn orbiter") && g_spawn_req < MAX_ORBITERS)
-        g_spawn_req++;
-    ui->tooltip("Queues a spawn at Spyro's position; the next sim tick "
-                "runs it through the game's own spawner.");
-    if (g_spawn_req > 0) {
-        ui->same_line();
-        ui->text("%d queued", g_spawn_req);
-    }
-
-    ui->slider_int("Orbit radius", &g_radius, 100, 4000);
-    ui->slider_int("Orbit speed", &g_step, 1, 256);
-    ui->text_disabled("Speed is angle units/tick; 4096 = full circle.");
-}
-
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api;
     g_self = self;
     if (api->api_version != OPENPETE_MOD_API_VERSION) return -1;
     op_sdk_bind(api);
+    g_radius = (int)api->config_int(self, "orbit.radius", ORBIT_RADIUS);
+    g_step   = (int)api->config_int(self, "orbit.speed", ORBIT_STEP);
     if (api->register_moby_type(self, "orbiter", DONOR_CLASS,
                                 orbiter_update) != 0)
         return -1;
-    api->register_ui(self, ui_draw, NULL);
+    status_publish(); /* initial block; repaints ride the tick hook */
     return api->override_name(self, "GamestateUpdate", on_gamestate_update);
 }

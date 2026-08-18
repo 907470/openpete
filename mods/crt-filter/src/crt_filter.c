@@ -2,10 +2,11 @@
  * config-driven parameters through the mod uniform block.
  *
  * config.toml [crt] knobs -> postfx_set_uniforms (std140: four floats,
- * matching crt.frag's crt_params block). Pushed at entry and again
- * whenever the overlay sliders move — config is per-boot (dev hot
- * reload re-runs entry with fresh values) and stays the file-side
- * source of truth; slider edits live only for this run. */
+ * matching crt.frag's crt_params block). Read once at entry: the
+ * [[config]] rows in mod.toml render engine-side in the Mods panel,
+ * and a committed edit writes config.toml back and reloads the mod,
+ * so entry re-runs with the fresh values — config.toml stays the
+ * file-side source of truth. */
 
 #include <openpete_mod_api.h>
 
@@ -20,58 +21,41 @@ typedef struct {           /* std140 mirror of crt.frag crt_params */
 } crt_params_t;
 
 static crt_params_t g_params;      /* what the shader is running on */
-static crt_params_t g_config;      /* values read from config.toml  */
 static int          g_fx = -1;     /* postfx handle, -1 = no pass   */
 static int          g_shader_ok;   /* crt.frag compiled             */
 
-/* Uniform pushes are a host-side copy, so the overlay can drive them
- * directly: no guest state is involved and nothing is deferred. */
-static void ui_draw(const openpete_mod_ui_t* ui, void* user) {
-    (void)user;
+/* Repaint the whole status block (ui_status lines persist until the
+ * next repaint). Entry is the only writer of the shown state — the
+ * shader/postfx outcome and the pushed params are fixed for the life
+ * of the load — so it publishes once, after that state is settled. */
+static void crt_status_publish(void) {
     if (!g_shader_ok) {
-        ui->text_disabled("crt.frag did not compile — see .build/shaders/");
+        g_api->ui_status(g_self,
+                         "crt.frag did not compile — see .build/shaders/");
         return;
     }
     if (g_fx < 0) {
-        ui->text_disabled("postfx chain unavailable in this engine build");
+        g_api->ui_status(g_self,
+                         "postfx chain unavailable in this engine build");
         return;
     }
-
-    int changed = 0;
-    changed |= ui->slider_float("Curvature", &g_params.curvature, 0.0f, 0.5f);
-    ui->tooltip("Barrel amount; 0 = flat");
-    changed |= ui->slider_float("Scanlines", &g_params.scan_depth, 0.0f, 1.0f);
-    ui->tooltip("Scanline darkening; 0 = off");
-    changed |= ui->slider_float("Slot mask", &g_params.mask_depth, 0.0f, 1.0f);
-    ui->tooltip("RGB slot-mask darkening; 0 = off");
-    changed |= ui->slider_float("Corner fade", &g_params.corner_fade,
-                                0.0f, 0.25f);
-    ui->tooltip("Vignette width at the curved edge");
-
-    if (ui->button("Reset to config.toml")) {
-        g_params = g_config;
-        changed = 1;
-    }
-    if (changed)
-        g_api->postfx_set_uniforms(g_self, g_fx, &g_params, sizeof g_params);
-
-    ui->separator();
-    ui->text("composite pass active (curve %.2f scan %.2f mask %.2f)",
-             g_params.curvature, g_params.scan_depth, g_params.mask_depth);
-    ui->text_disabled("edits apply live; config.toml is reloaded at boot");
+    g_api->ui_status(g_self,
+                     "composite pass active (curve %.2f scan %.2f mask %.2f)",
+                     g_params.curvature, g_params.scan_depth,
+                     g_params.mask_depth);
 }
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api;
     g_self = self;
     if (api->api_version != OPENPETE_MOD_API_VERSION) return -1;
-    api->register_ui(self, ui_draw, NULL);
 
     int frag = api->shader_register(self, "shaders/crt.frag");
     if (frag < 0) {
         api->log(self, OP_MOD_LOG_ERROR,
                  "crt.frag failed to compile — filter unavailable "
                  "(see .build/shaders/)");
+        crt_status_publish();
         return 0;   /* stay loaded: a broken shader never bricks a boot */
     }
     g_shader_ok = 1;
@@ -81,6 +65,7 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
         api->log(self, OP_MOD_LOG_INFO,
                  "postfx chain not in this engine build — shader "
                  "compiled and ready");
+        crt_status_publish();
         return 0;
     }
     g_fx = fx;
@@ -90,12 +75,12 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     p.scan_depth  = (float)api->config_float(self, "crt.scanline_depth", 0.28);
     p.mask_depth  = (float)api->config_float(self, "crt.mask_depth",     0.18);
     p.corner_fade = (float)api->config_float(self, "crt.corner_fade",    0.02);
-    g_config = p;
     g_params = p;
     api->postfx_set_uniforms(self, fx, &p, sizeof p);
 
     api->log(self, OP_MOD_LOG_INFO,
              "crt filter armed (curve %.2f scan %.2f mask %.2f)",
              p.curvature, p.scan_depth, p.mask_depth);
+    crt_status_publish();
     return api->postfx_enable(self, fx, 1);
 }

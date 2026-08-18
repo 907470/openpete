@@ -17,6 +17,15 @@ static unsigned                  g_calls;
  * effect the engine can suppress during speculative ticks. */
 OPENPETE_MOD_RA_CAPS(OP_MOD_RA_HOST_FX)
 
+/* Status lines, repainted from the hook each call; the entry paint's
+ * "waiting" line stands until the first call. */
+static void publish_status(void) {
+    g_api->ui_status(g_self, "CameraUpdate calls: %u", g_calls);
+    g_api->ui_status(g_self, "%s", g_calls
+        ? "observing (logs every 300th call)"
+        : "waiting for the first call");
+}
+
 static void on_camera_update(CPUState* cpu) {
     g_calls++;
     if (g_calls == 1u || (g_calls % 300u) == 0u)
@@ -24,21 +33,16 @@ static void on_camera_update(CPUState* cpu) {
                    "hello from the override chain: CameraUpdate call #%u",
                    g_calls);
     g_api->base(cpu); /* pre-hook shape: our code ran first, original last */
+    publish_status();
 }
 
 /* Overlay section: read-only view of the observer's counter. Render-pure —
  * it only reads host-side state the hook publishes. */
-static void ui_draw(const openpete_mod_ui_t* ui, void* user) {
-    (void)user;
-    ui->text("CameraUpdate calls: %u", g_calls);
-    ui->text_disabled("%s", g_calls ? "observing (logs every 300th call)"
-                                    : "waiting for the first call");
-}
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api;
     g_self = self;
     if (api->api_version != OPENPETE_MOD_API_VERSION) return -1;
-    api->register_ui(self, ui_draw, NULL);
+    publish_status();
     return api->override_name(self, "CameraUpdate", on_camera_update);
 }

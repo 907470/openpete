@@ -13,10 +13,14 @@ version = "0.1.0"
 api     = 2               # SDK api-version pin (OPENPETE_MOD_API_VERSION)
 deps    = ["other-mod"]   # hard deps: topo-sorted, cycles rejected,
                           # missing dep = actionable error
-above   = ["x"]           # advisory: must be listed AFTER x in
-below   = ["y"]           # enabled.txt / BEFORE y (order = priority)
-tier    = "raw"           # declare when poking raw func_* addresses —
-                          # region-pinned, may drift across updates
+state    = "none"         # host-state posture: "none" (no host state
+                          # derived from guest history) or
+                          # "rebuildable" (re-derives from guest RAM) —
+                          # gates savestate/rewind with mods enabled
+runahead = "pure"         # "pure" (tick hooks touch guest state only)
+                          # or "host-fx" (host side effects, engine-
+                          # suppressed during speculative ticks) —
+                          # gates runahead
 sim_neutral = true        # observer/presentation-only: never diverges
                           # gameplay state; excluded from the save
                           # modset tag
@@ -27,12 +31,9 @@ key     = "F6"            # with api->binding_down(self, "warp").
 purpose = "warp home"     # Users rebind via [keys.mod.<id>] in
                           # openpete.toml without editing the mod.
 
-[[site]]                  # instruction-site hooks (the escape hatch):
-name = "fade-bound"       # one guest instruction, replaced or appended.
-addr = 0x800128EC         # Sites are BAKED at recomp-regen time —
-kind = "replace"          # scripts/regen-mod-sites.sh; inert until then
-
-[test]                    # the modtest harness (tools/modtest.py)
+# CI declarations live in a SIBLING file this repo owns (modtest.toml,
+# same [test] schema) — they are not part of the manifest format.
+[test]                    # in modtest.toml, not mod.toml
 frames        = 8000
 expect_oracle = "skip"    # "pass"  = must stay byte-identical to PSX
                           # "fail"  = must diverge (gameplay mods)

@@ -9,4 +9,17 @@
 id      = "crash-dummy"
 name    = "Crash Dummy"
 version = "0.1.0"
-api     = 3
+api     = 5
+
+[[binding]]
+name    = "crash"
+key     = "F10"
+purpose = "fault on the next CameraUpdate (attribution test)"
+
+[[config]]
+key = "crash.auto_arm"
+type = "bool"
+default = true
+label = "Auto-crash on call 100"
+group = "Crash"
+help = "Fault automatically on the 100th CameraUpdate; off = crash only via the binding"

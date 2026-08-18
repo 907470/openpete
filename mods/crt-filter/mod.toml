@@ -8,9 +8,48 @@
 id      = "crt-filter"
 name    = "CRT Filter"
 version = "0.1.0"
-api     = 3
+api     = 5
 sim_neutral = true  # GPU-only presentation: excluded from the save modset tag
 
-[test]
-frames        = 4000
-gameplay_neutral = true
+# Settings schema — the engine renders these rows in the Mods panel and
+# writes committed edits back into config.toml (comments preserved);
+# the mod reloads so entry re-reads them through api->config_float.
+[[config]]
+key = "crt.curvature"
+type = "float"
+default = 0.12
+min = 0.0
+max = 0.5
+label = "Curvature"
+group = "CRT"
+help = "Barrel amount; 0 = flat"
+
+[[config]]
+key = "crt.scanline_depth"
+type = "float"
+default = 0.28
+min = 0.0
+max = 1.0
+label = "Scanlines"
+group = "CRT"
+help = "Scanline darkening; 0 = off"
+
+[[config]]
+key = "crt.mask_depth"
+type = "float"
+default = 0.18
+min = 0.0
+max = 1.0
+label = "Slot mask"
+group = "CRT"
+help = "RGB slot-mask darkening; 0 = off"
+
+[[config]]
+key = "crt.corner_fade"
+type = "float"
+default = 0.02
+min = 0.0
+max = 0.25
+label = "Corner fade"
+group = "CRT"
+help = "Vignette width at the curved edge"

@@ -13,7 +13,11 @@
 id      = "supercharge-anywhere"
 name    = "Supercharge Anywhere"
 version = "0.3.0"
-api     = 3
+api     = 5
+state    = "rebuildable"  # only host fact the world depends on is the
+                          # park vaddr; the park bytes are canonical RAM
+                          # and the next inject re-parks lazily
+runahead = "host-fx"      # binding reads + logs in the tick hook
 
 [[binding]]
 name    = "toggle"
@@ -25,7 +29,28 @@ purpose = "toggle supercharge-anywhere on/off"
 # doesn't reliably do), so we assert load + the per-level animation status
 # line rather than an oracle verdict. The trigger + injection are validated
 # separately with the level-charge bk2 and capture/inject runs.
-[test]
-frames        = 8000
-expect_oracle = "skip"
-expect_log    = ["supercharge anim ="]
+
+[[config]]
+key = "start_enabled"
+type = "bool"
+default = true
+label = "Enabled at boot"
+group = "Supercharge"
+help = "Boot posture of the force switch; the toggle binding flips it live"
+
+[[config]]
+key = "anim_substitute"
+type = "int"
+default = 3
+min = 0
+max = 44
+label = "Fallback anim index"
+group = "Supercharge"
+help = "Locomotion animation aliased to slot 45 until the authentic one is captured (3 = walk/run); takes effect on the next level load"
+
+[[config]]
+key = "debug"
+type = "bool"
+default = false
+label = "Log state transitions"
+group = "Debug"

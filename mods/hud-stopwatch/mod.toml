@@ -15,10 +15,51 @@
 id      = "hud-stopwatch"
 name    = "HUD Stopwatch"
 version = "0.1.0"
-api     = 3
+api     = 5
 sim_neutral = true  # observer/presentation-only: excluded from the save modset tag
 
-[test]
-frames        = 8000
-expect_oracle = "pass"
-expect_log    = ["hud-stopwatch: ticking", "present hook registered"]
+[[binding]]
+name    = "reset"
+key     = "T"
+purpose = "zero the stopwatch"
+
+# Settings schema — the engine renders these rows in the Mods panel and
+# writes committed edits back into config.toml; entry re-reads them
+# through api->config_* after the queued reload. Overlay space: x spans
+# 0..aspect from the left edge, y spans 0..1 from the top edge; sizes
+# are window-height fractions.
+
+# Settings schema — the engine renders these rows in the Mods panel and
+# writes committed edits back into config.toml; entry re-reads them
+# through api->config_* after the queued reload. Overlay space: x spans
+# 0..aspect from the left edge, y spans 0..1 from the top edge; sizes
+# are window-height fractions.
+[[config]]
+key = "layout.x"
+type = "float"
+default = 0.022
+min = 0.0
+max = 1.7
+label = "X"
+group = "Layout"
+help = "Readout origin: x spans 0..aspect from the left edge"
+
+[[config]]
+key = "layout.y"
+type = "float"
+default = 0.058
+min = 0.0
+max = 1.0
+label = "Y"
+group = "Layout"
+help = "Readout origin: y spans 0..1 from the top edge"
+
+[[config]]
+key = "layout.cap_height"
+type = "float"
+default = 0.026
+min = 0.010
+max = 0.100
+label = "Cap height"
+group = "Layout"
+help = "Glyph height; the backdrop panel scales with it"

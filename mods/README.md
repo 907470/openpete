@@ -78,8 +78,9 @@ name    = "My Mod"
 version = "0.1.0"
 api     = 1               # SDK api-version pin
 deps    = ["other-mod"]   # hard deps (topo-sorted, cycles rejected)
-above   = ["x"]           # advisory: must be listed AFTER x
-tier    = "raw"           # declare when using raw func_* addresses
+state   = "none"          # none | rebuildable — host-state posture;
+runahead = "pure"         # pure | host-fx — both gate savestate/
+                          # rewind/runahead with mods enabled
 sim_neutral = true        # observer/presentation-only: excluded from
                           # the save modset tag
 
@@ -96,12 +97,9 @@ label   = "S3 collect chime"   # the queued reload. types: bool | int |
 group   = "Gems"          # float | string; min/max = slider, items =
 help    = "tooltip text"  # combo.
 
-[[site]]                  # instruction-site hooks (the escape hatch);
-name = "fade-bound"       # baked by scripts/regen-mod-sites.sh
-addr = 0x800128EC
-kind = "replace"
-
-[test]                    # modtest harness (tools/modtest.py)
+[test]                    # modtest harness — lives in a SIBLING
+                          # modtest.toml (this repo's CI concern, not
+                          # part of the manifest format)
 frames        = 8000
 expect_oracle = "skip"    # pass | fail | skip
 input         = "test/scenario.bk2"
@@ -130,10 +128,10 @@ directory — start from the one nearest your idea. Declarative:
 `music-swap` (one WAV), `hd-single-texture` (one PNG),
 `recolored-artisans` (generated texture pack), `grim-garden` /
 `spyro15-cliff-town` (custom levels). Code tier: `hello-anchor` for
-observers, `double-gems` for gameplay taps, `hud-stopwatch` for HUD,
-`ghost-lite` for actor replay, `new-moby`/`mirror-level` for content,
-`fade-skip` for instruction sites, `triangle-flutter` for the full
-flagship treatment. `scripts/check_mods.sh` runs the whole ladder.
+observers, `double-gems` for gameplay taps, `hud-stopwatch` for HUD
+draws and bindings, `new-moby` for content, the `crt-*` mods for
+shaders, and `spyro3` for the full flagship treatment.
+`scripts/check_mods.sh` runs the whole ladder.
 
 ## Installing from a mod-sources manifest
 
