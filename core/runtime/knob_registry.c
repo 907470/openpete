@@ -13,6 +13,7 @@
 
 #include "openpete_knobs.h"
 #include "openpete_workpool.h"
+#include "openpete_terrain_cache.h"
 #include "openpete.h"
 #include "openpete_config.h"
 #include "config_schema.h"
@@ -174,6 +175,10 @@ static double rquant_get(const knob_desc_t *k) {
 static double exthreads_get(const knob_desc_t *k) {
     (void)k;
     return openpete_workpool_threads();   /* resolved count (auto expanded) */
+}
+static double tercache_get(const knob_desc_t *k) {
+    (void)k;
+    return openpete_tercache_ready() ? 1 : 0;   /* cache actually came up */
 }
 static int rquant_set(knob_desc_t *k, double v) {
     openpete_native_set_raster_quantize((int)v);
@@ -509,6 +514,15 @@ static const knob_desc_t g_builtin[] = {
       "at any count; 1 = serial. Boot-latched; display-only.",
       KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 1, 8,
       exthreads_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "terrain_cache", "Terrain GPU cache", "Display", "--terrain-cache", NULL,
+      "Retained GPU terrain: unclaimed sectors render from world-space vertex "
+      "chunks with the per-face verdicts mirrored in the vertex stage; claimed "
+      "sectors (near / portal / animated) stay on the CPU walk. Shows whether "
+      "the cache came up (needs a hardware GPU with fp64). Boot-latched; "
+      "display-only.",
+      KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      tercache_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "notex", "Untextured (lighting)", "Display", NULL, "OPENPETE_NOTEX",
       "Debug view: draw the 3D scene with textures replaced by neutral grey, "

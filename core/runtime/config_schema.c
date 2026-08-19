@@ -26,6 +26,7 @@ static const cfg_knob_t g_schema[] = {
     { "vertex_precision", "--vertex-precision", NULL,                    CFG_ENUM,   v_vprec,    NULL,       NULL,       0 },
     { "raster_quantize",  "--raster-quantize",  NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "extract_threads",  "--extract-threads",  NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
+    { "terrain_cache",    "--terrain-cache",    "OPENPETE_TERRAIN_CACHE", CFG_BOOL,  NULL,       NULL,       NULL,       0 },
     { "notex",            NULL,                 "OPENPETE_NOTEX",        CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "dither",           "--dither",           NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "texture_mapping",  "--texture-mapping",  NULL,                    CFG_ENUM,   v_texmap,   NULL,       NULL,       0 },

@@ -1,0 +1,47 @@
+#version 450
+
+/* Retained-terrain KEY-pass fragment stage — the psx_key_cutout.frag
+ * counterpart for terrain.vert's pass_sel==2 output: rasterise the flat og
+ * OT key as depth, with TEXTURED faces stamping only the pixels their
+ * opaque texels paint (og OT occupancy — a fence lattice must not
+ * key-discard what its holes show). Untextured faces raster full-footprint.
+ * The material comes from the vMat varying (the vertex stage already ran
+ * the near-tile / CLUT-ladder select), not a push constant. */
+
+layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
+
+layout(location = 0)      in vec2  vUV;    /* u/wq (recover via vQ)          */
+layout(location = 2) flat in uvec2 vMat;
+layout(location = 4)      in float vQ;     /* 1/wq                           */
+
+layout(location = 0) out vec4 outColor;
+
+uint vram_at(int x, int y) { return texelFetch(u_vram, ivec2(x, y), 0).r; }
+
+void main()
+{
+    uint mat0 = vMat.x;
+    if ((mat0 & (1u << 23)) != 0u) {          /* textured: transparent-texel cutout */
+        int tpx  = int(mat0 & 0x3FFu);
+        int tpy  = int((mat0 >> 10) & 0x1FFu);
+        uint bppc = (mat0 >> 19) & 3u;
+        int clx  = int(vMat.y & 0xFFFFu);
+        int cly  = int(vMat.y >> 16);
+        vec2 uvq = vUV / vQ;
+        int u = int(uvq.x), v = int(uvq.y);
+        uint p;
+        if (bppc == 2u) {
+            p = vram_at(tpx + u, tpy + v);
+        } else if (bppc == 1u) {
+            uint word = vram_at(tpx + (u >> 1), tpy + v);
+            uint idx  = (word >> (8 * (u & 1))) & 0xFFu;
+            p = vram_at(clx + int(idx), cly);
+        } else {
+            uint word = vram_at(tpx + (u >> 2), tpy + v);
+            uint nib  = (word >> (4 * (u & 3))) & 0xFu;
+            p = vram_at(clx + int(nib), cly);
+        }
+        if (p == 0u) discard;                  /* PSX transparent sentinel */
+    }
+    outColor = vec4(1.0);                      /* colour attachment unused */
+}

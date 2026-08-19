@@ -37,6 +37,8 @@
 #include "features/no_lod.h"  /* openpete_no_lod + openpete_fog_scale (--fog-scale) */
 #include "features/levelwarp_native.h" /* level-id -> verdicts-file spelling (fill-tag pick) */
 #include "openpete_fillpick.h"       /* LP fill-tag inspector (P): session verdicts + pick */
+#include "rhi.h"                     /* rhi_terrain_vertex (the chunk packer) */
+#include "openpete_terrain_cache.h"  /* terrain sector-mesh GPU cache (retained terrain) */
 
 #include "portal_native.h" /* portal-guard gate + the sky-plane provider (OT-conformance clamp) */
 #include "texture_pack.h"           /* identity resolve for the record dumper */
@@ -1226,6 +1228,7 @@ typedef struct {
     uint32_t animEpoch;                      /* s_tgen_epoch at last texmat refresh */
     uint32_t lastUse;                        /* s_tsc_stamp at last hit — LRU eviction key */
     int nLpV, nLpF, nHpV, nHpF, flags;
+    int nLpC, nHpC;                          /* colour-array entry counts (GPU-cache liveness hash) */
     int nGapfill;                            /* LP faces classified HP-coverage-gap fillers */
     unsigned fillGen;                        /* openpete_fillpick_generation() at last tagging */
     int originX, originY, originZ;
@@ -1247,6 +1250,13 @@ typedef struct {
      * 2 = no signal (untextured/unmatched sector — level mean applies). */
     float lpg_p[3], lpg_q[3];
     uint8_t lpg_state; unsigned lpg_gen;
+    /* GPU sector-mesh cache liveness: decodeGen bumps on every (re)decode of
+     * this slot (a global monotonic counter, so slot reuse for a different
+     * sector always mismatches); texGen when the env texture anim re-decoded
+     * any cached texmat; vertGen when the geometry env-anim actually CHANGED
+     * the decoded verts (content hash, not the unconditional per-tick
+     * re-decode). */
+    uint32_t decodeGen, texGen, vertGen, vertHash;
 } tscache_t;
 #define TSC_SLOTS 512
 static tscache_t s_tsc[TSC_SLOTS];
@@ -1798,6 +1808,11 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         int nLpC = (g[3] >> 8) & 0xFF;
         C->nHpV = g[4] & 0xFF; C->nHpF = (g[4] >> 16) & 0xFF;
         int nHpC = (g[4] >> 8) & 0xFF, hpVertsOff = (int)((g[4] >> 24) & 0xFF);
+        C->nLpC = nLpC; C->nHpC = nHpC;
+        {   /* GPU-cache liveness: any (re)decode invalidates the slot's chunks */
+            static uint32_t s_decode_ctr;
+            C->decodeGen = ++s_decode_ctr;
+        }
         if (C->nLpV > 256) C->nLpV = 256;
         if (C->nHpV > 256) C->nHpV = 256;
         uint32_t lpVerts = s + 0x1C;
@@ -1980,6 +1995,19 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
                     if (C->hpVprev) memcpy(C->hpVprev, C->hpV, sizeof(tsvert_t) * (size_t)nHp);
                     tsc_decode_verts(cpu, C->s + 0x1C + ((C->sig[4] >> 24) & 0xFF) * 4,
                                      nHp, C->hpV);
+                }
+                {   /* GPU-cache liveness: the re-decode is unconditional per tick,
+                     * so hash the decoded verts and bump vertGen only when the
+                     * geometry actually moved (else anim-listed sectors would
+                     * rebuild their GPU chunks every tick for nothing). */
+                    uint32_t h = 2166136261u;
+                    const uint8_t* hp = (const uint8_t*)C->lpV;
+                    for (size_t n = sizeof(tsvert_t) * (size_t)(C->lpV ? nLp : 0), j = 0; j < n; j++)
+                        h = (h ^ hp[j]) * 16777619u;
+                    hp = (const uint8_t*)C->hpV;
+                    for (size_t n = sizeof(tsvert_t) * (size_t)(C->hpV ? nHp : 0), j = 0; j < n; j++)
+                        h = (h ^ hp[j]) * 16777619u;
+                    if (h != C->vertHash) { C->vertHash = h; C->vertGen++; }
                 }
             } else if (s_vanim_on) {
                 /* Sub-tick present: fill the fractional lerp banks prev→cur at the
@@ -2169,15 +2197,20 @@ static void tsc_refresh_anim(CPUState* cpu, tscache_t* C,
     C->animEpoch = s_tgen_epoch;
     if (!C->hpF) return;                     /* LP faces are untextured */
     uint32_t tbl = (texTblMode == 2) ? hqTable : lqTable;
+    int changed = 0;
     for (int f = 0; f < C->nHpF; f++) {
         tsface_t* F = &C->hpF[f];
         if (F->tb == -1) continue;
         uint32_t g = s_tgen[F->tb & 0x7F];
         if (F->tgen == g) continue;
         F->tgen = g;
+        changed = 1;
         terrain_texmat(cpu, tbl, F->tb, hiDetail, &F->mat, F->tu, F->tv);
         terrain_texmat(cpu, tbl, F->tb, 1, &F->matN, F->tuN, F->tvN);
     }
+    /* GPU-cache liveness: baked materials (incl. the HQ sub-quad tiledefs,
+     * which the env anim rewrites in the sibling record) went stale. */
+    if (changed) C->texGen++;
 }
 
 /* Host-pointer terrain colour (DPCS blend identical to terrain_color; the debug
@@ -2581,6 +2614,472 @@ static uint8_t  s_secv_anim[1024];
 static uint32_t s_secv_stamp[1024];
 static double   s_rim_rowmax = 1.0;   /* max ||M row||/4096 — world->view scale bound */
 
+/* ==== terrain sector-mesh GPU cache: game-side builder + claims ============
+ *
+ * Packs a decoded sector (tscache_t) into rhi_terrain_vertex chunks — one per
+ * draw-class arena — and keeps them valid against the moving-terrain inputs:
+ * decodeGen (slot re-decode / reuse), texGen (env texture anim re-decoded
+ * texmats + the HQ sibling records), vertGen (geometry env anim content
+ * change), and a per-VBL colour-array hash (terrain colours are read live by
+ * the CPU walk; gameplay can only change them at tick boundaries). Everything
+ * baked here is exactly what the CPU face walk reads per present; the
+ * camera-dependent selections happen in terrain.vert.
+ *
+ * CLAIMED back to the CPU walk (sub-tick or per-face semantics the retained
+ * mesh cannot bake): near-plane-approaching sectors (the no-clip guarantee),
+ * portal-outline overlaps (rim cull / transparent-cover drop / plane-cover —
+ * the S2c plane-cover migration retires this one), vert-anim sectors (the
+ * fractional lerp banks), scroll-anim tiles (the 7-bit accumulator lerp),
+ * fill-duty sectors (the feed's screen-space dilation), arena-full and
+ * unmapped-colour sectors. */
+
+typedef struct {
+    uint32_t s;                       /* sector vaddr chunks were built from (0 = none) */
+    uint32_t decodeGen, texGen, vertGen, colHash;
+    uint32_t lastColFrame;            /* VBL of the last colour-hash check */
+    int      unbuildable;             /* claim reason latched at this decodeGen:
+                                       * 0 fine, 1 arena-full, 2 scroll-anim,
+                                       * 3 unmapped colours */
+    uint32_t first[OPTC_ARENA_COUNT];
+    int      count[OPTC_ARENA_COUNT];
+    uint8_t  gen;                     /* chunk generation (3 bits published) */
+} tgpu_slot_t;
+static tgpu_slot_t s_tgpu[TSC_SLOTS];
+/* census: window sums (reset each print) + per-walk counts (op_prof rows) */
+static long s_tgpu_secs, s_tgpu_claims, s_tgpu_rebuilds;
+static long s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
+            s_tgcl_fill, s_tgcl_build, s_tgcl_colour;
+static int  s_tgpu_secs_walk, s_tgpu_claims_walk;
+
+/* Active portal-sky planes for the per-sector portal claim: portal-adjacent
+ * terrain carries per-face feed semantics (inner-rim cull, transparent-cover
+ * drop, plane-cover interplay) the GPU path doesn't mirror yet, so any
+ * sector whose projected screen bbox overlaps a portal outline is claimed
+ * back to the CPU walk while the rest of the level still GPU-draws.
+ * s_tgpu_claim_all forces every sector to the CPU when a portal is recent
+ * but its planes are momentarily unavailable (safe degenerate). */
+static openpete_portal_skyplane s_tgpu_pplane[6];
+static int s_tgpu_pplane_n = 0;
+static int s_tgpu_claim_all = 0;
+static double s_tgpu_l3 = 1.0;        /* ||M row 2||/4096 (near-claim bound) */
+static int s_otbias_on;               /* tentative: defined (=1) at the feed */
+
+static void tgpu_free_slot(tgpu_slot_t* T) {
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        if (T->count[a] > 0) openpete_tercache_chunk_free(a, T->first[a], T->count[a]);
+        T->count[a] = 0;
+    }
+    T->s = 0;
+}
+
+/* Debug/experiment envs whose semantics live in the CPU walk: any of them set
+ * forces the pure-CPU path (per-run latch — these are dev levers). */
+static int tgpu_env_block(void) {
+    static int v = -1;
+    if (v >= 0) return v;
+    static const char* const keys[] = {
+        "TIERCOLOR", "NOTEX", "FLAT", "TIERONLY", "FARDBG", "SECTORDUMP",
+        "CALDBG", "NEARQ", "VERIFY", "CULLDBG", "NEARDBG", "BINDBG",
+        "LPKEEP", "LPKEEPDBG", "FILL_DILATE", "FILL_FOGSLACK", "FILL_UP",
+        "FILL_THINPX", "GAPFILL_EXCL", "FOGSCALE", "HQSCALE", "NEARZ",
+        "HIDETAIL", "TEXTBL", "PORTAL_CONFORM_DBG",
+        /* A/B levers whose non-default value changes walk math the shader
+         * mirrors only at the shipped default: */
+        "LP_FARCULL", "LP_ADMIT", "HP_DROP", "LOD_FAITHFUL",
+        "NEARBAND_CONTEST",
+    };
+    v = 0;
+    for (unsigned k = 0; k < sizeof(keys) / sizeof(keys[0]) && !v; k++) {
+        char name[64];
+        snprintf(name, sizeof name, "OPENPETE_TERRAIN_%s", keys[k]);
+        const char* e = getenv(name);
+        if (e && *e) v = 1;
+    }
+    if (!v) { const char* e = getenv("OPENPETE_TERRAIN_FOGDPCS");   /* =0: legacy lerp fog */
+              if (e && *e && *e == '0') v = 1; }
+    if (!v) { const char* e = getenv("OPENPETE_TERRAIN_CULL");      /* non-default cull mask */
+              if (e && *e && atoi(e) != 3) v = 1; }
+    if (!v) { const char* e = getenv("OPENPETE_PORTAL_GUARD");      /* guard re-feed needs CPU tris */
+              if (e && *e && *e != '0') v = 1; }
+    if (!v) { const char* e = getenv("OPENPETE_MOBY_TRUESCOPE");    /* terrain.frag mirrors scope ON */
+              if (e && *e && *e == '0') v = 1; }
+    if (!v) { const char* e = getenv("OPENPETE_TRUE_W");            /* W-mask bisect instrument */
+              if (e && *e) v = 1; }
+    if (!v) { const char* e = getenv("OPENPETE_NOTEX");             /* scene NOTEX spec constant */
+              if (e && *e && *e != '0') v = 1; }
+    return v;
+}
+
+static uint32_t tgpu_pack_mat0(const tmat* m) {
+    int blend = (m->blend > 3) ? 0 : m->blend;   /* ABR-3 "B+F/4" clamps opaque (scene rule) */
+    return (uint32_t)(m->tpx & 0x3FF)
+         | ((uint32_t)(m->tpy & 0x1FF) << 10)
+         | ((uint32_t)(m->bpp == 4 ? 0 : m->bpp == 8 ? 1 : 2) << 19)
+         | ((uint32_t)(blend & 3) << 21)
+         | ((uint32_t)(m->textured ? 1 : 0) << 23);
+}
+/* Draw-class arena by BLEND alone (untextured blended faces route to the
+ * blend pipes exactly like the feed's untextured gouraud-blend groups; only
+ * blend-0 untextured LP takes the LP arena — the caller decides that). */
+static int tgpu_arena_of(const tmat* m) {
+    int blend = (m->blend > 3) ? 0 : m->blend;
+    switch (blend) {
+        case 1:  return OPTC_ARENA_ALPHA;
+        case 2:  return OPTC_ARENA_ADD;
+        case 3:  return OPTC_ARENA_SUB;
+        default: return OPTC_ARENA_OPAQUE;
+    }
+}
+
+typedef struct { rhi_terrain_vertex* v; int n, cap; } tgpu_buf;
+static int tgpu_push(tgpu_buf* b, const rhi_terrain_vertex* v) {
+    if (b->n >= b->cap) {
+        int nc = b->cap ? b->cap * 2 : 256;
+        rhi_terrain_vertex* nv = (rhi_terrain_vertex*)realloc(b->v, sizeof(*nv) * (size_t)nc);
+        if (!nv) return -1;
+        b->v = nv; b->cap = nc;
+    }
+    b->v[b->n++] = *v;
+    return 0;
+}
+
+/* x4 fixed-point corner (sector-local world/16, 2 fractional bits). */
+typedef struct { int16_t x, y, z; } tgpu_p4;
+static tgpu_p4 tgpu_p4_of(const tsvert_t* v) {
+    tgpu_p4 p = { (int16_t)(v->x * 4), (int16_t)(v->y * 4), (int16_t)(v->z * 4) };
+    return p;
+}
+static tgpu_p4 tgpu_p4_mid(tgpu_p4 a, tgpu_p4 b) {   /* exact: x4 sums are even */
+    tgpu_p4 p = { (int16_t)((a.x + b.x) >> 1), (int16_t)((a.y + b.y) >> 1),
+                  (int16_t)((a.z + b.z) >> 1) };
+    return p;
+}
+static uint32_t tgpu_rgb_mid(uint32_t a, uint32_t b) {   /* cv_mid's per-channel (a+b)>>1 */
+    return (uint32_t)((((a & 0xFF) + (b & 0xFF)) >> 1))
+         | (uint32_t)(((((a >> 8) & 0xFF) + ((b >> 8) & 0xFF)) >> 1) << 8)
+         | (uint32_t)(((((a >> 16) & 0xFF) + ((b >> 16) & 0xFF)) >> 1) << 16);
+}
+
+/* Emit one triangle (3 corners) built from a face-level template. Each
+ * corner carries its flags16 role bits (HQ: sub-quad + corner slot; the
+ * vertex stage rebuilds the node from the TRANSFORMED parent corners). */
+typedef struct {
+    tgpu_p4  c[4];        /* parent-face corners, i0..i3 order */
+    uint32_t face_flags;
+    uint32_t matf0, matf1, matn0, matn1;
+    uint16_t flags16;
+} tgpu_face_t;
+typedef struct { tgpu_p4 p; uint32_t rgb_far, rgb_near;
+                 uint8_t uf, vf, un, vn, role; } tgpu_corner_t;
+
+static int tgpu_emit_tri(tgpu_buf* b, const tgpu_face_t* F,
+                         tgpu_corner_t a, tgpu_corner_t c1, tgpu_corner_t c2) {
+    const tgpu_corner_t cs[3] = { a, c1, c2 };
+    for (int k = 0; k < 3; k++) {
+        rhi_terrain_vertex v;
+        memset(&v, 0, sizeof(v));
+        v.px = cs[k].p.x; v.py = cs[k].p.y; v.pz = cs[k].p.z;
+        v.flags16 = (uint16_t)(F->flags16 | ((uint16_t)cs[k].role << 3));
+        v.uvf_u = cs[k].uf; v.uvf_v = cs[k].vf;
+        v.uvn_u = cs[k].un; v.uvn_v = cs[k].vn;
+        v.rgba_far  = 0xFF000000u | (cs[k].rgb_far  & 0xFFFFFFu);
+        v.rgba_near = 0xFF000000u | (cs[k].rgb_near & 0xFFFFFFu);
+        v.mat_far0 = F->matf0; v.mat_far1 = F->matf1;
+        v.mat_near0 = F->matn0; v.mat_near1 = F->matn1;
+        v.face_flags = F->face_flags;
+        v.c0x = F->c[0].x; v.c0y = F->c[0].y; v.c0z = F->c[0].z;
+        v.c1x = F->c[1].x; v.c1y = F->c[1].y; v.c1z = F->c[1].z;
+        v.c2x = F->c[2].x; v.c2y = F->c[2].y; v.c2z = F->c[2].z;
+        v.c3x = F->c[3].x; v.c3y = F->c[3].y; v.c3z = F->c[3].z;
+        if (tgpu_push(b, &v) != 0) return -1;
+    }
+    return 0;
+}
+
+/* FNV over the sector's live colour arrays (host pointers): the per-tick
+ * liveness for baked colours. Returns -1 when a range is unmapped (claim). */
+static int tgpu_col_hash(const tscache_t* SC, uint32_t* out) {
+    uint32_t h = 2166136261u;
+    struct { uint32_t base; int bytes; } r[3] = {
+        { SC->lpColBase, SC->nLpC * 4 },
+        { SC->nearBase,  SC->nHpC * 4 },
+        { SC->farBase,   SC->nHpC * 4 },
+    };
+    for (int i = 0; i < 3; i++) {
+        if (r[i].bytes <= 0) continue;
+        const uint8_t* p = (const uint8_t*)openpete_psx_to_host_ptr(r[i].base);
+        if (!p) return -1;
+        for (int j = 0; j < r[i].bytes; j++) h = (h ^ p[j]) * 16777619u;
+    }
+    *out = h;
+    return 0;
+}
+
+/* Build all of one sector's chunks. Returns 0 on success, 1 arena-full,
+ * 2 scroll-anim claim (the flat/HQ UV-scroll rides a fractional per-present
+ * accumulator lerp the mesh cannot bake). sec_index = the level sector index
+ * (the authored-correction key). */
+static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
+                             uint32_t hqTable, int sec_index) {
+    /* Scroll-anim claim scan: a scrolling tile bumps its gens every advance,
+     * so this build re-runs (and re-claims) while the scroller is live. */
+    if (s_tanim_have && SC->hpF) {
+        for (int f = 0; f < SC->nHpF; f++) {
+            const tsface_t* F = &SC->hpF[f];
+            if (F->tb != -1 && s_tanim_act[F->tb & 0x7F]) return 2;
+            if (F->quad && hqTable && !(F->w3 & 0x80) &&
+                s_tanim_act[F->hq_idx & 0x7F]) return 2;
+        }
+    }
+    tgpu_buf buf[OPTC_ARENA_COUNT];
+    memset(buf, 0, sizeof(buf));
+    int ok = 0;
+    uint32_t base_ff = ((uint32_t)slot & 0x1FFu)
+                     | (((uint32_t)s_tgpu[slot].gen & 7u) << 29);
+
+    /* ---- LP tier: untextured; drawn in WORLD and re-drawn in FILL ---- */
+    for (int f = 0; SC->lpV && SC->lpF && f < SC->nLpF; f++) {
+        const tsface_t* F = &SC->lpF[f];
+        if (F->i0 >= SC->nLpV || F->i1 >= SC->nLpV || F->i2 >= SC->nLpV || F->i3 >= SC->nLpV)
+            continue;   /* mirrors the walk's OOB skip */
+        tgpu_face_t T;
+        memset(&T, 0, sizeof(T));
+        T.c[0] = tgpu_p4_of(&SC->lpV[F->i0]); T.c[1] = tgpu_p4_of(&SC->lpV[F->i1]);
+        T.c[2] = tgpu_p4_of(&SC->lpV[F->i2]); T.c[3] = tgpu_p4_of(&SC->lpV[F->i3]);
+        T.face_flags = base_ff | (1u << 9)                       /* tier LP */
+                     | (F->gapfill ? (1u << 11) : 0u)
+                     | (F->dside   ? (1u << 12) : 0u)            /* LP w0&0x80 */
+                     | (F->quad    ? (1u << 14) : 0u)
+                     | (F->floorf  ? (1u << 18) : 0u)
+                     | (((uint32_t)F->admit  & 0x1Fu) << 19)
+                     | (((uint32_t)F->otbias & 0x1Fu) << 24);
+        T.matf0 = tgpu_pack_mat0(&F->mat);   /* untextured (blend may be set) */
+        uint32_t rc[4];
+        rc[0] = rd(cpu, SC->lpColBase + F->c0) & 0xFFFFFFu;
+        rc[1] = rd(cpu, SC->lpColBase + F->c1) & 0xFFFFFFu;
+        rc[2] = rd(cpu, SC->lpColBase + F->c2) & 0xFFFFFFu;
+        rc[3] = F->quad ? (rd(cpu, SC->lpColBase + F->c3) & 0xFFFFFFu) : 0u;
+        {   /* authored-data corrections (unpainted vertex colours) — the
+             * walk applies these per emit; bake them (static per level). */
+            uint32_t fixrgb;
+            if (lp_artfix_lookup(cpu, sec_index, f, &fixrgb))
+                rc[0] = rc[1] = rc[2] = rc[3] = fixrgb;
+        }
+        tgpu_corner_t k[4];
+        memset(k, 0, sizeof(k));
+        const int vi[4] = { F->i0, F->i1, F->i2, F->i3 };
+        for (int q = 0; q < 4; q++) {
+            k[q].p = tgpu_p4_of(&SC->lpV[vi[q]]);
+            k[q].rgb_far = k[q].rgb_near = rc[q];
+        }
+        tgpu_buf* dst = F->mat.blend ? &buf[tgpu_arena_of(&F->mat)]
+                                     : &buf[OPTC_ARENA_LP];
+        /* LP quad: strip diagonal i1-i2 (no i2/i3 swap — see the LP emit) */
+        if (tgpu_emit_tri(dst, &T, k[0], k[1], k[2]) != 0) goto done;
+        if (F->quad && tgpu_emit_tri(dst, &T, k[1], k[2], k[3]) != 0) goto done;
+    }
+
+    /* ---- HP tier: flat variant + the HQ 2x2 subdivide variant ---- */
+    for (int f = 0; SC->hpV && SC->hpF && f < SC->nHpF; f++) {
+        const tsface_t* F = &SC->hpF[f];
+        if (F->i0 >= SC->nHpV || F->i1 >= SC->nHpV || F->i2 >= SC->nHpV || F->i3 >= SC->nHpV)
+            continue;
+        int hq_elig = F->quad && hqTable != 0 && !(F->w3 & 0x80);
+        tgpu_face_t T;
+        memset(&T, 0, sizeof(T));
+        T.c[0] = tgpu_p4_of(&SC->hpV[F->i0]); T.c[1] = tgpu_p4_of(&SC->hpV[F->i1]);
+        T.c[2] = tgpu_p4_of(&SC->hpV[F->i2]); T.c[3] = tgpu_p4_of(&SC->hpV[F->i3]);
+        T.face_flags = base_ff
+                     | (F->fogbias ? (1u << 10) : 0u)
+                     | ((F->w3 & 0x4)  ? (1u << 12) : 0u)   /* dside */
+                     | (F->flip ? (1u << 13) : 0u)
+                     | (F->quad ? (1u << 14) : 0u)
+                     | ((F->w3 & 0x40) ? (1u << 15) : 0u)
+                     | ((F->w3 & 0x80) ? (1u << 16) : 0u)
+                     | (hq_elig ? (1u << 17) : 0u)
+                     | (((uint32_t)F->otbias & 0x1Fu) << 24);
+        T.matf0 = tgpu_pack_mat0(&F->mat);  T.matf1 = (uint32_t)(F->mat.clut_raw & 0xFFFF);
+        T.matn0 = tgpu_pack_mat0(&F->matN); T.matn1 = (uint32_t)(F->matN.clut_raw & 0xFFFF);
+        uint32_t nearC[4], farC[4];
+        const uint16_t co[4] = { F->c0, F->c1, F->c2, F->c3 };
+        for (int q = 0; q < 4; q++) {
+            nearC[q] = rd(cpu, SC->nearBase + co[q]) & 0xFFFFFFu;
+            farC[q]  = rd(cpu, SC->farBase  + co[q]) & 0xFFFFFFu;
+        }
+        const int vi[4] = { F->i0, F->i1, F->i2, F->i3 };
+        tgpu_corner_t k[4];
+        memset(k, 0, sizeof(k));
+        for (int q = 0; q < 4; q++) {
+            k[q].p = tgpu_p4_of(&SC->hpV[vi[q]]);
+            k[q].rgb_near = nearC[q]; k[q].rgb_far = farC[q];
+        }
+        tgpu_buf* dst = &buf[tgpu_arena_of(&F->mat)];
+        if (F->quad) {
+            /* GT4: i0=TL, i1=TR, i3=BL, i2=BR; UV [TL,TR,BL,BR]; diagonal i1-i3 */
+            k[0].uf = (uint8_t)F->tu[0]; k[0].vf = (uint8_t)F->tv[0];
+            k[1].uf = (uint8_t)F->tu[1]; k[1].vf = (uint8_t)F->tv[1];
+            k[3].uf = (uint8_t)F->tu[2]; k[3].vf = (uint8_t)F->tv[2];
+            k[2].uf = (uint8_t)F->tu[3]; k[2].vf = (uint8_t)F->tv[3];
+            k[0].un = (uint8_t)F->tuN[0]; k[0].vn = (uint8_t)F->tvN[0];
+            k[1].un = (uint8_t)F->tuN[1]; k[1].vn = (uint8_t)F->tvN[1];
+            k[3].un = (uint8_t)F->tuN[2]; k[3].vn = (uint8_t)F->tvN[2];
+            k[2].un = (uint8_t)F->tuN[3]; k[2].vn = (uint8_t)F->tvN[3];
+            if (tgpu_emit_tri(dst, &T, k[0], k[1], k[3]) != 0) goto done;
+            if (tgpu_emit_tri(dst, &T, k[1], k[3], k[2]) != 0) goto done;
+        } else {
+            /* GT3 with the 2-bit UV orientation (triRot) */
+            static const int triRot[4][3] = {{0,1,2},{1,3,0},{3,2,1},{2,0,3}};
+            const int* tc = triRot[F->trirot & 3];
+            for (int q = 0; q < 3; q++) {
+                k[q].uf = (uint8_t)F->tu[tc[q]]; k[q].vf = (uint8_t)F->tv[tc[q]];
+                k[q].un = (uint8_t)F->tuN[tc[q]]; k[q].vn = (uint8_t)F->tvN[tc[q]];
+            }
+            if (tgpu_emit_tri(dst, &T, k[0], k[1], k[2]) != 0) goto done;
+        }
+        /* HQ 2x2 subdivide variant (terrain_near_emit mirror): corners
+         * TL=i0, TR=i1, BL=i3, BR=i2 with RAW near colours; midpoint
+         * positions exact ((a+b)>>1 on even x4 sums), midpoint colours via
+         * the walk's (a+b)>>1; sub-quad q uses HQ Tiledef entry (q+1) with
+         * the D_8006D058 UV-orientation adjust; triangulation
+         * (TL,TR,BL)+(TR,BL,BR). Camera-space node values are rebuilt in
+         * the vertex stage from the parent corners + the role bits. */
+        if (hq_elig) {
+            tgpu_corner_t TL = k[0], TR = k[1], BL = k[3], BR = k[2];
+            TL.rgb_far = TL.rgb_near = nearC[0];
+            TR.rgb_far = TR.rgb_near = nearC[1];
+            BL.rgb_far = BL.rgb_near = nearC[3];
+            BR.rgb_far = BR.rgb_near = nearC[2];
+            tgpu_corner_t mT, mB, mL, mR, Cc;
+            memset(&mT, 0, sizeof(mT)); memset(&mB, 0, sizeof(mB));
+            memset(&mL, 0, sizeof(mL)); memset(&mR, 0, sizeof(mR));
+            memset(&Cc, 0, sizeof(Cc));
+            mT.p = tgpu_p4_mid(TL.p, TR.p); mT.rgb_far = tgpu_rgb_mid(TL.rgb_far, TR.rgb_far);
+            mB.p = tgpu_p4_mid(BL.p, BR.p); mB.rgb_far = tgpu_rgb_mid(BL.rgb_far, BR.rgb_far);
+            mL.p = tgpu_p4_mid(TL.p, BL.p); mL.rgb_far = tgpu_rgb_mid(TL.rgb_far, BL.rgb_far);
+            mR.p = tgpu_p4_mid(TR.p, BR.p); mR.rgb_far = tgpu_rgb_mid(TR.rgb_far, BR.rgb_far);
+            Cc.p = tgpu_p4_mid(mT.p, mB.p); Cc.rgb_far = tgpu_rgb_mid(mT.rgb_far, mB.rgb_far);
+            mT.rgb_near = mT.rgb_far; mB.rgb_near = mB.rgb_far;
+            mL.rgb_near = mL.rgb_far; mR.rgb_near = mR.rgb_far;
+            Cc.rgb_near = Cc.rgb_far;
+            tgpu_corner_t sq[4][4] = {
+                { TL, mT, mL, Cc },   /* SQ0 [TL,TR,BL,BR] order */
+                { mT, TR, Cc, mR },
+                { mL, Cc, BL, mB },
+                { Cc, mR, mB, BR },
+            };
+            uint32_t hqBase = hqTable + (uint32_t)F->hq_idx * 168u;
+            for (int q = 0; q < 4; q++) {
+                tmat m; float u[4], v[4];
+                memset(&m, 0, sizeof(m)); m.bpp = 16;
+                uint32_t e = hqBase + (uint32_t)(q + 1) * 8u;   /* entries 1..4 (.s delay-slot bump) */
+                decode_tiledef(cpu, e, F->abe, &m, u, v);
+                uint32_t ori = rd(cpu, e + 4) >> 25;
+                if (ori) {   /* HQ UV orientation (D_8006D058 offset table) */
+                    uint32_t w0 = rd(cpu, e), w1 = rd(cpu, e + 4);
+                    uint32_t te = 0x8006D058u + ori;
+                    uint32_t ew0 = rd(cpu, te), ew1 = rd(cpu, te + 4);
+                    uint32_t tl = ((w0 & 0xFFFF) + (ew0 & 0xFFFF)) & 0xFFFF;
+                    uint32_t tr = ((w1 & 0xFFFF) + (ew0 >> 16))    & 0xFFFF;
+                    uint32_t bl = ((w0 & 0xFFFF) + (ew1 & 0xFFFF)) & 0xFFFF;
+                    uint32_t br = ((w0 & 0xFFFF) + (ew1 >> 16))    & 0xFFFF;
+                    u[0]=(float)(tl & 0xFF); v[0]=(float)((tl >> 8) & 0xFF);
+                    u[1]=(float)(tr & 0xFF); v[1]=(float)((tr >> 8) & 0xFF);
+                    u[2]=(float)(bl & 0xFF); v[2]=(float)((bl >> 8) & 0xFF);
+                    u[3]=(float)(br & 0xFF); v[3]=(float)((br >> 8) & 0xFF);
+                }
+                tgpu_face_t H = T;
+                H.flags16 = (uint16_t)(1u | ((uint16_t)q << 1));   /* HQ variant + sub-quad */
+                H.matf0 = tgpu_pack_mat0(&m);
+                H.matf1 = (uint32_t)(m.clut_raw & 0xFFFF);
+                H.matn0 = 0; H.matn1 = 0;   /* near cells never re-select */
+                tgpu_corner_t c0 = sq[q][0], c1 = sq[q][1], c2 = sq[q][2], c3 = sq[q][3];
+                c0.uf = (uint8_t)u[0]; c0.vf = (uint8_t)v[0]; c0.role = 0;
+                c1.uf = (uint8_t)u[1]; c1.vf = (uint8_t)v[1]; c1.role = 1;
+                c2.uf = (uint8_t)u[2]; c2.vf = (uint8_t)v[2]; c2.role = 2;
+                c3.uf = (uint8_t)u[3]; c3.vf = (uint8_t)v[3]; c3.role = 3;
+                tgpu_buf* hdst = &buf[tgpu_arena_of(&m)];
+                if (tgpu_emit_tri(hdst, &H, c0, c1, c2) != 0) goto done;
+                if (tgpu_emit_tri(hdst, &H, c1, c2, c3) != 0) goto done;
+            }
+        }
+    }
+
+    /* ---- upload ---- */
+    {
+        tgpu_slot_t* S = &s_tgpu[slot];
+        uint32_t first[OPTC_ARENA_COUNT] = {0};
+        int a;
+        for (a = 0; a < OPTC_ARENA_COUNT; a++) {
+            if (buf[a].n == 0) continue;
+            if (openpete_tercache_chunk_alloc(a, buf[a].n, &first[a]) != 0) break;
+        }
+        if (a < OPTC_ARENA_COUNT) {   /* arena full: roll back this sector */
+            for (int b = 0; b < a; b++)
+                if (buf[b].n) openpete_tercache_chunk_free(b, first[b], buf[b].n);
+            goto done;
+        }
+        for (a = 0; a < OPTC_ARENA_COUNT; a++) {
+            if (buf[a].n == 0) { S->count[a] = 0; continue; }
+            openpete_tercache_chunk_write(a, first[a], buf[a].v, buf[a].n);
+            S->first[a] = first[a]; S->count[a] = buf[a].n;
+        }
+        ok = 1;
+    }
+done:
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) free(buf[a].v);
+    return ok ? 0 : 1;
+}
+
+/* Validate-or-rebuild a sector's chunks. Returns 0 when the GPU may draw it
+ * this present; a nonzero claim reason (tgpu_slot_t.unbuildable codes)
+ * claims it back to the CPU walk. */
+static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
+                       int sec_index) {
+    int slot = (int)(SC - s_tsc);
+    if (slot < 0 || slot >= (int)TSC_SLOTS || slot == (int)OPTC_SLOT_DEAD) return 1;
+    tgpu_slot_t* T = &s_tgpu[slot];
+    int dirty = (T->s != SC->s) || (T->decodeGen != SC->decodeGen)
+             || (T->texGen != SC->texGen) || (T->vertGen != SC->vertGen);
+    if (!dirty && T->lastColFrame != openpete_frame) {
+        /* Colour liveness once per VBL (colours can only change per tick). */
+        uint32_t h;
+        if (tgpu_col_hash(SC, &h) != 0) return 3;
+        T->lastColFrame = openpete_frame;
+        if (h != T->colHash) { dirty = 1; T->colHash = h; }
+    }
+    if (dirty) {
+        tgpu_free_slot(T);
+        T->gen = (uint8_t)((T->gen + 1u) & 7u);
+        T->s = SC->s;
+        T->decodeGen = SC->decodeGen; T->texGen = SC->texGen; T->vertGen = SC->vertGen;
+        T->lastColFrame = openpete_frame;
+        if (tgpu_col_hash(SC, &T->colHash) != 0) { T->unbuildable = 3; return 3; }
+        T->unbuildable = tgpu_build_sector(cpu, slot, SC, hqTable, sec_index);
+        s_tgpu_rebuilds++;
+    }
+    return T->unbuildable;
+}
+
+static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
+    static int on = -1, n;
+    if (on < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_DBG"); on = (e && *e && *e != '0'); }
+    if (!on || ++n < 120) return;
+    n = 0;
+    openpete_tercache_stats_t st;
+    openpete_tercache_get_stats(&st);
+    fprintf(stderr, "[ter-gpu f=%u] sectors=%ld claims=%ld (near=%ld portal=%ld "
+            "anim=%ld scroll=%ld fill=%ld arena=%ld col=%ld) rebuilds=%ld "
+            "chunks=%u verts=%u/%u draws=%u frees-pend=%u\n",
+            openpete_frame, s_tgpu_secs, s_tgpu_claims,
+            s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
+            s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgpu_rebuilds,
+            st.chunks, st.verts_used, st.verts_cap, st.draws_last_present,
+            st.frees_pending);
+    s_tgpu_secs = s_tgpu_claims = s_tgpu_rebuilds = 0;
+    s_tgcl_near = s_tgcl_portal = s_tgcl_anim = s_tgcl_scroll = 0;
+    s_tgcl_fill = s_tgcl_build = s_tgcl_colour = 0;
+}
+
 
 /* Per-walk shared inputs, latched by the build prologue BEFORE dispatch and
  * read-only during the walk (contract C2: the game fiber is parked for the
@@ -2599,7 +3098,55 @@ typedef struct {
     /* mid-walk env toggles, hoisted from the tn_env_vbl call sites (the
      * per-VBL re-latch is not thread-safe; the prologue latches per walk) */
     int holefill, lp_farcull, lp_admit, hp_drop;
+    /* Per-sector verdicts + retained-GPU ownership, computed by the serial
+     * prepass (one computation site; workers only read). Indexed by vi. */
+    const struct tn_secverd_s* verd;
+    const uint8_t* own;
 } tn_wcfg;
+
+/* Per-sector tier/fill verdicts (the walk head's sector-level block, hoisted
+ * into the prepass so the GPU-claim decision and the face walk share ONE
+ * computation). cbin stays double: the debug prints quote it raw. */
+typedef struct tn_secverd_s {
+    double  cbin;
+    uint8_t drawHP, drawLP, lpFarOnly, lpGapOnly, fillLP, secInLOD;
+} tn_secverd;
+static tn_secverd s_pre_verd[1024];
+static uint8_t    s_tgpu_own[1024];      /* GPU owns this sector this walk */
+
+/* Sector-level tier/fill verdicts (pure function of SC + latched walk
+ * config). The comment blocks explaining each rule live at the original
+ * decision sites in walk_sector — this is the same math, computed once per
+ * sector in the prepass. */
+static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V) {
+    int flags = SC->flags;
+    int nLpF = SC->nLpF, nHpF = SC->nHpF;
+    double cbin;
+    { double c1m, c2m;
+      ngte_mac(G->Mbin, G->camy - SC->centreY, G->camz - SC->centreZ,
+               SC->centreX - G->camx, &c1m, &c2m, &cbin); }
+    int lodThr = G->fogRefBase >> 2;
+    int drawHP = !(flags & 0x4000) && nHpF > 0;
+    int drawLP = !(flags & 0x2000) && nLpF > 0 && ((flags & 0x8000) || !drawHP);
+    if (G->tier_faithful) {
+        drawHP = drawHP && ((double)lodThr > cbin - SC->radius);
+        drawLP = !(flags & 0x2000) && nLpF > 0 &&
+                 ((flags & 0x8000) || (double)lodThr < cbin + SC->radius + 0x100);
+    }
+    int secInLOD = ((double)lodThr * (4.0 / s_fogscale) > cbin - SC->radius);
+    int lpFarOnly = 0, lpGapOnly = 0;
+    if (!drawLP && !(flags & 0x2000) && nLpF > 0) {
+        if (G->lod_handoff && !G->tier_faithful && drawHP) { drawLP = 1; lpFarOnly = 1; }
+        else if (s_gapfill_en && SC->nGapfill > 0) { drawLP = 1; lpGapOnly = 1; }
+    }
+    int fillLP = G->holefill && !(flags & 0x2000) && nLpF > 0
+                 && ((double)lodThr < cbin + SC->radius + 0x100)
+                 && !(openpete_no_lod && drawHP);
+    V->cbin = cbin;
+    V->drawHP = (uint8_t)drawHP; V->drawLP = (uint8_t)drawLP;
+    V->lpFarOnly = (uint8_t)lpFarOnly; V->lpGapOnly = (uint8_t)lpGapOnly;
+    V->fillLP = (uint8_t)fillLP; V->secInLOD = (uint8_t)secInLOD;
+}
 
 #define TN_MAX_WORKERS 8
 static tn_wctx s_wctx[TN_MAX_WORKERS];
@@ -2623,7 +3170,8 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
     uint32_t s = G->secptr[vi];
     const tscache_t* SC = G->SC[vi];
     lvert* sv = W->sv;
-    (void)M; (void)nvis; (void)s; (void)cullRefS2;
+    (void)M; (void)Mbin; (void)nvis; (void)s; (void)cullRefS2;
+    (void)tier_faithful;
         int flags   = SC->flags;
         int originX = SC->originX, originY = SC->originY, originZ = SC->originZ;
         double s4 = originX - camx, s5 = camy - originY, s6 = camz - originZ;
@@ -2652,23 +3200,15 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
          * in scale). Input to the faithful tier lists and the fill's distance
          * gate. lodThr = ENV_LODDIST>>4 (the same lodDist that drives fog:
          * ir0 = fogRef−4·m3 crosses 0 exactly at m3 = lodThr). */
-        double cbin;
-        { double c1m, c2m;
-          ngte_mac(Mbin, camy - SC->centreY, camz - SC->centreZ,
-                   SC->centreX - camx, &c1m, &c2m, &cbin); }
+        /* Sector-level verdicts come precomputed from the prepass
+         * (sector_verdicts — ONE computation site shared with the
+         * retained-GPU claim; the .s binning/tier rules are documented
+         * there and at the historical sites below). */
+        const tn_secverd* SV = &G->verd[vi];
+        double cbin = SV->cbin;
         int lodThr = fogRefBase >> 2;
-        int drawHP = !(flags & 0x4000) && nHpF > 0;
-        int drawLP = !(flags & 0x2000) && nLpF > 0 && ((flags & 0x8000) || !drawHP);
-        if (tier_faithful) {
-            /* The .s sector binning (func_800258F0's list pre-pass — 0x80025940
-             * is an instruction inside it, not an entry point): HP ends at the LOD
-             * distance; LP substitutes beyond it. A straddling sector lands in
-             * BOTH lists (LP rides behind HP via the ×1.03 tier pull, exactly
-             * the PSX LP-first/HP-over order). */
-            drawHP = drawHP && ((double)lodThr > cbin - SC->radius);
-            drawLP = !(flags & 0x2000) && nLpF > 0 &&
-                     ((flags & 0x8000) || (double)lodThr < cbin + SC->radius + 0x100);
-        }
+        int drawHP = SV->drawHP;
+        int drawLP = SV->drawLP;
         if (s_fardbg_active)
             fprintf(stderr, "[fardbg-sec] s=%d flags=%04X cbin=%.1f rad=%d lodThr=%d fogRefBase=%d "
                             "drawHP=%d drawLP=%d nLpF=%d nHpF=%d\n",
@@ -2725,7 +3265,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
          * no-pop-in extension) keeps the base palette, which og shows is
          * the closer stand-in for the LP look. The envelope stretches with
          * --fog-scale (k = 4/s_fogscale; ×1 at stock, bit-identical). */
-        int secInLOD = ((double)lodThr * (4.0 / s_fogscale) > cbin - SC->radius);
+        int secInLOD = SV->secInLOD;
         /* LP ride-alongs for sectors the bin leaves LP-unlisted:
          * - lpFarOnly (legacy, faithful-bin OFF only): the handoff substitutes
          *   a both-tier sector's LP for its dropped far HP. Under the faithful
@@ -2737,11 +3277,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
          *   og-attested hole cover survives the bin (a tag in a fully-near
          *   both-tier or no-HP sector; and under --no-lod, the sparse-HP
          *   holes of HP-drawing sectors; per-face gate below). */
-        int lpFarOnly = 0, lpGapOnly = 0;
-        if (!drawLP && !(flags & 0x2000) && nLpF > 0) {
-            if (lod_handoff && !tier_faithful && drawHP) { drawLP = 1; lpFarOnly = 1; }
-            else if (s_gapfill_en && SC->nGapfill > 0) { drawLP = 1; lpGapOnly = 1; }
-        }
+        int lpFarOnly = SV->lpFarOnly, lpGapOnly = SV->lpGapOnly;
         /* LP HOLE-FILL backing (W2.6-c): an HP sector that does NOT already
          * draw its LP re-emits it as WORLD_FILL — stencil-gated in core to the
          * pixels no world geometry covered, i.e. the LP↔HP T-junction seams
@@ -2764,7 +3300,6 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
          * the RAW RAM lodDist — --lod extended never writes it (host-policy
          * global only), so this stays the real LOD band marker. */
         /* OPENPETE_TERRAIN_HOLEFILL=0 disables (A/B) */
-        int s_holefill = G->holefill;
         /* The fill runs for EVERY far-band sector with LP — including sectors
          * whose LP already draws in WORLD (LP-only 0x4000 / force-LP). For
          * those the fill is a screen-DILATED duplicate (see the feed): the PSX
@@ -2788,14 +3323,33 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
          * -1046 pitch 992: z=61079 clean vs z=63909 fringed). LP-only /
          * force-LP sectors keep the fill in every mode — the far-water raster
          * slivers it exists for are pass-0 LP, not a tier handoff. */
-        int fillLP = s_holefill && !(flags & 0x2000) && nLpF > 0
-                     && ((double)lodThr < cbin + SC->radius + 0x100)
-                     && !(openpete_no_lod && drawHP);
+        int fillLP = SV->fillLP;
         /* (The v9 near-floor fill backstop is retired: its cliff_town
          * crest-strip motivation measured as a NATIVE HP coverage deficit —
          * the pure-HP og reference covers those sightlines — and its
          * rim-sliver false positives were the fringe class the frozen fill
          * tags exclude by review.) */
+
+        /* ---- retained-GPU ownership (terrain sector-mesh cache) ----
+         * The prepass claimed/validated this sector's chunks; the GPU renders
+         * it from them with the tier/fill verdicts above (published via the
+         * sector-params UBO) and the face walk is SKIPPED entirely. The
+         * sector_set staging write is host memory, distinct slot per sector —
+         * safe from pool workers (contract C3 keeps rhi_* on the owner). */
+        if (G->own && G->own[vi]) {
+            uint32_t sf = OPTC_SF_DRAWN
+                | (drawHP    ? OPTC_SF_DRAWHP    : 0u)
+                | (drawLP    ? OPTC_SF_DRAWLP    : 0u)
+                | (lpFarOnly ? OPTC_SF_LPFARONLY : 0u)
+                | (lpGapOnly ? OPTC_SF_LPGAPONLY : 0u)
+                | (fillLP    ? OPTC_SF_FILLLP    : 0u)
+                | (secInLOD  ? OPTC_SF_SECINLOD  : 0u)
+                | (((uint32_t)s_tgpu[(int)(SC - s_tsc)].gen & 7u) << 12);
+            openpete_tercache_sector_set((int)(SC - s_tsc),
+                                         (float)originX, (float)originY,
+                                         (float)originZ, sf);
+            return;
+        }
 
         W->walk_sectors++;
 
@@ -3788,6 +4342,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         }
         s_rim_rowmax = sqrt(rm) / 4096.0;
         if (s_rim_rowmax < 1e-6) s_rim_rowmax = 1.0;
+        /* Row-2 norm alone bounds view-Z growth per world unit — the
+         * retained-GPU near claim's radius scale. */
+        s_tgpu_l3 = sqrt((double)M[2][0]*M[2][0] + (double)M[2][1]*M[2][1] +
+                         (double)M[2][2]*M[2][2]) / 4096.0;
+        if (s_tgpu_l3 < 1e-6) s_tgpu_l3 = 1.0;
     }
     s_ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
     s_ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
@@ -3919,6 +4478,69 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         G.lp_admit   = tn_env_vbl(&adm_c, "OPENPETE_TERRAIN_LP_ADMIT", 1, 1);
         G.hp_drop    = tn_env_vbl(&hpd_c, "OPENPETE_TERRAIN_HP_DROP", 1, 1);
     }
+    G.verd = s_pre_verd;
+    G.own  = s_tgpu_own;
+    /* ---- terrain sector-mesh GPU cache: per-walk gate + globals ----
+     * When ON, unclaimed sectors skip the CPU face walk and render from
+     * their retained GPU chunks; terrain.vert mirrors every per-face
+     * verdict. Whole-walk fallback triggers: renderer-side conditions
+     * (openpete_native_tercache_usable), any debug env whose semantics live
+     * in the CPU walk, the fill-tag inspector (every face must project to be
+     * pickable), and non-default texture-table modes. Portal recency claims
+     * per-SECTOR (the outline broad-phase below), not the whole walk. */
+    /* One canonical tick can invoke this hook SEVERAL times, appending to
+     * one scene stamp (the .s renders more than one environment pass — the
+     * portal-preview destination render is the common case — and the interp
+     * bracket can flip the camera between the calls). One retained state
+     * cannot represent a multi-camera scene, so only the FIRST hook build
+     * of a stamp drives it; later same-stamp builds walk pure CPU and must
+     * NOT touch the staging (a restage would wipe the first build's
+     * sectors). Re-extract builds (s_vanim_sub) always drive: their build
+     * IS the displayed state. */
+    static uint32_t s_tb_last_stamp = 0xFFFFFFFFu;
+    int tb_first = s_vanim_sub || openpete_frame != s_tb_last_stamp;
+    if (!s_vanim_sub) s_tb_last_stamp = openpete_frame;
+    int tgpu_on = tb_first
+               && openpete_tercache_ready()
+               && openpete_native_tercache_usable()
+               && !tgpu_env_block()
+               && !s_fp_on
+               && texTblMode == 0;
+    s_tgpu_pplane_n = 0; s_tgpu_claim_all = 0;
+    if (tgpu_on && openpete_portal_sky_recent()) {
+        s_tgpu_pplane_n = openpete_portal_sky_planes(cpu, s_tgpu_pplane, 6);
+        /* Recent portal but planes momentarily gone: claim everything (safe). */
+        if (s_tgpu_pplane_n == 0) s_tgpu_claim_all = 1;
+    }
+    openpete_tercache_globals tcg;
+    if (tgpu_on) {
+        memset(&tcg, 0, sizeof(tcg));
+        for (int r = 0; r < 3; r++)
+            for (int c = 0; c < 3; c++) tcg.mrow[r][c] = (float)M[r][c];
+        tcg.ofx = s_ofx; tcg.ofy = s_ofy; tcg.H = s_H;
+        tcg.camx = camx; tcg.camy = camy; tcg.camz = camz;
+        tcg.fogscale = s_fogscale;
+        tcg.fog_ref_base = fogRefBase;
+        tcg.cull_ref_s2  = cullRefS2;
+        tcg.gflags = ((s_nearhq && hqTable) ? OPTC_GF_NEARHQ : 0u)
+                   | (s_clutfog       ? OPTC_GF_CLUTFOG : 0u)
+                   | ((s_cull & 1)    ? OPTC_GF_CULLHP  : 0u)
+                   | ((s_cull & 2)    ? OPTC_GF_CULLLP  : 0u)
+                   | (lod_handoff     ? OPTC_GF_HANDOFF : 0u)
+                   | (s_gapfill_en    ? OPTC_GF_GAPFILL : 0u)
+                   | (openpete_no_lod ? OPTC_GF_NOLOD   : 0u)
+                   | ((s_otbias_on && openpete_native_key_resolve_on())
+                                      ? OPTC_GF_KEYON   : 0u);
+        {   /* OPENPETE_TERRAIN_GPU_TINT=1: retained draws tint by sector id
+             * (temp bring-up attribution; unregistered). */
+            const char* e = getenv("OPENPETE_TERRAIN_GPU_TINT");
+            if (e && *e && *e != '0')
+                tcg.gflags |= (1u << 29) | ((uint32_t)(atoi(e) & 3) << 26);
+            e = getenv("OPENPETE_TERRAIN_GPU_NOKEYEMIT");
+            if (e && *e && *e != '0') tcg.gflags |= (1u << 30);
+        }
+    }
+    s_tgpu_secs_walk = 0; s_tgpu_claims_walk = 0;
     /* Any active walk instrument forces serial: their censuses/dumps are
      * whole-walk statics with serial semantics (per-sector timing, ordered
      * dumps), and several latch mid-walk. */
@@ -3937,6 +4559,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     int wserial = s_dbg_env || s_fp_on || s_first_walk || nw <= 1;
     s_first_walk = 0;
   tn_retry_serial:;
+    if (tgpu_on) openpete_tercache_frame_begin(&tcg, openpete_frame, s_vanim_sub);
+    else if (openpete_tercache_ready() && tb_first)
+        openpete_tercache_frame_skip(openpete_frame, s_vanim_sub);
     int nw_used = wserial ? 1 : nw;
     for (int w = 0; w < nw_used; w++) {
         tn_wctx* W = &s_wctx[w];
@@ -4039,6 +4664,96 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * not audited for concurrent callers, so the lazy per-sector fit is
          * computed here, serially; the walk only reads SC->lpg_*. */
         if (s_lpg_active) tsc_lp_grade((tscache_t*)SC);
+        /* Sector-level tier/fill verdicts — one computation site, consumed
+         * by both the retained-GPU claim below and the face walk. */
+        sector_verdicts(SC, &G, &s_pre_verd[vi]);
+        /* ---- retained-GPU claim (main thread: chunk builds write RHI
+         * buffers — contract C3). An unclaimed sector's chunks are validated
+         * or rebuilt here; the walk then publishes its verdict flags and
+         * skips the face loop. Claim reasons, in test order:
+         *  - near: the bounding sphere may reach the near plane; the CPU
+         *    walk near-clips, the GPU path guarantees m3 > 0 instead.
+         *  - portal: the sector's projected bbox overlaps an active portal
+         *    outline (rim cull / transparent-cover / plane-cover feed
+         *    semantics — the S2c plane-cover migration retires this).
+         *  - anim: vert-anim sectors lerp fractional banks per present.
+         *  - fill: WORLD_FILL twins are screen-dilated in the feed.
+         *  - build claims (scroll tiles, arena-full, unmapped colours)
+         *    come back from tgpu_ensure. */
+        s_tgpu_own[vi] = 0;
+        {   /* OPENPETE_TERRAIN_GPU_UVTRACE=<sector>: per-present anim/UV
+             * timeline for one sector (temp bring-up instrument; runs with
+             * the cache on OR off — the flip-phase comparison needs both). */
+            static int s_uvt2 = -2;
+            if (s_uvt2 == -2) { const char* e = getenv("OPENPETE_TERRAIN_GPU_UVTRACE");
+                                s_uvt2 = (e && *e) ? atoi(e) : -1; }
+            if ((int)i == s_uvt2 && SC->hpF && SC->nHpF > 28) {
+                const tsface_t* F28 = &SC->hpF[28];
+                fprintf(stderr, "[uvtrace f=%u] i=%u tu0=%.0f tgen=%u texGen=%u\n",
+                        openpete_frame, (unsigned)i, F28->tu[0], F28->tgen, SC->texGen);
+            }
+        }
+        if (tgpu_on) {
+            int claim = 0;
+            if (oc3 - s_tgpu_l3 * ((double)SC->radius + 16.0) < 16.0) {
+                claim = 1; s_tgcl_near++;
+            } else if (SC->polyanim) {
+                claim = 1; s_tgcl_anim++;
+            } else if (s_pre_verd[vi].fillLP) {
+                claim = 1; s_tgcl_fill++;
+            } else if (s_tgpu_claim_all) {
+                claim = 1; s_tgcl_portal++;
+            } else if (s_tgpu_pplane_n && oc3 > 1.0) {
+                double csx = s_ofx + oc1 * s_H / oc3;
+                double csy = s_ofy + oc2 * s_H / oc3;
+                double rpx = (double)SC->radius * s_H / oc3 * 1.5 + 16.0;
+                for (int pi = 0; pi < s_tgpu_pplane_n; pi++) {
+                    const openpete_portal_skyplane* pp = &s_tgpu_pplane[pi];
+                    if (csx + rpx >= pp->x0 && csx - rpx <= pp->x1 &&
+                        csy + rpx >= pp->y0 && csy - rpx <= pp->y1) {
+                        claim = 1; s_tgcl_portal++; break;
+                    }
+                }
+            }
+            if (!claim) {
+                int r = tgpu_ensure(cpu, SC, hqTable, (int)i);
+                if (r == 0) {
+                    s_tgpu_own[vi] = 1;
+                    s_tgpu_secs++; s_tgpu_secs_walk++;
+                } else {
+                    claim = 1;
+                    if (r == 2) s_tgcl_scroll++;
+                    else if (r == 3) s_tgcl_colour++;
+                    else s_tgcl_build++;
+                }
+            }
+            if (claim) { s_tgpu_claims++; s_tgpu_claims_walk++; }
+            {   /* OPENPETE_TERRAIN_GPU_SECDUMP=<frame>: one-shot per-sector
+                 * ownership dump (temp bring-up instrument). */
+                static int s_sd2 = -2; static unsigned s_sd2_done;
+                if (s_sd2 == -2) { const char* e = getenv("OPENPETE_TERRAIN_GPU_SECDUMP");
+                                   s_sd2 = (e && *e) ? atoi(e) : 0; }
+                if (s_sd2 && openpete_frame >= (unsigned)s_sd2 && s_sd2_done != openpete_frame
+                    && openpete_frame < (unsigned)s_sd2 + 2u) {
+                    if (vi == 0)
+                        fprintf(stderr, "[tgpu-hdr f=%u] ofx=%.4f ofy=%.4f H=%.1f nvis=%d "
+                                "M=%d,%d,%d,%d,%d,%d,%d,%d,%d cam=%.17g,%.17g,%.17g\n",
+                                openpete_frame, s_ofx, s_ofy, s_H, G.nvis,
+                                G.M[0][0], G.M[0][1], G.M[0][2],
+                                G.M[1][0], G.M[1][1], G.M[1][2],
+                                G.M[2][0], G.M[2][1], G.M[2][2],
+                                G.camx, G.camy, G.camz);
+                    fprintf(stderr, "[tgpu-sec f=%u] i=%u slot=%d own=%d hp=%d lp=%d fill=%d "
+                            "gaponly=%d inlod=%d cbin=%.0f rad=%d oc3=%.0f\n",
+                            openpete_frame, (unsigned)i, (int)(SC - s_tsc), s_tgpu_own[vi],
+                            s_pre_verd[vi].drawHP, s_pre_verd[vi].drawLP,
+                            s_pre_verd[vi].fillLP, s_pre_verd[vi].lpGapOnly,
+                            s_pre_verd[vi].secInLOD, s_pre_verd[vi].cbin,
+                            SC->radius, oc3);
+                    if (vi == G.nvis - 1) s_sd2_done = openpete_frame;
+                }
+            }
+        }
         s_pre_SC[vi] = SC;
         if (wserial) walk_sector(&s_wctx[0], &G, vi);
     }
@@ -4104,6 +4819,17 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_walk_sectors += W->walk_sectors;
         for (int c = 0; c < 6; c++) s_lpg_acc[c] += W->lpg_acc[c];
         s_lpg_acc_n += W->lpg_acc_n;
+    }
+    if (tgpu_on) {
+        openpete_tercache_frame_commit();
+        tgpu_census();
+        if (op_prof_on()) {   /* the claim-ratchet metric, per present */
+            static int id_secs = -1, id_claims = -1;
+            if (id_secs < 0)   id_secs   = op_prof_intern("tc.secs");
+            if (id_claims < 0) id_claims = op_prof_intern("tc.claims");
+            op_prof_count(id_secs,   (uint64_t)s_tgpu_secs_walk);
+            op_prof_count(id_claims, (uint64_t)s_tgpu_claims_walk);
+        }
     }
     if (tt_on) {   /* close the walk-cost census: last sector + window report */
         uint64_t tnow = openpete_phase_now_us();
@@ -5222,6 +5948,14 @@ static void terrain_feed_native(CPUState* cpu) {
          * negative-koff branch carries the moby embed rule, which a veil
          * blending OVER a moby must not inherit. OT_BIAS=0 zeroes the
          * channel: raw true depth (the A/B leg). */
+        {   static int s_uvt3 = -2;
+            if (s_uvt3 == -2) { const char* e = getenv("OPENPETE_TERRAIN_GPU_UVTRACE");
+                                s_uvt3 = (e && *e) ? atoi(e) : -1; }
+            if (s_uvt3 >= 0 && t->sec == s_uvt3 && t->face == 28)
+                fprintf(stderr, "[uvfeed f=%u] sec=%d face=%d u=%.0f,%.0f,%.0f v=%.0f,%.0f,%.0f\n",
+                        openpete_frame, t->sec, t->face,
+                        t->u[0], t->u[1], t->u[2], t->v[0], t->v[1], t->v[2]);
+        }
         if (s_otbias_on && !t->fill &&
             openpete_native_key_resolve_on()) {
             static int s_nbc = -1;   /* OPENPETE_TERRAIN_NEARBAND_CONTEST=0 disables the near-band contest-only keys (A/B) */
@@ -5701,6 +6435,8 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
          * the intermediates. Mark it explicitly: the frame DID paint terrain,
          * natively. */
         if (endp <= startp) render_path_mark_drawn(RP_TERRAIN);
+        { const char* e = getenv("OPENPETE_TERRAIN_GPU_DBG2");
+          if (e && *e && *e != '0') fprintf(stderr, "[tb-hook f=%u]\n", openpete_frame); }
         terrain_build(cpu, occGroup);               /* native walk + tris */
         openpete_native_scene_begin_frame(openpete_frame);  /* frame-keyed (composes) */
         terrain_feed_native(cpu);                   /* push tris to the scene */
@@ -5743,6 +6479,8 @@ void terrain_native_reextract(CPUState* cpu, double alpha, int interp_on) {
     int s_vanim_en = tn_env_vbl(&vanim_c, "OPENPETE_TERRAIN_VANIM", 1, 1);
     s_tanim_en = tn_env_vbl(&tanim_c, "OPENPETE_TERRAIN_TANIM", 1, 1);
     s_vanim_sub = 1; s_vanim_on = interp_on && s_vanim_en; s_vanim_alpha = alpha;
+    { const char* e = getenv("OPENPETE_TERRAIN_GPU_DBG2");
+      if (e && *e && *e != '0') fprintf(stderr, "[tb-rex f=%u a=%.3f]\n", openpete_frame, alpha); }
     terrain_build(cpu, s_terrain_saved_occGroup);
     terrain_feed_native(cpu);
     s_vanim_sub = 0; s_vanim_on = 0; s_tanim_en = 0;

@@ -110,6 +110,7 @@ add_library(openpete_core STATIC
     # Empirical CPU+GPU performance trace (per present / canonical tick).
     # Off by default; enabled by --profile-out PATH. See openpete_profile.h.
     runtime/profile.c
+    runtime/native_terrain_cache.c
 
     # Per-function tracing hooks (Tier B). Always compiled; the __cyg_profile
     # hooks fire only when a TU is built with -finstrument-functions

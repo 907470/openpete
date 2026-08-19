@@ -244,6 +244,16 @@ typedef struct openpete_options {
      * swim). Boot-latched; display-only (see openpete_texture_mapping_t). */
     openpete_texture_mapping_t texture_mapping;
 
+    /* Terrain sector-mesh GPU cache (`--terrain-cache 0|1`, EXPERIMENTAL,
+     * default OFF): retain terrain as per-sector GPU meshes and move the
+     * camera transform / fog / cull into the vertex shader, so the per-present
+     * CPU cost is O(sectors) instead of O(faces). Display-only; falls back to
+     * the CPU walk per present whenever an unsupported mode is active (debug
+     * envs, portal previews, HD texture packs, mod material selectors, A/B
+     * reference modes, software Vulkan, --vertex-precision integer). See
+     * notes/plans/openpete-terrain-gpu-cache.md. */
+    int         terrain_cache;
+
     /* Screenshot. Pass `--screenshot-on-frame N[,N2,...]` to fire on each
      * listed frame; the path template can contain `{n}` to substitute the
      * frame number per shot. Output extension `.png` writes PNG via

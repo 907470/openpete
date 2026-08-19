@@ -415,6 +415,9 @@ static void print_help(const char* display_name, const char* argv0) {
 #else
     fputs(
         "\nDebug / diagnostic flags:\n"
+        "  --terrain-cache 0|1        EXPERIMENTAL: retained-terrain GPU cache (per-sector\n"
+        "                             meshes, camera/fog/cull in the vertex shader). Default 0\n"
+        "                             while parity is being validated; display-only.\n"
         "  --headless                 no on-screen window (offscreen video driver)\n"
         "  --resume-handoff PATH      resume a session from a process-handoff checkpoint\n"
         "                             (written by the handoff exec; not for manual use)\n"
@@ -555,6 +558,11 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->dither          = 0;    /* --dither 1 for PS1 15-bit colour + hardware dither */
     opts->psycross_native_raster = 0;  /* reference renders on the window-derived square-pixel grid */
     opts->texture_mapping = OPENPETE_TEXTURE_MAPPING_PERSPECTIVE;  /* --texture-mapping affine for the PSX texture swim */
+    /* EXPERIMENTAL retained-terrain GPU cache; --terrain-cache 1 opts in.
+     * OPENPETE_TERRAIN_CACHE is the env spelling (harness runs that can't
+     * pass flags); the CLI, parsed later, wins. */
+    { const char* e = getenv("OPENPETE_TERRAIN_CACHE");
+      opts->terrain_cache = (e && *e) ? (atoi(e) != 0) : 0; }
     opts->lod                 = OPENPETE_LOD_ORIGINAL;  /* authentic PSX LOD band; --lod extended (a.k.a. --no-lod) for full detail at any distance */
 }
 
@@ -791,6 +799,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             i++;
         } else if (strcmp(a, "--no-lod") == 0) {
             opts->lod = OPENPETE_LOD_EXTENDED;   /* deprecated alias for --lod extended */
+        } else if (strcmp(a, "--terrain-cache") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->terrain_cache = atoi(v) != 0; i++;
         } else if (strcmp(a, "--fog-scale") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->fog_scale = (float)atof(v); i++;

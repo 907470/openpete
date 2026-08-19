@@ -52,6 +52,7 @@ extern int  GR_GetPresentSceneSize(int *out_w, int *out_h);
 extern int  GR_ReadPresentSceneRGBA(unsigned char *pixels, int w, int h,
                                     unsigned int gl_format);
 #include "openpete_native_vram.h"   /* W2.4: the owned VRAM model + native ops */
+#include "openpete_terrain_cache.h" /* terrain sector-mesh GPU cache (retained terrain) */
 #include "texture_pack.h"           /* texture-replacement registry (Phase 1+) */
 extern void PsyX_SetVRAMDirtyCallback(void (*cb)(int x, int y, int w, int h));
 static void nr_vram_dirty_cb(int x, int y, int w, int h);   /* W2.4, defined below */
@@ -354,6 +355,7 @@ static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = no
 #define AB_DIFF_SCENE_DELAY 1   /* ab/diff default: native lagged 1 frame to match PsyCross */
 static scene_tri_t s_scene_hist[SCENE_HIST][MAX_SCENE_TRIS]; /* completed-frame ring */
 static int                s_scene_hist_n[SCENE_HIST];
+static unsigned           s_scene_hist_frame[SCENE_HIST]; /* completed frame's stamp */
 static uint32_t           s_scene_hist_bg[SCENE_HIST];
 static uint32_t           s_scene_hist_fade[SCENE_HIST];  /* full-screen fade overlay, per snapshot */
 static uint32_t           s_scene_hist_freeze[SCENE_HIST]; /* freeze-backdrop overlay, per snapshot */
@@ -494,6 +496,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             int slot = (s_scene_hist_head + 1) % SCENE_HIST;
             if (s_scene_n > 0) memcpy(s_scene_hist[slot], s_scene, (size_t)s_scene_n * sizeof(s_scene[0]));
             s_scene_hist_n[slot] = s_scene_n; s_scene_hist_bg[slot] = s_scene_bg;
+            s_scene_hist_frame[slot] = s_scene_frame;
             s_scene_hist_fade[slot] = s_scene_fade;
             s_scene_hist_freeze[slot] = s_scene_freeze;
             s_scene_hist_hud_under[slot] = s_scene_hud_under;
@@ -517,6 +520,19 @@ void openpete_native_scene_begin_frame(unsigned frame) {
  * use it to append ONLY to a live scene: calling begin_frame with a
  * newer frame would snapshot-and-wipe a held scene during load stalls. */
 unsigned openpete_native_scene_frame(void) { return s_scene_frame; }
+
+/* Stamp of the scene scene_present_buf() would return under the CURRENT
+ * selection (delay/shot-lag included) — what the retained-terrain freshness
+ * gate compares against, so a frozen/lagged compose keeps its retained
+ * content and a stale-state compose (menus) drops it. */
+static unsigned scene_present_stamp(void) {
+    int depth = scene_delay_depth();
+    if (depth > 0 && depth <= s_scene_hist_count && s_scene_hist_head >= 0) {
+        int slot = (s_scene_hist_head - (depth - 1) + SCENE_HIST * 4) % SCENE_HIST;
+        return s_scene_hist_frame[slot];
+    }
+    return s_scene_frame;
+}
 
 /* Mod actor render service: suppress the PLAYER-category scene tris for
  * the NEXT presented frame (the flutter's hover window draws a stand-in
@@ -2224,10 +2240,46 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         build_panel(fsq, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f);
         rhi_update_buffer(fs_quad_vb, fsq, sizeof(fsq));
     }
+    /* Terrain sector-mesh GPU cache (--terrain-cache 1, EXPERIMENTAL): the
+     * retained-terrain path. Init only on opt-in — the arenas reserve ~130 MB
+     * of device memory. A failed init logs + leaves the CPU walk in place. */
+    if (opts->terrain_cache)
+        openpete_tercache_init(dev);
+
     OPL_INFO_F("native", "Vulkan %s window up (%dx%d, device='%s'); PsyCross hidden",
                ab_mode ? "A/B" : diff_mode ? "diff" : "vk",
                w, h, rhi_device_name(dev));
     return 0;
+}
+
+/* Can the terrain feeder route unclaimed sectors through the GPU cache this
+ * run/present? ANDs the renderer-side conditions the feeder can't see: cache
+ * up, no reference-compare scene delay (the cache draws the LIVE walk, not
+ * the history ring), no HD texture pack (per-run material replacement rides
+ * draw_tex_runs), no mod material selectors (same), no PSX vertex wobble
+ * (the snap lives in add_tri_grouped), and a hardware GPU (the verdict-heavy
+ * vertex shader crawls on llvmpipe). */
+int openpete_native_tercache_usable(void)
+{
+    /* OPENPETE_TERRAIN_CACHE_FORCE=1: waive the software-GPU exclusion (dev —
+     * llvmpipe renders the path correctly, just slowly; the WSL parity
+     * harness diffs screenshots at low frame counts). */
+    static int s_force = -1;
+    if (s_force < 0) {
+        const char* e = getenv("OPENPETE_TERRAIN_CACHE_FORCE");
+        s_force = (e && *e && *e != '0');
+    }
+    return s_nr.enabled
+        && openpete_tercache_ready()
+        && !s_scene_ref_compare
+        && scene_delay_depth() == 0
+        && !tag_split_on()
+        && !s_vertex_snap
+        && !texture_pack_replacements_active()
+        /* fp64 in terrain.vert is what makes the mirror bit-exact vs the
+         * CPU walk's double math — no fp64, no retained path. */
+        && rhi_device_has_float64(s_nr.dev)
+        && (s_force || !rhi_device_is_software(s_nr.dev));
 }
 
 bool openpete_native_render_enabled(void)
@@ -2704,6 +2756,18 @@ static void scene_to_clip(float sx, float sy, float *cx, float *cy)
     }
 }
 
+/* Linearize the CURRENT scene_to_clip mapping (affine in sx/sy) into
+ * {ax, bx, ay, by} for the terrain-cache vertex stage — probe the mapping
+ * itself so full-extent / panel / freeze_wf state can never drift. */
+static void tercache_clip_affine(float out[4])
+{
+    float cx0, cy0, cx1, cy1;
+    scene_to_clip(0.0f, 0.0f, &cx0, &cy0);
+    scene_to_clip(1.0f, 1.0f, &cx1, &cy1);
+    out[0] = cx1 - cx0; out[1] = cx0;
+    out[2] = cy1 - cy0; out[3] = cy0;
+}
+
 /* ---- depth-aware shadow decal: the shared WORLD-opaque depth pre-pass ------ */
 
 /* Camera reconstruction params from the game (openpete_native_render.h); the
@@ -2724,6 +2788,7 @@ void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params 
 static int   s_od_ready = 0;
 static float s_od_vw = 0.0f, s_od_vh = 0.0f;
 static float s_od_uax = 0.0f, s_od_ubx = 0.0f, s_od_vay = 0.0f, s_od_vby = 0.0f;
+static float s_od_taff[4];   /* terrain-cache prepass clip affine (full-extent) */
 
 /* Fallback view-Z band for shadow_decal.frag's mode-0 path (params invalid);
  * the height test does not use it. Env-tunable for calibration. */
@@ -2926,6 +2991,9 @@ static void native_depth_prepass(void)
         s_od_uax = (cx1 - cx0) * 0.5f; s_od_ubx = (cx0 + 1.0f) * 0.5f;
         s_od_vay = (cy0 - cy1) * 0.5f; s_od_vby = (1.0f - cy0) * 0.5f;
     }
+    /* Terrain-cache prepass affine: the same full-extent mapping, captured
+     * while it is active (consumed by the arena draw inside the pass below). */
+    tercache_clip_affine(s_od_taff);
     s_render_full_extent = prev_fe;
     s_render_freeze_wf = prev_wf;
     rhi_update_buffer(s_nr.prepass_vb, pbuf, sizeof(rhi_vertex) * (size_t)(m > 0 ? m : 1));
@@ -3009,6 +3077,10 @@ static void native_depth_prepass(void)
                     float y0 = scene[t].v[0].sy, y1 = scene[t].v[1].sy, y2 = scene[t].v[2].sy;
                     if (psx < fminf(x0, fminf(x1, x2)) || psx > fmaxf(x0, fmaxf(x1, x2))) continue;
                     if (psy < fminf(y0, fminf(y1, y2)) || psy > fmaxf(y0, fmaxf(y1, y2))) continue;
+                    fprintf(stderr, "[occl-uv] u=(%.2f,%.2f,%.2f) v=(%.2f,%.2f,%.2f) koff=%.1f\n",
+                            scene[t].v[0].u, scene[t].v[1].u, scene[t].v[2].u,
+                            scene[t].v[0].v, scene[t].v[1].v, scene[t].v[2].v,
+                            scene[t].koff);
                     fprintf(stderr, "[occl-tri f=%u] cat=%d blend=%d tex=%d sxy=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) vz=(%.0f,%.0f,%.0f)\n",
                             s_scene_frame, scene[t].category, scene[t].blend, scene[t].textured,
                             x0, y0, x1, y1, x2, y2,
@@ -3030,6 +3102,12 @@ static void native_depth_prepass(void)
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.prepass_vb);
         rhi_draw(s_nr.dev, (uint32_t)m, 0);
     }
+    /* Terrain-cache occluders: depth-only draw of the retained WORLD terrain
+     * (unclaimed sectors), matching the CPU extraction's WORLD + WORLD_FILL
+     * coverage above so the shadow-decal / occlusion consumers see the whole
+     * opaque terrain regardless of which path fed it. */
+    if (openpete_tercache_frame_open())
+        openpete_tercache_draw(OPTC_DRAW_PREPASS, s_od_taff, s_nr.vram_tex, 0, NULL, NULL);
     rhi_end_render_target(s_nr.dev, s_nr.opaque_depth);
     s_od_vw = (float)vw; s_od_vh = (float)vh;
     s_od_ready = 1;
@@ -3511,6 +3589,17 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     rhi_begin_render_target(s_nr.dev, s_nr.terrain_key_depth, 0.0f, 0.0f, 0.0f, 1.0f);
     rhi_set_viewport(s_nr.dev, vw, vh);
     draw_key_batch(s_tk_base, m, k_untex, kspans, k_nspans);
+    /* Retained terrain emits its og keys here too — CPU-fed faces (and
+     * mobys) must contest retained ground exactly as they contest CPU-fed
+     * ground. Same target, same flat-key depth encoding (terrain.vert
+     * pass_sel 2), the pass's own clip mapping. */
+    if (openpete_tercache_frame_open()) {
+        int prev_fe = s_render_full_extent;
+        s_render_full_extent = full_extent ? 1 : 0;
+        float taff[4]; tercache_clip_affine(taff);
+        s_render_full_extent = prev_fe;
+        openpete_tercache_draw(OPTC_DRAW_KEY, taff, s_nr.vram_tex, 0, NULL, NULL);
+    }
     rhi_end_render_target(s_nr.dev, s_nr.terrain_key_depth);
     rhi_begin_render_target(s_nr.dev, s_nr.moby_key_depth, 0.0f, 0.0f, 0.0f, 1.0f);
     rhi_set_viewport(s_nr.dev, vw, vh);
@@ -5960,6 +6049,18 @@ static bool draw_native_scene(bool full_extent)
          * below still draw, so the animated menu stays smooth at the present rate. */
         if (freeze_first >= 0) continue;
         rhi_gpu_zone_begin(s_nr.dev, k_scene_zone[gi]);
+        {   /* OPENPETE_TERRAIN_GPU_FIRST=1 (temp bring-up probe): draw the
+             * retained WORLD terrain BEFORE the CPU-fed batch, to expose
+             * draw-order-dependent depth ties at claimed/retained seams. */
+            static int s_tgf = -1;
+            if (s_tgf < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_FIRST");
+                             s_tgf = (e && *e && *e != '0'); }
+            if (s_tgf && gi == 0 && openpete_tercache_frame_open()) {
+                float aff[4]; tercache_clip_affine(aff);
+                openpete_tercache_draw(OPTC_DRAW_WORLD, aff, s_nr.vram_tex, holefill_on,
+                                       s_nr.terrain_key_depth, s_nr.moby_key_depth);
+            }
+        }
         const struct scene_group *g = &groups[gi];
         /* Dragon-rescue cutscene (actor_front): just BEFORE the PLAYER group,
          * depth-isolate the cutscene actors and draw them there so they win
@@ -6186,6 +6287,18 @@ static bool draw_native_scene(bool full_extent)
                               atex, acut, holefill_on ? 2 : 1);
             }
         }
+        /* Terrain sector-mesh GPU cache: the retained WORLD terrain (unclaimed
+         * sectors) draws in the same slot as the CPU-fed WORLD group — opaque
+         * depth-write, stencil-MARK when hole-fill is armed (identical raster
+         * roles; the vertex stage owns the per-face verdicts). */
+        static int s_tgf2 = -1;
+        if (s_tgf2 < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_FIRST");
+                          s_tgf2 = (e && *e && *e != '0'); }
+        if (gi == 0 && openpete_tercache_frame_open() && !s_tgf2) {
+            float aff[4]; tercache_clip_affine(aff);
+            openpete_tercache_draw(OPTC_DRAW_WORLD, aff, s_nr.vram_tex, holefill_on,
+                                   s_nr.terrain_key_depth, s_nr.moby_key_depth);
+        }
         /* WORLD_FILL — terrain LP hole-fill (W2.6-c): depth-tested at TRUE LP
          * depth, gated on stencil==0 so it can only paint pixels no opaque
          * coverage MARK claimed (LP↔HP T-junction seams — where the sky shows
@@ -6205,6 +6318,13 @@ static bool draw_native_scene(bool full_extent)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[12], (uint32_t)ut_first[12]);
         }
+        /* Terrain-cache LP hole-fill twin: stencil TEST_ZERO at true LP depth,
+         * same slot as the scene-fed fill (before the portal stencil clear). */
+        if (gi == 2 && holefill_on && openpete_tercache_frame_open()) {
+            float aff[4]; tercache_clip_affine(aff);
+            openpete_tercache_draw(OPTC_DRAW_FILL, aff, s_nr.vram_tex, 0,
+                                   s_nr.terrain_key_depth, s_nr.moby_key_depth);
+        }
         /* SUBTRACT-WORLD — genuinely subtractive content (blend 3, category
          * != SHADOW): the smoke puffs (fragment shatter, flame-kill), ABR-2
          * terrain/moby faces. Drawn LAST of the world-space stack (after the
@@ -6219,6 +6339,19 @@ static bool draw_native_scene(bool full_extent)
          *    shows it (on the flamed enemy). The .s renders particles at the
          *    END of the frame; og's smoke darkens the flame glow too, so
          *    after the ADD group is the faithful slot. */
+        /* Terrain-cache blend classes ride their groups' slots: ABR-0 alpha
+         * with the ALPHA group (gi==4), ABR-1 with ADDITIVE (gi==5, before
+         * the subtract-world slot below — og's smoke darkens the glow). */
+        if (gi == 4 && openpete_tercache_frame_open()) {
+            float aff[4]; tercache_clip_affine(aff);
+            openpete_tercache_draw(OPTC_DRAW_ALPHA, aff, s_nr.vram_tex, 0,
+                                   s_nr.terrain_key_depth, s_nr.moby_key_depth);
+        }
+        if (gi == 5 && openpete_tercache_frame_open()) {
+            float aff[4]; tercache_clip_affine(aff);
+            openpete_tercache_draw(OPTC_DRAW_ADD, aff, s_nr.vram_tex, 0,
+                                   s_nr.terrain_key_depth, s_nr.moby_key_depth);
+        }
         if (gi == 5) {
             { static int s_swd = -1;
               if (s_swd < 0) { const char* e = getenv("OPENPETE_PLY_VBDBG"); s_swd = (e && *e && *e != '0'); }
@@ -6242,6 +6375,12 @@ static bool draw_native_scene(bool full_extent)
                  * would invalidate. */
                 draw_tex_runs(txg_first[8], txg_count[8], tx_start, scene,
                               s_nr.scene_tex_sub_pipe, NULL, 0);
+            }
+            /* Terrain-cache ABR-2 terrain faces: same SUBTRACT-WORLD slot. */
+            if (openpete_tercache_frame_open()) {
+                float aff[4]; tercache_clip_affine(aff);
+                openpete_tercache_draw(OPTC_DRAW_SUB, aff, s_nr.vram_tex, 0,
+                                   s_nr.terrain_key_depth, s_nr.moby_key_depth);
             }
         }
         /* Portal-sky previews: drawn AFTER the ACTOR group (gi==2), BEFORE the
@@ -7960,6 +8099,10 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     uint64_t pt_t0 = pt_on ? openpete_phase_now_us() : 0, pt_t1;
     if (!rhi_begin_frame(s_nr.dev))
         return; /* swapchain recreating or window minimized — skip this present */
+    /* Retained terrain: select against the stamp of the scene this present
+     * composes (freeze/lag included), so retained content follows the same
+     * timeline and stale states never repaint. */
+    openpete_tercache_frame_select(scene_present_stamp());
     /* Tag this frame's GPU work with the present it will become, so the
      * frame-lagged harvest (next few presents) can bind zones back to it. */
     if (op_prof_on()) rhi_gpu_frame_token(s_nr.dev, (uint64_t)op_prof_next_present_index());
@@ -8079,6 +8222,8 @@ void openpete_native_render_snapshot_frozen(float cap_wf)
     int scene_n; uint32_t sbg, sfade, sfreeze;
     (void)scene_present_buf(&scene_n, &sbg, &sfade, &sfreeze, NULL, NULL);
     if (scene_n <= 0 || (sfreeze & (1u << 31))) return;
+    /* Retained terrain must land in the frozen backdrop too. */
+    openpete_tercache_frame_select(scene_present_stamp());
 
     /* Derive the reference display shape from gamestate (headless has no live
      * frame to source it from), same as the screenshot compose fallback. */
@@ -8206,6 +8351,10 @@ int openpete_native_render_screenshot_all(const char *base)
     truescope_apply_pending();
     s_scene_shot_compose = 1;
     s_scene_shot_lag = s_nr.headless ? 1 : 0;
+    /* Retained terrain rides the same scene selection: the lagged canonical
+     * scene is exactly the tercache LIVE state (the staged/live promote
+     * mirrors the canonical lag). */
+    openpete_tercache_frame_select(scene_present_stamp());
     int r = native_render_screenshot_all_impl(base);
     s_scene_shot_compose = 0;
     s_scene_shot_lag = 0;
@@ -8494,6 +8643,7 @@ void openpete_native_render_shutdown(void)
         return;
     rhi_wait_idle(s_nr.dev);
     openpete_devui_shutdown();   /* imgui backend objects die before the device */
+    openpete_tercache_shutdown(s_nr.dev);
     /* Mod postfx chain objects (S3): ping pool, UBO, cached pipelines
      * (both live registrations and the retirement list). */
     for (int i = 0; i < 2; i++)

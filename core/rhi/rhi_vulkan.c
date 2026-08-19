@@ -70,6 +70,7 @@ struct rhi_device {
     uint32_t                 gfx_family;
     VkQueue                  gfx_queue;
     char                     device_name[256];
+    bool                     device_software; /* picked device is a CPU rasterizer (llvmpipe) */
     bool                     headless;   /* surfaceless: no swapchain / present */
     int                      vsync_pref; /* --vsync: 1 = FIFO (vsync ON), 0 = vsync
                                           * OFF, -1 = unset (env / default). Read by
@@ -82,6 +83,7 @@ struct rhi_device {
                                    * preferred, D24_UNORM_S8 fallback — picked at
                                    * device selection (pick_depth_format). */
     bool           has_depth_bias_clamp; /* depthBiasClamp feature enabled */
+    bool           has_shader_float64;   /* shaderFloat64 feature enabled  */
     VkExtent2D     sc_extent;
     uint32_t       sc_count;
     VkImage        sc_images[RHI_MAX_SC_IMAGES];
@@ -142,6 +144,7 @@ struct rhi_device {
     VkDescriptorSetLayout vram_set_layout;
     VkDescriptorPool      desc_pool;
     VkPipelineLayout      cur_layout;  /* layout of the bound pipeline */
+    VkShaderStageFlags    cur_pc_stages; /* its push-constant stage flags */
 
     /* Reusable host-visible staging buffer for rhi_read_offscreen (the blocking
      * screenshot path). Persistent so it doesn't vkAllocateMemory/free each call;
@@ -230,6 +233,9 @@ struct rhi_pipeline {
     uint32_t        *vert_words, *frag_words; /* owned SPIR-V word copies   */
     size_t           vert_n, frag_n;          /* word counts                */
     struct rhi_pipeline *prev, *next;         /* device-wide rebuild registry */
+    VkShaderStageFlags pc_stages; /* stage visibility of the push-constant
+                                   * block (FRAGMENT; terrain: VERTEX too) —
+                                   * rhi_push_constants must match the range */
 };
 
 struct rhi_texture {
@@ -449,6 +455,7 @@ static bool pick_physical_and_device(rhi_device *dev)
             chosen_family = fam;
             chosen_score = score;
             snprintf(dev->device_name, sizeof(dev->device_name), "%s", props.deviceName);
+            dev->device_software = (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU);
         }
     }
     free(devs);
@@ -478,6 +485,13 @@ static bool pick_physical_and_device(rhi_device *dev)
     VkPhysicalDeviceFeatures enable = {0};
     enable.depthBiasClamp = supported.depthBiasClamp;
     dev->has_depth_bias_clamp = (supported.depthBiasClamp == VK_TRUE);
+    /* shaderFloat64: the retained-terrain vertex stage mirrors the CPU
+     * walk's double-precision GTE math bit-for-bit (float32 would flip
+     * raster edges at the last-ulp level and break the pixel-identical
+     * gate). Universally present on discrete GPUs and lavapipe; the
+     * terrain cache simply stays disabled without it. */
+    enable.shaderFloat64 = supported.shaderFloat64;
+    dev->has_shader_float64 = (supported.shaderFloat64 == VK_TRUE);
     const char *dev_ext[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
     VkDeviceCreateInfo dci = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
@@ -1751,6 +1765,16 @@ const char *rhi_device_name(const rhi_device *dev)
     return dev ? dev->device_name : "";
 }
 
+bool rhi_device_is_software(const rhi_device *dev)
+{
+    return dev ? dev->device_software : false;
+}
+
+bool rhi_device_has_float64(const rhi_device *dev)
+{
+    return dev ? dev->has_shader_float64 : false;
+}
+
 /* ------------------------------------------------------------------ */
 /* Buffers                                                            */
 /* ------------------------------------------------------------------ */
@@ -1818,6 +1842,53 @@ rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes)
 {
     return create_host_buffer(dev, bytes, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                               /*prefer_cached=*/false);
+}
+
+rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes)
+{
+    /* DEVICE_LOCAL + host-mapped (the ReBAR / BAR heap) when available: the
+     * terrain arena is written rarely (sector rebuilds) but fetched by the
+     * vertex stage every present — device-local keeps that fetch off PCIe.
+     * Silent fallback to the plain host-visible type (llvmpipe is unified
+     * memory; pre-ReBAR discrete parts still fit the 256 MB BAR heap or fall
+     * through to system memory, which merely costs bandwidth). */
+    rhi_buffer *b = calloc(1, sizeof(*b));
+    if (!b) return NULL;
+    b->size = (VkDeviceSize)bytes;
+    VkBufferCreateInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
+        .size = bytes,
+        .usage = VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
+        .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+    };
+    if (vkCreateBuffer(dev->device, &bi, NULL, &b->buffer) != VK_SUCCESS) {
+        RHI_LOG("vkCreateBuffer failed\n"); free(b); return NULL;
+    }
+    VkMemoryRequirements mr;
+    vkGetBufferMemoryRequirements(dev->device, b->buffer, &mr);
+    const VkMemoryPropertyFlags base = VK_MEMORY_PROPERTY_HOST_VISIBLE_BIT |
+                                       VK_MEMORY_PROPERTY_HOST_COHERENT_BIT;
+    uint32_t mt = find_memtype(dev->phys, mr.memoryTypeBits,
+                               base | VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+    if (mt == UINT32_MAX)
+        mt = find_memtype(dev->phys, mr.memoryTypeBits, base);
+    if (mt == UINT32_MAX) {
+        RHI_LOG("no host-visible memory type\n");
+        vkDestroyBuffer(dev->device, b->buffer, NULL); free(b); return NULL;
+    }
+    VkMemoryAllocateInfo mai = {
+        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+        .allocationSize = mr.size,
+        .memoryTypeIndex = mt,
+    };
+    if (vkAllocateMemory(dev->device, &mai, NULL, &b->memory) != VK_SUCCESS) {
+        RHI_LOG("vkAllocateMemory (device vertex buffer, %zu bytes) failed\n", bytes);
+        vkDestroyBuffer(dev->device, b->buffer, NULL); free(b); return NULL;
+    }
+    vkBindBufferMemory(dev->device, b->buffer, b->memory, 0);
+    vkMapMemory(dev->device, b->memory, 0, VK_WHOLE_SIZE, 0, &b->mapped);
+    b->dev = dev;
+    return b;
 }
 
 rhi_buffer *rhi_create_vertex_buffer_dynamic(rhi_device *dev, size_t bytes)
@@ -2929,11 +3000,30 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
         { .location = 4, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, w) },
         { .location = 5, .binding = 0, .format = VK_FORMAT_R32_SFLOAT,       .offset = offsetof(rhi_vertex, koff) },
     };
+    /* Terrain sector-mesh layout (rhi_terrain_vertex, 64 B): integer-packed
+     * retained world-space vertices; see rhi.h for the field/bit contract.
+     * SINT/UINT formats — terrain.vert consumes ivec/uvec, no normalization. */
+    VkVertexInputAttributeDescription terrain_attrs[9] = {
+        { .location = 0, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, px) },
+        { .location = 1, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UINT,     .offset = offsetof(rhi_terrain_vertex, uvf_u) },
+        { .location = 2, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UNORM,    .offset = offsetof(rhi_terrain_vertex, rgba_far) },
+        { .location = 3, .binding = 0, .format = VK_FORMAT_R8G8B8A8_UNORM,    .offset = offsetof(rhi_terrain_vertex, rgba_near) },
+        { .location = 4, .binding = 0, .format = VK_FORMAT_R32G32B32A32_UINT, .offset = offsetof(rhi_terrain_vertex, mat_far0) },
+        { .location = 5, .binding = 0, .format = VK_FORMAT_R32_UINT,          .offset = offsetof(rhi_terrain_vertex, face_flags) },
+        { .location = 6, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, c0x) },
+        { .location = 7, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, c1y) },
+        { .location = 8, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, c2z) },
+    };
     VkPipelineVertexInputStateCreateInfo vi = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &bind,
         .vertexAttributeDescriptionCount = 6, .pVertexAttributeDescriptions = attrs,
     };
+    if (desc->terrain_pipeline) {
+        bind.stride = sizeof(rhi_terrain_vertex);
+        vi.vertexAttributeDescriptionCount = 9;
+        vi.pVertexAttributeDescriptions = terrain_attrs;
+    }
     if (desc->postfx) {   /* fullscreen triangle: no vertex buffer at all */
         vi.vertexBindingDescriptionCount = 0;
         vi.pVertexBindingDescriptions = NULL;
@@ -3048,18 +3138,25 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
      * (the per-draw PSX material: tpage/clut/bpp). The 1b.1 quad pipeline
      * uses neither and keeps an empty layout. */
     VkPushConstantRange pcr = {
-        .stageFlags = VK_SHADER_STAGE_FRAGMENT_BIT,
+        /* Terrain pipelines read the per-draw block (clip affine + class
+         * select) in the VERTEX stage too; everything else is fragment-only
+         * (the per-draw PSX material). */
+        .stageFlags = desc->terrain_pipeline
+                          ? (VK_SHADER_STAGE_VERTEX_BIT | VK_SHADER_STAGE_FRAGMENT_BIT)
+                          : VK_SHADER_STAGE_FRAGMENT_BIT,
         .offset = 0, .size = desc->push_const_size,
     };
     /* set 0 (uses_vram) + optional set 1 (uses_vram2, e.g. the diff pass's
      * reference sampler) — both reuse the single-binding vram set layout.
-     * postfx: sets 0..2 samplers + set 3 the dynamic-UBO pair. */
+     * postfx: sets 0..2 samplers + set 3 the dynamic-UBO pair. terrain:
+     * set 0 = VRAM sampler, set 3 = the UBO pair (globals + sector params);
+     * sets 1/2 are declared for layout continuity but never bound/used. */
     VkDescriptorSetLayout set_layouts[5] = { dev->vram_set_layout, dev->vram_set_layout,
                                              dev->vram_set_layout,
-                                             (desc->postfx || desc->mod_pipeline)
+                                             (desc->postfx || desc->mod_pipeline || desc->terrain_pipeline)
                                                  ? dev->ubo_set_layout : dev->vram_set_layout,
                                              dev->vram_set_layout };
-    uint32_t set_count = (desc->postfx || desc->mod_pipeline) ? 4u
+    uint32_t set_count = (desc->postfx || desc->mod_pipeline || desc->terrain_pipeline) ? 4u
                        : desc->uses_vram5 ? 5u
                        : desc->uses_vram4 ? 4u
                        : desc->uses_vram3 ? 3u
@@ -3077,6 +3174,7 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
         vkDestroyShaderModule(dev->device, fs, NULL);
         return -1;
     }
+    p->pc_stages = desc->push_const_size ? pcr.stageFlags : 0;
     VkGraphicsPipelineCreateInfo gp = {
         .sType = VK_STRUCTURE_TYPE_GRAPHICS_PIPELINE_CREATE_INFO,
         .stageCount = 2, .pStages = stages,
@@ -3471,6 +3569,7 @@ void rhi_bind_pipeline(rhi_device *dev, rhi_pipeline *pipe)
 {
     if (!dev->frame_active) return;
     dev->cur_layout = pipe->layout; /* for bind_vram / push_constants */
+    dev->cur_pc_stages = pipe->pc_stages;
     vkCmdBindPipeline(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS, pipe->pipeline);
 }
 
@@ -3519,7 +3618,9 @@ void rhi_push_constants(rhi_device *dev, const void *data, uint32_t size)
 {
     if (!dev->frame_active) return;
     vkCmdPushConstants(dev->cmd[dev->frame], dev->cur_layout,
-                       VK_SHADER_STAGE_FRAGMENT_BIT, 0, size, data);
+                       dev->cur_pc_stages ? dev->cur_pc_stages
+                                          : VK_SHADER_STAGE_FRAGMENT_BIT,
+                       0, size, data);
 }
 
 void rhi_draw(rhi_device *dev, uint32_t vertex_count, uint32_t first_vertex)

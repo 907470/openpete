@@ -130,6 +130,13 @@ void rhi_set_device_lost_handler(void (*fn)(void));
 
 /* Diagnostics: the selected physical device name (valid until destroy). */
 const char *rhi_device_name(const rhi_device *dev);
+/* True when the picked physical device is a software rasterizer (llvmpipe
+ * reports VK_PHYSICAL_DEVICE_TYPE_CPU). Heavy vertex-shader paths (the
+ * terrain sector-mesh cache) auto-disable on it. */
+bool        rhi_device_is_software(const rhi_device *dev);
+/* shaderFloat64 enabled on this device (the retained-terrain vertex stage
+ * needs fp64 to mirror the CPU walk's double math bit-for-bit). */
+bool        rhi_device_has_float64(const rhi_device *dev);
 
 /* Read the offscreen color target into a host RGBA8 buffer (byte order
  * R,G,B,A, alpha forced opaque), for screenshots. Call after a rendered
@@ -201,6 +208,48 @@ typedef struct {
 typedef struct rhi_buffer   rhi_buffer;
 typedef struct rhi_pipeline rhi_pipeline;
 typedef struct rhi_texture  rhi_texture;
+
+/* Terrain sector-mesh vertex (the terrain GPU cache — see
+ * notes/plans/openpete-terrain-gpu-cache.md). A retained world-space
+ * vertex: the camera transform, fog, CLUT ladder and the per-face verdicts
+ * (NCLIP two-half cull, near/HQ variant select, LOD handoff) all run in the
+ * vertex shader, so every vertex carries its PARENT FACE's four corner
+ * positions and both tiledef halves' material/UV alongside its own data.
+ * Positions are sector-local with 2 FRACTIONAL bits (value = world/16 * 4):
+ * the HQ 2x2 subdivide's centre is the corner mean, a quarter-unit quantity.
+ * Layout is load-bearing: the Vulkan backend's terrain vertex-input
+ * attributes and terrain.vert's `location` declarations mirror these
+ * offsets. */
+typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
+                                       * terrain-cache header */
+    int16_t  px, py, pz;        /* position, sector-local, x4 fixed point   */
+    uint16_t flags16;           /* bit0: HQ-subdivide variant (vs flat/LP);
+                                 * bits1-2: HQ sub-quad index (0..3);
+                                 * bits3-4: corner slot within the sub-quad
+                                 * (0..3 in [TL,TR,BL,BR] order)             */
+    uint8_t  uvf_u, uvf_v;      /* far-tile (LQ) texel coords, page-relative */
+    uint8_t  uvn_u, uvn_v;      /* near-tile texel coords (HP textured only) */
+    uint32_t rgba_far;          /* far colour (LP: THE colour; HQ: the baked
+                                 * raw-near/midpoint colour), R,G,B,A        */
+    uint32_t rgba_near;         /* near colour (HP flat; else == rgba_far)   */
+    uint32_t mat_far0;          /* tpx(10) | tpy(9)<<10 | bppc(2)<<19 |
+                                 * blend(2)<<21 | textured(1)<<23
+                                 * (bppc: 0=4bpp, 1=8bpp, 2=16bpp)           */
+    uint32_t mat_far1;          /* clut_raw halfword (paletted only)         */
+    uint32_t mat_near0;         /* near-tile material, same packing          */
+    uint32_t mat_near1;
+    uint32_t face_flags;        /* sector_slot(9) | tier(1)<<9 | fogbias<<10 |
+                                 * gapfill<<11 | dside<<12 (LP w0&0x80 /
+                                 * HP w3&0x4) | flip<<13 | quad<<14 |
+                                 * w3_40<<15 | w3_80<<16 | hq_eligible<<17 |
+                                 * floor<<18 (LP up-facing) |
+                                 * admit(5)<<19 (LP authored admission) |
+                                 * otbias(5)<<24 (authored OT-slot bias)     */
+    int16_t  c0x, c0y, c0z;     /* parent face corners in i0,i1,i2,i3 order, */
+    int16_t  c1x, c1y, c1z;     /* sector-local, same x4 fixed point         */
+    int16_t  c2x, c2y, c2z;     /* (c2==c3 for tris)                         */
+    int16_t  c3x, c3y, c3z;
+} rhi_terrain_vertex;           /* 64 bytes */
 
 /* RHI_BLEND_SUBTRACT = PSX ABR mode 2 (dst = B - F): reverse-subtract, src ONE,
  * dst ONE — used by shadows (subtractive darkening). */
@@ -280,6 +329,13 @@ typedef struct {
                                  * mod vert/frag pairs see attributes at
                                  * locations 0..2 and the engine UBO at set 3
                                  * binding 0. uses_vram/uses_vram2 ignored.   */
+    bool           terrain_pipeline; /* terrain sector-mesh layout: vertex
+                                 * input = rhi_terrain_vertex (locations 0..8),
+                                 * sets = {0: VRAM sampler, 3: UBO pair via
+                                 * rhi_ubo_bind — globals + sector params},
+                                 * push constants visible to VERTEX|FRAGMENT
+                                 * (the per-draw clip affine + class select).
+                                 * uses_vram/uses_vram2 ignored.              */
 } rhi_pipeline_desc;
 
 /* Host-visible vertex buffer (map-and-memcpy updates).
@@ -297,6 +353,11 @@ typedef struct {
  * slot). rhi_update_buffer outside an active frame fills ALL slots (init /
  * under-wait-idle updates stay parity-safe). */
 rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes);
+/* SINGLE-instance vertex buffer preferring DEVICE_LOCAL host-mapped memory
+ * (ReBAR): for retained geometry the GPU fetches every present but the CPU
+ * writes rarely (the terrain sector-mesh arena). Falls back to the plain
+ * host-visible type. Same overlap rules as rhi_create_vertex_buffer. */
+rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes);
 rhi_buffer *rhi_create_vertex_buffer_dynamic(rhi_device *dev, size_t bytes);
 void        rhi_update_buffer(rhi_buffer *buf, const void *data, size_t bytes);
 /* Ranged variant: write `bytes` at byte `offset` within the (per-slot)

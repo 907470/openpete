@@ -79,6 +79,7 @@ int    openpete_native_vertex_snap_active(void)    { return s_native_vsnap; }
 void   openpete_native_set_raster_quantize(int n)  { s_native_rquant = n; }
 int    openpete_native_get_raster_quantize(void)   { return s_native_rquant; }
 int    openpete_workpool_threads(void)             { return 1; }
+int    openpete_tercache_ready(void)               { return 0; }
 int    openpete_native_get_dither(void)            { return s_native_dither; }
 void   openpete_native_set_dither(int on)          { s_native_dither = on ? 1 : 0; }
 void   widescreen_set_fov(float deg)           { (void)deg; }
