@@ -179,6 +179,10 @@ add_library(openpete_core STATIC
     # Phase 1d: cooperative scheduler globals (host/game fiber, frame counter).
     runtime/fiber.c
 
+    # Data-parallel extraction worker pool (--extract-threads). See
+    # openpete_workpool.h for the threading contracts (C1-C5).
+    runtime/work_pool.c
+
     # Pacing-clock lifecycle + the fast-forward flag. The host loop paces
     # itself against op_sleep_until deadlines; there is no pacing thread.
     runtime/ticker.c

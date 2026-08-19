@@ -13,6 +13,7 @@
 #include "openpete_recomp_module.h"
 #include "openpete_ticker.h"
 #include "openpete_time.h"
+#include "openpete_workpool.h"
 #include "openpete_frame_time_log.h"
 #include "openpete_profile.h"
 #include "openpete_func_trace.h"
@@ -3786,6 +3787,10 @@ int openpete_run(const openpete_options_t* opts) {
     OPL_INFO_F("boot", "starting %s (frame_limit=%d max_seconds=%d headless=%d)",
                opts->display_name, opts->frame_limit, opts->max_runtime_seconds,
                (int)opts->headless);
+
+    /* Extraction worker pool size (--extract-threads), before any consumer
+     * can resolve it. Threads themselves spawn lazily on first parallel run. */
+    openpete_workpool_configure(opts->extract_threads);
 
     /* libco: capture the host fiber. Phase 1b uses only co_active(); Phase 1c
      * creates the gameplay fiber so PSYQ calls can yield (VSync etc.). */

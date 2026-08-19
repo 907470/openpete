@@ -213,6 +213,15 @@ typedef struct openpete_options {
      * renderer only. */
     int raster_quantize;
 
+    /* Extraction worker threads (`--extract-threads N`). Data-parallel fan-out
+     * of the native render extraction (terrain sector walk) over a persistent
+     * worker pool; results merge in item order, so output is byte-identical
+     * to serial. 0 = auto (logical cores / 2, clamped to [1, 8]); 1 = serial
+     * (the pre-pool code path, no threads created). Boot-latched;
+     * display-only (workers read guest RAM only inside the extraction
+     * window — see openpete_workpool.h contracts). */
+    int extract_threads;
+
     /* PS1 15-bit colour (`--dither 0|1`). 1 = quantise the composed 3D scene
      * to RGB555 with the GPU's 4x4 ordered dither matrix on the PSX 512x240
      * framebuffer lattice — the authentic banding+crosshatch pair the native

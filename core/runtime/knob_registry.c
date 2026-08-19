@@ -12,6 +12,7 @@
  */
 
 #include "openpete_knobs.h"
+#include "openpete_workpool.h"
 #include "openpete.h"
 #include "openpete_config.h"
 #include "config_schema.h"
@@ -169,6 +170,10 @@ static int texmap_set(knob_desc_t *k, double v) {
 static double rquant_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
     return openpete_native_get_raster_quantize();
+}
+static double exthreads_get(const knob_desc_t *k) {
+    (void)k;
+    return openpete_workpool_threads();   /* resolved count (auto expanded) */
 }
 static int rquant_set(knob_desc_t *k, double v) {
     openpete_native_set_raster_quantize((int)v);
@@ -497,6 +502,13 @@ static const knob_desc_t g_builtin[] = {
       "always aligned with the integer vertex snap. Display-only.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 16,
       rquant_get, rquant_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "extract_threads", "Extraction threads", "Display", "--extract-threads", NULL,
+      "Worker threads for the native render extraction (terrain sector walk). "
+      "Shows the resolved count (0 = auto at launch). Output is byte-identical "
+      "at any count; 1 = serial. Boot-latched; display-only.",
+      KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 1, 8,
+      exthreads_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "notex", "Untextured (lighting)", "Display", NULL, "OPENPETE_NOTEX",
       "Debug view: draw the 3D scene with textures replaced by neutral grey, "

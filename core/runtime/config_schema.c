@@ -25,6 +25,7 @@ static const cfg_knob_t g_schema[] = {
     { "show_fps",         "--show-fps",         NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "vertex_precision", "--vertex-precision", NULL,                    CFG_ENUM,   v_vprec,    NULL,       NULL,       0 },
     { "raster_quantize",  "--raster-quantize",  NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
+    { "extract_threads",  "--extract-threads",  NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "notex",            NULL,                 "OPENPETE_NOTEX",        CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "dither",           "--dither",           NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "texture_mapping",  "--texture-mapping",  NULL,                    CFG_ENUM,   v_texmap,   NULL,       NULL,       0 },
