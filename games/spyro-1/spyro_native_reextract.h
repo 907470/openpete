@@ -127,6 +127,13 @@ void portal_native_reextract(struct CPUState* cpu, double alpha, int interp_on);
  * sectors (env vert INTPL — the Sunny-Flight wall) lerp their decoded vert banks
  * prev→cur by `alpha`; `interp_on` = camera bracketed (else snap to curr). */
 void terrain_native_reextract(struct CPUState* cpu, double alpha, int interp_on);
+/* Compute a whole-level top-down freecam pose from the live sector table:
+ * camera at the level bounds' centre, looking straight down (pitch at the
+ * freecam clamp), high enough that every sector's bounding sphere projects
+ * inside the visible frame. Fills v = {x, y, z, yaw, pitch} in world units.
+ * Returns 0 when no level is live (empty sector table). Used by
+ * `--freecam-pose topdown` (the per-level perf harness). */
+int terrain_native_topdown_pose(struct CPUState* cpu, int32_t v[5]);
 void moby_native_reextract(struct CPUState* cpu);
 void shadow_native_reextract(struct CPUState* cpu);
 void spyro_player_native_reextract(struct CPUState* cpu);

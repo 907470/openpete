@@ -30,6 +30,7 @@
 // TODO at the bottom.
 
 #include "features/freecam_native.h"
+#include "spyro_native_reextract.h"   /* terrain_native_topdown_pose (--freecam-pose topdown) */
 #include "openpete_freecam.h"
 #include "openpete_fillpick.h"  /* scripted engage of the LP fill-tag inspector */
 #include "openpete_log.h"
@@ -38,6 +39,7 @@
 #include <math.h>
 #include <stdint.h>
 #include <stdlib.h>   /* getenv (scripted auto-engage) */
+#include <string.h>   /* strstr (--freecam-pose topdown sentinel) */
 
 #ifndef M_PI
 #  define M_PI    3.14159265358979323846
@@ -282,6 +284,22 @@ static int freecam_parse_ints(const char* s, int32_t* out, int max) {
  * ≥3 integers in it) to g_Camera. Position is required; yaw/pitch optional. */
 static void freecam_apply_pose(CPUState* cpu, const char* s) {
     int32_t v[5] = {0, 0, 0, 0, 0};
+    if (strstr(s, "topdown")) {
+        /* Whole-level top-down pose, computed from the live sector table
+         * (the per-level perf harness — see terrain_native_topdown_pose). */
+        if (!terrain_native_topdown_pose(cpu, v)) {
+            OPL_WARN_F("freecam", "topdown pose: no level sector table live");
+            return;
+        }
+        cpu->write_word(CAM_POS_X, (uint32_t)v[0]);
+        cpu->write_word(CAM_POS_Y, (uint32_t)v[1]);
+        cpu->write_word(CAM_POS_Z, (uint32_t)v[2]);
+        cpu->write_half(CAM_YAW,   (uint16_t)(int16_t)v[3]);
+        cpu->write_half(CAM_PITCH, (uint16_t)(int16_t)v[4]);
+        OPL_INFO_F("freecam", "topdown pose set to (%d, %d, %d) yaw=%d pitch=%d",
+                   v[0], v[1], v[2], v[3], v[4]);
+        return;
+    }
     int n = freecam_parse_ints(s, v, 5);
     if (n < 3) {
         OPL_WARN_F("freecam",

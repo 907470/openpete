@@ -5748,6 +5748,105 @@ void terrain_native_reextract(CPUState* cpu, double alpha, int interp_on) {
     s_vanim_sub = 0; s_vanim_on = 0; s_tanim_en = 0;
 }
 
+/* Whole-level top-down pose (--freecam-pose topdown): centre of the sector
+ * bounding spheres, looking straight down from a height at which every
+ * sphere projects inside the visible frame. Sector centres/radii are the
+ * same world/16 header fields the LP/HP binning uses (decode mirrors
+ * tsc_get); CAM_POS wants full world units, so the result scales by 16.
+ * The vertical visible half-extent (224-line crop → 112) is the limiting
+ * axis at every supported aspect; 100 keeps a margin on top, and the
+ * per-sector radius inflates both the lateral offset and the height so a
+ * sphere's edge can't clip the frame. Pitch 992 = the freecam drive's own
+ * clamp (~87°) — writing more gets clamped on the first driven tick. */
+/* Per-vertex accumulator for the two passes below. The decode mirrors
+ * tsc_decode_verts + the origin application (x adds, y/z SUBTRACT — see the
+ * hpVert dump in terrain_dump): world/16 point = (originX + vx,
+ * originY - vy, originZ - vz). Bounding SPHERES were tried first and ran
+ * ~2x too high: the header spheres bake vertical extent and padding into
+ * the radius, so the lateral bound they give is far fatter than the mesh. */
+typedef struct { double px, py, H, need; } td_acc;
+static void td_scan_verts(CPUState* cpu, uint32_t verts, int nv,
+                          int ox, int oy, int oz,
+                          double mm[5], td_acc* acc) {
+    for (int k = 0; k < nv; k++) {
+        uint32_t w = rd(cpu, verts + (uint32_t)k * 4);
+        double x = (double)ox + (double)((w >> 21) & 0x7FF);
+        double y = (double)oy - (double)((w >> 10) & 0x7FF);
+        double z = (double)oz - (double)(w & 0x3FF);
+        if (mm) {
+            if (x < mm[0]) mm[0] = x;
+            if (x > mm[1]) mm[1] = x;
+            if (y < mm[2]) mm[2] = y;
+            if (y > mm[3]) mm[3] = y;
+            if (z > mm[4]) mm[4] = z;
+        }
+        if (acc) {
+            /* yaw-0 top-down maps world X to screen-horizontal (half extent
+             * 256 walk px at 4:3, wider under Hor+) and world Y to vertical
+             * (224-line crop → half 112). 244/100 leave margin for the ~3°
+             * tilt (pitch 992 = the drive clamp, not a true 90°). */
+            double nx = fabs(x - acc->px) * acc->H / 244.0;
+            double ny = fabs(y - acc->py) * acc->H / 100.0;
+            double need = z + (nx > ny ? nx : ny);
+            if (need > acc->need) acc->need = need;
+        }
+    }
+}
+int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
+    uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
+    uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
+    if (!sectorPtr || !sectorCnt || sectorCnt > 1024) return 0;
+    double H = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    if (H < 1.0) H = 400.0;
+    /* Pass 1: true vertex bounds (both banks) → centre + level top. */
+    double mm[5] = { 1e18, -1e18, 1e18, -1e18, -1e18 };  /* minx,maxx,miny,maxy,maxz */
+    int seen = 0;
+    for (uint32_t i = 0; i < sectorCnt; i++) {
+        uint32_t s = rd(cpu, sectorPtr + i * 4);
+        if (!s) continue;
+        uint32_t g1 = rd(cpu, s + 0x08), g2 = rd(cpu, s + 0x0C);
+        uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
+        int ox = (int)(g1 >> 16), oy = (int)(g1 & 0xFFFF), oz = (int)(g2 >> 16);
+        int nLpV = (int)(g3 & 0xFF), nHpV = (int)(g4 & 0xFF);
+        uint32_t hpOff = (g4 >> 24) & 0xFF;
+        td_scan_verts(cpu, s + 0x1C, nLpV, ox, oy, oz, mm, NULL);
+        td_scan_verts(cpu, s + 0x1C + hpOff * 4, nHpV, ox, oy, oz, mm, NULL);
+        seen++;
+    }
+    if (!seen || mm[1] < mm[0]) return 0;
+    /* Pass 2: lowest camera that still projects every vertex in-frame. */
+    td_acc acc = { (mm[0] + mm[1]) * 0.5, (mm[2] + mm[3]) * 0.5, H, mm[4] + 64.0 };
+    for (uint32_t i = 0; i < sectorCnt; i++) {
+        uint32_t s = rd(cpu, sectorPtr + i * 4);
+        if (!s) continue;
+        uint32_t g1 = rd(cpu, s + 0x08), g2 = rd(cpu, s + 0x0C);
+        uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
+        int ox = (int)(g1 >> 16), oy = (int)(g1 & 0xFFFF), oz = (int)(g2 >> 16);
+        int nLpV = (int)(g3 & 0xFF), nHpV = (int)(g4 & 0xFF);
+        uint32_t hpOff = (g4 >> 24) & 0xFF;
+        td_scan_verts(cpu, s + 0x1C, nLpV, ox, oy, oz, NULL, &acc);
+        td_scan_verts(cpu, s + 0x1C + hpOff * 4, nHpV, ox, oy, oz, NULL, &acc);
+    }
+    double pz = acc.need * 1.02;
+    /* Ceiling: past view-Z ~32767 (world/16) the .s's 16-bit frustum stage
+     * rejects every sector, D_VISIBILITY goes empty and the native walk —
+     * whose 4:3 candidate set IS that verdict — draws nothing (stone_hill
+     * proved it at 553651 world). Clamp under it; a level too wide to fit
+     * from there gets cropped edges rather than a blank frame. */
+    if (pz > 30000.0) {
+        fprintf(stderr, "[terrain] topdown pose height clamped (%d -> 30000 world/16): "
+                "level too wide for the .s frustum ceiling — edges may crop\n",
+                (int)pz);
+        pz = 30000.0;
+    }
+    v[0] = (int32_t)(acc.px * 16.0);
+    v[1] = (int32_t)(acc.py * 16.0);
+    v[2] = (int32_t)(pz * 16.0);
+    v[3] = 0;      /* yaw */
+    v[4] = 992;    /* pitch: straight down at the drive clamp */
+    return 1;
+}
+
 static const feature_dispatch_entry_t terrain_dispatch[] = {
     { 0x800258F0u, on_800258F0_terrain },
     { 0u, NULL },
