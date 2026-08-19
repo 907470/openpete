@@ -54,8 +54,8 @@ vec4 decode555(uint p)
 void main()
 {
     if ((g.fog.y & (1 << 29)) != 0) {          /* debug tint modes */
-        int mode = (g.fog.y >> 26) & 3;
-        if (mode == 2) {                        /* raw modulation colour */
+        int mode = (g.fog.y >> 26) & 7;
+        if (mode == 2 || mode >= 4) {           /* raw (or substituted) colour */
             outColor = vec4((vColor / vQ).rgb, 1.0);
         } else if (mode == 3) {                 /* UV visualizer (texel/256) */
             vec2 uvq = vUV / vQ;

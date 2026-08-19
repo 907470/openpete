@@ -142,13 +142,23 @@ void openpete_tercache_chunk_write(int arena, uint32_t first,
                                    const struct rhi_terrain_vertex *v, int count);
 void openpete_tercache_chunk_free(int arena, uint32_t first, int count);
 
-/* Draw entry (native_render.c). clip_affine = {ax, bx, ay, by} mapping PSX
- * screen coords to clip space for THIS target (mirrors scene_to_clip);
+/* Screen->clip mapping for one draw target: the RAW scene_to_clip inputs,
+ * so terrain.vert replicates the CPU's exact float expression term for term
+ * (a fitted affine reconstruction loses ~5 subpixel LSBs at the screen
+ * edges — enough to flip rasterized edge pixels vs the CPU-fed draws). */
+typedef struct {
+    float x_base, x_span;   /* cx = x_base + nx*x_span, nx = sx/disp_w      */
+    float y_base, y_span;   /* cy = y_base - ny*y_span, ny = (sy-band)/clip_h */
+    float disp_w, clip_h, band, freeze_wf;
+    int   full_extent;      /* cx = (-1 + nx*2)/freeze_wf, cy = 1 - ny*2    */
+} openpete_tercache_clip;
+
+/* Draw entry (native_render.c). clip = the target's screen->clip mapping;
  * use_mark selects the stencil-MARK world variant (hole-fill enabled).
  * key_hp / key_prop: the terrain og-key depth image and the prop TRUE-depth
  * image for the fragment key contest (NULL = contest off — key pass down);
  * pass both for the scene slots (WORLD/blends), NULL for PREPASS/KEY. */
-void openpete_tercache_draw(int which, const float clip_affine[4],
+void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
                             struct rhi_texture *vram, int use_mark,
                             struct rhi_texture *key_hp, struct rhi_texture *key_prop);
 

@@ -2756,16 +2756,23 @@ static void scene_to_clip(float sx, float sy, float *cx, float *cy)
     }
 }
 
-/* Linearize the CURRENT scene_to_clip mapping (affine in sx/sy) into
- * {ax, bx, ay, by} for the terrain-cache vertex stage — probe the mapping
- * itself so full-extent / panel / freeze_wf state can never drift. */
-static void tercache_clip_affine(float out[4])
+/* The CURRENT scene_to_clip mapping's RAW inputs for the terrain-cache
+ * vertex stage, which replicates the CPU expression term for term (a
+ * probed/fitted affine loses ~5 subpixel LSBs of precision at the screen
+ * edges — real rasterized-edge flips vs the CPU-fed draws). Reads the same
+ * state scene_to_clip does, so full-extent / freeze_wf can never drift. */
+static void tercache_clip_params(openpete_tercache_clip *out)
 {
-    float cx0, cy0, cx1, cy1;
-    scene_to_clip(0.0f, 0.0f, &cx0, &cy0);
-    scene_to_clip(1.0f, 1.0f, &cx1, &cy1);
-    out[0] = cx1 - cx0; out[1] = cx0;
-    out[2] = cy1 - cy0; out[3] = cy0;
+    out->disp_w = s_nr.disp_w > 0 ? (float)s_nr.disp_w : 512.0f;
+    float disp_h = s_nr.disp_h > 0 ? (float)s_nr.disp_h : 240.0f;
+    out->clip_h = s_nr.clip_h > 0 ? (float)s_nr.clip_h : 224.0f;
+    out->band   = (disp_h - out->clip_h) * 0.5f;
+    out->x_base = s_nr.p0_cx - s_nr.p0_hx;
+    out->x_span = 2.0f * s_nr.p0_hx;
+    out->y_base = 0.0f + s_nr.p0_hy;
+    out->y_span = 2.0f * s_nr.p0_hy;
+    out->freeze_wf = s_render_freeze_wf;
+    out->full_extent = s_render_full_extent ? 1 : 0;
 }
 
 /* ---- depth-aware shadow decal: the shared WORLD-opaque depth pre-pass ------ */
@@ -2788,7 +2795,7 @@ void openpete_native_set_shadow_decal_params(const openpete_shadow_decal_params 
 static int   s_od_ready = 0;
 static float s_od_vw = 0.0f, s_od_vh = 0.0f;
 static float s_od_uax = 0.0f, s_od_ubx = 0.0f, s_od_vay = 0.0f, s_od_vby = 0.0f;
-static float s_od_taff[4];   /* terrain-cache prepass clip affine (full-extent) */
+static openpete_tercache_clip s_od_taff;   /* terrain-cache prepass clip params */
 
 /* Fallback view-Z band for shadow_decal.frag's mode-0 path (params invalid);
  * the height test does not use it. Env-tunable for calibration. */
@@ -2993,7 +3000,7 @@ static void native_depth_prepass(void)
     }
     /* Terrain-cache prepass affine: the same full-extent mapping, captured
      * while it is active (consumed by the arena draw inside the pass below). */
-    tercache_clip_affine(s_od_taff);
+    tercache_clip_params(&s_od_taff);
     s_render_full_extent = prev_fe;
     s_render_freeze_wf = prev_wf;
     rhi_update_buffer(s_nr.prepass_vb, pbuf, sizeof(rhi_vertex) * (size_t)(m > 0 ? m : 1));
@@ -3107,7 +3114,7 @@ static void native_depth_prepass(void)
      * coverage above so the shadow-decal / occlusion consumers see the whole
      * opaque terrain regardless of which path fed it. */
     if (openpete_tercache_frame_open())
-        openpete_tercache_draw(OPTC_DRAW_PREPASS, s_od_taff, s_nr.vram_tex, 0, NULL, NULL);
+        openpete_tercache_draw(OPTC_DRAW_PREPASS, &s_od_taff, s_nr.vram_tex, 0, NULL, NULL);
     rhi_end_render_target(s_nr.dev, s_nr.opaque_depth);
     s_od_vw = (float)vw; s_od_vh = (float)vh;
     s_od_ready = 1;
@@ -3596,9 +3603,9 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
     if (openpete_tercache_frame_open()) {
         int prev_fe = s_render_full_extent;
         s_render_full_extent = full_extent ? 1 : 0;
-        float taff[4]; tercache_clip_affine(taff);
+        openpete_tercache_clip taff; tercache_clip_params(&taff);
         s_render_full_extent = prev_fe;
-        openpete_tercache_draw(OPTC_DRAW_KEY, taff, s_nr.vram_tex, 0, NULL, NULL);
+        openpete_tercache_draw(OPTC_DRAW_KEY, &taff, s_nr.vram_tex, 0, NULL, NULL);
     }
     rhi_end_render_target(s_nr.dev, s_nr.terrain_key_depth);
     rhi_begin_render_target(s_nr.dev, s_nr.moby_key_depth, 0.0f, 0.0f, 0.0f, 1.0f);
@@ -6056,8 +6063,8 @@ static bool draw_native_scene(bool full_extent)
             if (s_tgf < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_FIRST");
                              s_tgf = (e && *e && *e != '0'); }
             if (s_tgf && gi == 0 && openpete_tercache_frame_open()) {
-                float aff[4]; tercache_clip_affine(aff);
-                openpete_tercache_draw(OPTC_DRAW_WORLD, aff, s_nr.vram_tex, holefill_on,
+                openpete_tercache_clip aff; tercache_clip_params(&aff);
+                openpete_tercache_draw(OPTC_DRAW_WORLD, &aff, s_nr.vram_tex, holefill_on,
                                        s_nr.terrain_key_depth, s_nr.moby_key_depth);
             }
         }
@@ -6295,8 +6302,8 @@ static bool draw_native_scene(bool full_extent)
         if (s_tgf2 < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_FIRST");
                           s_tgf2 = (e && *e && *e != '0'); }
         if (gi == 0 && openpete_tercache_frame_open() && !s_tgf2) {
-            float aff[4]; tercache_clip_affine(aff);
-            openpete_tercache_draw(OPTC_DRAW_WORLD, aff, s_nr.vram_tex, holefill_on,
+            openpete_tercache_clip aff; tercache_clip_params(&aff);
+            openpete_tercache_draw(OPTC_DRAW_WORLD, &aff, s_nr.vram_tex, holefill_on,
                                    s_nr.terrain_key_depth, s_nr.moby_key_depth);
         }
         /* WORLD_FILL — terrain LP hole-fill (W2.6-c): depth-tested at TRUE LP
@@ -6321,8 +6328,8 @@ static bool draw_native_scene(bool full_extent)
         /* Terrain-cache LP hole-fill twin: stencil TEST_ZERO at true LP depth,
          * same slot as the scene-fed fill (before the portal stencil clear). */
         if (gi == 2 && holefill_on && openpete_tercache_frame_open()) {
-            float aff[4]; tercache_clip_affine(aff);
-            openpete_tercache_draw(OPTC_DRAW_FILL, aff, s_nr.vram_tex, 0,
+            openpete_tercache_clip aff; tercache_clip_params(&aff);
+            openpete_tercache_draw(OPTC_DRAW_FILL, &aff, s_nr.vram_tex, 0,
                                    s_nr.terrain_key_depth, s_nr.moby_key_depth);
         }
         /* SUBTRACT-WORLD — genuinely subtractive content (blend 3, category
@@ -6343,13 +6350,13 @@ static bool draw_native_scene(bool full_extent)
          * with the ALPHA group (gi==4), ABR-1 with ADDITIVE (gi==5, before
          * the subtract-world slot below — og's smoke darkens the glow). */
         if (gi == 4 && openpete_tercache_frame_open()) {
-            float aff[4]; tercache_clip_affine(aff);
-            openpete_tercache_draw(OPTC_DRAW_ALPHA, aff, s_nr.vram_tex, 0,
+            openpete_tercache_clip aff; tercache_clip_params(&aff);
+            openpete_tercache_draw(OPTC_DRAW_ALPHA, &aff, s_nr.vram_tex, 0,
                                    s_nr.terrain_key_depth, s_nr.moby_key_depth);
         }
         if (gi == 5 && openpete_tercache_frame_open()) {
-            float aff[4]; tercache_clip_affine(aff);
-            openpete_tercache_draw(OPTC_DRAW_ADD, aff, s_nr.vram_tex, 0,
+            openpete_tercache_clip aff; tercache_clip_params(&aff);
+            openpete_tercache_draw(OPTC_DRAW_ADD, &aff, s_nr.vram_tex, 0,
                                    s_nr.terrain_key_depth, s_nr.moby_key_depth);
         }
         if (gi == 5) {
@@ -6378,8 +6385,8 @@ static bool draw_native_scene(bool full_extent)
             }
             /* Terrain-cache ABR-2 terrain faces: same SUBTRACT-WORLD slot. */
             if (openpete_tercache_frame_open()) {
-                float aff[4]; tercache_clip_affine(aff);
-                openpete_tercache_draw(OPTC_DRAW_SUB, aff, s_nr.vram_tex, 0,
+                openpete_tercache_clip aff; tercache_clip_params(&aff);
+                openpete_tercache_draw(OPTC_DRAW_SUB, &aff, s_nr.vram_tex, 0,
                                    s_nr.terrain_key_depth, s_nr.moby_key_depth);
             }
         }

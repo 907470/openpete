@@ -101,7 +101,12 @@ static struct {
 } s_tc;
 
 /* push-constant block (mirrors terrain.vert TerrainPC) */
-typedef struct { float affine[4]; int32_t pass_sel; int32_t pad[3]; } tc_pc;
+typedef struct {
+    float   x_base, x_span, y_base, y_span;
+    float   disp_w, clip_h, band, freeze_wf;
+    int32_t pass_sel, full_extent;
+    int32_t pad[2];
+} tc_pc;
 
 int openpete_tercache_ready(void) { return s_tc.ready; }
 int openpete_tercache_frame_open(void) { return s_tc.draw_open; }
@@ -396,20 +401,24 @@ void openpete_tercache_frame_commit(void)
 
 /* ---- draw --------------------------------------------------------------- */
 
-static void tc_draw_arena(int arena, int pass_sel, const float affine[4])
+static void tc_draw_arena(int arena, int pass_sel, const openpete_tercache_clip *c)
 {
     tc_arena *a = &s_tc.arena[arena];
     if (a->high == 0) return;
     tc_pc pc;
-    memcpy(pc.affine, affine, sizeof(pc.affine));
-    pc.pass_sel = pass_sel; pc.pad[0] = pc.pad[1] = pc.pad[2] = 0;
+    memset(&pc, 0, sizeof(pc));
+    pc.x_base = c->x_base; pc.x_span = c->x_span;
+    pc.y_base = c->y_base; pc.y_span = c->y_span;
+    pc.disp_w = c->disp_w; pc.clip_h = c->clip_h;
+    pc.band = c->band; pc.freeze_wf = c->freeze_wf;
+    pc.pass_sel = pass_sel; pc.full_extent = c->full_extent;
     rhi_push_constants(s_tc.dev, &pc, sizeof(pc));
     rhi_bind_vertex_buffer(s_tc.dev, a->vb);
     rhi_draw(s_tc.dev, a->high, 0);
     s_tc.draws_last++;
 }
 
-void openpete_tercache_draw(int which, const float clip_affine[4],
+void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
                             rhi_texture *vram, int use_mark,
                             rhi_texture *key_hp, rhi_texture *key_prop)
 {
@@ -439,23 +448,35 @@ void openpete_tercache_draw(int which, const float clip_affine[4],
     rhi_ubo_bind(s_tc.dev, s_tc.ubo, 0, 1);
     switch (which) {
         case OPTC_DRAW_WORLD:
-            tc_draw_arena(OPTC_ARENA_OPAQUE, 0, clip_affine);
-            tc_draw_arena(OPTC_ARENA_LP,     0, clip_affine);
+            tc_draw_arena(OPTC_ARENA_OPAQUE, 0, clip);
+            tc_draw_arena(OPTC_ARENA_LP,     0, clip);
             break;
-        case OPTC_DRAW_ALPHA: tc_draw_arena(OPTC_ARENA_ALPHA, 0, clip_affine); break;
-        case OPTC_DRAW_ADD:   tc_draw_arena(OPTC_ARENA_ADD,   0, clip_affine); break;
-        case OPTC_DRAW_SUB:   tc_draw_arena(OPTC_ARENA_SUB,   0, clip_affine); break;
-        case OPTC_DRAW_FILL:  tc_draw_arena(OPTC_ARENA_LP,    1, clip_affine); break;
+        case OPTC_DRAW_ALPHA:
+            {   static int nb = -1;
+                if (nb < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_NOBLEND");
+                              nb = (e && *e && *e != '0'); }
+                if (nb) break;
+            }
+            tc_draw_arena(OPTC_ARENA_ALPHA, 0, clip); break;
+        case OPTC_DRAW_ADD:
+            {   static int nb = -1;
+                if (nb < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_NOBLEND");
+                              nb = (e && *e && *e != '0'); }
+                if (nb) break;
+            }
+            tc_draw_arena(OPTC_ARENA_ADD,   0, clip); break;
+        case OPTC_DRAW_SUB:   tc_draw_arena(OPTC_ARENA_SUB,   0, clip); break;
+        case OPTC_DRAW_FILL:  tc_draw_arena(OPTC_ARENA_LP,    1, clip); break;
         case OPTC_DRAW_PREPASS:
-            tc_draw_arena(OPTC_ARENA_OPAQUE, 0, clip_affine);
-            tc_draw_arena(OPTC_ARENA_LP,     0, clip_affine);
-            tc_draw_arena(OPTC_ARENA_LP,     1, clip_affine);
+            tc_draw_arena(OPTC_ARENA_OPAQUE, 0, clip);
+            tc_draw_arena(OPTC_ARENA_LP,     0, clip);
+            tc_draw_arena(OPTC_ARENA_LP,     1, clip);
             break;
         case OPTC_DRAW_KEY:
             /* keyed opaque faces only (blend arenas contest but never emit;
              * the vertex stage kills koff<=0.25 and fill-pass faces). */
-            tc_draw_arena(OPTC_ARENA_OPAQUE, 2, clip_affine);
-            tc_draw_arena(OPTC_ARENA_LP,     2, clip_affine);
+            tc_draw_arena(OPTC_ARENA_OPAQUE, 2, clip);
+            tc_draw_arena(OPTC_ARENA_LP,     2, clip);
             break;
     }
 }

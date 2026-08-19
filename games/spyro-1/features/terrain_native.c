@@ -4535,7 +4535,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * (temp bring-up attribution; unregistered). */
             const char* e = getenv("OPENPETE_TERRAIN_GPU_TINT");
             if (e && *e && *e != '0')
-                tcg.gflags |= (1u << 29) | ((uint32_t)(atoi(e) & 3) << 26);
+                tcg.gflags |= (1u << 29) | ((uint32_t)(atoi(e) & 7) << 26);
             e = getenv("OPENPETE_TERRAIN_GPU_NOKEYEMIT");
             if (e && *e && *e != '0') tcg.gflags |= (1u << 30);
         }

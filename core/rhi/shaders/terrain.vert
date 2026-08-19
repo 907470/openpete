@@ -41,10 +41,22 @@ layout(location = 7) in ivec4 inC1;       /* c1.yz, c2.xy                 */
 layout(location = 8) in ivec4 inC2;       /* c2.z, c3.xyz                 */
 
 layout(push_constant) uniform TerrainPC {
-    vec4 clip_affine;   /* x_clip = .x*sx + .y ; y_clip = .z*sy + .w      */
+    vec4 cbase;   /* x_base, x_span, y_base, y_span (scene_to_clip terms)  */
+    vec4 cdims;   /* disp_w, clip_h, band, freeze_wf                       */
     int  pass_sel;      /* 0 = WORLD, 1 = FILL (LP hole-fill), 2 = KEY    */
-    int  pad0, pad1, pad2;
+    int  full_extent;   /* full-target branch of the mapping              */
+    int  pad0, pad1;
 } pc;
+
+/* scene_to_clip mirror, term for term in float — a fitted affine loses ~5
+ * subpixel LSBs at the screen edges and flips rasterized edge pixels. */
+vec2 clip_of(vec2 sxy) {
+    float nx = sxy.x / pc.cdims.x;
+    float ny = (sxy.y - pc.cdims.z) / pc.cdims.y;
+    if (pc.full_extent != 0)
+        return vec2((-1.0 + nx * 2.0) / pc.cdims.w, 1.0 - ny * 2.0);
+    return vec2(pc.cbase.x + nx * pc.cbase.y, pc.cbase.z - ny * pc.cbase.w);
+}
 
 layout(std140, set = 3, binding = 0) uniform TerrainGlobals {
     vec4  mrow0;    /* xyz: M[0][*] (raw int16 values)                    */
@@ -429,9 +441,7 @@ void main()
         float K  = koff - 0.5;
         float zk = clamp(K / (K + 4096.0), 0.0, 0.9999);
         float kv = max(4096.0 * zk / max(1.0 - zk, 1e-6), 1.0);
-        vec2 sxy = proj_of(mo);
-        vec2 cxy = vec2(pc.clip_affine.x * sxy.x + pc.clip_affine.y,
-                        pc.clip_affine.z * sxy.y + pc.clip_affine.w);
+        vec2 cxy = clip_of(proj_of(mo));
         gl_Position = vec4(cxy * kv, kv * kv / (kv + 4096.0), kv);
         float fvz = float(mo.z) * 16.0;              /* TRUE per-vertex view-Z */
         float wq  = AFFINE_UV ? 1.0 : max(fvz, 1.0);
@@ -459,6 +469,11 @@ void main()
     } else {
         col = vec4(inColFar.rgb, 1.0);   /* LP / HQ: raw baked, never fogged */
     }
+    {   /* debug tint modes 4/5: show the baked near / far colour raw */
+        int dbgmode = (gf >> 26) & 7;
+        if ((gf & (1 << 29)) != 0 && dbgmode == 4) col = vec4(inColNear.rgb, 1.0);
+        if ((gf & (1 << 29)) != 0 && dbgmode == 5) col = vec4(inColFar.rgb, 1.0);
+    }
 
     /* ---- position: the feed + psx_scene.vert contract, exactly ----
      * feed: z = vz/(vz+4096) with vz = float(m3)*16 (near-guarded at 1);
@@ -472,9 +487,7 @@ void main()
     float vzo = max(4096.0 * zc2 / max(1.0 - zc2, 1e-6), 1.0);
     float Wu  = vzs;                       /* inW = pvz = the same view-Z */
     float q   = AFFINE_UV ? 1.0 : (vzo / Wu);
-    vec2 sxy  = proj_of(mo);
-    vec2 cxy  = vec2(pc.clip_affine.x * sxy.x + pc.clip_affine.y,
-                     pc.clip_affine.z * sxy.y + pc.clip_affine.w);
+    vec2 cxy  = clip_of(proj_of(mo));
     float zcl = DEPTH_AFFINE ? (vzo - 1.0) : (zc2 * vzo);
     gl_Position = AFFINE_UV
         ? vec4(cxy, DEPTH_AFFINE ? (vzo - 1.0) / vzo : zc2, 1.0)
