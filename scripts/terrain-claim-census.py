@@ -43,7 +43,8 @@ REASONS = ["near", "portal", "anim", "scroll", "fill", "arena", "col",
            "slot", "tp", "sel", "nearb", "nodraw", "prim", "pcov"]
 # nearb is a SUB-BUCKET of near (whole bounding sphere behind the near
 # threshold -> the CPU walk emits nothing), not an additional claim reason —
-# it is nonzero only under OPENPETE_TERRAIN_GPU_NODRAW=0. nodraw counts the
+# always 0 now that the no-draw verdict is unconditional (the fully-behind
+# case never reaches the near claim). nodraw counts the
 # sectors the no-draw verdict owns (neither walked nor drawn); the report
 # treats them as covered. prim/pcov are SUB-BUCKETS of portal (rim-broadphase
 # candidate / blended-face over an outline); portal minus their sum = the

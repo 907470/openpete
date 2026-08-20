@@ -516,11 +516,12 @@ static const knob_desc_t g_builtin[] = {
       exthreads_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "terrain_cache", "Terrain GPU cache", "Display", "--terrain-cache", NULL,
-      "Retained GPU terrain: unclaimed sectors render from world-space vertex "
-      "chunks with the per-face verdicts mirrored in the vertex stage; claimed "
-      "sectors (near / portal / animated) stay on the CPU walk. Shows whether "
-      "the cache came up (needs a hardware GPU with fp64). Boot-latched; "
-      "display-only.",
+      "Retained GPU terrain (default on): unclaimed sectors render from "
+      "world-space vertex chunks with the per-face verdicts mirrored in the "
+      "vertex stage; claimed sectors (near / blended-over-portal / safety) "
+      "stay on the CPU walk. Shows whether the cache came up (needs a "
+      "hardware GPU with fp64; software vk runs the CPU walk). 0 = kill "
+      "switch. Boot-latched; display-only.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       tercache_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 

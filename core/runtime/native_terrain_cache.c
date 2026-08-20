@@ -433,16 +433,6 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     tc_state *T = tc_begin_state(stamp, immediate);
     tc_globals_ubo *gu = &T->g;
     memset(gu, 0, sizeof(*gu));
-    {   static int dbg = -1; static int n;
-        if (dbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_DBG2");
-                       dbg = (e && *e && *e != '0'); }
-        if (dbg && ++n <= 4000)
-            fprintf(stderr, "[tc-beg] stamp=%u imm=%d cam=%.4f,%.4f,%.4f M00=%.0f M02=%.0f "
-                    "fogref=%d fogscale=%.6f gflags=0x%x\n",
-                    stamp, immediate, g->camx, g->camy, g->camz,
-                    (double)g->mrow[0][0], (double)g->mrow[0][2],
-                    g->fog_ref_base, g->fogscale, g->gflags);
-    }
     for (int k = 0; k < 3; k++) {
         gu->mrow0[k] = g->mrow[0][k];
         gu->mrow1[k] = g->mrow[1][k];
@@ -514,17 +504,6 @@ void openpete_tercache_frame_select(uint32_t present_stamp)
         if (s_tc.draw_open) s_tc.sel = s_tc.live;
     }
     s_tc.ubo_written = 0;
-    {   static int dbg = -1; static int n;
-        if (dbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_DBG2");
-                       dbg = (e && *e && *e != '0'); }
-        if (dbg && ++n <= 40)
-            fprintf(stderr, "[tc-sel] present=%u live=%u valid=%d staged=%u svalid=%d open=%d "
-                    "livecam=%.4f,%.4f,%.4f liveM=%.0f,%.0f\n",
-                    present_stamp, s_tc.live.stamp, s_tc.live.valid,
-                    s_tc.staged.stamp, s_tc.staged.valid, s_tc.draw_open,
-                    s_tc.live.g.dcam_xy[0], s_tc.live.g.dcam_xy[1], s_tc.live.g.dcam_zf[0],
-                    (double)s_tc.live.g.mrow0[0], (double)s_tc.live.g.mrow0[2]);
-    }
 }
 
 void openpete_tercache_sector_set(int slot, float ox, float oy, float oz,
@@ -618,20 +597,10 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
                          OPTC_ARENA_A_LP,     0, clip);
             break;
         case OPTC_DRAW_ALPHA:
-            {   static int nb = -1;
-                if (nb < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_NOBLEND");
-                              nb = (e && *e && *e != '0'); }
-                if (nb) break;
-            }
             tc_draw_arena(OPTC_ARENA_ALPHA, 0, clip);
             tc_draw_anim(s_tc.pipe_a_alpha, OPTC_ARENA_A_ALPHA, 0, clip);
             break;
         case OPTC_DRAW_ADD:
-            {   static int nb = -1;
-                if (nb < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_NOBLEND");
-                              nb = (e && *e && *e != '0'); }
-                if (nb) break;
-            }
             tc_draw_arena(OPTC_ARENA_ADD,   0, clip);
             tc_draw_anim(s_tc.pipe_a_add, OPTC_ARENA_A_ADD, 0, clip);
             break;

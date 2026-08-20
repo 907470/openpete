@@ -321,6 +321,10 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --lod MODE                 sector level-of-detail: original (default = authentic PSX LOD band) |\n"
         "                             extended (draw every visible sector at high-poly, out to the cull\n"
         "                             distance and beyond). Native renderer only. (--no-lod = extended.)\n"
+        "  --terrain-cache 0|1        retained-terrain GPU cache: static sectors render from persistent\n"
+        "                             GPU meshes with the per-face verdicts mirrored in the vertex\n"
+        "                             stage (default 1; display-only; needs a hardware GPU with fp64,\n"
+        "                             else the CPU walk runs as before). 0 = kill switch.\n"
         "  --fog-scale N              terrain fog-distance multiplier: 1 = authentic PSX curve, N = fog\n"
         "                             saturates N x farther (100 ~= fog off, the far-detail look).\n"
         "                             Default: 1, or 100 under --lod extended. Range [0.25,128].\n"
@@ -415,9 +419,6 @@ static void print_help(const char* display_name, const char* argv0) {
 #else
     fputs(
         "\nDebug / diagnostic flags:\n"
-        "  --terrain-cache 0|1        EXPERIMENTAL: retained-terrain GPU cache (per-sector\n"
-        "                             meshes, camera/fog/cull in the vertex shader). Default 0\n"
-        "                             while parity is being validated; display-only.\n"
         "  --headless                 no on-screen window (offscreen video driver)\n"
         "  --resume-handoff PATH      resume a session from a process-handoff checkpoint\n"
         "                             (written by the handoff exec; not for manual use)\n"
@@ -558,11 +559,13 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->dither          = 0;    /* --dither 1 for PS1 15-bit colour + hardware dither */
     opts->psycross_native_raster = 0;  /* reference renders on the window-derived square-pixel grid */
     opts->texture_mapping = OPENPETE_TEXTURE_MAPPING_PERSPECTIVE;  /* --texture-mapping affine for the PSX texture swim */
-    /* EXPERIMENTAL retained-terrain GPU cache; --terrain-cache 1 opts in.
-     * OPENPETE_TERRAIN_CACHE is the env spelling (harness runs that can't
-     * pass flags); the CLI, parsed later, wins. */
+    /* Retained-terrain GPU cache, default ON; --terrain-cache 0 is the kill
+     * switch. Display-only (the CPU walk stays the fallback for claimed
+     * sectors, software vk, and no-fp64 devices). OPENPETE_TERRAIN_CACHE is
+     * the env spelling (harness runs that can't pass flags); the CLI,
+     * parsed later, wins. */
     { const char* e = getenv("OPENPETE_TERRAIN_CACHE");
-      opts->terrain_cache = (e && *e) ? (atoi(e) != 0) : 0; }
+      opts->terrain_cache = (e && *e) ? (atoi(e) != 0) : 1; }
     opts->lod                 = OPENPETE_LOD_ORIGINAL;  /* authentic PSX LOD band; --lod extended (a.k.a. --no-lod) for full detail at any distance */
 }
 

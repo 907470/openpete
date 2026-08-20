@@ -664,7 +664,6 @@ void main()
     /* ---- KEY pass: rasterise the flat og key as depth (terrain_key.vert
      * mirror, including the CPU path's z round-trip) ---- */
     if (keyPass) {
-        if ((gf & (1 << 30)) != 0) { kill_vert(); return; }  /* debug: key emit off */
         if (koff <= 0.25) { kill_vert(); return; }   /* keyed faces only */
         float K  = koff - 0.5;
         float zk = clamp(K / (K + 4096.0), 0.0, 0.9999);

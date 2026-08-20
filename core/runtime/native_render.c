@@ -2250,11 +2250,17 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         build_panel(fsq, 0.0f, 0.0f, 1.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f);
         rhi_update_buffer(fs_quad_vb, fsq, sizeof(fsq));
     }
-    /* Terrain sector-mesh GPU cache (--terrain-cache 1, EXPERIMENTAL): the
-     * retained-terrain path. Init only on opt-in — the arenas reserve ~130 MB
-     * of device memory. A failed init logs + leaves the CPU walk in place. */
-    if (opts->terrain_cache)
-        openpete_tercache_init(dev);
+    /* Terrain sector-mesh GPU cache (default ON; --terrain-cache 0 is the
+     * kill switch — it skips the ~130 MB device-memory arenas too). Software
+     * vk never draws the retained path (the usable() exclusion), so don't
+     * spend the arenas there either — except under the FORCE waiver the
+     * llvmpipe parity harness uses. A failed init logs + leaves the CPU
+     * walk in place. */
+    if (opts->terrain_cache) {
+        const char* fe = getenv("OPENPETE_TERRAIN_CACHE_FORCE");
+        if ((fe && *fe && *fe != '0') || !rhi_device_is_software(dev))
+            openpete_tercache_init(dev);
+    }
 
     OPL_INFO_F("native", "Vulkan %s window up (%dx%d, device='%s'); PsyCross hidden",
                ab_mode ? "A/B" : diff_mode ? "diff" : "vk",
@@ -6068,18 +6074,6 @@ static bool draw_native_scene(bool full_extent)
          * below still draw, so the animated menu stays smooth at the present rate. */
         if (freeze_first >= 0) continue;
         rhi_gpu_zone_begin(s_nr.dev, k_scene_zone[gi]);
-        {   /* OPENPETE_TERRAIN_GPU_FIRST=1 (temp bring-up probe): draw the
-             * retained WORLD terrain BEFORE the CPU-fed batch, to expose
-             * draw-order-dependent depth ties at claimed/retained seams. */
-            static int s_tgf = -1;
-            if (s_tgf < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_FIRST");
-                             s_tgf = (e && *e && *e != '0'); }
-            if (s_tgf && gi == 0 && openpete_tercache_frame_open()) {
-                openpete_tercache_clip aff; tercache_clip_params(&aff);
-                openpete_tercache_draw(OPTC_DRAW_WORLD, &aff, s_nr.vram_tex, holefill_on,
-                                       s_nr.terrain_key_depth, s_nr.moby_key_depth);
-            }
-        }
         const struct scene_group *g = &groups[gi];
         /* Dragon-rescue cutscene (actor_front): just BEFORE the PLAYER group,
          * depth-isolate the cutscene actors and draw them there so they win
@@ -6310,10 +6304,7 @@ static bool draw_native_scene(bool full_extent)
          * sectors) draws in the same slot as the CPU-fed WORLD group — opaque
          * depth-write, stencil-MARK when hole-fill is armed (identical raster
          * roles; the vertex stage owns the per-face verdicts). */
-        static int s_tgf2 = -1;
-        if (s_tgf2 < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_FIRST");
-                          s_tgf2 = (e && *e && *e != '0'); }
-        if (gi == 0 && openpete_tercache_frame_open() && !s_tgf2) {
+        if (gi == 0 && openpete_tercache_frame_open()) {
             openpete_tercache_clip aff; tercache_clip_params(&aff);
             openpete_tercache_draw(OPTC_DRAW_WORLD, &aff, s_nr.vram_tex, holefill_on,
                                    s_nr.terrain_key_depth, s_nr.moby_key_depth);

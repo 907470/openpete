@@ -74,12 +74,13 @@ def run_level(exe, level, args, out_dir):
         "--skip-to-level", level, "--freecam-pose", "topdown",
         "--lod", args.lod,
         "--extract-threads", str(args.extract_threads),
-        "--terrain-cache", str(args.terrain_cache),
         # An active HD texture pack (a mod can carry one) forces the CPU
         # walk — openpete_native_tercache_usable() — which would silently
         # turn a terrain-cache leg into a second baseline. Point --mods-dir
         # at an empty dir to bench the vanilla pipeline.
-    ] + (["--mods-dir", tr(args.mods_dir)] if args.mods_dir else []) \
+    ] + (["--terrain-cache", str(args.terrain_cache)]
+         if args.terrain_cache is not None else []) \
+      + (["--mods-dir", tr(args.mods_dir)] if args.mods_dir else []) \
       + (["--texpack-dir", tr(args.texpack_dir)] if args.texpack_dir else []) + [
         "--renderer", "vk", "--vsync", "0",
         "--render-fps", str(args.render_fps),
@@ -129,7 +130,8 @@ def main():
     ap.add_argument("--lod", default="extended",
                     choices=["extended", "original"])
     ap.add_argument("--extract-threads", type=int, default=0)
-    ap.add_argument("--terrain-cache", type=int, default=0, choices=[0, 1])
+    ap.add_argument("--terrain-cache", type=int, default=None, choices=[0, 1],
+                    help="omit to follow the exe default (cache on)")
     ap.add_argument("--mods-dir", default=None,
                     help="override the exe-adjacent mods root (an empty dir "
                          "disables mods; active texpacks exclude the cache)")

@@ -2753,40 +2753,6 @@ static openpete_portal_skyplane s_tgpu_pplane[6];
 static int s_tgpu_pplane_n = 0;
 static int s_tgpu_claim_all = 0;
 static int s_tgpu_rim_ok = 0;         /* rim frames derived for THIS walk */
-/* OPENPETE_TERRAIN_GPU_FILLCLAIM=1: restore the pre-migration fill claim
- * (A/B lever, temp). GPU_-prefixed: safe with the cache engaged. */
-static int tgpu_fillclaim(void) {
-    static int v = -1;
-    if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_FILLCLAIM");
-                 v = (e && *e && *e != '0'); }
-    return v;
-}
-/* OPENPETE_TERRAIN_GPU_ANIMCLAIM=1: restore the pre-migration poly-anim
- * claim (A/B lever, temp). GPU_-prefixed: safe with the cache engaged. */
-static int tgpu_animclaim(void) {
-    static int v = -1;
-    if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_ANIMCLAIM");
-                 v = (e && *e && *e != '0'); }
-    return v;
-}
-/* OPENPETE_TERRAIN_GPU_SCROLLCLAIM=1: restore the pre-migration UV-scroll
- * claim (A/B lever, temp). GPU_-prefixed: safe with the cache engaged. */
-static int tgpu_scrollclaim(void) {
-    static int v = -1;
-    if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_SCROLLCLAIM");
-                 v = (e && *e && *e != '0'); }
-    return v;
-}
-/* OPENPETE_TERRAIN_GPU_RIMCLAIM=1: restore the pre-migration rim-candidate
- * claim (A/B lever, temp) — the walk claims rim-broadphase candidates and
- * the globals carry rim_n = 0, so the vertex-stage rim cull disarms with it.
- * GPU_-prefixed: safe with the cache engaged. */
-static int tgpu_rimclaim(void) {
-    static int v = -1;
-    if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_RIMCLAIM");
-                 v = (e && *e && *e != '0'); }
-    return v;
-}
 static int tgpu_portal_frames(CPUState* cpu);            /* defined post-feed-statics */
 static int tgpu_rim_sphere_cand(double oc1, double oc2, double oc3, int radius);
 static void tgpu_rim_globals_fill(openpete_tercache_globals* g);
@@ -2973,16 +2939,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     /* UV-scroll is mirrored: the accumulator-change tile generations rebuild
      * the bake per whole-texel advance (incl. the HQ-sibling-only ticks, via
      * tgenHq), and sub-tick fractional offsets ride the globals' per-tile dv
-     * table (flags16 carries the face's tile id). The pre-migration claim
-     * survives behind the A/B lever only. */
-    if (tgpu_scrollclaim() && s_tscroll_have && SC->hpF) {
-        for (int f = 0; f < SC->nHpF; f++) {
-            const tsface_t* F = &SC->hpF[f];
-            if (F->tb != -1 && s_tscroll_tile[F->tb & 0x7F]) return 2;
-            if (F->quad && hqTable && !(F->w3 & 0x80) &&
-                s_tscroll_tile[F->hq_idx & 0x7F]) return 2;
-        }
-    }
+     * table (flags16 carries the face's tile id). */
     tgpu_buf buf[OPTC_ARENA_COUNT];
     memset(buf, 0, sizeof(buf));
     int ok = 0;
@@ -3082,22 +3039,6 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         for (int q = 0; q < 4; q++) {
             nearC[q] = rd(cpu, SC->nearBase + co[q]) & 0xFFFFFFu;
             farC[q]  = rd(cpu, SC->farBase  + co[q]) & 0xFFFFFFu;
-        }
-        {   /* OPENPETE_TERRAIN_BAKEDBG="<slot>,<face>": one face's baked
-             * colour bytes per rebuild (temp instrument; pair with FARDBG's
-             * walk-side dump of the same face in the same build). */
-            static int s_bd = -2, s_bslot, s_bface;
-            if (s_bd == -2) { const char* e = getenv("OPENPETE_TERRAIN_BAKEDBG");
-                s_bd = 0;
-                if (e && *e) { char* t; s_bslot = (int)strtol(e, &t, 10);
-                               s_bface = *t ? (int)strtol(t + 1, NULL, 10) : -1;
-                               s_bd = 1; } }
-            if (s_bd && slot == s_bslot && f == s_bface)
-                fprintf(stderr, "[bakedbg f=%u] slot=%d face=%d co=%u,%u,%u,%u "
-                        "near=%06X,%06X,%06X,%06X far=%06X,%06X,%06X,%06X\n",
-                        openpete_frame, slot, f, co[0], co[1], co[2], co[3],
-                        nearC[0], nearC[1], nearC[2], nearC[3],
-                        farC[0], farC[1], farC[2], farC[3]);
         }
         const int vi[4] = { F->i0, F->i1, F->i2, F->i3 };
         tgpu_corner_t k[4];
@@ -4837,15 +4778,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_tgpu_pplane_n = openpete_portal_sky_planes(cpu, s_tgpu_pplane, 6);
         /* Recent portal but planes momentarily gone: claim everything (safe). */
         if (s_tgpu_pplane_n == 0) s_tgpu_claim_all = 1;
-        else {
-            /* OPENPETE_TERRAIN_GPU_PREFINE=0: blanket projected-bbox portal
-             * claim (the pre-refinement rule; A/B lever). GPU_-prefixed:
-             * safe with the cache engaged. */
-            static int s_prefine = -1;
-            if (s_prefine < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_PREFINE");
-                                 s_prefine = (e && *e) ? (*e != '0') : 1; }
-            if (s_prefine) s_tgpu_rim_ok = tgpu_portal_frames(cpu);
-        }
+        else s_tgpu_rim_ok = tgpu_portal_frames(cpu);
     }
     openpete_tercache_globals tcg;
     if (tgpu_on) {
@@ -4884,13 +4817,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             const char* e = getenv("OPENPETE_TERRAIN_GPU_TINT");
             if (e && *e && *e != '0')
                 tcg.gflags |= (1u << 29) | ((uint32_t)(atoi(e) & 7) << 26);
-            e = getenv("OPENPETE_TERRAIN_GPU_NOKEYEMIT");
-            if (e && *e && *e != '0') tcg.gflags |= (1u << 30);
         }
         /* Portal inner-rim frames for the vertex-stage cull (zeroed rim_n
-         * from the memset when frames are absent or the rim claim lever is
-         * on — retained tris then carry no rim verdict, matching the walk
-         * claiming every rim candidate). */
+         * from the memset when frames are absent — retained tris then carry
+         * no rim verdict). */
         tgpu_rim_globals_fill(&tcg);
     }
     s_tgpu_secs_walk = 0; s_tgpu_claims_walk = 0;
@@ -5059,63 +4989,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          *    pack-replaced faces, selector-matched faces) come back from
          *    tgpu_ensure. */
         s_tgpu_own[vi] = 0;
-        {   /* OPENPETE_TERRAIN_GPU_UVTRACE=<sector>: per-present anim/UV
-             * timeline for one sector (temp bring-up instrument; runs with
-             * the cache on OR off — the flip-phase comparison needs both). */
-            static int s_uvt2 = -2;
-            if (s_uvt2 == -2) { const char* e = getenv("OPENPETE_TERRAIN_GPU_UVTRACE");
-                                s_uvt2 = (e && *e) ? atoi(e) : -1; }
-            if ((int)i == s_uvt2 && SC->hpF && SC->nHpF > 28) {
-                const tsface_t* F28 = &SC->hpF[28];
-                fprintf(stderr, "[uvtrace f=%u] i=%u tu0=%.0f tgen=%u texGen=%u\n",
-                        openpete_frame, (unsigned)i, F28->tu[0], F28->tgen, SC->texGen);
-            }
-        }
         if (tgpu_on) {
             int claim = 0;
             const double nearBound = s_tgpu_l3 * ((double)SC->radius + 16.0);
-            /* OPENPETE_TERRAIN_GPU_NODRAW=0: A/B lever — behind-camera
-             * sectors fall back to the near claim (the pre-migration
-             * behaviour). GPU_-prefixed: safe with the cache engaged. */
-            static int s_nodraw = -1;
-            if (s_nodraw < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_NODRAW");
-                                s_nodraw = (e && *e) ? (*e != '0') : 1; }
-            /* OPENPETE_TERRAIN_GPU_NDDBG=<frame>: for every fully-behind
-             * classification in that VBL's builds, recompute the TRUE max
-             * vertex view-Z from the decoded geometry and flag sectors the
-             * sphere bound wrongly excluded (temp probe). */
-            static int s_nddbg = -2;
-            if (s_nddbg == -2) { const char* e = getenv("OPENPETE_TERRAIN_GPU_NDDBG");
-                                 s_nddbg = (e && *e) ? atoi(e) : -1; }
-            if (s_nddbg >= 0 && openpete_frame == (unsigned)s_nddbg &&
-                oc3 + nearBound < 16.0) {
-                double mx = -1e18; int nvt = 0;
-                for (int k = 0; SC->lpV && k < SC->nLpV; k++, nvt++) {
-                    double m1d, m2d, m3d;
-                    ngte_mac(M, camy - (double)(SC->originY + SC->lpV[k].y),
-                             camz - (double)(SC->originZ + SC->lpV[k].z),
-                             (double)(SC->originX + SC->lpV[k].x) - camx,
-                             &m1d, &m2d, &m3d);
-                    if (m3d > mx) mx = m3d;
-                }
-                for (int k = 0; SC->hpV && k < SC->nHpV; k++, nvt++) {
-                    double m1d, m2d, m3d;
-                    ngte_mac(M, camy - (double)(SC->originY + SC->hpV[k].y),
-                             camz - (double)(SC->originZ + SC->hpV[k].z),
-                             (double)(SC->originX + SC->hpV[k].x) - camx,
-                             &m1d, &m2d, &m3d);
-                    if (m3d > mx) mx = m3d;
-                }
-                fprintf(stderr, "[nddbg f=%u] i=%u slot=%d %s oc3=%.2f l3=%.4f "
-                        "r=%d bound=%.2f maxm3=%.2f nv=%d centre=%d,%d,%d "
-                        "origin=%d,%d,%d\n",
-                        openpete_frame, (unsigned)i, (int)(SC - s_tsc),
-                        mx > 0.0 ? "VIOLATION" : "ok", oc3, s_tgpu_l3,
-                        SC->radius, nearBound, mx, nvt,
-                        SC->centreX, SC->centreY, SC->centreZ,
-                        SC->originX, SC->originY, SC->originZ);
-            }
-            if (s_nodraw && oc3 + nearBound < 16.0) {
+            if (oc3 + nearBound < 16.0) {
                 /* NO-DRAW verdict: the whole bounding sphere sits behind the
                  * near threshold, so the CPU walk near-culls every face and
                  * emits nothing — owning the sector WITHOUT publishing (or
@@ -5128,21 +5005,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             } else if (oc3 - nearBound < 16.0) {
                 claim = 1; s_tgcl_near++;
                 if (oc3 + nearBound < 16.0)
-                    s_tgcl_nearb++;   /* census: fully-behind (NODRAW=0 A/B) */
-            } else if (SC->polyanim && tgpu_animclaim()) {
-                /* Poly-anim sectors bake (prev,cur) into the ANIM twin
-                 * arenas per canonical roll; the terrain_anim vertex stage
-                 * lerps at the build's alpha (tsc_vanim_lerp mirror), so no
-                 * claim is needed. Lever restores the claim for A/B. */
-                claim = 1; s_tgcl_anim++;
-            } else if (s_pre_verd[vi].fillLP && tgpu_fillclaim()) {
-                /* The FILL slot mirrors the whole default fill pass (sector
-                 * SF_FILLLP gate + opaque-only + strict all-corners
-                 * fully-fogged, terrain.vert pass_sel 1), and every fill
-                 * experiment env (FILL_DILATE/FOGSLACK/UP/THINPX) is in
-                 * tgpu_env_block — so fill sectors need no claim at the
-                 * shipped defaults. Lever restores the claim for A/B. */
-                claim = 1; s_tgcl_fill++;
+                    s_tgcl_nearb++;   /* census: fully-behind sub-bucket */
             } else if (s_lpg_active && s_lpg_mean_ok) {
                 claim = 1; s_tgcl_texpack++;
             } else if (s_tgpu_claim_all) {
@@ -5152,19 +5015,12 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * the rim frames derived, the inner-rim cull runs IN the
                  * vertex stage (portal_rim_classify mirror on the emitted
                  * tri, rebuilt from the corner attributes + the flags16
-                 * half/sub-tri bit), so rim candidacy no longer claims — only
+                 * half/sub-tri bit), so rim candidacy does not claim — only
                  * blended-face sectors over an outline do (the transparent-
-                 * cover DROP is the one remaining feed-side portal drop).
-                 * OPENPETE_TERRAIN_GPU_RIMCLAIM=1 restores the rim-candidate
-                 * claim (temp A/B lever; it also zeroes the globals' rim_n so
-                 * the shader test disarms with it). */
+                 * cover DROP is the one remaining feed-side portal drop). */
                 int pcl = 0;
                 if (s_tgpu_rim_ok) {
-                    if (tgpu_rimclaim() &&
-                        (i >= 1024u || SC->polyanim ||
-                         tgpu_rim_sphere_cand(oc1, oc2, oc3, SC->radius))) {
-                        pcl = 1; s_tgcl_prim++;
-                    } else if (tsc_has_blend((tscache_t*)SC)) {
+                    if (tsc_has_blend((tscache_t*)SC)) {
                         const double csx = s_ofx + oc1 * s_H / oc3;
                         const double csy = s_ofy + oc2 * s_H / oc3;
                         const double rpx = (double)SC->radius * s_H / oc3 * 1.5 + 16.0;
@@ -5214,31 +5070,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 }
             }
             if (claim) { s_tgpu_claims++; s_tgpu_claims_walk++; }
-            {   /* OPENPETE_TERRAIN_GPU_SECDUMP=<frame>: one-shot per-sector
-                 * ownership dump (temp bring-up instrument). */
-                static int s_sd2 = -2; static unsigned s_sd2_done;
-                if (s_sd2 == -2) { const char* e = getenv("OPENPETE_TERRAIN_GPU_SECDUMP");
-                                   s_sd2 = (e && *e) ? atoi(e) : 0; }
-                if (s_sd2 && openpete_frame >= (unsigned)s_sd2 && s_sd2_done != openpete_frame
-                    && openpete_frame < (unsigned)s_sd2 + 2u) {
-                    if (vi == 0)
-                        fprintf(stderr, "[tgpu-hdr f=%u] ofx=%.4f ofy=%.4f H=%.1f nvis=%d "
-                                "M=%d,%d,%d,%d,%d,%d,%d,%d,%d cam=%.17g,%.17g,%.17g\n",
-                                openpete_frame, s_ofx, s_ofy, s_H, G.nvis,
-                                G.M[0][0], G.M[0][1], G.M[0][2],
-                                G.M[1][0], G.M[1][1], G.M[1][2],
-                                G.M[2][0], G.M[2][1], G.M[2][2],
-                                G.camx, G.camy, G.camz);
-                    fprintf(stderr, "[tgpu-sec f=%u] i=%u slot=%d own=%d hp=%d lp=%d fill=%d "
-                            "gaponly=%d inlod=%d cbin=%.0f rad=%d oc3=%.0f\n",
-                            openpete_frame, (unsigned)i, (int)(SC - s_tsc), s_tgpu_own[vi],
-                            s_pre_verd[vi].drawHP, s_pre_verd[vi].drawLP,
-                            s_pre_verd[vi].fillLP, s_pre_verd[vi].lpGapOnly,
-                            s_pre_verd[vi].secInLOD, s_pre_verd[vi].cbin,
-                            SC->radius, oc3);
-                    if (vi == G.nvis - 1) s_sd2_done = openpete_frame;
-                }
-            }
         }
         s_pre_SC[vi] = SC;
         if (wserial) walk_sector(&s_wctx[0], &G, vi);
@@ -5874,7 +5705,7 @@ static int tgpu_rim_sphere_cand(double oc1, double oc2, double oc3, int radius) 
  * — no vertex-stage cull — when frames are absent or the rim-claim lever
  * routes rim candidates to the CPU walk. */
 static void tgpu_rim_globals_fill(openpete_tercache_globals* g) {
-    if (!s_tgpu_rim_ok || tgpu_rimclaim()) return;
+    if (!s_tgpu_rim_ok) return;
     g->rim_ofx = s_rim_ofx; g->rim_ofy = s_rim_ofy; g->rim_H = s_rim_H;
     g->rim_knobs[0] = portal_rim_eps();   g->rim_knobs[1] = portal_rim_near();
     g->rim_knobs[2] = portal_rim_reach(); g->rim_knobs[3] = portal_rim_cos();
@@ -6510,14 +6341,6 @@ static void terrain_feed_native(CPUState* cpu) {
          * negative-koff branch carries the moby embed rule, which a veil
          * blending OVER a moby must not inherit. OT_BIAS=0 zeroes the
          * channel: raw true depth (the A/B leg). */
-        {   static int s_uvt3 = -2;
-            if (s_uvt3 == -2) { const char* e = getenv("OPENPETE_TERRAIN_GPU_UVTRACE");
-                                s_uvt3 = (e && *e) ? atoi(e) : -1; }
-            if (s_uvt3 >= 0 && t->sec == s_uvt3 && t->face == 28)
-                fprintf(stderr, "[uvfeed f=%u] sec=%d face=%d u=%.0f,%.0f,%.0f v=%.0f,%.0f,%.0f\n",
-                        openpete_frame, t->sec, t->face,
-                        t->u[0], t->u[1], t->u[2], t->v[0], t->v[1], t->v[2]);
-        }
         if (s_otbias_on && !t->fill &&
             openpete_native_key_resolve_on()) {
             static int s_nbc = -1;   /* OPENPETE_TERRAIN_NEARBAND_CONTEST=0 disables the near-band contest-only keys (A/B) */
@@ -6997,8 +6820,6 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
          * the intermediates. Mark it explicitly: the frame DID paint terrain,
          * natively. */
         if (endp <= startp) render_path_mark_drawn(RP_TERRAIN);
-        { const char* e = getenv("OPENPETE_TERRAIN_GPU_DBG2");
-          if (e && *e && *e != '0') fprintf(stderr, "[tb-hook f=%u]\n", openpete_frame); }
         terrain_build(cpu, occGroup);               /* native walk + tris */
         openpete_native_scene_begin_frame(openpete_frame);  /* frame-keyed (composes) */
         terrain_feed_native(cpu);                   /* push tris to the scene */
@@ -7041,8 +6862,6 @@ void terrain_native_reextract(CPUState* cpu, double alpha, int interp_on) {
     int s_vanim_en = tn_env_vbl(&vanim_c, "OPENPETE_TERRAIN_VANIM", 1, 1);
     s_tanim_en = tn_env_vbl(&tanim_c, "OPENPETE_TERRAIN_TANIM", 1, 1);
     s_vanim_sub = 1; s_vanim_on = interp_on && s_vanim_en; s_vanim_alpha = alpha;
-    { const char* e = getenv("OPENPETE_TERRAIN_GPU_DBG2");
-      if (e && *e && *e != '0') fprintf(stderr, "[tb-rex f=%u a=%.3f]\n", openpete_frame, alpha); }
     terrain_build(cpu, s_terrain_saved_occGroup);
     terrain_feed_native(cpu);
     s_vanim_sub = 0; s_vanim_on = 0; s_tanim_en = 0;
