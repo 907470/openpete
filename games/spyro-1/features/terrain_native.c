@@ -2646,7 +2646,12 @@ static double   s_rim_rowmax = 1.0;   /* max ||M row||/4096 — world->view scal
  * the S2c plane-cover migration retires this one), vert-anim sectors (the
  * fractional lerp banks), scroll-anim tiles (the 7-bit accumulator lerp),
  * fill-duty sectors (the feed's screen-space dilation), arena-full and
- * unmapped-colour sectors. */
+ * unmapped-colour sectors, sectors an HD texture pack would replace into
+ * (per-run replacement rides the feed's draw_tex_runs), and sectors a mod
+ * material selector could override (custom pipelines resolve off the feed's
+ * provenance tags). The pack/selector claims are tier 1 of the
+ * exclusion→claim→fold ladder; the S2c texpack GPU fold retires them for
+ * replaced sectors. */
 
 typedef struct {
     uint32_t s;                       /* sector vaddr chunks were built from (0 = none) */
@@ -2655,17 +2660,27 @@ typedef struct {
     int      unbuildable;             /* claim reason latched at this decodeGen:
                                        * 0 fine, 1 arena-full, 2 scroll-anim,
                                        * 3 unmapped colours (4 = decode-slot
-                                       * contested, returned but never latched) */
+                                       * contested, 5 = texture pack, 6 = mod
+                                       * material selector; 4-6 returned but
+                                       * never latched here) */
     uint32_t first[OPTC_ARENA_COUNT];
     int      count[OPTC_ARENA_COUNT];
     uint32_t ownFrame;                /* VBL this slot last validated as GPU-owned */
+    /* Pack/selector claim latches: the scan answers depend on the decoded
+     * texmats (decodeGen/texGen) and on the pack registry / selector set
+     * (their own generations); 0 = unscanned (both counters start at 1). */
+    uint32_t scanDecodeGen, scanTexGen;
+    uint32_t tpGen;                   /* texture_pack_generation at last pack scan */
+    unsigned selEpoch;                /* openpete_mods_material_epoch at last scan */
+    uint8_t  tpClaim, selClaim;
     uint8_t  gen;                     /* chunk generation (3 bits published) */
 } tgpu_slot_t;
 static tgpu_slot_t s_tgpu[TSC_SLOTS];
 /* census: window sums (reset each print) + per-walk counts (op_prof rows) */
 static long s_tgpu_secs, s_tgpu_claims, s_tgpu_rebuilds;
 static long s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
-            s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot;
+            s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot,
+            s_tgcl_texpack, s_tgcl_sel;
 static int  s_tgpu_secs_walk, s_tgpu_claims_walk;
 
 /* Active portal-sky planes for the per-sector portal claim: portal-adjacent
@@ -3066,6 +3081,56 @@ done:
     return ok ? 0 : 1;
 }
 
+/* Texture-pack claim scan: does any pack file touch any face's texel box?
+ * Both tiledef halves — the walk picks far/near per present, and draws query
+ * per-tri sub-boxes, so the FACE box is tested by intersection
+ * (texture_pack_overlaps), the conservative cover of every draw-time
+ * containment query. LP is untextured, so HP faces only. A resolve MISS
+ * (texture not yet uploaded) is a consistent non-claim: the draw path's
+ * resolve misses identically, and the upload bumps the registry generation,
+ * which re-runs this scan. Serial prepass only (the resolve pipeline is not
+ * audited for concurrent callers — same rule as the LP-grade pre-warm). */
+static int tgpu_pack_scan(const tscache_t* SC) {
+    for (int f = 0; SC->hpF && f < SC->nHpF; f++) {
+        const tsface_t* F = &SC->hpF[f];
+        for (int half = 0; half < 2; half++) {
+            const tmat*  m  = half ? &F->matN : &F->mat;
+            const float* tu = half ? F->tuN : F->tu;
+            const float* tv = half ? F->tvN : F->tv;
+            if (!m->textured) continue;
+            float u0 = tu[0], v0 = tv[0], u1 = u0, v1 = v0;
+            for (int k = 1; k < 4; k++) {
+                if (tu[k] < u0) u0 = tu[k];
+                if (tu[k] > u1) u1 = tu[k];
+                if (tv[k] < v0) v0 = tv[k];
+                if (tv[k] > v1) v1 = tv[k];
+            }
+            texture_pack_id id;
+            if (!texture_pack_resolve(m->tpx, m->tpy, m->clx, m->cly, m->bpp,
+                                      (int)u0, (int)v0, (int)u1, (int)v1, &id))
+                continue;
+            if (texture_pack_overlaps(&id)) return 1;
+        }
+    }
+    return 0;
+}
+
+/* Selector claim scan: could a registered mod material selector override any
+ * face? LP faces feed as untextured LP-tier tags; HP faces key on the
+ * Tiledef id, with env = the tile is in the env-anim rewrite set (the same
+ * derivation the walk's emit uses for the provenance tag). */
+static int tgpu_sel_scan(const tscache_t* SC) {
+    if (SC->lpF && SC->nLpF > 0 &&
+        openpete_mods_material_terrain_claim(-1, 0, 1)) return 1;
+    for (int f = 0; SC->hpF && f < SC->nHpF; f++) {
+        const tsface_t* F = &SC->hpF[f];
+        int texid = (F->tb == -1) ? -1 : (F->tb & 0x7F);
+        if (openpete_mods_material_terrain_claim(texid, F->tgen != 0, 0))
+            return 1;
+    }
+    return 0;
+}
+
 /* Validate-or-rebuild a sector's chunks. Returns 0 when the GPU may draw it
  * this present; a nonzero claim reason (tgpu_slot_t.unbuildable codes)
  * claims it back to the CPU walk. */
@@ -3082,6 +3147,33 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
      * simply vanishes (the gnorc_cove water-border wedge). The loser walks
      * CPU instead; the first keeper's retained state stays intact. */
     if (T->s != SC->s && T->s != 0 && T->ownFrame == openpete_frame) return 4;
+    /* Pack/selector claims (tier 1 of the exclusion→claim→fold ladder),
+     * latched per slot and re-scanned only when an input generation moves.
+     * Checked BEFORE the dirty build: a claimed sector renders via the CPU
+     * walk, so validating or rebuilding chunks for it would be waste — its
+     * existing chunks stay allocated but unpublished (SF_DRAWN clear) until
+     * the claim lifts, when the normal dirty check below takes over. */
+    if (T->scanDecodeGen != SC->decodeGen || T->scanTexGen != SC->texGen) {
+        T->scanDecodeGen = SC->decodeGen; T->scanTexGen = SC->texGen;
+        T->tpGen = 0; T->selEpoch = 0;      /* force both rescans */
+    }
+    {
+        uint32_t g = texture_pack_generation();
+        if (T->tpGen != g) {
+            T->tpGen = g;
+            T->tpClaim = texture_pack_replacements_active()
+                       ? (uint8_t)tgpu_pack_scan(SC) : 0;
+        }
+        if (T->tpClaim) return 5;
+    }
+    {
+        unsigned e = openpete_mods_material_epoch();
+        if (T->selEpoch != e) {
+            T->selEpoch = e;
+            T->selClaim = (uint8_t)tgpu_sel_scan(SC);
+        }
+        if (T->selClaim) return 6;
+    }
     int dirty = (T->s != SC->s) || (T->decodeGen != SC->decodeGen)
              || (T->texGen != SC->texGen) || (T->vertGen != SC->vertGen);
     if (!dirty && T->lastColFrame != openpete_frame) {
@@ -3113,16 +3205,19 @@ static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
     openpete_tercache_stats_t st;
     openpete_tercache_get_stats(&st);
     fprintf(stderr, "[ter-gpu f=%u] sectors=%ld claims=%ld (near=%ld portal=%ld "
-            "anim=%ld scroll=%ld fill=%ld arena=%ld col=%ld slot=%ld) rebuilds=%ld "
+            "anim=%ld scroll=%ld fill=%ld arena=%ld col=%ld slot=%ld tp=%ld "
+            "sel=%ld) rebuilds=%ld "
             "chunks=%u verts=%u/%u draws=%u frees-pend=%u\n",
             openpete_frame, s_tgpu_secs, s_tgpu_claims,
             s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
-            s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot, s_tgpu_rebuilds,
+            s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot,
+            s_tgcl_texpack, s_tgcl_sel, s_tgpu_rebuilds,
             st.chunks, st.verts_used, st.verts_cap, st.draws_last_present,
             st.frees_pending);
     s_tgpu_secs = s_tgpu_claims = s_tgpu_rebuilds = 0;
     s_tgcl_near = s_tgcl_portal = s_tgcl_anim = s_tgcl_scroll = 0;
     s_tgcl_fill = s_tgcl_build = s_tgcl_colour = s_tgcl_slot = 0;
+    s_tgcl_texpack = s_tgcl_sel = 0;
 }
 
 
@@ -4738,8 +4833,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          *    semantics — the S2c plane-cover migration retires this).
          *  - anim: vert-anim sectors lerp fractional banks per present.
          *  - fill: WORLD_FILL twins are screen-dilated in the feed.
-         *  - build claims (scroll tiles, arena-full, unmapped colours)
-         *    come back from tgpu_ensure. */
+         *  - lpg: the pack-aware LP level-mean regrade applies to EVERY
+         *    sector's LP colours once any sector in this level fitted, and
+         *    the bake carries raw colours — so a terrain-replacing pack
+         *    claims the whole level until the S2c texpack fold mirrors the
+         *    grade (censused under tp=).
+         *  - build claims (scroll tiles, arena-full, unmapped colours,
+         *    pack-replaced faces, selector-matched faces) come back from
+         *    tgpu_ensure. */
         s_tgpu_own[vi] = 0;
         {   /* OPENPETE_TERRAIN_GPU_UVTRACE=<sector>: per-present anim/UV
              * timeline for one sector (temp bring-up instrument; runs with
@@ -4761,6 +4862,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 claim = 1; s_tgcl_anim++;
             } else if (s_pre_verd[vi].fillLP) {
                 claim = 1; s_tgcl_fill++;
+            } else if (s_lpg_active && s_lpg_mean_ok) {
+                claim = 1; s_tgcl_texpack++;
             } else if (s_tgpu_claim_all) {
                 claim = 1; s_tgcl_portal++;
             } else if (s_tgpu_pplane_n && oc3 > 1.0) {
@@ -4785,6 +4888,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     if (r == 2) s_tgcl_scroll++;
                     else if (r == 3) s_tgcl_colour++;
                     else if (r == 4) s_tgcl_slot++;
+                    else if (r == 5) s_tgcl_texpack++;
+                    else if (r == 6) s_tgcl_sel++;
                     else s_tgcl_build++;
                 }
             }

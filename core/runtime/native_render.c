@@ -312,6 +312,16 @@ static int tag_tint_on(void) {
     return s_tag_tint > 0;
 }
 
+/* The DEV tag instruments only (OPENPETE_TAG_SPLIT forces the batch key
+ * join, OPENPETE_TAG_TINT recolours by tag): their semantics live in the
+ * CPU batcher, so they disqualify the retained-terrain cache for the whole
+ * run. A selector-armed split does NOT — sectors a selector could override
+ * are claimed back per sector by the terrain feeder. */
+static int tag_split_dev(void) {
+    (void)tag_split_on();          /* lazy env init lives there */
+    return s_tag_split_env > 0 || s_tag_tint > 0;
+}
+
 /* Mod custom-pipeline drain (S7) — defined with the postfx executor
  * below; called from compose_variant (mod 3D under mod HUD). */
 static void draw_mod_meshes(void);
@@ -2255,10 +2265,13 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
 /* Can the terrain feeder route unclaimed sectors through the GPU cache this
  * run/present? ANDs the renderer-side conditions the feeder can't see: cache
  * up, no reference-compare scene delay (the cache draws the LIVE walk, not
- * the history ring), no HD texture pack (per-run material replacement rides
- * draw_tex_runs), no mod material selectors (same), no PSX vertex wobble
- * (the snap lives in add_tri_grouped), and a hardware GPU (the verdict-heavy
- * vertex shader crawls on llvmpipe). */
+ * the history ring), no dev tag instruments (their semantics live in the
+ * CPU batcher), no PSX vertex wobble (the snap lives in add_tri_grouped),
+ * and a hardware GPU (the verdict-heavy vertex shader crawls on llvmpipe).
+ * HD texture packs and mod material selectors are NOT whole-run exclusions:
+ * the terrain feeder claims affected sectors back per sector (tier 1 of the
+ * exclusion→claim→fold ladder), so a UI-/moby-only pack keeps the full
+ * cache. */
 int openpete_native_tercache_usable(void)
 {
     /* OPENPETE_TERRAIN_CACHE_FORCE=1: waive the software-GPU exclusion (dev —
@@ -2273,9 +2286,8 @@ int openpete_native_tercache_usable(void)
         && openpete_tercache_ready()
         && !s_scene_ref_compare
         && scene_delay_depth() == 0
-        && !tag_split_on()
+        && !tag_split_dev()
         && !s_vertex_snap
-        && !texture_pack_replacements_active()
         /* fp64 in terrain.vert is what makes the mirror bit-exact vs the
          * CPU walk's double math — no fp64, no retained path. */
         && rhi_device_has_float64(s_nr.dev)

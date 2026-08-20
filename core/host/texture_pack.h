@@ -109,6 +109,15 @@ typedef struct {
  * init). Lazy-loads the image on first match; memoized per identity. */
 int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out);
 
+/* Claim-scoping query: does ANY enabled pack file touch this identity's
+ * texel box? texture_pack_match tests containment because draws query
+ * per-tri boxes; a caller holding a whole FACE's box needs the conservative
+ * cover of every possible sub-box query, which is intersection — a file
+ * contained anywhere inside the face box intersects it. Index-only (never
+ * loads the image); symbolic entries match by annotated asset name (they
+ * cover the full upload, so any overlap counts). */
+int texture_pack_overlaps(const texture_pack_id *id);
+
 /* Stable 64-bit key over the full identity (thash+phash+box+bpp) — for
  * caller-side caches (e.g. the renderer's identity->GPU-texture map). */
 uint64_t texture_pack_id_hashkey(const texture_pack_id *id);
@@ -192,10 +201,11 @@ int  texture_pack_fog_ladder_get(float *t_scale, float *t_bias);
 #define OPENPETE_TP_FOG_CONT    0x100
 #define OPENPETE_TP_FOG_FOGBIAS 0x200
 
-/* Registry generation counter: bumps whenever the pack index rescans or the
- * enabled modset changes, i.e. whenever `texture_pack_repl.pixels` borrowed
- * from the cache may have been freed. For caller-side caches keyed on those
- * pointers. */
+/* Registry generation counter: bumps on ANY mutation that can change a
+ * resolve/match/overlap answer — VRAM uploads, MoveImage, ClearImage, pack
+ * index rescans, and enabled-modset changes (polled here, so latched callers
+ * see toggles without any query traffic). For caller-side caches keyed on
+ * resolutions or on borrowed `texture_pack_repl.pixels` pointers. */
 unsigned texture_pack_generation(void);
 
 /* Per-texture stock->pack grade: least-squares affine fit `pack ~= p*stock+q`

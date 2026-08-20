@@ -129,8 +129,10 @@ void openpete_tercache_frame_select(uint32_t present_stamp);
 int  openpete_tercache_frame_open(void);
 
 /* Provided by native_render.c: the renderer-side conditions ANDed (cache up,
- * no reference-compare delay, no HD pack / material selectors / PSX wobble,
- * hardware GPU). The feeder ANDs its own (flag, debug envs, portal recency). */
+ * no reference-compare delay, no dev tag instruments / PSX wobble, hardware
+ * GPU). HD packs and material selectors are per-sector CLAIMS in the feeder,
+ * not exclusions here. The feeder ANDs its own (flag, debug envs, portal
+ * recency). */
 int  openpete_native_tercache_usable(void);
 
 /* Chunk management (builder side). alloc returns 0 on success and the first

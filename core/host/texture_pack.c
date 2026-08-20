@@ -611,6 +611,27 @@ int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out)
     return 1;
 }
 
+int texture_pack_overlaps(const texture_pack_id *id)
+{
+    if (!id) return 0;
+    tp_poll_modset(); /* a late root / toggle can activate the pack */
+    if (!s_repl_active) return 0;
+    for (int i = 0; i < s_pack_n; i++) {
+        const tp_pack_entry *e = &s_pack[i];
+        if (!tp_src_enabled(e->src)) continue;
+        if (e->symbolic) {
+            if (id->asset && strcmp(e->name, id->asset) == 0) return 1;
+            continue;
+        }
+        if (e->thash != id->thash || e->bpp != id->bpp || e->phash != id->phash)
+            continue;
+        if (id->box_x < e->bx + e->bw && id->box_x + id->box_w > e->bx &&
+            id->box_y < e->by + e->bh && id->box_y + id->box_h > e->by)
+            return 1;
+    }
+    return 0;
+}
+
 /* ---- pack fog shift (see header) ------------------------------------------ */
 
 static int   s_fogshift_on;
@@ -656,7 +677,14 @@ int texture_pack_fog_ladder_get(float *t_scale, float *t_bias)
     return 1;
 }
 
-unsigned texture_pack_generation(void) { return s_gen; }
+unsigned texture_pack_generation(void) {
+    /* Poll here too: generation-latched callers (the terrain cache's claim
+     * scopes) may see no resolve/match traffic at all while everything is
+     * unclaimed, so without this a mid-session mod toggle would never fold
+     * into the generation they key on. */
+    tp_poll_modset();
+    return s_gen;
+}
 
 /* ---- per-texture stock->pack grade fit (see header) ----------------------- */
 

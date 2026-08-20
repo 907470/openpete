@@ -942,15 +942,52 @@ static int s_mat_slot_n = 1;    /* next free; 0 is the reserved sentinel */
  * boot and never re-arm. A disabled owner's selectors therefore still
  * cost a batch split and a winner scan, but can produce no override:
  * every winner/resolve path consults openpete_mods_is_enabled. */
+static unsigned s_mat_epoch;     /* bumps on selector registration/removal */
+
 static void material_rearm_split(void) {
     int any = 0, inst = 0;
     for (int i = 0; i < s_mat_count; i++)
         if (s_mats[i].live) { any = 1; if (s_mats[i].per_instance) inst = 1; }
     s_mat_has_instance = inst;
+    s_mat_epoch++;
     openpete_native_set_tag_split(any);
 }
 
 int openpete_mods_material_has_instance(void) { return s_mat_has_instance; }
+
+unsigned openpete_mods_material_epoch(void) {
+    /* Sum of two monotonic counters — strictly increases on any change a
+     * claim latch cares about; +1 keeps 0 free as the latches' "unset". */
+    return 1u + s_mat_epoch + openpete_mods_toggle_epoch();
+}
+
+int openpete_mods_material_terrain_claim(int texid, int env, int lp) {
+    if (s_mat_count == 0) return 0;
+    const int untex = texid < 0;
+    for (int i = 0; i < s_mat_count; i++) {
+        const mod_material_t* m = &s_mats[i];
+        if (!m->live || !openpete_mods_is_enabled(m->owner)) continue;
+        if (m->sel.path != -1 && m->sel.path != 1 /*OP_RP_TERRAIN*/) continue;
+        if (m->per_instance) {
+            /* Mirror the winner scans exactly: the untex band resolve keys
+             * on OP_SEL_UNTEXTURED + texture=-1, the S9 texture resolve on
+             * texture==texid with the flag clear — neither reads the
+             * env/tier refinements. */
+            if (untex ? ((m->sel.flags & OP_SEL_UNTEXTURED) && m->sel.texture == -1)
+                      : (!(m->sel.flags & OP_SEL_UNTEXTURED) && m->sel.texture == texid))
+                return 1;
+            continue;
+        }
+        /* Declarative: the resolve's predicate over the face's tag bits. */
+        if (m->sel.texture != -1 && (untex || m->sel.texture != texid)) continue;
+        if ((m->sel.flags & OP_SEL_ENV_ANIM) && !env) continue;
+        if ((m->sel.flags & OP_SEL_HP_TIER) && lp) continue;
+        if ((m->sel.flags & OP_SEL_LP_TIER) && !lp) continue;
+        if (((m->sel.flags & OP_SEL_UNTEXTURED) != 0) != (untex != 0)) continue;
+        return 1;
+    }
+    return 0;
+}
 
 int openpete_mods_material_register(openpete_mod_t* self,
                                     const openpete_mod_material_selector_t* sel,
