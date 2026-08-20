@@ -40,14 +40,17 @@ BIN = os.environ.get("OPENPETE_BIN",
 DISC = os.environ.get("OPENPETE_DISC",
                       os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue"))
 REASONS = ["near", "portal", "anim", "scroll", "fill", "arena", "col",
-           "slot", "tp", "sel", "nearb"]
+           "slot", "tp", "sel", "nearb", "nodraw"]
 # nearb is a SUB-BUCKET of near (whole bounding sphere behind the near
-# threshold -> the CPU walk emits nothing), not an additional claim reason.
+# threshold -> the CPU walk emits nothing), not an additional claim reason —
+# it is nonzero only under OPENPETE_TERRAIN_GPU_NODRAW=0. nodraw counts the
+# sectors the no-draw verdict owns (neither walked nor drawn); the report
+# treats them as covered.
 CEN_RE = re.compile(
     r"\[tgpu-cen f=(\d+)\] sub=(\d+) secs=(\d+) claims=(\d+) "
     r"near=(-?\d+) portal=(-?\d+) anim=(-?\d+) scroll=(-?\d+) fill=(-?\d+) "
     r"arena=(-?\d+) col=(-?\d+) slot=(-?\d+) tp=(-?\d+) sel=(-?\d+) "
-    r"nearb=(-?\d+)")
+    r"nearb=(-?\d+) nodraw=(-?\d+)")
 
 
 def read_manifest(path):
@@ -215,11 +218,14 @@ def main():
         if not results[kind]:
             continue
         a = agg(results[kind])
-        tot = a["secs"] + a["claims"]
+        tot = a["secs"] + a["claims"] + a["nodraw"]
+        cov = a["secs"] + a["nodraw"]
         lines += [f"## {title}", "",
-                  f"Aggregate: {a['secs']}/{tot} sectors GPU-drawn "
-                  f"({100.0 * a['secs'] / tot:.1f}% coverage), {a['claims']} claimed:", ""]
-        ranked = sorted((r for r in REASONS if r != "nearb"), key=lambda r: -a[r])
+                  f"Aggregate: {cov}/{tot} sectors off the CPU walk "
+                  f"({100.0 * cov / tot:.1f}% coverage; {a['nodraw']} of those "
+                  f"= behind-camera no-draw), {a['claims']} claimed:", ""]
+        ranked = sorted((r for r in REASONS if r not in ("nearb", "nodraw")),
+                        key=lambda r: -a[r])
         lines += ["| reason | sectors claimed | share of claims |", "|---|---|---|"]
         for r in ranked:
             if a[r] == 0:

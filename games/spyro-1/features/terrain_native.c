@@ -2680,7 +2680,7 @@ static tgpu_slot_t s_tgpu[TSC_SLOTS];
 static long s_tgpu_secs, s_tgpu_claims, s_tgpu_rebuilds;
 static long s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
             s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot,
-            s_tgcl_texpack, s_tgcl_sel, s_tgcl_nearb;
+            s_tgcl_texpack, s_tgcl_sel, s_tgcl_nearb, s_tgcl_nodraw;
 static int  s_tgpu_secs_walk, s_tgpu_claims_walk;
 
 /* Active portal-sky planes for the per-sector portal claim: portal-adjacent
@@ -3206,18 +3206,19 @@ static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
     openpete_tercache_get_stats(&st);
     fprintf(stderr, "[ter-gpu f=%u] sectors=%ld claims=%ld (near=%ld portal=%ld "
             "anim=%ld scroll=%ld fill=%ld arena=%ld col=%ld slot=%ld tp=%ld "
-            "sel=%ld nearb=%ld) rebuilds=%ld "
+            "sel=%ld nearb=%ld nodraw=%ld) rebuilds=%ld "
             "chunks=%u verts=%u/%u draws=%u frees-pend=%u\n",
             openpete_frame, s_tgpu_secs, s_tgpu_claims,
             s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
             s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot,
-            s_tgcl_texpack, s_tgcl_sel, s_tgcl_nearb, s_tgpu_rebuilds,
+            s_tgcl_texpack, s_tgcl_sel, s_tgcl_nearb, s_tgcl_nodraw,
+            s_tgpu_rebuilds,
             st.chunks, st.verts_used, st.verts_cap, st.draws_last_present,
             st.frees_pending);
     s_tgpu_secs = s_tgpu_claims = s_tgpu_rebuilds = 0;
     s_tgcl_near = s_tgcl_portal = s_tgcl_anim = s_tgcl_scroll = 0;
     s_tgcl_fill = s_tgcl_build = s_tgcl_colour = s_tgcl_slot = 0;
-    s_tgcl_texpack = s_tgcl_sel = s_tgcl_nearb = 0;
+    s_tgcl_texpack = s_tgcl_sel = s_tgcl_nearb = s_tgcl_nodraw = 0;
 }
 
 
@@ -3477,6 +3478,12 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
          * sector_set staging write is host memory, distinct slot per sector —
          * safe from pool workers (contract C3 keeps rhi_* on the owner). */
         if (G->own && G->own[vi]) {
+            /* own == 2: owned, NO-DRAW — the whole bounding sphere sits
+             * behind the near threshold, so the CPU walk would emit nothing
+             * for this sector. Publish no flags at all: the per-build sector
+             * reset left SF_DRAWN clear, which is exactly "draw nothing",
+             * and the walk is skipped like any owned sector. */
+            if (G->own[vi] == 2) return;
             uint32_t sf = OPTC_SF_DRAWN
                 | (drawHP    ? OPTC_SF_DRAWHP    : 0u)
                 | (drawLP    ? OPTC_SF_DRAWLP    : 0u)
@@ -4704,14 +4711,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     static int s_cen = -1;
     if (s_cen < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_CENSUS");
                      s_cen = (e && *e && *e != '0'); }
-    long cen0[11];
+    long cen0[12];
     if (s_cen) {
         cen0[0] = s_tgcl_near;   cen0[1] = s_tgcl_portal;
         cen0[2] = s_tgcl_anim;   cen0[3] = s_tgcl_scroll;
         cen0[4] = s_tgcl_fill;   cen0[5] = s_tgcl_build;
         cen0[6] = s_tgcl_colour; cen0[7] = s_tgcl_slot;
         cen0[8] = s_tgcl_texpack; cen0[9] = s_tgcl_sel;
-        cen0[10] = s_tgcl_nearb;
+        cen0[10] = s_tgcl_nearb; cen0[11] = s_tgcl_nodraw;
     }
     /* Any active walk instrument forces serial: their censuses/dumps are
      * whole-walk statics with serial semantics (per-sector timing, ordered
@@ -4873,15 +4880,62 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         }
         if (tgpu_on) {
             int claim = 0;
-            if (oc3 - s_tgpu_l3 * ((double)SC->radius + 16.0) < 16.0) {
+            const double nearBound = s_tgpu_l3 * ((double)SC->radius + 16.0);
+            /* OPENPETE_TERRAIN_GPU_NODRAW=0: A/B lever — behind-camera
+             * sectors fall back to the near claim (the pre-migration
+             * behaviour). GPU_-prefixed: safe with the cache engaged. */
+            static int s_nodraw = -1;
+            if (s_nodraw < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_NODRAW");
+                                s_nodraw = (e && *e) ? (*e != '0') : 1; }
+            /* OPENPETE_TERRAIN_GPU_NDDBG=<frame>: for every fully-behind
+             * classification in that VBL's builds, recompute the TRUE max
+             * vertex view-Z from the decoded geometry and flag sectors the
+             * sphere bound wrongly excluded (temp probe). */
+            static int s_nddbg = -2;
+            if (s_nddbg == -2) { const char* e = getenv("OPENPETE_TERRAIN_GPU_NDDBG");
+                                 s_nddbg = (e && *e) ? atoi(e) : -1; }
+            if (s_nddbg >= 0 && openpete_frame == (unsigned)s_nddbg &&
+                oc3 + nearBound < 16.0) {
+                double mx = -1e18; int nvt = 0;
+                for (int k = 0; SC->lpV && k < SC->nLpV; k++, nvt++) {
+                    double m1d, m2d, m3d;
+                    ngte_mac(M, camy - (double)(SC->originY + SC->lpV[k].y),
+                             camz - (double)(SC->originZ + SC->lpV[k].z),
+                             (double)(SC->originX + SC->lpV[k].x) - camx,
+                             &m1d, &m2d, &m3d);
+                    if (m3d > mx) mx = m3d;
+                }
+                for (int k = 0; SC->hpV && k < SC->nHpV; k++, nvt++) {
+                    double m1d, m2d, m3d;
+                    ngte_mac(M, camy - (double)(SC->originY + SC->hpV[k].y),
+                             camz - (double)(SC->originZ + SC->hpV[k].z),
+                             (double)(SC->originX + SC->hpV[k].x) - camx,
+                             &m1d, &m2d, &m3d);
+                    if (m3d > mx) mx = m3d;
+                }
+                fprintf(stderr, "[nddbg f=%u] i=%u slot=%d %s oc3=%.2f l3=%.4f "
+                        "r=%d bound=%.2f maxm3=%.2f nv=%d centre=%d,%d,%d "
+                        "origin=%d,%d,%d\n",
+                        openpete_frame, (unsigned)i, (int)(SC - s_tsc),
+                        mx > 0.0 ? "VIOLATION" : "ok", oc3, s_tgpu_l3,
+                        SC->radius, nearBound, mx, nvt,
+                        SC->centreX, SC->centreY, SC->centreZ,
+                        SC->originX, SC->originY, SC->originZ);
+            }
+            if (s_nodraw && oc3 + nearBound < 16.0) {
+                /* NO-DRAW verdict: the whole bounding sphere sits behind the
+                 * near threshold, so the CPU walk near-culls every face and
+                 * emits nothing — owning the sector WITHOUT publishing (or
+                 * validating chunks) reproduces that exactly, with zero CPU
+                 * walk cost. Genuine near-CROSSERS (sphere straddling the
+                 * threshold) still claim below: they need the walk's
+                 * near-clip and near-band HQ semantics. */
+                s_tgpu_own[vi] = 2;
+                s_tgcl_nodraw++;
+            } else if (oc3 - nearBound < 16.0) {
                 claim = 1; s_tgcl_near++;
-                /* Census sub-bucket: the whole bounding sphere sits BEHIND
-                 * the near threshold — the CPU walk emits nothing for such a
-                 * sector, so it is a candidate for a no-draw verdict instead
-                 * of a claim (vs a genuine near-CROSSER, which needs the
-                 * walk's near-clip + near-band HQ semantics). */
-                if (oc3 + s_tgpu_l3 * ((double)SC->radius + 16.0) < 16.0)
-                    s_tgcl_nearb++;
+                if (oc3 + nearBound < 16.0)
+                    s_tgcl_nearb++;   /* census: fully-behind (NODRAW=0 A/B) */
             } else if (SC->polyanim) {
                 claim = 1; s_tgcl_anim++;
             } else if (s_pre_verd[vi].fillLP) {
@@ -4902,7 +4956,13 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     }
                 }
             }
-            if (!claim) {
+            if (!claim && s_tgpu_own[vi] != 2) {
+                /* own == 2 (behind-camera no-draw) skips the validate/build
+                 * entirely — publishing such a sector DRAWN would hand the
+                 * shader mirror behind-camera vertices (negative W), whose
+                 * wrapped rasterization poisons the depth prepass. That
+                 * guarantee is the near-claim's whole job; no-draw keeps it
+                 * by never entering the drawn set. */
                 int r = tgpu_ensure(cpu, SC, hqTable, (int)i);
                 if (r == 0) {
                     s_tgpu_own[vi] = 1;
@@ -5015,7 +5075,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         if (s_cen)
             fprintf(stderr, "[tgpu-cen f=%u] sub=%d secs=%d claims=%d "
                     "near=%ld portal=%ld anim=%ld scroll=%ld fill=%ld "
-                    "arena=%ld col=%ld slot=%ld tp=%ld sel=%ld nearb=%ld\n",
+                    "arena=%ld col=%ld slot=%ld tp=%ld sel=%ld nearb=%ld "
+                    "nodraw=%ld\n",
                     openpete_frame, s_vanim_sub,
                     s_tgpu_secs_walk, s_tgpu_claims_walk,
                     s_tgcl_near - cen0[0], s_tgcl_portal - cen0[1],
@@ -5023,7 +5084,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     s_tgcl_fill - cen0[4], s_tgcl_build - cen0[5],
                     s_tgcl_colour - cen0[6], s_tgcl_slot - cen0[7],
                     s_tgcl_texpack - cen0[8], s_tgcl_sel - cen0[9],
-                    s_tgcl_nearb - cen0[10]);
+                    s_tgcl_nearb - cen0[10], s_tgcl_nodraw - cen0[11]);
         tgpu_census();
         if (op_prof_on()) {   /* the claim-ratchet metric, per present */
             static int id_secs = -1, id_claims = -1;
