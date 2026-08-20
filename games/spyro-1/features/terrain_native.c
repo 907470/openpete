@@ -2924,6 +2924,22 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             nearC[q] = rd(cpu, SC->nearBase + co[q]) & 0xFFFFFFu;
             farC[q]  = rd(cpu, SC->farBase  + co[q]) & 0xFFFFFFu;
         }
+        {   /* OPENPETE_TERRAIN_BAKEDBG="<slot>,<face>": one face's baked
+             * colour bytes per rebuild (temp instrument; pair with FARDBG's
+             * walk-side dump of the same face in the same build). */
+            static int s_bd = -2, s_bslot, s_bface;
+            if (s_bd == -2) { const char* e = getenv("OPENPETE_TERRAIN_BAKEDBG");
+                s_bd = 0;
+                if (e && *e) { char* t; s_bslot = (int)strtol(e, &t, 10);
+                               s_bface = *t ? (int)strtol(t + 1, NULL, 10) : -1;
+                               s_bd = 1; } }
+            if (s_bd && slot == s_bslot && f == s_bface)
+                fprintf(stderr, "[bakedbg f=%u] slot=%d face=%d co=%u,%u,%u,%u "
+                        "near=%06X,%06X,%06X,%06X far=%06X,%06X,%06X,%06X\n",
+                        openpete_frame, slot, f, co[0], co[1], co[2], co[3],
+                        nearC[0], nearC[1], nearC[2], nearC[3],
+                        farC[0], farC[1], farC[2], farC[3]);
+        }
         const int vi[4] = { F->i0, F->i1, F->i2, F->i3 };
         tgpu_corner_t k[4];
         memset(k, 0, sizeof(k));
@@ -4485,6 +4501,21 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     G.cpu = cpu;
     memcpy(G.M, M, sizeof(G.M)); memcpy(G.Mbin, Mbin, sizeof(G.Mbin));
     G.camx = camx; G.camy = camy; G.camz = camz;
+    {   /* OPENPETE_TERRAIN_CAMDBG=1 (temp): per-build game-camera pose in
+         * --freecam-pose form, for replanting a movie frame's view. */
+        static int s_camdbg = -1;
+        if (s_camdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_CAMDBG");
+                            s_camdbg = (e && *e && *e != '0'); }
+        if (s_camdbg)
+            fprintf(stderr, "[cam f=%u] pos=(%d, %d, %d) yaw=%d pitch=%d sub=%d\n",
+                    openpete_frame,
+                    (int32_t)rd(cpu, 0x80076DD0u + 0x28u),
+                    (int32_t)rd(cpu, 0x80076DD0u + 0x2Cu),
+                    (int32_t)rd(cpu, 0x80076DD0u + 0x30u),
+                    (int16_t)(rd(cpu, 0x80076DD0u + 0x50u) & 0xFFFFu),
+                    (int16_t)(rd(cpu, 0x80076DD0u + 0x4Cu) >> 16),
+                    s_vanim_sub);
+    }
     G.fogRefBase = fogRefBase; G.cullRefS2 = cullRefS2; G.texTblMode = texTblMode;
     G.tier_faithful = tier_faithful; G.lod_handoff = lod_handoff;
     G.hqTable = hqTable;

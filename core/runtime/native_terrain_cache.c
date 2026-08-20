@@ -90,6 +90,14 @@ static struct {
     rhi_pipeline *pipe_key;           /* og OT-key emit (pass_sel 2)          */
     tc_state      staged;             /* canonical build awaiting its present */
     tc_state      live;               /* what presents render                 */
+    tc_state      sel;                /* frame_select's snapshot of live: the
+                                       * present's draws may execute VBLs after
+                                       * selection (deferred screenshot
+                                       * readback), by which time live has been
+                                       * re-promoted — flushing live at draw
+                                       * time would pair old chunks with a
+                                       * fresher camera/fog/colour-generation
+                                       * set (rung flips, sub-pixel skew) */
     tc_sector_ubo *build_target;      /* where sector_set writes this build   */
     int           draw_open;          /* frame_select verdict for this present */
     int           ubo_written;        /* live blocks flushed this rhi frame   */
@@ -295,10 +303,34 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     /* release deferred ranges older than the in-flight window */
     int w = 0;
     for (int i = 0; i < s_tc.defer_n; i++) {
-        if (s_tc.present_ctr - s_tc.defer[i].stamp > TC_DEFER_PRESENTS)
+        if (s_tc.present_ctr - s_tc.defer[i].stamp > TC_DEFER_PRESENTS) {
+            /* Dead-stamp BEFORE the range becomes reusable. Every draw walks
+             * the whole arena and selects per vertex by 3-bit generation, so
+             * a released range that lingers unreused (release != reuse; the
+             * allocator can go elsewhere for many builds) still rasterises
+             * whenever a later state's generation aliases its own mod 8 — a
+             * sector that rebuilds every build (animated vertex lighting)
+             * then z-fights its current chunk with a pulse-phase-old twin.
+             * The defer window just guaranteed no in-flight frame reads
+             * these bytes, so overwriting here is the one race-free moment
+             * (stamping at free time was the July hazard). Slot DEAD is
+             * never published, so SF_DRAWN kills the vertex forever. */
+            static const rhi_terrain_vertex k_dead = { .face_flags = OPTC_SLOT_DEAD };
+            static rhi_terrain_vertex s_deadbuf[512];
+            if (s_deadbuf[0].face_flags != OPTC_SLOT_DEAD)
+                for (int d = 0; d < 512; d++) s_deadbuf[d] = k_dead;
+            uint32_t left = s_tc.defer[i].count, at = s_tc.defer[i].first;
+            while (left) {
+                uint32_t n = left > 512 ? 512 : left;
+                rhi_update_buffer_range(s_tc.arena[s_tc.defer[i].arena].vb,
+                                        s_deadbuf,
+                                        (size_t)at * sizeof(rhi_terrain_vertex),
+                                        (size_t)n * sizeof(rhi_terrain_vertex));
+                at += n; left -= n;
+            }
             tc_free_insert(&s_tc.arena[s_tc.defer[i].arena],
                            s_tc.defer[i].first, s_tc.defer[i].count);
-        else
+        } else
             s_tc.defer[w++] = s_tc.defer[i];
     }
     s_tc.defer_n = w;
@@ -367,6 +399,7 @@ void openpete_tercache_frame_select(uint32_t present_stamp)
      * retained state must not repaint. */
     int32_t age = (int32_t)(present_stamp - s_tc.live.stamp);
     s_tc.draw_open = s_tc.ready && s_tc.live.valid && age >= -8 && age <= 8;
+    if (s_tc.draw_open) s_tc.sel = s_tc.live;
     s_tc.ubo_written = 0;
     {   static int dbg = -1; static int n;
         if (dbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_DBG2");
@@ -436,9 +469,10 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
         case OPTC_DRAW_KEY:     p = s_tc.pipe_key;     break;
     }
     if (!p) return;
-    if (!s_tc.ubo_written) {   /* first draw of the present: flush the LIVE state */
-        rhi_ubo_write(s_tc.ubo, 0, &s_tc.live.g, sizeof(s_tc.live.g));
-        rhi_ubo_write(s_tc.ubo, 1, s_tc.live.sec, sizeof(s_tc.live.sec));
+    if (!s_tc.ubo_written) {   /* first draw of the present: flush the state
+                                * frame_select snapshotted for it */
+        rhi_ubo_write(s_tc.ubo, 0, &s_tc.sel.g, sizeof(s_tc.sel.g));
+        rhi_ubo_write(s_tc.ubo, 1, s_tc.sel.sec, sizeof(s_tc.sel.sec));
         s_tc.ubo_written = 1;
     }
     rhi_bind_pipeline(s_tc.dev, p);

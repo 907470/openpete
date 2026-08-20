@@ -55,7 +55,19 @@ void main()
 {
     if ((g.fog.y & (1 << 29)) != 0) {          /* debug tint modes */
         int mode = (g.fog.y >> 26) & 7;
-        if (mode == 2 || mode >= 4) {           /* raw (or substituted) colour */
+        if (mode == 6) {                        /* exact ladder t0k readout */
+            if ((vMat.y & (1u << 16)) == 0u) {  /* ladder never ran here */
+                outColor = vec4(0.0, 0.0, 1.0, 1.0);
+            } else {
+                uint enc = (vMat.y >> 18) & 0x1FFFu;   /* t0k + 4096 */
+                outColor = vec4(float((enc >> 8) & 255u) / 255.0,
+                                float(enc & 255u) / 255.0,
+                                float(((vMat.y >> 17) & 1u) * 128u
+                                      + ((vMat.y >> 9) & 0x7Fu)) / 255.0, 1.0);
+            }
+            return;
+        }
+        if (mode == 2 || mode == 4 || mode == 5) {  /* raw (or substituted) colour */
             outColor = vec4((vColor / vQ).rgb, 1.0);
         } else if (mode == 3) {                 /* UV visualizer (texel/256) */
             vec2 uvq = vUV / vQ;

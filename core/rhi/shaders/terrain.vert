@@ -343,6 +343,7 @@ void main()
     uint clut = inMat.y & 0xFFFFu;
     vec2 uv   = vec2(float(inUV.x), float(inUV.y));
     uint dbg_half = 0u, dbg_delta = 0u;
+    int  dbg_t0k  = -99999;   /* tint mode 6: exact ladder key (t0k) probe */
     if (!lp && !hqv && (gf & GF_CLUTFOG) != 0 && (sf & SF_SECINLOD) != 0u
         && (mat0 & (1u << 23)) != 0u) {
         /* per-corner int casts, then sum — the walk's exact quantisation */
@@ -350,6 +351,7 @@ void main()
                   + int(m2.z * fogscale) + int(m3c.z * fogscale);
         int key = (szsum >> 7) << 5;
         int t0k = key - fogRef + 4096;
+        dbg_t0k = t0k;
         if (t0k <= 0) {
             if ((inMat.z & (1u << 23)) != 0u) {   /* near half textured */
                 mat0 = inMat.z;
@@ -364,8 +366,15 @@ void main()
         }
     }
     vMat = uvec2(mat0, (clut & 0x3Fu) * 16u | (((clut >> 6) & 0x1FFu) << 16));
-    if ((gf & (1 << 29)) != 0)                 /* debug tint: ladder verdict */
+    if ((gf & (1 << 29)) != 0) {               /* debug tint: ladder verdict */
         vMat.y |= (dbg_half << 30) | (dbg_delta << 25);
+        if (((uint(gf) >> 26) & 7u) == 6u)     /* mode 6: exact t0k readout */
+            vMat.y = dbg_t0k <= -99999
+                   ? 0u
+                   : (uint(clamp(dbg_t0k + 4096, 0, 8191)) << 18)
+                     | (dbg_half << 17) | (1u << 16)
+                     | ((slot & 0x7Fu) << 9);   /* winner's sector slot */
+    }
 
     /* ---- own vertex camera-space value ----
      * Flat/LP verts: transform own position (identical ops to the corner
