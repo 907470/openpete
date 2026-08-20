@@ -20,7 +20,7 @@ and the exe runs from its build dir so DLLs/assets resolve).
 
 Usage:
   scripts/bench-topdown.py [--exe PATH] [--levels a,b,c] [--lod extended|original]
-      [--extract-threads N] [--render-fps N] [--out-dir DIR]
+      [--extract-threads N] [--terrain-cache 0|1] [--render-fps N] [--out-dir DIR]
       [--frame-limit N] [--skip-ticks N] [--no-screenshot]
 
 Exit: 0 on a full sweep, 64 skip (missing exe/disc), 1 if any level run died.
@@ -74,6 +74,13 @@ def run_level(exe, level, args, out_dir):
         "--skip-to-level", level, "--freecam-pose", "topdown",
         "--lod", args.lod,
         "--extract-threads", str(args.extract_threads),
+        "--terrain-cache", str(args.terrain_cache),
+        # An active HD texture pack (a mod can carry one) forces the CPU
+        # walk — openpete_native_tercache_usable() — which would silently
+        # turn a terrain-cache leg into a second baseline. Point --mods-dir
+        # at an empty dir to bench the vanilla pipeline.
+    ] + (["--mods-dir", tr(args.mods_dir)] if args.mods_dir else []) \
+      + (["--texpack-dir", tr(args.texpack_dir)] if args.texpack_dir else []) + [
         "--renderer", "vk", "--vsync", "0",
         "--render-fps", str(args.render_fps),
         "--profile-out", tr(opp),
@@ -122,6 +129,13 @@ def main():
     ap.add_argument("--lod", default="extended",
                     choices=["extended", "original"])
     ap.add_argument("--extract-threads", type=int, default=0)
+    ap.add_argument("--terrain-cache", type=int, default=0, choices=[0, 1])
+    ap.add_argument("--mods-dir", default=None,
+                    help="override the exe-adjacent mods root (an empty dir "
+                         "disables mods; active texpacks exclude the cache)")
+    ap.add_argument("--texpack-dir", default=None,
+                    help="override the base HD texpack dir (an empty dir "
+                         "disables it; same cache exclusion as mod packs)")
     ap.add_argument("--render-fps", type=int, default=1000)
     ap.add_argument("--frame-limit", type=int, default=3600)
     ap.add_argument("--max-runtime-seconds", type=int, default=240)
@@ -142,7 +156,8 @@ def main():
     levels = args.levels.split(",") if args.levels else LEVELS
     out_dir = os.path.abspath(args.out_dir) if args.out_dir else os.path.join(
         ROOT, "build", "bench-topdown",
-        "%s-x%d" % (args.lod, args.extract_threads))
+        "%s-x%d%s" % (args.lod, args.extract_threads,
+                      "-tc" if args.terrain_cache else ""))
     os.makedirs(out_dir, exist_ok=True)
 
     rows, failed = [], 0
@@ -177,6 +192,7 @@ def main():
 
     with open(os.path.join(out_dir, "rollup.json"), "w") as f:
         json.dump({"lod": args.lod, "extract_threads": args.extract_threads,
+                   "terrain_cache": args.terrain_cache,
                    "render_fps": args.render_fps, "rows": rows}, f, indent=1)
     print("rollup: %s" % os.path.join(out_dir, "rollup.json"))
     return 1 if failed else 0
