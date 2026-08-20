@@ -118,6 +118,23 @@ typedef struct {
      * All zero on canonical builds (whole-texel committed decode). Faces
      * carry their tile id in flags16; the vertex stage adds the offset. */
     float   scroll_dv[128][4];
+    /* Portal inner-rim cull mirror (portal_rim_classify in the vertex
+     * stage): the per-plane frames rim_frames_derive builds once per feed,
+     * plus the classifier's knob values, all fp64. rim_n = 0 disables the
+     * test (no active portal, or the rim-claim lever routes rim-candidate
+     * sectors to the CPU walk instead). Plane pi's outline lives at
+     * rim_pv[pi*16 .. pi*16+vn-1]; vn rides rim_nrm[pi][3], the frame's
+     * validity rides rim_abc[pi][3]. */
+    int32_t rim_n;
+    double  rim_ofx, rim_ofy, rim_H;  /* rim_frames_derive's GTE constants  */
+    double  rim_knobs[4];             /* eps, near, reach, cos(angle)       */
+    double  rim_abc[6][4];            /* screen inv-vz plane fit a,b,c; w=valid */
+    double  rim_O[6][4];              /* in-plane basis origin              */
+    double  rim_U[6][4];              /* in-plane basis U                   */
+    double  rim_W[6][4];              /* in-plane basis W                   */
+    double  rim_nrm[6][4];            /* unit view-space normal; w = vn     */
+    double  rim_bbox[6][4];           /* outline UV bbox pulo,puhi,pvlo,pvhi */
+    double  rim_pv[96][2];            /* outlines in (U,W) coords, 16/plane */
 } openpete_tercache_globals;
 
 /* Init/teardown (native_render.c owns the device lifetime). init returns 0

@@ -80,6 +80,21 @@ layout(std140, set = 3, binding = 0) uniform TerrainGlobals {
                      * alpha (1.0 on canonical builds; TERRAIN_ANIM only)   */
     ivec4 fog;      /* x: fogRefBase, y: gflags, z: cullRefS2, w: unused  */
     vec4  sdv[128]; /* per-tile scroll V offsets (lq, hqA, hqB, 0)        */
+    /* Portal inner-rim cull frames (portal_rim_classify mirror, fp64).
+     * rim_cnt.x = active plane count; 0 disables the test (no portal, or
+     * rim-candidate sectors claim to the CPU walk instead). Plane pi's
+     * outline lives at rim_pv[pi*16 .. pi*16+vn-1]. */
+    ivec4 rim_cnt;
+    ivec4 rim_pad;
+    dvec4 rim_oxyH;      /* rim ofx, ofy, H, pad                          */
+    dvec4 rim_knobs;     /* eps, near, reach, cos(angle)                  */
+    dvec4 rim_abc[6];    /* screen inv-vz plane fit a,b,c; w = valid      */
+    dvec4 rim_O[6];      /* in-plane basis origin (view space)            */
+    dvec4 rim_U[6];      /* in-plane basis U                              */
+    dvec4 rim_W[6];      /* in-plane basis W                              */
+    dvec4 rim_nrm[6];    /* unit view normal; w = outline vn              */
+    dvec4 rim_bbox[6];   /* outline UV bbox pulo, puhi, pvlo, pvhi        */
+    dvec2 rim_pv[96];    /* outlines in (U,W), 16 slots per plane         */
 } g;
 
 /* g.fog.y bits — keep in sync with openpete_terrain_cache.h OPTC_GF_* */
@@ -192,6 +207,118 @@ void kill_vert() {
     gl_Position = vec4(0.0, 0.0, 0.0, 1.0);   /* degenerate: no raster */
     vUV = vec2(0.0); vColor = vec4(0.0); vMat = uvec2(0u);
     vKoff = 0.0; vQ = 1.0;
+}
+
+/* ---- portal inner-rim cull (portal_rim_classify mirror) --------------------
+ * The CPU feed classifies every emitted tri against the active portal
+ * opening planes and DROPS accepted rim faces — they lie in the opening
+ * plane, coincident with the destination-sky preview, and no depth ordering
+ * can separate them. Same classifier here, in fp64 `precise`, on the tri
+ * rebuilt from the corner attributes (flags16 bit13 = second half/sub-tri).
+ * rim_uv_contains / rim_uv_edge_dist run on the plane's outline dropped
+ * into its in-plane (U,W) basis, exactly as the CPU helpers. */
+bool rim_uv_contains_g(int base, int pn, double u, double v) {
+    bool inp = false;
+    for (int i = 0, j = pn - 1; i < pn; j = i++) {
+        double iu = g.rim_pv[base + i].x, iv = g.rim_pv[base + i].y;
+        double ju = g.rim_pv[base + j].x, jv = g.rim_pv[base + j].y;
+        if ((iv > v) != (jv > v) &&
+            u < (ju - iu) * (v - iv) / (jv - iv) + iu)
+            inp = !inp;
+    }
+    return inp;
+}
+double rim_uv_edge_dist_g(int base, int pn, double u, double v) {
+    double best = 1e30lf;
+    for (int i = 0, j = pn - 1; i < pn; j = i++) {
+        double ax = g.rim_pv[base + j].x, ay = g.rim_pv[base + j].y;
+        double ex = g.rim_pv[base + i].x - ax, ey = g.rim_pv[base + i].y - ay;
+        double L2 = ex * ex + ey * ey;
+        double t = (L2 > 1e-9lf) ? ((u - ax) * ex + (v - ay) * ey) / L2 : 0.0lf;
+        if (t < 0.0lf) t = 0.0lf; else if (t > 1.0lf) t = 1.0lf;
+        double dx = u - (ax + t * ex), dy = v - (ay + t * ey);
+        double d = sqrt(dx * dx + dy * dy);
+        if (d < best) best = d;
+    }
+    return best;
+}
+/* True = some plane accepts the tri as inner rim (classify flags == 0): the
+ * CPU feed drops it, so the retained draw must too. Inputs are the emitted
+ * tri's FLOAT screen coords (the feed ttri's sx/sy) and walk view-Z (m3). */
+bool rim_classified(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) {
+    precise double ofx = g.rim_oxyH.x, ofy = g.rim_oxyH.y, H = g.rim_oxyH.z;
+    if (H < 1.0lf) return false;
+    double eps = g.rim_knobs.x, nearw = g.rim_knobs.y;
+    double reach = g.rim_knobs.z, cosw = g.rim_knobs.w;
+    double sx[3] = double[3](double(s0.x), double(s1.x), double(s2.x));
+    double sy[3] = double[3](double(s0.y), double(s1.y), double(s2.y));
+    double vz[3] = double[3](z0 * 16.0lf, z1 * 16.0lf, z2 * 16.0lf);
+    for (int pi = 0; pi < g.rim_cnt.x; pi++) {
+        if (g.rim_abc[pi].w == 0.0lf) continue;      /* frame invalid */
+        precise double nx = g.rim_nrm[pi].x, ny = g.rim_nrm[pi].y,
+                       nz = g.rim_nrm[pi].z;
+        precise dvec3 V[3];
+        double dmin = 1e30lf, dmax = 0.0lf;
+        bool okz = true;
+        for (int k = 0; k < 3; k++) {
+            precise double inv = g.rim_abc[pi].x * sx[k]
+                               + g.rim_abc[pi].y * sy[k] + g.rim_abc[pi].z;
+            if (inv <= 1e-9lf) { okz = false; break; }
+            precise double vzk = vz[k];
+            V[k] = dvec3((sx[k] - ofx) * vzk / H, (sy[k] - ofy) * vzk / H, vzk);
+            precise double dz = vzk - 1.0lf / inv;
+            precise double d = abs(dz * (nx * (sx[k] - ofx) + ny * (sy[k] - ofy)
+                                         + nz * H) / H);
+            if (d < dmin) dmin = d;
+            if (d > dmax) dmax = d;
+        }
+        if (!okz) continue;
+        if (dmin > 400.0lf) continue;                /* RIM_CAND_WINDOW */
+        int base = pi * 16, pn = int(g.rim_nrm[pi].w);
+        precise dvec3 O = g.rim_O[pi].xyz, U = g.rim_U[pi].xyz,
+                      W = g.rim_W[pi].xyz;
+        double fu[3], fv[3];
+        double fulo = 1e30lf, fuhi = -1e30lf, fvlo = 1e30lf, fvhi = -1e30lf;
+        for (int k = 0; k < 3; k++) {
+            precise dvec3 r = V[k] - O;
+            fu[k] = r.x * U.x + r.y * U.y + r.z * U.z;
+            fv[k] = r.x * W.x + r.y * W.y + r.z * W.z;
+            if (fu[k] < fulo) fulo = fu[k];
+            if (fu[k] > fuhi) fuhi = fu[k];
+            if (fv[k] < fvlo) fvlo = fv[k];
+            if (fv[k] > fvhi) fvhi = fv[k];
+        }
+        if (fuhi < g.rim_bbox[pi].x - 600.0lf ||     /* RIM_CAND_MARGIN */
+            fulo > g.rim_bbox[pi].y + 600.0lf ||
+            fvhi < g.rim_bbox[pi].z - 600.0lf ||
+            fvlo > g.rim_bbox[pi].w + 600.0lf) continue;
+        /* contain: any vertex or the centroid inside the outline, or a
+         * vertex within `reach` of an outline edge */
+        bool touches = false;
+        double cu = 0.0lf, cv = 0.0lf;
+        for (int k = 0; k < 3; k++) {
+            cu += fu[k]; cv += fv[k];
+            if (!touches && rim_uv_contains_g(base, pn, fu[k], fv[k]))
+                touches = true;
+        }
+        if (!touches && rim_uv_contains_g(base, pn, cu / 3.0lf, cv / 3.0lf))
+            touches = true;
+        if (!touches && reach > 0.0lf)
+            for (int k = 0; k < 3 && !touches; k++)
+                if (rim_uv_edge_dist_g(base, pn, fu[k], fv[k]) <= reach)
+                    touches = true;
+        if (!touches) continue;                      /* RIMFAIL_CONTAIN */
+        if (dmax > eps || dmin > nearw) continue;    /* RIMFAIL_DIST */
+        precise dvec3 e1 = V[1] - V[0], e2 = V[2] - V[0];
+        precise double fx = e1.y * e2.z - e1.z * e2.y;
+        precise double fy = e1.z * e2.x - e1.x * e2.z;
+        precise double fz = e1.x * e2.y - e1.y * e2.x;
+        double fl = sqrt(fx * fx + fy * fy + fz * fz);
+        if (fl < 1e-9lf) continue;                   /* RIMFAIL_ANGLE */
+        if (abs((fx * nx + fy * ny + fz * nz) / fl) < cosw) continue;
+        return true;                                 /* all terms pass */
+    }
+    return false;
 }
 
 void main()
@@ -372,6 +499,49 @@ void main()
     if (!near && !fillPass) {
         bool cullable = lp ? ((gf & GF_CULLLP) != 0) : ((gf & GF_CULLHP) != 0);
         if (cullable && !front && !front2) { kill_vert(); return; }
+    }
+
+    /* ---- portal inner-rim cull: rebuild THIS vertex's emitted tri and run
+     * the classifier on it. Triangulation matches the bake exactly —
+     * flat LP (i0,i1,i2)+(i1,i2,i3), flat HP (i0,i1,i3)+(i1,i3,i2), HQ
+     * sub-quad (c0,c1,c2)+(c1,c2,c3) — and the classifier's terms are
+     * vertex-SET invariant, so order differences vs the walk's emit are
+     * immaterial. Screen coords are the raw float projections (the feed's
+     * push_tri values; vertex-snap runs excluded the cache entirely). ---- */
+    if (g.rim_cnt.x > 0) {
+        bool tri2 = (f16 & 0x2000u) != 0u;
+        bool rimdrop;
+        if (!hqv) {
+            precise dvec3 ta, tb, tc2;
+            vec2 sa, sb, sc;
+            if (!quad)      { ta = m0; tb = m1; tc2 = m2;  sa = p0f; sb = p1f; sc = p2f; }
+            else if (lp) {
+                if (tri2)   { ta = m1; tb = m2; tc2 = m3c; sa = p1f; sb = p2f; sc = p3f; }
+                else        { ta = m0; tb = m1; tc2 = m2;  sa = p0f; sb = p1f; sc = p2f; }
+            } else {
+                if (tri2)   { ta = m1; tb = m3c; tc2 = m2; sa = p1f; sb = p3f; sc = p2f; }
+                else        { ta = m0; tb = m1; tc2 = m3c; sa = p0f; sb = p1f; sc = p3f; }
+            }
+            rimdrop = rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z);
+        } else {
+            /* Sub-quad nodes from the transformed parent corners (the same
+             * cv_mid mirrors the own-vertex rebuild uses below). */
+            precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
+            precise dvec3 mT = (TL + TR) * 0.5lf, mB = (BL + BR) * 0.5lf;
+            precise dvec3 mL = (TL + BL) * 0.5lf, mR = (TR + BR) * 0.5lf;
+            precise dvec3 C  = (mT + mB) * 0.5lf;
+            precise dvec3 q0, q1, q2, q3;
+            if      (subq == 0) { q0 = TL; q1 = mT; q2 = mL; q3 = C;  }
+            else if (subq == 1) { q0 = mT; q1 = TR; q2 = C;  q3 = mR; }
+            else if (subq == 2) { q0 = mL; q1 = C;  q2 = BL; q3 = mB; }
+            else                { q0 = C;  q1 = mR; q2 = mB; q3 = BR; }
+            precise dvec3 ta, tb, tc2;
+            if (tri2) { ta = q1; tb = q2; tc2 = q3; }
+            else      { ta = q0; tb = q1; tc2 = q2; }
+            rimdrop = rim_classified(proj_of(ta), proj_of(tb), proj_of(tc2),
+                                     ta.z, tb.z, tc2.z);
+        }
+        if (rimdrop) { kill_vert(); return; }
     }
 
     /* ---- material: near-tile / CLUT-ladder row select (flat HP textured) ---- */

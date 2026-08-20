@@ -68,9 +68,29 @@ typedef struct {
     double dH[2];      /* H, poly-anim alpha */
     int32_t fog[4];    /* fogRefBase, gflags, cullRefS2, 0 */
     float sdv[128][4]; /* per-tile scroll V offsets (lq, hqA, hqB, 0) */
+    /* Portal inner-rim cull frames (portal_rim_classify mirror; all fp64).
+     * Offset here is 2176 = 32-aligned, so the dvec4 run below keeps
+     * C natural layout == std140 (dvec4 base alignment 32, dvec2 array
+     * stride 16 == double[2]). rim_cnt.x = plane count (0 = test off). */
+    int32_t rim_cnt[4];
+    int32_t rim_pad[4];
+    double  rim_oxyH[4];   /* rim ofx, ofy, H, pad                       */
+    double  rim_knobs[4];  /* eps, near, reach, cos(angle)               */
+    double  rim_abc[6][4]; /* screen inv-vz plane fit a,b,c; w = valid   */
+    double  rim_O[6][4];   /* in-plane basis origin                      */
+    double  rim_U[6][4];   /* in-plane basis U                           */
+    double  rim_W[6][4];   /* in-plane basis W                           */
+    double  rim_nrm[6][4]; /* unit view normal; w = outline vn           */
+    double  rim_bbox[6][4];/* outline UV bbox pulo, puhi, pvlo, pvhi     */
+    double  rim_pv[96][2]; /* outlines in (U,W), 16 slots per plane      */
 } tc_globals_ubo;
 
 typedef struct { float o[4]; } tc_sector_ubo;   /* xyz origin, w flag bits */
+
+/* Both blocks ride one rhi_ubo sized to the sector block; the globals block
+ * (grown by the rim frames) must keep fitting it. */
+_Static_assert(sizeof(tc_globals_ubo) <= sizeof(tc_sector_ubo) * OPTC_SLOTS,
+               "tc_globals_ubo outgrew the shared UBO block size");
 
 /* One build's complete retained frame state. The feeder STAGES the canonical
  * build's state and it PROMOTES to live one build later — the sub-tick
@@ -437,6 +457,18 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     gu->fog[1] = (int32_t)g->gflags;
     gu->fog[2] = g->cull_ref_s2;
     memcpy(gu->sdv, g->scroll_dv, sizeof(gu->sdv));
+    gu->rim_cnt[0]  = g->rim_n;
+    gu->rim_oxyH[0] = g->rim_ofx;
+    gu->rim_oxyH[1] = g->rim_ofy;
+    gu->rim_oxyH[2] = g->rim_H;
+    memcpy(gu->rim_knobs, g->rim_knobs, sizeof(gu->rim_knobs));
+    memcpy(gu->rim_abc,   g->rim_abc,   sizeof(gu->rim_abc));
+    memcpy(gu->rim_O,     g->rim_O,     sizeof(gu->rim_O));
+    memcpy(gu->rim_U,     g->rim_U,     sizeof(gu->rim_U));
+    memcpy(gu->rim_W,     g->rim_W,     sizeof(gu->rim_W));
+    memcpy(gu->rim_nrm,   g->rim_nrm,   sizeof(gu->rim_nrm));
+    memcpy(gu->rim_bbox,  g->rim_bbox,  sizeof(gu->rim_bbox));
+    memcpy(gu->rim_pv,    g->rim_pv,    sizeof(gu->rim_pv));
 
     /* reset sector flags; origins are rewritten by sector_set */
     for (int i = 0; i < OPTC_SLOTS; i++) T->sec[i].o[3] = 0.0f;

@@ -2777,8 +2777,19 @@ static int tgpu_scrollclaim(void) {
                  v = (e && *e && *e != '0'); }
     return v;
 }
+/* OPENPETE_TERRAIN_GPU_RIMCLAIM=1: restore the pre-migration rim-candidate
+ * claim (A/B lever, temp) — the walk claims rim-broadphase candidates and
+ * the globals carry rim_n = 0, so the vertex-stage rim cull disarms with it.
+ * GPU_-prefixed: safe with the cache engaged. */
+static int tgpu_rimclaim(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_RIMCLAIM");
+                 v = (e && *e && *e != '0'); }
+    return v;
+}
 static int tgpu_portal_frames(CPUState* cpu);            /* defined post-feed-statics */
 static int tgpu_rim_sphere_cand(double oc1, double oc2, double oc3, int radius);
+static void tgpu_rim_globals_fill(openpete_tercache_globals* g);
 static double s_tgpu_l3 = 1.0;        /* ||M row 2||/4096 (near-claim bound) */
 static int s_otbias_on;               /* tentative: defined (=1) at the feed */
 
@@ -2900,7 +2911,8 @@ typedef struct { tgpu_p4 p, pp; uint32_t rgb_far, rgb_near;
                  uint8_t uf, vf, un, vn, role; } tgpu_corner_t;
 
 static int tgpu_emit_tri(tgpu_buf* b, const tgpu_face_t* F,
-                         tgpu_corner_t a, tgpu_corner_t c1, tgpu_corner_t c2) {
+                         tgpu_corner_t a, tgpu_corner_t c1, tgpu_corner_t c2,
+                         int tri2 /* second half / sub-tri (flags16 bit13) */) {
     const tgpu_corner_t cs[3] = { a, c1, c2 };
     for (int k = 0; k < 3; k++) {
         rhi_terrain_prev pr;
@@ -2915,7 +2927,8 @@ static int tgpu_emit_tri(tgpu_buf* b, const tgpu_face_t* F,
         rhi_terrain_vertex v;
         memset(&v, 0, sizeof(v));
         v.px = cs[k].p.x; v.py = cs[k].p.y; v.pz = cs[k].p.z;
-        v.flags16 = (uint16_t)(F->flags16 | ((uint16_t)cs[k].role << 3));
+        v.flags16 = (uint16_t)(F->flags16 | ((uint16_t)cs[k].role << 3)
+                               | (tri2 ? 0x2000u : 0u));
         v.uvf_u = cs[k].uf; v.uvf_v = cs[k].vf;
         v.uvn_u = cs[k].un; v.uvn_v = cs[k].vn;
         v.rgba_far  = 0xFF000000u | (cs[k].rgb_far  & 0xFFFFFFu);
@@ -3034,8 +3047,8 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         tgpu_buf* dst = F->mat.blend ? &buf[tgpu_arena_of(&F->mat) + ab]
                                      : &buf[OPTC_ARENA_LP + ab];
         /* LP quad: strip diagonal i1-i2 (no i2/i3 swap — see the LP emit) */
-        if (tgpu_emit_tri(dst, &T, k[0], k[1], k[2]) != 0) goto done;
-        if (F->quad && tgpu_emit_tri(dst, &T, k[1], k[2], k[3]) != 0) goto done;
+        if (tgpu_emit_tri(dst, &T, k[0], k[1], k[2], 0) != 0) goto done;
+        if (F->quad && tgpu_emit_tri(dst, &T, k[1], k[2], k[3], 1) != 0) goto done;
     }
 
     /* ---- HP tier: flat variant + the HQ 2x2 subdivide variant ---- */
@@ -3106,8 +3119,8 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             k[1].un = (uint8_t)F->tuN[1]; k[1].vn = (uint8_t)F->tvN[1];
             k[3].un = (uint8_t)F->tuN[2]; k[3].vn = (uint8_t)F->tvN[2];
             k[2].un = (uint8_t)F->tuN[3]; k[2].vn = (uint8_t)F->tvN[3];
-            if (tgpu_emit_tri(dst, &T, k[0], k[1], k[3]) != 0) goto done;
-            if (tgpu_emit_tri(dst, &T, k[1], k[3], k[2]) != 0) goto done;
+            if (tgpu_emit_tri(dst, &T, k[0], k[1], k[3], 0) != 0) goto done;
+            if (tgpu_emit_tri(dst, &T, k[1], k[3], k[2], 1) != 0) goto done;
         } else {
             /* GT3 with the 2-bit UV orientation (triRot) */
             static const int triRot[4][3] = {{0,1,2},{1,3,0},{3,2,1},{2,0,3}};
@@ -3116,7 +3129,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                 k[q].uf = (uint8_t)F->tu[tc[q]]; k[q].vf = (uint8_t)F->tv[tc[q]];
                 k[q].un = (uint8_t)F->tuN[tc[q]]; k[q].vn = (uint8_t)F->tvN[tc[q]];
             }
-            if (tgpu_emit_tri(dst, &T, k[0], k[1], k[2]) != 0) goto done;
+            if (tgpu_emit_tri(dst, &T, k[0], k[1], k[2], 0) != 0) goto done;
         }
         /* HQ 2x2 subdivide variant (terrain_near_emit mirror): corners
          * TL=i0, TR=i1, BL=i3, BR=i2 with RAW near colours; midpoint
@@ -3190,8 +3203,8 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                 c2.uf = (uint8_t)u[2]; c2.vf = (uint8_t)v[2]; c2.role = 2;
                 c3.uf = (uint8_t)u[3]; c3.vf = (uint8_t)v[3]; c3.role = 3;
                 tgpu_buf* hdst = &buf[tgpu_arena_of(&m) + ab];
-                if (tgpu_emit_tri(hdst, &H, c0, c1, c2) != 0) goto done;
-                if (tgpu_emit_tri(hdst, &H, c1, c2, c3) != 0) goto done;
+                if (tgpu_emit_tri(hdst, &H, c0, c1, c2, 0) != 0) goto done;
+                if (tgpu_emit_tri(hdst, &H, c1, c2, c3, 1) != 0) goto done;
             }
         }
     }
@@ -4874,6 +4887,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             e = getenv("OPENPETE_TERRAIN_GPU_NOKEYEMIT");
             if (e && *e && *e != '0') tcg.gflags |= (1u << 30);
         }
+        /* Portal inner-rim frames for the vertex-stage cull (zeroed rim_n
+         * from the memset when frames are absent or the rim claim lever is
+         * on — retained tris then carry no rim verdict, matching the walk
+         * claiming every rim candidate). */
+        tgpu_rim_globals_fill(&tcg);
     }
     s_tgpu_secs_walk = 0; s_tgpu_claims_walk = 0;
     /* OPENPETE_TERRAIN_GPU_CENSUS=1: one stderr line per hook walk with THIS
@@ -5130,18 +5148,21 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             } else if (s_tgpu_claim_all) {
                 claim = 1; s_tgcl_portal++;
             } else if (s_tgpu_pplane_n && oc3 > 1.0) {
-                /* Portal claim, refined (see the s_tgpu_pplane comment): only
-                 * rim-broadphase candidates and blended-face sectors over an
-                 * outline need the CPU walk's drops; sectors table-indexed
-                 * past the broadphase array conservatively claim (the feed's
-                 * rim_sec_cand treats them as candidates too). */
+                /* Portal claim, refined (see the s_tgpu_pplane comment). With
+                 * the rim frames derived, the inner-rim cull runs IN the
+                 * vertex stage (portal_rim_classify mirror on the emitted
+                 * tri, rebuilt from the corner attributes + the flags16
+                 * half/sub-tri bit), so rim candidacy no longer claims — only
+                 * blended-face sectors over an outline do (the transparent-
+                 * cover DROP is the one remaining feed-side portal drop).
+                 * OPENPETE_TERRAIN_GPU_RIMCLAIM=1 restores the rim-candidate
+                 * claim (temp A/B lever; it also zeroes the globals' rim_n so
+                 * the shader test disarms with it). */
                 int pcl = 0;
                 if (s_tgpu_rim_ok) {
-                    /* Poly-anim sectors are unconditional rim candidates
-                     * (rim_sector_cands: animated verts can leave the header
-                     * sphere) — reachable here since anim stopped claiming. */
-                    if (i >= 1024u || SC->polyanim ||
-                        tgpu_rim_sphere_cand(oc1, oc2, oc3, SC->radius)) {
+                    if (tgpu_rimclaim() &&
+                        (i >= 1024u || SC->polyanim ||
+                         tgpu_rim_sphere_cand(oc1, oc2, oc3, SC->radius))) {
                         pcl = 1; s_tgcl_prim++;
                     } else if (tsc_has_blend((tscache_t*)SC)) {
                         const double csx = s_ofx + oc1 * s_H / oc3;
@@ -5845,6 +5866,39 @@ static int tgpu_rim_sphere_cand(double oc1, double oc2, double oc3, int radius) 
         (double)(float)oc1 * 16.0, (double)(float)oc2 * 16.0,
         (double)(float)oc3 * 16.0,
         (double)(float)radius * 16.0 * s_rim_rowmax);
+}
+
+/* Stage the walk's rim frames + classifier knobs into the retained globals,
+ * so terrain.vert can run portal_rim_classify on each emitted tri (rebuilt
+ * from the corner attributes + the flags16 half/sub-tri bit). rim_n stays 0
+ * — no vertex-stage cull — when frames are absent or the rim-claim lever
+ * routes rim candidates to the CPU walk. */
+static void tgpu_rim_globals_fill(openpete_tercache_globals* g) {
+    if (!s_tgpu_rim_ok || tgpu_rimclaim()) return;
+    g->rim_ofx = s_rim_ofx; g->rim_ofy = s_rim_ofy; g->rim_H = s_rim_H;
+    g->rim_knobs[0] = portal_rim_eps();   g->rim_knobs[1] = portal_rim_near();
+    g->rim_knobs[2] = portal_rim_reach(); g->rim_knobs[3] = portal_rim_cos();
+    int n = s_pplane_n > 6 ? 6 : s_pplane_n;
+    for (int pi = 0; pi < n; pi++) {
+        const rim_frame_t* rf = &s_rimfr[pi];
+        const openpete_portal_skyplane* pp = &s_pplane[pi];
+        g->rim_abc[pi][0] = pp->a; g->rim_abc[pi][1] = pp->b;
+        g->rim_abc[pi][2] = pp->c;
+        g->rim_abc[pi][3] = rf->valid ? 1.0 : 0.0;
+        if (!rf->valid) continue;
+        for (int k = 0; k < 3; k++) {
+            g->rim_O[pi][k]   = rf->O[k]; g->rim_U[pi][k] = rf->U[k];
+            g->rim_W[pi][k]   = rf->W[k]; g->rim_nrm[pi][k] = rf->n[k];
+        }
+        g->rim_nrm[pi][3] = (double)pp->vn;
+        g->rim_bbox[pi][0] = rf->pulo; g->rim_bbox[pi][1] = rf->puhi;
+        g->rim_bbox[pi][2] = rf->pvlo; g->rim_bbox[pi][3] = rf->pvhi;
+        for (int k = 0; k < pp->vn && k < 16; k++) {
+            g->rim_pv[pi * 16 + k][0] = rf->pv[k].u;
+            g->rim_pv[pi * 16 + k][1] = rf->pv[k].v;
+        }
+    }
+    g->rim_n = n;
 }
 
 static int portal_rim_classify(CPUState* cpu, const ttri* t) {

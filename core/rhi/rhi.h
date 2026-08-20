@@ -230,7 +230,11 @@ typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
                                  * bits5-11: scroll tile id (flat: Tiledef,
                                  * HQ: record id); bit12: tile id valid —
                                  * the vertex stage adds the globals' per-tile
-                                 * fractional V-scroll offset               */
+                                 * fractional V-scroll offset;
+                                 * bit13: SECOND emitted tri of the (sub-)quad
+                                 * — the vertex belongs to half 2 / sub-tri 2,
+                                 * so per-emitted-tri verdicts (the portal
+                                 * inner-rim cull) can rebuild their own tri  */
     uint8_t  uvf_u, uvf_v;      /* far-tile (LQ) texel coords, page-relative */
     uint8_t  uvn_u, uvn_v;      /* near-tile texel coords (HP textured only) */
     uint32_t rgba_far;          /* far colour (LP: THE colour; HQ: the baked
