@@ -393,13 +393,27 @@ void openpete_tercache_frame_skip(uint32_t stamp, int immediate)
  * level transitions, a stopped feeder — must not repaint old terrain). */
 void openpete_tercache_frame_select(uint32_t present_stamp)
 {
-    /* present_stamp = the stamp of the SCENE being composed. Small skews in
-     * both directions are normal (canonical lag, pause-entry tail feeds);
-     * a large gap means the feeder stopped (menus, transitions) and the
-     * retained state must not repaint. */
-    int32_t age = (int32_t)(present_stamp - s_tc.live.stamp);
-    s_tc.draw_open = s_tc.ready && s_tc.live.valid && age >= -8 && age <= 8;
-    if (s_tc.draw_open) s_tc.sel = s_tc.live;
+    /* present_stamp = the stamp of the SCENE being composed. Prefer an EXACT
+     * stamp match so the retained terrain is the same extraction as the CPU
+     * tris it composes with: live first (the lagged screenshot compose and
+     * the sub-tick spine's immediate publishes both land here), then staged
+     * (a depth-0 compose — the capture freeze-backdrop snapshot, a spine-off
+     * windowed present — renders the CURRENT scene, whose terrain build sits
+     * in staged until the next build's promote; drawing live there pairs
+     * scene N with terrain N-1, and the camera moves between extractions, so
+     * the skew bakes a whole-scene rim into the frozen backdrop). Only then
+     * fall back to a small-tolerance live pick: modest skews are normal
+     * (pause-entry tail feeds), while a large gap means the feeder stopped
+     * (menus, transitions) and the retained state must not repaint. */
+    if (s_tc.ready && s_tc.live.valid && present_stamp == s_tc.live.stamp) {
+        s_tc.draw_open = 1; s_tc.sel = s_tc.live;
+    } else if (s_tc.ready && s_tc.staged.valid && present_stamp == s_tc.staged.stamp) {
+        s_tc.draw_open = 1; s_tc.sel = s_tc.staged;
+    } else {
+        int32_t age = (int32_t)(present_stamp - s_tc.live.stamp);
+        s_tc.draw_open = s_tc.ready && s_tc.live.valid && age >= -8 && age <= 8;
+        if (s_tc.draw_open) s_tc.sel = s_tc.live;
+    }
     s_tc.ubo_written = 0;
     {   static int dbg = -1; static int n;
         if (dbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_DBG2");
