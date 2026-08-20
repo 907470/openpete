@@ -79,6 +79,7 @@ layout(std140, set = 3, binding = 0) uniform TerrainGlobals {
     dvec2 dH;       /* x: H (projection distance), y: poly-anim sub-tick
                      * alpha (1.0 on canonical builds; TERRAIN_ANIM only)   */
     ivec4 fog;      /* x: fogRefBase, y: gflags, z: cullRefS2, w: unused  */
+    vec4  sdv[128]; /* per-tile scroll V offsets (lq, hqA, hqB, 0)        */
 } g;
 
 /* g.fog.y bits — keep in sync with openpete_terrain_cache.h OPTC_GF_* */
@@ -399,6 +400,15 @@ void main()
             dbg_delta = uint(delta);
             if (delta > 0) clut = (clut + uint(delta << 6)) & 0xFFFFu;
         }
+    }
+    /* env UV-scroll: per-tile fractional V offset for THIS build. Flat
+     * faces: the LQ dv (both LOD halves share one offset — the game writes
+     * the same scroll byte into all four V slots); HQ sub-quads: the
+     * per-half dv (entries 1-2 vs 3-4 sit half a window apart in the
+     * scroll ring). Zero on canonical builds. */
+    if ((f16 & 0x1000u) != 0u) {
+        int stile = int((f16 >> 5) & 0x7Fu);
+        uv.y += hqv ? g.sdv[stile][(subq >> 1) + 1] : g.sdv[stile].x;
     }
     vMat = uvec2(mat0, (clut & 0x3Fu) * 16u | (((clut >> 6) & 0x1FFu) << 16));
     if ((gf & (1 << 29)) != 0) {               /* debug tint: ladder verdict */

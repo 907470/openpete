@@ -112,6 +112,12 @@ typedef struct {
     int32_t fog_ref_base; /* ENV_LODDIST >> 2                                  */
     int32_t cull_ref_s2;  /* ENV_CULLDIST >> 7 (.s LP far-cull threshold)      */
     uint32_t gflags;      /* OPTC_GF_*                                         */
+    /* Per-tile fractional UV-scroll V offsets for THIS build (env texture
+     * anim, sub-tick lerp of the 7-bit accumulator): [0] = LQ/flat-face dv,
+     * [1]/[2] = HQ record entries 1-2 / 3-4 (the two ring halves), [3] pad.
+     * All zero on canonical builds (whole-texel committed decode). Faces
+     * carry their tile id in flags16; the vertex stage adds the offset. */
+    float   scroll_dv[128][4];
 } openpete_tercache_globals;
 
 /* Init/teardown (native_render.c owns the device lifetime). init returns 0

@@ -1195,6 +1195,9 @@ typedef struct {
     int8_t   tb;                                   /* HP texByte (int8 of w2; -1 = untextured) */
     uint32_t w3;                                   /* HP word3 (face_is_near gates) */
     uint32_t tgen;                                 /* s_tgen[tile] at texmat decode (anim liveness) */
+    uint32_t tgenHq;                               /* s_tgen[hq_idx] at last refresh — the scroll
+                                                    * accumulator gen for the HQ sibling record
+                                                    * (bake liveness; the CPU near path reads it live) */
     tmat mat; float tu[4], tv[4];                  /* tiledef half +0 (far/LQ; LP untextured) */
     tmat matN; float tuN[4], tvN[4];               /* tiledef half +8 (near tile, .s t0<=0 branch) */
 } tsface_t;
@@ -2146,7 +2149,23 @@ static void tsc_scroll_refresh(CPUState* cpu) {
         if (!desc) continue;
         dbg_desc++;
         {   uint32_t ct = rd(cpu, desc + 4) & 0xFFFFu;
-            if (ct < 128) { s_tscroll_tile[ct] = 1; s_tscroll_have = 1; } }
+            if (ct < 128) {
+                s_tscroll_tile[ct] = 1; s_tscroll_have = 1;
+                /* Accumulator-change generation: the scroller advances the
+                 * HQ sibling record on ticks where the 16-byte LQ entry is
+                 * byte-identical (scroll>>2 unchanged), so tsc_tile_gens
+                 * alone would leave a stale GPU bake. Track the raw 7-bit
+                 * accumulator and bump the tile generation on every advance
+                 * (canonical builds only — it moves at tick boundaries);
+                 * the re-decode is a no-op for the CPU path when the LQ
+                 * bytes coincide, and texGen rebuilds the bake. */
+                static uint16_t s_tscroll_acc[128];
+                uint16_t acc = (uint16_t)(cpu->read_half(desc + 6) & 0x7Fu);
+                if (!s_vanim_sub && s_tscroll_acc[ct] != acc) {
+                    s_tscroll_acc[ct] = acc;
+                    s_tgen[ct]++; s_tgen_epoch++;
+                }
+            } }
         if (!pair) continue;
         const openpete_interp_obj_t* o = openpete_interp_objs_find(desc);
         /* curr_ns == prev_ns means the snapshot clock stood still between the
@@ -2221,6 +2240,14 @@ static void tsc_refresh_anim(CPUState* cpu, tscache_t* C,
     int changed = 0;
     for (int f = 0; f < C->nHpF; f++) {
         tsface_t* F = &C->hpF[f];
+        /* HQ sibling liveness: the scroll accumulator gen for the record id
+         * (which can differ from tb). The near path decodes the record live
+         * per emit, so nothing re-decodes here — but the GPU bake reads it
+         * at build time and must go stale (texGen) when it advances. */
+        if (F->quad && !(F->w3 & 0x80)) {
+            uint32_t gh = s_tgen[F->hq_idx & 0x7F];
+            if (F->tgenHq != gh) { F->tgenHq = gh; changed = 1; }
+        }
         if (F->tb == -1) continue;
         uint32_t g = s_tgen[F->tb & 0x7F];
         if (F->tgen == g) continue;
@@ -2742,6 +2769,14 @@ static int tgpu_animclaim(void) {
                  v = (e && *e && *e != '0'); }
     return v;
 }
+/* OPENPETE_TERRAIN_GPU_SCROLLCLAIM=1: restore the pre-migration UV-scroll
+ * claim (A/B lever, temp). GPU_-prefixed: safe with the cache engaged. */
+static int tgpu_scrollclaim(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_SCROLLCLAIM");
+                 v = (e && *e && *e != '0'); }
+    return v;
+}
 static int tgpu_portal_frames(CPUState* cpu);            /* defined post-feed-statics */
 static int tgpu_rim_sphere_cand(double oc1, double oc2, double oc3, int radius);
 static double s_tgpu_l3 = 1.0;        /* ||M row 2||/4096 (near-claim bound) */
@@ -2922,12 +2957,12 @@ static int tgpu_col_hash(const tscache_t* SC, uint32_t* out) {
  * (the authored-correction key). */
 static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                              uint32_t hqTable, int sec_index) {
-    /* Scroll-anim claim scan: sectors touching a live scroller tile stay on
-     * the CPU walk. The mask covers every build — the scroller advances the
-     * HQ sibling record on ticks where the LQ entry bytes coincide, so the
-     * LQ-snapshot generations alone would leave a stale bake — and while it
-     * scrolls, those gen bumps re-run this build (and re-latch the claim). */
-    if (s_tscroll_have && SC->hpF) {
+    /* UV-scroll is mirrored: the accumulator-change tile generations rebuild
+     * the bake per whole-texel advance (incl. the HQ-sibling-only ticks, via
+     * tgenHq), and sub-tick fractional offsets ride the globals' per-tile dv
+     * table (flags16 carries the face's tile id). The pre-migration claim
+     * survives behind the A/B lever only. */
+    if (tgpu_scrollclaim() && s_tscroll_have && SC->hpF) {
         for (int f = 0; f < SC->nHpF; f++) {
             const tsface_t* F = &SC->hpF[f];
             if (F->tb != -1 && s_tscroll_tile[F->tb & 0x7F]) return 2;
@@ -3024,6 +3059,11 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                      | (((uint32_t)F->otbias & 0x1Fu) << 24);
         T.matf0 = tgpu_pack_mat0(&F->mat);  T.matf1 = (uint32_t)(F->mat.clut_raw & 0xFFFF);
         T.matn0 = tgpu_pack_mat0(&F->matN); T.matn1 = (uint32_t)(F->matN.clut_raw & 0xFFFF);
+        /* Scroll tile id (flags16 bits 5-12): the vertex stage adds the
+         * per-build fractional V offset for this Tiledef (zero when the
+         * tile isn't scrolling). */
+        if (F->tb != -1)
+            T.flags16 = (uint16_t)((((uint32_t)F->tb & 0x7Fu) << 5) | 0x1000u);
         uint32_t nearC[4], farC[4];
         const uint16_t co[4] = { F->c0, F->c1, F->c2, F->c3 };
         for (int q = 0; q < 4; q++) {
@@ -3136,7 +3176,11 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                     u[3]=(float)(br & 0xFF); v[3]=(float)((br >> 8) & 0xFF);
                 }
                 tgpu_face_t H = T;
-                H.flags16 = (uint16_t)(1u | ((uint16_t)q << 1));   /* HQ variant + sub-quad */
+                /* HQ variant + sub-quad + the HQ RECORD's scroll tile id
+                 * (the near-emit's dv lookup keys on hq_idx, not tb;
+                 * hq_idx is w2 & 0x7F, always in range). */
+                H.flags16 = (uint16_t)(1u | ((uint16_t)q << 1)
+                          | (((uint32_t)F->hq_idx & 0x7Fu) << 5) | 0x1000u);
                 H.matf0 = tgpu_pack_mat0(&m);
                 H.matf1 = (uint32_t)(m.clut_raw & 0xFFFF);
                 H.matn0 = 0; H.matn1 = 0;   /* near cells never re-select */
@@ -4801,6 +4845,16 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         /* Poly-anim lerp alpha: sub-tick paired builds carry the spine's
          * alpha; canonical (and unpaired) builds draw cur exactly. */
         tcg.vanim_alpha = (s_vanim_sub && s_vanim_on) ? s_vanim_alpha : 1.0;
+        /* Per-tile UV-scroll offsets for this build (zero when the tile has
+         * no fractional offset — canonical builds render the committed
+         * whole-texel decode). */
+        if (s_tanim_have)
+            for (int t = 0; t < 128; t++)
+                if (s_tanim_act[t]) {
+                    tcg.scroll_dv[t][0] = s_tanim_dvlq[t];
+                    tcg.scroll_dv[t][1] = s_tanim_dvhq[t][0];
+                    tcg.scroll_dv[t][2] = s_tanim_dvhq[t][1];
+                }
         tcg.fog_ref_base = fogRefBase;
         tcg.cull_ref_s2  = cullRefS2;
         tcg.gflags = ((s_nearhq && hqTable) ? OPTC_GF_NEARHQ : 0u)

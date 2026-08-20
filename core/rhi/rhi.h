@@ -226,7 +226,11 @@ typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
     uint16_t flags16;           /* bit0: HQ-subdivide variant (vs flat/LP);
                                  * bits1-2: HQ sub-quad index (0..3);
                                  * bits3-4: corner slot within the sub-quad
-                                 * (0..3 in [TL,TR,BL,BR] order)             */
+                                 * (0..3 in [TL,TR,BL,BR] order);
+                                 * bits5-11: scroll tile id (flat: Tiledef,
+                                 * HQ: record id); bit12: tile id valid —
+                                 * the vertex stage adds the globals' per-tile
+                                 * fractional V-scroll offset               */
     uint8_t  uvf_u, uvf_v;      /* far-tile (LQ) texel coords, page-relative */
     uint8_t  uvn_u, uvn_v;      /* near-tile texel coords (HP textured only) */
     uint32_t rgba_far;          /* far colour (LP: THE colour; HQ: the baked

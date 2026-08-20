@@ -65,8 +65,9 @@ typedef struct {
     double dcam_xy[2]; /* camx, camy      */
     double dcam_zf[2]; /* camz, fogscale  */
     double dof_xy[2];  /* ofx, ofy        */
-    double dH[2];      /* H, unused       */
+    double dH[2];      /* H, poly-anim alpha */
     int32_t fog[4];    /* fogRefBase, gflags, cullRefS2, 0 */
+    float sdv[128][4]; /* per-tile scroll V offsets (lq, hqA, hqB, 0) */
 } tc_globals_ubo;
 
 typedef struct { float o[4]; } tc_sector_ubo;   /* xyz origin, w flag bits */
@@ -435,6 +436,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     gu->fog[0] = g->fog_ref_base;
     gu->fog[1] = (int32_t)g->gflags;
     gu->fog[2] = g->cull_ref_s2;
+    memcpy(gu->sdv, g->scroll_dv, sizeof(gu->sdv));
 
     /* reset sector flags; origins are rewritten by sector_set */
     for (int i = 0; i < OPTC_SLOTS; i++) T->sec[i].o[3] = 0.0f;
