@@ -40,17 +40,19 @@ BIN = os.environ.get("OPENPETE_BIN",
 DISC = os.environ.get("OPENPETE_DISC",
                       os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue"))
 REASONS = ["near", "portal", "anim", "scroll", "fill", "arena", "col",
-           "slot", "tp", "sel", "nearb", "nodraw"]
+           "slot", "tp", "sel", "nearb", "nodraw", "prim", "pcov"]
 # nearb is a SUB-BUCKET of near (whole bounding sphere behind the near
 # threshold -> the CPU walk emits nothing), not an additional claim reason —
 # it is nonzero only under OPENPETE_TERRAIN_GPU_NODRAW=0. nodraw counts the
 # sectors the no-draw verdict owns (neither walked nor drawn); the report
-# treats them as covered.
+# treats them as covered. prim/pcov are SUB-BUCKETS of portal (rim-broadphase
+# candidate / blended-face over an outline); portal minus their sum = the
+# claim-all and no-refinement degenerates.
 CEN_RE = re.compile(
     r"\[tgpu-cen f=(\d+)\] sub=(\d+) secs=(\d+) claims=(\d+) "
     r"near=(-?\d+) portal=(-?\d+) anim=(-?\d+) scroll=(-?\d+) fill=(-?\d+) "
     r"arena=(-?\d+) col=(-?\d+) slot=(-?\d+) tp=(-?\d+) sel=(-?\d+) "
-    r"nearb=(-?\d+) nodraw=(-?\d+)")
+    r"nearb=(-?\d+) nodraw=(-?\d+) prim=(-?\d+) pcov=(-?\d+)")
 
 
 def read_manifest(path):
@@ -224,7 +226,8 @@ def main():
                   f"Aggregate: {cov}/{tot} sectors off the CPU walk "
                   f"({100.0 * cov / tot:.1f}% coverage; {a['nodraw']} of those "
                   f"= behind-camera no-draw), {a['claims']} claimed:", ""]
-        ranked = sorted((r for r in REASONS if r not in ("nearb", "nodraw")),
+        ranked = sorted((r for r in REASONS
+                         if r not in ("nearb", "nodraw", "prim", "pcov")),
                         key=lambda r: -a[r])
         lines += ["| reason | sectors claimed | share of claims |", "|---|---|---|"]
         for r in ranked:
@@ -235,6 +238,9 @@ def main():
                 extra = (f" (of which {a['nearb']} = "
                          f"{100.0 * a['nearb'] / a['near']:.0f}% fully "
                          f"BEHIND the near plane — no-draw candidates)")
+            if r == "portal" and (a["prim"] or a["pcov"]):
+                extra = (f" (rim-cand {a['prim']}, blended-cover {a['pcov']}, "
+                         f"degenerate {a['portal'] - a['prim'] - a['pcov']})")
             lines.append(f"| {r} | {a[r]} | "
                          f"{100.0 * a[r] / max(1, a['claims']):.1f}%{extra} |")
         lines.append("")

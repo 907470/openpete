@@ -1258,6 +1258,12 @@ typedef struct {
      * 2 = no signal (untextured/unmatched sector — level mean applies). */
     float lpg_p[3], lpg_q[3];
     uint8_t lpg_state; unsigned lpg_gen;
+    /* Any face (either tier) semi-transparent? Blend-on/off is decode-stable:
+     * HP ABE is the face's texByte high bit, LP ABE is face w1 bit 2, and the
+     * env tex anim's tiledef rewrites can only change the ABR class (1..4),
+     * never opaque vs blended — so one scan per decode suffices. Consumed by
+     * the retained-GPU portal claim (transparent-cover relevance). */
+    uint8_t hasBlend; uint32_t blendGen;
     /* GPU sector-mesh cache liveness: decodeGen bumps on every (re)decode of
      * this slot (a global monotonic counter, so slot reuse for a different
      * sector always mismatches); texGen when the env texture anim re-decoded
@@ -2620,6 +2626,18 @@ static void terrain_animdbg(CPUState* cpu) {
     have = 1;
 }
 
+/* Latched any-blended-face scan (see the tscache_t field comment). */
+static int tsc_has_blend(tscache_t* C) {
+    if (C->blendGen != C->decodeGen) {
+        int hb = 0;
+        for (int i = 0; i < C->nHpF && !hb; i++) if (C->hpF[i].mat.blend) hb = 1;
+        for (int i = 0; i < C->nLpF && !hb; i++) if (C->lpF[i].mat.blend) hb = 1;
+        C->hasBlend = (uint8_t)hb;
+        C->blendGen = C->decodeGen;
+    }
+    return C->hasBlend;
+}
+
 /* Per-sector view-space bounding sphere, stamped each walk (s_vanim_pres).
  * Shared input of the occlusion cull and the portal-rim sector broadphase
  * (rim_sector_cands): sector-table index -> centre through the projection
@@ -2680,19 +2698,31 @@ static tgpu_slot_t s_tgpu[TSC_SLOTS];
 static long s_tgpu_secs, s_tgpu_claims, s_tgpu_rebuilds;
 static long s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
             s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot,
-            s_tgcl_texpack, s_tgcl_sel, s_tgcl_nearb, s_tgcl_nodraw;
+            s_tgcl_texpack, s_tgcl_sel, s_tgcl_nearb, s_tgcl_nodraw,
+            s_tgcl_prim, s_tgcl_pcov;   /* portal sub-buckets: rim-candidate /
+                                         * blended-cover (portal = their sum
+                                         * plus claim-all + no-refine claims) */
 static int  s_tgpu_secs_walk, s_tgpu_claims_walk;
 
-/* Active portal-sky planes for the per-sector portal claim: portal-adjacent
- * terrain carries per-face feed semantics (inner-rim cull, transparent-cover
- * drop, plane-cover interplay) the GPU path doesn't mirror yet, so any
- * sector whose projected screen bbox overlaps a portal outline is claimed
- * back to the CPU walk while the rest of the level still GPU-draws.
+/* Active portal-sky planes for the per-sector portal claim. Of the feed's
+ * portal semantics, only two ever DROP a CPU-fed terrain tri — the inner-rim
+ * cull (bounded by the rim sector broadphase: a sector failing it cannot
+ * contain a rim candidate) and the transparent-cover drop (blended faces
+ * only). Opaque plane-cover needs no claim at all: covered pixels draw at
+ * true depth and the preview repaints over them in core, whoever drew them.
+ * So a sector claims iff it passes the rim broadphase, or it has a blended
+ * face and its projected bbox overlaps an active outline; everything else
+ * near a portal keeps the GPU path and draws identically by construction.
  * s_tgpu_claim_all forces every sector to the CPU when a portal is recent
- * but its planes are momentarily unavailable (safe degenerate). */
+ * but its planes are momentarily unavailable (safe degenerate); with the
+ * plane provider disabled (OPENPETE_TERRAIN_PORTAL_CONFORM=0) the feed
+ * drops nothing, and the pre-refinement blanket bbox claim is kept. */
 static openpete_portal_skyplane s_tgpu_pplane[6];
 static int s_tgpu_pplane_n = 0;
 static int s_tgpu_claim_all = 0;
+static int s_tgpu_rim_ok = 0;         /* rim frames derived for THIS walk */
+static int tgpu_portal_frames(CPUState* cpu);            /* defined post-feed-statics */
+static int tgpu_rim_sphere_cand(double oc1, double oc2, double oc3, int radius);
 static double s_tgpu_l3 = 1.0;        /* ||M row 2||/4096 (near-claim bound) */
 static int s_otbias_on;               /* tentative: defined (=1) at the feed */
 
@@ -3206,12 +3236,13 @@ static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
     openpete_tercache_get_stats(&st);
     fprintf(stderr, "[ter-gpu f=%u] sectors=%ld claims=%ld (near=%ld portal=%ld "
             "anim=%ld scroll=%ld fill=%ld arena=%ld col=%ld slot=%ld tp=%ld "
-            "sel=%ld nearb=%ld nodraw=%ld) rebuilds=%ld "
+            "sel=%ld nearb=%ld nodraw=%ld prim=%ld pcov=%ld) rebuilds=%ld "
             "chunks=%u verts=%u/%u draws=%u frees-pend=%u\n",
             openpete_frame, s_tgpu_secs, s_tgpu_claims,
             s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
             s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot,
             s_tgcl_texpack, s_tgcl_sel, s_tgcl_nearb, s_tgcl_nodraw,
+            s_tgcl_prim, s_tgcl_pcov,
             s_tgpu_rebuilds,
             st.chunks, st.verts_used, st.verts_cap, st.draws_last_present,
             st.frees_pending);
@@ -3219,6 +3250,7 @@ static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
     s_tgcl_near = s_tgcl_portal = s_tgcl_anim = s_tgcl_scroll = 0;
     s_tgcl_fill = s_tgcl_build = s_tgcl_colour = s_tgcl_slot = 0;
     s_tgcl_texpack = s_tgcl_sel = s_tgcl_nearb = s_tgcl_nodraw = 0;
+    s_tgcl_prim = s_tgcl_pcov = 0;
 }
 
 
@@ -4668,11 +4700,20 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                && !tgpu_env_block()
                && !s_fp_on
                && texTblMode == 0;
-    s_tgpu_pplane_n = 0; s_tgpu_claim_all = 0;
+    s_tgpu_pplane_n = 0; s_tgpu_claim_all = 0; s_tgpu_rim_ok = 0;
     if (tgpu_on && openpete_portal_sky_recent()) {
         s_tgpu_pplane_n = openpete_portal_sky_planes(cpu, s_tgpu_pplane, 6);
         /* Recent portal but planes momentarily gone: claim everything (safe). */
         if (s_tgpu_pplane_n == 0) s_tgpu_claim_all = 1;
+        else {
+            /* OPENPETE_TERRAIN_GPU_PREFINE=0: blanket projected-bbox portal
+             * claim (the pre-refinement rule; A/B lever). GPU_-prefixed:
+             * safe with the cache engaged. */
+            static int s_prefine = -1;
+            if (s_prefine < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_PREFINE");
+                                 s_prefine = (e && *e) ? (*e != '0') : 1; }
+            if (s_prefine) s_tgpu_rim_ok = tgpu_portal_frames(cpu);
+        }
     }
     openpete_tercache_globals tcg;
     if (tgpu_on) {
@@ -4711,7 +4752,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     static int s_cen = -1;
     if (s_cen < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_CENSUS");
                      s_cen = (e && *e && *e != '0'); }
-    long cen0[12];
+    long cen0[14];
     if (s_cen) {
         cen0[0] = s_tgcl_near;   cen0[1] = s_tgcl_portal;
         cen0[2] = s_tgcl_anim;   cen0[3] = s_tgcl_scroll;
@@ -4719,6 +4760,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         cen0[6] = s_tgcl_colour; cen0[7] = s_tgcl_slot;
         cen0[8] = s_tgcl_texpack; cen0[9] = s_tgcl_sel;
         cen0[10] = s_tgcl_nearb; cen0[11] = s_tgcl_nodraw;
+        cen0[12] = s_tgcl_prim;  cen0[13] = s_tgcl_pcov;
     }
     /* Any active walk instrument forces serial: their censuses/dumps are
      * whole-walk statics with serial semantics (per-sector timing, ordered
@@ -4852,9 +4894,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * skips the face loop. Claim reasons, in test order:
          *  - near: the bounding sphere may reach the near plane; the CPU
          *    walk near-clips, the GPU path guarantees m3 > 0 instead.
-         *  - portal: the sector's projected bbox overlaps an active portal
-         *    outline (rim cull / transparent-cover / plane-cover feed
-         *    semantics — the S2c plane-cover migration retires this).
+         *  - portal: the sector may carry a feed-time portal drop — a rim
+         *    broadphase candidate (inner-rim cull) or a blended-face sector
+         *    over an active outline (transparent-cover drop). Opaque
+         *    plane-cover needs no claim (per-pixel in core).
          *  - anim: vert-anim sectors lerp fractional banks per present.
          *  - fill: WORLD_FILL twins are screen-dilated in the feed.
          *  - lpg: the pack-aware LP level-mean regrade applies to EVERY
@@ -4945,16 +4988,42 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             } else if (s_tgpu_claim_all) {
                 claim = 1; s_tgcl_portal++;
             } else if (s_tgpu_pplane_n && oc3 > 1.0) {
-                double csx = s_ofx + oc1 * s_H / oc3;
-                double csy = s_ofy + oc2 * s_H / oc3;
-                double rpx = (double)SC->radius * s_H / oc3 * 1.5 + 16.0;
-                for (int pi = 0; pi < s_tgpu_pplane_n; pi++) {
-                    const openpete_portal_skyplane* pp = &s_tgpu_pplane[pi];
-                    if (csx + rpx >= pp->x0 && csx - rpx <= pp->x1 &&
-                        csy + rpx >= pp->y0 && csy - rpx <= pp->y1) {
-                        claim = 1; s_tgcl_portal++; break;
+                /* Portal claim, refined (see the s_tgpu_pplane comment): only
+                 * rim-broadphase candidates and blended-face sectors over an
+                 * outline need the CPU walk's drops; sectors table-indexed
+                 * past the broadphase array conservatively claim (the feed's
+                 * rim_sec_cand treats them as candidates too). */
+                int pcl = 0;
+                if (s_tgpu_rim_ok) {
+                    if (i >= 1024u || tgpu_rim_sphere_cand(oc1, oc2, oc3, SC->radius)) {
+                        pcl = 1; s_tgcl_prim++;
+                    } else if (tsc_has_blend((tscache_t*)SC)) {
+                        const double csx = s_ofx + oc1 * s_H / oc3;
+                        const double csy = s_ofy + oc2 * s_H / oc3;
+                        const double rpx = (double)SC->radius * s_H / oc3 * 1.5 + 16.0;
+                        for (int pi = 0; pi < s_tgpu_pplane_n; pi++) {
+                            const openpete_portal_skyplane* pp = &s_tgpu_pplane[pi];
+                            if (csx + rpx >= pp->x0 && csx - rpx <= pp->x1 &&
+                                csy + rpx >= pp->y0 && csy - rpx <= pp->y1) {
+                                pcl = 1; s_tgcl_pcov++; break;
+                            }
+                        }
+                    }
+                } else {
+                    /* Refinement frames unavailable (plane provider disabled):
+                     * blanket projected-bbox claim, the pre-refinement rule. */
+                    const double csx = s_ofx + oc1 * s_H / oc3;
+                    const double csy = s_ofy + oc2 * s_H / oc3;
+                    const double rpx = (double)SC->radius * s_H / oc3 * 1.5 + 16.0;
+                    for (int pi = 0; pi < s_tgpu_pplane_n; pi++) {
+                        const openpete_portal_skyplane* pp = &s_tgpu_pplane[pi];
+                        if (csx + rpx >= pp->x0 && csx - rpx <= pp->x1 &&
+                            csy + rpx >= pp->y0 && csy - rpx <= pp->y1) {
+                            pcl = 1; break;
+                        }
                     }
                 }
+                if (pcl) { claim = 1; s_tgcl_portal++; }
             }
             if (!claim && s_tgpu_own[vi] != 2) {
                 /* own == 2 (behind-camera no-draw) skips the validate/build
@@ -5076,7 +5145,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             fprintf(stderr, "[tgpu-cen f=%u] sub=%d secs=%d claims=%d "
                     "near=%ld portal=%ld anim=%ld scroll=%ld fill=%ld "
                     "arena=%ld col=%ld slot=%ld tp=%ld sel=%ld nearb=%ld "
-                    "nodraw=%ld\n",
+                    "nodraw=%ld prim=%ld pcov=%ld\n",
                     openpete_frame, s_vanim_sub,
                     s_tgpu_secs_walk, s_tgpu_claims_walk,
                     s_tgcl_near - cen0[0], s_tgcl_portal - cen0[1],
@@ -5084,7 +5153,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     s_tgcl_fill - cen0[4], s_tgcl_build - cen0[5],
                     s_tgcl_colour - cen0[6], s_tgcl_slot - cen0[7],
                     s_tgcl_texpack - cen0[8], s_tgcl_sel - cen0[9],
-                    s_tgcl_nearb - cen0[10], s_tgcl_nodraw - cen0[11]);
+                    s_tgcl_nearb - cen0[10], s_tgcl_nodraw - cen0[11],
+                    s_tgcl_prim - cen0[12], s_tgcl_pcov - cen0[13]);
         tgpu_census();
         if (op_prof_on()) {   /* the claim-ratchet metric, per present */
             static int id_secs = -1, id_claims = -1;
@@ -5567,6 +5637,32 @@ static int rim_sec_cand(int sec) {
     return (sec >= 0 && sec < 1024) ? s_sec_rimcand[sec] : 1;
 }
 
+/* Sphere-vs-plane candidate core, shared by the feed broadphase and the
+ * retained-GPU portal claim so the two verdicts cannot drift. Inputs are
+ * view-space world units; rv already carries the rowmax scale. */
+static int rim_sphere_cand_core(double cx, double cy, double cz, double rv) {
+    double slack = rv * 0.05 + 64.0;
+    if (s_rim_H >= 1.0) {
+        double vzmax = cz + rv; if (vzmax < 16.0) vzmax = 16.0;
+        slack += 4.0 * vzmax / s_rim_H;   /* ~4 px of screen-snap reconstruction */
+    }
+    const double r = rv + slack;
+    for (int pi = 0; pi < s_pplane_n; pi++) {
+        const rim_frame_t* rf = &s_rimfr[pi];
+        if (!rf->valid) continue;
+        const double dx = cx - rf->O[0], dy = cy - rf->O[1], dz = cz - rf->O[2];
+        const double dperp = fabs(dx*rf->n[0] + dy*rf->n[1] + dz*rf->n[2]);
+        if (dperp - r > RIM_CAND_WINDOW) continue;   /* sphere wholly beyond the window */
+        const double cu = dx*rf->U[0] + dy*rf->U[1] + dz*rf->U[2];
+        const double cv = dx*rf->W[0] + dy*rf->W[1] + dz*rf->W[2];
+        if (cu + r < rf->pulo - RIM_CAND_MARGIN || cu - r > rf->puhi + RIM_CAND_MARGIN ||
+            cv + r < rf->pvlo - RIM_CAND_MARGIN || cv - r > rf->pvhi + RIM_CAND_MARGIN)
+            continue;                                /* sphere wholly outside the in-plane bbox */
+        return 1;
+    }
+    return 0;
+}
+
 static void rim_sector_cands(void) {
     if (s_rimbroad < 0) { const char* e = getenv("OPENPETE_PORTAL_RIM_BROAD");
                           s_rimbroad = (e && *e) ? atoi(e) : 1; }
@@ -5574,32 +5670,35 @@ static void rim_sector_cands(void) {
     for (int i = 0; i < 1024; i++) {
         if (s_secv_stamp[i] != s_vanim_pres) { s_sec_rimcand[i] = 0; continue; }
         if (s_secv_anim[i]) { s_sec_rimcand[i] = 1; continue; }
-        const double cx = (double)s_secv[i][0] * 16.0;
-        const double cy = (double)s_secv[i][1] * 16.0;
-        const double cz = (double)s_secv[i][2] * 16.0;
-        const double rv = (double)s_secv[i][3] * 16.0 * s_rim_rowmax;
-        double slack = rv * 0.05 + 64.0;
-        if (s_rim_H >= 1.0) {
-            double vzmax = cz + rv; if (vzmax < 16.0) vzmax = 16.0;
-            slack += 4.0 * vzmax / s_rim_H;   /* ~4 px of screen-snap reconstruction */
-        }
-        const double r = rv + slack;
-        int cand = 0;
-        for (int pi = 0; pi < s_pplane_n && !cand; pi++) {
-            const rim_frame_t* rf = &s_rimfr[pi];
-            if (!rf->valid) continue;
-            const double dx = cx - rf->O[0], dy = cy - rf->O[1], dz = cz - rf->O[2];
-            const double dperp = fabs(dx*rf->n[0] + dy*rf->n[1] + dz*rf->n[2]);
-            if (dperp - r > RIM_CAND_WINDOW) continue;   /* sphere wholly beyond the window */
-            const double cu = dx*rf->U[0] + dy*rf->U[1] + dz*rf->U[2];
-            const double cv = dx*rf->W[0] + dy*rf->W[1] + dz*rf->W[2];
-            if (cu + r < rf->pulo - RIM_CAND_MARGIN || cu - r > rf->puhi + RIM_CAND_MARGIN ||
-                cv + r < rf->pvlo - RIM_CAND_MARGIN || cv - r > rf->pvhi + RIM_CAND_MARGIN)
-                continue;                                /* sphere wholly outside the in-plane bbox */
-            cand = 1;
-        }
-        s_sec_rimcand[i] = (uint8_t)cand;
+        s_sec_rimcand[i] = (uint8_t)rim_sphere_cand_core(
+            (double)s_secv[i][0] * 16.0, (double)s_secv[i][1] * 16.0,
+            (double)s_secv[i][2] * 16.0,
+            (double)s_secv[i][3] * 16.0 * s_rim_rowmax);
     }
+}
+
+/* ---- retained-GPU portal-claim refinement (walk side) ----------------------
+ * Derive the rim frames for the walk's claim tests, from the walk's own plane
+ * fetch. The feed re-derives them later in the same extraction with the
+ * same camera and plane set, so both sides test identical geometry; the
+ * claim must only be at least as inclusive as the feed's rim_sec_cand, which
+ * it is exactly (same core, same inputs — the claim site feeds the very
+ * values it stamps into s_secv through the same float round-trip). */
+static int tgpu_portal_frames(CPUState* cpu) {
+    if (s_pconform < 0) { const char* e = getenv("OPENPETE_TERRAIN_PORTAL_CONFORM");
+                          s_pconform = (e && *e) ? (*e != '0') : 1; }
+    if (!s_pconform) return 0;
+    memcpy(s_pplane, s_tgpu_pplane,
+           sizeof(openpete_portal_skyplane) * (size_t)s_tgpu_pplane_n);
+    s_pplane_n = s_tgpu_pplane_n;
+    rim_frames_derive(cpu);
+    return 1;
+}
+static int tgpu_rim_sphere_cand(double oc1, double oc2, double oc3, int radius) {
+    return rim_sphere_cand_core(
+        (double)(float)oc1 * 16.0, (double)(float)oc2 * 16.0,
+        (double)(float)oc3 * 16.0,
+        (double)(float)radius * 16.0 * s_rim_rowmax);
 }
 
 static int portal_rim_classify(CPUState* cpu, const ttri* t) {
