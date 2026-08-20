@@ -2680,7 +2680,7 @@ static tgpu_slot_t s_tgpu[TSC_SLOTS];
 static long s_tgpu_secs, s_tgpu_claims, s_tgpu_rebuilds;
 static long s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
             s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot,
-            s_tgcl_texpack, s_tgcl_sel;
+            s_tgcl_texpack, s_tgcl_sel, s_tgcl_nearb;
 static int  s_tgpu_secs_walk, s_tgpu_claims_walk;
 
 /* Active portal-sky planes for the per-sector portal claim: portal-adjacent
@@ -3206,18 +3206,18 @@ static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
     openpete_tercache_get_stats(&st);
     fprintf(stderr, "[ter-gpu f=%u] sectors=%ld claims=%ld (near=%ld portal=%ld "
             "anim=%ld scroll=%ld fill=%ld arena=%ld col=%ld slot=%ld tp=%ld "
-            "sel=%ld) rebuilds=%ld "
+            "sel=%ld nearb=%ld) rebuilds=%ld "
             "chunks=%u verts=%u/%u draws=%u frees-pend=%u\n",
             openpete_frame, s_tgpu_secs, s_tgpu_claims,
             s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
             s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot,
-            s_tgcl_texpack, s_tgcl_sel, s_tgpu_rebuilds,
+            s_tgcl_texpack, s_tgcl_sel, s_tgcl_nearb, s_tgpu_rebuilds,
             st.chunks, st.verts_used, st.verts_cap, st.draws_last_present,
             st.frees_pending);
     s_tgpu_secs = s_tgpu_claims = s_tgpu_rebuilds = 0;
     s_tgcl_near = s_tgcl_portal = s_tgcl_anim = s_tgcl_scroll = 0;
     s_tgcl_fill = s_tgcl_build = s_tgcl_colour = s_tgcl_slot = 0;
-    s_tgcl_texpack = s_tgcl_sel = 0;
+    s_tgcl_texpack = s_tgcl_sel = s_tgcl_nearb = 0;
 }
 
 
@@ -4696,6 +4696,23 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         }
     }
     s_tgpu_secs_walk = 0; s_tgpu_claims_walk = 0;
+    /* OPENPETE_TERRAIN_GPU_CENSUS=1: one stderr line per hook walk with THIS
+     * walk's claim counts by reason (deltas of the window counters, printed
+     * before tgpu_census can reset them) — the S2b claim-ratchet metric,
+     * harvested by scripts/terrain-claim-census.py. Temp instrument;
+     * unregistered; GPU_-prefixed so it is safe with the cache engaged. */
+    static int s_cen = -1;
+    if (s_cen < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_CENSUS");
+                     s_cen = (e && *e && *e != '0'); }
+    long cen0[11];
+    if (s_cen) {
+        cen0[0] = s_tgcl_near;   cen0[1] = s_tgcl_portal;
+        cen0[2] = s_tgcl_anim;   cen0[3] = s_tgcl_scroll;
+        cen0[4] = s_tgcl_fill;   cen0[5] = s_tgcl_build;
+        cen0[6] = s_tgcl_colour; cen0[7] = s_tgcl_slot;
+        cen0[8] = s_tgcl_texpack; cen0[9] = s_tgcl_sel;
+        cen0[10] = s_tgcl_nearb;
+    }
     /* Any active walk instrument forces serial: their censuses/dumps are
      * whole-walk statics with serial semantics (per-sector timing, ordered
      * dumps), and several latch mid-walk. */
@@ -4858,6 +4875,13 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             int claim = 0;
             if (oc3 - s_tgpu_l3 * ((double)SC->radius + 16.0) < 16.0) {
                 claim = 1; s_tgcl_near++;
+                /* Census sub-bucket: the whole bounding sphere sits BEHIND
+                 * the near threshold — the CPU walk emits nothing for such a
+                 * sector, so it is a candidate for a no-draw verdict instead
+                 * of a claim (vs a genuine near-CROSSER, which needs the
+                 * walk's near-clip + near-band HQ semantics). */
+                if (oc3 + s_tgpu_l3 * ((double)SC->radius + 16.0) < 16.0)
+                    s_tgcl_nearb++;
             } else if (SC->polyanim) {
                 claim = 1; s_tgcl_anim++;
             } else if (s_pre_verd[vi].fillLP) {
@@ -4988,6 +5012,18 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     }
     if (tgpu_on) {
         openpete_tercache_frame_commit();
+        if (s_cen)
+            fprintf(stderr, "[tgpu-cen f=%u] sub=%d secs=%d claims=%d "
+                    "near=%ld portal=%ld anim=%ld scroll=%ld fill=%ld "
+                    "arena=%ld col=%ld slot=%ld tp=%ld sel=%ld nearb=%ld\n",
+                    openpete_frame, s_vanim_sub,
+                    s_tgpu_secs_walk, s_tgpu_claims_walk,
+                    s_tgcl_near - cen0[0], s_tgcl_portal - cen0[1],
+                    s_tgcl_anim - cen0[2], s_tgcl_scroll - cen0[3],
+                    s_tgcl_fill - cen0[4], s_tgcl_build - cen0[5],
+                    s_tgcl_colour - cen0[6], s_tgcl_slot - cen0[7],
+                    s_tgcl_texpack - cen0[8], s_tgcl_sel - cen0[9],
+                    s_tgcl_nearb - cen0[10]);
         tgpu_census();
         if (op_prof_on()) {   /* the claim-ratchet metric, per present */
             static int id_secs = -1, id_claims = -1;
