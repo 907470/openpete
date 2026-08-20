@@ -2654,16 +2654,18 @@ typedef struct {
     uint32_t lastColFrame;            /* VBL of the last colour-hash check */
     int      unbuildable;             /* claim reason latched at this decodeGen:
                                        * 0 fine, 1 arena-full, 2 scroll-anim,
-                                       * 3 unmapped colours */
+                                       * 3 unmapped colours (4 = decode-slot
+                                       * contested, returned but never latched) */
     uint32_t first[OPTC_ARENA_COUNT];
     int      count[OPTC_ARENA_COUNT];
+    uint32_t ownFrame;                /* VBL this slot last validated as GPU-owned */
     uint8_t  gen;                     /* chunk generation (3 bits published) */
 } tgpu_slot_t;
 static tgpu_slot_t s_tgpu[TSC_SLOTS];
 /* census: window sums (reset each print) + per-walk counts (op_prof rows) */
 static long s_tgpu_secs, s_tgpu_claims, s_tgpu_rebuilds;
 static long s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
-            s_tgcl_fill, s_tgcl_build, s_tgcl_colour;
+            s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot;
 static int  s_tgpu_secs_walk, s_tgpu_claims_walk;
 
 /* Active portal-sky planes for the per-sector portal claim: portal-adjacent
@@ -3072,6 +3074,14 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
     int slot = (int)(SC - s_tsc);
     if (slot < 0 || slot >= (int)TSC_SLOTS || slot == (int)OPTC_SLOT_DEAD) return 1;
     tgpu_slot_t* T = &s_tgpu[slot];
+    /* Decode-cache slot CONTESTED this build: two visible sectors share one
+     * probe window, and the decode cache re-resolved this slot to a second
+     * sector after the first already validated as GPU-owned. Stealing the
+     * slot here would free the first sector's chunks and republish the
+     * slot's origin AFTER its face walk was skipped — the first sector
+     * simply vanishes (the gnorc_cove water-border wedge). The loser walks
+     * CPU instead; the first keeper's retained state stays intact. */
+    if (T->s != SC->s && T->s != 0 && T->ownFrame == openpete_frame) return 4;
     int dirty = (T->s != SC->s) || (T->decodeGen != SC->decodeGen)
              || (T->texGen != SC->texGen) || (T->vertGen != SC->vertGen);
     if (!dirty && T->lastColFrame != openpete_frame) {
@@ -3091,6 +3101,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         T->unbuildable = tgpu_build_sector(cpu, slot, SC, hqTable, sec_index);
         s_tgpu_rebuilds++;
     }
+    if (T->unbuildable == 0) T->ownFrame = openpete_frame;
     return T->unbuildable;
 }
 
@@ -3102,16 +3113,16 @@ static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
     openpete_tercache_stats_t st;
     openpete_tercache_get_stats(&st);
     fprintf(stderr, "[ter-gpu f=%u] sectors=%ld claims=%ld (near=%ld portal=%ld "
-            "anim=%ld scroll=%ld fill=%ld arena=%ld col=%ld) rebuilds=%ld "
+            "anim=%ld scroll=%ld fill=%ld arena=%ld col=%ld slot=%ld) rebuilds=%ld "
             "chunks=%u verts=%u/%u draws=%u frees-pend=%u\n",
             openpete_frame, s_tgpu_secs, s_tgpu_claims,
             s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
-            s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgpu_rebuilds,
+            s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot, s_tgpu_rebuilds,
             st.chunks, st.verts_used, st.verts_cap, st.draws_last_present,
             st.frees_pending);
     s_tgpu_secs = s_tgpu_claims = s_tgpu_rebuilds = 0;
     s_tgcl_near = s_tgcl_portal = s_tgcl_anim = s_tgcl_scroll = 0;
-    s_tgcl_fill = s_tgcl_build = s_tgcl_colour = 0;
+    s_tgcl_fill = s_tgcl_build = s_tgcl_colour = s_tgcl_slot = 0;
 }
 
 
@@ -4773,6 +4784,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     claim = 1;
                     if (r == 2) s_tgcl_scroll++;
                     else if (r == 3) s_tgcl_colour++;
+                    else if (r == 4) s_tgcl_slot++;
                     else s_tgcl_build++;
                 }
             }
