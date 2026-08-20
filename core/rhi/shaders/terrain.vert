@@ -39,6 +39,17 @@ layout(location = 5) in uint  inFaceFlags;
 layout(location = 6) in ivec4 inC0;       /* c0.xyz, c1.x   (x4 fixed)    */
 layout(location = 7) in ivec4 inC1;       /* c1.yz, c2.xy                 */
 layout(location = 8) in ivec4 inC2;       /* c2.z, c3.xyz                 */
+#ifdef TERRAIN_ANIM
+/* Poly-anim chunks (binding 1, rhi_terrain_prev): previous-tick twin of the
+ * position + parent corners. Every local coordinate is lerped prev->cur in
+ * fp64 at the build's alpha and CAST TO FLOAT before the camera transform —
+ * the exact mirror of tsc_vanim_lerp filling cvF (alpha = 1 on canonical
+ * builds collapses to cur bit-exactly, ints casting to float losslessly). */
+layout(location = 9)  in ivec4 inPrevPos; /* prev xyz (x4 fixed), pad     */
+layout(location = 10) in ivec4 inPrevC0;
+layout(location = 11) in ivec4 inPrevC1;
+layout(location = 12) in ivec4 inPrevC2;
+#endif
 
 layout(push_constant) uniform TerrainPC {
     vec4 cbase;   /* x_base, x_span, y_base, y_span (scene_to_clip terms)  */
@@ -65,7 +76,8 @@ layout(std140, set = 3, binding = 0) uniform TerrainGlobals {
     dvec2 dcam_xy;  /* camx, camy (fractional, world/16)                  */
     dvec2 dcam_zf;  /* camz, s_fogscale                                   */
     dvec2 dof_xy;   /* ofx, ofy (GTE screen offset, px)                   */
-    dvec2 dH;       /* x: H (projection distance), y: unused              */
+    dvec2 dH;       /* x: H (projection distance), y: poly-anim sub-tick
+                     * alpha (1.0 on canonical builds; TERRAIN_ANIM only)   */
     ivec4 fog;      /* x: fogRefBase, y: gflags, z: cullRefS2, w: unused  */
 } g;
 
@@ -216,10 +228,33 @@ void main()
                                g.dcam_xy.y - sorigin.y,     /* s5 */
                                g.dcam_zf.x - sorigin.z);    /* s6 */
     /* Baked corner positions are x4 fixed sector-local; *0.25 is exact. */
+#ifdef TERRAIN_ANIM
+    /* tsc_vanim_lerp mirror: p + (c - p) * a in double, then the float cast
+     * the CPU stores into cvF. Operands are local units (x4 fixed * 0.25 is
+     * exact), so this is the identical expression on the identical inputs. */
+    double va = g.dH.y;
+    #define ANIM_LERP3(P, C) \
+        dvec3(double(float(double(P.x) * 0.25lf + (double(C.x) * 0.25lf - double(P.x) * 0.25lf) * va)), \
+              double(float(double(P.y) * 0.25lf + (double(C.y) * 0.25lf - double(P.y) * 0.25lf) * va)), \
+              double(float(double(P.z) * 0.25lf + (double(C.z) * 0.25lf - double(P.z) * 0.25lf) * va)))
+    ivec3 cc0 = inC0.xyz;
+    ivec3 cc1 = ivec3(inC0.w, inC1.x, inC1.y);
+    ivec3 cc2 = ivec3(inC1.z, inC1.w, inC2.x);
+    ivec3 cc3 = inC2.yzw;
+    ivec3 pc0 = inPrevC0.xyz;
+    ivec3 pc1 = ivec3(inPrevC0.w, inPrevC1.x, inPrevC1.y);
+    ivec3 pc2 = ivec3(inPrevC1.z, inPrevC1.w, inPrevC2.x);
+    ivec3 pc3 = inPrevC2.yzw;
+    precise dvec3 lc0 = ANIM_LERP3(pc0, cc0);
+    precise dvec3 lc1 = ANIM_LERP3(pc1, cc1);
+    precise dvec3 lc2 = ANIM_LERP3(pc2, cc2);
+    precise dvec3 lc3 = ANIM_LERP3(pc3, cc3);
+#else
     dvec3 lc0 = dvec3(inC0.xyz) * 0.25lf;
     dvec3 lc1 = dvec3(double(inC0.w), double(inC1.x), double(inC1.y)) * 0.25lf;
     dvec3 lc2 = dvec3(double(inC1.z), double(inC1.w), double(inC2.x)) * 0.25lf;
     dvec3 lc3 = dvec3(inC2.yzw) * 0.25lf;
+#endif
     precise dvec3 m0 = mac_of(lc0, sdel), m1 = mac_of(lc1, sdel);
     precise dvec3 m2 = mac_of(lc2, sdel), m3c = mac_of(lc3, sdel);
     int nc = quad ? 4 : 3;
@@ -382,7 +417,11 @@ void main()
      * parent corners (cv_mid mirrors — midpoints averaged in camera space). */
     precise dvec3 mo;
     if (!hqv) {
+#ifdef TERRAIN_ANIM
+        precise dvec3 lown = ANIM_LERP3(inPrevPos.xyz, inPos.xyz);
+#else
         dvec3 lown = dvec3(inPos.xyz) * 0.25lf;
+#endif
         mo = mac_of(lown, sdel);
     } else {
         /* Parent corners in .s grid order: TL=i0, TR=i1, BL=i3, BR=i2. */

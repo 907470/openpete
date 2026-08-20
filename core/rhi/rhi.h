@@ -251,6 +251,21 @@ typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
     int16_t  c3x, c3y, c3z;
 } rhi_terrain_vertex;           /* 64 bytes */
 
+/* Poly-anim chunks only: previous-tick twin of the animated fields, a
+ * PARALLEL array in the anim arenas' prev buffer (vertex binding 1). The
+ * vertex stage lerps prev->cur in fp64 at the build's sub-tick alpha —
+ * position for flat/LP verts, parent corners for everything corner-derived
+ * (HQ nodes, fog ladder, NCLIP) — mirroring tsc_vanim_lerp's
+ * float(p + (c-p)*a) cast exactly. A sector whose banks jumped (keyframe
+ * reset) or has no prev bank yet bakes prev == cur (the CPU snap rule). */
+typedef struct rhi_terrain_prev {
+    int16_t  px, py, pz, pad;   /* prev position, sector-local x4 fixed */
+    int16_t  c0x, c0y, c0z;     /* prev parent corners, i0,i1,i2,i3     */
+    int16_t  c1x, c1y, c1z;
+    int16_t  c2x, c2y, c2z;
+    int16_t  c3x, c3y, c3z;
+} rhi_terrain_prev;             /* 32 bytes */
+
 /* RHI_BLEND_SUBTRACT = PSX ABR mode 2 (dst = B - F): reverse-subtract, src ONE,
  * dst ONE — used by shadows (subtractive darkening). */
 typedef enum { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT } rhi_blend_mode;
@@ -336,6 +351,12 @@ typedef struct {
                                  * push constants visible to VERTEX|FRAGMENT
                                  * (the per-draw clip affine + class select).
                                  * uses_vram/uses_vram2 ignored.              */
+    bool           terrain_anim; /* with terrain_pipeline: add vertex binding 1
+                                 * = rhi_terrain_prev (locations 9..12), the
+                                 * previous-tick position + parent corners for
+                                 * the vertex stage's sub-tick lerp (poly-anim
+                                 * sector chunks). Bind the prev buffer with
+                                 * rhi_bind_vertex_buffer2.                   */
 } rhi_pipeline_desc;
 
 /* Host-visible vertex buffer (map-and-memcpy updates).
@@ -586,6 +607,8 @@ void rhi_texture_extent(const rhi_texture *tex, int *w, int *h);
 /* Recorded between rhi_begin_offscreen and rhi_end_offscreen. */
 void rhi_bind_pipeline(rhi_device *dev, rhi_pipeline *pipe);
 void rhi_bind_vertex_buffer(rhi_device *dev, rhi_buffer *buf);
+/* Bind binding 0 + binding 1 (terrain_anim pipelines: cur verts + prev twin). */
+void rhi_bind_vertex_buffer2(rhi_device *dev, rhi_buffer *buf, rhi_buffer *prev);
 /* Bind a texture's descriptor set to set 0 for the current (uses_vram)
  * pipeline; call after rhi_bind_pipeline, before the draw. Works for any
  * rhi_texture (the VRAM image or an RGBA8 image) — the set layout is the

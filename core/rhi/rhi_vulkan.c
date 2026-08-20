@@ -3014,6 +3014,24 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
         { .location = 7, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, c1y) },
         { .location = 8, .binding = 0, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_vertex, c2z) },
     };
+    /* terrain_anim: cur verts at binding 0 + the prev-tick twin at binding 1
+     * (a parallel array, same vertex indexing — see rhi_terrain_prev). */
+    VkVertexInputBindingDescription terrain_binds[2] = {
+        { .binding = 0, .stride = sizeof(rhi_terrain_vertex),
+          .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
+        { .binding = 1, .stride = sizeof(rhi_terrain_prev),
+          .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
+    };
+    VkVertexInputAttributeDescription terrain_anim_attrs[13];
+    memcpy(terrain_anim_attrs, terrain_attrs, sizeof(terrain_attrs));
+    terrain_anim_attrs[9]  = (VkVertexInputAttributeDescription)
+        { .location = 9,  .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, px) };
+    terrain_anim_attrs[10] = (VkVertexInputAttributeDescription)
+        { .location = 10, .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, c0x) };
+    terrain_anim_attrs[11] = (VkVertexInputAttributeDescription)
+        { .location = 11, .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, c1y) };
+    terrain_anim_attrs[12] = (VkVertexInputAttributeDescription)
+        { .location = 12, .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, c2z) };
     VkPipelineVertexInputStateCreateInfo vi = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &bind,
@@ -3023,6 +3041,12 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
         bind.stride = sizeof(rhi_terrain_vertex);
         vi.vertexAttributeDescriptionCount = 9;
         vi.pVertexAttributeDescriptions = terrain_attrs;
+        if (desc->terrain_anim) {
+            vi.vertexBindingDescriptionCount = 2;
+            vi.pVertexBindingDescriptions = terrain_binds;
+            vi.vertexAttributeDescriptionCount = 13;
+            vi.pVertexAttributeDescriptions = terrain_anim_attrs;
+        }
     }
     if (desc->postfx) {   /* fullscreen triangle: no vertex buffer at all */
         vi.vertexBindingDescriptionCount = 0;
@@ -3579,6 +3603,15 @@ void rhi_bind_vertex_buffer(rhi_device *dev, rhi_buffer *buf)
     /* Dynamic ring buffers bind the current frame's slot (see rhi_buffer). */
     VkDeviceSize off = buf->ring_stride * dev->frame;
     vkCmdBindVertexBuffers(dev->cmd[dev->frame], 0, 1, &buf->buffer, &off);
+}
+
+void rhi_bind_vertex_buffer2(rhi_device *dev, rhi_buffer *buf, rhi_buffer *prev)
+{
+    if (!dev->frame_active) return;
+    VkBuffer bufs[2] = { buf->buffer, prev->buffer };
+    VkDeviceSize offs[2] = { buf->ring_stride * dev->frame,
+                             prev->ring_stride * dev->frame };
+    vkCmdBindVertexBuffers(dev->cmd[dev->frame], 0, 2, bufs, offs);
 }
 
 void rhi_texture_set_filter_linear(rhi_device *dev, rhi_texture *tex)

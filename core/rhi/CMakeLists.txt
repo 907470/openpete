@@ -31,6 +31,17 @@ foreach(s IN LISTS RHI_SHADERS)
         VERBATIM)
     list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${s}.spv)
 endforeach()
+# terrain_anim.vert: terrain.vert recompiled with the poly-anim vertex-lerp
+# path (second vertex binding = previous-tick positions/corners).
+add_custom_command(
+    OUTPUT ${RHI_SHADER_OUT_DIR}/terrain_anim.vert.spv
+    COMMAND ${GLSLANG_VALIDATOR} -V --define-macro TERRAIN_ANIM=1
+            ${RHI_SHADER_SRC_DIR}/terrain.vert
+            -o ${RHI_SHADER_OUT_DIR}/terrain_anim.vert.spv
+    DEPENDS ${RHI_SHADER_SRC_DIR}/terrain.vert
+    COMMENT "glslangValidator terrain.vert (TERRAIN_ANIM) -> terrain_anim.vert.spv"
+    VERBATIM)
+list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/terrain_anim.vert.spv)
 # Embed the compiled .spv into the binary: a build-time `cmake -P` step turns
 # the SPIR-V into a generated C source (byte arrays + a name->blob table),
 # which is compiled into the library. The renderer then loads shaders from

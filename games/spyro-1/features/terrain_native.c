@@ -2692,6 +2692,11 @@ typedef struct {
     unsigned selEpoch;                /* openpete_mods_material_epoch at last scan */
     uint8_t  tpClaim, selClaim;
     uint8_t  gen;                     /* chunk generation (3 bits published) */
+    uint32_t animRoll;                /* poly-anim: SC->vrollPres at build — a
+                                       * new canonical roll re-bakes (prev,cur)
+                                       * even when the content hash is stable
+                                       * (a paused anim must stop lerping the
+                                       * last step) */
 } tgpu_slot_t;
 static tgpu_slot_t s_tgpu[TSC_SLOTS];
 /* census: window sums (reset each print) + per-walk counts (op_prof rows) */
@@ -2726,6 +2731,14 @@ static int s_tgpu_rim_ok = 0;         /* rim frames derived for THIS walk */
 static int tgpu_fillclaim(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_FILLCLAIM");
+                 v = (e && *e && *e != '0'); }
+    return v;
+}
+/* OPENPETE_TERRAIN_GPU_ANIMCLAIM=1: restore the pre-migration poly-anim
+ * claim (A/B lever, temp). GPU_-prefixed: safe with the cache engaged. */
+static int tgpu_animclaim(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_ANIMCLAIM");
                  v = (e && *e && *e != '0'); }
     return v;
 }
@@ -2801,14 +2814,22 @@ static int tgpu_arena_of(const tmat* m) {
     }
 }
 
-typedef struct { rhi_terrain_vertex* v; int n, cap; } tgpu_buf;
-static int tgpu_push(tgpu_buf* b, const rhi_terrain_vertex* v) {
+typedef struct { rhi_terrain_vertex* v; rhi_terrain_prev* pv; int n, cap;
+                 int anim; /* fill pv alongside v (poly-anim sector) */ } tgpu_buf;
+static int tgpu_push(tgpu_buf* b, const rhi_terrain_vertex* v,
+                     const rhi_terrain_prev* p) {
     if (b->n >= b->cap) {
         int nc = b->cap ? b->cap * 2 : 256;
         rhi_terrain_vertex* nv = (rhi_terrain_vertex*)realloc(b->v, sizeof(*nv) * (size_t)nc);
         if (!nv) return -1;
         b->v = nv; b->cap = nc;
+        if (b->anim) {
+            rhi_terrain_prev* np = (rhi_terrain_prev*)realloc(b->pv, sizeof(*np) * (size_t)nc);
+            if (!np) return -1;
+            b->pv = np;
+        }
     }
+    if (b->anim) b->pv[b->n] = *p;
     b->v[b->n++] = *v;
     return 0;
 }
@@ -2835,17 +2856,27 @@ static uint32_t tgpu_rgb_mid(uint32_t a, uint32_t b) {   /* cv_mid's per-channel
  * vertex stage rebuilds the node from the TRANSFORMED parent corners). */
 typedef struct {
     tgpu_p4  c[4];        /* parent-face corners, i0..i3 order */
+    tgpu_p4  pc[4];       /* poly-anim: previous-tick corners (else unset) */
     uint32_t face_flags;
     uint32_t matf0, matf1, matn0, matn1;
     uint16_t flags16;
 } tgpu_face_t;
-typedef struct { tgpu_p4 p; uint32_t rgb_far, rgb_near;
+typedef struct { tgpu_p4 p, pp; uint32_t rgb_far, rgb_near;
                  uint8_t uf, vf, un, vn, role; } tgpu_corner_t;
 
 static int tgpu_emit_tri(tgpu_buf* b, const tgpu_face_t* F,
                          tgpu_corner_t a, tgpu_corner_t c1, tgpu_corner_t c2) {
     const tgpu_corner_t cs[3] = { a, c1, c2 };
     for (int k = 0; k < 3; k++) {
+        rhi_terrain_prev pr;
+        if (b->anim) {
+            memset(&pr, 0, sizeof(pr));
+            pr.px = cs[k].pp.x; pr.py = cs[k].pp.y; pr.pz = cs[k].pp.z;
+            pr.c0x = F->pc[0].x; pr.c0y = F->pc[0].y; pr.c0z = F->pc[0].z;
+            pr.c1x = F->pc[1].x; pr.c1y = F->pc[1].y; pr.c1z = F->pc[1].z;
+            pr.c2x = F->pc[2].x; pr.c2y = F->pc[2].y; pr.c2z = F->pc[2].z;
+            pr.c3x = F->pc[3].x; pr.c3y = F->pc[3].y; pr.c3z = F->pc[3].z;
+        }
         rhi_terrain_vertex v;
         memset(&v, 0, sizeof(v));
         v.px = cs[k].p.x; v.py = cs[k].p.y; v.pz = cs[k].p.z;
@@ -2861,7 +2892,7 @@ static int tgpu_emit_tri(tgpu_buf* b, const tgpu_face_t* F,
         v.c1x = F->c[1].x; v.c1y = F->c[1].y; v.c1z = F->c[1].z;
         v.c2x = F->c[2].x; v.c2y = F->c[2].y; v.c2z = F->c[2].z;
         v.c3x = F->c[3].x; v.c3y = F->c[3].y; v.c3z = F->c[3].z;
-        if (tgpu_push(b, &v) != 0) return -1;
+        if (tgpu_push(b, &v, b->anim ? &pr : NULL) != 0) return -1;
     }
     return 0;
 }
@@ -2909,6 +2940,24 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     int ok = 0;
     uint32_t base_ff = ((uint32_t)slot & 0x1FFu)
                      | (((uint32_t)s_tgpu[slot].gen & 7u) << 29);
+    /* Poly-anim sectors bake into the ANIM twin arenas with a parallel
+     * previous-tick record per vertex (the terrain_anim vertex stage lerps
+     * prev->cur at the build's alpha). Snap rule mirror: a sector with no
+     * prev bank yet, or whose banks jumped (keyframe reset — the CPU skips
+     * the lerp fill and draws cur), bakes prev == cur. */
+    const int anim = SC->polyanim != 0;
+    const int ab = anim ? (int)OPTC_ARENA_ANIM_BASE : 0;
+    int vsnap = 1;
+    if (anim) {
+        for (int a = OPTC_ARENA_ANIM_BASE; a < OPTC_ARENA_COUNT; a++)
+            buf[a].anim = 1;
+        const int nLp = (SC->lpV && SC->lpVprev) ? SC->nLpV : 0;
+        const int nHp = (SC->hpV && SC->hpVprev) ? SC->nHpV : 0;
+        const int havePrev = (!SC->lpV || SC->lpVprev) && (!SC->hpV || SC->hpVprev);
+        const int jump = (nLp && tsc_vanim_jump(SC->lpVprev, SC->lpV, nLp)) ||
+                         (nHp && tsc_vanim_jump(SC->hpVprev, SC->hpV, nHp));
+        vsnap = !havePrev || jump;
+    }
 
     /* ---- LP tier: untextured; drawn in WORLD and re-drawn in FILL ---- */
     for (int f = 0; SC->lpV && SC->lpF && f < SC->nLpF; f++) {
@@ -2943,10 +2992,12 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         const int vi[4] = { F->i0, F->i1, F->i2, F->i3 };
         for (int q = 0; q < 4; q++) {
             k[q].p = tgpu_p4_of(&SC->lpV[vi[q]]);
+            k[q].pp = (anim && !vsnap) ? tgpu_p4_of(&SC->lpVprev[vi[q]]) : k[q].p;
+            T.pc[q] = k[q].pp;
             k[q].rgb_far = k[q].rgb_near = rc[q];
         }
-        tgpu_buf* dst = F->mat.blend ? &buf[tgpu_arena_of(&F->mat)]
-                                     : &buf[OPTC_ARENA_LP];
+        tgpu_buf* dst = F->mat.blend ? &buf[tgpu_arena_of(&F->mat) + ab]
+                                     : &buf[OPTC_ARENA_LP + ab];
         /* LP quad: strip diagonal i1-i2 (no i2/i3 swap — see the LP emit) */
         if (tgpu_emit_tri(dst, &T, k[0], k[1], k[2]) != 0) goto done;
         if (F->quad && tgpu_emit_tri(dst, &T, k[1], k[2], k[3]) != 0) goto done;
@@ -3000,9 +3051,11 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         memset(k, 0, sizeof(k));
         for (int q = 0; q < 4; q++) {
             k[q].p = tgpu_p4_of(&SC->hpV[vi[q]]);
+            k[q].pp = (anim && !vsnap) ? tgpu_p4_of(&SC->hpVprev[vi[q]]) : k[q].p;
+            T.pc[q] = k[q].pp;
             k[q].rgb_near = nearC[q]; k[q].rgb_far = farC[q];
         }
-        tgpu_buf* dst = &buf[tgpu_arena_of(&F->mat)];
+        tgpu_buf* dst = &buf[tgpu_arena_of(&F->mat) + ab];
         if (F->quad) {
             /* GT4: i0=TL, i1=TR, i3=BL, i2=BR; UV [TL,TR,BL,BR]; diagonal i1-i3 */
             k[0].uf = (uint8_t)F->tu[0]; k[0].vf = (uint8_t)F->tv[0];
@@ -3047,6 +3100,12 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             mL.p = tgpu_p4_mid(TL.p, BL.p); mL.rgb_far = tgpu_rgb_mid(TL.rgb_far, BL.rgb_far);
             mR.p = tgpu_p4_mid(TR.p, BR.p); mR.rgb_far = tgpu_rgb_mid(TR.rgb_far, BR.rgb_far);
             Cc.p = tgpu_p4_mid(mT.p, mB.p); Cc.rgb_far = tgpu_rgb_mid(mT.rgb_far, mB.rgb_far);
+            /* prev twin midpoints (HQ node positions derive from the lerped
+             * PARENT corners in-shader; these per-vertex values are unread
+             * for hqv verts but kept coherent). */
+            mT.pp = tgpu_p4_mid(TL.pp, TR.pp); mB.pp = tgpu_p4_mid(BL.pp, BR.pp);
+            mL.pp = tgpu_p4_mid(TL.pp, BL.pp); mR.pp = tgpu_p4_mid(TR.pp, BR.pp);
+            Cc.pp = tgpu_p4_mid(mT.pp, mB.pp);
             mT.rgb_near = mT.rgb_far; mB.rgb_near = mB.rgb_far;
             mL.rgb_near = mL.rgb_far; mR.rgb_near = mR.rgb_far;
             Cc.rgb_near = Cc.rgb_far;
@@ -3086,7 +3145,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                 c1.uf = (uint8_t)u[1]; c1.vf = (uint8_t)v[1]; c1.role = 1;
                 c2.uf = (uint8_t)u[2]; c2.vf = (uint8_t)v[2]; c2.role = 2;
                 c3.uf = (uint8_t)u[3]; c3.vf = (uint8_t)v[3]; c3.role = 3;
-                tgpu_buf* hdst = &buf[tgpu_arena_of(&m)];
+                tgpu_buf* hdst = &buf[tgpu_arena_of(&m) + ab];
                 if (tgpu_emit_tri(hdst, &H, c0, c1, c2) != 0) goto done;
                 if (tgpu_emit_tri(hdst, &H, c1, c2, c3) != 0) goto done;
             }
@@ -3110,12 +3169,14 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         for (a = 0; a < OPTC_ARENA_COUNT; a++) {
             if (buf[a].n == 0) { S->count[a] = 0; continue; }
             openpete_tercache_chunk_write(a, first[a], buf[a].v, buf[a].n);
+            if (buf[a].anim)
+                openpete_tercache_chunk_write_prev(a, first[a], buf[a].pv, buf[a].n);
             S->first[a] = first[a]; S->count[a] = buf[a].n;
         }
         ok = 1;
     }
 done:
-    for (int a = 0; a < OPTC_ARENA_COUNT; a++) free(buf[a].v);
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) { free(buf[a].v); free(buf[a].pv); }
     return ok ? 0 : 1;
 }
 
@@ -3213,7 +3274,12 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         if (T->selClaim) return 6;
     }
     int dirty = (T->s != SC->s) || (T->decodeGen != SC->decodeGen)
-             || (T->texGen != SC->texGen) || (T->vertGen != SC->vertGen);
+             || (T->texGen != SC->texGen) || (T->vertGen != SC->vertGen)
+             /* poly-anim: every canonical roll re-bakes (prev,cur) — the
+              * content hash alone would leave a paused anim's chunk lerping
+              * its last step forever. Sub-tick builds don't roll, so this
+              * stays clean between ticks. */
+             || (SC->polyanim && T->animRoll != SC->vrollPres);
     if (!dirty && T->lastColFrame != openpete_frame) {
         /* Colour liveness once per VBL (colours can only change per tick). */
         uint32_t h;
@@ -3226,6 +3292,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         T->gen = (uint8_t)((T->gen + 1u) & 7u);
         T->s = SC->s;
         T->decodeGen = SC->decodeGen; T->texGen = SC->texGen; T->vertGen = SC->vertGen;
+        T->animRoll = SC->vrollPres;
         T->lastColFrame = openpete_frame;
         if (tgpu_col_hash(SC, &T->colHash) != 0) { T->unbuildable = 3; return 3; }
         T->unbuildable = tgpu_build_sector(cpu, slot, SC, hqTable, sec_index);
@@ -4731,6 +4798,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         tcg.ofx = s_ofx; tcg.ofy = s_ofy; tcg.H = s_H;
         tcg.camx = camx; tcg.camy = camy; tcg.camz = camz;
         tcg.fogscale = s_fogscale;
+        /* Poly-anim lerp alpha: sub-tick paired builds carry the spine's
+         * alpha; canonical (and unpaired) builds draw cur exactly. */
+        tcg.vanim_alpha = (s_vanim_sub && s_vanim_on) ? s_vanim_alpha : 1.0;
         tcg.fog_ref_base = fogRefBase;
         tcg.cull_ref_s2  = cullRefS2;
         tcg.gflags = ((s_nearhq && hqTable) ? OPTC_GF_NEARHQ : 0u)
@@ -4987,7 +5057,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 claim = 1; s_tgcl_near++;
                 if (oc3 + nearBound < 16.0)
                     s_tgcl_nearb++;   /* census: fully-behind (NODRAW=0 A/B) */
-            } else if (SC->polyanim) {
+            } else if (SC->polyanim && tgpu_animclaim()) {
+                /* Poly-anim sectors bake (prev,cur) into the ANIM twin
+                 * arenas per canonical roll; the terrain_anim vertex stage
+                 * lerps at the build's alpha (tsc_vanim_lerp mirror), so no
+                 * claim is needed. Lever restores the claim for A/B. */
                 claim = 1; s_tgcl_anim++;
             } else if (s_pre_verd[vi].fillLP && tgpu_fillclaim()) {
                 /* The FILL slot mirrors the whole default fill pass (sector
@@ -5009,7 +5083,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * rim_sec_cand treats them as candidates too). */
                 int pcl = 0;
                 if (s_tgpu_rim_ok) {
-                    if (i >= 1024u || tgpu_rim_sphere_cand(oc1, oc2, oc3, SC->radius)) {
+                    /* Poly-anim sectors are unconditional rim candidates
+                     * (rim_sector_cands: animated verts can leave the header
+                     * sphere) — reachable here since anim stopped claiming. */
+                    if (i >= 1024u || SC->polyanim ||
+                        tgpu_rim_sphere_cand(oc1, oc2, oc3, SC->radius)) {
                         pcl = 1; s_tgcl_prim++;
                     } else if (tsc_has_blend((tscache_t*)SC)) {
                         const double csx = s_ofx + oc1 * s_H / oc3;

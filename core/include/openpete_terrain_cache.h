@@ -26,6 +26,7 @@
 struct rhi_device;
 struct rhi_texture;
 struct rhi_terrain_vertex;
+struct rhi_terrain_prev;
 
 /* Vertex arenas, one per draw class. OPAQUE carries every HP face (textured
  * or flat, incl. HQ-subdivide variants and blend-4 "B+F/4" faces — the scene
@@ -38,8 +39,21 @@ enum {
     OPTC_ARENA_ADD,
     OPTC_ARENA_SUB,
     OPTC_ARENA_LP,
+    /* Poly-anim twins: same draw classes, small arenas whose vertices carry
+     * a PARALLEL rhi_terrain_prev buffer (previous-tick position + corners);
+     * drawn with the terrain_anim pipelines, which lerp prev->cur at the
+     * build's sub-tick alpha. Anim LP is drawn in WORLD (and PREPASS) but
+     * NEVER in FILL — poly-anim sectors are excluded from the hole-fill
+     * backing (a stale LP bank must not backstop-fill). */
+    OPTC_ARENA_A_OPAQUE,
+    OPTC_ARENA_A_ALPHA,
+    OPTC_ARENA_A_ADD,
+    OPTC_ARENA_A_SUB,
+    OPTC_ARENA_A_LP,
     OPTC_ARENA_COUNT
 };
+#define OPTC_ARENA_ANIM_BASE OPTC_ARENA_A_OPAQUE   /* base + class = twin */
+#define OPTC_ARENA_IS_ANIM(a) ((a) >= OPTC_ARENA_A_OPAQUE)
 
 /* Draw slots — native_render.c calls these at the matching point of its
  * draw order. WORLD = opaque arena + LP arena (pass WORLD); FILL = LP arena
@@ -93,6 +107,8 @@ typedef struct {
     double  ofx, ofy, H;  /* GTE screen offset + projection distance           */
     double  camx, camy, camz;  /* fractional camera, world/16                  */
     double  fogscale;     /* s_fogscale (SZ = fogscale * m3)                   */
+    double  vanim_alpha;  /* poly-anim sub-tick lerp alpha (1.0 = canonical /
+                           * unpaired build: the anim chunks draw cur exactly) */
     int32_t fog_ref_base; /* ENV_LODDIST >> 2                                  */
     int32_t cull_ref_s2;  /* ENV_CULLDIST >> 7 (.s LP far-cull threshold)      */
     uint32_t gflags;      /* OPTC_GF_*                                         */
@@ -142,6 +158,10 @@ int  openpete_native_tercache_usable(void);
 int  openpete_tercache_chunk_alloc(int arena, int vert_count, uint32_t *out_first);
 void openpete_tercache_chunk_write(int arena, uint32_t first,
                                    const struct rhi_terrain_vertex *v, int count);
+/* Anim arenas only: upload the parallel previous-tick records for a chunk
+ * written at the same [first, first+count) range. */
+void openpete_tercache_chunk_write_prev(int arena, uint32_t first,
+                                        const struct rhi_terrain_prev *p, int count);
 void openpete_tercache_chunk_free(int arena, uint32_t first, int count);
 
 /* Screen->clip mapping for one draw target: the RAW scene_to_clip inputs,
