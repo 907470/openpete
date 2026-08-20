@@ -9,20 +9,18 @@
 # slice, the test will fail with a non-zero pixel diff.
 #
 # Method:
-#   1. Pin --window so all aspects share an identical 4:3 sub-grid:
-#      4:3   →  960x720
-#      16:9  → 1280x720
-#      21:9  → 1680x720
-#      Any AR W:H → window width = 720 * W/H (must divide evenly).
-#      Window height 720 = 3× PSX 240, so host:PSX is exactly 3.0
-#      regardless of AR (avoids sub-pixel drift between aspects).
+#   1. Capture the NATIVE (-vk) render headless at each aspect
+#      (--screenshot-native-only). The native path is where Hor+ ships;
+#      its headless capture renders at the internal resolution,
+#      window-independent: 4:3 -> 640x448, W:H -> 640*(W/H)/(4/3) wide.
+#      (The PsyCross -og capture stopped widening when the Phase-6
+#      --aspect substitution stack was retired, and stays 4:3.)
 #   2. Take screenshot at frame N at each aspect.
-#   3. Drop top/bottom 24 rows of PSX overscan, center-crop to 960x672
-#      and pixel-diff against the 4:3 baseline.
-#
-# Currently RED: the cyclorama uses an aspect-aware matrix scaling
-# during the render pass that perturbs the central 4:3 column too.
-# Closing that channel will turn this gate green.
+#   3. Drop top/bottom 16 rows of PSX overscan, center-crop to 640x416
+#      and pixel-diff against the 4:3 baseline. 21:9 (even width) is
+#      pixel-exact; 16:9 rounds to an ODD width (853), so its central
+#      crop sits a half-pixel off and carries a permanent edge-fuzz
+#      allowance (the per-aspect ceiling).
 #
 # Usage:
 #   scripts/check_aspect_screenshot.sh
@@ -137,15 +135,15 @@ run_one() {
     [[ "$label" != "4:3" ]] && aspect_arg="$label"
     local win_w; win_w="$(window_w_for "$label")"
     local out_png="$OUT_DIR/shot-$label-${FRAME}.png"
-    # --screenshot-on-frame writes the PsyCross render with an "-og" suffix
-    # before the extension (native modes add -vk/-ab/-diff alongside).
-    local shot_file="${out_png%.png}-og.png"
+    # --screenshot-native-only writes just the native render, "-vk" suffix.
+    local shot_file="${out_png%.png}-vk.png"
     local log="$OUT_DIR/log-$label.txt"
     rm -f "$out_png" "$shot_file"
     local args=(--headless --disc "$DISC" --run-recomp 0x80012204
                 --frame-limit "$((FRAME + 5))"
                 --window "${win_w}x720"
                 --screenshot-on-frame "$FRAME"
+                --screenshot-native-only
                 --screenshot-output "$out_png"
                 --max-runtime-seconds 600)
     [[ -n "$aspect_arg" ]] && args+=(--aspect "$aspect_arg")
@@ -176,8 +174,8 @@ for a in "${ASPECTS[@]}"; do
     out="$(python3 scripts/center_crop_diff.py \
             --baseline "${SHOT[$BASELINE]}" \
             --candidate "${SHOT[$a]}" \
-            --crop-w 960 --crop-h 672 \
-            --overscan-top 24 --overscan-bot 24 \
+            --crop-w 640 --crop-h 416 \
+            --overscan-top 16 --overscan-bot 16 \
             --diff-threshold "$DIFF_THRESHOLD" \
             --max-divergent "$cap" \
             --diff-out "$OUT_DIR/diff-$BASELINE-vs-$a.png" 2>&1)"

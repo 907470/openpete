@@ -225,11 +225,15 @@ ab_env = "OPENPETE_TERRAIN_HOLEFILL"
 # Moby OT-bias pull (m_DepthOffset, record w0 bits 16-23): the .s keys every
 # regular/specular moby prim into the world OT at (TR.z_raw>>5) − offset —
 # one slot = 128 full-world view-Z units, default offset 4 — so a moby paints
-# over terrain up to ~512 units nearer (flat pedestal discs on the ground, the
-# rescue dragon's wing in the tower).  With the actor-front pass pinned OFF,
-# toggling the pull must flip the wing-vs-tower verdict in the same bbox.
+# over terrain up to ~512 units nearer.  The subject is the gold chest beside
+# the dragon: toggling the pull flips its edge-vs-tower occlusion band
+# (~380 px, solid, >12/channel).  The DRAGON cannot be the subject — cutscene
+# actors are ACTOR_FRONT-tagged (category 13) and og-key emission gates on
+# category ACTOR, so no pull ever fires for the wing; its wing-over-tower
+# look comes from the front pass (townsquare-delvin-wing-front guards that),
+# which is pinned OFF here to keep this case about the OT keys alone.
 [[case]]
-name   = "townsquare-delvin-wing-otbias"
+name   = "townsquare-chest-otbias"
 level  = "town_square"
 bk2    = "games/spyro-1/bk2/town-square-delvin-rescue.bk2"
 frame  = 2621
@@ -238,8 +242,8 @@ ab_env = "OPENPETE_MOBY_OTBIAS"
 pin_env = { OPENPETE_ACTOR_FRONT = "0" }
   [[case.check]]
   kind   = "ab-active"
-  min_px = 1000
-  bbox   = [120, 150, 300, 260]
+  min_px = 150
+  bbox   = [205, 160, 250, 245]
 
 # Dragon-rescue front pass leak under --lod extended (found in testing, 2026-07-14):
 # the actor front pass used to clear the WHOLE depth buffer, safe only while the

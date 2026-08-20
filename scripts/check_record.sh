@@ -8,10 +8,15 @@
 #   1. Plain 4:3: a single H.264 video stream, even dimensions, the frame
 #      count the runtime reported captured, and strictly-increasing
 #      per-frame PTS with non-uniform deltas (true VFR — not a fixed rate).
-#   2. 21:9 into a 640-wide window: the recorded width must be the *widened
-#      internal* width (well over 640), NOT the window width — proving the
-#      capture reads the present FBO at internal resolution, bars-free and
-#      independent of window size. (See openpete-record-video.md.)
+#   2. Letterbox-freedom: the same 21:9 headless record at two --window
+#      sizes must produce the SAME recorded aspect ratio, and dimensions
+#      that are not the raw window dimensions — the capture scales with the
+#      window (present-FBO readback) but its shape is content-derived,
+#      never the window's letterboxed shape. (Headless capture forces the
+#      PsyCross present, which no longer aspect-widens since the Phase-6
+#      --aspect substitution-stack retirement — so the recorded aspect is
+#      the PSX-derived present shape, not 21:9; the windowed native record
+#      DOES widen — 21:9 records 1120x448 on a real GPU.)
 #   3. --record-cfr: the opposite of run 1 — an exact NTSC rational rate, a
 #      single PTS delta (perfectly even cadence), exactly --record-frames
 #      frames, and no audio track.
@@ -138,25 +143,35 @@ if [[ -s "$OUT1" ]]; then
     fi
 fi
 
-# ---- Run 2: window-independence (21:9 into a narrow window) ---------------
-OUT2="$OUT_DIR/wide.mkv"
-rm -f "$OUT2"
-WIN_W=640
+# ---- Run 2: letterbox-freedom (same record at two window shapes) ----------
+# Two windows with DIFFERENT aspects (4:3 and 3:2), one game aspect: the
+# recorded frames must share one content-derived aspect ratio (widths agree
+# within 2 px after rescaling to a common height), and neither leg's
+# dimensions may be the raw window dimensions (a naive window dump would
+# record 640x480 / 900x600 and its aspect would follow the window).
+OUT2A="$OUT_DIR/wide-a.mkv"; OUT2B="$OUT_DIR/wide-b.mkv"
+rm -f "$OUT2A" "$OUT2B"
 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
-       --frame-limit 120 --aspect 21:9 --window ${WIN_W}x480 \
-       --record "$OUT2" >"$OUT_DIR/wide.log" 2>&1
+       --frame-limit 120 --aspect 21:9 --window 640x480 \
+       --record "$OUT2A" >"$OUT_DIR/wide-a.log" 2>&1
+"$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
+       --frame-limit 120 --aspect 21:9 --window 900x600 \
+       --record "$OUT2B" >"$OUT_DIR/wide-b.log" 2>&1
 
-if [[ -s "$OUT2" ]]; then
-    read -r WW WH < <(probe -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$OUT2" | tr ',' ' ')
-    # The 21:9 internal width is ~1198 here; the key assertion is that it is
-    # NOT the 640-pixel window width (i.e. no letterbox-window capture).
-    if (( ${WW:-0} > WIN_W + 200 )); then
-        note "wide: ${WW}x${WH} (>> ${WIN_W} window — bars-free internal res)"
+if [[ -s "$OUT2A" && -s "$OUT2B" ]]; then
+    read -r WA HA < <(probe -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$OUT2A" | tr ',' ' ')
+    read -r WB HB < <(probe -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$OUT2B" | tr ',' ' ')
+    # cross-multiplied aspect agreement: |WA/HA - WB/HB| <= 2px at height HB
+    AR_DELTA=$(( WA * HB - WB * HA )); AR_DELTA=${AR_DELTA#-}
+    if (( ${WA:-0} > 0 && ${HA:-0} > 0 && ${WB:-0} > 0 && ${HB:-0} > 0 )) \
+       && (( AR_DELTA <= 2 * HA )) \
+       && [[ "${WA}x${HA}" != "640x480" && "${WB}x${HB}" != "900x600" ]]; then
+        note "letterbox-free: ${WA}x${HA} / ${WB}x${HB} share one content aspect across 4:3 and 3:2 windows"
     else
-        bad "21:9 recorded ${WW}x${WH}; expected width >> ${WIN_W} (window-size capture?)"
+        bad "window-shaped record: ${WA:-?}x${HA:-?} (640x480 win) vs ${WB:-?}x${HB:-?} (900x600 win)"
     fi
 else
-    bad "no widescreen output written"
+    bad "missing record output (a: $([[ -s "$OUT2A" ]] && echo ok || echo MISSING), b: $([[ -s "$OUT2B" ]] && echo ok || echo MISSING))"
 fi
 
 # ---- Run 3: --record-cfr constant-rate capture ---------------------------
