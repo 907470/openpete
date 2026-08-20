@@ -2721,6 +2721,14 @@ static openpete_portal_skyplane s_tgpu_pplane[6];
 static int s_tgpu_pplane_n = 0;
 static int s_tgpu_claim_all = 0;
 static int s_tgpu_rim_ok = 0;         /* rim frames derived for THIS walk */
+/* OPENPETE_TERRAIN_GPU_FILLCLAIM=1: restore the pre-migration fill claim
+ * (A/B lever, temp). GPU_-prefixed: safe with the cache engaged. */
+static int tgpu_fillclaim(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_FILLCLAIM");
+                 v = (e && *e && *e != '0'); }
+    return v;
+}
 static int tgpu_portal_frames(CPUState* cpu);            /* defined post-feed-statics */
 static int tgpu_rim_sphere_cand(double oc1, double oc2, double oc3, int radius);
 static double s_tgpu_l3 = 1.0;        /* ||M row 2||/4096 (near-claim bound) */
@@ -4981,7 +4989,13 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     s_tgcl_nearb++;   /* census: fully-behind (NODRAW=0 A/B) */
             } else if (SC->polyanim) {
                 claim = 1; s_tgcl_anim++;
-            } else if (s_pre_verd[vi].fillLP) {
+            } else if (s_pre_verd[vi].fillLP && tgpu_fillclaim()) {
+                /* The FILL slot mirrors the whole default fill pass (sector
+                 * SF_FILLLP gate + opaque-only + strict all-corners
+                 * fully-fogged, terrain.vert pass_sel 1), and every fill
+                 * experiment env (FILL_DILATE/FOGSLACK/UP/THINPX) is in
+                 * tgpu_env_block — so fill sectors need no claim at the
+                 * shipped defaults. Lever restores the claim for A/B. */
                 claim = 1; s_tgcl_fill++;
             } else if (s_lpg_active && s_lpg_mean_ok) {
                 claim = 1; s_tgcl_texpack++;
