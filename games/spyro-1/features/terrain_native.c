@@ -94,6 +94,14 @@ static float   s_tanim_dvlq[128];     /* LQ per-quad tiledef  (game writes scrol
 static float   s_tanim_dvhq[128][2];  /* HQ record entries 1-2 / 3-4 (scroll>>1) */
 static int     s_tanim_have;          /* any tile active — skips the per-face test */
 static int     s_tanim_en;            /* OPENPETE_TERRAIN_TANIM latch (re-extract only) */
+/* Tiles on the live scroller list, refreshed EVERY build (canonical included).
+ * The retained-GPU path claims any sector touching one: a baked mesh can
+ * neither ride the per-present fractional offset above, nor track the HQ
+ * sibling record, which advances even on ticks where the 16-byte LQ entry is
+ * byte-identical (scroll>>2 unchanged) — so the LQ-snapshot generations that
+ * schedule rebuilds legitimately miss those advances. */
+static uint8_t s_tscroll_tile[128];
+static int     s_tscroll_have;
 
 /* ---- captured prims (ground truth) --------------------------------------- */
 typedef struct {
@@ -2114,19 +2122,26 @@ static void tsc_scroll_refresh(CPUState* cpu) {
     if (s_tdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_TANIMDBG"); s_tdbg = (e && *e && *e != '0'); }
     s_tanim_have = 0;
     memset(s_tanim_act, 0, sizeof(s_tanim_act));
+    s_tscroll_have = 0;
+    memset(s_tscroll_tile, 0, sizeof(s_tscroll_tile));
     int dbg_desc = 0, dbg_paired = 0;
-    /* Canonical builds render the committed whole-texel decode, byte-exact. */
-    if (!s_vanim_sub || !s_tanim_en) goto scan;
     {
     uint32_t cnt  = rd(cpu, G_ENVANIM + ENVANIM_SCROLL_CNT);
     uint32_t base = rd(cpu, G_ENVANIM + ENVANIM_SCROLL_CNT + 4);
     if (!base || cnt == 0 || cnt > 1024) goto scan;
-    op_time_t now = openpete_interp_present_now();
-    if (now <= 0) goto scan;
+    /* Fractional offsets exist only on sub-tick re-extract builds; the
+     * canonical path renders the committed whole-texel decode, byte-exact.
+     * The claim mask is filled regardless. */
+    int pair = (s_vanim_sub && s_tanim_en);
+    op_time_t now = pair ? openpete_interp_present_now() : 0;
+    if (pair && now <= 0) pair = 0;
     for (uint32_t k = 0; k < cnt; k++) {
         uint32_t desc = rd(cpu, base + k * 4);
         if (!desc) continue;
         dbg_desc++;
+        {   uint32_t ct = rd(cpu, desc + 4) & 0xFFFFu;
+            if (ct < 128) { s_tscroll_tile[ct] = 1; s_tscroll_have = 1; } }
+        if (!pair) continue;
         const openpete_interp_obj_t* o = openpete_interp_objs_find(desc);
         /* curr_ns == prev_ns means the snapshot clock stood still between the
          * two distinct accumulator states — there is no interval to sweep. It
@@ -2821,14 +2836,17 @@ static int tgpu_col_hash(const tscache_t* SC, uint32_t* out) {
  * (the authored-correction key). */
 static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                              uint32_t hqTable, int sec_index) {
-    /* Scroll-anim claim scan: a scrolling tile bumps its gens every advance,
-     * so this build re-runs (and re-claims) while the scroller is live. */
-    if (s_tanim_have && SC->hpF) {
+    /* Scroll-anim claim scan: sectors touching a live scroller tile stay on
+     * the CPU walk. The mask covers every build — the scroller advances the
+     * HQ sibling record on ticks where the LQ entry bytes coincide, so the
+     * LQ-snapshot generations alone would leave a stale bake — and while it
+     * scrolls, those gen bumps re-run this build (and re-latch the claim). */
+    if (s_tscroll_have && SC->hpF) {
         for (int f = 0; f < SC->nHpF; f++) {
             const tsface_t* F = &SC->hpF[f];
-            if (F->tb != -1 && s_tanim_act[F->tb & 0x7F]) return 2;
+            if (F->tb != -1 && s_tscroll_tile[F->tb & 0x7F]) return 2;
             if (F->quad && hqTable && !(F->w3 & 0x80) &&
-                s_tanim_act[F->hq_idx & 0x7F]) return 2;
+                s_tscroll_tile[F->hq_idx & 0x7F]) return 2;
         }
     }
     tgpu_buf buf[OPTC_ARENA_COUNT];

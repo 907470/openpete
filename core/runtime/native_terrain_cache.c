@@ -320,9 +320,11 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
         if (dbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_DBG2");
                        dbg = (e && *e && *e != '0'); }
         if (dbg && ++n <= 4000)
-            fprintf(stderr, "[tc-beg] stamp=%u imm=%d cam=%.4f,%.4f,%.4f M00=%.0f M02=%.0f\n",
+            fprintf(stderr, "[tc-beg] stamp=%u imm=%d cam=%.4f,%.4f,%.4f M00=%.0f M02=%.0f "
+                    "fogref=%d fogscale=%.6f gflags=0x%x\n",
                     stamp, immediate, g->camx, g->camy, g->camz,
-                    (double)g->mrow[0][0], (double)g->mrow[0][2]);
+                    (double)g->mrow[0][0], (double)g->mrow[0][2],
+                    g->fog_ref_base, g->fogscale, g->gflags);
     }
     for (int k = 0; k < 3; k++) {
         gu->mrow0[k] = g->mrow[0][k];

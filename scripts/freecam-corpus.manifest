@@ -35,6 +35,9 @@ blowhard | pos=(89820, 73764, 23253) yaw=2337 pitch=166
 cliff_town | pos=(138997, 98065, 22037) yaw=1370 pitch=8
 cliff_town | pos=(57191, 104992, 33420) yaw=1726 pitch=698
 cliff_town | pos=(59710, 127007, 17599) yaw=-3825 pitch=148
+# dark_hollow rescue room: per-tick vertex-lighting pulse (secC churn) over
+# textured fogged walls — the animated-colour + CLUT-ladder interaction pose.
+dark_hollow | pos=(86434, 27639, 17265) yaw=3048 pitch=243
 dream_weavers | pos=(78707, 18103, 11657) yaw=291 pitch=86
 gnorc_cove | pos=(36863, 117108, 30800) yaw=1448 pitch=343
 haunted_towers | pos=(100231, 109612, 61079) yaw=-1046 pitch=992
