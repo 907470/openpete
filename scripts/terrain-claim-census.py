@@ -47,8 +47,11 @@ REASONS = ["near", "portal", "anim", "scroll", "fill", "arena", "col",
 # case never reaches the near claim). nodraw counts the
 # sectors the no-draw verdict owns (neither walked nor drawn); the report
 # treats them as covered. prim/pcov are SUB-BUCKETS of portal (rim-broadphase
-# candidate / blended-face over an outline); portal minus their sum = the
-# claim-all and no-refinement degenerates. arena is the build-failure
+# candidate / blended-face over an outline); both are structurally 0 now —
+# the rim cull and the blended-face transparent-cover drop both run in the
+# terrain vertex stage — so any nonzero portal count is the claim-all /
+# no-refinement degenerate (planes momentarily unavailable, or the plane
+# provider disabled). arena is the build-failure
 # backstop bucket (true arena exhaustion / host OOM): the sectors it used
 # to report were actually the OPTC_SLOT_DEAD decode-slot sentinel, which
 # tsc_get now never populates. slot (decode-slot contest) is likewise

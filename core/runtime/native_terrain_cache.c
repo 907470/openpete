@@ -89,6 +89,16 @@ typedef struct {
      * openpete_native_hdfold_table at frame_begin. */
     float   hd_lad[4];
     float   hd_entry[OPENPETE_HDFOLD_MAX][16];
+    /* Blended-face portal-cover drop (portal_sky_covers mirror): active
+     * opening planes in screen space. hd_entry ends 16- but not 32-aligned,
+     * so the ivec4 first keeps the dvec4 run at std140's 32-byte base
+     * alignment (C natural layout == std140 continues to hold). cov_poly
+     * holds one screen point per vec4 slot, 16 slots per plane. */
+    int32_t cov_cnt[4];    /* x = plane count (0 = test off)              */
+    double  cov_margin[4]; /* x = cover margin M (world units)            */
+    double  cov_abc[6][4]; /* screen inv-vz plane fit a, b, c; w = pn     */
+    float   cov_bbox[6][4];/* outline screen bbox x0, y0, x1, y1          */
+    float   cov_poly[96][4];/* outline points (px, py, 0, 0), 16 per plane */
 } tc_globals_ubo;
 
 typedef struct {
@@ -500,6 +510,19 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
         gu->hd_lad[3] = n > 0 ? 1.0f : 0.0f;
         if (n > 0)
             memcpy(gu->hd_entry, tab, (size_t)n * sizeof(gu->hd_entry[0]));
+    }
+    gu->cov_cnt[0]   = g->cov_n;
+    gu->cov_margin[0] = g->cov_margin;
+    for (int pi = 0; pi < 6; pi++) {
+        gu->cov_abc[pi][0] = g->cov_abc[pi][0];
+        gu->cov_abc[pi][1] = g->cov_abc[pi][1];
+        gu->cov_abc[pi][2] = g->cov_abc[pi][2];
+        gu->cov_abc[pi][3] = (double)g->cov_pn[pi];
+        memcpy(gu->cov_bbox[pi], g->cov_bbox[pi], sizeof(gu->cov_bbox[pi]));
+        for (int k = 0; k < 16; k++) {
+            gu->cov_poly[pi * 16 + k][0] = g->cov_pxy[pi][k][0];
+            gu->cov_poly[pi * 16 + k][1] = g->cov_pxy[pi][k][1];
+        }
     }
 
     /* reset sector flags; origins are rewritten by sector_set */

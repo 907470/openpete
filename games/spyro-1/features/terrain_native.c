@@ -1260,12 +1260,6 @@ typedef struct {
      * 2 = no signal (untextured/unmatched sector — level mean applies). */
     float lpg_p[3], lpg_q[3];
     uint8_t lpg_state; unsigned lpg_gen;
-    /* Any face (either tier) semi-transparent? Blend-on/off is decode-stable:
-     * HP ABE is the face's texByte high bit, LP ABE is face w1 bit 2, and the
-     * env tex anim's tiledef rewrites can only change the ABR class (1..4),
-     * never opaque vs blended — so one scan per decode suffices. Consumed by
-     * the retained-GPU portal claim (transparent-cover relevance). */
-    uint8_t hasBlend; uint32_t blendGen;
     /* GPU sector-mesh cache liveness: decodeGen bumps on every (re)decode of
      * this slot (a global monotonic counter, so slot reuse for a different
      * sector always mismatches); texGen when the env texture anim re-decoded
@@ -2680,18 +2674,6 @@ static void terrain_animdbg(CPUState* cpu) {
     have = 1;
 }
 
-/* Latched any-blended-face scan (see the tscache_t field comment). */
-static int tsc_has_blend(tscache_t* C) {
-    if (C->blendGen != C->decodeGen) {
-        int hb = 0;
-        for (int i = 0; i < C->nHpF && !hb; i++) if (C->hpF[i].mat.blend) hb = 1;
-        for (int i = 0; i < C->nLpF && !hb; i++) if (C->lpF[i].mat.blend) hb = 1;
-        C->hasBlend = (uint8_t)hb;
-        C->blendGen = C->decodeGen;
-    }
-    return C->hasBlend;
-}
-
 /* Per-sector view-space bounding sphere, stamped each walk (s_vanim_pres).
  * Shared input of the occlusion cull and the portal-rim sector broadphase
  * (rim_sector_cands): sector-table index -> centre through the projection
@@ -2797,6 +2779,7 @@ static int s_tgpu_rim_ok = 0;         /* rim frames derived for THIS walk */
 static int tgpu_portal_frames(CPUState* cpu);            /* defined post-feed-statics */
 static int tgpu_rim_sphere_cand(double oc1, double oc2, double oc3, int radius);
 static void tgpu_rim_globals_fill(openpete_tercache_globals* g);
+static void tgpu_cover_globals_fill(openpete_tercache_globals* g);
 static double s_tgpu_l3 = 1.0;        /* ||M row 2||/4096 (near-claim bound) */
 static int s_otbias_on;               /* tentative: defined (=1) at the feed */
 
@@ -3071,6 +3054,11 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             T.pc[q] = k[q].pp;
             k[q].rgb_far = k[q].rgb_near = rc[q];
         }
+        /* flags16 bit 14 = blended face: the vertex stage's portal
+         * transparent-cover drop keys on it (raw mat blend, not the draw
+         * arena — ABR-3 clamps to the opaque arena but the feed still
+         * drops it under a cover). */
+        if (F->mat.blend) T.flags16 |= 0x4000u;
         tgpu_buf* dst = F->mat.blend ? &buf[tgpu_arena_of(&F->mat) + ab]
                                      : &buf[OPTC_ARENA_LP + ab];
         /* LP quad: strip diagonal i1-i2 (no i2/i3 swap — see the LP emit) */
@@ -3104,6 +3092,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
          * tile isn't scrolling). */
         if (F->tb != -1)
             T.flags16 = (uint16_t)((((uint32_t)F->tb & 0x7Fu) << 5) | 0x1000u);
+        if (F->mat.blend) T.flags16 |= 0x4000u;   /* cover-drop key (bit 14) */
         uint32_t nearC[4], farC[4];
         const uint16_t co[4] = { F->c0, F->c1, F->c2, F->c3 };
         for (int q = 0; q < 4; q++) {
@@ -3224,7 +3213,8 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                  * (the near-emit's dv lookup keys on hq_idx, not tb;
                  * hq_idx is w2 & 0x7F, always in range). */
                 H.flags16 = (uint16_t)(1u | ((uint16_t)q << 1)
-                          | (((uint32_t)F->hq_idx & 0x7Fu) << 5) | 0x1000u);
+                          | (((uint32_t)F->hq_idx & 0x7Fu) << 5) | 0x1000u
+                          | (m.blend ? 0x4000u : 0u));   /* cover-drop key */
                 H.matf0 = tgpu_pack_mat0(&m);
                 H.matf1 = (uint32_t)(m.clut_raw & 0xFFFF);
                 H.matn0 = 0; H.matn1 = 0;   /* near cells never re-select */
@@ -4951,6 +4941,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * from the memset when frames are absent — retained tris then carry
          * no rim verdict). */
         tgpu_rim_globals_fill(&tcg);
+        tgpu_cover_globals_fill(&tcg);
     }
     /* OPENPETE_TERRAIN_GPU_CENSUS=1: one stderr line per hook walk with THIS
      * walk's claim counts by reason (deltas of the window counters, printed
@@ -5151,27 +5142,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 claim = 1; s_tgcl_portal++;
             } else if (s_tgpu_pplane_n && oc3 > 1.0) {
                 /* Portal claim, refined (see the s_tgpu_pplane comment). With
-                 * the rim frames derived, the inner-rim cull runs IN the
-                 * vertex stage (portal_rim_classify mirror on the emitted
-                 * tri, rebuilt from the corner attributes + the flags16
-                 * half/sub-tri bit), so rim candidacy does not claim — only
-                 * blended-face sectors over an outline do (the transparent-
-                 * cover DROP is the one remaining feed-side portal drop). */
+                 * the rim frames derived, NOTHING portal-side claims: the
+                 * inner-rim cull AND the blended-face transparent-cover drop
+                 * both run in the vertex stage on the emitted tri rebuilt
+                 * from the corner attributes (portal_rim_classify /
+                 * portal_sky_covers mirrors — the cover planes ride the
+                 * build's globals, blended faces carry flags16 bit 14). */
                 int pcl = 0;
-                if (s_tgpu_rim_ok) {
-                    if (tsc_has_blend((tscache_t*)SC)) {
-                        const double csx = s_ofx + oc1 * s_H / oc3;
-                        const double csy = s_ofy + oc2 * s_H / oc3;
-                        const double rpx = (double)SC->radius * s_H / oc3 * 1.5 + 16.0;
-                        for (int pi = 0; pi < s_tgpu_pplane_n; pi++) {
-                            const openpete_portal_skyplane* pp = &s_tgpu_pplane[pi];
-                            if (csx + rpx >= pp->x0 && csx - rpx <= pp->x1 &&
-                                csy + rpx >= pp->y0 && csy - rpx <= pp->y1) {
-                                pcl = 1; s_tgcl_pcov++; break;
-                            }
-                        }
-                    }
-                } else {
+                if (!s_tgpu_rim_ok) {
                     /* Refinement frames unavailable (plane provider disabled):
                      * blanket projected-bbox claim, the pre-refinement rule. */
                     const double csx = s_ofx + oc1 * s_H / oc3;
@@ -5994,6 +5972,33 @@ static int transp_cover_on(void) {
                  v = (e && *e) ? (*e != '0') : 1; }
     return v;
 }
+/* Cover planes for the vertex stage's portal_sky_covers mirror: the same
+ * screen-space openings the feed's drop tests, snapshotted into the build's
+ * globals. Filled only when the rim frames are up (tgpu_portal_frames copied
+ * this build's planes into s_pplane); otherwise the blanket portal claim
+ * keeps every overlap sector on the CPU walk and no retained blend face can
+ * reach the test. The feed-side lever (OPENPETE_PORTAL_TRANSP_COVER=0)
+ * disables both sides alike, so lever-off keeps covers visible everywhere. */
+static void tgpu_cover_globals_fill(openpete_tercache_globals* g) {
+    if (!s_tgpu_rim_ok || !transp_cover_on()) return;
+    int n = s_pplane_n > 6 ? 6 : s_pplane_n;
+    g->cov_margin = (double)openpete_portal_plane_margin();
+    for (int pi = 0; pi < n; pi++) {
+        const openpete_portal_skyplane* pp = &s_pplane[pi];
+        g->cov_abc[pi][0] = pp->a;
+        g->cov_abc[pi][1] = pp->b;
+        g->cov_abc[pi][2] = pp->c;
+        g->cov_pn[pi] = pp->pn > 16 ? 16 : pp->pn;
+        g->cov_bbox[pi][0] = pp->x0; g->cov_bbox[pi][1] = pp->y0;
+        g->cov_bbox[pi][2] = pp->x1; g->cov_bbox[pi][3] = pp->y1;
+        for (int k = 0; k < pp->pn && k < 16; k++) {
+            g->cov_pxy[pi][k][0] = pp->px[k];
+            g->cov_pxy[pi][k][1] = pp->py[k];
+        }
+    }
+    g->cov_n = n;
+}
+
 static int portal_sky_covers(const ttri* t) {
     const double M = (double)openpete_portal_plane_margin();
     for (int pi = 0; pi < s_pplane_n; pi++) {

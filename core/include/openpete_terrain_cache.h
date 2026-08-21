@@ -136,6 +136,22 @@ typedef struct {
     double  rim_nrm[6][4];            /* unit view-space normal; w = vn     */
     double  rim_bbox[6][4];           /* outline UV bbox pulo,puhi,pvlo,pvhi */
     double  rim_pv[96][2];            /* outlines in (U,W) coords, 16/plane */
+    /* Blended-face portal-cover drop mirror (portal_sky_covers in the
+     * vertex stage): the active opening planes in SCREEN space. The feed
+     * drops any blended tri whose screen centroid falls inside an opening's
+     * outline polygon with the tri's mean view-Z at or behind the plane
+     * minus the cover margin; baked faces carry a blend bit (flags16 bit
+     * 14) and the vertex stage kills them by the same float-exact test.
+     * cov_n = 0 disables (no active portal, or the transparent-cover drop
+     * lever is off — the feed then keeps such tris too). A plane whose
+     * screen outline projection failed rides with cov_pn = 0 and never
+     * matches, exactly like the CPU test's pn < 3 skip. */
+    int32_t cov_n;
+    double  cov_margin;               /* plane-cover near margin M (world)  */
+    double  cov_abc[6][3];            /* screen inv-vz plane fit a, b, c    */
+    int32_t cov_pn[6];                /* outline point count (0 = no poly)  */
+    float   cov_bbox[6][4];           /* outline screen bbox x0, y0, x1, y1 */
+    float   cov_pxy[6][16][2];        /* outline polygon, screen px/py      */
 } openpete_tercache_globals;
 
 /* Init/teardown (native_render.c owns the device lifetime). init returns 0

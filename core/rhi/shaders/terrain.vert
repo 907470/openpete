@@ -97,6 +97,16 @@ layout(std140, set = 3, binding = 0) uniform TerrainGlobals {
     dvec2 rim_pv[96];    /* outlines in (U,W), 16 slots per plane         */
     vec4  hd_lad;        /* HD fold: CONT-fog ramp ts, tb; count; enable  */
     vec4  hd_ent[1664];  /* 416 entries x 4 vec4 (rect/atlas/fogA/fogB)   */
+    /* Blended-face portal-cover drop (portal_sky_covers mirror): active
+     * opening planes in SCREEN space. cov_cnt.x = plane count (0 = test
+     * off); cov_abc.w = the plane's outline point count (pn < 3 never
+     * matches, the CPU test's skip). One outline point per cov_poly slot,
+     * 16 slots per plane. */
+    ivec4 cov_cnt;
+    dvec4 cov_margin;    /* x = plane-cover near margin M (world units)   */
+    dvec4 cov_abc[6];    /* screen inv-vz plane fit a, b, c; w = pn       */
+    vec4  cov_bbox[6];   /* outline screen bbox x0, y0, x1, y1            */
+    vec4  cov_poly[96];  /* outline points (px, py, 0, 0)                 */
 } g;
 
 /* g.fog.y bits — keep in sync with openpete_terrain_cache.h OPTC_GF_* */
@@ -327,6 +337,43 @@ bool rim_classified(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) 
     return false;
 }
 
+/* ---- blended-face portal-cover drop (portal_sky_covers mirror) ------------
+ * The CPU feed drops any BLENDED emitted tri whose screen centroid sits
+ * inside an active opening's outline polygon with the tri's mean view-Z at
+ * or behind the opening plane minus the cover margin — the destination-sky
+ * preview repaints that whole area, and a blended face cannot be depth-
+ * punched out of it the way opaque cover is. Same test here on the rebuilt
+ * emitted tri: float32 arithmetic exactly where the CPU's is float (the
+ * ttri stores FLOAT screen coords but DOUBLE view-Z; `precise` blocks FMA
+ * contraction), doubles exactly where the CPU computes double. */
+bool cover_dropped(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) {
+    precise float cx = (s0.x + s1.x + s2.x) / 3.0;
+    precise float cy = (s0.y + s1.y + s2.y) / 3.0;
+    precise double vzsum = z0 + z1 + z2;
+    for (int pi = 0; pi < g.cov_cnt.x; pi++) {
+        int pn = int(g.cov_abc[pi].w);
+        if (pn < 3) continue;
+        vec4 bb = g.cov_bbox[pi];
+        if (cx < bb.x || cx > bb.z || cy < bb.y || cy > bb.w) continue;
+        bool inp = false;                            /* crossing test, float */
+        int base = pi * 16;
+        for (int i = 0, j = pn - 1; i < pn; j = i++) {
+            precise vec2 P = g.cov_poly[base + i].xy;
+            precise vec2 Q = g.cov_poly[base + j].xy;
+            if ((P.y > cy) != (Q.y > cy) &&
+                cx < (Q.x - P.x) * (cy - P.y) / (Q.y - P.y) + P.x)
+                inp = !inp;
+        }
+        if (!inp) continue;
+        precise double inv = g.cov_abc[pi].x * double(cx)
+                           + g.cov_abc[pi].y * double(cy) + g.cov_abc[pi].z;
+        if (inv <= 1e-9lf) continue;
+        precise double mean = vzsum * 16.0lf / 3.0lf;
+        if (mean >= 1.0lf / inv - g.cov_margin.x) return true;
+    }
+    return false;
+}
+
 void main()
 {
     uint ff   = inFaceFlags;
@@ -507,16 +554,21 @@ void main()
         if (cullable && !front && !front2) { kill_vert(); return; }
     }
 
-    /* ---- portal inner-rim cull: rebuild THIS vertex's emitted tri and run
-     * the classifier on it. Triangulation matches the bake exactly —
-     * flat LP (i0,i1,i2)+(i1,i2,i3), flat HP (i0,i1,i3)+(i1,i3,i2), HQ
-     * sub-quad (c0,c1,c2)+(c1,c2,c3) — and the classifier's terms are
-     * vertex-SET invariant, so order differences vs the walk's emit are
-     * immaterial. Screen coords are the raw float projections (the feed's
-     * push_tri values; vertex-snap runs excluded the cache entirely). ---- */
-    if (g.rim_cnt.x > 0) {
+    /* ---- portal drops: rebuild THIS vertex's emitted tri and run the two
+     * feed-side portal classifiers on it — the inner-rim cull (all faces)
+     * and the blended-face transparent-cover drop (flags16 bit 14).
+     * Triangulation matches the bake exactly — flat LP (i0,i1,i2)+
+     * (i1,i2,i3), flat HP (i0,i1,i3)+(i1,i3,i2), HQ sub-quad (c0,c1,c2)+
+     * (c1,c2,c3) — in the walk's own emit corner ORDER ((tl,tr,bl)+
+     * (tr,bl,br)), which the cover centroid's float sums need for
+     * last-ulp identity; the rim classifier's terms are additionally
+     * vertex-SET invariant. Screen coords are the raw float projections
+     * (the feed's push_tri values; vertex-snap runs excluded the cache
+     * entirely). ---- */
+    bool covTest = (f16 & 0x4000u) != 0u && g.cov_cnt.x > 0;
+    if (g.rim_cnt.x > 0 || covTest) {
         bool tri2 = (f16 & 0x2000u) != 0u;
-        bool rimdrop;
+        bool pdrop;
         if (!hqv) {
             precise dvec3 ta, tb, tc2;
             vec2 sa, sb, sc;
@@ -528,7 +580,10 @@ void main()
                 if (tri2)   { ta = m1; tb = m3c; tc2 = m2; sa = p1f; sb = p3f; sc = p2f; }
                 else        { ta = m0; tb = m1; tc2 = m3c; sa = p0f; sb = p1f; sc = p3f; }
             }
-            rimdrop = rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z);
+            pdrop = (g.rim_cnt.x > 0 &&
+                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z))
+                 || (covTest &&
+                     cover_dropped(sa, sb, sc, ta.z, tb.z, tc2.z));
         } else {
             /* Sub-quad nodes from the transformed parent corners (the same
              * cv_mid mirrors the own-vertex rebuild uses below). */
@@ -544,10 +599,13 @@ void main()
             precise dvec3 ta, tb, tc2;
             if (tri2) { ta = q1; tb = q2; tc2 = q3; }
             else      { ta = q0; tb = q1; tc2 = q2; }
-            rimdrop = rim_classified(proj_of(ta), proj_of(tb), proj_of(tc2),
-                                     ta.z, tb.z, tc2.z);
+            vec2 sa = proj_of(ta), sb = proj_of(tb), sc = proj_of(tc2);
+            pdrop = (g.rim_cnt.x > 0 &&
+                     rim_classified(sa, sb, sc, ta.z, tb.z, tc2.z))
+                 || (covTest &&
+                     cover_dropped(sa, sb, sc, ta.z, tb.z, tc2.z));
         }
-        if (rimdrop) { kill_vert(); return; }
+        if (pdrop) { kill_vert(); return; }
     }
 
     /* ---- material: near-tile / CLUT-ladder row select (flat HP textured) ---- */
