@@ -715,6 +715,16 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
         if (!run(c.str())) return -1;
     }
 
+    /* Drop the scratch now that the link has consumed it. gen/ is ~64 MB
+     * of generated C and inputs/ the carved binaries it came from —
+     * together about 70% of the module directory, reproducible from the
+     * disc at any time, and read by nothing after this point. They are
+     * kept on FAILURE (the early returns above), where they are the only
+     * evidence of what went wrong. obj/ stays: the modding framework's
+     * link-time override chains re-link from those objects. */
+    fs::remove_all(gen, ec);
+    fs::remove_all(inputs, ec);
+
     OPL_INFO_F("recomp-build", "module built: %s (codegen=%s rom=%s)",
                out_module_path, codegen_stamp.c_str(), rom_stamp.c_str());
     std::fprintf(stderr, "[first-boot] done: %s\n", out_module_path);

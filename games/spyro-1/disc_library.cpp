@@ -351,6 +351,15 @@ extern "C" int spyro1_library_resolve(openpete_options_t* opts,
             write_meta(entry, label, bin.filename().string(), sha,
                        (long long)time(nullptr));
             std::fprintf(stderr, "[library] added %s (%s)\n", label.c_str(), sha);
+            /* The library owns this copy from here on — the module is
+             * rebuilt from it, never from wherever the image came from.
+             * Worth saying once: the user is otherwise left holding two
+             * copies of a ~650 MB image with nothing telling them the
+             * first one is now redundant. */
+            std::fprintf(stderr,
+                "[library] your original %s is no longer needed — the copy "
+                "in your library is what OpenPete uses from now on\n",
+                bin.filename().string().c_str());
         }
         Meta m;
         if (!read_meta(entry, m)) return -1;
