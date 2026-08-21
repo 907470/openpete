@@ -1174,6 +1174,21 @@ const char* openpete_mods_sdk_dir(void) {
     return s_sdk_dir;
 }
 
+/* ---- pillar 9: game data + texture packs (api 2) ----------------------- */
+
+static int api_read_level_data(openpete_mod_t* self, int level_id,
+                               void* buf, uint32_t cap) {
+    (void)self;
+    return openpete_mods_read_level_data(level_id, buf, cap);
+}
+
+static int api_texpack_fog_shift(openpete_mod_t* self, const float scale_rgb[3],
+                                 const float offset_rgb[3]) {
+    (void)self;
+    texture_pack_fog_shift_set(scale_rgb, offset_rgb);
+    return 0;
+}
+
 static const openpete_mod_api_t s_api = {
     .api_version   = OPENPETE_MOD_API_VERSION,
     /* pillar 1: the override chain */
@@ -1213,6 +1228,9 @@ static const openpete_mod_api_t s_api = {
     .sfx_play      = api_sfx_play,
     /* declared input bindings */
     .binding_down  = api_binding_down,
+    /* pillar 9: game data + texture packs (api 2) */
+    .read_level_data   = api_read_level_data,
+    .texpack_fog_shift = api_texpack_fog_shift,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

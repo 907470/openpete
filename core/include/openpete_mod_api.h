@@ -123,10 +123,13 @@ enum {
 #define OPENPETE_TICK_HZ  (1125000.0 / 37609.0)
 #define OPENPETE_VBL_HZ   (2250000.0 / 37609.0)
 
-#define OPENPETE_MOD_API_VERSION 1u
+#define OPENPETE_MOD_API_VERSION 2u
 
 typedef struct openpete_mod_api {
-    uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION */
+    uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION (the struct is
+                             * append-only: a mod's manifest `api` pin is the
+                             * MINIMUM version its calls need; check
+                             * `api_version < N`, never `!=`) */
 
     /* ── Pillar 1: the override chain ────────────────────────────────
      * Attach an override to a guest function by symbol name (named tier
@@ -359,6 +362,25 @@ typedef struct openpete_mod_api {
      * diverges gameplay (the practice-ROM pattern); display-only reads
      * belong in present hooks. Undeclared name = error log + 0. */
     int (*binding_down)(openpete_mod_t* self, const char* name);
+
+    /* ---- pillar 9: game data + texture packs (api 2) ------------------- */
+
+    /* Read one level's raw Data blob from the USER'S OWN mounted disc into
+     * buf (cap bytes); buf NULL queries the length. Returns the blob length,
+     * or <0 when no game layer provides level data / the id is unknown. Lets
+     * a mod borrow authored game content (another level's sky, palette,
+     * geometry) without shipping derived data. */
+    int (*read_level_data)(openpete_mod_t* self, int level_id,
+                           void* buf, uint32_t cap);
+
+    /* Retarget the texture-pack fog ambience: fogged replacement texels
+     * blend toward scale*stock+offset (offsets in 0..255 units) instead of
+     * the stock ladder colours — for packs whose art re-grades the level.
+     * NULL/NULL restores stock. Per-texture grade fits still take
+     * precedence where they have signal; this is the fallback ambience.
+     * Display-only. */
+    int (*texpack_fog_shift)(openpete_mod_t* self, const float scale_rgb[3],
+                             const float offset_rgb[3]);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */
