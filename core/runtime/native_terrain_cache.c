@@ -85,7 +85,11 @@ typedef struct {
     double  rim_pv[96][2]; /* outlines in (U,W), 16 slots per plane      */
 } tc_globals_ubo;
 
-typedef struct { float o[4]; } tc_sector_ubo;   /* xyz origin, w flag bits */
+typedef struct {
+    float o[4];             /* xyz origin, w flag bits                      */
+    float gp[4], gq[4];     /* pack LP grade affine v' = p*v + q*255 (rgb);
+                             * valid only with OPTC_SF_LPGRADE set in o.w   */
+} tc_sector_ubo;
 
 /* Both blocks ride one rhi_ubo sized to the sector block; the globals block
  * (grown by the rim frames) must keep fitting it. */
@@ -136,7 +140,16 @@ static struct {
                                        * set (rung flips, sub-pixel skew) */
     tc_sector_ubo *build_target;      /* where sector_set writes this build   */
     int           draw_open;          /* frame_select verdict for this present */
-    int           ubo_written;        /* live blocks flushed this rhi frame   */
+    uint64_t      ubo_flush_serial;   /* rhi_frame_serial of the last UBO flush
+                                       * for the CURRENT selection (0 = none).
+                                       * Keyed on the frame serial, not a
+                                       * boolean: a capture path can render one
+                                       * selection across SEVERAL rhi frames
+                                       * (the HD-pending screenshot retry), and
+                                       * each frame's ring slot needs its own
+                                       * flush or the retained draws bind a
+                                       * never-written slot (all-zero sector
+                                       * flags = every vertex killed). */
     uint32_t      present_ctr;
     tc_defer      defer[TC_DEFER_MAX];
     int           defer_n;
@@ -422,7 +435,9 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
 
     /* lazily create the UBO (needs the device from init) */
     if (!s_tc.ubo) {
-        uint32_t block = sizeof(tc_sector_ubo) * OPTC_SLOTS;   /* 8 KB > globals */
+        uint32_t block = sizeof(tc_sector_ubo) * OPTC_SLOTS;   /* 24 KB > globals
+                                    * (within the 64 KB maxUniformBufferRange of
+                                    * every desktop implementation + llvmpipe) */
         s_tc.ubo = rhi_create_ubo(s_tc.dev, block, 2);
         if (!s_tc.ubo) { s_tc.ready = 0; return; }
     }
@@ -503,11 +518,11 @@ void openpete_tercache_frame_select(uint32_t present_stamp)
         s_tc.draw_open = s_tc.ready && s_tc.live.valid && age >= -8 && age <= 8;
         if (s_tc.draw_open) s_tc.sel = s_tc.live;
     }
-    s_tc.ubo_written = 0;
+    s_tc.ubo_flush_serial = 0;
 }
 
 void openpete_tercache_sector_set(int slot, float ox, float oy, float oz,
-                                  uint32_t sflags)
+                                  uint32_t sflags, const float *grade6)
 {
     if (!s_tc.build_target || slot < 0 || slot >= OPTC_SLOTS || slot == (int)OPTC_SLOT_DEAD)
         return;
@@ -517,6 +532,13 @@ void openpete_tercache_sector_set(int slot, float ox, float oy, float oz,
     s_tc.build_target[slot].o[1] = oy;
     s_tc.build_target[slot].o[2] = oz;
     s_tc.build_target[slot].o[3] = w.f;
+    if (grade6) {
+        for (int c = 0; c < 3; c++) {
+            s_tc.build_target[slot].gp[c] = grade6[c];
+            s_tc.build_target[slot].gq[c] = grade6[3 + c];
+        }
+        s_tc.build_target[slot].gp[3] = s_tc.build_target[slot].gq[3] = 0.0f;
+    }
 }
 
 void openpete_tercache_frame_commit(void)
@@ -574,11 +596,15 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
         case OPTC_DRAW_KEY:     p = s_tc.pipe_key;     break;
     }
     if (!p) return;
-    if (!s_tc.ubo_written) {   /* first draw of the present: flush the state
-                                * frame_select snapshotted for it */
-        rhi_ubo_write(s_tc.ubo, 0, &s_tc.sel.g, sizeof(s_tc.sel.g));
-        rhi_ubo_write(s_tc.ubo, 1, s_tc.sel.sec, sizeof(s_tc.sel.sec));
-        s_tc.ubo_written = 1;
+    {   /* First draw of each RHI FRAME: flush the selected state into this
+         * frame's UBO ring slot (see ubo_flush_serial — one selection can
+         * render across several rhi frames). */
+        uint64_t fs = rhi_frame_serial(s_tc.dev);
+        if (s_tc.ubo_flush_serial != fs) {
+            rhi_ubo_write(s_tc.ubo, 0, &s_tc.sel.g, sizeof(s_tc.sel.g));
+            rhi_ubo_write(s_tc.ubo, 1, s_tc.sel.sec, sizeof(s_tc.sel.sec));
+            s_tc.ubo_flush_serial = fs;
+        }
     }
     rhi_bind_pipeline(s_tc.dev, p);
     if (vram) rhi_bind_vram(s_tc.dev, vram);

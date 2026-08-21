@@ -740,7 +740,6 @@ typedef struct {
     int tex_faces, tex_tris;
     int near_q_agree, near_c_only;
     int walk_sectors;
-    double lpg_acc[6]; int lpg_acc_n;    /* pack-aware LP grade accumulator */
     int serial;   /* 1 = single-thread walk: also fills the s_tv/s_cv A/B arrays */
 } tn_wctx;
 
@@ -3597,9 +3596,22 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 | (fillLP    ? OPTC_SF_FILLLP    : 0u)
                 | (secInLOD  ? OPTC_SF_SECINLOD  : 0u)
                 | (((uint32_t)s_tgpu[(int)(SC - s_tsc)].gen & 7u) << 12);
+            /* Pack LP grade (lp_grade_apply's source choice, same priority):
+             * the bake carries raw LP colours, so the affine rides the
+             * sector params for the vertex stage to apply. */
+            float grade6[6]; const float* gr = NULL;
+            if (s_lpg_active) {
+                const float *p = NULL, *q = NULL;
+                if (SC->lpg_state == 1)  { p = SC->lpg_p;   q = SC->lpg_q; }
+                else if (s_lpg_mean_ok) { p = s_lpg_mean;  q = s_lpg_mean + 3; }
+                if (p) {
+                    for (int c = 0; c < 3; c++) { grade6[c] = p[c]; grade6[3 + c] = q[c]; }
+                    gr = grade6; sf |= OPTC_SF_LPGRADE;
+                }
+            }
             openpete_tercache_sector_set((int)(SC - s_tsc),
                                          (float)originX, (float)originY,
-                                         (float)originZ, sf);
+                                         (float)originZ, sf, gr);
             return;
         }
 
@@ -3635,16 +3647,9 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             faces = SC->lpFaces; faceStride = 8;
             lpColBase = SC->lpColBase;                     /* LP colours (4B, no fog) */
             if (SC->vfracPres == s_vanim_pres) cvF = SC->lpVf;
-            if (s_lpg_active) {
-                tsc_lp_grade(SC);
-                if (!passFill && SC->lpg_state == 1) {     /* level-mean accumulator */
-                    for (int c = 0; c < 3; c++) {
-                        W->lpg_acc[c]     += SC->lpg_p[c];
-                        W->lpg_acc[3 + c] += SC->lpg_q[c];
-                    }
-                    W->lpg_acc_n++;
-                }
-            }
+            /* SC->lpg_* is pre-warmed by the serial prepass (tsc_lp_grade),
+             * which also feeds the level-mean accumulator; workers only read
+             * it here (lp_grade_apply below). */
         } else {
             cverts = SC->hpV; cfaces = SC->hpF; nv = nHpV; nf = nHpF;
             faces = SC->hpFaces; faceStride = 16;
@@ -4877,7 +4882,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         W->tex_faces = W->tex_tris = 0;
         W->near_q_agree = W->near_c_only = 0;
         W->walk_sectors = 0;
-        memset(W->lpg_acc, 0, sizeof(W->lpg_acc)); W->lpg_acc_n = 0;
         W->serial = wserial;
     }
     if (!wserial && op_prof_on()) {
@@ -4968,6 +4972,17 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         /* Sector-level tier/fill verdicts — one computation site, consumed
          * by both the retained-GPU claim below and the face walk. */
         sector_verdicts(SC, &G, &s_pre_verd[vi]);
+        /* Level-mean accumulator for the pack LP grade: every visible fitted
+         * sector whose LP tier draws contributes — the same set the walk's
+         * pass-0 entry used to accumulate, now gathered here (serially) so
+         * retained sectors contribute without walking. */
+        if (s_lpg_active && s_pre_verd[vi].drawLP && SC->lpg_state == 1) {
+            for (int c = 0; c < 3; c++) {
+                s_lpg_acc[c]     += SC->lpg_p[c];
+                s_lpg_acc[3 + c] += SC->lpg_q[c];
+            }
+            s_lpg_acc_n++;
+        }
         /* ---- retained-GPU claim (main thread: chunk builds write RHI
          * buffers — contract C3). An unclaimed sector's chunks are validated
          * or rebuilt here; the walk then publishes its verdict flags and
@@ -4980,11 +4995,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          *    plane-cover needs no claim (per-pixel in core).
          *  - anim: vert-anim sectors lerp fractional banks per present.
          *  - fill: WORLD_FILL twins are screen-dilated in the feed.
-         *  - lpg: the pack-aware LP level-mean regrade applies to EVERY
-         *    sector's LP colours once any sector in this level fitted, and
-         *    the bake carries raw colours — so a terrain-replacing pack
-         *    claims the whole level until the S2c texpack fold mirrors the
-         *    grade (censused under tp=).
+         *  - (the pack-aware LP regrade no longer claims: the bake carries
+         *    raw colours and the per-sector grade affine rides the sector
+         *    params — lp_grade_apply is mirrored in the vertex stage under
+         *    OPTC_SF_LPGRADE, own fit and level mean alike.)
          *  - build claims (scroll tiles, arena-full, unmapped colours,
          *    pack-replaced faces, selector-matched faces) come back from
          *    tgpu_ensure. */
@@ -5006,8 +5020,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 claim = 1; s_tgcl_near++;
                 if (oc3 + nearBound < 16.0)
                     s_tgcl_nearb++;   /* census: fully-behind sub-bucket */
-            } else if (s_lpg_active && s_lpg_mean_ok) {
-                claim = 1; s_tgcl_texpack++;
             } else if (s_tgpu_claim_all) {
                 claim = 1; s_tgcl_portal++;
             } else if (s_tgpu_pplane_n && oc3 > 1.0) {
@@ -5134,8 +5146,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_tex_faces += W->tex_faces; s_tex_tris += W->tex_tris;
         s_near_q_agree += W->near_q_agree; s_near_c_only += W->near_c_only;
         s_walk_sectors += W->walk_sectors;
-        for (int c = 0; c < 6; c++) s_lpg_acc[c] += W->lpg_acc[c];
-        s_lpg_acc_n += W->lpg_acc_n;
     }
     if (tgpu_on) {
         openpete_tercache_frame_commit();

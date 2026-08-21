@@ -83,6 +83,7 @@ enum {
 #define OPTC_SF_FILLLP     32u
 #define OPTC_SF_FILLNEAR   64u
 #define OPTC_SF_SECINLOD   128u
+#define OPTC_SF_LPGRADE    256u   /* apply the per-sector pack LP grade (gp/gq) */
 
 /* Global flag bits (globals UBO; mirrored in terrain.vert). */
 #define OPTC_GF_NEARHQ     1u
@@ -156,8 +157,11 @@ int  openpete_tercache_ready(void);
  * draws no retained content. */
 void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
                                    uint32_t stamp, int immediate);
+/* grade6: the pack-aware LP colour grade for this sector (p.rgb then q.rgb,
+ * lp_grade_apply's affine — own fit or the level mean), or NULL when no pack
+ * is active. Pair a non-NULL grade with OPTC_SF_LPGRADE in sflags. */
 void openpete_tercache_sector_set(int slot, float ox, float oy, float oz,
-                                  uint32_t sflags);
+                                  uint32_t sflags, const float *grade6);
 void openpete_tercache_frame_commit(void);
 void openpete_tercache_frame_skip(uint32_t stamp, int immediate);
 /* Renderer side, once per rendered present: gate the retained draws on the

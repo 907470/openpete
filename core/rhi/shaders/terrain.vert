@@ -109,6 +109,7 @@ layout(std140, set = 3, binding = 0) uniform TerrainGlobals {
 
 struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
+    vec4 gp, gq;   /* pack LP grade affine v' = p*v8 + q*255 (rgb; SF_LPGRADE) */
 };
 layout(std140, set = 3, binding = 1) uniform TerrainSectors {
     TerrainSector sec[512];
@@ -123,6 +124,7 @@ layout(std140, set = 3, binding = 1) uniform TerrainSectors {
 #define SF_FILLLP     32u
 #define SF_FILLNEAR   64u
 #define SF_SECINLOD   128u
+#define SF_LPGRADE    256u
 
 /* face_flags bits — keep in sync with rhi_terrain_vertex (rhi.h) */
 #define FF_SLOT_MASK  0x1FFu
@@ -695,6 +697,19 @@ void main()
         }
     } else {
         col = vec4(inColFar.rgb, 1.0);   /* LP / HQ: raw baked, never fogged */
+    }
+    /* Pack-aware LP colour grade (lp_grade_apply mirror): the bake carries
+     * raw authored colours; with a replacement pack active the sector's
+     * grade affine (own HP-texture fit, or the level mean) rides the
+     * sector params. Same float32 ops and trunc-after-+0.5 as the walk;
+     * WORLD LP and fill LP alike, never HQ (the walk grades passLP only). */
+    if (lp && (sf & SF_LPGRADE) != 0u) {
+        for (int c = 0; c < 3; c++) {
+            precise float t = s.sec[slot].gp[c] * round(col[c] * 255.0);
+            t = t + s.sec[slot].gq[c] * 255.0;
+            t = t + 0.5;
+            col[c] = float(clamp(int(t), 0, 255)) / 255.0;
+        }
     }
     {   /* debug tint modes 4/5: show the baked near / far colour raw */
         int dbgmode = (gf >> 26) & 7;
