@@ -4569,7 +4569,7 @@ int openpete_native_hdfold_on(void)
     static int env = -1;
     if (env < 0) {
         const char *e = getenv("OPENPETE_TERRAIN_HDFOLD");
-        int on = e && *e && *e != '0';
+        int on = !(e && *e == '0');           /* default ON; =0 kill switch */
         /* The fold bakes the shipped pack-fog models; the A/B levers that
          * change the draw-time math disable it (tier-1 claims instead). */
         if (on) {

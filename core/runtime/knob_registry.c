@@ -525,6 +525,14 @@ static const knob_desc_t g_builtin[] = {
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       tercache_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
+    ENVROW_LATCHED("TERRAIN_HDFOLD", "Display", "1",
+      "HD texture-replacement fold (default on): with a texture pack active, "
+      "pack-matched terrain faces bake replacement entries into the retained "
+      "GPU cache (atlas + per-entry fog) instead of claiming their sectors "
+      "back to the CPU walk; unbakeable faces (blended targets, overflow) "
+      "still claim. Inert without a pack. 0 = kill switch (tier-1 per-sector "
+      "claims). Boot-latched; display-only."),
+
     { "notex", "Untextured (lighting)", "Display", NULL, "OPENPETE_NOTEX",
       "Debug view: draw the 3D scene with textures replaced by neutral grey, "
       "showing the raw gouraud vertex lighting. Cutout silhouettes stay real. "
