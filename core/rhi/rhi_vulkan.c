@@ -3102,6 +3102,24 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
         { .location = 11, .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, c1y) };
     terrain_anim_attrs[12] = (VkVertexInputAttributeDescription)
         { .location = 12, .binding = 1, .format = VK_FORMAT_R16G16B16A16_SINT, .offset = offsetof(rhi_terrain_prev, c2z) };
+    /* terrain_near: cur verts at binding 0 + the emitted-tri member context
+     * at binding 1 (a parallel array — see rhi_terrain_nearctx). */
+    VkVertexInputBindingDescription terrain_near_binds[2] = {
+        { .binding = 0, .stride = sizeof(rhi_terrain_vertex),
+          .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
+        { .binding = 1, .stride = sizeof(rhi_terrain_nearctx),
+          .inputRate = VK_VERTEX_INPUT_RATE_VERTEX },
+    };
+    VkVertexInputAttributeDescription terrain_near_attrs[13];
+    memcpy(terrain_near_attrs, terrain_attrs, sizeof(terrain_attrs));
+    terrain_near_attrs[9]  = (VkVertexInputAttributeDescription)
+        { .location = 9,  .binding = 1, .format = VK_FORMAT_R8G8B8A8_UINT, .offset = offsetof(rhi_terrain_nearctx, a_uf) };
+    terrain_near_attrs[10] = (VkVertexInputAttributeDescription)
+        { .location = 10, .binding = 1, .format = VK_FORMAT_R32G32_UINT,   .offset = offsetof(rhi_terrain_nearctx, a_far) };
+    terrain_near_attrs[11] = (VkVertexInputAttributeDescription)
+        { .location = 11, .binding = 1, .format = VK_FORMAT_R8G8B8A8_UINT, .offset = offsetof(rhi_terrain_nearctx, b_uf) };
+    terrain_near_attrs[12] = (VkVertexInputAttributeDescription)
+        { .location = 12, .binding = 1, .format = VK_FORMAT_R32G32_UINT,   .offset = offsetof(rhi_terrain_nearctx, b_far) };
     VkPipelineVertexInputStateCreateInfo vi = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_VERTEX_INPUT_STATE_CREATE_INFO,
         .vertexBindingDescriptionCount = 1, .pVertexBindingDescriptions = &bind,
@@ -3116,6 +3134,12 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
             vi.pVertexBindingDescriptions = terrain_binds;
             vi.vertexAttributeDescriptionCount = 13;
             vi.pVertexAttributeDescriptions = terrain_anim_attrs;
+        }
+        if (desc->terrain_near) {
+            vi.vertexBindingDescriptionCount = 2;
+            vi.pVertexBindingDescriptions = terrain_near_binds;
+            vi.vertexAttributeDescriptionCount = 13;
+            vi.pVertexAttributeDescriptions = terrain_near_attrs;
         }
     }
     if (desc->postfx) {   /* fullscreen triangle: no vertex buffer at all */

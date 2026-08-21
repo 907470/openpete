@@ -274,6 +274,21 @@ typedef struct rhi_terrain_prev {
     int16_t  c3x, c3y, c3z;
 } rhi_terrain_prev;             /* 32 bytes */
 
+/* Near-variant chunks only: the OTHER two emitted-tri members' attribute
+ * context, a parallel array in the near arenas' ctx buffer (vertex binding
+ * 1). The near-variant vertex stage rebuilds its whole emitted triangle
+ * (positions come from the parent corners already in the base vertex; UVs
+ * and both-half colours for the two non-self members come from here, in
+ * emit order relative to self: a = (self+1)%3, b = (self+2)%3), then
+ * mirrors the feed's near-plane clip on it and takes its own slot of the
+ * clipped fan. */
+typedef struct rhi_terrain_nearctx {
+    uint8_t  a_uf, a_vf, a_un, a_vn;   /* member a: far/near-half UVs   */
+    uint32_t a_far, a_near;            /* member a: far/near colours    */
+    uint8_t  b_uf, b_vf, b_un, b_vn;   /* member b likewise             */
+    uint32_t b_far, b_near;
+} rhi_terrain_nearctx;          /* 24 bytes */
+
 /* RHI_BLEND_SUBTRACT = PSX ABR mode 2 (dst = B - F): reverse-subtract, src ONE,
  * dst ONE — used by shadows (subtractive darkening). */
 typedef enum { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT } rhi_blend_mode;
@@ -365,6 +380,13 @@ typedef struct {
                                  * previous-tick position + parent corners for
                                  * the vertex stage's sub-tick lerp (poly-anim
                                  * sector chunks). Bind the prev buffer with
+                                 * rhi_bind_vertex_buffer2.                   */
+    bool           terrain_near; /* with terrain_pipeline: add vertex binding 1
+                                 * = rhi_terrain_nearctx (locations 9..12), the
+                                 * emitted-tri member context for the vertex
+                                 * stage's near-plane clip mirror (near-variant
+                                 * chunks). Mutually exclusive with
+                                 * terrain_anim; bind the ctx buffer with
                                  * rhi_bind_vertex_buffer2.                   */
 } rhi_pipeline_desc;
 
