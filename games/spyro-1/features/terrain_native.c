@@ -2754,6 +2754,13 @@ typedef struct {
     unsigned selEpoch;                /* openpete_mods_material_epoch at last scan */
     uint8_t  tpClaim, selClaim;
     uint8_t  gen;                     /* chunk generation (3 bits published) */
+    uint8_t  bakeVar;                 /* the last build for this sector emitted
+                                       * near-variant chunks alongside the plain
+                                       * ones — sticky for the sector's whole
+                                       * residency, so a sector oscillating
+                                       * across the near threshold re-bakes at
+                                       * most once (and a variant build that
+                                       * failed is not retried every present) */
     uint32_t animRoll;                /* poly-anim: SC->vrollPres at build — a
                                        * new canonical roll re-bakes (prev,cur)
                                        * even when the content hash is stable
@@ -2776,7 +2783,7 @@ static int tgpu_slot_hot(uint32_t idx) {
     return s_tgpu[idx].s != 0 && s_tgpu[idx].ownFrame == openpete_frame;
 }
 /* census: window sums (reset each print) + per-walk counts (op_prof rows) */
-static long s_tgpu_secs, s_tgpu_claims, s_tgpu_rebuilds;
+static long s_tgpu_secs, s_tgpu_claims, s_tgpu_rebuilds, s_tgpu_nvsecs;
 static long s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
             s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot,
             s_tgcl_texpack, s_tgcl_sel, s_tgcl_nearb, s_tgcl_nodraw,
@@ -2831,6 +2838,16 @@ static int tgpu_near_box_clear(const tscache_t* SC, const int M[3][3],
     return 1;
 }
 static double s_tgpu_l3 = 1.0;        /* ||M row 2||/4096 (near-claim bound) */
+
+/* Near-variant chunks (the vertex-stage clip fan) for sectors whose geometry
+ * can reach or cross the eye plane, instead of claiming them to the CPU walk.
+ * OPENPETE_TERRAIN_NEARVAR=0 restores the claim (A/B lever). */
+static int tgpu_nearvar_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_NEARVAR");
+                 v = !(e && *e && *e == '0'); }
+    return v;
+}
 static int s_otbias_on;               /* tentative: defined (=1) at the feed */
 
 static void tgpu_free_slot(tgpu_slot_t* T) {
@@ -2900,10 +2917,12 @@ static int tgpu_arena_of(const tmat* m) {
     }
 }
 
-typedef struct { rhi_terrain_vertex* v; rhi_terrain_prev* pv; int n, cap;
-                 int anim; /* fill pv alongside v (poly-anim sector) */ } tgpu_buf;
+typedef struct { rhi_terrain_vertex* v; rhi_terrain_prev* pv;
+                 rhi_terrain_nearctx* cx; int n, cap;
+                 int anim; /* fill pv alongside v (poly-anim sector)    */
+                 int nearv; /* fill cx alongside v (near-variant chunk) */ } tgpu_buf;
 static int tgpu_push(tgpu_buf* b, const rhi_terrain_vertex* v,
-                     const rhi_terrain_prev* p) {
+                     const rhi_terrain_prev* p, const rhi_terrain_nearctx* c) {
     if (b->n >= b->cap) {
         int nc = b->cap ? b->cap * 2 : 256;
         rhi_terrain_vertex* nv = (rhi_terrain_vertex*)realloc(b->v, sizeof(*nv) * (size_t)nc);
@@ -2914,8 +2933,15 @@ static int tgpu_push(tgpu_buf* b, const rhi_terrain_vertex* v,
             if (!np) return -1;
             b->pv = np;
         }
+        if (b->nearv) {
+            rhi_terrain_nearctx* ncx =
+                (rhi_terrain_nearctx*)realloc(b->cx, sizeof(*ncx) * (size_t)nc);
+            if (!ncx) return -1;
+            b->cx = ncx;
+        }
     }
     if (b->anim) b->pv[b->n] = *p;
+    if (b->nearv) b->cx[b->n] = *c;
     b->v[b->n++] = *v;
     return 0;
 }
@@ -2950,6 +2976,26 @@ typedef struct {
 typedef struct { tgpu_p4 p, pp; uint32_t rgb_far, rgb_near;
                  uint8_t uf, vf, un, vn, role; } tgpu_corner_t;
 
+static void tgpu_fill_vert(rhi_terrain_vertex* v, const tgpu_face_t* F,
+                           const tgpu_corner_t* k, int tri2, int spare) {
+    memset(v, 0, sizeof(*v));
+    v->px = k->p.x; v->py = k->p.y; v->pz = k->p.z;
+    v->flags16 = (uint16_t)(F->flags16 | ((uint16_t)k->role << 3)
+                            | (tri2  ? 0x2000u : 0u)
+                            | (spare ? 0x8000u : 0u));
+    v->uvf_u = k->uf; v->uvf_v = k->vf;
+    v->uvn_u = k->un; v->uvn_v = k->vn;
+    v->rgba_far  = 0xFF000000u | (k->rgb_far  & 0xFFFFFFu);
+    v->rgba_near = 0xFF000000u | (k->rgb_near & 0xFFFFFFu);
+    v->mat_far0 = F->matf0; v->mat_far1 = F->matf1;
+    v->mat_near0 = F->matn0; v->mat_near1 = F->matn1;
+    v->face_flags = F->face_flags;
+    v->c0x = F->c[0].x; v->c0y = F->c[0].y; v->c0z = F->c[0].z;
+    v->c1x = F->c[1].x; v->c1y = F->c[1].y; v->c1z = F->c[1].z;
+    v->c2x = F->c[2].x; v->c2y = F->c[2].y; v->c2z = F->c[2].z;
+    v->c3x = F->c[3].x; v->c3y = F->c[3].y; v->c3z = F->c[3].z;
+}
+
 static int tgpu_emit_tri(tgpu_buf* b, const tgpu_face_t* F,
                          tgpu_corner_t a, tgpu_corner_t c1, tgpu_corner_t c2,
                          int tri2 /* second half / sub-tri (flags16 bit13) */) {
@@ -2965,23 +3011,51 @@ static int tgpu_emit_tri(tgpu_buf* b, const tgpu_face_t* F,
             pr.c3x = F->pc[3].x; pr.c3y = F->pc[3].y; pr.c3z = F->pc[3].z;
         }
         rhi_terrain_vertex v;
-        memset(&v, 0, sizeof(v));
-        v.px = cs[k].p.x; v.py = cs[k].p.y; v.pz = cs[k].p.z;
-        v.flags16 = (uint16_t)(F->flags16 | ((uint16_t)cs[k].role << 3)
-                               | (tri2 ? 0x2000u : 0u));
-        v.uvf_u = cs[k].uf; v.uvf_v = cs[k].vf;
-        v.uvn_u = cs[k].un; v.uvn_v = cs[k].vn;
-        v.rgba_far  = 0xFF000000u | (cs[k].rgb_far  & 0xFFFFFFu);
-        v.rgba_near = 0xFF000000u | (cs[k].rgb_near & 0xFFFFFFu);
-        v.mat_far0 = F->matf0; v.mat_far1 = F->matf1;
-        v.mat_near0 = F->matn0; v.mat_near1 = F->matn1;
-        v.face_flags = F->face_flags;
-        v.c0x = F->c[0].x; v.c0y = F->c[0].y; v.c0z = F->c[0].z;
-        v.c1x = F->c[1].x; v.c1y = F->c[1].y; v.c1z = F->c[1].z;
-        v.c2x = F->c[2].x; v.c2y = F->c[2].y; v.c2z = F->c[2].z;
-        v.c3x = F->c[3].x; v.c3y = F->c[3].y; v.c3z = F->c[3].z;
-        if (tgpu_push(b, &v, b->anim ? &pr : NULL) != 0) return -1;
+        tgpu_fill_vert(&v, F, &cs[k], tri2, 0);
+        if (tgpu_push(b, &v, b->anim ? &pr : NULL, NULL) != 0) return -1;
     }
+    return 0;
+}
+
+/* Near-variant twin of one emitted triangle: SIX vertices — the primary fan
+ * triangle then the spare (flags16 bit 15) — each carrying the other two
+ * members' UVs and colours so the vertex stage can rebuild and near-plane
+ * clip the whole triangle. Context members are in emit order relative to
+ * self (a = self+1, b = self+2 mod 3), the order the clip fan indexes them
+ * in; both halves repeat the same three corner records, so a vertex's slot
+ * in its triangle is simply its index mod 3. */
+static int tgpu_emit_tri_near(tgpu_buf* b, const tgpu_face_t* F,
+                              tgpu_corner_t a, tgpu_corner_t c1,
+                              tgpu_corner_t c2, int tri2) {
+    const tgpu_corner_t cs[3] = { a, c1, c2 };
+    for (int spare = 0; spare < 2; spare++) {
+        for (int k = 0; k < 3; k++) {
+            rhi_terrain_vertex v;
+            rhi_terrain_nearctx cx;
+            const tgpu_corner_t* A = &cs[(k + 1) % 3];
+            const tgpu_corner_t* B = &cs[(k + 2) % 3];
+            tgpu_fill_vert(&v, F, &cs[k], tri2, spare);
+            memset(&cx, 0, sizeof(cx));
+            cx.a_uf = A->uf; cx.a_vf = A->vf; cx.a_un = A->un; cx.a_vn = A->vn;
+            cx.a_far  = 0xFF000000u | (A->rgb_far  & 0xFFFFFFu);
+            cx.a_near = 0xFF000000u | (A->rgb_near & 0xFFFFFFu);
+            cx.b_uf = B->uf; cx.b_vf = B->vf; cx.b_un = B->un; cx.b_vn = B->vn;
+            cx.b_far  = 0xFF000000u | (B->rgb_far  & 0xFFFFFFu);
+            cx.b_near = 0xFF000000u | (B->rgb_near & 0xFFFFFFu);
+            if (tgpu_push(b, &v, NULL, &cx) != 0) return -1;
+        }
+    }
+    return 0;
+}
+
+/* Emit one triangle into this sector's chunk buffers: the plain chunk
+ * always, plus the near-variant twin while the sector carries one. */
+static int tgpu_emit_face_tri(tgpu_buf* buf, int arena, int ab, int with_var,
+                              const tgpu_face_t* F, tgpu_corner_t a,
+                              tgpu_corner_t c1, tgpu_corner_t c2, int tri2) {
+    if (tgpu_emit_tri(&buf[arena + ab], F, a, c1, c2, tri2) != 0) return -1;
+    if (with_var && tgpu_emit_tri_near(&buf[arena + (int)OPTC_ARENA_NEAR_BASE],
+                                       F, a, c1, c2, tri2) != 0) return -1;
     return 0;
 }
 
@@ -3036,7 +3110,7 @@ static int tgpu_hdfold_face(const tmat* m,
  * tgpu_hdfold_face). sec_index = the level sector index (the
  * authored-correction key). */
 static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
-                             uint32_t hqTable, int sec_index) {
+                             uint32_t hqTable, int sec_index, int with_var) {
     /* UV-scroll is mirrored: the accumulator-change tile generations rebuild
      * the bake per whole-texel advance (incl. the HQ-sibling-only ticks, via
      * tgenHq), and sub-tick fractional offsets ride the globals' per-tile dv
@@ -3055,9 +3129,16 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
      * the lerp fill and draws cur), bakes prev == cur. */
     const int anim = SC->polyanim != 0;
     const int ab = anim ? (int)OPTC_ARENA_ANIM_BASE : 0;
+    /* Near-variant chunks are never poly-anim: those sectors keep the CPU
+     * claim, so the two twin arena families are mutually exclusive (one
+     * binding-1 twin per chunk — prev record OR member context). */
+    if (anim) with_var = 0;
+    if (with_var)
+        for (int a = OPTC_ARENA_NEAR_BASE; a < OPTC_ARENA_COUNT; a++)
+            buf[a].nearv = 1;
     int vsnap = 1;
     if (anim) {
-        for (int a = OPTC_ARENA_ANIM_BASE; a < OPTC_ARENA_COUNT; a++)
+        for (int a = OPTC_ARENA_ANIM_BASE; a < OPTC_ARENA_NEAR_BASE; a++)
             buf[a].anim = 1;
         const int nLp = (SC->lpV && SC->lpVprev) ? SC->nLpV : 0;
         const int nHp = (SC->hpV && SC->hpVprev) ? SC->nHpV : 0;
@@ -3109,11 +3190,11 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
          * arena — ABR-3 clamps to the opaque arena but the feed still
          * drops it under a cover). */
         if (F->mat.blend) T.flags16 |= 0x4000u;
-        tgpu_buf* dst = F->mat.blend ? &buf[tgpu_arena_of(&F->mat) + ab]
-                                     : &buf[OPTC_ARENA_LP + ab];
+        int da = F->mat.blend ? tgpu_arena_of(&F->mat) : (int)OPTC_ARENA_LP;
         /* LP quad: strip diagonal i1-i2 (no i2/i3 swap — see the LP emit) */
-        if (tgpu_emit_tri(dst, &T, k[0], k[1], k[2], 0) != 0) goto done;
-        if (F->quad && tgpu_emit_tri(dst, &T, k[1], k[2], k[3], 1) != 0) goto done;
+        if (tgpu_emit_face_tri(buf, da, ab, with_var, &T, k[0], k[1], k[2], 0) != 0) goto done;
+        if (F->quad &&
+            tgpu_emit_face_tri(buf, da, ab, with_var, &T, k[1], k[2], k[3], 1) != 0) goto done;
     }
 
     /* ---- HP tier: flat variant + the HQ 2x2 subdivide variant ---- */
@@ -3158,7 +3239,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             T.pc[q] = k[q].pp;
             k[q].rgb_near = nearC[q]; k[q].rgb_far = farC[q];
         }
-        tgpu_buf* dst = &buf[tgpu_arena_of(&F->mat) + ab];
+        int da = tgpu_arena_of(&F->mat);
         if (F->quad) {
             /* GT4: i0=TL, i1=TR, i3=BL, i2=BR; UV [TL,TR,BL,BR]; diagonal i1-i3 */
             k[0].uf = (uint8_t)F->tu[0]; k[0].vf = (uint8_t)F->tv[0];
@@ -3180,8 +3261,8 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                 T.matf1 |= (uint32_t)hdF << 16;
                 T.matn1 |= (uint32_t)hdN << 16;
             }
-            if (tgpu_emit_tri(dst, &T, k[0], k[1], k[3], 0) != 0) goto done;
-            if (tgpu_emit_tri(dst, &T, k[1], k[3], k[2], 1) != 0) goto done;
+            if (tgpu_emit_face_tri(buf, da, ab, with_var, &T, k[0], k[1], k[3], 0) != 0) goto done;
+            if (tgpu_emit_face_tri(buf, da, ab, with_var, &T, k[1], k[3], k[2], 1) != 0) goto done;
         } else {
             /* GT3 with the 2-bit UV orientation (triRot) */
             static const int triRot[4][3] = {{0,1,2},{1,3,0},{3,2,1},{2,0,3}};
@@ -3199,7 +3280,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                 T.matf1 |= (uint32_t)hdF << 16;
                 T.matn1 |= (uint32_t)hdN << 16;
             }
-            if (tgpu_emit_tri(dst, &T, k[0], k[1], k[2], 0) != 0) goto done;
+            if (tgpu_emit_face_tri(buf, da, ab, with_var, &T, k[0], k[1], k[2], 0) != 0) goto done;
         }
         /* HQ 2x2 subdivide variant (terrain_near_emit mirror): corners
          * TL=i0, TR=i1, BL=i3, BR=i2 with RAW near colours; midpoint
@@ -3280,9 +3361,9 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                     if (hd < 0) { fail = 5; goto done; }
                     H.matf1 |= (uint32_t)hd << 16;
                 }
-                tgpu_buf* hdst = &buf[tgpu_arena_of(&m) + ab];
-                if (tgpu_emit_tri(hdst, &H, c0, c1, c2, 0) != 0) goto done;
-                if (tgpu_emit_tri(hdst, &H, c1, c2, c3, 1) != 0) goto done;
+                int ha = tgpu_arena_of(&m);
+                if (tgpu_emit_face_tri(buf, ha, ab, with_var, &H, c0, c1, c2, 0) != 0) goto done;
+                if (tgpu_emit_face_tri(buf, ha, ab, with_var, &H, c1, c2, c3, 1) != 0) goto done;
             }
         }
     }
@@ -3306,12 +3387,16 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             openpete_tercache_chunk_write(a, first[a], buf[a].v, buf[a].n);
             if (buf[a].anim)
                 openpete_tercache_chunk_write_prev(a, first[a], buf[a].pv, buf[a].n);
+            if (buf[a].nearv)
+                openpete_tercache_chunk_write_ctx(a, first[a], buf[a].cx, buf[a].n);
             S->first[a] = first[a]; S->count[a] = buf[a].n;
         }
         ok = 1;
     }
 done:
-    for (int a = 0; a < OPTC_ARENA_COUNT; a++) { free(buf[a].v); free(buf[a].pv); }
+    for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
+        free(buf[a].v); free(buf[a].pv); free(buf[a].cx);
+    }
     return ok ? 0 : fail;
 }
 
@@ -3367,9 +3452,11 @@ static int tgpu_sel_scan(const tscache_t* SC) {
 
 /* Validate-or-rebuild a sector's chunks. Returns 0 when the GPU may draw it
  * this present; a nonzero claim reason (tgpu_slot_t.unbuildable codes)
- * claims it back to the CPU walk. */
+ * claims it back to the CPU walk. want_near = this present needs the sector's
+ * near-variant (clip-fan) chunks; a slot without them yet rebuilds to add
+ * them and keeps them for the rest of the sector's residency. */
 static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
-                       int sec_index) {
+                       int sec_index, int want_near) {
     int slot = (int)(SC - s_tsc);
     /* Backstop only: tsc_get never places a sector in OPTC_SLOT_DEAD (its
      * 9-bit face_flags id is the dead-stamp sentinel, so baked chunks for it
@@ -3420,7 +3507,11 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         }
         if (T->selClaim) return 6;
     }
-    int dirty = (T->s != SC->s) || (T->decodeGen != SC->decodeGen)
+    /* Near-variant chunks: kept for as long as the slot holds this sector, so
+     * a sector oscillating across the near threshold re-bakes at most once. */
+    int with_var = want_near || (T->bakeVar && T->s == SC->s);
+    int dirty = (with_var && !T->bakeVar)
+             || (T->s != SC->s) || (T->decodeGen != SC->decodeGen)
              || (T->texGen != SC->texGen) || (T->vertGen != SC->vertGen)
              /* poly-anim: every canonical roll re-bakes (prev,cur) — the
               * content hash alone would leave a paused anim's chunk lerping
@@ -3452,7 +3543,8 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         T->bakeHdEpoch = openpete_native_hdfold_epoch();
         T->lastColFrame = openpete_frame;
         if (tgpu_col_hash(SC, &T->colHash) != 0) { T->unbuildable = 3; return 3; }
-        T->unbuildable = tgpu_build_sector(cpu, slot, SC, hqTable, sec_index);
+        T->bakeVar = (uint8_t)(with_var != 0);
+        T->unbuildable = tgpu_build_sector(cpu, slot, SC, hqTable, sec_index, with_var);
         s_tgpu_rebuilds++;
     }
     if (T->unbuildable == 0) T->ownFrame = openpete_frame;
@@ -3466,11 +3558,11 @@ static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
     n = 0;
     openpete_tercache_stats_t st;
     openpete_tercache_get_stats(&st);
-    fprintf(stderr, "[ter-gpu f=%u] sectors=%ld claims=%ld (near=%ld portal=%ld "
+    fprintf(stderr, "[ter-gpu f=%u] sectors=%ld nvar=%ld claims=%ld (near=%ld portal=%ld "
             "anim=%ld scroll=%ld fill=%ld arena=%ld col=%ld slot=%ld tp=%ld "
             "sel=%ld nearb=%ld nodraw=%ld prim=%ld pcov=%ld) rebuilds=%ld "
             "chunks=%u verts=%u/%u draws=%u frees-pend=%u\n",
-            openpete_frame, s_tgpu_secs, s_tgpu_claims,
+            openpete_frame, s_tgpu_secs, s_tgpu_nvsecs, s_tgpu_claims,
             s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
             s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot,
             s_tgcl_texpack, s_tgcl_sel, s_tgcl_nearb, s_tgcl_nodraw,
@@ -3478,7 +3570,7 @@ static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
             s_tgpu_rebuilds,
             st.chunks, st.verts_used, st.verts_cap, st.draws_last_present,
             st.frees_pending);
-    s_tgpu_secs = s_tgpu_claims = s_tgpu_rebuilds = 0;
+    s_tgpu_secs = s_tgpu_claims = s_tgpu_rebuilds = s_tgpu_nvsecs = 0;
     s_tgcl_near = s_tgcl_portal = s_tgcl_anim = s_tgcl_scroll = 0;
     s_tgcl_fill = s_tgcl_build = s_tgcl_colour = s_tgcl_slot = 0;
     s_tgcl_texpack = s_tgcl_sel = s_tgcl_nearb = s_tgcl_nodraw = 0;
@@ -3755,6 +3847,9 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 | (lpGapOnly ? OPTC_SF_LPGAPONLY : 0u)
                 | (fillLP    ? OPTC_SF_FILLLP    : 0u)
                 | (secInLOD  ? OPTC_SF_SECINLOD  : 0u)
+                /* own == 3: near-variant present — draw the clip-fan chunks
+                 * and kill the plain ones (the two sets are exclusive). */
+                | (G->own[vi] == 3 ? OPTC_SF_NEARVAR : 0u)
                 | (((uint32_t)s_tgpu[(int)(SC - s_tsc)].gen & 7u) << 12);
             /* Pack LP grade (lp_grade_apply's source choice, same priority):
              * the bake carries raw LP colours, so the affine rides the
@@ -4960,6 +5055,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         /* Poly-anim lerp alpha: sub-tick paired builds carry the spine's
          * alpha; canonical (and unpaired) builds draw cur exactly. */
         tcg.vanim_alpha = (s_vanim_sub && s_vanim_on) ? s_vanim_alpha : 1.0;
+        tcg.nearz = s_nearz;   /* near-variant clip plane (clip_push_tri) */
         /* Per-tile UV-scroll offsets for this build (zero when the tile has
          * no fractional offset — canonical builds render the committed
          * whole-texel decode). */
@@ -5172,7 +5268,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          *    tgpu_ensure. */
         s_tgpu_own[vi] = 0;
         if (tgpu_on) {
-            int claim = 0;
+            int claim = 0, want_near = 0;
             const double nearBound = s_tgpu_l3 * ((double)SC->radius + 16.0);
             if (oc3 + nearBound < 16.0) {
                 /* NO-DRAW verdict: the whole bounding sphere sits behind the
@@ -5195,10 +5291,20 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * near-band/clip/straddle vertices (the bulk: the ground the
                  * camera stands on straddles the eye plane) still claim.
                  * Poly-anim sectors skip the refinement: their live verts
-                 * ride the anim banks, not the decoded AABB. */
-                claim = 1; s_tgcl_near++;
-                if (oc3 + nearBound < 16.0)
-                    s_tgcl_nearb++;   /* census: fully-behind sub-bucket */
+                 * ride the anim banks, not the decoded AABB.
+                 *
+                 * What survives the refinement takes the NEAR VARIANT: chunks
+                 * whose vertex stage re-runs the walk's near-plane clip fan
+                 * and its straddle waivers, so the sector still renders from
+                 * the GPU. Poly-anim sectors keep the claim (no anim x near
+                 * twin), as does the lever-off A/B. */
+                if (!SC->polyanim && tgpu_nearvar_on()) {
+                    want_near = 1;
+                } else {
+                    claim = 1; s_tgcl_near++;
+                    if (oc3 + nearBound < 16.0)
+                        s_tgcl_nearb++;   /* census: fully-behind sub-bucket */
+                }
             } else if (s_tgpu_claim_all) {
                 claim = 1; s_tgcl_portal++;
             } else if (s_tgpu_pplane_n && oc3 > 1.0) {
@@ -5233,9 +5339,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * wrapped rasterization poisons the depth prepass. That
                  * guarantee is the near-claim's whole job; no-draw keeps it
                  * by never entering the drawn set. */
-                int r = tgpu_ensure(cpu, SC, hqTable, (int)i);
+                int r = tgpu_ensure(cpu, SC, hqTable, (int)i, want_near);
                 if (r == 0) {
-                    s_tgpu_own[vi] = 1;
+                    s_tgpu_own[vi] = want_near ? 3 : 1;
+                    if (want_near) s_tgpu_nvsecs++;
                     s_tgpu_secs++; s_tgpu_secs_walk++;
                 } else {
                     claim = 1;

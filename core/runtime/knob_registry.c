@@ -922,6 +922,8 @@ static const knob_desc_t g_builtin[] = {
         "Drop HP beyond fog saturation, substitute LP (default 1)."),
     ENVROW_LATCHED("TERRAIN_PORTAL_CONFORM", "Debug", "1",
         "Terrain-vs-portal-sky depth conformance clamp (default 1)."),
+    ENVROW_LATCHED("TERRAIN_NEARVAR", "Debug", "1",
+        "Retain near-plane sectors on the GPU clip-fan path (0 = CPU walk)."),
     ENVROW_LIVE("TERRAIN_VANIM", "Debug", "1",
         "Sub-tick lerp of moving-terrain verts (default 1)."),
     ENVROW_LIVE("TERRAIN_TANIM", "Debug", "1",

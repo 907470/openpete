@@ -5,6 +5,7 @@
 #include "rhi.h"
 #include "openpete_terrain_cache.h"
 
+#include <stddef.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -30,6 +31,16 @@ static const uint32_t k_arena_cap[OPTC_ARENA_COUNT] = {
     [OPTC_ARENA_A_ADD]    = 16384,
     [OPTC_ARENA_A_SUB]    = 16384,
     [OPTC_ARENA_A_LP]     = 32768,
+    /* Near-variant twins: only sectors within reach of the near plane bake
+     * these, but each source triangle costs 6 vertices (primary + spare fan
+     * triangle) plus a 24 B ctx record, so size them for the handful of
+     * sectors around the camera rather than the whole visible set. Overflow
+     * claims the sector back to the CPU walk like any arena-full. */
+    [OPTC_ARENA_N_OPAQUE] = 393216,
+    [OPTC_ARENA_N_ALPHA]  =  32768,
+    [OPTC_ARENA_N_ADD]    =  32768,
+    [OPTC_ARENA_N_SUB]    =  32768,
+    [OPTC_ARENA_N_LP]     =  65536,
 };
 
 #define TC_FREE_MAX   1024   /* free-list spans per arena */
@@ -43,7 +54,8 @@ typedef struct { uint32_t first, count; } tc_span;
 
 typedef struct {
     rhi_buffer *vb;
-    rhi_buffer *pv;                   /* anim arenas: parallel prev-tick buffer */
+    rhi_buffer *pv;                   /* anim arenas: parallel prev-tick buffer
+                                       * near arenas: parallel ctx buffer      */
     uint32_t    cap;
     uint32_t    high;                 /* high-water vertex count (draw range) */
     tc_span     free_list[TC_FREE_MAX];
@@ -66,6 +78,8 @@ typedef struct {
     double dcam_zf[2]; /* camz, fogscale  */
     double dof_xy[2];  /* ofx, ofy        */
     double dH[2];      /* H, poly-anim alpha */
+    double dnear[2];   /* near-plane view-Z (clip mirror), reserved */
+    double dspare[2];  /* reserved — see the 32-byte stride note below */
     int32_t fog[4];    /* fogRefBase, gflags, cullRefS2, 0 */
     float sdv[128][4]; /* per-tile scroll V offsets (lq, hqA, hqB, 0) */
     /* Portal inner-rim cull frames (portal_rim_classify mirror; all fp64).
@@ -116,6 +130,14 @@ typedef struct {
 _Static_assert(sizeof(tc_globals_ubo) <= 65536 &&
                sizeof(tc_sector_ubo) * OPTC_SLOTS <= 65536,
                "terrain-cache UBO block exceeds the 64 KB UBO-range floor");
+/* The dvec4 runs must land on std140's 32-byte base alignment for C natural
+ * layout to keep matching the block the vertex stage reads — otherwise GLSL
+ * pads where C does not and EVERY field past the first dvec4 shifts (garbage
+ * fog/gflags, all-killed vertices). Any field added above them must therefore
+ * be a multiple of 32 bytes wide, not merely 16. */
+_Static_assert(offsetof(tc_globals_ubo, rim_oxyH) % 32 == 0 &&
+               offsetof(tc_globals_ubo, cov_margin) % 32 == 0,
+               "terrain-cache globals: a dvec4 run lost its 32-byte alignment");
 
 /* One build's complete retained frame state. The feeder STAGES the canonical
  * build's state and it PROMOTES to live one build later — the sub-tick
@@ -149,6 +171,11 @@ static struct {
     rhi_pipeline *pipe_a_world, *pipe_a_world_mark;
     rhi_pipeline *pipe_a_alpha, *pipe_a_add, *pipe_a_sub;
     rhi_pipeline *pipe_a_prepass, *pipe_a_key;
+    /* terrain_near variants (binding-1 member-context twin + the vertex-stage
+     * near-plane clip fan). Full set: near sectors carry every draw class. */
+    rhi_pipeline *pipe_n_world, *pipe_n_world_mark;
+    rhi_pipeline *pipe_n_alpha, *pipe_n_add, *pipe_n_sub;
+    rhi_pipeline *pipe_n_fill, *pipe_n_prepass, *pipe_n_key;
     rhi_texture  *hd_dummy;           /* 1x1 stand-in for the set-4 atlas     */
     tc_state      staged;             /* canonical build awaiting its present */
     tc_state      live;               /* what presents render                 */
@@ -240,13 +267,41 @@ int openpete_tercache_init(rhi_device *dev)
     s_tc.pipe_a_prepass = rhi_create_pipeline(dev, &d);
     d = anim_desc; d.frag_spv = "terrain_key_cache.frag.spv";
     s_tc.pipe_a_key = rhi_create_pipeline(dev, &d);
+    /* Near variants: identical state, the clip-fan vertex stage + the
+     * binding-1 member-context twin. Includes FILL — near sectors keep the
+     * LP hole-fill backing (unlike poly-anim, which is excluded from it). */
+    const rhi_pipeline_desc near_desc = {
+        .vert_spv = "terrain_near.vert.spv", .frag_spv = "terrain.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = true,
+        .terrain_pipeline = true, .terrain_near = true,
+        .push_const_size = sizeof(tc_pc),
+    };
+    d = near_desc;
+    s_tc.pipe_n_world = rhi_create_pipeline(dev, &d);
+    d = near_desc; d.stencil = RHI_STENCIL_MARK;
+    s_tc.pipe_n_world_mark = rhi_create_pipeline(dev, &d);
+    d = near_desc; d.blend = RHI_BLEND_ALPHA; d.depth_write_off = true;
+    s_tc.pipe_n_alpha = rhi_create_pipeline(dev, &d);
+    d = near_desc; d.blend = RHI_BLEND_ADD; d.depth_write_off = true;
+    s_tc.pipe_n_add = rhi_create_pipeline(dev, &d);
+    d = near_desc; d.blend = RHI_BLEND_SUBTRACT; d.depth_write_off = true;
+    s_tc.pipe_n_sub = rhi_create_pipeline(dev, &d);
+    d = near_desc; d.stencil = RHI_STENCIL_TEST_ZERO;
+    s_tc.pipe_n_fill = rhi_create_pipeline(dev, &d);
+    d = near_desc; d.frag_spv = "terrain_prepass.frag.spv"; d.color_write_off = true;
+    s_tc.pipe_n_prepass = rhi_create_pipeline(dev, &d);
+    d = near_desc; d.frag_spv = "terrain_key_cache.frag.spv";
+    s_tc.pipe_n_key = rhi_create_pipeline(dev, &d);
 
     int ok = s_tc.pipe_world && s_tc.pipe_world_mark && s_tc.pipe_alpha &&
              s_tc.pipe_add && s_tc.pipe_sub && s_tc.pipe_fill && s_tc.pipe_prepass &&
              s_tc.pipe_key &&
              s_tc.pipe_a_world && s_tc.pipe_a_world_mark && s_tc.pipe_a_alpha &&
              s_tc.pipe_a_add && s_tc.pipe_a_sub && s_tc.pipe_a_prepass &&
-             s_tc.pipe_a_key;
+             s_tc.pipe_a_key &&
+             s_tc.pipe_n_world && s_tc.pipe_n_world_mark && s_tc.pipe_n_alpha &&
+             s_tc.pipe_n_add && s_tc.pipe_n_sub && s_tc.pipe_n_fill &&
+             s_tc.pipe_n_prepass && s_tc.pipe_n_key;
     for (int a = 0; ok && a < OPTC_ARENA_COUNT; a++) {
         s_tc.arena[a].cap = k_arena_cap[a];
         s_tc.arena[a].vb = rhi_create_vertex_buffer_device(
@@ -255,6 +310,11 @@ int openpete_tercache_init(rhi_device *dev)
         if (ok && OPTC_ARENA_IS_ANIM(a)) {
             s_tc.arena[a].pv = rhi_create_vertex_buffer_device(
                 dev, (size_t)k_arena_cap[a] * sizeof(rhi_terrain_prev));
+            if (!s_tc.arena[a].pv) ok = 0;
+        }
+        if (ok && OPTC_ARENA_IS_NEAR(a)) {
+            s_tc.arena[a].pv = rhi_create_vertex_buffer_device(
+                dev, (size_t)k_arena_cap[a] * sizeof(rhi_terrain_nearctx));
             if (!s_tc.arena[a].pv) ok = 0;
         }
     }
@@ -289,6 +349,14 @@ void openpete_tercache_shutdown(rhi_device *dev)
     if (s_tc.pipe_a_sub)        rhi_destroy_pipeline(dev, s_tc.pipe_a_sub);
     if (s_tc.pipe_a_prepass)    rhi_destroy_pipeline(dev, s_tc.pipe_a_prepass);
     if (s_tc.pipe_a_key)        rhi_destroy_pipeline(dev, s_tc.pipe_a_key);
+    if (s_tc.pipe_n_world)      rhi_destroy_pipeline(dev, s_tc.pipe_n_world);
+    if (s_tc.pipe_n_world_mark) rhi_destroy_pipeline(dev, s_tc.pipe_n_world_mark);
+    if (s_tc.pipe_n_alpha)      rhi_destroy_pipeline(dev, s_tc.pipe_n_alpha);
+    if (s_tc.pipe_n_add)        rhi_destroy_pipeline(dev, s_tc.pipe_n_add);
+    if (s_tc.pipe_n_sub)        rhi_destroy_pipeline(dev, s_tc.pipe_n_sub);
+    if (s_tc.pipe_n_fill)       rhi_destroy_pipeline(dev, s_tc.pipe_n_fill);
+    if (s_tc.pipe_n_prepass)    rhi_destroy_pipeline(dev, s_tc.pipe_n_prepass);
+    if (s_tc.pipe_n_key)        rhi_destroy_pipeline(dev, s_tc.pipe_n_key);
     if (s_tc.pipe_world)      rhi_destroy_pipeline(dev, s_tc.pipe_world);
     if (s_tc.pipe_world_mark) rhi_destroy_pipeline(dev, s_tc.pipe_world_mark);
     if (s_tc.pipe_alpha)      rhi_destroy_pipeline(dev, s_tc.pipe_alpha);
@@ -372,10 +440,20 @@ void openpete_tercache_chunk_write_prev(int arena, uint32_t first,
                                         const rhi_terrain_prev *p, int count)
 {
     if (!s_tc.ready || arena < 0 || arena >= OPTC_ARENA_COUNT) return;
-    if (!s_tc.arena[arena].pv) return;   /* non-anim arena: no prev twin */
+    if (!OPTC_ARENA_IS_ANIM(arena) || !s_tc.arena[arena].pv) return;
     rhi_update_buffer_range(s_tc.arena[arena].pv, p,
                             (size_t)first * sizeof(rhi_terrain_prev),
                             (size_t)count * sizeof(rhi_terrain_prev));
+}
+
+void openpete_tercache_chunk_write_ctx(int arena, uint32_t first,
+                                       const rhi_terrain_nearctx *c, int count)
+{
+    if (!s_tc.ready || arena < 0 || arena >= OPTC_ARENA_COUNT) return;
+    if (!OPTC_ARENA_IS_NEAR(arena) || !s_tc.arena[arena].pv) return;
+    rhi_update_buffer_range(s_tc.arena[arena].pv, c,
+                            (size_t)first * sizeof(rhi_terrain_nearctx),
+                            (size_t)count * sizeof(rhi_terrain_nearctx));
 }
 
 void openpete_tercache_chunk_free(int arena, uint32_t first, int count)
@@ -485,6 +563,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     gu->dof_xy[0]  = g->ofx;  gu->dof_xy[1]  = g->ofy;
     gu->dH[0]      = g->H;
     gu->dH[1]      = g->vanim_alpha;   /* poly-anim lerp alpha (anim stage) */
+    gu->dnear[0]   = g->nearz;         /* near-plane clip zc (near stage)   */
     gu->fog[0] = g->fog_ref_base;
     gu->fog[1] = (int32_t)g->gflags;
     gu->fog[2] = g->cull_ref_s2;
@@ -618,10 +697,10 @@ static void tc_draw_arena(int arena, int pass_sel, const openpete_tercache_clip 
     s_tc.draws_last++;
 }
 
-/* Draw an anim twin arena: rebind the terrain_anim variant of the slot's
- * pipeline (same state, prev-twin vertex stage), then restore nothing — the
- * caller sequences all draws for one slot and every arena draw re-pushes its
- * own constants and buffers. */
+/* Draw a twin arena (poly-anim or near variant): rebind that variant of the
+ * slot's pipeline (same state, a different vertex stage + binding-1 twin),
+ * then restore nothing — the caller sequences all draws for one slot and
+ * every arena draw re-pushes its own constants and buffers. */
 static void tc_draw_anim(rhi_pipeline *p, int arena, int pass_sel,
                          const openpete_tercache_clip *c)
 {
@@ -678,22 +757,30 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
                          OPTC_ARENA_A_OPAQUE, 0, clip);
             tc_draw_anim(use_mark ? s_tc.pipe_a_world_mark : s_tc.pipe_a_world,
                          OPTC_ARENA_A_LP,     0, clip);
+            tc_draw_anim(use_mark ? s_tc.pipe_n_world_mark : s_tc.pipe_n_world,
+                         OPTC_ARENA_N_OPAQUE, 0, clip);
+            tc_draw_anim(use_mark ? s_tc.pipe_n_world_mark : s_tc.pipe_n_world,
+                         OPTC_ARENA_N_LP,     0, clip);
             break;
         case OPTC_DRAW_ALPHA:
             tc_draw_arena(OPTC_ARENA_ALPHA, 0, clip);
             tc_draw_anim(s_tc.pipe_a_alpha, OPTC_ARENA_A_ALPHA, 0, clip);
+            tc_draw_anim(s_tc.pipe_n_alpha, OPTC_ARENA_N_ALPHA, 0, clip);
             break;
         case OPTC_DRAW_ADD:
             tc_draw_arena(OPTC_ARENA_ADD,   0, clip);
             tc_draw_anim(s_tc.pipe_a_add, OPTC_ARENA_A_ADD, 0, clip);
+            tc_draw_anim(s_tc.pipe_n_add, OPTC_ARENA_N_ADD, 0, clip);
             break;
         case OPTC_DRAW_SUB:
             tc_draw_arena(OPTC_ARENA_SUB,   0, clip);
             tc_draw_anim(s_tc.pipe_a_sub, OPTC_ARENA_A_SUB, 0, clip);
+            tc_draw_anim(s_tc.pipe_n_sub, OPTC_ARENA_N_SUB, 0, clip);
             break;
         case OPTC_DRAW_FILL:
-            /* base LP only: poly-anim sectors never backstop-fill. */
+            /* LP only: poly-anim sectors never backstop-fill, near ones do. */
             tc_draw_arena(OPTC_ARENA_LP,    1, clip);
+            tc_draw_anim(s_tc.pipe_n_fill, OPTC_ARENA_N_LP, 1, clip);
             break;
         case OPTC_DRAW_PREPASS:
             tc_draw_arena(OPTC_ARENA_OPAQUE, 0, clip);
@@ -701,6 +788,9 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
             tc_draw_arena(OPTC_ARENA_LP,     1, clip);
             tc_draw_anim(s_tc.pipe_a_prepass, OPTC_ARENA_A_OPAQUE, 0, clip);
             tc_draw_anim(s_tc.pipe_a_prepass, OPTC_ARENA_A_LP,     0, clip);
+            tc_draw_anim(s_tc.pipe_n_prepass, OPTC_ARENA_N_OPAQUE, 0, clip);
+            tc_draw_anim(s_tc.pipe_n_prepass, OPTC_ARENA_N_LP,     0, clip);
+            tc_draw_anim(s_tc.pipe_n_prepass, OPTC_ARENA_N_LP,     1, clip);
             break;
         case OPTC_DRAW_KEY:
             /* keyed opaque faces only (blend arenas contest but never emit;
@@ -709,6 +799,8 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
             tc_draw_arena(OPTC_ARENA_LP,     2, clip);
             tc_draw_anim(s_tc.pipe_a_key, OPTC_ARENA_A_OPAQUE, 2, clip);
             tc_draw_anim(s_tc.pipe_a_key, OPTC_ARENA_A_LP,     2, clip);
+            tc_draw_anim(s_tc.pipe_n_key, OPTC_ARENA_N_OPAQUE, 2, clip);
+            tc_draw_anim(s_tc.pipe_n_key, OPTC_ARENA_N_LP,     2, clip);
             break;
     }
 }

@@ -27,6 +27,7 @@ struct rhi_device;
 struct rhi_texture;
 struct rhi_terrain_vertex;
 struct rhi_terrain_prev;
+struct rhi_terrain_nearctx;
 
 /* Vertex arenas, one per draw class. OPAQUE carries every HP face (textured
  * or flat, incl. HQ-subdivide variants and blend-4 "B+F/4" faces — the scene
@@ -50,10 +51,25 @@ enum {
     OPTC_ARENA_A_ADD,
     OPTC_ARENA_A_SUB,
     OPTC_ARENA_A_LP,
+    /* Near-variant twins: same draw classes, for sectors whose geometry can
+     * reach or cross the near plane. Every emitted triangle is baked TWICE
+     * (a primary and a spare fan triangle, 6 vertices per source triangle),
+     * each vertex carrying a PARALLEL rhi_terrain_nearctx record with the
+     * other two members' UVs and colours; drawn with the terrain_near
+     * pipelines, which re-run the walk's near-plane clip fan in the vertex
+     * stage. A slot holds both its plain and its near chunks and the
+     * per-present sector flags pick one (OPTC_SF_NEARVAR). */
+    OPTC_ARENA_N_OPAQUE,
+    OPTC_ARENA_N_ALPHA,
+    OPTC_ARENA_N_ADD,
+    OPTC_ARENA_N_SUB,
+    OPTC_ARENA_N_LP,
     OPTC_ARENA_COUNT
 };
 #define OPTC_ARENA_ANIM_BASE OPTC_ARENA_A_OPAQUE   /* base + class = twin */
-#define OPTC_ARENA_IS_ANIM(a) ((a) >= OPTC_ARENA_A_OPAQUE)
+#define OPTC_ARENA_NEAR_BASE OPTC_ARENA_N_OPAQUE
+#define OPTC_ARENA_IS_ANIM(a) ((a) >= OPTC_ARENA_A_OPAQUE && (a) < OPTC_ARENA_N_OPAQUE)
+#define OPTC_ARENA_IS_NEAR(a) ((a) >= OPTC_ARENA_N_OPAQUE)
 
 /* Draw slots — native_render.c calls these at the matching point of its
  * draw order. WORLD = opaque arena + LP arena (pass WORLD); FILL = LP arena
@@ -84,6 +100,10 @@ enum {
 #define OPTC_SF_FILLNEAR   64u
 #define OPTC_SF_SECINLOD   128u
 #define OPTC_SF_LPGRADE    256u   /* apply the per-sector pack LP grade (gp/gq) */
+#define OPTC_SF_NEARVAR    512u   /* draw this sector's NEAR-VARIANT chunks (the
+                                   * clip-fan vertex stage) instead of its plain
+                                   * ones: exactly one of the two sets survives,
+                                   * so a sector never draws twice */
 
 /* Global flag bits (globals UBO; mirrored in terrain.vert). */
 #define OPTC_GF_NEARHQ     1u
@@ -110,6 +130,8 @@ typedef struct {
     double  fogscale;     /* s_fogscale (SZ = fogscale * m3)                   */
     double  vanim_alpha;  /* poly-anim sub-tick lerp alpha (1.0 = canonical /
                            * unpaired build: the anim chunks draw cur exactly) */
+    double  nearz;        /* near-plane camera-space view-Z (s_nearz): the
+                           * near-variant vertex stage clips against it        */
     int32_t fog_ref_base; /* ENV_LODDIST >> 2                                  */
     int32_t cull_ref_s2;  /* ENV_CULLDIST >> 7 (.s LP far-cull threshold)      */
     uint32_t gflags;      /* OPTC_GF_*                                         */
@@ -247,6 +269,10 @@ void openpete_tercache_chunk_write(int arena, uint32_t first,
  * written at the same [first, first+count) range. */
 void openpete_tercache_chunk_write_prev(int arena, uint32_t first,
                                         const struct rhi_terrain_prev *p, int count);
+/* Near arenas only: upload the parallel emitted-tri member context for a chunk
+ * written at the same [first, first+count) range. */
+void openpete_tercache_chunk_write_ctx(int arena, uint32_t first,
+                                       const struct rhi_terrain_nearctx *c, int count);
 void openpete_tercache_chunk_free(int arena, uint32_t first, int count);
 
 /* Screen->clip mapping for one draw target: the RAW scene_to_clip inputs,

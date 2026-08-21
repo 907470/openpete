@@ -31,9 +31,15 @@ layout(location = 5) flat in uint  vHd;    /* HD-fold entry id | flags (vert sta
 layout(location = 0) out vec4 outColor;
 
 /* Debug sector tint (globals gflags bit 29): paint by sector id. */
+/* Prefix mirror of terrain.vert's TerrainGlobals: only the fields this stage
+ * reads are named, but every field BEFORE them must still be declared or the
+ * whole block shifts (a stray gflags then reads a double's exponent bits and
+ * silently turns the debug tints on). Any field added to the vertex stage's
+ * block ahead of `fog` / `hd_lad` has to be mirrored here too. */
 layout(std140, set = 3, binding = 0) uniform TerrainGlobals {
     vec4  mrow0; vec4 mrow1; vec4 mrow2;
     dvec2 dcam_xy; dvec2 dcam_zf; dvec2 dof_xy; dvec2 dH;
+    dvec2 dnear; dvec2 dspare;
     ivec4 fog;
     vec4  pad_[302];     /* scroll_dv + the rim frames (vertex-stage state) */
     vec4  hd_lad;        /* HD fold: CONT-fog ramp ts, tb; count; enable   */

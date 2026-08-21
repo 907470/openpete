@@ -42,6 +42,17 @@ add_custom_command(
     COMMENT "glslangValidator terrain.vert (TERRAIN_ANIM) -> terrain_anim.vert.spv"
     VERBATIM)
 list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/terrain_anim.vert.spv)
+# terrain_near.vert: terrain.vert recompiled with the near-plane clip-fan path
+# (second vertex binding = the emitted triangle's other two members).
+add_custom_command(
+    OUTPUT ${RHI_SHADER_OUT_DIR}/terrain_near.vert.spv
+    COMMAND ${GLSLANG_VALIDATOR} -V --define-macro TERRAIN_NEAR=1
+            ${RHI_SHADER_SRC_DIR}/terrain.vert
+            -o ${RHI_SHADER_OUT_DIR}/terrain_near.vert.spv
+    DEPENDS ${RHI_SHADER_SRC_DIR}/terrain.vert
+    COMMENT "glslangValidator terrain.vert (TERRAIN_NEAR) -> terrain_near.vert.spv"
+    VERBATIM)
+list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/terrain_near.vert.spv)
 # Embed the compiled .spv into the binary: a build-time `cmake -P` step turns
 # the SPIR-V into a generated C source (byte arrays + a name->blob table),
 # which is compiled into the library. The renderer then loads shaders from

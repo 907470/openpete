@@ -50,6 +50,18 @@ layout(location = 10) in ivec4 inPrevC0;
 layout(location = 11) in ivec4 inPrevC1;
 layout(location = 12) in ivec4 inPrevC2;
 #endif
+#ifdef TERRAIN_NEAR
+/* Near-variant chunks (binding 1, rhi_terrain_nearctx): the OTHER two
+ * emitted-tri members' attributes, in emit order relative to self
+ * (a = self+1, b = self+2 mod 3). Positions need no context — every vertex
+ * already carries the parent face corners the whole triangle is built from.
+ * With these the vertex stage can resolve all three members' pre-clip colour
+ * and UV and re-run the walk's near-plane clip fan. */
+layout(location = 9)  in uvec4 inCtxAUV;  /* a: uf, vf, un, vn            */
+layout(location = 10) in uvec2 inCtxACol; /* a: far, near (R8G8B8A8)      */
+layout(location = 11) in uvec4 inCtxBUV;
+layout(location = 12) in uvec2 inCtxBCol;
+#endif
 
 layout(push_constant) uniform TerrainPC {
     vec4 cbase;   /* x_base, x_span, y_base, y_span (scene_to_clip terms)  */
@@ -69,6 +81,9 @@ vec2 clip_of(vec2 sxy) {
     return vec2(pc.cbase.x + nx * pc.cbase.y, pc.cbase.z - ny * pc.cbase.w);
 }
 
+/* Mirrored by native_terrain_cache.c's tc_globals_ubo (C natural layout ==
+ * std140 there, which the dvec4 runs' 32-byte alignment depends on) and, as a
+ * prefix, by terrain.frag — a field added here must land in both. */
 layout(std140, set = 3, binding = 0) uniform TerrainGlobals {
     vec4  mrow0;    /* xyz: M[0][*] (raw int16 values)                    */
     vec4  mrow1;    /* xyz: M[1][*]                                       */
@@ -78,6 +93,8 @@ layout(std140, set = 3, binding = 0) uniform TerrainGlobals {
     dvec2 dof_xy;   /* ofx, ofy (GTE screen offset, px)                   */
     dvec2 dH;       /* x: H (projection distance), y: poly-anim sub-tick
                      * alpha (1.0 on canonical builds; TERRAIN_ANIM only)   */
+    dvec2 dnear;    /* x: near-plane view-Z (TERRAIN_NEAR clip mirror)      */
+    dvec2 dspare;   /* reserved (keeps the dvec4 runs below 32-B aligned)   */
     ivec4 fog;      /* x: fogRefBase, y: gflags, z: cullRefS2, w: unused  */
     vec4  sdv[128]; /* per-tile scroll V offsets (lq, hqA, hqB, 0)        */
     /* Portal inner-rim cull frames (portal_rim_classify mirror, fp64).
@@ -137,6 +154,7 @@ layout(std140, set = 3, binding = 1) uniform TerrainSectors {
 #define SF_FILLNEAR   64u
 #define SF_SECINLOD   128u
 #define SF_LPGRADE    256u
+#define SF_NEARVAR    512u
 
 /* face_flags bits — keep in sync with rhi_terrain_vertex (rhi.h) */
 #define FF_SLOT_MASK  0x1FFu
@@ -180,11 +198,14 @@ precise dvec3 mac_of(dvec3 lpos, dvec3 sdel) {
     return dvec3(m1, m2, m3);
 }
 
-/* proj_screen mirror: float sx = (float)(ofx + m1*H/z). Unclaimed sectors
- * guarantee m3 > 0 (the CPU guard z>1e-9 never fires there). */
+/* proj_screen mirror: float sx = (float)(ofx + m1*H/z), with the CPU's
+ * degenerate-Z floor. On plain chunks the floor never fires (an unclaimed
+ * sector guarantees m3 > 0); the near variant projects pre-clip corners that
+ * can sit at or behind the eye, where it does. */
 precise vec2 proj_of(dvec3 m) {
-    precise double sx = g.dof_xy.x + m.x * g.dH.x / m.z;
-    precise double sy = g.dof_xy.y + m.y * g.dH.x / m.z;
+    double z = m.z > 1e-9lf ? m.z : 1e-9lf;
+    precise double sx = g.dof_xy.x + m.x * g.dH.x / z;
+    precise double sy = g.dof_xy.y + m.y * g.dH.x / z;
     return vec2(float(sx), float(sy));
 }
 
@@ -201,6 +222,47 @@ int dpcs_ch(int c8, int fc12, int ir0) {
     int ird = clamp(((fc12 << 12) - mac) >> 12, -32768, 32767);
     int o = ((mac + ir0 * ird) >> 12) >> 4;
     return clamp(o, 0, 255);
+}
+
+/* One corner's terrain colour, the walk's terrain_color + lp_grade_apply:
+ * flat HP corners fog on their OWN view-Z (GTE-exact DPCS), LP/HQ take the
+ * baked raw colour, and an active replacement pack regrades LP. This is the
+ * colour the feed resolves per corner BEFORE any near-plane clip, so the
+ * clip mirror interpolates its output rather than re-fogging a cut vertex. */
+vec3 terrain_col(double mz, vec3 cfar, vec3 cnear, bool doFog, int fogRef,
+                 double fogscale, bool grade, vec4 gp, vec4 gq)
+{
+    vec3 col;
+    if (doFog) {
+        int ir0 = fogRef - int(mz * fogscale);
+        if (ir0 >= 4096) {
+            col = cnear;
+        } else if (ir0 <= 0) {
+            col = cfar;
+        } else {
+            ivec3 f8 = ivec3(round(cfar  * 255.0));
+            ivec3 n8 = ivec3(round(cnear * 255.0));
+            col = vec3(float(dpcs_ch(f8.r, n8.r << 4, ir0)) / 255.0,
+                       float(dpcs_ch(f8.g, n8.g << 4, ir0)) / 255.0,
+                       float(dpcs_ch(f8.b, n8.b << 4, ir0)) / 255.0);
+        }
+    } else {
+        col = cfar;   /* LP / HQ: raw baked, never fogged */
+    }
+    /* Pack-aware LP colour grade (lp_grade_apply mirror): the bake carries
+     * raw authored colours; with a replacement pack active the sector's
+     * grade affine (own HP-texture fit, or the level mean) rides the sector
+     * params. Same float32 ops and trunc-after-+0.5 as the walk; WORLD LP
+     * and fill LP alike, never HQ (the walk grades passLP only). */
+    if (grade) {
+        for (int c = 0; c < 3; c++) {
+            precise float t = gp[c] * round(col[c] * 255.0);
+            t = t + gq[c] * 255.0;
+            t = t + 0.5;
+            col[c] = float(clamp(int(t), 0, 255)) / 255.0;
+        }
+    }
+    return col;
 }
 
 /* face_is_near_canonical mirror (hqscale 4.0; per-corner saturation at 0).
@@ -374,6 +436,52 @@ bool cover_dropped(vec2 s0, vec2 s1, vec2 s2, double z0, double z1, double z2) {
     return false;
 }
 
+#ifdef TERRAIN_NEAR
+/* ---- near-plane clip fan (clip_push_tri / cv_lerp mirror) -----------------
+ * A near-variant sector's faces may reach or cross the eye plane, so the walk
+ * Sutherland-Hodgman-clips every emitted triangle against m3 >= zc before
+ * projecting it: 0 crossings -> 1 triangle, 1 -> a quad drawn as 2, 2 -> 1,
+ * 3 -> dropped. The bake emits SIX vertices per source triangle (a primary
+ * and a spare fan triangle, flags16 bit 15), each of which re-runs the whole
+ * clip here and becomes one corner of its fan triangle; the spare dies
+ * whenever the clip produced fewer than 4 output vertices.
+ *
+ * A clip corner carries the position, colour and UV the walk resolved BEFORE
+ * the clip — fogging and the LP grade run per parent corner, and the cut
+ * interpolates their OUTPUT, never re-fogs at the cut position. */
+struct cvx { dvec3 m; ivec3 c; vec2 uv; };
+
+/* Unpack a baked R8G8B8A8 colour word the way the vertex-input UNORM
+ * conversion unpacks the same bytes at locations 2/3. */
+vec3 unrgb(uint u) {
+    return vec3(float(u & 0xFFu), float((u >> 8) & 0xFFu),
+                float((u >> 16) & 0xFFu)) / 255.0;
+}
+
+cvx cv_lerp_n(cvx a, cvx b, double zc) {
+    precise double t = (zc - a.m.z) / (b.m.z - a.m.z);
+    if (t < 0.0lf) t = 0.0lf; else if (t > 1.0lf) t = 1.0lf;
+    precise double px = a.m.x + t * (b.m.x - a.m.x);
+    precise double py = a.m.y + t * (b.m.y - a.m.y);
+    precise float  pu = a.uv.x + float(t) * (b.uv.x - a.uv.x);
+    precise float  pv = a.uv.y + float(t) * (b.uv.y - a.uv.y);
+    precise double cr = double(a.c.x) + t * double(b.c.x - a.c.x) + 0.5lf;
+    precise double cg = double(a.c.y) + t * double(b.c.y - a.c.y) + 0.5lf;
+    precise double cb = double(a.c.z) + t * double(b.c.z - a.c.z) + 0.5lf;
+    cvx r;
+    r.m  = dvec3(px, py, zc);
+    r.uv = vec2(pu, pv);
+    r.c  = ivec3(int(cr), int(cg), int(cb));
+    return r;
+}
+
+/* Max distance (PSX px) a crossing vertex may project from the screen centre
+ * before the whole face is re-clipped at a doubled zc — the walk's own
+ * CLIP_PROJ_LIMIT (crossing projections shrink ~1/zc, so this terminates
+ * fast, and everything it trims lies far outside any visible frame). */
+#define CLIP_PROJ_LIMIT 2048.0
+#endif
+
 void main()
 {
     uint ff   = inFaceFlags;
@@ -382,7 +490,7 @@ void main()
     int  gf   = g.fog.y;
     bool lp   = (ff & FF_TIER_LP) != 0u;
     bool quad = (ff & FF_QUAD) != 0u;
-    uint f16  = uint(inPos.w);
+    uint f16  = uint(inPos.w) & 0xFFFFu;   /* SINT attribute: strip the sign */
     bool hqv  = (f16 & 1u) != 0u;             /* HQ-subdivide variant vertex */
     int  subq = int((f16 >> 1) & 3u);         /* HQ sub-quad index           */
     int  role = int((f16 >> 3) & 3u);         /* corner slot in the sub-quad */
@@ -390,6 +498,13 @@ void main()
     bool keyPass  = (pc.pass_sel == 2);
 
     if ((sf & SF_DRAWN) == 0u) { kill_vert(); return; }
+    /* Plain vs near-variant chunk sets: a slot holds both, and the sector's
+     * per-present flags pick exactly one, so a sector never draws twice. */
+#ifdef TERRAIN_NEAR
+    if ((sf & SF_NEARVAR) == 0u) { kill_vert(); return; }
+#else
+    if ((sf & SF_NEARVAR) != 0u) { kill_vert(); return; }
+#endif
     /* Chunk generation vs the published slot generation: a rebuilt sector's
      * old chunk keeps drawing for presents whose (lagged) state still names
      * the old generation; the new chunk waits its turn. */
@@ -529,10 +644,21 @@ void main()
     }
 
     /* ---- face_is_near: flat-vs-HQ variant select (HP quads only).
-     * The CPU gate is (front || straddle); straddling faces only exist in
-     * CLAIMED sectors, so `front` alone is the unclaimed mirror. ---- */
+     * The CPU gate is (front || straddle) — `front` is NCLIP on the PROJECTED
+     * corners, which is meaningless once a corner sits behind the camera, so
+     * the walk waives the facing test for straddling faces (both here and at
+     * the back-face cull below). Plain chunks never straddle (such sectors
+     * take the near variant or the CPU walk), so there `front` alone is the
+     * mirror. ---- */
+#ifdef TERRAIN_NEAR
+    bool straddle = m0.z <= 0.0lf || m1.z <= 0.0lf ||
+                    m2.z <= 0.0lf || m3c.z <= 0.0lf;
+#else
+    const bool straddle = false;
+#endif
     bool near = false;
-    if (!lp && !fillPass && (gf & GF_NEARHQ) != 0 && quad && front && (ff & FF_HQELIG) != 0u) {
+    if (!lp && !fillPass && (gf & GF_NEARHQ) != 0 && quad && (front || straddle)
+        && (ff & FF_HQELIG) != 0u) {
         if ((gf & GF_NOLOD) != 0) {
             /* --no-lod: HQ pinned ON for every eligible face; only the
              * behind-camera guard and the w3&0x80 exclusion remain (the
@@ -551,7 +677,7 @@ void main()
      * the cull in the walk; fill is emit-all by design) ---- */
     if (!near && !fillPass) {
         bool cullable = lp ? ((gf & GF_CULLLP) != 0) : ((gf & GF_CULLHP) != 0);
-        if (cullable && !front && !front2) { kill_vert(); return; }
+        if (cullable && !straddle && !front && !front2) { kill_vert(); return; }
     }
 
     /* ---- portal drops: rebuild THIS vertex's emitted tri and run the two
@@ -564,8 +690,11 @@ void main()
      * last-ulp identity; the rim classifier's terms are additionally
      * vertex-SET invariant. Screen coords are the raw float projections
      * (the feed's push_tri values; vertex-snap runs excluded the cache
-     * entirely). ---- */
+     * entirely). The near variant runs both classifiers AFTER its clip
+     * instead — the feed classifies the tris it actually emits, which for a
+     * clipped face are the CLIPPED ones. ---- */
     bool covTest = (f16 & 0x4000u) != 0u && g.cov_cnt.x > 0;
+#ifndef TERRAIN_NEAR
     if (g.rim_cnt.x > 0 || covTest) {
         bool tri2 = (f16 & 0x2000u) != 0u;
         bool pdrop;
@@ -607,6 +736,7 @@ void main()
         }
         if (pdrop) { kill_vert(); return; }
     }
+#endif
 
     /* ---- material: near-tile / CLUT-ladder row select (flat HP textured) ---- */
     uint mat0 = inMat.x;
@@ -653,9 +783,12 @@ void main()
      * the same scroll byte into all four V slots); HQ sub-quads: the
      * per-half dv (entries 1-2 vs 3-4 sit half a window apart in the
      * scroll ring). Zero on canonical builds. */
-    if ((f16 & 0x1000u) != 0u) {
+    bool scrollOn = (f16 & 0x1000u) != 0u;
+    float uvdv = 0.0;
+    if (scrollOn) {
         int stile = int((f16 >> 5) & 0x7Fu);
-        uv.y += hqv ? g.sdv[stile][(subq >> 1) + 1] : g.sdv[stile].x;
+        uvdv = hqv ? g.sdv[stile][(subq >> 1) + 1] : g.sdv[stile].x;
+        uv.y += uvdv;
     }
     vMat = uvec2(mat0, (clut & 0x3Fu) * 16u | (((clut >> 6) & 0x1FFu) << 16));
     if ((gf & (1 << 29)) != 0) {               /* debug tint: ladder verdict */
@@ -671,8 +804,119 @@ void main()
     /* ---- own vertex camera-space value ----
      * Flat/LP verts: transform own position (identical ops to the corner
      * transforms). HQ verts: rebuild the sub-quad node from the TRANSFORMED
-     * parent corners (cv_mid mirrors — midpoints averaged in camera space). */
+     * parent corners (cv_mid mirrors — midpoints averaged in camera space).
+     * The near variant instead rebuilds the WHOLE emitted triangle, clips it
+     * against the near plane and becomes one corner of the clipped fan. */
     precise dvec3 mo;
+#ifdef TERRAIN_NEAR
+    vec4 col;
+    {
+        /* Emitted-tri member positions, in the bake's emit order. */
+        bool tri2n = (f16 & 0x2000u) != 0u;
+        dvec3 tp[3];
+        if (!hqv) {
+            if (!quad)      { tp[0] = m0; tp[1] = m1; tp[2] = m2;  }
+            else if (lp) {
+                if (tri2n)  { tp[0] = m1; tp[1] = m2; tp[2] = m3c; }
+                else        { tp[0] = m0; tp[1] = m1; tp[2] = m2;  }
+            } else {
+                if (tri2n)  { tp[0] = m1; tp[1] = m3c; tp[2] = m2; }
+                else        { tp[0] = m0; tp[1] = m1; tp[2] = m3c; }
+            }
+        } else {
+            precise dvec3 TL = m0, TR = m1, BL = m3c, BR = m2;
+            precise dvec3 mT = (TL + TR) * 0.5lf, mB = (BL + BR) * 0.5lf;
+            precise dvec3 mL = (TL + BL) * 0.5lf, mR = (TR + BR) * 0.5lf;
+            precise dvec3 C  = (mT + mB) * 0.5lf;
+            precise dvec3 q0, q1, q2, q3;
+            if      (subq == 0) { q0 = TL; q1 = mT; q2 = mL; q3 = C;  }
+            else if (subq == 1) { q0 = mT; q1 = TR; q2 = C;  q3 = mR; }
+            else if (subq == 2) { q0 = mL; q1 = C;  q2 = BL; q3 = mB; }
+            else                { q0 = C;  q1 = mR; q2 = mB; q3 = BR; }
+            if (tri2n) { tp[0] = q1; tp[1] = q2; tp[2] = q3; }
+            else       { tp[0] = q0; tp[1] = q1; tp[2] = q2; }
+        }
+        /* Member attributes: self's are this vertex's own, the other two
+         * ride the ctx twin in emit order (a = self+1, b = self+2 mod 3).
+         * All six vertices of a source triangle sit at whole-triangle
+         * multiples from the arena base, so gl_VertexIndex % 3 IS the slot. */
+        int self = gl_VertexIndex % 3;
+        int ia = (self + 1) % 3, ib = (self + 2) % 3;
+        vec3 cf[3], cn[3];
+        vec2 uvm[3];
+        cf[self] = inColFar.rgb;  cn[self] = inColNear.rgb;  uvm[self] = uv;
+        cf[ia] = unrgb(inCtxACol.x); cn[ia] = unrgb(inCtxACol.y);
+        cf[ib] = unrgb(inCtxBCol.x); cn[ib] = unrgb(inCtxBCol.y);
+        uvm[ia] = (dbg_half == 1u) ? vec2(inCtxAUV.z, inCtxAUV.w)
+                                   : vec2(inCtxAUV.x, inCtxAUV.y);
+        uvm[ib] = (dbg_half == 1u) ? vec2(inCtxBUV.z, inCtxBUV.w)
+                                   : vec2(inCtxBUV.x, inCtxBUV.y);
+        if (scrollOn) { uvm[ia].y += uvdv; uvm[ib].y += uvdv; }
+
+        bool doFog   = !lp && !hqv;
+        bool doGrade = lp && (sf & SF_LPGRADE) != 0u;
+        int  dbgmode = (gf >> 26) & 7;
+        bool dbgraw  = (gf & (1 << 29)) != 0 && (dbgmode == 4 || dbgmode == 5);
+        cvx cin[3];
+        for (int k = 0; k < 3; k++) {
+            vec3 c = terrain_col(tp[k].z, cf[k], cn[k], doFog, fogRef, fogscale,
+                                 doGrade, s.sec[slot].gp, s.sec[slot].gq);
+            if (dbgraw) c = (dbgmode == 4) ? cn[k] : cf[k];
+            cin[k].m  = tp[k];
+            cin[k].c  = ivec3(round(c * 255.0));
+            cin[k].uv = uvm[k];
+        }
+
+        /* Sutherland-Hodgman against m3 >= zc, with the walk's doubling
+         * retry: a crossing vertex still projecting beyond CLIP_PROJ_LIMIT
+         * re-clips the whole face at a doubled zc (<= 16 rounds). */
+        cvx outv[4];
+        int nout = 0;
+        double zc = g.dnear.x;
+        for (int rnd = 0; rnd < 24; rnd++) {
+            nout = 0;
+            bool clipped = false;
+            for (int i = 0; i < 3; i++) {
+                cvx cur = cin[i], nxt = cin[(i + 1) % 3];
+                bool curIn = cur.m.z >= zc, nxtIn = nxt.m.z >= zc;
+                if (curIn) outv[nout++] = cur;
+                if (curIn != nxtIn && nout < 4) {
+                    outv[nout++] = cv_lerp_n(cur, nxt, zc);
+                    clipped = true;
+                }
+            }
+            if (nout < 3) { kill_vert(); return; }   /* fully behind the plane */
+            if (clipped && rnd < 16) {
+                bool sane = true;
+                for (int i = 0; i < nout && sane; i++) {
+                    if (outv[i].m.z != zc) continue;   /* crossings move with zc */
+                    vec2 sp = proj_of(outv[i].m);
+                    if (abs(sp.x - float(g.dof_xy.x)) > CLIP_PROJ_LIMIT ||
+                        abs(sp.y - float(g.dof_xy.y)) > CLIP_PROJ_LIMIT) sane = false;
+                }
+                if (!sane) { zc *= 2.0lf; continue; }
+            }
+            break;
+        }
+        /* Fan the clipped polygon: (out0,out1,out2) + (out0,out2,out3). */
+        bool spare = (f16 & 0x8000u) != 0u;
+        if (spare && nout < 4) { kill_vert(); return; }
+        int e0 = 0, e1 = spare ? 2 : 1, e2 = spare ? 3 : 2;
+        if (g.rim_cnt.x > 0 || covTest) {
+            vec2 sa = proj_of(outv[e0].m), sb = proj_of(outv[e1].m),
+                 sc = proj_of(outv[e2].m);
+            if ((g.rim_cnt.x > 0 &&
+                 rim_classified(sa, sb, sc, outv[e0].m.z, outv[e1].m.z, outv[e2].m.z))
+             || (covTest &&
+                 cover_dropped(sa, sb, sc, outv[e0].m.z, outv[e1].m.z, outv[e2].m.z)))
+                { kill_vert(); return; }
+        }
+        cvx V = outv[self == 0 ? e0 : (self == 1 ? e1 : e2)];
+        mo  = V.m;
+        uv  = V.uv;
+        col = vec4(vec3(V.c) / 255.0, 1.0);
+    }
+#else
     if (!hqv) {
 #ifdef TERRAIN_ANIM
         precise dvec3 lown = ANIM_LERP3(inPrevPos.xyz, inPos.xyz);
@@ -696,6 +940,7 @@ void main()
         mo = node == 0 ? TL : node == 1 ? TR : node == 2 ? BR : node == 3 ? BL
            : node == 4 ? mT : node == 5 ? mB : node == 6 ? mL : node == 7 ? mR : C;
     }
+#endif
 
     /* ---- og OT key (feed koff mirror; ambient per face / per HQ sub-quad) ---- */
     float koff = 0.0;
@@ -755,42 +1000,19 @@ void main()
         return;
     }
 
-    /* ---- colour: GTE-exact DPCS fog (flat HP); baked raw otherwise ---- */
-    vec4 col;
-    if (!lp && !hqv) {
-        int ir0 = fogRef - int(mo.z * fogscale);
-        if (ir0 >= 4096) {
-            col = vec4(inColNear.rgb, 1.0);
-        } else if (ir0 <= 0) {
-            col = vec4(inColFar.rgb, 1.0);
-        } else {
-            ivec3 f8 = ivec3(round(inColFar.rgb  * 255.0));
-            ivec3 n8 = ivec3(round(inColNear.rgb * 255.0));
-            col = vec4(float(dpcs_ch(f8.r, n8.r << 4, ir0)) / 255.0,
-                       float(dpcs_ch(f8.g, n8.g << 4, ir0)) / 255.0,
-                       float(dpcs_ch(f8.b, n8.b << 4, ir0)) / 255.0, 1.0);
-        }
-    } else {
-        col = vec4(inColFar.rgb, 1.0);   /* LP / HQ: raw baked, never fogged */
-    }
-    /* Pack-aware LP colour grade (lp_grade_apply mirror): the bake carries
-     * raw authored colours; with a replacement pack active the sector's
-     * grade affine (own HP-texture fit, or the level mean) rides the
-     * sector params. Same float32 ops and trunc-after-+0.5 as the walk;
-     * WORLD LP and fill LP alike, never HQ (the walk grades passLP only). */
-    if (lp && (sf & SF_LPGRADE) != 0u) {
-        for (int c = 0; c < 3; c++) {
-            precise float t = s.sec[slot].gp[c] * round(col[c] * 255.0);
-            t = t + s.sec[slot].gq[c] * 255.0;
-            t = t + 0.5;
-            col[c] = float(clamp(int(t), 0, 255)) / 255.0;
-        }
-    }
+#ifndef TERRAIN_NEAR
+    /* ---- colour: GTE-exact DPCS fog (flat HP); baked raw otherwise. The
+     * near variant resolved this per member before its clip. ---- */
+    vec4 col = vec4(terrain_col(mo.z, inColFar.rgb, inColNear.rgb,
+                                !lp && !hqv, fogRef, fogscale,
+                                lp && (sf & SF_LPGRADE) != 0u,
+                                s.sec[slot].gp, s.sec[slot].gq), 1.0);
     {   /* debug tint modes 4/5: show the baked near / far colour raw */
         int dbgmode = (gf >> 26) & 7;
         if ((gf & (1 << 29)) != 0 && dbgmode == 4) col = vec4(inColNear.rgb, 1.0);
         if ((gf & (1 << 29)) != 0 && dbgmode == 5) col = vec4(inColFar.rgb, 1.0);
     }
+#endif
 
     /* ---- position: the feed + psx_scene.vert contract, exactly ----
      * feed: z = vz/(vz+4096) with vz = float(m3)*16 (near-guarded at 1);
