@@ -34,6 +34,7 @@
 #define MODULE_DEFAULT_NAME "spyro1-recomp.dll"
 static void* mod_open(const char* p) { return (void*)LoadLibraryA(p); }
 static void* mod_sym(void* h, const char* n) { return (void*)GetProcAddress((HMODULE)h, n); }
+static void mod_close(void* h) { FreeLibrary((HMODULE)h); }
 #else
 #include <dlfcn.h>
 #include <unistd.h>
@@ -41,6 +42,7 @@ static void* mod_sym(void* h, const char* n) { return (void*)GetProcAddress((HMO
 #define MODULE_DEFAULT_NAME "spyro1-recomp.so"
 static void* mod_open(const char* p) { return dlopen(p, RTLD_NOW | RTLD_LOCAL); }
 static void* mod_sym(void* h, const char* n) { return dlsym(h, n); }
+static void mod_close(void* h) { dlclose(h); }
 #endif
 
 typedef struct CPUState CPUState;
@@ -103,6 +105,13 @@ static void default_module_path(char* buf, size_t n) {
 #endif
 }
 
+static int file_readable(const char* p) {
+    FILE* f = fopen(p, "rb");
+    if (!f) return 0;
+    fclose(f);
+    return 1;
+}
+
 extern int spyro1_recomp_build_module(const char* disc_path,
                                       const char* out_module_path);
 
@@ -115,6 +124,39 @@ static int build_task_fn(void* p) {
     return spyro1_recomp_build_module(t->disc, t->out);
 }
 
+/* Load the module at `path` and bind everything the host needs from it.
+ * Returns the descriptor, or NULL with the handle closed again and
+ * `*why` naming what was wrong — a caller holding a disc can rebuild and
+ * retry rather than give up. The module must be CLOSED on failure: a
+ * second dlopen of a path already mapped hands back the same stale
+ * image, so a rebuild would appear not to have taken. */
+static const openpete_recomp_module* bind_module(const char* path,
+                                                 const char** why) {
+    g_module = mod_open(path);
+    if (!g_module) { *why = "cannot be loaded"; return NULL; }
+
+    const openpete_recomp_module* desc =
+        (const openpete_recomp_module*)mod_sym(g_module, "spyro1_recomp_module");
+    if (!desc) *why = "has no spyro1_recomp_module descriptor";
+    else if (desc->abi_version != OPENPETE_RECOMP_ABI_VERSION)
+        *why = "was built against a different module ABI";
+
+    if (!*why) {
+        /* Bind the forwarders only once the descriptor vouches for the
+         * ABI; a mismatched module's symbols are not to be trusted. */
+        s_missing = 0;
+#define LOAD_PTR(n) p_##n = (void (*)(CPUState*))need(#n);
+        SPYRO1_MODULE_FUNCS(LOAD_PTR)
+#undef LOAD_PTR
+        p_set_overlay = (void (*)(uint32_t))need("spyro_set_active_overlay_by_magic");
+        p_get_overlay_magic = (uint32_t (*)(void))need("spyro_get_active_overlay_magic");
+        if (s_missing) *why = "is missing symbols the host needs";
+    }
+
+    if (*why) { mod_close(g_module); g_module = NULL; return NULL; }
+    return desc;
+}
+
 int spyro1_recomp_attach(const char* module_path_override,
                          const char* disc_path,
                          int allow_build) {
@@ -124,44 +166,48 @@ int spyro1_recomp_attach(const char* module_path_override,
         default_module_path(pathbuf, sizeof pathbuf);
         path = pathbuf;
     }
-    g_module = mod_open(path);
-    if (!g_module && allow_build && disc_path) {
-        /* First boot: no module next to the exe — build one from the
-         * disc (extract -> recomp -> compile -> link; D2.4). */
-        fprintf(stderr,
-                "openpete: no recomp module at %s — building it from the "
-                "disc (first boot)\n", path);
+
+    const char* why = NULL;
+    const openpete_recomp_module* desc = NULL;
+    if (file_readable(path)) desc = bind_module(path, &why);
+    else why = "is not there";
+
+    if (!desc && allow_build && disc_path) {
+        /* Either first boot, or an upgrade left a module this build
+         * cannot use. Both are the same job — recompile from the disc
+         * (extract -> recomp -> compile -> link; D2.4) — and both are
+         * recoverable without the user doing anything, so say what is
+         * happening rather than failing at them.
+         *
+         * A version whose emission inputs changed normally lands on a
+         * fresh codegen stamp and takes the "is not there" path; this
+         * also catches whatever the stamp cannot see, so an incompatible
+         * module is never a dead end. */
+        if (!strcmp(why, "is not there"))
+            /* Deliberately does NOT say "first boot". Since the codegen
+             * stamp covers the emission inputs, an update that changes
+             * them lands on a fresh stamp and arrives here too — with a
+             * library the user has been playing for weeks. */
+            fprintf(stderr, "openpete: building the recomp module from your "
+                            "disc — this happens on first boot and after an "
+                            "update that changes the generated code\n");
+        else
+            fprintf(stderr, "openpete: the recomp module %s — rebuilding it "
+                            "from your disc\n", why);
         struct build_task bt = { disc_path, path };
+        why = NULL;
         if (spyro1_splash_run_task(build_task_fn, &bt) == 0)
-            g_module = mod_open(path);
-    }
-    if (!g_module) {
-        fprintf(stderr,
-                "openpete: failed to load recomp module '%s'\n"
-                "  (shared-linkage build: the module is built separately as "
-                "spyro1-recomp; pass --recomp-module PATH to override)\n",
-                path);
-        return -1;
-    }
-    const openpete_recomp_module* desc =
-        (const openpete_recomp_module*)mod_sym(g_module, "spyro1_recomp_module");
-    if (!desc) {
-        fprintf(stderr,
-                "openpete: '%s' has no spyro1_recomp_module descriptor — "
-                "not a recomp module?\n", path);
-        return -1;
+            desc = bind_module(path, &why);
+        else
+            why = "could not be rebuilt";
     }
 
-    s_missing = 0;
-#define LOAD_PTR(n) p_##n = (void (*)(CPUState*))need(#n);
-    SPYRO1_MODULE_FUNCS(LOAD_PTR)
-#undef LOAD_PTR
-    p_set_overlay = (void (*)(uint32_t))need("spyro_set_active_overlay_by_magic");
-    p_get_overlay_magic = (uint32_t (*)(void))need("spyro_get_active_overlay_magic");
-    if (s_missing) {
+    if (!desc) {
         fprintf(stderr,
-                "openpete: recomp module '%s' is missing %d symbols "
-                "(stale module? rebuild it)\n", path, s_missing);
+                "openpete: recomp module '%s' %s\n"
+                "  (shared-linkage build: the module is built separately as "
+                "spyro1-recomp; pass --recomp-module PATH to override)\n",
+                path, why ? why : "could not be loaded");
         return -1;
     }
 

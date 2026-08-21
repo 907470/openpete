@@ -188,6 +188,45 @@ if [[ $APPIMAGE -eq 1 ]]; then
              head -20 "$WORK/payload.diff" >&2; exit 2; }
 fi
 
+# An update that changes what the recompiler emits must re-key the module
+# cache. Keying on the PSXRecomp binary alone did NOT: a shipped manifest
+# change (a new funcs list, a channel-site update — the most common kind
+# of change between releases) silently handed the user the previous
+# version's module, with no crash and nothing that looked stale.
+echo "[dist-gate] an emission-input change re-keys the module cache..."
+before_dir=$(dirname "$module")
+for input in "$appdir"/usr/recomp/manifest/channel_sites.txt \
+             "$appdir"/recomp/manifest/channel_sites.txt; do
+    [[ -f "$input" ]] && { echo "# dist-gate upgrade probe" >> "$input"; break; }
+done
+"${APP[@]}" --headless --frame-limit 60 --run-recomp 0x80012204 \
+      --max-runtime-seconds 900 > "$WORK/upgrade.log" 2>&1 \
+    || { echo "[dist-gate] FAIL: boot after an emission-input change crashed" >&2;
+         tail -20 "$WORK/upgrade.log" >&2; exit 2; }
+after=$(ls "$DATA"/library/*/modules/*/spyro1-recomp.so 2>/dev/null | wc -l)
+(( after >= 2 )) \
+    || { echo "[dist-gate] FAIL: a manifest change did not re-key the module" \
+              "cache — an upgrading user would keep running the previous" \
+              "version's generated code" >&2; exit 2; }
+grep -q "building the recomp module from your disc" "$WORK/upgrade.log" \
+    || { echo "[dist-gate] FAIL: the module was re-keyed but no rebuild ran" >&2;
+         exit 2; }
+
+# Whatever the stamp cannot see must still not be a dead end: an
+# unusable module at the ACTIVE path is rebuilt in place, not fatal.
+echo "[dist-gate] an unusable module at the active path self-repairs..."
+active=$(grep -o "shared recomp module attached: .*" "$WORK/upgrade.log" \
+         | tail -1 | sed "s/.*attached: //")
+[[ -f "$active" ]] || { echo "[dist-gate] FAIL: no active module path in the log" >&2; exit 2; }
+printf '\177ELF not a recomp module' > "$active"
+"${APP[@]}" --headless --frame-limit 60 --run-recomp 0x80012204 \
+      --max-runtime-seconds 900 > "$WORK/repair.log" 2>&1 \
+    || { echo "[dist-gate] FAIL: an unusable module was fatal instead of" \
+              "being rebuilt" >&2; tail -20 "$WORK/repair.log" >&2; exit 2; }
+grep -q "rebuilding it from your disc" "$WORK/repair.log" \
+    || { echo "[dist-gate] FAIL: unusable module did not trigger a rebuild" >&2;
+         exit 2; }
+
 echo "[dist-gate] drop-in source mod compiles + loads on boot..."
 mkdir -p "$DATA/mods"
 cp -r mods/hello-anchor "$DATA/mods/"

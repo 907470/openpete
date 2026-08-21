@@ -23,6 +23,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <algorithm>
 #include <atomic>
 #include <filesystem>
 #include <fstream>
@@ -164,6 +165,28 @@ uint64_t fnv1a_file(const fs::path& p, uint64_t h = 0xcbf29ce484222325ull) {
             h *= 0x100000001b3ull;
         }
         if (!f) break;
+    }
+    return h;
+}
+
+/* Fold a whole directory tree into `h`. Files are visited in sorted
+ * relative-path order, never the filesystem's, so the hash is a property
+ * of the content rather than of how the tree happened to be laid out;
+ * the relative path is mixed in alongside the bytes, so a rename counts
+ * as a change too. */
+uint64_t fnv1a_tree(const fs::path& root, uint64_t h) {
+    std::error_code ec;
+    std::vector<fs::path> files;
+    for (fs::recursive_directory_iterator it(root, ec), end;
+         it != end; it.increment(ec)) {
+        if (ec) break;
+        if (it->is_regular_file(ec)) files.push_back(it->path());
+    }
+    std::sort(files.begin(), files.end());
+    for (const fs::path& f : files) {
+        const std::string rel = f.lexically_relative(root).generic_string();
+        for (char c : rel) { h ^= (uint8_t)c; h *= 0x100000001b3ull; }
+        h = fnv1a_file(f, h);
     }
     return h;
 }
@@ -381,15 +404,25 @@ std::string cc_target_fingerprint(const std::string& cc) {
 }
 
 /* The codegen identity for cache keying: hash of (PSXRecomp binary +
- * compiler identity + native-target feature set) at a fixed opt level.
- * Library entries key module dirs by this, so a toolchain bump, a
- * compiler swap, OR a different-CPU copy rebuilds under a fresh dir.
- * Shared by the dir-keying entry point and the in-build descriptor stamp
- * so they never disagree. */
+ * emission inputs + compiler identity + native-target feature set) at a
+ * fixed opt level. Library entries key module dirs by this, so a
+ * toolchain bump, a compiler swap, a manifest change OR a different-CPU
+ * copy rebuilds under a fresh dir. Shared by the dir-keying entry point
+ * and the in-build descriptor stamp so they never disagree.
+ *
+ * The emission inputs matter as much as the recompiler binary and change
+ * far more often: PSXRecomp reads the manifests (per-binary funcs lists,
+ * psyq.toml, channel_sites.txt) to decide what to emit, and the result
+ * is compiled against the source kit. Two releases sharing a PSXRecomp
+ * but shipping a new funcs list emit DIFFERENT code, so keying on the
+ * binary alone would hand an upgrading user the previous version's
+ * module — silently, since nothing about it looks stale. */
 std::string compute_codegen_stamp(const fs::path& base) {
     const std::string psxrecomp = find_psxrecomp(base);
     if (psxrecomp.empty()) return "";
     uint64_t h = fnv1a_file(psxrecomp);
+    h = fnv1a_tree(base / "recomp" / "manifest", h);
+    h = fnv1a_tree(base / "recomp" / "src", h);
     const std::string cc = find_cc(base);
     for (char c : cc_identity(cc))          { h ^= (uint8_t)c; h *= 0x100000001b3ull; }
     for (char c : cc_target_fingerprint(cc)){ h ^= (uint8_t)c; h *= 0x100000001b3ull; }
