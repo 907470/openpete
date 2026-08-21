@@ -1275,7 +1275,13 @@ typedef struct {
     uint32_t decodeGen, texGen, vertGen, vertHash;
 } tscache_t;
 #define TSC_SLOTS 512
+/* Linear-probe window for lookup, placement, and eviction (must agree
+ * everywhere a sector's slot is derived from its hash). Sized so a fully
+ * GPU-owned window — the one case eviction cannot pick a victim without
+ * un-drawing an owner — needs 17 owned sectors hashing together. */
+#define TSC_WINDOW 16u
 static tscache_t s_tsc[TSC_SLOTS];
+static int tgpu_slot_hot(uint32_t idx);   /* GPU-owned this present (defined with s_tgpu) */
 static uint32_t s_tsc_stamp;                 /* bumped once per terrain_build call */
 static long s_tsc_hit, s_tsc_miss;
 
@@ -1779,17 +1785,19 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
     uint32_t g[5] = { rd(cpu, s + 0x04), rd(cpu, s + 0x08), rd(cpu, s + 0x0C),
                       rd(cpu, s + 0x10), rd(cpu, s + 0x14) };
     uint32_t h = (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
-    /* 8-slot probe window + LRU eviction. The old 2-way (h, h^1) alternating
+    /* Probe window + LRU eviction. The old 2-way (h, h^1) alternating
      * eviction thrashed: gnorc_cove freecam at the level's long axis pulls
      * ~170 sectors into one present, and any 3+ visible sectors sharing a slot
      * pair evicted each other EVERY present — each miss is a full re-decode +
      * gapfill classification (ms-scale for big sectors: s148 alone burned
      * ~5ms/present; 17-19 misses/present at the hot heading = the
      * direction-dependent perf cliff, 2026-07-10). The window makes thrash
-     * need 9+ hot sectors in one 8-window; LRU (stamped per terrain_build
-     * call) evicts a stale sector, never this present's working set. */
+     * need TSC_WINDOW+1 hot sectors in one window; LRU (stamped per
+     * terrain_build call) evicts a stale sector, never this present's
+     * working set. Probes are five-word compares — window width is noise
+     * next to one re-decode. */
     tscache_t* C = NULL;
-    for (uint32_t k = 0; k < 8u; k++) {
+    for (uint32_t k = 0; k < TSC_WINDOW; k++) {
         tscache_t* W = &s_tsc[(h + k) & (TSC_SLOTS - 1)];
         if (W->s == s && W->sig[0]==g[0] && W->sig[1]==g[1] && W->sig[2]==g[2]
             && W->sig[3]==g[3] && W->sig[4]==g[4]) {
@@ -1801,11 +1809,31 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
     }
     {
         s_tsc_miss++;
-        for (uint32_t k = 0; k < 8u; k++) {          /* empty slot first, else LRU */
-            tscache_t* W = &s_tsc[(h + k) & (TSC_SLOTS - 1)];
+        tscache_t* hot = NULL;                       /* fallback: LRU among GPU-owned */
+        for (uint32_t k = 0; k < TSC_WINDOW; k++) {  /* empty slot first, else LRU */
+            uint32_t idx = (h + k) & (TSC_SLOTS - 1);
+            /* OPTC_SLOT_DEAD's 9-bit id is the dead-stamp face_flags
+             * sentinel (chunks baked with it are culled as dead), so the
+             * decode cache never holds a sector there. */
+            if (idx == OPTC_SLOT_DEAD) continue;
+            tscache_t* W = &s_tsc[idx];
             if (!W->s) { C = W; break; }
+            /* Never evict a slot the GPU cache validated as owned THIS
+             * present: the re-resolve would free the owner's chunks and
+             * republish the slot after its face walk was already skipped,
+             * so the owner vanishes for a present (the gnorc_cove
+             * water-border wedge). The incoming sector takes another slot;
+             * only when every candidate is owned (TSC_WINDOW+ owned
+             * sectors hashing into one window) does plain LRU resume, and
+             * the loser then rides tgpu_ensure's contest claim back to
+             * the CPU walk. */
+            if (tgpu_slot_hot(idx)) {
+                if (!hot || W->lastUse < hot->lastUse) hot = W;
+                continue;
+            }
             if (!C || W->lastUse < C->lastUse) C = W;
         }
+        if (!C) C = hot;
         free(C->lpV); free(C->lpF); free(C->hpV); free(C->hpF);
         free(C->lpVprev); free(C->hpVprev); free(C->lpVf); free(C->hpVf);
         memset(C, 0, sizeof(*C));
@@ -1985,7 +2013,7 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
             dbg_desc++;
             uint32_t h = (((s >> 2) * 2654435761u) >> 14) & (TSC_SLOTS - 1);
             tscache_t* C = NULL;
-            for (uint32_t w = 0; w < 8u; w++) {   /* same probe window as tsc_get */
+            for (uint32_t w = 0; w < TSC_WINDOW; w++) {   /* same probe window as tsc_get */
                 tscache_t* W = &s_tsc[(h + w) & (TSC_SLOTS - 1)];
                 if (W->s == s) { C = W; break; }
             }
@@ -2733,6 +2761,12 @@ typedef struct {
                                        * drain moved it */
 } tgpu_slot_t;
 static tgpu_slot_t s_tgpu[TSC_SLOTS];
+/* Does this decode slot hold a sector the GPU cache validated as owned this
+ * present? tsc_get's eviction skips these (see the contest note there). With
+ * the cache off, ownFrame never advances, so this is always false. */
+static int tgpu_slot_hot(uint32_t idx) {
+    return s_tgpu[idx].s != 0 && s_tgpu[idx].ownFrame == openpete_frame;
+}
 /* census: window sums (reset each print) + per-walk counts (op_prof rows) */
 static long s_tgpu_secs, s_tgpu_claims, s_tgpu_rebuilds;
 static long s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
@@ -3297,6 +3331,9 @@ static int tgpu_sel_scan(const tscache_t* SC) {
 static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
                        int sec_index) {
     int slot = (int)(SC - s_tsc);
+    /* Backstop only: tsc_get never places a sector in OPTC_SLOT_DEAD (its
+     * 9-bit face_flags id is the dead-stamp sentinel, so baked chunks for it
+     * would be killed as dead). */
     if (slot < 0 || slot >= (int)TSC_SLOTS || slot == (int)OPTC_SLOT_DEAD) return 1;
     tgpu_slot_t* T = &s_tgpu[slot];
     /* Decode-cache slot CONTESTED this build: two visible sectors share one
@@ -4915,7 +4952,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * no rim verdict). */
         tgpu_rim_globals_fill(&tcg);
     }
-    s_tgpu_secs_walk = 0; s_tgpu_claims_walk = 0;
     /* OPENPETE_TERRAIN_GPU_CENSUS=1: one stderr line per hook walk with THIS
      * walk's claim counts by reason (deltas of the window counters, printed
      * before tgpu_census can reset them) — the S2b claim-ratchet metric,
@@ -4925,15 +4961,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     if (s_cen < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_CENSUS");
                      s_cen = (e && *e && *e != '0'); }
     long cen0[14];
-    if (s_cen) {
-        cen0[0] = s_tgcl_near;   cen0[1] = s_tgcl_portal;
-        cen0[2] = s_tgcl_anim;   cen0[3] = s_tgcl_scroll;
-        cen0[4] = s_tgcl_fill;   cen0[5] = s_tgcl_build;
-        cen0[6] = s_tgcl_colour; cen0[7] = s_tgcl_slot;
-        cen0[8] = s_tgcl_texpack; cen0[9] = s_tgcl_sel;
-        cen0[10] = s_tgcl_nearb; cen0[11] = s_tgcl_nodraw;
-        cen0[12] = s_tgcl_prim;  cen0[13] = s_tgcl_pcov;
-    }
     /* Any active walk instrument forces serial: their censuses/dumps are
      * whole-walk statics with serial semantics (per-sector timing, ordered
      * dumps), and several latch mid-walk. */
@@ -4952,6 +4979,19 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     int wserial = s_dbg_env || s_fp_on || s_first_walk || nw <= 1;
     s_first_walk = 0;
   tn_retry_serial:;
+    /* Per-walk counters reset AFTER the retry label: an eviction-conflict
+     * serial retry replaces the aborted walk's numbers instead of summing
+     * with them (summed lines inflated census rows exactly 2x). */
+    s_tgpu_secs_walk = 0; s_tgpu_claims_walk = 0;
+    if (s_cen) {
+        cen0[0] = s_tgcl_near;   cen0[1] = s_tgcl_portal;
+        cen0[2] = s_tgcl_anim;   cen0[3] = s_tgcl_scroll;
+        cen0[4] = s_tgcl_fill;   cen0[5] = s_tgcl_build;
+        cen0[6] = s_tgcl_colour; cen0[7] = s_tgcl_slot;
+        cen0[8] = s_tgcl_texpack; cen0[9] = s_tgcl_sel;
+        cen0[10] = s_tgcl_nearb; cen0[11] = s_tgcl_nodraw;
+        cen0[12] = s_tgcl_prim;  cen0[13] = s_tgcl_pcov;
+    }
     if (tgpu_on) openpete_tercache_frame_begin(&tcg, openpete_frame, s_vanim_sub);
     else if (openpete_tercache_ready() && tb_first)
         openpete_tercache_frame_skip(openpete_frame, s_vanim_sub);

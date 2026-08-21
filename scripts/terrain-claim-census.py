@@ -48,7 +48,17 @@ REASONS = ["near", "portal", "anim", "scroll", "fill", "arena", "col",
 # sectors the no-draw verdict owns (neither walked nor drawn); the report
 # treats them as covered. prim/pcov are SUB-BUCKETS of portal (rim-broadphase
 # candidate / blended-face over an outline); portal minus their sum = the
-# claim-all and no-refinement degenerates.
+# claim-all and no-refinement degenerates. arena is the build-failure
+# backstop bucket (true arena exhaustion / host OOM): the sectors it used
+# to report were actually the OPTC_SLOT_DEAD decode-slot sentinel, which
+# tsc_get now never populates. slot (decode-slot contest) is likewise
+# structurally 0 — eviction skips GPU-owned slots; only a window with 17+
+# owned sectors can still contest. Rows where a decode-cache eviction
+# conflict forced the prepass's serial fallback double-counted every
+# column (the retried walk summed into the same census line): baselines
+# before the eviction fix carry exactly 2x inflation on such rows (the
+# wild-flight-text bk2 and the beast_makers-8cf90e / gnorc_cove-c2acad
+# freecam poses are known cases).
 CEN_RE = re.compile(
     r"\[tgpu-cen f=(\d+)\] sub=(\d+) secs=(\d+) claims=(\d+) "
     r"near=(-?\d+) portal=(-?\d+) anim=(-?\d+) scroll=(-?\d+) fill=(-?\d+) "
