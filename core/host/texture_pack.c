@@ -34,6 +34,7 @@
 #include "stb_image.h"
 
 #include <SDL3/SDL.h>  /* SDL_GetBasePath — same discovery music_override uses */
+#include "openpete_paths.h" /* the writable user pack root */
 #include <dirent.h>
 
 #define TP_MAX_ENTRIES   4096
@@ -267,6 +268,25 @@ static void tp_repl_scan(void)
     snprintf(s_srcs[0].label, sizeof s_srcs[0].label, "base pack");
     s_src_n = 1;
     tp_scan_dir(0);
+    /* The shipped pack sits inside the install, which may be read-only —
+     * so the user's own drop-in dir is a SECOND base root, not a
+     * replacement, and outranks the shipped one. An explicit
+     * --texpack-dir / OPENPETE_TEXPACK_DIR names exactly one directory
+     * and is not joined by anything. */
+    if (!s_dir_override[0] && !(env && *env)) {
+        char user[512];
+        if (openpete_paths_data_dir("assets", user, sizeof user, 0) == 0) {
+            char dir[sizeof s_srcs[0].dir];
+            snprintf(dir, sizeof dir, "%s/textures/replacements", user);
+            if (strcmp(dir, s_repl_dir) != 0 && s_src_n < TP_SRC_MAX) {
+                int si = s_src_n;
+                snprintf(s_srcs[si].dir, sizeof s_srcs[si].dir, "%s", dir);
+                snprintf(s_srcs[si].label, sizeof s_srcs[si].label, "user pack");
+                s_src_n++;
+                tp_scan_dir(si);
+            }
+        }
+    }
     /* Mod asset roots, enabled order = priority (later wins). */
     int n_roots = openpete_mods_asset_root_count();
     for (int r = 0; r < n_roots; r++) (void)tp_add_root_source(r);

@@ -84,7 +84,8 @@ static void* mod_dlsym(void* h, const char* name) { return dlsym(h, name); }
 static const char* mod_dlerror(void) { return dlerror(); }
 #endif
 
-#include <SDL3/SDL.h> /* SDL_GetBasePath — default mods/ + sdk/ location */
+#include <SDL3/SDL.h> /* SDL_GetBasePath — shipped sdk/ + toolchain */
+#include "openpete_paths.h" /* mods/ lives with the writable user data */
 
 #include "openpete_psx.h"   /* openpete_psx_get_ram — api->guest() */
 #include "openpete_state.h" /* savestate slots — engine services */
@@ -2142,7 +2143,11 @@ typedef struct {
  * mods directory / nothing enabled: inert). openpete_mods_prepare and
  * openpete_mods_init both run this so they see the same set; everything
  * here is idempotent (zip unpack is content-stamped). */
-/* Resolve the mods root: opts → env → <exe>/mods. Returns 0 with
+/* Resolve the mods root: opts → env → the writable-data location.
+ * Mods are user-authored and get compiled in place (.build/, .unpacked/),
+ * so the root has to be writable: openpete_paths puts it next to the exe
+ * in a portable install and under the per-user data directory otherwise,
+ * which is what a read-only install medium leaves. Returns 0 with
  * mods_dir filled, -1 if no base path is resolvable. */
 static int mods_root(const openpete_options_t* opts, char* mods_dir,
                      size_t mods_dir_cap) {
@@ -2152,10 +2157,7 @@ static int mods_root(const openpete_options_t* opts, char* mods_dir,
         snprintf(mods_dir, mods_dir_cap, "%s", src);
         return 0;
     }
-    const char* base = SDL_GetBasePath(); /* trailing sep, SDL-owned */
-    if (!base) return -1;
-    snprintf(mods_dir, mods_dir_cap, "%smods", base);
-    return 0;
+    return openpete_paths_data_dir("mods", mods_dir, mods_dir_cap, 0);
 }
 
 /* Scan the mods root for candidate ids: subdirs containing mod.toml,

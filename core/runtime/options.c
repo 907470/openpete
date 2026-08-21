@@ -11,8 +11,11 @@
 #include "game_extras.h"  /* game_resolve_level_arg (--skip-to-level names),
                            * game_validate_cheats_arg (--cheats names) */
 
-#include <SDL3/SDL.h>     /* SDL_GetBasePath — default --bk2-record directory */
+#include "openpete_paths.h" /* where --bk2-record output is allowed to live */
 
+#include <SDL3/SDL.h>     /* SDL_CreateDirectory — --bk2-record output dir */
+
+#include <ctype.h>      /* tolower — case-insensitive disc-image extensions */
 #include <math.h>       /* lround/fabs — --record-cfr NTSC-multiple validation */
 #include <stdio.h>
 #include <stdlib.h>
@@ -228,9 +231,34 @@ static char* build_bk2_record_args(int argc, char** argv) {
     return buf;
 }
 
+/* Does this bare argument name a disc image on disk? Only then may a
+ * positional be read as one — an existence check alone would swallow a
+ * mistyped flag-less path, and an extension check alone would swallow a
+ * typo'd flag value. */
+static int arg_is_disc_image(const char* a) {
+    const char* dot = strrchr(a, '.');
+    static const char* const kExt[] = { ".cue", ".bin", ".img", ".iso",
+                                        ".chd", ".pbp" };
+    if (!dot) return 0;
+    size_t i;
+    int match = 0;
+    for (i = 0; i < sizeof kExt / sizeof kExt[0] && !match; i++) {
+        const char* e = kExt[i];
+        size_t k;
+        for (k = 0; e[k]; k++)
+            if (tolower((unsigned char)dot[k]) != e[k]) break;
+        match = (e[k] == '\0' && dot[k] == '\0');
+    }
+    if (!match) return 0;
+    FILE* f = fopen(a, "rb");
+    if (!f) return 0;
+    fclose(f);
+    return 1;
+}
+
 /* Resolve the default --bk2-record path when the flag is passed with no
- * argument: "<exe_dir>/bk2/<timestamp>.bk2", creating the bk2 dir. Falls
- * back to a relative "bk2/..." if the exe dir can't be resolved. Returns
+ * argument: "<bk2-dir>/<timestamp>.bk2", creating the bk2 dir. Falls back
+ * to a relative "bk2/..." if no data directory can be resolved. Returns
  * a heap buffer (leaked for program lifetime), or NULL on OOM. */
 static char* resolve_default_bk2_record_path(void) {
     char stamp[24];
@@ -242,15 +270,21 @@ static char* resolve_default_bk2_record_path(void) {
     if (!tmv || strftime(stamp, sizeof(stamp), "%Y%m%d-%H%M%S", tmv) == 0)
         snprintf(stamp, sizeof(stamp), "recording");
 
-    const char* base = SDL_GetBasePath();  /* SDL3: owned by SDL, trailing sep, do not free */
-    const char* prefix = base ? base : "";  /* NULL → relative to CWD */
-
-    /* "<prefix>bk2" directory, then "<prefix>bk2/<stamp>.bk2" file. */
-    size_t plen = strlen(prefix);
-    char* dir = (char*)malloc(plen + 4);  /* "bk2" + NUL */
-    if (!dir) return NULL;
-    memcpy(dir, prefix, plen);
-    memcpy(dir + plen, "bk2", 4);
+    /* Recordings are output, so the directory has to be writable: next to
+     * the exe in a portable install, under the per-user data directory
+     * otherwise (an install medium we cannot write is exactly the case
+     * that used to fail here). */
+    char resolved[1024];
+    char* dir;
+    if (openpete_paths_data_dir("bk2", resolved, sizeof resolved, 0) == 0) {
+        dir = (char*)malloc(strlen(resolved) + 1);
+        if (!dir) return NULL;
+        strcpy(dir, resolved);
+    } else {
+        dir = (char*)malloc(4);  /* "bk2" + NUL — relative to CWD */
+        if (!dir) return NULL;
+        memcpy(dir, "bk2", 4);
+    }
     if (!SDL_CreateDirectory(dir))  /* mkdir -p; true if it already exists */
         fprintf(stderr, "openpete: --bk2-record: could not create %s: %s\n",
                 dir, SDL_GetError());
@@ -272,7 +306,9 @@ static char* resolve_default_bk2_record_path(void) {
 static void print_help(const char* display_name, const char* argv0) {
     fprintf(stderr,
         "OpenPete %s\n"
-        "Usage: %s [options]\n"
+        "Usage: %s [options] [DISC-IMAGE]\n"
+        "  A bare path to a .cue/.bin/.img/.iso/.chd/.pbp means --ingest, so opening a\n"
+        "  disc image from a file manager or dragging it onto the program just works.\n"
         "  An 'openpete.toml' next to the executable and one in your config dir supply\n"
         "  persistent settings, in layers: global < [game.ID] < [disc.SERIAL] < [disc.SHA]\n"
         "  < [saved] < environment < bk2 sidecar < the flags you type. Inside a layer,\n"
@@ -1209,6 +1245,14 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
             print_help(opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
+        } else if (a[0] != '-' && !opts->ingest_path && !opts->disc_path
+                   && !opts->exe_path && arg_is_disc_image(a)) {
+            /* A bare path to a disc image — what a desktop file's %f, a
+             * file manager's "Open with" and a drag onto the icon all
+             * deliver. Same meaning as --ingest: the library dedups by
+             * content, so re-opening an already-installed disc just boots
+             * it. */
+            opts->ingest_path = a;
         } else {
             /* Config-spliced tokens were never typed, so pointing at the
              * command line would send the user hunting in the wrong place. */

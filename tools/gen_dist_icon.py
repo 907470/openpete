@@ -2,7 +2,8 @@
 """Generate the ROM-free distribution icon (original art, authored here —
 no game bytes; distribution D3). Emits the same artifacts as
 mcs_icon_to_ico.py: a C file with openpete_spyro1_icon_{w,h,rgba} for
-SDL_SetWindowIcon and/or a Windows .ico (32-bit BMP-format entry).
+SDL_SetWindowIcon, a Windows .ico (32-bit BMP-format entry), and/or a PNG
+for the Linux .desktop / AppImage icon.
 
 The design is a 16x16 pixel mark: dark-purple rounded tile, two orange
 "horn" triangles and eyes — abstract, geometric, original.
@@ -11,6 +12,7 @@ The design is a 16x16 pixel mark: dark-purple rounded tile, two orange
 import argparse
 import struct
 import sys
+import zlib
 from pathlib import Path
 
 # 16x16 grid. Legend: . transparent, P purple tile, D darker purple edge,
@@ -88,18 +90,50 @@ def write_ico(path: Path, px):
     path.write_bytes(hdr + entry + img)
 
 
+def write_png(path: Path, px, scale: int):
+    """Nearest-neighbour upscale of the 16x16 mark to a real icon size.
+
+    Freedesktop icon lookup wants 256x256 and AppImage thumbnailers scale
+    whatever they find, so shipping the 16x16 grid directly would be
+    resampled to mush by someone else's filter. Integer nearest-neighbour
+    keeps the pixel mark crisp at any size the desktop asks for.
+    """
+    w, h = W * scale, H * scale
+    raw = bytearray()
+    for y in range(h):
+        raw.append(0)                        # filter type 0 (None)
+        row = px[(y // scale) * W:(y // scale) * W + W]
+        for x in range(w):
+            raw += bytes(row[x // scale])
+    def chunk(tag, data):
+        return (struct.pack(">I", len(data)) + tag + data
+                + struct.pack(">I", zlib.crc32(tag + data) & 0xFFFFFFFF))
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)   # 8-bit RGBA
+    path.write_bytes(b"\x89PNG\r\n\x1a\n"
+                     + chunk(b"IHDR", ihdr)
+                     + chunk(b"IDAT", zlib.compress(bytes(raw), 9))
+                     + chunk(b"IEND", b""))
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--c", type=Path)
     ap.add_argument("--ico", type=Path)
+    ap.add_argument("--png", type=Path)
+    ap.add_argument("--png-size", type=int, default=256,
+                    help="PNG edge in pixels; rounded down to a whole "
+                         "multiple of the 16px mark")
     args = ap.parse_args()
     px = pixels()
     if args.c:
         write_c(args.c, px)
     if args.ico:
         write_ico(args.ico, px)
-    if not args.c and not args.ico:
-        print("nothing to do (--c/--ico)", file=sys.stderr)
+    if args.png:
+        scale = max(1, args.png_size // W)
+        write_png(args.png, px, scale)
+    if not args.c and not args.ico and not args.png:
+        print("nothing to do (--c/--ico/--png)", file=sys.stderr)
         return 1
     return 0
 

@@ -1286,17 +1286,23 @@ void openpete_config_report(FILE *out) {
             s_scope_sha[0] ? s_scope_sha : "-");
     fprintf(out, "  save target: %s\n", s_save_path[0] ? s_save_path : "(none)");
 
-    /* Where cards and savestates go, which the knob table below never
-     * shows: they are directories, not knobs. */
+    /* Where the things openpete writes go, which the knob table below
+     * never shows: they are directories, not knobs. Worth printing in
+     * full because the answer moves with the layout — "where did my disc
+     * library go?" should be answerable without reading the source. */
     {
-        char cards[CFG_PATH_MAX], states[CFG_PATH_MAX];
+        char dir[CFG_PATH_MAX];
         fprintf(out, "  layout: %s\n",
                 openpete_paths_portable() ? "portable (next to the exe)"
                                           : "per-user directories");
-        if (openpete_paths_state_dir("cards", cards, sizeof cards, 0) == 0)
-            fprintf(out, "  cards: %s\n", cards);
-        if (openpete_paths_state_dir("states", states, sizeof states, 0) == 0)
-            fprintf(out, "  states: %s\n", states);
+        static const char* const kState[] = { "cards", "states" };
+        static const char* const kData[]  = { "library", "mods", "assets", "bk2" };
+        for (size_t i = 0; i < sizeof kState / sizeof kState[0]; i++)
+            if (openpete_paths_state_dir(kState[i], dir, sizeof dir, 0) == 0)
+                fprintf(out, "  %-8s %s\n", kState[i], dir);
+        for (size_t i = 0; i < sizeof kData / sizeof kData[0]; i++)
+            if (openpete_paths_data_dir(kData[i], dir, sizeof dir, 0) == 0)
+                fprintf(out, "  %-8s %s\n", kData[i], dir);
     }
 
     fprintf(out, "\n  %-22s %-14s %-26s %s\n", "knob", "value", "won at", "shadowed");

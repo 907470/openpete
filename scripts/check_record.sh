@@ -72,6 +72,16 @@ LOG1="$OUT_DIR/plain.log"
 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
        --frame-limit "$FRAMES" --mute off --record "$OUT1" >"$LOG1" 2>&1
 
+# A build configured without libav accepts --record and warns that it is
+# ignoring it. Every later assertion would then be about a file that was
+# never written — and Run 3 would never even end, because its stopping
+# condition is a count of RECORDED frames that stays at zero. Treat it as
+# the missing prerequisite it is, alongside the binary and ffprobe.
+if grep -q "this build has no video encoder" "$LOG1"; then
+    echo "SKIP: $BIN was built without a video encoder (libav* not linked)" >&2
+    exit 64
+fi
+
 [[ -s "$OUT1" ]] || { bad "no output file written ($OUT1)"; }
 
 if [[ -s "$OUT1" ]]; then

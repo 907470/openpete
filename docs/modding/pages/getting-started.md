@@ -17,6 +17,22 @@ mods/<id>/
 A `<id>.zip` with `mod.toml` at the archive root loads identically —
 it is unpacked and content-cached automatically.
 
+### Where `mods/` is
+
+The mods folder lives wherever the install keeps the files it writes,
+because the engine compiles mods in place:
+
+| Install                  | `mods/`                          |
+| ------------------------ | -------------------------------- |
+| Windows                  | next to `openpete-spyro1.exe`    |
+| Linux `.tar.xz`          | `~/.local/share/openpete/mods/`  |
+| Linux AppImage           | `~/.local/share/openpete/mods/`  |
+| any, `portable = true`   | next to the executable           |
+
+An AppImage is a read-only file, so it is always the per-user path
+there. `--mods-dir DIR` (or `$OPENPETE_MODS_DIR`) overrides all of
+this — handy for developing against a checkout.
+
 `mods/enabled.txt` lists enabled mods, one id per line — **the order IS
 the priority**: mods later in the list run first on shared overrides,
 and `base()` descends toward earlier mods, then the game's original

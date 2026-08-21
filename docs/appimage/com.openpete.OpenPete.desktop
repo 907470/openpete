@@ -1,0 +1,14 @@
+[Desktop Entry]
+Type=Application
+Name=OpenPete
+GenericName=Spyro the Dragon
+Comment=Play your own Spyro the Dragon disc, recompiled for your PC
+Exec=openpete-spyro1 %f
+Icon=com.openpete.OpenPete
+Terminal=false
+Categories=Game;ActionGame;
+Keywords=spyro;playstation;psx;
+# Opening a disc image from a file manager hands it over as %f, which the
+# runtime reads exactly like --ingest: the image is copied into the disc
+# library (deduplicated by content) and booted.
+MimeType=application/x-cue;application/x-cd-image;application/x-raw-disk-image;

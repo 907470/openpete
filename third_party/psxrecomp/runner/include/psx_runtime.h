@@ -2,7 +2,11 @@
 #define PSX_RUNTIME_H
 
 #include <stdint.h>
-#include <stdio.h>
+/* No <stdio.h>, and nothing else from libc: the generated MIPS
+ * translation uses only fixed-width integers, so the whole module
+ * compiles against the compiler-provided freestanding headers. That
+ * is what lets a bundled clang build it on a machine with no libc
+ * development package installed. */
 
 /* Cross-boundary DATA symbols (distribution shared linkage). On PE, a
  * dlopen'd module writing an exe-exported *data* symbol relies on MinGW

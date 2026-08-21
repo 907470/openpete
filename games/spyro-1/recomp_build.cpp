@@ -667,6 +667,17 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
           << " @" << q << rsp.string() << q;
 #ifndef _WIN32
         c << " -Wl,-Bsymbolic-functions -Wl,--unresolved-symbols=ignore-all";
+        /* The translated MIPS is pure integer code: it calls nothing from
+         * the C library, defines no constructors and needs no crt frames,
+         * so the module links with no libc and no DT_NEEDED at all. That
+         * is what lets a bundled clang compile it on a machine with no
+         * development packages installed — no crt*.o, no libc.so linker
+         * script, no headers. Anything the module does reference (the
+         * host's psyq_, psx_ and gte_ surface, and a compiler-emitted
+         * memcpy should codegen ever grow one) resolves at dlopen from
+         * the process-global scope, which already holds the exe and its
+         * libc. */
+        c << " -nostdlib -nostartfiles";
 #endif
         if (!run(c.str())) return -1;
     }

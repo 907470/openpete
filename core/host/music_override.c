@@ -10,6 +10,7 @@
 
 #include "openpete_log.h"
 #include "openpete_mods.h" /* asset-overlay roots */
+#include "openpete_paths.h" /* the writable user assets root */
 #include "wav_loader.h"
 
 #define MO_MAX_TRACKS   64    /* m_MusicTable capacity; 48 used in Spyro 1 */
@@ -18,10 +19,15 @@
 
 enum { MO_UNLOADED = 0, MO_LOADED, MO_FAILED };
 
+/* Two base roots, lowest priority first: the shipped assets/music/ inside
+ * the install (which may be read-only) and the user's own writable one.
+ * Mod asset roots outrank both. */
+enum { MO_DIR_SHIPPED = 0, MO_DIR_USER, MO_DIR_MAX };
+
 static struct {
     int   discovered;
-    char  dir[1024];                /* "" → no override directory */
-    char* manifest[MO_MAX_TRACKS];  /* malloc'd paths relative to dir */
+    char  dir[MO_DIR_MAX][1024];    /* "" → that root is not in play */
+    char* manifest[MO_MAX_TRACKS];  /* malloc'd paths relative to a dir */
 
     op_wav_pcm cache[MO_MAX_TRACKS];
     uint8_t    cache_state[MO_MAX_TRACKS];
@@ -49,10 +55,10 @@ static void apply_gain(void)
               s.forced_gain >= 0.0f ? s.forced_gain : s.gain);
 }
 
-static void parse_manifest(void)
+static void parse_manifest(const char* dir)
 {
-    char path[sizeof(s.dir) + 16];
-    snprintf(path, sizeof(path), "%smanifest.txt", s.dir);
+    char path[sizeof(s.dir[0]) + 16];
+    snprintf(path, sizeof(path), "%smanifest.txt", dir);
     FILE* f = fopen(path, "r");
     if (!f) return;
 
@@ -85,14 +91,29 @@ void music_override_init(void)
     s.discovered = 1;
 
     const char* base = SDL_GetBasePath();
-    if (!base) {
-        OPL_WARN_F("music", "wav override disabled: SDL_GetBasePath: %s",
+    if (base)
+        snprintf(s.dir[MO_DIR_SHIPPED], sizeof(s.dir[0]), "%sassets/music/",
+                 base);
+    else
+        OPL_WARN_F("music", "shipped wav overrides disabled: SDL_GetBasePath: %s",
                    SDL_GetError());
-        return;
+
+    char user[1024];
+    if (openpete_paths_data_dir("assets", user, sizeof user, 0) == 0) {
+        char dir[sizeof(s.dir[0])];
+        snprintf(dir, sizeof dir, "%s/music/", user);
+        if (strcmp(dir, s.dir[MO_DIR_SHIPPED]) != 0)
+            snprintf(s.dir[MO_DIR_USER], sizeof(s.dir[0]), "%s", dir);
     }
-    snprintf(s.dir, sizeof(s.dir), "%sassets/music/", base);
-    OPL_INFO_F("music", "wav override search path: %s", s.dir);
-    parse_manifest();
+
+    if (!s.dir[MO_DIR_SHIPPED][0] && !s.dir[MO_DIR_USER][0]) return;
+    OPL_INFO_F("music", "wav override search path: %s%s%s",
+               s.dir[MO_DIR_SHIPPED],
+               s.dir[MO_DIR_USER][0] ? ", " : "", s.dir[MO_DIR_USER]);
+    /* Later parse wins per track, so the user's manifest overrides the
+     * shipped one entry by entry rather than all-or-nothing. */
+    for (int d = 0; d < MO_DIR_MAX; d++)
+        if (s.dir[d][0]) parse_manifest(s.dir[d]);
 }
 
 static const op_wav_pcm* load_track(int track)
@@ -111,7 +132,7 @@ static const op_wav_pcm* load_track(int track)
     if (s.cache_state[track] == MO_LOADED) return &s.cache[track];
     if (s.cache_state[track] == MO_FAILED) return NULL;
 
-    char path[sizeof(s.dir) + 1040];
+    char path[sizeof(s.dir[0]) + 1040];
     /* Asset overlay: mod roots outrank the base dir; later-enabled mods
      * outrank earlier ones (single priority truth with the texture
      * namespace). First hit wins. */
@@ -129,18 +150,19 @@ static const op_wav_pcm* load_track(int track)
         FILE* mf = fopen(path, "rb");
         if (mf) { fclose(mf); found = 1; }
     }
-    if (!found) {
+    /* Base roots below the mods, user before shipped. Missing files are
+     * the common no-override case — probe quietly and don't latch, so
+     * files dropped in mid-session are picked up. */
+    for (int d = MO_DIR_MAX - 1; d >= 0 && !found; d--) {
+        if (!s.dir[d][0]) continue;
         if (s.manifest[track])
-            snprintf(path, sizeof(path), "%s%s", s.dir, s.manifest[track]);
+            snprintf(path, sizeof(path), "%s%s", s.dir[d], s.manifest[track]);
         else
-            snprintf(path, sizeof(path), "%strack_%02d.wav", s.dir, track);
-
-        /* Missing file is the common no-override case — probe quietly and
-         * don't latch, so files dropped in mid-session are picked up. */
+            snprintf(path, sizeof(path), "%strack_%02d.wav", s.dir[d], track);
         FILE* f = fopen(path, "rb");
-        if (!f) return NULL;
-        fclose(f);
+        if (f) { fclose(f); found = 1; }
     }
+    if (!found) return NULL;
 
     if (op_wav_load(path, &s.cache[track]) != 0) {
         s.cache_state[track] = MO_FAILED;  /* op_wav_load warned */
@@ -191,7 +213,7 @@ void music_override_stop(void)
 int music_override_try_start(int track_index, int start_sector)
 {
     music_override_init();
-    if (!s.dir[0]) return 0;
+    if (!s.dir[MO_DIR_SHIPPED][0] && !s.dir[MO_DIR_USER][0]) return 0;
     if (track_index < 0 || track_index >= MO_MAX_TRACKS) return 0;
 
     const op_wav_pcm* pcm = load_track(track_index);
@@ -321,5 +343,5 @@ void music_override_shutdown(void)
     s_path.state   = MO_UNLOADED;
     s_path.path[0] = '\0';
     s.discovered = 0;
-    s.dir[0]     = '\0';
+    for (int d = 0; d < MO_DIR_MAX; d++) s.dir[d][0] = '\0';
 }

@@ -3,18 +3,21 @@
 
 /*
  * openpete_paths.h — where openpete keeps the files it writes: the
- * openpete.toml holding the [saved] zone, memory-card images, savestates.
+ * openpete.toml holding the [saved] zone, memory-card images, savestates,
+ * the disc library, drop-in mods, user assets and recordings.
  *
  * Two layouts:
  *
  *   portable  everything in the game folder, next to the exe —
- *             <exe>/openpete.toml, <exe>/cards/, <exe>/states/. Matches
- *             the already-exe-relative library/, mods/ and bk2/, so an
- *             install is one directory the user can see, move, back up
- *             or run off a stick, and nothing hides in AppData.
+ *             <exe>/openpete.toml, <exe>/cards/, <exe>/states/,
+ *             <exe>/library/, <exe>/mods/, so an install is one directory
+ *             the user can see, move, back up or run off a stick, and
+ *             nothing hides in AppData.
  *   user      the platform's per-user directories: config under
  *             $XDG_CONFIG_HOME/openpete or %APPDATA%\openpete, state
- *             under $XDG_STATE_HOME/openpete or %LOCALAPPDATA%\openpete.
+ *             under $XDG_STATE_HOME/openpete or %LOCALAPPDATA%\openpete,
+ *             bulk data under $XDG_DATA_HOME/openpete or
+ *             %LOCALAPPDATA%\openpete.
  *
  * Windows defaults to portable, POSIX to user. A Windows install is a
  * folder the user unzipped and expects to own; a Linux one is expected to
@@ -66,6 +69,23 @@ int openpete_paths_user_config_dir(char* out, size_t cap, int create);
  * does not leave directories behind for a session that never ran.
  * Returns 0 on success. */
 int openpete_paths_state_dir(const char* leaf, char* out, size_t cap, int create);
+
+/* Directory holding a class of bulk user data — `leaf` is "library",
+ * "mods", "assets" or "bk2". Same portable-vs-user rule as the state
+ * dirs, but the per-user spelling is the XDG *data* directory: these hold
+ * ingested discs, compiled modules and user-authored content, not
+ * machine-local session state.
+ *
+ * One extra rule the state dirs do not need: when the user layout is in
+ * force and <exe>/<leaf> already exists in a writable install directory,
+ * that directory is adopted. These four were unconditionally exe-relative
+ * before, so every install predating the split already has content there,
+ * and moving it out from under a launcher would read as data loss. A
+ * read-only install (an AppImage mount, Program Files) has no such
+ * directory to adopt and lands in the per-user location.
+ *
+ * `create` makes it; pass 0 to merely name it. Returns 0 on success. */
+int openpete_paths_data_dir(const char* leaf, char* out, size_t cap, int create);
 
 #ifdef __cplusplus
 }

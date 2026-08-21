@@ -1,0 +1,29 @@
+#!/bin/sh
+# AppRun — the AppImage entry point.
+#
+# Deliberately minimal. The squashfs mounts read-only at a path that is
+# different on every launch, so this does exactly two things: point the
+# loader at the libraries bundled beside the binary, and exec the real
+# binary in place.
+#
+# Uses no external command. $PATH belongs to whoever launched us — a
+# desktop launcher, a minimal environment, a test harness that empties it
+# on purpose — and a game that will not start because `dirname` was not
+# on it is not a game that ships. $APPDIR is set by the AppImage runtime;
+# the fallback covers running AppRun straight out of an extracted image.
+if [ -n "$APPDIR" ]; then
+    HERE="$APPDIR"
+elif [ "${0#*/}" = "$0" ]; then
+    HERE=.
+else
+    HERE="${0%/*}"
+fi
+
+export LD_LIBRARY_PATH="$HERE/usr/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
+
+# No chdir. Relative --disc/--ingest paths on the command line belong to
+# the directory the user launched from (AppImage exports it as $OWD); a
+# chdir here would silently resolve them against the mount. Arguments
+# pass through verbatim so a desktop file's %f, a drag onto the icon and
+# a terminal invocation all behave identically.
+exec "$HERE/usr/openpete-spyro1" "$@"

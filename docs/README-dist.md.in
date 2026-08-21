@@ -6,8 +6,8 @@ widescreen, high framerate, HD texture packs — while keeping gameplay
 
 **You need your own disc.** OpenPete ships no game content: on first
 run it reads your disc image, rebuilds the game's code for your machine,
-and stores everything in a `library/` folder next to the program. This
-takes under a minute; after that the original file is never needed
+and stores everything in its disc library (see "Where your files go").
+This takes under a minute; after that the original file is never needed
 again.
 
 ## Quick start
@@ -18,8 +18,12 @@ again.
 3. Drag and drop your `.bin` or `.cue` into the Window.
 <!-- @end -->
 <!-- @linux -->
-2. Run `./openpete-spyro1`
-3. Drag and drop your `.bin` or `.cue` into the window.
+2. Make it executable and run it — `chmod +x OpenPete-*.AppImage` then
+   `./OpenPete-*.AppImage` for the AppImage, or `./openpete-spyro1` from
+   the extracted `.tar.xz`.
+3. Drag and drop your `.bin` or `.cue` into the window. You can also
+   hand it over on the command line (`./OpenPete-*.AppImage mydisc.cue`)
+   or from your file manager's "Open with".
 <!-- @end -->
 
 ## Where your files go
@@ -36,25 +40,39 @@ library/        your ingested disc and its compiled code
 ```
 <!-- @end -->
 <!-- @linux -->
-Settings live in `~/.config/openpete`; saves and the compiled game live
-in `~/.local/state/openpete`:
+OpenPete follows the XDG directories, so nothing is written next to the
+program itself:
 
 ```
-openpete.toml   your settings
-cards/          memory cards (the game's own saves)
-states/         savestate slots
-library/        your ingested disc and its compiled code
+~/.config/openpete/openpete.toml   your settings
+~/.local/state/openpete/cards/     memory cards (the game's own saves)
+~/.local/state/openpete/states/    savestate slots
+~/.local/share/openpete/library/   your ingested disc and its compiled code
+~/.local/share/openpete/mods/      drop-in mods
+~/.local/share/openpete/assets/    your own texture packs and music
+~/.local/share/openpete/bk2/       input recordings
 ```
 
-Set `portable = true` at the top of `openpete.toml` to keep all four in
-the program's own folder instead.
+Set `portable = true` at the top of `openpete.toml` to keep all of them
+in the program's own folder instead. That works for the `.tar.xz`; the
+AppImage is a read-only file, so it always uses the paths above.
 <!-- @end -->
 
 ## Notes
 
 <!-- @linux -->
-- A C compiler (`cc`) must be installed for the first run
-  (`sudo apt install gcc` or equivalent).
+- The AppImage carries its own compiler, so first run needs nothing
+  installed. The `.tar.xz` uses your system `cc` unless it was packaged
+  with a bundled one (`sudo apt install gcc` or equivalent).
+- If the AppImage exits with a FUSE error, your distribution no longer
+  installs libfuse by default. Either install it, or run the image
+  without it: `./OpenPete-*.AppImage --appimage-extract-and-run`.
+- To get OpenPete into your application menu, either install
+  `appimaged`/Gear Lever, or copy
+  `com.openpete.OpenPete.desktop` and `com.openpete.OpenPete.png` out of
+  `./OpenPete-*.AppImage --appimage-extract` into
+  `~/.local/share/applications` and `~/.local/share/icons` and point
+  `Exec=` at where you keep the image.
 <!-- @end -->
 <!-- @windows -->
 - Windows may show a SmartScreen warning ("Windows protected your PC")

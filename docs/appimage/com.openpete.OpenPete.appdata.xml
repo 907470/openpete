@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<component type="desktop-application">
+  <id>com.openpete.OpenPete</id>
+  <metadata_license>CC0-1.0</metadata_license>
+  <project_license>MIT</project_license>
+  <name>OpenPete</name>
+  <summary>Play your own Spyro the Dragon disc, recompiled for your PC</summary>
+  <description>
+    <p>
+      OpenPete plays Spyro the Dragon (PlayStation, 1998) natively on a PC —
+      widescreen, high framerate, HD texture packs — while keeping gameplay
+      bit-identical to original PlayStation hardware.
+    </p>
+    <p>
+      No game content is shipped. On first run OpenPete reads a disc image you
+      supply, recompiles the game's code for your machine with the bundled
+      toolchain, and keeps the result in its disc library; after that the
+      original file is never needed again.
+    </p>
+  </description>
+  <launchable type="desktop-id">com.openpete.OpenPete.desktop</launchable>
+  <url type="homepage">https://openpete.com/</url>
+  <provides>
+    <binary>openpete-spyro1</binary>
+  </provides>
+  <content_rating type="oars-1.1">
+    <content_attribute id="violence-cartoon">mild</content_attribute>
+  </content_rating>
+  <releases>
+    <release version="@VERSION@" date="@DATE@"/>
+  </releases>
+</component>

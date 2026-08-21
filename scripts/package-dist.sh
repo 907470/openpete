@@ -6,19 +6,29 @@
 # recomp module (users first-boot-compile it), no disc data, ROM-free
 # icon (the dist presets pin OPENPETE_ROM_FREE_ICON=ON).
 #
-#   scripts/package-dist.sh linux   [--out DIR]
+#   scripts/package-dist.sh linux   [--out DIR] [--toolchain DIR] [--appimage]
 #   scripts/package-dist.sh windows [--out DIR] [--toolchain DIR]
 #
-# --with-mod-sdk additionally stages the mod SDK headers + a mods/ drop
-# folder, which the boot-time mod compiler needs. Releases ship without
-# it; the dist gate passes it to keep that path exercised.
+# --appimage additionally emits OpenPete-<ver>-x86_64.AppImage from the
+# SAME staged tree the tarball is made from, so the two artifacts can
+# never drift. The AppImage is the primary Linux download: its squashfs
+# keeps the bundled compiler compressed and never unpacks it, and its
+# read-only mount is what forces the writable-state split (the library,
+# mods, user assets and recordings resolve through openpete_paths).
+#
+# --with-mod-sdk additionally stages the mod SDK headers the boot-time
+# mod compiler needs (plus, where mods live next to the exe, a mods/ drop
+# folder). Releases ship without it; the dist gate passes it to keep that
+# path exercised.
 #
 # Inputs: the corresponding *-shared preset build (linux-release-shared /
-# windows-mingw-shared) with its staged recomp/ directory. For Windows,
-# --toolchain points at an UNPACKED llvm-mingw (ucrt x86_64) to bundle;
-# it is trimmed (x86_64-only, C-only) into the archive. Linux v1 uses
-# the system compiler (documented in README-dist; bundled-clang for
-# Linux is release-engineering follow-up).
+# windows-mingw-shared) with its staged recomp/ directory. --toolchain
+# points at an UNPACKED compiler tree to bundle: llvm-mingw (ucrt
+# x86_64) for Windows, a trimmed llvm.org clang for Linux
+# (scripts/setup_linux_clang.sh produces one in .tools/clang). Without
+# it the Windows zip and the Linux tarball fall back to the user's own
+# compiler (documented in README-dist); the AppImage always bundles one,
+# since needing nothing installed is the point of it.
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -27,6 +37,7 @@ shift || true
 OUT=dist
 TOOLCHAIN=""
 WITH_MOD_SDK=0
+APPIMAGE=0
 # --sign '<command>' — Authenticode hook, Windows platform only. Invoked
 # once per first-party PE (openpete-spyro1.exe, PSXRecomp.exe) with the
 # file path appended; a nonzero exit fails the package. Evaluated per
@@ -50,6 +61,7 @@ while [[ $# -gt 0 ]]; do
         --toolchain) TOOLCHAIN="$2"; shift 2 ;;
         --sign) SIGN_CMD="$2"; shift 2 ;;
         --with-mod-sdk) WITH_MOD_SDK=1; shift ;;
+        --appimage) APPIMAGE=1; shift ;;
         *) echo "unknown arg: $1" >&2; exit 64 ;;
     esac
 done
@@ -73,17 +85,27 @@ stage_common() {  # stage_common <build-game-dir>
     # C — but its comments are engineering notes about the host tree.
     scripts/strip-comments.py "$STAGE"/recomp/src/*
     if [[ $WITH_MOD_SDK -eq 1 ]]; then
-        # Mod SDK + drop-in mod dir (openpete-mod-compile-on-boot): mods
-        # ship mod.toml + src/ and compile at boot against <exe>/sdk with
-        # the bundled toolchain. The SDK is a handful of headers.
+        # Mod SDK (openpete-mod-compile-on-boot): mods ship mod.toml +
+        # src/ and compile at boot against <exe>/sdk with the bundled
+        # toolchain. The SDK is a handful of headers, and read-only —
+        # unlike mods/ it belongs in the install.
         cp -a "$B/sdk" "$STAGE/sdk"
-        mkdir -p "$STAGE/mods"
-        printf '%s\n' \
-            "Drop mods here: mods/<id>/ (or mods/<id>.zip) containing" \
-            "mod.toml, plus src/*.c (compiled automatically at boot) and/or" \
-            "assets/. mods/enabled.txt (one id per line) fixes the load" \
-            "order; without it every mod loads, alphabetically." \
-            > "$STAGE/mods/README.txt"
+        # The drop-in mods/ folder only belongs here where mods actually
+        # resolve next to the exe. Under the per-user layout (POSIX
+        # default, and the only option for a read-only AppImage) the
+        # runtime looks in the data directory instead, and a placeholder
+        # shipped here would be a directory nobody's mods are read from —
+        # worse, it would be mistaken for the real one. README-dist names
+        # the per-user path for those platforms.
+        if [[ "$PLATFORM" == windows ]]; then
+            mkdir -p "$STAGE/mods"
+            printf '%s\n' \
+                "Drop mods here: mods/<id>/ (or mods/<id>.zip) containing" \
+                "mod.toml, plus src/*.c (compiled automatically at boot) and/or" \
+                "assets/. mods/enabled.txt (one id per line) fixes the load" \
+                "order; without it every mod loads, alphabetically." \
+                > "$STAGE/mods/README.txt"
+        fi
     fi
     cp gamecontrollerdb.txt "$STAGE/" 2>/dev/null || true
     cp LICENSE NOTICE.md "$STAGE/"
@@ -102,6 +124,93 @@ stage_common() {  # stage_common <build-game-dir>
         > "$STAGE/README.md"
 }
 
+# Libraries an AppImage must NEVER carry: graphics, display-server and
+# audio-device clients bind to the host's drivers, and a bundled copy
+# shadowing the host's breaks on exactly the machines the image is meant
+# to run on. Asserted after staging rather than trusted.
+APPIMAGE_FORBIDDEN='^lib(GL|GLX|GLdispatch|EGL|GLESv2|vulkan|X11|Xext|Xrandr|Xi|xcb|wayland|drm|gbm|asound|pulse|pulsecommon|sndio|jack)'
+
+build_appimage() {  # build_appimage <stage-dir>
+    local S="$1"
+    local TOOL="${OPENPETE_APPIMAGETOOL:-.tools/appimagetool-x86_64.AppImage}"
+    [[ -x "$TOOL" ]] || {
+        echo "[package] --appimage needs appimagetool: run" \
+             "scripts/setup_appimagetool.sh" >&2; exit 64; }
+
+    local APPDIR="$OUT/OpenPete.AppDir"
+    rm -rf "$APPDIR"
+    # The payload keeps the tarball's exact shape one level down, because
+    # the runtime resolves recomp/, sdk/ and the shipped assets/ relative
+    # to its own executable. usr/ is only where AppImage convention puts
+    # a payload; nothing inside it is rearranged.
+    mkdir -p "$APPDIR/usr" "$APPDIR/usr/lib"
+    cp -a "$S"/. "$APPDIR/usr/"
+
+    # The image must be able to recompile the game on a machine with no
+    # development packages at all — that is the reason it exists. Ship a
+    # compiler whether or not the tarball stage got one.
+    if [[ ! -x "$APPDIR/usr/recomp/tools/clang/bin/clang" ]]; then
+        local CC_TREE="${TOOLCHAIN:-.tools/clang}"
+        [[ -x "$CC_TREE/bin/clang" ]] || {
+            echo "[package] --appimage needs a compiler to bundle: run" \
+                 "scripts/setup_linux_clang.sh (or pass --toolchain DIR)" >&2
+            exit 64; }
+        echo "[package] bundling clang from $CC_TREE"
+        mkdir -p "$APPDIR/usr/recomp/tools/clang"
+        cp -a "$CC_TREE"/. "$APPDIR/usr/recomp/tools/clang/"
+    fi
+
+    # OpenAL Soft is the one runtime dependency that is neither a driver
+    # nor universally installed. LGPL: dynamic linking preserved, license
+    # text rides along (NOTICE.md), same arrangement as the Windows zip.
+    local al
+    al=$(ldd "$S/openpete-spyro1" | awk '/libopenal\.so/ {print $3}')
+    [[ -n "$al" && -f "$al" ]] || { echo "[package] libopenal.so.1 not found" >&2; exit 1; }
+    cp -L "$al" "$APPDIR/usr/lib/libopenal.so.1"
+    cp third_party/OpenAL-mingw/COPYING "$APPDIR/usr/OpenAL-COPYING.txt"
+
+    local bad
+    bad=$(ls "$APPDIR/usr/lib" | grep -E "$APPIMAGE_FORBIDDEN" || true)
+    [[ -z "$bad" ]] || {
+        echo "[package] driver/display libraries must not be bundled: $bad" >&2
+        exit 1; }
+
+    install -m755 docs/appimage/AppRun "$APPDIR/AppRun"
+    install -m644 docs/appimage/com.openpete.OpenPete.desktop \
+        "$APPDIR/com.openpete.OpenPete.desktop"
+    mkdir -p "$APPDIR/usr/share/applications" \
+             "$APPDIR/usr/share/icons/hicolor/256x256/apps" \
+             "$APPDIR/usr/share/metainfo"
+    cp "$APPDIR/com.openpete.OpenPete.desktop" "$APPDIR/usr/share/applications/"
+    # The ROM-free mark (tools/gen_dist_icon.py) — the authentic memcard
+    # icon must never ship. Generated here so the image can never pick up
+    # a ROM-derived one by accident.
+    python3 tools/gen_dist_icon.py --png "$APPDIR/com.openpete.OpenPete.png"
+    cp "$APPDIR/com.openpete.OpenPete.png" \
+       "$APPDIR/usr/share/icons/hicolor/256x256/apps/"
+    sed -e "s/@VERSION@/${VERSION#v}/g" -e "s/@DATE@/$(date -u +%Y-%m-%d)/g" \
+        docs/appimage/com.openpete.OpenPete.appdata.xml \
+        > "$APPDIR/usr/share/metainfo/com.openpete.OpenPete.appdata.xml"
+
+    local IMG="$OUT/OpenPete-${VERSION}-x86_64.AppImage"
+    rm -f "$IMG"
+    # --runtime-file: without it appimagetool downloads the launcher stub
+    # from a rolling tag at package time, so the artifact would depend on
+    # the network and on whatever that tag points at today.
+    local RT="${OPENPETE_APPIMAGE_RUNTIME:-.tools/appimage-runtime-x86_64}"
+    local rt_arg=()
+    if [[ -f "$RT" ]]; then rt_arg=(--runtime-file "$RT")
+    else echo "[package] NOTE: no pinned AppImage runtime at $RT —" \
+              "appimagetool will fetch one (run scripts/setup_appimagetool.sh)" >&2
+    fi
+    # --appimage-extract-and-run: the tool is itself an AppImage, and
+    # build containers routinely have no FUSE.
+    ARCH=x86_64 "$TOOL" --appimage-extract-and-run "${rt_arg[@]}" "$APPDIR" "$IMG"
+    ( cd "$OUT" && sha256sum "$(basename "$IMG")" > "$(basename "$IMG").sha256" )
+    rm -rf "$APPDIR"
+    echo "[package] $IMG ready"
+}
+
 case "$PLATFORM" in
 linux)
     B=build/linux-release-shared/games/spyro-1
@@ -116,22 +225,26 @@ linux)
     stage_common "$B"
     mkdir -p "$STAGE/recomp/tools"
     cp third_party/psxrecomp/build/PSXRecomp "$STAGE/recomp/tools/"
+    # The tarball bundles a compiler only when asked: it is the
+    # portable/dev artifact, and a ~320 MB toolchain would quadruple a
+    # 3 MB download for users who already have cc. The AppImage always
+    # carries one (build_appimage stages it) — the squashfs keeps it
+    # compressed and its whole point is that first boot needs nothing
+    # installed. find_cc (recomp_build.cpp) prefers
+    # recomp/tools/clang/bin/clang over the system cc either way.
     if [[ -n "$TOOLCHAIN" ]]; then
-        # Bundle a Linux clang tree. find_cc (recomp_build.cpp) prefers
-        # recomp/tools/clang/bin/clang over the system cc. A real
-        # self-contained clang tarball trims like the Windows one
-        # (plan D3.1); this stages whatever tree is pointed at.
         echo "[package] bundling clang from $TOOLCHAIN"
         mkdir -p "$STAGE/recomp/tools/clang"
         cp -a "$TOOLCHAIN"/. "$STAGE/recomp/tools/clang/"
     else
-        echo "[package] NOTE: no --toolchain — Linux archive uses the" \
+        echo "[package] NOTE: no --toolchain — the archive uses the" \
              "system cc (README-dist documents this)." >&2
     fi
     [[ -n "$SIGN_CMD" ]] && echo "[package] NOTE: --sign is Windows-only" \
         "(Authenticode); ignored for linux" >&2
     tar cJf "$OUT/$NAME.tar.xz" -C "$OUT" "$NAME"
     ( cd "$OUT" && sha256sum "$NAME.tar.xz" > "$NAME.tar.xz.sha256" )
+    if [[ $APPIMAGE -eq 1 ]]; then build_appimage "$STAGE"; fi
     ;;
 windows)
     B=build/windows-mingw-shared/games/spyro-1
@@ -142,6 +255,9 @@ windows)
     # Linux branch). PE exports live in the export table data directory,
     # not the COFF symbol table, and the first-boot module links against
     # the staged implib — stripping cannot break either.
+    if [[ $APPIMAGE -eq 1 ]]; then
+        echo "[package] --appimage is a Linux format; ignored for windows" >&2
+    fi
     x86_64-w64-mingw32-strip "$STAGE/openpete-spyro1.exe"
     cp "$B/OpenAL32.dll" "$STAGE/" 2>/dev/null \
         || cp third_party/OpenAL-mingw/x86_64-w64-mingw32/bin/OpenAL32.dll "$STAGE/"
@@ -185,7 +301,8 @@ windows)
     ( cd "$OUT" && sha256sum "$NAME.zip" > "$NAME.zip.sha256" )
     ;;
 *)
-    echo "usage: scripts/package-dist.sh {linux|windows} [--out DIR] [--toolchain DIR]" >&2
+    echo "usage: scripts/package-dist.sh {linux|windows} [--out DIR]" \
+         "[--toolchain DIR] [--with-mod-sdk] [--appimage (linux)]" >&2
     exit 64
     ;;
 esac

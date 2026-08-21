@@ -43,6 +43,7 @@
 #include "text_moby_native.h"
 
 #include <math.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "spyro1_symbols.gen.h"
 

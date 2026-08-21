@@ -189,6 +189,11 @@ static int user_state_dir(char* out, size_t cap, int create) {
                              "XDG_STATE_HOME", ".local/state");
 }
 
+static int user_data_dir(char* out, size_t cap, int create) {
+    return user_openpete_dir(out, cap, create, "LOCALAPPDATA", "AppData\\Local",
+                             "XDG_DATA_HOME", ".local/share");
+}
+
 /* ------------------------------------------------------------------ */
 /* public resolvers                                                    */
 /* ------------------------------------------------------------------ */
@@ -242,6 +247,42 @@ int openpete_paths_state_dir(const char* leaf, char* out, size_t cap, int create
         if (portable) hint_legacy_state(leaf, dir);
         (void)OPP_MKDIR(dir);
     }
+    snprintf(out, cap, "%s", dir);
+    return 0;
+}
+
+/* The library, mods, user assets and recordings were exe-relative on every
+ * platform before the layout split, so an install that predates it holds
+ * live content there. Keep using it rather than silently starting over in
+ * the per-user directory — but only when the install directory is one we
+ * can actually write, which a read-only mount is not. */
+static int adopt_install_dir(const char* leaf, char* out, size_t cap) {
+    char base[OPP_PATH_MAX];
+    if (openpete_exe_dir(base, sizeof base) != 0) return 0;
+    char dir[OPP_PATH_MAX + 16];
+    path_join(dir, sizeof dir, base, leaf);
+    if (!dir_exists(dir) || strlen(dir) >= cap) return 0;
+    if (!dir_writable(dir)) return 0;
+    snprintf(out, cap, "%s", dir);
+    return 1;
+}
+
+int openpete_paths_data_dir(const char* leaf, char* out, size_t cap, int create) {
+    char base[OPP_PATH_MAX];
+    if (openpete_paths_portable()) {
+        if (openpete_exe_dir(base, sizeof base) != 0) return -1;
+    } else {
+        if (adopt_install_dir(leaf, out, cap)) return 0;
+        if (user_data_dir(base, sizeof base, create) != 0) return -1;
+    }
+
+    char dir[OPP_PATH_MAX + 16];
+    path_join(dir, sizeof dir, base, leaf);
+    if (strlen(dir) >= cap) {
+        OPL_ERROR_F("paths", "%s-dir path too long", leaf);
+        return -1;
+    }
+    if (create) (void)OPP_MKDIR(dir);
     snprintf(out, cap, "%s", dir);
     return 0;
 }

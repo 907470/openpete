@@ -6,7 +6,9 @@
 //     meta.toml              label / source / ingested / last_played
 //     modules/<codegen-stamp>/spyro1-recomp.so   (+ obj/ kept)
 //
-// Lives next to the exe (portable-install layout). Resolution order at
+// Lives wherever openpete_paths puts writable data: next to the exe in a
+// portable install, $XDG_DATA_HOME/openpete/library under the user layout
+// (which is what a read-only AppImage mount forces). Resolution order at
 // boot: explicit --disc = dev path, library untouched; --ingest PATH
 // stream-hashes + copies the image in (dedup by content), then boots
 // the entry; no disc at all = scan the library and boot the single /
@@ -15,6 +17,7 @@
 // — engine updates rebuild the module from the library's own copy.
 #include "openpete.h"
 #include "openpete_log.h"
+#include "openpete_paths.h" /* library root: portable vs per-user data dir */
 #include "openpete_psx.h"   /* openpete_psx_read_disc_serial */
 #include "sha256.h"
 
@@ -79,7 +82,16 @@ std::string exe_dir() {
 #endif
 }
 
-fs::path library_root() { return fs::path(exe_dir()) / "library"; }
+/* Named, not created. Readers tolerate an absent library (nothing ingested
+ * yet), and every writer goes through fs::create_directories, which makes
+ * the parents — so a mere query (--config-report, a scope lookup) leaves
+ * no empty directory behind. */
+fs::path library_root() {
+    char dir[2048];
+    if (openpete_paths_data_dir("library", dir, sizeof dir, 0) != 0)
+        return fs::path(exe_dir()) / "library";
+    return fs::path(dir);
+}
 
 /* Locate the .bin for an image path the user handed us (.bin itself,
  * or a .cue whose sibling/only .bin we find — same tolerance as
