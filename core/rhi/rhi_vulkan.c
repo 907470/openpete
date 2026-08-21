@@ -2510,6 +2510,76 @@ void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels)
     update_image(dev, tex, pixels);
 }
 
+/* Sub-rect uploads from TIGHT per-rect source buffers (each rects[i].pixels
+ * is w*h*4 bytes) — the atlas-append path. Same staging/in-frame semantics
+ * as update_image; payloads are packed into one staging slot and copied in
+ * one barrier pair. Rects that don't fit the remaining slot are dropped
+ * (the caller re-queues them next frame). */
+void rhi_update_rgba8_rects(rhi_device *dev, rhi_texture *tex,
+                            const rhi_tex_rect_src *rects, int nrects)
+{
+    if (!tex || !tex->staging || nrects <= 0) return;
+    const size_t cap = (size_t)tex->width * tex->height * tex->bpp;
+
+    VkBuffer src;
+    VkCommandBuffer cb;
+    uint8_t *dst;
+    bool one_shot = !dev->frame_active;
+    if (one_shot) {
+        dst = (uint8_t *)tex->staging->mapped;
+        src = tex->staging->buffer;
+        cb  = one_shot_begin(dev);
+    } else {
+        rhi_buffer **slot = &tex->staging_ring[dev->frame];
+        if (!*slot)
+            *slot = create_host_buffer(dev, cap,
+                                       VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
+                                       /*prefer_cached=*/false);
+        if (!*slot) return;
+        dst = (uint8_t *)(*slot)->mapped;
+        src = (*slot)->buffer;
+        cb  = dev->cmd[dev->frame];
+    }
+
+    VkBufferImageCopy regions[96];
+    int nreg = 0;
+    size_t off = 0;
+    for (int i = 0; i < nrects && nreg < 96; i++) {
+        const rhi_tex_rect_src *r = &rects[i];
+        if (!r->pixels || r->w <= 0 || r->h <= 0) continue;
+        size_t bytes = (size_t)r->w * r->h * 4u;
+        off = (off + 3) & ~(size_t)3;
+        if (off + bytes > cap) break;
+        memcpy(dst + off, r->pixels, bytes);
+        regions[nreg++] = (VkBufferImageCopy){
+            .bufferOffset = off,
+            .bufferRowLength = (uint32_t)r->w,
+            .bufferImageHeight = (uint32_t)r->h,
+            .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+            .imageOffset = { r->x, r->y, 0 },
+            .imageExtent = { (uint32_t)r->w, (uint32_t)r->h, 1 },
+        };
+        off += bytes;
+    }
+    if (nreg == 0) { if (one_shot) one_shot_end(dev, cb); return; }
+
+    image_barrier(cb, tex->image, tex->layout,
+                  VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_ACCESS_SHADER_READ_BIT, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT);
+    vkCmdCopyBufferToImage(cb, src, tex->image,
+                           VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                           (uint32_t)nreg, regions);
+    image_barrier(cb, tex->image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL,
+                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_SHADER_READ_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT);
+    if (one_shot) one_shot_end(dev, cb);
+    tex->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
+}
+
 /* Copy a host-visible readback staging buffer (raw swapchain-format pixels) into
  * the caller's RGBA8 out buffer: swizzle B8G8R8A8 -> R,G,B,A and force opaque
  * alpha. Shared by the blocking screenshot path and the async --record ring. */
@@ -3180,7 +3250,8 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
                                              (desc->postfx || desc->mod_pipeline || desc->terrain_pipeline)
                                                  ? dev->ubo_set_layout : dev->vram_set_layout,
                                              dev->vram_set_layout };
-    uint32_t set_count = (desc->postfx || desc->mod_pipeline || desc->terrain_pipeline) ? 4u
+    uint32_t set_count = desc->terrain_pipeline ? 5u   /* + set 4: HD atlas sampler */
+                       : (desc->postfx || desc->mod_pipeline) ? 4u
                        : desc->uses_vram5 ? 5u
                        : desc->uses_vram4 ? 4u
                        : desc->uses_vram3 ? 3u

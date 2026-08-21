@@ -355,7 +355,8 @@ typedef struct {
     bool           terrain_pipeline; /* terrain sector-mesh layout: vertex
                                  * input = rhi_terrain_vertex (locations 0..8),
                                  * sets = {0: VRAM sampler, 3: UBO pair via
-                                 * rhi_ubo_bind — globals + sector params},
+                                 * rhi_ubo_bind — globals + sector params,
+                                 * 4: HD-replacement atlas sampler},
                                  * push constants visible to VERTEX|FRAGMENT
                                  * (the per-draw clip affine + class select).
                                  * uses_vram/uses_vram2 ignored.              */
@@ -517,6 +518,14 @@ void rhi_update_vram_rects(rhi_device *dev, rhi_texture *tex,
  * width*height*4 bytes. */
 rhi_texture *rhi_create_rgba8(rhi_device *dev, uint32_t width, uint32_t height);
 void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels);
+
+/* Sub-rect uploads from TIGHT per-rect source buffers (pixels = w*h*4 RGBA8
+ * bytes each) — the HD-atlas append path. Same in-frame/one-shot semantics
+ * as rhi_update_rgba8; rects that overflow the staging slot are dropped
+ * (re-queue them next frame). At most 96 rects per call. */
+typedef struct { const void *pixels; int x, y, w, h; } rhi_tex_rect_src;
+void rhi_update_rgba8_rects(rhi_device *dev, rhi_texture *tex,
+                            const rhi_tex_rect_src *rects, int nrects);
 
 /* Switch a sampled texture's descriptor to the LINEAR-filter sampler (the
  * default is NEAREST — pixel-exact VRAM/blit semantics). For high-res

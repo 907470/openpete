@@ -178,6 +178,48 @@ int  openpete_tercache_frame_open(void);
  * recency). */
 int  openpete_native_tercache_usable(void);
 
+/* ---- HD texture-replacement fold (pack art in the retained path) --------
+ * Defined in native_render.c (owner of the pack-registry and pack-fog
+ * helpers plus the frame upload point). The feeder's bake interns one entry
+ * per emitted textured tri; the retained fragment stage samples the fold
+ * atlas instead of the VRAM model when a face carries an entry id (upper
+ * halves of the mat_far1/mat_near1 clut words). */
+#define OPENPETE_HDFOLD_MAX 416   /* entry-table cap (globals-UBO budget) */
+
+/* Master gate: OPENPETE_TERRAIN_HDFOLD=1, a pack active, and the pack-fog
+ * models at their shipped defaults (the fold bakes those). Per-run latch. */
+int  openpete_native_hdfold_on(void);
+
+/* Intern the replacement verdict of one emitted tri (page texel corners).
+ * Returns 0 = no replacement (draw-time resolve misses / no match too),
+ * >0 = 1-based entry id, -1 = unbakeable (table/atlas full) — the caller
+ * claims the sector back to the CPU walk. */
+int  openpete_native_hdfold_intern(int tpx, int tpy, int clx, int cly, int bpp,
+                                   const float us[3], const float vs[3]);
+
+/* Entry-table snapshot for the globals fill: payload of
+ * OPENPETE_HDFOLD_MAX x 4 vec4 (rect / atlas rect / fogA / fogB), the live
+ * count, and the continuous-fog ramp (lad[0..1]; lad valid = ret). */
+const void *openpete_native_hdfold_table(int *count, float lad[2]);
+
+/* The fold atlas (NULL until the first intern) — the set-4 sampler. */
+struct rhi_texture *openpete_native_hdfold_atlas(void);
+
+/* Atlas uploads still queued (drained ~96 per rendered frame). */
+int openpete_native_hdfold_pending(void);
+
+/* Bumped on every intern and on a flush that drains the upload queue —
+ * fold-overflow-claimed sectors re-bake when it moves. */
+uint32_t openpete_native_hdfold_epoch(void);
+
+/* Flush pending atlas uploads into the current rhi frame (after begin_frame,
+ * before the first render pass — the hd_flush_pending site). */
+void openpete_native_hdfold_flush(void);
+
+/* Drop table + atlas content (pack registry reset / level change); baked
+ * entry ids die with it, so callers must also rebake hd-baked sectors. */
+void openpete_native_hdfold_reset(void);
+
 /* Chunk management (builder side). alloc returns 0 on success and the first
  * vertex index in *out_first; write uploads packed vertices; free defers the
  * range's reuse by the frames-in-flight window and stamps its face_flags to

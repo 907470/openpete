@@ -2723,6 +2723,14 @@ typedef struct {
                                        * even when the content hash is stable
                                        * (a paused anim must stop lerping the
                                        * last step) */
+    uint32_t bakeTpGen;               /* HD fold: texture_pack_generation at
+                                       * build — a moved registry (new files
+                                       * loaded) re-bakes so faces that now
+                                       * match gain their entries */
+    uint32_t bakeHdEpoch;             /* HD fold: hdfold_epoch at build — a
+                                       * fold-claimed (unbuildable=5) sector
+                                       * retries when interns or an upload
+                                       * drain moved it */
 } tgpu_slot_t;
 static tgpu_slot_t s_tgpu[TSC_SLOTS];
 /* census: window sums (reset each print) + per-walk counts (op_prof rows) */
@@ -2929,10 +2937,37 @@ static int tgpu_col_hash(const tscache_t* SC, uint32_t* out) {
     return 0;
 }
 
+/* HD fold: intern one textured half's replacement entry for a face's emitted
+ * tris (the draw-time per-tri resolve+match, evaluated at bake). u/v arrays
+ * are the half's corner texels in emit order; the second tri is NULL for
+ * GT3s. Returns 0 = no replacement, >0 = the entry id (both tris agree),
+ * -1 = unbakeable — blended target (sub-runs draw those inline, in order),
+ * tris resolving to different files, or table/atlas overflow — the sector
+ * claims back to the CPU walk. */
+static int tgpu_hdfold_face(const tmat* m,
+                            const float* ua, const float* va,
+                            const float* ub, const float* vb)
+{
+    if (!m->textured) return 0;
+    int a = openpete_native_hdfold_intern(m->tpx, m->tpy, m->clx, m->cly,
+                                          m->bpp, ua, va);
+    if (a < 0) return -1;
+    int b = a;
+    if (ub) {
+        b = openpete_native_hdfold_intern(m->tpx, m->tpy, m->clx, m->cly,
+                                          m->bpp, ub, vb);
+        if (b < 0) return -1;
+    }
+    if (a != b) return -1;
+    if (a > 0 && m->blend) return -1;
+    return a;
+}
+
 /* Build all of one sector's chunks. Returns 0 on success, 1 arena-full,
  * 2 scroll-anim claim (the flat/HQ UV-scroll rides a fractional per-present
- * accumulator lerp the mesh cannot bake). sec_index = the level sector index
- * (the authored-correction key). */
+ * accumulator lerp the mesh cannot bake), 5 = HD-fold unbakeable face (see
+ * tgpu_hdfold_face). sec_index = the level sector index (the
+ * authored-correction key). */
 static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                              uint32_t hqTable, int sec_index) {
     /* UV-scroll is mirrored: the accumulator-change tile generations rebuild
@@ -2942,6 +2977,8 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     tgpu_buf buf[OPTC_ARENA_COUNT];
     memset(buf, 0, sizeof(buf));
     int ok = 0;
+    int fail = 1;                     /* claim code when !ok (1 = arena-full) */
+    const int hdfold = openpete_native_hdfold_on();
     uint32_t base_ff = ((uint32_t)slot & 0x1FFu)
                      | (((uint32_t)s_tgpu[slot].gen & 7u) << 29);
     /* Poly-anim sectors bake into the ANIM twin arenas with a parallel
@@ -3059,6 +3096,17 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             k[1].un = (uint8_t)F->tuN[1]; k[1].vn = (uint8_t)F->tvN[1];
             k[3].un = (uint8_t)F->tuN[2]; k[3].vn = (uint8_t)F->tvN[2];
             k[2].un = (uint8_t)F->tuN[3]; k[2].vn = (uint8_t)F->tvN[3];
+            if (hdfold) {   /* replacement entries per emitted tri, both halves */
+                float uA[3] = { k[0].uf, k[1].uf, k[3].uf }, vA[3] = { k[0].vf, k[1].vf, k[3].vf };
+                float uB[3] = { k[1].uf, k[3].uf, k[2].uf }, vB[3] = { k[1].vf, k[3].vf, k[2].vf };
+                float nA[3] = { k[0].un, k[1].un, k[3].un }, wA[3] = { k[0].vn, k[1].vn, k[3].vn };
+                float nB[3] = { k[1].un, k[3].un, k[2].un }, wB[3] = { k[1].vn, k[3].vn, k[2].vn };
+                int hdF = tgpu_hdfold_face(&F->mat,  uA, vA, uB, vB);
+                int hdN = tgpu_hdfold_face(&F->matN, nA, wA, nB, wB);
+                if (hdF < 0 || hdN < 0) { fail = 5; goto done; }
+                T.matf1 |= (uint32_t)hdF << 16;
+                T.matn1 |= (uint32_t)hdN << 16;
+            }
             if (tgpu_emit_tri(dst, &T, k[0], k[1], k[3], 0) != 0) goto done;
             if (tgpu_emit_tri(dst, &T, k[1], k[3], k[2], 1) != 0) goto done;
         } else {
@@ -3068,6 +3116,15 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             for (int q = 0; q < 3; q++) {
                 k[q].uf = (uint8_t)F->tu[tc[q]]; k[q].vf = (uint8_t)F->tv[tc[q]];
                 k[q].un = (uint8_t)F->tuN[tc[q]]; k[q].vn = (uint8_t)F->tvN[tc[q]];
+            }
+            if (hdfold) {
+                float uA[3] = { k[0].uf, k[1].uf, k[2].uf }, vA[3] = { k[0].vf, k[1].vf, k[2].vf };
+                float nA[3] = { k[0].un, k[1].un, k[2].un }, wA[3] = { k[0].vn, k[1].vn, k[2].vn };
+                int hdF = tgpu_hdfold_face(&F->mat,  uA, vA, NULL, NULL);
+                int hdN = tgpu_hdfold_face(&F->matN, nA, wA, NULL, NULL);
+                if (hdF < 0 || hdN < 0) { fail = 5; goto done; }
+                T.matf1 |= (uint32_t)hdF << 16;
+                T.matn1 |= (uint32_t)hdN << 16;
             }
             if (tgpu_emit_tri(dst, &T, k[0], k[1], k[2], 0) != 0) goto done;
         }
@@ -3142,6 +3199,13 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                 c1.uf = (uint8_t)u[1]; c1.vf = (uint8_t)v[1]; c1.role = 1;
                 c2.uf = (uint8_t)u[2]; c2.vf = (uint8_t)v[2]; c2.role = 2;
                 c3.uf = (uint8_t)u[3]; c3.vf = (uint8_t)v[3]; c3.role = 3;
+                if (hdfold) {   /* HQ tiles replace like any textured half */
+                    float uA[3] = { u[0], u[1], u[2] }, vA[3] = { v[0], v[1], v[2] };
+                    float uB[3] = { u[1], u[2], u[3] }, vB[3] = { v[1], v[2], v[3] };
+                    int hd = tgpu_hdfold_face(&m, uA, vA, uB, vB);
+                    if (hd < 0) { fail = 5; goto done; }
+                    H.matf1 |= (uint32_t)hd << 16;
+                }
                 tgpu_buf* hdst = &buf[tgpu_arena_of(&m) + ab];
                 if (tgpu_emit_tri(hdst, &H, c0, c1, c2, 0) != 0) goto done;
                 if (tgpu_emit_tri(hdst, &H, c1, c2, c3, 1) != 0) goto done;
@@ -3174,7 +3238,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     }
 done:
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) { free(buf[a].v); free(buf[a].pv); }
-    return ok ? 0 : 1;
+    return ok ? 0 : fail;
 }
 
 /* Texture-pack claim scan: does any pack file touch any face's texel box?
@@ -3255,12 +3319,21 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
     }
     {
         uint32_t g = texture_pack_generation();
-        if (T->tpGen != g) {
-            T->tpGen = g;
-            T->tpClaim = texture_pack_replacements_active()
-                       ? (uint8_t)tgpu_pack_scan(SC) : 0;
+        if (openpete_native_hdfold_on()) {
+            /* HD fold: matched faces bake replacement entries instead of
+             * claiming (tgpu_build_sector interns per emitted tri; an
+             * unbakeable face returns the tier-1 claim from the build).
+             * A moved registry re-bakes so newly-loaded files take. */
+            T->tpClaim = 0;
+            if (T->tpGen != g) T->tpGen = g;
+        } else {
+            if (T->tpGen != g) {
+                T->tpGen = g;
+                T->tpClaim = texture_pack_replacements_active()
+                           ? (uint8_t)tgpu_pack_scan(SC) : 0;
+            }
+            if (T->tpClaim) return 5;
         }
-        if (T->tpClaim) return 5;
     }
     {
         unsigned e = openpete_mods_material_epoch();
@@ -3276,7 +3349,15 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
               * content hash alone would leave a paused anim's chunk lerping
               * its last step forever. Sub-tick builds don't roll, so this
               * stays clean between ticks. */
-             || (SC->polyanim && T->animRoll != SC->vrollPres);
+             || (SC->polyanim && T->animRoll != SC->vrollPres)
+             /* HD fold: the pack registry moved since this bake (files
+              * uploaded/cleared) — re-intern the sector's entries; a
+              * fold-claimed sector retries when the fold state moved
+              * (a queue drain can unblock its overflow). */
+             || (openpete_native_hdfold_on() &&
+                 (T->bakeTpGen != T->tpGen ||
+                  (T->unbuildable == 5 &&
+                   T->bakeHdEpoch != openpete_native_hdfold_epoch())));
     if (!dirty && T->lastColFrame != openpete_frame) {
         /* Colour liveness once per VBL (colours can only change per tick). */
         uint32_t h;
@@ -3290,6 +3371,8 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         T->s = SC->s;
         T->decodeGen = SC->decodeGen; T->texGen = SC->texGen; T->vertGen = SC->vertGen;
         T->animRoll = SC->vrollPres;
+        T->bakeTpGen = T->tpGen;
+        T->bakeHdEpoch = openpete_native_hdfold_epoch();
         T->lastColFrame = openpete_frame;
         if (tgpu_col_hash(SC, &T->colHash) != 0) { T->unbuildable = 3; return 3; }
         T->unbuildable = tgpu_build_sector(cpu, slot, SC, hqTable, sec_index);
@@ -4661,6 +4744,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
           s_lpg_mean_ok = 0;
           s_lpg_acc_n = 0;
           memset(s_lpg_acc, 0, sizeof s_lpg_acc);
+          /* HD-fold entry table + atlas are level-lifetime (the pack's
+           * identities die with the level's VRAM uploads); baked entry ids
+           * die with them — the registry-generation dirty check rebakes. */
+          openpete_native_hdfold_reset();
       } }
     if (s_lpg_acc_n > 0) {
         for (int c = 0; c < 6; c++) s_lpg_mean[c] = (float)(s_lpg_acc[c] / s_lpg_acc_n);

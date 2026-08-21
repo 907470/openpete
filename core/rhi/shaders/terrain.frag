@@ -18,6 +18,7 @@
 layout(set = 0, binding = 0) uniform usampler2D u_vram; /* R16_UINT 1024x512 */
 layout(set = 1, binding = 0) uniform sampler2D u_hpkey;   /* terrain og-key image */
 layout(set = 2, binding = 0) uniform sampler2D u_mobykey; /* prop TRUE-depth image */
+layout(set = 4, binding = 0) uniform sampler2D u_hdatlas; /* HD-fold atlas (NEAREST) */
 
 layout(location = 0)      in vec2  vUV;    /* x q (divide by vQ)             */
 layout(location = 1)      in vec4  vColor; /* x q (divide by vQ)             */
@@ -25,6 +26,7 @@ layout(location = 2) flat in uvec2 vMat;   /* x: tpx|tpy<<10|bppc<<19|textured<<
                                             * y: clx | cly<<16 */
 layout(location = 3) flat in float vKoff;  /* og OT key (0 = out of contest) */
 layout(location = 4)      in float vQ;
+layout(location = 5) flat in uint  vHd;    /* HD-fold entry id | flags (vert stage) */
 
 layout(location = 0) out vec4 outColor;
 
@@ -33,6 +35,9 @@ layout(std140, set = 3, binding = 0) uniform TerrainGlobals {
     vec4  mrow0; vec4 mrow1; vec4 mrow2;
     dvec2 dcam_xy; dvec2 dcam_zf; dvec2 dof_xy; dvec2 dH;
     ivec4 fog;
+    vec4  pad_[302];     /* scroll_dv + the rim frames (vertex-stage state) */
+    vec4  hd_lad;        /* HD fold: CONT-fog ramp ts, tb; count; enable   */
+    vec4  hd_ent[1664];  /* 416 entries x 4 vec4 (rect/atlas/fogA/fogB)    */
 } g;
 
 /* gl_FragCoord.z encoding — matches the vertex stage's selection. */
@@ -103,6 +108,48 @@ void main()
     vec4 col = vColor / vQ;
     if ((mat0 & (1u << 23)) == 0u) {          /* untextured: plain gouraud */
         outColor = vec4(col.rgb, 1.0);
+        return;
+    }
+    /* HD-fold replacement: a baked entry replaces the VRAM fetch —
+     * hd_tex_cutout.frag's math (file-box mapping, alpha cutout, the
+     * continuous pack-fog ramp) evaluated from the entry table, then the
+     * same PSX modulation. Entries exist only on opaque faces. */
+    if ((vHd & 0xFFFFu) != 0u) {
+        uint ei = ((vHd & 0xFFFFu) - 1u) * 4u;
+        vec4 rect  = g.hd_ent[ei];
+        vec4 arect = g.hd_ent[ei + 1u];
+        vec4 fogA  = g.hd_ent[ei + 2u];
+        vec4 fogB  = g.hd_ent[ei + 3u];
+        vec2 uvh = vUV / vQ;
+        vec2 t = clamp((uvh - rect.xy) / rect.zw, 0.0, 1.0);
+        /* Half a texel inside the file's atlas rect: clamp-to-edge
+         * without bleeding across the shelf gutter. */
+        vec2 ht = 0.5 / arect.zw;
+        t = clamp(t, ht, 1.0 - ht);
+        vec2 auv = arect.xy + t * arect.zw;
+        vec4 hc;
+        if (fogA.w > 0.5) {   /* linear-class file: manual bilinear (atlas is NEAREST) */
+            vec2 tx = auv - 0.5;
+            vec2 fw = fract(tx);
+            ivec2 b = ivec2(floor(tx));
+            vec4 s00 = texelFetch(u_hdatlas, b, 0);
+            vec4 s10 = texelFetch(u_hdatlas, b + ivec2(1, 0), 0);
+            vec4 s01 = texelFetch(u_hdatlas, b + ivec2(0, 1), 0);
+            vec4 s11 = texelFetch(u_hdatlas, b + ivec2(1, 1), 0);
+            hc = mix(mix(s00, s10, fw.x), mix(s01, s11, fw.x), fw.y);
+        } else {              /* exact-multiple file: stock-identical fetch */
+            hc = texelFetch(u_hdatlas, ivec2(auv), 0);
+        }
+        if (hc.a < 0.5) discard;
+        if ((vHd & 0x10000u) != 0u && g.hd_lad.x != 0.0) {
+            float w = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
+                                   : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
+            float tt = clamp(w * g.hd_lad.x +
+                             (g.hd_lad.y - ((vHd & 0x20000u) != 0u ? 8192.0 / 3840.0 : 0.0)),
+                             0.0, 1.0);
+            hc.rgb = clamp(hc.rgb * mix(vec3(1.0), fogA.rgb, tt) + fogB.rgb * tt, 0.0, 1.0);
+        }
+        outColor = vec4(clamp(hc.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0), 1.0);
         return;
     }
     int tpx  = int(mat0 & 0x3FFu);

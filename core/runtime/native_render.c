@@ -4538,6 +4538,193 @@ static void tp_pack_fog(const psx_material* m, int cly, int fog_delta,
     }
 }
 
+/* ---- HD texture-replacement fold: pack art in the RETAINED terrain path.
+ * The sub-run model above resolves per tri at draw time and rebinds per
+ * file; the retained sector-mesh cache instead interns one ENTRY per
+ * (file, material) at bake time — file pixels packed into one shared
+ * atlas, the fog transform tp_pack_fog computes per sub-run baked per
+ * entry — and the terrain fragment stage samples the atlas by the entry
+ * id carried in the vertex stream. Entries ride the terrain globals UBO
+ * (4 vec4 each: page rect / atlas rect / fogA / fogB). */
+#define HDFOLD_ATLAS_DIM 2048
+
+typedef struct {
+    const unsigned char *pixels;             /* dedup identity (file) */
+    int tpx, tpy, clx, cly, bpp;             /* dedup identity (material) */
+    float payload[16];                       /* the 4 UBO vec4s */
+} hdfold_entry;
+static hdfold_entry s_hdf_ent[OPENPETE_HDFOLD_MAX];
+static float        s_hdf_tab[OPENPETE_HDFOLD_MAX][16];
+static int          s_hdf_n = 0;
+static rhi_texture *s_hdf_atlas = NULL;
+static int   s_hdf_shelf_x, s_hdf_shelf_y, s_hdf_shelf_h;   /* shelf packer */
+static rhi_tex_rect_src s_hdf_pending[512];   /* a full pack's load burst */
+static int   s_hdf_pending_n = 0;
+/* Bumped on every intern and every flush that drains the queue: sectors
+ * claimed for fold overflow re-bake when it moves (tgpu_ensure). */
+static uint32_t s_hdf_epoch = 1;
+
+int openpete_native_hdfold_on(void)
+{
+    static int env = -1;
+    if (env < 0) {
+        const char *e = getenv("OPENPETE_TERRAIN_HDFOLD");
+        int on = e && *e && *e != '0';
+        /* The fold bakes the shipped pack-fog models; the A/B levers that
+         * change the draw-time math disable it (tier-1 claims instead). */
+        if (on) {
+            const char *c = getenv("OPENPETE_TEXPACK_FOG_CONT");
+            const char *f = getenv("OPENPETE_TEXPACK_FOG_FIT");
+            if ((c && *c == '0') || (f && *f == '0')) on = 0;
+        }
+        env = on;
+    }
+    return env && texture_pack_replacements_active();
+}
+
+void openpete_native_hdfold_reset(void)
+{
+    s_hdf_n = 0;
+    s_hdf_pending_n = 0;
+    s_hdf_shelf_x = s_hdf_shelf_y = s_hdf_shelf_h = 0;
+}
+
+int openpete_native_hdfold_intern(int tpx, int tpy, int clx, int cly, int bpp,
+                                  const float us[3], const float vs[3])
+{
+    if (!openpete_native_hdfold_on()) return 0;
+    float u0 = us[0], u1 = us[0], v0 = vs[0], v1 = vs[0];
+    for (int k = 1; k < 3; k++) {
+        if (us[k] < u0) u0 = us[k];
+        if (us[k] > u1) u1 = us[k];
+        if (vs[k] < v0) v0 = vs[k];
+        if (vs[k] > v1) v1 = vs[k];
+    }
+    texture_pack_id id;
+    if (!texture_pack_resolve(tpx, tpy, clx, cly, bpp,
+                              (int)u0, (int)v0, (int)u1, (int)v1, &id))
+        return 0;                             /* draw resolve misses too */
+    texture_pack_repl repl;
+    if (!texture_pack_match(&id, &repl)) return 0;
+    for (int i = 0; i < s_hdf_n; i++) {       /* memoized per (file, material) */
+        hdfold_entry *e = &s_hdf_ent[i];
+        if (e->pixels == repl.pixels && e->tpx == tpx && e->tpy == tpy &&
+            e->clx == clx && e->cly == cly && e->bpp == bpp)
+            return i + 1;
+    }
+    if (s_hdf_n >= OPENPETE_HDFOLD_MAX) return -1;
+
+    /* Shelf-pack the file image into the atlas. */
+    if (repl.w > HDFOLD_ATLAS_DIM || repl.h > HDFOLD_ATLAS_DIM) return -1;
+    /* 1-texel gutter between files: entry sampling clamps half a texel
+     * inside its own rect, so a spacer row/column is enough to keep the
+     * manual-bilinear taps from reading a neighbour. */
+    if (s_hdf_shelf_x + repl.w > HDFOLD_ATLAS_DIM) {
+        s_hdf_shelf_y += s_hdf_shelf_h;
+        s_hdf_shelf_x = s_hdf_shelf_h = 0;
+    }
+    if (s_hdf_shelf_y + repl.h > HDFOLD_ATLAS_DIM) return -1;   /* atlas full */
+    if (s_hdf_pending_n >= (int)(sizeof(s_hdf_pending) / sizeof(s_hdf_pending[0])))
+        return -1;                            /* upload queue full: claim, retry next build */
+    int ax = s_hdf_shelf_x, ay = s_hdf_shelf_y;
+    s_hdf_shelf_x += repl.w + 1;
+    if (repl.h + 1 > s_hdf_shelf_h) s_hdf_shelf_h = repl.h + 1;
+    s_hdf_pending[s_hdf_pending_n++] =
+        (rhi_tex_rect_src){ repl.pixels, ax, ay, repl.w, repl.h };
+
+    /* The file's texel box anchored in page coords (the sub-run rect rule —
+     * invariant across tris resolving the same identity+file). */
+    float pu0 = u0 - (float)(id.box_x - repl.box_x);
+    float pv0 = v0 - (float)(id.box_y - repl.box_y);
+
+    /* Continuous-model fog affine at the deepest authored row, retargeted
+     * per texture (fit) or by the global shift — tp_pack_fog's exact rule. */
+    tp_fog_xform fN;
+    tp_fog_affine(clx, cly, TP_FOG_DELTA_MAX, bpp, &fN);
+    float fp[3], fq[3];
+    int fit = texture_pack_grade_fit(&id, &repl, tpx, tpy, clx, cly, bpp,
+                                     (int)pu0, (int)pv0, fp, fq);
+    float fs[3], fo[3];
+    int shift = fit ? 0 : texture_pack_fog_shift_get(fs, fo);
+
+    hdfold_entry *e = &s_hdf_ent[s_hdf_n];
+    e->pixels = repl.pixels;
+    e->tpx = tpx; e->tpy = tpy; e->clx = clx; e->cly = cly; e->bpp = bpp;
+    float *p = e->payload;
+    p[0] = pu0;  p[1] = pv0;
+    p[2] = (float)repl.box_w; p[3] = (float)repl.box_h;
+    p[4] = (float)ax; p[5] = (float)ay;
+    p[6] = (float)repl.w; p[7] = (float)repl.h;
+    for (int c = 0; c < 3; c++) {
+        p[8 + c]  = fN.a[c];
+        p[12 + c] = fit   ? fp[c] * fN.b[c] + (1.0f - fN.a[c]) * fq[c]
+                  : shift ? fs[c] * fN.b[c] + (1.0f - fN.a[c]) * (fo[c] / 255.0f)
+                  :         fN.b[c];
+    }
+    /* Filter class (the per-file rule hd_flush_pending applies): an exact
+     * integer multiple of its texel box samples NEAREST (bit-identical to
+     * the stock fetch); everything else is LINEAR — the atlas sampler is
+     * NEAREST, so linear entries bilinear-filter manually in the shader. */
+    {
+        int exact = repl.box_w > 0 && repl.box_h > 0 &&
+                    repl.w % repl.box_w == 0 && repl.h % repl.box_h == 0 &&
+                    repl.w / repl.box_w > 0 && repl.h / repl.box_h > 0;
+        p[11] = exact ? 0.0f : 1.0f;
+    }
+    p[15] = 0.0f;
+    memcpy(s_hdf_tab[s_hdf_n], e->payload, sizeof(e->payload));
+    s_hdf_epoch++;
+    return ++s_hdf_n;
+}
+
+const void *openpete_native_hdfold_table(int *count, float lad[2])
+{
+    if (count) *count = s_hdf_n;
+    if (lad) {
+        float ts, tb;
+        if (texture_pack_fog_ladder_get(&ts, &tb)) { lad[0] = ts; lad[1] = tb; }
+        else { lad[0] = 0.0f; lad[1] = 0.0f; }
+    }
+    return s_hdf_tab;
+}
+
+struct rhi_texture *openpete_native_hdfold_atlas(void)
+{
+    return s_hdf_atlas;
+}
+
+int openpete_native_hdfold_pending(void)
+{
+    return s_hdf_pending_n;
+}
+
+uint32_t openpete_native_hdfold_epoch(void)
+{
+    return s_hdf_epoch;
+}
+
+void openpete_native_hdfold_flush(void)
+{
+    if (!s_hdf_pending_n || !s_nr.enabled) return;
+    if (!s_hdf_atlas) {
+        /* NEAREST sampler (the default): exact-multiple files fetch stock-
+         * identical texels; linear-class entries filter in-shader. */
+        s_hdf_atlas = rhi_create_rgba8(s_nr.dev, HDFOLD_ATLAS_DIM, HDFOLD_ATLAS_DIM);
+        if (!s_hdf_atlas) { s_hdf_pending_n = 0; return; }
+    }
+    /* One staging-slot batch per frame (96-rect upload cap); the rest waits
+     * for the next flush. The screenshot compose retries its frame until
+     * this queue drains, so captures never sample a half-filled atlas. */
+    int n = s_hdf_pending_n > 96 ? 96 : s_hdf_pending_n;
+    rhi_update_rgba8_rects(s_nr.dev, s_hdf_atlas, s_hdf_pending, n);
+    s_hdf_pending_n -= n;
+    if (s_hdf_pending_n > 0)
+        memmove(s_hdf_pending, s_hdf_pending + n,
+                (size_t)s_hdf_pending_n * sizeof(s_hdf_pending[0]));
+    else
+        s_hdf_epoch++;                /* drained: fold-claimed sectors retry */
+}
+
 /* allow_override: 0 = stock only; 1 = material overrides via the plain
  * pipeline; 2 = via the stencil-MARK twin (the caller's group marks its
  * opaque coverage for hole-fill, so overridden runs must mark too — else
@@ -8122,6 +8309,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     rhi_gpu_zone_begin(s_nr.dev, "upload");
     upload_synced_textures();
     hd_flush_pending();        /* HD replacement textures queued at draw time */
+    openpete_native_hdfold_flush();
     rhi_gpu_zone_end(s_nr.dev);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_GPU_SYNC, pt_t1 - pt_t0); pt_t0 = pt_t1; }
     if (s_ptrace) { fprintf(stderr, "[ptrace f=%u] B", s_scene_frame); fflush(stderr); }
@@ -8266,6 +8454,7 @@ void openpete_native_render_snapshot_frozen(float cap_wf)
     if (rhi_begin_frame(s_nr.dev)) {
         upload_synced_textures();
         hd_flush_pending();
+        openpete_native_hdfold_flush();
         native_depth_prepass();
         { int kw, kh; rhi_texture_extent(s_nr.shot_frozen, &kw, &kh);
           native_terrain_key_pass(1, kw, kh); }
@@ -8313,6 +8502,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf)
         if (!rhi_begin_frame(s_nr.dev)) { s_render_freeze_wf = prev_wf; return 1; }
         upload_synced_textures();
         hd_flush_pending();
+        openpete_native_hdfold_flush();
         native_depth_prepass();
         /* Black clear + mod draws + SCENE point: live-offscreen parity, same
          * rationale as the 4:3 dump compose (see screenshot_all_impl). */
@@ -8329,7 +8519,8 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf)
         rhi_end_offscreen(s_nr.dev);
         rhi_blit_to_swapchain(s_nr.dev);
         rhi_end_frame(s_nr.dev);
-        if (attempt >= 8 || s_hd_pending_n == 0) break;
+        if (attempt >= 8 || (s_hd_pending_n == 0 &&
+                             openpete_native_hdfold_pending() == 0)) break;
     }
     s_render_freeze_wf = prev_wf;
 
@@ -8488,6 +8679,7 @@ static int native_render_screenshot_all_impl(const char *base)
         if (!rhi_begin_frame(s_nr.dev)) return 1;
         upload_synced_textures();  /* pending VRAM/ref uploads ride this frame (W2.2) */
         hd_flush_pending();        /* HD replacement textures queued at draw time */
+        openpete_native_hdfold_flush();
         native_depth_prepass();    /* shared WORLD-opaque depth for the shadow decal */
         /* BLACK clear — live-offscreen parity. The live present clears black and
          * relies on the scene's own bg-fill quad; clearing to the bg colour here
@@ -8529,7 +8721,8 @@ static int native_render_screenshot_all_impl(const char *base)
          * invisible; cost a "chests don't render" ghost hunt, 2026-07-11).
          * Flush-and-redraw until nothing new is queued: a full HD pack can
          * put hundreds of files in view at once, so one retry isn't enough. */
-        if (attempt >= 8 || s_hd_pending_n == 0) break;
+        if (attempt >= 8 || (s_hd_pending_n == 0 &&
+                             openpete_native_hdfold_pending() == 0)) break;
     }
 
     unsigned char *nat = malloc(frame_px * 4);          /* native, top-down    */

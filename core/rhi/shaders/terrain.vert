@@ -95,6 +95,8 @@ layout(std140, set = 3, binding = 0) uniform TerrainGlobals {
     dvec4 rim_nrm[6];    /* unit view normal; w = outline vn              */
     dvec4 rim_bbox[6];   /* outline UV bbox pulo, puhi, pvlo, pvhi        */
     dvec2 rim_pv[96];    /* outlines in (U,W), 16 slots per plane         */
+    vec4  hd_lad;        /* HD fold: CONT-fog ramp ts, tb; count; enable  */
+    vec4  hd_ent[1664];  /* 416 entries x 4 vec4 (rect/atlas/fogA/fogB)   */
 } g;
 
 /* g.fog.y bits — keep in sync with openpete_terrain_cache.h OPTC_GF_* */
@@ -150,6 +152,8 @@ layout(location = 1)      out vec4  vColor; /* pre-multiplied by q              
 layout(location = 2) flat out uvec2 vMat;   /* x: mat0, y: clx | cly<<16 (post-ladder) */
 layout(location = 3) flat out float vKoff;  /* og OT key (feed koff mirror)         */
 layout(location = 4)      out float vQ;     /* q (frag divides UV/colour by it)     */
+layout(location = 5) flat out uint  vHd;    /* HD-fold: entry id (bits 0-15, 0=none)
+                                             * | ladder-face 1<<16 | fogbias 1<<17  */
 
 /* ngte_mac mirror: camera-space MAC = (M*v)/4096 in DOUBLE, with the terrain
  * walk's axis permutation and per-sector camera deltas:
@@ -552,8 +556,10 @@ void main()
     vec2 uv   = vec2(float(inUV.x), float(inUV.y));
     uint dbg_half = 0u, dbg_delta = 0u;
     int  dbg_t0k  = -99999;   /* tint mode 6: exact ladder key (t0k) probe */
+    bool ladderFace = false;
     if (!lp && !hqv && (gf & GF_CLUTFOG) != 0 && (sf & SF_SECINLOD) != 0u
         && (mat0 & (1u << 23)) != 0u) {
+        ladderFace = true;
         /* per-corner int casts, then sum — the walk's exact quantisation */
         int szsum = int(m0.z * fogscale) + int(m1.z * fogscale)
                   + int(m2.z * fogscale) + int(m3c.z * fogscale);
@@ -572,6 +578,17 @@ void main()
             dbg_delta = uint(delta);
             if (delta > 0) clut = (clut + uint(delta << 6)) & 0xFFFFu;
         }
+    }
+    /* HD-fold entry select: the bake stores one entry id per LOD half in
+     * the clut words' upper 16 bits (0 = no replacement); the drawn half's
+     * id ships to the fragment stage with the CONT-fog flags (ladder faces
+     * fade on the published ramp; fogbias shifts it — ff bit 10). */
+    vHd = 0u;
+    if (g.hd_lad.w != 0.0 && (mat0 & (1u << 23)) != 0u) {
+        uint hid = (dbg_half == 1u ? (inMat.w >> 16) : (inMat.y >> 16)) & 0xFFFFu;
+        if (hid != 0u)
+            vHd = hid | (ladderFace ? 0x10000u : 0u)
+                      | (((ff >> 10) & 1u) << 17);
     }
     /* env UV-scroll: per-tile fractional V offset for THIS build. Flat
      * faces: the LQ dv (both LOD halves share one offset — the game writes

@@ -83,6 +83,12 @@ typedef struct {
     double  rim_nrm[6][4]; /* unit view normal; w = outline vn           */
     double  rim_bbox[6][4];/* outline UV bbox pulo, puhi, pvlo, pvhi     */
     double  rim_pv[96][2]; /* outlines in (U,W), 16 slots per plane      */
+    /* HD texture-replacement fold: the continuous-fog ramp (ts, tb) +
+     * entry count/enable, then the entry table (4 vec4 per entry: page
+     * rect, atlas rect, fogA + filter class, fogB). Snapshotted from
+     * openpete_native_hdfold_table at frame_begin. */
+    float   hd_lad[4];
+    float   hd_entry[OPENPETE_HDFOLD_MAX][16];
 } tc_globals_ubo;
 
 typedef struct {
@@ -91,10 +97,15 @@ typedef struct {
                              * valid only with OPTC_SF_LPGRADE set in o.w   */
 } tc_sector_ubo;
 
-/* Both blocks ride one rhi_ubo sized to the sector block; the globals block
- * (grown by the rim frames) must keep fitting it. */
-_Static_assert(sizeof(tc_globals_ubo) <= sizeof(tc_sector_ubo) * OPTC_SLOTS,
-               "tc_globals_ubo outgrew the shared UBO block size");
+/* Both blocks ride one rhi_ubo with a uniform block size (the larger of the
+ * two); everything must stay inside the 64 KB maxUniformBufferRange every
+ * desktop implementation and llvmpipe provide. */
+#define TC_UBO_BLOCK (sizeof(tc_globals_ubo) > sizeof(tc_sector_ubo) * OPTC_SLOTS \
+                          ? sizeof(tc_globals_ubo)                                \
+                          : sizeof(tc_sector_ubo) * OPTC_SLOTS)
+_Static_assert(sizeof(tc_globals_ubo) <= 65536 &&
+               sizeof(tc_sector_ubo) * OPTC_SLOTS <= 65536,
+               "terrain-cache UBO block exceeds the 64 KB UBO-range floor");
 
 /* One build's complete retained frame state. The feeder STAGES the canonical
  * build's state and it PROMOTES to live one build later — the sub-tick
@@ -128,6 +139,7 @@ static struct {
     rhi_pipeline *pipe_a_world, *pipe_a_world_mark;
     rhi_pipeline *pipe_a_alpha, *pipe_a_add, *pipe_a_sub;
     rhi_pipeline *pipe_a_prepass, *pipe_a_key;
+    rhi_texture  *hd_dummy;           /* 1x1 stand-in for the set-4 atlas     */
     tc_state      staged;             /* canonical build awaiting its present */
     tc_state      live;               /* what presents render                 */
     tc_state      sel;                /* frame_select's snapshot of live: the
@@ -242,6 +254,12 @@ int openpete_tercache_init(rhi_device *dev)
         openpete_tercache_shutdown(dev);
         return 0;
     }
+    /* Set-4 stand-in (init-time: uploads are illegal inside a render pass). */
+    s_tc.hd_dummy = rhi_create_rgba8(dev, 1, 1);
+    if (s_tc.hd_dummy) {
+        const uint32_t px = 0;
+        rhi_update_rgba8(dev, s_tc.hd_dummy, &px);
+    }
     s_tc.ready = 1;
     return 1;
 }
@@ -249,6 +267,7 @@ int openpete_tercache_init(rhi_device *dev)
 void openpete_tercache_shutdown(rhi_device *dev)
 {
     if (!dev) return;
+    if (s_tc.hd_dummy) { rhi_destroy_texture(dev, s_tc.hd_dummy); s_tc.hd_dummy = NULL; }
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
         if (s_tc.arena[a].vb) { rhi_destroy_buffer(dev, s_tc.arena[a].vb); s_tc.arena[a].vb = NULL; }
         if (s_tc.arena[a].pv) { rhi_destroy_buffer(dev, s_tc.arena[a].pv); s_tc.arena[a].pv = NULL; }
@@ -435,9 +454,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
 
     /* lazily create the UBO (needs the device from init) */
     if (!s_tc.ubo) {
-        uint32_t block = sizeof(tc_sector_ubo) * OPTC_SLOTS;   /* 24 KB > globals
-                                    * (within the 64 KB maxUniformBufferRange of
-                                    * every desktop implementation + llvmpipe) */
+        uint32_t block = (uint32_t)TC_UBO_BLOCK;
         s_tc.ubo = rhi_create_ubo(s_tc.dev, block, 2);
         if (!s_tc.ubo) { s_tc.ready = 0; return; }
     }
@@ -474,6 +491,16 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     memcpy(gu->rim_nrm,   g->rim_nrm,   sizeof(gu->rim_nrm));
     memcpy(gu->rim_bbox,  g->rim_bbox,  sizeof(gu->rim_bbox));
     memcpy(gu->rim_pv,    g->rim_pv,    sizeof(gu->rim_pv));
+    {   /* HD-fold entry table + continuous-fog ramp (level-lifetime state,
+         * snapshotted per build like the rest of the globals). */
+        int n = 0; float lad[2];
+        const void *tab = openpete_native_hdfold_table(&n, lad);
+        gu->hd_lad[0] = lad[0]; gu->hd_lad[1] = lad[1];
+        gu->hd_lad[2] = (float)n;
+        gu->hd_lad[3] = n > 0 ? 1.0f : 0.0f;
+        if (n > 0)
+            memcpy(gu->hd_entry, tab, (size_t)n * sizeof(gu->hd_entry[0]));
+    }
 
     /* reset sector flags; origins are rewritten by sector_set */
     for (int i = 0; i < OPTC_SLOTS; i++) T->sec[i].o[3] = 0.0f;
@@ -612,6 +639,13 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
      * as bind_scene_pipe — absent images leave vKoff==0 fragments alone). */
     if (key_hp)   rhi_bind_depth_sampler(s_tc.dev, key_hp, 1);
     if (key_prop) rhi_bind_depth_sampler(s_tc.dev, key_prop, 2);
+    {   /* set 4: the HD-fold atlas. terrain.frag references it statically,
+         * so the init-time 1x1 dummy stands in whenever no fold entry
+         * exists (vHd == 0 fragments never sample it). */
+        rhi_texture *at = openpete_native_hdfold_atlas();
+        if (!at) at = s_tc.hd_dummy;
+        if (at) rhi_bind_texture_set(s_tc.dev, at, 4);
+    }
     rhi_ubo_bind(s_tc.dev, s_tc.ubo, 0, 1);
     switch (which) {
         case OPTC_DRAW_WORLD:
