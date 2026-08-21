@@ -74,10 +74,12 @@ def run_level(exe, level, args, out_dir):
         "--skip-to-level", level, "--freecam-pose", "topdown",
         "--lod", args.lod,
         "--extract-threads", str(args.extract_threads),
-        # An active HD texture pack (a mod can carry one) forces the CPU
-        # walk — openpete_native_tercache_usable() — which would silently
-        # turn a terrain-cache leg into a second baseline. Point --mods-dir
-        # at an empty dir to bench the vanilla pipeline.
+        # An active HD texture pack (a mod can carry one) rides the fold
+        # into the retained cache these days, but it still costs pack
+        # machinery (resolve/intern, atlas uploads) and enabled mods run
+        # their hooks — point --mods-dir at an empty dir to bench the
+        # vanilla pipeline; benching WITH the play dir's enabled mods is
+        # the pack-cost leg, not a baseline.
     ] + (["--terrain-cache", str(args.terrain_cache)]
          if args.terrain_cache is not None else []) \
       + (["--mods-dir", tr(args.mods_dir)] if args.mods_dir else []) \

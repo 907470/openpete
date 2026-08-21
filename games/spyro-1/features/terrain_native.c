@@ -1243,6 +1243,14 @@ typedef struct {
     unsigned fillGen;                        /* openpete_fillpick_generation() at last tagging */
     int originX, originY, originZ;
     int centreX, centreY, centreZ, radius;   /* header bounding sphere (w0/w1) — the .s LP/HP binning inputs */
+    /* Vertex AABB over BOTH tiers' decoded verts (origin-relative decode
+     * units, same frame the walk's per-vertex transform consumes). The
+     * near-claim refinement transforms its 8 corners: view-Z is linear in
+     * xyz, so the corner minimum bounds every vertex — a sector whose
+     * box-min m3 stays at or beyond the claim threshold provably contains
+     * no vertex the sphere test was guarding against. Invalid (vMinX >
+     * vMaxX) when the sector decoded no verts. */
+    int16_t vMinX, vMinY, vMinZ, vMaxX, vMaxY, vMaxZ;
     uint32_t lpColBase, nearBase, farBase, lpFaces, hpFaces;
     tsvert_t* lpV; tsface_t* lpF;
     tsvert_t* hpV; tsface_t* hpF;
@@ -1873,6 +1881,24 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         C->lpg_state = 0;              /* re-decoded sector: re-derive the LP grade */
         C->fillGen = openpete_fillpick_generation();
         tsc_tag_gapfill(cpu, C, sectorPtr, sectorCnt);
+        {   /* Vertex AABB (both tiers) for the near-claim refinement. */
+            int16_t mnx = 32767, mny = 32767, mnz = 32767;
+            int16_t mxx = -32768, mxy = -32768, mxz = -32768;
+            for (int t2 = 0; t2 < 2; t2++) {
+                const tsvert_t* vv = t2 ? C->hpV : C->lpV;
+                int nvv = t2 ? C->nHpV : C->nLpV;
+                for (int k = 0; vv && k < nvv; k++) {
+                    if (vv[k].x < mnx) mnx = vv[k].x;
+                    if (vv[k].x > mxx) mxx = vv[k].x;
+                    if (vv[k].y < mny) mny = vv[k].y;
+                    if (vv[k].y > mxy) mxy = vv[k].y;
+                    if (vv[k].z < mnz) mnz = vv[k].z;
+                    if (vv[k].z > mxz) mxz = vv[k].z;
+                }
+            }
+            C->vMinX = mnx; C->vMinY = mny; C->vMinZ = mnz;
+            C->vMaxX = mxx; C->vMaxY = mxy; C->vMaxZ = mxz;
+        }
         C->polyanim = tsc_sector_polyanim(cpu, s, sectorPtr, sectorCnt);
         if (C->polyanim && C->lpF) {   /* stale-bank guard: see tsc_sector_polyanim */
             for (int f = 0; f < C->nLpF; f++) C->lpF[f].gapfill = 0;
@@ -2780,6 +2806,30 @@ static int tgpu_portal_frames(CPUState* cpu);            /* defined post-feed-st
 static int tgpu_rim_sphere_cand(double oc1, double oc2, double oc3, int radius);
 static void tgpu_rim_globals_fill(openpete_tercache_globals* g);
 static void tgpu_cover_globals_fill(openpete_tercache_globals* g);
+
+/* Near-claim refinement: does the sector's vertex AABB stay wholly at or
+ * beyond the 16.0 view-Z the near claim guards? View-Z is linear in xyz, so
+ * the minimum over the 8 transformed corners bounds every decoded vertex
+ * (the corners transform through the walk's own per-vertex expression). A
+ * clear box means no vertex can enter the near band, clip, or straddle the
+ * eye plane — the identical regime every sphere-passing owned sector
+ * renders in, so the plain chunks are exact by construction. */
+static int tgpu_near_box_clear(const tscache_t* SC, const int M[3][3],
+                               double camx, double camy, double camz) {
+    if (SC->vMinX > SC->vMaxX) return 0;             /* no verts decoded */
+    const double s4 = SC->originX - camx, s5 = camy - SC->originY,
+                 s6 = camz - SC->originZ;
+    const double xs[2] = { (double)SC->vMinX, (double)SC->vMaxX };
+    const double ys[2] = { (double)SC->vMinY, (double)SC->vMaxY };
+    const double zs[2] = { (double)SC->vMinZ, (double)SC->vMaxZ };
+    for (int c = 0; c < 8; c++) {
+        double m1, m2, m3;
+        ngte_mac(M, s5 - ys[(c >> 1) & 1], s6 - zs[(c >> 2) & 1],
+                 xs[c & 1] + s4, &m1, &m2, &m3);
+        if (m3 < 16.0) return 0;
+    }
+    return 1;
+}
 static double s_tgpu_l3 = 1.0;        /* ||M row 2||/4096 (near-claim bound) */
 static int s_otbias_on;               /* tentative: defined (=1) at the feed */
 
@@ -5134,7 +5184,18 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                  * near-clip and near-band HQ semantics. */
                 s_tgpu_own[vi] = 2;
                 s_tgcl_nodraw++;
-            } else if (oc3 - nearBound < 16.0) {
+            } else if (oc3 - nearBound < 16.0 &&
+                       (SC->polyanim || !tgpu_near_box_clear(SC, M, camx, camy, camz))) {
+                /* Sphere-crossing sector: refined by the vertex AABB. The
+                 * sphere bound (centre - l3*(radius+16)) inflates in every
+                 * direction, so ~1/5 of the sectors it flags provably keep
+                 * every VERTEX at or beyond the same 16.0 view-Z the sphere
+                 * test guards — the exact regime every owned sector already
+                 * renders in — and stay on the GPU. Sectors with real
+                 * near-band/clip/straddle vertices (the bulk: the ground the
+                 * camera stands on straddles the eye plane) still claim.
+                 * Poly-anim sectors skip the refinement: their live verts
+                 * ride the anim banks, not the decoded AABB. */
                 claim = 1; s_tgcl_near++;
                 if (oc3 + nearBound < 16.0)
                     s_tgcl_nearb++;   /* census: fully-behind sub-bucket */
