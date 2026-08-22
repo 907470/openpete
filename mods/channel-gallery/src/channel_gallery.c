@@ -64,21 +64,30 @@ static row_t g_rows[] = {
     OP_CHAN_PLAYER, -1, -1, {0.30f, 0.60f, 1.00f}, 0, -1 },
   { "Sky",             "The cyclorama dome behind everything.",
     OP_CHAN_SKY, -1, -1, {0.70f, 0.40f, 1.00f}, 0, -1 },
-  { "Flame (ribbon)",  "KNOWN GAP: textured + blended, and the textured "
-                       "override path is still opaque-scoped, so this row "
-                       "cannot light yet. Breathe fire and watch the caps "
-                       "row instead.",
+  { "Flame (ribbon)",  "The ADDITIVE plume. The tint reads yellow rather than "
+                       "orange because the material inherits the group's "
+                       "additive blend — orange ADDED over green grass.",
     OP_CHAN_FLAME, 0, -1, {1.00f, 0.30f, 0.00f}, 0, -1 },
   { "Flame (caps)",    "The OPAQUE base caps of the same effect.",
     OP_CHAN_FLAME, 1, -1, {0.10f, 1.00f, 1.00f}, 0, -1 },
-  { "Shadows (moby)",  "KNOWN GAP: textured + subtractive — same "
-                       "opaque-scoped limit as the flame ribbon. The player "
-                       "shadow row (untextured) does light.",
+  /* Not a blend-plumbing gap: moby shadows draw through the depth-aware
+   * decal pipe, whose FRAGMENT stage owns per-pixel wall/steep-face
+   * occlusion — the one stage a material replaces. Reshading them needs a
+   * decal material profile (engine-supplied visibility the mod's frag
+   * applies), not a wider override path. Confirmed by probe: with
+   * OPENPETE_MOBY_SHADOW_DECAL=0 the fallback pipe takes the override and
+   * this row lights, which is exactly why it stays refused — a mod's reach
+   * must not depend on whether the host can sample depth. */
+  { "Shadows (moby)",  "KNOWN GAP: drawn by the depth-aware decal pipe, whose "
+                       "fragment stage owns occlusion — reshading it needs a "
+                       "decal material profile, not a wider override path. "
+                       "The player shadow row (untextured) does light.",
     OP_CHAN_SHADOW, 0, -1, {0.90f, 0.90f, 0.20f}, 0, -1 },
   { "Shadows (player)","Spyro's own silhouette.",
     OP_CHAN_SHADOW, 1, -1, {0.20f, 1.00f, 0.60f}, 0, -1 },
-  { "Particle billboards", "KNOWN GAP: textured + blended, same limit. "
-                           "The untextured particle rows below do light.",
+  { "Particle billboards", "The textured sparkle quads. Toggle it against the "
+                           "glow row to see the ident key split ONE channel: "
+                           "the quads recolour, the glow ring stays stock.",
     OP_CHAN_PARTICLE, PART(PART_QUAD), -1, {1.00f, 0.50f, 0.50f}, 0, -1 },
   { "Particle glows",  "Glow rings around collectables.",
     OP_CHAN_PARTICLE, PART(PART_GLOW), -1, {0.50f, 1.00f, 0.50f}, 0, -1 },

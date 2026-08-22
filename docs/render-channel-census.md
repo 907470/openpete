@@ -83,6 +83,28 @@ channel does **not** reach portal previews. The cyclorama feeder draws
 the level's own sky; portal previews are a different feeder drawing a
 *different level's* sky, and the two are only related conceptually.
 
+### Reshadeable does not follow from taggable
+
+A tri carrying a provenance tag is not automatically reshadeable. A
+material replaces the FRAGMENT stage, so a channel is reachable only if
+its draw path's fragment stage is doing nothing but colour math. Three
+outcomes exist today:
+
+| Path | Reshadeable | Why |
+|---|---|---|
+| opaque + the alpha/additive/subtract-world groups | yes | psx_scene.vert/.frag; the override inherits the group's blend, depth-write and painter slot |
+| moby shadows (`scene_tex_sub_decal_pipe`) | **no** | `shadow_decal_tex.frag` OWNS per-pixel occlusion (samples the WORLD-opaque pre-pass depth at set 0, rejects walls/steep faces). Replacing that stage deletes the occlusion, and its vertex stage + push constants are a different contract entirely |
+| portal sky mask (colour-write off) | n/a | writes no colour; deliberately untagged, since a material could not change anything |
+
+The shadow row is the one that matters, because it looks like a
+plumbing gap and is not. Probe: with `OPENPETE_MOBY_SHADOW_DECAL=0` the
+fallback (plain subtract + hardware bias) DOES take the override and the
+shadows recolour. That is precisely why the override stays refused on
+both paths — accepting it only on the fallback would make a mod's reach
+depend on whether the host can sample depth. Reshading shadows needs a
+**decal material profile**: a second stock-stage pair whose engine half
+supplies the visibility verdict for the mod's fragment to apply.
+
 ## Retention identity
 
 What key would survive this channel's geometry being banked across

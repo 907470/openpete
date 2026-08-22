@@ -4749,10 +4749,22 @@ void openpete_native_hdfold_flush(void)
 /* allow_override: 0 = stock only; 1 = material overrides via the plain
  * pipeline; 2 = via the stencil-MARK twin (the caller's group marks its
  * opaque coverage for hole-fill, so overridden runs must mark too — else
- * the LP fill paints over them). */
+ * the LP fill paints over them).
+ *
+ * blend_class is the caller group's PSX ABR+1 class (0 opaque, 1 average,
+ * 2 additive, 3 subtract). Reshade-only: an override inherits it rather
+ * than choosing, so a material changes colour math and never how the run
+ * composites. Blended groups are painter-ordered — the override swaps the
+ * pipeline for a contiguous run in place and draws it in the same slot, so
+ * submission order survives. */
 static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                           const scene_tri_t* scene, rhi_pipeline* self,
-                          rhi_pipeline* hd_pipe, int allow_override) {
+                          rhi_pipeline* hd_pipe, int allow_override,
+                          int blend_class) {
+    static const rhi_blend_mode k_ov_blend[4] = {
+        RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT
+    };
+    if (blend_class < 0 || blend_class > 3) blend_class = 0;
     const int hd_defer_ok = hd_pipe == s_nr.hd_cutout_pipe ||
                             hd_pipe == s_nr.hd_cutout_mark_pipe;
     const int ov_mark = (allow_override == 2);
@@ -4803,17 +4815,25 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
         if (allow_override && tag_split_on() && s0->tag) {
             openpete_mod_material_gpu_t mg;
             if (openpete_mods_material_resolve(s0->tag, &mg) >= 0) {
-                /* Textured overrides are scoped to plain OPAQUE runs, so the
-                 * opaque (blend class 0) pipeline is the only one this path
-                 * can want. */
+                /* One pipeline per (material, blend class): the MARK twin is
+                 * opaque-only (hole-fill coverage), so a blended run never
+                 * wants it. */
                 void** ov_slot = ov_mark ? mg.pipeline_mark_slot
-                                         : mg.pipeline_slot[0];
+                                         : mg.pipeline_slot[blend_class];
                 if (*ov_slot == NULL) {
                     rhi_pipeline_desc md = {
                         .vert_spv = "psx_scene.vert.spv",
                         .frag_spv = "psx_scene.frag.spv",
-                        .blend = RHI_BLEND_NONE,
+                        .blend = k_ov_blend[blend_class],
                         .depth_test = true,
+                        /* Blended groups z-test against opaque but never
+                         * occlude each other. No .depth_bias: binding a bias
+                         * pipeline invalidates the dynamic bias state, so an
+                         * override would have to re-set a value it doesn't
+                         * have — and the one override-eligible subtract group
+                         * (SUBTRACT-WORLD) draws at zero bias anyway. The
+                         * biased group, moby shadows, takes no overrides. */
+                        .depth_write_off = blend_class != 0,
                         .stencil = ov_mark ? RHI_STENCIL_MARK
                                            : RHI_STENCIL_NONE,
                         .mod_pipeline = true,
@@ -5080,7 +5100,7 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
         rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         draw_tex_runs(hud_tex_first, hud_tex_count, tx_start, scene, s_nr.scene_tex_hud_pipe,
-                      s_nr.hd_tex_pipe, 0);  /* bucket 6, submission order + run-coalesce; HD = alpha, depth-off */
+                      s_nr.hd_tex_pipe, 0, 0);  /* bucket 6, submission order + run-coalesce; HD = alpha, depth-off */
     }
     {   /* OPENPETE_HUD6_ZPIPE=1 (A/B): draw the glyph bucket through the opaque
          * depth-tested pipe after a depth clear — isolates gouraud_hud_pipe state. */
@@ -6402,7 +6422,7 @@ static bool draw_native_scene(bool full_extent)
                      * is depth only, and a mod pipe would bring its own (and
                      * possibly different) discard rule to the coverage. */
                     draw_tex_runs(txg_first[9], txg_count[9], tx_start, scene,
-                                  tpipe, hpipe, pass);
+                                  tpipe, hpipe, pass, 0);
                 }
             }
         }
@@ -6545,14 +6565,22 @@ static bool draw_native_scene(bool full_extent)
                   : (g->blend == 1) ? s_nr.hd_scene_blend_pipe
                   : (g->blend == 2) ? s_nr.hd_scene_add_pipe
                   : NULL;
-                /* Material overrides in the opaque groups only (blend groups
-                 * keep stock — scheduling contract). A group drawing through
-                 * the stencil-MARK variant (hole-fill coverage) overrides via
-                 * the material's MARK twin so overridden pixels still mark. */
-                int mat_ok = (gi == 0 || gi == 2 || gi == 3)
-                                 ? (g->tex == s_nr.scene_tex_mark_pipe ? 2 : 1)
-                                 : 0;
-                draw_tex_runs(txg_first[gi], txg_count[gi], tx_start, scene, g->tex, hd, mat_ok);
+                /* A group drawing through the stencil-MARK variant (hole-fill
+                 * coverage) overrides via the material's MARK twin so
+                 * overridden pixels still mark. The alpha/additive groups take
+                 * plain overrides at their own blend class.
+                 *
+                 * gi==1 (moby shadows) stays stock: its preferred path is the
+                 * depth-aware decal below, a different shader contract
+                 * (shadow_decal_tex, set 0 = pre-pass depth) whose FRAGMENT
+                 * stage owns occlusion — the very stage a material replaces.
+                 * Allowing the override only on the non-decal fallback would
+                 * make a mod's reach depend on the host's depth-sampling
+                 * support, so neither path takes it. */
+                int mat_ok = (gi == 1) ? 0
+                           : (g->tex == s_nr.scene_tex_mark_pipe ? 2 : 1);
+                draw_tex_runs(txg_first[gi], txg_count[gi], tx_start, scene, g->tex, hd,
+                              mat_ok, g->blend);
             }
         }
         /* ACTOR_FRONT (rescue actors) at the normal actor layer — only when NO
@@ -6581,7 +6609,7 @@ static bool draw_native_scene(bool full_extent)
                 rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 draw_tex_runs(txg_first[9], txg_count[9], tx_start, scene,
-                              atex, acut, holefill_on ? 2 : 1);
+                              atex, acut, holefill_on ? 2 : 1, 0);
             }
         }
         /* Terrain sector-mesh GPU cache: the retained WORLD terrain (unclaimed
@@ -6668,7 +6696,7 @@ static bool draw_native_scene(bool full_extent)
                  * caller's dynamic depth-bias state, which an HD rebind
                  * would invalidate. */
                 draw_tex_runs(txg_first[8], txg_count[8], tx_start, scene,
-                              s_nr.scene_tex_sub_pipe, NULL, 0);
+                              s_nr.scene_tex_sub_pipe, NULL, 1, 3);
             }
             /* Terrain-cache ABR-2 terrain faces: same SUBTRACT-WORLD slot. */
             if (openpete_tercache_frame_open()) {
@@ -6803,7 +6831,7 @@ static bool draw_native_scene(bool full_extent)
                 rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 draw_tex_runs(txg_first[7], txg_count[7], tx_start, scene, s_nr.scene_tex_pipe,
-                              s_nr.hd_cutout_pipe, 0);
+                              s_nr.hd_cutout_pipe, 0, 0);
             }
         }
         /* GS_LevelTransition flyby ONLY (hud_under): draw the flat HUD layer here —
