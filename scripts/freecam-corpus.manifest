@@ -40,6 +40,13 @@ cliff_town | pos=(59710, 127007, 17599) yaw=-3825 pitch=148
 dark_hollow | pos=(86434, 27639, 17265) yaw=3048 pitch=243
 dream_weavers | pos=(78707, 18103, 11657) yaw=291 pitch=86
 gnorc_cove | pos=(36863, 117108, 30800) yaw=1448 pitch=343
+# gnorc_cove aerial vista, LP-dominated. The .s's per-half LP NCLIP backface
+# test drops a scattered ~4.7k px of faces here (OPENPETE_TERRAIN_CULL=1 draws
+# them and lands FURTHER from og), and its verdict is a 2D cross over
+# GTE-projected corners, so which faces drop shifts under small yaw changes.
+# This pins the mirror at one angle, where og and the native path agree
+# structurally and differ only on edge pixels.
+gnorc_cove | pos=(40035, 93020, 48414) yaw=394 pitch=475
 haunted_towers | pos=(100231, 109612, 61079) yaw=-1046 pitch=992
 haunted_towers | pos=(100234, 109750, 63909) yaw=-1046 pitch=992
 haunted_towers | pos=(106236, 143423, 35847) yaw=-1180 pitch=227
