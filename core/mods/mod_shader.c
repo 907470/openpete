@@ -917,7 +917,7 @@ typedef struct {
      * average, 2 additive, 3 subtract). A material reshades inside
      * whatever group it lands in and must not change how that group
      * composites, so the same shader needs a pipeline per blend. */
-    void* pipeline[4];
+    void* pipeline[5];   /* [4] = opaque, depth-write off (portal sky) */
     void* pipeline_mark;   /* stencil-MARK twin (hole-fill WORLD/ACTOR groups) */
     int   user_enabled;    /* material_enable — the mod's own on/off */
     /* Static uniform block (material_set_params). Declarative materials have
@@ -1319,7 +1319,7 @@ static int material_fill_gpu(int best, int uniform_slot,
         ? openpete_mods_shader_spv(m->frag, &out->frag_words, NULL) : NULL;
     if (m->vert < 0) out->vert_words = 0;
     if (m->frag < 0) out->frag_words = 0;
-    for (int b = 0; b < 4; b++) out->pipeline_slot[b] = &m->pipeline[b];
+    for (int b = 0; b < 5; b++) out->pipeline_slot[b] = &m->pipeline[b];
     out->pipeline_mark_slot = &m->pipeline_mark;
     out->owner = m->owner;
     /* A per-instance slot always wins; otherwise fall back to this
@@ -1406,7 +1406,7 @@ int openpete_mods_material_resolve(uint32_t tag,
 void openpete_mods_material_remove_owner(const char* mod_id) {
     for (int i = 0; i < s_mat_count; i++) {
         if (!s_mats[i].live || strcmp(s_mats[i].owner, mod_id) != 0) continue;
-        for (int b = 0; b < 4; b++)
+        for (int b = 0; b < 5; b++)
             if (s_mats[i].pipeline[b] &&
                 s_mats[i].pipeline[b] != OPENPETE_POSTFX_PIPE_FAILED &&
                 s_retired_n < MOD_POSTFX_MAX)
@@ -1415,7 +1415,7 @@ void openpete_mods_material_remove_owner(const char* mod_id) {
             s_mats[i].pipeline_mark != OPENPETE_POSTFX_PIPE_FAILED &&
             s_retired_n < MOD_POSTFX_MAX)
             s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_mark;
-        for (int b = 0; b < 4; b++) s_mats[i].pipeline[b] = NULL;
+        for (int b = 0; b < 5; b++) s_mats[i].pipeline[b] = NULL;
         s_mats[i].pipeline_mark = NULL;
         s_mats[i].live = 0;
     }
@@ -1425,7 +1425,7 @@ void openpete_mods_material_remove_owner(const char* mod_id) {
 void openpete_mods_material_retire_all(void) {
     for (int i = 0; i < s_mat_count; i++) {
         if (!s_mats[i].live) continue;
-        for (int b = 0; b < 4; b++)
+        for (int b = 0; b < 5; b++)
             if (s_mats[i].pipeline[b] &&
                 s_mats[i].pipeline[b] != OPENPETE_POSTFX_PIPE_FAILED &&
                 s_retired_n < MOD_POSTFX_MAX)
@@ -1434,7 +1434,7 @@ void openpete_mods_material_retire_all(void) {
             s_mats[i].pipeline_mark != OPENPETE_POSTFX_PIPE_FAILED &&
             s_retired_n < MOD_POSTFX_MAX)
             s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_mark;
-        for (int b = 0; b < 4; b++) s_mats[i].pipeline[b] = NULL;
+        for (int b = 0; b < 5; b++) s_mats[i].pipeline[b] = NULL;
         s_mats[i].pipeline_mark = NULL;
     }
 }

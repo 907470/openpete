@@ -6031,6 +6031,15 @@ static bool draw_native_scene(bool full_extent)
     enum { MAX_PORTAL_RUNS = 32 };
     struct portal_run pmask[MAX_PORTAL_RUNS], psky[MAX_PORTAL_RUNS];
     int pmask_n = 0, psky_n = 0;
+    /* Material segments inside a sky run. The run itself must stay
+     * one-per-portal — masks pair by group and groups sort by depth — so an
+     * override splits the DRAW of a run, not the run. Segments are contiguous
+     * and in submission order (flat base, then dome), which is what lets a
+     * selector take the close dome and leave the far chip stock. */
+    struct portal_seg { int run; int first, count; uint32_t tag; };
+    enum { MAX_PORTAL_SEGS = 96 };
+    struct portal_seg pseg[MAX_PORTAL_SEGS];
+    int pseg_n = 0;
     for (int cat = 0; cat < 2; cat++) {   /* pass 0 = masks, pass 1 = sky colours */
         const int want = cat ? OPENPETE_SCENE_PORTAL_CYCLORAMA : OPENPETE_SCENE_PORTAL_MASK;
         struct portal_run *runs = cat ? psky : pmask;
@@ -6045,6 +6054,16 @@ static bool draw_native_scene(bool full_extent)
                 runs[cur].first = n; runs[cur].count = 0;
                 runs[cur].depth = scene[t].v[0].z;
             }
+            /* Sky pass only: open a segment whenever the resolve-relevant tag
+             * changes (or the run did), so one portal's flat base and dome can
+             * take different materials. */
+            if (cat && tag_split_on()) {
+                uint32_t mt = ut_mask_tag(scene[t].tag);
+                int fresh = (pseg_n == 0) || pseg[pseg_n - 1].run != cur ||
+                            pseg[pseg_n - 1].tag != mt;
+                if (fresh && pseg_n < MAX_PORTAL_SEGS)
+                    pseg[pseg_n++] = (struct portal_seg){ cur, n, 0, mt };
+            }
             for (int k = 0; k < 3; k++) {
                 float cx, cy;
                 scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
@@ -6055,6 +6074,7 @@ static bool draw_native_scene(bool full_extent)
                 o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
             }
             runs[cur].count += 3;
+            if (cat && pseg_n && pseg[pseg_n - 1].run == cur) pseg[pseg_n - 1].count += 3;
             n += 3;
         }
     }
@@ -6711,8 +6731,63 @@ static bool draw_native_scene(bool full_extent)
                     rhi_set_depth_bias(s_nr.dev, c, cl, s);
                 }
                 rhi_draw(s_nr.dev, (uint32_t)mc, (uint32_t)mf);
-                bind_scene_pipe(s_nr.gouraud_noz_pipe);
-                rhi_draw(s_nr.dev, (uint32_t)sk->count, (uint32_t)sk->first);
+                /* Sky colours: material segments where a selector claimed
+                 * them, stock elsewhere. Portal sky is opaque but depth-write
+                 * OFF (it must not occlude what shows through the aperture),
+                 * so overrides build that variant rather than the plain
+                 * opaque one. */
+                int drawn = 0;
+                if (tag_split_on()) {
+                    for (int sg = 0; sg < pseg_n; sg++) {
+                        if (pseg[sg].run != order[oi] || pseg[sg].count <= 0) continue;
+                        rhi_pipeline* pipe = NULL;
+                        openpete_mod_material_gpu_t mg;
+                        if (pseg[sg].tag &&
+                            openpete_mods_material_resolve(pseg[sg].tag, &mg) >= 0) {
+                            void** slot = mg.pipeline_slot[4];
+                            if (*slot == NULL) {
+                                rhi_pipeline_desc md = {
+                                    .vert_spv = "psx_scene.vert.spv",
+                                    .frag_spv = "psx_scene.frag.spv",
+                                    .blend = RHI_BLEND_NONE,
+                                    .depth_test = true,
+                                    .depth_write_off = true,
+                                    .stencil = RHI_STENCIL_NONE,
+                                    .mod_pipeline = true,
+                                    .push_const_size = sizeof(psx_material_hd),
+                                };
+                                rhi_pipeline* np = rhi_create_pipeline_spv(
+                                    s_nr.dev, &md, mg.vert_spv, mg.vert_words,
+                                    mg.frag_spv, mg.frag_words);
+                                *slot = np ? (void*)np : PFX_PIPE_FAILED;
+                            }
+                            if (*slot != PFX_PIPE_FAILED) {
+                                pipe = (rhi_pipeline*)*slot;
+                                bind_scene_pipe(pipe);
+                                rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
+                                if (s_nr.mat_pack_dummy)
+                                    rhi_bind_texture_set(s_nr.dev, s_nr.mat_pack_dummy, 1);
+                                if (s_mat_ubo)
+                                    rhi_ubo_bind(s_nr.dev, s_mat_ubo, 0,
+                                                 mg.uniform_slot > 0 ? 1 + mg.uniform_slot : 0);
+                                psx_material_hd zm;
+                                memset(&zm, 0, sizeof zm);
+                                rhi_push_constants(s_nr.dev, &zm, sizeof zm);
+                            }
+                        }
+                        if (!pipe) bind_scene_pipe(s_nr.gouraud_noz_pipe);
+                        rhi_draw(s_nr.dev, (uint32_t)pseg[sg].count,
+                                 (uint32_t)pseg[sg].first);
+                        drawn += pseg[sg].count;
+                    }
+                }
+                if (drawn < sk->count) {
+                    /* No segments (nothing armed), or the segment table
+                     * overflowed — draw the run stock. */
+                    bind_scene_pipe(s_nr.gouraud_noz_pipe);
+                    rhi_draw(s_nr.dev, (uint32_t)(drawn ? sk->count - drawn : sk->count),
+                             (uint32_t)(drawn ? sk->first + drawn : sk->first));
+                }
             }
             /* PORTAL_GUARD: near-band terrain protection redraw — the PSX
              * mask-bit mirror (see the category doc in the header). Drawn

@@ -663,7 +663,7 @@ typedef struct {
      * 3 subtract): a material reshades within whatever group it lands in and
      * inherits that group's compositing, so one shader needs one pipeline per
      * blend it is drawn under. */
-    void** pipeline_slot[4];
+    void** pipeline_slot[5];   /* [4] = opaque + no depth write (portal sky) */
     void** pipeline_mark_slot;  /* stencil-MARK twin (hole-fill groups) */
     const char* owner;
     int   uniform_slot;

@@ -13,6 +13,9 @@
  * Reading the result:
  *   - A row marked KNOWN GAP cannot light in this build. That is the map
  *     working, not a bug.
+ *   - A row marked UNVERIFIED is wired but has never been observed to paint,
+ *     because no capture yet puts its geometry visibly on screen. Treat it as
+ *     a claim not yet checked, not as a working row.
  *   - An unmarked row that lights nothing just has no geometry on screen:
  *     breathe fire for the flame rows, find a gem for the sparkle rows,
  *     rescue a dragon for the star.
@@ -90,13 +93,21 @@ static row_t g_rows[] = {
    * approach (far colour chip, fogged dome, close gouraud dome); a material
    * wants all three or it pops as the player walks up to the portal. */
   { "Portal preview (all)",
-    "KNOWN GAP: the portal feeder is not tagged yet. Shows ANOTHER level's "
-    "sky, so the Sky row never reaches it.",
+    "The destination sky seen through a portal — ANOTHER level's sky, which "
+    "is why the Sky row never reaches it. All three approach rungs at once.",
     OP_CHAN_PORTAL, -1, -1, {0.60f, 0.20f, 1.00f}, 0, -1 },
   { "Portal preview (close dome)",
-    "KNOWN GAP: same. Would take only the full gouraud dome you see up "
-    "close, leaving the far colour chip stock.",
+    "Only the full gouraud dome seen up close. Toggle this against the far "
+    "chip row to watch one rung of the ladder change and the other stay.",
     OP_CHAN_PORTAL, OP_PORTAL_DOME, -1, {0.30f, 0.10f, 0.90f}, 0, -1 },
+  { "Portal preview (far chip)",
+    "Only the flat colour chip a distant portal shows. Lights nothing when "
+    "every portal in view is already close enough to draw its dome.",
+    OP_CHAN_PORTAL, OP_PORTAL_FLAT, -1, {1.00f, 0.60f, 0.20f}, 0, -1 },
+  { "Portal preview (fogged dome)",
+    "Only the medium-distance dome, DPCS-fogged toward the level's fog "
+    "colour — the cross-dissolve rung between the chip and the close dome.",
+    OP_CHAN_PORTAL, OP_PORTAL_BLENDED, -1, {0.20f, 0.80f, 0.90f}, 0, -1 },
 };
 #define NROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
 

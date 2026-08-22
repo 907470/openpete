@@ -756,6 +756,18 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
 /* Tracer/beam streaks. The .s drains its source point arrays every
  * frame, so nothing survives to identify a streak. */
 #define OPENPETE_TAG_TRACER(slot)         OPENPETE_TAG_PATH(8u, 0u, (slot))
+/* Portal destination-sky previews. Identity is the preview KIND, because
+ * the game draws a portal three ways across the approach and they are
+ * genuinely different art: a flat colour chip far out, a DPCS-fogged dome
+ * at medium range, the full gouraud dome up close. Anything that restyles
+ * one rung and not the others pops as the player walks up.
+ *
+ * The owning portal is NOT in the tag — it rides the per-tri GROUP id
+ * (the destination skybox pointer), which the portal pass already uses. */
+#define OPENPETE_TAG_PORTAL_FLAT     0u
+#define OPENPETE_TAG_PORTAL_DOME     1u
+#define OPENPETE_TAG_PORTAL_BLENDED  2u
+#define OPENPETE_TAG_PORTAL(kind, slot)   OPENPETE_TAG_PATH(9u, (kind), (slot))
 
 void openpete_native_scene_set_tag(uint32_t tag);
 /* Arm/disarm the tag as a batch-split key (material-selector registry). */

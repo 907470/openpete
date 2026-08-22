@@ -399,6 +399,9 @@ typedef struct {
     uint32_t flat_rgb;      /* resolved raw flat colour (a0 is stale on replay)   */
     uint32_t skybox;        /* skybox ptr for the dome walk (is_dome only)        */
     int      is_dome;       /* leaf emitted a gradient dome (kind != FLAT)        */
+    int      kind;          /* PORTAL_FLAT/DOME/BLENDED — is_dome collapses the
+                             * last two, but a material selector keys on the
+                             * full trichotomy, so keep it for replay           */
     uint32_t ot_b;          /* captured D_PORTAL_DEPTH (the .s OT bucket)          */
     uint32_t fog_rgb;       /* blended-medium DPCS fog target (0 if none)         */
     double   fog_t;         /* blended-medium fog lerp coeff (0 if none)          */
@@ -873,6 +876,9 @@ static float plane_depth_back(double a, double b, double c, double x, double y) 
  * replay), set by each feed path immediately before it emits. File-local
  * ambient only — never crosses a feeder boundary. */
 static int s_portal_group = 0;
+/* Preview kind of the leaf currently feeding — the provenance tag's identity.
+ * Sticky like s_portal_group: set where that is set, consumed at emit. */
+static int s_portal_kind = OPENPETE_TAG_PORTAL_FLAT;
 /* Set while the current feed has marked a stencil aperture from the OPENING
  * POLYGON (emit_portal_aperture): the sky tris then emit as colours only, and
  * the opening — not a depth race against the arch stone — bounds coverage.
@@ -1019,9 +1025,11 @@ static int portal_scene_emit_enabled(void) { return render_path_enabled(RP_PORTA
 
 static void portal_add_sky_tri(const openpete_scene_tri* t) {
     if (!portal_scene_emit_enabled()) return;
+    openpete_native_scene_set_tag(OPENPETE_TAG_PORTAL(s_portal_kind, 0));
     if (!s_aperture_ok)   /* no opening polygon this feed: footprint IS the mask */
         openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_MASK, 0, s_portal_group);
     openpete_native_scene_add_tri_grouped(t, OPENPETE_SCENE_PORTAL_CYCLORAMA, 0, s_portal_group);
+    openpete_native_scene_set_tag(0);
 }
 
 static int band_dbg(void);
@@ -1472,6 +1480,7 @@ static void outline_offset(const ppt* poly, int pn, const double* d, float* ex, 
 static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
                                uint32_t rgba, int channel) {
     if (!portal_scene_emit_enabled()) return;
+    openpete_native_scene_set_tag(OPENPETE_TAG_PORTAL(s_portal_kind, 0));
     float rx[16], ry[16];
     double outward[16];
     for (int i = 0; i < pn; i++) outward[i] = -dpx[i];
@@ -1515,6 +1524,7 @@ static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
             openpete_native_scene_add_tri_grouped(&t, channel, 0, s_portal_group);
         }
     }
+    openpete_native_scene_set_tag(0);
 }
 
 static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly, int pn,
@@ -2029,6 +2039,10 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
     if (feed) {
         openpete_native_scene_begin_frame(openpete_frame);  /* append; cyclorama/world already began it */
         int is_dome = (kind != PORTAL_FLAT);
+        /* Stamp the preview kind for the emits this leaf is about to make. */
+        s_portal_kind = (kind == PORTAL_DOME)    ? OPENPETE_TAG_PORTAL_DOME
+                      : (kind == PORTAL_BLENDED) ? OPENPETE_TAG_PORTAL_BLENDED
+                                                 : OPENPETE_TAG_PORTAL_FLAT;
         /* TEMP: derived-vs-GTE dome matrix validation */
         { static int md=-1; if(md<0){const char*e=getenv("OPENPETE_PORTAL_MAT_DBG");md=(e&&*e&&*e!='0');}
           if (md && is_dome) { int M[3][3], D[3][3]; read_gte_rotmatrix(cpu, M);
@@ -2174,6 +2188,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
                                        ? flat_rgb_override
                                        : portal_flat_raw_rgb(cpu, a0, is_dome);
                 c->is_dome       = (is_dome && is_skybox_a0) || forced_dome;
+                c->kind          = s_portal_kind;
                 c->skybox        = (is_dome && is_skybox_a0) ? a0 : forced_sb;
                 c->ot_b          = cpu->read_word(D_PORTAL_DEPTH);
                 c->fog_rgb       = fog;
@@ -2339,6 +2354,8 @@ static void feed_revealed_portals(CPUState* cpu) {
             c->flat_a0       = 0;
             c->flat_rgb      = rgb;
             c->is_dome       = rev_dome;
+            c->kind          = rev_dome ? OPENPETE_TAG_PORTAL_DOME
+                                        : OPENPETE_TAG_PORTAL_FLAT;
             c->skybox        = rev_dome ? skybox : 0;
             c->ot_b          = 0;      /* revealed off-4:3: no live leaf -> outline mirror */
             c->fog_rgb       = rev_fog;
