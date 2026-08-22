@@ -38,6 +38,7 @@
 #include "spyro_interp_regions.h"   /* spyro_interp_moby_key — HUD-pool slot-stable identity */
 #include "render_paths.h"  /* --render-paths isolation */
 #include "openpete_ui_moby.h"  /* HUD/UI moby classifier (overlay-on-top tagging) */
+#include "openpete_mods.h"     /* per-instance material slot resolve (S8b) */
 
 #include <math.h>
 #include <stdint.h>

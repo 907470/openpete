@@ -590,6 +590,11 @@ static void flame_feed_scaffold(CPUState* cpu) {
         int mode = (t->tpage >> 7) & 3, bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
         int clx = (t->clut & 0x3F) * 16, cly = (t->clut >> 6) & 0x1FF;
         int blend = t->textured ? 2 : 0;   /* GT4 strip = additive; G3 cap = opaque */
+        /* Ribbon and caps differ in blend, so they must be separately
+         * addressable: a material that reshades the additive ribbon has no
+         * business repainting the opaque base. */
+        openpete_native_scene_set_tag(OPENPETE_TAG_FLAME(
+            t->textured ? OPENPETE_TAG_FLAME_RIBBON : OPENPETE_TAG_FLAME_CAPS, 0));
         int splits = (t->nv == 4) ? 2 : 1;
         for (int s = 0; s < splits; s++) {
             int a, b, c;
@@ -607,6 +612,7 @@ static void flame_feed_scaffold(CPUState* cpu) {
             openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
         }
     }
+    openpete_native_scene_set_tag(0);
 }
 
 /* ---- native walk feed (3b.1 endpoint: float geometry from gamestate) -------
@@ -619,6 +625,7 @@ static void flame_feed_native(CPUState* cpu) {
     if (s_fquad_n <= 0 && s_fcap_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
 
+    openpete_native_scene_set_tag(OPENPETE_TAG_FLAME(OPENPETE_TAG_FLAME_RIBBON, 0));
     for (int i = 0; i < s_fquad_n; i++) {
         fquad* q = &s_fquad[i];
         /* GT4 -> two tris: (v0,v1,v2) + (v1,v3,v2) */
@@ -637,6 +644,7 @@ static void flame_feed_native(CPUState* cpu) {
             openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
         }
     }
+    openpete_native_scene_set_tag(OPENPETE_TAG_FLAME(OPENPETE_TAG_FLAME_CAPS, 0));
     for (int i = 0; i < s_fcap_n; i++) {
         fcap* c = &s_fcap[i];
         openpete_scene_tri st = {0};
@@ -650,6 +658,7 @@ static void flame_feed_native(CPUState* cpu) {
         st.blend = 0;                       /* G3 caps are opaque (code 0x30, ABE clear) */
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
     }
+    openpete_native_scene_set_tag(0);
 }
 
 /* ---- gating --------------------------------------------------------------- */

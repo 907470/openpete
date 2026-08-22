@@ -121,6 +121,7 @@ static void tracer_build_and_feed(CPUState* cpu) {
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
     int is_gnasty = (cpu->read_word(G_LEVELID) == 63u);   /* level 63: thin + green */
     int wshift    = is_gnasty ? 2 : 0;
+    openpete_native_scene_set_tag(OPENPETE_TAG_TRACER(0));
 
     openpete_native_scene_begin_frame(openpete_frame);
 
@@ -181,6 +182,7 @@ static void tracer_build_and_feed(CPUState* cpu) {
             pc0x=c0x; pc0y=c0y; pc1x=c1x; pc1y=c1y; pvz=vz; pcol=col; havePrev=1;
         }
     }
+    openpete_native_scene_set_tag(0);
 }
 
 /* Dispatch hook: snapshot the tracer gamestate (before the .s drains it), run

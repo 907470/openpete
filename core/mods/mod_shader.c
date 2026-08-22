@@ -933,6 +933,17 @@ typedef struct {
 static mat_slot_t s_mat_slots[MOD_MATERIAL_SLOTS];
 static int s_mat_slot_n = 1;    /* next free; 0 is the reserved sentinel */
 
+/* Slot ids are minted from ONE global counter but stamped into per-path
+ * tag fields of differing width, so the table can never outgrow the
+ * NARROWEST field that carries an id. Terrain's is the narrowest at 9
+ * bits, and its decode masks (tag >> 16) & 0x1FF: an id of 512 would
+ * come back as 0, which reads as "defer to declarative resolve" — the
+ * wrong material, silently, with no crash and no log. 0x1FF itself is
+ * the declined->stock sentinel, so the last usable id is 510. Raising
+ * MOD_MATERIAL_SLOTS means widening that field first. */
+typedef char nr_assert_mat_slots_fit_narrowest_tag_field[
+    (MOD_MATERIAL_SLOTS <= OPENPETE_MATERIAL_TERRAIN_STOCK) ? 1 : -1];
+
 /* native_render arms the batcher tag-split while any selector lives;
  * s_mat_has_instance gates the moby walk's per-instance resolve.
  *

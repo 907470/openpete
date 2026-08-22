@@ -529,6 +529,7 @@ static void shadow_moby_feed_native(CPUState* cpu) {
     shadow_moby_build(cpu);
     if (s_mosh_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
+    openpete_native_scene_set_tag(OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_MOBY, 0));
     for (int i = 0; i < s_mosh_n; i++) {
         moshtri* m = &s_mosh[i];
         openpete_scene_tri st = {0};
@@ -543,6 +544,7 @@ static void shadow_moby_feed_native(CPUState* cpu) {
         st.clut_x = m->clx; st.clut_y = m->cly; st.bpp = m->bpp; st.blend = 3; /* ABR mode 2 (subtract) */
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_SHADOW, 0);
     }
+    openpete_native_scene_set_tag(0);
 }
 
 /* A/B: native moby-shadow tris vs the captured FT3 prims (.s int16 SXY oracle).
@@ -736,6 +738,7 @@ static void shadow_spyro_feed_native(CPUState* cpu) {
     shadow_spyro_build(cpu);
     if (s_sptri_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
+    openpete_native_scene_set_tag(OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_PLAYER, 0));
     for (int i = 0; i < s_sptri_n; i++) {
         sptri* c = &s_sptri[i];
         openpete_scene_tri st = {0};
@@ -750,6 +753,7 @@ static void shadow_spyro_feed_native(CPUState* cpu) {
         st.blend = 3;                                  /* untextured subtract (ABR mode 2) */
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_SHADOW, 0);
     }
+    openpete_native_scene_set_tag(0);
 }
 
 /* A/B: native Spyro-shadow fan vs the captured G3 prims (.s int16 SXY oracle).
@@ -795,6 +799,7 @@ static void shadow_moby_feed_scaffold(CPUState* cpu) {
     if (s_gte_n <= 0) return;
     float depth = scaffold_depth();
     openpete_native_scene_begin_frame(openpete_frame);
+    openpete_native_scene_set_tag(OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_MOBY, 0));
     for (int p = 0; p < s_gte_n; p++) {
         prim_t* t = &s_gte[p];
         if (t->nv < 3 || !t->textured) continue;
@@ -811,6 +816,7 @@ static void shadow_moby_feed_scaffold(CPUState* cpu) {
         st.clut_x = clx; st.clut_y = cly; st.bpp = bpp; st.blend = 3; /* ABR mode 2 (subtract) */
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_SHADOW, 0);
     }
+    openpete_native_scene_set_tag(0);
 }
 
 /* Spyro shadow: each captured G3 (code 0x32) is an untextured gouraud tri, ABR
@@ -822,6 +828,7 @@ static void shadow_spyro_feed_scaffold(CPUState* cpu) {
     if (s_gte_n <= 0) return;
     float depth = scaffold_depth();
     openpete_native_scene_begin_frame(openpete_frame);
+    openpete_native_scene_set_tag(OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_PLAYER, 0));
     for (int p = 0; p < s_gte_n; p++) {
         prim_t* t = &s_gte[p];
         if (t->nv < 3 || t->textured) continue;       /* skip the E1 mini-packet */
@@ -835,6 +842,7 @@ static void shadow_spyro_feed_scaffold(CPUState* cpu) {
         st.blend = 3;                                  /* untextured subtract (ABR mode 2) */
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_SHADOW, 0);
     }
+    openpete_native_scene_set_tag(0);
 }
 
 /* ---- gating --------------------------------------------------------------- */

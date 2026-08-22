@@ -956,6 +956,8 @@ static void particle_feed_native(CPUState* cpu) {
     /* sel-1 gouraud streak lines -> thin (1px-perp) gouraud quads */
     for (int i = 0; i < s_pline_n; i++) {
         pline* l = &s_pline[i];
+        openpete_native_scene_set_tag(
+            OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_LINE, l->sel, 0));
         float dx = l->bx - l->ax, dy = l->by - l->ay;
         float len = sqrtf(dx*dx + dy*dy);
         float px = 0.5f, py = 0.0f;
@@ -978,6 +980,7 @@ static void particle_feed_native(CPUState* cpu) {
             openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
         }
     }
+    openpete_native_scene_set_tag(0);
     if (s_fq_n <= 0) return;
     /* OPENPETE_PARTICLE_MATDBG=<frame>: one line per emitted quad — sel/blend/
      * rgb/texture — to attribute a missing-or-wrong-blend particle (e.g. the
@@ -1002,6 +1005,8 @@ static void particle_feed_native(CPUState* cpu) {
       } }
     for (int i = 0; i < s_fq_n; i++) {
         fquad* q = &s_fq[i];
+        openpete_native_scene_set_tag(
+            OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_QUAD, q->sel, 0));
         /* (A depth pull for the subtractive smoke was tried here and
          * FALSIFIED 2026-07-10: the burst point is the occluder's NEAREST
          * surface from the camera, so true depth never blocked the puffs —
@@ -1023,6 +1028,7 @@ static void particle_feed_native(CPUState* cpu) {
             openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
         }
     }
+    openpete_native_scene_set_tag(0);
 }
 
 /* ---- glow rings (func_800580F4) — native float walk + feed + A/B ----------- *
@@ -1212,6 +1218,8 @@ static void glow_feed_native(CPUState* cpu) {
     glow_build(cpu);
     if (s_gtri_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
+    openpete_native_scene_set_tag(
+        OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_GLOW, 0, 0));
     for (int i = 0; i < s_gtri_n; i++) {
         gtri* t = &s_gtri[i];
         /* cz is full-world; the behind-moby push is an ordering BIAS, applied
@@ -1230,6 +1238,7 @@ static void glow_feed_native(CPUState* cpu) {
         st.blend = 2;                                 /* ABR mode 1 (additive) */
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
     }
+    openpete_native_scene_set_tag(0);
 }
 
 /* A/B the native glow fan vs the captured G3-STP prims (code 0x32). Per-vertex
@@ -1524,6 +1533,8 @@ static void sparkle_feed_native(CPUState* cpu) {
     sparkle_build(cpu);
     if (s_sline_n <= 0 && s_sstar_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
+    openpete_native_scene_set_tag(
+        OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_FLARE, 0, 0));
     for (int i = 0; i < s_sstar_n; i++) {
         sstar* st = &s_sstar[i];
         float depth = openpete_native_depth_from_viewz(
@@ -1566,8 +1577,11 @@ static void sparkle_feed_native(CPUState* cpu) {
             openpete_native_scene_add_tri(&t, OPENPETE_SCENE_WORLD, 0);
         }
     }
+    openpete_native_scene_set_tag(0);
     if (s_sline_n <= 0) return;
     int split[2][3] = { {0,1,2}, {1,3,2} };
+    openpete_native_scene_set_tag(
+        OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_SPARK, 0, 0));
     for (int i = 0; i < s_sline_n; i++) {
         sline* l = &s_sline[i];
         float dx = l->bx - l->ax, dy = l->by - l->ay;
@@ -1592,6 +1606,7 @@ static void sparkle_feed_native(CPUState* cpu) {
             openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
         }
     }
+    openpete_native_scene_set_tag(0);
 }
 
 /* A/B native sparkle lines vs the captured LINE_F prims (code 0x40): per-vertex
@@ -1718,6 +1733,8 @@ static void dragonstar_feed_native(CPUState* cpu) {
      * crosses nearer ground/Spyro — the additive pipe is depth_write_off, so this
      * is an on-top additive overlay, mirroring the PSX HUD-OT order. */
     float depth = 0.0f;
+    openpete_native_scene_set_tag(
+        OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_STAR, 0, 0));
     for (int i = 0; i < s_dstri_n; i++) {
         gtri* t = &s_dstri[i];
         openpete_scene_tri st = {0};
@@ -1731,6 +1748,7 @@ static void dragonstar_feed_native(CPUState* cpu) {
         st.blend = 2;                                  /* ABR mode 1 (additive) */
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
     }
+    openpete_native_scene_set_tag(0);
 }
 
 /* A/B the native star fan vs the captured F3-STP prims (code 0x22): per-vertex

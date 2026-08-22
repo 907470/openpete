@@ -452,6 +452,11 @@ static void push_scene(CPUState* cpu) {
     uint32_t bg = cpu->read_word(G_CYCLORAMA + 0x10) & 0xFFFFFF;
     openpete_native_scene_set_bg(bg | 0xFF000000u);
     if (!render_path_enabled(RP_CYCLORAMA)) return;  /* bg only; dome not selected */
+    /* Whole-dome identity: the feeder walks a flat tri list with no
+     * region or band structure, so the tag names the channel and nothing
+     * finer. Anything per-region has to derive a key from the vertex run
+     * first. */
+    openpete_native_scene_set_tag(OPENPETE_TAG_SKY(0));
     for (int i = 0; i < s_native_n; i++) {
         openpete_scene_tri t = {0};
         for (int k = 0; k < 3; k++) {
@@ -470,6 +475,7 @@ static void push_scene(CPUState* cpu) {
          * layer must be allowed to repaint. */
         openpete_native_scene_add_tri(&t, OPENPETE_SCENE_SKY, 0);
     }
+    openpete_native_scene_set_tag(0);
 }
 
 /* Camera-matrix args from the last real render (cyc_extract reads the matrices

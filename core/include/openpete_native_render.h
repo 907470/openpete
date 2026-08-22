@@ -696,6 +696,67 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
 #define OPENPETE_TAG_TERRAIN_UNTEX(lp, env, sec, slot) \
     (OPENPETE_TAG_TERRAIN(lp, env, sec) | 0x02000000u | \
      (((uint32_t)(slot) & 0x1FFu) << 16))
+
+/* ── The remaining feeder paths ───────────────────────────────────────
+ * Every path below copies the MOBY layout exactly — [31:28] path,
+ * [27:16] material slot (12 bits), [15:0] source identity (16 bits) —
+ * which fills the word with no spare bits. Copy it for any new feeder
+ * rather than inventing a payload: one shared shape keeps the decode
+ * and the slot-width reasoning uniform across channels.
+ *
+ * The identity half is whatever the feeder actually HAS at emit time,
+ * which varies sharply by path. Where a feeder has none, the field is
+ * 0 and the tag identifies the channel only — that is a real limit,
+ * not a placeholder to fill in later: a per-element selector cannot be
+ * built on a feeder that never knew which element it was drawing.
+ * `docs/render-channel-census.md` records the per-feeder evidence. */
+#define OPENPETE_TAG_PATH(p, ident, slot) \
+    (((uint32_t)(p) & 0xFu) << 28 | (((uint32_t)(slot) & 0xFFFu) << 16) | \
+     ((uint32_t)(ident) & 0xFFFFu))
+
+/* Player (Spyro) — drawn by r_pete.s, NOT the moby pool walk, so no
+ * moby-class selector can ever reach him. The emitted tri carries no
+ * sub-model marker (the walk keeps per-vertex indices, not a segment
+ * id), so identity is 0 = the whole player; splitting head/body/wing
+ * would mean threading the segment through the walk first. */
+#define OPENPETE_TAG_PLAYER(slot)         OPENPETE_TAG_PATH(3u, 0u, (slot))
+/* Flame breath. Identity distinguishes the ADDITIVE ribbon from the
+ * OPAQUE G3 caps — one feeder, two blend modes, so a material that
+ * reshades the ribbon must be able to leave the caps alone. */
+#define OPENPETE_TAG_FLAME_RIBBON  0u
+#define OPENPETE_TAG_FLAME_CAPS    1u
+#define OPENPETE_TAG_FLAME(part, slot)    OPENPETE_TAG_PATH(4u, (part), (slot))
+/* Particles. The feeder covers six distinct effects and only two of them
+ * carry the game's own `sel` class — glows, flares, sparkle lines and the
+ * dragon star are not in that space at all. So identity is a pair:
+ * [15:8] a feeder-local KIND naming the effect, [7:0] the game's `sel`
+ * where one exists (0 otherwise).
+ *
+ * Both halves CLASSIFY without IDENTIFYING: the pool stores no slot or
+ * pointer and emit order is pool-walk order. Enough for "all smoke
+ * puffs", never enough for "this puff" — which is also why the channel
+ * cannot be geometry-cached. */
+#define OPENPETE_TAG_PART_QUAD    0u   /* FT4 billboards (sel-classified) */
+#define OPENPETE_TAG_PART_LINE    1u   /* streak lines (sel-classified) */
+#define OPENPETE_TAG_PART_GLOW    2u   /* glow rings */
+#define OPENPETE_TAG_PART_FLARE   3u   /* sparkle flares */
+#define OPENPETE_TAG_PART_SPARK   4u   /* sparkle lines */
+#define OPENPETE_TAG_PART_STAR    5u   /* dragon-rescue star fan */
+#define OPENPETE_TAG_PARTICLE(kind, sel, slot) \
+    OPENPETE_TAG_PATH(5u, (((uint32_t)(kind) & 0xFFu) << 8) | \
+                          ((uint32_t)(sel) & 0xFFu), (slot))
+/* Sky / cyclorama dome. No per-tri identity exists (the feeder carries a
+ * loop index only), so the identity field is 0 = the whole dome. */
+#define OPENPETE_TAG_SKY(slot)            OPENPETE_TAG_PATH(6u, 0u, (slot))
+/* Drop shadows. Identity is the caster KIND, not the caster: the moby
+ * pointer is read while building but never reaches the tri. */
+#define OPENPETE_TAG_SHADOW_MOBY   0u
+#define OPENPETE_TAG_SHADOW_PLAYER 1u
+#define OPENPETE_TAG_SHADOW(kind, slot)   OPENPETE_TAG_PATH(7u, (kind), (slot))
+/* Tracer/beam streaks. The .s drains its source point arrays every
+ * frame, so nothing survives to identify a streak. */
+#define OPENPETE_TAG_TRACER(slot)         OPENPETE_TAG_PATH(8u, 0u, (slot))
+
 void openpete_native_scene_set_tag(uint32_t tag);
 /* Arm/disarm the tag as a batch-split key (material-selector registry). */
 void openpete_native_set_tag_split(int on);

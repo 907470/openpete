@@ -635,8 +635,16 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].fog_delta = s_cur_fog_delta;  /* sticky (set_fog_delta) */
         if (s_cur_tag && tag_tint_on()) {
             /* Coverage instrument: hash the tag to a stable tint and modulate
-             * the vertex colours — "which source produced this pixel". */
+             * the vertex colours — "which source produced this pixel".
+             * The tint bits are read out of the LOW 23 bits, so the hash has to
+             * avalanche: a bare Knuth multiply leaves them zero for any tag
+             * whose payload is zero (a whole-channel tag like 0x60000000 is
+             * 3<<29, and 2^29*odd mod 2^32 keeps only the top bits), which
+             * collapsed every payload-less channel to one identical tint. The
+             * finalizer mixes the path nibble down into the readout bits so
+             * distinct channels stay distinguishable. */
             uint32_t hsh = s_cur_tag * 2654435761u;
+            hsh ^= hsh >> 15; hsh *= 2246822519u; hsh ^= hsh >> 13;
             uint32_t tr = 128u + (hsh & 0x7Fu), tg = 128u + ((hsh >> 8) & 0x7Fu),
                      tb = 128u + ((hsh >> 16) & 0x7Fu);
             for (int k = 0; k < 3; k++) {
