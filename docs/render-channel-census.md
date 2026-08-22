@@ -43,7 +43,7 @@ All paths under `games/spyro-1/features/`.
 | `moby_native.c` | ACTOR / HUD3D / HUD / ACTOR_FRONT (routed at :3233-3236) | **YES** — `TAG_MOBY_SLOT` :3334, cleared :3338 | both | both | **STABLE** — guest record ptr, `m_Class`, packed face key | faceblock decode cache; Tier-2 speck hold banked per canonical epoch |
 | `terrain_native.c` | WORLD / WORLD_FILL (:6756-6757); PORTAL_GUARD (:6774, env-gated, default off) | **YES** — `TAG_TERRAIN*` :6692-6699, cleared :6758 | both | both | **STABLE** — sector, face, texid, tier, env | sector decode cache; retained GPU sector-mesh cache; sub-tick lerp banks |
 | `spyro_native.c` | PLAYER (:1440, :1558) | no | both | both | singleton (`G_SPYRO`); no per-face key | pose capture/replay |
-| `portal_native.c` | PORTAL_CYCLORAMA, PORTAL_MASK (via `add_tri_grouped`) | no | 0 | no | **STABLE per group** — destination skybox guest ptr (:1096) | sub-tick capture-and-replay |
+| `portal_native.c` | PORTAL_CYCLORAMA, PORTAL_MASK (via `add_tri_grouped`) | no | 0 | no | **STABLE per group** — destination skybox guest ptr (:1096); plus a per-leaf KIND (see below) | sub-tick capture-and-replay |
 | `cyclorama_native.c` | SKY (:471) | no | 0 | no | loop index only | canonical-drew replay gate |
 | `flame_native.c` | WORLD (:637 ribbon, :651 caps) | no | **2 ribbon / 0 caps** | ribbon yes, caps no | singleton | none |
 | `particle_native.c` | WORLD (six sites) | no | 0/2/3, data-driven | quads yes, rest no | **UNSTABLE** — `sel` class 0..6 only; no pool slot or pointer | snapshot + liveness gate |
@@ -60,6 +60,28 @@ to the separate overlay-glyph channel, not a scene category),
 `levelwarp_native.c`, `audio_volume_native.c`, `mod_level_ops.c`,
 `mod_moby_ops.c`, `native_gte.c`. No `add_tri` callers exist outside
 `games/spyro-1/features/`.
+
+### The portal preview is a three-rung LOD ladder
+
+A portal shows the destination level's sky, and the game renders it three
+different ways across the approach (`portal_native.c:2004-2008`):
+
+| Kind | Leaf | What it draws |
+|---|---|---|
+| `PORTAL_FLAT` (0) | `func_8004FEA0` | a flat colour quad — the far preview, and the close backstop behind the dome |
+| `PORTAL_BLENDED` (2) | `func_80050240` | the dome with DPCS fog toward `D_800757D4` — the medium-distance cross-dissolve |
+| `PORTAL_DOME` (1) | `func_8004F4BC` | the full gouraud dome, unfogged — the close-up |
+
+The leaf records `is_dome = (kind != PORTAL_FLAT)`, so the kind is in hand
+at emit and would make a natural selector key: "restyle the close-up
+portal sky" and "restyle the far colour chip" are different asks, and a
+mod that reshades one and not the others will otherwise see its effect
+pop as the player walks toward the portal.
+
+Worth stating plainly because it is easy to miss: a material on the SKY
+channel does **not** reach portal previews. The cyclorama feeder draws
+the level's own sky; portal previews are a different feeder drawing a
+*different level's* sky, and the two are only related conceptually.
 
 ## Retention identity
 

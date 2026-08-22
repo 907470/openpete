@@ -7,6 +7,14 @@
 #
 # Display-only: materials reshade what the renderer already drew and cannot
 # move, reorder or re-composite anything, so the simulation is untouched.
+#
+# KEEP THIS CURRENT. The rows are claims about the engine: one that lights
+# says "selectable", one that stays dark says "not yet". Anything that
+# changes what is selectable or routable updates this mod in the same
+# change — a new channel or key gets a row, a newly-reachable draw path
+# gets its row re-verified. Rows that cannot light yet STAY, labelled as
+# known gaps; deleting them to look complete throws away the information
+# that makes the gallery worth having.
 
 [mod]
 id      = "channel-gallery"

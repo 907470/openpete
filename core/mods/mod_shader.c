@@ -1006,7 +1006,8 @@ int openpete_mods_material_terrain_claim(int texid, int env, int lp) {
         if ((m->sel.flags & OP_SEL_ENV_ANIM) && !env) continue;
         if ((m->sel.flags & OP_SEL_HP_TIER) && lp) continue;
         if ((m->sel.flags & OP_SEL_LP_TIER) && !lp) continue;
-        if (((m->sel.flags & OP_SEL_UNTEXTURED) != 0) != (untex != 0)) continue;
+        if ((m->sel.flags & OP_SEL_TEXTURED) && untex) continue;
+        if ((m->sel.flags & OP_SEL_UNTEXTURED) && !untex) continue;
         return 1;
     }
     return 0;
@@ -1068,7 +1069,7 @@ int openpete_mods_material_register(openpete_mod_t* self,
         return -1;
     }
     if (sel->channel != -1 &&
-        (sel->channel < OP_CHAN_MOBY || sel->channel > OP_CHAN_TRACER)) {
+        (sel->channel < OP_CHAN_MOBY || sel->channel > OP_CHAN_PORTAL)) {
         OPL_ERROR_F("mods", "%s: material: unknown channel %d", id, sel->channel);
         return -1;
     }
@@ -1389,9 +1390,11 @@ int openpete_mods_material_resolve(uint32_t tag,
         if ((m->sel.flags & OP_SEL_ENV_ANIM) && !env) continue;
         if ((m->sel.flags & OP_SEL_HP_TIER) && lp) continue;
         if ((m->sel.flags & OP_SEL_LP_TIER) && !lp) continue;
-        /* Untextured refinement is two-way: flagged selectors never match
-         * textured runs, unflagged ones never match the untextured band. */
-        if (((m->sel.flags & OP_SEL_UNTEXTURED) != 0) != (untex != 0)) continue;
+        /* Texturedness NARROWS: setting neither member selects both, so an
+         * unqualified terrain selector reaches the gouraud faces (the LP
+         * tier and the beyond-LOD band) as well as the textured ones. */
+        if ((m->sel.flags & OP_SEL_TEXTURED) && untex) continue;
+        if ((m->sel.flags & OP_SEL_UNTEXTURED) && !untex) continue;
         if (best < 0 ||
             m->load_index > s_mats[best].load_index)  /* later = higher prio */
             best = i;

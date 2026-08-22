@@ -135,21 +135,40 @@ enum {
     OP_CHAN_SKY      = 6,
     OP_CHAN_SHADOW   = 7,
     OP_CHAN_TRACER   = 8,
+    OP_CHAN_PORTAL   = 9,   /* destination-sky previews inside a portal */
+};
+/* Portal preview kinds — the `ident` key for OP_CHAN_PORTAL. The game
+ * draws a portal three ways across the approach, so a material that takes
+ * only one of them POPS as the player walks up; -1 (all three) is almost
+ * always what a portal mod means. */
+enum {
+    OP_PORTAL_FLAT    = 0,  /* far colour chip / close backstop */
+    OP_PORTAL_DOME    = 1,  /* full gouraud dome, close up      */
+    OP_PORTAL_BLENDED = 2,  /* fogged dome, medium cross-dissolve */
 };
 /* Retained: `path` used 0-based values before channels existed. */
 enum { OP_RP_MOBY = 0, OP_RP_TERRAIN = 1 };
+/* Refinements. Each pair is a NARROWING: setting neither member selects
+ * both, which is what an unqualified "all terrain" has to mean. (The
+ * textured/untextured pair used to be a two-way filter where unflagged
+ * meant textured-only — so the plainest possible terrain selector
+ * silently skipped every gouraud face, which is the LP tier and the
+ * beyond-LOD band. Matching NARROWER than the author asked is as much a
+ * bug as matching wider.) */
 enum {
-    OP_SEL_ENV_ANIM   = 1u << 0,
-    OP_SEL_HP_TIER    = 1u << 1,
-    OP_SEL_LP_TIER    = 1u << 2,
-    OP_SEL_UNTEXTURED = 1u << 3,
+    OP_SEL_ENV_ANIM   = 1u << 0,  /* env-animated faces only */
+    OP_SEL_HP_TIER    = 1u << 1,  /* high-poly tier only  } neither = both */
+    OP_SEL_LP_TIER    = 1u << 2,  /* low-poly tier only   }               */
+    OP_SEL_UNTEXTURED = 1u << 3,  /* gouraud faces only   } neither = both */
+    OP_SEL_TEXTURED   = 1u << 4,  /* textured faces only  }               */
 };
 /* Every flag the engine understands. A selector carrying a bit outside
  * this mask is REFUSED rather than silently matching wider than the mod
  * author asked for — `struct_size` alone cannot catch a new flag bit,
  * because adding one never changes sizeof. */
 #define OP_SEL_FLAGS_KNOWN (OP_SEL_ENV_ANIM | OP_SEL_HP_TIER | \
-                            OP_SEL_LP_TIER  | OP_SEL_UNTEXTURED)
+                            OP_SEL_LP_TIER  | OP_SEL_UNTEXTURED | \
+                            OP_SEL_TEXTURED)
 
 typedef struct openpete_mod_material_selector {
     /* sizeof(*this) at the mod's compile time; the engine refuses sizes it

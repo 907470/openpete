@@ -5,10 +5,17 @@
  * off, so the geometry it claims lights up in its own colour. Nothing here
  * is clever; the mod exists so the SELECTOR is the visible variable.
  *
+ * KEEP THIS CURRENT: the rows are claims about the engine, so anything that
+ * changes what is selectable updates this file in the same change. Rows that
+ * cannot light yet stay, marked KNOWN GAP — they are the frontier, and
+ * deleting them to look complete is how the gallery stops being useful.
+ *
  * Reading the result:
- *   - A row that lights nothing either has no geometry on screen (breathe
- *     fire for the flame rows, find a gem for the sparkle rows) or is a
- *     channel this build cannot route yet.
+ *   - A row marked KNOWN GAP cannot light in this build. That is the map
+ *     working, not a bug.
+ *   - An unmarked row that lights nothing just has no geometry on screen:
+ *     breathe fire for the flame rows, find a gem for the sparkle rows,
+ *     rescue a dragon for the star.
  *   - Two rows claiming the same pixels means the selectors overlap; the
  *     later registration wins, which is the documented priority.
  *   - Blended rows tint rather than replace: an additive draw forced to a
@@ -54,15 +61,21 @@ static row_t g_rows[] = {
     OP_CHAN_PLAYER, -1, -1, {0.30f, 0.60f, 1.00f}, 0, -1 },
   { "Sky",             "The cyclorama dome behind everything.",
     OP_CHAN_SKY, -1, -1, {0.70f, 0.40f, 1.00f}, 0, -1 },
-  { "Flame (ribbon)",  "The additive breath ribbon only — breathe fire.",
+  { "Flame (ribbon)",  "KNOWN GAP: textured + blended, and the textured "
+                       "override path is still opaque-scoped, so this row "
+                       "cannot light yet. Breathe fire and watch the caps "
+                       "row instead.",
     OP_CHAN_FLAME, 0, -1, {1.00f, 0.30f, 0.00f}, 0, -1 },
   { "Flame (caps)",    "The OPAQUE base caps of the same effect.",
     OP_CHAN_FLAME, 1, -1, {0.10f, 1.00f, 1.00f}, 0, -1 },
-  { "Shadows (moby)",  "Drop shadows under objects.",
+  { "Shadows (moby)",  "KNOWN GAP: textured + subtractive — same "
+                       "opaque-scoped limit as the flame ribbon. The player "
+                       "shadow row (untextured) does light.",
     OP_CHAN_SHADOW, 0, -1, {0.90f, 0.90f, 0.20f}, 0, -1 },
   { "Shadows (player)","Spyro's own silhouette.",
     OP_CHAN_SHADOW, 1, -1, {0.20f, 1.00f, 0.60f}, 0, -1 },
-  { "Particle billboards", "Smoke puffs and other textured quads.",
+  { "Particle billboards", "KNOWN GAP: textured + blended, same limit. "
+                           "The untextured particle rows below do light.",
     OP_CHAN_PARTICLE, PART(PART_QUAD), -1, {1.00f, 0.50f, 0.50f}, 0, -1 },
   { "Particle glows",  "Glow rings around collectables.",
     OP_CHAN_PARTICLE, PART(PART_GLOW), -1, {0.50f, 1.00f, 0.50f}, 0, -1 },
@@ -72,6 +85,18 @@ static row_t g_rows[] = {
     OP_CHAN_PARTICLE, PART(PART_STAR), -1, {0.40f, 0.90f, 1.00f}, 0, -1 },
   { "Tracers",         "Beam streaks (Gnasty's zaps).",
     OP_CHAN_TRACER, -1, -1, {1.00f, 0.10f, 0.10f}, 0, -1 },
+  /* A portal shows the DESTINATION level's sky — a different feeder from the
+   * cyclorama, so the Sky row never reaches it. Drawn three ways across the
+   * approach (far colour chip, fogged dome, close gouraud dome); a material
+   * wants all three or it pops as the player walks up to the portal. */
+  { "Portal preview (all)",
+    "KNOWN GAP: the portal feeder is not tagged yet. Shows ANOTHER level's "
+    "sky, so the Sky row never reaches it.",
+    OP_CHAN_PORTAL, -1, -1, {0.60f, 0.20f, 1.00f}, 0, -1 },
+  { "Portal preview (close dome)",
+    "KNOWN GAP: same. Would take only the full gouraud dome you see up "
+    "close, leaving the far colour chip stock.",
+    OP_CHAN_PORTAL, OP_PORTAL_DOME, -1, {0.30f, 0.10f, 0.90f}, 0, -1 },
 };
 #define NROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
 
