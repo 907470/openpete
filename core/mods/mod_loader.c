@@ -1190,6 +1190,16 @@ static int api_texpack_fog_shift(openpete_mod_t* self, const float scale_rgb[3],
     return 0;
 }
 
+/* pillar 10: materials. The mod-facing form takes a frag shader only —
+ * vertex-stage overrides stay engine-internal, so a material can never
+ * move geometry, only reshade it. */
+static int api_material_register(openpete_mod_t* self,
+                                 const openpete_mod_material_selector_t* sel,
+                                 int shader) {
+    if (!sel) return -1;
+    return openpete_mods_material_register(self, sel, -1, shader, NULL);
+}
+
 static const openpete_mod_api_t s_api = {
     .api_version   = OPENPETE_MOD_API_VERSION,
     /* pillar 1: the override chain */
@@ -1232,6 +1242,10 @@ static const openpete_mod_api_t s_api = {
     /* pillar 9: game data + texture packs (api 2) */
     .read_level_data   = api_read_level_data,
     .texpack_fog_shift = api_texpack_fog_shift,
+    /* pillar 10: materials */
+    .material_register   = api_material_register,
+    .material_enable     = openpete_mods_material_enable,
+    .material_set_params = openpete_mods_material_set_params,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

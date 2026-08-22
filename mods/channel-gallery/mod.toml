@@ -1,0 +1,36 @@
+# channel-gallery — a material selector per render channel, toggled live.
+#
+# Every row registers the SAME highlight shader with a DIFFERENT selector, so
+# what you see when you tick a row is exactly what that selector claims. It is
+# the quickest way to answer "can I shade only X?" for some X, and the quickest
+# way to find out that X is not separately addressable.
+#
+# Display-only: materials reshade what the renderer already drew and cannot
+# move, reorder or re-composite anything, so the simulation is untouched.
+
+[mod]
+id      = "channel-gallery"
+name    = "Channel Gallery"
+version = "0.1.0"
+api     = 3            # pillar 10: materials
+state    = "none"      # GPU-only; nothing to save
+runahead = "pure"      # no tick hooks
+sim_neutral = true
+
+[[config]]
+key = "gallery.strength"
+type = "float"
+default = 0.65
+min = 0.0
+max = 1.0
+label = "Highlight strength"
+group = "Gallery"
+help = "0 leaves the stock look untouched, 1 replaces it with the flat highlight colour. The overlay slider changes it live."
+
+[[config]]
+key = "gallery.rows"
+type = "string"
+default = ""
+label = "Rows lit at load"
+group = "Gallery"
+help = "Comma-separated row numbers (0-based, in overlay order), or \"all\". Lets the gallery be driven without the dev overlay. Empty = every row starts off."

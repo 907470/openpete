@@ -4319,7 +4319,16 @@ static int ut_tag_resolves(uint32_t tag) {
  * twin for the hole-fill WORLD/ACTOR groups so overridden coverage still
  * masks the LP fill. A span that fails to resolve or build draws with the
  * stock pipe — never invisible. */
-static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark) {
+static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
+                              int blend_class) {
+    /* Reshade-only: a material replaces the group's COLOUR MATH, never how
+     * the group composites, so the pipeline it builds inherits this group's
+     * blend. Anything else would let a mod silently reorder or re-composite
+     * geometry the painter order depends on. */
+    static const rhi_blend_mode k_blend[4] = {
+        RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT
+    };
+    if (blend_class < 0 || blend_class > 3) blend_class = 0;
     int bound = 0;
     for (int si = 0; si < s_utmat_n; si++) {
         if (s_utmat[si].gi != gi || s_utmat[si].count <= 0) continue;
@@ -4327,12 +4336,16 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark) {
         rhi_pipeline* pipe = NULL;
         openpete_mod_material_gpu_t mg;
         if (s_utmat[si].tag && openpete_mods_material_resolve(s_utmat[si].tag, &mg) >= 0) {
-            void** slot = want_mark ? mg.pipeline_mark_slot : mg.pipeline_slot;
+            void** slot = want_mark ? mg.pipeline_mark_slot
+                                    : mg.pipeline_slot[blend_class];
             if (*slot == NULL) {
                 rhi_pipeline_desc md = {
                     .vert_spv = "psx_scene.vert.spv",
                     .frag_spv = "psx_scene.frag.spv",
-                    .blend = RHI_BLEND_NONE,
+                    .blend = k_blend[blend_class],
+                    /* Blended groups are painter-ordered and depth-write off;
+                     * inherit that too rather than punching the depth buffer. */
+                    .depth_write_off = blend_class != 0,
                     .depth_test = true,
                     .stencil = want_mark ? RHI_STENCIL_MARK : RHI_STENCIL_NONE,
                     .mod_pipeline = true,
@@ -4790,8 +4803,11 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
         if (allow_override && tag_split_on() && s0->tag) {
             openpete_mod_material_gpu_t mg;
             if (openpete_mods_material_resolve(s0->tag, &mg) >= 0) {
+                /* Textured overrides are scoped to plain OPAQUE runs, so the
+                 * opaque (blend class 0) pipeline is the only one this path
+                 * can want. */
                 void** ov_slot = ov_mark ? mg.pipeline_mark_slot
-                                         : mg.pipeline_slot;
+                                         : mg.pipeline_slot[0];
                 if (*ov_slot == NULL) {
                     rhi_pipeline_desc md = {
                         .vert_spv = "psx_scene.vert.spv",
@@ -5238,11 +5254,14 @@ static void draw_backdrop_fills(uint32_t bg, const int* ut_first,
         rhi_draw(s_nr.dev, 6, 0);
         rhi_gpu_zone_end(s_nr.dev);
     }
-    if (sky_ok && s_nr.gouraud_pipe && ut_count[11] > 0) {
+    if (sky_ok && s_nr.gouraud_pipe) {
         rhi_gpu_zone_begin(s_nr.dev, "sc.sky");
-        bind_scene_pipe(s_nr.gouraud_pipe);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        rhi_draw(s_nr.dev, (uint32_t)ut_count[11], (uint32_t)ut_first[11]);
+        if (ut_count[11] > 0) {
+            bind_scene_pipe(s_nr.gouraud_pipe);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+            rhi_draw(s_nr.dev, (uint32_t)ut_count[11], (uint32_t)ut_first[11]);
+        }
+        draw_ut_mat_spans(11, s_nr.gouraud_pipe, 0, 0);   /* opaque backdrop */
         rhi_gpu_zone_end(s_nr.dev);
     }
 }
@@ -5639,10 +5658,17 @@ static bool draw_native_scene(bool full_extent)
     for (int gi = 0; gi < 6; gi++) {
         ut_first[gi] = n;
         int gb = groups[gi].blend, gc = groups[gi].gcat;
-        /* Untextured material deferral (S8c): opaque WORLD/ACTOR buckets only
-         * (mirrors the textured override's plain-opaque scoping). */
-        const int defer_ok = tag_split_on() && gb == 0 &&
-                             (gc == OPENPETE_SCENE_WORLD || gc == OPENPETE_SCENE_ACTOR);
+        /* Untextured material deferral. Opaque WORLD/ACTOR/PLAYER buckets and
+         * every BLENDED bucket: the blended groups carry flame, particles,
+         * tracers and the shadow decals, and a channel that only ever emits
+         * blended geometry would otherwise be unreachable by any material.
+         * Blended spans reshade only — draw_ut_mat_spans inherits the group's
+         * blend and depth-write policy, so painter order is untouched. */
+        const int defer_ok = tag_split_on() &&
+                             (gb != 0 ||
+                              gc == OPENPETE_SCENE_WORLD ||
+                              gc == OPENPETE_SCENE_ACTOR ||
+                              gc == OPENPETE_SCENE_PLAYER);
         int dn = 0;
         for (int t = 0; t < scene_n; t++) {
             if (scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
@@ -5877,20 +5903,62 @@ static bool draw_native_scene(bool full_extent)
      * the WORLD group with the TEST_ZERO pipe. Both untextured by
      * construction (gouraud dome / gouraud LP). */
     ut_first[11] = n;
-    for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].category != OPENPETE_SCENE_SKY || n + 3 > SCENE_VB_VERTS) continue;
-        for (int k = 0; k < 3; k++) {
-            float cx, cy;
-            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-            o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+    {
+        /* SKY takes the same material deferral as the numbered groups: a
+         * dome-wide selector is one of the plainest things a mod can ask
+         * for, and without this the sky is the one opaque channel no
+         * material can reach. One tag, so at most one deferred span. */
+        const int sky_defer = tag_split_on();
+        int sdn = 0;
+        for (int t = 0; t < scene_n; t++) {
+            if (scene[t].textured || scene[t].category != OPENPETE_SCENE_SKY ||
+                n + 3 > SCENE_VB_VERTS) continue;
+            if (sky_defer && scene[t].tag && ut_tag_resolves(scene[t].tag)) {
+                s_utdef_idx[sdn++] = t;
+                continue;
+            }
+            for (int k = 0; k < 3; k++) {
+                float cx, cy;
+                scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+                rhi_vertex *o = &buf[n + k];
+                o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
+                o->u = 0.0f; o->v = 0.0f;
+                o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
                 o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+            }
+            n += 3;
         }
-        n += 3;
+        ut_count[11] = n - ut_first[11];        /* the PLAIN (stock) span */
+        if (sdn) {
+            s_utsort_scene = scene;
+            qsort(s_utdef_idx, (size_t)sdn, sizeof(int), utdef_cmp);
+            uint32_t cur = 0; int span_first = 0, open = 0;
+            for (int d = 0; d < sdn; d++) {
+                int t = s_utdef_idx[d];
+                if (n + 3 > SCENE_VB_VERTS) break;
+                uint32_t mt = ut_mask_tag(scene[t].tag);
+                if (!open || mt != cur) {
+                    if (open && s_utmat_n < UT_MAT_SPANS)
+                        s_utmat[s_utmat_n++] = (__typeof__(s_utmat[0]))
+                            { 11, cur, span_first, n - span_first };
+                    cur = mt; span_first = n; open = 1;
+                }
+                for (int k = 0; k < 3; k++) {
+                    float cx, cy;
+                    scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+                    rhi_vertex *o = &buf[n + k];
+                    o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
+                    o->u = 0.0f; o->v = 0.0f;
+                    o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+                    o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+                }
+                n += 3;
+            }
+            if (open && s_utmat_n < UT_MAT_SPANS)
+                s_utmat[s_utmat_n++] = (__typeof__(s_utmat[0]))
+                    { 11, cur, span_first, n - span_first };
+        }
     }
-    ut_count[11] = n - ut_first[11];
     ut_first[12] = n;
     for (int t = 0; t < scene_n; t++) {
         if (scene[t].textured || scene[t].category != OPENPETE_SCENE_WORLD_FILL || n + 3 > SCENE_VB_VERTS) continue;
@@ -6382,7 +6450,8 @@ static bool draw_native_scene(bool full_extent)
             rhi_draw(s_nr.dev, (uint32_t)ut_count[gi], (uint32_t)ut_first[gi]);
         }
         if (s_utmat_n && gi != 1 && g->utex)
-            draw_ut_mat_spans(gi, g->utex, holefill_on && (gi == 0 || gi == 2));
+            draw_ut_mat_spans(gi, g->utex, holefill_on && (gi == 0 || gi == 2),
+                              g->blend);
         if (txg_count[gi] > 0 && s_nr.vram_tex && g->tex) {
             /* MOBY SHADOWS (gi==1) prefer the DEPTH-AWARE textured decal when the
              * shared WORLD-opaque depth pre-pass is available this present — the

@@ -913,8 +913,19 @@ typedef struct {
     int  vert, frag;       /* shader handles; -1 = stock stage */
     openpete_mod_material_fn per_instance;   /* NULL = declarative (S8a) */
     int  load_index;
-    void* pipeline;        /* executor-cached rhi_pipeline* */
+    /* Executor-cached rhi_pipeline*, one per BLEND CLASS (0 opaque, 1
+     * average, 2 additive, 3 subtract). A material reshades inside
+     * whatever group it lands in and must not change how that group
+     * composites, so the same shader needs a pipeline per blend. */
+    void* pipeline[4];
     void* pipeline_mark;   /* stencil-MARK twin (hole-fill WORLD/ACTOR groups) */
+    int   user_enabled;    /* material_enable — the mod's own on/off */
+    /* Static uniform block (material_set_params). Declarative materials have
+     * no per-instance callback to mint a slot, so the block is interned into
+     * one at every frame reset and reused for the whole present. */
+    unsigned char params[OPENPETE_MATERIAL_UNIFORMS_MAX];
+    uint32_t      params_len;
+    int           static_slot;
     int  live;
 } mod_material_t;
 
@@ -977,8 +988,9 @@ int openpete_mods_material_terrain_claim(int texid, int env, int lp) {
     const int untex = texid < 0;
     for (int i = 0; i < s_mat_count; i++) {
         const mod_material_t* m = &s_mats[i];
-        if (!m->live || !openpete_mods_is_enabled(m->owner)) continue;
-        if (m->sel.path != -1 && m->sel.path != 1 /*OP_RP_TERRAIN*/) continue;
+        if (!m->live || !m->user_enabled ||
+            !openpete_mods_is_enabled(m->owner)) continue;
+        if (m->sel.channel != -1 && m->sel.channel != OP_CHAN_TERRAIN) continue;
         if (m->per_instance) {
             /* Mirror the winner scans exactly: the untex band resolve keys
              * on OP_SEL_UNTEXTURED + texture=-1, the S9 texture resolve on
@@ -1013,7 +1025,7 @@ int openpete_mods_material_register(openpete_mod_t* self,
     }
     if (sel->texture != -1 &&
         (sel->texture < 0 || sel->texture > 0x7F ||
-         (sel->path != -1 && sel->path != 1 /*OP_RP_TERRAIN*/) ||
+         (sel->channel != -1 && sel->channel != OP_CHAN_TERRAIN) ||
          (sel->flags & 0x8u /*OP_SEL_UNTEXTURED*/))) {
         OPL_ERROR_F("mods", "%s: material texture selector must be a terrain "
                     "Tiledef id 0..127 on a textured path (got %d)", id,
@@ -1039,6 +1051,27 @@ int openpete_mods_material_register(openpete_mod_t* self,
         }
     }
     if (vert_shader < 0 && frag_shader < 0) return -1;   /* nothing to do */
+    /* Refuse a selector this engine cannot fully honour, rather than
+     * matching wider than its author asked for. Size alone is not enough:
+     * a new flag bit never changes sizeof, so the flags are checked
+     * against the known mask too. */
+    if (sel->struct_size != (uint32_t)sizeof *sel) {
+        OPL_ERROR_F("mods", "%s: material: selector size %u, engine expects %u "
+                    "— rebuild the mod against this SDK",
+                    id, sel->struct_size, (unsigned)sizeof *sel);
+        return -1;
+    }
+    if (sel->flags & ~(unsigned)OP_SEL_FLAGS_KNOWN) {
+        OPL_ERROR_F("mods", "%s: material: selector carries unknown flag bits "
+                    "%#x — this engine would match wider than you asked",
+                    id, sel->flags & ~(unsigned)OP_SEL_FLAGS_KNOWN);
+        return -1;
+    }
+    if (sel->channel != -1 &&
+        (sel->channel < OP_CHAN_MOBY || sel->channel > OP_CHAN_TRACER)) {
+        OPL_ERROR_F("mods", "%s: material: unknown channel %d", id, sel->channel);
+        return -1;
+    }
     if (s_mat_count >= MOD_MATERIAL_MAX) {
         OPL_ERROR_F("mods", "%s: material table full (%d)", id,
                     MOD_MATERIAL_MAX);
@@ -1053,11 +1086,35 @@ int openpete_mods_material_register(openpete_mod_t* self,
     m->per_instance = per_instance;
     m->load_index = openpete_mods_load_index_of(self);
     m->live = 1;
-    s_mat_count++;
+    m->user_enabled = 1;          /* registration arms it; enable() toggles */
+    int handle = s_mat_count++;
     material_rearm_split();
-    OPL_INFO_F("mods", "%s: material selector armed (path %d class %d "
-               "flags %#x%s)", id, sel->path, sel->moby_class, sel->flags,
+    OPL_INFO_F("mods", "%s: material selector armed (channel %d ident %d class %d "
+               "flags %#x%s)", id, sel->channel, sel->ident, sel->moby_class, sel->flags,
                per_instance ? ", per-instance" : "");
+    return handle;
+}
+
+/* Turn one registered material on or off. */
+int openpete_mods_material_enable(openpete_mod_t* self, int material, int on) {
+    (void)self;
+    if (material < 0 || material >= s_mat_count || !s_mats[material].live)
+        return -1;
+    s_mats[material].user_enabled = on ? 1 : 0;
+    material_rearm_split();
+    return 0;
+}
+
+/* Set the uniform block a material's shader reads. */
+int openpete_mods_material_set_params(openpete_mod_t* self, int material,
+                                      const void* block, uint32_t len) {
+    (void)self;
+    if (material < 0 || material >= s_mat_count || !s_mats[material].live)
+        return -1;
+    if (len > OPENPETE_MATERIAL_UNIFORMS_MAX) return -1;
+    if (len && !block) return -1;
+    s_mats[material].params_len = len;
+    if (len) memcpy(s_mats[material].params, block, len);
     return 0;
 }
 
@@ -1068,8 +1125,9 @@ static int material_moby_winner(int cls) {
     int best = -1;
     for (int i = 0; i < s_mat_count; i++) {
         mod_material_t* m = &s_mats[i];
-        if (!m->live || !openpete_mods_is_enabled(m->owner)) continue;
-        if (m->sel.path != -1 && m->sel.path != 0 /*OP_RP_MOBY*/) continue;
+        if (!m->live || !m->user_enabled ||
+            !openpete_mods_is_enabled(m->owner)) continue;
+        if (m->sel.channel != -1 && m->sel.channel != OP_CHAN_MOBY) continue;
         if (m->sel.moby_class != -1 && m->sel.moby_class != cls) continue;
         if (m->sel.texture != -1) continue;   /* texture keys are terrain-only */
         if (m->sel.flags & (OP_SEL_ENV_ANIM | OP_SEL_HP_TIER | OP_SEL_LP_TIER |
@@ -1081,7 +1139,31 @@ static int material_moby_winner(int cls) {
     return best;
 }
 
-void openpete_mods_material_frame_reset(void) { s_mat_slot_n = 1; }
+/* Level id for level-scoped selector keys. The mods layer cannot read it
+ * itself — the symbol is game-specific — so the game pushes it while it
+ * renders. Draw-time resolve is the only consumer, and -1 (nothing has
+ * pushed yet) makes every level key inert rather than wrongly matching. */
+static int s_cur_level = -1;
+void openpete_mods_set_level(int level_id) { s_cur_level = level_id; }
+static int openpete_mods_current_level(void) { return s_cur_level; }
+
+void openpete_mods_material_frame_reset(void) {
+    s_mat_slot_n = 1;
+    /* Re-intern every live material's static block, so a declarative
+     * material has a slot to point at for the rest of this present. */
+    for (int i = 0; i < s_mat_count; i++) {
+        mod_material_t* m = &s_mats[i];
+        m->static_slot = 0;
+        if (!m->live || !m->params_len) continue;
+        if (!m->user_enabled || !openpete_mods_is_enabled(m->owner)) continue;
+        if (s_mat_slot_n >= MOD_MATERIAL_SLOTS) continue;   /* full -> no params */
+        int sl = s_mat_slot_n++;
+        s_mat_slots[sl].mat = i;
+        s_mat_slots[sl].len = m->params_len;
+        memcpy(s_mat_slots[sl].bytes, m->params, m->params_len);
+        m->static_slot = sl;
+    }
+}
 int  openpete_mods_material_slot_count(void) { return s_mat_slot_n; }
 
 const void* openpete_mods_material_slot_uniforms(int slot, uint32_t* len) {
@@ -1122,9 +1204,10 @@ static int material_terrain_untex_winner(void) {
     int best = -1;
     for (int i = 0; i < s_mat_count; i++) {
         mod_material_t* m = &s_mats[i];
-        if (!m->live || !openpete_mods_is_enabled(m->owner)) continue;
+        if (!m->live || !m->user_enabled ||
+            !openpete_mods_is_enabled(m->owner)) continue;
         if (!m->per_instance) continue;
-        if (m->sel.path != -1 && m->sel.path != 1 /*OP_RP_TERRAIN*/) continue;
+        if (m->sel.channel != -1 && m->sel.channel != OP_CHAN_TERRAIN) continue;
         if (m->sel.texture != -1) continue;   /* untex band has no texture */
         if (!(m->sel.flags & OP_SEL_UNTEXTURED)) continue;
         if (best < 0 || m->load_index > s_mats[best].load_index) best = i;
@@ -1138,9 +1221,10 @@ static int material_terrain_tex_winner(int texid) {
     int best = -1;
     for (int i = 0; i < s_mat_count; i++) {
         mod_material_t* m = &s_mats[i];
-        if (!m->live || !openpete_mods_is_enabled(m->owner)) continue;
+        if (!m->live || !m->user_enabled ||
+            !openpete_mods_is_enabled(m->owner)) continue;
         if (!m->per_instance) continue;
-        if (m->sel.path != -1 && m->sel.path != 1 /*OP_RP_TERRAIN*/) continue;
+        if (m->sel.channel != -1 && m->sel.channel != OP_CHAN_TERRAIN) continue;
         if (m->sel.flags & OP_SEL_UNTEXTURED) continue;
         /* Per-instance terrain selectors are texture-keyed: texture=-1
          * per-instance stays the untex band's business (S8c), never a
@@ -1234,10 +1318,12 @@ static int material_fill_gpu(int best, int uniform_slot,
         ? openpete_mods_shader_spv(m->frag, &out->frag_words, NULL) : NULL;
     if (m->vert < 0) out->vert_words = 0;
     if (m->frag < 0) out->frag_words = 0;
-    out->pipeline_slot = &m->pipeline;
+    for (int b = 0; b < 4; b++) out->pipeline_slot[b] = &m->pipeline[b];
     out->pipeline_mark_slot = &m->pipeline_mark;
     out->owner = m->owner;
-    out->uniform_slot = uniform_slot;
+    /* A per-instance slot always wins; otherwise fall back to this
+     * material's static block (0 = no params at all). */
+    out->uniform_slot = uniform_slot > 0 ? uniform_slot : m->static_slot;
     return best;
 }
 
@@ -1277,12 +1363,24 @@ int openpete_mods_material_resolve(uint32_t tag,
     int env  = (path == 1) && (tag & 0x08000000u);
     int lp   = (path == 1) && (tag & 0x04000000u);
     int tex  = (path == 1 && !untex) ? (int)((tag >> 9) & 0x7Fu) : -1;
+    /* Channel == the raw path nibble. The other feeders (player, flame,
+     * particle, sky, shadow, tracer) all carry their identity in [15:0],
+     * so one comparison serves every one of them. */
+    int chan  = (int)(tag >> 28);
+    int ident = (int)(tag & 0xFFFFu);
+    int level = openpete_mods_current_level();
     int best = -1;
     for (int i = 0; i < s_mat_count; i++) {
         mod_material_t* m = &s_mats[i];
-        if (!m->live || !openpete_mods_is_enabled(m->owner)) continue;
+        if (!m->live || !m->user_enabled ||
+            !openpete_mods_is_enabled(m->owner)) continue;
         if (m->per_instance) continue;   /* per-instance winners resolve via slots only */
-        if (m->sel.path != -1 && m->sel.path != path) continue;
+        if (m->sel.channel != -1 && m->sel.channel != chan) continue;
+        if (m->sel.level != -1 && level >= 0 && m->sel.level != level) continue;
+        /* Identity is meaningful for every channel EXCEPT terrain, whose
+         * [15:0] is sector|texid rather than a channel-local id and which
+         * has its own keys below. */
+        if (m->sel.ident != -1 && path != 1 && m->sel.ident != ident) continue;
         if (path == 0 && m->sel.moby_class != -1 && m->sel.moby_class != cls)
             continue;
         /* Texture key (S9): terrain textured faces only. */
@@ -1305,15 +1403,16 @@ int openpete_mods_material_resolve(uint32_t tag,
 void openpete_mods_material_remove_owner(const char* mod_id) {
     for (int i = 0; i < s_mat_count; i++) {
         if (!s_mats[i].live || strcmp(s_mats[i].owner, mod_id) != 0) continue;
-        if (s_mats[i].pipeline &&
-            s_mats[i].pipeline != OPENPETE_POSTFX_PIPE_FAILED &&
-            s_retired_n < MOD_POSTFX_MAX)
-            s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline;
+        for (int b = 0; b < 4; b++)
+            if (s_mats[i].pipeline[b] &&
+                s_mats[i].pipeline[b] != OPENPETE_POSTFX_PIPE_FAILED &&
+                s_retired_n < MOD_POSTFX_MAX)
+                s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline[b];
         if (s_mats[i].pipeline_mark &&
             s_mats[i].pipeline_mark != OPENPETE_POSTFX_PIPE_FAILED &&
             s_retired_n < MOD_POSTFX_MAX)
             s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_mark;
-        s_mats[i].pipeline = NULL;
+        for (int b = 0; b < 4; b++) s_mats[i].pipeline[b] = NULL;
         s_mats[i].pipeline_mark = NULL;
         s_mats[i].live = 0;
     }
@@ -1323,15 +1422,16 @@ void openpete_mods_material_remove_owner(const char* mod_id) {
 void openpete_mods_material_retire_all(void) {
     for (int i = 0; i < s_mat_count; i++) {
         if (!s_mats[i].live) continue;
-        if (s_mats[i].pipeline &&
-            s_mats[i].pipeline != OPENPETE_POSTFX_PIPE_FAILED &&
-            s_retired_n < MOD_POSTFX_MAX)
-            s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline;
+        for (int b = 0; b < 4; b++)
+            if (s_mats[i].pipeline[b] &&
+                s_mats[i].pipeline[b] != OPENPETE_POSTFX_PIPE_FAILED &&
+                s_retired_n < MOD_POSTFX_MAX)
+                s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline[b];
         if (s_mats[i].pipeline_mark &&
             s_mats[i].pipeline_mark != OPENPETE_POSTFX_PIPE_FAILED &&
             s_retired_n < MOD_POSTFX_MAX)
             s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_mark;
-        s_mats[i].pipeline = NULL;
+        for (int b = 0; b < 4; b++) s_mats[i].pipeline[b] = NULL;
         s_mats[i].pipeline_mark = NULL;
     }
 }

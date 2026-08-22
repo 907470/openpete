@@ -123,7 +123,62 @@ enum {
 #define OPENPETE_TICK_HZ  (1125000.0 / 37609.0)
 #define OPENPETE_VBL_HZ   (2250000.0 / 37609.0)
 
-#define OPENPETE_MOD_API_VERSION 2u
+/* Channels == the renderer's feeder paths, and the values ARE the tag's
+ * path nibble so a selector maps to tags without a translation table.
+ * `docs/render-channel-census.md` says what each feeder can be keyed on. */
+enum {
+    OP_CHAN_MOBY     = 1,
+    OP_CHAN_TERRAIN  = 2,
+    OP_CHAN_PLAYER   = 3,
+    OP_CHAN_FLAME    = 4,
+    OP_CHAN_PARTICLE = 5,
+    OP_CHAN_SKY      = 6,
+    OP_CHAN_SHADOW   = 7,
+    OP_CHAN_TRACER   = 8,
+};
+/* Retained: `path` used 0-based values before channels existed. */
+enum { OP_RP_MOBY = 0, OP_RP_TERRAIN = 1 };
+enum {
+    OP_SEL_ENV_ANIM   = 1u << 0,
+    OP_SEL_HP_TIER    = 1u << 1,
+    OP_SEL_LP_TIER    = 1u << 2,
+    OP_SEL_UNTEXTURED = 1u << 3,
+};
+/* Every flag the engine understands. A selector carrying a bit outside
+ * this mask is REFUSED rather than silently matching wider than the mod
+ * author asked for — `struct_size` alone cannot catch a new flag bit,
+ * because adding one never changes sizeof. */
+#define OP_SEL_FLAGS_KNOWN (OP_SEL_ENV_ANIM | OP_SEL_HP_TIER | \
+                            OP_SEL_LP_TIER  | OP_SEL_UNTEXTURED)
+
+typedef struct openpete_mod_material_selector {
+    /* sizeof(*this) at the mod's compile time; the engine refuses sizes it
+     * does not know rather than reading past what the mod actually wrote. */
+    uint32_t struct_size;
+    int      channel;     /* OP_CHAN_* ; -1 = any channel */
+    /* Channel-local identity — the tag's [15:0]. Meaning is per channel:
+     * flame ribbon/caps, the particle (kind<<8 | sel) pair, shadow caster
+     * kind. -1 = any. Channels whose feeder has no identity to give
+     * (player, sky, tracer) only ever emit 0, so only -1 or 0 match. */
+    int      ident;
+    int      moby_class;  /* moby only; -1 = any */
+    int      texture;     /* terrain texture-record id 0..127; -1 = any */
+    int      level;       /* g_LevelId; -1 = any. Sector/texture ids are
+                           * per-level, so a key without this matches the
+                           * same id in EVERY level. */
+    unsigned flags;       /* OP_SEL_* refinements */
+} openpete_mod_material_selector_t;
+/* Fill a selector with the match-everything defaults; a mod then narrows
+ * only what it cares about. Zero-init would mean channel 0 / class 0. */
+static inline openpete_mod_material_selector_t openpete_mod_material_sel_any(void) {
+    openpete_mod_material_selector_t s;
+    s.struct_size = (uint32_t)sizeof s;
+    s.channel = -1; s.ident = -1; s.moby_class = -1;
+    s.texture = -1; s.level = -1; s.flags = 0u;
+    return s;
+}
+
+#define OPENPETE_MOD_API_VERSION 3u
 
 typedef struct openpete_mod_api {
     uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION (the struct is
@@ -381,6 +436,38 @@ typedef struct openpete_mod_api {
      * Display-only. */
     int (*texpack_fog_shift)(openpete_mod_t* self, const float scale_rgb[3],
                              const float offset_rgb[3]);
+
+    /* ---- pillar 10: materials (api 3) --------------------------------- */
+
+    /* Attach a fragment shader to a SET of rendered geometry, chosen by the
+     * data that defines it: a render channel (moby, terrain, player, flame,
+     * particle, sky, shadow, tracer), optionally narrowed by that channel's
+     * own keys — moby class, terrain texture/tier, a channel-local identity,
+     * a level. Build the selector with openpete_mod_material_sel_any() and
+     * narrow only what you mean; the engine REFUSES a selector it cannot
+     * fully honour rather than matching wider than you asked.
+     *
+     * `shader` is a frag handle from shader_register. The shader reshades
+     * within whatever draw group the geometry already belongs to: it cannot
+     * change blending, depth policy or draw order, so a material can never
+     * reorder the scene. Unmatched or failed builds keep stock shading —
+     * a material is never a way to make something invisible.
+     *
+     * Returns a material handle, or -1. Registration starts ENABLED. */
+    int (*material_register)(openpete_mod_t* self,
+                             const openpete_mod_material_selector_t* sel,
+                             int shader);
+
+    /* Turn one registered material on or off. Cheap and callable from any
+     * context — this is what a [[config]] toggle drives. */
+    int (*material_enable)(openpete_mod_t* self, int material, int on);
+
+    /* Set the uniform block the material's shader reads (std140, up to
+     * OPENPETE_MATERIAL_UNIFORMS_MAX bytes). May be called per tick; for
+     * smoothly time-varying effects prefer driving them from the engine
+     * UBO's time in the shader over re-pushing a block every present. */
+    int (*material_set_params)(openpete_mod_t* self, int material,
+                               const void* block, uint32_t len);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

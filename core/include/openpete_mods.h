@@ -93,21 +93,6 @@ typedef struct openpete_mod_pipeline_desc {
     uint32_t _reserved[4];
 } openpete_mod_pipeline_desc_t;
 
-enum { OP_RP_MOBY = 0, OP_RP_TERRAIN = 1 };
-enum {
-    OP_SEL_ENV_ANIM   = 1u << 0,
-    OP_SEL_HP_TIER    = 1u << 1,
-    OP_SEL_LP_TIER    = 1u << 2,
-    OP_SEL_UNTEXTURED = 1u << 3,
-};
-
-typedef struct openpete_mod_material_selector {
-    int      path;        /* OP_RP_* ; -1 = any path */
-    int      moby_class;  /* -1 = any (terrain: ignored) */
-    int      texture;     /* terrain texture-record id 0..127; -1 = any */
-    unsigned flags;       /* OP_SEL_* refinements */
-} openpete_mod_material_selector_t;
-
 typedef int (*openpete_mod_material_fn)(struct CPUState* cpu,
                                         uint32_t moby_vaddr,
                                         void* uniform_out, uint32_t cap);
@@ -674,7 +659,11 @@ void openpete_mods_pipeline_retire_all(void);
 typedef struct {
     const uint32_t* vert_spv; size_t vert_words;
     const uint32_t* frag_spv; size_t frag_words;
-    void** pipeline_slot;
+    /* One cached pipeline per BLEND CLASS (0 opaque, 1 average, 2 additive,
+     * 3 subtract): a material reshades within whatever group it lands in and
+     * inherits that group's compositing, so one shader needs one pipeline per
+     * blend it is drawn under. */
+    void** pipeline_slot[4];
     void** pipeline_mark_slot;  /* stencil-MARK twin (hole-fill groups) */
     const char* owner;
     int   uniform_slot;
@@ -727,6 +716,10 @@ unsigned openpete_mods_material_epoch(void);
  * during the walk, then native_render writes each slot's bytes into the
  * UBO before the scene draw. */
 void openpete_mods_material_frame_reset(void);
+/* Game -> mods: the level currently being rendered, for level-scoped
+ * selector keys (sector and texture ids are per-level). Push it while
+ * rendering; -1 until something does, which keeps level keys inert. */
+void openpete_mods_set_level(int level_id);
 int  openpete_mods_material_slot_count(void);   /* 1 + interned slots */
 const void* openpete_mods_material_slot_uniforms(int slot, uint32_t* len);
 /* Enabled-list position of a mod (0-based load order; -1 unknown). */
@@ -743,6 +736,9 @@ int openpete_mods_material_register(openpete_mod_t* self,
                                     const openpete_mod_material_selector_t* sel,
                                     int vert_shader, int frag_shader,
                                     openpete_mod_material_fn per_instance);
+int openpete_mods_material_enable(openpete_mod_t* self, int material, int on);
+int openpete_mods_material_set_params(openpete_mod_t* self, int material,
+                                      const void* block, uint32_t len);
 
 /* Loader-facing (wired into the mod api). */
 int openpete_mods_sfx_replace(openpete_mod_t* self, const char* name,

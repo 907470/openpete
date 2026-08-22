@@ -6403,6 +6403,9 @@ static void terrain_feed_native(CPUState* cpu) {
         const char* e = getenv("OPENPETE_TERRAIN_FILL_DILATE");
         s_fill_dilate = (e && *e) ? (float)atof(e) : 0.0f;  /* v4.1: quantize/grow OFF by default (v2/v3 machinery caused silhouette ghosting/spikes + sub-tick crawl; envs re-enable for experiments) */
     }
+    /* Level-scoped selector keys resolve at draw time, which has no cpu —
+     * push the id from here, the feed that runs whenever a world renders. */
+    openpete_mods_set_level((int)cpu->read_word(G_LEVELID));
     /* Untextured-band material (S8c): one resolve per feed — the whole
      * beyond-LOD gouraud band shares a single per-instance outcome. */
     const int untex_slot = openpete_mods_material_terrain_untex_slot(cpu);
