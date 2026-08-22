@@ -917,6 +917,50 @@ uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
 
 extern int spyro_native_dispatch(CPUState* cpu, uint32_t addr);
 
+/* See the OPENPETE_NOOP_SREND arm in psx_override_dispatch_game below. The mask
+ * is latched on first use — this sits on the per-call dispatch path and getenv
+ * is expensive on Windows. */
+static int srend_noop_hit(uint32_t addr) {
+    static int s_mask = -1;
+    if (s_mask < 0) {
+        const char* e = getenv("OPENPETE_NOOP_SREND");
+        s_mask = e ? (int)strtol(e, NULL, 0) : 0;
+        if (s_mask) {
+            fprintf(stderr, "[noop-srend] mask=%d — renderers suppressed; "
+                            "geometry and gameplay state are NOT faithful\n", s_mask);
+        }
+    }
+    if (s_mask == 0) return 0;
+    switch (addr) {
+    case 0x800258F0u:                        /* world/terrain renderer      */
+        return (s_mask & 1) != 0;
+    case 0x8001F798u:                        /* regular material renderer   */
+        /* Bits 16/32 take the two material EMIT passes separately: they build
+         * prims and write no gameplay-readable byte (the cull passes own
+         * m_WasDrawn), so suppressing them leaves every verdict in place —
+         * the "stub the moby renderer" ceiling. Bit 1 additionally takes the
+         * cull passes, which the game cannot survive. */
+        if (s_mask & 16) return 1;
+        return (s_mask & 2) != 0;
+    case 0x80020F34u:                        /* specular material renderer  */
+        if (s_mask & 32) return 1;
+        return (s_mask & 2) != 0;
+    case 0x8001F158u: case 0x800208FCu:      /* moby cull/gather passes     */
+    case 0x80022A2Cu:                        /* shaded cull + renderer      */
+        return (s_mask & 2) != 0;
+    case 0x8004EBA8u:                        /* cyclorama dome              */
+    case 0x80050BD0u:                        /* portal previews             */
+        return (s_mask & 4) != 0;
+    case 0x80023AC4u:                        /* Spyro                       */
+    case 0x80058D64u:                        /* flame breath                */
+    case 0x80059F8Cu: case 0x80059A48u:      /* moby + Spyro shadows        */
+    case 0x800573C8u: case 0x800580F4u:      /* particles, glows            */
+        return (s_mask & 8) != 0;
+    default:
+        return 0;
+    }
+}
+
 int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
     /* Debug free camera (F): while engaged, drive the camera in place of
      * CameraFollowSpyro (on this game fiber) and suppress it + UpdateSpyro so
@@ -946,6 +990,29 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
      * dispatch arms below into core/features/widescreen.c and they
      * start firing through here instead. */
     if (feature_registry_dispatch(cpu, addr)) {
+        return 1;
+    }
+
+    /* Perf attribution knob (OPENPETE_NOOP_SREND=<mask>): turn the handwritten
+     * PSX renderers into no-ops so the sim tick can be measured without the
+     * emulated-GTE prim building whose output native mode discards. Placed
+     * AFTER the feature arms on purpose: a native feeder that hooks a renderer
+     * runs its own capture/feed and then calls the real renderer directly; that
+     * inner call re-enters here (the feeder's re-entrancy guard has already
+     * declined) and is the call this suppresses. So the feeds keep running and
+     * only the guest-side prim math goes away.
+     *
+     * MEASUREMENT ONLY — the renderers also write gameplay-readable state
+     * (sector visibility, m_WasDrawn, the moby render queue), so a run with any
+     * bit set is not gameplay-faithful and its geometry will thin out.
+     *   1  world/terrain (func_800258F0)
+     *   2  mobys (2 cull/gather passes + 3 material renderers)
+     *   4  cyclorama dome + portal previews
+     *   8  Spyro, flame, shadows, particles, glows
+     *  16  regular moby prim build ONLY (verdicts left intact)
+     *  32  specular moby prim build ONLY (verdicts left intact)
+     */
+    if (srend_noop_hit(addr)) {
         return 1;
     }
 
