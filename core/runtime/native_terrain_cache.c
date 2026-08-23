@@ -773,7 +773,11 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
         if (!at) at = s_tc.hd_dummy;
         if (at) rhi_bind_texture_set(s_tc.dev, at, 4);
     }
-    rhi_ubo_bind(s_tc.dev, s_tc.ubo, 0, 1);
+    /* Sets 5/6, not the contract set: set 3 binding 1 belongs to a mod's own
+     * uniform block, and a descriptor set views one buffer per binding — so
+     * the terrain blocks cannot sit beside it. */
+    rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 5, 0);
+    rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 6, 1);
     switch (which) {
         case OPTC_DRAW_WORLD:
             tc_draw_arena(OPTC_ARENA_OPAQUE, 0, clip);

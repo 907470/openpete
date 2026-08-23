@@ -84,7 +84,7 @@ vec2 clip_of(vec2 sxy) {
 /* Mirrored by native_terrain_cache.c's tc_globals_ubo (C natural layout ==
  * std140 there, which the dvec4 runs' 32-byte alignment depends on) and, as a
  * prefix, by terrain.frag — a field added here must land in both. */
-layout(std140, set = 3, binding = 0) uniform TerrainGlobals {
+layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     vec4  mrow0;    /* xyz: M[0][*] (raw int16 values)                    */
     vec4  mrow1;    /* xyz: M[1][*]                                       */
     vec4  mrow2;    /* xyz: M[2][*]                                       */
@@ -140,7 +140,7 @@ struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
     vec4 gp, gq;   /* pack LP grade affine v' = p*v8 + q*255 (rgb; SF_LPGRADE) */
 };
-layout(std140, set = 3, binding = 1) uniform TerrainSectors {
+layout(std140, set = 6, binding = 0) uniform TerrainSectors {
     TerrainSector sec[512];
 } s;
 

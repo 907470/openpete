@@ -381,12 +381,23 @@ typedef struct {
                                  * that. Implies mod_pipeline's vertex input. */
     bool           terrain_pipeline; /* terrain sector-mesh layout: vertex
                                  * input = rhi_terrain_vertex (locations 0..8),
-                                 * sets = {0: VRAM sampler, 3: UBO pair via
-                                 * rhi_ubo_bind — globals + sector params,
-                                 * 4: HD-replacement atlas sampler},
+                                 * sets = {0: VRAM sampler, 1/2: og key images,
+                                 * 3: the material contract's UBO pair,
+                                 * 4: HD-replacement atlas sampler,
+                                 * 5: TerrainGlobals, 6: TerrainSectors — both
+                                 * single-binding via rhi_ubo_bind_at},
                                  * push constants visible to VERTEX|FRAGMENT
                                  * (the per-draw clip affine + class select).
-                                 * uses_vram/uses_vram2 ignored.              */
+                                 * The engine's own two blocks sit ABOVE the
+                                 * contract set rather than inside it: set 3
+                                 * binding 1 belongs to the mod, and one
+                                 * descriptor set views one buffer per binding,
+                                 * so terrain uniforms and a mod's uniforms
+                                 * cannot share it. Needs
+                                 * maxBoundDescriptorSets >= 7 (as materials
+                                 * do); below that, pipeline creation fails and
+                                 * the cache stays off. uses_vram/uses_vram2
+                                 * ignored.                                   */
     bool           terrain_anim; /* with terrain_pipeline: add vertex binding 1
                                  * = rhi_terrain_prev (locations 9..12), the
                                  * previous-tick position + parent corners for
@@ -487,13 +498,22 @@ rhi_pipeline *rhi_create_pipeline_spv(rhi_device *dev,
  * visible to vertex+fragment). block_size is rounded up to the device's
  * minUniformBufferOffsetAlignment. Write targets the CURRENT frame slot
  * (same parity contract as rhi_create_vertex_buffer_dynamic: write
- * every frame that binds). Bind attaches set 3 of a postfx pipeline. */
+ * every frame that binds). Bind attaches set 3 of a postfx pipeline.
+ *
+ * rhi_ubo_bind_at attaches ONE block through a single-binding layout at
+ * an arbitrary set index instead. Set 3 is the shader-contract set — its
+ * binding 0 is the engine block and its binding 1 is the MOD's block, and
+ * a descriptor set can only view one buffer per binding, so an engine
+ * subsystem with uniforms of its own has to put them somewhere a mod
+ * never looks. That is what this is for. */
 typedef struct rhi_ubo rhi_ubo;
 rhi_ubo *rhi_create_ubo(rhi_device *dev, uint32_t block_size, uint32_t blocks);
 void     rhi_ubo_write(rhi_ubo *ubo, uint32_t block, const void *data,
                        uint32_t len);
 void     rhi_ubo_bind(rhi_device *dev, rhi_ubo *ubo, uint32_t block_a,
                       uint32_t block_b);
+void     rhi_ubo_bind_at(rhi_device *dev, rhi_ubo *ubo, uint32_t set,
+                         uint32_t block);
 void     rhi_destroy_ubo(rhi_device *dev, rhi_ubo *ubo);
 
 /* ---- offscreen-as-input (S2: the COMPOSITE postfx point) ------------

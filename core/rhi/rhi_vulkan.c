@@ -186,6 +186,7 @@ struct rhi_device {
      * COMPOSITE postfx input — lazily (re)written when off_gen moves, i.e.
      * after every offscreen recreate), and the UBO offset alignment. */
     VkDescriptorSetLayout ubo_set_layout;
+    VkDescriptorSetLayout ubo1_set_layout;            /* one dynamic binding    */
     VkDescriptorSet off_sampled_set[RHI_FRAMES_IN_FLIGHT];
     uint32_t        off_gen;                          /* bumped per create_offscreen */
     uint32_t        off_sampled_gen[RHI_FRAMES_IN_FLIGHT];
@@ -1205,6 +1206,16 @@ static bool create_descriptor_infra(rhi_device *dev)
     if (vkCreateDescriptorSetLayout(dev->device, &uli, NULL, &dev->ubo_set_layout) != VK_SUCCESS) {
         RHI_LOG("vkCreateDescriptorSetLayout (ubo) failed\n"); return false;
     }
+    /* Single dynamic-UBO binding, for engine blocks bound at a set index of
+     * their own (rhi_ubo_bind_at) rather than inside the contract set. */
+    VkDescriptorSetLayoutCreateInfo u1li = {
+        .sType = VK_STRUCTURE_TYPE_DESCRIPTOR_SET_LAYOUT_CREATE_INFO,
+        .bindingCount = 1, .pBindings = ub,
+    };
+    if (vkCreateDescriptorSetLayout(dev->device, &u1li, NULL,
+                                    &dev->ubo1_set_layout) != VK_SUCCESS) {
+        RHI_LOG("vkCreateDescriptorSetLayout (ubo1) failed\n"); return false;
+    }
     {
         VkPhysicalDeviceProperties props;
         vkGetPhysicalDeviceProperties(dev->phys, &props);
@@ -1405,6 +1416,7 @@ void rhi_destroy(rhi_device *dev)
     if (dev->desc_pool)      vkDestroyDescriptorPool(dev->device, dev->desc_pool, NULL);
     if (dev->vram_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->vram_set_layout, NULL);
     if (dev->ubo_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->ubo_set_layout, NULL);
+    if (dev->ubo1_set_layout) vkDestroyDescriptorSetLayout(dev->device, dev->ubo1_set_layout, NULL);
     if (dev->vram_sampler)   vkDestroySampler(dev->device, dev->vram_sampler, NULL);
     if (dev->linear_sampler) vkDestroySampler(dev->device, dev->linear_sampler, NULL);
 
@@ -3277,15 +3289,21 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
                                               desc->material_pipeline || desc->terrain_pipeline)
                                                  ? dev->ubo_set_layout : dev->vram_set_layout,
                                              dev->vram_set_layout,
-                                             dev->vram_set_layout,
-                                             dev->vram_set_layout };
+                                             /* terrain keeps its own two blocks
+                                              * at 5/6 — set 3 binding 1 is the
+                                              * mod's, and a set views one
+                                              * buffer per binding. */
+                                             desc->terrain_pipeline ? dev->ubo1_set_layout
+                                                                    : dev->vram_set_layout,
+                                             desc->terrain_pipeline ? dev->ubo1_set_layout
+                                                                    : dev->vram_set_layout };
     /* material: the mod layout PLUS the engine's occlusion inputs, which a
      * material's fragment stage runs before the mod's colour maths. They sit
      * ABOVE the UBO pair (sets 4..6) rather than replacing sets 1/2 so a
      * material's own uniform block stays at set 3 binding 1 — the one part
      * of the layout mod source actually writes. */
     uint32_t set_count = desc->material_pipeline ? 7u  /* + sets 4..6: og keys, rank */
-                       : desc->terrain_pipeline ? 5u   /* + set 4: HD atlas sampler */
+                       : desc->terrain_pipeline ? 7u   /* + 4: HD atlas, 5/6: blocks */
                        : (desc->postfx || desc->mod_pipeline) ? 4u
                        : desc->uses_vram5 ? 5u
                        : desc->uses_vram4 ? 4u
@@ -3432,6 +3450,7 @@ struct rhi_ubo {
     uint32_t        block_size;  /* aligned to minUniformBufferOffsetAlignment */
     uint32_t        blocks;      /* per frame slot */
     VkDescriptorSet set;         /* 2 dynamic-UBO bindings into buf */
+    VkDescriptorSet set1;        /* 1 dynamic-UBO binding (rhi_ubo_bind_at) */
     rhi_device     *dev;
 };
 
@@ -3477,6 +3496,23 @@ rhi_ubo *rhi_create_ubo(rhi_device *dev, uint32_t block_size, uint32_t blocks)
           .pBufferInfo = &bi },
     };
     vkUpdateDescriptorSets(dev->device, 2, wr, 0, NULL);
+
+    /* Second view of the same buffer through the single-binding layout, so a
+     * block can also be bound at a set index outside the contract set. Its
+     * absence is not fatal — rhi_ubo_bind_at simply becomes a no-op. */
+    ai.pSetLayouts = &dev->ubo1_set_layout;
+    if (vkAllocateDescriptorSets(dev->device, &ai, &u->set1) == VK_SUCCESS) {
+        VkWriteDescriptorSet w1 = {
+            .sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET, .dstSet = u->set1,
+            .dstBinding = 0, .descriptorCount = 1,
+            .descriptorType = VK_DESCRIPTOR_TYPE_UNIFORM_BUFFER_DYNAMIC,
+            .pBufferInfo = &bi,
+        };
+        vkUpdateDescriptorSets(dev->device, 1, &w1, 0, NULL);
+    } else {
+        RHI_LOG("rhi_create_ubo: single-binding descriptor alloc failed\n");
+        u->set1 = VK_NULL_HANDLE;
+    }
     return u;
 }
 
@@ -3512,9 +3548,19 @@ void rhi_ubo_bind(rhi_device *dev, rhi_ubo *ubo, uint32_t block_a,
                             dev->cur_layout, 3, 1, &ubo->set, 2, offs);
 }
 
+void rhi_ubo_bind_at(rhi_device *dev, rhi_ubo *ubo, uint32_t set, uint32_t block)
+{
+    if (!dev || !ubo || !ubo->set1 || !dev->frame_active || !dev->cur_layout) return;
+    if (block >= ubo->blocks) return;
+    uint32_t off = ((uint32_t)dev->frame * ubo->blocks + block) * ubo->block_size;
+    vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
+                            dev->cur_layout, set, 1, &ubo->set1, 1, &off);
+}
+
 void rhi_destroy_ubo(rhi_device *dev, rhi_ubo *ubo)
 {
     if (!ubo) return;
+    if (ubo->set1) vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &ubo->set1);
     if (ubo->set) vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &ubo->set);
     rhi_destroy_buffer(dev, ubo->buf);
     free(ubo);
