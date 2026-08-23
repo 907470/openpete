@@ -2774,6 +2774,11 @@ typedef struct {
                                        * fold-claimed (unbuildable=5) sector
                                        * retries when interns or an upload
                                        * drain moved it */
+    unsigned bakeSelEpoch;            /* material_epoch at build — the baked
+                                       * faces carry material BUCKET ids, so a
+                                       * selector set that moved makes them
+                                       * stale (wrong pass, or a face left in
+                                       * the stock pass a material now wants) */
 } tgpu_slot_t;
 static tgpu_slot_t s_tgpu[TSC_SLOTS];
 /* Does this decode slot hold a sector the GPU cache validated as owned this
@@ -3149,6 +3154,9 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     }
 
     /* ---- LP tier: untextured; drawn in WORLD and re-drawn in FILL ---- */
+    /* Every LP face keys the same (untextured, LP tier), so its material
+     * bucket is a per-sector constant. 0 = no material claims these faces. */
+    const int lp_bucket = openpete_mods_material_terrain_bucket(-1, 0, 1);
     for (int f = 0; SC->lpV && SC->lpF && f < SC->nLpF; f++) {
         const tsface_t* F = &SC->lpF[f];
         if (F->i0 >= SC->nLpV || F->i1 >= SC->nLpV || F->i2 >= SC->nLpV || F->i3 >= SC->nLpV)
@@ -3164,7 +3172,8 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                      | (F->floorf  ? (1u << 18) : 0u)
                      | (((uint32_t)F->admit  & 0x1Fu) << 19)
                      | (((uint32_t)F->otbias & 0x1Fu) << 24);
-        T.matf0 = tgpu_pack_mat0(&F->mat);   /* untextured (blend may be set) */
+        T.matf0 = tgpu_pack_mat0(&F->mat)    /* untextured (blend may be set) */
+                | ((uint32_t)lp_bucket << 24);
         uint32_t rc[4];
         rc[0] = rd(cpu, SC->lpColBase + F->c0) & 0xFFFFFFu;
         rc[1] = rd(cpu, SC->lpColBase + F->c1) & 0xFFFFFFu;
@@ -3216,7 +3225,14 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                      | ((F->w3 & 0x80) ? (1u << 16) : 0u)
                      | (hq_elig ? (1u << 17) : 0u)
                      | (((uint32_t)F->otbias & 0x1Fu) << 24);
-        T.matf0 = tgpu_pack_mat0(&F->mat);  T.matf1 = (uint32_t)(F->mat.clut_raw & 0xFFFF);
+        /* Material bucket, keyed exactly as the walk's provenance tag is:
+         * Tiledef id + env-rewrite membership. Both LOD halves of a face
+         * share it (the selector keys on the Tiledef, not on the page), so
+         * it rides mat_far0 alone and the near half needs no copy. */
+        const int hp_bucket = openpete_mods_material_terrain_bucket(
+            (F->tb == -1) ? -1 : (F->tb & 0x7F), F->tgen != 0, 0);
+        T.matf0 = tgpu_pack_mat0(&F->mat) | ((uint32_t)hp_bucket << 24);
+        T.matf1 = (uint32_t)(F->mat.clut_raw & 0xFFFF);
         T.matn0 = tgpu_pack_mat0(&F->matN); T.matn1 = (uint32_t)(F->matN.clut_raw & 0xFFFF);
         /* Scroll tile id (flags16 bits 5-12): the vertex stage adds the
          * per-build fractional V offset for this Tiledef (zero when the
@@ -3346,7 +3362,9 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                 H.flags16 = (uint16_t)(1u | ((uint16_t)q << 1)
                           | (((uint32_t)F->hq_idx & 0x7Fu) << 5) | 0x1000u
                           | (m.blend ? 0x4000u : 0u));   /* cover-drop key */
-                H.matf0 = tgpu_pack_mat0(&m);
+                /* HQ cells are sub-quads of this HP face: same Tiledef, so
+                 * the same bucket (the pack overwrites the whole word). */
+                H.matf0 = tgpu_pack_mat0(&m) | ((uint32_t)hp_bucket << 24);
                 H.matf1 = (uint32_t)(m.clut_raw & 0xFFFF);
                 H.matn0 = 0; H.matn1 = 0;   /* near cells never re-select */
                 tgpu_corner_t c0 = sq[q][0], c1 = sq[q][1], c2 = sq[q][2], c3 = sq[q][3];
@@ -3434,18 +3452,36 @@ static int tgpu_pack_scan(const tscache_t* SC) {
     return 0;
 }
 
-/* Selector claim scan: could a registered mod material selector override any
- * face? LP faces feed as untextured LP-tier tags; HP faces key on the
- * Tiledef id, with env = the tile is in the env-anim rewrite set (the same
- * derivation the walk's emit uses for the provenance tag). */
+/* Selector claim scan: which sectors must still walk the CPU for a mod
+ * material to reach them? LP faces feed as untextured LP-tier tags; HP faces
+ * key on the Tiledef id, with env = the tile is in the env-anim rewrite set
+ * (the same derivation the walk's emit uses for the provenance tag).
+ *
+ * A DECLARATIVE selector no longer claims: the bake stamps its bucket into
+ * the face and the retained draw issues that bucket's own pass. Two cases
+ * still do:
+ *
+ *  - a PER-INSTANCE selector, whose callback mints a per-present slot. A
+ *    bake outlives the present, so it cannot hold one — banking an outcome
+ *    would strobe.
+ *  - any material on a BLENDED face. Splitting an arena into a stock pass
+ *    and a material pass changes the order those faces composite in, and
+ *    blending is order-dependent. Until that is resolved, blended terrain
+ *    keeps its whole sector on the walk, where the order is og's. */
 static int tgpu_sel_scan(const tscache_t* SC) {
-    if (SC->lpF && SC->nLpF > 0 &&
-        openpete_mods_material_terrain_claim(-1, 0, 1)) return 1;
+    if (SC->lpF && SC->nLpF > 0) {
+        if (openpete_mods_material_terrain_claim(-1, 0, 1)) return 1;
+        if (openpete_mods_material_terrain_bucket(-1, 0, 1))
+            for (int f = 0; f < SC->nLpF; f++)
+                if (SC->lpF[f].mat.blend) return 1;
+    }
     for (int f = 0; SC->hpF && f < SC->nHpF; f++) {
         const tsface_t* F = &SC->hpF[f];
         int texid = (F->tb == -1) ? -1 : (F->tb & 0x7F);
-        if (openpete_mods_material_terrain_claim(texid, F->tgen != 0, 0))
-            return 1;
+        int env   = F->tgen != 0;
+        if (openpete_mods_material_terrain_claim(texid, env, 0)) return 1;
+        if ((F->mat.blend || F->matN.blend) &&
+            openpete_mods_material_terrain_bucket(texid, env, 0)) return 1;
     }
     return 0;
 }
@@ -3525,7 +3561,10 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
              || (openpete_native_hdfold_on() &&
                  (T->bakeTpGen != T->tpGen ||
                   (T->unbuildable == 5 &&
-                   T->bakeHdEpoch != openpete_native_hdfold_epoch())));
+                   T->bakeHdEpoch != openpete_native_hdfold_epoch())))
+             /* Material buckets are baked into the faces, so a selector set
+              * that moved leaves them naming the wrong pass. */
+             || (T->bakeSelEpoch != T->selEpoch);
     if (!dirty && T->lastColFrame != openpete_frame) {
         /* Colour liveness once per VBL (colours can only change per tick). */
         uint32_t h;
@@ -3541,6 +3580,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         T->animRoll = SC->vrollPres;
         T->bakeTpGen = T->tpGen;
         T->bakeHdEpoch = openpete_native_hdfold_epoch();
+        T->bakeSelEpoch = T->selEpoch;
         T->lastColFrame = openpete_frame;
         if (tgpu_col_hash(SC, &T->colHash) != 0) { T->unbuildable = 3; return 3; }
         T->bakeVar = (uint8_t)(with_var != 0);

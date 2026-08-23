@@ -68,7 +68,14 @@ layout(push_constant) uniform TerrainPC {
     vec4 cdims;   /* disp_w, clip_h, band, freeze_wf                       */
     int  pass_sel;      /* 0 = WORLD, 1 = FILL (LP hole-fill), 2 = KEY    */
     int  full_extent;   /* full-target branch of the mapping              */
-    int  pad0, pad1;
+    /* Material bucket this pass draws: -1 = every face (no material
+     * installed, and the depth/key passes, which shade nothing); 0 = the
+     * stock pass, which drops faces a material claimed; >0 = that
+     * material's pass, which keeps only its own faces. The bucket is baked
+     * into the face, so a face's pass membership depends on the face and
+     * not on the camera or on whether the sector is resident. */
+    int  mat_pass;
+    int  pad1;
 } pc;
 
 /* scene_to_clip mirror, term for term in float — a fitted affine loses ~5
@@ -509,6 +516,13 @@ void main()
      * old chunk keeps drawing for presents whose (lagged) state still names
      * the old generation; the new chunk waits its turn. */
     if (((ff >> 29) & 7u) != ((sf >> 12) & 7u)) { kill_vert(); return; }
+
+    /* Material bucket: one pass per bucket over the same arena, each keeping
+     * only its own faces. Baked into the face's spare material bits, so it
+     * survives the sector's whole residency. */
+    if (pc.mat_pass >= 0 && int((inMat.x >> 24) & 0xFFu) != pc.mat_pass) {
+        kill_vert(); return;
+    }
 
     /* ---- pass / tier admission (sector-level, CPU-computed) ---- */
     if (fillPass) {

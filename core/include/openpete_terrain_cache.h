@@ -243,6 +243,13 @@ const void *openpete_native_hdfold_table(int *count, float lad[2]);
 /* The fold atlas (NULL until the first intern) — the set-4 sampler. */
 struct rhi_texture *openpete_native_hdfold_atlas(void);
 
+/* The material UBO (native_render), whose block 0 is the engine block and
+ * whose blocks 1+ are the interned per-material uniform blocks. A retained
+ * material pass binds it at set 3, the same pair a walked material draw
+ * binds — one shading contract, one uniform source, either residency.
+ * NULL until the first override arms the batcher split. */
+struct rhi_ubo *openpete_native_material_ubo(void);
+
 /* Atlas uploads still queued (drained ~96 per rendered frame). */
 int openpete_native_hdfold_pending(void);
 

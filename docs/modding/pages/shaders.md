@@ -138,6 +138,21 @@ repaint geometry you never asked for.
 `mods/declarative-reshade` is a complete working example: a manifest and
 one `.frag`.
 
+#### Terrain and the retained cache
+
+Terrain is the one channel the engine draws two ways. Near geometry and
+anything that changes is walked per present; the rest is baked into GPU
+buffers once and redrawn without the CPU touching it. A material reaches
+both, and reaches them identically — the engine compiles your `.frag`
+twice, once per path, and gates each with the same occlusion verdicts.
+You write one shader and never learn which path a face took.
+
+One exception, and it is a cost rather than a limit: a material on
+**transparent** terrain — water, waterfalls, the additive glows — pulls
+its whole sector back onto the CPU walk. Transparency composites in
+draw order, and serving it from the cache would reorder it. Opaque
+terrain, which is nearly all of it, stays on the cache.
+
 ### The C tier
 
 For selection that depends on runtime state, register from `entry`:

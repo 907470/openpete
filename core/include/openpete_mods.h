@@ -733,6 +733,42 @@ int  openpete_mods_material_terrain_claim(int texid, int env, int lp);
 /* Monotonic epoch over everything material_terrain_claim reads: selector
  * registration/removal and the mod enabled set. For claim latches. */
 unsigned openpete_mods_material_epoch(void);
+
+/* ── Retained-terrain material buckets ───────────────────────────────
+ * A retained face is baked once and redrawn for many presents without a
+ * walk, so it cannot carry a per-present slot id. It carries a BUCKET
+ * instead: the banked identity of the declarative selector that wins for
+ * its face key, 0 = none. The bake stamps it; the vertex stage keeps only
+ * the faces whose bucket matches the pass being drawn; the material epoch
+ * invalidates the bake. Identity, never an outcome — a slot number would
+ * be stale one present later. */
+#define OPENPETE_MATERIAL_TER_VARIANTS 3  /* arena vertex stage: plain/anim/near */
+#define OPENPETE_MATERIAL_TER_SLOTS    3  /* colour slot: world / world-MARK / fill */
+#define OPENPETE_MATERIAL_TER_PIPES \
+    (OPENPETE_MATERIAL_TER_VARIANTS * OPENPETE_MATERIAL_TER_SLOTS)
+/* Bucket ids are stamped into 8 spare bits of the baked face material. */
+#define OPENPETE_MATERIAL_TER_BUCKET_MAX 255
+
+/* The winning bucket for a face key, or 0 for none. Same predicate and the
+ * same priority as the draw-time resolve — a face must shade identically
+ * whether it is walked or retained. */
+int  openpete_mods_material_terrain_bucket(int texid, int env, int lp);
+/* Highest live bucket id (0 = no terrain material installed), so the draw
+ * loop knows how many material passes an arena can need. */
+int  openpete_mods_material_terrain_bucket_max(void);
+
+typedef struct {
+    const uint32_t* frag_spv;    /* the OP_PROFILE_TERRAIN module          */
+    size_t          frag_words;
+    void**          pipeline_slot; /* cached rhi_pipeline* for this variant */
+    const char*     owner;
+    int             uniform_slot;  /* material-UBO block (0 = no params)    */
+} openpete_mod_material_terrain_t;
+/* Fill `out` for one bucket and one pipeline variant index (0 ..
+ * OPENPETE_MATERIAL_TER_PIPES-1). Returns 0 on success, -1 when the bucket
+ * is dead, disabled, or has no terrain profile — draw those faces stock. */
+int  openpete_mods_material_terrain_bucket_gpu(
+        int bucket, int pipe_idx, openpete_mod_material_terrain_t* out);
 /* Per-present interned-slot table lifecycle + readout for the material
  * UBO (native_render): reset at scene-begin, then the extractor interns
  * during the walk, then native_render writes each slot's bytes into the

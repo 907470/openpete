@@ -988,6 +988,10 @@ typedef struct {
      * openpete_psx_decal.glsl). */
     void* pipeline[OPENPETE_MATERIAL_PIPE_VARIANTS];
     void* pipeline_mark;   /* stencil-MARK twin (hole-fill WORLD/ACTOR groups) */
+    /* Retained-terrain pipelines, one per (arena vertex stage x colour
+     * slot). Separate from `pipeline` because the terrain layout, the
+     * vertex input and the engine half of the contract all differ. */
+    void* pipeline_ter[OPENPETE_MATERIAL_TER_PIPES];
     int   user_enabled;    /* material_enable — the mod's own on/off */
     /* Static uniform block (material_set_params). Declarative materials have
      * no per-instance callback to mint a slot, so the block is interned into
@@ -1054,10 +1058,18 @@ unsigned openpete_mods_material_epoch(void) {
 
 static int openpete_mods_current_level(void);   /* defined with s_cur_level */
 
-int openpete_mods_material_terrain_claim(int texid, int env, int lp) {
-    if (s_mat_count == 0) return 0;
+/* One scan of the terrain selectors for a face key. Returns the winning
+ * DECLARATIVE selector index (-1 = none), by the same predicate and the same
+ * later-load-wins priority as the draw-time resolve. *inst is set when a
+ * PER-INSTANCE selector could reach the face: those mint a per-present slot
+ * from a callback and cannot be banked into a retained bake, so they still
+ * claim the sector back to the walk. */
+static int terrain_winner(int texid, int env, int lp, int* inst) {
+    *inst = 0;
+    if (s_mat_count == 0) return -1;
     const int untex = texid < 0;
     const int level = openpete_mods_current_level();
+    int best = -1;
     for (int i = 0; i < s_mat_count; i++) {
         const mod_material_t* m = &s_mats[i];
         if (!m->live || !m->user_enabled ||
@@ -1074,7 +1086,7 @@ int openpete_mods_material_terrain_claim(int texid, int env, int lp) {
              * env/tier refinements. */
             if (untex ? ((m->sel.flags & OP_SEL_UNTEXTURED) && m->sel.texture == -1)
                       : (!(m->sel.flags & OP_SEL_UNTEXTURED) && m->sel.texture == texid))
-                return 1;
+                *inst = 1;
             continue;
         }
         /* Declarative: the resolve's predicate over the face's tag bits. */
@@ -1084,8 +1096,54 @@ int openpete_mods_material_terrain_claim(int texid, int env, int lp) {
         if ((m->sel.flags & OP_SEL_LP_TIER) && !lp) continue;
         if ((m->sel.flags & OP_SEL_TEXTURED) && untex) continue;
         if ((m->sel.flags & OP_SEL_UNTEXTURED) && !untex) continue;
-        return 1;
+        if (best < 0 || m->load_index > s_mats[best].load_index) best = i;
     }
+    return best;
+}
+
+int openpete_mods_material_terrain_claim(int texid, int env, int lp) {
+    int inst = 0;
+    (void)terrain_winner(texid, env, lp, &inst);
+    /* A declarative winner no longer claims: the bake stamps its bucket and
+     * the retained draw serves it. Only a per-instance callback, whose
+     * outcome is per-present, still needs the walk. */
+    return inst;
+}
+
+int openpete_mods_material_terrain_bucket(int texid, int env, int lp) {
+    int inst = 0;
+    int w = terrain_winner(texid, env, lp, &inst);
+    /* A face a per-instance selector can reach walks the CPU anyway; giving
+     * it a bucket as well would paint it twice if it ever stopped claiming. */
+    if (inst || w < 0) return 0;
+    return (w + 1 <= OPENPETE_MATERIAL_TER_BUCKET_MAX) ? w + 1 : 0;
+}
+
+int openpete_mods_material_terrain_bucket_max(void) {
+    int max = 0;
+    for (int i = 0; i < s_mat_count; i++) {
+        const mod_material_t* m = &s_mats[i];
+        if (!m->live || m->per_instance || !m->user_enabled ||
+            !openpete_mods_is_enabled(m->owner)) continue;
+        if (m->sel.channel != -1 && m->sel.channel != OP_CHAN_TERRAIN) continue;
+        if (i + 1 > max && i + 1 <= OPENPETE_MATERIAL_TER_BUCKET_MAX) max = i + 1;
+    }
+    return max;
+}
+
+int openpete_mods_material_terrain_bucket_gpu(
+        int bucket, int pipe_idx, openpete_mod_material_terrain_t* out) {
+    if (!out || bucket <= 0 || bucket > s_mat_count) return -1;
+    if (pipe_idx < 0 || pipe_idx >= OPENPETE_MATERIAL_TER_PIPES) return -1;
+    mod_material_t* m = &s_mats[bucket - 1];
+    if (!m->live || !m->user_enabled || !openpete_mods_is_enabled(m->owner))
+        return -1;
+    if (m->frag < 0) return -1;
+    out->frag_spv = openpete_mods_shader_spv_terrain(m->frag, &out->frag_words);
+    if (!out->frag_spv || out->frag_words == 0) return -1;
+    out->pipeline_slot = &m->pipeline_ter[pipe_idx];
+    out->owner = m->owner;
+    out->uniform_slot = m->static_slot;
     return 0;
 }
 
@@ -1523,7 +1581,13 @@ void openpete_mods_material_remove_owner(const char* mod_id) {
             s_mats[i].pipeline_mark != OPENPETE_POSTFX_PIPE_FAILED &&
             s_retired_n < MOD_POSTFX_MAX)
             s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_mark;
+        for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++)
+            if (s_mats[i].pipeline_ter[b] &&
+                s_mats[i].pipeline_ter[b] != OPENPETE_POSTFX_PIPE_FAILED &&
+                s_retired_n < MOD_POSTFX_MAX)
+                s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_ter[b];
         for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++) s_mats[i].pipeline[b] = NULL;
+        for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++) s_mats[i].pipeline_ter[b] = NULL;
         s_mats[i].pipeline_mark = NULL;
         s_mats[i].live = 0;
     }
@@ -1542,7 +1606,13 @@ void openpete_mods_material_retire_all(void) {
             s_mats[i].pipeline_mark != OPENPETE_POSTFX_PIPE_FAILED &&
             s_retired_n < MOD_POSTFX_MAX)
             s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_mark;
+        for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++)
+            if (s_mats[i].pipeline_ter[b] &&
+                s_mats[i].pipeline_ter[b] != OPENPETE_POSTFX_PIPE_FAILED &&
+                s_retired_n < MOD_POSTFX_MAX)
+                s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_ter[b];
         for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++) s_mats[i].pipeline[b] = NULL;
+        for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++) s_mats[i].pipeline_ter[b] = NULL;
         s_mats[i].pipeline_mark = NULL;
     }
 }

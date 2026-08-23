@@ -42,7 +42,9 @@ trap 'rm -rf "$WORK"' EXIT
 # Stage one gallery copy per config so runs never share a config.toml.
 # `extra` is appended verbatim, so a rung can drive gallery.class etc.
 # STRENGTH overrides the highlight strength for one call; 0.0 makes every
-# lit row an IDENTITY material (see the identity rungs below).
+# lit row an IDENTITY material (see the identity rungs below). CACHE=1 forces
+# the retained terrain cache on (it is off by default on a software GPU) and
+# turns on its per-walk census; EXTRA_ARGS appends CLI flags.
 run_rows() {  # run_rows <tag> <bk2> <frame> <rows> <extra-toml>
     local tag=$1 bk2=$2 frame=$3 rows=$4 extra=$5
     local md="$WORK/mods-$tag" out="$WORK/$tag-$frame-vk.png"
@@ -53,14 +55,23 @@ run_rows() {  # run_rows <tag> <bk2> <frame> <rows> <extra-toml>
     printf 'gallery.rows = "%s"\ngallery.strength = %s\n%s\n' \
         "$rows" "${STRENGTH:-1.0}" "$extra" \
         > "$md/channel-gallery/config.toml"
-    timeout 300 "$BIN" --headless --no-config --disc "$DISC" \
+    OPENPETE_TERRAIN_CACHE_FORCE="${CACHE:-0}" \
+    OPENPETE_TERRAIN_GPU_CENSUS="${CACHE:-0}" \
+    timeout 600 "$BIN" --headless --no-config --disc "$DISC" \
         --run-recomp 0x80012204 --renderer vk --mute 1 --aspect 16:9 \
         --bk2 "games/spyro-1/bk2/$bk2.bk2" --screenshot-native-only \
         --mods-dir "$md" --screenshot-on-frame "$frame" \
         --screenshot-output "$WORK/$tag-{n}.png" \
-        --frame-limit $((frame + 2)) --max-runtime-seconds 280 \
+        --frame-limit $((frame + 2)) --max-runtime-seconds 580 \
+        ${EXTRA_ARGS:-} \
         > "$WORK/$tag.log" 2>&1
     [ -s "$out" ]                  # caller checks; a missing capture is a hard error
+}
+
+# Last per-walk census line's <field>= value, or "" when the cache never ran.
+census_field() {  # census_field <tag> <field>
+    sed -n 's/.*\[tgpu-cen [^]]*\].*[ ]'"$2"'=\([0-9-]*\).*/\1/p' \
+        "$WORK/$1.log" | tail -1
 }
 
 # Changed-pixel count between two captures.
@@ -266,6 +277,44 @@ if [ -s "$WORK/tint-1800-vk.png" ]; then
     fi
 else
     bad "no capture for the many-outcome rung (see $WORK/tint.log)"
+fi
+
+# ── residency invariance (terrain) ────────────────────────────────────
+# A face's shading is a function of the face, never of where the face
+# happens to live. Terrain is the only channel where that can be tested,
+# because it is the only one with two residencies: the CPU walk, and the
+# retained GPU cache that redraws baked arenas without walking.
+#
+# Two legs, same material, same frame, same build — one with the cache on
+# and one with --terrain-cache 0. The number is 0, not "within tolerance":
+# both legs render the same frame.
+#
+# It MUST assert the cache actually engaged, or it passes vacuously — a
+# terrain material used to claim every sector back to the walk, which would
+# make both legs walk and read 0 px having tested nothing. `sel` counts
+# sectors claimed by a material selector and must be 0; `secs` counts
+# sectors offered to the cache and must be nonzero.
+say "the same material, walked and retained, is the same pixels"
+if CACHE=1 run_rows resret flame 1800 1 "" &&
+   CACHE=1 EXTRA_ARGS="--terrain-cache 0" run_rows reswalk flame 1800 1 ""; then
+    secs=$(census_field resret secs)
+    sel=$(census_field resret sel)
+    if [ -z "$secs" ]; then
+        # No census line at all: the cache never ran, so there is nothing to
+        # compare. Skip loudly rather than report a green that means nothing.
+        ok "SKIPPED: the retained terrain cache did not engage on this device"
+    elif [ "${sel:-1}" -ne 0 ] || [ "${secs:-0}" -eq 0 ]; then
+        bad "the cache did not serve the material (secs=${secs:-?} sel=${sel:-?}) — a nonzero sel means the selector claimed its sectors back to the walk, so both legs walked and this rung proves nothing"
+    else
+        n=$(diffpx "$WORK/resret-1800-vk.png" "$WORK/reswalk-1800-vk.png")
+        if [ "${n:-999}" -eq 0 ]; then
+            ok "retained == walked (0 px; cache engaged, secs=$secs sel=$sel)"
+        else
+            bad "retained and walked disagree by ${n:-?} px — a material's reach or output is depending on residency, which strobes as the player moves"
+        fi
+    fi
+else
+    bad "no capture for the residency rung (see $WORK/resret.log, $WORK/reswalk.log)"
 fi
 
 echo

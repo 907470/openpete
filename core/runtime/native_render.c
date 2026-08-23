@@ -340,6 +340,10 @@ static rhi_ubo* s_pfx_ubo;
  * override binds it. */
 static rhi_ubo* s_mat_ubo;
 static void fill_material_ubo(void);
+/* Shared with the retained terrain cache: a terrain material pass binds the
+ * same set-3 pair a walked material draw binds, so both residencies read one
+ * uniform source. */
+struct rhi_ubo *openpete_native_material_ubo(void) { return s_mat_ubo; }
 static uint32_t           s_scene_bg;  /* panel-0 background fill (rgba); 0 = none */
 
 /* Reference frame-sync: the native scene is built from the FRESHLY-computed
