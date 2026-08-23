@@ -104,8 +104,17 @@ enum {
 enum {
     OP_POSTFX_COMPOSITE = 0, /* after scene+HUD compose, before the present
                               * blit — the first and default point */
-    OP_POSTFX_SCENE     = 1, /* post-3D, pre-HUD (not yet available) */
-    OP_POSTFX_PRESENT   = 2, /* post-blit, swapchain (not yet available) */
+    OP_POSTFX_SCENE     = 1, /* post-3D, pre-HUD: effects tint the world
+                              * while the HUD stays crisp on top. Also
+                              * gets real scene depth at op_scene_depth
+                              * (WORLD-opaque pre-pass; terrain, not
+                              * mobys). See mods/scene-sepia. */
+    OP_POSTFX_PRESENT   = 2, /* post-blit, swapchain — NOT IMPLEMENTED.
+                              * Registering here is refused. It would be
+                              * identical to COMPOSITE until the present
+                              * blit does something COMPOSITE cannot see
+                              * (an upscaler), which is why it has not
+                              * been built. */
 };
 
 /* Canonical sim-tick rate in Hz — exactly 1125000/37609 = 29.9130527… .
