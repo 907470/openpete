@@ -1522,11 +1522,9 @@ static uint8_t  s_wtri_mangle[MAX_NTRI]; /* any vertex near-fixed-up (unr) or
                                           * projection — never a key emitter */
 static uint32_t s_wtri_fkey[MAX_NTRI]; /* packed SXY vertex-index triple (face topology id) */
 static uint16_t s_wtri_cls[MAX_NTRI];  /* m_Class of the emitting moby (provenance tag) */
-static uint16_t s_wtri_matslot[MAX_NTRI]; /* per-instance material slot (S8b, 0 = none) */
 static uint32_t s_cur_moby_key;        /* moby for the record currently being walked */
 static uint16_t s_cur_moby_cls;        /* m_Class of that moby (set beside the key) */
 static int8_t   s_cur_moby_dofs;       /* authored OT bias (moby+0x47, set beside the key) */
-static uint16_t s_cur_moby_matslot;    /* interned per-instance material slot for that moby */
 static float    s_cur_env_az;          /* current record's TR azimuth (env-UV bias) */
 static uint32_t s_emit_fkey;           /* packed index triple for the next emit_wtri */
 #define PACK_FKEY(a,b,c) (((uint32_t)(a)&0x3FFu) | (((uint32_t)(b)&0x3FFu)<<10) | (((uint32_t)(c)&0x3FFu)<<20))
@@ -1588,7 +1586,6 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
                                          a->sat || b->sat || c->sat) ? 1 : 0);
     s_wtri_fkey[s_wtri_n] = s_emit_fkey;
     s_wtri_cls[s_wtri_n] = s_cur_moby_cls;     /* provenance tag (mod-shaders S6) */
-    s_wtri_matslot[s_wtri_n] = s_cur_moby_matslot;  /* per-instance material (S8b) */
     ntri_t* t = &s_wtri[s_wtri_n++];
     t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez, a->tvz};
     t->v[1]=(ntri_vert){b->sx,b->sy,b->vz,ub,vb,cb, b->ex,b->ey,b->ez, b->tvz};
@@ -1991,10 +1988,6 @@ static int build_walk_tris_inner(CPUState* cpu) {
                 }
             }
         }
-        /* S8b: per-instance material resolve at extraction (cpu here);
-         * gated on a per-instance selector existing (single bool). */
-        s_cur_moby_matslot = openpete_mods_material_has_instance()
-            ? (uint16_t)openpete_mods_material_moby_slot(cpu, s_cur_moby_cls, mob) : 0;
         s_cur_env_az = R->env_az; /* per-moby env-UV bias input (SPEC metal) */
         { /* HUD tag: 2=HUD3D icon, 1=HUD flat, 0=actor */
           s_cur_ui = openpete_ui_moby_is_addr_static(mob) ? 2
@@ -3230,6 +3223,9 @@ static void push_scene_moby(void) {
         openpete_mobyrank_match();
     }
     uint32_t rord_moby[256]; int rord_n = 0;  /* this walk's ranked-moby ordinals */
+    /* Per-moby memo for the material-slot resolve below (faces of one moby
+     * are contiguous in this stream). */
+    uint32_t mat_last_moby = 0; uint16_t mat_last_slot = 0; int mat_have = 0;
     for (int i = 0; i < s_wtri_n; i++) {
         int cat = s_wtri_ui[i] == 2 ? OPENPETE_SCENE_HUD3D
                 : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
@@ -3332,8 +3328,31 @@ static void push_scene_moby(void) {
              * must never yield the pixel to it (psx_scene_key.frag). */
             t.rank = -1.0f;
         }
+        /* Per-instance material slot, resolved HERE rather than banked at
+         * extraction. Slot ids are interned per feed cycle and this loop
+         * runs AFTER scene_begin_frame() has reset that table, so a slot
+         * captured during the walk names nothing by the time it would be
+         * stamped — and because ids are handed out in first-seen order, a
+         * stale one can even name another instance's block. Re-resolving
+         * from the banked IDENTITY (moby ptr + class) is the same rule the
+         * residency ladder applies everywhere else: bank identity, never
+         * outcomes. Memoized on the moby ptr — the walk emits a moby's
+         * faces contiguously, so this is one resolve per moby, not per
+         * face. */
+        uint16_t matslot = 0;
+        if (openpete_mods_material_has_instance()) {
+            if (mat_have && s_wtri_moby[i] == mat_last_moby) {
+                matslot = mat_last_slot;
+            } else {
+                matslot = (uint16_t)openpete_mods_material_moby_slot(
+                    NULL, s_wtri_cls[i], s_wtri_moby[i]);
+                mat_last_moby = s_wtri_moby[i];
+                mat_last_slot = matslot;
+                mat_have = 1;
+            }
+        }
         openpete_native_scene_set_tag(
-            OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], s_wtri_matslot[i]));
+            OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], matslot));
         openpete_native_scene_add_tri(&t, cat, 0);
     }
     openpete_native_scene_set_tag(0);   /* leave the tagged emit loop clean */
@@ -4646,8 +4665,6 @@ static int build_shaded_walk_tris(CPUState* cpu) {
         s_cur_moby_key = R->moby; s_emit_fkey = 0u;   /* colour-cache identity (shaded never matches the regular cache) */
         s_cur_moby_cls = R->moby ? (uint16_t)cpu->read_half(R->moby + 0x36) : 0;
         s_cur_moby_dofs = R->moby ? (int8_t)cpu->read_byte(R->moby + 0x47u) : 0; /* og OT bias (rot>>24) */
-        s_cur_moby_matslot = openpete_mods_material_has_instance()
-            ? (uint16_t)openpete_mods_material_moby_slot(cpu, s_cur_moby_cls, R->moby) : 0;
         s_cur_fogsup = 0;         /* shaded mobys have no fog band — never fog-suppressed */
         s_cur_ui = openpete_ui_moby_is_addr_static(R->moby) ? 2
                  : (openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot) ? (model_3d ? 2 : 1)
@@ -5536,21 +5553,20 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         const hold_t* h = replays[k].h;
         float dx = (float)replays[k].dx, dy = (float)replays[k].dy;
         float vzs = (float)replays[k].vzs;
-        /* Material slots are interned per PRESENT (frame_reset in scene_begin),
-         * so the capture present's slot is meaningless here — re-resolve from
-         * the banked class. Without this (and cls/front/fogsup below) the
-         * replayed tris kept whatever stale values these arrays held at their
-         * indices, so a held moby lost its mod material on every intermediate
-         * present (distant decor flickering stock-bright at high FPS). */
-        uint16_t hslot = openpete_mods_material_has_instance()
-            ? (uint16_t)openpete_mods_material_moby_slot(cpu, h->cls, h->moby) : 0;
+        /* cls/front/fogsup are re-stamped per replayed tri below: without
+         * them the replayed tris kept whatever stale values these arrays
+         * held at their indices, so a held moby lost its mod material on
+         * every intermediate present (distant decor flickering stock-bright
+         * at high FPS). The material SLOT is no longer among them — it is
+         * resolved from (moby, class) at stamp time in push_scene_moby,
+         * after the per-cycle intern table has been reset, which is the
+         * only point where a slot id is meaningful. */
         s_hold_replayed++;
         for (int t = 0; t < h->n && s_wtri_n < MAX_NTRI; t++) {
             s_wtri_ui[s_wtri_n]      = 0;
             s_wtri_front[s_wtri_n]   = h->front;
             s_wtri_fogsup[s_wtri_n]  = h->fogsup;
             s_wtri_cls[s_wtri_n]     = h->cls;
-            s_wtri_matslot[s_wtri_n] = hslot;
             s_wtri_moby[s_wtri_n]    = h->moby;
             s_wtri_fkey[s_wtri_n]    = s_hold_fkey[h->off + t];
             s_wtri_mode[s_wtri_n]    = s_hold_mode[h->off + t];

@@ -206,12 +206,6 @@ scene.
 Instances whose blocks are byte-identical share a slot and stay in one
 batch, so cost tracks *distinct outcomes*, not matches.
 
-> **Current limitation:** a callback returning many distinct blocks
-> currently loses most of its instances — they fall back to stock
-> shading. Callbacks that return a small set of shared blocks are
-> unaffected. `mods/moby-instance-tint` reproduces it and its manifest
-> carries the diagnosis.
-
 ### What is not reachable
 
 Being tagged does not make geometry reshadeable. A material replaces the

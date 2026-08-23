@@ -131,9 +131,7 @@ static row_t g_rows[] = {
     "then a callback reads each instance's m_State and declines the ones "
     "that do not match. Set the state slider to -1 to claim every "
     "instance of the class, which is what the plain class row already "
-    "does — the point is what happens when you narrow it. This row "
-    "returns ONE shared block, so it avoids the many-distinct-outcomes "
-    "defect that mods/moby-instance-tint reproduces.",
+    "does — the point is what happens when you narrow it.",
     OP_CHAN_MOBY, -1, 0, {0.10f, 1.00f, 0.35f}, 0, -1 },
 };
 #define NROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
