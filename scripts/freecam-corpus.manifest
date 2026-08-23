@@ -46,6 +46,15 @@ gnorc_cove | pos=(36863, 117108, 30800) yaw=1448 pitch=343
 # GTE-projected corners, so which faces drop shifts under small yaw changes.
 # This pins the mirror at one angle, where og and the native path agree
 # structurally and differ only on edge pixels.
+#
+# The knife edge cuts both ways: this pose's golden is the only one in the
+# corpus that has ever needed re-capturing without a code change behind it.
+# Its first PNGs matched no reachable build — three independent binaries
+# (the bless commit's own, a later one, and a second checkout's) agreed
+# byte-for-byte with each other and differed from those PNGs by the same
+# 41/19/78/39 px, while the two sibling gnorc_cove poses matched exactly.
+# The replacements are that consensus. A scattered divergence here is a
+# real verdict flip and worth chasing; it is not capture noise.
 gnorc_cove | pos=(40035, 93020, 48414) yaw=394 pitch=475
 haunted_towers | pos=(100231, 109612, 61079) yaw=-1046 pitch=992
 haunted_towers | pos=(100234, 109750, 63909) yaw=-1046 pitch=992
