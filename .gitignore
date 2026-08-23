@@ -55,3 +55,7 @@ mods/spyro15-cliff-town/assets/
 # is what gets committed.
 fill-tags.session
 tests/freecam/__pycache__/
+
+# ctest scratch, written when ctest runs from the source dir rather than
+# the build dir (a wrong-cwd invocation still leaves this behind).
+Testing/
