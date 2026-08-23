@@ -679,6 +679,24 @@ void openpete_tercache_frame_commit(void)
 
 /* ---- draw --------------------------------------------------------------- */
 
+/* OPENPETE_TERRAIN_DUP_DRAW=N (dev probe): issue every arena draw N times.
+ * Pricing the material design — a partial material claim costs one extra
+ * full-arena pass per material, and the question is whether the retained
+ * vertex stage is cheap enough for that to be free. N=2 is the upper bound
+ * (the duplicate also re-runs the FRAGMENT stage, which a real material
+ * pass mostly would not). */
+static int tc_dup_draw(void)
+{
+    static int n = -1;
+    if (n < 0) {
+        const char *e = getenv("OPENPETE_TERRAIN_DUP_DRAW");
+        n = (e && *e) ? atoi(e) : 1;
+        if (n < 1) n = 1;
+        if (n > 8) n = 8;
+    }
+    return n;
+}
+
 static void tc_draw_arena(int arena, int pass_sel, const openpete_tercache_clip *c)
 {
     tc_arena *a = &s_tc.arena[arena];
@@ -693,7 +711,8 @@ static void tc_draw_arena(int arena, int pass_sel, const openpete_tercache_clip 
     rhi_push_constants(s_tc.dev, &pc, sizeof(pc));
     if (a->pv) rhi_bind_vertex_buffer2(s_tc.dev, a->vb, a->pv);
     else       rhi_bind_vertex_buffer(s_tc.dev, a->vb);
-    rhi_draw(s_tc.dev, a->high, 0);
+    for (int r = 0, rn = tc_dup_draw(); r < rn; r++)
+        rhi_draw(s_tc.dev, a->high, 0);
     s_tc.draws_last++;
 }
 
@@ -735,6 +754,12 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
             s_tc.ubo_flush_serial = fs;
         }
     }
+    static const char *k_zone[] = { "ter.world", "ter.alpha", "ter.add",
+                                    "ter.sub", "ter.fill", "ter.prepass",
+                                    "ter.key" };
+    rhi_gpu_zone_begin(s_tc.dev,
+                       (which >= 0 && which <= OPTC_DRAW_KEY) ? k_zone[which]
+                                                             : "ter.gpu");
     rhi_bind_pipeline(s_tc.dev, p);
     if (vram) rhi_bind_vram(s_tc.dev, vram);
     /* og key contest inputs (scene slots only; same bind-at-pipe discipline
@@ -803,6 +828,7 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
             tc_draw_anim(s_tc.pipe_n_key, OPTC_ARENA_N_LP,     2, clip);
             break;
     }
+    rhi_gpu_zone_end(s_tc.dev);
 }
 
 void openpete_tercache_get_stats(openpete_tercache_stats_t *out)
