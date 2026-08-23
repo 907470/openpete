@@ -2721,8 +2721,17 @@ int openpete_mods_init(const openpete_options_t* opts) {
     mods_sdk_dir(sdk_dir, sizeof sdk_dir);
     snprintf(s_sdk_dir, sizeof s_sdk_dir, "%s", sdk_dir);
 
-    /* Phase A: parse all discovered manifests (no loading yet). */
-    struct openpete_mod pending[MODS_MAX];
+    /* Phase A: parse all discovered manifests (no loading yet).
+     *
+     * STATIC, not a local: struct openpete_mod is ~7 KB (it carries several
+     * PATH_MAX buffers plus the [[material]] rows), so MODS_MAX of them is
+     * over half a megabyte in one frame. As a local that silently outgrew
+     * the Windows main-thread stack the moment the material rows were added
+     * — boot died with EXCEPTION_STACK_OVERFLOW right after the PSX EXE
+     * loaded, while Linux's 8 MB stack absorbed it and showed nothing.
+     * Single-threaded boot-path code, so a static is the cheap fix and it
+     * matches s_mods above. */
+    static struct openpete_mod pending[MODS_MAX];
     int n_pending = 0;
     for (int i = 0; i < n_refs && n_pending < MODS_MAX; i++) {
         struct openpete_mod* mod = &pending[n_pending];
