@@ -30,7 +30,9 @@
  * A shader includes one contract or the other, never both.
  *
  * Reserved for the engine: push constants, sets 0-1, and input locations
- * 0-1. A material's own uniform block is set 3 binding 1 (std140). */
+ * 0-4 (the vertex stage writes more than this contract names — declaring
+ * one of the unnamed slots reads engine state that is free to change).
+ * A material's own uniform block is set 3 binding 1 (std140). */
 
 #ifndef OPENPETE_PSX_MATERIAL_GLSL
 #define OPENPETE_PSX_MATERIAL_GLSL
@@ -52,8 +54,20 @@ layout(push_constant) uniform op_psx_material {
     vec4 hd_fog_b;          /*   c' = c*a + b (identity when unfogged); .rgb  */
 } op_pc;
 
-layout(location = 0) in vec2 vUV;     /* texel coords within the texture page */
-layout(location = 1) in vec4 vColor;  /* per-vertex modulate (R8G8B8A8 -> 0..1) */
+/* The vertex stage emits UV and colour PRE-MULTIPLIED by the perspective
+ * ratio vQ, and vQ alongside them, so the rasterizer's screen-linear
+ * interpolation reconstructs perspective-correct values after the divide.
+ * Read them through op_uv() / op_color(), never raw: the raw varyings are
+ * only meaningful once divided, and they are wrong by a factor that grows
+ * as geometry approaches the camera. */
+layout(location = 0) in vec2 vUV;     /* texel coords   x vQ (divide by vQ) */
+layout(location = 1) in vec4 vColor;  /* modulate 0..1  x vQ (divide by vQ) */
+layout(location = 2) in float vQ;     /* perspective ratio (psx_scene.vert) */
+
+/* Perspective-correct texel coords within the texture page. */
+vec2 op_uv()    { return vUV / vQ; }
+/* Perspective-correct per-vertex modulate colour (R8G8B8A8 -> 0..1). */
+vec4 op_color() { return vColor / vQ; }
 
 uint op_vram_at(int x, int y) { return texelFetch(op_vram, ivec2(x, y), 0).r; }
 
@@ -70,7 +84,9 @@ vec4 op_decode555(uint p)
                 1.0 - 0.5 * float((p >> 15) & 1u));
 }
 
-/* Raw texel at page-relative texel coords (this draw's bpp + CLUT). */
+/* Raw texel at page-relative texel coords (this draw's bpp + CLUT).
+ * Pass op_uv() for this fragment's own texel; the raw vUV varying is
+ * still multiplied by the perspective ratio. */
 vec4 op_psx_texel(ivec2 uv)
 {
     uint word;
@@ -100,9 +116,10 @@ vec3 op_psx_modulate(vec3 texel, vec3 vcol)
  * a == 0.0 means the PSX transparent sentinel — the caller discards. */
 vec4 op_psx_shade()
 {
-    if (op_pc.bpp == 0) return vec4(vColor.rgb, 1.0);
-    vec4 c = op_psx_texel(ivec2(vUV));
-    return vec4(op_psx_modulate(c.rgb, vColor.rgb), c.a);
+    vec4 col = op_color();
+    if (op_pc.bpp == 0) return vec4(col.rgb, 1.0);
+    vec4 c = op_psx_texel(ivec2(op_uv()));
+    return vec4(op_psx_modulate(c.rgb, col.rgb), c.a);
 }
 
 /* ---- HD texture-pack access ------------------------------------------
@@ -117,8 +134,9 @@ vec4 op_psx_shade()
  * GPU upload hasn't completed (first sighting — one present of stock). */
 bool op_pack_active() { return op_pc.hd != 0; }
 
-/* Raw replacement texel at page-texel coords (vUV space). The pack file's
- * own resolution and filter; true per-texel alpha; NO fog or modulation. */
+/* Raw replacement texel at page-texel coords (op_uv() space). The pack
+ * file's own resolution and filter; true per-texel alpha; NO fog or
+ * modulation. */
 vec4 op_pack_texel(vec2 page_uv)
 {
     vec2 t = (page_uv - op_pc.hd_org) / op_pc.hd_size;
@@ -134,10 +152,10 @@ vec4 op_pack_texel(vec2 page_uv)
 vec4 op_pack_shade()
 {
     if (op_pc.hd == 0) return op_psx_shade();
-    vec4 c = op_pack_texel(vUV);
+    vec4 c = op_pack_texel(op_uv());
     if (c.a < 0.5) return vec4(0.0);
     c.rgb = clamp(c.rgb * op_pc.hd_fog_a.rgb + op_pc.hd_fog_b.rgb, 0.0, 1.0);
-    return vec4(op_psx_modulate(c.rgb, vColor.rgb), 1.0);
+    return vec4(op_psx_modulate(c.rgb, op_color().rgb), 1.0);
 }
 
 #endif /* OPENPETE_PSX_MATERIAL_GLSL */

@@ -25,5 +25,9 @@ layout(location = 0) out vec4 outColor;
 void main()
 {
     vec4 base = op_pack_shade();
+    /* alpha 0 is the PSX transparent-texel sentinel, not a colour. Opaque
+     * draws do not blend, so writing it through paints the cut-out holes
+     * solid instead of leaving them empty. */
+    if (base.a == 0.0) discard;
     outColor = vec4(mix(base.rgb, tint.rgb, 0.75), base.a);
 }
