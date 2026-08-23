@@ -153,6 +153,7 @@ for leg in "id_terrain flame 1800 1 terrain (both LOD tiers)" \
            "id_player flame 1800 4 player" \
            "id_sky cyclorama-portal 2000 5 sky" \
            "id_flame flame 1800 6 flame ribbon" \
+           "id_particle flame 1800 10 particle billboards" \
            "id_shadow artisans-bridge 2000 8 moby shadows (decal)" \
            "id_portal cyclorama-portal 2000 15 portal previews"; do
     set -- $leg

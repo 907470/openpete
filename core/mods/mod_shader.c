@@ -994,14 +994,21 @@ unsigned openpete_mods_material_epoch(void) {
     return 1u + s_mat_epoch + openpete_mods_toggle_epoch();
 }
 
+static int openpete_mods_current_level(void);   /* defined with s_cur_level */
+
 int openpete_mods_material_terrain_claim(int texid, int env, int lp) {
     if (s_mat_count == 0) return 0;
     const int untex = texid < 0;
+    const int level = openpete_mods_current_level();
     for (int i = 0; i < s_mat_count; i++) {
         const mod_material_t* m = &s_mats[i];
         if (!m->live || !m->user_enabled ||
             !openpete_mods_is_enabled(m->owner)) continue;
         if (m->sel.channel != -1 && m->sel.channel != OP_CHAN_TERRAIN) continue;
+        /* Mirror the resolve's level test. Without it a level-scoped row
+         * claims every sector in EVERY level — the sector it would never
+         * override still walks the CPU, for the whole game. */
+        if (m->sel.level != -1 && level >= 0 && m->sel.level != level) continue;
         if (m->per_instance) {
             /* Mirror the winner scans exactly: the untex band resolve keys
              * on OP_SEL_UNTEXTURED + texture=-1, the S9 texture resolve on
@@ -1156,7 +1163,14 @@ static int material_moby_winner(int cls) {
  * renders. Draw-time resolve is the only consumer, and -1 (nothing has
  * pushed yet) makes every level key inert rather than wrongly matching. */
 static int s_cur_level = -1;
-void openpete_mods_set_level(int level_id) { s_cur_level = level_id; }
+void openpete_mods_set_level(int level_id) {
+    /* The retained-terrain claim latches its verdict against
+     * openpete_mods_material_epoch(), and that verdict now depends on the
+     * level (selectors are level-scoped, because sector and texture ids are
+     * per-level). So a level change has to move the epoch, or a sector
+     * latched in one level keeps that answer into the next. */
+    if (level_id != s_cur_level) { s_cur_level = level_id; s_mat_epoch++; }
+}
 static int openpete_mods_current_level(void) { return s_cur_level; }
 
 void openpete_mods_material_frame_reset(void) {
