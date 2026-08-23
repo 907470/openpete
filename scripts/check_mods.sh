@@ -672,6 +672,101 @@ else
     ok "ffmpeg/PIL unavailable — SCENE recording assertion skipped"
 fi
 
+# ── declarative materials: a shader mod with NO C at all ───────────────
+# The zero-C tier's whole claim is that a manifest plus a .frag is a
+# complete mod, so the rung asserts exactly that: the mod loads down the
+# assets-only path (never compiled), its [[material]] rows arm, and the
+# geometry they select actually changes on screen. The pixel leg is a
+# controlled A/B (same frame and seed, mod present vs absent) rather than
+# a colour classifier — "some pixels moved" is the structural claim; which
+# colour they moved to is the mod's business, not the gate's.
+say "declarative materials: manifest-only mod arms rows without compiling"
+fixture "$WORK/decl" declarative-reshade
+out="$(run_game "$WORK/decl" 400 --renderer vk 2>&1)"
+if printf '%s\n' "$out" | grep -q "declarative-reshade: 3 declarative material row(s)"; then
+    ok "manifest [[material]] rows parsed"
+else
+    bad "declarative rows not parsed"
+    printf '%s\n' "$out" | grep -i "declarative-reshade" | head -3
+fi
+if printf '%s\n' "$out" | grep -q "loaded declarative-reshade .*assets only"; then
+    ok "loaded down the assets-only path — nothing was compiled"
+else
+    bad "zero-C mod did not take the assets-only path"
+fi
+if [ "$(printf '%s\n' "$out" | grep -c "declarative-reshade: material selector armed")" = "3" ]; then
+    ok "all three selectors armed (incl. the enabled=false row)"
+else
+    bad "wrong number of armed selectors"
+fi
+
+# A bad channel name must be REFUSED, never defaulted to "any": silently
+# widening a typo'd selector would repaint geometry the author never asked
+# for, which is the one failure mode the selector contract exists to stop.
+say "declarative materials: an unknown channel is refused, not widened"
+mkdir -p "$WORK/declbad/typo/shaders"
+cp mods/declarative-reshade/shaders/tint.frag "$WORK/declbad/typo/shaders/"
+cat > "$WORK/declbad/typo/mod.toml" <<'TOML'
+[mod]
+id = "typo"
+version = "0.0.1"
+api = 3
+[[material]]
+frag = "shaders/tint.frag"
+channel = "terrian"
+TOML
+mkdir -p "$WORK/decl2"
+ln -sfn "$WORK/declbad/typo" "$WORK/decl2/typo"
+echo "typo" > "$WORK/decl2/enabled.txt"
+out="$(run_game "$WORK/decl2" 300 2>&1)"
+if printf '%s\n' "$out" | grep -q "unknown channel \"terrian\""; then
+    ok "typo'd channel rejected by name"
+else
+    bad "typo'd channel was not rejected"
+fi
+if printf '%s\n' "$out" | grep -q "typo: material selector armed"; then
+    bad "the refused row armed anyway — it would match every channel"
+else
+    ok "no selector armed from the refused row"
+fi
+
+say "declarative materials: the rows actually repaint their geometry"
+if python3 -c "import PIL" 2>/dev/null; then
+    mkdir -p "$WORK/declnone"; : > "$WORK/declnone/enabled.txt"
+    for leg in none decl; do
+        d="$WORK/decl"; [ "$leg" = none ] && d="$WORK/declnone"
+        timeout 300 "$BIN" --headless --no-config --disc "$DISC" \
+            --run-recomp 0x80012204 --renderer vk --mute 1 \
+            --bk2 games/spyro-1/bk2/flame.bk2 --screenshot-native-only \
+            --mods-dir "$d" --screenshot-on-frame 1800 \
+            --screenshot-output "$WORK/decl-$leg-{n}.png" \
+            --frame-limit 1802 --max-runtime-seconds 280 \
+            > "$WORK/decl-$leg.log" 2>&1 || true
+    done
+    if [ -s "$WORK/decl-none-1800-vk.png" ] && [ -s "$WORK/decl-decl-1800-vk.png" ]; then
+        n_changed=$(python3 - "$WORK/decl-none-1800-vk.png" "$WORK/decl-decl-1800-vk.png" <<'PYEOF'
+import sys
+from PIL import Image, ImageChops
+a = Image.open(sys.argv[1]).convert("RGB")
+b = Image.open(sys.argv[2]).convert("RGB")
+print(sum(1 for p in ImageChops.difference(a, b).getdata() if p != (0, 0, 0)))
+PYEOF
+)
+        # The player + flame rows cover a few percent of this frame; a
+        # threshold well under that catches "armed but never drew" without
+        # pinning the gate to an exact pixel count.
+        if [ "${n_changed:-0}" -gt 2000 ]; then
+            ok "manifest rows repainted $n_changed px vs no mods"
+        else
+            bad "declarative rows armed but changed only ${n_changed:-0} px"
+        fi
+    else
+        ok "no headless vk capture available — pixel assertion skipped"
+    fi
+else
+    ok "PIL unavailable — declarative pixel assertion skipped"
+fi
+
 echo
 if [ "$fail" -eq 0 ]; then
     echo "[modtest] ALL GREEN"

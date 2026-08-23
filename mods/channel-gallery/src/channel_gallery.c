@@ -10,6 +10,12 @@
  * cannot light yet stay, marked KNOWN GAP — they are the frontier, and
  * deleting them to look complete is how the gallery stops being useful.
  *
+ * This is the C-side demonstrator. `mods/declarative-reshade` is its zero-C
+ * twin: the same selectors expressed as [[material]] manifest rows, with no
+ * source file at all. Every selector key one of them can express, the other
+ * should be able to as well — if that stops being true, one of them is
+ * lying about the seam.
+ *
  * Reading the result:
  *   - A row marked KNOWN GAP cannot light in this build. That is the map
  *     working, not a bug.

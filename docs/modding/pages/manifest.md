@@ -102,6 +102,28 @@ title = "GRIM GARDEN"      # optional: in-game title if it should differ
   applied to the user's own disc — see `grim-garden` or
   `spyro15-cliff-town` for the pattern) that writes `assets/levels/`.
 
+## `[[material]]` — re-shading, zero code
+
+The other no-C block: a `[[material]]` row points a fragment shader at a
+subset of the geometry the engine already draws.
+
+```toml
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "flame"
+ident   = 0                          # the additive plume, not the base caps
+params  = [0.30, 0.55, 1.00, 0.60]   # arrives as the shader's std140 block
+```
+
+A mod that is one manifest plus one `.frag` is a complete, working mod —
+see `mods/declarative-reshade`. Selector keys, precedence against C-side
+registrations, and what is *not* reachable are documented in
+[Mod shaders](shaders.md#materials--re-shading-the-engines-own-draws).
+
+Rows are display-only (they change colour maths, never compositing or
+gameplay), and an unrecognised key is refused rather than ignored — a
+typo must not silently widen what you selected.
+
 ## config.toml
 
 `config.toml` (optional, next to `mod.toml`) describes what the user

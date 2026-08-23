@@ -129,6 +129,41 @@ typedef struct {
     double  def_d;     /* default: float */
     char    def_s[64]; /* default: string */
 } mod_cfg_row_t;
+/* One [[material]] row from mod.toml — the zero-C material tier. Holds
+ * exactly what `material_register` takes, in manifest spelling, so a mod
+ * that only wants "reshade this channel with this frag" needs no C at
+ * all. Rows register BEFORE openpete_mod_entry, so a mixed mod's C code
+ * registers later and therefore wins (last match takes the pixels): the
+ * manifest states the default, code refines it. */
+#define MOD_MATERIAL_ROWS_MAX 16
+#define MOD_MATERIAL_PARAMS_MAX 64   /* floats; capped again by the ABI's
+                                      * OPENPETE_MATERIAL_UNIFORMS_MAX */
+/* Manifest channel spelling -> OP_CHAN_*. "any" (or an absent key) is -1;
+ * an unrecognised name returns -2 so the caller refuses the row instead
+ * of silently widening it to every channel. */
+static int mod_channel_from_name(const char* s) {
+    static const struct { const char* name; int chan; } k[] = {
+        { "any",      -1 },              { "moby",     OP_CHAN_MOBY },
+        { "terrain",  OP_CHAN_TERRAIN }, { "player",   OP_CHAN_PLAYER },
+        { "flame",    OP_CHAN_FLAME },   { "particle", OP_CHAN_PARTICLE },
+        { "sky",      OP_CHAN_SKY },     { "shadow",   OP_CHAN_SHADOW },
+        { "tracer",   OP_CHAN_TRACER },  { "portal",   OP_CHAN_PORTAL },
+    };
+    for (size_t i = 0; i < sizeof k / sizeof k[0]; i++)
+        if (strcmp(s, k[i].name) == 0) return k[i].chan;
+    return -2;
+}
+
+typedef struct {
+    char  frag[128];   /* "shaders/<name>.frag" — relative to the mod dir */
+    char  vert[128];   /* optional "shaders/<name>.vert" */
+    int   channel;     /* OP_CHAN_*; -1 = any */
+    int   ident, moby_class, texture, level;   /* -1 = any */
+    unsigned flags;    /* OP_SEL_* narrowing bits */
+    float params[MOD_MATERIAL_PARAMS_MAX];
+    int   n_params;
+    int   enabled;     /* [[material]] enabled = false starts it off */
+} mod_material_row_t;
 #define MOD_PATH_MAX      1024
 #define MOD_SRCS_MAX      64
 #define MOD_DEPS_MAX      8
@@ -157,6 +192,8 @@ struct openpete_mod {
     int   n_bindings;
     mod_cfg_row_t cfg_rows[MOD_CFG_ROWS_MAX]; /* [[config]] schema */
     int   n_cfg;
+    mod_material_row_t mat_rows[MOD_MATERIAL_ROWS_MAX]; /* [[material]] */
+    int   n_mat_rows;
     int   cfg_reload_pending; /* Apply wrote config.toml; reload at the
                                * next tick boundary re-reads it */
     /* [[level]] blocks: declarative custom levels (registered with the
@@ -604,6 +641,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
 
     mod->n_deps = mod->n_bindings = 0;
     mod->n_cfg = 0;
+    mod->n_mat_rows = 0;   /* re-parsed below; else a reload appends dupes */
     mod->state_decl = mod->ra_decl = 0;
     char dir_copy[MOD_PATH_MAX];
     snprintf(dir_copy, sizeof dir_copy, "%s", mod->dir);
@@ -1519,6 +1557,106 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
             if (lti.ok) free(lti.u.s);
         }
     }
+    {   /* [[material]] — declarative reshade rows (zero-C material tier).
+         * Unknown channel/tier/textured spellings are REFUSED, never
+         * defaulted: a typo'd key that silently widened the selection
+         * would repaint geometry the author never asked for, and the
+         * whole selector contract is "never match wider than asked". */
+        toml_array_t* ma = toml_array_in(root, "material");
+        int nm = ma ? toml_array_nelem(ma) : 0;
+        for (int i = 0; i < nm; i++) {
+            if (mod->n_mat_rows >= MOD_MATERIAL_ROWS_MAX) {
+                OPL_ERROR_F("mods", "%s: more than %d [[material]] rows — "
+                            "the rest are ignored", path,
+                            MOD_MATERIAL_ROWS_MAX);
+                break;
+            }
+            toml_table_t* mt = toml_table_at(ma, i);
+            if (!mt) continue;
+            mod_material_row_t r;
+            memset(&r, 0, sizeof r);
+            r.channel = r.ident = r.moby_class = r.texture = r.level = -1;
+            r.enabled = 1;
+
+            toml_datum_t d;
+            int bad = 0;
+            if ((d = toml_string_in(mt, "frag")).ok) {
+                snprintf(r.frag, sizeof r.frag, "%s", d.u.s); free(d.u.s);
+            }
+            if ((d = toml_string_in(mt, "vert")).ok) {
+                snprintf(r.vert, sizeof r.vert, "%s", d.u.s); free(d.u.s);
+            }
+            if (!r.frag[0] && !r.vert[0]) {
+                OPL_ERROR_F("mods", "%s: [[material]] needs frag (or vert) "
+                            "— skipped", path);
+                continue;
+            }
+            if ((d = toml_string_in(mt, "channel")).ok) {
+                r.channel = mod_channel_from_name(d.u.s);
+                if (r.channel == -2) {
+                    OPL_ERROR_F("mods", "%s: [[material]] unknown channel "
+                                "\"%s\" — skipped", path, d.u.s);
+                    bad = 1;
+                }
+                free(d.u.s);
+            }
+            if (bad) continue;
+            if ((d = toml_int_in(mt, "ident")).ok)   r.ident      = (int)d.u.i;
+            if ((d = toml_int_in(mt, "class")).ok)   r.moby_class = (int)d.u.i;
+            if ((d = toml_int_in(mt, "texture")).ok) r.texture    = (int)d.u.i;
+            if ((d = toml_int_in(mt, "level")).ok)   r.level      = (int)d.u.i;
+            if ((d = toml_bool_in(mt, "enabled")).ok) r.enabled   = d.u.b ? 1 : 0;
+            /* tier / textured are NARROWING: omit for both, name one to
+             * restrict. They mirror the C flags exactly. */
+            if ((d = toml_string_in(mt, "tier")).ok) {
+                if (strcmp(d.u.s, "hp") == 0)      r.flags |= OP_SEL_HP_TIER;
+                else if (strcmp(d.u.s, "lp") == 0) r.flags |= OP_SEL_LP_TIER;
+                else {
+                    OPL_ERROR_F("mods", "%s: [[material]] tier must be "
+                                "\"hp\" or \"lp\" (got \"%s\") — skipped",
+                                path, d.u.s);
+                    bad = 1;
+                }
+                free(d.u.s);
+            }
+            if (bad) continue;
+            if ((d = toml_bool_in(mt, "textured")).ok)
+                r.flags |= d.u.b ? OP_SEL_TEXTURED : OP_SEL_UNTEXTURED;
+            if ((d = toml_bool_in(mt, "env_anim")).ok && d.u.b)
+                r.flags |= OP_SEL_ENV_ANIM;
+            toml_array_t* pa = toml_array_in(mt, "params");
+            if (pa) {
+                int np = toml_array_nelem(pa);
+                if (np > MOD_MATERIAL_PARAMS_MAX) {
+                    OPL_ERROR_F("mods", "%s: [[material]] params has %d "
+                                "floats, max %d — skipped", path, np,
+                                MOD_MATERIAL_PARAMS_MAX);
+                    continue;
+                }
+                for (int k = 0; k < np; k++) {
+                    toml_datum_t pv = toml_double_at(pa, k);
+                    if (!pv.ok) {   /* TOML keeps 1 and 1.0 distinct */
+                        toml_datum_t iv = toml_int_at(pa, k);
+                        if (!iv.ok) {
+                            OPL_ERROR_F("mods", "%s: [[material]] params[%d] "
+                                        "is not a number — skipped", path, k);
+                            bad = 1;
+                            break;
+                        }
+                        r.params[k] = (float)iv.u.i;
+                    } else {
+                        r.params[k] = (float)pv.u.d;
+                    }
+                }
+                if (bad) continue;
+                r.n_params = np;
+            }
+            mod->mat_rows[mod->n_mat_rows++] = r;
+        }
+        if (mod->n_mat_rows)
+            OPL_INFO_F("mods", "%s: %d declarative material row(s)", mod->id,
+                       mod->n_mat_rows);
+    }
     rc = 0;
 out:
     toml_free(root);
@@ -1846,7 +1984,10 @@ typedef int (*mod_entry_fn)(const openpete_mod_api_t*, openpete_mod_t*);
 
 /* Run openpete_mod_entry + resolve the state-ABI descriptor. Shared by
  * the boot load and the deferred first-enable path. */
+static void mod_register_materials(struct openpete_mod* mod);
+
 static int mod_run_entry(struct openpete_mod* mod) {
+    mod_register_materials(mod);   /* manifest first; entry's C wins over it */
     mod_entry_fn entry =
         (mod_entry_fn)mod_dlsym(mod->dl, "openpete_mod_entry");
     if (!entry) {
@@ -1864,6 +2005,51 @@ static int mod_run_entry(struct openpete_mod* mod) {
     mod_resolve_ui_section(mod, mod->dl);
     mod->entered = 1;
     return 0;
+}
+
+/* Arm the mod's [[material]] rows — the zero-C material tier. Runs
+ * BEFORE openpete_mod_entry so a mixed mod's C registrations land later
+ * and therefore win the pixels (last match takes them): the manifest is
+ * the declared default, C is the refinement.
+ *
+ * A row that cannot be honoured is dropped with an error and the rest
+ * still arm — one bad row must not cost a mod its whole manifest — but
+ * it is never silently downgraded to a wider selector. */
+static void mod_register_materials(struct openpete_mod* mod) {
+    for (int i = 0; i < mod->n_mat_rows; i++) {
+        const mod_material_row_t* r = &mod->mat_rows[i];
+        int frag = -1, vert = -1;
+        if (r->frag[0]) {
+            frag = openpete_mods_shader_register(mod, r->frag);
+            if (frag < 0) {
+                OPL_ERROR_F("mods", "%s: [[material]] frag \"%s\" failed to "
+                            "build — row skipped", mod->id, r->frag);
+                continue;
+            }
+        }
+        if (r->vert[0]) {
+            vert = openpete_mods_shader_register(mod, r->vert);
+            if (vert < 0) {
+                OPL_ERROR_F("mods", "%s: [[material]] vert \"%s\" failed to "
+                            "build — row skipped", mod->id, r->vert);
+                continue;
+            }
+        }
+        openpete_mod_material_selector_t sel = openpete_mod_material_sel_any();
+        sel.channel    = r->channel;
+        sel.ident      = r->ident;
+        sel.moby_class = r->moby_class;
+        sel.texture    = r->texture;
+        sel.level      = r->level;
+        sel.flags      = r->flags;
+        int h = openpete_mods_material_register(mod, &sel, vert, frag, NULL);
+        if (h < 0) continue;          /* register already logged the reason */
+        if (r->n_params)
+            (void)openpete_mods_material_set_params(
+                mod, h, r->params, (uint32_t)(r->n_params * sizeof(float)));
+        if (!r->enabled)
+            (void)openpete_mods_material_enable(mod, h, 0);
+    }
 }
 
 /* Register the mod's assets/ overlay root (in enabled/entry order —
@@ -1919,6 +2105,7 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
             OPL_INFO_F("mods", "loaded %s v%s (assets only)", mod->id,
                        mod->version);
             mod->entered = 1;
+            mod_register_materials(mod);   /* a manifest-only mod IS its rows */
             mod_register_assets(mod);
             return 0;
         }
@@ -1979,6 +2166,7 @@ static int mod_enter_deferred(struct openpete_mod* mod) {
         if (mod_run_entry(mod) != 0) return -1;
     } else {
         mod->entered = 1; /* assets-only: the overlay root IS the mod */
+        mod_register_materials(mod);
     }
     mod_register_assets(mod);
     s_tag_built = 0; /* the modset tag now includes this mod if divergent */

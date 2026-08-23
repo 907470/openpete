@@ -1,0 +1,65 @@
+# declarative-reshade — a shader mod with NO C code.
+#
+# This whole mod is a manifest plus one .frag. There is no src/ directory,
+# no openpete_mod_entry, nothing to compile against the SDK: the [[material]]
+# rows below ARE the mod. Anyone who can write a fragment shader can ship a
+# reshade without learning the C ABI, and everything they need to say about
+# WHICH geometry it hits is a key in this file.
+#
+# It exists as much to prove the tier as to be useful. `channel-gallery` is
+# the C-side demonstrator; this is its zero-C twin, and the two together are
+# the claim that the seam is expressible from either side.
+#
+# Selector keys (all optional; omit one and it matches everything):
+#   channel  any | moby | terrain | player | flame | particle | sky |
+#            shadow | tracer | portal
+#   ident    channel-local identity (flame ribbon/caps, particle kind,
+#            shadow caster kind, portal preview rung)
+#   class    moby class
+#   texture  terrain Tiledef id 0..127
+#   level    level id — sector and texture ids are per-level, so a keyed
+#            row usually wants this too
+#   tier     "hp" | "lp"        (omit = both)
+#   textured true | false       (omit = both)
+#   env_anim true               (animated terrain env faces only)
+#   params   floats handed to the shader as its uniform block
+#   enabled  false to ship a row switched off
+#
+# A key the engine does not recognise is REFUSED, never ignored: a typo that
+# silently widened the selection would repaint geometry you never asked for.
+#
+# Display-only: materials reshade what the renderer already drew. They
+# cannot move, reorder or re-composite geometry, so gameplay is untouched.
+
+[mod]
+id      = "declarative-reshade"
+name    = "Declarative Reshade"
+version = "0.1.0"
+api     = 3            # pillar 10: materials
+state    = "none"      # GPU-only; nothing to save
+runahead = "pure"      # no tick hooks
+sim_neutral = true
+
+# Spyro himself, tinted warm. He is NOT a moby, so a moby row never hits him.
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "player"
+params  = [1.0, 0.55, 0.15, 0.45]   # rgb + strength
+
+# The additive flame plume. The material inherits the group's additive
+# blend — it can change colour math, never how the draw composites — so a
+# tint here reads as "added light", not as a flat repaint.
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "flame"
+ident   = 0                          # 0 = ribbon, 1 = the opaque base caps
+params  = [0.30, 0.55, 1.00, 0.60]
+
+# Off by default: proof that a row can ship switched off, and a place to
+# see the LP terrain tier on its own. Flip enabled to true.
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "terrain"
+tier    = "lp"
+enabled = false
+params  = [1.0, 0.2, 0.6, 0.5]
