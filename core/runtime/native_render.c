@@ -6827,7 +6827,13 @@ static bool draw_native_scene(bool full_extent)
                                     .blend = RHI_BLEND_NONE,
                                     .depth_test = true,
                                     .depth_write_off = true,
-                                    .stencil = RHI_STENCIL_NONE,
+                                    /* The aperture mask is what confines the
+                                     * destination sky to the portal's opening;
+                                     * an override that drops it paints sky over
+                                     * the surrounding wall. Reshade-only means
+                                     * inheriting the group's stencil state the
+                                     * same way it inherits blend and depth. */
+                                    .stencil = RHI_STENCIL_TEST,
                                     .mod_pipeline = true,
                                     .push_const_size = sizeof(psx_material_hd),
                                 };

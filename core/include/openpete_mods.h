@@ -677,8 +677,9 @@ typedef struct {
      * inherits that group's compositing, so one shader needs one pipeline per
      * blend it is drawn under. */
     void** pipeline_slot[OPENPETE_MATERIAL_PIPE_VARIANTS];
-        /* [0..3] PSX blend classes, [4] opaque + no depth write (portal
-         * sky), [5] the decal profile (openpete_psx_decal.glsl). */
+        /* [0..3] PSX blend classes, [4] portal sky (opaque, no depth
+         * write, stencil TEST against the aperture mask), [5] the decal
+         * profile (openpete_psx_decal.glsl). */
     void** pipeline_mark_slot;  /* stencil-MARK twin (hole-fill groups) */
     const char* owner;
     int   uniform_slot;
