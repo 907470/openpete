@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "psx_key_contest.glsl"
 
 /* Textured OPAQUE scene fragment stage with the terrain KEY-RESOLVE contest.
  *
@@ -83,101 +85,31 @@ uint sample_word(int u, int v)
 
 void main()
 {
+    /* Set 2 = TERRAIN og KEYS (keyed WORLD faces as their ABSOLUTE og key
+     * laid flat — og's per-pixel OT occupancy). Set 1 = MOBY og KEYS
+     * (keyed opaque ACTOR faces, same encoding). Set 3 = PROP TRUE DEPTH
+     * (curated embedded-prop faces only). Set 4 = the moby og-RANK raster.
+     * The verdicts themselves live in psx_key_contest.glsl. */
     bool ranked = vRank.x > 0.5;
-    if (ranked) {   /* ranked moby face: same-moby painter select.
-                     * NEAR-TIE SCOPED: og's whole-face verdict overrides
-                     * per-pixel depth only where the two same-moby surfaces
-                     * are within interpenetration range of each other — the
-                     * contour-flicker/decal class. Cleanly separated faces
-                     * keep true depth: og's deliberate relayering of those,
-                     * authored for 320x240, reads as an artifact upscaled. */
-        vec4 e = texelFetch(u_mobyrank, ivec2(gl_FragCoord.xy), 0);
-        float irank = floor(e.r * 255.0 + 0.5) + floor(e.g * 255.0 + 0.5) * 256.0;
-        float iord  = floor(e.b * 255.0 + 0.5);
-        if (abs(iord - vRank.y) < 0.5 && irank > vRank.x + 0.5) {
-            float ownerVz = e.a * 32640.0;
-            float ownVz = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
-                                       : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
-            if (abs(ownerVz - ownVz) < 384.0) discard;
-        }
-    }
+    float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_AFFINE);
+    if (ranked &&
+        op_rank_loses(texelFetch(u_mobyrank, ivec2(gl_FragCoord.xy), 0), vRank, own))
+        discard;
     /* A RANKED face skips the positive-koff painter contest: rank IS og's
      * exact same-moby painter, while the key image holds same-moby per-face
      * keys with no ordinal — large same-moby faces (jaw vs chin) sit beyond
      * the 64-world margin, so the contest would kill the rank winner while
      * the select kills everything under it (a hole to the clear). The face
      * still STAMPS its key, so keyed terrain keeps yielding to it. */
-    if (!ranked && abs(vKoff) > 0.25) {   /* keyed face: contest the og key rasters */
-        /* Three images. Set 2 = TERRAIN og KEYS: keyed WORLD faces as their
-         * ABSOLUTE og key laid FLAT — og's per-pixel OT occupancy, the
-         * painter select. Set 1 = MOBY og KEYS: keyed opaque ACTOR faces,
-         * same flat-key encoding. Set 3 = PROP TRUE DEPTH: curated
-         * embedded-prop faces only (pedestal discs, statue bases),
-         * per-vertex TRUE view-Z. Decodes match terrain_key.vert's
-         * canonical z = kv/(kv+4096) (affine 1-1/kv quantises past the
-         * 64-world margin beyond kv~46k — far faces discarded themselves).
-         *
-         * POSITIVE koff (OT-band terrain + moby faces): strict
-         * less-by-half-slot painter select vs the terrain key image; ties
-         * inside og's 128-world quantum fall through to true depth. Under
-         * MOBY_TRUESCOPE (the default), TERRAIN fragments never yield to
-         * general MOBY keys AT ALL: og's authored pulls (-128*dofs) exist
-         * to float pickups and decor over whatever the OT sorts them
-         * against, and any per-pixel window derived from them re-admits
-         * the punch-through classes — a chest through the gnastys_loot
-         * wall lip via pull+push compounding, a rotating gem through a
-         * near wall it sits 300 world behind (the pull is baked into the
-         * key, so key-vs-own-true cannot tell 300-behind-a-wall from
-         * contact with sloped ground; measured cases overlap at every
-         * margin). Terrain-over-moby is decided by TRUE depth plus the
-         * -127 stored tie pull (contact), the curated PROP EMBED rule
-         * below (authored embedded decor), and the ACTOR_FRONT pass
-         * (authored inside-terrain cutscene actors). MOBY fragments still
-         * honour moby keys as og's cross-moby painter, scoped by their
-         * own TRUE view-Z. MOBY_TRUESCOPE=false restores og's full
-         * compound painter for A/B.
-         *
-         * NEGATIVE koff = NEAR-BAND terrain, contest-only, per-pixel own
-         * key (og subdivides the near band into pieces at PIECE-LOCAL
-         * means; the fragment's own view-Z — stored depth is TRUE here —
-         * is the piece limit). Vs the terrain and moby key images: the
-         * same strict rule (og's painter). Vs the PROP image: the
-         * EMBED rule, a deliberate divergence from painter roulette — an
-         * authored prop PHYSICALLY within 1024 world behind the near
-         * surface always wins the pixel, so a prop set into its ground
-         * renders whole from every angle where og's view-dependent piece
-         * keys show it complete or notched by camera. Prop-ness is a
-         * CURATED CLASS LIST in the moby feeder: no geometric quantity
-         * separates "prop set into its ground" from "actor just behind a
-         * crest" (flat keys, per-pixel keys, biased and true-depth
-         * margins all overlap across those classes). */
-        float hk = texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r;
-        float ak = texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r;
-        float mk = texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r;
-        float tkey = hk < 0.999999 ? 4096.0 * hk / max(1.0 - hk, 1e-9) : 1e30;
-        float akey = ak < 0.999999 ? 4096.0 * ak / max(1.0 - ak, 1e-9) : 1e30;
-        float mkey = mk < 0.999999 ? 4096.0 * mk / max(1.0 - mk, 1e-9) : 1e30;
-        float own = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
-                                 : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
-        bool actor = vRank.x < -0.5;   /* unranked moby faces mark rank -1 */
-        if (vKoff > 0.0) {
-            if (tkey < (vKoff - 0.5) - 64.0) discard;
-            if ((actor || !MOBY_TRUESCOPE) &&
-                akey < (vKoff - 0.5) - 64.0 &&
-                (!MOBY_TRUESCOPE || akey < own - 64.0)) discard;
-            /* Prop EMBED rule on the OT band (terrain fragments only, the
-             * near-band rule's twin): a curated embedded prop within 1024
-             * world behind this terrain's TRUE surface wins the pixel.
-             * Under the true-depth scope this is what carries the
-             * dofs-0 pedestal discs at mid/far range — og floated them on
-             * the ground's own authored push, which the scope no longer
-             * mirrors. */
-            if (MOBY_TRUESCOPE && !actor && mkey < own + 1024.0) discard;
-        } else {   /* near-band: per-pixel own key; +1024 embed rule vs props */
-            if (tkey < own - 64.0 ||
-                (!MOBY_TRUESCOPE && akey < own - 64.0) ||
-                mkey < own + 1024.0) discard;
-        }
+    if (!ranked && abs(vKoff) > 0.25) {
+        if (op_key_loses(
+                op_key_from_stored(texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r),
+                op_key_from_stored(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r),
+                op_key_from_stored(texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r),
+                own, vKoff,
+                vRank.x < -0.5,     /* unranked moby faces mark rank -1 */
+                MOBY_TRUESCOPE))
+            discard;
     }
     vec2 uv = vUV / vQ;
     vec4 col = vColor / vQ;

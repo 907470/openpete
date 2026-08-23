@@ -1,5 +1,7 @@
 #version 450
 #extension GL_ARB_gpu_shader_fp64 : require
+#extension GL_GOOGLE_include_directive : require
+#include "psx_key_contest.glsl"
 
 /* Terrain sector-mesh fragment stage — psx_scene.frag / psx_scene_key.frag
  * with the per-draw push-constant material replaced by FLAT varyings from
@@ -91,23 +93,17 @@ void main()
         }
         return;
     }
-    /* og key-resolve contest (rules in psx_scene_key.frag; terrain subset:
-     * not ranked, not an actor, true-scope on). */
+    /* og key-resolve contest (psx_key_contest.glsl). Terrain subset: never
+     * ranked, never an actor, true-scope forced on — so the actor-key arm
+     * can never fire and rides the never-wins sentinel. */
     if (abs(vKoff) > 0.25) {
-        float hk = texelFetch(u_hpkey,   ivec2(gl_FragCoord.xy), 0).r;
-        float mk = texelFetch(u_mobykey, ivec2(gl_FragCoord.xy), 0).r;
-        float tkey = hk < 0.999999 ? 4096.0 * hk / max(1.0 - hk, 1e-9) : 1e30;
-        float mkey = mk < 0.999999 ? 4096.0 * mk / max(1.0 - mk, 1e-9) : 1e30;
-        float own = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
-                                 : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
-        if (vKoff > 0.0) {
-            if (tkey < (vKoff - 0.5) - 64.0) discard;
-            /* Prop EMBED rule (true-scope): a curated embedded prop within
-             * 1024 world behind this terrain's TRUE surface wins the pixel. */
-            if (mkey < own + 1024.0) discard;
-        } else {   /* near-band: per-pixel own key; +1024 embed rule vs props */
-            if (tkey < own - 64.0 || mkey < own + 1024.0) discard;
-        }
+        if (op_key_loses(
+                op_key_from_stored(texelFetch(u_hpkey,   ivec2(gl_FragCoord.xy), 0).r),
+                OP_KEY_NONE,
+                op_key_from_stored(texelFetch(u_mobykey, ivec2(gl_FragCoord.xy), 0).r),
+                op_vz_from_depth(gl_FragCoord.z, DEPTH_AFFINE), vKoff,
+                false, true))
+            discard;
     }
 
     uint mat0 = vMat.x;

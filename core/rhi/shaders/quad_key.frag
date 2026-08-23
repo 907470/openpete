@@ -1,4 +1,6 @@
 #version 450
+#extension GL_GOOGLE_include_directive : require
+#include "psx_key_contest.glsl"
 
 /* Untextured OPAQUE gouraud fragment stage with the terrain KEY-RESOLVE
  * contest — quad.frag plus the LP-vs-HP og-key discard (see
@@ -29,48 +31,20 @@ layout(constant_id = 3) const bool MOBY_TRUESCOPE = true;
 void main()
 {
     bool ranked = vRank.x > 0.5;
-    if (ranked) {   /* ranked moby face: NEAR-TIE-scoped same-moby painter
-                     * select (rules in psx_scene_key.frag) */
-        vec4 e = texelFetch(u_mobyrank, ivec2(gl_FragCoord.xy), 0);
-        float irank = floor(e.r * 255.0 + 0.5) + floor(e.g * 255.0 + 0.5) * 256.0;
-        float iord  = floor(e.b * 255.0 + 0.5);
-        if (abs(iord - vRank.y) < 0.5 && irank > vRank.x + 0.5) {
-            float ownerVz = e.a * 32640.0;
-            float ownVz = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
-                                       : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
-            if (abs(ownerVz - ownVz) < 384.0) discard;
-        }
-    }
-    /* Ranked faces skip the positive-koff contest — see psx_scene_key.frag. */
-    if (!ranked && abs(vKoff) > 0.25) {   /* keyed face: contest the og key rasters
-                                * (rules in psx_scene_key.frag) */
-        float hk = texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r;
-        float ak = texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r;
-        float mk = texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r;
-        float tkey = hk < 0.999999 ? 4096.0 * hk / max(1.0 - hk, 1e-9) : 1e30;
-        float akey = ak < 0.999999 ? 4096.0 * ak / max(1.0 - ak, 1e-9) : 1e30;
-        float mkey = mk < 0.999999 ? 4096.0 * mk / max(1.0 - mk, 1e-9) : 1e30;
-        float own = DEPTH_AFFINE ? 1.0 / max(1.0 - gl_FragCoord.z, 1e-9)
-                                 : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
-        bool actor = vRank.x < -0.5;   /* unranked moby faces mark rank -1 */
-        if (vKoff > 0.0) {
-            if (tkey < (vKoff - 0.5) - 64.0) discard;
-            if ((actor || !MOBY_TRUESCOPE) &&
-                akey < (vKoff - 0.5) - 64.0 &&
-                (!MOBY_TRUESCOPE || akey < own - 64.0)) discard;
-            /* Prop EMBED rule on the OT band (terrain fragments only, the
-             * near-band rule's twin): a curated embedded prop within 1024
-             * world behind this terrain's TRUE surface wins the pixel.
-             * Under the true-depth scope this is what carries the
-             * dofs-0 pedestal discs at mid/far range — og floated them on
-             * the ground's own authored push, which the scope no longer
-             * mirrors. */
-            if (MOBY_TRUESCOPE && !actor && mkey < own + 1024.0) discard;
-        } else {   /* near-band: per-pixel own key; +1024 embed rule vs props */
-            if (tkey < own - 64.0 ||
-                (!MOBY_TRUESCOPE && akey < own - 64.0) ||
-                mkey < own + 1024.0) discard;
-        }
+    float own = op_vz_from_depth(gl_FragCoord.z, DEPTH_AFFINE);
+    if (ranked &&
+        op_rank_loses(texelFetch(u_mobyrank, ivec2(gl_FragCoord.xy), 0), vRank, own))
+        discard;
+    /* Ranked faces skip the positive-koff contest — see psx_key_contest.glsl. */
+    if (!ranked && abs(vKoff) > 0.25) {
+        if (op_key_loses(
+                op_key_from_stored(texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r),
+                op_key_from_stored(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r),
+                op_key_from_stored(texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r),
+                own, vKoff,
+                vRank.x < -0.5,     /* unranked moby faces mark rank -1 */
+                MOBY_TRUESCOPE))
+            discard;
     }
     outColor = vColor / vQ;
 }

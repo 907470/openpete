@@ -20,13 +20,18 @@ set(RHI_SHADER_SRC_DIR ${CMAKE_CURRENT_SOURCE_DIR}/shaders)
 set(RHI_SHADER_OUT_DIR ${CMAKE_CURRENT_BINARY_DIR}/shaders)
 file(MAKE_DIRECTORY ${RHI_SHADER_OUT_DIR})
 set(RHI_SHADERS quad.vert quad.frag quad_key.frag psx_sample.vert psx_scene.vert psx_sample.frag psx_scene.frag psx_scene_key.frag psx_key_cutout.frag blit.frag diff.frag freeze_overlay.frag resolve.frag overlay_resolve.frag shadow_decal.frag shadow_decal_tex.vert shadow_decal_tex.frag prepass.vert terrain_key.vert occl_downsample.frag hd_tex.frag hd_tex_cutout.frag postfx_fs.vert raster_quantize.frag psx_dither.frag moby_rank.vert moby_rank.frag moby_rank_cutout.frag terrain.vert terrain.frag terrain_prepass.frag terrain_key_cache.frag)
+# Shared .glsl includes (GL_GOOGLE_include_directive). Every shader DEPENDS
+# on all of them: the set is tiny, and a per-shader dependency scan would be
+# one more thing to keep in sync with the #include lines.
+set(RHI_SHADER_INCLUDES ${RHI_SHADER_SRC_DIR}/psx_key_contest.glsl)
 set(RHI_SHADER_SPV "")
 foreach(s IN LISTS RHI_SHADERS)
     add_custom_command(
         OUTPUT ${RHI_SHADER_OUT_DIR}/${s}.spv
-        COMMAND ${GLSLANG_VALIDATOR} -V ${RHI_SHADER_SRC_DIR}/${s}
+        COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR}
+                ${RHI_SHADER_SRC_DIR}/${s}
                 -o ${RHI_SHADER_OUT_DIR}/${s}.spv
-        DEPENDS ${RHI_SHADER_SRC_DIR}/${s}
+        DEPENDS ${RHI_SHADER_SRC_DIR}/${s} ${RHI_SHADER_INCLUDES}
         COMMENT "glslangValidator ${s} -> ${s}.spv"
         VERBATIM)
     list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/${s}.spv)
@@ -35,10 +40,10 @@ endforeach()
 # path (second vertex binding = previous-tick positions/corners).
 add_custom_command(
     OUTPUT ${RHI_SHADER_OUT_DIR}/terrain_anim.vert.spv
-    COMMAND ${GLSLANG_VALIDATOR} -V --define-macro TERRAIN_ANIM=1
+    COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR} --define-macro TERRAIN_ANIM=1
             ${RHI_SHADER_SRC_DIR}/terrain.vert
             -o ${RHI_SHADER_OUT_DIR}/terrain_anim.vert.spv
-    DEPENDS ${RHI_SHADER_SRC_DIR}/terrain.vert
+    DEPENDS ${RHI_SHADER_SRC_DIR}/terrain.vert ${RHI_SHADER_INCLUDES}
     COMMENT "glslangValidator terrain.vert (TERRAIN_ANIM) -> terrain_anim.vert.spv"
     VERBATIM)
 list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/terrain_anim.vert.spv)
@@ -46,10 +51,10 @@ list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/terrain_anim.vert.spv)
 # (second vertex binding = the emitted triangle's other two members).
 add_custom_command(
     OUTPUT ${RHI_SHADER_OUT_DIR}/terrain_near.vert.spv
-    COMMAND ${GLSLANG_VALIDATOR} -V --define-macro TERRAIN_NEAR=1
+    COMMAND ${GLSLANG_VALIDATOR} -V -I${RHI_SHADER_SRC_DIR} --define-macro TERRAIN_NEAR=1
             ${RHI_SHADER_SRC_DIR}/terrain.vert
             -o ${RHI_SHADER_OUT_DIR}/terrain_near.vert.spv
-    DEPENDS ${RHI_SHADER_SRC_DIR}/terrain.vert
+    DEPENDS ${RHI_SHADER_SRC_DIR}/terrain.vert ${RHI_SHADER_INCLUDES}
     COMMENT "glslangValidator terrain.vert (TERRAIN_NEAR) -> terrain_near.vert.spv"
     VERBATIM)
 list(APPEND RHI_SHADER_SPV ${RHI_SHADER_OUT_DIR}/terrain_near.vert.spv)
