@@ -611,6 +611,12 @@ int openpete_mods_shader_register(openpete_mod_t* self, const char* path);
  * glslang_stage_t value (vertex/fragment). */
 const uint32_t* openpete_mods_shader_spv(int handle, size_t* words,
                                          int* stage);
+/* The same material fragment compiled for the RETAINED TERRAIN pipelines,
+ * whose engine half of the contract reads flat per-face varyings instead of
+ * a per-draw push block (OP_PROFILE_TERRAIN in openpete_psx_material.glsl).
+ * NULL when the shader has no terrain profile — not a material fragment, or
+ * its terrain compile failed; terrain then draws stock. */
+const uint32_t* openpete_mods_shader_spv_terrain(int handle, size_t* words);
 void openpete_mods_shader_remove_owner(const char* mod_id);
 /* Hot-reload watch: content hash of <mod>/shaders/ ("-" if absent). */
 int openpete_mods_shader_watch_key(const char* mod_dir, char key_out[65]);

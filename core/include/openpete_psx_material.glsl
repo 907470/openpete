@@ -43,12 +43,126 @@
  * previous-pass image in the postfx tier (openpete_shader_api.glsl). A
  * shader includes one contract or the other, never both.
  *
- * Reserved for the engine: push constants, sets 0-2 and 4-6, and input
- * locations 0-4. A material's own uniform block is set 3 binding 1
- * (std140) — the one part of the layout that is yours. */
+ * Reserved for the engine: push constants, every descriptor set except set 3
+ * binding 1, and the input locations. A material's own uniform block is set 3
+ * binding 1 (std140) — the one part of the layout that is yours.
+ *
+ * TWO ENGINE HALVES, ONE MOD HALF. Terrain does not reach the fragment stage
+ * the way the rest of the scene does: its geometry is baked into GPU arenas
+ * and redrawn without the CPU walking it, so the per-draw material arrives as
+ * flat varyings rather than push constants and the HD texture pack folds
+ * through an atlas rather than a per-draw image. The engine therefore
+ * compiles a material's source TWICE, defining OP_PROFILE_TERRAIN for the
+ * retained pipelines, and this file supplies a matching main() and shading
+ * helpers for each. The mod's source is byte-identical between them, and a
+ * material's colour must be too: shading is a function of the face, never of
+ * where the face happens to live. */
 
 #ifndef OPENPETE_PSX_MATERIAL_GLSL
 #define OPENPETE_PSX_MATERIAL_GLSL
+
+#ifdef OP_PROFILE_TERRAIN
+/* ---- engine half: the retained terrain pipelines --------------------- */
+
+#include "terrain_shade.glsl"
+
+layout(location = 0) out vec4 op_out_color;
+
+/* Perspective-correct texel coords within the texture page. */
+vec2 op_uv()    { return vUV / vQ; }
+/* Perspective-correct per-vertex modulate colour (R8G8B8A8 -> 0..1). */
+vec4 op_color() { return vColor / vQ; }
+
+uint op_vram_at(int x, int y)  { return ter_vram_at(x, y); }
+float op_expand5(uint v)       { return ter_expand5(v); }
+vec4 op_decode555(uint p)      { return ter_decode555(p); }
+
+/* PSX texture modulation: texel * vertexColour / 128 (128 = unchanged). */
+vec3 op_psx_modulate(vec3 texel, vec3 vcol)
+{
+    return clamp(texel * vcol * (255.0 / 128.0), 0.0, 1.0);
+}
+
+/* Raw texel at page-relative texel coords, through this FACE's page and
+ * CLUT (vMat, from the vertex stage). Untextured faces have no page, and
+ * report the transparent sentinel. */
+vec4 op_psx_texel(ivec2 uv)
+{
+    uint mat0 = vMat.x;
+    if ((mat0 & (1u << 23)) == 0u) return vec4(0.0);
+    int  tpx  = int(mat0 & 0x3FFu);
+    int  tpy  = int((mat0 >> 10) & 0x1FFu);
+    uint bppc = (mat0 >> 19) & 3u;
+    int  clx  = int(vMat.y & 0xFFFFu);
+    int  cly  = int(vMat.y >> 16);
+    uint p;
+    if (bppc == 2u) {          /* 16bpp direct */
+        p = ter_vram_at(tpx + uv.x, tpy + uv.y);
+    } else if (bppc == 1u) {   /* 8bpp CLUT */
+        uint w   = ter_vram_at(tpx + (uv.x >> 1), tpy + uv.y);
+        uint idx = (w >> (8 * (uv.x & 1))) & 0xFFu;
+        p = ter_vram_at(clx + int(idx), cly);
+    } else {                   /* 4bpp CLUT */
+        uint w   = ter_vram_at(tpx + (uv.x >> 2), tpy + uv.y);
+        uint nib = (w >> (4 * (uv.x & 3))) & 0xFu;
+        p = ter_vram_at(clx + int(nib), cly);
+    }
+    return ter_decode555(p);
+}
+
+/* The stock result for this fragment, VRAM only — no texture-pack fold.
+ * Untextured faces are the vertex colour alone. */
+vec4 op_psx_shade()
+{
+    vec4 col = op_color();
+    if ((vMat.x & (1u << 23)) == 0u) return vec4(col.rgb, 1.0);
+    vec4 c = op_psx_texel(ivec2(op_uv()));
+    return vec4(op_psx_modulate(c.rgb, col.rgb), c.a);
+}
+
+/* True when the active texture pack replaces this face's texture. On the
+ * retained path a replacement is a FOLD entry baked into the face by the
+ * sector build, not a per-draw image. */
+bool op_pack_active() { return (vHd & 0xFFFFu) != 0u; }
+
+/* Raw replacement texel at page-texel coords (op_uv() space). The pack
+ * file's own resolution and filter; true per-texel alpha; NO fog or
+ * modulation. Reports transparent when no replacement covers the face. */
+vec4 op_pack_texel(vec2 page_uv)
+{
+    if ((vHd & 0xFFFFu) == 0u) return vec4(0.0);
+    uint ei = ((vHd & 0xFFFFu) - 1u) * 4u;
+    vec4 rect  = g.hd_ent[ei];
+    vec4 arect = g.hd_ent[ei + 1u];
+    vec2 t  = clamp((page_uv - rect.xy) / rect.zw, 0.0, 1.0);
+    vec2 ht = 0.5 / arect.zw;      /* clamp-to-edge inside the shelf gutter */
+    t = clamp(t, ht, 1.0 - ht);
+    return texelFetch(u_hdatlas, ivec2(arect.xy + t * arect.zw), 0);
+}
+
+/* The scene result WITH the active texture pack — what the player would see
+ * if this material weren't installed, and what the engine hands to
+ * op_material(). */
+vec4 op_pack_shade() { return ter_stock_shade(); }
+
+/* ---- the mod's half -------------------------------------------------- */
+vec4 op_material(vec4 base);
+
+void main()
+{
+    /* Sector debug tints answer before anything else, mod included: they
+     * exist to show what the engine believes, not what a mod paints. */
+    vec4 c;
+    if (ter_debug_shade(c)) { op_out_color = c; return; }
+    /* og's painter verdict, exactly as the stock terrain stage runs it. */
+    if (ter_key_loses()) discard;
+    c = op_material(op_pack_shade());
+    if (c.a == 0.0) discard;        /* PSX transparent-texel sentinel */
+    op_out_color = c;
+}
+
+#else
+/* ---- engine half: the walked scene pipelines ------------------------- */
 
 #include "psx_key_contest.glsl"
 
@@ -205,5 +319,7 @@ void main()
     if (c.a == 0.0) discard;        /* PSX transparent-texel sentinel */
     op_out_color = c;
 }
+
+#endif /* OP_PROFILE_TERRAIN */
 
 #endif /* OPENPETE_PSX_MATERIAL_GLSL */

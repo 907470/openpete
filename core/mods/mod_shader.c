@@ -54,6 +54,12 @@ typedef struct {
     int         stage;       /* GLSLANG_STAGE_VERTEX / _FRAGMENT */
     uint32_t*   spv;         /* malloc'd SPIR-V words */
     size_t      spv_words;
+    /* The same source compiled for the retained terrain pipelines
+     * (OP_PROFILE_TERRAIN). NULL for anything that is not a material
+     * fragment, and for one whose terrain profile failed to compile —
+     * terrain draws then stay stock rather than the mod failing. */
+    uint32_t*   spv_ter;
+    size_t      spv_ter_words;
     int         live;        /* 0 = swept slot (stale handle) */
 } mod_shader_t;
 
@@ -215,6 +221,27 @@ static int key_update_file(openpete_sha256_ctx* hc, const char* path) {
     return 0;
 }
 
+/* Every staged file a mod's shader can compile against: the tier contracts
+ * and everything they include. All of it keys the build, because a change to
+ * any of it changes the SPIR-V a source produces — a cached .spv that
+ * outlives an edit to one of these is a shader lying about its interface. */
+static const char* const k_iface_files[] = {
+    "openpete_shader_api.glsl",     /* postfx tier                        */
+    "openpete_psx_material.glsl",   /* material tier: both engine halves  */
+    "openpete_psx_decal.glsl",      /* decal draw path                    */
+    "psx_key_contest.glsl",         /* og painter verdicts (both halves)  */
+    "terrain_shade.glsl",           /* retained-terrain engine half       */
+};
+
+static void key_update_interface(openpete_sha256_ctx* hc) {
+    for (size_t i = 0; i < sizeof k_iface_files / sizeof *k_iface_files; i++) {
+        char p[MOD_SHADER_PATH_MAX * 2];
+        snprintf(p, sizeof p, "%s/shaders/%s", openpete_mods_sdk_dir(),
+                 k_iface_files[i]);
+        (void)key_update_file(hc, p);   /* absent = stable no-op */
+    }
+}
+
 /* Interface hash (also the prebuilt-sidecar contract): api version +
  * interface header bytes. Deliberately EXCLUDES the glslang version —
  * a prebuilt .spv doesn't depend on the engine's compiler. */
@@ -223,16 +250,7 @@ static void interface_hash(char out_hex[65]) {
     openpete_sha256_init(&hc);
     const unsigned api_ver = OPENPETE_MOD_API_VERSION;
     openpete_sha256_update(&hc, &api_ver, sizeof api_ver);
-    char p[MOD_SHADER_PATH_MAX * 2];
-    snprintf(p, sizeof p, "%s/shaders/openpete_shader_api.glsl",
-             openpete_mods_sdk_dir());
-    (void)key_update_file(&hc, p);   /* absent = stable no-op */
-    snprintf(p, sizeof p, "%s/shaders/openpete_psx_material.glsl",
-             openpete_mods_sdk_dir());
-    (void)key_update_file(&hc, p);   /* material-tier contract */
-    snprintf(p, sizeof p, "%s/shaders/openpete_psx_decal.glsl",
-             openpete_mods_sdk_dir());
-    (void)key_update_file(&hc, p);   /* decal material profile */
+    key_update_interface(&hc);
     uint8_t digest[32];
     openpete_sha256_final(&hc, digest);
     openpete_sha256_hex(digest, out_hex);
@@ -256,18 +274,7 @@ static int shader_compute_key(const char* mod_dir, const char* rel_path,
     snprintf(glslang_ver, sizeof glslang_ver, "glslang none");
 #endif
     key_update_str(&hc, glslang_ver);
-    {
-        char p[MOD_SHADER_PATH_MAX * 2];
-        snprintf(p, sizeof p, "%s/shaders/openpete_shader_api.glsl",
-                 openpete_mods_sdk_dir());
-        (void)key_update_file(&hc, p);
-        snprintf(p, sizeof p, "%s/shaders/openpete_psx_material.glsl",
-                 openpete_mods_sdk_dir());
-        (void)key_update_file(&hc, p);
-        snprintf(p, sizeof p, "%s/shaders/openpete_psx_decal.glsl",
-                 openpete_mods_sdk_dir());
-        (void)key_update_file(&hc, p);
-    }
+    key_update_interface(&hc);
     if (key_update_file(&hc, src_path) != 0) return -1;
     /* Siblings: the mod's whole shader dir keys every shader in it, so
      * a mod-local include edit invalidates its includers. */
@@ -305,9 +312,9 @@ static void write_log(const char* log_path, const char* phase,
  * (details in log_path). */
 #ifdef OPENPETE_NO_GLSLANG
 static size_t compile_glsl(const char* src, int stage,
-                           const include_ctx_t* inc_ctx,
+                           const include_ctx_t* inc_ctx, const char* preamble,
                            const char* log_path, uint32_t** out_words) {
-    (void)src; (void)stage; (void)inc_ctx; (void)out_words;
+    (void)src; (void)stage; (void)inc_ctx; (void)preamble; (void)out_words;
     write_log(log_path, "compile",
               "engine built without glslang (OPENPETE_BUILD_GLSLANG=OFF); "
               "ship a prebuilt .spv + .spv.ihash sidecar instead", NULL);
@@ -315,7 +322,7 @@ static size_t compile_glsl(const char* src, int stage,
 }
 #else
 static size_t compile_glsl(const char* src, int stage,
-                           const include_ctx_t* inc_ctx,
+                           const include_ctx_t* inc_ctx, const char* preamble,
                            const char* log_path, uint32_t** out_words) {
     static int s_glslang_up = 0;
     if (!s_glslang_up) {
@@ -344,6 +351,9 @@ static size_t compile_glsl(const char* src, int stage,
 
     glslang_shader_t* sh = glslang_shader_create(&input);
     if (!sh) return 0;
+    /* Injected after #version, so a profile define reaches the contract
+     * include without the mod's source knowing which profile it is in. */
+    if (preamble) glslang_shader_set_preamble(sh, preamble);
     if (!glslang_shader_preprocess(sh, &input) ||
         !glslang_shader_parse(sh, &input)) {
         write_log(log_path, "parse", glslang_shader_get_info_log(sh),
@@ -375,6 +385,52 @@ static size_t compile_glsl(const char* src, int stage,
     return words;
 }
 #endif /* OPENPETE_NO_GLSLANG */
+
+/* One profile of one shader source: reuse the cached SPIR-V when the build
+ * key still matches, else compile and cache it. `suffix` names the variant's
+ * cache files ("" for the stock profile, ".terrain" for the retained terrain
+ * engine half) and `preamble` is what glslang injects after #version.
+ * Returns word count, 0 on failure — and on failure removes only the STAMP,
+ * so a previously good .spv survives to be re-validated next boot. */
+static size_t compile_profile(const char* src, int stage,
+                              const include_ctx_t* ctx, const char* key,
+                              const char* build_dir, const char* flat,
+                              const char* suffix, const char* preamble,
+                              const char* log_path, const char* id,
+                              const char* path, uint32_t** out_words) {
+    char spv_path[MOD_SHADER_PATH_MAX * 3], stamp_path[MOD_SHADER_PATH_MAX * 3];
+    snprintf(spv_path, sizeof spv_path, "%s/%s%s.spv", build_dir, flat, suffix);
+    snprintf(stamp_path, sizeof stamp_path, "%s/%s%s.hash", build_dir, flat, suffix);
+
+    char stamped[65] = "";
+    FILE* f = fopen(stamp_path, "rb");
+    if (f) {
+        size_t got = fread(stamped, 1, 64, f);
+        stamped[got] = '\0';
+        if (got && stamped[got - 1] == '\n') stamped[got - 1] = '\0';
+        fclose(f);
+    }
+    if (strcmp(stamped, key) == 0) {
+        size_t len = 0;
+        char* cached = read_whole_file(spv_path, &len);
+        if (cached && len >= 4 && (len & 3u) == 0) {
+            *out_words = (uint32_t*)cached;
+            return len / 4;
+        }
+        free(cached);
+    }
+    size_t n = compile_glsl(src, stage, ctx, preamble, log_path, out_words);
+    if (n == 0) {
+        remove(stamp_path);          /* stamp only; a cached .spv survives */
+        return 0;
+    }
+    (void)write_whole_file(spv_path, *out_words, n * 4);
+    f = fopen(stamp_path, "wb");
+    if (f) { fprintf(f, "%s\n", key); fclose(f); }
+    OPL_INFO_F("mods", "%s: shader %s%s compiled (%zu words)", id, path,
+               suffix, n);
+    return n;
+}
 
 /* ------------------------------------------------------------------ */
 /* the service                                                         */
@@ -409,10 +465,7 @@ int openpete_mods_shader_register(openpete_mod_t* self, const char* path) {
     shader_mkdir(build_dir);
     char flat[MOD_SHADER_PATH_MAX];
     flatten_path(path, flat, sizeof flat);
-    char spv_path[MOD_SHADER_PATH_MAX * 3], stamp_path[MOD_SHADER_PATH_MAX * 3];
     char log_path[MOD_SHADER_PATH_MAX * 3];
-    snprintf(spv_path, sizeof spv_path, "%s/%s.spv", build_dir, flat);
-    snprintf(stamp_path, sizeof stamp_path, "%s/%s.hash", build_dir, flat);
     snprintf(log_path, sizeof log_path, "%s/%s.log", build_dir, flat);
 
     char src_path[MOD_SHADER_PATH_MAX * 2];
@@ -420,53 +473,43 @@ int openpete_mods_shader_register(openpete_mod_t* self, const char* path) {
 
     uint32_t* words = NULL;
     size_t n_words = 0;
+    uint32_t* ter_words = NULL;
+    size_t n_ter_words = 0;
 
     size_t src_len = 0;
     char* src = read_whole_file(src_path, &src_len);
     if (src) {
-        /* Source-first: content-hash cache, stamp-not-object on failure. */
-        char key[65], stamped[65] = "";
+        char key[65];
         if (shader_compute_key(mod_dir, path, key) != 0) { free(src); return -1; }
-        {
-            FILE* f = fopen(stamp_path, "rb");
-            if (f) {
-                size_t got = fread(stamped, 1, 64, f);
-                stamped[got] = '\0';
-                if (got && stamped[got - 1] == '\n') stamped[got - 1] = '\0';
-                fclose(f);
-            }
+        include_ctx_t ctx;
+        snprintf(ctx.shader_dir, sizeof ctx.shader_dir, "%s/%s", mod_dir, path);
+        char* slash = strrchr(ctx.shader_dir, '/');
+        if (slash) *slash = '\0';
+        snprintf(ctx.sdk_shader_dir, sizeof ctx.sdk_shader_dir,
+                 "%s/shaders", openpete_mods_sdk_dir());
+
+        n_words = compile_profile(src, stage, &ctx, key, build_dir, flat,
+                                  "", NULL, log_path, id, path, &words);
+        if (n_words == 0) {
+            OPL_ERROR_F("mods", "%s: shader %s: compile FAILED (see %s) "
+                        "— effect unavailable", id, path, log_path);
+            free(src);
+            return -1;
         }
-        if (strcmp(stamped, key) == 0) {
-            size_t len = 0;
-            char* cached = read_whole_file(spv_path, &len);
-            if (cached && len >= 4 && (len & 3u) == 0) {
-                words = (uint32_t*)cached;
-                n_words = len / 4;
-            } else {
-                free(cached);
-            }
-        }
-        if (!words) {
-            include_ctx_t ctx;
-            snprintf(ctx.shader_dir, sizeof ctx.shader_dir, "%s/%s",
-                     mod_dir, path);
-            char* slash = strrchr(ctx.shader_dir, '/');
-            if (slash) *slash = '\0';
-            snprintf(ctx.sdk_shader_dir, sizeof ctx.sdk_shader_dir,
-                     "%s/shaders", openpete_mods_sdk_dir());
-            n_words = compile_glsl(src, stage, &ctx, log_path, &words);
-            if (n_words == 0) {
-                OPL_ERROR_F("mods", "%s: shader %s: compile FAILED (see %s) "
-                            "— effect unavailable", id, path, log_path);
-                remove(stamp_path);   /* stamp only; a cached .spv survives */
-                free(src);
-                return -1;
-            }
-            (void)write_whole_file(spv_path, words, n_words * 4);
-            FILE* f = fopen(stamp_path, "wb");
-            if (f) { fprintf(f, "%s\n", key); fclose(f); }
-            OPL_INFO_F("mods", "%s: shader %s compiled (%zu words)", id, path,
-                       n_words);
+        /* A material fragment is compiled a second time for the retained
+         * terrain pipelines, whose engine half of the contract takes flat
+         * per-face varyings instead of a per-draw push block. The source is
+         * the same source: only the profile define differs. Anything else
+         * (postfx, decal, mesh vertex stages) has one profile. */
+        if (stage == MOD_SHADER_STAGE_FRAG &&
+            strstr(src, "openpete_psx_material.glsl")) {
+            n_ter_words = compile_profile(src, stage, &ctx, key, build_dir, flat,
+                                          ".terrain", "#define OP_PROFILE_TERRAIN 1\n",
+                                          log_path, id, path, &ter_words);
+            if (n_ter_words == 0)
+                OPL_ERROR_F("mods", "%s: shader %s: terrain profile FAILED "
+                            "(see %s) — terrain draws stay stock", id, path,
+                            log_path);
         }
         free(src);
     } else {
@@ -517,6 +560,8 @@ int openpete_mods_shader_register(openpete_mod_t* self, const char* path) {
     sh->stage = stage;
     sh->spv = words;
     sh->spv_words = n_words;
+    sh->spv_ter = ter_words;
+    sh->spv_ter_words = n_ter_words;
     sh->live = 1;
     return s_shader_count++;
 }
@@ -530,6 +575,16 @@ const uint32_t* openpete_mods_shader_spv(int handle, size_t* words,
     return s_shaders[handle].spv;
 }
 
+/* The retained-terrain profile of a material fragment. NULL when the shader
+ * has none (not a material, or its terrain compile failed) — the caller then
+ * draws terrain stock rather than dropping the frame. */
+const uint32_t* openpete_mods_shader_spv_terrain(int handle, size_t* words) {
+    if (handle < 0 || handle >= s_shader_count || !s_shaders[handle].live)
+        return NULL;
+    if (words) *words = s_shaders[handle].spv_ter_words;
+    return s_shaders[handle].spv_ter;
+}
+
 void openpete_mods_shader_remove_owner(const char* mod_id) {
     for (int i = 0; i < s_shader_count; i++) {
         if (!s_shaders[i].live || !s_shaders[i].owner) continue;
@@ -537,6 +592,9 @@ void openpete_mods_shader_remove_owner(const char* mod_id) {
         free(s_shaders[i].spv);
         s_shaders[i].spv = NULL;
         s_shaders[i].spv_words = 0;
+        free(s_shaders[i].spv_ter);
+        s_shaders[i].spv_ter = NULL;
+        s_shaders[i].spv_ter_words = 0;
         s_shaders[i].live = 0;   /* slot stays dead: stale handles error */
     }
 }
