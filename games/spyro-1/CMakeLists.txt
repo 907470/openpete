@@ -440,7 +440,15 @@ const int openpete_modsite_registry_count = 0;
 ")
 endif()
 target_sources(openpete-spyro1 PRIVATE ${SPYRO_GENERATED}/mod_sites_registry.c)
-add_custom_command(TARGET openpete-spyro1 POST_BUILD
+# The staged <exe>/sdk/ tree IS the contract mods compile and #include
+# against, so it must never lag the repo. An ALL target rather than a
+# POST_BUILD command: POST_BUILD only fires when the exe relinks, and
+# editing a header or a .glsl does not relink anything — a contract edit
+# would sit unstaged until some unrelated C change happened to force a
+# link, and every mod would keep building against the old contract with
+# no diagnostic. copy_if_different over a dozen small files is cheap
+# enough to run unconditionally.
+add_custom_target(spyro1_sdk_stage ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
@@ -464,7 +472,9 @@ add_custom_command(TARGET openpete-spyro1 POST_BUILD
             ${CMAKE_SOURCE_DIR}/core/rhi/shaders/quad.vert
             ${CMAKE_SOURCE_DIR}/core/rhi/shaders/quad.frag
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk/shaders
-    COMMENT "Staging mod SDK headers into <exe>/sdk/")
+    COMMENT "Staging mod SDK headers into <exe>/sdk/"
+    VERBATIM)
+add_dependencies(spyro1_sdk_stage openpete-spyro1)
 
 # --- Build-time mod compile (notes/plans/openpete-mod-compile-on-boot.md)
 # `cmake --build` leaves every mod compiled, not just the engine:
@@ -549,7 +559,7 @@ if(OPENPETE_COMPILE_MODS)
         endforeach()
         endif() # OPENPETE_STAGE_MOD_DLLS
         add_custom_target(spyro1_mods ALL DEPENDS ${_staged_mod_dlls})
-        add_dependencies(spyro1_mods spyro1_mods_stage)
+        add_dependencies(spyro1_mods spyro1_mods_stage spyro1_sdk_stage)
     else()
         # Always runs (cheap: the exe's pass-1 content-hash check skips
         # up-to-date mods in milliseconds); nonzero exit fails the build.
@@ -558,7 +568,7 @@ if(OPENPETE_COMPILE_MODS)
                     --mods-dir ${OPENPETE_COMPILE_MODS_DIR}
             COMMENT "Compiling mods (openpete-spyro1 --compile-mods)"
             VERBATIM)
-        add_dependencies(spyro1_mods openpete-spyro1)
+        add_dependencies(spyro1_mods openpete-spyro1 spyro1_sdk_stage)
     endif()
 endif()
 
