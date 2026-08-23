@@ -92,16 +92,43 @@ outcomes exist today:
 
 | Path | Reshadeable | Why |
 |---|---|---|
-| opaque + the alpha/additive/subtract-world groups | yes | psx_scene.vert/.frag; the override inherits the group's blend, depth-write and painter slot |
+| opaque + the alpha/additive/subtract-world groups | yes, but **not yet faithfully** — see below | the override inherits the group's blend, depth-write and painter slot, and builds against psx_scene.vert/.frag |
 | moby shadows (`scene_tex_sub_decal_pipe`) | yes, via the **decal profile** | `shadow_decal_tex.frag` OWNS per-pixel occlusion (samples the WORLD-opaque pre-pass depth at set 0, rejects walls/steep faces). A plain material would delete that, so this path takes a second contract — `openpete_psx_decal.glsl` — whose engine half exposes the verdict (`op_decal_visible()`) for the mod's fragment to apply |
 | portal sky mask (colour-write off) | n/a | writes no colour; deliberately untagged, since a material could not change anything |
 
-The shadow row is the one that matters, because it looks like a
-plumbing gap and is not. Probe: with `OPENPETE_MOBY_SHADOW_DECAL=0` the
-fallback (plain subtract + hardware bias) DOES take the override and the
-shadows recolour. That is precisely why the plain override stays refused
-on both paths — accepting it only on the fallback would make a mod's
-reach depend on whether the host can sample depth.
+**The first row's caveat is the important one.** The stock textured
+scene pipelines do NOT bind `psx_scene.frag`; they bind
+`psx_scene_key.frag`, and the untextured ones bind `quad_key.frag`.
+Those stages carry the og OT-key contest (terrain keys, actor keys, the
+prop EMBED rule) and the same-moby rank painter select — per-pixel
+*visibility verdicts* expressed as `discard`. Both override sites
+(`draw_tex_runs`, `draw_ut_mat_spans`) build against the contest-free
+twin, so a material on those groups changes not only a face's colour but
+which surface exists at a pixel.
+
+Measured (`cliff-town-vista` f2000): a material selecting the terrain LP
+tier and returning stock shading unchanged moves 3105 px, 300 of them at
+≥64 sum-delta, with adjacent pixels swapping between two surfaces'
+colour families in both directions. It survives `--terrain-cache 0`, and
+a probe painting the audience by `vKoff` presence shows that audience is
+100% keyed. Separately, `openpete_psx_material.glsl` never divides
+`vUV`/`vColor` by the perspective ratio `vQ` the way every stock stage
+does — worth ~1-3 LSB on far geometry and more near the camera (moby
+3958 px → 1 px when a probe does the divide by hand).
+
+So the ordinary groups belong in the same category as the shadow row,
+not opposite it. `notes/plans/openpete-terrain-cache-materials.md`
+owns the fix: the engine owns `main()` and the mod owns the colour slot,
+which retires the decal profile as a separate *contract* (it stays a
+separate pipeline variant) and makes both defects impossible to
+reintroduce.
+
+Probe worth keeping for the shadow row: with
+`OPENPETE_MOBY_SHADOW_DECAL=0` the fallback (plain subtract + hardware
+bias) DOES take the override and the shadows recolour. That is precisely
+why the plain override stays refused on both paths — accepting it only on
+the fallback would make a mod's reach depend on whether the host can
+sample depth.
 
 **The decal profile is the resolution** (`core/include/openpete_psx_decal.glsl`):
 a second shading contract that splits the stock stage into the engine's
@@ -113,8 +140,18 @@ as ONE call because every moby shadow shares one sprite AND one tag; a
 non-uniform tag falls back to stock rather than painting the range with
 the first triangle's material.
 
-The generalisation to carry forward: **a draw path whose fragment stage
-does anything but colour maths needs its own profile, not an exemption.**
+The generalisation to carry forward, in the form the measurements above
+force: **almost every draw path's fragment stage does something besides
+colour maths, so the split belongs in the contract rather than in a
+per-path profile.** A mod that writes its own `main()` leaves the engine
+nowhere to stand — and every occlusion rule, perspective term or fog
+model the engine later adds silently makes every shipped material wrong.
+
+The instrument that catches it in one number: **an identity material —
+one whose fragment returns the stock shading unchanged — must be
+pixel-identical to no material at all.** No colour classifier, no eyes,
+no judgement about what looks right; any nonzero result is contract
+leakage by definition, because the mod asked for nothing.
 
 ## Retention identity
 
