@@ -1,17 +1,19 @@
-/* The gallery's highlight, on the DECAL material profile.
+/* The gallery's highlight, on the DECAL variant of the material contract.
  *
  * Moby drop-shadows draw through a pass whose stock fragment stage decides
  * per pixel whether the shadow is occluded — it reconstructs the terrain
  * height from a depth pre-pass and rejects walls, steep faces and raised
- * platforms. A material replaces the fragment stage, so it has to apply
- * that verdict rather than silently drop it; op_decal_visible() is the
- * engine handing it over.
+ * platforms. That verdict is the engine's, applied by main() before this
+ * function runs, so a material on this path cannot paint through a wall
+ * even by accident.
  *
- * Everything else is the plain highlight: take the stock look, push it
- * toward the row's colour. The draw blends SUBTRACTIVE, so a brighter
- * tint darkens the ground MORE — the row reads inverted compared with the
- * opaque channels, which is the material inheriting its group's
- * compositing exactly as it should.
+ * Note how little separates this from highlight.frag: a different include,
+ * and nothing else. Same function, same body — the two contracts differ in
+ * which draw path they wrap, not in what a mod writes.
+ *
+ * The draw blends SUBTRACTIVE, so a brighter tint darkens the ground MORE
+ * — the row reads inverted compared with the opaque channels, which is the
+ * material inheriting its group's compositing exactly as it should.
  */
 #version 450
 #extension GL_GOOGLE_include_directive : require
@@ -20,12 +22,8 @@
 layout(set = 3, binding = 1, std140) uniform op_instance {
     vec4 tint;     /* rgb = highlight colour, a = strength 0..1 */
 };
-layout(location = 0) out vec4 outColor;
 
-void main()
+vec4 op_material(vec4 base)
 {
-    if (!op_decal_visible()) discard;
-    vec4 base = op_decal_shade();
-    if (base.a == 0.0) discard;          /* PSX transparent sentinel */
-    outColor = vec4(mix(base.rgb, tint.rgb, clamp(tint.a, 0.0, 1.0)), base.a);
+    return vec4(mix(base.rgb, tint.rgb, clamp(tint.a, 0.0, 1.0)), base.a);
 }

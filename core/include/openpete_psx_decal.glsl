@@ -1,35 +1,29 @@
-/* openpete_psx_decal.glsl — the DECAL material profile.
+/* openpete_psx_decal.glsl — the DECAL variant of the material contract.
  *
- * Include from a material fragment shader targeting a draw path whose stock
- * fragment stage owns per-pixel OCCLUSION rather than only colour:
+ * Same shape as openpete_psx_material.glsl, and the SAME mod-facing
+ * function: the engine owns main(), the mod supplies op_material(base).
  *
  *     #version 450
  *     #extension GL_GOOGLE_include_directive : require
  *     #include "openpete_psx_decal.glsl"
  *
  *     layout(set = 3, binding = 1, std140) uniform op_instance { vec4 tint; };
- *     layout(location = 0) out vec4 outColor;
- *     void main() {
- *         if (!op_decal_visible()) discard;   // engine's verdict, not yours
- *         vec4 c = op_decal_shade();
- *         if (c.a == 0.0) discard;
- *         outColor = vec4(c.rgb * tint.rgb, c.a);
- *     }
  *
- * WHY THIS EXISTS, and why it is a second contract rather than a flag on
- * the first. A material replaces the fragment stage. That is harmless when
- * the stock stage is pure colour maths, and destructive when it is not:
- * Spyro's moby drop-shadows draw as flat fans with the depth test OFF,
- * because their fragment shader decides, per pixel, whether the shadow is
- * occluded — reconstructing the terrain's world height from a depth
- * pre-pass and rejecting walls, steep faces, and raised platforms in
- * front. Hand a mod the plain material contract there and its shader
- * silently deletes that logic: the fan paints straight through walls.
+ *     vec4 op_material(vec4 base) { return vec4(base.rgb * tint.rgb, base.a); }
  *
- * So the profile splits the stock stage in two. `op_decal_visible()` is
- * the engine's occlusion verdict, unchanged and not overridable.
- * `op_decal_shade()` is the sprite decode plus the PSX modulation rule.
- * A mod composes them and owns only the colour.
+ * WHY A SEPARATE INCLUDE. Not a different contract — a different DRAW
+ * PATH. Spyro's moby drop-shadows are flat fans drawn with the depth test
+ * OFF, because their fragment stage decides per pixel whether the shadow
+ * is occluded: it reconstructs the terrain's world height from the opaque
+ * depth pre-pass and rejects walls, steep faces and raised platforms in
+ * front. That path has its own vertex stage, its own push block and its
+ * own samplers, so the declarations differ — but the split is identical
+ * to the main contract's, and a mod that writes one op_material() can be
+ * pointed at either.
+ *
+ * The engine's occlusion verdict is applied by main() before op_material()
+ * runs, and is not overridable: a material cannot paint shadows through
+ * walls, because it never gets the chance to skip the test.
  *
  * Reserved for the engine: push constants, sets 0-1, input locations 0-2.
  * A material's own uniform block is set 3 binding 1 (std140).
@@ -134,8 +128,8 @@ float op_worldup_at(vec2 s, float vz)
 }
 
 /* The engine's occlusion verdict. false = this pixel is occluded and the
- * decal must not paint. Not overridable: a material that skips this call
- * paints shadows through walls. */
+ * decal must not paint. main() applies it; a material never sees the
+ * fragments it rejects. */
 bool op_decal_visible()
 {
     vec2  uv = vec2(op_pc.uax * vScreenPSX.x + op_pc.ubx,
@@ -169,6 +163,21 @@ bool op_decal_visible()
         if (viewZ + op_pc.band < fanViewZ) return false;
     }
     return true;
+}
+
+/* ---- the mod's half --------------------------------------------------
+ * Supplied by the material, same signature as the main contract's. base =
+ * op_decal_shade(); return the colour to write. */
+vec4 op_material(vec4 base);
+
+layout(location = 0) out vec4 op_out_color;
+
+void main()
+{
+    if (!op_decal_visible()) discard;
+    vec4 c = op_material(op_decal_shade());
+    if (c.a == 0.0) discard;        /* PSX transparent-texel sentinel */
+    op_out_color = c;
 }
 
 #endif /* OPENPETE_PSX_DECAL_GLSL */

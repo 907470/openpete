@@ -42,13 +42,12 @@ The engine resolves it to `sdk/shaders/openpete_shader_api.glsl` and
 hashes those bytes into every shader's build key — an interface change
 auto-invalidates your cache. **Material** fragment shaders include
 `openpete_psx_material.glsl` instead (never both — they claim the same
-descriptor set differently): it carries the material-tier interface plus
-the stock PSX decode as functions (`op_psx_shade()` = faithful stock
-result) and HD texture-pack access (`op_pack_shade()` = the scene with
-the installed pack applied), so a material builds ON the faithful base
-rather than forking it. Forks of `sdk/shaders/psx_scene.frag` still work but freeze the
-decode they copied; include-based materials are rebuilt by the engine
-whenever the contract evolves.
+descriptor set differently). A material does not write `main()`: the
+engine owns the fragment stage and you supply one function, which is
+handed the faithful stock result and returns a colour. Forks of
+`sdk/shaders/psx_scene.frag` still work but freeze the decode they
+copied; include-based materials are rebuilt by the engine whenever the
+contract evolves.
 
 Shipping without source: a prebuilt `<path>.spv` loads when no source
 sits beside it, but requires a `<path>.spv.ihash` sidecar matching the
@@ -162,10 +161,32 @@ tiers has its C registrations land later — and later wins. Where two
 materials claim the same pixels, the last registration takes them.
 
 Material fragment shaders include `openpete_psx_material.glsl` and read
-their own block at set 3 binding 1. `op_pack_shade()` is the usual base
-layer: it decodes the face the way the engine would, honours an installed
-HD texture pack, and returns the interpolated vertex colour for
-untextured draws — so one shader serves both paths.
+their own block at set 3 binding 1. The whole shader is one function:
+
+```glsl
+#include "openpete_psx_material.glsl"
+
+layout(set = 3, binding = 1, std140) uniform op_instance { vec4 tint; };
+
+vec4 op_material(vec4 base)          // base = the engine's own result
+{
+    return vec4(mix(base.rgb, tint.rgb, tint.a), base.a);
+}
+```
+
+`base` is the face decoded the way the engine would draw it — CLUT decode,
+perspective divide, PSX modulation, and any installed HD texture pack's
+replacement — or the interpolated vertex colour for untextured draws, so
+one function serves both paths. Return `base.a` unchanged unless you mean
+to change transparency: the engine discards the PSX transparent-texel
+sentinel for you.
+
+**Why you do not write `main()`.** The stock fragment stage does more than
+colour maths — it runs og's per-pixel painter verdicts, which decide
+*which surface exists* at a pixel. A shader that owned `main()` replaced
+those silently, and every rule the engine added later broke every material
+already shipped. It did, three times, before the split. With `main()`
+engine-side you cannot lose behaviour you never knew about.
 
 `mods/channel-gallery` registers the same shader once per channel with a
 different selector each time, with live toggles. It is the fastest way to
@@ -206,43 +227,38 @@ scene.
 Instances whose blocks are byte-identical share a slot and stay in one
 batch, so cost tracks *distinct outcomes*, not matches.
 
-### Profiles — when the stock stage is not just colour
+### Draw paths with their own include
 
-Being tagged does not make geometry reshadeable. A material replaces the
-fragment stage, which is harmless when that stage is pure colour maths
-and destructive when it is not.
+Some draw paths carry their own vertex stage, push block and samplers, so
+their declarations cannot be the ones above. Moby drop-shadows are the
+worked example: flat fans drawn with the depth test **off**, because their
+fragment stage decides per pixel whether the shadow is occluded —
+reconstructing terrain height from a depth pre-pass and rejecting walls,
+steep faces and raised platforms.
 
-Moby drop-shadows are the worked example. They draw as flat fans with the
-depth test **off**, because their fragment shader decides per pixel
-whether the shadow is occluded — reconstructing terrain height from a
-depth pre-pass and rejecting walls, steep faces and raised platforms.
-Hand that path an ordinary material and the shader silently deletes the
-occlusion: shadows paint through walls.
-
-So those paths take a second contract, the **decal profile**, which
-splits the stock stage in two and gives you only the half you should own:
+Those paths get their own include. Nothing else changes:
 
 ```glsl
 #include "openpete_psx_decal.glsl"
 
-void main() {
-    if (!op_decal_visible()) discard;   // the engine's verdict, not yours
-    vec4 base = op_decal_shade();       // sprite decode + PSX modulation
-    if (base.a == 0.0) discard;
-    outColor = vec4(mix(base.rgb, tint.rgb, tint.a), base.a);
+layout(set = 3, binding = 1, std140) uniform op_instance { vec4 tint; };
+
+vec4 op_material(vec4 base)
+{
+    return vec4(mix(base.rgb, tint.rgb, tint.a), base.a);
 }
 ```
 
-Register it exactly as any other material — the selector is unchanged and
-the engine picks the profile from the draw path. Only the include, and
-the obligation to apply `op_decal_visible()`, differ. `mods/channel-gallery`
-carries a row on this profile (`shaders/highlight_decal.frag`).
+Same function, same body — only the include differs, and the engine picks
+it from the draw path. The occlusion verdict is applied before your
+function runs, so a material on this path cannot paint shadows through a
+wall even by accident. `mods/channel-gallery` carries a row on it
+(`shaders/highlight_decal.frag`); compare it with `shaders/highlight.frag`
+and the only difference is the `#include` line.
 
 Shadows blend **subtractive**, so a brighter tint darkens the ground
 *more* — the row reads inverted next to the opaque channels, which is the
 material inheriting its group's compositing exactly as it should.
 
-If a future draw path puts other logic in its fragment stage, it gets its
-own profile rather than an escape hatch on this one. A row that cannot be
-reshaded yet stays in the gallery labelled as a known gap; there are none
-at present.
+A row that cannot be reshaded yet stays in the gallery labelled as a known
+gap; there are none at present.
