@@ -41,6 +41,8 @@ trap 'rm -rf "$WORK"' EXIT
 
 # Stage one gallery copy per config so runs never share a config.toml.
 # `extra` is appended verbatim, so a rung can drive gallery.class etc.
+# STRENGTH overrides the highlight strength for one call; 0.0 makes every
+# lit row an IDENTITY material (see the identity rungs below).
 run_rows() {  # run_rows <tag> <bk2> <frame> <rows> <extra-toml>
     local tag=$1 bk2=$2 frame=$3 rows=$4 extra=$5
     local md="$WORK/mods-$tag" out="$WORK/$tag-$frame-vk.png"
@@ -48,7 +50,8 @@ run_rows() {  # run_rows <tag> <bk2> <frame> <rows> <extra-toml>
     mkdir -p "$md"
     cp -r mods/channel-gallery "$md/"
     rm -rf "$md/channel-gallery/.build"
-    printf 'gallery.rows = "%s"\ngallery.strength = 1.0\n%s\n' "$rows" "$extra" \
+    printf 'gallery.rows = "%s"\ngallery.strength = %s\n%s\n' \
+        "$rows" "${STRENGTH:-1.0}" "$extra" \
         > "$md/channel-gallery/config.toml"
     timeout 300 "$BIN" --headless --no-config --disc "$DISC" \
         --run-recomp 0x80012204 --renderer vk --mute 1 --aspect 16:9 \
@@ -121,6 +124,67 @@ while IFS='|' read -r tag bk2 frame row minpx label; do
         bad "row $row repainted only ${n:-0} px, expected >= $minpx"
     fi
 done <<< "$RUNGS"
+
+# ── identity materials ────────────────────────────────────────────────
+# The rungs above prove a material REACHES its audience. These prove it
+# reaches it and nothing else: a material that returns the stock shading
+# unchanged (strength 0) must be pixel-identical to no material at all.
+#
+# It needs no colour classifier and no judgement about what looks right —
+# the mod asked for nothing, so any changed pixel is the ENGINE's stage
+# leaking, not the mod's. That is what makes it worth having: it is the
+# only rung here that can fail because of something nobody wrote.
+#
+# It has already earned its place twice. The material contract never
+# divided vUV/vColor by the perspective ratio vQ the way every stock
+# fragment stage does (moby 3958 px -> 1), and all three shipped material
+# shaders wrote the PSX transparent-texel sentinel through instead of
+# discarding it, painting cut-out holes solid on opaque draws.
+#
+# TOL 4, not 0: the decode is exact but the pipelines differ, and a
+# handful of edge fragments land on the far side of a rounding boundary.
+IDTOL=4
+say "identity materials repaint nothing they were not asked to"
+for leg in "id_moby flame 1800 2 mobys" \
+           "id_player flame 1800 4 player" \
+           "id_sky cyclorama-portal 2000 5 sky" \
+           "id_flame flame 1800 6 flame ribbon" \
+           "id_shadow artisans-bridge 2000 8 moby shadows (decal)" \
+           "id_portal cyclorama-portal 2000 15 portal previews"; do
+    set -- $leg
+    tag=$1 bk2=$2 frame=$3 row=$4; shift 4; label="$*"
+    base="$WORK/base_flame-1800-vk.png"
+    [ "$bk2" = "cyclorama-portal" ] && base="$WORK/base_portal-2000-vk.png"
+    [ "$bk2" = "artisans-bridge" ]  && base="$WORK/base_bridge-2000-vk.png"
+    if ! STRENGTH=0.0 run_rows "$tag" "$bk2" "$frame" "$row" ""; then
+        bad "no capture for identity row $row (see $WORK/$tag.log)"; continue
+    fi
+    n=$(diffpx "$base" "$WORK/$tag-$frame-vk.png")
+    if [ "${n:-999}" -le "$IDTOL" ]; then
+        ok "$label: identity material is stock (${n:-?} px <= $IDTOL)"
+    else
+        bad "$label: identity material moved ${n:-?} px — the engine's own fragment work is being replaced, not the colour (perspective term? an occlusion contest? see notes/plans/openpete-terrain-cache-materials.md)"
+    fi
+done
+
+# Terrain is the KNOWN exception, and it is the arc's opening evidence:
+# the stock textured pipelines bind psx_scene_key.frag / quad_key.frag,
+# whose og OT-key contest discards fragments a nearer key owns, while the
+# override builds against the contest-free psx_scene.frag. Every terrain
+# LP fragment a material reaches is keyed, so the loss is visible as two
+# surfaces trading pixels. Expected to go to <= IDTOL when the contract
+# inversion lands (T0); this rung then flips to the loop above.
+say "identity material on terrain — KNOWN GAP (the og key contest)"
+if STRENGTH=0.0 run_rows id_terrain flame 1800 1 ""; then
+    n=$(diffpx "$WORK/base_flame-1800-vk.png" "$WORK/id_terrain-1800-vk.png")
+    if [ "${n:-0}" -gt "$IDTOL" ]; then
+        ok "terrain identity still moves $n px (the documented key-contest loss)"
+    else
+        bad "terrain identity is now clean ($n px) — T0 landed or the contest changed: move this row into the identity loop above and update the census"
+    fi
+else
+    bad "no capture for identity row 1 (see $WORK/id_terrain.log)"
+fi
 
 # ── refine == declarative ─────────────────────────────────────────────
 # A refine material whose callback accepts every instance selects the same
