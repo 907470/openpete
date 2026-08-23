@@ -156,6 +156,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Per-channel material gate: turns every mods/channel-gallery row into
+    # an assertion (a row that should paint must, a KNOWN GAP row must
+    # not), plus refine-vs-declarative equivalence — including the
+    # many-distinct-outcome case, which is the shape that caught
+    # per-instance slots being stamped after their intern table was reset.
+    # Neither check_mods nor native_visual_regression runs a mod material
+    # at all, so this is the only gate that exercises the selector seam.
+    # Slow (a dozen headless sessions); `ctest -L mods` or the script.
+    add_test(NAME mod_channel_selectors
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_mod_channels.sh)
+    set_tests_properties(mod_channel_selectors PROPERTIES
+        LABELS "slow;mods"
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Freecam-corpus gate for the terrain near-LP gapfill classifier —
     # replays recorded problematic freecam spots (holes that must stay
     # filled, walls/arches the fill must not touch) and asserts metric

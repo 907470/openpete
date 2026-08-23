@@ -1,0 +1,224 @@
+#!/usr/bin/env bash
+# Per-channel material gate: every row of mods/channel-gallery is a CLAIM
+# about what the engine can select, and this turns each claim into an
+# assertion. A row that should paint must paint; a row marked KNOWN GAP
+# must paint nothing (a gap that quietly starts working is also news).
+#
+# Why this exists as its own gate: the gallery's claims were verified by
+# hand, one screenshot at a time, and that is exactly how two real bugs
+# got through — a texturedness filter that silently skipped the whole LP
+# terrain tier, and per-instance material slots that were dead before
+# they were stamped. Both were invisible to check_mods and check_native_
+# visual, because neither runs a mod material at all.
+#
+# The last rung is the one with teeth: a refine material whose callback
+# returns a DIFFERENT block per instance must repaint exactly what the
+# equivalent DECLARATIVE selector repaints. Same audience, two routes,
+# one number. Note the "different block per instance" — the shared-block
+# version of that comparison passes straight through the slot bug, which
+# is documented at the rung itself.
+#
+# Usage: scripts/check_mod_channels.sh
+# Exit: 0 pass, 1 failures, 64 skip (no binary / disc / vulkan / PIL).
+set -uo pipefail
+cd "$(dirname "$0")/.."
+
+BIN=build/linux-release/games/spyro-1/openpete-spyro1
+DISC=games/spyro-1/spyro-1/build/SCUS-94228.cue
+WORK="${TMPDIR:-/tmp}/openpete-modchan.$$"
+fail=0
+
+say() { printf '\n[modchan] %s\n' "$*"; }
+ok()  { printf '[modchan]   PASS: %s\n' "$*"; }
+bad() { printf '[modchan]   FAIL: %s\n' "$*"; fail=1; }
+
+[ -x "$BIN" ] || { echo "[modchan] SKIP: no binary at $BIN"; exit 64; }
+[ -f "$DISC" ] || { echo "[modchan] SKIP: no disc at $DISC"; exit 64; }
+python3 -c "import PIL" 2>/dev/null || { echo "[modchan] SKIP: PIL unavailable"; exit 64; }
+
+mkdir -p "$WORK"
+trap 'rm -rf "$WORK"' EXIT
+
+# Stage one gallery copy per config so runs never share a config.toml.
+# `extra` is appended verbatim, so a rung can drive gallery.class etc.
+run_rows() {  # run_rows <tag> <bk2> <frame> <rows> <extra-toml>
+    local tag=$1 bk2=$2 frame=$3 rows=$4 extra=$5
+    local md="$WORK/mods-$tag" out="$WORK/$tag-$frame-vk.png"
+    rm -rf "$md"; rm -f "$out"     # never measure a stale capture
+    mkdir -p "$md"
+    cp -r mods/channel-gallery "$md/"
+    rm -rf "$md/channel-gallery/.build"
+    printf 'gallery.rows = "%s"\ngallery.strength = 1.0\n%s\n' "$rows" "$extra" \
+        > "$md/channel-gallery/config.toml"
+    timeout 300 "$BIN" --headless --no-config --disc "$DISC" \
+        --run-recomp 0x80012204 --renderer vk --mute 1 --aspect 16:9 \
+        --bk2 "games/spyro-1/bk2/$bk2.bk2" --screenshot-native-only \
+        --mods-dir "$md" --screenshot-on-frame "$frame" \
+        --screenshot-output "$WORK/$tag-{n}.png" \
+        --frame-limit $((frame + 2)) --max-runtime-seconds 280 \
+        > "$WORK/$tag.log" 2>&1
+    [ -s "$out" ]                  # caller checks; a missing capture is a hard error
+}
+
+# Changed-pixel count between two captures.
+diffpx() {
+    python3 - "$1" "$2" <<'PY'
+import sys
+from PIL import Image, ImageChops
+a = Image.open(sys.argv[1]).convert("RGB")
+b = Image.open(sys.argv[2]).convert("RGB")
+print(sum(1 for p in ImageChops.difference(a, b).getdata() if p != (0, 0, 0)))
+PY
+}
+
+# ── baselines (gallery loaded, every row OFF) ─────────────────────────
+# The baseline runs WITH the mod present but no row lit, so the gate
+# measures the selector alone and not the cost of loading a mod.
+for leg in "base_flame flame 1800" "base_portal cyclorama-portal 2000"; do
+    set -- $leg
+    if ! run_rows "$1" "$2" "$3" "" ""; then
+        echo "[modchan] SKIP: no headless vk capture for $2 (see $WORK/$1.log)"
+        grep -qiE "no vulkan|no display|failed to (create|open)" "$WORK/$1.log" && exit 64
+        echo "[modchan] FAIL: baseline capture missing for $2"; exit 1
+    fi
+done
+
+# ── per-channel rungs ─────────────────────────────────────────────────
+# tag | bk2 | frame | row | min-px (0 = must paint NOTHING) | label
+RUNGS="
+terrain|flame|1800|1|20000|terrain, both LOD tiers
+moby|flame|1800|2|400|mobys
+player|flame|1800|4|1500|player (Spyro is not a moby)
+flameribbon|flame|1800|6|10000|flame ribbon (additive, textured)
+particlequad|flame|1800|10|30|particle billboards (textured, blended)
+shadowmoby|flame|1800|8|0|moby shadows (KNOWN GAP: decal frag owns occlusion)
+sky|cyclorama-portal|2000|5|3000|cyclorama sky
+portal|cyclorama-portal|2000|15|3000|portal previews (all three rungs)
+"
+
+while IFS='|' read -r tag bk2 frame row minpx label; do
+    [ -z "${tag// }" ] && continue
+    base="$WORK/base_flame-1800-vk.png"
+    [ "$bk2" = "cyclorama-portal" ] && base="$WORK/base_portal-2000-vk.png"
+    say "$label"
+    if ! run_rows "$tag" "$bk2" "$frame" "$row" ""; then
+        bad "no capture for row $row (see $WORK/$tag.log)"; continue
+    fi
+    n=$(diffpx "$base" "$WORK/$tag-$frame-vk.png")
+    if [ "$minpx" -eq 0 ]; then
+        # A known gap that starts painting is news, not a silent win: the
+        # row's help text and the census both claim it cannot.
+        if [ "${n:-0}" -eq 0 ]; then
+            ok "row $row paints nothing, as its KNOWN GAP note claims"
+        else
+            bad "row $row painted $n px but is documented as a KNOWN GAP — either the engine gained a capability (update the gallery + census) or something else is leaking into this selector"
+        fi
+    elif [ "${n:-0}" -ge "$minpx" ]; then
+        ok "row $row repainted $n px (>= $minpx)"
+    else
+        bad "row $row repainted only ${n:-0} px, expected >= $minpx"
+    fi
+done <<< "$RUNGS"
+
+# ── refine == declarative ─────────────────────────────────────────────
+# A refine material whose callback accepts every instance selects the same
+# audience as the plain declarative all-mobys selector, so it must repaint
+# the same pixels.
+#
+# NOTE this rung alone is NOT sufficient, and it took writing it to see
+# why: the gallery's refine row returns ONE shared block, and the
+# stamped-slot bug only bit when a callback produced MANY DISTINCT
+# outcomes. Measured against the buggy engine this pair reads 1586 vs
+# 1586 — a clean pass straight through the defect. The many-outcome rung
+# below is the one with teeth; this one covers the shared-block path.
+say "refine material claiming everything == declarative all-mobys"
+if run_rows "refine_all" flame 1800 19 $'gallery.class = -1\ngallery.refine_state = -1'; then
+    nd=$(diffpx "$WORK/base_flame-1800-vk.png" "$WORK/moby-1800-vk.png")
+    nr=$(diffpx "$WORK/base_flame-1800-vk.png" "$WORK/refine_all-1800-vk.png")
+    if [ "${nr:-0}" -eq "${nd:-1}" ] && [ "${nr:-0}" -gt 0 ]; then
+        ok "refine and declarative both repainted $nr px"
+    else
+        bad "refine repainted ${nr:-0} px, declarative ${nd:-0} — a per-instance material is losing (or gaining) instances"
+    fi
+else
+    bad "no capture for the refine rung (see $WORK/refine_all.log)"
+fi
+
+# A callback that declines every instance must leave the frame stock.
+say "refine material declining everything == no material at all"
+if run_rows "refine_none" flame 1800 19 $'gallery.class = -1\ngallery.refine_state = 250'; then
+    nz=$(diffpx "$WORK/base_flame-1800-vk.png" "$WORK/refine_none-1800-vk.png")
+    if [ "${nz:-1}" -eq 0 ]; then
+        ok "every instance declined, frame is stock"
+    else
+        bad "declining callback still repainted ${nz} px"
+    fi
+else
+    bad "no capture for the decline rung (see $WORK/refine_none.log)"
+fi
+
+# ── many distinct outcomes == the same audience ───────────────────────
+# The rung with teeth. mods/moby-instance-tint's callback returns a
+# DIFFERENT block per instance, so it interns a slot per moby instead of
+# one shared slot. It must still claim exactly the audience the plain
+# all-mobys selector claims — every moby, no more, no fewer.
+#
+# This is the shape that caught the real bug: slot ids were interned
+# during the extraction walk and stamped into the tag after
+# scene_begin_frame had reset the intern table, so the high ids named
+# nothing and most instances fell back to stock. Shared-block callbacks
+# sailed through it (the table refills from 1); this one read 218 against
+# the declarative 1586.
+say "many-distinct-outcome refine == declarative all-mobys"
+tintmd="$WORK/mods-tint"
+rm -rf "$tintmd"; rm -f "$WORK/tint-1800-vk.png"
+mkdir -p "$tintmd"
+cp -r mods/moby-instance-tint "$tintmd/"
+rm -rf "$tintmd/moby-instance-tint/.build"
+OPENPETE_MATERIAL_STATS=1 timeout 300 "$BIN" --headless --no-config --disc "$DISC" \
+    --run-recomp 0x80012204 --renderer vk --mute 1 --aspect 16:9 \
+    --bk2 games/spyro-1/bk2/flame.bk2 --screenshot-native-only \
+    --mods-dir "$tintmd" --screenshot-on-frame 1800 \
+    --screenshot-output "$WORK/tint-{n}.png" \
+    --frame-limit 1802 --max-runtime-seconds 280 \
+    > "$WORK/tint.log" 2>&1
+if [ -s "$WORK/tint-1800-vk.png" ]; then
+    # Its baseline is the no-mods frame: this mod has no gallery rows.
+    if ! run_rows nomods flame 1800 "" ""; then
+        bad "no no-mods baseline for the many-outcome rung"
+    else
+        # The gallery baseline has the mod loaded but inert, so both
+        # baselines are the same image; compare against the tint mod's own.
+        nt=$(diffpx "$WORK/nomods-1800-vk.png" "$WORK/tint-1800-vk.png")
+        nd2=$(diffpx "$WORK/base_flame-1800-vk.png" "$WORK/moby-1800-vk.png")
+        if [ "${nt:-0}" -eq "${nd2:-1}" ] && [ "${nt:-0}" -gt 0 ]; then
+            ok "per-instance blocks reached all $nt px the declarative selector does"
+        else
+            bad "per-instance refine repainted ${nt:-0} px, declarative ${nd2:-0} — instances are being lost (check that slot ids are resolved where they are STAMPED, not banked during the walk)"
+        fi
+        # Pixel-count equality is necessary but NOT sufficient, and finding
+        # that out is why this line exists: a variant where every instance
+        # collapses onto ONE slot repaints exactly the same pixels (each
+        # moby is tinted, just all the same wrong colour) and sails past
+        # the comparison above. The interned-slot census is the structural
+        # witness that the outcomes really are per-instance. A hash over
+        # distinct moby addresses cannot legitimately produce one slot.
+        peak=$(grep -oE 'per-instance slots interned this present = [0-9]+' \
+               "$WORK/tint.log" | tail -1 | grep -oE '[0-9]+$')
+        if [ "${peak:-0}" -ge 4 ]; then
+            ok "callback produced $peak distinct interned outcomes"
+        else
+            bad "only ${peak:-0} distinct outcomes interned from a per-vaddr hash — instances are collapsing onto a shared slot, so they render with each other's parameters"
+        fi
+    fi
+else
+    bad "no capture for the many-outcome rung (see $WORK/tint.log)"
+fi
+
+echo
+if [ "$fail" -eq 0 ]; then
+    echo "[modchan] ALL GREEN"
+else
+    echo "[modchan] FAILURES — see above"
+fi
+exit $fail

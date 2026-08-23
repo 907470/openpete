@@ -10,6 +10,14 @@
  * cannot light yet stay, marked KNOWN GAP — they are the frontier, and
  * deleting them to look complete is how the gallery stops being useful.
  *
+ * The claims are GATED: scripts/check_mod_channels.sh asserts a
+ * representative row per channel, both directions — a row that should paint
+ * must, and a KNOWN GAP row must paint nothing. Adding a row here is only
+ * half the change; a row nothing checks is back to being a hopeful comment.
+ * Row INDICES are part of that gate's contract (it drives rows by number
+ * through gallery.rows), so inserting a row in the middle means updating
+ * the gate's table in the same commit.
+ *
  * This is the C-side demonstrator. `mods/declarative-reshade` is its zero-C
  * twin: the same selectors expressed as [[material]] manifest rows, with no
  * source file at all. Every selector key one of them can express, the other
