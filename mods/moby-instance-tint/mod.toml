@@ -1,0 +1,42 @@
+# moby-instance-tint — the refine callback made visible.
+#
+# A selector on ALL mobys with a refine callback that tints each instance
+# by a hash of its guest address, so every moby renders a distinct stable
+# colour. The hash is deliberate: if the callback were running once per
+# CLASS rather than once per instance, every moby of a kind would come out
+# identical and you would see it immediately.
+#
+# A real mod keys the callback on gameplay state (m_State FLAMED, a
+# per-instance timer, distance) and scopes the SELECTOR to a class first
+# — that ordering is the point of the three-layer seam.
+#
+# KNOWN ENGINE DEFECT this mod reproduces — do not "fix" the mod:
+# a refine callback returning MANY DISTINCT outcomes loses most of its
+# instances. Slot ids are interned per feed cycle and stamped into the
+# geometry's provenance tag, but some moby geometry outlives the cycle
+# that stamped it; the next cycle resets the table and re-interns fewer,
+# so the carried tags point past the end and the draw-time resolve
+# rejects them as stale (correctly — the guard is not the bug).
+# Measured on flame.bk2 f1800: a constant block (2 interned slots)
+# repaints all 1586 moby px; the per-vaddr hash (20+ slots) repaints 218,
+# with the geometry carrying slots 22-24 against a live table of 21.
+# Root cause is a law violation, not a limit: the tag banks an OUTCOME
+# (a per-cycle slot id) where the residency ladder says bank IDENTITY and
+# re-resolve. The Tier-2 hold-replay path already does exactly that; the
+# other carry paths do not.
+#
+# COST NOTE: instances whose uniform blocks are byte-identical share one
+# slot and stay in one batch, so cost tracks DISTINCT OUTCOMES, not
+# matches. A per-vaddr hash is the worst case by construction — this
+# all-moby demo interns ~100 slots and so costs ~100 extra draws. Scope
+# real selectors to a class + a rare state to stay cheap; the [gpu-pass]
+# and draw-count instruments name the cost.
+
+[mod]
+id = "moby-instance-tint"
+name = "Moby Instance Tint"
+version = "0.2.0"
+api = 4            # material_register_refine
+state = "none"     # GPU-only; nothing to save
+runahead = "pure"  # no tick hooks
+sim_neutral = true

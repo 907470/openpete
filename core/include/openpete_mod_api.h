@@ -197,7 +197,59 @@ static inline openpete_mod_material_selector_t openpete_mod_material_sel_any(voi
     return s;
 }
 
-#define OPENPETE_MOD_API_VERSION 3u
+/* ── Refine: the middle layer of the selection seam ──────────────────
+ * A selector decides WHICH geometry a material may claim; a refine
+ * callback decides, per instance, whether it actually does — and with
+ * what parameters. That is what makes "class 42, but only while it is
+ * burning" expressible: the selector prunes to class 42 cheaply, the
+ * callback reads that instance's state and declines the rest.
+ *
+ * The callback runs during EXTRACTION, in tick context, on the serial
+ * emit path — guest RAM is readable and coherent through the ordinary
+ * api->guest()/op_read_u32() accessors, which is why no CPUState
+ * appears here. It is NOT a render hook and must not touch host
+ * rendering state.
+ *
+ * SEMANTICS, NEVER CADENCE: the engine promises the verdict a material
+ * carries is the one your callback most recently gave for that
+ * instance. It does NOT promise how often you are called — results are
+ * interned, and a channel that later banks geometry across presents
+ * will re-resolve from identity rather than re-invoke you. So a
+ * callback must be a pure function of the key plus tick-stable guest
+ * state. Counting calls to infer "instances drawn" is measuring the
+ * engine's memoization, not the scene. */
+
+/* Per-channel key versions — bumped when a channel's key members change
+ * meaning. The engine stamps the live one into `version`; a mod that
+ * cares can refuse a version it was not written against. */
+#define OPENPETE_MATERIAL_KEY_VER_MOBY    1u
+#define OPENPETE_MATERIAL_KEY_VER_TERRAIN 1u
+
+/* What the engine knows about one instance at refine time. The engine
+ * fills every field; `channel` selects which union member is live. */
+typedef struct openpete_mod_material_key {
+    uint32_t struct_size;   /* sizeof at ENGINE compile time */
+    uint32_t version;       /* OPENPETE_MATERIAL_KEY_VER_* for `channel` */
+    int      channel;       /* OP_CHAN_* */
+    union {
+        struct {
+            uint32_t vaddr;      /* guest address of the moby record */
+            int      moby_class; /* m_Class */
+        } moby;
+        struct {
+            int      texture;    /* Tiledef id, or -1 for the untextured band */
+            unsigned flags;      /* the OP_SEL_* bits describing this face */
+        } terrain;
+    } u;
+} openpete_mod_material_key_t;
+
+/* Return the number of bytes written to `out` (0 = claim it, no
+ * parameters), or -1 to DECLINE — that instance keeps stock shading.
+ * `cap` is OPENPETE_MATERIAL_UNIFORMS_MAX; never write past it. */
+typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
+                                      void* out, uint32_t cap);
+
+#define OPENPETE_MOD_API_VERSION 4u
 
 typedef struct openpete_mod_api {
     uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION (the struct is
@@ -487,6 +539,26 @@ typedef struct openpete_mod_api {
      * UBO's time in the shader over re-pushing a block every present. */
     int (*material_set_params)(openpete_mod_t* self, int material,
                                const void* block, uint32_t len);
+
+    /* Register a material whose per-instance verdict comes from a refine
+     * callback (api 4). Identical to material_register except the engine
+     * calls `refine` once per candidate instance during extraction: it
+     * returns a uniform block for that instance, or -1 to leave it stock.
+     *
+     * Instances whose blocks are byte-identical share one slot and stay in
+     * ONE batch, so a callback that returns few distinct outcomes is cheap
+     * and one that returns a distinct block per instance costs a draw
+     * apiece. Scope the SELECTOR as tightly as you can and let the callback
+     * decide the rare cases — that ordering is the whole point of the
+     * three-layer seam.
+     *
+     * Refine is available on the channels that have a stable per-instance
+     * identity (moby today; terrain is gated on the retained-cache work).
+     * On a channel without one, register declaratively and drive the
+     * material with material_set_params instead. */
+    int (*material_register_refine)(openpete_mod_t* self,
+                                    const openpete_mod_material_selector_t* sel,
+                                    int shader, openpete_mod_refine_fn refine);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

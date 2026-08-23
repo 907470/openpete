@@ -33,6 +33,7 @@
  */
 #include <openpete_mod_api.h>
 #include <openpete_mod_ui.h>
+#include <openpete_game_structs.h>   /* typed Moby view — the refine row */
 #include <string.h>
 #include <stdlib.h>   /* strtol — gallery.rows parsing */
 
@@ -123,6 +124,17 @@ static row_t g_rows[] = {
     "Only the medium-distance dome, DPCS-fogged toward the level's fog "
     "colour — the cross-dissolve rung between the chip and the close dome.",
     OP_CHAN_PORTAL, OP_PORTAL_BLENDED, -1, {0.20f, 0.80f, 0.90f}, 0, -1 },
+  /* The only row with a refine callback — registered separately below,
+   * because a selector alone cannot express "and in this state". */
+  { "Moby class + STATE (refine)",
+    "The middle layer of the seam: the selector prunes to a moby class, "
+    "then a callback reads each instance's m_State and declines the ones "
+    "that do not match. Set the state slider to -1 to claim every "
+    "instance of the class, which is what the plain class row already "
+    "does — the point is what happens when you narrow it. This row "
+    "returns ONE shared block, so it avoids the many-distinct-outcomes "
+    "defect that mods/moby-instance-tint reproduces.",
+    OP_CHAN_MOBY, -1, 0, {0.10f, 1.00f, 0.35f}, 0, -1 },
 };
 #define NROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
 
@@ -131,8 +143,43 @@ static float g_strength = 0.65f;
 static int   g_class = 0;        /* drives the one class-keyed row */
 static int   g_class_row = 3;
 
+/* ── The refine row: "class X, but only in state Y" ──────────────────
+ * The declarative rows above stop at what a selector can express. This
+ * one adds the middle layer: the selector prunes to a moby class, and
+ * the callback below reads that instance's m_State and declines the
+ * ones that do not match. It is the original motivating case for the
+ * seam existing at all, and the only row here whose verdict depends on
+ * live gameplay state.
+ *
+ * NOTE ON PURITY: the engine's contract is that SELECTION is a pure
+ * function of the key plus tick-stable guest RAM. m_State qualifies.
+ * The slider does not — it is host state, and it works here only
+ * because refine runs at canonical extraction, where a slider value is
+ * stable for the tick. A shipping mod should author its predicate as a
+ * constant, not read a live widget; the slider exists so you can hunt
+ * for a state that is on screen without rebuilding. */
+static int g_refine_row  = -1;   /* index of the refine row below */
+static int g_refine_state = -1;  /* -1 = accept any state (claim all) */
+static int g_refine_mat  = -1;
+
+static int refine_state(const openpete_mod_material_key_t* key,
+                        void* out, uint32_t cap)
+{
+    if (cap < 16 || key->channel != OP_CHAN_MOBY) return -1;
+    if (g_refine_state >= 0) {
+        const Moby* m = (const Moby*)g_api->guest(key->u.moby.vaddr);
+        if (!m || (int)m->m_State != g_refine_state) return -1;  /* decline */
+    }
+    float* v = (float*)out;
+    v[0] = 0.10f; v[1] = 1.00f; v[2] = 0.35f; v[3] = g_strength;
+    return 16;
+}
+
 /* std140: one vec4 — rgb highlight + strength in w. */
 static void push_params(row_t* r) {
+    /* The refine row's block comes from its callback, per instance — a
+     * set_params push would be overwritten by the next extraction. */
+    if (r->mat >= 0 && r->mat == g_refine_mat) return;
     float blk[4] = { r->rgb[0], r->rgb[1], r->rgb[2], g_strength };
     if (r->mat >= 0) g_api->material_set_params(g_self, r->mat, blk, sizeof blk);
 }
@@ -142,7 +189,14 @@ static void register_row(row_t* r) {
     sel.channel    = r->channel;
     sel.ident      = r->ident;
     sel.moby_class = r->moby_class;
-    r->mat = g_api->material_register(g_self, &sel, g_shader);
+    if (r == &g_rows[g_refine_row]) {
+        sel.moby_class = g_class;   /* shares the class slider */
+        r->mat = g_api->material_register_refine(g_self, &sel, g_shader,
+                                                 refine_state);
+        g_refine_mat = r->mat;
+    } else {
+        r->mat = g_api->material_register(g_self, &sel, g_shader);
+    }
     if (r->mat < 0) {
         g_api->log(g_self, OP_MOD_LOG_WARN, "row '%s' refused", r->label);
         return;
@@ -175,17 +229,28 @@ static void ui(const openpete_mod_ui_t* ui) {
     if (ui->slider_int("Moby class", &g_class, 0, 767)) {
         /* Re-registering per class would leak selectors, so the class row is
          * rebuilt in place: disable, repoint, restore. */
-        row_t* r = &g_rows[g_class_row];
-        r->moby_class = g_class;
-        if (r->mat >= 0) {
-            g_api->material_enable(g_self, r->mat, 0);
-            r->mat = -1;
+        const int rows[2] = { g_class_row, g_refine_row };
+        for (int k = 0; k < 2; k++) {
+            row_t* r = &g_rows[rows[k]];
+            r->moby_class = g_class;
+            if (r->mat >= 0) {
+                g_api->material_enable(g_self, r->mat, 0);
+                r->mat = -1;
+            }
+            register_row(r);
+            g_api->material_enable(g_self, r->mat, r->on);
         }
-        register_row(r);
-        g_api->material_enable(g_self, r->mat, r->on);
     }
-    ui->tooltip("Which class the class-keyed row above selects. Gems and "
+    ui->tooltip("Which class the class-keyed rows above select. Gems and "
                 "chests are the easy ones to find.");
+    if (ui->slider_int("Moby state (refine row)", &g_refine_state, -1, 255)) {
+        /* Only the predicate changed, not the selector — the callback
+         * re-reads it at the next extraction, so nothing to re-register. */
+    }
+    ui->tooltip("-1 claims every instance of the class (same as the plain "
+                "class row). Any other value makes the callback decline "
+                "every instance whose m_State differs — narrowing the "
+                "selector could never express this.");
     ui->separator();
     ui->text("%d of %d rows live", live, NROWS);
     if (live > 1)
@@ -194,7 +259,7 @@ static void ui(const openpete_mod_ui_t* ui) {
 OPENPETE_MOD_UI_SECTION(ui)
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
-    if (api->api_version < 3u) return -1;   /* pillar 10 (materials) */
+    if (api->api_version < 4u) return -1;   /* material_register_refine */
     g_api = api; g_self = self;
 
     g_shader = api->shader_register(self, "shaders/highlight.frag");
@@ -204,6 +269,14 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
         return 0;                            /* loaded but does nothing */
     }
     g_strength = (float)api->config_float(self, "gallery.strength", 0.65);
+    g_refine_row = NROWS - 1;          /* the refine row is last in the table */
+    /* Both moby-keyed rows follow this; config so the gallery stays
+     * drivable without the overlay, which is the whole point of the
+     * gallery.rows key too. */
+    g_class = (int)api->config_int(self, "gallery.class", 0);
+    g_rows[g_class_row].moby_class  = g_class;
+    g_rows[g_refine_row].moby_class = g_class;
+    g_refine_state = (int)api->config_int(self, "gallery.refine_state", -1);
     for (int i = 0; i < NROWS; i++) register_row(&g_rows[i]);
 
     /* gallery.rows turns rows on without the overlay — a comma-separated

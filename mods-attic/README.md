@@ -9,10 +9,13 @@ when its surface re-lands as an append-only pillar.
   (capture_actor_pose / draw_actor / suppress_player_draw): pinned to
   the vk renderer's actor path, which is being reworked. Re-add as a
   pillar once that path settles.
-- `moby-instance-tint`, `crystalfissure-dark-artisans` —
-  material_register (+ read_level_data / texpack_fog_shift): renderer
-  material internals; the dark-artisans needs belong in the texpack
-  layer proper.
+- `crystalfissure-dark-artisans` — read_level_data /
+  texpack_fog_shift: its needs belong in the texpack layer proper.
+  (`moby-instance-tint` RETURNED — it lives in `mods/` again, on
+  `material_register_refine` (api 4). Un-atticking it is what surfaced
+  the many-distinct-outcomes defect its manifest now documents, which
+  is the argument for un-atticking these the moment their surface
+  lands rather than leaving them to rot.)
 - `mirror-level` — the level-slot C API; `[[level]]` is the surviving
   declarative road, and the slot-capacity work will change the id
   time-share this API baked in.

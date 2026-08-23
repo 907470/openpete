@@ -20,7 +20,7 @@
 id      = "channel-gallery"
 name    = "Channel Gallery"
 version = "0.1.0"
-api     = 3            # pillar 10: materials
+api     = 4            # pillar 10 materials + material_register_refine
 state    = "none"      # GPU-only; nothing to save
 runahead = "pure"      # no tick hooks
 sim_neutral = true
@@ -42,3 +42,23 @@ default = ""
 label = "Rows lit at load"
 group = "Gallery"
 help = "Comma-separated row numbers (0-based, in overlay order), or \"all\". Lets the gallery be driven without the dev overlay. Empty = every row starts off."
+
+[[config]]
+key = "gallery.class"
+type = "int"
+default = 0
+min = -1
+max = 767
+label = "Moby class"
+group = "Gallery"
+help = "The class both moby-keyed rows select. -1 matches every class. Set it here to drive the gallery without the dev overlay."
+
+[[config]]
+key = "gallery.refine_state"
+type = "int"
+default = -1
+min = -1
+max = 255
+label = "Refine row: moby state"
+group = "Gallery"
+help = "The m_State the refine row's callback accepts. -1 claims every instance of the selected class; any other value makes the callback decline instances whose state differs. This is the predicate a selector alone cannot express."

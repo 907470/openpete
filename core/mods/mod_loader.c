@@ -1238,6 +1238,14 @@ static int api_material_register(openpete_mod_t* self,
     return openpete_mods_material_register(self, sel, -1, shader, NULL);
 }
 
+static int api_material_register_refine(openpete_mod_t* self,
+                                        const openpete_mod_material_selector_t* sel,
+                                        int shader,
+                                        openpete_mod_refine_fn refine) {
+    if (!sel) return -1;
+    return openpete_mods_material_register(self, sel, -1, shader, refine);
+}
+
 static const openpete_mod_api_t s_api = {
     .api_version   = OPENPETE_MOD_API_VERSION,
     /* pillar 1: the override chain */
@@ -1282,6 +1290,7 @@ static const openpete_mod_api_t s_api = {
     .texpack_fog_shift = api_texpack_fog_shift,
     /* pillar 10: materials */
     .material_register   = api_material_register,
+    .material_register_refine = api_material_register_refine,
     .material_enable     = openpete_mods_material_enable,
     .material_set_params = openpete_mods_material_set_params,
 };

@@ -172,6 +172,46 @@ different selector each time, with live toggles. It is the fastest way to
 see what a given selector actually claims — including which things are
 *not* separately addressable yet.
 
+### Refine — deciding per instance
+
+A selector prunes cheaply; a refine callback decides the rest. It runs
+during extraction, in tick context, and returns that instance's uniform
+block or `-1` to leave it stock:
+
+```c
+static int refine(const openpete_mod_material_key_t* key,
+                  void* out, uint32_t cap) {
+    const Moby* m = (const Moby*)api->guest(key->u.moby.vaddr);
+    if (!m || m->m_State != BURNING) return -1;      /* decline */
+    float* v = out; v[0] = 1.0f; v[1] = 0.4f; v[2] = 0.0f; v[3] = 1.0f;
+    return 16;
+}
+...
+api->material_register_refine(self, &sel, frag, refine);
+```
+
+That is how "class 42, but only while it is burning" is expressed: the
+selector narrows to class 42, the callback declines the rest. Scope the
+selector as tightly as you can first — the callback is the expensive
+half.
+
+**The engine promises SEMANTICS, never CADENCE.** Your verdict is the one
+the material carries; how often you are asked for it is the engine's
+business. Results are interned, and a channel that later banks geometry
+across presents re-resolves from identity rather than calling back. So a
+callback must be a pure function of its key plus tick-stable guest state,
+and a counter inside one measures the engine's memoization, not the
+scene.
+
+Instances whose blocks are byte-identical share a slot and stay in one
+batch, so cost tracks *distinct outcomes*, not matches.
+
+> **Current limitation:** a callback returning many distinct blocks
+> currently loses most of its instances — they fall back to stock
+> shading. Callbacks that return a small set of shared blocks are
+> unaffected. `mods/moby-instance-tint` reproduces it and its manifest
+> carries the diagnosis.
+
 ### What is not reachable
 
 Being tagged does not make geometry reshadeable. A material replaces the

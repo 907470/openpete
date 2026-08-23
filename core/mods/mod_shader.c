@@ -1179,8 +1179,16 @@ int openpete_mods_material_moby_slot(CPUState* cpu, int moby_class,
     int w = material_moby_winner(moby_class);
     if (w < 0 || !s_mats[w].per_instance) return 0;   /* declarative → draw-time */
 
+    (void)cpu;   /* refine reads guest RAM through the mod api's accessors */
+    openpete_mod_material_key_t key;
+    memset(&key, 0, sizeof key);
+    key.struct_size    = (uint32_t)sizeof key;
+    key.version        = OPENPETE_MATERIAL_KEY_VER_MOBY;
+    key.channel        = OP_CHAN_MOBY;
+    key.u.moby.vaddr   = moby_vaddr;
+    key.u.moby.moby_class = moby_class;
     unsigned char buf[OPENPETE_MATERIAL_UNIFORMS_MAX];
-    int rc = s_mats[w].per_instance(cpu, moby_vaddr, buf, sizeof buf);
+    int rc = s_mats[w].per_instance(&key, buf, sizeof buf);
     if (rc < 0) return OPENPETE_MATERIAL_SLOT_STOCK;   /* declined → stock */
     if (rc > (int)sizeof buf) rc = (int)sizeof buf;
 
@@ -1250,8 +1258,16 @@ int openpete_mods_material_terrain_tex_slot(CPUState* cpu, int texid) {
     if (w < 0) { if (s_dbg == texid) { static int p1; if (p1++ < 8)
                      fprintf(stderr, "[texslot] tid=%d NO-WINNER\n", texid); }
                  return 0; }
+    (void)cpu;
+    openpete_mod_material_key_t key;
+    memset(&key, 0, sizeof key);
+    key.struct_size      = (uint32_t)sizeof key;
+    key.version          = OPENPETE_MATERIAL_KEY_VER_TERRAIN;
+    key.channel          = OP_CHAN_TERRAIN;
+    key.u.terrain.texture = texid;
+    key.u.terrain.flags   = s_mats[w].sel.flags;
     unsigned char buf[OPENPETE_MATERIAL_UNIFORMS_MAX];
-    int rc = s_mats[w].per_instance(cpu, (uint32_t)texid, buf, sizeof buf);
+    int rc = s_mats[w].per_instance(&key, buf, sizeof buf);
     if (s_dbg == texid) { static int p2; if (p2++ < 30)
         fprintf(stderr, "[texslot] tid=%d w=%d rc=%d slot_n=%d\n",
                 texid, w, rc, s_mat_slot_n); }
@@ -1279,8 +1295,16 @@ int openpete_mods_material_terrain_untex_slot(CPUState* cpu) {
     if (!s_mat_has_instance) return 0;
     int w = material_terrain_untex_winner();
     if (w < 0) return 0;
+    (void)cpu;
+    openpete_mod_material_key_t key;
+    memset(&key, 0, sizeof key);
+    key.struct_size      = (uint32_t)sizeof key;
+    key.version          = OPENPETE_MATERIAL_KEY_VER_TERRAIN;
+    key.channel          = OP_CHAN_TERRAIN;
+    key.u.terrain.texture = -1;          /* the untextured gouraud band */
+    key.u.terrain.flags   = OP_SEL_UNTEXTURED;
     unsigned char buf[OPENPETE_MATERIAL_UNIFORMS_MAX];
-    int rc = s_mats[w].per_instance(cpu, 0u, buf, sizeof buf);
+    int rc = s_mats[w].per_instance(&key, buf, sizeof buf);
     if (rc < 0) return OPENPETE_MATERIAL_TERRAIN_STOCK;
     if (rc > (int)sizeof buf) rc = (int)sizeof buf;
     for (int s = 1; s < s_mat_slot_n; s++)

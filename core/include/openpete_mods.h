@@ -93,9 +93,16 @@ typedef struct openpete_mod_pipeline_desc {
     uint32_t _reserved[4];
 } openpete_mod_pipeline_desc_t;
 
-typedef int (*openpete_mod_material_fn)(struct CPUState* cpu,
-                                        uint32_t moby_vaddr,
-                                        void* uniform_out, uint32_t cap);
+/* Engine-side spelling of openpete_mod_refine_fn (openpete_mod_api.h,
+ * included further down — the struct is forward-declared so the two
+ * typedefs stay compatible without reordering this header). No
+ * CPUState: refine runs in tick context and reads guest RAM through the
+ * mod api's own accessors, which keeps an engine-internal type out of
+ * the public ABI. */
+struct openpete_mod_material_key;
+typedef int (*openpete_mod_material_fn)(
+        const struct openpete_mod_material_key* key,
+        void* uniform_out, uint32_t cap);
 typedef struct CPUState CPUState;
 
 /* Name→vaddr symbol table (generated from manifest/symbols.toml by
