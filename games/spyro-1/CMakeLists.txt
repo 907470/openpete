@@ -466,6 +466,7 @@ add_custom_target(spyro1_sdk_stage ALL
             ${CMAKE_SOURCE_DIR}/core/include/openpete_shader_api.glsl
             ${CMAKE_SOURCE_DIR}/core/include/openpete_psx_material.glsl
             ${CMAKE_SOURCE_DIR}/core/include/openpete_psx_decal.glsl
+            ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_key_contest.glsl
             ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_scene.vert
             ${CMAKE_SOURCE_DIR}/core/rhi/shaders/shadow_decal_tex.vert
             ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_scene.frag

@@ -258,7 +258,12 @@ typedef struct openpete_mod_material_key {
 typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
                                       void* out, uint32_t cap);
 
-#define OPENPETE_MOD_API_VERSION 4u
+/* 5: the material shading contract inverted — the engine owns main() and a
+ * material supplies op_material(vec4 base). Materials written against api 4
+ * (their own main() + outColor) fail to COMPILE against the api-5 contract,
+ * deliberately: silently keeping them would keep them shading without the
+ * perspective divide and without og's per-pixel painter verdicts. */
+#define OPENPETE_MOD_API_VERSION 5u
 
 typedef struct openpete_mod_api {
     uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION (the struct is

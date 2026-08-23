@@ -135,17 +135,21 @@ done <<< "$RUNGS"
 # leaking, not the mod's. That is what makes it worth having: it is the
 # only rung here that can fail because of something nobody wrote.
 #
-# It has already earned its place twice. The material contract never
+# It has already earned its place four times. The material contract never
 # divided vUV/vColor by the perspective ratio vQ the way every stock
-# fragment stage does (moby 3958 px -> 1), and all three shipped material
+# fragment stage does (moby 3958 px -> 1); all three shipped material
 # shaders wrote the PSX transparent-texel sentinel through instead of
-# discarding it, painting cut-out holes solid on opaque draws.
+# discarding it, painting cut-out holes solid on opaque draws; the portal
+# override dropped the aperture stencil and painted sky over the wall
+# (1785 px); and every override deleted og's per-pixel key contest, which
+# is what moved terrain 3105 px until the engine took back main().
 #
 # TOL 4, not 0: the decode is exact but the pipelines differ, and a
 # handful of edge fragments land on the far side of a rounding boundary.
 IDTOL=4
 say "identity materials repaint nothing they were not asked to"
-for leg in "id_moby flame 1800 2 mobys" \
+for leg in "id_terrain flame 1800 1 terrain (both LOD tiers)" \
+           "id_moby flame 1800 2 mobys" \
            "id_player flame 1800 4 player" \
            "id_sky cyclorama-portal 2000 5 sky" \
            "id_flame flame 1800 6 flame ribbon" \
@@ -167,24 +171,6 @@ for leg in "id_moby flame 1800 2 mobys" \
     fi
 done
 
-# Terrain is the KNOWN exception, and it is the arc's opening evidence:
-# the stock textured pipelines bind psx_scene_key.frag / quad_key.frag,
-# whose og OT-key contest discards fragments a nearer key owns, while the
-# override builds against the contest-free psx_scene.frag. Every terrain
-# LP fragment a material reaches is keyed, so the loss is visible as two
-# surfaces trading pixels. Expected to go to <= IDTOL when the contract
-# inversion lands (T0); this rung then flips to the loop above.
-say "identity material on terrain — KNOWN GAP (the og key contest)"
-if STRENGTH=0.0 run_rows id_terrain flame 1800 1 ""; then
-    n=$(diffpx "$WORK/base_flame-1800-vk.png" "$WORK/id_terrain-1800-vk.png")
-    if [ "${n:-0}" -gt "$IDTOL" ]; then
-        ok "terrain identity still moves $n px (the documented key-contest loss)"
-    else
-        bad "terrain identity is now clean ($n px) — T0 landed or the contest changed: move this row into the identity loop above and update the census"
-    fi
-else
-    bad "no capture for identity row 1 (see $WORK/id_terrain.log)"
-fi
 
 # ── refine == declarative ─────────────────────────────────────────────
 # A refine material whose callback accepts every instance selects the same

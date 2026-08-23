@@ -3676,6 +3676,22 @@ static void bind_scene_pipe(rhi_pipeline* p)
     }
 }
 
+/* The same four images for a MATERIAL pipeline, whose layout puts them at
+ * sets 2 and 4..6 — above the UBO pair rather than replacing sets 1/2, so a
+ * material's own uniform block keeps set 3 binding 1. The engine half of
+ * openpete_psx_material.glsl runs the contest from these before the mod's
+ * op_material() sees a colour; without them a material would silently
+ * delete og's painter verdicts, which is what it used to do. */
+static void bind_material_keys(void)
+{
+    if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth || !s_nr.actor_key_depth) return;
+    rhi_bind_depth_sampler(s_nr.dev, s_nr.terrain_key_depth, 2);
+    rhi_bind_depth_sampler(s_nr.dev, s_nr.moby_key_depth, 4);
+    rhi_bind_depth_sampler(s_nr.dev, s_nr.actor_key_depth, 5);
+    if (s_nr.moby_rank_rt)
+        rhi_bind_texture_set(s_nr.dev, s_nr.moby_rank_rt, 6);
+}
+
 /* ---- moby occlusion culling: grid pass + readback + query -------------------
  *
  * Per LIVE present: one tiny render pass reduces the WORLD-opaque depth
@@ -4348,7 +4364,7 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
                     .depth_write_off = blend_class != 0,
                     .depth_test = true,
                     .stencil = want_mark ? RHI_STENCIL_MARK : RHI_STENCIL_NONE,
-                    .mod_pipeline = true,
+                    .material_pipeline = true,
                     .push_const_size = sizeof(psx_material_hd),
                 };
                 rhi_pipeline* np = rhi_create_pipeline_spv(
@@ -4365,6 +4381,7 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
                 rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
                 if (s_nr.mat_pack_dummy)   /* op_pack_tex: no pack art for gouraud */
                     rhi_bind_texture_set(s_nr.dev, s_nr.mat_pack_dummy, 1);
+                bind_material_keys();
                 if (s_mat_ubo)
                     rhi_ubo_bind(s_nr.dev, s_mat_ubo, 0,
                                  mg.uniform_slot > 0 ? 1 + mg.uniform_slot : 0);
@@ -4836,7 +4853,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                         .depth_write_off = blend_class != 0,
                         .stencil = ov_mark ? RHI_STENCIL_MARK
                                            : RHI_STENCIL_NONE,
-                        .mod_pipeline = true,
+                        .material_pipeline = true,
                         .push_const_size = sizeof(psx_material_hd),
                     };
                     rhi_pipeline* p = rhi_create_pipeline_spv(
@@ -4853,6 +4870,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                     rhi_texture* pack_bound = s_nr.mat_pack_dummy;
                     if (pack_bound)
                         rhi_bind_texture_set(s_nr.dev, pack_bound, 1);
+                    bind_material_keys();
                     /* engine block 0 + the per-instance slot's mod block
                      * (S8b, block 1+slot; slot 0 = declarative binds the
                      * engine block as the mod block too — harmless). */
@@ -6834,7 +6852,7 @@ static bool draw_native_scene(bool full_extent)
                                      * inheriting the group's stencil state the
                                      * same way it inherits blend and depth. */
                                     .stencil = RHI_STENCIL_TEST,
-                                    .mod_pipeline = true,
+                                    .material_pipeline = true,
                                     .push_const_size = sizeof(psx_material_hd),
                                 };
                                 rhi_pipeline* np = rhi_create_pipeline_spv(
@@ -6848,6 +6866,7 @@ static bool draw_native_scene(bool full_extent)
                                 rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
                                 if (s_nr.mat_pack_dummy)
                                     rhi_bind_texture_set(s_nr.dev, s_nr.mat_pack_dummy, 1);
+                                bind_material_keys();
                                 if (s_mat_ubo)
                                     rhi_ubo_bind(s_nr.dev, s_mat_ubo, 0,
                                                  mg.uniform_slot > 0 ? 1 + mg.uniform_slot : 0);

@@ -190,6 +190,7 @@ struct rhi_device {
     uint32_t        off_gen;                          /* bumped per create_offscreen */
     uint32_t        off_sampled_gen[RHI_FRAMES_IN_FLIGHT];
     VkDeviceSize    ubo_align;                        /* minUniformBufferOffsetAlignment */
+    uint32_t        max_desc_sets;                    /* maxBoundDescriptorSets          */
 
     bool        gpu_timers;                 /* env set AND queue has timestamps */
     float       gpu_ts_period;              /* ns per timestamp tick */
@@ -1209,6 +1210,7 @@ static bool create_descriptor_infra(rhi_device *dev)
         vkGetPhysicalDeviceProperties(dev->phys, &props);
         dev->ubo_align = props.limits.minUniformBufferOffsetAlignment;
         if (dev->ubo_align == 0) dev->ubo_align = 256;
+        dev->max_desc_sets = props.limits.maxBoundDescriptorSets;
     }
 
     /* Every rhi_texture (the VRAM display texture, RTT targets, AND every HD
@@ -3269,17 +3271,36 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
      * postfx: sets 0..2 samplers + set 3 the dynamic-UBO pair. terrain:
      * set 0 = VRAM sampler, set 3 = the UBO pair (globals + sector params);
      * sets 1/2 are declared for layout continuity but never bound/used. */
-    VkDescriptorSetLayout set_layouts[5] = { dev->vram_set_layout, dev->vram_set_layout,
+    VkDescriptorSetLayout set_layouts[7] = { dev->vram_set_layout, dev->vram_set_layout,
                                              dev->vram_set_layout,
-                                             (desc->postfx || desc->mod_pipeline || desc->terrain_pipeline)
+                                             (desc->postfx || desc->mod_pipeline ||
+                                              desc->material_pipeline || desc->terrain_pipeline)
                                                  ? dev->ubo_set_layout : dev->vram_set_layout,
+                                             dev->vram_set_layout,
+                                             dev->vram_set_layout,
                                              dev->vram_set_layout };
-    uint32_t set_count = desc->terrain_pipeline ? 5u   /* + set 4: HD atlas sampler */
+    /* material: the mod layout PLUS the engine's occlusion inputs, which a
+     * material's fragment stage runs before the mod's colour maths. They sit
+     * ABOVE the UBO pair (sets 4..6) rather than replacing sets 1/2 so a
+     * material's own uniform block stays at set 3 binding 1 — the one part
+     * of the layout mod source actually writes. */
+    uint32_t set_count = desc->material_pipeline ? 7u  /* + sets 4..6: og keys, rank */
+                       : desc->terrain_pipeline ? 5u   /* + set 4: HD atlas sampler */
                        : (desc->postfx || desc->mod_pipeline) ? 4u
                        : desc->uses_vram5 ? 5u
                        : desc->uses_vram4 ? 4u
                        : desc->uses_vram3 ? 3u
                        : desc->uses_vram ? (desc->uses_vram2 ? 2u : 1u) : 0u;
+    if (set_count > dev->max_desc_sets) {
+        /* Degrade, never crash: the caller treats a NULL pipeline as "draw
+         * this run stock", so a device too small for the material layout
+         * loses reshading rather than the frame. */
+        RHI_LOG("pipeline needs %u descriptor sets, device allows %u\n",
+                set_count, dev->max_desc_sets);
+        vkDestroyShaderModule(dev->device, vs, NULL);
+        vkDestroyShaderModule(dev->device, fs, NULL);
+        return -1;
+    }
     VkPipelineLayoutCreateInfo plci = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_LAYOUT_CREATE_INFO,
         .setLayoutCount = set_count,

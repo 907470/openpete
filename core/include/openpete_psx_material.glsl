@@ -1,41 +1,56 @@
 /* openpete_psx_material.glsl — the material-tier shading contract.
  *
- * Include from a MATERIAL fragment shader (material_register) with:
+ * A material replaces the COLOUR of geometry the engine already decided to
+ * draw. It does not replace the fragment stage: the engine owns main(), and
+ * the mod supplies one function.
  *
  *     #version 450
  *     #extension GL_GOOGLE_include_directive : require
  *     #include "openpete_psx_material.glsl"
  *
- * and write main() in terms of op_psx_shade():
- *
  *     layout(set = 3, binding = 1, std140) uniform op_instance { vec4 tint; };
- *     layout(location = 0) out vec4 outColor;
- *     void main() {
- *         vec4 c = op_psx_shade();          // faithful stock shading
- *         if (c.a == 0.0) discard;          // PSX transparent sentinel
- *         outColor = vec4(c.rgb * tint.rgb, c.a);
+ *
+ *     vec4 op_material(vec4 base)      // base = faithful stock shading
+ *     {
+ *         return vec4(base.rgb * tint.rgb, base.a);
  *     }
  *
- * This brings in the textured-scene interface (VRAM sampler, PSX material
- * push constants, vUV/vColor inputs) plus the stock PSX decode — 4/8/16bpp
- * texel fetch through the CLUT and the texel * vertexColour / 128
- * modulation rule — as functions, so a material builds ON the faithful
- * base instead of forking it. Forks of psx_scene.frag keep compiling
- * against whatever decode they copied; shaders built on this include are
- * rebuilt by the engine whenever the contract changes (its bytes are
- * hashed into every mod shader's build key).
+ * That is the whole shader. No main(), no outColor, no discard: the engine
+ * writes the output, and it discards the PSX transparent-texel sentinel
+ * (base.a == 0) for you — return it unchanged and the hole stays a hole.
  *
- * NOT for postfx shaders: set 0 binding 0 is the VRAM texture here, but
- * the previous-pass image in the postfx tier (openpete_shader_api.glsl).
- * A shader includes one contract or the other, never both.
+ * WHY the inversion. The stock fragment stage does more than colour maths:
+ * it divides by the perspective ratio, and it runs og's per-pixel painter
+ * verdicts (the OT-key contest, the prop EMBED rule, the same-moby rank
+ * select) which decide WHICH surface exists at a pixel. A shader that owns
+ * main() replaces all of that silently — and every rule the engine adds
+ * later breaks every material already shipped. With main() engine-side, a
+ * material cannot lose engine behaviour it never knew about.
  *
- * Reserved for the engine: push constants, sets 0-1, and input locations
- * 0-4 (the vertex stage writes more than this contract names — declaring
- * one of the unnamed slots reads engine state that is free to change).
- * A material's own uniform block is set 3 binding 1 (std140). */
+ * WHAT YOU GET in base: the perspective divide, the 4/8/16bpp VRAM decode
+ * through the CLUT, the texel * vertexColour / 128 modulation, and any
+ * active HD texture-pack replacement (with its fog affine). Untextured
+ * draws arrive as the interpolated vertex colour, so one op_material serves
+ * both the textured and the gouraud paths.
+ *
+ * WHAT YOU INHERIT and cannot change: blend equation, depth test/write,
+ * stencil, painter slot, and the occlusion verdicts above. A material
+ * changes colour maths and nothing else — so a tint on an ADDITIVE draw
+ * reads as added light rather than as a repaint, and mixing rather than
+ * replacing is usually what you want.
+ *
+ * NOT for postfx shaders: set 0 binding 0 is the VRAM texture here, but the
+ * previous-pass image in the postfx tier (openpete_shader_api.glsl). A
+ * shader includes one contract or the other, never both.
+ *
+ * Reserved for the engine: push constants, sets 0-2 and 4-6, and input
+ * locations 0-4. A material's own uniform block is set 3 binding 1
+ * (std140) — the one part of the layout that is yours. */
 
 #ifndef OPENPETE_PSX_MATERIAL_GLSL
 #define OPENPETE_PSX_MATERIAL_GLSL
+
+#include "psx_key_contest.glsl"
 
 layout(set = 0, binding = 0) uniform usampler2D op_vram; /* R16_UINT 1024x512 */
 
@@ -43,10 +58,21 @@ layout(set = 0, binding = 0) uniform usampler2D op_vram; /* R16_UINT 1024x512 */
  * op_pc.hd != 0; a 1x1 placeholder otherwise. Sample through op_pack_*. */
 layout(set = 1, binding = 0) uniform sampler2D op_pack_tex;
 
+/* Engine occlusion inputs — not yours to read: main() has already applied
+ * them by the time op_material() runs. */
+layout(set = 2, binding = 0) uniform sampler2D op_key_terrain;
+layout(set = 4, binding = 0) uniform sampler2D op_key_moby;
+layout(set = 5, binding = 0) uniform sampler2D op_key_actor;
+layout(set = 6, binding = 0) uniform sampler2D op_moby_rank;
+
+/* Engine-selected depth encoding and key scope; see psx_key_contest.glsl. */
+layout(constant_id = 0) const bool OP_DEPTH_AFFINE = false;
+layout(constant_id = 3) const bool OP_MOBY_TRUESCOPE = true;
+
 layout(push_constant) uniform op_psx_material {
     int tpage_x, tpage_y;   /* texture page origin (VRAM 16-bit-pixel units) */
     int clut_x,  clut_y;    /* CLUT origin (VRAM pixel units; paletted only) */
-    int bpp;                /* 4, 8, or 16 */
+    int bpp;                /* 4, 8, or 16 — 0 marks an UNTEXTURED draw      */
     int hd;                 /* 1 = op_pack_tex holds this draw's replacement  */
     vec2 hd_org;            /* the pack FILE's texel box within the texture   */
     vec2 hd_size;           /*   page (origin / size, page texel coords)      */
@@ -57,12 +83,14 @@ layout(push_constant) uniform op_psx_material {
 /* The vertex stage emits UV and colour PRE-MULTIPLIED by the perspective
  * ratio vQ, and vQ alongside them, so the rasterizer's screen-linear
  * interpolation reconstructs perspective-correct values after the divide.
- * Read them through op_uv() / op_color(), never raw: the raw varyings are
- * only meaningful once divided, and they are wrong by a factor that grows
- * as geometry approaches the camera. */
-layout(location = 0) in vec2 vUV;     /* texel coords   x vQ (divide by vQ) */
-layout(location = 1) in vec4 vColor;  /* modulate 0..1  x vQ (divide by vQ) */
-layout(location = 2) in float vQ;     /* perspective ratio (psx_scene.vert) */
+ * Read them through op_uv() / op_color(), never raw. */
+layout(location = 0) in vec2  vUV;     /* texel coords   x vQ (divide by vQ) */
+layout(location = 1) in vec4  vColor;  /* modulate 0..1  x vQ (divide by vQ) */
+layout(location = 2) in float vQ;      /* perspective ratio (psx_scene.vert) */
+layout(location = 3) flat in float vKoff;  /* this face's og OT key channel  */
+layout(location = 4) flat in vec2  vRank;  /* own walk rank, moby ordinal    */
+
+layout(location = 0) out vec4 op_out_color;
 
 /* Perspective-correct texel coords within the texture page. */
 vec2 op_uv()    { return vUV / vQ; }
@@ -73,8 +101,8 @@ uint op_vram_at(int x, int y) { return texelFetch(op_vram, ivec2(x, y), 0).r; }
 
 float op_expand5(uint v) { return float((v << 3) | (v >> 2)) / 255.0; }
 
-/* 15-bit VRAM word -> RGBA. a: 0 = the PSX transparent sentinel (0x0000,
- * callers discard), 0.5 = STP-set texel (semi-transparent), 1 = opaque. */
+/* 15-bit VRAM word -> RGBA. a: 0 = the PSX transparent sentinel (the engine
+ * discards it), 0.5 = STP-set texel (semi-transparent), 1 = opaque. */
 vec4 op_decode555(uint p)
 {
     if (p == 0u) return vec4(0.0);
@@ -85,8 +113,7 @@ vec4 op_decode555(uint p)
 }
 
 /* Raw texel at page-relative texel coords (this draw's bpp + CLUT).
- * Pass op_uv() for this fragment's own texel; the raw vUV varying is
- * still multiplied by the perspective ratio. */
+ * Pass op_uv() for this fragment's own texel. */
 vec4 op_psx_texel(ivec2 uv)
 {
     uint word;
@@ -110,10 +137,9 @@ vec3 op_psx_modulate(vec3 texel, vec3 vcol)
     return clamp(texel * vcol * (255.0 / 128.0), 0.0, 1.0);
 }
 
-/* The stock scene result for this fragment. bpp 0 marks an UNTEXTURED
- * (flat/gouraud) draw — the stock output is the vertex colour alone, no
- * texel fetch and no /128 modulation. Otherwise: sample + modulate;
- * a == 0.0 means the PSX transparent sentinel — the caller discards. */
+/* The stock scene result for this fragment, VRAM only. bpp 0 marks an
+ * UNTEXTURED (flat/gouraud) draw — the vertex colour alone, no texel fetch
+ * and no /128 modulation. */
 vec4 op_psx_shade()
 {
     vec4 col = op_color();
@@ -122,12 +148,7 @@ vec4 op_psx_shade()
     return vec4(op_psx_modulate(c.rgb, col.rgb), c.a);
 }
 
-/* ---- HD texture-pack access ------------------------------------------
- * A material override takes the draw away from the engine's replacement
- * path, so without these the shader only ever sees the stock VRAM decode
- * and any HD art the player installed for the same texture goes dark.
- * op_pack_shade() restores it: build the effect ON the pack's art the
- * same way op_psx_shade() builds on stock. */
+/* ---- HD texture-pack access ------------------------------------------ */
 
 /* True when the active texture pack replaces this draw's texture (and
  * op_pack_tex holds it). False: no pack, no matching file, or the file's
@@ -143,12 +164,10 @@ vec4 op_pack_texel(vec2 page_uv)
     return texture(op_pack_tex, clamp(t, 0.0, 1.0));
 }
 
-/* The scene result WITH the active texture pack: what the player would
- * see if this material weren't installed. Replacement sample + the
- * CLUT-ladder fog affine + the vertex modulate, with the opaque-scene
- * cutout rule (alpha < 0.5 -> a == 0.0, caller discards) — mirroring the
- * engine's own replacement pipe. Falls back to op_psx_shade() when no
- * replacement covers the draw, so it is always safe as the base layer. */
+/* The scene result WITH the active texture pack — what the player would see
+ * if this material weren't installed. Falls back to op_psx_shade() when no
+ * replacement covers the draw, so it is always safe as the base layer, and
+ * it is what the engine hands to op_material(). */
 vec4 op_pack_shade()
 {
     if (op_pc.hd == 0) return op_psx_shade();
@@ -156,6 +175,35 @@ vec4 op_pack_shade()
     if (c.a < 0.5) return vec4(0.0);
     c.rgb = clamp(c.rgb * op_pc.hd_fog_a.rgb + op_pc.hd_fog_b.rgb, 0.0, 1.0);
     return vec4(op_psx_modulate(c.rgb, op_color().rgb), 1.0);
+}
+
+/* ---- the mod's half --------------------------------------------------
+ * Supplied by the material. base = op_pack_shade(); return the colour to
+ * write, keeping base.a unless you mean to change transparency. */
+vec4 op_material(vec4 base);
+
+void main()
+{
+    /* og's painter verdicts, exactly as the stock stages run them: which
+     * surface exists at this pixel is the engine's call, not the mod's. */
+    bool ranked = vRank.x > 0.5;
+    float own = op_vz_from_depth(gl_FragCoord.z, OP_DEPTH_AFFINE);
+    if (ranked &&
+        op_rank_loses(texelFetch(op_moby_rank, ivec2(gl_FragCoord.xy), 0), vRank, own))
+        discard;
+    if (!ranked && abs(vKoff) > 0.25) {
+        if (op_key_loses(
+                op_key_from_stored(texelFetch(op_key_terrain, ivec2(gl_FragCoord.xy), 0).r),
+                op_key_from_stored(texelFetch(op_key_actor,   ivec2(gl_FragCoord.xy), 0).r),
+                op_key_from_stored(texelFetch(op_key_moby,    ivec2(gl_FragCoord.xy), 0).r),
+                own, vKoff,
+                vRank.x < -0.5,     /* unranked moby faces mark rank -1 */
+                OP_MOBY_TRUESCOPE))
+            discard;
+    }
+    vec4 c = op_material(op_pack_shade());
+    if (c.a == 0.0) discard;        /* PSX transparent-texel sentinel */
+    op_out_color = c;
 }
 
 #endif /* OPENPETE_PSX_MATERIAL_GLSL */

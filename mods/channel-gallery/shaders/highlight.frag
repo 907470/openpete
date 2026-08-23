@@ -5,11 +5,11 @@
  * varies is not this shader but the selector that decides which geometry
  * reaches it.
  *
- * op_pack_shade() is the base layer rather than op_psx_shade() so a
- * highlighted face still matches its neighbours when an HD texture pack is
- * installed (it falls back to the stock decode when no pack is active).
- * Untextured draws arrive with bpp 0 and op_pack_shade() returns the
- * interpolated vertex colour, so one shader serves both.
+ * `base` is the engine's own result for this fragment — stock decode, or
+ * an installed HD texture pack's replacement, with the vertex modulation
+ * already applied — so a highlighted face still matches its neighbours,
+ * and untextured draws arrive as the interpolated vertex colour. One
+ * function serves every channel the gallery selects.
  *
  * mix, not replace: geometry stays readable, which matters for the blended
  * channels — an additive draw forced to a flat colour just blows out. */
@@ -20,14 +20,8 @@
 layout(set = 3, binding = 1, std140) uniform op_instance {
     vec4 tint;     /* rgb = highlight colour, a = strength 0..1 */
 };
-layout(location = 0) out vec4 outColor;
 
-void main()
+vec4 op_material(vec4 base)
 {
-    vec4 base = op_pack_shade();
-    /* alpha 0 is the PSX transparent-texel sentinel, not a colour. Opaque
-     * draws do not blend, so writing it through paints the cut-out holes
-     * solid instead of leaving them empty. */
-    if (base.a == 0.0) discard;
-    outColor = vec4(mix(base.rgb, tint.rgb, clamp(tint.a, 0.0, 1.0)), base.a);
+    return vec4(mix(base.rgb, tint.rgb, clamp(tint.a, 0.0, 1.0)), base.a);
 }

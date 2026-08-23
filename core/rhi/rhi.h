@@ -367,6 +367,18 @@ typedef struct {
                                  * mod vert/frag pairs see attributes at
                                  * locations 0..2 and the engine UBO at set 3
                                  * binding 0. uses_vram/uses_vram2 ignored.   */
+    bool           material_pipeline; /* mod MATERIAL layout: mod_pipeline's
+                                 * sets 0..3 (samplers, then the UBO pair)
+                                 * PLUS sets 4..6 = the engine's og-key
+                                 * occlusion inputs (terrain keys, moby keys,
+                                 * actor keys / rank), which a material's
+                                 * fragment stage evaluates before the mod's
+                                 * colour maths. Above the UBO pair, not
+                                 * replacing sets 1/2, so a material's own
+                                 * uniform block stays at set 3 binding 1.
+                                 * Needs maxBoundDescriptorSets >= 7; pipeline
+                                 * creation FAILS (caller draws stock) below
+                                 * that. Implies mod_pipeline's vertex input. */
     bool           terrain_pipeline; /* terrain sector-mesh layout: vertex
                                  * input = rhi_terrain_vertex (locations 0..8),
                                  * sets = {0: VRAM sampler, 3: UBO pair via
