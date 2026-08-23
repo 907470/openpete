@@ -6507,6 +6507,7 @@ static bool draw_native_scene(bool full_extent)
             if (moby_decal) {
                 int base = (txg_first[1] - tx_start) / 3;
                 const scene_tri_t *m0 = &scene[s_txscene[base]];   /* uniform material */
+                const uint32_t s0_decal_tag = m0->tag;
                 shadow_decal_tex_pc pc;
                 pc.col0x = s_shadow_decal.cam_col0[0];
                 pc.col0y = s_shadow_decal.cam_col0[1];
@@ -6537,9 +6538,55 @@ static bool draw_native_scene(bool full_extent)
                 pc.tpage_x = m0->tpage_x; pc.tpage_y = m0->tpage_y;
                 pc.clut_x = m0->clut_x;   pc.clut_y = m0->clut_y;
                 pc.bpp = m0->bpp;
-                bind_scene_pipe(s_nr.scene_tex_sub_decal_pipe);
+                /* Mod material on the DECAL PROFILE. The stock fragment
+                 * stage here owns per-pixel occlusion, so a plain material
+                 * would delete it (shadows would paint through walls) —
+                 * hence a second contract, openpete_psx_decal.glsl, whose
+                 * engine half hands the mod the visibility verdict to
+                 * apply. Layout matches `mod_pipeline` exactly: sets 0/1
+                 * samplers, set 3 the engine/mod UBO pair.
+                 *
+                 * The whole range is ONE draw because every moby shadow
+                 * shares one sprite AND one tag, so there is nothing to
+                 * split. A non-uniform tag would need run-splitting, so it
+                 * falls back to stock rather than paint most of the range
+                 * with the first tri's material. */
+                rhi_pipeline* dpipe = s_nr.scene_tex_sub_decal_pipe;
+                openpete_mod_material_gpu_t dmg;
+                int dslot_ok = 0;
+                if (tag_split_on() && s0_decal_tag) {
+                    int ntri1 = txg_count[1] / 3, uniform = 1;
+                    for (int q = 1; q < ntri1; q++)
+                        if (scene[s_txscene[base + q]].tag != s0_decal_tag) { uniform = 0; break; }
+                    if (uniform &&
+                        openpete_mods_material_resolve(s0_decal_tag, &dmg) >= 0) {
+                        void** ds = dmg.pipeline_slot[OPENPETE_MATERIAL_PIPE_DECAL];
+                        if (*ds == NULL) {
+                            rhi_pipeline_desc dd = {
+                                .vert_spv = "shadow_decal_tex.vert.spv",
+                                .frag_spv = "shadow_decal_tex.frag.spv",
+                                .blend = RHI_BLEND_SUBTRACT,
+                                .depth_test = false,
+                                .mod_pipeline = true,
+                                .push_const_size = sizeof(shadow_decal_tex_pc),
+                            };
+                            rhi_pipeline* np = rhi_create_pipeline_spv(
+                                s_nr.dev, &dd, dmg.vert_spv, dmg.vert_words,
+                                dmg.frag_spv, dmg.frag_words);
+                            *ds = np ? (void*)np : PFX_PIPE_FAILED;
+                            if (!np)
+                                fprintf(stderr, "[native] material: decal pipeline "
+                                                "build FAILED for %s\n", dmg.owner);
+                        }
+                        if (*ds != PFX_PIPE_FAILED) { dpipe = (rhi_pipeline*)*ds; dslot_ok = 1; }
+                    }
+                }
+                bind_scene_pipe(dpipe);
                 rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0); /* set 0 */
                 rhi_bind_vram2(s_nr.dev, s_nr.vram_tex);                /* set 1 */
+                if (dslot_ok && s_mat_ubo)
+                    rhi_ubo_bind(s_nr.dev, s_mat_ubo, 0,
+                                 dmg.uniform_slot > 0 ? 1 + dmg.uniform_slot : 0);
                 rhi_push_constants(s_nr.dev, &pc, sizeof pc);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 rhi_draw(s_nr.dev, (uint32_t)txg_count[1], (uint32_t)txg_first[1]);

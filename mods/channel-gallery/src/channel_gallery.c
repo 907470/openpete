@@ -25,8 +25,11 @@
  * lying about the seam.
  *
  * Reading the result:
- *   - A row marked KNOWN GAP cannot light in this build. That is the map
- *     working, not a bug.
+ *   - No row is a KNOWN GAP right now: every channel this build routes is
+ *     reshadeable, moby shadows included (they took a second shading
+ *     contract, the decal profile, to get there). The label and the gate's
+ *     zero-expectation stay because the next new channel will need them —
+ *     a row that cannot light yet is the map working, not a bug.
  *   - A row marked UNVERIFIED is wired but has never been observed to paint,
  *     because no capture yet puts its geometry visibly on screen. Treat it as
  *     a claim not yet checked, not as a working row.
@@ -85,18 +88,18 @@ static row_t g_rows[] = {
     OP_CHAN_FLAME, 0, -1, {1.00f, 0.30f, 0.00f}, 0, -1 },
   { "Flame (caps)",    "The OPAQUE base caps of the same effect.",
     OP_CHAN_FLAME, 1, -1, {0.10f, 1.00f, 1.00f}, 0, -1 },
-  /* Not a blend-plumbing gap: moby shadows draw through the depth-aware
-   * decal pipe, whose FRAGMENT stage owns per-pixel wall/steep-face
-   * occlusion — the one stage a material replaces. Reshading them needs a
-   * decal material profile (engine-supplied visibility the mod's frag
-   * applies), not a wider override path. Confirmed by probe: with
-   * OPENPETE_MOBY_SHADOW_DECAL=0 the fallback pipe takes the override and
-   * this row lights, which is exactly why it stays refused — a mod's reach
-   * must not depend on whether the host can sample depth. */
-  { "Shadows (moby)",  "KNOWN GAP: drawn by the depth-aware decal pipe, whose "
-                       "fragment stage owns occlusion — reshading it needs a "
-                       "decal material profile, not a wider override path. "
-                       "The player shadow row (untextured) does light.",
+  /* The row that proved "reshadeable does not follow from taggable": moby
+   * shadows are tagged and blend-plumbed, but their draw path's FRAGMENT
+   * stage owns per-pixel wall/steep-face occlusion — the one stage a
+   * material replaces. It stayed a known gap until the decal PROFILE
+   * existed, and is deliberately still refused on the non-decal fallback
+   * pipe, so a mod's reach never depends on whether the host can sample
+   * depth (OPENPETE_MOBY_SHADOW_DECAL=0 takes that path). */
+  { "Shadows (moby)",  "Drawn by the depth-aware decal pipe, whose fragment "
+                       "stage owns per-pixel occlusion — so this row uses the "
+                       "DECAL material profile, which hands the shader that "
+                       "verdict to apply instead of letting it delete the "
+                       "logic. Subtractive: a brighter tint darkens MORE.",
     OP_CHAN_SHADOW, 0, -1, {0.90f, 0.90f, 0.20f}, 0, -1 },
   { "Shadows (player)","Spyro's own silhouette.",
     OP_CHAN_SHADOW, 1, -1, {0.20f, 1.00f, 0.60f}, 0, -1 },
@@ -145,6 +148,13 @@ static row_t g_rows[] = {
 #define NROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
 
 static int   g_shader = -1;
+/* Rows on a draw path whose stock fragment stage owns occlusion need the
+ * DECAL profile instead — a different include, sets and push block. The
+ * row table names which shader a row wants; everything else about the row
+ * is unchanged, which is the point: the profile is a shading contract,
+ * not a different kind of selector. */
+static int   g_shader_decal = -1;
+static int   g_decal_row = 8;    /* Shadows (moby) */
 static float g_strength = 0.65f;
 static int   g_class = 0;        /* drives the one class-keyed row */
 static int   g_class_row = 3;
@@ -201,7 +211,9 @@ static void register_row(row_t* r) {
                                                  refine_state);
         g_refine_mat = r->mat;
     } else {
-        r->mat = g_api->material_register(g_self, &sel, g_shader);
+        int sh = (r == &g_rows[g_decal_row]) ? g_shader_decal : g_shader;
+        if (sh < 0) { r->mat = -1; return; }
+        r->mat = g_api->material_register(g_self, &sel, sh);
     }
     if (r->mat < 0) {
         g_api->log(g_self, OP_MOD_LOG_WARN, "row '%s' refused", r->label);
@@ -269,6 +281,7 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api; g_self = self;
 
     g_shader = api->shader_register(self, "shaders/highlight.frag");
+    g_shader_decal = api->shader_register(self, "shaders/highlight_decal.frag");
     if (g_shader < 0) {
         api->log(self, OP_MOD_LOG_ERROR,
                  "highlight.frag failed to build — gallery inert");

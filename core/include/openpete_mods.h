@@ -658,6 +658,12 @@ void openpete_mods_drawmesh_clear(void);
 void openpete_mods_pipeline_remove_owner(const char* mod_id);
 void openpete_mods_pipeline_retire_all(void);
 
+/* Draw-state variants a material can be built for. Index 5 is the DECAL
+ * profile; see openpete_psx_decal.glsl for why that is a separate shading
+ * contract rather than another blend class. */
+#define OPENPETE_MATERIAL_PIPE_VARIANTS 6
+#define OPENPETE_MATERIAL_PIPE_DECAL    5
+
 /* Material selectors (S8a/S8b) — draw-time resolve for the batcher.
  * NULL spv side = keep the stock stage (executor falls back to the
  * embedded psx_scene shaders). uniform_slot > 0 = a per-instance
@@ -670,7 +676,9 @@ typedef struct {
      * 3 subtract): a material reshades within whatever group it lands in and
      * inherits that group's compositing, so one shader needs one pipeline per
      * blend it is drawn under. */
-    void** pipeline_slot[5];   /* [4] = opaque + no depth write (portal sky) */
+    void** pipeline_slot[OPENPETE_MATERIAL_PIPE_VARIANTS];
+        /* [0..3] PSX blend classes, [4] opaque + no depth write (portal
+         * sky), [5] the decal profile (openpete_psx_decal.glsl). */
     void** pipeline_mark_slot;  /* stencil-MARK twin (hole-fill groups) */
     const char* owner;
     int   uniform_slot;

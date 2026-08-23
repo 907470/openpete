@@ -206,11 +206,43 @@ scene.
 Instances whose blocks are byte-identical share a slot and stay in one
 batch, so cost tracks *distinct outcomes*, not matches.
 
-### What is not reachable
+### Profiles — when the stock stage is not just colour
 
 Being tagged does not make geometry reshadeable. A material replaces the
-fragment stage, so a draw path whose fragment stage does something other
-than colour maths cannot accept one. Moby drop-shadows are the current
-example: they draw through a depth-aware decal pass whose fragment shader
-owns per-pixel occlusion against the world, so it is not yours to replace.
-The gallery marks such cases as known gaps rather than hiding them.
+fragment stage, which is harmless when that stage is pure colour maths
+and destructive when it is not.
+
+Moby drop-shadows are the worked example. They draw as flat fans with the
+depth test **off**, because their fragment shader decides per pixel
+whether the shadow is occluded — reconstructing terrain height from a
+depth pre-pass and rejecting walls, steep faces and raised platforms.
+Hand that path an ordinary material and the shader silently deletes the
+occlusion: shadows paint through walls.
+
+So those paths take a second contract, the **decal profile**, which
+splits the stock stage in two and gives you only the half you should own:
+
+```glsl
+#include "openpete_psx_decal.glsl"
+
+void main() {
+    if (!op_decal_visible()) discard;   // the engine's verdict, not yours
+    vec4 base = op_decal_shade();       // sprite decode + PSX modulation
+    if (base.a == 0.0) discard;
+    outColor = vec4(mix(base.rgb, tint.rgb, tint.a), base.a);
+}
+```
+
+Register it exactly as any other material — the selector is unchanged and
+the engine picks the profile from the draw path. Only the include, and
+the obligation to apply `op_decal_visible()`, differ. `mods/channel-gallery`
+carries a row on this profile (`shaders/highlight_decal.frag`).
+
+Shadows blend **subtractive**, so a brighter tint darkens the ground
+*more* — the row reads inverted next to the opaque channels, which is the
+material inheriting its group's compositing exactly as it should.
+
+If a future draw path puts other logic in its fragment stage, it gets its
+own profile rather than an escape hatch on this one. A row that cannot be
+reshaded yet stays in the gallery labelled as a known gap; there are none
+at present.

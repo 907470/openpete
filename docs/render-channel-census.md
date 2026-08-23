@@ -93,17 +93,28 @@ outcomes exist today:
 | Path | Reshadeable | Why |
 |---|---|---|
 | opaque + the alpha/additive/subtract-world groups | yes | psx_scene.vert/.frag; the override inherits the group's blend, depth-write and painter slot |
-| moby shadows (`scene_tex_sub_decal_pipe`) | **no** | `shadow_decal_tex.frag` OWNS per-pixel occlusion (samples the WORLD-opaque pre-pass depth at set 0, rejects walls/steep faces). Replacing that stage deletes the occlusion, and its vertex stage + push constants are a different contract entirely |
+| moby shadows (`scene_tex_sub_decal_pipe`) | yes, via the **decal profile** | `shadow_decal_tex.frag` OWNS per-pixel occlusion (samples the WORLD-opaque pre-pass depth at set 0, rejects walls/steep faces). A plain material would delete that, so this path takes a second contract — `openpete_psx_decal.glsl` — whose engine half exposes the verdict (`op_decal_visible()`) for the mod's fragment to apply |
 | portal sky mask (colour-write off) | n/a | writes no colour; deliberately untagged, since a material could not change anything |
 
 The shadow row is the one that matters, because it looks like a
 plumbing gap and is not. Probe: with `OPENPETE_MOBY_SHADOW_DECAL=0` the
 fallback (plain subtract + hardware bias) DOES take the override and the
-shadows recolour. That is precisely why the override stays refused on
-both paths — accepting it only on the fallback would make a mod's reach
-depend on whether the host can sample depth. Reshading shadows needs a
-**decal material profile**: a second stock-stage pair whose engine half
-supplies the visibility verdict for the mod's fragment to apply.
+shadows recolour. That is precisely why the plain override stays refused
+on both paths — accepting it only on the fallback would make a mod's
+reach depend on whether the host can sample depth.
+
+**The decal profile is the resolution** (`core/include/openpete_psx_decal.glsl`):
+a second shading contract that splits the stock stage into the engine's
+occlusion verdict and the mod's colour. Its pipeline reuses the
+`mod_pipeline` set layout unchanged — sets 0/1 samplers (pre-pass depth,
+VRAM), set 3 the engine/mod UBO pair — with `shadow_decal_tex.vert` as
+the vertex stage and the decal push block. The whole subtract range draws
+as ONE call because every moby shadow shares one sprite AND one tag; a
+non-uniform tag falls back to stock rather than painting the range with
+the first triangle's material.
+
+The generalisation to carry forward: **a draw path whose fragment stage
+does anything but colour maths needs its own profile, not an exemption.**
 
 ## Retention identity
 

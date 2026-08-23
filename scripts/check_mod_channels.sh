@@ -74,7 +74,8 @@ PY
 # ── baselines (gallery loaded, every row OFF) ─────────────────────────
 # The baseline runs WITH the mod present but no row lit, so the gate
 # measures the selector alone and not the cost of loading a mod.
-for leg in "base_flame flame 1800" "base_portal cyclorama-portal 2000"; do
+for leg in "base_flame flame 1800" "base_portal cyclorama-portal 2000" \
+           "base_bridge artisans-bridge 2000"; do
     set -- $leg
     if ! run_rows "$1" "$2" "$3" "" ""; then
         echo "[modchan] SKIP: no headless vk capture for $2 (see $WORK/$1.log)"
@@ -91,7 +92,7 @@ moby|flame|1800|2|400|mobys
 player|flame|1800|4|1500|player (Spyro is not a moby)
 flameribbon|flame|1800|6|10000|flame ribbon (additive, textured)
 particlequad|flame|1800|10|30|particle billboards (textured, blended)
-shadowmoby|flame|1800|8|0|moby shadows (KNOWN GAP: decal frag owns occlusion)
+shadowmoby|artisans-bridge|2000|8|60|moby shadows (DECAL profile: engine keeps the occlusion verdict)
 sky|cyclorama-portal|2000|5|3000|cyclorama sky
 portal|cyclorama-portal|2000|15|3000|portal previews (all three rungs)
 "
@@ -100,6 +101,7 @@ while IFS='|' read -r tag bk2 frame row minpx label; do
     [ -z "${tag// }" ] && continue
     base="$WORK/base_flame-1800-vk.png"
     [ "$bk2" = "cyclorama-portal" ] && base="$WORK/base_portal-2000-vk.png"
+    [ "$bk2" = "artisans-bridge" ]  && base="$WORK/base_bridge-2000-vk.png"
     say "$label"
     if ! run_rows "$tag" "$bk2" "$frame" "$row" ""; then
         bad "no capture for row $row (see $WORK/$tag.log)"; continue

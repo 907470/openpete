@@ -230,6 +230,9 @@ static void interface_hash(char out_hex[65]) {
     snprintf(p, sizeof p, "%s/shaders/openpete_psx_material.glsl",
              openpete_mods_sdk_dir());
     (void)key_update_file(&hc, p);   /* material-tier contract */
+    snprintf(p, sizeof p, "%s/shaders/openpete_psx_decal.glsl",
+             openpete_mods_sdk_dir());
+    (void)key_update_file(&hc, p);   /* decal material profile */
     uint8_t digest[32];
     openpete_sha256_final(&hc, digest);
     openpete_sha256_hex(digest, out_hex);
@@ -259,6 +262,9 @@ static int shader_compute_key(const char* mod_dir, const char* rel_path,
                  openpete_mods_sdk_dir());
         (void)key_update_file(&hc, p);
         snprintf(p, sizeof p, "%s/shaders/openpete_psx_material.glsl",
+                 openpete_mods_sdk_dir());
+        (void)key_update_file(&hc, p);
+        snprintf(p, sizeof p, "%s/shaders/openpete_psx_decal.glsl",
                  openpete_mods_sdk_dir());
         (void)key_update_file(&hc, p);
     }
@@ -917,7 +923,12 @@ typedef struct {
      * average, 2 additive, 3 subtract). A material reshades inside
      * whatever group it lands in and must not change how that group
      * composites, so the same shader needs a pipeline per blend. */
-    void* pipeline[5];   /* [4] = opaque, depth-write off (portal sky) */
+    /* One built pipeline per draw-state variant this material can be
+     * asked for: [0..3] = PSX blend classes, [4] = opaque with depth
+     * write off (portal sky), [5] = the DECAL PROFILE (moby shadows:
+     * a different vertex stage, descriptor sets and push block — see
+     * openpete_psx_decal.glsl). */
+    void* pipeline[OPENPETE_MATERIAL_PIPE_VARIANTS];
     void* pipeline_mark;   /* stencil-MARK twin (hole-fill WORLD/ACTOR groups) */
     int   user_enabled;    /* material_enable — the mod's own on/off */
     /* Static uniform block (material_set_params). Declarative materials have
@@ -1343,7 +1354,8 @@ static int material_fill_gpu(int best, int uniform_slot,
         ? openpete_mods_shader_spv(m->frag, &out->frag_words, NULL) : NULL;
     if (m->vert < 0) out->vert_words = 0;
     if (m->frag < 0) out->frag_words = 0;
-    for (int b = 0; b < 5; b++) out->pipeline_slot[b] = &m->pipeline[b];
+    for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++)
+        out->pipeline_slot[b] = &m->pipeline[b];
     out->pipeline_mark_slot = &m->pipeline_mark;
     out->owner = m->owner;
     /* A per-instance slot always wins; otherwise fall back to this
@@ -1430,7 +1442,7 @@ int openpete_mods_material_resolve(uint32_t tag,
 void openpete_mods_material_remove_owner(const char* mod_id) {
     for (int i = 0; i < s_mat_count; i++) {
         if (!s_mats[i].live || strcmp(s_mats[i].owner, mod_id) != 0) continue;
-        for (int b = 0; b < 5; b++)
+        for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++)
             if (s_mats[i].pipeline[b] &&
                 s_mats[i].pipeline[b] != OPENPETE_POSTFX_PIPE_FAILED &&
                 s_retired_n < MOD_POSTFX_MAX)
@@ -1439,7 +1451,7 @@ void openpete_mods_material_remove_owner(const char* mod_id) {
             s_mats[i].pipeline_mark != OPENPETE_POSTFX_PIPE_FAILED &&
             s_retired_n < MOD_POSTFX_MAX)
             s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_mark;
-        for (int b = 0; b < 5; b++) s_mats[i].pipeline[b] = NULL;
+        for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++) s_mats[i].pipeline[b] = NULL;
         s_mats[i].pipeline_mark = NULL;
         s_mats[i].live = 0;
     }
@@ -1449,7 +1461,7 @@ void openpete_mods_material_remove_owner(const char* mod_id) {
 void openpete_mods_material_retire_all(void) {
     for (int i = 0; i < s_mat_count; i++) {
         if (!s_mats[i].live) continue;
-        for (int b = 0; b < 5; b++)
+        for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++)
             if (s_mats[i].pipeline[b] &&
                 s_mats[i].pipeline[b] != OPENPETE_POSTFX_PIPE_FAILED &&
                 s_retired_n < MOD_POSTFX_MAX)
@@ -1458,7 +1470,7 @@ void openpete_mods_material_retire_all(void) {
             s_mats[i].pipeline_mark != OPENPETE_POSTFX_PIPE_FAILED &&
             s_retired_n < MOD_POSTFX_MAX)
             s_retired_pipelines[s_retired_n++] = s_mats[i].pipeline_mark;
-        for (int b = 0; b < 5; b++) s_mats[i].pipeline[b] = NULL;
+        for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++) s_mats[i].pipeline[b] = NULL;
         s_mats[i].pipeline_mark = NULL;
     }
 }
