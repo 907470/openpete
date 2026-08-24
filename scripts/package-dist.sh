@@ -72,7 +72,11 @@ sign_pe() {  # sign_pe <file> — no-op unless --sign was given
     eval "$SIGN_CMD \"\$1\"" || { echo "[package] signing FAILED: $1" >&2; exit 1; }
 }
 
-VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev)
+# OPENPETE_DIST_VERSION overrides the derived name. Test builds handed to
+# testers want the commit alone (`git rev-parse --short HEAD`) so a report
+# names the build without implying a release; leave it unset for releases,
+# where the tag is the point.
+VERSION="${OPENPETE_DIST_VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
 NAME="openpete-spyro1-${VERSION}-${PLATFORM}-x86_64"
 STAGE="$OUT/$NAME"
 
