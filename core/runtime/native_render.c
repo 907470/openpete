@@ -4300,6 +4300,9 @@ static void tp_fog_affine(int clut_x, int base_y, int delta, int bpp,
  * mod pipeline (psx_scene stages, push-constant bpp 0 = untextured). Inert
  * without an armed selector (tag_split_on). */
 #define UT_MAT_SPANS 96
+/* The untextured buckets past the numbered groups (0..5): SKY draws before
+ * the group loop, WORLD_FILL right after the WORLD group. */
+#define UT_BUCKET_SKY 11
 static struct { int gi; uint32_t tag; int first, count; } s_utmat[UT_MAT_SPANS];
 static int s_utmat_n;
 static int s_utdef_idx[MAX_SCENE_TRIS];
@@ -4332,6 +4335,65 @@ static int ut_tag_resolves(uint32_t tag) {
     return hit;
 }
 
+/* Emit `dn` deferred tris (scene indices in s_utdef_idx) as contiguous
+ * tag-grouped spans for bucket `gi`, starting at vertex `n`. Returns the new
+ * vertex count.
+ *
+ * ONE implementation, because there are two buckets that defer (the numbered
+ * groups and SKY) and a third divergence between them is how this file grows
+ * holes: a deferred tri is already out of the plain span, so anything that
+ * fails to record it deletes it.
+ *
+ * That is also why the span table reserves a slot. The old "overflow → stock"
+ * degradation zeroed the last span's TAG without extending its COUNT, so an
+ * overflowing span's tris were written to the buffer and referenced by
+ * nothing. Here the open span simply stops splitting once the table is nearly
+ * full and absorbs the rest of the bucket at tag 0 — the whole tail draws
+ * stock, which is what the degradation always meant to say.
+ *
+ * The reservation only makes ONE bucket fit, so the callers must also refuse
+ * to DEFER once the table is full (see defer_ok) — otherwise the next bucket
+ * hands tris here that no span can record. Measured: with the table shrunk to
+ * 2 slots, that gap deleted 34370 px. Both halves are needed. */
+static int ut_emit_deferred(int gi, const scene_tri_t* scene, rhi_vertex* buf,
+                            int n, int dn)
+{
+    if (dn <= 0) return n;
+    s_utsort_scene = scene;
+    qsort(s_utdef_idx, (size_t)dn, sizeof(int), utdef_cmp);
+    uint32_t cur = 0; int span_first = 0, open = 0;
+    for (int d = 0; d < dn; d++) {
+        int t = s_utdef_idx[d];
+        if (n + 3 > SCENE_VB_VERTS) break;
+        uint32_t mt = ut_mask_tag(scene[t].tag);
+        if (!open) {
+            cur = mt; span_first = n; open = 1;
+        } else if (mt != cur) {
+            if (s_utmat_n + 1 < UT_MAT_SPANS) {     /* keep one slot for the tail */
+                s_utmat[s_utmat_n++] = (__typeof__(s_utmat[0]))
+                    { gi, cur, span_first, n - span_first };
+                cur = mt; span_first = n;
+            } else {
+                cur = 0;    /* absorbed: this span's tail draws stock */
+            }
+        }
+        for (int k = 0; k < 3; k++) {
+            float cx, cy;
+            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
+            rhi_vertex* o = &buf[n + k];
+            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
+            o->u = 0.0f; o->v = 0.0f;
+            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
+            o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
+        }
+        n += 3;
+    }
+    if (open && s_utmat_n < UT_MAT_SPANS)
+        s_utmat[s_utmat_n++] = (__typeof__(s_utmat[0]))
+            { gi, cur, span_first, n - span_first };
+    return n;
+}
+
 /* Does this untextured bucket DRAW its deferred material spans?
  *
  * Deferring a tri REMOVES it from the plain span, so a bucket that defers
@@ -4345,13 +4407,21 @@ static int ut_tag_resolves(uint32_t tag) {
  * owns per-pixel occlusion, which a plain material would delete, and its
  * vertex interface is its own — so a material there needs a profile it does
  * not have yet, not a wider override path. Everything else takes spans:
- * the opaque WORLD/ACTOR/PLAYER buckets, and every BLENDED bucket (flame,
+ * the opaque WORLD/ACTOR/PLAYER buckets, every BLENDED bucket (flame,
  * particles, tracers — a channel that only ever emits blended geometry
- * would otherwise be unreachable by any material). Blended spans reshade
- * only: draw_ut_mat_spans inherits the group's blend and depth-write
- * policy, so painter order is untouched. */
+ * would otherwise be unreachable by any material), and SKY, whose dome-wide
+ * selector is one of the plainest things a mod can ask for. Blended spans
+ * reshade only: draw_ut_mat_spans inherits the group's blend and
+ * depth-write policy, so painter order is untouched.
+ *
+ * SKY's stock span and its material spans are drawn together under one
+ * `sky_ok`, so they are already suppressed as a pair — but that was
+ * ADJACENCY, not structure, and adjacency is what this predicate exists to
+ * replace. Keep them paired: anything that draws ut_count[gi] owes
+ * draw_ut_mat_spans(gi) under the same condition. */
 static int ut_mat_spans_ok(int gi, int gb, int gc) {
     if (gi == 1) return 0;
+    if (gi == UT_BUCKET_SKY) return 1;
     return gb != 0 || gc == OPENPETE_SCENE_WORLD ||
            gc == OPENPETE_SCENE_ACTOR || gc == OPENPETE_SCENE_PLAYER;
 }
@@ -5320,14 +5390,19 @@ static void draw_backdrop_fills(uint32_t bg, const int* ut_first,
         rhi_draw(s_nr.dev, 6, 0);
         rhi_gpu_zone_end(s_nr.dev);
     }
+    /* The plain span and the material spans are ONE bucket and must stay
+     * under one condition: a deferred tri is out of the plain span, so a
+     * `sky_ok` that suppressed only one of these would draw a hole or draw
+     * a sky nothing suppressed. Keep them together (ut_mat_spans_ok). */
     if (sky_ok && s_nr.gouraud_pipe) {
         rhi_gpu_zone_begin(s_nr.dev, "sc.sky");
-        if (ut_count[11] > 0) {
+        if (ut_count[UT_BUCKET_SKY] > 0) {
             bind_scene_pipe(s_nr.gouraud_pipe);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-            rhi_draw(s_nr.dev, (uint32_t)ut_count[11], (uint32_t)ut_first[11]);
+            rhi_draw(s_nr.dev, (uint32_t)ut_count[UT_BUCKET_SKY],
+                     (uint32_t)ut_first[UT_BUCKET_SKY]);
         }
-        draw_ut_mat_spans(11, s_nr.gouraud_pipe, 0, 0);   /* opaque backdrop */
+        draw_ut_mat_spans(UT_BUCKET_SKY, s_nr.gouraud_pipe, 0, 0); /* opaque backdrop */
         rhi_gpu_zone_end(s_nr.dev);
     }
 }
@@ -5725,8 +5800,11 @@ static bool draw_native_scene(bool full_extent)
         ut_first[gi] = n;
         int gb = groups[gi].blend, gc = groups[gi].gcat;
         /* Defer only what this bucket will actually draw — see
-         * ut_mat_spans_ok. Deferring more than that DELETES it. */
-        const int defer_ok = tag_split_on() && ut_mat_spans_ok(gi, gb, gc);
+         * ut_mat_spans_ok — and only while the span table can still record
+         * it. Deferring more than that DELETES it: the tri leaves the plain
+         * span and nothing else draws it. */
+        const int defer_ok = tag_split_on() && ut_mat_spans_ok(gi, gb, gc) &&
+                             s_utmat_n < UT_MAT_SPANS;
         int dn = 0;
         for (int t = 0; t < scene_n; t++) {
             if (scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
@@ -5776,46 +5854,9 @@ static bool draw_native_scene(bool full_extent)
             n += 3;
         }
         ut_count[gi] = n - ut_first[gi];           /* the PLAIN (stock-drawn) span */
-        if (dn) {
-            /* Deferred tris: group by resolve-relevant tag into contiguous
-             * spans after the plain span. A span-table overflow records tag 0
-             * (drawn with the stock pipe — never invisible). */
-            s_utsort_scene = scene;
-            qsort(s_utdef_idx, (size_t)dn, sizeof(int), utdef_cmp);
-            uint32_t cur = 0; int span_first = 0, open = 0;
-            for (int d = 0; d < dn; d++) {
-                int t = s_utdef_idx[d];
-                if (n + 3 > SCENE_VB_VERTS) break;
-                uint32_t mt = ut_mask_tag(scene[t].tag);
-                if (!open || mt != cur) {
-                    if (open) {
-                        if (s_utmat_n < UT_MAT_SPANS)
-                            s_utmat[s_utmat_n++] = (__typeof__(s_utmat[0]))
-                                { gi, cur, span_first, n - span_first };
-                        else if (s_utmat_n)
-                            s_utmat[UT_MAT_SPANS - 1].tag = 0;   /* overflow → stock */
-                    }
-                    cur = mt; span_first = n; open = 1;
-                }
-                for (int k = 0; k < 3; k++) {
-                    float cx, cy;
-                    scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-                    rhi_vertex *o = &buf[n + k];
-                    o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-                    o->u = 0.0f; o->v = 0.0f;
-                    o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
-                }
-                n += 3;
-            }
-            if (open) {
-                if (s_utmat_n < UT_MAT_SPANS)
-                    s_utmat[s_utmat_n++] = (__typeof__(s_utmat[0]))
-                        { gi, cur, span_first, n - span_first };
-                else if (s_utmat_n)
-                    s_utmat[UT_MAT_SPANS - 1].tag = 0;
-            }
-        }
+        /* Deferred tris: grouped by resolve-relevant tag into contiguous
+         * spans after the plain span (ut_emit_deferred). */
+        n = ut_emit_deferred(gi, scene, buf, n, dn);
     }
     /* HUD untextured: every HUD-category untextured tri (any blend). The pipe is
      * depth-test OFF by design (the layer must paint over the world uncondition-
@@ -5960,13 +6001,16 @@ static bool draw_native_scene(bool full_extent)
      * pipe (depth-tested backdrop, no stencil mark); FILL draws right after
      * the WORLD group with the TEST_ZERO pipe. Both untextured by
      * construction (gouraud dome / gouraud LP). */
-    ut_first[11] = n;
+    ut_first[UT_BUCKET_SKY] = n;
     {
-        /* SKY takes the same material deferral as the numbered groups: a
-         * dome-wide selector is one of the plainest things a mod can ask
-         * for, and without this the sky is the one opaque channel no
-         * material can reach. One tag, so at most one deferred span. */
-        const int sky_defer = tag_split_on();
+        /* SKY takes the same material deferral as the numbered groups, and
+         * through the same predicate — a dome-wide selector is one of the
+         * plainest things a mod can ask for, and without this the sky is the
+         * one opaque channel no material can reach. One tag, so at most one
+         * deferred span. */
+        const int sky_defer = tag_split_on() &&
+            ut_mat_spans_ok(UT_BUCKET_SKY, 0, OPENPETE_SCENE_SKY) &&
+            s_utmat_n < UT_MAT_SPANS;
         int sdn = 0;
         for (int t = 0; t < scene_n; t++) {
             if (scene[t].textured || scene[t].category != OPENPETE_SCENE_SKY ||
@@ -5986,36 +6030,8 @@ static bool draw_native_scene(bool full_extent)
             }
             n += 3;
         }
-        ut_count[11] = n - ut_first[11];        /* the PLAIN (stock) span */
-        if (sdn) {
-            s_utsort_scene = scene;
-            qsort(s_utdef_idx, (size_t)sdn, sizeof(int), utdef_cmp);
-            uint32_t cur = 0; int span_first = 0, open = 0;
-            for (int d = 0; d < sdn; d++) {
-                int t = s_utdef_idx[d];
-                if (n + 3 > SCENE_VB_VERTS) break;
-                uint32_t mt = ut_mask_tag(scene[t].tag);
-                if (!open || mt != cur) {
-                    if (open && s_utmat_n < UT_MAT_SPANS)
-                        s_utmat[s_utmat_n++] = (__typeof__(s_utmat[0]))
-                            { 11, cur, span_first, n - span_first };
-                    cur = mt; span_first = n; open = 1;
-                }
-                for (int k = 0; k < 3; k++) {
-                    float cx, cy;
-                    scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-                    rhi_vertex *o = &buf[n + k];
-                    o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-                    o->u = 0.0f; o->v = 0.0f;
-                    o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                    o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
-                }
-                n += 3;
-            }
-            if (open && s_utmat_n < UT_MAT_SPANS)
-                s_utmat[s_utmat_n++] = (__typeof__(s_utmat[0]))
-                    { 11, cur, span_first, n - span_first };
-        }
+        ut_count[UT_BUCKET_SKY] = n - ut_first[UT_BUCKET_SKY];   /* PLAIN span */
+        n = ut_emit_deferred(UT_BUCKET_SKY, scene, buf, n, sdn);
     }
     ut_first[12] = n;
     for (int t = 0; t < scene_n; t++) {
