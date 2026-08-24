@@ -36,6 +36,7 @@ Windows keeps everything in the program's own folder, next to
 openpete.toml   your settings
 cards/          memory cards (the game's own saves)
 states/         savestate slots
+logs/           openpete.log — attach to a bug report
 library/        your ingested disc and its compiled code
 ```
 <!-- @end -->
@@ -47,6 +48,7 @@ program itself:
 ~/.config/openpete/openpete.toml   your settings
 ~/.local/state/openpete/cards/     memory cards (the game's own saves)
 ~/.local/state/openpete/states/    savestate slots
+~/.local/state/openpete/logs/      openpete.log — attach to a bug report
 ~/.local/share/openpete/library/   your ingested disc and its compiled code
 ~/.local/share/openpete/mods/      drop-in mods
 ~/.local/share/openpete/assets/    your own texture packs and music
@@ -82,6 +84,16 @@ AppImage is a read-only file, so it always uses the paths above.
 - Windows: install to a reasonably short path (e.g. `C:\Games\OpenPete`);
   very deep folders can hit Windows' path-length limit during first run.
 <!-- @end -->
+
+## Reporting a problem
+
+Every run mirrors its diagnostics to `openpete.log` in the `logs`
+directory above — the startup sequence, what it decided about your disc
+and your hardware, any driver errors, and the crash dump if it crashed.
+Attach it. The previous run is kept alongside it as `openpete.log.1`,
+which is the one you want when a relaunch made the problem go away.
+
+Nothing in it identifies you beyond the paths OpenPete itself uses.
 
 _OpenPete is not affiliated with Sony, Insomniac Games, or Activision.
 Spyro the Dragon is a trademark of its respective owners._

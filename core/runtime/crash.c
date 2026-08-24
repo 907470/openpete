@@ -114,6 +114,11 @@ static void on_signal(int sig, siginfo_t* info, void* ucontext) {
     }
 #endif
     fflush(stderr);
+    /* The log file mirrors stderr through a pipe, so the dump we just
+     * wrote is still in flight; re-raising would kill the process with it
+     * unread. Drain before dying — a crash report with no crash in it is
+     * the one case the file exists for. */
+    openpete_log_file_sync();
 
     /* Restore default handler and re-raise so the OS can dump core etc. */
     signal(sig, SIG_DFL);

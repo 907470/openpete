@@ -147,6 +147,19 @@ else
              tail -20 "$WORK/first-boot.log" >&2; exit 2; }
 fi
 
+# A GUI launch has no terminal, so the log file is the only thing a user
+# can attach to a report. Assert the first boot — the run most likely to
+# go wrong on a stranger's machine — actually left one, and that it
+# carries the build it did rather than an empty shell.
+LOGF="$XDG_STATE_HOME/openpete/logs/openpete.log"
+[[ -s "$LOGF" ]] \
+    || { echo "[dist-gate] FAIL: first boot wrote no log file at $LOGF" >&2;
+         exit 2; }
+grep -q "first-boot module build" "$LOGF" \
+    || { echo "[dist-gate] FAIL: the log file did not capture the module" \
+              "build it was open for" >&2; exit 2; }
+echo "[dist-gate] first boot left a log file ($(wc -c < "$LOGF") bytes)..."
+
 module=$(ls "$DATA"/library/*/modules/*/spyro1-recomp.so 2>/dev/null | head -1)
 [[ -n "$module" ]] || { echo "[dist-gate] FAIL: no module built under $DATA" >&2;
                         tail -20 "$WORK/first-boot.log" >&2; exit 2; }

@@ -8,6 +8,7 @@ set(PSXRECOMP_RUNNER ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner)
 
 add_library(openpete_core STATIC
     runtime/log.c
+    runtime/log_file.c
     runtime/options.c
 
     # openpete.toml: the layered config file that replaced the openpete.opts

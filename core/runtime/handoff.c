@@ -125,6 +125,12 @@ void openpete_handoff_poll(CPUState* cpu) {
     OPL_INFO_F("handoff", "exec at frame %u (checkpoint %s)",
                openpete_frame, path);
     fflush(NULL);
+    /* Put the real stderr back on fd 2 first. The log mirror routes fd 2
+     * through a pipe drained by a thread, and exec destroys every thread
+     * while keeping the fds: the successor would write into a pipe with
+     * no reader and wedge as soon as it filled. It opens its own mirror
+     * on the way up, carrying this run over to openpete.log.1. */
+    openpete_log_file_close();
     execv("/proc/self/exe", nv);
     /* Only reached on failure — never brick the session. */
     OPL_ERROR_F("handoff", "execv failed: continuing without handoff");

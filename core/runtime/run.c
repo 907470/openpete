@@ -3783,6 +3783,12 @@ static void log_frame_on_exit(void) {
 
 int openpete_run(const openpete_options_t* opts) {
     openpete_log_init(opts->log_format, opts->log_level_spec);
+    /* The stderr mirror is normally already up (main() opens it before
+     * attaching the recomp module). Harmless no-op if so; this covers
+     * embedders that call openpete_run() directly. Before
+     * atexit(log_frame_on_exit) because atexit runs LIFO — registering the
+     * sink first makes it close LAST, so the exit lines still land in it. */
+    openpete_log_file_open(opts->log_file);
     atexit(log_frame_on_exit);
     OPL_INFO_F("boot", "starting %s (frame_limit=%d max_seconds=%d headless=%d)",
                opts->display_name, opts->frame_limit, opts->max_runtime_seconds,

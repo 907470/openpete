@@ -90,6 +90,7 @@ void   openpete_native_set_notex(int on)           { (void)on; }
 int    openpete_log_get_format(void)           { return 0; }
 void   openpete_log_set_format(int f)          { (void)f; }
 const char *openpete_log_get_spec(void)        { return ""; }
+const char *openpete_log_file_path(void)       { return ""; }
 void   openpete_log_set_spec(const char *s)    { (void)s; }
 void   openpete_logf(int lvl, const char *sub, const char *fmt, ...) {
     (void)lvl; (void)sub; (void)fmt;

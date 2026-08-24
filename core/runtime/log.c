@@ -34,16 +34,22 @@ static char g_spec[128];   /* last applied level spec, for display */
 
 /* ANSI colour for the plain-text log, only when stderr is an interactive
  * terminal (piped/redirected output — grep, files, the oracle — stays clean). */
+static int g_tty = -1;
+
+/* The stderr mirror (log_file.c) replaces fd 2 with a pipe, which would
+ * make the test below answer "not a terminal" and silently drop colour
+ * from every interactive run. It pins the real answer before the swap. */
+void openpete_log_pin_stderr_tty(int is_tty) { g_tty = is_tty ? 1 : 0; }
+
 static int stderr_is_tty(void) {
-    static int s = -1;
-    if (s < 0) {
+    if (g_tty < 0) {
 #if defined(_WIN32)
-        s = _isatty(_fileno(stderr)) ? 1 : 0;
+        g_tty = _isatty(_fileno(stderr)) ? 1 : 0;
 #else
-        s = isatty(fileno(stderr)) ? 1 : 0;
+        g_tty = isatty(fileno(stderr)) ? 1 : 0;
 #endif
     }
-    return s;
+    return g_tty;
 }
 
 static const char* level_color(openpete_log_level_t l) {
@@ -140,7 +146,11 @@ static openpete_log_level_t lookup_level(const char* subsystem) {
 
 void openpete_log_init(openpete_log_format_t fmt, const char* level_spec) {
     g_fmt = fmt;
-    g_t0 = monotonic_seconds();
+    /* Anchor the timeline once. main() initialises the logger before the
+     * recomp module is attached (so a first-boot build failure is logged
+     * with real timestamps) and openpete_run() initialises again; a second
+     * reset would rewind every timestamp mid-file. */
+    if (g_t0 == 0.0) g_t0 = monotonic_seconds();
     clear_rules();
     g_default = OPL_INFO;
 

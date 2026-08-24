@@ -479,6 +479,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             measure one path's accuracy. Opt-in (per-frame GPU readback).\n"
         "  --log-format json|plain    structured stderr (default plain)\n"
         "  --log-level SPEC           e.g. cd:debug,*:info; env OPENPETE_LOG=...\n"
+        "  --log-file PATH            mirror stderr to PATH instead of the default\n"
+        "                             <state>/logs/openpete.log; env OPENPETE_LOG_FILE=...\n"
+        "  --no-log-file              do not write a log file at all\n"
         "  --screenshot-on-frame N[,N2,...]  save image at each listed frame; can be passed once with a comma list.\n"
         "                             In a windowed pure-vk run, -vk.png is a READBACK of the exact\n"
         "                             presented frame (sub-tick interp, mods, overlays included);\n"
@@ -556,6 +559,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->rewind_hold_iters   = 0;
     opts->runahead            = 0;
     opts->log_format          = OPENPETE_LOG_PLAIN;
+    opts->log_file            = NULL;  /* unset: env, else <state>/logs/openpete.log */
     opts->renderer            = OPENPETE_RENDERER_VK;  /* native Vulkan is the default display (windowed); --renderer psycross for the legacy GL path. Inert under --headless (native disabled → PsyCross). */
     opts->mute                = false; /* audio on by default; --mute 1 to silence */
     opts->sfx_volume          = -1;    /* -1 = unset; the game's own slider stands */
@@ -987,6 +991,11 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--log-level") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->log_level_spec = v; i++;
+        } else if (strcmp(a, "--log-file") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->log_file = v; i++;
+        } else if (strcmp(a, "--no-log-file") == 0) {
+            opts->log_file = "off";
         } else if (strcmp(a, "--disc") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->disc_path = v; i++;

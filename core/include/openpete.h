@@ -395,6 +395,9 @@ typedef struct openpete_options {
     /* Logging */
     openpete_log_format_t log_format;
     const char* log_level_spec;        /* e.g. "cd:debug,*:info" or NULL */
+    /* --log-file PATH / --no-log-file (which sets "off"). NULL = unset, so
+     * $OPENPETE_LOG_FILE and then the default state-dir path apply. */
+    const char* log_file;
 
     /* Disc / data — Phase 1b uses these; Phase 0b ignores them. */
     const char* disc_path;

@@ -72,6 +72,7 @@ static const cfg_knob_t g_schema[] = {
     { "render_stats",     "--render-stats",     NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       1 },
     { "log_level",        "--log-level",        "OPENPETE_LOG",          CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "log_format",       "--log-format",       NULL,                    CFG_ENUM,   v_logfmt,   NULL,       NULL,       0 },
+    { "log_file",         "--log-file",         "OPENPETE_LOG_FILE",     CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "fillpick",         NULL,                 "OPENPETE_FILLPICK",     CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "fillpick_preview", NULL,                 "OPENPETE_FILLPICK_PREVIEW", CFG_BOOL, NULL,     NULL,       NULL,       0 },
 };

@@ -347,6 +347,12 @@ static void loglevel_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     snprintf(buf, cap, "%s", (v && *v) ? v : "(default: info)");
 }
 
+static void logfile_get_str(const knob_desc_t *k, char *buf, size_t cap) {
+    (void)k;
+    const char *v = openpete_log_file_path();
+    snprintf(buf, cap, "%s", (v && *v) ? v : "(no log file)");
+}
+
 static int loglevel_set_str(knob_desc_t *k, const char *v) {
     (void)k;
     if (v && *v == '(') v = "";   /* "(default: info)" placeholder = clear */
@@ -759,6 +765,12 @@ static const knob_desc_t g_builtin[] = {
       "REPLACES all boot rules with the typed spec (empty = *:info).",
       KNOB_STRING, KNOB_LIVE, NULL, 0, 0, 0,
       NULL, NULL, loglevel_get_str, loglevel_set_str, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "log_file", "Log file", "Debug", "--log-file", "OPENPETE_LOG_FILE",
+      "Path stderr is mirrored to for bug reports; empty = disabled "
+      "(--no-log-file). Opened once at startup, so read-only here.",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, logfile_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "log_format", "Log format", "Debug", "--log-format", NULL,
       "stderr log shape: plain text vs one JSON object per line. Takes "

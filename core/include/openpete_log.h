@@ -38,6 +38,26 @@ openpete_log_format_t openpete_log_get_format(void);
 void openpete_log_set_spec(const char* spec);
 const char* openpete_log_get_spec(void);
 
+/* Mirror everything written to stderr into a log file, so a launch with
+ * no terminal (a double-clicked AppImage, a .desktop entry) still leaves
+ * something to attach to a bug report. `spec` is the resolved --log-file
+ * value: NULL falls back to $OPENPETE_LOG_FILE and then to
+ * <state>/logs/openpete.log; "off", "0" or "" disable the sink. Returns 0
+ * when a file sink is active. One previous run is kept as ".1"; a second
+ * concurrent instance runs without a sink rather than interleave. */
+int openpete_log_file_open(const char* spec);
+void openpete_log_file_close(void);
+const char* openpete_log_file_path(void);  /* "" when inactive */
+
+/* Pin the answer to "is stderr a terminal?" before the mirror swaps fd 2
+ * for a pipe. Colour selection would otherwise see the pipe. */
+void openpete_log_pin_stderr_tty(int is_tty);
+
+/* Flush and let the pump thread drain. For the crash path, where the
+ * process is about to die and the dump would otherwise be lost in the
+ * pipe. Not async-signal-safe. */
+void openpete_log_file_sync(void);
+
 /* Log a message. `extra` is an optional NUL-terminated key=value sequence,
  * one pair per line, used for structured fields. May be NULL. */
 void openpete_logf(openpete_log_level_t level, const char* subsystem,
