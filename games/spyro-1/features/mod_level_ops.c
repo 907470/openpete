@@ -425,7 +425,7 @@ static void leveltext_hook_install(void) {
  * carries copyBgColor/copySectorCount/copySectors, pointer-patched at
  * load) — replacing the destination level never touches it. While a
  * replace is declared, this driver parses the custom level's own
- * cyclorama component out of the mod's data.bin (LevelHeader
+ * cyclorama component out of the mod's .WAD data segment (LevelHeader
  * m_DataOffset @+8 -> skip 5 self-sizing components -> cyclorama:
  * [size][bg word][sector count][payload-relative sector ptrs]...),
  * parks the payload in the guest arena with the pointers absolutized,
@@ -455,7 +455,7 @@ static const sky_park_t* sky_park_get(const char* dir, const char* stem) {
     pk->gaddr = 0;
 
     char path[1152];
-    snprintf(path, sizeof path, "%s/levels/%s.data.bin", dir, stem);
+    openpete_mods_custom_asset_path(dir, stem, 0, path, sizeof path);
     FILE* f = fopen(path, "rb");
     if (!f) return NULL;
     fseek(f, 0, SEEK_END);

@@ -50,7 +50,7 @@ version to pin, nothing that can break across engine updates:
 - `assets/textures/replacements/<name>.png` replaces a texture in the
   native renderer (see `hd-single-texture`; the texture-dump tooling
   names the files).
-- `assets/levels/<stem>.data.bin` + `.ovl.bin` plus a `[[level]]`
+- `assets/levels/<stem>.WAD` + `.OVL` plus a `[[level]]`
   manifest block is a playable custom level — slot claim, warp row and
   disc serving are all engine-side (see `grim-garden`).
 

@@ -18,6 +18,7 @@
 #include "openpete_log.h"
 #include "../host/wav_loader.h" /* op_wav_probe_seconds (custom-level music) */
 
+#include <dirent.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -449,6 +450,41 @@ static int s_custom_active = -1;       /* row owning the shared slot */
 static int s_custom_slot_id = 0;       /* claimed slot id (65), 0 = none */
 static int s_custom_warp = -1;         /* queued warp (real row index) */
 
+/* ── Custom-level asset files ────────────────────────────────────────
+ * A declarative level ships two files under <dir>/levels/: <stem>.WAD
+ * (the level's WAD data segment) and, optionally, <stem>.OVL (the
+ * donor's code overlay). Those are the extensions the level editors
+ * emit; the case they emit them in varies (and case matters on Linux
+ * but not on Windows), so the lookup matches the name case-insensitively
+ * by scanning the directory when the literal lowercase path misses. */
+int openpete_mods_custom_asset_path(const char* dir, const char* stem,
+                                    int is_ovl, char* out, size_t cap) {
+    const char* ext = is_ovl ? "ovl" : "wad";
+    if (!dir || !stem || !out || cap == 0) return -1;
+    snprintf(out, cap, "%s/levels/%s.%s", dir, stem, ext);
+    struct stat st;
+    if (stat(out, &st) == 0) return 0;
+
+    char want[160];
+    snprintf(want, sizeof want, "%s.%s", stem, ext);
+    char ldir[1024];
+    snprintf(ldir, sizeof ldir, "%s/levels", dir);
+    DIR* d = opendir(ldir);
+    if (d) {
+        struct dirent* e;
+        while ((e = readdir(d))) {
+            if (strcasecmp(e->d_name, want) != 0) continue;
+            snprintf(out, cap, "%s/%s", ldir, e->d_name);
+            closedir(d);
+            return 0;
+        }
+        closedir(d);
+    }
+    /* Canonical (missing) path stays in `out` for the caller's log. */
+    snprintf(out, cap, "%s/levels/%s.%s", dir, stem, ext);
+    return -1;
+}
+
 int openpete_mods_custom_register(const char* mod_id, const char* name,
                                   const char* stem, const char* dir,
                                   const char* donor, int replace,
@@ -479,8 +515,8 @@ int openpete_mods_custom_register(const char* mod_id, const char* name,
     r->declared_replace = 0;
     char p[1088];
     struct stat st;
-    snprintf(p, sizeof p, "%s/levels/%s.data.bin", dir, stem);
-    r->data_size = stat(p, &st) == 0 ? (uint32_t)st.st_size : 0;
+    r->data_size = openpete_mods_custom_asset_path(dir, stem, 0, p, sizeof p)
+                   == 0 && stat(p, &st) == 0 ? (uint32_t)st.st_size : 0;
     if (!r->data_size)
         OPL_WARN_F(log_tag, "level \"%s\": %s missing — listed but not "
                    "playable until derived", name, p);

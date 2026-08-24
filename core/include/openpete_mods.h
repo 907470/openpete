@@ -507,7 +507,7 @@ typedef struct {
     int (*set_level_name)(CPUState* cpu, int level_id, const char* name);
     /* Per-tick driver: while `on`, the donor level's homeworld portal
      * renders the custom level's own skybox (parsed from
-     * <dir>/levels/<stem>.data.bin, parked in the guest arena);
+     * <dir>/levels/<stem>.WAD, parked in the guest arena);
      * restores the baked preview when `on` drops or the level changes.
      * Idempotent, cheap when nothing changes. */
     int (*replace_sky_tick)(CPUState* cpu, int donor_id, const char* dir,
@@ -517,7 +517,7 @@ typedef struct {
 void openpete_mods_set_level_ops(const openpete_level_ops_t* ops);
 
 /* ── Declarative custom levels ([[level]] manifest blocks) ───────────
- * A mod ships assets/levels/<stem>.data.bin (+ optional .ovl.bin) and a
+ * A mod ships assets/levels/<stem>.WAD (+ optional .OVL) and a
  * manifest block; the registry owns slot time-sharing, guest TOC
  * declarations and warps — no mod code involved. Rows sort by NAME
  * (the menu's alphabetical Custom World buckets). */
@@ -545,6 +545,12 @@ void openpete_mods_custom_set_mode(int i, int replace);
  * the active slot row, or an enabled declared replace row. 1 = found. */
 int  openpete_mods_custom_files_for(int level_id, const char** dir_out,
                                     const char** stem_out);
+/* Path of a custom level's data (<stem>.WAD) or code-overlay (<stem>.OVL)
+ * file under <dir>/levels/. The extension is matched case-insensitively.
+ * 0 = found; -1 = absent, with the canonical path still written to `out`
+ * so callers can name the missing file. */
+int  openpete_mods_custom_asset_path(const char* dir, const char* stem,
+                                     int is_ovl, char* out, size_t cap);
 /* Music hook: the custom song for logical level `level_id` right now
  * (same row selection as files_for). Returns the WAV path (and its
  * duration via dur_sec_out, may be NULL) or NULL when the level has no

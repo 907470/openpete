@@ -63,8 +63,8 @@ restore on disable.
 ``` toml
 [[level]]
 name  = "Grim Garden"      # shown in the menu; also the sort key
-files = "grim_garden"      # stem: assets/levels/grim_garden.data.bin
-                           #     + assets/levels/grim_garden.ovl.bin
+files = "grim_garden"      # stem: assets/levels/grim_garden.WAD
+                           #     + assets/levels/grim_garden.OVL
 donor = "dark_hollow"      # whose loader/code the level runs under —
                            # lower_snake name ("cliff_town") or id (22)
 replace = true             # optional: serve over the donor's own level
@@ -75,9 +75,11 @@ title = "GRIM GARDEN"      # optional: in-game title if it should differ
                            # from name (e.g. a portal-safe A-Z spelling)
 ```
 
-- `<stem>.data.bin` is the level's WAD data segment (any size);
-  `<stem>.ovl.bin` is the donor's code overlay (must stay the donor's
+- `<stem>.WAD` is the level's WAD data segment (any size);
+  `<stem>.OVL` is the donor's code overlay (must stay the donor's
   stock size) — omit it to run the stock overlay.
+  These are the extensions the level editors emit; the case doesn't
+  matter (`.wad`, `.WAD` and `.Wad` all resolve).
 - Pick the level your hack was authored against as `donor`.
 - Without `music`, the level plays its **donor's** track. With it, the
   engine plays your WAV whenever the level starts its music, and sizes
@@ -91,7 +93,7 @@ title = "GRIM GARDEN"      # optional: in-game title if it should differ
   card but shows as an apostrophe at the portal). Set `title` to show a
   different in-game string than the menu `name`.
 - In `replace` mode the donor's homeworld **portal preview** also shows
-  your level's own skybox (parsed from your `data.bin`) instead of the
+  your level's own skybox (parsed from your `.WAD`) instead of the
   stock preview baked into the homeworld.
 - Multiple `[[level]]` blocks per mod are legal.
 - Custom levels share the game's one free level slot (id 65) until the

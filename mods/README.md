@@ -42,8 +42,8 @@ ABI at all. The engine picks the files up by convention:
 assets/textures/replacements/*.png    HD texture replacement (native renderer)
 assets/music/*.wav                    per-track music replacement
 assets/sounds/*.wav                   mod-local one-shots (sfx_play / [[binding]])
-assets/levels/<stem>.data.bin
-assets/levels/<stem>.ovl.bin          custom level payloads, wired by [[level]]
+assets/levels/<stem>.WAD
+assets/levels/<stem>.OVL              custom level payloads, wired by [[level]]
 ```
 
 `[[level]]` in the manifest turns a pair of level payloads into a

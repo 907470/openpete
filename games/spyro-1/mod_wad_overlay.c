@@ -401,10 +401,9 @@ void mod_wad_apply(uint8_t* host_buf, int sectors) {
             if (openpete_mods_custom_files_for(serve_id, &cdir, &cstem)) {
                 struct stat st;
                 char dp[1088];
-                snprintf(path, sizeof path, "%s/levels/%s.%s.bin", cdir,
-                         cstem, kind);
-                snprintf(dp, sizeof dp, "%s/levels/%s.data.bin", cdir,
-                         cstem);
+                openpete_mods_custom_asset_path(cdir, cstem, kind[0] == 'o',
+                                                path, sizeof path);
+                openpete_mods_custom_asset_path(cdir, cstem, 0, dp, sizeof dp);
                 struct stat ds;
                 if (stat(path, &st) == 0 && (uint32_t)st.st_size == want_len &&
                     stat(dp, &ds) == 0 && (uint32_t)ds.st_size == want_dlen) {
