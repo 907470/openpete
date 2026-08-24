@@ -743,7 +743,10 @@ unsigned openpete_mods_material_epoch(void);
  * invalidates the bake. Identity, never an outcome — a slot number would
  * be stale one present later. */
 #define OPENPETE_MATERIAL_TER_VARIANTS 3  /* arena vertex stage: plain/anim/near */
-#define OPENPETE_MATERIAL_TER_SLOTS    3  /* colour slot: world / world-MARK / fill */
+/* Colour slot: world, world-MARK (hole-fill coverage), fill (LP backing),
+ * then the three PSX blend classes. Depth and key passes shade nothing and
+ * need no material pipeline. */
+#define OPENPETE_MATERIAL_TER_SLOTS    6
 #define OPENPETE_MATERIAL_TER_PIPES \
     (OPENPETE_MATERIAL_TER_VARIANTS * OPENPETE_MATERIAL_TER_SLOTS)
 /* Bucket ids are stamped into 8 spare bits of the baked face material. */

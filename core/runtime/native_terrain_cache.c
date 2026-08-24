@@ -771,8 +771,17 @@ static int tc_bind_material(int bucket, int variant, int slot)
         d.terrain_anim = (variant == 1);
         d.terrain_near = (variant == 2);
         d.push_const_size = sizeof(tc_pc);
-        if (slot == 1) d.stencil = RHI_STENCIL_MARK;
-        if (slot == 2) d.stencil = RHI_STENCIL_TEST_ZERO;
+        switch (slot) {
+            case 1: d.stencil = RHI_STENCIL_MARK; break;
+            case 2: d.stencil = RHI_STENCIL_TEST_ZERO; break;
+            /* A material inherits its group's compositing, so a blend slot's
+             * pipeline differs from the stock one only in the fragment
+             * stage — same equation, same depth-write rule. */
+            case 3: d.blend = RHI_BLEND_ALPHA;    d.depth_write_off = true; break;
+            case 4: d.blend = RHI_BLEND_ADD;      d.depth_write_off = true; break;
+            case 5: d.blend = RHI_BLEND_SUBTRACT; d.depth_write_off = true; break;
+            default: break;
+        }
         rhi_pipeline *p = rhi_create_pipeline_spv(s_tc.dev, &d, NULL, 0,
                                                   mg.frag_spv, mg.frag_words);
         if (!p) {
@@ -809,6 +818,16 @@ static void tc_draw_material_world(int bucket, int slot,
         tc_draw_arena(OPTC_ARENA_N_OPAQUE, 0, clip);
         tc_draw_arena(OPTC_ARENA_N_LP,     0, clip);
     }
+}
+
+/* One blend class, all three arena flavours, for one bucket. */
+static void tc_draw_material_blend(int bucket, int slot, int a_plain,
+                                   int a_anim, int a_near,
+                                   const openpete_tercache_clip *clip)
+{
+    if (tc_bind_material(bucket, 0, slot)) tc_draw_arena(a_plain, 0, clip);
+    if (tc_bind_material(bucket, 1, slot)) tc_draw_arena(a_anim,  0, clip);
+    if (tc_bind_material(bucket, 2, slot)) tc_draw_arena(a_near,  0, clip);
 }
 
 void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
@@ -861,11 +880,11 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
      * the terrain blocks cannot sit beside it. */
     rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 5, 0);
     rhi_ubo_bind_at(s_tc.dev, s_tc.ubo, 6, 1);
-    /* Colour slots the material passes serve run their stock pass filtered
-     * (mat_pass 0); everything else — depth, key, and the blend classes the
-     * split is not yet legal for — draws every face. */
-    const int bmax = (which == OPTC_DRAW_WORLD || which == OPTC_DRAW_FILL)
-                         ? openpete_mods_material_terrain_bucket_max() : 0;
+    /* Every colour slot runs its stock pass filtered (mat_pass 0) and then
+     * one pass per bucket. The depth and key passes shade nothing, so they
+     * draw every face regardless of bucket. */
+    const int bmax = (which == OPTC_DRAW_PREPASS || which == OPTC_DRAW_KEY)
+                         ? 0 : openpete_mods_material_terrain_bucket_max();
     s_tc_mat_pass = bmax > 0 ? 0 : -1;
     switch (which) {
         case OPTC_DRAW_WORLD:
@@ -888,16 +907,34 @@ void openpete_tercache_draw(int which, const openpete_tercache_clip *clip,
             tc_draw_arena(OPTC_ARENA_ALPHA, 0, clip);
             tc_draw_anim(s_tc.pipe_a_alpha, OPTC_ARENA_A_ALPHA, 0, clip);
             tc_draw_anim(s_tc.pipe_n_alpha, OPTC_ARENA_N_ALPHA, 0, clip);
+            for (int b = 1; b <= bmax; b++) {
+                s_tc_mat_pass = b;
+                tc_draw_material_blend(b, 3, OPTC_ARENA_ALPHA,
+                                       OPTC_ARENA_A_ALPHA, OPTC_ARENA_N_ALPHA,
+                                       clip);
+            }
             break;
         case OPTC_DRAW_ADD:
             tc_draw_arena(OPTC_ARENA_ADD,   0, clip);
             tc_draw_anim(s_tc.pipe_a_add, OPTC_ARENA_A_ADD, 0, clip);
             tc_draw_anim(s_tc.pipe_n_add, OPTC_ARENA_N_ADD, 0, clip);
+            for (int b = 1; b <= bmax; b++) {
+                s_tc_mat_pass = b;
+                tc_draw_material_blend(b, 4, OPTC_ARENA_ADD,
+                                       OPTC_ARENA_A_ADD, OPTC_ARENA_N_ADD,
+                                       clip);
+            }
             break;
         case OPTC_DRAW_SUB:
             tc_draw_arena(OPTC_ARENA_SUB,   0, clip);
             tc_draw_anim(s_tc.pipe_a_sub, OPTC_ARENA_A_SUB, 0, clip);
             tc_draw_anim(s_tc.pipe_n_sub, OPTC_ARENA_N_SUB, 0, clip);
+            for (int b = 1; b <= bmax; b++) {
+                s_tc_mat_pass = b;
+                tc_draw_material_blend(b, 5, OPTC_ARENA_SUB,
+                                       OPTC_ARENA_A_SUB, OPTC_ARENA_N_SUB,
+                                       clip);
+            }
             break;
         case OPTC_DRAW_FILL:
             /* LP only: poly-anim sectors never backstop-fill, near ones do. */

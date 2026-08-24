@@ -147,11 +147,14 @@ both, and reaches them identically — the engine compiles your `.frag`
 twice, once per path, and gates each with the same occlusion verdicts.
 You write one shader and never learn which path a face took.
 
-One exception, and it is a cost rather than a limit: a material on
-**transparent** terrain — water, waterfalls, the additive glows — pulls
-its whole sector back onto the CPU walk. Transparency composites in
-draw order, and serving it from the cache would reorder it. Opaque
-terrain, which is nearly all of it, stays on the cache.
+A declarative row costs the cache nothing: across the whole level corpus,
+arming an all-terrain selector leaves the retained sector count and every
+claim reason exactly where they were with no mods at all.
+
+A `material_register_refine` callback is the exception. Its result can
+change per present, and a baked face has no per-present anything, so a
+sector a refine selector can reach goes back on the CPU walk for as long
+as the selector is installed. Prefer a declarative row where one will do.
 
 ### The C tier
 

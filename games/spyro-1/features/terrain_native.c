@@ -3114,6 +3114,30 @@ static int tgpu_hdfold_face(const tmat* m,
  * accumulator lerp the mesh cannot bake), 5 = HD-fold unbakeable face (see
  * tgpu_hdfold_face). sec_index = the level sector index (the
  * authored-correction key). */
+/* TEMP probe (OPENPETE_TERRAIN_BUCKET_CENSUS=1): per bake, how many BLENDED
+ * faces carry a material bucket and how many do not. A blend arena holding
+ * both is the only shape in which splitting it into a stock pass and a
+ * material pass can reorder anything — so this is what says whether an
+ * ordering A/B tested the mixed case or a trivially-ordered one. */
+static long s_bkc_blend_mat, s_bkc_blend_stock, s_bkc_op_mat, s_bkc_op_stock;
+static int tgpu_bucket_census_on(void) {
+    static int on = -1;
+    if (on < 0) { const char* e = getenv("OPENPETE_TERRAIN_BUCKET_CENSUS");
+                  on = (e && *e && *e != '0'); }
+    return on;
+}
+static void tgpu_bucket_census(int blended, int bucket) {
+    if (blended) { if (bucket) s_bkc_blend_mat++; else s_bkc_blend_stock++; }
+    else         { if (bucket) s_bkc_op_mat++;    else s_bkc_op_stock++; }
+}
+/* Which Tiledef ids land on BLENDED HP faces — the keys a texture-scoped
+ * selector can use to split one blend arena's drawn faces across buckets. */
+static uint32_t s_bkc_blend_tex[4];
+static void tgpu_bucket_census_tex(int texid, int blended) {
+    if (blended && texid >= 0 && texid < 128)
+        s_bkc_blend_tex[texid >> 5] |= 1u << (texid & 31);
+}
+
 static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                              uint32_t hqTable, int sec_index, int with_var) {
     /* UV-scroll is mirrored: the accumulator-change tile generations rebuild
@@ -3174,6 +3198,8 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                      | (((uint32_t)F->otbias & 0x1Fu) << 24);
         T.matf0 = tgpu_pack_mat0(&F->mat)    /* untextured (blend may be set) */
                 | ((uint32_t)lp_bucket << 24);
+        if (tgpu_bucket_census_on())
+            tgpu_bucket_census(F->mat.blend != 0, lp_bucket);
         uint32_t rc[4];
         rc[0] = rd(cpu, SC->lpColBase + F->c0) & 0xFFFFFFu;
         rc[1] = rd(cpu, SC->lpColBase + F->c1) & 0xFFFFFFu;
@@ -3233,6 +3259,11 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             (F->tb == -1) ? -1 : (F->tb & 0x7F), F->tgen != 0, 0);
         T.matf0 = tgpu_pack_mat0(&F->mat) | ((uint32_t)hp_bucket << 24);
         T.matf1 = (uint32_t)(F->mat.clut_raw & 0xFFFF);
+        if (tgpu_bucket_census_on()) {
+            int blended = F->mat.blend != 0 || F->matN.blend != 0;
+            tgpu_bucket_census(blended, hp_bucket);
+            tgpu_bucket_census_tex((F->tb == -1) ? -1 : (F->tb & 0x7F), blended);
+        }
         T.matn0 = tgpu_pack_mat0(&F->matN); T.matn1 = (uint32_t)(F->matN.clut_raw & 0xFFFF);
         /* Scroll tile id (flags16 bits 5-12): the vertex stage adds the
          * per-build fractional V offset for this Tiledef (zero when the
@@ -3458,30 +3489,17 @@ static int tgpu_pack_scan(const tscache_t* SC) {
  * (the same derivation the walk's emit uses for the provenance tag).
  *
  * A DECLARATIVE selector no longer claims: the bake stamps its bucket into
- * the face and the retained draw issues that bucket's own pass. Two cases
- * still do:
- *
- *  - a PER-INSTANCE selector, whose callback mints a per-present slot. A
- *    bake outlives the present, so it cannot hold one — banking an outcome
- *    would strobe.
- *  - any material on a BLENDED face. Splitting an arena into a stock pass
- *    and a material pass changes the order those faces composite in, and
- *    blending is order-dependent. Until that is resolved, blended terrain
- *    keeps its whole sector on the walk, where the order is og's. */
+ * the face and the retained draw issues that bucket's own pass. Only a
+ * PER-INSTANCE selector still does — its callback mints a per-present slot,
+ * and a bake outlives the present, so banking that outcome would strobe. */
 static int tgpu_sel_scan(const tscache_t* SC) {
-    if (SC->lpF && SC->nLpF > 0) {
-        if (openpete_mods_material_terrain_claim(-1, 0, 1)) return 1;
-        if (openpete_mods_material_terrain_bucket(-1, 0, 1))
-            for (int f = 0; f < SC->nLpF; f++)
-                if (SC->lpF[f].mat.blend) return 1;
-    }
+    if (SC->lpF && SC->nLpF > 0 &&
+        openpete_mods_material_terrain_claim(-1, 0, 1)) return 1;
     for (int f = 0; SC->hpF && f < SC->nHpF; f++) {
         const tsface_t* F = &SC->hpF[f];
         int texid = (F->tb == -1) ? -1 : (F->tb & 0x7F);
-        int env   = F->tgen != 0;
-        if (openpete_mods_material_terrain_claim(texid, env, 0)) return 1;
-        if ((F->mat.blend || F->matN.blend) &&
-            openpete_mods_material_terrain_bucket(texid, env, 0)) return 1;
+        if (openpete_mods_material_terrain_claim(texid, F->tgen != 0, 0))
+            return 1;
     }
     return 0;
 }
@@ -3589,6 +3607,24 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
     }
     if (T->unbuildable == 0) T->ownFrame = openpete_frame;
     return T->unbuildable;
+}
+
+static void tgpu_bucket_census_print(void) {
+    if (!tgpu_bucket_census_on()) return;
+    static long last;
+    long tot = s_bkc_blend_mat + s_bkc_blend_stock + s_bkc_op_mat + s_bkc_op_stock;
+    if (tot == last) return;
+    last = tot;
+    fprintf(stderr, "[bkt-cen] baked faces: blended mat=%ld stock=%ld | "
+                    "opaque mat=%ld stock=%ld%s\n",
+            s_bkc_blend_mat, s_bkc_blend_stock, s_bkc_op_mat, s_bkc_op_stock,
+            (s_bkc_blend_mat && s_bkc_blend_stock)
+                ? "  <- MIXED blend arena" : "");
+    fprintf(stderr, "[bkt-cen] Tiledefs on blended HP faces:");
+    for (int t = 0; t < 128; t++)
+        if (s_bkc_blend_tex[t >> 5] & (1u << (t & 31)))
+            fprintf(stderr, " %d", t);
+    fprintf(stderr, "\n");
 }
 
 static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
@@ -5477,6 +5513,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     s_tgcl_nearb - cen0[10], s_tgcl_nodraw - cen0[11],
                     s_tgcl_prim - cen0[12], s_tgcl_pcov - cen0[13]);
         tgpu_census();
+        tgpu_bucket_census_print();
         if (op_prof_on()) {   /* the claim-ratchet metric, per present */
             static int id_secs = -1, id_claims = -1;
             if (id_secs < 0)   id_secs   = op_prof_intern("tc.secs");

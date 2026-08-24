@@ -92,7 +92,7 @@ def bk2_frames(name):
         return 0
 
 
-def run_row(kind, slug, args, target_frame, lod, outdir):
+def run_row(kind, slug, args, target_frame, lod, outdir, mods_dir=""):
     """Run one row; return (slug, dict) with the last canonical census at or
     before target_frame+1, or (slug, None) on failure (log kept)."""
     env = dict(os.environ)
@@ -117,6 +117,11 @@ def run_row(kind, slug, args, target_frame, lod, outdir):
            "--screenshot-output", os.path.join(shots, f"{slug}__{{n}}.png"),
            "--frame-limit", str(target_frame + 2),
            "--max-runtime-seconds", "280"] + args
+    # A mods dir arms whatever selectors it holds. The point of running the
+    # corpus with one is the terrain-material claim gate: an all-terrain
+    # selector must leave `sel` at 0 on every row, not just the one pose it
+    # was developed against.
+    cmd += ["--mods-dir", mods_dir] if mods_dir else ["--mods", ""]
     try:
         p = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True,
                            text=True, timeout=300)
@@ -172,6 +177,10 @@ def main():
     ap.add_argument("--lod", default="extended", choices=["extended", "original"])
     ap.add_argument("--bk2-only", action="store_true")
     ap.add_argument("--freecam-only", action="store_true")
+    ap.add_argument("--mods-dir", default="",
+                    help="run with this mods dir armed (default: --mods \"\", "
+                         "no mods). Use it to hold a terrain material against "
+                         "the whole corpus and watch the `sel` column.")
     opts = ap.parse_args()
     os.makedirs(opts.out, exist_ok=True)
 
@@ -201,7 +210,8 @@ def main():
     results = {"bk2": [], "freecam": []}
     fails = []
     with ThreadPoolExecutor(max_workers=opts.jobs) as ex:
-        futs = {ex.submit(run_row, k, s, a, t, opts.lod, opts.out): (k, s)
+        futs = {ex.submit(run_row, k, s, a, t, opts.lod, opts.out,
+                          opts.mods_dir): (k, s)
                 for (k, s, a, t) in jobs}
         for fut, (kind, slug) in futs.items():
             slug2, d = fut.result()
