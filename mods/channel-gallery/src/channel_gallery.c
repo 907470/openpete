@@ -101,7 +101,16 @@ static row_t g_rows[] = {
                        "verdict to apply instead of letting it delete the "
                        "logic. Subtractive: a brighter tint darkens MORE.",
     OP_CHAN_SHADOW, 0, -1, {0.90f, 0.90f, 0.20f}, 0, -1 },
-  { "Shadows (player)","Spyro's own silhouette.",
+  /* KNOWN GAP. Spyro's silhouette is drawn by a THIRD fragment stage: an
+   * untextured depth-aware decal, whose vertex interface differs from both
+   * the scene contract and the textured decal profile above. It has no
+   * engine half yet, so this row is routable but paints nothing — the tag
+   * reaches it, and the override does not. Lighting it leaves the shadow
+   * exactly as the game drew it. */
+  { "Shadows (player)","Spyro's own silhouette. KNOWN GAP: routable but not "
+                       "yet reshadeable — it is drawn by an untextured "
+                       "depth-aware decal stage that has no material profile "
+                       "of its own, so this row paints nothing.",
     OP_CHAN_SHADOW, 1, -1, {0.20f, 1.00f, 0.60f}, 0, -1 },
   { "Particle billboards", "The textured sparkle quads. Toggle it against the "
                            "glow row to see the ident key split ONE channel: "

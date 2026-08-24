@@ -107,6 +107,7 @@ player|flame|1800|4|1500|player (Spyro is not a moby)
 flameribbon|flame|1800|6|10000|flame ribbon (additive, textured)
 particlequad|flame|1800|10|30|particle billboards (textured, blended)
 shadowmoby|artisans-bridge|2000|8|60|moby shadows (DECAL profile: engine keeps the occlusion verdict)
+shadowplayer|artisans-bridge|2000|9|0|player shadow (KNOWN GAP — and it must paint nothing, not paint LESS: this row DELETED the shadow, 3099 px, because deferring a tri removes it from the plain span and this bucket then skipped the spans)
 sky|cyclorama-portal|2000|5|3000|cyclorama sky
 portal|cyclorama-portal|2000|15|3000|portal previews (all three rungs)
 terrainrefine|flame|1800|20|1000|terrain refine callback (untextured band)

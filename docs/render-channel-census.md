@@ -112,7 +112,9 @@ because it never gets the chance to skip it.
 |---|---|---|
 | opaque + the alpha/additive/subtract-world groups | yes | `openpete_psx_material.glsl` — the engine half runs the key + rank contests from sets 2 and 4-6 |
 | portal sky previews | yes | same include; the override inherits the aperture stencil test |
+| retained terrain (the GPU sector-mesh cache) | yes | same include, compiled a second time under `OP_PROFILE_TERRAIN` — flat per-face varyings instead of a push block, the fold atlas instead of a per-draw pack image, and `terrain_shade.glsl` shared with the stock stage so they cannot drift |
 | moby shadows (`scene_tex_sub_decal_pipe`) | yes | `openpete_psx_decal.glsl` — a different draw path (own vertex stage, push block, samplers) so its declarations differ, but the same `op_material()` and the same split |
+| **Spyro's shadow** (`gouraud_sub_pipe`, untextured depth-aware decal) | **NO — known gap** | a THIRD fragment stage, with a vertex interface that is neither the scene contract's nor the textured decal's (`vColor` at 0, `vUV` at 1, plus `vQ`). It owns per-pixel occlusion, so it needs an engine half of its own; none exists. The channel-gallery's "Shadows (player)" row is routable and paints nothing, asserted by a gate rung |
 | portal sky mask (colour-write off) | n/a | writes no colour; deliberately untagged, since a material could not change anything |
 
 Probe worth keeping for the shadow row: with

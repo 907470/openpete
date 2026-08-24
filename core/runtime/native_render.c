@@ -4332,6 +4332,30 @@ static int ut_tag_resolves(uint32_t tag) {
     return hit;
 }
 
+/* Does this untextured bucket DRAW its deferred material spans?
+ *
+ * Deferring a tri REMOVES it from the plain span, so a bucket that defers
+ * and then does not draw the spans deletes the geometry outright — the
+ * Spyro shadow vanished this way, because gi==1's untextured draw is the
+ * depth-aware silhouette decal, which takes no material and skipped them.
+ * One predicate answers both the deferral and the draw so the two cannot
+ * disagree again.
+ *
+ * gi==1 (untextured SUBTRACT) is Spyro's shadow decal: its fragment stage
+ * owns per-pixel occlusion, which a plain material would delete, and its
+ * vertex interface is its own — so a material there needs a profile it does
+ * not have yet, not a wider override path. Everything else takes spans:
+ * the opaque WORLD/ACTOR/PLAYER buckets, and every BLENDED bucket (flame,
+ * particles, tracers — a channel that only ever emits blended geometry
+ * would otherwise be unreachable by any material). Blended spans reshade
+ * only: draw_ut_mat_spans inherits the group's blend and depth-write
+ * policy, so painter order is untouched. */
+static int ut_mat_spans_ok(int gi, int gb, int gc) {
+    if (gi == 1) return 0;
+    return gb != 0 || gc == OPENPETE_SCENE_WORLD ||
+           gc == OPENPETE_SCENE_ACTOR || gc == OPENPETE_SCENE_PLAYER;
+}
+
 /* Draw one bucket's deferred untextured material spans (S8c). Builds the
  * material's pipeline on first use — psx_scene stages as stock fallbacks
  * (their vertex interface, vUV loc 0 / vColor loc 1, is the mod-material
@@ -5700,17 +5724,9 @@ static bool draw_native_scene(bool full_extent)
     for (int gi = 0; gi < 6; gi++) {
         ut_first[gi] = n;
         int gb = groups[gi].blend, gc = groups[gi].gcat;
-        /* Untextured material deferral. Opaque WORLD/ACTOR/PLAYER buckets and
-         * every BLENDED bucket: the blended groups carry flame, particles,
-         * tracers and the shadow decals, and a channel that only ever emits
-         * blended geometry would otherwise be unreachable by any material.
-         * Blended spans reshade only — draw_ut_mat_spans inherits the group's
-         * blend and depth-write policy, so painter order is untouched. */
-        const int defer_ok = tag_split_on() &&
-                             (gb != 0 ||
-                              gc == OPENPETE_SCENE_WORLD ||
-                              gc == OPENPETE_SCENE_ACTOR ||
-                              gc == OPENPETE_SCENE_PLAYER);
+        /* Defer only what this bucket will actually draw — see
+         * ut_mat_spans_ok. Deferring more than that DELETES it. */
+        const int defer_ok = tag_split_on() && ut_mat_spans_ok(gi, gb, gc);
         int dn = 0;
         for (int t = 0; t < scene_n; t++) {
             if (scene[t].textured || n + 3 > SCENE_VB_VERTS) continue;
@@ -6511,7 +6527,7 @@ static bool draw_native_scene(bool full_extent)
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, (uint32_t)ut_count[gi], (uint32_t)ut_first[gi]);
         }
-        if (s_utmat_n && gi != 1 && g->utex)
+        if (s_utmat_n && g->utex && ut_mat_spans_ok(gi, g->blend, g->gcat))
             draw_ut_mat_spans(gi, g->utex, holefill_on && (gi == 0 || gi == 2),
                               g->blend);
         if (txg_count[gi] > 0 && s_nr.vram_tex && g->tex) {
