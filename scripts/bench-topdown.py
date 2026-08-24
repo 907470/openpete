@@ -32,6 +32,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fences"))
+import bench_guard
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")
 DISC = os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue")
@@ -128,6 +131,8 @@ def scope_p50(summary, scope, kind):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe", default=DEFAULT_EXE)
+    ap.add_argument("--allow-untuned", action="store_true",
+                    help="skip the bench_guard tuned-binary refusal")
     ap.add_argument("--levels", default=None, help="comma list (default: all)")
     ap.add_argument("--lod", default="extended",
                     choices=["extended", "original"])
@@ -156,6 +161,9 @@ def main():
     if not os.path.isfile(DISC):
         print("SKIP: disc not found: %s" % DISC)
         return EXIT_SKIP
+
+    bench_guard.check(args.exe, allow_untuned=args.allow_untuned)
+    bench_guard.print_surface(args.exe, args.mods_dir, args.texpack_dir)
 
     levels = args.levels.split(",") if args.levels else LEVELS
     out_dir = os.path.abspath(args.out_dir) if args.out_dir else os.path.join(

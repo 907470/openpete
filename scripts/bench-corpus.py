@@ -28,6 +28,9 @@ import re
 import subprocess
 import sys
 
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fences"))
+import bench_guard
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")
 DISC = os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue")
@@ -190,6 +193,8 @@ def compare_baseline(roll, baseline_path, thr_pct, thr_us):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--exe", default=DEFAULT_EXE)
+    ap.add_argument("--allow-untuned", action="store_true",
+                    help="skip the bench_guard tuned-binary refusal")
     ap.add_argument("--movies", default=None, help="comma list of bk2 stems (default: all)")
     ap.add_argument("--frame-limit", type=int, default=20000)
     ap.add_argument("--render-fps", type=int, default=120)
@@ -210,6 +215,9 @@ def main():
     if not os.path.exists(DISC):
         print("[bench] disc not found: %s" % DISC, file=sys.stderr)
         return EXIT_SKIP
+
+    bench_guard.check(args.exe, allow_untuned=args.allow_untuned)
+    bench_guard.print_surface(args.exe)
 
     movies = sorted(glob.glob(os.path.join(BK2_DIR, "*.bk2")))
     if args.movies:
