@@ -144,6 +144,18 @@ static row_t g_rows[] = {
     "instance of the class, which is what the plain class row already "
     "does — the point is what happens when you narrow it.",
     OP_CHAN_MOBY, -1, 0, {0.10f, 1.00f, 0.35f}, 0, -1 },
+  /* The second refine row, and the one that proves refine survives the
+   * RESIDENCY ladder: terrain is the only channel the engine draws two ways,
+   * and most of it is baked into GPU buffers that no CPU walk ever visits.
+   * A callback cannot be asked per baked face — so the engine runs it once
+   * per present for the selector's single key and hands the answer to both
+   * paths. Keyed on the untextured band so it is level-independent. */
+  { "Terrain untextured band (refine)",
+    "A refine callback on terrain. Terrain is drawn two ways — walked near "
+    "the camera, redrawn from baked GPU buffers everywhere else — and this "
+    "row reaches both with the same colour. That is the residency law: what "
+    "a face looks like is a function of the face, never of where it lives.",
+    OP_CHAN_TERRAIN, -1, -1, {1.00f, 0.45f, 0.10f}, 0, -1 },
 };
 #define NROWS ((int)(sizeof g_rows / sizeof g_rows[0]))
 
@@ -174,9 +186,14 @@ static int   g_class_row = 3;
  * stable for the tick. A shipping mod should author its predicate as a
  * constant, not read a live widget; the slider exists so you can hunt
  * for a state that is on screen without rebuilding. */
-static int g_refine_row  = -1;   /* index of the refine row below */
+static int g_refine_row  = -1;   /* index of the moby refine row */
 static int g_refine_state = -1;  /* -1 = accept any state (claim all) */
 static int g_refine_mat  = -1;
+/* The terrain refine row. Its key is the untextured band, so the callback is
+ * asked once per present rather than once per instance — terrain has no
+ * instances, and a baked face could not carry a per-present answer anyway. */
+static int g_ter_refine_row = -1;
+static int g_ter_refine_mat = -1;
 
 static int refine_state(const openpete_mod_material_key_t* key,
                         void* out, uint32_t cap)
@@ -191,11 +208,24 @@ static int refine_state(const openpete_mod_material_key_t* key,
     return 16;
 }
 
+/* The terrain refine callback. Terrain's refine key is a whole band, not an
+ * instance, so this is asked once per present and its answer covers every
+ * face the selector reaches — walked or baked into the retained cache. */
+static int refine_terrain(const openpete_mod_material_key_t* key,
+                          void* out, uint32_t cap)
+{
+    if (cap < 16 || key->channel != OP_CHAN_TERRAIN) return -1;
+    float* v = (float*)out;
+    v[0] = 1.00f; v[1] = 0.45f; v[2] = 0.10f; v[3] = g_strength;
+    return 16;
+}
+
 /* std140: one vec4 — rgb highlight + strength in w. */
 static void push_params(row_t* r) {
-    /* The refine row's block comes from its callback, per instance — a
-     * set_params push would be overwritten by the next extraction. */
-    if (r->mat >= 0 && r->mat == g_refine_mat) return;
+    /* A refine row's block comes from its callback — a set_params push
+     * would be overwritten by the next resolve. */
+    if (r->mat >= 0 && (r->mat == g_refine_mat || r->mat == g_ter_refine_mat))
+        return;
     float blk[4] = { r->rgb[0], r->rgb[1], r->rgb[2], g_strength };
     if (r->mat >= 0) g_api->material_set_params(g_self, r->mat, blk, sizeof blk);
 }
@@ -210,6 +240,13 @@ static void register_row(row_t* r) {
         r->mat = g_api->material_register_refine(g_self, &sel, g_shader,
                                                  refine_state);
         g_refine_mat = r->mat;
+    } else if (r == &g_rows[g_ter_refine_row]) {
+        /* A per-instance terrain selector is keyed: the untextured band, or
+         * one Tiledef id. The band is the level-independent one. */
+        sel.flags |= OP_SEL_UNTEXTURED;
+        r->mat = g_api->material_register_refine(g_self, &sel, g_shader,
+                                                 refine_terrain);
+        g_ter_refine_mat = r->mat;
     } else {
         int sh = (r == &g_rows[g_decal_row]) ? g_shader_decal : g_shader;
         if (sh < 0) { r->mat = -1; return; }
@@ -288,7 +325,11 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
         return 0;                            /* loaded but does nothing */
     }
     g_strength = (float)api->config_float(self, "gallery.strength", 0.65);
-    g_refine_row = NROWS - 1;          /* the refine row is last in the table */
+    /* The two refine rows are the last two in the table, in that order. Row
+     * indices are the gate's contract, so new rows are APPENDED, never
+     * inserted — which is why these are counted from the end. */
+    g_ter_refine_row = NROWS - 1;
+    g_refine_row     = NROWS - 2;
     /* Both moby-keyed rows follow this; config so the gallery stays
      * drivable without the overlay, which is the whole point of the
      * gallery.rows key too. */

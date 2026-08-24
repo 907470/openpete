@@ -40,7 +40,12 @@ BIN = os.environ.get("OPENPETE_BIN",
 DISC = os.environ.get("OPENPETE_DISC",
                       os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue"))
 REASONS = ["near", "portal", "anim", "scroll", "fill", "arena", "col",
-           "slot", "tp", "sel", "nearb", "nodraw", "prim", "pcov"]
+           "slot", "tp", "nearb", "nodraw", "prim", "pcov"]
+# `sel` (a mod material selector claiming its sectors back) is GONE, not
+# zero: a material is baked into the face as a bucket and drawn from the
+# cache, so there is no longer a reason code for it. Its absence is part of
+# what --mods-dir now proves — a run with a selector armed produces the same
+# reasons, not the same reasons plus a zero.
 # nearb is a SUB-BUCKET of near (whole bounding sphere behind the near
 # threshold -> the CPU walk emits nothing), not an additional claim reason —
 # always 0 now that the no-draw verdict is unconditional (the fully-behind
@@ -65,7 +70,7 @@ REASONS = ["near", "portal", "anim", "scroll", "fill", "arena", "col",
 CEN_RE = re.compile(
     r"\[tgpu-cen f=(\d+)\] sub=(\d+) secs=(\d+) claims=(\d+) "
     r"near=(-?\d+) portal=(-?\d+) anim=(-?\d+) scroll=(-?\d+) fill=(-?\d+) "
-    r"arena=(-?\d+) col=(-?\d+) slot=(-?\d+) tp=(-?\d+) sel=(-?\d+) "
+    r"arena=(-?\d+) col=(-?\d+) slot=(-?\d+) tp=(-?\d+) "
     r"nearb=(-?\d+) nodraw=(-?\d+) prim=(-?\d+) pcov=(-?\d+)")
 
 
@@ -118,9 +123,10 @@ def run_row(kind, slug, args, target_frame, lod, outdir, mods_dir=""):
            "--frame-limit", str(target_frame + 2),
            "--max-runtime-seconds", "280"] + args
     # A mods dir arms whatever selectors it holds. The point of running the
-    # corpus with one is the terrain-material claim gate: an all-terrain
-    # selector must leave `sel` at 0 on every row, not just the one pose it
-    # was developed against.
+    # corpus with one is the terrain-material gate: an all-terrain selector
+    # must leave every row's sector and claim counts exactly where they were
+    # with no mods — on every row, not just the one pose it was developed
+    # against, which is how the blend carve-out survived its first review.
     cmd += ["--mods-dir", mods_dir] if mods_dir else ["--mods", ""]
     try:
         p = subprocess.run(cmd, cwd=ROOT, env=env, capture_output=True,

@@ -151,10 +151,11 @@ A declarative row costs the cache nothing: across the whole level corpus,
 arming an all-terrain selector leaves the retained sector count and every
 claim reason exactly where they were with no mods at all.
 
-A `material_register_refine` callback is the exception. Its result can
-change per present, and a baked face has no per-present anything, so a
-sector a refine selector can reach goes back on the CPU walk for as long
-as the selector is installed. Prefer a declarative row where one will do.
+A `material_register_refine` callback costs it nothing either. A terrain
+refine selector is keyed on one thing — a Tiledef id, or the untextured
+band — so the engine asks your callback once per present rather than once
+per face, and hands the same answer to both paths. Nothing about that
+needs a face to be walked.
 
 ### The C tier
 

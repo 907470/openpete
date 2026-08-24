@@ -721,17 +721,10 @@ int  openpete_mods_material_terrain_untex_slot(CPUState* cpu);
  * terrain face's Tiledef id. Same slot semantics as the untex resolve; the
  * feeder memoizes per (present, texid). */
 int  openpete_mods_material_terrain_tex_slot(CPUState* cpu, int texid);
-/* Would ANY live+enabled selector override a terrain face with these
- * attributes? The build-time twin of the draw-time tag resolve, for the
- * retained-terrain cache's per-sector claim: matched sectors keep walking
- * the CPU feed so overrides continue to apply. texid -1 = untextured (LP
- * faces and the beyond-LOD gouraud band); env = env-anim rewrite-set
- * member; lp = LP tier. Per-instance selectors count as matches even
- * though their callback may decline per present — declining stays a
- * draw-path decision. */
-int  openpete_mods_material_terrain_claim(int texid, int env, int lp);
-/* Monotonic epoch over everything material_terrain_claim reads: selector
- * registration/removal and the mod enabled set. For claim latches. */
+/* Monotonic epoch over everything a terrain selector scan reads: selector
+ * registration/removal and the mod enabled set. The retained cache latches
+ * its BAKE against it — a baked face carries its material's bucket, so a
+ * selector set that moved makes the bake stale. */
 unsigned openpete_mods_material_epoch(void);
 
 /* ── Retained-terrain material buckets ───────────────────────────────

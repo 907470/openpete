@@ -2740,9 +2740,12 @@ typedef struct {
     int      unbuildable;             /* claim reason latched at this decodeGen:
                                        * 0 fine, 1 arena-full, 2 scroll-anim,
                                        * 3 unmapped colours (4 = decode-slot
-                                       * contested, 5 = texture pack, 6 = mod
-                                       * material selector; 4-6 returned but
-                                       * never latched here) */
+                                       * contested, 5 = texture pack; both
+                                       * returned but never latched here).
+                                       * Code 6 was the mod-material selector
+                                       * claim and is retired: a material is
+                                       * baked into the face as a bucket and
+                                       * drawn from the cache. */
     uint32_t first[OPTC_ARENA_COUNT];
     int      count[OPTC_ARENA_COUNT];
     uint32_t ownFrame;                /* VBL this slot last validated as GPU-owned */
@@ -2752,7 +2755,7 @@ typedef struct {
     uint32_t scanDecodeGen, scanTexGen;
     uint32_t tpGen;                   /* texture_pack_generation at last pack scan */
     unsigned selEpoch;                /* openpete_mods_material_epoch at last scan */
-    uint8_t  tpClaim, selClaim;
+    uint8_t  tpClaim;
     uint8_t  gen;                     /* chunk generation (3 bits published) */
     uint8_t  bakeVar;                 /* the last build for this sector emitted
                                        * near-variant chunks alongside the plain
@@ -2791,7 +2794,7 @@ static int tgpu_slot_hot(uint32_t idx) {
 static long s_tgpu_secs, s_tgpu_claims, s_tgpu_rebuilds, s_tgpu_nvsecs;
 static long s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
             s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot,
-            s_tgcl_texpack, s_tgcl_sel, s_tgcl_nearb, s_tgcl_nodraw,
+            s_tgcl_texpack, s_tgcl_nearb, s_tgcl_nodraw,
             s_tgcl_prim, s_tgcl_pcov;   /* portal sub-buckets: rim-candidate /
                                          * blended-cover (portal = their sum
                                          * plus claim-all + no-refine claims) */
@@ -3483,27 +3486,6 @@ static int tgpu_pack_scan(const tscache_t* SC) {
     return 0;
 }
 
-/* Selector claim scan: which sectors must still walk the CPU for a mod
- * material to reach them? LP faces feed as untextured LP-tier tags; HP faces
- * key on the Tiledef id, with env = the tile is in the env-anim rewrite set
- * (the same derivation the walk's emit uses for the provenance tag).
- *
- * A DECLARATIVE selector no longer claims: the bake stamps its bucket into
- * the face and the retained draw issues that bucket's own pass. Only a
- * PER-INSTANCE selector still does — its callback mints a per-present slot,
- * and a bake outlives the present, so banking that outcome would strobe. */
-static int tgpu_sel_scan(const tscache_t* SC) {
-    if (SC->lpF && SC->nLpF > 0 &&
-        openpete_mods_material_terrain_claim(-1, 0, 1)) return 1;
-    for (int f = 0; SC->hpF && f < SC->nHpF; f++) {
-        const tsface_t* F = &SC->hpF[f];
-        int texid = (F->tb == -1) ? -1 : (F->tb & 0x7F);
-        if (openpete_mods_material_terrain_claim(texid, F->tgen != 0, 0))
-            return 1;
-    }
-    return 0;
-}
-
 /* Validate-or-rebuild a sector's chunks. Returns 0 when the GPU may draw it
  * this present; a nonzero claim reason (tgpu_slot_t.unbuildable codes)
  * claims it back to the CPU walk. want_near = this present needs the sector's
@@ -3553,14 +3535,11 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
             if (T->tpClaim) return 5;
         }
     }
-    {
-        unsigned e = openpete_mods_material_epoch();
-        if (T->selEpoch != e) {
-            T->selEpoch = e;
-            T->selClaim = (uint8_t)tgpu_sel_scan(SC);
-        }
-        if (T->selClaim) return 6;
-    }
+    /* Mod materials no longer claim: a face carries its material's banked
+     * bucket, and the retained draw issues a pass per bucket. The epoch is
+     * still latched here because the BAKE depends on it — a selector set
+     * that moved leaves the stamped buckets naming the wrong pass. */
+    T->selEpoch = openpete_mods_material_epoch();
     /* Near-variant chunks: kept for as long as the slot holds this sector, so
      * a sector oscillating across the near threshold re-bakes at most once. */
     int with_var = want_near || (T->bakeVar && T->s == SC->s);
@@ -3636,12 +3615,12 @@ static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
     openpete_tercache_get_stats(&st);
     fprintf(stderr, "[ter-gpu f=%u] sectors=%ld nvar=%ld claims=%ld (near=%ld portal=%ld "
             "anim=%ld scroll=%ld fill=%ld arena=%ld col=%ld slot=%ld tp=%ld "
-            "sel=%ld nearb=%ld nodraw=%ld prim=%ld pcov=%ld) rebuilds=%ld "
+            "nearb=%ld nodraw=%ld prim=%ld pcov=%ld) rebuilds=%ld "
             "chunks=%u verts=%u/%u draws=%u frees-pend=%u\n",
             openpete_frame, s_tgpu_secs, s_tgpu_nvsecs, s_tgpu_claims,
             s_tgcl_near, s_tgcl_portal, s_tgcl_anim, s_tgcl_scroll,
             s_tgcl_fill, s_tgcl_build, s_tgcl_colour, s_tgcl_slot,
-            s_tgcl_texpack, s_tgcl_sel, s_tgcl_nearb, s_tgcl_nodraw,
+            s_tgcl_texpack, s_tgcl_nearb, s_tgcl_nodraw,
             s_tgcl_prim, s_tgcl_pcov,
             s_tgpu_rebuilds,
             st.chunks, st.verts_used, st.verts_cap, st.draws_last_present,
@@ -3649,7 +3628,7 @@ static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
     s_tgpu_secs = s_tgpu_claims = s_tgpu_rebuilds = s_tgpu_nvsecs = 0;
     s_tgcl_near = s_tgcl_portal = s_tgcl_anim = s_tgcl_scroll = 0;
     s_tgcl_fill = s_tgcl_build = s_tgcl_colour = s_tgcl_slot = 0;
-    s_tgcl_texpack = s_tgcl_sel = s_tgcl_nearb = s_tgcl_nodraw = 0;
+    s_tgcl_texpack = s_tgcl_nearb = s_tgcl_nodraw = 0;
     s_tgcl_prim = s_tgcl_pcov = 0;
 }
 
@@ -5173,7 +5152,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     static int s_cen = -1;
     if (s_cen < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_CENSUS");
                      s_cen = (e && *e && *e != '0'); }
-    long cen0[14];
+    long cen0[13];
     /* Any active walk instrument forces serial: their censuses/dumps are
      * whole-walk statics with serial semantics (per-sector timing, ordered
      * dumps), and several latch mid-walk. */
@@ -5201,9 +5180,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         cen0[2] = s_tgcl_anim;   cen0[3] = s_tgcl_scroll;
         cen0[4] = s_tgcl_fill;   cen0[5] = s_tgcl_build;
         cen0[6] = s_tgcl_colour; cen0[7] = s_tgcl_slot;
-        cen0[8] = s_tgcl_texpack; cen0[9] = s_tgcl_sel;
-        cen0[10] = s_tgcl_nearb; cen0[11] = s_tgcl_nodraw;
-        cen0[12] = s_tgcl_prim;  cen0[13] = s_tgcl_pcov;
+        cen0[8] = s_tgcl_texpack; cen0[9] = s_tgcl_nearb;
+        cen0[10] = s_tgcl_nodraw; cen0[11] = s_tgcl_prim;
+        cen0[12] = s_tgcl_pcov;
     }
     if (tgpu_on) openpete_tercache_frame_begin(&tcg, openpete_frame, s_vanim_sub);
     else if (openpete_tercache_ready() && tb_first)
@@ -5426,7 +5405,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     else if (r == 3) s_tgcl_colour++;
                     else if (r == 4) s_tgcl_slot++;
                     else if (r == 5) s_tgcl_texpack++;
-                    else if (r == 6) s_tgcl_sel++;
                     else s_tgcl_build++;
                 }
             }
@@ -5501,7 +5479,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         if (s_cen)
             fprintf(stderr, "[tgpu-cen f=%u] sub=%d secs=%d claims=%d "
                     "near=%ld portal=%ld anim=%ld scroll=%ld fill=%ld "
-                    "arena=%ld col=%ld slot=%ld tp=%ld sel=%ld nearb=%ld "
+                    "arena=%ld col=%ld slot=%ld tp=%ld nearb=%ld "
                     "nodraw=%ld prim=%ld pcov=%ld\n",
                     openpete_frame, s_vanim_sub,
                     s_tgpu_secs_walk, s_tgpu_claims_walk,
@@ -5509,9 +5487,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     s_tgcl_anim - cen0[2], s_tgcl_scroll - cen0[3],
                     s_tgcl_fill - cen0[4], s_tgcl_build - cen0[5],
                     s_tgcl_colour - cen0[6], s_tgcl_slot - cen0[7],
-                    s_tgcl_texpack - cen0[8], s_tgcl_sel - cen0[9],
-                    s_tgcl_nearb - cen0[10], s_tgcl_nodraw - cen0[11],
-                    s_tgcl_prim - cen0[12], s_tgcl_pcov - cen0[13]);
+                    s_tgcl_texpack - cen0[8],
+                    s_tgcl_nearb - cen0[9], s_tgcl_nodraw - cen0[10],
+                    s_tgcl_prim - cen0[11], s_tgcl_pcov - cen0[12]);
         tgpu_census();
         tgpu_bucket_census_print();
         if (op_prof_on()) {   /* the claim-ratchet metric, per present */

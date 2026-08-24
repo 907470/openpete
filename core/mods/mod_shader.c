@@ -999,6 +999,13 @@ typedef struct {
     unsigned char params[OPENPETE_MATERIAL_UNIFORMS_MAX];
     uint32_t      params_len;
     int           static_slot;
+    /* Per-instance TERRAIN materials: the refine outcome for this present,
+     * memoized so the callback runs ONCE however many faces need it and
+     * whichever residency they are in. A terrain refine selector has exactly
+     * one key (its Tiledef id, or the untextured band), so one slot covers
+     * the whole material. */
+    int           refine_slot;
+    unsigned      refine_present;
     int  live;
 } mod_material_t;
 
@@ -1058,27 +1065,30 @@ unsigned openpete_mods_material_epoch(void) {
 
 static int openpete_mods_current_level(void);   /* defined with s_cur_level */
 
-/* One scan of the terrain selectors for a face key. Returns the winning
- * DECLARATIVE selector index (-1 = none), by the same predicate and the same
- * later-load-wins priority as the draw-time resolve. *inst is set when a
- * PER-INSTANCE selector could reach the face: those mint a per-present slot
- * from a callback and cannot be banked into a retained bake, so they still
- * claim the sector back to the walk. */
-static int terrain_winner(int texid, int env, int lp, int* inst) {
-    *inst = 0;
+/* Is this material live, enabled, on the terrain channel, and in scope for
+ * the level being rendered? The level test mirrors the resolve's: without
+ * it a level-scoped row would bucket faces in EVERY level. */
+static int terrain_sel_usable(const mod_material_t* m, int level) {
+    if (!m->live || !m->user_enabled || !openpete_mods_is_enabled(m->owner))
+        return 0;
+    if (m->sel.channel != -1 && m->sel.channel != OP_CHAN_TERRAIN) return 0;
+    if (m->sel.level != -1 && level >= 0 && m->sel.level != level) return 0;
+    return 1;
+}
+
+/* The winning terrain selector for a face key (-1 = none), by the same
+ * predicates and the same precedence as the draw-time resolve: a
+ * PER-INSTANCE selector wins outright (the walked path's tag carries its
+ * slot, which short-circuits the declarative scan), and among selectors of
+ * one kind the later-loaded one wins. */
+static int terrain_winner(int texid, int env, int lp) {
     if (s_mat_count == 0) return -1;
     const int untex = texid < 0;
     const int level = openpete_mods_current_level();
-    int best = -1;
+    int best = -1, best_inst = -1;
     for (int i = 0; i < s_mat_count; i++) {
         const mod_material_t* m = &s_mats[i];
-        if (!m->live || !m->user_enabled ||
-            !openpete_mods_is_enabled(m->owner)) continue;
-        if (m->sel.channel != -1 && m->sel.channel != OP_CHAN_TERRAIN) continue;
-        /* Mirror the resolve's level test. Without it a level-scoped row
-         * claims every sector in EVERY level — the sector it would never
-         * override still walks the CPU, for the whole game. */
-        if (m->sel.level != -1 && level >= 0 && m->sel.level != level) continue;
+        if (!terrain_sel_usable(m, level)) continue;
         if (m->per_instance) {
             /* Mirror the winner scans exactly: the untex band resolve keys
              * on OP_SEL_UNTEXTURED + texture=-1, the S9 texture resolve on
@@ -1086,7 +1096,8 @@ static int terrain_winner(int texid, int env, int lp, int* inst) {
              * env/tier refinements. */
             if (untex ? ((m->sel.flags & OP_SEL_UNTEXTURED) && m->sel.texture == -1)
                       : (!(m->sel.flags & OP_SEL_UNTEXTURED) && m->sel.texture == texid))
-                *inst = 1;
+                if (best_inst < 0 || m->load_index > s_mats[best_inst].load_index)
+                    best_inst = i;
             continue;
         }
         /* Declarative: the resolve's predicate over the face's tag bits. */
@@ -1098,38 +1109,25 @@ static int terrain_winner(int texid, int env, int lp, int* inst) {
         if ((m->sel.flags & OP_SEL_UNTEXTURED) && !untex) continue;
         if (best < 0 || m->load_index > s_mats[best].load_index) best = i;
     }
-    return best;
-}
-
-int openpete_mods_material_terrain_claim(int texid, int env, int lp) {
-    int inst = 0;
-    (void)terrain_winner(texid, env, lp, &inst);
-    /* A declarative winner no longer claims: the bake stamps its bucket and
-     * the retained draw serves it. Only a per-instance callback, whose
-     * outcome is per-present, still needs the walk. */
-    return inst;
+    return best_inst >= 0 ? best_inst : best;
 }
 
 int openpete_mods_material_terrain_bucket(int texid, int env, int lp) {
-    int inst = 0;
-    int w = terrain_winner(texid, env, lp, &inst);
-    /* A face a per-instance selector can reach walks the CPU anyway; giving
-     * it a bucket as well would paint it twice if it ever stopped claiming. */
-    if (inst || w < 0) return 0;
+    int w = terrain_winner(texid, env, lp);
+    if (w < 0) return 0;
     return (w + 1 <= OPENPETE_MATERIAL_TER_BUCKET_MAX) ? w + 1 : 0;
 }
 
 int openpete_mods_material_terrain_bucket_max(void) {
-    int max = 0;
+    int max = 0, level = openpete_mods_current_level();
     for (int i = 0; i < s_mat_count; i++) {
-        const mod_material_t* m = &s_mats[i];
-        if (!m->live || m->per_instance || !m->user_enabled ||
-            !openpete_mods_is_enabled(m->owner)) continue;
-        if (m->sel.channel != -1 && m->sel.channel != OP_CHAN_TERRAIN) continue;
+        if (!terrain_sel_usable(&s_mats[i], level)) continue;
         if (i + 1 > max && i + 1 <= OPENPETE_MATERIAL_TER_BUCKET_MAX) max = i + 1;
     }
     return max;
 }
+
+static int terrain_refine_slot(int w);   /* defined with the refine tier */
 
 int openpete_mods_material_terrain_bucket_gpu(
         int bucket, int pipe_idx, openpete_mod_material_terrain_t* out) {
@@ -1139,11 +1137,20 @@ int openpete_mods_material_terrain_bucket_gpu(
     if (!m->live || !m->user_enabled || !openpete_mods_is_enabled(m->owner))
         return -1;
     if (m->frag < 0) return -1;
+    if (m->per_instance) {
+        /* The refine callback decides this present. Declining is not an
+         * error: those faces are already claimed out of the stock pass, so
+         * the caller draws the bucket's pass with the STOCK pipeline. */
+        int slot = terrain_refine_slot(bucket - 1);
+        if (slot == OPENPETE_MATERIAL_TERRAIN_STOCK || slot <= 0) return -1;
+        out->uniform_slot = slot;
+    } else {
+        out->uniform_slot = m->static_slot;
+    }
     out->frag_spv = openpete_mods_shader_spv_terrain(m->frag, &out->frag_words);
     if (!out->frag_spv || out->frag_words == 0) return -1;
     out->pipeline_slot = &m->pipeline_ter[pipe_idx];
     out->owner = m->owner;
-    out->uniform_slot = m->static_slot;
     return 0;
 }
 
@@ -1289,8 +1296,13 @@ void openpete_mods_set_level(int level_id) {
 }
 static int openpete_mods_current_level(void) { return s_cur_level; }
 
+/* Bumped every present, so a per-present memo (the terrain refine slot) can
+ * tell "computed this present" from "computed under the last one". */
+static unsigned s_mat_present = 1;
+
 void openpete_mods_material_frame_reset(void) {
     s_mat_slot_n = 1;
+    s_mat_present++;
     /* Re-intern every live material's static block, so a declarative
      * material has a slot to point at for the rest of this present. */
     for (int i = 0; i < s_mat_count; i++) {
@@ -1385,46 +1397,64 @@ static int material_terrain_tex_winner(int texid) {
     return best;
 }
 
-/* Resolve the texture-keyed material for one textured terrain face id, once
- * per (present, texid) — the feeder memoizes per texid. The callback receives
- * the Tiledef id in the moby_vaddr argument. Returns the interned slot for
- * OPENPETE_TAG_TERRAIN_TEX (0 = no per-instance winner -> declarative
- * resolve; OPENPETE_MATERIAL_TERRAIN_STOCK = the callback declined). */
-int openpete_mods_material_terrain_tex_slot(CPUState* cpu, int texid) {
-    static int s_dbg = -2;
-    if (s_dbg == -2) { const char* e = getenv("OPENPETE_TEXSEL_DBG3");
-                       s_dbg = e ? atoi(e) : -1; }
-    if (!s_mat_has_instance) return 0;
-    int w = material_terrain_tex_winner(texid);
-    if (w < 0) { if (s_dbg == texid) { static int p1; if (p1++ < 8)
-                     fprintf(stderr, "[texslot] tid=%d NO-WINNER\n", texid); }
-                 return 0; }
-    (void)cpu;
+/* The refine outcome for one per-instance TERRAIN material, as an interned
+ * uniform slot, computed ONCE per present.
+ *
+ * A terrain refine selector carries exactly one key — a Tiledef id, or the
+ * untextured band — so "the material's outcome" and "this key's outcome" are
+ * the same thing, and one memo per material covers every face it reaches.
+ * That is what lets a RETAINED face have a refine material at all: the
+ * outcome is not derivable from a baked face, but it does not have to be,
+ * because it does not vary across the faces of one material.
+ *
+ * Computing it in one place is also what keeps the two residencies on one
+ * answer. It used to be driven from the walk's emit loop, which a retained
+ * face never enters; both paths now read this, in the same per-present
+ * context, from the same key.
+ *
+ * Returns 0 (no winner / not per-instance) or an interned slot, or
+ * OPENPETE_MATERIAL_TERRAIN_STOCK when the callback declined. */
+static int terrain_refine_slot(int w) {
+    if (w < 0 || w >= s_mat_count) return 0;
+    mod_material_t* m = &s_mats[w];
+    if (!m->per_instance) return 0;
+    if (m->refine_present == s_mat_present) return m->refine_slot;
+    m->refine_present = s_mat_present;
+    m->refine_slot = OPENPETE_MATERIAL_TERRAIN_STOCK;
+
+    const int untex = (m->sel.flags & OP_SEL_UNTEXTURED) != 0;
     openpete_mod_material_key_t key;
     memset(&key, 0, sizeof key);
-    key.struct_size      = (uint32_t)sizeof key;
-    key.version          = OPENPETE_MATERIAL_KEY_VER_TERRAIN;
-    key.channel          = OP_CHAN_TERRAIN;
-    key.u.terrain.texture = texid;
-    key.u.terrain.flags   = s_mats[w].sel.flags;
+    key.struct_size       = (uint32_t)sizeof key;
+    key.version           = OPENPETE_MATERIAL_KEY_VER_TERRAIN;
+    key.channel           = OP_CHAN_TERRAIN;
+    key.u.terrain.texture = untex ? -1 : m->sel.texture;
+    key.u.terrain.flags   = untex ? OP_SEL_UNTEXTURED : m->sel.flags;
     unsigned char buf[OPENPETE_MATERIAL_UNIFORMS_MAX];
-    int rc = s_mats[w].per_instance(&key, buf, sizeof buf);
-    if (s_dbg == texid) { static int p2; if (p2++ < 30)
-        fprintf(stderr, "[texslot] tid=%d w=%d rc=%d slot_n=%d\n",
-                texid, w, rc, s_mat_slot_n); }
-    if (rc < 0) return OPENPETE_MATERIAL_TERRAIN_STOCK;
+    int rc = m->per_instance(&key, buf, sizeof buf);
+    if (rc < 0) return m->refine_slot;          /* declined -> stock */
     if (rc > (int)sizeof buf) rc = (int)sizeof buf;
     for (int s = 1; s < s_mat_slot_n; s++)
         if (s_mat_slots[s].mat == w && s_mat_slots[s].len == (uint32_t)rc &&
             memcmp(s_mat_slots[s].bytes, buf, (size_t)rc) == 0)
-            return s;
+            return (m->refine_slot = s);
     if (s_mat_slot_n >= MOD_MATERIAL_SLOTS)
-        return OPENPETE_MATERIAL_TERRAIN_STOCK;   /* table full → graceful stock */
+        return m->refine_slot;                  /* table full -> graceful stock */
     int s = s_mat_slot_n++;
     s_mat_slots[s].mat = w;
     s_mat_slots[s].len = (uint32_t)rc;
     memcpy(s_mat_slots[s].bytes, buf, (size_t)rc);
-    return s;
+    return (m->refine_slot = s);
+}
+
+/* Resolve the texture-keyed material for one textured terrain face id. The
+ * callback receives the Tiledef id in the key. Returns the interned slot for
+ * OPENPETE_TAG_TERRAIN_TEX (0 = no per-instance winner -> declarative
+ * resolve; OPENPETE_MATERIAL_TERRAIN_STOCK = the callback declined). */
+int openpete_mods_material_terrain_tex_slot(CPUState* cpu, int texid) {
+    if (!s_mat_has_instance) return 0;
+    (void)cpu;
+    return terrain_refine_slot(material_terrain_tex_winner(texid));
 }
 
 /* Resolve the untextured-terrain material once per extraction (terrain has
@@ -1434,31 +1464,8 @@ int openpete_mods_material_terrain_tex_slot(CPUState* cpu, int texid) {
  * OPENPETE_MATERIAL_TERRAIN_STOCK = the callback declined). */
 int openpete_mods_material_terrain_untex_slot(CPUState* cpu) {
     if (!s_mat_has_instance) return 0;
-    int w = material_terrain_untex_winner();
-    if (w < 0) return 0;
     (void)cpu;
-    openpete_mod_material_key_t key;
-    memset(&key, 0, sizeof key);
-    key.struct_size      = (uint32_t)sizeof key;
-    key.version          = OPENPETE_MATERIAL_KEY_VER_TERRAIN;
-    key.channel          = OP_CHAN_TERRAIN;
-    key.u.terrain.texture = -1;          /* the untextured gouraud band */
-    key.u.terrain.flags   = OP_SEL_UNTEXTURED;
-    unsigned char buf[OPENPETE_MATERIAL_UNIFORMS_MAX];
-    int rc = s_mats[w].per_instance(&key, buf, sizeof buf);
-    if (rc < 0) return OPENPETE_MATERIAL_TERRAIN_STOCK;
-    if (rc > (int)sizeof buf) rc = (int)sizeof buf;
-    for (int s = 1; s < s_mat_slot_n; s++)
-        if (s_mat_slots[s].mat == w && s_mat_slots[s].len == (uint32_t)rc &&
-            memcmp(s_mat_slots[s].bytes, buf, (size_t)rc) == 0)
-            return s;
-    if (s_mat_slot_n >= MOD_MATERIAL_SLOTS)
-        return OPENPETE_MATERIAL_TERRAIN_STOCK;   /* table full → graceful stock */
-    int s = s_mat_slot_n++;
-    s_mat_slots[s].mat = w;
-    s_mat_slots[s].len = (uint32_t)rc;
-    memcpy(s_mat_slots[s].bytes, buf, (size_t)rc);
-    return s;
+    return terrain_refine_slot(material_terrain_untex_winner());
 }
 
 /* An interned slot can outlive its winner's usability: extraction interns

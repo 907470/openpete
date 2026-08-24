@@ -109,6 +109,7 @@ particlequad|flame|1800|10|30|particle billboards (textured, blended)
 shadowmoby|artisans-bridge|2000|8|60|moby shadows (DECAL profile: engine keeps the occlusion verdict)
 sky|cyclorama-portal|2000|5|3000|cyclorama sky
 portal|cyclorama-portal|2000|15|3000|portal previews (all three rungs)
+terrainrefine|flame|1800|20|1000|terrain refine callback (untextured band)
 "
 
 while IFS='|' read -r tag bk2 frame row minpx label; do
@@ -166,7 +167,8 @@ for leg in "id_terrain flame 1800 1 terrain (both LOD tiers)" \
            "id_flame flame 1800 6 flame ribbon" \
            "id_particle flame 1800 10 particle billboards" \
            "id_shadow artisans-bridge 2000 8 moby shadows (decal)" \
-           "id_portal cyclorama-portal 2000 15 portal previews"; do
+           "id_portal cyclorama-portal 2000 15 portal previews" \
+           "id_terref flame 1800 20 terrain refine callback"; do
     set -- $leg
     tag=$1 bk2=$2 frame=$3 row=$4; shift 4; label="$*"
     base="$WORK/base_flame-1800-vk.png"
@@ -289,32 +291,61 @@ fi
 # and one with --terrain-cache 0. The number is 0, not "within tolerance":
 # both legs render the same frame.
 #
+# Two things this rung has to get right, and both were learned the hard way.
+#
 # It MUST assert the cache actually engaged, or it passes vacuously — a
 # terrain material used to claim every sector back to the walk, which would
-# make both legs walk and read 0 px having tested nothing. `sel` counts
-# sectors claimed by a material selector and must be 0; `secs` counts
-# sectors offered to the cache and must be nonzero.
-say "the same material, walked and retained, is the same pixels"
-if CACHE=1 run_rows resret flame 1800 1 "" &&
-   CACHE=1 EXTRA_ARGS="--terrain-cache 0" run_rows reswalk flame 1800 1 ""; then
-    secs=$(census_field resret secs)
-    sel=$(census_field resret sel)
+# make both legs walk and read 0 px having tested nothing. `secs` counts the
+# sectors the cache is serving and must be nonzero. (There is no longer a
+# claim reason for a material selector to check: the claim is gone, which is
+# why `secs` alone now settles it.)
+#
+# And it must measure the material's residency delta against the STOCK one,
+# not against zero. The cache's fp64 mirror of the walk is a handful of
+# pixels off at 1 LSB even with no mods at all — 10 px at this frame. A
+# material that repaints most of the screen HIDES those pixels, so a raw
+# "== 0" reads green for the wide rows and red for narrow ones, which is
+# backwards. What the law actually forbids is a material ADDING residency
+# dependence, so the stock pair is the baseline.
+say "a material adds no residency dependence of its own"
+if CACHE=1 run_rows stockret flame 1800 "" "" &&
+   CACHE=1 EXTRA_ARGS="--terrain-cache 0" run_rows stockwalk flame 1800 "" ""; then
+    secs=$(census_field stockret secs)
+    base_delta=$(diffpx "$WORK/stockret-1800-vk.png" "$WORK/stockwalk-1800-vk.png")
     if [ -z "$secs" ]; then
         # No census line at all: the cache never ran, so there is nothing to
         # compare. Skip loudly rather than report a green that means nothing.
         ok "SKIPPED: the retained terrain cache did not engage on this device"
-    elif [ "${sel:-1}" -ne 0 ] || [ "${secs:-0}" -eq 0 ]; then
-        bad "the cache did not serve the material (secs=${secs:-?} sel=${sel:-?}) — a nonzero sel means the selector claimed its sectors back to the walk, so both legs walked and this rung proves nothing"
+    elif [ "${secs:-0}" -eq 0 ]; then
+        bad "the cache served no sectors (secs=0) — both legs walked, so this rung proves nothing"
     else
-        n=$(diffpx "$WORK/resret-1800-vk.png" "$WORK/reswalk-1800-vk.png")
-        if [ "${n:-999}" -eq 0 ]; then
-            ok "retained == walked (0 px; cache engaged, secs=$secs sel=$sel)"
-        else
-            bad "retained and walked disagree by ${n:-?} px — a material's reach or output is depending on residency, which strobes as the player moves"
-        fi
+        ok "stock residency delta is ${base_delta} px (the cache's own fp64 mirror; the bar to not exceed)"
+        # row 1  = declarative, both terrain LOD tiers
+        # row 20 = refine callback on the untextured band — the rung that
+        #          says a per-present outcome survives being BAKED, which is
+        #          the one thing a retained face cannot carry by itself.
+        for leg in "resdecl 1 declarative terrain row" \
+                   "resref 20 refine callback on terrain"; do
+            set -- $leg
+            tag=$1 row=$2; shift 2; label="$*"
+            if CACHE=1 run_rows "$tag-r" flame 1800 "$row" "" &&
+               CACHE=1 EXTRA_ARGS="--terrain-cache 0" run_rows "$tag-w" flame 1800 "$row" ""; then
+                reach=$(diffpx "$WORK/stockret-1800-vk.png" "$WORK/$tag-r-1800-vk.png")
+                n=$(diffpx "$WORK/$tag-r-1800-vk.png" "$WORK/$tag-w-1800-vk.png")
+                if [ "${reach:-0}" -eq 0 ]; then
+                    bad "$label: reached 0 px, so comparing residencies proves nothing — the row is not selecting anything at this frame"
+                elif [ "${n:-999}" -le "${base_delta:-0}" ]; then
+                    ok "$label: residency delta ${n} px <= stock ${base_delta} px (reached ${reach} px, cache engaged secs=$secs)"
+                else
+                    bad "$label: residency delta ${n} px EXCEEDS the stock ${base_delta} px — the material's reach or output depends on where the face lives, which strobes as the player moves"
+                fi
+            else
+                bad "$label: no capture (see $WORK/$tag-r.log, $WORK/$tag-w.log)"
+            fi
+        done
     fi
 else
-    bad "no capture for the residency rung (see $WORK/resret.log, $WORK/reswalk.log)"
+    bad "no capture for the residency baseline (see $WORK/stockret.log, $WORK/stockwalk.log)"
 fi
 
 echo
