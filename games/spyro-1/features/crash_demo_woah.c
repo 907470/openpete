@@ -10,11 +10,18 @@
 //
 // Instead: intercept CrashDemoLaunch (0x8002BAB8) BEFORE the teardown runs
 // and play Crash's "woah!" as a host-side one-shot. The sample is the
-// player's own — extracted on first use from the demo's level data on the
-// mounted disc image (S0/S000000D.NSF), decoded, and cached as a WAV under
-// the state dir; nothing ships in the binary. The title screen keeps running
+// player's own — decoded on first use straight out of the demo's level data
+// on the mounted disc image (S0/S000000D.NSF) into an OpenAL buffer, never
+// staged on disk; nothing ships in the binary. The title screen keeps running
 // (the guest's own KillSoundsAndMusic has already silenced the music by the
 // time the branch fires, which reads as intended drama).
+//
+// The branch also fires TitlescreenPlaySound(9) — a UI blip that on hardware
+// is cut off within a few frames by the program swap, but here runs to
+// completion over the top of the woah. The second hook below suppresses that
+// one call. Sound 9 is the generic back/cancel blip used all over the title
+// screen, so the hook is gated on the exact state the cheat branch tests
+// (substate 3 with the combo held), leaving every other use audible.
 //
 // NSF format (Crash 2/3 engine): a sequence of 64 KiB chunks, u16 magic
 // 0x1234 + u16 type at +2 (type 3 = sound chunk; Spyro 1's demo NSFs are all
@@ -30,9 +37,10 @@
 #include "openpete.h"       /* openpete_options_t */
 #include "openpete_fiber.h" /* openpete_frame (VBL counter) */
 #include "openpete_log.h"
-#include "openpete_mods.h"  /* openpete_mod_sound_play */
-#include "openpete_paths.h"
+#include "openpete_mods.h"  /* openpete_mod_sound_play_pcm */
 #include "openpete_psx.h"   /* openpete_psx_load_file_from_disc */
+#include "psx_runtime.h"    /* CPUState */
+#include "spyro_overlay_table.h" /* spyro_get_active_overlay_magic */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -40,6 +48,20 @@
 #include <string.h>
 
 #define ADDR_CRASH_DEMO_LAUNCH 0x8002BAB8u
+
+/* Titlescreen overlay (id 48 in the overlay table). Overlays share one
+ * vaddr window, so a hook on an overlay-resident address must confirm the
+ * right overlay is the one currently resident. */
+#define ADDR_TS_PLAY_SOUND     0x8007AAD4u
+#define OVERLAY_TITLESCREEN    48u
+#define TS_SOUND_BACK          9    /* the blip the cheat branch fires */
+#define TS_SUBSTATE_PRESS_START 3
+
+#define ADDR_G_PAD_HELD        0x80077380u /* g_Pad 0x80077378 + m_Held @ 0x8 */
+#define ADDR_TS_SUBSTATE       0x80078D88u /* g_TitlescreenState.m_SubState */
+#define PAD_L1                 (1u << 2)
+#define PAD_TRIANGLE           (1u << 4)
+#define CHEAT_COMBO            (PAD_L1 | PAD_TRIANGLE)
 
 #define NSF_CHUNK_LEN   65536u
 #define NSF_CHUNK_MAGIC 0x1234u
@@ -53,7 +75,8 @@
  * 11025 Hz is the sample's natural voice pitch. */
 #define WOAH_RATE 11025u
 
-static char s_disc_path[1024];
+static char     s_disc_path[1024];
+static unsigned s_blips_suppressed;
 
 static uint32_t rd32(const uint8_t* p) {
     uint32_t v;
@@ -122,79 +145,44 @@ static uint32_t find_woah(const uint8_t* nsf, size_t len, const uint8_t** body) 
     return 0;
 }
 
-static int write_wav(const char* path, const int16_t* pcm, uint32_t frames) {
-    FILE* fp = fopen(path, "wb");
-    if (!fp) return -1;
-    uint32_t data_len = frames * 2u;
-    uint32_t riff_len = 36u + data_len;
-    uint32_t rate = WOAH_RATE, byte_rate = WOAH_RATE * 2u, fmt_len = 16u;
-    uint16_t fmt_pcm = 1, chans = 1, block = 2, bits = 16;
-    int ok = fwrite("RIFF", 1, 4, fp) == 4 &&
-             fwrite(&riff_len, 4, 1, fp) == 1 &&
-             fwrite("WAVEfmt ", 1, 8, fp) == 8 &&
-             fwrite(&fmt_len, 4, 1, fp) == 1 &&
-             fwrite(&fmt_pcm, 2, 1, fp) == 1 &&
-             fwrite(&chans, 2, 1, fp) == 1 &&
-             fwrite(&rate, 4, 1, fp) == 1 &&
-             fwrite(&byte_rate, 4, 1, fp) == 1 &&
-             fwrite(&block, 2, 1, fp) == 1 &&
-             fwrite(&bits, 2, 1, fp) == 1 &&
-             fwrite("data", 1, 4, fp) == 4 &&
-             fwrite(&data_len, 4, 1, fp) == 1 &&
-             fwrite(pcm, 2, frames, fp) == frames;
-    fclose(fp);
-    if (!ok) remove(path);
-    return ok ? 0 : -1;
-}
+/* Decode-once, keep the PCM. ~10 KB held for the session so every later
+ * press is a cache hit in the AL layer with no disc read. Returns 0 on
+ * success; failures are logged once and latched. */
+static int16_t* s_pcm;
+static uint32_t s_pcm_frames;
 
-/* Extract-and-cache. Returns the cached WAV path, or NULL (logged). */
-static const char* woah_wav_path(void) {
-    static char s_path[1200];
+static int woah_load(void) {
     static int s_state = 0; /* 0 = untried, 1 = ok, -1 = failed */
-    if (s_state) return s_state > 0 ? s_path : NULL;
+    if (s_state) return s_state > 0 ? 0 : -1;
     s_state = -1;
-
-    char dir[1024];
-    if (openpete_paths_state_dir("cache", dir, sizeof dir, 1) != 0) {
-        OPL_WARN_F("game", "%s", "crash-woah: no writable cache dir");
-        return NULL;
-    }
-    snprintf(s_path, sizeof s_path, "%s/crash3-woah.wav", dir);
-
-    FILE* fp = fopen(s_path, "rb");
-    if (fp) { /* cached by an earlier session */
-        fclose(fp);
-        s_state = 1;
-        return s_path;
-    }
 
     if (!s_disc_path[0]) {
         OPL_WARN_F("game", "%s", "crash-woah: no --disc image to extract from");
-        return NULL;
+        return -1;
     }
     size_t nsf_len = 0;
     uint8_t* nsf = openpete_psx_load_file_from_disc(s_disc_path, WOAH_NSF, &nsf_len);
-    if (!nsf) return NULL; /* loader logged why (e.g. demo-less disc) */
+    if (!nsf) return -1; /* loader logged why (e.g. a demo-less disc) */
 
     const uint8_t* body = NULL;
     uint32_t body_len = find_woah(nsf, nsf_len, &body);
     if (!body_len) {
         OPL_WARN_F("game", "crash-woah: sound entry not found in %s", WOAH_NSF);
         free(nsf);
-        return NULL;
+        return -1;
     }
-    int16_t* pcm = NULL;
-    uint32_t frames = adpcm_to_pcm(body, body_len, &pcm);
-    int rc = frames ? write_wav(s_path, pcm, frames) : -1;
-    free(pcm);
+    s_pcm_frames = adpcm_to_pcm(body, body_len, &s_pcm);
     free(nsf);
-    if (rc != 0) {
-        OPL_WARN_F("game", "crash-woah: could not write %s", s_path);
-        return NULL;
+    if (!s_pcm_frames) {
+        free(s_pcm);
+        s_pcm = NULL;
+        OPL_WARN_F("game", "%s", "crash-woah: ADPCM decode produced no audio");
+        return -1;
     }
-    OPL_INFO_F("game", "crash-woah: extracted %u frames to %s", frames, s_path);
+    OPL_INFO_F("game", "crash-woah: decoded %u frames from %s",
+               s_pcm_frames, WOAH_NSF);
     s_state = 1;
-    return s_path;
+    return 0;
 }
 
 static int on_crash_demo_launch(CPUState* cpu, uint32_t addr) {
@@ -207,14 +195,31 @@ static int on_crash_demo_launch(CPUState* cpu, uint32_t addr) {
     static unsigned s_last_vbl = 0;
     unsigned now = openpete_frame;
     if (!s_last_vbl || now - s_last_vbl > 180u) {
-        const char* wav = woah_wav_path();
-        if (wav) openpete_mod_sound_play(wav, 1.0f);
-        OPL_INFO_F("game", "%s", "crash demo cheat: suppressing LoadExec"
-                   " teardown, playing the woah instead");
+        if (woah_load() == 0)
+            openpete_mod_sound_play_pcm("crash3-woah", s_pcm, s_pcm_frames,
+                                        1, WOAH_RATE, 1.0f);
+        /* The blip count is the engagement proof for the companion hook:
+         * a 0 here means the guest sting played over the woah. */
+        OPL_INFO_F("game", "crash demo cheat: suppressing LoadExec teardown"
+                   " (%u guest blip(s) muted), playing the woah instead",
+                   s_blips_suppressed);
     }
     s_last_vbl = now;
     /* Always swallow the call: the body's shutdown sequence (SetDispMask,
      * PadStopCom, callback clears) assumes LoadExec never returns. */
+    return 1;
+}
+
+/* Suppress the back/cancel blip the cheat branch fires just before
+ * CrashDemoLaunch, so it does not play over the woah. Everything else that
+ * uses sound 9 (menu backs, card prompts) falls through untouched. */
+static int on_titlescreen_play_sound(CPUState* cpu, uint32_t addr) {
+    (void)addr;
+    if (spyro_get_active_overlay_magic() != OVERLAY_TITLESCREEN) return 0;
+    if ((int)cpu->a0 != TS_SOUND_BACK) return 0;
+    if (cpu->read_word(ADDR_TS_SUBSTATE) != TS_SUBSTATE_PRESS_START) return 0;
+    if ((cpu->read_word(ADDR_G_PAD_HELD) & CHEAT_COMBO) != CHEAT_COMBO) return 0;
+    s_blips_suppressed++;
     return 1;
 }
 
@@ -224,6 +229,7 @@ static void crash_demo_woah_apply_options(const openpete_options_t* opts) {
 }
 
 static const feature_dispatch_entry_t k_dispatch[] = {
+    { ADDR_TS_PLAY_SOUND,     on_titlescreen_play_sound },
     { ADDR_CRASH_DEMO_LAUNCH, on_crash_demo_launch },
     { 0, NULL },
 };

@@ -214,6 +214,15 @@ uint32_t openpete_mods_guest_alloc_low(uint32_t size, uint32_t align,
  * (logged; never fatal). */
 int openpete_mod_sound_play(const char* path, float gain);
 
+/* Same, for audio a caller already holds in memory — interleaved s16 PCM,
+ * 1 or 2 channels. `key` names the sound for the buffer cache (a stable
+ * label, not a path); the first call for a key uploads, later calls reuse
+ * the AL buffer and re-read nothing. Lets a caller synthesize or decode a
+ * sound without staging a WAV on disk. 0 ok / -1 failed. */
+int openpete_mod_sound_play_pcm(const char* key, const int16_t* pcm,
+                                uint32_t frame_count, int channels,
+                                uint32_t sample_rate, float gain);
+
 /* Live modset toggle (P2): queue an enable/disable; it applies at the
  * NEXT tick boundary by flipping owner-keyed disabled flags across all
  * registration surfaces (nothing is torn down — re-enable restores the
