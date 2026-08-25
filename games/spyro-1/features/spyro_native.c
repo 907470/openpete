@@ -44,6 +44,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
 extern void     func_80023AC4(CPUState* cpu);  /* the real SPYRO renderer */
 extern unsigned openpete_frame;
@@ -74,6 +75,7 @@ static int s_code_hist[256];
  * moby harness validated — Spyro emits the same POLY_* family (F3/FT3/G3/GT3,
  * see the format notes). */
 static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
+    OP_PROF_ACCUM_SCOPE("spyro.capture");
     s_gte_n = 0;
     uint32_t p = start;
     int guard = 0;
@@ -1614,7 +1616,8 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
     static int s_in = 0; if (s_in) return 0; s_in = 1;
 
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
-    func_80023AC4(cpu);                          /* run the real renderer */
+    { OP_PROF_ACCUM_SCOPE("spyro.srend");
+      func_80023AC4(cpu); }                      /* run the real renderer */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_SPYRO, startp, endp);   /* polybuf range for the OT filter */

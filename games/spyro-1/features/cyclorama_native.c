@@ -42,6 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
 extern void     func_8004EBA8(CPUState* cpu);  /* the real dome renderer */
 extern unsigned openpete_frame;
@@ -497,7 +498,8 @@ static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
     uint32_t a0 = cpu->a0, a1 = cpu->a1, a2 = cpu->a2;
     s_cyc_a0 = a0; s_cyc_a1 = a1; s_cyc_a2 = a2;   /* for sub-tick re-extract */
     uint32_t start = cpu->read_word(POLYBUF_CURSOR);
-    func_8004EBA8(cpu);                     /* run the real renderer */
+    { OP_PROF_ACCUM_SCOPE("cyclorama.srend");
+      func_8004EBA8(cpu); }                  /* run the real renderer */
     uint32_t end = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_CYCLORAMA, start, end);  /* polybuf range for the OT filter */

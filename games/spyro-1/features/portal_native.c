@@ -66,6 +66,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
 extern void     func_8004FEA0(CPUState* cpu);  /* portal sky: close, full colour */
 extern void     func_80050240(CPUState* cpu);  /* portal sky: medium, blended    */
@@ -2393,7 +2394,8 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
     s_dome_curr_valid = 0;
     static int s_reports = 0;
     if (s_want_dump_this_frame() && s_reports < 8) { dump_portal_table(cpu); s_reports++; }
-    func_80050BE0(cpu);                       /* real RenderPortals: on-4:3 portals fed via leaves */
+    { OP_PROF_ACCUM_SCOPE("portal.srend");
+      func_80050BE0(cpu); }                    /* real RenderPortals: on-4:3 portals fed via leaves */
     if (feed) feed_revealed_portals(cpu);     /* widescreen: off-4:3 portals the .s culled */
     /* The leaves + reveal have populated s_pcap[] this canonical frame; mark it
      * usable so portal_native_reextract replays it on the intermediate presents.

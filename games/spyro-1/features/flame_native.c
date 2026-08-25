@@ -35,6 +35,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
 extern void     func_80058D64(CPUState* cpu);  /* the real FLAME renderer */
 extern unsigned openpete_frame;
@@ -83,6 +84,7 @@ static int s_code_hist[256];
  * each prim by its code byte (word[1]>>24) with the general PSX polygon decode
  * (bit4 gouraud / bit3 quad / bit2 textured). Same scheme moby/Spyro use. */
 static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
+    OP_PROF_ACCUM_SCOPE("flame.capture");
     s_gte_n = 0;
     uint32_t p = start;
     int guard = 0;
@@ -683,7 +685,8 @@ static int on_80058D64_flame_native(CPUState* cpu, uint32_t addr) {
     static int s_in = 0; if (s_in) return 0; s_in = 1;
 
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
-    func_80058D64(cpu);                          /* run the real renderer */
+    { OP_PROF_ACCUM_SCOPE("flame.srend");
+      func_80058D64(cpu); }                      /* run the real renderer */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_FLAME, startp, endp);   /* polybuf range for the OT filter */

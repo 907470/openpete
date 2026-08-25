@@ -126,6 +126,7 @@ static int    s_prim_total;
  * each prim by its code byte (word[1]>>24) with the general PSX polygon decode
  * (bit4 gouraud / bit3 quad / bit2 textured). Same scheme moby/Spyro/flame use. */
 static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
+    OP_PROF_ACCUM_SCOPE("terrain.capture");
     s_gte_n = 0;
     s_prim_total = 0;
     memset(s_code_hist, 0, sizeof(s_code_hist));
@@ -7163,7 +7164,8 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
         cpu->write_word(G_ENVIRONMENT + ENV_LODDIST, (uint32_t)s_lodpoke);
     }
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
-    func_800258F0(cpu);                            /* run the real renderer (verdicts intact) */
+    { OP_PROF_ACCUM_SCOPE("terrain.srend");
+      func_800258F0(cpu); }                        /* run the real renderer (verdicts intact) */
     if (s_lodpoke >= 0)
         cpu->write_word(G_ENVIRONMENT + ENV_LODDIST, lodsave);
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
@@ -7188,9 +7190,11 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
          * the intermediates. Mark it explicitly: the frame DID paint terrain,
          * natively. */
         if (endp <= startp) render_path_mark_drawn(RP_TERRAIN);
-        terrain_build(cpu, occGroup);               /* native walk + tris */
+        { OP_PROF_ACCUM_SCOPE("terrain.build");
+          terrain_build(cpu, occGroup); }            /* native walk + tris */
         openpete_native_scene_begin_frame(openpete_frame);  /* frame-keyed (composes) */
-        terrain_feed_native(cpu);                   /* push tris to the scene */
+        { OP_PROF_ACCUM_SCOPE("terrain.feed");
+          terrain_feed_native(cpu); }                /* push tris to the scene */
     }
 
     if (verify && openpete_frame >= terrain_verify_frame()) {

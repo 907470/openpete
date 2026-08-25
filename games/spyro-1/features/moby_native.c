@@ -47,6 +47,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
 extern void     func_8001F798(CPUState* cpu);  /* the real REGULAR moby renderer */
 extern void     func_80020F34(CPUState* cpu);  /* the real SPECULAR moby renderer (same +0x1600 geometry) */
@@ -3481,7 +3482,8 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
     (void)mat;
 
     uint32_t start = cpu->read_word(POLYBUF_CURSOR);
-    render_fn(cpu);                            /* run the real renderer */
+    { OP_PROF_ACCUM_SCOPE("moby.srend");
+      render_fn(cpu); }                        /* run the real renderer */
     uint32_t end = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_MOBY, start, end);  /* polybuf range for the OT filter */
@@ -3493,8 +3495,11 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
         fprintf(stderr, "[moby-window %s f=%u] polybuf [%08X,%08X) %u bytes\n",
                 mat ? mat : "?", openpete_frame, start, end, end - start);
 
-    capture_gte(cpu, start, end);
-    int nrec = project_all_records(cpu);      /* native float verts -> s_proj */
+    { OP_PROF_ACCUM_SCOPE("moby.capture");
+      capture_gte(cpu, start, end); }
+    int nrec;
+    { OP_PROF_ACCUM_SCOPE("moby.project");
+      nrec = project_all_records(cpu); }      /* native float verts -> s_proj */
     if (tier_dbg_on() && !(mat && mat[0]=='S' && mat[1]=='P')) {   /* ~1/sec, REG+SPEC records pooled */
         static int s_tier_cnt = 0;
         if (++s_tier_cnt >= 30) {
@@ -3557,7 +3562,8 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
              * where only the SHADED/text producer runs — still cannot mark it. */
             if (append_revealed_regular(cpu) > 0) render_path_mark_drawn(RP_MOBY);
         }
-        build_walk_tris(cpu);                 /* 3a.2b walk; SPEC dedups vs s_reg_moby; shading baked (#1) */
+        { OP_PROF_ACCUM_SCOPE("moby.build");
+          build_walk_tris(cpu); }             /* 3a.2b walk; SPEC dedups vs s_reg_moby; shading baked (#1) */
         /* Adopt render-time-animated colours the post-render walk can't see (e.g.
          * the boundary-barrier shimmer). REGULAR only; no-op for static-colour
          * mobys. (recolor_walk_from_prims, the env-metal variant, stays SPEC-only.) */
@@ -3569,7 +3575,8 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
             if (rc) OPL_DEBUG_F("native", "adopt_prim_colors: recoloured %d walk tri(s) from prims "
                                 "(render-time-animated colour) f=%u", rc, openpete_frame);
         }
-        push_scene_moby();                    /* recolor_walk_from_prims dropped: colour already native
+        { OP_PROF_ACCUM_SCOPE("moby.feed");
+          push_scene_moby(); }                /* recolor_walk_from_prims dropped: colour already native
                                                * (walk +0x1100/base), env-UV now native (build_walk_tris) */
         /* Sub-tick spine: snapshot the cull records + per-vertex fog colour
          * scratch (both live now) so intermediates can re-derive these mobys.
@@ -4877,7 +4884,8 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
     if (!verify && !feed && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
-    func_80022A2C(cpu);                      /* run the real SHADED renderer (writes m_WasDrawn) */
+    { OP_PROF_ACCUM_SCOPE("moby.srend");
+      func_80022A2C(cpu); }                  /* run the real SHADED renderer (writes m_WasDrawn) */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_MOBY, startp, endp);  /* polybuf range for the OT filter */

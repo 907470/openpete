@@ -41,6 +41,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
 extern void     func_80059F8C(CPUState* cpu);  /* the real MOBY-shadows renderer */
 extern void     func_80059A48(CPUState* cpu);  /* the real SPYRO-shadow renderer */
@@ -83,6 +84,7 @@ static int s_code_hist[256];
  * The Spyro shadow's E1 draw-mode mini-packet (tag len 2, code byte 0) decodes
  * to nv=0 and is skipped by consumers. */
 static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
+    OP_PROF_ACCUM_SCOPE("shadow.capture");
     s_gte_n = 0;
     memset(s_code_hist, 0, sizeof(s_code_hist));
     uint32_t p = start;
@@ -865,7 +867,8 @@ static int on_80059F8C_shadow_moby(CPUState* cpu, uint32_t addr) {
     static int s_in = 0; if (s_in) return 0; s_in = 1;
 
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
-    func_80059F8C(cpu);                          /* run the real renderer */
+    { OP_PROF_ACCUM_SCOPE("shadow.srend");
+      func_80059F8C(cpu); }                      /* run the real renderer */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_SHADOW, startp, endp);
@@ -896,7 +899,8 @@ static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
     static int s_in = 0; if (s_in) return 0; s_in = 1;
 
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
-    func_80059A48(cpu);
+    { OP_PROF_ACCUM_SCOPE("shadow.srend");
+      func_80059A48(cpu); }
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_SHADOW, startp, endp);

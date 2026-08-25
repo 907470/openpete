@@ -40,6 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
 extern void     func_8004F000(CPUState* cpu);   /* the real cross-fade renderer */
 extern void     func_8001C694(CPUState* cpu);   /* the real GS_ExitLevel screen */
@@ -256,7 +257,8 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
     if (cpu->ra < GS_EXIT_FN_LO || cpu->ra >= GS_EXIT_FN_HI) s_cross_bg_flat = 0;
 
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
-    func_8004F000(cpu);                                   /* real renderer (verdict + g_SonyImage) */
+    { OP_PROF_ACCUM_SCOPE("transition.srend");
+      func_8004F000(cpu); }                               /* real renderer (verdict + g_SonyImage) */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     /* Record the emitted polybuf range: feeds the OT-walk isolation filter
@@ -346,7 +348,8 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
         s_cross_bg_flat = 0;                              /* case 0: freeze owns the screen */
     }
 
-    func_8001C694(cpu);                                   /* real renderer (case 1 nests func_8004F000) */
+    { OP_PROF_ACCUM_SCOPE("transition.srend");
+      func_8001C694(cpu); }                               /* real renderer (case 1 nests func_8004F000) */
 
     if (feed && cpu->read_word(D_GS_EXIT_MODE) == 0) {    /* case 0: grayscale freeze */
         /* Fade the frozen level to black over the 32-tick case, matching PSX: the

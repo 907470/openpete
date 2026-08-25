@@ -48,6 +48,16 @@ static int  s_sp = 0;
 static int  s_warned_overflow = 0;
 static int  s_warned_underflow = 0;
 
+/* One bucket per interned name that has been accumulated into this present.
+ * Linear scan: the table holds a handful of hook names and the lookup runs once
+ * per hook entry, which is cheap next to the two clock reads around it. */
+#define OPP_ACCUM_MAX 64
+struct opp_accum { int name_id; uint64_t first_t0_us, sum_us; uint32_t calls; };
+static struct opp_accum s_accum[OPP_ACCUM_MAX];
+static int s_accum_count = 0;
+static int s_warned_accum_full = 0;
+
+
 /* ---- little-endian packers ------------------------------------------------- */
 static inline void le_u16(uint8_t* p, uint16_t v) { p[0]=(uint8_t)v; p[1]=(uint8_t)(v>>8); }
 static inline void le_u32(uint8_t* p, uint32_t v) {
@@ -94,6 +104,7 @@ int op_prof_open(const char* path) {
     s_spans_since_present = 0;
     s_sp = 0;
     s_name_count = 0;
+    s_accum_count = 0;
     s_on = 1;
     fprintf(stderr, "[profile] tracing to %s\n", path);
     return 0;
@@ -177,6 +188,40 @@ void op_prof_add_span(int name_id, uint64_t dur_us) {
     emit_span(s_sp, name_id, t0, (uint32_t)dur_us, 0);
 }
 
+/* ---- accumulating scopes --------------------------------------------------- */
+void op_prof_accum(int name_id, uint64_t us) {
+    if (!s_on || !on_main_thread() || name_id < 0) return;
+    struct opp_accum* a = NULL;
+    for (int i = 0; i < s_accum_count; i++)
+        if (s_accum[i].name_id == name_id) { a = &s_accum[i]; break; }
+    if (!a) {
+        if (s_accum_count >= OPP_ACCUM_MAX) {
+            if (!s_warned_accum_full) { s_warned_accum_full = 1;
+                fprintf(stderr, "[profile] accum table full (>%d names); dropping\n",
+                        OPP_ACCUM_MAX); }
+            return;
+        }
+        a = &s_accum[s_accum_count++];
+        a->name_id = name_id; a->sum_us = 0; a->calls = 0;
+        /* Anchor at this present's first entry, not at flush time: the emitted
+         * interval then lands inside the region the entries actually ran in. */
+        a->first_t0_us = op_prof_now_us() - us;
+    }
+    a->sum_us += us;
+    a->calls++;
+}
+
+/* Emit one span per non-empty bucket and reset. Called at the present boundary;
+ * the spans bind to the present being closed like any other span. */
+static void accum_flush(void) {
+    for (int i = 0; i < s_accum_count; i++) {
+        struct opp_accum* a = &s_accum[i];
+        if (a->sum_us) emit_span(0, a->name_id, a->first_t0_us,
+                                 (uint32_t)a->sum_us, a->calls);
+    }
+    s_accum_count = 0;
+}
+
 /* ---- census counts --------------------------------------------------------- */
 void op_prof_count(int name_id, uint64_t value) {
     if (!s_on || !on_main_thread() || name_id < 0) return;
@@ -226,6 +271,7 @@ void op_prof_func(int name_id, uint32_t addr, uint64_t calls,
 /* ---- present boundary ------------------------------------------------------ */
 uint32_t op_prof_present(uint32_t canon_tick, int kind) {
     if (!s_on || !on_main_thread()) return s_present_index;
+    accum_flush();          /* before the PRESENT record: the buckets bind here */
     uint8_t r[OPP_REC_SIZE];
     memset(r, 0, sizeof(r));
     r[0] = OPP_REC_PRESENT;

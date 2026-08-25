@@ -36,6 +36,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
 extern void     func_800573C8(CPUState* cpu);  /* RenderParticles  */
 extern void     func_800580F4(CPUState* cpu);  /* RenderGlows      */
@@ -79,6 +80,7 @@ static int s16(int v) { return (int)(int16_t)(uint32_t)v; }
 /* Walk a polybuf [start,end) by OT tag length (stride=((w0>>24)+1)*4); decode
  * polygon prims (code high byte of word[+4]) with the standard PSX layout. */
 static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
+    OP_PROF_ACCUM_SCOPE("particle.capture");
     uint32_t p = start;
     int guard = 0;
     while (p < end && guard++ < MAX_PRIMS) {
@@ -1796,7 +1798,8 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
 
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
     s_part_pool = cpu->read_word(G_PARTICLES);     /* the pool the .s walks (g_Particles is a ptr) */
-    realfn(cpu);                                   /* run the real renderer (verdict bytes) */
+    { OP_PROF_ACCUM_SCOPE("particle.srend");
+      realfn(cpu); }                               /* run the real renderer (verdict bytes) */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_PARTICLES, startp, endp);
@@ -1894,7 +1897,8 @@ static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
     static int s_in = 0; if (s_in) return 0; s_in = 1;
 
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
-    func_80058864(cpu);                            /* run the real renderer */
+    { OP_PROF_ACCUM_SCOPE("particle.srend");
+      func_80058864(cpu); }                        /* run the real renderer */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     if ((feed || verify) && endp > startp) { s_prim_n = 0; capture_prims(cpu, startp, endp); }

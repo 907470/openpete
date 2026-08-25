@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
 extern void     func_800168DC(CPUState* cpu);   /* the real OT-insert helper */
 extern void     func_800190D4(CPUState* cpu);    /* the full-screen fade emitter */
@@ -369,7 +370,8 @@ static int on_800168DC(CPUState* cpu, uint32_t addr) {
         else if (is_line_g2(cpu, prim)) feed_line_g2(cpu, prim, cpu->read_word(prim + 4));  /* UI separator lines */
     }
 
-    func_800168DC(cpu);                          /* run the real OT insert (ref unchanged) */
+    { OP_PROF_ACCUM_SCOPE("ui_sprite.srend");
+      func_800168DC(cpu); }                      /* run the real OT insert (ref unchanged) */
     s_in = 0;
     return 1;
 }
@@ -398,7 +400,8 @@ static int on_800190D4(CPUState* cpu, uint32_t addr) {
      * on_800168DC hook treats that F4 as the fade (already handled) and NOT a menu
      * dark panel (also a 0x2A F4). */
     s_in_fade = 1;
-    func_800190D4(cpu);                                /* run the real fade emit (ref unchanged) */
+    { OP_PROF_ACCUM_SCOPE("ui_sprite.srend");
+      func_800190D4(cpu); }                            /* run the real fade emit (ref unchanged) */
     s_in_fade = 0;
     s_in = 0;
     return 1;

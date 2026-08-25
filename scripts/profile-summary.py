@@ -13,6 +13,11 @@ Notes:
   * rex.* scopes are children of rex_total; compose/* GPU zones are children of
     compose. Per-scope share% is of the kind's total present_busy and will sum
     to >100% because of that nesting — it's a breakdown, not a partition.
+  * [sim.split] breaks the sim tick down: each fiber hook's inclusive cost
+    (hook.<feature>), the guest renderer it calls (<feature>.srend), and the
+    remainder — openpete's own extraction on the game fiber. The bottom
+    "unattributed" row is sim_tick minus every hook, i.e. guest game logic plus
+    whatever fiber-side work is still uninstrumented.
 """
 import argparse
 import json
@@ -154,6 +159,54 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
     out["cpu_scopes"] = agg(cpu_pick)
     out["gpu_zones"] = agg(gpu_pick)
 
+    # ---- sim-tick split (fiber hooks) ---------------------------------------
+    # Canonical presents only: the hooks run on the game fiber, which only the
+    # canonical present yields to. Sums are per-canonical-tick averages so the
+    # rows compare directly against sim_tick's p50.
+    canon = [p for p in presents if p.kind == KIND_CANONICAL]
+    tot = {}
+    for p in canon:
+        for (_d, name, _t0, dur, _a) in p.spans:
+            tot[name] = tot.get(name, 0) + dur
+    nc = len(canon) or 1
+
+    def per_tick(name):
+        return tot.get(name, 0) / nc
+
+    hooks = sorted(n for n in tot if n.startswith("hook."))
+    rows = []
+    accounted = 0.0
+    for h in hooks:
+        feat = h[len("hook."):]
+        prefix = feat[:-len("_native")] if feat.endswith("_native") else feat
+        subs = {n: tot[n] / nc for n in tot if n.startswith(prefix + ".")}
+        total = per_tick(h)
+        accounted += total
+        rows.append({
+            "hook": feat,
+            "total_us": round(total, 1),
+            "srend_us": round(subs.get(prefix + ".srend", 0.0), 1),
+            # Everything the hook spent outside the guest renderer call: capture,
+            # native walk, scene feed, and any unscoped remainder.
+            "openpete_us": round(total - subs.get(prefix + ".srend", 0.0), 1),
+            "parts": {k.split(".", 1)[1]: round(v, 1) for k, v in sorted(subs.items())},
+        })
+    # Fiber-side openpete work that is not a feature hook (PSYQ thunk scopes).
+    for n in sorted(tot):
+        if n.startswith("psyq."):
+            accounted += per_tick(n)
+            rows.append({"hook": n, "total_us": round(per_tick(n), 1),
+                         "srend_us": 0.0, "openpete_us": round(per_tick(n), 1),
+                         "parts": {}})
+    rows.sort(key=lambda r: -r["total_us"])
+    sim = per_tick("sim_tick")
+    out["sim_split"] = {
+        "sim_tick_us_per_tick": round(sim, 1),
+        "rows": rows,
+        "unattributed_us": round(sim - accounted, 1),
+        "canonical_presents": nc,
+    }
+
     # ---- census -----------------------------------------------------------
     cen = {}
     for p in presents:
@@ -202,6 +255,22 @@ def render_text(s):
             L.append("%-22s%-12s%8d%8d%8d%9.1f%8.1f"
                      % (r["scope"][:22], r["kind"], r["p50_us"], r["p99_us"],
                         r["max_us"], r["sum_ms"], r["share_pct"]))
+
+    ss = s.get("sim_split")
+    if ss and ss["rows"]:
+        L.append("[sim.split]           per canonical tick, us   "
+                 "(hook = inclusive; srend = the guest renderer it calls)")
+        L.append("%-22s%10s%10s%10s  %s" % ("scope", "total", "srend", "openpete", "parts"))
+        for r in ss["rows"]:
+            parts = " ".join("%s=%.0f" % (k, v) for k, v in r["parts"].items()
+                             if k != "srend" and v >= 1.0)
+            L.append("%-22s%10.1f%10.1f%10.1f  %s"
+                     % (r["hook"][:22], r["total_us"], r["srend_us"],
+                        r["openpete_us"], parts))
+        L.append("%-22s%10.1f%10s%10s  %s"
+                 % ("unattributed", ss["unattributed_us"], "", "",
+                    "guest game logic + uninstrumented fiber work"))
+        L.append("%-22s%10.1f" % ("= sim_tick", ss["sim_tick_us_per_tick"]))
 
     table("cpu.scope", s["cpu_scopes"])
     table("gpu.zone", s["gpu_zones"])

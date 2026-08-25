@@ -95,6 +95,7 @@ extern "C" {
 #include "openpete_mods.h"          /* custom-level song lookup + SFX overlay */
 #include "features/render_paths.h"  /* --render-paths OT-walk filter */
 #include "features/moby_rank.h"     /* same-moby painter rank source (OT-walk ingest) */
+#include "openpete_profile.h"       /* game-fiber cost split (--profile-out) */
 
 /* PsyCross internals shared with the libcd thunks below. */
 extern "C" int g_CD_com;
@@ -600,7 +601,23 @@ void psyq_SetDrawMode(CPUState* cpu) {
 /* OT-walk scratch lives in the saved_ot_t buffer declared above; each
  * DrawOTag rebuilds it and the display walk parses it. */
 
+/* Accumulating trace guard for the game-fiber thunks. The C header's
+ * OP_PROF_ACCUM_SCOPE relies on the cleanup attribute, which is C-only; this is
+ * the C++ equivalent. Inert (one load) unless a trace is open. */
+namespace {
+struct op_accum_scope {
+    int id; uint64_t t0;
+    explicit op_accum_scope(const char* name) : id(-1), t0(0) {
+        if (op_prof_on()) { id = op_prof_intern(name); t0 = op_prof_now_us(); }
+    }
+    ~op_accum_scope() { if (id >= 0) op_prof_accum(id, op_prof_now_us() - t0); }
+};
+}
+
 void psyq_DrawOTag(CPUState* cpu) {
+    /* The OT rebuild is openpete's own work on the game fiber, so it lands
+     * inside the sim-tick bracket rather than any render-side phase. */
+    op_accum_scope prof_("psyq.drawotag");
     /* First DrawOTag is the natural transition from "boot init" to "game is
      * rendering." Anchor `openpete_frame` here: from now on, every VSync(0)
      * yields to the host and ticks the host-facing counter. */

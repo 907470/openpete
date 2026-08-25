@@ -984,6 +984,10 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         return 1;
     }
 
+    /* NOT trace-scoped, unlike the feature-registry hooks below: these two arms
+     * run on EVERY translated-function entry, so a pair of clock reads here
+     * would cost more than the thing being measured. The registry's own scopes
+     * start only after an address match, which is rare. */
     if (spyro_native_dispatch(cpu, addr)) {
         return 1;
     }

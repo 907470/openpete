@@ -42,6 +42,7 @@
 #include "spyro_native_reextract.h"   /* sub-tick re-extract entry */
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "spyro1_symbols.gen.h"
+#include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
 extern void     func_800189F0(CPUState* cpu);   /* the real tracer/beam renderer */
 extern unsigned openpete_frame;
@@ -198,7 +199,8 @@ static int on_800189F0_tracer(CPUState* cpu, uint32_t addr) {
 
     if (feed) tracer_snapshot(cpu);                        /* capture before the drain */
     uint32_t pb0 = cpu->read_word(POLYBUF_CURSOR);
-    func_800189F0(cpu);                                   /* real renderer (verdict) */
+    { OP_PROF_ACCUM_SCOPE("tracer.srend");
+      func_800189F0(cpu); }                               /* real renderer (verdict) */
     /* Record the tracer's emitted polybuf range as RP_TRACER: drives the OT-filter
      * isolation AND the canon-drawn liveness gate the sub-tick re-extract reads.
      * Empty when no tracer drew (render_path_record drops empty ranges), so a frame

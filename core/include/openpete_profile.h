@@ -10,7 +10,8 @@
  * REUSES the existing OPPT/OPPC call sites — openpete_phase_add()/set_count()
  * forward to op_prof automatically when a trace is open — so the 9 phase scopes
  * and 4 census counters appear with zero new call sites. New finer scopes use
- * OP_PROF_SCOPE()/op_prof_begin()/op_prof_end() directly.
+ * OP_PROF_SCOPE()/op_prof_begin()/op_prof_end() directly, or
+ * OP_PROF_ACCUM_SCOPE() when the region is entered many times per tick.
  *
  * Everything is inert (one predictable branch) unless --profile-out is set.
  * Diagnostic-only; never touches gameplay state. Main-thread only (host+game
@@ -55,6 +56,24 @@ void op_prof_add_span(int name_id, uint64_t dur_us);
 /* Census value for the current/next present (e.g. mobys/tris/draws/culled). */
 void op_prof_count(int name_id, uint64_t value);
 
+/* ---- accumulating scopes ---------------------------------------------------
+ * For regions entered many times per tick (dispatch hooks fire once per hooked
+ * guest call — the 2D addPrim chokepoint runs hundreds of times a tick), one
+ * SPAN record per entry would bloat the trace and put an fwrite in the hot path.
+ * op_prof_accum() instead sums into a per-name bucket; the present boundary
+ * emits ONE span per non-empty bucket, carrying the per-present call count in
+ * the span's aux field.
+ *
+ * Emitted spans are depth 0 and anchored at the bucket's FIRST entry this
+ * present (t0 = first entry, dur = summed time), so the interval stays inside
+ * whatever real scope contained the entries and present_busy_us() — a union of
+ * span intervals — is not inflated by the synthetic timestamp.
+ *
+ * Buckets are FLAT, not nested: a bucket that measures a region inside another
+ * bucket's region (e.g. "terrain.srend", the guest renderer call inside
+ * "hook.terrain_native") is a subset, and the consumer subtracts. */
+void op_prof_accum(int name_id, uint64_t us);
+
 /* The index op_prof_present() will assign to the present currently being built
  * (i.e. the next present). GPU work submitted now is tagged with this so the
  * frame-lagged harvest can bind its zones to the right present. */
@@ -81,6 +100,10 @@ void op_prof_func(int name_id, uint32_t addr, uint64_t calls,
  * when the block exits. The name is interned once (function-static cache). */
 #if defined(__GNUC__) || defined(__clang__)
 static inline void op_prof__scope_cleanup(int* began) { if (*began) op_prof_end(); }
+typedef struct { int name_id; uint64_t t0_us; } op_prof_accum_guard;
+static inline void op_prof__accum_cleanup(op_prof_accum_guard* g) {
+    if (g->name_id >= 0) op_prof_accum(g->name_id, op_prof_now_us() - g->t0_us);
+}
 #define OP_PROF__CAT2(a, b) a##b
 #define OP_PROF__CAT(a, b)  OP_PROF__CAT2(a, b)
 #define OP_PROF_SCOPE(lit) \
@@ -93,8 +116,23 @@ static inline void op_prof__scope_cleanup(int* began) { if (*began) op_prof_end(
         op_prof_begin(OP_PROF__CAT(op_prof_id_, __LINE__)); \
         OP_PROF__CAT(op_prof_began_, __LINE__) = 1; \
     }
+/* Accumulating variant: same block-scoped usage, but the measured time is
+ * summed into a per-name bucket and emitted once per present (see
+ * op_prof_accum). Use for hooks that fire many times per tick. */
+#define OP_PROF_ACCUM_SCOPE(lit) \
+    static int OP_PROF__CAT(op_prof_aid_, __LINE__) = -1; \
+    op_prof_accum_guard OP_PROF__CAT(op_prof_ag_, __LINE__) \
+        __attribute__((cleanup(op_prof__accum_cleanup))) = { -1, 0 }; \
+    if (op_prof_on()) { \
+        if (OP_PROF__CAT(op_prof_aid_, __LINE__) < 0) \
+            OP_PROF__CAT(op_prof_aid_, __LINE__) = op_prof_intern(lit); \
+        OP_PROF__CAT(op_prof_ag_, __LINE__).name_id = \
+            OP_PROF__CAT(op_prof_aid_, __LINE__); \
+        OP_PROF__CAT(op_prof_ag_, __LINE__).t0_us = op_prof_now_us(); \
+    }
 #else
 #define OP_PROF_SCOPE(lit) ((void)0)
+#define OP_PROF_ACCUM_SCOPE(lit) ((void)0)
 #endif
 
 #ifdef __cplusplus
