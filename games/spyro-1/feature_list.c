@@ -24,6 +24,7 @@ extern const feature_module_t transition_native_module;
 extern const feature_module_t cheats_native_module;
 extern const feature_module_t levelwarp_native_module;
 extern const feature_module_t text_moby_id_module;
+extern const feature_module_t crash_demo_woah_module;
 
 const feature_module_t* const openpete_features[] = {
     /* --render-paths: parse the path-isolation selection at startup (apply_options
@@ -111,6 +112,11 @@ const feature_module_t* const openpete_features[] = {
      * through) so the sub-tick interpolator can tell one tick's letters from
      * the next's. See features/text_moby_id.c. */
     &text_moby_id_module,
+    /* L1+Triangle on the title screen: the original boots the disc's Crash 3
+     * demo via LoadExec, which openpete cannot host. Swallows CrashDemoLaunch
+     * before its engine teardown and plays Crash's "woah!" (extracted from
+     * the player's own disc image on first use) as an easter egg. */
+    &crash_demo_woah_module,
 };
 
 const size_t openpete_feature_count =

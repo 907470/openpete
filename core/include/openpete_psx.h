@@ -183,6 +183,14 @@ uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
                                          const char* exe_filename,
                                          size_t* out_size);
 
+/* General form of the above: fetch any file from the image by iso9660
+ * path ("SYSTEM.CNF", "S0/S000000D.NSF" — one directory level deep at
+ * most, matching the reader). Caller frees with free(). Returns NULL and
+ * logs on failure. */
+uint8_t* openpete_psx_load_file_from_disc(const char* cue_path,
+                                          const char* filename,
+                                          size_t* out_size);
+
 /* The image's release serial ("SCUS-94228") from its SYSTEM.CNF BOOT line.
  * Cheap (a few sectors) — it is read at boot to select the [disc.SERIAL]
  * scope in openpete.toml. Returns 0 on success. */

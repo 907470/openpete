@@ -1969,8 +1969,10 @@ void psyq_MemCardSync(CPUState* cpu) {
 /* --- libapi -------------------------------------------------------------- */
 
 void psyq_LoadExec(CPUState* cpu) {
-    /* Spyro doesn't actually call LoadExec at runtime, but the symbol is
-     * exported. Stub to a no-op rather than abort. */
+    /* One live caller: CrashDemoLaunch (title-screen L1+Triangle boots the
+     * disc's S0\CRASH.EXE demo). features/crash_demo_woah.c intercepts that
+     * path before its engine teardown, so this should never fire; keep a
+     * warning no-op rather than abort in case another route appears. */
     (void)cpu;
     OPL_WARN_F("thunks", "%s", "LoadExec called - ignoring");
 }

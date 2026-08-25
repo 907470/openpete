@@ -228,6 +228,7 @@ add_executable(openpete-spyro1
     features/freecam_native.c
     features/audio_volume_native.c
     features/cheats_native.c
+    features/crash_demo_woah.c
     features/levelwarp_native.c
 
     # Phase 3 / Phase 4 — native translations of spyro-1/src/*.c compiled

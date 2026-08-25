@@ -23,10 +23,10 @@
 #include <string>
 #include <vector>
 
-extern "C" uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
-                                                   const char* exe_filename,
-                                                   size_t* out_size) {
-    if (!cue_path || !exe_filename) return nullptr;
+extern "C" uint8_t* openpete_psx_load_file_from_disc(const char* cue_path,
+                                                    const char* filename,
+                                                    size_t* out_size) {
+    if (!cue_path || !filename) return nullptr;
 
     PS1::ISOReader reader;
     if (!reader.Open(cue_path)) {
@@ -55,16 +55,16 @@ extern "C" uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
     }
 
     PS1::ISOFileEntry entry{};
-    if (!reader.FindFile(exe_filename, entry)) {
-        OPL_ERROR_F("disc", "EXE not found on disc: %s", exe_filename);
+    if (!reader.FindFile(filename, entry)) {
+        OPL_ERROR_F("disc", "file not found on disc: %s", filename);
         return nullptr;
     }
-    OPL_INFO_F("disc", "EXE %s @ LBA=%u size=%u", exe_filename, entry.lba, entry.size);
+    OPL_INFO_F("disc", "disc file %s @ LBA=%u size=%u", filename, entry.lba, entry.size);
 
     auto* buf = static_cast<uint8_t*>(std::malloc(entry.size));
     if (!buf) return nullptr;
 
-    size_t got = reader.ReadFile(exe_filename, buf, entry.size);
+    size_t got = reader.ReadFile(filename, buf, entry.size);
     if (got != entry.size) {
         OPL_ERROR_F("disc", "ReadFile got %zu/%u bytes", got, entry.size);
         std::free(buf);
@@ -73,6 +73,12 @@ extern "C" uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
 
     *out_size = got;
     return buf;
+}
+
+extern "C" uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
+                                                   const char* exe_filename,
+                                                   size_t* out_size) {
+    return openpete_psx_load_file_from_disc(cue_path, exe_filename, out_size);
 }
 
 /* The disc's own serial ("SCUS-94228"), read out of SYSTEM.CNF's
