@@ -7,7 +7,11 @@
  * playing a sound from any hook context is sim-neutral by construction,
  * so it is legal from tick AND present hooks (audio is presentation, not
  * render output; the render-purity contract concerns sim effects).
- * --mute at the listener gain covers these too.
+ *
+ * These sources sit on PsyCross's AL context but outside its SPU mixer, so
+ * the SPU's own mute flag never reaches them. --mute arrives here through
+ * openpete_mod_sound_set_mute() instead — the same push music_override
+ * takes — and stops whatever is already in flight.
  *
  * WAVs load through op_wav_load (PCM int16 mono/stereo) and are cached
  * by path — repeated plays reuse the AL buffer. Callers that already hold
@@ -38,6 +42,7 @@ static snd_cache_t s_cache[SND_CACHE_MAX];
 static int         s_cache_count = 0;
 static ALuint      s_sources[SND_SOURCES];
 static int         s_inited = 0; /* 0 = not yet, 1 = ok, -1 = AL dead */
+static int         s_muted  = 0;
 
 static int snd_init(void) {
     if (s_inited) return s_inited;
@@ -105,6 +110,7 @@ static ALuint snd_buffer_for(const char* path) {
 /* Play `buf` on the first free source; all busy = steal the oldest slot
  * (round-robin) — one-shots are short, the clank beats silence. */
 static int snd_play_buffer(ALuint buf, float gain) {
+    if (s_muted) return 0; /* muted is a silence, not a failure */
     if (gain < 0.0f) gain = 0.0f;
     if (gain > 4.0f) gain = 4.0f;
     static int s_rr = 0;
@@ -120,6 +126,12 @@ static int snd_play_buffer(ALuint buf, float gain) {
     alSourcef(src, AL_GAIN, gain);
     alSourcePlay(src);
     return 0;
+}
+
+void openpete_mod_sound_set_mute(int on) {
+    s_muted = on ? 1 : 0;
+    if (s_muted && s_inited > 0)
+        for (int i = 0; i < SND_SOURCES; i++) alSourceStop(s_sources[i]);
 }
 
 int openpete_mod_sound_play(const char* path, float gain) {

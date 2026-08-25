@@ -223,6 +223,12 @@ int openpete_mod_sound_play_pcm(const char* key, const int16_t* pcm,
                                 uint32_t frame_count, int channels,
                                 uint32_t sample_rate, float gain);
 
+/* Engine mute, pushed down by openpete_set_mute(). These sources live on
+ * PsyCross's AL context but outside its SPU mixer, so the SPU's own mute
+ * flag does not reach them — without this they keep playing under --mute.
+ * Muting also stops whatever is mid-flight, matching the music override. */
+void openpete_mod_sound_set_mute(int on);
+
 /* Live modset toggle (P2): queue an enable/disable; it applies at the
  * NEXT tick boundary by flipping owner-keyed disabled flags across all
  * registration surfaces (nothing is torn down — re-enable restores the

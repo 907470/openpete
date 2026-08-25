@@ -1003,6 +1003,9 @@ void openpete_set_mute(int on) {
     PsyX_SPUAL_SetMute(s_mute);
     PsyX_XA_ForceGain(s_mute ? 0.0f : -1.0f);
     music_override_set_forced_gain(s_mute ? 0.0f : -1.0f);
+    /* Mod one-shots are AL sources outside the SPU mixer, so the SPU mute
+     * flag above does not cover them. */
+    openpete_mod_sound_set_mute(s_mute);
 }
 
 int openpete_get_mute(void) { return s_mute; }
