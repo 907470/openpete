@@ -134,6 +134,14 @@ void terrain_native_reextract(struct CPUState* cpu, double alpha, int interp_on)
  * Returns 0 when no level is live (empty sector table). Used by
  * `--freecam-pose topdown` (the per-level perf harness). */
 int terrain_native_topdown_pose(struct CPUState* cpu, int32_t v[5]);
+/* Compute waypoint `corner` (0..3) of a low-altitude flight around the live
+ * level: a rectangle inset inside the sector bounds, just above the highest
+ * geometry, looking horizontally along the direction of travel. Where the
+ * top-down pose reveals a whole level in one frame, flying this reveals it
+ * progressively, which is what exercises sector-cache eviction and LOD
+ * crossings. Fills v = {x, y, z, yaw, pitch} in world units; returns 0 when
+ * no level is live. Used by `--freecam-path sweep0;sweep1;...`. */
+int terrain_native_sweep_pose(struct CPUState* cpu, int corner, int32_t v[5]);
 void moby_native_reextract(struct CPUState* cpu);
 void shadow_native_reextract(struct CPUState* cpu);
 void spyro_player_native_reextract(struct CPUState* cpu);

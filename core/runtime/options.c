@@ -524,7 +524,12 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             live (same format as the freecam log: \"pos=(x, y, z) yaw=N\n"
         "                             pitch=N\"). CLI twin of OPENPETE_FREECAM_POSE — env vars don't\n"
         "                             cross the WSL->Windows interop boundary.\n"
-        "  --unlock-frames LIST       force fast-forward inside ranges, e.g. 100-200,500-600 (openpete_frame)\n"
+        "  --freecam-path SPEC        engage the free camera and fly it along a looping waypoint\n"
+        "                             path: \"[ticks=N;] WP(;WP)+\" where WP is \"topdown\" or\n"
+        "                             \"x,y,z[,yaw,pitch]\". Interpolates over N ticks per segment\n"
+        "                             (default 120). Exercises the costs only movement reaches\n"
+        "                             (sector-cache churn, LOD crossings) that a static pose cannot.\n"
+        "                             CLI twin of OPENPETE_FREECAM_PATH; supersedes --freecam-pose.\n"        "  --unlock-frames LIST       force fast-forward inside ranges, e.g. 100-200,500-600 (openpete_frame)\n"
         "  --position-log PATH        append CSV (frame,vbl,x,y,z) of g_Spyro.m_Position each yield\n"
         "  --gameplay-hash-log PATH   append CSV (frame,vbl,hex_hash) of FNV1a-64 over the\n"
         "                             gameplay-state region (manifest/gameplay_state_regions.toml).\n"
@@ -1028,6 +1033,14 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--run-recomp") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->run_recomp_addr = (uint32_t)strtoul(v, NULL, 0); i++;
+        } else if (strcmp(a, "--freecam-path") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+#ifdef _WIN32
+            _putenv_s("OPENPETE_FREECAM_PATH", v);
+#else
+            setenv("OPENPETE_FREECAM_PATH", v, 1);
+#endif
+            i++;
         } else if (strcmp(a, "--freecam-pose") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
 #ifdef _WIN32

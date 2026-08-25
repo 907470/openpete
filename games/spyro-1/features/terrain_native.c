@@ -7283,6 +7283,56 @@ static void td_scan_verts(CPUState* cpu, uint32_t verts, int nv,
         }
     }
 }
+/* Waypoint `corner` of a low-altitude circuit of the level. Shares pass 1 of
+ * the top-down pose (true vertex bounds over both LOD banks); skips pass 2,
+ * since this camera sits just above the geometry rather than far enough back
+ * to frame all of it. */
+int terrain_native_sweep_pose(CPUState* cpu, int corner, int32_t v[5]) {
+    uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
+    uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
+    if (!sectorPtr || !sectorCnt || sectorCnt > 1024) return 0;
+
+    double mm[5] = { 1e18, -1e18, 1e18, -1e18, -1e18 };  /* minx,maxx,miny,maxy,maxz */
+    int seen = 0;
+    for (uint32_t i = 0; i < sectorCnt; i++) {
+        uint32_t s = rd(cpu, sectorPtr + i * 4);
+        if (!s) continue;
+        uint32_t g1 = rd(cpu, s + 0x08), g2 = rd(cpu, s + 0x0C);
+        uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
+        int ox = (int)(g1 >> 16), oy = (int)(g1 & 0xFFFF), oz = (int)(g2 >> 16);
+        int nLpV = (int)(g3 & 0xFF), nHpV = (int)(g4 & 0xFF);
+        uint32_t hpOff = (g4 >> 24) & 0xFF;
+        td_scan_verts(cpu, s + 0x1C, nLpV, ox, oy, oz, mm, NULL);
+        td_scan_verts(cpu, s + 0x1C + hpOff * 4, nHpV, ox, oy, oz, mm, NULL);
+        seen++;
+    }
+    if (!seen || mm[1] < mm[0]) return 0;
+
+    /* Inset 30% from the centre so the circuit stays over the level rather
+     * than orbiting its empty corners, and ride 64 (world/16) above the
+     * highest vertex so the camera clears geometry instead of burrowing. */
+    static const double sx[4] = { -1.0,  1.0,  1.0, -1.0 };
+    static const double sy[4] = { -1.0, -1.0,  1.0,  1.0 };
+    const int c = ((corner % 4) + 4) % 4;
+    const int nxt = (c + 1) % 4;
+
+    const double cx = (mm[0] + mm[1]) * 0.5, cy = (mm[2] + mm[3]) * 0.5;
+    const double hx = (mm[1] - mm[0]) * 0.30, hy = (mm[3] - mm[2]) * 0.30;
+
+    const double px = cx + sx[c] * hx,   py = cy + sy[c] * hy;
+    const double nx = cx + sx[nxt] * hx, ny = cy + sy[nxt] * hy;
+
+    /* Face the next waypoint: the drive basis is forward = (cos yaw, sin yaw). */
+    const double yaw = atan2(ny - py, nx - px) * (4096.0 / (2.0 * 3.14159265358979323846));
+
+    v[0] = (int32_t)(px * 16.0);
+    v[1] = (int32_t)(py * 16.0);
+    v[2] = (int32_t)((mm[4] + 64.0) * 16.0);
+    v[3] = (int32_t)(int16_t)(uint16_t)(int32_t)yaw;
+    v[4] = 0;      /* horizontal — looking into the level, not down at it */
+    return 1;
+}
+
 int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
     uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
     uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);

@@ -30,7 +30,7 @@
 // TODO at the bottom.
 
 #include "features/freecam_native.h"
-#include "spyro_native_reextract.h"   /* terrain_native_topdown_pose (--freecam-pose topdown) */
+#include "spyro_native_reextract.h"   /* terrain_native_topdown_pose / _sweep_pose (--freecam-pose, --freecam-path) */
 #include "openpete_freecam.h"
 #include "openpete_fillpick.h"  /* scripted engage of the LP fill-tag inspector */
 #include "openpete_log.h"
@@ -113,6 +113,140 @@ static void freecam_force_draw_all_sectors(CPUState* cpu) {
     cpu->write_word(ADDR_CAMERA_UNK_POS_VEC_X, 0u);
 }
 
+/* ---- Scripted flight path (OPENPETE_FREECAM_PATH / --freecam-path) --------
+ *
+ * A static pose reveals a whole level in its first frame, so every first-use
+ * resource it needs is created at once and nothing is created afterwards. The
+ * costs that only *movement* reaches — terrain sector cache eviction and
+ * refill, LOD tier crossings, moby extraction churn — are invisible to it.
+ * This flies the camera instead: waypoints are linearly interpolated over
+ * `ticks` canonical ticks per segment, and the path loops so a run of any
+ * length stays in motion.
+ *
+ * Spec: "[ticks=N;] WP(;WP)+" where WP is "x,y,z[,yaw,pitch]", "topdown", or
+ * "sweepN". The latter two resolve against the live sector table — `topdown`
+ * to the whole-level overhead pose, `sweepN` to corner N of a low-altitude
+ * circuit — so a path can dive from above the level into a flight across it
+ * without the caller knowing any level's bounds. */
+static int freecam_parse_ints(const char* s, int32_t* out, int max);
+
+#define FREECAM_PATH_MAX 16
+#define FREECAM_PATH_DEFAULT_TICKS 120
+
+static struct {
+    int32_t wp[FREECAM_PATH_MAX][5];   /* x, y, z, yaw, pitch */
+    uint8_t is_topdown[FREECAM_PATH_MAX];
+    int8_t  sweep[FREECAM_PATH_MAX];   /* >= 0: resolve as sweep corner N */
+    int     n;
+    int     ticks;      /* ticks per segment */
+    int     t;          /* tick index within the current segment */
+    int     seg;
+    int     resolved;   /* topdown waypoints filled in from the sector table */
+    int     active;
+} s_path;
+
+/* Parse the spec into s_path. Returns 1 if a usable path (>= 2 waypoints)
+ * was found. Waypoint text is bounded-copied so a malformed spec cannot run
+ * off the end of the segment. */
+static int freecam_path_parse(const char* spec) {
+    memset(&s_path, 0, sizeof s_path);
+    s_path.ticks = FREECAM_PATH_DEFAULT_TICKS;
+    for (int i = 0; i < FREECAM_PATH_MAX; i++) s_path.sweep[i] = -1;
+
+    const char* p = spec;
+    while (*p && s_path.n < FREECAM_PATH_MAX) {
+        while (*p == ' ' || *p == ';') p++;
+        if (!*p) break;
+        const char* end = strchr(p, ';');
+        size_t len = end ? (size_t)(end - p) : strlen(p);
+        char seg[128];
+        if (len >= sizeof seg) len = sizeof seg - 1;
+        memcpy(seg, p, len);
+        seg[len] = '\0';
+
+        const char* tk = strstr(seg, "ticks=");
+        if (tk) {
+            int v = atoi(tk + 6);
+            if (v > 0) s_path.ticks = v;
+        } else if (strstr(seg, "topdown")) {
+            s_path.is_topdown[s_path.n] = 1;
+            s_path.sweep[s_path.n] = -1;
+            s_path.n++;
+        } else if (strstr(seg, "sweep")) {
+            s_path.sweep[s_path.n] = (int8_t)atoi(strstr(seg, "sweep") + 5);
+            s_path.n++;
+        } else {
+            int32_t v[5] = {0, 0, 0, 0, 0};
+            if (freecam_parse_ints(seg, v, 5) >= 3) {
+                memcpy(s_path.wp[s_path.n], v, sizeof v);
+                s_path.sweep[s_path.n] = -1;
+                s_path.n++;
+            }
+        }
+        if (!end) break;
+        p = end + 1;
+    }
+
+    if (s_path.n < 2) {
+        OPL_WARN_F("freecam",
+                   "--freecam-path needs at least 2 waypoints (got %d)", s_path.n);
+        return 0;
+    }
+    s_path.active = 1;
+    OPL_INFO_F("freecam", "flight path armed: %d waypoint(s), %d tick(s) per segment",
+               s_path.n, s_path.ticks);
+    return 1;
+}
+
+/* Fill in any `topdown` waypoints once a level's sector table is live. */
+static int freecam_path_resolve(CPUState* cpu) {
+    if (s_path.resolved) return 1;
+    for (int i = 0; i < s_path.n; i++) {
+        int32_t v[5] = {0, 0, 0, 0, 0};
+        if (s_path.is_topdown[i]) {
+            if (!terrain_native_topdown_pose(cpu, v)) return 0;  /* not live yet */
+        } else if (s_path.sweep[i] >= 0) {
+            if (!terrain_native_sweep_pose(cpu, s_path.sweep[i], v)) return 0;
+        } else {
+            continue;
+        }
+        memcpy(s_path.wp[i], v, sizeof v);
+    }
+    for (int i = 0; i < s_path.n; i++)
+        OPL_INFO_F("freecam", "path wp%d = (%d, %d, %d) yaw=%d pitch=%d", i,
+                   s_path.wp[i][0], s_path.wp[i][1], s_path.wp[i][2],
+                   s_path.wp[i][3], s_path.wp[i][4]);
+    s_path.resolved = 1;
+    return 1;
+}
+
+/* Shortest-arc interpolation for the game's int16 Euler angles: going from
+ * 32000 to -32000 is 1536 units forward, not 64000 units back. */
+static int32_t freecam_lerp_angle(int32_t a, int32_t b, int num, int den) {
+    int32_t d = (int32_t)(int16_t)(uint16_t)(uint32_t)(b - a);
+    return (int32_t)(int16_t)(uint16_t)(uint32_t)(a + (d * num) / den);
+}
+
+/* Advance one tick along the path and stamp the camera. */
+static void freecam_path_step(CPUState* cpu) {
+    if (!freecam_path_resolve(cpu)) return;
+
+    const int32_t* a = s_path.wp[s_path.seg];
+    const int32_t* b = s_path.wp[(s_path.seg + 1) % s_path.n];
+    const int num = s_path.t, den = s_path.ticks;
+
+    cpu->write_word(CAM_POS_X, (uint32_t)(a[0] + (int32_t)(((int64_t)(b[0] - a[0]) * num) / den)));
+    cpu->write_word(CAM_POS_Y, (uint32_t)(a[1] + (int32_t)(((int64_t)(b[1] - a[1]) * num) / den)));
+    cpu->write_word(CAM_POS_Z, (uint32_t)(a[2] + (int32_t)(((int64_t)(b[2] - a[2]) * num) / den)));
+    cpu->write_half(CAM_YAW,   (uint16_t)(int16_t)freecam_lerp_angle(a[3], b[3], num, den));
+    cpu->write_half(CAM_PITCH, (uint16_t)(int16_t)freecam_lerp_angle(a[4], b[4], num, den));
+
+    if (++s_path.t >= s_path.ticks) {
+        s_path.t = 0;
+        s_path.seg = (s_path.seg + 1) % s_path.n;
+    }
+}
+
 /* Drive the camera from input + force all-sector drawing. Runs IN PLACE OF
  * CameraFollowSpyro (see freecam_native_should_freeze), i.e. at the exact frame
  * point the follow logic normally runs, so the camera we write is what the
@@ -120,6 +254,14 @@ static void freecam_force_draw_all_sectors(CPUState* cpu) {
  * consume that same frame — and suppressing CameraFollowSpyro is also what lets
  * us own m_OcclusionGroup (the game's raycast that sets it lives there). */
 static void freecam_drive(CPUState* cpu) {
+    /* A scripted path owns the camera outright — the interactive axes would
+     * fight it, and a headless run has none to read anyway. */
+    if (s_path.active) {
+        freecam_path_step(cpu);
+        freecam_force_draw_all_sectors(cpu);
+        return;
+    }
+
     openpete_freecam_axes ax;
     openpete_freecam_get_axes(&ax);
 
@@ -339,15 +481,20 @@ void freecam_native_maybe_autoengage(CPUState* cpu) {
     static int s_done = 0;
     if (s_done) return;
     const char* pose = getenv("OPENPETE_FREECAM_POSE");
+    const char* path = getenv("OPENPETE_FREECAM_PATH");
     const char* eng  = getenv("OPENPETE_FREECAM");
-    int want = (pose && *pose) || (eng && *eng && *eng != '0');
+    int want = (pose && *pose) || (path && *path) ||
+               (eng && *eng && *eng != '0');
     if (!want || openpete_freecam_active()) { s_done = 1; return; }
     /* Gate on "a level is live" (load state negative) — unambiguous, unlike
      * g_Gamestate whose Playing==0 aliases the zero-initialised boot value. */
     if ((int32_t)cpu->read_word(ADDR_LEVEL_LOAD_STATE) < 0) {
         s_done = 1;
         openpete_freecam_toggle();
-        if (pose && *pose) freecam_apply_pose(cpu, pose);
+        /* A path supersedes a single pose: it stamps the camera every tick,
+         * so an initial jump would only be overwritten on the next one. */
+        if (path && *path) freecam_path_parse(path);
+        else if (pose && *pose) freecam_apply_pose(cpu, pose);
     }
 }
 
