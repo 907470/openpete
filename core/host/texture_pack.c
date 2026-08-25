@@ -17,6 +17,7 @@
 #include "openpete_discontinuity.h"
 #include "openpete_mods.h" /* asset-overlay roots */
 #include "openpete_native_vram.h"
+#include "openpete_profile.h"
 
 #include "PsyX/PsyX_public.h"  /* PsyX_VRAM_Snapshot — restore-time rescan */
 
@@ -296,6 +297,9 @@ static struct {
     int            busy;           /* a decode is in flight */
     int            quit;
     size_t         resident;       /* decoded bytes currently held */
+    int            pf_outstanding; /* prefetch items still queued/in flight */
+    Uint64         pf_t0;          /* prefetch start, for the completion log */
+    unsigned       pf_done;        /* decoded by the prefetch */
     unsigned       budget_skips;   /* prefetch items deferred to on-demand */
     int            budget_logged;
 } s_dec;
@@ -336,6 +340,7 @@ static void tp_decode_one(int ei) {
 
     SDL_LockMutex(s_dec.mu);
     s_dec.resident += (size_t)w * (size_t)h * 4u;
+    s_dec.pf_done++;
     SDL_UnlockMutex(s_dec.mu);
 }
 
@@ -374,6 +379,15 @@ static int SDLCALL tp_decode_main(void *unused) {
 
         SDL_LockMutex(s_dec.mu);
         s_dec.busy = 0;
+        if (s_dec.pf_outstanding > 0 && --s_dec.pf_outstanding == 0) {
+            double ms = (double)(SDL_GetTicksNS() - s_dec.pf_t0) / 1e6;
+            unsigned n = s_dec.pf_done;
+            size_t res = s_dec.resident;
+            SDL_UnlockMutex(s_dec.mu);
+            fprintf(stderr, "[texpack] prefetch complete: %u decoded, "
+                    "%zu KiB resident, %.0f ms\n", n, res / 1024u, ms);
+            SDL_LockMutex(s_dec.mu);
+        }
         SDL_BroadcastCondition(s_dec.cv);
         SDL_UnlockMutex(s_dec.mu);
     }
@@ -435,10 +449,26 @@ static void tp_decode_request(int ei, int urgent) {
  * already resident instead of waiting on the on-demand path. */
 static void tp_decode_prefetch_all(void) {
     if (!s_repl_active) return;
+    /* OPENPETE_TEXPACK_PREFETCH=0 leaves every entry on the on-demand path —
+     * a diagnostic leg for pricing the prefetch against the contention it
+     * causes while it runs. */
+    const char *pf = getenv("OPENPETE_TEXPACK_PREFETCH");
+    if (pf && *pf == '0') {
+        fprintf(stderr, "%s", "[texpack] prefetch disabled; replacements "
+                "decode on first draw\n");
+        return;
+    }
     tp_decode_start();
+    SDL_LockMutex(s_dec.mu);
+    s_dec.pf_t0 = SDL_GetTicksNS();
+    s_dec.pf_done = 0;
+    SDL_UnlockMutex(s_dec.mu);
     int n = 0;
     for (int i = 0; i < s_pack_n; i++)
         if (tp_src_enabled(s_pack[i].src)) { tp_decode_request(i, 0); n++; }
+    SDL_LockMutex(s_dec.mu);
+    s_dec.pf_outstanding += n;
+    SDL_UnlockMutex(s_dec.mu);
     if (n)
         fprintf(stderr, "[texpack] prefetching %d replacement%s off-tick\n",
                 n, n == 1 ? "" : "s");
@@ -959,6 +989,9 @@ int texture_pack_grade_fit(const texture_pack_id *id, const texture_pack_repl *r
     }
     const uint16_t *vr = openpete_vram_data();
     if (!vr) return 0;
+    /* Cache miss: the per-texel regression below is the expensive path, and
+     * a level's worth of first-use fits lands in one tick. */
+    OP_PROF_ACCUM_SCOPE("tex.gradefit");
     double sx[3] = {0}, sy[3] = {0}, sxx[3] = {0}, sxy[3] = {0};
     int cnt = 0;
     for (int ty = 0; ty < repl->box_h; ty++) {

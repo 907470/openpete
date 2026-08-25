@@ -4683,6 +4683,8 @@ static void tp_pack_fog(const psx_material* m, int cly, int fog_delta,
  * id carried in the vertex stream. Entries ride the terrain globals UBO
  * (4 vec4 each: page rect / atlas rect / fogA / fogB). */
 #define HDFOLD_ATLAS_DIM 2048
+/* Replacement rects uploaded into the atlas per flush. */
+#define HDFOLD_UPLOAD_PER_FRAME 96
 
 typedef struct {
     const unsigned char *pixels;             /* dedup identity (file) */
@@ -4725,6 +4727,7 @@ void openpete_native_hdfold_reset(void)
     s_hdf_shelf_x = s_hdf_shelf_y = s_hdf_shelf_h = 0;
 }
 
+
 int openpete_native_hdfold_intern(int tpx, int tpy, int clx, int cly, int bpp,
                                   const float us[3], const float vs[3])
 {
@@ -4750,6 +4753,7 @@ int openpete_native_hdfold_intern(int tpx, int tpy, int clx, int cly, int bpp,
     }
     if (s_hdf_n >= OPENPETE_HDFOLD_MAX) return -1;
 
+    OP_PROF_ACCUM_SCOPE("tex.hdfold_new");   /* first use of this replacement */
     /* Shelf-pack the file image into the atlas. */
     if (repl.w > HDFOLD_ATLAS_DIM || repl.h > HDFOLD_ATLAS_DIM) return -1;
     /* 1-texel gutter between files: entry sampling clamps half a texel
@@ -4845,14 +4849,21 @@ void openpete_native_hdfold_flush(void)
     if (!s_hdf_atlas) {
         /* NEAREST sampler (the default): exact-multiple files fetch stock-
          * identical texels; linear-class entries filter in-shader. */
-        s_hdf_atlas = rhi_create_rgba8(s_nr.dev, HDFOLD_ATLAS_DIM, HDFOLD_ATLAS_DIM);
+        { OP_PROF_ACCUM_SCOPE("tex.atlas_create");
+          s_hdf_atlas = rhi_create_rgba8(s_nr.dev, HDFOLD_ATLAS_DIM, HDFOLD_ATLAS_DIM); }
         if (!s_hdf_atlas) { s_hdf_pending_n = 0; return; }
     }
     /* One staging-slot batch per frame (96-rect upload cap); the rest waits
      * for the next flush. The screenshot compose retries its frame until
-     * this queue drains, so captures never sample a half-filled atlas. */
-    int n = s_hdf_pending_n > 96 ? 96 : s_hdf_pending_n;
-    rhi_update_rgba8_rects(s_nr.dev, s_hdf_atlas, s_hdf_pending, n);
+     * this queue drains, so captures never sample a half-filled atlas.
+     *
+     * The cap is a staging-slot bound, not a pacing lever: sweeping it 96 -> 4
+     * moves the pack's first-render stall by a few ms and no more, because
+     * that stall is not the rect copies. */
+    const int cap = HDFOLD_UPLOAD_PER_FRAME;
+    int n = s_hdf_pending_n > cap ? cap : s_hdf_pending_n;
+    { OP_PROF_ACCUM_SCOPE("tex.atlas_upload");
+      rhi_update_rgba8_rects(s_nr.dev, s_hdf_atlas, s_hdf_pending, n); }
     s_hdf_pending_n -= n;
     if (s_hdf_pending_n > 0)
         memmove(s_hdf_pending, s_hdf_pending + n,
