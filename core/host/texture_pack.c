@@ -80,13 +80,17 @@ typedef struct {
     int symbolic;                  /* named asset file (<asset>.png) — matched by
                                     * the game layer's texture_pack_annotate name;
                                     * covers the FULL upload (Phase 7) */
-    unsigned char *px;             /* lazy; NULL until first match */
+    unsigned char *px;             /* decoded by the worker; read only once
+                                    * px_state is TP_PX_READY */
     int w, h;
     int load_failed;
+    SDL_AtomicInt px_state;        /* TP_PX_* — publishes px across threads */
+    unsigned char urgent;          /* a draw is waiting on this one */
     unsigned char src;             /* index into s_srcs (0 = base pack dir) */
     char name[96];                 /* filename; for symbolic: asset name (no .png) */
 } tp_pack_entry;
 static tp_pack_entry s_pack[TP_PACK_MAX];
+
 static int  s_pack_n = 0;
 static char s_repl_dir[512];
 static int  s_repl_active = 0;
@@ -110,6 +114,7 @@ static int tp_src_enabled(int src) {
 }
 
 static int tp_add_root_source(int r);
+static void tp_decode_prefetch_all(void);
 static int s_seen_roots = 0; /* asset roots already turned into sources */
 
 /* Live-toggle awareness: a modset change flips which sources serve, so
@@ -133,6 +138,10 @@ static void tp_poll_modset(void) {
         if (grew) {
             s_gen++;
             s_repl_active = s_pack_n > 0;
+            /* A mod's pack arrives here, not through tp_repl_scan — this is
+             * the activation path that matters in practice, so it is the one
+             * that must start the prefetch. */
+            tp_decode_prefetch_all();
         }
     }
 }
@@ -248,8 +257,197 @@ static int tp_add_root_source(int r)
     return added > 0 || s_pack_n != before;
 }
 
+/* ---- Background replacement decode ---------------------------------------
+ *
+ * Decoding a replacement is a blocking PNG read off disk. Doing it inline in
+ * texture_pack_match is doing it during draw-time texture resolve — on the
+ * game fiber, inside the tick — so the host loop stops for as long as the
+ * read takes. A level's worth arriving at once (first render of a scene the
+ * pack covers) has stalled it for 228-275 ms, far past the pacer's slip
+ * clamp, which silently discards that much wall-clock from the game clock.
+ *
+ * Decodes therefore run on a worker. The whole enabled pack is prefetched
+ * when it goes active, so by the time a draw wants an entry it is normally
+ * already resident; anything the prefetch has not reached is queued at the
+ * front on first use, and that draw falls back to the base texture for as
+ * long as it takes. The tick never blocks on disk either way.
+ *
+ * Prefetch stops adding to resident memory past TP_PREFETCH_BUDGET; entries
+ * beyond it stay on the on-demand path rather than being dropped, so a pack
+ * larger than the budget still renders fully, just with brief fallback the
+ * first time each texture is drawn. */
+#define TP_PX_NONE   0
+#define TP_PX_QUEUED 1
+#define TP_PX_READY  2
+#define TP_PX_FAILED 3
+
+/* Decoded-pixel ceiling for *prefetch*. On-demand decodes ignore it — a
+ * texture a draw is actually waiting for is always worth the memory. */
+#define TP_PREFETCH_BUDGET ((size_t)256 * 1024 * 1024)
+
+#define TP_Q_CAP (TP_PACK_MAX + 1)
+
+static struct {
+    SDL_Thread    *th;
+    SDL_Mutex     *mu;
+    SDL_Condition *cv;
+    int            q[TP_Q_CAP];
+    int            head, tail;     /* ring: head = next out, tail = next in */
+    int            busy;           /* a decode is in flight */
+    int            quit;
+    size_t         resident;       /* decoded bytes currently held */
+    unsigned       budget_skips;   /* prefetch items deferred to on-demand */
+    int            budget_logged;
+} s_dec;
+
+static int tp_q_empty(void) { return s_dec.head == s_dec.tail; }
+
+/* Caller holds s_dec.mu. */
+static void tp_q_push(int ei, int front) {
+    int nxt = (s_dec.tail + 1) % TP_Q_CAP;
+    if (nxt == s_dec.head) return;            /* full — on-demand will retry */
+    if (front) {
+        s_dec.head = (s_dec.head + TP_Q_CAP - 1) % TP_Q_CAP;
+        s_dec.q[s_dec.head] = ei;
+    } else {
+        s_dec.q[s_dec.tail] = ei;
+        s_dec.tail = nxt;
+    }
+}
+
+static void tp_decode_one(int ei) {
+    tp_pack_entry *e = &s_pack[ei];
+    char path[704];
+    snprintf(path, sizeof path, "%s/%s%s", s_srcs[e->src].dir, e->name,
+             e->symbolic ? ".png" : "");
+    int comp = 0, w = 0, h = 0;
+    unsigned char *px = stbi_load(path, &w, &h, &comp, 4);
+    if (!px) {
+        e->load_failed = 1;
+        SDL_SetAtomicInt(&e->px_state, TP_PX_FAILED);
+        return;
+    }
+    e->w = w; e->h = h;
+    e->px = px;
+    /* Publish w/h/px before the state flip, so a reader that sees READY sees
+     * all three. */
+    SDL_MemoryBarrierRelease();
+    SDL_SetAtomicInt(&e->px_state, TP_PX_READY);
+
+    SDL_LockMutex(s_dec.mu);
+    s_dec.resident += (size_t)w * (size_t)h * 4u;
+    SDL_UnlockMutex(s_dec.mu);
+}
+
+static int SDLCALL tp_decode_main(void *unused) {
+    (void)unused;
+    for (;;) {
+        SDL_LockMutex(s_dec.mu);
+        while (!s_dec.quit && tp_q_empty())
+            SDL_WaitCondition(s_dec.cv, s_dec.mu);
+        if (s_dec.quit) { SDL_UnlockMutex(s_dec.mu); return 0; }
+        int ei = s_dec.q[s_dec.head];
+        s_dec.head = (s_dec.head + 1) % TP_Q_CAP;
+        s_dec.busy = 1;
+        int over = s_dec.resident >= TP_PREFETCH_BUDGET;
+        SDL_UnlockMutex(s_dec.mu);
+
+        tp_pack_entry *e = &s_pack[ei];
+        if (over && !e->urgent) {
+            /* Back to NONE, not FAILED: the first draw that wants it will
+             * re-queue it as urgent and it decodes then. */
+            SDL_SetAtomicInt(&e->px_state, TP_PX_NONE);
+            SDL_LockMutex(s_dec.mu);
+            s_dec.budget_skips++;
+            int say = !s_dec.budget_logged;
+            s_dec.budget_logged = 1;
+            size_t res = s_dec.resident;
+            SDL_UnlockMutex(s_dec.mu);
+            if (say)
+                fprintf(stderr, "[texpack] prefetch budget reached (%zu MiB "
+                        "resident); remaining entries decode on first draw, "
+                        "which shows the base texture briefly\n",
+                        res / (1024u * 1024u));
+        } else {
+            tp_decode_one(ei);
+        }
+
+        SDL_LockMutex(s_dec.mu);
+        s_dec.busy = 0;
+        SDL_BroadcastCondition(s_dec.cv);
+        SDL_UnlockMutex(s_dec.mu);
+    }
+}
+
+static void tp_decode_start(void) {
+    if (s_dec.th) return;
+    if (!s_dec.mu) s_dec.mu = SDL_CreateMutex();
+    if (!s_dec.cv) s_dec.cv = SDL_CreateCondition();
+    if (!s_dec.mu || !s_dec.cv) return;
+    s_dec.quit = 0;
+    s_dec.th = SDL_CreateThread(tp_decode_main, "openpete-texdec", NULL);
+}
+
+/* Drain the queue and wait for any in-flight decode. Required before the
+ * registry is rebuilt or torn down, since both invalidate s_pack under the
+ * worker's feet. */
+static void tp_decode_quiesce(void) {
+    if (!s_dec.mu) return;
+    SDL_LockMutex(s_dec.mu);
+    s_dec.head = s_dec.tail = 0;
+    while (s_dec.busy) SDL_WaitCondition(s_dec.cv, s_dec.mu);
+    SDL_UnlockMutex(s_dec.mu);
+}
+
+static void tp_decode_stop(void) {
+    if (!s_dec.th) return;
+    SDL_LockMutex(s_dec.mu);
+    s_dec.quit = 1;
+    s_dec.head = s_dec.tail = 0;
+    SDL_BroadcastCondition(s_dec.cv);
+    SDL_UnlockMutex(s_dec.mu);
+    SDL_WaitThread(s_dec.th, NULL);
+    s_dec.th = NULL;
+}
+
+/* Queue ei unless it is already decoded, failed, or in the queue. `urgent`
+ * marks a draw as waiting: it jumps the prefetch backlog and ignores the
+ * memory budget. */
+static void tp_decode_request(int ei, int urgent) {
+    tp_pack_entry *e = &s_pack[ei];
+    if (urgent) e->urgent = 1;
+    int st = SDL_GetAtomicInt(&e->px_state);
+    if (st != TP_PX_NONE) return;              /* ready, failed, or queued */
+    if (!s_dec.th) tp_decode_start();
+    if (!s_dec.th) {                           /* no worker — decode inline */
+        tp_decode_one(ei);
+        return;
+    }
+    if (!SDL_CompareAndSwapAtomicInt(&e->px_state, TP_PX_NONE, TP_PX_QUEUED))
+        return;                                /* another thread queued it */
+    SDL_LockMutex(s_dec.mu);
+    tp_q_push(ei, urgent);
+    SDL_SignalCondition(s_dec.cv);
+    SDL_UnlockMutex(s_dec.mu);
+}
+
+/* Queue the whole enabled pack, so a draw normally finds its replacement
+ * already resident instead of waiting on the on-demand path. */
+static void tp_decode_prefetch_all(void) {
+    if (!s_repl_active) return;
+    tp_decode_start();
+    int n = 0;
+    for (int i = 0; i < s_pack_n; i++)
+        if (tp_src_enabled(s_pack[i].src)) { tp_decode_request(i, 0); n++; }
+    if (n)
+        fprintf(stderr, "[texpack] prefetching %d replacement%s off-tick\n",
+                n, n == 1 ? "" : "s");
+}
+
 static void tp_repl_scan(void)
 {
+    /* The worker indexes s_pack; this rebuilds it. */
+    tp_decode_quiesce();
     s_repl_active = 0; s_pack_n = 0;
     memset(s_match, 0, sizeof s_match);
     /* Precedence: --texpack-dir override > OPENPETE_TEXPACK_DIR env > built-in dir. */
@@ -296,6 +494,7 @@ static void tp_repl_scan(void)
         fprintf(stderr, "[texpack] replacement pack active: %d entries "
                 "(%d source%s)\n", s_pack_n, s_src_n,
                 s_src_n == 1 ? "" : "s");
+    tp_decode_prefetch_all();
 }
 
 void texture_pack_init(void)
@@ -359,6 +558,7 @@ void texture_pack_on_restore(void)
 void texture_pack_shutdown(void)
 {
     if (getenv("OPENPETE_TEXPACK_DUMP_REGISTRY")) texture_pack_debug_dump();
+    tp_decode_stop();
     for (int i = 0; i < s_pack_n; i++)
         if (s_pack[i].px) { stbi_image_free(s_pack[i].px); s_pack[i].px = NULL; }
     s_pack_n = 0;
@@ -608,16 +808,13 @@ int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out)
     }
     if (ei < 0) return 0;
     tp_pack_entry *e = &s_pack[ei];
-    if (!e->px && !e->load_failed) {            /* lazy first load */
-        char path[704];
-        snprintf(path, sizeof path, "%s/%s%s", s_srcs[e->src].dir, e->name,
-                 e->symbolic ? ".png" : "");
-        int comp = 0;
-        e->px = stbi_load(path, &e->w, &e->h, &comp, 4);
-        if (!e->px) e->load_failed = 1;
-        else fprintf(stderr, "[texpack] replacement loaded %dx%d: %s%s\n",
-                     e->w, e->h, e->name, e->symbolic ? ".png (symbolic)" : "");
+    /* Not resident yet: ask for it and draw the base texture this frame
+     * rather than blocking the tick on a disk read. */
+    if (SDL_GetAtomicInt(&e->px_state) != TP_PX_READY) {
+        tp_decode_request(ei, 1);
+        if (SDL_GetAtomicInt(&e->px_state) != TP_PX_READY) return 0;
     }
+    SDL_MemoryBarrierAcquire();                 /* pairs with the worker */
     if (!e->px) return 0;
     out->pixels = e->px; out->w = e->w; out->h = e->h;
     if (e->symbolic) {
