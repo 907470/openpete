@@ -12,9 +12,11 @@
 // and play Crash's "woah!" as a host-side one-shot. The sample is the
 // player's own — decoded on first use straight out of the demo's level data
 // on the mounted disc image (S0/S000000D.NSF) into an OpenAL buffer, never
-// staged on disk; nothing ships in the binary. The title screen keeps running
-// (the guest's own KillSoundsAndMusic has already silenced the music by the
-// time the branch fires, which reads as intended drama).
+// staged on disk; nothing ships in the binary. The title screen keeps running.
+//
+// The branch opens with KillSoundsAndMusic(), which on hardware is moot —
+// the program is about to be replaced — but here leaves the title track
+// stopped for good. The per-tick hook below restarts it afterwards.
 //
 // The branch also fires TitlescreenPlaySound(9) — a UI blip that on hardware
 // is cut off within a few frames by the program swap, but here runs to
@@ -31,6 +33,8 @@
 // A sound entry's single item is raw SPU-ADPCM 16-byte lines. eIDs pack a
 // 5-char name into 6-bit fields; "arg0A" (Crash's woah/aargh yell) is
 // 0x14DA0049.
+
+#include "features/crash_demo_woah.h"
 
 #include "feature_registry.h"
 
@@ -56,12 +60,24 @@
 #define OVERLAY_TITLESCREEN    48u
 #define TS_SOUND_BACK          9    /* the blip the cheat branch fires */
 #define TS_SUBSTATE_PRESS_START 3
-
-#define ADDR_G_PAD_HELD        0x80077380u /* g_Pad 0x80077378 + m_Held @ 0x8 */
 #define ADDR_TS_SUBSTATE       0x80078D88u /* g_TitlescreenState.m_SubState */
+
 #define PAD_L1                 (1u << 2)
 #define PAD_TRIANGLE           (1u << 4)
 #define CHEAT_COMBO            (PAD_L1 | PAD_TRIANGLE)
+
+#define ADDR_G_PAD_HELD        0x80077380u /* g_Pad 0x80077378 + m_Held @ 0x8 */
+/* g_CdMusic @ 0x800774B0. Offsets from the CdMusic layout in music.h:
+ * m_CurrentTrack 0x0, m_Flags 0x4, m_MusicTable[64]{start,end} 0x8..0x208,
+ * m_TrackPosition 0x208, m_SyncData[8] 0x20C, m_PostCDCommand 0x214,
+ * m_Flags2 0x218, m_EasterEggTicks 0x21C. */
+#define ADDR_G_CDMUSIC_TRACK   0x800774B0u
+#define ADDR_G_CDMUSIC_FLAGS   0x800774B4u
+#define ADDR_G_CDMUSIC_POSTCMD 0x800776C4u
+#define ADDR_G_CDMUSIC_FLAGS2  0x800776C8u
+#define ADDR_G_CDMUSIC_EGGTICKS 0x800776CCu
+#define MUSIC_STATE_PLAY       1
+#define MUSIC_FLAG_SILENT      0x40 /* set once playback has fully stopped */
 
 #define NSF_CHUNK_LEN   65536u
 #define NSF_CHUNK_MAGIC 0x1234u
@@ -77,6 +93,7 @@
 
 static char     s_disc_path[1024];
 static unsigned s_blips_suppressed;
+static int      s_music_owed; /* cheat fired; title track needs restarting */
 
 static uint32_t rd32(const uint8_t* p) {
     uint32_t v;
@@ -205,6 +222,10 @@ static int on_crash_demo_launch(CPUState* cpu, uint32_t addr) {
                    s_blips_suppressed);
     }
     s_last_vbl = now;
+    /* KillSoundsAndMusic() ran at the top of the branch and the title track
+     * is now stopped for good — on hardware the program swap made that
+     * moot. Owe it a restart; the tick hook pays once the combo is up. */
+    s_music_owed = 1;
     /* Always swallow the call: the body's shutdown sequence (SetDispMask,
      * PadStopCom, callback clears) assumes LoadExec never returns. */
     return 1;
@@ -221,6 +242,39 @@ static int on_titlescreen_play_sound(CPUState* cpu, uint32_t addr) {
     if ((cpu->read_word(ADDR_G_PAD_HELD) & CHEAT_COMBO) != CHEAT_COMBO) return 0;
     s_blips_suppressed++;
     return 1;
+}
+
+/* Restart the title track the cheat branch stopped. Deferred to the tick
+ * hook and held until the combo is released, because the guest re-enters
+ * the branch — and re-runs KillSoundsAndMusic — on every tick the buttons
+ * stay down; restarting underneath that would just stutter.
+ *
+ * The restart goes through the game's own deferred-command slot rather
+ * than a synthetic call: CDMusicUpdate() runs SetMusicState(m_CurrentTrack,
+ * m_Flags2) and clears m_Flags2 whenever it finds it non-zero, so writing
+ * PLAY there is the same request the game makes of itself. Its precondition
+ * is exactly what the kill leaves behind — no pending CD command and
+ * playback fully stopped (m_Flags SILENT). */
+void spyro1_crash_woah_on_tick(CPUState* cpu) {
+    if (!s_music_owed) return;
+    if (spyro_get_active_overlay_magic() != OVERLAY_TITLESCREEN) {
+        s_music_owed = 0; /* left the title screen; its music is not ours */
+        return;
+    }
+    if ((cpu->read_word(ADDR_G_PAD_HELD) & CHEAT_COMBO) == CHEAT_COMBO)
+        return;           /* still held — the branch will kill it again */
+
+    uint32_t flags = cpu->read_word(ADDR_G_CDMUSIC_FLAGS);
+    if (cpu->read_word(ADDR_G_CDMUSIC_POSTCMD) != 0 ||
+        !(flags & MUSIC_FLAG_SILENT))
+        return;           /* CD still settling — try again next tick */
+
+    s_music_owed = 0;
+    cpu->write_word(ADDR_G_CDMUSIC_FLAGS2, MUSIC_STATE_PLAY);
+    OPL_INFO_F("game", "crash-woah: requested title track %u restart "
+               "(music flags 0x%X, egg ticks %d)",
+               cpu->read_word(ADDR_G_CDMUSIC_TRACK), flags,
+               (int)cpu->read_word(ADDR_G_CDMUSIC_EGGTICKS));
 }
 
 static void crash_demo_woah_apply_options(const openpete_options_t* opts) {

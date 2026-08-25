@@ -18,6 +18,7 @@
 #include "features/text_moby_native.h"
 #include "features/audio_volume_native.h"
 #include "features/cheats_native.h"
+#include "features/crash_demo_woah.h"
 #include "features/freecam_native.h"
 #include "features/levelwarp_native.h"
 
@@ -485,6 +486,10 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * live, re-armed at the title screen so each new session gets them. Inert
      * without the flag. */
     spyro1_cheats_on_tick(cpu);
+
+    /* Title-screen Crash-demo easter egg: restart the music its branch
+     * stopped, once the combo is released. Inert until the cheat fires. */
+    spyro1_crash_woah_on_tick(cpu);
 
     /* --sfx / --music: hold the game's own volume sliders at the requested
      * levels (re-stamped over the title screen's and a save load's reseeds,
