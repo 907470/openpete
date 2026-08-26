@@ -123,6 +123,15 @@ static uint32_t (*s_orig_lwr)(uint32_t, uint32_t);
  * the reads it names are silently canonical and must be dealt with. */
 static uint32_t s_stat_unaligned_reads;
 
+/* stage() refusals. Every caller falls back to writing guest RAM when staging
+ * is unavailable, which is correct but silent -- a producer that never manages
+ * to stage would keep writing gameplay memory while every gate stayed green.
+ * The refusal that is easiest to miss is a PARTIAL overlap: an address already
+ * covered by a shorter span cannot be extended, so it returns NULL. Counting
+ * refusals is what makes "no producer writes guest RAM any more" a measurement
+ * rather than a hope. */
+static uint32_t s_stat_stage_fail;
+
 /* One-shot so an exhausted arena is loud once rather than per resolve. */
 static int s_warned_full;
 
@@ -154,6 +163,11 @@ static void sv_wset_note(uint32_t addr)
 
 void openpete_subtick_view_report_writes(void)
 {
+    if (s_stat_stage_fail)
+        OPL_WARN_F("subtick-view",
+                   "%u stage() refusal(s) -- that many producer writes went to "
+                   "guest RAM instead of the view",
+                   s_stat_stage_fail);
     if (s_stat_unaligned_reads)
         OPL_WARN_F("subtick-view",
                    "%u unaligned load(s) hit a staged span and read CANONICAL "
@@ -177,6 +191,8 @@ uint32_t openpete_subtick_view_opens(void) { return s_opens; }
 
 /* Index of the span covering `addr`, or -1. Declared ahead of the callbacks. */
 static int sv_find(uint32_t addr);
+static void sv_guard_begin(void);
+static void sv_guard_end(void);
 
 /* Read `n` bytes at `addr` from staging if covered, else from the displaced
  * callback. A read straddling the end of a span falls through to real memory
@@ -269,6 +285,7 @@ void openpete_subtick_view_begin(CPUState* cpu)
         const char* e = getenv("OPENPETE_SUBTICK_WRITE_TRACE");
         s_trace = (e && *e && *e != '0');
     }
+    sv_guard_begin();
 
     if (!cpu) return;
     s_orig_read_word  = cpu->read_word;
@@ -295,6 +312,7 @@ void openpete_subtick_view_begin(CPUState* cpu)
 
 void openpete_subtick_view_end(CPUState* cpu)
 {
+    sv_guard_end();
     s_active = 0;
     if (!cpu || !s_orig_read_word) return;
     cpu->read_word  = s_orig_read_word;
@@ -346,6 +364,20 @@ static int sv_find(uint32_t addr)
 
 void* openpete_subtick_view_stage(uint32_t addr, uint32_t len)
 {
+    /* OPENPETE_SUBTICK_VIEW=0 refuses every staging request, so every producer
+     * falls back to its write-and-restore path against guest RAM. That is the
+     * pre-view behaviour, kept reachable as the A/B for this whole change --
+     * and it is what makes the RAM guard falsifiable, since a guard that has
+     * only ever reported zero has not been shown capable of reporting more. */
+    static int enabled = -1;
+    if (enabled < 0) {
+        const char* e = getenv("OPENPETE_SUBTICK_VIEW");
+        enabled = (e && *e) ? (*e != '0') : 1;
+        if (!enabled)
+            OPL_WARN_F("subtick-view", "%s",
+                       "DISABLED — producers write guest RAM directly (legacy path)");
+    }
+    if (!enabled) return NULL;
     if (!s_active || !len) return NULL;
 
     /* Already covered: hand back the existing copy so several producers can
@@ -358,15 +390,17 @@ void* openpete_subtick_view_stage(uint32_t addr, uint32_t len)
         uint32_t avail = sp->len - (addr - sp->addr);
         if (avail >= len)
             return s_arena + sp->off + (addr - sp->addr);
+        s_stat_stage_fail++;
         return NULL;   /* caller keeps the value canonical rather than guessing */
     }
 
     /* Real bytes, deliberately not via the view — staging seeds from
      * canonical memory, and a span never seeds from another span. */
     const void* live = openpete_psx_to_host_ptr(addr);
-    if (!live) return NULL;
+    if (!live) { s_stat_stage_fail++; return NULL; }
 
     if (s_span_count >= SV_MAX_SPANS || len > SV_ARENA_BYTES - s_arena_used) {
+        s_stat_stage_fail++;
         if (!s_warned_full) {
             s_warned_full = 1;
             OPL_WARN_F("subtick-view",
@@ -404,3 +438,98 @@ void* openpete_subtick_host_ptr(uint32_t addr)
     }
     return openpete_psx_to_host_ptr(addr);
 }
+
+/* ---- guest-RAM write guard ------------------------------------------------
+ * The census above sees CPU-path writes. It is blind to a write through a host
+ * pointer, which is how the bracket producers always wrote, so "no producer
+ * writes guest RAM any more" rested on having read the right source files --
+ * and that enumeration had already missed one producer.
+ *
+ * This settles it by construction instead: with OPENPETE_SUBTICK_RAM_GUARD=1,
+ * main guest RAM is mapped read-only for the duration of every sub-tick
+ * present. Any writer faults, whatever path it took to get the address, and
+ * the handler names the faulting address before letting the write proceed, so
+ * a run reports rather than dies.
+ *
+ * Resolution limit, because the number it prints is easy to over-read: letting
+ * the write proceed means unprotecting for the REST of that present, so the
+ * guard reports the FIRST writer per present, not all of them. Across many
+ * presents different writers surface; a run that reports one violation has not
+ * shown there is only one. Zero across many presents is the meaningful
+ * result.
+ *
+ * Debug-gated and POSIX-only: it is an auditing tool for the correctness
+ * machine, not something the shipped renderer pays for. Scratchpad is NOT
+ * covered -- it is a sub-page allocation, and it holds the .s renderer's
+ * transient workspace rather than gameplay state.
+ */
+#if defined(__unix__) || defined(__APPLE__)
+#include <signal.h>
+#include <sys/mman.h>
+#include <unistd.h>
+
+static int  s_guard = -1;
+static int  s_guard_armed;
+static uint32_t s_guard_hits;
+static struct sigaction s_prev_segv;
+
+static void sv_guard_unprotect(void)
+{
+    uint8_t* ram = openpete_psx_get_ram();
+    if (ram) mprotect(ram, OPENPETE_PSX_RAM_SIZE, PROT_READ | PROT_WRITE);
+    s_guard_armed = 0;
+}
+
+static void sv_segv(int sig, siginfo_t* si, void* uc)
+{
+    uint8_t* ram = openpete_psx_get_ram();
+    uint8_t* fa  = (uint8_t*)si->si_addr;
+    if (s_guard_armed && ram && fa >= ram && fa < ram + OPENPETE_PSX_RAM_SIZE) {
+        s_guard_hits++;
+        OPL_WARN_F("subtick-view",
+                   "GUEST RAM WRITTEN during a sub-tick present: [%08x] "
+                   "(host %p) — a producer is still publishing through "
+                   "gameplay memory",
+                   OPENPETE_PSX_KSEG0_BASE + (uint32_t)(fa - ram), (void*)fa);
+        /* Let it through: the point is to enumerate every writer in one run,
+         * not to halt at the first. */
+        sv_guard_unprotect();
+        return;
+    }
+    if (s_prev_segv.sa_flags & SA_SIGINFO) s_prev_segv.sa_sigaction(sig, si, uc);
+    else if (s_prev_segv.sa_handler)       s_prev_segv.sa_handler(sig);
+    else                                   _exit(139);
+}
+
+static void sv_guard_begin(void)
+{
+    if (s_guard < 0) {
+        const char* e = getenv("OPENPETE_SUBTICK_RAM_GUARD");
+        s_guard = (e && *e && *e != '0');
+        if (s_guard) {
+            struct sigaction sa;
+            memset(&sa, 0, sizeof sa);
+            sa.sa_sigaction = sv_segv;
+            sa.sa_flags = SA_SIGINFO | SA_NODEFER;
+            sigaction(SIGSEGV, &sa, &s_prev_segv);
+            OPL_INFO_F("subtick-view", "%s",
+                       "RAM guard armed: guest RAM is read-only during presents");
+        }
+    }
+    if (!s_guard) return;
+    uint8_t* ram = openpete_psx_get_ram();
+    if (ram && mprotect(ram, OPENPETE_PSX_RAM_SIZE, PROT_READ) == 0)
+        s_guard_armed = 1;
+}
+
+static void sv_guard_end(void)
+{
+    if (s_guard > 0 && s_guard_armed) sv_guard_unprotect();
+}
+
+uint32_t openpete_subtick_view_guard_hits(void) { return s_guard_hits; }
+#else
+static void sv_guard_begin(void) {}
+static void sv_guard_end(void)   {}
+uint32_t openpete_subtick_view_guard_hits(void) { return 0; }
+#endif

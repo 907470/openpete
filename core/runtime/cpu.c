@@ -20,7 +20,10 @@
  * `--defsym=<game-symbol>=g_ram+<offset>` to alias native C globals to
  * fixed PSX RAM addresses (plan §8 strategy A). Outside that link-time
  * trick, all access still flows through `openpete_psx_get_ram()`. */
-uint8_t g_ram[RAM_SIZE];
+/* Page-aligned so the sub-tick RAM guard can mprotect it (see
+ * openpete_subtick_view.h). Alignment is free here and preserves every
+ * --defsym alias, which are all g_ram+offset. */
+uint8_t g_ram[RAM_SIZE] __attribute__((aligned(4096)));
 static uint8_t g_scratch[SCRATCH_SIZE];
 
 uint8_t* openpete_psx_get_ram(void)     { return g_ram; }
