@@ -6,7 +6,8 @@
 #include "openpete_interp.h"        /* snapshot ring query + op_now/OP_NS_PER_SEC */
 #include "openpete_interp_objs.h"   /* per-object (moby) prev/curr table */
 #include "openpete_native_render.h" /* register callback + scene API */
-#include "openpete_psx.h"           /* openpete_psx_to_host_ptr */
+#include "openpete_psx.h"
+#include "openpete_subtick_view.h"           /* openpete_psx_to_host_ptr */
 #include "psx_runtime.h"            /* CPUState (read_word) */
 #include "features/render_paths.h"  /* canon-drawn mask (load-window census) */
 #include "spyro_interp_regions.h"   /* spyro_interp_moby_key */
@@ -1065,7 +1066,10 @@ static void scratch_bracket_leave(CPUState* cpu) {
     }
 }
 
-static void spyro_native_reextract(void* cpu_v) {
+/* The sub-tick present body. Always entered through the wrapper below, which
+ * owns the view's begin/end pairing — this function has many exit paths and
+ * an unpaired view would leave staged bytes visible to the next tick. */
+static void spyro_native_reextract_body(void* cpu_v) {
     CPUState* cpu = (CPUState*)cpu_v;
 
     /* W0.3 bracket-integrity: snapshot the fixed DIRECT gameplay regions BEFORE
@@ -2059,6 +2063,19 @@ static void spyro_native_reextract(void* cpu_v) {
             amin = 2.0; amax = -1.0;
         }
     }
+}
+
+/* Sub-tick presents show interpolated state. Producers below still publish it
+ * by writing gameplay-readable memory and restoring it afterwards; the view is
+ * the destination those writes are migrating to, and while it is open it
+ * serves staged bytes to every read the feeders make. Opening it here is
+ * behaviour-neutral until a producer stages something — an empty view resolves
+ * every address to real memory. */
+static void spyro_native_reextract(void* cpu_v) {
+    CPUState* cpu = (CPUState*)cpu_v;
+    openpete_subtick_view_begin(cpu);
+    spyro_native_reextract_body(cpu_v);
+    openpete_subtick_view_end(cpu);
 }
 
 void spyro_native_reextract_init(void) {

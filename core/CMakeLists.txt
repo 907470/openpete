@@ -37,6 +37,7 @@ add_library(openpete_core STATIC
     # the pump and the sim are headed for different threads. See
     # openpete_host_input.h.
     runtime/host_input.c
+    runtime/subtick_view.c
     runtime/screenshot.c
     runtime/run.c
     runtime/psxtrace_verify.c

@@ -28,6 +28,7 @@
 
 #include "openpete_log.h"
 #include "openpete_time.h"   /* op_now — overlay's own sub-tick alpha (camera-independent) */
+#include "openpete_subtick_view.h" /* engagement report at shutdown */
 #include "openpete_interp.h" /* deterministic present clock for the overlay sub-tick alpha */
 #include "openpete_record.h" /* native --record capture seam */
 #include "rhi.h"
@@ -9303,6 +9304,19 @@ void openpete_native_render_record_flush(void)
 
 void openpete_native_render_shutdown(void)
 {
+    /* Sub-tick view engagement. Reported unconditionally because a run that
+     * never opened it cannot support any claim about the sub-tick path, and
+     * that fact is invisible in the pixels. */
+    {
+        uint32_t opens = openpete_subtick_view_opens();
+        uint32_t spans = 0, served = 0, writes = 0;
+        openpete_subtick_view_stats(&spans, &served, &writes);
+        OPL_INFO_F("subtick-view",
+                   "presents=%u staged_spans=%u served_reads=%u (last present); "
+                   "cpu_writes_while_open=%u",
+                   opens, spans, served, writes);
+    }
+
     if (!s_nr.enabled)
         return;
     rhi_wait_idle(s_nr.dev);
