@@ -54,6 +54,7 @@
 
 #include "feature_registry.h"
 #include "psx_runtime.h"
+#include "openpete_subtick_view.h"
 #include "openpete_native_render.h"
 #include "render_paths.h"
 #include "spyro_native_reextract.h"   /* portal_native_reextract export */
@@ -2333,13 +2334,26 @@ static void feed_revealed_portals(CPUState* cpu) {
         int rev_dome = 0; int rev_M[3][3];
         if (rev_want) {
             derive_dome_matrix(cpu, rev_M);
-            uint32_t save_gte[5], save_clip[4];
+            uint32_t save_gte[5], save_clip[4] = {0};
             for (int j = 0; j < 5; j++) save_gte[j] = cpu->gte_ctrl[j];
-            for (int j = 0; j < 4; j++) save_clip[j] = cpu->read_word(D_CLIPRECT + j * 4u);
-            cpu->write_word(D_CLIPRECT + 0x0, (uint32_t)(int32_t)floorf(oylo) << 16);
-            cpu->write_word(D_CLIPRECT + 0x4, (uint32_t)(int32_t)ceilf (oyhi) << 16);
-            cpu->write_word(D_CLIPRECT + 0x8, (uint32_t)(int32_t)floorf(oxlo) << 16);
-            cpu->write_word(D_CLIPRECT + 0xC, (uint32_t)(int32_t)ceilf (oxhi) << 16);
+            const uint32_t rev_clip[4] = {
+                (uint32_t)(int32_t)floorf(oylo) << 16,
+                (uint32_t)(int32_t)ceilf (oyhi) << 16,
+                (uint32_t)(int32_t)floorf(oxlo) << 16,
+                (uint32_t)(int32_t)ceilf (oxhi) << 16,
+            };
+            /* Publish the narrowed clip rect through the sub-tick view when one
+             * is open: the dome feed reads it back through cpu->read_word, which
+             * the view serves, so gameplay memory need not carry a render-local
+             * value. Falls back to the write-and-restore bracket otherwise. */
+            uint8_t* rev_clip_st =
+                (uint8_t*)openpete_subtick_view_stage(D_CLIPRECT, sizeof rev_clip);
+            if (rev_clip_st) {
+                memcpy(rev_clip_st, rev_clip, sizeof rev_clip);
+            } else {
+                for (int j = 0; j < 4; j++) save_clip[j] = cpu->read_word(D_CLIPRECT + j * 4u);
+                for (int j = 0; j < 4; j++) cpu->write_word(D_CLIPRECT + j * 4u, rev_clip[j]);
+            }
             cpu->gte_ctrl[0] = (uint32_t)(uint16_t)rev_M[0][0] | ((uint32_t)(uint16_t)rev_M[0][1] << 16);
             cpu->gte_ctrl[1] = (uint32_t)(uint16_t)rev_M[0][2] | ((uint32_t)(uint16_t)rev_M[1][0] << 16);
             cpu->gte_ctrl[2] = (uint32_t)(uint16_t)rev_M[1][1] | ((uint32_t)(uint16_t)rev_M[1][2] << 16);
@@ -2347,7 +2361,8 @@ static void feed_revealed_portals(CPUState* cpu) {
             cpu->gte_ctrl[4] = (uint32_t)(uint16_t)rev_M[2][2];
             rev_dome = feed_portal_dome(cpu, skybox, 0, /*canonical=*/0, rev_fog, rev_fog_t);
             for (int j = 0; j < 5; j++) cpu->gte_ctrl[j] = save_gte[j];
-            for (int j = 0; j < 4; j++) cpu->write_word(D_CLIPRECT + j * 4u, save_clip[j]);
+            if (!rev_clip_st)
+                for (int j = 0; j < 4; j++) cpu->write_word(D_CLIPRECT + j * 4u, save_clip[j]);
         }
         if (s_pcap_n < PORTAL_CAP_MAX) {
             portal_cap_t* c = &s_pcap[s_pcap_n++];
@@ -2488,8 +2503,12 @@ void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
 
     /* Save the transient inputs we overwrite; restore before returning so the
      * game fiber resumes on canonical CPU/RAM state. */
-    uint32_t save_clip[4], save_gte[5];
-    for (int i = 0; i < 4; i++) save_clip[i] = cpu->read_word(D_CLIPRECT + i * 4);
+    uint32_t save_clip[4] = {0}, save_gte[5];
+    /* Same seam as the reverse-dome path above: stage once for the whole replay
+     * and every per-cap rect below lands in the view instead of guest memory. */
+    uint8_t* clip_st = (uint8_t*)openpete_subtick_view_stage(D_CLIPRECT, 4u * 4u);
+    if (!clip_st)
+        for (int i = 0; i < 4; i++) save_clip[i] = cpu->read_word(D_CLIPRECT + i * 4);
     for (int i = 0; i < 5; i++) save_gte[i]  = cpu->gte_ctrl[i];
 
     for (int n = 0; n < s_pcap_n; n++) {
@@ -2541,10 +2560,15 @@ void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
                 rc[2] = (int)floorf(lx0) - pad; rc[3] = (int)ceilf(lx1) + pad;
             }
         }
-        cpu->write_word(D_CLIPRECT + 0x0, (uint32_t)rc[0] << 16);
-        cpu->write_word(D_CLIPRECT + 0x4, (uint32_t)rc[1] << 16);
-        cpu->write_word(D_CLIPRECT + 0x8, (uint32_t)rc[2] << 16);
-        cpu->write_word(D_CLIPRECT + 0xC, (uint32_t)rc[3] << 16);
+        {
+            const uint32_t cap_clip[4] = {
+                (uint32_t)rc[0] << 16, (uint32_t)rc[1] << 16,
+                (uint32_t)rc[2] << 16, (uint32_t)rc[3] << 16,
+            };
+            if (clip_st) memcpy(clip_st, cap_clip, sizeof cap_clip);
+            else for (int j = 0; j < 4; j++)
+                     cpu->write_word(D_CLIPRECT + j * 4u, cap_clip[j]);
+        }
 
         if (c->is_dome && dome_ready) {
             /* Write the sub-tick-lerped shared dome matrix (computed once above). */
@@ -2589,7 +2613,8 @@ void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
                              c->fog_rgb, c->fog_t);
     }
 
-    for (int i = 0; i < 4; i++) cpu->write_word(D_CLIPRECT + i * 4, save_clip[i]);
+    if (!clip_st)
+        for (int i = 0; i < 4; i++) cpu->write_word(D_CLIPRECT + i * 4, save_clip[i]);
     for (int i = 0; i < 5; i++) cpu->gte_ctrl[i] = save_gte[i];
 }
 
