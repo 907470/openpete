@@ -101,6 +101,12 @@ void openpete_subtick_view_stats(uint32_t* out_spans, uint32_t* out_served,
  * vacuous rather than passing. */
 uint32_t openpete_subtick_view_opens(void);
 
+/* Log every distinct guest address written while a view was open, for the run.
+ * This is the census that says which producers still publish through gameplay
+ * memory -- note it sees only CPU-path writes, so a producer that writes a host
+ * pointer directly is invisible to it and must be found another way. */
+void openpete_subtick_view_report_writes(void);
+
 #ifdef __cplusplus
 }
 #endif

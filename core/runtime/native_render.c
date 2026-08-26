@@ -9315,6 +9315,7 @@ void openpete_native_render_shutdown(void)
                    "presents=%u staged_spans=%u served_reads=%u (last present); "
                    "cpu_writes_while_open=%u",
                    opens, spans, served, writes);
+        openpete_subtick_view_report_writes();
     }
 
     if (!s_nr.enabled)

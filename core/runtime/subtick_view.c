@@ -108,12 +108,64 @@ static uint32_t (*s_orig_read_word)(uint32_t);
 static uint16_t (*s_orig_read_half)(uint32_t);
 static uint8_t  (*s_orig_read_byte)(uint32_t);
 static void     (*s_orig_write_word)(uint32_t, uint32_t);
+static void     (*s_orig_write_half)(uint32_t, uint16_t);
+static void     (*s_orig_write_byte)(uint32_t, uint8_t);
+static void     (*s_orig_swl)(uint32_t, uint32_t);
+static void     (*s_orig_swr)(uint32_t, uint32_t);
+static uint32_t (*s_orig_lwl)(uint32_t, uint32_t);
+static uint32_t (*s_orig_lwr)(uint32_t, uint32_t);
+
+/* Unaligned loads that landed inside a staged span. They are NOT served from
+ * staging -- lwl/lwr merge with the destination register and reimplementing
+ * that here would be a second copy of subtle semantics. Counting them instead
+ * turns "feeders probably do not use unaligned loads" from an assumption into
+ * a measurement: while this is zero the gap is empty, and if it ever is not,
+ * the reads it names are silently canonical and must be dealt with. */
+static uint32_t s_stat_unaligned_reads;
 
 /* One-shot so an exhausted arena is loud once rather than per resolve. */
 static int s_warned_full;
 
 /* OPENPETE_SUBTICK_WRITE_TRACE=1 */
 static int s_trace = -1;
+
+/* Distinct guest addresses written while a view was open, for the whole run.
+ * Per-present tracing is capped and shows only what one present did; a census
+ * needs the union, so producers that fire rarely or only in certain scenes
+ * still appear. Linear set -- it is tiny by construction, and if it ever is
+ * not, that is itself the finding. */
+#define SV_WSET_MAX 256u
+static struct { uint32_t addr; uint32_t hits; } s_wset[SV_WSET_MAX];
+static uint32_t s_wset_n;
+static uint32_t s_wset_overflow;
+
+static void sv_wset_note(uint32_t addr)
+{
+    for (uint32_t i = 0; i < s_wset_n; i++)
+        if (s_wset[i].addr == addr) { s_wset[i].hits++; return; }
+    if (s_wset_n < SV_WSET_MAX) {
+        s_wset[s_wset_n].addr = addr;
+        s_wset[s_wset_n].hits = 1;
+        s_wset_n++;
+    } else {
+        s_wset_overflow++;
+    }
+}
+
+void openpete_subtick_view_report_writes(void)
+{
+    if (s_stat_unaligned_reads)
+        OPL_WARN_F("subtick-view",
+                   "%u unaligned load(s) hit a staged span and read CANONICAL "
+                   "bytes -- lwl/lwr are not served from staging",
+                   s_stat_unaligned_reads);
+    if (!s_wset_n) return;
+    OPL_WARN_F("subtick-view",
+               "%u distinct guest address(es) written during sub-tick presents%s:",
+               s_wset_n, s_wset_overflow ? " (set full, more elided)" : "");
+    for (uint32_t i = 0; i < s_wset_n; i++)
+        OPL_WARN_F("subtick-view", "  [%08x] x%u", s_wset[i].addr, s_wset[i].hits);
+}
 
 /* Lifetime count of presents this view was opened for. An A/B that leaves it
  * at zero never exercised the view, and a neutral result from such a run says
@@ -166,9 +218,33 @@ static uint8_t sv_read_byte(uint32_t addr)
 /* Writes are counted, then performed. See the header: the count is the
  * measure of un-migrated producers, and refusing the write would damage the
  * present rather than protect anything. */
+/* Every write path is counted, not just word-sized. A byte-writing producer
+ * would otherwise be invisible to the census and the remaining work would be
+ * reported as smaller than it is. */
+static void sv_write_half(uint32_t addr, uint16_t v)
+{ s_stat_writes++; sv_wset_note(addr); s_orig_write_half(addr, v); }
+
+static void sv_write_byte(uint32_t addr, uint8_t v)
+{ s_stat_writes++; sv_wset_note(addr); s_orig_write_byte(addr, v); }
+
+static void sv_swl(uint32_t addr, uint32_t v)
+{ s_stat_writes++; sv_wset_note(addr); s_orig_swl(addr, v); }
+
+static void sv_swr(uint32_t addr, uint32_t v)
+{ s_stat_writes++; sv_wset_note(addr); s_orig_swr(addr, v); }
+
+static uint32_t sv_lwl(uint32_t addr, uint32_t rt)
+{ if (s_active && sv_find(addr) >= 0) s_stat_unaligned_reads++;
+  return s_orig_lwl(addr, rt); }
+
+static uint32_t sv_lwr(uint32_t addr, uint32_t rt)
+{ if (s_active && sv_find(addr) >= 0) s_stat_unaligned_reads++;
+  return s_orig_lwr(addr, rt); }
+
 static void sv_write_word(uint32_t addr, uint32_t value)
 {
     s_stat_writes++;
+    sv_wset_note(addr);
     /* OPENPETE_SUBTICK_WRITE_TRACE names the addresses, which is what turns
      * "something wrote during a present" into a producer you can go and fix.
      * Capped per present so a runaway writer cannot flood the log. */
@@ -199,10 +275,22 @@ void openpete_subtick_view_begin(CPUState* cpu)
     s_orig_read_half  = cpu->read_half;
     s_orig_read_byte  = cpu->read_byte;
     s_orig_write_word = cpu->write_word;
+    s_orig_write_half = cpu->write_half;
+    s_orig_write_byte = cpu->write_byte;
+    s_orig_swl        = cpu->swl;
+    s_orig_swr        = cpu->swr;
+    s_orig_lwl        = cpu->lwl;
+    s_orig_lwr        = cpu->lwr;
     cpu->read_word  = sv_read_word;
     cpu->read_half  = sv_read_half;
     cpu->read_byte  = sv_read_byte;
     cpu->write_word = sv_write_word;
+    cpu->write_half = sv_write_half;
+    cpu->write_byte = sv_write_byte;
+    cpu->swl        = sv_swl;
+    cpu->swr        = sv_swr;
+    cpu->lwl        = sv_lwl;
+    cpu->lwr        = sv_lwr;
 }
 
 void openpete_subtick_view_end(CPUState* cpu)
@@ -213,6 +301,12 @@ void openpete_subtick_view_end(CPUState* cpu)
     cpu->read_half  = s_orig_read_half;
     cpu->read_byte  = s_orig_read_byte;
     cpu->write_word = s_orig_write_word;
+    cpu->write_half = s_orig_write_half;
+    cpu->write_byte = s_orig_write_byte;
+    cpu->swl        = s_orig_swl;
+    cpu->swr        = s_orig_swr;
+    cpu->lwl        = s_orig_lwl;
+    cpu->lwr        = s_orig_lwr;
     s_orig_read_word = NULL;
 }
 
