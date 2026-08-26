@@ -780,6 +780,10 @@ static const knob_desc_t g_builtin[] = {
 
     ENVROW_LATCHED("DEPTH_AFFINE", "Debug", "1",
         "0 = legacy depth curve; 1 (default) screen-affine; baked into pipelines at boot."),
+    ENVROW_LATCHED("THREAD_SPLIT", "Debug", "0",
+      "Run the sim on a worker thread while the main thread owns the window "
+      "and the event pump, so dragging or resizing the window cannot stall "
+      "the game. Windowed native-vk only. Latched at startup."),
     ENVROW_LATCHED("GPU_TIMERS", "Debug", "0",
         "Per-pass GPU timestamp zones (query pools created at device init)."),
     ENVROW_LIVE("PHASE_TIMERS", "Debug", "0",
