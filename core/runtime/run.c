@@ -200,6 +200,44 @@ static volatile sig_atomic_t g_native_fs_toggle_request = 0;
  * quit binding — and forwards the rest. Consuming quit/close here is what
  * keeps PsyX_Exit (and its exit(0), which hangs on static teardown under
  * WSL+GL+libco) unreachable. */
+/* Host thread split (OPENPETE_THREAD_SPLIT=1, off by default).
+ *
+ * Win32 runs a modal loop inside DefWindowProc for a title-bar drag or a
+ * resize, which blocks whichever thread owns the window. Today that thread
+ * also runs the game, so dragging the window freezes the sim. The fix is to
+ * keep the window and the pump on main and move the host loop to a worker:
+ * a drag then blocks main while the worker keeps ticking.
+ *
+ * Off by default while it earns mileage; the knob is also the A/B for
+ * diagnosing anything the split is suspected of causing. */
+static int openpete_thread_split_enabled(void)
+{
+    static int v = -1;
+    if (v < 0) {
+        const char* e = getenv("OPENPETE_THREAD_SPLIT");
+        v = (e && *e && *e != '0') ? 1 : 0;
+    }
+    return v;
+}
+
+/* Only the default windowed pure-vk configuration splits. Everything else —
+ * headless, --renderer psycross|ab|diff, screenshot capture — keeps PsyCross
+ * rasterizing, which means a thread-affine GL context created on whichever
+ * thread runs bring-up, and those are also the modes every gate runs in. They
+ * stay single-threaded until this path has proven itself. */
+static bool openpete_split_applies(const openpete_options_t* opts)
+{
+    return openpete_thread_split_enabled()
+        && !opts->headless
+        && opts->renderer == OPENPETE_RENDERER_VK
+        && opts->screenshot_frame_count <= 0
+        && opts->screenshot_presents_start < 0
+        && !openpete_host_input_legacy();
+}
+
+/* Set once the worker has finished, so main can leave its pump loop. */
+static SDL_AtomicInt g_worker_done;
+
 static bool openpete_handle_event(SDL_Event* ev);
 
 static void openpete_pump_events(void) {
@@ -1065,6 +1103,11 @@ int openpete_get_render_fps(void) {
 }
 
 static int run_recomp_fiber(const openpete_options_t* opts) {
+    /* True when main owns the window, the pump and the SDL-state publish, and
+     * this function is running on the worker. Resolved once: it decides which
+     * half of the input seam this thread is responsible for. */
+    const bool split = openpete_split_applies(opts);
+
     memset(&g_game, 0, sizeof(g_game));
     openpete_psx_runtime_init(&g_game.cpu);
     openpete_psx_set_diag_cpu(&g_game.cpu);
@@ -2663,8 +2706,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             if ((alt_enter && !prev_alt_enter) ||
                 openpete_key_pressed(OPK_FULLSCREEN) ||
                 g_native_fs_toggle_request) {
-                g_native_fs_toggle_request = 0;
-                openpete_native_toggle_fullscreen();
+                if (split) {
+                    /* SDL_SetWindowFullscreen belongs to the thread that owns
+                     * the window. Raise the request; main performs it. */
+                    g_native_fs_toggle_request = 1;
+                } else {
+                    g_native_fs_toggle_request = 0;
+                    openpete_native_toggle_fullscreen();
+                }
             }
             prev_alt_enter = alt_enter;
         }
@@ -2686,7 +2735,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * Legacy pumps inside PsyX_UpdateInput below, so it publishes the
          * previous pump's state — the same one-iteration lag the polled
          * bindings have always had. */
-        openpete_host_input_publish_sdl();
+        if (!split) openpete_host_input_publish_sdl();
 
         if (openpete_host_input_legacy()) {
             /* Pre-ownership path, kept as a diagnostic A/B: PsyCross both
@@ -2695,12 +2744,19 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * gameplay for any input the host is not driving. */
             PsyX_UpdateInput();
         } else {
-            openpete_pump_events();
-            /* Re-publish now the pump has refreshed SDL, so the pad sample
-             * and this iteration's consumers see current state rather than
-             * the pre-pump snapshot taken above. */
-            openpete_host_input_publish_sdl();
-            openpete_host_input_sample((openpete_host_input_modstate() & SDL_KMOD_ALT) != 0);
+            /* Under the thread split main owns the pump, the SDL-state
+             * publish and the pad sample; this thread only consumes what was
+             * published. That asymmetry is the whole point of the seam — the
+             * consumer never touches SDL. */
+            if (!split) {
+                openpete_pump_events();
+                /* Re-publish now the pump has refreshed SDL, so the pad sample
+                 * and this iteration's consumers see current state rather than
+                 * the pre-pump snapshot taken above. */
+                openpete_host_input_publish_sdl();
+                openpete_host_input_sample(
+                    (openpete_host_input_modstate() & SDL_KMOD_ALT) != 0);
+            }
             openpete_host_input_latch(ovr_claimed);
             PsyX_Pad_InternalPadUpdates();
             openpete_host_input_parity_check(ovr_claimed);
@@ -3891,6 +3947,91 @@ static void log_frame_on_exit(void) {
     OPL_INFO_F("exit", "last openpete_frame=%u", openpete_frame);
 }
 
+/* Worker entry: the entire host loop and the game fiber. libco fibers are
+ * thread-affine, so the fiber must be created and switched on this one thread
+ * for its whole life — which is why the loop moves wholesale rather than
+ * having main drive parts of it. */
+static int  s_worker_rc;
+static const openpete_options_t* s_worker_opts;
+
+static int SDLCALL openpete_sim_thread(void* unused)
+{
+    (void)unused;
+    s_worker_rc = run_recomp_fiber(s_worker_opts);
+    SDL_SetAtomicInt(&g_worker_done, 1);
+    return 0;
+}
+
+/* main: owns SDL video, the window, and the event pump. See
+ * openpete_thread_split_enabled for why. */
+static int run_split_threaded(const openpete_options_t* opts)
+{
+    /* Bring SDL video up HERE, on the thread that will pump. PsyX_Initialise
+     * calls SDL_Init(SDL_INIT_VIDEO) too, but from the worker — by then this
+     * is an existing-subsystem refcount bump rather than a second init on the
+     * wrong thread. */
+    if (!SDL_Init(SDL_INIT_VIDEO | SDL_INIT_EVENTS)) {
+        OPL_ERROR_F("boot", "SDL_Init(video) failed: %s", SDL_GetError());
+        return OPENPETE_EXIT_SETUP_ERROR;
+    }
+
+    /* The window must belong to the pumping thread: Win32 delivers a window's
+     * messages only to its creator. Bring-up on the worker adopts this. */
+    int win_w = (opts->window_w > 0) ? opts->window_w : 0;
+    int win_h = (opts->window_h > 0) ? opts->window_h : 0;
+    openpete_native_precreate_window(opts, win_w, win_h);
+
+    /* Seed the input seam before the worker exists: its first latch must find
+     * a valid snapshot, or pad injection falls back to reading SDL on the
+     * worker. Also publish an initial SDL-state snapshot for the same reason
+     * — bindings evaluated on the worker must never reach SDL themselves. */
+    openpete_host_input_seed_neutral();
+    openpete_host_input_publish_sdl();
+
+    s_worker_opts = opts;
+    SDL_SetAtomicInt(&g_worker_done, 0);
+    /* Explicit, large stack. The host loop and everything it calls used to
+     * run on the process's main stack, which the OS grows generously; a
+     * default-sized thread stack is a fraction of that, and this call tree is
+     * deep (recompiled dispatch, feeders, extraction, the RHI). */
+    SDL_PropertiesID props = SDL_CreateProperties();
+    SDL_SetPointerProperty(props, SDL_PROP_THREAD_CREATE_ENTRY_FUNCTION_POINTER,
+                           (void*)openpete_sim_thread);
+    SDL_SetStringProperty(props, SDL_PROP_THREAD_CREATE_NAME_STRING, "openpete-sim");
+    SDL_SetNumberProperty(props, SDL_PROP_THREAD_CREATE_STACKSIZE_NUMBER,
+                          64 * 1024 * 1024);
+    SDL_Thread* th = SDL_CreateThreadWithProperties(props);
+    SDL_DestroyProperties(props);
+    if (!th) {
+        OPL_ERROR_F("boot", "SDL_CreateThread(openpete-sim) failed: %s — "
+                            "running single-threaded", SDL_GetError());
+        return run_recomp_fiber(opts);
+    }
+    OPL_INFO_F("boot", "%s", "thread split: main owns window+pump, worker owns the sim");
+
+    /* Pump loop. Deliberately fast relative to the sim: the worker latches
+     * whatever was last published, so this period bounds input staleness.
+     * SDL_WaitEventTimeout parks the thread instead of spinning, and still
+     * wakes immediately when an event arrives. */
+    while (!SDL_GetAtomicInt(&g_worker_done)) {
+        SDL_WaitEventTimeout(NULL, 1);
+        openpete_pump_events();
+        openpete_host_input_publish_sdl();
+        openpete_host_input_sample(
+            (openpete_host_input_modstate() & SDL_KMOD_ALT) != 0);
+
+        /* Window ops belong to this thread. The worker raises the flag (from
+         * a binding or Alt+Enter) and main performs the SDL call. */
+        if (g_native_fs_toggle_request) {
+            g_native_fs_toggle_request = 0;
+            openpete_native_toggle_fullscreen();
+        }
+    }
+
+    SDL_WaitThread(th, NULL);
+    return s_worker_rc;
+}
+
 int openpete_run(const openpete_options_t* opts) {
     openpete_log_init(opts->log_format, opts->log_level_spec);
     /* The stderr mirror is normally already up (main() opens it before
@@ -3925,6 +4066,8 @@ int openpete_run(const openpete_options_t* opts) {
     /* Phase 1d: dispatch entry on a fiber and drive a frame loop with VSync
      * yielding back here for present + scene swap. */
     if (opts->run_recomp_addr != 0) {
+        if (openpete_split_applies(opts))
+            return run_split_threaded(opts);
         return run_recomp_fiber(opts);
     }
 #endif

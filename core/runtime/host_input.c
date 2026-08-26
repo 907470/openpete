@@ -299,6 +299,24 @@ void openpete_host_input_sample(bool alt_held)
     s_snap_seq++;
 }
 
+void openpete_host_input_seed_neutral(void)
+{
+    /* Publish a neutral, valid snapshot before the consumer can run.
+     *
+     * Without one, the consumer's first latch finds nothing to stamp, leaves
+     * the override inactive, and PsyX_Pad_InternalPadUpdates falls through to
+     * its LIVE path — which calls SDL_PumpEvents (PsyX_pad.cpp). Under the
+     * thread split that consumer is the worker, so this is an SDL event pump
+     * from a thread that does not own video: a hard crash on Windows.
+     *
+     * Seeding neutral means the override is active from the first tick and
+     * the live path is unreachable on the consumer thread by construction. */
+    s_snap.bits = PAD_NEUTRAL_BITS;
+    s_snap.axes[0] = s_snap.axes[1] = s_snap.axes[2] = s_snap.axes[3] = 128;
+    s_snap.valid = true;
+    s_snap_seq++;
+}
+
 void openpete_host_input_latch(bool claimed)
 {
     if (claimed || !s_snap.valid)

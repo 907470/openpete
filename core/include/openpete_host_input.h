@@ -38,6 +38,13 @@ int openpete_host_input_legacy(void);
  * the neutral pad rather than going stale. */
 void openpete_host_input_sample(bool alt_held);
 
+/* Publish a neutral snapshot so the consumer has something valid to stamp
+ * before the producer's first real sample. Required before starting a
+ * consumer on another thread: without it the first latch leaves the override
+ * inactive and the injection path falls back to reading SDL directly, on the
+ * wrong thread. */
+void openpete_host_input_seed_neutral(void);
+
 /* Consumer. Stamps the published snapshot into the PsyCross override channel.
  * A no-op when `claimed` is set — that means a higher-priority override writer
  * (bk2 replay, the settings menu, the dev overlay, rewind) already owns the
