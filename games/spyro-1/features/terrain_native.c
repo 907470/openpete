@@ -28,7 +28,8 @@
 #include "feature_registry.h"
 #include "psx_runtime.h"   /* full CPUState (read_word, gte_ctrl, ...) */
 #include "openpete_native_render.h"
-#include "openpete_psx.h"  /* openpete_psx_to_host_ptr (sector colour host reads) */
+#include "openpete_psx.h"
+#include "openpete_subtick_view.h"  /* openpete_psx_to_host_ptr (sector colour host reads) */
 #include "render_paths.h"  /* --render-paths isolation */
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
 #include "openpete_interp.h"         /* openpete_interp_present_now (scroll-anim alpha) */
@@ -3079,7 +3080,7 @@ static int tgpu_col_hash(const tscache_t* SC, uint32_t* out) {
     };
     for (int i = 0; i < 3; i++) {
         if (r[i].bytes <= 0) continue;
-        const uint8_t* p = (const uint8_t*)openpete_psx_to_host_ptr(r[i].base);
+        const uint8_t* p = (const uint8_t*)openpete_subtick_host_ptr(r[i].base);
         if (!p) return -1;
         for (int j = 0; j < r[i].bytes; j++) h = (h ^ p[j]) * 16777619u;
     }
@@ -3970,9 +3971,9 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
         }
         if (!cverts || !cfaces) continue;                  /* alloc failure: skip pass */
         /* Colour bases → host pointers (fallback: the cpu read path). */
-        const uint8_t* h_lp   = passLP ? (const uint8_t*)openpete_psx_to_host_ptr(lpColBase) : NULL;
-        const uint8_t* h_near = passLP ? NULL : (const uint8_t*)openpete_psx_to_host_ptr(nearBase);
-        const uint8_t* h_far  = passLP ? NULL : (const uint8_t*)openpete_psx_to_host_ptr(farBase);
+        const uint8_t* h_lp   = passLP ? (const uint8_t*)openpete_subtick_host_ptr(lpColBase) : NULL;
+        const uint8_t* h_near = passLP ? NULL : (const uint8_t*)openpete_subtick_host_ptr(nearBase);
+        const uint8_t* h_far  = passLP ? NULL : (const uint8_t*)openpete_subtick_host_ptr(farBase);
         int host_col = passLP ? (h_lp != NULL) : (h_near != NULL && h_far != NULL);
         W->emit_noHP = passLP;     /* tag emitted tris with this pass's tier */
         W->emit_fill = passFill;   /* fill pass -> WORLD_FILL category in the feed */

@@ -849,6 +849,7 @@ typedef struct {
     uint8_t*    live;        /* row-owned live save (len bytes) */
     int         captured;    /* canon[] has ever been filled */
     int         open;        /* live[] holds this present's save */
+    uint8_t*    stage;       /* view copy for this present, NULL = write guest RAM */
     int         warned;      /* one-shot capture-length-mismatch warning */
 } scratch_region_t;
 
@@ -1022,6 +1023,17 @@ static void scratch_bracket_enter(CPUState* cpu) {
         if (!h) continue;
         memcpy(r->live, h, r->len);
         r->open = 1;
+        /* Publish this row's replay through the view. Staging seeds from the
+         * live bytes, so a row whose producer is stale keeps exactly what it
+         * would have kept before -- the canon overwrite below is what makes a
+         * fresh row differ, same as when it went to guest memory.
+         *
+         * Overlapping rows resolve correctly by construction: a SEG_OVERLAY row
+         * lands inside the span its records row already staged, so stage()
+         * returns that same buffer and the overlay writes into it in phase
+         * order -- reproducing the temporal reuse the .s renderer performs,
+         * which is the whole reason the phase column exists. */
+        r->stage = (uint8_t*)openpete_subtick_view_stage(r->psx_base, r->len);
     }
     s_bracket_open = 1;
     /* Restore canon per PRODUCER freshness: a producer that didn't run during
@@ -1034,6 +1046,7 @@ static void scratch_bracket_enter(CPUState* cpu) {
         scratch_region_t* r = &s_scratch_rows[i];
         if (r->phase != SPHASE_ENTER || !r->open || !r->captured) continue;
         if (!scratch_prod_fresh(r->producer)) continue;
+        if (r->stage) { memcpy(r->stage, r->canon, r->len); continue; }
         void* h = openpete_psx_to_host_ptr(r->psx_base);
         if (h) memcpy(h, r->canon, r->len);
     }
@@ -1051,6 +1064,7 @@ static void scratch_bracket_seg_restore(CPUState* cpu) {
         scratch_region_t* r = &s_scratch_rows[i];
         if (r->phase != SPHASE_SEG_OVERLAY || !r->open || !r->captured) continue;
         if (!scratch_prod_fresh(r->producer)) continue;
+        if (r->stage) { memcpy(r->stage, r->canon, r->len); continue; }
         void* h = openpete_psx_to_host_ptr(r->psx_base);
         if (h) memcpy(h, r->canon, r->len);
     }
@@ -1068,6 +1082,7 @@ static void scratch_bracket_leave(CPUState* cpu) {
         scratch_region_t* r = &s_scratch_rows[i];
         if (!r->open) continue;
         r->open = 0;
+        if (r->stage) { r->stage = NULL; continue; }  /* never written; nothing to undo */
         void* h = openpete_psx_to_host_ptr(r->psx_base);
         if (h) memcpy(h, r->live, r->len);
     }

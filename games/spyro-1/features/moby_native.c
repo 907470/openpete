@@ -28,7 +28,8 @@
 #include "feature_registry.h"
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
-#include "openpete_psx.h"            /* openpete_psx_to_host_ptr (SPEC scratch bracket) */
+#include "openpete_psx.h"
+#include "openpete_subtick_view.h"            /* openpete_psx_to_host_ptr (SPEC scratch bracket) */
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "openpete_log.h"           /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
@@ -108,7 +109,7 @@ static void moby_native_capture_spec_scratch(CPUState* cpu) {
      * intermediate present, strobing specular mobys). */
     extern int openpete_speculative;
     if (openpete_speculative) return;
-    const void* h = openpete_psx_to_host_ptr(G_SCRATCH + SPEC_SCR_LO);
+    const void* h = openpete_subtick_host_ptr(G_SCRATCH + SPEC_SCR_LO);
     if (h) { memcpy(s_canon_spec, h, SPEC_SCR_LEN); s_canon_spec_valid = 1;
              s_canon_spec_epoch = spyro_native_canon_epoch_stamp(); }
 }
@@ -2079,8 +2080,8 @@ static int build_walk_tris_inner(CPUState* cpu) {
         /* Resolve the colour bases to host pointers once per record; the loop
          * then reads colours directly (moby_color_at_host). Fallback = the
          * cpu->read_word path when a base doesn't map (never in practice). */
-        const uint8_t* cb_host = (const uint8_t*)openpete_psx_to_host_ptr(cbase);
-        const uint8_t* fb_host = farbase ? (const uint8_t*)openpete_psx_to_host_ptr(farbase) : NULL;
+        const uint8_t* cb_host = (const uint8_t*)openpete_subtick_host_ptr(cbase);
+        const uint8_t* fb_host = farbase ? (const uint8_t*)openpete_subtick_host_ptr(farbase) : NULL;
         int host_col = (cb_host != NULL) && (farbase == 0 || fb_host != NULL);
         /* Sub-tick COLOUR crossfade (patch-animated effects): the fade of the
          * Gnasty-blast dome/rings is per-KEYFRAME colour-index re-pointing down
@@ -5633,7 +5634,7 @@ void moby_native_reextract(CPUState* cpu) {
      * dedup'd record pass, then restore the REGULAR scratch. */
     int spec_walk = 0;
     if (spec_fresh) {
-        void* h = openpete_psx_to_host_ptr(G_SCRATCH + SPEC_SCR_LO);
+        void* h = openpete_subtick_host_ptr(G_SCRATCH + SPEC_SCR_LO);
         if (h) {
             static uint8_t saved_reg[SPEC_SCR_LEN];
             memcpy(saved_reg, h, SPEC_SCR_LEN);       /* current = REGULAR (from bracket) */

@@ -9,7 +9,8 @@
  * more tick). */
 
 #include "moby_rank.h"
-#include "openpete_psx.h"   /* openpete_psx_to_host_ptr — fresh-chain walk */
+#include "openpete_psx.h"
+#include "openpete_subtick_view.h"   /* openpete_psx_to_host_ptr — fresh-chain walk */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -162,12 +163,12 @@ void openpete_mobyrank_ot_end(void)
 
 static int mr_walk_buckets(mr_ot_t* W)
 {
-    const uint32_t* pot = (const uint32_t*)openpete_psx_to_host_ptr(MR_G_WORLDOT);
+    const uint32_t* pot = (const uint32_t*)openpete_subtick_host_ptr(MR_G_WORLDOT);
     if (!pot) return -1;
     uint32_t base = *pot;
     if (!base || (base & 3)) return -1;
-    const uint8_t* bh = (const uint8_t*)openpete_psx_to_host_ptr(base);
-    const uint8_t* bh_end = (const uint8_t*)openpete_psx_to_host_ptr(
+    const uint8_t* bh = (const uint8_t*)openpete_subtick_host_ptr(base);
+    const uint8_t* bh_end = (const uint8_t*)openpete_subtick_host_ptr(
         base + MR_OT_BUCKETS * 8u - 4u);
     if (!bh || !bh_end) return -1;
     W->n = 0;
@@ -179,7 +180,7 @@ static int mr_walk_buckets(mr_ot_t* W)
         if (!endn || !start) continue;
         uint32_t addr = start;
         while (addr && nodes++ < 24576) {
-            const uint8_t* host = (const uint8_t*)openpete_psx_to_host_ptr(addr);
+            const uint8_t* host = (const uint8_t*)openpete_subtick_host_ptr(addr);
             if (!host) return -1;
             uint32_t tag;
             memcpy(&tag, host, 4);

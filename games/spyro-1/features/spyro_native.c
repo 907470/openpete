@@ -30,7 +30,8 @@
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "openpete_log.h"           /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
-#include "openpete_psx.h"            /* openpete_psx_to_host_ptr (seg-scratch mix) */
+#include "openpete_psx.h"
+#include "openpete_subtick_view.h"            /* openpete_psx_to_host_ptr (seg-scratch mix) */
 #include "openpete_mods.h"           /* openpete_mods_active (actor-pose snapshot) */
 #include "spyro_native_reextract.h"  /* canon-scratch capture (sub-tick spine) */
 #include "spyro1_actor_pose.h"       /* mod actor render service pose blob (rung 16) */
@@ -273,7 +274,7 @@ static int     s_anim_on    = 0;
  * The two pose snapshots feed the two-pass shape lerp in the re-extract. */
 static void spyro_anim_capture_seg(CPUState* cpu) {
     (void)cpu;
-    const void* h = openpete_psx_to_host_ptr(SEG_SCRATCH);
+    const void* h = openpete_subtick_host_ptr(SEG_SCRATCH);
     if (!h) return;
     if (s_seg_valid >= 1) memcpy(s_seg_prev, s_seg_curr, SEG_BLOCK);
     memcpy(s_seg_curr, h, SEG_BLOCK);
@@ -309,7 +310,7 @@ static spyro1_actor_pose_t s_pose_live;
 static int s_pose_live_valid = 0;
 
 static void spyro_pose_snapshot(CPUState* cpu) {
-    const void* h = openpete_psx_to_host_ptr(SEG_SCRATCH);
+    const void* h = openpete_subtick_host_ptr(SEG_SCRATCH);
     if (!h) return;
     s_pose_live.magic    = SPYRO1_ACTOR_POSE_MAGIC;
     s_pose_live.version  = SPYRO1_ACTOR_POSE_VERSION;
@@ -1505,7 +1506,7 @@ int spyro1_actor_emit(CPUState* cpu, int kind, const void* pose, int len,
         return 0;
     }
 
-    void* h = openpete_psx_to_host_ptr(SEG_SCRATCH);
+    void* h = openpete_subtick_host_ptr(SEG_SCRATCH);
     if (!h) return 0;
     uint8_t live_seg[SEG_BLOCK];
     memcpy(live_seg, h, SEG_BLOCK);          /* render-transient swap:      */
@@ -1709,7 +1710,7 @@ void spyro_player_native_reextract(CPUState* cpu) {
      * always on-model. */
     int two_pass = 0;
     if (s_anim_on && s_seg_valid >= 2) {
-        void* h = openpete_psx_to_host_ptr(SEG_SCRATCH);
+        void* h = openpete_subtick_host_ptr(SEG_SCRATCH);
         if (h) {
             uint8_t live[SEG_BLOCK];
             memcpy(live, h, SEG_BLOCK);                 /* the canonical (curr) seg block */

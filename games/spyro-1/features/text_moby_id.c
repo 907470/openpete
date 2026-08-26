@@ -30,7 +30,8 @@
 #include <string.h>
 
 #include "feature_registry.h"
-#include "openpete_psx.h"      /* openpete_psx_to_host_ptr */
+#include "openpete_psx.h"
+#include "openpete_subtick_view.h"      /* openpete_psx_to_host_ptr */
 #include "psx_runtime.h"
 
 #include "text_moby_id.h"
@@ -142,7 +143,7 @@ int text_moby_id_lookup(uint32_t moby, uint32_t* out_key) {
              * previous one's records standing, and the pool recycles those
              * addresses for whatever the next layout allocates. Requiring the
              * live m_Class to be the one the emitter wrote rejects those. */
-            const void* h = openpete_psx_to_host_ptr(moby + MOBY_CLASS_OFF);
+            const void* h = openpete_subtick_host_ptr(moby + MOBY_CLASS_OFF);
             uint16_t live = 0;
             if (!h) return 0;
             memcpy(&live, h, 2);

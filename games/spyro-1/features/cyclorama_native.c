@@ -30,7 +30,8 @@
 
 #include "feature_registry.h"
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, a0/a1/a2, read_word) */
-#include "openpete_psx.h"  /* openpete_psx_to_host_ptr (present-time DRAWENV read) */
+#include "openpete_psx.h"
+#include "openpete_subtick_view.h"  /* openpete_psx_to_host_ptr (present-time DRAWENV read) */
 #include "openpete_native_render.h"  /* native scene push + enabled gate */
 #include "render_paths.h"  /* --render-paths isolation */
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
@@ -592,9 +593,9 @@ int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int
  * its ColorLerp fade step there). The thunk latch stays as the fallback for
  * the brief boot window where g_CurDB doesn't point at g_DB[] yet. */
 void cyclorama_native_env_clear_commit(void) {
-    const uint32_t curdb = *(const uint32_t*)openpete_psx_to_host_ptr(G_CUR_DB);
+    const uint32_t curdb = *(const uint32_t*)openpete_subtick_host_ptr(G_CUR_DB);
     if (curdb != G_DB && curdb != G_DB + 0x84u) return;   /* not a valid DB* yet */
-    const uint8_t* env = (const uint8_t*)openpete_psx_to_host_ptr(curdb);
+    const uint8_t* env = (const uint8_t*)openpete_subtick_host_ptr(curdb);
     /* PSYQ DRAWENV: isbg @+0x18, r0/g0/b0 @+0x19..0x1B (m_DrawEnv is DB +0x00) */
     openpete_native_set_clear_color(env[0x18], env[0x19], env[0x1A], env[0x1B]);
 }
