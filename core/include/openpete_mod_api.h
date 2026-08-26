@@ -262,8 +262,13 @@ typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
  * material supplies op_material(vec4 base). Materials written against api 4
  * (their own main() + outColor) fail to COMPILE against the api-5 contract,
  * deliberately: silently keeping them would keep them shading without the
- * perspective divide and without og's per-pixel painter verdicts. */
-#define OPENPETE_MOD_API_VERSION 5u
+ * perspective divide and without og's per-pixel painter verdicts.
+ *
+ * 6: material_set_selector + moby_classes. A selector can now be RETUNED on
+ * a live material, which is what a mod driving one from a widget needs:
+ * registration is refused inside a present, so the re-register such a mod
+ * used to attempt could only fail, leaving its material destroyed. */
+#define OPENPETE_MOD_API_VERSION 6u
 
 typedef struct openpete_mod_api {
     uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION (the struct is
@@ -384,7 +389,12 @@ typedef struct openpete_mod_api {
      * non-deterministic in count and timing, so anything sim-affecting
      * belongs in tick hooks. Publish state from tick hooks into your
      * own variables; evaluate your own curves at ctx->alpha here (the
-     * engine never interpolates mod visuals). Never runs headless. */
+     * engine never interpolates mod visuals).
+     *
+     * Rides an actual present, so it does not run when nothing is being
+     * presented: a plain headless run never calls it. A headless run that
+     * asks for a screenshot DOES present, and the hook fires there — which
+     * is what lets a headless gate reach present-context behaviour. */
     int (*register_present_hook)(openpete_mod_t* self,
                                  openpete_mod_present_fn fn);
 
@@ -573,6 +583,37 @@ typedef struct openpete_mod_api {
     int (*material_register_refine)(openpete_mod_t* self,
                                     const openpete_mod_material_selector_t* sel,
                                     int shader, openpete_mod_refine_fn refine);
+
+    /* Point a live material at a different selector, keeping its handle,
+     * shader, refine callback and enabled state (api 6). This is how a
+     * material follows a value the user is changing — a class picker, a
+     * level-scoped key re-keyed on level change. Re-registering instead
+     * burns a table slot per change and is refused outright inside a
+     * present, which is where a UI section runs.
+     *
+     * Selection must be constant across a whole present, so a call from a
+     * present hook or UI section takes effect at the NEXT TICK rather than
+     * immediately; called from entry or a tick hook it lands at once.
+     * Either way the material keeps shading under its old key until the new
+     * one applies — it never goes dark in between.
+     *
+     * The selector is validated exactly as material_register validates it:
+     * a key that would have been refused at registration is refused here. */
+    int (*material_set_selector)(openpete_mod_t* self, int material,
+                                 const openpete_mod_material_selector_t* sel);
+
+    /* The moby classes the CURRENT LEVEL has loaded, ascending, into `out`;
+     * returns the count (pass out=NULL/cap=0 to size the buffer first).
+     * These are the classes that can appear at all, which makes it the set
+     * worth offering a user to choose from — a class outside it can never
+     * match. It is LEVEL-scoped, not visibility-scoped: the answer does not
+     * change as the camera moves, and it is a superset of the classes with
+     * a live instance at this instant.
+     *
+     * Reads an engine-side snapshot refreshed once per tick, so unlike
+     * guest(), it is safe to call from a UI section. Empty before the first
+     * level finishes loading. */
+    int (*moby_classes)(openpete_mod_t* self, uint16_t* out, int cap);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

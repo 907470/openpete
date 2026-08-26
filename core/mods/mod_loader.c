@@ -944,6 +944,13 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
     }
     hot_reload_poll();
 
+    /* Both of these are things a UI section may have asked for from inside a
+     * present, where they could not be honoured: a retuned selector would
+     * have split the frame between two keys, and the class census reads
+     * guest RAM. The tick boundary is where they become legal. */
+    openpete_mods_material_apply_pending();
+    if (s_mod_count) openpete_mods_moby_class_census(cpu);
+
     /* Apply-committed config changes: reload the mod so its entry
      * re-reads the fresh values (build key unchanged, so the compile is
      * a cache hit). A mod that never entered (deferred row / assets-
@@ -1240,6 +1247,11 @@ static int api_material_register(openpete_mod_t* self,
     return openpete_mods_material_register(self, sel, -1, shader, NULL);
 }
 
+static int api_moby_classes(openpete_mod_t* self, uint16_t* out, int cap) {
+    (void)self;   /* the loaded-class set is a property of the level */
+    return openpete_mods_moby_classes(out, cap);
+}
+
 static int api_material_register_refine(openpete_mod_t* self,
                                         const openpete_mod_material_selector_t* sel,
                                         int shader,
@@ -1295,6 +1307,8 @@ static const openpete_mod_api_t s_api = {
     .material_register_refine = api_material_register_refine,
     .material_enable     = openpete_mods_material_enable,
     .material_set_params = openpete_mods_material_set_params,
+    .material_set_selector = openpete_mods_material_set_selector,
+    .moby_classes        = api_moby_classes,
 };
 
 /* ---- discovery / manifest / build / load --------------------------- */

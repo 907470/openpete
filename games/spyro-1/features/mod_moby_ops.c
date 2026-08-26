@@ -107,12 +107,26 @@ static void ops_walk_class(CPUState* cpu, int class_id,
     }
 }
 
+/* The classes this level loaded: every non-NULL g_Models row, since the
+ * table is indexed directly by m_Class and the loader only populates rows
+ * the level uses. Reported outside GS_Playing as "unknown" rather than as a
+ * short list — mid-load the loader is still filling the table. */
+static int ops_classes_loaded(CPUState* cpu, uint16_t* out, int cap) {
+    if (cpu->read_word(ADDR_G_GAMESTATE) != 0u) return -1;   /* GS_Playing */
+    int n = 0;
+    for (int id = 0; id < MODEL_COUNT && n < cap; id++)
+        if (cpu->read_word(ADDR_G_MODELS + 4u * (uint32_t)id))
+            out[n++] = (uint16_t)id;
+    return n;
+}
+
 static const openpete_moby_ops_t s_spyro1_moby_ops = {
     .update_hook_addr = 0x8003385Cu, /* GamestateUpdate */
     .level_id         = ops_level_id,
     .alloc_seed_class = ops_alloc_seed_class,
     .spawn            = ops_spawn,
     .walk_class       = ops_walk_class,
+    .classes_loaded   = ops_classes_loaded,
 };
 
 /* SoundDefinition repoint op (core sfx_def_replace service): resolve

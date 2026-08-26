@@ -20,20 +20,22 @@
 id      = "channel-gallery"
 name    = "Channel Gallery"
 version = "0.1.0"
-api     = 5            # pillar 10 materials; engine-owned main()
+api     = 6            # material_set_selector (live class picker)
 state    = "none"      # GPU-only; nothing to save
 runahead = "pure"      # no tick hooks
 sim_neutral = true
 
-[[config]]
-key = "gallery.strength"
-type = "float"
-default = 0.65
-min = 0.0
-max = 1.0
-label = "Highlight strength"
-group = "Gallery"
-help = "0 leaves the stock look untouched, 1 replaces it with the flat highlight colour. The overlay slider changes it live."
+# Only load-time settings are declared here. A [[config]] row is rendered by
+# the Mods panel and committed with Apply — write the file, reload the mod —
+# which is the wrong shape for a value you want to sweep while watching the
+# picture, and declaring one beside a live widget for the same value gives the
+# panel two controls that disagree. So gallery.strength, gallery.class and
+# gallery.refine_state are LIVE WIDGETS in the mod's own UI section instead.
+#
+# All three are still read from config.toml at load, which is how headless
+# runs drive the gallery (config keys are looked up by name, not through this
+# schema): gallery.strength = 0.65, gallery.class = <moby class, -1 = any>,
+# gallery.refine_state = <m_State, -1 = any>.
 
 [[config]]
 key = "gallery.rows"
@@ -43,22 +45,3 @@ label = "Rows lit at load"
 group = "Gallery"
 help = "Comma-separated row numbers (0-based, in overlay order), or \"all\". Lets the gallery be driven without the dev overlay. Empty = every row starts off."
 
-[[config]]
-key = "gallery.class"
-type = "int"
-default = 0
-min = -1
-max = 767
-label = "Moby class"
-group = "Gallery"
-help = "The class both moby-keyed rows select. -1 matches every class. Set it here to drive the gallery without the dev overlay."
-
-[[config]]
-key = "gallery.refine_state"
-type = "int"
-default = -1
-min = -1
-max = 255
-label = "Refine row: moby state"
-group = "Gallery"
-help = "The m_State the refine row's callback accepts. -1 claims every instance of the selected class; any other value makes the callback decline instances whose state differs. This is the predicate a selector alone cannot express."

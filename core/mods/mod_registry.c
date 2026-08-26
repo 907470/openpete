@@ -88,6 +88,30 @@ void openpete_mods_set_moby_ops(const openpete_moby_ops_t* ops) {
     s_ops = ops;
 }
 
+/* ── Loaded moby classes ────────────────────────────────────────────────
+ * Which classes a level loaded is a fact about guest RAM, but its consumer
+ * is a mod's UI section, which runs inside a present where guest access is
+ * refused. So the engine walks it at the tick boundary and mods read this
+ * copy — the same shape as openpete_mods_set_level. */
+static uint16_t s_moby_classes[OPENPETE_MOBY_CLASSES_MAX];
+static int      s_moby_class_count;
+
+void openpete_mods_moby_class_census(CPUState* cpu) {
+    if (!s_ops || !s_ops->classes_loaded) return;
+    int n = s_ops->classes_loaded(cpu, s_moby_classes,
+                                  OPENPETE_MOBY_CLASSES_MAX);
+    /* -1 means mid-load: keep the last good answer rather than blanking the
+     * set every time the player walks through a portal. */
+    if (n >= 0) s_moby_class_count = n;
+}
+
+int openpete_mods_moby_classes(uint16_t* out, int cap) {
+    if (!out || cap <= 0) return s_moby_class_count;
+    int n = s_moby_class_count < cap ? s_moby_class_count : cap;
+    for (int i = 0; i < n; i++) out[i] = s_moby_classes[i];
+    return n;
+}
+
 /* The shared per-tick driver hook, added lazily on the FIRST
  * registration in ANY namespace (anchor = the moby ops' master-update
  * address; the game registers both ops structs at boot). */

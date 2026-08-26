@@ -179,6 +179,30 @@ Manifest rows arm *before* `openpete_mod_entry`, so a mod that uses both
 tiers has its C registrations land later — and later wins. Where two
 materials claim the same pixels, the last registration takes them.
 
+### Following a value: retune, don't re-register
+
+`material_register` is an **entry-time** call. It is refused inside a
+present — and a UI section runs inside one — so a material that has to
+follow something the user is changing cannot re-register itself. Point it
+at a new selector instead:
+
+```c
+sel.moby_class = picked;
+api->material_set_selector(self, mat, &sel);
+```
+
+The handle, shader, refine callback and enabled state all survive; only
+the key changes. Called from a present hook or UI section it takes effect
+at the **next tick** rather than immediately, because selection has to be
+constant for a whole present — the material keeps shading under its old
+key until then, so it never blinks out in between.
+
+Offer the user only keys that can match. `api->moby_classes(self, buf,
+cap)` returns the moby classes the current level actually loaded —
+typically a few dozen out of the 768 the field allows — so a class picker
+built from it has no dead entries. It reads an engine-side snapshot taken
+once per tick, so unlike `guest()` it is safe to call from a UI section.
+
 Material fragment shaders include `openpete_psx_material.glsl` and read
 their own block at set 3 binding 1. The whole shader is one function:
 

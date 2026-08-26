@@ -1006,11 +1006,17 @@ typedef struct {
      * the whole material. */
     int           refine_slot;
     unsigned      refine_present;
+    /* A selector retuned from inside a present (material_set_selector) parks
+     * here until the tick boundary. Selection has to be constant for a whole
+     * present or half the frame shades under the old key. */
+    openpete_mod_material_selector_t sel_pending;
+    int           sel_dirty;
     int  live;
 } mod_material_t;
 
 static mod_material_t s_mats[MOD_MATERIAL_MAX];
 static int s_mat_count;
+static int s_mat_sel_dirty;      /* any material carries a parked selector */
 static int s_mat_has_instance;   /* cached: any live selector has a callback */
 
 /* Per-present interned per-instance slots (S8b). Index 0 reserved
@@ -1154,6 +1160,44 @@ int openpete_mods_material_terrain_bucket_gpu(
     return 0;
 }
 
+/* Refuse a selector this engine cannot fully honour, rather than matching
+ * wider than its author asked for. Size alone is not enough: a new flag bit
+ * never changes sizeof, so the flags are checked against the known mask too.
+ *
+ * Shared by register and set_selector so a retune can never install a key the
+ * register path would have refused. */
+static int material_sel_valid(const char* id,
+                              const openpete_mod_material_selector_t* sel) {
+    if (sel->struct_size != (uint32_t)sizeof *sel) {
+        OPL_ERROR_F("mods", "%s: material: selector size %u, engine expects %u "
+                    "— rebuild the mod against this SDK",
+                    id, sel->struct_size, (unsigned)sizeof *sel);
+        return 0;
+    }
+    if (sel->flags & ~(unsigned)OP_SEL_FLAGS_KNOWN) {
+        OPL_ERROR_F("mods", "%s: material: selector carries unknown flag bits "
+                    "%#x — this engine would match wider than you asked",
+                    id, sel->flags & ~(unsigned)OP_SEL_FLAGS_KNOWN);
+        return 0;
+    }
+    if (sel->channel != -1 &&
+        (sel->channel < OP_CHAN_MOBY || sel->channel > OP_CHAN_PORTAL)) {
+        OPL_ERROR_F("mods", "%s: material: unknown channel %d", id,
+                    sel->channel);
+        return 0;
+    }
+    if (sel->texture != -1 &&
+        (sel->texture < 0 || sel->texture > 0x7F ||
+         (sel->channel != -1 && sel->channel != OP_CHAN_TERRAIN) ||
+         (sel->flags & (unsigned)OP_SEL_UNTEXTURED))) {
+        OPL_ERROR_F("mods", "%s: material texture selector must be a terrain "
+                    "Tiledef id 0..127 on a textured path (got %d)", id,
+                    sel->texture);
+        return 0;
+    }
+    return 1;
+}
+
 int openpete_mods_material_register(openpete_mod_t* self,
                                     const openpete_mod_material_selector_t* sel,
                                     int vert_shader, int frag_shader,
@@ -1162,18 +1206,11 @@ int openpete_mods_material_register(openpete_mod_t* self,
     if (!id || !sel) return -1;
     if (openpete_mods_in_present) {
         OPL_ERROR_F("mods", "%s: material_register refused inside a present "
-                    "hook (register at entry)", id);
+                    "hook — register at entry, and retune a live selector "
+                    "with material_set_selector", id);
         return -1;
     }
-    if (sel->texture != -1 &&
-        (sel->texture < 0 || sel->texture > 0x7F ||
-         (sel->channel != -1 && sel->channel != OP_CHAN_TERRAIN) ||
-         (sel->flags & 0x8u /*OP_SEL_UNTEXTURED*/))) {
-        OPL_ERROR_F("mods", "%s: material texture selector must be a terrain "
-                    "Tiledef id 0..127 on a textured path (got %d)", id,
-                    sel->texture);
-        return -1;
-    }
+    if (!material_sel_valid(id, sel)) return -1;
     if (frag_shader >= 0) {
         size_t w = 0; int st = -1;
         if (!openpete_mods_shader_spv(frag_shader, &w, &st) ||
@@ -1193,27 +1230,6 @@ int openpete_mods_material_register(openpete_mod_t* self,
         }
     }
     if (vert_shader < 0 && frag_shader < 0) return -1;   /* nothing to do */
-    /* Refuse a selector this engine cannot fully honour, rather than
-     * matching wider than its author asked for. Size alone is not enough:
-     * a new flag bit never changes sizeof, so the flags are checked
-     * against the known mask too. */
-    if (sel->struct_size != (uint32_t)sizeof *sel) {
-        OPL_ERROR_F("mods", "%s: material: selector size %u, engine expects %u "
-                    "— rebuild the mod against this SDK",
-                    id, sel->struct_size, (unsigned)sizeof *sel);
-        return -1;
-    }
-    if (sel->flags & ~(unsigned)OP_SEL_FLAGS_KNOWN) {
-        OPL_ERROR_F("mods", "%s: material: selector carries unknown flag bits "
-                    "%#x — this engine would match wider than you asked",
-                    id, sel->flags & ~(unsigned)OP_SEL_FLAGS_KNOWN);
-        return -1;
-    }
-    if (sel->channel != -1 &&
-        (sel->channel < OP_CHAN_MOBY || sel->channel > OP_CHAN_PORTAL)) {
-        OPL_ERROR_F("mods", "%s: material: unknown channel %d", id, sel->channel);
-        return -1;
-    }
     if (s_mat_count >= MOD_MATERIAL_MAX) {
         OPL_ERROR_F("mods", "%s: material table full (%d)", id,
                     MOD_MATERIAL_MAX);
@@ -1258,6 +1274,54 @@ int openpete_mods_material_set_params(openpete_mod_t* self, int material,
     s_mats[material].params_len = len;
     if (len) memcpy(s_mats[material].params, block, len);
     return 0;
+}
+
+/* Retune a live material's selector, keeping its handle, shader, callback and
+ * enabled state. Re-registering instead would burn a table slot per change
+ * and leave the old selector matching forever, and is refused outright inside
+ * a present — which is exactly where a mod reacting to its own UI runs. */
+int openpete_mods_material_set_selector(
+        openpete_mod_t* self, int material,
+        const openpete_mod_material_selector_t* sel) {
+    const char* id = openpete_mods_id_of(self);
+    if (!id || !sel) return -1;
+    if (material < 0 || material >= s_mat_count || !s_mats[material].live)
+        return -1;
+    mod_material_t* m = &s_mats[material];
+    if (m->owner != id && strcmp(m->owner, id) != 0) {
+        OPL_ERROR_F("mods", "%s: material %d belongs to \"%s\"", id, material,
+                    m->owner);
+        return -1;
+    }
+    if (!material_sel_valid(id, sel)) return -1;
+    /* Inside a present the new key is parked: a selector that changed mid-
+     * present would shade part of the image under each key, and the retained
+     * terrain bake keys off the material epoch, which may only move between
+     * ticks. Outside one there is nothing to straddle, so it lands now. */
+    if (openpete_mods_in_present) {
+        m->sel_pending = *sel;
+        m->sel_dirty = 1;
+        s_mat_sel_dirty = 1;
+        return 0;
+    }
+    m->sel = *sel;
+    m->sel_dirty = 0;
+    material_rearm_split();      /* bumps the epoch: baked terrain re-keys */
+    return 0;
+}
+
+/* Install selectors parked by a present-context retune. */
+void openpete_mods_material_apply_pending(void) {
+    if (!s_mat_sel_dirty) return;
+    s_mat_sel_dirty = 0;
+    int n = 0;
+    for (int i = 0; i < s_mat_count; i++) {
+        if (!s_mats[i].sel_dirty) continue;
+        s_mats[i].sel = s_mats[i].sel_pending;
+        s_mats[i].sel_dirty = 0;
+        n++;
+    }
+    if (n) material_rearm_split();
 }
 
 /* The winning selector index for a moby of class `cls` (enabled-list
@@ -1596,6 +1660,7 @@ void openpete_mods_material_remove_owner(const char* mod_id) {
         for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++) s_mats[i].pipeline[b] = NULL;
         for (int b = 0; b < OPENPETE_MATERIAL_TER_PIPES; b++) s_mats[i].pipeline_ter[b] = NULL;
         s_mats[i].pipeline_mark = NULL;
+        s_mats[i].sel_dirty = 0;   /* a parked retune dies with the material */
         s_mats[i].live = 0;
     }
     material_rearm_split();

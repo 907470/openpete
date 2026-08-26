@@ -46,6 +46,7 @@
 #include <openpete_mod_ui.h>
 #include <openpete_game_structs.h>   /* typed Moby view — the refine row */
 #include <string.h>
+#include <stdio.h>    /* snprintf — class picker labels */
 #include <stdlib.h>   /* strtol — gallery.rows parsing */
 
 static const openpete_mod_api_t* g_api;
@@ -76,7 +77,8 @@ static row_t g_rows[] = {
     OP_CHAN_TERRAIN, -1, -1, {0.20f, 0.90f, 0.40f}, 0, -1 },
   { "Mobys (all)",     "Every pooled object: gems, chests, critters, decor.",
     OP_CHAN_MOBY, -1, -1, {1.00f, 0.75f, 0.10f}, 0, -1 },
-  { "Mobys of one class", "Class 0 by default — retune with the slider below.",
+  { "Mobys of one class", "Pick the class from the list below — it holds "
+                          "exactly the classes this level loaded.",
     OP_CHAN_MOBY, -1, 0, {1.00f, 0.35f, 0.10f}, 0, -1 },
   { "Player",          "Spyro. He is NOT a moby — the moby rows never hit him.",
     OP_CHAN_PLAYER, -1, -1, {0.30f, 0.60f, 1.00f}, 0, -1 },
@@ -180,6 +182,37 @@ static float g_strength = 0.65f;
 static int   g_class = 0;        /* drives the one class-keyed row */
 static int   g_class_row = 3;
 
+/* The class picker lists only classes the CURRENT LEVEL loaded. A slider over
+ * the whole 0..767 range was almost all dead travel: a level loads a few dozen
+ * classes, and every other value selects nothing anywhere. */
+#define CLASSES_MAX 512
+static uint16_t    g_classes[CLASSES_MAX];
+static char        g_class_lbl[CLASSES_MAX][8];
+static const char* g_class_items[CLASSES_MAX];
+static int         g_class_n;
+static int         g_class_idx;   /* index into g_classes, not a class id */
+
+static void class_list_refresh(void) {
+    int n = g_api->moby_classes(g_self, g_classes, CLASSES_MAX);
+    /* Relabelled unconditionally: two levels can load the same NUMBER of
+     * classes with different ids, so a count comparison would leave the
+     * picker showing the previous level's numbers. */
+    for (int i = 0; i < n; i++) {
+        snprintf(g_class_lbl[i], sizeof g_class_lbl[i], "%u",
+                 (unsigned)g_classes[i]);
+        g_class_items[i] = g_class_lbl[i];
+    }
+    g_class_n = n;
+    /* Track the selected class rather than the index: the set changes on
+     * every level load, and the same class sits at a different offset. A
+     * class this level does not load keeps its value and is called out —
+     * silently snapping the picker elsewhere would retune the rows to a
+     * class the user never chose. */
+    for (int i = 0; i < g_class_n; i++)
+        if (g_classes[i] == (uint16_t)g_class) { g_class_idx = i; return; }
+    if (g_class_idx >= g_class_n) g_class_idx = 0;
+}
+
 /* ── The refine row: "class X, but only in state Y" ──────────────────
  * The declarative rows above stop at what a selector can express. This
  * one adds the middle layer: the selector prunes to a moby class, and
@@ -239,6 +272,49 @@ static void push_params(row_t* r) {
     if (r->mat >= 0) g_api->material_set_params(g_self, r->mat, blk, sizeof blk);
 }
 
+/* The class-keyed rows follow the class picker by RETUNING their selector,
+ * never by re-registering: registration is refused inside a present, and a
+ * UI section runs inside one, so a re-register could only destroy the row.
+ * The retune lands at the next tick — the row keeps shading under the old
+ * class until then rather than going dark. */
+static void retune_class_rows(void) {
+    const int rows[2] = { g_class_row, g_refine_row };
+    for (int k = 0; k < 2; k++) {
+        row_t* r = &g_rows[rows[k]];
+        r->moby_class = g_class;
+        if (r->mat < 0) continue;
+        openpete_mod_material_selector_t sel = openpete_mod_material_sel_any();
+        sel.channel    = r->channel;
+        sel.ident      = r->ident;
+        sel.moby_class = g_class;
+        if (g_api->material_set_selector(g_self, r->mat, &sel) != 0)
+            g_api->log(g_self, OP_MOD_LOG_WARN, "row '%s' retune refused",
+                       r->label);
+    }
+}
+
+/* The same retune, driven without the overlay: gallery.class_switch =
+ * "<tick>:<class>" re-keys the class rows once, from a PRESENT hook. That is
+ * the same context the picker runs in — the one where a re-register is
+ * refused and the new key has to wait for the tick boundary — so this is how
+ * a headless run reaches the live path at all. Unset, no hook is registered.
+ * It doubles as the worked example of re-keying a material from render
+ * context, which is what a mod following the camera or the level would do. */
+static int g_switch_tick = -1;
+static int g_switch_class;
+static int g_switched;
+
+static void on_present(const openpete_present_ctx_t* ctx) {
+    if (g_switched || g_switch_tick < 0 || (int)ctx->tick < g_switch_tick)
+        return;
+    g_switched = 1;
+    g_class = g_switch_class;
+    retune_class_rows();
+    g_api->log(g_self, OP_MOD_LOG_INFO,
+               "class rows re-keyed to %d at tick %u (lands next tick)",
+               g_class, ctx->tick);
+}
+
 static void register_row(row_t* r) {
     openpete_mod_material_selector_t sel = openpete_mod_material_sel_any();
     sel.channel    = r->channel;
@@ -290,23 +366,20 @@ static void ui(const openpete_mod_ui_t* ui) {
         live += r->on ? 1 : 0;
     }
     ui->separator();
-    if (ui->slider_int("Moby class", &g_class, 0, 767)) {
-        /* Re-registering per class would leak selectors, so the class row is
-         * rebuilt in place: disable, repoint, restore. */
-        const int rows[2] = { g_class_row, g_refine_row };
-        for (int k = 0; k < 2; k++) {
-            row_t* r = &g_rows[rows[k]];
-            r->moby_class = g_class;
-            if (r->mat >= 0) {
-                g_api->material_enable(g_self, r->mat, 0);
-                r->mat = -1;
-            }
-            register_row(r);
-            g_api->material_enable(g_self, r->mat, r->on);
-        }
+    class_list_refresh();
+    if (g_class_n == 0) {
+        ui->text_disabled("Moby class: no level loaded yet");
+    } else if (ui->combo("Moby class", &g_class_idx,
+                         (const char* const*)g_class_items, g_class_n)) {
+        g_class = g_classes[g_class_idx];
+        retune_class_rows();
     }
-    ui->tooltip("Which class the class-keyed rows above select. Gems and "
-                "chests are the easy ones to find.");
+    ui->tooltip("Which class the class-keyed rows above select. Only classes "
+                "THIS LEVEL loaded are listed — any other value selects "
+                "nothing, because no moby here can carry it.");
+    if (g_class_n && g_classes[g_class_idx] != (uint16_t)g_class)
+        ui->text_disabled("class %d is not loaded in this level — the rows "
+                          "above select nothing", g_class);
     if (ui->slider_int("Moby state (refine row)", &g_refine_state, -1, 255)) {
         /* Only the predicate changed, not the selector — the callback
          * re-reads it at the next extraction, so nothing to re-register. */
@@ -323,7 +396,7 @@ static void ui(const openpete_mod_ui_t* ui) {
 OPENPETE_MOD_UI_SECTION(ui)
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
-    if (api->api_version < 4u) return -1;   /* material_register_refine */
+    if (api->api_version < 6u) return -1;   /* material_set_selector */
     g_api = api; g_self = self;
 
     g_shader = api->shader_register(self, "shaders/highlight.frag");
@@ -347,6 +420,22 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_rows[g_refine_row].moby_class = g_class;
     g_refine_state = (int)api->config_int(self, "gallery.refine_state", -1);
     for (int i = 0; i < NROWS; i++) register_row(&g_rows[i]);
+
+    char sw[64];
+    api->config_str(self, "gallery.class_switch", "", sw, (int)sizeof sw);
+    if (sw[0]) {
+        char* end;
+        long t = strtol(sw, &end, 10);
+        if (*end == ':') {
+            g_switch_tick  = (int)t;
+            g_switch_class = (int)strtol(end + 1, NULL, 10);
+            api->register_present_hook(self, on_present);
+        } else {
+            api->log(self, OP_MOD_LOG_WARN,
+                     "gallery.class_switch: want \"<tick>:<class>\", got \"%s\"",
+                     sw);
+        }
+    }
 
     /* gallery.rows turns rows on without the overlay — a comma-separated
      * list of row numbers, or "all". The overlay is the nice way to drive

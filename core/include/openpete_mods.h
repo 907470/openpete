@@ -487,9 +487,23 @@ typedef struct {
     /* Call fn for every live moby of class_id. */
     void (*walk_class)(CPUState* cpu, int class_id,
                        openpete_moby_update_fn fn);
+    /* Fill `out` with the moby classes the CURRENT LEVEL has loaded — the
+     * classes that can appear at all — ascending, and return the count.
+     * -1 while the table cannot be trusted (mid-load). Level-scoped, so the
+     * answer is stable as the camera moves; it is a superset of the classes
+     * with a live instance right now. */
+    int (*classes_loaded)(CPUState* cpu, uint16_t* out, int cap);
 } openpete_moby_ops_t;
 
 void openpete_mods_set_moby_ops(const openpete_moby_ops_t* ops);
+
+/* Host-side snapshot of the loaded-class set, refreshed once per tick from
+ * the ops above. Mods read it through the api's moby_classes, which must be
+ * callable from a UI section — i.e. inside a present, where guest access is
+ * refused — so the read never touches guest RAM. */
+#define OPENPETE_MOBY_CLASSES_MAX 512
+void openpete_mods_moby_class_census(CPUState* cpu);
+int  openpete_mods_moby_classes(uint16_t* out, int cap);
 
 /* Level-slot namespace (rung 12). A registered slot is a NEW level id
  * whose WAD TOC entry is cloned from a donor level; the game ops own
@@ -814,6 +828,12 @@ int openpete_mods_material_register(openpete_mod_t* self,
 int openpete_mods_material_enable(openpete_mod_t* self, int material, int on);
 int openpete_mods_material_set_params(openpete_mod_t* self, int material,
                                       const void* block, uint32_t len);
+int openpete_mods_material_set_selector(
+        openpete_mod_t* self, int material,
+        const openpete_mod_material_selector_t* sel);
+/* Installs selectors retuned from inside a present. Called at the tick
+ * boundary, where a key change cannot split a frame in half. */
+void openpete_mods_material_apply_pending(void);
 
 /* Loader-facing (wired into the mod api). */
 int openpete_mods_sfx_replace(openpete_mod_t* self, const char* name,

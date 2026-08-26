@@ -224,6 +224,40 @@ else
     bad "no capture for the decline rung (see $WORK/refine_none.log)"
 fi
 
+# ── retuning a live selector ──────────────────────────────────────────
+# A material can be pointed at a different selector while it is live
+# (material_set_selector), which is how the class picker follows the user's
+# choice. Registering again instead is refused inside a present — where a UI
+# section runs — so the retune is the ONLY path a picker has.
+#
+# Reached here through gallery.class_switch, which retunes from a PRESENT
+# hook: the same context the picker uses, and the branch that has to defer to
+# the tick boundary rather than splitting a frame between two keys. Both legs
+# are pinned, because either half can pass alone for the wrong reason — a
+# retune that silently did nothing still matches the BEFORE class, and one
+# that matched everything would differ from it too.
+#
+# Classes 348 and 356 are both drawn at this pose (695 px / 440 px), so
+# neither leg can pass by selecting nothing.
+say "retuning a live selector re-keys the material"
+if run_rows "retune_a" flame 1800 3 'gallery.class = 348' &&
+   run_rows "retune_b" flame 1800 3 'gallery.class = 356' &&
+   run_rows "retune_s" flame 1800 3 \
+        $'gallery.class = 348\ngallery.class_switch = "1000:356"'; then
+    na=$(diffpx "$WORK/base_flame-1800-vk.png" "$WORK/retune_a-1800-vk.png")
+    nb=$(diffpx "$WORK/base_flame-1800-vk.png" "$WORK/retune_b-1800-vk.png")
+    ns=$(diffpx "$WORK/retune_s-1800-vk.png" "$WORK/retune_b-1800-vk.png")
+    nx=$(diffpx "$WORK/retune_s-1800-vk.png" "$WORK/retune_a-1800-vk.png")
+    if [ "${na:-0}" -gt 0 ] && [ "${nb:-0}" -gt 0 ] &&
+       [ "${ns:-1}" -eq 0 ] && [ "${nx:-0}" -gt 0 ]; then
+        ok "retuned material matches the class it was pointed at ($nx px from the class it left)"
+    else
+        bad "retune: before=${na:-0} px after=${nb:-0} px, retuned-vs-after=${ns:-1} px (want 0), retuned-vs-before=${nx:-0} px (want >0)"
+    fi
+else
+    bad "no capture for the retune rung (see $WORK/retune_s.log)"
+fi
+
 # ── many distinct outcomes == the same audience ───────────────────────
 # The rung with teeth. mods/moby-instance-tint's callback returns a
 # DIFFERENT block per instance, so it interns a slot per moby instead of
