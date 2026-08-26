@@ -74,7 +74,11 @@ static int      s_shown_sp_ok = 0;
 /* Per-moby RAM bracket save slots — restored after re-extract so the next sim
  * tick reads canonical RAM. Sized generously for any level's live moby count. */
 #define MOBY_SAVE_MAX 1024
-typedef struct { uint32_t addr; uint8_t bytes[MOBY_STRIDE]; } moby_save_t;
+/* `staged` records that this moby's sub-tick writes went to the view's copy
+ * rather than to guest RAM, so it needs no restore. `bytes` is captured
+ * either way: for a staged record it lets the integrity check below PROVE
+ * guest RAM was left alone, which is the claim staging is making. */
+typedef struct { uint32_t addr; uint8_t staged; uint8_t bytes[MOBY_STRIDE]; } moby_save_t;
 
 /* g_Particles pool (smoke / triangles / line particles): stride-0x20 array behind
  * a pointer; pos = X@lo16(+0x04), Y@hi16(+0x04), Z@lo16(+0x08) (int16, world/4).
@@ -1570,6 +1574,12 @@ static void spyro_native_reextract_body(void* cpu_v) {
                             if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) goto next_moby;
                             s_moby_save[moby_save_n].addr = m;
                             memcpy(s_moby_save[moby_save_n].bytes, mh, MOBY_STRIDE);
+                            {   /* publish this record's lerp through the view */
+                                uint8_t* st = (uint8_t*)openpete_subtick_view_stage(
+                                                  m, MOBY_STRIDE);
+                                s_moby_save[moby_save_n].staged = (st != NULL);
+                                if (st) mh = st;
+                            }
                             moby_save_n++;
                             /* Cutscene path-followers first: if this moby is a
                              * cutscene actor, evaluate its packed waypoint
@@ -1694,6 +1704,11 @@ static void spyro_native_reextract_body(void* cpu_v) {
             if (ha < 0.0) ha = 0.0; else if (ha > 1.0) ha = 1.0;
             s_moby_save[moby_save_n].addr = m;
             memcpy(s_moby_save[moby_save_n].bytes, mh, MOBY_STRIDE);
+            {
+                uint8_t* st = (uint8_t*)openpete_subtick_view_stage(m, MOBY_STRIDE);
+                s_moby_save[moby_save_n].staged = (st != NULL);
+                if (st) mh = st;
+            }
             moby_save_n++;
             /* Position (m_Position +0x0C): when the HUD appears the icons slide
              * down (Y, ~3-5 units/tick) into place — lerp that so the slide is as
@@ -2004,6 +2019,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
     /* Restore canonical RAM before the game fiber resumes (the present below
      * reads only s_scene). Order is irrelevant — the regions are disjoint. */
     for (int i = 0; i < moby_save_n; i++) {
+        if (s_moby_save[i].staged) continue;   /* never written; nothing to undo */
         uint8_t* mh = (uint8_t*)openpete_psx_to_host_ptr(s_moby_save[i].addr);
         if (mh) memcpy(mh, s_moby_save[i].bytes, MOBY_STRIDE);
     }
