@@ -47,6 +47,26 @@ void openpete_host_input_sample(bool alt_held);
  * "override always active, host always the source". */
 void openpete_host_input_latch(bool claimed);
 
+/* ---- host SDL input-state snapshot -------------------------------------
+ *
+ * Everything that reads live SDL keyboard/gamepad state does so through this
+ * snapshot instead of calling SDL directly. Same producer/consumer split as
+ * the pad above and for the same reason: those SDL arrays are refreshed by
+ * the event pump, and the pump is moving to a different thread from the host
+ * loop that consumes them. A snapshot is the handoff that survives the move.
+ *
+ * Double-buffered with an atomic index, so a consumer always reads one
+ * internally consistent sample rather than a half-updated one.
+ *
+ * Publishing is a producer-side (pump) act; every accessor below is
+ * consumer-side and never touches SDL. */
+void openpete_host_input_publish_sdl(void);
+
+int      openpete_host_input_key_down(int scancode);
+int      openpete_host_input_pad_button(int button);
+int      openpete_host_input_pad_axis(int axis);
+unsigned openpete_host_input_modstate(void);
+
 /* Last published snapshot (diagnostics / the parity instrument). */
 void openpete_host_input_last(openpete_pad_snapshot_t* out);
 

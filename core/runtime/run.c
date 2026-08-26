@@ -2659,7 +2659,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * has no chord vocabulary; `fullscreen` is the rebindable single
              * key for it and ships unbound so nothing changes by default. */
             bool alt_enter = openpete_keymap_scancode_down(SDL_SCANCODE_RETURN) &&
-                             (SDL_GetModState() & SDL_KMOD_ALT) != 0;
+                             (openpete_host_input_modstate() & SDL_KMOD_ALT) != 0;
             if ((alt_enter && !prev_alt_enter) ||
                 openpete_key_pressed(OPK_FULLSCREEN) ||
                 g_native_fs_toggle_request) {
@@ -2680,6 +2680,14 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          *
          * The Alt gate that PsyX_UpdateInput applied to its injection half
          * moves onto the sample, so Alt+Enter still cannot register as Start. */
+        /* Publish the SDL-state snapshot on both paths: hotkeys, mod key
+         * queries and the Alt gate all read it, so the legacy A/B would
+         * otherwise run with every binding reading a never-updated buffer.
+         * Legacy pumps inside PsyX_UpdateInput below, so it publishes the
+         * previous pump's state — the same one-iteration lag the polled
+         * bindings have always had. */
+        openpete_host_input_publish_sdl();
+
         if (openpete_host_input_legacy()) {
             /* Pre-ownership path, kept as a diagnostic A/B: PsyCross both
              * pumps and decodes, and the override channel carries only what
@@ -2688,7 +2696,11 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             PsyX_UpdateInput();
         } else {
             openpete_pump_events();
-            openpete_host_input_sample((SDL_GetModState() & SDL_KMOD_ALT) != 0);
+            /* Re-publish now the pump has refreshed SDL, so the pad sample
+             * and this iteration's consumers see current state rather than
+             * the pre-pump snapshot taken above. */
+            openpete_host_input_publish_sdl();
+            openpete_host_input_sample((openpete_host_input_modstate() & SDL_KMOD_ALT) != 0);
             openpete_host_input_latch(ovr_claimed);
             PsyX_Pad_InternalPadUpdates();
             openpete_host_input_parity_check(ovr_claimed);

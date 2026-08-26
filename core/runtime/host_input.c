@@ -178,6 +178,103 @@ static void vgamepad_drive(unsigned frame)
     SDL_SetJoystickVirtualAxis(s_vpad, SDL_GAMEPAD_AXIS_LEFTY, (Sint16)-sweep);
 }
 
+/* ---- host SDL input-state snapshot (see the header) --------------------- */
+
+typedef struct {
+    bool     keys[SDL_SCANCODE_COUNT];
+    bool     buttons[SDL_GAMEPAD_BUTTON_COUNT];
+    Sint16   axes[SDL_GAMEPAD_AXIS_COUNT];
+    unsigned mods;
+    bool     have_pad;
+} host_sdl_state_t;
+
+static host_sdl_state_t s_sdl_state[2];
+static SDL_AtomicInt    s_sdl_state_cur;   /* index of the readable buffer */
+
+/* First connected gamepad, matching the binding layer's "first pad wins". */
+static SDL_Gamepad* host_first_gamepad(void)
+{
+    int n = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&n);
+    SDL_Gamepad* found = NULL;
+    if (ids) {
+        for (int i = 0; i < n && !found; i++)
+            found = SDL_GetGamepadFromID(ids[i]);
+        SDL_free(ids);
+    }
+    return found;
+}
+
+void openpete_host_input_publish_sdl(void)
+{
+    int cur  = SDL_GetAtomicInt(&s_sdl_state_cur);
+    int next = cur ^ 1;
+    host_sdl_state_t* d = &s_sdl_state[next];
+
+    int nkeys = 0;
+    const bool* keys = SDL_GetKeyboardState(&nkeys);
+    if (keys) {
+        if (nkeys > SDL_SCANCODE_COUNT) nkeys = SDL_SCANCODE_COUNT;
+        memcpy(d->keys, keys, (size_t)nkeys * sizeof(bool));
+        if (nkeys < SDL_SCANCODE_COUNT)
+            memset(d->keys + nkeys, 0,
+                   (size_t)(SDL_SCANCODE_COUNT - nkeys) * sizeof(bool));
+    } else {
+        memset(d->keys, 0, sizeof(d->keys));
+    }
+
+    d->mods = (unsigned)SDL_GetModState();
+
+    SDL_Gamepad* gp = host_first_gamepad();
+    d->have_pad = (gp != NULL);
+    if (gp) {
+        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; b++)
+            d->buttons[b] = SDL_GetGamepadButton(gp, (SDL_GamepadButton)b);
+        for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++)
+            d->axes[a] = SDL_GetGamepadAxis(gp, (SDL_GamepadAxis)a);
+    } else {
+        memset(d->buttons, 0, sizeof(d->buttons));
+        memset(d->axes, 0, sizeof(d->axes));
+    }
+
+    /* Release: the buffer's contents must be visible before the index that
+     * publishes it. */
+    SDL_MemoryBarrierRelease();
+    SDL_SetAtomicInt(&s_sdl_state_cur, next);
+}
+
+static const host_sdl_state_t* host_sdl_read(void)
+{
+    const host_sdl_state_t* r = &s_sdl_state[SDL_GetAtomicInt(&s_sdl_state_cur)];
+    SDL_MemoryBarrierAcquire();
+    return r;
+}
+
+int openpete_host_input_key_down(int scancode)
+{
+    if (scancode <= 0 || scancode >= SDL_SCANCODE_COUNT) return 0;
+    return host_sdl_read()->keys[scancode] ? 1 : 0;
+}
+
+int openpete_host_input_pad_button(int button)
+{
+    if (button < 0 || button >= SDL_GAMEPAD_BUTTON_COUNT) return 0;
+    const host_sdl_state_t* st = host_sdl_read();
+    return (st->have_pad && st->buttons[button]) ? 1 : 0;
+}
+
+int openpete_host_input_pad_axis(int axis)
+{
+    if (axis < 0 || axis >= SDL_GAMEPAD_AXIS_COUNT) return 0;
+    const host_sdl_state_t* st = host_sdl_read();
+    return st->have_pad ? st->axes[axis] : 0;
+}
+
+unsigned openpete_host_input_modstate(void)
+{
+    return host_sdl_read()->mods;
+}
+
 void openpete_host_input_sample(bool alt_held)
 {
     unsigned short bits = PAD_NEUTRAL_BITS;

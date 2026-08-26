@@ -38,6 +38,7 @@
 #include "openpete_mod_api.h"
 #include "openpete_mod_ui.h"
 #include "openpete_log.h"
+#include "openpete_host_input.h"
 #include "openpete_keymap.h"     /* [keys.mod.<id>] binding overrides */
 #include "../host/sha256.h"     /* content-hash build cache key */
 #include "../host/host_spawn.h" /* silent compiler spawn + cc identity */
@@ -559,9 +560,10 @@ static int api_host_key_down(const char* key_name) {
     if (!key_name) return 0;
     SDL_Scancode sc = SDL_GetScancodeFromName(key_name);
     if (sc == SDL_SCANCODE_UNKNOWN) return 0;
-    int nkeys = 0;
-    const bool* state = SDL_GetKeyboardState(&nkeys);
-    return (state && (int)sc < nkeys) ? (state[sc] ? 1 : 0) : 0;
+    /* Snapshot, not live SDL: mods call this from their tick, which runs on
+     * the game fiber — not necessarily the thread that pumps events and so
+     * refreshes SDL's keyboard array. */
+    return openpete_host_input_key_down((int)sc);
 }
 
 

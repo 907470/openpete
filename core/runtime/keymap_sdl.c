@@ -15,6 +15,8 @@
 
 #include <SDL3/SDL.h>
 
+#include "openpete_host_input.h"
+
 #include <string.h>
 
 static SDL_Gamepad* km_first_gamepad(void) {
@@ -50,22 +52,21 @@ static SDL_Gamepad* km_first_gamepad(void) {
  * build keyboard state from the SDL_EVENT_KEY_* stream and drop events
  * whose `which` is not a physical keyboard, instead of polling the merged
  * array. One function now, rather than every hotkey call site. */
+/* These read the host's published SDL-state snapshot rather than SDL itself:
+ * the arrays SDL maintains are refreshed by the event pump, and the pump does
+ * not necessarily run on the thread evaluating bindings. The snapshot is
+ * published once per pump, so a whole binding evaluation sees one consistent
+ * sample instead of state that can change under it mid-poll. */
 static int km_sdl_key_down(int scancode) {
-    if (scancode <= 0 || scancode >= SDL_SCANCODE_COUNT) return 0;
-    const bool* state = SDL_GetKeyboardState(NULL);
-    return (state && state[scancode]) ? 1 : 0;
+    return openpete_host_input_key_down(scancode);
 }
 
 static int km_sdl_pad_button(int button) {
-    SDL_Gamepad* gp = km_first_gamepad();
-    if (!gp) return 0;
-    return SDL_GetGamepadButton(gp, (SDL_GamepadButton)button) ? 1 : 0;
+    return openpete_host_input_pad_button(button);
 }
 
 static int km_sdl_pad_axis(int axis) {
-    SDL_Gamepad* gp = km_first_gamepad();
-    if (!gp) return 0;
-    return SDL_GetGamepadAxis(gp, (SDL_GamepadAxis)axis);
+    return openpete_host_input_pad_axis(axis);
 }
 
 /* SDL's own button vocabulary is still the mapping-database spelling —
