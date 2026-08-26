@@ -4100,11 +4100,12 @@ int openpete_run(const openpete_options_t* opts) {
 
     /* libco: capture the host fiber. Phase 1b uses only co_active(); Phase 1c
      * creates the gameplay fiber so PSYQ calls can yield (VSync etc.). */
-    /* Do NOT call co_active() here under the split. On Windows libco uses
-     * Win32 fibers (libco.c selects fiber.c), and co_active() calls
-     * ConvertThreadToFiber on the caller — converting MAIN, which never
-     * switches and does not need to be a fiber. The worker converts itself
-     * and owns the game fiber for its whole life. */
+    /* Pointless under the split — main never switches, so it has no business
+     * being a fiber. (This call was also FATAL until libco was built with
+     * LIBCO_MP: without it `thread_local` is an empty macro, co_active_ is a
+     * plain global, and main's conversion made the worker skip its own —
+     * see the note in core/CMakeLists.txt. LIBCO_MP is the fix; this guard is
+     * just hygiene.) */
     if (!openpete_split_applies(opts)) {
         cothread_t host_fiber = co_active();
         OPL_INFO_F("boot", "libco host fiber=%p", host_fiber);

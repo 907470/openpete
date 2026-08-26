@@ -220,6 +220,24 @@ add_library(openpete_core STATIC
 target_sources(openpete_core PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/libco/libco.c)
 
+# LIBCO_MP is REQUIRED, not an optimisation. libco/settings.h defines
+# `thread_local` as NOTHING unless it is set:
+#
+#     #if !defined(LIBCO_MP)   /* Running in single-threaded environment */
+#       #define thread_local
+#
+# so co_active_ (fiber.c) and co_active_handle (amd64.c) silently become
+# plain globals shared by every thread. The failure that produces is not a
+# subtle race: the first thread to call co_active() converts itself and
+# stores its handle, and every LATER thread then sees a non-NULL handle,
+# skips its own ConvertThreadToFiber, and calls SwitchToFiber while not
+# being a fiber at all — an access violation inside the OS fiber
+# bookkeeping. Reading the declaration is not enough to rule this out; the
+# variables ARE spelled thread_local, the macro is just empty.
+set_source_files_properties(
+    ${CMAKE_SOURCE_DIR}/third_party/libco/libco.c
+    PROPERTIES COMPILE_DEFINITIONS LIBCO_MP)
+
 target_include_directories(openpete_core
     PUBLIC
         ${CMAKE_CURRENT_SOURCE_DIR}/include
