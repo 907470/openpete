@@ -121,23 +121,79 @@ int openpete_devui_toggle(void)
     return s_open;
 }
 
+/* Event queue: the pump and the imgui frame do not necessarily run on the
+ * same thread, and imgui is single-threaded — ProcessEvent mutates the same
+ * IO state NewFrame consumes. So the pump only *queues* here, and the events
+ * are fed to imgui on the thread that records its frame.
+ *
+ * Single-producer/single-consumer ring. On overflow the newest event is
+ * dropped rather than the oldest: losing the tail of a burst degrades an
+ * overlay interaction, while dropping the oldest can strip a press and leave
+ * imgui holding a key down forever. Drops are counted and reported, because a
+ * silently lossy input queue is a miserable thing to debug. */
+#define DEVUI_EVQ_CAP 512
+static SDL_Event  s_evq[DEVUI_EVQ_CAP];
+static SDL_AtomicInt s_evq_head;   /* producer writes */
+static SDL_AtomicInt s_evq_tail;   /* consumer writes */
+static unsigned   s_evq_dropped;
+
 void openpete_devui_process_event(const union SDL_Event *ev)
 {
     if (!s_inited || !ev) return;
-    ImGui_ImplSDL3_ProcessEvent((const SDL_Event *)ev);
+
+    int head = SDL_GetAtomicInt(&s_evq_head);
+    int tail = SDL_GetAtomicInt(&s_evq_tail);
+    int next = (head + 1) % DEVUI_EVQ_CAP;
+    if (next == tail) {
+        if ((s_evq_dropped++ % 256u) == 0u)
+            OPL_WARN_F("devui", "event queue full; dropped %u", s_evq_dropped);
+        return;
+    }
+    s_evq[head] = *(const SDL_Event *)ev;
+    SDL_MemoryBarrierRelease();          /* event visible before the index */
+    SDL_SetAtomicInt(&s_evq_head, next);
+}
+
+/* Drain queued events into imgui. Must run on the thread that records the
+ * imgui frame, immediately before it. */
+static void devui_drain_events(void)
+{
+    int tail = SDL_GetAtomicInt(&s_evq_tail);
+    int head = SDL_GetAtomicInt(&s_evq_head);
+    SDL_MemoryBarrierAcquire();
+    while (tail != head) {
+        ImGui_ImplSDL3_ProcessEvent(&s_evq[tail]);
+        tail = (tail + 1) % DEVUI_EVQ_CAP;
+    }
+    SDL_SetAtomicInt(&s_evq_tail, tail);
+}
+
+/* imgui's IO capture flags are published rather than read live: they belong to
+ * the imgui frame's thread, but the pump needs them too (to decide whether a
+ * double-click is the overlay's or the window's). One frame stale by
+ * construction, which is what a capture flag is anyway — it describes the
+ * frame that was drawn. */
+static SDL_AtomicInt s_wants_kb;
+static SDL_AtomicInt s_wants_mouse;
+
+static void devui_publish_io_wants(void)
+{
+    const ImGuiIO &io = ImGui::GetIO();
+    SDL_SetAtomicInt(&s_wants_kb,
+                     (s_open && (io.WantCaptureKeyboard || io.WantTextInput)) ? 1 : 0);
+    SDL_SetAtomicInt(&s_wants_mouse, (s_open && io.WantCaptureMouse) ? 1 : 0);
 }
 
 int openpete_devui_wants_keyboard(void)
 {
     if (!s_inited || !s_open) return 0;
-    const ImGuiIO &io = ImGui::GetIO();
-    return io.WantCaptureKeyboard || io.WantTextInput;
+    return SDL_GetAtomicInt(&s_wants_kb);
 }
 
 int openpete_devui_wants_mouse(void)
 {
     if (!s_inited || !s_open) return 0;
-    return ImGui::GetIO().WantCaptureMouse ? 1 : 0;
+    return SDL_GetAtomicInt(&s_wants_mouse);
 }
 
 /* ------------------------------------------------------------------ */
@@ -999,8 +1055,16 @@ void openpete_devui_render(struct rhi_device *dev)
     /* The inspector's crosshair + panel ride the same imgui frame as the
      * config overlay, but must show with the overlay closed (aiming a camera
      * behind a 540px panel is not the workflow). */
+    if (!s_inited) return;
+
+    /* Feed imgui every frame, open or not: its IO bookkeeping (key/mouse
+     * state, focus) must stay current or the overlay opens holding whatever
+     * was down when it last drew. Draining only while open would also let the
+     * queue fill and start dropping. */
+    devui_drain_events();
+
     bool fillpick = openpete_fillpick_active() != 0;
-    if (!s_inited || (!s_open && !fillpick)) return;
+    if (!s_open && !fillpick) return;
     if (dev != s_dev) return;
     void *cb = rhi_current_command_buffer(dev);
     if (!cb) return;
@@ -1015,5 +1079,6 @@ void openpete_devui_render(struct rhi_device *dev)
     if (s_open) draw_panel();
     if (fillpick) { draw_fillpick_crosshair(); draw_fillpick_panel(); }
     ImGui::Render();
+    devui_publish_io_wants();
     ImGui_ImplVulkan_RenderDrawData(ImGui::GetDrawData(), (VkCommandBuffer)cb);
 }
