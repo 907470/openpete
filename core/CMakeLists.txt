@@ -30,6 +30,13 @@ add_library(openpete_core STATIC
     # turns binding names into codes and reads whether they are held.
     runtime/keymap.c
     runtime/keymap_sdl.c
+
+    # Host-owned pad decode: producer publishes an SDL-decoded snapshot, the
+    # sim-side consumer arbitrates it against the other override writers and
+    # stamps the PsyCross override channel. Split producer/consumer because
+    # the pump and the sim are headed for different threads. See
+    # openpete_host_input.h.
+    runtime/host_input.c
     runtime/screenshot.c
     runtime/run.c
     runtime/psxtrace_verify.c

@@ -8,6 +8,7 @@
 #include "openpete.h"
 #include "openpete_fiber.h"
 #include "openpete_log.h"
+#include "openpete_host_input.h"
 #include "openpete_psx.h"
 #include "openpete_discontinuity.h"
 #include "openpete_recomp_module.h"
@@ -1979,6 +1980,12 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         bool   sim_due = (s_render_fps == 0) || unlock_now ||
                          (iter_now_ns >= next_sim.at);
 
+        /* Override-channel arbitration for this iteration. The channel has
+         * several writers with different priorities; live decode is the
+         * lowest and fills it whenever nothing else claims it. Anything that
+         * needs the pad to NOT be live input sets this. */
+        bool ovr_claimed = false;
+
         /* --bk2: stamp this frame's bitfield into PsyCross's pad-override
          * slot. PsyX_Pad_InternalPadUpdates uses it instead of polling SDL.
          * Out-of-range frames (before the offset, or past the movie's end)
@@ -2024,6 +2031,10 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             }
             g_PsyX_Pad_InputOverride = bits;
             g_PsyX_Pad_OverrideActive = ovr_active;
+            /* Pre-offset / past-end frames leave ovr_active 0 on purpose:
+             * that is the documented hand-back to live input once a movie
+             * ends, which now means the live-decode latch below. */
+            if (ovr_active) ovr_claimed = true;
         }
 
         /* Settings menu open: neutralise the game pad so the arrow keys drive
@@ -2033,6 +2044,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * on the next sim-due iter. The sim keeps running (input just goes
          * nowhere), so aspect/ssaa/draw-distance changes preview live. */
         if (openpete_menu_is_open()) {
+            ovr_claimed = true;
             g_PsyX_Pad_InputOverride  = 0xFFFF;
             g_PsyX_Pad_OverrideActive = 1;
             g_PsyX_Pad_AnalogOverride[0] = g_PsyX_Pad_AnalogOverride[1] =
@@ -2054,6 +2066,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         {
             bool devui_kb = openpete_devui_wants_keyboard() != 0;
             if (devui_kb && !openpete_menu_is_open()) {
+                ovr_claimed = true;
                 g_PsyX_Pad_InputOverride  = 0xFFFF;
                 g_PsyX_Pad_OverrideActive = 1;
                 g_PsyX_Pad_AnalogOverride[0] = g_PsyX_Pad_AnalogOverride[1] =
@@ -2600,7 +2613,30 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             prev_alt_enter = alt_enter;
         }
 
-        PsyX_UpdateInput();
+        /* Input, as four explicit steps instead of PsyX_UpdateInput's two.
+         * pump -> decode -> arbitrate+stamp -> inject. openpete owns decode
+         * and the latch point; PsyCross still owns the byte-exact write into
+         * the PSX pad buffer, through the same override channel bk2 replay
+         * has always used.
+         *
+         * Ordering is load-bearing: the decode must read SDL state from THIS
+         * iteration's pump, or live input lags a full iteration behind.
+         *
+         * The Alt gate that PsyX_UpdateInput applied to its injection half
+         * moves onto the sample, so Alt+Enter still cannot register as Start. */
+        if (openpete_host_input_legacy()) {
+            /* Pre-ownership path, kept as a diagnostic A/B: PsyCross both
+             * pumps and decodes, and the override channel carries only what
+             * bk2/menu/devui stamped. The two paths must produce identical
+             * gameplay for any input the host is not driving. */
+            PsyX_UpdateInput();
+        } else {
+            PsyX_Sys_DoPollEvent();
+            openpete_host_input_sample((SDL_GetModState() & SDL_KMOD_ALT) != 0);
+            openpete_host_input_latch(ovr_claimed);
+            PsyX_Pad_InternalPadUpdates();
+            openpete_host_input_parity_check(ovr_claimed);
+        }
 
         /* Hand control to the game until the next VSync(0) yield. Gated so
          * --render-fps>0 outer iterations that don't have a sim tick due
@@ -3769,6 +3805,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
         co_delete((cothread_t)openpete_game_fiber);
         openpete_game_fiber = NULL;
     }
+
+    /* Report before PsyX_Shutdown: the instrument reads PsyCross pad state. */
+    openpete_host_input_parity_report();
 
     openpete_native_render_shutdown();
     PsyX_Shutdown();
