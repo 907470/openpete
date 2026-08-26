@@ -79,11 +79,23 @@ ENTRY = "0x80012204"
 # and most dynamic bracket targets, and camera/Spyro/flame/shadow are written
 # on any gameplay frame. Terrain-heavy movies add little here.
 CORPUS = {
+    # Fast enough to sit inside an iteration loop.
     "quick": ["moby-crossfade", "dream-weavers-particle"],
+    # Adds the distant-terrain/vista movies. Both carry a --skip-to-level
+    # sidecar (auto-spliced by --bk2) and are 1.7-2.7x longer, so this tier
+    # costs several times `quick` -- it is the arc-end sweep, not the loop.
     "full": ["moby-crossfade", "dream-weavers-particle",
              "artisans-lp-waterfall", "inventory-moby-swim",
-             "cliff-town-vista"],
+             "stone-hill-distant-terrain", "cliff-town-vista"],
 }
+
+# Safety cap only. Runs end on --bk2-stop-on-end; this exists so a movie that
+# never signals end cannot hang the harness. A hand-tuned per-movie limit was
+# tried and removed: every movie in this corpus carries a --skip-to-level
+# sidecar that fast-forwards ~1200 frames before gameplay begins, so a limit
+# guessed from the bk2's input-row count truncated the movies mid-skip and
+# still reported PASS -- a shorter DIFFERENT test wearing the same name.
+FRAME_CAP = 20000
 
 # Sub-tick captures are capped at OPENPETE_MAX_SCREENSHOT_FRAMES (64). A leak
 # perturbs gameplay state, which then diverges for the REST of the run, so a
@@ -91,24 +103,34 @@ CORPUS = {
 MAX_SAMPLES = 64
 
 
-def sample_grid(frames, n=MAX_SAMPLES):
-    """Frames to arm, spread over the movie, skipping the boot/load head."""
-    lo, hi = int(frames * 0.15), max(int(frames * 0.15) + 1, frames - 4)
+def sample_grid(frames, n=MAX_SAMPLES, head=0):
+    """Frames to arm, spread over the movie's PLAYING window.
+
+    `head` is where gameplay actually starts, measured from the canonical
+    leg rather than assumed: a --skip-to-level movie fast-forwards for
+    ~1200 frames plus a level load, and captures armed inside that window
+    sample a game that is not yet running the scene under test. Clamped to
+    half the movie so a mis-parse degrades coverage instead of erasing it."""
+    lo = min(max(int(frames * 0.15), head), max(1, frames // 2))
+    hi = max(lo + 1, frames - 4)
     step = max(1, (hi - lo) // n)
     return list(range(lo, hi, step))[:n]
 
 
-def run_leg(bk2, hashlog, frames, armed, shotdir, verbose):
+def run_leg(bk2, hashlog, frames, armed, shotdir, verbose, head=0):
     env_extra = {}
     cmd = [
         str(EXE), "--headless", "--no-config", "--disc", str(DISC),
         "--run-recomp", ENTRY, "--renderer", "vk", "--mute", "1",
         "--bk2", str(BK2DIR / f"{bk2}.bk2"),
         "--gameplay-hash-log", str(hashlog),
+        # Stop when the movie ends rather than at a guessed frame count; the
+        # limit below is only a hang guard.
+        "--bk2-stop-on-end",
         "--frame-limit", str(frames), "--max-runtime-seconds", "280",
     ]
     if armed:
-        grid = ",".join(str(f) for f in sample_grid(frames))
+        grid = ",".join(str(f) for f in sample_grid(frames, head=head))
         # Per-present restore check: hashes the bracketed regions before any
         # lerp write and re-checks after every restore, so a leak is caught in
         # the present that caused it. The hash-log comparison alone is a
@@ -138,7 +160,10 @@ def run_leg(bk2, hashlog, frames, armed, shotdir, verbose):
     if m:
         presents = int(m.group(1))
     leaks = re.findall(r"\[bracket-check [^\]]*\] RESTORE MISMATCH ([^\n]*)", p.stderr)
-    return p.returncode, presents, leaks
+    # Where the level actually starts, for the armed leg's grid.
+    skip = re.search(r"\[skip-to-level\][^\n]*at frame=(\d+)", p.stderr)
+    skip_at = int(skip.group(1)) if skip else 0
+    return p.returncode, presents, leaks, skip_at
 
 
 def read_log(path):
@@ -167,7 +192,8 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--corpus", choices=sorted(CORPUS), default="quick")
     ap.add_argument("--only", help="comma-separated bk2 names, overrides --corpus")
-    ap.add_argument("--frames", type=int, default=1800)
+    ap.add_argument("--frames", type=int, default=0,
+                    help="override the per-movie frame limit (default: FRAMES table)")
     ap.add_argument("--mode", choices=["both", "ab", "baseline"], default="both")
     ap.add_argument("--bless", action="store_true",
                     help="write the canonical run as the new baseline (deliberate act: commit it)")
@@ -192,8 +218,10 @@ def main():
                 failures.append(f"{bk2}: no such bk2")
                 continue
 
+            frames = args.frames or FRAME_CAP
             plain, armed_log = tmp / f"{bk2}.plain.csv", tmp / f"{bk2}.armed.csv"
-            rc_p, pres_p, _ = run_leg(bk2, plain, args.frames, False, tmp, args.verbose)
+            rc_p, pres_p, _, skip_at = run_leg(bk2, plain, frames, False, tmp,
+                                               args.verbose)
             if rc_p != 0:
                 failures.append(f"{bk2}: canonical leg exited {rc_p}")
                 continue
@@ -201,9 +229,15 @@ def main():
             if not log_p:
                 failures.append(f"{bk2}: canonical leg wrote no hash rows")
                 continue
+            # True movie length, observed. The armed leg replays the same movie,
+            # so its grid is built from this rather than from a guess. The +600
+            # covers the level load that follows the skip's transition.
+            real_frames = len(log_p)
+            head = skip_at + 600 if skip_at else 0
 
             if args.mode in ("both", "ab"):
-                rc_a, pres_a, leaks = run_leg(bk2, armed_log, args.frames, True, tmp, args.verbose)
+                rc_a, pres_a, leaks, _ = run_leg(bk2, armed_log, real_frames, True, tmp,
+                                                 args.verbose, head=head)
                 if rc_a != 0:
                     failures.append(f"{bk2}: armed leg exited {rc_a}")
                 elif leaks:
