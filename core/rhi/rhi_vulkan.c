@@ -27,7 +27,13 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Swapchain pipeline depth. Overridable from the build so the depth/refresh
+ * trade can be swept without editing the source; every per-frame ring below
+ * is sized from it. Note the readback and grid rings lag by exactly this many
+ * presents, so a capture taken at depth N lands N presents behind. */
+#ifndef RHI_FRAMES_IN_FLIGHT
 #define RHI_FRAMES_IN_FLIGHT 2
+#endif
 #define RHI_MAX_SC_IMAGES    8
 
 #define RHI_LOG(...)  fprintf(stderr, "[rhi/vk] " __VA_ARGS__)
@@ -1024,6 +1030,7 @@ static bool create_sync_and_commands(rhi_device *dev)
         .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
         .flags = VK_FENCE_CREATE_SIGNALED_BIT,
     };
+    RHI_LOG("frames in flight = %d\n", RHI_FRAMES_IN_FLIGHT);
     for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
         VK_CHECK(vkCreateSemaphore(dev->device, &sem, NULL, &dev->img_avail[i]));
         VK_CHECK(vkCreateFence(dev->device, &fence, NULL, &dev->in_flight[i]));
