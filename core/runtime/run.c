@@ -1323,6 +1323,9 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * bring-up failure is non-fatal — we log and run PsyCross-only. The
      * native path is a pure display consumer; it never touches PSX RAM, so
      * the oracle gate / determinism are unaffected. */
+    /* Create the window before bring-up so it belongs to this thread — the
+     * one that pumps. Bring-up adopts it exactly as it adopts the splash's. */
+    openpete_native_precreate_window(opts, win_w, win_h);
     (void)openpete_native_render_init(opts, win_w, win_h);
     openpete_native_set_fps_overlay(opts->fps_overlay);  /* vk FPS overlay (O-menu SHOW FPS row toggles live) */
     openpete_native_set_fps_in_record(opts->record_fps_overlay);  /* --record-fps-overlay */

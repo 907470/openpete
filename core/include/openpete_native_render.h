@@ -42,6 +42,14 @@ extern "C" {
  * window, so this is the only window an icon can land on. */
 void openpete_native_set_icon(const void* rgba32, int w, int h);
 
+/* Create the visible window up front, on the caller's thread, for bring-up to
+ * adopt — the same hand-over the first-run splash uses. Win32 delivers a
+ * window's messages only to the thread that created it, so the window must
+ * belong to whichever thread runs the event pump. No-op unless this is the
+ * single-window vk path, or a window was already handed over. */
+void openpete_native_precreate_window(const openpete_options_t *opts,
+                                      int win_w, int win_h);
+
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h);
 
 /* True once init succeeded and the native A/B display is live. */

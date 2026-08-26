@@ -1081,6 +1081,54 @@ static bool scene_has_world(const scene_tri_t* scene, int n) {
 }
 
 /* Single native renderer instance (one window per process). */
+/* Resolve the window size. Shared by bring-up and by the main-thread
+ * precreate below so the two cannot disagree about how big the window is. */
+static void nr_resolve_window_size(const openpete_options_t *opts,
+                                   int win_w, int win_h, bool ab_mode,
+                                   int *out_w, int *out_h)
+{
+    int w = (win_w > 0) ? win_w : NR_DEFAULT_W;
+    int h = (win_h > 0) ? win_h : NR_DEFAULT_H;
+
+    /* A/B shows two panels side-by-side, so widen the window 2x by default —
+     * each panel then gets the game's full width instead of being squeezed into
+     * half. vk/diff are single full-window panels and keep the resolved size.
+     * An explicit --window is treated as the intended TOTAL window size and is
+     * left alone (the user picked it deliberately). */
+    if (ab_mode && opts->window_w <= 0)
+        w *= 2;
+
+    *out_w = w;
+    *out_h = h;
+}
+
+/* A window created by the host before bring-up, adopted the same way the
+ * first-run splash's window is. See openpete_native_precreate_window. */
+static SDL_Window* s_precreated_win;
+
+void openpete_native_precreate_window(const openpete_options_t *opts,
+                                      int win_w, int win_h)
+{
+    if (s_precreated_win || opts->adopted_window) return;
+    /* Only the single-window vk path. ab/diff drive PsyCross's GL window
+     * alongside this one, and headless has no window at all. */
+    if (opts->headless || opts->renderer != OPENPETE_RENDERER_VK) return;
+
+    int w, h;
+    nr_resolve_window_size(opts, win_w, win_h, /*ab_mode=*/false, &w, &h);
+
+    const char *title = (opts->display_name && opts->display_name[0])
+                        ? opts->display_name : "Spyro the Dragon";
+    s_precreated_win = SDL_CreateWindow(title, w, h,
+                                        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+    if (!s_precreated_win) {
+        /* Not fatal: bring-up falls back to creating its own window. */
+        OPL_WARN_F("native", "precreate SDL_CreateWindow failed: %s", SDL_GetError());
+        return;
+    }
+    OPL_INFO_F("native", "window precreated on the host thread (%dx%d)", w, h);
+}
+
 /* Window icon pixels, handed over before bring-up (the decoded image lives in
  * the game module). Stored rather than applied immediately because the window
  * does not exist yet at the point the caller has them. */
@@ -1509,16 +1557,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * PsyCross's GL window is started hidden (see run.c), so this Vulkan
      * window is the single visible one. Match the game's resolved window size
      * so it isn't surprisingly larger than the PsyCross-only window. */
-    int w = (win_w > 0) ? win_w : NR_DEFAULT_W;
-    int h = (win_h > 0) ? win_h : NR_DEFAULT_H;
-
-    /* A/B shows two panels side-by-side, so widen the window 2x by default —
-     * each panel then gets the game's full width instead of being squeezed into
-     * half. vk/diff are single full-window panels and keep the resolved size.
-     * An explicit --window is treated as the intended TOTAL window size and is
-     * left alone (the user picked it deliberately). */
-    if (ab_mode && opts->window_w <= 0)
-        w *= 2;
+    int w, h;
+    nr_resolve_window_size(opts, win_w, win_h, ab_mode, &w, &h);
 
     SDL_Window *win = NULL;
     rhi_device *dev = NULL;
@@ -1539,7 +1579,12 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
                           : (opts->display_name && opts->display_name[0])
                                       ? opts->display_name
                                       : "Spyro the Dragon";
+        /* Either the first-run splash's window or one the host precreated.
+         * Both exist so the window is owned by the thread that will pump it:
+         * Win32 delivers a window's messages only to its creating thread. */
         SDL_Window *adopt = (SDL_Window*)opts->adopted_window;
+        const char *adopt_src = "splash";
+        if (!adopt) { adopt = s_precreated_win; adopt_src = "precreated"; }
         if (adopt && !ab_mode && !diff_mode) {
             /* In-process continuation: reuse the first-run splash's window
              * (main.cpp hands it over in windowed vk mode only; its
@@ -1555,7 +1600,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
             SDL_GetWindowSize(win, &cur_w, &cur_h);
             if (cur_w != w || cur_h != h)
                 SDL_SetWindowSize(win, w, h);
-            OPL_INFO_F("native", "adopted splash window (%dx%d)", w, h);
+            OPL_INFO_F("native", "adopted %s window (%dx%d)", adopt_src, w, h);
         } else {
             win = SDL_CreateWindow(title, w, h,
                                    SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
