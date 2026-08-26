@@ -1104,7 +1104,15 @@ static void spyro_native_reextract_body(void* cpu_v) {
     s_fpos_active = 1;
 
     /* Bracket targets (all written then restored on the host fiber). */
-    uint8_t* cam = (uint8_t*)openpete_psx_to_host_ptr(G_CAMERA);
+    /* The camera's sub-tick lerp publishes through the view: writes land in a
+     * staged copy that every read during this present resolves to, so guest RAM
+     * is never touched and there is nothing to restore. If staging is
+     * unavailable the legacy write-and-restore against live RAM still runs --
+     * dropping the interpolation instead would judder the camera, which is a
+     * worse failure than the one being retired. */
+    uint8_t* cam = (uint8_t*)openpete_subtick_view_stage(G_CAMERA, CAM_BYTES);
+    const int cam_staged = (cam != NULL);
+    if (!cam) cam = (uint8_t*)openpete_psx_to_host_ptr(G_CAMERA);
     uint8_t  cam_saved[CAM_BYTES];
     int      cam_bracketed = 0;
     uint8_t* sp = NULL; uint8_t sp_saved[SPYRO_SAVE]; int sp_bracketed = 0;
@@ -1255,7 +1263,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
             use_herm = 0;            /* linear only — no tangent across branches */
             ra_rebased = 1;
         }
-        memcpy(cam_saved, cam, CAM_BYTES);        /* live (bracket restore) */
+        if (!cam_staged) memcpy(cam_saved, cam, CAM_BYTES);  /* legacy path only */
         if (use_herm) {
             herm_matrix(cam, pcam2, pcam, ccam, CAM_OFF_PROJ, alpha);
             herm_matrix(cam, pcam2, pcam, ccam, CAM_OFF_VIEW, alpha);
@@ -1901,7 +1909,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
     }
     if (openpete_camlock_active() && cam) {
         if (!cam_bracketed) {
-            memcpy(cam_saved, cam, CAM_BYTES);
+            if (!cam_staged) memcpy(cam_saved, cam, CAM_BYTES);
             cam_bracketed = 1;
         }
         cl_apply(cam);
@@ -1996,7 +2004,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
     if (sh_bracketed)  memcpy(sh, sh_saved, SHADOW_SAVE);
     if (fl_bracketed)  memcpy(fl, fl_saved, FLAME_SAVE);
     if (sp_bracketed)  memcpy(sp, sp_saved, SPYRO_SAVE);
-    if (cam_bracketed) memcpy(cam, cam_saved, CAM_BYTES);
+    if (cam_bracketed && !cam_staged) memcpy(cam, cam_saved, CAM_BYTES);
 
     /* W0.3 bracket-integrity: every lerp write above must be undone — verify the
      * present left gameplay RAM byte-identical to how it found it. A mismatch is
