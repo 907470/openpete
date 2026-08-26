@@ -204,7 +204,7 @@ static volatile sig_atomic_t g_native_fs_toggle_request = 0;
  * quit binding — and forwards the rest. Consuming quit/close here is what
  * keeps PsyX_Exit (and its exit(0), which hangs on static teardown under
  * WSL+GL+libco) unreachable. */
-/* Host thread split (OPENPETE_THREAD_SPLIT=1, off by default).
+/* Host thread split (on by default; OPENPETE_THREAD_SPLIT=0 disables).
  *
  * Win32 runs a modal loop inside DefWindowProc for a title-bar drag or a
  * resize, which blocks whichever thread owns the window. Today that thread
@@ -212,14 +212,14 @@ static volatile sig_atomic_t g_native_fs_toggle_request = 0;
  * keep the window and the pump on main and move the host loop to a worker:
  * a drag then blocks main while the worker keeps ticking.
  *
- * Off by default while it earns mileage; the knob is also the A/B for
- * diagnosing anything the split is suspected of causing. */
+ * The knob remains as the A/B for diagnosing anything the split is suspected
+ * of causing: OPENPETE_THREAD_SPLIT=0 puts the loop back on main. */
 static int openpete_thread_split_enabled(void)
 {
     static int v = -1;
     if (v < 0) {
         const char* e = getenv("OPENPETE_THREAD_SPLIT");
-        v = (e && *e && *e != '0') ? 1 : 0;
+        v = (e && *e) ? (*e != '0') : 1;   /* default ON */
     }
     return v;
 }
