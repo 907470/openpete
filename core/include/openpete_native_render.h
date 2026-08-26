@@ -37,6 +37,11 @@ extern "C" {
  * OR when the native path is simply not requested; returns non-zero only on a
  * real bring-up failure (the caller logs and continues without the native
  * path — it is never fatal to the game). */
+/* Hand the window icon over before bring-up. RGBA32, w*4 stride. Applied to the
+ * native window when it is created — in the default path PsyCross never makes a
+ * window, so this is the only window an icon can land on. */
+void openpete_native_set_icon(const void* rgba32, int w, int h);
+
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h);
 
 /* True once init succeeded and the native A/B display is live. */

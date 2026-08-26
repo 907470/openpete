@@ -1081,6 +1081,19 @@ static bool scene_has_world(const scene_tri_t* scene, int n) {
 }
 
 /* Single native renderer instance (one window per process). */
+/* Window icon pixels, handed over before bring-up (the decoded image lives in
+ * the game module). Stored rather than applied immediately because the window
+ * does not exist yet at the point the caller has them. */
+static const unsigned char* s_icon_rgba;
+static int s_icon_w, s_icon_h;
+
+void openpete_native_set_icon(const void* rgba32, int w, int h)
+{
+    s_icon_rgba = (const unsigned char*)rgba32;
+    s_icon_w = w;
+    s_icon_h = h;
+}
+
 static struct {
     bool          enabled;
     bool          headless;     /* W1.1: surfaceless capture (no window/present); screenshots only */
@@ -1550,6 +1563,26 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
                 OPL_ERROR_F("native", "SDL_CreateWindow(VULKAN) failed: %s", SDL_GetError());
                 return 1;
             }
+        }
+
+        /* The window icon has to be set here, not on PsyCross's window: in the
+         * default (null-GPU) path PsyCross never creates one, so the visible
+         * window would ship icon-less on any platform without a resource-file
+         * icon — i.e. everywhere but Windows. */
+        if (s_icon_rgba && s_icon_w > 0 && s_icon_h > 0) {
+            SDL_Surface* ico = SDL_CreateSurfaceFrom(
+                s_icon_w, s_icon_h, SDL_PIXELFORMAT_RGBA32,
+                (void*)s_icon_rgba, s_icon_w * 4);
+            if (ico) {
+                SDL_SetWindowIcon(win, ico);
+                SDL_DestroySurface(ico);
+                OPL_INFO_F("native", "window icon applied (%dx%d)",
+                           s_icon_w, s_icon_h);
+            }
+        } else {
+            /* Weakly linked: a build without the icon generator step resolves
+             * the symbol to NULL and silently ships a default icon. Say so. */
+            OPL_WARN_F("native", "%s", "no window icon available (icon data not linked)");
         }
 
         /* --fullscreen 1: launch in borderless-desktop fullscreen — the exact

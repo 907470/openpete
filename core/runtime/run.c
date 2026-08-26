@@ -195,24 +195,36 @@ static volatile sig_atomic_t g_native_fs_toggle_request = 0;
  * itself. SDL_PollEvent drains one shared queue, so a second drain does not
  * split the work — it steals events from whichever loop polls second.
  *
- * The event *filter* below still runs first, at push time, and consumes
- * quit/close/Escape before they are ever queued; anything it drops never
- * reaches here, which is why PsyX_Exit is unreachable from this path. */
+ * Each event goes to openpete_handle_event first, which consumes the ones
+ * openpete owns outright — quit, window close, Escape's overlay dismiss, the
+ * quit binding — and forwards the rest. Consuming quit/close here is what
+ * keeps PsyX_Exit (and its exit(0), which hangs on static teardown under
+ * WSL+GL+libco) unreachable. */
+static bool openpete_handle_event(SDL_Event* ev);
+
 static void openpete_pump_events(void) {
     SDL_Event ev;
-    while (SDL_PollEvent(&ev))
-        PsyX_Sys_HandleEvent(&ev);
+    while (SDL_PollEvent(&ev)) {
+        if (openpete_handle_event(&ev))
+            PsyX_Sys_HandleEvent(&ev);
+    }
 }
 
-static bool openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
-    (void)userdata;
+/* Handle one dequeued event. Returns true to pass it on to PsyCross, false to
+ * consume it here.
+ *
+ * This used to be an SDL event *filter*, which ran at push time and dropped
+ * events before they were ever queued — necessary back when PsyCross owned the
+ * pump and the only way to keep an event away from it was to stop it existing.
+ * Now that openpete owns the only pump, consuming an event is just declining
+ * to forward it, and everything runs in one place in a defined order. */
+static bool openpete_handle_event(SDL_Event* ev) {
     /* Dev overlay sees every event (imgui io bookkeeping; frames only run
-     * while it is open). The filter runs during the main-thread event pump —
-     * same thread as the host loop — so this is race-free. */
+     * while it is open), including ones consumed below. */
     openpete_devui_process_event(ev);
     if (ev->type == SDL_EVENT_QUIT) {
         g_shutdown_requested = 1;
-        return false;  /* drop so PsyX_Sys_DoPollEvent never sees it */
+        return false;  /* never reaches PsyCross, so PsyX_Exit stays unreachable */
     }
     /* Double-click toggles native-window fullscreen (see the host loop) —
      * unless the click landed on the dev overlay. */
@@ -272,7 +284,7 @@ static bool openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
          * so it can't reach PsyCross's debug-key dispatch. */
         if (esc) return false;
     }
-    return true;  /* keep everything else in queue for PsyCross */
+    return true;  /* everything else goes on to PsyCross */
 }
 
 static void openpete_on_sigint(int sig) {
@@ -1271,6 +1283,18 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             }
         }
     }
+    /* Same icon for the native Vulkan window, which is the visible one in the
+     * default path (PsyCross runs null-GPU and creates no window at all).
+     * Handed over rather than applied: that window does not exist yet. */
+    {
+        extern const uint8_t openpete_spyro1_icon_rgba[] __attribute__((weak));
+        extern const int openpete_spyro1_icon_w __attribute__((weak));
+        extern const int openpete_spyro1_icon_h __attribute__((weak));
+        if (&openpete_spyro1_icon_w && openpete_spyro1_icon_w > 0)
+            openpete_native_set_icon(openpete_spyro1_icon_rgba,
+                                     openpete_spyro1_icon_w,
+                                     openpete_spyro1_icon_h);
+    }
 
     if (opts->headless && g_window) {
         /* Window was created unmapped (PsyX_Initialise startHidden=1) — no
@@ -1331,12 +1355,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
                openpete_psycross_renders ? "ON" : "OFF (native vk owns display)",
                (int)opts->renderer, (int)openpete_native_render_enabled());
 
-    /* Intercept window-close / Alt-F4 / Escape before PsyCross sees them —
-     * PsyX_Sys_DoPollEvent reacts to SDL_QUIT / WINDOWEVENT_CLOSE by calling
-     * PsyX_Exit() → exit(0), which in WSL+GL+libco tends to hang on static
-     * teardown. Our filter sets g_shutdown_requested; the host-fiber loop
-     * picks it up and we shut down through the normal path. */
-    SDL_SetEventFilter(openpete_sdl_event_filter, NULL);
     signal(SIGINT,  openpete_on_sigint);
 #ifdef SIGTERM
     signal(SIGTERM, openpete_on_sigint);
@@ -2108,14 +2126,32 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
          * button). */
         openpete_keymap_suspend_keyboard(openpete_devui_wants_keyboard() ? 1 : 0);
 
+        /* Cursor follows who owns the mouse. PsyCross used to hide it outright
+         * whenever it owned a window, but it no longer creates one in the
+         * default path, so the OS cursor sat over the game — including
+         * borderless fullscreen. Hiding it unconditionally is wrong the other
+         * way: the dev overlay and the settings menu are mouse-driven and need
+         * it back. Edge-triggered so this is two SDL calls per transition
+         * rather than two per iteration. */
+        if (!opts->headless) {
+            bool want_cursor = openpete_devui_is_open() ||
+                               openpete_devui_wants_mouse() ||
+                               openpete_menu_is_open();
+            static int cursor_shown = -1;   /* -1 = not yet applied */
+            if ((int)want_cursor != cursor_shown) {
+                if (want_cursor) SDL_ShowCursor();
+                else             SDL_HideCursor();
+                cursor_shown = (int)want_cursor;
+            }
+        }
+
         /* Sample every binding once per iteration; openpete_key_pressed()
          * below reads the edge this computed. Reads SDL's keyboard/gamepad
-         * state caches, which the previous iteration's PsyX_UpdateInput
-         * refreshed — so this must run before the first hotkey test, and
-         * the turbo peek at the top of the loop deliberately sees the
-         * previous sample. Our SDL_SetEventFilter swallows QUIT/CLOSE/ESC
-         * before the pump, so PsyCross's own exit-on-quit path inside
-         * PsyX_Sys_DoPollEvent never fires. */
+         * state caches, which the previous iteration's pump refreshed — so
+         * this must run before the first hotkey test, and the turbo peek at
+         * the top of the loop deliberately sees the previous sample.
+         * openpete_handle_event consumes QUIT/CLOSE/ESC without forwarding
+         * them, so PsyCross's exit-on-quit path never fires. */
         openpete_keymap_poll();
 
         /* Dev config overlay. Mutually exclusive with the settings menu —
