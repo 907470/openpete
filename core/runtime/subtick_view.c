@@ -1,9 +1,14 @@
 /* core/runtime/subtick_view.c — see openpete_subtick_view.h.
  *
- * Span lookup is a linear scan. The staged set is small and bounded by the
- * number of regions the present path interpolates (single digits plus the
- * per-object pools), and every feeder read hits this path, so the table is
- * sized to stay in cache rather than to scale.
+ * Lookup is on the hot path: every guest read a feeder makes during an
+ * intermediate present goes through it, and the per-object pools stage on the
+ * order of a thousand spans (one per live record). A scan over that per read
+ * is not viable, so spans are indexed by 32-byte block.
+ *
+ * Every staged span is at least SV_BLOCK bytes and spans never overlap, so a
+ * block maps to at most one span and an open-addressed table keyed on
+ * addr >> 5 answers in O(1). Staging inserts one entry per block a span
+ * covers; a span of 0x58 bytes costs 2-3 entries.
  */
 
 #include "openpete_subtick_view.h"
@@ -25,6 +30,63 @@ typedef struct {
     uint32_t len;
     uint32_t off;     /* offset into s_arena */
 } sv_span_t;
+
+/* Block index. Power of two, open addressed, linear probe. Sized so the load
+ * factor stays under ~0.35 at the worst staged set (every pool record live),
+ * because a full table degrades to a scan of exactly the kind this replaces. */
+#define SV_BLOCK       32u
+#define SV_BLOCK_SHIFT 5u
+#define SV_IDX_SLOTS   16384u
+#define SV_IDX_MASK    (SV_IDX_SLOTS - 1u)
+
+typedef struct {
+    uint32_t block;   /* addr >> SV_BLOCK_SHIFT */
+    uint32_t span;    /* index into s_span */
+    uint32_t gen;     /* present this entry was written for */
+} sv_idx_t;
+
+static sv_idx_t s_idx[SV_IDX_SLOTS];
+/* Generation stamp instead of clearing 16K slots per present. Starts at 1 so
+ * the zero-initialised table reads as stale on the first present. */
+static uint32_t s_gen = 1;
+
+static uint32_t sv_hash(uint32_t block)
+{
+    /* Knuth multiplicative; block numbers are dense and highly correlated
+     * (pool records are contiguous), so the low bits alone would clump. */
+    return (block * 2654435761u) & SV_IDX_MASK;
+}
+
+/* A later span covering a block WINS. Spans are normally disjoint, but the
+ * transient-scratch rows deliberately overlap in PSX space and are applied in
+ * a defined order — last-writer-wins reproduces that ordering exactly, where
+ * refusing the overlap would not. */
+static void sv_idx_insert(uint32_t block, uint32_t span)
+{
+    uint32_t i = sv_hash(block);
+    for (uint32_t probe = 0; probe < SV_IDX_SLOTS; probe++) {
+        if (s_idx[i].gen != s_gen || s_idx[i].block == block) {
+            s_idx[i].gen   = s_gen;
+            s_idx[i].block = block;
+            s_idx[i].span  = span;
+            return;
+        }
+        i = (i + 1u) & SV_IDX_MASK;
+    }
+    /* Table full: the span stays staged but this block is unfindable, so reads
+     * of it fall through to real memory -- canonical, never wrong. */
+}
+
+static int sv_idx_lookup(uint32_t block)
+{
+    uint32_t i = sv_hash(block);
+    for (uint32_t probe = 0; probe < SV_IDX_SLOTS; probe++) {
+        if (s_idx[i].gen != s_gen) return -1;      /* stale slot ends the probe */
+        if (s_idx[i].block == block) return (int)s_idx[i].span;
+        i = (i + 1u) & SV_IDX_MASK;
+    }
+    return -1;
+}
 
 static sv_span_t s_span[SV_MAX_SPANS];
 static uint32_t  s_span_count;
@@ -107,6 +169,8 @@ void openpete_subtick_view_begin(CPUState* cpu)
 {
     s_span_count  = 0;
     s_arena_used  = 0;
+    s_gen++;
+    if (s_gen == 0) s_gen = 1;   /* skip 0: it means "never written" */
     s_stat_spans  = 0;
     s_stat_served = 0;
     s_stat_writes = 0;
@@ -150,10 +214,13 @@ void openpete_subtick_view_stats(uint32_t* out_spans, uint32_t* out_served,
 
 static int sv_find(uint32_t addr)
 {
-    for (uint32_t i = 0; i < s_span_count; i++) {
-        if (addr >= s_span[i].addr && addr - s_span[i].addr < s_span[i].len)
-            return (int)i;
-    }
+    if (!s_span_count) return -1;
+    int sp = sv_idx_lookup(addr >> SV_BLOCK_SHIFT);
+    if (sp < 0) return -1;
+    /* The block matched, but a span need not cover the whole of its first or
+     * last block — verify the address really lands inside it. */
+    if (addr >= s_span[sp].addr && addr - s_span[sp].addr < s_span[sp].len)
+        return sp;
     return -1;
 }
 
@@ -190,12 +257,17 @@ void* openpete_subtick_view_stage(uint32_t addr, uint32_t len)
         return NULL;
     }
 
-    sv_span_t* sp = &s_span[s_span_count++];
+    uint32_t si = s_span_count++;
+    sv_span_t* sp = &s_span[si];
     sp->addr = addr;
     sp->len  = len;
     sp->off  = s_arena_used;
     s_arena_used += len;
     s_stat_spans++;
+
+    for (uint32_t b = addr >> SV_BLOCK_SHIFT;
+         b <= (addr + len - 1u) >> SV_BLOCK_SHIFT; b++)
+        sv_idx_insert(b, si);
 
     memcpy(s_arena + sp->off, live, len);
     return s_arena + sp->off;

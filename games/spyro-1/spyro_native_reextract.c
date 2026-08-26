@@ -1120,8 +1120,10 @@ static void spyro_native_reextract_body(void* cpu_v) {
     int      sp_rot_active[3] = {0,0,0};   /* per-segment (body/head/tail) float-rot gate */
     double   sp_rot_ang[3][3] = {{0}};     /* [seg][Z,X,Y] sub-tick float byte-angles */
     uint8_t* fl = NULL; uint8_t fl_saved[FLAME_SAVE]; int fl_bracketed = 0;
+    int fl_staged = 0;
     double   fl_subframe = 0.0;  /* fractional counter advance → flame sub-keyframe slide */
     uint8_t* sh = NULL; uint8_t sh_saved[SHADOW_SAVE]; int sh_bracketed = 0;
+    int sh_staged = 0;
     static moby_save_t s_moby_save[MOBY_SAVE_MAX];
     int      moby_save_n = 0;
     static part_save_t s_part_save[PART_SAVE_MAX];
@@ -1416,7 +1418,9 @@ static void spyro_native_reextract_body(void* cpu_v) {
          *
          * Teleport-guard the flame's first active tick (prev pose stale from
          * before activation): snap when the origin jumps far. */
-        fl = (uint8_t*)openpete_psx_to_host_ptr(G_SPYROFLAME);
+        fl = (uint8_t*)openpete_subtick_view_stage(G_SPYROFLAME, FLAME_SAVE);
+        fl_staged = (fl != NULL);
+        if (!fl) fl = (uint8_t*)openpete_psx_to_host_ptr(G_SPYROFLAME);
         if (fl) {
             const uint8_t* pfl = prev->data + prev->region_offsets[FLAME_REGION];
             const uint8_t* cfl = curr->data + curr->region_offsets[FLAME_REGION];
@@ -1424,7 +1428,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
             const int32_t* cp = (const int32_t*)(cfl + FLAME_POS_OFF);
             double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
             if (dx*dx + dy*dy + dz*dz <= 5000.0 * 5000.0) {
-                memcpy(fl_saved, fl, FLAME_SAVE);                 /* live (bracket restore) */
+                if (!fl_staged) memcpy(fl_saved, fl, FLAME_SAVE);  /* legacy path only */
                 lerp_vec3  (fl, pfl, cfl, FLAME_POS_OFF, alpha);
                 lerp_matrix(fl, pfl, cfl, FLAME_ATT_OFF, alpha);
                 /* Per-strand keyframe counter: advance fractionally so the ribbon
@@ -1464,7 +1468,9 @@ static void spyro_native_reextract_body(void* cpu_v) {
          * so the shadow tracks him; teleport-guard a jump (level transition / warp
          * / a frame Spyro lifts off → re-grounds). (Moby shadows need no bracket —
          * they re-derive from each moby's already-interpolated m_Position.) */
-        sh = (uint8_t*)openpete_psx_to_host_ptr(D_SPYROSHADOW);
+        sh = (uint8_t*)openpete_subtick_view_stage(D_SPYROSHADOW, SHADOW_SAVE);
+        sh_staged = (sh != NULL);
+        if (!sh) sh = (uint8_t*)openpete_psx_to_host_ptr(D_SPYROSHADOW);
         if (sh) {
             const uint8_t* psh = prev->data + prev->region_offsets[SHADOW_REGION];
             const uint8_t* csh = curr->data + curr->region_offsets[SHADOW_REGION];
@@ -1472,7 +1478,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
             const int32_t* cp = (const int32_t*)(csh + SHADOW_POS_OFF);
             double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
             if (dx*dx + dy*dy + dz*dz <= 5000.0 * 5000.0) {
-                memcpy(sh_saved, sh, SHADOW_SAVE);            /* live (bracket restore) */
+                if (!sh_staged) memcpy(sh_saved, sh, SHADOW_SAVE);  /* legacy path only */
                 lerp_vec3(sh, psh, csh, SHADOW_POS_OFF, alpha);
                 sh_bracketed = 1;
             }
@@ -2007,8 +2013,8 @@ static void spyro_native_reextract_body(void* cpu_v) {
                   memcpy(ph + 0x08u,        &s_part_save[i].w2, 4); }
     }
     if (ds_bracketed && ds_host) memcpy(ds_host, ds_saved, 0x2C);
-    if (sh_bracketed)  memcpy(sh, sh_saved, SHADOW_SAVE);
-    if (fl_bracketed)  memcpy(fl, fl_saved, FLAME_SAVE);
+    if (sh_bracketed && !sh_staged)  memcpy(sh, sh_saved, SHADOW_SAVE);
+    if (fl_bracketed && !fl_staged)  memcpy(fl, fl_saved, FLAME_SAVE);
     if (sp_bracketed && !sp_staged)  memcpy(sp, sp_saved, SPYRO_SAVE);
     if (cam_bracketed && !cam_staged) memcpy(cam, cam_saved, CAM_BYTES);
 
