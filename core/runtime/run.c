@@ -130,6 +130,10 @@ static void vp_set_present_target(void) {
  * to be a plain function pointer with no closure) can find it. There's
  * only ever one open trace per run. */
 static openpete_psxtrace_t* s_psxtrace_active = NULL;
+/* Set during host init, consumed by the host loop — which run on different
+ * threads under the split, so this cannot stay a local. Written once before
+ * the worker exists and read-only thereafter. */
+static openpete_psxtrace_t* psxtrace = NULL;
 
 static void openpete_psxtrace_on_anchor(uint32_t addr) {
     (void)addr;
@@ -1102,7 +1106,7 @@ int openpete_get_render_fps(void) {
     return s_render_fps;
 }
 
-static int run_recomp_fiber(const openpete_options_t* opts) {
+static int run_host_init(const openpete_options_t* opts) {
     /* True when main owns the window, the pump and the SDL-state publish, and
      * this function is running on the worker. Resolved once: it decides which
      * half of the input seam this thread is responsible for. */
@@ -1448,7 +1452,6 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
      * overrides via --psxtrace-anchor-pc), matching the BP
      * scripts/pcsx-redux-trace.lua used to record the trace. */
     static openpete_psxtrace_t s_psxtrace;
-    openpete_psxtrace_t* psxtrace = NULL;
     if (opts->psxtrace_verify_path) {
         if (openpete_psxtrace_open(&s_psxtrace,
                                    opts->psxtrace_verify_path) == 0) {
@@ -1529,6 +1532,27 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
             openpete_ticker_start();
         }
     }
+
+    return 0;
+}
+
+/* The worker half: the game fiber and the host loop.
+ *
+ * Split from run_host_init above because SDL brings its video, gamepad and
+ * haptic subsystems up on one thread and pumps them on that same thread. With
+ * init on the worker, main's pump raced it — a GAMEPAD_ADDED delivered on main
+ * reaches PsyX_Pad_Event_ControllerAdded, which tears down and re-creates the
+ * haptic subsystem while the worker is still inside PsyX_Pad_InitSystem. Init
+ * on main serialises the two for free: main does not start pumping until init
+ * has returned, so no barrier is needed (and a barrier could not work anyway —
+ * the worker's SDL init needs main to be pumping, so main waiting on it
+ * deadlocks).
+ *
+ * libco fibers are created and switched here, on the one thread that owns them
+ * for their whole life. */
+static int run_host_loop(const openpete_options_t* opts) {
+    /* Which half of the input seam this thread owns (see run_host_init). */
+    const bool split = openpete_split_applies(opts);
 
     openpete_host_fiber = co_active();
     /* 8 MB fiber stack — Spyro's deepest reasonable call chain is well under
@@ -3947,6 +3971,14 @@ static void log_frame_on_exit(void) {
     OPL_INFO_F("exit", "last openpete_frame=%u", openpete_frame);
 }
 
+/* Single-threaded path: init then loop, on one thread, exactly as before the
+ * split existed. */
+static int run_recomp_fiber(const openpete_options_t* opts) {
+    int rc = run_host_init(opts);
+    if (rc != 0) return rc;
+    return run_host_loop(opts);
+}
+
 /* Worker entry: the entire host loop and the game fiber. libco fibers are
  * thread-affine, so the fiber must be created and switched on this one thread
  * for its whole life — which is why the loop moves wholesale rather than
@@ -3957,7 +3989,8 @@ static const openpete_options_t* s_worker_opts;
 static int SDLCALL openpete_sim_thread(void* unused)
 {
     (void)unused;
-    s_worker_rc = run_recomp_fiber(s_worker_opts);
+    s_worker_rc = run_host_loop(s_worker_opts);
+    OPL_INFO_F("boot", "worker exited rc=%d", s_worker_rc);
     SDL_SetAtomicInt(&g_worker_done, 1);
     return 0;
 }
@@ -3977,9 +4010,14 @@ static int run_split_threaded(const openpete_options_t* opts)
 
     /* The window must belong to the pumping thread: Win32 delivers a window's
      * messages only to its creator. Bring-up on the worker adopts this. */
-    int win_w = (opts->window_w > 0) ? opts->window_w : 0;
-    int win_h = (opts->window_h > 0) ? opts->window_h : 0;
-    openpete_native_precreate_window(opts, win_w, win_h);
+    /* All host + PsyCross + SDL-subsystem init runs HERE, on main, before the
+     * worker exists. SDL brings its video/gamepad/haptic subsystems up on one
+     * thread and pumps them on that thread; with init on the worker, main's
+     * pump raced it and faulted inside SDL. Doing init before main starts
+     * pumping serialises the two with no barrier — and a barrier could not
+     * work anyway, since the worker's SDL init needs main to be pumping. */
+    int init_rc = run_host_init(opts);
+    if (init_rc != 0) return init_rc;
 
     /* Seed the input seam before the worker exists: its first latch must find
      * a valid snapshot, or pad injection falls back to reading SDL on the
@@ -4028,7 +4066,9 @@ static int run_split_threaded(const openpete_options_t* opts)
         }
     }
 
+    OPL_INFO_F("boot", "main leaving pump loop");
     SDL_WaitThread(th, NULL);
+    OPL_INFO_F("boot", "joined; rc=%d", s_worker_rc);
     return s_worker_rc;
 }
 
@@ -4051,8 +4091,15 @@ int openpete_run(const openpete_options_t* opts) {
 
     /* libco: capture the host fiber. Phase 1b uses only co_active(); Phase 1c
      * creates the gameplay fiber so PSYQ calls can yield (VSync etc.). */
-    cothread_t host_fiber = co_active();
-    OPL_INFO_F("boot", "libco host fiber=%p", host_fiber);
+    /* Do NOT call co_active() here under the split. On Windows libco uses
+     * Win32 fibers (libco.c selects fiber.c), and co_active() calls
+     * ConvertThreadToFiber on the caller — converting MAIN, which never
+     * switches and does not need to be a fiber. The worker converts itself
+     * and owns the game fiber for its whole life. */
+    if (!openpete_split_applies(opts)) {
+        cothread_t host_fiber = co_active();
+        OPL_INFO_F("boot", "libco host fiber=%p", host_fiber);
+    }
 
     openpete_psx_install_crash_handler();
 
