@@ -163,10 +163,21 @@ static const char* seh_name(DWORD code) {
     }
 }
 
+/* Thread that installed the handler — i.e. main. Lets the banner say whether
+ * the fault was on main or a worker without the reader having to guess. */
+static DWORD g_main_tid;
+static DWORD openpete_crash_main_tid(void) { return g_main_tid; }
+
 static LONG WINAPI on_seh(EXCEPTION_POINTERS* ep) {
     DWORD code = ep->ExceptionRecord->ExceptionCode;
-    fprintf(stderr, "\n=== openpete crash: %s (0x%08lX) ===\n",
-            seh_name(code), (unsigned long)code);
+    /* Name the thread. Once the host loop runs off the main thread, "where did
+     * it crash" is unanswerable without this: markers logged from one thread
+     * cannot attribute a fault raised on another, and a fault anywhere kills
+     * the process identically. */
+    fprintf(stderr, "\n=== openpete crash: %s (0x%08lX) thread=%lu%s ===\n",
+            seh_name(code), (unsigned long)code,
+            (unsigned long)GetCurrentThreadId(),
+            (GetCurrentThreadId() == openpete_crash_main_tid()) ? " (main)" : "");
     if (code == EXCEPTION_ACCESS_VIOLATION
         && ep->ExceptionRecord->NumberParameters >= 2) {
         fprintf(stderr, "  fault addr=0x%llx kind=%s\n",
@@ -205,6 +216,7 @@ static LONG WINAPI on_seh(EXCEPTION_POINTERS* ep) {
 }
 
 void openpete_psx_install_crash_handler(void) {
+    g_main_tid = GetCurrentThreadId();
     SetUnhandledExceptionFilter(on_seh);
     OPL_INFO_F("boot", "crash handler installed (Win32 SEH unhandled-exception filter)");
 }
