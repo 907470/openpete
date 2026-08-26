@@ -89,7 +89,10 @@ typedef struct { uint32_t addr; uint8_t staged; uint8_t bytes[MOBY_STRIDE]; } mo
 #define PART_HDR_SEL    8u           /* (hdr>>8)&0xFF: 0xFF=end, &0x80=inactive */
 #define PART_POS_OFF    0x04u        /* X(lo16)/Y(hi16) word; Z(lo16) at +0x08 */
 #define PART_SAVE_MAX   512
-typedef struct { uint32_t addr, w1, w2; } part_save_t;  /* +0x04, +0x08 */
+/* `staged` mirrors the moby table: writes went to the view's copy, so no
+ * restore is owed. w1/w2 are captured either way so the integrity check can
+ * prove guest RAM was left alone. */
+typedef struct { uint32_t addr, w1, w2; uint8_t staged; } part_save_t;  /* +0x04, +0x08 */
 
 /* g_Camera field offsets (verified in camera.h / the feeders):
  *   +0x00 m_ProjectionMatrix (SHORTMATRIX: short[3][3]+pad)
@@ -1828,6 +1831,14 @@ static void spyro_native_reextract_body(void* cpu_v) {
                 s_part_save[part_save_n].addr = pa;
                 s_part_save[part_save_n].w1 = live1;
                 s_part_save[part_save_n].w2 = live2;
+                {   /* Stage the WHOLE record, not just the two written words: a
+                     * reader resolving any field of this particle must land in
+                     * the staged copy, or it would mix staged position with
+                     * canonical everything-else. */
+                    uint8_t* st = (uint8_t*)openpete_subtick_view_stage(pa, PART_STRIDE);
+                    s_part_save[part_save_n].staged = (st != NULL);
+                    if (st) ph = st;
+                }
                 part_save_n++;
                 int16_t lX = lerp16((int16_t)pX, (int16_t)cX, pa_alpha);
                 int16_t lY = lerp16((int16_t)pY, (int16_t)cY, pa_alpha);
@@ -2024,6 +2035,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
         if (mh) memcpy(mh, s_moby_save[i].bytes, MOBY_STRIDE);
     }
     for (int i = 0; i < part_save_n; i++) {
+        if (s_part_save[i].staged) continue;   /* never written; nothing to undo */
         uint8_t* ph = (uint8_t*)openpete_psx_to_host_ptr(s_part_save[i].addr);
         if (ph) { memcpy(ph + PART_POS_OFF, &s_part_save[i].w1, 4);
                   memcpy(ph + 0x08u,        &s_part_save[i].w2, 4); }

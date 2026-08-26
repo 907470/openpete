@@ -13,6 +13,7 @@
 
 #include "openpete_subtick_view.h"
 
+#include <stdlib.h>
 #include <string.h>
 
 #include "openpete_psx.h"
@@ -36,7 +37,11 @@ typedef struct {
  * because a full table degrades to a scan of exactly the kind this replaces. */
 #define SV_BLOCK       32u
 #define SV_BLOCK_SHIFT 5u
-#define SV_IDX_SLOTS   16384u
+/* Entries are per (block, span) pair and duplicates are kept, so a dense pool
+ * costs ~2 entries per record. Sized so the load factor stays under ~0.25 at
+ * the worst staged set: a crowded table lengthens every probe chain, and a
+ * full one silently drops spans to the canonical path. */
+#define SV_IDX_SLOTS   32768u
 #define SV_IDX_MASK    (SV_IDX_SLOTS - 1u)
 
 typedef struct {
@@ -57,15 +62,25 @@ static uint32_t sv_hash(uint32_t block)
     return (block * 2654435761u) & SV_IDX_MASK;
 }
 
-/* A later span covering a block WINS. Spans are normally disjoint, but the
- * transient-scratch rows deliberately overlap in PSX space and are applied in
- * a defined order — last-writer-wins reproduces that ordering exactly, where
- * refusing the overlap would not. */
+/* One block can belong to SEVERAL spans, so entries are never merged by block.
+ *
+ * Two ways that happens, and the second is not a corner case: adjacent records
+ * in a pool share a boundary block whenever the record stride is not a whole
+ * number of blocks or the pool base is unaligned -- the particle stride is
+ * exactly one block, so a dense pool collides on essentially every record. The
+ * other is the transient-scratch rows, which overlap in PSX space by design.
+ *
+ * Merging by block silently loses the shadowed span: its lookups fail the
+ * coverage test, fall through to real memory, and read CANONICAL bytes. Since
+ * staging means real memory is deliberately no longer written, the effect is
+ * that the interpolation vanishes -- which is exactly how this was found, as
+ * 388 divergent golden tiles of particles that had stopped moving between
+ * ticks. */
 static void sv_idx_insert(uint32_t block, uint32_t span)
 {
     uint32_t i = sv_hash(block);
     for (uint32_t probe = 0; probe < SV_IDX_SLOTS; probe++) {
-        if (s_idx[i].gen != s_gen || s_idx[i].block == block) {
+        if (s_idx[i].gen != s_gen) {        /* stale slots only; never merge */
             s_idx[i].gen   = s_gen;
             s_idx[i].block = block;
             s_idx[i].span  = span;
@@ -75,17 +90,6 @@ static void sv_idx_insert(uint32_t block, uint32_t span)
     }
     /* Table full: the span stays staged but this block is unfindable, so reads
      * of it fall through to real memory -- canonical, never wrong. */
-}
-
-static int sv_idx_lookup(uint32_t block)
-{
-    uint32_t i = sv_hash(block);
-    for (uint32_t probe = 0; probe < SV_IDX_SLOTS; probe++) {
-        if (s_idx[i].gen != s_gen) return -1;      /* stale slot ends the probe */
-        if (s_idx[i].block == block) return (int)s_idx[i].span;
-        i = (i + 1u) & SV_IDX_MASK;
-    }
-    return -1;
 }
 
 static sv_span_t s_span[SV_MAX_SPANS];
@@ -107,6 +111,9 @@ static void     (*s_orig_write_word)(uint32_t, uint32_t);
 
 /* One-shot so an exhausted arena is loud once rather than per resolve. */
 static int s_warned_full;
+
+/* OPENPETE_SUBTICK_WRITE_TRACE=1 */
+static int s_trace = -1;
 
 /* Lifetime count of presents this view was opened for. An A/B that leaves it
  * at zero never exercised the view, and a neutral result from such a run says
@@ -162,6 +169,12 @@ static uint8_t sv_read_byte(uint32_t addr)
 static void sv_write_word(uint32_t addr, uint32_t value)
 {
     s_stat_writes++;
+    /* OPENPETE_SUBTICK_WRITE_TRACE names the addresses, which is what turns
+     * "something wrote during a present" into a producer you can go and fix.
+     * Capped per present so a runaway writer cannot flood the log. */
+    if (s_trace && s_stat_writes <= 16)
+        OPL_WARN_F("subtick-view", "guest write during present: [%08x] <- %08x",
+                   addr, value);
     s_orig_write_word(addr, value);
 }
 
@@ -176,6 +189,10 @@ void openpete_subtick_view_begin(CPUState* cpu)
     s_stat_writes = 0;
     s_active      = 1;
     s_opens++;
+    if (s_trace < 0) {
+        const char* e = getenv("OPENPETE_SUBTICK_WRITE_TRACE");
+        s_trace = (e && *e && *e != '0');
+    }
 
     if (!cpu) return;
     s_orig_read_word  = cpu->read_word;
@@ -215,13 +232,22 @@ void openpete_subtick_view_stats(uint32_t* out_spans, uint32_t* out_served,
 static int sv_find(uint32_t addr)
 {
     if (!s_span_count) return -1;
-    int sp = sv_idx_lookup(addr >> SV_BLOCK_SHIFT);
-    if (sp < 0) return -1;
-    /* The block matched, but a span need not cover the whole of its first or
-     * last block — verify the address really lands inside it. */
-    if (addr >= s_span[sp].addr && addr - s_span[sp].addr < s_span[sp].len)
-        return sp;
-    return -1;
+    const uint32_t block = addr >> SV_BLOCK_SHIFT;
+    uint32_t i = sv_hash(block);
+    int best = -1;
+    for (uint32_t probe = 0; probe < SV_IDX_SLOTS; probe++) {
+        if (s_idx[i].gen != s_gen) break;        /* stale slot ends the chain */
+        if (s_idx[i].block == block) {
+            uint32_t sp = s_idx[i].span;
+            /* A span need not cover the whole of its first or last block, so
+             * every candidate is coverage-tested rather than trusted. */
+            if (addr >= s_span[sp].addr && addr - s_span[sp].addr < s_span[sp].len
+                && (int)sp > best)
+                best = (int)sp;                  /* latest staged span wins */
+        }
+        i = (i + 1u) & SV_IDX_MASK;
+    }
+    return best;
 }
 
 void* openpete_subtick_view_stage(uint32_t addr, uint32_t len)
