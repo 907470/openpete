@@ -187,6 +187,23 @@ void openpete_request_shutdown(void) { g_shutdown_requested = 1; }
  * heavy SDL_SetWindowFullscreen call runs in the loop, not the filter. */
 static volatile sig_atomic_t g_native_fs_toggle_request = 0;
 
+/* The process's single event pump.
+ *
+ * openpete owns the SDL_PollEvent loop; every dequeued event is routed on to
+ * PsyCross's handlers (controller hotplug, resize, its debug keys, text input,
+ * Alt tracking) so those keep working without PsyCross draining the queue
+ * itself. SDL_PollEvent drains one shared queue, so a second drain does not
+ * split the work — it steals events from whichever loop polls second.
+ *
+ * The event *filter* below still runs first, at push time, and consumes
+ * quit/close/Escape before they are ever queued; anything it drops never
+ * reaches here, which is why PsyX_Exit is unreachable from this path. */
+static void openpete_pump_events(void) {
+    SDL_Event ev;
+    while (SDL_PollEvent(&ev))
+        PsyX_Sys_HandleEvent(&ev);
+}
+
 static bool openpete_sdl_event_filter(void* userdata, SDL_Event* ev) {
     (void)userdata;
     /* Dev overlay sees every event (imgui io bookkeeping; frames only run
@@ -2631,7 +2648,7 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
              * gameplay for any input the host is not driving. */
             PsyX_UpdateInput();
         } else {
-            PsyX_Sys_DoPollEvent();
+            openpete_pump_events();
             openpete_host_input_sample((SDL_GetModState() & SDL_KMOD_ALT) != 0);
             openpete_host_input_latch(ovr_claimed);
             PsyX_Pad_InternalPadUpdates();

@@ -3,6 +3,8 @@
 
 #include "PsyX/PsyX_public.h"
 
+#include <SDL3/SDL.h>
+
 #include <string.h>
 #include <stdlib.h>
 
@@ -91,6 +93,91 @@ int openpete_host_input_legacy(void)
     return v;
 }
 
+/* Virtual gamepad (OPENPETE_INPUT_VGAMEPAD=1).
+ *
+ * The synthetic source above bypasses SDL entirely, which is what makes it
+ * usable headless but also means it never exercises the real thing: hotplug
+ * events reaching PsyCross's controller handlers through the host's pump, and
+ * PsyCross's gamepad decode reading actual SDL axes and buttons. Attaching an
+ * SDL virtual joystick drives that whole path for real — SDL emits a genuine
+ * SDL_EVENT_GAMEPAD_ADDED, the pump routes it, PsyCross opens the pad, and
+ * decode reads it like any other controller. Diagnostic only. */
+static SDL_Joystick* s_vpad;
+static int s_vpad_state = -1;   /* -1 unresolved, 0 off, 1 requested */
+
+static void vgamepad_maybe_attach(void)
+{
+    if (s_vpad_state < 0) {
+        const char* e = getenv("OPENPETE_INPUT_VGAMEPAD");
+        s_vpad_state = (e && *e && *e != '0') ? 1 : 0;
+    }
+    if (s_vpad_state != 1 || s_vpad)
+        return;
+
+    /* SDL_INIT_GAMEPAD is brought up by PsyX_Pad_InitSystem; attaching before
+     * that leaves the pad invisible to the gamepad layer. */
+    if (!SDL_WasInit(SDL_INIT_GAMEPAD))
+        return;
+
+    SDL_VirtualJoystickDesc desc;
+    SDL_INIT_INTERFACE(&desc);
+    desc.type       = SDL_JOYSTICK_TYPE_GAMEPAD;
+    desc.naxes      = SDL_GAMEPAD_AXIS_COUNT;
+    desc.nbuttons   = SDL_GAMEPAD_BUTTON_COUNT;
+    desc.name       = "openpete virtual pad";
+    desc.button_mask = 0xFFFFu;
+    desc.axis_mask   = 0x3Fu;
+
+    SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
+    if (!id) {
+        OPL_WARN_F("input", "virtual gamepad attach failed: %s", SDL_GetError());
+        s_vpad_state = 0;
+        return;
+    }
+    s_vpad = SDL_OpenJoystick(id);
+    if (!s_vpad) {
+        OPL_WARN_F("input", "virtual gamepad open failed: %s", SDL_GetError());
+        s_vpad_state = 0;
+        return;
+    }
+    /* Attaching is not the same as being usable: the pad only reaches decode
+     * if SDL exposes it as a *gamepad* (it needs a mapping — on some platforms
+     * a virtual joystick never gets one), and if PsyCross assigns it a slot,
+     * which a real controller already occupying slot 0 will prevent. Say so
+     * here, or a run that decodes nothing looks like a code failure. */
+    if (!SDL_IsGamepad(id))
+        OPL_WARN_F("input",
+                   "virtual pad (id=%u) attached but SDL does not expose it as a "
+                   "gamepad here — it will not reach decode", (unsigned)id);
+    else
+        OPL_INFO_F("input", "VIRTUAL gamepad attached (id=%u) — diagnostic only",
+                   (unsigned)id);
+}
+
+/* Drive the virtual pad from the same frame-indexed pattern the synthetic
+ * source uses, but through real SDL button/axis state so the decode under test
+ * is the genuine gamepad path. */
+static void vgamepad_drive(unsigned frame)
+{
+    if (!s_vpad) return;
+
+    static const int kBtn[] = {
+        SDL_GAMEPAD_BUTTON_SOUTH, SDL_GAMEPAD_BUTTON_EAST,
+        SDL_GAMEPAD_BUTTON_WEST,  SDL_GAMEPAD_BUTTON_NORTH,
+        SDL_GAMEPAD_BUTTON_DPAD_UP, SDL_GAMEPAD_BUTTON_DPAD_DOWN,
+        SDL_GAMEPAD_BUTTON_START,
+    };
+    const int n = (int)(sizeof(kBtn) / sizeof(kBtn[0]));
+    unsigned slot = (frame / 8u) % (unsigned)(n + 1);
+
+    for (int i = 0; i < n; i++)
+        SDL_SetJoystickVirtualButton(s_vpad, kBtn[i], (unsigned)i == slot);
+
+    Sint16 sweep = (Sint16)(((int)(frame % 100u) - 50) * 600);
+    SDL_SetJoystickVirtualAxis(s_vpad, SDL_GAMEPAD_AXIS_LEFTX, sweep);
+    SDL_SetJoystickVirtualAxis(s_vpad, SDL_GAMEPAD_AXIS_LEFTY, (Sint16)-sweep);
+}
+
 void openpete_host_input_sample(bool alt_held)
 {
     unsigned short bits = PAD_NEUTRAL_BITS;
@@ -101,6 +188,9 @@ void openpete_host_input_sample(bool alt_held)
      * halves separately means owning that gate here. Publishing neutral
      * (rather than skipping the publish) keeps the snapshot fresh: a stale
      * one would replay the last pre-Alt press for as long as Alt is down. */
+    vgamepad_maybe_attach();
+    vgamepad_drive(openpete_frame);
+
     if (synth_on())
         synth_pad(openpete_frame, &bits, axes);
     else if (!alt_held)
