@@ -1116,6 +1116,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
     uint8_t  cam_saved[CAM_BYTES];
     int      cam_bracketed = 0;
     uint8_t* sp = NULL; uint8_t sp_saved[SPYRO_SAVE]; int sp_bracketed = 0;
+    int sp_staged = 0;   /* sp points at the view's staged copy, not guest RAM */
     int      sp_rot_active[3] = {0,0,0};   /* per-segment (body/head/tail) float-rot gate */
     double   sp_rot_ang[3][3] = {{0}};     /* [seg][Z,X,Y] sub-tick float byte-angles */
     uint8_t* fl = NULL; uint8_t fl_saved[FLAME_SAVE]; int fl_bracketed = 0;
@@ -1302,7 +1303,12 @@ static void spyro_native_reextract_body(void* cpu_v) {
         }
 
         /* (b) Spyro position (singleton, region SPYRO_REGION). */
-        sp = (uint8_t*)openpete_psx_to_host_ptr(G_SPYRO);
+        /* Same shape as the camera above: publish the lerp into the view so
+         * guest RAM is untouched, falling back to write-and-restore only if
+         * staging is unavailable. */
+        sp = (uint8_t*)openpete_subtick_view_stage(G_SPYRO, SPYRO_SAVE);
+        sp_staged = (sp != NULL);
+        if (!sp) sp = (uint8_t*)openpete_psx_to_host_ptr(G_SPYRO);
         if (sp) {
             const uint8_t* psp = prev->data + prev->region_offsets[SPYRO_REGION];
             const uint8_t* csp = curr->data + curr->region_offsets[SPYRO_REGION];
@@ -1323,7 +1329,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
                 memcpy(s_psp_rb, s_shown_sp, 12);
                 psp = s_psp_rb;
             }
-            memcpy(sp_saved, sp, SPYRO_SAVE);          /* live (bracket restore) */
+            if (!sp_staged) memcpy(sp_saved, sp, SPYRO_SAVE);  /* legacy path only */
             /* pred1 for Spyro's m_Position, gated on the camera's prev2 continuity
              * PLUS a Spyro-specific position-step check (Spyro can warp while the
              * camera holds). Falls back to the linear lerp otherwise. */
@@ -2003,7 +2009,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
     if (ds_bracketed && ds_host) memcpy(ds_host, ds_saved, 0x2C);
     if (sh_bracketed)  memcpy(sh, sh_saved, SHADOW_SAVE);
     if (fl_bracketed)  memcpy(fl, fl_saved, FLAME_SAVE);
-    if (sp_bracketed)  memcpy(sp, sp_saved, SPYRO_SAVE);
+    if (sp_bracketed && !sp_staged)  memcpy(sp, sp_saved, SPYRO_SAVE);
     if (cam_bracketed && !cam_staged) memcpy(cam, cam_saved, CAM_BYTES);
 
     /* W0.3 bracket-integrity: every lerp write above must be undone — verify the
