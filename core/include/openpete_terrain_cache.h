@@ -260,6 +260,9 @@ uint32_t openpete_native_hdfold_epoch(void);
 /* Flush pending atlas uploads into the current rhi frame (after begin_frame,
  * before the first render pass — the hd_flush_pending site). */
 void openpete_native_hdfold_flush(void);
+/* Create + make resident the replacement atlas ahead of first use, so the
+ * driver's allocation work does not land on a pacer-timed frame. */
+void openpete_native_hdfold_prime(struct rhi_device *dev);
 
 /* Drop table + atlas content (pack registry reset / level change); baked
  * entry ids die with it, so callers must also rebake hd-baked sectors. */

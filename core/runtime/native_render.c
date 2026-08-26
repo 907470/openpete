@@ -2274,6 +2274,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
             openpete_tercache_init(dev);
     }
 
+    /* Replacement atlas up front when a pack is active. Created lazily it
+     * lands on the first frame that folds a replacement, and the driver's
+     * allocation and residency work for a 2048^2 RGBA image does not show up
+     * in the create call or in any GPU zone — it surfaces as ~90 ms inside
+     * the next fence wait, which is past the pacer's slip clamp. Paying it
+     * during bring-up costs the same time where no deadline is running. */
+    if (openpete_native_hdfold_on()) openpete_native_hdfold_prime(dev);
+
     OPL_INFO_F("native", "Vulkan %s window up (%dx%d, device='%s'); PsyCross hidden",
                ab_mode ? "A/B" : diff_mode ? "diff" : "vk",
                w, h, rhi_device_name(dev));
@@ -4133,9 +4141,35 @@ static void hd_pending_add(uint64_t key, const unsigned char *px, int w, int h,
         (__typeof__(s_hd_pending[0])){ key, px, w, h, box_w, box_h };
 }
 
+/* HD replacement textures created per frame. Each entry is its own image:
+ * vkCreateImage plus a device allocation and a view, which is driver-side
+ * work that shows up in neither a GPU zone nor the create call's own return.
+ * A pack-covered level entered with the pack resident queues its whole
+ * visible set at once — ~310 images, ~85 ms in one frame, past the pacer's
+ * slip clamp and so a real loss of wall-clock from the game clock. Creating
+ * a bounded number per frame spreads that over a handful of frames; entries
+ * still pending resolve to stock for that frame, which is the same outcome
+ * the cache-full path already produces.
+ *
+ * 12 is measured, not guessed: the burst's worst frame falls 85.8 -> 10.4 ms
+ * at this cap (24 -> 15.1, 8 -> 9.1, 4 -> 7.4), and every value tested clears
+ * the slip clamp. Returns flatten below 12 because ~7 ms of the burst is a
+ * fixed cost no cap divides, while a lower cap only lengthens the run of
+ * frames drawing stock. */
+#define HD_CREATE_PER_FRAME 12
+
 static void hd_flush_pending(void)   /* call OUTSIDE any render pass */
 {
-    for (int i = 0; i < s_hd_pending_n; i++) {
+    static int cap = -1;
+    if (cap < 0) {
+        cap = HD_CREATE_PER_FRAME;
+        const char *e = getenv("OPENPETE_HD_CREATE_CAP");
+        if (e && *e) { int v = atoi(e); if (v > 0) cap = v; }
+    }
+    int made = 0;
+    int i = 0;
+    for (; i < s_hd_pending_n; i++) {
+        if (made >= cap) break;
         uint64_t key = s_hd_pending[i].key;
         uint64_t base = key * 0x9E3779B97F4A7C15ull >> 32;
         int idx = -1;
@@ -4174,8 +4208,16 @@ static void hd_flush_pending(void)   /* call OUTSIDE any render pass */
         }
         s_hd_cache[idx].key = key;
         s_hd_cache[idx].tex = t;
+        made++;
     }
-    s_hd_pending_n = 0;
+    /* Keep whatever the budget did not reach for the next frame. */
+    if (i < s_hd_pending_n) {
+        s_hd_pending_n -= i;
+        memmove(s_hd_pending, s_hd_pending + i,
+                (size_t)s_hd_pending_n * sizeof(s_hd_pending[0]));
+    } else {
+        s_hd_pending_n = 0;
+    }
 }
 
 static void hd_cache_shutdown(void)
@@ -4841,6 +4883,24 @@ int openpete_native_hdfold_pending(void)
 uint32_t openpete_native_hdfold_epoch(void)
 {
     return s_hdf_epoch;
+}
+
+/* Create the atlas and force its first transition/residency now, so neither
+ * lands on a frame the sim pacer is timing. Safe to call before any
+ * replacement exists: the atlas contents are irrelevant until something
+ * folds into it. */
+void openpete_native_hdfold_prime(rhi_device *dev)
+{
+    if (s_hdf_atlas || !dev) return;
+    s_hdf_atlas = rhi_create_rgba8(dev, HDFOLD_ATLAS_DIM, HDFOLD_ATLAS_DIM);
+    if (!s_hdf_atlas) return;
+    /* One 1x1 write: the upload path is what makes the image resident and
+     * transitions it, and doing that here is the whole point of priming. */
+    static const unsigned char px[4] = { 0, 0, 0, 0 };
+    rhi_tex_rect_src seed = { px, 0, 0, 1, 1 };
+    rhi_update_rgba8_rects(dev, s_hdf_atlas, &seed, 1);
+    OPL_INFO_F("native", "hdfold atlas primed (%dx%d)",
+               HDFOLD_ATLAS_DIM, HDFOLD_ATLAS_DIM);
 }
 
 void openpete_native_hdfold_flush(void)
@@ -8593,7 +8653,10 @@ void openpete_native_render_frame(uint64_t record_pts_us)
 
     const int pt_on = openpete_phase_timers_on();
     uint64_t pt_t0 = pt_on ? openpete_phase_now_us() : 0, pt_t1;
-    if (!rhi_begin_frame(s_nr.dev))
+    int bf_ok;
+    { OP_PROF_ACCUM_SCOPE("gpu.beginframe");   /* fence wait + swapchain acquire */
+      bf_ok = rhi_begin_frame(s_nr.dev); }
+    if (!bf_ok)
         return; /* swapchain recreating or window minimized — skip this present */
     /* Retained terrain: select against the stamp of the scene this present
      * composes (freeze/lag included), so retained content follows the same
@@ -8606,9 +8669,9 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     /* Pending VRAM/reference uploads ride THIS frame's command buffer (W2.2)
      * — must precede the first render pass (the depth pre-pass below). */
     rhi_gpu_zone_begin(s_nr.dev, "upload");
-    upload_synced_textures();
-    hd_flush_pending();        /* HD replacement textures queued at draw time */
-    openpete_native_hdfold_flush();
+    { OP_PROF_ACCUM_SCOPE("upl.synced");   upload_synced_textures(); }
+    { OP_PROF_ACCUM_SCOPE("upl.hd");       hd_flush_pending(); }
+    { OP_PROF_ACCUM_SCOPE("upl.hdfold");   openpete_native_hdfold_flush(); }
     rhi_gpu_zone_end(s_nr.dev);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_GPU_SYNC, pt_t1 - pt_t0); pt_t0 = pt_t1; }
     if (s_ptrace) { fprintf(stderr, "[ptrace f=%u] B", s_scene_frame); fflush(stderr); }
@@ -8683,7 +8746,8 @@ void openpete_native_render_frame(uint64_t record_pts_us)
         rhi_gpu_zone_end(s_nr.dev);
     }
 
-    rhi_end_frame(s_nr.dev);
+    { OP_PROF_ACCUM_SCOPE("gpu.endframe");   /* submit + present */
+      rhi_end_frame(s_nr.dev); }
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_GPU_SYNC, pt_t1 - pt_t0);
                  openpete_phase_set_count(OPPC_DRAWS, (int)rhi_draw_calls(s_nr.dev));
                  phase_present_done(); }
