@@ -1150,6 +1150,10 @@ static struct {
     SDL_Window   *window;
     rhi_device   *dev;
     int           win_w, win_h; /* last-known pixel size, for resize detection */
+    /* A size seen but not yet adopted, and when it was first seen — a resize
+     * is only taken once it has held still (see NR_RESIZE_SETTLE_NS). */
+    int           pending_w, pending_h;
+    Uint64        pending_since_ns;
 
     /* Reference panel: PsyCross's read-back frame (RGBA8). */
     rhi_pipeline *blit_pipe;
@@ -4234,6 +4238,10 @@ static void hd_pending_add(uint64_t key, const unsigned char *px, int w, int h,
  * the slip clamp. Returns flatten below 12 because ~7 ms of the burst is a
  * fixed cost no cap divides, while a lower cap only lengthens the run of
  * frames drawing stock. */
+/* How long the window size must hold still before a resize is adopted. Long
+ * enough to span a drag's per-pixel steps, short enough to feel immediate. */
+#define NR_RESIZE_SETTLE_NS (150ull * 1000ull * 1000ull)
+
 #define HD_CREATE_PER_FRAME 12
 
 static void hd_flush_pending(void)   /* call OUTSIDE any render pass */
@@ -8681,9 +8689,21 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     int pw = 0, ph = 0;
     if (SDL_GetWindowSizeInPixels(s_nr.window, &pw, &ph) && pw > 0 && ph > 0 &&
         (pw != s_nr.win_w || ph != s_nr.win_h)) {
-        s_nr.win_w = pw;
-        s_nr.win_h = ph;
-        rhi_notify_resize(s_nr.dev);
+        /* Wait for the size to SETTLE before adopting it. A live resize walks
+         * the width one pixel at a time, and adopting each step rebuilds the
+         * SSAA scene target and the depth pre-pass every frame — dozens of
+         * full teardowns per drag. Each is expensive enough to cost the sim a
+         * tick, and the presenting thread is the sim thread. Render at the old
+         * size until the user pauses, then rebuild once. */
+        if (pw != s_nr.pending_w || ph != s_nr.pending_h) {
+            s_nr.pending_w = pw;
+            s_nr.pending_h = ph;
+            s_nr.pending_since_ns = SDL_GetTicksNS();
+        } else if (SDL_GetTicksNS() - s_nr.pending_since_ns >= NR_RESIZE_SETTLE_NS) {
+            s_nr.win_w = pw;
+            s_nr.win_h = ph;
+            rhi_notify_resize(s_nr.dev);
+        }
     }
 
     /* Mirror VRAM + read the reference back BEFORE opening our frame: these do

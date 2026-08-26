@@ -3957,8 +3957,14 @@ static int run_host_loop(const openpete_options_t* opts) {
     /* Report before PsyX_Shutdown: the instrument reads PsyCross pad state. */
     openpete_host_input_parity_report();
 
-    openpete_native_render_shutdown();
-    PsyX_Shutdown();
+    /* Renderer + PsyCross teardown destroy the window and call SDL_Quit, which
+     * belong to the thread that created them. Under the split that is main, so
+     * the worker leaves them alone and main runs them after the join —
+     * tearing the window down from here would hang the process on exit. */
+    if (!split) {
+        openpete_native_render_shutdown();
+        PsyX_Shutdown();
+    }
 
     fprintf(stdout,
             "openpete-exit: reason=%s frames=%u ms=%u code=%d\n",
@@ -3990,7 +3996,6 @@ static int SDLCALL openpete_sim_thread(void* unused)
 {
     (void)unused;
     s_worker_rc = run_host_loop(s_worker_opts);
-    OPL_INFO_F("boot", "worker exited rc=%d", s_worker_rc);
     SDL_SetAtomicInt(&g_worker_done, 1);
     return 0;
 }
@@ -4066,9 +4071,13 @@ static int run_split_threaded(const openpete_options_t* opts)
         }
     }
 
-    OPL_INFO_F("boot", "main leaving pump loop");
     SDL_WaitThread(th, NULL);
-    OPL_INFO_F("boot", "joined; rc=%d", s_worker_rc);
+
+    /* Worker is joined, so nothing else touches the device or the window.
+     * These run here because they own main-thread resources (see the matching
+     * comment in run_host_loop). */
+    openpete_native_render_shutdown();
+    PsyX_Shutdown();
     return s_worker_rc;
 }
 

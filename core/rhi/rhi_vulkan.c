@@ -136,6 +136,18 @@ struct rhi_device {
     uint32_t frame;        /* 0..RHI_FRAMES_IN_FLIGHT-1 */
     uint32_t image_index;  /* acquired swapchain image this frame */
     bool     needs_recreate;
+    /* Presents dropped because no swapchain image arrived in time — a live
+     * resize is the expected cause. Counted so a silent frame drop is
+     * visible rather than mysterious. */
+    unsigned acquire_timeouts;
+    /* While set, presents are skipped without blocking (see the acquire
+     * budget above). Cleared once the window passes. */
+    Uint64   acquire_backoff_until_ns;
+    /* Same idea for swapchain rebuilds, which are far more expensive. */
+    Uint64   recreate_backoff_until_ns;
+    /* Window size as last observed while waiting for a resize to settle. */
+    int      last_seen_w, last_seen_h;
+    Uint64   size_stable_since_ns;
     bool     frame_active;  /* between begin_frame and end_frame */
     uint32_t draw_calls;    /* rhi_draw invocations since begin_frame (perf census) */
     VkExtent2D cur_extent;  /* render area of the CURRENT pass (offscreen sc_extent
@@ -1453,25 +1465,117 @@ void rhi_wait_idle(rhi_device *dev)
 static uint64_t s_frame_serial = 0;
 uint64_t rhi_frame_serial(rhi_device *dev) { (void)dev; return s_frame_serial; }
 
+/* Acquire budget, and the back-off after one expires.
+ *
+ * The budget MUST stay well under the pacer's slip threshold (4 sim periods,
+ * ~67 ms): a wait longer than that turns every expiry into a reported sim
+ * slip, which is just trading an unbounded freeze for a bounded one.
+ *
+ * The back-off is what stops a sustained stall (a live resize holds images
+ * for as long as the user drags) from costing the budget on EVERY iteration
+ * and throttling the sim to a crawl. After one expiry, presents are skipped
+ * outright for a short window — no blocking at all — so the sim runs at full
+ * speed and presentation resumes on its own once images flow again. */
+#ifndef RHI_ACQUIRE_TIMEOUT_NS
+#define RHI_ACQUIRE_TIMEOUT_NS  (8ull * 1000ull * 1000ull)    /* 8 ms  */
+#endif
+/* Must match the renderer's own resize settle window closely enough that the
+ * swapchain and the render targets rebuild in the same gesture. */
+#ifndef RHI_RESIZE_SETTLE_NS
+#define RHI_RESIZE_SETTLE_NS    (150ull * 1000ull * 1000ull)  /* 150 ms */
+#endif
+#ifndef RHI_ACQUIRE_BACKOFF_NS
+#define RHI_ACQUIRE_BACKOFF_NS  (32ull * 1000ull * 1000ull)   /* 32 ms */
+#endif
+
+/* Report any present-path phase that blocks long enough to threaten the sim.
+ * Under the thread split the presenting thread is the sim thread, so a stall
+ * here is a dropped tick — and "which call blocked" is otherwise invisible. */
+#define RHI_STALL_REPORT_NS (12ull * 1000ull * 1000ull)
+static void rhi_note_stall(const char *what, Uint64 t0)
+{
+    Uint64 dt = SDL_GetTicksNS() - t0;
+    if (dt >= RHI_STALL_REPORT_NS)
+        RHI_LOG("stall: %s blocked %.1f ms\n", what, (double)dt / 1e6);
+}
+
 bool rhi_begin_frame(rhi_device *dev)
 {
     if (dev->needs_recreate && !dev->headless) {
-        if (!recreate(dev)) return false;
+        /* Rate-limit. A live resize reports OUT_OF_DATE on every frame, and
+         * each recreate is a vkDeviceWaitIdle plus a full swapchain teardown
+         * and rebuild — doing that per frame stalls the sim for as long as the
+         * user drags the edge. Retry on an interval and skip the present in
+         * between; the last attempt before the size settles is the one that
+         * sticks. */
+        /* Do not rebuild while the window is still being dragged. Presenting
+         * against a stale extent reports OUT_OF_DATE every frame, so without
+         * this the rate-limit below just paces a 40-50 ms teardown-and-rebuild
+         * forever. Skipping the present costs nothing the user can see during
+         * a resize, and keeps the sim off this call entirely. */
+        int cw = 0, ch = 0;
+        if (SDL_GetWindowSizeInPixels(dev->window, &cw, &ch) && cw > 0 && ch > 0) {
+            if (cw != dev->last_seen_w || ch != dev->last_seen_h) {
+                dev->last_seen_w = cw;
+                dev->last_seen_h = ch;
+                dev->size_stable_since_ns = SDL_GetTicksNS();
+                return false;
+            }
+            if (SDL_GetTicksNS() - dev->size_stable_since_ns < RHI_RESIZE_SETTLE_NS)
+                return false;
+        }
+        if (dev->recreate_backoff_until_ns &&
+            SDL_GetTicksNS() < dev->recreate_backoff_until_ns)
+            return false;
+        Uint64 t0 = SDL_GetTicksNS();
+        bool ok = recreate(dev);
+        rhi_note_stall("recreate", t0);
+        dev->recreate_backoff_until_ns = SDL_GetTicksNS() + RHI_ACQUIRE_BACKOFF_NS;
+        if (!ok) return false;
     }
     s_frame_serial++;
 
-    vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame], VK_TRUE, UINT64_MAX);
+    {
+        Uint64 t0 = SDL_GetTicksNS();
+        vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame], VK_TRUE, UINT64_MAX);
+        rhi_note_stall("fence-wait", t0);
+    }
 
     /* This slot's previous submission has fully retired — its timestamp
      * queries are ready for a block-free harvest. */
     if (dev->gpu_timers) gpu_timers_harvest(dev);
 
+    /* Backing off after a failed acquire: skip the present without blocking,
+     * so a compositor that is not handing out images cannot pace the sim. */
+    if (!dev->headless && dev->acquire_backoff_until_ns) {
+        if (SDL_GetTicksNS() < dev->acquire_backoff_until_ns)
+            return false;
+        dev->acquire_backoff_until_ns = 0;
+    }
+
     /* Headless: no swapchain image to acquire — the command buffer records
      * directly into the offscreen / render-target images. */
     if (!dev->headless) {
-        VkResult acq = vkAcquireNextImageKHR(dev->device, dev->swapchain, UINT64_MAX,
+        /* Bounded, not UINT64_MAX. Under FIFO this normally returns within a
+         * vblank, but Windows stops handing out images for the whole of a live
+         * resize (the modal loop inside DefWindowProc). An unbounded wait here
+         * parks whichever thread presents — and that thread also runs the sim,
+         * so the game froze for as long as the user held the window edge.
+         * Timing out lets the caller skip the present and keep ticking. */
+        Uint64 acq_t0 = SDL_GetTicksNS();
+        VkResult acq = vkAcquireNextImageKHR(dev->device, dev->swapchain,
+                                             RHI_ACQUIRE_TIMEOUT_NS,
                                              dev->img_avail[dev->frame],
                                              VK_NULL_HANDLE, &dev->image_index);
+        rhi_note_stall("acquire", acq_t0);
+        if (acq == VK_TIMEOUT || acq == VK_NOT_READY) {
+            /* No image within the budget: drop this present, keep the sim
+             * running. The semaphore was not signalled, so nothing waits on
+             * it and the next frame re-acquires cleanly. */
+            dev->acquire_timeouts++;
+            dev->acquire_backoff_until_ns = SDL_GetTicksNS() + RHI_ACQUIRE_BACKOFF_NS;
+            return false;
+        }
         if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
             dev->needs_recreate = true;
             return false;
@@ -1716,7 +1820,9 @@ void rhi_end_frame(rhi_device *dev)
         .pSwapchains = &dev->swapchain,
         .pImageIndices = &dev->image_index,
     };
+    Uint64 pres_t0 = SDL_GetTicksNS();
     VkResult pr = vkQueuePresentKHR(dev->gfx_queue, &pi);
+    rhi_note_stall("present", pres_t0);
     if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) {
         dev->needs_recreate = true;
     } else if (pr == VK_ERROR_DEVICE_LOST) {
