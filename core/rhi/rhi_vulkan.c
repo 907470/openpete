@@ -76,11 +76,15 @@ struct rhi_device {
     uint32_t                 gfx_family;
     VkQueue                  gfx_queue;
     char                     device_name[256];
+    char                     driver_version[64];
     bool                     device_software; /* picked device is a CPU rasterizer (llvmpipe) */
     bool                     headless;   /* surfaceless: no swapchain / present */
     int                      vsync_pref; /* --vsync: 1 = FIFO (vsync ON), 0 = vsync
                                           * OFF, -1 = unset (env / default). Read by
                                           * choose_present_mode on (re)create. */
+    VkPresentModeKHR         present_mode_granted; /* what the swapchain was
+                                          * actually built with -- the requested
+                                          * mode is not evidence of anything. */
 
     /* Swapchain */
     VkSwapchainKHR swapchain;
@@ -475,6 +479,20 @@ static bool pick_physical_and_device(rhi_device *dev)
             chosen_family = fam;
             chosen_score = score;
             snprintf(dev->device_name, sizeof(dev->device_name), "%s", props.deviceName);
+            /* Vendor-encoded driverVersion, decoded the way each vendor packs
+             * it. A pacing baseline is invalidated by a driver update as
+             * surely as by a different GPU, so this is recorded, not guessed. */
+            {
+                const uint32_t dv = props.driverVersion;
+                if (props.vendorID == 0x10DE)          /* NVIDIA: 10.8.8.6 */
+                    snprintf(dev->driver_version, sizeof(dev->driver_version),
+                             "%u.%u.%u.%u", (dv >> 22) & 0x3FF, (dv >> 14) & 0xFF,
+                             (dv >> 6) & 0xFF, dv & 0x3F);
+                else
+                    snprintf(dev->driver_version, sizeof(dev->driver_version),
+                             "%u.%u.%u", VK_API_VERSION_MAJOR(dv),
+                             VK_API_VERSION_MINOR(dv), VK_API_VERSION_PATCH(dv));
+            }
             dev->device_software = (props.deviceType == VK_PHYSICAL_DEVICE_TYPE_CPU);
         }
     }
@@ -639,7 +657,7 @@ static bool create_swapchain(rhi_device *dev)
         .imageSharingMode = VK_SHARING_MODE_EXCLUSIVE,
         .preTransform = caps.currentTransform,
         .compositeAlpha = VK_COMPOSITE_ALPHA_OPAQUE_BIT_KHR,
-        .presentMode = choose_present_mode(dev), /* FIFO (vsync) unless --vsync 0 / OPENPETE_PRESENT_MODE */
+        .presentMode = (dev->present_mode_granted = choose_present_mode(dev)), /* FIFO (vsync) unless --vsync 0 / OPENPETE_PRESENT_MODE */
         .clipped = VK_TRUE,
         .oldSwapchain = VK_NULL_HANDLE,
     };
@@ -1492,11 +1510,45 @@ uint64_t rhi_frame_serial(rhi_device *dev) { (void)dev; return s_frame_serial; }
  * Under the thread split the presenting thread is the sim thread, so a stall
  * here is a dropped tick — and "which call blocked" is otherwise invisible. */
 #define RHI_STALL_REPORT_NS (12ull * 1000ull * 1000ull)
-static void rhi_note_stall(const char *what, Uint64 t0)
+
+/* Block time per present-path phase, accumulated for the pacing log. The
+ * >=12 ms report catches catastrophes; the pacing plan needs the whole
+ * distribution, including the sub-millisecond FIFO wait that IS the pacing on
+ * a vsynced present. Statics rather than device fields: exactly one thread
+ * presents, and the consumer (the host loop) has no rhi_device handle. */
+static Uint64 s_block_ns[RHI_BLOCK_PHASE_COUNT];
+
+static void rhi_note_stall_phase(const char *what, int phase, Uint64 t0)
 {
     Uint64 dt = SDL_GetTicksNS() - t0;
+    if (phase >= 0) s_block_ns[phase] += dt;
     if (dt >= RHI_STALL_REPORT_NS)
         RHI_LOG("stall: %s blocked %.1f ms\n", what, (double)dt / 1e6);
+}
+
+void rhi_take_block_times(int64_t *out, int n)
+{
+    for (int i = 0; i < n && i < RHI_BLOCK_PHASE_COUNT; i++) {
+        out[i] = (int64_t)s_block_ns[i];
+        s_block_ns[i] = 0;
+    }
+}
+
+const char *rhi_driver_version(const rhi_device *dev)
+{
+    return (dev && dev->driver_version[0]) ? dev->driver_version : "unknown";
+}
+
+const char *rhi_present_mode_name(const rhi_device *dev)
+{
+    if (!dev) return "none";
+    switch (dev->present_mode_granted) {
+    case VK_PRESENT_MODE_IMMEDIATE_KHR:    return "immediate";
+    case VK_PRESENT_MODE_MAILBOX_KHR:      return "mailbox";
+    case VK_PRESENT_MODE_FIFO_KHR:         return "fifo";
+    case VK_PRESENT_MODE_FIFO_RELAXED_KHR: return "fifo-relaxed";
+    default:                               return "other";
+    }
 }
 
 bool rhi_begin_frame(rhi_device *dev)
@@ -1529,7 +1581,7 @@ bool rhi_begin_frame(rhi_device *dev)
             return false;
         Uint64 t0 = SDL_GetTicksNS();
         bool ok = recreate(dev);
-        rhi_note_stall("recreate", t0);
+        rhi_note_stall_phase("recreate", RHI_BLOCK_RECREATE, t0);
         dev->recreate_backoff_until_ns = SDL_GetTicksNS() + RHI_ACQUIRE_BACKOFF_NS;
         if (!ok) return false;
     }
@@ -1538,7 +1590,7 @@ bool rhi_begin_frame(rhi_device *dev)
     {
         Uint64 t0 = SDL_GetTicksNS();
         vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame], VK_TRUE, UINT64_MAX);
-        rhi_note_stall("fence-wait", t0);
+        rhi_note_stall_phase("fence-wait", RHI_BLOCK_FENCE, t0);
     }
 
     /* This slot's previous submission has fully retired — its timestamp
@@ -1567,7 +1619,7 @@ bool rhi_begin_frame(rhi_device *dev)
                                              RHI_ACQUIRE_TIMEOUT_NS,
                                              dev->img_avail[dev->frame],
                                              VK_NULL_HANDLE, &dev->image_index);
-        rhi_note_stall("acquire", acq_t0);
+        rhi_note_stall_phase("acquire", RHI_BLOCK_ACQUIRE, acq_t0);
         if (acq == VK_TIMEOUT || acq == VK_NOT_READY) {
             /* No image within the budget: drop this present, keep the sim
              * running. The semaphore was not signalled, so nothing waits on
@@ -1822,7 +1874,7 @@ void rhi_end_frame(rhi_device *dev)
     };
     Uint64 pres_t0 = SDL_GetTicksNS();
     VkResult pr = vkQueuePresentKHR(dev->gfx_queue, &pi);
-    rhi_note_stall("present", pres_t0);
+    rhi_note_stall_phase("present", RHI_BLOCK_PRESENT, pres_t0);
     if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) {
         dev->needs_recreate = true;
     } else if (pr == VK_ERROR_DEVICE_LOST) {

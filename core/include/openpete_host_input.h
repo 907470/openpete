@@ -21,6 +21,7 @@
  */
 
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef struct openpete_pad_snapshot {
     unsigned short bits;      /* active-low, released = 1 */
@@ -76,6 +77,19 @@ unsigned openpete_host_input_modstate(void);
 
 /* Last published snapshot (diagnostics / the parity instrument). */
 void openpete_host_input_last(openpete_pad_snapshot_t* out);
+
+/* op_now() at the moment the last snapshot was published, or 0 before the
+ * first one. The consumer runs on a different thread from the producer, so
+ * "how stale was the input this tick consumed" is a real quantity now rather
+ * than zero by construction; this is what makes it measurable. */
+int64_t openpete_host_input_last_sample_ns(void);
+
+/* Publish instant of the snapshot the last latch actually CONSUMED, captured
+ * at the latch. This, not the one above, is what a tick's input staleness is
+ * measured against: reading the live value after the tick has run names a
+ * sample the tick never saw. Zero when nothing has latched (the legacy input
+ * path never latches, and its staleness is therefore unmeasured, not zero). */
+int64_t openpete_host_input_latched_sample_ns(void);
 
 /* Parity instrument (--input-parity). Compares what the host actually drove
  * into the pad against a fresh live decode taken in the same iteration, on the

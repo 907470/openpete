@@ -5,6 +5,10 @@
 
 #include <SDL3/SDL.h>
 
+#include "openpete_time.h"
+#include "openpete_pace_log.h"
+
+#include <stdatomic.h>
 #include <string.h>
 #include <stdlib.h>
 
@@ -13,6 +17,15 @@
 
 static openpete_pad_snapshot_t s_snap;
 static unsigned s_snap_seq;      /* bumped on every publish — staleness probe */
+
+/* Publish instant of s_snap. Written by the pump thread, read by the sim
+ * thread; atomic so the pacing log can never quote a torn timestamp. The
+ * snapshot itself is not atomic — that is a pre-existing property of this
+ * seam, and a torn pad value is a gameplay question, not a timing one. */
+static _Atomic int64_t s_snap_ns;
+
+/* Publish instant of the snapshot the LAST latch consumed. Worker-only. */
+static int64_t s_latched_ns;
 
 /* Synthetic input source (OPENPETE_INPUT_SYNTH=1).
  *
@@ -297,6 +310,25 @@ void openpete_host_input_sample(bool alt_held)
     memcpy(s_snap.axes, axes, sizeof(s_snap.axes));
     s_snap.valid = true;
     s_snap_seq++;
+    const int64_t now_ns = (int64_t)op_now();
+    atomic_store_explicit(&s_snap_ns, now_ns, memory_order_relaxed);
+
+    /* Pad edges go to the pacing log from HERE — the producer side — because
+     * the quantity of interest is when the press was seen relative to the
+     * tick that consumed it. Logging it at the latch would record the
+     * consumer's own cadence and hide exactly the phase being measured. */
+    {
+        static unsigned short s_prev_bits = PAD_NEUTRAL_BITS;
+        static unsigned char  s_prev_axes[4] = { 128, 128, 128, 128 };
+        const int analog_delta = memcmp(s_prev_axes, axes, sizeof(axes)) != 0;
+        if (bits != s_prev_bits || analog_delta) {
+            openpete_pace_input_edge(now_ns, bits,
+                                     (unsigned short)(bits ^ s_prev_bits),
+                                     analog_delta);
+            s_prev_bits = bits;
+            memcpy(s_prev_axes, axes, sizeof(axes));
+        }
+    }
 }
 
 void openpete_host_input_seed_neutral(void)
@@ -315,12 +347,26 @@ void openpete_host_input_seed_neutral(void)
     s_snap.axes[0] = s_snap.axes[1] = s_snap.axes[2] = s_snap.axes[3] = 128;
     s_snap.valid = true;
     s_snap_seq++;
+    atomic_store_explicit(&s_snap_ns, (int64_t)op_now(), memory_order_relaxed);
 }
 
 void openpete_host_input_latch(bool claimed)
 {
     if (claimed || !s_snap.valid)
         return;
+
+    /* Capture the publish instant of the snapshot being consumed, here, with
+     * the copy — not read back later. Under the thread split the producer
+     * republishes on its own ~1 ms cadence, so a later read names whichever
+     * sample happens to be current then, biasing the measured staleness
+     * DOWNWARD: the flattering direction, on the one quantity the thread
+     * split is known to have made worse.
+     *
+     * Residual: the snapshot's bytes and its timestamp are still two reads of
+     * a seam with no seqlock, so under a republish landing between them they
+     * can belong to different samples. Bounded by the pump period, one-way,
+     * and it is the input-phase work that owns closing that seam properly. */
+    s_latched_ns = atomic_load_explicit(&s_snap_ns, memory_order_relaxed);
 
     g_PsyX_Pad_InputOverride     = s_snap.bits;
     g_PsyX_Pad_AnalogOverride[0] = s_snap.axes[0];
@@ -333,6 +379,16 @@ void openpete_host_input_latch(bool claimed)
 void openpete_host_input_last(openpete_pad_snapshot_t* out)
 {
     if (out) *out = s_snap;
+}
+
+int64_t openpete_host_input_last_sample_ns(void)
+{
+    return atomic_load_explicit(&s_snap_ns, memory_order_relaxed);
+}
+
+int64_t openpete_host_input_latched_sample_ns(void)
+{
+    return s_latched_ns;
 }
 
 void openpete_host_input_parity_enable(void)

@@ -611,6 +611,10 @@ typedef struct openpete_options {
      * notes/plans/openpete-frame-pacing.md and
      * scripts/measure-pacing.py. */
     const char* frame_time_log_path;
+    /* --pace-log PATH: the unified pacing event log (every VBL, every
+     * present, on one timebase). Superset of --frame-time-log; see
+     * openpete_pace_log.h. */
+    const char* pace_log_path;
 
     /* --profile-out PATH (default NULL): stream a binary `.opp` performance
      * trace (CPU scope spans + GPU zones + census, keyed per present /

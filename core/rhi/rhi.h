@@ -130,6 +130,26 @@ void rhi_set_device_lost_handler(void (*fn)(void));
 
 /* Diagnostics: the selected physical device name (valid until destroy). */
 const char *rhi_device_name(const rhi_device *dev);
+
+/* The present mode the swapchain was actually GRANTED, as a short name
+ * ("fifo" / "immediate" / "mailbox"). The requested mode proves nothing: a
+ * surface that does not advertise IMMEDIATE silently falls back to FIFO, and
+ * a pacing baseline taken against the wrong one is not comparable. */
+const char *rhi_present_mode_name(const rhi_device *dev);
+
+/* Driver version of the selected device, vendor-decoded. Part of a pacing
+ * baseline's environment key: a driver update changes present behaviour and
+ * must not compare as the same machine. */
+const char *rhi_driver_version(const rhi_device *dev);
+
+/* Present-path block time, for the pacing log. Under the host thread split
+ * the presenting thread is also the sim thread, so time blocked here is time
+ * the tick did not run — which makes "which call blocked, and for how long"
+ * a pacing quantity rather than a rendering one. Read-and-clear: each call
+ * returns the nanoseconds accumulated since the previous one. */
+enum { RHI_BLOCK_FENCE = 0, RHI_BLOCK_ACQUIRE, RHI_BLOCK_PRESENT,
+       RHI_BLOCK_RECREATE, RHI_BLOCK_PHASE_COUNT };
+void rhi_take_block_times(int64_t *out, int n);
 /* True when the picked physical device is a software rasterizer (llvmpipe
  * reports VK_PHYSICAL_DEVICE_TYPE_CPU). Heavy vertex-shader paths (the
  * terrain sector-mesh cache) auto-disable on it. */

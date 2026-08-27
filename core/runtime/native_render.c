@@ -2403,6 +2403,21 @@ int openpete_native_tercache_usable(void)
         && (s_force || !rhi_device_is_software(s_nr.dev));
 }
 
+const char* openpete_native_render_gpu_name(void)
+{
+    return s_nr.dev ? rhi_device_name(s_nr.dev) : "unknown";
+}
+
+const char* openpete_native_render_driver_version(void)
+{
+    return s_nr.dev ? rhi_driver_version(s_nr.dev) : "unknown";
+}
+
+const char* openpete_native_render_present_mode(void)
+{
+    return s_nr.dev ? rhi_present_mode_name(s_nr.dev) : "none";
+}
+
 bool openpete_native_render_enabled(void)
 {
     return s_nr.enabled;

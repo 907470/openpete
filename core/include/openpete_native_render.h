@@ -55,6 +55,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
 /* True once init succeeded and the native A/B display is live. */
 bool openpete_native_render_enabled(void);
 
+/* Device identity for the pacing log's environment block. Both return a
+ * static string valid for the process ("unknown" / "none" before the device
+ * exists, and in PsyCross-only runs). The present mode is the one actually
+ * granted, which is the only one a baseline may be keyed on. */
+const char* openpete_native_render_gpu_name(void);
+const char* openpete_native_render_driver_version(void);
+const char* openpete_native_render_present_mode(void);
+
 /* Toggle the native window between windowed and borderless-desktop fullscreen.
  * Bound to Alt+Enter and double-click by run.c, and the O-menu DISPLAY row.
  * No-op until the native window is up (so it's inert in headless /

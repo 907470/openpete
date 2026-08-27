@@ -116,6 +116,11 @@ add_library(openpete_core STATIC
     # Off by default; enabled by --frame-time-log PATH.
     runtime/openpete_frame_time_log.c
 
+    # Unified pacing event log (--pace-log PATH) + the always-on pacing
+    # census reported at the end of every run. See openpete_pace_log.h and
+    # notes/plans/openpete-sim-tick-pacing-perfection.md.
+    runtime/pace_log.c
+
     # Empirical CPU+GPU performance trace (per present / canonical tick).
     # Off by default; enabled by --profile-out PATH. See openpete_profile.h.
     runtime/profile.c
@@ -283,6 +288,26 @@ if(OPENPETE_BUILD_GLSLANG)
 else()
     target_compile_definitions(openpete_core PRIVATE OPENPETE_NO_GLSLANG)
 endif()
+
+# Build identity for the pacing log's environment block. Baselines are only
+# comparable within a matching environment, and "which build produced this"
+# is the field that decides it. Resolved at configure time, so a rebuild
+# without a reconfigure reports the revision the tree was configured at --
+# which is why pacing baselines carry a capture timestamp as well.
+find_package(Git QUIET)
+if(GIT_FOUND)
+    execute_process(
+        COMMAND ${GIT_EXECUTABLE} describe --always --dirty --tags
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE OPENPETE_GIT_REV
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+endif()
+if(NOT OPENPETE_GIT_REV)
+    set(OPENPETE_GIT_REV "unknown")
+endif()
+target_compile_definitions(openpete_core
+    PRIVATE OPENPETE_BUILD_ID="${OPENPETE_GIT_REV}")
 
 # Native renderer foundation: the thin RHI + Vulkan backend (core/rhi).
 # Always available (added unconditionally by the top-level CMakeLists);
