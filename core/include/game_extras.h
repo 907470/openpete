@@ -30,6 +30,12 @@ uint32_t    game_get_expected_crc32(void);    /* sanity check against user's dum
 const char* game_get_display_name(void);      /* "Spyro the Dragon" */
 const char* game_get_id(void);                /* "spyro-1" — the [game.<id>] config scope */
 
+/* Guest address of the function through which this game reads its pad
+ * buffer — the moment that decides which host input sample a tick plays.
+ * Return 0 if unknown: the pacing census then reports the pad-read phase as
+ * unmeasured rather than as zero reads. */
+uint32_t    game_get_pad_read_pc(void);
+
 /* --- Memory layout ---
  * compiled_range / overlay_range are PSX-side virtual addresses; the
  * impl supplies the values for its game. */

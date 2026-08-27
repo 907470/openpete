@@ -8,6 +8,7 @@
 #include "openpete_fiber.h"
 #include "openpete_log.h"
 #include "openpete_psx.h"
+#include "openpete_pace_log.h"
 #include "openpete_recomp_module.h"
 
 #include <errno.h>
@@ -136,6 +137,12 @@ void call_by_address(CPUState* cpu, uint32_t addr) {
  * engines capture state at the same function-entry instant rather than the
  * vsync-vs-syscall phase skew you'd get otherwise. Set once before fiber
  * dispatch; never written from the fiber. */
+/* Pad-read probe: guest address of the function that reads the pad buffer,
+ * supplied per-game (game_get_pad_read_pc) so core carries no game address.
+ * Zero = no probe, which the census reports as UNMEASURED rather than as
+ * "the game never read the pad". */
+uint32_t    openpete_pad_read_pc         = 0u;
+
 uint32_t    openpete_halt_at_pc          = 0u;
 uint32_t    openpete_halt_hit_target     = 1u;  /* dump on Nth call (1 = first) */
 static uint32_t openpete_halt_hit_count  = 0u;
@@ -344,6 +351,14 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
             s_hang_head = (s_hang_head + 1u) % HANG_RING;
         }
     }
+    /* Pad-read probe: the guest function that consumes the pad buffer. Sited
+     * here rather than in the game's native-dispatch switch because every
+     * translated function entry passes through this call in BOTH build modes,
+     * so the probe reads the same moment whether the tick ran the recompiled
+     * function or its decompiled twin. */
+    if (openpete_pad_read_pc != 0u && addr == openpete_pad_read_pc)
+        openpete_pace_pad_read();
+
     if (openpete_halt_at_pc != 0u && addr == openpete_halt_at_pc &&
         !openpete_halt_done) {
         openpete_halt_hit_count++;

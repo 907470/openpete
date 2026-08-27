@@ -15,17 +15,41 @@
 /* Neutral pad: all buttons released (active-low), sticks centred. */
 #define PAD_NEUTRAL_BITS 0xFFFF
 
-static openpete_pad_snapshot_t s_snap;
-static unsigned s_snap_seq;      /* bumped on every publish — staleness probe */
+/* The producer/consumer seam, published as ONE sample under a seqlock.
+ *
+ * Bits, axes and the publish instant have to travel together. Read
+ * separately they can belong to different samples, and the damage is not
+ * symmetric: a tick can be credited with a timestamp from a sample whose
+ * BYTES it never consumed, which under-reports input delay — the flattering
+ * direction, on the one quantity the thread split is known to have made
+ * worse. Worse, the exposure window is one pump period wide and sits exactly
+ * at the latch boundary, which is precisely the feature an input-window
+ * measurement reads its answer from.
+ *
+ * `s_snap_seq` is odd while a publish is in flight and even when the sample
+ * is whole; a reader that sees an odd count, or a different count either
+ * side of its copy, retries. The producer never blocks inside the critical
+ * section (a dozen bytes of stores), so a reader converges immediately. */
+typedef struct {
+    openpete_pad_snapshot_t snap;
+    int64_t                 ns;    /* op_now() at publish */
+} host_pad_sample_t;
 
-/* Publish instant of s_snap. Written by the pump thread, read by the sim
- * thread; atomic so the pacing log can never quote a torn timestamp. The
- * snapshot itself is not atomic — that is a pre-existing property of this
- * seam, and a torn pad value is a gameplay question, not a timing one. */
-static _Atomic int64_t s_snap_ns;
+static host_pad_sample_t   s_snap_live;   /* guarded by s_snap_seq */
+static _Atomic unsigned    s_snap_seq;    /* even = stable, odd = publishing */
 
-/* Publish instant of the snapshot the LAST latch consumed. Worker-only. */
-static int64_t s_latched_ns;
+/* Bounded so a producer that dies mid-publish cannot hang the sim thread.
+ * A trip is a finding, not a routine outcome: it is counted and reported. */
+#define PAD_SEQLOCK_TRIES 256
+static _Atomic unsigned s_snap_retry_fail;
+
+/* The last sample the consumer actually copied, plus its identity. Worker-only.
+ * `s_latched_seq` is what makes an input measurement attributable: it names
+ * WHICH published sample a tick consumed, where a timestamp comparison can
+ * only guess from ordering. */
+static openpete_pad_snapshot_t s_latched_snap;
+static int64_t                 s_latched_ns;
+static unsigned                s_latched_seq;
 
 /* Synthetic input source (OPENPETE_INPUT_SYNTH=1).
  *
@@ -80,6 +104,118 @@ static void synth_pad(unsigned frame, unsigned short* bits, unsigned char axes[4
         axes[2] = (unsigned char)(128 + (int)(frame % 100u) - 50);
         axes[3] = (unsigned char)(128 - (int)(frame % 100u) + 50);
     }
+}
+
+/* Timed pulse source (M5 Tier A) — OPENPETE_INPUT_PULSE=<count>.
+ *
+ * The frame-indexed synth source above cannot answer an input-PHASE question:
+ * it changes on a frame boundary, so every edge lands at the same point in the
+ * grid period and a phase sweep degenerates to one bin. This source schedules
+ * presses at wall instants instead, spread across the grid period, which is
+ * what makes "which VBL consumes an edge arriving at phase p" measurable.
+ *
+ * It is in-process, just upstream of the latch: it validates the log plumbing
+ * and the analyzer's attribution arithmetic, and NOTHING about the OS. It
+ * cannot see the SDL pump, event delivery, focus, or a main thread parked in a
+ * modal loop — during such a stall it publishes nothing and its own schedule
+ * slides with it, so it would absolve exactly the hazard the thread split
+ * introduced. Only an external injector (Tier B) can see that. Accordingly
+ * this source must never be the producer behind an end-to-end latency claim.
+ *
+ * Presses are held for at least one grid period by default, so a pulse the
+ * latch misses is a real finding rather than the expected outcome of a press
+ * shorter than the sampling interval. Axes are held static: the synth source's
+ * sweeping sticks emit an analog edge on nearly every publish, which would
+ * bury the pulse edges the measurement is about. */
+static int      s_pulse_n = -1;      /* -1 = unresolved, 0 = off */
+static int      s_pulse_hold_ns;
+static int      s_pulse_gap_ns;
+static unsigned short s_pulse_bit;
+static int64_t  s_pulse_t0;
+static int      s_pulse_fired;       /* pulses whose press instant has passed */
+
+static int pulse_on(void)
+{
+    if (s_pulse_n < 0) {
+        const char* e = getenv("OPENPETE_INPUT_PULSE");
+        s_pulse_n = (e && *e) ? atoi(e) : 0;
+        if (s_pulse_n < 0) s_pulse_n = 0;
+
+        const char* h = getenv("OPENPETE_INPUT_PULSE_HOLD_US");
+        /* One VBL period plus a margin: long enough that every latch interval
+         * overlaps the press, so "consumed == injected" is the expected
+         * result and any shortfall names a defect. */
+        s_pulse_hold_ns = (h && *h) ? atoi(h) * 1000 : 20 * 1000 * 1000;
+
+        const char* g = getenv("OPENPETE_INPUT_PULSE_GAP_US");
+        /* Deliberately NOT a whole number of grid periods: an interval that
+         * divides the period would place every press at the same phase and
+         * the sweep would report a clean result over one bin. */
+        s_pulse_gap_ns = (g && *g) ? atoi(g) * 1000 : 117 * 1000 * 1000;
+
+        const char* b = getenv("OPENPETE_INPUT_PULSE_BIT");
+        /* L2 by default: it reaches the pad buffer like any other bit but
+         * does not advance a menu, so a sweep does not rewrite the scene it
+         * is measuring. */
+        s_pulse_bit = (unsigned short)((b && *b) ? strtoul(b, NULL, 0) : 0x0100u);
+
+        if (s_pulse_n)
+            OPL_INFO_F("input",
+                       "timed pulse source: %d pulse(s), bit 0x%04X, hold %d us, "
+                       "gap %d us — diagnostic, in-process only",
+                       s_pulse_n, s_pulse_bit,
+                       s_pulse_hold_ns / 1000, s_pulse_gap_ns / 1000);
+    }
+    return s_pulse_n > 0;
+}
+
+int openpete_host_input_pulse_count(void)
+{
+    (void)pulse_on();
+    return s_pulse_n > 0 ? s_pulse_n : 0;
+}
+
+unsigned short openpete_host_input_pulse_bit(void)
+{
+    (void)pulse_on();
+    return s_pulse_n > 0 ? s_pulse_bit : 0u;
+}
+
+int openpete_host_input_pulse_hold_us(void)
+{
+    (void)pulse_on();
+    return s_pulse_n > 0 ? s_pulse_hold_ns / 1000 : 0;
+}
+
+int openpete_host_input_pulses_fired(void)
+{
+    return s_pulse_fired;
+}
+
+/* Apply the schedule to `bits`. Pulse k presses at t0 + k*gap + jitter(k),
+ * where the jitter walks the press across the grid period so the phases are
+ * spread rather than aliased onto one point. */
+static void pulse_apply(unsigned short* bits)
+{
+    const int64_t now = (int64_t)op_now();
+    if (!s_pulse_t0) s_pulse_t0 = now;
+
+    const int64_t since = now - s_pulse_t0;
+    if (since < 0) return;
+    int64_t k = since / s_pulse_gap_ns;
+    if (k >= s_pulse_n) return;
+
+    /* A cheap deterministic hash of the index: reproducible across runs (the
+     * whole log must replay identically) but uncorrelated with the grid. */
+    unsigned h = (unsigned)k * 2654435761u;
+    const int64_t jitter = (int64_t)(h % 16715111u);
+
+    const int64_t start = s_pulse_t0 + k * (int64_t)s_pulse_gap_ns + jitter;
+    if (now < start) return;
+    if ((int)(k + 1) > s_pulse_fired) s_pulse_fired = (int)(k + 1);
+    if (now >= start + s_pulse_hold_ns) return;
+
+    *bits = (unsigned short)(*bits & ~s_pulse_bit);   /* active-low */
 }
 
 extern unsigned openpete_frame;
@@ -288,6 +424,49 @@ unsigned openpete_host_input_modstate(void)
     return host_sdl_read()->mods;
 }
 
+/* Publish one whole sample. Returns its sequence number (even, stable). */
+static unsigned pad_publish(unsigned short bits, const unsigned char axes[4],
+                            int64_t now_ns)
+{
+    const unsigned seq = atomic_load_explicit(&s_snap_seq, memory_order_relaxed);
+    atomic_store_explicit(&s_snap_seq, seq + 1u, memory_order_relaxed);
+    SDL_MemoryBarrierRelease();          /* odd count visible before the bytes */
+
+    s_snap_live.snap.bits = bits;
+    memcpy(s_snap_live.snap.axes, axes, sizeof(s_snap_live.snap.axes));
+    s_snap_live.snap.valid = true;
+    s_snap_live.ns = now_ns;
+
+    SDL_MemoryBarrierRelease();          /* bytes visible before the even count */
+    atomic_store_explicit(&s_snap_seq, seq + 2u, memory_order_relaxed);
+    return seq + 2u;
+}
+
+/* Copy the current sample whole. Returns its sequence number, or 0 if no
+ * sample has ever been published or the retry bound was exhausted. */
+static unsigned pad_read_stable(host_pad_sample_t* out)
+{
+    for (int i = 0; i < PAD_SEQLOCK_TRIES; i++) {
+        const unsigned s0 =
+            atomic_load_explicit(&s_snap_seq, memory_order_relaxed);
+        if (s0 & 1u) continue;           /* publish in flight */
+        SDL_MemoryBarrierAcquire();
+        *out = s_snap_live;
+        SDL_MemoryBarrierAcquire();
+        if (atomic_load_explicit(&s_snap_seq, memory_order_relaxed) == s0)
+            return s0;
+    }
+    /* Never observed, and if it ever is, the census must say so rather than
+     * the caller silently reusing a previous sample as if it were fresh. */
+    atomic_fetch_add_explicit(&s_snap_retry_fail, 1u, memory_order_relaxed);
+    return 0u;
+}
+
+unsigned openpete_host_input_seqlock_failures(void)
+{
+    return atomic_load_explicit(&s_snap_retry_fail, memory_order_relaxed);
+}
+
 void openpete_host_input_sample(bool alt_held)
 {
     unsigned short bits = PAD_NEUTRAL_BITS;
@@ -306,12 +485,14 @@ void openpete_host_input_sample(bool alt_held)
     else if (!alt_held)
         PsyX_Pad_DecodeP1(&bits, axes);
 
-    s_snap.bits = bits;
-    memcpy(s_snap.axes, axes, sizeof(s_snap.axes));
-    s_snap.valid = true;
-    s_snap_seq++;
+    /* Applied last so the pulse survives whatever the live decode produced:
+     * the schedule is the thing under test, and a real key held at the same
+     * moment must not cancel it. */
+    if (pulse_on())
+        pulse_apply(&bits);
+
     const int64_t now_ns = (int64_t)op_now();
-    atomic_store_explicit(&s_snap_ns, now_ns, memory_order_relaxed);
+    const unsigned seq = pad_publish(bits, axes, now_ns);
 
     /* Pad edges go to the pacing log from HERE — the producer side — because
      * the quantity of interest is when the press was seen relative to the
@@ -322,7 +503,7 @@ void openpete_host_input_sample(bool alt_held)
         static unsigned char  s_prev_axes[4] = { 128, 128, 128, 128 };
         const int analog_delta = memcmp(s_prev_axes, axes, sizeof(axes)) != 0;
         if (bits != s_prev_bits || analog_delta) {
-            openpete_pace_input_edge(now_ns, bits,
+            openpete_pace_input_edge(now_ns, seq, bits,
                                      (unsigned short)(bits ^ s_prev_bits),
                                      analog_delta);
             s_prev_bits = bits;
@@ -343,52 +524,73 @@ void openpete_host_input_seed_neutral(void)
      *
      * Seeding neutral means the override is active from the first tick and
      * the live path is unreachable on the consumer thread by construction. */
-    s_snap.bits = PAD_NEUTRAL_BITS;
-    s_snap.axes[0] = s_snap.axes[1] = s_snap.axes[2] = s_snap.axes[3] = 128;
-    s_snap.valid = true;
-    s_snap_seq++;
-    atomic_store_explicit(&s_snap_ns, (int64_t)op_now(), memory_order_relaxed);
+    const unsigned char neutral[4] = { 128, 128, 128, 128 };
+    pad_publish(PAD_NEUTRAL_BITS, neutral, (int64_t)op_now());
 }
 
 void openpete_host_input_latch(bool claimed)
 {
-    if (claimed || !s_snap.valid)
+    if (claimed) {
+        /* A higher-priority writer (bk2 replay, the menu, devui) owns the pad
+         * this iteration, so this tick consumes NO host sample. Clearing the
+         * latch record rather than leaving the previous one standing is the
+         * whole point: a stale publish instant quoted against this tick's
+         * exec_start reads as ever-growing input staleness on a channel the
+         * tick never touched — a plausible number about nothing, which on a
+         * fully-claimed run (bk2) is every number the log reports. */
+        s_latched_ns  = 0;
+        s_latched_seq = 0;
+        s_latched_snap.valid = false;
         return;
+    }
 
-    /* Capture the publish instant of the snapshot being consumed, here, with
-     * the copy — not read back later. Under the thread split the producer
-     * republishes on its own ~1 ms cadence, so a later read names whichever
-     * sample happens to be current then, biasing the measured staleness
-     * DOWNWARD: the flattering direction, on the one quantity the thread
-     * split is known to have made worse.
-     *
-     * Residual: the snapshot's bytes and its timestamp are still two reads of
-     * a seam with no seqlock, so under a republish landing between them they
-     * can belong to different samples. Bounded by the pump period, one-way,
-     * and it is the input-phase work that owns closing that seam properly. */
-    s_latched_ns = atomic_load_explicit(&s_snap_ns, memory_order_relaxed);
+    /* Copy bytes, publish instant and identity as ONE sample. Reading the
+     * timestamp separately lets a tick be credited with a sample whose bytes
+     * it never saw; the sequence number is what makes "which published sample
+     * did this tick consume" answerable rather than inferred from ordering. */
+    host_pad_sample_t cur;
+    const unsigned seq = pad_read_stable(&cur);
+    if (!seq || !cur.snap.valid) return;
 
-    g_PsyX_Pad_InputOverride     = s_snap.bits;
-    g_PsyX_Pad_AnalogOverride[0] = s_snap.axes[0];
-    g_PsyX_Pad_AnalogOverride[1] = s_snap.axes[1];
-    g_PsyX_Pad_AnalogOverride[2] = s_snap.axes[2];
-    g_PsyX_Pad_AnalogOverride[3] = s_snap.axes[3];
+    s_latched_snap = cur.snap;
+    s_latched_ns   = cur.ns;
+    s_latched_seq  = seq;
+
+    g_PsyX_Pad_InputOverride     = cur.snap.bits;
+    g_PsyX_Pad_AnalogOverride[0] = cur.snap.axes[0];
+    g_PsyX_Pad_AnalogOverride[1] = cur.snap.axes[1];
+    g_PsyX_Pad_AnalogOverride[2] = cur.snap.axes[2];
+    g_PsyX_Pad_AnalogOverride[3] = cur.snap.axes[3];
     g_PsyX_Pad_OverrideActive    = 1;
 }
 
 void openpete_host_input_last(openpete_pad_snapshot_t* out)
 {
-    if (out) *out = s_snap;
+    host_pad_sample_t cur;
+    if (!out) return;
+    if (pad_read_stable(&cur)) *out = cur.snap;
+    else                       out->valid = false;
 }
 
 int64_t openpete_host_input_last_sample_ns(void)
 {
-    return atomic_load_explicit(&s_snap_ns, memory_order_relaxed);
+    host_pad_sample_t cur;
+    return pad_read_stable(&cur) ? cur.ns : 0;
 }
 
 int64_t openpete_host_input_latched_sample_ns(void)
 {
     return s_latched_ns;
+}
+
+unsigned openpete_host_input_latched_seq(void)
+{
+    return s_latched_seq;
+}
+
+unsigned short openpete_host_input_latched_bits(void)
+{
+    return s_latched_snap.valid ? s_latched_snap.bits : PAD_NEUTRAL_BITS;
 }
 
 void openpete_host_input_parity_enable(void)

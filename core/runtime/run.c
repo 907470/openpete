@@ -1501,6 +1501,25 @@ static int run_host_init(const openpete_options_t* opts) {
      * so it can't clobber the freshly-seeded gp inside game_fiber_entry. */
     g_game.gp    = opts->seed_cpu_path ? 0u : opts->test_recomp_gp;
 
+    /* Pad-read probe: arm from the per-game address before the first
+     * dispatch, so tick zero's read is seen like every other. */
+    {
+        extern uint32_t openpete_pad_read_pc;
+        /* OPENPETE_PAD_READ_PC overrides the per-game address. It is how the
+         * probe is falsified — pointed at an address the game never calls,
+         * the census must report NEVER — and how a second game's read site is
+         * found before it is written down. */
+        const char* pad_pc_env = getenv("OPENPETE_PAD_READ_PC");
+        openpete_pad_read_pc = (pad_pc_env && *pad_pc_env)
+            ? (uint32_t)strtoul(pad_pc_env, NULL, 0)
+            : game_get_pad_read_pc();
+        if (openpete_pad_read_pc) {
+            openpete_pace_pad_probe_arm();
+            OPL_DEBUG_F("pacing", "pad-read probe armed at 0x%08X",
+                        openpete_pad_read_pc);
+        }
+    }
+
     /* Wire halt-at-pc before dispatch so psx_override_dispatch sees it on
      * the very first recompiled function-entry. dispatch.c owns the slot. */
     if (opts->halt_at_pc != 0u) {
@@ -2008,7 +2027,10 @@ static int run_host_loop(const openpete_options_t* opts) {
                                 s_render_fps,
                                 g_openpete_interp_enabled ? 1 : 0,
                                 s_runahead_req,
-                                tick_scale);
+                                tick_scale,
+                                openpete_split_applies(opts) ? 1 : 0,
+                                openpete_host_input_legacy(),
+                                opts->headless ? 1 : 0);
         if (openpete_pace_log_open(opts->pace_log_path, env) != 0)
             return OPENPETE_EXIT_SETUP_ERROR;
     }
@@ -2892,6 +2914,13 @@ static int run_host_loop(const openpete_options_t* opts) {
          * name one the tick never saw — against a staleness of the same
          * order as the error it would introduce. */
         op_time_t pace_latch_ns = 0;
+        /* Which published sample this VBL consumed — identity, not a
+         * timestamp. OP_PACE_LATCH_NONE on the legacy path (it never latches,
+         * so its input phase is unmeasured rather than zero). */
+        unsigned  pace_latch_seq = OP_PACE_LATCH_NONE;
+        /* Pad bits of that sample: whether a press reached the game is a
+         * question about state, not about which sample carried it. */
+        uint16_t  pace_latch_bits = 0xFFFFu;
 
         if (openpete_host_input_legacy()) {
             /* Pre-ownership path, kept as a diagnostic A/B: PsyCross both
@@ -2914,7 +2943,10 @@ static int run_host_loop(const openpete_options_t* opts) {
                     (openpete_host_input_modstate() & SDL_KMOD_ALT) != 0);
             }
             openpete_host_input_latch(ovr_claimed);
-            pace_latch_ns = openpete_host_input_latched_sample_ns();
+            pace_latch_ns  = openpete_host_input_latched_sample_ns();
+            pace_latch_seq = ovr_claimed ? OP_PACE_LATCH_CLAIMED
+                                         : openpete_host_input_latched_seq();
+            pace_latch_bits = openpete_host_input_latched_bits();
             PsyX_Pad_InternalPadUpdates();
             openpete_host_input_parity_check(ovr_claimed);
         }
@@ -2952,6 +2984,11 @@ static int run_host_loop(const openpete_options_t* opts) {
              * instrument is checked against truth rather than trusted. */
             openpete_pace_inject(pace_paced);
             pace_exec_start_ns = op_now();
+            /* Bracket the VBL BEFORE the switch: the guest's pad read fires
+             * inside it, and a record stamped against the previous VBL's
+             * start would report a phase off by a whole period. */
+            openpete_pace_vbl_begin(openpete_frame, pace_exec_start_ns,
+                                     pace_latch_ns);
             {
                 uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
                 co_switch((cothread_t)openpete_game_fiber);
@@ -3974,13 +4011,11 @@ static int run_host_loop(const openpete_options_t* opts) {
             if (s_last_canon_present_ns == 0 ||
                 (op_now() - s_last_canon_present_ns) > 6 * sim_period_ns)
                 pace_flags |= OP_PACE_F_NOT_LIVE;
-            /* pad_reads (0): counting the guest's own reads of the PSX pad
-             * buffer needs a read hook this log does not own. Producer is
-             * owed by the input-phase work; the analyzer reports the field
-             * as absent rather than as "no reads". */
-            openpete_pace_vbl(openpete_frame, pace_flags, 0,
+            openpete_pace_vbl(openpete_frame, pace_flags,
+                              openpete_pace_pad_reads_this_vbl(),
                               pace_deadline_ns, pace_latch_ns,
-                              pace_exec_start_ns, pace_exec_end_ns);
+                              pace_exec_start_ns, pace_exec_end_ns,
+                              pace_latch_seq, pace_latch_bits);
         }
 
         const int s_force_pacing = pace_force_pacing();

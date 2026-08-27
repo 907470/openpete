@@ -15,8 +15,12 @@
  *     i64 created_unix_ns   i64 op_epoch_ns
  *     i64 vbl_hz_num     i64 vbl_hz_den     i64 tick_vbls
  *
- *   record (48 B):
- *     u8 type   u8 flags   u16 aux   u32 index   i64 t_ns   i64 a,b,c,d
+ *   record (64 B):
+ *     u8 type   u8 flags   u16 aux   u32 index   i64 t_ns   i64 a,b,c,d,e,f
+ *
+ * Version 2 added the payload slots `e` and `f` (v1 records were 48 B with
+ * neither). The reader takes the record size from the header rather than
+ * assuming it, so a v1 log stays readable — the slots read as absent.
  *
  * Multi-byte fields are written in host byte order. Every target this ships
  * on is little-endian; the reader assumes it rather than negotiating.
@@ -43,9 +47,9 @@ extern "C" {
 #endif
 
 #define OP_PACE_MAGIC        0x4C50504FU   /* 'OPPL' LE */
-#define OP_PACE_VERSION      1U
+#define OP_PACE_VERSION      2U
 #define OP_PACE_HEADER_FIXED 64U
-#define OP_PACE_RECORD_BYTES 48U
+#define OP_PACE_RECORD_BYTES 64U
 
 /* Record types. Never renumber: logs outlive the build that wrote them. */
 enum {
@@ -57,7 +61,8 @@ enum {
     OP_PACE_WINDOW      = 6,
     OP_PACE_CLOCKSAMPLE = 7,
     OP_PACE_WAKE        = 8,
-    OP_PACE_PRESENT_SPAN = 9
+    OP_PACE_PRESENT_SPAN = 9,
+    OP_PACE_PAD_READ    = 10
 };
 
 /* VBL flags. */
@@ -114,7 +119,9 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
                              int refresh_mhz, const char* present_mode,
                              int fullscreen, int render_fps,
                              int interp_on, int runahead_n,
-                             double tick_scale);
+                             double tick_scale,
+                             int thread_split, int input_legacy,
+                             int headless);
 
 /* ---- emit --------------------------------------------------------------- */
 
@@ -127,7 +134,26 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
  * treats it as missing rather than as the epoch. */
 void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
                        int64_t deadline_ns, int64_t latch_ns,
-                       int64_t exec_start_ns, int64_t exec_end_ns);
+                       int64_t exec_start_ns, int64_t exec_end_ns,
+                       unsigned latched_seq, uint16_t latched_bits);
+
+/* `latched_seq` values, in the record's `e` slot. Publish sequences are even
+ * and step by 2, so the odd values are free to name the two different reasons
+ * a VBL consumed no host sample — reasons a bare zero would conflate, leaving
+ * a bk2 replay's input statistics indistinguishable from a live run's. */
+#define OP_PACE_LATCH_NONE    0u   /* no latch on this path (legacy input)  */
+#define OP_PACE_LATCH_CLAIMED 1u   /* bk2 / menu / devui owned the pad      */
+
+/* `latched_bits` — the pad bits of that same sample.
+ *
+ * The sequence alone answers "was this exact sample read", which is NOT the
+ * question. The producer republishes far faster than the consumer latches, so
+ * most samples are legitimately never read, and a held button reaches the game
+ * through a LATER sample carrying the same state. Whether a press was seen is
+ * therefore a question about bits: the first VBL to latch at or after the edge
+ * either still carries the edge's new state, or the press came and went
+ * between two latches and the game never saw it at all. Without the bits,
+ * every superseded sample looks like a dropped press. */
 
 /* One present ATTEMPT — recorded even when the swapchain refused an image, so
  * a run that stops displaying is visible rather than silently absent.
@@ -155,8 +181,15 @@ void openpete_pace_shed(uint8_t kind, uint16_t reason,
  * analyzer, not the runtime, attributes a cause. */
 void openpete_pace_slip(uint8_t kind, int64_t periods, int64_t behind_ns);
 
-/* A pad edge, from the always-on per-VBL input producer. Pad bits only. */
-void openpete_pace_input_edge(int64_t sample_ns, uint16_t bits,
+/* A pad edge, from the always-on input producer.
+ *
+ * `seq` is the publish sequence of the sample carrying the edge, and it is
+ * the field that makes the record attributable: a VBL records the sequence it
+ * latched, so "which tick consumed this edge — and did any tick consume it at
+ * all" is answered by identity rather than inferred from timestamp ordering.
+ * Without it a dropped pulse is indistinguishable from a consumed one, and a
+ * phase sweep reports a clean result over edges the guest never saw. */
+void openpete_pace_input_edge(int64_t sample_ns, unsigned seq, uint16_t bits,
                               uint16_t bits_delta, int analog_delta);
 
 /* Begin/end of a span during which the pacing grid does not apply. */
@@ -190,6 +223,35 @@ void openpete_pace_wake(int64_t request_ns, int64_t target_ns, int64_t wake_ns);
 void openpete_pace_present_span(uint8_t kind, int64_t start_ns,
                                 int64_t end_ns, int64_t extract_ns);
 
+/* Bracket the VBL the guest is about to run.
+ *
+ * The pad-read probe below fires from deep inside the dispatcher, which knows
+ * nothing about the grid. Handing it the two instants the VBL was stamped
+ * with lets each PAD_READ record carry its own offsets, so "where in the VBL
+ * period did the game read the pad" is answerable from the record alone
+ * rather than by joining against a VBL record not yet written. */
+void openpete_pace_vbl_begin(uint32_t vbl_index, int64_t exec_start_ns,
+                              int64_t latch_ns);
+
+/* The guest read its pad buffer. Emitted at the entry of the game function
+ * that consumes the buffer PsyX_Pad_InternalPadUpdates wrote — the moment
+ * that actually decides which host sample this tick plays, and which on real
+ * hardware is a software-initiated SIO0 transaction with no tie to vblank.
+ *
+ * Counted whether or not a log file is open: the count is the honest producer
+ * for the VBL record's `pad_reads` field, which until now was hard-zero. */
+void openpete_pace_pad_read(void);
+
+/* Reads seen since the last openpete_pace_vbl_begin, saturated to u16.
+ * Distinguishable from "no probe wired": see openpete_pace_pad_probe_armed. */
+uint16_t openpete_pace_pad_reads_this_vbl(void);
+
+/* Non-zero once a pad-read probe address has been armed. Without it every
+ * tick reports zero reads, which is a MISSING measurement and must not be
+ * read as "the game never looked at the pad". */
+int  openpete_pace_pad_probe_armed(void);
+void openpete_pace_pad_probe_arm(void);
+
 /* ---- census (always compiled, no log file needed) ----------------------- */
 
 #define OP_PACE_HIST_BUCKETS 9
@@ -212,8 +274,14 @@ typedef struct {
     uint64_t wakes;             /* pacer sleeps observed                     */
     int64_t  wake_overshoot_max_ns; /* worst OS overshoot past a FUTURE target */
     int64_t  wake_behind_max_ns;    /* worst "deadline already gone" at request */
+    uint64_t vbls_claimed;      /* consumed no host sample: another writer   */
+    uint64_t input_edges;       /* pad edges the producer published          */
     uint64_t latch_samples;     /* VBLs that contributed one: 0 means the
                                  * bound is unmeasured, not perfect          */
+    uint64_t pad_reads;         /* guest reads of its pad buffer             */
+    uint64_t pad_read_vbls;     /* VBLs in which at least one read fired     */
+    int64_t  pad_read_offset_max_ns; /* worst first-read delay into the VBL   */
+    int64_t  pad_read_age_max_ns;    /* worst age of the sample when read     */
 } openpete_pace_census_t;
 
 void openpete_pace_census_get(openpete_pace_census_t* out);

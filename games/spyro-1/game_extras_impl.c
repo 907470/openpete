@@ -56,6 +56,17 @@ const char* game_get_id(void) {
     return "spyro-1";
 }
 
+uint32_t game_get_pad_read_pc(void) {
+    /* PadVSync (spyro-1/src/gamepad.c) @ 0x80053C68 — the game's once-per-
+     * VSync consumption of g_PadBuffer: it reads status, size_type, inputs[]
+     * and sticks and folds them into g_Pad. Every other reader in the game
+     * works from g_Pad, so this entry is where the host's latched sample
+     * actually becomes the tick's input. PadDemoUpdate (0x800539FC) also
+     * touches the buffer but only on the demo-record path, which is not a
+     * play path. */
+    return 0x80053C68u;
+}
+
 /* --- Memory layout (PSX defaults; overrides come in Phase 1b) --- */
 
 uint32_t game_get_ram_size(void)             { return 2u * 1024u * 1024u; }

@@ -91,6 +91,44 @@ int64_t openpete_host_input_last_sample_ns(void);
  * path never latches, and its staleness is therefore unmeasured, not zero). */
 int64_t openpete_host_input_latched_sample_ns(void);
 
+/* Sequence number of the sample the last latch consumed, or 0 if that
+ * iteration consumed none (a higher-priority writer had claimed the pad).
+ *
+ * This is what makes an input measurement attributable. A timestamp can only
+ * say a sample was published before a tick ran; the sequence says WHICH
+ * sample the tick actually took, so a pulse the latch never picked up is
+ * countable instead of being credited to whichever tick happened to follow
+ * it. Sequence numbers are even and increase by 2 per publish (the odd
+ * values are the seqlock's in-flight state). */
+unsigned openpete_host_input_latched_seq(void);
+
+/* Pad bits of that same sample, so a caller can verify a specific edge was
+ * consumed rather than merely superseded. */
+unsigned short openpete_host_input_latched_bits(void);
+
+/* Times the consumer's seqlock retry bound was exhausted. Expected to stay 0;
+ * a non-zero count means some latch reused nothing and is a defect, not
+ * noise, so it is surfaced rather than swallowed. */
+unsigned openpete_host_input_seqlock_failures(void);
+
+/* Timed pulse source (M5 Tier A), OPENPETE_INPUT_PULSE=<count>. Count is the
+ * schedule's size; `fired` is how many press instants the run actually reached
+ * (a short run reaches fewer). The analyzer needs both: "every injected pulse
+ * was consumed" is only checkable against the number that was injected, and a
+ * log with none must not be allowed to report a passing sweep. */
+int openpete_host_input_pulse_count(void);
+int openpete_host_input_pulses_fired(void);
+
+/* Which pad bit the pulse source drives, so the analyzer can separate injected
+ * presses from whatever else happened to be pressed. 0 when the source is off. */
+unsigned short openpete_host_input_pulse_bit(void);
+
+/* How long each pulse is held. The analyzer needs it to tell a plumbing defect
+ * from a truth: a press lost while the latch interval was SHORTER than the
+ * hold was available and skipped, which is a bug; one lost across an interval
+ * longer than the hold is input sampling working as specified. */
+int openpete_host_input_pulse_hold_us(void);
+
 /* Parity instrument (--input-parity). Compares what the host actually drove
  * into the pad against a fresh live decode taken in the same iteration, on the
  * frames where live decode is supposed to be the source. Counts engagement

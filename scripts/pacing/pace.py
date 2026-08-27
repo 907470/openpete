@@ -12,6 +12,7 @@ so a number shown here can be traced to a statistic that has a fixture.
     drift            OLS frequency error (ppm) + CUSUM undeclared re-anchors
     stability        overlapping Allan / modified Allan deviation
     spectrum         Lomb-Scargle periodogram; named interference lines
+    input            latch phase, the guest's own pad-read moment, edge mapping
     attribute        bucket every tail event and slip by cause
     diff             A/B two runs with bootstrap confidence intervals
     export-perfetto  Perfetto trace for eyeballing a single incident
@@ -23,6 +24,7 @@ that disagreed about which VBLs count would produce numbers nobody could
 compare.
 """
 import argparse
+import bisect
 import json
 import math
 import sys
@@ -745,6 +747,309 @@ def cmd_report(a):
     return 0
 
 
+# --------------------------------------------------------------------- input
+
+def input_regime(log):
+    """What an input metric from this log can honestly mean.
+
+    Returns (fatal, notes). A fatal regime is one where the quantity is zero or
+    undefined BY CONSTRUCTION, so a number computed from it would describe the
+    instrument rather than the game — the shape every defect in this suite has
+    taken so far."""
+    env, fatal, notes = log.env, [], []
+    if env.get("virtual_clock", "0") not in ("0", ""):
+        fatal.append("the virtual clock advances only when the pacer sleeps, "
+                     "so every input instant is scheduled, not observed")
+    if env.get("input_legacy", "0") not in ("0", ""):
+        fatal.append("the legacy input path never latches a host sample, so "
+                     "there is no consumption instant to measure")
+    if env.get("thread_split", "1") in ("0", ""):
+        # Not fatal: edge->VBL attribution and the pad-read phase are still
+        # real. But staleness is the length of ten lines of C, and quoting it
+        # as an input-freshness result is how a green gets reported for a
+        # regime the shipped default never runs in.
+        notes.append("thread split OFF: the producer runs in-loop immediately "
+                     "before the latch, so publish staleness is ~0 by "
+                     "construction and is NOT evidence about the default")
+    if env.get("headless", "0") not in ("0", ""):
+        notes.append("headless: the split is refused here, and almost no "
+                     "input reaches the process — coverage, not evidence")
+    return fatal, notes
+
+
+def cmd_input(a):
+    log, kept, excluded = load(a.log, a.warmup)
+    print("env: " + " ".join(f"{k}={v}" for k, v in sorted(log.env.items())))
+    fatal, notes = input_regime(log)
+    if a.require_pulses and not int(log.env.get("input_pulse", "0") or 0):
+        print("REFUSED: --require-pulses but this run had no pulse source; a "
+              "sweep result cannot be claimed from a log with no injection",
+              file=sys.stderr)
+        return 3
+    for n in notes:
+        print(f"note: {n}")
+    if fatal:
+        for f in fatal:
+            print(f"REFUSED: {f}", file=sys.stderr)
+        return 3
+    print(population_line(log, kept, excluded))
+    if refuse_if_empty(kept, log):
+        return 3
+
+    period = nominal_vbl_ns(log)
+
+    # ---- I1 and staleness, over VBLs that actually consumed a host sample.
+    consumed = [r for r in kept if r.consumed_input]
+    claimed = sum(1 for r in kept if r.latched_seq == pacelog.LATCH_CLAIMED)
+    nolatch = sum(1 for r in kept if r.latched_seq == pacelog.LATCH_NONE)
+    unknown = sum(1 for r in kept if r.latched_seq is None)
+    print(f"input population: {len(consumed)}/{len(kept)} VBL consumed a host "
+          f"sample (claimed {claimed}, no-latch {nolatch}"
+          + (f", pre-v2 log {unknown}" if unknown else "") + ")")
+    if unknown:
+        print("REFUSED: this log predates the latch-identity field; its input "
+              "numbers cannot be attributed", file=sys.stderr)
+        return 3
+    if not consumed:
+        print("VACUOUS: no VBL consumed a host input sample — another writer "
+              "owned the pad throughout (bk2 replay?)", file=sys.stderr)
+        return 3
+
+    i1 = [r.latch_ns - r.deadline_ns for r in consumed]
+    stale = [r.exec_start_ns - r.latch_ns for r in consumed]
+    for name, vals in (("I1 latch phase (latch - deadline)", i1),
+                       ("publish staleness (exec_start - latch)", stale)):
+        rsig, p99, mx = ps.triple(vals)
+        print(f"{name}: robust sigma {us(rsig)}  p50 {us(ps.percentile(vals,50))} "
+              f"p99 {us(p99)} max {us(mx)}")
+
+    # ---- Where in the VBL the guest itself reads the pad.
+    # This is the moment that decides which sample the frame plays; the latch
+    # only decides what is available to be read.
+    by_vbl = {}
+    for r in log.of(pacelog.PAD_READ):
+        by_vbl.setdefault(r.index, []).append(r)
+    idx = {r.index for r in kept}
+    first = [rs[0] for i, rs in by_vbl.items() if i in idx
+             for rs in [sorted(rs, key=lambda x: x.t_ns)]]
+    if not by_vbl:
+        print("pad read: no probe in this log — the guest's own read moment "
+              "is UNMEASURED, not absent")
+    elif not first:
+        print("pad read: probe present but no read landed in an analysable "
+              "VBL")
+    else:
+        offs = [r.read_offset_ns for r in first if r.read_offset_ns is not None]
+        ages = [r.read_age_ns for r in first if r.read_age_ns is not None]
+        counts = [len(v) for i, v in by_vbl.items() if i in idx]
+        print(f"pad read: {sum(counts)} read(s) in {len(counts)} analysable "
+              f"VBL ({min(counts)}-{max(counts)} per VBL)")
+        if offs:
+            print(f"  first read, into the VBL: p50 {us(ps.percentile(offs,50))} "
+                  f"p99 {us(ps.percentile(offs,99))} max {us(max(offs))} "
+                  f"({100.0*ps.percentile(offs,50)/period:.1f}% of a period "
+                  f"at p50)")
+        if ages:
+            print(f"  sample age when read:     p50 {us(ps.percentile(ages,50))} "
+                  f"p99 {us(ps.percentile(ages,99))} max {us(max(ages))}")
+
+    # ---- Edge -> consuming VBL, keyed on identity.
+    #
+    # A sequence says WHICH published sample a VBL took. An edge is CONSUMED
+    # only if some VBL latched exactly its sequence; if every VBL jumped from a
+    # lower sequence to a higher one, the sample carrying that edge was never
+    # read and the press did not reach the game. A timestamp comparison cannot
+    # tell those apart — it would credit the edge to the next VBL either way,
+    # and report a clean result over presses the guest never saw.
+    edges = log.of(pacelog.INPUT_EDGE)
+    if not edges:
+        print("input edges: none — nothing was pressed, so there is no "
+              "edge-to-VBL result (this is coverage, not a pass)")
+        return 0
+
+    yielded = [r for r in log.of(pacelog.VBL) if r.consumed_input]
+    yielded.sort(key=lambda r: r.exec_start_ns)
+    if yielded and yielded[0].latched_bits is None:
+        print("REFUSED: this log has no latched pad bits; whether a press "
+              "reached the game cannot be decided from sequences alone",
+              file=sys.stderr)
+        return 3
+    seqs = [r.latched_seq for r in yielded]
+
+    def first_latch_at_or_after(seq):
+        i = bisect.bisect_left(seqs, seq)
+        return yielded[i] if i < len(yielded) else None
+
+    win = [(b, e) for _wid, b, e in log.windows()]
+
+    def in_window(t):
+        return any(b <= t <= e for b, e in win)
+
+    consumed_edges, lost, masked, unresolved = [], [], 0, 0
+    for ed in edges:
+        if ed.edge_seq is None:
+            unresolved += 1
+            continue
+        if in_window(ed.t_ns):
+            # Paused, rewound, loading: the grid does not apply and neither
+            # does an input-latency claim.
+            masked += 1
+            continue
+        v = first_latch_at_or_after(ed.edge_seq)
+        if v is None:
+            unresolved += 1      # the run ended before the next latch
+            continue
+        # Did the state this edge announced survive to that latch? The mask is
+        # the bits the edge changed; if the latch still agrees with the edge on
+        # all of them, the game saw the transition. If not, the press came and
+        # went between two latches and never reached the guest at all — which
+        # a sequence comparison alone would have scored as a hit.
+        mask = ed.edge_delta
+        if mask and (v.latched_bits & mask) != (ed.edge_bits & mask):
+            # Lost. Record the latch interval that swallowed it: a press
+            # available for longer than that interval and still missed is a
+            # defect; one shorter is sampling working as specified.
+            i = bisect.bisect_left(seqs, ed.edge_seq)
+            prev = yielded[i - 1].exec_start_ns if i else None
+            gap = (v.exec_start_ns - prev) if prev is not None else None
+            lost.append((ed, gap))
+            continue
+        consumed_edges.append((ed, v))
+
+    total = len(edges)
+    print(f"input edges: {total} published; {len(consumed_edges)} reached a "
+          f"VBL, {len(lost)} lost between latches, {masked} inside a declared "
+          f"window, {unresolved} unresolved (run ended)")
+    if lost:
+        pct = 100.0 * len(lost) / max(1, total - masked - unresolved)
+        print(f"  {pct:.1f}% of edges never reached the game: the state "
+              f"changed and changed back between two latches. Input is sampled "
+              f"once per VBL, so a transition shorter than a VBL period can "
+              f"vanish entirely — this is the number a sweep must not hide.")
+    if not consumed_edges:
+        print("VACUOUS: no edge reached a VBL", file=sys.stderr)
+        return 3
+
+    delay = [v.exec_start_ns - ed.t_ns for ed, v in consumed_edges]
+    rsig, p99, mx = ps.triple(delay)
+    print(f"edge -> consuming VBL start: p50 {us(ps.percentile(delay,50))} "
+          f"p99 {us(p99)} max {us(mx)} (robust sigma {us(rsig)})")
+    print("  measured from the PUBLISH instant: the OS and pump time before "
+          "it is not in this number, and an external injector is the only "
+          "thing that can see it.")
+
+    # ---- Tier A sweep: did every injected pulse reach a VBL?
+    #
+    # Deliberately reported as plumbing validation, not as an input-latency
+    # result. This source lives inside the process, downstream of everything
+    # that can actually go wrong on the way in, so a clean sweep here says the
+    # log and the attribution arithmetic are sound and says nothing about the
+    # OS. The end-to-end number belongs to an external injector.
+    try:
+        pulse_bit = int(log.env.get("input_pulse_bit", "0"), 0)
+    except ValueError:
+        pulse_bit = 0
+    pulse_n = int(log.env.get("input_pulse", "0") or 0)
+    if pulse_n and pulse_bit:
+        # A press is the edge on which the bit goes active-low.
+        presses = [ed for ed in edges
+                   if (ed.edge_delta & pulse_bit)
+                   and not (ed.edge_bits & pulse_bit)]
+        got = sum(1 for ed, _v in consumed_edges
+                  if (ed.edge_delta & pulse_bit) and not (ed.edge_bits & pulse_bit))
+        print(f"Tier A sweep (bit 0x{pulse_bit:04x}, {pulse_n} scheduled): "
+              f"{len(presses)} press(es) published, {got} consumed")
+        if not presses:
+            print("VACUOUS: the pulse source was configured but published no "
+                  "press — it did not engage", file=sys.stderr)
+            return 3
+        # --hold-us overrides what the run recorded. It is the calibration
+        # control for the explained/unexplained split: raised past every latch
+        # interval, every loss must become UNEXPLAINED and the check must FAIL.
+        # A check that cannot be made to fail is not checking anything.
+        hold_ns = (a.hold_us * 1000 if a.hold_us
+                   else int(log.env.get("input_pulse_hold_us", "0") or 0) * 1000)
+        lost_pulses = [(ed, gap) for ed, gap in lost
+                       if (ed.edge_delta & pulse_bit)
+                       and not (ed.edge_bits & pulse_bit)]
+        # A press is UNEXPLAINED when it was held longer than the latch
+        # interval that dropped it: the sample was there to be taken. Those
+        # are plumbing defects. A press dropped across an interval longer than
+        # its hold is input sampling working exactly as specified, and gating
+        # on it would fail the run for being loaded.
+        unexplained = [(ed, gap) for ed, gap in lost_pulses
+                       if gap is not None and hold_ns and gap < hold_ns]
+        explained = len(lost_pulses) - len(unexplained)
+        if lost_pulses:
+            gaps = [g for _e, g in lost_pulses if g is not None]
+            print(f"  {len(lost_pulses)} press(es) lost: {explained} across a "
+                  f"latch interval longer than the {hold_ns/1e6:.1f} ms hold "
+                  f"(sampling working as specified"
+                  + (f", widest {max(gaps)/1e6:.1f} ms" if gaps else "")
+                  + f"), {len(unexplained)} UNEXPLAINED")
+        if unexplained:
+            print(f"FAIL: {len(unexplained)} injected press(es) were available "
+                  f"for longer than the latch interval that dropped them — the "
+                  f"sample was there to be taken", file=sys.stderr)
+            for ed, gap in unexplained[:5]:
+                print(f"  seq {ed.edge_seq} at "
+                      f"t={(ed.t_ns - log.epoch_ns)/1e9:.3f}s, latch interval "
+                      f"{gap/1e6:.2f} ms < hold {hold_ns/1e6:.2f} ms",
+                      file=sys.stderr)
+            return 2
+        print("  plumbing validated: every injected press is attributable, and "
+              "every loss is explained by a latch interval wider than its "
+              "hold.")
+
+    # ---- Phase of the edge within the consuming VBL's own grid period.
+    #
+    # Anchored on that VBL's recorded deadline rather than on a reconstructed
+    # global grid: the grid is re-anchored at unlock exits and render-fps
+    # changes, and a reconstruction bins edges near an anchor against a grid no
+    # VBL ever followed.
+    phases = []
+    for ed, v in consumed_edges:
+        if not v.deadline_ns:
+            continue          # regrid VBL: no grid to phase against
+        # Forward from the grid point the consuming VBL was paced to: 0 is the
+        # deadline itself, 1 is a whole period later. Anchored on that VBL's
+        # own recorded deadline, so slips and re-anchors need no reconstruction.
+        phases.append(((ed.t_ns - v.deadline_ns) % period) / period)
+    if not phases:
+        return 0
+
+    nb = 10
+    hist = [0] * nb
+    for ph in phases:
+        hist[min(nb - 1, int(ph * nb))] += 1
+    occupied = sum(1 for n in hist if n)
+    print(f"edge phase after the consuming VBL's grid point ({len(phases)} "
+          f"edge(s), 0 = at the deadline, 1 = a period later):")
+    wide = max(hist) or 1
+    for i, n in enumerate(hist):
+        print(f"  {i/nb:.1f}-{(i+1)/nb:.1f} {n:6d} " + "#" * int(40.0 * n / wide))
+
+    if occupied <= 2:
+        # Every edge landed in the same slice of the period. That is not a
+        # narrow result — it means the producer publishes at a FIXED point in
+        # the loop, so the phase being histogrammed is the loop's, not the
+        # injection's. With the split off, the pump, the sample and the latch
+        # are consecutive statements in one iteration, and no schedule upstream
+        # of them can spread the published phase.
+        print(f"  DEGENERATE: {occupied}/{nb} bins occupied. Publishes are "
+              f"locked to the loop's own phase, so this histogram describes "
+              f"the publish cadence, not when input arrives. A phase sweep "
+              f"cannot resolve a latch window from this run — it needs the "
+              f"thread split (an independent pump cadence) or an external "
+              f"injector.")
+    else:
+        print("  A flat histogram means edges arrive at uniformly random "
+              "phases; it is NOT a latency result on its own. The latch-window "
+              "edge shows as a step in WHICH VBL consumes each phase, which "
+              "needs an injector driving known phases (M5 Tier B).")
+    return 0
+
+
 # -------------------------------------------------------------------- CLI
 
 def main():
@@ -789,6 +1094,17 @@ def main():
     p = add("spectrum", cmd_spectrum, "periodic interference lines")
     p.add_argument("--lines", type=int, default=5)
     p.add_argument("--min-power", type=float, default=0.05)
+
+    p = add("input", cmd_input,
+            "input latch phase, pad-read phase, edge mapping")
+    p.add_argument("--hold-us", type=int, default=0,
+                   help="override the recorded pulse hold when deciding "
+                        "whether a lost press was available to be taken; the "
+                        "calibration control for that check")
+    p.add_argument("--require-pulses", action="store_true",
+                   help="refuse unless the timed pulse source was active — "
+                        "the check that makes a sweep leg fail when it did "
+                        "not inject")
 
     p = add("attribute", cmd_attribute, "bucket tail events by cause")
     p.add_argument("--threshold-us", type=float, default=1000.0)

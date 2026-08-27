@@ -18,16 +18,26 @@ import sys
 from pathlib import Path
 
 MAGIC = 0x4C50504F  # 'OPPL'
-VERSION = 1
+VERSION = 2
 HEADER_FIXED = 64
-RECORD_BYTES = 48
+RECORD_BYTES = 64
+# v1 records had four payload slots and no `e`. The size comes from the header,
+# so an older log still parses; its `e` reads as absent (None), which callers
+# must distinguish from a real zero — `e` carries a latch identity where zero
+# is a meaningful value, not a missing one.
+RECORD_LAYOUT = {48: ("<BBHIqqqqq", 1), 64: ("<BBHIqqqqqqq", 2)}
 
 (VBL, PRESENT, SHED, SLIP, INPUT_EDGE, WINDOW, CLOCKSAMPLE, WAKE,
- PRESENT_SPAN) = range(1, 10)
+ PRESENT_SPAN, PAD_READ) = range(1, 11)
 TYPE_NAMES = {VBL: "VBL", PRESENT: "PRESENT", SHED: "SHED", SLIP: "SLIP",
               INPUT_EDGE: "INPUT_EDGE", WINDOW: "WINDOW",
               CLOCKSAMPLE: "CLOCKSAMPLE", WAKE: "WAKE",
-              PRESENT_SPAN: "PRESENT_SPAN"}
+              PRESENT_SPAN: "PRESENT_SPAN", PAD_READ: "PAD_READ"}
+
+# `latched_seq` sentinels (openpete_pace_log.h). Publish sequences are even and
+# step by 2, so odd values are free to name the reasons a VBL consumed no host
+# sample — reasons a bare zero would conflate.
+LATCH_NONE, LATCH_CLAIMED = 0, 1
 NAME_TYPES = {v: k for k, v in TYPE_NAMES.items()}
 
 F_SLIPPED, F_UNLOCK, F_PAUSED, F_STEPPED = 1, 2, 4, 8
@@ -49,11 +59,14 @@ HIST_EDGES_NS = [0, 100_000, 250_000, 500_000, 1_000_000, 2_000_000,
 
 
 class Record:
-    __slots__ = ("type", "flags", "aux", "index", "t_ns", "a", "b", "c", "d")
+    __slots__ = ("type", "flags", "aux", "index", "t_ns", "a", "b", "c", "d",
+                 "e", "f")
 
     def __init__(self, tup):
         (self.type, self.flags, self.aux, self.index,
-         self.t_ns, self.a, self.b, self.c, self.d) = tup
+         self.t_ns, self.a, self.b, self.c, self.d) = tup[:9]
+        self.e = tup[9] if len(tup) > 9 else None
+        self.f = tup[10] if len(tup) > 10 else None
 
     @property
     def name(self):
@@ -71,6 +84,49 @@ class Record:
     def exec_start_ns(self): return self.c
     @property
     def exec_end_ns(self): return self.d
+
+    @property
+    def latched_seq(self):
+        """Which published input sample this VBL consumed — identity, not a
+        timestamp. None on a v1 log (the field did not exist), LATCH_NONE if
+        this path never latches, LATCH_CLAIMED if another writer owned the pad,
+        else an even publish sequence."""
+        return self.e
+
+    @property
+    def consumed_input(self):
+        """True only if this VBL took a host sample. A claimed VBL carries a
+        stale-looking latch instant it never used, and folding those into an
+        input statistic is how a bk2 replay produces input numbers."""
+        return self.e is not None and self.e >= 2
+
+    @property
+    def latched_bits(self):
+        """Pad bits of the sample this VBL consumed. Whether a press reached
+        the game is a question about state: the producer republishes far
+        faster than the consumer latches, so a held button arrives through a
+        LATER sample than the one whose edge announced it."""
+        return None if self.f is None else (self.f & 0xFFFF)
+
+    # INPUT_EDGE accessors.
+    @property
+    def edge_bits(self): return self.a & 0xFFFF
+    @property
+    def edge_delta(self): return self.aux
+    @property
+    def edge_seq(self): return self.e
+
+    # PAD_READ accessors: the guest's own read of its pad buffer.
+    @property
+    def read_ordinal(self): return self.aux          # 1 = first read of the VBL
+    @property
+    def read_offset_ns(self):
+        """How far into the VBL the guest looked at the pad."""
+        return self.t_ns - self.a if self.a else None
+    @property
+    def read_age_ns(self):
+        """Age of the consumed sample at the moment the guest read it."""
+        return self.t_ns - self.b if self.b else None
 
     # PRESENT accessors. `t_ns` is when the present path RETURNED; the block
     # fields are the waits it imposed before that.
@@ -211,10 +267,18 @@ def read(path: Path) -> Log:
         struct.unpack_from("<IIIIIIqqqqq", data, 0)
     if magic != MAGIC:
         raise SystemExit(f"{path}: bad magic 0x{magic:08x} (expected OPPL)")
-    if version != VERSION:
-        raise SystemExit(f"{path}: unsupported version {version}")
-    if rec_bytes != RECORD_BYTES:
+    if rec_bytes not in RECORD_LAYOUT:
         raise SystemExit(f"{path}: unsupported record size {rec_bytes}")
+    fmt, layout_version = RECORD_LAYOUT[rec_bytes]
+    # The record size, not the version field, decides how to parse: a version
+    # this reader predates but whose records it can still lay out is readable,
+    # and refusing it would throw away a log nobody can regenerate.
+    if version > VERSION:
+        print(f"{path}: written by a newer build (version {version}); "
+              f"parsing its {rec_bytes}-byte records", file=sys.stderr)
+    elif version != layout_version:
+        raise SystemExit(f"{path}: version {version} with {rec_bytes}-byte "
+                         f"records — header is inconsistent")
 
     env = {}
     for line in data[HEADER_FIXED:HEADER_FIXED + env_bytes].decode(
@@ -227,7 +291,7 @@ def read(path: Path) -> Log:
     # A run killed mid-write leaves a partial trailing record; truncate rather
     # than refuse, so a SIGKILLed soak run is still readable.
     body = body[: (len(body) // RECORD_BYTES) * RECORD_BYTES]
-    recs = [Record(t) for t in struct.iter_unpack("<BBHIqqqqq", body)]
+    recs = [Record(t) for t in struct.iter_unpack(fmt, body)]
     return Log(env, epoch_ns, created_unix_ns, vbl_num, vbl_den, tick_vbls, recs)
 
 
@@ -236,8 +300,11 @@ def fmt_record(r, epoch_ns):
     if r.type == VBL:
         err = f"{r.phase_err_ns / 1e3:+9.1f}us" if r.paced else "  unpaced"
         exec_ms = (r.exec_end_ns - r.exec_start_ns) / 1e6
+        seq = {None: "seq n/a", LATCH_NONE: "no latch",
+               LATCH_CLAIMED: "claimed"}.get(r.latched_seq,
+                                             f"seq {r.latched_seq}")
         return (f"{t:10.4f} VBL     #{r.index:<7} phase {err} "
-                f"exec {exec_ms:7.3f}ms [{r.flag_str()}]")
+                f"exec {exec_ms:7.3f}ms [{r.flag_str()}] {seq}")
     if r.type == PRESENT:
         kind = "intermediate" if r.flags else "canonical   "
         return (f"{t:10.4f} PRESENT #{r.index:<7} {kind} block: "
@@ -247,8 +314,15 @@ def fmt_record(r, epoch_ns):
         return (f"{t:10.4f} SLIP    {'render' if r.flags else 'sim   '} "
                 f"{r.a} period(s), {r.b/1e6:.1f} ms behind")
     if r.type == INPUT_EDGE:
-        return (f"{t:10.4f} INPUT   bits 0x{r.a & 0xFFFF:04x} "
-                f"delta 0x{r.aux:04x} analog {r.flags}")
+        return (f"{t:10.4f} INPUT   seq {r.edge_seq} bits 0x{r.edge_bits:04x} "
+                f"delta 0x{r.edge_delta:04x} analog {r.flags}")
+    if r.type == PAD_READ:
+        off = r.read_offset_ns
+        age = r.read_age_ns
+        return (f"{t:10.4f} PADREAD #{r.index:<7} read {r.read_ordinal} "
+                f"{'  n/a' if off is None else f'{off/1e3:+8.1f}us'} into the "
+                f"VBL, sample age "
+                f"{'n/a' if age is None else f'{age/1e3:+8.1f}us'}")
     if r.type == WINDOW:
         return f"{t:10.4f} WINDOW  id {r.aux} {'begin' if r.flags else 'end'}"
     if r.type == PRESENT_SPAN:

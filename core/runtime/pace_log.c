@@ -4,6 +4,7 @@
 
 #include "openpete_pace_log.h"
 #include "openpete_time.h"
+#include "openpete_host_input.h"
 #include "openpete_log.h"
 
 #include <SDL3/SDL.h>
@@ -33,8 +34,13 @@ typedef struct {
     uint16_t aux;
     uint32_t index;
     int64_t  t_ns;
-    int64_t  a, b, c, d;
+    int64_t  a, b, c, d, e, f;
 } pace_rec_t;
+
+/* The on-disk record must be exactly what the header advertises: a compiler
+ * that pads pace_rec_t would write a file no reader can parse, silently. */
+_Static_assert(sizeof(pace_rec_t) == OP_PACE_RECORD_BYTES,
+               "pace_rec_t must match OP_PACE_RECORD_BYTES");
 
 static FILE*       s_fp;
 static SDL_Mutex*  s_lock;
@@ -212,7 +218,9 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
                              int refresh_mhz, const char* present_mode,
                              int fullscreen, int render_fps,
                              int interp_on, int runahead_n,
-                             double tick_scale)
+                             double tick_scale,
+                             int thread_split, int input_legacy,
+                             int headless)
 {
     char cpu[256];
     char gov[64] = "unknown";
@@ -241,7 +249,20 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
         "runahead=%d\n"
         "tick_scale=%.6f\n"
         "pacer_slack_ns=%lld\n"
-        "virtual_clock=%d\n",
+        "virtual_clock=%d\n"
+        /* The three fields that decide whether an INPUT metric from this log
+         * means anything. With the split off, producer and consumer are the
+         * same thread in the same iteration and input staleness is
+         * microseconds by construction; the legacy path never latches at all;
+         * headless has no display and forces the split off. Without these in
+         * the header the analyzer cannot tell which regime it is reading, and
+         * a baseline would key two different regimes to the same machine. */
+        "thread_split=%d\n"
+        "input_legacy=%d\n"
+        "headless=%d\n"
+        "input_pulse=%d\n"
+        "input_pulse_bit=0x%04X\n"
+        "input_pulse_hold_us=%d\n",
         OPENPETE_BUILD_ID,
         SDL_GetPlatform(),
         cpu,
@@ -253,7 +274,11 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
         present_mode ? present_mode : "unknown",
         fullscreen, render_fps, interp_on, runahead_n, tick_scale,
         (long long)op_pacer_slack_ns(),
-        op_virtual_clock_active());
+        op_virtual_clock_active(),
+        thread_split, input_legacy, headless,
+        openpete_host_input_pulse_count(),
+        openpete_host_input_pulse_bit(),
+        openpete_host_input_pulse_hold_us());
 }
 
 /* ------------------------------------------------------------------ */
@@ -293,7 +318,8 @@ static unsigned hist_bucket(int64_t err_ns)
 
 void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
                        int64_t deadline_ns, int64_t latch_ns,
-                       int64_t exec_start_ns, int64_t exec_end_ns)
+                       int64_t exec_start_ns, int64_t exec_end_ns,
+                       unsigned latched_seq, uint16_t latched_bits)
 {
     /* Under the virtual clock (--record-cfr) op_now returns SCHEDULED time,
      * advanced only by the pacer's own sleep, so exec_start equals the
@@ -332,11 +358,18 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
             if (err > s_census.phase_err_max_ns) s_census.phase_err_max_ns = err;
             if (err < s_census.phase_err_min_ns) s_census.phase_err_min_ns = err;
             s_census.phase_hist[hist_bucket(err)]++;
-            if (latch_ns) {
+            /* Only a VBL that actually CONSUMED a host sample contributes.
+             * A claimed iteration leaves the previous publish instant
+             * standing, and charging that age to a tick which never looked at
+             * the channel grows the bound without bound on a bk2 run — a
+             * number about nothing, in the shape of a measurement. */
+            if (latch_ns && latched_seq >= 2u) {
                 const int64_t off = exec_start_ns - latch_ns;
                 s_census.latch_samples++;
                 if (off > s_census.latch_offset_max_ns)
                     s_census.latch_offset_max_ns = off;
+            } else if (latched_seq == OP_PACE_LATCH_CLAIMED) {
+                s_census.vbls_claimed++;
             }
         }
     }
@@ -349,6 +382,8 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
     r.index = vbl_index;
     r.t_ns  = exec_start_ns;
     r.a = deadline_ns; r.b = latch_ns; r.c = exec_start_ns; r.d = exec_end_ns;
+    r.e = (int64_t)latched_seq;
+    r.f = (int64_t)latched_bits;
     pace_emit(&r);
     maybe_clocksample(exec_start_ns);
 }
@@ -398,9 +433,10 @@ void openpete_pace_slip(uint8_t kind, int64_t periods, int64_t behind_ns)
     pace_emit(&r);
 }
 
-void openpete_pace_input_edge(int64_t sample_ns, uint16_t bits,
+void openpete_pace_input_edge(int64_t sample_ns, unsigned seq, uint16_t bits,
                               uint16_t bits_delta, int analog_delta)
 {
+    s_census.input_edges++;
     if (!s_fp) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_INPUT_EDGE;
@@ -408,6 +444,67 @@ void openpete_pace_input_edge(int64_t sample_ns, uint16_t bits,
     r.aux   = bits_delta;
     r.t_ns  = sample_ns;
     r.a     = bits;
+    r.e     = (int64_t)seq;
+    pace_emit(&r);
+}
+
+/* Pad-read probe state. Written and read only on the thread that runs the
+ * game fiber, so no atomics: the dispatcher, the VBL bracket and the VBL
+ * emit are all that thread. */
+static uint32_t s_vbl_index;
+static int64_t  s_vbl_exec_start_ns;
+static int64_t  s_vbl_latch_ns;
+static unsigned s_vbl_pad_reads;
+static int      s_pad_probe_armed;
+
+void openpete_pace_pad_probe_arm(void)   { s_pad_probe_armed = 1; }
+int  openpete_pace_pad_probe_armed(void) { return s_pad_probe_armed; }
+
+void openpete_pace_vbl_begin(uint32_t vbl_index, int64_t exec_start_ns,
+                              int64_t latch_ns)
+{
+    s_vbl_index         = vbl_index;
+    s_vbl_exec_start_ns = exec_start_ns;
+    s_vbl_latch_ns      = latch_ns;
+    s_vbl_pad_reads     = 0;
+}
+
+uint16_t openpete_pace_pad_reads_this_vbl(void)
+{
+    return s_vbl_pad_reads > 0xFFFFu ? 0xFFFFu : (uint16_t)s_vbl_pad_reads;
+}
+
+void openpete_pace_pad_read(void)
+{
+    const int64_t now = (int64_t)op_now();
+    const unsigned n  = ++s_vbl_pad_reads;
+
+    s_census.pad_reads++;
+    if (n == 1) {
+        s_census.pad_read_vbls++;
+        /* Only the FIRST read of a VBL is a phase measurement: later ones are
+         * the game looking again at bytes that cannot have changed, since
+         * nothing rewrites the buffer between the latch and the next latch. */
+        if (s_vbl_exec_start_ns) {
+            const int64_t off = now - s_vbl_exec_start_ns;
+            if (off > s_census.pad_read_offset_max_ns)
+                s_census.pad_read_offset_max_ns = off;
+        }
+        if (s_vbl_latch_ns) {
+            const int64_t age = now - s_vbl_latch_ns;
+            if (age > s_census.pad_read_age_max_ns)
+                s_census.pad_read_age_max_ns = age;
+        }
+    }
+
+    if (!s_fp) return;
+    pace_rec_t r = {0};
+    r.type  = OP_PACE_PAD_READ;
+    r.aux   = (uint16_t)(n > 0xFFFFu ? 0xFFFFu : n);
+    r.index = s_vbl_index;
+    r.t_ns  = now;
+    r.a     = s_vbl_exec_start_ns;
+    r.b     = s_vbl_latch_ns;
     pace_emit(&r);
 }
 
@@ -507,12 +604,22 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
     /* An unmeasured quantity prints as n/a. A latch bound of "0.000 ms" on a
      * run where no sample ever contributed reads as a perfect result, which
      * is worse than an absent one. */
-    char latch[32], early_s[48];
+    char latch[96], early_s[48];
     if (c->latch_samples)
-        SDL_snprintf(latch, sizeof(latch), "%.3f ms",
-                     (double)c->latch_offset_max_ns / 1e6);
+        SDL_snprintf(latch, sizeof(latch), "%.3f ms over %llu VBL",
+                     (double)c->latch_offset_max_ns / 1e6,
+                     (unsigned long long)c->latch_samples);
     else
         SDL_strlcpy(latch, "n/a", sizeof(latch));
+    /* A run where another writer owned the pad throughout (bk2 replay) has no
+     * host input phase to report. Saying so is the difference between an
+     * absent measurement and a flattering one. */
+    if (c->vbls_claimed) {
+        char tail[48];
+        SDL_snprintf(tail, sizeof(tail), " (+%llu claimed)",
+                     (unsigned long long)c->vbls_claimed);
+        SDL_strlcat(latch, tail, sizeof(latch));
+    }
     if (early)
         SDL_snprintf(early_s, sizeof(early_s), ", %llu early (max %+.3f ms)",
                      (unsigned long long)early,
@@ -520,12 +627,38 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
     else
         early_s[0] = '\0';
 
+    /* Three distinguishable states, because two of them are absences: no
+     * probe wired (unmeasured), a probe that never fired (a real and alarming
+     * finding — the game stopped reading its pad), and a measurement. */
+    char padr[128];
+    if (!s_pad_probe_armed)
+        SDL_strlcpy(padr, "pad read: no probe", sizeof(padr));
+    else if (c->pad_read_vbls == 0)
+        SDL_strlcpy(padr, "pad read: NEVER (probe armed)", sizeof(padr));
+    else
+        SDL_snprintf(padr, sizeof(padr),
+                     "pad read: %llu in %llu VBL(s), <=%+.3f ms into the "
+                     "VBL, sample age <=%+.3f ms",
+                     (unsigned long long)c->pad_reads,
+                     (unsigned long long)c->pad_read_vbls,
+                     (double)c->pad_read_offset_max_ns / 1e6,
+                     (double)c->pad_read_age_max_ns / 1e6);
+
+    /* The seqlock never failing is the expected state, so it prints nothing;
+     * a single failure means some latch consumed no sample at all and must
+     * not hide inside a healthy-looking line. */
+    char seqfail[64];
+    const unsigned sf = openpete_host_input_seqlock_failures();
+    if (sf) SDL_snprintf(seqfail, sizeof(seqfail),
+                         "; INPUT SEQLOCK FAILED %u time(s)", sf);
+    else    seqfail[0] = '\0';
+
     SDL_snprintf(buf, buf_bytes,
         "%llu VBL (%llu paced, %llu clean); %llu+%llu present; "
         "phase %.2f%% within 250us, max %+.3f ms%s; "
         "transient %llu VBL max %+.3f ms; wake<=%+.3f ms behind<=%+.3f ms; "
-        "latch<=%s; "
-        "slips sim %llu/%llu render %llu/%llu; sheds %llu",
+        "latch<=%s; %s; %llu input edge(s); "
+        "slips sim %llu/%llu render %llu/%llu; sheds %llu%s",
         (unsigned long long)c->vbls,
         (unsigned long long)c->vbls_paced,
         (unsigned long long)c->vbls_clean,
@@ -538,12 +671,14 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
         (double)c->phase_err_transient_max_ns / 1e6,
         (double)c->wake_overshoot_max_ns / 1e6,
         (double)c->wake_behind_max_ns / 1e6,
-        latch,
+        latch, padr,
+        (unsigned long long)c->input_edges,
         (unsigned long long)c->slip_events[0],
         (unsigned long long)c->slip_periods[0],
         (unsigned long long)c->slip_events[1],
         (unsigned long long)c->slip_periods[1],
-        (unsigned long long)c->sheds);
+        (unsigned long long)c->sheds,
+        seqfail);
 }
 
 /* ------------------------------------------------------------------ */
