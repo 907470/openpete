@@ -203,6 +203,10 @@ def main():
     a = ap.parse_args()
 
     inj = make_injector(a.scancode)
+    # Opened before the first press and written as we go: an exception part way
+    # through (the desktop locking, UIPI, the game exiting) would otherwise
+    # discard a run that had already delivered hundreds of usable pulses.
+    out = open(a.out, "w")
     try:
         wall = inj.wall_ns
         t0 = wall() + int(a.start_delay_s * 1e9)
@@ -235,6 +239,7 @@ def main():
                 skipped += 1
                 recs.append({"seq": k, "scheduled_wall_ns": target,
                              "skipped": True, "foreground": title})
+                out.write(json.dumps(recs[-1]) + "\n")
                 continue
 
             inj.press()
@@ -244,11 +249,14 @@ def main():
             up = wall()
             recs.append({"seq": k, "down_wall_ns": down, "up_wall_ns": up,
                          "scheduled_wall_ns": target, "focused": True})
+            out.write(json.dumps(recs[-1]) + "\n")
+            out.flush()
             if (k + 1) % 50 == 0:
                 print(f"  {k+1}/{a.count} scheduled, {len(recs)-skipped} "
                       f"injected", file=sys.stderr)
     finally:
         inj.close()
+        out.close()
 
     thieves = {}
     for r in recs:
@@ -261,8 +269,10 @@ def main():
             "pad_bit": a.pad_bit, "hold_us": a.hold_us, "gap_us": a.gap_us,
             "count": a.count, "injected": len(recs) - skipped,
             "skipped_unfocused": skipped}
-    # Written last-line-first so a reader can find it without scanning: the
-    # metadata is what decides whether the run may be analysed at all.
+    # Rewritten with the metadata first, now that the totals are known. The
+    # incremental file above is the crash copy; this is the analysable one, and
+    # the metadata leads because it decides whether the run may be analysed at
+    # all.
     with open(a.out, "w") as f:
         f.write(json.dumps(meta) + "\n")
         for r in recs:

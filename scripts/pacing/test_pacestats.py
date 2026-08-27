@@ -278,9 +278,44 @@ def test_diff():
           ps.bootstrap_ci(a, b) == ps.bootstrap_ci(a, b))
 
 
+def test_slip_recovery():
+    """A slip clamp snaps the grid forward while the loop still carries the
+    backlog. The ticks that follow start late and converge, and OLS reads that
+    converging phase as the period being SHORT — a frequency error that is
+    really a transient. This is not hypothetical: on the Windows gate it turned
+    +0.05 ppm into -3.14 ppm from 30 VBL out of 6917."""
+    print("slip recovery")
+    nominal = VBL_NS
+    n, lead = 2000, 30
+    # A perfect grid, plus a decaying lateness over the first `lead` VBLs.
+    xs = list(range(n))
+    ys = []
+    for i in xs:
+        late = 8_000_000 * (0.75 ** i) if i < lead else 0.0
+        ys.append(i * nominal + late)
+
+    biased, _ = ps.drift_ppm(xs, ys, nominal)
+    check("fitting through the recovery invents a large negative drift",
+          biased < -2.0, f"{biased:+.3f} ppm over {n} VBL")
+
+    trimmed, _ = ps.drift_ppm(xs[lead:], ys[lead:], nominal)
+    check("dropping the recovery recovers the true rate",
+          approx(trimmed, 0.0, 0.01), f"{trimmed:+.4f} ppm")
+
+    # And the bias must dilute with span, which is why a short gate leg and a
+    # long soak run disagreed before this was understood.
+    xs2 = list(range(20_000))
+    ys2 = [i * nominal + (8_000_000 * (0.75 ** i) if i < lead else 0.0)
+           for i in xs2]
+    diluted, _ = ps.drift_ppm(xs2, ys2, nominal)
+    check("the same transient dilutes over a 10x longer run",
+          abs(diluted) < abs(biased) / 5,
+          f"{diluted:+.4f} ppm over 20000 VBL vs {biased:+.3f} over {n}")
+
+
 if __name__ == "__main__":
     for fn in (test_summary, test_drift, test_stability, test_spectrum,
-               test_diff):
+               test_diff, test_slip_recovery):
         fn()
     print()
     if FAILURES:

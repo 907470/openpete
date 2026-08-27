@@ -24,6 +24,10 @@ import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
+from hostenv import child_env                                  # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fences"))
+import wslenv_guard                                            # noqa: E402
 import pacelog                                                # noqa: E402
 import pacestats as ps                                        # noqa: E402
 
@@ -70,12 +74,13 @@ def run_leg(exe, disc, name, flags, seconds, out_dir, headless, extra):
     vbls = int(seconds * VBL_HZ)
     cmd = [str(exe), "--disc", str(disc), "--frame-limit", str(vbls),
            "--pace-log", str(log)] + flags + extra
-    env = dict(os.environ)
+    knobs = {}
     if headless:
         cmd.append("--headless")
-        env["OPENPETE_FORCE_PACING"] = "1"   # headless is unpaced otherwise
+        knobs["OPENPETE_FORCE_PACING"] = "1"   # headless is unpaced otherwise
     t0 = time.time()
     r = subprocess.run(cmd, capture_output=True, text=True,
+                       env=child_env(knobs),
                        timeout=seconds * 4 + 300)
     if r.returncode != 0 or not log.exists():
         tail = (r.stderr or r.stdout or "")[-400:]
@@ -116,6 +121,13 @@ def analyse(log_path, warmup):
 
 
 def main():
+    # A matrix leg configured through the environment that never receives it
+    # is a duplicate of another leg wearing a different name.
+    _bad = wslenv_guard.scan(str(REPO))
+    if _bad:
+        sys.exit("FENCE (wslenv_guard): " +
+                 ", ".join(p for p, _ in _bad) +
+                 " would drop env knobs crossing to a Windows exe")
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
     ap.add_argument("--tier", choices=sorted(TIER_SECONDS), default="quick")

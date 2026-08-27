@@ -18,6 +18,12 @@
 set -uo pipefail
 
 cd "$(dirname "$0")/.."
+. scripts/lib/wslenv.sh
+# Refuse before spending 6 minutes on legs whose knobs would not arrive: this
+# gate has already once run its entire Windows path unpaced and uninjected,
+# reported VACUOUS for one leg and PASS for another, and neither was true of
+# anything that ran.
+python3 scripts/fences/wslenv_guard.py >/dev/null || exit 65
 # Long enough that the drift leg can resolve its own 1 ppm gate: at the
 # measured jitter a 55 s span cannot separate 2 ppm from 1 ppm, and a gate
 # that can never certify its headline metric is decoration.
@@ -59,7 +65,12 @@ run_leg() {   # name, mode(headless|windowed), extra env assignments...
   local extra=()
   [ "$mode" = headless ] && extra+=(--headless)
   echo "[pacing] leg $name ($mode, ${SECONDS_PER_LEG}s)"
-  if ! env "$@" "$EXE" --disc "$DISC" --frame-limit "$VBLS" \
+  # Forward the knobs through WSLENV: a Windows .exe launched from WSL does
+  # not inherit the Linux environment, and a knob that fails to arrive is
+  # silent — the run proceeds with the default and reports numbers about a
+  # configuration nobody asked for.
+  wslenv_forward "$@"
+  if ! env "${WSLENV_ARGS[@]}" "$EXE" --disc "$DISC" --frame-limit "$VBLS" \
        --pace-log "$log" "${extra[@]}" >"$OUT/$name.out" 2>&1; then
     echo "[pacing] FAIL: leg $name did not run; see $OUT/$name.out" >&2
     return 1
@@ -109,13 +120,14 @@ if [ $shed_possible -eq 0 ]; then
 else
 shed_skipped=0
 echo "[pacing] --- shed contract: do presents shed while ticks hold? ---"
-python3 - "$OUT/gate-shed-inject.pacelog" "$OUT/gate-shed-base.pacelog" "$P99_US" <<'PY'
+python3 - "$OUT/gate-shed-inject.pacelog" "$OUT/gate-shed-base.pacelog" "$P99_US" "$INJECT_US" <<'PY'
 import sys
 from pathlib import Path
 sys.path.insert(0, "scripts/pacing")
 import pacelog, pacestats as ps
 
 inj, base, p99_goal_us = Path(sys.argv[1]), Path(sys.argv[2]), float(sys.argv[3])
+inject_us = float(sys.argv[4])
 li, lb = pacelog.read(inj), pacelog.read(base)
 ki, _ = li.analysis_vbls()
 kb, _ = lb.analysis_vbls()
@@ -129,9 +141,24 @@ if not ki:
 
 # The injector must actually have made presents expensive, or the leg proves
 # nothing about shedding.
+spans_b = lb.of(pacelog.PRESENT_SPAN)
 if spans_i:
     cost = ps.percentile([r.span_cost_ns for r in spans_i], 50)
-    print(f"injected present cost p50: {cost/1e3:.1f}us")
+    cost_b = ps.percentile([r.span_cost_ns for r in spans_b], 50) if spans_b else 0
+    print(f"present cost p50: {cost_b/1e3:.1f}us baseline -> {cost/1e3:.1f}us "
+          f"injected (asked for +{inject_us:.0f}us)")
+    # The injection ITSELF has to be shown to have arrived. Everything below
+    # compares two legs and calls the difference a demonstration of shedding;
+    # if the knob never reached the process the two legs are the same run
+    # twice, and the comparison passes while proving nothing. This has
+    # happened: under WSL the env knob does not cross to a Windows .exe, and
+    # the contract reported PASS over a duplicate of its own baseline.
+    if cost - cost_b < 0.5 * inject_us * 1000:
+        fail.append(
+            f"the injection did not arrive: present cost rose only "
+            f"{(cost-cost_b)/1e3:.1f}us against the {inject_us:.0f}us asked "
+            f"for, so the two legs are the same configuration and nothing "
+            f"here is a demonstration of anything")
 else:
     fail.append("injected leg recorded no present spans — the path never ran")
 

@@ -106,9 +106,11 @@ unsigned openpete_host_input_latched_seq(void);
  * consumed rather than merely superseded. */
 unsigned short openpete_host_input_latched_bits(void);
 
-/* Times the consumer's seqlock retry bound was exhausted. Expected to stay 0;
- * a non-zero count means some latch reused nothing and is a defect, not
- * noise, so it is surfaced rather than swallowed. */
+/* Times the consumer's seqlock retry bound was exhausted — the producer was
+ * unavailable for the whole retry window, not merely mid-publish. Expected to
+ * stay 0. A non-zero count means some tick reused the previous sample instead
+ * of a fresh one, which is not necessarily a bug (a long preemption of the
+ * pump thread produces it) but is never nothing, so it is surfaced. */
 unsigned openpete_host_input_seqlock_failures(void);
 
 /* Timed pulse source (M5 Tier A), OPENPETE_INPUT_PULSE=<count>. Count is the

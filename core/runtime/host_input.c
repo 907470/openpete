@@ -38,9 +38,16 @@ typedef struct {
 static host_pad_sample_t   s_snap_live;   /* guarded by s_snap_seq */
 static _Atomic unsigned    s_snap_seq;    /* even = stable, odd = publishing */
 
-/* Bounded so a producer that dies mid-publish cannot hang the sim thread.
- * A trip is a finding, not a routine outcome: it is counted and reported. */
-#define PAD_SEQLOCK_TRIES 256
+/* Bounded so a producer preempted mid-publish cannot hang the sim thread. The
+ * publish itself is a dozen bytes, so a reader normally converges on the first
+ * or second try; what does NOT converge quickly is the case where the OS
+ * descheduled the producer between the odd and even counts — a ~10 ns window,
+ * but a preemption landing in it lasts milliseconds. Spinning through the
+ * whole bound then takes about a microsecond and gives up on a sample that
+ * was moments from being whole, so the reader yields once it is clear this is
+ * not contention but scheduling. */
+#define PAD_SEQLOCK_TRIES     256
+#define PAD_SEQLOCK_SPIN      16    /* tries before yielding the CPU */
 static _Atomic unsigned s_snap_retry_fail;
 
 /* The last sample the consumer actually copied, plus its identity. Worker-only.
@@ -447,6 +454,7 @@ static unsigned pad_publish(unsigned short bits, const unsigned char axes[4],
 static unsigned pad_read_stable(host_pad_sample_t* out)
 {
     for (int i = 0; i < PAD_SEQLOCK_TRIES; i++) {
+        if (i >= PAD_SEQLOCK_SPIN) SDL_DelayNS(1000);
         const unsigned s0 =
             atomic_load_explicit(&s_snap_seq, memory_order_relaxed);
         if (s0 & 1u) continue;           /* publish in flight */
@@ -456,8 +464,10 @@ static unsigned pad_read_stable(host_pad_sample_t* out)
         if (atomic_load_explicit(&s_snap_seq, memory_order_relaxed) == s0)
             return s0;
     }
-    /* Never observed, and if it ever is, the census must say so rather than
-     * the caller silently reusing a previous sample as if it were fresh. */
+    /* The producer was not merely publishing but unavailable for the whole
+     * retry window. The caller keeps the previous override bytes, which is the
+     * right behaviour, but the census must say it happened rather than let a
+     * tick silently replay an older sample as if it were fresh. */
     atomic_fetch_add_explicit(&s_snap_retry_fail, 1u, memory_order_relaxed);
     return 0u;
 }

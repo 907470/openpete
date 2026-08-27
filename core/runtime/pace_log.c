@@ -316,6 +316,93 @@ static unsigned hist_bucket(int64_t err_ns)
     return OP_PACE_HIST_BUCKETS - 1;
 }
 
+/* Pad-read probe state. Written and read only on the thread that runs the
+ * game fiber, so no atomics: the dispatcher, the VBL bracket and the VBL
+ * emit are all that thread. */
+static uint32_t s_vbl_index;
+static int64_t  s_vbl_exec_start_ns;
+static int64_t  s_vbl_latch_ns;
+static unsigned s_vbl_pad_reads;
+static int      s_pad_probe_armed;
+/* Open between vbl_begin and the VBL emit; suspended for fiber runs that
+ * belong to a different tick (speculation, rewind replay). A read outside
+ * both is real and is counted, but it is not evidence about this VBL. */
+static int      s_vbl_bracket_open;
+static int      s_vbl_suspend;
+
+void openpete_pace_vbl_suspend(int on) { s_vbl_suspend = on ? 1 : 0; }
+
+void openpete_pace_pad_probe_arm(void)   { s_pad_probe_armed = 1; }
+int  openpete_pace_pad_probe_armed(void) { return s_pad_probe_armed; }
+
+void openpete_pace_vbl_begin(uint32_t vbl_index, int64_t exec_start_ns,
+                              int64_t latch_ns)
+{
+    s_vbl_index         = vbl_index;
+    s_vbl_exec_start_ns = exec_start_ns;
+    s_vbl_latch_ns      = latch_ns;
+    s_vbl_pad_reads     = 0;
+    s_vbl_bracket_open  = 1;
+    s_vbl_suspend       = 0;
+}
+
+uint16_t openpete_pace_pad_reads_this_vbl(void)
+{
+    return s_vbl_pad_reads > 0xFFFFu ? 0xFFFFu : (uint16_t)s_vbl_pad_reads;
+}
+
+void openpete_pace_pad_read(void)
+{
+    const int64_t now  = (int64_t)op_now();
+    const int     live = s_vbl_bracket_open && !s_vbl_suspend;
+
+    if (!live) {
+        /* A real read, by a fiber run that is not the VBL this bracket names.
+         * Counting it in `pad_reads` would break the "exactly one per VBL"
+         * result, and measuring its offset would place it in a period it
+         * never ran in. Recorded, so it is visible, and excluded. */
+        s_census.pad_reads_unattributed++;
+        if (!s_fp) return;
+        pace_rec_t ur = {0};
+        ur.type  = OP_PACE_PAD_READ;
+        ur.flags = OP_PACE_PR_UNATTRIBUTED;
+        ur.index = s_vbl_index;
+        ur.t_ns  = now;
+        pace_emit(&ur);
+        return;
+    }
+
+    const unsigned n = ++s_vbl_pad_reads;
+
+    s_census.pad_reads++;
+    if (n == 1) {
+        s_census.pad_read_vbls++;
+        /* Only the FIRST read of a VBL is a phase measurement: later ones are
+         * the game looking again at bytes that cannot have changed, since
+         * nothing rewrites the buffer between the latch and the next latch. */
+        if (s_vbl_exec_start_ns) {
+            const int64_t off = now - s_vbl_exec_start_ns;
+            if (off > s_census.pad_read_offset_max_ns)
+                s_census.pad_read_offset_max_ns = off;
+        }
+        if (s_vbl_latch_ns) {
+            const int64_t age = now - s_vbl_latch_ns;
+            if (age > s_census.pad_read_age_max_ns)
+                s_census.pad_read_age_max_ns = age;
+        }
+    }
+
+    if (!s_fp) return;
+    pace_rec_t r = {0};
+    r.type  = OP_PACE_PAD_READ;
+    r.aux   = (uint16_t)(n > 0xFFFFu ? 0xFFFFu : n);
+    r.index = s_vbl_index;
+    r.t_ns  = now;
+    r.a     = s_vbl_exec_start_ns;
+    r.b     = s_vbl_latch_ns;
+    pace_emit(&r);
+}
+
 void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
                        int64_t deadline_ns, int64_t latch_ns,
                        int64_t exec_start_ns, int64_t exec_end_ns,
@@ -373,6 +460,11 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
             }
         }
     }
+
+    /* Close the bracket here, not below the log-file check: the census must
+     * classify reads identically whether or not a log is being written, or
+     * the always-on numbers describe a different rule from the recorded ones. */
+    s_vbl_bracket_open = 0;
 
     if (!s_fp) return;
     pace_rec_t r = {0};
@@ -445,66 +537,6 @@ void openpete_pace_input_edge(int64_t sample_ns, unsigned seq, uint16_t bits,
     r.t_ns  = sample_ns;
     r.a     = bits;
     r.e     = (int64_t)seq;
-    pace_emit(&r);
-}
-
-/* Pad-read probe state. Written and read only on the thread that runs the
- * game fiber, so no atomics: the dispatcher, the VBL bracket and the VBL
- * emit are all that thread. */
-static uint32_t s_vbl_index;
-static int64_t  s_vbl_exec_start_ns;
-static int64_t  s_vbl_latch_ns;
-static unsigned s_vbl_pad_reads;
-static int      s_pad_probe_armed;
-
-void openpete_pace_pad_probe_arm(void)   { s_pad_probe_armed = 1; }
-int  openpete_pace_pad_probe_armed(void) { return s_pad_probe_armed; }
-
-void openpete_pace_vbl_begin(uint32_t vbl_index, int64_t exec_start_ns,
-                              int64_t latch_ns)
-{
-    s_vbl_index         = vbl_index;
-    s_vbl_exec_start_ns = exec_start_ns;
-    s_vbl_latch_ns      = latch_ns;
-    s_vbl_pad_reads     = 0;
-}
-
-uint16_t openpete_pace_pad_reads_this_vbl(void)
-{
-    return s_vbl_pad_reads > 0xFFFFu ? 0xFFFFu : (uint16_t)s_vbl_pad_reads;
-}
-
-void openpete_pace_pad_read(void)
-{
-    const int64_t now = (int64_t)op_now();
-    const unsigned n  = ++s_vbl_pad_reads;
-
-    s_census.pad_reads++;
-    if (n == 1) {
-        s_census.pad_read_vbls++;
-        /* Only the FIRST read of a VBL is a phase measurement: later ones are
-         * the game looking again at bytes that cannot have changed, since
-         * nothing rewrites the buffer between the latch and the next latch. */
-        if (s_vbl_exec_start_ns) {
-            const int64_t off = now - s_vbl_exec_start_ns;
-            if (off > s_census.pad_read_offset_max_ns)
-                s_census.pad_read_offset_max_ns = off;
-        }
-        if (s_vbl_latch_ns) {
-            const int64_t age = now - s_vbl_latch_ns;
-            if (age > s_census.pad_read_age_max_ns)
-                s_census.pad_read_age_max_ns = age;
-        }
-    }
-
-    if (!s_fp) return;
-    pace_rec_t r = {0};
-    r.type  = OP_PACE_PAD_READ;
-    r.aux   = (uint16_t)(n > 0xFFFFu ? 0xFFFFu : n);
-    r.index = s_vbl_index;
-    r.t_ns  = now;
-    r.a     = s_vbl_exec_start_ns;
-    r.b     = s_vbl_latch_ns;
     pace_emit(&r);
 }
 
@@ -630,17 +662,29 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
     /* Three distinguishable states, because two of them are absences: no
      * probe wired (unmeasured), a probe that never fired (a real and alarming
      * finding — the game stopped reading its pad), and a measurement. */
-    char padr[128];
+    /* Reads by fiber runs that were not the VBL they landed in — speculation
+     * under runahead, rewind replay. Real reads, excluded from the phase
+     * distribution, and named rather than dropped so "exactly one per VBL"
+     * cannot quietly mean "one per VBL plus some others we ignored". */
+    char unattr[48];
+    if (c->pad_reads_unattributed)
+        SDL_snprintf(unattr, sizeof(unattr), " (+%llu speculative/replayed)",
+                     (unsigned long long)c->pad_reads_unattributed);
+    else
+        unattr[0] = '\0';
+
+    char padr[176];
     if (!s_pad_probe_armed)
         SDL_strlcpy(padr, "pad read: no probe", sizeof(padr));
     else if (c->pad_read_vbls == 0)
         SDL_strlcpy(padr, "pad read: NEVER (probe armed)", sizeof(padr));
     else
         SDL_snprintf(padr, sizeof(padr),
-                     "pad read: %llu in %llu VBL(s), <=%+.3f ms into the "
+                     "pad read: %llu in %llu VBL(s)%s, <=%+.3f ms into the "
                      "VBL, sample age <=%+.3f ms",
                      (unsigned long long)c->pad_reads,
                      (unsigned long long)c->pad_read_vbls,
+                     unattr,
                      (double)c->pad_read_offset_max_ns / 1e6,
                      (double)c->pad_read_age_max_ns / 1e6);
 

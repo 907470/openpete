@@ -38,6 +38,11 @@ TYPE_NAMES = {VBL: "VBL", PRESENT: "PRESENT", SHED: "SHED", SLIP: "SLIP",
 # step by 2, so odd values are free to name the reasons a VBL consumed no host
 # sample — reasons a bare zero would conflate.
 LATCH_NONE, LATCH_CLAIMED = 0, 1
+
+# PAD_READ flag: the read happened in a fiber run that was not the VBL the
+# record names (runahead speculation, rewind replay). Real, and excluded from
+# the read-phase distribution.
+PR_UNATTRIBUTED = 1 << 0
 NAME_TYPES = {v: k for k, v in TYPE_NAMES.items()}
 
 F_SLIPPED, F_UNLOCK, F_PAUSED, F_STEPPED = 1, 2, 4, 8
@@ -252,9 +257,14 @@ class Log:
     def env_key(self):
         """The fields a baseline is keyed on. Two logs whose keys differ were
         taken on different machines and must never be subtracted."""
+        # thread_split / input_legacy / headless belong here, not merely in
+        # the header: they change which thread owns the sim clock and how
+        # input reaches it, so two logs differing in them are two regimes, and
+        # a diff across them subtracts numbers that were never comparable.
         keep = ("build", "platform", "cpu", "cpu_count", "governor", "gpu",
                 "driver", "refresh_mhz", "present_mode", "render_fps",
-                "pacer_slack_ns", "virtual_clock")
+                "pacer_slack_ns", "virtual_clock", "thread_split",
+                "input_legacy", "headless", "runahead")
         return tuple((k, self.env.get(k, "?")) for k in keep)
 
 
@@ -317,6 +327,9 @@ def fmt_record(r, epoch_ns):
         return (f"{t:10.4f} INPUT   seq {r.edge_seq} bits 0x{r.edge_bits:04x} "
                 f"delta 0x{r.edge_delta:04x} analog {r.flags}")
     if r.type == PAD_READ:
+        if r.flags & PR_UNATTRIBUTED:
+            return (f"{t:10.4f} PADREAD #{r.index:<7} "
+                    f"speculative/replayed — not this VBL")
         off = r.read_offset_ns
         age = r.read_age_ns
         return (f"{t:10.4f} PADREAD #{r.index:<7} read {r.read_ordinal} "

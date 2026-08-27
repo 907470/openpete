@@ -233,6 +233,24 @@ void openpete_pace_present_span(uint8_t kind, int64_t start_ns,
 void openpete_pace_vbl_begin(uint32_t vbl_index, int64_t exec_start_ns,
                               int64_t latch_ns);
 
+/* Suspend/resume the VBL bracket for fiber runs that are NOT this VBL.
+ *
+ * Runahead speculates several more fiber runs inside one bracket, and rewind
+ * replays past ticks before the next bracket opens. Both fire the guest's pad
+ * read, and a record stamped against the committed VBL's exec_start would
+ * report an offset milliseconds into a period that read moment never belonged
+ * to — a real number about the wrong tick. Reads while suspended are recorded
+ * with OP_PACE_PR_UNATTRIBUTED and kept out of the phase statistics. */
+void openpete_pace_vbl_suspend(int on);
+
+/* PAD_READ flags. */
+enum {
+    /* The read did not happen inside the VBL the record names: speculation,
+     * rewind replay, or before any bracket was opened. Counted, never folded
+     * into the read-phase distribution. */
+    OP_PACE_PR_UNATTRIBUTED = 1u << 0
+};
+
 /* The guest read its pad buffer. Emitted at the entry of the game function
  * that consumes the buffer PsyX_Pad_InternalPadUpdates wrote — the moment
  * that actually decides which host sample this tick plays, and which on real
@@ -280,6 +298,7 @@ typedef struct {
                                  * bound is unmeasured, not perfect          */
     uint64_t pad_reads;         /* guest reads of its pad buffer             */
     uint64_t pad_read_vbls;     /* VBLs in which at least one read fired     */
+    uint64_t pad_reads_unattributed; /* speculative / replayed: not this VBL  */
     int64_t  pad_read_offset_max_ns; /* worst first-read delay into the VBL   */
     int64_t  pad_read_age_max_ns;    /* worst age of the sample when read     */
 } openpete_pace_census_t;

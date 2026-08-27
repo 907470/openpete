@@ -4,7 +4,8 @@
 #
 # Ships ONLY our own code + tools + facts-metadata. No game bytes: no
 # recomp module (users first-boot-compile it), no disc data, ROM-free
-# icon (the dist presets pin OPENPETE_ROM_FREE_ICON=ON).
+# icon (the dist presets pin OPENPETE_ROM_FREE_ICON=ON). The knob is a CMake
+# option, never a child's environment — wslenv-guard: no-launch.
 #
 #   scripts/package-dist.sh linux   [--out DIR] [--toolchain DIR] [--appimage]
 #   scripts/package-dist.sh windows [--out DIR] [--toolchain DIR]

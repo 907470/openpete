@@ -24,6 +24,10 @@ import argparse
 import glob
 import json
 import os
+import sys as _sys
+from pathlib import Path as _Path
+_sys.path.insert(0, str(_Path(__file__).resolve().parent / "lib"))
+from hostenv import child_env  # noqa: E402
 import re
 import subprocess
 import sys
@@ -66,9 +70,10 @@ def run_movie(exe, movie_path, opp_path, args, log_path):
         "--max-runtime-seconds", str(args.max_runtime_seconds),
         "--profile-out", opp,
     ]
-    env = dict(os.environ)
-    if args.gpu_timers:
-        env["OPENPETE_GPU_TIMERS"] = "1"
+    # Through child_env so the knob survives a Windows launch from WSL: set
+    # directly it would be dropped by interop and the run would quietly have
+    # no GPU timers at all.
+    env = child_env({"OPENPETE_GPU_TIMERS": "1"} if args.gpu_timers else {})
     # Capture via PIPE, not a file FD: redirecting a Windows .exe's stdout to a
     # real file descriptor makes its --profile-out fopen collide with the
     # redirected fd, leaking late stderr into the .opp trace. PIPE avoids it.

@@ -5,6 +5,7 @@ failed precondition named — rather than producing a number that measures
 the wrong thing:
 
   1. Untuned binary: an exe whose build cache says OPENPETE_SKIP_DECOMP=OFF
+     (read from CMakeCache, never set for a child — wslenv-guard: no-launch)
      (the -O0 dev hybrid) or that lives outside a linux-release /
      windows-mingw build tree. A dev-build fps figure is not a result.
   2. Contention: another openpete process already running — machine load
@@ -17,6 +18,25 @@ every reported number carries what was actually loaded.
 import os
 import subprocess
 import sys
+
+
+def _wslenv_scan():
+    """Refuse a tree where a harness would silently drop an env knob.
+
+    Cheap (~30 ms) and sited here because a bench run configured through the
+    environment is the case where losing a knob is invisible: the run
+    completes, the numbers are real, and they are about the default."""
+    here = os.path.dirname(os.path.abspath(__file__))
+    sys.path.insert(0, here)
+    try:
+        import wslenv_guard
+    except ImportError:
+        return
+    bad = wslenv_guard.scan(os.path.abspath(os.path.join(here, "..", "..")))
+    if bad:
+        _die("scripts would drop env knobs crossing to a Windows exe: "
+             + ", ".join(p for p, _ in bad)
+             + " (run scripts/fences/wslenv_guard.py)")
 
 
 def _die(reason):
@@ -38,6 +58,7 @@ def _build_cache(exe):
 
 
 def check(exe, allow_untuned=False):
+    _wslenv_scan()
     exe = os.path.abspath(exe)
     if not allow_untuned:
         cache = _build_cache(exe)

@@ -2648,7 +2648,12 @@ static int run_host_loop(const openpete_options_t* opts) {
                              * (measured: psyq_rand_seed at the first
                              * replayed tick). */
                             game_on_frame_pre(&g_game.cpu, openpete_frame);
+                            /* Replayed ticks are past VBLs re-executed to
+                             * reach the target; their pad reads belong to
+                             * those, not to whatever bracket is open. */
+                            openpete_pace_vbl_suspend(1);
                             co_switch((cothread_t)openpete_game_fiber);
+                            openpete_pace_vbl_suspend(0);
                             if (openpete_frame == before) break; /* safety */
                         }
                         input_log_truncate(kf->log_idx +
@@ -3116,6 +3121,10 @@ static int run_host_loop(const openpete_options_t* opts) {
                     unsigned ra_prims = openpete_primitives_drawn;
                     int prev_mute = PsyX_SPUAL_SetMute(1);
                     openpete_speculative = 1;
+                    /* Speculated ticks run inside this VBL's bracket but are
+                     * not this VBL: their pad reads must not be measured
+                     * against its exec_start. */
+                    openpete_pace_vbl_suspend(1);
                     for (int v = 0; v < 2 * runahead_n; v++) {
                         unsigned bf = openpete_frame;
                         game_on_frame_pre(&g_game.cpu, openpete_frame);
@@ -3146,6 +3155,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                         }
                     }
                     openpete_speculative = 0;
+                    openpete_pace_vbl_suspend(0);
                     (void)PsyX_SPUAL_SetMute(prev_mute);
                     if (!ra_live_lost) {
                         openpete_present_pending  = ra_pp;

@@ -70,4 +70,6 @@ ls "$PREFIX"/lib/*.a
 echo
 echo "Reconfigure the windows-mingw preset to pick these up:"
 echo "  cmake --preset windows-mingw"
+# The knob named below is a compile definition, not a child environment
+# variable — wslenv-guard: no-launch.
 echo "Then build; --record will be enabled (OPENPETE_HAS_LIBAV=1)."

@@ -299,6 +299,26 @@ def cmd_drift(a):
     if len(cur) >= a.min_segment:
         segments.append(cur)
 
+    # Drop each segment's opening VBLs. A clamp snaps the grid forward while
+    # the loop still carries the backlog that caused it, so the first ticks of
+    # a new segment start late and converge over the next few — a recovery
+    # transient, exactly like a run's warmup, and just as much not a frequency
+    # error. Fitted in, it dominates: on a 115 s run with three slips, 30 VBL
+    # out of 6917 turned +0.05 ppm into -3.14 ppm, and the estimate is flat
+    # from a 10-VBL margin all the way out to 1000. The count is printed
+    # because a margin that silently grew could hide a real drift behind it.
+    recovery = 0
+    if a.slip_recovery:
+        trimmed = []
+        for seg in segments:
+            t = seg[a.slip_recovery:] if len(seg) > a.slip_recovery else []
+            if len(t) >= a.min_segment:
+                recovery += len(seg) - len(t)
+                trimmed.append(t)
+            elif len(seg) >= a.min_segment:
+                trimmed.append(seg)   # too short to trim and still fit
+        segments = trimmed
+
     if not segments:
         print(f"no slip-free span of >= {a.min_segment} VBL to fit — "
               f"{len(slip_ns)} slip(s) across {len(kept)} analysed VBL",
@@ -324,7 +344,9 @@ def cmd_drift(a):
     slope = nominal * (1 + ppm / 1e6)
     span_s = (t[-1] - t[0]) / 1e9
     print(f"fitted over {len(segments)} slip-free segment(s), {tot_n} VBL "
-          f"({len(slip_ns)} slip(s) excluded from the fit)")
+          f"({len(slip_ns)} slip(s) excluded from the fit"
+          + (f"; {recovery} VBL dropped as post-clamp recovery" if recovery
+             else "") + ")")
     # What the frequency error costs over a real session, which is the form
     # that matters: this plan's deliverable is that RTA and tick time agree.
     err_2h = ppm * 1e-6 * 7200
@@ -771,6 +793,15 @@ def input_regime(log):
         notes.append("thread split OFF: the producer runs in-loop immediately "
                      "before the latch, so publish staleness is ~0 by "
                      "construction and is NOT evidence about the default")
+    if (env.get("runahead", "0") or "0") not in ("0", ""):
+        # Runahead runs the fiber several more times inside one VBL's bracket.
+        # Those reads are marked at the source and excluded here, so the
+        # phase distribution stays about the VBL it names — but the run is a
+        # different regime and the reader should know which one produced the
+        # number.
+        notes.append(f"runahead={env['runahead']}: speculative fiber runs are "
+                     f"excluded from the pad-read phase (they are marked "
+                     f"unattributed at the source, not silently folded in)")
     if env.get("headless", "0") not in ("0", ""):
         notes.append("headless: the split is refused here, and almost no "
                      "input reaches the process — coverage, not evidence")
@@ -785,7 +816,9 @@ def wall_to_mono(log):
     are. For converting an injector's timestamps into the log's timebase that
     same coupling is exactly what is wanted, and the conversion is near-exact."""
     cs = log.of(pacelog.CLOCKSAMPLE)
-    if len(cs) < 2:
+    if len(cs) < 3:
+        # Two points define a line through any pair of clocks, so a two-sample
+        # fit cannot be wrong and cannot be checked. Refuse it.
         return None
     n = len(cs)
     mx = sum(r.b for r in cs) / n          # wall
@@ -795,7 +828,15 @@ def wall_to_mono(log):
     if sxx == 0:
         return None
     slope = sxy / sxx
-    return lambda w: my + slope * (w - mx)
+    conv = lambda w: my + slope * (w - mx)          # noqa: E731
+
+    # A two-point line fits anything, and a suspend, an NTP step or a clock
+    # adjustment between samples corrupts slope and offset with no outward
+    # sign — every converted instant then shifts together, which is a clean,
+    # plausible latency number about the wrong timebase. Check the fit against
+    # its own samples instead of trusting it.
+    resid = max(abs(conv(r.b) - r.a) for r in cs)
+    return conv, resid, len(cs)
 
 
 def report_injection(log, a, period, yielded, seqs, edges):
@@ -830,10 +871,21 @@ def report_injection(log, a, period, yielded, seqs, edges):
               f"sample of the period", file=sys.stderr)
         return 3
 
-    conv = wall_to_mono(log)
-    if conv is None:
-        print("REFUSED: fewer than two CLOCKSAMPLE records — the injector's "
-              "wall timestamps cannot be placed on the log's timebase",
+    fit = wall_to_mono(log)
+    if fit is None:
+        print("REFUSED: fewer than three CLOCKSAMPLE records — the injector's "
+              "wall timestamps cannot be placed on the log's timebase, and a "
+              "two-point fit cannot be checked against anything",
+              file=sys.stderr)
+        return 3
+    conv, resid, nsamp = fit
+    print(f"  wall->op_now fit over {nsamp} clock sample(s), worst residual "
+          f"{resid/1e3:.1f}us")
+    if resid > 500_000:
+        print(f"REFUSED: the two clocks did not track each other over this run "
+              f"(worst residual {resid/1e6:.1f} ms). Something stepped the "
+              f"wall clock, so every converted injection instant is shifted "
+              f"and the latency numbers would be about the wrong timebase",
               file=sys.stderr)
         return 3
 
@@ -848,28 +900,28 @@ def report_injection(log, a, period, yielded, seqs, edges):
     paced.sort(key=lambda v: v.deadline_ns)
     dls = [v.deadline_ns for v in paced]
 
-    matched, unmatched = [], 0
+    matched, missed = [], []
     for p in pulses:
         t = conv(p["down_wall_ns"])
         i = bisect.bisect_left(press_t, t)
         if i >= len(presses):
-            unmatched += 1
+            missed.append(t)
             continue
         ed = presses[i]
         # A press the game saw far later than the injection is not this
         # injection: allow one gap between pulses, no more.
         if ed.t_ns - t > meta["gap_us"] * 1000:
-            unmatched += 1
+            missed.append(t)
             continue
         j = bisect.bisect_left(seqs, ed.edge_seq)
         v = yielded[j] if j < len(yielded) else None
         if v is None or (v.latched_bits & bit):
-            unmatched += 1          # never latched, or already released
+            missed.append(t)        # never latched, or already released
             continue
         matched.append((t, ed, v))
 
     got = len(matched)
-    print(f"  {got} matched, {unmatched} unaccounted")
+    print(f"  {got} matched, {len(missed)} unaccounted")
     if got < 0.9 * len(pulses):
         print(f"REFUSED: only {100.0*got/max(1,len(pulses)):.0f}% of injected "
               f"presses reached the game. Tier B fails by DELIVERING LESS, so "
@@ -897,13 +949,32 @@ def report_injection(log, a, period, yielded, seqs, edges):
     # happens IS the window edge, and it must not move under load.
     nb = 20
     bins = [[] for _ in range(nb)]
+    miss_bins = [0] * nb
+    dropped = 0
     idx_of = {id(v): k for k, v in enumerate(paced)}
-    for t, _ed, v in matched:
+
+    def phase_bin(t):
         k = bisect.bisect_right(dls, t) - 1
-        if k < 0 or id(v) not in idx_of:
+        if k < 0:
+            return None, None
+        return k, min(nb - 1, int((((t - dls[k]) % period) / period) * nb))
+
+    for t, _ed, v in matched:
+        k, b = phase_bin(t)
+        if k is None or id(v) not in idx_of:
+            dropped += 1
             continue
-        off = idx_of[id(v)] - k
-        bins[min(nb - 1, int((((t - dls[k]) % period) / period) * nb))].append(off)
+        bins[b].append(idx_of[id(v)] - k)
+    # Unmatched pulses are binned by phase too. Losses are not phase-neutral:
+    # a press arriving near the cutoff is exactly the one that can slip past a
+    # latch, so an unexamined 10% of missing pulses can be the boundary's own
+    # counterexamples removing themselves from the sample. The remaining bins
+    # then read 100% agreement, and the pivot reports a clean fixed window
+    # over data whose disagreements were quietly deleted.
+    for t in missed:
+        k, b = phase_bin(t)
+        if k is not None:
+            miss_bins[b] += 1
 
     occupied = sum(1 for b in bins if b)
     if occupied < nb // 2:
@@ -933,8 +1004,30 @@ def report_injection(log, a, period, yielded, seqs, edges):
             mixed.append((i / nb, agree))
             mark = mark or "  <-- straddles the cutoff"
         prev_mode = mode
+        lost = f"  lost {miss_bins[i]}" if miss_bins[i] else ""
         print(f"    {i/nb:.2f}-{(i+1)/nb:.2f}  n={len(b):4d}  consumed by +{mode}"
-              f"  ({agree:.0f}% in that tick){mark}")
+              f"  ({agree:.0f}% in that tick){lost}{mark}")
+
+    if dropped:
+        print(f"    ({dropped} matched pulse(s) had no grid point to bin "
+              f"against — a re-anchored VBL — and are excluded)")
+
+    # A pivot read over a sample whose losses cluster in one phase is a pivot
+    # read over the survivors of the very effect it is measuring. The floor
+    # here is far tighter than the one guarding the latency percentiles: those
+    # tolerate a uniform hole, this does not tolerate a biased one.
+    total_missed = sum(miss_bins)
+    if total_missed:
+        worst = max(range(nb), key=lambda i: miss_bins[i])
+        share = miss_bins[worst] / total_missed
+        print(f"    {total_missed} unmatched pulse(s), worst phase bin "
+              f"{worst/nb:.2f}-{(worst+1)/nb:.2f} holding "
+              f"{100*share:.0f}% of them")
+        if total_missed > 0.02 * len(pulses) and share > 2.0 / nb:
+            print(f"REFUSED: the unmatched pulses are concentrated at phase "
+                  f"{worst/nb:.2f}; the bins that survive are the ones that "
+                  f"agreed, so their agreement is not evidence", file=sys.stderr)
+            return 3
 
     offsets = sorted({max(set(b), key=b.count) for b in bins if b})
     if step_at is not None:
@@ -1011,8 +1104,14 @@ def cmd_input(a):
     # ---- Where in the VBL the guest itself reads the pad.
     # This is the moment that decides which sample the frame plays; the latch
     # only decides what is available to be read.
-    by_vbl = {}
+    by_vbl, unattr = {}, 0
     for r in log.of(pacelog.PAD_READ):
+        # A read by a fiber run that was not the VBL it landed in. Counting it
+        # would turn "exactly one read per VBL" into a number that is true of
+        # nothing.
+        if r.flags & pacelog.PR_UNATTRIBUTED:
+            unattr += 1
+            continue
         by_vbl.setdefault(r.index, []).append(r)
     idx = {r.index for r in kept}
     first = [rs[0] for i, rs in by_vbl.items() if i in idx
@@ -1028,7 +1127,9 @@ def cmd_input(a):
         ages = [r.read_age_ns for r in first if r.read_age_ns is not None]
         counts = [len(v) for i, v in by_vbl.items() if i in idx]
         print(f"pad read: {sum(counts)} read(s) in {len(counts)} analysable "
-              f"VBL ({min(counts)}-{max(counts)} per VBL)")
+              f"VBL ({min(counts)}-{max(counts)} per VBL)"
+              + (f"; {unattr} speculative/replayed read(s) excluded"
+                 if unattr else ""))
         if offs:
             print(f"  first read, into the VBL: p50 {us(ps.percentile(offs,50))} "
                   f"p99 {us(ps.percentile(offs,99))} max {us(max(offs))} "
@@ -1280,6 +1381,10 @@ def main():
                         "not a grid re-anchor (default: the phase goal)")
     p.add_argument("--min-segment", type=int, default=100,
                    help="shortest slip-free run of VBLs worth fitting")
+    p.add_argument("--slip-recovery", type=int, default=30,
+                   help="VBLs to drop at the start of each slip-free segment "
+                        "as post-clamp recovery (default 30; 0 disables, "
+                        "which is how the transient's size is measured)")
 
     add("stability", cmd_stability, "Allan / modified Allan deviation")
 
