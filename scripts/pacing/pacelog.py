@@ -254,18 +254,40 @@ class Log:
             spans.append((wid, start, last))
         return sorted(spans, key=lambda s: s[1])
 
+    # The environment splits into three parts, and conflating them is what
+    # made the baseline archive unreadable:
+    #
+    #   MACHINE — what the numbers were taken ON. Files the baseline.
+    #   REGIME  — what the run WAS. Two runs differing here are two different
+    #             questions, and subtracting them compares nothing.
+    #   BUILD   — what is being MEASURED. It must never be a reason to refuse
+    #             a comparison: a baseline that only matches the build that
+    #             produced it can never gate a later one, which is precisely
+    #             why nothing ever read these files back.
+    MACHINE_FIELDS = ("platform", "cpu", "cpu_count", "governor", "gpu",
+                      "driver", "refresh_mhz")
+    # thread_split / input_legacy / headless belong in the regime, not merely
+    # in the header: they change which thread owns the sim clock and how input
+    # reaches it, so two logs differing in them are two regimes.
+    REGIME_FIELDS = ("present_mode", "render_fps", "pacer_slack_ns",
+                     "virtual_clock", "thread_split", "input_legacy",
+                     "headless", "runahead")
+
+    def machine_key(self):
+        """Identity of the machine. Baselines are filed under this."""
+        return tuple((k, self.env.get(k, "?")) for k in self.MACHINE_FIELDS)
+
+    def regime_key(self):
+        """Identity of the run's configuration."""
+        return tuple((k, self.env.get(k, "?")) for k in self.REGIME_FIELDS)
+
     def env_key(self):
-        """The fields a baseline is keyed on. Two logs whose keys differ were
-        taken on different machines and must never be subtracted."""
-        # thread_split / input_legacy / headless belong here, not merely in
-        # the header: they change which thread owns the sim clock and how
-        # input reaches it, so two logs differing in them are two regimes, and
-        # a diff across them subtracts numbers that were never comparable.
-        keep = ("build", "platform", "cpu", "cpu_count", "governor", "gpu",
-                "driver", "refresh_mhz", "present_mode", "render_fps",
-                "pacer_slack_ns", "virtual_clock", "thread_split",
-                "input_legacy", "headless", "runahead")
-        return tuple((k, self.env.get(k, "?")) for k in keep)
+        """Machine + regime: everything a comparison must hold fixed."""
+        return self.machine_key() + self.regime_key()
+
+    def build_id(self):
+        """The build the run was taken on — reported, never a refusal."""
+        return self.env.get("build", "?")
 
 
 def read(path: Path) -> Log:

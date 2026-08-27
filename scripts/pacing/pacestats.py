@@ -233,7 +233,61 @@ def _phase_from_timestamps(times_ns, nominal_period_ns):
     return [(t - i * nominal_period_ns) / 1e9 for i, t in enumerate(times_ns)]
 
 
-def adev(times_ns, nominal_period_ns, taus=None):
+def phase_runs(times_ns, nominal_period_ns, indices=None, breaks_ns=()):
+    """Time-error series split into runs with NO discontinuity inside them.
+
+    A second difference is what makes ADEV blind to a constant frequency
+    offset, and it is equally what makes it maximally sensitive to a STEP.
+    Two kinds of step exist in this log and neither is instability:
+
+      * A GAP in the sequence. The phase is x = t - index*T0, and indexing by
+        array POSITION instead of the VBL index renumbers every sample after
+        an excluded one — so each VBL dropped as a transient injects a step of
+        one whole nominal period. A 7179-VBL gate log excludes 9 of them; at
+        16.7 ms each those steps are four orders of magnitude above the 1.4 us
+        core this curve is meant to resolve.
+
+      * A SLIP. The clamp discards wall time: the deadline jumps forward and
+        the VBL index does not, so the phase steps by however far the loop was
+        behind. The slip ledger already reports that as its own quantity.
+
+    Either lands at long tau, which is the one part of the curve ADEV exists
+    to report and the one part a histogram cannot show — so a level load would
+    read as thermal wander. Segment instead, and let the caller say how much
+    reach was lost.
+
+    Returns (runs, cuts): the phase series in seconds, and a per-cut reason
+    string ("gap" / "slip"). Reasons are counted rather than derived from the
+    run count, because several slips can land inside one already-excluded
+    stretch and the arithmetic then goes negative."""
+    if indices is None:
+        indices = range(len(times_ns))
+    brk = sorted(breaks_ns)
+    runs, cuts, cur = [], [], []
+    prev_idx = None
+    bi = 0
+    for idx, t in zip(indices, times_ns):
+        reason = None
+        if prev_idx is not None and idx != prev_idx + 1:
+            reason = "gap"
+        while bi < len(brk) and brk[bi] <= t:
+            if reason is None:
+                reason = "slip"
+            bi += 1
+        if reason and cur:
+            runs.append(cur)
+            cuts.append(reason)
+            cur = []
+        cur.append((idx, t))
+        prev_idx = idx
+    if cur:
+        runs.append(cur)
+    return ([[(t - i * nominal_period_ns) / 1e9 for i, t in run]
+             for run in runs], cuts)
+
+
+def adev(times_ns, nominal_period_ns, taus=None, indices=None,
+         breaks_ns=()):
     """Overlapping Allan deviation, per NIST SP 1065.
 
         sigma_y^2(tau) = 1/(2 (N-2m) tau^2) * sum (x_{i+2m} - 2x_{i+m} + x_i)^2
@@ -243,58 +297,70 @@ def adev(times_ns, nominal_period_ns, taus=None):
     departure at large tau — a flicker floor, thermal wander, a drift ramp —
     is the actionable signal, and it is invisible in any histogram.
 
+    `indices` and `breaks_ns` are passed to phase_runs: every triplet is taken
+    from within one discontinuity-free run, and runs contribute to a common
+    sum rather than to separate curves. Longest tau is therefore bounded by
+    the LONGEST run, not by the span of the log.
+
     Returns [(tau_s, adev), ...]."""
-    x = _phase_from_timestamps(times_ns, nominal_period_ns)
-    n = len(x)
-    if n < 5:
+    runs, _ = phase_runs(times_ns, nominal_period_ns, indices, breaks_ns)
+    longest = max((len(r) for r in runs), default=0)
+    if sum(len(r) for r in runs) < 5 or longest < 5:
         return []
     t0 = nominal_period_ns / 1e9
     if taus is None:
         taus, m = [], 1
-        while m <= (n - 1) // 2:
+        while m <= (longest - 1) // 2:
             taus.append(m)
             m = max(m + 1, int(m * 1.3))
     out = []
     for m in taus:
-        if n - 2 * m < 1:
+        acc, cnt = 0.0, 0
+        for x in runs:
+            for i in range(len(x) - 2 * m):
+                d = x[i + 2 * m] - 2 * x[i + m] + x[i]
+                acc += d * d
+                cnt += 1
+        if cnt < 1:
             continue
         tau = m * t0
-        acc = 0.0
-        for i in range(n - 2 * m):
-            d = x[i + 2 * m] - 2 * x[i + m] + x[i]
-            acc += d * d
-        out.append((tau, math.sqrt(acc / (2.0 * (n - 2 * m) * tau * tau))))
+        out.append((tau, math.sqrt(acc / (2.0 * cnt * tau * tau))))
     return out
 
 
-def mdev(times_ns, nominal_period_ns, taus=None):
+def mdev(times_ns, nominal_period_ns, taus=None, indices=None,
+         breaks_ns=()):
     """Overlapping modified Allan deviation.
 
     ADEV cannot tell white phase noise from flicker phase noise — both look
     close to tau^-1. MDEV separates them (tau^-1.5 vs tau^-1), and they call
     for different responses: white is the measurement floor and nothing to
-    chase; flicker is a real instability."""
-    x = _phase_from_timestamps(times_ns, nominal_period_ns)
-    n = len(x)
-    if n < 5:
+    chase; flicker is a real instability.
+
+    Run-split on the same terms as adev()."""
+    runs, _ = phase_runs(times_ns, nominal_period_ns, indices, breaks_ns)
+    longest = max((len(r) for r in runs), default=0)
+    if sum(len(r) for r in runs) < 5 or longest < 5:
         return []
     t0 = nominal_period_ns / 1e9
     if taus is None:
         taus, m = [], 1
-        while m <= (n - 1) // 3:
+        while m <= (longest - 1) // 3:
             taus.append(m)
             m = max(m + 1, int(m * 1.3))
     out = []
     for m in taus:
-        if n - 3 * m + 1 < 1:
+        acc, cnt = 0.0, 0
+        for x in runs:
+            for j in range(len(x) - 3 * m + 1):
+                inner = sum(x[i + 2 * m] - 2 * x[i + m] + x[i]
+                            for i in range(j, j + m))
+                acc += (inner / m) ** 2
+                cnt += 1
+        if cnt < 1:
             continue
         tau = m * t0
-        acc = 0.0
-        for j in range(n - 3 * m + 1):
-            inner = sum(x[i + 2 * m] - 2 * x[i + m] + x[i]
-                        for i in range(j, j + m))
-            acc += (inner / m) ** 2
-        out.append((tau, math.sqrt(acc / (2.0 * (n - 3 * m + 1) * tau * tau))))
+        out.append((tau, math.sqrt(acc / (2.0 * cnt * tau * tau))))
     return out
 
 

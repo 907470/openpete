@@ -502,13 +502,40 @@ def cmd_stability(a):
     if refuse_if_empty(kept, log):
         return 3
     t = [r.exec_start_ns for r in kept]
+    idx = [r.index for r in kept]
     nominal = nominal_vbl_ns(log)
-    curve = ps.adev(t, nominal)
+    # The same two discontinuities cmd_drift segments at, for the same reason:
+    # a step in the phase lands at long tau, which is the only part of this
+    # curve worth reading. See pacestats.phase_runs.
+    slip_ns = sorted(r.t_ns for r in log.of(pacelog.SLIP))
+    runs, cuts = ps.phase_runs(t, nominal, idx, slip_ns)
+    curve = ps.adev(t, nominal, indices=idx, breaks_ns=slip_ns)
     if not curve:
         print("too few samples for a stability estimate", file=sys.stderr)
         return 3
+
+    # Reach is bounded by the LONGEST run, not by the span of the log, and
+    # that is the whole reason to state it: the case for a long soak is the
+    # long-tau end of this curve, and a run peppered with level loads does not
+    # buy it however many hours it lasts.
+    longest = max(len(r) for r in runs)
+    span_s = (t[-1] - t[0]) / 1e9
+    reach_s = curve[-1][0]
+    print(f"fitted over {len(runs)} discontinuity-free run(s), longest "
+          f"{longest} VBL of {len(kept)} — tau reaches {reach_s:.1f}s "
+          f"across a {span_s:.1f}s log")
+    if cuts:
+        print(f"  (split at {cuts.count('slip')} slip(s) and "
+              f"{cuts.count('gap')} sequence gap(s) — a step in the phase "
+              f"reads as wander at exactly the tau this curve is for)")
+    if reach_s < 0.25 * span_s:
+        print(f"  finding: reach is {100.0 * reach_s / span_s:.0f}% of the "
+              f"log's span. A longer run does not buy long-tau coverage while "
+              f"the discontinuities keep arriving — the run length that "
+              f"matters is the UNBROKEN one.")
+
     print(f"{'tau (s)':>10} {'ADEV':>12} {'MDEV':>12}")
-    m = dict(ps.mdev(t, nominal))
+    m = dict(ps.mdev(t, nominal, indices=idx, breaks_ns=slip_ns))
     for tau, d in curve:
         md = m.get(tau)
         print(f"{tau:10.4f} {d:12.3e} " + (f"{md:12.3e}" if md else " " * 12))
@@ -675,6 +702,10 @@ def cmd_diff(a):
     log_a, kept_a, _ = load(a.baseline, a.warmup)
     log_b, kept_b, _ = load(a.candidate, a.warmup)
 
+    # The build is what a diff MEASURES, so it is reported, never refused on.
+    # Machine and regime are what a diff must hold fixed.
+    if log_a.build_id() != log_b.build_id():
+        print(f"build: {log_a.build_id()} -> {log_b.build_id()}")
     ka, kb = log_a.env_key(), log_b.env_key()
     if ka != kb:
         # Refusing is the whole point: silently subtracting numbers taken on
@@ -778,7 +809,9 @@ def cmd_report(a):
     curve = ps.adev(t, round(nominal))
     out = {
         "env": log.env,
-        "env_key": [list(kv) for kv in log.env_key()],
+        "build": log.build_id(),
+        "machine_key": [list(kv) for kv in log.machine_key()],
+        "regime_key": [list(kv) for kv in log.regime_key()],
         "vbl_hz": log.vbl_hz,
         "tick_hz": log.tick_hz,
         "population": {"analysed": len(kept), "excluded": excluded},

@@ -11,9 +11,16 @@ a matrix that parallelises itself measures its own scheduler.
     bench-matrix.py --tier soak --legs default   # hours; drift and thermal
     bench-matrix.py --tier standard --bless      # archive as the baseline
 
-Baselines are keyed on the environment (build, CPU, GPU, driver, refresh,
-present mode, governor). `diff` refuses to compare across a mismatched key,
-so the archive is per-machine by construction rather than by discipline.
+Every run is compared against the archived baseline for the same MACHINE (and
+exits non-zero if a gated statistic regressed); --no-compare skips it. A run
+with nothing archived says SKIP rather than passing quietly.
+
+Baselines are filed under the MACHINE (CPU, GPU, driver, refresh, governor)
+and matched per leg on the REGIME (present mode, render-fps, pacer slack,
+thread split, ...). The BUILD is what the comparison measures and is never a
+reason to refuse one — keying the archive on it, as this did originally, is
+what left it write-only: a baseline that only matches the build that produced
+it can never gate a later build.
 """
 import argparse
 import json
@@ -102,7 +109,9 @@ def analyse(log_path, warmup):
     wakes = log.of(pacelog.WAKE)
     return {
         "env": log.env,
-        "env_key": [list(kv) for kv in log.env_key()],
+        "build": log.build_id(),
+        "machine_key": [list(kv) for kv in log.machine_key()],
+        "regime_key": [list(kv) for kv in log.regime_key()],
         "n": len(kept),
         "excluded": excluded,
         "robust_sigma_ns": ps.robust_sigma(s1),
@@ -118,6 +127,125 @@ def analyse(log_path, warmup):
         "wake_p99_ns": ps.percentile([r.wake_overshoot_ns for r in wakes], 99)
                        if wakes else None,
     }
+
+
+# What a baseline comparison may GATE on, and what it may only report.
+#
+# The split is not stylistic. Re-running one unchanged configuration five times
+# gave an in-level p99 of 44.7 / 81.9 / 92.6 / 256.3 / 256.4 us — a 5.7x spread
+# straddling the goal. A gate on p99 would have flagged an unchanged build as a
+# regression more often than not, and a gate that cries wolf gets ignored, which
+# is worse than no gate. Rates and the distribution's CORE are what hold still;
+# a quantile in a sparse tail and a lone maximum do not.
+#
+#   (key, label, direction, tolerance)
+# direction: "lower" = smaller is better, "higher" = larger is better.
+GATED = [
+    ("robust_sigma_ns", "robust sigma", "lower", 2.0),
+    ("within_250us_pct", "within 250us", "higher", 0.5),
+    ("presents_per_tick", "presents/tick", "higher", 0.15),
+]
+REPORTED = ["p50_ns", "p99_ns", "p99_9_ns", "max_ns", "sim_slips",
+            "render_slips", "intermediate", "wake_p99_ns"]
+
+
+def machine_dir(machine_key):
+    """Directory a baseline for this machine is filed under."""
+    return "-".join(str(v).replace(" ", "_").replace("/", "_")[:24]
+                    for _, v in machine_key)
+
+
+def compare_to_baseline(results, tier, verbose=True):
+    """Diff this matrix against the archived baseline for the same machine.
+
+    Returns 0 (within tolerance), 1 (a gated statistic regressed), or 64 when
+    there is nothing to compare against — SKIP, never a silent pass. A gate
+    with no baseline is decoration, and saying so is the difference between
+    "verified" and "not checked".
+    """
+    first = next((r for r in results.values() if r), None)
+    if not first:
+        return 64
+    path = (REPO / "baselines/pacing" /
+            machine_dir([tuple(kv) for kv in first["machine_key"]]) /
+            f"{tier}.json")
+    if not path.exists():
+        print(f"\nbaseline: SKIP — none archived for this machine at tier "
+              f"{tier} ({path.relative_to(REPO)})")
+        print("  bless one with --bless; until then this run is measured "
+              "against nothing.")
+        return 64
+
+    base = json.loads(path.read_text())
+    print(f"\nbaseline: {path.relative_to(REPO)}"
+          f"  (build {base.get('build', '?')} -> {first.get('build', '?')})")
+    if "legs" not in base:
+        print("  REFUSED: archived file has no legs", file=sys.stderr)
+        return 1
+    # A file written before the machine/regime split records no regime, so
+    # every leg would refuse and the run would read as a regression. An
+    # unreadable baseline is a SKIP with a reason, not a failure of the code
+    # under test: blaming the candidate for the archive's format is exactly
+    # the kind of misattributed red that trains people to ignore a gate.
+    if any("regime_key" not in leg for leg in base["legs"].values()):
+        print("  SKIP — archived in a format predating the machine/regime "
+              "split; re-bless it.")
+        return 64
+
+    regressed = False
+    for name, cur in results.items():
+        if not cur:
+            continue
+        old = base["legs"].get(name)
+        if not old:
+            print(f"  {name:<11} SKIP — not in the baseline")
+            continue
+        # The regime IS the leg. If the same leg name was taken under a
+        # different configuration, the two rows are not the same measurement
+        # however alike their numbers look.
+        ok = [tuple(kv) for kv in old.get("regime_key", [])]
+        ck = [tuple(kv) for kv in cur.get("regime_key", [])]
+        if ok != ck:
+            print(f"  {name:<11} REFUSED — regime differs from the baseline's")
+            for (k, va), (_, vb) in zip(ok, ck):
+                if va != vb:
+                    print(f"                {k}: {va!r} vs {vb!r}")
+            regressed = True
+            continue
+        for key, label, direction, tol in GATED:
+            a_, b_ = old.get(key), cur.get(key)
+            if a_ is None or b_ is None:
+                continue
+            delta = b_ - a_
+            # Relative for the ns statistics, absolute for the percentages
+            # and ratios — a 2% tolerance on "99.76% within 250us" would be
+            # a tolerance of a quarter of the whole failure budget.
+            if key.endswith("_ns"):
+                bad = delta > tol * max(a_, 1) if direction == "lower" \
+                    else -delta > tol * max(a_, 1)
+                shown = f"{a_/1000:.1f}us -> {b_/1000:.1f}us"
+            else:
+                bad = (delta > tol) if direction == "lower" else (-delta > tol)
+                shown = f"{a_:.2f} -> {b_:.2f}"
+            if bad:
+                regressed = True
+                print(f"  {name:<11} REGRESSED {label}: {shown}")
+            elif verbose:
+                print(f"  {name:<11} ok {label}: {shown}")
+        if verbose:
+            info = []
+            for key in REPORTED:
+                a_, b_ = old.get(key), cur.get(key)
+                if a_ is None or b_ is None:
+                    continue
+                if key.endswith("_ns"):
+                    info.append(f"{key[:-3]} {a_/1000:.0f}->{b_/1000:.0f}us")
+                else:
+                    info.append(f"{key} {a_}->{b_}")
+            # Reported, not gated: these move several-fold between identical
+            # runs, so they inform a reader and must never fail a build.
+            print(f"  {name:<11} (ungated: " + ", ".join(info) + ")")
+    return 1 if regressed else 0
 
 
 def main():
@@ -142,7 +270,9 @@ def main():
     ap.add_argument("--out", default=None)
     ap.add_argument("--warmup", type=float, default=5.0)
     ap.add_argument("--bless", action="store_true",
-                    help="archive these results as the baseline for this env")
+                    help="archive these results as the baseline for this machine")
+    ap.add_argument("--no-compare", action="store_true",
+                    help="skip the comparison against the archived baseline")
     ap.add_argument("--extra", nargs="*", default=[],
                     help="flags appended to every leg")
     a = ap.parse_args()
@@ -186,18 +316,24 @@ def main():
     first = next(iter(results.values()))
     stamp = {"tier": a.tier, "seconds_per_leg": seconds,
              "platform": a.platform, "headless": a.headless,
-             "env_key": first.get("env_key"), "legs": results}
+             "build": first.get("build"),
+             "machine_key": first.get("machine_key"), "legs": results}
     (out / "matrix.json").write_text(json.dumps(stamp, indent=2))
     print(f"\nwrote {out / 'matrix.json'}")
 
+    rc = 0
+    if not a.no_compare:
+        rc = compare_to_baseline(results, a.tier)
+        if rc == 64:
+            rc = 0          # nothing archived is not a failure, only a SKIP
+
     if a.bless:
-        key = "-".join(str(v).replace(" ", "_").replace("/", "_")[:24]
-                       for _, v in (first.get("env_key") or []))
-        dest = REPO / "baselines/pacing" / key
+        dest = (REPO / "baselines/pacing" /
+                machine_dir([tuple(kv) for kv in first["machine_key"]]))
         dest.mkdir(parents=True, exist_ok=True)
         (dest / f"{a.tier}.json").write_text(json.dumps(stamp, indent=2))
         print(f"blessed baseline: {dest / (a.tier + '.json')}")
-    return 0
+    return rc
 
 
 if __name__ == "__main__":

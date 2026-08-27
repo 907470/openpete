@@ -9,6 +9,8 @@ no Allan deviation because it looks authoritative and nobody re-derives it.
 Run: python3 scripts/pacing/test_pacestats.py
 """
 import math
+import os
+import pathlib
 import random
 import sys
 from pathlib import Path as _P
@@ -226,11 +228,150 @@ def test_stability():
     check("random-walk wander flattens ADEV at large tau",
           walk_slope_hi > -0.6, f"large-tau slope {walk_slope_hi:.3f}")
 
+    # A GAP in the sequence is a full-period phase STEP, and the second
+    # difference is maximally sensitive to steps at exactly the long tau this
+    # curve exists to report. Nine dropped samples out of four thousand -- the
+    # transient count of a real 2-minute gate log -- must not be readable as
+    # wander. Indexing by array position is what makes them look like it.
+    #
+    # The tell is MAGNITUDE, not slope: a staircase of nine 16.7 ms steps
+    # inflates the whole curve by more than an order of magnitude while its
+    # log-log slope stays plausible. A reading taken off the slope alone would
+    # have called this run clean.
+    drop = set(range(400, 4000, 400))            # 9 excluded VBLs
+    g_idx = [i for i in range(4000) if i not in drop]
+    g_t   = [t_wpm[i] for i in g_idx]
+    truth = dict(ps.adev(t_wpm, VBL_NS))
+    naive = ps.adev(g_t, VBL_NS)
+    fixed = ps.adev(g_t, VBL_NS, indices=g_idx)
+    tau0 = naive[0][0]
+    check("indexing gaps by position inflates ADEV ~10x (the defect)",
+          naive[0][1] > 5 * truth[tau0],
+          f"{naive[0][1]:.3e} vs {truth[tau0]:.3e} at tau={tau0:.3f}s")
+    check("...while its slope still looks like white phase noise",
+          ps.adev_slope(naive, 0.5, 1.0) < -0.5,
+          f"slope {ps.adev_slope(naive, 0.5, 1.0):.3f} — a slope check misses it")
+    check("carrying the VBL index instead reproduces the gap-free curve",
+          approx(fixed[0][1], truth[tau0], truth[tau0] * 0.05),
+          f"{fixed[0][1]:.3e} vs {truth[tau0]:.3e}")
+
+    # A SLIP is the other step: the clamp discards wall time, so the phase
+    # jumps while the index does not. Same failure, same remedy -- split.
+    s_t = list(t_wpm)
+    slip_at = 2000
+    for i in range(slip_at, 4000):
+        s_t[i] += 30_000_000                     # 30 ms of discarded wall time
+    unsplit = ps.adev(s_t, VBL_NS)
+    split   = ps.adev(s_t, VBL_NS, breaks_ns=[s_t[slip_at]])
+    check("a slip carried into the curve reads as wander (the defect)",
+          ps.adev_slope(unsplit, 0.5, 1.0) > -0.5,
+          f"large-tau slope {ps.adev_slope(unsplit, 0.5, 1.0):.3f}")
+    check("splitting at the slip leaves white phase noise intact",
+          approx(ps.adev_slope(split, 0.5, 1.0), -1.0, 0.25),
+          f"large-tau slope {ps.adev_slope(split, 0.5, 1.0):.3f}")
+
+    # And the cost of splitting, which the report must state rather than
+    # quietly absorb: reach is bounded by the LONGEST run, not by the log.
+    full_tau = ps.adev(t_wpm, VBL_NS)[-1][0]
+    cut_tau  = ps.adev(s_t, VBL_NS, breaks_ns=[s_t[slip_at]])[-1][0]
+    check("splitting halves the reachable tau when the slip is central",
+          approx(cut_tau, full_tau / 2, full_tau * 0.15),
+          f"{cut_tau:.1f}s vs {full_tau:.1f}s unsplit")
+
     # MDEV separates white from flicker phase noise where ADEV cannot:
     # for white PM, MDEV falls as tau^-1.5.
     m_slope = ps.adev_slope(ps.mdev(t_wpm[:1500], VBL_NS))
     check("MDEV slope ~ -1.5 for white phase noise",
           approx(m_slope, -1.5, 0.25), f"got {m_slope:.3f}")
+
+
+# ------------------------------------------------------------------------
+def test_baseline_compare():
+    """The half of M9 that was missing: reading a blessed baseline back.
+
+    A baseline nothing compares against is an archive, not a gate. These cases
+    pin the four verdicts it must be able to reach — including SKIP, because a
+    gate with no baseline that prints nothing is indistinguishable from one
+    that passed."""
+    print("baseline comparison")
+    import importlib.util
+    import json
+    import tempfile
+    spec = importlib.util.spec_from_file_location(
+        "benchmatrix", os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                    "bench-matrix.py"))
+    bm = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(bm)
+
+    machine = [["platform", "Linux"], ["cpu", "test"], ["cpu_count", "8"],
+               ["governor", "perf"], ["gpu", "testgpu"], ["driver", "1"],
+               ["refresh_mhz", "60000"]]
+    regime = [["present_mode", "fifo"], ["render_fps", "0"],
+              ["pacer_slack_ns", "2500000"], ["virtual_clock", "0"],
+              ["thread_split", "1"], ["input_legacy", "0"],
+              ["headless", "0"], ["runahead", "0"]]
+
+    def leg(sigma=1000.0, within=99.8, ppt=1.0, reg=regime):
+        return {"build": "b", "machine_key": machine, "regime_key": reg,
+                "robust_sigma_ns": sigma, "within_250us_pct": within,
+                "presents_per_tick": ppt, "p50_ns": 9000.0, "p99_ns": 40000.0,
+                "p99_9_ns": 1e6, "max_ns": 2e7, "sim_slips": 2,
+                "render_slips": 0, "intermediate": 0, "wake_p99_ns": 15000.0}
+
+    with tempfile.TemporaryDirectory() as td:
+        bm.REPO = pathlib.Path(td)
+        d = bm.REPO / "baselines/pacing" / bm.machine_dir(
+            [tuple(kv) for kv in machine])
+
+        rc = bm.compare_to_baseline({"fps0": leg()}, "quick", verbose=False)
+        check("no archived baseline reports SKIP, not a pass", rc == 64,
+              f"rc {rc}")
+
+        d.mkdir(parents=True)
+        (d / "quick.json").write_text(json.dumps(
+            {"build": "old", "machine_key": machine, "legs": {"fps0": leg()}}))
+        rc = bm.compare_to_baseline({"fps0": leg()}, "quick", verbose=False)
+        check("an identical run passes", rc == 0, f"rc {rc}")
+
+        # A build change is what the comparison MEASURES. Keying the archive
+        # on it is what left the first baseline unreadable.
+        rc = bm.compare_to_baseline({"fps0": dict(leg(), build="new")},
+                                    "quick", verbose=False)
+        check("a different build is compared, not refused", rc == 0, f"rc {rc}")
+
+        rc = bm.compare_to_baseline({"fps0": leg(sigma=4000.0)}, "quick",
+                                    verbose=False)
+        check("a 4x wider core is caught", rc == 1, f"rc {rc}")
+        rc = bm.compare_to_baseline({"fps0": leg(sigma=1500.0)}, "quick",
+                                    verbose=False)
+        check("a 1.5x core is inside tolerance (runs vary)", rc == 0,
+              f"rc {rc}")
+
+        # Engagement, not just phase: a change that holds the grid by never
+        # interpolating has not improved anything.
+        rc = bm.compare_to_baseline({"fps0": leg(ppt=0.5)}, "quick",
+                                    verbose=False)
+        check("presents collapsing is caught even with phase unchanged",
+              rc == 1, f"rc {rc}")
+
+        rc = bm.compare_to_baseline({"fps0": leg(within=98.0)}, "quick",
+                                    verbose=False)
+        check("the on-grid RATE dropping is caught", rc == 1, f"rc {rc}")
+
+        other = [list(kv) for kv in regime]
+        other[0] = ["present_mode", "immediate"]
+        rc = bm.compare_to_baseline({"fps0": leg(reg=other)}, "quick",
+                                    verbose=False)
+        check("the same leg name under another regime is refused", rc == 1,
+              f"rc {rc}")
+
+        (d / "quick.json").write_text(json.dumps(
+            {"build": "old", "machine_key": machine,
+             "legs": {"fps0": {k: v for k, v in leg().items()
+                               if k != "regime_key"}}}))
+        rc = bm.compare_to_baseline({"fps0": leg()}, "quick", verbose=False)
+        check("a pre-split archive SKIPs rather than blaming the run",
+              rc == 64, f"rc {rc}")
 
 
 # ------------------------------------------------------------------------
@@ -378,7 +519,8 @@ def test_slip_recovery():
 
 
 if __name__ == "__main__":
-    for fn in (test_summary, test_drift, test_stability, test_spectrum,
+    for fn in (test_summary, test_drift, test_stability, test_baseline_compare,
+               test_spectrum,
                test_diff, test_slip_recovery, test_log_format):
         fn()
     print()
