@@ -12,7 +12,13 @@
 #      this leg the gate would pass on a machine fast enough never to exercise
 #      the mechanism, which is a green that proves nothing.
 #
-# Usage: scripts/check_pacing.sh [--windows] [--seconds N] [--p99-us N]
+#   3. Optionally (--tier-b), that a press entering the OS reaches the tick it
+#      should. That leg is opt-in because it needs a focused window on a real
+#      desktop and takes the foreground for the duration — a visible action on
+#      someone's machine, not a measurement detail. It SKIPS rather than passes
+#      wherever it cannot run.
+#
+# Usage: scripts/check_pacing.sh [--windows] [--seconds N] [--p99-us N] [--tier-b]
 #
 # Exit: 0 pass, 2 a real regression, 3 vacuous (nothing engaged), 64 skip.
 set -uo pipefail
@@ -31,6 +37,7 @@ SECONDS_PER_LEG=120
 P99_US=250
 PLATFORM=linux
 INJECT_US=3000
+TIER_B=0
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -38,6 +45,7 @@ while [ $# -gt 0 ]; do
     --seconds)  SECONDS_PER_LEG="$2"; shift 2 ;;
     --p99-us)   P99_US="$2"; shift 2 ;;
     --inject-us) INJECT_US="$2"; shift 2 ;;
+    --tier-b)   TIER_B=1; shift ;;
     *) echo "unknown argument: $1" >&2; exit 64 ;;
   esac
 done
@@ -108,6 +116,46 @@ python3 scripts/pacing/pace.py summary "$OUT/gate-grid.pacelog" --p99-us "$P99_U
 summary_rc=$?
 python3 scripts/pacing/pace.py drift "$OUT/gate-grid.pacelog"
 drift_rc=$?
+
+# ---- Tier B: does a press entering the OS reach the tick it should? --------
+#
+# Everything above measures the clock against itself. This measures it against
+# something outside the process, which is the only way to see the OS and pump
+# time ahead of the publish instant — and the only way to drive a KNOWN arrival
+# phase, which is what a latch-window claim needs.
+tierb_rc=0
+tierb_skipped=1
+if [ $TIER_B -eq 1 ]; then
+  echo
+  echo "[pacing] --- input window: does an injected press reach the right tick? ---"
+  if [ "$PLATFORM" != windows ]; then
+    echo "[pacing] SKIP: the external injector is Windows-only here"
+    echo "[pacing] (Linux needs /dev/uinput AND a compositor that routes"
+    echo "[pacing] synthetic evdev to the focused surface; WSLg does not.)"
+  elif ! command -v py.exe >/dev/null 2>&1; then
+    echo "[pacing] SKIP: py.exe not found, so no injector can run"
+  else
+    rm -f "$OUT/gate-tierb.pacelog" "$OUT/tierb-inject.jsonl"
+    tb_vbls=$(python3 -c "print(int(75 * 2250000 / 37609))")
+    "$EXE" --disc "$DISC" --frame-limit "$tb_vbls" \
+           --pace-log "$OUT/gate-tierb.pacelog" >"$OUT/tierb.out" 2>&1 &
+    tb_pid=$!
+    sleep 6
+    py.exe scripts/pacing/inject_input.py --count 380 --start-delay-s 6 \
+           --focus --out "$OUT/tierb-inject.jsonl" >"$OUT/tierb-inject.out" 2>&1
+    tb_inj=$?
+    wait $tb_pid
+    if [ $tb_inj -ne 0 ]; then
+      echo "[pacing] SKIP: the injector could not take the foreground or was"
+      echo "[pacing] refused; see $OUT/tierb-inject.out. Nothing is claimed."
+    else
+      tierb_skipped=0
+      python3 scripts/pacing/pace.py input "$OUT/gate-tierb.pacelog" \
+              --inject "$OUT/tierb-inject.jsonl"
+      tierb_rc=$?
+    fi
+  fi
+fi
 
 echo
 if [ $shed_possible -eq 0 ]; then
@@ -201,13 +249,20 @@ shed_rc=$?
 fi
 
 echo
-if [ $summary_rc -eq 3 ] || [ $shed_rc -eq 3 ]; then
+if [ $summary_rc -eq 3 ] || [ $shed_rc -eq 3 ] || [ $tierb_rc -eq 3 ]; then
   echo "[pacing] VACUOUS: a leg engaged nothing"; exit 3
 fi
 # Drift returning 3 is "the span cannot resolve the gate", which is a true
 # statement about a 60 s run rather than a regression. Only a real drift
 # failure (2) counts against the gate.
-if [ $summary_rc -ne 0 ] || [ $shed_rc -ne 0 ] || [ $drift_rc -eq 2 ]; then
+if [ $summary_rc -ne 0 ] || [ $shed_rc -ne 0 ] || [ $drift_rc -eq 2 ] \
+   || [ $tierb_rc -ne 0 ]; then
   echo "[pacing] verdict: FAIL"; exit 2
 fi
+# Name what was not covered. A PASS that quietly omits a leg reads exactly like
+# one that ran it.
+[ $TIER_B -eq 1 ] && [ $tierb_skipped -eq 1 ] && \
+  echo "[pacing] note: the input-window leg did not run; nothing is claimed about it"
+[ $TIER_B -eq 0 ] && \
+  echo "[pacing] note: input window not checked (pass --tier-b; it takes the foreground)"
 echo "[pacing] verdict: PASS"

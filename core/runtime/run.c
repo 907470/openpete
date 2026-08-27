@@ -2988,6 +2988,26 @@ static int run_host_loop(const openpete_options_t* opts) {
              * for: a known lateness the log must then report, so the
              * instrument is checked against truth rather than trusted. */
             openpete_pace_inject(pace_paced);
+            /* Start-alignment invariant: an iteration that runs the game
+             * fiber must have made its latch decision THIS iteration, before
+             * this point. The input window Tier B measured — one VBL period,
+             * grid-aligned — is a property of that ordering, so a refactor
+             * that moved the latch after the switch, or skipped it on some
+             * path, would silently change the window while every phase
+             * statistic kept reporting normally. Checked rather than
+             * commented; warned rather than fatal, because a player's game
+             * must not die for a diagnostic. */
+            if (!openpete_host_input_legacy() &&
+                pace_latch_seq == OP_PACE_LATCH_NONE) {
+                static int warned;
+                if (!warned++)
+                    OPL_ERROR_F("input",
+                                "ORDERING: VBL %u runs the fiber with no latch "
+                                "decision — input phase is no longer defined "
+                                "by the pump->decode->latch->switch order",
+                                openpete_frame);
+            }
+
             pace_exec_start_ns = op_now();
             /* Bracket the VBL BEFORE the switch: the guest's pad read fires
              * inside it, and a record stamped against the previous VBL's

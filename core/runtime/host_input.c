@@ -232,6 +232,7 @@ static int      s_parity_on = -1;   /* -1 = not yet resolved from the env */
 static unsigned s_parity_frames;    /* frames where live decode owned the pad */
 static unsigned s_parity_engaged;   /* ...of those, frames carrying real input */
 static unsigned s_parity_mismatch;
+static unsigned s_parity_stale;   /* pump produced nothing new: not a mismatch */
 static unsigned s_parity_last_seq;
 
 /* OPENPETE_INPUT_LEGACY=1 restores the pre-ownership input path (PsyCross
@@ -631,30 +632,42 @@ void openpete_host_input_parity_check(bool claimed)
     if (!PsyX_Pad_P1Ready())
         return;
 
-    /* Reference: decode live SDL again, now, in the same iteration. This is
-     * the value the pad WOULD have carried on the pre-ownership path. The
-     * comparison is against what actually landed in the pad buffer, so it
-     * catches the plumbing rather than the decode: a stale snapshot, a
+    /* Reference: what the tick actually LATCHED.
+     *
+     * The obvious reference is a fresh live decode, and that is what this used
+     * to do — but a live decode reads SDL keyboard and gamepad state, and this
+     * runs on the thread that consumes input, not the one that pumps it. Under
+     * the thread split that is an SDL read from the non-owning thread: the
+     * exact thing the producer/consumer seam exists to forbid, performed by
+     * the instrument meant to verify it.
+     *
+     * The latched sample answers the same question without touching SDL. What
+     * is under test is the PLUMBING — that the value this iteration latched is
+     * the one that reached the PSX pad buffer, and not a stale sample, a
      * mis-ordered latch, an override writer leaking past its claim, or the
      * analog centre drifting (live no-controller centres at 127; the override
-     * channel's own default is 128 — routing live input through the channel
-     * must not quietly adopt 128). */
-    unsigned short ref_bits = PAD_NEUTRAL_BITS;
-    unsigned char  ref_axes[4] = { 128, 128, 128, 128 };
-    if (synth_on())
-        synth_pad(openpete_frame, &ref_bits, ref_axes);
-    else
-        PsyX_Pad_DecodeP1(&ref_bits, ref_axes);
+     * channel defaults to 128, and routing live input through the channel must
+     * not quietly adopt 128). The decode itself needs no comparison: both
+     * paths call PsyX_Pad_DecodeP1, so they agree by construction. */
+    if (!s_latched_snap.valid)
+        return;                       /* nothing was consumed this iteration */
+    const unsigned short ref_bits = s_latched_snap.bits;
+    const unsigned char* ref_axes = s_latched_snap.axes;
 
-    /* Staleness probe: the sample must have been republished this iteration.
-     * A latch that reads a snapshot the producer did not refresh is the
-     * failure mode the thread split will make possible, so catch it now. */
-    if (s_snap_seq == s_parity_last_seq) {
-        if (s_parity_mismatch < 16)
-            OPL_WARN_F("input", "parity STALE: snapshot seq %u not refreshed", s_snap_seq);
-        s_parity_mismatch++;
+    /* Staleness probe: the producer must have published something new since
+     * the last latch. Under the split it republishes on its own cadence, so
+     * a repeat means the pump stopped — which is a different finding from a
+     * value mismatch and is counted separately, or a parked pump would be
+     * reported as a plumbing failure. */
+    if (s_latched_seq == s_parity_last_seq) {
+        if (s_parity_stale < 16)
+            OPL_WARN_F("input",
+                       "parity STALE: latched sample seq %u again — the "
+                       "producer published nothing new since the last tick",
+                       s_latched_seq);
+        s_parity_stale++;
     }
-    s_parity_last_seq = s_snap_seq;
+    s_parity_last_seq = s_latched_seq;
 
     unsigned short got_bits = PsyX_Pad_GetLastP1Bits();
     unsigned char  got_axes[4];
@@ -703,6 +716,13 @@ int openpete_host_input_parity_report(void)
                   s_parity_mismatch, s_parity_frames, s_parity_engaged);
         return 0;
     }
+    /* Reported next to the verdict, never folded into it: a stale sample means
+     * the pump stopped producing, which is a real finding about the producer
+     * and not a failure of the path this check covers. */
+    if (s_parity_stale)
+        OPL_WARN_F("input",
+                   "parity: %u tick(s) latched a sample the producer had not "
+                   "refreshed", s_parity_stale);
     OPL_INFO_F("input", "parity PASS: %u frames, %u engaged, 0 mismatches",
                s_parity_frames, s_parity_engaged);
     return 1;
