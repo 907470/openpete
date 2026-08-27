@@ -2,18 +2,15 @@
 """pacelog.py — reader for the unified pacing event log (--pace-log PATH).
 
 The shared parsing layer for scripts/pacing/. Everything downstream reads a
-log through `read()` so there is exactly one place that knows the binary
+log through `read()`, so there is exactly one place that knows the binary
 layout; see core/include/openpete_pace_log.h for the authoritative definition.
 
-Subcommands:
-    dump    LOG [--type VBL] [--limit N]   human-readable records
-    verify  LOG [--expect-inject-us N]     structural checks; with the
-                                          expectation, assert the log actually
-                                          measured a known injected stall
+It also owns the ANALYSED POPULATION (`Log.analysis_vbls`): masking lives with
+the parser rather than in each subcommand, because two subcommands that
+disagree about which VBLs count produce numbers nobody can compare, and the
+disagreement is invisible in both outputs.
 
-`verify` is what makes this log trustworthy rather than merely present. A log
-that parses proves the writer ran; only a known input with a known answer
-proves it measured the right quantity.
+Run the suite via scripts/pacing/pace.py — this module has no CLI.
 """
 import argparse
 import struct
@@ -33,6 +30,11 @@ NAME_TYPES = {v: k for k, v in TYPE_NAMES.items()}
 
 F_SLIPPED, F_UNLOCK, F_PAUSED, F_STEPPED = 1, 2, 4, 8
 F_REWIND, F_SPECULATIVE, F_NOT_LIVE, F_QUIESCE = 16, 32, 64, 128
+# The population split the runtime census also makes: a paced VBL that was
+# paused, stepped, rewound, loading, or is the first tick after a clamp is
+# reported but is not pacing evidence.
+TRANSIENT = F_PAUSED | F_STEPPED | F_REWIND | F_NOT_LIVE | F_SLIPPED
+
 FLAG_NAMES = [(F_SLIPPED, "slipped"), (F_UNLOCK, "unlock"), (F_PAUSED, "paused"),
               (F_STEPPED, "stepped"), (F_REWIND, "rewind"),
               (F_SPECULATIVE, "spec"), (F_NOT_LIVE, "not-live"),
@@ -117,6 +119,52 @@ class Log:
         across types (which present blocked which tick) must sort first."""
         return sorted(self.records, key=lambda r: r.t_ns)
 
+    def analysis_vbls(self, warmup_s=5.0):
+        """The VBLs a pacing statistic may be computed over, plus a census of
+        what was excluded and why.
+
+        Lives here rather than in each subcommand deliberately: if `summary`
+        and `diff` disagree about which VBLs count, their numbers are not
+        comparable, and the disagreement is invisible in both outputs.
+
+        Excluded: unpaced VBLs (no deadline was in force), transients
+        (paused / stepped / rewound / world-not-live / first tick after a
+        clamp), and a warmup span measured from the first VBL that is both
+        paced and live — a run's opening seconds are load, allocation and
+        cache-cold work, and including them prices the steady state wrongly.
+
+        Returns (kept, excluded) where excluded maps reason -> count."""
+        excluded = {"unpaced": 0, "transient": 0, "warmup": 0}
+        candidates = []
+        for r in self.of(VBL):
+            if not r.paced:
+                excluded["unpaced"] += 1
+            elif r.flags & TRANSIENT:
+                excluded["transient"] += 1
+            else:
+                candidates.append(r)
+        if not candidates:
+            return [], excluded
+        t0 = candidates[0].exec_start_ns + int(warmup_s * 1e9)
+        kept = [r for r in candidates if r.exec_start_ns >= t0]
+        excluded["warmup"] = len(candidates) - len(kept)
+        return kept, excluded
+
+    def windows(self):
+        """WINDOW records paired into (id, begin_ns, end_ns) spans. An
+        unterminated span ends at the last record — a run killed inside an
+        unlock still describes it."""
+        open_at, spans = {}, []
+        for r in self.of(WINDOW):
+            if r.flags & 1:
+                open_at[r.aux] = r.t_ns
+            elif r.aux in open_at:
+                spans.append((r.aux, open_at.pop(r.aux), r.t_ns))
+        last = max((r.t_ns for r in self.records), default=0)
+        for wid, start in open_at.items():
+            spans.append((wid, start, last))
+        return sorted(spans, key=lambda s: s[1])
+
     def env_key(self):
         """The fields a baseline is keyed on. Two logs whose keys differ were
         taken on different machines and must never be subtracted."""
@@ -186,153 +234,9 @@ def fmt_record(r, epoch_ns):
             f"index {r.index} {r.a} {r.b} {r.c} {r.d}")
 
 
-def cmd_dump(args):
-    log = read(args.log)
-    wanted = None
-    if args.type:
-        wanted = {NAME_TYPES[t] for t in args.type}
-    print(f"# env: " + " ".join(f"{k}={v}" for k, v in sorted(log.env.items())))
-    print(f"# {log.vbl_num}/{log.vbl_den} Hz VBL = {log.vbl_hz:.7f}, "
-          f"tick {log.tick_hz:.7f} Hz, {len(log.records)} record(s)")
-    n = 0
-    for r in log.records:
-        if wanted and r.type not in wanted:
-            continue
-        print(fmt_record(r, log.epoch_ns))
-        n += 1
-        if args.limit and n >= args.limit:
-            break
-    return 0
-
-
-def pct(vals, p):
-    if not vals:
-        return 0.0
-    s = sorted(vals)
-    i = min(len(s) - 1, max(0, int(round((p / 100.0) * (len(s) - 1)))))
-    return s[i]
-
-
-def cmd_verify(args):
-    log = read(args.log)
-    fail = []
-
-    # Structural: the header must carry the exact NTSC rational, not a rounded
-    # rate. A log that says 30 Hz was written against the wrong clock and every
-    # number derived from it is wrong in the same direction.
-    if (log.vbl_num, log.vbl_den) != (2250000, 37609):
-        fail.append(f"VBL rate is {log.vbl_num}/{log.vbl_den}, "
-                    f"expected 2250000/37609")
-    missing = [k for k in ("build", "platform", "cpu", "gpu", "present_mode",
-                           "refresh_mhz") if k not in log.env]
-    if missing:
-        fail.append(f"env block missing mandatory field(s): {', '.join(missing)}")
-
-    # Under --record-cfr op_now reports SCHEDULED time, so exec_start equals
-    # the deadline on every VBL by construction. A phase statistic from such a
-    # log is a fabricated perfect score, not a measurement.
-    virtual = log.env.get("virtual_clock", "0") not in ("0", "")
-
-    vbls = log.of(VBL)
-    presents = log.of(PRESENT)
-    # Engagement, not decoration: a log with no VBL records proves the writer
-    # opened a file, nothing more.
-    if not vbls:
-        fail.append("no VBL records — the log engaged nothing (VACUOUS)")
-
-    paced = [r for r in vbls if r.paced]
-    # Same population split the runtime census makes: a paced VBL that was
-    # paused/stepped/rewound/loading is reported but is not pacing evidence.
-    TRANSIENT = F_PAUSED | F_STEPPED | F_REWIND | F_NOT_LIVE | F_SLIPPED
-    clean = [r for r in paced if not (r.flags & TRANSIENT)]
-    print(f"records: {len(log.records)}  VBL {len(vbls)} ({len(paced)} paced)  "
-          f"PRESENT {len(presents)}  SLIP {len(log.of(SLIP))}  "
-          f"INPUT {len(log.of(INPUT_EDGE))}  WINDOW {len(log.of(WINDOW))}  "
-          f"CLOCK {len(log.of(CLOCKSAMPLE))}")
-
-    # Within a record type, timestamps must not go backwards: op_now is
-    # documented as strictly increasing, so a regression means a torn or
-    # misattributed stamp. Across types they legitimately interleave out of
-    # order (see Log.timeline), which is why this is checked per type.
-    for ty in sorted({r.type for r in log.records}):
-        seq = [r.t_ns for r in log.of(ty) if r.t_ns]
-        back = sum(1 for a, b in zip(seq, seq[1:]) if b < a)
-        if back:
-            fail.append(f"{back} {TYPE_NAMES.get(ty, f'type-{ty}')} record(s) "
-                        f"went backwards in time")
-
-    if virtual:
-        print("virtual clock (--record-cfr): phase error is 0 by construction; "
-              "no pacing statistic is available from this log")
-        if clean:
-            fail.append("virtual-clock log contains paced VBLs — the census "
-                        "should have classified them unpaced")
-    elif clean:
-        errs = [r.phase_err_ns for r in clean]
-        print(f"phase error (clean, n={len(clean)}): p50 {pct(errs,50)/1e3:+.1f}us "
-              f"p99 {pct(errs,99)/1e3:+.1f}us max {max(errs)/1e3:+.1f}us")
-    if not virtual and len(paced) != len(clean):
-        terrs = [r.phase_err_ns for r in paced if r.flags & TRANSIENT]
-        print(f"phase error (transient, n={len(terrs)}): "
-              f"max {max(terrs)/1e3:+.1f}us — paused/stepped/rewound/loading/slipped")
-
-    if args.expect_inject_us:
-        # Calibration against a known input. The check is a COUNT, not an
-        # extremum: a real run carries genuine multi-millisecond outliers
-        # (scheduler, page faults, a level load), so the largest phase error
-        # says nothing about whether the injected stalls were seen. How many
-        # VBLs came in at the injected magnitude does.
-        want_ns = args.expect_inject_us * 1000
-        # The injector fires every EVERY-th PACED VBL, so the expected count
-        # must be taken over the same population — using `clean` would
-        # under-count by the transient fraction on load-heavy runs.
-        expect_n = len(paced) / float(args.expect_inject_every)
-        hits = [r.phase_err_ns for r in clean if r.phase_err_ns >= want_ns * 0.8]
-        errs = sorted(r.phase_err_ns for r in clean)
-        med = errs[len(errs) // 2] if errs else 0
-        print(f"injection check: {len(hits)} VBL(s) at >= {want_ns*0.8/1e3:.0f}us, "
-              f"expected ~{expect_n:.0f}; median {med/1e3:+.1f}us")
-        if not clean:
-            fail.append("injection expected but no clean paced VBL was recorded")
-        elif len(hits) < expect_n * 0.5:
-            fail.append(f"only {len(hits)} VBL(s) reached the injected "
-                        f"{args.expect_inject_us} us, expected ~{expect_n:.0f} — "
-                        f"the log is not measuring the injected stall")
-        elif med > want_ns * 0.5:
-            # If everything is late, a late tail is not evidence of injection.
-            fail.append(f"median phase error {med/1e3:.1f} us is within reach of "
-                        f"the injected {args.expect_inject_us} us — the run is "
-                        f"late everywhere, so this proves nothing")
-
-    for f in fail:
-        print(f"FAIL: {f}", file=sys.stderr)
-    print("verify: " + ("FAIL" if fail else "PASS"))
-    return 2 if fail else 0
-
-
-def main():
-    ap = argparse.ArgumentParser(description=__doc__,
-                                 formatter_class=argparse.RawDescriptionHelpFormatter)
-    sub = ap.add_subparsers(dest="cmd", required=True)
-
-    d = sub.add_parser("dump", help="print records")
-    d.add_argument("log", type=Path)
-    d.add_argument("--type", action="append", choices=sorted(NAME_TYPES),
-                   help="restrict to this record type (repeatable)")
-    d.add_argument("--limit", type=int, default=0)
-    d.set_defaults(fn=cmd_dump)
-
-    v = sub.add_parser("verify", help="structural + calibration checks")
-    v.add_argument("log", type=Path)
-    v.add_argument("--expect-inject-us", type=int, default=0,
-                   help="assert the log measured an OPENPETE_PACE_INJECT_US stall")
-    v.add_argument("--expect-inject-every", type=int, default=30,
-                   help="the injection period used (OPENPETE_PACE_INJECT_US=N,EVERY)")
-    v.set_defaults(fn=cmd_verify)
-
-    args = ap.parse_args()
-    return args.fn(args)
-
-
+# The CLI lives in pace.py — one entry point, so `summary` and `diff` cannot
+# drift apart in what they consider analysable. cmd_verify stays here because
+# it is a statement about the FORMAT, which is this module's subject.
 if __name__ == "__main__":
-    sys.exit(main())
+    import sys
+    sys.exit("pacelog.py is the parsing library; run scripts/pacing/pace.py")

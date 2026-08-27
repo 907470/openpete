@@ -1,0 +1,727 @@
+#!/usr/bin/env python3
+"""pace.py — the pacing analysis suite (one CLI, subcommands).
+
+Reads the unified pacing event log written by `openpete --pace-log PATH`.
+Parsing lives in pacelog.py, the maths in pacestats.py (tested against known
+inputs by test_pacestats.py), and this file is the presentation layer only —
+so a number shown here can be traced to a statistic that has a fixture.
+
+    dump             raw records
+    verify           structural + calibration checks
+    summary          per-metric triple + percentiles + ledgers + verdict
+    drift            OLS frequency error (ppm) + CUSUM undeclared re-anchors
+    stability        overlapping Allan / modified Allan deviation
+    spectrum         Lomb-Scargle periodogram; named interference lines
+    attribute        bucket every tail event and slip by cause
+    diff             A/B two runs with bootstrap confidence intervals
+    export-perfetto  Perfetto trace for eyeballing a single incident
+    report           one JSON artifact per run, archivable and comparable
+
+Every subcommand analyses the same masked population (see
+`pacelog.Log.analysis_vbls`): paced, non-transient, past warmup. Subcommands
+that disagreed about which VBLs count would produce numbers nobody could
+compare.
+"""
+import argparse
+import json
+import math
+import sys
+from pathlib import Path
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import pacelog                                                # noqa: E402
+import pacestats as ps                                        # noqa: E402
+
+# Nominal VBL period, whole ns. The exact rate is a rational (2250000/37609
+# Hz) carried in the log header; this is its rounded form, used only where a
+# scalar period is needed for a ratio or a threshold.
+def nominal_vbl_ns(log):
+    return round(1e9 * log.vbl_den / log.vbl_num)
+
+
+def us(ns):
+    return f"{ns / 1e3:+.1f}us"
+
+
+def load(path, warmup_s):
+    log = pacelog.read(path)
+    kept, excluded = log.analysis_vbls(warmup_s)
+    return log, kept, excluded
+
+
+def population_line(log, kept, excluded):
+    tot = sum(excluded.values()) + len(kept)
+    return (f"population: {len(kept)}/{tot} VBL analysed "
+            f"(excluded: " + ", ".join(f"{k} {v}" for k, v in excluded.items()
+                                       if v) + ")" if any(excluded.values())
+            else f"population: {len(kept)}/{tot} VBL analysed")
+
+
+def refuse_if_empty(kept, log):
+    """A statistic over an empty population is not a passing result."""
+    if kept:
+        return False
+    virtual = log.env.get("virtual_clock", "0") not in ("0", "")
+    why = ("the virtual clock cannot express a phase error"
+           if virtual else "no paced, non-transient VBL survived masking")
+    print(f"VACUOUS: nothing to analyse — {why}", file=sys.stderr)
+    return True
+
+
+# ---------------------------------------------------------------- verify
+
+def cmd_verify(args):
+    log = pacelog.read(args.log)
+    fail = []
+
+    # Structural: the header must carry the exact NTSC rational, not a rounded
+    # rate. A log that says 30 Hz was written against the wrong clock and every
+    # number derived from it is wrong in the same direction.
+    if (log.vbl_num, log.vbl_den) != (2250000, 37609):
+        fail.append(f"pacelog.VBL rate is {log.vbl_num}/{log.vbl_den}, "
+                    f"expected 2250000/37609")
+    missing = [k for k in ("build", "platform", "cpu", "gpu", "present_mode",
+                           "refresh_mhz") if k not in log.env]
+    if missing:
+        fail.append(f"env block missing mandatory field(s): {', '.join(missing)}")
+
+    # Under --record-cfr op_now reports SCHEDULED time, so exec_start equals
+    # the deadline on every VBL by construction. A phase statistic from such a
+    # log is a fabricated perfect score, not a measurement.
+    virtual = log.env.get("virtual_clock", "0") not in ("0", "")
+
+    vbls = log.of(pacelog.VBL)
+    presents = log.of(pacelog.PRESENT)
+    # Engagement, not decoration: a log with no VBL records proves the writer
+    # opened a file, nothing more.
+    if not vbls:
+        fail.append("no VBL records — the log engaged nothing (VACUOUS)")
+
+    paced = [r for r in vbls if r.paced]
+    # The same population split the runtime census makes.
+    TRANSIENT = pacelog.TRANSIENT
+    clean = [r for r in paced if not (r.flags & TRANSIENT)]
+    print(f"records: {len(log.records)}  VBL {len(vbls)} ({len(paced)} paced)  "
+          f"PRESENT {len(presents)}  SLIP {len(log.of(pacelog.SLIP))}  "
+          f"INPUT {len(log.of(pacelog.INPUT_EDGE))}  WINDOW {len(log.of(pacelog.WINDOW))}  "
+          f"CLOCK {len(log.of(pacelog.CLOCKSAMPLE))}")
+
+    # Within a record type, timestamps must not go backwards: op_now is
+    # documented as strictly increasing, so a regression means a torn or
+    # misattributed stamp. Across types they legitimately interleave out of
+    # order (see Log.timeline), which is why this is checked per type.
+    for ty in sorted({r.type for r in log.records}):
+        seq = [r.t_ns for r in log.of(ty) if r.t_ns]
+        back = sum(1 for a, b in zip(seq, seq[1:]) if b < a)
+        if back:
+            fail.append(f"{back} {pacelog.TYPE_NAMES.get(ty, f'type-{ty}')} record(s) "
+                        f"went backwards in time")
+
+    if virtual:
+        print("virtual clock (--record-cfr): phase error is 0 by construction; "
+              "no pacing statistic is available from this log")
+        if clean:
+            fail.append("virtual-clock log contains paced VBLs — the census "
+                        "should have classified them unpaced")
+    elif clean:
+        errs = [r.phase_err_ns for r in clean]
+        print(f"phase error (clean, n={len(clean)}): p50 {ps.percentile(errs,50)/1e3:+.1f}us "
+              f"p99 {ps.percentile(errs,99)/1e3:+.1f}us max {max(errs)/1e3:+.1f}us")
+    if not virtual and len(paced) != len(clean):
+        terrs = [r.phase_err_ns for r in paced if r.flags & TRANSIENT]
+        print(f"phase error (transient, n={len(terrs)}): "
+              f"max {max(terrs)/1e3:+.1f}us — paused/stepped/rewound/loading/slipped")
+
+    if args.expect_inject_us:
+        # Calibration against a known input. The check is a COUNT, not an
+        # extremum: a real run carries genuine multi-millisecond outliers
+        # (scheduler, page faults, a level load), so the largest phase error
+        # says nothing about whether the injected stalls were seen. How many
+        # VBLs came in at the injected magnitude does.
+        want_ns = args.expect_inject_us * 1000
+        # The injector fires every EVERY-th PACED VBL, so the expected count
+        # must be taken over the same population — using `clean` would
+        # under-count by the transient fraction on load-heavy runs.
+        expect_n = len(paced) / float(args.expect_inject_every)
+        hits = [r.phase_err_ns for r in clean if r.phase_err_ns >= want_ns * 0.8]
+        errs = sorted(r.phase_err_ns for r in clean)
+        med = errs[len(errs) // 2] if errs else 0
+        print(f"injection check: {len(hits)} VBL(s) at >= {want_ns*0.8/1e3:.0f}us, "
+              f"expected ~{expect_n:.0f}; median {med/1e3:+.1f}us")
+        if not clean:
+            fail.append("injection expected but no clean paced VBL was recorded")
+        elif len(hits) < expect_n * 0.5:
+            fail.append(f"only {len(hits)} VBL(s) reached the injected "
+                        f"{args.expect_inject_us} us, expected ~{expect_n:.0f} — "
+                        f"the log is not measuring the injected stall")
+        elif med > want_ns * 0.5:
+            # If everything is late, a late tail is not evidence of injection.
+            fail.append(f"median phase error {med/1e3:.1f} us is within reach of "
+                        f"the injected {args.expect_inject_us} us — the run is "
+                        f"late everywhere, so this proves nothing")
+
+    for f in fail:
+        print(f"FAIL: {f}", file=sys.stderr)
+    print("verify: " + ("FAIL" if fail else "PASS"))
+    return 2 if fail else 0
+
+
+# ------------------------------------------------------------------ dump
+
+def cmd_dump(a):
+    log = pacelog.read(a.log)
+    wanted = {pacelog.NAME_TYPES[t] for t in a.type} if a.type else None
+    print("# env: " + " ".join(f"{k}={v}" for k, v in sorted(log.env.items())))
+    print(f"# {log.vbl_num}/{log.vbl_den} Hz VBL = {log.vbl_hz:.7f}, "
+          f"tick {log.tick_hz:.7f} Hz, {len(log.records)} record(s)")
+    n = 0
+    for r in (log.timeline() if a.timeline else log.records):
+        if wanted and r.type not in wanted:
+            continue
+        print(pacelog.fmt_record(r, log.epoch_ns))
+        n += 1
+        if a.limit and n >= a.limit:
+            break
+    return 0
+
+
+# ---------------------------------------------------------------- summary
+
+def cmd_summary(a):
+    log, kept, excluded = load(a.log, a.warmup)
+    print(f"env: " + " ".join(f"{k}={v}" for k, v in sorted(log.env.items())))
+    print(population_line(log, kept, excluded))
+    if refuse_if_empty(kept, log):
+        return 3
+
+    s1 = [r.phase_err_ns for r in kept]
+    starts = [r.exec_start_ns for r in kept]
+    # S2, interval error: successive starts against the nominal period. A run
+    # can hold a perfect average interval while every individual one is wrong,
+    # so this is not implied by S1.
+    s2 = [b - a_ - nominal_vbl_ns(log) for a_, b in zip(starts, starts[1:])]
+
+    for name, vals in (("S1 phase error", s1), ("S2 interval error", s2)):
+        if not vals:
+            continue
+        rsig, p99, mx = ps.triple(vals)
+        # Three numbers, never a stdev: how tight normal operation is, how bad
+        # a typical bad tick is, and the worst thing that happened.
+        print(f"{name}: robust sigma {us(rsig)}  p50 {us(ps.percentile(vals,50))} "
+              f"p90 {us(ps.percentile(vals,90))} p99 {us(p99)} "
+              f"p99.9 {us(ps.percentile(vals,99.9))} max {us(mx)}")
+    worst, at = ps.worst_window([r.exec_start_ns for r in kept],
+                                s1, int(a.window * 1e9))
+    print(f"worst {a.window:g}s window: {us(worst)} at "
+          f"t={(at - log.epoch_ns)/1e9:.3f}s")
+
+    slips = log.of(pacelog.SLIP)
+    sim = [r for r in slips if not r.flags]
+    ren = [r for r in slips if r.flags]
+    print(f"slips: sim {len(sim)} event(s)/{sum(r.a for r in sim)} VBL period(s) "
+          f"discarded; render {len(ren)}/{sum(r.a for r in ren)}")
+    pres = log.of(pacelog.PRESENT)
+    print(f"presents: {sum(1 for r in pres if not r.flags)} canonical, "
+          f"{sum(1 for r in pres if r.flags)} intermediate; "
+          f"sheds {len(log.of(pacelog.SHED))}")
+
+    # The verdict gates on p99/p99.9 and RECORDS max. Max on a general-purpose
+    # OS includes SMIs and scheduler noise nobody here controls; gating on it
+    # produces a flapping red X that teaches people to ignore the gate.
+    p99 = ps.percentile(s1, 99)
+    ok = p99 <= a.p99_us * 1000
+    print(f"verdict: {'PASS' if ok else 'FAIL'} — p99 {us(p99)} vs goal "
+          f"+{a.p99_us:.0f}us (max {us(max(s1))} recorded, not gated)")
+    return 0 if ok else 2
+
+
+# ------------------------------------------------------------------ drift
+
+def cmd_drift(a):
+    log, kept, excluded = load(a.log, a.warmup)
+    print(population_line(log, kept, excluded))
+    if refuse_if_empty(kept, log):
+        return 3
+
+    nominal = 1e9 * log.vbl_den / log.vbl_num
+
+    # Segment at every slip. A clamp DISCARDS wall time — the deadline jumps
+    # forward and the VBL index does not — so a fit spanning one reads the
+    # discontinuity as a frequency error. Those are different defects with
+    # different fixes and different meanings for a run's timing: drift is the
+    # oscillator being wrong, a slip is wall time the game lost outright.
+    # Fitting across a slip attributes the second to the first.
+    slip_ns = sorted(r.t_ns for r in log.of(pacelog.SLIP))
+    segments, cur = [], []
+    si = 0
+    for r in kept:
+        while si < len(slip_ns) and slip_ns[si] <= r.exec_start_ns:
+            if len(cur) >= a.min_segment:
+                segments.append(cur)
+            cur = []
+            si += 1
+        cur.append(r)
+    if len(cur) >= a.min_segment:
+        segments.append(cur)
+
+    if not segments:
+        print(f"no slip-free span of >= {a.min_segment} VBL to fit — "
+              f"{len(slip_ns)} slip(s) across {len(kept)} analysed VBL",
+              file=sys.stderr)
+        return 3
+
+    # Pool the segments: sample-weighted mean of the per-segment slopes, with
+    # the uncertainty combined in quadrature.
+    tot_n = sum(len(seg) for seg in segments)
+    ppm = 0.0
+    var = 0.0
+    for seg in segments:
+        si_ = [r.index for r in seg]
+        st = [r.exec_start_ns for r in seg]
+        p, _ = ps.drift_ppm(si_, st, nominal)
+        e = ps.drift_ppm_se(si_, st, nominal)
+        w = len(seg) / tot_n
+        ppm += w * p
+        var += (w * e) ** 2
+    se = math.sqrt(var)
+    idx = [r.index for r in kept]
+    t = [r.exec_start_ns for r in kept]
+    slope = nominal * (1 + ppm / 1e6)
+    span_s = (t[-1] - t[0]) / 1e9
+    print(f"fitted over {len(segments)} slip-free segment(s), {tot_n} VBL "
+          f"({len(slip_ns)} slip(s) excluded from the fit)")
+    # What the frequency error costs over a real session, which is the form
+    # that matters: this plan's deliverable is that RTA and tick time agree.
+    err_2h = ppm * 1e-6 * 7200
+    print(f"executed period: {slope/1e6:.6f} ms vs nominal "
+          f"{nominal/1e6:.6f} ms over {span_s:.1f}s")
+    print(f"frequency error: {ppm:+.4f} +/- {se:.4f} ppm (1 sigma) "
+          f"({err_2h:+.3f} s over a 2-hour run)")
+
+    # Slip-discarded wall time is reported alongside, never folded in: it is
+    # real divergence between RTA and tick time, and it is what the
+    # never-silent contract exists to surface.
+    discarded_ns = sum(r.a for r in log.of(pacelog.SLIP) if not r.flags) * nominal
+    if discarded_ns:
+        print(f"slip-discarded wall time: {discarded_ns/1e6:.1f} ms over "
+              f"{span_s:.1f}s — separate from drift, and the larger effect "
+              f"here ({discarded_ns/1e9/span_s*1e6:+.0f} ppm equivalent)")
+
+    # Three-way, against the GATE rather than against zero: a drift far
+    # outside the gate is a definite failure even when the uncertainty is
+    # loose, and only an interval straddling the gate is unresolved.
+    lo_mag, hi_mag = abs(ppm) - 2 * se, abs(ppm) + 2 * se
+
+    # C1, host-clock honesty. Everything above measures the grid against
+    # op_now; this measures op_now itself against a disciplined wall clock.
+    # A TSC calibrated dozens of ppm off is invisible to every
+    # self-measurement, and at 50 ppm a two-hour run is ~0.36 s from true
+    # time — material for RTA, and undetectable from inside the grid.
+    #
+    # Disclosure only: the sim clock stays monotonic-pure and is never
+    # disciplined to NTP.
+    cs = log.of(pacelog.CLOCKSAMPLE)
+    if len(cs) >= 3:
+        mono = [r.a for r in cs]
+        wall = [r.b for r in cs]
+        c_span = (mono[-1] - mono[0]) / 1e9
+        slope_c, _ = ps.ols_slope(mono, wall)
+        c_ppm = (slope_c - 1.0) * 1e6
+        c_se = ps.ols_slope_se(mono, wall) * 1e6
+        offsets = [w - m for m, w in zip(mono, wall)]
+        spread = max(offsets) - min(offsets)
+        # Two genuinely independent oscillators wander by microseconds over a
+        # couple of minutes. A sub-microsecond spread means the platform is
+        # deriving both from ONE source, and the estimate below is measuring a
+        # clock against itself — a guaranteed +0.00 ppm that reads as a clean
+        # bill of health. Report the coupling, not the zero.
+        if spread < 1000:
+            print(f"host clock (C1): VACUOUS on this platform — the two "
+                  f"sources track to {spread}ns over {c_span:.0f}s, so they "
+                  f"are not independent and no oscillator error can be seen. "
+                  f"Needs a genuinely external reference.")
+        else:
+            print(f"host clock (C1): monotonic vs wall {c_ppm:+.2f} +/- "
+                  f"{c_se:.2f} ppm over {c_span:.0f}s "
+                  f"({c_ppm*1e-6*7200:+.3f} s per 2 hours) "
+                  f"[UNCALIBRATED — no injector proves this column yet]")
+    else:
+        print(f"host clock (C1): {len(cs)} sample(s) — need a longer run "
+              f"(one per 10 s)")
+
+    hits = ps.cusum([r.phase_err_ns for r in kept])
+    declared = log.windows()
+    unexplained = []
+    for i, direction in hits:
+        when = kept[i].exec_start_ns
+        near = any(b - 2e9 <= when <= e + 2e9 for _, b, e in declared)
+        (declared and near) or unexplained.append((i, direction, when))
+    if hits:
+        print(f"grid steps: {len(hits)} detected, {len(unexplained)} outside a "
+              f"declared window")
+        for i, d, when in unexplained[:10]:
+            print(f"  VBL #{kept[i].index} at t={(when-log.epoch_ns)/1e9:.3f}s "
+                  f"({'up' if d > 0 else 'down'}) — UNDECLARED re-anchor")
+    else:
+        print("grid steps: none")
+
+    if lo_mag > a.ppm:
+        print(f"verdict: FAIL — |{ppm:+.4f}| ppm exceeds the {a.ppm} ppm gate "
+              f"beyond uncertainty, {len(unexplained)} undeclared re-anchor(s)")
+        return 2
+    if hi_mag < a.ppm and not unexplained:
+        print(f"verdict: PASS — |{ppm:+.4f}| +/- {se:.4f} ppm is inside the "
+              f"{a.ppm} ppm gate, 0 undeclared re-anchor(s)")
+        return 0
+    if unexplained:
+        print(f"verdict: FAIL — {len(unexplained)} undeclared re-anchor(s)")
+        return 2
+    # Solve for the span that would resolve the gate: the slope's standard
+    # error falls as n^-1.5 at a fixed cadence and spread.
+    need = span_s * (2 * se / a.ppm) ** (2.0 / 3.0)
+    print(f"verdict: UNRESOLVED — {span_s:.1f}s cannot separate "
+          f"|{ppm:+.4f}| ppm from the {a.ppm} ppm gate at this jitter "
+          f"(needs roughly {need:.0f}s).")
+    return 3
+
+
+# -------------------------------------------------------------- stability
+
+def cmd_stability(a):
+    log, kept, excluded = load(a.log, a.warmup)
+    print(population_line(log, kept, excluded))
+    if refuse_if_empty(kept, log):
+        return 3
+    t = [r.exec_start_ns for r in kept]
+    nominal = nominal_vbl_ns(log)
+    curve = ps.adev(t, nominal)
+    if not curve:
+        print("too few samples for a stability estimate", file=sys.stderr)
+        return 3
+    print(f"{'tau (s)':>10} {'ADEV':>12} {'MDEV':>12}")
+    m = dict(ps.mdev(t, nominal))
+    for tau, d in curve:
+        md = m.get(tau)
+        print(f"{tau:10.4f} {d:12.3e} " + (f"{md:12.3e}" if md else " " * 12))
+    lo = ps.adev_slope(curve, 0.0, 0.5)
+    hi = ps.adev_slope(curve, 0.5, 1.0)
+    print(f"log-log slope: {lo:+.2f} (short tau), {hi:+.2f} (long tau)")
+    # -1 is white phase noise: ADEV equals a plain stddev there and tells you
+    # nothing a histogram did not. A departure at LONG tau is the finding, and
+    # it is the one thing a histogram structurally cannot show.
+    if hi > -0.5:
+        print("finding: the curve flattens at long tau — wander or drift, not "
+              "white phase noise. A tighter pacer will not fix this; it is a "
+              "clock-discipline question.")
+    else:
+        print("reading: white-phase-noise-dominated (slope ~ -1) — the jitter "
+              "is memoryless and the deviation carries no more than a stddev.")
+    return 0
+
+
+# --------------------------------------------------------------- spectrum
+
+def cmd_spectrum(a):
+    log, kept, excluded = load(a.log, a.warmup)
+    print(population_line(log, kept, excluded))
+    if refuse_if_empty(kept, log):
+        return 3
+    pts = ps.spectrum([r.exec_start_ns for r in kept],
+                      [float(r.phase_err_ns) for r in kept])
+    if not pts:
+        print("spectrum unavailable (needs numpy + scipy, and >= 8 samples)",
+              file=sys.stderr)
+        return 3
+    lines = ps.spectrum_lines(pts, n=a.lines, min_power=a.min_power)
+    if not lines:
+        print(f"no line above power {a.min_power} — no periodic interference")
+        return 0
+    refresh_hz = float(log.env.get("refresh_mhz", 0)) / 1000.0
+    print("periodic lines in the phase error (a line is a diagnosis):")
+    for f, p in lines:
+        note = ""
+        # The named signature: a present cadence beating against a display
+        # whose refresh is not a multiple of the tick rate shows up at the
+        # difference frequency, not at either rate.
+        if refresh_hz > 0:
+            for k in (1, 2, 3):
+                beat = abs(refresh_hz - k * log.vbl_hz)
+                if beat > 0 and abs(f - beat) < max(0.02, 0.05 * beat):
+                    note = (f"  <- beat between {refresh_hz:.3f} Hz refresh "
+                            f"and {k}x the VBL rate")
+        print(f"  {f:9.4f} Hz  power {p:.3f}  (period {1/f:8.2f} s){note}")
+    return 0
+
+
+# -------------------------------------------------------------- attribute
+
+def cmd_attribute(a):
+    log, kept, excluded = load(a.log, a.warmup)
+    print(population_line(log, kept, excluded))
+    if refuse_if_empty(kept, log):
+        return 3
+
+    presents = log.of(pacelog.PRESENT)
+    windows = log.windows()
+    thr = a.threshold_us * 1000
+    tails = [r for r in kept if r.phase_err_ns > thr]
+    buckets, unattributed = {}, []
+
+    by_index = {r.index: i for i, r in enumerate(kept)}
+    for r in tails:
+        i = by_index[r.index]
+        prev = kept[i - 1] if i > 0 else None
+        # The tick began late; the cause has to have happened BEFORE it began
+        # and after the previous grid point. Anything else is coincidence.
+        lo, hi = r.deadline_ns - nominal_vbl_ns(log), r.exec_start_ns
+        cause = None
+        # The previous tick still running when this one's deadline passed is
+        # its own cause: the sim overran its budget, and no present blocked.
+        # Checked first — when a long tick and a blocked present overlap, the
+        # tick that did not finish is the nearer explanation.
+        if prev is not None and prev.exec_end_ns > r.deadline_ns:
+            cause = "previous tick overran"
+        blocked = [p for p in presents if lo <= p.t_ns <= hi
+                   and max(p.fence_block_ns, p.acquire_block_ns,
+                           p.queue_block_ns, p.recreate_block_ns) > thr]
+        if cause:
+            pass
+        elif blocked:
+            p = max(blocked, key=lambda p: max(
+                p.fence_block_ns, p.acquire_block_ns,
+                p.queue_block_ns, p.recreate_block_ns))
+            worst = max((p.fence_block_ns, "present/fence"),
+                        (p.acquire_block_ns, "present/acquire"),
+                        (p.queue_block_ns, "present/queue"),
+                        (p.recreate_block_ns, "present/recreate"))
+            cause = worst[1]
+        elif any(b <= hi and lo <= e for _, b, e in windows):
+            cause = "declared window"
+        if cause:
+            buckets[cause] = buckets.get(cause, 0) + 1
+        else:
+            unattributed.append(r)
+
+    print(f"tail events (> {a.threshold_us}us): {len(tails)}")
+    for k, v in sorted(buckets.items(), key=lambda kv: -kv[1]):
+        print(f"  {v:5d}  {k}")
+    print(f"  {len(unattributed):5d}  UNATTRIBUTED")
+    if unattributed:
+        # Not a shrug: an unattributed tail means the log is missing an event
+        # type. That is a defect in the instrument and the most actionable
+        # thing this subcommand can report.
+        print("\nunattributed tails are a FINDING, not noise: the log has no "
+              "event that explains them, so an event type is missing.")
+        for r in sorted(unattributed, key=lambda r: -r.phase_err_ns)[:a.show]:
+            print(f"  VBL #{r.index} at "
+                  f"t={(r.exec_start_ns-log.epoch_ns)/1e9:8.3f}s  "
+                  f"{us(r.phase_err_ns)}  exec "
+                  f"{(r.exec_end_ns-r.exec_start_ns)/1e6:.2f}ms")
+    return 0
+
+
+# ------------------------------------------------------------------- diff
+
+def cmd_diff(a):
+    log_a, kept_a, _ = load(a.baseline, a.warmup)
+    log_b, kept_b, _ = load(a.candidate, a.warmup)
+
+    ka, kb = log_a.env_key(), log_b.env_key()
+    if ka != kb:
+        # Refusing is the whole point: silently subtracting numbers taken on
+        # different machines is how a pacing "improvement" gets shipped.
+        print("REFUSED: environment keys differ — these runs are not "
+              "comparable.", file=sys.stderr)
+        for (k, va), (_, vb) in zip(ka, kb):
+            if va != vb:
+                print(f"  {k}: {va!r} vs {vb!r}", file=sys.stderr)
+        if not a.force:
+            return 2
+        print("(--force given; continuing anyway)", file=sys.stderr)
+
+    if refuse_if_empty(kept_a, log_a) or refuse_if_empty(kept_b, log_b):
+        return 3
+
+    print(f"baseline  {len(kept_a)} VBL   candidate {len(kept_b)} VBL")
+    worse = False
+    for label, stat in (("p50", lambda v: ps.percentile(v, 50)),
+                        ("p99", lambda v: ps.percentile(v, 99)),
+                        ("robust sigma", ps.robust_sigma)):
+        va = [r.phase_err_ns for r in kept_a]
+        vb = [r.phase_err_ns for r in kept_b]
+        point, lo, hi = ps.bootstrap_ci(va, vb, stat)
+        # Two independent tests, and a delta must clear BOTH.
+        #
+        # Statistical significance alone over-claims: with a few hundred
+        # samples the bootstrap resolves a 2 us shift confidently, and
+        # reporting that as IMPROVED invites shipping a change that moved
+        # nothing anyone can experience. The magnitude floor is the baseline's
+        # own core width — below the run's noise, a real difference is still
+        # not a finding.
+        floor = a.floor_frac * ps.robust_sigma(va)
+        if lo <= 0 <= hi:
+            verdict = "no significant change"
+        elif abs(point) < floor:
+            verdict = (f"below the noise floor (|{point/1e3:.1f}| < "
+                       f"{floor/1e3:.1f} us)")
+        elif point < 0:
+            verdict = "IMPROVED"
+        else:
+            verdict = "REGRESSED"
+            worse = True
+        print(f"  {label:>13}: {stat(va)/1e3:+8.1f} -> {stat(vb)/1e3:+8.1f} us  "
+              f"delta {point/1e3:+7.1f} us  95% CI [{lo/1e3:+.1f}, {hi/1e3:+.1f}]"
+              f"  {verdict}")
+    return 2 if worse else 0
+
+
+# -------------------------------------------------------- export-perfetto
+
+def cmd_export_perfetto(a):
+    log = pacelog.read(a.log)
+    ev, pid = [], 1
+    names = {1: "tick", 2: "present", 3: "shed", 4: "slip",
+             5: "input", 6: "window", 7: "clock"}
+    for tid, label in names.items():
+        ev.append({"name": "thread_name", "ph": "M", "pid": pid, "tid": tid,
+                   "args": {"name": label}})
+    for r in log.timeline():
+        ts = (r.t_ns - log.epoch_ns) / 1000.0          # Perfetto wants us
+        if r.type == pacelog.VBL:
+            ev.append({"name": f"tick #{r.index}", "ph": "X", "pid": pid,
+                       "tid": 1, "ts": (r.exec_start_ns - log.epoch_ns) / 1000.0,
+                       "dur": max(0, r.exec_end_ns - r.exec_start_ns) / 1000.0,
+                       "args": {"phase_err_us": r.phase_err_ns / 1000.0,
+                                "flags": r.flag_str()}})
+        elif r.type == pacelog.PRESENT:
+            ev.append({"name": "intermediate" if r.flags else "canonical",
+                       "ph": "X", "pid": pid, "tid": 2, "ts": ts, "dur": 1,
+                       "args": {"fence_us": r.fence_block_ns / 1000.0,
+                                "acquire_us": r.acquire_block_ns / 1000.0,
+                                "queue_us": r.queue_block_ns / 1000.0,
+                                "recreate_us": r.recreate_block_ns / 1000.0}})
+        elif r.type == pacelog.SLIP:
+            ev.append({"name": f"slip {r.a} VBL", "ph": "i", "pid": pid,
+                       "tid": 4, "ts": ts, "s": "g"})
+        elif r.type == pacelog.INPUT_EDGE:
+            ev.append({"name": "edge", "ph": "i", "pid": pid, "tid": 5,
+                       "ts": ts, "s": "g"})
+    for wid, b, e in log.windows():
+        ev.append({"name": f"window {wid}", "ph": "X", "pid": pid, "tid": 6,
+                   "ts": (b - log.epoch_ns) / 1000.0, "dur": (e - b) / 1000.0})
+    Path(a.out).write_text(json.dumps({"traceEvents": ev,
+                                       "displayTimeUnit": "ms"}))
+    print(f"wrote {a.out} ({len(ev)} events) — open at https://ui.perfetto.dev")
+    return 0
+
+
+# ------------------------------------------------------------------ report
+
+def cmd_report(a):
+    log, kept, excluded = load(a.log, a.warmup)
+    if refuse_if_empty(kept, log):
+        return 3
+    s1 = [r.phase_err_ns for r in kept]
+    t = [r.exec_start_ns for r in kept]
+    nominal = 1e9 * log.vbl_den / log.vbl_num
+    ppm, _ = ps.drift_ppm([r.index for r in kept], t, nominal)
+    rsig, p99, mx = ps.triple(s1)
+    curve = ps.adev(t, round(nominal))
+    out = {
+        "env": log.env,
+        "env_key": [list(kv) for kv in log.env_key()],
+        "vbl_hz": log.vbl_hz,
+        "tick_hz": log.tick_hz,
+        "population": {"analysed": len(kept), "excluded": excluded},
+        "s1_phase_error_ns": {
+            "robust_sigma": rsig, "p50": ps.percentile(s1, 50),
+            "p90": ps.percentile(s1, 90), "p99": p99,
+            "p99_9": ps.percentile(s1, 99.9), "max": mx,
+        },
+        "drift_ppm": ppm,
+        "drift_s_per_2h": ppm * 1e-6 * 7200,
+        "adev": [{"tau_s": tau, "adev": d} for tau, d in curve],
+        "adev_slope_long_tau": ps.adev_slope(curve, 0.5, 1.0),
+        "slips": {"sim": sum(1 for r in log.of(pacelog.SLIP) if not r.flags),
+                  "render": sum(1 for r in log.of(pacelog.SLIP) if r.flags)},
+        "presents": {
+            "canonical": sum(1 for r in log.of(pacelog.PRESENT) if not r.flags),
+            "intermediate": sum(1 for r in log.of(pacelog.PRESENT) if r.flags)},
+        "sheds": len(log.of(pacelog.SHED)),
+        "uncalibrated": ["present_block_times", "latch_offset", "clocksample"],
+    }
+    Path(a.out).write_text(json.dumps(out, indent=2))
+    print(f"wrote {a.out}")
+    return 0
+
+
+# -------------------------------------------------------------------- CLI
+
+def main():
+    ap = argparse.ArgumentParser(
+        description=__doc__,
+        formatter_class=argparse.RawDescriptionHelpFormatter)
+    sub = ap.add_subparsers(dest="cmd", required=True)
+
+    def add(name, fn, help_, log_arg="log"):
+        p = sub.add_parser(name, help=help_)
+        p.add_argument(log_arg, type=Path)
+        p.add_argument("--warmup", type=float, default=5.0,
+                       help="seconds of live running to skip (default 5)")
+        p.set_defaults(fn=fn)
+        return p
+
+    p = add("dump", cmd_dump, "print raw records")
+    p.add_argument("--type", action="append", choices=sorted(pacelog.NAME_TYPES))
+    p.add_argument("--limit", type=int, default=0)
+    p.add_argument("--timeline", action="store_true",
+                   help="sort by timestamp instead of emission order")
+
+    p = add("verify", cmd_verify, "structural + calibration checks")
+    p.add_argument("--expect-inject-us", type=int, default=0)
+    p.add_argument("--expect-inject-every", type=int, default=30)
+
+    p = add("summary", cmd_summary, "percentiles, ledgers, verdict")
+    p.add_argument("--p99-us", type=float, default=250.0,
+                   help="p99 phase-error goal in us (default 250, the plan's)")
+    p.add_argument("--window", type=float, default=1.0)
+
+    p = add("drift", cmd_drift, "frequency error + undeclared re-anchors")
+    p.add_argument("--ppm", type=float, default=1.0)
+    p.add_argument("--min-segment", type=int, default=100,
+                   help="shortest slip-free run of VBLs worth fitting")
+
+    add("stability", cmd_stability, "Allan / modified Allan deviation")
+
+    p = add("spectrum", cmd_spectrum, "periodic interference lines")
+    p.add_argument("--lines", type=int, default=5)
+    p.add_argument("--min-power", type=float, default=0.05)
+
+    p = add("attribute", cmd_attribute, "bucket tail events by cause")
+    p.add_argument("--threshold-us", type=float, default=1000.0)
+    p.add_argument("--show", type=int, default=10)
+
+    p = sub.add_parser("diff", help="A/B two runs with bootstrap CIs")
+    p.add_argument("baseline", type=Path)
+    p.add_argument("candidate", type=Path)
+    p.add_argument("--warmup", type=float, default=5.0)
+    p.add_argument("--force", action="store_true",
+                   help="compare across mismatched environments anyway")
+    p.add_argument("--floor-frac", type=float, default=1.0,
+                   help="magnitude floor as a multiple of the baseline's "
+                        "robust sigma (default 1.0); a statistically real "
+                        "delta below it is not reported as a change")
+    p.set_defaults(fn=cmd_diff)
+
+    p = add("export-perfetto", cmd_export_perfetto, "write a Perfetto trace")
+    p.add_argument("--out", default="pace-trace.json")
+
+    p = add("report", cmd_report, "write one JSON artifact for this run")
+    p.add_argument("--out", default="pace-report.json")
+
+    a = ap.parse_args()
+    return a.fn(a)
+
+
+if __name__ == "__main__":
+    sys.exit(main())
