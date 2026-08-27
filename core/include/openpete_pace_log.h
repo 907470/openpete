@@ -55,7 +55,8 @@ enum {
     OP_PACE_SLIP        = 4,
     OP_PACE_INPUT_EDGE  = 5,
     OP_PACE_WINDOW      = 6,
-    OP_PACE_CLOCKSAMPLE = 7
+    OP_PACE_CLOCKSAMPLE = 7,
+    OP_PACE_WAKE        = 8
 };
 
 /* VBL flags. */
@@ -160,6 +161,19 @@ void openpete_pace_input_edge(int64_t sample_ns, uint16_t bits,
 /* Begin/end of a span during which the pacing grid does not apply. */
 void openpete_pace_window(uint16_t id, int begin);
 
+/* The pacer's sleep: when it was requested, where it aimed, when it returned.
+ *
+ * All THREE instants are required, and the third is the one that makes the
+ * record honest. `wake - target` conflates two opposite situations: the OS
+ * oversleeping past a future deadline, and a deadline that had ALREADY PASSED
+ * when the sleep was requested — the second is the loop running behind, and
+ * blaming it on the scheduler points every investigation at the wrong system.
+ * Measured: 26 ms of apparent "overshoot" that was entirely the former.
+ *
+ * So the log records the OS's share as `wake - max(target, request)` and how
+ * far behind the loop already was as `max(0, request - target)`. */
+void openpete_pace_wake(int64_t request_ns, int64_t target_ns, int64_t wake_ns);
+
 /* ---- census (always compiled, no log file needed) ----------------------- */
 
 #define OP_PACE_HIST_BUCKETS 9
@@ -179,6 +193,9 @@ typedef struct {
     int64_t  phase_err_transient_max_ns; /* same, over the flagged ones        */
     uint64_t phase_hist[OP_PACE_HIST_BUCKETS];
     int64_t  latch_offset_max_ns; /* max exec_start - input sample            */
+    uint64_t wakes;             /* pacer sleeps observed                     */
+    int64_t  wake_overshoot_max_ns; /* worst OS overshoot past a FUTURE target */
+    int64_t  wake_behind_max_ns;    /* worst "deadline already gone" at request */
     uint64_t latch_samples;     /* VBLs that contributed one: 0 means the
                                  * bound is unmeasured, not perfect          */
 } openpete_pace_census_t;

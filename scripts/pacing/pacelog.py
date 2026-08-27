@@ -22,10 +22,10 @@ VERSION = 1
 HEADER_FIXED = 64
 RECORD_BYTES = 48
 
-VBL, PRESENT, SHED, SLIP, INPUT_EDGE, WINDOW, CLOCKSAMPLE = range(1, 8)
+VBL, PRESENT, SHED, SLIP, INPUT_EDGE, WINDOW, CLOCKSAMPLE, WAKE = range(1, 9)
 TYPE_NAMES = {VBL: "VBL", PRESENT: "PRESENT", SHED: "SHED", SLIP: "SLIP",
               INPUT_EDGE: "INPUT_EDGE", WINDOW: "WINDOW",
-              CLOCKSAMPLE: "CLOCKSAMPLE"}
+              CLOCKSAMPLE: "CLOCKSAMPLE", WAKE: "WAKE"}
 NAME_TYPES = {v: k for k, v in TYPE_NAMES.items()}
 
 F_SLIPPED, F_UNLOCK, F_PAUSED, F_STEPPED = 1, 2, 4, 8
@@ -72,6 +72,23 @@ class Record:
 
     # PRESENT accessors. `t_ns` is when the present path RETURNED; the block
     # fields are the waits it imposed before that.
+    # WAKE accessors.
+    @property
+    def wake_target_ns(self): return self.a
+    @property
+    def wake_overshoot_ns(self):
+        """Time the OS owed us: measured from the later of the target and the
+        request, so a deadline that had already passed is not charged to the
+        scheduler."""
+        return self.b
+
+    @property
+    def wake_behind_ns(self):
+        """How far past the target the loop already was when it asked to
+        sleep — the loop running behind, which is a different defect from the
+        OS being late and points at a different system."""
+        return self.c
+
     @property
     def fence_block_ns(self): return self.a
     @property
@@ -223,6 +240,9 @@ def fmt_record(r, epoch_ns):
                 f"delta 0x{r.aux:04x} analog {r.flags}")
     if r.type == WINDOW:
         return f"{t:10.4f} WINDOW  id {r.aux} {'begin' if r.flags else 'end'}"
+    if r.type == WAKE:
+        return (f"{t:10.4f} WAKE    target {(r.a - epoch_ns)/1e9:.6f}s "
+                f"os {r.b/1e3:+.1f}us behind {r.c/1e3:+.1f}us")
     if r.type == CLOCKSAMPLE:
         return f"{t:10.4f} CLOCK   mono {r.a} wall {r.b}"
     if r.type == SHED:

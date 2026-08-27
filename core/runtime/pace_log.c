@@ -411,6 +411,31 @@ void openpete_pace_input_edge(int64_t sample_ns, uint16_t bits,
     pace_emit(&r);
 }
 
+void openpete_pace_wake(int64_t request_ns, int64_t target_ns, int64_t wake_ns)
+{
+    /* The OS only owes us time it could actually have slept: measure its
+     * share from the later of the target and the moment we asked. Measuring
+     * from the target alone charges the scheduler for a deadline that was
+     * already gone before the sleep began. */
+    const int64_t from   = (request_ns > target_ns) ? request_ns : target_ns;
+    const int64_t over   = wake_ns - from;
+    const int64_t behind = (request_ns > target_ns) ? request_ns - target_ns : 0;
+
+    if (over > s_census.wake_overshoot_max_ns)
+        s_census.wake_overshoot_max_ns = over;
+    if (behind > s_census.wake_behind_max_ns)
+        s_census.wake_behind_max_ns = behind;
+    s_census.wakes++;
+    if (!s_fp) return;
+    pace_rec_t r = {0};
+    r.type  = OP_PACE_WAKE;
+    r.t_ns  = wake_ns;
+    r.a     = target_ns;
+    r.b     = over;
+    r.c     = behind;
+    pace_emit(&r);
+}
+
 void openpete_pace_window(uint16_t id, int begin)
 {
     if (!s_fp) return;
@@ -484,7 +509,8 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
     SDL_snprintf(buf, buf_bytes,
         "%llu VBL (%llu paced, %llu clean); %llu+%llu present; "
         "phase %.2f%% within 250us, max %+.3f ms%s; "
-        "transient %llu VBL max %+.3f ms; latch<=%s; "
+        "transient %llu VBL max %+.3f ms; wake<=%+.3f ms behind<=%+.3f ms; "
+        "latch<=%s; "
         "slips sim %llu/%llu render %llu/%llu; sheds %llu",
         (unsigned long long)c->vbls,
         (unsigned long long)c->vbls_paced,
@@ -496,6 +522,8 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
         early_s,
         (unsigned long long)c->vbls_transient,
         (double)c->phase_err_transient_max_ns / 1e6,
+        (double)c->wake_overshoot_max_ns / 1e6,
+        (double)c->wake_behind_max_ns / 1e6,
         latch,
         (unsigned long long)c->slip_events[0],
         (unsigned long long)c->slip_periods[0],

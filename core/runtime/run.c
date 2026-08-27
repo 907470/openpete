@@ -1019,6 +1019,17 @@ static int pace_force_pacing(void)
     return s_on;
 }
 
+/* Sleep to a deadline and record where the pacer aimed against where it
+ * actually woke. Splitting a late tick into "the OS returned late" and
+ * "everything after waking was slow" needs both instants; with only the
+ * second, a residual fraction of late ticks has no attributable cause. */
+static void pace_sleep_until(op_time_t deadline_ns)
+{
+    const op_time_t req = op_now();
+    op_sleep_until(deadline_ns);
+    openpete_pace_wake(req, deadline_ns, op_now());
+}
+
 /* One PRESENT record, carrying the block time the present path imposed on
  * this thread since the previous present. Read-and-clear, so each present
  * owns its own waits rather than a running total: under the thread split the
@@ -3937,7 +3948,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                                "sim slip: host stalled %.1f ms (dropped %lld VBL period(s) "
                                "of wall time)", (double)behind / 1e6, (long long)skip);
                 }
-                op_sleep_until(next_sim.at);
+                pace_sleep_until(next_sim.at);
             }
         } else {
             /* Wall-clock dual-pacer. sim deadline advances on sim-due
@@ -3977,7 +3988,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             }
             op_time_t next = (next_sim.at < next_render.at)
                              ? next_sim.at : next_render.at;
-            op_sleep_until(next);
+            pace_sleep_until(next);
         }
 
 #if defined(__EMSCRIPTEN__)

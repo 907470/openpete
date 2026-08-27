@@ -210,6 +210,20 @@ def cmd_summary(a):
         print(f"{name}: robust sigma {us(rsig)}  p50 {us(ps.percentile(vals,50))} "
               f"p90 {us(ps.percentile(vals,90))} p99 {us(p99)} "
               f"p99.9 {us(ps.percentile(vals,99.9))} max {us(mx)}")
+    wakes = log.of(pacelog.WAKE)
+    if wakes:
+        ov = [r.wake_overshoot_ns for r in wakes]
+        # The decomposition that makes a late tick actionable: how much the OS
+        # owed us, and how much we spent after it handed control back.
+        bh = [r.wake_behind_ns for r in wakes]
+        # Two different systems, never summed: what the scheduler owed us, and
+        # how far behind the loop already was when it asked to sleep.
+        print(f"pacer sleep, OS share:   p50 {us(ps.percentile(ov,50))} "
+              f"p99 {us(ps.percentile(ov,99))} max {us(max(ov))}")
+        print(f"pacer sleep, loop behind: p50 {us(ps.percentile(bh,50))} "
+              f"p99 {us(ps.percentile(bh,99))} max {us(max(bh))}"
+              f"  ({len(wakes)} sleeps)")
+
     worst, at = ps.worst_window([r.exec_start_ns for r in kept],
                                 s1, int(a.window * 1e9))
     print(f"worst {a.window:g}s window: {us(worst)} at "
@@ -467,6 +481,15 @@ def cmd_attribute(a):
     tails = [r for r in kept if r.phase_err_ns > thr]
     buckets, unattributed = {}, []
 
+    # Pair each analysed VBL with the sleep that immediately preceded it.
+    wakes = sorted(log.of(pacelog.WAKE), key=lambda r: r.t_ns)
+    wake_before, wi = {}, 0
+    for r in kept:
+        while wi < len(wakes) and wakes[wi].t_ns <= r.exec_start_ns:
+            wi += 1
+        if wi > 0:
+            wake_before[r.index] = wakes[wi - 1]
+
     by_index = {r.index: i for i, r in enumerate(kept)}
     for r in tails:
         i = by_index[r.index]
@@ -475,6 +498,18 @@ def cmd_attribute(a):
         # and after the previous grid point. Anything else is coincidence.
         lo, hi = r.deadline_ns - nominal_vbl_ns(log), r.exec_start_ns
         cause = None
+        # Did the OS return late from the pacer's sleep? That is the machine's
+        # contribution, and it is not fixable by anything in the present path
+        # — separating it is the difference between tuning pacer slack and
+        # rearchitecting the render loop.
+        wk = wake_before.get(r.index)
+        if wk is not None and wk.wake_overshoot_ns > thr:
+            cause = "os/sleep overshoot"
+        elif wk is not None and wk.wake_behind_ns > thr:
+            # Not the scheduler: the loop asked to sleep to a deadline that had
+            # already gone. The cause is upstream, in whatever consumed the
+            # time — which the present buckets below then name.
+            cause = None
         # The previous tick still running when this one's deadline passed is
         # its own cause: the sim overran its budget, and no present blocked.
         # Checked first — when a long tick and a blocked present overlap, the
