@@ -777,6 +777,191 @@ def input_regime(log):
     return fatal, notes
 
 
+def wall_to_mono(log):
+    """Least-squares wall -> op_now conversion from the log's CLOCKSAMPLE pairs.
+
+    Note the asymmetry with C1: for the honesty audit these two sources being
+    the same underlying clock makes the estimate vacuous, and on Windows they
+    are. For converting an injector's timestamps into the log's timebase that
+    same coupling is exactly what is wanted, and the conversion is near-exact."""
+    cs = log.of(pacelog.CLOCKSAMPLE)
+    if len(cs) < 2:
+        return None
+    n = len(cs)
+    mx = sum(r.b for r in cs) / n          # wall
+    my = sum(r.a for r in cs) / n          # mono
+    sxx = sum((r.b - mx) ** 2 for r in cs)
+    sxy = sum((r.b - mx) * (r.a - my) for r in cs)
+    if sxx == 0:
+        return None
+    slope = sxy / sxx
+    return lambda w: my + slope * (w - mx)
+
+
+def report_injection(log, a, period, yielded, seqs, edges):
+    """Map externally injected presses onto the VBLs that consumed them."""
+    lines = [json.loads(l) for l in Path(a.inject).read_text().splitlines() if l.strip()]
+    if not lines or lines[0].get("kind") != "inject-meta":
+        print("REFUSED: --inject file has no metadata header", file=sys.stderr)
+        return 3
+    meta = lines[0]
+    pulses = [p for p in lines[1:] if not p.get("skipped")]
+
+    print(f"\nTier B injection: {meta['injector']} on {meta['platform']}, "
+          f"{len(pulses)}/{meta['count']} pulse(s) injected, bit "
+          f"0x{meta['pad_bit']:04x}, hold {meta['hold_us']/1000:.1f} ms")
+
+    # Focus is the silent killer: SendInput lands in whatever window is
+    # foreground, so a notification stealing focus mid-run redirects every
+    # remaining press somewhere else. The failure signature is FEWER edges, not
+    # wrong ones, which is invisible in any statistic computed from what did
+    # arrive.
+    skipped = meta.get("skipped_unfocused", 0)
+    if skipped:
+        print(f"  {skipped} pulse(s) were skipped: the game window did not "
+              f"have focus. Foreground was {meta.get('foreground_when_skipped')}")
+    # Skipping is the right behaviour (the alternative is typing into someone
+    # else's window), but a hole in the schedule is still a hole: the presses
+    # that did land are no longer a uniform sample of the period, which is the
+    # one property the window pivot depends on.
+    if skipped > 0.1 * meta["count"]:
+        print(f"REFUSED: {100.0*skipped/meta['count']:.0f}% of the schedule "
+              f"was skipped for lack of focus; what remains is not a uniform "
+              f"sample of the period", file=sys.stderr)
+        return 3
+
+    conv = wall_to_mono(log)
+    if conv is None:
+        print("REFUSED: fewer than two CLOCKSAMPLE records — the injector's "
+              "wall timestamps cannot be placed on the log's timebase",
+              file=sys.stderr)
+        return 3
+
+    bit = meta["pad_bit"]
+    presses = sorted((ed for ed in edges
+                      if (ed.edge_delta & bit) and not (ed.edge_bits & bit)),
+                     key=lambda e: e.t_ns)
+    press_t = [e.t_ns for e in presses]
+
+    # VBLs indexed by their grid point, for "which period did this land in".
+    paced = [v for v in yielded if v.deadline_ns]
+    paced.sort(key=lambda v: v.deadline_ns)
+    dls = [v.deadline_ns for v in paced]
+
+    matched, unmatched = [], 0
+    for p in pulses:
+        t = conv(p["down_wall_ns"])
+        i = bisect.bisect_left(press_t, t)
+        if i >= len(presses):
+            unmatched += 1
+            continue
+        ed = presses[i]
+        # A press the game saw far later than the injection is not this
+        # injection: allow one gap between pulses, no more.
+        if ed.t_ns - t > meta["gap_us"] * 1000:
+            unmatched += 1
+            continue
+        j = bisect.bisect_left(seqs, ed.edge_seq)
+        v = yielded[j] if j < len(yielded) else None
+        if v is None or (v.latched_bits & bit):
+            unmatched += 1          # never latched, or already released
+            continue
+        matched.append((t, ed, v))
+
+    got = len(matched)
+    print(f"  {got} matched, {unmatched} unaccounted")
+    if got < 0.9 * len(pulses):
+        print(f"REFUSED: only {100.0*got/max(1,len(pulses)):.0f}% of injected "
+              f"presses reached the game. Tier B fails by DELIVERING LESS, so "
+              f"a statistic over what arrived would describe a biased sample. "
+              f"Check focus, elevation (UIPI blocks a non-elevated injector "
+              f"against an elevated window), and that the scancode is bound.",
+              file=sys.stderr)
+        return 3
+
+    pump = [ed.t_ns - t for t, ed, _v in matched]
+    e2e = [v.exec_start_ns - t for t, _ed, v in matched]
+    print(f"  OS + pump (inject -> publish): p50 {us(ps.percentile(pump,50))} "
+          f"p99 {us(ps.percentile(pump,99))} max {us(max(pump))}")
+    print("    the share no in-process source can see; it is why Tier A may "
+          "not print an end-to-end number.")
+    print(f"  end to end (inject -> consuming VBL start): "
+          f"p50 {us(ps.percentile(e2e,50))} p99 {us(ps.percentile(e2e,99))} "
+          f"max {us(max(e2e))}")
+
+    # ---- I2: the latch window, as a pivot.
+    #
+    # For each injection, which VBL consumed it, counted from the VBL whose
+    # grid period the injection landed in. Early phases should be consumed by
+    # the next VBL and late phases by the one after; the phase where that step
+    # happens IS the window edge, and it must not move under load.
+    nb = 20
+    bins = [[] for _ in range(nb)]
+    idx_of = {id(v): k for k, v in enumerate(paced)}
+    for t, _ed, v in matched:
+        k = bisect.bisect_right(dls, t) - 1
+        if k < 0 or id(v) not in idx_of:
+            continue
+        off = idx_of[id(v)] - k
+        bins[min(nb - 1, int((((t - dls[k]) % period) / period) * nb))].append(off)
+
+    occupied = sum(1 for b in bins if b)
+    if occupied < nb // 2:
+        print(f"  window pivot: only {occupied}/{nb} phase bins were reached — "
+              f"the injection did not cover the period, so no window edge can "
+              f"be read from it")
+        return 0
+
+    print(f"  latch window ({sum(len(b) for b in bins)} pulse(s); 'consumed by'"
+          f" counts VBLs after the one whose period the press landed in):")
+    prev_mode, step_at, mixed = None, None, []
+    for i, b in enumerate(bins):
+        if not b:
+            print(f"    {i/nb:.2f}-{(i+1)/nb:.2f}      -")
+            continue
+        mode = max(set(b), key=b.count)
+        agree = 100.0 * b.count(mode) / len(b)
+        mark = ""
+        if prev_mode is not None and mode != prev_mode:
+            mark = "  <-- step"
+            step_at = i / nb
+        # A bin where not every press went to the same VBL is straddling the
+        # boundary: some arrived just before the cutoff and some just after.
+        # That is the window edge whether or not the MODE changes, and reading
+        # only the mode misses an edge sitting on a bin boundary.
+        if agree < 100.0:
+            mixed.append((i / nb, agree))
+            mark = mark or "  <-- straddles the cutoff"
+        prev_mode = mode
+        print(f"    {i/nb:.2f}-{(i+1)/nb:.2f}  n={len(b):4d}  consumed by +{mode}"
+              f"  ({agree:.0f}% in that tick){mark}")
+
+    offsets = sorted({max(set(b), key=b.count) for b in bins if b})
+    if step_at is not None:
+        print(f"    the step is the latch-window edge, at phase ~{step_at:.2f} "
+              f"of the period.")
+    elif len(offsets) == 1 and mixed:
+        print(f"    no step INSIDE the period: every arrival phase is consumed "
+              f"by the same VBL (+{offsets[0]}), and the only mixed bin(s) are "
+              f"at " + ", ".join(f"{p:.2f}" for p, _ in mixed) + ". The window "
+              f"edge coincides with the grid point itself — which is the fixed "
+              f"window this plan claims: arrival phase does not decide which "
+              f"VBL sees the press.")
+    elif len(offsets) == 1:
+        print(f"    every phase consumed by +{offsets[0]} with no mixed bin. "
+              f"Either the window edge falls exactly between two bins, or the "
+              f"injection phase did not actually vary — check the phase "
+              f"histogram is uniform before reading this as a result.")
+    else:
+        print(f"    offsets {offsets} with no clean step: the consuming VBL is "
+              f"not a function of arrival phase alone, which is what a "
+              f"VARIABLE input window looks like.")
+    print(f"    the edge must sit at the same phase under load; a moving edge "
+          f"is a variable input window, which is the thing this plan exists to "
+          f"rule out.")
+    return 0
+
+
 def cmd_input(a):
     log, kept, excluded = load(a.log, a.warmup)
     print("env: " + " ".join(f"{k}={v}" for k, v in sorted(log.env.items())))
@@ -1001,6 +1186,13 @@ def cmd_input(a):
               "every loss is explained by a latch interval wider than its "
               "hold.")
 
+
+    # ---- Tier B: external injection, the only end-to-end measurement here.
+    if a.inject:
+        rc = report_injection(log, a, period, yielded, seqs, edges)
+        if rc:
+            return rc
+
     # ---- Phase of the edge within the consuming VBL's own grid period.
     #
     # Anchored on that VBL's recorded deadline rather than on a reconstructed
@@ -1097,6 +1289,11 @@ def main():
 
     p = add("input", cmd_input,
             "input latch phase, pad-read phase, edge mapping")
+    p.add_argument("--inject", type=Path,
+                   help="sidecar written by inject_input.py (M5 Tier B): the "
+                        "only input that can measure the OS and pump time "
+                        "ahead of the publish instant, and the only one that "
+                        "can drive a known arrival phase")
     p.add_argument("--hold-us", type=int, default=0,
                    help="override the recorded pulse hold when deciding "
                         "whether a lost press was available to be taken; the "
