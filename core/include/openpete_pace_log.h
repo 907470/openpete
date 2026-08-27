@@ -236,6 +236,16 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes);
  * Call once per iteration, immediately before the yield. */
 int64_t openpete_pace_inject(int paced);
 
+/* OPENPETE_PACE_INJECT_PRESENT_US=N: add N µs of busy work to every
+ * intermediate present, inflating its measured cost.
+ *
+ * This is the shed predicate's proof of engagement. A shed that has never
+ * been observed to fire is an assertion, not a mechanism: the fault injector
+ * makes presents too expensive to fit before the tick deadline, and the
+ * contract — presents are shed, ticks hold phase — becomes a thing that can
+ * be checked rather than believed. Returns the µs actually spent. */
+int64_t openpete_pace_inject_present(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -383,18 +383,35 @@ def cmd_drift(a):
               f"(one per 10 s)")
 
     hits = ps.cusum([r.phase_err_ns for r in kept])
-    declared = log.windows()
-    unexplained = []
+    # A re-anchor is DECLARED if the log already accounts for it: a masking
+    # window, or a slip clamp. A clamp abandons the grid deliberately and says
+    # so in the slip ledger, so re-reporting it here as an undeclared
+    # re-anchor would flag the instrument's own honest record as a finding.
+    declared = [(b, e) for _, b, e in log.windows()]
+    declared += [(r.t_ns, r.t_ns) for r in log.of(pacelog.SLIP)]
+    unexplained, small = [], 0
     for i, direction in hits:
         when = kept[i].exec_start_ns
-        near = any(b - 2e9 <= when <= e + 2e9 for _, b, e in declared)
-        (declared and near) or unexplained.append((i, direction, when))
+        # Magnitude floor, for the same reason `diff` has one. The sign
+        # statistic resolves ARBITRARILY small shifts given enough samples —
+        # it flagged a 1.7 us wander across 3296 VBLs — but a re-anchor
+        # abandons the grid, so its step is a pacing-scale event. A shift
+        # below the plan's own phase goal is not one.
+        before = ps.median([r.phase_err_ns for r in kept[max(0, i - 200):i]])
+        after = ps.median([r.phase_err_ns for r in kept[i:i + 200]])
+        shift = abs(after - before)
+        if shift < a.step_floor_us * 1000:
+            small += 1
+            continue
+        if not any(b - 2e9 <= when <= e + 2e9 for b, e in declared):
+            unexplained.append((i, direction, when, shift))
     if hits:
-        print(f"grid steps: {len(hits)} detected, {len(unexplained)} outside a "
-              f"declared window")
-        for i, d, when in unexplained[:10]:
+        print(f"grid steps: {len(hits)} detected, {small} below the "
+              f"{a.step_floor_us:g}us floor, {len(unexplained)} undeclared")
+        for i, d, when, shift in unexplained[:10]:
             print(f"  VBL #{kept[i].index} at t={(when-log.epoch_ns)/1e9:.3f}s "
-                  f"({'up' if d > 0 else 'down'}) — UNDECLARED re-anchor")
+                  f"({'up' if d > 0 else 'down'} {shift/1e3:.1f}us) — "
+                  f"UNDECLARED re-anchor")
     else:
         print("grid steps: none")
 
@@ -761,6 +778,9 @@ def main():
 
     p = add("drift", cmd_drift, "frequency error + undeclared re-anchors")
     p.add_argument("--ppm", type=float, default=1.0)
+    p.add_argument("--step-floor-us", type=float, default=250.0,
+                   help="median shift below which a detected step is wander, "
+                        "not a grid re-anchor (default: the phase goal)")
     p.add_argument("--min-segment", type=int, default=100,
                    help="shortest slip-free run of VBLs worth fitting")
 

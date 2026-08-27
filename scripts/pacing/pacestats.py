@@ -135,54 +135,88 @@ def drift_ppm(indices, times_ns, nominal_period_ns):
     return (slope - nominal_period_ns) / nominal_period_ns * 1e6, slope
 
 
-def drift_ppm_se(indices, times_ns, nominal_period_ns):
-    """One-sigma uncertainty on drift_ppm, same units."""
-    if nominal_period_ns == 0:
+def drift_ppm_se(indices, times_ns, nominal_period_ns, blocks=True,
+                 n_resample=200, seed=99):
+    """One-sigma uncertainty on drift_ppm, same units.
+
+    By default via a MOVING-BLOCK BOOTSTRAP of the residuals rather than the
+    textbook OLS standard error. The textbook formula assumes independent
+    residuals; pacing phase errors are strongly serially correlated — a busy
+    stretch is late for many consecutive ticks — and under correlation it
+    understates the uncertainty badly. Observed: two 55 s runs of the same
+    configuration reported -0.20 +/- 0.14 and +2.24 +/- 0.52 ppm, disagreeing
+    by far more than either interval allowed. An interval that excludes the
+    truth is worse than a wide one, because a gate believes it.
+
+    Blocks of ~sqrt(n) consecutive residuals preserve that correlation
+    structure while resampling."""
+    n = len(indices)
+    if nominal_period_ns == 0 or n < 8:
         return float("inf")
-    return ols_slope_se(indices, times_ns) / nominal_period_ns * 1e6
+    if not blocks:
+        return ols_slope_se(indices, times_ns) / nominal_period_ns * 1e6
+
+    slope, intercept = ols_slope(indices, times_ns)
+    resid = [y - (slope * x + intercept) for x, y in zip(indices, times_ns)]
+    blk = max(2, int(math.sqrt(n)))
+    n_blocks = n // blk
+    if n_blocks < 4:
+        return ols_slope_se(indices, times_ns) / nominal_period_ns * 1e6
+
+    import random
+    rng = random.Random(seed)
+    slopes = []
+    for _ in range(n_resample):
+        r = []
+        while len(r) < n:
+            st = rng.randrange(0, n - blk)
+            r.extend(resid[st:st + blk])
+        y = [slope * x + intercept + e for x, e in zip(indices, r[:n])]
+        slopes.append(ols_slope(indices, y)[0])
+    m = sum(slopes) / len(slopes)
+    var = sum((v - m) ** 2 for v in slopes) / max(1, len(slopes) - 1)
+    return math.sqrt(var) / nominal_period_ns * 1e6
 
 
 def cusum(vals, threshold=4.0, min_seg=25, _base=0):
-    """Change-point detection by the CUSUM statistic, binary-segmented.
+    """Change-point detection on the MEDIAN, binary-segmented.
 
-    Finds where the mean STEPS, which is what an undeclared grid re-anchor
-    looks like: the run is tight before and tight after, so no percentile and
-    no histogram notices — only the reference moved.
+    Finds where the typical value steps, which is what an undeclared grid
+    re-anchor looks like: tight before, tight after, only the reference moved.
+    No percentile and no histogram notices it.
 
-    The estimator is the standard one: with S_k the cumulative sum of
-    (v_i - mean), the change point is argmax |S_k|, and it is significant when
-    max|S| / (scale * sqrt(n)) exceeds `threshold`. A sequential CUSUM keyed on
-    the GLOBAL median cannot be used here: after a step the median sits between
-    the two levels, so the pre-step half reads as a sustained excursion and the
-    detector fires near the start of the run instead of at the step.
+    The statistic is a SIGN cumulative sum — sum of sign(v_i - median) — not
+    a cumulative sum of deviations. That distinction is the whole thing on
+    this data. Pacing distributions are a needle with heavy tails: the robust
+    scale is ~1.6 us while a single scheduler outlier is ~17 ms, ten thousand
+    times larger. A deviation-based statistic scaled by a robust sigma is
+    then guaranteed to trip on any one outlier, and it did — 60 spurious
+    "undeclared re-anchors" in a run that had none, while every segment's
+    median was identical to within 0.2 us.
 
-    Scale is the robust sigma, so the threshold adapts to a quiet run rather
-    than tripping on its own noise floor.
+    Sign steps are +/-1 regardless of how extreme an outlier is, so the walk
+    is bounded and a threshold on max|S| / sqrt(n) means what it says.
 
     Returns [(index, direction)] sorted by index, direction +1 / -1."""
     n = len(vals)
     if n < 2 * min_seg:
         return []
-    mean = sum(vals) / n
-    scale = robust_sigma(vals)
-    if scale <= 0:
-        return []
+    med = median(vals)
 
     best_k, best_s, run = 0, 0.0, 0.0
     for i in range(n - 1):
-        run += vals[i] - mean
+        d = vals[i] - med
+        run += (1.0 if d > 0 else (-1.0 if d < 0 else 0.0))
         if abs(run) > abs(best_s):
             best_s, best_k = run, i + 1
 
-    if abs(best_s) / (scale * math.sqrt(n)) < threshold:
+    if abs(best_s) / math.sqrt(n) < threshold:
         return []
     if best_k < min_seg or n - best_k < min_seg:
         return []
 
-    left_mean = sum(vals[:best_k]) / best_k
-    right_mean = sum(vals[best_k:]) / (n - best_k)
-    hits = [(_base + best_k, 1 if right_mean > left_mean else -1)]
-    # Binary segmentation: a run may re-anchor more than once.
+    left, right = median(vals[:best_k]), median(vals[best_k:])
+    hits = [(_base + best_k, 1 if right > left else -1)]
     hits += cusum(vals[:best_k], threshold, min_seg, _base)
     hits += cusum(vals[best_k:], threshold, min_seg, _base + best_k)
     return sorted(hits)

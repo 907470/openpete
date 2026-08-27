@@ -1042,8 +1042,12 @@ enum { PACE_SHED_SLOT_BUSY = 1, PACE_SHED_NO_BUDGET = 2 };
  * The predicate above will not act until it has seen this many, so a cold
  * start cannot shed on an estimate of zero. */
 #define PACE_COST_WARMUP 16
+/* Consecutive sheds before one present is admitted anyway, purely to
+ * re-measure. Without it the estimator is one-way. */
+#define PACE_SHED_PROBE_EVERY 32
 static op_time_t s_present_cost_ema;
 static int       s_present_cost_n;
+static int       s_present_shed_run;
 
 static void pace_record_present(uint8_t kind)
 {
@@ -3677,16 +3681,47 @@ static int run_host_loop(const openpete_options_t* opts) {
                 && !openpete_unlock_fps) {
             const op_time_t margin = s_present_cost_ema + s_present_cost_ema / 4;
             if (op_now() + margin > next_sim.at) {
-                pace_shed_now = 1;
-                openpete_pace_shed(OP_PACE_INTERMEDIATE, PACE_SHED_NO_BUDGET,
-                                   (int64_t)s_present_cost_ema,
-                                   (int64_t)(next_sim.at - op_now()));
+                /* A shed produces no measurement, so a predictor that only
+                 * learns from presents that RAN stops learning the moment it
+                 * starts shedding: the estimate latches at whatever the last
+                 * admitted present cost — a cold start, a shader compile, one
+                 * slow scene — and sheds forever after, with nothing able to
+                 * contradict it. Observed doing exactly that: 16 presents
+                 * admitted, then every subsequent one shed for the rest of
+                 * the run.
+                 *
+                 * So let one through periodically. The probe costs one late
+                 * tick at worst and is the only way the estimate can come
+                 * back down. */
+                /* Probe only where a probe can do least harm: with at least
+                 * half the tick period still available. A counter-based probe
+                 * admits an expensive present at an arbitrary moment, which
+                 * on slow hardware means one deliberately late tick every N —
+                 * measured as a 11.7 ms tick p99 on a software rasterizer,
+                 * caused entirely by the mechanism meant to protect it.
+                 * Choosing the moment with the most budget bounds the damage
+                 * to the case where a present genuinely cannot fit in half a
+                 * tick, where a rare late tick is the price of ever
+                 * discovering the cost came back down. */
+                const op_time_t budget = next_sim.at - op_now();
+                if (++s_present_shed_run >= PACE_SHED_PROBE_EVERY
+                        && budget > (op_time_t)g_openpete_tick_period_ns / 2) {
+                    s_present_shed_run = 0;
+                } else {
+                    pace_shed_now = 1;
+                    openpete_pace_shed(OP_PACE_INTERMEDIATE, PACE_SHED_NO_BUDGET,
+                                       (int64_t)s_present_cost_ema,
+                                       (int64_t)(next_sim.at - op_now()));
+                }
+            } else {
+                s_present_shed_run = 0;
             }
         }
 
         if (native_intermediate && !pace_shed_now) {
             const op_time_t pace_span_t0 = op_now();
             op_time_t pace_extract_ns = 0;
+            openpete_pace_inject_present();   /* fault injection, off by default */
             /* World-liveness gate: only re-derive the scene while canonical
              * presents are FLOWING (the last one within ~3 sim ticks on the
              * virtual clock). When the world is stuck — CD load, level

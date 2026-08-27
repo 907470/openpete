@@ -114,6 +114,33 @@ def test_drift():
     check("a 20k-VBL exact grid resolves well below 1 ppm",
           se_long * 2 < 1.0, f"1-sigma {se_long:.6f} ppm")
 
+    # Serially correlated residuals: the textbook OLS standard error assumes
+    # independence and understates the uncertainty when a run is late for
+    # many consecutive ticks, which is exactly how pacing misbehaves. The
+    # block bootstrap must report a wider interval than OLS on the same data.
+    rng_ac = random.Random(101)
+    ac, e = [], 0.0
+    for i in range(4000):
+        e = 0.98 * e + rng_ac.gauss(0, 40_000)    # AR(1), long memory
+        ac.append(int(i * VBL_NS + e))
+    ac_idx = list(range(4000))
+    se_ols = ps.drift_ppm_se(ac_idx, ac, VBL_NS, blocks=False)
+    se_blk = ps.drift_ppm_se(ac_idx, ac, VBL_NS)
+    check("block bootstrap widens the interval under autocorrelation",
+          se_blk > se_ols * 1.5,
+          f"OLS {se_ols:.3f} ppm vs block {se_blk:.3f} ppm")
+    # ...and must NOT inflate when residuals really are independent, or every
+    # drift figure becomes unnecessarily unresolvable. (Checked on a noisy
+    # grid, not the exact one: with zero residuals both estimators are zero
+    # and the comparison is meaningless.)
+    rng_iid = random.Random(103)
+    iid = [int(i * VBL_NS + rng_iid.gauss(0, 40_000)) for i in range(4000)]
+    r_ols = ps.drift_ppm_se(ac_idx, iid, VBL_NS, blocks=False)
+    r_blk = ps.drift_ppm_se(ac_idx, iid, VBL_NS)
+    check("...and does not inflate when residuals ARE independent",
+          0.5 < r_blk / max(1e-12, r_ols) < 2.0,
+          f"OLS {r_ols:.4f} ppm vs block {r_blk:.4f} ppm")
+
     # CUSUM: an undeclared re-anchor is a STEP in the mean. No percentile
     # notices it — the run is tight before and tight after.
     rng = random.Random(7)
@@ -126,6 +153,26 @@ def test_drift():
           f"first change at {hits[0][0] if hits else None}, true 500")
     check("CUSUM is quiet on a run with no step", not ps.cusum(quiet),
           f"{len(ps.cusum(quiet))} false positive(s)")
+
+    # The case that matters, and that a clean-Gaussian fixture cannot reach:
+    # a needle with heavy tails, which is the measured shape of real pacing
+    # data. A deviation-based CUSUM scaled by a robust sigma fires on every
+    # outlier here — observed as 60 spurious change points in a run whose
+    # segment medians were identical.
+    rng_h = random.Random(31)
+    heavy = []
+    for i in range(2000):
+        heavy.append(rng_h.gauss(10_000, 1_600)
+                     if rng_h.random() > 0.01 else rng_h.uniform(1e6, 17e6))
+    check("CUSUM is quiet on a heavy-tailed run with no median step",
+          not ps.cusum(heavy),
+          f"{len(ps.cusum(heavy))} false positive(s) among 1% huge outliers")
+
+    heavy_step = heavy[:1000] + [v + 200_000 for v in heavy[1000:]]
+    hits_h = ps.cusum(heavy_step)
+    check("CUSUM still finds a median step under heavy tails",
+          bool(hits_h) and approx(hits_h[0][0], 1000, 60),
+          f"first change at {hits_h[0][0] if hits_h else None}, true 1000")
     # Each half is individually tight, so no percentile taken within a half
     # reveals the step: only the reference moved. That is what CUSUM is for.
     lo_p99 = ps.percentile(stepped[:500], 99) - ps.median(stepped[:500])
