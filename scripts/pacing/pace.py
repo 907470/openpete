@@ -234,6 +234,25 @@ def cmd_summary(a):
     ren = [r for r in slips if r.flags]
     print(f"slips: sim {len(sim)} event(s)/{sum(r.a for r in sim)} VBL period(s) "
           f"discarded; render {len(ren)}/{sum(r.a for r in ren)}")
+    spans = log.of(pacelog.PRESENT_SPAN)
+    if spans:
+        c = [r.span_cost_ns for r in spans]
+        e = [r.span_extract_ns for r in spans]
+        # What an intermediate present costs the sim thread, and how much of
+        # it a shed actually avoids.
+        print(f"intermediate present cost: p50 {us(ps.percentile(c,50))} "
+              f"p99 {us(ps.percentile(c,99))} max {us(max(c))}  "
+              f"(scene rebuild p50 {us(ps.percentile(e,50))})")
+
+    sheds = log.of(pacelog.SHED)
+    if sheds:
+        by_reason = {}
+        for r in sheds:
+            by_reason[r.aux] = by_reason.get(r.aux, 0) + 1
+        names = {1: "slot busy", 2: "no budget before the tick deadline"}
+        print("sheds: " + ", ".join(f"{v} {names.get(k, k)}"
+                                    for k, v in sorted(by_reason.items())))
+
     pres = log.of(pacelog.PRESENT)
     print(f"presents: {sum(1 for r in pres if not r.flags)} canonical, "
           f"{sum(1 for r in pres if r.flags)} intermediate; "
@@ -490,6 +509,19 @@ def cmd_attribute(a):
         if wi > 0:
             wake_before[r.index] = wakes[wi - 1]
 
+    # Present spans, bucketed by second so the per-tail scan stays linear.
+    spans = sorted(log.of(pacelog.PRESENT_SPAN), key=lambda r: r.t_ns)
+    spans_by_s = {}
+    for sp in spans:
+        spans_by_s.setdefault(sp.t_ns // 1_000_000_000, []).append(sp)
+
+    def spans_near(r):
+        sec = r.exec_start_ns // 1_000_000_000
+        out = []
+        for k in (sec - 1, sec):
+            out.extend(spans_by_s.get(k, ()))
+        return out
+
     by_index = {r.index: i for i, r in enumerate(kept)}
     for r in tails:
         i = by_index[r.index]
@@ -530,6 +562,12 @@ def cmd_attribute(a):
                         (p.queue_block_ns, "present/queue"),
                         (p.recreate_block_ns, "present/recreate"))
             cause = worst[1]
+        elif any(s.span_start_ns <= hi and s.t_ns >= r.deadline_ns
+                 for s in spans_near(r)):
+            # Present CPU — the scene rebuild, recording, submission — landing
+            # across this tick's deadline. Not a blocked call; ordinary work
+            # on the thread that owns the sim clock.
+            cause = "present cpu (span)"
         elif any(b <= hi and lo <= e for _, b, e in windows):
             cause = "declared window"
         if cause:

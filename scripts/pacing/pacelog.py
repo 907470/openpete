@@ -22,10 +22,12 @@ VERSION = 1
 HEADER_FIXED = 64
 RECORD_BYTES = 48
 
-VBL, PRESENT, SHED, SLIP, INPUT_EDGE, WINDOW, CLOCKSAMPLE, WAKE = range(1, 9)
+(VBL, PRESENT, SHED, SLIP, INPUT_EDGE, WINDOW, CLOCKSAMPLE, WAKE,
+ PRESENT_SPAN) = range(1, 10)
 TYPE_NAMES = {VBL: "VBL", PRESENT: "PRESENT", SHED: "SHED", SLIP: "SLIP",
               INPUT_EDGE: "INPUT_EDGE", WINDOW: "WINDOW",
-              CLOCKSAMPLE: "CLOCKSAMPLE", WAKE: "WAKE"}
+              CLOCKSAMPLE: "CLOCKSAMPLE", WAKE: "WAKE",
+              PRESENT_SPAN: "PRESENT_SPAN"}
 NAME_TYPES = {v: k for k, v in TYPE_NAMES.items()}
 
 F_SLIPPED, F_UNLOCK, F_PAUSED, F_STEPPED = 1, 2, 4, 8
@@ -72,6 +74,15 @@ class Record:
 
     # PRESENT accessors. `t_ns` is when the present path RETURNED; the block
     # fields are the waits it imposed before that.
+    # PRESENT_SPAN accessors: how long a present occupied the thread that
+    # also owns the sim clock, and how much of that was the scene rebuild.
+    @property
+    def span_start_ns(self): return self.a
+    @property
+    def span_cost_ns(self): return self.b
+    @property
+    def span_extract_ns(self): return self.c
+
     # WAKE accessors.
     @property
     def wake_target_ns(self): return self.a
@@ -240,6 +251,9 @@ def fmt_record(r, epoch_ns):
                 f"delta 0x{r.aux:04x} analog {r.flags}")
     if r.type == WINDOW:
         return f"{t:10.4f} WINDOW  id {r.aux} {'begin' if r.flags else 'end'}"
+    if r.type == PRESENT_SPAN:
+        return (f"{t:10.4f} SPAN    {'intermediate' if r.flags else 'canonical'} "
+                f"cost {r.b/1e3:8.1f}us (extract {r.c/1e3:8.1f}us)")
     if r.type == WAKE:
         return (f"{t:10.4f} WAKE    target {(r.a - epoch_ns)/1e9:.6f}s "
                 f"os {r.b/1e3:+.1f}us behind {r.c/1e3:+.1f}us")

@@ -2403,6 +2403,11 @@ int openpete_native_tercache_usable(void)
         && (s_force || !rhi_device_is_software(s_nr.dev));
 }
 
+uint64_t openpete_native_render_fence_sheds(void)
+{
+    return s_nr.dev ? rhi_fence_sheds(s_nr.dev) : 0;
+}
+
 const char* openpete_native_render_gpu_name(void)
 {
     return s_nr.dev ? rhi_device_name(s_nr.dev) : "unknown";

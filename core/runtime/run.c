@@ -1035,11 +1035,37 @@ static void pace_sleep_until(op_time_t deadline_ns)
  * owns its own waits rather than a running total: under the thread split the
  * presenting thread is the sim thread, which makes a blocked present a
  * candidate cause for the next tick's lateness. */
+/* Reasons a present did not reach the display. */
+enum { PACE_SHED_SLOT_BUSY = 1, PACE_SHED_NO_BUDGET = 2 };
+
+/* Rolling cost of an intermediate present, and how many have been measured.
+ * The predicate above will not act until it has seen this many, so a cold
+ * start cannot shed on an estimate of zero. */
+#define PACE_COST_WARMUP 16
+static op_time_t s_present_cost_ema;
+static int       s_present_cost_n;
+
 static void pace_record_present(uint8_t kind)
 {
     int64_t blk[RHI_BLOCK_PHASE_COUNT] = {0};
     rhi_take_block_times(blk, RHI_BLOCK_PHASE_COUNT);
-    openpete_pace_present(kind, op_now(),
+    const op_time_t now_ns = op_now();
+
+    /* A present ATTEMPT that the swapchain refused is a shed, not a present.
+     * Recording it as one keeps the two legible apart: the display rate is
+     * what actually reached the screen, and the shed count is the price the
+     * sim clock is no longer paying. */
+    static uint64_t s_prev_sheds;
+    const uint64_t sheds = openpete_native_render_fence_sheds();
+    if (sheds != s_prev_sheds) {
+        const uint64_t n = sheds - s_prev_sheds;
+        s_prev_sheds = sheds;
+        for (uint64_t i = 0; i < n; i++)
+            openpete_pace_shed(kind, PACE_SHED_SLOT_BUSY,
+                               blk[RHI_BLOCK_FENCE], 0);
+        return;
+    }
+    openpete_pace_present(kind, now_ns,
                           blk[RHI_BLOCK_FENCE], blk[RHI_BLOCK_ACQUIRE],
                           blk[RHI_BLOCK_PRESENT], blk[RHI_BLOCK_RECREATE]);
 }
@@ -3635,7 +3661,32 @@ static int run_host_loop(const openpete_options_t* opts) {
             openpete_native_render_enabled() &&
             native_re != NULL &&
             !(g_paused && !g_step_one);
-        if (native_intermediate) {
+        /* Predictive shed: an intermediate present is optional, and a tick is
+         * not. If this present would not finish before the sim's next
+         * deadline, skip it — the pacing contract is that presents are shed
+         * before ticks slip, and a display frame nobody was promised is the
+         * cheapest thing in the system to give up.
+         *
+         * The cost estimate is an EMA of what intermediate presents have
+         * actually taken on this machine in this scene, measured below, so it
+         * adapts to the hardware instead of encoding a guess about it. A
+         * fresh EMA admits the first presents unconditionally: refusing to
+         * present until a cost is known would never learn one. */
+        int pace_shed_now = 0;
+        if (native_intermediate && s_present_cost_n >= PACE_COST_WARMUP
+                && !openpete_unlock_fps) {
+            const op_time_t margin = s_present_cost_ema + s_present_cost_ema / 4;
+            if (op_now() + margin > next_sim.at) {
+                pace_shed_now = 1;
+                openpete_pace_shed(OP_PACE_INTERMEDIATE, PACE_SHED_NO_BUDGET,
+                                   (int64_t)s_present_cost_ema,
+                                   (int64_t)(next_sim.at - op_now()));
+            }
+        }
+
+        if (native_intermediate && !pace_shed_now) {
+            const op_time_t pace_span_t0 = op_now();
+            op_time_t pace_extract_ns = 0;
             /* World-liveness gate: only re-derive the scene while canonical
              * presents are FLOWING (the last one within ~3 sim ticks on the
              * virtual clock). When the world is stuck — CD load, level
@@ -3654,7 +3705,9 @@ static int run_host_loop(const openpete_options_t* opts) {
             if (world_live) {
                 uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
                 vp_set_present_target();      /* even display-slot time for this present */
+                const op_time_t ex0 = op_now();
                 native_re(&g_game.cpu);       /* rebuild s_scene @ interpolated gamestate */
+                pace_extract_ns = op_now() - ex0;
                 if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
             }
             /* Mod draw service: present hooks at sub-tick alpha (no commit). */
@@ -3670,6 +3723,18 @@ static int run_host_loop(const openpete_options_t* opts) {
             ftl_record_present(&frame_time_log, frame_time_log_start_ns,
                                frame_time_log_target_period_ns, openpete_frame);
             pace_record_present(OP_PACE_INTERMEDIATE);
+            {
+                /* Feed the predictor from measured cost, and log the span so
+                 * attribution can name present CPU as a cause of a late tick
+                 * rather than reporting it as unattributed. */
+                const op_time_t span = op_now() - pace_span_t0;
+                openpete_pace_present_span(OP_PACE_INTERMEDIATE, pace_span_t0,
+                                           pace_span_t0 + span, pace_extract_ns);
+                s_present_cost_ema = s_present_cost_n
+                    ? (s_present_cost_ema * 7 + span) / 8
+                    : span;
+                if (s_present_cost_n < PACE_COST_WARMUP) s_present_cost_n++;
+            }
 
             /* Perf trace: close out this intermediate present (re-extract +
              * native render spans since the canonical present bind here). */

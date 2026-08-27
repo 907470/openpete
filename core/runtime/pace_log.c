@@ -436,6 +436,20 @@ void openpete_pace_wake(int64_t request_ns, int64_t target_ns, int64_t wake_ns)
     pace_emit(&r);
 }
 
+void openpete_pace_present_span(uint8_t kind, int64_t start_ns,
+                                int64_t end_ns, int64_t extract_ns)
+{
+    if (!s_fp) return;
+    pace_rec_t r = {0};
+    r.type  = OP_PACE_PRESENT_SPAN;
+    r.flags = kind;
+    r.t_ns  = end_ns;
+    r.a     = start_ns;
+    r.b     = end_ns - start_ns;
+    r.c     = extract_ns;
+    pace_emit(&r);
+}
+
 void openpete_pace_window(uint16_t id, int begin)
 {
     if (!s_fp) return;

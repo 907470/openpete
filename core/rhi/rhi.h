@@ -148,8 +148,14 @@ const char *rhi_driver_version(const rhi_device *dev);
  * a pacing quantity rather than a rendering one. Read-and-clear: each call
  * returns the nanoseconds accumulated since the previous one. */
 enum { RHI_BLOCK_FENCE = 0, RHI_BLOCK_ACQUIRE, RHI_BLOCK_PRESENT,
-       RHI_BLOCK_RECREATE, RHI_BLOCK_PHASE_COUNT };
+       RHI_BLOCK_RECREATE, RHI_BLOCK_IMAGE_FENCE, RHI_BLOCK_PHASE_COUNT };
 void rhi_take_block_times(int64_t *out, int n);
+
+/* Presents skipped because the slot's previous submission had not retired.
+ * Windowed only: rather than block the presenting thread on the display's
+ * cadence — which under the host thread split is also the sim thread — the
+ * frame is dropped. Monotonic; the caller diffs it. */
+uint64_t rhi_fence_sheds(const rhi_device *dev);
 /* True when the picked physical device is a software rasterizer (llvmpipe
  * reports VK_PHYSICAL_DEVICE_TYPE_CPU). Heavy vertex-shader paths (the
  * terrain sector-mesh cache) auto-disable on it. */

@@ -82,6 +82,9 @@ struct rhi_device {
     int                      vsync_pref; /* --vsync: 1 = FIFO (vsync ON), 0 = vsync
                                           * OFF, -1 = unset (env / default). Read by
                                           * choose_present_mode on (re)create. */
+    uint64_t                 fence_sheds; /* presents skipped rather than
+                                           * blocking the caller on the
+                                           * display's cadence */
     VkPresentModeKHR         present_mode_granted; /* what the swapchain was
                                           * actually built with -- the requested
                                           * mode is not evidence of anything. */
@@ -1502,6 +1505,12 @@ uint64_t rhi_frame_serial(rhi_device *dev) { (void)dev; return s_frame_serial; }
 #ifndef RHI_RESIZE_SETTLE_NS
 #define RHI_RESIZE_SETTLE_NS    (150ull * 1000ull * 1000ull)  /* 150 ms */
 #endif
+/* Backstop only: by this point the slot poll has already passed, so this
+ * fence is normally signalled. Bounding it keeps a driver hiccup from parking
+ * the sim thread indefinitely, the same reasoning as the acquire timeout. */
+#ifndef RHI_IMAGE_FENCE_TIMEOUT_NS
+#define RHI_IMAGE_FENCE_TIMEOUT_NS (32ull * 1000ull * 1000ull)   /* 32 ms */
+#endif
 #ifndef RHI_ACQUIRE_BACKOFF_NS
 #define RHI_ACQUIRE_BACKOFF_NS  (32ull * 1000ull * 1000ull)   /* 32 ms */
 #endif
@@ -1524,6 +1533,11 @@ static void rhi_note_stall_phase(const char *what, int phase, Uint64 t0)
     if (phase >= 0) s_block_ns[phase] += dt;
     if (dt >= RHI_STALL_REPORT_NS)
         RHI_LOG("stall: %s blocked %.1f ms\n", what, (double)dt / 1e6);
+}
+
+uint64_t rhi_fence_sheds(const rhi_device *dev)
+{
+    return dev ? dev->fence_sheds : 0;
 }
 
 void rhi_take_block_times(int64_t *out, int n)
@@ -1588,8 +1602,38 @@ bool rhi_begin_frame(rhi_device *dev)
     s_frame_serial++;
 
     {
+        /* Do not BLOCK on the slot's previous submission — poll it.
+         *
+         * Under FIFO this fence retires at the display's consumption rate, so
+         * waiting on it is waiting for a vblank. Whichever thread presents is
+         * then paced by the monitor, and that thread also runs the sim:
+         * measured on a 480 Hz display at the shipped default, 47.8 % of all
+         * wall time was spent inside this one call, against 0.1 % at the same
+         * present count with vsync off. The sim clock cannot be correct while
+         * the display owns it.
+         *
+         * Skipping is safe HERE specifically: this sits before
+         * vkAcquireNextImageKHR, so nothing has been consumed and no
+         * semaphore is left pending. Every caller already tolerates a false
+         * return — the bounded-acquire path established that contract for the
+         * same reason.
+         *
+         * Headless keeps the blocking wait: there is no display to pace it,
+         * and its readback path depends on the slot having retired.
+         *
+         * The queue self-paces to exactly the display rate either way; the
+         * difference is whether the excess is absorbed by shedding a present
+         * or by stalling the game. */
         Uint64 t0 = SDL_GetTicksNS();
-        vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame], VK_TRUE, UINT64_MAX);
+        if (dev->headless) {
+            vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
+                            VK_TRUE, UINT64_MAX);
+        } else if (vkGetFenceStatus(dev->device,
+                                    dev->in_flight[dev->frame]) != VK_SUCCESS) {
+            dev->fence_sheds++;
+            rhi_note_stall_phase("fence-poll", RHI_BLOCK_FENCE, t0);
+            return false;
+        }
         rhi_note_stall_phase("fence-wait", RHI_BLOCK_FENCE, t0);
     }
 
@@ -1641,8 +1685,18 @@ bool rhi_begin_frame(rhi_device *dev)
 
         /* If a previous frame is still using this image, wait on its fence. */
         if (dev->images_in_flight[dev->image_index] != VK_NULL_HANDLE) {
+            /* Bounded, and TAGGED: this wait was previously invisible to the
+             * block-time census, so attribution that blamed the slot fence
+             * could have been under-counting it. Not skippable — acquire has
+             * already consumed img_avail by this point, and returning here
+             * would leave that semaphore signalled with nothing to wait on
+             * it. In practice it is almost always already signalled once the
+             * poll above has passed, so the bound is a backstop. */
+            Uint64 iif_t0 = SDL_GetTicksNS();
             vkWaitForFences(dev->device, 1, &dev->images_in_flight[dev->image_index],
-                            VK_TRUE, UINT64_MAX);
+                            VK_TRUE, dev->headless ? UINT64_MAX
+                                                   : RHI_IMAGE_FENCE_TIMEOUT_NS);
+            rhi_note_stall_phase("image-fence", RHI_BLOCK_IMAGE_FENCE, iif_t0);
         }
         dev->images_in_flight[dev->image_index] = dev->in_flight[dev->frame];
     }

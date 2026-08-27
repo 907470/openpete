@@ -56,7 +56,8 @@ enum {
     OP_PACE_INPUT_EDGE  = 5,
     OP_PACE_WINDOW      = 6,
     OP_PACE_CLOCKSAMPLE = 7,
-    OP_PACE_WAKE        = 8
+    OP_PACE_WAKE        = 8,
+    OP_PACE_PRESENT_SPAN = 9
 };
 
 /* VBL flags. */
@@ -173,6 +174,21 @@ void openpete_pace_window(uint16_t id, int begin);
  * So the log records the OS's share as `wake - max(target, request)` and how
  * far behind the loop already was as `max(0, request - target)`. */
 void openpete_pace_wake(int64_t request_ns, int64_t target_ns, int64_t wake_ns);
+
+/* How long a present occupied the calling thread, start to finish.
+ *
+ * The PRESENT record's block times only cover the calls that BLOCK. The rest
+ * of the present path — rebuilding the interpolated scene, recording the
+ * command buffer, submitting — is ordinary CPU work on the same thread, and
+ * under the host split that thread owns the sim clock. With the blocking
+ * removed it becomes the dominant remaining cause of a late tick, and it was
+ * invisible: attribution reported it as unattributed, which is the log
+ * saying it lacks an event type. This is that event type.
+ *
+ * `extract_ns` splits out the scene rebuild, the largest single part and the
+ * one a shed predicate can actually avoid. */
+void openpete_pace_present_span(uint8_t kind, int64_t start_ns,
+                                int64_t end_ns, int64_t extract_ns);
 
 /* ---- census (always compiled, no log file needed) ----------------------- */
 

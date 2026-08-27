@@ -59,6 +59,10 @@ bool openpete_native_render_enabled(void);
  * static string valid for the process ("unknown" / "none" before the device
  * exists, and in PsyCross-only runs). The present mode is the one actually
  * granted, which is the only one a baseline may be keyed on. */
+/* Presents dropped because the swapchain slot had not retired — see
+ * rhi_fence_sheds. Monotonic. */
+uint64_t openpete_native_render_fence_sheds(void);
+
 const char* openpete_native_render_gpu_name(void);
 const char* openpete_native_render_driver_version(void);
 const char* openpete_native_render_present_mode(void);
