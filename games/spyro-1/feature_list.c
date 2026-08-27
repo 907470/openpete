@@ -25,6 +25,7 @@ extern const feature_module_t cheats_native_module;
 extern const feature_module_t levelwarp_native_module;
 extern const feature_module_t text_moby_id_module;
 extern const feature_module_t crash_demo_woah_module;
+extern const feature_module_t polybuf_guard_module;
 
 const feature_module_t* const openpete_features[] = {
     /* --render-paths: parse the path-isolation selection at startup (apply_options
@@ -117,6 +118,14 @@ const feature_module_t* const openpete_features[] = {
      * before its engine teardown and plays Crash's "woah!" (extracted from
      * the player's own disc image on first use) as an easter egg. */
     &crash_demo_woah_module,
+    /* Read-only detector for the unchecked polygon-buffer overflow: samples
+     * the prim cursor (D_800757B0) against the buffer end (D_800756FC) once
+     * per frame at BuildOrderTable, when the cursor is at its frame peak.
+     * Overrunning the buffer walks primitives into g_WorldOT, which sits
+     * immediately after it, and the OT tail-insert then dereferences primitive
+     * bytes as a node pointer — arbitrary 3-byte writes. Always falls through;
+     * OPENPETE_POLYBUF_GUARD=0 silences it, =verbose logs per-frame headroom. */
+    &polybuf_guard_module,
 };
 
 const size_t openpete_feature_count =

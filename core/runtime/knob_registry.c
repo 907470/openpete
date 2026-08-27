@@ -1126,6 +1126,11 @@ static const knob_desc_t g_builtin[] = {
         "Per-dome derived-vs-GTE matrix validation print."),
     ENVROW_LATCHED("PORTAL_REEXTRACT_DBG", "Debug diagnostics", "0",
         "1/20-frame portal replay-state print."),
+    ENVROW_LIVE("POLYBUF_GUARD", "Debug diagnostics", "0",
+        "polygon-buffer overflow detector: logs when the prim cursor "
+        "(D_800757B0) passes the buffer end (D_800756FC) and starts "
+        "overwriting g_WorldOT. 0=off (default), 1=on, "
+        "verbose=per-frame headroom"),
     ENVROW_LATCHED("NOLOD_DOME_DBG", "Debug diagnostics", "0",
         "Per-event forced-dome feed print under extended LOD."),
 #endif /* OPENPETE_HIDE_DEBUG_FLAGS */

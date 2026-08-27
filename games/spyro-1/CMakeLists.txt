@@ -206,6 +206,7 @@ add_executable(openpete-spyro1
     mod_wad_overlay.c
     feature_list.c
     features/render_paths.c
+    features/polybuf_guard.c
     features/render_decouple.c
     features/native_gte.c
     features/cyclorama_native.c
