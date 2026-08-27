@@ -21,6 +21,7 @@
  */
 
 #include "openpete_native_render.h"
+#include "openpete_perf_stats.h"
 #include "openpete_profile.h"   /* --profile-out forwarding shim */
 #include "openpete_menu.h"
 #include "openpete_devui.h"
@@ -196,20 +197,28 @@ typedef struct {
  * (OCCL_GW*OCCL_GH*4 = 12 KB) and tests whole-moby screen rects against it. */
 #define OCCL_GW 64
 #define OCCL_GH 48
-#define OVL_MAX_VERTS 4096   /* overlay (3D text-moby glyph) vertex cap (see draw_fps_overlay) */
+#define OVL_MAX_VERTS 16384  /* overlay (3D text-moby glyph) vertex cap (see draw_perf_overlay);
+                             * sized for the 4-line detailed readout, not a 1-line counter */
 #define MOD_OVL_MAX_VERTS 16384 /* mod draw-service overlay verts (see draw_mod_overlay) */
 #define MENU_MAX_VERTS 256   /* in-game menu panel/border/selection quads (see draw_menu_overlay) */
 #define MENU_GLYPH_MAX 32768 /* in-game menu 3D glyph text verts (labels/values/title);
                               * must match MENU_TXT_MAX (text_moby_native.c) — 8 rows
                               * overflowed 16384 (truncated border/last rows) */
-/* FPS-overlay supersampling: render the glyphs at OVL_SS_FACTOR× into a small
- * RGBA target covering the top-left OVL_REGION_W × OVL_REGION_H of the frame (in
+/* Stats-overlay supersampling: render the glyphs at OVL_SS_FACTOR× into a small
+ * RGBA target covering the top-left ovl_region_w() × ovl_region_h() of the frame (in
  * win_h-fraction units, matching the glyph layout's win_h-relative coords), then
  * box-downsample + alpha-blend onto the frame so the corner counter is crisp at
- * any resolution. The region is generous enough for "FPS: 9999". */
+ * any resolution. The region is generous enough for "FPS: 9999".
+ *
+ * Height follows the stats level: the detailed readout is four lines, and a
+ * region sized for one would clip the rest. It is not simply always tall —
+ * the supersample target holds OVL_SS_FACTOR^2 samples per pixel of it, so
+ * the unused height would cost real GPU memory in the common case. */
 #define OVL_SS_FACTOR  4
 #define OVL_REGION_W   0.30f
 #define OVL_REGION_H   0.05f
+#define OVL_REGION_W_DETAIL 0.45f
+#define OVL_REGION_H_DETAIL 0.15f
 /* Settings-menu glyph supersample factor. The menu region is the whole (tall)
  * panel, so this is smaller than OVL_SS_FACTOR to keep the target memory sane at
  * high resolutions (2× = 4 samples/px, a clear anti-alias). */
@@ -1311,13 +1320,14 @@ static struct {
      * OVL_SS_FACTOR× the overlay region), then ovl_resolve_pipe box-downsamples +
      * straight-alpha-blends them onto the offscreen via the ovl_quad rect — so the
      * corner counter is anti-aliased regardless of window/render res. See
-     * draw_fps_overlay. */
+     * draw_perf_overlay. */
     rhi_texture  *ovl_ss;
     int           ovl_ss_w, ovl_ss_h;
     rhi_pipeline *ovl_resolve_pipe;   /* overlay_resolve.frag, box + straight alpha, RHI_BLEND_ALPHA */
     rhi_buffer   *ovl_quad_vb;        /* composite quad at the overlay's screen rect */
     int           ovl_quad_win_w, ovl_quad_win_h;
     float         ovl_quad_ox;        /* overlay-x offset (win_h units) the quad was built at; shifts the counter right of the open settings menu */
+    float         ovl_quad_rw, ovl_quad_rh; /* region the quad was built at (grows with the stats level) */
 
     /* Settings-menu glyph/border supersample: same idea as ovl_ss but sized to the
      * menu PANEL rect (much larger). The glyph+border layer renders into menu_ss at
@@ -2085,7 +2095,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     };
     /* FPS-overlay supersample resolve: like resolve_desc but alpha-aware
      * (overlay_resolve.frag) and alpha-blended, to composite the downsampled
-     * glyphs over the scene. Optional — draw_fps_overlay falls back to a direct
+     * glyphs over the scene. Optional — draw_perf_overlay falls back to a direct
      * 1× draw if this (or ovl_quad_vb) didn't come up. */
     rhi_pipeline_desc ovl_resolve_desc = {
         .vert_spv = "psx_sample.vert.spv",
@@ -7201,9 +7211,18 @@ static bool draw_native_scene(bool full_extent)
  * (the gold extruded glyph models), built game-side by text_moby_native and
  * pushed via openpete_native_set_overlay_glyphs. Pure display: drawn only on the
  * LIVE vk present (not screenshots, ab, or diff, so the comparison images stay
- * clean). Toggle at runtime via the SHOW FPS row in the settings menu (O), or
- * start off with --show-fps 0. */
-static int s_fps_overlay  = 1;   /* enabled (default on) */
+ * clean). Toggle at runtime via the SHOW FPS row in the settings menu (O), the
+ * Performance stats row in the M overlay, or --perf-stats at launch.
+ *
+ * The overlay has three levels (openpete_perf_stats.h): off, the FPS counter,
+ * and the counter plus a pacing readout. Only the level lives here — the
+ * renderer needs it to gate the draw and to size the supersample region — and
+ * the numbers themselves are built by perf_stats.c. */
+static int s_perf_stats = OPENPETE_PERF_FPS;   /* level (default: FPS only) */
+/* The level a bare ON restores. The O menu's SHOW FPS row is a two-state
+ * mirror of a three-state setting, so turning it off and on again must not
+ * silently demote a user who picked the detailed readout in the M overlay. */
+static int s_perf_stats_last = OPENPETE_PERF_FPS;
 static int s_overlay_live = 0;   /* 1 only during the live present's compose_variant */
 static uint64_t s_fps_win_start = 0;  /* rolling 0.5s FPS window */
 static int      s_fps_frames    = 0;
@@ -7216,8 +7235,18 @@ void openpete_native_set_fps_in_record(int pref) {
     s_fps_in_record = -1;   /* re-resolve on the next recorded frame (live toggle) */
 }
 
-void openpete_native_set_fps_overlay(int on) { s_fps_overlay = on ? 1 : 0; }
-int  openpete_native_fps_overlay_enabled(void) { return s_fps_overlay; }
+void openpete_native_set_perf_stats(int level) {
+    if (level < OPENPETE_PERF_OFF) level = OPENPETE_PERF_OFF;
+    if (level >= OPENPETE_PERF_LEVELS) level = OPENPETE_PERF_LEVELS - 1;
+    s_perf_stats = level;
+    if (level != OPENPETE_PERF_OFF) s_perf_stats_last = level;
+}
+int  openpete_native_perf_stats_level(void) { return s_perf_stats; }
+
+void openpete_native_set_fps_overlay(int on) {
+    openpete_native_set_perf_stats(on ? s_perf_stats_last : OPENPETE_PERF_OFF);
+}
+int  openpete_native_fps_overlay_enabled(void) { return s_perf_stats != OPENPETE_PERF_OFF; }
 int  openpete_native_fps_value(void) { return s_fps_value; }
 
 /* Live presentation setters (in-game settings menu). Display-only: they touch
@@ -7379,10 +7408,10 @@ static void notex_apply_pending(void) {
 
 /* Overlay geometry built from Spyro's own 3D HUD text mobys (see
  * openpete_native_render.h). The game-side emitter (text_moby_native) pushes a
- * triangle list each frame; draw_fps_overlay draws it on the live present, or
+ * triangle list each frame; draw_perf_overlay draws it on the live present, or
  * nothing when empty (the game side caches the glyph models, so this is empty
- * only before the font has ever loaded — there is no bitmap fallback). Currently
- * the FPS counter; reusable for other text overlays. */
+ * only before the font has ever loaded — there is no bitmap fallback). Carries
+ * the performance-stats readout; reusable for other text overlays. */
 static openpete_hud_vert s_overlay_glyph_verts[OVL_MAX_VERTS];
 static int               s_overlay_glyph_n = 0;
 void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nverts) {
@@ -7441,8 +7470,8 @@ static bool draw_overlay_glyphs_3d(float ax, float ay, float ox) {
     for (int i = 0; i < s_overlay_glyph_n && n < OVL_MAX_VERTS; i++) {
         const openpete_hud_vert *v = &s_overlay_glyph_verts[i];
         /* Glyph coords are win_h-relative; ax/ay map them into the target's NDC.
-         * Offscreen 1×: ax=2·win_h/win_w, ay=2. Overlay SS: ax=2/OVL_REGION_W,
-         * ay=2/OVL_REGION_H — both keep glyphs square (ax/ay carry the same
+         * Offscreen 1×: ax=2·win_h/win_w, ay=2. Overlay SS: ax=2/ovl_region_w(),
+         * ay=2/ovl_region_h() — both keep glyphs square (ax/ay carry the same
          * win_h scale through the target's pixel dims). ox shifts the origin in
          * overlay-x (win_h units) — the 1× fallback path uses it to sit right of
          * the open menu; the SS prepass passes 0 (the composite quad moves). */
@@ -7495,11 +7524,11 @@ static void draw_mod_overlay(void) {
     rhi_draw(s_nr.dev, (uint32_t)n, 0);
 }
 
-/* True when the FPS overlay should render this frame: glyphs built, enabled, and
+/* True when the stats overlay should render this frame: glyphs built, on, and
  * not suppressed by the record gating (kept out of recordings unless
  * OPENPETE_FPS_IN_RECORD lets the live look be captured for verification). */
-static bool fps_overlay_should_draw(void) {
-    if (!s_fps_overlay || s_nr.win_w <= 0 || s_nr.win_h <= 0 || s_overlay_glyph_n < 3) return false;
+static bool perf_overlay_should_draw(void) {
+    if (s_perf_stats == OPENPETE_PERF_OFF || s_nr.win_w <= 0 || s_nr.win_h <= 0 || s_overlay_glyph_n < 3) return false;
     if (openpete_record_active()) {
         if (s_fps_in_record < 0) {
             if (s_fps_in_record_pref >= 0) {
@@ -7526,7 +7555,21 @@ static bool ovl_ss_ready(void) {
  * left edge when closed, so the FPS text's own left bearing reproduces the SAME
  * visual gap in both cases. Only the on-screen placement moves — the glyphs (and
  * the SS target they render into) are unchanged. */
-static float fps_overlay_ox(void) {
+/* Overlay region for the current stats level: wider and taller for the
+ * detailed readout's four lines, which are longer than "FPS: 9999" as well as
+ * more numerous. The supersample target, the composite quad and the glyph
+ * projection must all use the same rect, or the text lands in a shape other
+ * than the one it was rasterized into. */
+static float ovl_region_w(void) {
+    return (s_perf_stats >= OPENPETE_PERF_DETAIL) ? OVL_REGION_W_DETAIL
+                                                  : OVL_REGION_W;
+}
+static float ovl_region_h(void) {
+    return (s_perf_stats >= OPENPETE_PERF_DETAIL) ? OVL_REGION_H_DETAIL
+                                                  : OVL_REGION_H;
+}
+
+static float perf_overlay_ox(void) {
     if (!openpete_menu_is_open()) return 0.0f;
     openpete_menu_layout_t L; openpete_menu_get_layout(&L);
     return L.panel_x1;
@@ -7535,11 +7578,11 @@ static float fps_overlay_ox(void) {
 /* (Re)create ovl_ss at OVL_SS_FACTOR× the overlay region and rebuild the
  * composite quad on a window resize. Creates GPU resources / waits idle — call
  * OUTSIDE a frame (alongside ensure_ss_rtt). No-op if the SS pipeline/quad
- * failed at init (draw_fps_overlay then falls back to the 1× path). */
+ * failed at init (draw_perf_overlay then falls back to the 1× path). */
 static void ensure_ovl_ss(void) {
     if (!s_nr.ovl_resolve_pipe || !s_nr.ovl_quad_vb || s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
-    int rw = (int)(OVL_REGION_W * (float)s_nr.win_h + 0.5f);
-    int rh = (int)(OVL_REGION_H * (float)s_nr.win_h + 0.5f);
+    int rw = (int)(ovl_region_w() * (float)s_nr.win_h + 0.5f);
+    int rh = (int)(ovl_region_h() * (float)s_nr.win_h + 0.5f);
     if (rw < 1) rw = 1;
     if (rh < 1) rh = 1;
     int want_w = rw * OVL_SS_FACTOR, want_h = rh * OVL_SS_FACTOR;
@@ -7552,20 +7595,23 @@ static void ensure_ovl_ss(void) {
         s_nr.ovl_ss = rhi_create_render_target(s_nr.dev, (uint32_t)want_w, (uint32_t)want_h);
         s_nr.ovl_ss_w = want_w; s_nr.ovl_ss_h = want_h;
         if (s_nr.ovl_ss)
-            OPL_INFO_F("native", "FPS overlay SS target %dx%d (%d×)", want_w, want_h, OVL_SS_FACTOR);
+            OPL_INFO_F("native", "stats overlay SS target %dx%d (%d×)", want_w, want_h, OVL_SS_FACTOR);
     }
     /* Composite quad — the overlay's screen rect in offscreen NDC. Left edge sits
      * at overlay-x = want_ox (0 = flush top-left; shifted right of the panel while
-     * the menu is open, see fps_overlay_ox). Rect width is win_h-relative (glyph x
+     * the menu is open, see perf_overlay_ox). Rect width is win_h-relative (glyph x
      * uses win_h), so its NDC width scales by win_h/win_w; UV 0..1 maps the whole
      * SS target (v0 top, top-down). Rebuilt on resize OR when the offset changes
      * (menu open/close) — never per-frame, so the wait_idle stays rare. */
-    float want_ox = fps_overlay_ox();
+    float want_ox = perf_overlay_ox();
+    float want_rw = ovl_region_w();
+    float want_rh = ovl_region_h();
     if (s_nr.ovl_quad_win_w != s_nr.win_w || s_nr.ovl_quad_win_h != s_nr.win_h ||
-        s_nr.ovl_quad_ox != want_ox) {
+        s_nr.ovl_quad_ox != want_ox ||
+        s_nr.ovl_quad_rw != want_rw || s_nr.ovl_quad_rh != want_rh) {
         float ax = 2.0f * (float)s_nr.win_h / (float)s_nr.win_w;
-        float rw_ndc = OVL_REGION_W * ax;
-        float rh_ndc = OVL_REGION_H * 2.0f;
+        float rw_ndc = want_rw * ax;
+        float rh_ndc = want_rh * 2.0f;
         float nx_left = want_ox * ax - 1.0f;
         rhi_vertex q[6];
         build_panel(q, nx_left + rw_ndc * 0.5f, 1.0f - rh_ndc * 0.5f,
@@ -7576,24 +7622,25 @@ static void ensure_ovl_ss(void) {
         rhi_update_buffer(s_nr.ovl_quad_vb, q, sizeof(q));
         s_nr.ovl_quad_win_w = s_nr.win_w; s_nr.ovl_quad_win_h = s_nr.win_h;
         s_nr.ovl_quad_ox = want_ox;
+        s_nr.ovl_quad_rw = want_rw; s_nr.ovl_quad_rh = want_rh;
     }
 }
 
-/* Pre-pass: render the FPS glyphs at OVL_SS_FACTOR× into ovl_ss (cleared
+/* Pre-pass: render the overlay glyphs at OVL_SS_FACTOR× into ovl_ss (cleared
  * transparent). Its own render-target pass, so call it BEFORE the offscreen pass
  * opens (no nested render passes). No-op unless the SS path is ready. */
-static void prepare_fps_overlay_ss(void) {
-    if (!ovl_ss_ready() || !fps_overlay_should_draw()) return;
+static void prepare_perf_overlay_ss(void) {
+    if (!ovl_ss_ready() || !perf_overlay_should_draw()) return;
     rhi_begin_render_target(s_nr.dev, s_nr.ovl_ss, 0.0f, 0.0f, 0.0f, 0.0f);  /* transparent */
-    draw_overlay_glyphs_3d(2.0f / OVL_REGION_W, 2.0f / OVL_REGION_H, 0.0f);
+    draw_overlay_glyphs_3d(2.0f / ovl_region_w(), 2.0f / ovl_region_h(), 0.0f);
     rhi_end_render_target(s_nr.dev, s_nr.ovl_ss);
 }
 
-/* Composite the FPS overlay into the currently-open offscreen pass. SS path:
+/* Composite the stats overlay into the currently-open offscreen pass. SS path:
  * box-downsample + straight-alpha-blend the ovl_ss the pre-pass built. Fallback:
  * draw the glyphs directly at 1× (the original crisp-but-aliased path). */
-static void draw_fps_overlay(void) {
-    if (!fps_overlay_should_draw()) return;
+static void draw_perf_overlay(void) {
+    if (!perf_overlay_should_draw()) return;
     if (ovl_ss_ready()) {
         int factor = OVL_SS_FACTOR;
         rhi_reset_scissor(s_nr.dev);
@@ -7604,7 +7651,7 @@ static void draw_fps_overlay(void) {
         rhi_draw(s_nr.dev, 6, 0);
     } else {
         draw_overlay_glyphs_3d(2.0f * (float)s_nr.win_h / (float)s_nr.win_w, 2.0f,
-                               fps_overlay_ox());
+                               perf_overlay_ox());
     }
 }
 
@@ -7931,7 +7978,7 @@ static bool compose_variant(int variant, bool have_ref)
         scene_postfx_split();                     /* SCENE point (S5): scene→chain→HUD */
         draw_mod_meshes();                        /* mod 3D (S7 — under mod HUD) */
         draw_mod_overlay();                       /* mod HUD (content — records too) */
-        if (s_overlay_live) draw_fps_overlay();   /* on the resolved 1× offscreen, crisp */
+        if (s_overlay_live) draw_perf_overlay();   /* on the resolved 1× offscreen, crisp */
         if (s_overlay_live) draw_menu_overlay();  /* settings menu on top */
         /* Dev overlay: under a live COMPOSITE chain, drawn post-chain
          * instead so screen filters never render over the panel. */
@@ -7989,7 +8036,7 @@ static bool compose_variant(int variant, bool have_ref)
     if (variant == NRV_VK) { scene_postfx_split(); draw_mod_meshes(); draw_mod_overlay(); }
     /* FPS overlay — vk live present only (kept off ab/diff so comparison images
      * stay clean, and off screenshots/dumps where s_overlay_live is 0). */
-    if (variant == NRV_VK && s_overlay_live) draw_fps_overlay();
+    if (variant == NRV_VK && s_overlay_live) draw_perf_overlay();
     if (variant == NRV_VK && s_overlay_live) draw_menu_overlay();
     /* Dev overlay: when a COMPOSITE postfx chain is live it would filter
      * the panel into illegibility (CRT masks) — skip here and re-draw on
@@ -8759,7 +8806,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     update_layout();
     ensure_native_rtt(true);   /* native_rtt is the canonical frame in every mode */
     ensure_ss_rtt();           /* SSAA supersampled scene target (--ssaa>1, vk mode) */
-    ensure_ovl_ss();           /* FPS-overlay supersample target + composite quad */
+    ensure_ovl_ss();           /* stats-overlay supersample target + composite quad */
     ensure_menu_ss();          /* settings-menu glyph supersample (lazy, while open) */
     ensure_opaque_depth();     /* WORLD-opaque depth pre-pass target (shadow decal) */
 
@@ -8806,12 +8853,12 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_PREPASS, pt_t1 - pt_t0); pt_t0 = pt_t1; }
 
     int variant = s_nr.diff_mode ? NRV_DIFF : s_nr.ab_mode ? NRV_AB : NRV_VK;
-    s_overlay_live = 1;                       /* this is the live present → allow the FPS overlay */
-    /* Render the FPS glyphs at OVL_SS_FACTOR× into ovl_ss now — its own render
-     * pass, so it must precede compose_variant's offscreen pass. compose's
-     * draw_fps_overlay then composites the downsampled result. */
+    s_overlay_live = 1;                       /* this is the live present → allow the stats overlay */
+    /* Render the overlay glyphs at OVL_SS_FACTOR× into ovl_ss now — its own
+     * render pass, so it must precede compose_variant's offscreen pass.
+     * compose's draw_perf_overlay then composites the downsampled result. */
     rhi_gpu_zone_begin(s_nr.dev, "ovl_ss");
-    prepare_fps_overlay_ss();
+    prepare_perf_overlay_ss();
     rhi_gpu_zone_end(s_nr.dev);
     rhi_gpu_zone_begin(s_nr.dev, "menu_ss");
     prepare_menu_ss();         /* menu glyphs at MENU_SS_FACTOR× → menu_ss (own pass) */

@@ -78,9 +78,18 @@ void openpete_native_toggle_fullscreen(void);
  * keeping a shadow index, so it stays in sync with Alt+Enter / double-click. */
 int openpete_native_fullscreen_active(void);
 
-/* FPS overlay (vk live window). Default on; drawn only on the live vk present
- * (never ab/diff/screenshots). set() forces a state; the SHOW FPS row in the
- * settings menu (O) and --show-fps drive it. Display-only. */
+/* Performance-stats overlay (vk live window). Drawn only on the live vk
+ * present (never ab/diff/screenshots). The level is one of the
+ * OPENPETE_PERF_* values in openpete_perf_stats.h, which also owns the
+ * numbers; the renderer holds the level because it gates the draw and sizes
+ * the supersample region. Driven by --perf-stats, the Performance stats row
+ * in the M overlay, and the O menu's SHOW FPS row. Display-only. */
+void openpete_native_set_perf_stats(int level);
+int  openpete_native_perf_stats_level(void);
+
+/* Two-state view of the same setting, for the O menu row and the legacy
+ * --show-fps flag: OFF is level 0, ON restores the last non-zero level, so a
+ * toggle never quietly demotes a detailed readout to the bare counter. */
 void openpete_native_set_fps_overlay(int on);
 
 /* --record-fps-overlay: whether the FPS overlay is drawn INTO --record video.
@@ -89,7 +98,7 @@ void openpete_native_set_fps_overlay(int on);
  * the live window always follows set_fps_overlay above. */
 void openpete_native_set_fps_in_record(int pref);
 
-/* Is the FPS overlay currently on? The game-side digit-model emitter reads this
+/* Is the overlay on at all (any level)? The game-side glyph emitter reads this
  * to skip building geometry when the overlay is off. */
 int  openpete_native_fps_overlay_enabled(void);
 /* The current rolling FPS value the overlay displays. The game-side emitter

@@ -120,6 +120,7 @@ add_library(openpete_core STATIC
     # census reported at the end of every run. See openpete_pace_log.h and
     # notes/plans/openpete-sim-tick-pacing-perfection.md.
     runtime/pace_log.c
+    runtime/perf_stats.c
 
     # Empirical CPU+GPU performance trace (per present / canonical tick).
     # Off by default; enabled by --profile-out PATH. See openpete_profile.h.

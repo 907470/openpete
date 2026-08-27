@@ -4,8 +4,8 @@
 // models the game draws for the gem/life counters (digits, classes 260-269),
 // "DEMO MODE" / dragon names / "THE ADVENTURE BEGINS" / the pause & inventory
 // menus (letters A-Z, classes 426-451) and assorted punctuation. A general
-// "string -> 3D Spyro glyph mobys" engine (text_moby_native_emit); the FPS
-// counter (text_moby_native_fps_overlay) is its first consumer.
+// "string -> 3D Spyro glyph mobys" engine (text_moby_native_emit); the
+// performance-stats overlay (text_moby_native_perf_overlay) is its first consumer.
 //
 // Why these models work as a font asset (probed empirically during bring-up):
 //   * Each glyph is a distinct moby CLASS whose model is g_Models[class]; '0'-'9'
@@ -40,11 +40,13 @@
 #include "psx_runtime.h"            /* CPUState (read_word / read_byte) */
 #include "openpete_native_render.h" /* openpete_hud_vert + the overlay API */
 #include "openpete_menu.h"          /* menu state/layout for the settings-menu text */
+#include "openpete_perf_stats.h"    /* the overlay's levels + line text */
 #include "text_moby_native.h"
 
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <string.h>
 #include "spyro1_symbols.gen.h"
 
 
@@ -328,9 +330,9 @@ int text_moby_native_emit(const char* str,
 /* Mod draw-service text rasterizer (core/mods/mod_draw.c; registered in
  * main.cpp). void* out keeps the core-facing fn type free of the
  * openpete_hud_vert dependency. The glyph cache is populated by the
- * per-tick fps-overlay driver above (unconditionally under the native
- * renderer, --show-fps or not), so at present time we only read the
- * snapshot: mod text appears as soon as the game has loaded the font —
+ * per-tick stats-overlay driver below (unconditionally under the native
+ * renderer, at every level including off), so at present time we only read
+ * the snapshot: mod text appears as soon as the game has loaded the font —
  * absent before that (no bitmap fallback exists). */
 int text_moby_native_mod_emit(const char* str, float x, float y,
                               float cap_h, unsigned rgb,
@@ -340,39 +342,56 @@ int text_moby_native_mod_emit(const char* str, float x, float y,
                                  (openpete_hud_vert*)out_verts, cap);
 }
 
-/* ---- FPS overlay (the first consumer) ----------------------------------- */
-#define FPS_OVL_MAX   4096
-#define FPS_ORIGIN_X  0.014f
-#define FPS_ORIGIN_Y  0.016f
-#define FPS_CAP_H     0.020f   /* small corner counter */
-#define FPS_TINT      0x606000u   /* the game's HUD text back-colour, olive (96,96,0) */
+/* ---- performance-stats overlay (the first consumer) --------------------- */
+/* Sized for the detailed readout's four lines, not the one-line counter; must
+ * not exceed the renderer's OVL_MAX_VERTS, which drops the overflow. */
+#define PERF_OVL_MAX   16384
+#define PERF_ORIGIN_X  0.014f
+#define PERF_ORIGIN_Y  0.016f
+#define PERF_CAP_H     0.020f   /* small corner counter */
+#define PERF_LINE_STEP 0.030f   /* cap height + a line's worth of leading */
+#define PERF_TINT      0x606000u   /* the game's HUD text back-colour, olive (96,96,0) */
 
-static openpete_hud_vert s_fps_buf[FPS_OVL_MAX];
+static openpete_hud_vert s_perf_buf[PERF_OVL_MAX];
 
-void text_moby_native_fps_overlay(CPUState* cpu) {
+/* What the buffer currently holds. This runs once per tick, and the readout
+ * only moves twice a second, so re-emitting every tick would spend the glyph
+ * builder's whole cost ~15× over for identical geometry — on the thread that
+ * owns the tick deadline, which is precisely what the detailed level exists
+ * to measure. Rebuild only when the text actually changes. */
+static char s_shown[OPENPETE_PERF_MAX_LINES][OPENPETE_PERF_LINE_MAX];
+static int  s_shown_n = -1;   /* -1 = nothing pushed yet */
+
+void text_moby_native_perf_overlay(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;   /* inert headless: no cache, no draw */
     text_moby_native_cache(cpu);                     /* snapshot the font as soon as available */
-    if (!openpete_native_fps_overlay_enabled() || !text_moby_native_ready()) {
-        openpete_native_set_overlay_glyphs(NULL, 0); /* nothing until cached (no fallback) */
+    int level = openpete_native_perf_stats_level();
+    if (level <= OPENPETE_PERF_OFF || !text_moby_native_ready()) {
+        if (s_shown_n != 0) {
+            openpete_native_set_overlay_glyphs(NULL, 0); /* nothing until cached (no fallback) */
+            s_shown_n = 0;
+        }
         return;
     }
-    int val = openpete_native_fps_value();
-    if (val < 0) val = 0; else if (val > 9999) val = 9999;
 
-    char str[16]; int n = 0;
-    str[n++] = 'F'; str[n++] = 'P'; str[n++] = 'S'; str[n++] = ':'; str[n++] = ' ';
-    if (val == 0) {
-        str[n++] = '0';
-    } else {
-        char tmp[8]; int t = 0;
-        for (int v = val; v > 0; v /= 10) tmp[t++] = (char)('0' + v % 10);
-        while (t > 0) str[n++] = tmp[--t];
+    char lines[OPENPETE_PERF_MAX_LINES][OPENPETE_PERF_LINE_MAX];
+    int nl = openpete_perf_stats_lines(level, lines, OPENPETE_PERF_MAX_LINES);
+    if (nl == s_shown_n && memcmp(lines, s_shown, sizeof lines) == 0)
+        return;                                      /* geometry already correct */
+
+    /* One buffer, one push: each line emits into the tail of what the
+     * previous one wrote, so the whole readout reaches the renderer as a
+     * single glyph list rather than overwriting itself line by line. */
+    int nv = 0;
+    for (int i = 0; i < nl && nv < PERF_OVL_MAX; i++) {
+        nv += text_moby_native_emit(lines[i], PERF_ORIGIN_X,
+                                    PERF_ORIGIN_Y + (float)i * PERF_LINE_STEP,
+                                    PERF_CAP_H, PERF_TINT,
+                                    s_perf_buf + nv, PERF_OVL_MAX - nv);
     }
-    str[n] = '\0';
-
-    int nv = text_moby_native_emit(str, FPS_ORIGIN_X, FPS_ORIGIN_Y, FPS_CAP_H,
-                                   FPS_TINT, s_fps_buf, FPS_OVL_MAX);
-    openpete_native_set_overlay_glyphs(nv > 0 ? s_fps_buf : NULL, nv);
+    openpete_native_set_overlay_glyphs(nv > 0 ? s_perf_buf : NULL, nv);
+    memcpy(s_shown, lines, sizeof lines);
+    s_shown_n = nl;
 }
 
 /* ---- in-game settings menu text (labels / values / title) --------------- */

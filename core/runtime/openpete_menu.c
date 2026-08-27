@@ -311,8 +311,10 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
     /* VSync: -1 (unset) defaults to ON (FIFO); 0/1 as given. */
     s_vsync_idx = (opts->vsync == 0) ? 0 : 1;
 
-    /* Show-FPS: mirrors --show-fps (the live overlay default is on). */
-    s_showfps_idx = opts->fps_overlay ? 1 : 0;
+    /* SHOW FPS is the two-state view of the three-level stats overlay: ON
+     * whenever anything is drawn. The M overlay's Performance stats row picks
+     * WHICH level, and toggling this row off and on restores it. */
+    s_showfps_idx = (opts->perf_stats != OPENPETE_PERF_OFF) ? 1 : 0;
 
     /* SSAA: nearest supported factor. */
     s_ssaa_idx = nearest_idx(s_ssaa_vals, N_SSAA, opts->ssaa > 0 ? opts->ssaa : 1);
@@ -341,8 +343,8 @@ int openpete_menu_toggle(void) {
     s_open = !s_open;
     if (s_open) {
         /* Re-sync the rows a hotkey can change while the menu is closed, so the
-         * menu never shows a stale value: SHOW FPS (--show-fps / any future
-         * path), LOD (the "L" toggle flips openpete_no_lod directly), FOG
+         * menu never shows a stale value: SHOW FPS (--perf-stats / the M
+         * overlay's Performance stats row), LOD (the "L" toggle flips openpete_no_lod directly), FOG
          * (the L toggle moves it while fog is on autopilot), and FREECAM
          * (the "F" key / left-stick click). */
         s_showfps_idx = openpete_native_fps_overlay_enabled();

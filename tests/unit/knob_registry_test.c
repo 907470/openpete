@@ -71,8 +71,11 @@ void   openpete_native_set_ssaa(int n)         { s_native_ssaa = n; }
 int    openpete_native_get_ssaa(void)          { return s_native_ssaa; }
 void   openpete_native_set_vsync(int on)       { s_native_vsync = on ? 1 : 0; }
 int    openpete_native_get_vsync(void)         { return s_native_vsync; }
-void   openpete_native_set_fps_overlay(int on) { s_native_showfps = on ? 1 : 0; }
-int    openpete_native_fps_overlay_enabled(void) { return s_native_showfps; }
+void   openpete_native_set_perf_stats(int level) { s_native_showfps = level; }
+int    openpete_native_perf_stats_level(void)    { return s_native_showfps; }
+void   openpete_native_set_fps_overlay(int on)   { s_native_showfps = on ? OPENPETE_PERF_FPS
+                                                                         : OPENPETE_PERF_OFF; }
+int    openpete_native_fps_overlay_enabled(void) { return s_native_showfps != OPENPETE_PERF_OFF; }
 void   openpete_native_set_fps_in_record(int on) { (void)on; }
 void   openpete_native_set_vertex_precision(int m) { s_native_vsnap = m ? 1 : 0; }
 int    openpete_native_vertex_snap_active(void)    { return s_native_vsnap; }
@@ -240,14 +243,14 @@ int main(void) {
             { "ssaa",             "4"     },
             { "aspect",           "16:9"  },
             { "vsync",            "off"   },
-            { "show_fps",         "off"   },
+            { "perf_stats",       "off"   },
             { "vertex_precision", "integer" },
             { "raster_quantize",  "1"     },
         };
         openpete_options_t mopts;
         memset(&mopts, 0, sizeof mopts);
         mopts.vsync = -1; mopts.render_fps = -1; mopts.tick_scale = 1.0;
-        mopts.ssaa = 1; mopts.fps_overlay = 1; mopts.raster_quantize = -1;
+        mopts.ssaa = 1; mopts.perf_stats = OPENPETE_PERF_FPS; mopts.raster_quantize = -1;
         knob_registry_init(&mopts);
         s_native_up = true;   /* the renderer comes up after the boot stamp */
 
@@ -255,7 +258,7 @@ int main(void) {
         openpete_native_set_ssaa(4);
         openpete_native_set_aspect(16.0f / 9.0f);
         openpete_native_set_vsync(0);
-        openpete_native_set_fps_overlay(0);
+        openpete_native_set_perf_stats(OPENPETE_PERF_OFF);
         openpete_native_set_vertex_precision(1);
         openpete_native_set_raster_quantize(1);
 

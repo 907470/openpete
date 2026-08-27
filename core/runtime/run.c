@@ -1476,7 +1476,7 @@ static int run_host_init(const openpete_options_t* opts) {
      * one that pumps. Bring-up adopts it exactly as it adopts the splash's. */
     openpete_native_precreate_window(opts, win_w, win_h);
     (void)openpete_native_render_init(opts, win_w, win_h);
-    openpete_native_set_fps_overlay(opts->fps_overlay);  /* vk FPS overlay (O-menu SHOW FPS row toggles live) */
+    openpete_native_set_perf_stats(opts->perf_stats);   /* stats overlay level (O / M menus move it live) */
     openpete_native_set_fps_in_record(opts->record_fps_overlay);  /* --record-fps-overlay */
 
     /* Decide whether PsyCross still rasterizes the OT (see the global's comment).

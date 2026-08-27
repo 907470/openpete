@@ -51,11 +51,12 @@ int text_moby_native_mod_emit(const char* str, float x, float y,
                               float cap_h, unsigned rgb,
                               void* out_verts, int cap);
 
-/* Per-frame FPS-overlay consumer: refreshes the cache, then (once ready) builds
- * "FPS:<value>" and hands it to the native renderer's overlay slot
+/* Per-frame performance-stats consumer: refreshes the cache, then (once ready)
+ * builds the overlay's lines for the current level (openpete_perf_stats.h) and
+ * hands them to the native renderer's overlay slot
  * (openpete_native_set_overlay_glyphs). Called from game_on_frame_pre; a no-op
  * unless the native renderer is active. */
-void text_moby_native_fps_overlay(struct CPUState* cpu);
+void text_moby_native_perf_overlay(struct CPUState* cpu);
 
 /* Per-frame settings-menu text consumer: when the in-game menu (O) is open and
  * the font is cached, builds the title + each row's label/value (selected row

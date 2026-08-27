@@ -4,6 +4,7 @@
 
 #include <string.h>
 
+static const char *const v_perf[]     = { "off", "fps", "detailed", NULL };
 static const char *const v_vprec[]    = { "subpixel", "integer", NULL };
 static const char *const v_texmap[]   = { "perspective", "affine", NULL };
 static const char *const v_lod[]      = { "original", "extended", NULL };
@@ -22,7 +23,7 @@ static const cfg_knob_t g_schema[] = {
     { "aspect",           "--aspect",           NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "ssaa",             "--ssaa",             NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "vsync",            "--vsync",            "OPENPETE_PRESENT_MODE", CFG_BOOL,   NULL,       NULL,       NULL,       0 },
-    { "show_fps",         "--show-fps",         NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       0 },
+    { "perf_stats",       "--perf-stats",       NULL,                    CFG_ENUM,   v_perf,     NULL,       NULL,       0 },
     { "vertex_precision", "--vertex-precision", NULL,                    CFG_ENUM,   v_vprec,    NULL,       NULL,       0 },
     { "raster_quantize",  "--raster-quantize",  NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "extract_threads",  "--extract-threads",  NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
@@ -84,7 +85,18 @@ static const cfg_knob_t g_schema[] = {
 static const char *const g_mutex_screenshot[] = {
     "--screenshot-on-frame", "--screenshot-on-tick", NULL
 };
-static const char *const *const g_mutex_groups[] = { g_mutex_screenshot, NULL };
+/* --show-fps is the deprecated two-state spelling of --perf-stats. It has no
+ * schema row of its own — its ON value is not fixed, which is what an alias
+ * row requires — so a config file that spells the setting through [args] is
+ * where the two can collide. Between tiers this group makes the higher one
+ * win; a bare key and a command-line flag are already ordered by the tiers
+ * themselves (config tokens are emitted ahead of the real argv). */
+static const char *const g_mutex_perf_stats[] = {
+    "--perf-stats", "--show-fps", NULL
+};
+static const char *const *const g_mutex_groups[] = {
+    g_mutex_screenshot, g_mutex_perf_stats, NULL
+};
 
 const cfg_knob_t *cfg_schema(size_t *count) {
     if (count) *count = sizeof g_schema / sizeof g_schema[0];

@@ -340,7 +340,10 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --fullscreen 0|1           launch in borderless-desktop fullscreen (default 0 = windowed;\n"
         "                             on|off also accepted). Alt+Enter / double-click / the O-menu\n"
         "                             DISPLAY row toggle it live. Display-only.\n"
-        "  --show-fps 0|1             native vk FPS overlay (default 1 = on; on|off also accepted)\n"
+        "  --perf-stats LEVEL         on-screen performance stats: off | fps (default) | detailed.\n"
+        "                             detailed adds the VBL rate, slips, late ticks per 1000 and the\n"
+        "                             shed / interpolation share. 0|1|2 also accepted. Display-only.\n"
+        "  --show-fps 0|1             deprecated spelling of --perf-stats off|fps (on|off also accepted)\n"
         "  --rewind N                 hold Backspace to rewind up to N seconds (default 0 = off;\n"
         "                             ~2 MiB RAM per second of window; same-level only)\n"
         "  --runahead N               lead the presented timeline by N sim ticks (default 0 = off).\n"
@@ -571,7 +574,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->sfx_volume          = -1;    /* -1 = unset; the game's own slider stands */
     opts->music_volume        = -1;
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
-    opts->fps_overlay         = true;  /* native vk FPS overlay on by default; --show-fps 0 / O-menu SHOW FPS row */
+    opts->perf_stats          = OPENPETE_PERF_FPS;  /* the counter, no pacing readout; --perf-stats / O-menu SHOW FPS row */
     opts->vsync               = -1;    /* -1 = unset; default vsync ON (FIFO) unless OPENPETE_PRESENT_MODE */
     opts->render_fps          = -1;    /* -1 = unset; resolved at startup: display refresh (windowed) /
                                         * 0 legacy match-sim pacer (headless). --render-fps 0 = explicit legacy. */
@@ -708,11 +711,28 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             }
         } else if (strcmp(a, "--render-stats") == 0) {
             opts->render_stats = true;
+        } else if (strcmp(a, "--perf-stats") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            /* Words are the documented spelling (and what the config file
+             * writes back); the numbers are accepted because the level is an
+             * ordered scale and scripts reach for it that way. */
+            if      (!strcmp(v, "off")      || !strcmp(v, "0")) opts->perf_stats = OPENPETE_PERF_OFF;
+            else if (!strcmp(v, "fps")      || !strcmp(v, "1")) opts->perf_stats = OPENPETE_PERF_FPS;
+            else if (!strcmp(v, "detailed") || !strcmp(v, "2")) opts->perf_stats = OPENPETE_PERF_DETAIL;
+            else {
+                fprintf(stderr, "openpete: --perf-stats expects off|fps|detailed (0|1|2 also accepted), got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            i++;
         } else if (strcmp(a, "--show-fps") == 0) {
+            /* The two-state spelling this setting used to have. ON restores
+             * the FPS level rather than the detailed one: a flag that only
+             * ever meant "the counter" must not start turning on a readout
+             * its author never asked for. */
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             /* Accept 0|1 (preferred) plus on|off, matching --mute. */
-            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->fps_overlay = true;
-            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->fps_overlay = false;
+            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->perf_stats = OPENPETE_PERF_FPS;
+            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->perf_stats = OPENPETE_PERF_OFF;
             else {
                 fprintf(stderr, "openpete: --show-fps expects 0|1 (on|off also accepted), got: %s\n", v);
                 return OPENPETE_EXIT_SETUP_ERROR;
@@ -1108,7 +1128,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->record_audio_encoder = v; i++;
         } else if (strcmp(a, "--record-fps-overlay") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
-            /* Accept 0|1 (preferred) plus on|off, matching --show-fps / --vsync. */
+            /* Accept 0|1 (preferred) plus on|off, matching --vsync. */
             if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->record_fps_overlay = 1;
             else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->record_fps_overlay = 0;
             else {

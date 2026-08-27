@@ -305,6 +305,41 @@ static void case_alias_collapses(void) {
     expect_flag_value(&r, "--lod", "extended");
 }
 
+/* A key that was renamed keeps working, value and all.
+ *
+ * openpete writes these files itself (SAVE in the M overlay), so the previous
+ * release's saved settings are exactly what a rename breaks: without the
+ * mapping the old spelling is an "unknown key" and the boot fails outright.
+ * The value has to travel too — `show_fps` was a bool and `perf_stats` is a
+ * three-level enum, so true means the level the old key could select. */
+static void case_renamed_key(void) {
+    run_t r = run("renamed key: true maps to the level it meant",
+        "[game.spyro-1]\n"
+        "show_fps = true\n", NULL, 0);
+    expect_flag_value(&r, "--perf-stats", "fps");
+    expect_no_flag(&r, "--show-fps");
+
+    r = run("renamed key: false maps to off",
+        "[game.spyro-1]\n"
+        "show_fps = false\n", NULL, 0);
+    expect_flag_value(&r, "--perf-stats", "off");
+
+    /* And it ranks as the key it became: the new spelling in a more specific
+     * scope beats the old one in a less specific scope, rather than the two
+     * being treated as unrelated knobs and both surviving. */
+    r = run("renamed key: outranked by the new spelling",
+        "[game.spyro-1]\n"
+        "show_fps = true\n"
+        "[disc.SCUS-94228]\n"
+        "perf_stats = \"detailed\"\n", NULL, 1);
+    expect_flag_value(&r, "--perf-stats", "detailed");
+    /* exactly one --perf-stats survived */
+    int n = 0;
+    for (int i = 1; i < r.argc; i++)
+        if (!strcmp(r.argv[i], "--perf-stats")) n++;
+    CHECK(n == 1, "the old and new spellings should collapse to one flag, got %d", n);
+}
+
 /* An env-only knob spelled as a bare key goes out as its variable — and
  * a false one leaves the variable ABSENT, because several of these
  * consumers only test for presence. */
@@ -736,6 +771,7 @@ int main(void) {
     case_saved_tier();
     case_false_suppresses();
     case_alias_collapses();
+    case_renamed_key();
     case_env_only_knob();
     case_validation();
     case_scope_beats_file();

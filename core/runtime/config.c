@@ -259,6 +259,37 @@ static int is_directive_key(const char *key) {
     return !strcmp(key, "portable");
 }
 
+/* Keys that were renamed after files could already contain them.
+ *
+ * openpete writes these files itself (SAVE in the M overlay), so a rename
+ * with no mapping turns the previous release's saved settings into a hard
+ * "unknown key" boot failure. The bool -> vocabulary pair carries the value
+ * across too: `show_fps` was two-state and `perf_stats` is three, and true
+ * means the level the old key could actually select. */
+typedef struct {
+    const char *old_key;
+    const char *new_key;
+    const char *on;    /* NULL when the value needs no translation */
+    const char *off;
+} cfg_renamed_t;
+
+static const cfg_renamed_t g_renamed[] = {
+    { "show_fps", "perf_stats", "fps", "off" },
+};
+
+static const cfg_renamed_t *renamed_for(const char *key) {
+    for (size_t i = 0; i < sizeof g_renamed / sizeof g_renamed[0]; i++)
+        if (!strcmp(g_renamed[i].old_key, key)) return &g_renamed[i];
+    return NULL;
+}
+
+/* Truthiness of an old bool key, in every spelling TOML and the flag parser
+ * both accept. */
+static int renamed_truth(const char *val, int is_bool, int bool_val) {
+    if (is_bool) return bool_val;
+    return !strcmp(val, "1") || !strcmp(val, "on") || !strcmp(val, "true");
+}
+
 /* Bare keys of `tab` — the friendly, validated spelling. */
 static int harvest_base(const toml_table_t *tab, int tier, int file,
                         const char *origin, const char *where,
@@ -280,6 +311,13 @@ static int harvest_base(const toml_table_t *tab, int tier, int file,
             return -1;
         }
 
+        const cfg_renamed_t *ren = renamed_for(key);
+        if (ren) {
+            fprintf(stderr, "openpete: config: %s: '%s' has been renamed to "
+                            "'%s'; using it\n", where, key, ren->new_key);
+            key = ren->new_key;
+        }
+
         int ki = cfg_schema_find_id(key);
         if (ki < 0) {
             const char *hint = did_you_mean(key);
@@ -297,6 +335,13 @@ static int harvest_base(const toml_table_t *tab, int tier, int file,
             fprintf(stderr, "openpete: config: %s: '%s' has a value this "
                             "config cannot use\n", where, key);
             return -1;
+        }
+        if (ren && ren->on) {
+            /* Translate BEFORE the type checks below: the value in the file
+             * is spelled for the old knob's type, not the new one's. */
+            snprintf(val, sizeof val, "%s",
+                     renamed_truth(val, is_bool, bool_val) ? ren->on : ren->off);
+            is_bool = 0;
         }
         if (k->type == CFG_BOOL && !is_bool &&
             strcmp(val, "0") && strcmp(val, "1") &&

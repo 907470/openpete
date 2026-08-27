@@ -133,13 +133,14 @@ static int vsync_set(knob_desc_t *k, double v) {
     return 0;
 }
 
-static double showfps_get(const knob_desc_t *k) {
+static const char *const k_perf_names[] = { "off", "fps", "detailed" };
+static double perfstats_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
-    return openpete_native_fps_overlay_enabled() ? 1.0 : 0.0;
+    return (double)openpete_native_perf_stats_level();
 }
-static int showfps_set(knob_desc_t *k, double v) {
-    openpete_native_set_fps_overlay(v != 0.0);
-    k->stored_num = (v != 0.0);
+static int perfstats_set(knob_desc_t *k, double v) {
+    openpete_native_set_perf_stats((int)v);
+    k->stored_num = (int)v;
     return 0;
 }
 
@@ -495,10 +496,12 @@ static const knob_desc_t g_builtin[] = {
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       vsync_get, vsync_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
-    { "show_fps", "FPS overlay", "Display", "--show-fps", NULL,
-      "Top-left FPS counter (native renderer).",
-      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
-      showfps_get, showfps_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+    { "perf_stats", "Performance stats", "Display", "--perf-stats", NULL,
+      "Top-left overlay (native renderer): off, the FPS counter, or the "
+      "counter plus a pacing readout — VBL rate, deadline slips, late ticks "
+      "per 1000, and the shed / interpolation share of presents.",
+      KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_perf_names), 0, 0,
+      perfstats_get, perfstats_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "vertex_precision", "Vertex precision", "Display", "--vertex-precision", NULL,
       "PSX integer-grid vertex snap (authentic polygon wobble) vs smooth "
@@ -1241,8 +1244,8 @@ void knob_registry_init(const struct openpete_options *opts) {
                     k->stored_num = 1;   /* default FIFO */
                 }
             }
-        } else if (!strcmp(k->id, "show_fps")) {
-            k->stored_num = opts->fps_overlay ? 1 : 0;
+        } else if (!strcmp(k->id, "perf_stats")) {
+            k->stored_num = opts->perf_stats;
         } else if (!strcmp(k->id, "vertex_precision")) {
             k->stored_num = (opts->vertex_precision == OPENPETE_VERTEX_PRECISION_INTEGER);
         } else if (!strcmp(k->id, "raster_quantize")) {

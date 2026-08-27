@@ -515,10 +515,11 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     spyro1_levelwarp_on_tick(cpu);
 
 
-    /* Build the FPS overlay from Spyro's own 3D HUD text mobys (digits 260-269,
-     * letters 426-451, punctuation) when the native renderer is showing it. Pure
-     * presentation: reads model geometry from RAM, never writes gameplay state. */
-    text_moby_native_fps_overlay(cpu);
+    /* Build the performance-stats overlay from Spyro's own 3D HUD text mobys
+     * (digits 260-269, letters 426-451, punctuation) when the native renderer is
+     * showing it. Pure presentation: reads model geometry from RAM, never writes
+     * gameplay state. */
+    text_moby_native_perf_overlay(cpu);
 
     /* Build the in-game settings-menu text (title + rows) from the same 3D gold
      * glyph mobys when the menu (O) is open. Pure presentation. */

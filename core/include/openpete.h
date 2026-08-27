@@ -9,6 +9,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "openpete_perf_stats.h"   /* OPENPETE_PERF_* levels for opts.perf_stats */
 
 #ifdef __cplusplus
 extern "C" {
@@ -462,10 +463,12 @@ typedef struct openpete_options {
      * so the A/B-vs-PsyCross comparison stays 1:1 pixel-exact. */
     int ssaa;
 
-    /* FPS overlay on the native vk window (default on; --show-fps 0 to start
-     * off, SHOW FPS row in the O settings menu toggles live). Display-only;
-     * ignored under --headless / psycross. */
-    bool fps_overlay;
+    /* Performance-stats overlay level on the native vk window, one of the
+     * OPENPETE_PERF_* values: off, the FPS counter (the default), or the
+     * counter plus a pacing readout. --perf-stats at launch; the O menu's
+     * SHOW FPS row and the M overlay's Performance stats row move it live.
+     * Display-only; ignored under --headless / psycross. */
+    int perf_stats;
 
     /* --vsync 0|1: native vk swapchain present mode. 1 = FIFO (vsync ON, present
      * locked to the monitor refresh — the default); 0 = a vsync-OFF mode
