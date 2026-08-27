@@ -238,13 +238,21 @@ def cmd_summary(a):
           f"discarded; render {len(ren)}/{sum(r.a for r in ren)}")
     spans = log.of(pacelog.PRESENT_SPAN)
     if spans:
-        c = [r.span_cost_ns for r in spans]
-        e = [r.span_extract_ns for r in spans]
-        # What an intermediate present costs the sim thread, and how much of
-        # it a shed actually avoids.
-        print(f"intermediate present cost: p50 {us(ps.percentile(c,50))} "
-              f"p99 {us(ps.percentile(c,99))} max {us(max(c))}  "
-              f"(scene rebuild p50 {us(ps.percentile(e,50))})")
+        # Split by kind. The two are different quantities and conflating them
+        # flatters both: the intermediate cost is a SELECTED sample — the shed
+        # predicate only admits a present it expects to fit — while the
+        # canonical present is the one cost shedding can never avoid, and on a
+        # GPU-limited machine it is the whole story.
+        for kind, label in ((pacelog.CANONICAL, "canonical"),
+                            (pacelog.INTERMEDIATE, "intermediate")):
+            k = [r for r in spans if r.flags == kind]
+            if not k:
+                continue
+            c = [r.span_cost_ns for r in k]
+            e = [r.span_extract_ns for r in k]
+            print(f"{label} present cost: p50 {us(ps.percentile(c,50))} "
+                  f"p99 {us(ps.percentile(c,99))} max {us(max(c))}  "
+                  f"(scene rebuild p50 {us(ps.percentile(e,50))}, n={len(k)})")
 
     sheds = log.of(pacelog.SHED)
     if sheds:

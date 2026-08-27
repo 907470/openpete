@@ -3532,6 +3532,19 @@ static int run_host_loop(const openpete_options_t* opts) {
             s_last_canon_present_ns = op_now();   /* world-liveness stamp (see the
                                                    * native_intermediate gate) */
 
+            /* Bracket the canonical present the same way the intermediate one
+             * below is bracketed. Only the intermediate path was instrumented,
+             * which is survivable while a present is cheap and useless the
+             * moment it is not: on a GPU-limited machine the shed predicate
+             * declines nearly every intermediate (measured: 16 admitted against
+             * 3704 shed), so what remains on the sim thread is the canonical
+             * present — the one cost shedding can never avoid, and the one the
+             * log could not name. Worse, the intermediate figure is a SELECTED
+             * sample: the predicate only admits a present it expects to fit, so
+             * quoting it as "present cost" understates by construction. */
+            const op_time_t pace_canon_t0 = op_now();
+            op_time_t pace_canon_extract_ns = 0;
+
             /* Per-canonical-frame commit: the game latches which render paths this
              * frame drew (the "canon drawn" mask the sub-tick spine gates each
              * reextract feeder on) and clears its per-frame interval table for the
@@ -3594,7 +3607,9 @@ static int run_host_loop(const openpete_options_t* opts) {
                     extern int g_openpete_canon_lag_leg;
                     g_openpete_canon_lag_leg = 1;
                     vp_set_present_target();     /* even display-slot time for this present */
+                    const op_time_t rex_t0 = op_now();
                     lag_re(&g_game.cpu);
+                    pace_canon_extract_ns = op_now() - rex_t0;
                     g_openpete_canon_lag_leg = 0;
                     if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
                 } else {
@@ -3709,6 +3724,8 @@ static int run_host_loop(const openpete_options_t* opts) {
             ftl_record_present(&frame_time_log, frame_time_log_start_ns,
                                frame_time_log_target_period_ns, openpete_frame);
             pace_record_present(OP_PACE_CANONICAL);
+            openpete_pace_present_span(OP_PACE_CANONICAL, pace_canon_t0,
+                                       op_now(), pace_canon_extract_ns);
 
             /* Perf trace: close out this canonical present. Every CPU span
              * (SIM_TICK, the lag re-extract, native prepass/compose/gpu-sync)

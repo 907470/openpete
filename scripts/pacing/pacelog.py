@@ -34,6 +34,9 @@ TYPE_NAMES = {VBL: "VBL", PRESENT: "PRESENT", SHED: "SHED", SLIP: "SLIP",
               CLOCKSAMPLE: "CLOCKSAMPLE", WAKE: "WAKE",
               PRESENT_SPAN: "PRESENT_SPAN", PAD_READ: "PAD_READ"}
 
+# PRESENT / SHED / PRESENT_SPAN kinds, carried in `flags`.
+CANONICAL, INTERMEDIATE = 0, 1
+
 # `latched_seq` sentinels (openpete_pace_log.h). Publish sequences are even and
 # step by 2, so odd values are free to name the reasons a VBL consumed no host
 # sample — reasons a bare zero would conflate.
