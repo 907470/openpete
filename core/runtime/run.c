@@ -1046,8 +1046,36 @@ enum { PACE_SHED_SLOT_BUSY = 1, PACE_SHED_NO_BUDGET = 2 };
  * re-measure. Without it the estimator is one-way. */
 #define PACE_SHED_PROBE_EVERY 32
 static op_time_t s_present_cost_ema;
+/* EMA of |cost - ema|: the WIDTH of the cost distribution, not just its
+ * centre. The predicate needs an upper bound on what the next present will
+ * cost, and an EMA alone is a centre estimate — on a right-skewed cost
+ * distribution it is exceeded constantly. Measured over 49k recorded presents,
+ * the shipped `ema + ema/4` bound was exceeded by **18-19 % of presents**, in
+ * the attract demo and in a level alike. */
+static op_time_t s_present_cost_dev;
 static int       s_present_cost_n;
 static int       s_present_shed_run;
+
+/* Multiplier on the deviation. 0 selects the legacy centre-only bound, which
+ * is how the two are A/B'd against each other on one machine. */
+static int pace_shed_margin_k(void)
+{
+    static int k = -1;
+    if (k < 0) {
+        const char* e = getenv("OPENPETE_PACE_SHED_K");
+        /* Default 0 = the shipped centre-only bound. k=3 is provably the
+         * better PREDICTOR (miss rate 19 % -> 5 % over 49k recorded presents)
+         * but no end-to-end difference is measurable on this hardware, and
+         * k=4 collapses interpolation outright — 16 intermediate presents in a
+         * run instead of ~16000, because a bound that wide almost never fits
+         * the budget. A parameter with a cliff that near, tested on one fast
+         * machine, does not become a default on a prediction-quality argument
+         * alone. */
+        k = (e && *e) ? atoi(e) : 0;
+        if (k < 0) k = 0;
+    }
+    return k;
+}
 
 static void pace_record_present(uint8_t kind)
 {
@@ -3746,7 +3774,14 @@ static int run_host_loop(const openpete_options_t* opts) {
         int pace_shed_now = 0;
         if (native_intermediate && s_present_cost_n >= PACE_COST_WARMUP
                 && !openpete_unlock_fps) {
-            const op_time_t margin = s_present_cost_ema + s_present_cost_ema / 4;
+            /* Cover the tail, not the centre. k=3 takes the miss rate from
+             * ~19 % to ~5 % on the recorded cost series; the cost of the wider
+             * bound is shedding a little earlier, which is the trade this
+             * predicate exists to make. */
+            const int kk = pace_shed_margin_k();
+            const op_time_t margin = kk
+                ? s_present_cost_ema + (op_time_t)kk * s_present_cost_dev
+                : s_present_cost_ema + s_present_cost_ema / 4;
             if (op_now() + margin > next_sim.at) {
                 /* A shed produces no measurement, so a predictor that only
                  * learns from presents that RAN stops learning the moment it
@@ -3832,6 +3867,15 @@ static int run_host_loop(const openpete_options_t* opts) {
                 const op_time_t span = op_now() - pace_span_t0;
                 openpete_pace_present_span(OP_PACE_INTERMEDIATE, pace_span_t0,
                                            pace_span_t0 + span, pace_extract_ns);
+                /* Deviation first: it is measured against the PREVIOUS
+                 * centre, so updating the centre first would shrink every
+                 * deviation toward zero and collapse the bound back onto the
+                 * mean. */
+                if (s_present_cost_n) {
+                    const op_time_t d = span > s_present_cost_ema
+                        ? span - s_present_cost_ema : s_present_cost_ema - span;
+                    s_present_cost_dev = (s_present_cost_dev * 7 + d) / 8;
+                }
                 s_present_cost_ema = s_present_cost_n
                     ? (s_present_cost_ema * 7 + span) / 8
                     : span;

@@ -12,7 +12,13 @@
 #      this leg the gate would pass on a machine fast enough never to exercise
 #      the mechanism, which is a green that proves nothing.
 #
-#   3. Optionally (--tier-b), that a press entering the OS reaches the tick it
+#   3. That it holds its grid IN A LEVEL, not only on the attract demo. Every
+#      leg of this gate was the attract demo until 2026-08-27, and the shipped
+#      default was missing the 250 us goal in an actual level the whole time
+#      (+107.7 us attract, +301.0 us in twilight_harbor, same build and GPU).
+#      Present CPU cost is ~2x heavier in a level and the shed predicate's
+#      bound was a centre estimate, so a fifth of presents overran it.
+#   4. Optionally (--tier-b), that a press entering the OS reaches the tick it
 #      should. That leg is opt-in because it needs a focused window on a real
 #      desktop and takes the foreground for the duration — a visible action on
 #      someone's machine, not a measurement detail. It SKIPS rather than passes
@@ -38,6 +44,9 @@ P99_US=250
 PLATFORM=linux
 INJECT_US=3000
 TIER_B=0
+# Worst observed on the dev machine is 10.8 per 1000 in a level, 3.9 on the
+# attract demo. Provisional until a slower machine has been measured.
+LATE_PER_1000=15
 
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -46,6 +55,7 @@ while [ $# -gt 0 ]; do
     --p99-us)   P99_US="$2"; shift 2 ;;
     --inject-us) INJECT_US="$2"; shift 2 ;;
     --tier-b)   TIER_B=1; shift ;;
+    --late-per-1000) LATE_PER_1000="$2"; shift 2 ;;
     *) echo "unknown argument: $1" >&2; exit 64 ;;
   esac
 done
@@ -110,6 +120,25 @@ if [ $shed_possible -eq 1 ]; then
           "OPENPETE_PACE_INJECT_PRESENT_US=$INJECT_US" || shed_possible=0
 fi
 
+# The in-level leg. --skip-to-level fast-forwards ~1700 VBL to get there, and
+# those are unpaced and excluded by the analyzer, so the leg is given them back
+# on top of its measurement budget or it measures a fraction of what was asked.
+LEVEL=twilight_harbor
+level_possible=$shed_possible
+if [ $level_possible -eq 1 ]; then
+  LEVEL_VBLS=$((VBLS + 1800))
+  run_leg_level() {
+    local log="$OUT/gate-in-level.pacelog"
+    wslenv_forward "${COMMON[@]}"
+    env "${WSLENV_ARGS[@]}" "$EXE" --disc "$DISC" --skip-to-level "$LEVEL" \
+        --frame-limit "$LEVEL_VBLS" --pace-log "$log" \
+        >"$OUT/in-level.out" 2>&1 || return 1
+    [ -s "$log" ] || return 1
+  }
+  echo "[pacing] leg in-level ($LEVEL, windowed, ${SECONDS_PER_LEG}s)"
+  run_leg_level || level_possible=0
+fi
+
 echo
 echo "[pacing] --- grid: does the clock hold its own grid? ---"
 python3 scripts/pacing/pace.py summary "$OUT/gate-grid.pacelog" --p99-us "$P99_US"
@@ -155,6 +184,24 @@ if [ $TIER_B -eq 1 ]; then
       tierb_rc=$?
     fi
   fi
+fi
+
+echo
+echo "[pacing] --- in-level: does the clock hold its grid in a real scene? ---"
+level_rc=0
+if [ $level_possible -eq 0 ]; then
+  echo "[pacing] SKIP: the in-level leg needs a display; nothing is claimed"
+  echo "[pacing] about pacing outside the attract demo."
+else
+  # Gated on the RATE of late ticks, not on p99. In a level the tail is
+  # sparse — 10-25 VBLs over the goal out of ~2500 — so p99 falls among those
+  # few events and moves with their count: five runs of one unchanged build
+  # measured 44.7, 81.9, 92.6, 256.3 and 256.4 us, straddling a 250 us gate.
+  # The same runs' rate spanned 4.7-10.8 per 1000. A gate that flaps 40 % of
+  # the time on an unchanged build is one people learn to ignore.
+  python3 scripts/pacing/pace.py summary "$OUT/gate-in-level.pacelog" \
+          --p99-us "$P99_US" --max-late-per-1000 "$LATE_PER_1000" --warmup 8
+  level_rc=$?
 fi
 
 echo
@@ -210,6 +257,18 @@ if spans_i:
 else:
     fail.append("injected leg recorded no present spans — the path never ran")
 
+# A predicate that shed every intermediate would score perfectly on phase
+# error while destroying interpolation. Nothing below would have caught it:
+# every other check here rewards shedding. Measured for real — a candidate
+# margin rule left 16 intermediate presents in a run instead of ~16000.
+inter_b = sum(1 for r in lb.of(pacelog.PRESENT) if r.flags)
+inter_i = sum(1 for r in li.of(pacelog.PRESENT) if r.flags)
+print(f"intermediates: {inter_b} baseline -> {inter_i} injected")
+if inter_b > 100 and inter_i < inter_b // 10:
+    fail.append(f"interpolation collapsed: {inter_i} intermediate present(s) "
+                f"against {inter_b} in the baseline. Ticks holding phase "
+                f"because nothing is being presented is not the contract")
+
 print(f"sheds: {sheds_b} baseline -> {sheds_i} injected")
 if sheds_i == 0:
     fail.append("shedding never engaged — the predicate is not firing, so "
@@ -249,14 +308,15 @@ shed_rc=$?
 fi
 
 echo
-if [ $summary_rc -eq 3 ] || [ $shed_rc -eq 3 ] || [ $tierb_rc -eq 3 ]; then
+if [ $summary_rc -eq 3 ] || [ $shed_rc -eq 3 ] || [ $tierb_rc -eq 3 ] \
+   || [ $level_rc -eq 3 ]; then
   echo "[pacing] VACUOUS: a leg engaged nothing"; exit 3
 fi
 # Drift returning 3 is "the span cannot resolve the gate", which is a true
 # statement about a 60 s run rather than a regression. Only a real drift
 # failure (2) counts against the gate.
 if [ $summary_rc -ne 0 ] || [ $shed_rc -ne 0 ] || [ $drift_rc -eq 2 ] \
-   || [ $tierb_rc -ne 0 ]; then
+   || [ $tierb_rc -ne 0 ] || [ $level_rc -ne 0 ]; then
   echo "[pacing] verdict: FAIL"; exit 2
 fi
 # Name what was not covered. A PASS that quietly omits a leg reads exactly like
@@ -265,4 +325,6 @@ fi
   echo "[pacing] note: the input-window leg did not run; nothing is claimed about it"
 [ $TIER_B -eq 0 ] && \
   echo "[pacing] note: input window not checked (pass --tier-b; it takes the foreground)"
+[ $level_possible -eq 0 ] && \
+  echo "[pacing] note: nothing claimed about pacing outside the attract demo"
 echo "[pacing] verdict: PASS"

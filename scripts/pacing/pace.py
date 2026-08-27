@@ -260,6 +260,31 @@ def cmd_summary(a):
           f"{sum(1 for r in pres if r.flags)} intermediate; "
           f"sheds {len(log.of(pacelog.SHED))}")
 
+    # Late-tick RATE, and why it exists.
+    #
+    # p99 over this population is the 25th-worst of ~2500 VBL. When only 10-25
+    # VBLs exceed the goal, p99 lands INSIDE the sparse tail and moves with its
+    # count: five runs of one unchanged configuration in a level measured 44.7,
+    # 81.9, 92.6, 256.3 and 256.4 us — a 5.7x spread, straddling the 250 us
+    # goal, on a build that never changed. The same runs' late-tick RATE spread
+    # only 2.3x, because a count of rare events is a far more stable estimator
+    # of a rare event than a quantile that happens to fall among them.
+    #
+    # It is also the more meaningful quantity: "how often does a tick start
+    # late enough to feel" is the question, and a rate answers it directly.
+    late = sum(1 for v in s1 if v > a.p99_us * 1000)
+    very = sum(1 for v in s1 if v > 1_000_000)
+    per_k = 1000.0 * late / len(s1)
+    print(f"late ticks: {late} over +{a.p99_us:.0f}us ({per_k:.1f} per 1000 VBL), "
+          f"{very} over +1ms ({1000.0*very/len(s1):.1f} per 1000)")
+
+    if a.max_late_per_1000 is not None:
+        ok = per_k <= a.max_late_per_1000
+        print(f"verdict: {'PASS' if ok else 'FAIL'} — {per_k:.1f} late ticks per "
+              f"1000 VBL vs goal {a.max_late_per_1000:.1f} "
+              f"(p99 {us(ps.percentile(s1, 99))} recorded, not gated)")
+        return 0 if ok else 2
+
     # The verdict gates on p99/p99.9 and RECORDS max. Max on a general-purpose
     # OS includes SMIs and scheduler noise nobody here controls; gating on it
     # produces a flapping red X that teaches people to ignore the gate.
@@ -299,19 +324,29 @@ def cmd_drift(a):
     if len(cur) >= a.min_segment:
         segments.append(cur)
 
-    # Drop each segment's opening VBLs. A clamp snaps the grid forward while
-    # the loop still carries the backlog that caused it, so the first ticks of
-    # a new segment start late and converge over the next few — a recovery
-    # transient, exactly like a run's warmup, and just as much not a frequency
-    # error. Fitted in, it dominates: on a 115 s run with three slips, 30 VBL
-    # out of 6917 turned +0.05 ppm into -3.14 ppm, and the estimate is flat
-    # from a 10-VBL margin all the way out to 1000. The count is printed
-    # because a margin that silently grew could hide a real drift behind it.
+    # Drop VBLs at BOTH ends of every slip-free segment, because a clamp
+    # distorts the fit on both sides of itself and the two distortions have
+    # opposite signs.
+    #
+    # After a clamp, the grid has snapped forward while the loop still carries
+    # the backlog that caused it: the first ticks start late and converge, a
+    # FALLING phase ramp that OLS reads as a short period. Measured: 30 VBL out
+    # of 6917 turned +0.05 ppm into -3.14 ppm.
+    #
+    # Before a clamp, the loop is progressively falling behind — that is what
+    # eventually trips the clamp — a RISING phase ramp read as a long period.
+    # Measured: a 64 ms external stall near the end of one segment produced
+    # +2.9489 +/- 0.4685 ppm; trimming 30 VBL from the segment tails gave
+    # -0.0046 +/- 0.0503, stable out to 100.
+    #
+    # Neither is frequency error. Both are the clamp. The counts are printed
+    # because a trim that quietly grew could hide a real drift behind it.
     recovery = 0
     if a.slip_recovery:
+        k = a.slip_recovery
         trimmed = []
         for seg in segments:
-            t = seg[a.slip_recovery:] if len(seg) > a.slip_recovery else []
+            t = seg[k:len(seg) - k] if len(seg) > 2 * k else []
             if len(t) >= a.min_segment:
                 recovery += len(seg) - len(t)
                 trimmed.append(t)
@@ -345,7 +380,7 @@ def cmd_drift(a):
     span_s = (t[-1] - t[0]) / 1e9
     print(f"fitted over {len(segments)} slip-free segment(s), {tot_n} VBL "
           f"({len(slip_ns)} slip(s) excluded from the fit"
-          + (f"; {recovery} VBL dropped as post-clamp recovery" if recovery
+          + (f"; {recovery} VBL dropped at segment edges (clamp approach + recovery)" if recovery
              else "") + ")")
     # What the frequency error costs over a real session, which is the form
     # that matters: this plan's deliverable is that RTA and tick time agree.
@@ -1370,6 +1405,12 @@ def main():
     p.add_argument("--expect-inject-every", type=int, default=30)
 
     p = add("summary", cmd_summary, "percentiles, ledgers, verdict")
+    p.add_argument("--max-late-per-1000", type=float, default=None,
+                   help="gate on the RATE of ticks later than --p99-us instead "
+                        "of on p99 itself. Use wherever the tail is sparse: a "
+                        "quantile that falls among a handful of rare events "
+                        "moves with their count, and gates that flap teach "
+                        "people to ignore them")
     p.add_argument("--p99-us", type=float, default=250.0,
                    help="p99 phase-error goal in us (default 250, the plan's)")
     p.add_argument("--window", type=float, default=1.0)
@@ -1382,9 +1423,10 @@ def main():
     p.add_argument("--min-segment", type=int, default=100,
                    help="shortest slip-free run of VBLs worth fitting")
     p.add_argument("--slip-recovery", type=int, default=30,
-                   help="VBLs to drop at the start of each slip-free segment "
-                        "as post-clamp recovery (default 30; 0 disables, "
-                        "which is how the transient's size is measured)")
+                   help="VBLs to drop at EACH END of every slip-free segment "
+                        "(default 30; 0 disables, which is how the "
+                        "transient's size is measured). A clamp distorts the "
+                        "fit on both sides of itself, with opposite signs")
 
     add("stability", cmd_stability, "Allan / modified Allan deviation")
 

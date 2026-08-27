@@ -353,6 +353,19 @@ def test_slip_recovery():
     check("dropping the recovery recovers the true rate",
           approx(trimmed, 0.0, 0.01), f"{trimmed:+.4f} ppm")
 
+    # The mirror: a segment that ends with the loop progressively falling
+    # behind (which is what trips the clamp in the first place) is a RISING
+    # ramp, read as a LONG period. Same defect, opposite sign — and it is why
+    # trimming only the segment head left a +2.95 ppm gate failure standing.
+    ys_tail = [i * nominal + (0.0 if i < n - lead else 300_000.0 * (i - (n - lead)))
+               for i in xs]
+    biased_tail, _ = ps.drift_ppm(xs, ys_tail, nominal)
+    check("a build-up before a clamp invents a large POSITIVE drift",
+          biased_tail > 2.0, f"{biased_tail:+.3f} ppm")
+    trimmed_tail, _ = ps.drift_ppm(xs[:n - lead], ys_tail[:n - lead], nominal)
+    check("trimming the segment TAIL recovers the true rate",
+          approx(trimmed_tail, 0.0, 0.01), f"{trimmed_tail:+.4f} ppm")
+
     # And the bias must dilute with span, which is why a short gate leg and a
     # long soak run disagreed before this was understood.
     xs2 = list(range(20_000))
