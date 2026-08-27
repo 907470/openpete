@@ -11,6 +11,8 @@ Run: python3 scripts/pacing/test_pacestats.py
 import math
 import random
 import sys
+from pathlib import Path as _P
+sys.path.insert(0, str(_P(__file__).resolve().parent))
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -278,6 +280,55 @@ def test_diff():
           ps.bootstrap_ci(a, b) == ps.bootstrap_ci(a, b))
 
 
+def test_log_format():
+    """A format bump must not orphan the logs already on disk.
+
+    The record size comes from each log's own header, never from this build's
+    constant. Getting that wrong refuses every older log with a struct error —
+    which is indistinguishable from corruption, and a pacing log is evidence
+    nobody can regenerate. It happened: the v2 bump truncated v1 bodies to a
+    multiple of 64, and last night's matrix logs became unreadable."""
+    print("log format")
+    import io
+    import struct
+    import pacelog
+
+    def build(version, rec_bytes, fmt, payload):
+        env = b"build=test\n"
+        hdr = struct.pack("<IIIIIIqqqqq", pacelog.MAGIC, version,
+                          pacelog.HEADER_FIXED + len(env), rec_bytes,
+                          len(env), 0, 0, 0, 2250000, 37609, 2)
+        hdr += b"\x00" * (pacelog.HEADER_FIXED - len(hdr))
+        return hdr + env + struct.pack(fmt, *payload)
+
+    v1 = build(1, 48, "<BBHIqqqqq", (pacelog.VBL, 0, 0, 7, 100, 90, 80, 100, 200))
+    v2 = build(2, 64, "<BBHIqqqqqqq",
+               (pacelog.VBL, 0, 3, 7, 100, 90, 80, 100, 200, 42, 0xFFFF))
+
+    import tempfile
+    import os
+    for name, blob, want_e in (("v1", v1, None), ("v2", v2, 42)):
+        fd, path = tempfile.mkstemp(suffix=".pacelog")
+        os.write(fd, blob)
+        os.close(fd)
+        try:
+            log = pacelog.read(path)
+            r = log.records[0]
+            check(f"{name} log parses to one VBL record",
+                  len(log.records) == 1 and r.type == pacelog.VBL,
+                  f"{len(log.records)} record(s)")
+            check(f"{name} payload survives", r.deadline_ns == 90 and
+                  r.exec_start_ns == 100, f"deadline {r.deadline_ns}")
+            check(f"{name} latch identity reads {want_e}",
+                  r.latched_seq == want_e, f"got {r.latched_seq}")
+        finally:
+            os.unlink(path)
+
+    check("a v1 record carries no latched bits (absent, not zero)",
+          pacelog.Record((pacelog.VBL, 0, 0, 0, 0, 0, 0, 0, 0)).latched_bits
+          is None)
+
+
 def test_slip_recovery():
     """A slip clamp snaps the grid forward while the loop still carries the
     backlog. The ticks that follow start late and converge, and OLS reads that
@@ -315,7 +366,7 @@ def test_slip_recovery():
 
 if __name__ == "__main__":
     for fn in (test_summary, test_drift, test_stability, test_spectrum,
-               test_diff, test_slip_recovery):
+               test_diff, test_slip_recovery, test_log_format):
         fn()
     print()
     if FAILURES:

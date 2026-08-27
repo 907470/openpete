@@ -300,7 +300,11 @@ def read(path: Path) -> Log:
     body = data[header_bytes:]
     # A run killed mid-write leaves a partial trailing record; truncate rather
     # than refuse, so a SIGKILLed soak run is still readable.
-    body = body[: (len(body) // RECORD_BYTES) * RECORD_BYTES]
+    # Truncate to the size THIS log's header declares, not the current
+    # build's. Using the module constant silently refuses every older log —
+    # the one thing a format bump must not do, since a log is evidence nobody
+    # can regenerate.
+    body = body[: (len(body) // rec_bytes) * rec_bytes]
     recs = [Record(t) for t in struct.iter_unpack(fmt, body)]
     return Log(env, epoch_ns, created_unix_ns, vbl_num, vbl_den, tick_vbls, recs)
 
