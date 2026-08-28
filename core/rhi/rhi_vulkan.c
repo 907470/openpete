@@ -231,6 +231,11 @@ struct rhi_device {
     /* Window size as last observed while waiting for a resize to settle. */
     int      last_seen_w, last_seen_h;
     Uint64   size_stable_since_ns;
+    /* Set when the caller knows the size change was DISCRETE — one the app
+     * caused, arriving in a single step. The settle window exists to absorb a
+     * drag's per-pixel walk; applying it to a fullscreen toggle just freezes
+     * the display for the length of the window. */
+    bool     resize_discrete;
     bool     frame_active;  /* between begin_frame and end_frame */
     uint32_t draw_calls;    /* rhi_draw invocations since begin_frame (perf census) */
     VkExtent2D cur_extent;  /* render area of the CURRENT pass (offscreen sc_extent
@@ -1674,7 +1679,8 @@ bool rhi_begin_frame(rhi_device *dev)
          * forever. Skipping the present costs nothing the user can see during
          * a resize, and keeps the sim off this call entirely. */
         int cw = 0, ch = 0;
-        if (SDL_GetWindowSizeInPixels(dev->window, &cw, &ch) && cw > 0 && ch > 0) {
+        if (!dev->resize_discrete &&
+            SDL_GetWindowSizeInPixels(dev->window, &cw, &ch) && cw > 0 && ch > 0) {
             if (cw != dev->last_seen_w || ch != dev->last_seen_h) {
                 dev->last_seen_w = cw;
                 dev->last_seen_h = ch;
@@ -1689,6 +1695,14 @@ bool rhi_begin_frame(rhi_device *dev)
             return false;
         Uint64 t0 = SDL_GetTicksNS();
         bool ok = recreate(dev);
+        if (ok && dev->resize_discrete) {
+            /* Consumed. A later OUT_OF_DATE (the compositor delivering the
+             * size in two steps) rebuilds again through the normal path. */
+            dev->resize_discrete = false;
+            SDL_GetWindowSizeInPixels(dev->window, &dev->last_seen_w,
+                                      &dev->last_seen_h);
+            dev->size_stable_since_ns = SDL_GetTicksNS();
+        }
         rhi_note_stall_phase("recreate", RHI_BLOCK_RECREATE, t0);
         dev->recreate_backoff_until_ns = SDL_GetTicksNS() + RHI_ACQUIRE_BACKOFF_NS;
         if (!ok) return false;
@@ -2043,6 +2057,19 @@ void rhi_end_frame(rhi_device *dev)
 void rhi_notify_resize(rhi_device *dev)
 {
     if (dev) dev->needs_recreate = true;
+}
+
+/* As rhi_notify_resize, for a size change the app itself caused: rebuild at
+ * the next begin_frame instead of waiting out the settle window meant for a
+ * live drag. The back-off is cleared too — a toggle is not the sustained
+ * OUT_OF_DATE storm that back-off exists to damp. */
+void rhi_notify_resize_immediate(rhi_device *dev)
+{
+    if (!dev) return;
+    dev->needs_recreate = true;
+    dev->resize_discrete = true;
+    dev->recreate_backoff_until_ns = 0;
+    dev->acquire_backoff_until_ns = 0;
 }
 
 void rhi_set_vsync(rhi_device *dev, int vsync)

@@ -122,6 +122,10 @@ void rhi_end_frame(rhi_device *dev);
  * target are recreated on the next rhi_begin_frame. Safe to call on every
  * resize event. */
 void rhi_notify_resize(rhi_device *dev);
+/* Same, for an app-driven (discrete) size change such as a fullscreen toggle:
+ * rebuilds at the next begin_frame rather than waiting out the settle window
+ * that exists to absorb a live drag's per-pixel steps. */
+void rhi_notify_resize_immediate(rhi_device *dev);
 
 /* Register a handler called once on an unrecoverable VK_ERROR_DEVICE_LOST
  * (acquire/present). Lets the owning layer flag a clean shutdown; the RHI itself

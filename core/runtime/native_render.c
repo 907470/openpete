@@ -1152,6 +1152,12 @@ void openpete_native_set_icon(const void* rgba32, int w, int h)
     s_icon_h = h;
 }
 
+/* How long after an app-driven size change (a fullscreen toggle) the next size
+ * change is taken as discrete. Long enough for the compositor to deliver the
+ * new size, short enough that a drag beginning right afterwards still settles
+ * normally. */
+#define NR_RESIZE_IMMEDIATE_GRACE_NS (1000ull * 1000ull * 1000ull)
+
 static struct {
     bool          enabled;
     bool          headless;     /* W1.1: surfaceless capture (no window/present); screenshots only */
@@ -1164,6 +1170,13 @@ static struct {
      * is only taken once it has held still (see NR_RESIZE_SETTLE_NS). */
     int           pending_w, pending_h;
     Uint64        pending_since_ns;
+    /* When the app itself last caused a size change (a fullscreen toggle).
+     * Such a change arrives in a single step and so has nothing to settle;
+     * waiting out the drag window there costs a third of a second of frozen
+     * display for no benefit. Time-bounded rather than a plain flag so a
+     * toggle that changes no size at all cannot leave the next genuine drag
+     * unsettled. */
+    Uint64        resize_immediate_at_ns;
 
     /* Reference panel: PsyCross's read-back frame (RGBA8). */
     rhi_pipeline *blit_pipe;
@@ -2467,6 +2480,9 @@ void openpete_native_toggle_fullscreen(void)
     bool fs = (SDL_GetWindowFlags(s_nr.window) & SDL_WINDOW_FULLSCREEN) != 0;
     if (!fs)
         SDL_SetWindowFullscreenMode(s_nr.window, NULL);  /* borderless desktop */
+    /* The size change this causes lands in ONE step, so neither settle window
+     * applies to it: adopt it as soon as it is seen. */
+    s_nr.resize_immediate_at_ns = SDL_GetTicksNS();
     SDL_SetWindowFullscreen(s_nr.window, !fs);
     OPL_INFO_F("native", "fullscreen %s", !fs ? "on (borderless desktop)" : "off");
 }
@@ -8778,11 +8794,27 @@ void openpete_native_render_frame(uint64_t record_pts_us)
          * full teardowns per drag. Each is expensive enough to cost the sim a
          * tick, and the presenting thread is the sim thread. Render at the old
          * size until the user pauses, then rebuild once. */
-        if (pw != s_nr.pending_w || ph != s_nr.pending_h) {
+        Uint64 now_ns = SDL_GetTicksNS();
+        bool discrete = s_nr.resize_immediate_at_ns &&
+                        now_ns - s_nr.resize_immediate_at_ns <
+                            NR_RESIZE_IMMEDIATE_GRACE_NS;
+        if (discrete) {
+            /* How long the display was frozen for, in one number: both settle
+             * windows used to run in series here, at 150 ms each. */
+            OPL_INFO_F("native", "fullscreen: %dx%d adopted %.1f ms after the "
+                       "toggle", pw, ph,
+                       (double)(now_ns - s_nr.resize_immediate_at_ns) / 1e6);
+            s_nr.resize_immediate_at_ns = 0;
+            s_nr.win_w = s_nr.pending_w = pw;
+            s_nr.win_h = s_nr.pending_h = ph;
+            /* Tell the RHI it is discrete too, or its own settle window runs
+             * in series with this one and the two sum. */
+            rhi_notify_resize_immediate(s_nr.dev);
+        } else if (pw != s_nr.pending_w || ph != s_nr.pending_h) {
             s_nr.pending_w = pw;
             s_nr.pending_h = ph;
-            s_nr.pending_since_ns = SDL_GetTicksNS();
-        } else if (SDL_GetTicksNS() - s_nr.pending_since_ns >= NR_RESIZE_SETTLE_NS) {
+            s_nr.pending_since_ns = now_ns;
+        } else if (now_ns - s_nr.pending_since_ns >= NR_RESIZE_SETTLE_NS) {
             s_nr.win_w = pw;
             s_nr.win_h = ph;
             rhi_notify_resize(s_nr.dev);
