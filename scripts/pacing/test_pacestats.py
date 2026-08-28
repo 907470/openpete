@@ -8,6 +8,8 @@ no Allan deviation because it looks authoritative and nobody re-derives it.
 
 Run: python3 scripts/pacing/test_pacestats.py
 """
+import contextlib
+import io
 import math
 import os
 import pathlib
@@ -208,6 +210,39 @@ def test_stability():
           approx(adev1, expect, expect * 0.15),
           f"got {adev1:.3e}, theory {expect:.3e}")
 
+    # Per-run spread. The pooled curve sums squared differences across every
+    # run as though they were one process, so three runs of visibly different
+    # stability must still be separable when asked one at a time — otherwise a
+    # curve averaged over unlike stretches reports a stability nobody has.
+    t_mix, idx_mix = [], []
+    for r in range(3):
+        base = r * 2000
+        for i in range(1200):
+            t_mix.append(int((base + i) * VBL_NS + rng.gauss(0, sigma_ns) * (r + 1)))
+            idx_mix.append(base + i)
+    runs_mix, cuts_mix = ps.phase_runs(t_mix, VBL_NS, idx_mix)
+    check("index gaps split the series into one run each", len(runs_mix) == 3,
+          f"{len(runs_mix)} run(s), cuts {cuts_mix}")
+    per = [ps.adev_from_runs([r_], VBL_NS, [4])[0][1] for r_ in runs_mix]
+    check("per-run ADEV separates 1x/2x/3x jitter", max(per) / min(per) > 2.0,
+          " ".join(f"{v:.2e}" for v in per))
+    pooled = ps.adev_from_runs(runs_mix, VBL_NS, [4])[0][1]
+    check("the pooled value sits inside the spread it averages",
+          min(per) < pooled < max(per),
+          f"pooled {pooled:.2e} vs {min(per):.2e}..{max(per):.2e}")
+
+    # A slip's RECOVERY is trimmed from the head of the following run: the
+    # grid snapped forward while the loop still carried its backlog, so the
+    # convergence that follows is the clamp being re-reported as instability.
+    t_slip = [i * VBL_NS for i in range(400)]
+    t_slip += [400 * VBL_NS + 5_000_000 + i * VBL_NS for i in range(400)]
+    runs_slip, cuts_slip = ps.phase_runs(t_slip, VBL_NS, list(range(800)),
+                                         breaks_ns=[400 * VBL_NS + 5_000_000])
+    check("a slip splits the series and the recovery is trimmed",
+          cuts_slip == ["slip"] and len(runs_slip[0]) == 400
+          and len(runs_slip[1]) == 400 - ps.SLIP_RECOVERY_VBL,
+          f"cuts {cuts_slip}, runs {[len(r_) for r_ in runs_slip]}")
+
     # A frequency OFFSET (constant rate error) is a phase ramp, which the
     # second difference removes entirely -- ADEV must stay flat-to-falling and
     # must NOT report the offset as instability.
@@ -311,9 +346,10 @@ def test_baseline_compare():
               ["thread_split", "1"], ["input_legacy", "0"],
               ["headless", "0"], ["runahead", "0"]]
 
-    def leg(sigma=1000.0, within=99.8, ppt=1.0, reg=regime):
+    def leg(sigma=1000.0, within=99.8, ppt=1.0, reg=regime, late=6.0):
         return {"build": "b", "machine_key": machine, "regime_key": reg,
                 "robust_sigma_ns": sigma, "within_250us_pct": within,
+                "late_per_1000": late,
                 "presents_per_tick": ppt, "p50_ns": 9000.0, "p99_ns": 40000.0,
                 "p99_9_ns": 1e6, "max_ns": 2e7, "sim_slips": 2,
                 "render_slips": 0, "intermediate": 0, "wake_p99_ns": 15000.0}
@@ -354,9 +390,59 @@ def test_baseline_compare():
         check("presents collapsing is caught even with phase unchanged",
               rc == 1, f"rc {rc}")
 
-        rc = bm.compare_to_baseline({"fps0": leg(within=98.0)}, "quick",
+        # The late RATE, gated relatively. Five repeats of one unchanged
+        # build spread 4.7-10.8 per 1000, so the tolerance has to clear that
+        # spread or the gate flaps on noise.
+        rc = bm.compare_to_baseline({"fps0": leg(late=14.0)}, "quick",
                                     verbose=False)
-        check("the on-grid RATE dropping is caught", rc == 1, f"rc {rc}")
+        check("2.3x the late rate is inside the observed run-to-run spread",
+              rc == 0, f"rc {rc}")
+        rc = bm.compare_to_baseline({"fps0": leg(late=20.0)}, "quick",
+                                    verbose=False)
+        check("3.3x the late rate is caught", rc == 1, f"rc {rc}")
+
+        # The same proportional change at a different operating point. Gated
+        # as `within_250us_pct` at +/-0.5 points absolute, 99.94 -> 99.70 was
+        # inside tolerance while being four times the failure rate.
+        (d / "quick.json").write_text(json.dumps(
+            {"build": "old", "machine_key": machine,
+             "legs": {"fps0": leg(late=0.6, within=99.94)}}))
+        rc = bm.compare_to_baseline({"fps0": leg(late=3.0, within=99.70)},
+                                    "quick", verbose=False)
+        check("5x a small late rate is caught where half a point was not",
+              rc == 1, f"rc {rc}")
+        # ...but not below the floor, where the difference is a couple of
+        # late ticks in the whole leg and a ratio means nothing.
+        rc = bm.compare_to_baseline({"fps0": leg(late=1.0, within=99.90)},
+                                    "quick", verbose=False)
+        check("a sub-floor rate change is not a regression", rc == 0,
+              f"rc {rc}")
+
+        # Two-sided: a large improvement must ASK to be re-blessed. A one-way
+        # gate keeps measuring its tolerance from the old, worse number, so
+        # it defends less every time the code gets better.
+        (d / "quick.json").write_text(json.dumps(
+            {"build": "old", "machine_key": machine, "legs": {"fps0": leg()}}))
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = bm.compare_to_baseline({"fps0": leg(sigma=200.0)}, "quick",
+                                        verbose=False)
+        check("a 5x improvement passes but asks to be re-blessed",
+              rc == 0 and "re-bless" in out.getvalue(),
+              f"rc {rc}: {out.getvalue()!r}")
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = bm.compare_to_baseline({"fps0": leg(sigma=900.0)}, "quick",
+                                        verbose=False)
+        check("a small improvement does not", "re-bless" not in out.getvalue(),
+              out.getvalue())
+        # A count with zero tolerance has no tolerance to widen.
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = bm.compare_to_baseline({"fps0": dict(leg(), sim_slips=0)},
+                                        "quick", verbose=False)
+        check("fewer slips is not a re-bless request",
+              "re-bless" not in out.getvalue(), out.getvalue())
 
         other = [list(kv) for kv in regime]
         other[0] = ["present_mode", "immediate"]

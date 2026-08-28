@@ -320,7 +320,14 @@ def cmd_drift(a):
     # different fixes and different meanings for a run's timing: drift is the
     # oscillator being wrong, a slip is wall time the game lost outright.
     # Fitting across a slip attributes the second to the first.
-    slip_ns = sorted(r.t_ns for r in log.of(pacelog.SLIP))
+    # SIM slips only. A render slip discards render deadlines and leaves the
+    # sim grid exactly where it was, so segmenting the sim phase there removes
+    # reach for nothing: a 25 ms injected present produced 206 render slips and
+    # ZERO sim slips, and counting them all cut a 78 s log into 192 runs whose
+    # longest reached 0.4 s of tau. A break belongs here only where the series
+    # actually STEPS.
+    slip_ns = sorted(r.t_ns for r in log.of(pacelog.SLIP)
+                     if not r.flags)
     segments, cur = [], []
     si = 0
     for r in kept:
@@ -456,7 +463,11 @@ def cmd_drift(a):
     # so in the slip ledger, so re-reporting it here as an undeclared
     # re-anchor would flag the instrument's own honest record as a finding.
     declared = [(b, e) for _, b, e in log.windows()]
-    declared += [(r.t_ns, r.t_ns) for r in log.of(pacelog.SLIP)]
+    # Sim slips only, for the same reason: a render slip declares nothing
+    # about the sim grid, and a permissive window here would excuse a real
+    # undeclared re-anchor that happened to land near one.
+    declared += [(r.t_ns, r.t_ns) for r in log.of(pacelog.SLIP)
+                 if not r.flags]
     unexplained, small = [], 0
     for i, direction in hits:
         when = kept[i].exec_start_ns
@@ -516,7 +527,8 @@ def cmd_stability(a):
     # The same two discontinuities cmd_drift segments at, for the same reason:
     # a step in the phase lands at long tau, which is the only part of this
     # curve worth reading. See pacestats.phase_runs.
-    slip_ns = sorted(r.t_ns for r in log.of(pacelog.SLIP))
+    slip_ns = sorted(r.t_ns for r in log.of(pacelog.SLIP)
+                     if not r.flags)
     runs, cuts = ps.phase_runs(t, nominal, idx, slip_ns)
     curve = ps.adev(t, nominal, indices=idx, breaks_ns=slip_ns)
     if not curve:
@@ -548,6 +560,33 @@ def cmd_stability(a):
     for tau, d in curve:
         md = m.get(tau)
         print(f"{tau:10.4f} {d:12.3e} " + (f"{md:12.3e}" if md else " " * 12))
+    # Per-run spread at one mid-tau. The curve above pools squared differences
+    # across every run as though they were one process; a run that ENDS at a
+    # clamp is by construction the abnormal one, so a pooled curve can blend
+    # two populations into a stability nobody's machine has. Three runs is the
+    # fewest where a spread means anything.
+    if len(runs) >= 3:
+        mid = max(1, min(len(r) for r in runs) // 4)
+        per = []
+        for r in runs:
+            pt = ps.adev_from_runs([r], nominal, [mid])
+            if pt:
+                per.append(pt[0][1])
+        if len(per) >= 3:
+            lo_, hi_ = min(per), max(per)
+            # The pooled value is recomputed at this exact m rather than
+            # looked up: the printed curve walks 1, 2, 3, ... in 1.3x steps
+            # and need not contain it at all.
+            pooled = ps.adev_from_runs(runs, nominal, [mid])
+            tau_mid = mid * (nominal / 1e9)
+            print(f"per-run ADEV at tau={tau_mid:.3f}s: {lo_:.3e} .. "
+                  f"{hi_:.3e} across {len(per)} run(s)"
+                  + (f" (pooled {pooled[0][1]:.3e})" if pooled else ""))
+            if lo_ > 0 and hi_ / lo_ > 3.0:
+                print(f"  finding: the runs disagree by {hi_/lo_:.1f}x at this "
+                      f"tau, so the pooled curve above is an average over "
+                      f"unlike stretches — read the runs, not the average.")
+
     lo = ps.adev_slope(curve, 0.0, 0.5)
     hi = ps.adev_slope(curve, 0.5, 1.0)
     print(f"log-log slope: {lo:+.2f} (short tau), {hi:+.2f} (long tau)")
@@ -818,7 +857,8 @@ def cmd_report(a):
     # format, so a report written with the uncorrected curve outlives the
     # session that wrote it — the defect was fixed in `stability` and left
     # alive here, which is the worse of the two places to leave it.
-    slip_ns = sorted(r.t_ns for r in log.of(pacelog.SLIP))
+    slip_ns = sorted(r.t_ns for r in log.of(pacelog.SLIP)
+                     if not r.flags)
     curve = ps.adev(t, nominal, indices=[r.index for r in kept],
                     breaks_ns=slip_ns)
     # Drift, likewise, must not be fitted across a clamp: it reads discarded

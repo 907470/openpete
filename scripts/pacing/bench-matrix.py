@@ -25,21 +25,16 @@ it can never gate a later build.
 import argparse
 import json
 import os
-import subprocess
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "lib"))
-from hostenv import child_env                                  # noqa: E402
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "fences"))
 import wslenv_guard                                            # noqa: E402
 import pacelog                                                # noqa: E402
+from paceleg import REPO, VBL_HZ, exe_for, run_leg              # noqa: E402
 import pacestats as ps                                        # noqa: E402
-
-REPO = Path(__file__).resolve().parents[2]
-VBL_HZ = 2250000 / 37609
 
 # The knob axis the 0b findings identified as the driver: presents per tick.
 # Each leg names what it is FOR, so a table row can be read without the plan.
@@ -61,40 +56,6 @@ LEGS = {
 }
 
 TIER_SECONDS = {"quick": 60, "standard": 600, "soak": 4 * 3600}
-
-
-def exe_for(platform):
-    if platform == "windows":
-        p = REPO / "build/windows-mingw/games/spyro-1/openpete-spyro1.exe"
-    else:
-        p = REPO / "build/linux-release/games/spyro-1/openpete-spyro1"
-    if not p.exists():
-        sys.exit(f"no binary at {p} — build the preset first")
-    return p
-
-
-def run_leg(exe, disc, name, flags, seconds, out_dir, headless, extra):
-    log = out_dir / f"{name}.pacelog"
-    # Every harness destroys its own history before it runs: a stale log that
-    # survives a failed leg reads as a successful one.
-    log.unlink(missing_ok=True)
-    vbls = int(seconds * VBL_HZ)
-    cmd = [str(exe), "--disc", str(disc), "--frame-limit", str(vbls),
-           "--pace-log", str(log)] + flags + extra
-    knobs = {}
-    if headless:
-        cmd.append("--headless")
-        knobs["OPENPETE_FORCE_PACING"] = "1"   # headless is unpaced otherwise
-    t0 = time.time()
-    r = subprocess.run(cmd, capture_output=True, text=True,
-                       env=child_env(knobs),
-                       timeout=seconds * 4 + 300)
-    if r.returncode != 0 or not log.exists():
-        tail = (r.stderr or r.stdout or "")[-400:]
-        print(f"  {name}: FAILED (rc={r.returncode}) {tail}", file=sys.stderr)
-        return None
-    print(f"  {name}: {time.time()-t0:.0f}s wall, {log.stat().st_size//1024} KiB")
-    return log
 
 
 def analyse(log_path, warmup):
@@ -120,6 +81,10 @@ def analyse(log_path, warmup):
         "p99_9_ns": ps.percentile(s1, 99.9),
         "max_ns": max(s1),
         "within_250us_pct": 100.0 * sum(1 for v in s1 if abs(v) < 250_000) / len(s1),
+        # Late, not late-or-early: a tick that starts early is not the failure
+        # this defends against, and folding the two together lets one mask the
+        # other.
+        "late_per_1000": 1000.0 * sum(1 for v in s1 if v > 250_000) / len(s1),
         "presents_per_tick": (canon + inter) / max(1, canon),
         "canonical": canon, "intermediate": inter,
         "sim_slips": sum(1 for r in log.of(pacelog.SLIP) if not r.flags),
@@ -149,7 +114,17 @@ GATED = [
     # Repeats of one unchanged config held sigma to 0.4 -> 0.4 and 0.5 -> 0.5
     # us, so half again is generous, not tight.
     ("robust_sigma_ns", "robust sigma", "lower", 0.5),
-    ("within_250us_pct", "within 250us", "higher", 0.5),
+    # The late RATE, gated RELATIVELY. `within_250us_pct` was gated here at
+    # +/-0.5 points absolute, which is sensible where a leg sits at 94 % and
+    # nearly meaningless where it sits at 99.9 %: the same half-point permits
+    # a five-fold worse failure rate. The rate says the same thing in units
+    # that scale with the quantity being defended.
+    #
+    # The tolerance is set by the estimator's own run-to-run spread, not by
+    # taste: five repeats of one unchanged build in a level measured 4.7-10.8
+    # late per 1000, a 2.3x spread. A gate tighter than the noise flaps, and
+    # a flapping gate is one people learn to ignore.
+    ("late_per_1000", "late/1000", "lower", 1.5),
     ("presents_per_tick", "presents/tick", "higher", 0.15),
     # Slips are the loud failure and they are RARE, which is exactly the shape
     # this project's own rule says to gate as a count rather than trust to a
@@ -159,14 +134,79 @@ GATED = [
     ("sim_slips", "sim slips", "lower", 0.0),
     ("render_slips", "render slips", "lower", 0.0),
 ]
-REPORTED = ["p50_ns", "p99_ns", "p99_9_ns", "max_ns", "intermediate",
-            "wake_p99_ns"]
+# A rate cannot be gated relatively near zero: 0.0 -> 0.4 per 1000 is an
+# infinite regression by ratio and nothing at all in fact. Below this floor
+# the absolute change is what counts.
+#
+# The floor is COUNTING NOISE, not taste. A 600 s standard leg holds ~36k VBL
+# and a 60 s quick leg ~3.6k, so 1.0 per 1000 is ~4 late ticks in the small
+# case: about two sigma on a Poisson count of that size, and the smallest
+# difference a leg of this length can distinguish from luck. Set it any higher
+# and it stops being a floor and starts being the gate — at 3.0 it swallowed
+# 0.6 -> 3.0 per 1000, five times the failure rate, which is precisely the
+# case switching away from `within_250us_pct` was meant to catch.
+RATE_FLOOR = {"late_per_1000": 1.0}
+# How much BETTER a gated statistic may get before the baseline is stale. One
+# sided gates widen silently: every real improvement leaves the tolerance
+# measured against the old, worse number, so the gate defends less each time
+# the code improves and never says so.
+REBLESS_FACTOR = 2.0
+
+REPORTED = ["p50_ns", "p99_ns", "p99_9_ns", "max_ns", "within_250us_pct",
+            "intermediate", "wake_p99_ns"]
 
 
 def machine_dir(machine_key):
     """Directory a baseline for this machine is filed under."""
     return "-".join(str(v).replace(" ", "_").replace("/", "_")[:24]
                     for _, v in machine_key)
+
+
+def gate_delta(key, a_, b_, direction, tol):
+    """(worse, better, shown) for one statistic against its baseline.
+
+    Both directions are answered, because a gate that only ever asks "did it
+    regress" widens itself every time the code improves: the tolerance stays
+    measured from the old, worse number.
+    """
+    delta = b_ - a_
+    # Relative for the ns statistics and the rates, absolute for the
+    # percentages and ratios — a 2% tolerance on "99.76% within 250us" would
+    # be a tolerance of a quarter of the whole failure budget.
+    relative = key.endswith("_ns") or key in RATE_FLOOR
+    floor = RATE_FLOOR.get(key, 0.0)
+    if relative:
+        # A relative band around a near-zero baseline is a band of nothing;
+        # the floor is what stops 0.0 -> 0.4 per 1000 reading as a regression
+        # of infinite size and nothing at all in fact.
+        band = max(tol * max(a_, 0.0), floor)
+        # Improvement is a RATIO, not the same band mirrored: a statistic can
+        # only ever fall by its own size, so "improved by 1.5x the baseline"
+        # is unreachable by construction.
+        ratio = 1.0 + REBLESS_FACTOR * tol
+        shown = (f"{a_/1000:.1f}us -> {b_/1000:.1f}us" if key.endswith("_ns")
+                 else f"{a_:.2f} -> {b_:.2f}")
+    else:
+        band = tol
+        ratio = None
+        shown = f"{a_:.2f} -> {b_:.2f}"
+
+    if tol == 0.0:
+        # A zero-tolerance count (slips) has no tolerance to widen, so an
+        # improvement makes nothing stale — and a run that clamped twice
+        # yesterday and not today is noise, not news.
+        return (delta > band if direction == "lower" else -delta > band), \
+               False, shown
+
+    if direction == "lower":
+        worse = delta > band
+        better = ((a_ > ratio * max(b_, 1e-9)) if ratio is not None
+                  else -delta > REBLESS_FACTOR * band) and (a_ - b_) > floor
+    else:
+        worse = -delta > band
+        better = ((b_ > ratio * max(a_, 1e-9)) if ratio is not None
+                  else delta > REBLESS_FACTOR * band) and (b_ - a_) > floor
+    return worse, better, shown
 
 
 def compare_to_baseline(results, tier, verbose=True):
@@ -207,6 +247,7 @@ def compare_to_baseline(results, tier, verbose=True):
         return 64
 
     regressed = False
+    stale = False
     for name, cur in results.items():
         if not cur:
             continue
@@ -230,22 +271,18 @@ def compare_to_baseline(results, tier, verbose=True):
             a_, b_ = old.get(key), cur.get(key)
             if a_ is None or b_ is None:
                 continue
-            delta = b_ - a_
-            # Relative for the ns statistics, absolute for the percentages
-            # and ratios — a 2% tolerance on "99.76% within 250us" would be
-            # a tolerance of a quarter of the whole failure budget.
-            if key.endswith("_ns"):
-                bad = delta > tol * max(a_, 1) if direction == "lower" \
-                    else -delta > tol * max(a_, 1)
-                shown = f"{a_/1000:.1f}us -> {b_/1000:.1f}us"
-            else:
-                bad = (delta > tol) if direction == "lower" else (-delta > tol)
-                shown = f"{a_:.2f} -> {b_:.2f}"
-            if bad:
+            worse, better, shown = gate_delta(key, a_, b_, direction, tol)
+            if worse:
                 regressed = True
                 print(f"  {name:<11} REGRESSED {label}: {shown}")
-            elif verbose:
-                print(f"  {name:<11} ok {label}: {shown}")
+            else:
+                if better:
+                    stale = True
+                    print(f"  {name:<11} IMPROVED {label}: {shown} "
+                          f"— re-bless, the tolerance is measured from the "
+                          f"old number")
+                elif verbose:
+                    print(f"  {name:<11} ok {label}: {shown}")
         if verbose:
             info = []
             for key in REPORTED:
@@ -259,6 +296,10 @@ def compare_to_baseline(results, tier, verbose=True):
             # Reported, not gated: these move several-fold between identical
             # runs, so they inform a reader and must never fail a build.
             print(f"  {name:<11} (ungated: " + ", ".join(info) + ")")
+    if stale and not regressed:
+        print("\nbaseline: this run is better than the archive by more than "
+              f"{REBLESS_FACTOR:g}x the tolerance. Re-bless it (--bless), or "
+              "the gate keeps defending the old, worse number.")
     return 1 if regressed else 0
 
 

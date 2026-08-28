@@ -26,9 +26,9 @@
  * on is little-endian; the reader assumes it rather than negotiating.
  *
  * The env block is mandatory and carries build/CPU/GPU/refresh/present-mode/
- * governor. Baselines only compare within a matching environment, so the
- * analyzer refuses a cross-env diff rather than silently subtracting numbers
- * taken on different machines.
+ * governor/compositor. Baselines only compare within a matching environment,
+ * so the analyzer refuses a cross-env diff rather than silently subtracting
+ * numbers taken on different machines.
  *
  * The census (counters below) is compiled into every build and needs no log
  * file: pacing health is reported in the end-of-run summary of every run, the

@@ -267,8 +267,11 @@ class Log:
     #             a comparison: a baseline that only matches the build that
     #             produced it can never gate a later one, which is precisely
     #             why nothing ever read these files back.
+    # The compositor sits directly in the measured path — it owns the
+    # swapchain's release cadence — so two runs under different compositors
+    # are not the same machine however identical the silicon.
     MACHINE_FIELDS = ("platform", "cpu", "cpu_count", "governor", "gpu",
-                      "driver", "refresh_mhz")
+                      "driver", "refresh_mhz", "compositor")
     # thread_split / input_legacy / headless belong in the regime, not merely
     # in the header: they change which thread owns the sim clock and how input
     # reaches it, so two logs differing in them are two regimes.

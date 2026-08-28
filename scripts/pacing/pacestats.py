@@ -233,7 +233,21 @@ def _phase_from_timestamps(times_ns, nominal_period_ns):
     return [(t - i * nominal_period_ns) / 1e9 for i, t in enumerate(times_ns)]
 
 
-def phase_runs(times_ns, nominal_period_ns, indices=None, breaks_ns=()):
+# VBLs dropped from the head of a run that begins just after a clamp. The
+# clamp snaps the grid forward while the loop still carries the backlog that
+# caused it, so the first ticks start late and converge: a deterministic ramp,
+# already reported as its own quantity by the slip ledger, that a second
+# difference would otherwise re-report as instability at mid tau.
+#
+# `drift` trims the same recovery, and also trims the APPROACH to a clamp.
+# This does not, deliberately: the approach is the loop progressively losing
+# the grid, which is the very thing an instability curve exists to show. There
+# it is a bias in a frequency FIT and has to go; here it is the signal.
+SLIP_RECOVERY_VBL = 30
+
+
+def phase_runs(times_ns, nominal_period_ns, indices=None, breaks_ns=(),
+               trim_after_slip=SLIP_RECOVERY_VBL):
     """Time-error series split into runs with NO discontinuity inside them.
 
     A second difference is what makes ADEV blind to a constant frequency
@@ -259,7 +273,10 @@ def phase_runs(times_ns, nominal_period_ns, indices=None, breaks_ns=()):
     Returns (runs, cuts): the phase series in seconds, and a per-cut reason
     string ("gap" / "slip"). Reasons are counted rather than derived from the
     run count, because several slips can land inside one already-excluded
-    stretch and the arithmetic then goes negative."""
+    stretch and the arithmetic then goes negative.
+
+    `trim_after_slip` VBLs are dropped from the head of every run that starts
+    after a slip; see SLIP_RECOVERY_VBL for why that end and not the other."""
     if indices is None:
         indices = range(len(times_ns))
     brk = sorted(breaks_ns)
@@ -282,6 +299,14 @@ def phase_runs(times_ns, nominal_period_ns, indices=None, breaks_ns=()):
         prev_idx = idx
     if cur:
         runs.append(cur)
+    if trim_after_slip:
+        k = trim_after_slip
+        for n, reason in enumerate(cuts, start=1):
+            # cuts[n-1] is the reason run n BEGINS; the run before it ended at
+            # the clamp and is unaffected.
+            if reason == "slip" and len(runs[n]) > k:
+                runs[n] = runs[n][k:]
+    runs = [r for r in runs if r]
     return ([[(t - i * nominal_period_ns) / 1e9 for i, t in run]
              for run in runs], cuts)
 
@@ -292,6 +317,45 @@ def phase_runs(times_ns, nominal_period_ns, indices=None, breaks_ns=()):
 # sample plotted at the far right of a log axis, where it is read as evidence
 # about the slowest process in the system.
 MIN_ADEV_TERMS = 10
+
+
+def default_taus(longest):
+    """Sample counts m to evaluate at: 1, then ~1.3x steps up to N/2."""
+    taus, m = [], 1
+    while m <= (longest - 1) // 2:
+        taus.append(m)
+        m = max(m + 1, int(m * 1.3))
+    return taus
+
+
+def adev_from_runs(runs, nominal_period_ns, taus=None):
+    """Overlapping Allan deviation over pre-split runs (see `adev`).
+
+    Split out so a caller can ask the same question of ONE run: the pooled
+    curve sums squared differences across every run, which assumes they are
+    samples of one process. A run that ends at a clamp is by construction the
+    abnormal one, so the pooled curve can blend two populations and show a
+    stability nobody's machine has. Comparing individual runs at one tau is
+    how that becomes visible."""
+    longest = max((len(r) for r in runs), default=0)
+    if sum(len(r) for r in runs) < 5 or longest < 5:
+        return []
+    t0 = nominal_period_ns / 1e9
+    if taus is None:
+        taus = default_taus(longest)
+    out = []
+    for m in taus:
+        acc, cnt = 0.0, 0
+        for x in runs:
+            for i in range(len(x) - 2 * m):
+                d = x[i + 2 * m] - 2 * x[i + m] + x[i]
+                acc += d * d
+                cnt += 1
+        if cnt < MIN_ADEV_TERMS:
+            continue
+        tau = m * t0
+        out.append((tau, math.sqrt(acc / (2.0 * cnt * tau * tau))))
+    return out
 
 
 def adev(times_ns, nominal_period_ns, taus=None, indices=None,
@@ -312,28 +376,7 @@ def adev(times_ns, nominal_period_ns, taus=None, indices=None,
 
     Returns [(tau_s, adev), ...]."""
     runs, _ = phase_runs(times_ns, nominal_period_ns, indices, breaks_ns)
-    longest = max((len(r) for r in runs), default=0)
-    if sum(len(r) for r in runs) < 5 or longest < 5:
-        return []
-    t0 = nominal_period_ns / 1e9
-    if taus is None:
-        taus, m = [], 1
-        while m <= (longest - 1) // 2:
-            taus.append(m)
-            m = max(m + 1, int(m * 1.3))
-    out = []
-    for m in taus:
-        acc, cnt = 0.0, 0
-        for x in runs:
-            for i in range(len(x) - 2 * m):
-                d = x[i + 2 * m] - 2 * x[i + m] + x[i]
-                acc += d * d
-                cnt += 1
-        if cnt < MIN_ADEV_TERMS:
-            continue
-        tau = m * t0
-        out.append((tau, math.sqrt(acc / (2.0 * cnt * tau * tau))))
-    return out
+    return adev_from_runs(runs, nominal_period_ns, taus)
 
 
 def mdev(times_ns, nominal_period_ns, taus=None, indices=None,

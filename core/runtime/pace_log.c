@@ -188,6 +188,31 @@ static int read_first_line(const char* path, char* out, unsigned n)
 }
 #endif
 
+/* Who owns the swapchain's release cadence. It is part of the machine, not
+ * of the run: the same silicon under a different compositor presents on a
+ * different schedule, and two logs that disagree only here would otherwise
+ * compare as one environment. */
+static void compositor_id(char* out, unsigned n)
+{
+    const char* drv = SDL_GetCurrentVideoDriver();
+    if (!drv || !drv[0]) {
+        SDL_strlcpy(out, "none", n);
+        return;
+    }
+    SDL_strlcpy(out, drv, n);
+#if defined(__linux__)
+    {
+        /* The video driver says wayland or x11; the desktop says whose
+         * wayland it is, and KWin and Mutter do not schedule alike. */
+        const char* de = SDL_getenv("XDG_CURRENT_DESKTOP");
+        if (de && de[0]) {
+            SDL_strlcat(out, "/", n);
+            SDL_strlcat(out, de, n);
+        }
+    }
+#endif
+}
+
 static void cpu_model(char* out, unsigned n)
 {
     out[0] = '\0';
@@ -224,7 +249,9 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
 {
     char cpu[256];
     char gov[64] = "unknown";
+    char comp[96];
     cpu_model(cpu, sizeof(cpu));
+    compositor_id(comp, sizeof(comp));
 #if defined(__linux__)
     read_first_line("/sys/devices/system/cpu/cpu0/cpufreq/scaling_governor",
                     gov, sizeof(gov));
@@ -242,6 +269,7 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
         "gpu=%s\n"
         "driver=%s\n"
         "refresh_mhz=%d\n"
+        "compositor=%s\n"
         "present_mode=%s\n"
         "fullscreen=%d\n"
         "render_fps=%d\n"
@@ -271,6 +299,7 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
         gpu ? gpu : "unknown",
         driver ? driver : "unknown",
         refresh_mhz,
+        comp,
         present_mode ? present_mode : "unknown",
         fullscreen, render_fps, interp_on, runahead_n, tick_scale,
         (long long)op_pacer_slack_ns(),
