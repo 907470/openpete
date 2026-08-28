@@ -1056,6 +1056,14 @@ static op_time_t s_present_cost_ema;
 static op_time_t s_present_cost_dev;
 static int       s_present_cost_n;
 static int       s_present_shed_run;
+/* Largest remaining-budget seen at an intermediate opportunity, decayed so it
+ * tracks the machine instead of latching on one lucky moment. The probe below
+ * needs "the moment in the cycle with the most budget"; expressed as a FIXED
+ * fraction of a tick that moment does not exist on every machine — measured on
+ * an Arc 140V laptop, the budget at 11 119 consecutive sheds never once
+ * exceeded 9.6 ms against a 16.7 ms requirement, so the probe could not fire
+ * and interpolation stayed off for the whole run. */
+static op_time_t s_present_budget_peak;
 
 /* Multiplier on the deviation. 0 selects the legacy centre-only bound, which
  * is how the two are A/B'd against each other on one machine. */
@@ -3806,6 +3814,14 @@ static int run_host_loop(const openpete_options_t* opts) {
          * fresh EMA admits the first presents unconditionally: refusing to
          * present until a cost is known would never learn one. */
         int pace_shed_now = 0;
+        if (native_intermediate) {
+            /* Decay first, then take the max: without the decay this is a
+             * high-water mark that one long budget pins forever, and the
+             * probe would then wait for a moment that no longer comes. */
+            const op_time_t here = next_sim.at - op_now();
+            s_present_budget_peak -= s_present_budget_peak / 64;
+            if (here > s_present_budget_peak) s_present_budget_peak = here;
+        }
         if (native_intermediate && s_present_cost_n >= PACE_COST_WARMUP
                 && !openpete_unlock_fps) {
             /* Cover the tail, not the centre. k=3 takes the miss rate from
@@ -3840,8 +3856,20 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * tick, where a rare late tick is the price of ever
                  * discovering the cost came back down. */
                 const op_time_t budget = next_sim.at - op_now();
+                /* Relative to what this machine actually offers, not to the
+                 * tick period: an absolute threshold is a threshold some
+                 * machines never reach, and there the probe silently stops
+                 * existing. Three quarters of the observed peak keeps the
+                 * "least harm" intent — the probe still waits for a
+                 * near-best moment — while guaranteeing such a moment recurs.
+                 * Capped at half a tick so a machine with plenty of headroom
+                 * behaves exactly as before. */
+                op_time_t probe_at = s_present_budget_peak
+                                     - s_present_budget_peak / 4;
+                if (probe_at > (op_time_t)g_openpete_tick_period_ns / 2)
+                    probe_at = (op_time_t)g_openpete_tick_period_ns / 2;
                 if (++s_present_shed_run >= PACE_SHED_PROBE_EVERY
-                        && budget > (op_time_t)g_openpete_tick_period_ns / 2) {
+                        && budget >= probe_at) {
                     s_present_shed_run = 0;
                 } else {
                     pace_shed_now = 1;
