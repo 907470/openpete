@@ -342,9 +342,9 @@ def test_baseline_compare():
         rc = bm.compare_to_baseline({"fps0": leg(sigma=4000.0)}, "quick",
                                     verbose=False)
         check("a 4x wider core is caught", rc == 1, f"rc {rc}")
-        rc = bm.compare_to_baseline({"fps0": leg(sigma=1500.0)}, "quick",
+        rc = bm.compare_to_baseline({"fps0": leg(sigma=1200.0)}, "quick",
                                     verbose=False)
-        check("a 1.5x core is inside tolerance (runs vary)", rc == 0,
+        check("a 1.2x core is inside tolerance (runs vary)", rc == 0,
               f"rc {rc}")
 
         # Engagement, not just phase: a change that holds the grid by never
@@ -364,6 +364,27 @@ def test_baseline_compare():
                                     verbose=False)
         check("the same leg name under another regime is refused", rc == 1,
               f"rc {rc}")
+
+        # A slip is rare and loud, and this project's own rule is that a rare
+        # event is gated as a COUNT, never trusted to a percentile: five extra
+        # slips move within-250 by ~0.28 points, inside its tolerance, while a
+        # clamp re-anchors the phase and destroys the evidence.
+        (d / "quick.json").write_text(json.dumps(
+            {"build": "old", "machine_key": machine, "legs": {"fps0": leg()}}))
+        rc = bm.compare_to_baseline({"fps0": dict(leg(), sim_slips=7)},
+                                    "quick", verbose=False)
+        check("new slips are caught even though the rates barely move",
+              rc == 1, f"rc {rc}")
+
+        # The tolerance on a _ns key is RELATIVE HEADROOM, not a multiplier:
+        # 0.5 means "may grow by half". This was 2.0 read as "2x" and meaning
+        # 3x, so pin the semantics rather than the number.
+        rc = bm.compare_to_baseline({"fps0": leg(sigma=1400.0)}, "quick",
+                                    verbose=False)
+        check("+40% on the core is inside the 50% headroom", rc == 0, f"rc {rc}")
+        rc = bm.compare_to_baseline({"fps0": leg(sigma=1600.0)}, "quick",
+                                    verbose=False)
+        check("+60% on the core is not", rc == 1, f"rc {rc}")
 
         (d / "quick.json").write_text(json.dumps(
             {"build": "old", "machine_key": machine,

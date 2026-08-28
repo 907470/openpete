@@ -63,6 +63,12 @@ bool openpete_native_render_enabled(void);
  * rhi_fence_sheds. Monotonic. */
 uint64_t openpete_native_render_fence_sheds(void);
 
+/* The acquire path's refusals, and the granted swapchain depth. See
+ * rhi_acquire_sheds / rhi_swapchain_image_count. */
+uint64_t openpete_native_render_acquire_sheds(void);
+uint64_t openpete_native_render_acquire_timeouts(void);
+uint32_t openpete_native_render_swapchain_images(void);
+
 const char* openpete_native_render_gpu_name(void);
 const char* openpete_native_render_driver_version(void);
 const char* openpete_native_render_present_mode(void);

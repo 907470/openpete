@@ -2413,6 +2413,21 @@ int openpete_native_tercache_usable(void)
         && (s_force || !rhi_device_is_software(s_nr.dev));
 }
 
+uint64_t openpete_native_render_acquire_sheds(void)
+{
+    return s_nr.dev ? rhi_acquire_sheds(s_nr.dev) : 0;
+}
+
+uint64_t openpete_native_render_acquire_timeouts(void)
+{
+    return s_nr.dev ? rhi_acquire_timeouts(s_nr.dev) : 0;
+}
+
+uint32_t openpete_native_render_swapchain_images(void)
+{
+    return s_nr.dev ? rhi_swapchain_image_count(s_nr.dev) : 0;
+}
+
 uint64_t openpete_native_render_fence_sheds(void)
 {
     return s_nr.dev ? rhi_fence_sheds(s_nr.dev) : 0;

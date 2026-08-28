@@ -156,6 +156,22 @@ void rhi_take_block_times(int64_t *out, int n);
  * cadence — which under the host thread split is also the sim thread — the
  * frame is dropped. Monotonic; the caller diffs it. */
 uint64_t rhi_fence_sheds(const rhi_device *dev);
+
+/* Presents the ACQUIRE path refused, and how many of those were an expiry of
+ * the acquire budget rather than a skip inside the back-off it opened. Both
+ * are monotonic.
+ *
+ * Without these two, an acquire that waited and got an image is
+ * indistinguishable from one that waited, gave up, and suppressed the next
+ * several presents — and only the second means frames stopped reaching the
+ * screen. The pacing log recorded both as presents. */
+uint64_t rhi_acquire_sheds(const rhi_device *dev);
+uint64_t rhi_acquire_timeouts(const rhi_device *dev);
+
+/* Images the swapchain actually granted (we ask for minImageCount + 1; the
+ * driver may give more). A back-pressure diagnosis is not checkable without
+ * it. */
+uint32_t rhi_swapchain_image_count(const rhi_device *dev);
 /* True when the picked physical device is a software rasterizer (llvmpipe
  * reports VK_PHYSICAL_DEVICE_TYPE_CPU). Heavy vertex-shader paths (the
  * terrain sector-mesh cache) auto-disable on it. */

@@ -1036,7 +1036,8 @@ static void pace_sleep_until(op_time_t deadline_ns)
  * presenting thread is the sim thread, which makes a blocked present a
  * candidate cause for the next tick's lateness. */
 /* Reasons a present did not reach the display. */
-enum { PACE_SHED_SLOT_BUSY = 1, PACE_SHED_NO_BUDGET = 2 };
+enum { PACE_SHED_SLOT_BUSY = 1, PACE_SHED_NO_BUDGET = 2,
+       PACE_SHED_NO_IMAGE = 3 };
 
 /* Rolling cost of an intermediate present, and how many have been measured.
  * The predicate above will not act until it has seen this many, so a cold
@@ -1086,15 +1087,30 @@ static void pace_record_present(uint8_t kind)
     /* A present ATTEMPT that the swapchain refused is a shed, not a present.
      * Recording it as one keeps the two legible apart: the display rate is
      * what actually reached the screen, and the shed count is the price the
-     * sim clock is no longer paying. */
-    static uint64_t s_prev_sheds;
-    const uint64_t sheds = openpete_native_render_fence_sheds();
-    if (sheds != s_prev_sheds) {
-        const uint64_t n = sheds - s_prev_sheds;
-        s_prev_sheds = sheds;
-        for (uint64_t i = 0; i < n; i++)
+     * sim clock is no longer paying.
+     *
+     * There are THREE refusal paths and only the fence one was checked here.
+     * The other two live in the acquire path — the budget expiring, and the
+     * back-off it opens suppressing the presents that follow — and both
+     * returned false while this function went on to log a PRESENT. On a
+     * machine where they fire, half the "presents" in the log never reached
+     * the screen and nothing said so; the display rate read as full while the
+     * user watched half of it. A refusal the instrument cannot see is the
+     * failure this whole log exists to prevent. */
+    static uint64_t s_prev_fence_sheds, s_prev_acq_sheds;
+    const uint64_t fence_sheds = openpete_native_render_fence_sheds();
+    const uint64_t acq_sheds   = openpete_native_render_acquire_sheds();
+    if (fence_sheds != s_prev_fence_sheds || acq_sheds != s_prev_acq_sheds) {
+        const uint64_t nf = fence_sheds - s_prev_fence_sheds;
+        const uint64_t na = acq_sheds - s_prev_acq_sheds;
+        s_prev_fence_sheds = fence_sheds;
+        s_prev_acq_sheds   = acq_sheds;
+        for (uint64_t i = 0; i < nf; i++)
             openpete_pace_shed(kind, PACE_SHED_SLOT_BUSY,
                                blk[RHI_BLOCK_FENCE], 0);
+        for (uint64_t i = 0; i < na; i++)
+            openpete_pace_shed(kind, PACE_SHED_NO_IMAGE,
+                               blk[RHI_BLOCK_ACQUIRE], 0);
         return;
     }
     openpete_pace_present(kind, now_ns,
@@ -4305,6 +4321,21 @@ static int run_host_loop(const openpete_options_t* opts) {
         char pace_summary[512];
         openpete_pace_census_format(pace_summary, sizeof(pace_summary));
         OPL_INFO_F("pace", "%s", pace_summary);
+    }
+    /* The swapchain's side of the story, which the census cannot see. Printed
+     * unconditionally: a run where the acquire budget expired is a run whose
+     * display rate is not its present count, and that has to be legible
+     * without asking for a log file. */
+    if (openpete_native_render_enabled()) {
+        const uint64_t acq_sheds = openpete_native_render_acquire_sheds();
+        const uint64_t acq_to    = openpete_native_render_acquire_timeouts();
+        OPL_INFO_F("pace",
+                   "swapchain: %u image(s) granted; acquire refused %llu "
+                   "present(s) (%llu budget expiry, the rest suppressed by "
+                   "the back-off it opened)",
+                   openpete_native_render_swapchain_images(),
+                   (unsigned long long)acq_sheds,
+                   (unsigned long long)acq_to);
     }
     openpete_pace_log_close();
 

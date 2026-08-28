@@ -286,6 +286,14 @@ def phase_runs(times_ns, nominal_period_ns, indices=None, breaks_ns=()):
              for run in runs], cuts)
 
 
+# Fewest squared differences a curve point may rest on. Without a floor the
+# longest tau can be computed from one or two triplets, and a reach claim whose
+# endpoint is a single triplet is not a measurement — it is the noise of one
+# sample plotted at the far right of a log axis, where it is read as evidence
+# about the slowest process in the system.
+MIN_ADEV_TERMS = 10
+
+
 def adev(times_ns, nominal_period_ns, taus=None, indices=None,
          breaks_ns=()):
     """Overlapping Allan deviation, per NIST SP 1065.
@@ -321,7 +329,7 @@ def adev(times_ns, nominal_period_ns, taus=None, indices=None,
                 d = x[i + 2 * m] - 2 * x[i + m] + x[i]
                 acc += d * d
                 cnt += 1
-        if cnt < 1:
+        if cnt < MIN_ADEV_TERMS:
             continue
         tau = m * t0
         out.append((tau, math.sqrt(acc / (2.0 * cnt * tau * tau))))
@@ -357,7 +365,7 @@ def mdev(times_ns, nominal_period_ns, taus=None, indices=None,
                             for i in range(j, j + m))
                 acc += (inner / m) ** 2
                 cnt += 1
-        if cnt < 1:
+        if cnt < MIN_ADEV_TERMS:
             continue
         tau = m * t0
         out.append((tau, math.sqrt(acc / (2.0 * cnt * tau * tau))))

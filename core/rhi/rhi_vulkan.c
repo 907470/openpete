@@ -27,6 +27,73 @@
 #include <stdint.h>
 #include <stddef.h>
 
+/* Acquire budget, and the back-off after one expires.
+ *
+ * The budget has TWO bounds and the original only had the upper one. It must
+ * stay well under the pacer's slip threshold (4 sim periods, ~67 ms), or every
+ * expiry becomes a reported sim slip. It must ALSO exceed one display refresh
+ * period — because under FIFO, presenting at any rate below the refresh means
+ * the next image legitimately becomes available at the next repaint, and a
+ * budget shorter than that expires on essentially every present.
+ *
+ * The old fixed 8 ms satisfied only the upper bound, and 8 ms is shorter than
+ * a 120 Hz period (8.33 ms). Measured on a 120 Hz laptop at --render-fps 60:
+ * 1855 budget expiries, each opening the back-off below, which then suppressed
+ * the next present — 3710 refusals and **2 frames displayed in 150 seconds**,
+ * while the pacing log happily reported 3698 presents. Raising the budget to
+ * 24 ms on the same machine and scene: 0 refusals, 3698 frames, and the phase
+ * error IMPROVED too (94.91 % -> 99.59 % within 250 us, max 36.4 -> 6.0 ms).
+ * There was no trade-off to make; the short budget was pure loss, because the
+ * back-off cost the sim more time than waiting for the image ever did.
+ *
+ * So it is derived from the refresh at swapchain creation
+ * (rhi_acquire_budget_ns) rather than fixed. This constant is the floor used
+ * when the refresh is unknown, and it must remain >= one period of the slowest
+ * display we expect to meet.
+ *
+ * The back-off is what stops a sustained stall (a live resize holds images
+ * for as long as the user drags) from costing the budget on EVERY iteration
+ * and throttling the sim to a crawl. After one expiry, presents are skipped
+ * outright for a short window — no blocking at all — so the sim runs at full
+ * speed and presentation resumes on its own once images flow again. */
+/* Used only when the refresh cannot be read: assume the slowest display we
+ * expect to meet (60 Hz) rather than a fast one, because guessing too SHORT
+ * is the failure that hides itself — it expires, backs off, and reports
+ * presents that never reached the screen. */
+#ifndef RHI_ACQUIRE_TIMEOUT_NS
+#define RHI_ACQUIRE_TIMEOUT_NS  (25ull * 1000ull * 1000ull)   /* ~1.5 x 60 Hz */
+#endif
+/* Floor for the derived budget. A refresh so high that 1.5 periods is under
+ * this is not the case worth optimising; the value only has to exceed the
+ * driver's own acquire latency. */
+#ifndef RHI_ACQUIRE_BUDGET_MIN_NS
+#define RHI_ACQUIRE_BUDGET_MIN_NS (4ull * 1000ull * 1000ull)   /* 4 ms */
+#endif
+/* Must match the renderer's own resize settle window closely enough that the
+ * swapchain and the render targets rebuild in the same gesture. */
+#ifndef RHI_RESIZE_SETTLE_NS
+#define RHI_RESIZE_SETTLE_NS    (150ull * 1000ull * 1000ull)  /* 150 ms */
+#endif
+/* Backstop only: by this point the slot poll has already passed, so this
+ * fence is normally signalled. Bounding it keeps a driver hiccup from parking
+ * the sim thread indefinitely, the same reasoning as the acquire timeout. */
+#ifndef RHI_IMAGE_FENCE_TIMEOUT_NS
+#define RHI_IMAGE_FENCE_TIMEOUT_NS (32ull * 1000ull * 1000ull)   /* 32 ms */
+#endif
+/* Back-off after an expiry. NOT 32 ms: that sat 1.4 ms from the canonical
+ * present period (33.4 ms), so one expiry suppressed exactly every other
+ * present in a stable alternating pattern rather than decaying. A back-off
+ * must not be commensurate with the cadence it interrupts. One VBL is short
+ * enough to recover within a tick and long enough to break a stall loop. */
+/* Hard cap on the derived budget: an expiry must never be able to become a
+ * reported sim slip (the pacer clamps at 4 sim periods, ~67 ms). */
+#ifndef RHI_ACQUIRE_BUDGET_MAX_NS
+#define RHI_ACQUIRE_BUDGET_MAX_NS (40ull * 1000ull * 1000ull)  /* 40 ms */
+#endif
+#ifndef RHI_ACQUIRE_BACKOFF_NS
+#define RHI_ACQUIRE_BACKOFF_NS  (16ull * 1000ull * 1000ull)   /* ~1 VBL */
+#endif
+
 /* Swapchain pipeline depth. Overridable from the build so the depth/refresh
  * trade can be swept without editing the source; every per-frame ring below
  * is sized from it. Note the readback and grid rings lag by exactly this many
@@ -147,6 +214,15 @@ struct rhi_device {
      * resize is the expected cause. Counted so a silent frame drop is
      * visible rather than mysterious. */
     unsigned acquire_timeouts;
+    /* Presents skipped outright because a previous acquire expired and the
+     * back-off window is still open. Counted separately from the timeouts
+     * themselves: one expiry can suppress several presents, and a caller that
+     * cannot tell them apart cannot tell a display running at half rate from
+     * one running at full rate. */
+    uint64_t acquire_sheds;
+    /* Acquire budget in ns, derived from the display refresh at swapchain
+     * creation. See RHI_ACQUIRE_TIMEOUT_NS for why a fixed one was wrong. */
+    Uint64   acquire_budget_ns;
     /* While set, presents are skipped without blocking (see the acquire
      * budget above). Cleared once the window passes. */
     Uint64   acquire_backoff_until_ns;
@@ -676,6 +752,38 @@ static bool create_swapchain(rhi_device *dev)
 
     for (uint32_t i = 0; i < RHI_MAX_SC_IMAGES; i++)
         dev->images_in_flight[i] = VK_NULL_HANDLE;
+
+    /* Budget = two refresh periods, floored at RHI_ACQUIRE_TIMEOUT_NS and
+     * capped well under the pacer's slip threshold.
+     *
+     * TWO periods, not one: presenting below the refresh rate means the image
+     * arrives at a repaint boundary, and a budget of exactly one period
+     * expires on any jitter at all. The cap keeps an expiry from becoming a
+     * sim slip; the floor covers an unknown or absurd reported refresh.
+     *
+     * Only load-bearing under FIFO — a non-blocking mode never waits — but a
+     * mode change recreates the swapchain, so this re-runs either way. */
+    {
+        float hz = 0.0f;
+        if (dev->window) {
+            const SDL_DisplayMode *dm = SDL_GetCurrentDisplayMode(
+                SDL_GetDisplayForWindow(dev->window));
+            if (dm) hz = dm->refresh_rate;
+        }
+        /* One period is what the display owes us; the half is jitter margin.
+         * Scaling with the refresh rather than flooring everything at a fixed
+         * value matters in BOTH directions: a 60 Hz display needs 25 ms or it
+         * expires constantly, and a 480 Hz display gets 4 ms — TIGHTER than
+         * the 8 ms this replaces, so a genuine stall is abandoned sooner on
+         * the machine that can least afford to wait. */
+        Uint64 budget = (hz > 1.0f) ? (Uint64)(1.5f * 1e9f / hz)
+                                    : RHI_ACQUIRE_TIMEOUT_NS;
+        if (budget < RHI_ACQUIRE_BUDGET_MIN_NS) budget = RHI_ACQUIRE_BUDGET_MIN_NS;
+        if (budget > RHI_ACQUIRE_BUDGET_MAX_NS) budget = RHI_ACQUIRE_BUDGET_MAX_NS;
+        dev->acquire_budget_ns = budget;
+        RHI_LOG("swapchain: %u image(s), acquire budget %.1f ms (refresh %.3f Hz)\n",
+                dev->sc_count, (double)budget / 1e6, (double)hz);
+    }
     return true;
 }
 
@@ -1486,35 +1594,6 @@ void rhi_wait_idle(rhi_device *dev)
 static uint64_t s_frame_serial = 0;
 uint64_t rhi_frame_serial(rhi_device *dev) { (void)dev; return s_frame_serial; }
 
-/* Acquire budget, and the back-off after one expires.
- *
- * The budget MUST stay well under the pacer's slip threshold (4 sim periods,
- * ~67 ms): a wait longer than that turns every expiry into a reported sim
- * slip, which is just trading an unbounded freeze for a bounded one.
- *
- * The back-off is what stops a sustained stall (a live resize holds images
- * for as long as the user drags) from costing the budget on EVERY iteration
- * and throttling the sim to a crawl. After one expiry, presents are skipped
- * outright for a short window — no blocking at all — so the sim runs at full
- * speed and presentation resumes on its own once images flow again. */
-#ifndef RHI_ACQUIRE_TIMEOUT_NS
-#define RHI_ACQUIRE_TIMEOUT_NS  (8ull * 1000ull * 1000ull)    /* 8 ms  */
-#endif
-/* Must match the renderer's own resize settle window closely enough that the
- * swapchain and the render targets rebuild in the same gesture. */
-#ifndef RHI_RESIZE_SETTLE_NS
-#define RHI_RESIZE_SETTLE_NS    (150ull * 1000ull * 1000ull)  /* 150 ms */
-#endif
-/* Backstop only: by this point the slot poll has already passed, so this
- * fence is normally signalled. Bounding it keeps a driver hiccup from parking
- * the sim thread indefinitely, the same reasoning as the acquire timeout. */
-#ifndef RHI_IMAGE_FENCE_TIMEOUT_NS
-#define RHI_IMAGE_FENCE_TIMEOUT_NS (32ull * 1000ull * 1000ull)   /* 32 ms */
-#endif
-#ifndef RHI_ACQUIRE_BACKOFF_NS
-#define RHI_ACQUIRE_BACKOFF_NS  (32ull * 1000ull * 1000ull)   /* 32 ms */
-#endif
-
 /* Report any present-path phase that blocks long enough to threaten the sim.
  * Under the thread split the presenting thread is the sim thread, so a stall
  * here is a dropped tick — and "which call blocked" is otherwise invisible. */
@@ -1538,6 +1617,21 @@ static void rhi_note_stall_phase(const char *what, int phase, Uint64 t0)
 uint64_t rhi_fence_sheds(const rhi_device *dev)
 {
     return dev ? dev->fence_sheds : 0;
+}
+
+uint64_t rhi_acquire_sheds(const rhi_device *dev)
+{
+    return dev ? dev->acquire_sheds : 0;
+}
+
+uint64_t rhi_acquire_timeouts(const rhi_device *dev)
+{
+    return dev ? dev->acquire_timeouts : 0;
+}
+
+uint32_t rhi_swapchain_image_count(const rhi_device *dev)
+{
+    return dev ? dev->sc_count : 0;
 }
 
 void rhi_take_block_times(int64_t *out, int n)
@@ -1644,8 +1738,10 @@ bool rhi_begin_frame(rhi_device *dev)
     /* Backing off after a failed acquire: skip the present without blocking,
      * so a compositor that is not handing out images cannot pace the sim. */
     if (!dev->headless && dev->acquire_backoff_until_ns) {
-        if (SDL_GetTicksNS() < dev->acquire_backoff_until_ns)
+        if (SDL_GetTicksNS() < dev->acquire_backoff_until_ns) {
+            dev->acquire_sheds++;
             return false;
+        }
         dev->acquire_backoff_until_ns = 0;
     }
 
@@ -1660,7 +1756,9 @@ bool rhi_begin_frame(rhi_device *dev)
          * Timing out lets the caller skip the present and keep ticking. */
         Uint64 acq_t0 = SDL_GetTicksNS();
         VkResult acq = vkAcquireNextImageKHR(dev->device, dev->swapchain,
-                                             RHI_ACQUIRE_TIMEOUT_NS,
+                                             dev->acquire_budget_ns
+                                                 ? dev->acquire_budget_ns
+                                                 : RHI_ACQUIRE_TIMEOUT_NS,
                                              dev->img_avail[dev->frame],
                                              VK_NULL_HANDLE, &dev->image_index);
         rhi_note_stall_phase("acquire", RHI_BLOCK_ACQUIRE, acq_t0);
@@ -1669,6 +1767,7 @@ bool rhi_begin_frame(rhi_device *dev)
              * running. The semaphore was not signalled, so nothing waits on
              * it and the next frame re-acquires cleanly. */
             dev->acquire_timeouts++;
+            dev->acquire_sheds++;
             dev->acquire_backoff_until_ns = SDL_GetTicksNS() + RHI_ACQUIRE_BACKOFF_NS;
             return false;
         }

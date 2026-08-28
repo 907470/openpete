@@ -259,7 +259,8 @@ def cmd_summary(a):
         by_reason = {}
         for r in sheds:
             by_reason[r.aux] = by_reason.get(r.aux, 0) + 1
-        names = {1: "slot busy", 2: "no budget before the tick deadline"}
+        names = {1: "slot busy", 2: "no budget before the tick deadline",
+                 3: "no swapchain image (acquire expired or backing off)"}
         print("sheds: " + ", ".join(f"{v} {names.get(k, k)}"
                                     for k, v in sorted(by_reason.items())))
 
@@ -812,9 +813,31 @@ def cmd_report(a):
     s1 = [r.phase_err_ns for r in kept]
     t = [r.exec_start_ns for r in kept]
     nominal = 1e9 * log.vbl_den / log.vbl_num
-    ppm, _ = ps.drift_ppm([r.index for r in kept], t, nominal)
     rsig, p99, mx = ps.triple(s1)
-    curve = ps.adev(t, round(nominal))
+    # Same segmentation as `stability` and `drift`. This is the ARCHIVED
+    # format, so a report written with the uncorrected curve outlives the
+    # session that wrote it — the defect was fixed in `stability` and left
+    # alive here, which is the worse of the two places to leave it.
+    slip_ns = sorted(r.t_ns for r in log.of(pacelog.SLIP))
+    curve = ps.adev(t, nominal, indices=[r.index for r in kept],
+                    breaks_ns=slip_ns)
+    # Drift, likewise, must not be fitted across a clamp: it reads discarded
+    # wall time as frequency error. Reported as absent when no slip-free span
+    # is long enough, rather than as a number from a fit that had to span one.
+    idx = [r.index for r in kept]
+    segs, cur, si = [], [], 0
+    for i, r in enumerate(kept):
+        while si < len(slip_ns) and slip_ns[si] <= r.exec_start_ns:
+            if len(cur) >= 300: segs.append(cur)
+            cur = []; si += 1
+        cur.append(r)
+    if len(cur) >= 300: segs.append(cur)
+    ppm = None
+    if segs:
+        tot = sum(len(g) for g in segs)
+        ppm = sum(len(g) / tot * ps.drift_ppm([r.index for r in g],
+                                              [r.exec_start_ns for r in g],
+                                              nominal)[0] for g in segs)
     out = {
         "env": log.env,
         "build": log.build_id(),

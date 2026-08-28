@@ -140,13 +140,27 @@ def analyse(log_path, warmup):
 #
 #   (key, label, direction, tolerance)
 # direction: "lower" = smaller is better, "higher" = larger is better.
+# `tol` for a _ns key is a RELATIVE headroom: current may exceed baseline by
+# tol x baseline, so 0.5 means "may grow by half", not "may reach 1.5x" — the
+# prose and the arithmetic disagreed here once already (2.0 read as "2x" and
+# meant 3x). For every other key it is an ABSOLUTE difference in that key's
+# own units.
 GATED = [
-    ("robust_sigma_ns", "robust sigma", "lower", 2.0),
+    # Repeats of one unchanged config held sigma to 0.4 -> 0.4 and 0.5 -> 0.5
+    # us, so half again is generous, not tight.
+    ("robust_sigma_ns", "robust sigma", "lower", 0.5),
     ("within_250us_pct", "within 250us", "higher", 0.5),
     ("presents_per_tick", "presents/tick", "higher", 0.15),
+    # Slips are the loud failure and they are RARE, which is exactly the shape
+    # this project's own rule says to gate as a count rather than trust to a
+    # percentile: five extra slips in a 60 s leg move `within_250us` by ~0.28
+    # points, inside its tolerance, while destroying the evidence (a clamp
+    # re-anchors the phase). Zero tolerance at the quick tier.
+    ("sim_slips", "sim slips", "lower", 0.0),
+    ("render_slips", "render slips", "lower", 0.0),
 ]
-REPORTED = ["p50_ns", "p99_ns", "p99_9_ns", "max_ns", "sim_slips",
-            "render_slips", "intermediate", "wake_p99_ns"]
+REPORTED = ["p50_ns", "p99_ns", "p99_9_ns", "max_ns", "intermediate",
+            "wake_p99_ns"]
 
 
 def machine_dir(machine_key):
