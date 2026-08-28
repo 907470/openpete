@@ -749,6 +749,27 @@ int64_t openpete_pace_inject_present(void)
     return s_us;
 }
 
+int64_t openpete_pace_inject_canonical(void)
+{
+    static int     s_init;
+    static int64_t s_us;
+    if (!s_init) {
+        s_init = 1;
+        const char* e = getenv("OPENPETE_PACE_INJECT_CANON_US");
+        s_us = (e && *e) ? strtoll(e, NULL, 10) : 0;
+        if (s_us > 0)
+            OPL_WARN_F("pace",
+                       "INJECTING %lld us into every CANONICAL present — "
+                       "a present that cannot be shed; fault injection, "
+                       "never a play path",
+                       (long long)s_us);
+    }
+    if (s_us <= 0 || op_virtual_clock_active()) return 0;
+    const op_time_t until = op_now() + s_us * OP_NS_PER_US;
+    while (op_now() < until) { }
+    return s_us;
+}
+
 int64_t openpete_pace_inject(int paced)
 {
     static int     s_init;

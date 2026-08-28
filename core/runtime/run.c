@@ -3544,6 +3544,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * quoting it as "present cost" understates by construction. */
             const op_time_t pace_canon_t0 = op_now();
             op_time_t pace_canon_extract_ns = 0;
+            openpete_pace_inject_canonical();  /* fault injection, off by default */
 
             /* Per-canonical-frame commit: the game latches which render paths this
              * frame drew (the "canon drawn" mask the sub-tick spine gates each

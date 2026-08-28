@@ -333,6 +333,23 @@ int64_t openpete_pace_inject(int paced);
  * be checked rather than believed. Returns the µs actually spent. */
 int64_t openpete_pace_inject_present(void);
 
+/* OPENPETE_PACE_INJECT_CANON_US=N: the same, on the CANONICAL present.
+ *
+ * A separate knob rather than a wider blast radius for the one above, because
+ * the two ask different questions and the shed contract's leg is calibrated
+ * against the intermediate one — widening it would silently move that leg's
+ * baseline.
+ *
+ * This is the fault the plan could not previously make. A canonical present
+ * cannot be shed: it is the frame the tick just produced. So "the sim grid
+ * holds while an expensive present runs" is only demonstrated for the
+ * intermediates, and the case Phase 3 exists for — a machine where the
+ * unavoidable present does not fit — had no way to be reached on hardware
+ * fast enough to never suffer it. Injecting it reaches that case on any
+ * machine, which is the point of a fault injector: make the fault, rather
+ * than hunt for a machine that has it. Returns the µs actually spent. */
+int64_t openpete_pace_inject_canonical(void);
+
 #ifdef __cplusplus
 }
 #endif
