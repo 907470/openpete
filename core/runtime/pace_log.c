@@ -532,6 +532,11 @@ void openpete_pace_note_alpha(double alpha, int paired)
     s_next_alpha_paired = paired ? 1 : 0;
 }
 
+double openpete_pace_last_alpha(void)
+{
+    return (double)s_next_alpha_micro / 1e6;
+}
+
 void openpete_pace_present(uint8_t kind, int64_t done_ns,
                            int64_t fence_block_ns, int64_t acquire_block_ns,
                            int64_t queue_present_block_ns,

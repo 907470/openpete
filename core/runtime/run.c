@@ -3723,6 +3723,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                     vp_set_present_target();     /* even display-slot time for this present */
                     const op_time_t rex_t0 = op_now();
                     lag_re(&g_game.cpu);
+                    openpete_native_scene_sig_report(1);
                     pace_canon_extract_ns = op_now() - rex_t0;
                     g_openpete_canon_lag_leg = 0;
                     if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
@@ -4034,6 +4035,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 vp_set_present_target();      /* even display-slot time for this present */
                 const op_time_t ex0 = op_now();
                 native_re(&g_game.cpu);       /* rebuild s_scene @ interpolated gamestate */
+                openpete_native_scene_sig_report(0);
                 pace_extract_ns = op_now() - ex0;
                 if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
             }

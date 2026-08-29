@@ -170,6 +170,8 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
  * prev/curr pair existed at all). Called by the re-extract that resolves it;
  * the value rides on the next PRESENT record. */
 void openpete_pace_note_alpha(double alpha, int paired);
+/* The alpha the most recent re-extract resolved; census/diagnostics only. */
+double openpete_pace_last_alpha(void);
 
 /* The nominal present slot (1 / --render-fps), against which a display hole is
  * judged "long". Set whenever the render period changes; 0 disables the

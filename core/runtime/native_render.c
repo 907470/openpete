@@ -21,6 +21,7 @@
  */
 
 #include "openpete_native_render.h"
+#include "openpete_pace_log.h"
 #include "openpete_perf_stats.h"
 #include "openpete_profile.h"   /* --profile-out forwarding shim */
 #include "openpete_menu.h"
@@ -469,6 +470,94 @@ static int s_scene_hud_under = 0;
  * terrain they interpenetrate (the spread wing inside a wall) — true per-pixel
  * Z would amputate them. Reset per frame. */
 static int s_scene_actor_front = 0;
+
+/* One-shot census: the DISCRETE half of a composed scene, hashed.
+ *
+ * A scene tri carries two kinds of field. Continuous ones — vertex position,
+ * UV, colour — move with the interpolation alpha and are exactly what a
+ * re-lerp of an already-composed scene would reproduce. Discrete ones —
+ * whether a tri exists at all, its texture page, CLUT, bit depth, blend mode,
+ * draw category, prop, portal group, tag, fog row — come from decisions the
+ * game's own extraction makes: culling, LOD tier selection, palette choice.
+ *
+ * The question this answers: within ONE tick's span of alphas, does
+ * re-running the extraction ever decide differently? If the signature is
+ * constant across a tick's presents, then re-extracting per present buys
+ * nothing a transform re-lerp could not, and a composed scene can be reused
+ * for the presents the tick's own execution would otherwise leave frozen.
+ *
+ * OPENPETE_SCENE_SIG=1. Census only: no path depends on it. */
+/* Two signatures, because "the scene changed" is not one question.
+ *
+ *   MATERIAL SET — the distinct discrete keys present (texture page, CLUT,
+ *   bpp, blend, category, prop, group, tag, fog row). It moves only when the
+ *   extraction DECIDES differently: a new texture, an LOD tier that picks a
+ *   different page, a blend mode change, an object entering or leaving.
+ *
+ *   TRI MULTISET — the same keys with their counts. It also moves when the
+ *   same objects simply contribute a different number of triangles, which is
+ *   what sub-tick camera motion does at the frustum edge.
+ *
+ * A scene reuse that re-lerps transforms reproduces the second but not the
+ * first, so the two must be counted apart. Both are order-independent (XOR
+ * over distinct keys, sum over all tris), because tri order renumbers freely
+ * as counts shift and an order-sensitive hash would report that as a change.
+ */
+#define SIG_TBL 4096u
+static uint64_t scene_tri_key(const scene_tri_t *t)
+{
+    uint64_t k = (uint64_t)(uint32_t)t->tag;
+    k = k * 31 + (uint64_t)(uint32_t)t->tpage_x;
+    k = k * 31 + (uint64_t)(uint32_t)t->tpage_y;
+    k = k * 31 + (uint64_t)(uint32_t)t->clut_x;
+    k = k * 31 + (uint64_t)(uint32_t)t->clut_y;
+    k = k * 31 + (uint64_t)(uint32_t)t->bpp;
+    k = k * 31 + (uint64_t)(uint32_t)t->blend;
+    k = k * 31 + (uint64_t)(uint32_t)t->prop;
+    k = k * 31 + (uint64_t)(uint32_t)t->group;
+    k = k * 31 + (uint64_t)(uint32_t)t->fog_delta;
+    k = k * 31 + (uint64_t)(uint32_t)t->category;
+    k = k * 31 + (uint64_t)(uint32_t)t->textured;
+    return k ? k : 1;      /* 0 marks an empty slot */
+}
+
+static void scene_discrete_sig(uint64_t *set_h, uint64_t *cnt_h, int *distinct)
+{
+    static uint64_t tbl[SIG_TBL];
+    memset(tbl, 0, sizeof tbl);
+    uint64_t sh = 0, ch = 0;
+    int dn = 0;
+    for (int i = 0; i < s_scene_n; i++) {
+        const uint64_t k = scene_tri_key(&s_scene[i]);
+        ch += k * 1099511628211ull;                 /* order-independent */
+        uint32_t slot = (uint32_t)(k % SIG_TBL);
+        for (uint32_t probe = 0; probe < SIG_TBL; probe++) {
+            uint32_t idx = (slot + probe) % SIG_TBL;
+            if (tbl[idx] == k) break;               /* seen */
+            if (tbl[idx] == 0) { tbl[idx] = k; sh ^= k * 0x9E3779B97F4A7C15ull; dn++; break; }
+        }
+    }
+    *set_h = sh; *cnt_h = ch; *distinct = dn;
+}
+
+static int scene_sig_on(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("OPENPETE_SCENE_SIG"); on = (e && *e && *e != '0'); }
+    return on;
+}
+
+void openpete_native_scene_sig_report(int canonical)
+{
+    if (!scene_sig_on()) return;
+    extern unsigned openpete_frame;
+    uint64_t set_h = 0, cnt_h = 0; int distinct = 0;
+    scene_discrete_sig(&set_h, &cnt_h, &distinct);
+    fprintf(stderr, "[scene-sig] f=%u leg=%s alpha=%.4f n=%d d=%d set=%016llx cnt=%016llx\n",
+            openpete_frame, canonical ? "CANON" : "inter",
+            openpete_pace_last_alpha(), s_scene_n, distinct,
+            (unsigned long long)set_h, (unsigned long long)cnt_h);
+}
 
 void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
 

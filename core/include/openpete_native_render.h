@@ -63,6 +63,11 @@ bool openpete_native_render_enabled(void);
  * rhi_fence_sheds. Monotonic. */
 uint64_t openpete_native_render_fence_sheds(void);
 
+/* Census (OPENPETE_SCENE_SIG=1): hash the composed scene's DISCRETE fields and
+ * report them with the present's alpha. Answers whether re-extracting per
+ * present ever decides differently within one tick's alpha span. */
+void openpete_native_scene_sig_report(int canonical);
+
 /* Wait (up to timeout_ns) for the last queued present to be DISPLAYED.
  * 1 = displayed, 0 = timed out, -1 = unsupported / nothing outstanding.
  * Presenting-thread only. */
