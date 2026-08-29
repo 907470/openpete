@@ -3,7 +3,8 @@
 
 #include "spyro_native_reextract.h"
 #include "openpete_camlock.h"       /* render camera lock (G) — bracket override */
-#include "openpete_interp.h"        /* snapshot ring query + op_now/OP_NS_PER_SEC */
+#include "openpete_interp.h"
+#include "openpete_pace_log.h"        /* snapshot ring query + op_now/OP_NS_PER_SEC */
 #include "openpete_interp_objs.h"   /* per-object (moby) prev/curr table */
 #include "openpete_native_render.h" /* register callback + scene API */
 #include "openpete_psx.h"
@@ -1116,6 +1117,10 @@ static void spyro_native_reextract_body(void* cpu_v) {
     double qa = 0.0;
     const openpete_interp_snapshot_t *prev2 = NULL, *prev = NULL, *curr = NULL;
     int paired = openpete_interp_query3(op_now(), TICK_PERIOD_NS, &qa, &prev2, &prev, &curr);
+    /* Unpaired means there is no bracket to interpolate within (spawn, a
+     * stuck world): the scene is presented live, and the pacing log is told
+     * so rather than being given a stale alpha. */
+    if (!paired) openpete_pace_note_alpha(0.0, 0);
 
     /* Rebuild the fractional interpolated-position table for this present (the
      * lerp32 1-unit floor fix). Empty until a bracket below populates it; feeders
@@ -1243,6 +1248,13 @@ static void spyro_native_reextract_body(void* cpu_v) {
          * velocity — continuous and visually correct; the cubic Hermite is NOT
          * safe below 0, so the pred1 gate below requires alpha >= 0. */
         if (alpha < -0.35) alpha = -0.35; else if (alpha > 1.0) alpha = 1.0;
+        /* Publish the alpha this present will actually show. It is the
+         * position in ANIMATION time, which is what decides whether a present
+         * carried new motion or repeated the previous frame — two presents at
+         * one alpha are the same image however far apart they were submitted,
+         * and no submit timestamp can tell those apart. Taken after the clamp
+         * so it reports what was drawn, not what was requested. */
+        openpete_pace_note_alpha(alpha, 1);
 
         /* pred1 gate: use the cubic Hermite (centered start-tangent) only when a
          * valid prev2 exists AND the prev2→prev step is itself continuous — a cut

@@ -83,6 +83,16 @@ class Record:
     def flag_str(self):
         return ",".join(n for bit, n in FLAG_NAMES if self.flags & bit) or "-"
 
+    # PRESENT: what the frame SHOWED, not when it was submitted. None on a
+    # log written before alpha was recorded, which is not the same as 0.0.
+    @property
+    def present_alpha(self):
+        return None if self.e is None else self.e / 1e6
+
+    @property
+    def present_paired(self):
+        return None if self.f is None else bool(self.f)
+
     # VBL accessors, named so callers never index the raw payload slots.
     @property
     def deadline_ns(self): return self.a

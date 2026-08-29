@@ -656,6 +656,28 @@ def cmd_cadence(a):
     print(f"presents: {len(pres)} over {span_s:.1f}s = {len(pres)/span_s:.0f}/s "
           f"(nominal slot {nominal/1e6:.2f} ms"
           + (f", --render-fps {fps:.0f}" if fps else ", one per tick") + ")")
+    # Alpha across the tick boundary. A gap is only a loss of MOTION if the
+    # frames either side of it show different animation times: two presents at
+    # the same alpha are the same image however far apart they were submitted.
+    # This is what decides whether the last intermediate before a tick was a
+    # frame worth admitting or a duplicate of the canonical that follows.
+    alphas = [r.present_alpha for r in pres]
+    if any(a is not None for a in alphas):
+        steps, boundary = [], []
+        for (a_, b) in zip(pres, pres[1:]):
+            if a_.present_alpha is None or b.present_alpha is None:
+                continue
+            d = b.present_alpha - a_.present_alpha
+            # An interval roll shows as a large negative step (alpha returns
+            # to ~0 for the new pair); measure it as the distance to 1.0.
+            (boundary if not b.flags else steps).append(
+                (1.0 - a_.present_alpha) + b.present_alpha if not b.flags else d)
+        if steps:
+            print(f"  alpha step mid-tick        p50 {ps.percentile(steps,50):.4f} "
+                  f"p90 {ps.percentile(steps,90):.4f} (1.0 = one whole tick of motion)")
+        if boundary:
+            print(f"  alpha advanced across the tick boundary "
+                  f"p50 {ps.percentile(boundary,50):.4f} p90 {ps.percentile(boundary,90):.4f}")
     for label, sel in (("after a tick (canonical)", lambda f: not f),
                        ("mid-tick (intermediate)", lambda f: f)):
         g = [x for x, f in gaps if sel(f)]

@@ -1903,6 +1903,8 @@ static int run_host_loop(const openpete_options_t* opts) {
      * fiber is yielded inside VSync(0). */
     if (openpete_interp_init() == 0) {
         const op_time_t render_period_ns = op_period_ns(s_render_period);
+        /* The cadence counters judge a display hole against this. */
+        openpete_pace_set_slot_ns((int64_t)render_period_ns);
         const op_time_t sim_hz_x1000 = (OP_NS_PER_SEC * 1000) / sim_period_ns;
         const op_time_t render_hz_x1000 = (render_period_ns > 0)
             ? (OP_NS_PER_SEC * 1000) / render_period_ns
@@ -2268,6 +2270,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                                                 / tick_scale))
                 : sim_period;
             const op_time_t render_period_ns = op_period_ns(s_render_period);
+            openpete_pace_set_slot_ns((int64_t)render_period_ns);
             op_time_t anchor = op_now();
             op_deadline_anchor(&next_sim, anchor);
             op_deadline_anchor(&next_render, anchor);

@@ -509,12 +509,49 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
     maybe_clocksample(exec_start_ns);
 }
 
+/* What the NEXT present will show, published by the re-extract that resolves
+ * it. Kept here rather than passed through the present call because the alpha
+ * is decided several layers below the pacer, and threading it up would put a
+ * display quantity in every signature between. */
+static int64_t s_next_alpha_micro;
+static int64_t s_next_alpha_paired;
+static int64_t s_slot_ns;         /* nominal present spacing, 0 = unknown */
+static int64_t s_prev_present_ns; /* for the gap between consecutive presents */
+
+void openpete_pace_set_slot_ns(int64_t slot_ns)
+{
+    s_slot_ns = slot_ns > 0 ? slot_ns : 0;
+}
+
+void openpete_pace_note_alpha(double alpha, int paired)
+{
+    /* Micro-alpha: 1e-6 of a tick, signed. The canonical present is allowed a
+     * slightly NEGATIVE alpha (it fires a little before its grid stamp), so
+     * this must not be stored unsigned. */
+    s_next_alpha_micro  = (int64_t)(alpha * 1e6);
+    s_next_alpha_paired = paired ? 1 : 0;
+}
+
 void openpete_pace_present(uint8_t kind, int64_t done_ns,
                            int64_t fence_block_ns, int64_t acquire_block_ns,
                            int64_t queue_present_block_ns,
                            int64_t recreate_block_ns)
 {
     s_census.presents[kind == OP_PACE_INTERMEDIATE ? 1 : 0]++;
+    if (s_prev_present_ns) {
+        const int64_t gap = done_ns - s_prev_present_ns;
+        if (kind == OP_PACE_INTERMEDIATE) {
+            if (s_slot_ns && gap > 2 * s_slot_ns) s_census.gaps_mid_long++;
+        } else {
+            /* How long one image was held while the tick ran. An EMA, not a
+             * percentile: this is a display for a human reading it live, and
+             * the quantity is steady enough per scene that a centre estimate
+             * is honest. */
+            s_census.hold_ema_ns = s_census.hold_ema_ns
+                ? (s_census.hold_ema_ns * 7 + gap) / 8 : gap;
+        }
+    }
+    s_prev_present_ns = done_ns;
     if (!s_fp) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_PRESENT;
@@ -523,6 +560,11 @@ void openpete_pace_present(uint8_t kind, int64_t done_ns,
     r.t_ns  = done_ns;
     r.a = fence_block_ns; r.b = acquire_block_ns;
     r.c = queue_present_block_ns; r.d = recreate_block_ns;
+    /* The animation time this frame showed, which is what makes a present
+     * countable as MOTION rather than as an event: two presents at the same
+     * alpha are the same image however far apart they were submitted. */
+    r.e = s_next_alpha_micro;
+    r.f = s_next_alpha_paired;
     pace_emit(&r);
 }
 

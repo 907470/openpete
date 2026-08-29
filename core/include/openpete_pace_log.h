@@ -165,6 +165,16 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
  * present a candidate cause for the next tick's lateness. `recreate_block_ns`
  * carries the swapchain rebuild — the single largest of these, and previously
  * attributed to nothing. */
+/* Publish the interpolation alpha the next present will show (and whether a
+ * prev/curr pair existed at all). Called by the re-extract that resolves it;
+ * the value rides on the next PRESENT record. */
+void openpete_pace_note_alpha(double alpha, int paired);
+
+/* The nominal present slot (1 / --render-fps), against which a display hole is
+ * judged "long". Set whenever the render period changes; 0 disables the
+ * cadence counters rather than letting them count against a stale rate. */
+void openpete_pace_set_slot_ns(int64_t slot_ns);
+
 void openpete_pace_present(uint8_t kind, int64_t done_ns,
                            int64_t fence_block_ns, int64_t acquire_block_ns,
                            int64_t queue_present_block_ns,
@@ -282,6 +292,15 @@ typedef struct {
     uint64_t vbls_transient;    /* paced but flagged: reported, not folded in */
     uint64_t presents[2];       /* canonical, intermediate                    */
     uint64_t sheds;
+    /* Display cadence, which is what a viewer perceives and what a shed count
+     * cannot show: a shed is only a defect if it left a hole. `gaps_mid_long`
+     * counts holes of more than two present slots that end at an INTERMEDIATE
+     * present — the schedule's own doing. Holes ending at a canonical present
+     * are the tick executing on the presenting thread, unreachable by any
+     * schedule, so they are reported separately as `hold_ema_ns` rather than
+     * mixed into a count that then never goes to zero. */
+    uint64_t gaps_mid_long;
+    int64_t  hold_ema_ns;
     uint64_t slip_events[2];    /* sim, render                                */
     uint64_t slip_periods[2];
     int64_t  phase_err_max_ns;  /* max (exec_start - deadline) over clean VBLs */
