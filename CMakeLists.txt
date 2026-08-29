@@ -264,6 +264,35 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # The pacing analysis suite's own maths, against synthetic inputs with
+    # known answers. Fast, no PSX boot, no display: a wrong Allan deviation or
+    # a mis-set gate tolerance is worse than none, because it looks
+    # authoritative and nobody re-derives it. See
+    # notes/plans/openpete-sim-tick-pacing-perfection.md (M2).
+    add_test(NAME pacing_stats
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/pacing/test_pacestats.py)
+    set_tests_properties(pacing_stats PROPERTIES
+        LABELS "pacing"
+        TIMEOUT 300
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # The standing pacing gate (M9): does the sim clock hold its grid, does it
+    # hold BECAUSE presents shed (proved by fault injection, not by a machine
+    # fast enough never to exercise the mechanism), and does it hold in a level
+    # rather than only on the attract demo. Exit 3 = vacuous (nothing engaged)
+    # and fails the test deliberately: a gate that cannot reach its own subject
+    # must never read as a pass. 64 = SKIP (no binary / disc / display).
+    #
+    # NOT in the default set: it runs four 120 s legs and needs a display for
+    # three of them. Run with `ctest -L pacing`.
+    add_test(NAME pacing_strict
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_pacing.sh)
+    set_tests_properties(pacing_strict PROPERTIES
+        LABELS "slow;pacing"
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # --record video-capture smoke test. Boots the headless demo with
     # --record and uses ffprobe to assert a playable VFR H.264 stream with
     # even dimensions, the reported frame count, monotonic non-uniform PTS,
