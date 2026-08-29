@@ -62,7 +62,8 @@ enum {
     OP_PACE_CLOCKSAMPLE = 7,
     OP_PACE_WAKE        = 8,
     OP_PACE_PRESENT_SPAN = 9,
-    OP_PACE_PAD_READ    = 10
+    OP_PACE_PAD_READ    = 10,
+    OP_PACE_FLIP        = 11
 };
 
 /* VBL flags. */
@@ -174,6 +175,13 @@ void openpete_pace_note_alpha(double alpha, int paired);
  * judged "long". Set whenever the render period changes; 0 disables the
  * cadence counters rather than letting them count against a stale rate. */
 void openpete_pace_set_slot_ns(int64_t slot_ns);
+
+/* A present reached the DISPLAY. `id` is the swapchain present id waited on,
+ * `t_ns` the observed flip time. This is the only timestamp in the log that is
+ * not a submit time, which is why it gets its own record rather than another
+ * field on PRESENT: everything else says when we handed a frame over, and the
+ * display decides for itself when to show it. */
+void openpete_pace_flip(uint64_t id, int64_t t_ns, int64_t waited_ns);
 
 void openpete_pace_present(uint8_t kind, int64_t done_ns,
                            int64_t fence_block_ns, int64_t acquire_block_ns,

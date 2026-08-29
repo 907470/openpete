@@ -90,6 +90,12 @@
 #ifndef RHI_ACQUIRE_BUDGET_MAX_NS
 #define RHI_ACQUIRE_BUDGET_MAX_NS (40ull * 1000ull * 1000ull)  /* 40 ms */
 #endif
+/* Shortest wait that counts as having OBSERVED a flip. Below this the frame
+ * was already on screen and the return time is when we asked, not when the
+ * display changed. */
+#ifndef RHI_FLIP_OBSERVED_NS
+#define RHI_FLIP_OBSERVED_NS    (20ull * 1000ull)              /* 20 us */
+#endif
 #ifndef RHI_ACQUIRE_BACKOFF_NS
 #define RHI_ACQUIRE_BACKOFF_NS  (16ull * 1000ull * 1000ull)   /* ~1 VBL */
 #endif
@@ -231,6 +237,14 @@ struct rhi_device {
     /* Window size as last observed while waiting for a resize to settle. */
     int      last_seen_w, last_seen_h;
     Uint64   size_stable_since_ns;
+    /* Display timing (VK_KHR_present_id + VK_KHR_present_wait), when the
+     * driver offers both. Each present carries an id; waiting on an id blocks
+     * until that present has been DISPLAYED, which is the only number here
+     * that is not a submit time. */
+    bool     has_present_timing;
+    uint64_t present_id_next;      /* id the NEXT present will carry (from 1) */
+    uint64_t present_id_submitted; /* id of the last present actually queued  */
+    uint64_t present_id_seen;      /* newest id confirmed DISPLAYED           */
     /* Set when the caller knows the size change was DISCRETE — one the app
      * caused, arriving in a single step. The settle window exists to absorb a
      * drag's per-pixel walk; applying it to a fullscreen toggle just freezes
@@ -614,13 +628,51 @@ static bool pick_physical_and_device(rhi_device *dev)
      * terrain cache simply stays disabled without it. */
     enable.shaderFloat64 = supported.shaderFloat64;
     dev->has_shader_float64 = (supported.shaderFloat64 == VK_TRUE);
-    const char *dev_ext[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME };
+    /* Optional display-timing pair. present_id tags each present with a
+     * monotonically increasing id; present_wait blocks until the present
+     * carrying that id has actually been DISPLAYED. Together they are the only
+     * portable way to learn a flip time — every timestamp the engine takes
+     * itself is a SUBMIT time, and under FIFO the display quantises submits to
+     * its own refresh, so submit-side spacing can look even while the flips do
+     * not (and the reverse). Enabled only when both are present; nothing here
+     * is load-bearing. */
+    uint32_t dev_ext_n = 0;
+    vkEnumerateDeviceExtensionProperties(dev->phys, NULL, &dev_ext_n, NULL);
+    VkExtensionProperties *dev_avail = dev_ext_n
+        ? calloc(dev_ext_n, sizeof(*dev_avail)) : NULL;
+    if (dev_avail)
+        vkEnumerateDeviceExtensionProperties(dev->phys, NULL, &dev_ext_n, dev_avail);
+    bool have_present_id = false, have_present_wait = false;
+    for (uint32_t i = 0; i < dev_ext_n && dev_avail; i++) {
+        if (strcmp(dev_avail[i].extensionName, "VK_KHR_present_id") == 0)
+            have_present_id = true;
+        else if (strcmp(dev_avail[i].extensionName, "VK_KHR_present_wait") == 0)
+            have_present_wait = true;
+    }
+    free(dev_avail);
+    RHI_LOG("display timing: present_id %s, present_wait %s\n",
+            have_present_id ? "yes" : "no", have_present_wait ? "yes" : "no");
+
+    dev->has_present_timing = !dev->headless && have_present_id && have_present_wait;
+    const char *dev_ext[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME,
+                              "VK_KHR_present_id", "VK_KHR_present_wait" };
+    VkPhysicalDevicePresentWaitFeaturesKHR feat_wait = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_WAIT_FEATURES_KHR,
+        .presentWait = VK_TRUE,
+    };
+    VkPhysicalDevicePresentIdFeaturesKHR feat_id = {
+        .sType = VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_PRESENT_ID_FEATURES_KHR,
+        .pNext = &feat_wait,
+        .presentId = VK_TRUE,
+    };
     VkDeviceCreateInfo dci = {
         .sType = VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+        .pNext = dev->has_present_timing ? (const void *)&feat_id : NULL,
         .queueCreateInfoCount = 1,
         .pQueueCreateInfos = &qci,
         /* No swapchain extension when there's no surface to present to. */
-        .enabledExtensionCount = dev->headless ? 0u : 1u,
+        .enabledExtensionCount = dev->headless ? 0u
+                                 : (dev->has_present_timing ? 3u : 1u),
         .ppEnabledExtensionNames = dev->headless ? NULL : dev_ext,
         .pEnabledFeatures = &enable,
     };
@@ -1456,6 +1508,11 @@ static void destroy_swapchain_resources(rhi_device *dev)
 static bool recreate(rhi_device *dev)
 {
     vkDeviceWaitIdle(dev->device);
+    /* Present ids belong to a swapchain. The new one starts its sequence over,
+     * and any id still outstanding against the old one can never complete. */
+    dev->present_id_next = 1;
+    dev->present_id_submitted = 0;
+    dev->present_id_seen = 0;
     destroy_swapchain_resources(dev);
     if (!create_swapchain(dev)) return false;
     if (!create_offscreen(dev)) return false;
@@ -2031,8 +2088,18 @@ void rhi_end_frame(rhi_device *dev)
     };
     VK_CHECK(vkQueueSubmit(dev->gfx_queue, 1, &si, dev->in_flight[dev->frame]));
 
+    /* Ids start at 1 and must strictly increase per swapchain; a rebuild
+     * restarts the sequence, which rhi_present_wait handles by refusing to
+     * wait on an id from a swapchain that no longer exists. */
+    const uint64_t this_id = dev->present_id_next;
+    VkPresentIdKHR pid = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+        .swapchainCount = 1,
+        .pPresentIds = &this_id,
+    };
     VkPresentInfoKHR pi = {
         .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .pNext = dev->has_present_timing ? (const void *)&pid : NULL,
         .waitSemaphoreCount = 1,
         .pWaitSemaphores = &dev->render_done[dev->image_index],
         .swapchainCount = 1,
@@ -2041,6 +2108,10 @@ void rhi_end_frame(rhi_device *dev)
     };
     Uint64 pres_t0 = SDL_GetTicksNS();
     VkResult pr = vkQueuePresentKHR(dev->gfx_queue, &pi);
+    if (dev->has_present_timing && pr >= 0) {
+        dev->present_id_submitted = this_id;
+        dev->present_id_next++;
+    }
     rhi_note_stall_phase("present", RHI_BLOCK_PRESENT, pres_t0);
     if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) {
         dev->needs_recreate = true;
@@ -2052,6 +2123,60 @@ void rhi_end_frame(rhi_device *dev)
 
     dev->frame = (dev->frame + 1) % RHI_FRAMES_IN_FLIGHT;
     dev->frame_active = false;
+}
+
+int rhi_present_timing_supported(const rhi_device *dev)
+{
+    return dev && dev->has_present_timing ? 1 : 0;
+}
+
+int rhi_present_wait(rhi_device *dev, uint64_t timeout_ns, uint64_t *out_id,
+                     uint64_t *out_waited_ns)
+{
+    if (!dev || !dev->has_present_timing || !dev->swapchain) return -1;
+    if (dev->needs_recreate) return -1;
+
+    /* Confirm ids in order, and keep going while they come back INSTANTLY.
+     *
+     * Waiting on the newest present is useless — under FIFO it is one to three
+     * refreshes from the screen, past any single sleep budget, so it times out
+     * nearly every time. Waiting on the oldest unconfirmed one is right, but
+     * one confirmation per call is slower than presents are queued (measured
+     * 337/s confirmed against 423/s presented), so the backlog grows and every
+     * answer is a frame that flipped long ago.
+     *
+     * Draining fixes both: an id that has already flipped returns with no
+     * blocking, costing a driver call, and the loop stops at the first id that
+     * has NOT — which is the next real flip, and the only one whose return
+     * time means anything. The drain is bounded so a long backlog cannot turn
+     * one measurement into unbounded work on the sim thread. */
+    enum { RHI_FLIP_DRAIN_MAX = 64 };
+    const Uint64 t_start = SDL_GetTicksNS();
+    for (int i = 0; i < RHI_FLIP_DRAIN_MAX; i++) {
+        const uint64_t id = dev->present_id_seen + 1;
+        if (id > dev->present_id_submitted) return -1;
+        const Uint64 elapsed = SDL_GetTicksNS() - t_start;
+        if (elapsed >= timeout_ns) return 0;
+        const Uint64 t0 = SDL_GetTicksNS();
+        VkResult r = vkWaitForPresentKHR(dev->device, dev->swapchain, id,
+                                         timeout_ns - elapsed);
+        const Uint64 waited = SDL_GetTicksNS() - t0;
+        if (r == VK_SUCCESS) {
+            dev->present_id_seen = id;
+            if (out_id) *out_id = id;
+            if (out_waited_ns) *out_waited_ns = (uint64_t)waited;
+            /* Blocked, so the caller's clock at return IS the flip. A stale
+             * confirmation keeps draining instead. */
+            if (waited >= RHI_FLIP_OBSERVED_NS) return 1;
+            continue;
+        }
+        if (r == VK_TIMEOUT) return 0;
+        /* SUBOPTIMAL/OUT_OF_DATE arrive here when the surface changed under
+         * us; the present path already flags the rebuild, so this only
+         * declines. */
+        return -1;
+    }
+    return 0;
 }
 
 void rhi_notify_resize(rhi_device *dev)

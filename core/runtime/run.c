@@ -1023,9 +1023,42 @@ static int pace_force_pacing(void)
  * actually woke. Splitting a late tick into "the OS returned late" and
  * "everything after waking was slow" needs both instants; with only the
  * second, a residual fraction of late ticks has no attributable cause. */
+/* Spend the idle wait on a display-timing measurement, when one is asked for.
+ *
+ * OPENPETE_PACE_FLIP_LOG=1 turns the sleep before the next deadline into a
+ * bounded vkWaitForPresentKHR on the present just queued. The wait returns at
+ * the FLIP, which is the one timestamp the engine cannot otherwise observe —
+ * and it costs nothing the loop was not already going to spend, because the
+ * timeout never exceeds the deadline we were sleeping to. The remainder of the
+ * sleep still runs, so the pacing contract is unchanged.
+ *
+ * It must run on the presenting thread: the swapchain is externally
+ * synchronized and a wait from anywhere else races the present. That is also
+ * why this is measurement-only rather than always on — a driver whose wait
+ * misbehaves would stall the sim clock, and the point of the instrument is to
+ * measure the pacer, not to become part of it. */
+static int pace_flip_log_on(void)
+{
+    static int on = -1;
+    if (on < 0) {
+        const char *e = getenv("OPENPETE_PACE_FLIP_LOG");
+        on = (e && *e && *e != '0');
+    }
+    return on;
+}
+
 static void pace_sleep_until(op_time_t deadline_ns)
 {
     const op_time_t req = op_now();
+    if (pace_flip_log_on()) {
+        const op_time_t budget = deadline_ns - op_now();
+        if (budget > 0) {
+            uint64_t id = 0, waited = 0;
+            if (openpete_native_render_present_wait((uint64_t)budget, &id,
+                                                    &waited) == 1)
+                openpete_pace_flip(id, (int64_t)op_now(), (int64_t)waited);
+        }
+    }
     op_sleep_until(deadline_ns);
     openpete_pace_wake(req, deadline_ns, op_now());
 }

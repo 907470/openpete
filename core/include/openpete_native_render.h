@@ -63,6 +63,12 @@ bool openpete_native_render_enabled(void);
  * rhi_fence_sheds. Monotonic. */
 uint64_t openpete_native_render_fence_sheds(void);
 
+/* Wait (up to timeout_ns) for the last queued present to be DISPLAYED.
+ * 1 = displayed, 0 = timed out, -1 = unsupported / nothing outstanding.
+ * Presenting-thread only. */
+int openpete_native_render_present_wait(uint64_t timeout_ns, uint64_t *out_id,
+                                        uint64_t *out_waited_ns);
+
 /* The acquire path's refusals, and the granted swapchain depth. See
  * rhi_acquire_sheds / rhi_swapchain_image_count. */
 uint64_t openpete_native_render_acquire_sheds(void);

@@ -121,6 +121,19 @@ void rhi_end_frame(rhi_device *dev);
 /* Tell the device the window size changed; the swapchain + offscreen
  * target are recreated on the next rhi_begin_frame. Safe to call on every
  * resize event. */
+/* Display timing (VK_KHR_present_id + VK_KHR_present_wait), when the driver
+ * offers both. Every other timestamp in this engine is a SUBMIT time; under
+ * FIFO the display quantises submits to its own refresh, so submit spacing can
+ * be even while the flips are not. rhi_present_wait BLOCKS until the last
+ * queued present has been displayed, up to timeout_ns: 1 = displayed (the
+ * caller's clock at return is the flip time, within thread-wakeup jitter),
+ * 0 = still not displayed, -1 = unsupported or nothing outstanding. Call it
+ * ONLY from the thread that presents — the swapchain is externally
+ * synchronized, and a wait on another thread races vkQueuePresentKHR. */
+int  rhi_present_timing_supported(const rhi_device *dev);
+int  rhi_present_wait(rhi_device *dev, uint64_t timeout_ns, uint64_t *out_id,
+                      uint64_t *out_waited_ns);
+
 void rhi_notify_resize(rhi_device *dev);
 /* Same, for an app-driven (discrete) size change such as a fullscreen toggle:
  * rebuilds at the next begin_frame rather than waiting out the settle window

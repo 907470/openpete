@@ -678,6 +678,99 @@ def cmd_cadence(a):
         if boundary:
             print(f"  alpha advanced across the tick boundary "
                   f"p50 {ps.percentile(boundary,50):.4f} p90 {ps.percentile(boundary,90):.4f}")
+    # Display-side, when flip times were recorded (OPENPETE_PACE_FLIP_LOG=1).
+    # Everything above is a submit time; this is when the display actually
+    # changed, and the two are not interchangeable — under FIFO a submit is
+    # quantised to the next refresh, so an even submit cadence can flip
+    # unevenly and an uneven one can flip evenly.
+    # A flip whose wait returned instantly is a STALE confirmation: the frame
+    # was already on screen and the timestamp is when we asked, not when the
+    # display changed. Averaging those in would report the poll cadence as the
+    # display cadence.
+    FLIP_MIN_WAIT_NS = 20_000
+    all_flips = [r for r in log.of(pacelog.FLIP) if t0 <= r.t_ns <= t1]
+    flips = sorted((r for r in all_flips if (r.b or 0) >= FLIP_MIN_WAIT_NS),
+                   key=lambda r: r.t_ns)
+    if all_flips and len(flips) < len(all_flips):
+        print(f"  (flips: {len(flips)} observed, "
+              f"{len(all_flips) - len(flips)} already displayed when asked "
+              f"— dropped, their timestamps are polls)")
+    # Only ADJACENT present ids may be compared. Blocking on one flip means
+    # the next has usually happened by the time we ask again, so roughly every
+    # other flip is observed — and the interval between two non-adjacent
+    # observations is a hole in the SAMPLING, not a hole on the display.
+    # Reporting those together would put the instrument's own duty cycle in
+    # the tail and read it as judder.
+    adj = [(a_, b) for a_, b in zip(flips, flips[1:]) if b.a == a_.a + 1]
+    if len(adj) > 2:
+        fi = [b.t_ns - a_.t_ns for a_, b in adj]
+        print(f"  DISPLAY  {len(adj)} adjacent pair(s) of {len(flips)} observed "
+              f"flip(s): interval "
+              f"p50 {ps.percentile(fi,50)/1e6:>6.2f} ms "
+              f"p90 {ps.percentile(fi,90)/1e6:>6.2f} ms "
+              f"p99 {ps.percentile(fi,99)/1e6:>6.2f} ms "
+              f"max {max(fi)/1e6:.2f} ms")
+        # Animation error: how much the shown animation time advanced between
+        # two displayed frames, against how long the display actually held
+        # them. A frame shown twice as long should carry twice the motion; the
+        # deviation from that is what a viewer reads as judder, and no
+        # submit-side statistic contains it.
+        #
+        # Each flip is joined to the last present submitted before it — the
+        # wait is issued right after that present, so the pairing is the
+        # sequence itself rather than a matched id.
+        import bisect
+        pt = [r.t_ns for r in pres]
+
+        def alpha_at(f):
+            i = bisect.bisect_right(pt, f.t_ns) - 1
+            return pres[i].present_alpha if i >= 0 else None
+
+        tick_ns = float(nominal_vbl_ns(log)) * 2.0
+        errs = []
+        for a_, b in adj:
+            aa, ab = alpha_at(a_), alpha_at(b)
+            if aa is None or ab is None:
+                continue
+            da = ab - aa
+            if da < -0.5:
+                da += 1.0          # interval roll
+            errs.append(da * tick_ns - (b.t_ns - a_.t_ns))
+        if errs:
+            print(f"  animation error, DISPLAY-side (shown motion minus display "
+                  f"time) p50 {ps.percentile(errs,50)/1e6:+.2f} ms "
+                  f"p99 {ps.percentile([abs(e) for e in errs],99)/1e6:.2f} ms "
+                  f"max {max(abs(e) for e in errs)/1e6:.2f} ms")
+            # What this cannot see, said plainly. The wait only runs while the
+            # loop is idle, so a flip that happens while the sim thread is
+            # executing a tick is never observed — which is exactly the
+            # tick-boundary hole. These numbers describe mid-tick cadence, the
+            # part that was already healthy. Observing the other part needs the
+            # present (and the wait) off the sim thread.
+            print("  (display-side covers MID-TICK only: the loop is executing "
+                  "a tick when the\n   boundary frame flips, so that one is "
+                  "structurally unobservable here)")
+    elif log.of(pacelog.FLIP):
+        print("  DISPLAY: too few flip records to characterise")
+
+    # The boundary's animation error, from submit times and alpha. The
+    # display-side figure above cannot reach it, but the quantity is the same:
+    # how much motion the frame carried against how long it was held.
+    if any(r.present_alpha is not None for r in pres):
+        tick_ns = float(nominal_vbl_ns(log)) * 2.0
+        berr = []
+        for a_, b in zip(pres, pres[1:]):
+            if b.flags or a_.present_alpha is None or b.present_alpha is None:
+                continue                      # gaps that END at a canonical
+            da = b.present_alpha - a_.present_alpha
+            if da < -0.5:
+                da += 1.0
+            berr.append(da * tick_ns - (b.t_ns - a_.t_ns))
+        if berr:
+            print(f"  animation error at the tick boundary (submit-side) "
+                  f"p50 {ps.percentile(berr,50)/1e6:+.2f} ms "
+                  f"p90 {ps.percentile(berr,90)/1e6:+.2f} ms")
+
     for label, sel in (("after a tick (canonical)", lambda f: not f),
                        ("mid-tick (intermediate)", lambda f: f)):
         g = [x for x, f in gaps if sel(f)]

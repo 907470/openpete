@@ -582,6 +582,21 @@ void openpete_pace_shed(uint8_t kind, uint16_t reason,
     pace_emit(&r);
 }
 
+void openpete_pace_flip(uint64_t id, int64_t t_ns, int64_t waited_ns)
+{
+    if (!s_fp) return;
+    pace_rec_t r = {0};
+    r.type  = OP_PACE_FLIP;
+    r.index = (uint32_t)id;
+    r.t_ns  = t_ns;
+    r.a = (int64_t)id;
+    /* How long the wait actually blocked. A near-zero wait means the flip had
+     * ALREADY happened and t_ns is when we asked, not when the display
+     * changed — the analysis must drop those rather than average them in. */
+    r.b = waited_ns;
+    pace_emit(&r);
+}
+
 void openpete_pace_slip(uint8_t kind, int64_t periods, int64_t behind_ns)
 {
     const unsigned k = (kind == OP_PACE_SLIP_RENDER) ? 1u : 0u;
