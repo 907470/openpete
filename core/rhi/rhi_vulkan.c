@@ -27,6 +27,8 @@
 #include <stdint.h>
 #include <stddef.h>
 
+#include "rhi_gpu_audit.h" /* must follow volk.h: redirects the vk* globals */
+
 /* Acquire budget, and the back-off after one expires.
  *
  * The budget has TWO bounds and the original only had the upper one. It must
@@ -2409,6 +2411,7 @@ void rhi_update_buffer_range(rhi_buffer *buf, const void *data,
                              size_t offset, size_t bytes)
 {
     if (!buf || !buf->mapped) return;
+    if (g_openpete_guest_running) op_gpu_audit_map_write(bytes);
     VkDeviceSize cap = buf->ring_stride ? buf->ring_stride : buf->size;
     if ((VkDeviceSize)offset >= cap) return;
     if ((VkDeviceSize)(offset + bytes) > cap) bytes = (size_t)(cap - offset);
@@ -2429,6 +2432,7 @@ void rhi_update_buffer_range(rhi_buffer *buf, const void *data,
 void rhi_update_buffer(rhi_buffer *buf, const void *data, size_t bytes)
 {
     if (!buf || !buf->mapped) return;
+    if (g_openpete_guest_running) op_gpu_audit_map_write(bytes);
     VkDeviceSize cap = buf->ring_stride ? buf->ring_stride : buf->size;
     if ((VkDeviceSize)bytes > cap) bytes = (size_t)cap;
     if (!buf->ring_stride) {

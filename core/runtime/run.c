@@ -228,6 +228,32 @@ static volatile sig_atomic_t g_native_fs_toggle_request = 0;
  * quit binding — and forwards the rest. Consuming quit/close here is what
  * keeps PsyX_Exit (and its exit(0), which hangs on static teardown under
  * WSL+GL+libco) unreachable. */
+/* Guest-execution GPU audit (core/rhi/rhi_gpu_audit.h). Set around every
+ * switch to the game fiber; the RHI records any Vulkan call made while it is
+ * non-zero. Declared rather than included so run.c does not inherit the
+ * header's vk* redirection macros. */
+extern int g_openpete_guest_running;
+extern unsigned op_gpu_audit_total(void);
+extern int      op_gpu_audit_names(const char **out, int max);
+extern unsigned op_gpu_audit_map_writes(void);
+extern unsigned long long op_gpu_audit_map_bytes(void);
+
+/* OPENPETE_GPU_AUDIT_SELFTEST=1 arms the guest flag around exactly one real
+ * present. "Zero Vulkan calls during guest execution" is only worth reading
+ * from a build that can be shown catching the calls it says never happen; a
+ * mis-wired macro set reports the same zero as a genuinely clean tick. */
+static int gpu_audit_selftest_arm(void)
+{
+    static int state = -1;
+    if (state < 0) {
+        const char *e = getenv("OPENPETE_GPU_AUDIT_SELFTEST");
+        state = (e && *e && *e != '0') ? 1 : 0;
+    }
+    if (state != 1) return 0;
+    state = 0;          /* one present only */
+    return 1;
+}
+
 /* Host thread split (on by default; OPENPETE_THREAD_SPLIT=0 disables).
  *
  * Win32 runs a modal loop inside DefWindowProc for a title-bar drag or a
@@ -2793,7 +2819,9 @@ static int run_host_loop(const openpete_options_t* opts) {
                              * reach the target; their pad reads belong to
                              * those, not to whatever bracket is open. */
                             openpete_pace_vbl_suspend(1);
+                            g_openpete_guest_running = 1;
                             co_switch((cothread_t)openpete_game_fiber);
+                            g_openpete_guest_running = 0;
                             openpete_pace_vbl_suspend(0);
                             if (openpete_frame == before) break; /* safety */
                         }
@@ -3157,7 +3185,9 @@ static int run_host_loop(const openpete_options_t* opts) {
                                      pace_latch_ns);
             {
                 uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
+                g_openpete_guest_running = 1;
                 co_switch((cothread_t)openpete_game_fiber);
+                g_openpete_guest_running = 0;
                 if (pt0) openpete_phase_add(OPPT_SIM_TICK, openpete_phase_now_us() - pt0);
             }
             pace_exec_end_ns = op_now();
@@ -3289,7 +3319,9 @@ static int run_host_loop(const openpete_options_t* opts) {
                     for (int v = 0; v < 2 * runahead_n; v++) {
                         unsigned bf = openpete_frame;
                         game_on_frame_pre(&g_game.cpu, openpete_frame);
+                        g_openpete_guest_running = 1;
                         co_switch((cothread_t)openpete_game_fiber);
+                        g_openpete_guest_running = 0;
                         if (openpete_frame == bf) break;   /* safety */
                         /* Speculation crossed into a load/cutscene. The
                          * rollback contract is void here: the game fiber
@@ -3748,7 +3780,12 @@ static int run_host_loop(const openpete_options_t* opts) {
              * into the async readback ring inside (no GPU stall), so a vk
              * recording captures the on-screen frame at real speed. No-op unless
              * native is the display AND recording is active. */
-            openpete_native_render_frame((uint64_t)(op_now() / 1000));
+            {
+                const int audit_arm = gpu_audit_selftest_arm();
+                if (audit_arm) g_openpete_guest_running = 1;
+                openpete_native_render_frame((uint64_t)(op_now() / 1000));
+                if (audit_arm) g_openpete_guest_running = 0;
+            }
 
             /* Maintain the capture freeze backdrop: render this present's world
              * frame into the capture freeze texture so a later headless dump of a
@@ -4533,6 +4570,39 @@ static int run_host_loop(const openpete_options_t* opts) {
 
     /* Report before PsyX_Shutdown: the instrument reads PsyCross pad state. */
     openpete_host_input_parity_report();
+
+    /* Whether the guest's own execution ever reached the Vulkan device. A
+     * present thread can only run concurrently with a tick if this is zero;
+     * any name listed here is a call that would have to be moved, locked, or
+     * deferred first. */
+    {
+        unsigned gpu_hits = op_gpu_audit_total();
+        unsigned mw = op_gpu_audit_map_writes();
+        /* Mapped-memory writes are reported even when the call count is zero:
+         * they are host memcpys into device-visible buffers (the terrain
+         * sector arenas, filled from hooks inside the guest's render walk), so
+         * no Vulkan call names them, and a present thread reading those arenas
+         * races them regardless of how clean the call audit looks. */
+        OPL_INFO_F("gpu-audit",
+                   "mapped-buffer writes during guest execution: %u (%llu bytes)",
+                   mw, (unsigned long long)op_gpu_audit_map_bytes());
+        if (gpu_hits == 0) {
+            OPL_INFO_F("gpu-audit", "%s",
+                       "no Vulkan calls during guest execution");
+        } else {
+            const char *names[32];
+            int n = op_gpu_audit_names(names, 32);
+            char buf[1024];
+            int at = 0;
+            for (int i = 0; i < n && at < (int)sizeof(buf) - 1; i++)
+                at += snprintf(buf + at, sizeof(buf) - (size_t)at, "%s%s",
+                               i ? " " : "", names[i]);
+            if (!n) buf[0] = 0;
+            OPL_WARN_F("gpu-audit",
+                       "%u Vulkan calls during guest execution (%d distinct): %s",
+                       gpu_hits, n, buf);
+        }
+    }
 
     /* Renderer + PsyCross teardown destroy the window and call SDL_Quit, which
      * belong to the thread that created them. Under the split that is main, so
