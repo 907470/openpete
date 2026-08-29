@@ -605,6 +605,71 @@ def cmd_stability(a):
 
 # --------------------------------------------------------------- spectrum
 
+def cmd_cadence(a):
+    """Display cadence: the spacing of presents, split by what they follow.
+
+    SUBMIT-SIDE, and that limitation is the point of saying so. These are the
+    times we handed a frame to the presentation engine, not the times the
+    display changed. Under FIFO the display quantises our submits to its own
+    refresh, so two schedules with different histograms here can produce the
+    same flip sequence and vice versa. What settles it is a flip timestamp —
+    VK_KHR_present_wait, or an external PresentMon capture — against which the
+    quantity to report is animation error (the mismatch between how far the
+    animation advanced and how long the frame was shown). Until that exists,
+    read this as a proxy that can only be trusted when it moves a lot.
+
+    Gaps are split by what ENDS them, because the two have different causes
+    and only one is fixable by scheduling:
+
+      * a gap ending at a CANONICAL present spans the tick's own execution.
+        The presenting thread is the sim thread, so nothing can be displayed
+        while the guest runs. No present schedule reaches inside it.
+      * a gap ending at an INTERMEDIATE present is the schedule's own doing:
+        a shed, a late slot, or a cost overrun.
+
+    `shed %` is deliberately NOT the headline here. It is the fraction of grid
+    slots that happen to land near a deadline, so it rises as the present rate
+    falls — measured 10.8 % at --render-fps 480 and 16.3 % at 240 for the same
+    underlying behaviour — and reads as a health metric while being an
+    artifact of the grid."""
+    log, kept, excluded = load(a.log, a.warmup)
+    print(f"env: " + " ".join(f"{k}={v}" for k, v in sorted(log.env.items())))
+    print(population_line(log, kept, excluded))
+    if refuse_if_empty(kept, log):
+        return 3
+    # Paced window only: the unpaced fast-forward into a level presents on no
+    # schedule at all, and its gaps would land in every percentile here.
+    t0, t1 = kept[0].exec_start_ns, kept[-1].exec_start_ns
+    pres = sorted((r for r in log.of(pacelog.PRESENT) if t0 <= r.t_ns <= t1),
+                  key=lambda r: r.t_ns)
+    if len(pres) < 3:
+        print("too few presents in the paced window", file=sys.stderr)
+        return 3
+    fps = float(log.env.get("render_fps") or 0)
+    # --render-fps 0 is the legacy pacer: one present per TICK, which is two
+    # VBLs.
+    nominal = 1e9 / fps if fps > 0 else float(nominal_vbl_ns(log)) * 2.0
+    ticks = max(1, sum(1 for r in pres if not r.flags))
+    span_s = (pres[-1].t_ns - pres[0].t_ns) / 1e9
+
+    gaps = [(b.t_ns - a_.t_ns, b.flags) for a_, b in zip(pres, pres[1:])]
+    print(f"presents: {len(pres)} over {span_s:.1f}s = {len(pres)/span_s:.0f}/s "
+          f"(nominal slot {nominal/1e6:.2f} ms"
+          + (f", --render-fps {fps:.0f}" if fps else ", one per tick") + ")")
+    for label, sel in (("after a tick (canonical)", lambda f: not f),
+                       ("mid-tick (intermediate)", lambda f: f)):
+        g = [x for x, f in gaps if sel(f)]
+        if not g:
+            continue
+        big = [x for x in g if x > 2 * nominal]
+        print(f"  gap {label:<24} n={len(g):>6} "
+              f"p50 {ps.percentile(g,50)/1e6:>6.2f} ms ({ps.percentile(g,50)/nominal:>4.1f}x) "
+              f"p90 {ps.percentile(g,90)/1e6:>6.2f} ms ({ps.percentile(g,90)/nominal:>4.1f}x) "
+              f"p99 {ps.percentile(g,99)/1e6:>6.2f} ms")
+        print(f"      over 2 slots: {len(big)} = {len(big)/ticks:.2f} per tick")
+    return 0
+
+
 def cmd_spectrum(a):
     log, kept, excluded = load(a.log, a.warmup)
     print(population_line(log, kept, excluded))
@@ -1532,6 +1597,10 @@ def main():
                         "transient's size is measured). A clamp distorts the "
                         "fit on both sides of itself, with opposite signs")
 
+    add("cadence", cmd_cadence,
+        "display cadence: present spacing, split by tick-boundary vs mid-tick")
+    add("cadence", cmd_cadence,
+        "display cadence: present spacing, split by tick-boundary vs mid-tick")
     add("stability", cmd_stability, "Allan / modified Allan deviation")
 
     p = add("spectrum", cmd_spectrum, "periodic interference lines")

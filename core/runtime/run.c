@@ -3813,12 +3813,32 @@ static int run_host_loop(const openpete_options_t* opts) {
          * adapts to the hardware instead of encoding a guess about it. A
          * fresh EMA admits the first presents unconditionally: refusing to
          * present until a cost is known would never learn one. */
+        /* The deadline this present must beat.
+         *
+         * `next_sim.at` is advanced at the LOOP TAIL, so on a sim_due
+         * iteration it still names the deadline this iteration has already
+         * satisfied. Comparing against it here reads a NEGATIVE budget at the
+         * moment a full VBL period actually remains, and the predicate then
+         * refuses the one intermediate present a non-drawing VBL is entitled
+         * to (a drawing VBL is already excluded by did_present_this_iter).
+         *
+         * That cost exactly one present slot per tick, invariant to the
+         * present rate — measured 0.84 doubled display gaps per tick at BOTH
+         * --render-fps 480 and 240, which is the signature of a fixed
+         * per-tick loss rather than of a rate or capacity limit.
+         *
+         * After a slip the tail advances by more than one period, so this
+         * runs one period optimistic for a single iteration; the next one
+         * reads the corrected grid. */
+        const op_time_t pace_sim_deadline =
+            sim_due ? next_sim.at + sim_period_ns : next_sim.at;
+
         int pace_shed_now = 0;
         if (native_intermediate) {
             /* Decay first, then take the max: without the decay this is a
              * high-water mark that one long budget pins forever, and the
              * probe would then wait for a moment that no longer comes. */
-            const op_time_t here = next_sim.at - op_now();
+            const op_time_t here = pace_sim_deadline - op_now();
             s_present_budget_peak -= s_present_budget_peak / 64;
             if (here > s_present_budget_peak) s_present_budget_peak = here;
         }
@@ -3832,7 +3852,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             const op_time_t margin = kk
                 ? s_present_cost_ema + (op_time_t)kk * s_present_cost_dev
                 : s_present_cost_ema + s_present_cost_ema / 4;
-            if (op_now() + margin > next_sim.at) {
+            if (op_now() + margin > pace_sim_deadline) {
                 /* A shed produces no measurement, so a predictor that only
                  * learns from presents that RAN stops learning the moment it
                  * starts shedding: the estimate latches at whatever the last
@@ -3855,7 +3875,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * to the case where a present genuinely cannot fit in half a
                  * tick, where a rare late tick is the price of ever
                  * discovering the cost came back down. */
-                const op_time_t budget = next_sim.at - op_now();
+                const op_time_t budget = pace_sim_deadline - op_now();
                 /* Relative to what this machine actually offers, not to the
                  * tick period: an absolute threshold is a threshold some
                  * machines never reach, and there the probe silently stops
@@ -3875,7 +3895,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                     pace_shed_now = 1;
                     openpete_pace_shed(OP_PACE_INTERMEDIATE, PACE_SHED_NO_BUDGET,
                                        (int64_t)s_present_cost_ema,
-                                       (int64_t)(next_sim.at - op_now()));
+                                       (int64_t)(pace_sim_deadline - op_now()));
                 }
             } else {
                 s_present_shed_run = 0;
