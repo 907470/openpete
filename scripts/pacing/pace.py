@@ -678,6 +678,18 @@ def cmd_cadence(a):
         if boundary:
             print(f"  alpha advanced across the tick boundary "
                   f"p50 {ps.percentile(boundary,50):.4f} p90 {ps.percentile(boundary,90):.4f}")
+    # Alpha saturation. The mapping from present time to animation time is
+    # only linear while alpha stays inside its bracket; at the ends it clamps,
+    # and a clamp is a discontinuity in shown time — motion stops, then jumps.
+    # This is what sank the earlier attempt to drive alpha from wall time, so
+    # any change to the mapping has to report it alongside the error it fixes.
+    sat = [r.present_alpha for r in pres if r.present_alpha is not None]
+    if sat:
+        hi = sum(1 for a in sat if a >= 0.999)
+        lo = sum(1 for a in sat if a <= -0.349)
+        print(f"  alpha clamped: {hi} at the top ({100.0*hi/len(sat):.1f} %), "
+              f"{lo} at the bottom ({100.0*lo/len(sat):.1f} %) of {len(sat)}")
+
     # Display-side, when flip times were recorded (OPENPETE_PACE_FLIP_LOG=1).
     # Everything above is a submit time; this is when the display actually
     # changed, and the two are not interchangeable — under FIFO a submit is

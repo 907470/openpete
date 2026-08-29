@@ -90,8 +90,30 @@ int g_openpete_canon_lag_leg = 0;
 static void vp_set_present_target(void) {
     static int s_on = -1;
     if (s_on < 0) {
+        /* OFF by default: the clock spaces animation time evenly per PRESENT,
+         * and display time is not evenly spaced. The tick executes on this
+         * thread, so one image is held for the length of it — and an evenly
+         * spaced alpha gives that frame the same slice of motion as a frame
+         * shown for one refresh. Measured at --render-fps 480, three runs
+         * each: the frame held through the tick carried 0.083 of a tick of
+         * motion for an 8.0 ms hold, an animation error of -5.24 / -5.10 /
+         * -5.15 ms repeating 30 times a second, with a +0.3 ms mid-tick bias
+         * as its mirror image. Letting the phase follow wall time instead put
+         * the boundary error at +0.05 / +0.12 / +0.15 ms and the mid-tick
+         * error at +0.01 ms.
+         *
+         * What the clock was for is real but smaller: it removes submit-time
+         * jitter, and without it the error tail widens (p99 0.6-1.7 ms ->
+         * ~2.2 ms, roughly one refresh at 480 Hz). A periodic deficit thirty
+         * times a second is more visible than random error of that size on a
+         * percent of frames, so the systematic term is the one to kill.
+         *
+         * The clamping that sank an earlier attempt at this is no longer the
+         * problem it was — 0.0 % of presents in two of three runs — because
+         * the consumers now allow slightly negative alpha rather than
+         * snapping shown time forward at every interval roll. */
         const char* e = getenv("OPENPETE_PRESENT_TARGET_CLOCK");
-        s_on = !(e && *e == '0');
+        s_on = (e && *e && *e != '0');
     }
     if (!s_on) return;
     static op_time_t s_clk = 0, s_last = 0;
@@ -1047,11 +1069,25 @@ static int pace_flip_log_on(void)
     return on;
 }
 
-static void pace_sleep_until(op_time_t deadline_ns)
+static void pace_sleep_until(op_time_t deadline_ns, op_time_t sim_deadline_ns)
 {
     const op_time_t req = op_now();
     if (pace_flip_log_on()) {
-        const op_time_t budget = deadline_ns - op_now();
+        /* Never wait into the pacer's slack ahead of a SIM deadline. The sleep
+         * is not idle right up to it: op_sleep_until parks until the deadline
+         * minus slack and the loop uses what remains to be ready on time.
+         * Waiting into that window made the instrument the defect — every
+         * flip-logged run measured 760-783 late ticks per 1000 against 12.5
+         * for the same leg without it.
+         *
+         * Bounding by the RENDER target instead would disable the instrument
+         * outright wherever the slack exceeds a present slot, which at
+         * --render-fps 480 (2.08 ms slots, 2.5 ms slack) is always. Only the
+         * tick's own margin is protected. */
+        const op_time_t guard = sim_deadline_ns
+            ? sim_deadline_ns - op_pacer_slack_ns() : deadline_ns;
+        const op_time_t until = (guard < deadline_ns) ? guard : deadline_ns;
+        const op_time_t budget = until - op_now();
         if (budget > 0) {
             uint64_t id = 0, waited = 0;
             if (openpete_native_render_present_wait((uint64_t)budget, &id,
@@ -1100,6 +1136,23 @@ static op_time_t s_present_budget_peak;
 
 /* Multiplier on the deviation. 0 selects the legacy centre-only bound, which
  * is how the two are A/B'd against each other on one machine. */
+/* OPENPETE_PACE_LATE_BUDGET_US: microseconds of tick lateness an intermediate
+ * present may spend to reach the display. 0 = the strict rule (never start a
+ * present that could overrun the tick's start). Capped well under the slip
+ * threshold: this may cost phase, never the grid. */
+static op_time_t pace_late_budget_ns(void)
+{
+    static op_time_t v = -1;
+    if (v < 0) {
+        const char *e = getenv("OPENPETE_PACE_LATE_BUDGET_US");
+        long us = (e && *e) ? atol(e) : 0;
+        if (us < 0) us = 0;
+        if (us > 2000) us = 2000;
+        v = (op_time_t)us * 1000;
+    }
+    return v;
+}
+
 static int pace_shed_margin_k(void)
 {
     static int k = -1;
@@ -3888,7 +3941,26 @@ static int run_host_loop(const openpete_options_t* opts) {
             const op_time_t margin = kk
                 ? s_present_cost_ema + (op_time_t)kk * s_present_cost_dev
                 : s_present_cost_ema + s_present_cost_ema / 4;
-            if (op_now() + margin > pace_sim_deadline) {
+            /* Lateness budget: how far a present may push the tick's start.
+             *
+             * The frame refused right before a tick is NOT a duplicate of the
+             * canonical that follows — measured, it sits 0.083 of a tick
+             * behind it against a 0.069 normal step — so the strict rule
+             * discards real motion at the worst moment, just before the
+             * display holds one image for the length of the tick.
+             *
+             * Spending the budget is gated on the TAIL bound rather than the
+             * centre one, because the cost distribution is right-skewed (p50
+             * 436 us, p90 707 us): admitting on a centre estimate is how a
+             * 100 us trade becomes a multi-millisecond late tick. Zero (the
+             * default) keeps the strict rule. */
+            const op_time_t late_budget = pace_late_budget_ns();
+            const op_time_t tail_margin =
+                s_present_cost_ema + 3 * s_present_cost_dev;
+            const int fits_strict = op_now() + margin <= pace_sim_deadline;
+            const int fits_late   = late_budget > 0 &&
+                op_now() + tail_margin <= pace_sim_deadline + late_budget;
+            if (!fits_strict && !fits_late) {
                 /* A shed produces no measurement, so a predictor that only
                  * learns from presents that RAN stops learning the moment it
                  * starts shedding: the estimate latches at whatever the last
@@ -4275,7 +4347,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                                "sim slip: host stalled %.1f ms (dropped %lld VBL period(s) "
                                "of wall time)", (double)behind / 1e6, (long long)skip);
                 }
-                pace_sleep_until(next_sim.at);
+                pace_sleep_until(next_sim.at, next_sim.at);
             }
         } else {
             /* Wall-clock dual-pacer. sim deadline advances on sim-due
@@ -4315,7 +4387,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             }
             op_time_t next = (next_sim.at < next_render.at)
                              ? next_sim.at : next_render.at;
-            pace_sleep_until(next);
+            pace_sleep_until(next, next_sim.at);
         }
 
 #if defined(__EMSCRIPTEN__)

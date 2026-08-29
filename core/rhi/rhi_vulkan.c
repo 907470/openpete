@@ -650,10 +650,29 @@ static bool pick_physical_and_device(rhi_device *dev)
             have_present_wait = true;
     }
     free(dev_avail);
-    RHI_LOG("display timing: present_id %s, present_wait %s\n",
-            have_present_id ? "yes" : "no", have_present_wait ? "yes" : "no");
 
-    dev->has_present_timing = !dev->headless && have_present_id && have_present_wait;
+    /* OFF unless asked for, because enabling it is NOT free: chaining a
+     * present id onto every present measured 34.5 / 31.0 / 33.4 late ticks per
+     * 1000 against 11.7 / 12.9 / 15.2 with the pair declined — same leg, same
+     * binary, complete separation, and the enabled arm fails the standing
+     * gate's threshold of 15. An extension that changes what the driver does
+     * with the present queue has to be priced before it is switched on for
+     * everyone, not assumed inert because the app ignores it.
+     *
+     * OPENPETE_PACE_FLIP_LOG implies it: asking for flip times is asking to
+     * pay for them, and the pacing numbers from such a run are not comparable
+     * with a normal one. */
+    const char *pt_env = getenv("OPENPETE_PRESENT_TIMING");
+    const char *fl_env = getenv("OPENPETE_PACE_FLIP_LOG");
+    const bool pt_want = (pt_env && *pt_env && *pt_env != '0') ||
+                         (fl_env && *fl_env && *fl_env != '0');
+    RHI_LOG("display timing: present_id %s, present_wait %s -> %s\n",
+            have_present_id ? "available" : "absent",
+            have_present_wait ? "available" : "absent",
+            (pt_want && have_present_id && have_present_wait)
+                ? "ENABLED (costs pacing; measurement runs only)" : "off");
+    dev->has_present_timing = pt_want && !dev->headless &&
+                              have_present_id && have_present_wait;
     const char *dev_ext[] = { VK_KHR_SWAPCHAIN_EXTENSION_NAME,
                               "VK_KHR_present_id", "VK_KHR_present_wait" };
     VkPhysicalDevicePresentWaitFeaturesKHR feat_wait = {
@@ -2150,7 +2169,9 @@ int rhi_present_wait(rhi_device *dev, uint64_t timeout_ns, uint64_t *out_id,
      * has NOT — which is the next real flip, and the only one whose return
      * time means anything. The drain is bounded so a long backlog cannot turn
      * one measurement into unbounded work on the sim thread. */
-    enum { RHI_FLIP_DRAIN_MAX = 64 };
+    /* Small: every call costs a driver round-trip even when the id is already
+     * signalled, and this runs on the sim thread. */
+    enum { RHI_FLIP_DRAIN_MAX = 8 };
     const Uint64 t_start = SDL_GetTicksNS();
     for (int i = 0; i < RHI_FLIP_DRAIN_MAX; i++) {
         const uint64_t id = dev->present_id_seen + 1;
