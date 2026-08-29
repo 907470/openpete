@@ -69,6 +69,9 @@ extern void GR_PresentPBO_Unmap(void);
  * before SPU init); CaptureDrain pulls mixed stereo s16 @ 44100 frames. */
 extern int PsyX_SPUAL_CaptureActive(void);
 extern int PsyX_SPUAL_CaptureDrain(short* out, int max_frames);
+extern void PsyX_SPUAL_CaptureStats(unsigned long long* produced,
+                                    unsigned long long* dropped);
+extern void PsyX_SPUAL_CaptureResetStats(void);
 
 /* glReadPixels format token. Spelled out so this TU needn't include glad.h;
  * GL_RGBA is a stable GL enum. */
@@ -293,6 +296,7 @@ static int rec_setup_audio(void) {
     /* Discard whatever the loopback accumulated before recording started so
      * audio sample 0 ~aligns with video frame 0. */
     { short scratch[2048 * 2]; while (PsyX_SPUAL_CaptureDrain(scratch, 2048) > 0) {} }
+    PsyX_SPUAL_CaptureResetStats();  /* pre-roll backlog is expected; count from here */
 
     g_rec.a_next_pts   = 0;
     g_rec.audio_enabled = 1;
@@ -345,12 +349,27 @@ static void rec_pump_audio(void) {
     }
 }
 
+/* How often the encoder thread wakes to drain the SPU capture ring when no
+ * video frame is pending. Well under the ring's ~1 s capacity. */
+#define REC_AUDIO_PUMP_MS 10
+
 static int rec_thread_main(void* unused) {
     (void)unused;
     for (;;) {
         SDL_LockMutex(g_rec.mutex);
-        while (g_rec.count == 0 && !g_rec.stop)
-            SDL_WaitCondition(g_rec.cond, g_rec.mutex);
+        /* Timed wait, not an indefinite one: the SPU fills the capture ring at
+         * 44.1 kHz of emulated time no matter how slowly video frames arrive,
+         * so parking here until the next frame lets the ring overrun and
+         * discard audio whenever rendering runs below display rate. Waking
+         * regularly keeps the drain independent of the video cadence. */
+        while (g_rec.count == 0 && !g_rec.stop) {
+            SDL_WaitConditionTimeout(g_rec.cond, g_rec.mutex, REC_AUDIO_PUMP_MS);
+            if (g_rec.count == 0 && !g_rec.stop) {
+                SDL_UnlockMutex(g_rec.mutex);
+                rec_pump_audio();
+                SDL_LockMutex(g_rec.mutex);
+            }
+        }
         if (g_rec.count == 0 && g_rec.stop) {
             SDL_UnlockMutex(g_rec.mutex);
             break;
@@ -745,6 +764,24 @@ void openpete_record_submit_frame(const uint8_t* rgba, int w, int h,
 
 /* Free everything (idempotent). Encoder thread must already be joined. */
 static void rec_teardown(void) {
+    /* The SPU capture ring discards its oldest frames when the encoder falls
+     * behind, which shortens the audio track relative to emulated time. Report
+     * it: a silently time-compressed recording is useless for timing or level
+     * work and looks identical to a good one. */
+    {
+        unsigned long long produced = 0, dropped = 0;
+        PsyX_SPUAL_CaptureStats(&produced, &dropped);
+        if (dropped) {
+            OPL_WARN_F("record",
+                       "audio capture dropped %llu of %llu pushed frames (%.2f%%) - "
+                       "recorded audio is TIME-COMPRESSED, do not use it for "
+                       "timing or level comparison",
+                       dropped, produced,
+                       100.0 * (double)dropped / (double)produced);
+        } else if (produced) {
+            OPL_INFO_F("record", "audio capture: %llu frames, 0 dropped", produced);
+        }
+    }
     if (g_rec.afifo) { av_audio_fifo_free(g_rec.afifo); g_rec.afifo = NULL; }
     if (g_rec.aframe){ av_frame_free(&g_rec.aframe); }
     if (g_rec.swr)   { swr_free(&g_rec.swr); }

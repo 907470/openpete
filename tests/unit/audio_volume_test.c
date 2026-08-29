@@ -30,6 +30,8 @@ static float s_xa_gain    = -1.0f;
 static float s_wav_gain   = -1.0f;
 
 void PsyX_XA_SetVolume(float g)      { s_xa_gain  = g; }
+/* SPU main volume: unity here so the test sees the CD-volume stage alone. */
+float PsyX_SPUAL_GetMasterVolume(void) { return 1.0f; }
 void music_override_set_gain(float g) { s_wav_gain = g; }
 
 /* Runahead speculation flag; the module skips speculative ticks. */
@@ -98,8 +100,13 @@ int main(void) {
     if (s_writes != 0) fail("an unset preset wrote guest RAM");
 
     /* ...but the music gain still follows the game's own slider, which is
-     * what makes the in-game MUSIC row audible at all. */
-    if (s_xa_gain != 1.0f || s_wav_gain != 1.0f)
+     * what makes the in-game MUSIC row audible at all. The gain is the
+     * hardware chain, not a 0..1 fader: the game derives its CD input volume
+     * as m_MusicVolume = slider << 11 and the SPU applies it as
+     * (sample * volume) >> 15, so a slider of 10 is 20480/32768 = 0.625.
+     * Treating it as 1.0 overdrives the music past unity, where it clamps at
+     * AL_MAX_GAIN and flattens the top of the slider's travel. */
+    if (s_xa_gain != 0.625f || s_wav_gain != 0.625f)
         fail("music gain did not mirror a slider of 10");
 
     /* A preset stamps the slider and every derived field. */
@@ -112,7 +119,7 @@ int main(void) {
     expect("music slider", MUSIC_SLIDER,  3);
     expect("m_MusicVolume", SPU_MUSIC_VOL, 3u << 11);
     expect("cd volume",    SPU_CD_VOLUME, (3u << 11) | (3u << 27));
-    if (s_xa_gain != 0.3f) fail("music gain did not follow the preset");
+    if (s_xa_gain != 3.0f / 16.0f) fail("music gain did not follow the preset");
 
     /* Steady state costs no writes. */
     s_writes = 0;
@@ -160,7 +167,7 @@ int main(void) {
     if (openpete_get_music_volume() != -1)
         fail("a hand-moved music slider did not release the preset");
     expect("music slider stays where the player left it", MUSIC_SLIDER, 9);
-    if (s_xa_gain != 0.9f) fail("music gain did not follow the player's edit");
+    if (s_xa_gain != 9.0f / 16.0f) fail("music gain did not follow the player's edit");
     expect("sfx preset survives a music edit", SFX_SLIDER, 7);
 
     /* A released channel stays released across the game's own reseeds. */

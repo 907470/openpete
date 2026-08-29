@@ -50,6 +50,8 @@
 /* PsyCross XA streaming source. SetVolume is the game-driven channel; the
  * forced gain (--mute) sits above it and keeps winning while it is set. */
 extern void PsyX_XA_SetVolume(float linear_gain);
+/* SPU main volume, as forwarded from SpuSetCommonAttr. */
+extern float PsyX_SPUAL_GetMasterVolume(void);
 
 /* Runahead speculation flag (openpete_fiber.h). Declared rather than
  * included: that header pulls in SDL, which would drag a window library into
@@ -159,16 +161,29 @@ static void channel_tick(CPUState* cpu, vol_channel_t* ch, int menu_open) {
 
 /* --- music slider -> OpenAL gain ----------------------------------------- */
 
-static int s_mirrored_music = -1;
+static int   s_mirrored_music = -1;
+static float s_mirrored_master = -1.0f;
 
+/* Reproduce the two hardware stages the XA stream passes through rather than
+ * treating the slider as a 0..1 fader. The game derives its CD input volume as
+ * m_MusicVolume = slider << 11, and the SPU applies both that and the main
+ * volume as (sample * volume) >> 15. CD input volume is written to the
+ * register unshifted, so full scale for it is 32768 and slider 10 is 0.625,
+ * not 1.0; scaling it to 1.0 overdrives the music and, because gains above
+ * unity clamp at AL_MAX_GAIN, flattens the top of the slider's range. The
+ * main volume factor carries its own (14-bit) scale and arrives already
+ * normalised. */
 static void music_gain_mirror(CPUState* cpu) {
     int level = (int)cpu->read_word(ADDR_MUSIC_SLIDER);
     if (level < 0)  level = 0;
     if (level > 10) level = 10;
-    if (level == s_mirrored_music) return;
+    const float master = PsyX_SPUAL_GetMasterVolume();
+    if (level == s_mirrored_music && master == s_mirrored_master) return;
     s_mirrored_music = level;
+    s_mirrored_master = master;
 
-    float gain = (float)level / 10.0f;
+    const float cd_volume = (float)(level * 2048) / 32768.0f;
+    const float gain = cd_volume * master;
     PsyX_XA_SetVolume(gain);
     music_override_set_gain(gain);
 }

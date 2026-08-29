@@ -86,6 +86,7 @@ extern "C" {
     void PsyX_XA_Pump(int maxSectors);
     int  PsyX_XA_GetCurrentSector(void);
     void PsyX_XA_SetVolume(float linear_gain);
+    void PsyX_SPUAL_SetMasterVolume(float linear_gain);
 }
 
 /* Music WAV override (core/host/) — plays assets/music/track_NN.wav in
@@ -1774,6 +1775,19 @@ void psyq_SpuInit(CPUState* cpu) {
     openpete_mods_sfx_set_fns(spyro_sfx_resolve, spyro_sfx_upload);
 }
 
+/* Music level is the product of the two hardware stages the XA stream passes
+ * through: its own CD input volume, then the SPU main volume applied to the
+ * summed mix. Both arrive via separate SpuSetCommonAttr masks, so they are
+ * tracked apart and recombined whenever either moves. */
+static float s_cdVolume      = 1.0f;
+static float s_spuMainVolume = 1.0f;
+
+static void spyro_apply_music_gain(void) {
+    const float g = s_cdVolume * s_spuMainVolume;
+    PsyX_XA_SetVolume(g);
+    music_override_set_gain(g);
+}
+
 void psyq_SpuSetCommonAttr(CPUState* cpu) {
     SpuCommonAttr* attr = (SpuCommonAttr*)PTR(cpu->a0);
     SpuSetCommonAttr(attr);
@@ -1782,13 +1796,27 @@ void psyq_SpuSetCommonAttr(CPUState* cpu) {
      * gain (avg the two channels for a single mono gain). The WAV
      * override gets the same value so the in-game music slider and
      * track-transition fades cover both paths. */
+    /* SPU volumes are 15-bit: hardware mixes as (sample * volume) >> 15, so
+     * full scale is 32768. Main volume applies to the summed mix, and CD/XA
+     * input is summed *before* it, so the music gain carries both stages. */
+    if (attr && (attr->mask & (SPU_COMMON_MVOLL | SPU_COMMON_MVOLR))) {
+        int l = attr->mvol.left, r = attr->mvol.right;
+        if (l < 0) l = 0; if (r < 0) r = 0;
+        /* Main volume lands in a sweep-capable register whose fixed mode
+         * carries the level halved; the SPU doubles it on application, so
+         * 0x3CCC is applied as 31128 and full scale here is 16384. CD input
+         * volume below has no sweep mode and is applied as written, making
+         * it full scale at 32768 — the two are not the same scale. */
+        s_spuMainVolume = (float)((l + r) / 2) / 16384.0f;
+        PsyX_SPUAL_SetMasterVolume(s_spuMainVolume);
+        spyro_apply_music_gain();
+    }
     if (attr && (attr->mask & (SPU_COMMON_CDVOLL | SPU_COMMON_CDVOLR))) {
         int l = attr->cd.volume.left;
         int r = attr->cd.volume.right;
         if (l < 0) l = 0; if (r < 0) r = 0;
-        float g = (float)((l + r) / 2) / (float)0x3FFF;
-        PsyX_XA_SetVolume(g);
-        music_override_set_gain(g);
+        s_cdVolume = (float)((l + r) / 2) / 32768.0f;
+        spyro_apply_music_gain();
     }
 }
 
