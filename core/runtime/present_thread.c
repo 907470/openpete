@@ -68,6 +68,9 @@ static struct {
     unsigned  presents;       /* scenes that went out */
     unsigned  refused;        /* compose ran but the swapchain declined */
     unsigned  late;           /* compose instant already passed when picked */
+    int       late_run;       /* consecutive late presents */
+    int       drop_cooldown;  /* presents until another queue-drain drop may fire */
+    unsigned  late_drops;     /* staged frames dropped to drain the present queue */
     op_time_t late_ns;        /* summed lateness */
     op_time_t late_max_ns;
     op_time_t render_ema;     /* render into a stage image, per scene */
@@ -524,7 +527,33 @@ static int present_thread_main(void *unused)
         if (now - at > 1000000) {          /* >1 ms past its present instant */
             s_pt.late++; s_pt.late_ns += now - at;
             if (now - at > s_pt.late_max_ns) s_pt.late_max_ns = now - at;
-        }
+            /* Sustained lateness with newer scenes already pending is the
+             * deep-queue equilibrium, not load: after a stall (a swapchain
+             * rebuild is ~40 ms) the backlog goes out back-to-back,
+             * stacking presents with no vblank between, and a FIFO queue
+             * that deep never drains on its own — the blocking acquire
+             * then eats a whole refresh per frame, and from then on
+             * presents run a slot late in a stable alternating pattern
+             * (one a slot late, the next fired at once). Because it
+             * alternates, the detector is a leaky counter, not a
+             * consecutive run: +2 on a late present, -1 on a punctual
+             * one, so the pattern accrues while healthy jitter decays.
+             * One dropped frame shrinks the queue by one; the cooldown
+             * keeps this off a machine that is merely slow (its lateness
+             * survives any number of drops, so dropping would only shed
+             * frames it could have shown). */
+            if (s_pt.drop_cooldown > 0) s_pt.drop_cooldown--;
+            else if ((s_pt.late_run += 2) >= 16) {
+                const int64_t nt = openpete_native_scene_next_target();
+                if (nt && nt > s_staged.target) {
+                    s_staged.valid = 0;
+                    s_pt.late_drops++;
+                    s_pt.late_run = 0;
+                    s_pt.drop_cooldown = 16;
+                    continue;
+                }
+            }
+        } else if (s_pt.late_run > 0) s_pt.late_run--;
         const int kind = s_staged.kind, paired = s_staged.paired;
         const double alpha = s_staged.alpha;
         const int stage = s_staged.stage;
@@ -631,11 +660,11 @@ void openpete_present_thread_report(void)
     if (!s_pt.presents && !s_pt.refused) return;
     OPL_INFO_F("present-thread",
                "%u scene(s) presented, %u refused by the swapchain, %u render(s) refused, %u staged frame(s) discarded; "
-               "%u presented late (%.3f ms mean, %.3f ms max); render %.3f ms ema, present step %.3f ms ema; "
+               "%u presented late (%.3f ms mean, %.3f ms max), %u dropped to drain the queue; render %.3f ms ema, present step %.3f ms ema; "
                "%u drain(s), %.3f ms waited total, %.3f ms max",
                s_pt.presents, s_pt.refused, s_pt.render_refused, s_pt.discarded, s_pt.late,
                s_pt.late ? (double)s_pt.late_ns / s_pt.late / 1e6 : 0.0,
-               (double)s_pt.late_max_ns / 1e6,
+               (double)s_pt.late_max_ns / 1e6, s_pt.late_drops,
                (double)s_pt.render_ema / 1e6, (double)s_pt.present_ema / 1e6, s_pt.drains,
                (double)s_pt.drain_wait_ns / 1e6, (double)s_pt.drain_wait_max_ns / 1e6);
     if (s_pt.flips || s_pt.flip_timeouts)
