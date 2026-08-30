@@ -682,6 +682,16 @@ void openpete_pace_shed(uint8_t kind, uint16_t reason,
     pace_emit(&r);
 }
 
+void openpete_pace_cd_miss(int64_t waited_ns, uint64_t end_offset)
+{
+    if (!s_fp) return;
+    pace_rec_t r = {0};
+    r.type = OP_PACE_CD_MISS;
+    r.t_ns = op_now();
+    r.a = waited_ns; r.b = (int64_t)end_offset;
+    pace_emit(&r);
+}
+
 void openpete_pace_flip(uint64_t id, int64_t t_ns, int64_t waited_ns)
 {
     if (!s_fp) return;

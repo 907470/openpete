@@ -119,6 +119,7 @@ add_library(openpete_core STATIC
     # Unified pacing event log (--pace-log PATH) + the always-on pacing
     # census reported at the end of every run. See openpete_pace_log.h and
     # notes/plans/openpete-sim-tick-pacing-perfection.md.
+    runtime/disc_cache.c
     runtime/pace_log.c
     runtime/present_thread.c
     runtime/perf_stats.c

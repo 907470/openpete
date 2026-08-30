@@ -50,6 +50,7 @@ static const cfg_knob_t g_schema[] = {
 
     /* -------- Paths -------- */
     { "disc",             "--disc",             NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
+    { "disc_cache",       "--disc-cache",       "OPENPETE_DISC_CACHE",   CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "texpack_dir",      "--texpack-dir",      "OPENPETE_TEXPACK_DIR",  CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "mods_dir",         "--mods-dir",         "OPENPETE_MODS_DIR",     CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "mods",             "--mods",             "OPENPETE_MODS",         CFG_STRING, NULL,       NULL,       NULL,       0 },

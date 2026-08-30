@@ -322,6 +322,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "  \"pad:-leftx\"), several with an array, or none with \"none\" to unbind.\n"
         "  --keys-report    print every action, its binding and where it came from, and exit\n"
         "  --disc PATH                disc image (BIN/CUE)\n"
+        "  --disc-cache 0|1           keep the disc image resident in memory, filled by a background\n"
+        "                             loader (default 1): guest disc reads never wait on the file. 0 =\n"
+        "                             read the file per sector (A/B). Bytes identical either way.\n"
         "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields (defaults to the game's entry point)\n"
         "  --renderer MODE            display renderer: vk (native, full-window — default) | psycross (legacy GL) |\n"
         "                             ab (native|psycross side-by-side) | diff (|native - psycross| colour diff)\n"
@@ -615,6 +618,8 @@ void openpete_options_init(openpete_options_t* opts) {
      * parsed later, wins. */
     { const char* e = getenv("OPENPETE_TERRAIN_CACHE");
       opts->terrain_cache = (e && *e) ? (atoi(e) != 0) : 1; }
+    { const char* e = getenv("OPENPETE_DISC_CACHE");
+      opts->disc_cache = (e && *e) ? (atoi(e) != 0) : 1; }
     opts->lod                 = OPENPETE_LOD_ORIGINAL;  /* authentic PSX LOD band; --lod extended (a.k.a. --no-lod) for full detail at any distance */
 }
 
@@ -868,6 +873,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             i++;
         } else if (strcmp(a, "--no-lod") == 0) {
             opts->lod = OPENPETE_LOD_EXTENDED;   /* deprecated alias for --lod extended */
+        } else if (strcmp(a, "--disc-cache") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->disc_cache = atoi(v) != 0; i++;
         } else if (strcmp(a, "--terrain-cache") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->terrain_cache = atoi(v) != 0; i++;

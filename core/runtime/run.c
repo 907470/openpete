@@ -673,6 +673,7 @@ static int load_cpu_seed(CPUState* cpu, const char* path) {
 extern void PsyX_Initialise(char* windowName, int screenWidth,
                             int screenHeight, int fullscreen, int startHidden);
 extern void PsyX_Shutdown(void);
+#include "openpete_disc_cache.h"
 extern void PsyX_CDFS_Init(const char* imageFileName, int track, int sectorSize);
 extern char PsyX_BeginScene(void);
 extern void PsyX_EndScene(void);
@@ -924,8 +925,10 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
     if (opts->disc_path) {
         char* bin = derive_bin_path(opts->disc_path);
         if (bin) {
-            OPL_INFO_F("boot", "PsyX_CDFS_Init: %s", bin);
-            PsyX_CDFS_Init(bin, /*track=*/0, /*sectorSize=*/0);
+            if (!(opts->disc_cache && openpete_disc_cache_attach(bin))) {
+                OPL_INFO_F("boot", "PsyX_CDFS_Init: %s", bin);
+                PsyX_CDFS_Init(bin, /*track=*/0, /*sectorSize=*/0);
+            }
             free(bin);
         } else {
             OPL_WARN_F("boot", "could not derive .bin path from --disc=%s",
@@ -1955,8 +1958,10 @@ static int run_host_init(const openpete_options_t* opts) {
     if (opts->disc_path) {
         char* bin = derive_bin_path(opts->disc_path);
         if (bin) {
-            OPL_INFO_F("boot", "PsyX_CDFS_Init: %s", bin);
-            PsyX_CDFS_Init(bin, /*track=*/0, /*sectorSize=*/0);
+            if (!(opts->disc_cache && openpete_disc_cache_attach(bin))) {
+                OPL_INFO_F("boot", "PsyX_CDFS_Init: %s", bin);
+                PsyX_CDFS_Init(bin, /*track=*/0, /*sectorSize=*/0);
+            }
             free(bin);
         } else {
             OPL_WARN_F("boot", "could not derive .bin path from --disc=%s",
@@ -5021,6 +5026,12 @@ static int run_host_loop(const openpete_options_t* opts) {
     openpete_present_thread_report();
     eager_report();
 
+    {   uint64_t m; int64_t w, ln; size_t b;
+        openpete_disc_cache_census(&m, &w, &b, &ln);
+        if (openpete_disc_cache_active())
+            OPL_INFO_F("cd", "disc cache: %zu MB, loaded in %.2f s, %llu miss(es), %.2f ms blocked",
+                       b >> 20, (double)ln / 1e9, (unsigned long long)m, (double)w / 1e6);
+        openpete_disc_cache_shutdown(); }
     /* Report before PsyX_Shutdown: the instrument reads PsyCross pad state. */
     openpete_host_input_parity_report();
 
@@ -5179,6 +5190,7 @@ static int run_split_threaded(const openpete_options_t* opts)
      * These run here because they own main-thread resources (see the matching
      * comment in run_host_loop). */
     openpete_native_render_shutdown();
+    openpete_disc_cache_shutdown();
     PsyX_Shutdown();
     return s_worker_rc;
 }

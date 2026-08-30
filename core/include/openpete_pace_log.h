@@ -65,7 +65,8 @@ enum {
     OP_PACE_WAKE        = 8,
     OP_PACE_PRESENT_SPAN = 9,
     OP_PACE_PAD_READ    = 10,
-    OP_PACE_FLIP        = 11
+    OP_PACE_FLIP        = 11,
+    OP_PACE_CD_MISS     = 12   /* a disc read blocked on the background loader: a = waited ns, b = end offset */
 };
 
 /* VBL flags. */
@@ -220,6 +221,8 @@ void openpete_pace_shed(uint8_t kind, uint16_t reason,
  * `behind_ns` behind. Feeds both the record stream and the census. The
  * analyzer, not the runtime, attributes a cause. */
 void openpete_pace_slip(uint8_t kind, int64_t periods, int64_t behind_ns);
+/* A guest disc read that blocked on the in-memory image's loader. */
+void openpete_pace_cd_miss(int64_t waited_ns, uint64_t end_offset);
 
 /* A pad edge, from the always-on input producer.
  *

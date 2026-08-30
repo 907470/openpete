@@ -14,6 +14,7 @@
 #include "openpete_knobs.h"
 #include "openpete_workpool.h"
 #include "openpete_terrain_cache.h"
+#include "openpete_disc_cache.h"
 #include "openpete.h"
 #include "openpete_config.h"
 #include "config_schema.h"
@@ -176,6 +177,10 @@ static double rquant_get(const knob_desc_t *k) {
 static double exthreads_get(const knob_desc_t *k) {
     (void)k;
     return openpete_workpool_threads();   /* resolved count (auto expanded) */
+}
+static double disccache_get(const knob_desc_t *k) {
+    (void)k;
+    return openpete_disc_cache_active() ? 1 : 0;
 }
 static double tercache_get(const knob_desc_t *k) {
     (void)k;
@@ -665,6 +670,16 @@ static const knob_desc_t g_builtin[] = {
       "BIN/CUE the game boots from.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, path_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "disc_cache", "Disc cache", "Paths", "--disc-cache", "OPENPETE_DISC_CACHE",
+      "Disc image resident in memory (default on): guest disc reads are a "
+      "memcpy from a host array a background loader fills at boot, so a "
+      "level load never waits on the file (a read over a network share "
+      "costs tens of ms per burst and lands as a late tick). Shows whether "
+      "the cache attached. 0 = read the file per sector (A/B). Boot-latched; "
+      "bytes identical either way.",
+      KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      disccache_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "texpack_dir", "Texture pack dir", "Paths", "--texpack-dir", "OPENPETE_TEXPACK_DIR",
       "HD texture-replacement PNG directory (scanned once at renderer init).",

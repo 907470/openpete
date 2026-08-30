@@ -255,6 +255,12 @@ typedef struct openpete_options {
      * notes/plans/openpete-terrain-gpu-cache.md. */
     int         terrain_cache;
 
+    /* Disc image resident in memory (default on): PsyCross reads the .bin
+     * from a host array filled by a background loader instead of fread on
+     * the sim thread. --disc-cache 0 / OPENPETE_DISC_CACHE=0 = the file
+     * path, for A/B. Display/timing-only; bytes identical. */
+    int         disc_cache;
+
     /* Screenshot. Pass `--screenshot-on-frame N[,N2,...]` to fire on each
      * listed frame; the path template can contain `{n}` to substitute the
      * frame number per shot. Output extension `.png` writes PNG via

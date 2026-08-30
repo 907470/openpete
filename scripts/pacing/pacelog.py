@@ -28,12 +28,12 @@ RECORD_BYTES = 64
 RECORD_LAYOUT = {48: ("<BBHIqqqqq", 1), 64: ("<BBHIqqqqqqq", 2)}
 
 (VBL, PRESENT, SHED, SLIP, INPUT_EDGE, WINDOW, CLOCKSAMPLE, WAKE,
- PRESENT_SPAN, PAD_READ, FLIP) = range(1, 12)
+ PRESENT_SPAN, PAD_READ, FLIP, CD_MISS) = range(1, 13)
 TYPE_NAMES = {VBL: "VBL", PRESENT: "PRESENT", SHED: "SHED", SLIP: "SLIP",
               INPUT_EDGE: "INPUT_EDGE", WINDOW: "WINDOW",
               CLOCKSAMPLE: "CLOCKSAMPLE", WAKE: "WAKE",
               PRESENT_SPAN: "PRESENT_SPAN", PAD_READ: "PAD_READ",
-              FLIP: "FLIP"}
+              FLIP: "FLIP", CD_MISS: "CD_MISS"}
 
 # PRESENT / SHED / PRESENT_SPAN kinds, carried in `flags`.
 # REPEAT is the same image presented again (the present thread re-blitting the
