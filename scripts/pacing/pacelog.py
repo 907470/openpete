@@ -293,7 +293,12 @@ class Log:
     # reaches it, so two logs differing in them are two regimes.
     REGIME_FIELDS = ("present_mode", "render_fps", "pacer_slack_ns",
                      "virtual_clock", "thread_split", "input_legacy",
-                     "headless", "runahead")
+                     "headless", "runahead", "eager", "eager_lattice")
+
+    def eager(self):
+        """Eager production: presents and flip waits on their own thread, so
+        FLIP records cover the tick boundary too. Absent in older logs."""
+        return self.env.get("eager", "0") == "1"
 
     def machine_key(self):
         """Identity of the machine. Baselines are filed under this."""

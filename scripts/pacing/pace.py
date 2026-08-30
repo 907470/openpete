@@ -764,15 +764,23 @@ def cmd_cadence(a):
                   f"time) p50 {ps.percentile(errs,50)/1e6:+.2f} ms "
                   f"p99 {ps.percentile([abs(e) for e in errs],99)/1e6:.2f} ms "
                   f"max {max(abs(e) for e in errs)/1e6:.2f} ms")
-            # What this cannot see, said plainly. The wait only runs while the
-            # loop is idle, so a flip that happens while the sim thread is
-            # executing a tick is never observed — which is exactly the
-            # tick-boundary hole. These numbers describe mid-tick cadence, the
-            # part that was already healthy. Observing the other part needs the
-            # present (and the wait) off the sim thread.
-            print("  (display-side covers MID-TICK only: the loop is executing "
-                  "a tick when the\n   boundary frame flips, so that one is "
-                  "structurally unobservable here)")
+            # What this cannot see, said plainly. Inline, the wait only runs
+            # while the loop is idle, so a flip that happens while the sim
+            # thread is executing a tick is never observed — which is exactly
+            # the tick-boundary hole; those numbers describe mid-tick cadence,
+            # the part that was already healthy. Under eager production the
+            # present thread does the waiting and observes the boundary too,
+            # though not every flip: after a wait times out the next few
+            # presents go unwaited, so a run of misses is under-sampled here
+            # and the submit-side gap figures above are the ones to read.
+            if log.eager():
+                print("  (display-side covers the tick boundary too; a missed "
+                      "flip suspends the\n   wait for a few presents, so runs "
+                      "of misses are UNDER-sampled)")
+            else:
+                print("  (display-side covers MID-TICK only: the loop is "
+                      "executing a tick when the\n   boundary frame flips, so "
+                      "that one is structurally unobservable here)")
     elif log.of(pacelog.FLIP):
         print("  DISPLAY: too few flip records to characterise")
 

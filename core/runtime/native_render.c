@@ -2599,6 +2599,9 @@ uint32_t openpete_native_render_swapchain_images(void)
 /* Bounded wait for the last queued present to reach the display. Forwarded
  * rather than exposing the device, and callable only from the presenting
  * thread — see rhi_present_wait. */
+int openpete_native_render_present_outstanding(void) {
+    return s_nr.dev ? rhi_present_outstanding(s_nr.dev) : 0;
+}
 int openpete_native_render_present_wait(uint64_t timeout_ns, uint64_t *out_id,
                                         uint64_t *out_waited_ns)
 {

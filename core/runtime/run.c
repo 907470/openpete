@@ -1091,6 +1091,13 @@ static void eager_init(void)
     s_eager.lag_pin = (g && *g) ? (op_time_t)atoll(g) * 1000 : 0;
 }
 
+/* Next lattice instant at or after `t`: v(n) = base + n * period. */
+static op_time_t eager_lattice_ceil(op_time_t t, int64_t base, double period)
+{
+    const double n = ceil((double)(t - base) / period - 1e-6);
+    return base + (op_time_t)(n * period + 0.5);
+}
+
 static op_time_t eager_tail_cost(void)
 {
     return s_eager.cost_n >= EAGER_COST_WARMUP
@@ -1100,6 +1107,11 @@ static op_time_t eager_tail_cost(void)
 /* Plan the span that starts now: grid instants from `first` (the next slot
  * on the render grid) to `span_end` (the moment the next tick lands, where
  * alpha reaches 1). */
+/* Room for the canonical scene between its plan and its vblank: production
+ * (~0.25 ms), compose (0.3 ms on a light scene, 1.2 ms on a 48k-prim vista)
+ * and the driver's own lead to the flip (a submit 0.33 ms before a vblank
+ * still made it; one 0.13 ms before did not). */
+#define EAGER_PUBLISH_LEAD_NS 2000000
 static void eager_plan(op_time_t now, op_time_t first, op_time_t period, op_time_t span_end)
 {
     /* Close the previous span's books first. */
@@ -1123,8 +1135,28 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period, op_time
      * (480 on a 60 Hz panel): a scene per grid slot would be produced 8x
      * faster than any can be shown and superseded unpresented. Plan on the
      * coarser of the two grids, phase-preserving. */
+    int64_t lat_base = 0; double lat_period = 0.0;
+    const int on_lattice = openpete_native_display_vsync() &&
+                           openpete_present_thread_lattice(&lat_base, &lat_period);
     {
         const float hz = openpete_native_display_refresh_hz();
+        if (on_lattice) {
+            /* The present thread has fitted the display's vblank lattice
+             * from observed flips: targets go ON it, a whole number of
+             * refreshes apart, so each target is a vblank and the
+             * animation instant (target - lag) is exact. The nominal mode
+             * rate is not good enough for this -- it was 2e-5 off the
+             * measured one, a full slot of phase every ~50 s. */
+            const op_time_t lp = (op_time_t)(lat_period + 0.5);
+            op_time_t k = (period + lp / 2) / lp;             /* refreshes per render slot */
+            if (k < 1) k = 1;
+            period = (op_time_t)(lat_period * (double)k + 0.5);
+            /* The canonical scene is produced right after this plan and
+             * shown at once; its vblank must leave room for that. */
+            op_time_t f = now + EAGER_PUBLISH_LEAD_NS;
+            if (f < first) f = first;
+            first = eager_lattice_ceil(f, lat_base, lat_period);
+        } else
         if (hz > 1.0f && openpete_native_display_vsync()) {
             const op_time_t rp = (op_time_t)(1e9 / hz);
             if (rp > period + period / 8) {
@@ -1154,6 +1186,8 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period, op_time
         op_time_t f = s_eager.last_target + period;
         /* the old span's grid, unless it drifted a whole slot from ours */
         if (f - first > period) f = first + ((f - first) / period) * period;
+        /* re-snapped: the lattice fit moves by microseconds between spans */
+        if (on_lattice) f = eager_lattice_ceil(f - period / 2, lat_base, lat_period);
         first = f;
     }
     op_time_t slots[EAGER_MAX_TARGETS]; int ns = 0;

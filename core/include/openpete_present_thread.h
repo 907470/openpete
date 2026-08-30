@@ -13,6 +13,9 @@ extern "C" {
 /* OPENPETE_EAGER=1 enables eager production and the present thread.
  * Off by default until the A/B has priced it. */
 int  openpete_present_thread_enabled(void);
+/* OPENPETE_EAGER_LATTICE=1: targets and composes on the display's fitted
+ * vblank lattice (implies present timing). Off by default. */
+int  openpete_present_thread_lattice_enabled(void);
 int  openpete_present_thread_start(void);
 void openpete_present_thread_stop(void);
 
@@ -29,6 +32,11 @@ void openpete_present_thread_kick(void);
 /* Per-present callback on the present thread (frame-time log, profiler). */
 typedef void (*openpete_present_thread_cb)(void *ctx, int kind, double alpha, int paired);
 void openpete_present_thread_set_callback(openpete_present_thread_cb cb, void *ctx);
+
+/* The display's vblank lattice, v(n) = base + n * period, fitted from
+ * observed flips; 1 when locked (vsynced swapchain, present timing on, enough
+ * flips seen). The planner puts eager targets on it so a target is a vblank. */
+int      openpete_present_thread_lattice(int64_t *base_ns, double *period_ns);
 
 void     openpete_present_thread_report(void);
 unsigned openpete_present_thread_presents(void);

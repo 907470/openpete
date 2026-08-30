@@ -3,6 +3,7 @@
  */
 
 #include "openpete_pace_log.h"
+#include "openpete_present_thread.h"
 #include "openpete_time.h"
 #include "openpete_host_input.h"
 #include "openpete_log.h"
@@ -309,7 +310,13 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
         "headless=%d\n"
         "input_pulse=%d\n"
         "input_pulse_bit=0x%04X\n"
-        "input_pulse_hold_us=%d\n",
+        "input_pulse_hold_us=%d\n"
+        /* Eager production moves every present, and every flip wait, onto a
+         * thread of their own: a FLIP record then covers the tick boundary
+         * as well as mid-tick, which the analyzer must know to scope its
+         * display-side statements. */
+        "eager=%d\n"
+        "eager_lattice=%d\n",
         OPENPETE_BUILD_ID,
         SDL_GetPlatform(),
         cpu,
@@ -326,7 +333,9 @@ void openpete_pace_env_build(char* buf, unsigned buf_bytes,
         thread_split, input_legacy, headless,
         openpete_host_input_pulse_count(),
         openpete_host_input_pulse_bit(),
-        openpete_host_input_pulse_hold_us());
+        openpete_host_input_pulse_hold_us(),
+        openpete_present_thread_enabled(),
+        openpete_present_thread_lattice_enabled());
 }
 
 /* ------------------------------------------------------------------ */

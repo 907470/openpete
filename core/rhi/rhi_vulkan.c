@@ -678,8 +678,16 @@ static bool pick_physical_and_device(rhi_device *dev)
      * with a normal one. */
     const char *pt_env = getenv("OPENPETE_PRESENT_TIMING");
     const char *fl_env = getenv("OPENPETE_PACE_FLIP_LOG");
-    const bool pt_want = (pt_env && *pt_env && *pt_env != '0') ||
-                         (fl_env && *fl_env && *fl_env != '0');
+    const char *lt_env = getenv("OPENPETE_EAGER_LATTICE");
+    /* OPENPETE_EAGER_LATTICE implies it too: there the presenter is its own
+     * thread, the sim thread never touches the queue, and the flips are the
+     * pacing SOURCE (the present thread fits the display's vblank lattice
+     * from them). OPENPETE_PRESENT_TIMING=0 declines it explicitly. */
+    const bool pt_declined = pt_env && *pt_env == '0';
+    const bool pt_want = !pt_declined &&
+                         ((pt_env && *pt_env && *pt_env != '0') ||
+                          (fl_env && *fl_env && *fl_env != '0') ||
+                          (lt_env && *lt_env && *lt_env != '0'));
     RHI_LOG("display timing: present_id %s, present_wait %s -> %s\n",
             have_present_id ? "available" : "absent",
             have_present_wait ? "available" : "absent",
@@ -2209,12 +2217,28 @@ int rhi_present_timing_supported(const rhi_device *dev)
     return dev && dev->has_present_timing ? 1 : 0;
 }
 
+int rhi_present_outstanding(const rhi_device *dev)
+{
+    if (!dev || !dev->has_present_timing || !dev->swapchain) return 0;
+    return (int)(dev->present_id_submitted - dev->present_id_seen);
+}
+
 int rhi_present_wait(rhi_device *dev, uint64_t timeout_ns, uint64_t *out_id,
                      uint64_t *out_waited_ns)
 {
     if (!dev || !dev->has_present_timing || !dev->swapchain) return -1;
     if (dev->needs_recreate) return -1;
 
+    /* A timeout under about a millisecond is answered VK_SUCCESS at once for a
+     * present that has NOT been displayed (measured: every first ask after a
+     * present, at 0, 1 and 50 us). This function is therefore only called
+     * with millisecond-scale timeouts, and never as a poll. */
+    /* Confirm ids IN ORDER, oldest first, even on a dedicated presenter that
+     * only ever wants the newest: a wait issued on the newest id while an
+     * older one was still unconfirmed came back with 0.5 ms-quantised return
+     * times (residual to the vblank lattice ~160 us against ~20 us), every
+     * time, on the same driver. Confirming the older ids first -- each an
+     * instant return -- keeps the wait that matters on its event path. */
     /* Confirm ids in order, and keep going while they come back INSTANTLY.
      *
      * Waiting on the newest present is useless — under FIFO it is one to three
@@ -2230,7 +2254,7 @@ int rhi_present_wait(rhi_device *dev, uint64_t timeout_ns, uint64_t *out_id,
      * time means anything. The drain is bounded so a long backlog cannot turn
      * one measurement into unbounded work on the sim thread. */
     /* Small: every call costs a driver round-trip even when the id is already
-     * signalled, and this runs on the sim thread. */
+     * signalled, and inline (non-eager) this runs on the sim thread. */
     enum { RHI_FLIP_DRAIN_MAX = 8 };
     const Uint64 t_start = SDL_GetTicksNS();
     for (int i = 0; i < RHI_FLIP_DRAIN_MAX; i++) {

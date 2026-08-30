@@ -71,6 +71,7 @@ void openpete_native_scene_sig_report(int canonical);
 /* Wait (up to timeout_ns) for the last queued present to be DISPLAYED.
  * 1 = displayed, 0 = timed out, -1 = unsupported / nothing outstanding.
  * Presenting-thread only. */
+int openpete_native_render_present_outstanding(void);
 int openpete_native_render_present_wait(uint64_t timeout_ns, uint64_t *out_id,
                                         uint64_t *out_waited_ns);
 

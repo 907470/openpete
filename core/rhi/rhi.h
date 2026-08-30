@@ -153,6 +153,9 @@ void rhi_end_frame(rhi_device *dev);
 int  rhi_present_timing_supported(const rhi_device *dev);
 int  rhi_present_wait(rhi_device *dev, uint64_t timeout_ns, uint64_t *out_id,
                       uint64_t *out_waited_ns);
+/* Presents queued but not yet confirmed displayed by rhi_present_wait (0
+ * without present timing). Same thread rule as rhi_present_wait. */
+int  rhi_present_outstanding(const rhi_device *dev);
 
 void rhi_notify_resize(rhi_device *dev);
 /* Same, for an app-driven (discrete) size change such as a fullscreen toggle:
