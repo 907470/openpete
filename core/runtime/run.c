@@ -3300,6 +3300,17 @@ static int run_host_loop(const openpete_options_t* opts) {
              * key for it and ships unbound so nothing changes by default. */
             bool alt_enter = openpete_keymap_scancode_down(SDL_SCANCODE_RETURN) &&
                              (openpete_host_input_modstate() & SDL_KMOD_ALT) != 0;
+            /* OPENPETE_FS_TOGGLE_AT_VBL=n: toggle fullscreen once when the VBL
+             * counter reaches n — the fullscreen transition, reproducible
+             * from a harness. Diagnostic only. */
+            {
+                static long s_fs_at = -2;
+                if (s_fs_at == -2) { const char *e = getenv("OPENPETE_FS_TOGGLE_AT_VBL"); s_fs_at = (e && *e) ? atol(e) : -1; }
+                if (s_fs_at >= 0 && (long)openpete_frame >= s_fs_at) {
+                    g_native_fs_toggle_request = 1; s_fs_at = -1;
+                    OPL_INFO_F("native", "fullscreen toggle requested at VBL %u", openpete_frame);
+                }
+            }
             if ((alt_enter && !prev_alt_enter) ||
                 openpete_key_pressed(OPK_FULLSCREEN) ||
                 g_native_fs_toggle_request) {
@@ -5060,7 +5071,9 @@ static int run_split_threaded(const openpete_options_t* opts)
          * a binding or Alt+Enter) and main performs the SDL call. */
         if (g_native_fs_toggle_request) {
             g_native_fs_toggle_request = 0;
+            OPL_INFO_F("native", "%s", "fullscreen toggle: main performing");
             openpete_native_toggle_fullscreen();
+            OPL_INFO_F("native", "%s", "fullscreen toggle: main done");
         }
     }
 

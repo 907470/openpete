@@ -9173,44 +9173,6 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     truescope_apply_pending();
 
 
-    /* Detect window-size changes WITHOUT polling SDL events (the host loop
-     * owns the event queue, and stealing events would starve PsyCross input). */
-    int pw = 0, ph = 0;
-    if (SDL_GetWindowSizeInPixels(s_nr.window, &pw, &ph) && pw > 0 && ph > 0 &&
-        (pw != s_nr.win_w || ph != s_nr.win_h)) {
-        /* Wait for the size to SETTLE before adopting it. A live resize walks
-         * the width one pixel at a time, and adopting each step rebuilds the
-         * SSAA scene target and the depth pre-pass every frame — dozens of
-         * full teardowns per drag. Each is expensive enough to cost the sim a
-         * tick, and the presenting thread is the sim thread. Render at the old
-         * size until the user pauses, then rebuild once. */
-        Uint64 now_ns = SDL_GetTicksNS();
-        bool discrete = s_nr.resize_immediate_at_ns &&
-                        now_ns - s_nr.resize_immediate_at_ns <
-                            NR_RESIZE_IMMEDIATE_GRACE_NS;
-        if (discrete) {
-            /* How long the display was frozen for, in one number: both settle
-             * windows used to run in series here, at 150 ms each. */
-            OPL_INFO_F("native", "fullscreen: %dx%d adopted %.1f ms after the "
-                       "toggle", pw, ph,
-                       (double)(now_ns - s_nr.resize_immediate_at_ns) / 1e6);
-            s_nr.resize_immediate_at_ns = 0;
-            s_nr.win_w = s_nr.pending_w = pw;
-            s_nr.win_h = s_nr.pending_h = ph;
-            /* Tell the RHI it is discrete too, or its own settle window runs
-             * in series with this one and the two sum. */
-            rhi_notify_resize_immediate(s_nr.dev);
-        } else if (pw != s_nr.pending_w || ph != s_nr.pending_h) {
-            s_nr.pending_w = pw;
-            s_nr.pending_h = ph;
-            s_nr.pending_since_ns = now_ns;
-        } else if (now_ns - s_nr.pending_since_ns >= NR_RESIZE_SETTLE_NS) {
-            s_nr.win_w = pw;
-            s_nr.win_h = ph;
-            rhi_notify_resize(s_nr.dev);
-        }
-    }
-
     /* Mirror VRAM + read the reference back BEFORE opening our frame: these do
      * their own one-shot GPU submits, kept clear of our render pass. Called
      * UNCONDITIONALLY: sync_reference_texture self-no-ops when PsyCross hasn't
@@ -9258,6 +9220,45 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
 {
     s_last_frame_presented = 0;
     ps_apply_geometry();
+    /* Detect window-size changes WITHOUT polling SDL events (the host loop
+     * owns the event queue, and stealing events would starve PsyCross input). */
+    int pw = 0, ph = 0;
+    if (SDL_GetWindowSizeInPixels(s_nr.window, &pw, &ph) && pw > 0 && ph > 0 &&
+        (pw != s_nr.win_w || ph != s_nr.win_h)) {
+        /* Wait for the size to SETTLE before adopting it. A live resize walks
+         * the width one pixel at a time, and adopting each step rebuilds the
+         * SSAA scene target and the depth pre-pass every frame — dozens of
+         * full teardowns per drag. Each is expensive enough to cost the sim a
+         * tick, and the presenting thread may be the sim thread. Render at the old
+         * size until the user pauses, then rebuild once. */
+        Uint64 now_ns = SDL_GetTicksNS();
+        bool discrete = s_nr.resize_immediate_at_ns &&
+                        now_ns - s_nr.resize_immediate_at_ns <
+                            NR_RESIZE_IMMEDIATE_GRACE_NS;
+        if (discrete) {
+            /* How long the display was frozen for, in one number: both settle
+             * windows used to run in series here, at 150 ms each. */
+            OPL_INFO_F("native", "fullscreen: %dx%d adopted %.1f ms after the "
+                       "toggle", pw, ph,
+                       (double)(now_ns - s_nr.resize_immediate_at_ns) / 1e6);
+            s_nr.resize_immediate_at_ns = 0;
+            s_nr.win_w = s_nr.pending_w = pw;
+            s_nr.win_h = s_nr.pending_h = ph;
+            /* Tell the RHI it is discrete too, or its own settle window runs
+             * in series with this one and the two sum. */
+            rhi_notify_resize_immediate(s_nr.dev);
+        } else if (pw != s_nr.pending_w || ph != s_nr.pending_h) {
+            s_nr.pending_w = pw;
+            s_nr.pending_h = ph;
+            s_nr.pending_since_ns = now_ns;
+        } else if (now_ns - s_nr.pending_since_ns >= NR_RESIZE_SETTLE_NS) {
+            s_nr.win_w = pw;
+            s_nr.win_h = ph;
+            rhi_notify_resize(s_nr.dev);
+        }
+    }
+
+
     /* Rolling 0.5s FPS window for the overlay. Counts actual presents on
      * whichever thread makes them (inline, or the present thread under
      * eager production), so it reflects the true on-screen present rate. */
