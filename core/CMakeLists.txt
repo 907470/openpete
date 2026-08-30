@@ -37,6 +37,11 @@ add_library(openpete_core STATIC
     # the pump and the sim are headed for different threads. See
     # openpete_host_input.h.
     runtime/host_input.c
+    # Controller vibration. rumble_curve.c is the measured actuator
+    # curve, kept SDL-free so the unit test can link it alone; host_rumble.c is
+    # the registration / per-tick sample / per-pump apply seam.
+    runtime/rumble_curve.c
+    runtime/host_rumble.c
     runtime/subtick_view.c
     runtime/screenshot.c
     runtime/run.c

@@ -67,6 +67,15 @@ import sys
 import tempfile
 from pathlib import Path
 
+# Unattended launcher: silence controller vibration for every run this script
+# starts. Vibration ships on by default, which is right for a player and wrong
+# for a machine-driven run — nobody is holding the pad, and the buzzing shows
+# up in no log, so it would never surface on its own. Set in the environment
+# rather than at each invocation because this script builds its argument list
+# in more than one place, and a flag appended to the wrong one is a silent
+# miss. (scripts/fences/rumble_guard.py enforces this.)
+os.environ.setdefault("OPENPETE_VIBRATION", "0")
+
 ROOT = Path(__file__).resolve().parent.parent
 EXE = ROOT / "build" / "linux-release" / "games" / "spyro-1" / "openpete-spyro1"
 DISC = ROOT / "games" / "spyro-1" / "spyro-1" / "build" / "SCUS-94228.cue"

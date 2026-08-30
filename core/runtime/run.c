@@ -9,6 +9,7 @@
 #include "openpete_fiber.h"
 #include "openpete_log.h"
 #include "openpete_host_input.h"
+#include "openpete_rumble.h"
 #include "openpete_psx.h"
 #include "openpete_discontinuity.h"
 #include "openpete_recomp_module.h"
@@ -301,6 +302,11 @@ static void openpete_pump_events(void) {
         if (openpete_handle_event(&ev))
             PsyX_Sys_HandleEvent(&ev);
     }
+    /* Actuators are driven from here because this thread owns the SDL gamepad
+     * handles: PsyCross opens and closes them in the controller-added /
+     * -removed handlers just above, so applying on any other thread would race
+     * a close. It also puts the focus gate where focus is knowable. */
+    openpete_rumble_apply();
 }
 
 /* Handle one dequeued event. Returns true to pass it on to PsyCross, false to
@@ -1647,6 +1653,13 @@ int  openpete_get_sfx_volume(void)    { return s_sfx_volume; }
 void openpete_set_music_volume(int v) { s_music_volume = clamp_volume(v); }
 int  openpete_get_music_volume(void)  { return s_music_volume; }
 
+/* --vibration. Unlike the sliders this one has two halves: the guest enable
+ * flag (stamped by the per-game feature on its tick hook) and the host motor
+ * amplitude (applied on the pump thread). Both read the same request, so a
+ * dev-overlay edit moves them together. */
+void openpete_set_vibration(int v) { openpete_rumble_set_strength(clamp_volume(v)); }
+int  openpete_get_vibration(void)  { return openpete_rumble_get_strength(); }
+
 int openpete_get_render_fps(void) {
     return s_render_fps;
 }
@@ -1668,6 +1681,36 @@ static int run_host_init(const openpete_options_t* opts) {
      * from the live getters during renderer init, which happens first. */
     openpete_set_sfx_volume(opts->sfx_volume);
     openpete_set_music_volume(opts->music_volume);
+
+    /* --vibration: the host-side strength (0..10, -1 = parity), plus the
+     * context gates. Headless is a refusal rather than a default — a run with
+     * no window has no player at the desk, and every gate battery, capture and
+     * scripted launch is one.
+     *
+     * Installing the actuator-registration hook is what moves the per-vsync
+     * half of libpad's PadSetAct contract onto the host; left uninstalled
+     * (the OPENPETE_INPUT_LEGACY A/B) PsyCross keeps its historical one-shot
+     * behaviour, which is the "before" side of the vibration A/B. */
+    openpete_set_vibration(opts->vibration);
+    openpete_rumble_set_headless(opts->headless ? 1 : 0);
+    {
+        /* OPENPETE_RUMBLE_LEGACY=1 leaves the hook uninstalled, so PadSetAct
+         * keeps PsyCross's historical one-shot behaviour. That is the "before"
+         * side of the vibration A/B, and it is deliberately its OWN knob
+         * rather than a lean on OPENPETE_INPUT_LEGACY: the input-legacy path
+         * also moves pumping and decode back to PsyCross, which changes
+         * several things at once. An A/B that moves more than one variable
+         * cannot attribute what it measures. */
+        const char* e = getenv("OPENPETE_RUMBLE_LEGACY");
+        const int rumble_legacy = (e && *e && *e != '0');
+        if (!openpete_host_input_legacy() && !rumble_legacy)
+            g_PsyX_Pad_ActuatorRegister = openpete_rumble_register;
+        else
+            OPL_INFO_F("rumble", "actuator registration hook NOT installed "
+                                 "(%s) — PadSetAct keeps its one-shot behaviour",
+                       rumble_legacy ? "OPENPETE_RUMBLE_LEGACY"
+                                     : "OPENPETE_INPUT_LEGACY");
+    }
 
     uint8_t* bytes = NULL;
     size_t   len   = 0;
@@ -3226,6 +3269,10 @@ static int run_host_loop(const openpete_options_t* opts) {
                     extern int PsyX_SPUAL_SetMute(int on_off);
                     PsyX_SPUAL_SetMute(g_paused ? 1 : openpete_get_mute());
                 }
+                /* A paused game is not producing actuator bytes, but the last
+                 * pair it published would keep being re-issued; silence the
+                 * motors for the same reason the audio mutes. */
+                openpete_rumble_set_paused(g_paused ? 1 : 0);
                 OPL_INFO_F("frame-step", "%s at openpete_frame=%u",
                            g_paused ? "paused" : "resumed", openpete_frame);
             }
@@ -3528,6 +3575,15 @@ static int run_host_loop(const openpete_options_t* opts) {
             }
             pace_exec_end_ns = op_now();
             ticked_this_iter = (openpete_frame != frame_before_yield);
+
+            /* Sample the actuator buffer the tick just wrote. Here, rather
+             * than beside the pad latch above, because the guest fills that
+             * buffer inside its own PadVSync: reading before the switch would
+             * ship the previous tick's bytes and put a whole VBL of avoidable
+             * latency on every rumble. Before the runahead speculation below,
+             * so only the committed timeline can reach a motor. */
+            if (ticked_this_iter)
+                openpete_rumble_sample();
             {
                 /* What this VBL cost on this thread. A VBL that queued no
                  * draw is the update VBL, which the eager planner subtracts
@@ -5034,6 +5090,41 @@ static int run_host_loop(const openpete_options_t* opts) {
         openpete_disc_cache_shutdown(); }
     /* Report before PsyX_Shutdown: the instrument reads PsyCross pad state. */
     openpete_host_input_parity_report();
+
+    /* Vibration census. Emitted unconditionally because the numbers only mean
+     * something together, and every one of them is a zero in some legitimate
+     * configuration:
+     *
+     *   registered/nonzero  the diagnosis. libpad's PadSetAct is a
+     *                       registration, so the expected reading is a small
+     *                       number of calls all carrying {0,0} — a NON-zero
+     *                       registration would mean the game got its buffer
+     *                       filled before handing it over, and the one-shot
+     *                       reading of PadSetAct was not the whole story.
+     *   commands            SDL rumble calls issued. Zero is correct headless,
+     *                       unfocused, at --vibration 0, or with no pad.
+     *   recorder            the virtual-pad oracle: `live` says the self-probe
+     *                       arrived, and without that a zero motor count is
+     *                       indistinguishable from a recorder that was never
+     *                       wired. Never read the counts without it. */
+    {
+        uint16_t low = 0, high = 0;
+        openpete_rumble_last_pair(&low, &high);
+        OPL_INFO_F("rumble",
+                   "census: PadSetAct %u call(s), %u carrying non-zero bytes; "
+                   "%u motor command(s) issued, last pair {low %u, high %u}",
+                   openpete_rumble_register_calls(),
+                   openpete_rumble_register_nonzero(),
+                   openpete_rumble_commands(), (unsigned)low, (unsigned)high);
+        if (openpete_host_input_vpad_rumble_calls() ||
+            openpete_host_input_vpad_rumble_live()) {
+            OPL_INFO_F("rumble",
+                       "recorder: live=%d, %d callback(s), %d non-zero",
+                       openpete_host_input_vpad_rumble_live(),
+                       openpete_host_input_vpad_rumble_calls(),
+                       openpete_host_input_vpad_rumble_nonzero());
+        }
+    }
 
     /* Whether the guest's own execution ever reached the Vulkan device. A
      * present thread can only run concurrently with a tick if this is zero;

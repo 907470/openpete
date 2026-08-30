@@ -131,6 +131,23 @@ unsigned short openpete_host_input_pulse_bit(void);
  * longer than the hold is input sampling working as specified. */
 int openpete_host_input_pulse_hold_us(void);
 
+/* ---- rumble recorder (vibration oracle) --------------------------------
+ *
+ * Live only with OPENPETE_INPUT_VGAMEPAD: the virtual pad's descriptor carries
+ * a Rumble callback, which makes every motor command the whole chain delivers
+ * observable from a headless run. Vibration has no pixels and no gameplay-state
+ * bytes, so this is the only instrument that can see it at all.
+ *
+ * `_live` is the gate on believing any of the others. A zero motor count means
+ * nothing on its own — it reads the same whether nothing rumbled or the
+ * recorder was never wired — so a self-probe issues one deliberate non-zero
+ * pair at attach and asserts it arrived. Check `_live` before treating a zero
+ * as evidence; a harness that skips it is reporting a vacuous pass. */
+int  openpete_host_input_vpad_rumble_calls(void);
+int  openpete_host_input_vpad_rumble_nonzero(void);
+int  openpete_host_input_vpad_rumble_live(void);
+void openpete_host_input_vpad_rumble_last(unsigned* low, unsigned* high);
+
 /* Parity instrument (--input-parity). Compares what the host actually drove
  * into the pad against a fresh live decode taken in the same iteration, on the
  * frames where live decode is supposed to be the source. Counts engagement

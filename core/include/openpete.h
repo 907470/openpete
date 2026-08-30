@@ -547,6 +547,24 @@ typedef struct openpete_options {
     int sfx_volume;     /* --sfx   0..10, -1 = leave the game's slider alone */
     int music_volume;   /* --music 0..10, -1 = leave the game's slider alone */
 
+    /* --vibration: controller rumble, 0 (off) .. 10 (max), -1 = leave the
+     * game's own vibration setting alone (the default, which means ON — the
+     * game enables actuators at init and a save file restores the player's
+     * choice).
+     *
+     * Two jobs from one value, the same shape as the sliders above: the
+     * per-game vibration feature stamps the game's own enable flag at a tick
+     * boundary, and the host scales motor amplitude by N/10 on top. The guest
+     * toggle has no intensity of its own, so without the host scale a 3 and a
+     * 10 would feel identical.
+     *
+     * 0 silences the motors host-side and writes NOTHING to guest RAM — the
+     * game's own vibration setting keeps reading whatever the player chose.
+     * That is deliberate: 0 is the value every unattended launcher sets, and a
+     * guest write there would leave the oracle and determinism gates measuring
+     * a quietly modified game. */
+    int vibration;      /* --vibration 0..10, -1 = leave the game's setting alone */
+
     /* Content for the "<bk2_record_path>.args" sidecar written next to a
      * --bk2-record capture. Holds the launch flags passed *directly* on
      * the command line (excluding every --bk2-* flag and anything sourced
@@ -819,6 +837,14 @@ void openpete_set_sfx_volume(int v);
 int  openpete_get_sfx_volume(void);
 void openpete_set_music_volume(int v);
 int  openpete_get_music_volume(void);
+
+/* Live controller-vibration strength (0..10, -1 = leave the game's own
+ * setting alone) — the --vibration value, re-settable at runtime. Like the
+ * sliders above this is a host-side REQUEST: the per-game vibration feature
+ * performs the guest write on its tick hook, while the host half (motor
+ * amplitude) is applied on the pump thread. */
+void openpete_set_vibration(int v);
+int  openpete_get_vibration(void);
 
 #ifdef __cplusplus
 }

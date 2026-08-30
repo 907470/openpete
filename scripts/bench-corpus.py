@@ -35,6 +35,15 @@ import sys
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "fences"))
 import bench_guard
 
+# Unattended launcher: silence controller vibration for every run this script
+# starts. Vibration ships on by default, which is right for a player and wrong
+# for a machine-driven run — nobody is holding the pad, and the buzzing shows
+# up in no log, so it would never surface on its own. Set in the environment
+# rather than at each invocation because this script builds its argument list
+# in more than one place, and a flag appended to the wrong one is a silent
+# miss. (scripts/fences/rumble_guard.py enforces this.)
+os.environ.setdefault("OPENPETE_VIBRATION", "0")
+
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 SCRIPTS = os.path.join(ROOT, "scripts")
 DISC = os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue")

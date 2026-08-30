@@ -1,5 +1,6 @@
 #include "openpete_host_input.h"
 #include "openpete_log.h"
+#include "openpete_rumble.h"
 
 #include "PsyX/PsyX_public.h"
 
@@ -262,6 +263,73 @@ int openpete_host_input_legacy(void)
 static SDL_Joystick* s_vpad;
 static int s_vpad_state = -1;   /* -1 unresolved, 0 off, 1 requested */
 
+/* ---- rumble recorder (the vibration oracle) -----------------------------
+ *
+ * Vibration has no pixels and no gameplay-state bytes, so the golden, oracle
+ * and determinism gates are all structurally blind to it — reading them harder
+ * proves nothing about whether a motor moved. The virtual pad closes that: a
+ * virtual joystick's descriptor carries a Rumble callback, so attaching one
+ * turns the whole chain (guest write -> registration -> per-tick sample ->
+ * pump apply -> SDL -> device) into something a headless run can observe.
+ *
+ * What the recorder must NOT do is let a zero mean two things. A run that
+ * records no motor commands looks identical whether the fix is broken or the
+ * recorder was never wired up — and the pre-fix baseline is legitimately zero,
+ * because SDL skips the driver entirely when the requested pair matches the
+ * current one and a fresh joystick starts at {0,0} (SDL_joystick.c), so the
+ * old code's single boot command of {0,0} never reached a callback at all.
+ * The self-probe below is what separates the two: one deliberate non-zero
+ * rumble at attach, asserted to arrive, before any later zero is believed. The
+ * counters are zeroed behind it, so what they report is only ever the game. */
+typedef struct {
+    SDL_AtomicInt calls;        /* total Rumble callbacks seen */
+    SDL_AtomicInt nonzero;      /* callbacks carrying a non-zero pair */
+    SDL_AtomicInt last;         /* high<<16 | low, of the last callback */
+    SDL_AtomicInt probe_seen;   /* the self-probe pair arrived */
+} vpad_rumble_rec_t;
+
+static vpad_rumble_rec_t s_vpad_rumble;
+
+/* Distinctive enough that the probe cannot be confused with a game value: the
+ * curve never produces equal low and high bytes at this magnitude. */
+#define VPAD_PROBE_LOW   0x4000u
+#define VPAD_PROBE_HIGH  0x4000u
+
+static bool SDLCALL vpad_rumble_cb(void* userdata, Uint16 low, Uint16 high)
+{
+    (void)userdata;
+    SDL_AddAtomicInt(&s_vpad_rumble.calls, 1);
+    if (low || high)
+        SDL_AddAtomicInt(&s_vpad_rumble.nonzero, 1);
+    SDL_SetAtomicInt(&s_vpad_rumble.last,
+                     (int)(((Uint32)high << 16) | (Uint32)low));
+    if (low == VPAD_PROBE_LOW && high == VPAD_PROBE_HIGH)
+        SDL_SetAtomicInt(&s_vpad_rumble.probe_seen, 1);
+    return true;
+}
+
+int openpete_host_input_vpad_rumble_calls(void)
+{
+    return SDL_GetAtomicInt(&s_vpad_rumble.calls);
+}
+
+int openpete_host_input_vpad_rumble_nonzero(void)
+{
+    return SDL_GetAtomicInt(&s_vpad_rumble.nonzero);
+}
+
+int openpete_host_input_vpad_rumble_live(void)
+{
+    return SDL_GetAtomicInt(&s_vpad_rumble.probe_seen);
+}
+
+void openpete_host_input_vpad_rumble_last(unsigned* low, unsigned* high)
+{
+    Uint32 p = (Uint32)SDL_GetAtomicInt(&s_vpad_rumble.last);
+    if (low)  *low  = (unsigned)(p & 0xFFFFu);
+    if (high) *high = (unsigned)(p >> 16);
+}
+
 static void vgamepad_maybe_attach(void)
 {
     if (s_vpad_state < 0) {
@@ -284,6 +352,7 @@ static void vgamepad_maybe_attach(void)
     desc.name       = "openpete virtual pad";
     desc.button_mask = 0xFFFFu;
     desc.axis_mask   = 0x3Fu;
+    desc.Rumble      = vpad_rumble_cb;
 
     SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
     if (!id) {
@@ -309,6 +378,38 @@ static void vgamepad_maybe_attach(void)
     else
         OPL_INFO_F("input", "VIRTUAL gamepad attached (id=%u) — diagnostic only",
                    (unsigned)id);
+
+    /* Let the actuator path drive this device even headless / unfocused. The
+     * gates it lifts exist to protect a human's controller, and this one is
+     * ours; the id is re-checked against the handle actually driven, so a real
+     * pad that took slot 0 still gets the normal treatment. */
+    openpete_rumble_set_test_device((unsigned)id);
+
+    /* Self-probe: prove the rumble recorder is wired before any run is allowed
+     * to interpret a zero as "the motors stayed silent". Issued through
+     * SDL_RumbleJoystick on the pad we just opened, then immediately cleared
+     * so the probe cannot be mistaken for game output. If this does not
+     * arrive, the oracle is broken and must fail rather than pass quietly. */
+    SDL_RumbleJoystick(s_vpad, VPAD_PROBE_LOW, VPAD_PROBE_HIGH, 50);
+    SDL_RumbleJoystick(s_vpad, 0, 0, 0);
+
+    /* The probe is instrumentation, not data: zero the counters behind it so
+     * everything they report afterwards is the GAME driving motors. Leaving it
+     * in the totals is not a rounding error — it makes a run that delivered
+     * nothing report one non-zero command, which is indistinguishable from a
+     * run that delivered exactly one. (Measured: that is precisely how the
+     * gate's legacy leg first read, a false FAIL against working code.) */
+    SDL_SetAtomicInt(&s_vpad_rumble.calls, 0);
+    SDL_SetAtomicInt(&s_vpad_rumble.nonzero, 0);
+    SDL_SetAtomicInt(&s_vpad_rumble.last, 0);
+
+    if (!SDL_GetAtomicInt(&s_vpad_rumble.probe_seen))
+        OPL_ERROR_F("input",
+                    "virtual pad rumble recorder is NOT live — the probe pair "
+                    "never reached the callback, so a zero motor count from "
+                    "this run proves nothing");
+    else
+        OPL_INFO_F("input", "virtual pad rumble recorder live (self-probe ok)");
 }
 
 /* Drive the virtual pad from the same frame-indexed pattern the synthetic

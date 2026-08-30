@@ -295,6 +295,13 @@ static int sfxvol_set(knob_desc_t *k, double v) { (void)k; openpete_set_sfx_volu
 static double musicvol_get(const knob_desc_t *k) { (void)k; return (double)openpete_get_music_volume(); }
 static int musicvol_set(knob_desc_t *k, double v) { (void)k; openpete_set_music_volume((int)v); return 0; }
 
+/* ---- Input ---- */
+
+/* Vibration is the same shape: the setter moves a host request, and the guest
+ * enable flag is written by the per-game feature on its tick hook. */
+static double vibration_get(const knob_desc_t *k) { (void)k; return (double)openpete_get_vibration(); }
+static int vibration_set(knob_desc_t *k, double v) { (void)k; openpete_set_vibration((int)v); return 0; }
+
 /* ---- Recording ---- */
 
 /* --record is latched at boot, so with no path this run will never encode a
@@ -664,6 +671,16 @@ static const knob_desc_t g_builtin[] = {
       "it alone. Same stamping rules as the SFX row.",
       KNOB_INT, KNOB_LIVE, NULL, 0, -1, 10,
       musicvol_get, musicvol_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    /* -------- Input -------- */
+    { "vibration", "Vibration", "Input", "--vibration", "OPENPETE_VIBRATION",
+      "Controller rumble strength, 0 (off) to 10 (max); -1 leaves the game's "
+      "own vibration setting alone (the default, which means on). 10 matches "
+      "DuckStation's strength curve. The game's enable flag is stamped at a "
+      "tick boundary and released if the player toggles vibration in the "
+      "options menu; the motors are always silent headless or unfocused.",
+      KNOB_INT, KNOB_LIVE, NULL, 0, -1, 10,
+      vibration_get, vibration_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     /* -------- Paths -------- */
     { "disc", "Disc image", "Paths", "--disc", NULL,
@@ -1310,6 +1327,8 @@ void knob_registry_init(const struct openpete_options *opts) {
             k->stored_num = opts->sfx_volume;
         } else if (!strcmp(k->id, "music")) {
             k->stored_num = opts->music_volume;
+        } else if (!strcmp(k->id, "vibration")) {
+            k->stored_num = opts->vibration;
         } else if (!strcmp(k->id, "record_cfr")) {
             k->stored_num = opts->record_cfr;
         } else if (!strcmp(k->id, "record_frames")) {

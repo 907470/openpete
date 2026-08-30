@@ -19,6 +19,9 @@
 # Windows .exe paths are auto-translated for the disc + log args (wslpath -w);
 # pass a Linux out-log path and read the summary on the Linux side.
 set -euo pipefail
+
+
+
 cd "$(dirname "$0")/.."
 
 EXE="${1:?usage: bench-fps.sh <exe> <out-log> [--fps N] [--frames N] [-- <extra>]}"
@@ -50,9 +53,14 @@ fi
 echo "bench-fps: exe=$EXE  fps=$FPS  frames=$FRAMES  log=$LOG"
 # --vsync 0: present mode immediate so the true achieved rate shows (FIFO would
 # pin the average to the monitor refresh). Pass --vsync 1 after -- to override.
+# --vibration 0: unattended bench, nobody is holding a pad. The FLAG rather
+# than the env spelling because this script is routinely pointed at the
+# Windows .exe, and an exported knob does not cross that boundary without
+# WSLENV — an argument cannot be dropped that way.
+# (scripts/fences/rumble_guard.py enforces that this is here.)
 "$EXE" --disc "$DISC_ARG" --run-recomp 0x80012204 --renderer vk \
        --render-fps "$FPS" --frame-limit "$FRAMES" --vsync 0 \
-       --max-runtime-seconds 1200 \
+       --max-runtime-seconds 1200 --vibration 0 \
        --frame-time-log "$LOG_ARG" "${EXTRA[@]}"
 
 echo "=== measure-pacing: $LOG ==="

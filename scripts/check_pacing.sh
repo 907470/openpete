@@ -29,6 +29,8 @@
 # Exit: 0 pass, 2 a real regression, 3 vacuous (nothing engaged), 64 skip.
 set -uo pipefail
 
+
+
 cd "$(dirname "$0")/.."
 . scripts/lib/wslenv.sh
 # Refuse before spending 6 minutes on legs whose knobs would not arrive: this
@@ -98,7 +100,13 @@ run_leg() {   # name, mode(headless|windowed), extra env assignments...
 
 # Headless fast-forwards by default, so the gate forces the pacer on: an
 # unpaced run has no grid to be measured against.
-COMMON=(OPENPETE_FORCE_PACING=1)
+# OPENPETE_VIBRATION=0 rides the COMMON set rather than a bare `export`: this
+# gate launches the Windows .exe, and a Linux export does not cross that
+# boundary unless WSLENV carries it (scripts/lib/wslenv.sh, applied to exactly
+# this array). An export here would look right, silently not arrive, and leave
+# a controller buzzing through a windowed pacing leg.
+# (Unattended launcher — scripts/fences/rumble_guard.py.)
+COMMON=(OPENPETE_FORCE_PACING=1 OPENPETE_VIBRATION=0)
 
 # The grid leg is HEADLESS on purpose. It asks whether the clock holds its
 # own grid, and presents are exactly the interference that question is not

@@ -41,8 +41,11 @@ static int parse_volume_arg(const char* flag, const char* v, int* out) {
     char* end = NULL;
     long n = strtol(v, &end, 10);
     if (end == v || *end != '\0' || n < -1 || n > 10) {
+        /* "setting", not "slider": this parser is shared with --vibration,
+         * which is a toggle plus a host-side strength rather than an in-game
+         * slider. */
         fprintf(stderr, "openpete: %s expects 0..10 (on|off also accepted, "
-                        "-1 = leave the game's slider alone), got: %s\n",
+                        "-1 = leave the game's own setting alone), got: %s\n",
                 flag, v);
         return -1;
     }
@@ -417,6 +420,11 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             Survives the title screen and a save-file load; the game's own options\n"
         "                             menu takes it back the moment you move that slider. -1 = don't preset\n"
         "  --music N                  preset the game's MUSIC slider, same scale and rules as --sfx\n"
+        "  --vibration N              controller rumble: 0 (off) .. 10 (max), or on|off.\n"
+        "                             Default -1 leaves the game's own setting alone (= on);\n"
+        "                             0 silences the motors without changing that setting.\n"
+        "                             10 is the full measured response. Always silent when\n"
+        "                             headless or when the window is not focused.\n"
         "  --skip-to-level L          load directly into level L: numeric id (10=Artisans, 63=Gnasty) or\n"
         "                             lower_snake_case name (stone_hill, doctor_shemp, gnasty_gnorc, ...);\n"
         "                             an unknown name prints the full list. Windowed runs fast-forward the\n"
@@ -576,6 +584,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->mute                = false; /* audio on by default; --mute 1 to silence */
     opts->sfx_volume          = -1;    /* -1 = unset; the game's own slider stands */
     opts->music_volume        = -1;
+    opts->vibration           = -1;    /* -1 = unset; the game's own setting stands */
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
     opts->perf_stats          = OPENPETE_PERF_FPS;  /* the counter, no pacing readout; --perf-stats / O-menu SHOW FPS row */
     opts->vsync               = -1;    /* -1 = unset; default vsync ON (FIFO) unless OPENPETE_PRESENT_MODE */
@@ -1296,6 +1305,11 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             if (parse_volume_arg(a, v, &opts->music_volume) != 0)
                 return OPENPETE_EXIT_SETUP_ERROR;
             i++;
+        } else if (strcmp(a, "--vibration") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            if (parse_volume_arg(a, v, &opts->vibration) != 0)
+                return OPENPETE_EXIT_SETUP_ERROR;
+            i++;
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
             print_help(opts->display_name, argv[0]);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
@@ -1364,6 +1378,26 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         }
         opts->bk2_record_args = build_bk2_record_args(orig_argc, orig_argv);
         /* NULL (OOM) just means no sidecar — the recording itself still works. */
+    }
+
+    /* OPENPETE_VIBRATION: the env spelling of --vibration, applied only when
+     * the flag was not given (CLI beats env, the project-wide rule).
+     *
+     * The env spelling exists for scripted launches. A gate or bench harness
+     * needs one line it can put at the top of the file, not an argument
+     * threaded into however many invocation sites it builds — and an argument
+     * appended to the wrong one of those is a silent miss, which for this knob
+     * means a controller buzzing on someone's desk for the length of a corpus
+     * run. (Under WSL an env knob only reaches a Windows .exe if WSLENV names
+     * it; scripts/fences/wslenv_guard.py is what enforces that half.) */
+    if (opts->vibration < 0) {
+        const char* v = getenv("OPENPETE_VIBRATION");
+        if (v && *v) {
+            int level = -1;
+            if (parse_volume_arg("OPENPETE_VIBRATION", v, &level) != 0)
+                return OPENPETE_EXIT_SETUP_ERROR;
+            opts->vibration = level;
+        }
     }
 
     return OPENPETE_EXIT_OK;

@@ -17,6 +17,7 @@
 #include "psx_runtime.h"
 #include "features/text_moby_native.h"
 #include "features/audio_volume_native.h"
+#include "features/vibration_native.h"
 #include "features/cheats_native.h"
 #include "features/crash_demo_woah.h"
 #include "features/freecam_native.h"
@@ -508,6 +509,13 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * slider onto the XA / music-WAV gain so it acts as a level rather than
      * an on/off switch. Inert without the flags apart from that mirror. */
     spyro1_audio_volume_on_tick(cpu);
+
+    /* --vibration: hold the game's own vibration setting at the requested
+     * state (re-stamped over the title screen's and a save load's reseeds,
+     * released when the player toggles that row by hand). Inert without the
+     * flag; the host half — motor strength, and the headless / focus gates —
+     * lives in core/runtime/host_rumble.c. */
+    spyro1_vibration_on_tick(cpu);
 
     /* Dev-overlay level warp (M menu): drives the game's own exit-level ->
      * load sequence toward a chosen level. Inert until the Jump button is

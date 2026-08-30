@@ -130,6 +130,28 @@ target_include_directories(audio_volume_test PRIVATE
 set_target_properties(audio_volume_test PROPERTIES C_STANDARD 99)
 add_test(NAME audio_volume_test COMMAND audio_volume_test)
 
+# vibration_test — the measured motor response and the --vibration
+# preset's state machine. Two TUs, both deliberately SDL-free: rumble_curve.c
+# is the curve alone (the reference constants a later "it feels too strong"
+# tweak would otherwise drift silently), vibration_native.c is the guest-side
+# preset over a fake CPUState. The rest of the vibration path needs a real pad
+# and is covered by the virtual-pad rumble oracle instead — see
+# scripts/check_rumble.sh.
+add_executable(vibration_test
+    vibration_test.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/rumble_curve.c
+    ${CMAKE_SOURCE_DIR}/games/spyro-1/features/vibration_native.c)
+target_include_directories(vibration_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/games/spyro-1
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/core/host
+    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+set_target_properties(vibration_test PROPERTIES C_STANDARD 99)
+if(NOT WIN32)
+    target_link_libraries(vibration_test PRIVATE m)
+endif()
+add_test(NAME vibration_test COMMAND vibration_test)
+
 # config_resolve_test — openpete.toml precedence. The resolver decides which
 # of ~10 layers wins each knob and then materializes exactly one spelling of
 # it; this pins that ordering down so an edit can't quietly re-order the
