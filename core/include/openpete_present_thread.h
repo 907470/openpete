@@ -1,5 +1,6 @@
-/* Re-presenting the last composed frame while the guest executes.
- * See core/runtime/present_thread.c for what this measures and why. */
+/* The present thread: composes and presents the scenes the guest-side
+ * producer publishes into the scene ring, on their own target instants.
+ * See core/runtime/present_thread.c. */
 #ifndef OPENPETE_PRESENT_THREAD_H
 #define OPENPETE_PRESENT_THREAD_H
 
@@ -9,22 +10,25 @@
 extern "C" {
 #endif
 
-/* OPENPETE_PRESENT_THREAD=1. Off by default: this is a mechanism test. */
+/* OPENPETE_EAGER=1 enables eager production and the present thread.
+ * Off by default until the A/B has priced it. */
 int  openpete_present_thread_enabled(void);
 int  openpete_present_thread_start(void);
 void openpete_present_thread_stop(void);
 
-/* Open the window immediately before switching to the game fiber: presenting
- * is permitted until the matching close. `first_at` is the next slot on the
- * sim's own render grid, `period` that grid's spacing. */
-void openpete_present_thread_open(op_time_t first_at, op_time_t period);
+/* Hand the display to the thread (1) or take it back (0). Taking it back
+ * drops every pending scene, waits out a compose in flight, and returns only
+ * when the thread will issue nothing further: from then on the calling thread
+ * owns the device again. Idempotent. */
+void openpete_present_thread_set_active(int on);
+int  openpete_present_thread_active(void);
 
-/* Close the window immediately after the fiber returns, waiting out a present
- * still in flight. Returns the nanoseconds the sim spent waiting (0 if none)
- * and, via out_slots, how many grid slots the thread stepped -- including any
- * it stepped over without presenting, which the sim's deadline must also skip
- * or its grid comes back lagging. */
-op_time_t openpete_present_thread_close(unsigned *out_slots);
+/* A scene was published: wake the thread so it re-reads the earliest target. */
+void openpete_present_thread_kick(void);
+
+/* Per-present callback on the present thread (frame-time log, profiler). */
+typedef void (*openpete_present_thread_cb)(void *ctx, int kind, double alpha, int paired);
+void openpete_present_thread_set_callback(openpete_present_thread_cb cb, void *ctx);
 
 void     openpete_present_thread_report(void);
 unsigned openpete_present_thread_presents(void);

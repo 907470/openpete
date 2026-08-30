@@ -95,6 +95,16 @@ bool rhi_needs_recreate(const rhi_device *dev);
  * a second same-frame rhi_update_buffer to the same offset clobbers data a
  * recorded-but-unexecuted pass will read. */
 uint64_t rhi_frame_serial(rhi_device *dev);
+/* Block on the slot fence and the acquire instead of shedding the present:
+ * for a thread whose only job is presenting. Off = the sim-thread contract
+ * (poll, shed, never let the display pace the game). */
+void rhi_set_present_blocking(rhi_device *dev, bool on);
+/* Depth of the frame ring: a frame's fence is waited by the begin_frame this
+ * many frames later, which is when its GPU reads are known to be over.
+ * Overridable from the build (the depth/refresh trade sweep). */
+#ifndef RHI_FRAMES_IN_FLIGHT
+#define RHI_FRAMES_IN_FLIGHT 2
+#endif
 
 /* Offscreen color pass. For 1a, begin+end with nothing drawn between
  * clears the offscreen target to the given (linear, 0..1) color. From 1b

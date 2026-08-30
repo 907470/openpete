@@ -78,7 +78,10 @@ static cmd_buf_t s_tick_staging;   /* written by tick-context draws     */
 static cmd_buf_t s_tick_committed; /* displayed for the current tick    */
 static cmd_buf_t s_present;        /* rebuilt inside each present hook  */
 
-int openpete_mods_in_present = 0;
+/* Per thread: present hooks run on the thread that extracts while a mod UI
+ * section can run inside a compose on a present thread; one shared flag
+ * would let either clear the other's purity guard. */
+OPENPETE_THREAD_LOCAL int openpete_mods_in_present = 0;
 
 static openpete_mods_text_emit_fn s_text_fn = NULL;
 void openpete_mods_draw_set_text_fn(openpete_mods_text_emit_fn fn) {

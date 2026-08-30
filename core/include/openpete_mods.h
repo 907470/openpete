@@ -408,7 +408,14 @@ int  openpete_mods_register_present_hook(openpete_mod_present_fn fn,
 
 /* 1 while a present hook is executing on this thread — the loader's
  * guest/call/override entry points refuse during it (render-purity). */
-extern int openpete_mods_in_present;
+#ifndef OPENPETE_THREAD_LOCAL
+#  ifdef __cplusplus
+#    define OPENPETE_THREAD_LOCAL thread_local
+#  else
+#    define OPENPETE_THREAD_LOCAL _Thread_local
+#  endif
+#endif
+extern OPENPETE_THREAD_LOCAL int openpete_mods_in_present;
 
 /* ── Instruction-site hook tier (core/mods/mod_sites.c, rung 14) ───────
  *
@@ -696,6 +703,24 @@ int  openpete_mods_drawmesh_get(int i, openpete_mod_pipe_gpu_t* pd,
                                 const openpete_mod_vertex_t** verts, int* n,
                                 uint16_t* tex);
 void openpete_mods_drawmesh_clear(void);
+/* Per-scene copy of the queue (eager scene ring). Storage grows on demand;
+ * free `verts` with free() when the owner is torn down. */
+typedef struct { int pipe; int first, n; uint16_t tex; } openpete_mod_mesh_draw_t;
+typedef struct {
+    openpete_mod_vertex_t* verts; int vert_cap, vert_n;
+    openpete_mod_mesh_draw_t draws[256];
+    int draw_n;
+} openpete_mods_drawmesh_snap_t;
+int  openpete_mods_drawmesh_snapshot(openpete_mods_drawmesh_snap_t* d);
+int  openpete_mods_drawmesh_snap_get(const openpete_mods_drawmesh_snap_t* d, int i,
+                                     openpete_mod_pipe_gpu_t* pd,
+                                     const openpete_mod_vertex_t** verts, int* n,
+                                     uint16_t* tex);
+/* Registry read side for a compose: held for the whole compose so the
+ * shader/postfx/pipeline/material tables cannot change under it (their
+ * mutators take the write side). */
+void openpete_mods_registry_read_lock(void);
+void openpete_mods_registry_read_unlock(void);
 void openpete_mods_pipeline_remove_owner(const char* mod_id);
 void openpete_mods_pipeline_retire_all(void);
 
@@ -811,6 +836,8 @@ void openpete_mods_material_frame_reset(void);
 void openpete_mods_set_level(int level_id);
 int  openpete_mods_material_slot_count(void);   /* 1 + interned slots */
 const void* openpete_mods_material_slot_uniforms(int slot, uint32_t* len);
+typedef struct { uint32_t len; unsigned char bytes[256]; } openpete_mods_material_slot_snap_t;
+int  openpete_mods_material_slots_snapshot(openpete_mods_material_slot_snap_t* out, int cap);
 /* Enabled-list position of a mod (0-based load order; -1 unknown). */
 int  openpete_mods_load_index_of(openpete_mod_t* self);
 /* Last present-flush ctx (mod_draw.c) — the postfx engine UBO's

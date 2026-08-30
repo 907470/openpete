@@ -34,6 +34,7 @@ extern int g_openpete_guest_running;
 /* Records one Vulkan call made during guest execution. Cheap and lock-free;
  * keeps a total plus the distinct function names seen. */
 void op_gpu_audit_hit(const char *fn);
+void op_gpu_audit_bind_thread(void);   /* call once from the thread that runs the guest */
 
 /* Second channel: a host write into persistently-mapped device memory made
  * during guest execution. These issue no Vulkan call, so the channel above is

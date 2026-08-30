@@ -928,6 +928,34 @@ void openpete_native_render_frame(uint64_t record_pts_us);
  * thread other than the guest's may make. Returns 1 if a present went out. */
 int openpete_native_render_repeat_last(void);
 
+/* ---- eager scene ring ----------------------------------------------------
+ * The thread running the guest extracts every scene of a span ahead of time
+ * and publishes each into a ring; a present thread composes ring slots on
+ * the display grid. See native_render.c "eager scene ring" for the slot
+ * lifecycle and the ownership rule. Times are op_now() nanoseconds. */
+/* Call before the re-extract of an eager scene: the terrain builder stamps
+ * its build with a scene id (top bit set) instead of the VBL counter. */
+void     openpete_native_scene_eager_begin(void);
+uint32_t openpete_native_scene_build_stamp(void);
+/* Copy the accumulator + every per-present companion into the next free
+ * slot. kind = OP_PACE_CANONICAL / OP_PACE_INTERMEDIATE. Returns the slot,
+ * or -1 (ring full / allocation failed) — a refused publish, never a cut. */
+int      openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int paired);
+int64_t  openpete_native_scene_next_target(void);      /* earliest pending, 0 = none */
+int      openpete_native_scene_pick(int64_t at);       /* nearest pending -> PRESENTING */
+int      openpete_native_render_scene(int slot, uint64_t record_pts_us);
+void     openpete_native_scene_retire(uint64_t begun_serial);
+int      openpete_native_scene_stamp_live(uint32_t stamp);
+void     openpete_native_scene_ring_flush(void);
+int      openpete_native_scene_ring_pending(void);
+int      openpete_native_scene_ring_busy(void);
+void     openpete_native_scene_slot_info(int slot, int64_t *target_ns, double *alpha, int *paired, int *kind);
+void     openpete_native_scene_ring_report(void);
+/* Refresh the VRAM mirror from the guest's (dirty rects only). The eager
+ * producer calls it while the guest is idle; the inline present path calls
+ * it itself. */
+void     openpete_native_vram_sync(void);
+
 /* --- sub-tick re-feed spine (high-FPS, native-renderer plan §Movement) ----
  *
  * For smooth presentation above the 29.913 Hz sim, the host loop presents

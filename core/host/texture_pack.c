@@ -26,6 +26,16 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <SDL3/SDL.h>
+
+/* Registry lock. The entry table, the resolve/match caches and the pack
+ * table are written by the guest's VRAM ops (on the thread running the
+ * guest) and read by resolve/match from the bake AND from the compose,
+ * which may run on a present thread. One recursive mutex around every
+ * public entry that touches them; uncontended except at upload time. */
+static SDL_Mutex *s_reg_mx;
+static SDL_Mutex *reg_mx(void) { if (!s_reg_mx) s_reg_mx = SDL_CreateMutex(); return s_reg_mx; }
+
 #define XXH_INLINE_ALL
 #include "xxhash.h"
 
@@ -535,8 +545,7 @@ void texture_pack_init(void)
     tp_repl_scan();
 }
 
-void texture_pack_on_restore(void)
-{
+static void texture_pack_on_restore_locked(void) {
     if (!s_inited) return;
     unsigned bytes = PsyX_VRAM_GetSize();
     uint16_t *snap = (uint16_t *)malloc(bytes);
@@ -585,6 +594,8 @@ void texture_pack_on_restore(void)
     fprintf(stderr, "[texpack] guest restore: %d entries verified live, "
             "%d stale (killed)\n", kept, killed);
 }
+void texture_pack_on_restore(void) { SDL_LockMutex(reg_mx()); texture_pack_on_restore_locked(); SDL_UnlockMutex(s_reg_mx); }
+
 void texture_pack_shutdown(void)
 {
     if (getenv("OPENPETE_TEXPACK_DUMP_REGISTRY")) texture_pack_debug_dump();
@@ -618,9 +629,8 @@ static tp_entry *tp_alloc(void)
     return &s_ent[0];
 }
 
-void texture_pack_on_load(int x, int y, int w, int h,
-                          const uint16_t *src, int src_stride)
-{
+static void texture_pack_on_load_locked(int x, int y, int w, int h,
+                          const uint16_t *src, int src_stride) {
     if (w <= 0 || h <= 0 || !src) return;
     s_gen++;
     tp_entry *reuse = NULL;
@@ -646,10 +656,12 @@ void texture_pack_on_load(int x, int y, int w, int h,
         if (s_annot[i].x == x && s_annot[i].y == y &&
             s_annot[i].w == w && s_annot[i].h == h) e->asset = s_annot[i].name;
 }
+void texture_pack_on_load(int x, int y, int w, int h,
+                          const uint16_t *src, int src_stride) { SDL_LockMutex(reg_mx()); texture_pack_on_load_locked(x, y, w, h, src, src_stride); SDL_UnlockMutex(s_reg_mx); }
 
-void texture_pack_on_move(int src_x, int src_y, int w, int h,
-                          int dst_x, int dst_y)
-{
+
+static void texture_pack_on_move_locked(int src_x, int src_y, int w, int h,
+                          int dst_x, int dst_y) {
     if (w <= 0 || h <= 0) return;
     s_gen++;
     /* Kill identities the destination overwrites, then duplicate any entry
@@ -670,17 +682,20 @@ void texture_pack_on_move(int src_x, int src_y, int w, int h,
         }
     }
 }
+void texture_pack_on_move(int src_x, int src_y, int w, int h,
+                          int dst_x, int dst_y) { SDL_LockMutex(reg_mx()); texture_pack_on_move_locked(src_x, src_y, w, h, dst_x, dst_y); SDL_UnlockMutex(s_reg_mx); }
 
-void texture_pack_on_clear(int x, int y, int w, int h)
-{
+
+static void texture_pack_on_clear_locked(int x, int y, int w, int h) {
     if (w <= 0 || h <= 0) return;
     s_gen++;
     for (int i = 0; i < s_ent_n; i++)
         if (tp_overlap(&s_ent[i], x, y, w, h)) s_ent[i].alive = 0;
 }
+void texture_pack_on_clear(int x, int y, int w, int h) { SDL_LockMutex(reg_mx()); texture_pack_on_clear_locked(x, y, w, h); SDL_UnlockMutex(s_reg_mx); }
 
-void texture_pack_annotate(int x, int y, int w, int h, const char *name)
-{
+
+static void texture_pack_annotate_locked(int x, int y, int w, int h, const char *name) {
     if (s_annot_n >= TP_MAX_ANNOT) return;
     s_annot[s_annot_n++] = (tp_annot){ x, y, w, h, name };
     /* Retroactively name an already-live exact-rect entry. */
@@ -690,6 +705,8 @@ void texture_pack_annotate(int x, int y, int w, int h, const char *name)
             e->asset = name;
     }
 }
+void texture_pack_annotate(int x, int y, int w, int h, const char *name) { SDL_LockMutex(reg_mx()); texture_pack_annotate_locked(x, y, w, h, name); SDL_UnlockMutex(s_reg_mx); }
+
 
 /* ---- resolve -------------------------------------------------------------- */
 
@@ -721,10 +738,9 @@ static uint64_t tp_clut_hash(int bpp, int clut_x, int clut_y)
     return XXH3_64bits(clut, (bpp == 8 ? 256 : 16) * 2);
 }
 
-int texture_pack_resolve(int tpage_x, int tpage_y, int clut_x, int clut_y,
+static int texture_pack_resolve_locked(int tpage_x, int tpage_y, int clut_x, int clut_y,
                          int bpp, int u0, int v0, int u1, int v1,
-                         texture_pack_id *out)
-{
+                         texture_pack_id *out) {
     if (!s_inited || u1 < u0 || v1 < v0) return 0;
     tp_poll_modset();
     /* Cache key: material + box packed. Coordinates all fit their fields
@@ -767,6 +783,10 @@ int texture_pack_resolve(int tpage_x, int tpage_y, int clut_x, int clut_y,
     *out = id;
     return 1;
 }
+int texture_pack_resolve(int tpage_x, int tpage_y, int clut_x, int clut_y,
+                         int bpp, int u0, int v0, int u1, int v1,
+                         texture_pack_id *out) { SDL_LockMutex(reg_mx()); int r_ = texture_pack_resolve_locked(tpage_x, tpage_y, clut_x, clut_y, bpp, u0, v0, u1, v1, out); SDL_UnlockMutex(s_reg_mx); return r_; }
+
 
 /* ---- identity key / filename (shared: dump + replacement lookup) ---------- */
 
@@ -790,8 +810,7 @@ static void tp_id_filename(const texture_pack_id *id, const char *dir,
 
 /* ---- replacement lookup (Phase 3) ----------------------------------------- */
 
-int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out)
-{
+static int texture_pack_match_locked(const texture_pack_id *id, texture_pack_repl *out) {
     if (!id) return 0;
     tp_poll_modset(); /* before the active check: a late root activates */
     if (!s_repl_active) return 0;
@@ -857,9 +876,10 @@ int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out)
     }
     return 1;
 }
+int texture_pack_match(const texture_pack_id *id, texture_pack_repl *out) { SDL_LockMutex(reg_mx()); int r_ = texture_pack_match_locked(id, out); SDL_UnlockMutex(s_reg_mx); return r_; }
 
-int texture_pack_overlaps(const texture_pack_id *id)
-{
+
+static int texture_pack_overlaps_locked(const texture_pack_id *id) {
     if (!id) return 0;
     tp_poll_modset(); /* a late root / toggle can activate the pack */
     if (!s_repl_active) return 0;
@@ -878,6 +898,8 @@ int texture_pack_overlaps(const texture_pack_id *id)
     }
     return 0;
 }
+int texture_pack_overlaps(const texture_pack_id *id) { SDL_LockMutex(reg_mx()); int r_ = texture_pack_overlaps_locked(id); SDL_UnlockMutex(s_reg_mx); return r_; }
+
 
 /* ---- pack fog shift (see header) ------------------------------------------ */
 

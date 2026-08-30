@@ -46,6 +46,8 @@
 extern "C" {
 #endif
 
+/* Reasons a present did not reach the display (SHED record `reason`). */
+enum { PACE_SHED_SLOT_BUSY = 1, PACE_SHED_NO_BUDGET = 2, PACE_SHED_NO_IMAGE = 3 };
 #define OP_PACE_MAGIC        0x4C50504FU   /* 'OPPL' LE */
 #define OP_PACE_VERSION      2U
 #define OP_PACE_HEADER_FIXED 64U
@@ -176,6 +178,9 @@ void openpete_pace_vbl(uint32_t vbl_index, uint8_t flags, uint16_t pad_reads,
  * prev/curr pair existed at all). Called by the re-extract that resolves it;
  * the value rides on the next PRESENT record. */
 void openpete_pace_note_alpha(double alpha, int paired);
+int  openpete_pace_last_alpha_paired(void);
+/* The alpha the most recent EXTRACTION computed (extraction-thread owned). */
+double openpete_pace_extract_alpha(int *paired);
 /* The alpha the most recent re-extract resolved; census/diagnostics only. */
 double openpete_pace_last_alpha(void);
 
@@ -191,6 +196,15 @@ void openpete_pace_set_slot_ns(int64_t slot_ns);
  * display decides for itself when to show it. */
 void openpete_pace_flip(uint64_t id, int64_t t_ns, int64_t waited_ns);
 
+/* Record the present that just returned on this thread (block times, refusal
+ * ledger, alpha). See pace_log.c. */
+void openpete_pace_record_present(uint8_t kind, double alpha, int paired);
+
+void openpete_pace_present_alpha(uint8_t kind, int64_t done_ns,
+                                 int64_t fence_block_ns, int64_t acquire_block_ns,
+                                 int64_t queue_present_block_ns,
+                                 int64_t recreate_block_ns,
+                                 int64_t alpha_micro, int paired);
 void openpete_pace_present(uint8_t kind, int64_t done_ns,
                            int64_t fence_block_ns, int64_t acquire_block_ns,
                            int64_t queue_present_block_ns,

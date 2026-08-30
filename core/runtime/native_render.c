@@ -254,6 +254,62 @@ typedef char nr_assert_scene_tri_prefix[
 static scene_tri_t s_scene[MAX_SCENE_TRIS];      /* accumulating (frame N) */
 static int                s_scene_n;
 
+/* ---- eager scene ring ----------------------------------------------------
+ *
+ * Under eager production the thread running the guest extracts every scene
+ * of a span ahead of time and a present thread composes them on the display
+ * grid, through the next tick's execution. The two never share the live
+ * accumulator: publish() copies the accumulator and EVERY other piece of
+ * per-present state the compose reads (sidecars, draw-env, the mod overlay
+ * and draw_mesh queue, the interned material slots, the shadow-decal camera,
+ * the present ctx) into a ring slot, and the compose reads the slot through
+ * the accessors below. The live globals stay the source for the inline
+ * (non-eager) compose, so the two paths differ only in where s_ps_slot
+ * points.
+ *
+ * Slot lifecycle: FREE -> PENDING (published) -> PRESENTING (picked) ->
+ * PRESENTED (its RHI frame submitted) -> FREE once that frame's fence has
+ * been waited, or straight to FREE when a newer scene supersedes it
+ * unpresented. The retained terrain cache asks stamp_live() before it lets a
+ * freed arena range be rewritten, which is what keeps a burst's builds from
+ * overwriting bytes a still-pending scene draws. */
+enum { SS_FREE = 0, SS_PENDING, SS_PRESENTING, SS_PRESENTED };
+#define SCENE_RING 48
+#define SCENE_MAT_SLOTS 128
+typedef struct {
+    scene_tri_t *tri; int cap, n;
+    uint32_t bg, fade, freeze; int hud_under, actor_front;
+    unsigned  frame;               /* openpete_frame at extraction */
+    uint32_t  stamp;               /* terrain-cache build stamp (scene id) */
+    uint32_t  drawenv_clear;
+    int       geom[8];
+    openpete_hud_vert *ovl; int ovl_cap, ovl_n;
+    int       suppress_player;
+    openpete_shadow_decal_params shadow;
+    uint32_t  pctx_tick; float pctx_alpha; int pctx_canonical;
+    openpete_mods_drawmesh_snap_t mesh;
+    openpete_mods_material_slot_snap_t mat[SCENE_MAT_SLOTS]; int mat_n;
+    /* scheduling */
+    uint32_t  scene_id;
+    op_time_t target_ns;           /* the present instant alpha was computed for */
+    double    alpha; int paired; int kind;   /* OP_PACE_CANONICAL / _INTERMEDIATE */
+    int       state;
+    uint64_t  presented_serial;    /* rhi frame serial of its present */
+} scene_slot_t;
+static scene_slot_t s_ring[SCENE_RING];
+static int          s_ring_head = -1;          /* last published */
+static SDL_Mutex   *s_ring_mx;
+static const scene_slot_t *s_ps_slot;          /* compose source: NULL = live */
+static uint32_t ps_drawenv_clear(void);
+static int      ps_suppress_player(void);
+static const openpete_shadow_decal_params *ps_shadow(void);
+static unsigned ps_frame(void);
+static void     ps_apply_geometry(void);
+static uint32_t     s_eager_stamp;             /* build stamp for the scene being extracted */
+static uint32_t     s_scene_id_next = 1;
+static struct { unsigned published, refused_full, superseded, presented; } s_ring_census;
+
+
 /* Feed-time accumulation for the 2D-overlay carry (committed by
  * capture_overlay — see the carry block further down). The live scene is
  * wiped by EVERY sub-tick re-extract, so scavenging s_scene at capture time
@@ -639,6 +695,7 @@ unsigned openpete_native_scene_frame(void) { return s_scene_frame; }
  * gate compares against, so a frozen/lagged compose keeps its retained
  * content and a stale-state compose (menus) drops it. */
 static unsigned scene_present_stamp(void) {
+    if (s_ps_slot) return s_ps_slot->stamp;
     int depth = scene_delay_depth();
     if (depth > 0 && depth <= s_scene_hist_count && s_scene_hist_head >= 0) {
         int slot = (s_scene_hist_head - (depth - 1) + SCENE_HIST * 4) % SCENE_HIST;
@@ -646,6 +703,7 @@ static unsigned scene_present_stamp(void) {
     }
     return s_scene_frame;
 }
+
 
 /* Mod actor render service: suppress the PLAYER-category scene tris for
  * the NEXT presented frame (the flutter's hover window draws a stand-in
@@ -1137,6 +1195,13 @@ void openpete_native_scene_apply_overlay(double alpha) {
 static const scene_tri_t* scene_present_buf(int* out_n, uint32_t* out_bg,
                                                    uint32_t* out_fade, uint32_t* out_freeze,
                                                    int* out_hud_under, int* out_actor_front) {
+    if (s_ps_slot) {
+        *out_n = s_ps_slot->n; *out_bg = s_ps_slot->bg; *out_fade = s_ps_slot->fade;
+        if (out_freeze) *out_freeze = s_ps_slot->freeze;
+        if (out_hud_under) *out_hud_under = s_ps_slot->hud_under;
+        if (out_actor_front) *out_actor_front = s_ps_slot->actor_front;
+        return s_ps_slot->tri;
+    }
     int depth = scene_delay_depth();
     if (depth > 0 && depth <= s_scene_hist_count && s_scene_hist_head >= 0) {
         int slot = (s_scene_hist_head - (depth - 1) + SCENE_HIST * 4) % SCENE_HIST;
@@ -2621,22 +2686,30 @@ int openpete_native_fullscreen_active(void)
     return (SDL_GetWindowFlags(s_nr.window) & SDL_WINDOW_FULLSCREEN) != 0;
 }
 
+/* The display/clip rects arrive from the guest's PutDispEnv/PutDrawEnv on the
+ * thread running the guest; the compose reads s_nr.disp_* and clip_* on the
+ * thread presenting, which may be another one. The setters therefore write
+ * a guest-side staging copy, and every compose entry copies its source's
+ * rects into s_nr at its start (ps_apply_geometry): a scene composed from
+ * the ring carries the rects that were current when it was extracted. */
+static int s_geom_in[8];   /* disp x,y,w,h, clip x,y,w,h — guest-side */
+
 void openpete_native_set_display_rect(int x, int y, int w, int h)
 {
     /* Log size changes only; the disp origin flips every frame (double buffer). */
-    if (s_nr.enabled && (w != s_nr.disp_w || h != s_nr.disp_h))
+    if (s_nr.enabled && (w != s_geom_in[2] || h != s_geom_in[3]))
         OPL_INFO_F("native", "disp %dx%d @ (%d,%d) [VRAM px]", w, h, x, y);
-    s_nr.disp_x = x; s_nr.disp_y = y; s_nr.disp_w = w; s_nr.disp_h = h;
+    s_geom_in[0] = x; s_geom_in[1] = y; s_geom_in[2] = w; s_geom_in[3] = h;
 }
 
 void openpete_native_set_draw_clip(int x, int y, int w, int h)
 {
     /* Log on size change; the clip origin flips per frame like disp. The
      * overscan band (per side) is derived from the sizes, not clip.y. */
-    if (s_nr.enabled && (w != s_nr.clip_w || h != s_nr.clip_h))
+    if (s_nr.enabled && (w != s_geom_in[6] || h != s_geom_in[7]))
         OPL_INFO_F("native", "draw clip %dx%d @ (%d,%d) [VRAM px] (overscan band=%d/side)",
-                   w, h, x, y, s_nr.disp_h > 0 ? (s_nr.disp_h - h) / 2 : 0);
-    s_nr.clip_x = x; s_nr.clip_y = y; s_nr.clip_w = w; s_nr.clip_h = h;
+                   w, h, x, y, s_geom_in[3] > 0 ? (s_geom_in[3] - h) / 2 : 0);
+    s_geom_in[4] = x; s_geom_in[5] = y; s_geom_in[6] = w; s_geom_in[7] = h;
 }
 
 /* ---- W2.4 native VRAM model: dirty-rect tracked mirror -------------------
@@ -2673,7 +2746,22 @@ static int      s_vram_up_n    = 0;
 static bool     s_vram_up_full = false;
 static bool     s_ref_dirty    = false;  /* readback refreshed; upload pending */
 
+/* sync (guest side: drains the dirty rects, refreshes the mirror) and upload
+ * (present side: records the mirror rows into the frame) may run on two
+ * threads; the mirror ROWS are the payload, so the lock spans both bodies. */
+static SDL_Mutex *s_vram_mx;
+static SDL_Mutex *vram_mx(void) { if (!s_vram_mx) s_vram_mx = SDL_CreateMutex(); return s_vram_mx; }
+static void sync_vram_texture_locked(void);
 static void sync_vram_texture(void)
+{
+    SDL_LockMutex(vram_mx());
+    sync_vram_texture_locked();
+    SDL_UnlockMutex(s_vram_mx);
+}
+/* Guest-side entry for the eager producer: refresh the mirror while the
+ * guest is idle so no VRAM write can land mid-drain. */
+void openpete_native_vram_sync(void) { if (s_nr.enabled && !s_nr.headless) sync_vram_texture(); }
+static void sync_vram_texture_locked(void)
 {
     /* OPENPETE_VRAM_CENSUS: per-300-present dirty-traffic summary. */
     static int s_census = -1;
@@ -2792,6 +2880,7 @@ static void sync_vram_texture(void)
  * frame cb — see rhi_update_vram's contract in rhi.h). */
 static void upload_synced_textures(void)
 {
+    SDL_LockMutex(vram_mx());
     if (s_vram_up_full) {
         rhi_update_vram(s_nr.dev, s_nr.vram_tex, s_nr.vram_mirror);
         s_vram_up_full = false;
@@ -2805,6 +2894,7 @@ static void upload_synced_textures(void)
         rhi_update_rgba8(s_nr.dev, s_nr.ref_tex, s_nr.readback);
         s_ref_dirty = false;
     }
+    SDL_UnlockMutex(s_vram_mx);
 }
 
 /* Pull PsyCross's finished frame from its present FBO into s_nr.ref_tex.
@@ -3329,7 +3419,7 @@ static void native_depth_prepass(void)
         extern unsigned openpete_frame;
         float psx = 300.0f, psy = 145.0f; unsigned fmin = 0;
         if (pr && *pr) sscanf(pr, "%f,%f,%u", &psx, &psy, &fmin);
-        if (pr && *pr && s_shadow_decal.valid && printed < 40 &&
+        if (pr && *pr && ps_shadow()->valid && printed < 40 &&
             openpete_frame >= fmin) {
             for (int t = 0; t < scene_n && printed < 40; t++) {
                 int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
@@ -3341,16 +3431,16 @@ static void native_depth_prepass(void)
                 if (psx < xmin || psx > xmax || psy < ymin || psy > ymax) continue;
                 double W[3][3];
                 for (int i = 0; i < 3; i++) {
-                    W[0][i] = s_shadow_decal.cam_col0[i];
-                    W[1][i] = s_shadow_decal.cam_col1[i];
-                    W[2][i] = s_shadow_decal.cam_col2[i];
+                    W[0][i] = ps_shadow()->cam_col0[i];
+                    W[1][i] = ps_shadow()->cam_col1[i];
+                    W[2][i] = ps_shadow()->cam_col2[i];
                 }
                 double P[3][3];
                 for (int k = 0; k < 3; k++) {
                     double z = scene[t].v[k].z; if (z > 0.9999) z = 0.9999;
                     double vz = 4096.0 * z / (1.0 - z); if (vz < 1.0) vz = 1.0;
-                    double M1 = (scene[t].v[k].sx - s_shadow_decal.ofx) * vz / s_shadow_decal.h;
-                    double M2 = (scene[t].v[k].sy - s_shadow_decal.ofy) * vz / s_shadow_decal.h;
+                    double M1 = (scene[t].v[k].sx - ps_shadow()->ofx) * vz / ps_shadow()->h;
+                    double M2 = (scene[t].v[k].sy - ps_shadow()->ofy) * vz / ps_shadow()->h;
                     double V0 = (W[0][0]*M1 + W[0][1]*M2 + W[0][2]*vz) / 4096.0;
                     double V1 = (W[1][0]*M1 + W[1][1]*M2 + W[1][2]*vz) / 4096.0;
                     double V2 = (W[2][0]*M1 + W[2][1]*M2 + W[2][2]*vz) / 4096.0;
@@ -5042,6 +5132,8 @@ void openpete_native_hdfold_reset(void)
 }
 
 
+static SDL_Mutex *s_hdf_mx;
+static SDL_Mutex *hdf_mx(void) { if (!s_hdf_mx) s_hdf_mx = SDL_CreateMutex(); return s_hdf_mx; }
 int openpete_native_hdfold_intern(int tpx, int tpy, int clx, int cly, int bpp,
                                   const float us[3], const float vs[3])
 {
@@ -5078,13 +5170,17 @@ int openpete_native_hdfold_intern(int tpx, int tpy, int clx, int cly, int bpp,
         s_hdf_shelf_x = s_hdf_shelf_h = 0;
     }
     if (s_hdf_shelf_y + repl.h > HDFOLD_ATLAS_DIM) return -1;   /* atlas full */
-    if (s_hdf_pending_n >= (int)(sizeof(s_hdf_pending) / sizeof(s_hdf_pending[0])))
+    SDL_LockMutex(hdf_mx());
+    if (s_hdf_pending_n >= (int)(sizeof(s_hdf_pending) / sizeof(s_hdf_pending[0]))) {
+        SDL_UnlockMutex(s_hdf_mx);
         return -1;                            /* upload queue full: claim, retry next build */
+    }
     int ax = s_hdf_shelf_x, ay = s_hdf_shelf_y;
     s_hdf_shelf_x += repl.w + 1;
     if (repl.h + 1 > s_hdf_shelf_h) s_hdf_shelf_h = repl.h + 1;
     s_hdf_pending[s_hdf_pending_n++] =
         (rhi_tex_rect_src){ repl.pixels, ax, ay, repl.w, repl.h };
+    SDL_UnlockMutex(s_hdf_mx);
 
     /* The file's texel box anchored in page coords (the sub-run rect rule —
      * invariant across tris resolving the same identity+file). */
@@ -5175,7 +5271,15 @@ void openpete_native_hdfold_prime(rhi_device *dev)
                HDFOLD_ATLAS_DIM, HDFOLD_ATLAS_DIM);
 }
 
+static void hdfold_flush_locked(void);
 void openpete_native_hdfold_flush(void)
+{
+    if (!s_hdf_pending_n || !s_nr.enabled) return;
+    SDL_LockMutex(hdf_mx());
+    hdfold_flush_locked();
+    SDL_UnlockMutex(s_hdf_mx);
+}
+static void hdfold_flush_locked(void)
 {
     if (!s_hdf_pending_n || !s_nr.enabled) return;
     if (!s_hdf_atlas) {
@@ -6036,7 +6140,7 @@ static bool draw_native_scene(bool full_extent)
             }
             fprintf(stderr, "[census f=%u SCENE] n=%d wor=%d act=%d hud=%d ply=%d ovl=%d pan=%d h3d=%d psky=%d pmsk=%d sky=%d fill=%d blend=%d fade=%08x freeze=%u denv=%08x sbg=%08x\n",
                     s_scene_frame, scene_n, cat[0], cat[1], cat[2], cat[3], cat[4], cat[5], cat[6], cat[7], cat[8],
-                    cat[10], cat[11], blend, scene_fade, scene_freeze, s_drawenv_clear, scene_bg);
+                    cat[10], cat[11], blend, scene_fade, scene_freeze, ps_drawenv_clear(), scene_bg);
         }
     }
 
@@ -6049,7 +6153,7 @@ static bool draw_native_scene(bool full_extent)
      * are gamestate (derive-from-gamestate principle holds); the draw-env clear is
      * just the more robust source. scene_bg is the fallback (no auto-clear), then
      * the PsyCross readback corner (ab/diff harness / isolated --render-paths). */
-    uint32_t bg = s_drawenv_clear ? s_drawenv_clear : scene_bg;
+    uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : scene_bg;
     if (bg == 0) bg = bg_from_ref_corner();
 
     /* Empty scene: normally return false so the caller re-displays the PSX VRAM
@@ -6154,7 +6258,7 @@ static bool draw_native_scene(bool full_extent)
             if (scene[t].category == OPENPETE_SCENE_HUD ||
                 scene[t].category == OPENPETE_SCENE_HUD3D ||
                 scene[t].category == OPENPETE_SCENE_HUD_PANEL) continue;  /* -> HUD passes */
-            if (s_suppress_player &&
+            if (ps_suppress_player() &&
                 scene[t].category == OPENPETE_SCENE_PLAYER) continue;
             int b = scene[t].blend; if (b < 0 || b > 3) b = 0;   /* untextured class */
             if (b != gb) continue;
@@ -6519,7 +6623,7 @@ static bool draw_native_scene(bool full_extent)
             if (!scene[t].textured) continue;
             if (tx_start + (txtri + 1) * 3 > SCENE_VB_VERTS) break;
             int cat = scene[t].category;
-            if (s_suppress_player && cat == OPENPETE_SCENE_PLAYER) continue;
+            if (ps_suppress_player() && cat == OPENPETE_SCENE_PLAYER) continue;
             int belongs;
             if (b == 6) belongs = (cat == OPENPETE_SCENE_HUD);
             else if (b == 9) {
@@ -6846,30 +6950,30 @@ static bool draw_native_scene(bool full_extent)
                     bind_scene_pipe(s_nr.gouraud_sub_pipe);
                     rhi_bind_depth_sampler(s_nr.dev, s_nr.opaque_depth, 0);
                     shadow_decal_pc pc;
-                    pc.col0x = s_shadow_decal.cam_col0[0];
-                    pc.col0y = s_shadow_decal.cam_col0[1];
-                    pc.col0z = s_shadow_decal.cam_col0[2];
-                    pc.col1x = s_shadow_decal.cam_col1[0];
-                    pc.col1y = s_shadow_decal.cam_col1[1];
-                    pc.col1z = s_shadow_decal.cam_col1[2];
-                    pc.col2x = s_shadow_decal.cam_col2[0];
-                    pc.col2y = s_shadow_decal.cam_col2[1];
-                    pc.col2z = s_shadow_decal.cam_col2[2];
-                    pc.cam_pos_up = s_shadow_decal.cam_pos_up;
-                    pc.ofx = s_shadow_decal.ofx; pc.ofy = s_shadow_decal.ofy;
-                    pc.h = s_shadow_decal.h;
-                    pc.ground_up = s_shadow_decal.ground_up;
-                    pc.wall_height = s_shadow_decal.wall_height;
-                    pc.steep_nup = s_shadow_decal.steep_nup;
+                    pc.col0x = ps_shadow()->cam_col0[0];
+                    pc.col0y = ps_shadow()->cam_col0[1];
+                    pc.col0z = ps_shadow()->cam_col0[2];
+                    pc.col1x = ps_shadow()->cam_col1[0];
+                    pc.col1y = ps_shadow()->cam_col1[1];
+                    pc.col1z = ps_shadow()->cam_col1[2];
+                    pc.col2x = ps_shadow()->cam_col2[0];
+                    pc.col2y = ps_shadow()->cam_col2[1];
+                    pc.col2z = ps_shadow()->cam_col2[2];
+                    pc.cam_pos_up = ps_shadow()->cam_pos_up;
+                    pc.ofx = ps_shadow()->ofx; pc.ofy = ps_shadow()->ofy;
+                    pc.h = ps_shadow()->h;
+                    pc.ground_up = ps_shadow()->ground_up;
+                    pc.wall_height = ps_shadow()->wall_height;
+                    pc.steep_nup = ps_shadow()->steep_nup;
                     /* mode: env override for calibration; else height-test when
                      * the game supplied valid params, else draw-all (no mask). */
-                    float mode = s_shadow_decal.valid ? 1.0f : 0.0f;
+                    float mode = ps_shadow()->valid ? 1.0f : 0.0f;
                     const char* mv = getenv("OPENPETE_SHADOW_DECAL_MODE");
                     if (mv && *mv) mode = (float)atof(mv);
                     pc.mode = mode;
                     pc.band = shadow_decal_band();
-                    pc.plat_eps = s_shadow_decal.plat_eps;
-                    pc.plat_slack = s_shadow_decal.plat_slack;
+                    pc.plat_eps = ps_shadow()->plat_eps;
+                    pc.plat_slack = ps_shadow()->plat_slack;
                     pc.uax = s_od_uax; pc.ubx = s_od_ubx;
                     pc.vay = s_od_vay; pc.vby = s_od_vby;
                     pc.pvw = s_od_vw; pc.pvh = s_od_vh;
@@ -6906,29 +7010,29 @@ static bool draw_native_scene(bool full_extent)
                 const scene_tri_t *m0 = &scene[s_txscene[base]];   /* uniform material */
                 const uint32_t s0_decal_tag = m0->tag;
                 shadow_decal_tex_pc pc;
-                pc.col0x = s_shadow_decal.cam_col0[0];
-                pc.col0y = s_shadow_decal.cam_col0[1];
-                pc.col0z = s_shadow_decal.cam_col0[2];
-                pc.col1x = s_shadow_decal.cam_col1[0];
-                pc.col1y = s_shadow_decal.cam_col1[1];
-                pc.col1z = s_shadow_decal.cam_col1[2];
-                pc.col2x = s_shadow_decal.cam_col2[0];
-                pc.col2y = s_shadow_decal.cam_col2[1];
-                pc.col2z = s_shadow_decal.cam_col2[2];
-                pc.cam_pos_up = s_shadow_decal.cam_pos_up;
-                pc.ofx = s_shadow_decal.ofx; pc.ofy = s_shadow_decal.ofy;
-                pc.h = s_shadow_decal.h;
-                pc.wall_height = s_shadow_decal.wall_height;
-                pc.steep_nup = s_shadow_decal.steep_nup;
+                pc.col0x = ps_shadow()->cam_col0[0];
+                pc.col0y = ps_shadow()->cam_col0[1];
+                pc.col0z = ps_shadow()->cam_col0[2];
+                pc.col1x = ps_shadow()->cam_col1[0];
+                pc.col1y = ps_shadow()->cam_col1[1];
+                pc.col1z = ps_shadow()->cam_col1[2];
+                pc.col2x = ps_shadow()->cam_col2[0];
+                pc.col2y = ps_shadow()->cam_col2[1];
+                pc.col2z = ps_shadow()->cam_col2[2];
+                pc.cam_pos_up = ps_shadow()->cam_pos_up;
+                pc.ofx = ps_shadow()->ofx; pc.ofy = ps_shadow()->ofy;
+                pc.h = ps_shadow()->h;
+                pc.wall_height = ps_shadow()->wall_height;
+                pc.steep_nup = ps_shadow()->steep_nup;
                 /* height+steep test when the feeder supplied valid camera params,
                  * else draw-all (band). Env override shares the Spyro decal knob. */
-                float mode = s_shadow_decal.valid ? 1.0f : 0.0f;
+                float mode = ps_shadow()->valid ? 1.0f : 0.0f;
                 const char* mv = getenv("OPENPETE_SHADOW_DECAL_MODE");
                 if (mv && *mv) mode = (float)atof(mv);
                 pc.mode = mode;
                 pc.band = shadow_decal_band();
-                pc.plat_eps = s_shadow_decal.plat_eps;
-                pc.plat_slack = s_shadow_decal.plat_slack;
+                pc.plat_eps = ps_shadow()->plat_eps;
+                pc.plat_slack = ps_shadow()->plat_slack;
                 pc.uax = s_od_uax; pc.ubx = s_od_ubx;
                 pc.vay = s_od_vay; pc.vby = s_od_vby;
                 pc.pvw = s_od_vw;  pc.pvh = s_od_vh;
@@ -7654,14 +7758,16 @@ static bool draw_overlay_glyphs_3d(float ax, float ay, float ox) {
  * supersample pre-pass in v1). Runs in screenshot/record composes too — mod
  * HUD is content, not chrome. */
 static void draw_mod_overlay(void) {
-    if (s_mod_overlay_n < 3 || !s_nr.gouraud_pipe || !s_nr.mod_ovl_vb) return;
+    const openpete_hud_vert *ov = s_ps_slot ? s_ps_slot->ovl : s_mod_overlay_verts;
+    const int ovn = s_ps_slot ? s_ps_slot->ovl_n : s_mod_overlay_n;
+    if (ovn < 3 || !s_nr.gouraud_pipe || !s_nr.mod_ovl_vb) return;
     if (s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
     static rhi_vertex buf[MOD_OVL_MAX_VERTS];
     const float ax = 2.0f * (float)s_nr.win_h / (float)s_nr.win_w;
     const float ay = 2.0f;
     int n = 0;
-    for (int i = 0; i < s_mod_overlay_n && n < MOD_OVL_MAX_VERTS; i++) {
-        const openpete_hud_vert *v = &s_mod_overlay_verts[i];
+    for (int i = 0; i < ovn && n < MOD_OVL_MAX_VERTS; i++) {
+        const openpete_hud_vert *v = &ov[i];
         buf[n].x = v->x * ax - 1.0f;
         buf[n].y = 1.0f - v->y * ay;
         buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
@@ -8345,9 +8451,10 @@ static void fill_engine_block(pfx_engine_ubo_t* eng, int w, int h)
 {
     memset(eng, 0, sizeof *eng);
     eng->time = (float)((double)openpete_phase_now_us() * 1e-6);
-    eng->present = s_scene_frame;
+    eng->present = ps_frame();
     int canonical = 1;
-    openpete_mods_present_ctx(&eng->tick, &eng->alpha, &canonical);
+    if (s_ps_slot) { eng->tick = s_ps_slot->pctx_tick; eng->alpha = s_ps_slot->pctx_alpha; canonical = s_ps_slot->pctx_canonical; }
+    else openpete_mods_present_ctx(&eng->tick, &eng->alpha, &canonical);
     eng->canonical = (uint32_t)canonical;
     int ww = 0, wh = 0;
     rhi_swapchain_extent(s_nr.dev, &ww, &wh);
@@ -8394,7 +8501,7 @@ static void fill_material_ubo(void)
                                    MAT_UBO_BLOCKS);
     if (!s_mat_ubo) return;
     write_engine_block(s_mat_ubo, 0, 0, 0);
-    int nslots = openpete_mods_material_slot_count();   /* 1 + interned */
+    int nslots = s_ps_slot ? s_ps_slot->mat_n : openpete_mods_material_slot_count();   /* 1 + interned */
     /* Per-instance material census (OPENPETE_MATERIAL_STATS=1): the peak
      * interned-slot count is the structural proof that per-instance
      * callbacks produce distinct outcomes AND the batcher splits by
@@ -8412,7 +8519,8 @@ static void fill_material_ubo(void)
     }
     for (int s = 1; s < nslots && s < MAT_UBO_BLOCKS - 1; s++) {
         uint32_t len = 0;
-        const void* p = openpete_mods_material_slot_uniforms(s, &len);
+        const void* p = s_ps_slot ? (len = s_ps_slot->mat[s].len, (const void*)s_ps_slot->mat[s].bytes)
+                                  : openpete_mods_material_slot_uniforms(s, &len);
         if (p && len) rhi_ubo_write(s_mat_ubo, 1 + s, p, len);
     }
 }
@@ -8470,7 +8578,8 @@ static rhi_vertex  s_mesh_scratch[65536];
 
 static void draw_mod_meshes(void)
 {
-    int nd = openpete_mods_drawmesh_count();
+    const openpete_mods_drawmesh_snap_t *snap = s_ps_slot ? &s_ps_slot->mesh : NULL;
+    int nd = snap ? snap->draw_n : openpete_mods_drawmesh_count();
     if (nd <= 0) return;
     if (!s_pfx_ubo)
         s_pfx_ubo = rhi_create_ubo(s_nr.dev, OPENPETE_POSTFX_UNIFORMS_MAX,
@@ -8490,7 +8599,8 @@ static void draw_mod_meshes(void)
     for (int i = 0; i < nd; i++) {
         openpete_mod_pipe_gpu_t pd;
         const openpete_mod_vertex_t* mv; int n; uint16_t tex;
-        if (openpete_mods_drawmesh_get(i, &pd, &mv, &n, &tex) != 0) continue;
+        if ((snap ? openpete_mods_drawmesh_snap_get(snap, i, &pd, &mv, &n, &tex)
+                  : openpete_mods_drawmesh_get(i, &pd, &mv, &n, &tex)) != 0) continue;
         if (total + n > (int)(sizeof s_mesh_scratch / sizeof s_mesh_scratch[0]))
             break;
         for (int k = 0; k < n; k++) {
@@ -8518,7 +8628,8 @@ static void draw_mod_meshes(void)
     for (int i = 0; i < nd; i++) {
         openpete_mod_pipe_gpu_t pd;
         const openpete_mod_vertex_t* mv; int n; uint16_t tex;
-        if (openpete_mods_drawmesh_get(i, &pd, &mv, &n, &tex) != 0) continue;
+        if ((snap ? openpete_mods_drawmesh_snap_get(snap, i, &pd, &mv, &n, &tex)
+                  : openpete_mods_drawmesh_get(i, &pd, &mv, &n, &tex)) != 0) continue;
         if (first + n > total) break;
         if (*pd.pipeline_slot == NULL) {
             rhi_pipeline_desc rd = {
@@ -8878,6 +8989,173 @@ static void record_cycle(uint64_t pts_us)
         openpete_record_submit_frame(buf, w, h, /*top_down=*/1, tag);
 }
 
+/* ---- eager scene ring: operations (types above, by s_scene) ---- */
+static void render_frame_common(uint64_t record_pts_us, bool have_ref);
+static int  s_last_frame_presented;
+static SDL_Mutex *ring_mx(void) {
+    if (!s_ring_mx) s_ring_mx = SDL_CreateMutex();
+    return s_ring_mx;
+}
+static void ps_apply_geometry(void) {
+    const int *g = s_ps_slot ? s_ps_slot->geom : s_geom_in;
+    s_nr.disp_x = g[0]; s_nr.disp_y = g[1]; s_nr.disp_w = g[2]; s_nr.disp_h = g[3];
+    s_nr.clip_x = g[4]; s_nr.clip_y = g[5]; s_nr.clip_w = g[6]; s_nr.clip_h = g[7];
+}
+static uint32_t ps_drawenv_clear(void)  { return s_ps_slot ? s_ps_slot->drawenv_clear : s_drawenv_clear; }
+static int      ps_suppress_player(void){ return s_ps_slot ? s_ps_slot->suppress_player : s_suppress_player; }
+static const openpete_shadow_decal_params *ps_shadow(void) { return s_ps_slot ? &s_ps_slot->shadow : &s_shadow_decal; }
+static unsigned ps_frame(void)          { return s_ps_slot ? s_ps_slot->frame : s_scene_frame; }
+
+/* Stamp the terrain builder tags its build with: the scene id while an eager
+ * scene is being extracted, else the VBL counter as before. Scene ids carry
+ * the top bit so they never collide with a VBL number. */
+uint32_t openpete_native_scene_build_stamp(void) {
+    extern unsigned openpete_frame;
+    return s_eager_stamp ? s_eager_stamp : (uint32_t)openpete_frame;
+}
+void openpete_native_scene_eager_begin(void) {
+    s_eager_stamp = 0x80000000u | (s_scene_id_next & 0x7FFFFFFFu);
+}
+static int slot_grow(scene_slot_t *sl, int n) {
+    if (sl->cap >= n) return 1;
+    int cap = sl->cap ? sl->cap : 4096;
+    while (cap < n) cap *= 2;
+    void *nt = realloc(sl->tri, (size_t)cap * sizeof(scene_tri_t));
+    if (!nt) return 0;
+    sl->tri = (scene_tri_t*)nt; sl->cap = cap;
+    return 1;
+}
+/* Copy the accumulator and its companions into the next ring slot. Returns
+ * the slot index, or -1 when the ring has no free slot (the producer is
+ * ahead of the consumer by a whole ring) or the copy could not be sized —
+ * a refused publish, never a truncated scene. */
+int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int paired) {
+    SDL_LockMutex(ring_mx());
+    int idx = (s_ring_head + 1) % SCENE_RING;
+    scene_slot_t *sl = &s_ring[idx];
+    if (sl->state != SS_FREE) { s_ring_census.refused_full++; SDL_UnlockMutex(s_ring_mx); s_eager_stamp = 0; return -1; }
+    SDL_UnlockMutex(s_ring_mx);   /* the slot is FREE: only this thread publishes */
+    if (!slot_grow(sl, s_scene_n)) { s_eager_stamp = 0; return -1; }
+    if (s_scene_n > 0) memcpy(sl->tri, s_scene, (size_t)s_scene_n * sizeof(scene_tri_t));
+    sl->n = s_scene_n; sl->bg = s_scene_bg; sl->fade = s_scene_fade; sl->freeze = s_scene_freeze;
+    sl->hud_under = s_scene_hud_under; sl->actor_front = s_scene_actor_front;
+    sl->frame = s_scene_frame;
+    sl->stamp = s_eager_stamp ? s_eager_stamp : s_scene_frame;
+    sl->drawenv_clear = s_drawenv_clear;
+    memcpy(sl->geom, s_geom_in, sizeof sl->geom);
+    if (sl->ovl_cap < s_mod_overlay_n) {
+        int cap = s_mod_overlay_n < 256 ? 256 : s_mod_overlay_n;
+        void *nv = realloc(sl->ovl, (size_t)cap * sizeof(openpete_hud_vert));
+        if (nv) { sl->ovl = (openpete_hud_vert*)nv; sl->ovl_cap = cap; }
+    }
+    sl->ovl_n = sl->ovl_cap >= s_mod_overlay_n ? s_mod_overlay_n : 0;
+    if (sl->ovl_n > 0) memcpy(sl->ovl, s_mod_overlay_verts, (size_t)sl->ovl_n * sizeof(openpete_hud_vert));
+    sl->suppress_player = s_suppress_player;
+    sl->shadow = s_shadow_decal;
+    openpete_mods_present_ctx(&sl->pctx_tick, &sl->pctx_alpha, &sl->pctx_canonical);
+    openpete_mods_drawmesh_snapshot(&sl->mesh);
+    sl->mat_n = openpete_mods_material_slots_snapshot(sl->mat, SCENE_MAT_SLOTS);
+    sl->scene_id = s_scene_id_next++;
+    sl->target_ns = target_ns; sl->alpha = alpha; sl->paired = paired; sl->kind = kind;
+    sl->presented_serial = 0;
+    s_eager_stamp = 0;
+    SDL_LockMutex(s_ring_mx);
+    sl->state = SS_PENDING;
+    s_ring_head = idx;
+    s_ring_census.published++;
+    SDL_UnlockMutex(s_ring_mx);
+    return idx;
+}
+/* Earliest pending target (0 = none pending). */
+int64_t openpete_native_scene_next_target(void) {
+    op_time_t t = 0;
+    SDL_LockMutex(ring_mx());
+    for (int i = 0; i < SCENE_RING; i++)
+        if (s_ring[i].state == SS_PENDING && (t == 0 || s_ring[i].target_ns < t))
+            t = s_ring[i].target_ns;
+    SDL_UnlockMutex(s_ring_mx);
+    return t;
+}
+/* Pick the pending scene whose target is nearest `at`; every pending scene
+ * OLDER than the pick retires unpresented (superseded). Alpha binds here, at
+ * consume time: the scene shown is the animation moment nearest the flip,
+ * not the one a fixed slot mapping decided on at extraction. Returns the
+ * slot (now PRESENTING) or -1. */
+int openpete_native_scene_pick(int64_t at) {
+    int best = -1; op_time_t bd = 0;
+    SDL_LockMutex(ring_mx());
+    for (int i = 0; i < SCENE_RING; i++) {
+        if (s_ring[i].state != SS_PENDING) continue;
+        op_time_t d = s_ring[i].target_ns > at ? s_ring[i].target_ns - at : at - s_ring[i].target_ns;
+        if (best < 0 || d < bd) { best = i; bd = d; }
+    }
+    if (best >= 0) {
+        for (int i = 0; i < SCENE_RING; i++)
+            if (i != best && s_ring[i].state == SS_PENDING &&
+                (int32_t)(s_ring[i].scene_id - s_ring[best].scene_id) < 0) {
+                s_ring[i].state = SS_FREE; s_ring_census.superseded++;
+            }
+        s_ring[best].state = SS_PRESENTING;
+    }
+    SDL_UnlockMutex(s_ring_mx);
+    return best;
+}
+/* Called by the present thread right after every rhi_begin_frame: frames
+ * RHI_FRAMES_IN_FLIGHT behind the one just begun have had their fence
+ * waited, so their scenes' GPU reads are over. */
+void openpete_native_scene_retire(uint64_t begun_serial) {
+    SDL_LockMutex(ring_mx());
+    for (int i = 0; i < SCENE_RING; i++)
+        if (s_ring[i].state == SS_PRESENTED &&
+            s_ring[i].presented_serial + RHI_FRAMES_IN_FLIGHT <= begun_serial)
+            s_ring[i].state = SS_FREE;
+    SDL_UnlockMutex(s_ring_mx);
+}
+/* True while any unretired scene carries this build stamp. */
+int openpete_native_scene_stamp_live(uint32_t stamp) {
+    int live = 0;
+    SDL_LockMutex(ring_mx());
+    for (int i = 0; i < SCENE_RING && !live; i++)
+        live = s_ring[i].state != SS_FREE && s_ring[i].stamp == stamp;
+    SDL_UnlockMutex(s_ring_mx);
+    return live;
+}
+/* Drop every pending scene (guest discontinuity: savestate, rewind, level
+ * load). A scene mid-present finishes; its pixels are already committed. */
+void openpete_native_scene_ring_flush(void) {
+    SDL_LockMutex(ring_mx());
+    for (int i = 0; i < SCENE_RING; i++)
+        if (s_ring[i].state == SS_PENDING) { s_ring[i].state = SS_FREE; s_ring_census.superseded++; }
+    SDL_UnlockMutex(s_ring_mx);
+}
+int openpete_native_scene_ring_pending(void) {
+    int n = 0;
+    SDL_LockMutex(ring_mx());
+    for (int i = 0; i < SCENE_RING; i++) n += s_ring[i].state == SS_PENDING;
+    SDL_UnlockMutex(s_ring_mx);
+    return n;
+}
+int openpete_native_scene_ring_busy(void) {
+    int n = 0;
+    SDL_LockMutex(ring_mx());
+    for (int i = 0; i < SCENE_RING; i++) n += s_ring[i].state != SS_FREE;
+    SDL_UnlockMutex(s_ring_mx);
+    return n;
+}
+void openpete_native_scene_slot_info(int slot, int64_t *target_ns, double *alpha, int *paired, int *kind) {
+    if (slot < 0 || slot >= SCENE_RING) return;
+    if (target_ns) *target_ns = s_ring[slot].target_ns;
+    if (alpha) *alpha = s_ring[slot].alpha;
+    if (paired) *paired = s_ring[slot].paired;
+    if (kind) *kind = s_ring[slot].kind;
+}
+void openpete_native_scene_ring_report(void) {
+    if (!s_ring_census.published) return;
+    OPL_INFO_F("scene-ring", "%u scene(s) published, %u presented, %u superseded unpresented, %u refused (ring full)",
+               s_ring_census.published, s_ring_census.presented,
+               s_ring_census.superseded, s_ring_census.refused_full);
+}
+
 void openpete_native_render_frame(uint64_t record_pts_us)
 {
     if (!s_nr.enabled)
@@ -8894,18 +9172,6 @@ void openpete_native_render_frame(uint64_t record_pts_us)
     notex_apply_pending();
     truescope_apply_pending();
 
-    /* Rolling 0.5s FPS window for the overlay. Counts actual presents (canonical
-     * + sub-tick intermediates), so it reflects the true on-screen present rate. */
-    {
-        uint64_t now = SDL_GetPerformanceCounter(), freq = SDL_GetPerformanceFrequency();
-        if (s_fps_win_start == 0) s_fps_win_start = now;
-        s_fps_frames++;
-        uint64_t el = now - s_fps_win_start;
-        if (freq > 0 && el >= freq / 2u) {
-            s_fps_value = (int)((double)s_fps_frames * (double)freq / (double)el + 0.5);
-            s_fps_win_start = now; s_fps_frames = 0;
-        }
-    }
 
     /* Detect window-size changes WITHOUT polling SDL events (the host loop
      * owns the event queue, and stealing events would starve PsyCross input). */
@@ -8956,7 +9222,55 @@ void openpete_native_render_frame(uint64_t record_pts_us)
      * never samples have_ref, so the value itself only matters for ab/diff. */
     sync_vram_texture();
     bool have_ref = sync_reference_texture();
+    render_frame_common(record_pts_us, have_ref);
+}
 
+/* Compose and present one ring slot. The present thread's entry: no VRAM or
+ * reference sync here (the guest side did the sync while the guest was idle;
+ * the reference exists only in ab/diff, which never run eager), the mod
+ * registry is held for reading across the compose, and the slot moves to
+ * PRESENTED with the serial of the frame that carries it — or back to FREE
+ * when the swapchain declined, which is a refused present, not a shown one.
+ * Returns 1 if a present went out. */
+int openpete_native_render_scene(int slot, uint64_t record_pts_us)
+{
+    if (!s_nr.enabled || s_nr.headless || slot < 0 || slot >= SCENE_RING) return 0;
+    scene_slot_t *sl = &s_ring[slot];
+    rhi_set_present_blocking(s_nr.dev, true);
+    texmap_apply_pending();
+    notex_apply_pending();
+    truescope_apply_pending();
+    s_ps_slot = sl;
+    const uint64_t before = rhi_frame_serial(s_nr.dev);
+    render_frame_common(record_pts_us, false);
+    const uint64_t after = rhi_frame_serial(s_nr.dev);
+    rhi_set_present_blocking(s_nr.dev, false);
+    s_ps_slot = NULL;
+    const int did = after != before && s_last_frame_presented;
+    SDL_LockMutex(ring_mx());
+    if (did) { sl->state = SS_PRESENTED; sl->presented_serial = after; s_ring_census.presented++; }
+    else      sl->state = SS_FREE;
+    SDL_UnlockMutex(s_ring_mx);
+    return did;
+}
+
+static void render_frame_common(uint64_t record_pts_us, bool have_ref)
+{
+    s_last_frame_presented = 0;
+    ps_apply_geometry();
+    /* Rolling 0.5s FPS window for the overlay. Counts actual presents on
+     * whichever thread makes them (inline, or the present thread under
+     * eager production), so it reflects the true on-screen present rate. */
+    {
+        uint64_t now = SDL_GetPerformanceCounter(), freq = SDL_GetPerformanceFrequency();
+        if (s_fps_win_start == 0) s_fps_win_start = now;
+        s_fps_frames++;
+        uint64_t el = now - s_fps_win_start;
+        if (freq > 0 && el >= freq / 2u) {
+            s_fps_value = (int)((double)s_fps_frames * (double)freq / (double)el + 0.5);
+            s_fps_win_start = now; s_fps_frames = 0;
+        }
+    }
     /* Reference resolution (the display shape for the window aspect-fit + the
      * native_rtt/freeze size) normally comes from PsyCross's present FBO via
      * sync_reference_texture. In pure vk PsyCross no longer rasterizes the OT, so
@@ -8995,6 +9309,12 @@ void openpete_native_render_frame(uint64_t record_pts_us)
       bf_ok = rhi_begin_frame(s_nr.dev); }
     if (!bf_ok)
         return; /* swapchain recreating or window minimized — skip this present */
+    openpete_native_scene_retire(rhi_frame_serial(s_nr.dev));
+    /* The mod registry is read for the rest of the frame's recording. Taken
+     * AFTER begin_frame and released BEFORE end_frame: those two are where a
+     * present blocks on the display, and a tick-boundary mutator on the
+     * other thread must not wait behind a vblank. */
+    openpete_mods_registry_read_lock();
     /* Retained terrain: select against the stamp of the scene this present
      * composes (freeze/lag included), so retained content follows the same
      * timeline and stale states never repaint. */
@@ -9065,7 +9385,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
         }
     }
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_COMPOSE, pt_t1 - pt_t0); pt_t0 = pt_t1;
-                 openpete_phase_set_count(OPPC_TRIS, s_scene_n); }
+                 openpete_phase_set_count(OPPC_TRIS, s_ps_slot ? s_ps_slot->n : s_scene_n); }
     if (s_ptrace) { fprintf(stderr, "C"); fflush(stderr); }
 
     rhi_gpu_zone_begin(s_nr.dev, "blit");
@@ -9083,8 +9403,10 @@ void openpete_native_render_frame(uint64_t record_pts_us)
         rhi_gpu_zone_end(s_nr.dev);
     }
 
+    openpete_mods_registry_read_unlock();
     { OP_PROF_ACCUM_SCOPE("gpu.endframe");   /* submit + present */
       rhi_end_frame(s_nr.dev); }
+    s_last_frame_presented = 1;
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_GPU_SYNC, pt_t1 - pt_t0);
                  openpete_phase_set_count(OPPC_DRAWS, (int)rhi_draw_calls(s_nr.dev));
                  phase_present_done(); }
@@ -9114,6 +9436,7 @@ static int native_render_screenshot_all_impl(const char *base);
 void openpete_native_render_snapshot_frozen(float cap_wf)
 {
     if (!s_nr.enabled) return;
+    ps_apply_geometry();
     if (cap_wf < 1.0f) cap_wf = 1.0f;
     /* Only WORLD frames: a freeze frame has no world geometry, and snapshotting it
      * would overwrite the good backdrop with an empty one. */
@@ -9185,7 +9508,7 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf)
     /* Background = the gamestate draw-env clear (matching the 4:3 compose). */
     int scene_n; uint32_t scene_bg, scene_fade;
     (void)scene_present_buf(&scene_n, &scene_bg, &scene_fade, NULL, NULL, NULL);
-    uint32_t bg = s_drawenv_clear ? s_drawenv_clear : scene_bg;
+    uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : scene_bg;
     if (bg == 0) bg = bg_from_ref_corner();
     const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
     const float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
@@ -9288,6 +9611,7 @@ static int shot_write_offscreen(const char *path, const char *what)
 
 static int native_render_screenshot_all_impl(const char *base)
 {
+    ps_apply_geometry();
     if (!s_nr.enabled || !base) return 1;
 
     /* Live-present -vk (pure-vk window runs): off_image still holds the frame
@@ -9366,7 +9690,7 @@ static int native_render_screenshot_all_impl(const char *base)
      * scene_bg then corner as fallbacks. See draw_native_scene for the rationale. */
     int scene_n; uint32_t scene_bg, scene_fade;
     (void)scene_present_buf(&scene_n, &scene_bg, &scene_fade, NULL, NULL, NULL);
-    uint32_t bg = s_drawenv_clear ? s_drawenv_clear : scene_bg;
+    uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : scene_bg;
     if (bg == 0) bg = bg_from_ref_corner();
     const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
     const float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
@@ -9521,6 +9845,7 @@ static int native_render_screenshot_all_impl(const char *base)
 
 int openpete_native_render_screenshot(const char *path)
 {
+    ps_apply_geometry();
     if (!s_nr.enabled || !path) return 1;
     return shot_write_offscreen(path, "A/B");
 }

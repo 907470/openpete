@@ -6,6 +6,8 @@
 #include "openpete_time.h"
 #include "openpete_host_input.h"
 #include "openpete_log.h"
+#include "openpete_native_render.h"   /* refusal counters for the present recorder */
+#include "rhi.h"                      /* block-time phases */
 
 #include <SDL3/SDL.h>
 
@@ -540,8 +542,17 @@ void openpete_pace_set_slot_ns(int64_t slot_ns)
     s_slot_ns = slot_ns > 0 ? slot_ns : 0;
 }
 
+/* The extraction side's own copy, never touched by a present record. */
+static int64_t s_extract_alpha_micro; static int s_extract_alpha_paired;
+double openpete_pace_extract_alpha(int *paired)
+{
+    if (paired) *paired = s_extract_alpha_paired;
+    return (double)s_extract_alpha_micro / 1e6;
+}
 void openpete_pace_note_alpha(double alpha, int paired)
 {
+    s_extract_alpha_micro  = (int64_t)(alpha * 1e6);
+    s_extract_alpha_paired = paired ? 1 : 0;
     /* Micro-alpha: 1e-6 of a tick, signed. The canonical present is allowed a
      * slightly NEGATIVE alpha (it fires a little before its grid stamp), so
      * this must not be stored unsigned. */
@@ -553,11 +564,60 @@ double openpete_pace_last_alpha(void)
 {
     return (double)s_next_alpha_micro / 1e6;
 }
+int openpete_pace_last_alpha_paired(void) { return s_next_alpha_paired; }
+
+/* One present just returned from the renderer on the CALLING thread: take
+ * the RHI block times, convert any refusal the swapchain made since the last
+ * call into shed records, else log the present. Shared by the inline present
+ * path and the present thread so the refusal ledger has one owner; the two
+ * never present concurrently. `alpha` is the animation moment this frame
+ * showed (paired = 0 when there was no bracket). */
+void openpete_pace_record_present(uint8_t kind, double alpha, int paired)
+{
+    int64_t blk[RHI_BLOCK_PHASE_COUNT] = {0};
+    rhi_take_block_times(blk, RHI_BLOCK_PHASE_COUNT);
+    const int64_t now_ns = op_now();
+    /* A present ATTEMPT that the swapchain refused is a shed, not a present.
+     * Three refusal paths exist (fence, acquire budget, acquire back-off);
+     * every one is reported, or the display rate reads as full while the
+     * user watches half of it. */
+    static uint64_t s_prev_fence_sheds, s_prev_acq_sheds;
+    const uint64_t fence_sheds = openpete_native_render_fence_sheds();
+    const uint64_t acq_sheds   = openpete_native_render_acquire_sheds();
+    if (fence_sheds != s_prev_fence_sheds || acq_sheds != s_prev_acq_sheds) {
+        const uint64_t nf = fence_sheds - s_prev_fence_sheds;
+        const uint64_t na = acq_sheds - s_prev_acq_sheds;
+        s_prev_fence_sheds = fence_sheds;
+        s_prev_acq_sheds   = acq_sheds;
+        for (uint64_t i = 0; i < nf; i++)
+            openpete_pace_shed(kind, PACE_SHED_SLOT_BUSY, blk[RHI_BLOCK_FENCE], 0);
+        for (uint64_t i = 0; i < na; i++)
+            openpete_pace_shed(kind, PACE_SHED_NO_IMAGE, blk[RHI_BLOCK_ACQUIRE], 0);
+        return;
+    }
+    openpete_pace_present_alpha(kind, now_ns, blk[RHI_BLOCK_FENCE], blk[RHI_BLOCK_ACQUIRE],
+                                blk[RHI_BLOCK_PRESENT], blk[RHI_BLOCK_RECREATE],
+                                (int64_t)(alpha * 1e6), paired);
+}
 
 void openpete_pace_present(uint8_t kind, int64_t done_ns,
                            int64_t fence_block_ns, int64_t acquire_block_ns,
                            int64_t queue_present_block_ns,
                            int64_t recreate_block_ns)
+{
+    openpete_pace_present_alpha(kind, done_ns, fence_block_ns, acquire_block_ns,
+                                queue_present_block_ns, recreate_block_ns,
+                                s_next_alpha_micro, s_next_alpha_paired);
+}
+
+/* The alpha travels as an argument: the note_alpha global is written by the
+ * thread that extracts and would be overwritten by a present recorded on
+ * another thread, which logged one scene's alpha against another scene. */
+void openpete_pace_present_alpha(uint8_t kind, int64_t done_ns,
+                                 int64_t fence_block_ns, int64_t acquire_block_ns,
+                                 int64_t queue_present_block_ns,
+                                 int64_t recreate_block_ns,
+                                 int64_t alpha_micro, int paired)
 {
     census_lock();
     s_census.presents[kind <= OP_PACE_REPEAT ? kind : 0]++;
@@ -594,8 +654,8 @@ void openpete_pace_present(uint8_t kind, int64_t done_ns,
     /* The animation time this frame showed, which is what makes a present
      * countable as MOTION rather than as an event: two presents at the same
      * alpha are the same image however far apart they were submitted. */
-    r.e = s_next_alpha_micro;
-    r.f = s_next_alpha_paired;
+    r.e = alpha_micro;
+    r.f = paired;
     pace_emit(&r);
 }
 

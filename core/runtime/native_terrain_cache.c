@@ -5,6 +5,7 @@
 #include "rhi.h"
 #include "openpete_terrain_cache.h"
 #include "openpete_mods.h"   /* terrain material buckets + their pipelines */
+#include "openpete_native_render.h"   /* scene ring: is a build stamp still referenced */
 
 #include <stddef.h>
 #include <stdio.h>
@@ -150,9 +151,16 @@ _Static_assert(offsetof(tc_globals_ubo, rim_oxyH) % 32 == 0 &&
 typedef struct {
     tc_globals_ubo g;
     tc_sector_ubo  sec[OPTC_SLOTS];
-    uint32_t       stamp;             /* openpete_frame of the build */
+    uint32_t       stamp;             /* openpete_frame of the build, or a scene id */
     int            valid;
+    uint32_t       build_serial;      /* present_ctr at the build: ranges freed at a
+                                       * later serial may still be drawn by this state */
 } tc_state;
+
+/* Eager scene ring: one state per published scene, keyed by the scene id the
+ * builder stamped it with. Sized past the scene ring so a state outlives its
+ * scene's retirement. */
+#define TC_RING 48
 
 static struct {
     rhi_device   *dev;
@@ -180,6 +188,8 @@ static struct {
     rhi_texture  *hd_dummy;           /* 1x1 stand-in for the set-4 atlas     */
     tc_state      staged;             /* canonical build awaiting its present */
     tc_state      live;               /* what presents render                 */
+    tc_state      ring[TC_RING];      /* per-scene states (eager); stamp = scene id */
+    int           ring_next;
     tc_state      sel;                /* frame_select's snapshot of live: the
                                        * present's draws may execute VBLs after
                                        * selection (deferred screenshot
@@ -332,6 +342,11 @@ int openpete_tercache_init(rhi_device *dev)
         const uint32_t px = 0;
         rhi_update_rgba8(dev, s_tc.hd_dummy, &px);
     }
+    /* The UBO (block 0 globals, block 1 sectors) is a device object, so it
+     * is made here on the device-owning thread rather than lazily by the
+     * first build, which may run on the thread that runs the guest. */
+    s_tc.ubo = rhi_create_ubo(dev, (uint32_t)TC_UBO_BLOCK, 2);
+    if (!s_tc.ubo) return 0;
     s_tc.ready = 1;
     return 1;
 }
@@ -487,16 +502,32 @@ void openpete_tercache_chunk_free(int arena, uint32_t first, int count)
  * (the serial-retry path re-runs one build) restages in place. */
 static tc_state *tc_begin_state(uint32_t stamp, int immediate)
 {
+    if (immediate && (stamp & 0x80000000u)) {
+        /* A scene-id build: its own ring entry, so every pending scene of a
+         * burst composes against the terrain state extracted WITH it. Reuse
+         * an entry whose scene has retired; a state for a scene still
+         * pending is never overwritten (the oldest retired one is taken). */
+        int pick = -1;
+        for (int k = 0; k < TC_RING; k++) {
+            int i = (s_tc.ring_next + k) % TC_RING;
+            if (!s_tc.ring[i].valid || !openpete_native_scene_stamp_live(s_tc.ring[i].stamp)) { pick = i; break; }
+        }
+        if (pick < 0) pick = s_tc.ring_next;   /* ring exhausted: the oldest (should not happen) */
+        s_tc.ring_next = (pick + 1) % TC_RING;
+        tc_state *T = &s_tc.ring[pick];
+        T->stamp = stamp; T->valid = 1; T->build_serial = s_tc.present_ctr;
+        return T;
+    }
     if (immediate) {
         /* The staged canonical state SURVIVES: an intermediate re-extract
          * borrows live for its own present, and the next hook build's
          * promote restores the canonical timeline. */
-        s_tc.live.stamp = stamp; s_tc.live.valid = 1;
+        s_tc.live.stamp = stamp; s_tc.live.valid = 1; s_tc.live.build_serial = s_tc.present_ctr;
         return &s_tc.live;
     }
     if (s_tc.staged.valid && s_tc.staged.stamp != stamp)
         s_tc.live = s_tc.staged;           /* promote the previous build */
-    s_tc.staged.stamp = stamp; s_tc.staged.valid = 1;
+    s_tc.staged.stamp = stamp; s_tc.staged.valid = 1; s_tc.staged.build_serial = s_tc.present_ctr;
     return &s_tc.staged;
 }
 
@@ -509,8 +540,21 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     s_tc.draws_last = 0;
     /* release deferred ranges older than the in-flight window */
     int w = 0;
+    /* Eager: a range freed at build serial F was drawn by ring states built
+     * before F. Find the oldest build serial among ring states whose scene
+     * is still unretired; nothing freed at or after it may be reused yet.
+     * With no eager scenes in flight this is "no floor" and the release
+     * condition is the build-count window alone, exactly as before. */
+    uint32_t floor_serial = 0; int have_floor = 0;
+    for (int i = 0; i < TC_RING; i++) {
+        const tc_state *R = &s_tc.ring[i];
+        if (!R->valid || !openpete_native_scene_stamp_live(R->stamp)) continue;
+        if (!have_floor || (int32_t)(R->build_serial - floor_serial) < 0) { floor_serial = R->build_serial; have_floor = 1; }
+    }
     for (int i = 0; i < s_tc.defer_n; i++) {
-        if (s_tc.present_ctr - s_tc.defer[i].stamp > TC_DEFER_PRESENTS) {
+        const int aged   = s_tc.present_ctr - s_tc.defer[i].stamp > TC_DEFER_PRESENTS;
+        const int unread = !have_floor || (int32_t)(s_tc.defer[i].stamp - floor_serial) <= 0;
+        if (aged && unread) {
             /* Dead-stamp BEFORE the range becomes reusable. Every draw walks
              * the whole arena and selects per vertex by 3-bit generation, so
              * a released range that lingers unreused (release != reuse; the
@@ -542,12 +586,9 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     }
     s_tc.defer_n = w;
 
-    /* lazily create the UBO (needs the device from init) */
-    if (!s_tc.ubo) {
-        uint32_t block = (uint32_t)TC_UBO_BLOCK;
-        s_tc.ubo = rhi_create_ubo(s_tc.dev, block, 2);
-        if (!s_tc.ubo) { s_tc.ready = 0; return; }
-    }
+    if (!s_tc.ubo) { s_tc.ready = 0; return; }   /* created at init: no device
+                                                   * object is made from the
+                                                   * builder's thread */
     /* STAGE into host structs only: the feeder runs outside the RHI frame,
      * and an outside-frame rhi_ubo_write fills every ring slot — racing an
      * in-flight frame's read. The live blocks flush on the present's first
@@ -640,7 +681,13 @@ void openpete_tercache_frame_select(uint32_t present_stamp)
      * fall back to a small-tolerance live pick: modest skews are normal
      * (pause-entry tail feeds), while a large gap means the feeder stopped
      * (menus, transitions) and the retained state must not repaint. */
-    if (s_tc.ready && s_tc.live.valid && present_stamp == s_tc.live.stamp) {
+    const tc_state *R = NULL;
+    if (s_tc.ready && (present_stamp & 0x80000000u))
+        for (int i = 0; i < TC_RING; i++)
+            if (s_tc.ring[i].valid && s_tc.ring[i].stamp == present_stamp) { R = &s_tc.ring[i]; break; }
+    if (R) {
+        s_tc.draw_open = 1; s_tc.sel = *R;
+    } else if (s_tc.ready && s_tc.live.valid && present_stamp == s_tc.live.stamp) {
         s_tc.draw_open = 1; s_tc.sel = s_tc.live;
     } else if (s_tc.ready && s_tc.staged.valid && present_stamp == s_tc.staged.stamp) {
         s_tc.draw_open = 1; s_tc.sel = s_tc.staged;

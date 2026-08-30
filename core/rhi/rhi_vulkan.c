@@ -231,6 +231,10 @@ struct rhi_device {
     /* Acquire budget in ns, derived from the display refresh at swapchain
      * creation. See RHI_ACQUIRE_TIMEOUT_NS for why a fixed one was wrong. */
     Uint64   acquire_budget_ns;
+    /* The presenting thread has nothing else to do: block on the slot fence
+     * and the acquire instead of shedding. Set by a dedicated present thread;
+     * clear while the thread that runs the sim presents. */
+    bool     present_blocking;
     /* While set, presents are skipped without blocking (see the acquire
      * budget above). Cleared once the window passes. */
     Uint64   acquire_backoff_until_ns;
@@ -1742,6 +1746,11 @@ const char *rhi_present_mode_name(const rhi_device *dev)
     }
 }
 
+void rhi_set_present_blocking(rhi_device *dev, bool on)
+{
+    if (dev) dev->present_blocking = on;
+}
+
 bool rhi_needs_recreate(const rhi_device *dev)
 {
     return dev && dev->needs_recreate;
@@ -1819,6 +1828,12 @@ bool rhi_begin_frame(rhi_device *dev)
         if (dev->headless) {
             vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
                             VK_TRUE, UINT64_MAX);
+        } else if (dev->present_blocking) {
+            /* A dedicated present thread is paced by the display by design:
+             * waiting here costs the sim nothing. Bounded so a dead
+             * compositor still returns control. */
+            vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
+                            VK_TRUE, RHI_IMAGE_FENCE_TIMEOUT_NS);
         } else if (vkGetFenceStatus(dev->device,
                                     dev->in_flight[dev->frame]) != VK_SUCCESS) {
             dev->fence_sheds++;
@@ -1834,7 +1849,7 @@ bool rhi_begin_frame(rhi_device *dev)
 
     /* Backing off after a failed acquire: skip the present without blocking,
      * so a compositor that is not handing out images cannot pace the sim. */
-    if (!dev->headless && dev->acquire_backoff_until_ns) {
+    if (!dev->headless && !dev->present_blocking && dev->acquire_backoff_until_ns) {
         if (SDL_GetTicksNS() < dev->acquire_backoff_until_ns) {
             dev->acquire_sheds++;
             return false;
@@ -1865,7 +1880,8 @@ bool rhi_begin_frame(rhi_device *dev)
              * it and the next frame re-acquires cleanly. */
             dev->acquire_timeouts++;
             dev->acquire_sheds++;
-            dev->acquire_backoff_until_ns = SDL_GetTicksNS() + RHI_ACQUIRE_BACKOFF_NS;
+            if (!dev->present_blocking)
+                dev->acquire_backoff_until_ns = SDL_GetTicksNS() + RHI_ACQUIRE_BACKOFF_NS;
             return false;
         }
         if (acq == VK_ERROR_OUT_OF_DATE_KHR) {

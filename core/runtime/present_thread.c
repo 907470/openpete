@@ -1,30 +1,24 @@
-/* Presenting the last frame again while the guest executes.
+/* The present thread: the consumer half of eager production.
  *
- * The sub-tick present grid loses one slot per tick. The slot that would land
- * inside the tick's protective margin is refused, not because the GPU is busy
- * (a present costs ~430 us against a 2.08 ms slot at 480 Hz) but because
- * issuing it would push the tick late: presenting and executing the guest
- * share a thread. At 480 Hz that is 0.8 slots per tick, 24 presents a second,
- * exactly the 480 -> 456 gap.
+ * The thread running the guest extracts every scene of a span while the
+ * guest is idle and publishes them into the scene ring (native_render.c),
+ * each tagged with the instant its animation alpha was computed for. This
+ * thread sleeps until the earliest pending target, picks the pending scene
+ * nearest that instant, composes it and presents it -- through the next
+ * tick's execution, which is the whole point: the display no longer waits
+ * for the sim thread, and the sim thread never waits for the display.
  *
- * This thread takes the refused slots. While the guest is executing it
- * re-presents the LAST composed frame -- offscreen to swapchain, no
- * recompose, no scene walk, no read of guest RAM or GTE state. That is safe
- * to run concurrently only because the guest's own execution touches neither
- * the Vulkan device nor device-visible memory, which core/rhi/rhi_gpu_audit.h
- * measures rather than assumes.
+ * Ownership: from set_active(1) until set_active(0) returns, this thread is
+ * the only one issuing RHI frames. The guest-side producer touches the
+ * device only through persistently-mapped arena writes, which the terrain
+ * cache's retirement window keeps clear of any frame in flight. Everything
+ * else the compose reads was copied into the ring slot at publish time.
  *
- * What this can prove: that presents issued during a tick reach the display
- * on the refresh grid instead of serialising against the sim thread in the
- * driver. What it CANNOT prove: anything perceptual. A re-presented frame is
- * a DUPLICATE -- under FIFO the display was already showing those pixels for
- * the whole hold. Judge it on the flip histogram and on what the join costs
- * the sim, never on how it looks.
- *
- * Exclusion is a handshake, not a device lock: the sim opens the window
- * immediately before switching to the game fiber and closes it immediately
- * after, waiting out any present still in flight. Outside that window the sim
- * owns the device exactly as before, so no RHI call site changes.
+ * Pacing: there is no grid here. The producer put the targets on the grid;
+ * decimation shows up as targets that skip slots, and a late scene (its
+ * target already passed when it was published) is shown at once rather
+ * than held for a slot that is gone. Alpha binds at consume time: pick()
+ * takes the nearest pending scene and retires the older ones unpresented.
  */
 #include "openpete_present_thread.h"
 
@@ -40,24 +34,24 @@
 static struct {
     SDL_Thread    *thr;
     SDL_Mutex     *mx;
-    SDL_Condition *cv;        /* open / close / quit */
-    SDL_Condition *idle_cv;   /* a present finished */
+    SDL_Condition *cv;        /* activate / kick / quit */
+    SDL_Condition *idle_cv;   /* a compose finished */
 
-    int  open;                /* the guest is executing; presenting permitted */
-    int  busy;                /* a present is in flight right now */
+    int  active;              /* the thread owns the display */
+    int  busy;                /* a compose is in flight right now */
     int  quit;
 
-    op_time_t next_at;        /* next grid slot to aim at */
-    op_time_t period;         /* present grid period */
+    openpete_present_thread_cb cb; void *cb_ctx;
 
     /* census */
-    unsigned  presents;       /* re-presents that went out */
-    unsigned  slots;          /* grid slots stepped this window (presented or not) */
-    unsigned  refused;        /* begin_frame declined (acquire/recreate) */
-    unsigned  windows;        /* open/close pairs */
-    unsigned  joins;          /* closes that had to wait for a present */
-    op_time_t join_ns;        /* total time the sim spent waiting at close */
-    op_time_t join_max_ns;
+    unsigned  presents;       /* scenes that went out */
+    unsigned  refused;        /* compose ran but the swapchain declined */
+    unsigned  late;           /* target already passed when picked */
+    op_time_t late_ns;        /* summed lateness */
+    op_time_t late_max_ns;
+    unsigned  drains;         /* set_active(0) calls */
+    op_time_t drain_wait_ns;  /* time the caller spent waiting at a drain */
+    op_time_t drain_wait_max_ns;
 } s_pt;
 
 static int s_enabled = -1;
@@ -65,10 +59,33 @@ static int s_enabled = -1;
 int openpete_present_thread_enabled(void)
 {
     if (s_enabled < 0) {
-        const char *e = getenv("OPENPETE_PRESENT_THREAD");
+        const char *e = getenv("OPENPETE_EAGER");
         s_enabled = (e && *e && *e != '0') ? 1 : 0;
     }
     return s_enabled;
+}
+
+/* Sleep until `t`, but wake early on a kick/deactivate/quit. Coarse
+ * condvar waits for the bulk, a spin-capable hybrid for the last stretch:
+ * at 480 Hz a slot is 2.08 ms and a millisecond timer is too blunt. Called
+ * with the mutex held; returns with it held. */
+static void wait_until_locked(op_time_t t)
+{
+    for (;;) {
+        if (s_pt.quit || !s_pt.active) return;
+        const op_time_t now = op_now();
+        if (now >= t) return;
+        const op_time_t left = t - now;
+        if (left > 2000000) {
+            SDL_WaitConditionTimeout(s_pt.cv, s_pt.mx, (Sint32)((left - 1500000) / 1000000));
+            /* re-evaluate: a kick may have published an earlier target */
+            return;
+        }
+        SDL_UnlockMutex(s_pt.mx);
+        op_sleep_until(t);
+        SDL_LockMutex(s_pt.mx);
+        return;
+    }
 }
 
 static int present_thread_main(void *unused)
@@ -77,50 +94,46 @@ static int present_thread_main(void *unused)
     SDL_LockMutex(s_pt.mx);
     for (;;) {
         if (s_pt.quit) break;
-        if (!s_pt.open) {
+        if (!s_pt.active) {
             SDL_WaitCondition(s_pt.cv, s_pt.mx);
             continue;
         }
-        const op_time_t now = op_now();
-        if (now < s_pt.next_at) {
-            /* Wait out the slot, but wake on a close so the sim never waits
-             * on a sleep it could have interrupted. */
-            Sint32 ms = (Sint32)((s_pt.next_at - now) / 1000000);
-            SDL_WaitConditionTimeout(s_pt.cv, s_pt.mx, ms > 0 ? ms : 1);
+        const op_time_t target = openpete_native_scene_next_target();
+        if (!target) {
+            /* Nothing pending: sleep until a publish kicks us. Bounded so a
+             * lost kick cannot park the display for good. */
+            SDL_WaitConditionTimeout(s_pt.cv, s_pt.mx, 4);
             continue;
+        }
+        op_time_t now = op_now();
+        if (now < target) {
+            wait_until_locked(target);
+            continue;               /* re-read: the earliest target may have changed */
+        }
+        /* Due (or overdue). Pick against NOW: the nearest animation moment
+         * to the instant this frame is actually leaving. */
+        const int slot = openpete_native_scene_pick(now);
+        if (slot < 0) continue;
+        op_time_t t_ns = 0; double alpha = 0.0; int paired = 0, kind = OP_PACE_INTERMEDIATE;
+        openpete_native_scene_slot_info(slot, &t_ns, &alpha, &paired, &kind);
+        if (now - t_ns > 1000000) {         /* >1 ms past its target */
+            s_pt.late++; s_pt.late_ns += now - t_ns;
+            if (now - t_ns > s_pt.late_max_ns) s_pt.late_max_ns = now - t_ns;
         }
         s_pt.busy = 1;
         SDL_UnlockMutex(s_pt.mx);
-        const int did = openpete_native_render_repeat_last();
+        const int did = openpete_native_render_scene(slot, (uint64_t)(op_now() / 1000));
         if (did) {
-            /* Logged as its own kind. It carries the alpha of the frame it
-             * repeats, so the analysis can see it is the same animation
-             * moment arriving twice -- a hole closed in the display, not
-             * motion added. */
-            openpete_pace_present(OP_PACE_REPEAT, op_now(), 0, 0, 0, 0);
+            openpete_pace_record_present((uint8_t)kind, alpha, paired);
+            if (s_pt.cb) s_pt.cb(s_pt.cb_ctx, kind, alpha, paired);
+        } else {
+            /* The refusal ledger is what turns a declined swapchain into
+             * SHED records; run it even without a present. */
+            openpete_pace_record_present((uint8_t)kind, alpha, paired);
         }
         SDL_LockMutex(s_pt.mx);
         s_pt.busy = 0;
         if (did) s_pt.presents++; else s_pt.refused++;
-        /* Step the grid rather than re-basing on now, and step it in whole
-         * periods: re-basing on the current time silently re-phases this
-         * thread's grid away from the sim's, after which the two interleave
-         * and present MORE often than the grid has slots (measured: 529/s
-         * against a 480 Hz target). Every slot stepped is counted, presented
-         * or not -- the sim advances its own deadline by this count when it
-         * takes the window back, and counting only the presents leaves its
-         * grid lagging by the difference. */
-        s_pt.next_at += s_pt.period;
-        s_pt.slots++;
-        {
-            const op_time_t t = op_now();
-            if (s_pt.next_at < t) {
-                const op_time_t behind = t - s_pt.next_at;
-                const op_time_t skip   = behind / s_pt.period + 1;
-                s_pt.next_at += skip * s_pt.period;
-                s_pt.slots   += (unsigned)skip;
-            }
-        }
         SDL_SignalCondition(s_pt.idle_cv);
     }
     SDL_UnlockMutex(s_pt.mx);
@@ -140,51 +153,56 @@ int openpete_present_thread_start(void)
         OPL_WARN_F("present-thread", "SDL_CreateThread failed: %s", SDL_GetError());
         return 0;
     }
-    OPL_INFO_F("present-thread", "%s",
-               "started: re-presenting the last frame during guest execution");
+    OPL_INFO_F("present-thread", "%s", "started: eager scenes present on their own targets");
     return 1;
 }
 
-void openpete_present_thread_open(op_time_t first_at, op_time_t period)
+void openpete_present_thread_set_callback(openpete_present_thread_cb cb, void *ctx)
 {
-    if (!s_pt.thr || period <= 0) return;
+    s_pt.cb = cb; s_pt.cb_ctx = ctx;
+}
+
+void openpete_present_thread_kick(void)
+{
+    if (!s_pt.thr) return;
     SDL_LockMutex(s_pt.mx);
-    s_pt.open    = 1;
-    s_pt.next_at = first_at;
-    s_pt.period  = period;
-    s_pt.slots   = 0;
-    s_pt.windows++;
     SDL_SignalCondition(s_pt.cv);
     SDL_UnlockMutex(s_pt.mx);
 }
 
-op_time_t openpete_present_thread_close(unsigned *out_slots)
+int openpete_present_thread_active(void) { return s_pt.thr && s_pt.active; }
+
+void openpete_present_thread_set_active(int on)
 {
-    if (out_slots) *out_slots = 0;
-    if (!s_pt.thr) return 0;
+    if (!s_pt.thr) return;
     SDL_LockMutex(s_pt.mx);
-    s_pt.open = 0;
-    SDL_SignalCondition(s_pt.cv);
-    op_time_t waited = 0;
-    if (s_pt.busy) {
+    if (on) {
+        if (!s_pt.active) { s_pt.active = 1; SDL_SignalCondition(s_pt.cv); }
+        SDL_UnlockMutex(s_pt.mx);
+        return;
+    }
+    if (s_pt.active) {
+        s_pt.active = 0;
+        SDL_SignalCondition(s_pt.cv);
+        s_pt.drains++;
+        /* Nothing pending survives: a scene extracted for a moment the
+         * inline path is about to present would be shown twice. */
+        openpete_native_scene_ring_flush();
         const op_time_t t0 = op_now();
         while (s_pt.busy) SDL_WaitCondition(s_pt.idle_cv, s_pt.mx);
-        waited = op_now() - t0;
-        s_pt.joins++;
-        s_pt.join_ns += waited;
-        if (waited > s_pt.join_max_ns) s_pt.join_max_ns = waited;
+        const op_time_t w = op_now() - t0;
+        s_pt.drain_wait_ns += w;
+        if (w > s_pt.drain_wait_max_ns) s_pt.drain_wait_max_ns = w;
     }
-    if (out_slots) *out_slots = s_pt.slots;
     SDL_UnlockMutex(s_pt.mx);
-    return waited;
 }
 
 void openpete_present_thread_stop(void)
 {
     if (!s_pt.thr) return;
+    openpete_present_thread_set_active(0);
     SDL_LockMutex(s_pt.mx);
     s_pt.quit = 1;
-    s_pt.open = 0;
     SDL_SignalCondition(s_pt.cv);
     SDL_UnlockMutex(s_pt.mx);
     SDL_WaitThread(s_pt.thr, NULL);
@@ -196,12 +214,15 @@ void openpete_present_thread_stop(void)
 
 void openpete_present_thread_report(void)
 {
-    if (!s_pt.windows) return;
+    if (!s_pt.presents && !s_pt.refused) return;
     OPL_INFO_F("present-thread",
-               "%u re-present(s) over %u tick window(s), %u refused; "
-               "sim waited at close %u time(s), %.3f ms total, %.3f ms max",
-               s_pt.presents, s_pt.windows, s_pt.refused, s_pt.joins,
-               (double)s_pt.join_ns / 1e6, (double)s_pt.join_max_ns / 1e6);
+               "%u scene(s) presented, %u refused by the swapchain; %u picked late "
+               "(%.3f ms mean, %.3f ms max); %u drain(s), %.3f ms waited total, %.3f ms max",
+               s_pt.presents, s_pt.refused, s_pt.late,
+               s_pt.late ? (double)s_pt.late_ns / s_pt.late / 1e6 : 0.0,
+               (double)s_pt.late_max_ns / 1e6, s_pt.drains,
+               (double)s_pt.drain_wait_ns / 1e6, (double)s_pt.drain_wait_max_ns / 1e6);
+    openpete_native_scene_ring_report();
 }
 
 unsigned openpete_present_thread_presents(void) { return s_pt.presents; }

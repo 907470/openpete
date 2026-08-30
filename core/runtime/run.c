@@ -1001,6 +1001,278 @@ static struct {
     int      dispatch_ok;
 } g_game;
 
+/* ---- eager production --------------------------------------------------
+ *
+ * The pull model presented one scene at a time, extracting it on the sim
+ * thread at the moment the pacer decided it was due -- and refused the
+ * slots that fell inside the tick's protective margin, because extracting
+ * and executing the guest share this thread. Nothing forces extraction to
+ * happen at present time. Every present between tick N and tick N+1
+ * interpolates the span [N-1, N], whose both endpoints are already in the
+ * interp ring the moment tick N lands; so at that moment the whole span is
+ * extractable, and this thread is about to be idle for most of a tick.
+ *
+ * So: at the canonical tick, PLAN which grid instants of the coming span
+ * get a scene; then PRODUCE them one at a time whenever this thread is
+ * idle, publishing each into the scene ring for the present thread, which
+ * shows them on their instants -- through the next tick's execution. The
+ * deadline check sits BETWEEN scenes, never inside one, so the guest never
+ * resumes on interpolated RAM: production is scene-atomic. A scene whose
+ * instant has already passed is skipped (except the canonical, which also
+ * carries the tick boundary for mods).
+ *
+ * Running out of CPU inverts the failure mode. The pull model found out at
+ * the boundary, one present at a time, and lost a contiguous run at the END
+ * of the span. Here the budget (span length minus what this thread must
+ * still do in it) and the per-scene cost are known before anything is
+ * produced, so the shape of the degradation is chosen up front: a divisor
+ * ladder (every 2nd slot, every 3rd ...) keeps the cadence uniform on a
+ * fixed refresh. The trigger is a division, not a threshold on a curve.
+ * Hysteresis is asymmetric -- drop a level the moment a span is cut short,
+ * climb only after several consecutive spans with clear headroom -- because
+ * a rate that oscillates is worse than a steady lower one.
+ *
+ * The lag. The spine shows span [N-1, N] from the moment tick N lands, at
+ * alpha = (t - stamp_N) / period, so alpha reaches 1 when tick N+1 is DUE --
+ * and tick N+1 does not land until it has executed, ~6 ms later. The slots
+ * inside that execution sit at alpha 1.0-1.2: they need pose N+1, which does
+ * not exist yet. No amount of extraction ahead of time fills them; the
+ * timeline itself is one tick-execution too short. So an eager scene for
+ * display instant t animates the instant t - lag, where lag tracks the tail
+ * of the tick's execution time: every slot through the execution then sits
+ * at alpha < 1 of a span whose endpoints are both known, no extrapolation,
+ * and the price is a CONSTANT few milliseconds of display latency in place
+ * of a hold of the same length thirty times a second.
+ *
+ * OPENPETE_EAGER=1 enables (off by default). OPENPETE_EAGER_POLICY=greedy
+ * swaps the divisor ladder for "as many scenes as fit, evenly spaced across
+ * the span" -- the A/B partner for the question whether uniform-on-grid
+ * beats more-frames-off-grid. OPENPETE_EAGER_LEVEL=n pins the divisor;
+ * OPENPETE_EAGER_LAG_US=n pins the lag. */
+#define EAGER_MAX_TARGETS 128
+#define EAGER_COST_WARMUP 8
+#define EAGER_HEADROOM_RUNS 8
+static struct {
+    int       active;                 /* the present thread owns the display */
+    int       n, i;                   /* planned targets, next to produce */
+    op_time_t target[EAGER_MAX_TARGETS];
+    int       level;                  /* divisor: produce every level-th slot */
+    int       pinned;                 /* OPENPETE_EAGER_LEVEL */
+    int       policy;                 /* 0 divisor, 1 greedy */
+    int       headroom_runs;
+    op_time_t cost_ema, cost_dev; int cost_n;   /* per-scene production cost */
+    op_time_t vbl_ema;                /* cost of a non-drawing VBL on this thread */
+    op_time_t tick_ema, tick_dev;     /* execution time of a drawing VBL (the tick) */
+    op_time_t tick_peak;              /* decaying peak of the tick's execution time */
+    op_time_t lag;                    /* animation lag behind the display instant */
+    op_time_t lag_pin;                /* OPENPETE_EAGER_LAG_US */
+    int       lag_headroom;
+    int       dbg_level;
+    op_time_t last_target;            /* the previous span's final display instant */
+    int       world_live;             /* canonical presents are flowing (see the inline gate) */
+    unsigned  spans, produced, skipped_late, cut, refused, level_up, level_down;
+    int       span_cut;               /* this span ended with targets unproduced */
+} s_eager = { .level = 1 };
+
+static void eager_init(void)
+{
+    static int inited;
+    if (inited) return;
+    inited = 1;
+    const char *p = getenv("OPENPETE_EAGER_POLICY");
+    s_eager.policy = (p && !strcmp(p, "greedy")) ? 1 : 0;
+    const char *l = getenv("OPENPETE_EAGER_LEVEL");
+    s_eager.pinned = (l && *l) ? atoi(l) : 0;
+    if (s_eager.pinned > 0) s_eager.level = s_eager.pinned;
+    const char *g = getenv("OPENPETE_EAGER_LAG_US");
+    s_eager.lag_pin = (g && *g) ? (op_time_t)atoll(g) * 1000 : 0;
+}
+
+static op_time_t eager_tail_cost(void)
+{
+    return s_eager.cost_n >= EAGER_COST_WARMUP
+        ? s_eager.cost_ema + 3 * s_eager.cost_dev : 0;
+}
+
+/* Plan the span that starts now: grid instants from `first` (the next slot
+ * on the render grid) to `span_end` (the moment the next tick lands, where
+ * alpha reaches 1). */
+static void eager_plan(op_time_t now, op_time_t first, op_time_t period, op_time_t span_end)
+{
+    /* Close the previous span's books first. */
+    if (s_eager.n && s_eager.i < s_eager.n) { s_eager.cut++; s_eager.span_cut = 1; }
+    /* The lag follows the tick's execution tail: up at once (a slot at
+     * alpha > 1 is a lost frame), down only after a second of headroom (a
+     * lag that flickers warps animation time). */
+    if (s_eager.lag_pin > 0) s_eager.lag = s_eager.lag_pin;
+    else {
+        /* The peak over roughly the last second, decaying toward the centre:
+         * a tail bound that a rare long tick raises at once and that lets go
+         * of it again, unlike a deviation term that a bimodal tick inflates
+         * for good. */
+        s_eager.tick_peak -= (s_eager.tick_peak - s_eager.tick_ema) / 32;
+        const op_time_t want = s_eager.tick_peak + 300000;
+        if (want > s_eager.lag) { s_eager.lag = want; s_eager.lag_headroom = 0; }
+        else if (++s_eager.lag_headroom >= 30) { s_eager.lag = want; s_eager.lag_headroom = 0; }
+    }
+    /* Display instants whose ANIMATION instant (t - lag) is inside the span.
+     * The previous span already covers the instants up to its last target
+     * (that is what the lag is for: its late scenes show through this tick's
+     * execution), so this span begins at the slot after it -- a scene for an
+     * instant the old span covers would sit at NEGATIVE alpha of the new
+     * bracket, a backward extrapolation the old bracket renders exactly. */
+    span_end += s_eager.lag;
+    if (s_eager.last_target && s_eager.last_target + period > first) {
+        op_time_t f = s_eager.last_target + period;
+        /* the old span's grid, unless it drifted a whole slot from ours */
+        if (f - first > period) f = first + ((f - first) / period) * period;
+        first = f;
+    }
+    op_time_t slots[EAGER_MAX_TARGETS]; int ns = 0;
+    for (op_time_t t = first; t <= span_end && ns < EAGER_MAX_TARGETS; t += period) slots[ns++] = t;
+    if (ns == 0) { slots[ns++] = first; }
+
+    /* Budget on the tail of the per-scene cost, against what this thread
+     * has left of the span once the update VBL has run. */
+    const op_time_t tail = eager_tail_cost();
+    op_time_t budget = span_end - now - s_eager.vbl_ema - 1000000;   /* 1 ms safety */
+    if (budget < 0) budget = 0;
+    int afford = tail > 0 ? (int)(budget / tail) : ns;
+    if (afford < 1) afford = 1;
+
+    if (!s_eager.pinned) {
+        int need = (ns + afford - 1) / afford;      /* ceil(ns / afford) */
+        if (need < 1) need = 1;
+        if (s_eager.span_cut && need <= s_eager.level) need = s_eager.level + 1;
+        if (need > s_eager.level) {
+            s_eager.level = need; s_eager.level_down++; s_eager.headroom_runs = 0;
+        } else if (s_eager.level > 1) {
+            /* Climb only with a quarter margin over the next level's demand,
+             * held for several spans: a level that flickers judders the RATE. */
+            const int next_need = (ns + s_eager.level - 2) / (s_eager.level - 1);
+            if (afford * 4 >= next_need * 5) {
+                if (++s_eager.headroom_runs >= EAGER_HEADROOM_RUNS) {
+                    s_eager.level--; s_eager.level_up++; s_eager.headroom_runs = 0;
+                }
+            } else s_eager.headroom_runs = 0;
+        }
+    }
+    static int dbg = -1;
+    if (dbg < 0) { const char *e = getenv("OPENPETE_EAGER_DBG"); dbg = (e && *e && *e != '0'); }
+    if (dbg && (s_eager.span_cut || s_eager.level != s_eager.dbg_level)) {
+        fprintf(stderr, "[eager f=%u] plan: slots=%d budget=%.2fms tail=%.3fms afford=%d level=%d cut=%d lag=%.2fms vbl=%.2fms\n",
+                openpete_frame, ns, (double)budget / 1e6, (double)tail / 1e6, afford,
+                s_eager.level, s_eager.span_cut, (double)s_eager.lag / 1e6, (double)s_eager.vbl_ema / 1e6);
+        s_eager.dbg_level = s_eager.level;
+    }
+    s_eager.span_cut = 0;
+
+    s_eager.n = 0; s_eager.i = 0;
+    if (s_eager.policy == 1) {
+        int k = afford < ns ? afford : ns;
+        const op_time_t len = span_end - first;
+        for (int q = 0; q < k; q++) s_eager.target[s_eager.n++] = first + (len * q) / k;
+    } else {
+        for (int q = 0; q < ns; q += s_eager.level) s_eager.target[s_eager.n++] = slots[q];
+    }
+    s_eager.last_target = s_eager.n ? s_eager.target[s_eager.n - 1] : 0;
+    s_eager.spans++;
+}
+
+/* Produce one scene for instant `t`. The canonical scene (first of the
+ * span) also carries the tick boundary for mods and the canon-lag leg. */
+static void eager_produce_one(op_time_t t, int canonical)
+{
+    extern int g_openpete_canon_lag_leg;
+    openpete_native_reextract_fn re = openpete_native_get_reextract();
+    const op_time_t t0 = op_now();
+    uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
+    openpete_native_vram_sync();                 /* guest idle: the mirror cannot tear */
+    openpete_interp_set_present_target(t - s_eager.lag);   /* the animation instant this display instant shows */
+    if (canonical) g_openpete_canon_lag_leg = 1;
+    openpete_native_scene_eager_begin();
+    const op_time_t rex0 = op_now();
+    re(&g_game.cpu);
+    const op_time_t rex_ns = op_now() - rex0;
+    openpete_native_scene_sig_report(canonical);
+    g_openpete_canon_lag_leg = 0;
+    openpete_mods_present_flush(&g_game.cpu, canonical);
+    openpete_interp_set_present_target(0);
+    const int kind = canonical ? OP_PACE_CANONICAL : OP_PACE_INTERMEDIATE;
+    int paired = 0;
+    const double alpha = openpete_pace_extract_alpha(&paired);
+    const int slot = openpete_native_scene_publish(t, kind, alpha, paired);
+    if (slot >= 0) { openpete_present_thread_kick(); s_eager.produced++; }
+    else s_eager.refused++;
+    if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
+    if (op_prof_on())
+        op_prof_present((uint32_t)openpete_canon_tick,
+                        canonical ? OP_PROF_CANONICAL : OP_PROF_INTERMEDIATE);
+    const op_time_t span = op_now() - t0;
+    openpete_pace_present_span((uint8_t)kind, t0, t0 + span, rex_ns);
+    if (s_eager.cost_n) {
+        const op_time_t d = span > s_eager.cost_ema ? span - s_eager.cost_ema : s_eager.cost_ema - span;
+        s_eager.cost_dev = (s_eager.cost_dev * 7 + d) / 8;
+    }
+    s_eager.cost_ema = s_eager.cost_n ? (s_eager.cost_ema * 7 + span) / 8 : span;
+    if (s_eager.cost_n < EAGER_COST_WARMUP) s_eager.cost_n++;
+}
+
+/* Produce planned scenes while they fit before `deadline`. Scene-atomic:
+ * the check is between scenes. Returns the number produced. */
+static int eager_produce(op_time_t deadline, op_time_t period)
+{
+    int made = 0;
+    const op_time_t tail = eager_tail_cost();
+    while (s_eager.i < s_eager.n) {
+        const op_time_t now = op_now();
+        const op_time_t t = s_eager.target[s_eager.i];
+        const int canonical = s_eager.i == 0;
+        if (!canonical && t < now - period / 2) {   /* its instant is gone */
+            s_eager.i++; s_eager.skipped_late++; continue;
+        }
+        if (!canonical && now + tail > deadline) {
+            static int dbg = -1;
+            if (dbg < 0) { const char *e = getenv("OPENPETE_EAGER_DBG"); dbg = (e && *e && *e != '0'); }
+            if (dbg) fprintf(stderr, "[eager f=%u] stop: %d/%d produced, deadline in %.2fms, tail %.3fms\n",
+                             openpete_frame, s_eager.i, s_eager.n, (double)(deadline - now) / 1e6, (double)tail / 1e6);
+            break;
+        }
+        eager_produce_one(t, canonical);
+        s_eager.i++; made++;
+    }
+    return made;
+}
+
+static void eager_report(void)
+{
+    if (!s_eager.spans) return;
+    OPL_INFO_F("eager", "%u span(s): %u scene(s) produced, %u skipped (instant passed), "
+               "%u refused (ring full), %u cut short; level now %d (%u down, %u up); "
+               "scene cost %.3f ms ema, %.3f ms dev; lag %.3f ms (tick %.3f ms ema, %.3f dev); policy %s",
+               s_eager.spans, s_eager.produced, s_eager.skipped_late, s_eager.refused,
+               s_eager.cut, s_eager.level, s_eager.level_down, s_eager.level_up,
+               (double)s_eager.cost_ema / 1e6, (double)s_eager.cost_dev / 1e6,
+               (double)s_eager.lag / 1e6, (double)s_eager.tick_ema / 1e6, (double)s_eager.tick_dev / 1e6,
+               s_eager.policy ? "greedy" : "divisor");
+}
+
+/* Drop the plan on a guest discontinuity (savestate / rewind / level load);
+ * the ring flushes its own pending scenes. */
+static void eager_on_discontinuity(void) { s_eager.n = s_eager.i = 0; s_eager.last_target = 0; s_eager.tick_peak = s_eager.tick_ema; }
+
+/* Frame-time-log hook for presents made on the present thread. */
+static struct { openpete_frame_time_log_t *log; int64_t *start_ns, *period_ns; } s_eager_ftl;
+static void ftl_record_present(openpete_frame_time_log_t* log, int64_t start_ns,
+                               int64_t period_ns, uint32_t frame);
+static void eager_present_cb(void *ctx, int kind, double alpha, int paired)
+{
+    (void)ctx; (void)kind; (void)alpha; (void)paired;
+    if (s_eager_ftl.log)
+        ftl_record_present(s_eager_ftl.log, *s_eager_ftl.start_ns, *s_eager_ftl.period_ns,
+                           openpete_frame);
+}
+
 static void game_fiber_entry(void) {
     if (g_game.gp != 0u) {
         OPL_INFO_F("boot",
@@ -1131,9 +1403,6 @@ static void pace_sleep_until(op_time_t deadline_ns, op_time_t sim_deadline_ns)
  * owns its own waits rather than a running total: under the thread split the
  * presenting thread is the sim thread, which makes a blocked present a
  * candidate cause for the next tick's lateness. */
-/* Reasons a present did not reach the display. */
-enum { PACE_SHED_SLOT_BUSY = 1, PACE_SHED_NO_BUDGET = 2,
-       PACE_SHED_NO_IMAGE = 3 };
 
 /* Rolling cost of an intermediate present, and how many have been measured.
  * The predicate above will not act until it has seen this many, so a cold
@@ -1201,42 +1470,8 @@ static int pace_shed_margin_k(void)
 
 static void pace_record_present(uint8_t kind)
 {
-    int64_t blk[RHI_BLOCK_PHASE_COUNT] = {0};
-    rhi_take_block_times(blk, RHI_BLOCK_PHASE_COUNT);
-    const op_time_t now_ns = op_now();
-
-    /* A present ATTEMPT that the swapchain refused is a shed, not a present.
-     * Recording it as one keeps the two legible apart: the display rate is
-     * what actually reached the screen, and the shed count is the price the
-     * sim clock is no longer paying.
-     *
-     * There are THREE refusal paths and only the fence one was checked here.
-     * The other two live in the acquire path — the budget expiring, and the
-     * back-off it opens suppressing the presents that follow — and both
-     * returned false while this function went on to log a PRESENT. On a
-     * machine where they fire, half the "presents" in the log never reached
-     * the screen and nothing said so; the display rate read as full while the
-     * user watched half of it. A refusal the instrument cannot see is the
-     * failure this whole log exists to prevent. */
-    static uint64_t s_prev_fence_sheds, s_prev_acq_sheds;
-    const uint64_t fence_sheds = openpete_native_render_fence_sheds();
-    const uint64_t acq_sheds   = openpete_native_render_acquire_sheds();
-    if (fence_sheds != s_prev_fence_sheds || acq_sheds != s_prev_acq_sheds) {
-        const uint64_t nf = fence_sheds - s_prev_fence_sheds;
-        const uint64_t na = acq_sheds - s_prev_acq_sheds;
-        s_prev_fence_sheds = fence_sheds;
-        s_prev_acq_sheds   = acq_sheds;
-        for (uint64_t i = 0; i < nf; i++)
-            openpete_pace_shed(kind, PACE_SHED_SLOT_BUSY,
-                               blk[RHI_BLOCK_FENCE], 0);
-        for (uint64_t i = 0; i < na; i++)
-            openpete_pace_shed(kind, PACE_SHED_NO_IMAGE,
-                               blk[RHI_BLOCK_ACQUIRE], 0);
-        return;
-    }
-    openpete_pace_present(kind, now_ns,
-                          blk[RHI_BLOCK_FENCE], blk[RHI_BLOCK_ACQUIRE],
-                          blk[RHI_BLOCK_PRESENT], blk[RHI_BLOCK_RECREATE]);
+    openpete_pace_record_present(kind, openpete_pace_last_alpha(),
+                                 openpete_pace_last_alpha_paired());
 }
 
 /* Slip ledger for the pacer's deadline clamps below. A clamp fires when the
@@ -2255,10 +2490,16 @@ static int run_host_loop(const openpete_options_t* opts) {
      * resolved render-fps default). */
     openpete_menu_init(opts, refresh_hz);
 
-    /* Off unless OPENPETE_PRESENT_THREAD=1. Windowed pure-vk only: it
-     * re-presents the native offscreen, which nothing else fills. */
-    if (openpete_native_render_enabled() && !opts->headless)
-        openpete_present_thread_start();
+    /* Eager production (OPENPETE_EAGER=1): windowed native display only. */
+    if (openpete_native_render_enabled() && !opts->headless && openpete_present_thread_start()) {
+        eager_init();
+        s_eager_ftl.log = &frame_time_log;
+        s_eager_ftl.start_ns = &frame_time_log_start_ns;
+        s_eager_ftl.period_ns = &frame_time_log_target_period_ns;
+        openpete_present_thread_set_callback(eager_present_cb, NULL);
+        openpete_on_guest_discontinuity(eager_on_discontinuity);
+        openpete_on_guest_discontinuity(openpete_native_scene_ring_flush);
+    }
 
     while (!quit) {
         /* Top-of-loop unlock peek used *only* to gate sim_due under
@@ -3191,42 +3432,38 @@ static int run_host_loop(const openpete_options_t* opts) {
                                      pace_latch_ns);
             {
                 uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
-                /* Hand the present grid to the present thread for exactly as
-                 * long as the guest owns this one. The slots that fall inside
-                 * the tick are the ones the shed predicate refuses; nothing
-                 * else is competing for them, and the guest touches neither
-                 * the device nor device-visible memory while it runs. */
-                openpete_present_thread_open(next_render.at,
-                                             op_period_ns(s_render_period));
+                /* The guest touches neither the device nor device-visible
+                 * memory while it runs (core/rhi/rhi_gpu_audit.h measures
+                 * this); under eager production the present thread keeps
+                 * presenting through this switch. */
+                op_gpu_audit_bind_thread();
                 g_openpete_guest_running = 1;
                 co_switch((cothread_t)openpete_game_fiber);
                 g_openpete_guest_running = 0;
-                {
-                    unsigned slots = 0;
-                    openpete_present_thread_close(&slots);
-                    /* Slots the thread stepped are spent: step the sim's own
-                     * grid past them or the loop presents them a second time
-                     * the moment it gets the thread back.
-                     *
-                     * OPENPETE_PRESENT_THREAD_CEDE=0 skips the hand-back, to
-                     * isolate it: the hold is not idle display time waiting to
-                     * be filled -- the sim repays it with a burst of real
-                     * frames as soon as the tick ends -- so ceding those slots
-                     * to duplicates may cost more motion than it gains
-                     * display. That is one variable, and it gets its own leg. */
-                    static int cede = -1;
-                    if (cede < 0) {
-                        const char *e = getenv("OPENPETE_PRESENT_THREAD_CEDE");
-                        cede = (e && *e == '0') ? 0 : 1;
-                    }
-                    if (slots && cede)
-                        op_deadline_advance(&next_render, s_render_period,
-                                            (int)slots);
-                }
                 if (pt0) openpete_phase_add(OPPT_SIM_TICK, openpete_phase_now_us() - pt0);
             }
             pace_exec_end_ns = op_now();
             ticked_this_iter = (openpete_frame != frame_before_yield);
+            {
+                /* What this VBL cost on this thread. A VBL that queued no
+                 * draw is the update VBL, which the eager planner subtracts
+                 * from the span budget; one that did is the tick, whose
+                 * execution tail sets the eager lag. */
+                const op_time_t ex = pace_exec_end_ns - pace_exec_start_ns;
+                if (!openpete_present_pending)
+                    s_eager.vbl_ema = s_eager.vbl_ema ? (s_eager.vbl_ema * 7 + ex) / 8 : ex;
+                else if (ex < (op_time_t)g_openpete_tick_period_ns / 2) {
+                    /* Longer than half a tick is a load or a stall, not a
+                     * tick: it must not set the lag, which would plan a
+                     * span of a hundred targets and overflow the ring. */
+                    if (s_eager.tick_ema) {
+                        const op_time_t d = ex > s_eager.tick_ema ? ex - s_eager.tick_ema : s_eager.tick_ema - ex;
+                        s_eager.tick_dev = (s_eager.tick_dev * 7 + d) / 8;
+                    }
+                    s_eager.tick_ema = s_eager.tick_ema ? (s_eager.tick_ema * 7 + ex) / 8 : ex;
+                    if (ex > s_eager.tick_peak) s_eager.tick_peak = ex;
+                }
+            }
 
             bool ra_speculated = false;
             bool ra_skip_capture = false;
@@ -3773,10 +4010,43 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * ring), which would otherwise arm this lag leg and lag the
                  * canonical -vk; the explicit alpha=0.5 capture below owns the
                  * sub-tick leg instead. */
-                if (lag_re && !opts->headless &&
+                const int spine_on = lag_re && !opts->headless &&
                     openpete_native_render_enabled() && !openpete_unlock_fps &&
                     g_openpete_interp_enabled && openpete_interp_enabled() &&
-                    !(g_paused && !g_step_one)) {
+                    !(g_paused && !g_step_one);
+                /* Eager production takes the whole present path from here:
+                 * the canonical scene is the first of the span's plan, and
+                 * the present thread shows it. Never with a recording or a
+                 * screenshot target -- those read the inline present. */
+                const int eager_now = spine_on && openpete_present_thread_enabled() &&
+                    !opts->record_path && opts->screenshot_frame_count == 0 &&
+                    opts->screenshot_intermediate_count == 0 &&
+                    opts->screenshot_presents_start < 0 &&
+                    !opts->screenshot_freeze_backdrop;
+                if (eager_now != s_eager.active) {
+                    openpete_present_thread_set_active(eager_now);   /* 0: drains */
+                    s_eager.active = eager_now;
+                    OPL_INFO_F("eager", "%s", eager_now ? "engaged" : "disengaged (inline presents)");
+                }
+                if (eager_now) {
+                    openpete_native_scene_capture_overlay();
+                    const op_time_t period = op_period_ns(s_render_period);
+                    const op_time_t curr = openpete_interp_curr_tick_ns();
+                    const op_time_t now = op_now();
+                    op_time_t first = next_render.at;
+                    while (first < now) first += period;    /* the next slot not yet gone */
+                    const op_time_t span_end = (curr ? curr : now) + (op_time_t)g_openpete_tick_period_ns;
+                    eager_plan(now, first, period, span_end > first ? span_end : first);
+                    /* The canonical scene, then as much of the span as fits
+                     * before the update VBL is due — the latter only while
+                     * the world is live (the gate below). */
+                    s_eager.world_live = s_last_canon_present_ns != 0 &&
+                        (now - s_last_canon_present_ns) <= 6 * sim_period_ns;
+                    eager_produce(s_eager.world_live ? next_sim.at + sim_period_ns - 500000
+                                                     : now, period);
+                    pace_canon_extract_ns = 0;
+                } else
+                if (spine_on) {
                     /* Snapshot the 2D-UI overlay (fade/letterbox/menu panel + the
                      * 2D-UI sprites/lines) from THIS canonical render's scene before
                      * the re-extract wipes it. Captured on the CANONICAL present only
@@ -3809,13 +4079,13 @@ static int run_host_loop(const openpete_options_t* opts) {
             /* Mod draw service: commit the finished tick's draw commands,
              * run present hooks, push the overlay (near-zero cost modless).
              * See core/mods/mod_draw.c. */
-            openpete_mods_present_flush(&g_game.cpu, 1);
+            if (!s_eager.active) {
+                openpete_mods_present_flush(&g_game.cpu, 1);
 
-            /* The PTS arg tags this present for --record: the frame is queued
-             * into the async readback ring inside (no GPU stall), so a vk
-             * recording captures the on-screen frame at real speed. No-op unless
-             * native is the display AND recording is active. */
-            {
+                /* The PTS arg tags this present for --record: the frame is queued
+                 * into the async readback ring inside (no GPU stall), so a vk
+                 * recording captures the on-screen frame at real speed. No-op unless
+                 * native is the display AND recording is active. */
                 const int audit_arm = gpu_audit_selftest_arm();
                 if (audit_arm) g_openpete_guest_running = 1;
                 openpete_native_render_frame((uint64_t)(op_now() / 1000));
@@ -3908,6 +4178,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * record's `frame` field still carries openpete_frame as
              * metadata for cross-referencing with position-log /
              * gameplay-hash-log. */
+            if (!s_eager.active) {
             ftl_record_present(&frame_time_log, frame_time_log_start_ns,
                                frame_time_log_target_period_ns, openpete_frame);
             pace_record_present(OP_PACE_CANONICAL);
@@ -3919,6 +4190,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * and census emitted since the previous present binds here. */
             if (op_prof_on())
                 op_prof_present((uint32_t)openpete_canon_tick, OP_PROF_CANONICAL);
+            }
         }
 
         /* Native sub-tick intermediate render between sim ticks
@@ -3956,6 +4228,16 @@ static int run_host_loop(const openpete_options_t* opts) {
         /* Native sub-tick re-feed (high-FPS spine): rebuild the native
          * scene against interpolated gamestate and present that. */
         openpete_native_reextract_fn native_re = openpete_native_get_reextract();
+        /* Eager disengages the moment its gate closes on ANY iteration (a
+         * pause pressed mid-span), so the inline path never presents while
+         * the present thread still holds the display. Re-engaging waits for
+         * the next canonical tick, which owns the plan. */
+        if (s_eager.active && (openpete_unlock_fps || !g_openpete_interp_enabled ||
+                               !openpete_interp_enabled() || (g_paused && !g_step_one))) {
+            openpete_present_thread_set_active(0);
+            s_eager.active = 0;
+            OPL_INFO_F("eager", "%s", "disengaged (inline presents)");
+        }
         const bool native_intermediate =
             !headless_block && !openpete_unlock_fps &&
             g_openpete_interp_enabled &&
@@ -3996,6 +4278,23 @@ static int run_host_loop(const openpete_options_t* opts) {
             sim_due ? next_sim.at + sim_period_ns : next_sim.at;
 
         int pace_shed_now = 0;
+        if (s_eager.active) {
+            /* A non-drawing iteration under eager production: this thread is
+             * idle, so produce whatever of the plan still fits before the
+             * next VBL. Nothing is presented from here. The VBL cost this
+             * budgets against is measured on the drawing iterations' update
+             * VBL (see pace_exec below). */
+            /* The same world-liveness gate the inline intermediate path
+             * applies: while canonical presents are not flowing (CD load,
+             * level transition, a long producer stall) the guest is
+             * rewriting RAM and a re-extract would read it mid-overwrite.
+             * The display holds the last image; no scene is produced. */
+            s_eager.world_live = s_last_canon_present_ns != 0 &&
+                (op_now() - s_last_canon_present_ns) <= 6 * sim_period_ns;
+            if (!did_present_this_iter && native_re && s_eager.world_live)
+                eager_produce(pace_sim_deadline - 500000, op_period_ns(s_render_period));
+            pace_shed_now = 1;   /* the inline path below stays quiet */
+        } else
         if (native_intermediate) {
             /* Decay first, then take the max: without the decay this is a
              * high-water mark that one long budget pins forever, and the
@@ -4607,6 +4906,7 @@ static int run_host_loop(const openpete_options_t* opts) {
      * device. */
     openpete_present_thread_stop();
     openpete_present_thread_report();
+    eager_report();
 
     /* Report before PsyX_Shutdown: the instrument reads PsyCross pad state. */
     openpete_host_input_parity_report();

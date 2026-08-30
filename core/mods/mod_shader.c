@@ -35,6 +35,44 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+
+#include <SDL3/SDL.h>
+
+/* Registry lock. The tables below (shaders, postfx passes, pipelines,
+ * materials) are mutated from mod hooks on the thread that runs the guest
+ * and read by the compose, which may run on a present thread. Mutators take
+ * the write side; a compose holds the read side for its whole duration, so
+ * a tick boundary that retunes a material waits for the present in flight
+ * rather than shading half of it under the old key. Uncontended in the
+ * common case: the tables change at tick boundaries and mod load/unload. */
+static SDL_RWLock* s_reg_lock;
+static SDL_RWLock* reg_lock(void) {
+    if (!s_reg_lock) s_reg_lock = SDL_CreateRWLock();
+    return s_reg_lock;
+}
+/* A mutator called from INSIDE the compose (a mod UI section retuning a
+ * selector, a postfx uniform set from the dev overlay) runs on the thread
+ * that holds the read side; taking the write side there would deadlock, and
+ * the mutation is by the reader itself, which is the single-threaded case
+ * this lock exists to preserve. Only one compose runs at a time, so one
+ * reader thread id suffices. */
+static SDL_ThreadID s_reg_reader_tid;
+static int reg_wr_begin(void) {
+    if (s_reg_reader_tid && s_reg_reader_tid == SDL_GetCurrentThreadID()) return 0;
+    SDL_LockRWLockForWriting(reg_lock());
+    return 1;
+}
+static void reg_wr_end(int locked) { if (locked) SDL_UnlockRWLock(s_reg_lock); }
+#define REG_WR()     const int reg_l_ = reg_wr_begin()
+#define REG_WR_END() reg_wr_end(reg_l_)
+void openpete_mods_registry_read_lock(void) {
+    SDL_LockRWLockForReading(reg_lock());
+    s_reg_reader_tid = SDL_GetCurrentThreadID();
+}
+void openpete_mods_registry_read_unlock(void) {
+    s_reg_reader_tid = 0;
+    SDL_UnlockRWLock(s_reg_lock);
+}
 #include <dirent.h>
 #ifdef _WIN32
 #include <direct.h>
@@ -435,7 +473,7 @@ static size_t compile_profile(const char* src, int stage,
 /* ------------------------------------------------------------------ */
 /* the service                                                         */
 
-int openpete_mods_shader_register(openpete_mod_t* self, const char* path) {
+static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char* path) {
     const char* id = openpete_mods_id_of(self);
     const char* mod_dir = openpete_mods_dir_of(self);
     if (!id || !mod_dir || !path || !*path) return -1;
@@ -565,6 +603,8 @@ int openpete_mods_shader_register(openpete_mod_t* self, const char* path) {
     sh->live = 1;
     return s_shader_count++;
 }
+int openpete_mods_shader_register(openpete_mod_t* self, const char* path) { REG_WR(); int r_ = openpete_mods_shader_register_locked(self, path); REG_WR_END(); return r_; }
+
 
 const uint32_t* openpete_mods_shader_spv(int handle, size_t* words,
                                          int* stage) {
@@ -585,7 +625,7 @@ const uint32_t* openpete_mods_shader_spv_terrain(int handle, size_t* words) {
     return s_shaders[handle].spv_ter;
 }
 
-void openpete_mods_shader_remove_owner(const char* mod_id) {
+static void openpete_mods_shader_remove_owner_locked(const char* mod_id) {
     for (int i = 0; i < s_shader_count; i++) {
         if (!s_shaders[i].live || !s_shaders[i].owner) continue;
         if (strcmp(s_shaders[i].owner, mod_id) != 0) continue;
@@ -598,6 +638,8 @@ void openpete_mods_shader_remove_owner(const char* mod_id) {
         s_shaders[i].live = 0;   /* slot stays dead: stale handles error */
     }
 }
+void openpete_mods_shader_remove_owner(const char* mod_id) { REG_WR(); openpete_mods_shader_remove_owner_locked(mod_id); REG_WR_END(); }
+
 
 /* Hot-reload watch companion (mod_loader.c hot_reload_poll): content
  * hash of every shader source under <mod>/shaders/. "-" when the dir
@@ -665,7 +707,7 @@ static int s_fx_count;
 static void* s_retired_pipelines[MOD_POSTFX_MAX];
 static int s_retired_n;
 
-int openpete_mods_postfx_register(openpete_mod_t* self, int frag_shader,
+static int openpete_mods_postfx_register_locked(openpete_mod_t* self, int frag_shader,
                                   int point, int order) {
     const char* id = openpete_mods_id_of(self);
     if (!id) return -1;
@@ -701,16 +743,21 @@ int openpete_mods_postfx_register(openpete_mod_t* self, int frag_shader,
     fx->live = 1;
     return s_fx_count++;
 }
+int openpete_mods_postfx_register(openpete_mod_t* self, int frag_shader,
+                                  int point, int order) { REG_WR(); int r_ = openpete_mods_postfx_register_locked(self, frag_shader, point, order); REG_WR_END(); return r_; }
 
-int openpete_mods_postfx_enable(openpete_mod_t* self, int fx, int enabled) {
+
+static int openpete_mods_postfx_enable_locked(openpete_mod_t* self, int fx, int enabled) {
     const char* id = openpete_mods_id_of(self);
     if (!id || fx < 0 || fx >= s_fx_count || !s_fx[fx].live) return -1;
     if (strcmp(s_fx[fx].owner, id) != 0) return -1;   /* not yours */
     s_fx[fx].enabled = enabled ? 1 : 0;
     return 0;
 }
+int openpete_mods_postfx_enable(openpete_mod_t* self, int fx, int enabled) { REG_WR(); int r_ = openpete_mods_postfx_enable_locked(self, fx, enabled); REG_WR_END(); return r_; }
 
-int openpete_mods_postfx_set_uniforms(openpete_mod_t* self, int fx,
+
+static int openpete_mods_postfx_set_uniforms_locked(openpete_mod_t* self, int fx,
                                       const void* data, uint32_t size) {
     const char* id = openpete_mods_id_of(self);
     if (!id || fx < 0 || fx >= s_fx_count || !s_fx[fx].live || !data) return -1;
@@ -720,6 +767,9 @@ int openpete_mods_postfx_set_uniforms(openpete_mod_t* self, int fx,
     s_fx[fx].uniforms_len = size;
     return 0;
 }
+int openpete_mods_postfx_set_uniforms(openpete_mod_t* self, int fx,
+                                      const void* data, uint32_t size) { REG_WR(); int r_ = openpete_mods_postfx_set_uniforms_locked(self, fx, data, size); REG_WR_END(); return r_; }
+
 
 /* Renderer-facing: enabled passes at `point`, ordered by enabled-list
  * priority (load index) then per-mod order then registration. The fx
@@ -770,7 +820,7 @@ int openpete_mods_postfx_take_retired(void** out, int cap) {
 /* Shutdown sweep: every cached pipeline (enabled or not) to the
  * retirement list; registrations stay live (process is exiting or the
  * renderer is about to drain). */
-void openpete_mods_postfx_retire_all(void) {
+static void openpete_mods_postfx_retire_all_locked(void) {
     for (int i = 0; i < s_fx_count; i++) {
         if (!s_fx[i].live) continue;
         if (s_fx[i].pipeline && s_fx[i].pipeline != OPENPETE_POSTFX_PIPE_FAILED &&
@@ -779,8 +829,10 @@ void openpete_mods_postfx_retire_all(void) {
         s_fx[i].pipeline = NULL;
     }
 }
+void openpete_mods_postfx_retire_all(void) { REG_WR(); openpete_mods_postfx_retire_all_locked(); REG_WR_END(); }
 
-void openpete_mods_postfx_remove_owner(const char* mod_id) {
+
+static void openpete_mods_postfx_remove_owner_locked(const char* mod_id) {
     for (int i = 0; i < s_fx_count; i++) {
         if (!s_fx[i].live || strcmp(s_fx[i].owner, mod_id) != 0) continue;
         if (s_fx[i].pipeline && s_fx[i].pipeline != OPENPETE_POSTFX_PIPE_FAILED &&
@@ -790,6 +842,8 @@ void openpete_mods_postfx_remove_owner(const char* mod_id) {
         s_fx[i].live = 0;
     }
 }
+void openpete_mods_postfx_remove_owner(const char* mod_id) { REG_WR(); openpete_mods_postfx_remove_owner_locked(mod_id); REG_WR_END(); }
+
 /* ------------------------------------------------------------------ */
 /* custom-pipeline tier (S7): registry + per-present draw queue. The
  * queue is filled from PRESENT HOOKS (render-pure) and drained by the
@@ -799,6 +853,7 @@ void openpete_mods_postfx_remove_owner(const char* mod_id) {
 #define MOD_PIPE_MAX       32
 #define MOD_MESH_VERTS_MAX 65536
 #define MOD_MESH_DRAWS_MAX 256
+typedef char mod_mesh_draws_snap_assert[(MOD_MESH_DRAWS_MAX == 256) ? 1 : -1];
 
 typedef struct {
     const char* owner;
@@ -818,7 +873,7 @@ typedef struct { int pipe; int first, n; uint16_t tex; } mesh_draw_t;
 static mesh_draw_t s_mesh_draws[MOD_MESH_DRAWS_MAX];
 static int s_mesh_draw_n;
 
-int openpete_mods_pipeline_register(openpete_mod_t* self,
+static int openpete_mods_pipeline_register_locked(openpete_mod_t* self,
                                     const openpete_mod_pipeline_desc_t* desc) {
     const char* id = openpete_mods_id_of(self);
     if (!id || !desc) return -1;
@@ -865,6 +920,9 @@ int openpete_mods_pipeline_register(openpete_mod_t* self,
     p->live = 1;
     return s_pipe_count++;
 }
+int openpete_mods_pipeline_register(openpete_mod_t* self,
+                                    const openpete_mod_pipeline_desc_t* desc) { REG_WR(); int r_ = openpete_mods_pipeline_register_locked(self, desc); REG_WR_END(); return r_; }
+
 
 int openpete_mods_draw_mesh(openpete_mod_t* self, int pipeline,
                             const void* verts, int vert_count,
@@ -921,12 +979,56 @@ int openpete_mods_drawmesh_get(int i, openpete_mod_pipe_gpu_t* pd,
     return 0;
 }
 
+/* Per-scene snapshot of the draw_mesh queue: a present that composes a
+ * scene later than the hooks that queued its draws (and possibly on another
+ * thread, while the next scene's hooks are already queueing) reads from the
+ * copy, never from the live pool. Vertex storage grows to the used size. */
+int openpete_mods_drawmesh_snapshot(openpete_mods_drawmesh_snap_t* d) {
+    if (!d) return -1;
+    d->draw_n = 0;
+    if (s_mesh_draw_n <= 0) { d->vert_n = 0; return 0; }
+    if (d->vert_cap < s_mesh_vert_n) {
+        int cap = s_mesh_vert_n < 1024 ? 1024 : s_mesh_vert_n;
+        void* nv = realloc(d->verts, (size_t)cap * sizeof(openpete_mod_vertex_t));
+        if (!nv) { d->vert_n = 0; return -1; }
+        d->verts = (openpete_mod_vertex_t*)nv; d->vert_cap = cap;
+    }
+    memcpy(d->verts, s_mesh_verts, (size_t)s_mesh_vert_n * sizeof(openpete_mod_vertex_t));
+    d->vert_n = s_mesh_vert_n;
+    for (int i = 0; i < s_mesh_draw_n && i < MOD_MESH_DRAWS_MAX; i++) {
+        d->draws[i].pipe = s_mesh_draws[i].pipe; d->draws[i].first = s_mesh_draws[i].first;
+        d->draws[i].n = s_mesh_draws[i].n; d->draws[i].tex = s_mesh_draws[i].tex;
+    }
+    d->draw_n = s_mesh_draw_n;
+    return 0;
+}
+
+int openpete_mods_drawmesh_snap_get(const openpete_mods_drawmesh_snap_t* d, int i,
+                                    openpete_mod_pipe_gpu_t* pd,
+                                    const openpete_mod_vertex_t** verts, int* n,
+                                    uint16_t* tex) {
+    if (!d || i < 0 || i >= d->draw_n || !pd || !verts || !n || !tex) return -1;
+    mod_pipe_t* p = &s_pipes[d->draws[i].pipe];
+    if (!p->live || !openpete_mods_is_enabled(p->owner)) return -1;
+    pd->vert_spv = openpete_mods_shader_spv(p->vert, &pd->vert_words, NULL);
+    pd->frag_spv = openpete_mods_shader_spv(p->frag, &pd->frag_words, NULL);
+    pd->blend = p->blend;
+    pd->depth_test = p->depth_test;
+    pd->depth_write = p->depth_write;
+    pd->pipeline_slot = &p->pipeline;
+    pd->owner = p->owner;
+    *verts = &d->verts[d->draws[i].first];
+    *n = d->draws[i].n;
+    *tex = d->draws[i].tex;
+    return 0;
+}
+
 void openpete_mods_drawmesh_clear(void) {
     s_mesh_draw_n = 0;
     s_mesh_vert_n = 0;
 }
 
-void openpete_mods_pipeline_remove_owner(const char* mod_id) {
+static void openpete_mods_pipeline_remove_owner_locked(const char* mod_id) {
     for (int i = 0; i < s_pipe_count; i++) {
         if (!s_pipes[i].live || strcmp(s_pipes[i].owner, mod_id) != 0) continue;
         if (s_pipes[i].pipeline &&
@@ -937,8 +1039,10 @@ void openpete_mods_pipeline_remove_owner(const char* mod_id) {
         s_pipes[i].live = 0;
     }
 }
+void openpete_mods_pipeline_remove_owner(const char* mod_id) { REG_WR(); openpete_mods_pipeline_remove_owner_locked(mod_id); REG_WR_END(); }
 
-void openpete_mods_pipeline_retire_all(void) {
+
+static void openpete_mods_pipeline_retire_all_locked(void) {
     for (int i = 0; i < s_pipe_count; i++) {
         if (!s_pipes[i].live) continue;
         if (s_pipes[i].pipeline &&
@@ -948,6 +1052,8 @@ void openpete_mods_pipeline_retire_all(void) {
         s_pipes[i].pipeline = NULL;
     }
 }
+void openpete_mods_pipeline_retire_all(void) { REG_WR(); openpete_mods_pipeline_retire_all_locked(); REG_WR_END(); }
+
 /* ------------------------------------------------------------------ */
 /* material-selector tier (S8a declarative + S8b per-instance).
  *
@@ -1198,7 +1304,7 @@ static int material_sel_valid(const char* id,
     return 1;
 }
 
-int openpete_mods_material_register(openpete_mod_t* self,
+static int openpete_mods_material_register_locked(openpete_mod_t* self,
                                     const openpete_mod_material_selector_t* sel,
                                     int vert_shader, int frag_shader,
                                     openpete_mod_material_fn per_instance) {
@@ -1252,9 +1358,14 @@ int openpete_mods_material_register(openpete_mod_t* self,
                per_instance ? ", per-instance" : "");
     return handle;
 }
+int openpete_mods_material_register(openpete_mod_t* self,
+                                    const openpete_mod_material_selector_t* sel,
+                                    int vert_shader, int frag_shader,
+                                    openpete_mod_material_fn per_instance) { REG_WR(); int r_ = openpete_mods_material_register_locked(self, sel, vert_shader, frag_shader, per_instance); REG_WR_END(); return r_; }
+
 
 /* Turn one registered material on or off. */
-int openpete_mods_material_enable(openpete_mod_t* self, int material, int on) {
+static int openpete_mods_material_enable_locked(openpete_mod_t* self, int material, int on) {
     (void)self;
     if (material < 0 || material >= s_mat_count || !s_mats[material].live)
         return -1;
@@ -1262,9 +1373,11 @@ int openpete_mods_material_enable(openpete_mod_t* self, int material, int on) {
     material_rearm_split();
     return 0;
 }
+int openpete_mods_material_enable(openpete_mod_t* self, int material, int on) { REG_WR(); int r_ = openpete_mods_material_enable_locked(self, material, on); REG_WR_END(); return r_; }
+
 
 /* Set the uniform block a material's shader reads. */
-int openpete_mods_material_set_params(openpete_mod_t* self, int material,
+static int openpete_mods_material_set_params_locked(openpete_mod_t* self, int material,
                                       const void* block, uint32_t len) {
     (void)self;
     if (material < 0 || material >= s_mat_count || !s_mats[material].live)
@@ -1275,12 +1388,15 @@ int openpete_mods_material_set_params(openpete_mod_t* self, int material,
     if (len) memcpy(s_mats[material].params, block, len);
     return 0;
 }
+int openpete_mods_material_set_params(openpete_mod_t* self, int material,
+                                      const void* block, uint32_t len) { REG_WR(); int r_ = openpete_mods_material_set_params_locked(self, material, block, len); REG_WR_END(); return r_; }
+
 
 /* Retune a live material's selector, keeping its handle, shader, callback and
  * enabled state. Re-registering instead would burn a table slot per change
  * and leave the old selector matching forever, and is refused outright inside
  * a present — which is exactly where a mod reacting to its own UI runs. */
-int openpete_mods_material_set_selector(
+static int openpete_mods_material_set_selector_locked(
         openpete_mod_t* self, int material,
         const openpete_mod_material_selector_t* sel) {
     const char* id = openpete_mods_id_of(self);
@@ -1309,9 +1425,13 @@ int openpete_mods_material_set_selector(
     material_rearm_split();      /* bumps the epoch: baked terrain re-keys */
     return 0;
 }
+int openpete_mods_material_set_selector(
+        openpete_mod_t* self, int material,
+        const openpete_mod_material_selector_t* sel) { REG_WR(); int r_ = openpete_mods_material_set_selector_locked(self, material, sel); REG_WR_END(); return r_; }
+
 
 /* Install selectors parked by a present-context retune. */
-void openpete_mods_material_apply_pending(void) {
+static void openpete_mods_material_apply_pending_locked(void) {
     if (!s_mat_sel_dirty) return;
     s_mat_sel_dirty = 0;
     int n = 0;
@@ -1323,6 +1443,11 @@ void openpete_mods_material_apply_pending(void) {
     }
     if (n) material_rearm_split();
 }
+void openpete_mods_material_apply_pending(void) {
+    if (!s_mat_sel_dirty) return;     /* nothing parked: never take the lock */
+    REG_WR(); openpete_mods_material_apply_pending_locked(); REG_WR_END();
+}
+
 
 /* The winning selector index for a moby of class `cls` (enabled-list
  * priority, first match wins), or -1. Mobys have no env/tier, so those
@@ -1350,7 +1475,7 @@ static int material_moby_winner(int cls) {
  * renders. Draw-time resolve is the only consumer, and -1 (nothing has
  * pushed yet) makes every level key inert rather than wrongly matching. */
 static int s_cur_level = -1;
-void openpete_mods_set_level(int level_id) {
+static void openpete_mods_set_level_locked(int level_id) {
     /* The retained-terrain claim latches its verdict against
      * openpete_mods_material_epoch(), and that verdict now depends on the
      * level (selectors are level-scoped, because sector and texture ids are
@@ -1358,6 +1483,10 @@ void openpete_mods_set_level(int level_id) {
      * latched in one level keeps that answer into the next. */
     if (level_id != s_cur_level) { s_cur_level = level_id; s_mat_epoch++; }
 }
+/* One int, written between scenes and read at draw: no lock, and never a
+ * wait behind a compose blocked on the display. */
+void openpete_mods_set_level(int level_id) { openpete_mods_set_level_locked(level_id); }
+
 static int openpete_mods_current_level(void) { return s_cur_level; }
 
 /* Bumped every present, so a per-present memo (the terrain refine slot) can
@@ -1383,6 +1512,19 @@ void openpete_mods_material_frame_reset(void) {
     }
 }
 int  openpete_mods_material_slot_count(void) { return s_mat_slot_n; }
+
+/* Per-scene snapshot of the interned per-instance slots (see the ring in
+ * native_render.c). `cap` is the caller's slot capacity; returns the count
+ * copied (1 + interned). Bytes are packed at OPENPETE_MATERIAL_UNIFORMS_MAX
+ * stride so the compose can index them the same way as the live table. */
+int openpete_mods_material_slots_snapshot(openpete_mods_material_slot_snap_t* out, int cap) {
+    int n = s_mat_slot_n < cap ? s_mat_slot_n : cap;
+    for (int i = 1; i < n; i++) {
+        out[i].len = s_mat_slots[i].len;
+        memcpy(out[i].bytes, s_mat_slots[i].bytes, s_mat_slots[i].len);
+    }
+    return n;
+}
 
 const void* openpete_mods_material_slot_uniforms(int slot, uint32_t* len) {
     if (slot <= 0 || slot >= s_mat_slot_n) { if (len) *len = 0; return NULL; }
@@ -1640,7 +1782,7 @@ int openpete_mods_material_resolve(uint32_t tag,
     return material_fill_gpu(best, 0, out);
 }
 
-void openpete_mods_material_remove_owner(const char* mod_id) {
+static void openpete_mods_material_remove_owner_locked(const char* mod_id) {
     for (int i = 0; i < s_mat_count; i++) {
         if (!s_mats[i].live || strcmp(s_mats[i].owner, mod_id) != 0) continue;
         for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++)
@@ -1665,8 +1807,10 @@ void openpete_mods_material_remove_owner(const char* mod_id) {
     }
     material_rearm_split();
 }
+void openpete_mods_material_remove_owner(const char* mod_id) { REG_WR(); openpete_mods_material_remove_owner_locked(mod_id); REG_WR_END(); }
 
-void openpete_mods_material_retire_all(void) {
+
+static void openpete_mods_material_retire_all_locked(void) {
     for (int i = 0; i < s_mat_count; i++) {
         if (!s_mats[i].live) continue;
         for (int b = 0; b < OPENPETE_MATERIAL_PIPE_VARIANTS; b++)
@@ -1688,3 +1832,5 @@ void openpete_mods_material_retire_all(void) {
         s_mats[i].pipeline_mark = NULL;
     }
 }
+void openpete_mods_material_retire_all(void) { REG_WR(); openpete_mods_material_retire_all_locked(); REG_WR_END(); }
+

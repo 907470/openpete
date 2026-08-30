@@ -5186,9 +5186,12 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         cen0[10] = s_tgcl_nodraw; cen0[11] = s_tgcl_prim;
         cen0[12] = s_tgcl_pcov;
     }
-    if (tgpu_on) openpete_tercache_frame_begin(&tcg, openpete_frame, s_vanim_sub);
+    /* The build stamp: a scene id while an eager scene is being extracted
+     * (each scene of a burst gets its own retained state), else the VBL. */
+    const uint32_t tc_stamp = openpete_native_scene_build_stamp();
+    if (tgpu_on) openpete_tercache_frame_begin(&tcg, tc_stamp, s_vanim_sub);
     else if (openpete_tercache_ready() && tb_first)
-        openpete_tercache_frame_skip(openpete_frame, s_vanim_sub);
+        openpete_tercache_frame_skip(tc_stamp, s_vanim_sub);
     int nw_used = wserial ? 1 : nw;
     for (int w = 0; w < nw_used; w++) {
         tn_wctx* W = &s_wctx[w];
