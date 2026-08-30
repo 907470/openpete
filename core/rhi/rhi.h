@@ -99,6 +99,9 @@ uint64_t rhi_frame_serial(rhi_device *dev);
  * for a thread whose only job is presenting. Off = the sim-thread contract
  * (poll, shed, never let the display pace the game). */
 void rhi_set_present_blocking(rhi_device *dev, bool on);
+/* Refresh rate of the display the current swapchain was built for, from
+ * SDL at (re)creation; 0 when unknown. Follows the window across monitors. */
+float rhi_refresh_hz(const rhi_device *dev);
 /* Depth of the frame ring: a frame's fence is waited by the begin_frame this
  * many frames later, which is when its GPU reads are known to be over.
  * Overridable from the build (the depth/refresh trade sweep). */

@@ -79,6 +79,13 @@
 /* Backstop only: by this point the slot poll has already passed, so this
  * fence is normally signalled. Bounding it keeps a driver hiccup from parking
  * the sim thread indefinitely, the same reasoning as the acquire timeout. */
+/* Bound for the waits a dedicated present thread makes. Long enough for a
+ * swapchain rebuild plus the slowest display's refresh (a 60 Hz panel under
+ * FIFO with the queue full is ~50 ms of legitimate waiting); short enough
+ * that a dead compositor returns control. */
+#ifndef RHI_BLOCKING_FENCE_TIMEOUT_NS
+#define RHI_BLOCKING_FENCE_TIMEOUT_NS (500ull * 1000ull * 1000ull)
+#endif
 #ifndef RHI_IMAGE_FENCE_TIMEOUT_NS
 #define RHI_IMAGE_FENCE_TIMEOUT_NS (32ull * 1000ull * 1000ull)   /* 32 ms */
 #endif
@@ -235,6 +242,7 @@ struct rhi_device {
      * and the acquire instead of shedding. Set by a dedicated present thread;
      * clear while the thread that runs the sim presents. */
     bool     present_blocking;
+    float    refresh_hz;          /* of the display the swapchain was built for (0 = unknown) */
     /* While set, presents are skipped without blocking (see the acquire
      * budget above). Cleared once the window passes. */
     Uint64   acquire_backoff_until_ns;
@@ -852,6 +860,7 @@ static bool create_swapchain(rhi_device *dev)
                 SDL_GetDisplayForWindow(dev->window));
             if (dm) hz = dm->refresh_rate;
         }
+        dev->refresh_hz = hz;
         /* One period is what the display owes us; the half is jitter margin.
          * Scaling with the refresh rather than flooring everything at a fixed
          * value matters in BOTH directions: a 60 Hz display needs 25 ms or it
@@ -1746,6 +1755,8 @@ const char *rhi_present_mode_name(const rhi_device *dev)
     }
 }
 
+float rhi_refresh_hz(const rhi_device *dev) { return dev ? dev->refresh_hz : 0.0f; }
+
 void rhi_set_present_blocking(rhi_device *dev, bool on)
 {
     if (dev) dev->present_blocking = on;
@@ -1831,9 +1842,18 @@ bool rhi_begin_frame(rhi_device *dev)
         } else if (dev->present_blocking) {
             /* A dedicated present thread is paced by the display by design:
              * waiting here costs the sim nothing. Bounded so a dead
-             * compositor still returns control. */
-            vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
-                            VK_TRUE, RHI_IMAGE_FENCE_TIMEOUT_NS);
+             * compositor still returns control — and the bound is HONOURED:
+             * proceeding past a timed-out wait resets a fence and re-records
+             * a command buffer the GPU is still executing, which is a
+             * device loss a few submits later (seen on a 60 Hz display after
+             * a fullscreen toggle, where a rebuild pushed one wait past it). */
+            VkResult fw = vkWaitForFences(dev->device, 1, &dev->in_flight[dev->frame],
+                                          VK_TRUE, RHI_BLOCKING_FENCE_TIMEOUT_NS);
+            if (fw != VK_SUCCESS) {
+                dev->fence_sheds++;
+                rhi_note_stall_phase("fence-wait", RHI_BLOCK_FENCE, t0);
+                return false;
+            }
         } else if (vkGetFenceStatus(dev->device,
                                     dev->in_flight[dev->frame]) != VK_SUCCESS) {
             dev->fence_sheds++;
@@ -1905,10 +1925,22 @@ bool rhi_begin_frame(rhi_device *dev)
              * it. In practice it is almost always already signalled once the
              * poll above has passed, so the bound is a backstop. */
             Uint64 iif_t0 = SDL_GetTicksNS();
-            vkWaitForFences(dev->device, 1, &dev->images_in_flight[dev->image_index],
-                            VK_TRUE, dev->headless ? UINT64_MAX
-                                                   : RHI_IMAGE_FENCE_TIMEOUT_NS);
+            VkResult iw = vkWaitForFences(dev->device, 1, &dev->images_in_flight[dev->image_index],
+                                          VK_TRUE, dev->headless ? UINT64_MAX
+                                                 : dev->present_blocking ? RHI_BLOCKING_FENCE_TIMEOUT_NS
+                                                 : RHI_IMAGE_FENCE_TIMEOUT_NS);
             rhi_note_stall_phase("image-fence", RHI_BLOCK_IMAGE_FENCE, iif_t0);
+            if (iw != VK_SUCCESS) {
+                /* The image is still owned by a frame in flight and the
+                 * acquire semaphore is already consumed: the only clean exit
+                 * is a rebuild, which waits the device idle and starts the
+                 * semaphores over. Recording against the image would be a
+                 * device loss. */
+                RHI_LOG("image fence timed out (%.1f ms): rebuilding the swapchain\n",
+                        (double)(SDL_GetTicksNS() - iif_t0) / 1e6);
+                dev->needs_recreate = true;
+                return false;
+            }
         }
         dev->images_in_flight[dev->image_index] = dev->in_flight[dev->frame];
     }

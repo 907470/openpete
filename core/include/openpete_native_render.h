@@ -951,6 +951,7 @@ int      openpete_native_scene_ring_pending(void);
 int      openpete_native_scene_ring_busy(void);
 void     openpete_native_scene_slot_info(int slot, int64_t *target_ns, double *alpha, int *paired, int *kind);
 void     openpete_native_scene_ring_report(void);
+float    openpete_native_display_refresh_hz(void);   /* current swapchain's display, 0 = unknown */
 /* Refresh the VRAM mirror from the guest's (dirty rects only). The eager
  * producer calls it while the guest is idle; the inline present path calls
  * it itself. */

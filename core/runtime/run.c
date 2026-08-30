@@ -1118,6 +1118,21 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period, op_time
         if (want > s_eager.lag) { s_eager.lag = want; s_eager.lag_headroom = 0; }
         else if (++s_eager.lag_headroom >= 30) { s_eager.lag = want; s_eager.lag_headroom = 0; }
     }
+    /* Under FIFO the display shows at most one image per refresh, and the
+     * window may sit on a slower monitor than --render-fps was chosen for
+     * (480 on a 60 Hz panel): a scene per grid slot would be produced 8x
+     * faster than any can be shown and superseded unpresented. Plan on the
+     * coarser of the two grids, phase-preserving. */
+    {
+        const float hz = openpete_native_display_refresh_hz();
+        if (hz > 1.0f) {
+            const op_time_t rp = (op_time_t)(1e9 / hz);
+            if (rp > period + period / 8) {
+                const op_time_t k = (rp + period / 2) / period;   /* whole slots per refresh */
+                if (k > 1) period *= k;
+            }
+        }
+    }
     /* Display instants whose ANIMATION instant (t - lag) is inside the span.
      * The previous span already covers the instants up to its last target
      * (that is what the lag is for: its late scenes show through this tick's
