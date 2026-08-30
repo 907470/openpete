@@ -1251,11 +1251,13 @@ static int eager_produce(op_time_t deadline, op_time_t period)
 static void eager_report(void)
 {
     if (!s_eager.spans) return;
+    /* Under the greedy policy the divisor is bookkeeping only (the plan
+     * comes from `afford`), so it is reported as such. */
     OPL_INFO_F("eager", "%u span(s): %u scene(s) produced, %u skipped (instant passed), "
-               "%u refused (ring full), %u cut short; level now %d (%u down, %u up); "
+               "%u refused (ring full), %u cut short; level now %s%d (%u down, %u up); "
                "scene cost %.3f ms ema, %.3f ms dev; lag %.3f ms (tick %.3f ms ema, %.3f dev); policy %s",
                s_eager.spans, s_eager.produced, s_eager.skipped_late, s_eager.refused,
-               s_eager.cut, s_eager.level, s_eager.level_down, s_eager.level_up,
+               s_eager.cut, s_eager.policy ? "n/a " : "", s_eager.level, s_eager.level_down, s_eager.level_up,
                (double)s_eager.cost_ema / 1e6, (double)s_eager.cost_dev / 1e6,
                (double)s_eager.lag / 1e6, (double)s_eager.tick_ema / 1e6, (double)s_eager.tick_dev / 1e6,
                s_eager.policy ? "greedy" : "divisor");

@@ -502,7 +502,7 @@ void openpete_tercache_chunk_free(int arena, uint32_t first, int count)
  * (the serial-retry path re-runs one build) restages in place. */
 static tc_state *tc_begin_state(uint32_t stamp, int immediate)
 {
-    if (immediate && (stamp & 0x80000000u)) {
+    if (immediate && (stamp & OPTC_STAMP_SCENE_BIT)) {
         /* A scene-id build: its own ring entry, so every pending scene of a
          * burst composes against the terrain state extracted WITH it. Reuse
          * an entry whose scene has retired; a state for a scene still
@@ -682,7 +682,7 @@ void openpete_tercache_frame_select(uint32_t present_stamp)
      * (pause-entry tail feeds), while a large gap means the feeder stopped
      * (menus, transitions) and the retained state must not repaint. */
     const tc_state *R = NULL;
-    if (s_tc.ready && (present_stamp & 0x80000000u))
+    if (s_tc.ready && (present_stamp & OPTC_STAMP_SCENE_BIT))
         for (int i = 0; i < TC_RING; i++)
             if (s_tc.ring[i].valid && s_tc.ring[i].stamp == present_stamp) { R = &s_tc.ring[i]; break; }
     if (R) {

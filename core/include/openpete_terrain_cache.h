@@ -118,6 +118,9 @@ enum {
 /* face_flags bit layout lives with rhi_terrain_vertex in rhi.h. */
 #define OPTC_SLOT_DEAD     511u
 #define OPTC_SLOTS         512
+/* Build stamps: a VBL counter, or a scene id from the eager scene ring. Scene
+ * ids carry the top bit so the two spaces never collide. */
+#define OPTC_STAMP_SCENE_BIT  (1u << 31)
 
 /* Camera/projection/fog inputs are DOUBLE on purpose: terrain.vert re-runs
  * the CPU walk's double-precision GTE chain (fp64, `precise`) so the emitted

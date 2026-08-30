@@ -37,7 +37,7 @@ PT_RE = re.compile(
 EAGER_RE = re.compile(
     r"eager: (?P<spans>\d+) span\(s\): (?P<produced>\d+) scene\(s\) produced, "
     r"(?P<skipped>\d+) skipped.*?(?P<ringfull>\d+) refused.*?(?P<cut>\d+) cut short; "
-    r"level now (?P<level>\d+) \((?P<down>\d+) down, (?P<up>\d+) up\); "
+    r"level now (?:n/a )?(?P<level>\d+) \((?P<down>\d+) down, (?P<up>\d+) up\); "
     r"scene cost (?P<cost>[\d.]+) ms ema.*?lag (?P<lag>[\d.]+) ms \(tick (?P<tick>[\d.]+) ms ema")
 CAD_MOTION = re.compile(r"presents: (?P<n>\d+) carrying motion over (?P<s>[\d.]+)s = (?P<rate>\d+)/s")
 CAD_GAP = re.compile(r"gap after a tick, DISPLAY\s+n=\s*\d+ p50\s+(?P<p50>[\d.]+) ms.*?p99\s+(?P<p99>[\d.]+) ms\n\s+over 2 slots: \d+ = (?P<dbl>[\d.]+) per tick")

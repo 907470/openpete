@@ -9014,7 +9014,7 @@ uint32_t openpete_native_scene_build_stamp(void) {
     return s_eager_stamp ? s_eager_stamp : (uint32_t)openpete_frame;
 }
 void openpete_native_scene_eager_begin(void) {
-    s_eager_stamp = 0x80000000u | (s_scene_id_next & 0x7FFFFFFFu);
+    s_eager_stamp = OPTC_STAMP_SCENE_BIT | (s_scene_id_next & ~OPTC_STAMP_SCENE_BIT);
 }
 static int slot_grow(scene_slot_t *sl, int n) {
     if (sl->cap >= n) return 1;
