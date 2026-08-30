@@ -296,6 +296,55 @@ static SDL_AtomicInt g_worker_done;
 
 static bool openpete_handle_event(SDL_Event* ev);
 
+/* Idle-hide timer for the OS cursor: last mouse activity, in SDL ticks.
+ * Written by the event pump (main thread) and read by the host loop (the
+ * worker, once the thread split applies), hence the atomic. Unsigned 32-bit
+ * differences stay correct across the ~49-day wrap. Seeded to 0 rather than
+ * "now" would hide the cursor for the first two seconds of a session; the
+ * host loop seeds it from the current tick on its first pass instead. */
+static SDL_AtomicU32 g_mouse_last_activity_ms;
+
+/* Cursor follows who owns the mouse. PsyCross used to hide it outright
+ * whenever it owned a window, but it no longer creates one in the default
+ * path, so the OS cursor sat over the game — including borderless fullscreen.
+ * Hiding it unconditionally is wrong the other way: the dev overlay and the
+ * settings menu are mouse-driven and need it back, and a player reaching for
+ * the window controls needs to see where the pointer is. So over the game it
+ * hides once the mouse has been still for CURSOR_IDLE_HIDE_MS and comes back
+ * on the next mouse event.
+ *
+ * MUST run on the thread that owns the window. SDL's Win32 backend paints a
+ * visibility change with SetCursor(), which only affects the calling thread's
+ * windows; called from the sim worker it silently does nothing, and the
+ * hidden state then waits for a WM_SETCURSOR — which only arrives on mouse
+ * movement, the very thing that un-hides it again. Net effect off-thread: the
+ * cursor never disappears. (The old unconditional hide survived that bug
+ * because every later WM_SETCURSOR kept re-applying the same NULL cursor.)
+ *
+ * Edge-triggered, so this is one SDL call per transition rather than one per
+ * iteration. */
+static void openpete_cursor_update(bool headless)
+{
+    enum { CURSOR_IDLE_HIDE_MS = 2000 };
+    if (headless) return;
+
+    Uint32 now_ms = (Uint32)SDL_GetTicks();
+    static int cursor_shown = -1;   /* -1 = not yet applied */
+    if (cursor_shown < 0)           /* first pass: start the idle clock */
+        SDL_SetAtomicU32(&g_mouse_last_activity_ms, now_ms);
+
+    Uint32 idle_ms = now_ms - SDL_GetAtomicU32(&g_mouse_last_activity_ms);
+    bool want_cursor = openpete_devui_is_open() ||
+                       openpete_devui_wants_mouse() ||
+                       openpete_menu_is_open() ||
+                       idle_ms < CURSOR_IDLE_HIDE_MS;
+    if ((int)want_cursor == cursor_shown) return;
+
+    if (want_cursor) SDL_ShowCursor();
+    else             SDL_HideCursor();
+    cursor_shown = (int)want_cursor;
+}
+
 static void openpete_pump_events(void) {
     SDL_Event ev;
     while (SDL_PollEvent(&ev)) {
@@ -321,6 +370,15 @@ static bool openpete_handle_event(SDL_Event* ev) {
     /* Dev overlay sees every event (imgui io bookkeeping; frames only run
      * while it is open), including ones consumed below. */
     openpete_devui_process_event(ev);
+    /* Any mouse activity re-arms the idle-hide timer applied in the host
+     * loop. Buttons and the wheel count as well as motion: a user clicking
+     * without moving is still using the pointer. */
+    if (ev->type == SDL_EVENT_MOUSE_MOTION ||
+        ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN ||
+        ev->type == SDL_EVENT_MOUSE_BUTTON_UP ||
+        ev->type == SDL_EVENT_MOUSE_WHEEL) {
+        SDL_SetAtomicU32(&g_mouse_last_activity_ms, (Uint32)SDL_GetTicks());
+    }
     if (ev->type == SDL_EVENT_QUIT) {
         g_shutdown_requested = 1;
         return false;  /* never reaches PsyCross, so PsyX_Exit stays unreachable */
@@ -2872,24 +2930,11 @@ static int run_host_loop(const openpete_options_t* opts) {
          * button). */
         openpete_keymap_suspend_keyboard(openpete_devui_wants_keyboard() ? 1 : 0);
 
-        /* Cursor follows who owns the mouse. PsyCross used to hide it outright
-         * whenever it owned a window, but it no longer creates one in the
-         * default path, so the OS cursor sat over the game — including
-         * borderless fullscreen. Hiding it unconditionally is wrong the other
-         * way: the dev overlay and the settings menu are mouse-driven and need
-         * it back. Edge-triggered so this is two SDL calls per transition
-         * rather than two per iteration. */
-        if (!opts->headless) {
-            bool want_cursor = openpete_devui_is_open() ||
-                               openpete_devui_wants_mouse() ||
-                               openpete_menu_is_open();
-            static int cursor_shown = -1;   /* -1 = not yet applied */
-            if ((int)want_cursor != cursor_shown) {
-                if (want_cursor) SDL_ShowCursor();
-                else             SDL_HideCursor();
-                cursor_shown = (int)want_cursor;
-            }
-        }
+        /* Under the thread split the cursor is main's business (see
+         * openpete_cursor_update): SetCursor only reaches a window from the
+         * thread that owns it. Unsplit, this loop IS that thread. */
+        if (!openpete_split_applies(opts))
+            openpete_cursor_update(opts->headless);
 
         /* Sample every binding once per iteration; openpete_key_pressed()
          * below reads the edge this computed. Reads SDL's keyboard/gamepad
@@ -5264,6 +5309,10 @@ static int run_split_threaded(const openpete_options_t* opts)
         openpete_host_input_publish_sdl();
         openpete_host_input_sample(
             (openpete_host_input_modstate() & SDL_KMOD_ALT) != 0);
+
+        /* Idle-hide of the OS cursor. Another window op that belongs to this
+         * thread, and cheap: one atomic read plus three flag reads. */
+        openpete_cursor_update(opts->headless);
 
         /* Window ops belong to this thread. The worker raises the flag (from
          * a binding or Alt+Enter) and main performs the SDL call. */
