@@ -200,7 +200,7 @@ static struct {
                                        * set (rung flips, sub-pixel skew) */
     tc_sector_ubo *build_target;      /* where sector_set writes this build   */
     int           draw_open;
-    int  sel_src;      /* 0 closed, 1 scene ring, 2 live, 3 staged, 4 live by age */          /* frame_select verdict for this present */
+    int  sel_src;      /* 0 closed, 1 scene ring, 2 live, 3 staged */          /* frame_select verdict for this present */
     uint64_t      ubo_flush_serial;   /* rhi_frame_serial of the last UBO flush
                                        * for the CURRENT selection (0 = none).
                                        * Keyed on the frame serial, not a
@@ -729,23 +729,23 @@ void openpete_tercache_frame_skip(uint32_t stamp, int immediate)
     s_tc.build_target = T->sec;
 }
 
-/* Called once per rendered present: open the retained draws only when the
- * LIVE state is fresh relative to the present (a stale live state — menus,
- * level transitions, a stopped feeder — must not repaint old terrain). */
+/* Called once per rendered present: open the retained draws only for the
+ * state built by the scene being composed. A present whose scene ran no
+ * terrain feed has no retained terrain — the feeder stops during fades,
+ * level loads and menus, and the last live state must not repaint there
+ * (it would sample VRAM the load is already overwriting). */
 void openpete_tercache_frame_select(uint32_t present_stamp)
 {
-    /* present_stamp = the stamp of the SCENE being composed. Prefer an EXACT
-     * stamp match so the retained terrain is the same extraction as the CPU
-     * tris it composes with: live first (the lagged screenshot compose and
-     * the sub-tick spine's immediate publishes both land here), then staged
-     * (a depth-0 compose — the capture freeze-backdrop snapshot, a spine-off
+    /* present_stamp = the stamp of the SCENE being composed. The retained
+     * terrain must be the same extraction as the CPU tris it composes with:
+     * the eager ring first, then live (the lagged screenshot compose and the
+     * sub-tick spine's immediate publishes both land here), then staged (a
+     * depth-0 compose — the capture freeze-backdrop snapshot, a spine-off
      * windowed present — renders the CURRENT scene, whose terrain build sits
      * in staged until the next build's promote; drawing live there pairs
      * scene N with terrain N-1, and the camera moves between extractions, so
-     * the skew bakes a whole-scene rim into the frozen backdrop). Only then
-     * fall back to a small-tolerance live pick: modest skews are normal
-     * (pause-entry tail feeds), while a large gap means the feeder stopped
-     * (menus, transitions) and the retained state must not repaint. */
+     * the skew bakes a whole-scene rim into the frozen backdrop). No other
+     * state may stand in: a scene with no build of its own ran no feed. */
     const tc_state *R = NULL;
     if (s_tc.ready && (present_stamp & OPTC_STAMP_SCENE_BIT))
         for (int i = 0; i < TC_RING; i++)
@@ -757,10 +757,11 @@ void openpete_tercache_frame_select(uint32_t present_stamp)
     } else if (s_tc.ready && s_tc.staged.valid && present_stamp == s_tc.staged.stamp) {
         s_tc.draw_open = 1; s_tc.sel = s_tc.staged; s_tc.sel_src = 3;
     } else {
-        int32_t age = (int32_t)(present_stamp - s_tc.live.stamp);
-        s_tc.draw_open = s_tc.ready && s_tc.live.valid && age >= -8 && age <= 8;
-        if (s_tc.draw_open) s_tc.sel = s_tc.live;
-        s_tc.sel_src = s_tc.draw_open ? 4 : 0;
+        s_tc.draw_open = 0; s_tc.sel_src = 0;
+        if (tc_dbg() && s_tc.ready && s_tc.live.valid)
+            fprintf(stderr, "[tc] select stamp=%08x no state (live=%08x staged=%08x%s)\n",
+                    present_stamp, s_tc.live.stamp, s_tc.staged.valid ? s_tc.staged.stamp : 0u,
+                    s_tc.staged.valid ? "" : " invalid");
     }
     s_tc.ubo_flush_serial = 0;
 }
