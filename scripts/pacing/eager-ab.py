@@ -71,6 +71,7 @@ def main():
     ap.add_argument("--render-fps", default="480")
     ap.add_argument("--policy", default="divisor", help="OPENPETE_EAGER_POLICY for the on legs")
     ap.add_argument("--level", default="", help="OPENPETE_EAGER_LEVEL pin for the on legs")
+    ap.add_argument("--afford", default="", help="OPENPETE_EAGER_AFFORD pin: force the budget's verdict")
     ap.add_argument("--disc", default=str(
         REPO / "games/spyro-1/spyro-1/build/SCUS-94228.cue"))
     ap.add_argument("--out", default=None)
@@ -94,6 +95,8 @@ def main():
                 knobs["OPENPETE_EAGER_POLICY"] = a.policy
                 if a.level:
                     knobs["OPENPETE_EAGER_LEVEL"] = a.level
+                if a.afford:
+                    knobs["OPENPETE_EAGER_AFFORD"] = a.afford
             name = f"{a.bk2}-{a.render_fps}-{mode}{rep}"
             # The level load eats ~1700 VBL of fast-forward before a single
             # present goes out; +30 s clears it.
@@ -121,7 +124,7 @@ def main():
         return statistics.median(v) if v else float("nan")
 
     print(f"\n{a.bk2} @ {a.render_fps} fps, {a.reps} rep(s), medians  (on: policy={a.policy}"
-          f"{' level=' + a.level if a.level else ''})\n")
+          f"{' level=' + a.level if a.level else ''}{' afford=' + a.afford if a.afford else ''})\n")
     print(f"{'':30}" + "".join(f"{m:>12}" for m in modes))
     for label, key in (("motion presents (sum)", "motion"),
                        ("  canonical", "canon"),

@@ -1058,6 +1058,7 @@ static struct {
     op_time_t target[EAGER_MAX_TARGETS];
     int       level;                  /* divisor: produce every level-th slot */
     int       pinned;                 /* OPENPETE_EAGER_LEVEL */
+    int       afford_pin;             /* OPENPETE_EAGER_AFFORD: force the budget's verdict (A/B) */
     int       policy;                 /* 0 divisor, 1 greedy */
     int       headroom_runs;
     op_time_t cost_ema, cost_dev; int cost_n;   /* per-scene production cost */
@@ -1084,6 +1085,8 @@ static void eager_init(void)
     const char *l = getenv("OPENPETE_EAGER_LEVEL");
     s_eager.pinned = (l && *l) ? atoi(l) : 0;
     if (s_eager.pinned > 0) s_eager.level = s_eager.pinned;
+    const char *f = getenv("OPENPETE_EAGER_AFFORD");
+    s_eager.afford_pin = (f && *f) ? atoi(f) : 0;
     const char *g = getenv("OPENPETE_EAGER_LAG_US");
     s_eager.lag_pin = (g && *g) ? (op_time_t)atoll(g) * 1000 : 0;
 }
@@ -1138,6 +1141,7 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period, op_time
     op_time_t budget = span_end - now - s_eager.vbl_ema - 1000000;   /* 1 ms safety */
     if (budget < 0) budget = 0;
     int afford = tail > 0 ? (int)(budget / tail) : ns;
+    if (s_eager.afford_pin > 0) afford = s_eager.afford_pin;   /* a forced budget, for the policy A/B */
     if (afford < 1) afford = 1;
 
     if (!s_eager.pinned) {
