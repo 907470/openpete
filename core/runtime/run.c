@@ -4067,7 +4067,16 @@ static int run_host_loop(const openpete_options_t* opts) {
                     const op_time_t now = op_now();
                     op_time_t first = next_render.at;
                     while (first < now) first += period;    /* the next slot not yet gone */
-                    const op_time_t span_end = (curr ? curr : now) + (op_time_t)g_openpete_tick_period_ns;
+                    /* The span is anchored on the newest capture's stamp — unless
+                     * that stamp is stale. Captures dedupe when the interpolated
+                     * regions do not change (title screen, a cutscene holding
+                     * the camera), and a span anchored on a stamp a tick or
+                     * more old collapses to one or two slots while the inline
+                     * path keeps presenting the live scene at full rate. Anchor
+                     * on this tick's landing instead. */
+                    const op_time_t tp = (op_time_t)g_openpete_tick_period_ns;
+                    const op_time_t anchor = (curr && now - curr < 2 * tp) ? curr : now;
+                    const op_time_t span_end = anchor + tp;
                     eager_plan(now, first, period, span_end > first ? span_end : first);
                     /* The canonical scene, then as much of the span as fits
                      * before the update VBL is due — the latter only while
