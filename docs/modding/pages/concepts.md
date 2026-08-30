@@ -38,8 +38,9 @@ important contract in the API:
 - **Present context** (`register_present_hook`): render-pure by
   contract *and enforcement*. Guest access, game calls and
   registrations are refused with an error — presents are
-  non-deterministic in count and timing, so anything sim-affecting
-  would desync replays. Publish state from tick hooks into your own
+  non-deterministic in count and timing (the engine extracts scenes
+  ahead of their display instant and may produce fewer than one per
+  display slot), so anything sim-affecting would desync replays. Publish state from tick hooks into your own
   variables; evaluate your own curves at `ctx->alpha` for sub-tick
   smoothness.
 

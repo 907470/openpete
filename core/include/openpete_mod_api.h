@@ -64,7 +64,8 @@ typedef struct openpete_present_ctx {
     uint32_t tick;   /* canonical sim tick counter (openpete_frame)   */
     float    alpha;  /* sub-tick phase [0,1) between tick and tick+1;
                       * 0 on canonical presents                       */
-    float    dt;     /* wall seconds since the previous present       */
+    float    dt;     /* seconds between this scene's animation moment
+                      * and the previous scene's                       */
     float    aspect; /* overlay-space width: x spans [0, aspect]      */
 } openpete_present_ctx_t;
 
@@ -381,9 +382,17 @@ typedef struct openpete_mod_api {
     void (*ui_status)(openpete_mod_t* self, const char* fmt, ...);
 
     /* ── Pillar 5: present and screen-space draw ─────────────────────
-     * Register a per-present hook: runs once per presented frame (30 Hz
-     * canonical + every sub-tick present at high --render-fps) with the
-     * present context. RENDER-PURE by contract AND enforcement: while a
+     * Register a per-present hook: runs once per SCENE the engine
+     * extracts (the canonical one at 30 Hz + every sub-tick scene at high
+     * --render-fps) with the present context. Scenes are produced on the
+     * sim thread AHEAD of their display instant: the hook fires when its
+     * scene is extracted, not when it is shown, and when the engine cannot
+     * afford a scene for every display slot it produces fewer for that
+     * tick — the hook is then called fewer times than frames appear on
+     * screen. Count and timing are not part of the contract; ctx->alpha
+     * is the animation moment the scene shows and ctx->dt the spacing to
+     * the previous scene's, so curves evaluated at ctx->alpha are correct
+     * under any cadence. RENDER-PURE by contract AND enforcement: while a
      * present hook runs, guest access / game calls / base() / override
      * registration are refused with an error — presents are
      * non-deterministic in count and timing, so anything sim-affecting
