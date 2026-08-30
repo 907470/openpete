@@ -669,6 +669,13 @@ void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels);
  * summed rect payload exceeds one full-image staging slot (heavily
  * overlapping rects), it silently falls back to a full upload. */
 typedef struct { int x, y, w, h; } rhi_rect;
+/* Same, from a packed copy of the rects' texels (each rect's rows
+ * contiguous, rects at 4-byte-aligned offsets, in order) instead of a
+ * whole-VRAM mirror: the source for a scene that must be composed against the
+ * VRAM it was extracted against, not the newest. */
+void rhi_update_vram_rects_packed(rhi_device *dev, rhi_texture *tex,
+                                  const uint8_t *packed, size_t packed_bytes,
+                                  const rhi_rect *rects, int nrects);
 void rhi_update_vram_rects(rhi_device *dev, rhi_texture *tex,
                            const uint16_t *mirror,
                            const rhi_rect *rects, int nrects);

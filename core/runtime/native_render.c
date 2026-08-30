@@ -610,10 +610,22 @@ void openpete_native_scene_sig_report(int canonical)
     extern unsigned openpete_frame;
     uint64_t set_h = 0, cnt_h = 0; int distinct = 0;
     scene_discrete_sig(&set_h, &cnt_h, &distinct);
-    fprintf(stderr, "[scene-sig] f=%u leg=%s alpha=%.4f n=%d d=%d set=%016llx cnt=%016llx\n",
+    int cw = 0, ca = 0, cs = 0, cp = 0, ch2 = 0;
+    for (int t = 0; t < s_scene_n; t++) {
+        switch (s_scene[t].category) {
+        case OPENPETE_SCENE_WORLD: cw++; break;
+        case OPENPETE_SCENE_ACTOR: case OPENPETE_SCENE_ACTOR_FRONT: ca++; break;
+        case OPENPETE_SCENE_SKY: cs++; break;
+        case OPENPETE_SCENE_PLAYER: cp++; break;
+        case OPENPETE_SCENE_HUD: ch2++; break;
+        default: break;
+        }
+    }
+    fprintf(stderr, "[scene-sig] f=%u leg=%s alpha=%.4f n=%d d=%d set=%016llx cnt=%016llx W=%d A=%d S=%d P=%d H=%d freeze=%08x stamp=%08x\n",
             openpete_frame, canonical ? "CANON" : "inter",
             openpete_pace_last_alpha(), s_scene_n, distinct,
-            (unsigned long long)set_h, (unsigned long long)cnt_h);
+            (unsigned long long)set_h, (unsigned long long)cnt_h, cw, ca, cs, cp, ch2, s_scene_freeze,
+            s_eager_stamp ? s_eager_stamp : openpete_frame);
 }
 
 void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
@@ -2744,11 +2756,45 @@ static void nr_vram_dirty_cb(int x, int y, int w, int h)
     s_vram_rects[s_vram_nrects++] = (rhi_rect){ x, y, w, h };
 }
 
-/* Pending upload set (drained by upload_synced_textures inside the frame). */
-static rhi_rect s_vram_up_rects[NR_VRAM_MAX_RECTS];
-static int      s_vram_up_n    = 0;
-static bool     s_vram_up_full = false;
-static bool     s_ref_dirty    = false;  /* readback refreshed; upload pending */
+/* The VRAM journal: every mirror refresh is one entry, tagged with the id of
+ * the scene about to be extracted and carrying its own copy of the refreshed
+ * texels. A present applies the entries up to ITS scene's id, in order, and
+ * no further -- so a scene extracted before a VRAM write is composed against
+ * the VRAM it was extracted against, however much later it is presented.
+ * Without this the GPU texture simply tracked the newest mirror, and under
+ * eager production the world scenes still pending when a pause landed were
+ * composed against the pause's VRAM (the framebuffer effect writes over the
+ * texture pages the ground samples): the freeze backdrop lost its ground.
+ * Inline presents apply everything (one scene, extracted and composed in the
+ * same breath). A full refresh (level load, list overflow) carries no copy:
+ * it uploads the mirror when applied, which is exact for the newest scene
+ * and the best available for an older one. */
+typedef struct {
+    uint32_t  scene_id;
+    int       full;                       /* upload the whole mirror */
+    int       nrects;
+    rhi_rect  rects[NR_VRAM_MAX_RECTS];
+    uint8_t  *pix;                        /* rects' texels, packed as the upload wants them */
+    size_t    pix_bytes;
+} vram_jentry_t;
+#define VRAM_JOURNAL 64
+static vram_jentry_t s_vj[VRAM_JOURNAL];
+static int  s_vj_head = 0, s_vj_n = 0;    /* ring: oldest at head */
+static bool s_ref_dirty = false;          /* readback refreshed; upload pending */
+
+static void vram_journal_pop(void)
+{
+    vram_jentry_t *e = &s_vj[s_vj_head];
+    free(e->pix); e->pix = NULL; e->pix_bytes = 0;
+    s_vj_head = (s_vj_head + 1) % VRAM_JOURNAL; s_vj_n--;
+}
+/* Apply one entry into the current frame (mutex held). */
+static void vram_journal_apply(const vram_jentry_t *e)
+{
+    if (e->full) rhi_update_vram(s_nr.dev, s_nr.vram_tex, s_nr.vram_mirror);
+    else if (e->nrects > 0 && e->pix)
+        rhi_update_vram_rects_packed(s_nr.dev, s_nr.vram_tex, e->pix, e->pix_bytes, e->rects, e->nrects);
+}
 
 /* sync (guest side: drains the dirty rects, refreshes the mirror) and upload
  * (present side: records the mirror rows into the frame) may run on two
@@ -2855,27 +2901,53 @@ static void sync_vram_texture_locked(void)
               fprintf(stderr, "\n");
           }
       } }
-    /* Refresh the owned mirror from PsyCross's, dirty regions only, and queue
-     * the same regions for in-frame upload (W2.2 staging-ring path). */
+    /* Refresh the owned mirror from PsyCross's, dirty regions only, and
+     * journal the same regions (with their texels) for the presents to apply
+     * in scene order (W2.2 staging-ring upload, per frame). */
+    if (!s_vram_full && s_vram_nrects == 0) return;
+    if (s_vj_n == VRAM_JOURNAL) {
+        /* Ring full: the oldest entry is folded into a full refresh of the
+         * next one -- an older pending scene then sees newer texels, which is
+         * the pre-journal behaviour, once in a very long while. */
+        vram_journal_pop();
+        s_vram_full = true;
+    }
+    vram_jentry_t *e = &s_vj[(s_vj_head + s_vj_n) % VRAM_JOURNAL];
+    e->scene_id = s_scene_id_next;
+    e->pix = NULL; e->pix_bytes = 0; e->nrects = 0;
     if (s_vram_full) {
         GR_ReadVRAM(s_nr.vram_mirror, 0, 0, NR_VRAM_W, NR_VRAM_H);
-        s_vram_up_full = true;
-        s_vram_up_n = 0;
+        e->full = 1;
         s_vram_full = false;
         s_vram_nrects = 0;
+        s_vj_n++;
         return;
     }
+    e->full = 0;
+    size_t need = 0;
     for (int i = 0; i < s_vram_nrects; i++) {
         const rhi_rect r = s_vram_rects[i];
         for (int row = 0; row < r.h; row++)
             GR_ReadVRAM(s_nr.vram_mirror + (size_t)(r.y + row) * NR_VRAM_W + r.x,
                         r.x, r.y + row, r.w, 1);
-        if (!s_vram_up_full) {
-            if (s_vram_up_n >= NR_VRAM_MAX_RECTS) s_vram_up_full = true;
-            else s_vram_up_rects[s_vram_up_n++] = r;
-        }
+        need = (need + 3) & ~(size_t)3;
+        need += (size_t)r.w * r.h * 2u;
+    }
+    e->pix = need ? (uint8_t *)malloc(need) : NULL;
+    if (!e->pix) { e->full = 1; s_vram_nrects = 0; s_vj_n++; return; }   /* no memory: refresh whole */
+    e->pix_bytes = need;
+    size_t off = 0;
+    for (int i = 0; i < s_vram_nrects; i++) {
+        const rhi_rect r = s_vram_rects[i];
+        off = (off + 3) & ~(size_t)3;
+        for (int row = 0; row < r.h; row++)
+            memcpy(e->pix + off + (size_t)row * r.w * 2u,
+                   s_nr.vram_mirror + (size_t)(r.y + row) * NR_VRAM_W + r.x, (size_t)r.w * 2u);
+        e->rects[e->nrects++] = r;
+        off += (size_t)r.w * r.h * 2u;
     }
     s_vram_nrects = 0;
+    s_vj_n++;
 }
 
 /* Record the pending VRAM/reference uploads into the CURRENT frame's command
@@ -2884,15 +2956,15 @@ static void sync_vram_texture_locked(void)
  * frame cb — see rhi_update_vram's contract in rhi.h). */
 static void upload_synced_textures(void)
 {
+    /* Up to and including the scene being composed; everything for an inline
+     * present, which has no scene of its own in the ring. */
+    const uint32_t upto = s_ps_slot ? s_ps_slot->scene_id : UINT32_MAX;
     SDL_LockMutex(vram_mx());
-    if (s_vram_up_full) {
-        rhi_update_vram(s_nr.dev, s_nr.vram_tex, s_nr.vram_mirror);
-        s_vram_up_full = false;
-        s_vram_up_n = 0;
-    } else if (s_vram_up_n > 0) {
-        rhi_update_vram_rects(s_nr.dev, s_nr.vram_tex, s_nr.vram_mirror,
-                              s_vram_up_rects, s_vram_up_n);
-        s_vram_up_n = 0;
+    while (s_vj_n > 0) {
+        const vram_jentry_t *e = &s_vj[s_vj_head];
+        if (upto != UINT32_MAX && (int32_t)(e->scene_id - upto) > 0) break;
+        vram_journal_apply(e);
+        vram_journal_pop();
     }
     if (s_ref_dirty) {
         rhi_update_rgba8(s_nr.dev, s_nr.ref_tex, s_nr.readback);
@@ -8152,7 +8224,34 @@ static bool compose_variant(int variant, bool have_ref)
      * every frame in diff mode, and on WORLD frames in vk/ab to refresh the freeze
      * snapshot (skip menu/freeze frames so the snapshot is the gameplay frame to
      * freeze, never the menu drawn over it). */
-    bool world_frame = want_scene && !(sfreeze & (1u << 31)) && scene_has_world(scene, sn);
+    /* With the retained terrain cache in use the terrain is not in the tri
+     * list at all, and a scene whose terrain build the feeder SKIPPED (all
+     * sectors claimed: the draws open but painting nothing) is not a world
+     * frame however many mobys it carries. Eager production extracts such a
+     * scene at the pause-entry transition -- the moby and sky feeders still
+     * run while the terrain feed has cut out -- where the inline path
+     * extracts nothing; snapshotting it froze a backdrop with the ground
+     * missing. Read here, on the presenting thread, after frame_select. */
+    bool world_frame = want_scene && !(sfreeze & (1u << 31)) && scene_has_world(scene, sn)
+                       && openpete_tercache_frame_content() != 0;
+    /* OPENPETE_FREEZE_DBG=1: one line per composed present -- which frames
+     * qualify as the freeze backdrop and where their terrain came from. */
+    static int s_fdbg = -1;
+    if (s_fdbg < 0) { const char* e = getenv("OPENPETE_FREEZE_DBG"); s_fdbg = (e && *e && *e != '0'); }
+    if (s_fdbg && variant == NRV_VK) {
+        int cw = 0, ca = 0;
+        for (int t = 0; t < sn; t++) {
+            if (scene[t].category == OPENPETE_SCENE_WORLD) cw++;
+            else if (scene[t].category == OPENPETE_SCENE_ACTOR || scene[t].category == OPENPETE_SCENE_ACTOR_FRONT) ca++;
+        }
+        int td, th, tl, tn, tg[8];
+        openpete_tercache_frame_stats(&td, &th, &tl, &tn, tg);
+        char gb[512]; openpete_tercache_frame_globals(gb, sizeof gb);
+        openpete_tercache_frame_slots(gb, sizeof gb);
+        fprintf(stderr, "[freeze f=%u stamp=%08x] world=%d n=%d W=%d A=%d freeze=%08x tc_src=%d drawn=%d | %s\n",
+                s_scene_frame, scene_present_stamp(), (int)world_frame, sn, cw, ca, sfreeze,
+                openpete_tercache_frame_source(), td, gb);
+    }
     bool rtt_drew = false;
     float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
     float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
@@ -8996,6 +9095,7 @@ static void record_cycle(uint64_t pts_us)
 
 /* ---- eager scene ring: operations (types above, by s_scene) ---- */
 static void render_frame_common(uint64_t record_pts_us, bool have_ref);
+static void pt_dump_maybe(int rendered, unsigned frame, uint32_t stamp, uint32_t freeze);
 static int  s_last_frame_presented;
 static SDL_Mutex *ring_mx(void) {
     if (!s_ring_mx) s_ring_mx = SDL_CreateMutex();
@@ -9194,7 +9294,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
      * never samples have_ref, so the value itself only matters for ab/diff. */
     sync_vram_texture();
     bool have_ref = sync_reference_texture();
-    render_frame_common(record_pts_us, have_ref);
+    { const uint64_t b0 = rhi_frame_serial(s_nr.dev); render_frame_common(record_pts_us, have_ref); pt_dump_maybe(rhi_frame_serial(s_nr.dev) != b0, s_scene_frame, s_scene_frame, s_scene_freeze); }
 }
 
 /* Compose and present one ring slot. The present thread's entry: no VRAM or
@@ -9207,6 +9307,48 @@ void openpete_native_render_frame(uint64_t record_pts_us)
 /* The frame in progress ends in stage image `s_stage_target` instead of a
  * present (rhi_end_frame_to_stage) when >= 0. */
 static int s_stage_target = -1;
+
+/* OPENPETE_PT_DUMP=N (diagnostic): write the first render(s) of a scene
+ * extracted at VBL >= N to OPENPETE_PT_DUMP_PATH (a printf template taking
+ * the stamp), straight from the offscreen target, plus frozen_tex alongside
+ * -- the actual output of either present path, which no screenshot flag
+ * reaches. */
+static void pt_dump_maybe(int rendered, unsigned frame, uint32_t stamp, uint32_t freeze)
+{
+    static int s_dump_at = -2;
+    if (s_dump_at == -2) { const char *e = getenv("OPENPETE_PT_DUMP"); s_dump_at = (e && *e) ? atoi(e) : -1; }
+    static int s_dump_left = -1;
+    if (s_dump_left < 0) { const char *e = getenv("OPENPETE_PT_DUMP_COUNT"); s_dump_left = (e && *e) ? atoi(e) : 1; }
+    if (s_dump_at >= 0 && rendered && (int)frame >= s_dump_at && s_dump_left > 0) {
+        const char *tmpl = getenv("OPENPETE_PT_DUMP_PATH");
+        char path[1024] = {0};
+        if (tmpl && *tmpl) snprintf(path, sizeof path, tmpl, (unsigned)stamp);
+        if (path[0]) {
+            size_t cap = (size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u;
+            unsigned char *buf = cap ? malloc(cap) : NULL;
+            int w = 0, h = 0;
+            if (buf && rhi_read_offscreen(s_nr.dev, buf, cap, &w, &h)) {
+                for (size_t i = 0; i < (size_t)w * (size_t)h; i++) buf[i * 4 + 3] = 0xFF;
+                openpete_write_png_rgba(path, buf, w, h);
+                fprintf(stderr, "[pt-dump] scene stamp=%08x frame=%u freeze=%08x -> %s\n", stamp, frame, freeze, path);
+            }
+            free(buf);
+            if (s_nr.frozen_tex) {
+                int fw = 0, fh = 0; rhi_texture_extent(s_nr.frozen_tex, &fw, &fh);
+                size_t fcap = (size_t)fw * (size_t)fh * 4u;
+                unsigned char *fb = fcap ? malloc(fcap) : NULL;
+                if (fb && rhi_read_render_target(s_nr.dev, s_nr.frozen_tex, fb, fcap, &fw, &fh)) {
+                    for (size_t i = 0; i < (size_t)fw * (size_t)fh; i++) fb[i * 4 + 3] = 0xFF;
+                    char fpath[1024]; snprintf(fpath, sizeof fpath, "%s.frozen.png", path);
+                    openpete_write_png_rgba(fpath, fb, fw, fh);
+                    fprintf(stderr, "[pt-dump] frozen_tex %dx%d valid=%d -> %s\n", fw, fh, (int)s_nr.frozen_valid, fpath);
+                }
+                free(fb);
+            }
+        }
+        if (--s_dump_left <= 0) s_dump_at = -1;
+    }
+}
 
 static int render_scene_impl(int slot, int stage, uint64_t record_pts_us)
 {
@@ -9221,6 +9363,12 @@ static int render_scene_impl(int slot, int stage, uint64_t record_pts_us)
     const uint64_t before = rhi_frame_serial(s_nr.dev);
     render_frame_common(record_pts_us, false);
     const uint64_t after = rhi_frame_serial(s_nr.dev);
+    { static int sync = -1;   /* OPENPETE_PT_SYNC=1 (diagnostic): device idle after every render */
+      if (sync < 0) { const char *e = getenv("OPENPETE_PT_SYNC"); sync = (e && *e && *e != '0'); }
+      if (sync) rhi_wait_idle(s_nr.dev); }
+    { static int maxn = -1;   /* OPENPETE_PT_DUMP_MAXN: only scenes with at most this many tris */
+      if (maxn < 0) { const char *e = getenv("OPENPETE_PT_DUMP_MAXN"); maxn = (e && *e) ? atoi(e) : 1 << 30; }
+      if (sl->n <= maxn) pt_dump_maybe(after != before, sl->frame, sl->stamp, sl->freeze); }
     s_stage_target = -1;
     rhi_set_present_blocking(s_nr.dev, false);
     s_ps_slot = NULL;

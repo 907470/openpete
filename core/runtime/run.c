@@ -4097,8 +4097,14 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * the canonical scene is the first of the span's plan, and
                  * the present thread shows it. Never with a recording or a
                  * screenshot target -- those read the inline present. */
+                /* OPENPETE_EAGER_SHOT=1 (diagnostic): keep eager engaged with a
+                 * --screenshot-on-frame target; the dump then drains the
+                 * present thread, renders from the scene the producer holds,
+                 * and hands the display back. */
+                static int eager_shot = -1;
+                if (eager_shot < 0) { const char *e = getenv("OPENPETE_EAGER_SHOT"); eager_shot = (e && *e && *e != '0'); }
                 const int eager_now = spine_on && openpete_present_thread_enabled() &&
-                    !opts->record_path && opts->screenshot_frame_count == 0 &&
+                    !opts->record_path && (opts->screenshot_frame_count == 0 || eager_shot) &&
                     opts->screenshot_intermediate_count == 0 &&
                     opts->screenshot_presents_start < 0 &&
                     !opts->screenshot_freeze_backdrop;
@@ -4206,7 +4212,12 @@ static int run_host_loop(const openpete_options_t* opts) {
                     openpete_screenshot_format_path(opts->screenshot_output,
                                                     opts->screenshot_frames[si],
                                                     0, base, sizeof(base));
+                    /* The device is the present thread's while eager is
+                     * engaged: take it back for the dump, then return it. */
+                    const int pt_was = openpete_present_thread_active();
+                    if (pt_was) openpete_present_thread_set_active(0);
                     openpete_native_render_screenshot_all(base);
+                    if (pt_was) openpete_present_thread_set_active(1);
                 }
             }
 

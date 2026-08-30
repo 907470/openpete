@@ -3305,9 +3305,12 @@ void rhi_update_vram(rhi_device *dev, rhi_texture *tex, const uint16_t *pixels)
  * one N-region vkCmdCopyBufferToImage. Falls back to a full upload when the
  * packed payload wouldn't fit the (full-image-sized) staging slot. */
 #define RHI_VRAM_MAX_RECTS 96
-void rhi_update_vram_rects(rhi_device *dev, rhi_texture *tex,
-                           const uint16_t *mirror,
-                           const rhi_rect *rects, int nrects)
+/* Shared body: `pack` fills the staging buffer with the rects' texels in
+ * upload order (each rect's rows contiguous, rects at 4-byte-aligned
+ * offsets); the regions describe that layout. */
+static void update_vram_rects_impl(rhi_device *dev, rhi_texture *tex,
+                                   const uint16_t *mirror, const uint8_t *packed,
+                                   const rhi_rect *rects, int nrects)
 {
     if (!tex || !tex->staging || nrects <= 0) return;
     if (nrects > RHI_VRAM_MAX_RECTS) { update_image(dev, tex, mirror); return; }
@@ -3355,10 +3358,12 @@ void rhi_update_vram_rects(rhi_device *dev, rhi_texture *tex,
         off = (off + 3) & ~(size_t)3;               /* bufferOffset: 4-byte aligned */
         uint8_t *dst = map + off;
         const size_t row = (size_t)rw * tex->bpp;
-        for (int r = 0; r < rh; r++)
-            memcpy(dst + (size_t)r * row,
-                   (const uint8_t *)mirror + (((size_t)(ry + r) * tex->width + rx) * tex->bpp),
-                   row);
+        if (packed) memcpy(dst, packed + off, row * (size_t)rh);
+        else
+            for (int r = 0; r < rh; r++)
+                memcpy(dst + (size_t)r * row,
+                       (const uint8_t *)mirror + (((size_t)(ry + r) * tex->width + rx) * tex->bpp),
+                       row);
         regions[nregions] = (VkBufferImageCopy){
             .bufferOffset = off,
             .imageSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
@@ -3378,6 +3383,35 @@ void rhi_update_vram_rects(rhi_device *dev, rhi_texture *tex,
     if (one_shot) one_shot_end(dev, cb);
     tex->layout = VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL;
 }
+
+void rhi_update_vram_rects(rhi_device *dev, rhi_texture *tex,
+                           const uint16_t *mirror,
+                           const rhi_rect *rects, int nrects)
+{
+    update_vram_rects_impl(dev, tex, mirror, NULL, rects, nrects);
+}
+
+void rhi_update_vram_rects_packed(rhi_device *dev, rhi_texture *tex,
+                                  const uint8_t *packed, size_t packed_bytes,
+                                  const rhi_rect *rects, int nrects)
+{
+    (void)packed_bytes;
+    /* A rect count past the upload's region cap falls back to a whole-image
+     * upload in the shared body, which needs a mirror; a packed source has
+     * none, so split the batch instead. */
+    while (nrects > RHI_VRAM_MAX_RECTS) {
+        size_t off = 0;
+        for (int i = 0; i < RHI_VRAM_MAX_RECTS; i++) {
+            off = (off + 3) & ~(size_t)3;
+            off += (size_t)rects[i].w * rects[i].h * tex->bpp;
+        }
+        update_vram_rects_impl(dev, tex, NULL, packed, rects, RHI_VRAM_MAX_RECTS);
+        off = (off + 3) & ~(size_t)3;
+        packed += off; rects += RHI_VRAM_MAX_RECTS; nrects -= RHI_VRAM_MAX_RECTS;
+    }
+    update_vram_rects_impl(dev, tex, NULL, packed, rects, nrects);
+}
+
 
 void rhi_update_rgba8(rhi_device *dev, rhi_texture *tex, const void *pixels)
 {

@@ -3571,7 +3571,14 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         T->lastColFrame = openpete_frame;
         if (h != T->colHash) { dirty = 1; T->colHash = h; }
     }
+    static int s_tcdbg = -1;
+    if (s_tcdbg < 0) { const char* e = getenv("OPENPETE_TC_DBG"); s_tcdbg = (e && *e && *e != '0'); }
     if (dirty) {
+        if (s_tcdbg)
+            fprintf(stderr, "[tcf] rebuild slot=%d sec=%u gen=%u->%u stamp=%08x var=%d->%d s=%u->%u vert=%u->%u tex=%u->%u col=%d freed=%u/%u\n",
+                    slot, (unsigned)SC->s, T->gen, (T->gen + 1u) & 7u, openpete_native_scene_build_stamp(),
+                    T->bakeVar, with_var, (unsigned)T->s, (unsigned)SC->s, T->vertGen, SC->vertGen, T->texGen, SC->texGen,
+                    T->lastColFrame == openpete_frame, T->first[0], T->count[0]);
         tgpu_free_slot(T);
         T->gen = (uint8_t)((T->gen + 1u) & 7u);
         T->s = SC->s;

@@ -211,6 +211,14 @@ void openpete_tercache_frame_skip(uint32_t stamp, int immediate);
  * verdict to the draw sites. */
 void openpete_tercache_frame_select(uint32_t present_stamp);
 int  openpete_tercache_frame_open(void);
+/* Whether the selected state would paint anything: 1 = live sectors, 0 =
+ * open but empty (the feeder skipped this scene's build), -1 = cache not
+ * in use. The freeze-backdrop snapshot's "is this a world frame" test. */
+int  openpete_tercache_frame_content(void);
+int  openpete_tercache_frame_source(void);   /* 0 closed, 1 scene ring, 2 live, 3 staged, 4 live-by-age */
+void openpete_tercache_frame_stats(int *drawn, int *hp, int *lp, int *nearvar, int gens[8]);
+void openpete_tercache_frame_globals(char *out, int cap);
+void openpete_tercache_frame_slots(char *out, int cap);
 
 /* Provided by native_render.c: the renderer-side conditions ANDed (cache up,
  * no reference-compare delay, no dev tag instruments / PSX wobble, hardware

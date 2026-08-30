@@ -444,7 +444,10 @@ static int present_thread_main(void *unused)
             if (slot_idx < 0) continue;
             op_time_t t_ns = 0; double alpha = 0.0; int paired = 0, kind = OP_PACE_INTERMEDIATE;
             openpete_native_scene_slot_info(slot_idx, &t_ns, &alpha, &paired, &kind);
-            const int nstages = openpete_native_stage_count();
+            /* OPENPETE_PT_STAGED=0: render at the instant instead (A/B). */
+            static int staged_on = -1;
+            if (staged_on < 0) { const char *e = getenv("OPENPETE_PT_STAGED"); staged_on = !(e && *e == '0'); }
+            const int nstages = staged_on ? openpete_native_stage_count() : 0;
             const int stage = nstages > 0 ? (s_stage_next++ % nstages) : -1;
             if (pt_dbg() && s_dbg_n < PT_DBG_MAX) {
                 s_dbg_n++;
@@ -455,14 +458,26 @@ static int present_thread_main(void *unused)
             SDL_UnlockMutex(s_pt.mx);
             const op_time_t c0 = op_now();
             const uint32_t gen = openpete_native_stage_gen();
-            const int did = stage >= 0
-                ? openpete_native_render_scene_to_stage(slot_idx, stage, (uint64_t)(c0 / 1000))
-                : 0;
+            int did;
+            if (stage >= 0) did = openpete_native_render_scene_to_stage(slot_idx, stage, (uint64_t)(c0 / 1000));
+            else {
+                /* Unstaged: wait for the instant here, then render and present in one. */
+                const op_time_t at1 = compose_at_locked(t_ns, slot);
+                if (op_now() < at1) op_sleep_until(at1);
+                did = openpete_native_render_scene(slot_idx, (uint64_t)(op_now() / 1000));
+            }
             const op_time_t c = op_now() - c0;
             SDL_LockMutex(s_pt.mx);
             s_pt.busy = 0;
             SDL_SignalCondition(s_pt.idle_cv);
             if (!did) { s_pt.render_refused++; continue; }
+            if (stage < 0) {
+                openpete_pace_record_present((uint8_t)kind, alpha, paired);
+                if (s_pt.cb) s_pt.cb(s_pt.cb_ctx, kind, alpha, paired);
+                s_pt.presents++;
+                if (s_pt.flip_holdoff > 0) s_pt.flip_holdoff--; else s_pt.flip_pending = 1;
+                continue;
+            }
             s_pt.render_ema = s_pt.render_ema ? (s_pt.render_ema * 7 + c) / 8 : c;
             /* And the swapchain image, now: an image the display let go of
              * at the last vblank is not available until the driver has

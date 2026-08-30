@@ -199,7 +199,8 @@ static struct {
                                        * fresher camera/fog/colour-generation
                                        * set (rung flips, sub-pixel skew) */
     tc_sector_ubo *build_target;      /* where sector_set writes this build   */
-    int           draw_open;          /* frame_select verdict for this present */
+    int           draw_open;
+    int  sel_src;      /* 0 closed, 1 scene ring, 2 live, 3 staged, 4 live by age */          /* frame_select verdict for this present */
     uint64_t      ubo_flush_serial;   /* rhi_frame_serial of the last UBO flush
                                        * for the CURRENT selection (0 = none).
                                        * Keyed on the frame serial, not a
@@ -228,6 +229,54 @@ typedef struct {
 
 int openpete_tercache_ready(void) { return s_tc.ready; }
 int openpete_tercache_frame_open(void) { return s_tc.draw_open; }
+int openpete_tercache_frame_source(void) { return s_tc.sel_src; }
+/* Diagnostic: flag census of the selected state (drawn / HP / LP / near-variant)
+ * and a 3-bit generation histogram over its drawn sectors. */
+void openpete_tercache_frame_slots(char *out, int cap)
+{
+    int off = 0;
+    for (int i = 0; i < OPTC_SLOTS && off < cap - 24; i++) {
+        union { float f; uint32_t u; } w; w.f = s_tc.sel.sec[i].o[3];
+        if (!(w.u & OPTC_SF_DRAWN)) continue;
+        off += snprintf(out + off, (size_t)(cap - off), " %d:%03x", i, (unsigned)(w.u & 0xFFF));
+    }
+    if (off == 0) out[0] = 0;
+}
+void openpete_tercache_frame_globals(char *out, int cap)
+{
+    const tc_globals_ubo *g = &s_tc.sel.g;
+    snprintf(out, (size_t)cap, "cam=%.0f,%.0f,%.0f of=%.1f,%.1f H=%.1f near=%.1f fog=%d gfl=%08x cull=%d m0=%.3f,%.3f,%.3f m2=%.3f,%.3f,%.3f rim=%d cov=%d",
+             g->dcam_xy[0], g->dcam_xy[1], g->dcam_zf[0], g->dof_xy[0], g->dof_xy[1], g->dH[0], g->dnear[0],
+             g->fog[0], (unsigned)g->fog[1], g->fog[2], g->mrow0[0], g->mrow0[1], g->mrow0[2], g->mrow2[0], g->mrow2[1], g->mrow2[2],
+             g->rim_cnt[0], g->cov_cnt[0]);
+}
+void openpete_tercache_frame_stats(int *drawn, int *hp, int *lp, int *nearvar, int gens[8])
+{
+    *drawn = *hp = *lp = *nearvar = 0;
+    for (int g = 0; g < 8; g++) gens[g] = 0;
+    if (!s_tc.draw_open) return;
+    for (int i = 0; i < OPTC_SLOTS; i++) {
+        union { float f; uint32_t u; } w; w.f = s_tc.sel.sec[i].o[3];
+        if (!(w.u & OPTC_SF_DRAWN)) continue;
+        (*drawn)++;
+        if (w.u & OPTC_SF_DRAWHP) (*hp)++;
+        if (w.u & OPTC_SF_DRAWLP) (*lp)++;
+        if (w.u & OPTC_SF_NEARVAR) (*nearvar)++;
+        gens[(w.u >> 12) & 7u]++;
+    }
+}
+
+/* 1 = the state selected for this present holds at least one live sector, 0
+ * = the draws are open but would paint nothing (a frame_skip state: the
+ * feeder cut out for that scene), -1 = the retained path is not in use. */
+int openpete_tercache_frame_content(void)
+{
+    if (!s_tc.ready) return -1;
+    if (!s_tc.draw_open) return 0;
+    for (int i = 0; i < OPTC_SLOTS; i++)
+        if (i != (int)OPTC_SLOT_DEAD && s_tc.sel.sec[i].o[3] != 0.0f) return 1;
+    return 0;
+}
 
 int openpete_tercache_init(rhi_device *dev)
 {
@@ -500,6 +549,12 @@ void openpete_tercache_chunk_free(int arena, uint32_t first, int count)
  * state promotes to live (that is the extraction the next presents show).
  * An immediate (re-extract) build writes live directly. A repeated stamp
  * (the serial-retry path re-runs one build) restages in place. */
+static int tc_dbg(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("OPENPETE_TC_DBG"); on = (e && *e && *e != '0'); }
+    return on;
+}
 static tc_state *tc_begin_state(uint32_t stamp, int immediate)
 {
     if (immediate && (stamp & OPTC_STAMP_SCENE_BIT)) {
@@ -515,6 +570,8 @@ static tc_state *tc_begin_state(uint32_t stamp, int immediate)
         if (pick < 0) pick = s_tc.ring_next;   /* ring exhausted: the oldest (should not happen) */
         s_tc.ring_next = (pick + 1) % TC_RING;
         tc_state *T = &s_tc.ring[pick];
+        if (tc_dbg()) fprintf(stderr, "[tc] state pick=%d for stamp=%08x (was %08x valid=%d) ctr=%u\n",
+                              pick, stamp, T->stamp, T->valid, s_tc.present_ctr);
         T->stamp = stamp; T->valid = 1; T->build_serial = s_tc.present_ctr;
         return T;
     }
@@ -579,10 +636,18 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
                                         (size_t)n * sizeof(rhi_terrain_vertex));
                 at += n; left -= n;
             }
+            if (tc_dbg()) fprintf(stderr, "[tc] release arena=%d first=%u count=%u freed_at=%u ctr=%u floor=%u\n",
+                                  s_tc.defer[i].arena, s_tc.defer[i].first, s_tc.defer[i].count, s_tc.defer[i].stamp, s_tc.present_ctr, floor_serial);
             tc_free_insert(&s_tc.arena[s_tc.defer[i].arena],
                            s_tc.defer[i].first, s_tc.defer[i].count);
         } else
             s_tc.defer[w++] = s_tc.defer[i];
+    }
+    if (tc_dbg()) {
+        int live = 0;
+        for (int i = 0; i < TC_RING; i++) live += s_tc.ring[i].valid && openpete_native_scene_stamp_live(s_tc.ring[i].stamp);
+        fprintf(stderr, "[tc] begin stamp=%08x ctr=%u floor=%u have=%d live_states=%d released=%d held=%d\n",
+                stamp, s_tc.present_ctr, floor_serial, have_floor, live, s_tc.defer_n - w, w);
     }
     s_tc.defer_n = w;
 
@@ -686,15 +751,16 @@ void openpete_tercache_frame_select(uint32_t present_stamp)
         for (int i = 0; i < TC_RING; i++)
             if (s_tc.ring[i].valid && s_tc.ring[i].stamp == present_stamp) { R = &s_tc.ring[i]; break; }
     if (R) {
-        s_tc.draw_open = 1; s_tc.sel = *R;
+        s_tc.draw_open = 1; s_tc.sel = *R; s_tc.sel_src = 1;
     } else if (s_tc.ready && s_tc.live.valid && present_stamp == s_tc.live.stamp) {
-        s_tc.draw_open = 1; s_tc.sel = s_tc.live;
+        s_tc.draw_open = 1; s_tc.sel = s_tc.live; s_tc.sel_src = 2;
     } else if (s_tc.ready && s_tc.staged.valid && present_stamp == s_tc.staged.stamp) {
-        s_tc.draw_open = 1; s_tc.sel = s_tc.staged;
+        s_tc.draw_open = 1; s_tc.sel = s_tc.staged; s_tc.sel_src = 3;
     } else {
         int32_t age = (int32_t)(present_stamp - s_tc.live.stamp);
         s_tc.draw_open = s_tc.ready && s_tc.live.valid && age >= -8 && age <= 8;
         if (s_tc.draw_open) s_tc.sel = s_tc.live;
+        s_tc.sel_src = s_tc.draw_open ? 4 : 0;
     }
     s_tc.ubo_flush_serial = 0;
 }
