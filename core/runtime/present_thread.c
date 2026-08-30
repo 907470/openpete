@@ -30,6 +30,7 @@
 
 #include <SDL3/SDL.h>
 #include <stdlib.h>
+#include <stdio.h>
 
 static struct {
     SDL_Thread    *thr;

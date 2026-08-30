@@ -25,6 +25,7 @@
 #include "openpete_perf_stats.h"
 #include "openpete_profile.h"   /* --profile-out forwarding shim */
 #include "openpete_menu.h"
+#include "openpete_knobs.h"   /* env-epoch for cached live knobs */
 #include "openpete_devui.h"
 #include "openpete_mods.h"   /* openpete_mods_texture_get (mod-texture runs) */
 
@@ -6821,14 +6822,14 @@ static bool draw_native_scene(bool full_extent)
      * A large win at SSAA/high-res scene targets. OPENPETE_BACKDROP_DEFER=0
      * restores draw-first; freeze frames skip the group loop, so they keep
      * the up-front order (bg under the freeze overlay, no dome). */
-    /* Re-resolved once per VBL: setenv is the live channel (dev overlay). */
-    extern unsigned openpete_frame;
+    /* Re-resolved on a live edit (registry epoch), never per VBL. */
     static int s_backdrop_defer = -1;
-    static unsigned s_bd_resolved_f = ~0u;
-    if (s_backdrop_defer < 0 || s_bd_resolved_f != openpete_frame) {
+    static unsigned s_bd_resolved_ep = 0;
+    const unsigned bd_ep = knob_registry_env_epoch();
+    if (s_backdrop_defer < 0 || s_bd_resolved_ep != bd_ep) {
         const char* e = getenv("OPENPETE_BACKDROP_DEFER");
         s_backdrop_defer = !(e && *e && *e == '0');
-        s_bd_resolved_f = openpete_frame;
+        s_bd_resolved_ep = bd_ep;
     }
     if (!s_backdrop_defer || freeze_first >= 0)
         draw_backdrop_fills(bg, ut_first, ut_count,
@@ -8330,15 +8331,16 @@ static uint64_t s_pt_last_report = 0;
  * from openpete_phase_timers_on() so a --profile-out-only run measures the
  * phases (and forwards them to the trace) without spamming stderr. */
 static int pt_report_on(void) {
-    /* Re-resolved once per VBL: setenv is the live channel (dev overlay)
-     * and this runs at every phase-scope site per present. */
-    extern unsigned openpete_frame;
+    /* Re-resolved on a live edit (the dev overlay's setenv bumps the
+     * registry epoch), never per VBL: this runs at every phase-scope site
+     * on both the extracting and the presenting thread. */
     static int on = -1;
-    static unsigned resolved_f = ~0u;
-    if (on < 0 || resolved_f != openpete_frame) {
+    static unsigned resolved_ep = 0;
+    const unsigned ep = knob_registry_env_epoch();
+    if (on < 0 || resolved_ep != ep) {
         const char* e = getenv("OPENPETE_PHASE_TIMERS");
         on = (e && *e && *e != '0');
-        resolved_f = openpete_frame;
+        resolved_ep = ep;
     }
     return on;
 }

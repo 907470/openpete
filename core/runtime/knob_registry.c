@@ -383,7 +383,16 @@ static int logfmt_set(knob_desc_t *k, double v) {
  *    (KNOB_RESTART_ONLY) until the latch is converted to an accessor.
  *    Promoting one is a per-knob audited change, not an overlay tweak. */
 
+/* Bumped on every live env edit. A consumer that re-resolves a knob "once
+ * per VBL" pays a getenv per VBL on every thread that reads it; keyed on
+ * this epoch it pays one per EDIT. On Windows that matters twice over: the
+ * CRT's getenv is ~46x glibc's, and concurrent getenv/putenv from two
+ * threads has been observed to wedge the process. */
+static unsigned s_env_epoch = 1;
+unsigned knob_registry_env_epoch(void) { return s_env_epoch; }
+
 static int portable_setenv(const char *name, const char *val) {
+    s_env_epoch++;
 #ifdef _WIN32
     return _putenv_s(name, val ? val : "");
 #else

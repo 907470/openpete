@@ -47,8 +47,31 @@ static op_time_t s_slack_ns = 0;
 static int64_t s_qpc_freq = 0;
 /* High-resolution waitable timer (Win10 1803+). NULL on older Windows;
  * the fallback path uses timeBeginPeriod(1) + Sleep. */
-static HANDLE  s_hi_res_timer = NULL;
+static HANDLE  s_hi_res_timer = NULL;   /* capability probe + the first thread's timer */
 static int     s_timeperiod_set = 0;
+/* One waitable timer PER THREAD. A waitable timer is a single-shot signal:
+ * a second thread arming the same handle re-arms the wait the first thread
+ * is blocked in with INFINITE, which parked the sim thread for good once a
+ * present thread started sleeping through this path too. Every thread that
+ * sleeps gets its own; the table lets a shutdown wake all of them. */
+#  ifndef CREATE_WAITABLE_TIMER_HIGH_RESOLUTION
+#    define CREATE_WAITABLE_TIMER_HIGH_RESOLUTION 0x00000002
+#  endif
+#define OP_TIMER_MAX_THREADS 8
+static HANDLE  s_thread_timers[OP_TIMER_MAX_THREADS];
+static volatile LONG s_thread_timer_n = 0;
+static _Thread_local HANDLE t_timer = NULL;
+static HANDLE thread_timer(void) {
+    if (t_timer) return t_timer;
+    if (!s_hi_res_timer) return NULL;          /* no hi-res support: coarse Sleep path */
+    HANDLE h = CreateWaitableTimerExW(NULL, NULL, CREATE_WAITABLE_TIMER_HIGH_RESOLUTION,
+                                      TIMER_ALL_ACCESS);
+    if (!h) return NULL;
+    LONG i = InterlockedIncrement(&s_thread_timer_n) - 1;
+    if (i < OP_TIMER_MAX_THREADS) s_thread_timers[i] = h;
+    t_timer = h;
+    return h;
+}
 #endif
 
 /* Monotonicity guard. clock_gettime is monotonic by definition, but
@@ -109,17 +132,18 @@ void op_time_init(void) {
 void op_time_wake_pending_sleeps(void) {
 #if defined(_WIN32)
     if (!s_initialized) return;
-    if (s_hi_res_timer) {
-        /* SetWaitableTimer with a 0 due time fires immediately — any
-         * thread currently in WaitForSingleObject(s_hi_res_timer,
-         * INFINITE) wakes and returns. The spin-tail then notices
-         * op_now() >= deadline (or its own caller's exit predicate
-         * is true) and unwinds. CancelWaitableTimer would NOT signal
-         * waiters, only the next SetWaitableTimer would — so we set
-         * with a 0 time instead. */
+    {
+        /* SetWaitableTimer with a 0 due time fires immediately — a thread
+         * in WaitForSingleObject(timer, INFINITE) wakes and returns. The
+         * spin-tail then notices op_now() >= deadline (or its own caller's
+         * exit predicate is true) and unwinds. CancelWaitableTimer would NOT
+         * signal waiters, only the next SetWaitableTimer would — so we set
+         * with a 0 time instead, on every thread's timer. */
         LARGE_INTEGER due;
         due.QuadPart = 0;
-        SetWaitableTimer(s_hi_res_timer, &due, 0, NULL, NULL, FALSE);
+        LONG n = s_thread_timer_n; if (n > OP_TIMER_MAX_THREADS) n = OP_TIMER_MAX_THREADS;
+        for (LONG i = 0; i < n; i++)
+            if (s_thread_timers[i]) SetWaitableTimer(s_thread_timers[i], &due, 0, NULL, NULL, FALSE);
     }
 #endif
 }
@@ -130,6 +154,11 @@ void op_time_shutdown(void) {
     if (s_hi_res_timer) {
         CloseHandle(s_hi_res_timer);
         s_hi_res_timer = NULL;
+    }
+    {
+        LONG n = s_thread_timer_n; if (n > OP_TIMER_MAX_THREADS) n = OP_TIMER_MAX_THREADS;
+        for (LONG i = 0; i < n; i++)
+            if (s_thread_timers[i]) { CloseHandle(s_thread_timers[i]); s_thread_timers[i] = NULL; }
     }
     if (s_timeperiod_set) {
         timeEndPeriod(1);
@@ -219,15 +248,16 @@ static void sleep_until_win(op_time_t deadline_ns) {
     op_time_t now = op_now();
     if (now >= deadline_ns) return;
     op_time_t delay_ns = deadline_ns - now;
-    if (s_hi_res_timer) {
+    HANDLE tm = thread_timer();
+    if (tm) {
         /* SetWaitableTimerEx with negative due time = relative, in 100 ns
          * units. Capped at INT64_MAX/2 to be safe. */
         LARGE_INTEGER due;
         int64_t hundreds = delay_ns / 100;
         if (hundreds < 1) return;
         due.QuadPart = -hundreds;
-        if (SetWaitableTimer(s_hi_res_timer, &due, 0, NULL, NULL, FALSE)) {
-            WaitForSingleObject(s_hi_res_timer, INFINITE);
+        if (SetWaitableTimer(tm, &due, 0, NULL, NULL, FALSE)) {
+            WaitForSingleObject(tm, INFINITE);
         }
     } else {
         /* Coarse Sleep with timeBeginPeriod(1). Sleep is in integer ms,

@@ -122,6 +122,8 @@ knob_desc_t *knob_registry(size_t *count);
  * Call once, after openpete_options_parse, before the overlay first draws.
  * Keeps the opts pointer (main's options outlive the process loop). */
 void knob_registry_init(const struct openpete_options *opts);
+/* Live-edit epoch: re-resolve a cached env knob when this changes. */
+unsigned knob_registry_env_epoch(void);
 
 /* Convenience for the UI: current value of any row as a display string. */
 void knob_value_str(const knob_desc_t *k, char *buf, size_t cap);
