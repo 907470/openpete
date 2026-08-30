@@ -1403,7 +1403,9 @@ static int pace_flip_log_on(void)
 static void pace_sleep_until(op_time_t deadline_ns, op_time_t sim_deadline_ns)
 {
     const op_time_t req = op_now();
-    if (pace_flip_log_on()) {
+    /* Under eager production the presenting thread is the present thread,
+     * which does its own flip logging; a wait from here would race it. */
+    if (pace_flip_log_on() && !s_eager.active) {
         /* Never wait into the pacer's slack ahead of a SIM deadline. The sleep
          * is not idle right up to it: op_sleep_until parks until the deadline
          * minus slack and the loop uses what remains to be ready on time.

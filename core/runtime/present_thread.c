@@ -77,8 +77,15 @@ static void wait_until_locked(op_time_t t)
         const op_time_t now = op_now();
         if (now >= t) return;
         const op_time_t left = t - now;
-        if (left > 2000000) {
-            SDL_WaitConditionTimeout(s_pt.cv, s_pt.mx, (Sint32)((left - 1500000) / 1000000));
+        /* A condvar timeout is a coarse timer (a millisecond or more of
+         * oversleep on Windows), so it covers only the bulk, and only when
+         * there is bulk: with less than 4 ms left the whole wait goes to the
+         * hybrid sleep, which lands within tens of microseconds. Measured
+         * before this split: ~10 % of presents 1.8 ms late, each followed by
+         * one immediately -- the display saw pairs where the grid had two
+         * slots. */
+        if (left > 4000000) {
+            SDL_WaitConditionTimeout(s_pt.cv, s_pt.mx, (Sint32)((left - 3000000) / 1000000));
             /* re-evaluate: a kick may have published an earlier target */
             return;
         }
@@ -132,6 +139,21 @@ static int present_thread_main(void *unused)
         if (did) {
             openpete_pace_record_present((uint8_t)kind, alpha, paired);
             if (s_pt.cb) s_pt.cb(s_pt.cb_ctx, kind, alpha, paired);
+            /* OPENPETE_PACE_FLIP_LOG: wait for the flip of the present just
+             * queued, bounded by the time until the next target less a
+             * compose, so the instrument never makes the next scene late.
+             * This is the presenting thread, the only one that may wait. */
+            static int flip_log = -1;
+            if (flip_log < 0) { const char *e = getenv("OPENPETE_PACE_FLIP_LOG"); flip_log = (e && *e && *e != '0'); }
+            if (flip_log) {
+                const op_time_t nt = openpete_native_scene_next_target();
+                const op_time_t budget = nt ? nt - op_now() - 400000 : 1000000;
+                if (budget > 0) {
+                    uint64_t id = 0, waited = 0;
+                    if (openpete_native_render_present_wait((uint64_t)budget, &id, &waited) == 1)
+                        openpete_pace_flip(id, (int64_t)op_now(), (int64_t)waited);
+                }
+            }
         } else {
             /* The refusal ledger is what turns a declined swapchain into
              * SHED records; run it even without a present. */
