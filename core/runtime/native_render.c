@@ -9151,6 +9151,9 @@ void openpete_native_scene_slot_info(int slot, int64_t *target_ns, double *alpha
 }
 /* The display's refresh for the current swapchain (0 = unknown). */
 float openpete_native_display_refresh_hz(void) { return s_nr.dev ? rhi_refresh_hz(s_nr.dev) : 0.0f; }
+int   openpete_native_display_vsync(void)      { return s_nr.dev ? rhi_present_is_vsync(s_nr.dev) : 0; }
+/* Free ring slots: the producer's back-pressure. */
+int openpete_native_scene_ring_free(void) { return SCENE_RING - openpete_native_scene_ring_busy(); }
 void openpete_native_scene_ring_report(void) {
     if (!s_ring_census.published) return;
     OPL_INFO_F("scene-ring", "%u scene(s) published, %u presented, %u superseded unpresented, %u refused (ring full)",

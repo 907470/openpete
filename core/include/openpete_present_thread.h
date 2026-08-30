@@ -32,6 +32,7 @@ void openpete_present_thread_set_callback(openpete_present_thread_cb cb, void *c
 
 void     openpete_present_thread_report(void);
 unsigned openpete_present_thread_presents(void);
+int64_t  openpete_present_thread_cost_ns(void);
 
 #ifdef __cplusplus
 }

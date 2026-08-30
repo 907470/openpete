@@ -1125,13 +1125,23 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period, op_time
      * coarser of the two grids, phase-preserving. */
     {
         const float hz = openpete_native_display_refresh_hz();
-        if (hz > 1.0f) {
+        if (hz > 1.0f && openpete_native_display_vsync()) {
             const op_time_t rp = (op_time_t)(1e9 / hz);
             if (rp > period + period / 8) {
                 const op_time_t k = (rp + period / 2) / period;   /* whole slots per refresh */
                 if (k > 1) period *= k;
             }
         }
+        /* Uncapped presenting (vsync off, --render-fps far above the display):
+         * targets denser than scenes can be made would plan a span the ring
+         * cannot hold and the burst cannot finish. Floor the grid at the
+         * production cost; the ring's back-pressure below does the rest, and
+         * the present thread shows the newest scene at whatever rate the GPU
+         * allows. */
+        op_time_t floor_ns = eager_tail_cost() ? eager_tail_cost() : 250000;
+        const op_time_t pc = openpete_present_thread_cost_ns();
+        if (pc > floor_ns) floor_ns = pc;
+        if (period < floor_ns) period = floor_ns;
     }
     /* Display instants whose ANIMATION instant (t - lag) is inside the span.
      * The previous span already covers the instants up to its last target
@@ -1250,6 +1260,7 @@ static int eager_produce(op_time_t deadline, op_time_t period)
         if (!canonical && t < now - period / 2) {   /* its instant is gone */
             s_eager.i++; s_eager.skipped_late++; continue;
         }
+        if (!canonical && openpete_native_scene_ring_free() <= 1) break;   /* ring full: resume next iteration */
         if (!canonical && now + tail > deadline) {
             static int dbg = -1;
             if (dbg < 0) { const char *e = getenv("OPENPETE_EAGER_DBG"); dbg = (e && *e && *e != '0'); }
@@ -4785,6 +4796,19 @@ static int run_host_loop(const openpete_options_t* opts) {
                 }
             }
             op_deadline_advance(&next_render, s_render_period, 1);
+            if (s_eager.active) {
+                /* Under eager production the render grid is the present
+                 * thread's business: this loop only borrows its PHASE when it
+                 * plans a span. Step it silently to the present (no slip
+                 * accounting — nothing was missed) and sleep to the sim
+                 * deadline alone, instead of waking once per slot to do
+                 * nothing, or spinning flat out at an uncapped --render-fps. */
+                const op_time_t rp = op_period_ns(s_render_period);
+                if (rp > 0 && now2 > next_render.at)
+                    op_deadline_advance(&next_render, s_render_period,
+                                        (now2 - next_render.at) / rp + 1);
+                pace_sleep_until(next_sim.at, next_sim.at);
+            } else {
             {
                 const op_time_t rp = op_period_ns(s_render_period);
                 if (rp > 0 && now2 - next_render.at > slip_threshold_ns) {
@@ -4802,6 +4826,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             op_time_t next = (next_sim.at < next_render.at)
                              ? next_sim.at : next_render.at;
             pace_sleep_until(next, next_sim.at);
+            }
         }
 
 #if defined(__EMSCRIPTEN__)

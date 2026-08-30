@@ -1756,6 +1756,11 @@ const char *rhi_present_mode_name(const rhi_device *dev)
 }
 
 float rhi_refresh_hz(const rhi_device *dev) { return dev ? dev->refresh_hz : 0.0f; }
+bool rhi_present_is_vsync(const rhi_device *dev)
+{
+    return dev && !dev->headless && (dev->present_mode_granted == VK_PRESENT_MODE_FIFO_KHR ||
+                                     dev->present_mode_granted == VK_PRESENT_MODE_FIFO_RELAXED_KHR);
+}
 
 void rhi_set_present_blocking(rhi_device *dev, bool on)
 {

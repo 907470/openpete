@@ -49,6 +49,7 @@ static struct {
     unsigned  late;           /* target already passed when picked */
     op_time_t late_ns;        /* summed lateness */
     op_time_t late_max_ns;
+    op_time_t cost_ema;       /* compose + present, per scene */
     unsigned  drains;         /* set_active(0) calls */
     op_time_t drain_wait_ns;  /* time the caller spent waiting at a drain */
     op_time_t drain_wait_max_ns;
@@ -122,7 +123,12 @@ static int present_thread_main(void *unused)
         }
         s_pt.busy = 1;
         SDL_UnlockMutex(s_pt.mx);
-        const int did = openpete_native_render_scene(slot, (uint64_t)(op_now() / 1000));
+        const op_time_t c0 = op_now();
+        const int did = openpete_native_render_scene(slot, (uint64_t)(c0 / 1000));
+        if (did) {
+            const op_time_t c = op_now() - c0;
+            s_pt.cost_ema = s_pt.cost_ema ? (s_pt.cost_ema * 7 + c) / 8 : c;
+        }
         if (did) {
             openpete_pace_record_present((uint8_t)kind, alpha, paired);
             if (s_pt.cb) s_pt.cb(s_pt.cb_ctx, kind, alpha, paired);
@@ -226,3 +232,7 @@ void openpete_present_thread_report(void)
 }
 
 unsigned openpete_present_thread_presents(void) { return s_pt.presents; }
+/* What one present costs this thread, compose to submit, EMA. With vsync
+ * off this is the display's real throughput ceiling; the planner spaces
+ * targets no denser than it, or most scenes are made only to be superseded. */
+int64_t openpete_present_thread_cost_ns(void) { return s_pt.cost_ema; }
