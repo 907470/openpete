@@ -138,6 +138,32 @@ void rhi_blit_to_swapchain(rhi_device *dev);
 /* Submit the recorded command buffer and present the swapchain image. */
 void rhi_end_frame(rhi_device *dev);
 
+/* Staged presents: the render and the present as two steps, so a frame can
+ * be rendered ahead of the instant it is meant to appear and the work left
+ * at that instant is an acquire and a blit. rhi_end_frame_to_stage replaces
+ * rhi_blit_to_swapchain + rhi_end_frame: it blits the offscreen target into
+ * stage image `stage` (0..rhi_stage_count()-1) and submits, acquiring
+ * nothing. rhi_present_stage acquires a swapchain image, blits the stage
+ * image onto it and presents; false = refused (no image within the acquire
+ * budget, a rebuild pending, or the stage image was never filled / was
+ * rebuilt since -- compare rhi_stage_gen). A staged frame that is never
+ * presented costs nothing: no semaphore crosses the two steps, only queue
+ * submission order and image barriers. For the dedicated presenter; the
+ * fence and acquire waits here block. Headless: not available. */
+bool     rhi_begin_frame_staged(rhi_device *dev);   /* rhi_begin_frame without the acquire */
+int      rhi_stage_count(void);
+uint32_t rhi_stage_gen(const rhi_device *dev);
+void     rhi_end_frame_to_stage(rhi_device *dev, int stage);
+bool     rhi_present_stage(rhi_device *dev, int stage);
+/* The same in two steps: acquire the swapchain image early (right after the
+ * render, while the display is still on the previous frame -- an image the
+ * display released only at the last vblank is not truly available until the
+ * driver has processed that release, and a present issued on it BLOCKS until
+ * then, measured 1.3-1.7 ms), then submit the blit and present at the
+ * instant. acquire is idempotent while an image is held; submit takes it. */
+bool     rhi_present_stage_acquire(rhi_device *dev);
+bool     rhi_present_stage_submit(rhi_device *dev, int stage);
+
 /* Tell the device the window size changed; the swapchain + offscreen
  * target are recreated on the next rhi_begin_frame. Safe to call on every
  * resize event. */

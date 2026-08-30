@@ -9204,7 +9204,11 @@ void openpete_native_render_frame(uint64_t record_pts_us)
  * PRESENTED with the serial of the frame that carries it — or back to FREE
  * when the swapchain declined, which is a refused present, not a shown one.
  * Returns 1 if a present went out. */
-int openpete_native_render_scene(int slot, uint64_t record_pts_us)
+/* The frame in progress ends in stage image `s_stage_target` instead of a
+ * present (rhi_end_frame_to_stage) when >= 0. */
+static int s_stage_target = -1;
+
+static int render_scene_impl(int slot, int stage, uint64_t record_pts_us)
 {
     if (!s_nr.enabled || s_nr.headless || slot < 0 || slot >= SCENE_RING) return 0;
     scene_slot_t *sl = &s_ring[slot];
@@ -9213,18 +9217,54 @@ int openpete_native_render_scene(int slot, uint64_t record_pts_us)
     notex_apply_pending();
     truescope_apply_pending();
     s_ps_slot = sl;
+    s_stage_target = stage;
     const uint64_t before = rhi_frame_serial(s_nr.dev);
     render_frame_common(record_pts_us, false);
     const uint64_t after = rhi_frame_serial(s_nr.dev);
+    s_stage_target = -1;
     rhi_set_present_blocking(s_nr.dev, false);
     s_ps_slot = NULL;
     const int did = after != before && s_last_frame_presented;
+    /* PRESENTED here means "its GPU reads are in flight under render serial
+     * `after`": the retirement window is keyed on render frames, whether the
+     * frame went to the swapchain or to a stage image. */
     SDL_LockMutex(ring_mx());
     if (did) { sl->state = SS_PRESENTED; sl->presented_serial = after; s_ring_census.presented++; }
     else      sl->state = SS_FREE;
     SDL_UnlockMutex(s_ring_mx);
     return did;
 }
+
+int openpete_native_render_scene(int slot, uint64_t record_pts_us)
+{
+    return render_scene_impl(slot, -1, record_pts_us);
+}
+
+int openpete_native_render_scene_to_stage(int slot, int stage, uint64_t record_pts_us)
+{
+    return render_scene_impl(slot, stage, record_pts_us);
+}
+
+int openpete_native_present_stage_acquire(void)
+{
+    if (!s_nr.enabled || s_nr.headless || !s_nr.dev) return 0;
+    rhi_set_present_blocking(s_nr.dev, true);
+    const int ok = rhi_present_stage_acquire(s_nr.dev) ? 1 : 0;
+    rhi_set_present_blocking(s_nr.dev, false);
+    return ok;
+}
+
+int openpete_native_present_stage(int stage)
+{
+    if (!s_nr.enabled || s_nr.headless || !s_nr.dev) return 0;
+    rhi_set_present_blocking(s_nr.dev, true);
+    const int ok = rhi_present_stage_submit(s_nr.dev, stage) ? 1 : 0;
+    rhi_set_present_blocking(s_nr.dev, false);
+    return ok;
+}
+
+int      openpete_native_stage_count(void) { return s_nr.dev ? rhi_stage_count() : 0; }
+uint32_t openpete_native_stage_gen(void)   { return s_nr.dev ? rhi_stage_gen(s_nr.dev) : 0; }
 
 static void render_frame_common(uint64_t record_pts_us, bool have_ref)
 {
@@ -9317,7 +9357,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     uint64_t pt_t0 = pt_on ? openpete_phase_now_us() : 0, pt_t1;
     int bf_ok;
     { OP_PROF_ACCUM_SCOPE("gpu.beginframe");   /* fence wait + swapchain acquire */
-      bf_ok = rhi_begin_frame(s_nr.dev); }
+      bf_ok = s_stage_target >= 0 ? rhi_begin_frame_staged(s_nr.dev) : rhi_begin_frame(s_nr.dev); }
     if (!bf_ok)
         return; /* swapchain recreating or window minimized — skip this present */
     openpete_native_scene_retire(rhi_frame_serial(s_nr.dev));
@@ -9399,9 +9439,11 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
                  openpete_phase_set_count(OPPC_TRIS, s_ps_slot ? s_ps_slot->n : s_scene_n); }
     if (s_ptrace) { fprintf(stderr, "C"); fflush(stderr); }
 
-    rhi_gpu_zone_begin(s_nr.dev, "blit");
-    rhi_blit_to_swapchain(s_nr.dev);
-    rhi_gpu_zone_end(s_nr.dev);
+    if (s_stage_target < 0) {
+        rhi_gpu_zone_begin(s_nr.dev, "blit");
+        rhi_blit_to_swapchain(s_nr.dev);
+        rhi_gpu_zone_end(s_nr.dev);
+    }
     if (s_ptrace) { fprintf(stderr, "S"); fflush(stderr); }
 
     /* --record: capture the on-screen native frame via the async ring (no-op
@@ -9415,8 +9457,9 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     }
 
     openpete_mods_registry_read_unlock();
-    { OP_PROF_ACCUM_SCOPE("gpu.endframe");   /* submit + present */
-      rhi_end_frame(s_nr.dev); }
+    { OP_PROF_ACCUM_SCOPE("gpu.endframe");   /* submit + present (or submit into a stage) */
+      if (s_stage_target >= 0) rhi_end_frame_to_stage(s_nr.dev, s_stage_target);
+      else                     rhi_end_frame(s_nr.dev); }
     s_last_frame_presented = 1;
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_GPU_SYNC, pt_t1 - pt_t0);
                  openpete_phase_set_count(OPPC_DRAWS, (int)rhi_draw_calls(s_nr.dev));

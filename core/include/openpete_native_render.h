@@ -945,6 +945,14 @@ int      openpete_native_scene_publish(int64_t target_ns, int kind, double alpha
 int64_t  openpete_native_scene_next_target(void);      /* earliest pending, 0 = none */
 int      openpete_native_scene_pick(int64_t at);       /* nearest pending -> PRESENTING */
 int      openpete_native_render_scene(int slot, uint64_t record_pts_us);
+/* Staged form: render the scene into stage image `stage` now, present it
+ * later with openpete_native_present_stage (see rhi_present_stage). The
+ * slot's lifecycle is the same as a direct present's. */
+int      openpete_native_render_scene_to_stage(int slot, int stage, uint64_t record_pts_us);
+int      openpete_native_present_stage_acquire(void);      /* hold a swapchain image for the next present */
+int      openpete_native_present_stage(int stage);         /* 1 = presented (acquires if not held) */
+int      openpete_native_stage_count(void);
+uint32_t openpete_native_stage_gen(void);                  /* bumps when the stages are rebuilt */
 void     openpete_native_scene_retire(uint64_t begun_serial);
 int      openpete_native_scene_stamp_live(uint32_t stamp);
 void     openpete_native_scene_ring_flush(void);

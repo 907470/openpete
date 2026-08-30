@@ -20,6 +20,13 @@
  * gone. Alpha binds at consume time: pick() takes the nearest pending scene
  * and retires the older ones unpresented.
  *
+ * Two steps, like the extraction itself: the scene for the next instant is
+ * RENDERED into a stage image right after the previous frame goes out, while
+ * the display is still showing that one; at the instant, what is left is an
+ * acquire and a blit (rhi_present_stage). The render -- 0.3 ms on a light
+ * scene, up to 1.5 ms on a heavy vista, draw-call bound -- was the whole
+ * residual when it sat between the instant and the vblank.
+ *
  * Under a vsynced (FIFO) swapchain the display's vblanks are the only
  * instants a frame can appear, and every timestamp this engine takes itself
  * is a SUBMIT time. The driver's present_wait returns at the flip, and from
@@ -63,7 +70,10 @@ static struct {
     unsigned  late;           /* compose instant already passed when picked */
     op_time_t late_ns;        /* summed lateness */
     op_time_t late_max_ns;
-    op_time_t cost_ema;       /* compose + present, per scene */
+    op_time_t render_ema;     /* render into a stage image, per scene */
+    op_time_t present_ema;    /* acquire + blit + present, per frame */
+    unsigned  render_refused; /* the render frame could not begin (rebuild pending, fence bound) */
+    unsigned  discarded;      /* staged frames never presented (deactivated, stages rebuilt) */
     int       flip_pending;   /* a present is queued whose flip has not been observed */
     int       flip_holdoff;   /* presents left to make without a flip wait, after a timeout */
     unsigned  flips;          /* flips observed (present_wait returned at one) */
@@ -77,11 +87,16 @@ static struct {
 
 static int s_enabled = -1;
 
-/* The compose guard after the previous vblank, and the least lead a
- * compose needs to make its vblank (compose ~0.3 ms, submit ~0.1 ms, then
- * the driver: a submit 0.33 ms before a vblank still made it, one 0.13 ms
- * before did not). */
-enum { PT_COMPOSE_GUARD_NS = 300000, PT_MIN_LEAD_NS = 800000, PT_FLIP_HOLDOFF = 3 };
+/* The present instant's guard after the previous vblank, and the least
+ * lead a frame needs to make its vblank (the driver: a submit 0.33 ms
+ * before a vblank still made it, one 0.13 ms before did not). The guard is
+ * NOT the smallest that keeps the frame off the previous vblank (0.3 ms
+ * did): a present issued 0.35 ms after a vblank BLOCKED inside the driver
+ * for ~1.5 ms, until ~0.2 ms before the next -- measured at 0.3 (blocks),
+ * 0.9 and 1.5 (do not) -- and a thread stuck in the present cannot render
+ * the next frame ahead. At 0.9 the present returns in ~20 us and a 1.5 ms
+ * render still finishes 0.6 ms before the following instant. */
+enum { PT_COMPOSE_GUARD_NS = 900000, PT_MIN_LEAD_NS = 800000, PT_FLIP_HOLDOFF = 3 };
 
 /* OPENPETE_PT_DBG=1: a per-iteration trace of the present thread's timing
  * decisions (waits, composes, lattice fits) to stderr, in microseconds
@@ -346,9 +361,9 @@ static void wait_flip_locked(op_time_t bound)
     }
 }
 
-/* Compose start for a scene targeted at `target`: a guard after the
+/* The present instant for a frame targeted at `target`: a guard after the
  * vblank before it (any earlier and a fit error could let the frame slip
- * onto that vblank instead; any later and a heavy scene's compose misses
+ * onto that vblank instead; any later and the acquire + blit could miss
  * its own). OPENPETE_PT_GUARD_US overrides the guard, for measurement.
  * Mutex held. */
 
@@ -371,6 +386,16 @@ static op_time_t compose_at_locked(op_time_t target, double slot)
     return target - (op_time_t)(period + 0.5) + compose_guard_ns();
 }
 
+/* The frame rendered ahead, waiting for its instant. */
+static struct {
+    int       valid;
+    int       stage;          /* stage image it was rendered into */
+    uint32_t  gen;            /* rhi stage generation at render time */
+    op_time_t target;
+    double    alpha; int paired, kind;
+} s_staged;
+static int s_stage_next;
+
 static int present_thread_main(void *unused)
 {
     (void)unused;
@@ -381,94 +406,128 @@ static int present_thread_main(void *unused)
             lattice_reset_why("inactive", 0);
             lattice_reset();
             s_pt.flip_pending = 0; s_pt.flip_holdoff = 0;
+            if (s_staged.valid) { s_staged.valid = 0; s_pt.discarded++; }
             SDL_WaitCondition(s_pt.cv, s_pt.mx);
             continue;
         }
         const double slot = display_slot_ns();
-        const op_time_t target = openpete_native_scene_next_target();
         op_time_t now = op_now();
-        if (!target) {
-            /* Nothing pending: the flip of the last present is still worth
-             * observing (it keeps the lattice current); otherwise sleep until
-             * a publish kicks us. Bounded so a lost kick cannot park the
-             * display for good. */
-            if (s_pt.flip_pending) wait_flip_locked(now + 4000000);
-            else SDL_WaitConditionTimeout(s_pt.cv, s_pt.mx, 4);
+        const int on_lattice = s_lat.locked && slot > 0.0;
+
+        if (!s_staged.valid) {
+            /* Nothing rendered ahead: render the scene for the next present
+             * instant NOW, while the display is still showing the last one.
+             * The render (0.3 ms on a light scene, up to 1.5 ms on a heavy
+             * vista) is then off the path between the compose instant and
+             * the vblank; what remains there is an acquire and a blit. */
+            const op_time_t target = openpete_native_scene_next_target();
+            if (!target) {
+                /* Nothing pending: the flip of the last present is still
+                 * worth observing (it keeps the lattice current); otherwise
+                 * sleep until a publish kicks us. Bounded so a lost kick
+                 * cannot park the display for good. */
+                if (s_pt.flip_pending) wait_flip_locked(now + 4000000);
+                else SDL_WaitConditionTimeout(s_pt.cv, s_pt.mx, 4);
+                continue;
+            }
+            /* Pick against the first vblank whose PRESENT instant (a guard
+             * after the vblank before it) a render started now can meet,
+             * else against now: the animation moment nearest the flip.
+             * Picking by the earliest target would, once behind, render
+             * every stale scene in turn and never catch up; this retires
+             * the older ones instead. */
+            const op_time_t pick_at = on_lattice
+                ? lattice_ceil_locked(now + s_pt.render_ema + 100000
+                                      + (op_time_t)(s_lat.period + 0.5) - compose_guard_ns())
+                : now;
+            const int slot_idx = openpete_native_scene_pick(pick_at);
+            if (slot_idx < 0) continue;
+            op_time_t t_ns = 0; double alpha = 0.0; int paired = 0, kind = OP_PACE_INTERMEDIATE;
+            openpete_native_scene_slot_info(slot_idx, &t_ns, &alpha, &paired, &kind);
+            const int nstages = openpete_native_stage_count();
+            const int stage = nstages > 0 ? (s_stage_next++ % nstages) : -1;
+            if (pt_dbg() && s_dbg_n < PT_DBG_MAX) {
+                s_dbg_n++;
+                fprintf(stderr, "[pt] render target=%.0f now=%.0f stage=%d\n",
+                        dbg_rel(t_ns), dbg_rel(now), stage);
+            }
+            s_pt.busy = 1;
+            SDL_UnlockMutex(s_pt.mx);
+            const op_time_t c0 = op_now();
+            const uint32_t gen = openpete_native_stage_gen();
+            const int did = stage >= 0
+                ? openpete_native_render_scene_to_stage(slot_idx, stage, (uint64_t)(c0 / 1000))
+                : 0;
+            const op_time_t c = op_now() - c0;
+            SDL_LockMutex(s_pt.mx);
+            s_pt.busy = 0;
+            SDL_SignalCondition(s_pt.idle_cv);
+            if (!did) { s_pt.render_refused++; continue; }
+            s_pt.render_ema = s_pt.render_ema ? (s_pt.render_ema * 7 + c) / 8 : c;
+            /* And the swapchain image, now: an image the display let go of
+             * at the last vblank is not available until the driver has
+             * processed the release, and a present on it blocks until
+             * then (1.3-1.7 ms, measured). Held here, it is ready by the
+             * instant. */
+            SDL_UnlockMutex(s_pt.mx);
+            openpete_native_present_stage_acquire();
+            SDL_LockMutex(s_pt.mx);
+            s_staged.valid = 1; s_staged.stage = stage; s_staged.gen = gen;
+            s_staged.target = t_ns; s_staged.alpha = alpha; s_staged.paired = paired; s_staged.kind = kind;
             continue;
         }
-        const op_time_t at = compose_at_locked(target, slot);
-        const int on_lattice = s_lat.locked && slot > 0.0;
+
+        /* A frame is staged: present it at its instant -- a guard after the
+         * previous vblank on the lattice, else at its target. */
+        const op_time_t at = compose_at_locked(s_staged.target, slot);
         if (now < at) {
             if (s_pt.flip_pending) {
                 /* The previous flip is due a guard before `at`: wait for
-                 * it, never past `at` (the compose instant is the
-                 * lattice's, not the flip's -- a compose that waited for a
-                 * LATE flip would itself be late, and so would every one
-                 * after it), and never longer than a slot: a scene
-                 * published for an EARLIER target than the one read above
-                 * (the canonical, at a tick landing) cannot interrupt a
-                 * driver wait, so its lateness is bounded by this. */
+                 * it, never past `at` (the present instant is the lattice's,
+                 * not the flip's -- a present that waited for a LATE flip
+                 * would itself be late, and so would every one after it),
+                 * and never longer than a slot. */
                 op_time_t bound = at;
                 const op_time_t cap = now + (op_time_t)(slot > 0.0 ? slot : 4e6) + PT_COMPOSE_GUARD_NS;
                 if (bound > cap) bound = cap;
                 wait_flip_locked(bound);
-                continue;               /* re-read: the target set may have changed */
+                continue;
             }
             wait_until_locked(at);
             continue;
         }
-        /* Pick against the vblank this compose can actually make -- the
-         * first lattice instant a full lead ahead -- else against now: the
-         * animation moment nearest the flip. Picking by the target read
-         * above would, once behind, compose every stale scene in turn, each
-         * present blocking a refresh on the full queue, and never catch
-         * up; the pick retires the older scenes instead. */
-        const op_time_t pick_at = on_lattice ? lattice_ceil_locked(now + PT_MIN_LEAD_NS)
-                                : slot > 0.0 ? now + (op_time_t)slot - compose_guard_ns() : now;
-        const int slot_idx = openpete_native_scene_pick(pick_at);
-        if (slot_idx < 0) continue;
-        /* Every scene is presented, late ones included. A vblank with no
-         * new frame is not a neutral event on this path: the frame after
-         * such a gap missed ITS vblank too, every time (measured -- the
-         * compositor idles), so a dropped scene cost two refreshes and the
-         * second miss made the next gap. A frame that is late for its
-         * vblank is instead superseded when the next one arrives on time,
-         * and costs nothing beyond the refresh it already missed. */
         if (pt_dbg() && s_dbg_n < PT_DBG_MAX) {
             s_dbg_n++;
-            fprintf(stderr, "[pt] compose target=%.0f at=%.0f now=%.0f\n",
-                    dbg_rel(target), dbg_rel(at), dbg_rel(now));
+            fprintf(stderr, "[pt] present target=%.0f at=%.0f now=%.0f stage=%d\n",
+                    dbg_rel(s_staged.target), dbg_rel(at), dbg_rel(now), s_staged.stage);
         }
-        op_time_t t_ns = 0; double alpha = 0.0; int paired = 0, kind = OP_PACE_INTERMEDIATE;
-        openpete_native_scene_slot_info(slot_idx, &t_ns, &alpha, &paired, &kind);
-        const op_time_t due = compose_at_locked(t_ns, slot);
-        if (now - due > 1000000) {          /* >1 ms past its compose instant */
-            s_pt.late++; s_pt.late_ns += now - due;
-            if (now - due > s_pt.late_max_ns) s_pt.late_max_ns = now - due;
+        if (now - at > 1000000) {          /* >1 ms past its present instant */
+            s_pt.late++; s_pt.late_ns += now - at;
+            if (now - at > s_pt.late_max_ns) s_pt.late_max_ns = now - at;
         }
+        const int kind = s_staged.kind, paired = s_staged.paired;
+        const double alpha = s_staged.alpha;
+        const int stage = s_staged.stage;
+        const int stale_gen = s_staged.gen != openpete_native_stage_gen();
+        s_staged.valid = 0;
+        if (stale_gen) { s_pt.discarded++; continue; }   /* the stages were rebuilt under it */
         s_pt.busy = 1;
         SDL_UnlockMutex(s_pt.mx);
         const op_time_t c0 = op_now();
-        const int did = openpete_native_render_scene(slot_idx, (uint64_t)(c0 / 1000));
-        if (did) {
-            const op_time_t c = op_now() - c0;
-            s_pt.cost_ema = s_pt.cost_ema ? (s_pt.cost_ema * 7 + c) / 8 : c;
-            openpete_pace_record_present((uint8_t)kind, alpha, paired);
-            if (s_pt.cb) s_pt.cb(s_pt.cb_ctx, kind, alpha, paired);
-        } else {
-            /* The refusal ledger is what turns a declined swapchain into
-             * SHED records; run it even without a present. */
-            openpete_pace_record_present((uint8_t)kind, alpha, paired);
-        }
+        const int did = openpete_native_present_stage(stage);
+        const op_time_t c = op_now() - c0;
+        /* The refusal ledger is what turns a declined swapchain into SHED
+         * records; run it even without a present. */
+        openpete_pace_record_present((uint8_t)kind, alpha, paired);
+        if (did && s_pt.cb) s_pt.cb(s_pt.cb_ctx, kind, alpha, paired);
         SDL_LockMutex(s_pt.mx);
         s_pt.busy = 0;
         if (did) {
             s_pt.presents++;
+            s_pt.present_ema = s_pt.present_ema ? (s_pt.present_ema * 7 + c) / 8 : c;
             if (s_pt.flip_holdoff > 0) s_pt.flip_holdoff--;
             else s_pt.flip_pending = 1;
         } else s_pt.refused++;
-        if (pt_dbg() && s_dbg_n < PT_DBG_MAX)
-            fprintf(stderr, "[pt] presented did=%d submit_done=%.0f\n", did, dbg_rel(op_now()));
         SDL_SignalCondition(s_pt.idle_cv);
     }
     SDL_UnlockMutex(s_pt.mx);
@@ -551,11 +610,13 @@ void openpete_present_thread_report(void)
 {
     if (!s_pt.presents && !s_pt.refused) return;
     OPL_INFO_F("present-thread",
-               "%u scene(s) presented, %u refused by the swapchain; %u composed late "
-               "(%.3f ms mean, %.3f ms max); %u drain(s), %.3f ms waited total, %.3f ms max",
-               s_pt.presents, s_pt.refused, s_pt.late,
+               "%u scene(s) presented, %u refused by the swapchain, %u render(s) refused, %u staged frame(s) discarded; "
+               "%u presented late (%.3f ms mean, %.3f ms max); render %.3f ms ema, present step %.3f ms ema; "
+               "%u drain(s), %.3f ms waited total, %.3f ms max",
+               s_pt.presents, s_pt.refused, s_pt.render_refused, s_pt.discarded, s_pt.late,
                s_pt.late ? (double)s_pt.late_ns / s_pt.late / 1e6 : 0.0,
-               (double)s_pt.late_max_ns / 1e6, s_pt.drains,
+               (double)s_pt.late_max_ns / 1e6,
+               (double)s_pt.render_ema / 1e6, (double)s_pt.present_ema / 1e6, s_pt.drains,
                (double)s_pt.drain_wait_ns / 1e6, (double)s_pt.drain_wait_max_ns / 1e6);
     if (s_pt.flips || s_pt.flip_timeouts)
         OPL_INFO_F("present-thread",
@@ -573,4 +634,4 @@ unsigned openpete_present_thread_presents(void) { return s_pt.presents; }
 /* What one present costs this thread, compose to submit, EMA. With vsync
  * off this is the display's real throughput ceiling; the planner spaces
  * targets no denser than it, or most scenes are made only to be superseded. */
-int64_t openpete_present_thread_cost_ns(void) { return s_pt.cost_ema; }
+int64_t openpete_present_thread_cost_ns(void) { return s_pt.render_ema + s_pt.present_ema; }

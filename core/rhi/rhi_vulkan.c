@@ -83,6 +83,9 @@
  * swapchain rebuild plus the slowest display's refresh (a 60 Hz panel under
  * FIFO with the queue full is ~50 ms of legitimate waiting); short enough
  * that a dead compositor returns control. */
+#ifndef RHI_STAGE_RING
+#define RHI_STAGE_RING 3
+#endif
 #ifndef RHI_BLOCKING_FENCE_TIMEOUT_NS
 #define RHI_BLOCKING_FENCE_TIMEOUT_NS (500ull * 1000ull * 1000ull)
 #endif
@@ -217,6 +220,26 @@ struct rhi_device {
     VkFence         in_flight[RHI_FRAMES_IN_FLIGHT];
     VkSemaphore     render_done[RHI_MAX_SC_IMAGES];
     VkFence         images_in_flight[RHI_MAX_SC_IMAGES]; /* not owned */
+
+    /* Staged presents (rhi_end_frame_to_stage / rhi_present_stage): a ring
+     * of swapchain-sized images a rendered frame is blitted into instead of
+     * the swapchain, so the render can run ahead of the instant the frame is
+     * meant to appear, and the present step is an acquire and a blit. All
+     * synchronisation between the two is queue submission order plus image
+     * barriers -- no semaphore crosses them, so a staged frame that is never
+     * presented (superseded, or the display was taken back) leaves nothing
+     * pending. Recreated with the swapchain; `stage_gen` tells a holder of a
+     * stage index that its image is gone. */
+    VkImage         stage_image[RHI_STAGE_RING];
+    VkDeviceMemory  stage_mem[RHI_STAGE_RING];
+    VkImageLayout   stage_layout[RHI_STAGE_RING];
+    uint32_t        stage_gen;
+    VkCommandBuffer pcmd[RHI_STAGE_RING];       /* the present step's own ring */
+    VkFence         pfence[RHI_STAGE_RING];
+    VkSemaphore     pimg_avail[RHI_STAGE_RING];
+    uint32_t        pslot;
+    bool            pacquired;      /* rhi_present_stage_acquire holds an image for the next submit */
+    uint32_t        pacquired_gen;
 
     /* All live pipelines on this device (doubly linked via rhi_pipeline
      * prev/next): the sweep list for rhi_rebuild_pipelines. */
@@ -1278,6 +1301,21 @@ static bool create_sync_and_commands(rhi_device *dev)
     for (uint32_t i = 0; i < dev->sc_count; i++) {
         VK_CHECK(vkCreateSemaphore(dev->device, &sem, NULL, &dev->render_done[i]));
     }
+    /* The staged present step's own command buffers and sync. */
+    VkCommandBufferAllocateInfo pcbi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO,
+        .commandPool = dev->pool,
+        .level = VK_COMMAND_BUFFER_LEVEL_PRIMARY,
+        .commandBufferCount = RHI_STAGE_RING,
+    };
+    if (vkAllocateCommandBuffers(dev->device, &pcbi, dev->pcmd) != VK_SUCCESS) {
+        RHI_LOG("vkAllocateCommandBuffers (present step) failed\n");
+        return false;
+    }
+    for (int i = 0; i < RHI_STAGE_RING; i++) {
+        VK_CHECK(vkCreateSemaphore(dev->device, &sem, NULL, &dev->pimg_avail[i]));
+        VK_CHECK(vkCreateFence(dev->device, &fence, NULL, &dev->pfence[i]));
+    }
     return true;
 }
 
@@ -1529,8 +1567,54 @@ static void one_shot_end(rhi_device *dev, VkCommandBuffer cb)
     vkFreeCommandBuffers(dev->device, dev->pool, 1, &cb);
 }
 
+static void destroy_stages(rhi_device *dev)
+{
+    for (int i = 0; i < RHI_STAGE_RING; i++) {
+        if (dev->stage_image[i]) { vkDestroyImage(dev->device, dev->stage_image[i], NULL); dev->stage_image[i] = VK_NULL_HANDLE; }
+        if (dev->stage_mem[i])   { vkFreeMemory(dev->device, dev->stage_mem[i], NULL); dev->stage_mem[i] = VK_NULL_HANDLE; }
+        dev->stage_layout[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+    dev->stage_gen++;
+}
+
+static bool create_stages(rhi_device *dev)
+{
+    for (int i = 0; i < RHI_STAGE_RING; i++) {
+        VkImageCreateInfo ici = {
+            .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
+            .imageType = VK_IMAGE_TYPE_2D,
+            .format = dev->sc_format,
+            .extent = { dev->sc_extent.width, dev->sc_extent.height, 1 },
+            .mipLevels = 1, .arrayLayers = 1,
+            .samples = VK_SAMPLE_COUNT_1_BIT,
+            .tiling = VK_IMAGE_TILING_OPTIMAL,
+            .usage = VK_IMAGE_USAGE_TRANSFER_SRC_BIT | VK_IMAGE_USAGE_TRANSFER_DST_BIT,
+            .sharingMode = VK_SHARING_MODE_EXCLUSIVE,
+            .initialLayout = VK_IMAGE_LAYOUT_UNDEFINED,
+        };
+        if (vkCreateImage(dev->device, &ici, NULL, &dev->stage_image[i]) != VK_SUCCESS) {
+            RHI_LOG("stage vkCreateImage failed\n"); return false;
+        }
+        VkMemoryRequirements mr;
+        vkGetImageMemoryRequirements(dev->device, dev->stage_image[i], &mr);
+        uint32_t mt = find_memtype(dev->phys, mr.memoryTypeBits, VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT);
+        if (mt == UINT32_MAX) { RHI_LOG("no device-local memory type\n"); return false; }
+        VkMemoryAllocateInfo mai = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = mr.size, .memoryTypeIndex = mt,
+        };
+        if (vkAllocateMemory(dev->device, &mai, NULL, &dev->stage_mem[i]) != VK_SUCCESS) {
+            RHI_LOG("stage vkAllocateMemory failed\n"); return false;
+        }
+        vkBindImageMemory(dev->device, dev->stage_image[i], dev->stage_mem[i], 0);
+        dev->stage_layout[i] = VK_IMAGE_LAYOUT_UNDEFINED;
+    }
+    return true;
+}
+
 static void destroy_swapchain_resources(rhi_device *dev)
 {
+    destroy_stages(dev);
     if (dev->off_fb)    { vkDestroyFramebuffer(dev->device, dev->off_fb, NULL); dev->off_fb = VK_NULL_HANDLE; }
     if (dev->off_view)  { vkDestroyImageView(dev->device, dev->off_view, NULL); dev->off_view = VK_NULL_HANDLE; }
     if (dev->off_image) { vkDestroyImage(dev->device, dev->off_image, NULL); dev->off_image = VK_NULL_HANDLE; }
@@ -1558,6 +1642,7 @@ static bool recreate(rhi_device *dev)
     destroy_swapchain_resources(dev);
     if (!create_swapchain(dev)) return false;
     if (!create_offscreen(dev)) return false;
+    if (!create_stages(dev)) return false;
     VkSemaphoreCreateInfo sem = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
     for (uint32_t i = 0; i < dev->sc_count; i++)
         VK_CHECK(vkCreateSemaphore(dev->device, &sem, NULL, &dev->render_done[i]));
@@ -1613,6 +1698,7 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
     if (!create_rt_render_pass(dev))    goto fail;
     if (!create_rt_ds_render_pass(dev)) goto fail;
     if (!create_offscreen(dev))         goto fail;
+    if (!headless && !create_stages(dev)) goto fail;
     if (!create_sync_and_commands(dev)) goto fail;
     if (!create_descriptor_infra(dev))  goto fail;
     if (!create_gpu_timers(dev))        goto fail;
@@ -1672,6 +1758,10 @@ void rhi_destroy(rhi_device *dev)
     if (dev->vram_sampler)   vkDestroySampler(dev->device, dev->vram_sampler, NULL);
     if (dev->linear_sampler) vkDestroySampler(dev->device, dev->linear_sampler, NULL);
 
+    for (int i = 0; i < RHI_STAGE_RING; i++) {
+        if (dev->pimg_avail[i]) vkDestroySemaphore(dev->device, dev->pimg_avail[i], NULL);
+        if (dev->pfence[i])     vkDestroyFence(dev->device, dev->pfence[i], NULL);
+    }
     for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
         if (dev->img_avail[i]) vkDestroySemaphore(dev->device, dev->img_avail[i], NULL);
         if (dev->in_flight[i]) vkDestroyFence(dev->device, dev->in_flight[i], NULL);
@@ -1780,7 +1870,76 @@ bool rhi_needs_recreate(const rhi_device *dev)
     return dev && dev->needs_recreate;
 }
 
-bool rhi_begin_frame(rhi_device *dev)
+/* Acquire a swapchain image on `sem`, then wait out the frame that last
+ * used it. 1 = acquired (dev->image_index); 0 = refused (timeout, rebuild
+ * pending, device lost), nothing consumed unless noted in the counters. */
+static int acquire_image(rhi_device *dev, VkSemaphore sem, VkFence *owner_fence)
+{
+    {
+        Uint64 acq_t0 = SDL_GetTicksNS();
+        VkResult acq = vkAcquireNextImageKHR(dev->device, dev->swapchain,
+                                             dev->acquire_budget_ns
+                                                 ? dev->acquire_budget_ns
+                                                 : RHI_ACQUIRE_TIMEOUT_NS,
+                                             sem,
+                                             VK_NULL_HANDLE, &dev->image_index);
+        rhi_note_stall_phase("acquire", RHI_BLOCK_ACQUIRE, acq_t0);
+        if (acq == VK_TIMEOUT || acq == VK_NOT_READY) {
+            /* No image within the budget: drop this present, keep the sim
+             * running. The semaphore was not signalled, so nothing waits on
+             * it and the next frame re-acquires cleanly. */
+            dev->acquire_timeouts++;
+            dev->acquire_sheds++;
+            if (!dev->present_blocking)
+                dev->acquire_backoff_until_ns = SDL_GetTicksNS() + RHI_ACQUIRE_BACKOFF_NS;
+            return 0;
+        }
+        if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
+            dev->needs_recreate = true;
+            return 0;
+        } else if (acq == VK_ERROR_DEVICE_LOST) {
+            rhi_signal_device_lost("acquire");
+            return 0;
+        } else if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) {
+            RHI_LOG("vkAcquireNextImageKHR failed: %d\n", (int)acq);
+            return 0;
+        }
+
+        /* If a previous frame is still using this image, wait on its fence. */
+        if (dev->images_in_flight[dev->image_index] != VK_NULL_HANDLE) {
+            /* Bounded, and TAGGED: this wait was previously invisible to the
+             * block-time census, so attribution that blamed the slot fence
+             * could have been under-counting it. Not skippable — acquire has
+             * already consumed img_avail by this point, and returning here
+             * would leave that semaphore signalled with nothing to wait on
+             * it. In practice it is almost always already signalled once the
+             * poll above has passed, so the bound is a backstop. */
+            Uint64 iif_t0 = SDL_GetTicksNS();
+            VkResult iw = vkWaitForFences(dev->device, 1, &dev->images_in_flight[dev->image_index],
+                                          VK_TRUE, dev->headless ? UINT64_MAX
+                                                 : dev->present_blocking ? RHI_BLOCKING_FENCE_TIMEOUT_NS
+                                                 : RHI_IMAGE_FENCE_TIMEOUT_NS);
+            rhi_note_stall_phase("image-fence", RHI_BLOCK_IMAGE_FENCE, iif_t0);
+            if (iw != VK_SUCCESS) {
+                /* The image is still owned by a frame in flight and the
+                 * acquire semaphore is already consumed: the only clean exit
+                 * is a rebuild, which waits the device idle and starts the
+                 * semaphores over. Recording against the image would be a
+                 * device loss. */
+                RHI_LOG("image fence timed out (%.1f ms): rebuilding the swapchain\n",
+                        (double)(SDL_GetTicksNS() - iif_t0) / 1e6);
+                dev->needs_recreate = true;
+                return 0;
+            }
+        }
+        dev->images_in_flight[dev->image_index] = *owner_fence;
+    }
+    return 1;
+}
+
+/* The swapchain, rebuilt if it must be (rate-limited, and never mid-drag).
+ * False = no usable swapchain this time; the caller skips its present. */
+static bool ensure_swapchain(rhi_device *dev)
 {
     if (dev->needs_recreate && !dev->headless) {
         /* Rate-limit. A live resize reports OUT_OF_DATE on every frame, and
@@ -1823,6 +1982,12 @@ bool rhi_begin_frame(rhi_device *dev)
         dev->recreate_backoff_until_ns = SDL_GetTicksNS() + RHI_ACQUIRE_BACKOFF_NS;
         if (!ok) return false;
     }
+    return true;
+}
+
+static bool begin_frame_impl(rhi_device *dev, bool acquire)
+{
+    if (!ensure_swapchain(dev)) return false;
     s_frame_serial++;
 
     {
@@ -1899,63 +2064,8 @@ bool rhi_begin_frame(rhi_device *dev)
          * parks whichever thread presents — and that thread also runs the sim,
          * so the game froze for as long as the user held the window edge.
          * Timing out lets the caller skip the present and keep ticking. */
-        Uint64 acq_t0 = SDL_GetTicksNS();
-        VkResult acq = vkAcquireNextImageKHR(dev->device, dev->swapchain,
-                                             dev->acquire_budget_ns
-                                                 ? dev->acquire_budget_ns
-                                                 : RHI_ACQUIRE_TIMEOUT_NS,
-                                             dev->img_avail[dev->frame],
-                                             VK_NULL_HANDLE, &dev->image_index);
-        rhi_note_stall_phase("acquire", RHI_BLOCK_ACQUIRE, acq_t0);
-        if (acq == VK_TIMEOUT || acq == VK_NOT_READY) {
-            /* No image within the budget: drop this present, keep the sim
-             * running. The semaphore was not signalled, so nothing waits on
-             * it and the next frame re-acquires cleanly. */
-            dev->acquire_timeouts++;
-            dev->acquire_sheds++;
-            if (!dev->present_blocking)
-                dev->acquire_backoff_until_ns = SDL_GetTicksNS() + RHI_ACQUIRE_BACKOFF_NS;
-            return false;
-        }
-        if (acq == VK_ERROR_OUT_OF_DATE_KHR) {
-            dev->needs_recreate = true;
-            return false;
-        } else if (acq == VK_ERROR_DEVICE_LOST) {
-            rhi_signal_device_lost("acquire");
-            return false;
-        } else if (acq != VK_SUCCESS && acq != VK_SUBOPTIMAL_KHR) {
-            RHI_LOG("vkAcquireNextImageKHR failed: %d\n", (int)acq);
-            return false;
-        }
-
-        /* If a previous frame is still using this image, wait on its fence. */
-        if (dev->images_in_flight[dev->image_index] != VK_NULL_HANDLE) {
-            /* Bounded, and TAGGED: this wait was previously invisible to the
-             * block-time census, so attribution that blamed the slot fence
-             * could have been under-counting it. Not skippable — acquire has
-             * already consumed img_avail by this point, and returning here
-             * would leave that semaphore signalled with nothing to wait on
-             * it. In practice it is almost always already signalled once the
-             * poll above has passed, so the bound is a backstop. */
-            Uint64 iif_t0 = SDL_GetTicksNS();
-            VkResult iw = vkWaitForFences(dev->device, 1, &dev->images_in_flight[dev->image_index],
-                                          VK_TRUE, dev->headless ? UINT64_MAX
-                                                 : dev->present_blocking ? RHI_BLOCKING_FENCE_TIMEOUT_NS
-                                                 : RHI_IMAGE_FENCE_TIMEOUT_NS);
-            rhi_note_stall_phase("image-fence", RHI_BLOCK_IMAGE_FENCE, iif_t0);
-            if (iw != VK_SUCCESS) {
-                /* The image is still owned by a frame in flight and the
-                 * acquire semaphore is already consumed: the only clean exit
-                 * is a rebuild, which waits the device idle and starts the
-                 * semaphores over. Recording against the image would be a
-                 * device loss. */
-                RHI_LOG("image fence timed out (%.1f ms): rebuilding the swapchain\n",
-                        (double)(SDL_GetTicksNS() - iif_t0) / 1e6);
-                dev->needs_recreate = true;
-                return false;
-            }
-        }
-        dev->images_in_flight[dev->image_index] = dev->in_flight[dev->frame];
+        if (acquire &&
+            !acquire_image(dev, dev->img_avail[dev->frame], &dev->in_flight[dev->frame])) return false;
     }
     vkResetFences(dev->device, 1, &dev->in_flight[dev->frame]);
 
@@ -2210,6 +2320,179 @@ void rhi_end_frame(rhi_device *dev)
 
     dev->frame = (dev->frame + 1) % RHI_FRAMES_IN_FLIGHT;
     dev->frame_active = false;
+}
+
+bool rhi_begin_frame(rhi_device *dev) { return begin_frame_impl(dev, true); }
+
+/* ---- staged presents ------------------------------------------------ */
+
+/* A frame that will end in a stage image acquires no swapchain image: an
+ * acquire whose semaphore is never waited on would leave it signalled for
+ * the next acquire, and the images would run out (measured: every render
+ * refused after the third). */
+bool rhi_begin_frame_staged(rhi_device *dev)
+{
+    if (dev->headless) return false;
+    return begin_frame_impl(dev, false);
+}
+
+int rhi_stage_count(void) { return RHI_STAGE_RING; }
+uint32_t rhi_stage_gen(const rhi_device *dev) { return dev ? dev->stage_gen : 0; }
+
+void rhi_end_frame_to_stage(rhi_device *dev, int stage)
+{
+    if (!dev->frame_active) return;
+    if (dev->headless || stage < 0 || stage >= RHI_STAGE_RING || !dev->stage_image[stage]) {
+        rhi_end_frame(dev);
+        return;
+    }
+    VkCommandBuffer cb = dev->cmd[dev->frame];
+    VkImage st = dev->stage_image[stage];
+    /* Stage image -> transfer dst. Its previous reader was a present step's
+     * blit, in an earlier submission on this queue: the barrier's TRANSFER
+     * source stage covers that read (barriers order against every prior
+     * submission, not only this command buffer). */
+    image_barrier(cb, st, dev->stage_layout[stage], VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  dev->stage_layout[stage] == VK_IMAGE_LAYOUT_UNDEFINED ? 0 : VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_ACCESS_TRANSFER_WRITE_BIT,
+                  dev->stage_layout[stage] == VK_IMAGE_LAYOUT_UNDEFINED
+                      ? VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT : VK_PIPELINE_STAGE_TRANSFER_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkImageBlit region = {
+        .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .srcOffsets = { {0,0,0}, {(int32_t)dev->sc_extent.width, (int32_t)dev->sc_extent.height, 1} },
+        .dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .dstOffsets = { {0,0,0}, {(int32_t)dev->sc_extent.width, (int32_t)dev->sc_extent.height, 1} },
+    };
+    vkCmdBlitImage(cb, dev->off_image, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   st, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_LINEAR);
+    /* And back to transfer src, ready for the present step's blit. */
+    image_barrier(cb, st, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                  VK_ACCESS_TRANSFER_WRITE_BIT, VK_ACCESS_TRANSFER_READ_BIT,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    dev->stage_layout[stage] = VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL;
+    vkEndCommandBuffer(cb);
+    /* No swapchain image was acquired for this frame, so nothing to wait on
+     * or signal: the fence alone gates the slot's reuse. */
+    VkSubmitInfo si = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cb,
+    };
+    VK_CHECK(vkQueueSubmit(dev->gfx_queue, 1, &si, dev->in_flight[dev->frame]));
+    dev->frame = (dev->frame + 1) % RHI_FRAMES_IN_FLIGHT;
+    dev->frame_active = false;
+}
+
+bool rhi_present_stage_acquire(rhi_device *dev)
+{
+    if (dev->headless || dev->frame_active) return false;
+    if (dev->pacquired) return true;
+    if (!ensure_swapchain(dev)) return false;
+    const uint32_t p = dev->pslot;
+    /* This ring slot's previous present step must have retired before its
+     * command buffer is re-recorded. A dedicated presenter blocks here by
+     * design; the bound is honoured (a stale re-record is a device loss). */
+    Uint64 t0 = SDL_GetTicksNS();
+    VkResult fw = vkWaitForFences(dev->device, 1, &dev->pfence[p], VK_TRUE, RHI_BLOCKING_FENCE_TIMEOUT_NS);
+    if (fw != VK_SUCCESS) { dev->fence_sheds++; rhi_note_stall_phase("stage-fence", RHI_BLOCK_FENCE, t0); return false; }
+    rhi_note_stall_phase("stage-fence", RHI_BLOCK_FENCE, t0);
+    if (!acquire_image(dev, dev->pimg_avail[p], &dev->pfence[p])) return false;
+    vkResetFences(dev->device, 1, &dev->pfence[p]);
+    dev->pacquired = true;
+    dev->pacquired_gen = dev->stage_gen;
+    return true;
+}
+
+bool rhi_present_stage_submit(rhi_device *dev, int stage)
+{
+    if (dev->headless || dev->frame_active) return false;
+    if (stage < 0 || stage >= RHI_STAGE_RING) return false;
+    if (!dev->pacquired) { if (!rhi_present_stage_acquire(dev)) return false; }
+    /* The acquire belongs to the swapchain it was made on: a rebuild in
+     * between (stage_gen moved) waited the device idle and started the
+     * semaphores over, so the held image is gone with it. */
+    if (dev->pacquired_gen != dev->stage_gen) { dev->pacquired = false; return false; }
+    if (!dev->stage_image[stage] || dev->stage_layout[stage] != VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL) {
+        return false;                    /* never filled, or rebuilt since; the acquire stays held */
+    }
+    dev->pacquired = false;
+    const uint32_t p = dev->pslot;
+    VkCommandBuffer cb = dev->pcmd[p];
+    vkResetCommandBuffer(cb, 0);
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    vkBeginCommandBuffer(cb, &bi);
+    VkImage sc = dev->sc_images[dev->image_index];
+    image_barrier(cb, sc, VK_IMAGE_LAYOUT_UNDEFINED, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
+                  0, VK_ACCESS_TRANSFER_WRITE_BIT,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_TRANSFER_BIT);
+    VkImageBlit region = {
+        .srcSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .srcOffsets = { {0,0,0}, {(int32_t)dev->sc_extent.width, (int32_t)dev->sc_extent.height, 1} },
+        .dstSubresource = { .aspectMask = VK_IMAGE_ASPECT_COLOR_BIT, .layerCount = 1 },
+        .dstOffsets = { {0,0,0}, {(int32_t)dev->sc_extent.width, (int32_t)dev->sc_extent.height, 1} },
+    };
+    vkCmdBlitImage(cb, dev->stage_image[stage], VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL,
+                   sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region, VK_FILTER_NEAREST);
+    image_barrier(cb, sc, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, VK_IMAGE_LAYOUT_PRESENT_SRC_KHR,
+                  VK_ACCESS_TRANSFER_WRITE_BIT, 0,
+                  VK_PIPELINE_STAGE_TRANSFER_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    vkEndCommandBuffer(cb);
+
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TRANSFER_BIT;
+    VkSubmitInfo si = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &dev->pimg_avail[p],
+        .pWaitDstStageMask = &wait_stage,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cb,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &dev->render_done[dev->image_index],
+    };
+    VK_CHECK(vkQueueSubmit(dev->gfx_queue, 1, &si, dev->pfence[p]));
+    dev->pslot = (p + 1) % RHI_STAGE_RING;
+
+    const uint64_t this_id = dev->present_id_next;
+    VkPresentIdKHR pid = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_ID_KHR,
+        .swapchainCount = 1,
+        .pPresentIds = &this_id,
+    };
+    VkPresentInfoKHR pi = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .pNext = dev->has_present_timing ? (const void *)&pid : NULL,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &dev->render_done[dev->image_index],
+        .swapchainCount = 1,
+        .pSwapchains = &dev->swapchain,
+        .pImageIndices = &dev->image_index,
+    };
+    Uint64 pres_t0 = SDL_GetTicksNS();
+    VkResult pr = vkQueuePresentKHR(dev->gfx_queue, &pi);
+    if (dev->has_present_timing && pr >= 0) {
+        dev->present_id_submitted = this_id;
+        dev->present_id_next++;
+    }
+    rhi_note_stall_phase("present", RHI_BLOCK_PRESENT, pres_t0);
+    if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) {
+        dev->needs_recreate = true;
+    } else if (pr == VK_ERROR_DEVICE_LOST) {
+        rhi_signal_device_lost("present");
+        return false;
+    } else if (pr != VK_SUCCESS) {
+        RHI_LOG("vkQueuePresentKHR failed: %d\n", (int)pr);
+        return false;
+    }
+    return true;
+}
+
+bool rhi_present_stage(rhi_device *dev, int stage)
+{
+    return rhi_present_stage_acquire(dev) && rhi_present_stage_submit(dev, stage);
 }
 
 int rhi_present_timing_supported(const rhi_device *dev)
