@@ -153,13 +153,20 @@ static void cyc_clip_emit(cyc_cv a, cyc_cv b, cyc_cv c, int gouraud,
  * fills s_native[]. Mirrors func_8004EBA8: phase-1 sector visibility cull
  * (cull matrix a1), phase-2 per-vertex unpack + float project (draw matrix
  * a2) + per-face flat/gouraud emit. */
+static void cyc_extract_m(CPUState* cpu, uint32_t a0,
+                          const int Mcull[3][3], const int Mdraw[3][3],
+                          uint32_t fade_rgb, int fade_ir0);
 static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2,
                         uint32_t fade_rgb, int fade_ir0) {
-    s_native_n = 0;
-
     int Mcull[3][3], Mdraw[3][3];
     ngte_read_matrix(cpu, a1, Mcull);
     ngte_read_matrix(cpu, a2, Mdraw);
+    cyc_extract_m(cpu, a0, Mcull, Mdraw, fade_rgb, fade_ir0);
+}
+static void cyc_extract_m(CPUState* cpu, uint32_t a0,
+                          const int Mcull[3][3], const int Mdraw[3][3],
+                          uint32_t fade_rgb, int fade_ir0) {
+    s_native_n = 0;
     double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
     double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
     double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
@@ -485,6 +492,23 @@ static void push_scene(CPUState* cpu) {
  * re-extract, which has no register context. */
 static uint32_t s_cyc_a0 = 0xFFFFFFFFu, s_cyc_a1 = 0, s_cyc_a2 = 0;
 
+/* The two matrices themselves, snapshotted prev+curr per canonical tick. In
+ * gameplay a1/a2 are g_Camera's own view/projection fields, which the spine's
+ * camera bracket interpolates in place, so the live read above is already
+ * sub-tick. During the level transition (gamestate 1) the game builds both
+ * matrices on its STACK each tick — camera yaw minus a decaying spin, roll,
+ * pitch, a 320/512-scaled projection copy — and the stack is neither an
+ * interpolated region nor stable memory, so a pointer read there returns
+ * one tick's matrices for every present of the interval. The re-extract
+ * lerps this pair instead (componentwise, like the camera's lerp_matrix):
+ * camera motion and spin are both baked into the two endpoints, so both
+ * interpolate with no extrapolation. prev is valid only when the preceding
+ * canonical tick also drew the dome from the same kind of source. */
+static int      s_cyc_prev[2][3][3], s_cyc_curr[2][3][3];
+static int      s_cyc_prev_valid = 0, s_cyc_curr_valid = 0;
+static int      s_cyc_prev_cam = 0,   s_cyc_curr_cam = 0;   /* source = g_Camera fields */
+static unsigned s_cyc_curr_frame = 0xFFFFFFFFu;             /* VBL of the curr capture */
+
 static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = cyc_verify_enabled();
@@ -498,6 +522,21 @@ static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
 
     uint32_t a0 = cpu->a0, a1 = cpu->a1, a2 = cpu->a2;
     s_cyc_a0 = a0; s_cyc_a1 = a1; s_cyc_a2 = a2;   /* for sub-tick re-extract */
+    if (openpete_frame != s_cyc_curr_frame) {
+        /* New canonical tick: roll curr→prev. Consecutive = the previous
+         * capture was one tick (two VBLs) ago; a longer gap (a load stall,
+         * the draw loop pausing) breaks the pair and the re-extract snaps. */
+        int consecutive = s_cyc_curr_valid && s_cyc_curr_frame != 0xFFFFFFFFu &&
+                          openpete_frame - s_cyc_curr_frame <= 3u;
+        memcpy(s_cyc_prev, s_cyc_curr, sizeof s_cyc_prev);
+        s_cyc_prev_cam   = s_cyc_curr_cam;
+        s_cyc_prev_valid = consecutive;
+        s_cyc_curr_frame = openpete_frame;
+    }
+    ngte_read_matrix(cpu, a1, s_cyc_curr[0]);
+    ngte_read_matrix(cpu, a2, s_cyc_curr[1]);
+    s_cyc_curr_cam   = (a1 == G_CAMERA + 0x14 && a2 == G_CAMERA);
+    s_cyc_curr_valid = 1;
     uint32_t start = cpu->read_word(POLYBUF_CURSOR);
     { OP_PROF_ACCUM_SCOPE("cyclorama.srend");
       func_8004EBA8(cpu); }                  /* run the real renderer */
@@ -525,15 +564,18 @@ static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
     return 1;                               /* took over (body already ran) */
 }
 
-/* Sub-tick re-extract (high-FPS spine): rebuild the sky dome + background from
- * the saved matrix POINTERS — extract-only (no func_8004EBA8 call, no verdict
- * writes). The saved a1/a2 are g_Camera+0x14 (m_ViewMatrix) and +0x00
- * (m_ProjectionMatrix) — the SAME regions the spine's camera bracket interpolates
- * each present — and cyc_extract reads them LIVE, so the sky DOES rotate smoothly
- * sub-tick (verified 2026-06-22: a1=cam+0x14, a2=cam+0x00; the earlier
- * "stale tick-N / later refinement" note was wrong). push_scene also re-sets the
- * scene background. */
-void cyclorama_native_reextract(CPUState* cpu) {
+/* Sub-tick re-extract (high-FPS spine): rebuild the sky dome + background —
+ * extract-only (no func_8004EBA8 call, no verdict writes). When the canonical
+ * call took g_Camera's own matrices (a1 = +0x14 m_ViewMatrix, a2 = +0x00
+ * m_ProjectionMatrix) read them LIVE: those are the regions the spine's camera
+ * bracket interpolates each present, so the sky rotates smoothly sub-tick.
+ * Otherwise (stack-built matrices — the level-transition fly-in) lerp the
+ * snapshot pair prev→curr by the spine's alpha; snap to curr when the camera
+ * isn't bracketed, prev is missing or came from a different kind of source
+ * (the first and last tick of the transition), or the two endpoints diverge
+ * implausibly (a cut — keep the lerp from turning the long way round).
+ * push_scene also re-sets the scene background. */
+void cyclorama_native_reextract(CPUState* cpu, double alpha, int interp_on) {
     if (!openpete_native_render_enabled()) return;
     /* Only replay the sky dome if the canonical frame drew it. In cyclorama-less
      * states (e.g. the black level-name flyby) the saved matrices are stale; the
@@ -541,8 +583,39 @@ void cyclorama_native_reextract(CPUState* cpu) {
      * (the "ENTERING X" card over a sky) keep RP_CYCLORAMA set, so they're
      * unaffected. */
     if (!render_path_canon_drawn(RP_CYCLORAMA)) return;
-    if (s_cyc_a1 == 0 || s_cyc_a2 == 0) return;   /* no real frame captured yet */
-    cyc_extract(cpu, s_cyc_a0, s_cyc_a1, s_cyc_a2, 0, 0);
+    if (s_cyc_a1 == 0 || s_cyc_a2 == 0 || !s_cyc_curr_valid) return;   /* no real frame captured yet */
+    if (s_cyc_curr_cam) {
+        cyc_extract(cpu, s_cyc_a0, s_cyc_a1, s_cyc_a2, 0, 0);
+    } else {
+        int do_lerp = interp_on && s_cyc_prev_valid && !s_cyc_prev_cam;
+        if (do_lerp) {
+            /* One-tick component delta sanity: a continuous transition dome
+             * (camera glide + the spin's 2/4096 per tick) moves a few hundred
+             * Q12 units per tick at most. */
+            long worst = 0;
+            for (int m = 0; m < 2; m++)
+                for (int i = 0; i < 3; i++)
+                    for (int j = 0; j < 3; j++) {
+                        long d = (long)s_cyc_curr[m][i][j] - s_cyc_prev[m][i][j];
+                        if (d < 0) d = -d;
+                        if (d > worst) worst = d;
+                    }
+            if (worst > 1200) do_lerp = 0;
+        }
+        int M[2][3][3];
+        for (int m = 0; m < 2; m++)
+            for (int i = 0; i < 3; i++)
+                for (int j = 0; j < 3; j++) {
+                    if (do_lerp) {
+                        double v = (double)s_cyc_prev[m][i][j] +
+                                   ((double)s_cyc_curr[m][i][j] - s_cyc_prev[m][i][j]) * alpha;
+                        M[m][i][j] = (int)(v >= 0.0 ? v + 0.5 : v - 0.5);
+                    } else {
+                        M[m][i][j] = s_cyc_curr[m][i][j];
+                    }
+                }
+        cyc_extract_m(cpu, s_cyc_a0, M[0], M[1], 0, 0);
+    }
     push_scene(cpu);
 }
 

@@ -100,7 +100,10 @@ void flame_native_set_subframe(double frac);
  * in spyro_native_reextract.c. */
 int openpete_native_interp_pos(unsigned int key, double out[3]);
 
-void cyclorama_native_reextract(struct CPUState* cpu);
+/* Sky dome + background: live g_Camera matrices when the canonical call used
+ * them, else the stack-built (transition) matrix pair lerped prev→curr by
+ * `alpha`; `interp_on` = camera bracketed (else snap to curr). */
+void cyclorama_native_reextract(struct CPUState* cpu, double alpha, int interp_on);
 /* One extracted cyclorama dome triangle: screen space (float), per-vertex PSX
  * 0xBBGGRR colour. */
 typedef struct { float sx[3], sy[3]; unsigned int rgb[3]; } cyclorama_native_tri;

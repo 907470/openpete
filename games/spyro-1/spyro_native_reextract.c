@@ -2022,7 +2022,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
     const int pt_on = openpete_phase_timers_on();   /* per-feeder phase timing */
     uint64_t pt_t0 = 0, pt_t1;
     transition_native_reextract(cpu);     /* level-transition / balloonist cross-fade backdrop (backmost) */
-    cyclorama_native_reextract(cpu);      /* sky dome + background */
+    cyclorama_native_reextract(cpu, alpha, cam_bracketed); /* sky dome + background (transition matrices lerped prev→curr) */
     portal_native_reextract(cpu, alpha, cam_bracketed); /* homeworld portal previews (dome matrix lerped prev→curr) */
     if (pt_on) pt_t0 = openpete_phase_now_us();
     terrain_native_reextract(cpu, alpha, cam_bracketed); /* interpolated camera + poly-anim vert lerp */
