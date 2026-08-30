@@ -923,6 +923,11 @@ void  openpete_native_widescreen_x_bounds(float *xlo, float *xhi);
  * speed. Unused when recording is inactive. */
 void openpete_native_render_frame(uint64_t record_pts_us);
 
+/* Re-present the last composed frame (offscreen -> swapchain, no recompose).
+ * Issues no scene work and reads no guest state, so it is the one present a
+ * thread other than the guest's may make. Returns 1 if a present went out. */
+int openpete_native_render_repeat_last(void);
+
 /* --- sub-tick re-feed spine (high-FPS, native-renderer plan §Movement) ----
  *
  * For smooth presentation above the 29.913 Hz sim, the host loop presents

@@ -79,7 +79,13 @@ enum {
 };
 
 /* PRESENT / SHED kinds. */
-enum { OP_PACE_CANONICAL = 0, OP_PACE_INTERMEDIATE = 1 };
+/* A REPEAT is the same image presented again: the present thread re-blitting
+ * the last composed frame onto a slot the sim thread was going to refuse. It
+ * fills a hole in the DISPLAY without advancing animation by a microsecond, so
+ * it is its own kind -- folding it into either of the others would let a
+ * duplicate be counted as motion, which is the one thing this rung must not
+ * be allowed to claim. */
+enum { OP_PACE_CANONICAL = 0, OP_PACE_INTERMEDIATE = 1, OP_PACE_REPEAT = 2 };
 
 /* SLIP kinds. */
 enum { OP_PACE_SLIP_SIM = 0, OP_PACE_SLIP_RENDER = 1 };
@@ -300,7 +306,7 @@ typedef struct {
     uint64_t vbls_clean;        /* ... paced AND not paused/stepped/rewound/
                                  * loading: the pacing-evidence population    */
     uint64_t vbls_transient;    /* paced but flagged: reported, not folded in */
-    uint64_t presents[2];       /* canonical, intermediate                    */
+    uint64_t presents[3];       /* canonical, intermediate, repeat            */
     uint64_t sheds;
     /* Display cadence, which is what a viewer perceives and what a shed count
      * cannot show: a shed is only a defect if it left a hole. `gaps_mid_long`

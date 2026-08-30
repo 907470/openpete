@@ -1742,6 +1742,11 @@ const char *rhi_present_mode_name(const rhi_device *dev)
     }
 }
 
+bool rhi_needs_recreate(const rhi_device *dev)
+{
+    return dev && dev->needs_recreate;
+}
+
 bool rhi_begin_frame(rhi_device *dev)
 {
     if (dev->needs_recreate && !dev->headless) {

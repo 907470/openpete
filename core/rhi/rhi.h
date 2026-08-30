@@ -85,6 +85,10 @@ void rhi_wait_idle(rhi_device *dev);
  * the window is minimized) — the caller should skip rendering this
  * iteration; the device handles recreation internally. */
 bool rhi_begin_frame(rhi_device *dev);
+/* True when the swapchain must be rebuilt before the next present. The rebuild
+ * touches the window and calls SDL, so a thread that is not the window's owner
+ * must decline to present rather than drive it. */
+bool rhi_needs_recreate(const rhi_device *dev);
 /* Monotonic count of rhi_begin_frame calls. A pass that must write its ring
  * vertex buffer more than once per frame (e.g. one batch per render target)
  * bump-allocates within the buffer and resets its offset when this changes —

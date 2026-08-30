@@ -88,6 +88,23 @@ static void pace_flush_locked(void)
     s_buf_n = 0;
 }
 
+/* The census counters below are touched by the present thread as well as the
+ * sim thread, and unlike the record stream they exist whether or not a log
+ * file was opened -- so they get their own lock rather than borrowing the
+ * writer's. Uncontended in practice: two threads, one short update each. */
+static SDL_Mutex* s_census_lock;
+
+static void census_lock(void)
+{
+    if (!s_census_lock) s_census_lock = SDL_CreateMutex();
+    if (s_census_lock) SDL_LockMutex(s_census_lock);
+}
+
+static void census_unlock(void)
+{
+    if (s_census_lock) SDL_UnlockMutex(s_census_lock);
+}
+
 static void pace_emit(const pace_rec_t* r)
 {
     if (!s_fp) return;
@@ -542,11 +559,18 @@ void openpete_pace_present(uint8_t kind, int64_t done_ns,
                            int64_t queue_present_block_ns,
                            int64_t recreate_block_ns)
 {
-    s_census.presents[kind == OP_PACE_INTERMEDIATE ? 1 : 0]++;
+    census_lock();
+    s_census.presents[kind <= OP_PACE_REPEAT ? kind : 0]++;
     if (s_prev_present_ns) {
         const int64_t gap = done_ns - s_prev_present_ns;
         if (kind == OP_PACE_INTERMEDIATE) {
             if (s_slot_ns && gap > 2 * s_slot_ns) s_census.gaps_mid_long++;
+        } else if (kind == OP_PACE_REPEAT) {
+            /* Deliberately updates no gap statistic of its own. A repeat's
+             * contribution is that it moves s_prev_present_ns, which shortens
+             * the hold the NEXT canonical present measures -- that shortening
+             * is the display hole actually closing. Giving repeats their own
+             * gap counter as well would report the same event twice. */
         } else {
             /* How long one image was held while the tick ran. An EMA, not a
              * percentile: this is a display for a human reading it live, and
@@ -557,11 +581,13 @@ void openpete_pace_present(uint8_t kind, int64_t done_ns,
         }
     }
     s_prev_present_ns = done_ns;
+    const uint32_t seq = s_present_seq++;
+    census_unlock();
     if (!s_fp) return;
     pace_rec_t r = {0};
     r.type  = OP_PACE_PRESENT;
     r.flags = kind;
-    r.index = s_present_seq++;
+    r.index = seq;
     r.t_ns  = done_ns;
     r.a = fence_block_ns; r.b = acquire_block_ns;
     r.c = queue_present_block_ns; r.d = recreate_block_ns;
@@ -705,7 +731,8 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
             "unpaced (%llu VBL, %llu present) — no deadline was in force; "
             "slips sim %llu/%llu render %llu/%llu",
             (unsigned long long)c->vbls,
-            (unsigned long long)(c->presents[0] + c->presents[1]),
+            (unsigned long long)(c->presents[0] + c->presents[1]
+                                 + c->presents[2]),
             (unsigned long long)c->slip_events[0],
             (unsigned long long)c->slip_periods[0],
             (unsigned long long)c->slip_events[1],
@@ -789,7 +816,7 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
     else    seqfail[0] = '\0';
 
     SDL_snprintf(buf, buf_bytes,
-        "%llu VBL (%llu paced, %llu clean); %llu+%llu present; "
+        "%llu VBL (%llu paced, %llu clean); %llu+%llu+%llu present; "
         "phase %.2f%% within 250us, max %+.3f ms%s; "
         "transient %llu VBL max %+.3f ms; wake<=%+.3f ms behind<=%+.3f ms; "
         "latch<=%s; %s; %llu input edge(s); "
@@ -799,6 +826,7 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
         (unsigned long long)c->vbls_clean,
         (unsigned long long)c->presents[0],
         (unsigned long long)c->presents[1],
+        (unsigned long long)c->presents[2],
         pct,
         (double)c->phase_err_max_ns / 1e6,
         early_s,

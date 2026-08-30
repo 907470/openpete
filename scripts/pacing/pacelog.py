@@ -36,7 +36,12 @@ TYPE_NAMES = {VBL: "VBL", PRESENT: "PRESENT", SHED: "SHED", SLIP: "SLIP",
               FLIP: "FLIP"}
 
 # PRESENT / SHED / PRESENT_SPAN kinds, carried in `flags`.
-CANONICAL, INTERMEDIATE = 0, 1
+# REPEAT is the same image presented again (the present thread re-blitting the
+# last composed frame). It closes a hole in the display without advancing
+# animation, so every statistic has to decide explicitly whether it counts.
+CANONICAL, INTERMEDIATE, REPEAT = 0, 1, 2
+KIND_NAME = {CANONICAL: "canonical   ", INTERMEDIATE: "intermediate",
+             REPEAT: "repeat      "}
 
 # `latched_seq` sentinels (openpete_pace_log.h). Publish sequences are even and
 # step by 2, so odd values are free to name the reasons a VBL consumed no host
@@ -359,7 +364,7 @@ def fmt_record(r, epoch_ns):
         return (f"{t:10.4f} VBL     #{r.index:<7} phase {err} "
                 f"exec {exec_ms:7.3f}ms [{r.flag_str()}] {seq}")
     if r.type == PRESENT:
-        kind = "intermediate" if r.flags else "canonical   "
+        kind = KIND_NAME.get(r.flags, f"kind {r.flags}")
         return (f"{t:10.4f} PRESENT #{r.index:<7} {kind} block: "
                 f"fence {r.a/1e6:6.2f} acquire {r.b/1e6:6.2f} "
                 f"queue {r.c/1e6:6.2f} recreate {r.d/1e6:6.2f} ms")

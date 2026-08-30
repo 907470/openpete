@@ -14,6 +14,7 @@
 #include "openpete_recomp_module.h"
 #include "openpete_ticker.h"
 #include "openpete_time.h"
+#include "openpete_present_thread.h"
 #include "openpete_workpool.h"
 #include "openpete_frame_time_log.h"
 #include "openpete_pace_log.h"
@@ -2254,6 +2255,11 @@ static int run_host_loop(const openpete_options_t* opts) {
      * resolved render-fps default). */
     openpete_menu_init(opts, refresh_hz);
 
+    /* Off unless OPENPETE_PRESENT_THREAD=1. Windowed pure-vk only: it
+     * re-presents the native offscreen, which nothing else fills. */
+    if (openpete_native_render_enabled() && !opts->headless)
+        openpete_present_thread_start();
+
     while (!quit) {
         /* Top-of-loop unlock peek used *only* to gate sim_due under
          * --render-fps>0. The authoritative `unlock_fps` write
@@ -3185,9 +3191,38 @@ static int run_host_loop(const openpete_options_t* opts) {
                                      pace_latch_ns);
             {
                 uint64_t pt0 = openpete_phase_timers_on() ? openpete_phase_now_us() : 0;
+                /* Hand the present grid to the present thread for exactly as
+                 * long as the guest owns this one. The slots that fall inside
+                 * the tick are the ones the shed predicate refuses; nothing
+                 * else is competing for them, and the guest touches neither
+                 * the device nor device-visible memory while it runs. */
+                openpete_present_thread_open(next_render.at,
+                                             op_period_ns(s_render_period));
                 g_openpete_guest_running = 1;
                 co_switch((cothread_t)openpete_game_fiber);
                 g_openpete_guest_running = 0;
+                {
+                    unsigned slots = 0;
+                    openpete_present_thread_close(&slots);
+                    /* Slots the thread stepped are spent: step the sim's own
+                     * grid past them or the loop presents them a second time
+                     * the moment it gets the thread back.
+                     *
+                     * OPENPETE_PRESENT_THREAD_CEDE=0 skips the hand-back, to
+                     * isolate it: the hold is not idle display time waiting to
+                     * be filled -- the sim repays it with a burst of real
+                     * frames as soon as the tick ends -- so ceding those slots
+                     * to duplicates may cost more motion than it gains
+                     * display. That is one variable, and it gets its own leg. */
+                    static int cede = -1;
+                    if (cede < 0) {
+                        const char *e = getenv("OPENPETE_PRESENT_THREAD_CEDE");
+                        cede = (e && *e == '0') ? 0 : 1;
+                    }
+                    if (slots && cede)
+                        op_deadline_advance(&next_render, s_render_period,
+                                            (int)slots);
+                }
                 if (pt0) openpete_phase_add(OPPT_SIM_TICK, openpete_phase_now_us() - pt0);
             }
             pace_exec_end_ns = op_now();
@@ -4567,6 +4602,11 @@ static int run_host_loop(const openpete_options_t* opts) {
         co_delete((cothread_t)openpete_game_fiber);
         openpete_game_fiber = NULL;
     }
+
+    /* Joined before the renderer is torn down: it presents through the same
+     * device. */
+    openpete_present_thread_stop();
+    openpete_present_thread_report();
 
     /* Report before PsyX_Shutdown: the instrument reads PsyCross pad state. */
     openpete_host_input_parity_report();

@@ -2565,6 +2565,31 @@ bool openpete_native_render_enabled(void)
     return s_nr.enabled;
 }
 
+/* Re-present the last composed frame without recomposing it.
+ *
+ * The offscreen image is persistent and still holds the pixels the previous
+ * present blitted, so acquiring a swapchain image and blitting it again puts
+ * the same frame back on the display. No scene walk, no extraction, no read
+ * of guest RAM or GTE state -- which is the whole point: this is the only
+ * present that is safe to issue from a thread other than the one executing
+ * the guest.
+ *
+ * Returns 1 if a present was issued. A false begin_frame (swapchain
+ * recreating, no image within the acquire budget, minimised window) is a
+ * normal outcome, not an error. */
+int openpete_native_render_repeat_last(void)
+{
+    if (!s_nr.enabled || !s_nr.dev) return 0;
+    /* A pending swapchain rebuild drives SDL window queries and a full
+     * teardown; that belongs to the thread that owns the window, so decline
+     * and let the next canonical present do it. */
+    if (rhi_needs_recreate(s_nr.dev)) return 0;
+    if (!rhi_begin_frame(s_nr.dev)) return 0;
+    rhi_blit_to_swapchain(s_nr.dev);
+    rhi_end_frame(s_nr.dev);
+    return 1;
+}
+
 /* Toggle the native window between windowed and borderless-desktop fullscreen.
  * Bound to Alt+Enter and double-click in run.c (moved out of PsyCross, which
  * only ever drove its now-hidden GL window). SDL3 decides the fullscreen *kind*

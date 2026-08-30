@@ -36,6 +36,11 @@ def run_leg(exe, disc, name, flags, seconds, out_dir, headless, extra,
     # Every harness destroys its own history before it runs: a stale log that
     # survives a failed leg reads exactly like a successful one.
     log.unlink(missing_ok=True)
+    # The end-of-run summaries (pace, present-thread, subtick-view) only exist
+    # on the child's console, and a harness that has to re-run the game to read
+    # one is a harness nobody re-reads. Same destroy-first rule.
+    console = out_dir / f"{name}.stdout"
+    console.unlink(missing_ok=True)
     vbls = int(seconds * VBL_HZ)
     cmd = [str(exe), "--disc", str(disc), "--frame-limit", str(vbls),
            "--pace-log", str(log)] + list(flags) + list(extra)
@@ -47,6 +52,7 @@ def run_leg(exe, disc, name, flags, seconds, out_dir, headless, extra,
     r = subprocess.run(cmd, capture_output=True, text=True,
                        env=child_env(env_knobs),
                        timeout=seconds * 4 + 300)
+    console.write_text((r.stdout or "") + (r.stderr or ""))
     if r.returncode != 0 or not log.exists():
         tail = (r.stderr or r.stdout or "")[-400:]
         print(f"  {name}: FAILED (rc={r.returncode}) {tail}", file=sys.stderr)

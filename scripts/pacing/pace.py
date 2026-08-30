@@ -649,13 +649,24 @@ def cmd_cadence(a):
     # --render-fps 0 is the legacy pacer: one present per TICK, which is two
     # VBLs.
     nominal = 1e9 / fps if fps > 0 else float(nominal_vbl_ns(log)) * 2.0
-    ticks = max(1, sum(1 for r in pres if not r.flags))
+    ticks = max(1, sum(1 for r in pres if r.flags == pacelog.CANONICAL))
     span_s = (pres[-1].t_ns - pres[0].t_ns) / 1e9
 
+    # A repeat is the same image again. It closes a hole in the DISPLAY and
+    # adds nothing to MOTION, so the two rates are reported separately and
+    # never summed into one headline -- a rate that counts duplicates as
+    # frames is the flattering number this whole harness exists to refuse.
+    motion = [r for r in pres if r.flags != pacelog.REPEAT]
+    repeats = len(pres) - len(motion)
+
     gaps = [(b.t_ns - a_.t_ns, b.flags) for a_, b in zip(pres, pres[1:])]
-    print(f"presents: {len(pres)} over {span_s:.1f}s = {len(pres)/span_s:.0f}/s "
+    print(f"presents: {len(motion)} carrying motion over {span_s:.1f}s = "
+          f"{len(motion)/span_s:.0f}/s "
           f"(nominal slot {nominal/1e6:.2f} ms"
           + (f", --render-fps {fps:.0f}" if fps else ", one per tick") + ")")
+    if repeats:
+        print(f"  + {repeats} repeat(s) of an already-shown image = "
+              f"{len(pres)/span_s:.0f}/s reaching the display")
     # Alpha across the tick boundary. A gap is only a loss of MOTION if the
     # frames either side of it show different animation times: two presents at
     # the same alpha are the same image however far apart they were submitted.
@@ -664,7 +675,7 @@ def cmd_cadence(a):
     alphas = [r.present_alpha for r in pres]
     if any(a is not None for a in alphas):
         steps, boundary = [], []
-        for (a_, b) in zip(pres, pres[1:]):
+        for (a_, b) in zip(motion, motion[1:]):
             if a_.present_alpha is None or b.present_alpha is None:
                 continue
             d = b.present_alpha - a_.present_alpha
@@ -771,7 +782,12 @@ def cmd_cadence(a):
     if any(r.present_alpha is not None for r in pres):
         tick_ns = float(nominal_vbl_ns(log)) * 2.0
         berr = []
-        for a_, b in zip(pres, pres[1:]):
+        # Over motion-carrying presents only. A repeat sits between the last
+        # intermediate and the canonical carrying the intermediate's alpha, so
+        # pairing the canonical with it compares a full tick of motion against
+        # the few hundred microseconds since the duplicate -- which reads as a
+        # multi-millisecond regression that no frame actually suffered.
+        for a_, b in zip(motion, motion[1:]):
             if b.flags or a_.present_alpha is None or b.present_alpha is None:
                 continue                      # gaps that END at a canonical
             da = b.present_alpha - a_.present_alpha
@@ -783,9 +799,22 @@ def cmd_cadence(a):
                   f"p50 {ps.percentile(berr,50)/1e6:+.2f} ms "
                   f"p90 {ps.percentile(berr,90)/1e6:+.2f} ms")
 
-    for label, sel in (("after a tick (canonical)", lambda f: not f),
-                       ("mid-tick (intermediate)", lambda f: f)):
-        g = [x for x, f in gaps if sel(f)]
+    # The hole after a tick is measured twice, because the two answers differ
+    # the moment repeats exist and only one of them is about animation:
+    #   DISPLAY -- how long the screen held one image, repeats included. This
+    #     is what a present thread shortens.
+    #   MOTION  -- how long the screen showed the same animation moment. A
+    #     repeat does not shorten this by a microsecond, and reporting only
+    #     the display figure would let a duplicate read as smoothness.
+    motion_gaps = [(b.t_ns - a_.t_ns, b.flags)
+                   for a_, b in zip(motion, motion[1:])]
+    for label, sel, src in (
+            ("after a tick, DISPLAY", lambda f: f == pacelog.CANONICAL, gaps),
+            ("after a tick, MOTION ", lambda f: f == pacelog.CANONICAL,
+             motion_gaps),
+            ("mid-tick (intermediate)", lambda f: f == pacelog.INTERMEDIATE,
+             motion_gaps)):
+        g = [x for x, f in src if sel(f)]
         if not g:
             continue
         big = [x for x in g if x > 2 * nominal]
