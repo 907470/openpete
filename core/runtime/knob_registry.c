@@ -807,6 +807,14 @@ static const knob_desc_t g_builtin[] = {
 
     ENVROW_LATCHED("DEPTH_AFFINE", "Debug", "1",
         "0 = legacy depth curve; 1 (default) screen-affine; baked into pipelines at boot."),
+    ENVROW_LATCHED("EAGER", "Pacing", "1",
+      "Eager production (default on): the span of presents is extracted "
+      "AHEAD of each tick and presented from a dedicated thread's scene "
+      "ring, so the tick's execution leaves no hole in the display. 0 = "
+      "present from the sim thread (the first A/B for any pacing "
+      "regression). Windowed native-vk only; a --screenshot-on-frame "
+      "target disengages it unless OPENPETE_EAGER_SHOT=1. Latched at "
+      "startup."),
     ENVROW_LATCHED("THREAD_SPLIT", "Debug", "1",
       "Run the sim on a worker thread while the main thread owns the window "
       "and the event pump, so dragging or resizing the window cannot stall "

@@ -4,7 +4,7 @@
 The pull model extracts each intermediate scene on the sim thread at the
 moment the pacer decides it is due, so the slots that fall inside the tick's
 protective margin are refused and the display holds one image for the length
-of the tick (~6.5 ms at 480 Hz, thirty times a second). OPENPETE_EAGER=1
+of the tick (~6.5 ms at 480 Hz, thirty times a second). OPENPETE_EAGER=1 (the default)
 extracts every scene of a span while the guest is idle and a present thread
 shows them on their own instants, through the next tick's execution.
 
@@ -89,7 +89,8 @@ def main():
     rows = {m: [] for m in modes}
     for rep in range(1, a.reps + 1):
         for mode in modes:
-            knobs = {}
+            # Eager is the shipped default; the off leg must say so explicitly.
+            knobs = {"OPENPETE_EAGER": "0"}
             if mode == "on":
                 knobs["OPENPETE_EAGER"] = "1"
                 knobs["OPENPETE_EAGER_POLICY"] = a.policy

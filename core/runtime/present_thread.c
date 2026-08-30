@@ -234,11 +234,16 @@ int openpete_present_thread_lattice(int64_t *base_ns, double *period_ns)
     return ok;
 }
 
+/* Eager production is the shipped default: the span is extracted ahead of
+ * the tick and presented from this thread's scene ring, so the tick's own
+ * execution no longer opens a hole in the display. OPENPETE_EAGER=0 puts the
+ * present back on the sim thread (the first diagnostic for a pacing
+ * regression: it removes the ring, the lag and this thread in one move). */
 int openpete_present_thread_enabled(void)
 {
     if (s_enabled < 0) {
         const char *e = getenv("OPENPETE_EAGER");
-        s_enabled = (e && *e && *e != '0') ? 1 : 0;
+        s_enabled = (e && *e) ? (*e != '0') : 1;
     }
     return s_enabled;
 }
