@@ -9133,12 +9133,26 @@ static int slot_grow(scene_slot_t *sl, int n) {
 /* Copy the accumulator and its companions into the next ring slot. Returns
  * the slot index, or -1 when the ring has no free slot (the producer is
  * ahead of the consumer by a whole ring) or the copy could not be sized —
- * a refused publish, never a truncated scene. */
+ * a refused publish, never a truncated scene.
+ *
+ * Any FREE slot will do, not only the one after the last publish. Slot
+ * position carries no meaning — pick orders by scene_id and retire/flush
+ * scan the whole ring — while a PRESENTED slot can sit unretired for as
+ * long as the swapchain refuses frames (a live resize): retirement runs
+ * only after a successful begin_frame. If publishing required that exact
+ * slot, one such straggler would refuse every publish once the ring
+ * wrapped onto it, the consumer would drain pending and go idle, and with
+ * no render there is no begin_frame to ever retire it: the display stays
+ * frozen for good while the sim runs on. */
 int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int paired) {
     SDL_LockMutex(ring_mx());
-    int idx = (s_ring_head + 1) % SCENE_RING;
+    int idx = -1;
+    for (int i = 1; i <= SCENE_RING; i++) {
+        const int cand = (s_ring_head + i) % SCENE_RING;
+        if (s_ring[cand].state == SS_FREE) { idx = cand; break; }
+    }
+    if (idx < 0) { s_ring_census.refused_full++; SDL_UnlockMutex(s_ring_mx); s_eager_stamp = 0; return -1; }
     scene_slot_t *sl = &s_ring[idx];
-    if (sl->state != SS_FREE) { s_ring_census.refused_full++; SDL_UnlockMutex(s_ring_mx); s_eager_stamp = 0; return -1; }
     SDL_UnlockMutex(s_ring_mx);   /* the slot is FREE: only this thread publishes */
     if (!slot_grow(sl, s_scene_n)) { s_eager_stamp = 0; return -1; }
     if (s_scene_n > 0) memcpy(sl->tri, s_scene, (size_t)s_scene_n * sizeof(scene_tri_t));
