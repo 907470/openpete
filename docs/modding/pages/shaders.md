@@ -16,7 +16,7 @@ tightest:
 | Tier | API | What it does |
 |---|---|---|
 | Post-process | `shader_register` with `postfx_register`, `postfx_enable`, and `postfx_set_uniforms` | Runs fullscreen fragment passes over the composed frame, such as CRT effects, grading, and scanlines |
-| Material selectors | `[[material]]` rows, or `material_register` | Re-shades a subset of the engine's own draws, such as a moby class, the LP terrain tier, or the flame plume. The manifest form needs no C at all |
+| Material selectors | `[[material]]` rows, or `material_register` | Re-shades a subset of the engine's own draws, such as a moby class, the LP terrain tier, or the flame plume. The declarative form needs no C at all |
 
 Drawing your own geometry isn't among them. A mod shades what the engine
 already draws, and can't add draws of its own.
@@ -117,9 +117,9 @@ game structs, and never determines whether it applies.
 
 ### Declare a material in the manifest
 
-If all you want is to shade one thing with one shader, the manifest is
-the whole mod: no `src/` directory, no entry point, and nothing
-compiled.
+To point one shader at one selector, the manifest is enough: no `src/`
+directory, no entry point, and nothing compiled. A mod that also ships C
+declares its rows the same way.
 
 ```toml
 [[material]]

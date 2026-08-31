@@ -141,7 +141,7 @@ def main() -> int:
     w("## Mods")
     w("")
     w(f"- {len(mod_dirs)} mods under `mods/`.")
-    w(f"- Zero-C (manifest + assets only): "
+    w(f"- Declarative (manifest and files, nothing compiled): "
       f"{', '.join(f'`{m}`' for m in zero_c) or 'none'}.")
     w("")
     w("## Manifest key usage")

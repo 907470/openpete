@@ -55,10 +55,10 @@ expect_log    = ["my-mod: it worked"]        # substring asserts
     Write `args = "--skip-to-level stone_hill"`, not
     `args = ["--skip-to-level", "stone_hill"]`.
 
-## `[[level]]`: custom levels without code
+## `[[level]]`: declarative custom levels
 
-A mod can ship a whole custom level with no C at all: one manifest block
-plus two files. openpete gives the mod a section in the **Mods** list of
+A mod can ship a whole custom level declaratively: one manifest block
+plus two files, with no C at all. openpete gives the mod a section in the **Mods** list of
 the M overlay, with one row per level. Each row has a Warp button, a
 switch between slot mode and replace mode, and a tooltip carrying the
 level's "Custom World" number. Levels from all mods sort alphabetically,
@@ -114,10 +114,11 @@ Points to keep in mind:
   `assets/levels/`, such as an xdelta patch applied to the player's own
   disc. See `grim-garden` or `spyro15-cliff-town` for the pattern.
 
-## `[[material]]`: re-shading without code
+## `[[material]]`: declarative re-shading
 
-The other block that needs no C is `[[material]]`, which points a
-fragment shader at a subset of the geometry the engine already draws:
+The other declarative block that reaches the renderer is `[[material]]`,
+which points a fragment shader at a subset of the geometry the engine
+already draws:
 
 ```toml
 [[material]]

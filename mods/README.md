@@ -33,21 +33,21 @@ exactly as you would any other program.
 
 openpete names the offending mod in a crash report, names slow mods in
 the per-mod time instrument, and warns when a card was played under a
-different set of mods. None of that is a security boundary. An
-asset-only mod with no `src/` directory never loads code, which narrows
-what you have to trust down to the assets themselves.
+different set of mods. None of that is a security boundary. A
+declarative mod has no `src/` directory and never loads code, which
+narrows what you have to trust down to its files.
 
 Mods must not ship game-derived data, such as models, textures, or audio
 ripped from a Spyro disc. Ship a generator that derives those assets
 from the player's own disc instead. See `recolored-artisans` for the
 pattern.
 
-## Most mods are files, not programs
+## The declarative tier
 
-The primary way to mod the game is declarative: a `mod.toml` file plus
-files under `assets/`. There's no C, no compile step, and no API version
-to pin, so an asset-only mod can't break across engine updates because
-it has no ABI at all. The engine picks the files up by convention:
+A mod is declarative in whatever it expresses through `mod.toml` and
+files, with nothing to compile. Those parts carry no ABI and no API
+version to pin, so an engine update can't break them. The engine picks
+assets up by convention:
 
 ```
 assets/textures/*.png                 HD texture replacement (native renderer)
@@ -58,23 +58,31 @@ assets/levels/<stem>.WAD
 assets/levels/<stem>.OVL              custom level payloads, wired by [[level]]
 ```
 
-A `[[level]]` block in the manifest turns a pair of level payloads into
-a playable custom level. The engine handles the slot claim, the
-table-of-contents serving, and the warp row in the M overlay. See
-`grim-garden`. A `[[binding]]` block declares keys that players can
-rebind.
+Manifest blocks cover what files alone can't. `[[level]]` turns a pair
+of level payloads into a playable custom level, with the engine handling
+the slot claim, the table-of-contents serving, and the warp row in the M
+overlay (see `grim-garden`). `[[material]]` points a fragment shader at
+geometry the engine already draws. `[[config]]` declares settings that
+the engine renders in the Mods panel. `[[binding]]` declares keys that
+players can rebind.
 
-Five in-tree mods ship exactly this way: `music-swap`,
-`hd-single-texture`, `recolored-artisans`, `grim-garden`, and
-`spyro15-cliff-town`. Start there rather than at the C API.
+Six in-tree mods ship this tier alone: `music-swap`,
+`hd-single-texture`, `recolored-artisans`, `grim-garden`,
+`spyro15-cliff-town`, and `declarative-reshade`.
+
+The two tiers are complementary, not ranked, and nothing makes a mod
+pick one. Eight in-tree mods ship both, `hud-stopwatch`, `crt-filter`,
+and `spyro3` among them: a `[[config]]` block gets a C mod's settings
+rendered and written back without any widget code, and a `[[binding]]`
+block makes its hotkeys rebindable.
 
 ## Anatomy of a mod
 
 ```
 mods/<id>/
   mod.toml          manifest (documented in the next section)
-  assets/           overlay root (conventions listed earlier) - asset-only
-                    mods need nothing else
+  assets/           overlay root (conventions listed earlier) -
+                    declarative mods need nothing else
   config.toml       optional player-editable settings
   src/*.c           optional code tier: compiled on load against
                     <exe>/sdk/ by the bundled toolchain (all platforms;

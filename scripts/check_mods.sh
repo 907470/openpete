@@ -686,7 +686,7 @@ fi
 # ── declarative materials: a shader mod with NO C at all ───────────────
 # The zero-C tier's whole claim is that a manifest plus a .frag is a
 # complete mod, so the rung asserts exactly that: the mod loads down the
-# assets-only path (never compiled), its [[material]] rows arm, and the
+# declarative path (never compiled), its [[material]] rows arm, and the
 # geometry they select actually changes on screen. The pixel leg is a
 # controlled A/B (same frame and seed, mod present vs absent) rather than
 # a colour classifier — "some pixels moved" is the structural claim; which
@@ -700,10 +700,10 @@ else
     bad "declarative rows not parsed"
     printf '%s\n' "$out" | grep -i "declarative-reshade" | head -3
 fi
-if printf '%s\n' "$out" | grep -q "loaded declarative-reshade .*assets only"; then
-    ok "loaded down the assets-only path — nothing was compiled"
+if printf '%s\n' "$out" | grep -q "loaded declarative-reshade .*declarative"; then
+    ok "loaded down the declarative path — nothing was compiled"
 else
-    bad "zero-C mod did not take the assets-only path"
+    bad "declarative mod did not take the declarative path"
 fi
 if [ "$(printf '%s\n' "$out" | grep -c "declarative-reshade: material selector armed")" = "3" ]; then
     ok "all three selectors armed (incl. the enabled=false row)"

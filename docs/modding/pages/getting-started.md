@@ -9,7 +9,7 @@ A mod is a directory under `mods/` named for the mod's ID:
 | `mod.toml` | The manifest. See [Manifest and config](manifest.md). |
 | `config.toml` | Optional player-editable settings, read through `api->config_*`. |
 | `src/*.c` | C sources, compiled on load against `<exe>/sdk/`. |
-| `assets/` | Overlay root: `textures/`, `music/`, `sounds/`, and `levels/`. An asset-only mod needs no `src/`. |
+| `assets/` | Overlay root: `textures/`, `music/`, `sounds/`, and `levels/`. Optional, like `src/`. |
 | `data/` | Per-mod persistent directory, created on demand. |
 | `.build/` | The engine's compile cache. Don't commit it. |
 
@@ -44,11 +44,10 @@ To run a different set for a single session without editing the install,
 pass `--mods hello,other-mod`. The same ordering rule applies, and
 `--mods ""` runs the game without mods.
 
-## Create an asset-only mod
+## Declare assets and manifest blocks
 
-Start declarative. A manifest plus an `assets/` tree is a complete mod,
-and it's how most mods should ship: no compile step, no API version to
-pin, and nothing that can break across engine updates.
+A manifest plus files is already a complete mod, with no compile step
+and no API version to pin.
 
 The engine picks up assets by convention:
 
@@ -61,7 +60,16 @@ The engine picks up assets by convention:
   manifest block, make a playable custom level. The engine handles the
   slot claim, the warp row, and disc serving. See `grim-garden`.
 
-Reach for `src/*.c` only when you need behavior.
+Manifest blocks cover the rest of the tier. `[[level]]` wires a custom
+level, `[[material]]` re-shades geometry the engine already draws,
+`[[config]]` declares settings that the engine renders for you, and
+`[[binding]]` claims a rebindable hotkey. See
+[Manifest and config](manifest.md) for all of them.
+
+These blocks work the same way in a mod that also ships C. Declaring
+your settings with `[[config]]` saves you the widget code either way, so
+reach for a block whenever one covers what you want, and for `src/*.c`
+when you need behavior the engine can't be told about.
 
 ## Create a code mod
 

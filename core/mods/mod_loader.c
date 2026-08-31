@@ -1982,15 +1982,15 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
         snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT,
                  mod->dir, mod->id);
         if (file_mtime(so_path) == (time_t)-1) {
-            /* Pure-asset mods (textures/music only) are legal: no src/
-             * and no prebuilt object means the manifest + assets/ root
-             * are the whole mod. */
+            /* Declarative mods are legal: no src/ and no prebuilt
+              * object means the manifest and its files are the whole
+              * mod. */
             if (!run_entry) {
-                OPL_INFO_F("mods", "loaded %s v%s (assets only; disabled)",
+                OPL_INFO_F("mods", "loaded %s v%s (declarative; disabled)",
                            mod->id, mod->version);
                 return 0;
             }
-            OPL_INFO_F("mods", "loaded %s v%s (assets only)", mod->id,
+            OPL_INFO_F("mods", "loaded %s v%s (declarative)", mod->id,
                        mod->version);
             mod->entered = 1;
             mod_register_materials(mod);   /* a manifest-only mod IS its rows */

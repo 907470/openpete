@@ -5,9 +5,16 @@ gameplay that stays bit-identical to original PlayStation hardware. Its
 mod framework is designed to reach deeper than any other unofficial port
 of the game.
 
-## Mod with files, not code
+## Two tiers, neither one primary
 
-The primary road needs no C at all. The following mod is complete and
+openpete has a declarative tier and a code tier. They aren't a beginner
+path and an expert path: they reach different things, and a mod is free
+to use one, the other, or both at once.
+
+### The declarative tier
+
+A mod is declarative in whatever it expresses through `mod.toml` and
+files, with nothing to compile. The following mod is complete and
 working:
 
 ```
@@ -25,17 +32,22 @@ api     = 1
 ```
 
 Add `my-music` to `mods/enabled.txt`, and the title screen plays your
-track. Texture replacements, sound packs, and whole custom levels
-(`[[level]]`) work the same way: a manifest plus files under `assets/`,
-picked up by convention. An asset-only mod has no ABI, so nothing about
-it can break when the engine updates.
+track. Texture replacements and sound packs work the same way: files
+under `assets/`, picked up by convention.
 
-## Mod with code
+The tier reaches past assets. Manifest blocks declare whole custom
+levels (`[[level]]`), re-shade the geometry the engine already draws
+(`[[material]]`), expose player settings that the engine renders for you
+(`[[config]]`), and claim rebindable hotkeys (`[[binding]]`). Declaring
+something hands the engine the plumbing behind it. Nothing here
+compiles, so these parts carry no ABI and no API version to track.
 
-When you need behavior rather than content, write plain C. The engine
-compiles it on load against a generated SDK, and hooks the game through
-a per-function override chain that intercepts every call without
-patching any code:
+### The code tier
+
+C reaches what a declaration can't: the game's own functions and state.
+The engine compiles your source on load against a generated SDK, and
+hooks the game through a per-function override chain that intercepts
+every call without patching any code:
 
 ``` c
 #include <openpete_mod_api.h>
@@ -57,6 +69,18 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
 Save that as `mods/hello/src/hello.c`, add a three-line `mod.toml`, and
 the engine compiles and loads it at boot with the bundled toolchain, on
 every supported platform.
+
+### Mixing the two
+
+Nothing makes you choose. Declaring a code mod's settings with
+`[[config]]` and its hotkeys with `[[binding]]` gets them rendered and
+rebound for you, so you write no widget code. A `[[material]]` mod can
+add C later to select on runtime state, without changing the rows it
+already ships.
+
+Among the example mods, `hud-stopwatch`, `crt-filter`, and `spyro3` ship
+both tiers; `declarative-reshade` and `grim-garden` ship a manifest
+alone; and `double-gems` and `hello-anchor` ship only C.
 
 ## What to read next
 
