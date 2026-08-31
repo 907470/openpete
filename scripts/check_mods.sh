@@ -372,7 +372,7 @@ fi
 say "[test] blocks via tools/modtest.py (the harness modders run)"
 if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
         mods/double-gems mods/natural-gems mods/lib-and-client \
-        mods/hud-stopwatch mods/new-moby \
+        mods/hud-stopwatch \
         mods/arena-probe \
         mods/hd-single-texture mods/music-swap mods/spyro3 \
         mods/supercharge-anywhere; then

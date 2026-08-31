@@ -96,7 +96,6 @@ below the EXE base at `0x80010000`.)
 | Play your own WAV | `sfx_play` | yes |
 | Custom textures on your models | `assets/textures/own/<hexid>.png` | yes |
 | Post-process shaders | `shader_register` + `postfx_*` | yes |
-| New moby types | `register_moby_type` / `spawn_moby` | no |
 | Custom levels | `[[level]]` + `assets/levels/` | no |
 | User settings | `[[config]]` schema + `config_*` | n/a |
 | Status lines | `ui_status` | yes |

@@ -1,16 +1,11 @@
-// core/mods/mod_registry.c — namespaced content registries (PoC rungs
-// 11-12 of notes/plans/openpete-modding-framework.md).
+// core/mods/mod_registry.c — namespaced content registries.
 //
-// v1 namespace: MOBY TYPES. A mod registers `modid:name` with a donor
-// class and a per-tick update_fn; the registry claims a level-free class
-// id (game ops seed the model row from the donor — BattleShip's
-// fighter_registry model), dispatches the update_fn for every live
-// instance after the game's own update, and re-allocates ids on level
-// change (the loader repopulates the model table per level, so ids are
-// level-scoped by construction).
+// Namespaces: LEVEL SLOTS (a new level id cloned from a donor level) and
+// CUSTOM LEVELS (a mod-supplied WAD/OVL served over a slot), plus the
+// per-level event hooks both ride.
 //
 // Inertness: the per-tick chain link is added lazily on the FIRST
-// registration — no registered types means no hook, no guest reads, no
+// registration — nothing registered means no hook, no guest reads, no
 // behavior change. All registry guest writes are gameplay-divergent by
 // design (content mods), gated behind mods being loaded at all.
 
@@ -30,22 +25,8 @@ int  openpete_mods_chain_add(uint32_t addr, openpete_mod_override_fn fn,
                              const char* owner_id);
 void openpete_mods_base(CPUState* cpu);
 
-#define MOBY_TYPES_MAX  32
 #define MOBY_NAME_MAX   48
 #define MOBY_OWNER_MAX  64 /* mirrors the loader's MOD_ID_MAX */
-
-typedef struct {
-    char                    mod_id[MOBY_OWNER_MAX];
-    char                    name[MOBY_NAME_MAX];
-    int                     donor_class;
-    openpete_moby_update_fn update_fn;
-    int                     class_id; /* 0 = not live in this level */
-    int                     disabled; /* live toggle: no claims, no
-                                       * dispatch; instances freeze */
-} moby_type_t;
-
-static moby_type_t s_types[MOBY_TYPES_MAX];
-static int         s_type_count = 0;
 
 static const openpete_moby_ops_t* s_ops = NULL;
 static int s_hooked = 0;
@@ -133,10 +114,8 @@ static int ensure_hooked(const char* log_tag) {
 
 /* Per-tick registry driver: runs as the DEEPEST link on the game's
  * master-update chain (registered at mod-entry time, so every mod hook
- * wraps it). Order per tick: original update runs first (via base()),
- * then ids are (re)allocated, then each registered type's update_fn
- * walks its live instances — mod behavior always sees post-update
- * vanilla state. */
+ * wraps it). The original update runs first (via base()), so registry
+ * work always sees post-update vanilla state. */
 static void registry_tick(CPUState* cpu) {
     openpete_mods_base(cpu);
     if (!s_ops) return;
@@ -148,14 +127,7 @@ static void registry_tick(CPUState* cpu) {
     /* Any live level ends an in-flight slot transition: either we arrived
      * (lvl == the slot id) or the load went somewhere else. */
     if (lvl > 0) { s_slot_entering = 0; s_resident_level = lvl; }
-    if (lvl != s_level) {
-        /* Level changed: the loader repopulates the model table, so
-         * every claimed id is stale (its row may now be a REAL class of
-         * the new level). Invalidate; re-claim below once gameplay is
-         * live. */
-        for (int i = 0; i < s_type_count; i++) s_types[i].class_id = 0;
-        s_level = lvl;
-    }
+    if (lvl != s_level) s_level = lvl;
     if (lvl <= 0) return;
 
     for (int i = 0; i < s_level_hook_count; i++) {
@@ -165,22 +137,6 @@ static void registry_tick(CPUState* cpu) {
         h->fn(cpu, lvl);
     }
     openpete_mods_sfx_defs_apply(cpu, lvl);
-
-
-    for (int i = 0; i < s_type_count; i++) {
-        moby_type_t* t = &s_types[i];
-        if (t->disabled) continue;
-        if (!t->class_id) {
-            t->class_id = s_ops->alloc_seed_class(cpu, t->donor_class);
-            if (t->class_id)
-                OPL_INFO_F("mods", "moby type %s:%s live as class %d "
-                           "(donor %d, level %d)",
-                           t->mod_id, t->name, t->class_id,
-                           t->donor_class, lvl);
-        }
-        if (t->class_id && t->update_fn)
-            s_ops->walk_class(cpu, t->class_id, t->update_fn);
-    }
 }
 
 /* ── Level-slot namespace (rung 12) ─────────────────────────────────── */
@@ -242,70 +198,10 @@ int openpete_mods_on_level(const char* mod_id, openpete_mod_level_fn fn,
     return 0;
 }
 
-int openpete_mods_moby_register(const char* mod_id, const char* name,
-                                int donor_class,
-                                openpete_moby_update_fn update_fn,
-                                const char* log_tag) {
-    if (!mod_id || !name || !name[0]) return -1;
-    if (!s_ops) {
-        OPL_ERROR_F(log_tag, "moby registry: no game ops registered");
-        return -1;
-    }
-    for (int i = 0; i < s_type_count; i++) {
-        if (strcmp(s_types[i].mod_id, mod_id) == 0 &&
-            strcmp(s_types[i].name, name) == 0) {
-            OPL_ERROR_F(log_tag, "moby type \"%s\" already registered",
-                        name);
-            return -1;
-        }
-    }
-    if (s_type_count >= MOBY_TYPES_MAX) {
-        OPL_ERROR_F(log_tag, "moby type registry full (%d)",
-                    MOBY_TYPES_MAX);
-        return -1;
-    }
-    if (ensure_hooked(log_tag) != 0) return -1;
-    moby_type_t* t = &s_types[s_type_count++];
-    snprintf(t->mod_id, sizeof t->mod_id, "%s", mod_id);
-    snprintf(t->name, sizeof t->name, "%s", name);
-    t->donor_class = donor_class;
-    t->update_fn   = update_fn;
-    t->class_id    = 0;
-    OPL_INFO_F(log_tag, "moby type \"%s\" registered (donor class %d)",
-               name, donor_class);
-    return 0;
-}
-
-static moby_type_t* type_find(const char* mod_id, const char* name) {
-    for (int i = 0; i < s_type_count; i++)
-        if (strcmp(s_types[i].mod_id, mod_id) == 0 &&
-            strcmp(s_types[i].name, name) == 0)
-            return &s_types[i];
-    return NULL;
-}
-
-int openpete_mods_moby_type_id(const char* mod_id, const char* name) {
-    const moby_type_t* t = type_find(mod_id, name);
-    return (t && t->class_id) ? t->class_id : -1;
-}
-
-uint32_t openpete_mods_moby_spawn(CPUState* cpu, const char* mod_id,
-                                  const char* name) {
-    const moby_type_t* t = type_find(mod_id, name);
-    if (!t || t->disabled || !t->class_id || !s_ops || !cpu) return 0;
-    return s_ops->spawn(cpu, t->class_id, t->donor_class);
-}
-
 /* Hot reload: REMOVE a mod's registry rows (it re-registers fresh). */
 void openpete_mods_registry_remove_owner(const char* mod_id) {
     if (!mod_id) return;
     int w = 0;
-    for (int i = 0; i < s_type_count; i++) {
-        if (strcmp(s_types[i].mod_id, mod_id) == 0) continue;
-        s_types[w++] = s_types[i];
-    }
-    s_type_count = w;
-    w = 0;
     for (int i = 0; i < s_level_count; i++) {
         if (strcmp(s_levels[i].mod_id, mod_id) == 0) continue;
         s_levels[w++] = s_levels[i];
@@ -319,19 +215,7 @@ void openpete_mods_registry_remove_owner(const char* mod_id) {
     s_level_hook_count = w;
 }
 
-/* Live toggle: gate a mod's registry rows (moby types + level slots).
- *
- * A disabled moby type stops claiming, stops dispatching, and refuses
- * spawns. Its already-live instances stay in the pool as inert donor
- * lookalikes: the class id keeps its seeded g_Models row (so the render
- * walk still finds a model) and the level overlay's update switch has no
- * case for the id, so nothing else in the game drives them — they freeze
- * where they stand rather than misbehaving. Removing them is the MOD's
- * job from its on_toggle hook, which runs after this flip in tick
- * context; openpete_mods_moby_type_id deliberately keeps answering while
- * disabled so the hook can still find its instances. Re-enable resumes
- * dispatch on the same instances (the claimed id survives), or re-claims
- * a fresh id if the level changed meanwhile.
+/* Live toggle: gate a mod's registry rows (level slots + level hooks).
  *
  * A disabled level slot stops claiming and refuses entry. It does NOT
  * unclaim: the cloned TOC entry and the donor alias are what make the id
@@ -340,9 +224,6 @@ void openpete_mods_registry_remove_owner(const char* mod_id) {
  * applying a toggle-off. */
 void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on) {
     if (!mod_id) return;
-    for (int i = 0; i < s_type_count; i++)
-        if (strcmp(s_types[i].mod_id, mod_id) == 0)
-            s_types[i].disabled = !on;
     for (int i = 0; i < s_level_count; i++)
         if (strcmp(s_levels[i].mod_id, mod_id) == 0)
             s_levels[i].disabled = !on;

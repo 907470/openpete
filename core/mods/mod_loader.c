@@ -566,36 +566,6 @@ static int api_host_key_down(const char* key_name) {
     return openpete_host_input_key_down((int)sc);
 }
 
-
-
-
-
-/* Content registry: moby types (rung 11). Registration is entry-time;
- * spawning mutates sim state — tick context only. */
-static int api_register_moby_type(openpete_mod_t* self, const char* name,
-                                  int donor_class,
-                                  openpete_moby_update_fn update_fn) {
-    if (!self || !name) return -1;
-    if (purity_violation("register_moby_type")) return -1;
-    return openpete_mods_moby_register(self->id, name, donor_class,
-                                       update_fn, self->log_tag);
-}
-
-static int api_moby_type_id(openpete_mod_t* self, const char* name) {
-    if (!self || !name) return -1;
-    return openpete_mods_moby_type_id(self->id, name);
-}
-
-static uint32_t api_spawn_moby(openpete_mod_t* self, CPUState* cpu,
-                               const char* name) {
-    if (!self || !cpu || !name) return 0;
-    if (purity_violation("spawn_moby")) return 0;
-    return openpete_mods_moby_spawn(cpu, self->id, name);
-}
-
-
-
-
 static char s_sdk_dir[MOD_PATH_MAX];
 
 /* defined later in this file */
@@ -1290,10 +1260,6 @@ static const openpete_mod_api_t s_api = {
     .postfx_register     = openpete_mods_postfx_register,
     .postfx_enable       = openpete_mods_postfx_enable,
     .postfx_set_uniforms = openpete_mods_postfx_set_uniforms,
-    /* pillar 7: content */
-    .register_moby_type = api_register_moby_type,
-    .moby_type_id       = api_moby_type_id,
-    .spawn_moby         = api_spawn_moby,
     /* pillar 8: audio */
     .sfx_replace   = openpete_mods_sfx_replace,
     .sfx_play      = api_sfx_play,

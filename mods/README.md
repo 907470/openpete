@@ -116,13 +116,14 @@ via `api->guest` + the typed structs in `openpete_game_structs.h`
 (layout-pinned at compile time). Draw HUD text/rects through the
 native renderer (never guest prims). Services: `sfx_replace`/
 `sfx_play`, `guest_alloc`, post-process shaders (`shader_register` +
-`postfx_*`), new moby types (`register_moby_type`/`spawn_moby`),
-settings ([[config]] schema + `config_*`), `ui_status` lines, and
-`binding_down`. Present hooks are render-pure — sim work belongs in
-tick hooks; the loader enforces it. The api struct is **v1 and
-append-only**. Full contracts live in `sdk/openpete_mod_api.h` next
-to the exe; the widget annex (`openpete_mod_ui.h`) is separately
-versioned and carries no stability promise.
+`postfx_*`), settings ([[config]] schema + `config_*`), `ui_status`
+lines, and `binding_down`. Present hooks are render-pure — sim work
+belongs in tick hooks; the loader enforces it. The api struct is **v1
+and append-only** — with one deliberate exception on record: the
+moby-type registry was removed at api 7, before any mod outside this
+tree used it. Full contracts live in `sdk/openpete_mod_api.h` next to
+the exe; the widget annex (`openpete_mod_ui.h`) is separately versioned
+and carries no stability promise.
 
 ## The gallery is the documentation
 
@@ -132,8 +133,8 @@ directory — start from the one nearest your idea. Declarative:
 `recolored-artisans` (generated texture pack), `grim-garden` /
 `spyro15-cliff-town` (custom levels). Code tier: `hello-anchor` for
 observers, `double-gems` for gameplay taps, `hud-stopwatch` for HUD
-draws and bindings, `new-moby` for content, the `crt-*` mods for
-shaders, and `spyro3` for the full flagship treatment.
+draws and bindings, the `crt-*` mods for shaders, and `spyro3` for the
+full flagship treatment.
 `scripts/check_mods.sh` runs the whole ladder.
 
 ## Installing from a mod-sources manifest

@@ -268,8 +268,16 @@ typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
  * 6: material_set_selector + moby_classes. A selector can now be RETUNED on
  * a live material, which is what a mod driving one from a widget needs:
  * registration is refused inside a present, so the re-register such a mod
- * used to attempt could only fail, leaving its material destroyed. */
-#define OPENPETE_MOD_API_VERSION 6u
+ * used to attempt could only fail, leaving its material destroyed.
+ *
+ * 7: the moby-type registry (register_moby_type / moby_type_id /
+ * spawn_moby, "pillar 7") is REMOVED, and the pillar number stays retired.
+ * It was a speculative abstraction over one in-tree example: a mod wanting
+ * novel content can still claim a class row and drive it from an override
+ * on the game's own update, which is what the registry did on its behalf.
+ * Removing entries breaks the append-only rule above, deliberately and
+ * once: a mod calling them fails to COMPILE, which is the loud failure. */
+#define OPENPETE_MOD_API_VERSION 7u
 
 typedef struct openpete_mod_api {
     uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION (the struct is
@@ -454,32 +462,6 @@ typedef struct openpete_mod_api {
     int (*postfx_enable)(openpete_mod_t* self, int fx, int enabled);
     int (*postfx_set_uniforms)(openpete_mod_t* self, int fx,
                                const void* data, uint32_t size);
-
-    /* ── Pillar 7: content — new moby types ──────────────────────────
-     * Register a NEW moby type: the engine claims a class id that is
-     * FREE in the current level, seeds the model row from donor_class
-     * (the new type renders/collides with the donor's model), and calls
-     * update_fn once per live instance per sim tick, AFTER the game's
-     * own update. Ids are LEVEL-SCOPED — invalidated on level change
-     * and re-claimed when gameplay resumes; write level-independent
-     * behavior against the moby pointer, not the id.
-     *
-     * moby_type_id returns the currently claimed class id, -1 if the
-     * type isn't live in this level (yet) — a changed id is also the
-     * mod's level-change epoch signal.
-     *
-     * spawn_moby instantiates one through the game's own spawner (full
-     * donor-class init; placed at Spyro when no parent), rebranded to
-     * the registered type. Returns the guest moby vaddr (position at
-     * +0x0C, 3×i32) or 0 while the type isn't live / the pool is full.
-     * TICK context only. */
-    int (*register_moby_type)(openpete_mod_t* self, const char* name,
-                              int donor_class,
-                              void (*update_fn)(CPUState* cpu,
-                                                uint32_t moby_vaddr));
-    int (*moby_type_id)(openpete_mod_t* self, const char* name);
-    uint32_t (*spawn_moby)(openpete_mod_t* self, CPUState* cpu,
-                           const char* name);
 
     /* ── Pillar 8: audio ─────────────────────────────────────────────
      * The `name` domain differs per verb: sfx_play resolves in THIS

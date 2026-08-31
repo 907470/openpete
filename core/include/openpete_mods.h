@@ -456,26 +456,15 @@ int openpete_mods_site_attach(const char* mod_id, const char* name,
 /* Detach every handler owned by mod_id (unload/reload path). */
 void openpete_mods_site_detach_all(const char* mod_id);
 
-/* ── Content registries (core/mods/mod_registry.c, rungs 11-12) ────────
+/* ── Content registries (core/mods/mod_registry.c) ─────────────────────
  *
- * Namespaced additive content (`modid:entry`). v1 namespace: MOBY TYPES.
- * The capacity model is BattleShip's fighter_registry: rows seeded from
- * vanilla at level load — a registered type claims a class id whose
- * model row is FREE in the current level (a NULL g_Models row means the
- * level never uses that class, so the overlay update switch has no case
- * for it and the id falls through to `default` by construction) and
- * seeds the row from a donor class. Ids are LEVEL-SCOPED: invalidated
- * and re-allocated on level change (the loader repopulates the model
- * table). Lifts beyond the vanilla table size (>=512) ride
+ * Namespaced additive content (`modid:entry`): LEVEL SLOTS and the custom
+ * levels served over them. Lifts beyond the vanilla table sizes ride
  * openpete-ram-virtualization — acknowledged, not hidden.
  *
- * Behavior is CODE, not a table: the game dispatches per-type behavior
- * through compiled switches, so registered types get a mod-provided
- * update_fn the registry dispatches after the game's own update tick
- * (a chain link on the game's master-update function, added lazily on
- * first registration — no types registered = no hook = inert). */
-
-typedef void (*openpete_moby_update_fn)(CPUState* cpu, uint32_t moby_vaddr);
+ * The registries share one per-tick driver: a chain link on the game's
+ * master-update function, added lazily on first registration (nothing
+ * registered = no hook = inert). */
 
 /* Game ops the registry delegates to (game addresses stay game-side;
  * Spyro registers spyro1_moby_ops from main.cpp). */
@@ -483,17 +472,6 @@ typedef struct {
     uint32_t update_hook_addr; /* master per-tick update fn (chain anchor) */
     /* Current level id, 0 = none/not in gameplay yet. */
     int (*level_id)(CPUState* cpu);
-    /* Claim + seed a free model row from donor_class; 0 = not possible
-     * yet (level loading / no free row / donor absent). Idempotent per
-     * level: each call claims a FRESH row (seeded rows read non-free). */
-    int (*alloc_seed_class)(CPUState* cpu, int donor_class);
-    /* Spawn through the game's own spawner AS donor_class (full class-
-     * correct init: model, renderer bits, collision), then rebrand the
-     * instance to class_id. Returns guest moby vaddr, 0 on failure. */
-    uint32_t (*spawn)(CPUState* cpu, int class_id, int donor_class);
-    /* Call fn for every live moby of class_id. */
-    void (*walk_class)(CPUState* cpu, int class_id,
-                       openpete_moby_update_fn fn);
     /* Fill `out` with the moby classes the CURRENT LEVEL has loaded — the
      * classes that can appear at all — ascending, and return the count.
      * -1 while the table cannot be trusted (mid-load). Level-scoped, so the
@@ -606,15 +584,6 @@ int openpete_mods_read_level_data(int level_id, void* buf, uint32_t cap);
 int openpete_mods_on_level(const char* mod_id, openpete_mod_level_fn fn,
                            const char* log_tag);
 int openpete_mods_registry_ensure_driver(const char* log_tag);
-
-/* Loader-facing (wired into the mod api). */
-int openpete_mods_moby_register(const char* mod_id, const char* name,
-                                int donor_class,
-                                openpete_moby_update_fn update_fn,
-                                const char* log_tag);
-int openpete_mods_moby_type_id(const char* mod_id, const char* name);
-uint32_t openpete_mods_moby_spawn(CPUState* cpu, const char* mod_id,
-                                  const char* name);
 
 /* ── SFX overlay service (core/mods/mod_sfx.c) ─────────────────────
  * Host-side sound substitution at voice key-on. The game's SPU thunk
