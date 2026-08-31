@@ -48,7 +48,8 @@ static void crt_status_publish(void) {
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api;
     g_self = self;
-    if (api->api_version != OPENPETE_MOD_API_VERSION) return -1;
+    /* No version check: mod.toml's `api` pin is the minimum this mod
+     * needs, and the loader refuses an older engine before entry. */
 
     int frag = api->shader_register(self, "shaders/crt.frag");
     if (frag < 0) {

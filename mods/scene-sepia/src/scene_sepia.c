@@ -40,7 +40,8 @@ static void publish_status(void) {
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api; g_self = self;
-    if (api->api_version != OPENPETE_MOD_API_VERSION) return -1;
+    /* No version check: mod.toml's `api` pin is the minimum this mod
+     * needs, and the loader refuses an older engine before entry. */
     g_strength = (float)api->config_float(self, "sepia.strength", 1.0);
     if (g_strength < 0.0f) g_strength = 0.0f;
     if (g_strength > 1.0f) g_strength = 1.0f;

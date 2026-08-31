@@ -44,7 +44,6 @@ static void on_camera_update(CPUState* cpu) {
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     A = api; SELF = self;
-    if (api->api_version != OPENPETE_MOD_API_VERSION) return -1;
     return api->override_name(self, "CameraUpdate", on_camera_update);
 }
 ```

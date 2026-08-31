@@ -32,9 +32,9 @@ openpete simulates at the PSX's canonical 29.913 ticks/s but can present
 many frames per tick (high-fps interpolation). That split is the most
 important contract in the API:
 
-- **Tick context** (overrides, entry, registry update fns): the sim is
-  live. Guest reads/writes, `call`, spawning, registration — all
-  legal here, and only here.
+- **Tick context** (overrides, entry, level hooks): the sim is live.
+  Guest reads/writes, `call`, registration — all legal here, and only
+  here.
 - **Present context** (`register_present_hook`): render-pure by
   contract *and enforcement*. Guest access, game calls and
   registrations are refused with an error — presents are
@@ -44,9 +44,9 @@ important contract in the API:
   variables; evaluate your own curves at `ctx->alpha` for sub-tick
   smoothness.
 
-Draw calls (`draw_text`, `draw_rect`, `draw_actor`) work from both
-contexts: submitted in a tick they persist for that tick's presents;
-submitted in a present hook they live one present.
+Draw calls (`draw_text`, `draw_rect`) work from both contexts:
+submitted in a tick they persist for that tick's presents; submitted in
+a present hook they live one present.
 
 ## Sim-neutrality and the oracle
 
@@ -54,16 +54,16 @@ The project's floor is bit-identical gameplay with real PSX hardware,
 proven by a replay gate (`scripts/check_psx_oracle.sh`). Mods slot into
 that world in two ways:
 
-- **Observers / presentation mods** (HUD, ghosts, SFX overlay,
+- **Observers / presentation mods** (HUD, shaders, SFX overlay,
   textures): built on services that never write guest RAM — declare
   `sim_neutral = true` and your mod is excluded from the save modset
   tag. The SFX overlay, draw service and texture service are
   *sim-neutral by construction*: the substitution happens host-side.
-- **Gameplay mods** (new mobys, collision, model swaps): guest writes
+- **Gameplay mods** (rule changes, spawns, model swaps): guest writes
   are the point. The save-safety system tags memory cards with the
   modset; a card played under a different modset warns before mixing.
 
-The `[test]` block's `expect_oracle = "pass"` proves an observer stays
+`modtest.toml`'s `expect_oracle = "pass"` proves an observer stays
 byte-neutral *with the mod enabled*; `"fail"` asserts a gameplay mod
 really diverges; `"skip"` for everything in between.
 
@@ -96,6 +96,7 @@ below the EXE base at `0x80010000`.)
 | Play your own WAV | `sfx_play` | yes |
 | Custom textures on your models | `assets/textures/own/<hexid>.png` | yes |
 | Post-process shaders | `shader_register` + `postfx_*` | yes |
+| Re-shade some of what the engine draws | `[[material]]` rows, or `material_register` | yes |
 | Custom levels | `[[level]]` + `assets/levels/` | no |
 | User settings | `[[config]]` schema + `config_*` | n/a |
 | Status lines | `ui_status` | yes |

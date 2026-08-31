@@ -23,15 +23,15 @@ brew install cmake ninja python openal-soft ffmpeg
 
 ### Windows native (MSVC)
 Install Visual Studio 2022 with the "Desktop development with C++" workload
-plus CMake. SDL2 must be available via vcpkg or a system install. (This
-preset is in `CMakePresets.json` but is **not validated** as of Phase 0b.)
+plus CMake. The `windows-msvc` preset exists in `CMakePresets.json` but is
+**not validated** — the supported Windows build is the MinGW cross-build
+from Linux (`windows-mingw-shared`), which is what releases ship.
 
 ## Required: matching-decomp build
 
-The `games/spyro-1/spyro-1/` submodule is the matching decompilation. From
-Phase 1a onward, OpenPete consumes its `build/psx.map` (linker map) and
-`build/PSX.EXE` (the recompilation input). Build it once before configuring
-OpenPete:
+The `games/spyro-1/spyro-1/` submodule is the matching decompilation.
+OpenPete consumes its `build/psx.map` (linker map) and `build/PSX.EXE` (the
+recompilation input). Build it once before configuring OpenPete:
 
 ```bash
 cd games/spyro-1/spyro-1/
@@ -39,7 +39,8 @@ make
 ```
 
 That step is independent and may take longer than the OpenPete build itself.
-Phase 0b can configure and build OpenPete without it; later phases cannot.
+The dist presets (`OPENPETE_SKIP_DECOMP=ON`) configure without the submodule;
+a dev build that regenerates the recompiled C does not.
 
 ## Configure + build
 

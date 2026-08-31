@@ -36,7 +36,8 @@ static void publish_status(void) {
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api;
     g_self = self;
-    if (api->api_version != OPENPETE_MOD_API_VERSION) return -1;
+    /* No version check: mod.toml's `api` pin is the minimum this mod
+     * needs, and the loader refuses an older engine before entry. */
 
     void* host = 0;
     uint32_t va = api->guest_alloc(self, 256, 16, 0, &host);

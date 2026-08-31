@@ -38,7 +38,8 @@ static void on_camera_update(CPUState* cpu) {
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api;
     g_self = self;
-    if (api->api_version != OPENPETE_MOD_API_VERSION) return -1;
+    /* No version check: mod.toml's `api` pin is the minimum this mod
+     * needs, and the loader refuses an older engine before entry. */
     publish_status();
     return api->override_name(self, "CameraUpdate", on_camera_update);
 }

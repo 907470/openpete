@@ -9,13 +9,15 @@ they **cannot touch guest RAM**, so every tier below is sim-neutral by
 construction — your C side may *read* gameplay state to feed uniforms,
 and nothing flows back.
 
-Three tiers, cheapest coupling first:
+Two tiers, cheapest coupling first:
 
 | Tier | API | What it does |
 |---|---|---|
 | Post-process | `shader_register` + `postfx_register`/`postfx_enable`/`postfx_set_uniforms` | Fullscreen fragment passes over the composed frame (CRT, grading, scanlines) |
-| Custom draws | `pipeline_register` + `draw_mesh` | Your geometry, your vert+frag, drawn into the scene from a present hook |
 | Material selectors | `[[material]]` rows, or `material_register` | Re-shade a *subset* of the engine's own draws (a moby class, the LP terrain tier, the flame plume). The manifest form needs no C at all |
+
+Drawing your *own* geometry is not among them: a mod shades what the
+engine already draws, and cannot add draws of its own.
 
 ## Registering shaders
 

@@ -1,5 +1,13 @@
 # Missing-geometry bug — investigation notes
 
+> **SOLVED.** The cause was a stray `DR_TPAGE` primitive in PsyCross's
+> drawenv handling, which made the rest of the OT chain render
+> invisibly — nothing to do with per-polygon culling or GTE math. The
+> page is kept for the postmortem at the end: two plausible theories
+> (NCLIP path selection, small-vs-big emit) both produced *evidence*
+> because they perturbed OT chain order, which is the trap worth
+> remembering.
+
 ## Symptom
 
 In Artisans Homeworld, Stone Hill, and Dark Hollow, parts of geometry render

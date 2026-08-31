@@ -29,7 +29,7 @@ games/<game>/
 ├── CMakeLists.txt              # produces openpete-<game> binary
 ├── <game>/                     # the decomp submodule
 ├── manifest/
-│   ├── symbols.toml            # function-authority manifest (Phase 2)
+│   ├── symbols.toml            # function-authority manifest
 │   ├── globals.toml
 │   ├── overlays.toml
 │   └── psyq.toml               # PSYQ symbol → address (from psx.map)
@@ -45,7 +45,7 @@ games/<game>/
 
 Fill in **identity** first (entry point from PSX EXE header, CRC32 of the
 EXE, display name) — that's enough to compile and link. Memory layout,
-overlay handling, and runtime quirks come as Phases 1b–1c surface them.
+overlay handling and runtime quirks follow as bring-up surfaces them.
 
 ```c
 uint32_t game_get_entry_point(void) {
@@ -69,8 +69,8 @@ cmake --preset linux-release -DOPENPETE_GAMES="spyro-1;<game>"
 
 ## 5. Validate
 
-`./scripts/setup.sh` will start failing for `<game>`'s decomp build artifacts
-once Phase 1a needs them. Adapt the script if your game's map path differs.
+`./scripts/setup.sh` expects `<game>`'s decomp build artifacts where Spyro 1
+keeps them. Adapt the script if your game's map path differs.
 
 ## 6. Don't pollute `core/`
 

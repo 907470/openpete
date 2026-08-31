@@ -10,7 +10,6 @@ mods/<id>/
   assets/           overlay root (textures/replacements/, music/,
                     sounds/, levels/) — pure-asset mods need no src/
   data/             per-mod persistent dir (created on demand)
-  test/             self-contained inputs for the [test] block (bk2s)
   .build/           the engine's compile cache (never commit)
 ```
 
@@ -86,10 +85,16 @@ static void on_camera_update(CPUState* cpu) {
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     A = api; SELF = self;
-    if (api->api_version != OPENPETE_MOD_API_VERSION) return -1;
     return api->override_name(self, "CameraUpdate", on_camera_update);
 }
 ```
+
+No version check in the code: `mod.toml`'s `api` pin is the **minimum**
+the mod needs, and the loader refuses an older engine before your entry
+runs. Never compare with `!=` — the struct is append-only, so an engine
+newer than your pin is exactly what you want. If one call needs a later
+api than the rest, guard that call alone with
+`if (api->api_version >= N)`.
 
 Add `hello` to `mods/enabled.txt` and launch. The engine hashes your
 sources, compiles them with the bundled toolchain (a splash progress
@@ -115,12 +120,13 @@ the log — it never bricks the launch.
 
 - **Hot reload** (dev mode): launch with `OPENPETE_MOD_HOT_RELOAD=1`
   and edits to your sources *or* `config.toml` go live mid-session —
-  the loader re-compiles, swaps the chain at a tick boundary, and
-  carries your mod's state across via the savestate-participation
-  callbacks if you registered them.
-- **Testing**: declare a `[test]` block in `mod.toml` and run
-  `python3 tools/modtest.py mods/<id>` — the same harness CI uses
-  (`scripts/check_mods.sh` runs the whole ladder).
+  the loader re-compiles and swaps the chain at a tick boundary. Your
+  mod's own variables do **not** survive the swap: entry re-runs on the
+  fresh object, so re-derive whatever you need from guest state there.
+- **Testing**: `python3 tools/modtest.py mods/<id>` runs a mod against a
+  declared scenario — the same harness CI uses (`scripts/check_mods.sh`
+  runs the whole ladder). The declarations live in a `modtest.toml`
+  beside `mod.toml`; see [Manifest & config](manifest.md).
 - **Logs**: `api->log` lines are tagged `mod:<id>`. Crashes are
   attributed to the innermost mod on the override stack.
 
@@ -132,5 +138,5 @@ the log — it never bricks the launch.
 - **Divergence is a choice, not an accident.** If your mod perturbs
   gameplay-readable state, that's fine (say so: omit `sim_neutral`) —
   but observers should stay byte-neutral, and the PSX oracle gate can
-  prove either way (`expect_oracle = "pass"` in your `[test]`).
+  prove either way (`expect_oracle = "pass"` in your `modtest.toml`).
 - **No game data in the repo/zip.** Ship generators, not rips.
