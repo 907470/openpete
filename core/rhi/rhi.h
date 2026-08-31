@@ -155,6 +155,7 @@ int      rhi_stage_count(void);
 uint32_t rhi_stage_gen(const rhi_device *dev);
 void     rhi_end_frame_to_stage(rhi_device *dev, int stage);
 bool     rhi_present_stage(rhi_device *dev, int stage);
+bool     rhi_present_stage_release(rhi_device *dev);   /* give back a held acquire: present its stale contents */
 /* The same in two steps: acquire the swapchain image early (right after the
  * render, while the display is still on the previous frame -- an image the
  * display released only at the last vblank is not truly available until the

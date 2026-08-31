@@ -240,6 +240,10 @@ struct rhi_device {
     uint32_t        pslot;
     bool            pacquired;      /* rhi_present_stage_acquire holds an image for the next submit */
     uint32_t        pacquired_gen;
+    uint32_t        pacquired_index; /* WHICH image that acquire returned: image_index is clobbered
+                                      * by any begin_frame in between (the inline path, after the
+                                      * present thread hands the display back), and presenting an
+                                      * image the held semaphore was not armed for faults the driver. */
 
     /* All live pipelines on this device (doubly linked via rhi_pipeline
      * prev/next): the sweep list for rhi_rebuild_pipelines. */
@@ -2401,6 +2405,7 @@ bool rhi_present_stage_acquire(rhi_device *dev)
     vkResetFences(dev->device, 1, &dev->pfence[p]);
     dev->pacquired = true;
     dev->pacquired_gen = dev->stage_gen;
+    dev->pacquired_index = dev->image_index;
     return true;
 }
 
@@ -2418,6 +2423,7 @@ bool rhi_present_stage_submit(rhi_device *dev, int stage)
     }
     dev->pacquired = false;
     const uint32_t p = dev->pslot;
+    dev->image_index = dev->pacquired_index;
     VkCommandBuffer cb = dev->pcmd[p];
     vkResetCommandBuffer(cb, 0);
     VkCommandBufferBeginInfo bi = {
@@ -2493,6 +2499,64 @@ bool rhi_present_stage_submit(rhi_device *dev, int stage)
 bool rhi_present_stage(rhi_device *dev, int stage)
 {
     return rhi_present_stage_acquire(dev) && rhi_present_stage_submit(dev, stage);
+}
+
+/* Give back an image held by rhi_present_stage_acquire whose frame will
+ * never be submitted. Vulkan has no un-acquire: the only clean exits for
+ * an acquired image are a present or a swapchain rebuild. Present it with
+ * whatever it already holds -- a frame the display showed a few refreshes
+ * ago, on screen for one refresh -- which consumes the armed semaphore and
+ * leaves the swapchain whole for the next owner of the display. Without
+ * this, a handoff to the inline path strands one armed acquire per
+ * handoff, later submits pair that stale semaphore with images it never
+ * covered, and the driver faults the process after a few cycles. */
+bool rhi_present_stage_release(rhi_device *dev)
+{
+    if (!dev || dev->headless || !dev->pacquired) return true;
+    dev->pacquired = false;
+    if (dev->pacquired_gen != dev->stage_gen) return true;  /* rebuilt: acquire died with the swapchain */
+    const uint32_t p = dev->pslot;
+    dev->image_index = dev->pacquired_index;
+    VkCommandBuffer cb = dev->pcmd[p];
+    vkResetCommandBuffer(cb, 0);
+    VkCommandBufferBeginInfo bi = {
+        .sType = VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO,
+        .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
+    };
+    vkBeginCommandBuffer(cb, &bi);
+    /* PRESENT_SRC -> PRESENT_SRC via UNDEFINED keeps whatever pixels the
+     * image last held; no draw, no blit. */
+    image_barrier(cb, dev->sc_images[dev->image_index], VK_IMAGE_LAYOUT_UNDEFINED,
+                  VK_IMAGE_LAYOUT_PRESENT_SRC_KHR, 0, 0,
+                  VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT, VK_PIPELINE_STAGE_BOTTOM_OF_PIPE_BIT);
+    vkEndCommandBuffer(cb);
+    VkPipelineStageFlags wait_stage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
+    VkSubmitInfo si = {
+        .sType = VK_STRUCTURE_TYPE_SUBMIT_INFO,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &dev->pimg_avail[p],
+        .pWaitDstStageMask = &wait_stage,
+        .commandBufferCount = 1,
+        .pCommandBuffers = &cb,
+        .signalSemaphoreCount = 1,
+        .pSignalSemaphores = &dev->render_done[dev->image_index],
+    };
+    VK_CHECK(vkQueueSubmit(dev->gfx_queue, 1, &si, dev->pfence[p]));
+    dev->pslot = (p + 1) % RHI_STAGE_RING;
+    VkPresentInfoKHR pi = {
+        .sType = VK_STRUCTURE_TYPE_PRESENT_INFO_KHR,
+        .waitSemaphoreCount = 1,
+        .pWaitSemaphores = &dev->render_done[dev->image_index],
+        .swapchainCount = 1,
+        .pSwapchains = &dev->swapchain,
+        .pImageIndices = &dev->image_index,
+    };
+    /* No VkPresentIdKHR on this present: it is not a frame anyone waits on,
+     * and the id sequence stays with the real submits. */
+    VkResult pr = vkQueuePresentKHR(dev->gfx_queue, &pi);
+    if (pr == VK_ERROR_OUT_OF_DATE_KHR || pr == VK_SUBOPTIMAL_KHR) dev->needs_recreate = true;
+    else if (pr == VK_ERROR_DEVICE_LOST) { rhi_signal_device_lost("stage-release"); return false; }
+    return true;
 }
 
 int rhi_present_timing_supported(const rhi_device *dev)

@@ -951,6 +951,7 @@ int      openpete_native_render_scene(int slot, uint64_t record_pts_us);
 int      openpete_native_render_scene_to_stage(int slot, int stage, uint64_t record_pts_us);
 int      openpete_native_present_stage_acquire(void);      /* hold a swapchain image for the next present */
 int      openpete_native_present_stage(int stage);         /* 1 = presented (acquires if not held) */
+int      openpete_native_present_stage_release(void);      /* give back a held acquire on display handoff */
 int      openpete_native_stage_count(void);
 uint32_t openpete_native_stage_gen(void);                  /* bumps when the stages are rebuilt */
 void     openpete_native_scene_retire(uint64_t begun_serial);

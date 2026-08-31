@@ -491,10 +491,21 @@ static int present_thread_main(void *unused)
              * at the last vblank is not available until the driver has
              * processed the release, and a present on it blocks until
              * then (1.3-1.7 ms, measured). Held here, it is ready by the
-             * instant. */
+             * instant.
+             *
+             * Counts as busy: the acquire touches the swapchain, and the
+             * swapchain is externally synchronised. Without the flag a
+             * deactivation (interpolation toggled off) sees busy == 0,
+             * returns at once, and the sim thread starts inline presents
+             * on the same swapchain and queue while this thread is still
+             * inside the blocking vkAcquireNextImageKHR — a fault in the
+             * driver after a handful of toggles. */
+            s_pt.busy = 1;
             SDL_UnlockMutex(s_pt.mx);
             openpete_native_present_stage_acquire();
             SDL_LockMutex(s_pt.mx);
+            s_pt.busy = 0;
+            SDL_SignalCondition(s_pt.idle_cv);
             s_staged.valid = 1; s_staged.stage = stage; s_staged.gen = gen;
             s_staged.target = t_ns; s_staged.alpha = alpha; s_staged.paired = paired; s_staged.kind = kind;
             continue;
@@ -636,6 +647,19 @@ void openpete_present_thread_set_active(int on)
         const op_time_t w = op_now() - t0;
         s_pt.drain_wait_ns += w;
         if (w > s_pt.drain_wait_max_ns) s_pt.drain_wait_max_ns = w;
+        /* The staged frame will never be submitted; drop it here rather
+         * than on the thread's next wake, and give back the swapchain
+         * image its acquire holds. Vulkan has no un-acquire, so the
+         * release presents the image with the stale frame it already
+         * carries (one repeated refresh). Left dangling, the armed
+         * semaphore pairs with whatever image a LATER submit finds in
+         * image_index -- by then the inline path has moved it -- and the
+         * driver faults the process after a few engage/disengage cycles
+         * (interpolation toggled in play). */
+        if (s_staged.valid) { s_staged.valid = 0; s_pt.discarded++; }
+        SDL_UnlockMutex(s_pt.mx);
+        openpete_native_present_stage_release();
+        SDL_LockMutex(s_pt.mx);
     }
     SDL_UnlockMutex(s_pt.mx);
 }

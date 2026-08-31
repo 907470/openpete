@@ -9425,6 +9425,17 @@ int openpete_native_present_stage(int stage)
     return ok;
 }
 
+/* Release a swapchain acquire held for a staged present that will never be
+ * submitted (the display is being handed back to the inline path). */
+int openpete_native_present_stage_release(void)
+{
+    if (!s_nr.enabled || s_nr.headless || !s_nr.dev) return 1;
+    rhi_set_present_blocking(s_nr.dev, true);
+    const int ok = rhi_present_stage_release(s_nr.dev) ? 1 : 0;
+    rhi_set_present_blocking(s_nr.dev, false);
+    return ok;
+}
+
 int      openpete_native_stage_count(void) { return s_nr.dev ? rhi_stage_count() : 0; }
 uint32_t openpete_native_stage_gen(void)   { return s_nr.dev ? rhi_stage_gen(s_nr.dev) : 0; }
 
