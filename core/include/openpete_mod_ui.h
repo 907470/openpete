@@ -15,8 +15,8 @@
 // Reach for this annex only when your mod needs a genuinely custom
 // panel the schema cannot express.
 //
-// Registration is by EXPORTED DESCRIPTOR, not an api entry (the same
-// pattern as openpete_mod_stateabi): define your section body and put
+// Registration is by EXPORTED DESCRIPTOR, not an api entry: define
+// your section body and put
 //
 //     OPENPETE_MOD_UI_SECTION(my_section_fn)
 //

@@ -46,53 +46,6 @@ typedef struct openpete_sfx_event {
     uint32_t ms_since_prev;  /* host ms since the previous play */
 } openpete_sfx_event_t;
 
-typedef int  (*openpete_mod_state_save_fn)(void* buf, int cap);
-typedef void (*openpete_mod_state_load_fn)(const void* buf, int len);
-
-enum {
-    OP_MOD_STATE_DROP_OK = 1u << 0,
-    OP_MOD_RA_PURE       = 1u << 1,
-    OP_MOD_RA_HOST_FX    = 1u << 2,
-};
-
-/* Binary-mod descriptor (openpete_mod_stateabi symbol): still resolved
- * at dlopen for prebuilt objects that carry one; source mods declare
- * state/runahead in the manifest instead. */
-typedef struct openpete_mod_stateabi {
-    uint32_t magic;              /* 'SABI' = 0x53414249 */
-    uint32_t abi_version;
-    uint32_t abi_size;
-    uint32_t flags;              /* OP_MOD_STATE_* | OP_MOD_RA_* */
-    uint32_t n_fields;
-    const uint32_t (*fields)[2];
-} openpete_mod_stateabi_t;
-
-enum { OP_VTX_POS_UV_RGBA = 0 };
-
-typedef struct openpete_mod_vertex {
-    float    x, y, z;
-    float    u, v;
-    uint32_t rgba;
-} openpete_mod_vertex_t;
-
-enum {
-    OP_BLEND_OPAQUE = 0,
-    OP_BLEND_AVG    = 1,
-    OP_BLEND_ADD    = 2,
-    OP_BLEND_SUB    = 3,
-    OP_BLEND_ADD4   = 4,
-};
-
-typedef struct openpete_mod_pipeline_desc {
-    int      vert_shader;
-    int      frag_shader;
-    int      vertex_format;  /* OP_VTX_* */
-    int      blend;          /* OP_BLEND_* */
-    int      depth_test;
-    int      depth_write;
-    uint32_t _reserved[4];
-} openpete_mod_pipeline_desc_t;
-
 /* Engine-side spelling of openpete_mod_refine_fn (openpete_mod_api.h,
  * included further down — the struct is forward-declared so the two
  * typedefs stay compatible without reordering this header). No
@@ -619,39 +572,11 @@ int  openpete_mods_postfx_take_retired(void** out, int cap);
 void openpete_mods_postfx_remove_owner(const char* mod_id);
 void openpete_mods_postfx_retire_all(void);   /* shutdown: cache every pipeline */
 
-/* Custom-pipeline draw queue (S7) — renderer-facing drain. */
-typedef struct {
-    const uint32_t* vert_spv; size_t vert_words;
-    const uint32_t* frag_spv; size_t frag_words;
-    int blend, depth_test, depth_write;   /* OP_BLEND_* + flags */
-    void** pipeline_slot;
-    const char* owner;
-} openpete_mod_pipe_gpu_t;
-int  openpete_mods_drawmesh_count(void);
-int  openpete_mods_drawmesh_get(int i, openpete_mod_pipe_gpu_t* pd,
-                                const openpete_mod_vertex_t** verts, int* n,
-                                uint16_t* tex);
-void openpete_mods_drawmesh_clear(void);
-/* Per-scene copy of the queue (eager scene ring). Storage grows on demand;
- * free `verts` with free() when the owner is torn down. */
-typedef struct { int pipe; int first, n; uint16_t tex; } openpete_mod_mesh_draw_t;
-typedef struct {
-    openpete_mod_vertex_t* verts; int vert_cap, vert_n;
-    openpete_mod_mesh_draw_t draws[256];
-    int draw_n;
-} openpete_mods_drawmesh_snap_t;
-int  openpete_mods_drawmesh_snapshot(openpete_mods_drawmesh_snap_t* d);
-int  openpete_mods_drawmesh_snap_get(const openpete_mods_drawmesh_snap_t* d, int i,
-                                     openpete_mod_pipe_gpu_t* pd,
-                                     const openpete_mod_vertex_t** verts, int* n,
-                                     uint16_t* tex);
 /* Registry read side for a compose: held for the whole compose so the
- * shader/postfx/pipeline/material tables cannot change under it (their
- * mutators take the write side). */
+ * shader/postfx/material tables cannot change under it (their mutators
+ * take the write side). */
 void openpete_mods_registry_read_lock(void);
 void openpete_mods_registry_read_unlock(void);
-void openpete_mods_pipeline_remove_owner(const char* mod_id);
-void openpete_mods_pipeline_retire_all(void);
 
 /* Draw-state variants a material can be built for. Index 5 is the DECAL
  * profile; see openpete_psx_decal.glsl for why that is a separate shading
@@ -772,11 +697,6 @@ int  openpete_mods_load_index_of(openpete_mod_t* self);
 /* Last present-flush ctx (mod_draw.c) — the postfx engine UBO's
  * tick/alpha/canonical source, identical to the present-hook ctx. */
 void openpete_mods_present_ctx(uint32_t* tick, float* alpha, int* canonical);
-int openpete_mods_pipeline_register(openpete_mod_t* self,
-                                    const openpete_mod_pipeline_desc_t* desc);
-int openpete_mods_draw_mesh(openpete_mod_t* self, int pipeline,
-                            const void* verts, int vert_count,
-                            uint16_t texture_id);
 int openpete_mods_material_register(openpete_mod_t* self,
                                     const openpete_mod_material_selector_t* sel,
                                     int vert_shader, int frag_shader,
@@ -876,11 +796,6 @@ int openpete_mods_savestate_request(int op, unsigned slot,
  * like the user hotkeys (game fiber yielded, before pad refresh). */
 int openpete_mods_pending_state_op(unsigned* out_slot);
 
-/* Loader-facing registration for per-mod savestate participation. */
-int openpete_mods_state_register(openpete_mod_state_save_fn save,
-                                 openpete_mod_state_load_fn load,
-                                 const char* owner);
-
 /* Asset-overlay roots: one per enabled mod with an assets/ dir, in
  * enabled order (= priority; later wins). Consumers (texture pack,
  * music override) layer these over their base dirs. */
@@ -889,32 +804,11 @@ int         openpete_mods_register_asset_root(const char* dir,
 int         openpete_mods_asset_root_count(void);
 const char* openpete_mods_asset_root(int i, const char** owner);
 
-/* savestate.c: append/read the trailing "mods" section (per-mod blobs).
- * Read buffers while the file is open and tolerates pre-mods files
- * (EOF ⇒ nothing to restore); dispatch runs after the engine committed
- * guest state so mod load_fns see the restored world.
- *
- * P2b verdict ladder: verdict() runs PRE-COMMIT over the buffered
- * section — per blob: ABI-fingerprint match → deliver; mismatch with
- * DROP_OK → drop + reinit; mismatch without → REFUSE the whole load
- * (returns -1, caller must abort before touching guest state); opaque
- * (no descriptor) → deliver only on exact build-key match, else drop +
- * reinit. dispatch() then honors the cached verdicts and reinit-signals
- * (load(NULL,0)) enabled hook-mods absent from the file. */
-int  openpete_mods_state_write_section(FILE* fp);
-int  openpete_mods_state_read_section(FILE* fp);
-int  openpete_mods_state_verdict(void);
-void openpete_mods_state_dispatch(void);
-
-/* State-ABI descriptor lookup (mod_loader; savestate P2b). Returns 1 and
- * fills the outs iff mod `id` exported a valid openpete_mod_stateabi. */
-int openpete_mods_stateabi_query(const char* id, uint32_t* ver,
-                                 uint32_t* size, uint32_t* flags,
-                                 uint64_t* fp);
 /* Compile-on-boot content key for mod `id` (65-byte hex), NULL if unknown. */
 const char* openpete_mods_build_key(const char* id);
-/* 1 iff every enabled mod declares OP_MOD_RA_PURE or OP_MOD_RA_HOST_FX
- * (runahead arming gate); else 0 with *offender = first blocker's id. */
+/* 1 iff every enabled code mod declares a manifest runahead posture
+ * (runahead = "pure" | "host-fx" — the arming gate); else 0 with
+ * *offender = first blocker's id. */
 int openpete_mods_runahead_capable(const char** offender);
 /* Rewind gate: every enabled code mod declares a manifest state
  * posture. 0 = refuse timeline jumps; *offender names the first

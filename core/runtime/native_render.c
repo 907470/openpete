@@ -262,8 +262,8 @@ static int                s_scene_n;
  * of a span ahead of time and a present thread composes them on the display
  * grid, through the next tick's execution. The two never share the live
  * accumulator: publish() copies the accumulator and EVERY other piece of
- * per-present state the compose reads (sidecars, draw-env, the mod overlay
- * and draw_mesh queue, the interned material slots, the shadow-decal camera,
+ * per-present state the compose reads (sidecars, draw-env, the mod overlay,
+ * the interned material slots, the shadow-decal camera,
  * the present ctx) into a ring slot, and the compose reads the slot through
  * the accessors below. The live globals stay the source for the inline
  * (non-eager) compose, so the two paths differ only in where s_ps_slot
@@ -289,7 +289,6 @@ typedef struct {
     int       suppress_player;
     openpete_shadow_decal_params shadow;
     uint32_t  pctx_tick; float pctx_alpha; int pctx_canonical;
-    openpete_mods_drawmesh_snap_t mesh;
     openpete_mods_material_slot_snap_t mat[SCENE_MAT_SLOTS]; int mat_n;
     /* scheduling */
     uint32_t  scene_id;
@@ -393,7 +392,6 @@ static int tag_split_dev(void) {
 
 /* Mod custom-pipeline drain (S7) — defined with the postfx executor
  * below; called from compose_variant (mod 3D under mod HUD). */
-static void draw_mod_meshes(void);
 /* Postfx executor + SCENE-point split (S3/S5) — defined below the
  * postfx typedef; compose_variant (above them) calls via these decls. */
 static int native_postfx_run(int point, rhi_texture* target, int w, int h);
@@ -8346,7 +8344,6 @@ static bool compose_variant(int variant, bool have_ref)
             rhi_draw(s_nr.dev, 6, 0);
         }
         scene_postfx_split();                     /* SCENE point (S5): scene→chain→HUD */
-        draw_mod_meshes();                        /* mod 3D (S7 — under mod HUD) */
         draw_mod_overlay();                       /* mod HUD (content — records too) */
         if (s_overlay_live) draw_perf_overlay();   /* on the resolved 1× offscreen, crisp */
         if (s_overlay_live) draw_menu_overlay();  /* settings menu on top */
@@ -8403,7 +8400,7 @@ static bool compose_variant(int variant, bool have_ref)
     }
 
     /* SCENE point (S5) then mod HUD — vk variant, live + record composes. */
-    if (variant == NRV_VK) { scene_postfx_split(); draw_mod_meshes(); draw_mod_overlay(); }
+    if (variant == NRV_VK) { scene_postfx_split(); draw_mod_overlay(); }
     /* FPS overlay — vk live present only (kept off ab/diff so comparison images
      * stay clean, and off screenshots/dumps where s_overlay_live is 0). */
     if (variant == NRV_VK && s_overlay_live) draw_perf_overlay();
@@ -8673,118 +8670,6 @@ static rhi_texture** pfx_pings(int w, int h) {
     s_pfx_pool[victim].w = w; s_pfx_pool[victim].h = h;
     s_pfx_pool[victim].used = ++s_pfx_stamp;
     return s_pfx_pool[victim].t;
-}
-
-/* ── Mod custom-pipeline draws (S7) ──────────────────────────────────
- * Drains the present-hook draw_mesh queue inside the scene pass (called
- * beside draw_mod_overlay, after the world — mod 3D under mod HUD).
- * Vertices convert to rhi_vertex into a per-frame ring VB; pipelines
- * build lazily from the mod's SPIR-V (desc.mod_pipeline layout: std
- * attributes + engine UBO at set 3). Queue lifecycle is owned by the
- * present flush (cleared at flush start), so composes never re-drain
- * stale draws and headless runs can't accumulate. */
-static rhi_buffer* s_mesh_vb;
-static rhi_vertex  s_mesh_scratch[65536];
-
-static void draw_mod_meshes(void)
-{
-    const openpete_mods_drawmesh_snap_t *snap = s_ps_slot ? &s_ps_slot->mesh : NULL;
-    int nd = snap ? snap->draw_n : openpete_mods_drawmesh_count();
-    if (nd <= 0) return;
-    if (!s_pfx_ubo)
-        s_pfx_ubo = rhi_create_ubo(s_nr.dev, OPENPETE_POSTFX_UNIFORMS_MAX,
-                                   1 + PFX_MAX_PASSES);
-    if (!s_pfx_ubo) return;
-    if (!s_mesh_vb)
-        s_mesh_vb = rhi_create_vertex_buffer_dynamic(s_nr.dev, sizeof s_mesh_scratch);
-    if (!s_mesh_vb) return;
-
-    /* Engine UBO block 0: written here so mesh-only presents (no postfx
-     * chain) still see live values; the postfx run rewrites the same
-     * frame slot with identical content later in the frame. */
-    write_engine_block(s_pfx_ubo, 0, 0, 0);
-
-    /* Convert + pack every queued draw into the ring VB (one update). */
-    int total = 0;
-    for (int i = 0; i < nd; i++) {
-        openpete_mod_pipe_gpu_t pd;
-        const openpete_mod_vertex_t* mv; int n; uint16_t tex;
-        if ((snap ? openpete_mods_drawmesh_snap_get(snap, i, &pd, &mv, &n, &tex)
-                  : openpete_mods_drawmesh_get(i, &pd, &mv, &n, &tex)) != 0) continue;
-        if (total + n > (int)(sizeof s_mesh_scratch / sizeof s_mesh_scratch[0]))
-            break;
-        for (int k = 0; k < n; k++) {
-            rhi_vertex* v = &s_mesh_scratch[total + k];
-            v->x = mv[k].x; v->y = mv[k].y; v->z = mv[k].z;
-            v->u = mv[k].u; v->v = mv[k].v;
-            v->rgba = mv[k].rgba;
-            v->koff = 0.0f; v->sx = 0.f; v->sy = 0.f;
-            v->w = 0.f;    /* mod meshes feed unshifted depth: derive W from z */
-        }
-        total += n;
-    }
-    if (total == 0) return;
-    rhi_update_buffer(s_mesh_vb, s_mesh_scratch, (size_t)total * sizeof(rhi_vertex));
-    /* Precautionary parity with draw_mod_overlay: the scene path can leave
-     * a sub-region scissor armed (HD-replacement clip rects). Not observed
-     * to clip mod meshes in practice (the S7 bring-up "invisible triangle"
-     * was blind INSTRUMENTS, not state — see the plan's S7 note), but a
-     * clipped first mod draw would be miserable to rediscover. Depth is NOT
-     * cleared: mesh pipelines with depth_test z-test against the world. */
-    rhi_reset_scissor(s_nr.dev);
-    rhi_bind_vertex_buffer(s_nr.dev, s_mesh_vb);
-
-    int first = 0;
-    for (int i = 0; i < nd; i++) {
-        openpete_mod_pipe_gpu_t pd;
-        const openpete_mod_vertex_t* mv; int n; uint16_t tex;
-        if ((snap ? openpete_mods_drawmesh_snap_get(snap, i, &pd, &mv, &n, &tex)
-                  : openpete_mods_drawmesh_get(i, &pd, &mv, &n, &tex)) != 0) continue;
-        if (first + n > total) break;
-        if (*pd.pipeline_slot == NULL) {
-            rhi_pipeline_desc rd = {
-                .blend = pd.blend == OP_BLEND_ADD ? RHI_BLEND_ADD
-                       : pd.blend == OP_BLEND_ADD4 ? RHI_BLEND_ADD
-                       : pd.blend == OP_BLEND_SUB ? RHI_BLEND_SUBTRACT
-                       : pd.blend == OP_BLEND_AVG ? RHI_BLEND_ALPHA
-                       : RHI_BLEND_NONE,
-                .depth_test = pd.depth_test != 0,
-                .depth_write_off = pd.depth_write == 0,
-                .mod_pipeline = true,
-            };
-            rhi_pipeline* p = rhi_create_pipeline_spv(s_nr.dev, &rd,
-                                                      pd.vert_spv, pd.vert_words,
-                                                      pd.frag_spv, pd.frag_words);
-            *pd.pipeline_slot = p ? (void*)p : PFX_PIPE_FAILED;
-            if (!p)
-                fprintf(stderr, "[native] draw_mesh: pipeline build FAILED "
-                                "for %s\n", pd.owner);
-        }
-        if (*pd.pipeline_slot != PFX_PIPE_FAILED) {
-            bind_scene_pipe((rhi_pipeline*)*pd.pipeline_slot);
-            /* set 0: the mod texture (texture_register id) through the HD
-             * cache; untextured/missing binds the VRAM texture (inert for
-             * shaders that don't sample). Sets 1/2 mirror it (contract:
-             * postfx-only inputs are undefined for mesh pipelines). */
-            rhi_texture* t0 = s_nr.vram_tex;
-            if (tex) {
-                int mw = 0, mh = 0;
-                const unsigned char* px = openpete_mods_texture_get(tex, &mw, &mh);
-                if (px) {
-                    uint64_t key = (uint64_t)(uintptr_t)px;
-                    rhi_texture* mt = hd_cache_lookup(key);
-                    if (!mt) hd_pending_add(key, px, mw, mh, 0, 0);
-                    else t0 = mt;
-                }
-            }
-            rhi_bind_texture_set(s_nr.dev, t0, 0);
-            rhi_bind_texture_set(s_nr.dev, t0, 1);
-            rhi_bind_texture_set(s_nr.dev, t0, 2);
-            rhi_ubo_bind(s_nr.dev, s_pfx_ubo, 0, 0);
-            rhi_draw(s_nr.dev, (uint32_t)n, (uint32_t)first);
-        }
-        first += n;
-    }
 }
 
 /* Destroy pipelines orphaned by a mod hot-reload sweep. Dev-mode only
@@ -9178,7 +9063,6 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
     sl->suppress_player = s_suppress_player;
     sl->shadow = s_shadow_decal;
     openpete_mods_present_ctx(&sl->pctx_tick, &sl->pctx_alpha, &sl->pctx_canonical);
-    openpete_mods_drawmesh_snapshot(&sl->mesh);
     sl->mat_n = openpete_mods_material_slots_snapshot(sl->mat, SCENE_MAT_SLOTS);
     sl->scene_id = s_scene_id_next++;
     sl->target_ns = target_ns; sl->alpha = alpha; sl->paired = paired; sl->kind = kind;
@@ -9767,13 +9651,12 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf)
         hd_flush_pending();
         openpete_native_hdfold_flush();
         native_depth_prepass();
-        /* Black clear + mod draws + SCENE point: live-offscreen parity, same
-         * rationale as the 4:3 dump compose (see screenshot_all_impl). */
+        /* Black clear + mod overlay + SCENE point: live-offscreen parity,
+         * same rationale as the 4:3 dump compose (see screenshot_all_impl). */
         { int kw, kh; rhi_texture_extent(rt, &kw, &kh);
           native_terrain_key_pass(1, kw, kh); }
         rhi_begin_render_target(s_nr.dev, rt, 0.0f, 0.0f, 0.0f, 1.0f);
         draw_native_scene(true);
-        draw_mod_meshes();
         draw_mod_overlay();
         rhi_end_render_target(s_nr.dev, rt);
         native_postfx_run(1 /* SCENE */, rt, Wc, H);
@@ -9962,9 +9845,8 @@ static int native_render_screenshot_all_impl(const char *base)
          * is idempotent. NB the live path runs the SCENE postfx point BEFORE
          * these; the RT pass can't re-open with a load-op, so the dump runs the
          * SCENE chain after them — mod content gets chained into SCENE passes
-         * here (visible only when a SCENE-point pass AND mod draws are both
-         * active). */
-        draw_mod_meshes();
+         * here (visible only when a SCENE-point pass AND a mod overlay are
+         * both active). */
         draw_mod_overlay();
         rhi_end_render_target(s_nr.dev, s_nr.native_rtt);
         /* Postfx over the dump compose too — this path bypasses off_image, so
@@ -10136,10 +10018,8 @@ void openpete_native_render_shutdown(void)
             }
     if (s_pfx_ubo) { rhi_destroy_ubo(s_nr.dev, s_pfx_ubo); s_pfx_ubo = NULL; }
     if (s_pfx_prev) { rhi_destroy_texture(s_nr.dev, s_pfx_prev); s_pfx_prev = NULL; }
-    if (s_mesh_vb) { rhi_destroy_buffer(s_nr.dev, s_mesh_vb); s_mesh_vb = NULL; }
     {
         openpete_mods_postfx_retire_all();   /* incl. disabled passes' caches */
-        openpete_mods_pipeline_retire_all();
         openpete_mods_material_retire_all();
         void* dead[PFX_MAX_PASSES];
         int n;

@@ -2773,7 +2773,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             }
         }
         /* Live runahead re-arm. Arm only when every enabled mod declares a
-         * runahead capability (OP_MOD_RA_PURE / OP_MOD_RA_HOST_FX) —
+         * runahead posture in its manifest (runahead = pure | host-fx) —
          * speculative re-execution of tick hooks with undeclared host side
          * effects would double-fire them. Arms once and holds ra_snap until
          * the modset epoch above disarms it. */

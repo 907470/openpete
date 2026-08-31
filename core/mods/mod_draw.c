@@ -296,10 +296,9 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
      * ABOVE the renderer gate, so staging drains even when nothing
      * consumes it (--renderer og, or any run without a native renderer).
      * An undrained staging buffer pins every command ever submitted: the
-     * text/rect/actor caps fill for the rest of the session (further
-     * draw_actor calls fail) and the whole backlog would replay at once
-     * if the renderer came up. Same lifecycle rule as the draw_mesh
-     * queue below.
+     * text/rect caps fill for the rest of the session (further draw
+     * calls fail) and the whole backlog would replay at once if the
+     * renderer came up.
      *
      * Live toggle: the apply above runs BEFORE this commit, so a mod
      * disabled at this boundary still displays the tick it drew while
@@ -317,10 +316,6 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
      * ctx is computed unconditionally — the postfx engine UBO reads the
      * same values through openpete_mods_present_ctx (S4), hooks or not. */
     memset(&s_present, 0, sizeof s_present);
-    /* draw_mesh queue lifecycle (S7): THIS flush's hooks build this
-     * present's draws; stale entries from an undrained present (headless
-     * runs never render) must not accumulate or replay. */
-    openpete_mods_drawmesh_clear();
     {
         static op_time_t s_prev_present_ns = 0;
         const op_time_t now = openpete_interp_present_now();

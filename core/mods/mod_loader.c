@@ -232,15 +232,6 @@ struct openpete_mod {
     unsigned status_tick;
     openpete_mod_toggle_fn toggle_fn; /* live-toggle notification */
     void* dl;
-
-    /* State-ABI descriptor (openpete_mod_stateabi symbol, resolved at
-     * dlopen; savestate plan P2b). has_stateabi=0 = opaque tier: state
-     * blobs gate on the exact build_key instead. */
-    int      has_stateabi;
-    uint32_t st_ver;
-    uint32_t st_size;
-    uint32_t st_flags;   /* OP_MOD_STATE_* | OP_MOD_RA_* */
-    uint64_t st_fp;      /* fnv1a64 over ver+size+field table */
 };
 
 static struct openpete_mod s_mods[MODS_MAX];
@@ -251,16 +242,6 @@ static unsigned            s_toggle_epoch; /* defined with the queue below */
  * name the list the user actually controls: the mods dir's enabled.txt,
  * or the --mods override that replaced it. Set by mods_discover. */
 static const char* s_order_src = "enabled.txt";
-
-/* Resolve + fingerprint a mod's optional state-ABI descriptor (see
- * openpete_mod_api.h "Savestate state-ABI declaration"). Called after a
- * successful entry() on every (re)load path — hot reload re-resolves, so
- * a layout edit changes the fingerprint immediately. */
-static uint64_t stateabi_fnv1a64(const void* data, size_t len, uint64_t h) {
-    const uint8_t* p = (const uint8_t*)data;
-    for (size_t i = 0; i < len; i++) { h ^= p[i]; h *= 0x100000001b3ull; }
-    return h;
-}
 
 /* Resolve the UI annex's registration descriptor (see
  * openpete_mod_ui.h). The abi check runs at LOAD so the prebuilt-DLL
@@ -283,39 +264,6 @@ static void mod_resolve_ui_section(struct openpete_mod* mod, void* dl) {
         return;
     }
     mod->ui_body = d->body;
-}
-
-static void mod_resolve_stateabi(struct openpete_mod* mod, void* dl) {
-    mod->has_stateabi = 0;
-    mod->st_ver = mod->st_size = mod->st_flags = 0;
-    mod->st_fp = 0;
-    const openpete_mod_stateabi_t* d =
-        (const openpete_mod_stateabi_t*)mod_dlsym(dl, "openpete_mod_stateabi");
-    if (!d) return;
-    /* n_fields == 0 with fields == NULL is the CAPS-ONLY form
-     * (OPENPETE_MOD_RA_CAPS): declares runahead capability without any
-     * persisted state. Everything else malformed → opaque tier. */
-    int caps_only = (d->n_fields == 0 && !d->fields && d->abi_size == 0);
-    if (d->magic != 0x53414249u ||
-        (!caps_only && (!d->fields || d->n_fields == 0 ||
-                        d->n_fields > 4096u))) {
-        OPL_ERROR_F("mods", "%s: malformed openpete_mod_stateabi descriptor "
-                    "— treating as opaque (build-key gated)", mod->id);
-        return;
-    }
-    uint64_t h = 0xcbf29ce484222325ull;
-    h = stateabi_fnv1a64(&d->abi_version, 4, h);
-    h = stateabi_fnv1a64(&d->abi_size, 4, h);
-    if (!caps_only)
-        h = stateabi_fnv1a64(d->fields, (size_t)d->n_fields * 8u, h);
-    mod->has_stateabi = 1;
-    mod->st_ver   = d->abi_version;
-    mod->st_size  = d->abi_size;
-    mod->st_flags = d->flags;
-    mod->st_fp    = h;
-    OPL_INFO_F("mods", "%s: state-ABI v%u size=%u flags=0x%x fp=%016llx",
-               mod->id, d->abi_version, d->abi_size, d->flags,
-               (unsigned long long)h);
 }
 
 static const openpete_sdk_symbol_t* s_symbols = NULL;
@@ -582,21 +530,18 @@ static int mod_compile(const char* mod_dir, const char* id,
 typedef int (*mod_entry_fn)(const openpete_mod_api_t*, openpete_mod_t*);
 static const openpete_mod_api_t s_api;
 
-/* Reload one mod in place at a tick boundary: capture its state (the
- * savestate-participation pair), sweep every registration it owns,
- * re-parse + rebuild + dlopen a FRESH object (unique .hotN name — the
- * old object stays resident by design), re-run entry, restore state. */
+/* Reload one mod in place at a tick boundary: sweep every registration
+ * it owns, re-parse + rebuild + dlopen a FRESH object (unique .hotN
+ * name — the old object stays resident by design), re-run entry. The
+ * mod's own host state does NOT cross the reload: entry re-runs and
+ * re-derives it. */
 static void mod_hot_reload(struct openpete_mod* mod) {
     OPL_INFO_F("mods", "hot reload: %s (source or config change)", mod->id);
-    static unsigned char blob[64 * 1024];
-    int blen = openpete_mods_state_capture(mod->id, blob, sizeof blob);
 
     openpete_mods_chain_remove_owner(mod->id);
     openpete_mods_draw_remove_owner(mod->id);
     openpete_mods_registry_remove_owner(mod->id);
-    openpete_mods_state_remove(mod->id);
     openpete_mods_postfx_remove_owner(mod->id);  /* before shaders: retires pipelines */
-    openpete_mods_pipeline_remove_owner(mod->id);
     openpete_mods_material_remove_owner(mod->id);
     openpete_mods_shader_remove_owner(mod->id);
     mod->ui_body = NULL; /* re-resolved from the fresh object below */
@@ -670,10 +615,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
         return;
     }
     mod->dl = dl; /* old object deliberately stays resident */
-    mod_resolve_stateabi(mod, dl);
     mod_resolve_ui_section(mod, dl);
-    if (blen >= 0)
-        openpete_mods_state_restore(mod->id, blob, blen);
     /* Re-entry registered every surface in its default (enabled) state;
      * a live-disabled mod must come back disabled, not resurrected. And
      * a reload changes what the active registration set means, so the
@@ -683,9 +625,8 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     openpete_mods_draw_set_owner_enabled(mod->id, mod->enabled);
     openpete_mods_registry_set_owner_enabled(mod->id, mod->enabled);
     s_toggle_epoch++;
-    OPL_INFO_F("mods", "hot reload: %s live (state %s%s)", mod->id,
-               blen >= 0 ? "carried" : "fresh",
-               mod->enabled ? "" : "; still disabled");
+    OPL_INFO_F("mods", "hot reload: %s live%s", mod->id,
+               mod->enabled ? "" : " (still disabled)");
 }
 
 /* Watch: every 64 canonical ticks, recompute each loaded mod's content
@@ -970,24 +911,6 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
     s_toggle_n = kept;
 }
 
-/* State-ABI queries (savestate P2b — consumed by mod_services' verdict
- * ladder and, later, the runahead arming check). */
-int openpete_mods_stateabi_query(const char* id, uint32_t* ver,
-                                 uint32_t* size, uint32_t* flags,
-                                 uint64_t* fp) {
-    if (!id) return 0;
-    for (int i = 0; i < s_mod_count; i++) {
-        if (strcmp(s_mods[i].id, id) != 0) continue;
-        if (!s_mods[i].has_stateabi) return 0;
-        if (ver)   *ver   = s_mods[i].st_ver;
-        if (size)  *size  = s_mods[i].st_size;
-        if (flags) *flags = s_mods[i].st_flags;
-        if (fp)    *fp    = s_mods[i].st_fp;
-        return 1;
-    }
-    return 0;
-}
-
 const char* openpete_mods_build_key(const char* id) {
     if (!id) return NULL;
     for (int i = 0; i < s_mod_count; i++)
@@ -996,16 +919,13 @@ const char* openpete_mods_build_key(const char* id) {
 }
 
 /* 1 iff every ENABLED code mod declares a runahead posture (manifest
- * runahead = "pure" | "host-fx"; a binary mod's legacy descriptor RA
- * bits also count). Assets-only mods run zero code and are trivially
- * capable. An undeclared code mod makes runahead unarmable; *offender
- * names the first one. */
+ * runahead = "pure" | "host-fx"). Assets-only mods run zero code and are
+ * trivially capable. An undeclared code mod makes runahead unarmable;
+ * *offender names the first one. */
 int openpete_mods_runahead_capable(const char** offender) {
     for (int i = 0; i < s_mod_count; i++) {
         if (!s_mods[i].enabled || !s_mods[i].has_src) continue;
-        uint32_t fl = s_mods[i].has_stateabi ? s_mods[i].st_flags : 0;
-        if (!s_mods[i].ra_decl &&
-            !(fl & (OP_MOD_RA_PURE | OP_MOD_RA_HOST_FX))) {
+        if (!s_mods[i].ra_decl) {
             if (offender) *offender = s_mods[i].id;
             return 0;
         }
@@ -1950,7 +1870,6 @@ static int mod_run_entry(struct openpete_mod* mod) {
                     mod->id, rc);
         return -1;
     }
-    mod_resolve_stateabi(mod, mod->dl);
     mod_resolve_ui_section(mod, mod->dl);
     mod->entered = 1;
     return 0;

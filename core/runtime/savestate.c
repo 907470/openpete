@@ -347,9 +347,6 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
         rc = write_section(fp, path, "arena", arena_snap, hdr.arena_bytes);
     if (rc == 0 && hdr.modset_tag_bytes)
         rc = write_section(fp, path, "modset-tag", modset_tag, hdr.modset_tag_bytes);
-    /* Trailing mods section: per-mod participation blobs (rewinds rewind
-     * the mods too). Optional on read — pre-mods files still load. */
-    if (rc == 0) rc = openpete_mods_state_write_section(fp);
 
     free(vram_snap); free(spu_snap); free(spumem_snap); free(extra_snap);
     free(arena_snap);
@@ -475,15 +472,12 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
     if (rc == 0 && hdr.modset_tag_bytes)
         rc = read_section(fp, path, "modset-tag", tag_buf, hdr.modset_tag_bytes);
     tag_buf[hdr.modset_tag_bytes] = '\0';
-    if (rc == 0) (void)openpete_mods_state_read_section(fp); /* buffers only */
     fclose(fp);
 
-    /* PRE-COMMIT verdicts (P2b): both must pass BEFORE any guest byte is
-     * touched — a refused load leaves the running timeline untouched. */
+    /* PRE-COMMIT verdict: the arena ledger must pass BEFORE any guest
+     * byte is touched — a refused load leaves the timeline untouched. */
     if (rc == 0 && openpete_mods_arena_state_verdict(arena_buf,
                                                      hdr.arena_bytes) != 0)
-        rc = -1;
-    if (rc == 0 && openpete_mods_state_verdict() != 0)
         rc = -1;
 
     if (rc != 0) {
@@ -549,10 +543,6 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
      * park cursor BEFORE mod load_fns run — they may re-park. */
     openpete_mods_arena_state_apply(arena_buf, hdr.arena_bytes);
     free(arena_buf);
-
-    /* Mod participation blobs — after commit so load_fns that peek at
-     * guest state see the restored world. */
-    openpete_mods_state_dispatch();
 
     /* Broadcast the discontinuity LAST, once engine + game + mod state is
      * fully committed: host caches derived from guest RAM (interp prev/curr
