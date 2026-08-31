@@ -408,31 +408,51 @@ static void api_log(openpete_mod_t* self, int level, const char* fmt, ...) {
                   self ? self->log_tag : "mod:?", "%s", msg);
 }
 
+/* Region-table inverse (psx_runtime.h; declared here for the same reason
+ * call_by_address is — this file does not pull the runner header in). */
+int psx_runtime_region_host_to_vaddr(const void* host, uint32_t* out_vaddr);
+
+/* Guest vaddr -> host pointer. Delegates to the engine's own resolver so
+ * the two never disagree: it strips the segment bits with the full
+ * 0x1FFFFFFF mask (no 16 MB ceiling from a 24-bit offset), covers the
+ * scratchpad, and consults the region table for anything above canonical
+ * RAM — the arena included, at any size it grows to.
+ *
+ * Guest address 0 is PSX NULL and resolves to NULL here, NOT to the base
+ * of RAM: a mod that missed a failed allocation and writes through the
+ * returned pointer must fault in its own frame rather than silently
+ * poisoning the kernel area (which is also where the low park lives). */
 static void* api_guest(uint32_t vaddr) {
     if (purity_violation("guest")) return NULL;
-    uint32_t seg = vaddr >> 24;
-    if (seg != 0x00u && seg != 0x80u && seg != 0xA0u) return NULL;
-    uint32_t off = vaddr & 0x00FFFFFFu;
-    if (off >= 2u * 1024u * 1024u) {
-        /* Expansion window: registered regions (the mod guest arena,
-         * relocated buffers) resolve through the runtime's cold path. */
-        return openpete_psx_to_host_ptr(vaddr);
-    }
-    uint8_t* ram = openpete_psx_get_ram();
-    return ram ? ram + off : NULL;
+    uint32_t seg = vaddr >> 28;
+    if (seg != 0x0u && seg != 0x8u && seg != 0x9u && seg != 0xAu &&
+        seg != 0xBu)
+        return NULL;
+    return openpete_psx_to_host_ptr(vaddr);
 }
 
 /* MIPS kseg0 base — architectural, not a game address (the purity check
  * permits #define'd constants). */
 #define OP_KSEG0_BASE 0x80000000u
+#define OP_KSEG0_SCRATCH 0x9F800000u /* scratchpad's KSEG0 spelling */
 
+/* Host pointer -> guest vaddr, the exact inverse of api_guest for every
+ * address that call can hand out: canonical RAM, the scratchpad, and any
+ * registered region (guest_alloc's arena included — a mod that walks a
+ * host_view and needs the vaddr of an interior byte relies on this). */
 static uint32_t api_guest_addr(const void* host) {
     if (!host) return 0;
-    uint8_t* ram = openpete_psx_get_ram();
-    if (!ram) return 0;
     const uint8_t* p = (const uint8_t*)host;
-    if (p < ram || p >= ram + 2u * 1024u * 1024u) return 0;
-    return OP_KSEG0_BASE | (uint32_t)(p - ram);
+    uint8_t* ram = openpete_psx_get_ram();
+    if (ram && p >= ram && p < ram + 2u * 1024u * 1024u)
+        return OP_KSEG0_BASE | (uint32_t)(p - ram);
+    uint8_t* scratch = openpete_psx_get_scratch();
+    if (scratch && p >= scratch &&
+        p < scratch + OPENPETE_PSX_SCRATCH_SIZE)
+        return OP_KSEG0_SCRATCH | (uint32_t)(p - scratch);
+    uint32_t va = 0;
+    if (psx_runtime_region_host_to_vaddr(host, &va)) return va;
+    return 0;
 }
 
 void call_by_address(CPUState* cpu, uint32_t addr); /* psx_runtime.h */

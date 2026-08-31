@@ -241,6 +241,14 @@ int      psx_runtime_resolve_region(uint32_t psx_addr,
                                     void**   out_host,
                                     uint32_t* out_remaining);
 
+/* Inverse of psx_runtime_resolve_region: given a host pointer, return 1
+ * and (when non-NULL) set *out_vaddr to the KSEG0 vaddr naming it, if the
+ * pointer falls inside a registered region's host buffer. 0 otherwise.
+ * Regions are keyed on physical addresses, so the vaddr is returned in
+ * KSEG0 (the spelling the register call's base carried). */
+int      psx_runtime_region_host_to_vaddr(const void* host,
+                                          uint32_t* out_vaddr);
+
 /* Debug-build guard for "this site is canonical-only" 2 MB-mask sites.
  * In release: returns addr & 0x1FFFFF. In debug: same, plus asserts the
  * address does not fall in any registered region's band — i.e. that

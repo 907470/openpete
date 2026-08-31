@@ -24,6 +24,7 @@
 
 #define MAX_REGIONS        16u
 #define CANONICAL_RAM_END  0x00200000u   /* 2 MB main RAM */
+#define KSEG0_BASE         0x80000000u   /* unmapped cached segment */
 #define SCRATCH_BASE       0x1F800000u
 #define SCRATCH_END        0x1F800400u   /* 1 KB scratchpad */
 
@@ -107,6 +108,21 @@ int psx_runtime_resolve_region(uint32_t psx_addr,
         uint32_t off = phys - base;
         if (out_host)      *out_host      = s_regions[i].host + off;
         if (out_remaining) *out_remaining = size - off;
+        return 1;
+    }
+    return 0;
+}
+
+int psx_runtime_region_host_to_vaddr(const void* host, uint32_t* out_vaddr) {
+    if (!host || s_region_count == 0u) return 0;
+    const uint8_t* p = (const uint8_t*)host;
+    for (uint32_t i = 0; i < MAX_REGIONS; ++i) {
+        if (!s_regions[i].in_use) continue;
+        const uint8_t* base = s_regions[i].host;
+        if (p < base || p >= base + s_regions[i].size) continue;
+        if (out_vaddr)
+            *out_vaddr = KSEG0_BASE | (s_regions[i].phys_base
+                                       + (uint32_t)(p - base));
         return 1;
     }
     return 0;

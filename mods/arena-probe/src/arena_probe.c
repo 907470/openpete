@@ -28,7 +28,7 @@ static void publish_status(void) {
     }
     g_api->ui_status(g_self, "block A: 0x%08X  (256 B, 16-aligned)", g_va);
     g_api->ui_status(g_self, "block B: 0x%08X  (64 B, 64-aligned)", g_va2);
-    g_api->ui_status(g_self, "host write -> guest read: %s",
+    g_api->ui_status(g_self, "host<->guest round-trip + NULL guard: %s",
                      g_ok ? "OK" : "MISMATCH");
     g_api->ui_status(g_self, "probe runs once, at mod entry");
 }
@@ -60,6 +60,18 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     void* host2 = 0;
     uint32_t va2 = api->guest_alloc(self, 64, 64, 0, &host2);
     if (!va2 || va2 < va + 256 || (va2 & 63u)) ok = 0;
+
+    /* guest_addr is the exact inverse of guest() for arena memory, at the
+     * base AND at an interior byte — the round-trip a mod leans on when it
+     * has to store a vaddr into a guest structure. */
+    if (api->guest_addr(host) != va) ok = 0;
+    if (api->guest_addr((uint8_t*)host + 0x30) != va + 0x30) ok = 0;
+    if (api->guest(va) != host) ok = 0;
+
+    /* Guest address 0 is PSX NULL: it must NOT resolve to the base of RAM,
+     * or a mod that missed a failed allocation writes over the kernel area
+     * instead of faulting in its own frame. */
+    if (api->guest(0) != 0) ok = 0;
     g_va = va;
     g_va2 = va2;
     g_ok = ok;

@@ -313,17 +313,27 @@ typedef struct openpete_mod_api {
     void (*call)(CPUState* cpu, uint32_t addr);
 
     /* ── Pillar 2: guest memory ──────────────────────────────────────
-     * Translate a guest vaddr (kuseg/kseg0/kseg1 RAM) to a host pointer
-     * into the 2MB guest-RAM mirror, or NULL if out of range. Guest RAM
-     * is little-endian and so is every supported host, so typed reads/
+     * Translate a guest vaddr (kuseg/kseg0/kseg1) to a host pointer, or
+     * NULL if the address names nothing: canonical 2MB RAM, the
+     * scratchpad, and guest_alloc's arena all resolve. Guest RAM is
+     * little-endian and so is every supported host, so typed reads/
      * writes through the pointer see what the game sees. Global
      * addresses: OP_GADDR_* in openpete_sdk_symbols.h. Reminder: values
      * INSIDE guest structs that are pointers hold guest vaddrs —
-     * re-translate before chasing. Sim-thread use only. */
+     * re-translate before chasing. Sim-thread use only.
+     *
+     * Guest address 0 is PSX NULL and returns NULL, never the base of
+     * RAM: an allocation that failed hands back 0, and a mod that misses
+     * the check must fault in its own frame rather than write over the
+     * kernel area. */
     void* (*guest)(uint32_t vaddr);
 
-    /* Inverse of guest(): host pointer into the guest-RAM mirror →
-     * kseg0 vaddr, or 0 if the pointer is not inside guest RAM. */
+    /* Exact inverse of guest(), for every address guest() can resolve:
+     * a host pointer into canonical RAM, the scratchpad, or an arena
+     * allocation → its guest vaddr; 0 if the pointer names no guest
+     * address. Interior pointers work — (host_view + off) maps to
+     * (vaddr + off) — which is how a mod stores a vaddr for a field
+     * inside a payload it parked. */
     uint32_t (*guest_addr)(const void* host);
 
     /* Allocate `size` bytes at a GUEST-addressable vaddr with a typed
