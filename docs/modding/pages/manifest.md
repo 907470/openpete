@@ -21,9 +21,9 @@ runahead = "pure"         # "pure" (tick hooks touch guest state only)
                           # or "host-fx" (host side effects, engine-
                           # suppressed during speculative ticks) —
                           # gates runahead
-sim_neutral = true        # observer/presentation-only: never diverges
-                          # gameplay state; excluded from the save
-                          # modset tag
+sim_neutral = true        # presentation-only: the mod never writes
+                          # guest RAM, so it stays out of the save
+                          # compatibility tag
 
 [[binding]]               # declared host keys — conflicts across the
 name    = "warp"          # enabled set are reported at load; resolve
@@ -41,9 +41,6 @@ manifest format.
 ``` toml
 [test]                    # in modtest.toml, not mod.toml
 frames        = 8000
-expect_oracle = "skip"    # "pass"  = must stay byte-identical to PSX
-                          # "fail"  = must diverge (gameplay mods)
-                          # "skip"  = don't assert the oracle
 input         = "test/scenario.bk2"          # optional input movie
 args          = "--skip-to-level artisans"   # extra engine flags —
                                              # a STRING, not an array

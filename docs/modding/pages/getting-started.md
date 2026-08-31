@@ -166,10 +166,9 @@ attributed to the innermost mod on the override stack.
   `call`, and registrations all belong in tick context, which means
   inside overrides or your entry point. Present hooks are render-pure,
   and the loader enforces it.
-- **Make divergence a choice, not an accident.** Perturbing
-  gameplay-readable state is fine, as long as you declare it by omitting
-  `sim_neutral`. Observers should stay byte-neutral, and the PSX oracle
-  gate can prove it either way through `expect_oracle = "pass"` in your
-  `modtest.toml`.
+- **Declare whether you change gameplay.** Writing guest RAM is fine,
+  and it's what a gameplay mod is for. Say so by leaving `sim_neutral`
+  off, and set `sim_neutral = true` only when your mod never writes it.
+  See [Concepts](concepts.md#whether-your-mod-changes-gameplay).
 - **Keep game data out of your repository and your zip.** Ship
   generators, not rips.

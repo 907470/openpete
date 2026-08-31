@@ -39,38 +39,40 @@ are legal here and nowhere else.
 **Present context** covers hooks you install with
 `register_present_hook`. It's render-pure both by contract and by
 enforcement: guest access, game calls, and registrations are refused
-with an error. Presents are non-deterministic in count and timing,
-because the engine extracts scenes ahead of their display instant and
-can produce fewer than one per display slot, so anything that affected
-the simulation would desync replays. Publish state from your tick hooks
-into your own variables, then evaluate your own curves at `ctx->alpha`
-for sub-tick smoothness.
+with an error.
+
+The reason is that presents aren't countable. How many run per tick
+depends on the player's framerate, and the engine extracts scenes ahead
+of their display instant and can produce fewer than one per display
+slot. Anything you did to the game from a present hook would therefore
+happen a different number of times on different machines, which is not
+something you can write a working mod against.
+
+Publish state from your tick hooks into your own variables, then
+evaluate your own curves at `ctx->alpha` for sub-tick smoothness.
 
 Draw calls work from both contexts. `draw_text` and `draw_rect`
 submitted during a tick persist for that tick's presents; submitted from
 a present hook, they live for one present.
 
-## Sim-neutrality and the oracle
+## Whether your mod changes gameplay
 
-The project's floor is gameplay that stays bit-identical to real
-PlayStation hardware, proven by a replay gate
-(`scripts/check_psx_oracle.sh`). Mods fit into that world in two ways:
+Some mods change what the game does; others only change what the player
+sees. Which one yours is decides one manifest key, and openpete uses it
+to keep saves straight.
 
 - **Observers and presentation mods**, such as HUD, shader, sound
-  overlay, and texture mods, are built on services that never write
-  guest RAM. Declare `sim_neutral = true`, and openpete excludes your
-  mod from the save modset tag. The sound overlay, the draw service, and
-  the texture service are sim-neutral by construction, because the
-  substitution happens on the host side.
+  overlay, and texture mods, never write guest RAM. Declare
+  `sim_neutral = true`. The sound overlay, the draw service, and the
+  texture service can't write it even if you wanted them to, because
+  each substitutes on the host side.
 - **Gameplay mods**, such as rule changes, spawns, and model swaps,
-  exist to write guest RAM. The save-safety system tags memory cards
-  with the modset, and warns before you mix a card that was played under
-  a different one.
+  exist to write guest RAM. Leave `sim_neutral` off.
 
-In `modtest.toml`, `expect_oracle = "pass"` proves that an observer
-stays byte-neutral with the mod enabled, `"fail"` asserts that a
-gameplay mod really does diverge, and `"skip"` covers everything in
-between.
+openpete tags a memory card with the gameplay mods that were loaded when
+it was written, and warns the player before mixing that card with a
+different set. Declaring `sim_neutral` keeps your mod out of the tag, so
+a purely visual mod never makes a player's card look incompatible.
 
 ## Guest memory
 
@@ -97,18 +99,18 @@ in the expansion window above 2 MB and gives you a host view of it.
 
 ## Services
 
-| Goal | Service | Sim-neutral? |
+| Goal | Service | Writes guest RAM? |
 |---|---|---|
-| Draw HUD text or rectangles | `draw_text`, `draw_rect` | Yes |
-| Replace a game sound | `sfx_replace` | Yes for voice names, no for def-shaped names |
-| Play your own WAV file | `sfx_play` | Yes |
-| Put custom textures on your models | `assets/textures/own/<hexid>.png` | Yes |
-| Add post-process shaders | `shader_register` with `postfx_*` | Yes |
-| Re-shade some of what the engine draws | `[[material]]` rows, or `material_register` | Yes |
-| Add custom levels | `[[level]]` with `assets/levels/` | No |
-| Expose player settings | A `[[config]]` schema with `config_*` | Not applicable |
-| Show status lines | `ui_status` | Yes |
-| Add hotkeys | `[[binding]]` with `binding_down` | Divergent if read during ticks |
+| Draw HUD text or rectangles | `draw_text`, `draw_rect` | No |
+| Replace a game sound | `sfx_replace` | No for voice names, yes for def-shaped names |
+| Play your own WAV file | `sfx_play` | No |
+| Put custom textures on your models | `assets/textures/own/<hexid>.png` | No |
+| Add post-process shaders | `shader_register` with `postfx_*` | No |
+| Re-shade some of what the engine draws | `[[material]]` rows, or `material_register` | No |
+| Add custom levels | `[[level]]` with `assets/levels/` | Yes |
+| Expose player settings | A `[[config]]` schema with `config_*` | No |
+| Show status lines | `ui_status` | No |
+| Add hotkeys | `[[binding]]` with `binding_down` | Only if you act on the key in a tick hook |
 
 For the full contracts, see the [API reference](reference/api.md).
 

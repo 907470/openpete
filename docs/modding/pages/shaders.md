@@ -6,9 +6,9 @@ no shader toolchain to install on any platform. Compiles are cached by
 content hash under `<mod>/.build/shaders/`, and a broken shader produces
 a log line and an unavailable effect rather than a failed boot.
 
-Shaders run on the GPU only, so they can't touch guest RAM. Every tier
-described on this page is therefore sim-neutral by construction: your C
-code may read gameplay state to feed uniforms, and nothing flows back.
+Shaders run on the GPU only, so they can't touch guest RAM. Nothing on
+this page can change gameplay: your C code may read game state to feed
+uniforms, and nothing flows back.
 
 Two tiers are available, listed here from the loosest coupling to the
 tightest:

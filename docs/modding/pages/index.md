@@ -1,9 +1,7 @@
 # openpete modding
 
-openpete is a PC port of Spyro the Dragon whose non-negotiable floor is
-gameplay that stays bit-identical to original PlayStation hardware. Its
-mod framework is designed to reach deeper than any other unofficial port
-of the game.
+openpete is a PC port of Spyro the Dragon, with a mod framework designed
+to reach deeper into the game than any other unofficial port.
 
 ### Declarative modding
 
@@ -77,7 +75,7 @@ already ships.
 - [Getting started](getting-started.md): the anatomy of a mod, the build
   and load pipeline, testing, and hot reload.
 - [Concepts](concepts.md): the override chain, tick and present
-  contexts, sim-neutrality and the oracle, and guest memory.
+  contexts, and guest memory.
 - [Manifest and config](manifest.md): every `mod.toml` key, plus
   player-facing settings in `config.toml`.
 - Reference, generated from the same sources the compiler sees: the
