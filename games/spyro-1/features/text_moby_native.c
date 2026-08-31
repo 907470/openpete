@@ -83,16 +83,16 @@ static const float TXT_L[3] = { -0.34f, 0.50f, 0.80f };   /* unit, front-dominan
  * ≈ ±0.589 rad. Phase advances 8/frame, +12 per letter (a ripple along the row). */
 #define TXT_WOBBLE_AMP 0.589f
 
-/* Glyph lighting direction is settable so the FPS counter keeps its ORIGINAL
- * fixed front light while the settings menu uses Spyro's ROTATING specular light
- * (the metallic shimmer). emit_glyph dots the face normal with this unit vector,
- * exactly like the game's shaded_lit_color (moby_native.c) does with s_shL. The
- * default reproduces the original fixed model; text_moby_native_emit resets it,
- * the menu builder installs the rotating ellipse (specular_and_metal.c). */
-static float s_light[3] = { -0.34f, 0.50f, 0.80f };  /* == the old fixed TXT_L */
-/* 0 (FPS): add-only, faces range base..base+add. 1 (menu): SIGNED like the game's
- * shaded_lit_color — faces turned away darken BELOW base, giving metal contrast. */
-static int   s_light_signed = 0;
+/* Glyph lighting direction is per-emission so the FPS counter keeps its ORIGINAL
+ * fixed front light while the settings menu and the OSD use Spyro's ROTATING
+ * specular light (the metallic shimmer). emit_glyph dots the face normal with
+ * this unit vector, exactly like the game's shaded_lit_color (moby_native.c)
+ * does with s_shL. text_moby_native_emit installs the fixed model; the menu and
+ * OSD builders install the rotating ellipse (specular_and_metal.c).
+ *
+ * light_signed: 0 (FPS) = add-only, faces range base..base+add. 1 (menu/OSD) =
+ * SIGNED like shaded_lit_color — faces turned away darken BELOW base, giving
+ * metal contrast. */
 
 /* faked colon: stack two '.' (period, class 327) dots. The period model sits at
  * y[24,77] (mid ~50); recenter it then spread the two dots apart vertically. */
@@ -198,26 +198,46 @@ int text_moby_native_ready(void) { return s_cache_ready; }
 
 /* ---- emit (works purely from the cache) --------------------------------- */
 
-/* per-glyph vertices in overlay space (filled by emit_glyph). */
-static float s_gx[TXT_MAX_GLYPH_V], s_gy[TXT_MAX_GLYPH_V], s_gz[TXT_MAX_GLYPH_V];
+/* Emission state, per call rather than per file. Every emitter — the stats
+ * overlay and settings menu on the sim thread, the mod draw service on the
+ * present thread, the OSD every tick a toast is live — writes through one of
+ * these, so two threads emitting at once cannot tear each other's output
+ * cursor, glyph scratch or light direction. (A torn out/cap pair defeats
+ * push_tri's bounds check and writes past the caller's buffer; a light
+ * overwritten mid-string tears the shimmer across the glyphs.) */
+typedef struct {
+    openpete_hud_vert* out;    /* caller's buffer                      */
+    int   cap;                 /* its capacity, in verts               */
+    int   n;                   /* verts written so far                 */
+    float light[3];            /* unit light direction (N·L)           */
+    int   light_signed;        /* see the note above                   */
+    /* per-glyph vertices in overlay space (filled by emit_glyph). */
+    float gx[TXT_MAX_GLYPH_V], gy[TXT_MAX_GLYPH_V], gz[TXT_MAX_GLYPH_V];
+} emit_ctx_t;
 
-/* current emit() output cursor (single-threaded). */
-static openpete_hud_vert* s_out;
-static int s_out_cap;
-static int s_out_n;
+/* Start an emission into `out`, lit by the fixed front model (the FPS
+ * counter's original look). Callers wanting the rotating specular overwrite
+ * cx->light / cx->light_signed afterwards. */
+static void emit_ctx_init(emit_ctx_t* cx, openpete_hud_vert* out, int cap) {
+    cx->out = out;
+    cx->cap = cap;
+    cx->n   = 0;
+    cx->light[0] = TXT_L[0]; cx->light[1] = TXT_L[1]; cx->light[2] = TXT_L[2];
+    cx->light_signed = 0;
+}
 
-static void push_tri(int a, int b, int c, uint32_t rgba) {
-    if (!s_out || s_out_n + 3 > s_out_cap) return;
-    s_out[s_out_n++] = (openpete_hud_vert){ s_gx[a], s_gy[a], s_gz[a], rgba };
-    s_out[s_out_n++] = (openpete_hud_vert){ s_gx[b], s_gy[b], s_gz[b], rgba };
-    s_out[s_out_n++] = (openpete_hud_vert){ s_gx[c], s_gy[c], s_gz[c], rgba };
+static void push_tri(emit_ctx_t* cx, int a, int b, int c, uint32_t rgba) {
+    if (!cx->out || cx->n + 3 > cx->cap) return;
+    cx->out[cx->n++] = (openpete_hud_vert){ cx->gx[a], cx->gy[a], cx->gz[a], rgba };
+    cx->out[cx->n++] = (openpete_hud_vert){ cx->gx[b], cx->gy[b], cx->gz[b], rgba };
+    cx->out[cx->n++] = (openpete_hud_vert){ cx->gx[c], cx->gy[c], cx->gz[c], rgba };
 }
 
 /* Emit one cached glyph with its left edge at cursor_x, centred on center_y.
  * dy_model shifts the model vertically (model units) — used for the colon dots.
  * baseR/G/B is the (0..255) glyph colour. Returns the glyph width (overlay
  * frac), or -1 if the glyph isn't in the cache. */
-static float emit_glyph(int cls, float cursor_x, float center_y,
+static float emit_glyph(emit_ctx_t* cx, int cls, float cursor_x, float center_y,
                         float scale, float dy_model, float yaw,
                         int baseR, int baseG, int baseB) {
     int slot = (cls >= 0 && cls < 512) ? s_class_to_idx[cls] : -1;
@@ -239,9 +259,9 @@ static float emit_glyph(int cls, float cursor_x, float center_y,
         float vx_r = midx + dx * cs + dz * sn;  /* yawed X */
         float mz   =       -dx * sn + dz * cs;  /* yawed Z (depth) */
         float gx_local = (TXT_XSIGN < 0.0f) ? (vxmax - vx_r) : (vx_r - vxmin);
-        s_gx[i] = cursor_x + gx_local * scale;
-        s_gy[i] = center_y + TXT_YSIGN * my * scale;
-        s_gz[i] = TXT_DEPTH_MID - mz * TXT_DEPTH_K;          /* front nearer */
+        cx->gx[i] = cursor_x + gx_local * scale;
+        cx->gy[i] = center_y + TXT_YSIGN * my * scale;
+        cx->gz[i] = TXT_DEPTH_MID - mz * TXT_DEPTH_K;        /* front nearer */
     }
     for (int f = 0; f < fcount; f++) {
         uint32_t w0 = g->fw0[f], w1 = g->fw1[f];
@@ -256,8 +276,8 @@ static float emit_glyph(int cls, float cursor_x, float center_y,
         float nx = nx0 * cs + nz0 * sn;                    /* yaw the normal with the glyph */
         float nz = -nx0 * sn + nz0 * cs;
         float nl = sqrtf(nx * nx + ny * ny + nz * nz); if (nl < 1e-3f) nl = 1.0f;
-        float t = (nx * s_light[0] + ny * s_light[1] + nz * s_light[2]) / nl; /* N·L (unit L) */
-        if (s_light_signed) { if (t >  1.0f) t =  1.0f; else if (t < -1.0f) t = -1.0f; }
+        float t = (nx * cx->light[0] + ny * cx->light[1] + nz * cx->light[2]) / nl; /* N·L (unit L) */
+        if (cx->light_signed) { if (t >  1.0f) t =  1.0f; else if (t < -1.0f) t = -1.0f; }
         else                { if (t <  0.0f) t =  0.0f; else if (t >  1.0f) t =  1.0f; }
         int add = (int)(TXT_LIGHT_ADD * t);          /* signed (menu) darkens shadowed faces */
         int R = baseR + add; if (R < 0) R = 0; else if (R > 255) R = 255;
@@ -267,10 +287,10 @@ static float emit_glyph(int cls, float cursor_x, float center_y,
         /* Draw front AND back faces; the depth test keeps the (nearer) front and
          * the edge-on side walls have ~zero area — so no winding cull is needed. */
         if (i2 == i3) {
-            push_tri(i0, i1, i2, rgba);                       /* tri */
+            push_tri(cx, i0, i1, i2, rgba);                   /* tri */
         } else if (i3 < vcount) {
-            push_tri(i0, i1, i2, rgba);                       /* quad = 2 tris */
-            push_tri(i1, i3, i2, rgba);
+            push_tri(cx, i0, i1, i2, rgba);                   /* quad = 2 tris */
+            push_tri(cx, i1, i3, i2, rgba);
         }
     }
     return (float)(vxmax - vxmin) * scale;
@@ -278,11 +298,11 @@ static float emit_glyph(int cls, float cursor_x, float center_y,
 
 /* Emit one string's glyphs into `out`. wob_phase >= 0 applies the selected-row
  * yaw wobble (a per-glyph phase ripple, like the PSX pause menu); < 0 = upright. */
-static int emit_string(const char* str, float origin_x, float origin_y, float cap_h,
-                       unsigned base_rgb, int wob_phase,
-                       openpete_hud_vert* out, int out_cap) {
-    s_out = out; s_out_cap = out_cap; s_out_n = 0;
-    if (!s_cache_ready || !out || out_cap <= 0 || !str) return 0;
+static int emit_string(emit_ctx_t* cx, const char* str,
+                       float origin_x, float origin_y, float cap_h,
+                       unsigned base_rgb, int wob_phase) {
+    if (!s_cache_ready || !cx->out || cx->cap <= 0 || !str) return 0;
+    const int n_before = cx->n;
     const int baseR = (int)((base_rgb >> 16) & 0xFFu);
     const int baseG = (int)((base_rgb >>  8) & 0xFFu);
     const int baseB = (int)( base_rgb        & 0xFFu);
@@ -300,21 +320,21 @@ static int emit_string(const char* str, float origin_x, float origin_y, float ca
             yaw = cosf((float)au * (6.2831853f / 256.0f)) * TXT_WOBBLE_AMP;
         }
         if (c == ':') {                                  /* faked colon: two dots */
-            float w = emit_glyph(327, cursor, center_y, scale * TXT_COLON_SCALE,
+            float w = emit_glyph(cx, 327, cursor, center_y, scale * TXT_COLON_SCALE,
                                  TXT_COLON_RECENTER + TXT_COLON_SPREAD, yaw, baseR, baseG, baseB);
             if (w < 0.0f) { cursor += TXT_SPACE; continue; }
-            emit_glyph(327, cursor, center_y, scale * TXT_COLON_SCALE,
+            emit_glyph(cx, 327, cursor, center_y, scale * TXT_COLON_SCALE,
                        TXT_COLON_RECENTER - TXT_COLON_SPREAD, yaw, baseR, baseG, baseB);
             cursor += w + TXT_GAP; gi++;
             continue;
         }
         int cls = glyph_class(c);
         if (cls < 0) { cursor += TXT_SPACE; continue; }
-        float w = emit_glyph(cls, cursor, center_y, scale, 0.0f, yaw, baseR, baseG, baseB);
+        float w = emit_glyph(cx, cls, cursor, center_y, scale, 0.0f, yaw, baseR, baseG, baseB);
         if (w < 0.0f) { cursor += TXT_SPACE; continue; }  /* not cached -> skip */
         cursor += w + TXT_GAP; gi++;
     }
-    return s_out_n;
+    return cx->n - n_before;   /* verts THIS string added */
 }
 
 int text_moby_native_emit(const char* str,
@@ -322,9 +342,9 @@ int text_moby_native_emit(const char* str,
                           unsigned base_rgb,
                           openpete_hud_vert* out, int out_cap) {
     /* FPS counter etc. keep the original fixed front light + add-only shading. */
-    s_light[0] = TXT_L[0]; s_light[1] = TXT_L[1]; s_light[2] = TXT_L[2];
-    s_light_signed = 0;
-    return emit_string(str, origin_x, origin_y, cap_h, base_rgb, -1, out, out_cap);
+    emit_ctx_t cx;
+    emit_ctx_init(&cx, out, out_cap);
+    return emit_string(&cx, str, origin_x, origin_y, cap_h, base_rgb, -1);
 }
 
 /* Mod draw-service text rasterizer (core/mods/mod_draw.c; registered in
@@ -409,7 +429,7 @@ static openpete_hud_vert s_menu_buf[MENU_TXT_MAX];
 
 /* ---- lit gold border ---------------------------------------------------- */
 /* The frame around the panel is drawn here (not as flat quads in native_render)
- * so it receives the EXACT same lighting as the glyph rows: the current s_light
+ * so it receives the EXACT same lighting as the glyph rows: the emission's light
  * (SpecularUpdate's rotating ellipse), signed N·L, TXT_LIGHT_ADD. The frame is a
  * closed quad strip (outer = panel rect, inner = inset toward the panel centre by
  * MENU_BORDER_BT); each perimeter vertex carries an outward RADIAL normal in the
@@ -424,8 +444,8 @@ static openpete_hud_vert s_menu_buf[MENU_TXT_MAX];
 #define MENU_BORDER_BT   0.0035f  /* frame thickness, overlay units */
 #define MENU_BORDER_SAMP 12       /* perimeter samples per edge (smooth glint) */
 
-static uint32_t border_lit(float nx, float ny) {
-    float t = nx * s_light[0] + ny * s_light[1];   /* N·L, N=(nx,ny,0) unit; signed like the glyphs */
+static uint32_t border_lit(const emit_ctx_t* cx, float nx, float ny) {
+    float t = nx * cx->light[0] + ny * cx->light[1];   /* N·L, N=(nx,ny,0) unit; signed like the glyphs */
     if (t >  1.0f) t =  1.0f; else if (t < -1.0f) t = -1.0f;
     int add = (int)(TXT_LIGHT_ADD * t);
     int R = MENU_BORDER_R + add; if (R < 0) R = 0; else if (R > 255) R = 255;
@@ -434,15 +454,16 @@ static uint32_t border_lit(float nx, float ny) {
     return (uint32_t)R | ((uint32_t)G << 8) | ((uint32_t)B << 16) | 0xFF000000u;
 }
 
-/* Emit the lit frame into `out` (uses the current s_light — call after the menu
- * builder has set it). Returns verts written. Four straight edge strips: the
+/* Emit the lit frame into the context (uses cx's light — call after the builder
+ * has installed the rotating specular). Returns verts written. Four straight edge strips: the
  * outer edge lies on the panel rect, the inner edge is a PERPENDICULAR inset by
  * bt (so each strip is a clean parallel-sided rectangle — no inward bulge). Each
  * strip is subdivided along its length; every column's colour comes from the
  * outward RADIAL normal at its outer point, so the glint travels smoothly along
  * the edge. Adjacent strips meet at a shared corner whose radial normal is
  * identical from either side, so the overlap is seamless. */
-static int emit_menu_border(const openpete_menu_layout_t* L,
+static int emit_menu_border(const emit_ctx_t* ecx,
+                            const openpete_menu_layout_t* L,
                             openpete_hud_vert* out, int cap) {
     const float x0 = L->panel_x0, y0 = L->panel_y0, x1 = L->panel_x1, y1 = L->panel_y1;
     const float cx = 0.5f * (x0 + x1), cy = 0.5f * (y0 + y1);
@@ -465,7 +486,7 @@ static int emit_menu_border(const openpete_menu_layout_t* L,
             const float ixf = s[4] + (s[6] - s[4]) * f, iyf = s[5] + (s[7] - s[5]) * f;
             float dx = oxf - cx, dy = oyf - cy;               /* outward radial (lighting only) */
             float dl = sqrtf(dx * dx + dy * dy); if (dl < 1e-6f) dl = 1.0f;
-            const uint32_t col = border_lit(dx / dl, dy / dl);
+            const uint32_t col = border_lit(ecx, dx / dl, dy / dl);
             if (c > 0 && n + 6 <= cap) {
                 out[n++] = (openpete_hud_vert){ pox, poy, z, pcol };
                 out[n++] = (openpete_hud_vert){ oxf, oyf, z, col  };
@@ -529,6 +550,11 @@ void text_moby_native_menu(CPUState* cpu) {
     openpete_menu_get_layout(&L);
     const int cursor = openpete_menu_cursor();
 
+    /* One emission for the whole menu: the title, every row and the frame share
+     * this context's rotating light, and nothing else can perturb it mid-build. */
+    emit_ctx_t cx;
+    emit_ctx_init(&cx, s_menu_buf, MENU_TXT_MAX);
+
     /* Rotating specular light — reproduce SpecularUpdate's ellipse host-side (the
      * game runs SpecularUpdate only in menus/cutscenes, NOT gameplay where this
      * menu lives, and we must not write its RAM). Same N·L shading as the world's
@@ -542,20 +568,19 @@ void text_moby_native_menu(CPUState* cpu) {
         float Ly = sinf(sth) * 1.549f;   /* SINE_8   * 6345 >> 12 */
         float Lz = -0.25f;               /* -1024 / 4096 (small fixed into-screen) */
         float Ll = sqrtf(Lx*Lx + Ly*Ly + Lz*Lz); if (Ll < 1e-3f) Ll = 1.0f;
-        s_light[0] = Lx/Ll; s_light[1] = Ly/Ll; s_light[2] = Lz/Ll;
-        s_light_signed = 1;   /* metal contrast: shadowed faces darken below base */
+        cx.light[0] = Lx/Ll; cx.light[1] = Ly/Ll; cx.light[2] = Lz/Ll;
+        cx.light_signed = 1;   /* metal contrast: shadowed faces darken below base */
     }
 
     /* Pause-menu alignment: title centred; labels RIGHT-aligned to L.label_x;
      * values LEFT-aligned at L.value_x (the two columns meet at a central split). */
     const float pcx = 0.5f * (L.panel_x0 + L.panel_x1);   /* panel centre x */
-    int n = 0;
     {
         const char* title = openpete_menu_title();
         const float tw = measure_string(title, L.title_cap_h);
-        n += emit_string(title, pcx - 0.5f * tw,
-                         L.title_y - L.title_cap_h * 0.5f, L.title_cap_h,
-                         MENU_TITLE_TINT, -1, s_menu_buf + n, MENU_TXT_MAX - n);
+        emit_string(&cx, title, pcx - 0.5f * tw,
+                    L.title_y - L.title_cap_h * 0.5f, L.title_cap_h,
+                    MENU_TITLE_TINT, -1);
     }
     /* Uniform row font: shrink EVERY row (labels + values; the SETTINGS title
      * keeps its own cap) to the size the widest value needs to fit its column
@@ -584,24 +609,22 @@ void text_moby_native_menu(CPUState* cpu) {
             const float cw0 = measure_string(label, ccap);
             if (cw0 > cavail && cw0 > 0.0f) ccap *= cavail / cw0;
             const float cw = measure_string(label, ccap);
-            n += emit_string(label, pcx - 0.5f * cw,
-                             L.row_y[r] - ccap * 0.5f, ccap,
-                             MENU_TXT_TINT, wob, s_menu_buf + n, MENU_TXT_MAX - n);
+            emit_string(&cx, label, pcx - 0.5f * cw,
+                        L.row_y[r] - ccap * 0.5f, ccap, MENU_TXT_TINT, wob);
             continue;
         }
         const float lw = measure_string(label, row_cap);
-        n += emit_string(label, L.label_x - lw,
-                         L.row_y[r] - row_cap * 0.5f, row_cap,
-                         MENU_TXT_TINT, wob, s_menu_buf + n, MENU_TXT_MAX - n);
+        emit_string(&cx, label, L.label_x - lw,
+                    L.row_y[r] - row_cap * 0.5f, row_cap, MENU_TXT_TINT, wob);
         /* Safety net for any future value wider than the reference: shrink
          * that one value further so it still ends before the panel border. */
         float vcap = row_cap;
         const float vw = measure_string(value, vcap);
         if (vw > vavail && vw > 0.0f) vcap *= vavail / vw;
-        n += emit_string(value, L.value_x, L.row_y[r] - vcap * 0.5f, vcap,
-                         MENU_TXT_TINT, wob, s_menu_buf + n, MENU_TXT_MAX - n);
+        emit_string(&cx, value, L.value_x, L.row_y[r] - vcap * 0.5f, vcap,
+                    MENU_TXT_TINT, wob);
     }
-    /* Gold frame — same rotating light as the rows above (s_light still set). */
-    n += emit_menu_border(&L, s_menu_buf + n, MENU_TXT_MAX - n);
-    openpete_native_set_menu_glyphs(s_menu_buf, n);
+    /* Gold frame — same rotating light as the rows above (cx still carries it). */
+    cx.n += emit_menu_border(&cx, &L, s_menu_buf + cx.n, MENU_TXT_MAX - cx.n);
+    openpete_native_set_menu_glyphs(s_menu_buf, cx.n);
 }
