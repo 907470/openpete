@@ -64,21 +64,11 @@ echo "[regen] Generating $CHANNEL_SITES from manifest/render_channels.toml"
 python3 tools/gen_channel_sites.py \
     --manifest manifest/render_channels.toml --out "$CHANNEL_SITES"
 
-# Mod instruction-site tier (modding framework rung 14): fold the baked
-# mod site set — written by scripts/regen-mod-sites.sh from enabled mods'
-# mod.toml [[site]] blocks — into the same substitution table. Absent or
-# empty file = no mod sites baked = stock emission (inertness gate).
-MOD_SITES="$OUT/mod_sites.txt"
-if [[ -s "$MOD_SITES" ]] && grep -q '^mod_' "$MOD_SITES"; then
-    echo "[regen] Appending $(grep -c '^mod_' "$MOD_SITES") baked mod site(s) from $MOD_SITES"
-    cat "$MOD_SITES" >> "$CHANNEL_SITES"
-fi
-
 # Scoped regen: OPENPETE_REGEN_SCOPE=main_exe re-translates only the main
 # EXE (the only binary --channel-sites is passed to), reusing the overlay
-# outputs + external-JAL lists already on disk from the last full regen.
-# Used by regen-mod-sites.sh so toggling a site-hook mod costs one main-EXE
-# recompile, not the full overlay sweep.
+# outputs + external-JAL lists already on disk from the last full regen —
+# a channel-site edit costs one main-EXE recompile, not the full overlay
+# sweep.
 REGEN_SCOPE="${OPENPETE_REGEN_SCOPE:-full}"
 if [[ "$REGEN_SCOPE" == "main_exe" ]]; then
     echo "[regen] SCOPED regen: main EXE only (overlays + table reused from last full regen)"

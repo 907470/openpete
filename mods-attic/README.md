@@ -19,9 +19,11 @@ when its surface re-lands as an append-only pillar.
 - `mirror-level` — the level-slot C API; `[[level]]` is the surviving
   declarative road, and the slot-capacity work will change the id
   time-share this API baked in.
-- `fade-skip` — instruction-site hooks ([[site]]): build-time coupling
-  to the recomp regen step; the boot-fade skip itself is covered by
-  --skip-to-level for development.
+(`fade-skip` was DELETED, not parked: the instruction-site tier it
+demonstrated is gone from the engine — its API entry went at the v1 cut
+and the machinery behind it, unreachable ever since, followed. The
+boot-fade skip itself is covered by `--skip-to-level`. Recover the mod
+from git history if the tier ever returns.)
 
 These directories are NOT scanned by the loader. Their sources predate
 the v1 header and will need mechanical updates when they return.

@@ -168,7 +168,6 @@ typedef struct {
 #define MOD_PATH_MAX      1024
 #define MOD_SRCS_MAX      64
 #define MOD_DEPS_MAX      8
-#define MOD_EXPORTS_MAX   128
 
 struct openpete_mod {
     char  id[MOD_ID_MAX];
@@ -570,13 +569,7 @@ static char s_sdk_dir[MOD_PATH_MAX];
 
 /* defined later in this file */
 static int parse_manifest(const char* mod_dir, struct openpete_mod* mod);
-static void exports_remove_owner(const char* id);
 static int mod_enter_deferred(struct openpete_mod* mod);
-
-/* Hot reload (P4, dev mode): drop a mod's cross-mod exports; importers
- * hold raw pointers into the OLD object, which stays resident (never
- * dlclose mid-session), so stale imports keep working against stale
- * code until their owners also reload — logged so nobody is surprised. */
 
 static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
                      char* so_path, size_t so_path_len);
@@ -600,14 +593,12 @@ static void mod_hot_reload(struct openpete_mod* mod) {
 
     openpete_mods_chain_remove_owner(mod->id);
     openpete_mods_draw_remove_owner(mod->id);
-    openpete_mods_site_detach_all(mod->id);
     openpete_mods_registry_remove_owner(mod->id);
     openpete_mods_state_remove(mod->id);
     openpete_mods_postfx_remove_owner(mod->id);  /* before shaders: retires pipelines */
     openpete_mods_pipeline_remove_owner(mod->id);
     openpete_mods_material_remove_owner(mod->id);
     openpete_mods_shader_remove_owner(mod->id);
-    exports_remove_owner(mod->id);
     mod->ui_body = NULL; /* re-resolved from the fresh object below */
     mod->toggle_fn = NULL;
 
@@ -690,7 +681,6 @@ static void mod_hot_reload(struct openpete_mod* mod) {
      * either way — bump the modset epoch. */
     openpete_mods_chain_set_owner_enabled(mod->id, mod->enabled);
     openpete_mods_draw_set_owner_enabled(mod->id, mod->enabled);
-    openpete_mods_site_set_enabled(mod->id, mod->enabled);
     openpete_mods_registry_set_owner_enabled(mod->id, mod->enabled);
     s_toggle_epoch++;
     OPL_INFO_F("mods", "hot reload: %s live (state %s%s)", mod->id,
@@ -737,8 +727,7 @@ static void hot_reload_poll(void) {
  * commit), never mid-tick: requests queue here and the apply flips
  * owner-keyed disabled flags across every registration surface — chain
  * links (skipped transparently, base() nesting preserved), present
- * hooks, baked instruction sites (guarded identity arm), and registry
- * rows. Nothing is torn down, so re-enable restores the mod exactly
+ * hooks, and registry rows. Nothing is torn down, so re-enable restores the mod exactly
  * where it was. Asset overlays stay boot-scoped ("restart tier" in the
  * plan's language — their consumers scan at init).
  *
@@ -967,7 +956,6 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
         }
         openpete_mods_chain_set_owner_enabled(id, on);
         openpete_mods_draw_set_owner_enabled(id, on);
-        openpete_mods_site_set_enabled(id, on);
         openpete_mods_registry_set_owner_enabled(id, on);
         openpete_mods_sfx_set_owner_enabled(cpu, id, on);
         mod->enabled = on;
@@ -1143,36 +1131,6 @@ static int api_sfx_play(openpete_mod_t* self, const char* name,
     snprintf(path, sizeof path, "%s/assets/sounds/%s.wav", self->dir, name);
     return openpete_mod_sound_play(path, gain);
 }
-
-/* Cross-mod export registry: "modid:name" → pointer (rung 5). */
-typedef struct {
-    char  name[MOD_ID_MAX + 64];
-    void* ptr;
-} mod_export_t;
-
-static mod_export_t s_exports[MOD_EXPORTS_MAX];
-static int          s_export_count = 0;
-
-static void exports_remove_owner(const char* id) {
-    char prefix[MOD_ID_MAX + 2];
-    snprintf(prefix, sizeof prefix, "%s:", id);
-    int w = 0, removed = 0;
-    for (int i = 0; i < s_export_count; i++) {
-        if (strncmp(s_exports[i].name, prefix, strlen(prefix)) == 0) {
-            removed++;
-            continue;
-        }
-        s_exports[w++] = s_exports[i];
-    }
-    s_export_count = w;
-    if (removed)
-        OPL_WARN_F("mods", "%s: %d export(s) dropped on reload — other "
-                   "mods' existing imports now reference the OLD object",
-                   id, removed);
-}
-
-
-
 
 const char* openpete_mods_id_of(openpete_mod_t* self) {
     return self ? self->id : NULL;
@@ -2131,7 +2089,7 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
 }
 
 /* First enable of a deferred-entry mod (tick boundary): enter deps
- * first (a lib's exports must exist before this entry imports them;
+ * first (a library's entry must have run before its dependent's does;
  * deps stay disabled), then run entry and register the assets/ root.
  * Boot-scanned asset consumers (texture pack) only see the root after
  * a restart; per-play consumers (music) apply immediately. Late entry
@@ -2168,8 +2126,8 @@ static int mod_enter_deferred(struct openpete_mod* mod) {
 
 /* Dependency topo-sort (rung 5). DFS, stable in enabled order: a dep
  * loads before its dependents, so dependents keep HIGHER chain priority
- * than their libraries and a lib's exports exist when the client's
- * entry runs. Missing dep / cycle = actionable error, dependent
+ * than their libraries, and a library's entry has run by the time its
+ * client's does. Missing dep / cycle = actionable error, dependent
  * disabled, run continues. */
 enum { TS_WHITE = 0, TS_GRAY, TS_BLACK, TS_FAILED };
 
@@ -2723,15 +2681,6 @@ int openpete_mods_init(const openpete_options_t* opts) {
         n_pending++;
     }
 
-    /* Phase A.5: validate advisory above/below relations against the
-     * enabled order. Priority = position (later = higher), so
-     * above=["x"] means "must be listed AFTER x". Violations disable the
-     * DECLARING mod with a move-this-mod error; relations naming mods
-     * that aren't enabled are vacuously satisfied (advisory, not dep).
-     * Deferred-entry load-all rows sit outside the enabled order
-     * (appended lexicographically) — relations involving one are
-     * skipped, never error-disable a mod nobody enabled. */
-
     /* Phase B: topo-sort by hard deps (see topo_visit above). */
     topo_ctx_t tc;
     memset(&tc, 0, sizeof tc);
@@ -2741,10 +2690,10 @@ int openpete_mods_init(const openpete_options_t* opts) {
     for (int i = 0; i < n_pending; i++) (void)topo_visit(&tc, i);
 
     /* Entry policy: boot-enabled mods enter at load, and so do their
-     * deps (a lib's exports must exist before its client's entry
-     * imports them — the dep enters but stays disabled if it wasn't in
-     * the enabled set itself). Every other load-all row defers entry
-     * to its first enable. */
+     * deps (a library's entry must run before its client's — the dep
+     * enters but stays disabled if it wasn't in the enabled set
+     * itself). Every other load-all row defers entry to its first
+     * enable. */
     int must_enter[MODS_MAX] = {0};
     {
         int changed = 1;
@@ -2791,14 +2740,11 @@ int openpete_mods_init(const openpete_options_t* opts) {
         loaded++;
         if (mod->enabled) enabled++;
         /* Boot-disabled rows: make every registration surface agree.
-         * Matters for entered-but-disabled deps (their entry registered
-         * chains/hooks, which default to enabled) and for sticky state
-         * the surfaces keep outside registrations (baked sites of a
-         * disabled mod must not arm on attach). */
+         * Matters for entered-but-disabled deps: their entry registered
+         * chains/hooks, which default to enabled. */
         if (!mod->enabled) {
             openpete_mods_chain_set_owner_enabled(mod->id, 0);
             openpete_mods_draw_set_owner_enabled(mod->id, 0);
-            openpete_mods_site_set_enabled(mod->id, 0);
             openpete_mods_registry_set_owner_enabled(mod->id, 0);
         }
     }

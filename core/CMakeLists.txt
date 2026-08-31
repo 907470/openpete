@@ -103,7 +103,6 @@ add_library(openpete_core STATIC
     mods/mod_loader.c
     mods/mod_draw.c
     mods/mod_services.c
-    mods/mod_sites.c
     mods/mod_registry.c
     mods/mod_arena.c
     mods/mod_sfx.c

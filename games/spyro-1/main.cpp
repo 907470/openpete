@@ -76,11 +76,6 @@ extern "C" void spyro_state_regions_register(void);
 extern "C" {
 extern const openpete_sdk_symbol_t openpete_sdk_symbols[];
 extern const size_t                openpete_sdk_symbol_count;
-/* Instruction-site registry (rung 14), generated alongside the baked
- * guarded substitutions by tools/gen_mod_sites.py into
- * generated/mod_sites_registry.c (empty table when no sites baked). */
-extern const openpete_modsite_desc_t openpete_modsite_registry[];
-extern const int                     openpete_modsite_registry_count;
 /* Draw-service text rasterizer (features/text_moby_native.c — that header
  * has no C++ guards, so declare the one symbol we need directly). */
 int text_moby_native_mod_emit(const char* str, float x, float y,
@@ -154,10 +149,6 @@ int main(int argc, char** argv) {
      * itself runs from openpete_run() after all setup. */
     openpete_mods_set_symbol_table(openpete_sdk_symbols,
                                    openpete_sdk_symbol_count);
-    /* ...and the baked instruction-site registry (rung 14) so mod
-     * site_handler attachments resolve to their guarded indices. */
-    openpete_mods_set_site_registry(openpete_modsite_registry,
-                                    openpete_modsite_registry_count);
     /* ...and the draw service's text rasterizer (Spyro's 3D gold
      * text-moby glyphs — the same font as the FPS overlay). */
     openpete_mods_draw_set_text_fn(text_moby_native_mod_emit);

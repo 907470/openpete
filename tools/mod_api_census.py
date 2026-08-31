@@ -81,11 +81,8 @@ def main() -> int:
     manifest_keys = defaultdict(list)
     for d in mod_dirs:
         mtext = (d / "mod.toml").read_text()
-        for key, pat in [("above", r"^\s*above\s*="),
-                         ("below", r"^\s*below\s*="),
-                         ("tier", r"^\s*tier\s*="),
+        for key, pat in [("tier", r"^\s*tier\s*="),
                          ("[test]", r"^\s*\[test\]"),
-                         ("[[site]]", r"^\s*\[\[site\]\]"),
                          ("[[level]]", r"^\s*\[\[level\]\]"),
                          ("[[binding]]", r"^\s*\[\[binding\]\]")]:
             if re.search(pat, mtext, re.M):
@@ -151,8 +148,7 @@ def main() -> int:
     w("")
     w("| Key | Mods |")
     w("|---|---|")
-    for key in ["above", "below", "tier", "[test]", "[[site]]", "[[level]]",
-                "[[binding]]"]:
+    for key in ["tier", "[test]", "[[level]]", "[[binding]]"]:
         mods = manifest_keys.get(key, [])
         w(f"| `{key}` | {', '.join(f'`{m}`' for m in mods) or '—'} |")
     w("")

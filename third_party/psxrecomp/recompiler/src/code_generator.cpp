@@ -1387,40 +1387,6 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
         }
     }
 
-    /* Mod site-hook tier (openpete modding framework, PoC rung 14):
-     * GUARDED substitution, generic across every non-control-flow opcode.
-     * Emits `if (openpete_modsite_active[idx]) openpete_modsite_call(cpu,
-     * idx); else { <verbatim translation> }` (ModReplace) or the verbatim
-     * translation plus the guarded call (ModAppend). Identity when the
-     * guard is 0 — a baked-but-inactive site (mod not loaded, handler
-     * unregistered, or live-toggled off) is behaviorally inert by
-     * construction; the oracle gate proves it. Sites come from enabled
-     * mods' mod.toml [[site]] blocks via tools/gen_mod_sites.py →
-     * generated/mod_sites.txt → --channel-sites. Control-flow anchors are
-     * rejected by the anchor verifier (main_psx.cpp); this check is the
-     * belt-and-braces for delay-slot edge cases — the else-arm must stay a
-     * plain statement, so a jr/branch translation is never wrapped. */
-    if (auto _ms = channel_sites_.find(addr);
-        _ms != channel_sites_.end()
-        && (_ms->second.kind == ChannelSite::ModReplace
-         || _ms->second.kind == ChannelSite::ModAppend)) {
-        if (ControlFlowAnalyzer::is_control_flow(instr)) {
-            code += fmt::format(
-                "  /* mod site {} DROPPED: control-flow anchor */",
-                _ms->second.symbol);
-        } else if (_ms->second.kind == ChannelSite::ModReplace) {
-            code = fmt::format(
-                "if (openpete_modsite_active[{0}]) {{ openpete_modsite_call(cpu, {0}); }} "
-                "else {{ {1} }}  /* mod site (replace): {2} */",
-                _ms->second.imm, code, _ms->second.symbol);
-        } else {
-            code += fmt::format(
-                "  if (openpete_modsite_active[{0}]) openpete_modsite_call(cpu, {0});"
-                "  /* mod site (append): {1} */",
-                _ms->second.imm, _ms->second.symbol);
-        }
-    }
-
     /* Per-instruction PC tracking. When enabled, prepend `cpu->pc = X;`
      * so write-watchers and the state-diff harness can attribute every
      * memory write to the exact MIPS instruction that produced it. Costs

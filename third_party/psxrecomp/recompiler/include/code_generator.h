@@ -84,18 +84,6 @@ struct ChannelSite {
                      //       returns the substituted value. Moves bespoke
                      //       value-computing logic (cone slope, canonical-SX,
                      //       polybuf-canon, …) out of the recompiler.
-        ModReplace,  // any NON-control-flow op: GUARDED replace for the mod
-                     //       site-hook tier — emit
-                     //       `if (openpete_modsite_active[imm])
-                     //            openpete_modsite_call(cpu, imm);
-                     //        else { <verbatim translation> }`.
-                     //       Identity when the guard is off (mod not loaded /
-                     //       handler unregistered), so a baked-but-inactive
-                     //       site is behaviorally inert by construction. imm
-                     //       carries the baked site index; symbol carries a
-                     //       `<modid>:<name>` label for the emitted comment.
-        ModAppend,   // any NON-control-flow op: guarded append — verbatim
-                     //       translation first, then the same guarded call.
     };
     Kind        kind;
     int32_t     imm;      // OffsetAdd/ConstLoad: opcode immediate to match

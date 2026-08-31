@@ -430,19 +430,6 @@ add_custom_command(
     COMMENT "Building mod-author docs (gen_mod_docs.py + mkdocs)")
 add_custom_target(mod_docs ALL DEPENDS ${_mod_docs_stamp})
 
-# Instruction-site registry (rung 14): generated/mod_sites_registry.c maps
-# (mod_id, site name) → the baked guarded index. scripts/regen-mod-sites.sh
-# (or a full regen) rewrites it; seed an EMPTY registry at configure time so
-# checkouts whose generated/ predates the site tier still build.
-if(NOT EXISTS ${SPYRO_GENERATED}/mod_sites_registry.c)
-    file(WRITE ${SPYRO_GENERATED}/mod_sites_registry.c
-"/* AUTO-GENERATED seed (empty) — tools/gen_mod_sites.py rewrites this. */
-#include \"openpete_mods.h\"
-const openpete_modsite_desc_t openpete_modsite_registry[] = { {0, 0, 0u, 0} };
-const int openpete_modsite_registry_count = 0;
-")
-endif()
-target_sources(openpete-spyro1 PRIVATE ${SPYRO_GENERATED}/mod_sites_registry.c)
 # The staged <exe>/sdk/ tree IS the contract mods compile and #include
 # against, so it must never lag the repo. An ALL target rather than a
 # POST_BUILD command: POST_BUILD only fires when the exe relinks, and
