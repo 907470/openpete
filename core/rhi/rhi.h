@@ -156,6 +156,12 @@ uint32_t rhi_stage_gen(const rhi_device *dev);
 void     rhi_end_frame_to_stage(rhi_device *dev, int stage);
 bool     rhi_present_stage(rhi_device *dev, int stage);
 bool     rhi_present_stage_release(rhi_device *dev);   /* give back a held acquire: present its stale contents */
+/* Display-seam fence, runtime half: the thread that will present next
+ * claims the display at each handoff; every frame/present entry verifies
+ * the caller. Violations log and count (OPENPETE_SEAM_GUARD_FATAL=1
+ * aborts, for the stress harnesses). */
+void     rhi_display_claim(rhi_device *dev);
+unsigned rhi_seam_violations(void);
 /* The same in two steps: acquire the swapchain image early (right after the
  * render, while the display is still on the previous frame -- an image the
  * display released only at the last vblank is not truly available until the

@@ -477,4 +477,15 @@ if(NOT CMAKE_HOST_WIN32)
         COMMAND bash -c "! grep -rE 'CreateFiber|<windows.h>' ${CMAKE_SOURCE_DIR}/core/ --include='*.c' --include='*.h' --include='*.cpp' --include='*.hpp' --exclude='crash.c' --exclude='openpete_time.c' --exclude='openpete_frame_time_log.c' --exclude='mod_loader.c' --exclude='host_spawn.c' --exclude='paths.c'"
         COMMENT "core/ purity check: no Spyro addresses, no Win32-only APIs"
         VERBATIM)
+
+    # The display seam has ONE owner (the present thread while eager is
+    # active, the host loop otherwise). scripts/fences/seam_guard.py refuses
+    # new frame/present call sites outside the owner and window ops off the
+    # window's thread — the build-time half of the fence; the runtime half
+    # (rhi_display_claim + the per-entry owner check) lives in rhi_vulkan.c.
+    add_custom_target(openpete_seam_guard ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "Checking display-seam ownership..."
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/seam_guard.py ${CMAKE_SOURCE_DIR}
+        COMMENT "display-seam fence: presents and window ops only from their owner"
+        VERBATIM)
 endif()

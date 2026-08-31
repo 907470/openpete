@@ -127,6 +127,38 @@
  * core layer, which owns the shutdown flag) instead of spinning failed frames
  * forever. A callback keeps openpete_rhi free of core-runtime symbols — the
  * link goes core -> rhi, not back. */
+/* The runtime half of the display-seam fence (the build-time half is
+ * scripts/fences/seam_guard.py). The display's frame/present/swapchain
+ * state is externally synchronised and owned by exactly one thread at a
+ * time; ownership moves only through rhi_display_claim, called by the
+ * owner-to-be at each handoff. Every entry point below verifies the
+ * calling thread. A violation logs (first few in full, then counted) so a
+ * shipped build never dies for it; OPENPETE_SEAM_GUARD_FATAL=1 aborts at
+ * the first, which is what the stress harnesses run with — a fault caught
+ * here names the interleaving that a driver would otherwise turn into a
+ * silent process kill minutes later. */
+static SDL_ThreadID s_display_owner;
+static unsigned     s_seam_violations;
+void rhi_display_claim(rhi_device *dev)
+{
+    (void)dev;
+    s_display_owner = SDL_GetCurrentThreadID();
+}
+static void seam_check(const char *where)
+{
+    if (!s_display_owner) return;                 /* pre-claim boot window */
+    const SDL_ThreadID me = SDL_GetCurrentThreadID();
+    if (me == s_display_owner) return;
+    static int fatal = -1;
+    if (fatal < 0) { const char *e = getenv("OPENPETE_SEAM_GUARD_FATAL"); fatal = (e && *e && *e != '0'); }
+    if (s_seam_violations < 8)
+        RHI_LOG("SEAM: %s on thread %" SDL_PRIu64 " but the display is owned by %" SDL_PRIu64 "\n",
+                where, (Uint64)me, (Uint64)s_display_owner);
+    s_seam_violations++;
+    if (fatal) abort();
+}
+unsigned rhi_seam_violations(void) { return s_seam_violations; }
+
 static void (*s_device_lost_cb)(void) = NULL;
 void rhi_set_device_lost_handler(void (*fn)(void)) { s_device_lost_cb = fn; }
 static const char *s_last_gpu_zone;   /* set by rhi_gpu_zone_begin */
@@ -1750,11 +1782,13 @@ fail:
 
 rhi_device *rhi_create(struct SDL_Window *window, const char *app_name, int vsync)
 {
+    rhi_display_claim(NULL);   /* boot: the creating thread presents until a handoff */
     return rhi_create_impl(window, app_name, /*headless=*/false, 0, 0, vsync);
 }
 
 rhi_device *rhi_create_headless(const char *app_name, uint32_t width, uint32_t height)
 {
+    rhi_display_claim(NULL);
     /* Surfaceless: no swapchain, so present mode / vsync is irrelevant (-1). */
     return rhi_create_impl(NULL, app_name, /*headless=*/true, width, height, -1);
 }
@@ -2022,6 +2056,7 @@ static bool ensure_swapchain(rhi_device *dev)
 
 static bool begin_frame_impl(rhi_device *dev, bool acquire)
 {
+    seam_check("begin_frame");
     if (!ensure_swapchain(dev)) return false;
 
     {
@@ -2295,6 +2330,7 @@ void rhi_snapshot_offscreen_to_rt(rhi_device *dev, rhi_texture *dst,
 
 void rhi_end_frame(rhi_device *dev)
 {
+    seam_check("end_frame");
     if (!dev->frame_active) return;
     VkCommandBuffer cb = dev->cmd[dev->frame];
     vkEndCommandBuffer(cb);
@@ -2384,6 +2420,7 @@ uint32_t rhi_stage_gen(const rhi_device *dev) { return dev ? dev->stage_gen : 0;
 
 void rhi_end_frame_to_stage(rhi_device *dev, int stage)
 {
+    seam_check("end_frame_to_stage");
     if (!dev->frame_active) return;
     if (dev->headless || stage < 0 || stage >= RHI_STAGE_RING || !dev->stage_image[stage]) {
         rhi_end_frame(dev);
@@ -2429,6 +2466,7 @@ void rhi_end_frame_to_stage(rhi_device *dev, int stage)
 
 bool rhi_present_stage_acquire(rhi_device *dev)
 {
+    seam_check("present_stage_acquire");
     if (dev->headless || dev->frame_active) return false;
     if (dev->pacquired) return true;
     if (!ensure_swapchain(dev)) return false;
@@ -2450,6 +2488,7 @@ bool rhi_present_stage_acquire(rhi_device *dev)
 
 bool rhi_present_stage_submit(rhi_device *dev, int stage)
 {
+    seam_check("present_stage_submit");
     if (dev->headless || dev->frame_active) return false;
     if (stage < 0 || stage >= RHI_STAGE_RING) return false;
     if (!dev->pacquired) { if (!rhi_present_stage_acquire(dev)) return false; }
@@ -2551,6 +2590,7 @@ bool rhi_present_stage(rhi_device *dev, int stage)
  * covered, and the driver faults the process after a few cycles. */
 bool rhi_present_stage_release(rhi_device *dev)
 {
+    seam_check("present_stage_release");
     if (!dev || dev->headless || !dev->pacquired) return true;
     dev->pacquired = false;
     if (dev->pacquired_gen != dev->stage_gen) return true;  /* rebuilt: acquire died with the swapchain */
@@ -2612,6 +2652,7 @@ int rhi_present_outstanding(const rhi_device *dev)
 int rhi_present_wait(rhi_device *dev, uint64_t timeout_ns, uint64_t *out_id,
                      uint64_t *out_waited_ns)
 {
+    seam_check("present_wait");
     if (!dev || !dev->has_present_timing || !dev->swapchain) return -1;
     if (dev->needs_recreate) return -1;
 

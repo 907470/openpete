@@ -407,10 +407,12 @@ static int s_stage_next;
 static int present_thread_main(void *unused)
 {
     (void)unused;
+    int claimed = 0;   /* this thread has claimed the display for the current activation */
     SDL_LockMutex(s_pt.mx);
     for (;;) {
         if (s_pt.quit) break;
         if (!s_pt.active) {
+            claimed = 0;
             lattice_reset_why("inactive", 0);
             lattice_reset();
             s_pt.flip_pending = 0; s_pt.flip_holdoff = 0;
@@ -418,6 +420,7 @@ static int present_thread_main(void *unused)
             SDL_WaitCondition(s_pt.cv, s_pt.mx);
             continue;
         }
+        if (!claimed) { openpete_native_display_claim(); claimed = 1; }
         const double slot = display_slot_ns();
         op_time_t now = op_now();
         const int on_lattice = s_lat.locked && slot > 0.0;
@@ -658,6 +661,9 @@ void openpete_present_thread_set_active(int on)
          * (interpolation toggled in play). */
         if (s_staged.valid) { s_staged.valid = 0; s_pt.discarded++; }
         SDL_UnlockMutex(s_pt.mx);
+        /* This thread owns the display from here (seam fence) — including
+         * for the release below, which touches the swapchain. */
+        openpete_native_display_claim();
         openpete_native_present_stage_release();
         SDL_LockMutex(s_pt.mx);
     }

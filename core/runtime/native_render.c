@@ -9431,6 +9431,13 @@ int openpete_native_present_stage(int stage)
     return ok;
 }
 
+/* The calling thread takes ownership of the display (seam fence): the
+ * present thread as it engages, the host loop as a drain hands it back. */
+void openpete_native_display_claim(void)
+{
+    if (s_nr.dev) rhi_display_claim(s_nr.dev);
+}
+
 /* Release a swapchain acquire held for a staged present that will never be
  * submitted (the display is being handed back to the inline path). */
 int openpete_native_present_stage_release(void)
@@ -10233,5 +10240,10 @@ void openpete_native_render_shutdown(void)
     memset(&s_diff_stats, 0, sizeof(s_diff_stats));
 
     memset(&s_nr, 0, sizeof(s_nr));
+    if (rhi_seam_violations())
+        OPL_ERROR_F("native", "display-seam fence: %u call(s) reached the device "
+                    "from a thread that did not own the display (see SEAM lines; "
+                    "OPENPETE_SEAM_GUARD_FATAL=1 aborts at the first)",
+                    rhi_seam_violations());
     OPL_INFO_F("native", "Vulkan native renderer window shut down");
 }

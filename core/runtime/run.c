@@ -2233,6 +2233,12 @@ static int run_host_loop(const openpete_options_t* opts) {
     /* Which half of the input seam this thread owns (see run_host_init). */
     const bool split = openpete_split_applies(opts);
 
+    /* The device was created during init — under the thread split that was
+     * main — but inline presents come from THIS thread; the display's seam
+     * fence needs the ownership stated, not inferred from who created what.
+     * Eager's engage/disengage re-claims at every later handoff. */
+    openpete_native_display_claim();
+
     openpete_host_fiber = co_active();
     /* 8 MB fiber stack — Spyro's deepest reasonable call chain is well under
      * 1 MB but PSYQ + recompiler shadow stacks add up; budget generously. */
