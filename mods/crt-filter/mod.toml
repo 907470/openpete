@@ -11,7 +11,7 @@ version = "0.1.0"
 api     = 1
 state    = "none"      # GPU-only postfx
 runahead = "pure"      # no tick hooks
-sim_neutral = true  # GPU-only presentation: excluded from the save modset tag
+sim_mutative = false  # writes no guest RAM: outside the save modset tag
 
 # Settings schema — the engine renders these rows in the Mods panel and
 # writes committed edits back into config.toml (comments preserved);

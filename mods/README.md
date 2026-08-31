@@ -104,8 +104,10 @@ deps    = ["other-mod"]   # hard deps (topo-sorted, cycles rejected)
 state   = "none"          # none | rebuildable — host-state posture;
 runahead = "pure"         # pure | host-fx — both gate savestate/
                           # rewind/runahead with mods enabled
-sim_neutral = true        # observer/presentation-only: excluded from
-                          # the save modset tag
+sim_mutative = false      # this mod never writes guest RAM, so it is
+                          # excluded from the save modset tag. Omit it:
+                          # no C and no [[level]] derives non-mutative,
+                          # anything else is assumed to mutate
 
 [[binding]]               # declared host keys (conflicts are reported).
 name = "warp"             # Players rebind these in openpete.toml via

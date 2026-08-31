@@ -11,4 +11,4 @@ version = "0.1.0"
 api     = 1
 state    = "none"      # one-shot entry probe, no hooks
 runahead = "pure"      # no tick hooks at all
-sim_neutral = true  # allocation alone touches no canonical RAM
+sim_mutative = false  # allocation alone touches no canonical RAM

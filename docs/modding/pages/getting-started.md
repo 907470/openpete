@@ -84,7 +84,7 @@ chain.
     name    = "Hello"
     version = "0.1.0"
     api     = 2
-    sim_neutral = true   # log-only observer: never touches guest state
+    sim_mutative = false # log-only observer: never writes guest RAM
     ```
 
 2.  Write the source to `mods/hello/src/hello.c`:
@@ -166,9 +166,10 @@ attributed to the innermost mod on the override stack.
   `call`, and registrations all belong in tick context, which means
   inside overrides or your entry point. Present hooks are render-pure,
   and the loader enforces it.
-- **Declare whether you change gameplay.** Writing guest RAM is fine,
-  and it's what a gameplay mod is for. Say so by leaving `sim_neutral`
-  off, and set `sim_neutral = true` only when your mod never writes it.
-  See [Concepts](concepts.md#whether-your-mod-changes-gameplay).
+- **Say so if your C never writes guest RAM.** A mod that ships C is
+  assumed to change gameplay, which keeps the player's saves tagged
+  honestly. Set `sim_mutative = false` when yours doesn't. A mod with no
+  C needs no declaration at all. See
+  [Concepts](concepts.md#whether-your-mod-changes-gameplay).
 - **Keep game data out of your repository and your zip.** Ship
   generators, not rips.

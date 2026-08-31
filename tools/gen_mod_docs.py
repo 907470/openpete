@@ -378,13 +378,16 @@ def gen_gallery(mods_dir: Path) -> str:
         bits = [f"v{fields.get('version', '?')}"]
         if "tier" in fields:
             bits.append(f"tier: {fields['tier']}")
-        if fields.get("sim_neutral") == "true":
-            bits.append("sim-neutral")
         srcs = sorted(p.name for p in (toml.parent / "src").glob("*.c"))
+        sm = fields.get("sim_mutative")
+        mutative = (sm == "true") if sm in ("true", "false") \
+            else bool(srcs) or "[[level]]" in text
+        if not mutative:
+            bits.append("writes no guest RAM")
         if srcs:
             bits.append("src: " + ", ".join(f"`{s}`" for s in srcs))
         else:
-            bits.append("assets-only")
+            bits.append("declarative")
         out.append(" · ".join(bits) + "\n")
         if desc:
             out.append(md_prose(" ".join(desc)) + "\n")

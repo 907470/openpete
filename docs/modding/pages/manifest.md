@@ -21,9 +21,11 @@ runahead = "pure"         # "pure" (tick hooks touch guest state only)
                           # or "host-fx" (host side effects, engine-
                           # suppressed during speculative ticks) —
                           # gates runahead
-sim_neutral = true        # presentation-only: the mod never writes
-                          # guest RAM, so it stays out of the save
-                          # compatibility tag
+sim_mutative = false      # this mod never writes guest RAM, so it
+                          # stays out of the save compatibility tag.
+                          # Omit it: a mod that ships no C and claims
+                          # no [[level]] is derived non-mutative, and
+                          # anything else is assumed to mutate
 
 [[binding]]               # declared host keys — conflicts across the
 name    = "warp"          # enabled set are reported at load; resolve

@@ -38,7 +38,6 @@ version = "0.1.0"
 api     = 5            # pillar 10: materials
 state    = "none"      # GPU-only; nothing to save
 runahead = "pure"      # no tick hooks
-sim_neutral = true
 
 # Spyro himself, tinted warm. He is NOT a moby, so a moby row never hits him.
 [[material]]

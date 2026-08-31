@@ -549,8 +549,8 @@ static void mod_row_tooltip(const openpete_mods_menu_info_t *mi)
     ImGui::BeginTooltip();
     ImGui::PushTextWrapPos(ImGui::GetFontSize() * 30.0f);
     ImGui::Text("%s v%s", mi->id, mi->version);
-    if (mi->sim_neutral)
-        ImGui::TextDisabled("sim-neutral observer (outside the save "
+    if (!mi->sim_mutative)
+        ImGui::TextDisabled("writes no guest RAM (outside the save "
                             "modset tag)");
     if (!mi->entered)
         ImGui::TextDisabled("not started yet — enabling runs the mod at "

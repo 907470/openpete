@@ -11,4 +11,4 @@ version = "0.1.0"
 api     = 1
 state    = "none"     # counts calls; nothing guest-history-derived
 runahead = "host-fx"  # the hook logs — engine-suppressible speculation
-sim_neutral = true  # observer/presentation-only: excluded from the save modset tag
+sim_mutative = false  # writes no guest RAM: outside the save modset tag

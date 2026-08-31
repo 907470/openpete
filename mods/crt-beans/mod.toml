@@ -14,7 +14,7 @@ version = "1.0.0"
 api     = 1
 state    = "none"      # GPU-only postfx chain
 runahead = "pure"      # no tick hooks
-sim_neutral = true  # GPU-only presentation: excluded from the save modset tag
+sim_mutative = false  # writes no guest RAM: outside the save modset tag
 
 [[config]]
 key = "crt.max_spot_size"

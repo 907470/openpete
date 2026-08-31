@@ -58,21 +58,36 @@ a present hook, they live for one present.
 ## Whether your mod changes gameplay
 
 Some mods change what the game does; others only change what the player
-sees. Which one yours is decides one manifest key, and openpete uses it
-to keep saves straight.
+sees. openpete needs to know which yours is, so that it can keep the
+player's saves straight.
 
-- **Observers and presentation mods**, such as HUD, shader, sound
-  overlay, and texture mods, never write guest RAM. Declare
-  `sim_neutral = true`. The sound overlay, the draw service, and the
-  texture service can't write it even if you wanted them to, because
-  each substitutes on the host side.
-- **Gameplay mods**, such as rule changes, spawns, and model swaps,
-  exist to write guest RAM. Leave `sim_neutral` off.
+Most of the time it works this out on its own. A mod that ships no C and
+claims no `[[level]]` has no way to reach guest RAM, so the engine knows
+it can't change gameplay and you declare nothing. The draw service, the
+sound overlay, and the texture service can't write guest RAM either,
+because each substitutes on the host side.
+
+Once your mod ships C, the engine can't tell what that C does, so it
+assumes the mod changes gameplay. If yours doesn't, say so:
+
+``` toml
+[mod]
+sim_mutative = false   # this mod never writes guest RAM
+```
+
+Get it wrong in the cautious direction and the player sees a save
+warning they didn't need. Get it wrong the other way and a card quietly
+records progress it can't reproduce, which is why the assumption runs
+the way it does.
+
+### What the answer is used for
 
 openpete tags a memory card with the gameplay mods that were loaded when
-it was written, and warns the player before mixing that card with a
-different set. Declaring `sim_neutral` keeps your mod out of the tag, so
-a purely visual mod never makes a player's card look incompatible.
+it was first written, and warns the player before mixing that card with
+a different set. Progress is never blocked, and the tag only changes
+when the player passes `--adopt-saves`. A mod that writes no guest RAM
+stays out of the tag, so a purely visual mod never makes a card look
+incompatible.
 
 ## Guest memory
 

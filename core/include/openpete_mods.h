@@ -206,7 +206,8 @@ typedef struct {
     int entered;         /* openpete_mod_entry has run (deferred-entry
                           * load-all: boot-disabled mods enter on first
                           * enable) */
-    int sim_neutral;     /* manifest declaration (observer tier) */
+    int sim_mutative;    /* effective verdict: does the mod write guest
+                          * RAM? Declared, or derived by the engine. */
     int has_ui;          /* a UI section (register_ui / annex descriptor)
                           * or a live ui_status block */
     int has_assets;      /* assets/ overlay root (boot-scoped tier) */
@@ -305,8 +306,8 @@ void openpete_mods_time_report(unsigned ticks_elapsed);
 const char* openpete_mods_crash_attribution(uint32_t* addr_out);
 
 /* Per-modset save safety: canonical tag of the loaded gameplay-relevant
- * modset ("id@ver+id@ver", ids sorted; mods declaring sim_neutral=true
- * excluded). "" = vanilla. Stable after openpete_mods_init(); consumed
+ * modset ("id@ver+id@ver", ids sorted; mods that do not write guest
+ * RAM excluded). "" = vanilla. Stable after openpete_mods_init(); consumed
  * by core/host/memcard.c to tag cards + warn on mismatch. */
 const char* openpete_mods_modset_tag(void);
 

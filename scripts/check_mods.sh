@@ -382,11 +382,11 @@ else
 fi
 
 # ── 14. per-modset save safety: tag + warn + adopt (memcard sidecar) ────
-# The modset tag ("id@ver+...", sim_neutral mods excluded) is checked at
+# The modset tag ("id@ver+...", non-mutative mods excluded) is checked at
 # engine startup against the card's sidecar. Five flows, ~300 frames each:
 # fresh-vanilla silence, vanilla-card+mods warn, mismatch warn, explicit
-# adopt (sidecar rewritten), tagged-card+vanilla warn. The last uses a
-# sim_neutral observer to prove neutral mods don't taint the tag.
+# adopt (sidecar rewritten), tagged-card+vanilla warn. The last uses an
+# observer to prove a mod that writes no guest RAM doesn't taint the tag.
 say "save safety: modset tag / warn / adopt on the memcard sidecar"
 CARDS="$WORK/cards"; mkdir -p "$CARDS"
 fixture "$WORK/ss-gems" double-gems
@@ -423,9 +423,32 @@ else
 fi
 out="$(mc_run --mods-dir "$WORK/ss-observer")"
 if printf '%s\n' "$out" | grep -q "but no mods are active"; then
-    ok "tagged card + observer-only modset: warned (sim_neutral excluded from tag)"
+    ok "tagged card + observer-only modset: warned (non-mutative excluded from tag)"
 else
-    bad "tagged-card/vanilla warning missing (sim_neutral exclusion broken?)"
+    bad "tagged-card/vanilla warning missing (non-mutative exclusion broken?)"
+fi
+
+# Whether a mod joins the tag is DERIVED when the manifest is silent: a
+# mod that loads no code object still changes gameplay if it claims a
+# level slot. Contrast two mods of the identical shape (declarative, no
+# .so, no sim_mutative key) whose only difference is [[level]] — the
+# level mod must be tagged and the asset mod must not.
+fixture "$WORK/ss-level" grim-garden
+fixture "$WORK/ss-assets" music-swap
+rm -f "$CARDS/card1.mcr.modset"
+dd if=/dev/zero of="$CARDS/card1.mcr" bs=1024 count=128 2>/dev/null
+mc_run --mods-dir "$WORK/ss-level" --adopt-saves >/dev/null 2>&1
+if grep -q "^grim-garden@" "$CARDS/card1.mcr.modset" 2>/dev/null; then
+    ok "custom-level mod joins the tag (derived mutative without code)"
+else
+    bad "level mod absent from the tag — the [[level]] derivation broke"
+fi
+rm -f "$CARDS/card1.mcr.modset"
+mc_run --mods-dir "$WORK/ss-assets" --adopt-saves >/dev/null 2>&1
+if [ ! -e "$CARDS/card1.mcr.modset" ]; then
+    ok "asset-only mod stays out of the tag (derived non-mutative)"
+else
+    bad "asset-only mod tagged the card: $(cat "$CARDS/card1.mcr.modset")"
 fi
 
 # ── 15. zip mods: folder or zip, identical (P1 build+load) ──────────────

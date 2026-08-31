@@ -184,10 +184,9 @@ struct openpete_mod {
                         * guest RAM) — gates savestate/rewind arming */
     char  ra_decl;     /* manifest runahead: 0 undeclared, 'p' pure,
                         * 'h' host-fx — gates speculative re-execution */
-    int   sim_neutral; /* [mod] sim_neutral=true: author declares the mod
-                        * never diverges gameplay state (observers/HUD/
-                        * presentation) — excluded from the save modset
-                        * tag. Advisory, like tier. */
+    int   sim_mutative; /* [mod] sim_mutative: -1 undeclared (the engine
+                        * derives it), 0 the mod never writes guest RAM,
+                        * 1 it does. Drives the save modset tag. */
     mod_binding_t bindings[MOD_BINDINGS_MAX]; /* declared host keys */
     int   n_bindings;
     mod_cfg_row_t cfg_rows[MOD_CFG_ROWS_MAX]; /* [[config]] schema */
@@ -715,6 +714,8 @@ unsigned openpete_mods_toggle_epoch(void) { return s_toggle_epoch; }
 
 typedef struct { unsigned tick; char id[MOD_ID_MAX]; int on; } toggle_sched_t;
 static toggle_sched_t s_toggle_sched[16];
+static int mod_is_mutative(const struct openpete_mod* m);
+
 static int            s_toggle_sched_n = 0;
 
 int         openpete_mods_count(void) { return s_mod_count; }
@@ -735,7 +736,7 @@ int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out) {
     out->version     = m->version;
     out->enabled     = m->enabled;
     out->entered     = m->entered;
-    out->sim_neutral = m->sim_neutral;
+    out->sim_mutative = mod_is_mutative(m);
     out->has_ui      = m->ui_body != NULL || m->status_n > 0;
     out->has_assets  = m->has_assets;
     out->has_src     = m->has_src;
@@ -970,9 +971,20 @@ int openpete_mods_state_safe(const char** offender) {
     return 1;
 }
 
+/* Does this mod write guest RAM? An explicit sim_mutative wins. With
+ * none, the engine proves the answer where it can: a mod that loads no
+ * code object has no path to guest RAM at all, and a mod that claims a
+ * level slot changes what the player is progressing through. Everything
+ * else is assumed to mutate, so a forgotten declaration produces a
+ * spurious save warning rather than a silently mistagged card. */
+static int mod_is_mutative(const struct openpete_mod* m) {
+    if (m->sim_mutative >= 0) return m->sim_mutative;
+    return (m->dl != NULL) || (m->n_levels > 0);
+}
+
 /* Save modset tag (per-modset save safety): the canonical identity of
  * the running gameplay-relevant modset — "id@ver+id@ver", ids sorted,
- * sim_neutral mods excluded. Empty string = vanilla. Consumed by the
+ * non-mutative mods excluded. Empty string = vanilla. Consumed by the
  * host memcard module to tag save cards and warn on mismatch. */
 static char s_tag[1024];
 static int  s_tag_built = 0;
@@ -989,7 +1001,7 @@ const char* openpete_mods_modset_tag(void) {
     const struct openpete_mod* picked[MODS_MAX];
     int n = 0;
     for (int i = 0; i < s_mod_count; i++)
-        if (s_mods[i].dl && s_mods[i].entered && !s_mods[i].sim_neutral)
+        if (s_mods[i].entered && mod_is_mutative(&s_mods[i]))
             picked[n++] = &s_mods[i];
     for (int i = 1; i < n; i++) {
         const struct openpete_mod* m = picked[i];
@@ -1239,10 +1251,22 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
         if (!mod->name[0])
             snprintf(mod->name, sizeof mod->name, "%s", mod->id);
     }
-    /* sim_neutral = true: author-declared observer/presentation-only —
-     * excluded from the save modset tag (per-modset save safety). */
+    /* sim_mutative: does this mod write guest RAM? Undeclared leaves it
+     * to mod_is_mutative(), which can prove the answer for a mod that
+     * ships no code and claims no level. */
+    toml_datum_t sm = toml_bool_in(t, "sim_mutative");
+    mod->sim_mutative = sm.ok ? (sm.u.b ? 1 : 0) : -1;
+    /* The key was once spelled sim_neutral, with the opposite sense.
+     * Honour it with a warning rather than ignoring it: silently
+     * dropping the old spelling would move a mod into the save modset
+     * tag without anyone noticing. */
     toml_datum_t sn = toml_bool_in(t, "sim_neutral");
-    mod->sim_neutral = (sn.ok && sn.u.b) ? 1 : 0;
+    if (sn.ok) {
+        OPL_WARN_F("mods", "%s: sim_neutral is obsolete — write "
+                   "sim_mutative = %s instead (the sense is inverted)",
+                   mod->id, sn.u.b ? "false" : "true");
+        if (!sm.ok) mod->sim_mutative = sn.u.b ? 0 : 1;
+    }
     /* Hard dependencies: deps = ["other-mod", ...]. Topo-sorted before
      * loading (a dep's entry runs before its dependents'); a missing or
      * cyclic dep disables the mod with an actionable error. */
