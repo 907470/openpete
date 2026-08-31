@@ -106,8 +106,8 @@ static int  s_pack_n = 0;
 static char s_repl_dir[512];
 static int  s_repl_active = 0;
 /* Layered sources (asset-overlay v1): [0] = the base pack dir; then one
- * per enabled mod with an assets/textures/replacements/ dir, in enabled
- * order. A later source shipping the SAME identity replaces the earlier
+ * per enabled mod with an assets/textures/ dir, in enabled order. A
+ * later source shipping the SAME identity replaces the earlier
  * entry at scan time (last-writer-wins — the overlay's single priority
  * truth), logged for the resolved-asset assert. */
 #define TP_SRC_MAX 17
@@ -172,7 +172,11 @@ static tp_match_slot s_match[TP_MATCH_SLOTS];
 
 /* Scan one source dir into s_pack. A duplicate identity REPLACES the
  * existing entry in place (last-writer-wins across sources). Returns
- * entries touched (added or overridden). */
+ * entries touched (added or overridden).
+ *
+ * Only loose *.png files in the dir itself are entries; the scan is flat,
+ * so sibling subdirectories that live under the same textures/ root (such
+ * as own/, the declarative own-texture ids) are skipped. */
 static int tp_scan_dir(int src)
 {
     DIR *d = opendir(s_srcs[src].dir);
@@ -253,7 +257,7 @@ static int tp_add_root_source(int r)
     if (!root) return 0;
     int si = s_src_n;
     snprintf(s_srcs[si].dir, sizeof s_srcs[si].dir,
-             "%s/textures/replacements", root);
+             "%s/textures", root);
     snprintf(s_srcs[si].label, sizeof s_srcs[si].label, "mod %s",
              owner ? owner : "?");
     snprintf(s_srcs[si].owner, sizeof s_srcs[si].owner, "%s",
@@ -499,7 +503,7 @@ static void tp_repl_scan(void)
     } else {
         const char *base = SDL_GetBasePath();
         if (!base) return;
-        snprintf(s_repl_dir, sizeof s_repl_dir, "%sassets/textures/replacements", base);
+        snprintf(s_repl_dir, sizeof s_repl_dir, "%sassets/textures", base);
     }
     s_src_n = 0;
     snprintf(s_srcs[0].dir, sizeof s_srcs[0].dir, "%s", s_repl_dir);
@@ -515,7 +519,7 @@ static void tp_repl_scan(void)
         char user[512];
         if (openpete_paths_data_dir("assets", user, sizeof user, 0) == 0) {
             char dir[sizeof s_srcs[0].dir];
-            snprintf(dir, sizeof dir, "%s/textures/replacements", user);
+            snprintf(dir, sizeof dir, "%s/textures", user);
             if (strcmp(dir, s_repl_dir) != 0 && s_src_n < TP_SRC_MAX) {
                 int si = s_src_n;
                 snprintf(s_srcs[si].dir, sizeof s_srcs[si].dir, "%s", dir);

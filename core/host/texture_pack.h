@@ -91,7 +91,7 @@ void texture_pack_set_dir_override(const char *dir);
 
 /* True if a replacement directory exists and holds at least one PNG.
  * Dir: --texpack-dir, else $OPENPETE_TEXPACK_DIR, else
- * <exe>/assets/textures/replacements/. Cheap flag read — callable per drawn run. */
+ * <exe>/assets/textures/. Cheap flag read — callable per drawn run. */
 int texture_pack_replacements_active(void);
 
 /* A matched replacement: the image plus the FILE's texel box (upload-

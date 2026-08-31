@@ -50,7 +50,8 @@ to pin, so an asset-only mod can't break across engine updates because
 it has no ABI at all. The engine picks the files up by convention:
 
 ```
-assets/textures/replacements/*.png    HD texture replacement (native renderer)
+assets/textures/*.png                 HD texture replacement (native renderer)
+assets/textures/own/<hexid>.png       custom texture registered under its own id
 assets/music/*.wav                    per-track music replacement
 assets/sounds/*.wav                   mod-local one-shots (sfx_play / [[binding]])
 assets/levels/<stem>.WAD

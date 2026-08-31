@@ -271,10 +271,10 @@ fi
 
 say "asset overlay: two mods collide on one asset — last in order wins (rung 10)"
 for m in duel-a duel-b; do
-    mkdir -p "$WORK/duelsrc/$m/assets/textures/replacements"
+    mkdir -p "$WORK/duelsrc/$m/assets/textures"
     printf '[mod]\nid = "%s"\nversion = "0.0.1"\napi = '"$API_VER"'\n' "$m" \
         > "$WORK/duelsrc/$m/mod.toml"
-    python3 - "$WORK/duelsrc/$m/assets/textures/replacements/title_ui.png" <<'PY'
+    python3 - "$WORK/duelsrc/$m/assets/textures/title_ui.png" <<'PY'
 import sys, zlib, struct
 w = h = 8
 raw = b''.join(b'\x00' + b'\xff\x00\x00\xff' * w for _ in range(h))

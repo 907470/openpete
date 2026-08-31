@@ -703,8 +703,8 @@ typedef struct openpete_options {
 
     /* --texpack-dir PATH: directory of HD texture-replacement PNGs (the texture
      * pack). NULL = unset (defer to the OPENPETE_TEXPACK_DIR env, else the
-     * built-in <exe>/assets/textures/replacements/). Native renderer only;
-     * display-only, never perturbs gameplay state. */
+     * built-in <exe>/assets/textures/). Native renderer only; display-only,
+     * never perturbs gameplay state. */
     const char* texpack_dir;
 
     /* --mods-dir PATH: mods root (each subdir with a mod.toml is a mod;

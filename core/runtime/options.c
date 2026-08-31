@@ -399,7 +399,7 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             perspective-correct) | affine (PSX screen-linear = the original\n"
         "                             PS1 texture swim/warp). Native renderer only. Display-only.\n"
         "  --texpack-dir PATH         directory of HD texture-replacement PNGs (default: env OPENPETE_TEXPACK_DIR,\n"
-        "                             else <exe>/assets/textures/replacements/). Native renderer only.\n"
+        "                             else <exe>/assets/textures/). Native renderer only.\n"
         "  --mods-dir PATH            mods root: each subdir with a mod.toml is a mod, compiled on load;\n"
         "                             enabled.txt fixes order (= priority). Default: env OPENPETE_MODS_DIR,\n"
         "                             else <exe>/mods. No directory = no mods, byte-identical vanilla.\n"
