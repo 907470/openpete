@@ -2023,7 +2023,6 @@ static bool ensure_swapchain(rhi_device *dev)
 static bool begin_frame_impl(rhi_device *dev, bool acquire)
 {
     if (!ensure_swapchain(dev)) return false;
-    s_frame_serial++;
 
     {
         /* Do not BLOCK on the slot's previous submission — poll it.
@@ -2111,6 +2110,15 @@ static bool begin_frame_impl(rhi_device *dev, bool acquire)
         .flags = VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT,
     };
     vkBeginCommandBuffer(cb, &bi);
+    /* The frame serial counts frames that actually BEGAN — slot fence
+     * retired, image acquired, command buffer recording. Counting refused
+     * begins broke the promise scene retirement is built on ("a frame
+     * RHI_FRAMES_IN_FLIGHT serials back has had its fence waited"): a
+     * refusal burst could advance the serial without ever observing the
+     * oldest slot's fence, retiring scenes and freeing arena ranges a
+     * still-executing submission reads. Every counted begin is followed by
+     * its submit, so slot alternation is exact and the promise holds. */
+    s_frame_serial++;
     dev->frame_active = true;
     dev->draw_calls = 0;
     if (dev->gpu_timers) {
