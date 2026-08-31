@@ -1,7 +1,11 @@
 # openpete modding
 
-openpete is a PC port of Spyro the Dragon, with a mod framework designed
-to reach deeper into the game than any other unofficial port.
+!!! warning "Mods are native programs"
+
+    A mod's C source compiles and loads into the game process with the
+    same privileges as the game itself. There is no sandbox and no
+    signing. Install only mods that you trust, exactly as you would any
+    other program.
 
 ### Declarative modding
 
@@ -84,21 +88,3 @@ already ships.
   [globals](reference/globals.md),
   [game structs](reference/structs.md), and the
   [example gallery](reference/gallery.md).
-
-## Before you install a mod
-
-!!! warning "Mods are native programs"
-A mod's C source compiles and loads into the game process with the
-same privileges as the game itself. There is no sandbox and no
-signing. Install only mods that you trust, exactly as you would any
-other program.
-
-openpete names the offending mod in a crash report, names slow mods in
-the per-mod time instrument, and warns you when a memory card was played
-under a different set of mods. None of that is a security boundary.
-
-Mods must not ship game-derived data, such as models, textures, or audio
-ripped from a Spyro disc. Ship a generator that derives those assets
-from the player's own disc instead. For the pattern, see
-`recolored-artisans` and `spyro3` in the
-[example gallery](reference/gallery.md).
