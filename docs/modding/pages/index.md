@@ -5,13 +5,7 @@ gameplay that stays bit-identical to original PlayStation hardware. Its
 mod framework is designed to reach deeper than any other unofficial port
 of the game.
 
-## Two tiers, neither one primary
-
-openpete has a declarative tier and a code tier. They aren't a beginner
-path and an expert path: they reach different things, and a mod is free
-to use one, the other, or both at once.
-
-### The declarative tier
+### Declarative modding
 
 A mod is declarative in whatever it expresses through `mod.toml` and
 files, with nothing to compile. The following mod is complete and
@@ -23,7 +17,7 @@ mods/my-music/
   assets/music/track_20.wav
 ```
 
-``` toml
+```toml
 [mod]
 id      = "my-music"
 name    = "My title theme"
@@ -42,26 +36,26 @@ levels (`[[level]]`), re-shade the geometry the engine already draws
 something hands the engine the plumbing behind it. Nothing here
 compiles, so these parts carry no ABI and no API version to track.
 
-### The code tier
+### Code modding
 
 C reaches what a declaration can't: the game's own functions and state.
 The engine compiles your source on load against a generated SDK, and
 hooks the game through a per-function override chain that intercepts
 every call without patching any code:
 
-``` c
+```c
 #include <openpete_mod_api.h>
 
-static const openpete_mod_api_t* A;
-static openpete_mod_t* SELF;
+static const openpete_mod_api_t* g_api;
+static openpete_mod_t* g_self;
 
 static void on_camera_update(CPUState* cpu) {
-    A->log(SELF, OP_MOD_LOG_INFO, "hello from the override chain");
-    A->base(cpu);              /* fall through to the original */
+    g_api->log(g_self, OP_MOD_LOG_INFO, "hello from the override chain");
+    g_api->base(cpu);              /* fall through to the original */
 }
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
-    A = api; SELF = self;
+    g_api = api; g_self = self;
     return api->override_name(self, "CameraUpdate", on_camera_update);
 }
 ```
@@ -77,10 +71,6 @@ Nothing makes you choose. Declaring a code mod's settings with
 rebound for you, so you write no widget code. A `[[material]]` mod can
 add C later to select on runtime state, without changing the rows it
 already ships.
-
-Among the example mods, `hud-stopwatch`, `crt-filter`, and `spyro3` ship
-both tiers; `declarative-reshade` and `grim-garden` ship a manifest
-alone; and `double-gems` and `hello-anchor` ship only C.
 
 ## What to read next
 
@@ -100,10 +90,10 @@ alone; and `double-gems` and `hello-anchor` ship only C.
 ## Before you install a mod
 
 !!! warning "Mods are native programs"
-    A mod's C source compiles and loads into the game process with the
-    same privileges as the game itself. There is no sandbox and no
-    signing. Install only mods that you trust, exactly as you would any
-    other program.
+A mod's C source compiles and loads into the game process with the
+same privileges as the game itself. There is no sandbox and no
+signing. Install only mods that you trust, exactly as you would any
+other program.
 
 openpete names the offending mod in a crash report, names slow mods in
 the per-mod time instrument, and warns you when a memory card was played
@@ -114,11 +104,3 @@ ripped from a Spyro disc. Ship a generator that derives those assets
 from the player's own disc instead. For the pattern, see
 `recolored-artisans` and `spyro3` in the
 [example gallery](reference/gallery.md).
-
-## How the reference stays accurate
-
-The build regenerates the reference section whenever the API header, the
-symbol manifests, or the mod gallery change. `tools/gen_mod_docs.py`
-performs the extraction, and the `mod_docs` CMake target runs it. The
-prose in those pages comes from the same headers your mod compiles
-against, so there is no second copy of the truth to fall out of date.

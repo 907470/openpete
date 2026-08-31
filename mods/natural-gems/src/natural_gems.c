@@ -63,8 +63,7 @@ OP_OVERRIDE_IMPL_CollectItem(my_collect) {
 
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
-    g_api = api;
-    g_self = self;
+    g_api = api; g_self = self;
     publish_status();
     return OP_REGISTER_OVERRIDE_CollectItem(api, self, my_collect);
 }

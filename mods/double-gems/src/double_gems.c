@@ -44,8 +44,7 @@ static void on_collect_item(CPUState* cpu) {
 
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
-    g_api = api;
-    g_self = self;
+    g_api = api; g_self = self;
     publish_status();
     return api->override_name(self, "CollectItem", on_collect_item);
 }

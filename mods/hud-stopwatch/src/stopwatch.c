@@ -92,8 +92,7 @@ static void on_present(const openpete_present_ctx_t* ctx) {
 }
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
-    g_api = api;
-    g_self = self;
+    g_api = api; g_self = self;
     g_text_x = (float)api->config_float(self, "layout.x", 0.022);
     g_text_y = (float)api->config_float(self, "layout.y", 0.058);
     g_cap_h  = (float)api->config_float(self, "layout.cap_height", 0.026);

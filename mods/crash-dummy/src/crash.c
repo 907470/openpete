@@ -56,8 +56,7 @@ static void on_camera_update(CPUState* cpu) {
 
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
-    g_api = api;
-    g_self = self;
+    g_api = api; g_self = self;
     g_auto_armed = api->config_bool(self, "crash.auto_arm", 1);
     publish_status();
     return api->override_name(self, "CameraUpdate", on_camera_update);

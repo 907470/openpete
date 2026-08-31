@@ -396,8 +396,8 @@ static void ui(const openpete_mod_ui_t* ui) {
 OPENPETE_MOD_UI_SECTION(ui)
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
-    if (api->api_version < 6u) return -1;   /* material_set_selector */
     g_api = api; g_self = self;
+    if (api->api_version < 6u) return -1;   /* material_set_selector */
 
     g_shader = api->shader_register(self, "shaders/highlight.frag");
     g_shader_decal = api->shader_register(self, "shaders/highlight_decal.frag");

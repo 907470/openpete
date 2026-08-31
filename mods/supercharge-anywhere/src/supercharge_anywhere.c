@@ -347,8 +347,7 @@ static void publish_status(void) {
 }
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
-    g_api  = api;
-    g_self = self;
+    g_api = api; g_self = self;
 
     g_enabled = api->config_bool(self, "start_enabled", 1);
     g_debug   = api->config_bool(self, "debug", 0);

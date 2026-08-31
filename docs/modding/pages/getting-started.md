@@ -92,18 +92,18 @@ chain.
     ``` c
     #include <openpete_mod_api.h>
 
-    static const openpete_mod_api_t* A;
-    static openpete_mod_t* SELF;
+    static const openpete_mod_api_t* g_api;
+    static openpete_mod_t* g_self;
     static unsigned calls;
 
     static void on_camera_update(CPUState* cpu) {
         if ((++calls % 300u) == 0u)   /* ~every 10 s at 29.913 ticks/s */
-            A->log(SELF, OP_MOD_LOG_INFO, "CameraUpdate call #%u", calls);
-        A->base(cpu);                 /* pre-hook: us first, original last */
+            g_api->log(g_self, OP_MOD_LOG_INFO, "CameraUpdate call #%u", calls);
+        g_api->base(cpu);                 /* pre-hook: us first, original last */
     }
 
     int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
-        A = api; SELF = self;
+        g_api = api; g_self = self;
         return api->override_name(self, "CameraUpdate", on_camera_update);
     }
     ```

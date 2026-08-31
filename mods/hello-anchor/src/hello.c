@@ -36,8 +36,7 @@ static void on_camera_update(CPUState* cpu) {
  * it only reads host-side state the hook publishes. */
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
-    g_api = api;
-    g_self = self;
+    g_api = api; g_self = self;
     /* No version check: mod.toml's `api` pin is the minimum this mod
      * needs, and the loader refuses an older engine before entry. */
     publish_status();
