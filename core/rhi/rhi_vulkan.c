@@ -1643,8 +1643,39 @@ static bool recreate(rhi_device *dev)
     dev->present_id_next = 1;
     dev->present_id_submitted = 0;
     dev->present_id_seen = 0;
+    /* The acquire semaphores and slot fences start over too. A binary
+     * acquire semaphore can be left ARMED with no waiter (an acquire whose
+     * frame was refused or superseded before its submit), and Vulkan has no
+     * way to un-signal one: handing it to vkAcquireNextImageKHR on the new
+     * swapchain is invalid reuse of a signaled semaphore. Likewise a slot
+     * fence can be left UNSIGNALED with nothing pending (reset after an
+     * acquire whose submit never happened), which would park the next wait
+     * on it for its full timeout. After the device-idle above nothing
+     * references any of them, so recreating the lot restores the freshly
+     * created state every acquire/wait path assumes. Any acquire still held
+     * died with its swapchain. */
+    {
+        VkSemaphoreCreateInfo si = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
+        VkFenceCreateInfo fi = {
+            .sType = VK_STRUCTURE_TYPE_FENCE_CREATE_INFO,
+            .flags = VK_FENCE_CREATE_SIGNALED_BIT,
+        };
+        for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
+            vkDestroySemaphore(dev->device, dev->img_avail[i], NULL);
+            VK_CHECK(vkCreateSemaphore(dev->device, &si, NULL, &dev->img_avail[i]));
+            vkDestroyFence(dev->device, dev->in_flight[i], NULL);
+            VK_CHECK(vkCreateFence(dev->device, &fi, NULL, &dev->in_flight[i]));
+        }
+        for (int i = 0; i < RHI_STAGE_RING; i++) {
+            vkDestroySemaphore(dev->device, dev->pimg_avail[i], NULL);
+            VK_CHECK(vkCreateSemaphore(dev->device, &si, NULL, &dev->pimg_avail[i]));
+            vkDestroyFence(dev->device, dev->pfence[i], NULL);
+            VK_CHECK(vkCreateFence(dev->device, &fi, NULL, &dev->pfence[i]));
+        }
+        dev->pacquired = false;
+    }
     destroy_swapchain_resources(dev);
-    if (!create_swapchain(dev)) return false;
+    if (!create_swapchain(dev)) return false;   /* also nulls images_in_flight */
     if (!create_offscreen(dev)) return false;
     if (!create_stages(dev)) return false;
     VkSemaphoreCreateInfo sem = { .sType = VK_STRUCTURE_TYPE_SEMAPHORE_CREATE_INFO };
