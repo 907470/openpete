@@ -7,7 +7,7 @@
 # output.
 
 site_name: openpete modding
-site_description: Mod-author documentation for openpete, generated from the SDK the mods compile against.
+site_description: Documentation for openpete mod authors, generated from the SDK that mods compile against.
 docs_dir: pages
 use_directory_urls: false
 
@@ -50,7 +50,7 @@ nav:
   - Home: index.md
   - Getting started: getting-started.md
   - Concepts: concepts.md
-  - Manifest & config: manifest.md
+  - Manifest and config: manifest.md
   - Shaders: shaders.md
   - Reference:
       - API: reference/api.md

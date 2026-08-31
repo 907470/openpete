@@ -1,10 +1,14 @@
 # openpete modding
 
 openpete is a PC port of Spyro the Dragon whose non-negotiable floor is
-**bit-identical gameplay with original PSX hardware** — and whose mod
-framework is designed to be the deepest of any unofficial port.
+gameplay that stays bit-identical to original PlayStation hardware. Its
+mod framework is designed to reach deeper than any other unofficial port
+of the game.
 
-The primary road needs no C at all. This is a complete, working mod:
+## Mod with files, not code
+
+The primary road needs no C at all. The following mod is complete and
+working:
 
 ```
 mods/my-music/
@@ -20,16 +24,18 @@ version = "1.0.0"
 api     = 1
 ```
 
-Add `my-music` to `mods/enabled.txt` and the title screen plays your
+Add `my-music` to `mods/enabled.txt`, and the title screen plays your
 track. Texture replacements, sound packs, and whole custom levels
-(`[[level]]`) work the same way: a manifest plus files under
-`assets/`, picked up by convention. A pure-asset mod has **no ABI**
-— nothing about it can break when the engine updates.
+(`[[level]]`) work the same way: a manifest plus files under `assets/`,
+picked up by convention. An asset-only mod has no ABI, so nothing about
+it can break when the engine updates.
 
-When you need behavior, the code tier goes as deep as any unofficial
-port has gone — plain C, compiled on load against a generated SDK,
-hooking the game through a per-function override chain that
-intercepts *every* call with zero patching:
+## Mod with code
+
+When you need behavior rather than content, write plain C. The engine
+compiles it on load against a generated SDK, and hooks the game through
+a per-function override chain that intercepts every call without
+patching any code:
 
 ``` c
 #include <openpete_mod_api.h>
@@ -48,44 +54,47 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
 }
 ```
 
-Drop that in `mods/hello/src/hello.c` with a three-line `mod.toml`
-and the engine compiles and loads it at boot — on every platform,
-with the bundled toolchain.
+Save that as `mods/hello/src/hello.c`, add a three-line `mod.toml`, and
+the engine compiles and loads it at boot with the bundled toolchain, on
+every supported platform.
 
-## Where to go
+## What to read next
 
-- **[Getting started](getting-started.md)** — anatomy of a mod, the
-  build/load pipeline, testing, hot reload.
-- **[Concepts](concepts.md)** — the override chain, tick vs present
-  contexts, sim-neutrality and the oracle, guest memory.
-- **[Manifest & config](manifest.md)** — every `mod.toml` key, plus
-  user-facing settings via `config.toml`.
-- **Reference** — generated from the same sources the compiler sees:
-  the [API](reference/api.md), all
+- [Getting started](getting-started.md): the anatomy of a mod, the build
+  and load pipeline, testing, and hot reload.
+- [Concepts](concepts.md): the override chain, tick and present
+  contexts, sim-neutrality and the oracle, and guest memory.
+- [Manifest and config](manifest.md): every `mod.toml` key, plus
+  player-facing settings in `config.toml`.
+- Reference, generated from the same sources the compiler sees: the
+  [API](reference/api.md), the
   [overridable functions](reference/functions.md),
   [globals](reference/globals.md),
-  [typed game structs](reference/structs.md), and the
+  [game structs](reference/structs.md), and the
   [example gallery](reference/gallery.md).
 
-## Trust posture — read this first
+## Before you install a mod
 
-**Mods are native programs.** A mod's C source is compiled and loaded
-into the game process with the same privileges as the game itself.
-There is no sandbox and no signing. **Install only mods you trust**,
-exactly as you would any other program. Crash reports name the
-offending mod, the per-mod time instrument names slow ones, and the
-save-safety tag warns when a memory card was played under a different
-modset — but none of that is a security boundary.
+!!! warning "Mods are native programs"
+    A mod's C source compiles and loads into the game process with the
+    same privileges as the game itself. There is no sandbox and no
+    signing. Install only mods that you trust, exactly as you would any
+    other program.
 
-Mods may not ship game-derived data (models, textures, audio ripped
-from any Spyro disc). Ship a **generator** that derives assets from the
-user's own disc instead — see `recolored-artisans` and `spyro3` in the
-[gallery](reference/gallery.md) for the pattern.
+openpete names the offending mod in a crash report, names slow mods in
+the per-mod time instrument, and warns you when a memory card was played
+under a different set of mods. None of that is a security boundary.
 
-## These docs never lie
+Mods must not ship game-derived data, such as models, textures, or audio
+ripped from a Spyro disc. Ship a generator that derives those assets
+from the player's own disc instead. For the pattern, see
+`recolored-artisans` and `spyro3` in the
+[example gallery](reference/gallery.md).
 
-The reference section is regenerated by the build whenever the API
-header, the symbol manifests, or the mod gallery change
-(`tools/gen_mod_docs.py`, wired into the `mod_docs` CMake target). The
-prose you read there is extracted from the same headers your mod
-compiles against — there is no second copy of the truth to rot.
+## How the reference stays accurate
+
+The build regenerates the reference section whenever the API header, the
+symbol manifests, or the mod gallery change. `tools/gen_mod_docs.py`
+performs the extraction, and the `mod_docs` CMake target runs it. The
+prose in those pages comes from the same headers your mod compiles
+against, so there is no second copy of the truth to fall out of date.

@@ -2,141 +2,166 @@
 
 ## Anatomy of a mod
 
-```
-mods/<id>/
-  mod.toml          manifest — see [Manifest & config](manifest.md)
-  config.toml       optional user-editable settings (api->config_*)
-  src/*.c           compiled on load against <exe>/sdk/
-  assets/           overlay root (textures/replacements/, music/,
-                    sounds/, levels/) — pure-asset mods need no src/
-  data/             per-mod persistent dir (created on demand)
-  .build/           the engine's compile cache (never commit)
-```
+A mod is a directory under `mods/` named for the mod's ID:
 
-A `<id>.zip` with `mod.toml` at the archive root loads identically —
-it is unpacked and content-cached automatically.
+| Path | Contents |
+|---|---|
+| `mod.toml` | The manifest. See [Manifest and config](manifest.md). |
+| `config.toml` | Optional player-editable settings, read through `api->config_*`. |
+| `src/*.c` | C sources, compiled on load against `<exe>/sdk/`. |
+| `assets/` | Overlay root: `textures/`, `music/`, `sounds/`, and `levels/`. An asset-only mod needs no `src/`. |
+| `data/` | Per-mod persistent directory, created on demand. |
+| `.build/` | The engine's compile cache. Don't commit it. |
 
-### Where `mods/` is
+A `<id>.zip` archive with `mod.toml` at its root loads identically. The
+engine unpacks it and caches it by content hash.
 
-The mods folder lives wherever the install keeps the files it writes,
-because the engine compiles mods in place:
+### Where the mods directory lives
 
-| Install                  | `mods/`                          |
-| ------------------------ | -------------------------------- |
-| Windows                  | next to `openpete-spyro1.exe`    |
-| Linux `.tar.xz`          | `~/.local/share/openpete/mods/`  |
-| Linux AppImage           | `~/.local/share/openpete/mods/`  |
-| any, `portable = true`   | next to the executable           |
+The engine compiles mods in place, so `mods/` sits wherever the install
+keeps the files it writes:
 
-An AppImage is a read-only file, so it is always the per-user path
-there. `--mods-dir DIR` (or `$OPENPETE_MODS_DIR`) overrides all of
-this — handy for developing against a checkout.
+| Install | Location of `mods/` |
+|---|---|
+| Windows | Next to `openpete-spyro1.exe` |
+| Linux `.tar.xz` | `~/.local/share/openpete/mods/` |
+| Linux AppImage | `~/.local/share/openpete/mods/` |
+| Any install with `portable = true` | Next to the executable |
 
-`mods/enabled.txt` lists enabled mods, one id per line — **the order IS
-the priority**: mods later in the list run first on shared overrides,
-and `base()` descends toward earlier mods, then the game's original
-code. To try a different set without editing the install, pass
-`--mods hello,other-mod` (same ordering rule; `--mods ""` runs vanilla).
+An AppImage is a read-only file, so it always uses the per-user path. To
+point the engine somewhere else, such as a development checkout, pass
+`--mods-dir DIR` or set `OPENPETE_MODS_DIR`. Either one overrides all of
+the preceding locations.
 
-## Your first mod: files, not code
+### How mods are enabled and ordered
 
-Start declarative. A manifest plus an `assets/` tree is a complete
-mod, and it is how most mods should ship — no compile step, no API
-version to pin, nothing that can break across engine updates:
+`mods/enabled.txt` lists the enabled mods, one ID per line. Order
+determines priority: mods later in the list run first on shared
+overrides, and `base()` descends toward earlier mods and then to the
+game's original code.
 
-- `assets/music/track_20.wav` replaces the title theme
-  (see `music-swap`).
-- `assets/textures/replacements/<name>.png` replaces a texture in the
-  native renderer (see `hd-single-texture`; the texture-dump tooling
-  names the files).
-- `assets/levels/<stem>.WAD` + `.OVL` plus a `[[level]]`
-  manifest block is a playable custom level — slot claim, warp row and
-  disc serving are all engine-side (see `grim-garden`).
+To run a different set for a single session without editing the install,
+pass `--mods hello,other-mod`. The same ordering rule applies, and
+`--mods ""` runs the game without mods.
 
-Reach for `src/*.c` when you need *behavior*, not content.
+## Create an asset-only mod
 
-## Hello, override chain
+Start declarative. A manifest plus an `assets/` tree is a complete mod,
+and it's how most mods should ship: no compile step, no API version to
+pin, and nothing that can break across engine updates.
 
-`mods/hello/mod.toml`:
+The engine picks up assets by convention:
 
-``` toml
-[mod]
-id      = "hello"
-name    = "Hello"
-version = "0.1.0"
-api     = 2
-sim_neutral = true   # log-only observer: never touches guest state
-```
+- `assets/music/track_20.wav` replaces the title theme. See
+  `music-swap`.
+- `assets/textures/<name>.png` replaces a texture in the
+  native renderer. See `hd-single-texture`. The texture-dump tooling
+  names these files for you.
+- `assets/levels/<stem>.WAD` and `<stem>.OVL`, plus a `[[level]]`
+  manifest block, make a playable custom level. The engine handles the
+  slot claim, the warp row, and disc serving. See `grim-garden`.
 
-`mods/hello/src/hello.c`:
+Reach for `src/*.c` only when you need behavior.
 
-``` c
-#include <openpete_mod_api.h>
+## Create a code mod
 
-static const openpete_mod_api_t* A;
-static openpete_mod_t* SELF;
-static unsigned calls;
+The following mod logs a line every few seconds from inside the override
+chain.
 
-static void on_camera_update(CPUState* cpu) {
-    if ((++calls % 300u) == 0u)   /* ~every 10 s at 29.913 ticks/s */
-        A->log(SELF, OP_MOD_LOG_INFO, "CameraUpdate call #%u", calls);
-    A->base(cpu);                 /* pre-hook: us first, original last */
-}
+1.  Write the manifest to `mods/hello/mod.toml`:
 
-int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
-    A = api; SELF = self;
-    return api->override_name(self, "CameraUpdate", on_camera_update);
-}
-```
+    ``` toml
+    [mod]
+    id      = "hello"
+    name    = "Hello"
+    version = "0.1.0"
+    api     = 2
+    sim_neutral = true   # log-only observer: never touches guest state
+    ```
 
-No version check in the code: `mod.toml`'s `api` pin is the **minimum**
-the mod needs, and the loader refuses an older engine before your entry
-runs. Never compare with `!=` — the struct is append-only, so an engine
-newer than your pin is exactly what you want. If one call needs a later
-api than the rest, guard that call alone with
-`if (api->api_version >= N)`.
+2.  Write the source to `mods/hello/src/hello.c`:
 
-Add `hello` to `mods/enabled.txt` and launch. The engine hashes your
-sources, compiles them with the bundled toolchain (a splash progress
-stage on cold boots, a no-op on warm ones), `dlopen`s the result and
-calls your entry. A compile failure disables the mod with the error in
-the log — it never bricks the launch.
+    ``` c
+    #include <openpete_mod_api.h>
 
-## The three tiers of reach
+    static const openpete_mod_api_t* A;
+    static openpete_mod_t* SELF;
+    static unsigned calls;
 
-1. **Named tier** — `api->override_name(self, "CameraUpdate", fn)`.
-   Stable across engine updates; names come from the
-   [function reference](reference/functions.md).
-2. **Prototyped** — functions with natural signatures get generated
-   wrappers: `OP_OVERRIDE_IMPL_Foo`, `op_base_Foo(cpu, ...)`,
-   `op_call_Foo(cpu, ...)` with typed args and guest↔host pointer
-   marshalling (`openpete_sdk_wrappers.h`).
-3. **Raw tier** — `api->override_addr` on any address; args in
-   `cpu->a0..a3`, return in `cpu->v0`. Raw addresses are region-pinned
-   and can drift across decomp updates — the loader warns once per mod
-   on the first raw registration.
+    static void on_camera_update(CPUState* cpu) {
+        if ((++calls % 300u) == 0u)   /* ~every 10 s at 29.913 ticks/s */
+            A->log(SELF, OP_MOD_LOG_INFO, "CameraUpdate call #%u", calls);
+        A->base(cpu);                 /* pre-hook: us first, original last */
+    }
 
-## Iterating
+    int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+        A = api; SELF = self;
+        return api->override_name(self, "CameraUpdate", on_camera_update);
+    }
+    ```
 
-- **Hot reload** (dev mode): launch with `OPENPETE_MOD_HOT_RELOAD=1`
-  and edits to your sources *or* `config.toml` go live mid-session —
-  the loader re-compiles and swaps the chain at a tick boundary. Your
-  mod's own variables do **not** survive the swap: entry re-runs on the
-  fresh object, so re-derive whatever you need from guest state there.
-- **Testing**: `python3 tools/modtest.py mods/<id>` runs a mod against a
-  declared scenario — the same harness CI uses (`scripts/check_mods.sh`
-  runs the whole ladder). The declarations live in a `modtest.toml`
-  beside `mod.toml`; see [Manifest & config](manifest.md).
-- **Logs**: `api->log` lines are tagged `mod:<id>`. Crashes are
-  attributed to the innermost mod on the override stack.
+3.  Add `hello` to `mods/enabled.txt`.
 
-## Rules of the road
+4.  Launch the game.
 
-- **Sim-thread only**: guest reads/writes, `call`, registrations —
-  all belong in tick context (inside overrides or entry). Present hooks
-  are render-pure and the loader *enforces* it.
-- **Divergence is a choice, not an accident.** If your mod perturbs
-  gameplay-readable state, that's fine (say so: omit `sim_neutral`) —
-  but observers should stay byte-neutral, and the PSX oracle gate can
-  prove either way (`expect_oracle = "pass"` in your `modtest.toml`).
-- **No game data in the repo/zip.** Ship generators, not rips.
+The engine hashes your sources, compiles them with the bundled toolchain
+(a splash progress stage on cold boots, and a no-op on warm ones), calls
+`dlopen` on the result, and runs your entry point. A compile failure
+disables the mod and logs the error. It never blocks the launch.
+
+!!! note "Don't check the API version in code"
+    The `api` key in `mod.toml` is the *minimum* version your mod needs,
+    and the loader refuses an older engine before your entry point runs.
+    Never compare versions with `!=`: the API struct is append-only, so
+    an engine newer than your pin is exactly what you want. If a single
+    call needs a later version than the rest of the mod, guard that call
+    alone with `if (api->api_version >= N)`.
+
+## Choose a way to hook game functions
+
+Three tiers reach the game's code, from most stable to most precise:
+
+1.  **By name.** `api->override_name(self, "CameraUpdate", fn)` is
+    stable across engine updates. The names come from the
+    [function reference](reference/functions.md).
+2.  **Through a prototype.** Functions with natural signatures get
+    generated wrappers in `openpete_sdk_wrappers.h`:
+    `OP_OVERRIDE_IMPL_Foo`, `op_base_Foo(cpu, ...)`, and
+    `op_call_Foo(cpu, ...)`, with typed arguments and guest-to-host
+    pointer marshalling.
+3.  **By address.** `api->override_addr` reaches any address. Arguments
+    arrive in `cpu->a0` through `cpu->a3`, and the return value goes in
+    `cpu->v0`. Raw addresses are region-pinned and can drift across
+    decompilation updates, so the loader warns once per mod on the first
+    raw registration.
+
+## Iterate on a mod
+
+**Hot reload.** Launch with `OPENPETE_MOD_HOT_RELOAD=1`, and edits to
+your sources or to `config.toml` go live mid-session: the loader
+recompiles and swaps the chain at a tick boundary. Your mod's own
+variables don't survive the swap, because your entry point re-runs on
+the fresh object. Re-derive whatever you need from guest state there.
+
+**Testing.** `python3 tools/modtest.py mods/<id>` runs a mod against a
+declared scenario, using the same harness that CI uses.
+`scripts/check_mods.sh` runs the whole ladder. The declarations live in
+a `modtest.toml` file beside `mod.toml`. See
+[Manifest and config](manifest.md).
+
+**Logs.** Lines from `api->log` carry the tag `mod:<id>`. Crashes are
+attributed to the innermost mod on the override stack.
+
+## Follow these rules
+
+- **Do sim work on the sim thread only.** Guest reads and writes,
+  `call`, and registrations all belong in tick context, which means
+  inside overrides or your entry point. Present hooks are render-pure,
+  and the loader enforces it.
+- **Make divergence a choice, not an accident.** Perturbing
+  gameplay-readable state is fine, as long as you declare it by omitting
+  `sim_neutral`. Observers should stay byte-neutral, and the PSX oracle
+  gate can prove it either way through `expect_oracle = "pass"` in your
+  `modtest.toml`.
+- **Keep game data out of your repository and your zip.** Ship
+  generators, not rips.

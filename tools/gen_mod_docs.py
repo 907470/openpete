@@ -125,9 +125,9 @@ def gen_api(api_header: Path) -> str:
     intro = "\n".join(intro).strip()
 
     out = [GEN_NOTE, "# API reference\n"]
-    out.append(f"The contract every mod compiles against — extracted from "
-               f"`{api_header.relative_to(REPO)}` (the staged copy lives at "
-               f"`<exe>/sdk/openpete_mod_api.h`).\n")
+    out.append(f"The contract that every mod compiles against, extracted "
+               f"from `{api_header.relative_to(REPO)}`. The staged copy "
+               f"lives at `<exe>/sdk/openpete_mod_api.h`.\n")
     out.append("\n".join("> " + l for l in md_prose(intro).splitlines()) + "\n")
 
     # supporting types: /* */-commented typedefs between extern "C" and
@@ -176,8 +176,8 @@ def gen_api(api_header: Path) -> str:
     acc = re.findall(r"static inline [^{]+\{[^}]*\}", tail)
     if acc:
         out.append("## Convenience guest accessors\n")
-        out.append("Typed guest-RAM helpers defined in the header itself "
-                   "(inline, no extra link step):\n")
+        out.append("Typed guest-RAM helpers, defined inline in the header "
+                   "itself, so they need no extra link step:\n")
         sigs = [re.sub(r"\s+", " ", a[: a.index("{")]).strip() for a in acc]
         out.append("```c\n" + "\n".join(s + ";" for s in sigs) + "\n```\n")
 
@@ -231,21 +231,23 @@ def gen_functions(symbols: Path, protos_path: Path) -> str:
 
     out = [GEN_NOTE, "# Functions\n"]
     out.append(
-        f"Every guest function a mod can override or call — "
-        f"**{len(rows)}** symbols from `manifest/symbols.toml`, "
-        f"**{n_proto}** with natural-signature prototypes "
-        f"(`manifest/prototypes.toml`).\n\n"
-        "Hook by name with `api->override_name(self, \"Name\", fn)` or by "
-        "address with `api->override_addr`. A **prototyped** function "
-        "additionally gets generated wrappers in "
-        "`openpete_sdk_wrappers.h`: `OP_OVERRIDE_IMPL_Name` / "
-        "`OP_REGISTER_OVERRIDE_Name` / `op_base_Name` / `op_call_Name` "
-        "(typed args, pointer marshalling, arg-register save/restore). "
-        "Everything else is raw tier: read `cpu->a0..a3`, write "
-        "`cpu->v0`.\n\n"
-        "`func_XXXXXXXX` names are the not-yet-named tail of the decomp; "
-        "they resolve forever (decomp promotion contract) but the loader "
-        "warns once a stable name exists.\n")
+        f"Every guest function that a mod can override or call: "
+        f"**{len(rows)}** symbols from `manifest/symbols.toml`, of which "
+        f"**{n_proto}** have natural-signature prototypes in "
+        f"`manifest/prototypes.toml`.\n\n"
+        "Hook a function by name with "
+        "`api->override_name(self, \"Name\", fn)`, or by address with "
+        "`api->override_addr`. A prototyped function also gets generated "
+        "wrappers in `openpete_sdk_wrappers.h`: `OP_OVERRIDE_IMPL_Name`, "
+        "`OP_REGISTER_OVERRIDE_Name`, `op_base_Name`, and "
+        "`op_call_Name`, which give you typed arguments, pointer "
+        "marshalling, and argument-register save and restore. Everything "
+        "else uses the raw tier: read `cpu->a0` through `cpu->a3`, and "
+        "write `cpu->v0`.\n\n"
+        "A `func_XXXXXXXX` name belongs to the part of the decompilation "
+        "that isn't named yet. Those names resolve forever under the "
+        "decompilation promotion contract, but the loader warns you once "
+        "a stable name exists.\n")
 
     letter = None
     for name, addr, kind, srcf in rows:
@@ -275,17 +277,19 @@ def gen_globals(globals_path: Path) -> str:
     out = [GEN_NOTE, "# Globals\n"]
     out.append(
         f"**{len(rows)}** named guest-RAM globals from "
-        "`manifest/globals.toml`. Each is exported to mods as an "
-        "`OP_GADDR_<Name>` vaddr constant in `openpete_sdk_symbols.h` — "
-        "read/write through `api->guest()` or the `op_read_*`/"
-        "`op_write_*` helpers:\n\n"
+        "`manifest/globals.toml`. Each one is exported to mods as an "
+        "`OP_GADDR_<Name>` virtual-address constant in "
+        "`openpete_sdk_symbols.h`. Read and write them through "
+        "`api->guest()`, or through the `op_read_*` and `op_write_*` "
+        "helpers:\n\n"
         "```c\n"
         "uint32_t spyro = OP_GADDR_g_Spyro;\n"
         "int x = op_read_s32(api, spyro + 0x0C);   /* position.x */\n"
         "```\n\n"
-        "Pointers stored INSIDE guest structs are guest vaddrs — "
-        "re-translate before chasing. `D_80XXXXXX` names are the unnamed "
-        "decomp tail.\n")
+        "Pointers stored inside guest structs are guest virtual "
+        "addresses, so translate them again before you follow them. A "
+        "`D_80XXXXXX` name belongs to the part of the decompilation that "
+        "isn't named yet.\n")
     letter = None
     for name, addr, section, srcf in rows:
         l = name.lstrip("gD_")[:1].upper() or "#"
@@ -306,9 +310,9 @@ def gen_globals(globals_path: Path) -> str:
 def gen_structs(structs_header: Path) -> str:
     out = [GEN_NOTE, "# Game structs\n"]
     if not structs_header or not structs_header.exists():
-        out.append("!!! warning\n    `openpete_game_structs.h` was not "
-                   "found — build the game target once, then re-run "
-                   "`scripts/build-mod-docs.sh`.\n")
+        out.append("!!! warning\n    `openpete_game_structs.h` wasn\'t "
+                   "found. Build the game target once, then run "
+                   "`scripts/build-mod-docs.sh` again.\n")
         return "\n".join(out), 0
 
     src = structs_header.read_text(encoding="utf-8")
@@ -333,8 +337,9 @@ def gen_structs(structs_header: Path) -> str:
         if name in sizes:
             meta.append(f"`sizeof == {sizes[name]}`")
         if meta:
-            out.append(" · ".join(meta) + " — layout-pinned: drift fails "
-                       "the mod's compile, never a player's session.\n")
+            out.append(" · ".join(meta) + ". The layout is pinned, so "
+                       "drift fails the mod's compile rather than a "
+                       "player's session.\n")
         if name in offsets:
             out.append("| Field | Offset |")
             out.append("|---|---|")
@@ -351,8 +356,8 @@ def gen_structs(structs_header: Path) -> str:
 def gen_gallery(mods_dir: Path) -> str:
     out = [GEN_NOTE, "# Example gallery\n"]
     out.append("Every mechanism ships with a working, CI-tested example "
-               "mod — start from the one nearest your idea. Extracted "
-               "from each `mods/<id>/mod.toml`.\n")
+               "mod. Start from the one nearest to your idea. This page is "
+               "extracted from each `mods/<id>/mod.toml` file.\n")
     n = 0
     for toml in sorted(mods_dir.glob("*/mod.toml")):
         if ".unpacked" in toml.parts:
@@ -384,8 +389,8 @@ def gen_gallery(mods_dir: Path) -> str:
         if desc:
             out.append(md_prose(" ".join(desc)) + "\n")
         n += 1
-    out.append(f"\n*{n} mods in the gallery. Run the whole ladder with "
-               "`scripts/check_mods.sh`; test one mod with "
+    out.append(f"\n*The gallery holds {n} mods. Run the whole ladder "
+               "with `scripts/check_mods.sh`, or test a single mod with "
                "`python3 tools/modtest.py mods/<id>`.*\n")
     return "\n".join(out), n
 
