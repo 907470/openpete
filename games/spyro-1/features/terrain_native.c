@@ -2756,7 +2756,7 @@ typedef struct {
      * (their own generations); 0 = unscanned (both counters start at 1). */
     uint32_t scanDecodeGen, scanTexGen;
     uint32_t tpGen;                   /* texture_pack_generation at last pack scan */
-    unsigned selEpoch;                /* openpete_mods_material_epoch at last scan */
+    unsigned selEpoch;                /* openpete_mods_material_terrain_epoch at last scan */
     uint8_t  tpClaim;
     uint8_t  gen;                     /* chunk generation (3 bits published) */
     uint8_t  bakeVar;                 /* the last build for this sector emitted
@@ -3541,7 +3541,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
      * bucket, and the retained draw issues a pass per bucket. The epoch is
      * still latched here because the BAKE depends on it — a selector set
      * that moved leaves the stamped buckets naming the wrong pass. */
-    T->selEpoch = openpete_mods_material_epoch();
+    T->selEpoch = openpete_mods_material_terrain_epoch();
     /* Near-variant chunks: kept for as long as the slot holds this sector, so
      * a sector oscillating across the near threshold re-bakes at most once. */
     int with_var = want_near || (T->bakeVar && T->s == SC->s);

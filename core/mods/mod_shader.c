@@ -1156,23 +1156,41 @@ typedef char nr_assert_mat_slots_fit_narrowest_tag_field[
  * boot and never re-arm. A disabled owner's selectors therefore still
  * cost a batch split and a winner scan, but can produce no override:
  * every winner/resolve path consults openpete_mods_is_enabled. */
-static unsigned s_mat_epoch;     /* bumps on selector registration/removal */
+/* The retained terrain cache bakes each face's winning selector into the face
+ * itself, so it must re-bake whenever the TERRAIN-relevant selector set moves.
+ * This counter is that key, and it is deliberately NARROW: a counter that also
+ * moved for moby, sky, flame and particle materials — and for every enable
+ * toggle of one — re-baked the whole cache for changes that cannot alter a
+ * single terrain bucket, which cost 2.7x the frame rate while a mod was
+ * toggling rows (terrain.build 33% -> 73% of sim_tick). Move it only for
+ * changes terrain_winner() could actually see. */
+static unsigned s_mat_ter_epoch;
+
+/* Could this material ever bucket a terrain face — ignoring whether it is
+ * enabled right now? Deliberately NOT terrain_sel_usable(): the enable state
+ * is what we are deciding whether to react to, and the level is not known at
+ * every bump site. Wider than the truth is safe here (a spurious re-bake);
+ * narrower would leave faces stamped for a selector that no longer wins. */
+static int terrain_sel_relevant(const mod_material_t* m) {
+    return m->live && (m->sel.channel == -1 || m->sel.channel == OP_CHAN_TERRAIN);
+}
 
 static void material_rearm_split(void) {
     int any = 0, inst = 0;
     for (int i = 0; i < s_mat_count; i++)
         if (s_mats[i].live) { any = 1; if (s_mats[i].per_instance) inst = 1; }
     s_mat_has_instance = inst;
-    s_mat_epoch++;
     openpete_native_set_tag_split(any);
 }
 
 int openpete_mods_material_has_instance(void) { return s_mat_has_instance; }
 
-unsigned openpete_mods_material_epoch(void) {
-    /* Sum of two monotonic counters — strictly increases on any change a
-     * claim latch cares about; +1 keeps 0 free as the latches' "unset". */
-    return 1u + s_mat_epoch + openpete_mods_toggle_epoch();
+unsigned openpete_mods_material_terrain_epoch(void) {
+    /* Sum of two monotonic counters — strictly increases on any change the
+     * terrain bake cares about; +1 keeps 0 free as the latch's "unset". The
+     * mod toggle epoch rides along because terrain_sel_usable() consults
+     * openpete_mods_is_enabled(owner). */
+    return 1u + s_mat_ter_epoch + openpete_mods_toggle_epoch();
 }
 
 static int openpete_mods_current_level(void);   /* defined with s_cur_level */
@@ -1352,6 +1370,7 @@ static int openpete_mods_material_register_locked(openpete_mod_t* self,
     m->live = 1;
     m->user_enabled = 1;          /* registration arms it; enable() toggles */
     int handle = s_mat_count++;
+    if (terrain_sel_relevant(m)) s_mat_ter_epoch++;
     material_rearm_split();
     OPL_INFO_F("mods", "%s: material selector armed (channel %d ident %d class %d "
                "flags %#x%s)", id, sel->channel, sel->ident, sel->moby_class, sel->flags,
@@ -1370,6 +1389,7 @@ static int openpete_mods_material_enable_locked(openpete_mod_t* self, int materi
     if (material < 0 || material >= s_mat_count || !s_mats[material].live)
         return -1;
     s_mats[material].user_enabled = on ? 1 : 0;
+    if (terrain_sel_relevant(&s_mats[material])) s_mat_ter_epoch++;
     material_rearm_split();
     return 0;
 }
@@ -1420,9 +1440,11 @@ static int openpete_mods_material_set_selector_locked(
         s_mat_sel_dirty = 1;
         return 0;
     }
+    const int was_ter = terrain_sel_relevant(m);
     m->sel = *sel;
     m->sel_dirty = 0;
-    material_rearm_split();      /* bumps the epoch: baked terrain re-keys */
+    if (was_ter || terrain_sel_relevant(m)) s_mat_ter_epoch++;
+    material_rearm_split();
     return 0;
 }
 int openpete_mods_material_set_selector(
@@ -1437,8 +1459,10 @@ static void openpete_mods_material_apply_pending_locked(void) {
     int n = 0;
     for (int i = 0; i < s_mat_count; i++) {
         if (!s_mats[i].sel_dirty) continue;
+        const int was_ter = terrain_sel_relevant(&s_mats[i]);
         s_mats[i].sel = s_mats[i].sel_pending;
         s_mats[i].sel_dirty = 0;
+        if (was_ter || terrain_sel_relevant(&s_mats[i])) s_mat_ter_epoch++;
         n++;
     }
     if (n) material_rearm_split();
@@ -1477,11 +1501,13 @@ static int material_moby_winner(int cls) {
 static int s_cur_level = -1;
 static void openpete_mods_set_level_locked(int level_id) {
     /* The retained-terrain claim latches its verdict against
-     * openpete_mods_material_epoch(), and that verdict now depends on the
-     * level (selectors are level-scoped, because sector and texture ids are
-     * per-level). So a level change has to move the epoch, or a sector
+     * openpete_mods_material_terrain_epoch(), and that verdict depends on
+     * the level (selectors are level-scoped, because sector and texture ids
+     * are per-level). So a level change has to move the epoch, or a sector
      * latched in one level keeps that answer into the next. */
-    if (level_id != s_cur_level) { s_cur_level = level_id; s_mat_epoch++; }
+    if (level_id != s_cur_level) {
+        s_cur_level = level_id; s_mat_ter_epoch++;
+    }
 }
 /* One int, written between scenes and read at draw: no lock, and never a
  * wait behind a compose blocked on the display. */
@@ -1804,6 +1830,7 @@ static void openpete_mods_material_remove_owner_locked(const char* mod_id) {
         s_mats[i].pipeline_mark = NULL;
         s_mats[i].sel_dirty = 0;   /* a parked retune dies with the material */
         s_mats[i].live = 0;
+        s_mat_ter_epoch++;
     }
     material_rearm_split();
 }

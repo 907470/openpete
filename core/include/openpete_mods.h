@@ -785,7 +785,7 @@ int  openpete_mods_material_terrain_tex_slot(CPUState* cpu, int texid);
  * registration/removal and the mod enabled set. The retained cache latches
  * its BAKE against it — a baked face carries its material's bucket, so a
  * selector set that moved makes the bake stale. */
-unsigned openpete_mods_material_epoch(void);
+unsigned openpete_mods_material_terrain_epoch(void);
 
 /* ── Retained-terrain material buckets ───────────────────────────────
  * A retained face is baked once and redrawn for many presents without a
