@@ -102,8 +102,6 @@ typedef struct {
     int                     disabled; /* live toggle */
 } present_hook_t;
 
-void openpete_mods_draw_set_owner_enabled(const char* owner_id, int on);
-
 static present_hook_t s_phooks[PRESENT_HOOKS_MAX];
 static int            s_phook_count = 0;
 static int            s_any_draw = 0; /* fast bail for modless runs */

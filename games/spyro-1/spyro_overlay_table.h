@@ -38,6 +38,10 @@ const spyro_overlay_entry_t* spyro_overlay_find(uint32_t magic);
 /* Set the active overlay by id-magic. No-op if magic is unknown. */
 void spyro_set_active_overlay_by_magic(uint32_t magic);
 
+/* Id-magic of the overlay currently resident in the guest's overlay
+ * region, or 0 before any level overlay has been loaded. */
+uint32_t spyro_get_active_overlay_magic(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -292,6 +292,17 @@ void openpete_mods_sfx_set_def_reader(openpete_mods_sfx_def_read_fn fn);
 unsigned openpete_mods_toggle_epoch(void);
 void openpete_mods_registry_set_owner_enabled(const char* mod_id, int on);
 
+/* Owner teardown and live enable/disable for the three subsystems that
+ * key their entries on a mod id. Declared here beside their registry
+ * sibling: mod_loader.c calls all of them, and without a prototype in
+ * scope C assumes int(), which silently defeats argument checking on
+ * calls that pass a pointer. */
+void openpete_mods_chain_remove_owner(const char* owner_id);
+void openpete_mods_chain_set_owner_enabled(const char* owner_id, int on);
+void openpete_mods_draw_remove_owner(const char* owner_id);
+void openpete_mods_draw_set_owner_enabled(const char* owner_id, int on);
+void openpete_mods_registry_remove_owner(const char* mod_id);
+
 /* Per-mod time instrument (mod_chain.c): SELF-time accumulation per
  * owner (tick hooks fed by the chain runner, present hooks by
  * mod_draw.c) + the periodic report that names any mod exceeding the

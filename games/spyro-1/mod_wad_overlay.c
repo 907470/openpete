@@ -35,6 +35,7 @@
 
 #include "game_extras.h"
 #include "openpete_log.h"
+#include "openpete_str.h"
 #include "openpete_mods.h"
 #include "openpete_psx.h"
 
@@ -116,7 +117,7 @@ void spyro1_mod_wad_configure(const char* disc_path) {
  * disc loader applies, so a disc that boots also serves WAD reads. */
 static int resolve_bin(char* out, size_t cap) {
     const char* dot = strrchr(s_disc_path, '.');
-    if (dot && (strcasecmp(dot, ".cue") == 0)) {
+    if (dot && (op_strcasecmp(dot, ".cue") == 0)) {
         FILE* f = fopen(s_disc_path, "r");
         if (!f) return -1;
         char line[512], name[400] = "";

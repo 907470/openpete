@@ -15,6 +15,7 @@
 #include "openpete_ui_moby.h"
 #include "openpete_fiber.h"
 #include "psx_runtime.h"
+#include "spyro_overlay_table.h"
 #include "features/text_moby_native.h"
 #include "features/audio_volume_native.h"
 #include "features/vibration_native.h"
@@ -829,7 +830,6 @@ int game_is_gameplay_live(CPUState* cpu) {
  *       half-applied warp has to restore it alongside the RAM it wrote. */
 extern uint32_t spyro1_mod_wad_cursor_get(void);
 extern void     spyro1_mod_wad_cursor_set(uint32_t s);
-extern uint32_t spyro_get_active_overlay_magic(void);
 extern void     spyro1_thunk_state_save(uint32_t* cd_cb, uint32_t* vs_cb,
                                         uint32_t* xa_word);
 extern void     spyro1_thunk_state_load(uint32_t cd_cb, uint32_t vs_cb,

@@ -20,6 +20,7 @@
 #include "openpete_frame_time_log.h"
 #include "openpete_pace_log.h"
 #include "rhi.h"
+#include "../rhi/rhi_gpu_audit.h"
 #include "openpete_profile.h"
 #include "openpete_func_trace.h"
 #include "openpete_interp.h"
@@ -754,6 +755,10 @@ extern void PsyX_CDFS_Init(const char* imageFileName, int track, int sectorSize)
 extern char PsyX_BeginScene(void);
 extern void PsyX_EndScene(void);
 extern void PsyX_UpdateInput(void);
+/* Declared in PsyCross's private src/audio/PsyX_SPUAL.h, which is not on
+ * any public include path. Runahead mutes the OpenAL layer around a
+ * speculative tick so the replayed audio is emitted once, not twice. */
+extern int PsyX_SPUAL_SetMute(int on_off);
 
 /* Phase 1e infra-triangle (core/runtime/debug_render.cpp). */
 extern void openpete_debug_triangle_init(void);

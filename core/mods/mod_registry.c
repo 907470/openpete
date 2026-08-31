@@ -11,6 +11,7 @@
 
 #include "openpete_mods.h"
 #include "openpete_log.h"
+#include "openpete_str.h"
 #include "../host/wav_loader.h" /* op_wav_probe_seconds (custom-level music) */
 
 #include <dirent.h>
@@ -378,7 +379,7 @@ int openpete_mods_custom_asset_path(const char* dir, const char* stem,
     if (d) {
         struct dirent* e;
         while ((e = readdir(d))) {
-            if (strcasecmp(e->d_name, want) != 0) continue;
+            if (op_strcasecmp(e->d_name, want) != 0) continue;
             snprintf(out, cap, "%s/%s", ldir, e->d_name);
             closedir(d);
             return 0;
@@ -445,7 +446,7 @@ int openpete_mods_custom_register(const char* mod_id, const char* name,
     /* Alphabetical order (the menu's Custom World buckets). */
     int at = row;
     for (int i = 0; i < row; i++)
-        if (strcasecmp(s_customs[s_custom_order[i]].name, name) > 0) {
+        if (op_strcasecmp(s_customs[s_custom_order[i]].name, name) > 0) {
             at = i;
             break;
         }

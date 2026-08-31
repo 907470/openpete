@@ -698,8 +698,6 @@ static void hot_reload_poll(void) {
  * Drivers: the future mod menu; and OPENPETE_MODS_TOGGLE=
  * "tick:id:0|1[,...]" (a canonical-tick schedule) for CI/dev. */
 
-void openpete_mods_chain_set_owner_enabled(const char* owner_id, int on);
-void openpete_mods_draw_set_owner_enabled(const char* owner_id, int on);
 
 typedef struct {
     char id[MOD_ID_MAX];
