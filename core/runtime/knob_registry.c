@@ -68,7 +68,7 @@ static double fullscreen_get(const knob_desc_t *k) {
 static int fullscreen_set(knob_desc_t *k, double v) {
     (void)k;
     if ((v != 0.0) != (openpete_native_fullscreen_active() != 0))
-        openpete_native_toggle_fullscreen();
+        openpete_native_request_fullscreen_toggle();   /* SDL call runs on the window's thread */
     return 0;
 }
 

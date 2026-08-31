@@ -436,9 +436,10 @@ void openpete_menu_adjust(int dx) {
     switch (s_cursor) {
     case ROW_DISPLAY:
         /* Two-state cycle: either direction flips windowed <-> fullscreen via
-         * the same toggle Alt+Enter / double-click use; the value string reads
-         * the resulting live state back (nothing to apply below). */
-        openpete_native_toggle_fullscreen();
+         * the same request Alt+Enter / double-click use; the SDL call runs on
+         * the window-owning thread, not here. The value string reads the
+         * resulting live state back (nothing to apply below). */
+        openpete_native_request_fullscreen_toggle();
         break;
     case ROW_ASPECT:   s_aspect_idx = wrap_idx(s_aspect_idx + step, N_ASPECT);   break;
     case ROW_FPS:      s_fps_idx    = wrap_idx(s_fps_idx    + step, s_fps_count); break;

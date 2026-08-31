@@ -21,6 +21,7 @@
  */
 
 #include "openpete_native_render.h"
+#include "openpete_present_thread.h"
 #include "openpete_pace_log.h"
 #include "openpete_perf_stats.h"
 #include "openpete_profile.h"   /* --profile-out forwarding shim */
@@ -2660,6 +2661,11 @@ bool openpete_native_render_enabled(void)
  * normal outcome, not an error. */
 int openpete_native_render_repeat_last(void)
 {
+    /* The present thread owns the device while eager production is active;
+     * a repeat present from any other thread would race it on the swapchain
+     * and queue. Refuse rather than fault — under eager the display is being
+     * fed continuously anyway, so there is nothing for a repaint to add. */
+    if (openpete_present_thread_active()) return 0;
     if (!s_nr.enabled || !s_nr.dev) return 0;
     /* A pending swapchain rebuild drives SDL window queries and a full
      * teardown; that belongs to the thread that owns the window, so decline

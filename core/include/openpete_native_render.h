@@ -90,6 +90,10 @@ const char* openpete_native_render_present_mode(void);
  * No-op until the native window is up (so it's inert in headless /
  * PsyCross-only runs). */
 void openpete_native_toggle_fullscreen(void);
+/* Thread-safe request form: raises a flag the host loop services on the
+ * window-owning thread. Use this from the menu / overlay / any non-window
+ * thread; call the toggle directly only from the window's own thread. */
+void openpete_native_request_fullscreen_toggle(void);
 
 /* Live fullscreen state (1 = borderless-desktop fullscreen, 0 = windowed or
  * no native window). The O-menu DISPLAY row reads this each frame instead of

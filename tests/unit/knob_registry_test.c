@@ -52,6 +52,7 @@ void   openpete_runahead_set(int n)            { (void)n; }
 void   openpete_rewind_configure(int w)        { (void)w; }
 int    openpete_native_fullscreen_active(void) { return 0; }
 void   openpete_native_toggle_fullscreen(void) { }
+void   openpete_native_request_fullscreen_toggle(void) { }
 
 /* The renderer's live display state. Display rows read it back rather than
  * shadowing their value, because the O menu drives these setters directly

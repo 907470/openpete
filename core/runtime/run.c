@@ -217,6 +217,18 @@ void openpete_request_shutdown(void) { g_shutdown_requested = 1; }
  * heavy SDL_SetWindowFullscreen call runs in the loop, not the filter. */
 static volatile sig_atomic_t g_native_fs_toggle_request = 0;
 
+/* Ask for a windowed <-> fullscreen toggle from any thread.
+ * SDL_SetWindowFullscreen belongs to the thread that owns the window (on
+ * Win32 a cross-thread call SendMessages into a pump that may be busy, or
+ * silently misdelivers the resize), so callers that are not that thread —
+ * the settings menu on the sim worker, the dev overlay's knob row on the
+ * presenting thread — raise this request and the host loop routes it: under
+ * the thread split main performs the SDL call, unsplit the host loop does. */
+void openpete_native_request_fullscreen_toggle(void)
+{
+    g_native_fs_toggle_request = 1;
+}
+
 /* The process's single event pump.
  *
  * openpete owns the SDL_PollEvent loop; every dequeued event is routed on to
