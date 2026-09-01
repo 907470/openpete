@@ -63,4 +63,20 @@ void text_moby_native_perf_overlay(struct CPUState* cpu);
  * wobbling) and hands it to openpete_native_set_menu_glyphs. No-op otherwise. */
 void text_moby_native_menu(struct CPUState* cpu);
 
+/* Per-tick OSD consumer: builds every live toast's frame + text into the
+ * renderer's fixed slot grid and publishes it with the slot table
+ * (openpete_native_set_osd_glyphs). Rebuilt EVERY tick a toast is live — the
+ * gold shimmer is baked into vertex colours at emit time, so cached geometry
+ * would show a frozen glint. No-op with the OSD off, the ring empty, or the
+ * font not yet cached. */
+void text_moby_native_osd(struct CPUState* cpu);
+
+/* The gold shimmer's phase — SpecularUpdate's travelling light, reproduced
+ * host-side. Advanced once per LOGIC frame by text_moby_native_shimmer_tick
+ * (call once per sim tick, before the builders); speculative and replayed
+ * ticks sit it out. Shared by the settings menu and the OSD, so a toast
+ * shimmers whether or not the menu happens to be open. */
+void     text_moby_native_shimmer_tick(void);
+unsigned text_moby_native_shimmer_phase(void);
+
 #endif /* OPENPETE_TEXT_MOBY_NATIVE_H */

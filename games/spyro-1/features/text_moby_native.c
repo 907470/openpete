@@ -42,6 +42,8 @@
 #include "openpete_menu.h"          /* menu state/layout for the settings-menu text */
 #include "openpete_perf_stats.h"    /* the overlay's levels + line text */
 #include "openpete_overlay_anchor.h" /* per-line alignment inside an anchored block */
+#include "openpete_osd.h"          /* toast ring — the OSD builder below */
+#include "openpete_fiber.h"        /* speculative / replayed ticks skip the shimmer */
 #include "text_moby_native.h"
 
 #include <math.h>
@@ -453,6 +455,53 @@ void text_moby_native_perf_overlay(CPUState* cpu) {
     s_shown_anchor = anchor;
 }
 
+/* ---- the gold shimmer's phase ------------------------------------------
+ * Spyro's menus and cutscenes run SpecularUpdate, a light source travelling
+ * an ellipse, and the metallic sweep across the gold glyphs is that light
+ * turning. The game does not run it during gameplay (and we must not write
+ * its RAM), so it is reproduced host-side.
+ *
+ * It lives here, free-standing, rather than being derived from the settings
+ * menu's wobble tick: the OSD's toasts shimmer whether or not the menu is
+ * open, and a counter that only advanced while the menu was open would leave
+ * every toast lit by a frozen light.
+ *
+ * Advanced at the game's LOGIC rate — every other call, since this runs once
+ * per sim tick (paced per VBL, ~59.826 Hz) while the PSX bumps its rotation
+ * once per DRAWN frame (draw.c ++D_800758B8). Speculative and replayed ticks
+ * sit it out: those are rolled back or re-executed, and letting them advance
+ * makes the shimmer sprint through a rewind.
+ *
+ * One cosmetic consequence, priced rather than assumed: the wobble and the
+ * specular used to share one phase that only ran while the menu was open, so
+ * the glint sat at the same offset on every open. It now free-runs, so each
+ * open starts at a different offset. Imperceptible, and the alternative is a
+ * frozen glint on every toast. */
+static unsigned s_shimmer_phase = 0;
+
+void text_moby_native_shimmer_tick(void) {
+    if (openpete_speculative || openpete_replaying) return;
+    static unsigned s_call = 0;
+    if ((s_call++ & 1u) == 0u) s_shimmer_phase++;
+}
+
+unsigned text_moby_native_shimmer_phase(void) { return s_shimmer_phase; }
+
+/* Install SpecularUpdate's rotating ellipse as this emission's light. Same
+ * N·L shading as the world's shaded mobys (moby_native.c shaded_lit_color),
+ * so every glyph's highlight sweeps as the light turns. The clock advances
+ * +3 per logic frame, like the game's SpecularUpdate(3). */
+static void install_specular_light(emit_ctx_t* cx, unsigned phase) {
+    const unsigned sp = (phase * 3u) & 0xFFu;
+    const float sth = (float)sp * (6.2831853f / 256.0f);
+    float Lx = cosf(sth) * 0.968f;   /* COSINE_8 * 1983 >> 11 */
+    float Ly = sinf(sth) * 1.549f;   /* SINE_8   * 6345 >> 12 */
+    float Lz = -0.25f;               /* -1024 / 4096 (small fixed into-screen) */
+    float Ll = sqrtf(Lx*Lx + Ly*Ly + Lz*Lz); if (Ll < 1e-3f) Ll = 1.0f;
+    cx->light[0] = Lx/Ll; cx->light[1] = Ly/Ll; cx->light[2] = Lz/Ll;
+    cx->light_signed = 1;   /* metal contrast: shadowed faces darken below base */
+}
+
 /* ---- in-game settings menu text (labels / values / title) --------------- */
 #define MENU_TXT_MAX    32768   /* must match MENU_GLYPH_MAX (native_render.c);
                                  * 8 rows of label+value+title+border overflowed
@@ -493,20 +542,19 @@ static uint32_t border_lit(const emit_ctx_t* cx, float nx, float ny) {
     return (uint32_t)R | ((uint32_t)G << 8) | ((uint32_t)B << 16) | 0xFF000000u;
 }
 
-/* Emit the lit frame into the context (uses cx's light — call after the builder
- * has installed the rotating specular). Returns verts written. Four straight edge strips: the
+/* Emit a lit frame around (x0,y0)-(x1,y1) into `out` (lit by ecx's light — call
+ * after the builder has installed the rotating specular). Returns verts written. Four straight edge strips: the
  * outer edge lies on the panel rect, the inner edge is a PERPENDICULAR inset by
  * bt (so each strip is a clean parallel-sided rectangle — no inward bulge). Each
  * strip is subdivided along its length; every column's colour comes from the
  * outward RADIAL normal at its outer point, so the glint travels smoothly along
  * the edge. Adjacent strips meet at a shared corner whose radial normal is
  * identical from either side, so the overlap is seamless. */
-static int emit_menu_border(const emit_ctx_t* ecx,
-                            const openpete_menu_layout_t* L,
-                            openpete_hud_vert* out, int cap) {
-    const float x0 = L->panel_x0, y0 = L->panel_y0, x1 = L->panel_x1, y1 = L->panel_y1;
+static int emit_lit_border(const emit_ctx_t* ecx,
+                           float x0, float y0, float x1, float y1, float thickness,
+                           openpete_hud_vert* out, int cap) {
     const float cx = 0.5f * (x0 + x1), cy = 0.5f * (y0 + y1);
-    const float bt = MENU_BORDER_BT, z = TXT_DEPTH_MID;
+    const float bt = thickness, z = TXT_DEPTH_MID;
     const int   S  = MENU_BORDER_SAMP;
     /* {outerA, outerB, innerA, innerB} per strip; inner = outer inset by bt. */
     const float strip[4][8] = {
@@ -594,22 +642,7 @@ void text_moby_native_menu(CPUState* cpu) {
     emit_ctx_t cx;
     emit_ctx_init(&cx, s_menu_buf, MENU_TXT_MAX);
 
-    /* Rotating specular light — reproduce SpecularUpdate's ellipse host-side (the
-     * game runs SpecularUpdate only in menus/cutscenes, NOT gameplay where this
-     * menu lives, and we must not write its RAM). Same N·L shading as the world's
-     * shaded mobys (moby_native.c shaded_lit_color), so every glyph's highlight
-     * sweeps as the light turns — the metal shimmer — on all rows, not just the
-     * wobbling one. Clock advances +3/frame like SpecularUpdate(3). */
-    {
-        unsigned sp = ((unsigned)phase * 3u) & 0xFFu;
-        float sth = (float)sp * (6.2831853f / 256.0f);
-        float Lx = cosf(sth) * 0.968f;   /* COSINE_8 * 1983 >> 11 */
-        float Ly = sinf(sth) * 1.549f;   /* SINE_8   * 6345 >> 12 */
-        float Lz = -0.25f;               /* -1024 / 4096 (small fixed into-screen) */
-        float Ll = sqrtf(Lx*Lx + Ly*Ly + Lz*Lz); if (Ll < 1e-3f) Ll = 1.0f;
-        cx.light[0] = Lx/Ll; cx.light[1] = Ly/Ll; cx.light[2] = Lz/Ll;
-        cx.light_signed = 1;   /* metal contrast: shadowed faces darken below base */
-    }
+    install_specular_light(&cx, text_moby_native_shimmer_phase());
 
     /* Pause-menu alignment: title centred; labels RIGHT-aligned to L.label_x;
      * values LEFT-aligned at L.value_x (the two columns meet at a central split). */
@@ -664,6 +697,95 @@ void text_moby_native_menu(CPUState* cpu) {
                     MENU_TXT_TINT, wob);
     }
     /* Gold frame — same rotating light as the rows above (cx still carries it). */
-    cx.n += emit_menu_border(&cx, &L, s_menu_buf + cx.n, MENU_TXT_MAX - cx.n);
+    cx.n += emit_lit_border(&cx, L.panel_x0, L.panel_y0, L.panel_x1, L.panel_y1,
+                            MENU_BORDER_BT, s_menu_buf + cx.n, MENU_TXT_MAX - cx.n);
     openpete_native_set_menu_glyphs(s_menu_buf, cx.n);
+}
+
+/* ---- OSD toast text + frames -------------------------------------------
+ * Every live toast, every sim tick, into the renderer's fixed slot grid. The
+ * per-tick rebuild is not an oversight: the shimmer is baked into vertex
+ * COLOURS at emit time (emit_glyph dots the face normal against the light,
+ * emit_lit_border bakes the travelling glint per perimeter vertex), so
+ * geometry built once and reused would show a frozen glint on a live toast.
+ * The settings menu already does exactly this while it is open.
+ *
+ * Geometry is emitted in TARGET-LOCAL overlay space — slot i's box starts at
+ * y = i * slot_h — and the slot table tells the compositor which toast landed
+ * where and how much of its slot it filled. Text and table are published in
+ * one call, so the compositor can never resolve an id through a table that
+ * describes different geometry. */
+#define OSD_TXT_MAX     24576   /* must match OSD_GLYPH_MAX (native_render.c) */
+#define OSD_CAP_H       0.030f  /* toast glyph height, overlay units          */
+#define OSD_PAD_X       0.022f
+#define OSD_PAD_Y       0.014f
+#define OSD_BORDER_BT   0.0035f /* frame thickness — the menu's, so the two read as one set */
+#define OSD_TINT        0x96962Au   /* the menu's mid yellow-gold */
+
+static openpete_hud_vert s_osd_buf[OSD_TXT_MAX];
+
+/* Trim `src` into `dst` until it fits `avail` at `cap_h`. Truncating is the
+ * right failure for a fixed slot grid: a toast that overran its slot would
+ * bleed its glyphs into the neighbouring slot's texels, which the compositor
+ * then samples as part of a DIFFERENT toast. */
+static void osd_fit_text(const char* src, float cap_h, float avail,
+                         char* dst, int dstcap) {
+    snprintf(dst, (size_t)dstcap, "%s", src ? src : "");
+    for (int n = (int)strlen(dst); n > 0 && measure_string(dst, cap_h) > avail; n--)
+        dst[n - 1] = 0;
+}
+
+void text_moby_native_osd(CPUState* cpu) {
+    if (!openpete_native_render_enabled()) return;
+    text_moby_native_cache(cpu);
+    if (!openpete_osd_enabled() || !text_moby_native_ready()) {
+        openpete_native_set_osd_glyphs(NULL, 0, NULL, 0);
+        return;
+    }
+
+    openpete_osd_item_t items[OPENPETE_OSD_MAX];
+    const int n = openpete_osd_tick_items(items, OPENPETE_OSD_MAX);
+    if (n <= 0) {
+        openpete_native_set_osd_glyphs(NULL, 0, NULL, 0);
+        return;
+    }
+
+    float slot_w, slot_h;
+    openpete_native_osd_slot_extent(&slot_w, &slot_h);
+    if (slot_w <= 0.0f || slot_h <= 0.0f) return;
+    const float text_avail = slot_w - 2.0f * OSD_PAD_X;
+    if (text_avail <= 0.0f) return;
+
+    emit_ctx_t cx;
+    emit_ctx_init(&cx, s_osd_buf, OSD_TXT_MAX);
+    install_specular_light(&cx, text_moby_native_shimmer_phase());
+
+    openpete_osd_slot_t slots[OPENPETE_OSD_MAX];
+    int ns = 0;
+
+    for (int i = 0; i < n && i < OPENPETE_OSD_MAX; i++) {
+        char line[OPENPETE_OSD_TEXT_MAX];
+        osd_fit_text(items[i].text, OSD_CAP_H, text_avail, line, sizeof line);
+
+        float box_w = 2.0f * OSD_PAD_X + measure_string(line, OSD_CAP_H);
+        float box_h = 2.0f * OSD_PAD_Y + OSD_CAP_H;
+        if (box_w > slot_w) box_w = slot_w;
+        if (box_h > slot_h) box_h = slot_h;
+
+        const float sy = (float)i * slot_h;   /* this slot's top in the grid */
+        const int before = cx.n;
+        emit_string(&cx, line, OSD_PAD_X, sy + OSD_PAD_Y, OSD_CAP_H, OSD_TINT, -1);
+        cx.n += emit_lit_border(&cx, 0.0f, sy, box_w, sy + box_h, OSD_BORDER_BT,
+                                s_osd_buf + cx.n, OSD_TXT_MAX - cx.n);
+        if (cx.n == before) continue;   /* budget exhausted: publish no slot for it,
+                                         * and the compositor draws nothing rather
+                                         * than an empty frame */
+
+        slots[ns].id    = items[i].id;
+        slots[ns].slot  = i;
+        slots[ns].box_w = box_w;
+        slots[ns].box_h = box_h;
+        ns++;
+    }
+    openpete_native_set_osd_glyphs(s_osd_buf, cx.n, slots, ns);
 }

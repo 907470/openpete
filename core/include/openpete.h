@@ -482,6 +482,15 @@ typedef struct openpete_options {
      * overlay's row moves it live. Display-only. */
     int perf_position;
 
+    /* On-screen display (toast notifications). `osd` 0/1; `osd_position` an
+     * openpete_anchor_t; `osd_timeout_ms` the default dwell in INTEGER
+     * MILLISECONDS. The user-facing flag is in seconds (--osd-timeout 3.0)
+     * because that is how a person thinks about a toast; everything past the
+     * parser is ms, converted exactly once, right here. Display-only. */
+    int      osd;
+    int      osd_position;
+    uint32_t osd_timeout_ms;
+
     /* --vsync 0|1: native vk swapchain present mode. 1 = FIFO (vsync ON, present
      * locked to the monitor refresh — the default); 0 = a vsync-OFF mode
      * (immediate/mailbox) for low latency / uncapped-throughput benchmarking;

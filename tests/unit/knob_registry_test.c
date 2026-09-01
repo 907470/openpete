@@ -78,6 +78,14 @@ void   openpete_native_set_perf_stats(int level) { s_native_showfps = level; }
 static int s_native_perf_anchor = 0;
 void   openpete_native_set_perf_anchor(int a) { s_native_perf_anchor = a; }
 int    openpete_native_perf_anchor(void) { return s_native_perf_anchor; }
+static int      s_osd_on = 1, s_osd_anchor = 0;
+static uint32_t s_osd_timeout_ms = 3000;
+void     openpete_osd_set_enabled(int on) { s_osd_on = on ? 1 : 0; }
+int      openpete_osd_enabled(void) { return s_osd_on; }
+void     openpete_osd_set_anchor(int a) { s_osd_anchor = a; }
+int      openpete_osd_anchor(void) { return s_osd_anchor; }
+void     openpete_osd_set_default_timeout_ms(uint32_t ms) { s_osd_timeout_ms = ms; }
+uint32_t openpete_osd_default_timeout_ms(void) { return s_osd_timeout_ms; }
 int    openpete_native_perf_stats_level(void)    { return s_native_showfps; }
 void   openpete_native_set_fps_overlay(int on)   { s_native_showfps = on ? OPENPETE_PERF_FPS
                                                                          : OPENPETE_PERF_OFF; }

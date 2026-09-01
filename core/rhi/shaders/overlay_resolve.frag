@@ -15,7 +15,11 @@ layout(set = 0, binding = 0) uniform sampler2D uSrc;   /* supersampled overlay *
 layout(push_constant) uniform PC { int ssaa; } pc;
 
 layout(location = 0) in vec2 vUV;
-layout(location = 1) in vec4 vColor;                   /* unused */
+/* Per-quad modulation. The composite quad's vertex colour scales the resolved
+ * result: white (the default every caller built until the OSD) is identity,
+ * and the OSD writes a per-toast alpha here so eight toasts can fade
+ * independently without eight pipelines or a push constant per draw. */
+layout(location = 1) in vec4 vColor;
 
 layout(location = 0) out vec4 outColor;
 
@@ -49,5 +53,5 @@ void main()
     }
     float cov = acc_a / float(max(cnt, 1));
     vec3  col = (acc_a > 0.0) ? (acc / acc_a) : vec3(0.0);   /* un-premultiply */
-    outColor  = vec4(linear_to_srgb(col), cov);
+    outColor  = vec4(linear_to_srgb(col) * vColor.rgb, cov * vColor.a);
 }

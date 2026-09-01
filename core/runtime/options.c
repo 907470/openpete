@@ -7,6 +7,7 @@
 #include "openpete_config.h"  /* openpete.toml — the layered config file */
 #include "openpete_keymap.h"  /* [keys] — install the SDL name lookups */
 #include "openpete_overlay_anchor.h"  /* --perf-position / --osd-position spellings */
+#include "openpete_osd.h"             /* OPENPETE_OSD_TIMEOUT_MAX_MS */
 #include "openpete_log.h"
 #include "openpete_time.h"  /* OP_TICK_HZ — --record-cfr NTSC-multiple snap */
 #include "game_extras.h"  /* game_resolve_level_arg (--skip-to-level names),
@@ -352,6 +353,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             shed / interpolation share. 0|1|2 also accepted. Display-only.\n"
         "  --show-fps 0|1             deprecated spelling of --perf-stats off|fps (on|off also accepted)\n"
         "  --perf-position ANCHOR     where the stats block sits: top-left (default) | top-center | top-right | bottom-left | bottom-center | bottom-right\n"
+        "  --osd on|off               on-screen notifications when a setting changes (default on)\n"
+        "  --osd-position ANCHOR      where notifications stack; same six anchors (default top-left)\n"
+        "  --osd-timeout SECONDS      how long a notification stays up (default 3.0, max 30)\n"
         "  --rewind N                 hold Backspace to rewind up to N seconds (default 0 = off;\n"
         "                             ~2 MiB RAM per second of window; same-level only)\n"
         "  --runahead N               lead the presented timeline by N sim ticks (default 0 = off).\n"
@@ -590,6 +594,9 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
     opts->perf_stats          = OPENPETE_PERF_FPS;  /* the counter, no pacing readout; --perf-stats / O-menu SHOW FPS row */
     opts->perf_position       = OPENPETE_ANCHOR_TOP_LEFT;
+    opts->osd                 = 1;                          /* toasts on */
+    opts->osd_position        = OPENPETE_ANCHOR_TOP_LEFT;
+    opts->osd_timeout_ms      = 3000u;
     opts->vsync               = -1;    /* -1 = unset; default vsync ON (FIFO) unless OPENPETE_PRESENT_MODE */
     opts->render_fps          = -1;    /* -1 = unset; resolved at startup: display refresh (windowed) /
                                         * 0 legacy match-sim pacer (headless). --render-fps 0 = explicit legacy. */
@@ -728,6 +735,37 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             }
         } else if (strcmp(a, "--render-stats") == 0) {
             opts->render_stats = true;
+        } else if (strcmp(a, "--osd") == 0) {
+            const char *v = (i + 1 < argc) ? argv[++i] : "";
+            if      (!strcmp(v, "on")  || !strcmp(v, "1")) opts->osd = 1;
+            else if (!strcmp(v, "off") || !strcmp(v, "0")) opts->osd = 0;
+            else {
+                fprintf(stderr, "openpete: --osd expects on|off, got: %s\n", v);
+                return false;
+            }
+        } else if (strcmp(a, "--osd-position") == 0) {
+            const char *v = (i + 1 < argc) ? argv[++i] : "";
+            int an = openpete_anchor_parse(v);
+            if (an < 0) {
+                fprintf(stderr, "openpete: --osd-position expects one of "
+                        "top-left|top-center|top-right|bottom-left|bottom-center|"
+                        "bottom-right, got: %s\n", v);
+                return false;
+            }
+            opts->osd_position = an;
+        } else if (strcmp(a, "--osd-timeout") == 0) {
+            /* Seconds in, milliseconds out — the ONE conversion point. */
+            const char *v = (i + 1 < argc) ? argv[++i] : "";
+            char *end = NULL;
+            double secs = strtod(v, &end);
+            if (!v[0] || end == v || *end || !(secs > 0.0) ||
+                secs > (double)OPENPETE_OSD_TIMEOUT_MAX_MS / 1000.0) {
+                fprintf(stderr, "openpete: --osd-timeout expects seconds in "
+                        "(0, %.0f], got: %s\n",
+                        (double)OPENPETE_OSD_TIMEOUT_MAX_MS / 1000.0, v);
+                return false;
+            }
+            opts->osd_timeout_ms = (uint32_t)(secs * 1000.0 + 0.5);
         } else if (strcmp(a, "--perf-position") == 0) {
             const char *v = (i + 1 < argc) ? argv[++i] : "";
             int an = openpete_anchor_parse(v);

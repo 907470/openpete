@@ -15,6 +15,7 @@
 #include "openpete_log.h"
 #include "openpete_config.h"        /* saved-settings persistence (SETTINGS row) */
 #include "openpete_knobs.h"         /* knob_registry_save_edited */
+#include "openpete_osd.h"           /* announce every change the player makes */
 #include "openpete_freecam.h"        /* freecam active/toggle (FREECAM row) */
 #include "openpete_mods.h"           /* loaded-mod enumeration (MOD rows) */
 #include "features/no_lod.h"         /* openpete_no_lod_set */
@@ -38,6 +39,17 @@ enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
 static const char* const ROW_LABEL[ROW_COUNT] = {
     "DISPLAY", "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE",
     "TEXTURES", "DITHER", "LOD", "FREECAM", "SETTINGS", "EXIT GAME",
+};
+
+/* OSD coalescing key per row. NAMED, not indexed, because the hotkeys that
+ * front the same settings (L, F, Alt+Enter) raise their toasts from run.c and
+ * native_render.c and must land on the SAME toast — a player who flips LOD
+ * with the key and then with the row should see one toast repaint, not two
+ * stack. */
+static const char* const ROW_OSD_KEY[ROW_COUNT] = {
+    "menu.display", "menu.aspect", "menu.fps", "menu.showfps", "menu.vsync",
+    "menu.ssaa", "menu.wobble", "menu.texmap", "menu.dither", "menu.lod",
+    "menu.freecam", "menu.settings", "menu.quit",
 };
 
 /* EXIT is a CENTERED row: no value column, its label spans the panel centre
@@ -211,6 +223,25 @@ static const char* value_str(int row, char* buf, int buflen) {
     }
     default:           return "?";
     }
+}
+
+/* Announce a row's new value on the OSD. Coalesced PER ROW, so holding Right
+ * through the FPS ladder repaints one toast instead of stacking a dozen — and
+ * the toast then reads the value the player has actually landed on.
+ *
+ * Every string here is authored inside the glyph set the game's own text
+ * mobys cover (0-9 A-Z % / ? + ^ . ' and a faked colon). Anything outside it
+ * renders as a space, so a hyphen or a comma silently vanishes; the row
+ * labels and values already obey that because the menu draws them with the
+ * same glyphs. */
+static void notify_row(int row) {
+    char vb[16];
+    if (row < 0 || row >= ROW_COUNT) return;
+    const char* kb = ROW_OSD_KEY[row];
+    const char* label = openpete_menu_row_label(row);
+    const char* value = value_str(row, vb, sizeof vb);
+    if (value && *value) openpete_osd_notify("host", kb, 0, "%s: %s", label, value);
+    else                 openpete_osd_notify("host", kb, 0, "%s", label);
 }
 
 static void log_state(const char* what) {
@@ -438,7 +469,12 @@ void openpete_menu_adjust(int dx) {
         /* Two-state cycle: either direction flips windowed <-> fullscreen via
          * the same request Alt+Enter / double-click use; the SDL call runs on
          * the window-owning thread, not here. The value string reads the
-         * resulting live state back (nothing to apply below). */
+         * resulting live state back (nothing to apply below).
+         *
+         * The toast notify_row raises below therefore shows the state BEFORE
+         * the flip — it is a request, not a change. It self-corrects: the
+         * toggle announces on the same key when it actually runs, a frame or
+         * two later, and repaints this toast with the truth. */
         openpete_native_request_fullscreen_toggle();
         break;
     case ROW_ASPECT:   s_aspect_idx = wrap_idx(s_aspect_idx + step, N_ASPECT);   break;
@@ -480,6 +516,7 @@ void openpete_menu_adjust(int dx) {
     }
     apply_row(s_cursor);
     log_state("set");
+    notify_row(s_cursor);
 }
 
 void openpete_menu_activate(void) {
@@ -488,6 +525,11 @@ void openpete_menu_activate(void) {
     if (s_quit_armed < 2) s_quit_armed++;   /* first press arms, second fires */
     apply_row(s_cursor);
     log_state("activate");
+    /* SETTINGS announces what its press DID (SAVED n / CLEARED / FAILED).
+     * EXIT deliberately does not: arming already changes the row's own label
+     * to REALLY EXIT?, and a toast repeating it adds nothing to a two-press
+     * confirmation the player is looking straight at. */
+    if (s_cursor == ROW_SAVE) notify_row(s_cursor);
 }
 
 void openpete_menu_tick(void) { s_tick++; }

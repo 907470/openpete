@@ -39,6 +39,7 @@
 #include "openpete_freecam.h"
 #include "openpete_fillpick.h"
 #include "openpete_keymap.h"  /* [keys] — every host hotkey below */
+#include "openpete_osd.h"     /* toast the changes the player makes */
 #include "feature_registry.h"
 #include "openpete_mods.h"
 #include "features/no_lod.h"
@@ -2039,6 +2040,37 @@ static int run_host_init(const openpete_options_t* opts) {
     (void)openpete_native_render_init(opts, win_w, win_h);
     openpete_native_set_perf_stats(opts->perf_stats);   /* stats overlay level (O / M menus move it live) */
     openpete_native_set_perf_anchor(opts->perf_position);  /* which corner it anchors to (--perf-position) */
+    openpete_osd_set_enabled(opts->osd);
+    openpete_osd_set_anchor(opts->osd_position);
+    openpete_osd_set_default_timeout_ms(opts->osd_timeout_ms);
+    /* OPENPETE_OSD_DEMO=N seeds N sample toasts at startup. The OSD is
+     * otherwise driven entirely by live user action — a menu row, a hotkey, a
+     * mod — which a headless or scripted capture cannot perform, so a gate
+     * that wants to SEE a toast has no other way to make one exist. The
+     * timeout is the maximum so the stack is still up whenever the capture
+     * frame lands, and the strings are deliberately different lengths: the
+     * box is content-sized inside a fixed slot, and equal-length samples
+     * would never exercise that. Diagnostic only; unset in normal play. */
+    {
+        const char *e = getenv("OPENPETE_OSD_DEMO");
+        int demo_n = (e && *e) ? atoi(e) : 0;
+        static const char *const demo[] = {
+            "VSYNC: ON", "LOD: EXTENDED", "SSAA: 4X",
+            "DISPLAY: FULLSCREEN", "FPS: UNLIMITED", "TEXTURES: AFFINE",
+            "DITHER: 15 BIT", "FREECAM: ON",
+        };
+        if (demo_n > (int)(sizeof demo / sizeof demo[0]))
+            demo_n = (int)(sizeof demo / sizeof demo[0]);
+        for (int i = 0; i < demo_n; i++) {
+            /* One bucket each: the per-source rate limit exists to stop a
+             * runaway producer, and it would otherwise cap this seed at the
+             * burst of 4 — an eight-toast gate that silently captured four. */
+            char src[16];
+            snprintf(src, sizeof src, "demo%d", i);
+            openpete_osd_notify(src, NULL, OPENPETE_OSD_TIMEOUT_MAX_MS,
+                                "%s", demo[i]);
+        }
+    }
     openpete_native_set_fps_in_record(opts->record_fps_overlay);  /* --record-fps-overlay */
 
     /* Decide whether PsyCross still rasterizes the OT (see the global's comment).
@@ -3364,6 +3396,8 @@ static int run_host_loop(const openpete_options_t* opts) {
                 g_openpete_interp_enabled = !g_openpete_interp_enabled;
                 OPL_INFO_F("render", "interpolation -> %s",
                            g_openpete_interp_enabled ? "ON" : "OFF");
+                openpete_osd_notify("host", "hotkey.interp", 0, "INTERPOLATION: %s",
+                                    g_openpete_interp_enabled ? "ON" : "OFF");
             }
 
             /* Live toggle of sector LOD original <-> extended (the settings
@@ -3373,8 +3407,13 @@ static int run_host_loop(const openpete_options_t* opts) {
              * new state. Native-renderer display policy; inert under
              * PsyCross. The menu re-syncs its LOD row from openpete_no_lod
              * when next opened. */
-            if (openpete_key_pressed(OPK_LOD_TOGGLE))
+            if (openpete_key_pressed(OPK_LOD_TOGGLE)) {
                 openpete_no_lod_set(!openpete_no_lod, -1.0f);
+                /* Same key the O menu's LOD row uses, so a player who toggles
+                 * both ways sees one toast repaint rather than two stack. */
+                openpete_osd_notify("host", "menu.lod", 0, "LOD: %s",
+                                    openpete_no_lod ? "EXTENDED" : "ORIGINAL");
+            }
 
             /* The LP fill-tag inspector. Engaged, it picks the terrain face
              * under the crosshair each present and tints the fill-tag set, so
@@ -3409,7 +3448,11 @@ static int run_host_loop(const openpete_options_t* opts) {
              * axes so movement continues while held, consumed once per game
              * tick in game_on_frame_pre. Keyboard and pad sum (then clamp), so
              * either or both drive it. */
-            if (openpete_key_pressed(OPK_FREECAM)) openpete_freecam_toggle();
+            if (openpete_key_pressed(OPK_FREECAM)) {
+                openpete_freecam_toggle();
+                openpete_osd_notify("host", "menu.freecam", 0, "FREECAM: %s",
+                                    openpete_freecam_active() ? "ON" : "OFF");
+            }
 
             /* Render camera lock (openpete_camlock.h) — holds/flies the
              * PRESENTED view while the sim (cutscenes included) continues
@@ -5206,6 +5249,13 @@ static int run_host_loop(const openpete_options_t* opts) {
      * present thread can only run concurrently with a tick if this is zero;
      * any name listed here is a call that would have to be moved, locked, or
      * deferred first. */
+    /* OSD engagement. A capture-based gate reading zero here never composited
+     * a toast, whatever its pixels looked like — reported unconditionally so
+     * that cannot pass unnoticed. */
+    if (openpete_osd_enabled())
+        OPL_INFO_F("osd", "census: %u toast(s) composited",
+                   openpete_native_osd_composited());
+
     {
         unsigned gpu_hits = op_gpu_audit_total();
         unsigned mw = op_gpu_audit_map_writes();

@@ -271,6 +271,42 @@ float openpete_native_overlay_aspect(void);
  * over the menu panel. nverts==0 clears it. Display-only. */
 void openpete_native_set_menu_glyphs(const openpete_hud_vert *verts, int nverts);
 
+/* ---- OSD toast geometry ------------------------------------------------
+ * The OSD renders into a FIXED SLOT GRID: one supersample target holding
+ * OPENPETE_OSD_MAX stacked slots of identical extent, reallocated only when
+ * the window resizes. Content-sized targets were the obvious design and are
+ * wrong — every SS target rebuild waits the device idle, and toast arrivals,
+ * expiries and coalescing repaints happen many times a second.
+ *
+ * The builder emits each toast's border and text into its slot, in
+ * TARGET-LOCAL overlay space (slot i's top-left is at y = i * slot height),
+ * and reports which toast landed in which slot plus the box it actually
+ * filled. The compositor samples that sub-rect and places it by the anchor
+ * ledger at the toast's own alpha.
+ *
+ * The table is keyed by TOAST ID, never by index: the ring is mutated on
+ * other threads between this push and the present that consumes it. Geometry
+ * and table are published TOGETHER, under one lock — an id-keyed table is
+ * worthless if it can itself be read half-copied. */
+typedef struct {
+    uint32_t id;         /* the toast this slot holds                     */
+    int      slot;       /* its row in the grid                           */
+    float    box_w;      /* extent actually filled, overlay units         */
+    float    box_h;
+} openpete_osd_slot_t;
+
+void openpete_native_set_osd_glyphs(const openpete_hud_vert *verts, int nverts,
+                                    const openpete_osd_slot_t *slots, int nslots);
+
+/* The slot grid's geometry, so the builder lays out against the same numbers
+ * the compositor samples with. Extents are overlay units (window-height
+ * fractions); the count is OPENPETE_OSD_MAX. */
+void openpete_native_osd_slot_extent(float *w, float *h);
+
+/* Toasts composited so far this run. An engagement counter: a capture-based
+ * gate reading zero here never drew a toast, whatever its pixels say. */
+unsigned openpete_native_osd_composited(void);
+
 /* Path-isolation mode (--render-paths). When on, a frame with no native scene
  * geometry presents the scene background instead of re-displaying the PSX VRAM
  * framebuffer — the VRAM is the UNFILTERED frame, so falling back to it would

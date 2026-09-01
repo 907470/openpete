@@ -12,6 +12,7 @@
  */
 
 #include "openpete_knobs.h"
+#include "openpete_osd.h"
 #include "openpete_workpool.h"
 #include "openpete_terrain_cache.h"
 #include "openpete_disc_cache.h"
@@ -144,6 +145,37 @@ static double perfpos_get(const knob_desc_t *k) {
 static int perfpos_set(knob_desc_t *k, double v) {
     openpete_native_set_perf_anchor((int)v);
     k->stored_num = (int)v;
+    return 0;
+}
+
+static double osd_get(const knob_desc_t *k) {
+    KNOB_LIVE_OR_STORED(k);
+    return openpete_osd_enabled() ? 1.0 : 0.0;
+}
+static int osd_set(knob_desc_t *k, double v) {
+    openpete_osd_set_enabled(v != 0.0);
+    k->stored_num = (v != 0.0);
+    return 0;
+}
+static double osdpos_get(const knob_desc_t *k) {
+    KNOB_LIVE_OR_STORED(k);
+    return (double)openpete_osd_anchor();
+}
+static int osdpos_set(knob_desc_t *k, double v) {
+    openpete_osd_set_anchor((int)v);
+    k->stored_num = (int)v;
+    return 0;
+}
+/* Seconds at the surface, milliseconds underneath — the same unit boundary
+ * --osd-timeout draws, and the only other place it is crossed. */
+static double osdtimeout_get(const knob_desc_t *k) {
+    KNOB_LIVE_OR_STORED(k);
+    return (double)openpete_osd_default_timeout_ms() / 1000.0;
+}
+static int osdtimeout_set(knob_desc_t *k, double v) {
+    if (v <= 0.0) return -1;
+    openpete_osd_set_default_timeout_ms((uint32_t)(v * 1000.0 + 0.5));
+    k->stored_num = v;
     return 0;
 }
 
@@ -543,6 +575,25 @@ static const knob_desc_t g_builtin[] = {
       "first, the other stacks clear of it.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_anchor_names), 0, 0,
       perfpos_get, perfpos_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "osd", "Notifications", "Display", "--osd", NULL,
+      "On-screen notifications when a setting changes, in the game's own gold "
+      "chrome. Mods raise them too.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      osd_get, osd_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "osd_position", "Notification position", "Display", "--osd-position", NULL,
+      "Which corner or edge notifications stack at. Sharing a corner with the "
+      "stats block is fine: the stats block claims first and the toasts stack "
+      "clear of it.",
+      KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_anchor_names), 0, 0,
+      osdpos_get, osdpos_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "osd_timeout", "Notification timeout", "Display", "--osd-timeout", NULL,
+      "Seconds a notification stays up before it fades. A caller may ask for "
+      "its own; this is what it gets when it does not.",
+      KNOB_FLOAT, KNOB_LIVE, NULL, 0, 0.5, 30.0,
+      osdtimeout_get, osdtimeout_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "vertex_precision", "Vertex precision", "Display", "--vertex-precision", NULL,
       "PSX integer-grid vertex snap (authentic polygon wobble) vs smooth "
@@ -1317,6 +1368,12 @@ void knob_registry_init(const struct openpete_options *opts) {
             k->stored_num = opts->perf_stats;
         } else if (!strcmp(k->id, "perf_position")) {
             k->stored_num = opts->perf_position;
+        } else if (!strcmp(k->id, "osd")) {
+            k->stored_num = opts->osd ? 1 : 0;
+        } else if (!strcmp(k->id, "osd_position")) {
+            k->stored_num = opts->osd_position;
+        } else if (!strcmp(k->id, "osd_timeout")) {
+            k->stored_num = (double)opts->osd_timeout_ms / 1000.0;
         } else if (!strcmp(k->id, "vertex_precision")) {
             k->stored_num = (opts->vertex_precision == OPENPETE_VERTEX_PRECISION_INTEGER);
         } else if (!strcmp(k->id, "raster_quantize")) {

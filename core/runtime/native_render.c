@@ -27,6 +27,7 @@
 #include "openpete_profile.h"   /* --profile-out forwarding shim */
 #include "openpete_menu.h"
 #include "openpete_overlay_anchor.h"
+#include "openpete_osd.h"
 #include "openpete_knobs.h"   /* env-epoch for cached live knobs */
 #include "openpete_devui.h"
 #include "openpete_mods.h"   /* openpete_mods_texture_get (mod-texture runs) */
@@ -229,6 +230,17 @@ typedef struct {
  * panel, so this is smaller than OVL_SS_FACTOR to keep the target memory sane at
  * high resolutions (2× = 4 samples/px, a clear anti-alias). */
 #define MENU_SS_FACTOR 2
+/* OSD toast supersample. 2x, like the menu and for the same reason: this
+ * layer re-renders on EVERY sim tick (the gold shimmer is baked into vertex
+ * colours at emit time, so it cannot be built once), and 4x over eight slots
+ * buys nothing the eye can find. The grid is FIXED — max visible x max slot
+ * extent — and reallocated only on a window resize, because every SS target
+ * rebuild waits the device idle and toasts arrive, expire and repaint many
+ * times a second. */
+#define OSD_SS_FACTOR   2
+#define OSD_SLOT_W      0.62f   /* max toast box width,  overlay units */
+#define OSD_SLOT_H      0.075f  /* max toast box height, overlay units */
+#define OSD_GLYPH_MAX   24576   /* 8 toasts of border + wrapped text        */
 /* The INTERNAL stored tri (W0.7b): the feeder-facing openpete_scene_tri plus
  * the routing state that travels through the add_tri arguments. Private to
  * this TU — feeders can't write routing fields (no such field exists on their
@@ -1520,6 +1532,20 @@ static struct {
     rhi_buffer   *menu_quad_vb;       /* composite quad at the panel rect */
     int           menu_quad_win_w, menu_quad_win_h;
 
+    /* OSD toast supersample: a FIXED grid of OPENPETE_OSD_MAX slots, one per
+     * possible live toast, rebuilt only on resize. Each present the compositor
+     * draws one quad per toast sampling that toast's slot sub-rect, tinted by
+     * its fade alpha (the resolve shader modulates by the quad's vertex
+     * colour). Quads ride the per-present menu_vb ring: a sliding toast moves
+     * its quad EVERY present, so a single buffer rewritten under wait_idle —
+     * fine for chrome that only moves on a resize — would idle the device on
+     * every frame of every animation. */
+    rhi_texture  *osd_ss;
+    int           osd_ss_w, osd_ss_h;
+    int           osd_slot_px_w, osd_slot_px_h;   /* one slot, 1x pixels */
+    rhi_buffer   *osd_glyph_vb;       /* toast glyphs + frames (NDC, depth-tested) */
+    rhi_buffer   *osd_quad_vb;        /* one composite quad per visible toast */
+
     /* Depth-aware decal infrastructure: the WORLD-opaque depth PRE-PASS.
      * Rendered ONCE per present in the FULL-EXTENT PSX mapping at
      * max(ref, window) resolution; every consumer pass (native_rtt / SSAA /
@@ -1653,15 +1679,20 @@ static void diff_stats_accumulate(void)
  * (hx,hy); v0 is the UV-v at the TOP edge, v1 at the BOTTOM. (VRAM is uploaded
  * top-down so it uses v0<v1; the GL readback is bottom-up so the reference
  * uses v0>v1.) rgba is unused by the textured shaders. */
+static void build_panel_tinted(rhi_vertex out[6], float cx, float cy, float hx, float hy,
+                               float u0, float v0, float u1, float v1, uint32_t rgba)
+{
+    const rhi_vertex tl = { cx - hx, cy + hy, 0.0f, u0, v0, rgba, 0 };
+    const rhi_vertex tr = { cx + hx, cy + hy, 0.0f, u1, v0, rgba, 0 };
+    const rhi_vertex br = { cx + hx, cy - hy, 0.0f, u1, v1, rgba, 0 };
+    const rhi_vertex bl = { cx - hx, cy - hy, 0.0f, u0, v1, rgba, 0 };
+    out[0] = tl; out[1] = tr; out[2] = br;
+    out[3] = tl; out[4] = br; out[5] = bl;
+}
 static void build_panel(rhi_vertex out[6], float cx, float cy, float hx, float hy,
                         float u0, float v0, float u1, float v1)
 {
-    const rhi_vertex tl = { cx - hx, cy + hy, 0.0f, u0, v0, 0xFFFFFFFFu, 0 };
-    const rhi_vertex tr = { cx + hx, cy + hy, 0.0f, u1, v0, 0xFFFFFFFFu, 0 };
-    const rhi_vertex br = { cx + hx, cy - hy, 0.0f, u1, v1, 0xFFFFFFFFu, 0 };
-    const rhi_vertex bl = { cx - hx, cy - hy, 0.0f, u0, v1, 0xFFFFFFFFu, 0 };
-    out[0] = tl; out[1] = tr; out[2] = br;
-    out[3] = tl; out[4] = br; out[5] = bl;
+    build_panel_tinted(out, cx, cy, hx, hy, u0, v0, u1, v1, 0xFFFFFFFFu);
 }
 
 /* Aspect-fit content (content_w x content_h px) inside a clip-space cell
@@ -2332,6 +2363,12 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *ovl_resolve_pipe = rhi_create_pipeline(dev, &ovl_resolve_desc);
     rhi_buffer   *ovl_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_buffer   *menu_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
+    /* OSD toast layer. Both are per-present RINGS: a sliding toast rewrites
+     * its quad every present, and the glyph list is rebuilt every sim tick
+     * (the shimmer is baked per vertex). A single buffer would need a device
+     * idle per frame of every animation. */
+    rhi_buffer   *osd_glyph_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * OSD_GLYPH_MAX);
+    rhi_buffer   *osd_quad_vb  = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * OPENPETE_OSD_MAX * 6);
     /* Optional occlusion-grid resources (graceful fallback: NULL → no culling). */
     rhi_pipeline *occl_pipe = rhi_create_pipeline(dev, &occl_desc);
     /* Optional W2.6-c hole-fill pipes (graceful fallback: any NULL → WORLD uses
@@ -2520,6 +2557,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.ovl_resolve_pipe = ovl_resolve_pipe;   /* may be NULL → 1× fallback */
     s_nr.ovl_quad_vb  = ovl_quad_vb;            /* may be NULL → 1× fallback */
     s_nr.menu_quad_vb = menu_quad_vb;           /* may be NULL → 1× fallback */
+    s_nr.osd_glyph_vb = osd_glyph_vb;           /* may be NULL → no OSD layer  */
+    s_nr.osd_quad_vb  = osd_quad_vb;
     s_nr.occl_pipe    = occl_pipe;              /* may be NULL → no moby occlusion culling */
     s_nr.occl_grid    = occl_grid;              /* may be NULL → no moby occlusion culling */
     s_nr.vram_tex     = vram_tex;
@@ -2697,6 +2736,12 @@ void openpete_native_toggle_fullscreen(void)
     s_nr.resize_immediate_at_ns = SDL_GetTicksNS();
     SDL_SetWindowFullscreen(s_nr.window, !fs);
     OPL_INFO_F("native", "fullscreen %s", !fs ? "on (borderless desktop)" : "off");
+    /* Announced HERE rather than at the call sites: Alt+Enter, the fullscreen
+     * binding, a window double-click, the O-menu DISPLAY row and the M-overlay
+     * row all funnel through this one function, and the toast should read the
+     * same whichever of them the player used. */
+    openpete_osd_notify("host", "menu.display", 0,
+                        "DISPLAY: %s", !fs ? "FULLSCREEN" : "WINDOWED");
 }
 
 /* Live fullscreen state, read straight from the SDL window flags — the O-menu
@@ -7798,6 +7843,54 @@ void openpete_native_set_menu_glyphs(const openpete_hud_vert *verts, int nverts)
     s_menu_glyph_n = nverts;
 }
 
+/* ---- OSD toast geometry channel ----------------------------------------
+ * The one publish in this file that is SYNCHRONIZED, and deliberately so.
+ * Its siblings above are plain memcpys into file statics with the count
+ * stored separately, which is survivable for them: the perf readout rebuilds
+ * only when its text changes and the menu builder runs only while the menu is
+ * open, so a torn push is a rare one-present artifact. The OSD re-emits on
+ * every sim tick a toast is live, and its table is what the compositor
+ * resolves toast ids through — a half-copied table doesn't smear a glyph, it
+ * points a quad at another toast's slot. Geometry and table therefore move
+ * together under one lock. */
+static SDL_Mutex        *s_osd_mx;
+static openpete_hud_vert s_osd_glyph_verts[OSD_GLYPH_MAX];
+static int               s_osd_glyph_n = 0;
+static openpete_osd_slot_t s_osd_slots[OPENPETE_OSD_MAX];
+static int               s_osd_slot_n = 0;
+
+static SDL_Mutex *osd_pub_mx(void) {
+    if (!s_osd_mx) s_osd_mx = SDL_CreateMutex();
+    return s_osd_mx;
+}
+
+void openpete_native_set_osd_glyphs(const openpete_hud_vert *verts, int nverts,
+                                    const openpete_osd_slot_t *slots, int nslots) {
+    if (nverts < 0) nverts = 0;
+    if (nverts > OSD_GLYPH_MAX) nverts = OSD_GLYPH_MAX;
+    if (nslots < 0) nslots = 0;
+    if (nslots > OPENPETE_OSD_MAX) nslots = OPENPETE_OSD_MAX;
+    SDL_LockMutex(osd_pub_mx());
+    if (nverts > 0 && verts)
+        memcpy(s_osd_glyph_verts, verts, (size_t)nverts * sizeof(verts[0]));
+    s_osd_glyph_n = nverts;
+    if (nslots > 0 && slots)
+        memcpy(s_osd_slots, slots, (size_t)nslots * sizeof(slots[0]));
+    s_osd_slot_n = nslots;
+    SDL_UnlockMutex(osd_pub_mx());
+}
+
+void openpete_native_osd_slot_extent(float *w, float *h) {
+    /* The grid's slot extent in overlay units, quantized to the 1x pixel
+     * counts the target was actually built from. The builder lays out against
+     * these, so its slot origins line up exactly with the texel blocks the
+     * resolve shader averages — a slot origin off the OSD_SS_FACTOR grid would
+     * make edge blocks average in the neighbouring slot's texels. */
+    const float ph = (s_nr.win_h > 0) ? (float)s_nr.win_h : 1.0f;
+    if (w) *w = (s_nr.osd_slot_px_w > 0) ? (float)s_nr.osd_slot_px_w / ph : OSD_SLOT_W;
+    if (h) *h = (s_nr.osd_slot_px_h > 0) ? (float)s_nr.osd_slot_px_h / ph : OSD_SLOT_H;
+}
+
 /* Draw the overlay built from Spyro's own 3D HUD text mobys, fed each frame by
  * the game side (text_moby_native -> openpete_native_set_overlay_glyphs). Verts
  * arrive in window-height-fraction overlay space (origin top-left, +y down) with
@@ -7805,12 +7898,15 @@ void openpete_native_set_menu_glyphs(const openpete_hud_vert *verts, int nverts)
  * depth-tested through the opaque gouraud pipe after a local depth clear, so the
  * glyphs z-sort among their own faces yet sit on top of the whole frame — the
  * same isolation trick as the in-game HUD3D pass. Returns true if it drew. */
-static bool draw_overlay_glyphs_3d(float ax, float ay, float ox, float oy) {
-    if (s_overlay_glyph_n < 3 || !s_nr.gouraud_pipe || !s_nr.overlay_vb) return false;
-    static rhi_vertex buf[OVL_MAX_VERTS];
+static bool draw_glyph_list_3d(const openpete_hud_vert *verts, int nverts,
+                               rhi_buffer *vb, int cap,
+                               float ax, float ay, float ox, float oy) {
+    if (nverts < 3 || !verts || !vb || !s_nr.gouraud_pipe) return false;
+    static rhi_vertex buf[OSD_GLYPH_MAX > OVL_MAX_VERTS ? OSD_GLYPH_MAX : OVL_MAX_VERTS];
+    if (cap > (int)(sizeof buf / sizeof buf[0])) cap = (int)(sizeof buf / sizeof buf[0]);
     int n = 0;
-    for (int i = 0; i < s_overlay_glyph_n && n < OVL_MAX_VERTS; i++) {
-        const openpete_hud_vert *v = &s_overlay_glyph_verts[i];
+    for (int i = 0; i < nverts && n < cap; i++) {
+        const openpete_hud_vert *v = &verts[i];
         /* Glyph coords are win_h-relative; ax/ay map them into the target's NDC.
          * Offscreen 1×: ax=2·win_h/win_w, ay=2. Overlay SS: ax=2/ovl_region_w(),
          * ay=2/ovl_region_h() — both keep glyphs square (ax/ay carry the same
@@ -7827,13 +7923,19 @@ static bool draw_overlay_glyphs_3d(float ax, float ay, float ox, float oy) {
     }
     n -= n % 3;
     if (n <= 0) return false;
-    rhi_update_buffer(s_nr.overlay_vb, buf, (size_t)n * sizeof(rhi_vertex));
+    rhi_update_buffer(vb, buf, (size_t)n * sizeof(rhi_vertex));
     rhi_reset_scissor(s_nr.dev);
     rhi_clear_depth(s_nr.dev);
     bind_scene_pipe(s_nr.gouraud_pipe);
-    rhi_bind_vertex_buffer(s_nr.dev, s_nr.overlay_vb);
+    rhi_bind_vertex_buffer(s_nr.dev, vb);
     rhi_draw(s_nr.dev, (uint32_t)n, 0);
     return true;
+}
+
+/* The stats readout's own glyph list, through the shared draw above. */
+static bool draw_overlay_glyphs_3d(float ax, float ay, float ox, float oy) {
+    return draw_glyph_list_3d(s_overlay_glyph_verts, s_overlay_glyph_n,
+                              s_nr.overlay_vb, OVL_MAX_VERTS, ax, ay, ox, oy);
 }
 
 /* Draw the mod draw-service overlay (rects + text glyphs) into the currently
@@ -7869,22 +7971,27 @@ static void draw_mod_overlay(void) {
     rhi_draw(s_nr.dev, (uint32_t)n, 0);
 }
 
+/* Whether chrome is allowed into a --record video: --record-fps-overlay, else
+ * the OPENPETE_FPS_IN_RECORD env, else no. Resolved lazily and cached; the
+ * setter clears the cache so a live toggle re-resolves. */
+static int fps_in_record_resolved(void) {
+    if (s_fps_in_record < 0) {
+        if (s_fps_in_record_pref >= 0) {
+            s_fps_in_record = s_fps_in_record_pref;      /* --record-fps-overlay wins */
+        } else {
+            const char *e = getenv("OPENPETE_FPS_IN_RECORD");  /* env fallback */
+            s_fps_in_record = (e && *e && *e != '0') ? 1 : 0;
+        }
+    }
+    return s_fps_in_record;
+}
+
 /* True when the stats overlay should render this frame: glyphs built, on, and
  * not suppressed by the record gating (kept out of recordings unless
  * OPENPETE_FPS_IN_RECORD lets the live look be captured for verification). */
 static bool perf_overlay_should_draw(void) {
     if (s_perf_stats == OPENPETE_PERF_OFF || s_nr.win_w <= 0 || s_nr.win_h <= 0 || s_overlay_glyph_n < 3) return false;
-    if (openpete_record_active()) {
-        if (s_fps_in_record < 0) {
-            if (s_fps_in_record_pref >= 0) {
-                s_fps_in_record = s_fps_in_record_pref;      /* --record-fps-overlay wins */
-            } else {
-                const char *e = getenv("OPENPETE_FPS_IN_RECORD");  /* env fallback */
-                s_fps_in_record = (e && *e && *e != '0') ? 1 : 0;
-            }
-        }
-        if (!s_fps_in_record) return false;
-    }
+    if (openpete_record_active() && !fps_in_record_resolved()) return false;
     return true;
 }
 
@@ -8195,6 +8302,238 @@ static void draw_menu_overlay(void) {
     }
 }
 
+/* --- OSD toast overlay ---------------------------------------------------
+ * Same machinery as the settings menu — 3D gold glyphs and a lit gold frame
+ * supersampled into an offscreen RGBA layer, then box-downsampled and
+ * alpha-composited over the frame — but with N independently-faded boxes
+ * instead of one panel. The differences are the fixed slot grid (so nothing
+ * reallocates while toasts come and go) and the per-toast alpha, which rides
+ * the composite quad's VERTEX COLOUR rather than a push constant: the resolve
+ * shader already had the input declared and unused, and the quads are rebuilt
+ * every present anyway, so per-toast fade costs literally nothing extra. */
+
+/* Toasts actually COMPOSITED, cumulative. A capture-based gate that greened
+ * with zero here proved nothing about the OSD; reported at shutdown so that
+ * cannot pass unnoticed. */
+static unsigned s_osd_composited = 0;
+unsigned openpete_native_osd_composited(void) { return s_osd_composited; }
+
+static bool osd_ss_ready(void) {
+    return s_nr.ovl_resolve_pipe && s_nr.menu_vb && s_nr.osd_ss;
+}
+
+/* --record video is ground truth for mod-shader A/Bs, and the codebase has
+ * already ruled that chrome stays out of it: the stats overlay suppresses
+ * itself while recording unless --record-fps-overlay asks otherwise. Toasts
+ * follow the same rule, with the same override — a recording of the OSD
+ * itself is a legitimate thing to want, just not the default. */
+static bool osd_should_draw(void) {
+    if (!openpete_osd_enabled()) return false;
+    if (openpete_record_active() && !fps_in_record_resolved()) return false;
+    return true;
+}
+
+/* (Re)create the slot grid on a window resize. Sized from the MAXIMUM toast
+ * box, never from the live ones: sizing to content would rebuild the target —
+ * and wait the device idle — on every arrival, expiry and coalescing repaint,
+ * i.e. once per keypress while a value is held down. Call OUTSIDE a frame. */
+static void ensure_osd_ss(void) {
+    if (!s_nr.ovl_resolve_pipe || s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
+    if (!openpete_osd_enabled()) return;
+    /* Lazy like menu_ss: the grid is large, and a session that never raises a
+     * toast should never pay for it. */
+    if (!s_nr.osd_ss && !openpete_osd_any_live()) return;
+
+    int sw = (int)(OSD_SLOT_W * (float)s_nr.win_h + 0.5f);
+    int sh = (int)(OSD_SLOT_H * (float)s_nr.win_h + 0.5f);
+    if (sw < 1) sw = 1;
+    if (sh < 1) sh = 1;
+    int want_w = sw * OSD_SS_FACTOR;
+    int want_h = sh * OPENPETE_OSD_MAX * OSD_SS_FACTOR;
+    uint32_t maxdim = rhi_max_image_dimension(s_nr.dev);
+    if ((uint32_t)want_w > maxdim) { want_w = (int)maxdim; sw = want_w / OSD_SS_FACTOR; }
+    if ((uint32_t)want_h > maxdim) {
+        want_h = (int)maxdim;
+        sh = want_h / (OPENPETE_OSD_MAX * OSD_SS_FACTOR);
+        if (sh < 1) sh = 1;
+    }
+    if (s_nr.osd_ss && s_nr.osd_ss_w == want_w && s_nr.osd_ss_h == want_h) return;
+    rhi_wait_idle(s_nr.dev);
+    if (s_nr.osd_ss) { rhi_destroy_texture(s_nr.dev, s_nr.osd_ss); s_nr.osd_ss = NULL; }
+    s_nr.osd_ss = rhi_create_render_target(s_nr.dev, (uint32_t)want_w, (uint32_t)want_h);
+    s_nr.osd_ss_w = want_w; s_nr.osd_ss_h = want_h;
+    s_nr.osd_slot_px_w = sw; s_nr.osd_slot_px_h = sh;
+    if (s_nr.osd_ss)
+        OPL_INFO_F("native", "OSD SS grid %dx%d (%d slots of %dx%d px, %d×)",
+                   want_w, want_h, OPENPETE_OSD_MAX, sw, sh, OSD_SS_FACTOR);
+}
+
+/* Pre-pass: every live toast's border + text at OSD_SS_FACTOR× into the grid.
+ * Its own render pass, so it must run BEFORE the offscreen pass opens. The
+ * glyphs arrive in TARGET-LOCAL overlay space (slot i at y = i * slot_h), so
+ * one linear map covers the whole grid. */
+static void prepare_osd_ss(void) {
+    if (!osd_ss_ready() || !osd_should_draw()) return;
+    int n;
+    SDL_LockMutex(osd_pub_mx());
+    n = s_osd_glyph_n;
+    SDL_UnlockMutex(osd_pub_mx());
+    if (n < 3) return;
+    float sw, sh;
+    openpete_native_osd_slot_extent(&sw, &sh);
+    if (sw <= 0.0f || sh <= 0.0f) return;
+    rhi_begin_render_target(s_nr.dev, s_nr.osd_ss, 0.0f, 0.0f, 0.0f, 0.0f);  /* transparent */
+    SDL_LockMutex(osd_pub_mx());
+    draw_glyph_list_3d(s_osd_glyph_verts, s_osd_glyph_n,
+                       s_nr.osd_glyph_vb, OSD_GLYPH_MAX,
+                       2.0f / sw, 2.0f / (sh * (float)OPENPETE_OSD_MAX), 0.0f, 0.0f);
+    SDL_UnlockMutex(osd_pub_mx());
+    rhi_end_render_target(s_nr.dev, s_nr.osd_ss);
+}
+
+/* Composite the toasts into the currently-open offscreen pass: per toast a 1×
+ * subtractive panel, then the slot's supersampled sub-rect at the toast's
+ * alpha. Places through the anchor ledger, so the stats block (which claimed
+ * first) is never overprinted. */
+static void draw_osd_overlay(void) {
+    if (!osd_ss_ready() || !osd_should_draw()) return;
+    if (s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
+
+    /* Take the published table first: it is what says which toasts have
+     * geometry at all, and the state machine must not start a toast's timer
+     * before it can be seen. */
+    openpete_osd_slot_t slots[OPENPETE_OSD_MAX];
+    int nslots;
+    SDL_LockMutex(osd_pub_mx());
+    nslots = s_osd_slot_n;
+    memcpy(slots, s_osd_slots, sizeof slots);
+    SDL_UnlockMutex(osd_pub_mx());
+    if (nslots <= 0) return;
+
+    openpete_osd_ready_t ready[OPENPETE_OSD_MAX];
+    for (int i = 0; i < nslots; i++) {
+        ready[i].id    = slots[i].id;
+        ready[i].box_h = slots[i].box_h;
+    }
+    openpete_osd_view_t view[OPENPETE_OSD_MAX];
+    const int nv = openpete_osd_present_update(openpete_interp_present_now(),
+                                               ready, nslots,
+                                               view, OPENPETE_OSD_MAX);
+    if (nv <= 0) return;
+
+    float slot_w, slot_h;
+    openpete_native_osd_slot_extent(&slot_w, &slot_h);
+    const int   anchor = openpete_osd_anchor();
+    const float ax   = 2.0f * (float)s_nr.win_h / (float)s_nr.win_w;
+    const float ay   = 2.0f;
+    const float ph   = (float)s_nr.win_h;
+    const float M    = OPENPETE_ANCHOR_MARGIN;
+    const float base = s_anchor_ledger.used[anchor];   /* what the stats block took */
+    const float lo   = s_anchor_ledger.x_min + M, hi = s_anchor_ledger.x_max - M;
+
+    static rhi_vertex panels[OPENPETE_OSD_MAX * 6];
+    int pn = 0;
+    struct { float cx, cy, hx, hy, u0, v0, u1, v1; uint32_t rgba; } comp[OPENPETE_OSD_MAX];
+    int cn = 0;
+    int drawn = 0;
+
+    for (int i = 0; i < nv; i++) {
+        const openpete_osd_slot_t *sl = NULL;
+        for (int j = 0; j < nslots; j++)
+            if (slots[j].id == view[i].id) { sl = &slots[j]; break; }
+        if (!sl) continue;   /* retired between the table read and now */
+
+        /* Snap the box to whole output pixels, so the resolve's N×N blocks map
+         * 1:1 onto output pixels. A quad landing on subpixel offsets changes
+         * which fragment centres fall in which block and shimmers along the
+         * glyph edges — the fade carries the easing instead. */
+        int bw = (int)(sl->box_w * ph + 0.5f);
+        int bh = (int)(sl->box_h * ph + 0.5f);
+        if (bw < 1 || bh < 1) continue;
+        if (bw > s_nr.osd_slot_px_w) bw = s_nr.osd_slot_px_w;
+        if (bh > s_nr.osd_slot_px_h) bh = s_nr.osd_slot_px_h;
+        const float w = (float)bw / ph, h = (float)bh / ph;
+
+        /* Where it sits. x hugs the anchor's edge; y stacks from whatever the
+         * persistent chrome already claimed at this anchor. The slide-in runs
+         * along x for the side anchors and along y for the centred ones — a
+         * centred toast has no near edge to come from. */
+        float x = openpete_anchor_is_right(anchor)  ? hi - w
+                : openpete_anchor_is_center(anchor) ? 0.5f * (lo + hi - w)
+                                                    : lo;
+        if (x < lo) x = lo;
+        const int bottom = openpete_anchor_is_bottom(anchor);
+        float y = bottom ? (1.0f - M - base - view[i].y - h)
+                         : (M + base + view[i].y);
+
+        const float travel = 1.0f - view[i].slide;
+        if (openpete_anchor_is_center(anchor)) y += bottom ? travel * h : -travel * h;
+        else if (openpete_anchor_is_right(anchor)) x += travel * (w + M);
+        else                                       x -= travel * (w + M);
+
+        /* Snap the placed rect to the pixel grid too — the same reason. */
+        x = (float)(int)(x * ph + (x >= 0.0f ? 0.5f : -0.5f)) / ph;
+        y = (float)(int)(y * ph + 0.5f) / ph;
+
+        int a8 = (int)(view[i].alpha * 255.0f + 0.5f);
+        if (a8 <= 0) continue;
+        if (a8 > 255) a8 = 255;
+
+        /* Panel — the game's own dialog-box subtractive grey. The sub pipe
+         * ignores alpha, so the fade scales the SUBTRACTED RGB toward black:
+         * at alpha 0 it subtracts nothing, which is the same thing as being
+         * absent. */
+        const int g = (112 * a8) / 255;
+        const uint32_t sub = 0xFF000000u | (uint32_t)g | ((uint32_t)g << 8) | ((uint32_t)g << 16);
+        pn = menu_push_quad(panels, pn, ax, ay, x, y, x + w, y + h, sub);
+
+        /* Composite quad — the slot's used sub-rect, tinted by the fade. */
+        const float u1 = (float)bw / (float)s_nr.osd_slot_px_w;
+        const float v0 = (float)sl->slot / (float)OPENPETE_OSD_MAX;
+        const float v1 = v0 + (float)bh
+                            / (float)(s_nr.osd_slot_px_h * OPENPETE_OSD_MAX);
+        const float rw_ndc = w * ax, rh_ndc = h * ay;
+        comp[cn].cx = x * ax - 1.0f + rw_ndc * 0.5f;
+        comp[cn].cy = 1.0f - y * ay - rh_ndc * 0.5f;
+        comp[cn].hx = rw_ndc * 0.5f; comp[cn].hy = rh_ndc * 0.5f;
+        comp[cn].u0 = 0.0f; comp[cn].v0 = v0; comp[cn].u1 = u1; comp[cn].v1 = v1;
+        comp[cn].rgba = 0x00FFFFFFu | ((uint32_t)a8 << 24);
+        cn++;
+        drawn++;
+    }
+    if (drawn <= 0) return;
+    s_osd_composited += (unsigned)drawn;   /* engagement counter (a green must prove it engaged) */
+
+    if (pn > 0 && s_nr.gouraud_hud_sub_pipe && s_nr.menu_vb) {
+        rhi_update_buffer(s_nr.menu_vb, panels, (size_t)pn * sizeof(rhi_vertex));
+        rhi_reset_scissor(s_nr.dev);
+        bind_scene_pipe(s_nr.gouraud_hud_sub_pipe);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_vb);
+        rhi_draw(s_nr.dev, (uint32_t)pn, 0);
+    }
+
+    /* One quad per toast, all in one upload of the per-present ring slot, then
+     * one draw each (they differ only in their vertex data, so a single bind
+     * serves them all). */
+    static rhi_vertex quads[OPENPETE_OSD_MAX * 6];
+    int qn = 0;
+    for (int i = 0; i < cn; i++) {
+        build_panel_tinted(&quads[qn], comp[i].cx, comp[i].cy, comp[i].hx, comp[i].hy,
+                           comp[i].u0, comp[i].v0, comp[i].u1, comp[i].v1, comp[i].rgba);
+        qn += 6;
+    }
+    if (qn <= 0 || !s_nr.osd_quad_vb) return;
+    rhi_update_buffer(s_nr.osd_quad_vb, quads, (size_t)qn * sizeof(rhi_vertex));
+    int factor = OSD_SS_FACTOR;
+    rhi_reset_scissor(s_nr.dev);
+    bind_scene_pipe(s_nr.ovl_resolve_pipe);
+    rhi_bind_vram(s_nr.dev, s_nr.osd_ss);
+    rhi_push_constants(s_nr.dev, &factor, sizeof(factor));
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.osd_quad_vb);
+    for (int i = 0; i < cn; i++)
+        rhi_draw(s_nr.dev, 6, (uint32_t)(i * 6));
+}
+
 /* Capture the freeze backdrop from the CLEAN windowed offscreen we just ended
  * (correctly projected/pillarboxed at every window size, and — under --ssaa —
  * already box-resolved back to 1× window resolution). Hardware-blit the
@@ -8219,6 +8558,32 @@ static void capture_freeze_from_offscreen(bool world_frame)
         if (s_pt) { fprintf(stderr, "t"); fflush(stderr); }   /* freeze snapshot done */
         s_nr.frozen_valid = true;
     }
+}
+
+/* Snapshot the freeze backdrop BEFORE any chrome lands in it.
+ *
+ * capture_freeze_from_offscreen reads off_image, and off_image is where the
+ * stats block, the settings menu and the OSD's toasts have already been
+ * drawn — so whatever chrome was on the world frame at pause entry got BAKED
+ * into frozen_tex and then sat there, frozen, behind the pause screen long
+ * after the live thing had gone. The perf counter has always carried that
+ * latent bug, masked only because its live redraw overprints the same rect;
+ * moving it off the top-left corner unmasks it, and a toast that expired
+ * during the pause has nothing to overprint it at all.
+ *
+ * So: end the pass, take the snapshot, re-open LOADing what is there, and let
+ * chrome draw into the re-opened pass. Same end/run/re-open shape the postfx
+ * SCENE split already uses. Costs one extra pass boundary on world presents
+ * that actually feed the freeze; returns true when it captured, so the
+ * caller's tail capture stands down. Mod content is deliberately on the
+ * BACKDROP side of the split: a mod's HUD is content, not chrome. */
+static bool chrome_split_capture(bool world_frame)
+{
+    if (!(world_frame && s_nr.frozen_tex && s_overlay_live)) return false;
+    rhi_end_offscreen(s_nr.dev);
+    capture_freeze_from_offscreen(true);
+    rhi_begin_offscreen_load(s_nr.dev);
+    return true;
 }
 
 /* Renderer variants — the live mode picks one; --screenshot-on-frame dumps all
@@ -8381,8 +8746,13 @@ static bool compose_variant(int variant, bool have_ref)
         }
         scene_postfx_split();                     /* SCENE point (S5): scene→chain→HUD */
         draw_mod_overlay();                       /* mod HUD (content — records too) */
-        if (s_overlay_live) draw_perf_overlay();   /* on the resolved 1× offscreen, crisp */
-        if (s_overlay_live) draw_menu_overlay();  /* settings menu on top */
+        /* Freeze snapshot first, chrome after — see chrome_split_capture. */
+        const bool froze = chrome_split_capture(world_frame);
+        if (s_overlay_live) {
+            draw_perf_overlay();                  /* on the resolved 1× offscreen, crisp */
+            draw_osd_overlay();                   /* toasts above the readout    */
+            draw_menu_overlay();                  /* settings menu on top        */
+        }
         /* Dev overlay: under a live COMPOSITE chain, drawn post-chain
          * instead so screen filters never render over the panel. */
         if (s_overlay_live && !native_postfx_point_active(0))
@@ -8392,8 +8762,9 @@ static bool compose_variant(int variant, bool have_ref)
          * branch skips — so capture it here too, from the box-resolved 1× offscreen
          * (window resolution, matching the non-SSAA snapshot). Without this the
          * pause/inventory freeze had no captured frame under --ssaa and showed the
-         * clear/cyclorama colour instead of the frozen world. */
-        capture_freeze_from_offscreen(world_frame);
+         * clear/cyclorama colour instead of the frozen world. Skipped when the
+         * chrome split already took it. */
+        if (!froze) capture_freeze_from_offscreen(world_frame);
         return false;
     }
 
@@ -8436,11 +8807,19 @@ static bool compose_variant(int variant, bool have_ref)
     }
 
     /* SCENE point (S5) then mod HUD — vk variant, live + record composes. */
-    if (variant == NRV_VK) { scene_postfx_split(); draw_mod_overlay(); }
-    /* FPS overlay — vk live present only (kept off ab/diff so comparison images
+    bool froze = false;
+    if (variant == NRV_VK) {
+        scene_postfx_split();
+        draw_mod_overlay();
+        froze = chrome_split_capture(world_frame);   /* backdrop before chrome */
+    }
+    /* Chrome — vk live present only (kept off ab/diff so comparison images
      * stay clean, and off screenshots/dumps where s_overlay_live is 0). */
-    if (variant == NRV_VK && s_overlay_live) draw_perf_overlay();
-    if (variant == NRV_VK && s_overlay_live) draw_menu_overlay();
+    if (variant == NRV_VK && s_overlay_live) {
+        draw_perf_overlay();
+        draw_osd_overlay();
+        draw_menu_overlay();
+    }
     /* Dev overlay: when a COMPOSITE postfx chain is live it would filter
      * the panel into illegibility (CRT masks) — skip here and re-draw on
      * TOP of the chain's output instead (present_native, post-chain load
@@ -8450,7 +8829,7 @@ static bool compose_variant(int variant, bool have_ref)
 
     rhi_end_offscreen(s_nr.dev);
 
-    if (variant == NRV_VK) capture_freeze_from_offscreen(world_frame);
+    if (variant == NRV_VK && !froze) capture_freeze_from_offscreen(world_frame);
     return false;
 }
 
@@ -9451,6 +9830,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     overlay_layout_update();   /* anchor ledger: where each chrome block sits this present */
     ensure_ovl_ss();           /* stats-overlay supersample target + composite quad */
     ensure_menu_ss();          /* settings-menu glyph supersample (lazy, while open) */
+    ensure_osd_ss();           /* OSD toast slot grid (lazy, once a toast exists) */
     ensure_opaque_depth();     /* WORLD-opaque depth pre-pass target (shadow decal) */
 
     /* Present-path step trace (OPENPETE_LOAD_CENSUS=1): bisects a present that
@@ -9511,6 +9891,9 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     rhi_gpu_zone_end(s_nr.dev);
     rhi_gpu_zone_begin(s_nr.dev, "menu_ss");
     prepare_menu_ss();         /* menu glyphs at MENU_SS_FACTOR× → menu_ss (own pass) */
+    rhi_gpu_zone_end(s_nr.dev);
+    rhi_gpu_zone_begin(s_nr.dev, "osd_ss");
+    prepare_osd_ss();          /* toast slot grid at OSD_SS_FACTOR× (own pass) */
     rhi_gpu_zone_end(s_nr.dev);
     rhi_gpu_zone_begin(s_nr.dev, "compose");
     bool did_diff = compose_variant(variant, have_ref);
@@ -10089,6 +10472,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.ovl_ss)       rhi_destroy_texture(s_nr.dev, s_nr.ovl_ss);
     if (s_nr.ovl_quad_vb)  rhi_destroy_buffer(s_nr.dev, s_nr.ovl_quad_vb);
     if (s_nr.menu_ss)      rhi_destroy_texture(s_nr.dev, s_nr.menu_ss);
+    if (s_nr.osd_ss)       rhi_destroy_texture(s_nr.dev, s_nr.osd_ss);
     if (s_nr.menu_quad_vb) rhi_destroy_buffer(s_nr.dev, s_nr.menu_quad_vb);
     if (s_nr.ovl_resolve_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.ovl_resolve_pipe);
     if (s_nr.vram_tex)     rhi_destroy_texture(s_nr.dev, s_nr.vram_tex);
