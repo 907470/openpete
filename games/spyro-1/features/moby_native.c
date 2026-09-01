@@ -2552,6 +2552,15 @@ static int walk_prologue(CPUState* cpu, int is_spec) {
      * on one thread; every later walk finds them already set. */
     static int first = 1;
     if (first) { first = 0; return 1; }
+    /* OPENPETE_MOBY_WALK_SERIAL=1 forces this walk serial while leaving the
+     * worker pool up for every other caller. --extract-threads 1 cannot do
+     * that: it degrades the pool itself, so it retires the terrain sector walk
+     * in the same breath and no A/B built on it can say which fan-out a
+     * measurement belongs to. */
+    static int s_ser = -1;
+    if (s_ser < 0) { const char* e = getenv("OPENPETE_MOBY_WALK_SERIAL");
+                     s_ser = (e && *e && *e != '0'); }
+    if (s_ser) return 1;
     if (nw <= 1 || s_nrecs < 2 || walk_dbg_env()) return 1;
     return 0;
 }
