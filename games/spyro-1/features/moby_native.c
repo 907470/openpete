@@ -852,6 +852,10 @@ static int s_walk_in_rex;
 /* Re-extract record-loop split, the two halves a worker fan-out would target:
  * the per-record field rebuild and the model decode + projection. */
 static long s_us_dec, s_us_fields;
+/* Fan-out overhead, split: the whole parallel run against the ordered
+ * merge that follows it. The merge copies nine parallel arrays per
+ * RECORD, so its cost tracks record count rather than triangle count. */
+static long s_us_fanout, s_us_merge;
 
 /* OPENPETE_MOBY_TRACE=<moby addr>: per-call gate trace for ONE moby — the
  * canonical extract logs queue membership, the reveal builder logs every
@@ -2610,7 +2614,10 @@ static void walk_parallel(CPUState* cpu, int is_spec) {
     if (!walk_slabs_ready(nw)) { walk_records(cpu, is_spec, 0, s_nrecs); return; }
     for (int w = 0; w < nw; w++) s_wout[w].n = 0;
     mn_job J = { cpu, is_spec };
+    uint64_t t_disp = tier_dbg_on() ? openpete_phase_now_us() : 0;
     openpete_workpool_run(s_nrecs, walk_record_job, &J);
+    if (t_disp) s_us_fanout += (long)(openpete_phase_now_us() - t_disp);
+    uint64_t t_mrg = tier_dbg_on() ? openpete_phase_now_us() : 0;
     t_out = &s_gout; t_diag = &s_wdiag[0];   /* worker 0 is this thread */
     /* Ordered merge: worker runs land in s_wtri in RECORD order, so the stream
      * and every consumer downstream of it match the serial walk. */
@@ -2633,6 +2640,7 @@ static void walk_parallel(CPUState* cpu, int is_spec) {
         memcpy(&s_wtri_dofs[s_gout.n],   &O->dofs[st],   (size_t)n);
         s_gout.n += n;
     }
+    if (t_mrg) s_us_merge += (long)(openpete_phase_now_us() - t_mrg);
     for (int w = 1; w < nw; w++) {   /* diagnostics roll-up */
         const mn_walkdiag* D = &s_wdiag[w];
         s_wdiag[0].faces += D->faces; s_wdiag[0].emitted += D->emitted;
@@ -3781,12 +3789,13 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
         if (++s_tier_cnt >= 30) {
             fprintf(stderr, "[moby-tier f=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld lpskip=%ld shband=%ld | "
                     "zsf4-mirror ok=%ld bad=%ld | adopt=%ld fogskip=%ld dyncol-hi=%ld/%d dynmoby-hi=%ld/32 | "
-                    "proj=%ldus walk=%ldus rexwalk=%ldus dec=%ldus fld=%ldus rvdec=%ldus rvfld=%ldus rv=%ldus calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld par=%ld/%ld\n",
+                    "proj=%ldus walk=%ldus rexwalk=%ldus dec=%ldus fld=%ldus rvdec=%ldus rvfld=%ldus rv=%ldus fan=%ldus mrg=%ldus calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld par=%ld/%ld\n",
                     openpete_frame, s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade,
                     s_tier_gpfskip, s_tier_lpskip, s_shband_cull, s_tier_mirror_ok, s_tier_mirror_bad, s_tier_adopt, s_adopt_fogskip,
                     s_tier_dyncol_hi, MAX_DYNCOL, s_tier_dynmoby_hi,
                     s_us_proj, s_us_walk, s_us_walk_rex, s_us_dec, s_us_fields,
-                    s_us_rvdec, s_us_rvfields, s_us_reveal, s_us_calls, s_fc_hit, s_fc_miss,
+                    s_us_rvdec, s_us_rvfields, s_us_reveal,
+                    s_us_fanout, s_us_merge, s_us_calls, s_fc_hit, s_fc_miss,
                     s_fp_hit, s_fp_miss, s_clerp_recs, s_hold_replayed,
                     s_walk_par, s_walk_par + s_walk_serial);
             s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = s_tier_lpskip = s_shband_cull = s_adopt_fogskip = 0;
@@ -3794,6 +3803,7 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
             s_tier_dyncol_hi = s_tier_dynmoby_hi = 0;
             s_us_proj = s_us_walk = s_us_walk_rex = s_us_calls = 0;
             s_us_dec = s_us_fields = s_us_rvdec = s_us_rvfields = s_us_reveal = 0;
+            s_us_fanout = s_us_merge = 0;
             s_fc_hit = s_fc_miss = 0; s_hold_replayed = 0; s_clerp_recs = 0;
             s_walk_par = s_walk_serial = 0;
         }
