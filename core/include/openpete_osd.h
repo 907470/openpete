@@ -122,9 +122,14 @@ int openpete_osd_present_update(op_time_t now,
                                 const openpete_osd_ready_t *ready, int n_ready,
                                 openpete_osd_view_t *out, int cap);
 
-/* Drop every toast and reset the ring. For a test's fresh start, and for a
- * hard timeline discontinuity (a savestate load) where holding stale
- * announcements over would be worse than losing them. */
+/* Drop every toast and reset the ring. Used when notifications are switched
+ * off (leaving them queued would strand them: nothing publishes geometry for
+ * them, so nothing starts their timers, and the whole pile would reappear the
+ * moment they were switched back on) and for a test's fresh start.
+ *
+ * NOT called on a savestate load. A toast announces something the PLAYER did
+ * — a setting they changed, a key they pressed — and that is still true after
+ * a load; clearing it would read as the load having eaten their input. */
 void openpete_osd_reset(void);
 
 #ifdef __cplusplus

@@ -75,7 +75,16 @@ static int      s_anchor  = OPENPETE_ANCHOR_TOP_LEFT;
 static uint32_t s_default_ms = 3000;
 
 /* ---- configuration ------------------------------------------------------ */
-void openpete_osd_set_enabled(int on) { s_enabled = on ? 1 : 0; }
+void openpete_osd_set_enabled(int on) {
+    const int was = s_enabled;
+    s_enabled = on ? 1 : 0;
+    /* Turning notifications OFF drops whatever is up. Leaving them in the ring
+     * would strand them: the builder stops publishing geometry, so nothing
+     * starts their timers, and they would all reappear the moment the player
+     * turned notifications back on — announcements of things that happened
+     * minutes ago. */
+    if (was && !s_enabled) openpete_osd_reset();
+}
 int  openpete_osd_enabled(void)       { return s_enabled; }
 void openpete_osd_set_anchor(int a) {
     if (a >= 0 && a < OPENPETE_ANCHOR_COUNT) s_anchor = a;

@@ -1542,9 +1542,16 @@ static struct {
      * every frame of every animation. */
     rhi_texture  *osd_ss;
     int           osd_ss_w, osd_ss_h;
-    int           osd_slot_px_w, osd_slot_px_h;   /* one slot, 1x pixels */
+    /* One slot's 1x pixel extent, packed into a single word: written here on
+     * the present thread when the grid is (re)built, read on the sim thread by
+     * the glyph builder that lays out against it. Two ints would tear on a
+     * resize — one tick of boxes laid out to a width and a height that were
+     * never a pair — which is the same class as the perf region rect above,
+     * and cheaper to close than to reason about. */
+    uint64_t      osd_slot_px;   /* w | h << 32 */
     rhi_buffer   *osd_glyph_vb;       /* toast glyphs + frames (NDC, depth-tested) */
     rhi_buffer   *osd_quad_vb;        /* one composite quad per visible toast */
+    rhi_buffer   *osd_panel_vb;       /* the toasts' subtractive panels */
 
     /* Depth-aware decal infrastructure: the WORLD-opaque depth PRE-PASS.
      * Rendered ONCE per present in the FULL-EXTENT PSX mapping at
@@ -2369,6 +2376,12 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * idle per frame of every animation. */
     rhi_buffer   *osd_glyph_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * OSD_GLYPH_MAX);
     rhi_buffer   *osd_quad_vb  = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * OPENPETE_OSD_MAX * 6);
+    /* The toasts' panels get their OWN buffer rather than borrowing menu_vb.
+     * Both would be updated and drawn inside one command buffer on any frame
+     * where a toast is up while the menu is open — which is the common case,
+     * since changing a setting is what raises a toast — and the second update
+     * would overwrite the bytes the first draw reads at execution time. */
+    rhi_buffer   *osd_panel_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * OPENPETE_OSD_MAX * 6);
     /* Optional occlusion-grid resources (graceful fallback: NULL → no culling). */
     rhi_pipeline *occl_pipe = rhi_create_pipeline(dev, &occl_desc);
     /* Optional W2.6-c hole-fill pipes (graceful fallback: any NULL → WORLD uses
@@ -2559,6 +2572,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.menu_quad_vb = menu_quad_vb;           /* may be NULL → 1× fallback */
     s_nr.osd_glyph_vb = osd_glyph_vb;           /* may be NULL → no OSD layer  */
     s_nr.osd_quad_vb  = osd_quad_vb;
+    s_nr.osd_panel_vb = osd_panel_vb;
     s_nr.occl_pipe    = occl_pipe;              /* may be NULL → no moby occlusion culling */
     s_nr.occl_grid    = occl_grid;              /* may be NULL → no moby occlusion culling */
     s_nr.vram_tex     = vram_tex;
@@ -7880,6 +7894,12 @@ void openpete_native_set_osd_glyphs(const openpete_hud_vert *verts, int nverts,
     SDL_UnlockMutex(osd_pub_mx());
 }
 
+static void osd_slot_px(int *w, int *h) {
+    const uint64_t v = s_nr.osd_slot_px;   /* one read: both halves from one publish */
+    if (w) *w = (int)(uint32_t)v;
+    if (h) *h = (int)(uint32_t)(v >> 32);
+}
+
 void openpete_native_osd_slot_extent(float *w, float *h) {
     /* The grid's slot extent in overlay units, quantized to the 1x pixel
      * counts the target was actually built from. The builder lays out against
@@ -7887,8 +7907,10 @@ void openpete_native_osd_slot_extent(float *w, float *h) {
      * resolve shader averages — a slot origin off the OSD_SS_FACTOR grid would
      * make edge blocks average in the neighbouring slot's texels. */
     const float ph = (s_nr.win_h > 0) ? (float)s_nr.win_h : 1.0f;
-    if (w) *w = (s_nr.osd_slot_px_w > 0) ? (float)s_nr.osd_slot_px_w / ph : OSD_SLOT_W;
-    if (h) *h = (s_nr.osd_slot_px_h > 0) ? (float)s_nr.osd_slot_px_h / ph : OSD_SLOT_H;
+    int pw, phh;
+    osd_slot_px(&pw, &phh);
+    if (w) *w = (pw  > 0) ? (float)pw  / ph : OSD_SLOT_W;
+    if (h) *h = (phh > 0) ? (float)phh / ph : OSD_SLOT_H;
 }
 
 /* Draw the overlay built from Spyro's own 3D HUD text mobys, fed each frame by
@@ -8349,7 +8371,8 @@ static unsigned s_osd_composited = 0;
 unsigned openpete_native_osd_composited(void) { return s_osd_composited; }
 
 static bool osd_ss_ready(void) {
-    return s_nr.ovl_resolve_pipe && s_nr.menu_vb && s_nr.osd_ss;
+    return s_nr.ovl_resolve_pipe && s_nr.osd_quad_vb && s_nr.osd_panel_vb &&
+           s_nr.osd_ss;
 }
 
 /* --record video is ground truth for mod-shader A/Bs, and the codebase has
@@ -8392,7 +8415,7 @@ static void ensure_osd_ss(void) {
     if (s_nr.osd_ss) { rhi_destroy_texture(s_nr.dev, s_nr.osd_ss); s_nr.osd_ss = NULL; }
     s_nr.osd_ss = rhi_create_render_target(s_nr.dev, (uint32_t)want_w, (uint32_t)want_h);
     s_nr.osd_ss_w = want_w; s_nr.osd_ss_h = want_h;
-    s_nr.osd_slot_px_w = sw; s_nr.osd_slot_px_h = sh;
+    s_nr.osd_slot_px = (uint64_t)(uint32_t)sw | ((uint64_t)(uint32_t)sh << 32);
     if (s_nr.osd_ss)
         OPL_INFO_F("native", "OSD SS grid %dx%d (%d slots of %dx%d px, %d×)",
                    want_w, want_h, OPENPETE_OSD_MAX, sw, sh, OSD_SS_FACTOR);
@@ -8413,6 +8436,12 @@ static void prepare_osd_ss(void) {
     openpete_native_osd_slot_extent(&sw, &sh);
     if (sw <= 0.0f || sh <= 0.0f) return;
     rhi_begin_render_target(s_nr.dev, s_nr.osd_ss, 0.0f, 0.0f, 0.0f, 0.0f);  /* transparent */
+    /* The lock spans the draw rather than a copy-out: what it protects is a
+     * ~400 KB vertex array, and copying it a second time every present to
+     * shorten the hold is the more expensive trade. Inside is a buffer update
+     * and a draw call — command-buffer recording, microseconds — and the
+     * publish it can block happens once per sim tick. Nothing else is taken
+     * under it, so there is no lock order to get wrong. */
     SDL_LockMutex(osd_pub_mx());
     draw_glyph_list_3d(s_osd_glyph_verts, s_osd_glyph_n,
                        s_nr.osd_glyph_vb, OSD_GLYPH_MAX,
@@ -8426,7 +8455,6 @@ static void prepare_osd_ss(void) {
  * alpha. Places through the anchor ledger, so the stats block (which claimed
  * first) is never overprinted. */
 static void draw_osd_overlay(void) {
-    if (!osd_ss_ready() || !osd_should_draw()) return;
     if (s_nr.win_w <= 0 || s_nr.win_h <= 0) return;
 
     /* Take the published table first: it is what says which toasts have
@@ -8449,10 +8477,20 @@ static void draw_osd_overlay(void) {
     const int nv = openpete_osd_present_update(openpete_interp_present_now(),
                                                ready, nslots,
                                                view, OPENPETE_OSD_MAX);
-    if (nv <= 0) return;
+    /* The state machine is advanced ABOVE the draw gates, deliberately.
+     * Returning early when the toasts are merely not being DRAWN — during a
+     * --record capture, or before the supersample grid comes up — would stop
+     * time for them: nothing would expire, the ring would fill with toasts
+     * frozen mid-life, and the whole stale pile would appear at once when
+     * drawing resumed. They now live and die on schedule; only the pixels are
+     * suppressed. */
+    if (nv <= 0 || !osd_ss_ready() || !osd_should_draw()) return;
 
     float slot_w, slot_h;
     openpete_native_osd_slot_extent(&slot_w, &slot_h);
+    int slot_px_w, slot_px_h;
+    osd_slot_px(&slot_px_w, &slot_px_h);
+    if (slot_px_w <= 0 || slot_px_h <= 0) return;
     const int   anchor = openpete_osd_anchor();
     const float ax   = 2.0f * (float)s_nr.win_h / (float)s_nr.win_w;
     const float ay   = 2.0f;
@@ -8480,8 +8518,8 @@ static void draw_osd_overlay(void) {
         int bw = (int)(sl->box_w * ph + 0.5f);
         int bh = (int)(sl->box_h * ph + 0.5f);
         if (bw < 1 || bh < 1) continue;
-        if (bw > s_nr.osd_slot_px_w) bw = s_nr.osd_slot_px_w;
-        if (bh > s_nr.osd_slot_px_h) bh = s_nr.osd_slot_px_h;
+        if (bw > slot_px_w) bw = slot_px_w;
+        if (bh > slot_px_h) bh = slot_px_h;
         const float w = (float)bw / ph, h = (float)bh / ph;
 
         /* Where it sits. x hugs the anchor's edge; y stacks from whatever the
@@ -8518,10 +8556,9 @@ static void draw_osd_overlay(void) {
         pn = menu_push_quad(panels, pn, ax, ay, x, y, x + w, y + h, sub);
 
         /* Composite quad — the slot's used sub-rect, tinted by the fade. */
-        const float u1 = (float)bw / (float)s_nr.osd_slot_px_w;
+        const float u1 = (float)bw / (float)slot_px_w;
         const float v0 = (float)sl->slot / (float)OPENPETE_OSD_MAX;
-        const float v1 = v0 + (float)bh
-                            / (float)(s_nr.osd_slot_px_h * OPENPETE_OSD_MAX);
+        const float v1 = v0 + (float)bh / (float)(slot_px_h * OPENPETE_OSD_MAX);
         const float rw_ndc = w * ax, rh_ndc = h * ay;
         comp[cn].cx = x * ax - 1.0f + rw_ndc * 0.5f;
         comp[cn].cy = 1.0f - y * ay - rh_ndc * 0.5f;
@@ -8534,11 +8571,11 @@ static void draw_osd_overlay(void) {
     if (drawn <= 0) return;
     s_osd_composited += (unsigned)drawn;   /* engagement counter (a green must prove it engaged) */
 
-    if (pn > 0 && s_nr.gouraud_hud_sub_pipe && s_nr.menu_vb) {
-        rhi_update_buffer(s_nr.menu_vb, panels, (size_t)pn * sizeof(rhi_vertex));
+    if (pn > 0 && s_nr.gouraud_hud_sub_pipe) {
+        rhi_update_buffer(s_nr.osd_panel_vb, panels, (size_t)pn * sizeof(rhi_vertex));
         rhi_reset_scissor(s_nr.dev);
         bind_scene_pipe(s_nr.gouraud_hud_sub_pipe);
-        rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_vb);
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.osd_panel_vb);
         rhi_draw(s_nr.dev, (uint32_t)pn, 0);
     }
 
@@ -10512,6 +10549,9 @@ void openpete_native_render_shutdown(void)
     if (s_nr.mod_ovl_vb)   rhi_destroy_buffer(s_nr.dev, s_nr.mod_ovl_vb);
     if (s_nr.menu_vb)      rhi_destroy_buffer(s_nr.dev, s_nr.menu_vb);
     if (s_nr.menu_glyph_vb) rhi_destroy_buffer(s_nr.dev, s_nr.menu_glyph_vb);
+    if (s_nr.osd_glyph_vb) rhi_destroy_buffer(s_nr.dev, s_nr.osd_glyph_vb);
+    if (s_nr.osd_quad_vb)  rhi_destroy_buffer(s_nr.dev, s_nr.osd_quad_vb);
+    if (s_nr.osd_panel_vb) rhi_destroy_buffer(s_nr.dev, s_nr.osd_panel_vb);
     if (s_nr.scene_vb)     rhi_destroy_buffer(s_nr.dev, s_nr.scene_vb);
     if (s_nr.panels_vb)    rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
     if (s_nr.freeze_overlay_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.freeze_overlay_pipe);
