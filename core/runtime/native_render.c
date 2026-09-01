@@ -8012,18 +8012,47 @@ static bool ovl_ss_ready(void) {
  * in a shape other than the one it was rasterized into. Exactly one side owns
  * it — the game-side builder, which is the side that can measure a string —
  * and pushes it here; the renderer reads it back and never re-derives it. */
-static float s_ovl_ext_w = OVL_REGION_W;
-static float s_ovl_ext_h = OVL_REGION_H;
+/* Published as ONE 64-bit word rather than two floats. The builder writes it
+ * on the sim thread and the compose reads it on the present thread, and a torn
+ * PAIR — new width, stale height — would build the composite quad for a
+ * different rect than the supersample target holds, landing the readout in a
+ * shape it was not rasterized into. An aligned 64-bit store is single-copy on
+ * every target this builds for; two independent float stores are not one
+ * event. (Same class as the glyph publish below, found by auditing the
+ * sim->present statics rather than by seeing it go wrong.) */
+static uint64_t s_ovl_extent =
+    ((uint64_t)0) ;   /* 0 = never pushed; the OVL_REGION_* fallback applies */
+
+static float ovl_ext_unpack(uint64_t v, int hi, float fallback) {
+    if (v == 0) return fallback;
+    uint32_t bits = (uint32_t)(hi ? (v >> 32) : v);
+    float f;
+    memcpy(&f, &bits, sizeof f);
+    return (f > 0.0f) ? f : fallback;
+}
+
 void openpete_native_set_overlay_extent(float w, float h) {
-    if (w > 0.0f) s_ovl_ext_w = w;
-    if (h > 0.0f) s_ovl_ext_h = h;
+    if (!(w > 0.0f) || !(h > 0.0f)) return;
+    uint32_t bw, bh;
+    memcpy(&bw, &w, sizeof bw);
+    memcpy(&bh, &h, sizeof bh);
+    s_ovl_extent = (uint64_t)bw | ((uint64_t)bh << 32);
 }
 void openpete_native_get_overlay_extent(float *w, float *h) {
-    if (w) *w = s_ovl_ext_w;
-    if (h) *h = s_ovl_ext_h;
+    const uint64_t v = s_ovl_extent;   /* one read: both halves from one publish */
+    if (w) *w = ovl_ext_unpack(v, 0, OVL_REGION_W);
+    if (h) *h = ovl_ext_unpack(v, 1, OVL_REGION_H);
 }
-static float ovl_region_w(void) { return s_ovl_ext_w; }
-static float ovl_region_h(void) { return s_ovl_ext_h; }
+/* The extent LATCHED for this present. overlay_layout_update reads the
+ * published word once, at the top of the per-present resource pass, and
+ * everything downstream — the target size, the ledger claim, the composite
+ * quad, the prepass projection — reads the latch. Reading the publish at each
+ * of those would let a mid-present push change the rect between the target
+ * that was allocated and the quad that samples it, which is the same torn-pair
+ * failure one field down. */
+static float s_perf_rw = OVL_REGION_W, s_perf_rh = OVL_REGION_H;
+static float ovl_region_w(void) { return s_perf_rw; }
+static float ovl_region_h(void) { return s_perf_rh; }
 
 /* Where the user wants the perf block. Live-settable (--perf-position, the
  * knob row); the placement itself is resolved once per present below. */
@@ -8047,6 +8076,7 @@ static float s_perf_ox, s_perf_oy;   /* the perf block's placed top-left */
  * shared corner pushes the transient thing out of the way of the permanent
  * one rather than the reverse. */
 static void overlay_layout_update(void) {
+    openpete_native_get_overlay_extent(&s_perf_rw, &s_perf_rh);
     float xlo, xhi;
     openpete_anchor_usable_x(openpete_native_overlay_aspect(), &xlo, &xhi);
     openpete_anchor_reset(&s_anchor_ledger, xlo, xhi);
