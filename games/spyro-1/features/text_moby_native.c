@@ -127,6 +127,33 @@ static glyph_cache_t s_glyph[NGLYPH];
 static int s_class_to_idx[512];   /* class -> slot in s_glyph, or -1 */
 static int s_idx_init = 0;
 static int s_cache_ready = 0;
+/* Common advance for '0'-'9' (model units) — see text_moby_native_cache. */
+static int s_digit_adv = 0;
+
+static int is_digit_class(int cls) { return cls >= 260 && cls <= 269; }
+
+static float glyph_natural_w(int cls) {
+    const int slot = (cls >= 0 && cls < 512) ? s_class_to_idx[cls] : -1;
+    if (slot < 0 || !s_glyph[slot].valid) return -1.0f;
+    return (float)(s_glyph[slot].vxmax - s_glyph[slot].vxmin);
+}
+
+/* How much room a character takes, and how far into that room its glyph sits
+ * (overlay units). Everything but a digit is proportional — advance is the
+ * glyph width, inset 0. A digit takes the shared tabular advance and is
+ * centred in it. Both emit_string and measure_string go through here, so the
+ * two can never disagree about a string's width. adv < 0 = not cached. */
+static void glyph_metrics(int cls, float scale, float* adv, float* inset) {
+    const float w = glyph_natural_w(cls);
+    if (w < 0.0f) { *adv = -1.0f; *inset = 0.0f; return; }
+    if (is_digit_class(cls) && s_digit_adv > 0) {
+        *adv   = (float)s_digit_adv * scale;
+        *inset = 0.5f * (*adv - w * scale);   /* centred in its column */
+    } else {
+        *adv   = w * scale;
+        *inset = 0.0f;
+    }
+}
 
 /* char -> moby class, or -1 for "advance only" (space / unsupported). */
 static int glyph_class(char c) {
@@ -194,6 +221,23 @@ void text_moby_native_cache(CPUState* cpu) {
     if ((int32_t)cpu->read_word(m0) >= 0) return;        /* pointer set but data not yet in */
     if ((cpu->read_byte(m0) & 0xFF) == 0) return;        /* vcount 0 -> not ready */
     for (int s = 0; s < NGLYPH; s++) cache_one(cpu, s, SUPPORTED_CLASSES[s]);
+    /* TABULAR FIGURES. The glyph models are proportional — '1' is markedly
+     * narrower than '4' — so a number redrawn with different digits changes
+     * width, and any text laid out from its measured width then reflows. On a
+     * right-aligned readout that updates twice a second (the FPS counter) the
+     * whole line visibly slides back and forth as the value changes.
+     *
+     * So every digit gets the SAME advance, the widest one's, and is centred
+     * in it. A number's width then depends only on how many digits it has.
+     * Done in the emitter rather than per consumer, so measure_string and
+     * emit_string cannot disagree about it and every consumer — the counter,
+     * the menu's values, the OSD, a mod's HUD — gets columns that line up. */
+    s_digit_adv = 0;
+    for (int d = 0; d < 10; d++) {
+        const glyph_cache_t* g = &s_glyph[s_class_to_idx[260 + d]];
+        if (g->valid && (g->vxmax - g->vxmin) > s_digit_adv)
+            s_digit_adv = g->vxmax - g->vxmin;
+    }
     s_cache_ready = 1;                                    /* snapshot taken; never re-read RAM */
 }
 
@@ -333,9 +377,14 @@ static int emit_string(emit_ctx_t* cx, const char* str,
         }
         int cls = glyph_class(c);
         if (cls < 0) { cursor += TXT_SPACE; continue; }
-        float w = emit_glyph(cx, cls, cursor, center_y, scale, 0.0f, yaw, baseR, baseG, baseB);
-        if (w < 0.0f) { cursor += TXT_SPACE; continue; }  /* not cached -> skip */
-        cursor += w + TXT_GAP; gi++;
+        float adv, inset;
+        glyph_metrics(cls, scale, &adv, &inset);
+        if (adv < 0.0f) { cursor += TXT_SPACE; continue; }  /* not cached -> skip */
+        if (emit_glyph(cx, cls, cursor + inset, center_y, scale, 0.0f, yaw,
+                       baseR, baseG, baseB) < 0.0f) {
+            cursor += TXT_SPACE; continue;
+        }
+        cursor += adv + TXT_GAP; gi++;
     }
     return cx->n - n_before;   /* verts THIS string added */
 }
@@ -616,10 +665,11 @@ static float measure_string(const char* str, float cap_h) {
                       * scale * TXT_COLON_SCALE + TXT_GAP;
             continue;
         }
-        int cls  = glyph_class(c);
-        int slot = (cls >= 0 && cls < 512) ? s_class_to_idx[cls] : -1;
-        if (slot < 0 || !s_glyph[slot].valid) { cursor += TXT_SPACE; continue; }
-        cursor += (float)(s_glyph[slot].vxmax - s_glyph[slot].vxmin) * scale + TXT_GAP;
+        int cls = glyph_class(c);
+        float adv, inset;
+        glyph_metrics(cls, scale, &adv, &inset);
+        if (adv < 0.0f) { cursor += TXT_SPACE; continue; }
+        cursor += adv + TXT_GAP;
     }
     return cursor;
 }
