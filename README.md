@@ -165,6 +165,28 @@ instruments (the fill-tag inspector, the interpolation and LOD A/B
 toggles, the dev overlay) ship **unbound** and show up there as `dev` —
 bind one in your own config if you want it.
 
+### On-screen notifications
+
+Changing a setting raises a toast in the corner — the game's own gold
+frame and 3D lettering, not a debug overlay. It fades in, holds a few
+seconds and fades out; several stack. Mods raise them too.
+
+```toml
+osd          = "off"          # or leave them on (the default)
+osd_position = "bottom-right" # any of the six corners and edges
+osd_timeout  = 5              # seconds
+perf_position = "top-right"   # where the FPS / pacing block sits
+```
+
+The notifications and the performance-stats block share a placement
+ledger, so pointing both at one corner is fine: the stats block is
+permanent and claims its spot, and the toasts stack clear of it. Both
+also step aside for the settings menu (`O`) while it is open, so nothing
+is ever hidden behind the panel.
+
+Toasts stay out of `--record` video by default, like the stats block —
+`--record-fps-overlay` lets both in when you actually want them filmed.
+
 ### Which setting wins
 
 Lowest first:
