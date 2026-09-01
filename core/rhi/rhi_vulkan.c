@@ -1854,6 +1854,11 @@ void rhi_wait_idle(rhi_device *dev)
     if (dev && dev->device) vkDeviceWaitIdle(dev->device);
 }
 
+bool rhi_frame_active(const rhi_device *dev)
+{
+    return dev && dev->frame_active;
+}
+
 static uint64_t s_frame_serial = 0;
 uint64_t rhi_frame_serial(rhi_device *dev) { (void)dev; return s_frame_serial; }
 

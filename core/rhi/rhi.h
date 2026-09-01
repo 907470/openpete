@@ -79,6 +79,12 @@ uint32_t    rhi_max_image_dimension(const rhi_device *dev);
  * that recent frames may still be using. */
 void rhi_wait_idle(rhi_device *dev);
 
+/* True between rhi_begin_frame* and the frame's end/submit: a command buffer
+ * is recording. Descriptor sets, framebuffers and images it has already
+ * referenced must not be destroyed until it has been submitted and retired;
+ * resource (re)creation belongs before the frame begins. */
+bool rhi_frame_active(const rhi_device *dev);
+
 /* Begin a frame: waits on the previous use of this frame slot, acquires a
  * swapchain image, and opens the command buffer. Returns false if the
  * swapchain could not be used this frame (e.g. it needed recreation, or

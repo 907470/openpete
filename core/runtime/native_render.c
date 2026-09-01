@@ -3682,6 +3682,22 @@ static void ensure_terrain_key_depth(int w, int h)
     if (w <= 0 || h <= 0) return;
     if (s_nr.terrain_key_depth && s_nr.moby_key_depth && s_nr.actor_key_depth &&
         s_nr.moby_rank_rt && s_nr.tk_w >= w && s_nr.tk_h >= h) return;
+    /* Never while a frame is recording. The scene pipelines' layouts declare
+     * these four images as descriptor sets 1-4 and their shaders read them
+     * unconditionally, so the recording command buffer may already reference
+     * the current sets; destroying them here invalidates it (a driver fault
+     * at submit, or at the next draw), and a set created here is bound to
+     * nothing the frame has drawn so far. ensure_terrain_key_targets sizes
+     * them in the per-present resource pass instead. */
+    if (rhi_frame_active(s_nr.dev)) {
+        static int warned = 0;
+        if (!warned) {
+            warned = 1;
+            OPL_WARN_F("native", "key-contest targets %dx%d requested mid-frame (have %dx%d); "
+                       "allocation deferred to the next resource pass", w, h, s_nr.tk_w, s_nr.tk_h);
+        }
+        return;
+    }
     if (w < s_nr.tk_w) w = s_nr.tk_w;
     if (h < s_nr.tk_h) h = s_nr.tk_h;
     rhi_wait_idle(s_nr.dev);
@@ -3698,14 +3714,48 @@ static void ensure_terrain_key_depth(int w, int h)
         rhi_texture_extent(s_nr.terrain_key_depth, &s_nr.tk_w, &s_nr.tk_h);
     else {
         /* All-or-nothing: the scene pipes' layouts sample sets 1/2/3/4 as one
-         * contract — a partial allocation must read as "contest off", never
-         * a half-bound draw. */
+         * contract, so a partial allocation is released rather than half
+         * bound. This only turns the KEY PASS off (native_terrain_key_pass
+         * checks for the images); the scene pipelines still read the four
+         * sets unconditionally, so a scene drawn after an allocation failure
+         * here is undefined behaviour on every driver. It is an out-of-memory
+         * condition on a device that has just allocated the scene targets
+         * themselves, and it is logged as such. */
         if (s_nr.terrain_key_depth) { rhi_destroy_texture(s_nr.dev, s_nr.terrain_key_depth); s_nr.terrain_key_depth = NULL; }
         if (s_nr.moby_key_depth)    { rhi_destroy_texture(s_nr.dev, s_nr.moby_key_depth);    s_nr.moby_key_depth = NULL; }
         if (s_nr.actor_key_depth)   { rhi_destroy_texture(s_nr.dev, s_nr.actor_key_depth);   s_nr.actor_key_depth = NULL; }
         if (s_nr.moby_rank_rt)      { rhi_destroy_texture(s_nr.dev, s_nr.moby_rank_rt);      s_nr.moby_rank_rt = NULL; }
         s_nr.tk_w = s_nr.tk_h = 0;
+        OPL_WARN_F("native", "key-contest targets %dx%d could not be allocated; scene draws are undefined", w, h);
     }
+}
+
+/* Per-present resource pass: size the key-contest images for every scene
+ * target this present can draw into, BEFORE the frame begins. The scene
+ * pipelines (gouraud, textured, cutout and their blend variants) bind these
+ * four images as descriptor sets 1-4 on every draw, chrome included — the
+ * stats overlay's supersample pre-pass is a gouraud draw and, under eager
+ * production, the first draw of the first present, ahead of any scene. A
+ * draw whose pipeline statically reads a set that was never bound is
+ * undefined behaviour: Mesa ANV faults inside vkCmdDraw on it. Sizing here
+ * is the union of the extents the key pass is called with (native_rtt,
+ * the SSAA target, the window), so the key pass never needs to allocate
+ * mid-frame. */
+static void ensure_terrain_key_targets(void)
+{
+    if (!openpete_native_key_resolve_on()) return;
+    int w = s_nr.win_w, h = s_nr.win_h;
+    if (s_nr.native_rtt) {
+        int kw, kh; rhi_texture_extent(s_nr.native_rtt, &kw, &kh);
+        if (kw > w) w = kw;
+        if (kh > h) h = kh;
+    }
+    if (s_nr.ss_rtt) {
+        int kw, kh; rhi_texture_extent(s_nr.ss_rtt, &kw, &kh);
+        if (kw > w) w = kw;
+        if (kh > h) h = kh;
+    }
+    ensure_terrain_key_depth(w, h);
 }
 
 /* Pack one scene target's key batch from `scene` under the `full_extent`
@@ -3998,7 +4048,9 @@ static void draw_rank_batch(int base, int m, int untex,
 static void native_terrain_key_pass(int full_extent, int vw, int vh)
 {
     if (!openpete_native_key_resolve_on()) return;
-    ensure_terrain_key_depth(vw, vh);
+    /* The images were sized by ensure_terrain_key_targets before the frame
+     * began; a request larger than that clamps to what exists rather than
+     * reallocating inside the recording frame. */
     if (!s_nr.terrain_key_depth || !s_nr.moby_key_depth || !s_nr.actor_key_depth) return;
     if (vw > s_nr.tk_w) vw = s_nr.tk_w;
     if (vh > s_nr.tk_h) vh = s_nr.tk_h;
@@ -9935,6 +9987,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     ensure_menu_ss();          /* settings-menu glyph supersample (lazy, while open) */
     ensure_osd_ss();           /* OSD toast slot grid (lazy, once a toast exists) */
     ensure_opaque_depth();     /* WORLD-opaque depth pre-pass target (shadow decal) */
+    ensure_terrain_key_targets(); /* key-contest images: bound by every scene-pipe draw, chrome first */
 
     /* Present-path step trace (OPENPETE_LOAD_CENSUS=1): bisects a present that
      * never returns (the freeze-point hang) to the exact call. Terse; one
@@ -10115,6 +10168,7 @@ void openpete_native_render_snapshot_frozen(float cap_wf)
     sync_vram_texture();
     ensure_native_rtt(true);
     ensure_opaque_depth();
+    ensure_terrain_key_targets();
     uint32_t bg = s_drawenv_clear ? s_drawenv_clear : sbg;
     const float br  = (float)((bg >>  0) & 0xFF) / 255.0f;
     const float bgc = (float)((bg >>  8) & 0xFF) / 255.0f;
@@ -10298,6 +10352,7 @@ static int native_render_screenshot_all_impl(const char *base)
     update_layout();
     ensure_native_rtt(true);
     ensure_opaque_depth();     /* WORLD-opaque depth pre-pass target (shadow decal) */
+    ensure_terrain_key_targets();
     /* -ab/-diff need the PsyCross reference readback; without one (pure vk with
      * PsyCross in null-GPU library mode — no FBO exists at all) the dump writes
      * the -vk variant alone. ref_w/ref_h are still valid: the present path
