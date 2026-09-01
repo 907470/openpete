@@ -856,6 +856,9 @@ static long s_us_dec, s_us_fields;
  * merge that follows it. The merge copies nine parallel arrays per
  * RECORD, so its cost tracks record count rather than triangle count. */
 static long s_us_fanout, s_us_merge;
+/* Face-stream size per walk, the quantity a fan-out decision has to be made
+ * on: the prologue knows it before dispatching, and walk cost tracks it. */
+static long s_walk_faces, s_walk_runs;
 
 /* OPENPETE_MOBY_TRACE=<moby addr>: per-call gate trace for ONE moby — the
  * canonical extract logs queue membership, the reveal builder logs every
@@ -1615,6 +1618,7 @@ static double tri_nclip(float ax,float ay,float bx,float by,float cx,float cy) {
 }
 
 #define MN_MAX_WORKERS 8
+#define MN_FANOUT_MIN_FACES 400   /* see walk_prologue: dispatch break-even */
 /* Walk diagnostics (printed by compare_walk_vs_prims), one per worker. Aligned
  * to a cache line: workers bump their own counters throughout the walk, and
  * packed side by side every increment would bounce the line between cores. */
@@ -2520,6 +2524,7 @@ static int walk_dbg_env(void) {
 
 static int walk_prologue(CPUState* cpu, int is_spec) {
     long fc_miss0 = s_fc_miss, fp_miss0 = s_fp_miss;
+    long faces = 0;
     for (int r = 0; r < s_nrecs; r++) {
         rec_meta* R = &s_recs[r];
         s_pre_FC[r] = NULL; s_pre_FCp[r] = NULL; s_pre_clra[r] = 0.f;
@@ -2537,6 +2542,7 @@ static int walk_prologue(CPUState* cpu, int is_spec) {
         const fcache_t* FC = moby_faces_for_record(cpu, R);
         s_pre_FC[r] = FC;
         if (!FC) continue;
+        faces += FC->nfaces;
         if (R->frameA_p >= 0x80000000u && R->zsf4 > 0 && R->header >= 0x80000000u) {
             int curr_p = (R->frameA >= 0x80000000u) && (cpu->read_word(R->frameA + 4u) & 0xFFFFu) != 0u;
             int prev_p = (cpu->read_word(R->frameA_p + 4u) & 0xFFFFu) != 0u;
@@ -2565,6 +2571,22 @@ static int walk_prologue(CPUState* cpu, int is_spec) {
     if (s_ser < 0) { const char* e = getenv("OPENPETE_MOBY_WALK_SERIAL");
                      s_ser = (e && *e && *e != '0'); }
     if (s_ser) return 1;
+    if (tier_dbg_on()) { s_walk_faces += faces; s_walk_runs++; }
+    /* Below a work bound the dispatch costs more than it saves. The pool's
+     * floor is a semaphore wake plus a join that waits for every helper it
+     * signalled — including one that finds no work left — so a run costs on the
+     * order of 20 us however small it is, while the walk itself runs at ~0.1 us
+     * per face (307 faces / 30.6 us and 615 / 66.4 us, two scenes a factor of
+     * two apart). Break-even is therefore a few hundred faces, and below it the
+     * walk measured slower parallel than serial.
+     *
+     * The bound needs no per-machine calibration, because being wrong about it
+     * is wildly asymmetric: fanning out a scene that was too small costs a few
+     * microseconds, while failing to fan out a heavy one costs more than a
+     * millisecond — a whole-level vista walks ~17600 faces, 1852 us serial
+     * against 444 parallel. Only the far side of the bound is expensive, so any
+     * bound in this neighbourhood is safe wherever it runs. */
+    if (faces < MN_FANOUT_MIN_FACES) return 1;
     if (nw <= 1 || s_nrecs < 2 || walk_dbg_env()) return 1;
     return 0;
 }
@@ -3789,13 +3811,14 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
         if (++s_tier_cnt >= 30) {
             fprintf(stderr, "[moby-tier f=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld lpskip=%ld shband=%ld | "
                     "zsf4-mirror ok=%ld bad=%ld | adopt=%ld fogskip=%ld dyncol-hi=%ld/%d dynmoby-hi=%ld/32 | "
-                    "proj=%ldus walk=%ldus rexwalk=%ldus dec=%ldus fld=%ldus rvdec=%ldus rvfld=%ldus rv=%ldus fan=%ldus mrg=%ldus calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld par=%ld/%ld\n",
+                    "proj=%ldus walk=%ldus rexwalk=%ldus dec=%ldus fld=%ldus rvdec=%ldus rvfld=%ldus rv=%ldus fan=%ldus mrg=%ldus faces=%ld/%ld calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld par=%ld/%ld\n",
                     openpete_frame, s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade,
                     s_tier_gpfskip, s_tier_lpskip, s_shband_cull, s_tier_mirror_ok, s_tier_mirror_bad, s_tier_adopt, s_adopt_fogskip,
                     s_tier_dyncol_hi, MAX_DYNCOL, s_tier_dynmoby_hi,
                     s_us_proj, s_us_walk, s_us_walk_rex, s_us_dec, s_us_fields,
                     s_us_rvdec, s_us_rvfields, s_us_reveal,
-                    s_us_fanout, s_us_merge, s_us_calls, s_fc_hit, s_fc_miss,
+                    s_us_fanout, s_us_merge, s_walk_faces, s_walk_runs,
+                    s_us_calls, s_fc_hit, s_fc_miss,
                     s_fp_hit, s_fp_miss, s_clerp_recs, s_hold_replayed,
                     s_walk_par, s_walk_par + s_walk_serial);
             s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = s_tier_lpskip = s_shband_cull = s_adopt_fogskip = 0;
@@ -3804,6 +3827,7 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
             s_us_proj = s_us_walk = s_us_walk_rex = s_us_calls = 0;
             s_us_dec = s_us_fields = s_us_rvdec = s_us_rvfields = s_us_reveal = 0;
             s_us_fanout = s_us_merge = 0;
+            s_walk_faces = s_walk_runs = 0;
             s_fc_hit = s_fc_miss = 0; s_hold_replayed = 0; s_clerp_recs = 0;
             s_walk_par = s_walk_serial = 0;
         }
