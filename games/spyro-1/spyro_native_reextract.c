@@ -1162,39 +1162,22 @@ static void spyro_native_reextract_body(void* cpu_v) {
      * Detect via the camera position delta (threshold calibrated at 5000
      * units/tick: continuous ≤1218, cuts ≥140k — game_extras_impl.c) and snap
      * (present the live curr scene, no bracket) instead. */
-    /* How old the forward endpoint is, in ticks of present time. The ring keeps
-     * serving its newest pair while the sim produces nothing new — a paused
-     * update, a load, the debug freecam (which freezes UpdateSpyro) — so a pair
-     * can be arbitrarily old and still be the only one there is. Everything the
-     * guard below derives is a per-tick RATE, and a rate read off a frozen pair
-     * describes an event in the past, not this present: the camera has since
-     * been still, which is exactly when the occlusion grid and the shown view
-     * agree best. Left ungated, the freecam's engage-tick turn read as a cut on
-     * every present for the rest of the run, suspending moby occlusion culling
-     * outright and holding the pan estimate at the size of that one turn. */
+    /* How old the forward endpoint is, in ticks of present time. Normally under
+     * one — the ring captures every tick — but the sim can stop producing new
+     * states while presents continue: a paused update, a load, the debug freecam
+     * (which freezes UpdateSpyro). The pair is then arbitrarily old and still
+     * the only one there is. */
     double pair_age = 0.0;
     if (curr) pair_age = (double)((int64_t)openpete_interp_present_now()
                                   - (int64_t)curr->tick_ns) / (double)TICK_PERIOD_NS;
-    const int pair_stale = (pair_age > 2.0);
+    const int pair_stale = (pair_age > 4.0);
 
     int cam_cut = 0;
-    if (paired && cam && prev && curr && !pair_stale) {
-        /* The pair need not be adjacent ticks. Identical captures are deduped,
-         * so once the camera stops changing the ring keeps serving the last two
-         * DISTINCT states — and if the camera stopped right after a jump, that
-         * stale pair still straddles it. Judged per tick rather than per pair,
-         * an old jump stops reading as a cut as the span grows: it is not a
-         * recent event, and a camera that has not moved for many ticks is the
-         * one case where the occlusion grid and the shown view agree exactly.
-         * Held as a permanent cut it suspended moby occlusion culling outright
-         * for the whole of any static-camera view. */
-        double span = (double)(curr->tick - prev->tick);
-        if (span < 1.0) span = 1.0;
+    if (paired && cam && prev && curr) {
         const int32_t* pp = (const int32_t*)(prev->data + prev->region_offsets[0] + CAM_OFF_POS);
         const int32_t* cp = (const int32_t*)(curr->data + curr->region_offsets[0] + CAM_OFF_POS);
         double dx = (double)cp[0] - pp[0], dy = (double)cp[1] - pp[1], dz = (double)cp[2] - pp[2];
-        double lim = 5000.0 * span;
-        if (dx*dx + dy*dy + dz*dz > lim * lim) cam_cut = 1;
+        if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) cam_cut = 1;
         /* ROTATION cut: a stationary cut (camera spins to a new shot without moving
          * far — e.g. the dragon-rescue close-up, which flips the camera ~180° while
          * position barely changes) slips past the position threshold above. Linearly
@@ -1206,10 +1189,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
          * more than 90°/tick (cos<0 ⇒ frob<4096^2) — no smooth camera move does that
          * (it's 2700°/s); a normal fast pan stays far above the threshold (a 46° turn
          * gives frob≈2.4·4096^2), so this only fires on genuine cuts/reversals. */
-        /* Only over a single tick: past 90° the angle is ambiguous modulo a
-         * turn, so a multi-tick span carries no per-tick rate to test — and a
-         * stale pair is by construction not a recent turn. */
-        if (!cam_cut && span <= 1.0) {
+        if (!cam_cut) {
             const int16_t* pm = (const int16_t*)(prev->data + prev->region_offsets[0] + CAM_OFF_PROJ);
             const int16_t* cm = (const int16_t*)(curr->data + curr->region_offsets[0] + CAM_OFF_PROJ);
             double frob = 0; for (int i = 0; i < 9; i++) frob += (double)pm[i] * cm[i];
@@ -1226,10 +1206,10 @@ static void spyro_native_reextract_body(void* cpu_v) {
                 uint64_t now = openpete_phase_now_us();
                 if (now - t0 >= 1000000u) { t0 = now; n = 0; }
                 if (n < 4) { n++;
-                    fprintf(stderr, "[camcut f=%u] cut=%d span=%.0f d=(%.0f,%.0f,%.0f) |d|=%.0f lim=%.0f "
+                    fprintf(stderr, "[camcut f=%u] cut=%d age=%.1f d=(%.0f,%.0f,%.0f) |d|=%.0f lim=%.0f "
                             "prev=(%d,%d,%d) curr=(%d,%d,%d) ptick=%u ctick=%u\n",
-                            openpete_frame, cam_cut, span, dx, dy, dz,
-                            sqrt(dx*dx+dy*dy+dz*dz), lim,
+                            openpete_frame, cam_cut, pair_age, dx, dy, dz,
+                            sqrt(dx*dx+dy*dy+dz*dz), 5000.0,
                             pp[0], pp[1], pp[2], cp[0], cp[1], cp[2], prev->tick, curr->tick); }
             }
         }
@@ -1241,7 +1221,16 @@ static void spyro_native_reextract_body(void* cpu_v) {
      * cached rects inflate with real camera motion. Unpaired presents (spawn /
      * world-stuck) get a short suspension — the camera may have moved
      * arbitrarily relative to the grid capture. */
-    if (cam_cut) openpete_native_occl_suspend(12);
+    /* A cut the ring is still replaying long after the fact is not a reason to
+     * suspend. Identical captures are deduped, so once the sim stops producing
+     * new states the ring serves the last two DISTINCT ones on every present —
+     * and if the camera jumped just before it stopped, that pair straddles the
+     * jump forever. Interpolation must still refuse it (the pair is a real
+     * discontinuity), but the grid has been rebuilt from the shown camera on
+     * every present since, so culling has nothing to fear. Suspending there
+     * switched moby occlusion culling off for the whole of any static view. */
+    if (cam_cut && !pair_stale) openpete_native_occl_suspend(12);
+    else if (cam_cut) moby_native_set_occl_pan(0.0f);   /* the pan estimate is stale too */
     if (paired && cam && prev && curr && !cam_cut) {
         /* Per-tick rotation = the max angle any ROW direction moved, from the
          * per-row NORMALIZED dot products. NOT the trace formula — the Spyro
@@ -1262,8 +1251,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
             if (c < worst) worst = c;
         }
         if (worst > 1.0) worst = 1.0; else if (worst < -1.0) worst = -1.0;
-        /* rad/tick → px/tick (H≈288 + margin); a stale pair is not panning. */
-        moby_native_set_occl_pan(pair_stale ? 0.0f : (float)(acos(worst) * 400.0));
+        moby_native_set_occl_pan((float)(acos(worst) * 400.0)); /* rad/tick → px/tick (H≈288 + margin) */
     } else if (!cam_cut) {
         openpete_native_occl_suspend(2);
     }

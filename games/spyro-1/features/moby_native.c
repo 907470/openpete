@@ -40,6 +40,7 @@
 #include "render_paths.h"  /* --render-paths isolation */
 #include "openpete_ui_moby.h"  /* HUD/UI moby classifier (overlay-on-top tagging) */
 #include "openpete_mods.h"     /* per-instance material slot resolve (S8b) */
+#include "openpete_workpool.h" /* data-parallel face walk (--extract-threads) */
 
 #include <math.h>
 #include <stdint.h>
@@ -1520,7 +1521,7 @@ typedef struct {
 
 #define COLOR_SCRATCH (G_SCRATCH + 0x1100u)   /* per-vertex fogged RGB (.s DPCS output) */
 
-static ntri_t s_wtri[MAX_NTRI]; static int s_wtri_n;
+static ntri_t s_wtri[MAX_NTRI];   /* cursor lives in s_gout.n (see mn_out) */
 static uint8_t s_wtri_mode[MAX_NTRI]; /* shaded only: 0=gouraud 1=flat-basic 2=flat-metal */
 static uint8_t s_wtri_ui[MAX_NTRI];   /* 1 = this tri's moby is a HUD/UI overlay (draw on top) */
 static uint8_t s_wtri_fogsup[MAX_NTRI]; /* 1 = --no-lod suppressed this record's fog band: the .s
@@ -1532,9 +1533,13 @@ static uint8_t s_wtri_front[MAX_NTRI]; /* 1 = this tri's moby is a dragon-rescue
                                         * passes ONLY the rescue actors (per-pixel depth punch),
                                         * leaving every other moby's terrain occlusion
                                         * intact — the --lod extended leak fix. */
-static int     s_cur_ui;              /* set per-record by the walks before emitting its tris */
-static int     s_cur_front;           /* per-record: 1 = a g_DragonCutscene actor (front-pass) */
-static int     s_cur_fogsup;          /* per-record: --no-lod dropped a live fog band here */
+/* Per-record emit tags. Thread-local because the face walk fans records out
+ * across the extraction worker pool: each worker holds the tags of the record
+ * it is walking, and without that separation workers stamp their triangles with
+ * each other's moby identity, HUD routing and OT bias. */
+static _Thread_local int     s_cur_ui;      /* set per-record by the walks before emitting its tris */
+static _Thread_local int     s_cur_front;   /* per-record: 1 = a g_DragonCutscene actor (front-pass) */
+static _Thread_local int     s_cur_fogsup;  /* per-record: --no-lod dropped a live fog band here */
 
 /* The dragon-rescue cutscene actor set the game maintains (g_DragonCutscene,
  * struct @0x80077030): the rescued dragon + the cutscene Spyro/dragon mobys.
@@ -1572,11 +1577,11 @@ static uint8_t  s_wtri_mangle[MAX_NTRI]; /* any vertex near-fixed-up (unr) or
                                           * projection — never a key emitter */
 static uint32_t s_wtri_fkey[MAX_NTRI]; /* packed SXY vertex-index triple (face topology id) */
 static uint16_t s_wtri_cls[MAX_NTRI];  /* m_Class of the emitting moby (provenance tag) */
-static uint32_t s_cur_moby_key;        /* moby for the record currently being walked */
-static uint16_t s_cur_moby_cls;        /* m_Class of that moby (set beside the key) */
-static int8_t   s_cur_moby_dofs;       /* authored OT bias (moby+0x47, set beside the key) */
-static float    s_cur_env_az;          /* current record's TR azimuth (env-UV bias) */
-static uint32_t s_emit_fkey;           /* packed index triple for the next emit_wtri */
+static _Thread_local uint32_t s_cur_moby_key;   /* moby for the record currently being walked */
+static _Thread_local uint16_t s_cur_moby_cls;   /* m_Class of that moby (set beside the key) */
+static _Thread_local int8_t   s_cur_moby_dofs;  /* authored OT bias (moby+0x47, set beside the key) */
+static _Thread_local float    s_cur_env_az;     /* current record's TR azimuth (env-UV bias) */
+static _Thread_local uint32_t s_emit_fkey;      /* packed index triple for the next emit_wtri */
 #define PACK_FKEY(a,b,c) (((uint32_t)(a)&0x3FFu) | (((uint32_t)(b)&0x3FFu)<<10) | (((uint32_t)(c)&0x3FFu)<<20))
 
 /* signed 2*area of a screen-space triangle (NCLIP analog) -- backface/winding. */
@@ -1584,16 +1589,39 @@ static double tri_nclip(float ax,float ay,float bx,float by,float cx,float cy) {
     return (double)(bx-ax)*(cy-ay) - (double)(cx-ax)*(by-ay);
 }
 
-static struct {   /* walk diagnostics (printed by compare_walk_vs_prims) */
-    int faces, emitted, oor, skip, sprite, strip, fresh_g, fresh_t, quad, nearstraddle;
+#define MN_MAX_WORKERS 8
+/* Walk diagnostics (printed by compare_walk_vs_prims), one per worker. Aligned
+ * to a cache line: workers bump their own counters throughout the walk, and
+ * packed side by side every increment would bounce the line between cores. */
+typedef struct {
+    _Alignas(64) int faces;
+    int emitted, oor, skip, sprite, strip, fresh_g, fresh_t, quad, nearstraddle;
     int align_lo, align_hi, desync;
-} s_walkdiag;
+} mn_walkdiag;
+/* Slot 0 is the serial walk's, and the slot every parallel run sums into. */
+static mn_walkdiag s_wdiag[MN_MAX_WORKERS];
+static _Thread_local mn_walkdiag* t_diag = &s_wdiag[0];
+
+/* Where emitted triangles land: the global s_wtri* arrays for a serial walk, a
+ * per-worker slab for a parallel one. Cursor and capacity travel with the
+ * arrays so emit_wtri needs no knowledge of which it is filling. */
+typedef struct {
+    ntri_t*   tri;  uint32_t* fkey; uint32_t* moby; uint16_t* cls;
+    uint8_t*  ui;   uint8_t*  front; uint8_t* fogsup; uint8_t* mangle;
+    int8_t*   dofs;
+    int n, cap;
+} mn_out;
+static mn_out s_gout = { s_wtri, s_wtri_fkey, s_wtri_moby, s_wtri_cls, s_wtri_ui,
+                         s_wtri_front, s_wtri_fogsup, s_wtri_mangle, s_wtri_dofs,
+                         0, MAX_NTRI };
+static _Thread_local mn_out* t_out = &s_gout;
 
 static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
                       uint32_t ca, uint32_t cb, uint32_t cc,
                       int ua,int va,int ub,int vb,int uc,int vc,
                       int tex,int tpx,int tpy,int clx,int cly,int bpp,int blend) {
-    if (s_wtri_n >= MAX_NTRI) return;
+    mn_out* O = t_out;
+    if (O->n >= O->cap) return;
     /* NEAR-PLANE CULL: drop any triangle with a vertex at/behind the camera
      * (view-Z <= 0). The .s relies on the GTE perspective divide + NCLIP to
      * reject behind-camera prims; our float project() does a raw H/Z, so a
@@ -1625,23 +1653,23 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
         if (c->sx < xlo) xlo = c->sx; if (c->sx > xhi) xhi = c->sx;
         if (b->sy < ylo) ylo = b->sy; if (b->sy > yhi) yhi = b->sy;
         if (c->sy < ylo) ylo = c->sy; if (c->sy > yhi) yhi = c->sy;
-        if (xhi - xlo > 1023.0f || yhi - ylo > 511.0f) { s_walkdiag.nearstraddle++; return; }
+        if (xhi - xlo > 1023.0f || yhi - ylo > 511.0f) { t_diag->nearstraddle++; return; }
     }
-    s_wtri_ui[s_wtri_n] = (uint8_t)s_cur_ui;   /* HUD/UI tag for this tri (current record) */
-    s_wtri_front[s_wtri_n] = (uint8_t)s_cur_front;  /* cutscene actor (front-pass eligible) */
-    s_wtri_fogsup[s_wtri_n] = (uint8_t)s_cur_fogsup;   /* --no-lod fog-suppressed record */
-    s_wtri_moby[s_wtri_n] = s_cur_moby_key;    /* colour-cache identity (see s_dyncol) */
-    s_wtri_dofs[s_wtri_n] = s_cur_moby_dofs;
-    s_wtri_mangle[s_wtri_n] = (uint8_t)((a->unr || b->unr || c->unr ||
-                                         a->sat || b->sat || c->sat) ? 1 : 0);
-    s_wtri_fkey[s_wtri_n] = s_emit_fkey;
-    s_wtri_cls[s_wtri_n] = s_cur_moby_cls;     /* provenance tag (mod-shaders S6) */
-    ntri_t* t = &s_wtri[s_wtri_n++];
+    O->ui[O->n] = (uint8_t)s_cur_ui;       /* HUD/UI tag for this tri (current record) */
+    O->front[O->n] = (uint8_t)s_cur_front;    /* cutscene actor (front-pass eligible) */
+    O->fogsup[O->n] = (uint8_t)s_cur_fogsup;  /* --no-lod fog-suppressed record */
+    O->moby[O->n] = s_cur_moby_key;           /* colour-cache identity (see s_dyncol) */
+    O->dofs[O->n] = s_cur_moby_dofs;
+    O->mangle[O->n] = (uint8_t)((a->unr || b->unr || c->unr ||
+                                 a->sat || b->sat || c->sat) ? 1 : 0);
+    O->fkey[O->n] = s_emit_fkey;
+    O->cls[O->n] = s_cur_moby_cls;            /* provenance tag (mod-shaders S6) */
+    ntri_t* t = &O->tri[O->n++];
     t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez, a->tvz};
     t->v[1]=(ntri_vert){b->sx,b->sy,b->vz,ub,vb,cb, b->ex,b->ey,b->ez, b->tvz};
     t->v[2]=(ntri_vert){c->sx,c->sy,c->vz,uc,vc,cc, c->ex,c->ey,c->ez, c->tvz};
     t->textured=tex;t->tpage_x=tpx;t->tpage_y=tpy;t->clut_x=clx;t->clut_y=cly;t->bpp=bpp;t->blend=blend;
-    s_walkdiag.emitted++;
+    t_diag->emitted++;
 }
 
 /* specular env-reflection UV (#1) -- definitions below (near recolor); forward-
@@ -1995,13 +2023,19 @@ static int build_walk_tris(CPUState* cpu) {
     return n;
 }
 static double s_walk_H = 365.0;   /* GTE projection distance (ctrl[26]) for sprite extents */
-static int build_walk_tris_inner(CPUState* cpu) {
-    specular_env_load(cpu);   /* refresh metalMatrix + metal Tiledef (cheap; SPEC env-UV) */
-    s_walk_H = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
-    s_wtri_n = 0;
-    memset(&s_walkdiag, 0, sizeof(s_walkdiag));
-    int is_spec = (s_cur_mat && s_cur_mat[0]=='S' && s_cur_mat[1]=='P');
-    for (int r = 0; r < s_nrecs; r++) {
+/* Faces resolved by the serial prologue, one entry per record. The walk itself
+ * must not resolve them: the decode patches guest RAM in place and restores it,
+ * and both face caches allocate and evict — none of which is safe to run on
+ * several workers at once. */
+static const fcache_t* s_pre_FC[MAX_RECORDS];
+static const fcache_t* s_pre_FCp[MAX_RECORDS];
+static float           s_pre_clra[MAX_RECORDS];
+/* Where each record's triangles landed, for the ordered merge. */
+static struct { int worker, start, count; } s_pre_rec[MAX_RECORDS];
+
+/* Walk records [r0, r1) into the calling worker's emit target. */
+static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
+    for (int r = r0; r < r1; r++) {
         rec_meta* R = &s_recs[r];
         uint32_t mob = R->moby;   /* set in all paths (==rec+0x34 for .s recs); host-built reveal/re-extract records have addr=0 so reading R->addr+0x34 would miss the dedup */
         /* SPECULAR dedup: skip a moby the REGULAR pass already fed (overlap → would
@@ -2074,8 +2108,8 @@ static int build_walk_tris_inner(CPUState* cpu) {
         s_cur_fogsup = (openpete_no_lod && R->zsf4 != R->zsf4_raw && R->zsf4_raw < 1024) ? 1 : 0;
         uint32_t fb = R->faceblock;
         if (fb < 0x80000000u || R->proj_n <= 0) continue;
-        const fcache_t* FC = moby_faces_for_record(cpu, R);   /* Tier-1 decode (patch-aware) */
-        if (!FC) { s_walkdiag.desync++; continue; }
+        const fcache_t* FC = s_pre_FC[r];   /* Tier-1 decode, resolved by the prologue */
+        if (!FC) { t_diag->desync++; continue; }
         int base = R->proj_off, vcount = R->proj_n;
         /* per-vertex colour base + fade by the record's LOD tier (ladder documented
          * at moby_tier_faceblock; indexed by w1f). NEAR: model colours (hdr+0x18)
@@ -2140,31 +2174,22 @@ static int build_walk_tris_inner(CPUState* cpu) {
          * SAME alpha that lerps the vertex streams — endpoints are exactly the
          * two states the game drew. Only fetched when a patch list is in play
          * (prev==curr faces otherwise makes it a no-op). */
-        const fcache_t* FCp = NULL; float clr_a = 0.f;
-        if (R->frameA_p >= 0x80000000u && R->zsf4 > 0 && R->header >= 0x80000000u) {
-            int curr_p = (R->frameA >= 0x80000000u) && (cpu->read_word(R->frameA + 4u) & 0xFFFFu) != 0u;
-            int prev_p = (cpu->read_word(R->frameA_p + 4u) & 0xFFFFu) != 0u;
-            if (curr_p || prev_p) {
-                FCp = moby_faces_for_prev(cpu, R);
-                if (FCp == FC || (FCp && FCp->nfaces != FC->nfaces)) FCp = NULL;
-                if (FCp) { clr_a = R->clr_alpha; s_clerp_recs++; }
-            }
-        }
-        s_walkdiag.faces  += FC->raw;
-        s_walkdiag.sprite += FC->sprites;
-        s_walkdiag.skip   += FC->skips;
-        if      (FC->align == 0) s_walkdiag.align_lo++;
-        else if (FC->align == 1) s_walkdiag.align_hi++;
-        else                     s_walkdiag.desync++;
+        const fcache_t* FCp = s_pre_FCp[r]; float clr_a = s_pre_clra[r];
+        t_diag->faces  += FC->raw;
+        t_diag->sprite += FC->sprites;
+        t_diag->skip   += FC->skips;
+        if      (FC->align == 0) t_diag->align_lo++;
+        else if (FC->align == 1) t_diag->align_hi++;
+        else                     t_diag->desync++;
         for (int fi = 0; fi < FC->nfaces; fi++) {
             const wface_t* F = &FC->f[fi];
             int fresh = F->fresh, textured = F->textured;
-            if (!fresh)        s_walkdiag.strip++;
-            else if (textured) s_walkdiag.fresh_t++;
-            else               s_walkdiag.fresh_g++;
+            if (!fresh)        t_diag->strip++;
+            else if (textured) t_diag->fresh_t++;
+            else               t_diag->fresh_g++;
             int i0 = F->i0, i1 = F->i1, i2 = F->i2;
             int i3 = F->i3;   /* 4th-vertex SXY index (raw; strips never consume it) */
-            if (i0 >= vcount || i1 >= vcount || i2 >= vcount) { s_walkdiag.oor++; continue; }
+            if (i0 >= vcount || i1 >= vcount || i2 >= vcount) { t_diag->oor++; continue; }
             proj_xy* p0 = &s_proj[base+i0]; proj_xy* p1 = &s_proj[base+i1]; proj_xy* p2 = &s_proj[base+i2];
 
             /* FRESH faces run the .s's dual-NCLIP (block_8002008C): NCLIP1=(v0,v1,v2),
@@ -2198,7 +2223,7 @@ static int build_walk_tris_inner(CPUState* cpu) {
                  *   t6a<0  && t6b>0  -> .L80020158:        0x38 QUAD (v0,v1,v2)+(v1,v3,v2)
                  *   t6a<0  && t6b<=0 -> .L800203F4 (+8=v0): single 0x30 TRI (v0,v1,v2) */
                 if (t6a >= 0.0) { if (t6b > 0.0 && p3) { emit_b = b_is_v3tri = 1; } }   /* tri (v3,v1,v2) */
-                else if (t6b > 0.0 && p3) { emit_a = emit_b = 1; s_walkdiag.quad++; }   /* QUAD */
+                else if (t6b > 0.0 && p3) { emit_a = emit_b = 1; t_diag->quad++; }   /* QUAD */
                 else emit_a = 1;                                                        /* tri (v0,v1,v2) */
             } else {
                 /* strip: single tri. bit0=0 keep NCLIP>0; bit0=1 keep NCLIP!=0
@@ -2429,7 +2454,178 @@ static int build_walk_tris_inner(CPUState* cpu) {
             }
         }
     }
-    return s_wtri_n;
+}
+
+
+/* Serial prologue: resolve every record's face sets, and decide whether this
+ * present's walk may fan out at all.
+ *
+ * The face walk writes guest RAM. A keyframe that carries a patch list has its
+ * high-poly faceblock patched in place, decoded and restored — mirroring what
+ * the .s does before rendering each record, which is how effect models animate
+ * STRUCTURE per keyframe (the Gnasty-blast dome shrinks and fades entirely
+ * through it). What makes it legal is that patch -> decode -> restore is
+ * synchronous, so nothing can observe the transient; per-record parallelism
+ * destroys exactly that property, and the buffer holding the originals is one
+ * shared array, so a torn restore writes WRONG words back and the corruption is
+ * permanent and guest-visible.
+ *
+ * Resolving here disposes of that, and of the two cache hazards with it — an
+ * eviction frees a face array a concurrent reader may still hold, and the
+ * 32-slot patched-decode ring inserts round-robin, so a later insertion can
+ * clobber a pointer already handed out. All three reduce to one rule: fan out
+ * only when the prologue inserted into NEITHER cache. In steady state neither
+ * ever misses (tens of thousands of hits against zero, and sixteen patched
+ * decodes a second against eighty thousand hits), so this costs a serial walk
+ * on the rare present that loads a new face set, and nothing otherwise.
+ *
+ * Returns 1 when the walk must stay serial. */
+/* Engagement census: walks that fanned out against walks that stayed serial. */
+static long s_walk_par, s_walk_serial;
+
+static int walk_dbg_env(void) {
+    /* Any active walk instrument forces serial: their censuses and dumps are
+     * whole-walk statics with serial semantics, and several latch mid-walk. */
+    static int v = -1;
+    if (v < 0)
+        v = (getenv("OPENPETE_MOBY_CLASSDBG") || getenv("OPENPETE_MOBY_FADEDBG") ||
+             getenv("OPENPETE_MOBY_CLERP_DBG")) ? 1 : 0;
+    return v;
+}
+
+static int walk_prologue(CPUState* cpu, int is_spec) {
+    long fc_miss0 = s_fc_miss, fp_miss0 = s_fp_miss;
+    for (int r = 0; r < s_nrecs; r++) {
+        rec_meta* R = &s_recs[r];
+        s_pre_FC[r] = NULL; s_pre_FCp[r] = NULL; s_pre_clra[r] = 0.f;
+        s_pre_rec[r].worker = 0; s_pre_rec[r].start = 0; s_pre_rec[r].count = 0;
+        uint32_t mob = R->moby;
+        /* The same skips the walk applies, so no record is decoded here that the
+         * walk would not have decoded itself. */
+        if (is_spec) {
+            int dup = 0;
+            for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == mob) { dup = 1; break; }
+            if (dup) continue;
+        }
+        if (mob && moby_run_once_hidden(cpu, mob, (unsigned)cpu->read_half(mob + 0x36))) continue;
+        if (R->faceblock < 0x80000000u || R->proj_n <= 0) continue;
+        const fcache_t* FC = moby_faces_for_record(cpu, R);
+        s_pre_FC[r] = FC;
+        if (!FC) continue;
+        if (R->frameA_p >= 0x80000000u && R->zsf4 > 0 && R->header >= 0x80000000u) {
+            int curr_p = (R->frameA >= 0x80000000u) && (cpu->read_word(R->frameA + 4u) & 0xFFFFu) != 0u;
+            int prev_p = (cpu->read_word(R->frameA_p + 4u) & 0xFFFFu) != 0u;
+            if (curr_p || prev_p) {
+                const fcache_t* FCp = moby_faces_for_prev(cpu, R);
+                if (FCp == FC || (FCp && FCp->nfaces != FC->nfaces)) FCp = NULL;
+                if (FCp) { s_pre_FCp[r] = FCp; s_pre_clra[r] = R->clr_alpha; s_clerp_recs++; }
+            }
+        }
+    }
+    int nw = openpete_workpool_threads();
+    if (nw > MN_MAX_WORKERS) nw = MN_MAX_WORKERS;
+    /* A cache insertion this present may have evicted a pointer already stored
+     * above, so the resolved set is only trustworthy when neither cache moved. */
+    if (s_fc_miss != fc_miss0 || s_fp_miss != fp_miss0) return 1;
+    /* The first walk runs serial so the body's own lazy getenv latches resolve
+     * on one thread; every later walk finds them already set. */
+    static int first = 1;
+    if (first) { first = 0; return 1; }
+    if (nw <= 1 || s_nrecs < 2 || walk_dbg_env()) return 1;
+    return 0;
+}
+
+/* Per-worker emit slabs, allocated on first parallel use. A single worker can
+ * legitimately draw every triangle of a scene, so each slab carries the full
+ * global capacity. */
+static mn_out s_wout[MN_MAX_WORKERS];
+
+static int walk_slabs_ready(int nw) {
+    for (int w = 0; w < nw; w++) {
+        mn_out* O = &s_wout[w];
+        if (O->tri) continue;
+        O->tri    = (ntri_t*)  malloc(sizeof(ntri_t)  * MAX_NTRI);
+        O->fkey   = (uint32_t*)malloc(sizeof(uint32_t)* MAX_NTRI);
+        O->moby   = (uint32_t*)malloc(sizeof(uint32_t)* MAX_NTRI);
+        O->cls    = (uint16_t*)malloc(sizeof(uint16_t)* MAX_NTRI);
+        O->ui     = (uint8_t*) malloc(MAX_NTRI);
+        O->front  = (uint8_t*) malloc(MAX_NTRI);
+        O->fogsup = (uint8_t*) malloc(MAX_NTRI);
+        O->mangle = (uint8_t*) malloc(MAX_NTRI);
+        O->dofs   = (int8_t*)  malloc(MAX_NTRI);
+        O->cap = MAX_NTRI;
+        if (!O->tri || !O->fkey || !O->moby || !O->cls || !O->ui || !O->front ||
+            !O->fogsup || !O->mangle || !O->dofs) return 0;
+    }
+    return 1;
+}
+
+typedef struct { CPUState* cpu; int is_spec; } mn_job;
+
+static void walk_record_job(int item, int worker, void* arg) {
+    mn_job* J = (mn_job*)arg;
+    mn_out* O = &s_wout[worker];
+    t_out  = O;
+    t_diag = &s_wdiag[worker];
+    int start = O->n;
+    walk_records(J->cpu, J->is_spec, item, item + 1);
+    s_pre_rec[item].worker = worker;
+    s_pre_rec[item].start  = start;
+    s_pre_rec[item].count  = O->n - start;
+}
+
+static void walk_parallel(CPUState* cpu, int is_spec) {
+    int nw = openpete_workpool_threads();
+    if (nw > MN_MAX_WORKERS) nw = MN_MAX_WORKERS;
+    if (!walk_slabs_ready(nw)) { walk_records(cpu, is_spec, 0, s_nrecs); return; }
+    for (int w = 0; w < nw; w++) s_wout[w].n = 0;
+    mn_job J = { cpu, is_spec };
+    openpete_workpool_run(s_nrecs, walk_record_job, &J);
+    t_out = &s_gout; t_diag = &s_wdiag[0];   /* worker 0 is this thread */
+    /* Ordered merge: worker runs land in s_wtri in RECORD order, so the stream
+     * and every consumer downstream of it match the serial walk. */
+    s_gout.n = 0;
+    for (int r = 0; r < s_nrecs; r++) {
+        int n = s_pre_rec[r].count;
+        if (n <= 0) continue;
+        const mn_out* O = &s_wout[s_pre_rec[r].worker];
+        int st = s_pre_rec[r].start;
+        if (s_gout.n + n > MAX_NTRI) n = MAX_NTRI - s_gout.n;
+        if (n <= 0) break;
+        memcpy(&s_wtri[s_gout.n],        &O->tri[st],    (size_t)n * sizeof(ntri_t));
+        memcpy(&s_wtri_fkey[s_gout.n],   &O->fkey[st],   (size_t)n * sizeof(uint32_t));
+        memcpy(&s_wtri_moby[s_gout.n],   &O->moby[st],   (size_t)n * sizeof(uint32_t));
+        memcpy(&s_wtri_cls[s_gout.n],    &O->cls[st],    (size_t)n * sizeof(uint16_t));
+        memcpy(&s_wtri_ui[s_gout.n],     &O->ui[st],     (size_t)n);
+        memcpy(&s_wtri_front[s_gout.n],  &O->front[st],  (size_t)n);
+        memcpy(&s_wtri_fogsup[s_gout.n], &O->fogsup[st], (size_t)n);
+        memcpy(&s_wtri_mangle[s_gout.n], &O->mangle[st], (size_t)n);
+        memcpy(&s_wtri_dofs[s_gout.n],   &O->dofs[st],   (size_t)n);
+        s_gout.n += n;
+    }
+    for (int w = 1; w < nw; w++) {   /* diagnostics roll-up */
+        const mn_walkdiag* D = &s_wdiag[w];
+        s_wdiag[0].faces += D->faces; s_wdiag[0].emitted += D->emitted;
+        s_wdiag[0].oor += D->oor;     s_wdiag[0].skip += D->skip;
+        s_wdiag[0].sprite += D->sprite; s_wdiag[0].strip += D->strip;
+        s_wdiag[0].fresh_g += D->fresh_g; s_wdiag[0].fresh_t += D->fresh_t;
+        s_wdiag[0].quad += D->quad;   s_wdiag[0].nearstraddle += D->nearstraddle;
+        s_wdiag[0].align_lo += D->align_lo; s_wdiag[0].align_hi += D->align_hi;
+        s_wdiag[0].desync += D->desync;
+    }
+}
+
+static int build_walk_tris_inner(CPUState* cpu) {
+    specular_env_load(cpu);   /* refresh metalMatrix + metal Tiledef (cheap; SPEC env-UV) */
+    s_walk_H = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
+    s_gout.n = 0;
+    memset(s_wdiag, 0, sizeof(s_wdiag));
+    int is_spec = (s_cur_mat && s_cur_mat[0]=='S' && s_cur_mat[1]=='P');
+    int serial = walk_prologue(cpu, is_spec);
+    if (serial) { s_walk_serial++; walk_records(cpu, is_spec, 0, s_nrecs); return s_gout.n; }
+    s_walk_par++;
+    walk_parallel(cpu, is_spec);
+    return s_gout.n;
 }
 
 /* A/B the walked triangles vs the captured prims (topology desync detector).
@@ -2513,7 +2709,7 @@ static void compare_walk_vs_prims(void) {
             s_pb_done = 1;
         }
     }
-    int wn=s_wtri_n, pn=s_ptri_n;
+    int wn=s_gout.n, pn=s_ptri_n;
     int prim_quad=0, prim_tri=0;   /* how many GPU quads vs tris the .s actually emitted */
     for(int g=0;g<s_gte_n;g++){ if(s_gte[g].nv==4)prim_quad++; else if(s_gte[g].nv==3)prim_tri++; }
     int wmatch=0, neg_m=0, pos_m=0, neg_u=0, pos_u=0;
@@ -2641,7 +2837,7 @@ static void compare_walk_vs_prims(void) {
         "[moby-walk %s f=%u] recs=%d faces=%d walkTris=%d primTris=%d | "
         "ONSCREEN precision=%d/%d(%.1f%%) recall=%d/%d(%.1f%%) onscrUnmatched=%d | "
         "precision=%d/%d(%.1f%%) recall=%d/%d(%.1f%%) | ",
-        s_cur_mat, openpete_frame, s_nrecs, s_walkdiag.faces, wn, pn,
+        s_cur_mat, openpete_frame, s_nrecs, s_wdiag[0].faces, wn, pn,
         wmatch_on, won, won?100.0*wmatch_on/won:0.0, pcov_on, pon, pon?100.0*pcov_on/pon:0.0, won_un,
         wmatch, wn, wn?100.0*wmatch/wn:0.0, pcov, pn, pn?100.0*pcov/pn:0.0);
     fprintf(stderr,
@@ -2650,11 +2846,11 @@ static void compare_walk_vs_prims(void) {
         "align{lo=%d hi=%d desync=%d} | nclip matched{-=%d +=%d} unmatched{-=%d +=%d} "
         "matchedTex{-=%d +=%d} matchedFlat{-=%d +=%d} | col=%d/%d uv=%d/%d wdup=%d/%d primQ=%d primT=%d walkQ=%d luma=w%.0f/p%.0f\n",
         openpete_frame,
-        s_walkdiag.fresh_g, s_walkdiag.fresh_t, s_walkdiag.strip, s_walkdiag.sprite,
-        s_walkdiag.skip, s_walkdiag.quad, s_walkdiag.oor, s_walkdiag.nearstraddle,
-        s_walkdiag.align_lo, s_walkdiag.align_hi, s_walkdiag.desync,
+        s_wdiag[0].fresh_g, s_wdiag[0].fresh_t, s_wdiag[0].strip, s_wdiag[0].sprite,
+        s_wdiag[0].skip, s_wdiag[0].quad, s_wdiag[0].oor, s_wdiag[0].nearstraddle,
+        s_wdiag[0].align_lo, s_wdiag[0].align_hi, s_wdiag[0].desync,
         neg_m,pos_m,neg_u,pos_u, mt_n,mt_p,mf_n,mf_p, colmatch,coln, uvmatch,uvn, wdup,wn,
-        prim_quad, prim_tri, s_walkdiag.quad, coln?wluma_sum/coln:0.0, coln?pluma_sum/coln:0.0);
+        prim_quad, prim_tri, s_wdiag[0].quad, coln?wluma_sum/coln:0.0, coln?pluma_sum/coln:0.0);
     #undef ONSCR
 }
 
@@ -2668,10 +2864,10 @@ static void compare_walk_vs_prims(void) {
  * the comparison within the same moby. On-screen tris only. */
 static void shaded_color_ab(void) {
     build_prim_tris();
-    if (s_ptri_n <= 0 || s_wtri_n <= 0) return;
+    if (s_ptri_n <= 0 || s_gout.n <= 0) return;
     static const int pm[6][3]={{0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}};
     int n[3]={0,0,0}, exact[3]={0,0,0}; double cherr[3]={0,0,0};
-    for (int wi=0; wi<s_wtri_n; wi++) {
+    for (int wi=0; wi<s_gout.n; wi++) {
         ntri_t* w=&s_wtri[wi]; int md=s_wtri_mode[wi]; if(md>2)md=0;
         double wcx=(w->v[0].sx+w->v[1].sx+w->v[2].sx)/3.0, wcy=(w->v[0].sy+w->v[1].sy+w->v[2].sy)/3.0;
         if (!(wcx>=0&&wcx<=512&&wcy>=0&&wcy<=240)) continue;
@@ -2719,7 +2915,7 @@ static void shaded_color_ab(void) {
  * mobys) keep their base colour. */
 static void recolor_walk_from_prims(void) {
     build_prim_tris();
-    for (int wi = 0; wi < s_wtri_n; wi++) {
+    for (int wi = 0; wi < s_gout.n; wi++) {
         ntri_t* w = &s_wtri[wi];
         double wcx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0;
         double wcy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0;
@@ -2827,7 +3023,7 @@ static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
     }
     double tol_sq = tol * tol;
     int recoloured = 0;
-    for (int wi = 0; wi < s_wtri_n; wi++) {
+    for (int wi = 0; wi < s_gout.n; wi++) {
         ntri_t* w = &s_wtri[wi];
         /* Speck gate: a tri only a few px across can't display a colour
          * transient — but at vista density (thousands of 2-5px mobys, ~48k
@@ -2951,7 +3147,7 @@ static int adopt_prim_colors(void) {
 static int adopt_prim_colors_subtick(void) {
     if (s_dyncol_n == 0) return 0;
     int applied = 0;
-    for (int wi = 0; wi < s_wtri_n; wi++) {
+    for (int wi = 0; wi < s_gout.n; wi++) {
         uint32_t mob = s_wtri_moby[wi];
         int dyn = 0;
         for (int i = 0; i < s_dynmoby_n; i++) if (s_dynmoby[i] == mob) { dyn = 1; break; }
@@ -3059,7 +3255,7 @@ static void specular_env_calibrate(CPUState* cpu) {
         fprintf(stderr, "  rec%d metal=%d mscol=%08X moby=%08X\n", r,
             s_recs[r].metal, s_recs[r].mscol, cpu->read_word(s_recs[r].addr + 0x34));
     int dumped = 0, nv = 0; double sumu = 0, sumv = 0, sgnu = 0; int maxu = 0, maxv = 0;
-    for (int wi = 0; wi < s_wtri_n && dumped < 16; wi++) {
+    for (int wi = 0; wi < s_gout.n && dumped < 16; wi++) {
         ntri_t* w = &s_wtri[wi];
         if (!w->textured) continue;
         double wcx=(w->v[0].sx+w->v[1].sx+w->v[2].sx)/3.0, wcy=(w->v[0].sy+w->v[1].sy+w->v[2].sy)/3.0;
@@ -3109,7 +3305,7 @@ static void specular_hl_calibrate(CPUState* cpu) {
     build_prim_tris();
     fprintf(stderr, "[spec-hl f=%u] light=(%d,%d,%d)\n", openpete_frame, lx,ly,lz);
     int dumped=0;
-    for (int wi=0; wi<s_wtri_n && dumped<24; wi++) {
+    for (int wi=0; wi<s_gout.n && dumped<24; wi++) {
         ntri_t* w=&s_wtri[wi];
         double wcx=(w->v[0].sx+w->v[1].sx+w->v[2].sx)/3.0, wcy=(w->v[0].sy+w->v[1].sy+w->v[2].sy)/3.0;
         double best=1e18; int bp=-1;
@@ -3144,10 +3340,10 @@ static void specular_hl_calibrate(CPUState* cpu) {
 static void push_scene_moby(void) {
     if (!render_path_enabled(RP_MOBY)) return;  /* --render-paths: mobys not selected */
     static int s_logged = 0;
-    if (!s_logged && s_wtri_n > 0) {
+    if (!s_logged && s_gout.n > 0) {
         s_logged = 1;
         fprintf(stderr, "[moby-native] feeding panel 0: %d moby tris from gamestate "
-                "(3a.2b independent face-stream walk) frame %u\n", s_wtri_n, openpete_frame);
+                "(3a.2b independent face-stream walk) frame %u\n", s_gout.n, openpete_frame);
     }
     openpete_native_scene_begin_frame(openpete_frame);
     /* TEMP forensics (OPENPETE_MBCEN=1): one line per emitted moby per PRESENT —
@@ -3160,7 +3356,7 @@ static void push_scene_moby(void) {
           s_pres++;
           struct { uint32_t m; int cls, n; float x0,y0,x1,y1,z0,z1; } acc[512];
           int na = 0;
-          for (int i = 0; i < s_wtri_n; i++) {
+          for (int i = 0; i < s_gout.n; i++) {
               const ntri_t* w = &s_wtri[i];
               int j = 0;
               for (; j < na; j++) if (acc[j].m == s_wtri_moby[i]) break;
@@ -3193,7 +3389,7 @@ static void push_scene_moby(void) {
           s_td = 0;
           if (e && sscanf(e, "%d,%d,%d,%d,%d,%d", &tx0,&ty0,&tx1,&ty1,&tfa,&tfb) == 6) s_td = 1; }
       if (s_td == 1 && (int)openpete_frame >= tfa && (int)openpete_frame <= tfb) {
-          for (int i = 0; i < s_wtri_n; i++) {
+          for (int i = 0; i < s_gout.n; i++) {
               const ntri_t* w = &s_wtri[i];
               float cx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0f;
               float cy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0f;
@@ -3257,7 +3453,7 @@ static void push_scene_moby(void) {
      * sub-tick re-extracts inherit them for free. */
     if (openpete_mobyrank_on()) {
         openpete_mobyrank_snap_begin(openpete_frame);
-        for (int i = 0; i < s_wtri_n; i++) {
+        for (int i = 0; i < s_gout.n; i++) {
             if (s_wtri[i].blend != 0 || !s_wtri_moby[i] || s_wtri_ui[i] != 0 ||
                 s_wtri_mangle[i]) continue;
             uint8_t su[3], sv[3];
@@ -3277,7 +3473,7 @@ static void push_scene_moby(void) {
     /* Per-moby memo for the material-slot resolve below (faces of one moby
      * are contiguous in this stream). */
     uint32_t mat_last_moby = 0; uint16_t mat_last_slot = 0; int mat_have = 0;
-    for (int i = 0; i < s_wtri_n; i++) {
+    for (int i = 0; i < s_gout.n; i++) {
         int cat = s_wtri_ui[i] == 2 ? OPENPETE_SCENE_HUD3D
                 : s_wtri_ui[i] == 1 ? OPENPETE_SCENE_HUD
                 : s_wtri_front[i]   ? OPENPETE_SCENE_ACTOR_FRONT
@@ -3555,17 +3751,19 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
         if (++s_tier_cnt >= 30) {
             fprintf(stderr, "[moby-tier f=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld lpskip=%ld shband=%ld | "
                     "zsf4-mirror ok=%ld bad=%ld | adopt=%ld fogskip=%ld dyncol-hi=%ld/%d dynmoby-hi=%ld/32 | "
-                    "proj=%ldus walk=%ldus rexwalk=%ldus calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld\n",
+                    "proj=%ldus walk=%ldus rexwalk=%ldus calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld par=%ld/%ld\n",
                     openpete_frame, s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade,
                     s_tier_gpfskip, s_tier_lpskip, s_shband_cull, s_tier_mirror_ok, s_tier_mirror_bad, s_tier_adopt, s_adopt_fogskip,
                     s_tier_dyncol_hi, MAX_DYNCOL, s_tier_dynmoby_hi,
                     s_us_proj, s_us_walk, s_us_walk_rex, s_us_calls, s_fc_hit, s_fc_miss,
-                    s_fp_hit, s_fp_miss, s_clerp_recs, s_hold_replayed);
+                    s_fp_hit, s_fp_miss, s_clerp_recs, s_hold_replayed,
+                    s_walk_par, s_walk_par + s_walk_serial);
             s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = s_tier_lpskip = s_shband_cull = s_adopt_fogskip = 0;
             s_tier_mirror_ok = s_tier_mirror_bad = 0; s_tier_adopt = 0; s_tier_cnt = 0;
             s_tier_dyncol_hi = s_tier_dynmoby_hi = 0;
             s_us_proj = s_us_walk = s_us_walk_rex = s_us_calls = 0;
             s_fc_hit = s_fc_miss = 0; s_hold_replayed = 0; s_clerp_recs = 0;
+            s_walk_par = s_walk_serial = 0;
         }
     }
 
@@ -4683,7 +4881,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
     static proj_xy sv[8192]; project_all_shaded(cpu, sv, 8192);   /* fills sv[] + s_shrecs[] */
     if (s_sh_nohl < 0) { const char* e=getenv("OPENPETE_SHADED_NOHL"); s_sh_nohl = (e&&*e!='0'); }
     s_shmode[0]=s_shmode[1]=s_shmode[2]=0;
-    s_wtri_n = 0;
+    s_gout.n = 0;
     for (int r = 0; r < s_nshrecs; r++) {
         shaded_rec* R = &s_shrecs[r];
         /* HUD/overlay tag (0=ACTOR, 1=HUD flat, 2=HUD3D depth-sorted). Two kinds of
@@ -4757,7 +4955,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
          * with the far-darkening approximation — deferred to a calibrated pass.) */
         int flat_abe = (((int32_t)mscolor) >> 22) == 0;
         uint32_t fp = R->faces;
-        for (int f = 0; f < R->fcount && s_wtri_n < MAX_NTRI; f++, fp += 8u) {
+        for (int f = 0; f < R->fcount && s_gout.n < MAX_NTRI; f++, fp += 8u) {
             uint32_t w0 = cpu->read_word(fp), w1 = cpu->read_word(fp + 4u);
             if (w0 & 1u) { if (w0 & 2u) s_shmode[2]++; else s_shmode[1]++; } else s_shmode[0]++;
             int i0 = (int)((w0 >> 21) & 0x1FCu) >> 2;
@@ -4798,7 +4996,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
              * (mode 0) and metal (mode 2) stay opaque here (metal ABE deferred).
              * blend=1 == ABR0 (50% B/2+F/2), the untextured-ABE default. */
             int sh_blend = (mode == 1 && flat_abe) ? 1 : 0;
-            int mt0 = s_wtri_n;
+            int mt0 = s_gout.n;
             proj_xy* p0 = &base[i0]; proj_xy* p1 = &base[i1]; proj_xy* p2 = &base[i2];
             double ncl1 = tri_nclip(p0->sx,p0->sy,p1->sx,p1->sy,p2->sx,p2->sy);  /* float backface cull (see build_walk_tris) */
             if (i2 == i3) {                                       /* TRI */
@@ -4809,7 +5007,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
                 double ncl2 = tri_nclip(p3->sx,p3->sy,p1->sx,p1->sy,p2->sx,p2->sy);
                 if (ncl1 > 0.0 || ncl2 < 0.0) {
                     emit_wtri(p0,p1,p2, c0,c1,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
-                    if (s_wtri_n < MAX_NTRI)
+                    if (s_gout.n < MAX_NTRI)
                         emit_wtri(p1,p3,p2, c1,c3,c2, 0,0,0,0,0,0, 0,0,0,0,0,16,sh_blend);
                 }
             }
@@ -4834,10 +5032,10 @@ static int build_shaded_walk_tris(CPUState* cpu) {
                             (double)p2->sx, (double)p2->sy, i2==i3?" TRI":" QUAD",
                             ncl1, i2==i3 ? 0.0 :
                                 (i3<vc ? tri_nclip(base[i3].sx,base[i3].sy,p1->sx,p1->sy,p2->sx,p2->sy) : -999.0),
-                            i0i, s_wtri_n - mt0);
+                            i0i, s_gout.n - mt0);
                 }
             }
-            for (int t = mt0; t < s_wtri_n; t++) s_wtri_mode[t] = mode;
+            for (int t = mt0; t < s_gout.n; t++) s_wtri_mode[t] = mode;
         }
         /* ABR-CARVE-OUT (audit 2026-06-30): the game builds metal SimpleModel faces
          * semi-transparent (cmd 0x2A) then REMOVES ABE per-face on a runtime depth
@@ -4852,7 +5050,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
          * wrong. (The earlier per-frame ABR-FIXME alarm here was a false-positive
          * firehose — it counted every metal-mode face without the ABE-removal gate.) */
     }
-    return s_wtri_n;
+    return s_gout.n;
 }
 
 /* Ground-truth check for the gouraud per-vertex lighting: the .s writes its
@@ -5697,7 +5895,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             if (!hold_project_origin(cpu, s_rec_tr[r], &sx, &sy)) continue;
             int off = s_hold_tri_n, n = 0;
             uint16_t hcls = 0; uint8_t hfront = 0, hfogsup = 0;
-            for (int wi = 0; wi < s_wtri_n && s_hold_tri_n < HOLD_TRI_MAX; wi++) {
+            for (int wi = 0; wi < s_gout.n && s_hold_tri_n < HOLD_TRI_MAX; wi++) {
                 if (s_wtri_moby[wi] != mob) continue;
                 if (n == 0) { hcls = s_wtri_cls[wi]; hfront = s_wtri_front[wi];
                               hfogsup = s_wtri_fogsup[wi]; }
@@ -5728,18 +5926,18 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * after the per-cycle intern table has been reset, which is the
          * only point where a slot id is meaningful. */
         s_hold_replayed++;
-        for (int t = 0; t < h->n && s_wtri_n < MAX_NTRI; t++) {
-            s_wtri_ui[s_wtri_n]      = 0;
-            s_wtri_front[s_wtri_n]   = h->front;
-            s_wtri_fogsup[s_wtri_n]  = h->fogsup;
-            s_wtri_cls[s_wtri_n]     = h->cls;
-            s_wtri_moby[s_wtri_n]    = h->moby;
-            s_wtri_fkey[s_wtri_n]    = s_hold_fkey[h->off + t];
-            s_wtri_mode[s_wtri_n]    = s_hold_mode[h->off + t];
-            ntri_t* o = &s_wtri[s_wtri_n];
+        for (int t = 0; t < h->n && s_gout.n < MAX_NTRI; t++) {
+            s_wtri_ui[s_gout.n]      = 0;
+            s_wtri_front[s_gout.n]   = h->front;
+            s_wtri_fogsup[s_gout.n]  = h->fogsup;
+            s_wtri_cls[s_gout.n]     = h->cls;
+            s_wtri_moby[s_gout.n]    = h->moby;
+            s_wtri_fkey[s_gout.n]    = s_hold_fkey[h->off + t];
+            s_wtri_mode[s_gout.n]    = s_hold_mode[h->off + t];
+            ntri_t* o = &s_wtri[s_gout.n];
             *o = s_hold_tri[h->off + t];
             for (int vv = 0; vv < 3; vv++) { o->v[vv].sx += dx; o->v[vv].sy += dy; o->v[vv].vz *= vzs; }
-            s_wtri_n++;
+            s_gout.n++;
         }
     }
     push_scene_moby();
@@ -5782,7 +5980,7 @@ void moby_native_reextract(CPUState* cpu) {
     int nm = 0, reg_walk = 0;
     if (reg_fresh) {
         nm = reextract_record_pass(cpu, "REG");
-        reg_walk = s_wtri_n;
+        reg_walk = s_gout.n;
     }
     openpete_phase_set_count(OPPC_MOBYS, nm);   /* perf census: records this present */
 
@@ -5798,7 +5996,7 @@ void moby_native_reextract(CPUState* cpu) {
             memcpy(saved_reg, h, SPEC_SCR_LEN);       /* current = REGULAR (from bracket) */
             memcpy(h, s_canon_spec, SPEC_SCR_LEN);    /* specular queue + colour */
             reextract_record_pass(cpu, "SP");
-            spec_walk = s_wtri_n;
+            spec_walk = s_gout.n;
             memcpy(h, saved_reg, SPEC_SCR_LEN);       /* restore REGULAR */
         }
     }
@@ -5854,7 +6052,7 @@ void moby_native_reextract(CPUState* cpu) {
         if (openpete_frame != last) { last = openpete_frame;
             fprintf(stderr, "[reextract-moby f=%u] fresh reg=%d spec=%d shd=%d | recs_in=%d reg_walk=%d spec_walk=%d shd_walk=%d\n",
                     openpete_frame, reg_fresh, spec_fresh, shd_fresh,
-                    nm, reg_walk, spec_walk, shd_fresh ? s_wtri_n : 0); }
+                    nm, reg_walk, spec_walk, shd_fresh ? s_gout.n : 0); }
     }
     static int animswdbg = -1;
     if (animswdbg < 0) { const char* e = getenv("OPENPETE_MOBY_ANIMSW_DBG"); animswdbg = (e && *e && *e != '0'); }
