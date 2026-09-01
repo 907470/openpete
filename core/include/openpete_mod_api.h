@@ -276,8 +276,14 @@ typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
  * novel content can still claim a class row and drive it from an override
  * on the game's own update, which is what the registry did on its behalf.
  * Removing entries breaks the append-only rule above, deliberately and
- * once: a mod calling them fails to COMPILE, which is the loud failure. */
-#define OPENPETE_MOD_API_VERSION 7u
+ * once: a mod calling them fails to COMPILE, which is the loud failure.
+ *
+ * 8: notify() — post a transient on-screen notification (pillar 4). Growth
+ * against the shrink arc, and named as such: the shrink removes machinery
+ * that duplicated a better path, and there is no better path for a
+ * transient message. ui_status is a persistent panel line behind an
+ * overlay the player has to open, which is a different thing and stays. */
+#define OPENPETE_MOD_API_VERSION 8u
 
 typedef struct openpete_mod_api {
     uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION (the struct is
@@ -398,6 +404,42 @@ typedef struct openpete_mod_api {
      * (genuinely custom panels belong to the UI annex,
      * openpete_mod_ui.h — separately versioned, no stability promise). */
     void (*ui_status)(openpete_mod_t* self, const char* fmt, ...);
+
+    /* Post a transient on-screen notification — a toast in the game's own
+     * gold-bordered chrome, at the anchor the player chose. For "this
+     * just happened", where ui_status is for "this is the state".
+     *
+     * `key` (may be NULL) COALESCES: a live toast with the same key is
+     * repainted — new text, timer restarted, same slot — instead of a
+     * second one stacking. A value the player is scrubbing through wants
+     * a key; a discrete event wants NULL. The engine prefixes your mod id
+     * onto it, so two mods cannot collide on the same key.
+     *
+     * `timeout_ms` is MILLISECONDS: 0 takes the player's configured
+     * default (--osd-timeout), and anything above 30000 is clamped to it.
+     * The ring holds a handful of toasts, so an unclamped timeout would
+     * let one mod pin slots for the rest of the session. A repaint takes
+     * the RETARGETING call's timeout, not the one the toast was created
+     * with, so a recurring notification can lengthen its own dwell
+     * without giving up its key.
+     *
+     * Legal from entry, tick hooks and present hooks: it writes host
+     * state only, so it does not trip the present hooks' render-purity
+     * guard. Rate-limited per mod (a small burst, then a slow refill), so
+     * a tick loop cannot own the stack.
+     *
+     * A NO-OP on speculative (runahead) and replayed (rewind) ticks —
+     * those are rolled back or re-executed, and a notification from one
+     * would announce something that never committed, or announce it
+     * twice. A mod counting its own notify calls will therefore see fewer
+     * toasts than calls; that is by design, not a dropped message.
+     *
+     * Text renders with the GAME'S OWN glyph set: 0-9, A-Z (lowercase is
+     * folded up), space, and % / ? + ^ . ' : — anything else renders as a
+     * space. Hyphens, commas, exclamation marks and brackets silently
+     * vanish, so write your strings inside the set. */
+    void (*notify)(openpete_mod_t* self, const char* key,
+                   uint32_t timeout_ms, const char* fmt, ...);
 
     /* ── Pillar 5: present and screen-space draw ─────────────────────
      * Register a per-present hook: runs once per SCENE the engine

@@ -34,6 +34,7 @@
 // before openpete_mods_init() loads them from the warmed cache.
 
 #include "openpete_mods.h"
+#include "openpete_osd.h"
 #include "../host/texture_pack.h"   /* texpack_fog_shift */
 #include "openpete_mod_api.h"
 #include "openpete_mod_ui.h"
@@ -497,6 +498,25 @@ static void api_ui_status(openpete_mod_t* self, const char* fmt, ...) {
     vsnprintf(m->status[m->status_n], sizeof m->status[0], fmt, ap);
     va_end(ap);
     m->status_n++;
+}
+
+/* Toasts are attributed to the mod on BOTH axes: the coalescing key is
+ * namespaced with its id so two mods cannot repaint each other's toast, and
+ * the rate-limit bucket is per mod so one mod in a tick loop cannot starve
+ * another's notifications — or the engine's own. */
+static void api_notify(openpete_mod_t* self, const char* key,
+                       uint32_t timeout_ms, const char* fmt, ...) {
+    if (!self || !fmt) return;
+    struct openpete_mod* m = self;
+    char text[OPENPETE_OSD_TEXT_MAX];
+    va_list ap;
+    va_start(ap, fmt);
+    vsnprintf(text, sizeof text, fmt, ap);
+    va_end(ap);
+    char nskey[OPENPETE_OSD_KEY_MAX];
+    if (key && *key) snprintf(nskey, sizeof nskey, "%s/%s", m->id, key);
+    openpete_osd_notify(m->id, (key && *key) ? nskey : NULL,
+                        timeout_ms, "%s", text);
 }
 
 static int api_register_toggle_hook(openpete_mod_t* self,
@@ -1159,6 +1179,7 @@ static const openpete_mod_api_t s_api = {
     .config_float  = openpete_mods_config_float,
     .config_str    = openpete_mods_config_str,
     .ui_status     = api_ui_status,
+    .notify        = api_notify,
     /* pillar 5: present and screen-space draw */
     .register_present_hook = api_register_present_hook,
     .draw_text     = openpete_mods_draw_text,

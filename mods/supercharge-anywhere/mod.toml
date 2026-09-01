@@ -13,7 +13,7 @@
 id      = "supercharge-anywhere"
 name    = "Supercharge Anywhere"
 version = "0.3.0"
-api     = 1
+api     = 8              # notify() (the toggle announces itself)
 state    = "rebuildable"  # only host fact the world depends on is the
                           # park vaddr; the park bytes are canonical RAM
                           # and the next inject re-parks lazily

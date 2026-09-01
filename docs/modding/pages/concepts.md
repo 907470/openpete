@@ -125,7 +125,35 @@ in the expansion window above 2 MB and gives you a host view of it.
 | Add custom levels | `[[level]]` with `assets/levels/` | Yes |
 | Expose player settings | A `[[config]]` schema with `config_*` | No |
 | Show status lines | `ui_status` | No |
+| Announce something that just happened | `notify` | No |
 | Add hotkeys | `[[binding]]` with `binding_down` | Only if you act on the key in a tick hook |
+
+### `ui_status` or `notify`?
+
+They answer different questions. `ui_status` is **state** — a block of
+lines in your mod's section of the Mods panel, repainted whenever you
+print again, visible only while the player has that overlay open.
+`notify` is an **event** — a toast in the game's own gold chrome, on
+screen for a few seconds whether or not any panel is open.
+
+A counter, a per-level readout, the current mode: `ui_status`. "The key
+you just pressed registered", "your level finished loading", "the thing
+you were waiting for happened": `notify`.
+
+Two things about `notify` are easy to get wrong:
+
+- **Write inside the game's glyph set.** Text renders with Spyro's own
+  3D letter models: `0-9`, `A-Z` (lowercase folds up), space, and
+  `% / ? + ^ . ' :`. Everything else renders as a space, so a hyphen,
+  comma or exclamation mark silently disappears.
+- **Pass a key for anything repeating.** A key coalesces: a second
+  notification with the same key repaints the live toast instead of
+  stacking a new one. A value the player is scrubbing through wants a
+  key; a one-off event wants `NULL`.
+
+It is also a no-op on runahead and rewind ticks, which are rolled back
+or re-executed — so a mod that counts its own `notify` calls will see
+fewer toasts than calls. That is the design, not a dropped message.
 
 For the full contracts, see the [API reference](reference/api.md).
 

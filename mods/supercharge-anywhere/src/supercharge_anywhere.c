@@ -264,6 +264,12 @@ static void on_spyro_update(CPUState* cpu) {
         g_enabled = !g_enabled;
         g_api->log(g_self, OP_MOD_LOG_INFO, "supercharge-anywhere: %s",
                    g_enabled ? "ON" : "OFF");
+        /* The switch is a keypress with no on-screen effect until Spyro
+         * happens to be ground-charging, so without this the player cannot
+         * tell whether the key registered. Keyed, so mashing it repaints one
+         * toast rather than stacking a column of them. */
+        g_api->notify(g_self, "force", 0, "SUPERCHARGE: %s",
+                      g_enabled ? "ON" : "OFF");
     }
     g_prev_down = down;
 
