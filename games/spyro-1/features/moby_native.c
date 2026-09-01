@@ -842,7 +842,12 @@ static int tier_dbg_on(void) {
  * projection (proj) and the face-stream walk + tri build (walk) — across ALL
  * callers (canonical pass + per-present re-extract + SPEC), so a caching
  * change is measured by the same instrument before and after. */
-static long s_us_proj, s_us_walk, s_us_calls;
+static long s_us_proj, s_us_walk, s_us_walk_rex, s_us_calls;
+/* Which pass the face walk is running under. The canonical producers walk once
+ * per TICK and the sub-tick re-extract walks once per PRESENT; pooled into one
+ * accumulator the total is neither quantity and has to be corrected by hand
+ * before it can be compared against a per-present scope. */
+static int s_walk_in_rex;
 
 /* OPENPETE_MOBY_TRACE=<moby addr>: per-call gate trace for ONE moby — the
  * canonical extract logs queue membership, the reveal builder logs every
@@ -1157,6 +1162,15 @@ static int moby_run_once_hidden(CPUState* cpu, uint32_t m, unsigned cls) {
  * set. Extends s_recs[]/s_proj[]; build_walk_tris then walks the union.
  * Inert at 4:3 without --no-lod. */
 static uint32_t s_specq_moby[MAX_RECORDS]; static int s_specq_n;   /* last SPEC-pass moby set */
+static int occl_record_culled(CPUState* cpu, uint32_t moby);
+static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, int n,
+                              const double tr[3], uint32_t header);
+/* OPENPETE_MOBY_OCCL_VERIFY bracket for cull sites ahead of the occlusion
+ * block: begin() returns 1 when the audit wants the record extracted anyway,
+ * end() re-queries the freshly refreshed bounds and reports a wrong verdict. */
+static int  occl_verify_begin(uint32_t moby);
+static void occl_verify_end(uint32_t moby, const proj_xy* p, int n);
+static long s_occl_seen, s_occl_culled;
 static int append_revealed_regular(CPUState* cpu) {
     float F = openpete_native_widescreen_factor();
     /* Two reveal modes, composable — each mirrors a retired game-side
@@ -1188,6 +1202,7 @@ static int append_revealed_regular(CPUState* cpu) {
     int rdbg = (openpete_frame >= s_rdbg && openpete_frame <= s_rdbg + 1u);
     static uint32_t revlist[MAX_RECORDS];   /* this call's reveals (hysteresis publish) */
     static float revsx[MAX_RECORDS], revsy[MAX_RECORDS]; static int revnv[MAX_RECORDS];
+    static uint32_t occl_rev[MAX_RECORDS]; int occl_rev_n = 0;   /* admitted but occlusion-culled */
     int revealed = 0;
     uint32_t m = cpu->read_word(G_LEVELMOBYS);
     int guard = 0;
@@ -1202,7 +1217,7 @@ static int append_revealed_regular(CPUState* cpu) {
      * and opposite fixes. */
     static int s_rcen = -1;
     if (s_rcen < 0) { const char* e = getenv("OPENPETE_MOBY_RANGE_CENSUS"); s_rcen = (e && *e && *e != '0'); }
-    struct { int live, dead, runonce, dup, spec, nomodel, behind, rng, ceded, offwin, dec0, cap; } cen = {0};
+    struct { int live, dead, runonce, dup, spec, nomodel, behind, rng, ceded, offwin, occl, dec0, cap; } cen = {0};
     int32_t cen_maxd = 0; double cen_maxrz = 0.0; int32_t cen_t4e = 0;
     while (m >= 0x80000000u && guard++ < 4096) {
         uint8_t stt = cpu->read_byte(m + 0x48);
@@ -1339,6 +1354,27 @@ static int append_revealed_regular(CPUState* cpu) {
          * coverage. */
         if (central && admit_canon) { cen.ceded++; TRC("skip=ceded-to-canon sx=%.0f", sx); m += 0x58; continue; }
         if (sx < (double)xlo - margin || sx > (double)xhi + margin) { cen.offwin++; TRC("skip=off-window sx=%.0f", sx); m += 0x58; continue; }  /* outside widened view (+radius) */
+        /* Occlusion cull, exactly as the queue pass tests its own records: a
+         * moby behind nearer world-opaque depth costs a full decode + walk for
+         * pixels the depth test erases. Placed after the admission tests above
+         * so the verdict below is "admitted, but hidden" — extended LOD removes
+         * the distance ceiling entirely, so this admits every moby in a level
+         * from a high vantage and occlusion is the only axis left to cut on.
+         * A culled reveal still publishes into the hysteresis set: admission
+         * stands, only the drawing is skipped, and dropping it from the set
+         * would narrow t4e next present and strobe the threshold. */
+        int ver_check = 0;
+        if (occl_record_culled(cpu, m)) {
+            ver_check = occl_verify_begin(m);
+            if (!ver_check) {
+                s_occl_seen++; s_occl_culled++;
+                cen.occl++;
+                if (occl_rev_n < MAX_RECORDS) occl_rev[occl_rev_n++] = m;
+                TRC("skip=occluded");
+                m += 0x58; continue;
+            }
+        }
+        s_occl_seen++;
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) { cen.cap++; break; }
         int off = s_proj_n;
         /* ZSF4 mirrored from the cull's formula (@8001F404) — there is no live
@@ -1369,6 +1405,8 @@ static int append_revealed_regular(CPUState* cpu) {
                                       rzsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         if (got <= 0) { cen.dec0++; TRC("skip=decode-0 zsf4=%d", rzsf4); m += 0x58; continue; }
         TRC("REVEALED got=%d zsf4=%d", got, rzsf4);
+        if (ver_check) occl_verify_end(m, s_proj + off, got);
+        else occl_cache_update(cpu, m, s_proj + off, got, f.TR_frac, f.header);
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
         s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
             moby_tier_faceblock(cpu, f.header, rzsf4), f.w0,
@@ -1396,17 +1434,23 @@ static int append_revealed_regular(CPUState* cpu) {
             static unsigned last = 0xFFFFFFFFu; static int pass = 0;
             pass = (openpete_frame == last) ? pass + 1 : 0;   /* 0 = canonical, >0 = sub-tick */
             last = openpete_frame;
-            fprintf(stderr, "[moby-range f=%u.%d] live=%d revealed=%d | rng=%d cap=%d dec0=%d offwin=%d "
+            fprintf(stderr, "[moby-range f=%u.%d] live=%d revealed=%d | rng=%d cap=%d dec0=%d offwin=%d occl=%d "
                     "ceded=%d dup=%d spec=%d nomodel=%d behind=%d runonce=%d dead=%d | maxd=%d vs t4e=%d maxrz=%.0f "
                     "| recs=%d/%d verts=%d/%d\n",
-                    openpete_frame, pass, cen.live, revealed, cen.rng, cen.cap, cen.dec0, cen.offwin,
+                    openpete_frame, pass, cen.live, revealed, cen.rng, cen.cap, cen.dec0, cen.offwin, cen.occl,
                     cen.ceded, cen.dup, cen.spec, cen.nomodel, cen.behind, cen.runonce, cen.dead,
                     cen_maxd, cen_t4e, cen_maxrz, s_nrecs, MAX_RECORDS, s_proj_n, MAX_PROJ);
         }
     }
-    /* publish this call's reveal set as the next call's hysteresis set */
-    s_rev_prev_n = (revealed < MAX_RECORDS) ? revealed : MAX_RECORDS;
-    memcpy(s_rev_prev, revlist, (size_t)s_rev_prev_n * sizeof(uint32_t));
+    /* Publish this call's ADMITTED set (drawn + occlusion-culled) as the next
+     * call's hysteresis set — the widening mirrors what the .s cull would have
+     * admitted, which the display-side cull must not perturb. */
+    {
+        int hn = (revealed < MAX_RECORDS) ? revealed : MAX_RECORDS;
+        memcpy(s_rev_prev, revlist, (size_t)hn * sizeof(uint32_t));
+        for (int k = 0; k < occl_rev_n && hn < MAX_RECORDS; k++) s_rev_prev[hn++] = occl_rev[k];
+        s_rev_prev_n = hn;
+    }
     /* OPENPETE_MOBY_REVEAL_CENSUS: per-present reveal counts (flicker check —
      * pre-fix the count alternated N,0,0,0 between canonical and sub-tick
      * presents; post-fix it holds steady). */
@@ -1433,7 +1477,11 @@ static int append_revealed_regular(CPUState* cpu) {
         fprintf(stderr, "[moby-reveal-feed] frame=%u F=%.3f host-built %d revealed regular mobys "
                 "(off-4:3, live) appended to the native scene\n", openpete_frame, F, revealed);
     }
-    return revealed;
+    /* Admitted, not drawn: a present whose every reveal was occlusion-culled
+     * still exercised this producer, and the caller's render-path mark keys off
+     * the return — reporting 0 there would retire the sub-tick moby passes for
+     * as long as the wall stands in front of them. */
+    return revealed + occl_rev_n;
 }
 
 /* ---- native scene triangle (fed to panel 0) ------------------------------
@@ -1942,7 +1990,8 @@ static int build_walk_tris(CPUState* cpu) {
     if (!tier_dbg_on()) return build_walk_tris_inner(cpu);
     uint64_t t0 = openpete_phase_now_us();
     int n = build_walk_tris_inner(cpu);
-    s_us_walk += (long)(openpete_phase_now_us() - t0);
+    long dt = (long)(openpete_phase_now_us() - t0);
+    if (s_walk_in_rex) s_us_walk_rex += dt; else s_us_walk += dt;
     return n;
 }
 static double s_walk_H = 365.0;   /* GTE projection distance (ctrl[26]) for sprite extents */
@@ -3506,16 +3555,16 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
         if (++s_tier_cnt >= 30) {
             fprintf(stderr, "[moby-tier f=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld lpskip=%ld shband=%ld | "
                     "zsf4-mirror ok=%ld bad=%ld | adopt=%ld fogskip=%ld dyncol-hi=%ld/%d dynmoby-hi=%ld/32 | "
-                    "proj=%ldus walk=%ldus calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld\n",
+                    "proj=%ldus walk=%ldus rexwalk=%ldus calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld\n",
                     openpete_frame, s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade,
                     s_tier_gpfskip, s_tier_lpskip, s_shband_cull, s_tier_mirror_ok, s_tier_mirror_bad, s_tier_adopt, s_adopt_fogskip,
                     s_tier_dyncol_hi, MAX_DYNCOL, s_tier_dynmoby_hi,
-                    s_us_proj, s_us_walk, s_us_calls, s_fc_hit, s_fc_miss,
+                    s_us_proj, s_us_walk, s_us_walk_rex, s_us_calls, s_fc_hit, s_fc_miss,
                     s_fp_hit, s_fp_miss, s_clerp_recs, s_hold_replayed);
             s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = s_tier_lpskip = s_shband_cull = s_adopt_fogskip = 0;
             s_tier_mirror_ok = s_tier_mirror_bad = 0; s_tier_adopt = 0; s_tier_cnt = 0;
             s_tier_dyncol_hi = s_tier_dynmoby_hi = 0;
-            s_us_proj = s_us_walk = s_us_calls = 0;
+            s_us_proj = s_us_walk = s_us_walk_rex = s_us_calls = 0;
             s_fc_hit = s_fc_miss = 0; s_hold_replayed = 0; s_clerp_recs = 0;
         }
     }
@@ -5021,11 +5070,18 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
  * exempt (drawn depth-off — never depth-occluded). Direct-mapped cache: a
  * collision only evicts (→ that moby extracts normally), never lies. */
 typedef struct { uint32_t moby; float x0, y0, x1, y1, vz_min; unsigned tick;
-                 float mot, mot_vz; } occl_rect_t;   /* measured screen / view-Z motion per VBL (px, world units) */
+                 float mot, mot_vz;      /* measured screen / view-Z motion per VBL (px, world units) */
+                 /* Anchor for the extraction-free bounds refresh below: the
+                  * record's origin projection, view-space TR.z, model radius
+                  * and class at the last REAL extraction. Written only there,
+                  * so a refresh re-derives from a fixed reference and cannot
+                  * drift however long a moby stays hidden. */
+                 float asx, asy, atrz, arad; uint16_t acls; } occl_rect_t;
 #define OCCL_HASH_N 1024                       /* power of two; ~500 live mobys max */
 static occl_rect_t s_occl_cache[OCCL_HASH_N];
 static float s_occl_pan_px = 0.0f;             /* px/tick pan allowance (orchestrator) */
-static long  s_occl_culled = 0, s_occl_seen = 0;   /* census (records, re-extract passes) */
+/* s_occl_culled / s_occl_seen: census (records, re-extract + reveal passes) —
+ * declared above append_revealed_regular, which is also a cull site. */
 
 void moby_native_set_occl_pan(float px_per_tick) { s_occl_pan_px = px_per_tick; }
 
@@ -5033,32 +5089,99 @@ static unsigned occl_slot(uint32_t moby) {
     return ((moby >> 3) * 2654435761u >> 16) & (OCCL_HASH_N - 1);
 }
 
-static long s_occl_f[3];   /* feeder-side pre-query outcomes: ui-exempt / no-cache / stale-cache */
+static long s_occl_f[4];   /* feeder-side pre-query outcomes: ui-exempt / no-cache / stale-cache / refreshed */
+
+static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, double* sy);
+
+/* ---- extraction-free bounds refresh ---------------------------------------
+ * A culled record never reaches occl_cache_update, so its bounds age out and
+ * the age test forces a full extraction — decode, project and walk — purely to
+ * re-derive a screen rect whose only consumer is the cull that then skips it
+ * again. That cycle capped the cull's value at one skipped present in three.
+ *
+ * The rect can be rebuilt without any of it: project the record ORIGIN through
+ * the current camera (the TR-only slice — no euler compose, no decode) and
+ * carry the anchor's rect around it, rescaled by the view-Z ratio, unioned with
+ * the model's own radius box. The radius bounds every pose and rotation of the
+ * model, so the union contains the true projected extent whatever the moby has
+ * animated into since. Both bounds are taken conservatively — an over-large
+ * rect or an over-near view-Z can only fail to cull, never cull something
+ * visible.
+ *
+ * Nothing is written: repeated refreshes re-derive from the same anchor, so
+ * they cannot drift, and the measured-motion fields (which compare successive
+ * extractions) never see a rect built by this second method. Two guards stand
+ * in for the staleness bound that is being removed — m_Class is re-checked
+ * because moby slots are recycled and a reused address would otherwise inherit
+ * the previous occupant's radius, and the anchor expires outright after
+ * OCCL_ANCHOR_MAX_VBL so no rect survives a scene indefinitely. */
+#define OCCL_ANCHOR_MAX_VBL 64u
+
+static int occl_refresh_bounds(CPUState* cpu, uint32_t moby, const occl_rect_t* e,
+                               float* x0, float* y0, float* x1, float* y1, float* vz) {
+    if (e->arad <= 0.0f || e->atrz <= 1.0f || e->vz_min <= 0.0f) return 0;
+    if ((unsigned)(openpete_frame - e->tick) > OCCL_ANCHOR_MAX_VBL) return 0;
+    if ((uint16_t)cpu->read_half(moby + 0x36u) != e->acls) return 0;   /* slot recycled */
+    double tr[3], sx, sy;
+    build_moby_record_tr(cpu, moby, tr);
+    if (!hold_project_origin(cpu, tr, &sx, &sy)) return 0;   /* too near to project: extract */
+    double H     = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
+    double scale = (double)e->atrz / tr[2];                  /* screen px per anchor px */
+    double hr    = (double)e->arad * H / tr[2];              /* radius box half-extent */
+    double ax0 = sx + ((double)e->x0 - e->asx) * scale, ax1 = sx + ((double)e->x1 - e->asx) * scale;
+    double ay0 = sy + ((double)e->y0 - e->asy) * scale, ay1 = sy + ((double)e->y1 - e->asy) * scale;
+    *x0 = (float)(ax0 < sx - hr ? ax0 : sx - hr);
+    *x1 = (float)(ax1 > sx + hr ? ax1 : sx + hr);
+    *y0 = (float)(ay0 < sy - hr ? ay0 : sy - hr);
+    *y1 = (float)(ay1 > sy + hr ? ay1 : sy + hr);
+    /* Nearest view-Z. k is world view-Z per TR unit taken from the anchor's
+     * NEAREST vertex, so it under-estimates the origin's own ratio — nearer,
+     * conservative — and a full radius comes off again to bound any rotation.
+     * The anchor rect rescaled is kept as the alternative and the nearer of the
+     * two wins. */
+    double k   = (double)e->vz_min / (double)e->atrz;
+    double vzr = k * (tr[2] - (double)e->arad);
+    double vza = (double)e->vz_min / scale;
+    *vz = (float)(vzr < vza ? vzr : vza);
+    return 1;
+}
 
 /* Cull verdict for one record BEFORE any decode work. 1 = provably hidden. */
-static int occl_record_culled(uint32_t moby) {
+static int occl_record_culled(CPUState* cpu, uint32_t moby) {
     if (openpete_ui_moby_is_addr_static(moby) || openpete_ui_moby_is_addr_ui(moby))
         { s_occl_f[0]++; return 0; }                /* HUD/UI: drawn depth-off, never occluded */
     const occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
     if (e->moby != moby) { s_occl_f[1]++; return 0; }   /* no cached bounds → extract (refreshes) */
     unsigned age = openpete_frame - e->tick;
-    if (age > 2u) { s_occl_f[2]++; return 0; }      /* stale bounds → extract (refreshes) */
+    float rx0 = e->x0, ry0 = e->y0, rx1 = e->x1, ry1 = e->y1, rvz = e->vz_min;
+    float own;
+    if (age > 2u) {
+        if (!occl_refresh_bounds(cpu, moby, e, &rx0, &ry0, &rx1, &ry1, &rvz))
+            { s_occl_f[2]++; return 0; }            /* no usable anchor → extract (refreshes) */
+        s_occl_f[3]++;
+        /* The refreshed rect is built around the moby's CURRENT origin and hard-
+         * bounded by its model radius, so no own-motion allowance is owed — only
+         * the camera's pan across this present. */
+        age = 0u;
+        own = 0.0f;
+    } else {
+        /* Own-motion allowance ≈ 256 world units/tick at an overestimated H≈400:
+         * px = 400·256/vz. Camera pan rides s_occl_pan_px (measured per tick).
+         * Own-motion allowance: the 256-u/tick model floor OR the moby's MEASURED
+         * screen motion ×1.5, whichever is larger — fast movers (birds ~750 u/tick)
+         * beat the model by 3× and could stay culled ≤3 presents while emerging
+         * from cover (found by the OCCL_VERIFY audit, magic-crafters f2154). */
+        float vzm = e->vz_min < 512.0f ? 512.0f : e->vz_min;
+        own = 102400.0f / vzm;
+        if (e->mot * 1.5f > own) own = e->mot * 1.5f;
+    }
     float aged = (float)age + 1.0f;
-    /* Own-motion allowance ≈ 256 world units/tick at an overestimated H≈400:
-     * px = 400·256/vz. Camera pan rides s_occl_pan_px (measured per tick). */
-    float vzm = e->vz_min < 512.0f ? 512.0f : e->vz_min;
-    /* Own-motion allowance: the 256-u/tick model floor OR the moby's MEASURED
-     * screen motion ×1.5, whichever is larger — fast movers (birds ~750 u/tick)
-     * beat the model by 3× and could stay culled ≤3 presents while emerging
-     * from cover (found by the OCCL_VERIFY audit, magic-crafters f2154). */
-    float own = 102400.0f / vzm;
-    if (e->mot * 1.5f > own) own = e->mot * 1.5f;
     float inf = 8.0f + aged * (s_occl_pan_px + own);
     float vzs = 600.0f;
     if (e->mot_vz * 1.5f > vzs) vzs = e->mot_vz * 1.5f;
-    int culled = openpete_native_occl_query(e->x0 - inf, e->y0 - inf,
-                                            e->x1 + inf, e->y1 + inf,
-                                            e->vz_min - vzs * aged);
+    int culled = openpete_native_occl_query(rx0 - inf, ry0 - inf,
+                                            rx1 + inf, ry1 + inf,
+                                            rvz - vzs * aged);
     /* OPENPETE_MOBY_OCCL_DUMP: rate-limited raw-rect dump (diagnosis). CULLED
      * verdicts print with the comparison values (need vs the farthest grid
      * cell in the scanned rect) so a wrong cull names its own cause: vz_min
@@ -5073,12 +5196,12 @@ static int occl_record_culled(uint32_t moby) {
             if (culled && nc < 64) {
                 nc++;
                 fprintf(stderr, "[occl-CULL f=%u] moby=%08x rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f inf=%.0f age=%u scan_max=%.0f need=%.0f\n",
-                        openpete_frame, moby, e->x0, e->y0, e->x1, e->y1, e->vz_min, inf, age,
-                        openpete_native_occl_last_scan_max(), e->vz_min - 600.0f * aged - 1500.0f);
+                        openpete_frame, moby, rx0, ry0, rx1, ry1, rvz, inf, age,
+                        openpete_native_occl_last_scan_max(), rvz - 600.0f * aged - 1500.0f);
             } else if (!culled && n < 8) {
                 n++;
                 fprintf(stderr, "[occl-rect f=%u] moby=%08x rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f inf=%.0f pan=%.1f age=%u -> 0\n",
-                        openpete_frame, moby, e->x0, e->y0, e->x1, e->y1, e->vz_min, inf, s_occl_pan_px, age);
+                        openpete_frame, moby, rx0, ry0, rx1, ry1, rvz, inf, s_occl_pan_px, age);
             }
         }
     }
@@ -5086,12 +5209,18 @@ static int occl_record_culled(uint32_t moby) {
 }
 
 /* ---- occl-verify audit mode (OPENPETE_MOBY_OCCL_VERIFY=1, inert otherwise) --
- * When the cull says "hidden", the pass extracts the moby ANYWAY, then re-runs
- * the query on the FRESH bounds (age 0). A fresh verdict of "visible" means the
- * ≤2-tick-stale cache would have culled a moby the depth test would NOT fully
- * erase — a would-be single-present flicker. Census printed once per second.
- * The moby still draws in verify mode (verdict overridden), so a live run with
- * verify on is also the zero-flicker reference. */
+ * When the cull says "hidden", the pass extracts the moby ANYWAY and re-runs the
+ * query on the bounds that extraction just produced. A fresh verdict of
+ * "visible" means the cached bounds would have culled a moby the depth test
+ * would NOT fully erase — a would-be single-present flicker. Census printed once
+ * per second. The moby still draws in verify mode (verdict overridden), so a
+ * live run with verify on is also the zero-flicker reference.
+ *
+ * A would-culled record does NOT write its cache entry here, exactly as it would
+ * not in a production run. Refreshing it would keep every entry young, the
+ * extraction-free refresh path would never engage, and the audit would report on
+ * a state the cull never reaches — so the fresh bounds are taken straight off the
+ * projection instead of through the cache. */
 static int occl_verify_on(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_MOBY_OCCL_VERIFY"); v = (e && *e && *e != '0'); }
@@ -5100,49 +5229,67 @@ static int occl_verify_on(void) {
 static long s_ver_would = 0;   /* stale-cache verdicts said CULL */
 static long s_ver_wrong = 0;   /* ...of which fresh bounds said VISIBLE */
 
-/* Re-query with the just-refreshed cache entry (age forced fresh). Returns the
- * query verdict on fresh bounds. */
-static int occl_query_fresh(uint32_t moby) {
-    const occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
-    if (e->moby != moby) return 1;   /* no verts projected → nothing drawable */
-    float vzm = e->vz_min < 512.0f ? 512.0f : e->vz_min;
+static void occl_proj_bounds(const proj_xy* p, int n, float* px0, float* py0,
+                             float* px1, float* py1, float* pvz);
+
+/* Query one explicit set of bounds with the age-0 inflation. */
+static int occl_query_at(float x0, float y0, float x1, float y1, float vzmin,
+                         float mot, float mot_vz) {
+    float vzm = vzmin < 512.0f ? 512.0f : vzmin;
     float own = 102400.0f / vzm;
-    if (e->mot * 1.5f > own) own = e->mot * 1.5f;
+    if (mot * 1.5f > own) own = mot * 1.5f;
     float inf = 8.0f + (s_occl_pan_px + own);
     float vzs = 600.0f;
-    if (e->mot_vz * 1.5f > vzs) vzs = e->mot_vz * 1.5f;
-    return openpete_native_occl_query(e->x0 - inf, e->y0 - inf,
-                                      e->x1 + inf, e->y1 + inf,
-                                      e->vz_min - vzs);
+    if (mot_vz * 1.5f > vzs) vzs = mot_vz * 1.5f;
+    return openpete_native_occl_query(x0 - inf, y0 - inf, x1 + inf, y1 + inf, vzmin - vzs);
 }
-static void occl_verify_report(uint32_t moby, const occl_rect_t* stale_snap) {
-    const occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
+static occl_rect_t s_ver_snap;   /* the entry the cull judged, for the report */
+static int occl_verify_begin(uint32_t moby) {
+    if (!occl_verify_on()) return 0;
+    s_ver_would++;
+    s_ver_snap = s_occl_cache[occl_slot(moby)];
+    return 1;
+}
+static void occl_verify_end(uint32_t moby, const proj_xy* p, int n) {
+    if (n <= 0) return;                 /* no verts projected → nothing drawable */
+    float x0, y0, x1, y1, vz;
+    occl_proj_bounds(p, n, &x0, &y0, &x1, &y1, &vz);
+    if (occl_query_at(x0, y0, x1, y1, vz, s_ver_snap.mot, s_ver_snap.mot_vz)) return;
     /* Classify: a fresh rect fully outside the visible extent produces ZERO
      * pixels regardless of the verdict — the conservative inflation merely
      * crossed the boundary. Only on-screen fresh rects are real events. */
     float xlo, xhi;
     openpete_native_widescreen_x_bounds(&xlo, &xhi);
-    int zeropx = (e->x1 < xlo || e->x0 > xhi || e->y1 < 0.0f || e->y0 > 224.0f);
+    int zeropx = (x1 < xlo || x0 > xhi || y1 < 0.0f || y0 > 224.0f);
     if (!zeropx) s_ver_wrong++;
-    fprintf(stderr, "[occl-VERIFY-%s f=%u] moby=%08x stale rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f "
+    fprintf(stderr, "[occl-VERIFY-%s f=%u] moby=%08x cached rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f age=%u "
                     "fresh rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f mot=%.1f scan_max=%.0f\n",
             zeropx ? "zeropx" : "WRONG", openpete_frame, moby,
-            stale_snap->x0, stale_snap->y0, stale_snap->x1, stale_snap->y1, stale_snap->vz_min,
-            e->x0, e->y0, e->x1, e->y1, e->vz_min, e->mot,
+            s_ver_snap.x0, s_ver_snap.y0, s_ver_snap.x1, s_ver_snap.y1, s_ver_snap.vz_min,
+            openpete_frame - s_ver_snap.tick,
+            x0, y0, x1, y1, vz, s_ver_snap.mot,
             openpete_native_occl_last_scan_max());
 }
 
 /* Refresh the cache from a record's freshly projected verts (s_proj carries
  * PSX screen px + FULL-WORLD view-Z — exactly the query's units). Bounds over
  * ALL verts ⊇ bounds over the drawn subset, so the rect is conservative. */
-static void occl_cache_update(uint32_t moby, const proj_xy* p, int n) {
-    if (n <= 0) return;
+static void occl_proj_bounds(const proj_xy* p, int n, float* px0, float* py0,
+                             float* px1, float* py1, float* pvz) {
     float x0 = p[0].sx, x1 = p[0].sx, y0 = p[0].sy, y1 = p[0].sy, vzm = p[0].vz;
     for (int j = 1; j < n; j++) {
         if (p[j].sx < x0) x0 = p[j].sx; else if (p[j].sx > x1) x1 = p[j].sx;
         if (p[j].sy < y0) y0 = p[j].sy; else if (p[j].sy > y1) y1 = p[j].sy;
         if (p[j].vz < vzm) vzm = p[j].vz;
     }
+    *px0 = x0; *py0 = y0; *px1 = x1; *py1 = y1; *pvz = vzm;
+}
+
+static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, int n,
+                              const double tr[3], uint32_t header) {
+    if (n <= 0) return;
+    float x0, y0, x1, y1, vzm;
+    occl_proj_bounds(p, n, &x0, &y0, &x1, &y1, &vzm);
     occl_rect_t* e = &s_occl_cache[occl_slot(moby)];
     /* Measured motion (px + view-Z per VBL) from the previous bounds of the
      * SAME moby: rect-centre delta over the refresh interval. Slot collision
@@ -5160,6 +5307,21 @@ static void occl_cache_update(uint32_t moby, const proj_xy* p, int n) {
     }
     e->moby = moby; e->x0 = x0; e->y0 = y0; e->x1 = x1; e->y1 = y1;
     e->vz_min = vzm; e->tick = openpete_frame;
+    /* Anchor for the extraction-free refresh: this pose's origin projection and
+     * TR.z, plus the model radius (AnimationHeader byte[7] << 4, the same
+     * bounding radius the .s cone cull biases by @8001F2A0) and the class the
+     * radius belongs to. A record whose origin will not project (too near) still
+     * refreshes bounds by extracting, so the anchor is simply left unusable. */
+    e->arad = 0.0f;
+    if (header >= 0x80000000u && tr && tr[2] > 1.0) {
+        double asx, asy;
+        if (hold_project_origin(cpu, tr, &asx, &asy)) {
+            e->asx  = (float)asx; e->asy = (float)asy;
+            e->atrz = (float)tr[2];
+            e->arad = (float)((int)cpu->read_byte(header + 7) << 4);
+            e->acls = (uint16_t)cpu->read_half(moby + 0x36u);
+        }
+    }
 }
 
 /* ---- Tier-2 small-moby extraction hold ------------------------------------
@@ -5235,6 +5397,7 @@ static double s_rec_tr[MAX_RECORDS][3];   /* per-record float TR (Tier-2 hold ca
 
 static int reextract_record_pass(CPUState* cpu, const char* mat) {
     int is_spec = (mat && mat[0] == 'S' && mat[1] == 'P');
+    s_walk_in_rex = 1;
     static uint32_t mobys[MAX_RECORDS], recs[MAX_RECORDS]; int nm = 0;
     /* Tier-2 hold pool is per canonical epoch: a new tick invalidates every
      * hold (its first present re-extracts everything and re-captures). */
@@ -5283,18 +5446,13 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         }
         s_occl_seen++;
         int ver_check = 0;              /* verify mode: audit this moby post-extract */
-        occl_rect_t ver_snap;
-        if (occl_record_culled(mobys[i])) {
-            if (!occl_verify_on()) {
+        if (occl_record_culled(cpu, mobys[i])) {
+            ver_check = occl_verify_begin(mobys[i]);   /* extract anyway and audit */
+            if (!ver_check) {
                 s_occl_culled++;
                 if (!is_spec && culled_n < MAX_RECORDS) culled_moby[culled_n++] = mobys[i];
                 continue;
             }
-            /* verify: extract anyway, re-query on fresh bounds after
-             * occl_cache_update below. Snapshot the stale entry for the report. */
-            s_ver_would++;
-            ver_check = 1;
-            ver_snap = s_occl_cache[occl_slot(mobys[i])];
         }
         /* Tier-2 hold: a speck-sized moby captured earlier THIS epoch replays
          * its built tris translated by the origin-projection delta — skipping
@@ -5478,9 +5636,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                         f.TR_frac[0], f.TR_frac[1], f.TR_frac[2]);
             }
         }
-        occl_cache_update(mobys[i], s_proj + off, got);   /* refresh cull bounds */
-        if (ver_check && !occl_query_fresh(mobys[i]))
-            occl_verify_report(mobys[i], &ver_snap);
+        if (ver_check) occl_verify_end(mobys[i], s_proj + off, got);
+        else occl_cache_update(cpu, mobys[i], s_proj + off, got, f.TR_frac, f.header);
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
         s_rec_tr[s_nrecs][0] = f.TR_frac[0];   /* Tier-2 capture reference */
         s_rec_tr[s_nrecs][1] = f.TR_frac[1];
@@ -5586,6 +5743,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         }
     }
     push_scene_moby();
+    s_walk_in_rex = 0;
     return nm;
 }
 
@@ -5668,21 +5826,21 @@ void moby_native_reextract(CPUState* cpu) {
             if (win0 == 0) { win0 = now; wc = s_occl_culled; ws = s_occl_seen; }
             if (now - win0 >= 1000000u) {
                 long dc = s_occl_culled - wc, dsn = s_occl_seen - ws;
-                static long pq[OPENPETE_OCCL_Q_COUNT], pf[3];
+                static long pq[OPENPETE_OCCL_Q_COUNT], pf[4];
                 long q[OPENPETE_OCCL_Q_COUNT];
                 openpete_native_occl_qstats(q);
                 fprintf(stderr, "[moby-occl f=%u] culled %ld / %ld records (%.0f%%) | "
-                        "pre: ui=%ld nocache=%ld stalecache=%ld | "
+                        "pre: ui=%ld nocache=%ld stalecache=%ld refreshed=%ld | "
                         "query: nogrid=%ld susp=%ld stale=%ld near=%ld edge=%ld vis=%ld cull=%ld offscr=%ld\n",
                         openpete_frame, dc, dsn, dsn > 0 ? 100.0 * (double)dc / (double)dsn : 0.0,
-                        s_occl_f[0]-pf[0], s_occl_f[1]-pf[1], s_occl_f[2]-pf[2],
+                        s_occl_f[0]-pf[0], s_occl_f[1]-pf[1], s_occl_f[2]-pf[2], s_occl_f[3]-pf[3],
                         q[0]-pq[0], q[1]-pq[1], q[2]-pq[2], q[3]-pq[3], q[4]-pq[4], q[5]-pq[5], q[6]-pq[6], q[7]-pq[7]);
                 if (occl_verify_on())
                     fprintf(stderr, "[moby-occl-verify f=%u] would_cull=%ld wrong=%ld (%.3f%%)\n",
                             openpete_frame, s_ver_would, s_ver_wrong,
                             s_ver_would > 0 ? 100.0 * (double)s_ver_wrong / (double)s_ver_would : 0.0);
                 for (int k = 0; k < OPENPETE_OCCL_Q_COUNT; k++) pq[k] = q[k];
-                for (int k = 0; k < 3; k++) pf[k] = s_occl_f[k];
+                for (int k = 0; k < 4; k++) pf[k] = s_occl_f[k];
                 win0 = now; wc = s_occl_culled; ws = s_occl_seen;
             }
         }
