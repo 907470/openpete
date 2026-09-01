@@ -352,7 +352,7 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             detailed adds the VBL rate, slips, late ticks per 1000 and the\n"
         "                             shed / interpolation share. 0|1|2 also accepted. Display-only.\n"
         "  --show-fps 0|1             deprecated spelling of --perf-stats off|fps (on|off also accepted)\n"
-        "  --perf-position ANCHOR     where the stats block sits: top-left (default) | top-center | top-right | bottom-left | bottom-center | bottom-right\n"
+        "  --perf-position ANCHOR     where the stats block sits: top-right (default) | top-left | top-center | bottom-left | bottom-center | bottom-right\n"
         "  --osd on|off               on-screen notifications when a setting changes (default on)\n"
         "  --osd-position ANCHOR      where notifications stack; same six anchors (default top-left)\n"
         "  --osd-timeout SECONDS      how long a notification stays up (default 3.0, max 30)\n"
@@ -593,7 +593,11 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->vibration           = -1;    /* -1 = unset; the game's own setting stands */
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
     opts->perf_stats          = OPENPETE_PERF_FPS;  /* the counter, no pacing readout; --perf-stats / O-menu SHOW FPS row */
-    opts->perf_position       = OPENPETE_ANCHOR_TOP_LEFT;
+    /* Top-RIGHT: the stats block and the notifications both default to a
+     * corner, and putting them in the same one would have every toast push
+     * itself down past a readout the player is watching. Opposite corners is
+     * the arrangement that needs no explanation. */
+    opts->perf_position       = OPENPETE_ANCHOR_TOP_RIGHT;
     opts->osd                 = 1;                          /* toasts on */
     opts->osd_position        = OPENPETE_ANCHOR_TOP_LEFT;
     opts->osd_timeout_ms      = 3000u;

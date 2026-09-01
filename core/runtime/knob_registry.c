@@ -563,7 +563,7 @@ static const knob_desc_t g_builtin[] = {
       vsync_get, vsync_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "perf_stats", "Performance stats", "Display", "--perf-stats", NULL,
-      "Top-left overlay (native renderer): off, the FPS counter, or the "
+      "Corner overlay (native renderer): off, the FPS counter, or the "
       "counter plus a pacing readout — VBL rate, deadline slips, late ticks "
       "per 1000, and the shed / interpolation share of presents.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_perf_names), 0, 0,

@@ -175,7 +175,7 @@ seconds and fades out; several stack. Mods raise them too.
 osd          = "off"          # or leave them on (the default)
 osd_position = "bottom-right" # any of the six corners and edges
 osd_timeout  = 5              # seconds
-perf_position = "top-right"   # where the FPS / pacing block sits
+perf_position = "top-left"    # the FPS / pacing block; defaults to top-right
 ```
 
 The notifications and the performance-stats block share a placement
