@@ -1197,7 +1197,8 @@ static op_time_t eager_tail_cost(void)
  * and the driver's own lead to the flip (a submit 0.33 ms before a vblank
  * still made it; one 0.13 ms before did not). */
 #define EAGER_PUBLISH_LEAD_NS 2000000
-static void eager_plan(op_time_t now, op_time_t first, op_time_t period, op_time_t span_end)
+static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
+                       op_time_t span_end, op_time_t prod_end)
 {
     /* Close the previous span's books first. */
     if (s_eager.n && s_eager.i < s_eager.n) { s_eager.cut++; s_eager.span_cut = 1; }
@@ -1266,6 +1267,10 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period, op_time
      * execution), so this span begins at the slot after it -- a scene for an
      * instant the old span covers would sit at NEGATIVE alpha of the new
      * bracket, a backward extrapolation the old bracket renders exactly. */
+    /* The extension below moves the SLOT ENUMERATION past the instant
+     * production stops at, which is correct — those late instants are shown
+     * through the next tick's execution — but it is not time in which to
+     * produce them. `prod_end` is that separate quantity. */
     span_end += s_eager.lag;
     if (s_eager.last_target && s_eager.last_target + period > first) {
         op_time_t f = s_eager.last_target + period;
@@ -1280,9 +1285,20 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period, op_time
     if (ns == 0) { slots[ns++] = first; }
 
     /* Budget on the tail of the per-scene cost, against what this thread
-     * has left of the span once the update VBL has run. */
+     * has left of the span once the update VBL has run.
+     *
+     * Against `prod_end` — the pacer grid instant the produce deadlines are
+     * derived from — never the span endpoint. The span is anchored on the
+     * capture stamp, which PLL-locks to average tick COMPLETION, so it lands
+     * about one tick execution past the moment production actually stops
+     * (measured +2.1 ms); the lag extension above adds several more. Budgeting
+     * against either prices time this thread never has, which made `afford`
+     * exceed the slot count on every span of a level that could not keep up —
+     * 19-33 against 16 inside a 33.43 ms tick — so the proactive step below
+     * could never fire and the level fell only AFTER a span was cut short.
+     * That is the oscillation the divisor ladder exists to prevent. */
     const op_time_t tail = eager_tail_cost();
-    op_time_t budget = span_end - now - s_eager.vbl_ema - 1000000;   /* 1 ms safety */
+    op_time_t budget = prod_end - now - s_eager.vbl_ema - 1000000;   /* 1 ms safety */
     if (budget < 0) budget = 0;
     int afford = tail > 0 ? (int)(budget / tail) : ns;
     if (s_eager.afford_pin > 0) afford = s_eager.afford_pin;   /* a forced budget, for the policy A/B */
@@ -4310,7 +4326,8 @@ static int run_host_loop(const openpete_options_t* opts) {
                     const op_time_t tp = (op_time_t)g_openpete_tick_period_ns;
                     const op_time_t anchor = (curr && now - curr < 2 * tp) ? curr : now;
                     const op_time_t span_end = anchor + tp;
-                    eager_plan(now, first, period, span_end > first ? span_end : first);
+                    eager_plan(now, first, period, span_end > first ? span_end : first,
+                               next_sim.at + 2 * sim_period_ns);
                     /* The canonical scene, then as much of the span as fits
                      * before the update VBL is due — the latter only while
                      * the world is live (the gate below). */
