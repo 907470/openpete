@@ -236,6 +236,24 @@ typedef struct { float x, y, z; uint32_t rgba; } openpete_hud_vert;
  * for other text overlays. Display-only; never touches gameplay state. */
 void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nverts);
 
+/* The overlay block's REGION rect in overlay space (window-height units), set
+ * by the game-side builder — it is the side that can measure a string, so it
+ * owns the number and the renderer reads it back rather than re-deriving it.
+ * The supersample target, the composite quad and the glyph projection all use
+ * this one rect; a disagreement lands the text in a shape other than the one
+ * it was rasterized into. Glyphs are emitted REGION-LOCAL (origin at the
+ * rect's top-left); the anchor decides where the rect goes on screen. */
+void openpete_native_set_overlay_extent(float w, float h);
+void openpete_native_get_overlay_extent(float *w, float *h);
+
+/* Which corner/edge the performance-stats block anchors to
+ * (openpete_overlay_anchor.h's openpete_anchor_t). Live-settable. The builder
+ * reads it back to align each line inside the region — right-anchored text
+ * right-aligns, centred text centres — so the block's slack sits on the side
+ * away from the screen edge it hugs. */
+void openpete_native_set_perf_anchor(int anchor);
+int  openpete_native_perf_anchor(void);
+
 /* Mod draw-service overlay (core/mods/mod_draw.c): rects + text glyphs in the
  * same overlay space, pushed once per present. Drawn on the vk variant in the
  * live present AND screenshot/record composes (mod HUD is content, not

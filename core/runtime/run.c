@@ -2038,6 +2038,7 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_native_precreate_window(opts, win_w, win_h);
     (void)openpete_native_render_init(opts, win_w, win_h);
     openpete_native_set_perf_stats(opts->perf_stats);   /* stats overlay level (O / M menus move it live) */
+    openpete_native_set_perf_anchor(opts->perf_position);  /* which corner it anchors to (--perf-position) */
     openpete_native_set_fps_in_record(opts->record_fps_overlay);  /* --record-fps-overlay */
 
     /* Decide whether PsyCross still rasterizes the OT (see the global's comment).
@@ -3226,6 +3227,12 @@ static int run_host_loop(const openpete_options_t* opts) {
                         openpete_frame = lf;
                         openpete_interp_reset();
                         openpete_interp_objs_reset();
+                        /* Everything below re-executes ticks that already
+                         * happened. Presentation-side announcements and
+                         * per-tick animation phases must sit out the burst —
+                         * a held Backspace replays up to a keyframe of ticks
+                         * with no present between them. */
+                        openpete_replaying = 1;
                         while (openpete_frame < target) {
                             int idx = kf->log_idx +
                                       (int)(openpete_frame - kf->frame);
@@ -3256,6 +3263,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                             openpete_pace_vbl_suspend(0);
                             if (openpete_frame == before) break; /* safety */
                         }
+                        openpete_replaying = 0;
                         input_log_truncate(kf->log_idx +
                                            (int)(target - kf->frame));
                         openpete_rewind_drop_after(openpete_frame);

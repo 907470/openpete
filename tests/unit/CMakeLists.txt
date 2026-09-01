@@ -201,3 +201,17 @@ if(OPENPETE_ENABLE_RECORD AND PkgConfig_FOUND AND NOT CMAKE_CROSSCOMPILING)
             TIMEOUT 120)
     endif()
 endif()
+
+# openpete_osd_test — the OSD toast ring's state machine on a synthetic
+# clock (coalescing, the ttl's first-geometry start, id skew between the two
+# readers, eviction, the rate limit, the stack glide). openpete_osd.c is
+# compiled directly and SDL's mutex API is faked in the test, so the link
+# line stays SDL-free like the rest of the console tests here.
+add_executable(openpete_osd_test
+    openpete_osd_test.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_osd.c)
+target_include_directories(openpete_osd_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/third_party/SDL/include)
+set_target_properties(openpete_osd_test PROPERTIES C_STANDARD 11)
+add_test(NAME openpete_osd_test COMMAND openpete_osd_test)

@@ -5,6 +5,9 @@
 #include <string.h>
 
 static const char *const v_perf[]     = { "off", "fps", "detailed", NULL };
+static const char *const v_anchor[]   = { "top-left", "top-center", "top-right",
+                                          "bottom-left", "bottom-center",
+                                          "bottom-right", NULL };
 static const char *const v_vprec[]    = { "subpixel", "integer", NULL };
 static const char *const v_texmap[]   = { "perspective", "affine", NULL };
 static const char *const v_lod[]      = { "original", "extended", NULL };
@@ -24,6 +27,7 @@ static const cfg_knob_t g_schema[] = {
     { "ssaa",             "--ssaa",             NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "vsync",            "--vsync",            "OPENPETE_PRESENT_MODE", CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "perf_stats",       "--perf-stats",       NULL,                    CFG_ENUM,   v_perf,     NULL,       NULL,       0 },
+    { "perf_position",    "--perf-position",    NULL,                    CFG_ENUM,   v_anchor,   NULL,       NULL,       0 },
     { "vertex_precision", "--vertex-precision", NULL,                    CFG_ENUM,   v_vprec,    NULL,       NULL,       0 },
     { "raster_quantize",  "--raster-quantize",  NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "extract_threads",  "--extract-threads",  NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },

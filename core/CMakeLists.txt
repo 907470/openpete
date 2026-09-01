@@ -84,6 +84,17 @@ add_library(openpete_core STATIC
     runtime/openpete_ui_moby.c
     runtime/openpete_menu.c
 
+    # Shared placement ledger for on-screen chrome (perf stats, OSD toasts):
+    # six anchors, a usable-x range that dodges the open settings panel, and a
+    # per-anchor stacking cursor so two surfaces never claim one corner. See
+    # openpete_overlay_anchor.h.
+    runtime/overlay_anchor.c
+
+    # OSD toast notifications: the ring, coalescing, rate limit and animation
+    # state machine. Drawing lives in native_render.c + text_moby_native.c;
+    # this is state only, on an injected clock. See openpete_osd.h.
+    runtime/openpete_osd.c
+
     # M-key dev config overlay: table-driven knob registry (C) + Dear ImGui
     # panel (C++ TU, flat C API in openpete_devui.h). Native-vk-only, live
     # presents only. See notes/plans/openpete-imgui-config-overlay.md.

@@ -41,6 +41,7 @@
 #include "openpete_native_render.h" /* openpete_hud_vert + the overlay API */
 #include "openpete_menu.h"          /* menu state/layout for the settings-menu text */
 #include "openpete_perf_stats.h"    /* the overlay's levels + line text */
+#include "openpete_overlay_anchor.h" /* per-line alignment inside an anchored block */
 #include "text_moby_native.h"
 
 #include <math.h>
@@ -362,6 +363,11 @@ int text_moby_native_mod_emit(const char* str, float x, float y,
                                  (openpete_hud_vert*)out_verts, cap);
 }
 
+/* Advance width of `str` at `cap_h` (defined with the menu text below, which
+ * is its other consumer): the perf readout needs it to right-align / centre a
+ * line inside its region. */
+static float measure_string(const char* str, float cap_h);
+
 /* ---- performance-stats overlay (the first consumer) --------------------- */
 /* Sized for the detailed readout's four lines, not the one-line counter; must
  * not exceed the renderer's OVL_MAX_VERTS, which drops the overflow. */
@@ -371,6 +377,13 @@ int text_moby_native_mod_emit(const char* str, float x, float y,
 #define PERF_CAP_H     0.020f   /* small corner counter */
 #define PERF_LINE_STEP 0.030f   /* cap height + a line's worth of leading */
 #define PERF_TINT      0x606000u   /* the game's HUD text back-colour, olive (96,96,0) */
+/* Region WIDTH is a per-level constant, deliberately not measured from the live
+ * text: the readout's digits change twice a second, and a content-measured
+ * width would resize the renderer's supersample target that often — every
+ * resize idles the device. The slack is absorbed by per-line alignment
+ * instead, so a right-anchored block still sits flush against the edge. */
+#define PERF_REGION_W        0.30f
+#define PERF_REGION_W_DETAIL 0.45f
 
 static openpete_hud_vert s_perf_buf[PERF_OVL_MAX];
 
@@ -378,9 +391,11 @@ static openpete_hud_vert s_perf_buf[PERF_OVL_MAX];
  * only moves twice a second, so re-emitting every tick would spend the glyph
  * builder's whole cost ~15× over for identical geometry — on the thread that
  * owns the tick deadline, which is precisely what the detailed level exists
- * to measure. Rebuild only when the text actually changes. */
+ * to measure. Rebuild only when the text (or the layout it was built for)
+ * actually changes. */
 static char s_shown[OPENPETE_PERF_MAX_LINES][OPENPETE_PERF_LINE_MAX];
 static int  s_shown_n = -1;   /* -1 = nothing pushed yet */
+static int  s_shown_anchor = -1;
 
 void text_moby_native_perf_overlay(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;   /* inert headless: no cache, no draw */
@@ -396,15 +411,38 @@ void text_moby_native_perf_overlay(CPUState* cpu) {
 
     char lines[OPENPETE_PERF_MAX_LINES][OPENPETE_PERF_LINE_MAX];
     int nl = openpete_perf_stats_lines(level, lines, OPENPETE_PERF_MAX_LINES);
-    if (nl == s_shown_n && memcmp(lines, s_shown, sizeof lines) == 0)
+    const int anchor = openpete_native_perf_anchor();
+    if (nl == s_shown_n && anchor == s_shown_anchor &&
+        memcmp(lines, s_shown, sizeof lines) == 0)
         return;                                      /* geometry already correct */
 
-    /* One buffer, one push: each line emits into the tail of what the
-     * previous one wrote, so the whole readout reaches the renderer as a
-     * single glyph list rather than overwriting itself line by line. */
+    /* The region this block occupies. Height follows the live line count so a
+     * one-line counter doesn't reserve four lines of screen (and four lines of
+     * supersample target); width is the per-level constant above. The renderer
+     * reads this back for the supersample target, the composite quad and the
+     * anchor ledger's claim — one owner, no third place to disagree. */
+    const float region_w = (level >= OPENPETE_PERF_DETAIL) ? PERF_REGION_W_DETAIL
+                                                           : PERF_REGION_W;
+    const float region_h = 2.0f * PERF_ORIGIN_Y + PERF_CAP_H
+                         + (float)(nl > 0 ? nl - 1 : 0) * PERF_LINE_STEP;
+    openpete_native_set_overlay_extent(region_w, region_h);
+
+    /* Align EACH LINE, not the block: the lines differ in length, and aligning
+     * the block alone would leave a right-anchored readout with a ragged right
+     * edge against the screen edge it is hugging. */
     int nv = 0;
     for (int i = 0; i < nl && nv < PERF_OVL_MAX; i++) {
-        nv += text_moby_native_emit(lines[i], PERF_ORIGIN_X,
+        float x = PERF_ORIGIN_X;
+        if (openpete_anchor_is_right(anchor)) {
+            x = region_w - PERF_ORIGIN_X - measure_string(lines[i], PERF_CAP_H);
+        } else if (openpete_anchor_is_center(anchor)) {
+            x = 0.5f * (region_w - measure_string(lines[i], PERF_CAP_H));
+        }
+        if (x < PERF_ORIGIN_X) x = PERF_ORIGIN_X;   /* never start off the region */
+        /* One buffer, one push: each line emits into the tail of what the
+         * previous one wrote, so the whole readout reaches the renderer as a
+         * single glyph list rather than overwriting itself line by line. */
+        nv += text_moby_native_emit(lines[i], x,
                                     PERF_ORIGIN_Y + (float)i * PERF_LINE_STEP,
                                     PERF_CAP_H, PERF_TINT,
                                     s_perf_buf + nv, PERF_OVL_MAX - nv);
@@ -412,6 +450,7 @@ void text_moby_native_perf_overlay(CPUState* cpu) {
     openpete_native_set_overlay_glyphs(nv > 0 ? s_perf_buf : NULL, nv);
     memcpy(s_shown, lines, sizeof lines);
     s_shown_n = nl;
+    s_shown_anchor = anchor;
 }
 
 /* ---- in-game settings menu text (labels / values / title) --------------- */

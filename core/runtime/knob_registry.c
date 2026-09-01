@@ -134,6 +134,19 @@ static int vsync_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+static const char *const k_anchor_names[] = { "top-left", "top-center", "top-right",
+                                              "bottom-left", "bottom-center",
+                                              "bottom-right" };
+static double perfpos_get(const knob_desc_t *k) {
+    KNOB_LIVE_OR_STORED(k);
+    return (double)openpete_native_perf_anchor();
+}
+static int perfpos_set(knob_desc_t *k, double v) {
+    openpete_native_set_perf_anchor((int)v);
+    k->stored_num = (int)v;
+    return 0;
+}
+
 static const char *const k_perf_names[] = { "off", "fps", "detailed" };
 static double perfstats_get(const knob_desc_t *k) {
     KNOB_LIVE_OR_STORED(k);
@@ -523,6 +536,13 @@ static const knob_desc_t g_builtin[] = {
       "per 1000, and the shed / interpolation share of presents.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_perf_names), 0, 0,
       perfstats_get, perfstats_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "perf_position", "Stats position", "Display", "--perf-position", NULL,
+      "Which corner or edge the performance-stats block anchors to. Shares "
+      "the anchor ledger with the OSD: whichever surface claims a corner "
+      "first, the other stacks clear of it.",
+      KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_anchor_names), 0, 0,
+      perfpos_get, perfpos_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "vertex_precision", "Vertex precision", "Display", "--vertex-precision", NULL,
       "PSX integer-grid vertex snap (authentic polygon wobble) vs smooth "
@@ -1295,6 +1315,8 @@ void knob_registry_init(const struct openpete_options *opts) {
             }
         } else if (!strcmp(k->id, "perf_stats")) {
             k->stored_num = opts->perf_stats;
+        } else if (!strcmp(k->id, "perf_position")) {
+            k->stored_num = opts->perf_position;
         } else if (!strcmp(k->id, "vertex_precision")) {
             k->stored_num = (opts->vertex_precision == OPENPETE_VERTEX_PRECISION_INTEGER);
         } else if (!strcmp(k->id, "raster_quantize")) {

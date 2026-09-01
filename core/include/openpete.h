@@ -10,6 +10,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "openpete_perf_stats.h"   /* OPENPETE_PERF_* levels for opts.perf_stats */
+#include "openpete_overlay_anchor.h" /* openpete_anchor_t for opts.perf_position */
 
 #ifdef __cplusplus
 extern "C" {
@@ -475,6 +476,11 @@ typedef struct openpete_options {
      * SHOW FPS row and the M overlay's Performance stats row move it live.
      * Display-only; ignored under --headless / psycross. */
     int perf_stats;
+
+    /* Which corner/edge the performance-stats block anchors to, an
+     * openpete_anchor_t (openpete_overlay_anchor.h). --perf-position; the M
+     * overlay's row moves it live. Display-only. */
+    int perf_position;
 
     /* --vsync 0|1: native vk swapchain present mode. 1 = FIFO (vsync ON, present
      * locked to the monitor refresh — the default); 0 = a vsync-OFF mode

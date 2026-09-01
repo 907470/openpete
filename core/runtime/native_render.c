@@ -26,6 +26,7 @@
 #include "openpete_perf_stats.h"
 #include "openpete_profile.h"   /* --profile-out forwarding shim */
 #include "openpete_menu.h"
+#include "openpete_overlay_anchor.h"
 #include "openpete_knobs.h"   /* env-epoch for cached live knobs */
 #include "openpete_devui.h"
 #include "openpete_mods.h"   /* openpete_mods_texture_get (mod-texture runs) */
@@ -218,10 +219,12 @@ typedef struct {
  * the supersample target holds OVL_SS_FACTOR^2 samples per pixel of it, so
  * the unused height would cost real GPU memory in the common case. */
 #define OVL_SS_FACTOR  4
+/* Fallback region, used only until the game-side builder pushes a real extent
+ * (openpete_native_set_overlay_extent) — before the glyph font has ever
+ * cached, nothing draws anyway. The builder owns the rect because it is the
+ * side that can MEASURE the text; the renderer only reads it back. */
 #define OVL_REGION_W   0.30f
 #define OVL_REGION_H   0.05f
-#define OVL_REGION_W_DETAIL 0.45f
-#define OVL_REGION_H_DETAIL 0.15f
 /* Settings-menu glyph supersample factor. The menu region is the whole (tall)
  * panel, so this is smaller than OVL_SS_FACTOR to keep the target memory sane at
  * high resolutions (2× = 4 samples/px, a clear anti-alias). */
@@ -1505,8 +1508,8 @@ static struct {
     rhi_pipeline *ovl_resolve_pipe;   /* overlay_resolve.frag, box + straight alpha, RHI_BLEND_ALPHA */
     rhi_buffer   *ovl_quad_vb;        /* composite quad at the overlay's screen rect */
     int           ovl_quad_win_w, ovl_quad_win_h;
-    float         ovl_quad_ox;        /* overlay-x offset (win_h units) the quad was built at; shifts the counter right of the open settings menu */
-    float         ovl_quad_rw, ovl_quad_rh; /* region the quad was built at (grows with the stats level) */
+    float         ovl_quad_ox, ovl_quad_oy; /* overlay-space top-left the quad was built at (the anchor ledger's placement for the perf block) */
+    float         ovl_quad_rw, ovl_quad_rh; /* region the quad was built at (follows the pushed extent) */
 
     /* Settings-menu glyph/border supersample: same idea as ovl_ss but sized to the
      * menu PANEL rect (much larger). The glyph+border layer renders into menu_ss at
@@ -7802,7 +7805,7 @@ void openpete_native_set_menu_glyphs(const openpete_hud_vert *verts, int nverts)
  * depth-tested through the opaque gouraud pipe after a local depth clear, so the
  * glyphs z-sort among their own faces yet sit on top of the whole frame — the
  * same isolation trick as the in-game HUD3D pass. Returns true if it drew. */
-static bool draw_overlay_glyphs_3d(float ax, float ay, float ox) {
+static bool draw_overlay_glyphs_3d(float ax, float ay, float ox, float oy) {
     if (s_overlay_glyph_n < 3 || !s_nr.gouraud_pipe || !s_nr.overlay_vb) return false;
     static rhi_vertex buf[OVL_MAX_VERTS];
     int n = 0;
@@ -7811,11 +7814,12 @@ static bool draw_overlay_glyphs_3d(float ax, float ay, float ox) {
         /* Glyph coords are win_h-relative; ax/ay map them into the target's NDC.
          * Offscreen 1×: ax=2·win_h/win_w, ay=2. Overlay SS: ax=2/ovl_region_w(),
          * ay=2/ovl_region_h() — both keep glyphs square (ax/ay carry the same
-         * win_h scale through the target's pixel dims). ox shifts the origin in
-         * overlay-x (win_h units) — the 1× fallback path uses it to sit right of
-         * the open menu; the SS prepass passes 0 (the composite quad moves). */
+         * win_h scale through the target's pixel dims). (ox,oy) shifts the origin
+         * in overlay space — the 1× fallback path uses it to land on the block's
+         * anchored rect; the SS prepass passes (0,0), since there the composite
+         * quad is what moves and the glyphs fill their region. */
         buf[n].x = (v->x + ox) * ax - 1.0f;
-        buf[n].y = 1.0f - v->y * ay;
+        buf[n].y = 1.0f - (v->y + oy) * ay;
         buf[n].z = v->z; buf[n].u = 0.0f; buf[n].v = 0.0f;
         buf[n].rgba = v->rgba; buf[n].koff = 0.0f; buf[n].w = 0.0f;
         buf[n].sx = 0.0f; buf[n].sy = 0.0f;   /* unranked: rank select off */
@@ -7896,24 +7900,53 @@ static bool ovl_ss_ready(void) {
  * left edge when closed, so the FPS text's own left bearing reproduces the SAME
  * visual gap in both cases. Only the on-screen placement moves — the glyphs (and
  * the SS target they render into) are unchanged. */
-/* Overlay region for the current stats level: wider and taller for the
- * detailed readout's four lines, which are longer than "FPS: 9999" as well as
- * more numerous. The supersample target, the composite quad and the glyph
- * projection must all use the same rect, or the text lands in a shape other
- * than the one it was rasterized into. */
-static float ovl_region_w(void) {
-    return (s_perf_stats >= OPENPETE_PERF_DETAIL) ? OVL_REGION_W_DETAIL
-                                                  : OVL_REGION_W;
+/* Overlay region for the perf readout: the rect the supersample target, the
+ * composite quad and the glyph projection must ALL agree on, or the text lands
+ * in a shape other than the one it was rasterized into. Exactly one side owns
+ * it — the game-side builder, which is the side that can measure a string —
+ * and pushes it here; the renderer reads it back and never re-derives it. */
+static float s_ovl_ext_w = OVL_REGION_W;
+static float s_ovl_ext_h = OVL_REGION_H;
+void openpete_native_set_overlay_extent(float w, float h) {
+    if (w > 0.0f) s_ovl_ext_w = w;
+    if (h > 0.0f) s_ovl_ext_h = h;
 }
-static float ovl_region_h(void) {
-    return (s_perf_stats >= OPENPETE_PERF_DETAIL) ? OVL_REGION_H_DETAIL
-                                                  : OVL_REGION_H;
+void openpete_native_get_overlay_extent(float *w, float *h) {
+    if (w) *w = s_ovl_ext_w;
+    if (h) *h = s_ovl_ext_h;
 }
+static float ovl_region_w(void) { return s_ovl_ext_w; }
+static float ovl_region_h(void) { return s_ovl_ext_h; }
 
-static float perf_overlay_ox(void) {
-    if (!openpete_menu_is_open()) return 0.0f;
-    openpete_menu_layout_t L; openpete_menu_get_layout(&L);
-    return L.panel_x1;
+/* Where the user wants the perf block. Live-settable (--perf-position, the
+ * knob row); the placement itself is resolved once per present below. */
+static int s_perf_anchor = OPENPETE_ANCHOR_TOP_LEFT;
+void openpete_native_set_perf_anchor(int a) {
+    if (a >= 0 && a < OPENPETE_ANCHOR_COUNT) s_perf_anchor = a;
+}
+int openpete_native_perf_anchor(void) { return s_perf_anchor; }
+
+/* The present's placement ledger. Reset at the top of the per-present resource
+ * pass, then claimed in order: the persistent perf block first, the transient
+ * toasts after, so chrome that is always there owns its corner and the thing
+ * that comes and goes stacks away from it. */
+static openpete_anchor_ledger_t s_anchor_ledger;
+static float s_perf_ox, s_perf_oy;   /* the perf block's placed top-left */
+
+/* Resolve where every anchored chrome block sits THIS present. Runs once, in
+ * the per-present resource pass before ensure_ovl_ss, so the composite quads
+ * are built against the placement they will actually be drawn at. Claim order
+ * is the policy: the persistent perf block first, then the OSD's toasts, so a
+ * shared corner pushes the transient thing out of the way of the permanent
+ * one rather than the reverse. */
+static void overlay_layout_update(void) {
+    float xlo, xhi;
+    openpete_anchor_usable_x(openpete_native_overlay_aspect(), &xlo, &xhi);
+    openpete_anchor_reset(&s_anchor_ledger, xlo, xhi);
+    if (perf_overlay_should_draw())
+        openpete_anchor_place(&s_anchor_ledger, s_perf_anchor,
+                              ovl_region_w(), ovl_region_h(),
+                              &s_perf_ox, &s_perf_oy);
 }
 
 /* (Re)create ovl_ss at OVL_SS_FACTOR× the overlay region and rebuild the
@@ -7944,25 +7977,28 @@ static void ensure_ovl_ss(void) {
      * uses win_h), so its NDC width scales by win_h/win_w; UV 0..1 maps the whole
      * SS target (v0 top, top-down). Rebuilt on resize OR when the offset changes
      * (menu open/close) — never per-frame, so the wait_idle stays rare. */
-    float want_ox = perf_overlay_ox();
+    float want_ox = s_perf_ox, want_oy = s_perf_oy;
     float want_rw = ovl_region_w();
     float want_rh = ovl_region_h();
     if (s_nr.ovl_quad_win_w != s_nr.win_w || s_nr.ovl_quad_win_h != s_nr.win_h ||
-        s_nr.ovl_quad_ox != want_ox ||
+        s_nr.ovl_quad_ox != want_ox || s_nr.ovl_quad_oy != want_oy ||
         s_nr.ovl_quad_rw != want_rw || s_nr.ovl_quad_rh != want_rh) {
         float ax = 2.0f * (float)s_nr.win_h / (float)s_nr.win_w;
         float rw_ndc = want_rw * ax;
         float rh_ndc = want_rh * 2.0f;
         float nx_left = want_ox * ax - 1.0f;
+        float ny_top  = 1.0f - want_oy * 2.0f;
         rhi_vertex q[6];
-        build_panel(q, nx_left + rw_ndc * 0.5f, 1.0f - rh_ndc * 0.5f,
+        build_panel(q, nx_left + rw_ndc * 0.5f, ny_top - rh_ndc * 0.5f,
                     rw_ndc * 0.5f, rh_ndc * 0.5f, 0.0f, 0.0f, 1.0f, 1.0f);
-        /* Single (non-ring) VB rewritten only on resize / offset change: an
-         * in-flight frame may still read it — fully sync first (like panels_vb). */
+        /* Single (non-ring) VB rewritten only on resize / anchor move: an
+         * in-flight frame may still read it — fully sync first (like panels_vb).
+         * The anchor moves on a menu open/close, a stats-level switch or a
+         * user setting, never per present, so the idle stays rare. */
         rhi_wait_idle(s_nr.dev);
         rhi_update_buffer(s_nr.ovl_quad_vb, q, sizeof(q));
         s_nr.ovl_quad_win_w = s_nr.win_w; s_nr.ovl_quad_win_h = s_nr.win_h;
-        s_nr.ovl_quad_ox = want_ox;
+        s_nr.ovl_quad_ox = want_ox; s_nr.ovl_quad_oy = want_oy;
         s_nr.ovl_quad_rw = want_rw; s_nr.ovl_quad_rh = want_rh;
     }
 }
@@ -7973,7 +8009,7 @@ static void ensure_ovl_ss(void) {
 static void prepare_perf_overlay_ss(void) {
     if (!ovl_ss_ready() || !perf_overlay_should_draw()) return;
     rhi_begin_render_target(s_nr.dev, s_nr.ovl_ss, 0.0f, 0.0f, 0.0f, 0.0f);  /* transparent */
-    draw_overlay_glyphs_3d(2.0f / ovl_region_w(), 2.0f / ovl_region_h(), 0.0f);
+    draw_overlay_glyphs_3d(2.0f / ovl_region_w(), 2.0f / ovl_region_h(), 0.0f, 0.0f);
     rhi_end_render_target(s_nr.dev, s_nr.ovl_ss);
 }
 
@@ -7992,7 +8028,7 @@ static void draw_perf_overlay(void) {
         rhi_draw(s_nr.dev, 6, 0);
     } else {
         draw_overlay_glyphs_3d(2.0f * (float)s_nr.win_h / (float)s_nr.win_w, 2.0f,
-                               perf_overlay_ox());
+                               s_perf_ox, s_perf_oy);
     }
 }
 
@@ -9412,6 +9448,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     update_layout();
     ensure_native_rtt(true);   /* native_rtt is the canonical frame in every mode */
     ensure_ss_rtt();           /* SSAA supersampled scene target (--ssaa>1, vk mode) */
+    overlay_layout_update();   /* anchor ledger: where each chrome block sits this present */
     ensure_ovl_ss();           /* stats-overlay supersample target + composite quad */
     ensure_menu_ss();          /* settings-menu glyph supersample (lazy, while open) */
     ensure_opaque_depth();     /* WORLD-opaque depth pre-pass target (shadow decal) */

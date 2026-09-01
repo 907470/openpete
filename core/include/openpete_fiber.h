@@ -59,6 +59,24 @@ extern int      openpete_present_pending;   /* set by DrawOTag thunk; consumed b
  * host-thread thunk code reads it. */
 extern int openpete_speculative;
 
+/* 1 while the host is REPLAYING committed guest ticks — the rewind driver
+ * re-executing the input log from a keyframe toward its target, and any
+ * state-load fast-forward that re-runs game_on_frame_pre. Distinct from
+ * openpete_speculative, deliberately: speculative ticks are ROLLED BACK,
+ * replayed ticks are the committed timeline being re-walked, and the dozen
+ * consumers of that flag chose their behaviour for the rolled-back case.
+ *
+ * Presentation-side announcements read it so a held rewind does not fire one
+ * notification per replayed tick, and so per-tick animation phases do not
+ * sprint through a replay. It does NOT cover a backward jump into ordinary
+ * live play (a savestate load, --state-stress-rewind): those frames resume the
+ * normal loop and are indistinguishable from first-time ones.
+ *
+ * Plain int, read cross-thread — the same relaxed idiom as
+ * openpete_speculative, and for the same reason: a one-present skew either way
+ * on a purely presentational suppression is not worth an atomic. */
+extern int openpete_replaying;
+
 /* 1 for the duration of a runahead tick whose speculation input DIFFERS
  * from the previous tick's — the led pair crosses prediction branches, so
  * presentation-side consumers may REBASE their interpolation at the last

@@ -6,6 +6,7 @@
 #include "openpete.h"
 #include "openpete_config.h"  /* openpete.toml — the layered config file */
 #include "openpete_keymap.h"  /* [keys] — install the SDL name lookups */
+#include "openpete_overlay_anchor.h"  /* --perf-position / --osd-position spellings */
 #include "openpete_log.h"
 #include "openpete_time.h"  /* OP_TICK_HZ — --record-cfr NTSC-multiple snap */
 #include "game_extras.h"  /* game_resolve_level_arg (--skip-to-level names),
@@ -350,6 +351,7 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             detailed adds the VBL rate, slips, late ticks per 1000 and the\n"
         "                             shed / interpolation share. 0|1|2 also accepted. Display-only.\n"
         "  --show-fps 0|1             deprecated spelling of --perf-stats off|fps (on|off also accepted)\n"
+        "  --perf-position ANCHOR     where the stats block sits: top-left (default) | top-center | top-right | bottom-left | bottom-center | bottom-right\n"
         "  --rewind N                 hold Backspace to rewind up to N seconds (default 0 = off;\n"
         "                             ~2 MiB RAM per second of window; same-level only)\n"
         "  --runahead N               lead the presented timeline by N sim ticks (default 0 = off).\n"
@@ -587,6 +589,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->vibration           = -1;    /* -1 = unset; the game's own setting stands */
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
     opts->perf_stats          = OPENPETE_PERF_FPS;  /* the counter, no pacing readout; --perf-stats / O-menu SHOW FPS row */
+    opts->perf_position       = OPENPETE_ANCHOR_TOP_LEFT;
     opts->vsync               = -1;    /* -1 = unset; default vsync ON (FIFO) unless OPENPETE_PRESENT_MODE */
     opts->render_fps          = -1;    /* -1 = unset; resolved at startup: display refresh (windowed) /
                                         * 0 legacy match-sim pacer (headless). --render-fps 0 = explicit legacy. */
@@ -725,6 +728,16 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             }
         } else if (strcmp(a, "--render-stats") == 0) {
             opts->render_stats = true;
+        } else if (strcmp(a, "--perf-position") == 0) {
+            const char *v = (i + 1 < argc) ? argv[++i] : "";
+            int an = openpete_anchor_parse(v);
+            if (an < 0) {
+                fprintf(stderr, "openpete: --perf-position expects one of "
+                        "top-left|top-center|top-right|bottom-left|bottom-center|"
+                        "bottom-right, got: %s\n", v);
+                return false;
+            }
+            opts->perf_position = an;
         } else if (strcmp(a, "--perf-stats") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             /* Words are the documented spelling (and what the config file

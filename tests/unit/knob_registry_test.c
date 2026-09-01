@@ -75,6 +75,9 @@ int    openpete_native_get_ssaa(void)          { return s_native_ssaa; }
 void   openpete_native_set_vsync(int on)       { s_native_vsync = on ? 1 : 0; }
 int    openpete_native_get_vsync(void)         { return s_native_vsync; }
 void   openpete_native_set_perf_stats(int level) { s_native_showfps = level; }
+static int s_native_perf_anchor = 0;
+void   openpete_native_set_perf_anchor(int a) { s_native_perf_anchor = a; }
+int    openpete_native_perf_anchor(void) { return s_native_perf_anchor; }
 int    openpete_native_perf_stats_level(void)    { return s_native_showfps; }
 void   openpete_native_set_fps_overlay(int on)   { s_native_showfps = on ? OPENPETE_PERF_FPS
                                                                          : OPENPETE_PERF_OFF; }
