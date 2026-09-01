@@ -2586,7 +2586,12 @@ static int walk_prologue(CPUState* cpu, int is_spec) {
      * millisecond — a whole-level vista walks ~17600 faces, 1852 us serial
      * against 444 parallel. Only the far side of the bound is expensive, so any
      * bound in this neighbourhood is safe wherever it runs. */
-    if (faces < MN_FANOUT_MIN_FACES) return 1;
+    /* Calibration override: re-derive the bound on other hardware without a
+     * rebuild (sweep it against the walk cost the tier census reports). */
+    static int s_min = -1;
+    if (s_min < 0) { const char* e = getenv("OPENPETE_MOBY_FANOUT_MIN");
+                     s_min = (e && *e) ? atoi(e) : MN_FANOUT_MIN_FACES; }
+    if (faces < s_min) return 1;
     if (nw <= 1 || s_nrecs < 2 || walk_dbg_env()) return 1;
     return 0;
 }

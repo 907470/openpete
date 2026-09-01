@@ -5479,7 +5479,12 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * walk_faces is 0 even on a whole-level vista (every sector is owned
          * and returns before touching a face), which is the case this gate
          * exists for. */
-        if (walk_faces < TN_FANOUT_MIN_FACES)
+        /* Calibration override: re-derive the bound on other hardware without
+         * a rebuild (sweep it against the ter.walk / ter.faces census). */
+        static int s_fanmin = -1;
+        if (s_fanmin < 0) { const char* e = getenv("OPENPETE_TERRAIN_FANOUT_MIN");
+                            s_fanmin = (e && *e) ? atoi(e) : TN_FANOUT_MIN_FACES; }
+        if (walk_faces < s_fanmin)
             for (int vi = 0; vi < nvis; vi++) walk_sector_job(vi, 0, &G);
         else
             openpete_workpool_run(nvis, walk_sector_job, &G);
@@ -5492,7 +5497,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
              * average is the fraction of walks above the threshold. */
             static int idp_ = -1;
             if (idp_ < 0) idp_ = op_prof_intern("ter.par");
-            op_prof_count(idp_, walk_faces < TN_FANOUT_MIN_FACES ? 0u : 1u);
+            op_prof_count(idp_, walk_faces < s_fanmin ? 0u : 1u);
             static int id_ = -1;
             if (id_ < 0) id_ = op_prof_intern("ter.merge");
             op_prof_begin(id_);
