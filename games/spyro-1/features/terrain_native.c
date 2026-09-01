@@ -3710,6 +3710,9 @@ static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V
 }
 
 #define TN_MAX_WORKERS 8
+/* Walked-face count below which the face walk runs inline instead of fanning
+ * out — see the dispatch break-even derivation at the workpool call site. */
+#define TN_FANOUT_MIN_FACES 400
 static tn_wctx s_wctx[TN_MAX_WORKERS];
 static ttri*   s_wbuf[TN_MAX_WORKERS];   /* parallel-mode output buffers (lazy) */
 static const tscache_t* s_pre_SC[1024];
@@ -5215,6 +5218,12 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         W->walk_sectors = 0;
         W->serial = wserial;
     }
+    /* Faces the CPU face walk will actually process this build: sectors the
+     * retained-GPU cache owns return from walk_sector before touching a face,
+     * so their geometry is not walk work and must not count toward the
+     * fan-out decision below. With the cache warm this total collapses to
+     * near zero even on a whole-level vista. */
+    long walk_faces = 0;
     if (!wserial && op_prof_on()) {
         static int id_ = -1;
         if (id_ < 0) id_ = op_prof_intern("ter.prepass");
@@ -5423,6 +5432,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             if (claim) { s_tgpu_claims++; s_tgpu_claims_walk++; }
         }
         s_pre_SC[vi] = SC;
+        if (!s_tgpu_own[vi]) walk_faces += SC->nLpF + SC->nHpF;
         if (wserial) walk_sector(&s_wctx[0], &G, vi);
     }
     if (!wserial) {
@@ -5455,9 +5465,34 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             if (id_ < 0) id_ = op_prof_intern("ter.walk");
             op_prof_begin(id_);
         }
-        openpete_workpool_run(nvis, walk_sector_job, &G);
+        /* Fan out only when the walk is big enough to repay the dispatch.
+         * Waking the helpers and joining them costs ~20us whatever the run
+         * holds, and the pool's own item stream is the same work in the same
+         * order either way, so running the jobs inline below the threshold is
+         * bit-identical and strictly cheaper. Break-even is where the ~7/8 of
+         * the walk the helpers absorb equals that floor: at the measured
+         * 0.032-0.056us per walked face the crossover sits between ~410 and
+         * ~720 faces depending on the scene, so the constant sits under the
+         * whole range. Erring low is the cheap direction — fanning out 400
+         * faces too eagerly wastes ~20us, while serializing a cache-cold
+         * 10k-face vista would cost ~300. With the retained-GPU cache warm
+         * walk_faces is 0 even on a whole-level vista (every sector is owned
+         * and returns before touching a face), which is the case this gate
+         * exists for. */
+        if (walk_faces < TN_FANOUT_MIN_FACES)
+            for (int vi = 0; vi < nvis; vi++) walk_sector_job(vi, 0, &G);
+        else
+            openpete_workpool_run(nvis, walk_sector_job, &G);
         if (op_prof_on()) {
             op_prof_end();   /* ter.walk */
+            static int idf_ = -1;
+            if (idf_ < 0) idf_ = op_prof_intern("ter.faces");
+            op_prof_count(idf_, (uint64_t)walk_faces);
+            /* 1 when this walk fanned out, 0 when it ran inline: the census
+             * average is the fraction of walks above the threshold. */
+            static int idp_ = -1;
+            if (idp_ < 0) idp_ = op_prof_intern("ter.par");
+            op_prof_count(idp_, walk_faces < TN_FANOUT_MIN_FACES ? 0u : 1u);
             static int id_ = -1;
             if (id_ < 0) id_ = op_prof_intern("ter.merge");
             op_prof_begin(id_);
