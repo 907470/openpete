@@ -498,4 +498,17 @@ if(NOT CMAKE_HOST_WIN32)
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/seam_guard.py ${CMAKE_SOURCE_DIR}
         COMMENT "display-seam fence: presents and window ops only from their owner"
         VERBATIM)
+
+    # Launcher hygiene, the two silent-failure defaults. A scripted run must
+    # silence the pad (nobody is holding it, and the buzzing reaches no log),
+    # and a script that sets OPENPETE_* knobs for a Windows .exe must name
+    # WSLENV or the knob never crosses and the run measures the default.
+    # Both run on every build, since a scanner run only by hand
+    # is not enforced.
+    add_custom_target(openpete_launch_guards ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "Checking launcher hygiene..."
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/rumble_guard.py ${CMAKE_SOURCE_DIR}
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/wslenv_guard.py ${CMAKE_SOURCE_DIR}
+        COMMENT "launcher fences: silence the pad, and make env knobs cross into WSL"
+        VERBATIM)
 endif()

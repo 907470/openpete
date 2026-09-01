@@ -35,7 +35,14 @@ WINDOWS_LAUNCH = re.compile(r"windows-mingw|windows-msvc|\.exe\b")
 # catching, so this one over-reports and requires the author to say which it
 # is. The cost of a wrong answer here is a whole evidence set about the wrong
 # configuration; the cost of an annotation is one line.
-KNOB = re.compile(r"\bOPENPETE_[A-Z0-9_]+\s*=")
+# Shell/attribute `NAME=`, and the Python spellings a harness actually uses:
+# a dict literal `{"NAME": v}` and a subscript assignment `env["NAME"] = v`.
+# The bare-`=` form alone missed every Python harness in the scratchpad, which
+# is where harnesses get written.
+KNOB = re.compile(r"""
+      \bOPENPETE_[A-Z0-9_]+\s*=
+    | ['"]OPENPETE_[A-Z0-9_]+['"]\s*[:\]]
+""", re.X)
 
 # Only an actual USE clears a file, never a mention. An earlier version
 # accepted the string "WSLENV" anywhere, so a comment explaining the hazard
@@ -44,7 +51,8 @@ KNOB = re.compile(r"\bOPENPETE_[A-Z0-9_]+\s*=")
 SANCTIONED = re.compile(r"""
       \bwslenv_forward\b            # sourced the shell helper and called it
     | \bchild_env\s*\(              # built the child environment properly
-    | \bWSLENV\s*=                  # set it directly, deliberately
+    | \bWSLENV\s*=                  # set it directly, deliberately (shell)
+    | ['"]WSLENV['"]\s*[:\]]        # ...python dict literal or env["WSLENV"]
     | \bWSLENV_ARGS\b               # launched with what the helper produced
 """, re.X)
 
@@ -54,6 +62,17 @@ SANCTIONED = re.compile(r"""
 EXEMPT = re.compile(r"wslenv-guard:\s*no-launch")
 
 SKIP_DIRS = {".git", "build", "__pycache__", "node_modules", "third_party"}
+
+
+def offends(text):
+    """One file's verdict: the knobs it would silently drop, or [] if it is
+    clean or out of scope. Shared with the write-time hook so both entry
+    points enforce one rule."""
+    if not (WINDOWS_LAUNCH.search(text) and KNOB.search(text)):
+        return []
+    if SANCTIONED.search(text) or EXEMPT.search(text):
+        return []
+    return sorted(set(m.group(0).strip(" =:]\"'") for m in KNOB.finditer(text)))
 
 
 def scan(root):
@@ -70,13 +89,9 @@ def scan(root):
                 text = open(p, encoding="utf-8", errors="replace").read()
             except OSError:
                 continue
-            if not (WINDOWS_LAUNCH.search(text) and KNOB.search(text)):
-                continue
-            if SANCTIONED.search(text) or EXEMPT.search(text):
-                continue
-            knobs = sorted(set(m.group(0).rstrip(" =")
-                               for m in KNOB.finditer(text)))
-            bad.append((os.path.relpath(p, root), knobs))
+            knobs = offends(text)
+            if knobs:
+                bad.append((os.path.relpath(p, root), knobs))
     return bad
 
 

@@ -60,7 +60,10 @@ SANCTIONED = re.compile(r"""
       --vibration[=\s]+0\b            # the flag, passed directly
     | --vibration[=\s]+"?\$           # the flag, forwarded from a variable
     | \bOPENPETE_VIBRATION\s*=\s*0\b  # the env spelling, shell
-    | OPENPETE_VIBRATION"\s*,\s*"0    # the env spelling, python os.environ
+    | OPENPETE_VIBRATION"\s*,\s*"0    # the env spelling, python setdefault
+    | OPENPETE_VIBRATION['"]\]\s*=\s*['"]0   # ...and python dict assignment
+    | OPENPETE_VIBRATION['"]\s*[:,]\s*['"]0   # ...and a python dict literal
+    | --vibration['"]\s*,\s*['"]0    # the flag, as python argv list members
 """, re.X)
 
 # The escape hatch, for the one kind of script that SHOULD rumble: a hands-on
@@ -71,6 +74,29 @@ EXEMPT = re.compile(r"rumble-guard:\s*(intentional|no-launch)")
 SKIP_DIRS = {".git", "build", "__pycache__", "node_modules", "third_party",
              "dist", "mods-attic"}
 SUFFIXES = (".sh", ".py", ".bash")
+
+
+def offends(name, text, require_unattended=True):
+    """One file's verdict: True when it launches the binary unattended and
+    never silences vibration. Shared with the write-time hook, which passes
+    require_unattended=False — the naming convention is a tree-scan heuristic
+    for spotting harnesses among a repo's other scripts, and at write time
+    there is nothing to guess: the file is a script, and it launches the game.
+
+    Deliberately NOT exempting headless-only scripts. Whether a given
+    invocation is headless cannot be read reliably out of shell that builds
+    its arguments in arrays across a dozen lines, and guessing wrong here
+    means the fence passes the one file worth catching. Passing
+    --vibration 0 on a headless run costs nothing and makes the intent
+    explicit at the launch site instead of implicit in a gate three layers
+    down."""
+    if not LAUNCH.search(text):
+        return False
+    if require_unattended and not UNATTENDED.match(name):
+        return False
+    if EXEMPT.search(text) or SANCTIONED.search(text):
+        return False
+    return True
 
 
 def scan(root):
@@ -86,20 +112,8 @@ def scan(root):
                     text = fh.read()
             except OSError:
                 continue
-            if not LAUNCH.search(text):
-                continue
-            if not UNATTENDED.match(name):
-                continue
-            if EXEMPT.search(text) or SANCTIONED.search(text):
-                continue
-            # Deliberately NOT exempting headless-only scripts. Whether a given
-            # invocation is headless cannot be read reliably out of shell that
-            # builds its arguments in arrays across a dozen lines, and guessing
-            # wrong here means the fence passes the one file worth catching.
-            # Passing --vibration 0 on a headless run costs nothing and makes
-            # the intent explicit at the launch site instead of implicit in a
-            # gate three layers down.
-            bad.append(os.path.relpath(path, root))
+            if offends(name, text):
+                bad.append(os.path.relpath(path, root))
     return bad
 
 
