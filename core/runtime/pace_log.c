@@ -775,6 +775,116 @@ void openpete_pace_present_span(uint8_t kind, int64_t start_ns,
     pace_emit(&r);
 }
 
+/* An iteration is recorded individually once its active time crosses this.
+ * The pump's ordinary work is tens of microseconds; a millisecond means it
+ * stopped publishing input for at least one whole iteration period, which is
+ * the smallest stall worth a record of its own. */
+#define PACE_HOST_PUMP_FLOOR_NS   ((int64_t)1000000)
+/* The same, for the PARK — and it needs its own floor because a stall can
+ * land on either side of the wait's return and only one of them is a cost.
+ * A Win32 modal size/move loop runs the OS's loop INSIDE the wait, so the
+ * iteration parks for the whole drag and does no work at all: judged on
+ * active time it is the quietest iteration of the run, while input
+ * publication has in fact stopped for seconds. The wait asks for 1 ms, so
+ * anything past four of them is the OS holding the thread rather than the
+ * loop idling. */
+#define PACE_HOST_PUMP_PARK_FLOOR_NS ((int64_t)4000000)
+/* How often the summary lands. Ten a second is free next to ~60 VBL and a few
+ * hundred presents, and short enough that a stall's neighbourhood is still
+ * resolved by the surrounding summaries. */
+#define PACE_HOST_PUMP_WINDOW_NS  ((int64_t)100000000)
+
+void openpete_pace_host_pump(int64_t start_ns, int64_t wait_end_ns,
+                             int64_t pump_end_ns, int64_t input_end_ns,
+                             int64_t end_ns, int window_op)
+{
+    /* Main-thread only, so the accumulators need no lock of their own; the
+     * census counters they feed are shared and take theirs below. */
+    static int64_t  s_win_start_ns;
+    static uint64_t s_win_iters;
+    static uint64_t s_win_long;
+    static int64_t  s_win_active_ns;
+    static int64_t  s_win_active_max_ns;
+    static int64_t  s_win_pump_max_ns;
+    static int64_t  s_win_park_ns;
+    static uint32_t s_iter;
+
+    const int64_t park   = wait_end_ns - start_ns;
+    const int64_t pump   = pump_end_ns - wait_end_ns;
+    const int64_t active = end_ns - wait_end_ns;
+
+    census_lock();
+    s_census.host_pump_iters++;
+    s_census.host_pump_active_ns += active;
+    s_census.host_pump_park_ns += park;
+    if (active > s_census.host_pump_max_ns) s_census.host_pump_max_ns = active;
+    if (pump > s_census.host_pump_events_max_ns)
+        s_census.host_pump_events_max_ns = pump;
+    if (park > s_census.host_pump_park_max_ns)
+        s_census.host_pump_park_max_ns = park;
+    if (active >= PACE_HOST_PUMP_FLOOR_NS ||
+        park >= PACE_HOST_PUMP_PARK_FLOOR_NS) s_census.host_pump_long++;
+    census_unlock();
+
+    s_iter++;
+    if (!s_win_start_ns) s_win_start_ns = start_ns;
+    s_win_iters++;
+    s_win_active_ns += active;
+    s_win_park_ns += park;
+    if (active > s_win_active_max_ns) s_win_active_max_ns = active;
+    if (pump > s_win_pump_max_ns) s_win_pump_max_ns = pump;
+
+    if (!s_fp) {
+        /* No log file: the window accumulators would grow without ever being
+         * emitted, and their max would then describe the whole run rather than
+         * a window. The census above already carries the always-on half. */
+        if (end_ns - s_win_start_ns >= PACE_HOST_PUMP_WINDOW_NS) {
+            s_win_start_ns = 0;
+            s_win_iters = s_win_long = 0;
+            s_win_active_ns = s_win_active_max_ns = s_win_pump_max_ns = 0;
+            s_win_park_ns = 0;
+        }
+        return;
+    }
+
+    if (active >= PACE_HOST_PUMP_FLOOR_NS ||
+        park >= PACE_HOST_PUMP_PARK_FLOOR_NS) {
+        s_win_long++;
+        pace_rec_t r = {0};
+        r.type  = OP_PACE_HOST_PUMP;
+        r.flags = (uint8_t)((window_op ? OP_PACE_HP_WINDOW : 0u)
+                            | (park >= PACE_HOST_PUMP_PARK_FLOOR_NS
+                               ? OP_PACE_HP_PARKED : 0u));
+        r.index = s_iter;
+        r.t_ns  = end_ns;
+        r.a     = start_ns;
+        r.b     = wait_end_ns - start_ns;      /* parked, not a cost */
+        r.c     = pump;
+        r.d     = input_end_ns - pump_end_ns;
+        r.e     = end_ns - input_end_ns;
+        pace_emit(&r);
+    }
+
+    if (end_ns - s_win_start_ns >= PACE_HOST_PUMP_WINDOW_NS) {
+        pace_rec_t s = {0};
+        s.type  = OP_PACE_HOST_PUMP;
+        s.flags = OP_PACE_HP_SUMMARY;
+        s.index = (uint32_t)s_win_iters;
+        s.t_ns  = end_ns;
+        s.a     = s_win_start_ns;
+        s.b     = s_win_active_ns;
+        s.c     = s_win_active_max_ns;
+        s.d     = s_win_pump_max_ns;
+        s.e     = (int64_t)s_win_long;
+        s.f     = s_win_park_ns;
+        pace_emit(&s);
+        s_win_start_ns = 0;
+        s_win_iters = s_win_long = 0;
+        s_win_active_ns = s_win_active_max_ns = s_win_pump_max_ns = 0;
+        s_win_park_ns = 0;
+    }
+}
+
 void openpete_pace_window(uint16_t id, int begin)
 {
     if (!s_fp) return;
@@ -888,6 +998,28 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
     /* The seqlock never failing is the expected state, so it prints nothing;
      * a single failure means some latch consumed no sample at all and must
      * not hide inside a healthy-looking line. */
+    /* The pumping thread. Absent under the single-threaded path, where the
+     * pump shares the sim's thread and its cost is already inside the VBL
+     * bracket — printing a zero there would claim a measurement that was
+     * never taken. */
+    char pump[160];
+    if (c->host_pump_iters)
+        SDL_snprintf(pump, sizeof(pump),
+                     "; pump %llu iter(s), %.3f ms mean active + %.3f ms "
+                     "parked, max %.3f ms active (events alone %.3f ms) / "
+                     "%.3f ms parked, %llu long",
+                     (unsigned long long)c->host_pump_iters,
+                     (double)c->host_pump_active_ns
+                         / (double)c->host_pump_iters / 1e6,
+                     (double)c->host_pump_park_ns
+                         / (double)c->host_pump_iters / 1e6,
+                     (double)c->host_pump_max_ns / 1e6,
+                     (double)c->host_pump_events_max_ns / 1e6,
+                     (double)c->host_pump_park_max_ns / 1e6,
+                     (unsigned long long)c->host_pump_long);
+    else
+        pump[0] = '\0';
+
     char seqfail[64];
     const unsigned sf = openpete_host_input_seqlock_failures();
     if (sf) SDL_snprintf(seqfail, sizeof(seqfail),
@@ -899,7 +1031,7 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
         "phase %.2f%% within 250us, max %+.3f ms%s; "
         "transient %llu VBL max %+.3f ms; wake<=%+.3f ms behind<=%+.3f ms; "
         "latch<=%s; %s; %llu input edge(s); "
-        "slips sim %llu/%llu render %llu/%llu; sheds %llu%s",
+        "slips sim %llu/%llu render %llu/%llu; sheds %llu%s%s",
         (unsigned long long)c->vbls,
         (unsigned long long)c->vbls_paced,
         (unsigned long long)c->vbls_clean,
@@ -920,7 +1052,7 @@ void openpete_pace_census_format(char* buf, unsigned buf_bytes)
         (unsigned long long)c->slip_events[1],
         (unsigned long long)c->slip_periods[1],
         (unsigned long long)c->sheds,
-        seqfail);
+        pump, seqfail);
 }
 
 /* ------------------------------------------------------------------ */

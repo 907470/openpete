@@ -45,6 +45,13 @@ def us(ns):
     return f"{ns / 1e3:+.1f}us"
 
 
+def dur(ns):
+    """An unsigned duration. `us` signs its output because a phase error is
+    signed; a cost is not, and a 214 ms stall printed in microseconds with a
+    leading + is unreadable at exactly the moment it matters."""
+    return f"{ns / 1e6:.3f}ms" if abs(ns) >= 1e6 else f"{ns / 1e3:.1f}us"
+
+
 def load(path, warmup_s):
     log = pacelog.read(path)
     kept, excluded = log.analysis_vbls(warmup_s)
@@ -57,6 +64,56 @@ def population_line(log, kept, excluded):
             f"(excluded: " + ", ".join(f"{k} {v}" for k, v in excluded.items()
                                        if v) + ")" if any(excluded.values())
             else f"population: {len(kept)}/{tot} VBL analysed")
+
+
+def host_pump_line(log, worst=3):
+    """The window-owning thread, which no other statistic here can see.
+
+    Nothing else in the log is stamped on it: VBL and PRESENT_SPAN belong to
+    the sim worker and FLIP to the present thread, so a main-thread stall —
+    a modal resize running the OS's loop inside the event pump, a synchronous
+    fullscreen toggle — shows up elsewhere only as its consequences.
+
+    Absence means the pump loop never ran (the single-threaded host, where the
+    pump shares the sim's thread and is already inside the VBL bracket), not a
+    quiet one: a split run emits a summary every reporting window regardless of
+    what happened in it."""
+    recs = log.of(pacelog.HOST_PUMP)
+    if not recs:
+        return ("host pump: not recorded — single-threaded host, or a log "
+                "written before the record existed")
+    summaries = [r for r in recs if r.hp_summary]
+    # Ranked by the whole iteration, park included: the worst stall this
+    # instrument exists to catch — a modal size/move loop, which runs inside
+    # the wait — does no work at all, and ranking on active time alone would
+    # sort it to the bottom of its own report.
+    longs = sorted((r for r in recs if not r.hp_summary),
+                   key=lambda r: r.hp_park_ns + r.hp_active_ns, reverse=True)
+    iters = sum(r.hp_iters for r in summaries)
+    total = sum(r.hp_active_sum_ns for r in summaries)
+    # Max over the summaries, not over the individually recorded iterations:
+    # the floor means a run whose worst iteration stayed under it records no
+    # individual at all, and reporting "max 0" for that run would read as a
+    # thread that never did any work.
+    mx = max((r.hp_active_max_ns for r in summaries), default=0)
+    ev = max((r.hp_events_max_ns for r in summaries), default=0)
+    # Mean park is how the loop's own health reads: it should be near the
+    # SDL_WaitEventTimeout period. Far below it, the loop is spinning — which
+    # costs a core without lengthening any single iteration, so it is
+    # invisible in every other number on this line.
+    park = sum(r.hp_park_sum_ns or 0 for r in summaries)
+    out = [f"host pump: {iters} iter(s) in {len(summaries)} window(s), "
+           f"active mean {dur(total // iters if iters else 0)} + "
+           f"{dur(park // iters if iters else 0)} parked, "
+           f"worst iteration {dur(mx)} (events alone {dur(ev)}); "
+           f"{sum(r.hp_long for r in summaries)} over the record floor"]
+    for r in longs[:worst]:
+        what = (f"parked {dur(r.hp_park_ns)}" if r.flags & pacelog.HP_PARKED
+                else f"{dur(r.hp_active_ns)} = events {dur(r.hp_events_ns)} "
+                     f"input {dur(r.hp_input_ns)} window {dur(r.hp_window_ns)}")
+        out.append(f"  t={(r.t_ns - log.epoch_ns)/1e9:9.3f}s {what}"
+                   f"{'  [window op]' if r.flags & pacelog.HP_WINDOW else ''}")
+    return "\n".join(out)
 
 
 def refuse_if_empty(kept, log):
@@ -253,6 +310,8 @@ def cmd_summary(a):
             print(f"{label} present cost: p50 {us(ps.percentile(c,50))} "
                   f"p99 {us(ps.percentile(c,99))} max {us(max(c))}  "
                   f"(scene rebuild p50 {us(ps.percentile(e,50))}, n={len(k)})")
+
+    print(host_pump_line(log))
 
     sheds = log.of(pacelog.SHED)
     if sheds:
@@ -1038,7 +1097,7 @@ def cmd_export_perfetto(a):
     log = pacelog.read(a.log)
     ev, pid = [], 1
     names = {1: "tick", 2: "present", 3: "shed", 4: "slip",
-             5: "input", 6: "window", 7: "clock"}
+             5: "input", 6: "window", 7: "clock", 8: "host pump"}
     for tid, label in names.items():
         ev.append({"name": "thread_name", "ph": "M", "pid": pid, "tid": tid,
                    "args": {"name": label}})
@@ -1063,6 +1122,26 @@ def cmd_export_perfetto(a):
         elif r.type == pacelog.INPUT_EDGE:
             ev.append({"name": "edge", "ph": "i", "pid": pid, "tid": 5,
                        "ts": ts, "s": "g"})
+        elif r.type == pacelog.HOST_PUMP and not r.hp_summary:
+            if r.flags & pacelog.HP_PARKED:
+                # A park stall is the whole iteration: it did no work, and
+                # drawing only its (empty) active tail would hide the span.
+                ev.append({"name": "pump parked", "ph": "X", "pid": pid,
+                           "tid": 8, "ts": (r.a - log.epoch_ns) / 1000.0,
+                           "dur": r.hp_park_ns / 1000.0,
+                           "args": {"active_us": r.hp_active_ns / 1000.0}})
+                continue
+            # Only the individually recorded (long) iterations get a slice.
+            # The slice starts where the park ended, so the track shows the
+            # stall itself lined up against the tick it delayed — the whole
+            # reason this thread is in the trace.
+            ev.append({"name": "pump stall", "ph": "X", "pid": pid, "tid": 8,
+                       "ts": (r.a + r.hp_park_ns - log.epoch_ns) / 1000.0,
+                       "dur": r.hp_active_ns / 1000.0,
+                       "args": {"events_us": r.hp_events_ns / 1000.0,
+                                "input_us": r.hp_input_ns / 1000.0,
+                                "window_us": r.hp_window_ns / 1000.0,
+                                "window_op": bool(r.flags & pacelog.HP_WINDOW)}})
     for wid, b, e in log.windows():
         ev.append({"name": f"window {wid}", "ph": "X", "pid": pid, "tid": 6,
                    "ts": (b - log.epoch_ns) / 1000.0, "dur": (e - b) / 1000.0})

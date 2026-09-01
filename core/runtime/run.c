@@ -5140,7 +5140,7 @@ static int run_host_loop(const openpete_options_t* opts) {
         /* Pacing census: printed on every run, no flag needed, the way the
          * determinism gates are ambient. A run that was never paced says so
          * instead of quoting a phase error against a grid it did not follow. */
-        char pace_summary[512];
+        char pace_summary[768];
         openpete_pace_census_format(pace_summary, sizeof(pace_summary));
         OPL_INFO_F("pace", "%s", pace_summary);
     }
@@ -5385,11 +5385,21 @@ static int run_split_threaded(const openpete_options_t* opts)
      * SDL_WaitEventTimeout parks the thread instead of spinning, and still
      * wakes immediately when an event arrives. */
     while (!SDL_GetAtomicInt(&g_worker_done)) {
+        /* Four instants per iteration, so a stall on this thread can be
+         * attributed rather than merely noticed. A Win32 modal resize or move
+         * runs the OS's own loop inside the event pump, which is where the
+         * split's display defects have historically hidden, and it is
+         * indistinguishable from a quiet loop unless the pump is timed apart
+         * from the park that precedes it. */
+        const int64_t hp_t0 = (int64_t)op_now();
         SDL_WaitEventTimeout(NULL, 1);
+        const int64_t hp_waited = (int64_t)op_now();
         openpete_pump_events();
+        const int64_t hp_pumped = (int64_t)op_now();
         openpete_host_input_publish_sdl();
         openpete_host_input_sample(
             (openpete_host_input_modstate() & SDL_KMOD_ALT) != 0);
+        const int64_t hp_input = (int64_t)op_now();
 
         /* Idle-hide of the OS cursor. Another window op that belongs to this
          * thread, and cheap: one atomic read plus three flag reads. */
@@ -5397,12 +5407,16 @@ static int run_split_threaded(const openpete_options_t* opts)
 
         /* Window ops belong to this thread. The worker raises the flag (from
          * a binding or Alt+Enter) and main performs the SDL call. */
+        int hp_window = 0;
         if (g_native_fs_toggle_request) {
             g_native_fs_toggle_request = 0;
+            hp_window = 1;
             OPL_INFO_F("native", "%s", "fullscreen toggle: main performing");
             openpete_native_toggle_fullscreen();
             OPL_INFO_F("native", "%s", "fullscreen toggle: main done");
         }
+        openpete_pace_host_pump(hp_t0, hp_waited, hp_pumped, hp_input,
+                                (int64_t)op_now(), hp_window);
     }
 
     SDL_WaitThread(th, NULL);

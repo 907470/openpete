@@ -66,7 +66,23 @@ enum {
     OP_PACE_PRESENT_SPAN = 9,
     OP_PACE_PAD_READ    = 10,
     OP_PACE_FLIP        = 11,
-    OP_PACE_CD_MISS     = 12   /* a disc read blocked on the background loader: a = waited ns, b = end offset */
+    OP_PACE_CD_MISS     = 12,  /* a disc read blocked on the background loader: a = waited ns, b = end offset */
+    OP_PACE_HOST_PUMP   = 13   /* one iteration of the host pump loop (thread split only) */
+};
+
+/* HOST_PUMP flags. */
+enum {
+    /* An aggregate over the iterations of one reporting window, rather than a
+     * single iteration. See openpete_pace_host_pump. */
+    OP_PACE_HP_SUMMARY = 1u << 0,
+    /* A window op (fullscreen toggle) ran in this iteration. */
+    OP_PACE_HP_WINDOW  = 1u << 1,
+    /* The iteration was recorded for its PARK, not its work: the wait held
+     * the thread far past the timeout it asked for. On Win32 this is the
+     * modal size/move loop, which runs inside the wait and does no work at
+     * all — the quietest iteration of the run by active time, while input
+     * publication has stopped for the length of the drag. */
+    OP_PACE_HP_PARKED  = 1u << 2
 };
 
 /* VBL flags. */
@@ -266,6 +282,35 @@ void openpete_pace_wake(int64_t request_ns, int64_t target_ns, int64_t wake_ns);
 void openpete_pace_present_span(uint8_t kind, int64_t start_ns,
                                 int64_t end_ns, int64_t extract_ns);
 
+/* One iteration of the host pump loop — the thread that owns the window.
+ *
+ * Under the thread split nothing else in this log is stamped on that thread:
+ * VBL and PRESENT_SPAN belong to the sim worker, FLIP to the present thread,
+ * and main appears only as the timestamp on an INPUT_EDGE. Yet main is where
+ * the split's own defects live — a Win32 modal resize or move runs the OS's
+ * loop INSIDE the pump, a fullscreen toggle is a synchronous window op, and a
+ * gamepad hotplug re-enumerates devices. Each stalls input publication and the
+ * window ops the other two threads have queued, and until now every one of
+ * them was invisible: the log had no event type for the pumping thread.
+ *
+ * The four instants split the iteration into the park (SDL_WaitEventTimeout,
+ * which is the loop idling and is not a cost) and the three pieces of work
+ * after it. `window_op` marks an iteration that performed one.
+ *
+ * Unlike the rest of this log, this is not one record per event. The pump runs
+ * ~1000x/s against ~60 VBL and a few hundred presents, and a record apiece
+ * would make the pump the bulk of every file. Two things are emitted instead,
+ * which together lose nothing: every iteration whose ACTIVE time crosses a
+ * fixed floor gets its own record, and a summary record every reporting window
+ * carries count, sum, and max over ALL iterations in it — the long ones
+ * included, with `e` naming how many of them were also recorded individually.
+ * The selection is on duration, not on phase: every long iteration is kept, so
+ * this is not the throttled trace the header warns about, and the summary
+ * keeps the accounting complete for the short ones it drops. */
+void openpete_pace_host_pump(int64_t start_ns, int64_t wait_end_ns,
+                             int64_t pump_end_ns, int64_t input_end_ns,
+                             int64_t end_ns, int window_op);
+
 /* Bracket the VBL the guest is about to run.
  *
  * The pad-read probe below fires from deep inside the dispatcher, which knows
@@ -353,6 +398,21 @@ typedef struct {
     uint64_t pad_reads_unattributed; /* speculative / replayed: not this VBL  */
     int64_t  pad_read_offset_max_ns; /* worst first-read delay into the VBL   */
     int64_t  pad_read_age_max_ns;    /* worst age of the sample when read     */
+    /* Host pump loop (thread split only; zero iterations means the loop never
+     * ran, which is the single-threaded path, not a perfect result). `active`
+     * excludes the park, which is the loop idling rather than a cost. */
+    uint64_t host_pump_iters;
+    uint64_t host_pump_long;         /* ... of which crossed the record floor */
+    int64_t  host_pump_active_ns;    /* summed active time                    */
+    int64_t  host_pump_park_ns;      /* summed park: a loop that is not
+                                      * sleeping shows up here and nowhere
+                                      * else, since spinning costs a core
+                                      * without lengthening any iteration    */
+    int64_t  host_pump_max_ns;       /* worst single iteration                */
+    int64_t  host_pump_park_max_ns;  /* longest park: a wait that held the
+                                      * thread past its timeout is a stall,
+                                      * however little work it did          */
+    int64_t  host_pump_events_max_ns;/* worst event pump alone: modal loops   */
 } openpete_pace_census_t;
 
 void openpete_pace_census_get(openpete_pace_census_t* out);

@@ -28,12 +28,18 @@ RECORD_BYTES = 64
 RECORD_LAYOUT = {48: ("<BBHIqqqqq", 1), 64: ("<BBHIqqqqqqq", 2)}
 
 (VBL, PRESENT, SHED, SLIP, INPUT_EDGE, WINDOW, CLOCKSAMPLE, WAKE,
- PRESENT_SPAN, PAD_READ, FLIP, CD_MISS) = range(1, 13)
+ PRESENT_SPAN, PAD_READ, FLIP, CD_MISS, HOST_PUMP) = range(1, 14)
 TYPE_NAMES = {VBL: "VBL", PRESENT: "PRESENT", SHED: "SHED", SLIP: "SLIP",
               INPUT_EDGE: "INPUT_EDGE", WINDOW: "WINDOW",
               CLOCKSAMPLE: "CLOCKSAMPLE", WAKE: "WAKE",
               PRESENT_SPAN: "PRESENT_SPAN", PAD_READ: "PAD_READ",
-              FLIP: "FLIP", CD_MISS: "CD_MISS"}
+              FLIP: "FLIP", CD_MISS: "CD_MISS", HOST_PUMP: "HOST_PUMP"}
+
+# HOST_PUMP flags. A summary record aggregates one reporting window; the rest
+# are single iterations that crossed the record floor. The two shapes share a
+# type because they are one accounting: the summary's totals INCLUDE the
+# individually recorded iterations, and `hp_long` says how many of them.
+HP_SUMMARY, HP_WINDOW, HP_PARKED = 1 << 0, 1 << 1, 1 << 2
 
 # PRESENT / SHED / PRESENT_SPAN kinds, carried in `flags`.
 # REPEAT is the same image presented again (the present thread re-blitting the
@@ -162,6 +168,40 @@ class Record:
     def span_cost_ns(self): return self.b
     @property
     def span_extract_ns(self): return self.c
+
+    # HOST_PUMP accessors — one iteration of the window-owning thread.
+    # `hp_active` is the part that is a COST: the park before it is the loop
+    # idling, and charging it as time spent would report a healthy pump as a
+    # thread that is busy ~100% of the time.
+    @property
+    def hp_summary(self): return bool(self.flags & HP_SUMMARY)
+    @property
+    def hp_park_ns(self): return self.b
+    @property
+    def hp_events_ns(self): return self.c
+    @property
+    def hp_input_ns(self): return self.d
+    @property
+    def hp_window_ns(self): return self.e
+    @property
+    def hp_active_ns(self):
+        return self.t_ns - self.a - self.b
+
+    # HOST_PUMP summary accessors (flags & HP_SUMMARY). Its totals cover every
+    # iteration of the window, including the ones that also got their own
+    # record — `hp_long` is how many those were, not a separate population.
+    @property
+    def hp_iters(self): return self.index
+    @property
+    def hp_active_sum_ns(self): return self.b
+    @property
+    def hp_active_max_ns(self): return self.c
+    @property
+    def hp_events_max_ns(self): return self.d
+    @property
+    def hp_long(self): return self.e
+    @property
+    def hp_park_sum_ns(self): return self.f
 
     # WAKE accessors.
     @property
@@ -394,6 +434,19 @@ def fmt_record(r, epoch_ns):
     if r.type == PRESENT_SPAN:
         return (f"{t:10.4f} SPAN    {'intermediate' if r.flags else 'canonical'} "
                 f"cost {r.b/1e3:8.1f}us (extract {r.c/1e3:8.1f}us)")
+    if r.type == HOST_PUMP:
+        if r.hp_summary:
+            mean = r.hp_active_sum_ns / r.hp_iters if r.hp_iters else 0
+            park = (r.hp_park_sum_ns or 0) / r.hp_iters if r.hp_iters else 0
+            return (f"{t:10.4f} PUMP    summary {r.hp_iters:5} iter(s) "
+                    f"active mean {mean/1e3:7.1f}us max {r.hp_active_max_ns/1e3:9.1f}us "
+                    f"(events {r.hp_events_max_ns/1e3:9.1f}us) "
+                    f"park mean {park/1e3:7.1f}us {r.hp_long} over floor")
+        return (f"{t:10.4f} PUMP    #{r.index:<7} park {r.hp_park_ns/1e3:10.1f}us "
+                f"active {r.hp_active_ns/1e3:9.1f}us = events {r.hp_events_ns/1e3:9.1f} "
+                f"input {r.hp_input_ns/1e3:7.1f} window {r.hp_window_ns/1e3:9.1f}us"
+                f"{' [parked]' if r.flags & HP_PARKED else ''}"
+                f"{' [window op]' if r.flags & HP_WINDOW else ''}")
     if r.type == WAKE:
         return (f"{t:10.4f} WAKE    target {(r.a - epoch_ns)/1e9:.6f}s "
                 f"os {r.b/1e3:+.1f}us behind {r.c/1e3:+.1f}us")
