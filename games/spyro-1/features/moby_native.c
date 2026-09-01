@@ -849,6 +849,9 @@ static long s_us_proj, s_us_walk, s_us_walk_rex, s_us_calls;
  * accumulator the total is neither quantity and has to be corrected by hand
  * before it can be compared against a per-present scope. */
 static int s_walk_in_rex;
+/* Re-extract record-loop split, the two halves a worker fan-out would target:
+ * the per-record field rebuild and the model decode + projection. */
+static long s_us_dec, s_us_fields;
 
 /* OPENPETE_MOBY_TRACE=<moby addr>: per-call gate trace for ONE moby — the
  * canonical extract logs queue membership, the reveal builder logs every
@@ -1163,6 +1166,10 @@ static int moby_run_once_hidden(CPUState* cpu, uint32_t m, unsigned cls) {
  * set. Extends s_recs[]/s_proj[]; build_walk_tris then walks the union.
  * Inert at 4:3 without --no-lod. */
 static uint32_t s_specq_moby[MAX_RECORDS]; static int s_specq_n;   /* last SPEC-pass moby set */
+/* Reveal-producer split: the per-moby field rebuild and the model decode. Under
+ * extended LOD this loop, not the queue pass, is where moby extraction lives. */
+static long s_us_rvdec, s_us_rvfields, s_us_reveal;
+static int tier_dbg_on(void);
 static int occl_record_culled(CPUState* cpu, uint32_t moby);
 static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, int n,
                               const double tr[3], uint32_t header);
@@ -1172,7 +1179,15 @@ static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, in
 static int  occl_verify_begin(uint32_t moby);
 static void occl_verify_end(uint32_t moby, const proj_xy* p, int n);
 static long s_occl_seen, s_occl_culled;
+static int append_revealed_regular_inner(CPUState* cpu);
 static int append_revealed_regular(CPUState* cpu) {
+    if (!tier_dbg_on()) return append_revealed_regular_inner(cpu);
+    uint64_t t0 = openpete_phase_now_us();
+    int n = append_revealed_regular_inner(cpu);
+    s_us_reveal += (long)(openpete_phase_now_us() - t0);
+    return n;
+}
+static int append_revealed_regular_inner(CPUState* cpu) {
     float F = openpete_native_widescreen_factor();
     /* Two reveal modes, composable — each mirrors a retired game-side
      * producer widening, so admission is deliberately liveness-BLIND
@@ -1256,7 +1271,10 @@ static int append_revealed_regular(CPUState* cpu) {
         int in_spec_snap = 0;
         for (int k = 0; k < s_specq_n; k++) if (s_specq_moby[k] == m) { in_spec_snap = 1; break; }
         moby_fields f;
-        int bok = build_moby_record_fields(cpu, m, &f);
+        int bok;
+        { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
+          bok = build_moby_record_fields(cpu, m, &f);
+          if (t0) s_us_rvfields += (long)(openpete_phase_now_us() - t0); }
         if (rdbg) {
             double dsx = 9999.0;
             if (bok && f.TR_raw[2] > 0) dsx = ofx + (double)f.TR_raw[0] * H / (double)f.TR_raw[2];
@@ -1402,8 +1420,11 @@ static int append_revealed_regular(CPUState* cpu) {
             int v = (rmd << 8) - (int)f.TR_raw[2];
             rzsf4 = v < -32768 ? -32768 : (v > 32767 ? 32767 : v);
         }
-        int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0, 0.0, -1.0, f.TR_raw, f.TR_frac, f.M,
-                                      rzsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+        int got;
+        { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
+          got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0, 0.0, -1.0, f.TR_raw, f.TR_frac, f.M,
+                                    rzsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+          if (t0) s_us_rvdec += (long)(openpete_phase_now_us() - t0); }
         if (got <= 0) { cen.dec0++; TRC("skip=decode-0 zsf4=%d", rzsf4); m += 0x58; continue; }
         TRC("REVEALED got=%d zsf4=%d", got, rzsf4);
         if (ver_check) occl_verify_end(m, s_proj + off, got);
@@ -3751,17 +3772,19 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
         if (++s_tier_cnt >= 30) {
             fprintf(stderr, "[moby-tier f=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld lpskip=%ld shband=%ld | "
                     "zsf4-mirror ok=%ld bad=%ld | adopt=%ld fogskip=%ld dyncol-hi=%ld/%d dynmoby-hi=%ld/32 | "
-                    "proj=%ldus walk=%ldus rexwalk=%ldus calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld par=%ld/%ld\n",
+                    "proj=%ldus walk=%ldus rexwalk=%ldus dec=%ldus fld=%ldus rvdec=%ldus rvfld=%ldus rv=%ldus calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld par=%ld/%ld\n",
                     openpete_frame, s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade,
                     s_tier_gpfskip, s_tier_lpskip, s_shband_cull, s_tier_mirror_ok, s_tier_mirror_bad, s_tier_adopt, s_adopt_fogskip,
                     s_tier_dyncol_hi, MAX_DYNCOL, s_tier_dynmoby_hi,
-                    s_us_proj, s_us_walk, s_us_walk_rex, s_us_calls, s_fc_hit, s_fc_miss,
+                    s_us_proj, s_us_walk, s_us_walk_rex, s_us_dec, s_us_fields,
+                    s_us_rvdec, s_us_rvfields, s_us_reveal, s_us_calls, s_fc_hit, s_fc_miss,
                     s_fp_hit, s_fp_miss, s_clerp_recs, s_hold_replayed,
                     s_walk_par, s_walk_par + s_walk_serial);
             s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = s_tier_lpskip = s_shband_cull = s_adopt_fogskip = 0;
             s_tier_mirror_ok = s_tier_mirror_bad = 0; s_tier_adopt = 0; s_tier_cnt = 0;
             s_tier_dyncol_hi = s_tier_dynmoby_hi = 0;
             s_us_proj = s_us_walk = s_us_walk_rex = s_us_calls = 0;
+            s_us_dec = s_us_fields = s_us_rvdec = s_us_rvfields = s_us_reveal = 0;
             s_fc_hit = s_fc_miss = 0; s_hold_replayed = 0; s_clerp_recs = 0;
             s_walk_par = s_walk_serial = 0;
         }
@@ -5674,7 +5697,11 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             }
         }
         moby_fields f;
-        if (!build_moby_record_fields(cpu, mobys[i], &f)) continue;  /* shaded → handled separately */
+        { int bok;
+          uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
+          bok = build_moby_record_fields(cpu, mobys[i], &f);
+          if (t0) s_us_fields += (long)(openpete_phase_now_us() - t0);
+          if (!bok) continue; }   /* shaded → handled separately */
         /* Led coherence (runahead): build_moby_record_fields read the LIVE
          * moby's anim state — under runahead that's the restored REAL tick,
          * which ≈ the table's PREV (led-1): the sub-tick pose pair
@@ -5808,9 +5835,12 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * Read BEFORE the decode: the tier-adjusted vertex-count read
          * ([hdr+8+(ZSF4>>31)], 0 = skip) hides far no-LP-mesh mobys (gems). */
         int zsf4 = fade_snap_get(mobys[i], 1024);
-        int got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0,
-                                      fap, fbp, w0p, hdrp, balpha, gpf_frac,
-                                      f.TR_raw, f.TR_frac, f.M, zsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+        int got;
+        { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
+          got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0,
+                                    fap, fbp, w0p, hdrp, balpha, gpf_frac,
+                                    f.TR_raw, f.TR_frac, f.M, zsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+          if (t0) s_us_dec += (long)(openpete_phase_now_us() - t0); }
         if (got <= 0) continue;
         /* OPENPETE_MOBY_POSTRACE_CLS: final SUBMITTED screen-space centroid —
          * the render-side truth, one step before raster (jitter forensics). */
