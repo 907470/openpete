@@ -1297,10 +1297,26 @@ static void eager_plan(op_time_t now, op_time_t first, op_time_t period,
      * 19-33 against 16 inside a 33.43 ms tick — so the proactive step below
      * could never fire and the level fell only AFTER a span was cut short.
      * That is the oscillation the divisor ladder exists to prevent. */
+    /* How many scenes fit is a question about their SUM, not about one of
+     * them. `eager_tail_cost()` is a per-scene p99.7 bound, which is the right
+     * question between scenes (the produce guard below) and the wrong one
+     * here: pricing all N at once at p99.7 charges every scene the worst
+     * scene's cost, ~2x the true sum, since independent costs average out.
+     * The sum's own spread grows as sqrt(N), so bound it that way -- with
+     * N <= EAGER_MAX_TARGETS the sqrt term is a constant. Being wrong is also
+     * cheap in one direction only: the produce guard still stops at the
+     * deadline, and a cut span is observed and answered by the ladder. */
     const op_time_t tail = eager_tail_cost();
     op_time_t budget = prod_end - now - s_eager.vbl_ema - 1000000;   /* 1 ms safety */
     if (budget < 0) budget = 0;
-    int afford = tail > 0 ? (int)(budget / tail) : ns;
+    int afford;
+    if (s_eager.cost_n >= EAGER_COST_WARMUP && s_eager.cost_ema > 0) {
+        const op_time_t spread = 8 * s_eager.cost_dev;      /* 2 sigma at N = 16 */
+        op_time_t room = budget > spread ? budget - spread : 0;
+        afford = (int)(room / s_eager.cost_ema);
+    } else {
+        afford = tail > 0 ? (int)(budget / tail) : ns;
+    }
     if (s_eager.afford_pin > 0) afford = s_eager.afford_pin;   /* a forced budget, for the policy A/B */
     if (afford < 1) afford = 1;
 
@@ -1376,7 +1392,10 @@ static void eager_produce_one(op_time_t t, int canonical)
     openpete_pace_present_span((uint8_t)kind, t0, t0 + span, rex_ns);
     if (s_eager.cost_n) {
         const op_time_t d = span > s_eager.cost_ema ? span - s_eager.cost_ema : s_eager.cost_ema - span;
-        s_eager.cost_dev = (s_eager.cost_dev * 7 + d) / 8;
+        /* Slower than the mean: the deviation feeds the plan's capacity
+         * verdict, and an 8-sample window is half a tick — short enough that a
+         * single costly scene moves the level and starts a limit cycle. */
+        s_eager.cost_dev = (s_eager.cost_dev * 31 + d) / 32;
     }
     s_eager.cost_ema = s_eager.cost_n ? (s_eager.cost_ema * 7 + span) / 8 : span;
     if (s_eager.cost_n < EAGER_COST_WARMUP) s_eager.cost_n++;
