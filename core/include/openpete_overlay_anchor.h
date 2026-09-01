@@ -72,17 +72,29 @@ void openpete_anchor_reset(openpete_anchor_ledger_t *L,
                            float x_min, float x_max);
 
 /* Claim a w×h block at `a` and report its TOP-LEFT corner in overlay space.
- * TOP_* anchors stack downward from the top margin, BOTTOM_* upward from the
- * bottom; LEFT hugs x_min, RIGHT hugs x_max, CENTER centres in the range. The
- * anchor's cursor then advances by h plus the inter-block gap, so the next
- * claimant at the same anchor lands clear of this one. A block wider than the
- * usable range is placed flush at the range's near edge rather than clipped. */
+ * TOP_* anchors stack downward from the edge, BOTTOM_* upward; LEFT hugs
+ * x_min, RIGHT hugs x_max, CENTER centres in the range. The anchor's cursor
+ * then advances by h plus the inter-block gap, so the next claimant at the
+ * same anchor lands clear of this one. A block wider than the usable range is
+ * placed flush at the range's near edge rather than clipped.
+ *
+ * `margin` is the gap from the screen edge, and it is PER CLAIM rather than a
+ * property of the ledger, because the two kinds of block differ: a toast is a
+ * bordered panel that should not touch the edge, while the stats block is bare
+ * text whose region ALREADY carries its own inset. Charging a shared margin to
+ * both double-pads the second one — which is what pushed the stats readout off
+ * the window edge it used to sit flush against. Pass OPENPETE_ANCHOR_MARGIN
+ * for a panel, 0 for a block that pads itself.
+ *
+ * The cursor tracks CONTENT extent only, so each claimant applies its own
+ * margin and none inherits its predecessor's. */
 void openpete_anchor_place(openpete_anchor_ledger_t *L, int a,
-                           float w, float h, float *out_x, float *out_y);
+                           float w, float h, float margin,
+                           float *out_x, float *out_y);
 
-/* Margin from the window edge, and the gap between stacked blocks (overlay
- * units). Exposed so a caller can size a region against the space that is
- * actually left. */
+/* The standard margin for a block that does NOT pad itself, and the gap
+ * between stacked blocks (overlay units). Exposed so a caller can size a
+ * region against the space that is actually left. */
 #define OPENPETE_ANCHOR_MARGIN 0.012f
 #define OPENPETE_ANCHOR_GAP    0.010f
 

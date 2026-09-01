@@ -7846,6 +7846,10 @@ float openpete_native_overlay_aspect(void) {
     return 4.0f / 3.0f;
 }
 
+float openpete_native_overlay_px_per_unit(void) {
+    return (s_nr.win_h > 0) ? (float)s_nr.win_h : 0.0f;
+}
+
 /* In-game menu glyph geometry (labels/values/title), pushed each frame by the
  * game-side builder. Drawn by draw_menu_overlay over the panel. */
 static openpete_hud_vert s_menu_glyph_verts[MENU_GLYPH_MAX];
@@ -8097,15 +8101,47 @@ static float s_perf_ox, s_perf_oy;   /* the perf block's placed top-left */
  * is the policy: the persistent perf block first, then the OSD's toasts, so a
  * shared corner pushes the transient thing out of the way of the permanent
  * one rather than the reverse. */
+/* Round an overlay-space length/offset to a whole output pixel. */
+static float snap_px(float v, float win_h) {
+    if (win_h <= 0.0f) return v;
+    return (float)(int)(v * win_h + (v >= 0.0f ? 0.5f : -0.5f)) / win_h;
+}
+
 static void overlay_layout_update(void) {
+    const float ph = (s_nr.win_h > 0) ? (float)s_nr.win_h : 0.0f;
     openpete_native_get_overlay_extent(&s_perf_rw, &s_perf_rh);
+    /* Quantize the REGION to whole output pixels. The supersample target is
+     * allocated at round(region * win_h) * N texels, so a region whose pixel
+     * size is fractional makes the composite quad cover a slightly different
+     * area than the target holds — the resolve's N×N blocks then straddle
+     * output pixels and the glyph edges soften. */
+    s_perf_rw = snap_px(s_perf_rw, ph);
+    s_perf_rh = snap_px(s_perf_rh, ph);
+
     float xlo, xhi;
     openpete_anchor_usable_x(openpete_native_overlay_aspect(), &xlo, &xhi);
     openpete_anchor_reset(&s_anchor_ledger, xlo, xhi);
-    if (perf_overlay_should_draw())
+    if (perf_overlay_should_draw()) {
+        /* Margin 0: the perf REGION already carries its own padding
+         * (PERF_ORIGIN_X/Y inset the text inside it), so the block sits flush
+         * against the window edge exactly as it did before it moved onto the
+         * ledger. Charging it the standard margin too moved the readout ~5 px
+         * inward, off the frame edge and onto the picture — which reads as a
+         * loss of crispness, because olive-gold text over a bright sky has far
+         * less contrast than the same text over the frame's dark border. */
         openpete_anchor_place(&s_anchor_ledger, s_perf_anchor,
-                              ovl_region_w(), ovl_region_h(),
+                              ovl_region_w(), ovl_region_h(), 0.0f,
                               &s_perf_ox, &s_perf_oy);
+        /* And quantize the PLACEMENT. This is the half that regressed when the
+         * block moved onto the ledger: it used to sit at overlay (0,0), which
+         * is pixel-aligned by construction, and the ledger's margin put it at
+         * a fractional offset (0.012 * 480 = 5.76 px at the default window).
+         * A fractional translation shifts EVERY source block off its output
+         * pixel, which reads as a soft counter — the same 1:1
+         * output-pixel-to-block rule the toast quads already follow. */
+        s_perf_ox = snap_px(s_perf_ox, ph);
+        s_perf_oy = snap_px(s_perf_oy, ph);
+    }
 }
 
 /* (Re)create ovl_ss at OVL_SS_FACTOR× the overlay region and rebuild the

@@ -264,6 +264,15 @@ void openpete_native_set_mod_overlay(const openpete_hud_vert *verts, int nverts)
  * [0, 1]. Falls back to 4:3 before the window exists. */
 float openpete_native_overlay_aspect(void);
 
+/* Output pixels per overlay unit — i.e. the window height. A game-side text
+ * builder needs it to SNAP a computed origin to a whole pixel: text that is
+ * right-aligned or centred derives its origin from the measured string, so
+ * the origin moves by a fraction of a pixel whenever the text changes, and
+ * the glyphs land at a different sub-pixel phase each time. Left-aligned text
+ * never had the problem because its origin is a constant. 0 before the window
+ * exists. */
+float openpete_native_overlay_px_per_unit(void);
+
 /* Hand the native renderer the in-game settings menu's glyph geometry (the row
  * labels/values/title, built game-side by text_moby_native from the same 3D gold
  * glyph mobys, with the selected row's per-glyph yaw baked in). Same overlay

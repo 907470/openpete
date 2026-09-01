@@ -54,14 +54,15 @@ void openpete_anchor_reset(openpete_anchor_ledger_t *L,
 }
 
 void openpete_anchor_place(openpete_anchor_ledger_t *L, int a,
-                           float w, float h, float *out_x, float *out_y) {
+                           float w, float h, float margin,
+                           float *out_x, float *out_y) {
     float x = 0.0f, y = 0.0f;
     if (!L || a < 0 || a >= OPENPETE_ANCHOR_COUNT) {
         if (out_x) *out_x = 0.0f;
         if (out_y) *out_y = 0.0f;
         return;
     }
-    const float M = OPENPETE_ANCHOR_MARGIN;
+    const float M = margin;
     const float lo = L->x_min + M, hi = L->x_max - M;
 
     if (openpete_anchor_is_right(a))        x = hi - w;

@@ -432,6 +432,14 @@ void text_moby_native_perf_overlay(CPUState* cpu) {
     /* Align EACH LINE, not the block: the lines differ in length, and aligning
      * the block alone would leave a right-anchored readout with a ragged right
      * edge against the screen edge it is hugging. */
+    /* Right-aligned and centred text derives its origin from the MEASURED
+     * string, so the origin moves whenever the readout does — and the readout
+     * changes twice a second. Unsnapped, that lands the glyphs at a different
+     * sub-pixel phase every update, which reads as the counter softening and
+     * crawling rather than simply changing value. Left-aligned text never had
+     * this: its origin is a constant. Snap to a whole output pixel so every
+     * update reproduces the same phase. */
+    const float ppu = openpete_native_overlay_px_per_unit();
     int nv = 0;
     for (int i = 0; i < nl && nv < PERF_OVL_MAX; i++) {
         float x = PERF_ORIGIN_X;
@@ -440,6 +448,7 @@ void text_moby_native_perf_overlay(CPUState* cpu) {
         } else if (openpete_anchor_is_center(anchor)) {
             x = 0.5f * (region_w - measure_string(lines[i], PERF_CAP_H));
         }
+        if (ppu > 0.0f) x = (float)(int)(x * ppu + 0.5f) / ppu;
         if (x < PERF_ORIGIN_X) x = PERF_ORIGIN_X;   /* never start off the region */
         /* One buffer, one push: each line emits into the tail of what the
          * previous one wrote, so the whole readout reaches the renderer as a
