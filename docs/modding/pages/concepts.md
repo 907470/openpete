@@ -134,12 +134,13 @@ written under a different allocation layout — a config edit that changed
 a size — is refused with the mod and entry named, never restored into
 the wrong place.
 
-!!! note "One caveat inherited from the moby format, for now"
-    Animated-model vertex streams are referenced through a 21-bit field,
-    so a payload of that shape currently needs `OP_GALLOC_LOW`. That flag
-    is transitional and leaves the SDK before v1: a stream-handle
-    resolver at the game's readers replaces it, and no mod will ever
-    choose where its memory lives.
+!!! note "Animated models: stream handles"
+    An animation frame word references its vertex stream through a
+    21-bit field, which cannot hold an arena address. Ask
+    `api->vstream_handle` for a handle to the stream's vaddr and write
+    the handle into the field; the game's readers resolve it. Request
+    handles at entry, in a fixed order, once per stream — they are
+    ledgered like allocations.
 
 ## Services
 

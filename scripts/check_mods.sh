@@ -373,7 +373,7 @@ say "[test] blocks via tools/modtest.py (the harness modders run)"
 if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
         mods/double-gems mods/natural-gems mods/lib-and-client \
         mods/hud-stopwatch \
-        mods/arena-probe mods/arena-canary \
+        mods/arena-probe mods/arena-canary mods/vstream-rehandle \
         mods/hd-single-texture mods/music-swap mods/spyro3 \
         mods/supercharge-anywhere; then
     ok "modtest runner: all [test] blocks green"
@@ -466,6 +466,86 @@ if printf '%s\n' "$out" | grep -q "row #0 superseded" && \
     ok "Apply (changed shape): row superseded, pre-Apply file REFUSED naming the mod and entry"
 else
     bad "Apply (changed shape): file written against a superseded row was not refused"
+fi
+
+# ── 13b. stream handles: every 21-bit field reader resolves handles ───
+# vstream-rehandle rewrites EVERY animated model's frame words in the level
+# to stream handles — mode 1 bound to the streams in place, mode 2 bound to
+# arena copies (the total-conversion shape). The rendered frame must equal
+# stock byte-for-byte: the readers are the 21 substituted sites plus the
+# native walks, so a pixel difference is a reader that resolved a handle
+# differently from an address. Engagement: the census line must show
+# handle resolutions and no unresolved field.
+say "stream handles: rehandled level renders pixel-identical to stock"
+SHOT_FRAME=2800
+for v in stock mode1 mode2; do
+    rm -rf "$WORK/vh-$v"; mkdir -p "$WORK/vh-$v"
+    : > "$WORK/vh-$v/enabled.txt"
+done
+cp -r "$MODS_SRC/vstream-rehandle" "$WORK/vh-mode1/vstream-rehandle"
+cp -r "$MODS_SRC/vstream-rehandle" "$WORK/vh-mode2/vstream-rehandle"
+rm -rf "$WORK"/vh-mode*/vstream-rehandle/.build
+echo vstream-rehandle > "$WORK/vh-mode1/enabled.txt"
+echo vstream-rehandle > "$WORK/vh-mode2/enabled.txt"
+printf 'mode = 2\n' > "$WORK/vh-mode2/vstream-rehandle/config.toml"
+vh_run() { # vh_run <variant> -> log on stdout; the native capture lands
+           # at $WORK/vh-<variant>-vk.png (the renderer suffixes its variant)
+    rm -f "$WORK/vh-$1-vk.png"
+    run_game "$WORK/vh-$1" 3000 --skip-to-level stone_hill \
+        --screenshot-on-frame $SHOT_FRAME --screenshot-native-only \
+        --screenshot-output "$WORK/vh-$1.png"
+}
+out_stock="$(vh_run stock)"
+out_m1="$(vh_run mode1)"
+out_m2="$(vh_run mode2)"
+if [ -s "$WORK/vh-stock-vk.png" ] && [ -s "$WORK/vh-mode1-vk.png" ] && [ -s "$WORK/vh-mode2-vk.png" ]; then
+    ok "three captures written"
+else
+    bad "a capture is missing (stock/mode1/mode2)"
+fi
+for v in m1 m2; do
+    eval "o=\$out_$v"
+    if printf '%s\n' "$o" | grep -q "vstream-rehandle: level rehandled" && \
+       printf '%s\n' "$o" | grep -qE "\[vstream\] stock=[0-9]+ handle=[1-9][0-9]* unresolved=0 "; then
+        ok "$v: level rehandled; handle resolutions counted, none unresolved"
+    else
+        bad "$v: fixture never engaged, or a field resolved to nothing"
+    fi
+done
+if cmp -s "$WORK/vh-stock-vk.png" "$WORK/vh-mode1-vk.png"; then
+    ok "mode 1 (handles in place): pixel-identical to stock"
+else
+    bad "mode 1 (handles in place): DIFFERS from stock"
+fi
+if cmp -s "$WORK/vh-stock-vk.png" "$WORK/vh-mode2-vk.png"; then
+    ok "mode 2 (streams in the arena): pixel-identical to stock"
+else
+    bad "mode 2 (streams in the arena): DIFFERS from stock"
+fi
+
+# supercharge-anywhere injects a captured Spyro animation whose frame words
+# are halved-encoding fields: capture on a ramp level, then inject on a
+# level without one — every frame word must carry a handle.
+say "stream handles: supercharge injection carries halved-encoding handles"
+rm -rf "$WORK/sc"; mkdir -p "$WORK/sc"
+cp -r "$MODS_SRC/supercharge-anywhere" "$WORK/sc/supercharge-anywhere"
+rm -rf "$WORK/sc/supercharge-anywhere/.build" "$WORK/sc/supercharge-anywhere/data"
+echo supercharge-anywhere > "$WORK/sc/enabled.txt"
+# The user's config.toml may ship the force switched off; the injection
+# only runs while it is on.
+printf 'start_enabled = true\n' > "$WORK/sc/supercharge-anywhere/config.toml"
+out="$(run_game "$WORK/sc" 3000 --skip-to-level tree_tops)"
+if printf '%s\n' "$out" | grep -q "captured authentic anim-45"; then
+    ok "ramp level: authentic animation captured"
+else
+    bad "ramp level: no capture"
+fi
+out="$(OPENPETE_VSTREAM_FATAL=1 run_game "$WORK/sc" 3500 --skip-to-level stone_hill)"
+if printf '%s\n' "$out" | grep -qE "[0-9]+ frame words carry stream handles" && \
+   printf '%s\n' "$out" | grep -q "openpete-exit: reason=frame-limit"; then
+    ok "injected animation: frame words carry handles; run clean with unresolved fatal"
+else
+    bad "injected animation did not carry handles, or the run aborted"
 fi
 
 # ── 14. per-modset save safety: tag + warn + adopt (memcard sidecar) ────

@@ -208,6 +208,7 @@ add_library(openpete_core STATIC
     # PSX RAM virtualization region table — backs cold-path memory
     # resolvers. See notes/plans/openpete-ram-virtualization.md.
     runtime/psx_region.c
+    runtime/vstream.c
 
     # Phase 1d: cooperative scheduler globals (host/game fiber, frame counter).
     runtime/fiber.c
@@ -509,6 +510,18 @@ if(NOT CMAKE_HOST_WIN32)
         COMMAND ${CMAKE_COMMAND} -E echo "Checking scene-producer clocks..."
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/clock_guard.py ${CMAKE_SOURCE_DIR}
         COMMENT "clock fence: scene producers read the present clock, not the wall clock"
+        VERBATIM)
+
+    # The moby frame word's 21-bit stream field is decoded by one idiom at
+    # 21 sites; each is substituted with the stream-handle resolver. A
+    # missed reader walks garbage vertices silently, so the census over the
+    # GENERATED C (opcode words, not C text) and the manifest must agree,
+    # and every row's line must carry the substitution (a stale regen runs
+    # the stock decode).
+    add_custom_target(openpete_vstream_sites ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "Checking frame-word field readers..."
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/vstream_sites.py ${CMAKE_SOURCE_DIR}
+        COMMENT "vstream fence: every 21-bit field reader is substituted, at its srl"
         VERBATIM)
 
     # Launcher hygiene, the two silent-failure defaults. A scripted run must

@@ -154,6 +154,14 @@ int32_t psx_runtime_cone_widen_permoby(int32_t mac1_abs, int32_t a2,
                                        int32_t mac3, int32_t a3);
 int32_t psx_runtime_cone_widen_shaded(int32_t mac1_abs, int32_t mac3);
 
+/* Moby vertex-stream field ReplaceCall hooks (channel moby_vstream_field):
+ * substitute the `srl rd, rt, 11|10` of the game's field-decode idiom.
+ * The source register holds the frame word << 11; the hook undoes the
+ * shift and resolves the 21-bit field through the stream-handle table
+ * (core/runtime/vstream.c) — stock values pass through bit-identical. */
+uint32_t psx_runtime_vstream_moby(uint32_t rt);
+uint32_t psx_runtime_vstream_halved(uint32_t rt);
+
 /* Flag-gated store hooks (void ReplaceCall — emitted as `hook(cpu, ea, val);`
  * replacing the original sb). Defined in games/spyro-1/features/
  * render_decouple.c. */

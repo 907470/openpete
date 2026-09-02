@@ -23,6 +23,8 @@ psx_runtime_dist_gate_upper
 psx_runtime_mwasdrawn_clear_store
 psx_runtime_mwasdrawn_store
 psx_runtime_part_cull_4vert
+psx_runtime_vstream_moby
+psx_runtime_vstream_halved
 psx_runtime_part_cull_sx1
 psx_runtime_part_cull_sx2
 psx_runtime_part_drawn_store

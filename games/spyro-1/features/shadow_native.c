@@ -28,6 +28,7 @@
 // (--renderer vk|ab|diff; scene feed); inert fall-through otherwise.
 
 #include "feature_registry.h"
+#include "openpete_vstream.h"
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
@@ -209,7 +210,7 @@ static void shadow_spyro_dump(CPUState* cpu) {
         uint32_t subB = cpu->read_word(models0 + (((selX >> 8) & 0xFF) << 2) + 0x38);
         uint32_t vdA = cpu->read_word(subA + ((selY & 0xFF) << 2) + 0x24);
         uint32_t vdB = cpu->read_word(subB + (((selY >> 8) & 0xFF) << 2) + 0x24);
-        uint32_t vmA = (vdA & 0x1FFFFFu) << 1, vmB = (vdB & 0x1FFFFFu) << 1;
+        uint32_t vmA = openpete_vstream_addr(vdA & 0x1FFFFFu, 1), vmB = openpete_vstream_addr(vdB & 0x1FFFFFu, 1);
         fprintf(stderr, "  nav: subA=%08X subB=%08X vdA=%08X->%08X vdB=%08X->%08X\n",
                 subA, subB, vdA, vmA, vdB, vmB);
         fprintf(stderr, "  keyframe A words: %08X %08X   B words: %08X %08X\n",
@@ -677,8 +678,9 @@ static void shadow_spyro_build(CPUState* cpu) {
     if (factor != 0) {                  /* hi-detail: lerp two keyframes */
         uint32_t subA = cpu->read_word(models0 + ((selX & 0xFF) << 2) + 0x38);
         uint32_t subB = cpu->read_word(models0 + (((selX >> 8) & 0xFF) << 2) + 0x38);
-        uint32_t vmA = (cpu->read_word(subA + ((selY & 0xFF) << 2) + 0x24) & 0x1FFFFFu) << 1;
-        uint32_t vmB = (cpu->read_word(subB + (((selY >> 8) & 0xFF) << 2) + 0x24) & 0x1FFFFFu) << 1;
+        /* Spyro's frame words carry the stream address halved (or a handle); the resolver undoes both. */
+        uint32_t vmA = openpete_vstream_addr(cpu->read_word(subA + ((selY & 0xFF) << 2) + 0x24) & 0x1FFFFFu, 1);
+        uint32_t vmB = openpete_vstream_addr(cpu->read_word(subB + (((selY >> 8) & 0xFF) << 2) + 0x24) & 0x1FFFFFu, 1);
         uint32_t aw[2] = { cpu->read_word(vmA), cpu->read_word(vmA+4) };
         uint32_t bw[2] = { cpu->read_word(vmB), cpu->read_word(vmB+4) };
         for (int i = 0; i < 8; i++) {
@@ -688,7 +690,7 @@ static void shadow_spyro_build(CPUState* cpu) {
         }
     } else {                            /* lo-detail: single keyframe (selX.lo) */
         uint32_t sub = cpu->read_word(models0 + ((selX & 0xFF) << 2) + 0x38);
-        uint32_t vm = (cpu->read_word(sub + ((selY & 0xFF) << 2) + 0x24) & 0x1FFFFFu) << 1;
+        uint32_t vm = openpete_vstream_addr(cpu->read_word(sub + ((selY & 0xFF) << 2) + 0x24) & 0x1FFFFFu, 1);
         uint32_t w[2] = { cpu->read_word(vm), cpu->read_word(vm+4) };
         for (int i = 0; i < 8; i++) sil[i] = (uint8_t)((w[i>>2] >> ((i&3)*8)) & 0xFF);
     }

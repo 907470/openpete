@@ -242,8 +242,11 @@ static int ops_set_level_name(CPUState* cpu, int level_id,
         if (strcmp(s_park[i].text, clean) == 0) gaddr = s_park[i].gaddr;
     if (!gaddr) {
         void* host = NULL;
-        gaddr = openpete_mods_guest_alloc_low((uint32_t)n + 1u, 4u, &host,
-                                              "level-names");
+        /* The title table holds full pointers, so the string can live in
+         * the arena; parked once and never rewritten. */
+        gaddr = openpete_mods_guest_alloc((uint32_t)n + 1u, 4u,
+                                          OP_GALLOC_IMMUTABLE, &host,
+                                          "level-names");
         if (!gaddr || !host) return -1;
         memcpy(host, clean, (size_t)n + 1u);
         if (s_park_n < (int)(sizeof s_park / sizeof s_park[0])) {

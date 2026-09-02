@@ -13,7 +13,7 @@
 id      = "supercharge-anywhere"
 name    = "Supercharge Anywhere"
 version = "0.3.0"
-api     = 8              # notify() (the toggle announces itself)
+api     = 9              # vstream_handle (injected frame words)
 state    = "rebuildable"  # only host fact the world depends on is the
                           # park vaddr; the park bytes are canonical RAM
                           # and the next inject re-parks lazily

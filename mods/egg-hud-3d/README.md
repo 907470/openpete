@@ -23,7 +23,7 @@ The inventory's dark "uncollected" marks are static and keep their sprite.
 - `func_80022A2C` (the shaded-moby renderer, the one call every screen
   makes) is pre-hooked: one parked `Moby` per record is appended to the
   render list, then the original runs.
-- Mobys live in a 42-slot park in the low guest window, one fixed slot per
+- Mobys live in a 42-slot park in the guest arena, one fixed slot per
   emitter position, so each egg keeps a stable address for the engine's
   per-object interpolation.
 

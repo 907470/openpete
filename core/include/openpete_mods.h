@@ -147,8 +147,7 @@ void openpete_mods_bk2_query(openpete_mods_bk2_status_t* out);
 /* Guest scratch arena (core/mods/mod_arena.c): session-lifetime bump
  * allocator in the >2MB expansion window, registered as a psx_runtime
  * region — guest-addressable through the standard accessors, host-
- * addressable via *host_view. flags = OP_GALLOC_* (IMMUTABLE is the
- * only one the high arena honours). Every allocation is ledgered by
+ * addressable via *host_view. flags = OP_GALLOC_*. Every allocation is ledgered by
  * (owner, per-owner call index); the ledger is what the carry gate,
  * re-entry replay and the savestate verdict all consume. Returns the
  * guest vaddr, 0 on failure (exhausted, ledger full, bad args). */
@@ -174,14 +173,12 @@ void           openpete_mods_arena_mem_restore(const void* bytes,
                                                uint32_t used);
 void           openpete_mods_arena_immutable_check(const char* when);
 
-/* Low park window (mod_arena.c): canonical-RAM bump allocator below the
- * game's EXE image, for payloads with narrow address fields (21-bit
- * Spyro anim vertex offsets). The GAME registers the window at boot;
- * allocation fails loudly before that. */
-void     openpete_mods_arena_low_init(uint32_t base, uint32_t size);
-uint32_t openpete_mods_guest_alloc_low(uint32_t size, uint32_t align,
-                                       void** host_view,
-                                       const char* owner);
+/* Stream handle (mod_arena.c): the index a mod writes into a frame
+ * word's 21-bit field in place of a stream vaddr that will not fit. Same
+ * vaddr -> same handle; every call is a ledger row (replayed on re-entry,
+ * verified on load). 0 = refused (vaddr 0, kernel area, table or ledger
+ * full). */
+uint32_t openpete_mods_vstream_handle(uint32_t vaddr, const char* owner);
 
 /* One-shot mod sound (core/host/mod_sound.c): host-side additive OpenAL
  * playback of a PCM WAV at `path`, gain-clamped [0,4]. Sim-neutral by
@@ -849,7 +846,7 @@ int openpete_mods_runahead_capable(const char** offender);
  * undeclared mod. */
 int openpete_mods_state_safe(const char** offender);
 
-/* Arena state section (both ledgers + the arena's used bytes),
+/* Arena state section (the ledger + the arena's used bytes),
  * serialized with the engine state. verdict() prefix-matches the live
  * ledgers against the saved ones pre-commit, superseded marks included
  * (-1 = refuse); apply() adopts saved rows the live session has not

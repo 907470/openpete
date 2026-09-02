@@ -215,3 +215,17 @@ target_include_directories(openpete_osd_test PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/SDL/include)
 set_target_properties(openpete_osd_test PROPERTIES C_STANDARD 11)
 add_test(NAME openpete_osd_test COMMAND openpete_osd_test)
+
+# vstream_test — the moby vertex-stream resolver + handle table
+# (core/runtime/vstream.c): stock pass-through, handle indexing in both
+# encodings, bind-once entries, and the bounded host alias through a
+# registered region reached via a top-bit-masked (KUSEG) pointer.
+add_executable(vstream_test
+    vstream_test.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/vstream.c
+    ${CMAKE_SOURCE_DIR}/core/runtime/psx_region.c)
+target_include_directories(vstream_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+set_target_properties(vstream_test PROPERTIES C_STANDARD 99)
+add_test(NAME vstream_test COMMAND vstream_test)

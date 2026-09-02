@@ -97,14 +97,4 @@ void spyro1_moby_ops_register(void) {
     };
     openpete_mods_sfx_set_def_names(
         k_def_names, (int)(sizeof k_def_names / sizeof k_def_names[0]));
-    /* Low park window for guest_alloc_low: kernel area below the EXE
-     * image (0x80010000). Bounds are EMPIRICAL, not the whole kernel
-     * region: a payload at 0x80008000 fed the game's twinkle-particle
-     * reader garbage (gem model rows point into the park; that reader
-     * expects stock layout) and the wild OT-link writes poisoned RAM —
-     * 2026-07-11 hang. 0xB000.. hosted the chest pack for a full
-     * session without incident; models whose ROWS gameplay readers
-     * chase should still prefer the high arena unless the format
-     * forces low addresses (21-bit anim vertex offsets). */
-    openpete_mods_arena_low_init(0x8000B000u, 0x5000u);
 }

@@ -121,8 +121,10 @@ extern int g_cdXaStartVBL;
  * framing, arena ledger, ...). Part of the ident hash, so a bump cleanly
  * orphans older files. 4 = P2b (arena section, MSv2 mods framing).
  * 5 = virtual XA music-head anchor joined the CD section. */
-/* 6 = arena section v2: high-arena ledger + the arena's used bytes. */
-#define OPENPETE_STATE_ABI 6u
+/* 6 = arena section v2: high-arena ledger + the arena's used bytes.
+ * 7 = arena section v3: one ledger with allocation + stream-handle rows;
+ *     the low-park ledger is gone with the low allocator. */
+#define OPENPETE_STATE_ABI 7u
 
 /* Just the register file — the function-pointer tail of CPUState is
  * runtime-only, must not be saved or restored. */

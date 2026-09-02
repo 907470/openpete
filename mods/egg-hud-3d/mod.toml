@@ -9,7 +9,7 @@
 # --render-fps the egg spins and slides smoothly where the sprite stepped.
 #
 # Guest writes: the shaded render list (scratch, rebuilt every tick) and
-# a small park of Moby structs in the low window. The egg state machine
+# a small park of Moby structs in the guest arena. The egg state machine
 # and every sprite rectangle the game computes are untouched.
 
 [mod]

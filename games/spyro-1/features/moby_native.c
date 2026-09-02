@@ -29,6 +29,7 @@
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "openpete_psx.h"
+#include "openpete_vstream.h"       /* frame-word field -> stream address (handles) */
 #include "openpete_subtick_view.h"            /* openpete_psx_to_host_ptr (SPEC scratch bracket) */
 #include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
@@ -325,22 +326,47 @@ static void hex_dump(CPUState* cpu, uint32_t start, uint32_t end) {
 /* One moby vertex stream (frame A or B): packed 11/11/10 literals interleaved
  * with 5/5/5 short-deltas, the bit-0 flag of each word selecting the next. A
  * literal RESETS the accumulator; a short ADDS. */
-typedef struct { uint32_t litp, shortp; int VX, VY, VZ, flag, s5; } vstream;
+typedef struct {
+    uint32_t litp, shortp;
+    /* Bounded host alias of the stream's mapping: reads inside
+     * [base_va, base_va + len) go straight to host memory, anything else
+     * takes the guest access path. A stream parked past 2 MB therefore
+     * costs the region lookup once per stream, not once per vertex. */
+    const uint8_t* base; uint32_t base_va, len;
+    int VX, VY, VZ, flag, s5;
+} vstream;
+static inline uint32_t vs_read_word(CPUState* cpu, const vstream* s, uint32_t va) {
+    if (s->base && va >= s->base_va && va - s->base_va + 4u <= s->len) {
+        uint32_t w; memcpy(&w, s->base + (va - s->base_va), 4); return w;
+    }
+    return cpu->read_word(va);
+}
+static inline uint32_t vs_read_half(CPUState* cpu, const vstream* s, uint32_t va) {
+    if (s->base && va >= s->base_va && va - s->base_va + 2u <= s->len) {
+        uint16_t h; memcpy(&h, s->base + (va - s->base_va), 2); return h;
+    }
+    return cpu->read_half(va);
+}
 static void vstream_init(CPUState* cpu, vstream* s, uint32_t frame, int s5) {
     uint32_t fw0 = cpu->read_word(frame), fw1 = cpu->read_word(frame + 4);
-    s->litp   = (fw0 & 0x1FFFFFu) | 0x80000000u;
+    /* The frame word's 21-bit field is a byte address or a stream handle;
+     * the resolver decides (openpete_vstream.h). Stock values come back as
+     * the KUSEG byte address, which the game reads through KSEG0. */
+    uint32_t va = openpete_vstream_resolve(fw0 & 0x1FFFFFu, 0, &s->base, &s->len);
+    s->litp   = va | 0x80000000u;
+    s->base_va = s->litp;
     s->shortp = s->litp + ((fw1 >> 24) & 0xFFu) * 4u;
     s->VX = s->VY = s->VZ = s->flag = 0; s->s5 = s5;
 }
 static void vstream_next(CPUState* cpu, vstream* s, int first) {
     if (first || s->flag == 0) {
-        uint32_t w = cpu->read_word(s->litp); s->litp += 4;
+        uint32_t w = vs_read_word(cpu, s, s->litp); s->litp += 4;
         s->VZ = (int32_t)w >> 21;
         s->VX = (int32_t)(w << 10) >> 21;
         s->VY = (int32_t)(w << 20) >> 19;
         s->flag = (int)(w & 1u);
     } else {
-        int16_t d = (int16_t)cpu->read_half(s->shortp); s->shortp += 2;
+        int16_t d = (int16_t)vs_read_half(cpu, s, s->shortp); s->shortp += 2;
         s->VZ += ((int32_t)d >> 11) << s->s5;                       /* sra11 */
         s->VX -= ((int32_t)((uint32_t)(int32_t)d << 21) >> 27) << s->s5;
         s->VY -= ((int32_t)((uint32_t)(int32_t)d << 26) >> 27) << s->s5;

@@ -20,12 +20,14 @@
  *     stream carries index 45 (a ramp level), snapshot that record's raw
  *     (pre-rebased) bytes — from the USER's own disc — and cache them (RAM +
  *     the mod's data dir, so it persists across sessions).
- *   - INJECT: on levels lacking it, park the captured blob in low guest RAM
- *     (guest_alloc_low — required: the frames hold 21-bit halved vertex
- *     addresses) and replay PatchInSpyroAnimations' own per-record pointer
+ *   - INJECT: on levels lacking it, park the captured blob in the guest
+ *     arena and replay PatchInSpyroAnimations' own per-record pointer
  *     re-basing against THIS level's Spyro model (its base mesh m_Data is
- *     level-invariant), then point m_Animations[45] at it. Ramp levels keep
- *     their native animation untouched.
+ *     level-invariant), then point m_Animations[45] at it. The frame words'
+ *     21-bit halved vertex-stream fields cannot reach the arena, so each
+ *     frame's stream is exchanged for a stream handle once, at the first
+ *     park; only the model-relative pointers are re-based per level. Ramp
+ *     levels keep their native animation untouched.
  *   Until a ramp level has been visited once (no cache yet), we fall back to
  *   aliasing index 45 to a present locomotion animation so nothing faults.
  *
@@ -92,9 +94,13 @@ static const char* const g_anim_kind_name[] = {
     "authentic (injected)",  "aliased (fallback)"
 };
 
-/* Low-RAM park for the injected copy (allocated once, tick context). */
+/* Arena park for the injected copy (allocated once, tick context), and the
+ * blob with its frame words already carrying stream handles — built once
+ * at the first park, copied per level. */
 static uint32_t g_park_vaddr = 0;
 static void*    g_park_host  = 0;
+static unsigned char g_blob_handled[BLOB_MAX];
+static int      g_blob_handled_ok = 0;
 
 /* Host-state posture (manifest: state = "rebuildable"): the only host
  * fact the guest world depends on is the park vaddr, and the park's
@@ -174,19 +180,50 @@ OP_OVERRIDE_IMPL_PatchInSpyroAnimations(sc_capture) {
 
 /* ---- inject: park the captured blob and re-base it for THIS level ------- */
 
+/* Once per session: the park's address fixes every frame's stream vaddr
+ * (park + frames + numFrames*4 + the raw field), so exchange each for a
+ * stream handle in frame order and keep the result as the copy source.
+ * Handles are requested in a fixed order from one place, so the sequence
+ * is identical every session and every level. */
+static int build_handled_blob(void) {
+    if (g_blob_handled_ok) return 1;
+    memcpy(g_blob_handled, g_blob, g_blob_len);
+    unsigned char* h = g_blob_handled;
+    int numFrames = *(short*)(h + AH_NUMFRAMES);
+    uint32_t past = g_park_vaddr + AH_FRAMES + (uint32_t)numFrames * 4u;
+    for (int j = 0; j < numFrames; j++) {
+        uint32_t* fd = (uint32_t*)(h + AH_FRAMES + (uint32_t)j * 4u);
+        uint32_t stream = (*fd & 0x001FFFFFu) + past;
+        uint32_t handle = g_api->vstream_handle(g_self, stream);
+        if (!handle) {
+            g_api->log(g_self, OP_MOD_LOG_ERROR,
+                       "no stream handle for frame %d (%08x)", j, stream);
+            return 0;
+        }
+        *fd = (*fd & 0xFFE00000u) | handle;
+    }
+    g_blob_handled_ok = 1;
+    g_api->log(g_self, OP_MOD_LOG_INFO,
+               "supercharge-anywhere: %d frame words carry stream handles "
+               "(park %08x)", numFrames, g_park_vaddr);
+    return 1;
+}
+
 /* Replays PatchInSpyroAnimations' per-record pointer patching for the parked
  * copy against the current Spyro model. Returns the parked guest vaddr. */
 static uint32_t inject_authentic_anim(uint32_t model) {
     if (!g_have_blob || !model) return 0;
 
     if (!g_park_vaddr) {
-        g_park_vaddr = g_api->guest_alloc(g_self, g_blob_len, 16,
-                                          OP_GALLOC_LOW, &g_park_host);
+        g_park_vaddr = g_api->guest_alloc(g_self, g_blob_len, 16, 0,
+                                          &g_park_host);
         if (!g_park_vaddr || !g_park_host) { g_park_vaddr = 0; return 0; }
     }
+    if (!build_handled_blob()) return 0;
 
-    /* Fresh raw copy, then re-base against this level's model. */
-    memcpy(g_park_host, g_blob, g_blob_len);
+    /* Fresh copy (frame words already hold handles), then re-base the
+     * model-relative pointers against this level's model. */
+    memcpy(g_park_host, g_blob_handled, g_blob_len);
     unsigned char* h = (unsigned char*)g_park_host;
 
     uint32_t mdata = op_read_u32(g_api, model + MODEL_MDATA);
@@ -198,13 +235,6 @@ static uint32_t inject_authentic_anim(uint32_t model) {
     uint32_t frames_va = g_park_vaddr + AH_FRAMES;
     uint32_t past      = frames_va + (uint32_t)numFrames * 4u; /* vertex stream */
     *(uint32_t*)(h + AH_ANIMVERTS) += past;
-
-    for (int j = 0; j < numFrames; j++) {
-        uint32_t* fd = (uint32_t*)(h + AH_FRAMES + (uint32_t)j * 4u);
-        uint32_t lower = (((*fd & 0x001FFFFFu) + past) >> 1) & 0x001FFFFFu;
-        uint32_t upper = *fd & 0xFFE00000u;
-        *fd = upper + lower;
-    }
 
     op_write_u32(g_api, anim_slot(model, ANIM_SUPERCHARGE), g_park_vaddr);
     return g_park_vaddr;

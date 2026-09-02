@@ -42,6 +42,7 @@
 #include "openpete_osd.h"     /* toast the changes the player makes */
 #include "feature_registry.h"
 #include "openpete_mods.h"
+#include "openpete_vstream.h"
 #include "features/no_lod.h"
 #include "features/widescreen.h"
 #include "openpete_state.h"
@@ -5227,6 +5228,19 @@ static int run_host_loop(const openpete_options_t* opts) {
         /* stderr, not the log: the roundtrip gate greps this summary. */
         fprintf(stderr, "[ra-predict] checked=%u mismatch=%u invalidated=%u\n",
                 s_ra_pc_checked, s_ra_pc_mismatches, s_ra_pc_invalidated);
+    }
+    {
+        /* Vertex-stream field census (stderr: harnesses grep it). A
+         * non-zero `unresolved` in a run with no handle-writing mod means
+         * a stock frame word lives below the handle bound. */
+        openpete_vstream_census_t vc;
+        openpete_vstream_census(&vc);
+        if (vc.stock || vc.handle || vc.unresolved)
+            fprintf(stderr, "[vstream] stock=%llu handle=%llu unresolved=%llu"
+                    " first=%#x\n", (unsigned long long)vc.stock,
+                    (unsigned long long)vc.handle,
+                    (unsigned long long)vc.unresolved,
+                    vc.first_unresolved);
     }
     openpete_interp_shutdown();
 

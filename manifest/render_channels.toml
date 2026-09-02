@@ -828,3 +828,52 @@ Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
 doc              = "notes/plans/openpete-disable-lods.md"
+
+[[channel]]
+name        = "moby_vstream_field"
+status      = "gated"
+description = """
+Not a render->gameplay leak: a FORMAT limit lifted at its readers. Each
+animation frame word packs the vertex-stream address into bits 0-20 (a
+byte address for moby frames; halved for Spyro's own), so a stream must
+sit in the first 2 MB of RAM and mod model data could never live in the
+arena past it. Every reader decodes the field with one idiom —
+`sll r,r,11 ; srl r,r,11|10` — at the 21 sites below (8 functions, main
+EXE only; the 35 level overlays have none). The `srl` of each pair is
+substituted with a resolver call: a field value >= 0x8000 passes through
+bit-identical (stock), a value below it is a HANDLE into an engine table
+of full 32-bit vaddrs (core/runtime/vstream.c). Stock words never
+address below 0x10000 (the kernel area), which is what makes the range
+free — the full-20k oracle census (`[vstream] ... unresolved=0`) is the
+evidence. The operand is the shift's `rt` field (a shift is R-type with
+rs = 0); the hook undoes the `sll` and resolves. The `sll` stays as
+emitted, dead once its consumer is replaced.
+scripts/fences/vstream_sites.py censuses the GENERATED C by opcode and
+refuses a site missing here, a row naming no site, or a stale regen."""
+substitution_sites = [
+    { addr = 0x8001F9AC, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_moby" },  # func_8001F798 moby renderer, frame A
+    { addr = 0x8001F9CC, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_moby" },  # func_8001F798 frame B
+    { addr = 0x80021148, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_moby" },  # func_80020F34 renderer variant, frame A
+    { addr = 0x80021168, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_moby" },  # func_80020F34 frame B
+    { addr = 0x8004B8B0, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_moby" },  # D_8004B610 collision
+    { addr = 0x8004CC4C, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_moby" },  # D_8004C820 collision
+    { addr = 0x8004DC18, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_moby" },  # func_8004D5EC collision
+    { addr = 0x8004E8A8, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_moby" },  # D_8004E5B8 collision
+    { addr = 0x80052E00, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_moby" },  # func_80052D64 particles/fragments
+    { addr = 0x80052E74, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_moby" },  # func_80052D64
+    { addr = 0x80053170, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_moby" },  # func_800530C0
+    { addr = 0x80052F84, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_halved" },  # func_80052F38 particles, Spyro frame
+    { addr = 0x80023B6C, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_halved" },  # func_80023AC4 Spyro renderer
+    { addr = 0x80023BD8, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_halved" },  # func_80023AC4
+    { addr = 0x80023C48, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_halved" },  # func_80023AC4
+    { addr = 0x80023CC8, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_halved" },  # func_80023AC4
+    { addr = 0x80023D4C, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_halved" },  # func_80023AC4
+    { addr = 0x80023DC8, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_halved" },  # func_80023AC4
+    { addr = 0x80059C20, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_halved" },  # func_80059A48 shadow
+    { addr = 0x80059C28, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_halved" },  # func_80059A48
+    { addr = 0x80059D0C, dest = "rd", operand = "rt", kind = "replace_call", hook = "psx_runtime_vstream_halved" },  # func_80059A48
+]
+determinism_critical = false  # stock values pass through bit-identical; the oracle census proves it
+verified_against = ["psx_oracle"]
+state_regions    = []
+doc              = "notes/plans/openpete-moby-stream-handles.md"

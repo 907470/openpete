@@ -744,14 +744,23 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                 }
                 break;
             case 0x02:                                          // srl
-                /* AppendCall: same generic shape as sll above — the quad
+                /* ReplaceCall: the moby vertex-stream field decode idiom
+                 * (`sll r,r,11 ; srl r,r,11|10`) is substituted at its srl
+                 * with the stream-handle resolver (channel
+                 * moby_vstream_field); `rd = hook(rt)` with rt holding the
+                 * frame word << 11.
+                 * AppendCall: same generic shape as sll above — the quad
                  * variants' gather entry is `srl $a0,$at,6` (rt=$at =
                  * packed corner-index word). */
                 if (auto _cs = channel_sites_.find(addr);
                     _cs != channel_sites_.end()
-                    && _cs->second.kind == ChannelSite::AppendCall) {
+                    && _cs->second.kind == ChannelSite::ReplaceCall) {
+                    code = emit_channel_replace_call(_cs->second, instr);
+                } else if (auto _ca = channel_sites_.find(addr);
+                    _ca != channel_sites_.end()
+                    && _ca->second.kind == ChannelSite::AppendCall) {
                     code = translate_srl(instr)
-                         + emit_channel_append_call(_cs->second, instr);
+                         + emit_channel_append_call(_ca->second, instr);
                 } else {
                     code = translate_srl(instr);
                 }

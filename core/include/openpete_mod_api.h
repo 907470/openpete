@@ -87,15 +87,7 @@ enum {
 
 /* guest_alloc flags. */
 enum {
-    OP_GALLOC_LOW = 1u << 0, /* TRANSITIONAL — leaves the SDK before v1
-                              * ships. Allocate from the low free window
-                              * below the game's EXE image (canonical
-                              * RAM) for payloads whose format addresses
-                              * memory through 21-bit fields (Spyro's
-                              * animated-model frame words). The stream-
-                              * handle resolver replaces this; new mods
-                              * must not use it. */
-    OP_GALLOC_IMMUTABLE = 1u << 1, /* a promise BY THE MOD: once the
+    OP_GALLOC_IMMUTABLE = 1u << 0, /* a promise BY THE MOD: once the
                               * allocating tick completes, neither the
                               * mod nor the game writes these bytes
                               * again. The engine may exempt them from
@@ -288,8 +280,13 @@ typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
  * against the shrink arc, and named as such: the shrink removes machinery
  * that duplicated a better path, and there is no better path for a
  * transient message. ui_status is a persistent panel line behind an
- * overlay the player has to open, which is a different thing and stays. */
-#define OPENPETE_MOD_API_VERSION 8u
+ * overlay the player has to open, which is a different thing and stays.
+ *
+ * 9: vstream_handle() — a stream handle for a frame word's 21-bit field
+ * (pillar 2). With it a model payload lives in the arena like any other
+ * allocation; the OP_GALLOC_LOW placement flag and the low window it
+ * named are gone. */
+#define OPENPETE_MOD_API_VERSION 9u
 
 typedef struct openpete_mod_api {
     uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION (the struct is
@@ -387,10 +384,9 @@ typedef struct openpete_mod_api {
      * entry); survival of `host_view` across handoff; any particular
      * snapshot mechanism, granularity or cost.
      *
-     * Until the engine carries the arena, a mod holding a NON-immutable
-     * allocation makes rewind, runahead, file save and handoff refuse,
-     * naming the mod — the header never says "carried" while the engine
-     * neither carries nor refuses. */
+     * Model data — vertex streams referenced from animation frame
+     * words — is parked here like anything else; the frame word carries
+     * a stream handle from vstream_handle, never an address. */
     uint32_t (*guest_alloc)(openpete_mod_t* self, uint32_t size,
                             uint32_t align, uint32_t flags,
                             void** host_view);
@@ -697,6 +693,23 @@ typedef struct openpete_mod_api {
      * guest(), it is safe to call from a UI section. Empty before the first
      * level finishes loading. */
     int (*moby_classes)(openpete_mod_t* self, uint16_t* out, int cap);
+
+    /* ── api 9 ───────────────────────────────────────────────────────
+     * A stream handle for `stream_vaddr`: the value to write into an
+     * animation frame word's 21-bit vertex-stream field (bits 0-20) in
+     * place of an address that will not fit. The game's readers resolve
+     * it to the full vaddr, so a stream may live anywhere guest_alloc
+     * puts it. The same vaddr always yields the same handle; handles are
+     * small (< 0x8000) and never 0 — 0 is the failure return (vaddr 0, a
+     * vaddr in the kernel area, or the table exhausted).
+     *
+     * Ask at entry, in a fixed order, once per stream: every call is
+     * ledgered like an allocation, replayed on re-entry, and verified
+     * when a savestate loads. A handle sequence that depends on the
+     * order levels were visited makes a savestate from another route
+     * refuse to load. Spyro's own frame words store the address halved;
+     * a handle is written as-is in both encodings. Tick context only. */
+    uint32_t (*vstream_handle)(openpete_mod_t* self, uint32_t stream_vaddr);
 } openpete_mod_api_t;
 
 /* Convenience typed guest accessors. */

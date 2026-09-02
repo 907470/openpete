@@ -192,9 +192,10 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self)
 {
     g_api = api; g_self = self;
     void* host = 0;
-    s_park = api->guest_alloc(self, SLOTS * (uint32_t)sizeof(Moby), 16, OP_GALLOC_LOW, &host);
+    /* Rewritten every tick, so never IMMUTABLE; the arena carries it. */
+    s_park = api->guest_alloc(self, SLOTS * (uint32_t)sizeof(Moby), 16, 0, &host);
     if (!s_park || !host) {
-        api->log(self, OP_MOD_LOG_ERROR, "egg-hud-3d: low park allocation failed");
+        api->log(self, OP_MOD_LOG_ERROR, "egg-hud-3d: park allocation failed");
         return -1;
     }
     s_park_host = (Moby*)host;

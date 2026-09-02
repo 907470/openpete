@@ -430,6 +430,22 @@ static void* api_guest(uint32_t vaddr) {
     if (seg != 0x0u && seg != 0x8u && seg != 0x9u && seg != 0xAu &&
         seg != 0xBu)
         return NULL;
+    /* The kernel area (physical [0, 0x10000)) is the stream-handle range:
+     * a frame word whose 21-bit field addresses it decodes as a handle,
+     * never as bytes. No allocator lands there, so this raw translation
+     * is the one route left for a mod to park data under the bound; it
+     * is refused (NULL), loudly once. Not fatal: a mod chasing a null
+     * model row lands here on a READ, which is harmless. */
+    if (vaddr != 0u && (vaddr & 0x1FFFFFFFu) < 0x10000u) {
+        static int s_warned = 0;
+        if (!s_warned) {
+            s_warned = 1;
+            OPL_WARN_F("mods", "guest(0x%08X): the kernel area is the "
+                       "stream-handle range — no mod data may live below "
+                       "0x10000; refused (NULL)", vaddr);
+        }
+        return NULL;
+    }
     return openpete_psx_to_host_ptr(vaddr);
 }
 
@@ -1143,16 +1159,21 @@ static uint32_t api_guest_alloc(openpete_mod_t* self, uint32_t size,
     if (host_view) *host_view = NULL;
     if (!self) return 0;
     if (purity_violation("guest_alloc")) return 0;
-    if (flags & ~(uint32_t)(OP_GALLOC_LOW | OP_GALLOC_IMMUTABLE)) {
+    if (flags & ~(uint32_t)OP_GALLOC_IMMUTABLE) {
         OPL_ERROR_F("mods", "%s: guest_alloc: unknown flags %#x", self->id,
                     flags);
         return 0;
     }
-    if (flags & OP_GALLOC_LOW)
-        return openpete_mods_guest_alloc_low(size, align, host_view,
-                                             self->id);
     return openpete_mods_guest_alloc(size, align, flags, host_view,
                                      self->id);
+}
+
+/* Stream handle: sim-visible numbering — tick context only. */
+static uint32_t api_vstream_handle(openpete_mod_t* self,
+                                   uint32_t stream_vaddr) {
+    if (!self) return 0;
+    if (purity_violation("vstream_handle")) return 0;
+    return openpete_mods_vstream_handle(stream_vaddr, self->id);
 }
 
 
@@ -1244,6 +1265,7 @@ static const openpete_mod_api_t s_api = {
     .config_str    = openpete_mods_config_str,
     .ui_status     = api_ui_status,
     .notify        = api_notify,
+    .vstream_handle = api_vstream_handle,
     /* pillar 5: present and screen-space draw */
     .register_present_hook = api_register_present_hook,
     .draw_text     = openpete_mods_draw_text,

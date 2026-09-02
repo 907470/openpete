@@ -31,6 +31,8 @@ op_time_t openpete_interp_tick_stamp(void) { return objs_tick_stamp(); }
 op_time_t g_openpete_tick_period_ns = (op_time_t)33430222;  /* 37609/1125000 s */
 
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define SLOTS  OPENPETE_INTERP_OBJ_SLOTS
@@ -118,6 +120,18 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
         s_tab[i].prev_ns   = 0;
         s_tab[i].curr_ns   = objs_tick_stamp();
         s_stat_spawned++;
+        /* OPENPETE_INTERP_OBJS_KEYLOG: one stderr line per spawn, with the
+         * key — the identity instrument for keying tests (a re-keyed object
+         * shows as a spawn every tick it is re-keyed). */
+        {
+            static int s_keylog = -1;
+            if (s_keylog < 0) {
+                const char* e = getenv("OPENPETE_INTERP_OBJS_KEYLOG");
+                s_keylog = (e && *e && *e != '0') ? 1 : 0;
+            }
+            if (s_keylog)
+                fprintf(stderr, "[interp-objs] spawn key=%08x\n", key);
+        }
     }
     memcpy(s_tab[i].curr, data, len);
     s_tab[i].blob_len = (uint8_t)len;
