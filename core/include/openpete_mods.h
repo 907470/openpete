@@ -147,10 +147,25 @@ void openpete_mods_bk2_query(openpete_mods_bk2_status_t* out);
 /* Guest scratch arena (core/mods/mod_arena.c): session-lifetime bump
  * allocator in the >2MB expansion window, registered as a psx_runtime
  * region — guest-addressable through the standard accessors, host-
- * addressable via *host_view. Returns the guest vaddr, 0 on failure.
- * NOT in the engine savestate snapshot; no free. */
+ * addressable via *host_view. flags = OP_GALLOC_* (IMMUTABLE is the
+ * only one the high arena honours). Every allocation is ledgered by
+ * (owner, per-owner call index); the ledger is what the carry gate,
+ * re-entry replay and the savestate verdict all consume. Returns the
+ * guest vaddr, 0 on failure (exhausted, ledger full, bad args). */
+#define OPENPETE_ARENA_OWNER_MAX 64 /* == the loader's MOD_ID_MAX */
 uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
-                                   void** host_view, const char* owner);
+                                   uint32_t flags, void** host_view,
+                                   const char* owner);
+
+/* 1 iff `owner` holds a live (non-superseded) row without
+ * OP_GALLOC_IMMUTABLE — the per-mod half of the carry gate. */
+int openpete_mods_arena_owner_mutable(const char* owner);
+
+/* Carry gate: 1 iff no ENABLED mod holds a non-immutable high-arena
+ * allocation. While 0, rewind, runahead, file save and handoff refuse;
+ * *offender names the first mod. Deleted, not relaxed, once every
+ * snapshot carries the arena. */
+int openpete_mods_arena_carry_safe(const char** offender);
 
 /* Low park window (mod_arena.c): canonical-RAM bump allocator below the
  * game's EXE image, for payloads with narrow address fields (21-bit

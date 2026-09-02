@@ -263,6 +263,20 @@ int openpete_state_slot_present(unsigned slot) {
 
 int openpete_state_save_file(const char* path, const CPUState* cpu,
                              unsigned frame) {
+    /* Every file save — hotkey slot, scheduled --state-save, the handoff
+     * checkpoint — lands here. A file that omits the arena while a mod
+     * holds mutable arena state would restore guest RAM out of step with
+     * that mod's state; refuse, naming the mod. */
+    {
+        const char* offender = NULL;
+        if (!openpete_mods_arena_carry_safe(&offender)) {
+            OPL_ERROR_F("savestate", "%s: save refused — mod \"%s\" holds "
+                        "mutable arena memory this file format does not "
+                        "carry", path, offender ? offender : "?");
+            return -1;
+        }
+    }
+
 
     FILE* fp = fopen(path, "wb");
     if (!fp) {

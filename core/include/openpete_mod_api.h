@@ -87,17 +87,23 @@ enum {
 
 /* guest_alloc flags. */
 enum {
-    OP_GALLOC_LOW = 1u << 0, /* allocate from the LOW free window below
-                              * the game's EXE image (canonical RAM:
-                              * savestate-carried, visible to every
-                              * access path) instead of the >2MB
-                              * expansion arena. For payloads whose
-                              * format addresses memory through narrow
-                              * fields (Spyro's animated-model frames
-                              * hold 21-bit absolute vertex-stream
-                              * addresses). The window is small (tens of
-                              * KB) — park compact payloads, not
-                              * scratch. */
+    OP_GALLOC_LOW = 1u << 0, /* TRANSITIONAL — leaves the SDK before v1
+                              * ships. Allocate from the low free window
+                              * below the game's EXE image (canonical
+                              * RAM) for payloads whose format addresses
+                              * memory through 21-bit fields (Spyro's
+                              * animated-model frame words). The stream-
+                              * handle resolver replaces this; new mods
+                              * must not use it. */
+    OP_GALLOC_IMMUTABLE = 1u << 1, /* a promise BY THE MOD: once the
+                              * allocating tick completes, neither the
+                              * mod nor the game writes these bytes
+                              * again. The engine may exempt them from
+                              * timeline snapshots, verify the promise,
+                              * and refuse or abort on a detected
+                              * violation. Writing them afterwards is
+                              * undefined. Model parks; never scratch
+                              * the mod rewrites. */
 };
 
 /* Post-process injection points (postfx_register). Points are defined
@@ -342,15 +348,49 @@ typedef struct openpete_mod_api {
      * inside a payload it parked. */
     uint32_t (*guest_addr)(const void* host);
 
-    /* Allocate `size` bytes at a GUEST-addressable vaddr with a typed
-     * HOST view of the same bytes. Default arena: the >2MB expansion
-     * window (NOT savestate-carried — re-derive persistent contents
-     * after a state load; recompiled sites that MASK addresses to 2MB
-     * cannot see it). OP_GALLOC_LOW allocates from the low free window
-     * instead (canonical, savestate-carried, but tens of KB). Session-
-     * lifetime bump, no free; align must be a power of two (0 = arena
-     * default). Returns the guest vaddr, 0 = exhausted/unavailable.
-     * TICK context only. */
+    /* Allocates `size` bytes of guest-addressable memory. Returns the
+     * guest vaddr (0 = exhausted / unavailable / invalid — never
+     * partial) and, via `host_view`, a host alias of the same bytes.
+     * `align` is a power of two (0 = default). Session-lifetime bump;
+     * there is no free — allocate at entry and reuse, the cursor never
+     * returns. Tick context only: call it, and write through
+     * `host_view`, only from entry, tick hooks and toggle hooks — never
+     * from a present hook, a UI section, or a thread of your own.
+     *
+     * Initial contents: zero on first allocation. On re-entry (a reload)
+     * your allocation sequence is replayed — the i-th call with the same
+     * size, alignment and flags returns the same vaddr and view, holding
+     * the bytes as last written, not zero. Initialise what you need
+     * initialised.
+     *
+     * Guaranteed for every allocation: the vaddr and host view are
+     * stable for the process lifetime, and the bytes are reachable
+     * through every engine-owned guest access path (cpu->read_* /
+     * write_*, api->guest).
+     *
+     * Timeline coherence: unless marked OP_GALLOC_IMMUTABLE, the bytes
+     * are timeline state — savestates, rewind, runahead and process
+     * handoff carry and restore them the way they do guest RAM, with one
+     * difference: an allocation made AFTER a snapshot keeps its current
+     * contents when that snapshot is restored; the cursor never rewinds.
+     * Mutable per-session state belongs here, not in host statics.
+     * Because carried bytes cross process boundaries at handoff, they
+     * must never contain host pointers; store guest vaddrs.
+     *
+     * Unknown flags fail the call (returns 0, logs the flag), so a mod
+     * using a future flag on an older engine fails loudly at the
+     * allocation instead of silently landing in the wrong place.
+     *
+     * Explicitly not promised: the arena's numeric base or layout (never
+     * hardcode a vaddr; a savestate whose allocation sequence does not
+     * prefix-match the live session is refused, naming the mod and the
+     * entry); survival of `host_view` across handoff; any particular
+     * snapshot mechanism, granularity or cost.
+     *
+     * Until the engine carries the arena, a mod holding a NON-immutable
+     * allocation makes rewind, runahead, file save and handoff refuse,
+     * naming the mod — the header never says "carried" while the engine
+     * neither carries nor refuses. */
     uint32_t (*guest_alloc)(openpete_mod_t* self, uint32_t size,
                             uint32_t align, uint32_t flags,
                             void** host_view);

@@ -12,9 +12,11 @@
 // Contracts and caveats (documented, not hidden):
 //   - Allocation is a session-lifetime bump (no free): the arena is
 //     scratch, not a heap. 1MB v1; raise when a consumer needs more.
-//   - NOT part of the engine savestate snapshot (that is canonical 2MB
-//     RAM): a mod whose arena data must survive save/load rehydrates it
-//     in its savestate-participation callbacks.
+//   - Timeline state unless a row is marked OP_GALLOC_IMMUTABLE: the
+//     arena's used prefix is carried by every snapshot the way guest RAM
+//     is. Until the carry lands, a mod holding a mutable row makes the
+//     timeline features refuse rather than silently desync
+//     (openpete_mods_arena_carry_safe).
 //   - Recompiled game sites that canonicalize addresses (mask to 2MB)
 //     cannot see arena data — the same per-site limitation every
 //     relocated buffer has (see openpete-ram-virtualization.md). The
@@ -53,17 +55,68 @@
 #define ARENA_BASE 0x80700000u /* clear of the no-lod/polybuf windows */
 #define ARENA_SIZE (1u * 1024u * 1024u)
 
+/* The arena is never realloc'd: every host_view handed out must stay
+ * valid for the process lifetime, and region-per-chunk growth would run
+ * into the runtime's region table. Growth, when it comes, is one
+ * reserve-then-commit mapping in place of this array. */
 static uint8_t  s_arena[ARENA_SIZE];
 static uint32_t s_used = 0;
 static int      s_state = 0; /* 0 unregistered, 1 ok, -1 failed */
 
-uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
-                                   void** host_view, const char* owner) {
-    if (host_view) *host_view = NULL;
-    if (size == 0 || size > ARENA_SIZE) return 0;
-    if (align == 0) align = 8;
-    if (align & (align - 1)) return 0; /* power of two only */
+/* ── High-arena ledger ──────────────────────────────────────────────
+ *
+ * Every allocation is a row keyed by (owner, per-owner call index) and
+ * recording (size, align, flags, offset). The ledger serves three
+ * consumers with one structure and one mismatch semantic:
+ *   - the carry gate: which enabled mods hold NON-immutable rows;
+ *   - replay on re-entry: a reloaded mod's i-th call with matching
+ *     (size, align, flags) is served its existing row — same vaddr,
+ *     same view, bytes as last written — so a reload never orphans
+ *     memory or walks the cursor. A mismatching call falls through to
+ *     a fresh bump and marks the old row SUPERSEDED;
+ *   - the savestate verdict: a file's rows must prefix-match the live
+ *     ledger exactly, superseded marks included — a file whose rows
+ *     reference a row the live session has since superseded would
+ *     restore bytes into an orphan while the mod's handle points at the
+ *     replacement.
+ * Overflow REFUSES the allocation: a ledger that silently stops
+ * recording turns every later verdict into a guess. */
+#define ARENA_ROWS_MAX 256
 
+typedef struct {
+    char     owner[OPENPETE_ARENA_OWNER_MAX];
+    uint32_t call_idx;   /* per-owner allocation sequence number */
+    uint32_t size;
+    uint32_t align;
+    uint32_t flags;      /* OP_GALLOC_* as passed */
+    uint32_t off;        /* arena offset; vaddr = ARENA_BASE + off */
+    uint32_t superseded; /* replaced by a later row on a mismatching replay */
+} arena_row_t;
+
+static arena_row_t s_rows[ARENA_ROWS_MAX];
+static uint32_t    s_rows_n = 0;
+
+/* Per-owner call cursors: reset to 0 when the owner (re)enters so its
+ * allocation sequence replays from the first row. */
+#define ARENA_OWNERS_MAX 64
+typedef struct {
+    char     owner[OPENPETE_ARENA_OWNER_MAX];
+    uint32_t next_call;
+} arena_owner_t;
+static arena_owner_t s_owners[ARENA_OWNERS_MAX];
+static uint32_t      s_owners_n = 0;
+
+static arena_owner_t* owner_slot(const char* owner, int create) {
+    for (uint32_t i = 0; i < s_owners_n; i++)
+        if (strcmp(s_owners[i].owner, owner) == 0) return &s_owners[i];
+    if (!create || s_owners_n >= ARENA_OWNERS_MAX) return NULL;
+    arena_owner_t* o = &s_owners[s_owners_n++];
+    snprintf(o->owner, sizeof o->owner, "%s", owner);
+    o->next_call = 0;
+    return o;
+}
+
+static int arena_register(void) {
     if (s_state == 0) {
         s_state = (psx_runtime_register_region(ARENA_BASE, ARENA_SIZE,
                                                s_arena) == 0) ? 1 : -1;
@@ -74,18 +127,60 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
             OPL_INFO_F("mods", "guest arena live @ 0x%08X (%u KiB)",
                        ARENA_BASE, ARENA_SIZE / 1024u);
     }
-    if (s_state < 0) return 0;
+    return s_state > 0;
+}
 
+uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
+                                   uint32_t flags, void** host_view,
+                                   const char* owner) {
+    if (host_view) *host_view = NULL;
+    if (!owner || !*owner) return 0;
+    if (size == 0 || size > ARENA_SIZE) return 0;
+    if (align == 0) align = 8;
+    if (align & (align - 1)) return 0; /* power of two only */
+    if (!arena_register()) return 0;
+
+    arena_owner_t* o = owner_slot(owner, 1);
+    if (!o) {
+        OPL_ERROR_F("mods", "guest arena: owner table full (%d) — %s "
+                    "refused", ARENA_OWNERS_MAX, owner);
+        return 0;
+    }
+    uint32_t call_idx = o->next_call;
+
+    if (s_rows_n >= ARENA_ROWS_MAX) {
+        OPL_ERROR_F("mods", "guest arena ledger full (%d rows) — %s call "
+                    "#%u refused; allocate at entry and reuse, the cursor "
+                    "never returns", ARENA_ROWS_MAX, owner, call_idx);
+        return 0;
+    }
     uint32_t off = (s_used + (align - 1)) & ~(align - 1);
     if (off + size > ARENA_SIZE) {
         OPL_ERROR_F("mods", "guest arena exhausted (%s wanted %u B, "
-                    "%u/%u used)", owner ? owner : "?", size, s_used,
-                    ARENA_SIZE);
+                    "%u/%u used)", owner, size, s_used, ARENA_SIZE);
         return 0;
     }
+    o->next_call = call_idx + 1;
     s_used = off + size;
+    memset(&s_arena[off], 0, size); /* zero on first allocation */
+
+    arena_row_t* r = &s_rows[s_rows_n++];
+    memset(r, 0, sizeof *r);
+    snprintf(r->owner, sizeof r->owner, "%s", owner);
+    r->call_idx = call_idx;
+    r->size = size; r->align = align; r->flags = flags; r->off = off;
+
     if (host_view) *host_view = &s_arena[off];
     return ARENA_BASE + off;
+}
+
+int openpete_mods_arena_owner_mutable(const char* owner) {
+    if (!owner) return 0;
+    for (uint32_t i = 0; i < s_rows_n; i++)
+        if (!s_rows[i].superseded && !(s_rows[i].flags & OP_GALLOC_IMMUTABLE)
+            && strcmp(s_rows[i].owner, owner) == 0)
+            return 1;
+    return 0;
 }
 
 /* ── Low park window (guest_alloc_low) ─────────────────────────────────

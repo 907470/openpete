@@ -479,7 +479,8 @@ static const sky_park_t* sky_park_get(const char* dir, const char* stem) {
     uint32_t paylen = csz - 4u;
     void* host = NULL;
     uint32_t gaddr =
-        openpete_mods_guest_alloc(paylen, 16u, &host, "portal-sky");
+        openpete_mods_guest_alloc(paylen, 16u, OP_GALLOC_IMMUTABLE, &host,
+                                  "portal-sky");
     if (!gaddr || !host ||
         fread(host, 1, paylen, f) != paylen) {
         fclose(f);

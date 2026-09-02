@@ -105,6 +105,8 @@ void openpete_mods_base(CPUState* cpu);
                                * entries (which once ate a freshly added
                                * mod on a 33-mod install) */
 #define MOD_ID_MAX        64
+_Static_assert(MOD_ID_MAX == OPENPETE_ARENA_OWNER_MAX,
+               "arena ledger owner field must hold a full mod id");
 #define MOD_BINDINGS_MAX  8
 
 typedef struct {
@@ -989,6 +991,22 @@ int openpete_mods_state_safe(const char** offender) {
     return 1;
 }
 
+/* 1 iff no ENABLED mod holds a high-arena allocation without
+ * OP_GALLOC_IMMUTABLE. A snapshot that omits the arena restores guest
+ * RAM to an earlier tick while such a mod's state stays at the later
+ * one; every timeline feature refuses rather than run that split. */
+int openpete_mods_arena_carry_safe(const char** offender) {
+    for (int i = 0; i < s_mod_count; i++) {
+        if (!s_mods[i].enabled) continue;
+        if (openpete_mods_arena_owner_mutable(s_mods[i].id)) {
+            if (offender) *offender = s_mods[i].id;
+            return 0;
+        }
+    }
+    if (offender) *offender = NULL;
+    return 1;
+}
+
 /* Does this mod write guest RAM? An explicit sim_mutative wins. With
  * none, the engine proves the answer where it can: a mod that loads no
  * code object has no path to guest RAM at all, and a mod that claims a
@@ -1080,7 +1098,7 @@ static uint32_t api_guest_alloc(openpete_mod_t* self, uint32_t size,
     if (host_view) *host_view = NULL;
     if (!self) return 0;
     if (purity_violation("guest_alloc")) return 0;
-    if (flags & ~(uint32_t)OP_GALLOC_LOW) {
+    if (flags & ~(uint32_t)(OP_GALLOC_LOW | OP_GALLOC_IMMUTABLE)) {
         OPL_ERROR_F("mods", "%s: guest_alloc: unknown flags %#x", self->id,
                     flags);
         return 0;
@@ -1088,7 +1106,8 @@ static uint32_t api_guest_alloc(openpete_mod_t* self, uint32_t size,
     if (flags & OP_GALLOC_LOW)
         return openpete_mods_guest_alloc_low(size, align, host_view,
                                              self->id);
-    return openpete_mods_guest_alloc(size, align, host_view, self->id);
+    return openpete_mods_guest_alloc(size, align, flags, host_view,
+                                     self->id);
 }
 
 
