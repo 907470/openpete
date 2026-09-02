@@ -640,9 +640,6 @@ int  openpete_mods_material_resolve(uint32_t tag,
 void openpete_mods_material_remove_owner(const char* mod_id);
 void openpete_mods_material_retire_all(void);
 
-/* Per-instance material callback (S8b). Cap on a per-draw uniform
- * block (fits the material UBO block; matches the postfx cap). */
-#define OPENPETE_MATERIAL_UNIFORMS_MAX 256u
 /* True when any registered selector carries a per-instance callback —
  * the moby walk skips the resolve entirely otherwise (single bool). */
 int  openpete_mods_material_has_instance(void);

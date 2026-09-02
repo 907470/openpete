@@ -255,6 +255,99 @@ else
     bad "alias override never fired"
 fi
 
+# ── 7b. prebuilt objects: the ABI descriptor decides what may run ──────
+# A binary-only mod (no src/, a prebuilt .build/<id>.so) is the one path
+# compile-on-load cannot rebuild, so it is the path a stale vtable shape
+# reaches the engine through. Three objects, compiled by hand against the
+# staged SDK: no descriptor at all, a descriptor claiming a newer api, and
+# the SDK's own stub — only the last may run.
+say "prebuilt objects: ABI descriptor refuses stale and future objects"
+SDK="$(dirname "$BIN")/sdk"
+CC_MOD="${OPENPETE_MOD_CC:-cc}"
+mkdir -p "$WORK/abisrc"
+cat > "$WORK/abisrc/body.c" <<'EOF'
+#include <openpete_mod_api.h>
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    api->log(self, OP_MOD_LOG_INFO, "ABI PROBE ENTRY RAN");
+    return 0;
+}
+EOF
+cat > "$WORK/abisrc/future.c" <<'EOF'
+#include <openpete_mod_api.h>
+const openpete_mod_abi_t openpete_mod_abi = {
+    OPENPETE_MOD_ABI_MAGIC, OPENPETE_MOD_API_VERSION + 1u,
+    (uint32_t)sizeof(openpete_mod_api_t) + 8u };
+EOF
+abi_fixture() { # abi_fixture <id> <extra .c or ""> — a binary-only mod dir
+    local id="$1" extra="$2"
+    local d="$WORK/abi/$id"
+    mkdir -p "$d/.build"
+    printf '[mod]\nid = "%s"\nversion = "0.0.1"\napi = %s\n' "$id" "$API_VER" \
+        > "$d/mod.toml"
+    # shellcheck disable=SC2086
+    "$CC_MOD" -shared -fPIC -O2 -fno-strict-aliasing -I"$SDK" \
+        -o "$d/.build/$id.so" "$WORK/abisrc/body.c" $extra \
+        > "$WORK/abi-$id.cc.log" 2>&1 || bad "abi fixture $id did not compile"
+}
+abi_fixture abi-none   ""
+abi_fixture abi-future "$WORK/abisrc/future.c"
+abi_fixture abi-ok     "$SDK/openpete_mod_abi.c"
+printf 'abi-none\nabi-future\nabi-ok\n' > "$WORK/abi/enabled.txt"
+out="$(run_game "$WORK/abi" 600)"
+if printf '%s\n' "$out" | grep -q "abi-none: .*carries no ABI descriptor"; then
+    ok "no-descriptor object refused"
+else
+    bad "no-descriptor object was not refused"
+fi
+if printf '%s\n' "$out" | grep -q "abi-future: .*built for api $((API_VER + 1))"; then
+    ok "future-api object refused (names both versions)"
+else
+    bad "future-api object was not refused"
+fi
+if [ "$(printf '%s\n' "$out" | grep -c "ABI PROBE ENTRY RAN")" = 1 ] &&
+   printf '%s\n' "$out" | grep -q "loaded abi-ok"; then
+    ok "descriptored object ran, and only it"
+else
+    bad "entry ran $(printf '%s\n' "$out" | grep -c 'ABI PROBE ENTRY RAN') times (want 1)"
+    printf '%s\n' "$out" | grep "mods:" | head -6
+fi
+
+# ── 7c. a failed entry leaves nothing registered ───────────────────────
+# An entry that installs an override and THEN returns nonzero is disabled
+# — and its override must go with it, or a mod the loader reports as
+# disabled keeps running code on every tick.
+say "failed entry: registrations made before the failure are swept"
+mkdir -p "$WORK/failsrc/entry-fails/src"
+printf '[mod]\nid = "entry-fails"\nversion = "0.0.1"\napi = %s\n' "$API_VER" \
+    > "$WORK/failsrc/entry-fails/mod.toml"
+cat > "$WORK/failsrc/entry-fails/src/m.c" <<'EOF'
+#include <openpete_mod_api.h>
+static const openpete_mod_api_t* A; static openpete_mod_t* S;
+static void fn(CPUState* cpu) {
+    A->log(S, OP_MOD_LOG_INFO, "ORPHAN OVERRIDE FIRED");
+    A->base(cpu);
+}
+int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
+    A = api; S = self;
+    api->override_name(self, "CollectItem", fn);
+    return -1; /* registered, then failed */
+}
+EOF
+mkdir -p "$WORK/fail"
+ln -sfn "$WORK/failsrc/entry-fails" "$WORK/fail/entry-fails"
+printf 'entry-fails\n' > "$WORK/fail/enabled.txt"
+out="$(run_game "$WORK/fail" 8000)"
+if printf '%s\n' "$out" | grep -q "entry-fails: openpete_mod_entry returned -1"; then
+    ok "failed entry reported"
+else
+    bad "failed entry not reported"
+fi
+if ! printf '%s\n' "$out" | grep -q "ORPHAN OVERRIDE FIRED"; then
+    ok "override registered before the failure never fired"
+else
+    bad "override from a failed entry is still live"
+fi
+
 # ── 8. asset overlay: texture namespace scan + overlay-duel (rungs 7+10) ─
 say "asset overlay: mod texture joins the pack (rung 7 scan)"
 fixture "$WORK/tex" hd-single-texture

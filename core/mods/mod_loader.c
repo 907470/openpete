@@ -245,6 +245,55 @@ static unsigned            s_toggle_epoch; /* defined with the queue below */
  * or the --mods override that replaced it. Set by mods_discover. */
 static const char* s_order_src = "enabled.txt";
 
+/* Read the object's ABI descriptor (openpete_mod_api.h, "ABI
+ * descriptor") before anything in it runs. Refused: no descriptor (an
+ * object from before the layout freeze — its vtable shape is unknown),
+ * a newer api than the engine's, or a larger api struct (calls would
+ * index past the engine's vtable). Older-but-descriptored loads: the
+ * struct is append-only from the freeze on. The check runs on BOTH the
+ * engine-compiled path (always green: the SDK stub rides the compile
+ * line) and the prebuilt-object path, which compile-on-load cannot
+ * rebuild and which is therefore the path this exists for. */
+static int mod_check_abi(void* dl, const char* id, const char* path) {
+    const openpete_mod_abi_t* d =
+        (const openpete_mod_abi_t*)mod_dlsym(dl, "openpete_mod_abi");
+    if (!d || d->magic != OPENPETE_MOD_ABI_MAGIC) {
+        OPL_ERROR_F("mods", "%s: %s carries no ABI descriptor — it was "
+                    "built without the SDK's openpete_mod_abi.c (add "
+                    "<sdk>/openpete_mod_abi.c to the compile line, or let "
+                    "the engine compile the mod from src/) — disabled",
+                    id, path);
+        return -1;
+    }
+    if (d->api_version > OPENPETE_MOD_API_VERSION ||
+        d->api_size > (uint32_t)sizeof(openpete_mod_api_t)) {
+        OPL_ERROR_F("mods", "%s: %s was built for api %u (struct %u bytes) "
+                    "but this engine provides api %u (%u bytes) — a newer "
+                    "object cannot load into an older engine; update "
+                    "openpete or rebuild the mod against this SDK — "
+                    "disabled", id, path, d->api_version, d->api_size,
+                    OPENPETE_MOD_API_VERSION,
+                    (unsigned)sizeof(openpete_mod_api_t));
+        return -1;
+    }
+    return 0;
+}
+
+/* Sweep every registration surface a mod owns. Runs before a reload
+ * re-enters the mod, and after a FAILED entry: an entry that registered
+ * chains, draws or materials and then returned nonzero must not leave
+ * them live under an id the loader has just declared disabled. */
+static void mod_strip_registrations(struct openpete_mod* mod) {
+    openpete_mods_chain_remove_owner(mod->id);
+    openpete_mods_draw_remove_owner(mod->id);
+    openpete_mods_registry_remove_owner(mod->id);
+    openpete_mods_postfx_remove_owner(mod->id);  /* before shaders: retires pipelines */
+    openpete_mods_material_remove_owner(mod->id);
+    openpete_mods_shader_remove_owner(mod->id);
+    mod->ui_body   = NULL;
+    mod->toggle_fn = NULL;
+}
+
 /* Resolve the UI annex's registration descriptor (see
  * openpete_mod_ui.h). The abi check runs at LOAD so the prebuilt-DLL
  * fallback path (which compile-on-load cannot rebuild) fails loudly
@@ -595,26 +644,11 @@ static const openpete_mod_api_t s_api;
 static void mod_hot_reload(struct openpete_mod* mod) {
     OPL_INFO_F("mods", "hot reload: %s (source or config change)", mod->id);
 
-    openpete_mods_chain_remove_owner(mod->id);
-    openpete_mods_draw_remove_owner(mod->id);
-    openpete_mods_registry_remove_owner(mod->id);
-    openpete_mods_postfx_remove_owner(mod->id);  /* before shaders: retires pipelines */
-    openpete_mods_material_remove_owner(mod->id);
-    openpete_mods_shader_remove_owner(mod->id);
-    mod->ui_body = NULL; /* re-resolved from the fresh object below */
-    mod->toggle_fn = NULL;
-
-    mod->n_deps = mod->n_bindings = 0;
-    mod->n_cfg = 0;
-    mod->n_mat_rows = 0;   /* re-parsed below; else a reload appends dupes */
-    mod->state_decl = mod->ra_decl = 0;
-    char dir_copy[MOD_PATH_MAX];
-    snprintf(dir_copy, sizeof dir_copy, "%s", mod->dir);
-    if (parse_manifest(dir_copy, mod) != 0) {
-        OPL_ERROR_F("mods", "%s: reload manifest parse failed — mod is "
-                    "now INERT until the next successful reload", mod->id);
-        return;
-    }
+    /* Build and open the fresh object BEFORE touching anything live: a
+     * reload that cannot produce a loadable object keeps the running one
+     * (registrations and all) instead of leaving the mod inert. The
+     * Mods-panel Apply reaches this path, so a stray syntax error must
+     * cost a log line, not the session's mod. */
     static unsigned s_hot_n = 0;
     char hot_path[MOD_PATH_MAX + 32];
     snprintf(hot_path, sizeof hot_path, "%s/.build/%s.hot%u" MOD_DL_EXT,
@@ -627,16 +661,16 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     char key[65];
     if (mod_compute_key(mod->dir, s_sdk_dir, key) != 0 ||
         mod_compile(mod->dir, mod->id, s_sdk_dir, key, hot_path, 0) != 0) {
-        OPL_ERROR_F("mods", "%s: reload compile failed — mod is now "
-                    "INERT until the next successful reload", mod->id);
+        OPL_ERROR_F("mods", "%s: reload compile failed — keeping the "
+                    "running object", mod->id);
         return;
     }
     snprintf(mod->build_key, sizeof mod->build_key, "%s", key);
 #else
     char so_path[MOD_PATH_MAX];
     if (build_mod(mod, s_sdk_dir, so_path, sizeof so_path) != 0) {
-        OPL_ERROR_F("mods", "%s: reload compile failed — mod is now "
-                    "INERT until the next successful reload", mod->id);
+        OPL_ERROR_F("mods", "%s: reload compile failed — keeping the "
+                    "running object", mod->id);
         return;
     }
     {   /* copy: a fresh inode guarantees dlopen loads a fresh object */
@@ -645,7 +679,8 @@ static void mod_hot_reload(struct openpete_mod* mod) {
         if (!in || !outf) {
             if (in) fclose(in);
             if (outf) fclose(outf);
-            OPL_ERROR_F("mods", "%s: reload stage copy failed", mod->id);
+            OPL_ERROR_F("mods", "%s: reload stage copy failed — keeping "
+                        "the running object", mod->id);
             return;
         }
         unsigned char cbuf[8192];
@@ -658,18 +693,42 @@ static void mod_hot_reload(struct openpete_mod* mod) {
 #endif
     void* dl = mod_dlopen(hot_path);
     if (!dl) {
-        OPL_ERROR_F("mods", "%s: reload dlopen failed: %s", mod->id,
-                    mod_dlerror());
+        OPL_ERROR_F("mods", "%s: reload dlopen failed: %s — keeping the "
+                    "running object", mod->id, mod_dlerror());
         return;
     }
+    if (mod_check_abi(dl, mod->id, hot_path) != 0) return;
     mod_entry_fn entry = (mod_entry_fn)mod_dlsym(dl, "openpete_mod_entry");
+    if (!entry) {
+        OPL_ERROR_F("mods", "%s: reload object has no openpete_mod_entry "
+                    "— keeping the running object", mod->id);
+        return;
+    }
+
+    /* A loadable object exists: now retire the running one. From here a
+     * failure leaves the mod INERT — the old registrations are gone and
+     * the new entry never completed — which the log says in as many
+     * words. */
+    mod_strip_registrations(mod);
+    mod->n_deps = mod->n_bindings = 0;
+    mod->n_cfg = 0;
+    mod->n_mat_rows = 0;   /* re-parsed below; else a reload appends dupes */
+    mod->state_decl = mod->ra_decl = 0;
+    char dir_copy[MOD_PATH_MAX];
+    snprintf(dir_copy, sizeof dir_copy, "%s", mod->dir);
+    if (parse_manifest(dir_copy, mod) != 0) {
+        OPL_ERROR_F("mods", "%s: reload manifest parse failed — mod is "
+                    "now INERT until the next successful reload", mod->id);
+        return;
+    }
     openpete_mods_config_load(mod, mod->dir, mod->log_tag);
     (void)config_compute_key(mod->dir, mod->cfg_key);
     (void)openpete_mods_shader_watch_key(mod->dir, mod->shader_key);
     openpete_mods_arena_entry_begin(mod->id); /* replay its allocations */
-    if (!entry || entry(&s_api, mod) != 0) {
+    if (entry(&s_api, mod) != 0) {
         OPL_ERROR_F("mods", "%s: reload entry failed — mod is now INERT",
                     mod->id);
+        mod_strip_registrations(mod);
         return;
     }
     mod->dl = dl; /* old object deliberately stays resident */
@@ -1039,10 +1098,12 @@ const char* openpete_mods_build_key(const char* id) {
 /* 1 iff every ENABLED code mod declares a runahead posture (manifest
  * runahead = "pure" | "host-fx"). Assets-only mods run zero code and are
  * trivially capable. An undeclared code mod makes runahead unarmable;
- * *offender names the first one. */
+ * *offender names the first one. "Code mod" = a loaded object, so a
+ * binary-only mod (prebuilt object, no src/) is held to the same
+ * declaration as a source one. */
 int openpete_mods_runahead_capable(const char** offender) {
     for (int i = 0; i < s_mod_count; i++) {
-        if (!s_mods[i].enabled || !s_mods[i].has_src) continue;
+        if (!s_mods[i].enabled || !s_mods[i].dl) continue;
         if (!s_mods[i].ra_decl) {
             if (offender) *offender = s_mods[i].id;
             return 0;
@@ -1058,7 +1119,7 @@ int openpete_mods_runahead_capable(const char** offender) {
  * guest world moves under it. Assets-only mods hold no host state. */
 int openpete_mods_state_safe(const char** offender) {
     for (int i = 0; i < s_mod_count; i++) {
-        if (!s_mods[i].enabled || !s_mods[i].has_src) continue;
+        if (!s_mods[i].enabled || !s_mods[i].dl) continue;
         if (!s_mods[i].state_decl) {
             if (offender) *offender = s_mods[i].id;
             return 0;
@@ -1815,6 +1876,7 @@ static int mod_compute_key(const char* mod_dir, const char* sdk_dir,
         "openpete_mod_api.h", "openpete_mod_ui.h", "openpete_sdk_symbols.h",
         "openpete_sdk_wrappers.h", "psx_runtime.h",
         "openpete_game_structs.h", "spyro1_actor_pose.h",
+        "openpete_mod_abi.c",
     };
     for (size_t i = 0; i < sizeof sdk_inputs / sizeof sdk_inputs[0]; i++) {
         char p[MOD_PATH_MAX];
@@ -1924,6 +1986,12 @@ static int mod_compile(const char* mod_dir, const char* id,
     for (int i = 0; i < n_srcs && off < (int)sizeof cmd; i++)
         off += snprintf(cmd + off, sizeof cmd - (size_t)off,
                         " " MOD_Q "%s" MOD_Q, srcs[i]);
+    /* The ABI descriptor rides every compile line (openpete_mod_api.h,
+     * "ABI descriptor"): compiled against the same SDK as the mod's own
+     * sources, it records the api the object is really built for. */
+    if (off < (int)sizeof cmd)
+        off += snprintf(cmd + off, sizeof cmd - (size_t)off,
+                        " " MOD_Q "%s/openpete_mod_abi.c" MOD_Q, sdk_dir);
     snprintf(cmd + off, sizeof cmd - (size_t)off,
              " >" MOD_Q "%s/compile.log" MOD_Q " 2>&1", build_dir);
 
@@ -2018,6 +2086,7 @@ static int mod_run_entry(struct openpete_mod* mod) {
     if (rc != 0) {
         OPL_ERROR_F("mods", "%s: openpete_mod_entry returned %d — disabled",
                     mod->id, rc);
+        mod_strip_registrations(mod); /* whatever it registered before failing */
         return -1;
     }
     mod_resolve_ui_section(mod, mod->dl);
@@ -2140,6 +2209,10 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
     if (!mod->dl) {
         OPL_ERROR_F("mods", "%s: dlopen failed: %s — disabled", mod->id,
                     mod_dlerror());
+        return -1;
+    }
+    if (mod_check_abi(mod->dl, mod->id, so_path) != 0) {
+        mod->dl = NULL; /* the object stays mapped; nothing in it runs */
         return -1;
     }
     openpete_mods_config_load(mod, mod->dir, mod->log_tag);

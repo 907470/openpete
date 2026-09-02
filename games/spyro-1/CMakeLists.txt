@@ -449,6 +449,7 @@ add_custom_target(spyro1_sdk_stage ALL
             ${_mod_sdk_gen}/openpete_sdk_symbols.h
             ${_mod_sdk_gen}/openpete_sdk_wrappers.h
             ${_mod_sdk_gen}/openpete_game_structs.h
+            ${CMAKE_SOURCE_DIR}/core/mods/sdk/openpete_mod_abi.c
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk
     COMMAND ${CMAKE_COMMAND} -E make_directory
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk/shaders
@@ -506,7 +507,8 @@ if(OPENPETE_COMPILE_MODS)
             ${CMAKE_CURRENT_SOURCE_DIR}/spyro1_actor_pose.h
             ${_mod_sdk_gen}/openpete_sdk_symbols.h
             ${_mod_sdk_gen}/openpete_sdk_wrappers.h
-            ${_mod_sdk_gen}/openpete_game_structs.h)
+            ${_mod_sdk_gen}/openpete_game_structs.h
+            ${CMAKE_SOURCE_DIR}/core/mods/sdk/openpete_mod_abi.c)
         # Always runs (cheap: copy-if-different over a <5MB tree); keeps
         # staged mod sources/assets current with the repo every build.
         add_custom_target(spyro1_mods_stage ALL
@@ -541,6 +543,7 @@ if(OPENPETE_COMPILE_MODS)
                         -fno-strict-aliasing -Wall -static-libgcc
                         -I$<TARGET_FILE_DIR:openpete-spyro1>/sdk
                         -o ${_dll} ${_mod_srcs}
+                        $<TARGET_FILE_DIR:openpete-spyro1>/sdk/openpete_mod_abi.c
                 COMMAND ${CMAKE_COMMAND} -E rm -f
                         ${_mod_build_dir}/${_mod_id}.hash
                 DEPENDS ${_mod_srcs} ${_mod_hdrs} ${_mod_sdk_deps}

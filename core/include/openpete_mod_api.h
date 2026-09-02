@@ -251,6 +251,10 @@ typedef struct openpete_mod_material_key {
     } u;
 } openpete_mod_material_key_t;
 
+/* Cap on one instance's per-draw uniform block: the bytes a refine
+ * callback may write, and the size of a material's uniform payload. */
+#define OPENPETE_MATERIAL_UNIFORMS_MAX 256u
+
 /* Return the number of bytes written to `out` (0 = claim it, no
  * parameters), or -1 to DECLINE — that instance keeps stock shading.
  * `cap` is OPENPETE_MATERIAL_UNIFORMS_MAX; never write past it. */
@@ -285,8 +289,17 @@ typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
  * 9: vstream_handle() — a stream handle for a frame word's 21-bit field
  * (pillar 2). With it a model payload lives in the arena like any other
  * allocation; the OP_GALLOC_LOW placement flag and the low window it
- * named are gone. */
-#define OPENPETE_MOD_API_VERSION 9u
+ * named are gone.
+ *
+ * 10: the layout freeze. notify() moves to the TAIL of the struct: it was
+ * inserted between ui_status and register_present_hook at 8, which broke
+ * the append-only rule for every object built against 4..7 — no such
+ * object had shipped, so the layout is corrected once rather than
+ * carried. And every code object now exports an `openpete_mod_abi`
+ * descriptor (see OPENPETE_MOD_ABI_DEFINE below): the loader refuses an
+ * object built for a newer api, or a larger struct, than the engine it
+ * is loaded into, instead of calling through a stale vtable shape. */
+#define OPENPETE_MOD_API_VERSION 10u
 
 typedef struct openpete_mod_api {
     uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION (the struct is
@@ -440,42 +453,6 @@ typedef struct openpete_mod_api {
      * (genuinely custom panels belong to the UI annex,
      * openpete_mod_ui.h — separately versioned, no stability promise). */
     void (*ui_status)(openpete_mod_t* self, const char* fmt, ...);
-
-    /* Post a transient on-screen notification — a toast in the game's own
-     * gold-bordered chrome, at the anchor the player chose. For "this
-     * just happened", where ui_status is for "this is the state".
-     *
-     * `key` (may be NULL) COALESCES: a live toast with the same key is
-     * repainted — new text, timer restarted, same slot — instead of a
-     * second one stacking. A value the player is scrubbing through wants
-     * a key; a discrete event wants NULL. The engine prefixes your mod id
-     * onto it, so two mods cannot collide on the same key.
-     *
-     * `timeout_ms` is MILLISECONDS: 0 takes the player's configured
-     * default (--osd-timeout), and anything above 30000 is clamped to it.
-     * The ring holds a handful of toasts, so an unclamped timeout would
-     * let one mod pin slots for the rest of the session. A repaint takes
-     * the RETARGETING call's timeout, not the one the toast was created
-     * with, so a recurring notification can lengthen its own dwell
-     * without giving up its key.
-     *
-     * Legal from entry, tick hooks and present hooks: it writes host
-     * state only, so it does not trip the present hooks' render-purity
-     * guard. Rate-limited per mod (a small burst, then a slow refill), so
-     * a tick loop cannot own the stack.
-     *
-     * A NO-OP on speculative (runahead) and replayed (rewind) ticks —
-     * those are rolled back or re-executed, and a notification from one
-     * would announce something that never committed, or announce it
-     * twice. A mod counting its own notify calls will therefore see fewer
-     * toasts than calls; that is by design, not a dropped message.
-     *
-     * Text renders with the GAME'S OWN glyph set: 0-9, A-Z (lowercase is
-     * folded up), space, and % / ? + ^ . ' : — anything else renders as a
-     * space. Hyphens, commas, exclamation marks and brackets silently
-     * vanish, so write your strings inside the set. */
-    void (*notify)(openpete_mod_t* self, const char* key,
-                   uint32_t timeout_ms, const char* fmt, ...);
 
     /* ── Pillar 5: present and screen-space draw ─────────────────────
      * Register a per-present hook: runs once per SCENE the engine
@@ -710,7 +687,69 @@ typedef struct openpete_mod_api {
      * refuse to load. Spyro's own frame words store the address halved;
      * a handle is written as-is in both encodings. Tick context only. */
     uint32_t (*vstream_handle)(openpete_mod_t* self, uint32_t stream_vaddr);
+
+    /* Post a transient on-screen notification — a toast in the game's own
+     * gold-bordered chrome, at the anchor the player chose. For "this
+     * just happened", where ui_status is for "this is the state".
+     *
+     * `key` (may be NULL) COALESCES: a live toast with the same key is
+     * repainted — new text, timer restarted, same slot — instead of a
+     * second one stacking. A value the player is scrubbing through wants
+     * a key; a discrete event wants NULL. The engine prefixes your mod id
+     * onto it, so two mods cannot collide on the same key.
+     *
+     * `timeout_ms` is MILLISECONDS: 0 takes the player's configured
+     * default (--osd-timeout), and anything above 30000 is clamped to it.
+     * The ring holds a handful of toasts, so an unclamped timeout would
+     * let one mod pin slots for the rest of the session. A repaint takes
+     * the RETARGETING call's timeout, not the one the toast was created
+     * with, so a recurring notification can lengthen its own dwell
+     * without giving up its key.
+     *
+     * Legal from entry, tick hooks and present hooks: it writes host
+     * state only, so it does not trip the present hooks' render-purity
+     * guard. Rate-limited per mod (a small burst, then a slow refill), so
+     * a tick loop cannot own the stack.
+     *
+     * A NO-OP on speculative (runahead) and replayed (rewind) ticks —
+     * those are rolled back or re-executed, and a notification from one
+     * would announce something that never committed, or announce it
+     * twice. A mod counting its own notify calls will therefore see fewer
+     * toasts than calls; that is by design, not a dropped message.
+     *
+     * Text renders with the GAME'S OWN glyph set: 0-9, A-Z (lowercase is
+     * folded up), space, and % / ? + ^ . ' : — anything else renders as a
+     * space. Hyphens, commas, exclamation marks and brackets silently
+     * vanish, so write your strings inside the set. */
+    void (*notify)(openpete_mod_t* self, const char* key,
+                   uint32_t timeout_ms, const char* fmt, ...);
 } openpete_mod_api_t;
+
+/* ── ABI descriptor ──────────────────────────────────────────────────
+ * Every code object exports one `openpete_mod_abi` recording the api
+ * version and api-struct size it was COMPILED against. The loader reads
+ * it before the entry point runs and refuses an object that is newer
+ * than the engine (a later api, or a larger struct: its calls would
+ * index past the vtable the engine actually has) or that carries no
+ * descriptor at all (an object from before the layout freeze, whose
+ * vtable shape cannot be trusted). An object older than the engine loads:
+ * the struct is append-only from api 10 on, so every entry it knows
+ * about is where it expects it.
+ *
+ * Mods compiled by the engine get the descriptor for free — the SDK's
+ * openpete_mod_abi.c rides every compile line. A hand-built object
+ * (a cross-compiled DLL) must add that file to its own compile line, or
+ * put OPENPETE_MOD_ABI_DEFINE() in exactly one of its sources. */
+typedef struct openpete_mod_abi {
+    uint32_t magic;       /* OPENPETE_MOD_ABI_MAGIC */
+    uint32_t api_version; /* OPENPETE_MOD_API_VERSION at the mod's compile time */
+    uint32_t api_size;    /* sizeof(openpete_mod_api_t) at the mod's compile time */
+} openpete_mod_abi_t;
+#define OPENPETE_MOD_ABI_MAGIC 0x4F504142u /* 'OPAB' */
+#define OPENPETE_MOD_ABI_DEFINE()                                          \
+    const openpete_mod_abi_t openpete_mod_abi = {                          \
+        OPENPETE_MOD_ABI_MAGIC, OPENPETE_MOD_API_VERSION,                  \
+        (uint32_t)sizeof(openpete_mod_api_t) }
 
 /* Convenience typed guest accessors. */
 static inline uint32_t op_read_u32(const openpete_mod_api_t* api, uint32_t va) {

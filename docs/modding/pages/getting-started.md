@@ -117,6 +117,15 @@ The engine hashes your sources, compiles them with the bundled toolchain
 `dlopen` on the result, and runs your entry point. A compile failure
 disables the mod and logs the error. It never blocks the launch.
 
+!!! note "Shipping a prebuilt object"
+    A mod with no `src/` but a `.build/<id>.so` (or `.dll`) loads as-is.
+    Every code object must export an ABI descriptor recording the api it
+    was built against; the engine adds it to its own compile lines, so a
+    hand-built object has to compile `<sdk>/openpete_mod_abi.c` alongside
+    its sources (or put `OPENPETE_MOD_ABI_DEFINE()` in one of them). An
+    object with no descriptor, or one built for a newer api than the
+    engine, is refused with a log line naming both versions.
+
 !!! note "Don't check the API version in code"
     The `api` key in `mod.toml` is the *minimum* version your mod needs,
     and the loader refuses an older engine before your entry point runs.
