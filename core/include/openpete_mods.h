@@ -537,6 +537,13 @@ int openpete_mods_registry_ensure_driver(const char* log_tag);
  * voice's stock addr+pitch and applies the returned substitution to a
  * HOST COPY of the voice attrs only — guest state stays byte-stock. */
 typedef const char* (*openpete_mods_sfx_resolver_fn)(uint32_t spu_addr);
+/* Name canonicaliser: the game maps a mod-facing alias ("gem_pickup")
+ * to the SoundTable slot name the resolver reports ("gemPickup"); NULL
+ * or identity when no alias exists. Applied to sfx_replace/sfx_hook
+ * names before they are stored. */
+typedef const char* (*openpete_mods_sfx_canon_fn)(const char* name);
+void openpete_mods_sfx_set_canon(openpete_mods_sfx_canon_fn fn);
+
 typedef uint32_t (*openpete_mods_sfx_upload_fn)(const void* body,
                                                 uint32_t len);
 void openpete_mods_sfx_set_fns(openpete_mods_sfx_resolver_fn resolve,

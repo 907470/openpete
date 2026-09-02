@@ -63,6 +63,9 @@ static int           s_stat_count;
 
 static openpete_mods_sfx_resolver_fn s_resolve;
 static openpete_mods_sfx_upload_fn   s_upload;
+static openpete_mods_sfx_canon_fn    s_canon;
+
+void openpete_mods_sfx_set_canon(openpete_mods_sfx_canon_fn fn) { s_canon = fn; }
 
 /* Game-registered names for per-level SoundDefinition sounds (the ones
  * the voice-layer resolver can never name — chest breaks reference a
@@ -144,6 +147,7 @@ int openpete_mods_sfx_replace(openpete_mod_t* self, const char* name,
         return rc;
     }
 
+    if (s_canon) name = s_canon(name); /* alias -> slot name */
     sfx_replace_t* r = NULL;
     for (int i = 0; i < s_repl_count; i++)
         if (strcmp(s_repl[i].name, name) == 0) { r = &s_repl[i]; break; }
@@ -402,6 +406,7 @@ void openpete_mods_sfx_set_owner_enabled(CPUState* cpu, const char* owner,
 
 int openpete_mods_sfx_hook(openpete_mod_t* self, const char* name,
                            void (*fn)(openpete_sfx_event_t* ev)) {
+    if (s_canon && name) name = s_canon(name); /* alias -> slot name */
     if (!name || !fn || strlen(name) >= SFX_NAME_MAX) return -1;
     if (s_hook_count >= SFX_HOOKS_MAX) return -1;
     sfx_hook_t* h = &s_hooks[s_hook_count++];

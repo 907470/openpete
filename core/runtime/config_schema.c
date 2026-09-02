@@ -60,6 +60,7 @@ static const cfg_knob_t g_schema[] = {
     { "disc",             "--disc",             NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "disc_cache",       "--disc-cache",       "OPENPETE_DISC_CACHE",   CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "texpack_dir",      "--texpack-dir",      "OPENPETE_TEXPACK_DIR",  CFG_STRING, NULL,       NULL,       NULL,       0 },
+    { "sfxpack_dir",      "--sfxpack-dir",      "OPENPETE_SFXPACK_DIR",  CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "mods_dir",         "--mods-dir",         "OPENPETE_MODS_DIR",     CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "mods",             "--mods",             "OPENPETE_MODS",         CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "card_dir",         "--card-dir",         "OPENPETE_CARD_DIR",     CFG_STRING, NULL,       NULL,       NULL,       0 },

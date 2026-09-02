@@ -1707,6 +1707,7 @@ void psyq_CdIntToPos(CPUState* cpu) {
 /* --- libspu -------------------------------------------------------------- */
 
 #include "openpete_mods.h" /* SFX overlay service (mods/mod_sfx.c) */
+#include "sfx_pack.h"      /* drop-in WAV replacement (core/host/sfx_pack.c) */
 
 /* ── SFX overlay: Spyro-1 glue ─────────────────────────────────────────
  * Names for the game's SoundTable slots (spyro-1/include/sound_table.h;
@@ -1716,44 +1717,90 @@ void psyq_CdIntToPos(CPUState* cpu) {
  * ADPCM into the free SPU tail after the level bank. Everything here is
  * host-side: guest RAM and the SPU bank image stay byte-stock.
  */
-static const struct { uint8_t slot; const char* name; } k_sfx_names[] = {
-    {0x00, "gem_pickup"},   {0x03, "chest_break"},
-    {0x04, "spyro_charge"}, {0x05, "super_charge"},
-    {0x06, "waterfall"},    {0x1A, "exit_vortex"},
-    {0x1B, "spyro_stars"},  {0x1D, "water_splash"},
-    {0x1E, "spyro_walk"},   {0x20, "spyro_unsquish"},
-    {0x21, "flight_pling"}, {0x23, "flight_collected"},
-    {0x26, "moby_poof"},    {0x28, "spyro_flame"},
-    {0x2C, "menu_sound"},   {0x2D, "menu_cursor"},
-    {0x2E, "menu_confirm"}, {0x2F, "pickup_ding"},
+#include "spyro1_sfx_names.h" /* generated: all 256 slot names */
+
+/* Mod-facing aliases that predate the generated table; they resolve to
+ * the slot name and keep working forever. */
+static const struct { const char* alias; uint8_t slot; } k_sfx_aliases[] = {
+    {"gem_pickup", 0x00},   {"chest_break", 0x03},
+    {"spyro_charge", 0x04}, {"super_charge", 0x05},
+    {"exit_vortex", 0x1A},  {"spyro_stars", 0x1B},
+    {"water_splash", 0x1D}, {"spyro_walk", 0x1E},
+    {"spyro_unsquish", 0x20}, {"flight_pling", 0x21},
+    {"flight_collected", 0x23}, {"moby_poof", 0x26},
+    {"spyro_flame", 0x28},  {"menu_sound", 0x2C},
+    {"menu_cursor", 0x2D},  {"menu_confirm", 0x2E},
+    {"pickup_ding", 0x2F},
 };
+static const char* spyro_sfx_canon(const char* name) {
+    for (const auto& a : k_sfx_aliases)
+        if (strcmp(a.alias, name) == 0) return spyro1_sfx_slot_names[a.slot];
+    return name;
+}
 
 #define SPYRO_SPU_SOUNDDEFS_VA  0x800761D0u /* g_Spu.m_SoundDefinitions */
 #define SPYRO_SPU_SOUNDTABLE_VA 0x800761D4u /* g_Spu.m_SoundTable */
+#define SPYRO_CUTSCENE_DEF_VA   0x800778F0u /* g_CutsceneSoundDef: a ONE-entry
+                                             * def the cutscene/title/speech
+                                             * code points m_SoundDefinitions
+                                             * at while the level TABLE stays */
 #define SPYRO_LEVELHDR_VRAMSPU  0x80076C04u /* g_LevelHeader.m_VramSramSize */
 #define SPYRO_SOUNDDEF_STRIDE   0x14u
 #define SPYRO_SPU_BANK_BLAST    (0x80000u - 0x1010u) /* level SPU upload */
 #define SPYRO_SPU_TAIL_CEIL     0x7EF00u
 
-static const char* spyro_sfx_resolve(uint32_t spu_addr) {
+/* Slot names whose def owns `spu_addr` in the CURRENT tables. When the
+ * game has pointed m_SoundDefinitions at the one-entry cutscene def the
+ * level table is meaningless for it: no slot names then. */
+static int spyro_sfx_slot_names(uint32_t spu_addr, const char** out, int max) {
     uint32_t defs_va  = *(uint32_t*)PTR(SPYRO_SPU_SOUNDDEFS_VA);
     uint32_t table_va = *(uint32_t*)PTR(SPYRO_SPU_SOUNDTABLE_VA);
-    if (!defs_va || !table_va) return nullptr;
+    if (!defs_va || !table_va || defs_va == SPYRO_CUTSCENE_DEF_VA) return 0;
     const uint8_t* table = (const uint8_t*)PTR(table_va);
     const uint8_t* defs  = (const uint8_t*)PTR(defs_va);
     int count = *(const int32_t*)PTR(table_va + 256);
-    if (!table || !defs || count <= 0 || count > 256) return nullptr;
-    for (const auto& e : k_sfx_names) {
-        uint8_t id = table[e.slot];
+    if (!table || !defs || count <= 0 || count > 256) return 0;
+    int n = 0;
+    for (int slot = 0; slot < SPYRO1_SFX_SLOT_COUNT && n < max; slot++) {
+        uint8_t id = table[slot];
         if (id >= count) continue;
         uint32_t addr;
         memcpy(&addr, defs + id * SPYRO_SOUNDDEF_STRIDE, 4);
-        if (addr == spu_addr) return e.name;
+        if (addr == spu_addr) out[n++] = spyro1_sfx_slot_names[slot];
     }
-    return nullptr;
+    return n;
+}
+
+static const char* spyro_sfx_resolve(uint32_t spu_addr) {
+    const char* names[1];
+    return spyro_sfx_slot_names(spu_addr, names, 1) ? names[0] : nullptr;
 }
 
 static uint32_t s_sfx_tail; /* next free SPU byte this bank-generation */
+
+/* ── sfx pack glue ──
+ * The pack folds a replacement's pitch into its buffer rate using the
+ * base pitch the game will keep refreshing the voice with: the
+ * ActiveSound's m_Pitch (the def's, or the per-play override), read
+ * from guest RAM. g_Spu.m_ActiveSounds[24] follows SpuCommonAttr (0x28
+ * bytes); ActiveSound is 0x1C bytes with m_Pitch at +8. */
+#define SPYRO_SPU_VA            0x80075F08u /* g_Spu */
+#define SPYRO_ACTIVESOUND_OFF   0x28u
+#define SPYRO_ACTIVESOUND_SIZE  0x1Cu
+static int spyro_sfx_base_pitch(int voice) {
+    if (voice < 0 || voice >= 24) return 0;
+    uint32_t p = *(uint32_t*)PTR(SPYRO_SPU_VA + SPYRO_ACTIVESOUND_OFF +
+                                 (uint32_t)voice * SPYRO_ACTIVESOUND_SIZE + 8u);
+    return (p > 0 && p < 0x4000u) ? (int)p : 0;
+}
+static uint32_t s_spu_xfer_addr; /* SpuSetTransferStartAddr, advanced by SpuWrite */
+static void spyro_sfx_pack_arm(void) {
+    static int s_armed = 0;
+    if (s_armed) return;
+    s_armed = 1;
+    sfx_pack_set_pitch_reader(spyro_sfx_base_pitch);
+    sfx_pack_set_name_resolver(spyro_sfx_slot_names);
+}
 
 static uint32_t spyro_sfx_upload(const void* body, uint32_t len) {
     if (!s_sfx_tail) {
@@ -1773,6 +1820,7 @@ void psyq_SpuInit(CPUState* cpu) {
     (void)cpu;
     SpuInit();
     openpete_mods_sfx_set_fns(spyro_sfx_resolve, spyro_sfx_upload);
+    openpete_mods_sfx_set_canon(spyro_sfx_canon);
 }
 
 /* Music level is the product of the two hardware stages the XA stream passes
@@ -1898,12 +1946,21 @@ void psyq_SpuRead(CPUState* cpu) {
 
 void psyq_SpuWrite(CPUState* cpu) {
     /* The level-load bank blast overwrites all of SPU RAM including any
-     * staged SFX replacements — invalidate them (re-staged lazily). */
-    if ((unsigned int)cpu->a1 == SPYRO_SPU_BANK_BLAST) {
+     * staged SFX replacements — invalidate them (re-staged lazily). The
+     * sfx pack's identity cache follows the same two-tier rule: a blast
+     * is a new generation, any other write (dragon speech lands over the
+     * top of the bank mid-level) forgets just the addresses it covers. */
+    spyro_sfx_pack_arm();
+    unsigned int len = (unsigned int)cpu->a1;
+    if (len == SPYRO_SPU_BANK_BLAST) {
         openpete_mods_sfx_bank_reset();
         s_sfx_tail = 0;
+        sfx_pack_generation_bump();
+    } else {
+        sfx_pack_invalidate_range(s_spu_xfer_addr, len);
     }
-    cpu->v0 = SpuWrite((unsigned char*)PTR(cpu->a0), (unsigned int)cpu->a1);
+    cpu->v0 = SpuWrite((unsigned char*)PTR(cpu->a0), len);
+    s_spu_xfer_addr += len;
 }
 
 void psyq_SpuSetTransferMode(CPUState* cpu) {
@@ -1911,6 +1968,7 @@ void psyq_SpuSetTransferMode(CPUState* cpu) {
 }
 
 void psyq_SpuSetTransferStartAddr(CPUState* cpu) {
+    s_spu_xfer_addr = (unsigned int)cpu->a0;
     cpu->v0 = SpuSetTransferStartAddr((unsigned int)cpu->a0);
 }
 

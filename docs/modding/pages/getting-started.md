@@ -9,7 +9,7 @@ A mod is a directory under `mods/` named for the mod's ID:
 | `mod.toml` | The manifest. See [Manifest and config](manifest.md). |
 | `config.toml` | Optional player-editable settings, read through `api->config_*`. |
 | `src/*.c` | C sources, compiled on load against `<exe>/sdk/`. |
-| `assets/` | Overlay root: `textures/`, `music/`, `sounds/`, and `levels/`. Optional, like `src/`. |
+| `assets/` | Overlay root: `textures/`, `music/`, `sfx/`, and `levels/`. Optional, like `src/`. |
 | `data/` | Per-mod persistent directory, created on demand. |
 | `.build/` | The engine's compile cache. Don't commit it. |
 

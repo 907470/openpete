@@ -252,6 +252,7 @@ add_executable(openpete-spyro1
     # --allow-multiple-definition).
     psyq_thunks.cpp
     recomp_extract.cpp
+    sfx_census.cpp
     disc_library.cpp
     splash.c
     write_trace.cpp
@@ -301,6 +302,21 @@ target_include_directories(openpete-spyro1 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${SPYRO_GENERATED}
     ${CMAKE_CURRENT_BINARY_DIR}/gen)
+
+# SoundTable slot names (tools/gen_sfx_names.py over the decomp's
+# sound_table.h): one table shared by the sfx resolver, the sfx pack's
+# symbolic form and the census dump's file labels.
+add_custom_command(
+    OUTPUT  ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro1_sfx_names.h
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${CMAKE_CURRENT_BINARY_DIR}/gen
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_sfx_names.py
+            --header ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include/sound_table.h
+            --out ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro1_sfx_names.h
+    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include/sound_table.h
+            ${CMAKE_SOURCE_DIR}/tools/gen_sfx_names.py
+    COMMENT "Generating SoundTable slot names (gen_sfx_names.py)")
+add_custom_target(spyro1_sfx_names DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro1_sfx_names.h)
+add_dependencies(openpete-spyro1 spyro1_sfx_names)
 
 # Gameplay-state-regions table: generate from manifest, wrap in a TU
 # that registers the table with openpete_core's extern hooks. See

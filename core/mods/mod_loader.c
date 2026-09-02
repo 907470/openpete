@@ -1246,7 +1246,7 @@ static int api_sfx_play(openpete_mod_t* self, const char* name,
                           float gain) {
     if (!self || !name || strstr(name, "..")) return -1;
     char path[MOD_PATH_MAX + 96];
-    snprintf(path, sizeof path, "%s/assets/sounds/%s.wav", self->dir, name);
+    snprintf(path, sizeof path, "%s/assets/sfx/own/%s.wav", self->dir, name);
     return openpete_mod_sound_play(path, gain);
 }
 

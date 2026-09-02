@@ -52,6 +52,7 @@ nav:
   - Concepts: concepts.md
   - Manifest and config: manifest.md
   - Shaders: shaders.md
+  - Sounds: sounds.md
   - Reference:
       - API: reference/api.md
       - Functions: reference/functions.md

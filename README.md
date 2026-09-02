@@ -390,6 +390,32 @@ the original. `OPENPETE_TEXPACK_DIR=<dir>` overrides the pack location.
 Replacement applies in the native (`--renderer vk`, default) display path;
 `--headless` and the PsyCross reference path always render the originals.
 
+## Custom sounds (sfx packs)
+
+Drop replacement WAVs into `assets/sfx/` **next to the executable** (or a
+mod's `assets/sfx/`) and they play in place of the original sound
+effects — every level's samples, dragon speech, the intro and titlescreen
+alike. Presentation-only by construction: the swap happens when the
+emulated SPU voice's PCM reaches the mixer, so the game's sound tables,
+sample bank, pitch and the tick a sound ends on are all untouched.
+
+The workflow is **dump → edit → drop in**, and the dump needs no gameplay:
+
+```
+./openpete-spyro1 --disc SCUS-94228.cue --dump-sfx-pack dumps/   # every sample, from the WAD
+# edit/re-record dumps/<name>.wav in any editor, keep the filename
+cp dumps/<name>.wav assets/sfx/
+```
+
+Filenames are the identity — `<slot-name>-<content-hash>-p<pitch>.wav` —
+so one file covers the same sample wherever the game plays it, and
+`<slot-name>.wav` alone replaces that role in every level. Any rate, bit
+depth or channel count is accepted (stereo is downmixed; the SPU voice is
+mono). A replacement plays for the original sample's duration.
+`--sfxpack-dir <dir>` overrides the pack location; sources are rescanned
+at every level load. See `docs/modding/pages/sounds.md` for the name forms
+and the round-trip check.
+
 ## Disc requirement
 
 Original *Spyro the Dragon* (NTSC-U, SCUS-94228) BIN/CUE pair. The .bin's

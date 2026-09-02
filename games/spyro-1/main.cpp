@@ -62,6 +62,8 @@ static void openpete_attach_parent_console(void) {
 static void openpete_attach_parent_console(void) {}
 #endif
 
+extern "C" int spyro1_dump_sfx_pack(const char* cue_path, const char* out_dir,
+                                    const char* extra_wads);
 extern "C" int spyro1_extract_recomp_inputs(const char* cue_path,
                                             const char* out_dir);
 extern "C" int spyro1_config_disc_identity(const char* disc_path,
@@ -179,6 +181,12 @@ int main(int argc, char** argv) {
      * install's compile-on-boot cache. Needs no disc/library/window. */
     if (opts.compile_mods)
         return openpete_mods_compile_all(&opts) == 0 ? 0 : 1;
+
+    /* sfx pack census (--dump-sfx-pack): walk the disc's WAD (+ custom
+     * level files) and exit. Needs the disc only. */
+    if (opts.dump_sfx_pack_dir)
+        return spyro1_dump_sfx_pack(opts.disc_path, opts.dump_sfx_pack_dir,
+                                    opts.dump_sfx_wads) == 0 ? 0 : 1;
 
     /* Distribution D2.5: resolve disc + module through the
      * content-addressed library (--ingest copies an image in; no disc

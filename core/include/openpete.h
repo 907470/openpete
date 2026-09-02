@@ -721,6 +721,10 @@ typedef struct openpete_options {
      * built-in <exe>/assets/textures/). Native renderer only; display-only,
      * never perturbs gameplay state. */
     const char* texpack_dir;
+    /* --sfxpack-dir PATH: directory of drop-in sound replacements (WAVs
+     * named by the sfx census); NULL = env OPENPETE_SFXPACK_DIR /
+     * <exe>/assets/sfx. Mods' assets/sfx/ always join. */
+    const char* sfxpack_dir;
 
     /* --mods-dir PATH: mods root (each subdir with a mod.toml is a mod;
      * enabled.txt fixes the order = priority). NULL = unset (defer to
@@ -743,6 +747,13 @@ typedef struct openpete_options {
      * compile failed). The cmake `spyro1_mods` build step for native
      * presets; also pre-warms a dist install's compile-on-boot cache. */
     int         compile_mods;
+
+    /* --dump-sfx-pack DIR: utility mode — walk every sample on --disc
+     * (and the custom-level Data files in --dump-sfx-wads, comma list)
+     * and write the sfx pack census (WAVs named by content hash +
+     * index.txt) to DIR, then exit. */
+    const char* dump_sfx_pack_dir;
+    const char* dump_sfx_wads;
 
     /* openpete.toml utility modes — resolve, do the one thing, exit 0.
      * Handled by game main alongside --compile-mods, so the whole config

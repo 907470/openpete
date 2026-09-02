@@ -195,6 +195,8 @@ add_library(openpete_core STATIC
     host/music_override.c
     host/mod_sound.c
     host/sha256.c
+    host/sfx_ident.c
+    host/sfx_pack.c
     host/texture_pack.c
     host/wav_loader.c
 

@@ -530,7 +530,7 @@ typedef struct openpete_mod_api {
 
     /* ── Pillar 8: audio ─────────────────────────────────────────────
      * The `name` domain differs per verb: sfx_play resolves in THIS
-     * MOD's assets/sounds/; sfx_replace resolves in the GAME's
+     * MOD's assets/sfx/own/; sfx_replace resolves in the GAME's
      * registered sound names.
      *
      * sfx_replace: substitute the sample behind a named game sound.
@@ -546,7 +546,7 @@ typedef struct openpete_mod_api {
      * and are sim-DIVERGENT — the log line says which route was taken.
      * Unknown name => -1.
      *
-     * sfx_play: play `assets/sounds/<name>.wav` from this mod's
+     * sfx_play: play `assets/sfx/own/<name>.wav` from this mod's
      * directory as a HOST-side additive one-shot (never the SPU —
      * sim-neutral by construction, legal from tick and present hooks).
      * gain 0..4, 1.0 = as-authored; WAVs are cached after the first

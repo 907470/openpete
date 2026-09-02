@@ -43,6 +43,7 @@
 #include "feature_registry.h"
 #include "openpete_mods.h"
 #include "openpete_vstream.h"
+#include "../host/sfx_pack.h"
 #include "features/no_lod.h"
 #include "features/widescreen.h"
 #include "openpete_state.h"
@@ -2243,6 +2244,8 @@ static int run_host_init(const openpete_options_t* opts) {
      * override mirrors the XA forced gain so --mute covers it too.
      * Routed through the live setter (dev overlay toggles it too). */
     music_override_init();  /* logs the assets/music/ search path */
+    sfx_pack_set_dir_override(opts->sfxpack_dir);
+    sfx_pack_init();        /* assets/sfx/ drop-in replacement */
     openpete_set_mute(opts->mute ? 1 : 0);
 
     /* Host-backed memory card: apply CLI/env config before the game's
@@ -5241,6 +5244,20 @@ static int run_host_loop(const openpete_options_t* opts) {
                     (unsigned long long)vc.handle,
                     (unsigned long long)vc.unresolved,
                     vc.first_unresolved);
+    }
+    {
+        /* sfx pack census (stderr: harnesses grep it). */
+        sfx_pack_census_t sc;
+        sfx_pack_census(&sc);
+        if (sc.keyed || sc.active)
+            fprintf(stderr, "[sfxpack] files=%d keyed=%llu resolved=%llu "
+                    "replaced=%llu truncated=%llu verify_ok=%llu verify_bad=%llu\n",
+                    sc.files, (unsigned long long)sc.keyed,
+                    (unsigned long long)sc.resolved,
+                    (unsigned long long)sc.replaced,
+                    (unsigned long long)sc.truncated,
+                    (unsigned long long)sc.verify_ok,
+                    (unsigned long long)sc.verify_bad);
     }
     openpete_interp_shutdown();
 

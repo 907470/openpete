@@ -404,6 +404,8 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --texture-mapping MODE     texture/colour interpolation: perspective (default = modern\n"
         "                             perspective-correct) | affine (PSX screen-linear = the original\n"
         "                             PS1 texture swim/warp). Native renderer only. Display-only.\n"
+        "  --sfxpack-dir PATH         directory of drop-in sound-effect WAVs named by the sfx census\n"
+        "                             (default: env OPENPETE_SFXPACK_DIR, else assets/sfx next to the exe)\n"
         "  --texpack-dir PATH         directory of HD texture-replacement PNGs (default: env OPENPETE_TEXPACK_DIR,\n"
         "                             else <exe>/assets/textures/). Native renderer only.\n"
         "  --mods-dir PATH            mods root: each subdir with a mod.toml is a mod, compiled on load;\n"
@@ -491,6 +493,10 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --compile-mods             compile EVERY mod with src/ in the mods dir (see --mods-dir;\n"
         "                             ignores enabled.txt) against <exe>/sdk and exit; nonzero exit\n"
         "                             on any failed compile (the cmake build-time mods gate)\n"
+        "  --dump-sfx-pack DIR        write every game sound on --disc as a content-named WAV\n"
+        "                             (+ index.txt) into DIR and exit: the sfx pack census\n"
+        "  --dump-sfx-wads A.wad,B.wad also walk these custom-level Data files (a [[level]]\n"
+        "                             mod's assets/levels/<stem>.wad)\n"
         "  --render-paths LIST        render ONLY these paths in both renderers, e.g.\n"
         "                             cyclorama,spyro,moby,terrain,shadow,flame,particles. Lets a path be\n"
         "                             compared in isolation. Presentation-only; gameplay state unaffected.\n"
@@ -615,9 +621,12 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->record_cfr          = 0.0;   /* 0 = true VFR (wall-clock PTS) */
     opts->record_frames       = 0;     /* 0 = record until the run ends */
     opts->texpack_dir         = NULL;  /* NULL = unset; env OPENPETE_TEXPACK_DIR / built-in dir */
+    opts->sfxpack_dir         = NULL;  /* NULL = unset; env OPENPETE_SFXPACK_DIR / built-in dir */
     opts->mods_dir            = NULL;  /* NULL = unset; env OPENPETE_MODS_DIR / <exe>/mods */
     opts->mods_enabled        = NULL;  /* NULL = unset; env OPENPETE_MODS / mods/enabled.txt */
     opts->compile_mods        = 0;     /* --compile-mods: compile every mod and exit */
+    opts->dump_sfx_pack_dir   = NULL;
+    opts->dump_sfx_wads       = NULL;
     opts->card_dir            = NULL;  /* NULL = default appdir; env OPENPETE_CARD_DIR */
     opts->card1_path          = NULL;
     opts->card2_path          = NULL;
@@ -1243,6 +1252,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 fprintf(stderr, "openpete: --record-frames expects a non-negative integer\n");
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
+        } else if (strcmp(a, "--sfxpack-dir") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->sfxpack_dir = v; i++;
         } else if (strcmp(a, "--texpack-dir") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->texpack_dir = v; i++;
@@ -1254,6 +1266,12 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->mods_enabled = v; i++;
         } else if (strcmp(a, "--compile-mods") == 0) {
             opts->compile_mods = 1;
+        } else if (strcmp(a, "--dump-sfx-pack") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->dump_sfx_pack_dir = v; i++;
+        } else if (strcmp(a, "--dump-sfx-wads") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->dump_sfx_wads = v; i++;
         } else if (strcmp(a, "--config") == 0) {
             /* Consumed by the config loader before this parse; accepted
              * here so it isn't an unknown flag. */

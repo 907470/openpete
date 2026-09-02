@@ -405,6 +405,72 @@ else
     bad "duel resolution wrong for order [b,a]"
 fi
 
+# ── 8b. asset overlay: sound namespace (assets/sfx/) ─────────────────
+# Two declarative mods each ship a symbolic spyroCharge.wav (synthesized
+# tones — Spyro charges constantly in the attract demo, gems are never
+# collected there). Asserts: a file replaces a keyed voice; last in order
+# wins with the same log line the texture namespace prints; flipping the
+# order flips the winner. Then the round-trip instrument: a fresh census
+# of the disc loaded unmodified must verify bit-identical at every key-on.
+say "asset overlay: sound namespace — symbolic replacement + last-wins"
+for m in sfxduel-a sfxduel-b; do
+    mkdir -p "$WORK/sfxsrc/$m/assets/sfx"
+    printf '[mod]\nid = "%s"\nversion = "0.0.1"\napi = '"$API_VER"'\n' "$m" \
+        > "$WORK/sfxsrc/$m/mod.toml"
+    python3 - "$WORK/sfxsrc/$m/assets/sfx/spyroCharge.wav" "$m" <<'PY'
+import math, struct, sys, wave
+f = 440.0 if sys.argv[2].endswith('a') else 660.0
+rate = 22050; n = int(rate * 0.25)
+pcm = b''.join(struct.pack('<h', int(8000 * math.sin(2 * math.pi * f * i / rate))) for i in range(n))
+w = wave.open(sys.argv[1], 'wb'); w.setnchannels(1); w.setsampwidth(2); w.setframerate(rate)
+w.writeframes(pcm); w.close()
+PY
+done
+mkdir -p "$WORK/sfxduel"
+ln -sfn "$WORK/sfxsrc/sfxduel-a" "$WORK/sfxduel/sfxduel-a"
+ln -sfn "$WORK/sfxsrc/sfxduel-b" "$WORK/sfxduel/sfxduel-b"
+printf 'sfxduel-a\nsfxduel-b\n' > "$WORK/sfxduel/enabled.txt"
+out="$(run_game "$WORK/sfxduel" 6000)"
+if printf '%s\n' "$out" | grep -q 'mod sfxduel-b overrides "spyroCharge.wav" (was mod sfxduel-a)'; then
+    ok "later-enabled mod wins the sound (b over a)"
+else
+    bad "sound duel resolution wrong for order [a,b]"
+    printf '%s\n' "$out" | grep -i sfxpack | head -3
+fi
+replaced="$(printf '%s\n' "$out" | grep -o '\[sfxpack\].*replaced=[0-9]*' | grep -o 'replaced=[0-9]*' | cut -d= -f2)"
+if [ "${replaced:-0}" -ge 1 ]; then
+    ok "symbolic spyroCharge.wav replaced a keyed voice (replaced=$replaced)"
+else
+    bad "no voice was replaced by the sound mod"
+    printf '%s\n' "$out" | grep "sfxpack" | head -3
+fi
+printf 'sfxduel-b\nsfxduel-a\n' > "$WORK/sfxduel/enabled.txt"
+out="$(run_game "$WORK/sfxduel" 6000)"
+if printf '%s\n' "$out" | grep -q 'mod sfxduel-a overrides "spyroCharge.wav" (was mod sfxduel-b)'; then
+    ok "flipping the order flips the sound winner (a over b)"
+else
+    bad "sound duel resolution wrong for order [b,a]"
+fi
+
+say "sfx pack round-trip: a fresh census loaded unmodified verifies bit-identical"
+if timeout 300 "$BIN" --disc "$DISC" --dump-sfx-pack "$WORK/sfxdump" > "$WORK/sfxdump.log" 2>&1 &&
+   grep -q "no_end=0 failed=0" "$WORK/sfxdump.log"; then
+    ok "census: $(grep -o 'entries=[0-9]* sources=[0-9]* dumped=[0-9]*' "$WORK/sfxdump.log")"
+    mkdir -p "$WORK/nomods"; : > "$WORK/nomods/enabled.txt"
+    out="$(OPENPETE_SFXPACK_VERIFY=1 run_game "$WORK/nomods" 6000 --sfxpack-dir "$WORK/sfxdump")"
+    line="$(printf '%s\n' "$out" | grep '^\[sfxpack\]')"
+    keyed="$(printf '%s' "$line" | grep -o 'keyed=[0-9]*' | cut -d= -f2)"
+    vok="$(printf '%s' "$line" | grep -o 'verify_ok=[0-9]*' | cut -d= -f2)"
+    vbad="$(printf '%s' "$line" | grep -o 'verify_bad=[0-9]*' | cut -d= -f2)"
+    if [ "${keyed:-0}" -ge 1 ] && [ "${vok:-0}" = "${keyed:-1}" ] && [ "${vbad:-1}" = 0 ]; then
+        ok "every key-on replaced and verified ($line)"
+    else
+        bad "round-trip not bit-identical: $line"
+    fi
+else
+    bad "census dump failed"; tail -3 "$WORK/sfxdump.log"
+fi
+
 # ── 9. level-segment overlay: CdRead chokepoint (rung 9) ────────────────
 say "wad overlay: byte-identical blob — chokepoint provably transparent"
 mkdir -p "$WORK/wadsrc/wad-identity/assets/wad"

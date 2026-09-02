@@ -53,7 +53,8 @@ assets up by convention:
 assets/textures/*.png                 HD texture replacement (native renderer)
 assets/textures/own/<hexid>.png       custom texture registered under its own id
 assets/music/*.wav                    per-track music replacement
-assets/sounds/*.wav                   mod-local one-shots (sfx_play / [[binding]])
+assets/sfx/*.wav                      sound-effect replacement (files named by the sfx census)
+assets/sfx/own/*.wav                  mod-local one-shots (sfx_play / [[binding]])
 assets/levels/<stem>.WAD
 assets/levels/<stem>.OVL              custom level payloads, wired by [[level]]
 ```
