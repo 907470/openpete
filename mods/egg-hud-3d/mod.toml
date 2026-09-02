@@ -37,4 +37,4 @@ type = "bool"
 default = false
 label = "Reverse direction"
 group = "Spin"
-help = "Spin the other way"
+help = "Spin the other way (the default matches the flipbook's direction)"
