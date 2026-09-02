@@ -30,11 +30,3 @@ max = 60.0
 label = "Spin speed (°/tick)"
 group = "Spin"
 help = "Rotation per sim tick. The flipbook's nine cells fit ~12°/tick; 40° would be one full turn per cycle"
-
-[[config]]
-key = "spin.reverse"
-type = "bool"
-default = false
-label = "Reverse direction"
-group = "Spin"
-help = "Spin the other way (the default matches the flipbook's direction)"

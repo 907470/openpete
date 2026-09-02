@@ -201,10 +201,9 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self)
     {
         double deg = api->config_float(self, "spin.degrees_per_tick", 12.0);
         if (deg < 1.0) deg = 1.0; if (deg > 60.0) deg = 60.0;
-        /* Negative by default: the flipbook's spots travel the other way from
-         * a positive z-byte step (verified against the sprite). */
+        /* Negative: the flipbook's spots travel the other way from a positive
+         * z-byte step (verified against the sprite). */
         s_step_units = -deg * 256.0 / 360.0;
-        if (api->config_bool(self, "spin.reverse", 0)) s_step_units = -s_step_units;
     }
     memset(s_park_host, 0, SLOTS * sizeof(Moby));
     if (api->override_addr(self, OP_FNADDR_func_8001919C, on_sprite) != 0) return -1;
