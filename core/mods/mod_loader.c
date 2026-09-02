@@ -629,6 +629,7 @@ static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
                      char* so_path, size_t so_path_len);
 static int mod_compute_key(const char* mod_dir, const char* sdk_dir,
                            char key_out[65]);
+static void sdk_prefix_drop(void);
 static int config_compute_key(const char* mod_dir, char key_out[65]);
 static int mod_compile(const char* mod_dir, const char* id,
                        const char* sdk_dir, const char* key,
@@ -759,6 +760,7 @@ static void hot_reload_poll(void) {
     if (!s_hot) return;
     static unsigned s_cnt = 0;
     if (++s_cnt % 64u) return;
+    sdk_prefix_drop(); /* an SDK edit must show up in this round's keys */
     for (int i = 0; i < s_mod_count; i++) {
         struct openpete_mod* mod = &s_mods[i];
         /* Deferred-entry rows (never entered) reload nothing: no code
@@ -1858,12 +1860,22 @@ static int mod_list_srcs(const char* mod_dir,
  * re-extract) never changes it; an SDK regen, api bump, toolchain swap,
  * or real source edit always does. Returns 0 with key_out filled, -1 if
  * the mod has no compilable sources. */
-static int mod_compute_key(const char* mod_dir, const char* sdk_dir,
-                           char key_out[65]) {
-    char srcs[MOD_SRCS_MAX][MOD_PATH_MAX];
-    int n_srcs = mod_list_srcs(mod_dir, srcs);
-    if (n_srcs <= 0) return -1;
+/* The SDK half of the build key is the same for every mod and is the
+ * large half — a few hundred KB of generated headers against a few KB of
+ * mod source — so it is hashed once per round and the digest state is
+ * cloned per mod. The byte stream fed to the hash is unchanged, so the
+ * keys, and every stamp already on disk, are identical to hashing it
+ * per mod. The hot-reload watch drops the prefix before each poll round
+ * so an SDK edit is still noticed. */
+static openpete_sha256_ctx s_sdk_prefix;
+static char                s_sdk_prefix_dir[MOD_PATH_MAX];
+static int                 s_sdk_prefix_ok = 0;
 
+static void sdk_prefix_drop(void) { s_sdk_prefix_ok = 0; }
+
+static const openpete_sha256_ctx* sdk_prefix(const char* sdk_dir) {
+    if (s_sdk_prefix_ok && strcmp(s_sdk_prefix_dir, sdk_dir) == 0)
+        return &s_sdk_prefix;
     openpete_sha256_ctx hc;
     openpete_sha256_init(&hc);
     const unsigned api_ver = OPENPETE_MOD_API_VERSION;
@@ -1883,6 +1895,19 @@ static int mod_compute_key(const char* mod_dir, const char* sdk_dir,
         snprintf(p, sizeof p, "%s/%s", sdk_dir, sdk_inputs[i]);
         (void)hash_file(&hc, p); /* absent header = stable no-op */
     }
+    s_sdk_prefix = hc;
+    snprintf(s_sdk_prefix_dir, sizeof s_sdk_prefix_dir, "%s", sdk_dir);
+    s_sdk_prefix_ok = 1;
+    return &s_sdk_prefix;
+}
+
+static int mod_compute_key(const char* mod_dir, const char* sdk_dir,
+                           char key_out[65]) {
+    char srcs[MOD_SRCS_MAX][MOD_PATH_MAX];
+    int n_srcs = mod_list_srcs(mod_dir, srcs);
+    if (n_srcs <= 0) return -1;
+
+    openpete_sha256_ctx hc = *sdk_prefix(sdk_dir);
     for (int i = 0; i < n_srcs; i++)
         (void)hash_file(&hc, srcs[i]);
     uint8_t digest[32];
