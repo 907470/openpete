@@ -148,6 +148,35 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
     }
     uint32_t call_idx = o->next_call;
 
+    /* Replay: an existing live row for this (owner, call) is served as
+     * is when the request matches it — same vaddr, same view, bytes as
+     * last written. A mismatch means the mod's allocation pattern
+     * changed (a config-driven size, an order that depends on runtime
+     * state): the old row is marked superseded so no savestate written
+     * against it can ever restore into an orphan, and the call falls
+     * through to a fresh bump. */
+    for (uint32_t i = 0; i < s_rows_n; i++) {
+        arena_row_t* r = &s_rows[i];
+        if (r->superseded || r->call_idx != call_idx ||
+            strcmp(r->owner, owner) != 0)
+            continue;
+        if (r->size == size && r->align == align && r->flags == flags) {
+            o->next_call = call_idx + 1;
+            if (host_view) *host_view = &s_arena[r->off];
+            OPL_INFO_F("mods", "guest arena: %s call #%u replayed "
+                       "(%u B @0x%08X, bytes kept)", owner, call_idx,
+                       size, ARENA_BASE + r->off);
+            return ARENA_BASE + r->off;
+        }
+        r->superseded = 1;
+        OPL_WARN_F("mods", "guest arena: %s call #%u changed shape "
+                   "(%u B/%u/%#x -> %u B/%u/%#x) — row #%u superseded; "
+                   "savestates written against it are now refused",
+                   owner, call_idx, r->size, r->align, r->flags, size,
+                   align, flags, i);
+        break;
+    }
+
     if (s_rows_n >= ARENA_ROWS_MAX) {
         OPL_ERROR_F("mods", "guest arena ledger full (%d rows) — %s call "
                     "#%u refused; allocate at entry and reuse, the cursor "
@@ -172,6 +201,12 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
 
     if (host_view) *host_view = &s_arena[off];
     return ARENA_BASE + off;
+}
+
+void openpete_mods_arena_entry_begin(const char* owner) {
+    if (!owner || !*owner) return;
+    arena_owner_t* o = owner_slot(owner, 0);
+    if (o) o->next_call = 0;
 }
 
 int openpete_mods_arena_owner_mutable(const char* owner) {

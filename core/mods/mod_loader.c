@@ -650,6 +650,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     openpete_mods_config_load(mod, mod->dir, mod->log_tag);
     (void)config_compute_key(mod->dir, mod->cfg_key);
     (void)openpete_mods_shader_watch_key(mod->dir, mod->shader_key);
+    openpete_mods_arena_entry_begin(mod->id); /* replay its allocations */
     if (!entry || entry(&s_api, mod) != 0) {
         OPL_ERROR_F("mods", "%s: reload entry failed — mod is now INERT",
                     mod->id);
@@ -876,6 +877,65 @@ static void toggle_parse_env(void) {
                    s_toggle_sched_n, s_toggle_sched_n == 1 ? "y" : "ies");
 }
 
+/* Scheduled config edits (harness): OPENPETE_MODS_CFG_APPLY=
+ * "tick:id:key=int[,...]" commits an integer config edit through the
+ * same path the Mods panel's Apply uses — config.toml rewritten, reload
+ * queued, entry re-run at the next tick boundary — so a headless run can
+ * exercise re-entry deterministically. */
+typedef struct {
+    unsigned tick;
+    char     id[MOD_ID_MAX];
+    char     key[64];
+    int64_t  val;
+} cfg_apply_sched_t;
+static cfg_apply_sched_t s_cfg_sched[8];
+static int               s_cfg_sched_n = 0;
+
+static void cfg_apply_schedule_parse(void) {
+    const char* e = getenv("OPENPETE_MODS_CFG_APPLY");
+    if (!e || !*e) return;
+    char buf[512];
+    snprintf(buf, sizeof buf, "%s", e);
+    char* save = NULL;
+    for (char* tok = strtok_r(buf, ",", &save); tok;
+         tok = strtok_r(NULL, ",", &save)) {
+        cfg_apply_sched_t t;
+        long long v;
+        if (sscanf(tok, "%u:%63[^:]:%63[^=]=%lld", &t.tick, t.id, t.key,
+                   &v) == 4 &&
+            s_cfg_sched_n < (int)(sizeof s_cfg_sched / sizeof s_cfg_sched[0])) {
+            t.val = (int64_t)v;
+            s_cfg_sched[s_cfg_sched_n++] = t;
+        } else {
+            OPL_ERROR_F("mods", "OPENPETE_MODS_CFG_APPLY: bad token \"%s\" "
+                        "(want tick:id:key=int)", tok);
+        }
+    }
+    if (s_cfg_sched_n)
+        OPL_INFO_F("mods", "config-apply schedule armed (%d entr%s)",
+                   s_cfg_sched_n, s_cfg_sched_n == 1 ? "y" : "ies");
+}
+
+static void cfg_apply_schedule_run(unsigned canonical_tick) {
+    for (int i = 0; i < s_cfg_sched_n; i++) {
+        cfg_apply_sched_t* t = &s_cfg_sched[i];
+        if (t->tick != canonical_tick) continue;
+        int idx = -1;
+        for (int m = 0; m < s_mod_count; m++)
+            if (strcmp(s_mods[m].id, t->id) == 0) { idx = m; break; }
+        if (idx < 0) {
+            OPL_ERROR_F("mods", "config-apply schedule: no mod \"%s\"", t->id);
+            continue;
+        }
+        openpete_mods_cfg_edit_t e;
+        memset(&e, 0, sizeof e);
+        e.key = t->key; e.type = 'i'; e.ival = t->val;
+        OPL_INFO_F("mods", "config-apply schedule: %s %s=%lld at tick %u",
+                   t->id, t->key, (long long)t->val, canonical_tick);
+        (void)openpete_mods_cfg_apply(idx, 1, &e);
+    }
+}
+
 void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
     s_current_tick = canonical_tick;
     for (int i = 0; i < s_toggle_sched_n; i++) {
@@ -883,6 +943,7 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
             (void)openpete_mods_set_mod_enabled(s_toggle_sched[i].id,
                                                 s_toggle_sched[i].on);
     }
+    cfg_apply_schedule_run(canonical_tick);
     hot_reload_poll();
 
     /* Both of these are things a UI section may have asked for from inside a
@@ -1946,6 +2007,7 @@ static int mod_run_entry(struct openpete_mod* mod) {
                     mod->id);
         return -1; /* keep the .so resident; it is inert without chains */
     }
+    openpete_mods_arena_entry_begin(mod->id);
     int rc = entry(&s_api, mod);
     if (rc != 0) {
         OPL_ERROR_F("mods", "%s: openpete_mod_entry returned %d — disabled",
@@ -2791,6 +2853,7 @@ int openpete_mods_init(const openpete_options_t* opts) {
                    "the O-menu", loaded - enabled,
                    loaded - enabled == 1 ? "" : "s");
     toggle_parse_env();
+    cfg_apply_schedule_parse();
     return loaded;
 }
 

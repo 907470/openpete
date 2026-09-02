@@ -157,6 +157,11 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
                                    uint32_t flags, void** host_view,
                                    const char* owner);
 
+/* Reset `owner`'s allocation call cursor: the loader calls this
+ * immediately before running (or re-running) openpete_mod_entry, so the
+ * mod's allocation sequence replays from its first ledger row. */
+void openpete_mods_arena_entry_begin(const char* owner);
+
 /* 1 iff `owner` holds a live (non-superseded) row without
  * OP_GALLOC_IMMUTABLE — the per-mod half of the carry gate. */
 int openpete_mods_arena_owner_mutable(const char* owner);
