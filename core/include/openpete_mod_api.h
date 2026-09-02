@@ -539,12 +539,10 @@ typedef struct openpete_mod_api {
      * 44.1 kHz) used instead of the game's pitch computation; 0 = keep
      * the game's pitch. Voice-layer names ("gem_pickup", ...) are
      * replaced host-side at key-on — guest RAM, SPU banks and the
-     * gameplay rand() stream stay byte-stock, so the substitution is
-     * sim-neutral by construction. Names the game layer marks as
-     * def-shaped (per-level SoundDefinition sounds, e.g.
-     * "chest_break_wooden") route through a guest def repoint instead
-     * and are sim-DIVERGENT — the log line says which route was taken.
-     * Unknown name => -1.
+     * gameplay rand() stream stay byte-stock. Sounds with no SoundTable
+     * name (a moby's own m_Sounds def) cannot be reached this way — a
+     * hash-named file in assets/sfx/ covers every sample, named or not,
+     * and needs no code. Unknown name => -1.
      *
      * sfx_play: play `assets/sfx/own/<name>.wav` from this mod's
      * directory as a HOST-side additive one-shot (never the SPU —

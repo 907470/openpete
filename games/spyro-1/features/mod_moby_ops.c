@@ -45,56 +45,6 @@ static const openpete_moby_ops_t s_spyro1_moby_ops = {
     .classes_loaded   = ops_classes_loaded,
 };
 
-/* SoundDefinition repoint op (core sfx_def_replace service): resolve
- * (model class, m_Sounds slot) through the LIVE per-level tables —
- * g_Models row -> model m_Sounds[slot] = def index -> g_Spu def entry
- * (stride 0x14, sample SPU address at +0) — and rewrite the address.
- * Nonzero = class/def not present in this level (not an error). */
-#define ADDR_G_SPU_DEFS   0x800761D0u
-#define SOUNDDEF_STRIDE   0x14u
-
-static int ops_sfx_def_repoint(CPUState* cpu, uint16_t model_class,
-                               uint8_t sound_slot, uint32_t spu_addr) {
-    if (model_class >= MODEL_COUNT || sound_slot >= 16) return -1;
-    uint32_t defs = cpu->read_word(ADDR_G_SPU_DEFS);
-    uint32_t model = cpu->read_word(ADDR_G_MODELS +
-                                    4u * (uint32_t)model_class);
-    if (!defs || !model) return -1;
-    uint32_t idx = cpu->read_byte((model | 0x80000000u) + 4u + sound_slot);
-    if (idx == 0xFFu) return -1;
-    cpu->write_word(defs + idx * SOUNDDEF_STRIDE, spu_addr);
-    return 0;
-}
-
-/* Reader twin of the repoint: same (class, slot) -> live-def resolve,
- * returning the def's current sample address. Lets the engine capture
- * the word it is about to overwrite, so a live disable can restore the
- * stock sound instead of waiting for the next level load. */
-static int ops_sfx_def_read(CPUState* cpu, uint16_t model_class,
-                            uint8_t sound_slot, uint32_t* out_addr) {
-    if (model_class >= MODEL_COUNT || sound_slot >= 16 || !out_addr)
-        return -1;
-    uint32_t defs = cpu->read_word(ADDR_G_SPU_DEFS);
-    uint32_t model = cpu->read_word(ADDR_G_MODELS +
-                                    4u * (uint32_t)model_class);
-    if (!defs || !model) return -1;
-    uint32_t idx = cpu->read_byte((model | 0x80000000u) + 4u + sound_slot);
-    if (idx == 0xFFu) return -1;
-    *out_addr = cpu->read_word(defs + idx * SOUNDDEF_STRIDE);
-    return 0;
-}
-
 void spyro1_moby_ops_register(void) {
     openpete_mods_set_moby_ops(&s_spyro1_moby_ops);
-    openpete_mods_sfx_set_def_repoint(ops_sfx_def_repoint);
-    openpete_mods_sfx_set_def_reader(ops_sfx_def_read);
-    /* Named handles for the def-shaped sounds (m_Sounds[] slot 0 of the
-     * chest classes — no stable SoundTable name exists for these). */
-    static const openpete_mods_sfx_def_name_t k_def_names[] = {
-        { "chest_break_wooden",  194, 0 },
-        { "chest_break_metal",   195, 0 },
-        { "chest_break_armored", 401, 0 },
-    };
-    openpete_mods_sfx_set_def_names(
-        k_def_names, (int)(sizeof k_def_names / sizeof k_def_names[0]));
 }

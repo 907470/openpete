@@ -289,21 +289,6 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick);
  * The apply loop DEFERS such a disable until the player leaves; the
  * menu greys the switch. */
 int  openpete_mods_registry_owner_busy(const char* mod_id);
-/* SFX owner sweep (mod_sfx.c): restores engine-written SoundDefinition
- * words on disable (when the game registered a def reader) and clears
- * the owner's rows' latches so re-enable re-applies at level-ready.
- * Runs from the apply loop with the live cpu. */
-void openpete_mods_sfx_set_owner_enabled(CPUState* cpu, const char* owner,
-                                         int on);
-/* Game-registered def READER (counterpart of the repoint op): resolve
- * (model class, m_Sounds slot) and read the live def's sample address.
- * Registering it upgrades sfx-def disables from next-level to a true
- * live restore. */
-typedef int (*openpete_mods_sfx_def_read_fn)(CPUState* cpu,
-                                             uint16_t model_class,
-                                             uint8_t sound_slot,
-                                             uint32_t* out_addr);
-void openpete_mods_sfx_set_def_reader(openpete_mods_sfx_def_read_fn fn);
 /* Bumped once per APPLIED toggle (state actually changed). The run loop
  * polls it to invalidate timeline-derived state: rewind history recorded
  * under the old modset must not replay into the new one, and runahead
@@ -523,8 +508,8 @@ int openpete_mods_level_enter(CPUState* cpu, int level_id);
 int openpete_mods_read_level_data(int level_id, void* buf, uint32_t cap);
 
 /* Level-ready event (mod_registry.c): hooks fire once per level on the
- * first master-update tick with gameplay live; also drives
- * openpete_mods_sfx_defs_apply. Loader-facing registration. */
+ * first master-update tick with gameplay live. Loader-facing
+ * registration. */
 int openpete_mods_on_level(const char* mod_id, openpete_mod_level_fn fn,
                            const char* log_tag);
 int openpete_mods_registry_ensure_driver(const char* log_tag);
@@ -754,34 +739,6 @@ int openpete_mods_sfx_hook(openpete_mod_t* self, const char* name,
                            void (*fn)(openpete_sfx_event_t* ev));
 uint32_t openpete_mods_sfx_stage(openpete_mod_t* self, const void* body,
                                  uint32_t len);
-
-/* SoundDefinition replacement (mod_sfx.c): the game registers a
- * def-repoint op (resolve (model class, m_Sounds slot) to the live
- * per-level def and rewrite its sample address; return 0 ok, nonzero =
- * class not present). Rows apply once per level from the registry's
- * level-ready point. */
-typedef int (*openpete_mods_sfx_def_repoint_fn)(CPUState* cpu,
-                                                uint16_t model_class,
-                                                uint8_t sound_slot,
-                                                uint32_t spu_addr);
-void openpete_mods_sfx_set_def_repoint(openpete_mods_sfx_def_repoint_fn fn);
-
-/* Game-registered names for per-level SoundDefinition sounds: a
- * sfx_replace() call on one of these names routes into the def-repoint
- * machinery (sim-DIVERGENT — guest def words change), so mods keep one
- * verb for "substitute a game sound". Rows must be static-lifetime. */
-typedef struct {
-    const char* name;
-    uint16_t    model_class;
-    uint8_t     sound_slot;
-} openpete_mods_sfx_def_name_t;
-void openpete_mods_sfx_set_def_names(const openpete_mods_sfx_def_name_t* rows,
-                                     int n);
-int  openpete_mods_sfx_def_replace(openpete_mod_t* self,
-                                   uint16_t model_class,
-                                   uint8_t sound_slot,
-                                   const void* body, uint32_t len);
-void openpete_mods_sfx_defs_apply(CPUState* cpu, int level_id);
 
 /* Per-mod user configuration (mod_config.c): mods/<id>/config.toml,
  * parsed by the loader right before the mod's entry runs (boot and hot

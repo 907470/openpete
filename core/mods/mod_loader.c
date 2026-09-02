@@ -1077,7 +1077,6 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
         openpete_mods_chain_set_owner_enabled(id, on);
         openpete_mods_draw_set_owner_enabled(id, on);
         openpete_mods_registry_set_owner_enabled(id, on);
-        openpete_mods_sfx_set_owner_enabled(cpu, id, on);
         mod->enabled = on;
         s_toggle_epoch++;
         OPL_INFO_F("mods", "live toggle: %s %s (tick %u)",

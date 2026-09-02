@@ -45,6 +45,8 @@ mods/*/assets/s3/
 mods-attic/*/assets/s3/
 # Texel strip convert_chests.py derives from the same disc.
 mods/spyro3/assets/textures/own/
+# S3 samples the converters decode to WAV for the sfx pack (same disc).
+mods/spyro3/assets/sfx/
 
 # Generated mod-docs reference pages (tools/gen_mod_docs.py output)
 docs/modding/pages/reference/

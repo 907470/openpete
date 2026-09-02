@@ -137,7 +137,6 @@ static void registry_tick(CPUState* cpu) {
         h->fired_level = lvl;
         h->fn(cpu, lvl);
     }
-    openpete_mods_sfx_defs_apply(cpu, lvl);
 }
 
 /* ── Level-slot namespace (rung 12) ─────────────────────────────────── */
