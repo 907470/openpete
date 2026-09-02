@@ -23,6 +23,7 @@
 #include "feature_registry.h"
 #include "psx_runtime.h"
 #include "openpete_native_render.h"
+#include "openpete_native_vram.h"     /* cell dump: decode a sprite cell from the VRAM model */
 #include "render_paths.h"
 #include "texture_pack.h"
 
@@ -85,6 +86,39 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
     int clx=(int)(clut&0x3Fu)*16, cly=(int)((clut>>6)&0x1FFu);
     uint32_t rgba = (w1 & 0xFFFFFFu) | 0xFF000000u;
     int abe = (int)((w1>>24)&0x2u);   /* code bit1 = semi-transparent (ABR mode 0) */
+
+    /* One-shot texel dump of the sprite's cell (OPENPETE_UISPRITE_CELLDUMP=<dir>,
+     * _FROM=<frame>): decodes the FT4's u/v box through its CLUT from the VRAM
+     * model to <dir>/cell_f<frame>_u<u>_v<v>.ppm — the flipbook cells at texel
+     * resolution, for measuring what an animation actually does between ticks. */
+    {
+        static int s_cd = -1; static const char* s_cd_dir; static unsigned s_cd_from; static int s_cd_n;
+        if (s_cd < 0) { s_cd_dir = getenv("OPENPETE_UISPRITE_CELLDUMP"); s_cd = (s_cd_dir && *s_cd_dir);
+                        const char* f = getenv("OPENPETE_UISPRITE_CELLDUMP_FROM"); s_cd_from = f ? (unsigned)strtoul(f,NULL,0) : 0; }
+        if (s_cd && openpete_frame >= s_cd_from && s_cd_n < 64 && bpp != 16) {
+            int u0=u[0],u1=u[0],v0=v[0],v1=v[0];
+            for (int k=1;k<4;k++){ if(u[k]<u0)u0=u[k]; if(u[k]>u1)u1=u[k]; if(v[k]<v0)v0=v[k]; if(v[k]>v1)v1=v[k]; }
+            int cw=u1-u0, ch=v1-v0;
+            const uint16_t* vr = openpete_vram_data();
+            if (vr && cw>0 && ch>0 && cw<=256 && ch<=256) {
+                char path[512]; snprintf(path,sizeof path,"%s/cell_f%u_u%d_v%d.ppm",s_cd_dir,openpete_frame,u0,v0);
+                FILE* fp=fopen(path,"wb");
+                if (fp) { s_cd_n++;
+                    fprintf(fp,"P6\n%d %d\n255\n",cw,ch);
+                    for (int y=0;y<ch;y++) for (int x=0;x<cw;x++) {
+                        int tu=u0+x, tv=v0+y, ci;
+                        if (bpp==4) { uint16_t w=vr[(size_t)(tpy+tv)*OPENPETE_VRAM_W + tpx + (tu>>2)]; ci=(w>>((tu&3)*4))&0xF; }
+                        else        { uint16_t w=vr[(size_t)(tpy+tv)*OPENPETE_VRAM_W + tpx + (tu>>1)]; ci=(w>>((tu&1)*8))&0xFF; }
+                        uint16_t c=vr[(size_t)cly*OPENPETE_VRAM_W + clx + ci];
+                        unsigned char px[3]={(unsigned char)((c&31)*255/31),(unsigned char)(((c>>5)&31)*255/31),(unsigned char)(((c>>10)&31)*255/31)};
+                        if (c==0) px[0]=px[1]=px[2]=0;   /* index 0 / black = transparent on PSX */
+                        fwrite(px,1,3,fp);
+                    }
+                    fclose(fp);
+                }
+            }
+        }
+    }
 
     openpete_native_scene_begin_frame(openpete_frame);   /* idempotent within a frame */
     static const int idx[2][3] = { {0,1,2}, {1,3,2} };   /* TL,TR,BL,BR -> 2 tris */
