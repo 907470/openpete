@@ -391,7 +391,13 @@ def main():
     ap.add_argument("--single-sided", action="store_true",
                     help="omit the double-sided face flag (winding is NOT made consistent)")
     ap.add_argument("--out", type=Path, default=MOD / "assets" / "teapot_s1pack.bin")
-    build(ap.parse_args())
+    args = ap.parse_args()
+    # A stress pack never lands on the shipped asset path: the mod loads
+    # whatever sits at assets/teapot_s1pack.bin, and a face count past the
+    # polygon buffer hangs the game.
+    if args.dup_faces > 1 and args.out == MOD / "assets" / "teapot_s1pack.bin":
+        args.out = MOD / "assets" / f"teapot_s1pack.stress{args.dup_faces}.bin"
+    build(args)
 
 
 if __name__ == "__main__":
