@@ -1,0 +1,5 @@
+# modtest.toml — CI declaration for tools/modtest.py.
+[test]
+frames     = 2400
+args       = "--skip-to-level artisans"
+expect_log = ["teapot-dragons: pack: 254 verts", "class 250 80161700 -> teapot"]
