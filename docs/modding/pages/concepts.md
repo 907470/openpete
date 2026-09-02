@@ -104,13 +104,42 @@ host pointer, accepting kuseg, kseg0, and kseg1 addresses, and
     [Globals](reference/globals.md), and from the `OP_FNADDR_*`
     constants. Never hardcode a number that you can name.
 
-For guest-addressable scratch space, `api->guest_alloc` bump-allocates
-in the expansion window above 2 MB and gives you a host view of it.
+For memory of your own, `api->guest_alloc` bump-allocates guest-
+addressable bytes and gives you a host view of the same block. This is
+**the day-one home for mutable mod state**: the engine carries every
+allocation through savestates, rewind, runahead and process handoff
+exactly as it carries guest RAM, so a cooldown, a spawned-set bitmap or
+a per-session counter kept there rolls back with the world instead of
+running ahead of it. Host statics do not roll back; keep them for
+things that are not timeline state (caches, file handles, UI drafts).
 
-!!! note "One caveat inherited from the moby format"
-    Animated-model vertex streams use 21-bit offsets, so any payload for
-    one of those must live in the low 2 MB. Coordinate a fixed park
-    below the executable base at `0x80010000`.
+Four rules keep it honest:
+
+1.  Allocate at entry and reuse. There is no free, and the cursor never
+    comes back — allocating per level or per toggle grows every future
+    snapshot.
+2.  Write through the host view only from tick context (entry, tick
+    hooks, toggle hooks) — never from a present hook, a UI section, or a
+    thread of your own. Snapshots assume the arena is quiescent between
+    ticks.
+3.  Store guest addresses inside the block, never host pointers: the
+    bytes cross a process boundary at handoff.
+4.  A block you park once and never write again — a model payload — takes
+    `OP_GALLOC_IMMUTABLE`. It is a promise the engine checks; a broken
+    one is logged with your mod's name.
+
+On a reload (the Mods panel's Apply) your allocation sequence is replayed:
+the same calls get the same blocks with their bytes intact. A savestate
+written under a different allocation layout — a config edit that changed
+a size — is refused with the mod and entry named, never restored into
+the wrong place.
+
+!!! note "One caveat inherited from the moby format, for now"
+    Animated-model vertex streams are referenced through a 21-bit field,
+    so a payload of that shape currently needs `OP_GALLOC_LOW`. That flag
+    is transitional and leaves the SDK before v1: a stream-handle
+    resolver at the game's readers replaces it, and no mod will ever
+    choose where its memory lives.
 
 ## Services
 

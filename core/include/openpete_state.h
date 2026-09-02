@@ -39,12 +39,15 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
  * memcpy of the volatile state (CPU regs + RAM + scratch + SPU
  * deterministic mirror + CD cursors + frame/vbl counters).
  *
+ * Carried: CPU regs, RAM, scratch, the SPU deterministic mirror, CD
+ * cursors + queue, the game-extra blob, VRAM (row-delta restore) and the
+ * mod arena's used prefix (re-anchored on restore: bytes allocated after
+ * the snapshot keep their contents, the cursor never rewinds).
+ *
  * Deliberately EXCLUDED (callers must gate accordingly):
- *   - VRAM + SPU sample RAM: mutate only inside load windows; users run
- *     at gameplay steady-state (runahead is hard-gated OFF during loads;
- *     rewind keyframes may add VRAM dirty-rect capture later, P4).
- *   - mods section + verdicts (same process, same mods).
- *   - game_extra (WAD cursor only moves during loads).
+ *   - SPU sample RAM: mutates only inside load windows; users run at
+ *     gameplay steady-state (runahead is hard-gated OFF during loads).
+ *   - the arena LEDGER and its verdicts (same process, same layout).
  *
  * load(quiet=1): speculative restore — deterministic mirrors only; no
  * discontinuity broadcast, no game/mod resync, no OpenAL perturbation.

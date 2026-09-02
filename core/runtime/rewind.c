@@ -4,6 +4,7 @@
 #include "openpete_discontinuity.h"
 #include "openpete_input_log.h"
 #include "openpete_log.h"
+#include "openpete_mods.h"   /* arena immutable check */
 
 #include <stdlib.h>
 #include <string.h>
@@ -22,7 +23,8 @@ static void rewind_on_guest_discontinuity(void) {
 
 void openpete_rewind_configure(int window_seconds) {
     openpete_rewind_clear();
-    /* Keyframes own their snapshot blobs (~2.1 MiB each, lazily allocated);
+    /* Keyframes own their snapshot blobs (~3.1 MiB each plus the mod
+     * arena's watermark, lazily allocated);
      * clear() only invalidates them, so a reconfigure must free them before
      * dropping the ring or every live resize leaks the whole window. */
     for (int i = 0; i < s_ring_n; i++)
@@ -38,7 +40,7 @@ void openpete_rewind_configure(int window_seconds) {
         s_registered = 1;
         (void)openpete_on_guest_discontinuity(rewind_on_guest_discontinuity);
     }
-    OPL_INFO_F("rewind", "window %d s (%d keyframes x ~2.1 MiB)",
+    OPL_INFO_F("rewind", "window %d s (%d keyframes x ~3.1 MiB + arena)",
                window_seconds, s_ring_n);
 }
 
@@ -64,6 +66,7 @@ void openpete_rewind_on_iter(const CPUState* cpu, unsigned frame, int live) {
         kf->mem = openpete_state_mem_new();
         if (!kf->mem) return;   /* OOM: ring shrinks by one, logged inside */
     }
+    openpete_mods_arena_immutable_check("rewind keyframe");
     if (openpete_state_mem_save(kf->mem, cpu, frame) != 0) return;
     kf->frame   = frame;
     kf->log_idx = input_log_count();

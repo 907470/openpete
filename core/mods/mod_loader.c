@@ -1052,22 +1052,6 @@ int openpete_mods_state_safe(const char** offender) {
     return 1;
 }
 
-/* 1 iff no ENABLED mod holds a high-arena allocation without
- * OP_GALLOC_IMMUTABLE. A snapshot that omits the arena restores guest
- * RAM to an earlier tick while such a mod's state stays at the later
- * one; every timeline feature refuses rather than run that split. */
-int openpete_mods_arena_carry_safe(const char** offender) {
-    for (int i = 0; i < s_mod_count; i++) {
-        if (!s_mods[i].enabled) continue;
-        if (openpete_mods_arena_owner_mutable(s_mods[i].id)) {
-            if (offender) *offender = s_mods[i].id;
-            return 0;
-        }
-    }
-    if (offender) *offender = NULL;
-    return 1;
-}
-
 /* Does this mod write guest RAM? An explicit sim_mutative wins. With
  * none, the engine proves the answer where it can: a mod that loads no
  * code object has no path to guest RAM at all, and a mod that claims a

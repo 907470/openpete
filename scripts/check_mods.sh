@@ -381,14 +381,16 @@ else
     bad "modtest runner reported failures"
 fi
 
-# ── 13. arena timeline canary: guest_alloc memory vs the timeline ──────
+# ── 13. arena timeline canary: guest_alloc memory IS timeline state ───
 # arena-canary mirrors g_GameTick in a MUTABLE arena block and logs
-# DESYNC whenever guest RAM moves back in time without the arena. The
-# engine does not yet carry the arena, so the honest expectations are:
-# the harness rollback (which no gate covers) shows the defect, and the
-# gated features REFUSE naming the mod. These assertions flip to "no
-# DESYNC, armed, saved and restored" when the carry lands.
-say "arena canary: mutable arena memory vs rewind / runahead / file save"
+# DESYNC whenever guest RAM moves back in time without the arena. Every
+# timeline feature must restore both together: the stress-rewind
+# harness, runahead rollback (with the prediction oracle hashing the
+# arena), a file save/load, and the reload cases — an Apply that keeps
+# the allocation shape replays the row and a pre-Apply file restores;
+# an Apply that changes the shape supersedes the row and the pre-Apply
+# file is REFUSED. A modset mismatch refuses too.
+say "arena canary: mutable arena memory rides rewind / runahead / savestates"
 fixture "$WORK/canary" arena-canary
 out="$(run_game "$WORK/canary" 7000 --state-stress-rewind 25)"
 if printf '%s\n' "$out" | grep -q "arena-canary: armed" && \
@@ -398,24 +400,72 @@ else
     bad "canary never armed or the stress harness never rolled back"
 fi
 if printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
-    ok "stress-rewind: DESYNC observed — the uncarried arena runs ahead of guest RAM (the defect, measured)"
+    bad "stress-rewind: DESYNC — the arena did not roll back with guest RAM"
 else
-    bad "stress-rewind: no DESYNC — either the arena is carried now (flip this rung) or the instrument is blind"
+    ok "stress-rewind: arena rolled back with guest RAM (no DESYNC)"
 fi
-out="$(run_game "$WORK/canary" 3000 --runahead 1)"
-if printf '%s\n' "$out" | grep -q 'runahead: disabled: mod "arena-canary" holds mutable arena memory'; then
-    ok "runahead refused to arm, naming the mod"
+out="$(OPENPETE_RA_PREDICT_CHECK=1 run_game "$WORK/canary" 7000 --runahead 1)"
+if printf '%s\n' "$out" | grep -q "runahead: armed" && \
+   printf '%s\n' "$out" | grep -q "arena-canary: armed" && \
+   printf '%s\n' "$out" | grep -qE "\[ra-predict\] checked=[1-9][0-9]* mismatch=0" && \
+   ! printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
+    ok "runahead armed over mutable arena memory; prediction oracle exact; no DESYNC"
 else
-    bad "runahead armed (or refused for another reason) over mutable arena memory"
+    bad "runahead over the canary: not armed, oracle mismatch, or DESYNC"
 fi
 rm -f "$WORK/canary.state"
-out="$(run_game "$WORK/canary" 3000 --state-save-on-frame 1500 \
+out="$(run_game "$WORK/canary" 5000 --state-save-on-frame 4500 \
         --state-save-output "$WORK/canary.state")"
-if printf '%s\n' "$out" | grep -q 'save refused — mod "arena-canary" holds mutable arena memory' && \
-   [ ! -e "$WORK/canary.state" ]; then
-    ok "file save refused, naming the mod; no file written"
+if printf '%s\n' "$out" | grep -q "savestate: saved" && [ -e "$WORK/canary.state" ]; then
+    ok "file save with mutable arena memory: written"
 else
-    bad "file save went through over mutable arena memory"
+    bad "file save with mutable arena memory failed"
+fi
+out="$(run_game "$WORK/canary" 6000 --state-load-on-frame 5000 \
+        --state-load-input "$WORK/canary.state")"
+if printf '%s\n' "$out" | grep -q "arena ledger applied: .* 64 B restored" && \
+   printf '%s\n' "$out" | grep -q "savestate: loaded" && \
+   ! printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
+    ok "file load restored the arena with guest RAM (no DESYNC)"
+else
+    bad "file load: arena not restored, or DESYNC after the load"
+fi
+fixture "$WORK/canary-ms" double-gems
+out="$(run_game "$WORK/canary-ms" 1500 --state-load-on-frame 1000 \
+        --state-load-input "$WORK/canary.state")"
+if printf '%s\n' "$out" | grep -q "MODSET MISMATCH.*load refused"; then
+    ok "modset mismatch: load refused, running state untouched"
+else
+    bad "modset mismatch was not refused"
+fi
+# Reload cases need a writable copy: Apply rewrites config.toml.
+for v in same diff; do
+    rm -rf "$WORK/canary-$v"; mkdir -p "$WORK/canary-$v"
+    cp -r "$MODS_SRC/arena-canary" "$WORK/canary-$v/arena-canary"
+    rm -rf "$WORK/canary-$v/arena-canary/.build"
+    echo arena-canary > "$WORK/canary-$v/enabled.txt"
+done
+rm -f "$WORK/same.state" "$WORK/diff.state"
+out="$(OPENPETE_MODS_CFG_APPLY=2700:arena-canary:slots=4 \
+       run_game "$WORK/canary-same" 6500 \
+        --state-save-on-frame 4500 --state-save-output "$WORK/same.state" \
+        --state-load-on-frame 5500 --state-load-input "$WORK/same.state")"
+if printf '%s\n' "$out" | grep -q "arena-canary call #0 replayed" && \
+   printf '%s\n' "$out" | grep -q "savestate: loaded" && \
+   ! printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
+    ok "Apply (same shape): allocation replayed, pre-Apply file restored faithfully"
+else
+    bad "Apply (same shape): no replay, load refused, or DESYNC"
+fi
+out="$(OPENPETE_MODS_CFG_APPLY=2700:arena-canary:slots=8 \
+       run_game "$WORK/canary-diff" 6500 \
+        --state-save-on-frame 4500 --state-save-output "$WORK/diff.state" \
+        --state-load-on-frame 5500 --state-load-input "$WORK/diff.state")"
+if printf '%s\n' "$out" | grep -q "row #0 superseded" && \
+   printf '%s\n' "$out" | grep -q 'entry #0 .* was superseded by a reload .* REFUSING the load'; then
+    ok "Apply (changed shape): row superseded, pre-Apply file REFUSED naming the mod and entry"
+else
+    bad "Apply (changed shape): file written against a superseded row was not refused"
 fi
 
 # ── 14. per-modset save safety: tag + warn + adopt (memcard sidecar) ────

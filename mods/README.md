@@ -142,7 +142,9 @@ guest RAM through `api->guest` plus the typed structs in
 Draw HUD text and rectangles through the native renderer, never through
 guest prims.
 
-The services are `sfx_replace` and `sfx_play`, `guest_alloc`,
+The services are `sfx_replace` and `sfx_play`, `guest_alloc` (guest-
+addressable memory the engine carries through savestates, rewind and
+runahead — the home for mutable mod state),
 post-process shaders through `shader_register` and `postfx_*`, settings
 through a `[[config]]` schema and `config_*`, `ui_status` lines, and
 `binding_down`. Present hooks are render-pure, so simulation work

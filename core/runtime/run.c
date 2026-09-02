@@ -653,7 +653,11 @@ static void ra_pc_invalidate_all(void) {
 static uint64_t ra_pc_hash(void) {
     uint64_t h = openpete_fnv1a64_init();
     h = openpete_fnv1a64_update(h, openpete_psx_get_ram(), OPENPETE_PSX_RAM_SIZE);
-    return openpete_fnv1a64_update(h, openpete_psx_get_scratch(), OPENPETE_PSX_SCRATCH_SIZE);
+    h = openpete_fnv1a64_update(h, openpete_psx_get_scratch(), OPENPETE_PSX_SCRATCH_SIZE);
+    /* The mod arena is inside the rollback boundary: a led/committed
+     * split there is the same class of misprediction as one in RAM. */
+    return openpete_fnv1a64_update(h, openpete_mods_arena_bytes(),
+                                   openpete_mods_arena_used());
 }
 
 static void gameplay_hash_log_emit_header(FILE* fp) {
@@ -2862,15 +2866,6 @@ static int run_host_loop(const openpete_options_t* opts) {
                                 "\"host-fx\" to its mod.toml)",
                                 ra_offender ? ra_offender : "?");
                     ra_depth = s_runahead_req = 0;
-                } else if (!openpete_mods_arena_carry_safe(&ra_offender)) {
-                    /* The speculation snapshot omits the arena: a mod
-                     * whose hooks mutate arena state would commit ticks
-                     * against state already advanced by the led branch. */
-                    OPL_ERROR_F("runahead",
-                                "disabled: mod \"%s\" holds mutable arena "
-                                "memory the snapshot does not carry",
-                                ra_offender ? ra_offender : "?");
-                    ra_depth = s_runahead_req = 0;
                 } else {
                     ra_snap = openpete_state_mem_new();
                     if (!ra_snap) ra_depth = s_runahead_req = 0;
@@ -3258,17 +3253,14 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * world moves under it. */
                 if (rw_k) {
                     const char* st_offender = NULL;
-                    if (!openpete_mods_state_safe(&st_offender) ||
-                        !openpete_mods_arena_carry_safe(&st_offender)) {
+                    if (!openpete_mods_state_safe(&st_offender)) {
                         static bool st_hinted = false;
                         if (!st_hinted) {
                             st_hinted = true;
                             OPL_WARN_F("rewind", "refused: mod \"%s\" "
                                        "declares no state posture (add "
                                        "state = \"none\" or "
-                                       "\"rebuildable\" to its mod.toml) "
-                                       "or holds mutable arena memory the "
-                                       "keyframes do not carry",
+                                       "\"rebuildable\" to its mod.toml)",
                                        st_offender ? st_offender : "?");
                         }
                         rw_k = false;
@@ -3848,8 +3840,10 @@ static int run_host_loop(const openpete_options_t* opts) {
                             if (s_ra_pc[i].hash != ra_pc_hash()) {
                                 s_ra_pc_mismatches++;
                                 fprintf(stderr, "[ra-predict] MISMATCH f=%u: led "
-                                        "prediction != committed state (stealth "
-                                        "host-state read during speculation?)\n",
+                                        "prediction != committed state (a read of "
+                                        "host state outside the rollback "
+                                        "boundary — neither guest RAM nor the "
+                                        "mod arena — during speculation?)\n",
                                         openpete_frame);
                                 if (ra_pc_on() >= 2 && s_ra_pc[i].led) {
                                     /* Dump differing ranges as PSX vaddrs. */

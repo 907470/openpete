@@ -162,15 +162,17 @@ uint32_t openpete_mods_guest_alloc(uint32_t size, uint32_t align,
  * mod's allocation sequence replays from its first ledger row. */
 void openpete_mods_arena_entry_begin(const char* owner);
 
-/* 1 iff `owner` holds a live (non-superseded) row without
- * OP_GALLOC_IMMUTABLE — the per-mod half of the carry gate. */
-int openpete_mods_arena_owner_mutable(const char* owner);
-
-/* Carry gate: 1 iff no ENABLED mod holds a non-immutable high-arena
- * allocation. While 0, rewind, runahead, file save and handoff refuse;
- * *offender names the first mod. Deleted, not relaxed, once every
- * snapshot carries the arena. */
-int openpete_mods_arena_carry_safe(const char** offender);
+/* Snapshot support: the arena's used prefix is timeline state. save
+ * copies [0, used); restore is a RE-ANCHOR — bytes allocated after the
+ * snapshot keep their contents and the cursor never moves backwards.
+ * immutable_check verifies every IMMUTABLE row's checksum (captured on
+ * first check) and warns once per broken promise; call it once per
+ * keyframe / file save, never per speculative tick. */
+uint32_t       openpete_mods_arena_used(void);
+const uint8_t* openpete_mods_arena_bytes(void);
+void           openpete_mods_arena_mem_restore(const void* bytes,
+                                               uint32_t used);
+void           openpete_mods_arena_immutable_check(const char* when);
 
 /* Low park window (mod_arena.c): canonical-RAM bump allocator below the
  * game's EXE image, for payloads with narrow address fields (21-bit
@@ -847,11 +849,12 @@ int openpete_mods_runahead_capable(const char** offender);
  * undeclared mod. */
 int openpete_mods_state_safe(const char** offender);
 
-/* Low-park arena ledger (savestate P2b): serialized with the engine
- * state so a restored guest RAM's parked payloads can never be clobbered
- * by the live bump cursor. verdict() prefix-matches live allocations
- * against the saved ledger pre-commit (-1 = refuse); apply() re-anchors
- * the cursor to max(live, saved) and adopts saved entries post-commit. */
+/* Arena state section (both ledgers + the arena's used bytes),
+ * serialized with the engine state. verdict() prefix-matches the live
+ * ledgers against the saved ones pre-commit, superseded marks included
+ * (-1 = refuse); apply() adopts saved rows the live session has not
+ * made, restores the arena bytes and re-anchors the cursors to
+ * max(live, saved) post-commit. */
 uint32_t openpete_mods_arena_state_size(void);
 void     openpete_mods_arena_state_save(void* dst);
 int      openpete_mods_arena_state_verdict(const void* src, uint32_t size);

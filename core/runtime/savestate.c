@@ -121,7 +121,8 @@ extern int g_cdXaStartVBL;
  * framing, arena ledger, ...). Part of the ident hash, so a bump cleanly
  * orphans older files. 4 = P2b (arena section, MSv2 mods framing).
  * 5 = virtual XA music-head anchor joined the CD section. */
-#define OPENPETE_STATE_ABI 5u
+/* 6 = arena section v2: high-arena ledger + the arena's used bytes. */
+#define OPENPETE_STATE_ABI 6u
 
 /* Just the register file — the function-pointer tail of CPUState is
  * runtime-only, must not be saved or restored. */
@@ -263,21 +264,6 @@ int openpete_state_slot_present(unsigned slot) {
 
 int openpete_state_save_file(const char* path, const CPUState* cpu,
                              unsigned frame) {
-    /* Every file save — hotkey slot, scheduled --state-save, the handoff
-     * checkpoint — lands here. A file that omits the arena while a mod
-     * holds mutable arena state would restore guest RAM out of step with
-     * that mod's state; refuse, naming the mod. */
-    {
-        const char* offender = NULL;
-        if (!openpete_mods_arena_carry_safe(&offender)) {
-            OPL_ERROR_F("savestate", "%s: save refused — mod \"%s\" holds "
-                        "mutable arena memory this file format does not "
-                        "carry", path, offender ? offender : "?");
-            return -1;
-        }
-    }
-
-
     FILE* fp = fopen(path, "wb");
     if (!fp) {
         OPL_ERROR_F("savestate", "fopen %s for write failed: %s",
@@ -309,6 +295,9 @@ int openpete_state_save_file(const char* path, const CPUState* cpu,
     hdr.cd_state_bytes   = (uint32_t)sizeof(state_cd_t);
     hdr.game_extra_bytes = game_state_extra_size();
     hdr.modset_tag_bytes = (uint32_t)strlen(modset_tag);
+    /* Immutable-row promises are checked once per file save (and once
+     * per rewind keyframe), never per speculative tick. */
+    openpete_mods_arena_immutable_check("file save");
     hdr.arena_bytes      = openpete_mods_arena_state_size();
 
     /* Snapshot the host-side mirrors into heap buffers before writing —
@@ -502,20 +491,24 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
         return -1;
     }
 
-    /* Modset check: guest RAM carries mod-parked payloads and pointers
-     * into them, so loading under a DIFFERENT enabled-modset can corrupt
-     * silently (arena bump-cursor reuse). Warn loudly for now; the P2b
-     * per-mod ABI verdict ladder turns this into verified/refused/degraded. */
+    /* Modset check, pre-commit: guest RAM and the arena carry mod-parked
+     * payloads and pointers into them, so a file saved under a DIFFERENT
+     * mutative modset restores a world the running mods did not build.
+     * Refuse rather than proceed; the ledger verdict above covers the
+     * layout, this covers the set. */
     {
         const char* now_tag = openpete_mods_modset_tag();
         if (!now_tag) now_tag = "";
         if (strcmp(now_tag, tag_buf) != 0) {
             OPL_ERROR_F("savestate",
                         "%s: MODSET MISMATCH — state saved under [%s], "
-                        "running [%s]. Mod-parked guest data may be "
-                        "inconsistent; proceed at your own risk (P2b will "
-                        "gate this properly).",
+                        "running [%s]; load refused — running state "
+                        "untouched. Enable the same mods (and versions) "
+                        "the state was saved with.",
                         path, tag_buf, now_tag);
+            free(ram_buf); free(vram_buf); free(spu_buf); free(spumem_buf);
+            free(extra_buf); free(arena_buf); free(tag_buf);
+            return -1;
         }
     }
 
@@ -553,8 +546,9 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
         game_state_extra_load(extra_buf, hdr.game_extra_bytes);
     free(extra_buf);
 
-    /* Arena ledger apply (verdict passed pre-commit): re-anchor the low-
-     * park cursor BEFORE mod load_fns run — they may re-park. */
+    /* Arena apply (verdict passed pre-commit): restore the arena bytes
+     * and re-anchor both cursors before anything downstream — a mod's
+     * next tick hook may re-park against the restored layout. */
     openpete_mods_arena_state_apply(arena_buf, hdr.arena_bytes);
     free(arena_buf);
 
@@ -613,6 +607,12 @@ struct openpete_state_mem {
      * touched VRAM costs one compare, no GPU traffic. */
     uint8_t*   vram;       /* PsyX_VRAM_GetSize() */
     uint32_t   vram_bytes;
+    /* Mod arena: the used prefix [0, watermark). The watermark only
+     * grows, so the buffer is realloc'd grow-only at save time (the
+     * ARENA itself is never realloc'd — only this snapshot copy). */
+    uint8_t*   arena;
+    uint32_t   arena_cap;
+    uint32_t   arena_used;
 };
 
 openpete_state_mem_t* openpete_state_mem_new(void) {
@@ -642,6 +642,7 @@ void openpete_state_mem_free(openpete_state_mem_t* m) {
     free(m->cdq);
     free(m->gx);
     free(m->vram);
+    free(m->arena);
     free(m);
 }
 
@@ -665,6 +666,17 @@ int openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
     PsyX_CD_QueueSnapshot(m->cdq);
     if (m->gx_bytes) game_state_extra_save(m->gx);
     if (PsyX_VRAM_Snapshot(m->vram, m->vram_bytes) != 0) return -1;
+    {
+        uint32_t used = openpete_mods_arena_used();
+        if (used > m->arena_cap) {
+            uint8_t* grown = (uint8_t*)realloc(m->arena, used);
+            if (!grown) return -1;
+            m->arena = grown;
+            m->arena_cap = used;
+        }
+        if (used) memcpy(m->arena, openpete_mods_arena_bytes(), used);
+        m->arena_used = used;
+    }
     m->valid = 1;
     return 0;
 }
@@ -693,6 +705,7 @@ int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
      * (the dispatcher setter no-ops when the id already matches). */
     if (m->gx_bytes) game_state_extra_load(m->gx, m->gx_bytes);
     (void)PsyX_VRAM_RestoreDelta(m->vram, m->vram_bytes);
+    openpete_mods_arena_mem_restore(m->arena, m->arena_used);
     SDL_SetAtomicInt(&openpete_vbl, (int)m->vbl);
     if (!quiet) {
         game_on_state_loaded(cpu);
