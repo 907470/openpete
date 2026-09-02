@@ -1,0 +1,5 @@
+# modtest.toml — CI declaration for tools/modtest.py.
+[test]
+frames     = 4200
+args       = "--bk2 games/spyro-1/bk2/egg-inventory.bk2 --skip-to-level stone_hill"
+expect_log = ["egg-hud-3d: armed"]

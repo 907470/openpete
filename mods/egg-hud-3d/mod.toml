@@ -1,0 +1,21 @@
+# egg-hud-3d — the HUD / inventory egg icon is the real dragon egg.
+#
+# The game draws its collected-egg icons as a nine-cell flipbook sprite
+# (a pre-rendered egg rotating, one cell per tick). This mod intercepts
+# every emission of that sprite and puts the game's own 3D dragon-egg
+# model (moby class 34, a PETE.WAD shared model resident in every level)
+# in its place as a HUD billboard, rotated to the cell the sprite would
+# have shown. The engine interpolates HUD mobys between ticks, so at high
+# --render-fps the egg spins and slides smoothly where the sprite stepped.
+#
+# Guest writes: the shaded render list (scratch, rebuilt every tick) and
+# a small park of Moby structs in the low window. The egg state machine
+# and every sprite rectangle the game computes are untouched.
+
+[mod]
+id      = "egg-hud-3d"
+name    = "3D Egg Icons"
+version = "0.1.0"
+api     = 1
+state    = "rebuildable"   # the park is re-derived from the game's own egg state every tick
+runahead = "pure"          # tick hooks touch guest state only
