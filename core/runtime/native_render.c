@@ -36,6 +36,7 @@
 #include "openpete_time.h"   /* op_now — overlay's own sub-tick alpha (camera-independent) */
 #include "openpete_subtick_view.h" /* engagement report at shutdown */
 #include "openpete_interp.h" /* deterministic present clock for the overlay sub-tick alpha */
+#include "openpete_interp_objs.h" /* tick stamp + period for the overlay sub-tick alpha */
 #include "openpete_record.h" /* native --record capture seam */
 #include "rhi.h"
 #include "screenshot.h"  /* openpete_write_png_rgba */
@@ -1109,7 +1110,11 @@ void openpete_native_scene_capture_overlay(void) {
         memcpy(s_overlay_prev, s_overlay_carry, (size_t)s_overlay_carry_n * sizeof(s_overlay_carry[0]));
     s_overlay_prev_n = s_overlay_carry_n;
     s_overlay_prev_ns = s_overlay_curr_ns;   /* roll the capture timestamp too */
-    s_overlay_curr_ns = op_now();
+    /* Stamp the capture with the tick's gridded instant, the same clock the
+     * 3D per-object channels roll on, not the wall-clock time this code runs
+     * at: the two differ by scheduling jitter, and a 2D slide phased by wall
+     * time would judder against the 3D scene it sits over. */
+    s_overlay_curr_ns = openpete_interp_tick_stamp();
     /* Commit the feed-time accumulation as this tick's carry set. Only the GAME
      * RENDER's fresh emission ever accumulates: OVERLAY/HUD_PANEL by category,
      * 2D-UI sprites/lines by carry==1, and apply_overlay's re-applied (carry==2)
@@ -1162,9 +1167,33 @@ void openpete_native_scene_apply_overlay(double alpha) {
             if (oalpha < 0.0) oalpha = 0.0; else if (oalpha > 1.0) oalpha = 1.0;
         }
     } else if (s_overlay_curr_ns > s_overlay_prev_ns && s_overlay_prev_ns > 0) {
-        double period = (double)(s_overlay_curr_ns - s_overlay_prev_ns);
-        oalpha = (double)(op_now() - s_overlay_curr_ns) / period;
+        /* Interp spans one tick (1-tick lag, no extrapolation): cap the
+         * denominator at one tick like the 3D brackets, so a carry resuming
+         * after a spine-off stretch sweeps its delta over one tick instead of
+         * crawling for the length of the gap. */
+        op_time_t period = s_overlay_curr_ns - s_overlay_prev_ns;
+        if (period > g_openpete_tick_period_ns) period = g_openpete_tick_period_ns;
+        /* The VIRTUAL present clock, never op_now(): the scene may be extracted
+         * well before the instant it displays (eager production builds the
+         * whole span right after the tick), and the alpha is for the DISPLAY
+         * instant. Measured against extraction time every intermediate sat at
+         * alpha≈0 and the title logo's drop-in stepped at the tick rate. */
+        oalpha = (double)((int64_t)openpete_interp_present_now() - (int64_t)s_overlay_curr_ns) / (double)period;
         if (oalpha < 0.0) oalpha = 0.0; else if (oalpha > 1.0) oalpha = 1.0;
+    }
+    /* OPENPETE_ALPHA_MAP_DBG: the overlay's present-time -> interp-time mapping
+     * beside the 3D bracket's line (spyro_native_reextract.c), so a 2D-UI slide
+     * stepping while the 3D scene glides is attributable in one log. */
+    {
+        static int s_oadbg = -1;
+        if (s_oadbg < 0) { const char* e = getenv("OPENPETE_ALPHA_MAP_DBG"); s_oadbg = (e && *e && *e != '0'); }
+        if (s_oadbg && s_overlay_carry_n > 0) {
+            extern int g_openpete_canon_lag_leg;
+            fprintf(stderr, "[overlay-alpha f=%u leg=%s] present_now=%.3fms now=%.3fms curr_ns=%.3fms prev_ns=%.3fms cam_alpha=%.3f oalpha=%.3f n=%d\n",
+                    s_scene_frame, g_openpete_canon_lag_leg ? "CANON" : "inter",
+                    (double)openpete_interp_present_now() / 1e6, (double)op_now() / 1e6, /* clock-guard: wall */ /* prints both */
+                    (double)s_overlay_curr_ns / 1e6, (double)s_overlay_prev_ns / 1e6, alpha, oalpha, s_overlay_carry_n);
+        }
     }
     /* Pair curr with prev by index only when the two captures are structurally the
      * same (equal count) — a count change (a blink toggling, a glyph added) makes
@@ -2747,7 +2776,7 @@ void openpete_native_toggle_fullscreen(void)
         SDL_SetWindowFullscreenMode(s_nr.window, NULL);  /* borderless desktop */
     /* The size change this causes lands in ONE step, so neither settle window
      * applies to it: adopt it as soon as it is seen. */
-    s_nr.resize_immediate_at_ns = SDL_GetTicksNS();
+    s_nr.resize_immediate_at_ns = SDL_GetTicksNS(); /* clock-guard: wall */ /* resize debounce */
     SDL_SetWindowFullscreen(s_nr.window, !fs);
     OPL_INFO_F("native", "fullscreen %s", !fs ? "on (borderless desktop)" : "off");
     /* Announced HERE rather than at the call sites: Alt+Enter, the fullscreen
@@ -9027,7 +9056,7 @@ int openpete_phase_timers_on(void) {
 uint64_t openpete_phase_now_us(void) {
     static double us_per_tick = 0.0;
     if (us_per_tick == 0.0) us_per_tick = 1e6 / (double)SDL_GetPerformanceFrequency();
-    return (uint64_t)((double)SDL_GetPerformanceCounter() * us_per_tick);
+    return (uint64_t)((double)SDL_GetPerformanceCounter() * us_per_tick); /* clock-guard: wall */ /* phase timer */
 }
 
 /* Map the fixed OPPT/OPPC enums to interned trace-scope names (lazy). */
@@ -9921,7 +9950,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
          * full teardowns per drag. Each is expensive enough to cost the sim a
          * tick, and the presenting thread may be the sim thread. Render at the old
          * size until the user pauses, then rebuild once. */
-        Uint64 now_ns = SDL_GetTicksNS();
+        Uint64 now_ns = SDL_GetTicksNS(); /* clock-guard: wall */ /* resize debounce */
         bool discrete = s_nr.resize_immediate_at_ns &&
                         now_ns - s_nr.resize_immediate_at_ns <
                             NR_RESIZE_IMMEDIATE_GRACE_NS;
@@ -9953,7 +9982,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
      * whichever thread makes them (inline, or the present thread under
      * eager production), so it reflects the true on-screen present rate. */
     {
-        uint64_t now = SDL_GetPerformanceCounter(), freq = SDL_GetPerformanceFrequency();
+        uint64_t now = SDL_GetPerformanceCounter(), freq = SDL_GetPerformanceFrequency(); /* clock-guard: wall */ /* FPS window */
         if (s_fps_win_start == 0) s_fps_win_start = now;
         s_fps_frames++;
         uint64_t el = now - s_fps_win_start;

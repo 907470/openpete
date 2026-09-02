@@ -134,6 +134,15 @@ void openpete_interp_objs_stats(int* tracked, int* paired,
  * freezes the other half). */
 extern op_time_t g_openpete_tick_period_ns;
 
+/* The instant the most recent sim tick is stamped at — the PLL-smoothed VBL
+ * grid the objs ring rolls on (gridded under deterministic capture). Any
+ * per-tick channel that interpolates against the present clock stamps its
+ * captures with THIS, never op_now(): the wall-clock capture time drifts
+ * from the tick grid by scheduling jitter, and under eager production the
+ * scene is extracted long before the instant it displays. Falls back to
+ * op_now() when the run loop has not stamped a tick yet. */
+op_time_t openpete_interp_tick_stamp(void);
+
 #ifdef __cplusplus
 }
 #endif

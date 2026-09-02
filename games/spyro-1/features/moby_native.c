@@ -5905,7 +5905,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 int mh2 = openpete_native_interp_pos(mobys[i], mf);
                 fprintf(stderr, "[moby-screen f=%u] leg=%s now=%.3f m=%08x cls=%03x n=%d c=(%.2f,%.2f) vz=%.1f fpos=%d/%d cam=(%.1f,%.1f,%.1f) mob=(%.1f,%.1f,%.1f) TRf=(%.2f,%.2f,%.2f)\n",
                         openpete_frame, g_openpete_canon_lag_leg ? "CANON" : "inter",
-                        (double)op_now() / 1e6,
+                        (double)op_now() / 1e6, /* clock-guard: wall */ /* prints both */
                         mobys[i], sccls, got,
                         mx / got, my / got, mz / got,
                         ch, mh2, cf[0], cf[1], cf[2], mf[0], mf[1], mf[2],

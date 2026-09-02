@@ -423,7 +423,7 @@ static void cl_apply(uint8_t* cam) {
     /* Fly: advance the pose from the shared freecam axes at wall-time rate. */
     {
         static op_time_t s_prev_ns = 0;
-        op_time_t now = op_now();
+        op_time_t now = op_now(); /* clock-guard: wall */ /* fly input integrates at wall rate */
         double dt = (s_prev_ns && g_openpete_tick_period_ns > 0)
                         ? (double)(now - s_prev_ns) / (double)g_openpete_tick_period_ns
                         : 0.0;
@@ -1116,7 +1116,10 @@ static void spyro_native_reextract_body(void* cpu_v) {
      * no camera bracket. */
     double qa = 0.0;
     const openpete_interp_snapshot_t *prev2 = NULL, *prev = NULL, *curr = NULL;
-    int paired = openpete_interp_query3(op_now(), TICK_PERIOD_NS, &qa, &prev2, &prev, &curr);
+    /* The query's own alpha (qa) is unused — the bracket alpha is derived
+     * below from the present clock — but pass that clock here too, so the
+     * re-extract reads one clock throughout. */
+    int paired = openpete_interp_query3(openpete_interp_present_now(), TICK_PERIOD_NS, &qa, &prev2, &prev, &curr);
     /* Unpaired means there is no bracket to interpolate within (spawn, a
      * stuck world): the scene is presented live, and the pacing log is told
      * so rather than being given a stale alpha. */
@@ -1272,7 +1275,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
                 extern int g_openpete_canon_lag_leg;
                 fprintf(stderr, "[alpha-map f=%u leg=%s] now=%.3fms raw=%.3fms curr_ns=%.3fms period=%.3fms alpha_raw=%.3f tick=%u\n",
                         openpete_frame, g_openpete_canon_lag_leg ? "CANON" : "inter",
-                        (double)openpete_interp_present_now() / 1e6, (double)op_now() / 1e6, (double)curr->tick_ns / 1e6,
+                        (double)openpete_interp_present_now() / 1e6, (double)op_now() / 1e6, (double)curr->tick_ns / 1e6, /* clock-guard: wall */ /* prints both */
                         period / 1e6, alpha, curr->tick);
             }
         }

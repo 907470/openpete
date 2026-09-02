@@ -499,6 +499,18 @@ if(NOT CMAKE_HOST_WIN32)
         COMMENT "display-seam fence: presents and window ops only from their owner"
         VERBATIM)
 
+    # A scene is built for a PRESENT instant. scripts/fences/clock_guard.py
+    # refuses a wall-clock read (op_now / SDL_GetTicks* / clock_gettime) in
+    # the scene-producer files unless the line says `clock-guard: wall`: the
+    # interpolation alpha is (present clock - tick stamp) / period, and a
+    # channel phased by op_now() sits at alpha~0 under eager production and
+    # flakes under deterministic capture — both invisible to every gate.
+    add_custom_target(openpete_clock_guard ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "Checking scene-producer clocks..."
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/clock_guard.py ${CMAKE_SOURCE_DIR}
+        COMMENT "clock fence: scene producers read the present clock, not the wall clock"
+        VERBATIM)
+
     # Launcher hygiene, the two silent-failure defaults. A scripted run must
     # silence the pad (nobody is holding it, and the buzzing reaches no log),
     # and a script that sets OPENPETE_* knobs for a Windows .exe must name

@@ -21,8 +21,9 @@
  * that drive the objs table without the run loop). */
 op_time_t g_openpete_tick_stamp = 0;
 static op_time_t objs_tick_stamp(void) {
-    return g_openpete_tick_stamp ? g_openpete_tick_stamp : op_now();
+    return g_openpete_tick_stamp ? g_openpete_tick_stamp : op_now(); /* clock-guard: wall */ /* unit harnesses only */
 }
+op_time_t openpete_interp_tick_stamp(void) { return objs_tick_stamp(); }
 
 /* One sim tick in wall time (see the header note). Default NTSC; run.c
  * rescales by 1/tick_scale so --tick-scale stretches every consumer's

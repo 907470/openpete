@@ -346,9 +346,9 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
         openpete_mods_in_present = 1;
         for (int i = 0; i < s_phook_count; i++) {
             if (s_phooks[i].disabled) continue;
-            const op_time_t t0 = op_now();
+            const op_time_t t0 = op_now(); /* clock-guard: wall */ /* hook cost span */
             s_phooks[i].fn(&ctx);
-            openpete_mods_time_add(s_phooks[i].owner_id, op_now() - t0, 1);
+            openpete_mods_time_add(s_phooks[i].owner_id, op_now() - t0, 1); /* clock-guard: wall */
         }
         openpete_mods_in_present = 0;
         }
