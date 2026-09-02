@@ -1,0 +1,8 @@
+# modtest.toml — this repo's CI declaration for tools/modtest.py.
+# Engine-repo concern, not part of the mod manifest format. The timeline
+# cases (stress-rewind, runahead, save/load, reload) live in
+# scripts/check_mods.sh, which drives engine flags per run.
+[test]
+frames        = 4000
+expect_oracle = "pass"
+expect_log    = ["arena-canary: armed"]

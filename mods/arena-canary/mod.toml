@@ -1,0 +1,32 @@
+# arena-canary — CI proof that guest_alloc memory is TIMELINE state.
+#
+# Holds one mutable arena block (flags 0) and, from a tick hook, keeps
+# the game's own tick counter mirrored in it. Every timeline feature —
+# savestate load, rewind, runahead rollback, the --state-stress-rewind
+# harness — moves guest RAM back in time; if the arena does not move
+# with it, the mirror runs AHEAD of the guest counter and the mod logs
+# DESYNC. A clean run under every timeline feature is the proof that the
+# arena is carried; a DESYNC is the exact defect an author would ship by
+# keeping per-session state in the arena.
+#
+# The allocation size is config-driven so the reload harness can change
+# the mod's allocation pattern and prove the ledger refuses a savestate
+# written under the old layout.
+
+[mod]
+id      = "arena-canary"
+name    = "Arena Timeline Canary"
+version = "0.1.0"
+api     = 8
+state    = "none"      # no host residue: everything lives in the arena
+runahead = "pure"      # tick hook reads guest RAM and writes the arena only
+sim_mutative = false  # writes no canonical guest RAM
+
+[[config]]
+key = "slots"
+type = "int"
+default = 4
+min = 1
+max = 64
+label = "Mirror slots"
+help = "Size of the arena block in 16-byte slots (changes the allocation pattern)."

@@ -373,12 +373,49 @@ say "[test] blocks via tools/modtest.py (the harness modders run)"
 if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
         mods/double-gems mods/natural-gems mods/lib-and-client \
         mods/hud-stopwatch \
-        mods/arena-probe \
+        mods/arena-probe mods/arena-canary \
         mods/hd-single-texture mods/music-swap mods/spyro3 \
         mods/supercharge-anywhere; then
     ok "modtest runner: all [test] blocks green"
 else
     bad "modtest runner reported failures"
+fi
+
+# ── 13. arena timeline canary: guest_alloc memory vs the timeline ──────
+# arena-canary mirrors g_GameTick in a MUTABLE arena block and logs
+# DESYNC whenever guest RAM moves back in time without the arena. The
+# engine does not yet carry the arena, so the honest expectations are:
+# the harness rollback (which no gate covers) shows the defect, and the
+# gated features REFUSE naming the mod. These assertions flip to "no
+# DESYNC, armed, saved and restored" when the carry lands.
+say "arena canary: mutable arena memory vs rewind / runahead / file save"
+fixture "$WORK/canary" arena-canary
+out="$(run_game "$WORK/canary" 7000 --state-stress-rewind 25)"
+if printf '%s\n' "$out" | grep -q "arena-canary: armed" && \
+   printf '%s\n' "$out" | grep -q "stress-rewind: 1 rollbacks"; then
+    ok "canary armed and the harness rolled the timeline back (engaged)"
+else
+    bad "canary never armed or the stress harness never rolled back"
+fi
+if printf '%s\n' "$out" | grep -q "arena-canary: DESYNC"; then
+    ok "stress-rewind: DESYNC observed — the uncarried arena runs ahead of guest RAM (the defect, measured)"
+else
+    bad "stress-rewind: no DESYNC — either the arena is carried now (flip this rung) or the instrument is blind"
+fi
+out="$(run_game "$WORK/canary" 3000 --runahead 1)"
+if printf '%s\n' "$out" | grep -q 'runahead: disabled: mod "arena-canary" holds mutable arena memory'; then
+    ok "runahead refused to arm, naming the mod"
+else
+    bad "runahead armed (or refused for another reason) over mutable arena memory"
+fi
+rm -f "$WORK/canary.state"
+out="$(run_game "$WORK/canary" 3000 --state-save-on-frame 1500 \
+        --state-save-output "$WORK/canary.state")"
+if printf '%s\n' "$out" | grep -q 'save refused — mod "arena-canary" holds mutable arena memory' && \
+   [ ! -e "$WORK/canary.state" ]; then
+    ok "file save refused, naming the mod; no file written"
+else
+    bad "file save went through over mutable arena memory"
 fi
 
 # ── 14. per-modset save safety: tag + warn + adopt (memcard sidecar) ────
