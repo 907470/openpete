@@ -70,12 +70,18 @@ rule as every other asset namespace. The loader logs each collision as
 ## What the game still decides
 
 - **Duration.** The game is told a sound has ended when the original
-  sample would have ended, and that moment is gameplay state. A longer
-  replacement is cut there; a shorter one leaves silence. `index.txt`
-  lists every sample's stock duration in milliseconds.
+  sample would have ended, and that moment is gameplay state — it does
+  not move. A longer replacement still plays to its own end: when the
+  game frees the voice at the stock end, the tail keeps ringing on a
+  separate channel (it is silenced by a deliberate stop, a level load,
+  mute and pause). A shorter file leaves silence. `index.txt` lists
+  every sample's stock duration in milliseconds.
 - **Pitch and variance.** The game's per-play pitch, its random
   variance and its pitch cycling all apply to your file as they did to
-  the original.
+  the original. Add `-flat` before `.wav` (`gemPickup-flat.wav`,
+  `<label>-<hash>-p0400-flat.wav`) to pin the file to its own rate for
+  the whole play instead: no variance, no cycling, no slides. Audible
+  only; the game's own pitch bookkeeping is untouched.
 - **Volume and pan** are the game's.
 - **Looping.** A sample the game loops keeps looping. A replacement with
   a `smpl` loop chunk (what samplers and DAWs write) loops that window;
@@ -88,6 +94,9 @@ the level. Set `OPENPETE_SFXPACK_LOG=1` to have the engine name every
 sample it keyed that no file covers (hash, address, base pitch, size).
 `--sfxpack-dir DIR` points the base pack at a directory of your own;
 mods' `assets/sfx/` always join it.
+
+The `[sfxpack]` line at exit counts `keyed`, `resolved`, `replaced` and
+`rings_out` (replacements that outlast their stock sample).
 
 `OPENPETE_SFXPACK_VERIFY=1` is the round-trip check: with an unmodified
 dump loaded, every key-on compares the file's PCM against the original

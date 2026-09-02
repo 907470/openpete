@@ -41,6 +41,8 @@ typedef struct {
     int      kind;         /* OP_SFX_NAME_* */
     uint64_t hash;         /* HASH form */
     int      pitch;        /* HASH form: base pitch, or -1 when untagged */
+    int      flat;         /* "-flat" qualifier: play at the file's own rate,
+                            * ignoring the game's pitch writes (audible only) */
     char     name[64];     /* SYMBOLIC form: basename without .wav */
 } op_sfx_name;
 

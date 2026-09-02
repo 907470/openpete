@@ -411,7 +411,9 @@ Filenames are the identity — `<slot-name>-<content-hash>-p<pitch>.wav` —
 so one file covers the same sample wherever the game plays it, and
 `<slot-name>.wav` alone replaces that role in every level. Any rate, bit
 depth or channel count is accepted (stereo is downmixed; the SPU voice is
-mono). A replacement plays for the original sample's duration.
+mono). A replacement longer than the original rings out on its own
+channel after the game has moved on; `-flat` before `.wav` pins a file to
+its own rate, ignoring the game's pitch variance and cycling.
 `--sfxpack-dir <dir>` overrides the pack location; sources are rescanned
 at every level load. See `docs/modding/pages/sounds.md` for the name forms
 and the round-trip check.

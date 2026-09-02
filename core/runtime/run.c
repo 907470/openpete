@@ -5251,11 +5251,11 @@ static int run_host_loop(const openpete_options_t* opts) {
         sfx_pack_census(&sc);
         if (sc.keyed || sc.active)
             fprintf(stderr, "[sfxpack] files=%d keyed=%llu resolved=%llu "
-                    "replaced=%llu truncated=%llu verify_ok=%llu verify_bad=%llu\n",
+                    "replaced=%llu rings_out=%llu verify_ok=%llu verify_bad=%llu\n",
                     sc.files, (unsigned long long)sc.keyed,
                     (unsigned long long)sc.resolved,
                     (unsigned long long)sc.replaced,
-                    (unsigned long long)sc.truncated,
+                    (unsigned long long)sc.rings_out,
                     (unsigned long long)sc.verify_ok,
                     (unsigned long long)sc.verify_bad);
     }

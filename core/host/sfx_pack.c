@@ -305,7 +305,7 @@ static sp_entry* match(const sp_ident* id, uint32_t addr, int base_pitch)
 
 static void override_done(PsyX_SPUAL_SampleOverride* ov)
 {
-    if (ov->truncated) s_census.truncated++;
+    if (ov->rings_out) s_census.rings_out++;
 }
 
 static int override_cb(int voice, unsigned int addr, int stock_samples,
@@ -342,7 +342,8 @@ static int override_cb(int voice, unsigned int addr, int stock_samples,
 
     uint32_t rate = e->rate;
     int fold = 0;
-    if (e->id.kind == OP_SFX_NAME_HASH && e->id.pitch > 0) fold = e->id.pitch;
+    if (e->id.flat) fold = 0;                 /* pinned: the file's own rate, always */
+    else if (e->id.kind == OP_SFX_NAME_HASH && e->id.pitch > 0) fold = e->id.pitch;
     else if (e->id.kind == OP_SFX_NAME_SYMBOLIC && base_pitch > 0) fold = base_pitch;
     if (fold > 0) {
         /* Tagged: "at its own rate this file is the sound at base pitch
@@ -363,6 +364,7 @@ static int override_cb(int voice, unsigned int addr, int stock_samples,
     out->rate       = rate;
     out->loop_start = e->loop_start;
     out->loop_len   = e->loop_len;
+    out->flat       = e->id.flat;
     out->done       = override_done;
     if (openpete_speculative) return 1;
     s_census.replaced++;

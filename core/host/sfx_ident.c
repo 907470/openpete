@@ -1,6 +1,7 @@
 #include "sfx_ident.h"
 
 #include <ctype.h>
+#include <strings.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -36,6 +37,11 @@ int op_sfx_name_parse(const char* basename, op_sfx_name* out)
     const char* ext = basename + n - 4;
     if (strcasecmp(ext, ".wav") != 0) return OP_SFX_NAME_NONE;
     size_t stem_len = n - 4;
+    /* Optional trailing "-flat" qualifier on any form. */
+    if (stem_len > 5 && strncasecmp(basename + stem_len - 5, "-flat", 5) == 0) {
+        out->flat = 1;
+        stem_len -= 5;
+    }
 
     /* Hash form: find a 16-hex run that is either the whole stem, or
      * follows a '-' and is followed by end / "-p<4 hex>". Scan from the

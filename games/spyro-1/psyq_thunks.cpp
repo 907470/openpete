@@ -1708,6 +1708,7 @@ void psyq_CdIntToPos(CPUState* cpu) {
 
 #include "openpete_mods.h" /* SFX overlay service (mods/mod_sfx.c) */
 #include "sfx_pack.h"      /* drop-in WAV replacement (core/host/sfx_pack.c) */
+extern "C" void PsyX_SPUAL_StopOrphans(void);
 
 /* ── SFX overlay: Spyro-1 glue ─────────────────────────────────────────
  * Names for the game's SoundTable slots (spyro-1/include/sound_table.h;
@@ -1956,6 +1957,7 @@ void psyq_SpuWrite(CPUState* cpu) {
         openpete_mods_sfx_bank_reset();
         s_sfx_tail = 0;
         sfx_pack_generation_bump();
+        PsyX_SPUAL_StopOrphans(); /* a new level: no tails from the old one */
     } else {
         sfx_pack_invalidate_range(s_spu_xfer_addr, len);
     }

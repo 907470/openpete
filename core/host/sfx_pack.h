@@ -53,7 +53,7 @@ typedef struct {
     uint64_t keyed;       /* override callbacks (voice key-ons with a decode) */
     uint64_t resolved;    /* identity known (END flag found) */
     uint64_t replaced;    /* a pack file served */
-    uint64_t truncated;   /* served file was longer than stock and got cut */
+    uint64_t rings_out;   /* served file outlasts stock; its tail rings out */
     uint64_t verify_ok;   /* OPENPETE_SFXPACK_VERIFY: PCM identical to stock */
     uint64_t verify_bad;
     int      active;      /* any file in any source */
