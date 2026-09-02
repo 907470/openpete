@@ -60,6 +60,17 @@ typedef struct {
 } record_t;
 
 static record_t s_rec[SLOTS];
+
+/* Spin. The flipbook advances one cell per tick (g_Hud+0x40, the game's own
+ * frame cursor, wraps mod 9), and egg i shows cell (cursor + i) % 9 — so an
+ * egg's phase is (accumulated cursor advances + i). The angle is that phase
+ * times a configurable step: the nine cells span far less than a turn (the
+ * cell-to-cell motion measures ~12°), so 360°/9 per tick spun visibly fast. */
+static double  s_step_units;          /* rotation-byte units per tick (256 = 360°) */
+static uint8_t s_cursor_prev;
+static int     s_cursor_seen;
+static unsigned s_cursor_total;       /* ticks of flipbook advance since load */
+#define G_HUD_EGGCURSOR    (OP_GADDR_g_Hud + 0x40u)
 static uint32_t s_park;                /* guest vaddr of Moby[SLOTS] */
 static Moby*    s_park_host;
 static unsigned s_appended, s_dropped, s_ticks_seen;
@@ -125,6 +136,15 @@ static void on_sprite(CPUState* cpu)
 static void on_shaded_render(CPUState* cpu)
 {
     if (s_park) {
+        /* Advance the spin clock by the game's own cursor motion (once per tick
+         * in gameplay and the inventory; unchanged when the render is called
+         * twice in a tick or the game is paused). */
+        uint8_t cursor = (uint8_t)(op_read_u32(g_api, G_HUD_EGGCURSOR) % EGG_CELLS);   /* int field, 0..8 */
+        if (!s_cursor_seen) { s_cursor_seen = 1; s_cursor_prev = cursor; }
+        if (cursor != s_cursor_prev) {
+            s_cursor_total += (unsigned)((cursor + EGG_CELLS - s_cursor_prev) % EGG_CELLS);
+            s_cursor_prev = cursor;
+        }
         uint32_t n = 0;
         while (n < SHADED_CAP && op_read_u32(g_api, G_SHADED_LIST + n * 4u) != 0) n++;
         unsigned free_slots = (n < SHADED_CAP - 1u) ? (SHADED_CAP - 1u - n) : 0u;
@@ -141,7 +161,11 @@ static void on_shaded_render(CPUState* cpu)
             /* The model's long axis is model Y; the z rotation byte turns it
              * about that axis (verified by render: constant upright silhouette,
              * spots travelling horizontally, like the flipbook). */
-            m->m_Rotation.z       = (uint8_t)((r->cell * 256u + 4u) / EGG_CELLS);
+            {
+                unsigned i = (r->cell + EGG_CELLS - (unsigned)s_cursor_prev % EGG_CELLS) % EGG_CELLS;
+                double phase = (double)(s_cursor_total + i);
+                m->m_Rotation.z = (uint8_t)((long)(phase * s_step_units) & 0xFF);
+            }
             m->m_DepthOffset      = 127;
             /* Specular/metal type 0, as the in-world egg moby carries it; the HUD
              * icons' type 11 (gold metal) shades the egg brown. */
@@ -174,6 +198,12 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self)
         return -1;
     }
     s_park_host = (Moby*)host;
+    {
+        double deg = api->config_float(self, "spin.degrees_per_tick", 12.0);
+        if (deg < 1.0) deg = 1.0; if (deg > 60.0) deg = 60.0;
+        s_step_units = deg * 256.0 / 360.0;
+        if (api->config_bool(self, "spin.reverse", 0)) s_step_units = -s_step_units;
+    }
     memset(s_park_host, 0, SLOTS * sizeof(Moby));
     if (api->override_addr(self, OP_FNADDR_func_8001919C, on_sprite) != 0) return -1;
     if (api->override_addr(self, OP_FNADDR_func_80022A2C, on_shaded_render) != 0) return -1;

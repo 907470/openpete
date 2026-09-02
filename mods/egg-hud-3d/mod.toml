@@ -19,3 +19,22 @@ version = "0.1.0"
 api     = 1
 state    = "rebuildable"   # the park is re-derived from the game's own egg state every tick
 runahead = "pure"          # tick hooks touch guest state only
+
+# Settings — rendered in the Mods panel; committed edits reload the mod.
+[[config]]
+key = "spin.degrees_per_tick"
+type = "float"
+default = 12.0
+min = 1.0
+max = 60.0
+label = "Spin speed (°/tick)"
+group = "Spin"
+help = "Rotation per sim tick. The flipbook's nine cells fit ~12°/tick; 40° would be one full turn per cycle"
+
+[[config]]
+key = "spin.reverse"
+type = "bool"
+default = false
+label = "Reverse direction"
+group = "Spin"
+help = "Spin the other way"
