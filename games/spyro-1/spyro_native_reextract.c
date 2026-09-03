@@ -71,6 +71,7 @@ static int      s_shown_sp_ok = 0;
 #define SHADOW_REGION 3u            /* index in s_spyro_interp_regions (after g_SpyroFlame) */
 #define SHADOW_SAVE   0x1Cu         /* shadow bytes bracketed (covers anchor @ 0x10..0x1C) */
 #define SHADOW_POS_OFF 0x10u        /* m_Position (ground anchor, Vector3D int32) */
+#define GS_REGION     4u            /* index in s_spyro_interp_regions (after g_SpyroShadow): g_GameState */
 
 /* Per-moby RAM bracket save slots — restored after re-extract so the next sim
  * tick reads canonical RAM. Sized generously for any level's live moby count. */
@@ -1175,7 +1176,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
                                   - (int64_t)curr->tick_ns) / (double)TICK_PERIOD_NS;
     const int pair_stale = (pair_age > 4.0);
 
-    int cam_cut = 0;
+    int cam_cut = 0, gs_edge = 0;
     if (paired && cam && prev && curr) {
         const int32_t* pp = (const int32_t*)(prev->data + prev->region_offsets[0] + CAM_OFF_POS);
         const int32_t* cp = (const int32_t*)(curr->data + curr->region_offsets[0] + CAM_OFF_POS);
@@ -1198,6 +1199,19 @@ static void spyro_native_reextract_body(void* cpu_v) {
             double frob = 0; for (int i = 0; i < 9; i++) frob += (double)pm[i] * cm[i];
             if (frob < 4096.0 * 4096.0) cam_cut = 1;   /* angle > 90° per tick */
         }
+        /* GAME-STATE edge: the two ticks came from different simulation regimes
+         * (gameplay -> level transition, transition -> load, cutscene in/out).
+         * The camera re-targets on such an edge — entering a portal swings it
+         * ~20° and ~500 units in one tick, under both thresholds above — and a
+         * lerp presents the chord of that swing: Spyro lands ~10 px off the
+         * canonical line for the one present whose pair straddles the edge.
+         * The regimes are not one motion, so the pair is a cut by definition. */
+        {
+            uint32_t pgs, cgs;
+            memcpy(&pgs, prev->data + prev->region_offsets[GS_REGION], 4);
+            memcpy(&cgs, curr->data + curr->region_offsets[GS_REGION], 4);
+            if (pgs != cgs) { cam_cut = 1; gs_edge = 1; }
+        }
         /* OPENPETE_CAMCUT_DBG: rate-limited census of the guard's inputs. A cut
          * costs both the sub-tick camera bracket and the occlusion cull, so a
          * view that reads as cut every present needs its span and delta named. */
@@ -1209,9 +1223,9 @@ static void spyro_native_reextract_body(void* cpu_v) {
                 uint64_t now = openpete_phase_now_us();
                 if (now - t0 >= 1000000u) { t0 = now; n = 0; }
                 if (n < 4) { n++;
-                    fprintf(stderr, "[camcut f=%u] cut=%d age=%.1f d=(%.0f,%.0f,%.0f) |d|=%.0f lim=%.0f "
+                    fprintf(stderr, "[camcut f=%u] cut=%d gs_edge=%d age=%.1f d=(%.0f,%.0f,%.0f) |d|=%.0f lim=%.0f "
                             "prev=(%d,%d,%d) curr=(%d,%d,%d) ptick=%u ctick=%u\n",
-                            openpete_frame, cam_cut, pair_age, dx, dy, dz,
+                            openpete_frame, cam_cut, gs_edge, pair_age, dx, dy, dz,
                             sqrt(dx*dx+dy*dy+dz*dz), 5000.0,
                             pp[0], pp[1], pp[2], cp[0], cp[1], cp[2], prev->tick, curr->tick); }
             }

@@ -83,6 +83,16 @@ static const openpete_interp_region_t s_spyro_interp_regions[] = {
      * stepping at 30 Hz. (Moby shadows need no capture: they re-derive from each
      * moby's already-interpolated m_Position.) Read-only. */
     { "g_SpyroShadow", 0x8007AA10, 0x28 },
+    /* g_GameState (4 bytes): which simulation regime produced the tick —
+     * gameplay, level transition, cutscene, pause. A pair whose two ticks
+     * came from different regimes is a discontinuity for the presentation
+     * bracket: the camera re-targets on the edge (entering a portal turns it
+     * ~20° and moves it ~500 units in one tick — a real cut, but under the
+     * 90°/5000-unit thresholds that catch teleports), so the re-extract snaps
+     * instead of lerping the chord of the swing. Committed timeline, like the
+     * camera it gates: a led copy could flip a tick before the camera pair it
+     * is compared against. */
+    { "g_GameState", 0x800757D8, 0x4, 1 },
 };
 
 /* --- per-object (indirect) capture: the g_LevelMobys array --------------- */
