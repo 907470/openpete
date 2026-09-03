@@ -316,8 +316,6 @@ def gen_functions(symbols: Path, protos_path: Path) -> str:
     rows = []
     for f in funcs:
         name = unq(f.get("name", ""))
-        if name.startswith("__maspsx_include_asm_hack_"):
-            continue   # recompiler shim aliases — noise for authors
         rows.append((name, f.get("addr", "?"), unq(f.get("kind", "")),
                      unq(f.get("source_file", ""))))
     rows.sort(key=lambda r: r[0].lower())

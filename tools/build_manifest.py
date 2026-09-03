@@ -155,6 +155,12 @@ def parse_map(path: Path) -> list[Section]:
         if not is_clean_symbol(rest):
             continue
         name = rest.split()[0]
+        # The decomp's INCLUDE_ASM macro emits a C wrapper symbol
+        # `__maspsx_include_asm_hack_<name>` at the same address as
+        # <name>; the wrapper is an artefact of that build, not a game
+        # symbol.
+        if name.startswith("__maspsx_include_asm_hack_"):
+            continue
         current.symbols.append(Symbol(
             addr=int(addr_hex, 16),
             name=name,
