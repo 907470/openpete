@@ -901,7 +901,7 @@ static const knob_desc_t g_builtin[] = {
 
     ENVROW_LATCHED("DEPTH_AFFINE", "Debug", "1",
         "0 = legacy depth curve; 1 (default) screen-affine; baked into pipelines at boot."),
-    ENVROW_LATCHED("EAGER", "Pacing", "1",
+    ENVROW_LATCHED("EAGER", "Debug", "1",
       "Eager production (default on): the span of presents is extracted "
       "AHEAD of each tick and presented from a dedicated thread's scene "
       "ring, so the tick's execution leaves no hole in the display. 0 = "
