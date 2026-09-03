@@ -13,7 +13,9 @@ Per model:
      x/z clamped to the literal field (±1023). The x flip is the
      handedness difference between the two spaces: without it the
      checkpoint crate's "C" reads mirrored in Spyro (the S3 animated-
-     model port hit the same mirror).
+     model port hit the same mirror). `--yaw` then rotates about the
+     vertical axis: a moby draws along its own local axes, and a Crash
+     model faces +x where the statue's pedestal expects -y.
   2. Unreferenced vertices dropped; if still over `--budget` (255, the
      header's one-byte tier count), shortest-edge collapse until it fits.
   3. The same collapse run further gives the LP tier (≤ `--lp-faces`
@@ -332,7 +334,11 @@ def encode_model(mesh, atlas, args, report):
     half = max(max(xs) - cx, cx - min(xs), max(zs) - cz, cz - min(zs), 1e-6)
     k = min(args.height / height, 1000.0 / half, 4090.0 / height)
     index_of = {old: new for new, old in enumerate(used)}
-    verts = [(-(p[0] - cx) * k, -(p[1] - ymin) * k, (p[2] - cz) * k) for p in src]
+    ca, sa = math.cos(math.radians(args.yaw)), math.sin(math.radians(args.yaw))
+    verts = []
+    for p in src:
+        gx, gz = -(p[0] - cx) * k, (p[2] - cz) * k
+        verts.append((gx * ca - gz * sa, -(p[1] - ymin) * k, gx * sa + gz * ca))
     tris = [dict(v=[index_of[i] for i in t["v"]], rgb=t["rgb"], tex=t["tex"],
                  nocull=t["nocull"]) for t in mesh.tris]
     src_verts = len(verts)
@@ -538,6 +544,9 @@ def main():
                     help="MODEL=ANIM[:FRAME] pose override (repeatable)")
     ap.add_argument("--height", type=float, default=900.0,
                     help="model height in world units (Spyro ≈ 480)")
+    ap.add_argument("--yaw", type=float, default=270.0,
+                    help="rotation about the vertical axis, degrees (270 turns the "
+                         "Crash models to face the statue pedestal's front)")
     ap.add_argument("--budget", type=int, default=255, help="HP vertex ceiling")
     ap.add_argument("--lp-faces", type=int, default=200, help="LP tier face target")
     ap.add_argument("--anim-slots", type=int, default=16)

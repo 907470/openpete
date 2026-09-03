@@ -19,7 +19,9 @@ python3 tools/crash3/verify_pack.py --preview /tmp/crash3-preview               
 texture atlases `assets/textures/own/c30N.png`, which the engine registers
 at boot under those ids (the faces bake the mode-3 tpage + id). Knobs:
 `--models`, `--pose MODEL=ANIM:FRAME`, `--height` (world units, Spyro is
-about 480), `--budget` (vertex ceiling, 255), `--lp-faces`, `--double-sided`.
+about 480), `--yaw` (degrees about the vertical axis; the default 270
+turns Crash to face the statue pedestal's front), `--budget` (vertex
+ceiling, 255), `--lp-faces`, `--double-sided`.
 
 Format facts the converter rests on live in its docstrings; the Crash side
 is a port of the cbhacks/CrashEdit loaders (TGEO poly-item strip state
