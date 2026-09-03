@@ -2,7 +2,7 @@
 
 #include "render_paths.h"
 #include "feature_registry.h"
-#include "psx_runtime.h"   /* CPUState, read_word — for the path brackets */
+#include "psx_runtime_internal.h"   /* CPUState, read_word — for the path brackets */
 #include "openpete.h"
 #include "openpete_knobs.h"          /* dev-overlay row bind */
 #include "openpete_native_render.h"  /* isolation toggle */

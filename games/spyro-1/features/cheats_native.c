@@ -43,7 +43,7 @@
 #include "openpete_fiber.h" /* openpete_speculative */
 #include "openpete_knobs.h" /* dev-overlay rows (M key) */
 #include "openpete_log.h"
-#include "psx_runtime.h" /* CPUState + its read/write callbacks */
+#include "psx_runtime_internal.h" /* CPUState + its read/write callbacks */
 
 #include <ctype.h>
 #include <stddef.h>

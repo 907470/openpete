@@ -19,7 +19,7 @@
 #define ADDR_G_GAMESTATE  0x800757D8u
 #define ADDR_G_LEVELID    0x8007596Cu
 
-#include "psx_runtime.h" /* CPUState */
+#include "psx_runtime_internal.h" /* CPUState */
 
 static int ops_level_id(CPUState* cpu) {
     if (cpu->read_word(ADDR_G_GAMESTATE) != 0u) return 0; /* GS_Playing */

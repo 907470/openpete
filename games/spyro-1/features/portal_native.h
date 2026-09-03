@@ -7,7 +7,7 @@
  * carries the plane handoff between them. */
 #pragma once
 #include <stdint.h>
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 
 /* Portal-guard gate (terrain PORTAL_GUARD experiment): true while a portal
  * fed sky within the last couple of presents. */

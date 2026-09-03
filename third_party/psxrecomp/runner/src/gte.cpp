@@ -1,5 +1,5 @@
 #include "gte.h"
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 #include "automation.h"
 #include <algorithm>
 #include <cstdio>

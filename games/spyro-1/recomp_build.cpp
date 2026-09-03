@@ -467,7 +467,8 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
         return -1;
     }
 
-    if (!fs::exists(man / "manifest.toml") || !fs::exists(src / "psx_runtime.h")) {
+    if (!fs::exists(man / "manifest.toml") || !fs::exists(src / "psx_runtime.h") ||
+        !fs::exists(src / "psx_runtime_internal.h")) {
         std::fprintf(stderr,
             "openpete: recomp inputs not staged next to the exe (%s) — "
             "expected recomp/manifest + recomp/src\n", R.string().c_str());

@@ -32,7 +32,7 @@
 #include "feature_registry.h"
 #include "openpete_psx.h"
 #include "openpete_subtick_view.h"      /* openpete_psx_to_host_ptr */
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 
 #include "text_moby_id.h"
 

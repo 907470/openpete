@@ -43,7 +43,7 @@
 
 #include <stdint.h>
 
-#include "psx_runtime.h"   /* CPUState */
+#include "psx_runtime_internal.h"   /* CPUState */
 
 #ifdef __cplusplus
 extern "C" {

@@ -3,7 +3,7 @@
 #ifndef SPYRO1_CRASH_DEMO_WOAH_H
 #define SPYRO1_CRASH_DEMO_WOAH_H
 
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 
 #ifdef __cplusplus
 extern "C" {

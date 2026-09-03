@@ -37,7 +37,7 @@
 // PURE PRESENTATION: only READS model geometry from RAM and (in the consumer)
 // calls native-render setters. Writes no gameplay-readable state.
 
-#include "psx_runtime.h"            /* CPUState (read_word / read_byte) */
+#include "psx_runtime_internal.h"            /* CPUState (read_word / read_byte) */
 #include "openpete_native_render.h" /* openpete_hud_vert + the overlay API */
 #include "openpete_menu.h"          /* menu state/layout for the settings-menu text */
 #include "openpete_perf_stats.h"    /* the overlay's levels + line text */

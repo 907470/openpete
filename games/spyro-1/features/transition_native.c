@@ -30,7 +30,7 @@
 // probe is retained as a diagnostic. See notes/plans/openpete-native-renderer.md.
 
 #include "feature_registry.h"
-#include "psx_runtime.h"            /* CPUState */
+#include "psx_runtime_internal.h"            /* CPUState */
 #include "openpete_native_render.h" /* native scene API */
 #include "render_paths.h"           /* render_paths_active */
 #include "spyro_native_reextract.h" /* transition_native_reextract decl */

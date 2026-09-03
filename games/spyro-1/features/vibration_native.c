@@ -52,7 +52,7 @@
 #include "features/vibration_native.h"
 
 #include "openpete.h"        /* openpete_get/set_vibration */
-#include "psx_runtime.h"     /* CPUState + its read/write callbacks */
+#include "psx_runtime_internal.h"     /* CPUState + its read/write callbacks */
 
 #include <stdint.h>
 

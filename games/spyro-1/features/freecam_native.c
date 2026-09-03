@@ -34,7 +34,7 @@
 #include "openpete_freecam.h"
 #include "openpete_fillpick.h"  /* scripted engage of the LP fill-tag inspector */
 #include "openpete_log.h"
-#include "psx_runtime.h"        /* CPUState + its read/write callbacks */
+#include "psx_runtime_internal.h"        /* CPUState + its read/write callbacks */
 
 #include <math.h>
 #include <stdint.h>

@@ -30,7 +30,7 @@
 #include "openpete_mods.h"
 #include "openpete_log.h"
 
-#include "psx_runtime.h" /* CPUState */
+#include "psx_runtime_internal.h" /* CPUState */
 #include "mod_wad_overlay.h" /* spyro1_mod_wad_read_level_data */
 #include "game_extras.h"     /* game_set_skip_to_level (title-screen route) */
 

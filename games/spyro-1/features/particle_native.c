@@ -24,7 +24,7 @@
 #include "feature_registry.h"
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
-#include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
+#include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "openpete_interp.h"       /* openpete_interp_present_now (sparkle phase) */
 #include "openpete_interp_objs.h"  /* per-slot prev/curr snapshots (sparkle phase) */

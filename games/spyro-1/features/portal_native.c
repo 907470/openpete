@@ -53,7 +53,7 @@
 // dump, not the field names): see the format notes.
 
 #include "feature_registry.h"
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 #include "openpete_subtick_view.h"
 #include "openpete_native_render.h"
 #include "render_paths.h"

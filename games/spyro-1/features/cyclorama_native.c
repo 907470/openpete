@@ -29,7 +29,7 @@
 // cyclorama_native_extract_faded, which transition_native.c feeds.
 
 #include "feature_registry.h"
-#include "psx_runtime.h"   /* full CPUState (gte_ctrl, a0/a1/a2, read_word) */
+#include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, a0/a1/a2, read_word) */
 #include "openpete_psx.h"
 #include "openpete_subtick_view.h"  /* openpete_psx_to_host_ptr (present-time DRAWENV read) */
 #include "openpete_native_render.h"  /* native scene push + enabled gate */

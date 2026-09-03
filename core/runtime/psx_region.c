@@ -14,7 +14,7 @@
  * physical addresses (vaddr & 0x1FFFFFFFu) so KSEG0/KSEG1 mirrors of
  * the same buffer resolve to the same region. */
 
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 
 #include <assert.h>
 #include <stdint.h>

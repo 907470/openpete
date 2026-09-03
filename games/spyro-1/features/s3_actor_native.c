@@ -30,7 +30,7 @@
 //     indices, [w+2..4] UV/texpage words (unused in the gouraud v1).
 
 #include "feature_registry.h"
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
 #include "openpete_log.h"
 #include "openpete_mods.h"

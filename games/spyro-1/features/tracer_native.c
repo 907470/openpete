@@ -36,7 +36,7 @@
 #include <string.h>
 
 #include "feature_registry.h"
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
 #include "render_paths.h"
 #include "spyro_native_reextract.h"   /* sub-tick re-extract entry */

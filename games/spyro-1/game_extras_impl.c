@@ -14,7 +14,7 @@
 #include "openpete_psx.h"
 #include "openpete_ui_moby.h"
 #include "openpete_fiber.h"
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 #include "spyro_overlay_table.h"
 #include "features/text_moby_native.h"
 #include "features/audio_volume_native.h"

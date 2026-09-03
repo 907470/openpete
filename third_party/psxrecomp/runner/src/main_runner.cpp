@@ -7,7 +7,7 @@
 #include <windows.h>
 #include <timeapi.h>    /* timeBeginPeriod / timeEndPeriod */
 
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 #include "cdrom_stub.h"
 #include "xa_audio.h"
 #include "fmv_player.h"

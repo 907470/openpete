@@ -57,7 +57,7 @@
 #include "openpete.h"       /* openpete_options_t */
 #include "openpete_log.h"
 #include "openpete_psx.h"   /* openpete_psx_load_file_from_disc */
-#include "psx_runtime.h"    /* CPUState */
+#include "psx_runtime_internal.h"    /* CPUState */
 #include "sfx_pack.h"       /* sfx_pack_arm_oneshot */
 #include "spyro_overlay_table.h" /* spyro_get_active_overlay_magic */
 

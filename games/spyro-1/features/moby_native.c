@@ -31,7 +31,7 @@
 #include "openpete_psx.h"
 #include "openpete_vstream.h"       /* frame-word field -> stream address (handles) */
 #include "openpete_subtick_view.h"            /* openpete_psx_to_host_ptr (SPEC scratch bracket) */
-#include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
+#include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "openpete_log.h"           /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
 #include "openpete_interp.h"        /* op_now() — sub-tick clock for rotation interp */

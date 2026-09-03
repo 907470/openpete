@@ -3,7 +3,7 @@
 #include "openpete_vstream.h"
 #include "openpete_log.h"
 #include "openpete_psx.h"    /* openpete_psx_get_ram */
-#include "psx_runtime.h"     /* psx_runtime_resolve_region; hook prototypes */
+#include "psx_runtime_internal.h"     /* psx_runtime_resolve_region; hook prototypes */
 
 #include <stdlib.h>
 #include <string.h>

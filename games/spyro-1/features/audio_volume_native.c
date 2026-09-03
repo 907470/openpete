@@ -43,7 +43,7 @@
 
 #include "openpete.h"        /* openpete_get/set_{sfx,music}_volume */
 #include "music_override.h"  /* music_override_set_gain */
-#include "psx_runtime.h"     /* CPUState + its read/write callbacks */
+#include "psx_runtime_internal.h"     /* CPUState + its read/write callbacks */
 
 #include <stdint.h>
 

@@ -12,7 +12,7 @@
 #ifndef SPYRO_OVERLAY_TABLE_H
 #define SPYRO_OVERLAY_TABLE_H
 
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 
 #include <stddef.h>
 #include <stdint.h>

@@ -22,7 +22,7 @@
 // (--renderer vk|ab|diff; scene feed); inert fall-through otherwise.
 
 #include "feature_registry.h"
-#include "psx_runtime.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
+#include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "openpete_log.h"  /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
 #include "render_paths.h"  /* --render-paths isolation */

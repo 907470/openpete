@@ -7,7 +7,7 @@
 
 #include "openpete_psx.h"
 #include "openpete_log.h"
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 
 #include <stdint.h>
 #include <stdlib.h>

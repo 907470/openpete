@@ -633,6 +633,7 @@ if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
             ${CMAKE_CURRENT_SOURCE_DIR}/spyro_overlay_table.h
             ${CMAKE_SOURCE_DIR}/core/include/openpete_recomp_module.h
             ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
+            ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime_internal.h
             ${_rdir}/src
         VERBATIM)
     if(WIN32)

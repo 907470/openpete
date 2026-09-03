@@ -9,7 +9,7 @@
 #include "openpete_native_render.h" /* register callback + scene API */
 #include "openpete_psx.h"
 #include "openpete_subtick_view.h"           /* openpete_psx_to_host_ptr */
-#include "psx_runtime.h"            /* CPUState (read_word) */
+#include "psx_runtime_internal.h"            /* CPUState (read_word) */
 #include "features/render_paths.h"  /* canon-drawn mask (load-window census) */
 #include "spyro_interp_regions.h"   /* spyro_interp_moby_key */
 

@@ -12,7 +12,7 @@
  */
 #include "debug_server.h"
 #include "game_extras.h"
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 #include "func_logger.h"
 
 #include <stdio.h>

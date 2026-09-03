@@ -57,7 +57,7 @@ HEADER = """\
  * fprintf+abort body lives in psyq_stub_runtime.c.
  */
 
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 
 extern void psyq_stub_hit(const char* name, uint32_t addr, CPUState* cpu);
 

@@ -11,7 +11,7 @@
 #include <stdint.h>
 
 /* CPUState lives in psxrecomp's psx_runtime.h — vendored, untouched. */
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 
 #ifdef __cplusplus
 extern "C" {

@@ -15,7 +15,7 @@
 // channel (openpete_canonical_sx*_q16) is stashed by the GTE. This TU OWNS
 // the per-iteration verdict flags below.
 
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 
 #include <stdint.h>
 

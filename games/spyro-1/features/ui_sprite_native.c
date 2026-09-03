@@ -21,7 +21,7 @@
 // (OPENPETE_UISPRITE_DUMP=<frame>) rather than trusting an inferred offset map.
 
 #include "feature_registry.h"
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
 #include "openpete_native_vram.h"     /* cell dump: decode a sprite cell from the VRAM model */
 #include "render_paths.h"

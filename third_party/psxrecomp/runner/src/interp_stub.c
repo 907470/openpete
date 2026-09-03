@@ -7,7 +7,7 @@
  */
 #ifdef INTERPRETER_ONLY
 
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 
 /* Stub dispatch — no compiled functions in interpreter-only mode */
 int psx_dispatch_compiled(CPUState* cpu, uint32_t addr)

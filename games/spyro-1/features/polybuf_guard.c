@@ -40,7 +40,7 @@
 
 #include "openpete_fiber.h"  /* openpete_frame (VBL counter) */
 #include "openpete_log.h"
-#include "psx_runtime.h"   /* CPUState + its read callbacks */
+#include "psx_runtime_internal.h"   /* CPUState + its read callbacks */
 
 #include <stdint.h>
 #include <stdlib.h>

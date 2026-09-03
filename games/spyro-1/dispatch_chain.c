@@ -11,7 +11,7 @@
 // lives in the auto-generated spyro_overlay_table.c (driven by
 // scripts/regen-recomp.sh from build/wad/*.ovl).
 
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 #include "spyro_overlay_table.h"
 
 #include <stddef.h>

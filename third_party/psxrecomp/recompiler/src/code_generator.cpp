@@ -2231,7 +2231,7 @@ std::string CodeGenerator::generate_file(
     // Include the generic PSX runtime header.
     // This provides: CPUState typedef, gte_execute, call_by_address,
     // psx_syscall, psx_override_dispatch, and all other runtime API.
-    ss << "#include \"psx_runtime.h\"\n\n";
+    ss << "#include \"psx_runtime_internal.h\"\n\n";
 
     // Emit reference implementations for unaligned memory helpers.
     // These implement the MIPS lwl/lwr/swl/swr semantics.

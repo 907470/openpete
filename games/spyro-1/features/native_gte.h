@@ -21,7 +21,7 @@
 #define OPENPETE_NATIVE_GTE_H
 
 #include <stdint.h>
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 
 /* GTE UNR divide cap (0x1FFFF in 16.16) and SXY output saturation. */
 #define NGTE_DIV_CAP   (131071.0 / 65536.0)

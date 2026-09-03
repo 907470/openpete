@@ -50,7 +50,7 @@
 #include "openpete_log.h"
 #include "openpete_fnv1a64.h"
 
-#include "psx_runtime.h" /* psx_runtime_register_region */
+#include "psx_runtime_internal.h" /* psx_runtime_register_region */
 #include "openpete_vstream.h" /* stream-handle table (vstream_handle) */
 
 #include <stdio.h>

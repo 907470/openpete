@@ -1,6 +1,6 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 #include "cdrom_stub.h"
 #include "spu.h"
 #include "automation.h"

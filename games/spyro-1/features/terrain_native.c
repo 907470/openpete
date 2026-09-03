@@ -26,7 +26,7 @@
 // Gated by OPENPETE_TERRAIN_VERIFY (dump/A/B) or a native renderer mode (feed).
 
 #include "feature_registry.h"
-#include "psx_runtime.h"   /* full CPUState (read_word, gte_ctrl, ...) */
+#include "psx_runtime_internal.h"   /* full CPUState (read_word, gte_ctrl, ...) */
 #include "openpete_native_render.h"
 #include "openpete_psx.h"
 #include "openpete_subtick_view.h"  /* openpete_psx_to_host_ptr (sector colour host reads) */

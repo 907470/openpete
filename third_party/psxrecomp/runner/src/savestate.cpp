@@ -17,7 +17,7 @@
 #include <windows.h>
 
 #include "savestate.h"
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 #include "gpu_state.h"
 
 #include <cstdio>

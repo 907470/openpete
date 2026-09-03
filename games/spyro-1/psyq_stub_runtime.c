@@ -3,7 +3,7 @@
 // generated file deliberately avoids <stdio.h>/<stdlib.h> (PSYQ exports
 // names like printf/exit/sprintf that would collide with libc).
 
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 
 #include <stdio.h>
 #include <stdlib.h>

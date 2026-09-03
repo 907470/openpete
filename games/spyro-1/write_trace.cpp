@@ -16,7 +16,7 @@
 #include <cstdlib>
 #include <cstring>
 
-#include "psx_runtime.h"
+#include "psx_runtime_internal.h"
 
 extern "C" {
 extern unsigned openpete_frame;
