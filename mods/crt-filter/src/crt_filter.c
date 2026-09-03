@@ -31,7 +31,7 @@ static int          g_shader_ok;   /* crt.frag compiled             */
 static void crt_status_publish(void) {
     if (!g_shader_ok) {
         g_api->ui_status(g_self,
-                         "crt.frag did not compile — see .build/shaders/");
+                         "crt.frag did not compile - see .build/shaders/");
         return;
     }
     if (g_fx < 0) {

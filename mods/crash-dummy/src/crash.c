@@ -28,7 +28,7 @@ static void publish_status(void) {
         g_api->ui_status(g_self, "auto crash disarmed (crash.auto_arm)");
     }
     g_api->ui_status(g_self, "\"crash\" binding faults on the next "
-                     "CameraUpdate — the report must name this mod");
+                     "CameraUpdate - the report must name this mod");
 }
 
 static void crash_now(const char* why) {

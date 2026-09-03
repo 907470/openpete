@@ -909,7 +909,7 @@ void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui) {
     for (int l = 0; l < m->status_n; l++)
         ui->text("%s", m->status[l]);
     if (m->status_trunc)
-        ui->text_disabled("… (ui_status block truncated)");
+        ui->text_disabled("... (ui_status block truncated)");
     if (!m->ui_body) return;
     openpete_mods_in_present = 1;
     m->ui_body(ui);

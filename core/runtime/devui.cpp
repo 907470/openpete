@@ -441,7 +441,7 @@ static void draw_save_bar(void) {
                           "[saved] block of %s.\n\n"
                           "Saved settings beat everything else in the file, but\n"
                           "still lose to a flag you type or a variable you export\n"
-                          "— rows in that position are marked 'pinned by ...'.",
+                          "- rows in that position are marked 'pinned by ...'.",
                           openpete_config_save_path());
 
     ImGui::SameLine();
@@ -553,7 +553,7 @@ static void mod_row_tooltip(const openpete_mods_menu_info_t *mi)
         ImGui::TextDisabled("writes no guest RAM (outside the save "
                             "modset tag)");
     if (!mi->entered)
-        ImGui::TextDisabled("not started yet — enabling runs the mod at "
+        ImGui::TextDisabled("not started yet - enabling runs the mod at "
                             "the next tick boundary");
     if (mi->has_assets)
         ImGui::TextDisabled("asset overlay: textures/music follow the "
@@ -817,7 +817,7 @@ static void draw_custom_level_rows(const char *mod_id)
         ImGui::TextUnformatted(ci.name);
         if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip)) {
             ImGui::BeginTooltip();
-            ImGui::Text("Custom World %d — donor level %d", 7 + i / 5,
+            ImGui::Text("Custom World %d - donor level %d", 7 + i / 5,
                         ci.donor_id);
             if (!ci.files_ok)
                 ImGui::TextDisabled("level files not derived yet");

@@ -54,7 +54,7 @@ min = 0
 max = 1
 label = "Subpixel order"
 group = "CRT"
-help = "0 = RGB, 1 = BGR — your monitor's physical subpixel layout; the mask lights individual subpixels, so a mismatch tints it (mask_type 1 only)"
+help = "0 = RGB, 1 = BGR - your monitor's physical subpixel layout; the mask lights individual subpixels, so a mismatch tints it (mask_type 1 only)"
 
 [[config]]
 key = "crt.subpixel_triad_px"

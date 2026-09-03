@@ -50,7 +50,7 @@ static void format_elapsed(char* buf, size_t cap, double ticks) {
  * per tick. Each event that changes a line repaints the whole block. */
 static void publish_status(void) {
     g_api->ui_status(g_self, g_started
-        ? "ticking — the HUD readout is the live display"
+        ? "ticking - the HUD readout is the live display"
         : "waiting for the first sim tick");
     g_api->ui_status(g_self,
         "\"reset\" binding zeroes the stopwatch on the next sim tick");

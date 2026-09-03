@@ -565,7 +565,7 @@ static const knob_desc_t g_builtin[] = {
 
     { "perf_stats", "Performance stats", "Display", "--perf-stats", NULL,
       "Corner overlay (native renderer): off, the FPS counter, or the "
-      "counter plus a pacing readout — VBL rate, deadline slips, late ticks "
+      "counter plus a pacing readout - VBL rate, deadline slips, late ticks "
       "per 1000, and the shed / interpolation share of presents.",
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_perf_names), 0, 0,
       perfstats_get, perfstats_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
@@ -604,7 +604,7 @@ static const knob_desc_t g_builtin[] = {
 
     { "raster_quantize", "Raster quantize", "Display", "--raster-quantize", NULL,
       "Point-resample the 3D scene to N x the PSX raster (1 = the authentic "
-      "512x240 grid — 224 lines visible on screen, letterbands trimmed; "
+      "512x240 grid - 224 lines visible on screen, letterbands trimmed; "
       "0 = off). One sample per cell, as the hardware rasterizer produced, "
       "always aligned with the integer vertex snap. Display-only.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 16,
@@ -998,7 +998,7 @@ static const knob_desc_t g_builtin[] = {
         "frame erosion begins near 512."),
     ENVROW_LATCHED("PORTAL_RIM_NEAR", "Debug", "128",
         "Rim predicate: how far the NEAREST vertex may sit from the opening plane, in "
-        "world units — the rim must touch the plane, an arch's front wall must not."),
+        "world units - the rim must touch the plane, an arch's front wall must not."),
     ENVROW_LATCHED("PORTAL_RIM_EPS", "Debug", "384",
         "Rim predicate: how far the FARTHEST vertex may stray from the opening plane, "
         "in world units."),

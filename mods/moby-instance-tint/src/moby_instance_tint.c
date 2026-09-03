@@ -59,10 +59,10 @@ static void ui_draw(const openpete_mod_ui_t* ui) {
                 "verdict your callback gave, not how often it asks for it. "
                 "Do not read this as a scene count.");
     if (!g_total)
-        ui->text_disabled("selector inert — no moby instance seen yet");
+        ui->text_disabled("selector inert - no moby instance seen yet");
     ui->separator();
     ui->slider_float("floor", &g_floor, 0.0f, 1.0f);
-    ui->tooltip("Darkest a tint channel can get — the hash rides on top.");
+    ui->tooltip("Darkest a tint channel can get - the hash rides on top.");
     ui->slider_float("spread", &g_spread, 0.0f, 1.0f);
     ui->tooltip("How far the per-vaddr hash pushes each channel above "
                 "the floor.");

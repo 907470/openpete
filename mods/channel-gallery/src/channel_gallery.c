@@ -71,22 +71,22 @@ typedef struct {
 } row_t;
 
 static row_t g_rows[] = {
-  { "Everything",      "No key at all — every channel this build can route.",
+  { "Everything",      "No key at all - every channel this build can route.",
     -1, -1, -1, {1.00f, 0.20f, 0.80f}, 0, -1 },
   { "Terrain",         "The whole world mesh, both LOD tiers.",
     OP_CHAN_TERRAIN, -1, -1, {0.20f, 0.90f, 0.40f}, 0, -1 },
   { "Mobys (all)",     "Every pooled object: gems, chests, critters, decor.",
     OP_CHAN_MOBY, -1, -1, {1.00f, 0.75f, 0.10f}, 0, -1 },
-  { "Mobys of one class", "Pick the class from the list below — it holds "
+  { "Mobys of one class", "Pick the class from the list below - it holds "
                           "exactly the classes this level loaded.",
     OP_CHAN_MOBY, -1, 0, {1.00f, 0.35f, 0.10f}, 0, -1 },
-  { "Player",          "Spyro. He is NOT a moby — the moby rows never hit him.",
+  { "Player",          "Spyro. He is NOT a moby - the moby rows never hit him.",
     OP_CHAN_PLAYER, -1, -1, {0.30f, 0.60f, 1.00f}, 0, -1 },
   { "Sky",             "The cyclorama dome behind everything.",
     OP_CHAN_SKY, -1, -1, {0.70f, 0.40f, 1.00f}, 0, -1 },
   { "Flame (ribbon)",  "The ADDITIVE plume. The tint reads yellow rather than "
                        "orange because the material inherits the group's "
-                       "additive blend — orange ADDED over green grass.",
+                       "additive blend - orange ADDED over green grass.",
     OP_CHAN_FLAME, 0, -1, {1.00f, 0.30f, 0.00f}, 0, -1 },
   { "Flame (caps)",    "The OPAQUE base caps of the same effect.",
     OP_CHAN_FLAME, 1, -1, {0.10f, 1.00f, 1.00f}, 0, -1 },
@@ -98,7 +98,7 @@ static row_t g_rows[] = {
    * pipe, so a mod's reach never depends on whether the host can sample
    * depth (OPENPETE_MOBY_SHADOW_DECAL=0 takes that path). */
   { "Shadows (moby)",  "Drawn by the depth-aware decal pipe, whose fragment "
-                       "stage owns per-pixel occlusion — so this row uses the "
+                       "stage owns per-pixel occlusion - so this row uses the "
                        "DECAL material profile, which hands the shader that "
                        "verdict to apply instead of letting it delete the "
                        "logic. Subtractive: a brighter tint darkens MORE.",
@@ -110,7 +110,7 @@ static row_t g_rows[] = {
    * reaches it, and the override does not. Lighting it leaves the shadow
    * exactly as the game drew it. */
   { "Shadows (player)","Spyro's own silhouette. KNOWN GAP: routable but not "
-                       "yet reshadeable — it is drawn by an untextured "
+                       "yet reshadeable - it is drawn by an untextured "
                        "depth-aware decal stage that has no material profile "
                        "of its own, so this row paints nothing.",
     OP_CHAN_SHADOW, 1, -1, {0.20f, 1.00f, 0.60f}, 0, -1 },
@@ -122,7 +122,7 @@ static row_t g_rows[] = {
     OP_CHAN_PARTICLE, PART(PART_GLOW), -1, {0.50f, 1.00f, 0.50f}, 0, -1 },
   { "Particle sparkles","Gem sparkle flares.",
     OP_CHAN_PARTICLE, PART(PART_FLARE), -1, {1.00f, 1.00f, 0.40f}, 0, -1 },
-  { "Dragon star",     "The rescue star — only during a dragon cutscene.",
+  { "Dragon star",     "The rescue star - only during a dragon cutscene.",
     OP_CHAN_PARTICLE, PART(PART_STAR), -1, {0.40f, 0.90f, 1.00f}, 0, -1 },
   { "Tracers",         "Beam streaks (Gnasty's zaps).",
     OP_CHAN_TRACER, -1, -1, {1.00f, 0.10f, 0.10f}, 0, -1 },
@@ -131,7 +131,7 @@ static row_t g_rows[] = {
    * approach (far colour chip, fogged dome, close gouraud dome); a material
    * wants all three or it pops as the player walks up to the portal. */
   { "Portal preview (all)",
-    "The destination sky seen through a portal — ANOTHER level's sky, which "
+    "The destination sky seen through a portal - ANOTHER level's sky, which "
     "is why the Sky row never reaches it. All three approach rungs at once.",
     OP_CHAN_PORTAL, -1, -1, {0.60f, 0.20f, 1.00f}, 0, -1 },
   { "Portal preview (close dome)",
@@ -144,7 +144,7 @@ static row_t g_rows[] = {
     OP_CHAN_PORTAL, OP_PORTAL_FLAT, -1, {1.00f, 0.60f, 0.20f}, 0, -1 },
   { "Portal preview (fogged dome)",
     "Only the medium-distance dome, DPCS-fogged toward the level's fog "
-    "colour — the cross-dissolve rung between the chip and the close dome.",
+    "colour - the cross-dissolve rung between the chip and the close dome.",
     OP_CHAN_PORTAL, OP_PORTAL_BLENDED, -1, {0.20f, 0.80f, 0.90f}, 0, -1 },
   /* The only row with a refine callback — registered separately below,
    * because a selector alone cannot express "and in this state". */
@@ -153,7 +153,7 @@ static row_t g_rows[] = {
     "then a callback reads each instance's m_State and declines the ones "
     "that do not match. Set the state slider to -1 to claim every "
     "instance of the class, which is what the plain class row already "
-    "does — the point is what happens when you narrow it.",
+    "does - the point is what happens when you narrow it.",
     OP_CHAN_MOBY, -1, 0, {0.10f, 1.00f, 0.35f}, 0, -1 },
   /* The second refine row, and the one that proves refine survives the
    * RESIDENCY ladder: terrain is the only channel the engine draws two ways,
@@ -162,8 +162,8 @@ static row_t g_rows[] = {
    * per present for the selector's single key and hands the answer to both
    * paths. Keyed on the untextured band so it is level-independent. */
   { "Terrain untextured band (refine)",
-    "A refine callback on terrain. Terrain is drawn two ways — walked near "
-    "the camera, redrawn from baked GPU buffers everywhere else — and this "
+    "A refine callback on terrain. Terrain is drawn two ways - walked near "
+    "the camera, redrawn from baked GPU buffers everywhere else - and this "
     "row reaches both with the same colour. That is the residency law: what "
     "a face looks like is a function of the face, never of where it lives.",
     OP_CHAN_TERRAIN, -1, -1, {1.00f, 0.45f, 0.10f}, 0, -1 },
@@ -348,7 +348,7 @@ static void register_row(row_t* r) {
 static void ui(const openpete_mod_ui_t* ui) {
     ui->text("Toggle a row: the geometry it selects lights up.");
     if (g_shader < 0) {
-        ui->text_disabled("highlight.frag failed to build — nothing to show");
+        ui->text_disabled("highlight.frag failed to build - nothing to show");
         return;
     }
     if (ui->slider_float("Highlight strength", &g_strength, 0.0f, 1.0f))
@@ -359,7 +359,7 @@ static void ui(const openpete_mod_ui_t* ui) {
     int live = 0;
     for (int i = 0; i < NROWS; i++) {
         row_t* r = &g_rows[i];
-        if (r->mat < 0) { ui->text_disabled("%s — unavailable", r->label); continue; }
+        if (r->mat < 0) { ui->text_disabled("%s - unavailable", r->label); continue; }
         if (ui->checkbox(r->label, &r->on))
             g_api->material_enable(g_self, r->mat, r->on);
         ui->tooltip(r->help);
@@ -375,10 +375,10 @@ static void ui(const openpete_mod_ui_t* ui) {
         retune_class_rows();
     }
     ui->tooltip("Which class the class-keyed rows above select. Only classes "
-                "THIS LEVEL loaded are listed — any other value selects "
+                "THIS LEVEL loaded are listed - any other value selects "
                 "nothing, because no moby here can carry it.");
     if (g_class_n && g_classes[g_class_idx] != (uint16_t)g_class)
-        ui->text_disabled("class %d is not loaded in this level — the rows "
+        ui->text_disabled("class %d is not loaded in this level - the rows "
                           "above select nothing", g_class);
     if (ui->slider_int("Moby state (refine row)", &g_refine_state, -1, 255)) {
         /* Only the predicate changed, not the selector — the callback
@@ -386,7 +386,7 @@ static void ui(const openpete_mod_ui_t* ui) {
     }
     ui->tooltip("-1 claims every instance of the class (same as the plain "
                 "class row). Any other value makes the callback decline "
-                "every instance whose m_State differs — narrowing the "
+                "every instance whose m_State differs - narrowing the "
                 "selector could never express this.");
     ui->separator();
     ui->text("%d of %d rows live", live, NROWS);

@@ -247,7 +247,7 @@ static void publish_status(void)
 {
     g_api->ui_status(g_self, "Teapot statues");
     if (!s_file)
-        g_api->ui_status(g_self, "no asset pack — run tools/gen_teapot.py");
+        g_api->ui_status(g_self, "no asset pack - run tools/gen_teapot.py");
     else
         g_api->ui_status(g_self, "%u-vertex teapot at %08x; installed in %d level load(s)",
                          s_pack.hp_verts, s_model, s_patched_levels);

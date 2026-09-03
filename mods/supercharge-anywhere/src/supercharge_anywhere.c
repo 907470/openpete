@@ -378,7 +378,7 @@ static void publish_status(void) {
         g_api->ui_status(g_self, "authentic anim-45 cached: %u bytes",
                          g_blob_len);
     else
-        g_api->ui_status(g_self, "no authentic anim cached — enter a ramp "
+        g_api->ui_status(g_self, "no authentic anim cached - enter a ramp "
                          "level once (Wizard Peak, Tree Tops)");
 }
 

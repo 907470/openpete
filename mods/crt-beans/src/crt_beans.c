@@ -35,13 +35,13 @@ static int            g_fx_count;     /* passes registered; 0 = chain unavailabl
  * exit paths are the only callers. */
 static void beans_status(void) {
     if (g_fx_count == 0) {
-        g_api->ui_status(g_self, "CRT chain unavailable — see .build/shaders/");
+        g_api->ui_status(g_self, "CRT chain unavailable - see .build/shaders/");
         return;
     }
     if (g_fx_count == 3)
         g_api->ui_status(g_self, "3 passes active: virtualize -> scan H -> scan V");
     else
-        g_api->ui_status(g_self, "%d of 3 passes registered — chain incomplete",
+        g_api->ui_status(g_self, "%d of 3 passes registered - chain incomplete",
                          g_fx_count);
 }
 
