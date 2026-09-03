@@ -29,6 +29,18 @@ extern "C" {
 void sfx_pack_init(void);
 void sfx_pack_set_dir_override(const char* dir); /* before init */
 
+/* One-shot substitution: the NEXT voice key-on plays `pcm` (mono s16 at
+ * `rate`, pitch-pinned) instead of whatever sample it keyed, and the arm
+ * is spent. Lets a feature make the game's own sound path emit a
+ * different sample for one specific play, without stopping the voice,
+ * the music or the SPU underneath it — the substitution is audible only,
+ * exactly like a pack file. `pcm` must outlive the arm; the caller
+ * disarms if the play it was aiming at never happens. An armed one-shot
+ * takes precedence over any pack file for that key-on. */
+void sfx_pack_arm_oneshot(const int16_t* pcm, int count, unsigned int rate);
+void sfx_pack_disarm_oneshot(void);
+int  sfx_pack_oneshot_armed(void);
+
 /* The level bank was (re)blasted: new generation — rescan sources so an
  * edited WAV lands on the next level entry, drop every cached identity
  * and the decoded PCM of files that changed. */

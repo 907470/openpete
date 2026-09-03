@@ -500,8 +500,8 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * without the flag. */
     spyro1_cheats_on_tick(cpu);
 
-    /* Title-screen Crash-demo easter egg: restart the music its branch
-     * stopped, once the combo is released. Inert until the cheat fires. */
+    /* Title-screen Crash-demo easter egg: pre-decode the woah while the
+     * title screen is up, and re-arm between presses. Inert elsewhere. */
     spyro1_crash_woah_on_tick(cpu);
 
     /* --sfx / --music: hold the game's own volume sliders at the requested

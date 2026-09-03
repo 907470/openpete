@@ -8,22 +8,38 @@
 // so unintercepted the guest returns from CrashDemoLaunch into the engine it
 // just tore down: masked display, dead pad, black screen.
 //
-// Instead: intercept CrashDemoLaunch (0x8002BAB8) BEFORE the teardown runs
-// and play Crash's "woah!" as a host-side one-shot. The sample is the
-// player's own — decoded on first use straight out of the demo's level data
-// on the mounted disc image (S0/S000000D.NSF) into an OpenAL buffer, never
-// staged on disk; nothing ships in the binary. The title screen keeps running.
+// Instead the cheat becomes a sound: Crash's "woah!" plays in place of the
+// UI blip the branch fires, and the title screen carries on untouched. The
+// sample is the player's own — decoded out of the demo's level data on the
+// mounted disc image (S0/S000000D.NSF), never staged on disk; nothing ships
+// in the binary.
 //
-// The branch opens with KillSoundsAndMusic(), which on hardware is moot —
-// the program is about to be replaced — but here leaves the title track
-// stopped for good. The per-tick hook below restarts it afterwards.
+// Three interceptions make that work, all gated on the exact state the cheat
+// branch tests (titlescreen overlay, substate 3, combo held), so every other
+// use of these functions is untouched:
 //
-// The branch also fires TitlescreenPlaySound(9) — a UI blip that on hardware
-// is cut off within a few frames by the program swap, but here runs to
-// completion over the top of the woah. The second hook below suppresses that
-// one call. Sound 9 is the generic back/cancel blip used all over the title
-// screen, so the hook is gated on the exact state the cheat branch tests
-// (substate 3 with the combo held), leaving every other use audible.
+//   KillSoundsAndMusic() — the branch's first act. On hardware it is moot
+//   (the program is about to be replaced); here it stops the title track for
+//   good and, worse, the branch then spins in a busy-wait until the CD has
+//   fully stopped, which costs a visible hitch every tick the combo is held.
+//   Swallowed. Its wait loop tests g_CdMusic.m_Flags for the SILENT bit, so
+//   the bit is spoofed for the handful of instructions between the swallow
+//   and CrashDemoLaunch and restored there — the loop falls straight
+//   through, the CD is never stopped, and there is nothing to restart.
+//
+//   TitlescreenPlaySound(9) — the back/cancel blip. Left to run, with a
+//   one-shot sample substitution armed underneath it (sfx_pack_arm_oneshot),
+//   so the game's own voice plays the woah: correct mixing, volume and mute
+//   for free, and no second audio path. Later ticks of the same held press
+//   are suppressed so the woah is not retriggered every frame.
+//
+//   CrashDemoLaunch() — swallowed whole; its body's shutdown sequence
+//   assumes LoadExec never returns.
+//
+// The NSF is 2.5 MB and is read straight off the disc image, outside the
+// guest's CD path and its cache, so the decode runs on a worker thread
+// started when the title screen becomes resident — seconds before the combo
+// can be pressed — rather than inside the frame that presses it.
 //
 // NSF format (Crash 2/3 engine): a sequence of 64 KiB chunks, u16 magic
 // 0x1234 + u16 type at +2 (type 3 = sound chunk; Spyro 1's demo NSFs are all
@@ -39,12 +55,13 @@
 #include "feature_registry.h"
 
 #include "openpete.h"       /* openpete_options_t */
-#include "openpete_fiber.h" /* openpete_frame (VBL counter) */
 #include "openpete_log.h"
-#include "openpete_mods.h"  /* openpete_mod_sound_play_pcm */
 #include "openpete_psx.h"   /* openpete_psx_load_file_from_disc */
 #include "psx_runtime.h"    /* CPUState */
+#include "sfx_pack.h"       /* sfx_pack_arm_oneshot */
 #include "spyro_overlay_table.h" /* spyro_get_active_overlay_magic */
+
+#include <SDL3/SDL.h>
 
 #include <stdint.h>
 #include <stdio.h>
@@ -52,6 +69,7 @@
 #include <string.h>
 
 #define ADDR_CRASH_DEMO_LAUNCH 0x8002BAB8u
+#define ADDR_KILL_SOUNDS_MUSIC 0x80056B28u
 
 /* Titlescreen overlay (id 48 in the overlay table). Overlays share one
  * vaddr window, so a hook on an overlay-resident address must confirm the
@@ -67,16 +85,8 @@
 #define CHEAT_COMBO            (PAD_L1 | PAD_TRIANGLE)
 
 #define ADDR_G_PAD_HELD        0x80077380u /* g_Pad 0x80077378 + m_Held @ 0x8 */
-/* g_CdMusic @ 0x800774B0. Offsets from the CdMusic layout in music.h:
- * m_CurrentTrack 0x0, m_Flags 0x4, m_MusicTable[64]{start,end} 0x8..0x208,
- * m_TrackPosition 0x208, m_SyncData[8] 0x20C, m_PostCDCommand 0x214,
- * m_Flags2 0x218, m_EasterEggTicks 0x21C. */
-#define ADDR_G_CDMUSIC_TRACK   0x800774B0u
+/* g_CdMusic @ 0x800774B0, m_Flags at +0x4 (CdMusic layout in music.h). */
 #define ADDR_G_CDMUSIC_FLAGS   0x800774B4u
-#define ADDR_G_CDMUSIC_POSTCMD 0x800776C4u
-#define ADDR_G_CDMUSIC_FLAGS2  0x800776C8u
-#define ADDR_G_CDMUSIC_EGGTICKS 0x800776CCu
-#define MUSIC_STATE_PLAY       1
 #define MUSIC_FLAG_SILENT      0x40 /* set once playback has fully stopped */
 
 #define NSF_CHUNK_LEN   65536u
@@ -93,7 +103,15 @@
 
 static char     s_disc_path[1024];
 static unsigned s_blips_suppressed;
-static int      s_music_owed; /* cheat fired; title track needs restarting */
+static int      s_press_handled;   /* this held press already got its woah */
+static int      s_flags_spoofed;   /* g_CdMusic.m_Flags carries a fake SILENT */
+static uint32_t s_saved_flags;
+static unsigned s_arm_ticks;       /* ticks the pending substitution has waited */
+
+/* The arm is spent by the key-on in SoundsUpdate(), which for this branch
+ * lands on a later tick than the PlaySound that queued it. Drop it if that
+ * key-on never comes, so a stale arm cannot land on an unrelated sound. */
+#define ARM_EXPIRY_TICKS 30u
 
 static uint32_t rd32(const uint8_t* p) {
     uint32_t v;
@@ -162,119 +180,125 @@ static uint32_t find_woah(const uint8_t* nsf, size_t len, const uint8_t** body) 
     return 0;
 }
 
-/* Decode-once, keep the PCM. ~10 KB held for the session so every later
- * press is a cache hit in the AL layer with no disc read. Returns 0 on
- * success; failures are logged once and latched. */
-static int16_t* s_pcm;
-static uint32_t s_pcm_frames;
+/* Decode-once, keep the PCM. ~10 KB held for the session, decoded on a
+ * worker thread (the disc read is 2.5 MB and does not go through the
+ * guest's CD cache) and published through s_ready. */
+static int16_t*      s_pcm;
+static uint32_t      s_pcm_frames;
+static SDL_AtomicInt s_ready;   /* 0 = pending/absent, 1 = s_pcm usable */
+static SDL_Thread*   s_loader;
 
-static int woah_load(void) {
-    static int s_state = 0; /* 0 = untried, 1 = ok, -1 = failed */
-    if (s_state) return s_state > 0 ? 0 : -1;
-    s_state = -1;
-
-    if (!s_disc_path[0]) {
-        OPL_WARN_F("game", "%s", "crash-woah: no --disc image to extract from");
-        return -1;
-    }
+static int SDLCALL woah_load_main(void* unused) {
+    (void)unused;
     size_t nsf_len = 0;
     uint8_t* nsf = openpete_psx_load_file_from_disc(s_disc_path, WOAH_NSF, &nsf_len);
-    if (!nsf) return -1; /* loader logged why (e.g. a demo-less disc) */
+    if (!nsf) return 0; /* loader logged why (e.g. a demo-less disc) */
 
     const uint8_t* body = NULL;
     uint32_t body_len = find_woah(nsf, nsf_len, &body);
     if (!body_len) {
         OPL_WARN_F("game", "crash-woah: sound entry not found in %s", WOAH_NSF);
         free(nsf);
-        return -1;
+        return 0;
     }
-    s_pcm_frames = adpcm_to_pcm(body, body_len, &s_pcm);
+    int16_t* pcm = NULL;
+    uint32_t frames = adpcm_to_pcm(body, body_len, &pcm);
     free(nsf);
-    if (!s_pcm_frames) {
-        free(s_pcm);
-        s_pcm = NULL;
+    if (!frames) {
+        free(pcm);
         OPL_WARN_F("game", "%s", "crash-woah: ADPCM decode produced no audio");
-        return -1;
+        return 0;
     }
-    OPL_INFO_F("game", "crash-woah: decoded %u frames from %s",
-               s_pcm_frames, WOAH_NSF);
-    s_state = 1;
+    s_pcm = pcm;
+    s_pcm_frames = frames;
+    SDL_SetAtomicInt(&s_ready, 1);   /* publishes s_pcm / s_pcm_frames */
+    OPL_INFO_F("game", "crash-woah: decoded %u frames from %s", frames, WOAH_NSF);
     return 0;
 }
 
-static int on_crash_demo_launch(CPUState* cpu, uint32_t addr) {
-    (void)cpu;
+/* Kick the decode the first time the title screen is resident: the title
+ * sequence runs for seconds before substate 3 will take the combo. */
+static void woah_load_start(void) {
+    if (s_loader || !s_disc_path[0]) return;
+    s_loader = SDL_CreateThread(woah_load_main, "openpete-crashwoah", NULL);
+    if (s_loader) SDL_DetachThread(s_loader);
+    else s_loader = (SDL_Thread*)-1;  /* thread refused; do not retry per tick */
+}
+
+/* Is the guest inside the L1+Triangle branch of substate 3? Every hook
+ * below is gated on this, so the same functions used elsewhere on the
+ * title screen behave normally. */
+static int in_cheat_branch(CPUState* cpu) {
+    return spyro_get_active_overlay_magic() == OVERLAY_TITLESCREEN &&
+           cpu->read_word(ADDR_TS_SUBSTATE) == TS_SUBSTATE_PRESS_START &&
+           (cpu->read_word(ADDR_G_PAD_HELD) & CHEAT_COMBO) == CHEAT_COMBO;
+}
+
+/* Swallow the branch's KillSoundsAndMusic(0) so the title track keeps
+ * playing and the CD is never stopped. The branch then spins until
+ * g_CdMusic.m_Flags reports playback fully stopped, which will now never
+ * happen, so hand it the SILENT bit for the few instructions until
+ * CrashDemoLaunch restores the real value. Nothing else reads m_Flags in
+ * between: the wait loop's body (CDLoadTime / SoundsUpdate /
+ * CDMusicUpdate) is precisely what the spoof skips. */
+static int on_kill_sounds_and_music(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    /* The trigger is a HELD combo, and on real hardware the first firing
-     * replaced the program — the branch could never run twice. Here the
-     * title loop re-enters it every tick for as long as the buttons stay
-     * down, so debounce to one woah per distinct press (~3 s). */
-    static unsigned s_last_vbl = 0;
-    unsigned now = openpete_frame;
-    if (!s_last_vbl || now - s_last_vbl > 180u) {
-        if (woah_load() == 0)
-            openpete_mod_sound_play_pcm("crash3-woah", s_pcm, s_pcm_frames,
-                                        1, WOAH_RATE, 1.0f);
-        /* The blip count is the engagement proof for the companion hook:
-         * a 0 here means the guest sting played over the woah. */
-        OPL_INFO_F("game", "crash demo cheat: suppressing LoadExec teardown"
-                   " (%u guest blip(s) muted), playing the woah instead",
-                   s_blips_suppressed);
+    if (!in_cheat_branch(cpu)) return 0;
+    if (!s_flags_spoofed) {
+        s_saved_flags = cpu->read_word(ADDR_G_CDMUSIC_FLAGS);
+        cpu->write_word(ADDR_G_CDMUSIC_FLAGS, s_saved_flags | MUSIC_FLAG_SILENT);
+        s_flags_spoofed = 1;
     }
-    s_last_vbl = now;
-    /* KillSoundsAndMusic() ran at the top of the branch and the title track
-     * is now stopped for good — on hardware the program swap made that
-     * moot. Owe it a restart; the tick hook pays once the combo is up. */
-    s_music_owed = 1;
-    /* Always swallow the call: the body's shutdown sequence (SetDispMask,
+    return 1;
+}
+
+static int on_crash_demo_launch(CPUState* cpu, uint32_t addr) {
+    (void)addr;
+    if (s_flags_spoofed) {
+        cpu->write_word(ADDR_G_CDMUSIC_FLAGS, s_saved_flags);
+        s_flags_spoofed = 0;
+    }
+    /* Always swallow: the body's shutdown sequence (SetDispMask,
      * PadStopCom, callback clears) assumes LoadExec never returns. */
     return 1;
 }
 
-/* Suppress the back/cancel blip the cheat branch fires just before
- * CrashDemoLaunch, so it does not play over the woah. Everything else that
- * uses sound 9 (menu backs, card prompts) falls through untouched. */
+/* The branch's back/cancel blip. On the first tick of a press, arm the
+ * woah underneath it and let the guest's own voice play it; on the
+ * remaining ticks of the same held press, suppress it so the sound is not
+ * retriggered every frame. Sound 9 is the generic back/cancel blip used
+ * all over the title screen — the gate keeps every other use audible. */
 static int on_titlescreen_play_sound(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    if (spyro_get_active_overlay_magic() != OVERLAY_TITLESCREEN) return 0;
     if ((int)cpu->a0 != TS_SOUND_BACK) return 0;
-    if (cpu->read_word(ADDR_TS_SUBSTATE) != TS_SUBSTATE_PRESS_START) return 0;
-    if ((cpu->read_word(ADDR_G_PAD_HELD) & CHEAT_COMBO) != CHEAT_COMBO) return 0;
-    s_blips_suppressed++;
-    return 1;
+    if (!in_cheat_branch(cpu)) return 0;
+    if (s_press_handled) {
+        s_blips_suppressed++;
+        return 1;
+    }
+    s_press_handled = 1;
+    if (!SDL_GetAtomicInt(&s_ready))
+        return 0;  /* woah not decoded (yet, or at all) — the blip stands in */
+    sfx_pack_arm_oneshot(s_pcm, (int)s_pcm_frames, WOAH_RATE);
+    s_arm_ticks = 0;
+    OPL_INFO_F("game", "crash demo cheat: suppressing LoadExec teardown, playing"
+               " the woah in place of the blip (%u repeat blip(s) muted so far)",
+               s_blips_suppressed);
+    return 0;
 }
 
-/* Restart the title track the cheat branch stopped. Deferred to the tick
- * hook and held until the combo is released, because the guest re-enters
- * the branch — and re-runs KillSoundsAndMusic — on every tick the buttons
- * stay down; restarting underneath that would just stutter.
- *
- * The restart goes through the game's own deferred-command slot rather
- * than a synthetic call: CDMusicUpdate() runs SetMusicState(m_CurrentTrack,
- * m_Flags2) and clears m_Flags2 whenever it finds it non-zero, so writing
- * PLAY there is the same request the game makes of itself. Its precondition
- * is exactly what the kill leaves behind — no pending CD command and
- * playback fully stopped (m_Flags SILENT). */
+/* Per-tick housekeeping: start the decode once the title screen is up,
+ * re-arm for the next press when the combo comes up, and drop a
+ * substitution whose key-on never arrived. */
 void spyro1_crash_woah_on_tick(CPUState* cpu) {
-    if (!s_music_owed) return;
-    if (spyro_get_active_overlay_magic() != OVERLAY_TITLESCREEN) {
-        s_music_owed = 0; /* left the title screen; its music is not ours */
-        return;
-    }
-    if ((cpu->read_word(ADDR_G_PAD_HELD) & CHEAT_COMBO) == CHEAT_COMBO)
-        return;           /* still held — the branch will kill it again */
+    if (spyro_get_active_overlay_magic() != OVERLAY_TITLESCREEN) return;
+    woah_load_start();
 
-    uint32_t flags = cpu->read_word(ADDR_G_CDMUSIC_FLAGS);
-    if (cpu->read_word(ADDR_G_CDMUSIC_POSTCMD) != 0 ||
-        !(flags & MUSIC_FLAG_SILENT))
-        return;           /* CD still settling — try again next tick */
+    if ((cpu->read_word(ADDR_G_PAD_HELD) & CHEAT_COMBO) != CHEAT_COMBO)
+        s_press_handled = 0;
 
-    s_music_owed = 0;
-    cpu->write_word(ADDR_G_CDMUSIC_FLAGS2, MUSIC_STATE_PLAY);
-    OPL_INFO_F("game", "crash-woah: requested title track %u restart "
-               "(music flags 0x%X, egg ticks %d)",
-               cpu->read_word(ADDR_G_CDMUSIC_TRACK), flags,
-               (int)cpu->read_word(ADDR_G_CDMUSIC_EGGTICKS));
+    if (sfx_pack_oneshot_armed() && ++s_arm_ticks > ARM_EXPIRY_TICKS)
+        sfx_pack_disarm_oneshot();
 }
 
 static void crash_demo_woah_apply_options(const openpete_options_t* opts) {
@@ -283,6 +307,7 @@ static void crash_demo_woah_apply_options(const openpete_options_t* opts) {
 }
 
 static const feature_dispatch_entry_t k_dispatch[] = {
+    { ADDR_KILL_SOUNDS_MUSIC, on_kill_sounds_and_music },
     { ADDR_TS_PLAY_SOUND,     on_titlescreen_play_sound },
     { ADDR_CRASH_DEMO_LAUNCH, on_crash_demo_launch },
     { 0, NULL },

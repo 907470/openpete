@@ -303,6 +303,12 @@ static sp_entry* match(const sp_ident* id, uint32_t addr, int base_pitch)
 
 /* ── the PsyCross callback ───────────────────────────────────────── */
 
+/* One-shot substitution (sfx_pack_arm_oneshot). Armed and spent on the
+ * sim thread, the same thread that keys voices and runs the callback. */
+static const int16_t* s_oneshot_pcm;
+static int            s_oneshot_count;
+static unsigned int   s_oneshot_rate;
+
 static void override_done(PsyX_SPUAL_SampleOverride* ov)
 {
     if (ov->rings_out) s_census.rings_out++;
@@ -313,6 +319,22 @@ static int override_cb(int voice, unsigned int addr, int stock_samples,
 {
     (void)stock_loops;
     if (!openpete_speculative) s_census.keyed++;
+    /* A one-shot arm outranks the pack, and is checked before the
+     * "no files" early-out so it works with no pack installed. */
+    if (s_oneshot_pcm) {
+        out->pcm        = s_oneshot_pcm;
+        out->count      = s_oneshot_count;
+        out->rate       = s_oneshot_rate;
+        out->loop_start = 0;
+        out->loop_len   = 0;
+        out->flat       = 1; /* the caller's rate is the sound; ignore pitch */
+        out->done       = NULL;
+        if (!openpete_speculative) {
+            s_oneshot_pcm = NULL;   /* spent */
+            s_census.replaced++;
+        }
+        return 1;
+    }
     if (s_log < 0) {
         const char* v = getenv("OPENPETE_SFXPACK_LOG");
         s_log = (v && *v && *v != '0') ? 1 : 0;
@@ -407,6 +429,18 @@ static int override_cb(int voice, unsigned int addr, int stock_samples,
 }
 
 /* ── public ──────────────────────────────────────────────────────── */
+
+void sfx_pack_arm_oneshot(const int16_t* pcm, int count, unsigned int rate)
+{
+    if (!pcm || count <= 0 || rate == 0) return;
+    s_oneshot_count = count;
+    s_oneshot_rate  = rate;
+    s_oneshot_pcm   = pcm;   /* published last: the callback reads it first */
+}
+
+void sfx_pack_disarm_oneshot(void) { s_oneshot_pcm = NULL; }
+
+int sfx_pack_oneshot_armed(void) { return s_oneshot_pcm != NULL; }
 
 void sfx_pack_set_dir_override(const char* dir)
 {

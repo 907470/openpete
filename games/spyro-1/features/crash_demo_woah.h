@@ -9,8 +9,9 @@
 extern "C" {
 #endif
 
-/* Per-tick: restart the title music the cheat branch stopped, once the
- * combo is released. Inert unless the cheat has fired. */
+/* Per-tick: start the background decode of the woah once the title
+ * screen is resident, and reset the once-per-press latches when the
+ * combo comes up. Inert away from the title screen. */
 void spyro1_crash_woah_on_tick(CPUState* cpu);
 
 #ifdef __cplusplus
