@@ -53,6 +53,7 @@ nav:
   - Manifest and config: manifest.md
   - Shaders: shaders.md
   - Sounds: sounds.md
+  - Publishing a mod: publishing.md
   - Reference:
       - API: reference/api.md
       - Functions: reference/functions.md

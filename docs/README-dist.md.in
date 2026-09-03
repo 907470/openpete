@@ -38,6 +38,9 @@ cards/          memory cards (the game's own saves)
 states/         savestate slots
 logs/           openpete.log — attach to a bug report
 library/        your ingested disc and its compiled code
+mods/           drop-in mods
+sdk/            mod SDK headers (only when packaged with the SDK)
+recomp/         the bundled compiler and recompiler
 ```
 <!-- @end -->
 <!-- @linux -->
@@ -84,6 +87,28 @@ AppImage is a read-only file, so it always uses the paths above.
 - Windows: install to a reasonably short path (e.g. `C:\Games\OpenPete`);
   very deep folders can hit Windows' path-length limit during first run.
 <!-- @end -->
+
+## Mods
+
+A mod is a folder (or a `.zip`) dropped into the `mods` directory above,
+holding a `mod.toml` manifest plus any of `assets/` (replacement
+textures, music, sounds, custom levels) and `src/*.c`. Source mods are
+compiled on the next start against the `sdk` folder next to the program,
+by the same compiler that built your disc's module; a start that has
+mods to compile shows "COMPILING MODS" on the splash. If there is no
+`sdk` folder next to the program, this build was packaged without the
+mod SDK: source mods are disabled and mods made only of a manifest and
+assets still load. `mods/enabled.txt` (one mod ID per
+line) fixes which mods load and in what order; without it every mod
+loads, alphabetically.
+
+A source mod runs inside the game process with the same privileges as
+the game. There is no sandbox. Install only mods you trust, as you would
+any other program. A mod with no `src/` directory never loads code.
+
+Mod authors: the SDK documentation is built from the source tree
+(`cmake --build --preset linux-release --target mod_docs`) and starts at
+"Getting started".
 
 ## Reporting a problem
 

@@ -151,9 +151,12 @@ through a `[[config]]` schema and `config_*`, `ui_status` lines, and
 `binding_down`. Present hooks are render-pure, so simulation work
 belongs in tick hooks, and the loader enforces the split.
 
-The API struct is at v1 and is append-only, with one deliberate
-exception on record: the moby-type registry was removed at api 7, before
-any mod outside this tree used it. The full contracts live in
+The API struct layout is frozen at api 10 and append-only from there;
+earlier versions rearranged it (api 7 removed the moby-type registry,
+api 8 inserted `notify` mid-struct, api 10 moved it to the tail), before
+any mod outside this tree used them. Every prebuilt object carries an
+ABI descriptor and the loader refuses one built for a newer api or a
+larger struct. The full contracts live in
 `sdk/openpete_mod_api.h` next to the executable. The widget annex,
 `openpete_mod_ui.h`, is versioned separately and carries no stability
 promise.
