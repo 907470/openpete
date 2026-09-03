@@ -1,30 +1,24 @@
-// openpete_mod_ui.h — the mod UI ANNEX (SDK header, separately versioned).
+// openpete_mod_ui.h — custom panels in the Mods overlay.
 //
-// ── NO STABILITY PROMISE ────────────────────────────────────────────
-// This header is NOT covered by OPENPETE_MOD_API_VERSION. It mirrors an
-// immediate-mode widget set over the engine's dev-overlay UI library
-// (Dear ImGui today) and is bumped freely as that library and the
-// overlay evolve; a bump may require a source edit in your mod. Mods
-// ship as source and rebuild automatically against the staged SDK, so
-// in practice a bump costs a recompile — but the *call-level* shape of
-// any widget may change between engine releases without notice.
+// Not covered by OPENPETE_MOD_API_VERSION. This header mirrors an
+// immediate-mode widget set over the engine's overlay UI library and is
+// revised as that library evolves; a revision may need a source edit in
+// the mod. Mods ship as source and rebuild against the staged SDK, so a
+// revision costs a recompile.
 //
-// The kernel alternative that IS stable: declare settings as [[config]]
-// schema rows in mod.toml and let the engine render them (values read
-// back through api->config_*), and print status through api->ui_status.
-// Reach for this annex only when your mod needs a genuinely custom
-// panel the schema cannot express.
+// The stable alternatives: [[config]] rows in mod.toml, which the engine
+// renders and the mod reads through api->config_*, and api->ui_status for
+// text. Use this header only for a panel the schema cannot express.
 //
-// Registration is by EXPORTED DESCRIPTOR, not an api entry: define
-// your section body and put
+// Registration is by exported descriptor, not an api entry: define the
+// section body and put
 //
 //     OPENPETE_MOD_UI_SECTION(my_section_fn)
 //
 // at file scope in exactly one source file. The loader resolves the
-// descriptor at dlopen and REFUSES the section (with a log line; the
-// mod itself still loads) when the compiled-in OPENPETE_MOD_UI_ABI
-// does not match the engine's — which protects the prebuilt-binary
-// fallback path that compile-on-load cannot rebuild.
+// descriptor at dlopen and refuses the section, with a log line, when its
+// OPENPETE_MOD_UI_ABI differs from the engine's; the mod itself still
+// loads.
 
 #ifndef OPENPETE_MOD_UI_H
 #define OPENPETE_MOD_UI_H
@@ -33,15 +27,13 @@
 extern "C" {
 #endif
 
-/* The annex ABI generation. Checked at LOAD, not only at compile. */
+/* Annex ABI generation, checked at load. */
 #define OPENPETE_MOD_UI_ABI 1u
 
-/* ── The widget vtable ───────────────────────────────────────────────
- * Implemented by the engine's dev overlay — mods never see the
- * underlying UI library. Widgets returning int report 1 when the value
- * changed this frame (checkbox/slider/combo write through their
- * pointer), buttons report 1 on click. tooltip() annotates the
- * PREVIOUS widget on hover. */
+/* Widget table, implemented by the engine's overlay. Widgets returning
+ * int report 1 when the value changed this frame (checkbox, slider and
+ * combo write through their pointer); button reports 1 on click.
+ * tooltip() annotates the previous widget on hover. */
 typedef struct openpete_mod_ui {
     void (*text)(const char* fmt, ...);          /* printf-style line   */
     void (*text_disabled)(const char* fmt, ...); /* dimmed line         */
@@ -59,14 +51,14 @@ typedef struct openpete_mod_ui {
     void* _reserved[8];
 } openpete_mod_ui_t;
 
-/* The section body. Runs only while the overlay is open AND the mod is
- * enabled, under the render-purity guard (guest access / game calls /
- * base() / registration are refused inside — mutate host-side mod
- * state from widgets and let tick hooks consume it). */
+/* Section body. Runs only while the overlay is open and the mod is
+ * enabled, under the render-purity guard: guest access, game calls,
+ * base() and registration are refused inside it. Change host-side mod
+ * state from widgets and let tick hooks consume it. */
 typedef void (*openpete_mod_ui_body_fn)(const openpete_mod_ui_t* ui);
 
-/* Loader-resolved registration descriptor. Do not define by hand — use
- * the macro below so the abi field can never go stale. */
+/* Registration descriptor. Define it with OPENPETE_MOD_UI_SECTION so the
+ * abi field cannot go stale. */
 typedef struct openpete_mod_ui_section {
     unsigned magic;        /* 'OPUI' = 0x4F505549 */
     unsigned abi;          /* == OPENPETE_MOD_UI_ABI at compile time */

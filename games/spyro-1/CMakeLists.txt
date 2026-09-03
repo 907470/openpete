@@ -461,7 +461,6 @@ add_custom_target(spyro1_sdk_stage ALL
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_ui.h
             ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
-            ${CMAKE_CURRENT_SOURCE_DIR}/spyro1_actor_pose.h
             ${_mod_sdk_gen}/openpete_sdk_symbols.h
             ${_mod_sdk_gen}/openpete_sdk_wrappers.h
             ${_mod_sdk_gen}/openpete_game_structs.h
@@ -520,7 +519,6 @@ if(OPENPETE_COMPILE_MODS)
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_ui.h
             ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
-            ${CMAKE_CURRENT_SOURCE_DIR}/spyro1_actor_pose.h
             ${_mod_sdk_gen}/openpete_sdk_symbols.h
             ${_mod_sdk_gen}/openpete_sdk_wrappers.h
             ${_mod_sdk_gen}/openpete_game_structs.h

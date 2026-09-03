@@ -1886,7 +1886,7 @@ static const openpete_sha256_ctx* sdk_prefix(const char* sdk_dir) {
     static const char* const sdk_inputs[] = {
         "openpete_mod_api.h", "openpete_mod_ui.h", "openpete_sdk_symbols.h",
         "openpete_sdk_wrappers.h", "psx_runtime.h",
-        "openpete_game_structs.h", "spyro1_actor_pose.h",
+        "openpete_game_structs.h",
         "openpete_mod_abi.c",
     };
     for (size_t i = 0; i < sizeof sdk_inputs / sizeof sdk_inputs[0]; i++) {

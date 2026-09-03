@@ -1,43 +1,33 @@
-// openpete_mod_api.h — the MOD-FACING API surface (SDK header, api v1).
+// openpete_mod_api.h — the mod API.
 //
-// This header is staged into <exe>/sdk/ and compiled into third-party mod
-// shared objects. Everything a mod touches at runtime flows through the
-// openpete_mod_api_t struct passed to its entry point — mods never link
-// against engine symbols directly (portable across ELF/PE, no -rdynamic).
-//
-// A mod is a folder under mods/ with a mod.toml manifest; most mods need
-// no code at all (assets/ + manifest — see mods/README.md). Mods that DO
-// ship src/*.c are compiled on load by the engine toolchain into a
-// per-mod shared object (core/mods/mod_loader.c). The entry point:
+// Staged into <exe>/sdk/ and compiled into every code mod. A mod reaches
+// the engine only through the openpete_mod_api_t struct passed to its
+// entry point; it never links against engine symbols.
 //
 //     int openpete_mod_entry(const openpete_mod_api_t* api,
 //                            openpete_mod_t* self);
 //
-// returns 0 on success (non-zero disables the mod with a log line).
+// Return 0 to load; any other value disables the mod and logs the value.
 //
-// ── STABILITY ───────────────────────────────────────────────────────
-// This struct is api v1 and APPEND-ONLY: entries never move, change
-// signature, or disappear; new capability appends at the end under a
-// bumped OPENPETE_MOD_API_VERSION. The manifest's `api = N` pin is the
-// MINIMUM version the mod needs, not an exact match. Two deliberate
-// exceptions to "nothing here ever breaks":
-//   - CPUState override signatures (below) gain typed siblings when the
-//     marshalling generator lands; the raw form stays.
-//   - The UI annex (openpete_mod_ui.h) is a SEPARATE header on its own
-//     version line and carries no stability promise at all.
+// Stability. The struct layout is frozen at api 10: from there on entries
+// are appended, never moved, retyped or removed. The manifest `api = N`
+// pin is the minimum version the mod needs; check `api_version < N`,
+// never `!=`. The UI annex (openpete_mod_ui.h) is versioned separately
+// and carries no stability promise.
 //
-// Override semantics:
-// pre-hook / post-hook / full replacement are ONE mechanism, distinguished
-// by where the override calls api->base(cpu) — last / first / never.
-// base() falls through the priority chain and bottoms out at the
-// recompiled original. Event detection: post-hook + state-diff around
-// base() (no separate event subsystem — diff the world, e.g. g_LevelId
-// under g_Gamestate == GS_Playing for "level ready").
+// Version at which each entry appeared: `since api N` in its comment.
+// api 1 is the base set; 7 removed the moby-type registry; 10 moved
+// notify to the tail of the struct and added the ABI descriptor.
 //
-// Raw cpu-context override signatures only for now (CPUState* — the
-// MIPS O32 register file; args in cpu->a0..a3, return in cpu->v0).
-// Prototype-driven natural-signature wrappers come with the marshalling
-// generator (a later, additive rung).
+// Overrides. A pre-hook, a post-hook and a full replacement are one
+// mechanism, distinguished by where the override calls api->base(cpu):
+// last, first or never. base() runs the next override in the chain and
+// bottoms out at the recompiled original. There is no event system:
+// detect an event by diffing guest state around base().
+//
+// Override bodies take the raw MIPS register file (CPUState): arguments
+// in cpu->a0..a3, return value in cpu->v0. openpete_sdk_wrappers.h
+// provides natural-signature wrappers for every prototyped function.
 
 #ifndef OPENPETE_MOD_API_H
 #define OPENPETE_MOD_API_H
@@ -54,28 +44,26 @@ typedef struct CPUState CPUState;
 /* Opaque per-mod handle owned by the loader. */
 typedef struct openpete_mod openpete_mod_t;
 
-/* An override body. Read/write guest state through cpu; call
- * api->base(cpu) to fall through to the next link / the original. */
+/* An override body. Read and write guest state through cpu; call
+ * api->base(cpu) to run the next override or the original. */
 typedef void (*openpete_mod_override_fn)(CPUState* cpu);
 
-/* Per-present context handed to present hooks (see
- * register_present_hook below). */
+/* Context handed to a present hook (register_present_hook). */
 typedef struct openpete_present_ctx {
-    uint32_t tick;   /* canonical sim tick counter (openpete_frame)   */
+    uint32_t tick;   /* sim tick counter                               */
     float    alpha;  /* sub-tick phase [0,1) between tick and tick+1;
-                      * 0 on canonical presents                       */
+                      * 0 on a canonical present                       */
     float    dt;     /* seconds between this scene's animation moment
                       * and the previous scene's                       */
-    float    aspect; /* overlay-space width: x spans [0, aspect]      */
+    float    aspect; /* overlay-space width: x spans [0, aspect]       */
 } openpete_present_ctx_t;
 
 typedef void (*openpete_mod_present_fn)(const openpete_present_ctx_t* ctx);
 
-/* Live enable/disable notification (see register_toggle_hook). Runs at
- * the tick boundary, AFTER the mod's registration surfaces flipped —
- * tick context, so guest reads/writes are legal. on=0 is the place to
- * UNDO apply-once guest effects (repointed tables, patched colours);
- * on=1 rarely needs work — level-scoped apply re-runs automatically. */
+/* Live enable/disable callback (register_toggle_hook). Runs at the tick
+ * boundary after the mod's registrations have flipped; guest reads and
+ * writes are legal. on=0 is where a mod restores guest bytes its entry
+ * or hooks changed. */
 typedef void (*openpete_mod_toggle_fn)(CPUState* cpu, int on);
 
 enum {
@@ -87,53 +75,37 @@ enum {
 
 /* guest_alloc flags. */
 enum {
-    OP_GALLOC_IMMUTABLE = 1u << 0, /* a promise BY THE MOD: once the
-                              * allocating tick completes, neither the
-                              * mod nor the game writes these bytes
-                              * again. The engine may exempt them from
-                              * timeline snapshots, verify the promise,
-                              * and refuse or abort on a detected
-                              * violation. Writing them afterwards is
-                              * undefined. Model parks; never scratch
-                              * the mod rewrites. */
+    OP_GALLOC_IMMUTABLE = 1u << 0, /* the mod promises that after the
+                              * allocating tick neither it nor the game
+                              * writes these bytes. The engine may leave
+                              * them out of savestates and rewind history
+                              * and may abort on a detected write. Use for
+                              * parked model data, never for scratch. */
 };
 
-/* Post-process injection points (postfx_register). Points are defined
- * SEMANTICALLY, not by resolution. */
+/* Post-process injection points (postfx_register). */
 enum {
-    OP_POSTFX_COMPOSITE = 0, /* after scene+HUD compose, before the present
-                              * blit — the first and default point */
-    OP_POSTFX_SCENE     = 1, /* post-3D, pre-HUD: effects tint the world
-                              * while the HUD stays crisp on top. Also
-                              * gets real scene depth at op_scene_depth
-                              * (WORLD-opaque pre-pass; terrain, not
-                              * mobys). See mods/scene-sepia. */
-    OP_POSTFX_PRESENT   = 2, /* post-blit, swapchain — NOT IMPLEMENTED.
-                              * Registering here is refused. It would be
-                              * identical to COMPOSITE until the present
-                              * blit does something COMPOSITE cannot see
-                              * (an upscaler), which is why it has not
-                              * been built. */
+    OP_POSTFX_COMPOSITE = 0, /* after scene and HUD compose, before the
+                              * present blit; the default point */
+    OP_POSTFX_SCENE     = 1, /* after the 3D scene, before the HUD, so the
+                              * HUD stays unaffected. Scene depth is
+                              * available at op_scene_depth (terrain only,
+                              * not mobys). */
+    OP_POSTFX_PRESENT   = 2, /* reserved; registration is refused */
 };
 
-/* Canonical sim-tick rate in Hz — exactly 1125000/37609 = 29.9130527… .
- *
- * The PSX runs 240p non-interlaced, so a frame is a full 263 scanlines and
- * the vertical rate is 2250000/37609 = 59.8261054… Hz; the game calls
- * VSync(2), so gameplay advances at half that. This is NOT 29.97 — that
- * figure derives from the interlaced 262.5-line field rate, which nothing
- * this engine outputs uses. A mod that converts ticks to seconds with 29.97
- * runs 0.19 % fast against game time (~1.1 s over a ten-minute run).
- *
- * A compile-time constant rather than an api entry: it never varies at
- * runtime, and pinning it in the header keeps mods from pasting a literal.
- * (--tick-scale stretches WALL time only; a tick is still a tick.) */
+/* Sim tick rate: 1125000/37609 Hz (29.913...). The PSX outputs 263-line
+ * non-interlaced video at 2250000/37609 Hz (59.826...) and the game runs
+ * one tick per two VBLs. Not 29.97: that is the interlaced field rate,
+ * which this game never uses, and a mod converting ticks to seconds with
+ * it drifts 0.19 % against game time. --tick-scale stretches wall time
+ * only; a tick stays one tick. */
 #define OPENPETE_TICK_HZ  (1125000.0 / 37609.0)
 #define OPENPETE_VBL_HZ   (2250000.0 / 37609.0)
 
-/* Channels == the renderer's feeder paths, and the values ARE the tag's
- * path nibble so a selector maps to tags without a translation table.
- * `docs/render-channel-census.md` says what each feeder can be keyed on. */
+/* Render channels: the renderer's feeder paths. A material selector
+ * names one of these. docs/render-channel-census.md lists the keys each
+ * channel can be narrowed on. */
 enum {
     OP_CHAN_MOBY     = 1,
     OP_CHAN_TERRAIN  = 2,
@@ -143,26 +115,21 @@ enum {
     OP_CHAN_SKY      = 6,
     OP_CHAN_SHADOW   = 7,
     OP_CHAN_TRACER   = 8,
-    OP_CHAN_PORTAL   = 9,   /* destination-sky previews inside a portal */
+    OP_CHAN_PORTAL   = 9,   /* destination-sky preview inside a portal */
 };
-/* Portal preview kinds — the `ident` key for OP_CHAN_PORTAL. The game
- * draws a portal three ways across the approach, so a material that takes
- * only one of them POPS as the player walks up; -1 (all three) is almost
- * always what a portal mod means. */
+/* Portal preview kinds: the `ident` key for OP_CHAN_PORTAL. The game
+ * draws a portal three ways across the approach; a material keyed on one
+ * kind pops as the player walks up, so -1 (all three) is the usual
+ * choice. */
 enum {
     OP_PORTAL_FLAT    = 0,  /* far colour chip / close backstop */
     OP_PORTAL_DOME    = 1,  /* full gouraud dome, close up      */
     OP_PORTAL_BLENDED = 2,  /* fogged dome, medium cross-dissolve */
 };
-/* Retained: `path` used 0-based values before channels existed. */
+/* Legacy 0-based path values; prefer OP_CHAN_*. */
 enum { OP_RP_MOBY = 0, OP_RP_TERRAIN = 1 };
-/* Refinements. Each pair is a NARROWING: setting neither member selects
- * both, which is what an unqualified "all terrain" has to mean. (The
- * textured/untextured pair used to be a two-way filter where unflagged
- * meant textured-only — so the plainest possible terrain selector
- * silently skipped every gouraud face, which is the LP tier and the
- * beyond-LOD band. Matching NARROWER than the author asked is as much a
- * bug as matching wider.) */
+/* Selector refinements. Each pair narrows: setting neither member of a
+ * pair selects both. */
 enum {
     OP_SEL_ENV_ANIM   = 1u << 0,  /* env-animated faces only */
     OP_SEL_HP_TIER    = 1u << 1,  /* high-poly tier only  } neither = both */
@@ -170,33 +137,31 @@ enum {
     OP_SEL_UNTEXTURED = 1u << 3,  /* gouraud faces only   } neither = both */
     OP_SEL_TEXTURED   = 1u << 4,  /* textured faces only  }               */
 };
-/* Every flag the engine understands. A selector carrying a bit outside
- * this mask is REFUSED rather than silently matching wider than the mod
- * author asked for — `struct_size` alone cannot catch a new flag bit,
- * because adding one never changes sizeof. */
+/* Every flag the engine understands. A selector carrying any other bit
+ * is refused: struct_size cannot detect a new flag bit, since adding one
+ * does not change sizeof. */
 #define OP_SEL_FLAGS_KNOWN (OP_SEL_ENV_ANIM | OP_SEL_HP_TIER | \
                             OP_SEL_LP_TIER  | OP_SEL_UNTEXTURED | \
                             OP_SEL_TEXTURED)
 
 typedef struct openpete_mod_material_selector {
-    /* sizeof(*this) at the mod's compile time; the engine refuses sizes it
-     * does not know rather than reading past what the mod actually wrote. */
+    /* sizeof(*this) at the mod's compile time; the engine refuses a size
+     * it does not know. */
     uint32_t struct_size;
-    int      channel;     /* OP_CHAN_* ; -1 = any channel */
-    /* Channel-local identity — the tag's [15:0]. Meaning is per channel:
-     * flame ribbon/caps, the particle (kind<<8 | sel) pair, shadow caster
-     * kind. -1 = any. Channels whose feeder has no identity to give
-     * (player, sky, tracer) only ever emit 0, so only -1 or 0 match. */
+    int      channel;     /* OP_CHAN_*; -1 = any channel */
+    /* Channel-local identity, meaning per channel: flame ribbon or cap,
+     * particle (kind << 8 | sel), shadow caster kind, portal preview
+     * kind. -1 = any. Player, sky and tracer emit only 0. */
     int      ident;
     int      moby_class;  /* moby only; -1 = any */
     int      texture;     /* terrain texture-record id 0..127; -1 = any */
-    int      level;       /* g_LevelId; -1 = any. Sector/texture ids are
-                           * per-level, so a key without this matches the
-                           * same id in EVERY level. */
+    int      level;       /* g_LevelId; -1 = any. Sector and texture ids
+                           * are per level, so a key without this matches
+                           * the same id in every level. */
     unsigned flags;       /* OP_SEL_* refinements */
 } openpete_mod_material_selector_t;
-/* Fill a selector with the match-everything defaults; a mod then narrows
- * only what it cares about. Zero-init would mean channel 0 / class 0. */
+/* A selector that matches everything; narrow only the fields you mean.
+ * A zero-initialised selector would mean channel 0 and class 0. */
 static inline openpete_mod_material_selector_t openpete_mod_material_sel_any(void) {
     openpete_mod_material_selector_t s;
     s.struct_size = (uint32_t)sizeof s;
@@ -205,38 +170,27 @@ static inline openpete_mod_material_selector_t openpete_mod_material_sel_any(voi
     return s;
 }
 
-/* ── Refine: the middle layer of the selection seam ──────────────────
- * A selector decides WHICH geometry a material may claim; a refine
- * callback decides, per instance, whether it actually does — and with
- * what parameters. That is what makes "class 42, but only while it is
- * burning" expressible: the selector prunes to class 42 cheaply, the
- * callback reads that instance's state and declines the rest.
+/* Refine callbacks (material_register_refine). The selector decides
+ * which geometry a material may claim; the refine callback decides per
+ * instance whether it does, and with what uniform block. Example: the
+ * selector prunes to class 42, the callback claims only instances that
+ * are burning.
  *
- * The callback runs during EXTRACTION, in tick context, on the serial
- * emit path — guest RAM is readable and coherent through the ordinary
- * api->guest()/op_read_u32() accessors, which is why no CPUState
- * appears here. It is NOT a render hook and must not touch host
- * rendering state.
- *
- * SEMANTICS, NEVER CADENCE: the engine promises the verdict a material
- * carries is the one your callback most recently gave for that
- * instance. It does NOT promise how often you are called — results are
- * interned, and a channel that later banks geometry across presents
- * will re-resolve from identity rather than re-invoke you. So a
- * callback must be a pure function of the key plus tick-stable guest
- * state. Counting calls to infer "instances drawn" is measuring the
- * engine's memoization, not the scene. */
+ * The callback runs during extraction in tick context: guest RAM is
+ * readable through api->guest() and op_read_*; host render state is off
+ * limits. Results are memoised per instance, so the callback must be a
+ * pure function of the key and tick-stable guest state; the call count
+ * is not part of the contract. */
 
-/* Per-channel key versions — bumped when a channel's key members change
- * meaning. The engine stamps the live one into `version`; a mod that
- * cares can refuse a version it was not written against. */
+/* Key version per channel, stamped into `version`; bumped when a
+ * channel's key members change meaning. */
 #define OPENPETE_MATERIAL_KEY_VER_MOBY    1u
 #define OPENPETE_MATERIAL_KEY_VER_TERRAIN 1u
 
-/* What the engine knows about one instance at refine time. The engine
- * fills every field; `channel` selects which union member is live. */
+/* One instance at refine time. Every field is filled by the engine;
+ * `channel` selects the live union member. */
 typedef struct openpete_mod_material_key {
-    uint32_t struct_size;   /* sizeof at ENGINE compile time */
+    uint32_t struct_size;   /* sizeof at engine compile time */
     uint32_t version;       /* OPENPETE_MATERIAL_KEY_VER_* for `channel` */
     int      channel;       /* OP_CHAN_* */
     union {
@@ -251,190 +205,132 @@ typedef struct openpete_mod_material_key {
     } u;
 } openpete_mod_material_key_t;
 
-/* Cap on one instance's per-draw uniform block: the bytes a refine
- * callback may write, and the size of a material's uniform payload. */
+/* Size cap of a material's per-instance uniform block. */
 #define OPENPETE_MATERIAL_UNIFORMS_MAX 256u
 
-/* Return the number of bytes written to `out` (0 = claim it, no
- * parameters), or -1 to DECLINE — that instance keeps stock shading.
- * `cap` is OPENPETE_MATERIAL_UNIFORMS_MAX; never write past it. */
+/* Return the number of bytes written to `out` (0 = claim with no
+ * parameters), or -1 to decline: the instance keeps stock shading. `cap`
+ * is OPENPETE_MATERIAL_UNIFORMS_MAX. */
 typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
                                       void* out, uint32_t cap);
 
-/* 5: the material shading contract inverted — the engine owns main() and a
- * material supplies op_material(vec4 base). Materials written against api 4
- * (their own main() + outColor) fail to COMPILE against the api-5 contract,
- * deliberately: silently keeping them would keep them shading without the
- * perspective divide and without og's per-pixel painter verdicts.
- *
- * 6: material_set_selector + moby_classes. A selector can now be RETUNED on
- * a live material, which is what a mod driving one from a widget needs:
- * registration is refused inside a present, so the re-register such a mod
- * used to attempt could only fail, leaving its material destroyed.
- *
- * 7: the moby-type registry (register_moby_type / moby_type_id /
- * spawn_moby, "pillar 7") is REMOVED, and the pillar number stays retired.
- * It was a speculative abstraction over one in-tree example: a mod wanting
- * novel content can still claim a class row and drive it from an override
- * on the game's own update, which is what the registry did on its behalf.
- * Removing entries breaks the append-only rule above, deliberately and
- * once: a mod calling them fails to COMPILE, which is the loud failure.
- *
- * 8: notify() — post a transient on-screen notification (pillar 4). Growth
- * against the shrink arc, and named as such: the shrink removes machinery
- * that duplicated a better path, and there is no better path for a
- * transient message. ui_status is a persistent panel line behind an
- * overlay the player has to open, which is a different thing and stays.
- *
- * 9: vstream_handle() — a stream handle for a frame word's 21-bit field
- * (pillar 2). With it a model payload lives in the arena like any other
- * allocation; the OP_GALLOC_LOW placement flag and the low window it
- * named are gone.
- *
- * 10: the layout freeze. notify() moves to the TAIL of the struct: it was
- * inserted between ui_status and register_present_hook at 8, which broke
- * the append-only rule for every object built against 4..7 — no such
- * object had shipped, so the layout is corrected once rather than
- * carried. And every code object now exports an `openpete_mod_abi`
- * descriptor (see OPENPETE_MOD_ABI_DEFINE below): the loader refuses an
- * object built for a newer api, or a larger struct, than the engine it
- * is loaded into, instead of calling through a stale vtable shape. */
 #define OPENPETE_MOD_API_VERSION 10u
 
 typedef struct openpete_mod_api {
-    uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION (the struct is
-                             * append-only: a mod's manifest `api` pin is the
-                             * MINIMUM version its calls need; check
-                             * `api_version < N`, never `!=`) */
+    uint32_t api_version;   /* == OPENPETE_MOD_API_VERSION of the engine;
+                             * compare with `<`, never `!=` */
 
-    /* ── Pillar 1: the override chain ────────────────────────────────
-     * Attach an override to a guest function by symbol name (named tier
-     * — resolved through the SDK symbol table, e.g. "CameraUpdate") or
-     * by PSX vaddr (raw tier — region/binary-pinned; declare
-     * tier = "raw" in the manifest). Returns 0 on success, non-zero if
-     * the name is unknown / args invalid.
-     * Priority: the enabled-list order IS the priority — overrides from
-     * later-listed mods run first; base() walks toward earlier mods and
-     * bottoms out at the recompiled original. */
+    /* ── Overrides ──────────────────────────────────────────────────
+     * Attach an override to a guest function by symbol name (resolved
+     * through openpete_sdk_symbols.h, e.g. "CameraUpdate") or by PSX
+     * vaddr (the manifest must declare tier = "raw"). Returns 0 on
+     * success, non-zero for an unknown name or invalid arguments.
+     * Priority is the enabled-list order: overrides from later-listed
+     * mods run first, and base() walks toward earlier mods and then the
+     * recompiled original. Since api 1. */
     int (*override_addr)(openpete_mod_t* self, uint32_t addr,
                          openpete_mod_override_fn fn);
     int (*override_name)(openpete_mod_t* self, const char* name,
                          openpete_mod_override_fn fn);
 
-    /* Fall through to the next override in the chain (or the recompiled
-     * original). Only valid while an override registered by this mod is
-     * on the call stack. May be called 0, 1, or N times; each call runs
-     * the continuation once. */
+    /* Run the next override in the chain, or the original. Valid only
+     * while an override registered by this mod is on the call stack. May
+     * be called any number of times; each call runs the continuation
+     * once. Since api 1. */
     void (*base)(CPUState* cpu);
 
-    /* Invoke a guest function by vaddr through the dispatch layer (the
-     * callee's own override chain runs — calls see the same modded
-     * world as the game). Argument/return marshalling is the caller's
-     * job: write cpu->a0..a3 first, read cpu->v0 after. Only valid on
-     * the sim thread with a live cpu (i.e. inside an override). */
+    /* Call a guest function by vaddr through the dispatch layer, so the
+     * callee's own override chain runs. Write cpu->a0..a3 before, read
+     * cpu->v0 after. Valid only inside an override. Since api 1. */
     void (*call)(CPUState* cpu, uint32_t addr);
 
-    /* ── Pillar 2: guest memory ──────────────────────────────────────
-     * Translate a guest vaddr (kuseg/kseg0/kseg1) to a host pointer, or
-     * NULL if the address names nothing: canonical 2MB RAM, the
-     * scratchpad, and guest_alloc's arena all resolve. Guest RAM is
-     * little-endian and so is every supported host, so typed reads/
-     * writes through the pointer see what the game sees. Global
-     * addresses: OP_GADDR_* in openpete_sdk_symbols.h. Reminder: values
-     * INSIDE guest structs that are pointers hold guest vaddrs —
-     * re-translate before chasing. Sim-thread use only.
-     *
-     * Guest address 0 is PSX NULL and returns NULL, never the base of
-     * RAM: an allocation that failed hands back 0, and a mod that misses
-     * the check must fault in its own frame rather than write over the
-     * kernel area. */
+    /* ── Guest memory ───────────────────────────────────────────────
+     * Translate a guest vaddr (kuseg, kseg0 or kseg1) to a host pointer:
+     * the 2 MB RAM, the scratchpad and guest_alloc's arena all resolve.
+     * NULL for an address that names nothing, including guest address 0.
+     * Guest RAM and every supported host are little-endian, so typed
+     * reads and writes through the pointer see what the game sees.
+     * Pointer fields inside guest structs hold guest vaddrs; translate
+     * them again before dereferencing. Global addresses are OP_GADDR_* in
+     * openpete_sdk_symbols.h. Sim thread only. Since api 1. */
     void* (*guest)(uint32_t vaddr);
 
-    /* Exact inverse of guest(), for every address guest() can resolve:
-     * a host pointer into canonical RAM, the scratchpad, or an arena
-     * allocation → its guest vaddr; 0 if the pointer names no guest
-     * address. Interior pointers work — (host_view + off) maps to
-     * (vaddr + off) — which is how a mod stores a vaddr for a field
-     * inside a payload it parked. */
+    /* Inverse of guest(): a host pointer into RAM, the scratchpad or an
+     * arena allocation to its guest vaddr, 0 if the pointer names no
+     * guest address. Interior pointers map to the corresponding interior
+     * vaddr. Since api 1. */
     uint32_t (*guest_addr)(const void* host);
 
-    /* Allocates `size` bytes of guest-addressable memory. Returns the
-     * guest vaddr (0 = exhausted / unavailable / invalid — never
-     * partial) and, via `host_view`, a host alias of the same bytes.
-     * `align` is a power of two (0 = default). Session-lifetime bump;
-     * there is no free — allocate at entry and reuse, the cursor never
-     * returns. Tick context only: call it, and write through
-     * `host_view`, only from entry, tick hooks and toggle hooks — never
-     * from a present hook, a UI section, or a thread of your own.
+    /* Allocate `size` bytes of guest-addressable memory. Returns the
+     * guest vaddr (0 = exhausted, unavailable or invalid) and, through
+     * `host_view`, a host alias of the same bytes. `align` is a power of
+     * two (0 = default). The arena is a bump allocator with no free:
+     * allocate at entry and reuse. Tick context only: call it, and write
+     * through `host_view`, only from entry, tick hooks and toggle hooks.
      *
-     * Initial contents: zero on first allocation. On re-entry (a reload)
-     * your allocation sequence is replayed — the i-th call with the same
-     * size, alignment and flags returns the same vaddr and view, holding
-     * the bytes as last written, not zero. Initialise what you need
-     * initialised.
+     * Contents are zero on first allocation. On reload the allocation
+     * sequence is replayed: the i-th call with the same size, alignment
+     * and flags returns the same vaddr and view, holding the bytes as
+     * last written. Initialise what needs initialising.
      *
-     * Guaranteed for every allocation: the vaddr and host view are
-     * stable for the process lifetime, and the bytes are reachable
-     * through every engine-owned guest access path (cpu->read_* /
-     * write_*, api->guest).
+     * The vaddr and host view are stable for the process lifetime, and
+     * the bytes are reachable through every engine guest access path
+     * (cpu->read_*, cpu->write_*, api->guest).
      *
-     * Timeline coherence: unless marked OP_GALLOC_IMMUTABLE, the bytes
-     * are timeline state — savestates, rewind, runahead and process
-     * handoff carry and restore them the way they do guest RAM, with one
-     * difference: an allocation made AFTER a snapshot keeps its current
+     * Unless flagged OP_GALLOC_IMMUTABLE the bytes are timeline state:
+     * savestates, rewind, runahead and process handoff carry and restore
+     * them like guest RAM. An allocation made after a snapshot keeps its
      * contents when that snapshot is restored; the cursor never rewinds.
-     * Mutable per-session state belongs here, not in host statics.
-     * Because carried bytes cross process boundaries at handoff, they
-     * must never contain host pointers; store guest vaddrs.
+     * Keep mutable per-session state here rather than in host statics,
+     * and store guest vaddrs rather than host pointers, since carried
+     * bytes cross process boundaries at handoff.
      *
-     * Unknown flags fail the call (returns 0, logs the flag), so a mod
-     * using a future flag on an older engine fails loudly at the
-     * allocation instead of silently landing in the wrong place.
+     * An unknown flag fails the call (returns 0, logs the flag).
      *
-     * Explicitly not promised: the arena's numeric base or layout (never
-     * hardcode a vaddr; a savestate whose allocation sequence does not
-     * prefix-match the live session is refused, naming the mod and the
-     * entry); survival of `host_view` across handoff; any particular
-     * snapshot mechanism, granularity or cost.
+     * Not promised: the arena's base or layout (never hardcode a vaddr;
+     * a savestate whose allocation sequence does not prefix-match the
+     * live session is refused, naming the mod and entry), survival of
+     * `host_view` across handoff, or any particular snapshot mechanism.
      *
-     * Model data — vertex streams referenced from animation frame
-     * words — is parked here like anything else; the frame word carries
-     * a stream handle from vstream_handle, never an address. */
+     * Model vertex streams referenced from animation frame words are
+     * parked here too; the frame word carries a handle from
+     * vstream_handle, not an address. Since api 1. */
     uint32_t (*guest_alloc)(openpete_mod_t* self, uint32_t size,
                             uint32_t align, uint32_t flags,
                             void** host_view);
 
-    /* ── Pillar 3: lifecycle and identity ────────────────────────────
-     * printf-style logging, tagged "mod:<id>". level = OP_MOD_LOG_*. */
+    /* ── Lifecycle ──────────────────────────────────────────────────
+     * printf-style logging, tagged "mod:<id>". level = OP_MOD_LOG_*.
+     * Since api 1. */
     void (*log)(openpete_mod_t* self, int level, const char* fmt, ...);
 
     /* Per-mod persistent data directory (mods/<id>/data, created on
-     * first call). Returns an engine-owned absolute path string. Mods
-     * are native code — plain stdio inside it is the intended use. */
+     * first call). Returns an engine-owned absolute path; use plain stdio
+     * inside it. Since api 1. */
     const char* (*data_dir)(openpete_mod_t* self);
 
-    /* Live-toggle notification: called at the tick boundary each time
-     * THIS mod's live toggle actually flips, after the flip. The engine
-     * freezes a disabled mod's registrations but never rewinds guest
-     * state — a mod whose entry or hooks WROTE guest state restores the
-     * stock bytes in on=0. This is the mod's unload story. One
-     * registration per mod (re-register replaces). Returns 0. */
+    /* Register the live-toggle callback: runs at the tick boundary after
+     * each flip of this mod's enable state. The engine freezes a disabled
+     * mod's registrations but never rewinds guest state, so a mod that
+     * wrote guest state restores the stock bytes on on=0. One
+     * registration per mod; re-registering replaces. Returns 0.
+     * Since api 1. */
     int (*register_toggle_hook)(openpete_mod_t* self,
                                 openpete_mod_toggle_fn fn);
 
-    /* ── Pillar 4: settings (config.toml + [[config]] schema) ────────
+    /* ── Settings ───────────────────────────────────────────────────
      * Read a value from mods/<id>/config.toml. Keys are dotted paths:
-     * "chests.collision" reads key `collision` in table [chests]. `def`
-     * is returned when the file, the key, or a type-compatible value is
-     * absent. The file is parsed once, right before entry runs — read
-     * config at entry and branch there; when the user commits a change
-     * in the Mods panel (rendered from the manifest's [[config]] schema
-     * rows) the engine rewrites config.toml and RELOADS the mod, so
-     * entry re-reads fresh values. Numeric coercion: bools read as 0/1
-     * through config_int/config_float; ints read through config_float
-     * (and floats truncate through config_int); strings never coerce.
-     * config_str copies at most cap-1 chars + NUL into buf and returns
-     * 1 if the key was present (0 = default copied). */
+     * "chests.collision" is key `collision` in table [chests]. `def` is
+     * returned when the file, the key or a type-compatible value is
+     * absent. The file is parsed once, before entry runs; when the user
+     * commits a change in the Mods panel (rendered from the manifest's
+     * [[config]] rows) the engine rewrites config.toml and reloads the
+     * mod, so read config at entry. Coercion: bools read as 0/1 through
+     * config_int and config_float; ints read through config_float;
+     * floats truncate through config_int; strings never coerce.
+     * config_str copies at most cap-1 chars plus NUL into buf and
+     * returns 1 if the key was present, 0 if the default was copied.
+     * Since api 1. */
     int     (*config_bool)(openpete_mod_t* self, const char* key, int def);
     int64_t (*config_int)(openpete_mod_t* self, const char* key,
                           int64_t def);
@@ -443,305 +339,252 @@ typedef struct openpete_mod_api {
     int     (*config_str)(openpete_mod_t* self, const char* key,
                           const char* def, char* buf, int cap);
 
-    /* Print a status line into this mod's section of the Mods panel —
-     * the kernel's answer to "my UI is just text". Legal from any
-     * context (host-side only). Lines ACCUMULATE within a tick and
-     * persist until the next tick in which the mod calls ui_status
-     * again — a one-shot line printed at entry or on a level event
-     * stays visible; a per-tick printer repaints its whole block each
-     * tick. Past ~24 lines the block truncates with an ellipsis marker
-     * (genuinely custom panels belong to the UI annex,
-     * openpete_mod_ui.h — separately versioned, no stability promise). */
+    /* Print a status line into this mod's section of the Mods panel.
+     * Legal from any context; host state only. Lines accumulate within
+     * a tick and persist until the next tick in which the mod calls
+     * ui_status again, so a line printed once stays visible and a
+     * per-tick printer repaints its block each tick. The block truncates
+     * past about 24 lines. Custom panels use openpete_mod_ui.h.
+     * Since api 1. */
     void (*ui_status)(openpete_mod_t* self, const char* fmt, ...);
 
-    /* ── Pillar 5: present and screen-space draw ─────────────────────
-     * Register a per-present hook: runs once per SCENE the engine
-     * extracts (the canonical one at 30 Hz + every sub-tick scene at high
-     * --render-fps) with the present context. Scenes are produced on the
-     * sim thread AHEAD of their display instant: the hook fires when its
-     * scene is extracted, not when it is shown, and when the engine cannot
-     * afford a scene for every display slot it produces fewer for that
-     * tick — the hook is then called fewer times than frames appear on
-     * screen. Count and timing are not part of the contract; ctx->alpha
-     * is the animation moment the scene shows and ctx->dt the spacing to
-     * the previous scene's, so curves evaluated at ctx->alpha are correct
-     * under any cadence. RENDER-PURE by contract AND enforcement: while a
-     * present hook runs, guest access / game calls / base() / override
-     * registration are refused with an error — presents are
-     * non-deterministic in count and timing, so anything sim-affecting
-     * belongs in tick hooks. Publish state from tick hooks into your
-     * own variables; evaluate your own curves at ctx->alpha here (the
-     * engine never interpolates mod visuals).
+    /* ── Present hooks and screen-space draws ───────────────────────
+     * Register a per-present hook: runs once per scene the engine
+     * extracts (the canonical one each tick plus every sub-tick scene at
+     * a higher --render-fps). The hook fires when its scene is extracted
+     * on the sim thread, ahead of display, and the engine may produce
+     * fewer scenes than display slots; call count and timing are not
+     * part of the contract. ctx->alpha is the animation moment the scene
+     * shows and ctx->dt the spacing to the previous scene, so a curve
+     * evaluated at ctx->alpha is correct under any cadence. Publish
+     * state from tick hooks into your own variables and evaluate it here;
+     * the engine never interpolates mod visuals.
      *
-     * Rides an actual present, so it does not run when nothing is being
-     * presented: a plain headless run never calls it. A headless run that
-     * asks for a screenshot DOES present, and the hook fires there — which
-     * is what lets a headless gate reach present-context behaviour. */
+     * Render-pure, enforced: guest access, game calls, base() and
+     * override registration are refused inside a present hook, since
+     * presents are non-deterministic in count and timing.
+     *
+     * Runs only when something is presented: a plain headless run never
+     * calls it, a headless run that takes a screenshot does. Since api 1. */
     int (*register_present_hook)(openpete_mod_t* self,
                                  openpete_mod_present_fn fn);
 
-    /* Screen-space draws (native vk renderer). Coordinates are OVERLAY
-     * SPACE: window-height fractions, origin top-left, +y down; x spans
-     * [0, aspect], y spans [0, 1]. Host-side only (zero guest-RAM
-     * writes — a drawing observer stays sim-neutral by construction).
-     * Immediate mode, two contexts: called from a TICK context the
-     * command shows for all of that tick's presents (redraw every
-     * tick); from a PRESENT hook it lives one present. draw_text
-     * glyphs: digits, A-Z (lowercase folds), % / ? + ^ . ' and ':' —
-     * Spyro's own 3D gold text mobys; rgb is the glyph tint (e.g.
-     * 0x605010 for HUD gold); text appears once the game has loaded the
-     * glyph font. draw_rect rgba: R,G,B,A bytes (alpha currently
-     * ignored: opaque). Headless and PsyCross-only runs consume
-     * nothing. */
+    /* Screen-space draws on the native renderer. Overlay space: units of
+     * window height, origin top-left, +y down, x in [0, aspect], y in
+     * [0, 1]. Host state only. Immediate mode: a call from tick context
+     * shows for all of that tick's presents (redraw every tick); a call
+     * from a present hook shows for that present. draw_text glyph set:
+     * digits, A-Z (lowercase folds up), space, and % / ? + ^ . ' :, drawn
+     * with the game's own gold text glyphs; rgb tints them (0x605010 =
+     * HUD gold); text appears once the game has loaded the glyph font.
+     * draw_rect rgba is R,G,B,A bytes; alpha is currently ignored.
+     * Headless and PsyCross-only runs consume nothing. Since api 1. */
     void (*draw_text)(float x, float y, float cap_h, uint32_t rgb,
                       const char* str);
     void (*draw_rect)(float x, float y, float w, float h, uint32_t rgba);
 
-    /* ── Pillar 6: post-process shaders ──────────────────────────────
+    /* ── Post-process shaders ───────────────────────────────────────
      * Register a GLSL shader by path relative to the mod directory
-     * (e.g. "shaders/crt.frag"); stage from the extension (.vert /
-     * .frag — postfx uses .frag). The ENGINE compiles it to SPIR-V on
-     * load (in-process glslang, vulkan1.0 dialect), content-hash cached
-     * under .build/shaders/. A prebuilt "<path>.spv" next to a MISSING
-     * source loads instead but requires a "<path>.spv.ihash" sidecar
-     * matching the current shader-interface hash. `#include
-     * "openpete_shader_api.glsl"` resolves to the SDK interface header.
-     * Returns a shader handle >= 0, or -1 (missing file / compile error
-     * — see .build/shaders/<name>.log; the mod keeps loading, the
-     * effect is simply unavailable). Entry/tick context only. Sources
-     * join the dev hot-reload watch. */
+     * (e.g. "shaders/crt.frag"); the extension selects the stage. The
+     * engine compiles it to SPIR-V on load (in-process glslang, Vulkan
+     * 1.0 dialect), cached by content hash under .build/shaders/. A
+     * prebuilt "<path>.spv" next to a missing source loads instead if a
+     * "<path>.spv.ihash" sidecar matches the current shader-interface
+     * hash. `#include "openpete_shader_api.glsl"` resolves to the SDK
+     * interface header. Returns a shader handle >= 0, or -1 for a missing
+     * file or compile error (see .build/shaders/<name>.log; the mod still
+     * loads). Entry or tick context. Sources join the hot-reload watch.
+     * Since api 1. */
     int (*shader_register)(openpete_mod_t* self, const char* path);
 
-    /* Fullscreen fragment passes at a named injection point
-     * (OP_POSTFX_*). Pass order across mods = enabled-list priority;
-     * `order` breaks ties within a mod (lower runs first). The pass
-     * samples the previous pass (set 0) and receives the engine UBO
-     * (time, tick, interp alpha, resolution — see
-     * sdk/shaders/openpete_shader_api.glsl) plus the mod's uniform
-     * block. postfx_set_uniforms COPIES data on call (<= 1024 bytes;
-     * push from tick or present hooks). postfx_register returns an fx
-     * handle >= 0 (registered DISABLED; call postfx_enable) or -1.
-     * Entry/tick context for register; enable/uniforms any context. */
+    /* Fullscreen fragment pass at an injection point (OP_POSTFX_*).
+     * Pass order across mods is enabled-list priority; `order` breaks
+     * ties within a mod (lower runs first). The pass samples the previous
+     * pass (set 0) and receives the engine UBO (time, tick, alpha,
+     * resolution; see shaders/openpete_shader_api.glsl) plus the mod's
+     * uniform block. postfx_set_uniforms copies `data` on call (at most
+     * 1024 bytes; push from tick or present hooks). postfx_register
+     * returns an fx handle >= 0, registered disabled, or -1. Register
+     * from entry or tick context; enable and set_uniforms from any.
+     * Since api 1. */
     int (*postfx_register)(openpete_mod_t* self, int frag_shader,
                            int point, int order);
     int (*postfx_enable)(openpete_mod_t* self, int fx, int enabled);
     int (*postfx_set_uniforms)(openpete_mod_t* self, int fx,
                                const void* data, uint32_t size);
 
-    /* ── Pillar 8: audio ─────────────────────────────────────────────
-     * The `name` domain differs per verb: sfx_play resolves in THIS
-     * MOD's assets/sfx/own/; sfx_replace resolves in the GAME's
-     * registered sound names.
+    /* ── Audio ──────────────────────────────────────────────────────
+     * sfx_replace: substitute the sample behind a named game sound; the
+     * code form of dropping <name>.wav into this mod's assets/sfx. body
+     * is raw SPU-ADPCM frames (no VAG header, final block end-flag 0x01),
+     * decoded and copied by the engine. pitch is in SPU units (0x1000 =
+     * 44.1 kHz) and overrides the game's pitch writes; 0 keeps the game's
+     * own pitch. The swap happens at the voice's PCM upload, below the
+     * SPU RAM image and voice mirror, so guest RAM, the gameplay rand()
+     * stream and the tick on which the game sees the sound end (it polls
+     * the stock sample's duration) stay stock; a longer replacement
+     * rings out past that tick. Sounds without a SoundTable name (a
+     * moby's own m_Sounds def) are unreachable here; a hash-named file in
+     * assets/sfx/ covers every sample and needs no code. Unknown name
+     * returns -1. Since api 1.
      *
-     * sfx_replace: substitute the sample behind a named game sound —
-     * the code form of dropping a symbolic <name>.wav in this mod's
-     * assets/sfx. body = raw SPU-ADPCM frames (no VAG header, final
-     * block end-flag 0x01), decoded and copied by the engine. pitch =
-     * SPU units (0x1000 = 44.1 kHz) the replacement plays at, ignoring
-     * the game's pitch writes; 0 = the raw sample under the game's own
-     * pitch. The swap happens at the voice's PCM upload, below the SPU
-     * RAM image and the voice mirror: guest RAM, the gameplay rand()
-     * stream and the tick on which the game sees the sound end (it
-     * polls the STOCK sample's duration) stay byte-stock, and a longer
-     * replacement rings out past that tick. Sounds with no SoundTable
-     * name (a moby's own m_Sounds def) cannot be reached this way — a
-     * hash-named file in assets/sfx/ covers every sample, named or not,
-     * and needs no code. Unknown name => -1.
-     *
-     * sfx_play: play `assets/sfx/own/<name>.wav` from this mod's
-     * directory as a HOST-side additive one-shot (never the SPU —
-     * sim-neutral by construction, legal from tick and present hooks).
-     * gain 0..4, 1.0 = as-authored; WAVs are cached after the first
-     * play. 0 ok / -1 failed (missing file, no audio — logged, never
-     * fatal). */
+     * sfx_play: play assets/sfx/own/<name>.wav from this mod's directory
+     * as a host-side one-shot, never through the SPU, so it is legal from
+     * tick and present hooks. gain 0..4, 1.0 = as authored; WAVs are
+     * cached after the first play. Returns 0, or -1 for a missing file or
+     * no audio device (logged). Since api 1. */
     int (*sfx_replace)(openpete_mod_t* self, const char* name,
                        const void* adpcm_body, uint32_t len,
                        uint16_t pitch);
     int (*sfx_play)(openpete_mod_t* self, const char* name, float gain);
 
-    /* ── Declared input bindings ─────────────────────────────────────
-     * Resolve a [[binding]] declared in this mod's mod.toml
-     * ({name, key, purpose}) to the live host key state (1 = held).
-     * Declaring bindings surfaces conflicts across the enabled set at
-     * load time and lets the user rebind without touching the mod (the
-     * openpete.toml [keys.mod.<id>] table overrides the declared key,
-     * reaches gamepad sources like "pad:north", and takes "none" to
-     * disable). Reading host input in a TICK hook intentionally
-     * diverges gameplay (the practice-ROM pattern); display-only reads
-     * belong in present hooks. Undeclared name = error log + 0. */
+    /* ── Input bindings ─────────────────────────────────────────────
+     * Read a [[binding]] declared in this mod's mod.toml ({name, key,
+     * purpose}): 1 while the bound host key is held. Declared bindings
+     * are conflict-checked across the enabled set at load, and the user
+     * rebinds through openpete.toml [keys.mod.<id>] (keyboard names,
+     * gamepad names such as "pad:north", or "none"). Reading host input
+     * in a tick hook diverges gameplay from a replay by design; display-
+     * only reads belong in present hooks. Undeclared name logs an error
+     * and returns 0. Since api 1. */
     int (*binding_down)(openpete_mod_t* self, const char* name);
 
-    /* ---- pillar 9: game data + texture packs (api 2) ------------------- */
-
-    /* Read one level's raw Data blob from the USER'S OWN mounted disc into
-     * buf (cap bytes); buf NULL queries the length. Returns the blob length,
-     * or <0 when no game layer provides level data / the id is unknown. Lets
-     * a mod borrow authored game content (another level's sky, palette,
-     * geometry) without shipping derived data. */
+    /* ── Game data and texture packs ────────────────────────────────
+     * Read one level's raw Data blob from the mounted disc into buf (cap
+     * bytes); buf NULL queries the length. Returns the blob length, or
+     * < 0 when no game layer provides level data or the id is unknown.
+     * Lets a mod use another level's sky, palette or geometry without
+     * shipping derived data. Since api 2. */
     int (*read_level_data)(openpete_mod_t* self, int level_id,
                            void* buf, uint32_t cap);
 
     /* Retarget the texture-pack fog ambience: fogged replacement texels
-     * blend toward scale*stock+offset (offsets in 0..255 units) instead of
-     * the stock ladder colours — for packs whose art re-grades the level.
-     * NULL/NULL restores stock. Per-texture grade fits still take
-     * precedence where they have signal; this is the fallback ambience.
-     * Display-only. */
+     * blend toward scale*stock+offset (offsets in 0..255 units) instead
+     * of the stock ladder colours, for packs whose art re-grades the
+     * level. NULL/NULL restores stock. Per-texture grade fits take
+     * precedence where they have signal. Display only. Since api 2. */
     int (*texpack_fog_shift)(openpete_mod_t* self, const float scale_rgb[3],
                              const float offset_rgb[3]);
 
-    /* ---- pillar 10: materials (api 3) --------------------------------- */
-
-    /* Attach a fragment shader to a SET of rendered geometry, chosen by the
-     * data that defines it: a render channel (moby, terrain, player, flame,
-     * particle, sky, shadow, tracer), optionally narrowed by that channel's
-     * own keys — moby class, terrain texture/tier, a channel-local identity,
-     * a level. Build the selector with openpete_mod_material_sel_any() and
-     * narrow only what you mean; the engine REFUSES a selector it cannot
-     * fully honour rather than matching wider than you asked.
+    /* ── Materials ──────────────────────────────────────────────────
+     * Attach a fragment shader to a set of geometry chosen by a render
+     * channel and that channel's keys (moby class, terrain texture or
+     * tier, channel-local identity, level). Build the selector with
+     * openpete_mod_material_sel_any() and narrow only what you mean; the
+     * engine refuses a selector it cannot fully honour rather than
+     * matching wider than asked.
      *
      * `shader` is a frag handle from shader_register. The shader reshades
-     * within whatever draw group the geometry already belongs to: it cannot
-     * change blending, depth policy or draw order, so a material can never
-     * reorder the scene. Unmatched or failed builds keep stock shading —
-     * a material is never a way to make something invisible.
+     * within the draw group the geometry already belongs to: it cannot
+     * change blending, depth policy or draw order. Unmatched or failed
+     * builds keep stock shading; a material cannot make geometry
+     * invisible.
      *
-     * Returns a material handle, or -1. Registration starts ENABLED. */
+     * Returns a material handle, or -1. Registration starts enabled.
+     * Since api 3. */
     int (*material_register)(openpete_mod_t* self,
                              const openpete_mod_material_selector_t* sel,
                              int shader);
 
-    /* Turn one registered material on or off. Cheap and callable from any
-     * context — this is what a [[config]] toggle drives. */
+    /* Turn one registered material on or off. Callable from any context;
+     * the natural target of a [[config]] toggle. Since api 3. */
     int (*material_enable)(openpete_mod_t* self, int material, int on);
 
-    /* Set the uniform block the material's shader reads (std140, up to
+    /* Set the uniform block the material's shader reads (std140, at most
      * OPENPETE_MATERIAL_UNIFORMS_MAX bytes). May be called per tick; for
-     * smoothly time-varying effects prefer driving them from the engine
-     * UBO's time in the shader over re-pushing a block every present. */
+     * time-varying effects prefer the engine UBO's time in the shader.
+     * Since api 3. */
     int (*material_set_params)(openpete_mod_t* self, int material,
                                const void* block, uint32_t len);
 
-    /* Register a material whose per-instance verdict comes from a refine
-     * callback (api 4). Identical to material_register except the engine
-     * calls `refine` once per candidate instance during extraction: it
-     * returns a uniform block for that instance, or -1 to leave it stock.
+    /* material_register with a per-instance refine callback: the engine
+     * calls `refine` once per candidate instance during extraction and
+     * it returns that instance's uniform block, or -1 to leave it stock.
+     * Instances with byte-identical blocks share one slot and one batch,
+     * so a callback with few distinct outcomes is cheap and one with a
+     * distinct block per instance costs a draw each. Scope the selector
+     * tightly and let the callback decide the rare cases.
      *
-     * Instances whose blocks are byte-identical share one slot and stay in
-     * ONE batch, so a callback that returns few distinct outcomes is cheap
-     * and one that returns a distinct block per instance costs a draw
-     * apiece. Scope the SELECTOR as tightly as you can and let the callback
-     * decide the rare cases — that ordering is the whole point of the
-     * three-layer seam.
-     *
-     * Refine is available on the channels that have a stable per-instance
-     * identity (moby today; terrain is gated on the retained-cache work).
-     * On a channel without one, register declaratively and drive the
-     * material with material_set_params instead. */
+     * Available on channels with a stable per-instance identity (moby);
+     * on other channels register declaratively and drive the material
+     * with material_set_params. Since api 4. */
     int (*material_register_refine)(openpete_mod_t* self,
                                     const openpete_mod_material_selector_t* sel,
                                     int shader, openpete_mod_refine_fn refine);
 
     /* Point a live material at a different selector, keeping its handle,
-     * shader, refine callback and enabled state (api 6). This is how a
-     * material follows a value the user is changing — a class picker, a
-     * level-scoped key re-keyed on level change. Re-registering instead
-     * burns a table slot per change and is refused outright inside a
-     * present, which is where a UI section runs.
-     *
-     * Selection must be constant across a whole present, so a call from a
-     * present hook or UI section takes effect at the NEXT TICK rather than
-     * immediately; called from entry or a tick hook it lands at once.
-     * Either way the material keeps shading under its old key until the new
-     * one applies — it never goes dark in between.
-     *
-     * The selector is validated exactly as material_register validates it:
-     * a key that would have been refused at registration is refused here. */
+     * shader, refine callback and enabled state. Selection is constant
+     * across a present, so a call from a present hook or UI section
+     * takes effect at the next tick; from entry or a tick hook it applies
+     * at once. The material keeps shading under its old key until the new
+     * one applies. The selector is validated as material_register
+     * validates it. Since api 6. */
     int (*material_set_selector)(openpete_mod_t* self, int material,
                                  const openpete_mod_material_selector_t* sel);
 
-    /* The moby classes the CURRENT LEVEL has loaded, ascending, into `out`;
-     * returns the count (pass out=NULL/cap=0 to size the buffer first).
-     * These are the classes that can appear at all, which makes it the set
-     * worth offering a user to choose from — a class outside it can never
-     * match. It is LEVEL-scoped, not visibility-scoped: the answer does not
-     * change as the camera moves, and it is a superset of the classes with
-     * a live instance at this instant.
-     *
-     * Reads an engine-side snapshot refreshed once per tick, so unlike
-     * guest(), it is safe to call from a UI section. Empty before the first
-     * level finishes loading. */
+    /* The moby classes the current level has loaded, ascending, into
+     * `out`; returns the count (out=NULL, cap=0 sizes the buffer). Level-
+     * scoped, not visibility-scoped: a superset of the classes with a
+     * live instance at this instant, and the set worth offering a user
+     * to choose from. Reads an engine-side snapshot refreshed once per
+     * tick, so it is safe from a UI section. Empty before the first
+     * level finishes loading. Since api 6. */
     int (*moby_classes)(openpete_mod_t* self, uint16_t* out, int cap);
 
-    /* ── api 9 ───────────────────────────────────────────────────────
+    /* ── Vertex streams ─────────────────────────────────────────────
      * A stream handle for `stream_vaddr`: the value to write into an
      * animation frame word's 21-bit vertex-stream field (bits 0-20) in
-     * place of an address that will not fit. The game's readers resolve
+     * place of an address that does not fit. The game's readers resolve
      * it to the full vaddr, so a stream may live anywhere guest_alloc
      * puts it. The same vaddr always yields the same handle; handles are
-     * small (< 0x8000) and never 0 — 0 is the failure return (vaddr 0, a
-     * vaddr in the kernel area, or the table exhausted).
+     * below 0x8000 and never 0, which is the failure return (vaddr 0, a
+     * kernel-area vaddr, or the table exhausted).
      *
      * Ask at entry, in a fixed order, once per stream: every call is
-     * ledgered like an allocation, replayed on re-entry, and verified
-     * when a savestate loads. A handle sequence that depends on the
-     * order levels were visited makes a savestate from another route
-     * refuse to load. Spyro's own frame words store the address halved;
-     * a handle is written as-is in both encodings. Tick context only. */
+     * ledgered like an allocation, replayed on reload, and verified when
+     * a savestate loads, so a sequence that depends on the order levels
+     * were visited makes a savestate from another route refuse to load.
+     * The game stores frame-word addresses halved; a handle is written
+     * as-is in both encodings. Tick context only. Since api 9. */
     uint32_t (*vstream_handle)(openpete_mod_t* self, uint32_t stream_vaddr);
 
-    /* Post a transient on-screen notification — a toast in the game's own
-     * gold-bordered chrome, at the anchor the player chose. For "this
-     * just happened", where ui_status is for "this is the state".
+    /* ── Notifications ──────────────────────────────────────────────
+     * Post a transient on-screen notification in the game's gold-
+     * bordered chrome at the anchor the player chose. ui_status reports
+     * state; notify reports an event.
      *
-     * `key` (may be NULL) COALESCES: a live toast with the same key is
-     * repainted — new text, timer restarted, same slot — instead of a
-     * second one stacking. A value the player is scrubbing through wants
-     * a key; a discrete event wants NULL. The engine prefixes your mod id
-     * onto it, so two mods cannot collide on the same key.
+     * `key` (may be NULL) coalesces: a live toast with the same key is
+     * repainted with the new text and a restarted timer instead of a
+     * second toast stacking. The engine prefixes the mod id, so keys
+     * never collide across mods.
      *
-     * `timeout_ms` is MILLISECONDS: 0 takes the player's configured
-     * default (--osd-timeout), and anything above 30000 is clamped to it.
-     * The ring holds a handful of toasts, so an unclamped timeout would
-     * let one mod pin slots for the rest of the session. A repaint takes
-     * the RETARGETING call's timeout, not the one the toast was created
-     * with, so a recurring notification can lengthen its own dwell
-     * without giving up its key.
+     * `timeout_ms`: 0 takes the player's --osd-timeout default; values
+     * above 30000 clamp to it. A repaint takes the repainting call's
+     * timeout.
      *
-     * Legal from entry, tick hooks and present hooks: it writes host
-     * state only, so it does not trip the present hooks' render-purity
-     * guard. Rate-limited per mod (a small burst, then a slow refill), so
-     * a tick loop cannot own the stack.
+     * Legal from entry, tick hooks and present hooks; host state only.
+     * Rate-limited per mod (a small burst, then a slow refill). A no-op
+     * on runahead and rewind-replay ticks, whose effects are rolled back
+     * or re-executed; a mod therefore sees fewer toasts than calls.
      *
-     * A NO-OP on speculative (runahead) and replayed (rewind) ticks —
-     * those are rolled back or re-executed, and a notification from one
-     * would announce something that never committed, or announce it
-     * twice. A mod counting its own notify calls will therefore see fewer
-     * toasts than calls; that is by design, not a dropped message.
-     *
-     * Text renders with the GAME'S OWN glyph set: 0-9, A-Z (lowercase is
-     * folded up), space, and % / ? + ^ . ' : — anything else renders as a
-     * space. Hyphens, commas, exclamation marks and brackets silently
-     * vanish, so write your strings inside the set. */
+     * Glyph set: 0-9, A-Z (lowercase folds up), space, and % / ? + ^ . '
+     * :. Any other character renders as a space. Since api 8. */
     void (*notify)(openpete_mod_t* self, const char* key,
                    uint32_t timeout_ms, const char* fmt, ...);
 } openpete_mod_api_t;
 
 /* ── ABI descriptor ──────────────────────────────────────────────────
  * Every code object exports one `openpete_mod_abi` recording the api
- * version and api-struct size it was COMPILED against. The loader reads
- * it before the entry point runs and refuses an object that is newer
- * than the engine (a later api, or a larger struct: its calls would
- * index past the vtable the engine actually has) or that carries no
- * descriptor at all (an object from before the layout freeze, whose
- * vtable shape cannot be trusted). An object older than the engine loads:
- * the struct is append-only from api 10 on, so every entry it knows
- * about is where it expects it.
+ * version and api-struct size it was compiled against. The loader reads
+ * it before the entry point runs and refuses an object built for a newer
+ * api or a larger struct than the engine has, and an object with no
+ * descriptor. An older object loads, since the struct is append-only
+ * from api 10.
  *
- * Mods compiled by the engine get the descriptor for free — the SDK's
- * openpete_mod_abi.c rides every compile line. A hand-built object
- * (a cross-compiled DLL) must add that file to its own compile line, or
- * put OPENPETE_MOD_ABI_DEFINE() in exactly one of its sources. */
+ * The engine adds the SDK's openpete_mod_abi.c to every compile line, so
+ * a mod's own sources need not define the descriptor. A hand-built object
+ * compiles that file in, or puts OPENPETE_MOD_ABI_DEFINE() in exactly one
+ * of its sources. */
 typedef struct openpete_mod_abi {
     uint32_t magic;       /* OPENPETE_MOD_ABI_MAGIC */
     uint32_t api_version; /* OPENPETE_MOD_API_VERSION at the mod's compile time */
@@ -753,7 +596,8 @@ typedef struct openpete_mod_abi {
         OPENPETE_MOD_ABI_MAGIC, OPENPETE_MOD_API_VERSION,                  \
         (uint32_t)sizeof(openpete_mod_api_t) }
 
-/* Convenience typed guest accessors. */
+/* Typed guest accessors. A read of an unmapped address returns 0; a
+ * write to one is dropped. */
 static inline uint32_t op_read_u32(const openpete_mod_api_t* api, uint32_t va) {
     void* p = api->guest(va);
     return p ? *(uint32_t*)p : 0u;

@@ -1,23 +1,20 @@
 #ifndef PSX_RUNTIME_H
 #define PSX_RUNTIME_H
 
+/* Runtime interface between the recompiled game code and the engine.
+ * Mods use CPUState (the register file an override receives); everything
+ * after it is engine linkage.
+ *
+ * Only <stdint.h> is included: the generated code uses fixed-width
+ * integers alone, so the recompiled module builds against the compiler's
+ * freestanding headers on a machine with no libc development package. */
 #include <stdint.h>
-/* No <stdio.h>, and nothing else from libc: the generated MIPS
- * translation uses only fixed-width integers, so the whole module
- * compiles against the compiler-provided freestanding headers. That
- * is what lets a bundled clang build it on a machine with no libc
- * development package installed. */
 
-/* Cross-boundary DATA symbols (distribution shared linkage). On PE, a
- * dlopen'd module writing an exe-exported *data* symbol relies on MinGW
- * runtime pseudo-relocation — a brittle mechanism (it broke a Windows
- * shared build after a toolchain bump; the generated code writes
- * openpete_gte_caller_pc hundreds of times per frame). When compiling the
- * recomp MODULE on Windows, mark these __declspec(dllimport) so the
- * compiler routes reads/writes through the import table (__imp_) directly,
- * with no pseudo-reloc. The exe (which DEFINES them) and every non-Windows
- * / non-module build see a plain extern. OPENPETE_RECOMP_MODULE_BUILD is
- * defined only for module TUs (CMake shared target + first-boot compile). */
+/* Data symbols shared across the exe/module boundary. On Windows a module
+ * writing an exe-exported data symbol would otherwise depend on MinGW
+ * pseudo-relocation; marking the symbol dllimport in module builds routes
+ * the access through the import table. OPENPETE_RECOMP_MODULE_BUILD is
+ * defined only for module translation units. */
 #if defined(_WIN32) && defined(OPENPETE_RECOMP_MODULE_BUILD)
 #  define OPENPETE_ABI_DATA __declspec(dllimport)
 #else
@@ -28,8 +25,9 @@
 extern "C" {
 #endif
 
-/* MIPS R3000A register file + GTE coprocessor registers + memory callbacks.
- * This struct is the only coupling between generated code and the runtime. */
+/* MIPS R3000A register file, GTE registers and memory callbacks. The only
+ * coupling between generated code and the runtime. Overrides receive one
+ * of these: arguments in a0..a3, return value in v0. */
 typedef struct CPUState {
     uint32_t zero, at, v0, v1, a0, a1, a2, a3;
     uint32_t t0, t1, t2, t3, t4, t5, t6, t7;
@@ -52,219 +50,197 @@ typedef struct CPUState {
     void     (*swr)(uint32_t addr, uint32_t rt_value);
 } CPUState;
 
-/* Initialize a CPUState and install memory callbacks. Call before running any
- * recompiled function. */
+/* Initialise a CPUState and install the memory callbacks. Call before
+ * running any recompiled function. */
 void psx_runtime_init(CPUState* cpu);
 
-/* Load bytes into PS1 RAM at the given virtual address. */
+/* Copy bytes into PSX RAM at a virtual address. */
 void psx_runtime_load(uint32_t addr, const uint8_t* data, uint32_t size);
 
-/* MMIO tracing — logs all hardware register accesses to mmio_trace.log.
- * Call with enable=1 after psx_runtime_init(). */
+/* Log every hardware register access to mmio_trace.log. Call with
+ * enable=1 after psx_runtime_init(). */
 void psx_mmio_trace_enable(int enable);
 
-/* Install signal handlers for SIGSEGV/SIGABRT to dump CPU state on crash. */
+/* Install SIGSEGV/SIGABRT handlers that dump the CPU state. */
 void psx_install_crash_handler(void);
 
-/* Dynamic call dispatch — handles BIOS calls and jump-register targets.
- * Logs any address not yet implemented. Never crashes on unknown calls. */
+/* Dispatch a call by address: BIOS calls and jump-register targets. An
+ * unknown address is logged, never fatal. */
 void call_by_address(CPUState* cpu, uint32_t addr);
 
-/* Override gate — emitted by code_generator at the top of every function.
- * Returns 1 if intercepted (body skipped), 0 if normal execution continues.
- * Default: always returns 0. Add real implementations in runtime.c when needed. */
+/* Override gate emitted at the top of every recompiled function. Returns
+ * 1 when the call was intercepted and the body is skipped. */
 int psx_override_dispatch(CPUState* cpu, uint32_t addr);
 
-/* SYSCALL handler — emitted for SYSCALL instructions. */
+/* SYSCALL instruction handler. */
 void psx_syscall(CPUState* cpu, uint32_t code);
 
-/* GTE coprocessor — implemented in gte.cpp. */
+/* GTE coprocessor command. */
 void gte_execute(CPUState* cpu, uint32_t cmd);
 
-/* Calling-instruction PC for the most recently issued GTE command,
- * written by recompiled code immediately before each gte_execute()
- * call. Read by the render cache emit to tag each cached vertex with
- * the function that produced it — used for per-prim-class
- * discrimination (cyclorama vs world-moby vs Spyro mesh vs HUD).
- * 0 = unknown (pre-regen generated code or interpreter path). */
+/* PC of the instruction that issued the most recent GTE command, written
+ * by recompiled code before each gte_execute() call. The render cache
+ * tags each vertex with it to classify the producing function. 0 =
+ * unknown. */
 OPENPETE_ABI_DATA extern uint32_t openpete_gte_caller_pc;
 
-/* GTE register transfer helpers (for overlay interpreter) */
+/* GTE register transfers for the overlay interpreter. */
 uint32_t gte_read_data(CPUState* cpu, uint8_t reg);
 uint32_t gte_read_ctrl(CPUState* cpu, uint8_t reg);
 void     gte_write_data(CPUState* cpu, uint8_t reg, uint32_t val);
 void     gte_write_ctrl(CPUState* cpu, uint8_t reg, uint32_t val);
 
-/* Direct access to PS1 RAM (2MB) and scratchpad (1KB). Used by automation scripts. */
+/* Direct access to PSX RAM (2 MB) and the scratchpad (1 KB). */
 uint8_t* psx_get_ram(void);
 uint8_t* psx_get_scratch(void);
 
-/* Frame-gated GP1 display command tracker (called from gpu_write_gp1). */
+/* Frame-gated GP1 display command tracker, called from gpu_write_gp1. */
 void diag_track_gp1(uint32_t cmd);
 
-/* g_SonyImage / D_8006FCF4 base redirect. Default 0x8006FCF4 (canonical
- * PSX address; substitution is identity). When (any future
- * consumer of the env-renderer scratch pool) registers a relocated
- * region, this knob is set to the new base; the recompiler's lui+addiu
- * pair substitution emits code that resolves to the new base + offset
- * for any (lui $X, 0x8007 / addiu $X, $X, lo) pair landing in the pool
- * range [0x8006FCF4, 0x80072894). See code_generator translate_lui. */
+/* Base of the g_SonyImage / D_8006FCF4 scratch pool. Default 0x8006FCF4,
+ * the canonical address. A consumer that relocates the pool sets the new
+ * base; the recompiler's lui+addiu substitution for every pair landing in
+ * [0x8006FCF4, 0x80072894) resolves to base + offset. */
 OPENPETE_ABI_DATA extern uint32_t psx_runtime_g_sony_image_base;
 
-/* --no-lod feature flag (native-renderer display policy; the native
- * feeders key detail selection on it). No generated code reads it —
- * the game-side producer stack was deleted 2026-07-06. Defined in
- * core/features/no_lod.c. */
+/* --no-lod display policy flag, read by the native feeders' detail
+ * selection. No generated code reads it. Defined in core/features/no_lod.c. */
 extern int openpete_no_lod;
 
-/* Per-iteration scratch flag set inside each render-bucket walker's
- * cone test (sub at 0x8001F30C / 0x80020AB8, addi at 0x80022C0C) to 1
- * iff the moby passed the native 4:3 cone test. The substituted
- * `sb $a0, 0x51($fp)` sites (0x8001F4CC / 0x80020C7C / 0x80022D98) read
- * this flag and only set m_WasDrawn=1 when it's set — the m_WasDrawn
- * render→gameplay channel's verdict gate. */
+/* Per-iteration flag set inside each render-bucket walker's cone test
+ * (sub at 0x8001F30C / 0x80020AB8, addi at 0x80022C0C) to 1 when the moby
+ * passed the canonical 4:3 cone test. The substituted `sb $a0, 0x51($fp)`
+ * sites (0x8001F4CC / 0x80020C7C / 0x80022D98) set m_WasDrawn=1 only when
+ * it is set. */
 extern uint8_t psx_runtime_native_cone_pass;
 
-/* Companion to native_cone_pass for the DISTANCE half of the moby cull.
- * The dist-gate hooks at the box-cull comparison PCs (shaded path
- * 0x80022B50/B58/B6C/B74/B84/B8C; analogous PCs in the regular/specular
- * paths) clear native_dist_pass when the cull comparand rejects; the
- * m_WasDrawn=1 stores gate on (native_cone_pass && native_dist_pass).
- * Reset to 1 at the iteration's m_WasDrawn clear (0x80022B28 etc.). */
+/* Distance half of the moby cull. The dist-gate hooks at the box-cull
+ * comparison PCs (shaded path 0x80022B50/B58/B6C/B74/B84/B8C and the
+ * corresponding regular/specular PCs) clear it when the comparand
+ * rejects; the m_WasDrawn=1 stores gate on (native_cone_pass &&
+ * native_dist_pass). Reset to 1 at the iteration's m_WasDrawn clear
+ * (0x80022B28 and siblings). */
 extern uint8_t psx_runtime_native_dist_pass;
 
-/* Append-call hooks the recompiler emits AFTER the canonical box-cull
- * add/sub at the distance-channel PCs (channel
- * no_lod_moby_distance_cull_verdict), passing the dest-register comparand:
- *   _lower : box-cull lower-bound (cull if v - delta <= 0)
- *   _upper : box-cull upper-bound + post-MVMVA proj-Z (cull if v + delta >= 0)
+/* Append-call hooks emitted after the canonical box-cull add/sub at the
+ * distance-cull PCs, receiving the destination-register comparand:
+ *   _lower : lower bound (cull if v - delta <= 0)
+ *   _upper : upper bound and post-MVMVA projected Z (cull if v + delta >= 0)
  * Each clears native_dist_pass when the box cull rejects. Defined in
- * games/spyro-1/features/render_decouple.c. This is the named-hook form of
- * what used to be an inline `if (...) native_dist_pass = 0;` in the
- * recompiler — the verdict math now lives host-side, not in third_party. */
+ * games/spyro-1/features/render_decouple.c. */
 void psx_runtime_dist_gate_lower(int32_t v);
 void psx_runtime_dist_gate_upper(int32_t v);
 
-/* Moby cone-X cull ReplaceCall hooks (channel m_WasDrawn cone-compute sites).
- * Record the canonical 4:3 cone verdict in native_cone_pass and return the
- * canonical comparand. _permoby(mac1,a2,mac3,a3) for regular/specular;
- * _shaded(mac1,mac3) for the fixed-102/77 shaded path. Defined in
- * games/spyro-1/features/render_decouple.c. */
+/* Moby cone-X cull ReplaceCall hooks at the m_WasDrawn cone-compute
+ * sites. Record the canonical 4:3 verdict in native_cone_pass and return
+ * the canonical comparand. _permoby(mac1,a2,mac3,a3) for the regular and
+ * specular paths; _shaded(mac1,mac3) for the fixed-102/77 shaded path.
+ * Defined in games/spyro-1/features/render_decouple.c. */
 int32_t psx_runtime_cone_widen_permoby(int32_t mac1_abs, int32_t a2,
                                        int32_t mac3, int32_t a3);
 int32_t psx_runtime_cone_widen_shaded(int32_t mac1_abs, int32_t mac3);
 
-/* Moby vertex-stream field ReplaceCall hooks (channel moby_vstream_field):
- * substitute the `srl rd, rt, 11|10` of the game's field-decode idiom.
- * The source register holds the frame word << 11; the hook undoes the
- * shift and resolves the 21-bit field through the stream-handle table
- * (core/runtime/vstream.c) — stock values pass through bit-identical. */
+/* Moby vertex-stream field ReplaceCall hooks, substituting the
+ * `srl rd, rt, 11|10` of the game's field-decode idiom. The source
+ * register holds the frame word << 11; the hook undoes the shift and
+ * resolves the 21-bit field through the stream-handle table
+ * (core/runtime/vstream.c). Stock values pass through bit-identical. */
 uint32_t psx_runtime_vstream_moby(uint32_t rt);
 uint32_t psx_runtime_vstream_halved(uint32_t rt);
 
-/* Flag-gated store hooks (void ReplaceCall — emitted as `hook(cpu, ea, val);`
- * replacing the original sb). Defined in games/spyro-1/features/
- * render_decouple.c. */
+/* Flag-gated store hooks emitted as `hook(cpu, ea, val);` in place of the
+ * original sb. Defined in games/spyro-1/features/render_decouple.c. */
 void psx_runtime_mwasdrawn_clear_store(CPUState* cpu, uint32_t addr, uint32_t val);
 void psx_runtime_mwasdrawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
 void psx_runtime_part_drawn_store(CPUState* cpu, uint32_t addr, uint32_t val);
 
-/* Particle / sparkle canonical-SX cull hooks (defined in
- * games/spyro-1/features/render_decouple.c). Set native_part_pass from the
- * canonical SX side channel / return the canonical SX, replacing inline
- * recompiler math. */
+/* Particle and sparkle canonical-SX cull hooks. Set native_part_pass from
+ * the canonical SX side channel and return the canonical SX. Defined in
+ * games/spyro-1/features/render_decouple.c. */
 int32_t psx_runtime_part_cull_sx1(int32_t a, int32_t b);
 int32_t psx_runtime_part_cull_sx2(int32_t a, int32_t b);
 int32_t psx_runtime_part_cull_4vert(int32_t v);
 int32_t psx_runtime_sparkle_canon_sx(void);
 
-/* Per-iteration scratch flag for the particle renderer (r_particles.s).
- * Same shape as psx_runtime_native_cone_pass but for the screen-space
- * X-cull test. The part_cull hooks at the `sub _, _, $s6` sites record
- * the canonical 4:3 verdict from the canonical-SX q16 FIFO below; the
- * substituted sb at 0x80057720 / 0x80057A10 / 0x80057B20 / 0x80057CDC
- * reads this flag and only writes m_03=1 when the canonical cull
- * admitted the particle — the particle_drawn_flag channel's verdict
- * gate. */
+/* Per-iteration flag for the particle renderer (r_particles.s), the
+ * screen-space X-cull counterpart of native_cone_pass. The part_cull
+ * hooks at the `sub _, _, $s6` sites record the canonical 4:3 verdict
+ * from the canonical-SX FIFO below; the substituted sb at 0x80057720 /
+ * 0x80057A10 / 0x80057B20 / 0x80057CDC writes m_03=1 only when the
+ * canonical cull admitted the particle. */
 extern uint8_t psx_runtime_native_part_pass;
 
-/* Canonical (un-widened) SX values in q16, stashed by gte.cpp's RTPS
- * after each projection. 3-deep FIFO matching push_sxy semantics —
- * sx2 is the latest, sx1 the previous, sx0 the oldest. Used by
- * r_particles.s cull substitutions to test canonical 4:3 verdicts
- * directly against fractional-precision SX values (avoids the 1-pixel
- * boundary ambiguity that plain int16 SX after mfc2 has). Canonical
- * 4:3 verdict: 0 < canonical_sx_q16 < 0x02000000. */
+/* Canonical (un-widened) SX values in q16, stored by RTPS after each
+ * projection. A 3-deep FIFO matching push_sxy: sx2 is the latest, sx0 the
+ * oldest. The r_particles.s cull substitutions test the canonical 4:3
+ * verdict against these fractional values, which the int16 SX after mfc2
+ * cannot resolve at the 1-pixel boundary. Canonical 4:3 verdict:
+ * 0 < sx_q16 < 0x02000000. */
 extern int64_t openpete_canonical_sx0_q16;
 extern int64_t openpete_canonical_sx1_q16;
 extern int64_t openpete_canonical_sx2_q16;
 
-/* Diagnostic hook for the moby cone-cull at 0x80022C0C. Implemented in
- * games/spyro-1/game_extras_impl.c. Activated by env var
- * OPENPETE_DIAG_CONE_SLOT (with optional FROM/TO frame range). The
- * substitution at 0x80022C0C calls this with |MAC1|, MAC3, and the
- * computed native cone-pass verdict so we can compare across aspects. */
+/* Diagnostic hook for the moby cone cull at 0x80022C0C, active under
+ * OPENPETE_DIAG_CONE_SLOT (optional FROM/TO frame range). Receives |MAC1|,
+ * MAC3 and the native cone-pass verdict. Defined in
+ * games/spyro-1/game_extras_impl.c. */
 struct CPUState;
 void openpete_diag_cone_dump(void* cpu,
                              int32_t mac1_abs,
                              int32_t mac3,
                              uint8_t native_pass);
 
-/* Terrain-reproject validation probe. Recompiler emits a call at
- * r_environment.s 0x80025A34 with the camera-free packed world vertex
- * (w0=X<<16|Y, w1=Z<<16|flags), vert ptr, scaled camera position.
- * Read-only; gated by OPENPETE_ENVVERT_LOG. Impl game_extras_impl.c. */
+/* Terrain-reproject probe at r_environment.s 0x80025A34, receiving the
+ * camera-free packed world vertex (w0 = X<<16|Y, w1 = Z<<16|flags), the
+ * vertex pointer and the scaled camera position. Read-only; active under
+ * OPENPETE_ENVVERT_LOG. Defined in games/spyro-1/game_extras_impl.c. */
 void openpete_envvert_probe(void* cpu, uint32_t w0, uint32_t w1,
                             uint32_t s1, uint32_t s7, uint32_t t8,
                             uint32_t t9);
 
-/* --- PSX RAM virtualization (presentation-side region table) ------------
+/* --- PSX RAM virtualisation: the region table --------------------------
  *
- * Lets renderer-side code register a host buffer at any PSX vaddr above
- * the canonical 2 MB. Consulted by cold-path memory accessors
- * (cpu->read_X / write_X, mem_ptr, openpete_psx_to_host_ptr, savestate
- * scans). NOT auto-rerouted into recompiler-emitted inline g_ram[]
- * accesses — consumers redirect those via psxrecomp instruction
- * substitutions at the relevant lui+addiu sites.
+ * Registers a host buffer at any PSX vaddr above the canonical 2 MB. The
+ * cold-path accessors (cpu->read_X / write_X, mem_ptr,
+ * openpete_psx_to_host_ptr, savestate scans) consult it. Inline g_ram[]
+ * accesses emitted by the recompiler are not rerouted; consumers redirect
+ * those through instruction substitutions at the lui+addiu sites.
  *
- * Determinism: regions are presentation-only by contract. Gameplay code
- * never addresses a registered range. Debug builds with
- * OPENPETE_DEBUG_REGION_GUARD assert if they do. */
+ * Regions are presentation-only by contract: gameplay code never
+ * addresses a registered range. Debug builds with
+ * OPENPETE_DEBUG_REGION_GUARD assert if it does. */
 
-/* psx_base must be a KSEG0/KSEG1/KUSEG vaddr whose phys (& 0x1FFFFFFF)
- * is >= 0x200000 — i.e. above the canonical 2 MB. Returns 0 on success;
- * non-zero on overlap with canonical RAM, scratchpad, or another region,
- * or if the table is full. host_buffer ownership stays with the caller. */
+/* psx_base is a KSEG0/KSEG1/KUSEG vaddr whose physical address
+ * (& 0x1FFFFFFF) is >= 0x200000. Returns 0 on success, non-zero on
+ * overlap with canonical RAM, the scratchpad or another region, or when
+ * the table is full. The caller keeps ownership of host_buffer. */
 int      psx_runtime_register_region(uint32_t psx_base,
                                      uint32_t size,
                                      void*    host_buffer);
 
-/* Unregister by base. No-op if no region matches. */
+/* Unregister by base; no-op when nothing matches. */
 void     psx_runtime_unregister_region(uint32_t psx_base);
 
-/* Returns 1 if psx_addr falls in a registered region. If so, *out_host
- * (when non-NULL) gets the host pointer for that exact address, and
- * *out_remaining (when non-NULL) gets bytes-until-region-end. */
+/* Returns 1 when psx_addr falls in a registered region, setting *out_host
+ * (if non-NULL) to the host pointer for that address and *out_remaining
+ * (if non-NULL) to the bytes until the region's end. */
 int      psx_runtime_resolve_region(uint32_t psx_addr,
                                     void**   out_host,
                                     uint32_t* out_remaining);
 
-/* Inverse of psx_runtime_resolve_region: given a host pointer, return 1
- * and (when non-NULL) set *out_vaddr to the KSEG0 vaddr naming it, if the
- * pointer falls inside a registered region's host buffer. 0 otherwise.
- * Regions are keyed on physical addresses, so the vaddr is returned in
- * KSEG0 (the spelling the register call's base carried). */
+/* Inverse of psx_runtime_resolve_region: returns 1 and sets *out_vaddr
+ * (if non-NULL) to the KSEG0 vaddr when the host pointer falls inside a
+ * registered region's buffer, 0 otherwise. */
 int      psx_runtime_region_host_to_vaddr(const void* host,
                                           uint32_t* out_vaddr);
 
-/* Debug-build guard for "this site is canonical-only" 2 MB-mask sites.
- * In release: returns addr & 0x1FFFFF. In debug: same, plus asserts the
- * address does not fall in any registered region's band — i.e. that
- * the caller is on a path that should only ever see canonical RAM. */
+/* Returns addr & 0x1FFFFF. Debug builds additionally assert the address
+ * is not inside a registered region, marking the call site as one that
+ * only ever sees canonical RAM. */
 uint32_t psx_runtime_canonicalize(uint32_t addr);
 
-/* Number of currently-registered regions. Zero means cold-path
- * resolvers can skip the region check entirely. Tests + tooling. */
+/* Number of registered regions; zero lets cold-path resolvers skip the
+ * region check. */
 uint32_t psx_runtime_region_count(void);
 
 #ifdef __cplusplus
