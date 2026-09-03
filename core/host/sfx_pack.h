@@ -40,6 +40,19 @@ void sfx_pack_set_dir_override(const char* dir); /* before init */
 void sfx_pack_arm_oneshot(const int16_t* pcm, int count, unsigned int rate);
 void sfx_pack_disarm_oneshot(void);
 int  sfx_pack_oneshot_armed(void);
+/* Code-registered symbolic entry (the mod API's sfx_replace): what a
+ * symbolic <name>.wav in the owner's assets/sfx would provide from disk,
+ * supplied as an SPU-ADPCM body from memory and decoded here. Same
+ * substitution point and the same audible-only contract as a file — the
+ * SPU RAM image, the voice mirror and the one-shot end tick the guest
+ * observes stay stock; a longer body rings out on an orphan source.
+ * pitch (SPU units, 0x1000 = 44.1 kHz) pins the playback rate; 0 plays
+ * the raw sample under the game's own pitch writes. Owner gating follows
+ * the mod's enabled state at each key-on; re-registering (owner, name)
+ * replaces. Sim thread. 0 ok, -1 refused (bad body, table full). */
+int  sfx_pack_register_symbolic_adpcm(const char* owner, const char* name,
+                                      const void* adpcm, uint32_t len,
+                                      int pitch);
 
 /* The level bank was (re)blasted: new generation — rescan sources so an
  * edited WAV lands on the next level entry, drop every cached identity

@@ -1745,10 +1745,8 @@ static const char* spyro_sfx_canon(const char* name) {
                                              * def the cutscene/title/speech
                                              * code points m_SoundDefinitions
                                              * at while the level TABLE stays */
-#define SPYRO_LEVELHDR_VRAMSPU  0x80076C04u /* g_LevelHeader.m_VramSramSize */
 #define SPYRO_SOUNDDEF_STRIDE   0x14u
 #define SPYRO_SPU_BANK_BLAST    (0x80000u - 0x1010u) /* level SPU upload */
-#define SPYRO_SPU_TAIL_CEIL     0x7EF00u
 
 /* Slot names whose def owns `spu_addr` in the CURRENT tables. When the
  * game has pointed m_SoundDefinitions at the one-entry cutscene def the
@@ -1771,13 +1769,6 @@ static int spyro_sfx_slot_names(uint32_t spu_addr, const char** out, int max) {
     }
     return n;
 }
-
-static const char* spyro_sfx_resolve(uint32_t spu_addr) {
-    const char* names[1];
-    return spyro_sfx_slot_names(spu_addr, names, 1) ? names[0] : nullptr;
-}
-
-static uint32_t s_sfx_tail; /* next free SPU byte this bank-generation */
 
 /* ── sfx pack glue ──
  * The pack folds a replacement's pitch into its buffer rate using the
@@ -1803,24 +1794,9 @@ static void spyro_sfx_pack_arm(void) {
     sfx_pack_set_name_resolver(spyro_sfx_slot_names);
 }
 
-static uint32_t spyro_sfx_upload(const void* body, uint32_t len) {
-    if (!s_sfx_tail) {
-        uint32_t vram = *(uint32_t*)PTR(SPYRO_LEVELHDR_VRAMSPU);
-        if (vram < 0x80000u || vram > 0x100000u) return 0;
-        s_sfx_tail = (0x1010u + vram - 0x80000u + 15u) & ~15u;
-    }
-    if (s_sfx_tail + len > SPYRO_SPU_TAIL_CEIL) return 0;
-    uint32_t dest = s_sfx_tail;
-    SpuSetTransferStartAddr(dest);
-    SpuWrite((unsigned char*)const_cast<void*>(body), len);
-    s_sfx_tail = (dest + len + 15u) & ~15u;
-    return dest;
-}
-
 void psyq_SpuInit(CPUState* cpu) {
     (void)cpu;
     SpuInit();
-    openpete_mods_sfx_set_fns(spyro_sfx_resolve, spyro_sfx_upload);
     openpete_mods_sfx_set_canon(spyro_sfx_canon);
 }
 
@@ -1869,53 +1845,33 @@ void psyq_SpuSetCommonAttr(CPUState* cpu) {
     }
 }
 
-/* Per-voice SFX-overlay state: Spyro's per-tick voice updater
- * (spu.c SpuUpdate ~:470) re-applies SPU_VOICE_PITCH from the guest
- * ActiveSound (= the STOCK definition pitch) every tick with no WDSA in
- * the mask — a key-on-only substitution would be overwritten one tick
- * later (heard as the replacement racing at the stock rate). Track the
- * override per voice and keep re-applying until the voice is re-keyed. */
-static uint16_t s_sfx_voice_pitch[24]; /* 0 = no override */
-static uint8_t  s_sfx_voice_mute[24];
+/* OPENPETE_SFX_END_LOG=1 (see psyq_SpuGetKeyStatus): the key-on side —
+ * which sample (and slot name, when the level table knows it) each
+ * voice was armed with. */
+static int sfx_key_log_on(void) {
+    static int s_log = -1;
+    if (s_log < 0) { const char* e = getenv("OPENPETE_SFX_END_LOG"); s_log = (e && *e && *e != '0'); }
+    return s_log;
+}
+static void sfx_key_log_attr(const SpuVoiceAttr* attr) {
+    if (!sfx_key_log_on() || !(attr->mask & SPU_VOICE_WDSA)) return;
+    const char* names[1];
+    int n = spyro_sfx_slot_names(attr->addr, names, 1);
+    for (int v = 0; v < 24; v++)
+        if (attr->voice & (1u << v))
+            fprintf(stderr, "[sfx-attr f=%u v=%d addr=%#x pitch=%#x name=%s]\n",
+                    openpete_frame, v, attr->addr, attr->pitch, n ? names[0] : "-");
+}
 
+/* Voice attributes pass through as written. Sound replacement (the sfx
+ * pack, including the mod API's sfx_replace) happens below this mirror,
+ * at the voice's PCM upload inside PsyCross, so the address and pitch
+ * the one-shot duration is derived from — and with them the tick on
+ * which the guest sees the voice end — are always the game's own. */
 void psyq_SpuSetVoiceAttr(CPUState* cpu) {
-    /* SFX overlay: substitute on a HOST COPY only — the guest attr (and
-     * everything the sim can read) stays byte-stock. */
-    SpuVoiceAttr attr = *(SpuVoiceAttr*)PTR(cpu->a0);
-    if (attr.mask & SPU_VOICE_WDSA) {
-        uint32_t n_addr = 0; uint16_t n_pitch = 0; int mute = 0;
-        int sub = openpete_mods_sfx_on_key(attr.addr, attr.pitch,
-                                           &n_addr, &n_pitch, &mute);
-        for (int v = 0; v < 24; v++) {
-            if (!(attr.voice & (1u << v))) continue;
-            s_sfx_voice_pitch[v] = (sub && !mute) ? n_pitch : 0;
-            s_sfx_voice_mute[v]  = (uint8_t)(sub && mute);
-        }
-        if (sub) {
-            if (mute) {
-                attr.volume.left = attr.volume.right = 0;
-                attr.mask |= SPU_VOICE_VOLL | SPU_VOICE_VOLR;
-            } else {
-                attr.addr = n_addr;
-                attr.pitch = n_pitch;
-                attr.mask |= SPU_VOICE_PITCH;
-                if (attr.mask & SPU_VOICE_LSAX) attr.loop_addr = n_addr;
-            }
-        }
-    } else {
-        /* pitch/volume refresh from guest state: keep overridden voices
-         * overridden. (Refreshes are per-voice single-bit calls; the
-         * SPU_ALLCH boot init runs before any override exists.) */
-        for (int v = 0; v < 24; v++) {
-            if (!(attr.voice & (1u << v))) continue;
-            if (s_sfx_voice_pitch[v] && (attr.mask & SPU_VOICE_PITCH))
-                attr.pitch = s_sfx_voice_pitch[v];
-            if (s_sfx_voice_mute[v] &&
-                (attr.mask & (SPU_VOICE_VOLL | SPU_VOICE_VOLR)))
-                attr.volume.left = attr.volume.right = 0;
-        }
-    }
-    SpuSetVoiceAttr(&attr);
+    const SpuVoiceAttr* attr = (const SpuVoiceAttr*)PTR(cpu->a0);
+    sfx_key_log_attr(attr);
+    SpuSetVoiceAttr((SpuVoiceAttr*)attr);
 }
 
 void psyq_SpuSetVoiceVolume(CPUState* cpu) {
@@ -1933,8 +1889,25 @@ void psyq_SpuSetKey(CPUState* cpu) {
     SpuSetKey((int)cpu->a0, (unsigned int)cpu->a1);
 }
 
+/* OPENPETE_SFX_END_LOG=1: one line per voice key-status transition the
+ * guest observes (ON / RESET with the VBL it was read on). The RESET
+ * read is the tick the game frees the sound slot and writes the
+ * sound-ref byte, so two runs whose logs match played every voice to the
+ * same guest-visible end — the A/B behind the sfx_replace rung of
+ * check_mods.sh. */
 void psyq_SpuGetKeyStatus(CPUState* cpu) {
-    cpu->v0 = (uint32_t)SpuGetKeyStatus((unsigned int)cpu->a0);
+    unsigned int mask = (unsigned int)cpu->a0;
+    cpu->v0 = (uint32_t)SpuGetKeyStatus(mask);
+    if (sfx_key_log_on() && mask && !(mask & (mask - 1u))) {
+        static uint8_t s_last[24];
+        int v = __builtin_ctz(mask);
+        if (v < 24 && s_last[v] != (uint8_t)cpu->v0) {
+            s_last[v] = (uint8_t)cpu->v0;
+            if (cpu->v0 == SPU_ON || cpu->v0 == SPU_RESET)
+                fprintf(stderr, "[sfx-key f=%u v=%d %s]\n", openpete_frame, v,
+                        cpu->v0 == SPU_ON ? "on" : "reset");
+        }
+    }
 }
 
 void psyq_SpuGetAllKeysStatus(CPUState* cpu) {
@@ -1954,8 +1927,6 @@ void psyq_SpuWrite(CPUState* cpu) {
     spyro_sfx_pack_arm();
     unsigned int len = (unsigned int)cpu->a1;
     if (len == SPYRO_SPU_BANK_BLAST) {
-        openpete_mods_sfx_bank_reset();
-        s_sfx_tail = 0;
         sfx_pack_generation_bump();
         PsyX_SPUAL_StopOrphans(); /* a new level: no tails from the old one */
     } else {

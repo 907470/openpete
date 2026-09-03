@@ -147,7 +147,7 @@ the wrong place.
 | Goal | Service | Writes guest RAM? |
 |---|---|---|
 | Draw HUD text or rectangles | `draw_text`, `draw_rect` | No |
-| Replace a game sound | `sfx_replace` | No for voice names, yes for def-shaped names |
+| Replace a game sound | `sfx_replace` | No |
 | Play your own WAV file | `sfx_play` | No |
 | Put custom textures on your models | `assets/textures/own/<hexid>.png` | No |
 | Add post-process shaders | `shader_register` with `postfx_*` | No |

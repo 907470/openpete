@@ -27,7 +27,10 @@ typedef struct {
 
 typedef struct {
     op_sfx_name id;
-    int      src;
+    int      src;        /* source index; -1 = registered from code (sfx_replace) */
+    char     owner[64];  /* code entries: the registering mod ("" = engine) */
+    int      raw;        /* code entries: the sample at `rate` under the game's
+                          * pitch as written — no base-pitch fold */
     char     path[640];
     long     mtime;
     long     size;
@@ -173,7 +176,7 @@ static void scan_dir(int si)
          * live disable falls back. */
         for (int i = 0; i < s_entry_n; i++) {
             sp_entry* o = &s_entries[i];
-            if (o == e || o->src >= si) continue;
+            if (o == e || o->src < 0 || o->src >= si) continue;
             int same = o->id.kind == id.kind &&
                        (id.kind == OP_SFX_NAME_HASH
                             ? (o->id.hash == id.hash && o->id.pitch == id.pitch)
@@ -206,11 +209,13 @@ static void add_root_source(int r)
 
 static void rescan(void)
 {
-    /* Entries whose file vanished are dropped; the rest keep their PCM. */
+    /* Entries whose file vanished are dropped; the rest keep their PCM.
+     * Code-registered entries have no file and live until re-registered. */
     int keep = 0;
     for (int i = 0; i < s_entry_n; i++) {
         struct stat st;
-        if (stat(s_entries[i].path, &st) == 0) s_entries[keep++] = s_entries[i];
+        if (s_entries[i].src < 0 || stat(s_entries[i].path, &st) == 0)
+            s_entries[keep++] = s_entries[i];
         else entry_release(&s_entries[i]);
     }
     s_entry_n = keep;
@@ -270,16 +275,18 @@ static const sp_ident* ident_lookup(uint32_t addr)
 
 /* ── match ───────────────────────────────────────────────────────── */
 
-static int src_enabled(int si)
+static int entry_enabled(const sp_entry* e)
 {
-    return !s_srcs[si].owner[0] || openpete_mods_is_enabled(s_srcs[si].owner);
+    const char* owner = e->src < 0 ? e->owner : s_srcs[e->src].owner;
+    return !owner[0] || openpete_mods_is_enabled(owner);
 }
 
 /* Tiers: a tagged file for exactly this def's base pitch (4) > the
  * untagged raw form (3) > a tagged file for another def sharing the
  * sample (2; it still plays correctly — see the rate folding in the
  * callback — the author just did not tune it for this role) > symbolic
- * slot name (1). */
+ * slot name (1). Within the symbolic tier a code registration outranks
+ * a file: the call is the more deliberate claim. */
 static sp_entry* match(const sp_ident* id, uint32_t addr, int base_pitch)
 {
     sp_entry* best = NULL;
@@ -294,9 +301,12 @@ static sp_entry* match(const sp_ident* id, uint32_t addr, int base_pitch)
         else if (e->id.kind == OP_SFX_NAME_SYMBOLIC)
             for (int k = 0; k < n_names; k++)
                 if (strcmp(e->id.name, names[k]) == 0) { tier = 1; break; }
-        if (!tier || !src_enabled(e->src)) continue;
-        /* later entry (later source) wins ties */
-        if (tier >= best_tier) { best = e; best_tier = tier; }
+        if (!tier || !entry_enabled(e)) continue;
+        /* later entry (later source) wins ties; code beats file at tier 1 */
+        if (tier > best_tier ||
+            (tier == best_tier && (e->src < 0 || best->src >= 0))) {
+            best = e; best_tier = tier;
+        }
     }
     return best;
 }
@@ -366,7 +376,7 @@ static int override_cb(int voice, unsigned int addr, int stock_samples,
     int fold = 0;
     if (e->id.flat) fold = 0;                 /* pinned: the file's own rate, always */
     else if (e->id.kind == OP_SFX_NAME_HASH && e->id.pitch > 0) fold = e->id.pitch;
-    else if (e->id.kind == OP_SFX_NAME_SYMBOLIC && base_pitch > 0) fold = base_pitch;
+    else if (e->id.kind == OP_SFX_NAME_SYMBOLIC && !e->raw && base_pitch > 0) fold = base_pitch;
     if (fold > 0) {
         /* Tagged: "at its own rate this file is the sound at base pitch
          * P" (the FILE's tag). Fold P into the buffer rate; the game's
@@ -439,6 +449,55 @@ void sfx_pack_arm_oneshot(const int16_t* pcm, int count, unsigned int rate)
 }
 
 void sfx_pack_disarm_oneshot(void) { s_oneshot_pcm = NULL; }
+
+int sfx_pack_register_symbolic_adpcm(const char* owner, const char* name,
+                                     const void* adpcm, uint32_t len,
+                                     int pitch)
+{
+    if (!name || !*name || strlen(name) >= sizeof(((op_sfx_name*)0)->name) ||
+        !adpcm || len < 16 || len > (1u << 20))
+        return -1;
+    /* One block of 16 bytes decodes to 28 samples; the decoder stops at
+     * the END flag, so a body carrying one decodes to at most this. */
+    int cap = (int)(len / 16u) * 28;
+    int16_t* pcm = (int16_t*)SDL_malloc((size_t)cap * sizeof(int16_t));
+    if (!pcm) return -1;
+    int ls = 0, ll = 0;
+    int n = PsyX_SPUAL_DecodeSample((const unsigned char*)adpcm, (int)len,
+                                    pcm, &ls, &ll);
+    if (n <= 0) { SDL_free(pcm); return -1; }
+    const char* own = owner ? owner : "";
+    sp_entry* e = NULL;
+    for (int i = 0; i < s_entry_n; i++) {
+        sp_entry* o = &s_entries[i];
+        if (o->src < 0 && strcmp(o->owner, own) == 0 &&
+            strcmp(o->id.name, name) == 0) { e = o; break; }
+    }
+    if (!e) {
+        if (s_entry_n >= SP_ENTRY_MAX) { SDL_free(pcm); return -1; }
+        e = &s_entries[s_entry_n++];
+        memset(e, 0, sizeof *e);
+        e->src = -1;
+        snprintf(e->owner, sizeof e->owner, "%s", own);
+    } else {
+        entry_release(e);
+    }
+    e->id.kind = OP_SFX_NAME_SYMBOLIC;
+    snprintf(e->id.name, sizeof e->id.name, "%s", name);
+    /* pitch 0: the raw sample at the decoder rate, pitched by the game as
+     * stock. Otherwise the caller's pitch is the sound: pin the buffer
+     * rate to it and ignore the game's pitch writes. */
+    e->id.flat    = pitch > 0;
+    e->raw        = pitch <= 0;
+    e->rate       = pitch > 0 ? op_sfx_rate_for_pitch(pitch) : 44100u;
+    e->pcm        = pcm;
+    e->count      = n;
+    e->loop_start = ls;
+    e->loop_len   = ll;
+    e->decoded    = 1;
+    s_census.active = 1;
+    return 0;
+}
 
 int sfx_pack_oneshot_armed(void) { return s_oneshot_pcm != NULL; }
 

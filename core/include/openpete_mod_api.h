@@ -533,13 +533,17 @@ typedef struct openpete_mod_api {
      * MOD's assets/sfx/own/; sfx_replace resolves in the GAME's
      * registered sound names.
      *
-     * sfx_replace: substitute the sample behind a named game sound.
-     * body = raw SPU-ADPCM frames (no VAG header, final block end-flag
-     * 0x01), copied by the engine. pitch = SPU units (0x1000 =
-     * 44.1 kHz) used instead of the game's pitch computation; 0 = keep
-     * the game's pitch. Voice-layer names ("gem_pickup", ...) are
-     * replaced host-side at key-on — guest RAM, SPU banks and the
-     * gameplay rand() stream stay byte-stock. Sounds with no SoundTable
+     * sfx_replace: substitute the sample behind a named game sound —
+     * the code form of dropping a symbolic <name>.wav in this mod's
+     * assets/sfx. body = raw SPU-ADPCM frames (no VAG header, final
+     * block end-flag 0x01), decoded and copied by the engine. pitch =
+     * SPU units (0x1000 = 44.1 kHz) the replacement plays at, ignoring
+     * the game's pitch writes; 0 = the raw sample under the game's own
+     * pitch. The swap happens at the voice's PCM upload, below the SPU
+     * RAM image and the voice mirror: guest RAM, the gameplay rand()
+     * stream and the tick on which the game sees the sound end (it
+     * polls the STOCK sample's duration) stay byte-stock, and a longer
+     * replacement rings out past that tick. Sounds with no SoundTable
      * name (a moby's own m_Sounds def) cannot be reached this way — a
      * hash-named file in assets/sfx/ covers every sample, named or not,
      * and needs no code. Unknown name => -1.
