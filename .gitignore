@@ -64,3 +64,5 @@ tests/freecam/__pycache__/
 # ctest scratch, written when ctest runs from the source dir rather than
 # the build dir (a wrong-cwd invocation still leaves this behind).
 Testing/
+# crash3-models: pack + atlases are converted from the disc (tools/crash3/convert.py)
+mods/crash3-models/assets/

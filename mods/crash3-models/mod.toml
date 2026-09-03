@@ -1,0 +1,41 @@
+# crash3-models — a Crash Bandicoot 3 demo model on a Spyro 1 moby class.
+#
+# The Spyro 1 disc ships a Crash 3 demo (S0/*.NSF). tools/crash3/convert.py
+# decodes its models and encodes each as a Spyro 1 animated-moby Model
+# blob into assets/crash3_s1pack.bin (textures in assets/textures/own/).
+# This mod parks the chosen model in the mod arena and installs it over
+# the chosen moby class from a PatchMobyModelPointers post-hook. Static
+# pose only: every animation / frame a live moby sits on resolves to the
+# one converted pose.
+
+[mod]
+id      = "crash3-models"
+name    = "Crash 3 Models"
+version = "0.1.0"
+api     = 10
+state    = "rebuildable"   # the park is re-copied on every fresh level
+runahead = "pure"
+
+[[config]]
+key = "model"
+type = "string"
+default = "Cr10G"
+label = "Model"
+group = "Crash 3"
+help = "eName of the pack model to install (Cr10G = Crash; see tools/crash3/nsf.py census)"
+
+[[config]]
+key = "target.class"
+type = "int"
+default = 250
+label = "Target moby class"
+group = "Crash 3"
+help = "g_Models row to replace (250 = crystal dragon statue, present in every level)"
+
+[[config]]
+key = "debug.dump"
+type = "bool"
+default = false
+label = "Dump pack table + stock model"
+group = "Debug"
+help = "Log every model in the pack at entry and the stock model's anim/frame counts at install"

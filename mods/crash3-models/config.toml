@@ -1,0 +1,5 @@
+model = "Cr10G"
+[target]
+class = 250
+[debug]
+dump = false
