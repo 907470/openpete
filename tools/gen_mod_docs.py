@@ -61,37 +61,82 @@ def unq(v: str) -> str:
 
 # ── api.md ───────────────────────────────────────────────────────────────
 
-SECTION_RE = re.compile(r"─+\s*(.*?)\s*─")
-
-
 def md_prose(text: str) -> str:
     """Extracted comment prose -> markdown-safe text: literal <tokens>
     like <exe>/sdk would otherwise be swallowed as HTML, and bare *
-    pairs (pointer decls, src/*.c) would become italics."""
-    return (text.replace("&", "&amp;").replace("<", "&lt;")
-                .replace("*", "\\*"))
+    pairs (pointer decls, src/*.c) would become italics. Backtick spans
+    are left alone."""
+    out, i = [], 0
+    for part in re.split(r"(`[^`]*`|\*\*[^*\n]+\*\*)", text):
+        if part.startswith(("`", "**")):
+            out.append(part)
+        else:
+            out.append(part.replace("&", "&amp;").replace("<", "&lt;")
+                           .replace("*", "\\*"))
+    return "".join(out)
 
 
 def strip_comment(block: str) -> str:
-    """/* ... */ block -> prose, preserving blank-line paragraphs."""
+    """/** ... */ block -> its text, preserving blank-line paragraphs."""
     out = []
     for line in block.splitlines():
-        line = re.sub(r"^\s*/?\*+/?", "", line)
+        line = re.sub(r"^\s*/?\*+<?/?", "", line)
         line = re.sub(r"\*/\s*$", "", line)
         out.append(line.rstrip())
     text = "\n".join(out).strip("\n")
-    # de-indent uniformly
     lines = text.splitlines()
     pad = min((len(l) - len(l.lstrip()) for l in lines if l.strip()),
               default=0)
     return "\n".join(l[pad:] for l in lines).strip()
 
 
+PARAM_RE = re.compile(r"^@param\s+(\w+)\s*(.*)$")
+
+
+def dox_to_md(text: str) -> str:
+    """Doxygen tags -> markdown. @param/@return/@since become list
+    items and sentences; @code fences; inline @p/@c/#/:: become code
+    spans; @brief is dropped (the text stands on its own)."""
+    text = re.sub(r"@brief\s+", "", text)
+    text = re.sub(r"@[pc]\s+([\w.>-]+)", r"`\1`", text)
+    text = re.sub(r"(?<![\w`])#([A-Z_][A-Z0-9_]+)", r"`\1`", text)
+    text = re.sub(r"(?<![\w`])::(\w+)", r"`\1`", text)
+    text = re.sub(r"(?<![\w`/])(\w+)::(\w+)", r"`\1.\2`", text)
+    text = text.replace("@code", "```c").replace("@endcode", "```")
+    text = re.sub(r"(?<=\S)[ \t]+@since[ \t]+([^\n]*)", r" Since \1.", text)
+    text = re.sub(r"\n(@since|@return|@param)", r"\n\n\1", text, count=1)
+    out, i, lines = [], 0, text.splitlines()
+    while i < len(lines):
+        line = lines[i]
+        m = PARAM_RE.match(line)
+        if m or line.startswith("@return") or line.startswith("@since") \
+                or line.startswith("@par "):
+            # gather indented continuation lines
+            body = [line]
+            while i + 1 < len(lines) and lines[i + 1].startswith(" "):
+                i += 1
+                body.append(lines[i].strip())
+            joined = " ".join(b.strip() for b in body)
+            if m:
+                pm = PARAM_RE.match(joined)
+                out.append(f"- `{pm.group(1)}`: {pm.group(2)}")
+            elif joined.startswith("@return"):
+                out.append("- Returns: " + joined[len("@return"):].strip())
+            elif joined.startswith("@since"):
+                out.append("Since " + joined[len("@since"):].strip() + ".")
+            else:
+                out.append("**" + joined[len("@par "):].strip() + "**")
+        else:
+            out.append(line)
+        i += 1
+    return "\n".join(out)
+
+
 def split_members(body: str):
-    """Yield (comment, decl) pairs for struct members; a comment whose
-    first line carries a ── section marker starts a new section."""
+    """Yield (comments, decl) for struct members: every /** */ block
+    between one declaration and the next, then the declaration."""
     i, n = 0, len(body)
-    comment = ""
+    comments = []
     while i < n:
         rest = body[i:]
         ws = len(rest) - len(rest.lstrip())
@@ -100,13 +145,61 @@ def split_members(body: str):
             break
         if body.startswith("/*", i):
             end = body.index("*/", i) + 2
-            comment = body[i:end]
+            comments.append(body[i:end])
             i = end
             continue
         end = body.index(";", i) + 1
-        yield comment, " ".join(body[i:end].split())
-        comment = ""
+        yield comments, " ".join(body[i:end].split())
+        comments = []
         i = end
+    if comments:
+        yield comments, ""
+
+
+def scan_types(pre: str):
+    """(comment, code) pairs for the documented items between extern "C"
+    and the api struct: typedefs, enums and the version define. Static
+    inline helpers and bare forward declarations are skipped."""
+    items, i, n, comment = [], 0, len(pre), ""
+    while i < n:
+        ws = len(pre[i:]) - len(pre[i:].lstrip())
+        i += ws
+        if i >= n:
+            break
+        if pre.startswith("/*", i):
+            end = pre.index("*/", i) + 2
+            comment = pre[i:end]
+            i = end
+            continue
+        if pre.startswith("#define", i):
+            end = pre.index("\n", i)
+            while pre[end - 1] == "\\":
+                end = pre.index("\n", end + 1)
+            line = pre[i:end]
+            if line.startswith("#define OPENPETE_MOD_API_VERSION"):
+                items.append((comment, line))
+            comment = ""
+            i = end
+            continue
+        # a declaration: ends at the first ';' outside braces
+        depth, j = 0, i
+        while j < n:
+            c = pre[j]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+                if depth == 0 and pre.startswith("static inline", i):
+                    break
+            elif c == ";" and depth == 0:
+                break
+            j += 1
+        code = pre[i:j + 1].strip()
+        if code.startswith(("typedef", "enum")):
+            items.append((comment, code))
+        comment = ""
+        i = j + 1
+    return items
 
 
 MEMBER_NAME_RE = re.compile(r"\(\s*\*\s*(\w+)\s*\)")
@@ -115,14 +208,13 @@ MEMBER_NAME_RE = re.compile(r"\(\s*\*\s*(\w+)\s*\)")
 def gen_api(api_header: Path) -> str:
     src = api_header.read_text(encoding="utf-8")
 
-    # the file-top overview is a // block
-    intro = []
-    for line in src.splitlines():
-        if line.startswith("//"):
-            intro.append(line.lstrip("/").strip())
-        elif intro:
-            break
-    intro = "\n".join(intro).strip()
+    # the file-top overview is the leading /** @file */ block
+    intro = ""
+    m = re.match(r"\s*(/\*\*(?:[^*]|\*(?!/))*\*/)", src)
+    if m:
+        intro = "\n".join(l for l in strip_comment(m.group(1)).splitlines()
+                          if not l.startswith("@file"))
+        intro = dox_to_md(intro).strip()
 
     out = [GEN_NOTE, "# API reference\n"]
     out.append(f"The contract that every mod compiles against, extracted "
@@ -130,22 +222,18 @@ def gen_api(api_header: Path) -> str:
                f"lives at `<exe>/sdk/openpete_mod_api.h`.\n")
     out.append("\n".join("> " + l for l in md_prose(intro).splitlines()) + "\n")
 
-    # supporting types: /* */-commented typedefs between extern "C" and
-    # the api struct (the // intro contains a literal src/*.c that would
-    # fake a comment-open — scan only past it)
-    pre = src[src.index('extern "C" {'):
+    # supporting types: documented typedefs, enums and the version
+    # define between extern "C" and the api struct
+    pre = src[src.index('extern "C" {') + len('extern "C" {'):
               src.index("typedef struct openpete_mod_api")]
-    types = re.findall(
-        r"(/\*(?:[^*]|\*(?!/))*\*/\s*)?(typedef (?:struct|int|void)[^;{]*"
-        r"(?:\{[^}]*\})?[^;]*;|enum \{[^}]*\};|#define OPENPETE_MOD_API_VERSION[^\n]*)",
-        pre)
+    types = scan_types(pre)
     out.append("## Supporting types\n")
     for comment, code in types:
         code = code.strip()
         if code.startswith("typedef struct CPUState"):
             continue
         if comment.strip():
-            out.append(md_prose(strip_comment(comment)) + "\n")
+            out.append(md_prose(dox_to_md(strip_comment(comment))) + "\n")
         out.append(f"```c\n{code}\n```\n")
 
     # the struct itself
@@ -153,22 +241,28 @@ def gen_api(api_header: Path) -> str:
     body = body[body.index("{") + 1: body.index("} openpete_mod_api_t;")]
 
     members = 0
-    for comment, decl in split_members(body):
-        section = None
-        prose = strip_comment(comment) if comment.strip() else ""
-        first = prose.splitlines()[0] if prose else ""
-        sm = SECTION_RE.search(first)
-        if sm and sm.group(1):
-            section = sm.group(1)
-            prose = "\n".join(prose.splitlines()[1:]).strip()
-        if section:
-            out.append(f"## {section}\n")
+    for comments, decl in split_members(body):
+        prose = ""
+        for c in comments:
+            text = strip_comment(c)
+            if text.startswith("@name"):
+                first, _, restp = text.partition("\n")
+                out.append(f"## {first[len('@name'):].strip()}\n")
+                restp = restp.replace("@{", "").strip()
+                if restp:
+                    out.append(md_prose(dox_to_md(restp)) + "\n")
+            elif text.strip() in ("@}", ""):
+                continue
+            else:
+                prose = text
+        if not decl:
+            continue
         name_m = MEMBER_NAME_RE.search(decl)
         name = name_m.group(1) if name_m else decl.split()[-1].rstrip(";")
         out.append(f"### `api->{name}`\n")
         out.append(f"```c\n{decl}\n```\n")
         if prose:
-            out.append(md_prose(prose) + "\n")
+            out.append(md_prose(dox_to_md(prose)) + "\n")
         members += 1
 
     # convenience accessors at the tail of the header
@@ -318,8 +412,10 @@ def gen_structs(structs_header: Path) -> str:
     src = structs_header.read_text(encoding="utf-8")
     intro_m = re.match(r"\s*(/\*(?:[^*]|\*(?!/))*\*/)", src)
     if intro_m:
+        intro = "\n".join(l for l in strip_comment(intro_m.group(1)).splitlines()
+                          if not l.startswith("@file"))
         out.append("\n".join("> " + l for l in md_prose(
-            strip_comment(intro_m.group(1))).splitlines()) + "\n")
+            dox_to_md(intro).strip()).splitlines()) + "\n")
 
     sizes = dict(re.findall(
         r'_Static_assert\(sizeof\((\w+)\)\s*==\s*(0x[0-9a-fA-F]+|\d+)', src))
