@@ -474,11 +474,6 @@ add_custom_target(spyro1_sdk_stage ALL
             ${CMAKE_SOURCE_DIR}/core/include/openpete_psx_decal.glsl
             ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_key_contest.glsl
             ${CMAKE_SOURCE_DIR}/core/rhi/shaders/terrain_shade.glsl
-            ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_scene.vert
-            ${CMAKE_SOURCE_DIR}/core/rhi/shaders/shadow_decal_tex.vert
-            ${CMAKE_SOURCE_DIR}/core/rhi/shaders/psx_scene.frag
-            ${CMAKE_SOURCE_DIR}/core/rhi/shaders/quad.vert
-            ${CMAKE_SOURCE_DIR}/core/rhi/shaders/quad.frag
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk/shaders
     COMMENT "Staging mod SDK headers into <exe>/sdk/"
     VERBATIM)

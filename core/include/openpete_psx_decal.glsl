@@ -1,7 +1,7 @@
-/* openpete_psx_decal.glsl — the DECAL variant of the material contract.
+/* openpete_psx_decal.glsl — the material contract for moby drop-shadows.
  *
- * Same shape as openpete_psx_material.glsl, and the SAME mod-facing
- * function: the engine owns main(), the mod supplies op_material(base).
+ * Same mod-facing function as openpete_psx_material.glsl: the engine owns
+ * main(), the mod supplies op_material(base).
  *
  *     #version 450
  *     #extension GL_GOOGLE_include_directive : require
@@ -11,45 +11,38 @@
  *
  *     vec4 op_material(vec4 base) { return vec4(base.rgb * tint.rgb, base.a); }
  *
- * WHY A SEPARATE INCLUDE. Not a different contract — a different DRAW
- * PATH. Spyro's moby drop-shadows are flat fans drawn with the depth test
- * OFF, because their fragment stage decides per pixel whether the shadow
- * is occluded: it reconstructs the terrain's world height from the opaque
- * depth pre-pass and rejects walls, steep faces and raised platforms in
- * front. That path has its own vertex stage, its own push block and its
- * own samplers, so the declarations differ — but the split is identical
- * to the main contract's, and a mod that writes one op_material() can be
- * pointed at either.
+ * A separate include because the draw path differs. Moby drop-shadows are
+ * flat fans drawn with the depth test off; their fragment stage decides per
+ * pixel whether the shadow is occluded by reconstructing the terrain's
+ * world height from the opaque depth pre-pass and rejecting walls, steep
+ * faces and raised platforms in front. That path has its own vertex stage,
+ * push block and samplers. A mod that writes one op_material() can be
+ * pointed at either contract.
  *
- * The engine's occlusion verdict is applied by main() before op_material()
- * runs, and is not overridable: a material cannot paint shadows through
- * walls, because it never gets the chance to skip the test.
+ * main() applies the occlusion verdict before op_material() runs; a
+ * material cannot paint a shadow through a wall.
  *
  * Reserved for the engine: push constants, sets 0-1, input locations 0-2.
- * A material's own uniform block is set 3 binding 1 (std140).
- *
- * The maths below mirrors core/rhi/shaders/shadow_decal_tex.frag — read
- * that file for the derivation of each occluder class.
- */
+ * The material's own uniform block is set 3 binding 1 (std140). */
 
 #ifndef OPENPETE_PSX_DECAL_GLSL
 #define OPENPETE_PSX_DECAL_GLSL
 
-layout(set = 0, binding = 0) uniform sampler2D  op_opaque_depth; /* WORLD-opaque pre-pass */
-layout(set = 1, binding = 0) uniform usampler2D op_vram;         /* R16_UINT 1024x512     */
+layout(set = 0, binding = 0) uniform sampler2D  op_opaque_depth; /* terrain-opaque pre-pass */
+layout(set = 1, binding = 0) uniform usampler2D op_vram;         /* R16_UINT 1024x512       */
 
 layout(push_constant) uniform OP_DECAL_PC {
     float col0x, col0y, col0z;   /* camera rows 4096^2 * C^-1 (world reconstruct) */
     float col1x, col1y, col1z;
     float col2x, col2y, col2z;
-    float cam_pos_up;            /* camera world HEIGHT (the game z field) */
-    float ofx, ofy, h;           /* GTE projection regs */
+    float cam_pos_up;            /* camera world height (the game's z field) */
+    float ofx, ofy, h;           /* GTE projection registers */
     float wall_height;           /* height slack above ground before "wall" */
     float steep_nup;             /* |up normal| below which a surface is a wall face */
-    float mode;                  /* 0 = draw all (band), 1 = height+steep test */
+    float mode;                  /* 0 = draw all (band), 1 = height and steepness test */
     float band;                  /* fallback view-Z band (mode 0) */
-    float plat_eps;              /* raised-occluder-in-front: min rise above the plane */
-    float plat_slack;            /* raised-occluder-in-front: view-Z slack */
+    float plat_eps;              /* raised occluder in front: min rise above the plane */
+    float plat_slack;            /* raised occluder in front: view-Z slack */
     float uax, ubx, vay, vby;    /* PSX screen -> pre-pass uv affine */
     float pvw, pvh;              /* pre-pass raster extent within the depth image */
     int   tpage_x, tpage_y;      /* PSX texture page origin (VRAM 16bpp-pixel units) */
@@ -87,9 +80,9 @@ uint op_decal_word(int u, int v)
     }
 }
 
-/* The stock look: sprite texel * vertexColour / 128, PSX modulation.
- * alpha 0 = the transparent sentinel; discard on it as the stock stage
- * does, or the fan's whole quad paints. */
+/* The stock shadow colour: sprite texel * vertexColour / 128. Alpha 0 is
+ * the transparent sentinel; main() discards it, otherwise the whole fan
+ * quad would paint. */
 vec4 op_decal_shade()
 {
     vec4 c = op_decode555(op_decal_word(int(vUV.x), int(vUV.y)));
@@ -127,7 +120,7 @@ float op_worldup_at(vec2 s, float vz)
     return op_pc.cam_pos_up - V1;
 }
 
-/* The engine's occlusion verdict. false = this pixel is occluded and the
+/* The engine's occlusion verdict: false = this pixel is occluded and the
  * decal must not paint. main() applies it; a material never sees the
  * fragments it rejects. */
 bool op_decal_visible()
@@ -166,7 +159,7 @@ bool op_decal_visible()
 }
 
 /* ---- the mod's half --------------------------------------------------
- * Supplied by the material, same signature as the main contract's. base =
+ * Supplied by the material, with the main contract's signature. base =
  * op_decal_shade(); return the colour to write. */
 vec4 op_material(vec4 base);
 

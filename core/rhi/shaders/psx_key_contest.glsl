@@ -1,60 +1,53 @@
-/* psx_key_contest.glsl — og's per-pixel painter verdicts, as pure math.
+/* psx_key_contest.glsl — the per-pixel painter verdicts of the original
+ * renderer, as pure functions. Included by the engine halves of the
+ * material contract; not a mod-facing interface.
  *
- * ENGINE-INTERNAL, not part of the mod SDK. It deliberately declares NO
- * samplers and no varyings: every caller owns its own bindings (the scene
- * stages, the gouraud stage and the retained-terrain stage all sit at
- * different descriptor sets) and passes in values it has already fetched.
- * That is what lets one copy of the rules serve all of them — the three
- * stages previously carried three transcriptions of the same arithmetic
- * with "keep in sync" comments holding them together.
+ * Declares no samplers and no varyings: each caller owns its own bindings
+ * and passes in values it has already fetched, so one copy of the rules
+ * serves every stage.
  *
- * The rules themselves:
+ * The original renderer decides which surface exists at a pixel by an
+ * ordering-table key, not by depth. A face's key is its view-Z plus the
+ * authored OT slot offsets (LP +0x40+8*bias, HP +4*bias, 128 world per
+ * slot); stored depth is true view-Z. The key rasters decide occupancy
+ * and true geometry decides everything against the surface that wins.
  *
- * og decides WHICH surface exists at a pixel by an ORDERING-TABLE key, not
- * by depth. A face's key is its view-Z plus the authored OT slot offsets
- * (LP +0x40+8*bias, HP +4*bias, 128 world per slot); stored depth is TRUE
- * view-Z. So the key rasters decide occupancy and true geometry decides
- * everything against the surface that wins.
- *
- * Three images feed it — terrain og keys, moby og keys, and curated
- * embedded-prop TRUE depth — plus the moby og-RANK raster for the
- * same-moby painter select. Callers that have no meaning for one of them
- * pass the never-wins sentinel OP_KEY_NONE.
- */
+ * Inputs: terrain keys, moby keys, curated embedded-prop true depth, and
+ * the moby rank raster for the same-moby painter select. A caller with no
+ * meaning for one of them passes OP_KEY_NONE. */
 
 #ifndef OPENPETE_PSX_KEY_CONTEST_GLSL
 #define OPENPETE_PSX_KEY_CONTEST_GLSL
 
-/* A key so far away it can never win a contest. */
+/* A key that never wins a contest. */
 #define OP_KEY_NONE 1e30
 
-/* Window depth -> view-Z, inverting whichever encoding the vertex stage
- * chose. affine: z = 1 - 1/vz (screen-affine, exact under interpolation);
- * else the legacy hyperbolic z = vz/(vz+4096). */
+/* Window depth -> view-Z for the vertex stage's encoding. affine:
+ * z = 1 - 1/vz (screen-affine, exact under interpolation); otherwise the
+ * hyperbolic z = vz/(vz+4096). */
 float op_vz_from_depth(float z, bool affine)
 {
     return affine ? 1.0 / max(1.0 - z, 1e-9)
                   : 4096.0 * z / max(1.0 - z, 1e-9);
 }
 
-/* A key image's stored value -> key view-Z. The images are written by
- * terrain_key.vert's canonical encoding z = kv/(kv+4096) regardless of the
- * scene's own depth mode; 1.0 means "nothing was rasterised here". */
+/* A key image's stored value -> key view-Z. Key images are written with
+ * z = kv/(kv+4096) regardless of the scene's depth mode; 1.0 means nothing
+ * was rasterised at the pixel. */
 float op_key_from_stored(float stored)
 {
     return stored < 0.999999 ? 4096.0 * stored / max(1.0 - stored, 1e-9)
                              : OP_KEY_NONE;
 }
 
-/* Same-moby painter select, NEAR-TIE SCOPED. og paints a moby's faces in
- * walk order, so a fragment loses its pixel iff a LATER-ranked face of the
- * SAME moby covers it — regardless of true depth. Scoped to surfaces within
- * interpenetration range of each other (the contour-flicker / decal class):
- * cleanly separated faces keep true depth, because og's deliberate
- * relayering of those was authored for 320x240 and reads as an artifact
- * upscaled.
+/* Same-moby painter select, scoped to near ties. The original renderer
+ * paints a moby's faces in walk order, so a fragment loses its pixel when
+ * a later-ranked face of the same moby covers it, regardless of depth.
+ * Applied only within interpenetration range (384 world): cleanly
+ * separated faces keep true depth, since the relayering was authored for
+ * 320x240 and reads as an artifact upscaled.
  *
- * e = the rank texel (r+g*256 = winning face's walk rank, b = that face's
+ * e = the rank texel (r + g*256 = the winning face's walk rank, b = its
  * present-local moby ordinal, a = its view-Z / 32640). rank = this
  * fragment's own (rank, ordinal). */
 bool op_rank_loses(vec4 e, vec2 rank, float own_vz)
@@ -65,29 +58,24 @@ bool op_rank_loses(vec4 e, vec2 rank, float own_vz)
     return abs(e.a * 32640.0 - own_vz) < 384.0;
 }
 
-/* The og key contest. koff = the face's key channel: POSITIVE = its
- * ABSOLUTE og key + 0.5 (OT-band terrain and moby faces); NEGATIVE =
- * near-band terrain, contest-only, where og subdivides into pieces at
- * piece-local means so the fragment's own view-Z is the limit. actor =
- * this is an unranked moby face. truescope = scope moby key yields by the
- * fragment's own TRUE view-Z (the default; false restores og's full
+/* The key contest. koff is the face's key channel: positive = its absolute
+ * OT key + 0.5 (OT-band terrain and moby faces); negative = near-band
+ * terrain, contest-only, where the fragment's own view-Z is the limit.
+ * actor = an unranked moby face. truescope = moby keys yield by the
+ * fragment's own true view-Z (the default; false restores the full
  * compound painter).
  *
- * Under truescope, TERRAIN fragments never yield to general MOBY keys at
- * all: og's authored pulls (-128*dofs) exist to float pickups and decor
- * over whatever the OT sorts them against, and any per-pixel window
- * derived from them re-admits the punch-through classes (a chest through
- * the gnastys_loot wall lip via pull+push compounding; a rotating gem
- * through a near wall it sits 300 world behind). Terrain-over-moby is
- * decided instead by TRUE depth plus the -127 stored tie pull (contact),
- * the PROP EMBED rule below, and the ACTOR_FRONT pass.
+ * Under truescope, terrain never yields to general moby keys: the authored
+ * pulls (-128*dofs) float pickups and decor over whatever the OT sorts them
+ * against, and a per-pixel window derived from them re-admits punch-through
+ * (a chest through a wall lip, a gem through a near wall). Terrain over
+ * moby is decided by true depth plus the -127 stored tie pull, the prop
+ * embed rule, and the actor-front pass.
  *
- * PROP EMBED: a curated embedded prop (pedestal discs, statue bases — a
- * class list in the moby feeder, because no geometric quantity separates
- * "prop set into its ground" from "actor just behind a crest") within 1024
- * world behind this surface wins the pixel. That is what carries dofs-0
- * pedestals at mid range, where og floated them on the ground's own
- * authored push and the true-depth scope no longer mirrors it. */
+ * Prop embed: a curated embedded prop (pedestal discs, statue bases; a
+ * class list in the moby feeder) within 1024 world behind this surface
+ * wins the pixel. This carries dofs-0 pedestals at mid range, where the
+ * original floated them on the ground's own push. */
 bool op_key_loses(float tkey, float akey, float mkey, float own,
                   float koff, bool actor, bool truescope)
 {

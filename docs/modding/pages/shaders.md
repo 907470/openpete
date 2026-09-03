@@ -49,9 +49,7 @@ change invalidates your cache automatically.
 
 Material fragment shaders include `openpete_psx_material.glsl` instead.
 Never include both, because they claim the same descriptor set in
-different ways. Forks of `sdk/shaders/psx_scene.frag` still work, but
-they freeze the decode they copied, whereas the engine rebuilds
-include-based materials whenever the contract evolves.
+different ways.
 
 To ship without source, put a prebuilt `<path>.spv` file where no source
 sits beside it. It also needs a `<path>.spv.ihash` sidecar file matching
