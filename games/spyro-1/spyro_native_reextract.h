@@ -187,6 +187,20 @@ int      spyro_native_canon_epoch_fresh(uint32_t stamp);
 int      spyro_native_canon_mobyreg_fresh(void);  /* colour 0x1100 + cull records (REGULAR hook) */
 int      spyro_native_canon_shaded_fresh(void);   /* shaded list 0x2400 (SHADED/text hook) */
 
+/* The camera a producer drew under. A feeder re-derives its geometry from
+ * g_Camera, which the sub-tick bracket interpolates between tick-end
+ * snapshots; a producer whose draw ran under matrices the tick did not end
+ * with (the game-over screen rebuilds them from the skybox rotation after
+ * drawing the letters and Spyro) must be re-derived from its own camera.
+ *   _capture_camera: at the producer hook, record g_Camera's transform block.
+ *   _prod_camera_enter/_leave: around that producer's feeder in the
+ *   re-extract; enter installs the captured camera when the commit found it
+ *   differs from the tick-end camera (returns 1), leave restores. */
+enum { SPYRO_PROD_MOBYREG = 0, SPYRO_PROD_SPYRO = 1, SPYRO_PROD_SHADED = 2 };
+void spyro_native_canon_capture_camera(void* cpu, int producer);
+int  spyro_native_prod_camera_enter(int producer);
+void spyro_native_prod_camera_leave(void);
+
 /* Register the orchestrator with the core sub-tick spine. Call once at boot,
  * after the feeders are registered. */
 void spyro_native_reextract_init(void);

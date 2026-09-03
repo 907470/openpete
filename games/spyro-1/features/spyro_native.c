@@ -1652,6 +1652,7 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
          * covers it with margin and stays clear of SHADED@0x2400. */
         spyro_native_canon_capture_range(cpu, 0x1D00u, 0x300u);
         spyro_native_canon_capture_sxy(cpu);
+        spyro_native_canon_capture_camera(cpu, SPYRO_PROD_SPYRO);
         spyro_anim_capture_seg(cpu);   /* roll prev/curr seg block for sub-tick blend */
     }
 

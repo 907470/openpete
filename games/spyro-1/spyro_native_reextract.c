@@ -272,6 +272,7 @@ static int s_fpos_n = 0;
  * separate channel, keeps going). s_fpos_active is 1 only during the re-extract
  * body; the canonical path sees it 0 and every feeder falls back to live RAM. */
 static int s_fpos_active = 0;
+static int s_prod_cam_active;   /* a producer's captured camera is installed (defined below) */
 static void fpos_reset(void) { s_fpos_n = 0; }
 static void fpos_set(uint32_t key, const int32_t* prev, const int32_t* curr, double t) {
     if (s_fpos_n >= FPOS_MAX) return;
@@ -292,6 +293,7 @@ static void fpos_set_h(uint32_t key, const int32_t* prev2, const int32_t* prev,
 }
 int openpete_native_interp_pos(unsigned int key, double out[3]) {
     if (!s_fpos_active) return 0;   /* canonical render path → use live RAM */
+    if (s_prod_cam_active && key == G_CAMERA) return 0;   /* held producer camera: integer RAM */
     for (int i = 0; i < s_fpos_n; ++i) {
         if (s_fpos[i].key == (uint32_t)key) {
             out[0] = s_fpos[i].p[0]; out[1] = s_fpos[i].p[1]; out[2] = s_fpos[i].p[2];
@@ -838,7 +840,8 @@ static int cutpath_smooth_pos(uint32_t m, const int32_t* pp, const int32_t* cp,
  * phase column encodes. Live saves are all taken before any restore (one
  * coherent pre-state), so overlapping rows' saved bytes agree and leave()
  * may restore in any order. */
-typedef enum { SPROD_MOBYREG = 0, SPROD_SPYRO, SPROD_SHADED, SPROD_COUNT } sprod_t;
+typedef enum { SPROD_MOBYREG = SPYRO_PROD_MOBYREG, SPROD_SPYRO = SPYRO_PROD_SPYRO,
+               SPROD_SHADED = SPYRO_PROD_SHADED, SPROD_COUNT } sprod_t;
 typedef enum { SPHASE_ENTER = 0, SPHASE_SEG_OVERLAY } sphase_t;
 
 typedef struct {
@@ -918,7 +921,54 @@ static uint32_t s_prod_epoch[SPROD_COUNT] = {0};  /* per-producer last-capture s
                                                    * SPYRO   = seg + FK + SXY,
                                                    * SHADED  = shaded list (text hook) */
 
+/* Per-producer draw camera: m_ProjectionMatrix, m_ViewMatrix, m_Position
+ * ([0x00,0x34) of g_Camera) as they stood when the producer hook fired. The
+ * commit runs after the whole canonical draw, so live g_Camera is then the
+ * tick-end camera the interp ring snapshots; a producer whose capture differs
+ * drew under a camera the bracket cannot interpolate (the game-over draw
+ * rebuilds the matrices from the skybox rotation for the cyclorama after the
+ * letters and Spyro, so the tick ends under the skybox camera and re-deriving
+ * them from it projects them off-screen). Such a producer's feeder reads the
+ * captured camera verbatim instead. */
+#define CAM_XFORM_BYTES 0x34u
+static uint8_t  s_prod_cam[SPROD_COUNT][CAM_XFORM_BYTES];
+static uint32_t s_prod_cam_epoch[SPROD_COUNT];
+static int      s_prod_cam_hold[SPROD_COUNT];   /* set at commit: capture != tick-end camera */
+static uint8_t* s_body_cam = NULL;              /* the camera bytes the feeders read this present */
+static uint8_t  s_prod_cam_saved[CAM_XFORM_BYTES];
+static int      s_prod_cam_active = 0;
+
+void spyro_native_canon_capture_camera(void* cpu_v, int producer) {
+    (void)cpu_v;
+    if (openpete_speculative) return;           /* same rule as scratch_row_capture */
+    if (producer < 0 || producer >= SPROD_COUNT) return;
+    const uint8_t* h = (const uint8_t*)openpete_psx_to_host_ptr(G_CAMERA);
+    if (!h) return;
+    memcpy(s_prod_cam[producer], h, CAM_XFORM_BYTES);
+    s_prod_cam_epoch[producer] = s_canon_epoch_now;
+}
+
+int spyro_native_prod_camera_enter(int producer) {
+    if (producer < 0 || producer >= SPROD_COUNT) return 0;
+    if (!s_body_cam || s_prod_cam_active) return 0;
+    if (s_prod_cam_epoch[producer] != s_canon_epoch_ok || !s_prod_cam_hold[producer]) return 0;
+    memcpy(s_prod_cam_saved, s_body_cam, CAM_XFORM_BYTES);
+    memcpy(s_body_cam, s_prod_cam[producer], CAM_XFORM_BYTES);
+    s_prod_cam_active = 1;
+    return 1;
+}
+
+void spyro_native_prod_camera_leave(void) {
+    if (!s_prod_cam_active) return;
+    memcpy(s_body_cam, s_prod_cam_saved, CAM_XFORM_BYTES);
+    s_prod_cam_active = 0;
+}
+
 void spyro_native_canon_epoch_commit(void) {
+    const uint8_t* h = (const uint8_t*)openpete_psx_to_host_ptr(G_CAMERA);
+    for (int p = 0; p < SPROD_COUNT; ++p)
+        s_prod_cam_hold[p] = h && s_prod_cam_epoch[p] == s_canon_epoch_now &&
+                             memcmp(s_prod_cam[p], h, CAM_XFORM_BYTES) != 0;
     s_canon_epoch_ok = s_canon_epoch_now;
     s_canon_epoch_now++;
 }
@@ -1144,6 +1194,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
     uint8_t* cam = (uint8_t*)openpete_subtick_view_stage(G_CAMERA, CAM_BYTES);
     const int cam_staged = (cam != NULL);
     if (!cam) cam = (uint8_t*)openpete_psx_to_host_ptr(G_CAMERA);
+    s_body_cam = cam;
     uint8_t  cam_saved[CAM_BYTES];
     int      cam_bracketed = 0;
     uint8_t* sp = NULL; uint8_t sp_saved[SPYRO_SAVE]; int sp_bracketed = 0;
@@ -2091,7 +2142,9 @@ static void spyro_native_reextract_body(void* cpu_v) {
      * without record 14+ mobys (Sparx, distant chests) being clobbered earlier. */
     scratch_bracket_seg_restore(cpu);
     if (pt_on) pt_t0 = openpete_phase_now_us();
+    spyro_native_prod_camera_enter(SPROD_SPYRO);   /* Spyro's own draw camera when the tick ended under another */
     spyro_player_native_reextract(cpu);   /* interpolated camera + lerped position */
+    spyro_native_prod_camera_leave();
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SPYRO, pt_t1 - pt_t0); }
     particle_native_reextract(cpu);       /* particles / glows / sparkles (Sparx) */
     flame_native_reextract(cpu);          /* fire breath (self-gated on m_IsFlameActive) */
@@ -2174,6 +2227,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
     }
 
     s_fpos_active = 0;   /* leave the resolver inert for the canonical render path */
+    s_body_cam = NULL;
 
     static int dbg = -1;
     if (dbg < 0) { const char* e = getenv("OPENPETE_REEXTRACT_DBG"); dbg = (e && *e && *e != '0'); }

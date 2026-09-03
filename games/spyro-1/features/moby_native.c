@@ -3941,6 +3941,7 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
                 if (!is_spec) {
                     spyro_native_canon_capture_range(cpu, 0x1100u, 0x500u);
                     spyro_native_canon_capture_recs(cpu);    /* full records (>13 overflow 0x1900) */
+                    spyro_native_canon_capture_camera(cpu, SPYRO_PROD_MOBYREG);
                     /* Invalidate the SPECULAR capture at the START of each canonical
                      * moby render (REGULAR runs first every frame). The game only calls
                      * func_80020F34 when there ARE specular mobys to draw; once the last
@@ -5247,6 +5248,7 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
         /* Sub-tick spine: snapshot the shaded Moby* list (live now) so
          * intermediates can re-derive the gems/props. */
         spyro_native_canon_capture_range(cpu, 0x2400u, 0x800u);
+        spyro_native_canon_capture_camera(cpu, SPYRO_PROD_SHADED);
         /* Flat HUD/text draws OVER the player by default; UNDER it only during the
          * "THE ADVENTURE BEGINS" reveal where Spyro flies in front of the text being
          * revealed — that runs under GS_TitleScreen (13) (the title state machine
@@ -6082,6 +6084,10 @@ void moby_native_reextract(CPUState* cpu) {
     int shd_fresh  = spyro_native_canon_shaded_fresh();
 
     int nm = 0, reg_walk = 0;
+    /* Each pass re-derives from the camera its producer drew under (held
+     * verbatim when the tick ended under a different one, else the
+     * interpolated bracket). */
+    spyro_native_prod_camera_enter(SPYRO_PROD_MOBYREG);
     if (reg_fresh) {
         nm = reextract_record_pass(cpu, "REG");
         reg_walk = s_gout.n;
@@ -6104,11 +6110,14 @@ void moby_native_reextract(CPUState* cpu) {
             memcpy(h, saved_reg, SPEC_SCR_LEN);       /* restore REGULAR */
         }
     }
+    spyro_native_prod_camera_leave();
 
     /* Shaded mobys (gems/props/HUD icons/text) — already re-derive from g_Camera. */
     if (shd_fresh) {
         s_cur_mat = "SHD";
+        spyro_native_prod_camera_enter(SPYRO_PROD_SHADED);
         build_shaded_walk_tris(cpu);
+        spyro_native_prod_camera_leave();
         push_scene_moby();
     }
     openpete_native_scene_set_hud_under_player(cpu->read_word(0x800757D8u) == 13u);

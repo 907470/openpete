@@ -3408,7 +3408,9 @@ static void update_image(rhi_device *dev, rhi_texture *tex, const void *pixels)
     VkBuffer src;
     VkCommandBuffer cb;
     bool one_shot = !dev->frame_active;
+    if (!pixels) { RHI_LOG("update_image: NULL pixels (tex %ux%u)\n", tex->width, tex->height); return; }
     if (one_shot) {
+        if (!tex->staging->mapped) { RHI_LOG("update_image: staging unmapped\n"); return; }
         memcpy(tex->staging->mapped, pixels, bytes);
         src = tex->staging->buffer;
         cb  = one_shot_begin(dev);
@@ -3419,6 +3421,7 @@ static void update_image(rhi_device *dev, rhi_texture *tex, const void *pixels)
                                        VK_BUFFER_USAGE_TRANSFER_SRC_BIT,
                                        /*prefer_cached=*/false);
         if (!*slot) return;
+        if (!(*slot)->mapped) { RHI_LOG("update_image: ring slot %u unmapped\n", dev->frame); return; }
         memcpy((*slot)->mapped, pixels, bytes);
         src = (*slot)->buffer;
         cb  = dev->cmd[dev->frame];
@@ -3462,7 +3465,9 @@ static void update_vram_rects_impl(rhi_device *dev, rhi_texture *tex,
                                    const rhi_rect *rects, int nrects)
 {
     if (!tex || !tex->staging || nrects <= 0) return;
-    if (nrects > RHI_VRAM_MAX_RECTS) { update_image(dev, tex, mirror); return; }
+    /* Whole-image fallbacks need a mirror; a packed source has none and is
+     * batched to fit by its caller, so an oversize packed batch is dropped. */
+    if (nrects > RHI_VRAM_MAX_RECTS) { if (mirror) update_image(dev, tex, mirror); return; }
     const size_t cap = (size_t)tex->width * tex->height * tex->bpp;
     size_t need = 0;
     for (int i = 0; i < nrects; i++) {
@@ -3471,7 +3476,7 @@ static void update_vram_rects_impl(rhi_device *dev, rhi_texture *tex,
         need += (size_t)rects[i].w * rects[i].h * tex->bpp;
     }
     if (need == 0) return;
-    if (need > cap) { update_image(dev, tex, mirror); return; }
+    if (need > cap) { if (mirror) update_image(dev, tex, mirror); return; }
 
     VkBuffer src;
     VkCommandBuffer cb;
@@ -3545,20 +3550,26 @@ void rhi_update_vram_rects_packed(rhi_device *dev, rhi_texture *tex,
                                   const rhi_rect *rects, int nrects)
 {
     (void)packed_bytes;
-    /* A rect count past the upload's region cap falls back to a whole-image
-     * upload in the shared body, which needs a mirror; a packed source has
-     * none, so split the batch instead. */
-    while (nrects > RHI_VRAM_MAX_RECTS) {
-        size_t off = 0;
-        for (int i = 0; i < RHI_VRAM_MAX_RECTS; i++) {
-            off = (off + 3) & ~(size_t)3;
-            off += (size_t)rects[i].w * rects[i].h * tex->bpp;
+    if (!tex) return;
+    /* The shared body falls back to a whole-image upload past its region cap
+     * or when the payload outgrows the (image-sized) staging slot, and that
+     * fallback needs a mirror a packed source does not have. Split the batch
+     * on both bounds instead: overlapping dirty rects (a level load rewrites
+     * the same texture pages many times before one present drains them) pack
+     * to more bytes than the image holds. */
+    const size_t cap = (size_t)tex->width * tex->height * tex->bpp;
+    while (nrects > 0) {
+        int n = 0; size_t off = 0;
+        while (n < nrects && n < RHI_VRAM_MAX_RECTS) {
+            const size_t next = ((off + 3) & ~(size_t)3) +
+                                (size_t)rects[n].w * rects[n].h * tex->bpp;
+            if (n > 0 && next > cap) break;
+            off = next; n++;
         }
-        update_vram_rects_impl(dev, tex, NULL, packed, rects, RHI_VRAM_MAX_RECTS);
+        update_vram_rects_impl(dev, tex, NULL, packed, rects, n);
         off = (off + 3) & ~(size_t)3;
-        packed += off; rects += RHI_VRAM_MAX_RECTS; nrects -= RHI_VRAM_MAX_RECTS;
+        packed += off; rects += n; nrects -= n;
     }
-    update_vram_rects_impl(dev, tex, NULL, packed, rects, nrects);
 }
 
 
