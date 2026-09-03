@@ -2,7 +2,7 @@
 //
 // P2 workhorse of notes/plans/openpete-modding-framework.md (native
 // draw/overlay service, vk-renderer-first — USER-LOCKED direction): mods
-// draw HUD text/rects through the native renderer, never guest-side, so
+// draw HUD text through the native renderer, never guest-side, so
 // an observer/HUD mod stays sim-neutral by construction (zero guest-RAM
 // writes; guest prim injection provably leaks — the 16:9
 // particle_drawn_flag regression).
@@ -40,7 +40,6 @@
 #include <string.h>
 
 #define DRAW_TEXTS_MAX 64
-#define DRAW_RECTS_MAX 128
 #define DRAW_STR_MAX   96
 #define PRESENT_HOOKS_MAX 16
 #define DRAW_ACTORS_MAX 8
@@ -53,11 +52,6 @@ typedef struct {
 } cmd_text_t;
 
 typedef struct {
-    float    x, y, w, h;
-    uint32_t rgba;
-} cmd_rect_t;
-
-typedef struct {
     int      kind;
     int      len;
     uint32_t tint_rgba;
@@ -67,8 +61,6 @@ typedef struct {
 typedef struct {
     cmd_text_t  texts[DRAW_TEXTS_MAX];
     int         n_texts;
-    cmd_rect_t  rects[DRAW_RECTS_MAX];
-    int         n_rects;
     cmd_actor_t actors[DRAW_ACTORS_MAX];
     int         n_actors;
     int         suppress_player; /* hide the game's own player render */
@@ -195,15 +187,6 @@ void openpete_mods_draw_text(float x, float y, float cap_h, uint32_t rgb,
     s_any_draw = 1;
 }
 
-void openpete_mods_draw_rect(float x, float y, float w, float h,
-                             uint32_t rgba) {
-    cmd_buf_t* b = target_buf();
-    if (b->n_rects >= DRAW_RECTS_MAX) return;
-    cmd_rect_t* r = &b->rects[b->n_rects++];
-    r->x = x; r->y = y; r->w = w; r->h = h; r->rgba = rgba;
-    s_any_draw = 1;
-}
-
 /* Capture delegates to the game's snapshot (hook-consistent — never a
  * mid-tick read). Tick context only: the pose is sim state, and present
  * hooks are render-pure (the loader also purity-gates this entry). */
@@ -235,25 +218,7 @@ int openpete_mods_draw_actor(int kind, const void* pose, int len,
 #define MOD_DRAW_VERTS_MAX 16384
 static openpete_hud_vert s_verts[MOD_DRAW_VERTS_MAX];
 
-/* Rects sit behind glyphs in the overlay's isolated depth pass (glyph
- * depth band is mid-range; see text_moby_native TXT_DEPTH_MID). */
-#define RECT_DEPTH 0.95f
-
-static int emit_rect(const cmd_rect_t* r, int n) {
-    if (n + 6 > MOD_DRAW_VERTS_MAX) return n;
-    const float x0 = r->x, y0 = r->y, x1 = r->x + r->w, y1 = r->y + r->h;
-    const openpete_hud_vert q[6] = {
-        { x0, y0, RECT_DEPTH, r->rgba }, { x1, y0, RECT_DEPTH, r->rgba },
-        { x1, y1, RECT_DEPTH, r->rgba }, { x0, y0, RECT_DEPTH, r->rgba },
-        { x1, y1, RECT_DEPTH, r->rgba }, { x0, y1, RECT_DEPTH, r->rgba },
-    };
-    memcpy(&s_verts[n], q, sizeof q);
-    return n + 6;
-}
-
 static int emit_buf(const cmd_buf_t* b, int n) {
-    for (int i = 0; i < b->n_rects; i++)
-        n = emit_rect(&b->rects[i], n);
     if (s_text_fn) {
         for (int i = 0; i < b->n_texts; i++) {
             const cmd_text_t* t = &b->texts[i];
@@ -294,7 +259,7 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
      * ABOVE the renderer gate, so staging drains even when nothing
      * consumes it (--renderer og, or any run without a native renderer).
      * An undrained staging buffer pins every command ever submitted: the
-     * text/rect caps fill for the rest of the session (further draw
+     * text cap fills for the rest of the session (further draw
      * calls fail) and the whole backlog would replay at once if the
      * renderer came up.
      *
@@ -388,8 +353,7 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
     if (!s_logged_first && n > 0) {
         s_logged_first = 1;
         OPL_INFO_F("mods", "draw service live: %d overlay verts "
-                   "(%d tick rects, %d tick texts, %d present texts)",
-                   n, s_tick_committed.n_rects, s_tick_committed.n_texts,
-                   s_present.n_texts);
+                   "(%d tick texts, %d present texts)",
+                   n, s_tick_committed.n_texts, s_present.n_texts);
     }
 }

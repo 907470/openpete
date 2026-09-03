@@ -259,8 +259,9 @@ fi
 # A binary-only mod (no src/, a prebuilt .build/<id>.so) is the one path
 # compile-on-load cannot rebuild, so it is the path a stale vtable shape
 # reaches the engine through. Three objects, compiled by hand against the
-# staged SDK: no descriptor at all, a descriptor claiming a newer api, and
-# the SDK's own stub — only the last may run.
+# staged SDK: no descriptor at all, a descriptor claiming a newer api, a
+# descriptor from before the layout freeze (its calls would land on
+# shifted slots), and the SDK's own stub — only the last may run.
 say "prebuilt objects: ABI descriptor refuses stale and future objects"
 SDK="$(dirname "$BIN")/sdk"
 CC_MOD="${OPENPETE_MOD_CC:-cc}"
@@ -278,6 +279,11 @@ const openpete_mod_abi_t openpete_mod_abi = {
     OPENPETE_MOD_ABI_MAGIC, OPENPETE_MOD_API_VERSION + 1u,
     (uint32_t)sizeof(openpete_mod_api_t) + 8u };
 EOF
+cat > "$WORK/abisrc/prefreeze.c" <<'EOF'
+#include <openpete_mod_api.h>
+const openpete_mod_abi_t openpete_mod_abi = {
+    OPENPETE_MOD_ABI_MAGIC, 10u, (uint32_t)sizeof(openpete_mod_api_t) };
+EOF
 abi_fixture() { # abi_fixture <id> <extra .c or ""> — a binary-only mod dir
     local id="$1" extra="$2"
     local d="$WORK/abi/$id"
@@ -291,8 +297,9 @@ abi_fixture() { # abi_fixture <id> <extra .c or ""> — a binary-only mod dir
 }
 abi_fixture abi-none   ""
 abi_fixture abi-future "$WORK/abisrc/future.c"
+abi_fixture abi-prefreeze "$WORK/abisrc/prefreeze.c"
 abi_fixture abi-ok     "$SDK/openpete_mod_abi.c"
-printf 'abi-none\nabi-future\nabi-ok\n' > "$WORK/abi/enabled.txt"
+printf 'abi-none\nabi-future\nabi-prefreeze\nabi-ok\n' > "$WORK/abi/enabled.txt"
 out="$(run_game "$WORK/abi" 600)"
 if printf '%s\n' "$out" | grep -q "abi-none: .*carries no ABI descriptor"; then
     ok "no-descriptor object refused"
@@ -303,6 +310,11 @@ if printf '%s\n' "$out" | grep -q "abi-future: .*built for api $((API_VER + 1))"
     ok "future-api object refused (names both versions)"
 else
     bad "future-api object was not refused"
+fi
+if printf '%s\n' "$out" | grep -q "abi-prefreeze: .*built for api 10, but the api struct layout changed at api 11"; then
+    ok "pre-freeze object refused (layout floor)"
+else
+    bad "pre-freeze (api 10) object was not refused"
 fi
 if [ "$(printf '%s\n' "$out" | grep -c "ABI PROBE ENTRY RAN")" = 1 ] &&
    printf '%s\n' "$out" | grep -q "loaded abi-ok"; then
@@ -1019,10 +1031,11 @@ fi
 
 # ── mod shaders S5: the SCENE injection point processes the 3D scene
 # UNDER the HUD. scene-sepia sepia-tones the scene at the SCENE point,
-# then draws a yellow HUD marker AFTER. The decisive proof is that the
-# marker stays PURE YELLOW: if the SCENE split were broken (effect ran
-# over everything, or the load-rebegin lost the scene), the marker
-# would be sepia'd or the scene black. Assert the marker is yellow
+# then draws a cyan HUD text marker AFTER. The decisive proof is that
+# the marker stays CYAN, a colour a sepia tone cannot produce: if the
+# SCENE split were broken (effect ran over everything, or the
+# load-rebegin lost the scene), the marker would be sepia'd or the scene
+# black. Assert cyan glyph pixels exist in the marker's region
 # (under-HUD) AND a scene sample is sepia (SCENE ran). Windowed + a
 # real level (--skip-to-level 10) so the frame has 3D content.
 # NB --skip-to-level fast-forwards presents until the level is playable
@@ -1044,15 +1057,22 @@ import sys
 from PIL import Image
 im = Image.open(sys.argv[1]).convert("RGB")
 w, h = im.size; px = im.load()
-hud = px[int(w*0.09), int(h*0.09)]           # the mod's HUD marker (post-SCENE)
+# The mod's "SCENE" marker: cyan glyphs at overlay (0.04, 0.04), cap 0.05.
+# Glyph strokes are thin, so scan the region and count cyan pixels
+# (R low, G and B high); sepia output always has R >= G >= B.
+cyan = 0
+for yy in range(int(h*0.02), int(h*0.12)):
+    for xx in range(int(h*0.02), int(h*0.45)):
+        r, g, b = px[xx, yy]
+        if r < 80 and g > 120 and b > 120:
+            cyan += 1
 sc  = px[int(w*0.5),  int(h*0.6)]            # 3D scene
-hud_yellow = hud[0] > 200 and hud[1] > 200 and hud[2] < 70
 scene_sepia = sc[0] >= sc[1] >= sc[2] and (sc[0] - sc[2]) > 15 and sc[0] > 40
-print("OK" if hud_yellow and scene_sepia else f"BAD hud={hud} scene={sc}")
+print("OK" if cyan >= 20 and scene_sepia else f"BAD cyan_px={cyan} scene={sc}")
 PYEOF
 )
         if [ "$sepia_v" = "OK" ]; then
-            ok "HUD marker crisp yellow over a sepia scene — SCENE runs under the HUD"
+            ok "HUD marker crisp cyan over a sepia scene — SCENE runs under the HUD"
         else
             bad "SCENE under-HUD not confirmed ($sepia_v — see $WORK/sepia.log)"
         fi

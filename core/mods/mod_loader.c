@@ -249,11 +249,16 @@ static const char* s_order_src = "enabled.txt";
  * descriptor") before anything in it runs. Refused: no descriptor (an
  * object from before the layout freeze — its vtable shape is unknown),
  * a newer api than the engine's, or a larger api struct (calls would
- * index past the engine's vtable). Older-but-descriptored loads: the
- * struct is append-only from the freeze on. The check runs on BOTH the
+ * index past the engine's vtable), or an api older than the layout
+ * freeze (entries before the freeze point moved, so its calls would land
+ * on the wrong slots). Older-but-descriptored loads from the freeze on:
+ * the struct is append-only from there. The check runs on BOTH the
  * engine-compiled path (always green: the SDK stub rides the compile
  * line) and the prebuilt-object path, which compile-on-load cannot
  * rebuild and which is therefore the path this exists for. */
+/* First api whose struct layout every later api preserves. */
+#define MOD_ABI_LAYOUT_FLOOR 11u
+
 static int mod_check_abi(void* dl, const char* id, const char* path) {
     const openpete_mod_abi_t* d =
         (const openpete_mod_abi_t*)mod_dlsym(dl, "openpete_mod_abi");
@@ -263,6 +268,13 @@ static int mod_check_abi(void* dl, const char* id, const char* path) {
                     "<sdk>/openpete_mod_abi.c to the compile line, or let "
                     "the engine compile the mod from src/) — disabled",
                     id, path);
+        return -1;
+    }
+    if (d->api_version < MOD_ABI_LAYOUT_FLOOR) {
+        OPL_ERROR_F("mods", "%s: %s was built for api %u, but the api "
+                    "struct layout changed at api %u (entries before it "
+                    "moved); rebuild the mod against this SDK — disabled",
+                    id, path, d->api_version, MOD_ABI_LAYOUT_FLOOR);
         return -1;
     }
     if (d->api_version > OPENPETE_MOD_API_VERSION ||
@@ -1331,7 +1343,6 @@ static const openpete_mod_api_t s_api = {
     /* pillar 5: present and screen-space draw */
     .register_present_hook = api_register_present_hook,
     .draw_text     = openpete_mods_draw_text,
-    .draw_rect     = openpete_mods_draw_rect,
     /* pillar 6: post-process shaders */
     .shader_register     = openpete_mods_shader_register,
     .postfx_register     = openpete_mods_postfx_register,

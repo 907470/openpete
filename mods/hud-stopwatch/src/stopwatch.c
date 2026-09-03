@@ -1,7 +1,7 @@
 /* hud-stopwatch — rung 15: the native draw service + present hooks.
- * See mod.toml. Pattern to copy: tick hook counts sim time and draws the
- * per-tick backdrop; the present hook publishes nothing to the sim and
- * only reads mod state + ctx, formatting the smooth time at alpha. */
+ * See mod.toml. Pattern to copy: the tick hook counts sim time; the
+ * present hook publishes nothing to the sim and only reads mod state +
+ * ctx, formatting the smooth time at alpha. */
 
 #include <openpete_mod_api.h>
 
@@ -14,20 +14,10 @@ static int                       g_started;
 
 /* Overlay-space layout of the readout, read from the [[config]] rows at
  * entry (a committed edit reloads the mod, so entry re-reads them).
- * x/y are the text origin (window-height fractions from the top-left);
- * the backdrop panel is derived from them so it keeps hugging the
- * digits at any size. */
+ * x/y are the text origin (window-height fractions from the top-left). */
 static float g_text_x = 0.022f;   /* sits just under the FPS counter */
 static float g_text_y = 0.058f;
 static float g_cap_h  = 0.026f;
-
-/* Backdrop geometry as multiples of the glyph cap height: the text's
- * inset from the panel's top-left corner, and the panel's extent —
- * sized for the seven glyphs of "M:SS.hh". */
-#define PANEL_PAD_X 0.39f
-#define PANEL_PAD_Y 0.31f
-#define PANEL_W     6.54f
-#define PANEL_H     1.62f
 
 /* "reset" binding state: completed resets, and the previous tick's key
  * level for press-edge detection. */
@@ -75,11 +65,6 @@ static void on_camera_update(CPUState* cpu) {
     }
     g_reset_was_down = reset_down;
     g_ticks++;
-    /* Backdrop panel: tick context — persists across this tick's
-     * presents. */
-    g_api->draw_rect(g_text_x - PANEL_PAD_X * g_cap_h,
-                     g_text_y - PANEL_PAD_Y * g_cap_h,
-                     PANEL_W * g_cap_h, PANEL_H * g_cap_h, 0xFF1A1A28u);
     g_api->base(cpu);
 }
 

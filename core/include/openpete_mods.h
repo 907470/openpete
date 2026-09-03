@@ -357,8 +357,6 @@ void openpete_mods_draw_set_actor_fns(openpete_mods_actor_capture_fn cap,
 /* Loader-facing submission entry points (wired into the mod api). */
 void openpete_mods_draw_text(float x, float y, float cap_h, uint32_t rgb,
                              const char* str);
-void openpete_mods_draw_rect(float x, float y, float w, float h,
-                             uint32_t rgba);
 int  openpete_mods_capture_actor_pose(int kind, void* buf, int cap);
 int  openpete_mods_draw_actor(int kind, const void* pose, int len,
                               uint32_t tint_rgba);

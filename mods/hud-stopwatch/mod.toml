@@ -7,8 +7,8 @@
 # hook, so the hundredths spin smoothly at high --render-fps (the mod
 # owns its sub-tick curve; the engine never interpolates mod visuals).
 #
-# Draws: a dark backdrop rect (tick context, persists per tick) and the
-# "M:SS.hh" gameplay stopwatch (present context, one present each).
+# Draws the "M:SS.hh" gameplay stopwatch (present context, one present
+# each).
 # Time base: sim ticks / 29.913 — a gameplay-time stopwatch.
 
 [mod]
@@ -62,4 +62,4 @@ min = 0.010
 max = 0.100
 label = "Cap height"
 group = "Layout"
-help = "Glyph height; the backdrop panel scales with it"
+help = "Glyph height"

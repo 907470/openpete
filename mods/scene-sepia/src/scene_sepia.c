@@ -17,13 +17,14 @@ static void push_strength(void) {
     g_api->postfx_set_uniforms(g_self, g_fx, &p, sizeof p);
 }
 
-/* Present hook: a bright HUD marker drawn AFTER the SCENE fog pass, so
- * it must stay crisp (unfogged) — the under-HUD proof. Overlay space
- * is [0,aspect] × [0,1]; a small square in the top-left. */
+/* Present hook: a cyan HUD text marker drawn AFTER the SCENE pass, so it
+ * must stay cyan — a colour a sepia tone cannot produce, the under-HUD
+ * proof. Overlay space is [0,aspect] × [0,1]; the marker sits in the
+ * top-left. */
 static void on_present(const openpete_present_ctx_t* ctx) {
     (void)ctx;
     g_presents++;
-    if (g_marker) g_api->draw_rect(0.04f, 0.04f, 0.10f, 0.10f, 0xFF00FFFFu);
+    if (g_marker) g_api->draw_text(0.04f, 0.04f, 0.05f, 0x00FFFFu, "SCENE");
 }
 
 /* Status lines: the armed/unavailable verdict settles at entry and

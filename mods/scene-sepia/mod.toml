@@ -29,4 +29,4 @@ type = "bool"
 default = true
 label = "Under-HUD proof marker"
 group = "Sepia"
-help = "Yellow square drawn after the SCENE pass; stays full-colour, which is what distinguishes SCENE from COMPOSITE"
+help = "Cyan HUD text drawn after the SCENE pass; stays cyan, which is what distinguishes SCENE from COMPOSITE"

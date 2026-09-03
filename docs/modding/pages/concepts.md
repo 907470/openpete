@@ -51,9 +51,9 @@ something you can write a working mod against.
 Publish state from your tick hooks into your own variables, then
 evaluate your own curves at `ctx->alpha` for sub-tick smoothness.
 
-Draw calls work from both contexts. `draw_text` and `draw_rect`
-submitted during a tick persist for that tick's presents; submitted from
-a present hook, they live for one present.
+Draw calls work from both contexts. `draw_text` submitted during a tick
+persists for that tick's presents; submitted from a present hook, it
+lives for one present.
 
 ## Whether your mod changes gameplay
 
@@ -146,7 +146,7 @@ the wrong place.
 
 | Goal | Service | Writes guest RAM? |
 |---|---|---|
-| Draw HUD text or rectangles | `draw_text`, `draw_rect` | No |
+| Draw HUD text | `draw_text` | No |
 | Replace a game sound | `sfx_replace` | No |
 | Play your own WAV file | `sfx_play` | No |
 | Put custom textures on your models | `assets/textures/own/<hexid>.png` | No |

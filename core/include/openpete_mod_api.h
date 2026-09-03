@@ -13,13 +13,13 @@
  * Return 0 to load; any other value disables the mod and logs the value.
  *
  * @par Stability
- * The struct layout is frozen at api 10: from there on entries are
- * appended, never moved, retyped or removed. The manifest `api = N` pin is
- * the minimum version the mod needs; check `api_version < N`, never `!=`.
- * The UI annex (openpete_mod_ui.h) is versioned separately and carries no
- * stability promise. Each entry states the version it appeared in with
- * `@since`. api 1 is the base set; 7 removed the moby-type registry; 10
- * moved notify to the tail of the struct and added the ABI descriptor.
+ * The struct layout is frozen at api 11: from there on entries are
+ * appended, never moved, retyped or removed, and the loader refuses a
+ * prebuilt object built against an earlier api. The manifest `api = N`
+ * pin is the minimum version the mod needs; check `api_version < N`,
+ * never `!=`. The UI annex (openpete_mod_ui.h) is versioned separately
+ * and carries no stability promise. Each entry states the version it
+ * appeared in with `@since`.
  *
  * @par Overrides
  * A pre-hook, a post-hook and a full replacement are one mechanism,
@@ -253,7 +253,7 @@ typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
                                       void* out, uint32_t cap);
 
 /** @brief The api version this header describes. */
-#define OPENPETE_MOD_API_VERSION 10u
+#define OPENPETE_MOD_API_VERSION 11u
 
 /** @brief The engine's function table, passed to the mod entry point. */
 typedef struct openpete_mod_api {
@@ -493,12 +493,6 @@ typedef struct openpete_mod_api {
      */
     void (*draw_text)(float x, float y, float cap_h, uint32_t rgb,
                       const char* str);
-    /**
-     * @brief Draw a rectangle in overlay space; same contexts as draw_text().
-     * @param rgba R,G,B,A bytes; alpha is currently ignored.
-     * @since api 1
-     */
-    void (*draw_rect)(float x, float y, float w, float h, uint32_t rgba);
     /** @} */
 
     /** @name Post-process shaders
