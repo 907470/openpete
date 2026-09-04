@@ -38,6 +38,10 @@ carries two commits on top of upstream `stenzek/duckstation`:
    `core/include/openpete_fnv1a64.h`, and `tools/psxtrace_format.py`
    so the emitted v2 `.psxtrace` is byte-compatible with openpete's
    `--psxtrace-verify`.
+   The region table is a hand-written copy: `tools/check_ds_region_mirror.py`
+   (ctest `ds_region_mirror`) diffs it against the manifest row by row,
+   and `scripts/capture_psx_oracle_ds.sh` refuses to capture while they
+   differ.
 
 `duckstation-regtest` is the headless regression-test target that
 already ships with software audio (no audio output), software

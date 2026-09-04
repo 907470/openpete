@@ -356,7 +356,35 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             LABELS "determinism"
             TIMEOUT 120
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+        # DuckStation mirror of the gameplay-state manifest. The psxtrace
+        # capture module in the DuckStation fork hand-copies
+        # manifest/gameplay_state_regions.toml; both sides hash the same
+        # bytes only while the two tables reduce to identical rows. Skips
+        # when the submodule is not checked out.
+        add_test(NAME ds_region_mirror
+                 COMMAND ${Python3_EXECUTABLE}
+                         ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_ds_region_mirror.py)
+        set_tests_properties(ds_region_mirror PROPERTIES
+            LABELS "determinism;oracle"
+            TIMEOUT 30
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
+
+    # Recompiler GTE data-register side effects: mtc2/lwc2 to $30 must
+    # recompute LZCR, to $28 must unpack IR1-3. Recompiles a probe binary
+    # with PSXRecomp and runs the emitted C against a harness. Skips when
+    # PSXRecomp is not built.
+    add_test(NAME recomp_gte_sideeffects
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_recomp_gte.sh
+                     --build-dir=${CMAKE_BINARY_DIR}
+                     --cc=${CMAKE_C_COMPILER})
+    set_tests_properties(recomp_gte_sideeffects PROPERTIES
+        LABELS "recompiler;determinism"
+        TIMEOUT 120
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # PSX oracle gate — verify openpete gameplay-state RAM matches a
     # DuckStation (real SCPH1001) baseline tick-for-tick over the 20k-tick

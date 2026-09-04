@@ -6,7 +6,10 @@ list of addresses without a runtime TOML dependency.
 Inputs:  manifest/gameplay_state_regions.toml
 Outputs: <out_dir>/gameplay_state_regions.gen.h
 
-Schema mirrors openpete-determinism-enforcement.md Phase 1.
+`flatten_regions()` is the one place the manifest's per-kind fields are
+reduced to the runtime table row; tools/check_ds_region_mirror.py imports
+it so the DuckStation-side mirror is compared against the same reduction
+the engine compiles.
 """
 import argparse
 import sys
@@ -17,6 +20,90 @@ try:
 except ImportError:
     import tomli as tomllib  # type: ignore
 
+
+def coerce_int(v: object) -> int:
+    return v if isinstance(v, int) else int(v, 0)  # type: ignore[arg-type]
+
+
+def sanitize(s: str) -> str:
+    return "".join(c if c.isalnum() else "_" for c in s)
+
+
+def load_regions(manifest: str) -> list:
+    with open(manifest, "rb") as f:
+        data = tomllib.load(f)
+    return data.get("region", [])
+
+
+def flatten_regions(regions: list) -> list:
+    """Reduce each [[region]] to the runtime table row.
+
+    Row keys: kind (DIRECT / INDIRECT_ARRAY / INDIRECT_ARRAY_END_PTR /
+    INDIRECT_ARRAY_COUNT), start, length, aux, elem_size, name, mask
+    (tuple of offsets), mask_per_element (0/1), cd_load_transient (0/1),
+    gameplay_neutral (0/1).
+    """
+    rows = []
+    for r in regions:
+        name = r["name"]
+        kind = r.get("kind", "direct")
+        aux = 0
+        elem_size_field = 0
+        if kind == "direct":
+            start = coerce_int(r["start"])
+            length = coerce_int(r["length"])
+            kind_tag = "DIRECT"
+        elif kind == "indirect_array":
+            # `base_ptr` is the PSX vaddr of the base pointer; the runtime
+            # dereferences it and hashes `element_size * max_elements`
+            # bytes from the resulting address. `live_end_ptr_addr` clamps
+            # the hashed extent to `*end_ptr - *base_ptr`; `live_count_addr`
+            # clamps to `*count * element_size`. Either keeps stale heap
+            # garbage in unallocated tail slots out of the hash.
+            start = coerce_int(r["base_ptr"])
+            elem_sz = coerce_int(r["element_size"])
+            max_n = coerce_int(r["max_elements"])
+            length = elem_sz * max_n
+            if "live_end_ptr_addr" in r:
+                aux = coerce_int(r["live_end_ptr_addr"])
+                # Per-element masks need the stride at runtime.
+                if "mask_per_element" in r:
+                    elem_size_field = elem_sz
+                kind_tag = "INDIRECT_ARRAY_END_PTR"
+            elif "live_count_addr" in r:
+                aux = coerce_int(r["live_count_addr"])
+                elem_size_field = elem_sz
+                kind_tag = "INDIRECT_ARRAY_COUNT"
+            else:
+                if "mask_per_element" in r:
+                    elem_size_field = elem_sz
+                kind_tag = "INDIRECT_ARRAY"
+        else:
+            raise ValueError(f"unknown region kind {kind!r} for {name}")
+        if "mask_offsets" in r:
+            mask = tuple(coerce_int(m) for m in r["mask_offsets"])
+            per_elem = 0
+        elif "mask_per_element" in r:
+            mask = tuple(coerce_int(m) for m in r["mask_per_element"])
+            per_elem = 1
+        else:
+            mask = ()
+            per_elem = 0
+        rows.append({
+            "kind": kind_tag,
+            "start": start,
+            "length": length,
+            "aux": aux,
+            "elem_size": elem_size_field,
+            "name": name,
+            "mask": mask,
+            "mask_per_element": per_elem,
+            "cd_load_transient": 1 if r.get("cd_load_transient", False) else 0,
+            "gameplay_neutral": 1 if r.get("gameplay_neutral", False) else 0,
+        })
+    return rows
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--manifest", required=True)
@@ -26,11 +113,14 @@ def main() -> int:
                          "PCSX-Redux oracle dumper (scripts/pcsx-redux-trace.lua)")
     args = ap.parse_args()
 
-    with open(args.manifest, "rb") as f:
-        data = tomllib.load(f)
-    regions = data.get("region", [])
+    regions = load_regions(args.manifest)
     if not regions:
         print(f"error: no [[region]] entries in {args.manifest}", file=sys.stderr)
+        return 1
+    try:
+        rows = flatten_regions(regions)
+    except ValueError as e:
+        print(f"error: {e}", file=sys.stderr)
         return 1
 
     lines: list[str] = []
@@ -44,92 +134,34 @@ def main() -> int:
     lines.append(" */")
     lines.append("#include \"openpete_psx.h\"")
     lines.append("")
-    lines.append(f"#define OPENPETE_STATE_REGION_COUNT {len(regions)}")
+    lines.append(f"#define OPENPETE_STATE_REGION_COUNT {len(rows)}")
     lines.append("")
-    def coerce_int(v: object) -> int:
-        return v if isinstance(v, int) else int(v, 0)  # type: ignore[arg-type]
 
-    # First pass: emit per-region static mask arrays for any region
-    # with mask_offsets / mask_per_element. Avoids inline-array
-    # syntax issues and keeps the table struct dense.
-    def sanitize(s: str) -> str:
-        return "".join(c if c.isalnum() else "_" for c in s)
-    for r in regions:
-        mask = r.get("mask_offsets") or r.get("mask_per_element")
-        if not mask: continue
-        sym = f"openpete_mask_{sanitize(r['name'])}"
-        ms = ", ".join(f"0x{coerce_int(m):X}" for m in mask)
+    # Per-region static mask arrays keep the table struct dense.
+    for row in rows:
+        if not row["mask"]:
+            continue
+        sym = f"openpete_mask_{sanitize(row['name'])}"
+        ms = ", ".join(f"0x{m:X}" for m in row["mask"])
         lines.append(f"static const uint16_t {sym}[] = {{ {ms} }};")
     lines.append("")
 
     lines.append("static const OpenpeteStateRegion openpete_state_regions_table[OPENPETE_STATE_REGION_COUNT] = {")
-    for r in regions:
-        name = r["name"]
-        kind = r.get("kind", "direct")
-        aux = 0
-        elem_size_field = 0
-        if kind == "direct":
-            start  = coerce_int(r["start"])
-            length = coerce_int(r["length"])
-            kind_macro = "OPENPETE_REGION_DIRECT"
-        elif kind == "indirect_array":
-            # `base_ptr` is the PSX vaddr of the base pointer; runtime
-            # dereferences it and hashes `element_size * max_elements`
-            # bytes starting at the resulting address. Optional
-            # `live_end_ptr_addr` clamps the hashed extent to
-            # `*end_ptr - *base_ptr`; `live_count_addr` clamps to
-            # `*count * element_size`. Either lets us avoid hashing
-            # stale heap garbage in unallocated tail slots.
-            start    = coerce_int(r["base_ptr"])
-            elem_sz  = coerce_int(r["element_size"])
-            max_n    = coerce_int(r["max_elements"])
-            length   = elem_sz * max_n
-            if "live_end_ptr_addr" in r:
-                aux = coerce_int(r["live_end_ptr_addr"])
-                # Per-element masks need elem_size at runtime so
-                # mask offsets can be applied per-stride. Stash it
-                # in elem_size_field for END_PTR regions when masked.
-                if "mask_per_element" in r:
-                    elem_size_field = elem_sz
-                kind_macro = "OPENPETE_REGION_INDIRECT_ARRAY_END_PTR"
-            elif "live_count_addr" in r:
-                aux = coerce_int(r["live_count_addr"])
-                elem_size_field = elem_sz
-                kind_macro = "OPENPETE_REGION_INDIRECT_ARRAY_COUNT"
-            else:
-                # Plain INDIRECT_ARRAY: elem_size still useful for
-                # per-element masks even without a live extent clamp.
-                if "mask_per_element" in r:
-                    elem_size_field = elem_sz
-                kind_macro = "OPENPETE_REGION_INDIRECT_ARRAY"
-        else:
-            print(f"error: unknown region kind {kind!r} for {name}", file=sys.stderr)
-            return 1
-        # Mask config
-        if "mask_offsets" in r:
-            mask_sym = f"openpete_mask_{sanitize(name)}"
-            mask_count = len(r["mask_offsets"])
-            mask_per_elem = 0
-        elif "mask_per_element" in r:
-            mask_sym = f"openpete_mask_{sanitize(name)}"
-            mask_count = len(r["mask_per_element"])
-            mask_per_elem = 1
+    for row in rows:
+        if row["mask"]:
+            mask_sym = f"openpete_mask_{sanitize(row['name'])}"
         else:
             mask_sym = "NULL"
-            mask_count = 0
-            mask_per_elem = 0
-        # CD-load-transient flag: region legitimately diverges for the
-        # duration of a synchronous CdRead and re-converges; the gate
-        # tolerates a *healing* divergence here (see openpete_psx.h).
-        cd_transient = 1 if r.get("cd_load_transient", False) else 0
-        # gameplay_neutral flag: render-side region audited as gameplay-
-        # neutral — divergence is logged but never hard-fails the gate
-        # (see openpete_psx.h). The proof must accompany it in the manifest.
-        neutral = 1 if r.get("gameplay_neutral", False) else 0
+        # cd_load_transient: the region diverges for the duration of a
+        # synchronous CdRead and re-converges; the gate tolerates a healing
+        # divergence (see openpete_psx.h). gameplay_neutral: audited
+        # render-side region whose divergence is logged, never hard-failed;
+        # the proof accompanies it in the manifest.
         lines.append(
-            f"    {{ {kind_macro}, 0x{start:08X}u, 0x{length:X}u, "
-            f"0x{aux:08X}u, 0x{elem_size_field:X}u, \"{name}\", "
-            f"{mask_sym}, {mask_count}, {mask_per_elem}, {cd_transient}, {neutral} }},"
+            f"    {{ OPENPETE_REGION_{row['kind']}, 0x{row['start']:08X}u, 0x{row['length']:X}u, "
+            f"0x{row['aux']:08X}u, 0x{row['elem_size']:X}u, \"{row['name']}\", "
+            f"{mask_sym}, {len(row['mask'])}, {row['mask_per_element']}, "
+            f"{row['cd_load_transient']}, {row['gameplay_neutral']} }},"
         )
     lines.append("};")
     lines.append("")
@@ -137,18 +169,15 @@ def main() -> int:
     out = Path(args.out)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(lines))
-    print(f"[gen_state_regions] wrote {out} ({len(regions)} regions)")
+    print(f"[gen_state_regions] wrote {out} ({len(rows)} regions)")
 
     if args.out_lua:
-        # Lua kind values mirror the OPENPETE_REGION_* enum, hardcoded here
-        # to avoid a header dep — this file is consumed by the PCSX-Redux
-        # Lua dumper (LuaJIT) which has no C-toolchain access.
-        lua_kind = {
-            "OPENPETE_REGION_DIRECT":                  0,
-            "OPENPETE_REGION_INDIRECT_ARRAY":          1,
-            "OPENPETE_REGION_INDIRECT_ARRAY_END_PTR":  2,
-            "OPENPETE_REGION_INDIRECT_ARRAY_COUNT":    3,
-        }
+        # Kind values mirror the OPENPETE_REGION_* enum, hardcoded so the
+        # PCSX-Redux Lua dumper (LuaJIT, no C toolchain) needs no header.
+        # elem_size is emitted for COUNT regions only: the dumper has no
+        # mask support, so the per-element stride is unused elsewhere.
+        lua_kind = {"DIRECT": 0, "INDIRECT_ARRAY": 1,
+                    "INDIRECT_ARRAY_END_PTR": 2, "INDIRECT_ARRAY_COUNT": 3}
         lua_lines: list[str] = []
         lua_lines.append("-- Auto-generated by tools/gen_state_regions.py — do not edit.")
         lua_lines.append(f"-- Source: {args.manifest}")
@@ -158,43 +187,21 @@ def main() -> int:
         lua_lines.append("--   0=DIRECT 1=INDIRECT_ARRAY 2=INDIRECT_ARRAY_END_PTR")
         lua_lines.append("--   3=INDIRECT_ARRAY_COUNT")
         lua_lines.append("return {")
-        for r in regions:
-            name = r["name"]
-            kind = r.get("kind", "direct")
-            aux = 0
-            elem_size_field = 0
-            if kind == "direct":
-                start  = coerce_int(r["start"])
-                length = coerce_int(r["length"])
-                kind_val = lua_kind["OPENPETE_REGION_DIRECT"]
-            elif kind == "indirect_array":
-                start    = coerce_int(r["base_ptr"])
-                elem_sz  = coerce_int(r["element_size"])
-                max_n    = coerce_int(r["max_elements"])
-                length   = elem_sz * max_n
-                if "live_end_ptr_addr" in r:
-                    aux = coerce_int(r["live_end_ptr_addr"])
-                    kind_val = lua_kind["OPENPETE_REGION_INDIRECT_ARRAY_END_PTR"]
-                elif "live_count_addr" in r:
-                    aux = coerce_int(r["live_count_addr"])
-                    elem_size_field = elem_sz
-                    kind_val = lua_kind["OPENPETE_REGION_INDIRECT_ARRAY_COUNT"]
-                else:
-                    kind_val = lua_kind["OPENPETE_REGION_INDIRECT_ARRAY"]
-            else:
-                kind_val = -1
+        for row in rows:
+            es = row["elem_size"] if row["kind"] == "INDIRECT_ARRAY_COUNT" else 0
             lua_lines.append(
-                f"    {{ kind={kind_val}, start=0x{start:08X}, "
-                f"length=0x{length:X}, aux=0x{aux:08X}, "
-                f"elem_size=0x{elem_size_field:X}, "
-                f"name={name!r} }},"
+                f"    {{ kind={lua_kind[row['kind']]}, start=0x{row['start']:08X}, "
+                f"length=0x{row['length']:X}, aux=0x{row['aux']:08X}, "
+                f"elem_size=0x{es:X}, "
+                f"name={row['name']!r} }},"
             )
         lua_lines.append("}")
         out_lua = Path(args.out_lua)
         out_lua.parent.mkdir(parents=True, exist_ok=True)
         out_lua.write_text("\n".join(lua_lines) + "\n")
-        print(f"[gen_state_regions] wrote {out_lua} ({len(regions)} regions, lua)")
+        print(f"[gen_state_regions] wrote {out_lua} ({len(rows)} regions, lua)")
     return 0
+
 
 if __name__ == "__main__":
     sys.exit(main())

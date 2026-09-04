@@ -47,6 +47,14 @@ if [[ ! -x "$DS_BIN" ]]; then
 fi
 [[ -f "$DISC" ]] || { echo "[capture-ds] disc missing: $DISC" >&2; exit 1; }
 
+# The capture module's region table is a hand-written copy of the
+# manifest; a golden captured from a drifted copy would hash different
+# bytes than openpete and fail every run against it.
+python3 tools/check_ds_region_mirror.py || {
+    echo "[capture-ds] refusing to capture: DuckStation region mirror differs from the manifest" >&2
+    exit 1
+}
+
 mkdir -p "$(dirname "$OUT")"
 # DuckStation's -frames is *presentation* frames (not GamestateDraw hits).
 # Pad generously: ~1000 startup + 4× the requested record count handles
