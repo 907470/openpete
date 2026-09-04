@@ -35,6 +35,20 @@ theme:
     - content.code.copy
     - toc.integrate
 
+# The SDK ships this site as static files opened from disk. Under file://
+# the material bundle loads search/search_index.js, which only the offline
+# plugin emits; without it the bundle aborts before mounting the sidebar,
+# leaving the nav unsized and clipped at the bottom of the window.
+plugins:
+  - search
+  - offline
+
+# The offline plugin's search worker shim, vendored: the plugin only points at
+# unpkg.com when no polyfill path contains "iframe-worker".
+extra:
+  polyfills:
+    - assets/javascripts/iframe-worker-shim.js
+
 markdown_extensions:
   - admonition
   - tables

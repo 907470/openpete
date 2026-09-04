@@ -426,6 +426,7 @@ add_dependencies(openpete-spyro1 spyro1_game_structs)
 set(_mod_docs_stamp ${CMAKE_CURRENT_BINARY_DIR}/moddocs.stamp)
 file(GLOB _mod_docs_manifests CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/mods/*/mod.toml)
 file(GLOB _mod_docs_pages CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/docs/modding/pages/*.md)
+file(GLOB _mod_docs_assets CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/docs/modding/pages/assets/javascripts/*)
 add_custom_command(
     OUTPUT  ${_mod_docs_stamp}
     COMMAND ${CMAKE_SOURCE_DIR}/scripts/build-mod-docs.sh
@@ -443,6 +444,7 @@ add_custom_command(
             ${CMAKE_SOURCE_DIR}/docs/modding/mkdocs.yml
             ${_mod_docs_manifests}
             ${_mod_docs_pages}
+            ${_mod_docs_assets}
             ${CMAKE_SOURCE_DIR}/mods/examples.txt
     COMMENT "Building mod-author docs (gen_mod_docs.py + mkdocs)")
 add_custom_target(mod_docs ALL DEPENDS ${_mod_docs_stamp})
