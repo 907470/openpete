@@ -29,6 +29,7 @@
 #if defined(_WIN32)
 #  include <io.h>
 #  include <sys/stat.h>
+#  include <windows.h>
 #  define op_pipe(fds)      _pipe((fds), 65536, _O_BINARY)
 #  define op_dup(fd)        _dup(fd)
 #  define op_dup2(a, b)     _dup2((a), (b))
@@ -37,6 +38,10 @@
 #  define op_close(fd)      _close(fd)
 #  define OP_OPEN_MODE      (_S_IREAD | _S_IWRITE)
 #  define OP_PATH_SEP       '\\'
+#  define OP_NULL_DEVICE    "NUL"
+/* Without a console the C runtime parks a negative sentinel, not a
+ * handle, in the standard slots. */
+#  define op_fd_is_open(fd) (_get_osfhandle(fd) > 0)
 #else
 #  include <sys/file.h>
 #  include <unistd.h>
@@ -48,6 +53,8 @@
 #  define op_close(fd)      close(fd)
 #  define OP_OPEN_MODE      0644
 #  define OP_PATH_SEP       '/'
+#  define OP_NULL_DEVICE    "/dev/null"
+#  define op_fd_is_open(fd) (fcntl((fd), F_GETFD) >= 0)
 #  ifndef O_BINARY
 #    define O_BINARY 0
 #  endif
@@ -68,7 +75,16 @@ static SDL_Thread* s_pump        = NULL;
 static char        s_path[LOG_PATH_MAX];
 static size_t      s_written     = 0;
 static int         s_truncated   = 0;
-#if !defined(_WIN32)
+/* Descriptor behind the stderr FILE object. 2 whenever the process had a
+ * stderr at startup. A console-less Windows process leaves the object
+ * detached (_fileno() < 0, every fprintf fails with EBADF); it is rebound
+ * to a fresh descriptor, which then mirrors fd 2. */
+static int         s_stderr_fd   = 2;
+#if defined(_WIN32)
+/* Whatever STD_ERROR_HANDLE named before the swap; NULL under a GUI-subsystem
+ * launch with no console, restored verbatim on close. */
+static HANDLE      s_win_orig_err = NULL;
+#else
 static int         s_lock_fd     = -1;
 #endif
 
@@ -172,6 +188,31 @@ static void drop_lock(void) {
 #endif
 }
 
+/* A GUI-subsystem Windows exe launched by a double click has no standard
+ * handles at all, and a process whose parent closed fd 2 has none either.
+ * Every open() below would then land on the lowest free descriptor: the
+ * log file (or the lock) becomes fd 2 and the pipe swap closes it. Park
+ * the null device on each missing standard descriptor first, so fd 2 is
+ * a real, writable, non-terminal stderr and the tee works unchanged;
+ * the terminal leg then discards into the null device. */
+static void reserve_std_fds(void) {
+    for (int fd = 0; fd <= 2; fd++) {
+        if (op_fd_is_open(fd)) continue;
+        int n = open(OP_NULL_DEVICE, O_RDWR | O_BINARY);
+        if (n < 0) return;
+        if (n != fd) { op_dup2(n, fd); op_close(n); }
+    }
+#if defined(_WIN32)
+    if (_fileno(stderr) < 0 && freopen(OP_NULL_DEVICE, "w", stderr))
+        s_stderr_fd = _fileno(stderr);
+#endif
+}
+
+static void restore_fd2(void) {
+    op_dup2(s_real_stderr, 2);
+    if (s_stderr_fd != 2) op_dup2(s_real_stderr, s_stderr_fd);
+}
+
 int openpete_log_file_open(const char* spec) {
     if (s_pump) return 0;  /* already open */
 
@@ -180,23 +221,11 @@ int openpete_log_file_open(const char* spec) {
         return -1;
 
     if (resolve_path(spec, s_path, sizeof s_path) != 0) return -1;
+    reserve_std_fds();
     if (take_lock(s_path) != 0) return -1;
 
-    /* Keep one generation. A crash that a relaunch papers over is the
-     * common report ("it worked the second time"), and the run that
-     * failed is the one worth reading. */
-    char prev[LOG_PATH_MAX + 4];
-    if (snprintf(prev, sizeof prev, "%s.1", s_path) < (int)sizeof prev) {
-        remove(prev);
-        rename(s_path, prev);
-    }
-
-    s_log_fd = open(s_path, O_CREAT | O_WRONLY | O_TRUNC | O_BINARY,
-                    OP_OPEN_MODE);
-    if (s_log_fd < 0) { drop_lock(); return -1; }
-
     int fds[2];
-    if (op_pipe(fds) != 0) goto fail_file;
+    if (op_pipe(fds) != 0) { drop_lock(); return -1; }
     s_pipe_r = fds[0];
 
     s_real_stderr = op_dup(2);
@@ -210,27 +239,58 @@ int openpete_log_file_open(const char* spec) {
     openpete_log_pin_stderr_tty(isatty(s_real_stderr));
 #endif
 
+    /* Rotate and open only once the tee is certain to go up: a failure
+     * above must leave the previous run's log intact, not replaced by an
+     * empty file. One generation is kept because a crash that a relaunch
+     * papers over is the common report ("it worked the second time"), and
+     * the run that failed is the one worth reading. */
+    char prev[LOG_PATH_MAX + 4];
+    if (snprintf(prev, sizeof prev, "%s.1", s_path) < (int)sizeof prev) {
+        remove(prev);
+        rename(s_path, prev);
+    }
+    s_log_fd = open(s_path, O_CREAT | O_WRONLY | O_TRUNC | O_BINARY,
+                    OP_OPEN_MODE);
+    if (s_log_fd < 0) { op_close(fds[1]); goto fail_dup; }
+
     setvbuf(stderr, NULL, _IONBF, 0);
-    if (op_dup2(fds[1], 2) < 0) { op_close(fds[1]); goto fail_dup; }
-    /* fd 2 is now the only writer, so restoring it in close() is what
-     * gives the pump its EOF. */
+    if (op_dup2(fds[1], 2) < 0) { op_close(fds[1]); goto fail_file; }
+    /* fd 2 (and the rebound stderr descriptor, when distinct) are now the
+     * only writers, so restoring them in close() is what gives the pump
+     * its EOF. */
     op_close(fds[1]);
+    if (s_stderr_fd != 2) op_dup2(2, s_stderr_fd);
+
+#if defined(_WIN32)
+    /* _dup2 rewires the C runtime only. Code that writes through the
+     * Win32 standard handle (the Vulkan loader, SDL, a child compiler
+     * inheriting its parent's handles) needs STD_ERROR_HANDLE pointed at
+     * the pipe as well. */
+    s_win_orig_err = GetStdHandle(STD_ERROR_HANDLE);
+    SetStdHandle(STD_ERROR_HANDLE, (HANDLE)_get_osfhandle(2));
+#endif
 
     s_pump = SDL_CreateThread(pump_thread, "openpete-log", NULL);
-    if (!s_pump) { op_dup2(s_real_stderr, 2); goto fail_dup; }
+    if (!s_pump) {
+#if defined(_WIN32)
+        SetStdHandle(STD_ERROR_HANDLE, s_win_orig_err);
+#endif
+        restore_fd2();
+        goto fail_file;
+    }
 
     atexit(openpete_log_file_close);
     return 0;
 
+fail_file:
+    op_close(s_log_fd);
+    s_log_fd = -1;
 fail_dup:
     op_close(s_real_stderr);
     s_real_stderr = -1;
 fail_pipe:
     op_close(s_pipe_r);
     s_pipe_r = -1;
-fail_file:
-    op_close(s_log_fd);
-    s_log_fd = -1;
     drop_lock();
     return -1;
 }
@@ -239,7 +299,10 @@ void openpete_log_file_close(void) {
     if (!s_pump) return;
 
     fflush(stderr);
-    op_dup2(s_real_stderr, 2);  /* last pipe writer goes away -> pump EOF */
+#if defined(_WIN32)
+    SetStdHandle(STD_ERROR_HANDLE, s_win_orig_err);
+#endif
+    restore_fd2();  /* last pipe writer goes away -> pump EOF */
     /* The EOF depends on no live child still holding an inherited fd 2.
      * Every process this runtime spawns (the first-boot compiler and
      * linker, the mod compiler) is waited on before shutdown, and their
