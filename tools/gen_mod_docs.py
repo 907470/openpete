@@ -55,7 +55,16 @@ def read_toml_blocks(path: Path, block: str):
 
 
 def unq(v: str) -> str:
-    return v.strip().strip('"')
+    """A TOML scalar as text: the value with any trailing `# comment`
+    removed, then unquoted."""
+    v = v.strip()
+    if not v.startswith('"'):
+        v = v.split('#', 1)[0].strip()
+    else:
+        m = re.match(r'"([^"]*)"', v)
+        if m:
+            v = m.group(1)
+    return v.strip('"')
 
 
 # ── api.md ───────────────────────────────────────────────────────────────
@@ -542,7 +551,7 @@ def gen_gallery(mods_dir: Path) -> str:
         srcs = sorted(p.name for p in (toml.parent / "src").glob("*.c"))
         sm = fields.get("sim_mutative")
         mutative = (sm == "true") if sm in ("true", "false") \
-            else bool(srcs) or "[[level]]" in text
+            else bool(srcs) or bool(re.search(r"^\[\[level\]\]", text, re.M))
         bits = [f"v{fields.get('version', '?')}"]
         bits.append("writes guest RAM" if mutative else "writes no guest RAM")
         blocks = sorted({b for b in re.findall(r"^\[\[(\w+)\]\]", text, re.M)})

@@ -1,5 +1,5 @@
 // games/spyro-1/mod_wad_overlay.c — the asset overlay's level-segment
-// namespace (PoC ladder rung 9, notes/plans/openpete-modding-framework.md).
+// namespace.
 //
 // Spyro's loader pulls everything from WAD.WAD by sector range, so the
 // overlay key is LOGICAL identity, not a path: per-level {overlay, data}

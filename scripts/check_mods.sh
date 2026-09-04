@@ -374,6 +374,31 @@ else
     printf '%s\n' "$out" | grep -i texpack | head -3
 fi
 
+say "asset overlay: symbolic name binds to content, not to the VRAM rect (rung 7d)"
+# The title UI atlas and every level's texture page upload to the same
+# 512x256 block at VRAM (512,256). The annotation must bind title_ui to
+# the atlas content so a level page landing on the rect stays unnamed.
+out="$(OPENPETE_TEXPACK_DUMP_REGISTRY=1 timeout 600 "$BIN" --headless --disc "$DISC" \
+        --skip-to-level artisans --frame-limit 3000 --mods-dir "$WORK/tex" \
+        --screenshot-on-frame 2900 \
+        --screenshot-output "$WORK/tex7d-{n}.png" 2>&1)"
+bound="$(printf '%s\n' "$out" | sed -n 's/.*annotate title_ui: bound to thash=\([0-9a-f]*\).*/\1/p' | head -1)"
+if [ -n "$bound" ]; then
+    ok "title_ui annotation bound to content $bound"
+else
+    bad "title_ui annotation never bound (engagement missing)"
+    printf '%s\n' "$out" | grep -i "annotate" | head -3
+fi
+named="$(printf '%s\n' "$out" | grep -c 'asset=title_ui' || true)"
+stray="$(printf '%s\n' "$out" | grep 'asset=title_ui' | grep -vc "thash=$bound" || true)"
+rect="$(printf '%s\n' "$out" | grep -c '\[texpack\] entry 512,256 512x256' || true)"
+if [ "$rect" -ge 1 ] && [ "$stray" -eq 0 ]; then
+    ok "after the Artisans load the rect holds $rect entry, $named named title_ui, none with another hash"
+else
+    bad "title_ui over-claims: rect entries=$rect named=$named other-hash-named=$stray"
+    printf '%s\n' "$out" | grep '\[texpack\] entry 512,256' | head -3
+fi
+
 say "asset overlay: two mods collide on one asset — last in order wins (rung 10)"
 for m in duel-a duel-b; do
     mkdir -p "$WORK/duelsrc/$m/assets/textures"

@@ -23,7 +23,8 @@ mods, then the original game code.
 `--mods a,b` or `OPENPETE_MODS=a,b` replaces the list for one run.
 `--mods ""` runs without mods.
 
-The M overlay's Mods section toggles a loaded mod at the next tick
+The in-game settings overlay (opened with the M key, "the M overlay"
+below) has a Mods section that toggles a loaded mod at the next tick
 boundary and edits its settings. It does not reorder mods.
 
 A distribution packaged with the SDK carries working examples under
@@ -38,7 +39,7 @@ it. The [Examples](reference/gallery.md) page lists them first.
 | `config.toml` | Optional player-editable settings, read through `api->config_*`. |
 | `src/*.c` | C sources, compiled on load against `<exe>/sdk/`. |
 | `shaders/*.vert`, `*.frag` | GLSL, compiled on load. See [Shaders](shaders.md). |
-| `assets/` | Overlay root: `textures/`, `music/`, `sfx/`, `levels/`. |
+| `assets/` | Overlay root: `textures/`, `music/`, `sfx/`, `wad/`, `levels/`. See [Textures and music](assets.md), [Sounds](sounds.md), [Levels](levels.md). |
 | `data/` | Per-mod persistent directory, created on first `api->data_dir()` call. |
 | `.build/` | The engine's compile cache. Not part of a release. |
 
@@ -62,6 +63,10 @@ rebindable key. See [Manifest](manifest.md).
 
 ## A code mod
 
+A code mod compiles on the player's machine. The Windows archive and the
+Linux AppImage bundle the compiler; the Linux `.tar.xz` uses `cc` on
+`PATH`, or the compiler named by `OPENPETE_CC`.
+
 1. `mods/hello/mod.toml`:
 
     ``` toml
@@ -69,7 +74,7 @@ rebindable key. See [Manifest](manifest.md).
     id      = "hello"
     name    = "Hello"
     version = "0.1.0"
-    api     = 2
+    api     = 1
     sim_mutative = false   # never writes guest RAM
     ```
 
@@ -118,7 +123,9 @@ with `if (api->api_version >= N)`.
    `op_base_Foo(cpu, ...)`, `op_call_Foo(cpu, ...)`, with guest-to-host
    pointer marshalling.
 3. **By address.** `api->override_addr(self, 0x8003xxxx, fn)`. Arguments
-   are in `cpu->a0..a3`, the return value in `cpu->v0`. Addresses are
+   are in `cpu->a0..a3`, the return value in `cpu->v0`; the register
+   fields need `#include <psx_runtime.h>` (in `sdk/`), since the API
+   header only forward-declares `CPUState`. Addresses are
    pinned to the SCUS-94228 binary; the loader logs a warning on a mod's
    first raw registration.
 

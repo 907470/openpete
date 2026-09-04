@@ -353,12 +353,12 @@ static int on_800168DC(CPUState* cpu, uint32_t addr) {
         s_cpu = cpu;
         openpete_native_scene_register_overlay_precapture(on_overlay_precapture);
     }
-    /* First symbolic texture asset (texture-replacement plan Phase 7): name
-     * the title-screen UI upload (logo + PRESS START + banner glyphs — one
-     * 512x256 block at VRAM (512,256), measured via the registry dump). A
-     * pack file `title_ui.png` then replaces the whole block by NAME.
-     * Rect-keyed for now; decomp load-site annotation supersedes this when
-     * the uploader function gets named. */
+    /* Name the title-screen UI upload (logo + PRESS START + banner glyphs,
+     * one 512x256 block at VRAM (512,256)) so a pack file `title_ui.png`
+     * replaces the whole block by name. The first title-screen primitive is
+     * linked after the block is uploaded, so the annotation binds to the
+     * atlas content; the level texture pages that later reuse the same VRAM
+     * block hash differently and stay unnamed. */
     static int s_annotated = 0;
     if (!s_annotated) {
         s_annotated = 1;

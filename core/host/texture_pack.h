@@ -75,10 +75,11 @@ int texture_pack_resolve(int tpage_x, int tpage_y, int clut_x, int clut_y,
 
 /* ---- symbolic annotation (game layer, Phase 7) --------------------------- */
 
-/* Name the next upload(s) that land exactly on `rect` (x,y,w,h). The game
- * layer calls this from load-site knowledge; the registry attaches the name
- * to matching entries as they arrive. `name` must be a string literal or
- * otherwise outlive the registry. */
+/* Name one texture by content: the upload live on exactly (x,y,w,h) now, or
+ * the next upload landing there when none is live. The name binds to that
+ * upload's content hash; later uploads on the same rect carry it only when
+ * their bytes match, since VRAM blocks are shared across screens and levels.
+ * `name` must be a string literal or otherwise outlive the registry. */
 void texture_pack_annotate(int x, int y, int w, int h, const char *name);
 
 /* ---- replacement packs (Phase 3) ----------------------------------------- */

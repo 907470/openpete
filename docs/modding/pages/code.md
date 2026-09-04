@@ -37,7 +37,8 @@ counter before and after.
 
 `api->call(cpu, addr)` calls a guest function through the same dispatch
 layer, so the callee's own override chain runs. Write `cpu->a0..a3`
-before, read `cpu->v0` after.
+before, read `cpu->v0` after. The register fields are declared in
+`psx_runtime.h` (in `sdk/`); include it alongside the API header.
 
 ## Tick context and present context
 
@@ -74,8 +75,9 @@ translate them again before following them.
 - Take addresses from the `OP_GADDR_*` constants in
   [Globals](reference/globals.md) and the `OP_FNADDR_*` constants in
   `openpete_sdk_symbols.h`.
-- `op_read_u32`, `op_write_u32`, `op_read_s32`, `op_read_u8`,
-  `op_write_u8` are inline helpers in the API header.
+- `op_read_u32(api, va)`, `op_write_u32(api, va, v)`, `op_read_s32`,
+  `op_read_u8`, `op_write_u8` are inline helpers in the API header; each
+  takes the API table as its first argument.
 
 ### The arena
 

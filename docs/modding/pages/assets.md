@@ -51,3 +51,16 @@ The WAV is PCM 16-bit, mono or stereo, at 11025, 22050, 32000, 44100, or
 
 There is no music census tool; indices come from the game's
 `m_MusicTable`.
+
+## Level data
+
+`assets/wad/level<ID>.data.bin` replaces one level's data segment and
+`assets/wad/level<ID>.ovl.bin` its code overlay, where ID is the logical
+level id (10 = Artisans). The game loads everything from one WAD file by
+sector range; the engine serves the mod's bytes to every disc read that
+lands inside that level's entry. An overlay replacement must match the
+stock size, since code loads into a fixed buffer; a data replacement may
+be any size. These files are disc-derived, so a mod ships a generator
+that writes them on the player's machine (`recolored-artisans`, see
+[Publishing](publishing.md)). Custom levels in their own slot use
+`assets/levels/` instead, see [Levels](levels.md).

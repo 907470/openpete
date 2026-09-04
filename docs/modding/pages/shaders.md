@@ -76,9 +76,10 @@ ratio. The mod's own block is set 3 binding 1: declare it `std140` and
 mirror the layout in the C struct by hand. `postfx_set_uniforms` copies
 the bytes verbatim, at most 1024.
 
-Examples: `mods/crt-filter` (a config-driven `COMPOSITE` pass),
-`mods/crt-beans` (a three-pass CRT model), `mods/scene-sepia` (a `SCENE`
-pass under the HUD).
+Example: `crt-beans` (a three-pass CRT model, shipped under
+`sdk/examples/`). In the source tree only: `mods/crt-filter` (a
+config-driven `COMPOSITE` pass) and `mods/scene-sepia` (a `SCENE` pass
+under the HUD).
 
 ## Materials
 
@@ -92,6 +93,8 @@ order and changes colour math only. It cannot move, reorder, hide, or
 re-composite geometry. On an additive draw the output is still added.
 
 ### Declare a material in the manifest
+
+Up to 16 rows per mod.
 
 ```toml
 [[material]]
@@ -224,5 +227,7 @@ Results are memoised per instance and the call count is not part of the
 contract, so the callback must be a pure function of its key and
 tick-stable guest state. Instances whose blocks are byte-identical share
 one slot and one batch, so cost follows the number of distinct outcomes,
-not the number of matches. `mods/moby-instance-tint` is the worst case by
-construction: one distinct block per instance.
+not the number of matches. `mods/moby-instance-tint` (source tree only)
+is the worst case by construction: one distinct block per instance.
+`channel-gallery` (shipped under `sdk/examples/`) registers materials
+from C over every selectable surface.

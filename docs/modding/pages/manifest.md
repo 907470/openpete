@@ -6,10 +6,10 @@
 
 ``` toml
 [mod]
-id      = "my-mod"        # must match the directory or zip name
+id      = "my-mod"        # the directory or zip name; enabled.txt and --mods use that name
 name    = "My Mod"        # shown in the Mods section; defaults to id
 version = "0.1.0"
-api     = 2               # minimum OPENPETE_MOD_API_VERSION; omit for a mod with no src/
+api     = 1               # minimum OPENPETE_MOD_API_VERSION; omit for a mod with no src/
 deps    = ["other-mod"]   # hard dependencies: their entry points run first
 sim_mutative = false      # see below
 state    = "none"         # "none" | "rebuildable": permits rewind with this mod loaded

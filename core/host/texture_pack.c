@@ -62,6 +62,8 @@ typedef struct {
 typedef struct {
     int x, y, w, h;
     const char *name;
+    uint64_t thash;             /* content the name is bound to; 0 = armed,
+                                 * binds to the next upload landing on the rect */
 } tp_annot;
 
 typedef struct {                /* resolve cache slot */
@@ -656,9 +658,21 @@ static void texture_pack_on_load_locked(int x, int y, int w, int h,
         e->thash = XXH3_64bits_digest(&st);
     }
     e->asset = NULL;
-    for (int i = 0; i < s_annot_n; i++)
-        if (s_annot[i].x == x && s_annot[i].y == y &&
-            s_annot[i].w == w && s_annot[i].h == h) e->asset = s_annot[i].name;
+    for (int i = 0; i < s_annot_n; i++) {
+        tp_annot *a = &s_annot[i];
+        if (a->x != x || a->y != y || a->w != w || a->h != h) continue;
+        /* The rect is shared: the title UI atlas and every level's texture
+         * page land on the same VRAM block. The name belongs to one content,
+         * so it binds to the first upload's hash and later uploads to the rect
+         * carry it only when their bytes match. */
+        if (a->thash == 0) {
+            a->thash = e->thash;
+            fprintf(stderr, "[texpack] annotate %s: bound to thash=%016llx "
+                    "(%d,%d %dx%d, on upload)\n", a->name,
+                    (unsigned long long)a->thash, x, y, w, h);
+        }
+        if (a->thash == e->thash) e->asset = a->name;
+    }
 }
 void texture_pack_on_load(int x, int y, int w, int h,
                           const uint16_t *src, int src_stride) { SDL_LockMutex(reg_mx()); texture_pack_on_load_locked(x, y, w, h, src, src_stride); SDL_UnlockMutex(s_reg_mx); }
@@ -701,13 +715,25 @@ void texture_pack_on_clear(int x, int y, int w, int h) { SDL_LockMutex(reg_mx())
 
 static void texture_pack_annotate_locked(int x, int y, int w, int h, const char *name) {
     if (s_annot_n >= TP_MAX_ANNOT) return;
-    s_annot[s_annot_n++] = (tp_annot){ x, y, w, h, name };
-    /* Retroactively name an already-live exact-rect entry. */
+    tp_annot *a = &s_annot[s_annot_n++];
+    *a = (tp_annot){ x, y, w, h, name, 0 };
+    /* An exact-rect entry live now is the content being named: bind the
+     * annotation to its hash and name it. With none live the annotation
+     * stays armed and binds to the next upload on the rect. */
     for (int i = 0; i < s_ent_n; i++) {
         tp_entry *e = &s_ent[i];
-        if (e->alive && e->x == x && e->y == y && e->w == w && e->h == h)
+        if (e->alive && e->x == x && e->y == y && e->w == w && e->h == h) {
+            a->thash = e->thash;
             e->asset = name;
+        }
     }
+    if (a->thash)
+        fprintf(stderr, "[texpack] annotate %s: bound to thash=%016llx "
+                "(%d,%d %dx%d, live entry)\n", name,
+                (unsigned long long)a->thash, x, y, w, h);
+    else
+        fprintf(stderr, "[texpack] annotate %s: armed for the next upload on "
+                "%d,%d %dx%d\n", name, x, y, w, h);
 }
 void texture_pack_annotate(int x, int y, int w, int h, const char *name) { SDL_LockMutex(reg_mx()); texture_pack_annotate_locked(x, y, w, h, name); SDL_UnlockMutex(s_reg_mx); }
 

@@ -44,6 +44,18 @@ import no symbol from it, so an empty stub with the expected version node
 satisfies the loader without shipping a terminal library (see
 `scripts/setup_linux_clang.sh`).
 
+## Mod SDK example mods — bundled under `sdk/examples/`
+
+Present only in archives packaged with the mod SDK. Each example is a
+separate directory the loader compiles or reads at boot; none is linked
+into `openpete-spyro1`.
+
+| Component                          | License | Notes                                                                 |
+| ---------------------------------- | ------- | --------------------------------------------------------------------- |
+| crt-beans (`sdk/examples/crt-beans`) | MIT     | port of https://github.com/aduffey/crt-beans; the mod ships its `LICENSE` |
+
+The other examples are original to this project and carry the root licence.
+
 ## Linux AppImage — bundled at runtime
 
 | Component                              | License                              | Notes                                                              |

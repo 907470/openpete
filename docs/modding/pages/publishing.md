@@ -7,10 +7,14 @@ textures, sounds, level payloads, or code overlays, and no patch whose
 plaintext is game data. Ship a generator the player runs once against
 their own disc image, writing the derived files into `assets/` on their
 machine. `recolored-artisans` shows the pattern: its `generate.sh` calls
-`tools/extract_wad_entry.py`, which ships under `<exe>/sdk/tools/` and
-lives at `tools/` in the source tree, so the same relative path works
-from either place. Original content (a synthesised sound, a painted texture, a
-model you built) is yours to ship.
+`extract_wad_entry.py`, which ships under `<exe>/sdk/tools/` and lives at
+`tools/` in the source tree; the script looks for it relative to its own
+directory from `sdk/examples/`, from the source tree's `mods/`, and from
+`<exe>/mods/`, and `OPENPETE_SDK_TOOLS` names the directory when the mod
+lives elsewhere. The generator needs bash and python3; on Windows run it
+from Git Bash or WSL, or run the python command it contains by hand.
+Original content (a synthesised sound, a painted texture, a model you
+built) is yours to ship.
 
 ## Carry a licence
 
