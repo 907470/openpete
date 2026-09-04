@@ -578,7 +578,8 @@ if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
         mods/double-gems mods/natural-gems mods/lib-and-client \
         mods/hud-stopwatch \
         mods/arena-probe mods/arena-canary mods/vstream-rehandle \
-        mods/hd-single-texture mods/music-swap mods/spyro3 \
+        mods/hd-single-texture mods/music-swap mods/declarative-example \
+        mods/spyro3 \
         mods/supercharge-anywhere; then
     ok "modtest runner: all [test] blocks green"
 else

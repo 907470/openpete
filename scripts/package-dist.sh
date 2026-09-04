@@ -107,7 +107,11 @@ stage_common() {  # stage_common <build-game-dir>
             echo "[package-dist] WARNING: $B/moddocs/site missing (mkdocs" \
                  "not installed?) — sdk/docs/ not staged" >&2
         fi
-        mkdir -p "$STAGE/sdk/examples"
+        # Generator tools the examples call as ../../tools/<name> from
+        # their own directory, so the same relative path works in the
+        # source tree (mods/<id>) and in the archive (sdk/examples/<id>).
+        mkdir -p "$STAGE/sdk/tools" "$STAGE/sdk/examples"
+        cp tools/extract_wad_entry.py "$STAGE/sdk/tools/"
         while read -r ex; do
             [[ -z "$ex" || "$ex" == \#* ]] && continue
             [[ -f "mods/$ex/mod.toml" ]] \

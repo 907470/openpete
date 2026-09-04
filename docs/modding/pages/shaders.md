@@ -118,8 +118,8 @@ Every selector key is optional; an omitted key matches everything:
 
 A key the engine does not recognise is refused with an error, since a
 typo that silently widened a selector would repaint geometry the row
-never named. `mods/declarative-reshade` is a complete example: one
-manifest and one `.frag`.
+never named. `declarative-example` is a complete example: one manifest,
+asset files and one `.frag`.
 
 Terrain is drawn two ways: near and changing geometry is walked per
 present; the rest is retained in GPU buffers. The engine compiles a

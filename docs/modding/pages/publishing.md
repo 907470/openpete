@@ -6,8 +6,10 @@ A mod must not contain data derived from a Spyro disc: no models,
 textures, sounds, level payloads, or code overlays, and no patch whose
 plaintext is game data. Ship a generator the player runs once against
 their own disc image, writing the derived files into `assets/` on their
-machine. `mods/recolored-artisans` and `mods/grim-garden` show the
-pattern. Original content (a synthesised sound, a painted texture, a
+machine. `recolored-artisans` shows the pattern: its `generate.sh` calls
+`tools/extract_wad_entry.py`, which ships under `<exe>/sdk/tools/` and
+lives at `tools/` in the source tree, so the same relative path works
+from either place. Original content (a synthesised sound, a painted texture, a
 model you built) is yours to ship.
 
 ## Carry a licence

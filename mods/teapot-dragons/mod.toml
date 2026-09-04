@@ -1,19 +1,20 @@
-# teapot-dragons — every crystallised dragon statue is a Utah teapot.
+# teapot-dragons: every crystallised dragon statue is a Utah teapot.
 #
-# The densest single model the Spyro 1 animated-moby format admits
-# (255-vertex count byte, 9-bit face indices), parked in the arena and
-# installed over the level's crystal-dragon class (250, the last model of
-# every level) from a PatchMobyModelPointers post-hook. Geometry is
-# generated from the public-domain Newell teapot patch data by
-# tools/gen_teapot.py into assets/teapot_s1pack.bin.
+# The densest single model the Spyro 1 animated-moby format admits (a
+# 255-vertex count byte, 9-bit face indices), parked in the mod arena
+# and installed over the level's crystal-dragon class (250, the last
+# model of every level) from a PatchMobyModelPointers post-hook. The
+# geometry is generated from the public-domain Newell teapot patch data
+# by tools/gen_teapot.py into assets/teapot_s1pack.bin, so the mod ships
+# no disc-derived bytes.
 
 [mod]
 id      = "teapot-dragons"
 name    = "Teapot Dragons"
 version = "0.1.0"
 api     = 10
-state    = "rebuildable"   # the park is re-copied on every fresh level
-runahead = "pure"
+state    = "rebuildable"   # the park is re-copied on every fresh level, so a state load needs nothing carried
+runahead = "pure"          # hooks only rewrite the park and the model row; no host effects
 
 [[config]]
 key = "teapot.enabled"

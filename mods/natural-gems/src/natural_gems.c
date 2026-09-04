@@ -1,9 +1,27 @@
-/* natural-gems — marshalling-wrapper proof (see mod.toml).
+/**
+ * @file natural_gems.c
+ * @brief natural-gems: every gem pickup counts double, written against
+ *        the typed wrapper surface instead of raw registers.
  *
- * Everything below is natural-signature C: no cpu->a0 spelunking. The
- * typed Moby* arrives unpacked, base() re-marshals it, and op_call_Sin
- * invokes the game's own sine (PSX 4096-unit circle: Sin(1024) == 90°
- * == 4096) with argument registers saved/restored around the call.
+ * The SDK generates a natural-signature wrapper for every prototyped game
+ * function (openpete_sdk_wrappers.h). Three of them appear here:
+ *
+ * - OP_OVERRIDE_IMPL_CollectItem declares an override whose parameters
+ *   arrive unpacked and typed (a Moby* instead of cpu->a0).
+ * - op_base_CollectItem calls the next override or the original with
+ *   natural arguments; the wrapper re-marshals them into registers.
+ * - op_call_Sin calls an unrelated game function from inside the
+ *   override, saving and restoring the argument registers around it so
+ *   the pending CollectItem arguments survive.
+ *
+ * The wrappers exist because register marshalling is where hand-written
+ * overrides go wrong: a forgotten save of cpu->a0 around a nested call
+ * corrupts the outer call's argument. Prefer a wrapper whenever the
+ * function is prototyped; fall back to raw cpu access only for a
+ * function the symbol manifest does not prototype.
+ *
+ * This mod writes guest RAM (the gem total), so mod.toml declares it
+ * mutative and saves played with it carry the modset tag.
  */
 
 #include <openpete_mod_api.h>
@@ -12,18 +30,23 @@
 
 static const openpete_mod_api_t* g_api;
 static openpete_mod_t*           g_self;
-static int                       g_first = 1;
+static int                       g_first = 1;  /**< First pickup not yet seen. */
 
-/* Host-side session tallies: the one-shot Sin(1024) result (-1 until the
- * first pickup makes the natural call) and the pickups this override
- * doubled, with the gems it granted on top of the game's own award. */
+/** @brief Result of the one-shot Sin(1024) call; -1 until the first pickup. */
 static int32_t                   g_sin = -1;
+/** @brief Pickups this override doubled. */
 static uint32_t                  g_doubled;
+/** @brief Gems granted on top of the game's own award. */
 static uint32_t                  g_bonus_gems;
 
-/* Status lines: repainted from the pickup hook and once at entry.
- * Sin(1024) is the game's own sine at 90 degrees on the PSX 4096-unit
- * circle — 4096 is the expected result. */
+/**
+ * @brief Repaint the Mods-panel status block.
+ *
+ * Sin is the game's own sine on its 4096-unit circle, so Sin(1024) is the
+ * sine of 90 degrees and returns 4096. The line reports whether the
+ * typed call produced that value, which is a check on the marshalling,
+ * not on the game.
+ */
 static void publish_status(void) {
     if (g_sin < 0)
         g_api->ui_status(g_self, "natural call not made yet "
@@ -35,6 +58,19 @@ static void publish_status(void) {
     g_api->ui_status(g_self, "bonus gems granted: %u", g_bonus_gems);
 }
 
+/**
+ * @brief Typed override of CollectItem(Moby* pMoby).
+ *
+ * The macro supplies `cpu` and the unpacked parameter `pMoby`. The body
+ * is a post-hook: it calls the original first, then acts on the result.
+ *
+ * The gem award is detected by differencing g_GemTotal around the base
+ * call rather than by decoding the moby, because the game's own code
+ * already knows what the item was worth. Reading the delta after the
+ * fact reuses that knowledge and stays correct for every item kind the
+ * function handles. The doubled total is written back with op_write_u32,
+ * the typed guest-RAM accessor from the SDK header.
+ */
 OP_OVERRIDE_IMPL_CollectItem(my_collect) {
     if (g_first) {
         g_first = 0;
@@ -61,7 +97,13 @@ OP_OVERRIDE_IMPL_CollectItem(my_collect) {
     publish_status();
 }
 
-
+/**
+ * @brief Mod entry point.
+ * @return The registration result; non-zero disables the mod.
+ *
+ * OP_REGISTER_OVERRIDE_CollectItem attaches the typed override by the
+ * function's symbol name, so the mod carries no addresses of its own.
+ */
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api; g_self = self;
     publish_status();

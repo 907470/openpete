@@ -1,0 +1,98 @@
+# declarative-example: every feature a mod can use with no code, in one
+# mod. No src/, no entry point, nothing compiled on the host. The mod is
+# this manifest, three asset files and one fragment shader.
+#
+# Custom levels ([[level]]) are the one declarative feature not shown
+# here; the Custom levels page and grim-garden cover them. [[binding]]
+# and [[config]] rows are read by a mod's own code, so they belong to a
+# code mod; hud-stopwatch shows both.
+#
+# What each part demonstrates:
+#
+# assets/textures/title_ui.png
+#   A texture replacement named by symbolic identity: title_ui is the
+#   512x256 title-screen UI atlas. A magenta and cyan checker, so the
+#   substitution is visible on the title screen. The other name form,
+#   <label>-<thash>-<box>-<phash>-<bpp>bpp.png, names one texture by
+#   content; OPENPETE_TEXPACK_DUMP_DIR writes every drawn texture under
+#   that name. A larger PNG is an HD replacement: the renderer samples
+#   the file at its own resolution.
+#
+# assets/music/manifest.txt + assets/music/title_theme.wav
+#   A music replacement through the manifest form: each line maps a
+#   track index to a file in this directory. The shorter form is a file
+#   named track_NN.wav with no manifest. Track 20 is the title theme;
+#   the file is a 440 Hz tone, so the substitution is audible at once.
+#
+# assets/sfx/gemPickup.wav
+#   A sound replacement named by role. gemPickup is the sound-table slot
+#   the game plays when Spyro collects a gem, in every level. The other
+#   forms name one recording by content hash. The file is a synthesised
+#   two-note chime. The game still decides duration, pitch, variance,
+#   volume and looping; a -flat suffix pins the file to its own rate.
+#
+# [[material]] rows + shaders/tint.frag
+#   Each row registers the shader with a selector. The engine decides per
+#   draw whether the shader runs; the shader receives the colour the
+#   engine was about to write and returns the colour to write. A material
+#   inherits its draw group's blend mode and draw order and changes colour
+#   math only. The rows below use every selector key that needs no
+#   per-level id: channel, ident, tier, textured, env_anim, params,
+#   enabled. class, texture and level key on ids that differ per level.
+#
+# Nothing in an asset-only mod reaches guest RAM: every substitution
+# happens on the host, so gameplay is byte-identical with the mod
+# enabled, and the engine derives sim_mutative = false from the absence
+# of src/ and [[level]].
+#
+# When several enabled mods ship the same file or select the same draw,
+# the mod listed later in enabled.txt wins.
+
+[mod]
+id      = "declarative-example"
+name    = "Declarative Example"
+version = "0.1.0"
+api     = 5            # [[material]] rows; a mod with assets only could omit the pin
+state    = "none"      # nothing derived from guest history
+runahead = "pure"      # no tick hooks
+
+# Spyro, tinted warm. The player has his own channel and is not a moby.
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "player"
+params  = [1.0, 0.55, 0.15, 0.45]   # rgb + strength, the shader's std140 block
+
+# The flame ribbon only. ident is the channel-local identity: for flame,
+# 0 is the additive ribbon and 1 is the opaque base caps. The material
+# inherits the ribbon's additive blend, so the tint reads as added light.
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "flame"
+ident   = 0
+params  = [0.30, 0.55, 1.00, 0.60]
+
+# Untextured terrain faces only, both LOD tiers. textured keys on whether
+# the face carries a texture; omitting it selects both.
+[[material]]
+frag    = "shaders/tint.frag"
+channel  = "terrain"
+textured = false
+params   = [0.20, 0.90, 0.40, 0.35]
+
+# Animated environment faces only: water and lava surfaces the game
+# scrolls or cycles. env_anim = true narrows to those.
+[[material]]
+frag     = "shaders/tint.frag"
+channel  = "terrain"
+env_anim = true
+params   = [0.60, 0.20, 1.00, 0.50]
+
+# Shipped switched off. A row with enabled = false is registered and
+# listed in the Mods panel, and the player can turn it on; the row
+# isolates the LP terrain tier so it can be seen on its own.
+[[material]]
+frag    = "shaders/tint.frag"
+channel = "terrain"
+tier    = "lp"
+enabled = false
+params  = [1.0, 0.2, 0.6, 0.5]

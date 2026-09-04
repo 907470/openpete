@@ -1,11 +1,11 @@
-# hud-stopwatch — an "M:SS.hh" gameplay stopwatch drawn as HUD text.
+# hud-stopwatch: an "M:SS.hh" gameplay stopwatch drawn as HUD text.
 #
-# The elapsed time is published from a tick hook and evaluated at
-# ctx->alpha in a present hook, so the hundredths advance smoothly at high
-# --render-fps: the mod owns its sub-tick curve, the engine never
-# interpolates mod visuals. Time base: sim ticks / 29.913. Draws through
-# draw_text only, so it writes no guest RAM. A [[binding]] resets the
-# watch.
+# A tick hook counts sim ticks; a present hook evaluates the time at
+# ctx->alpha and draws it, so the hundredths advance smoothly at a high
+# --render-fps. The engine never interpolates mod visuals; the mod owns
+# its sub-tick curve. Time base: sim ticks / 29.913. The mod draws
+# through draw_text only and writes no guest RAM. A [[binding]] resets
+# the watch.
 
 [mod]
 id      = "hud-stopwatch"
@@ -14,22 +14,19 @@ version = "0.1.0"
 api     = 1
 sim_mutative = false  # writes no guest RAM: outside the save modset tag
 
+# A binding is a named key the mod polls with api->binding_down. The
+# engine owns the key assignment, so the player can rebind it without
+# touching the mod, and the purpose string is what the rebinding UI shows.
 [[binding]]
 name    = "reset"
 key     = "T"
 purpose = "zero the stopwatch"
 
-# Settings schema — the engine renders these rows in the Mods panel and
-# writes committed edits back into config.toml; entry re-reads them
-# through api->config_* after the queued reload. Overlay space: x spans
-# 0..aspect from the left edge, y spans 0..1 from the top edge; sizes
-# are window-height fractions.
-
-# Settings schema — the engine renders these rows in the Mods panel and
-# writes committed edits back into config.toml; entry re-reads them
-# through api->config_* after the queued reload. Overlay space: x spans
-# 0..aspect from the left edge, y spans 0..1 from the top edge; sizes
-# are window-height fractions.
+# Settings schema. The engine renders these rows in the Mods panel and
+# writes committed edits back into config.toml; a commit reloads the mod,
+# and entry re-reads the values through api->config_*. Overlay space: x
+# spans 0..aspect from the left edge, y spans 0..1 from the top edge;
+# sizes are window-height fractions, so a layout holds at any resolution.
 [[config]]
 key = "layout.x"
 type = "float"

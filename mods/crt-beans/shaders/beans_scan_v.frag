@@ -1,20 +1,24 @@
-/* beans_scan_v.frag — crt-beans pass 3/3 (port of
- * scanlines_fast_vertical.slang + mask.inc from crt-beans by Andrew
- * Duffey, MIT — see the mod LICENSE).
+/**
+ * @file beans_scan_v.frag
+ * @brief crt-beans pass 3 of 3: vertical spot profile, phosphor mask and
+ *        output encode. Port of scanlines_fast_vertical.slang and
+ *        mask.inc from crt-beans by Andrew Duffey (MIT, see the mod
+ *        LICENSE).
  *
- * Renders the scanlines vertically: each output pixel takes the two
- * nearest scanline centres' horizontal beam profiles (pass 2) and applies
- * the vertical spot falloff — a cubic profile whose WIDTH varies with the
- * signal (bright = fat spot, dim = thin), which is what keeps the look
- * correct at any output resolution. Then the phosphor mask (subpixel-aware
- * static grille, or the band-limited "dynamic" grille) and the output
- * gamma encode.
+ * Each output pixel takes the two nearest scanline centres' horizontal
+ * beam profiles from pass 2 and applies the vertical spot falloff: a
+ * cubic profile whose width varies with the signal, wide for bright and
+ * narrow for dim. Because the width is a function of the signal and not
+ * of the output pixel size, the look holds at any output resolution.
+ * The phosphor mask follows, either a subpixel-aware static grille or a
+ * band-limited dynamic grille, then the output gamma encode.
  *
- * Port notes vs upstream: row geometry comes from op_scene_rect /
- * op_scene_grid (224 visible PSX rows; overscan already cropped by the
- * engine, so the Overscan* parameters are dropped); interlacing branches
- * are dropped (240p progressive); pass-2 input is sqrt-encoded 8-bit — the
- * raw texel is sqrt(sample), decode is x*x. */
+ * Differences from upstream: row geometry comes from op_scene_rect and
+ * op_scene_grid (224 visible PSX rows; the engine has already cropped
+ * overscan, so the Overscan parameters are dropped); the interlacing
+ * branches are dropped (240p progressive); the pass-2 input is
+ * square-root encoded 8-bit, decoded with x*x.
+ */
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #define OP_POSTFX_STAGE_FRAGMENT 1
@@ -32,8 +36,21 @@ layout(set = 3, binding = 1, std140) uniform beans_params {
 
 #define PI 3.1415926535897932384626433832795
 
-/* ---- mask.inc (verbatim port; MIT) --------------------------------- */
+/**
+ * @name Phosphor masks (mask.inc, ported unchanged)
+ * @{
+ */
 
+/**
+ * @brief Static aperture grille aligned to the monitor's physical
+ *        subpixels.
+ * @param pixels_per_triad Monitor pixels per phosphor triad, 2..5. Each
+ *        tile below lights the subpixels that fall in one phosphor's
+ *        column at that pitch, so the grille is drawn by the monitor's
+ *        own subpixels rather than by blending.
+ * @return rgb = per-channel mask, a = coverage, the ratio the mask
+ *         dims the picture by, which blend_mask compensates.
+ */
 vec4 subpixel_aperture_grille(vec2 coord, vec4 output_size,
                               float subpixel_pattern, float pixels_per_triad) {
     float x = coord.x * output_size.x;
@@ -87,9 +104,14 @@ vec4 subpixel_aperture_grille(vec2 coord, vec4 output_size,
     return vec4(mask, mask_coverage);
 }
 
-/* Band-limited aperture grille: a raised-cosine low-pass (radius = one
- * output pixel) convolved with a piecewise-constant RGB grille, sampled at
- * the output pixel centre — alias-free at any triad count. */
+/**
+ * @brief Band-limited aperture grille at an arbitrary triad count.
+ *
+ * A raised-cosine low-pass of radius one output pixel is convolved with
+ * a piecewise-constant RGB grille and sampled at the output pixel
+ * centre. Filtering before sampling is what keeps the grille alias-free
+ * when the triad pitch is not a whole number of pixels.
+ */
 vec4 dynamic_aperture_grille(vec2 coord, vec4 output_size, float mask_triads) {
     const vec3[3] phosphors = { vec3(1.0, 0.0, 0.0), vec3(0.0, 1.0, 0.0),
                                 vec3(0.0, 0.0, 1.0) };
@@ -131,16 +153,22 @@ vec4 dynamic_aperture_grille(vec2 coord, vec4 output_size, float mask_triads) {
     return vec4(mask, 3.0);
 }
 
-/* Keep the mask as strong as possible, fading it only as needed to hold
- * overall brightness (integral of the masked value == unmasked value). */
+/**
+ * @brief Apply a mask while holding overall brightness.
+ *
+ * The mask is kept at full strength wherever the masked value can still
+ * integrate to the unmasked value, and faded only where it cannot, so a
+ * bright pixel does not dim just because a grille is on.
+ */
 vec3 blend_mask(vec3 mask, vec3 pixel_value, float mask_coverage) {
     vec3 a = clamp((pixel_value - 1) / (1 - mask_coverage), vec3(0.0), pixel_value);
     vec3 b = clamp((1 - mask_coverage * pixel_value) / (1 - mask_coverage), vec3(0.0), pixel_value);
     return mask_coverage * a * mask + b;
 }
 
-/* ---- vertical scanline profile -------------------------------------- */
+/** @} */
 
+/** @brief Linear to sRGB encode; the clamp guards pow against fp error. */
 vec3 linear_to_srgb(vec3 rgb) {
     rgb = clamp(rgb, 0.0, 1.0);   /* guard fp error before pow */
     bvec3 cutoff = lessThan(rgb, vec3(0.0031308));
@@ -149,13 +177,22 @@ vec3 linear_to_srgb(vec3 rgb) {
     return mix(higher, lower, cutoff);
 }
 
+/** @brief Linear to gamma 2.2 encode. */
 vec3 linear_to_gamma(vec3 rgb) {
     rgb = clamp(rgb, 0.0, 1.0);
     return pow(rgb, vec3(1.0 / 2.2));
 }
 
-/* One scanline's contribution at vertical distance `dist` (in scanline
- * heights) from its centre; row_c is the row centre in row units. */
+/**
+ * @brief One scanline's contribution at a vertical distance from its
+ *        centre.
+ * @param row_c The row centre, in row units.
+ * @param dist  Distance from that centre, in scanline heights.
+ *
+ * The spot width w depends on the sample: w_rcp is 1/w, and w runs from
+ * min_spot*max_spot at black to max_spot at white. The cubic
+ * (y*y)*(2y-3)+1 is the falloff, 1 at the centre and 0 at one width.
+ */
 vec3 line_contrib(float row_c, float dist) {
     if (row_c < 0.0 || row_c > op_scene_grid.z) return vec3(0.0); /* off-raster */
     float uv_y = op_scene_rect.y + row_c / op_scene_grid.z * op_scene_rect.w;

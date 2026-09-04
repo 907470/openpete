@@ -1,19 +1,36 @@
-/* teapot-dragons — the crystal dragon statue (moby class 250) is a Utah
- * teapot. See mod.toml.
+/**
+ * @file teapot_dragons.c
+ * @brief teapot-dragons: the crystal dragon statue (moby class 250) is a
+ *        Utah teapot. A model-replacement mod built on the arena and the
+ *        vertex-stream handle table.
  *
- *  1. entry: read assets/teapot_s1pack.bin (tools/gen_teapot.py), park
- *     the payload with guest_alloc, relocate its absolute words to the
- *     park and exchange the frame word's stream offset for a stream
- *     handle (vstream_handle) — once, so the ledger replays identically.
- *  2. PatchMobyModelPointers post-hook: whenever the game has just
- *     installed a level's stock class-250 model (row holds neither 0 nor
- *     our vaddr), copy the per-level bytes our static pack cannot know
- *     (m_Sounds, m_CollisionModels) from the stock header into ours and
- *     point the row at the park. The row is nulled and re-installed on
- *     every level load and dragon-cutscene load, so this re-fires per
- *     level and is idempotent within one.
- *  debug.dump: log the stock model and the live statue mobys once per
- *  level (the calibration that sized the generator). */
+ * Two phases:
+ *
+ * 1. Entry reads assets/teapot_s1pack.bin (written by tools/gen_teapot.py),
+ *    parks the model payload in the mod arena with guest_alloc, relocates
+ *    the payload's absolute words to the park address, and exchanges each
+ *    frame word's vertex-stream offset for a stream handle from
+ *    vstream_handle. The handles are requested once, in pack order, so
+ *    the engine's handle ledger replays identically every session.
+ * 2. A post-hook on PatchMobyModelPointers fires after the game installs
+ *    a level's models. When the class-250 row holds a stock model (neither
+ *    0 nor the park), the hook copies the per-level bytes a static pack
+ *    cannot know, m_Sounds and m_CollisionModels, from the stock header
+ *    into the parked one and points the row at the park. The game nulls
+ *    and re-installs the row on every level load and dragon-cutscene
+ *    load, so the hook re-fires per level and is idempotent within one.
+ *
+ * debug.dump logs the stock model and the live statue mobys once per
+ * level. It is the calibration that sized the generator, kept because a
+ * model-replacement mod for another class starts by reading the same
+ * numbers.
+ *
+ * Why a handle and not an address: the moby format's frame word holds
+ * the vertex-stream address in a 21-bit field, which cannot reach the
+ * arena. The engine keeps a table of stream addresses and lets a mod
+ * store a small handle in the field instead; every reader of the field
+ * resolves handles before use.
+ */
 
 #include <openpete_mod_api.h>
 #include <openpete_sdk_symbols.h>
@@ -28,16 +45,23 @@
 static const openpete_mod_api_t* g_api;
 static openpete_mod_t*           g_self;
 
-#define STATUE_CLASS 250u
-#define MOBY_STRIDE  0x58u
+#define STATUE_CLASS 250u   /**< The crystal dragon statue, last model of every level. */
+#define MOBY_STRIDE  0x58u  /**< sizeof(Moby) in the level moby array. */
 
-static int s_dump;
-static int s_enabled;
-static int s_dumped_level;     /* g_LevelId last dumped (0 = never) */
+static int s_dump;           /**< debug.dump config. */
+static int s_enabled;        /**< teapot.enabled config. */
+static int s_dumped_level;   /**< g_LevelId last dumped; 0 = never. */
 
-/* ── asset pack ─────────────────────────────────────────────────────── */
-
-#define PACK_MAGIC 0x544F5054u   /* 'TPOT' */
+/**
+ * @name Asset pack
+ * Layout, little-endian: header | reloc_words | reloc_frames | payload.
+ * reloc_words are payload offsets of absolute-vaddr words linked at
+ * base 0; reloc_frames are payload offsets of frame words whose 21-bit
+ * field holds a stream offset. The generator's docstring is the
+ * authoritative description.
+ * @{
+ */
+#define PACK_MAGIC 0x544F5054u   /**< 'TPOT' */
 
 typedef struct {
     uint32_t magic, version, payload_size, n_reloc_words, n_reloc_frames,
@@ -45,15 +69,28 @@ typedef struct {
 } pack_header_t;
 
 static pack_header_t s_pack;
-static uint8_t*      s_file;       /* whole file */
-static uint8_t*      s_payload;    /* relocated model bytes (host copy) */
-static uint32_t      s_park;       /* guest vaddr of the parked payload */
-static uint32_t      s_model;      /* guest vaddr of the Model header */
+static uint8_t*      s_file;       /**< The whole file, host memory. */
+static uint8_t*      s_payload;    /**< Relocated model bytes inside s_file. */
+static uint32_t      s_park;       /**< Guest vaddr of the parked payload. */
+static uint32_t      s_model;      /**< Guest vaddr of the Model header. */
 static int           s_patched_levels;
+/** @} */
 
 static uint32_t rd32(uint32_t a) { return op_read_u32(g_api, a); }
 static uint8_t  rd8(uint32_t a)  { return op_read_u8(g_api, a); }
 
+/**
+ * @brief Log one animation header of the stock model, with the frame-0
+ *        vertex extents and the face-block census.
+ * @param ah  Guest vaddr of the animation header.
+ * @param idx Animation index, for the log line.
+ *
+ * The vertex walk mirrors the renderer's stream decode: a literal word
+ * per vertex when the previous word's flag bit is 0, a packed short
+ * delta otherwise. A frame field below 0x10000 is a stream handle, not
+ * an address; the game's readers resolve it and a mod cannot, so the
+ * walk is skipped for such a frame.
+ */
 static void dump_anim(uint32_t ah, int idx)
 {
     uint32_t hw = rd32(ah);
@@ -72,9 +109,6 @@ static void dump_anim(uint32_t ah, int idx)
             f, w0 & 0x1FFFFFu, (w0 >> 21) & 7u, w0 >> 24, w1 & 0xFFFFu,
             (w1 >> 16) & 0xFFu, w1 >> 24);
     }
-    /* vertex extents of frame 0 (mirror of the renderer's stream decode).
-     * A field below 0x10000 is a stream handle, not an address: the
-     * game's readers resolve it, a mod cannot — skip. */
     if ((rd32(ah + 0x24u) & 0x1FFFFFu) >= 0x10000u) {
         uint32_t fr = ah + 0x24u, w0 = rd32(fr), w1 = rd32(fr + 4);
         uint32_t litp = (w0 & 0x1FFFFFu) | 0x80000000u;
@@ -111,6 +145,8 @@ static void dump_anim(uint32_t ah, int idx)
             uint32_t bc, fp, end; int nf = 0, ntex = 0, nfresh = 0;
             fb |= 0x80000000u;
             bc = rd32(fb); fp = fb + 4u; end = fp + bc;
+            /* Face record sizes by kind: sprite 0x14; fresh textured 0x18,
+             * fresh gouraud 0x0C; repeat textured 0x14, repeat gouraud 8. */
             while (fp + 8u <= end && nf < 8192) {
                 uint32_t w0 = rd32(fp);
                 int fresh = (int32_t)w0 < 0, tex = (w0 & 2u) != 0;
@@ -127,6 +163,7 @@ static void dump_anim(uint32_t ah, int idx)
     }
 }
 
+/** @brief Log the stock class-250 Model header and its first animations. */
 static void dump_stock_model(void)
 {
     uint32_t mp = rd32(OP_GADDR_g_Models + STATUE_CLASS * 4u), m, na, i;
@@ -146,6 +183,13 @@ static void dump_stock_model(void)
     }
 }
 
+/**
+ * @brief Log every live statue moby in the level moby array.
+ *
+ * The array ends at the first moby whose m_State is -1. Field offsets
+ * come from the typed Moby view in openpete_game_structs.h, which is the
+ * same header a mod uses to read any moby field by name.
+ */
 static void dump_statue_mobys(void)
 {
     uint32_t m = rd32(OP_GADDR_g_LevelMobys);
@@ -172,7 +216,23 @@ static void dump_statue_mobys(void)
     g_api->log(g_self, OP_MOD_LOG_INFO, "  %d statue mobys", found);
 }
 
-
+/**
+ * @brief Read, validate, park and relocate the asset pack.
+ * @return 1 when the model is parked and s_model is valid; 0 otherwise,
+ *         with the cause logged.
+ *
+ * The pack path is derived from data_dir, the mod's own persistent
+ * directory, so the mod finds its assets wherever the mod directory
+ * lives. Every header field is checked against the file size and the
+ * format's ceilings before any of it is used; a pack from a different
+ * generator version fails here rather than in the renderer.
+ *
+ * The park is not allocated IMMUTABLE. The payload is re-copied on
+ * every fresh level and the game reads per-level bytes from the parked
+ * header, so the engine must be free to restore the arena across a
+ * state load. An IMMUTABLE park is for data the game only ever reads
+ * and the mod never rewrites.
+ */
 static int load_pack(void)
 {
     char path[512];
@@ -204,8 +264,6 @@ static int load_pack(void)
     rf = rw + s_pack.n_reloc_words;
     s_payload = (uint8_t*)(rf + s_pack.n_reloc_frames);
 
-    /* Park + relocate. Not IMMUTABLE: the payload is re-copied on every
-     * fresh level and the game reads per-level bytes from its header. */
     {
         void* view = NULL;
         uint32_t i;
@@ -220,9 +278,10 @@ static int load_pack(void)
             w += s_park;
             memcpy(s_payload + rw[i], &w, 4);
         }
-        /* The 21-bit frame field cannot hold an arena address: exchange
-         * the stream's parked vaddr for a handle, requested here once in
-         * pack order so the ledger sequence is the same every session. */
+        /* Handles are requested here, once, in pack order. The engine
+         * records handle allocations in a ledger that replays on a state
+         * load; the same request sequence every session is what makes
+         * the replay land on the same handles. */
         for (i = 0; i < s_pack.n_reloc_frames; i++) {
             uint32_t w, h;
             memcpy(&w, s_payload + rf[i], 4);
@@ -243,6 +302,7 @@ static int load_pack(void)
     return 1;
 }
 
+/** @brief Repaint the Mods-panel status block. */
 static void publish_status(void)
 {
     g_api->ui_status(g_self, "Teapot statues");
@@ -253,8 +313,23 @@ static void publish_status(void)
                          s_pack.hp_verts, s_model, s_patched_levels);
 }
 
-/* Post-hook: runs after every install pass. A row holding neither 0 nor
- * our vaddr means the game just installed a level's stock statue. */
+/**
+ * @brief Post-hook on PatchMobyModelPointers: install the teapot over
+ *        class 250 after the game installs a level's models.
+ *
+ * base() runs first so the game's own install is complete before the
+ * row is inspected. A row holding neither 0 nor the park means the game
+ * just installed a level's stock statue.
+ *
+ * The park contents are verified before use by comparing a window the
+ * game never writes, the tail of the vertex stream, against the host
+ * copy. After a state load or a fresh session the arena may have been
+ * restored to older bytes or never filled; the comparison detects both
+ * and re-copies. The header's m_Sounds (16 per-level sound definition
+ * indices) and m_CollisionModels (8 words) are copied from the stock
+ * model on every install because they differ per level and a static
+ * pack cannot carry them.
+ */
 static void on_patch_models(CPUState* cpu)
 {
     uint32_t row = OP_GADDR_g_Models + STATUE_CLASS * 4u, stock;
@@ -268,8 +343,6 @@ static void on_patch_models(CPUState* cpu)
 
     park_host = g_api->guest(s_park);
     if (!park_host) { g_api->log(g_self, OP_MOD_LOG_ERROR, "park unmapped"); return; }
-    /* Fresh level: the arena may have been restored or never filled —
-     * compare a window the game never writes (the vertex stream tail). */
     {
         uint32_t w = s_pack.payload_size < 64u ? s_pack.payload_size : 64u;
         uint32_t off = s_pack.payload_size - w;
@@ -277,9 +350,9 @@ static void on_patch_models(CPUState* cpu)
             memcpy(park_host, s_payload, s_pack.payload_size);
     }
     stock |= 0x80000000u;
-    for (b = 0; b < 16; b++)                     /* m_Sounds: per-level def indices */
+    for (b = 0; b < 16; b++)
         op_write_u8(g_api, s_model + 4u + (uint32_t)b, rd8(stock + 4u + (uint32_t)b));
-    for (b = 0; b < 8; b++)                      /* m_CollisionModels: the stock statue's */
+    for (b = 0; b < 8; b++)
         op_write_u32(g_api, s_model + 0x14u + 4u * (uint32_t)b, rd32(stock + 0x14u + 4u * (uint32_t)b));
     op_write_u32(g_api, row, s_model);
     s_patched_levels++;
@@ -288,8 +361,13 @@ static void on_patch_models(CPUState* cpu)
     publish_status();
 }
 
-/* Specular-moby renderer: runs every gameplay frame; the statue is drawn
- * through it. One dump per level, once mobys exist. */
+/**
+ * @brief Pre-hook on the specular-moby renderer (func_80020F34), which
+ *        runs every gameplay tick and draws the statue.
+ *
+ * Used only as a per-tick point at which mobys exist, for the one dump
+ * per level. The renderer itself is untouched.
+ */
 static void on_specular_render(CPUState* cpu)
 {
     int level = (int)rd32(OP_GADDR_g_LevelId);
@@ -301,6 +379,15 @@ static void on_specular_render(CPUState* cpu)
     g_api->base(cpu);
 }
 
+/**
+ * @brief Mod entry point.
+ *
+ * A missing or bad pack leaves the mod loaded with a status line saying
+ * so; the hooks still register and do nothing until a pack exists. The
+ * overrides attach by address through the OP_FNADDR_ constants the SDK
+ * generates from the symbol manifest, which is the form for a function
+ * that has an address but no natural-signature wrapper.
+ */
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self)
 {
     g_api = api; g_self = self;

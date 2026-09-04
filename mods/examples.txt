@@ -6,8 +6,7 @@ hello-anchor
 natural-gems
 hud-stopwatch
 crt-beans
-declarative-reshade
+declarative-example
 channel-gallery
-sfx-single-sound
 recolored-artisans
 teapot-dragons

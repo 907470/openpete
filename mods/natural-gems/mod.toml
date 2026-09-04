@@ -1,15 +1,17 @@
-# natural-gems — double-gems written against the typed wrappers.
+# natural-gems: every gem pickup counts double, written against the
+# typed wrapper surface.
 #
-# Same behaviour as double-gems (every gem pickup counts double) using the
-# generated natural-signature surface: OP_OVERRIDE_IMPL_CollectItem gives
-# a typed Moby* parameter, op_base_CollectItem falls through with natural
-# arguments, and op_call_Sin shows a typed call into an unrelated game
-# function.
+# OP_OVERRIDE_IMPL_CollectItem gives the override a typed Moby*
+# parameter, op_base_CollectItem falls through with natural arguments,
+# and op_call_Sin makes a typed call into an unrelated game function.
+# The mod writes g_GemTotal, so it is mutative: a memory card played
+# with it enabled carries the modset tag.
 
 [mod]
 id      = "natural-gems"
 name    = "Natural Gems"
 version = "0.1.0"
 api     = 1
-state    = "none"      # counters only
-runahead = "host-fx"   # logs on pickup — suppressible
+state    = "none"      # session counters only; nothing to carry across a state load
+runahead = "host-fx"   # logs on pickup; the engine suppresses them during speculation
+sim_mutative = true    # writes g_GemTotal

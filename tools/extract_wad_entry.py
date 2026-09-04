@@ -1,17 +1,19 @@
 #!/usr/bin/env python3
-"""extract_wad_entry.py — pull a level's Data entry out of WAD.WAD.
+"""extract_wad_entry.py: pull a level's Data entry out of WAD.WAD.
 
-The level-segment asset overlay (games/spyro-1/mod_wad_overlay.c, PoC
-rung 9) serves mod files named assets/wad/level<ID>.data.bin in place of
-the disc's bytes. Mods may not SHIP derived game data (legal posture),
-so blobs are derived locally from the user's own disc — this tool is
-that derivation step:
+The engine's level-segment asset overlay serves a mod file named
+assets/wad/level<ID>.data.bin in place of the disc's bytes. A mod may
+not ship data derived from a disc, so the blob is derived on the
+player's machine from the player's own disc, and this tool is that
+derivation step:
 
     tools/extract_wad_entry.py --disc game.cue --level 10 \
         --out my-mod/assets/wad/level10.data.bin
 
-Optionally --recolor-bg R,G,B patches the cyclorama background colour
-(docs/level-format.md §4.6) as a minimal, format-safe edit example.
+--recolor-bg R,G,B patches the cyclorama background colour in the
+extracted entry, a minimal edit that keeps the format intact. A mod
+that ships a generator script calls this tool with its own arguments;
+recolored-artisans is the example.
 """
 
 import argparse

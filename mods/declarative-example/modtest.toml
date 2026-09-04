@@ -1,0 +1,8 @@
+# modtest.toml: this repo's CI declaration for tools/modtest.py. Not part
+# of the manifest format and not shipped with the mod.
+[test]
+frames        = 4000
+expect_oracle = "pass"
+expect_log    = ["declarative-example/assets/music/title_theme.wav",
+                 "declarative-example: 5 declarative material row(s)",
+                 "loaded declarative-example"]

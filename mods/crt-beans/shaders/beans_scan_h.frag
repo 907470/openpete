@@ -1,21 +1,27 @@
-/* beans_scan_h.frag — crt-beans pass 2/3 (port of
- * scanlines_fast_horizontal.slang from crt-beans by Andrew Duffey, MIT —
- * see the mod LICENSE).
+/**
+ * @file beans_scan_h.frag
+ * @brief crt-beans pass 2 of 3: horizontal beam-spot convolution per
+ *        scanline. Port of scanlines_fast_horizontal.slang from crt-beans
+ *        by Andrew Duffey (MIT, see the mod LICENSE).
  *
- * Convolves each scanline's samples with the electron-beam spot function
- * along the horizontal axis, piecewise per source texel. All distance
- * units are SCANLINE HEIGHTS (centre-to-centre of adjacent scanlines = 1).
+ * Each scanline's samples are convolved with the electron-beam spot
+ * function along the horizontal axis, piecewise per source texel. All
+ * distances are in scanline heights: centre to centre of adjacent
+ * scanlines is 1.
  *
- * Port notes vs upstream: the "source" is the virtualized PSX raster from
- * pass 1 (a piecewise-constant full-res image), so every fragment samples
- * its row at the row-band CENTRE — all fragments in a band compute the
- * identical row profile, which is what makes pass 3's row-centre bilinear
- * reads exact. delta (texel width in scanline heights) comes from the
- * on-screen geometry of op_scene_rect instead of RetroArch's viewport
- * uniforms; the interlacing branches are dropped (PSX 240p content is
- * progressive, 224 visible rows). Intermediates are sqrt-encoded 8-bit
- * (decode x*x); the raw texel doubles as the sqrt(sample) the spot-width
- * model wants. */
+ * Differences from upstream:
+ *
+ * - The source is the virtualised PSX raster from pass 1. Every fragment
+ *   samples its row at the row-band centre, so every fragment in a band
+ *   computes the identical row profile. Pass 3 relies on that: its
+ *   bilinear reads at row centres are exact only if the band is uniform.
+ * - delta, the texel width in scanline heights, comes from the on-screen
+ *   geometry in op_scene_rect rather than RetroArch's viewport uniforms.
+ * - The interlacing branches are dropped. PSX 240p content is
+ *   progressive, 224 visible rows.
+ * - Intermediates are square-root encoded 8-bit; decode is x*x, and the
+ *   raw texel doubles as the sqrt(sample) the spot-width model wants.
+ */
 #version 450
 #extension GL_GOOGLE_include_directive : require
 #define OP_POSTFX_STAGE_FRAGMENT 1
@@ -33,10 +39,17 @@ layout(set = 3, binding = 1, std140) uniform beans_params {
 
 #define PI 3.1415926535897932384626433832795
 
-/* Convolution of the spot function over one source texel [x0,x1] at
- * position x, for a texel whose sqrt-encoded value is `raw` (so raw*raw is
- * the linear sample and raw is sqrt(sample)). A common factor of
- * MaxSpotSize / (2*pi) is factored out and applied by the caller. */
+/**
+ * @brief The spot function integrated over one source texel.
+ * @param raw The texel's square-root encoded value: raw*raw is the linear
+ *            sample and raw is sqrt(sample), which the width model uses.
+ * @param x   Position along the scanline, in scanline heights.
+ * @param x0  Texel start, same units.
+ * @param x1  Texel end, same units.
+ *
+ * The common factor max_spot / (2*pi) is left out here and applied once
+ * by the caller after the sum.
+ */
 vec3 spot_integral(vec3 raw, float x, float x0, float x1) {
     vec3 sample_value = raw * raw;
     vec3 w_rcp = 1.0 / (u_min_spot * u_max_spot
@@ -54,7 +67,8 @@ void main() {
     float vx = (op_uv.x - op_scene_rect.x) / op_scene_rect.z * op_scene_grid.x;
     float vy = (op_uv.y - op_scene_rect.y) / op_scene_rect.w * op_scene_grid.z;
 
-    /* This fragment's row, sampled at the band centre (see header). */
+    /* This fragment's row, sampled at the band centre; every fragment in
+     * the band computes the same profile. */
     float row_uv_y = op_scene_rect.y
                    + (floor(vy) + 0.5) / op_scene_grid.z * op_scene_rect.w;
 

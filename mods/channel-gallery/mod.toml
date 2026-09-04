@@ -1,39 +1,41 @@
-# channel-gallery — one material selector per render channel, toggled live.
+# channel-gallery: one material selector per render channel, toggled
+# live.
 #
-# Every row registers the same highlight shader with a different selector,
-# so ticking a row shows exactly what that selector claims. It answers
-# "can I shade only X?" for each channel and key, and shows which draw
-# paths are not separately addressable.
+# Every row registers the same highlight shader with a different
+# selector, so ticking a row shows exactly what that selector claims. It
+# answers "can I shade only X?" for each channel and key, and shows which
+# draw paths are not separately addressable.
 #
-# Display-only: materials reshade what the renderer already drew and cannot
-# move, reorder or re-composite anything.
+# Materials are display-only: they reshade what the renderer already drew
+# and cannot move, reorder or re-composite anything.
 #
-# Rows are claims about the engine: a row that lights is selectable, a row
-# that stays dark is not yet. A change to what is selectable updates this
-# mod in the same change: a new channel or key gets a row, a newly
-# reachable draw path gets its row re-verified. Rows that cannot light yet
-# stay, labelled as known gaps.
+# Rows are claims about the engine. A row that lights is selectable; a
+# row that stays dark is not yet. A change to what is selectable updates
+# this mod in the same change: a new channel or key gets a row, a newly
+# reachable draw path gets its row re-verified. Rows that cannot light
+# yet stay, labelled as known gaps.
 
 [mod]
 id      = "channel-gallery"
 name    = "Channel Gallery"
 version = "0.1.0"
 api     = 6            # material_set_selector (live class picker)
-state    = "none"      # GPU-only; nothing to save
+state    = "none"      # GPU-only; nothing to carry across a state load
 runahead = "pure"      # no tick hooks
 sim_mutative = false
 
-# Only load-time settings are declared here. A [[config]] row is rendered by
-# the Mods panel and committed with Apply — write the file, reload the mod —
-# which is the wrong shape for a value you want to sweep while watching the
-# picture, and declaring one beside a live widget for the same value gives the
-# panel two controls that disagree. So gallery.strength, gallery.class and
-# gallery.refine_state are LIVE WIDGETS in the mod's own UI section instead.
+# Only load-time settings are declared here. A [[config]] row is rendered
+# by the Mods panel and committed with Apply, which writes the file and
+# reloads the mod. That is the wrong shape for a value swept while
+# watching the picture, and declaring a row beside a live widget for the
+# same value gives the panel two controls that disagree. So
+# gallery.strength, gallery.class and gallery.refine_state are live
+# widgets in the mod's own UI section instead.
 #
-# All three are still read from config.toml at load, which is how headless
-# runs drive the gallery (config keys are looked up by name, not through this
-# schema): gallery.strength = 0.65, gallery.class = <moby class, -1 = any>,
-# gallery.refine_state = <m_State, -1 = any>.
+# All three are still read from config.toml at load, which is how
+# headless runs drive the gallery. Config keys are looked up by name, not
+# through this schema: gallery.strength = 0.65, gallery.class = <moby
+# class, -1 = any>, gallery.refine_state = <m_State, -1 = any>.
 
 [[config]]
 key = "gallery.rows"

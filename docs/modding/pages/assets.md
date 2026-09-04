@@ -41,7 +41,10 @@ directory outside any mod; mod roots always join it.
 `assets/music/track_NN.wav` replaces music track NN, where NN is the
 zero-padded index into the game's music table (`track_20.wav` is the
 title theme). A `manifest.txt` in the same directory maps other paths to
-indices, one `<index> <relative path>` pair per line.
+indices, one `<index> <relative path>` pair per line; a later line for
+the same index wins. Both forms work in a mod's `assets/music/` and in
+the base directories, and within one directory the manifest mapping is
+tried first.
 
 The WAV is PCM 16-bit, mono or stereo, at 11025, 22050, 32000, 44100, or
 48000 Hz. It loads whole into RAM.

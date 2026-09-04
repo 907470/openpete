@@ -1,9 +1,11 @@
-# recolored-artisans — a level-data replacement produced by a generator.
+# recolored-artisans: a level-data replacement produced by a generator.
 #
-# Mods may not ship derived game data, so this mod ships a generator: run
-# ./generate.sh <your-disc.cue> once and it derives a recoloured Artisans
-# data blob (magenta cyclorama background) from your disc into
-# assets/wad/level10.data.bin. Ungenerated, the mod is inert.
+# A mod may not ship data derived from a Spyro disc. This mod ships a
+# generator instead: ./generate.sh <your-disc.cue> derives a recoloured
+# Artisans data blob (magenta cyclorama background) from the player's own
+# disc into assets/wad/level10.data.bin. Until generated, the mod has no
+# assets and does nothing. The pattern applies to any mod whose payload
+# starts from disc bytes: ship the transform, not its output.
 
 [mod]
 id      = "recolored-artisans"

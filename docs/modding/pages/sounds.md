@@ -92,4 +92,5 @@ counts; with an unmodified dump loaded, `verify_bad` is 0.
 `api->sfx_play(self, "<name>", gain)`. That directory is not scanned for
 replacements.
 
-Example: `mods/sfx-single-sound` (one symbolic file, no code).
+Example: `declarative-example` (one symbolic file among its assets, no
+code).

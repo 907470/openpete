@@ -34,7 +34,8 @@ The site lands in `build/<preset>/games/spyro-1/moddocs/site/index.html`.
 stages into `<exe>/sdk/examples/`; the documentation's Examples page
 lists them first. Every entry ships only original content.
 
-Examples, listed on the documentation's Examples page: `music-swap`,
+Examples, listed on the documentation's Examples page:
+`declarative-example`, `music-swap`,
 `hd-single-texture`, `sfx-single-sound`, `declarative-reshade`,
 `recolored-artisans`, `grim-garden`, and `spyro15-cliff-town` are
 declarative; `hello-anchor`, `double-gems`, `natural-gems`,

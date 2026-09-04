@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""gen_teapot.py — tessellate the Newell teapot into an S1 animated Model
+"""gen_teapot.py: tessellate the Newell teapot into an S1 animated Model
 blob and write assets/teapot_s1pack.bin for the teapot-dragons mod.
 
 The model is the densest a single S1 moby model can be:
@@ -8,7 +8,7 @@ The model is the densest a single S1 moby model can be:
   * face words carry 9-bit vertex indices (byte offset & 0x7FC), so 512
     would be addressable, but the count byte is the binding limit;
   * vertex literals are 11/11/12-bit (x, z in [-1024, 1023]; y even in
-    [-4096, 4094]) — the teapot is scaled to fit x/z and stands on y=0
+    [-4096, 4094]); the teapot is scaled to fit x/z and stands on y=0
     growing toward negative y, the game's up.
 
 Patches are subdivided greedily by surface area until the vertex budget
@@ -252,7 +252,7 @@ def build(args):
     nverts = len(w.pos)
     assert nverts <= 255, nverts
 
-    # teapot space: z up, [x,y] the ground plane. World: y up is NEGATIVE,
+    # teapot space: z up, [x,y] the ground plane. World: up is negative y,
     # base on y = 0; centre x/z on the bbox.
     xs = [p[0] for p in w.pos]; ys = [p[1] for p in w.pos]; zs = [p[2] for p in w.pos]
     cx, cy = (min(xs) + max(xs)) / 2, (min(ys) + max(ys)) / 2
@@ -299,7 +299,7 @@ def build(args):
         return out
     hp = frecs(hp_faces); lp = frecs(lp_faces)
     # stress knob: repeat the HP face block (same vertices) to probe the
-    # face-side limits — the game's polygon buffer and the walks' caps
+    # face-side limits: the game's polygon buffer and the walks' caps
     hp = hp * max(1, args.dup_faces)
 
     # layout: model hdr 0x3C | anim hdr 0x2C (1 frame) | cols | far |
@@ -387,7 +387,7 @@ def main():
     ap.add_argument("--r", type=int, default=210); ap.add_argument("--g", type=int, default=225)
     ap.add_argument("--b", type=int, default=255)
     ap.add_argument("--dup-faces", type=int, default=1,
-                    help="STRESS: emit the HP face block N times over the same vertices")
+                    help="stress test: emit the HP face block N times over the same vertices")
     ap.add_argument("--single-sided", action="store_true",
                     help="omit the double-sided face flag (winding is NOT made consistent)")
     ap.add_argument("--out", type=Path, default=MOD / "assets" / "teapot_s1pack.bin")

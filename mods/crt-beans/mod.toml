@@ -1,18 +1,22 @@
-# crt-beans — CRT display simulation (port of Andrew Duffey's crt-beans,
-# the "fast" 3-pass variant; MIT, see LICENSE).
+# crt-beans: CRT display simulation. A port of Andrew Duffey's crt-beans,
+# the "fast" three-pass variant (MIT, see LICENSE).
 #
 # Electron-beam spot brightness and width vary with signal intensity, so
-# scanlines stay correct at any output resolution, plus an aperture-grille
-# phosphor mask. Post-process only: reads the composed frame, writes
-# pixels.
+# scanlines stay correct at any output resolution. An aperture-grille
+# phosphor mask follows. Post-process only: the passes read the composed
+# frame and write pixels, and the mod never touches guest RAM.
+#
+# The [[config]] rows below are the schema the Mods panel renders. The
+# values live in config.toml; a committed edit reloads the mod and entry
+# re-reads them. Each help string is what the panel shows as a tooltip.
 
 [mod]
 id      = "crt-beans"
 name    = "CRT (crt-beans)"
 version = "1.0.0"
 api     = 1
-state    = "none"      # GPU-only postfx chain
-runahead = "pure"      # no tick hooks
+state    = "none"      # GPU-only chain; nothing to carry across a state load
+runahead = "pure"      # no tick hooks; nothing to suppress during speculation
 sim_mutative = false  # writes no guest RAM: outside the save modset tag
 
 [[config]]

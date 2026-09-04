@@ -55,6 +55,36 @@ static void apply_gain(void)
               s.forced_gain >= 0.0f ? s.forced_gain : s.gain);
 }
 
+/* One manifest line: "<index> <relative path>", # comments. Shared by
+ * the base-root parse (cached per track) and the per-mod-root probe. */
+static int manifest_line(const char* line, int* idx, char* rel, size_t cap)
+{
+    if (line[0] == '#') return 0;
+    if (cap < 1024) return 0;
+    return sscanf(line, "%d %1023s", idx, rel) == 2;
+}
+
+/* A mod root's manifest.txt, probed at track start rather than cached:
+ * mod roots come and go with the enabled set, the file is a few lines,
+ * and a track starts a handful of times per session. Returns 1 and the
+ * mapped relative path when `dir` maps `track`. */
+static int manifest_lookup(const char* dir, int track, char* rel, size_t cap)
+{
+    char path[1100];
+    snprintf(path, sizeof path, "%s/music/manifest.txt", dir);
+    FILE* f = fopen(path, "r");
+    if (!f) return 0;
+    char line[1100];
+    int  hit = 0;
+    while (fgets(line, sizeof line, f)) {
+        int idx;
+        /* Later lines win, matching the base-root parse. */
+        if (manifest_line(line, &idx, rel, cap) && idx == track) hit = 1;
+    }
+    fclose(f);
+    return hit;
+}
+
 static void parse_manifest(const char* dir)
 {
     char path[sizeof(s.dir[0]) + 16];
@@ -67,8 +97,7 @@ static void parse_manifest(const char* dir)
     while (fgets(line, sizeof(line), f)) {
         int  idx;
         char rel[1024];
-        if (line[0] == '#') continue;
-        if (sscanf(line, "%d %1023s", &idx, rel) != 2) continue;
+        if (!manifest_line(line, &idx, rel, sizeof rel)) continue;
         if (idx < 0 || idx >= MO_MAX_TRACKS) {
             OPL_WARN_F("music", "manifest.txt: track %d out of range", idx);
             continue;
@@ -145,6 +174,14 @@ static const op_wav_pcm* load_track(int track)
         /* Live toggle: a disabled mod's root stops serving (probed per
          * track start, so the flip lands at the next track change). */
         if (owner && *owner && !openpete_mods_is_enabled(owner)) continue;
+        /* Both name forms per root: the manifest mapping first, then
+         * track_NN.wav, so a mod can ship either. */
+        char rel[1024];
+        if (manifest_lookup(root, track, rel, sizeof rel)) {
+            snprintf(path, sizeof(path), "%s/music/%s", root, rel);
+            FILE* mf = fopen(path, "rb");
+            if (mf) { fclose(mf); found = 1; continue; }
+        }
         snprintf(path, sizeof(path), "%s/music/track_%02d.wav", root,
                  track);
         FILE* mf = fopen(path, "rb");

@@ -1,53 +1,59 @@
-# declarative-reshade — a shader mod with no C code.
+# declarative-reshade: a shader mod with no C code.
 #
-# The mod is this manifest plus one .frag: no src/, no entry point,
-# nothing compiled. The [[material]] rows below are the mod.
+# The mod is this manifest plus one .frag. There is no src/, no entry
+# point and nothing compiled on the host. Each [[material]] row registers
+# the shader with a selector, and the engine applies it to every draw the
+# selector matches.
 #
-# Selector keys (all optional; an omitted key matches everything):
+# Selector keys. All are optional; an omitted key matches everything.
 #   channel  any | moby | terrain | player | flame | particle | sky |
 #            shadow | tracer | portal
 #   ident    channel-local identity (flame ribbon or caps, particle kind,
 #            shadow caster kind, portal preview kind)
 #   class    moby class
 #   texture  terrain texture-record id 0..127
-#   level    level id; texture ids are per level, so a keyed row usually
-#            needs this too
+#   level    level id; texture ids are per level, so a texture-keyed row
+#            usually needs this too
 #   tier     "hp" | "lp"        (omit = both)
 #   textured true | false       (omit = both)
 #   env_anim true               (animated terrain env faces only)
 #   params   floats handed to the shader as its uniform block
 #   enabled  false to ship a row switched off
 #
-# A key the engine does not recognise is refused, never ignored: a typo
-# that silently widened the selection would repaint geometry the row never
-# named. Display-only: materials cannot move, reorder or re-composite
-# geometry.
+# A key the engine does not recognise is refused, not ignored. A typo
+# that silently widened the selection would repaint geometry the row
+# never named, and the author would have no signal.
+#
+# Materials are display-only. They reshade what the renderer already
+# drew and cannot move, reorder or re-composite geometry.
 
 [mod]
 id      = "declarative-reshade"
 name    = "Declarative Reshade"
 version = "0.1.0"
-api     = 5            # pillar 10: materials
-state    = "none"      # GPU-only; nothing to save
+api     = 5            # [[material]] rows
+state    = "none"      # GPU-only; nothing to carry across a state load
 runahead = "pure"      # no tick hooks
 
-# Spyro himself, tinted warm. He is NOT a moby, so a moby row never hits him.
+# Spyro, tinted warm. The player is drawn on its own channel and is not
+# a moby, so a moby row never reaches him.
 [[material]]
 frag    = "shaders/tint.frag"
 channel = "player"
 params  = [1.0, 0.55, 0.15, 0.45]   # rgb + strength
 
 # The additive flame plume. The material inherits the group's additive
-# blend — it can change colour math, never how the draw composites — so a
-# tint here reads as "added light", not as a flat repaint.
+# blend: it can change colour math but not how the draw composites, so
+# a tint here reads as added light rather than a flat repaint.
 [[material]]
 frag    = "shaders/tint.frag"
 channel = "flame"
 ident   = 0                          # 0 = ribbon, 1 = the opaque base caps
 params  = [0.30, 0.55, 1.00, 0.60]
 
-# Off by default: proof that a row can ship switched off, and a place to
-# see the LP terrain tier on its own. Flip enabled to true.
+# Shipped switched off. A row can ship disabled and be enabled from the
+# Mods panel; this one isolates the LP terrain tier so it can be seen on
+# its own. Set enabled to true to try it.
 [[material]]
 frag    = "shaders/tint.frag"
 channel = "terrain"

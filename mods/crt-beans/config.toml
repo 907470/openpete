@@ -1,14 +1,15 @@
-# crt-beans — user knobs (code defaults are authoritative; see
-# src/crt_beans.c). Values land in the shaders through the mod uniform
-# block (postfx_set_uniforms), std140: seven floats.
+# crt-beans player settings. The [[config]] rows in mod.toml are the
+# schema; this file holds the values, and the Mods panel rewrites it on
+# a committed edit. The seven values land in the shaders as one std140
+# uniform block of seven floats (see src/crt_beans.c).
 #
-# Defaults mirror upstream crt-beans-fast.
+# Defaults are the upstream crt-beans-fast defaults.
 
 [crt]
-max_spot_size      = 0.90  # electron-beam spot max size, proportion of a scanline [0.6..1.0]
-min_spot_size      = 0.40  # spot size floor at black, proportion of max [0.3..1.0]
+max_spot_size      = 0.90  # electron-beam spot at full white, proportion of a scanline [0.6..1.0]
+min_spot_size      = 0.40  # spot size floor at black, proportion of the max [0.3..1.0]
 mask_type          = 2     # phosphor mask: 0 = off, 1 = subpixel grille, 2 = dynamic grille
-subpixel_pattern   = 0     # your monitor's subpixels: 0 = RGB, 1 = BGR (mask_type 1 only)
+subpixel_pattern   = 0     # your monitor's subpixel order: 0 = RGB, 1 = BGR (mask_type 1 only)
 subpixel_triad_px  = 4     # monitor pixels per phosphor triad, 2..5 (mask_type 1 only)
-mask_triads        = 550   # phosphor triads across the screen (mask_type 2 only) [400..800]
+mask_triads        = 550   # phosphor triads across the screen width (mask_type 2 only) [400..800]
 output_gamma       = 1     # output encode: 0 = sRGB, 1 = 2.2 gamma
