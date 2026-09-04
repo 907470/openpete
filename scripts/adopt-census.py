@@ -30,11 +30,11 @@ BIN = os.environ.get("OPENPETE_BIN",
                      os.path.join(ROOT, "build/linux-release/games/spyro-1/openpete-spyro1"))
 DISC = os.environ.get("OPENPETE_DISC",
                       os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue"))
-EXIT_RE = re.compile(r"moby adopt census: frames=(\d+) faces=(\d+) classes=(\d+)((?: cls=\d+:faces=\d+,frames=\d+)*)")
-CLS_RE = re.compile(r"cls=(\d+):faces=(\d+),frames=(\d+)")
+EXIT_RE = re.compile(r"moby adopt census: frames=(\d+) faces=(\d+) classes=(\d+)((?: cls=\d+:faces=\d+,frames=\d+\S*)*)")
+CLS_RE = re.compile(r"cls=(\d+):faces=(\d+),frames=(\d+)(?:,br=(\S+?),tex=(\d+),hl=(\d+)(?:,dup=(\d+),tiny=(\d+))?)?")
 FEED_RE = re.compile(r"render-paths: feed audit: fed_path_frames=\d+ unmarked_path_frames=\d+[^\n]*")
 LINE_RE = re.compile(r"\[adopt-cen f=(\d+)\] cls=(\d+) faces=(\d+) moby=([0-9A-F]+) fkey=([0-9A-F]+) "
-                     r"walk=([0-9A-F/]+) adopt=([0-9A-F/]+)")
+                     r"(?:br=([0-9A-F]+) (?:bj=\d+ ext=[\d.]+ )?)?walk=([0-9A-F/]+) adopt=([0-9A-F/]+)")
 
 
 def read_manifest(path):
@@ -112,10 +112,12 @@ def parse_row(m, lines, frame_limit, feed=None):
     reconstructed from the lines when the exit line is missing (a torn
     stderr write at exit); `frames` is then the count of distinct frames."""
     if m:
-        per_cls = {int(c): (int(fa), int(fr)) for c, fa, fr in CLS_RE.findall(m.group(4))}
+        per_cls = {int(g[0]): (int(g[1]), int(g[2])) for g in CLS_RE.findall(m.group(4))}
+        br_by_cls = {int(g[0]): (g[3] or "", g[4] or "", g[5] or "", g[6] or "", g[7] or "") for g in CLS_RE.findall(m.group(4))}
         frames, faces = int(m.group(1)), int(m.group(2))
     else:
         per_cls = {}
+        br_by_cls = {}
         frames_seen = set()
         for f_, cls, fcount, *_ in lines:
             fa_, fr_ = per_cls.get(int(cls), (0, 0))
@@ -123,14 +125,14 @@ def parse_row(m, lines, frame_limit, feed=None):
             frames_seen.add(int(f_))
         frames, faces = len(frames_seen), sum(fa for fa, fr in per_cls.values())
     examples = {}
-    for f_, cls, faces, moby, fkey, walk, adopt in lines:
-        examples.setdefault(int(cls), (int(f_), moby, fkey, walk, adopt))
+    for f_, cls, faces, moby, fkey, br, walk, adopt in lines:
+        examples.setdefault(int(cls), (int(f_), moby, fkey, walk, adopt, br or ""))
     # The render-path feed audit's exit line rides along: an unmarked feed is
     # a sub-tick flicker defect the corpus run surfaces for free.
     unmarked = feed.group(0).split("unmarked_path_frames=", 1)[1] if feed else ""
     return {"frames": frames, "faces": faces, "reconstructed": m is None,
-            "per_cls": per_cls, "examples": examples, "frame_limit": frame_limit,
-            "feed_unmarked": unmarked}
+            "per_cls": per_cls, "br_by_cls": br_by_cls, "examples": examples,
+            "frame_limit": frame_limit, "feed_unmarked": unmarked}
 
 
 def rows_from_logs(outdir):
@@ -204,9 +206,18 @@ def write_report(opts, results, fails):
     agg = {}
     for slug, d in results:
         for c, (fa, fr) in d["per_cls"].items():
-            a = agg.setdefault(c, {"faces": 0, "frames": 0, "rows": [], "example": None})
+            a = agg.setdefault(c, {"faces": 0, "frames": 0, "rows": [], "example": None,
+                                   "br": [0] * 6, "tex": 0, "hl": 0, "dup": 0, "tiny": 0})
             a["faces"] += fa
             a["frames"] += fr
+            br, tex, hl, dup, tiny = d.get("br_by_cls", {}).get(c, ("", "", "", "", ""))
+            if br:
+                for i, v in enumerate(br.split("/")[:6]):
+                    a["br"][i] += int(v)
+                a["tex"] += int(tex or 0)
+                a["hl"] += int(hl or 0)
+                a["dup"] += int(dup or 0)
+                a["tiny"] += int(tiny or 0)
             a["rows"].append(slug)
             if a["example"] is None and c in d["examples"]:
                 a["example"] = (slug,) + d["examples"][c]
@@ -225,12 +236,12 @@ def write_report(opts, results, fails):
     if fails:
         lines += ["## FAILED rows (no census line)", ""] + [f"- {s}" for s in fails] + [""]
     lines += ["## Adoptions by moby class (all rows)", "",
-              "| class | faces | frames | rows | example (row f moby fkey walk -> adopt) |",
-              "|---|---|---|---|---|"]
+              "| class | faces | frames | rows | branch ?/strip/tri/tri-v3/quadA/quadB | tex | hl | dup | tiny | example (row f moby fkey br walk -> adopt) |",
+              "|---|---|---|---|---|---|---|---|---|---|"]
     for c, a in sorted(agg.items(), key=lambda kv: -kv[1]["faces"]):
         ex = a["example"]
-        exs = f"{ex[0]} f={ex[1]} moby={ex[2]} fkey={ex[3]} {ex[4]} -> {ex[5]}" if ex else "-"
-        lines.append(f"| {c} | {a['faces']} | {a['frames']} | {len(a['rows'])} | {exs} |")
+        exs = f"{ex[0]} f={ex[1]} moby={ex[2]} fkey={ex[3]} br={ex[6]} {ex[4]} -> {ex[5]}" if ex else "-"
+        lines.append(f"| {c} | {a['faces']} | {a['frames']} | {len(a['rows'])} | {'/'.join(str(v) for v in a['br'])} | {a['tex']} | {a['hl']} | {a['dup']} | {a['tiny']} | {exs} |")
     bad = [(slug, d["feed_unmarked"]) for slug, d in sorted(results)
            if d["feed_unmarked"] and not d["feed_unmarked"].startswith("0")]
     lines += ["", "## Render-path feed audit (unmarked feeds = sub-tick flicker)", ""]

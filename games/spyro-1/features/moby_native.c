@@ -1578,6 +1578,11 @@ typedef struct {
 static ntri_t s_wtri[MAX_NTRI];   /* cursor lives in s_gout.n (see mn_out) */
 static uint8_t s_wtri_mode[MAX_NTRI]; /* shaded only: 0=gouraud 1=flat-basic 2=flat-metal */
 static uint8_t s_wtri_ui[MAX_NTRI];   /* 1 = this tri's moby is a HUD/UI overlay (draw on top) */
+/* Emit branch of the tri, low 3 bits: 1 strip tri, 2 fresh tri (v0,v1,v2),
+ * 3 fresh tri (v3,v1,v2), 4 quad half (v0,v1,v2), 5 quad half (v1,v3,v2);
+ * 0x10 textured, 0x20 spec-highlight strip. Census/probe provenance only. */
+static uint8_t s_wtri_br[MAX_NTRI];
+static _Thread_local uint8_t s_emit_br;
 static uint8_t s_wtri_fogsup[MAX_NTRI]; /* 1 = --no-lod suppressed this record's fog band: the .s
                                          * prims carry fogged colours the walk dropped — adopt
                                          * must NOT copy them back (distant-chest saturation) */
@@ -1662,12 +1667,12 @@ static _Thread_local mn_walkdiag* t_diag = &s_wdiag[0];
  * arrays so emit_wtri needs no knowledge of which it is filling. */
 typedef struct {
     ntri_t*   tri;  uint32_t* fkey; uint32_t* moby; uint16_t* cls;
-    uint8_t*  ui;   uint8_t*  front; uint8_t* fogsup; uint8_t* mangle;
+    uint8_t*  ui;   uint8_t*  front; uint8_t* fogsup; uint8_t* mangle; uint8_t* br;
     int8_t*   dofs;
     int n, cap;
 } mn_out;
 static mn_out s_gout = { s_wtri, s_wtri_fkey, s_wtri_moby, s_wtri_cls, s_wtri_ui,
-                         s_wtri_front, s_wtri_fogsup, s_wtri_mangle, s_wtri_dofs,
+                         s_wtri_front, s_wtri_fogsup, s_wtri_mangle, s_wtri_br, s_wtri_dofs,
                          0, MAX_NTRI };
 static _Thread_local mn_out* t_out = &s_gout;
 
@@ -1718,6 +1723,7 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     O->mangle[O->n] = (uint8_t)((a->unr || b->unr || c->unr ||
                                  a->sat || b->sat || c->sat) ? 1 : 0);
     O->fkey[O->n] = s_emit_fkey;
+    O->br[O->n] = s_emit_br;
     O->cls[O->n] = s_cur_moby_cls;            /* provenance tag (mod-shaders S6) */
     ntri_t* t = &O->tri[O->n++];
     t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez, a->tvz};
@@ -2491,18 +2497,22 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                             "drawn full-additive (no quarter-add pipe) f=%u -- FIX moby_native.c:1074",
                             openpete_frame);
 
+            const uint8_t brflags = (uint8_t)((textured ? 0x10u : 0u) | (F->hl ? 0x20u : 0u));
             if (emit_a) {
                 s_emit_fkey = PACK_FKEY(i0,i1,i2);
+                s_emit_br = (uint8_t)(brflags | (!fresh ? 1u : emit_b ? 4u : 2u));
                 emit_wtri(p0,p1,p2, c0,c1,c2, u[0],v[0],u[1],v[1],u[2],v[2],
                           textured,tpx,tpy,clx,cly,bpp,blend);
             }
             if (emit_b) {
                 if (b_is_v3tri) {        /* tri-2nd (v3,v1,v2) */
                     s_emit_fkey = PACK_FKEY(i3,i1,i2);
+                    s_emit_br = (uint8_t)(brflags | 3u);
                     emit_wtri(p3,p1,p2, c3,c1,c2, u[3],v[3],u[1],v[1],u[2],v[2],
                               textured,tpx,tpy,clx,cly,bpp,blend);
                 } else {                 /* quad 2nd half (v1,v3,v2) */
                     s_emit_fkey = PACK_FKEY(i1,i3,i2);
+                    s_emit_br = (uint8_t)(brflags | 5u);
                     emit_wtri(p1,p3,p2, c1,c3,c2, u[1],v[1],u[3],v[3],u[2],v[2],
                               textured,tpx,tpy,clx,cly,bpp,blend);
                 }
@@ -2639,10 +2649,11 @@ static int walk_slabs_ready(int nw) {
         O->front  = (uint8_t*) malloc(MAX_NTRI);
         O->fogsup = (uint8_t*) malloc(MAX_NTRI);
         O->mangle = (uint8_t*) malloc(MAX_NTRI);
+        O->br     = (uint8_t*) malloc(MAX_NTRI);
         O->dofs   = (int8_t*)  malloc(MAX_NTRI);
         O->cap = MAX_NTRI;
         if (!O->tri || !O->fkey || !O->moby || !O->cls || !O->ui || !O->front ||
-            !O->fogsup || !O->mangle || !O->dofs) return 0;
+            !O->fogsup || !O->mangle || !O->br || !O->dofs) return 0;
     }
     return 1;
 }
@@ -2689,6 +2700,7 @@ static void walk_parallel(CPUState* cpu, int is_spec) {
         memcpy(&s_wtri_ui[s_gout.n],     &O->ui[st],     (size_t)n);
         memcpy(&s_wtri_front[s_gout.n],  &O->front[st],  (size_t)n);
         memcpy(&s_wtri_fogsup[s_gout.n], &O->fogsup[st], (size_t)n);
+        memcpy(&s_wtri_br[s_gout.n],     &O->br[st],     (size_t)n);
         memcpy(&s_wtri_mangle[s_gout.n], &O->mangle[st], (size_t)n);
         memcpy(&s_wtri_dofs[s_gout.n],   &O->dofs[st],   (size_t)n);
         s_gout.n += n;
@@ -2761,19 +2773,23 @@ static double tri_match_cost(const ntri_t* w, const ptri* p) {
  * the argmin permutation/prim and the `> tol` decision are identical when the
  * caller compares against tol*tol — just far cheaper (adopt calls this ~tens of
  * thousands of times per canonical frame at a moby-dense vista). */
-static double tri_match_cost_sq(const ntri_t* w, const ptri* p) {
+/* out_bj (optional) receives the argmin permutation: out_bj[k] = the prim
+ * vertex paired with walk vertex k, a bijection by construction. */
+static double tri_match_cost_sq_perm(const ntri_t* w, const ptri* p, int* out_bj) {
     static const int perm[6][3]={{0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}};
-    double bestmax=1e36;
+    double bestmax=1e36; int bi=0;
     for (int pi=0;pi<6;pi++){
         double mx=0;
         for (int k=0;k<3;k++){
             double dx=w->v[k].sx-p->x[perm[pi][k]], dy=w->v[k].sy-p->y[perm[pi][k]];
             double d=dx*dx+dy*dy; if(d>mx)mx=d;
         }
-        if(mx<bestmax)bestmax=mx;
+        if(mx<bestmax){bestmax=mx;bi=pi;}
     }
+    if (out_bj) for (int k=0;k<3;k++) out_bj[k]=perm[bi][k];
     return bestmax;
 }
+static double tri_match_cost_sq(const ntri_t* w, const ptri* p) { return tri_match_cost_sq_perm(w, p, NULL); }
 static void compare_walk_vs_prims(void) {
     build_prim_tris();
     static int s_cmp_dumped = 0; int s_cmp_dump = !s_cmp_dumped; s_cmp_dumped = 1;
@@ -3107,7 +3123,10 @@ static void dyncol_note_moby(uint32_t m) {
 typedef struct {
     uint16_t cls;
     uint32_t faces, frames, frame_faces;
-    uint32_t ex_moby, ex_fkey, ex_walk[3], ex_adopt[3];
+    uint32_t br[8], tex, hl;      /* emit branch / textured / highlight tallies (s_wtri_br) */
+    uint32_t dup;                 /* faces whose walk->prim vertex map hit one prim vertex twice */
+    uint32_t tiny;                /* faces whose screen extent is under 4 px in x or y */
+    uint32_t ex_moby, ex_fkey, ex_walk[3], ex_adopt[3]; uint8_t ex_br, ex_bj[3]; float ex_ext;
 } adopt_cen_t;
 #define ADOPT_CEN_MAX 64
 static adopt_cen_t s_acen[ADOPT_CEN_MAX];
@@ -3117,8 +3136,11 @@ static uint32_t s_acen_frames, s_acen_faces;
 static void adopt_census_exit(void) {
     fprintf(stderr, "moby adopt census: frames=%u faces=%u classes=%d",
             s_acen_frames, s_acen_faces, s_acen_n);
-    for (int i = 0; i < s_acen_n; i++)
-        fprintf(stderr, " cls=%u:faces=%u,frames=%u", s_acen[i].cls, s_acen[i].faces, s_acen[i].frames);
+    for (int i = 0; i < s_acen_n; i++) {
+        const adopt_cen_t* c = &s_acen[i];
+        fprintf(stderr, " cls=%u:faces=%u,frames=%u,br=%u/%u/%u/%u/%u/%u,tex=%u,hl=%u,dup=%u,tiny=%u",
+                c->cls, c->faces, c->frames, c->br[0], c->br[1], c->br[2], c->br[3], c->br[4], c->br[5], c->tex, c->hl, c->dup, c->tiny);
+    }
     fprintf(stderr, "\n");
 }
 
@@ -3131,7 +3153,7 @@ static int adopt_census_on(void) {
     return s_acen_on;
 }
 
-static void adopt_census_note(int wi, const uint32_t walk_rgb[3]) {
+static void adopt_census_note(int wi, const uint32_t walk_rgb[3], const int bj[3]) {
     const uint16_t cls = s_wtri_cls[wi];
     adopt_cen_t* c = NULL;
     for (int i = 0; i < s_acen_n; i++) if (s_acen[i].cls == cls) { c = &s_acen[i]; break; }
@@ -3140,8 +3162,23 @@ static void adopt_census_note(int wi, const uint32_t walk_rgb[3]) {
         c = &s_acen[s_acen_n++]; memset(c, 0, sizeof *c); c->cls = cls;
     }
     c->faces++; c->frame_faces++; s_acen_faces++;
+    c->br[s_wtri_br[wi] & 7u]++;
+    if (s_wtri_br[wi] & 0x10u) c->tex++;
+    if (s_wtri_br[wi] & 0x20u) c->hl++;
+    const int dup = (bj[0] == bj[1] || bj[1] == bj[2] || bj[0] == bj[2]);
+    const ntri_t* w = &s_wtri[wi];
+    float xlo = w->v[0].sx, xhi = xlo, ylo = w->v[0].sy, yhi = ylo;
+    for (int k = 1; k < 3; k++) {
+        if (w->v[k].sx < xlo) xlo = w->v[k].sx; if (w->v[k].sx > xhi) xhi = w->v[k].sx;
+        if (w->v[k].sy < ylo) ylo = w->v[k].sy; if (w->v[k].sy > yhi) yhi = w->v[k].sy;
+    }
+    const float ext = (xhi - xlo) > (yhi - ylo) ? (xhi - xlo) : (yhi - ylo);
+    if (dup) c->dup++;
+    if ((xhi - xlo) < 4.0f || (yhi - ylo) < 4.0f) c->tiny++;
     if (c->frame_faces == 1) {   /* the frame's first face is the class's example */
-        c->ex_moby = s_wtri_moby[wi]; c->ex_fkey = s_wtri_fkey[wi];
+        c->ex_moby = s_wtri_moby[wi]; c->ex_fkey = s_wtri_fkey[wi]; c->ex_br = s_wtri_br[wi];
+        for (int k = 0; k < 3; k++) c->ex_bj[k] = (uint8_t)bj[k];
+        c->ex_ext = ext;
         for (int k = 0; k < 3; k++) { c->ex_walk[k] = walk_rgb[k]; c->ex_adopt[k] = s_wtri[wi].v[k].rgb & 0xFFFFFFu; }
     }
 }
@@ -3153,8 +3190,9 @@ static void adopt_census_frame(void) {
         adopt_cen_t* c = &s_acen[i];
         if (!c->frame_faces) continue;
         any = 1; c->frames++;
-        fprintf(stderr, "[adopt-cen f=%u] cls=%u faces=%u moby=%08X fkey=%08X walk=%06X/%06X/%06X adopt=%06X/%06X/%06X\n",
-                openpete_frame, c->cls, c->frame_faces, c->ex_moby, c->ex_fkey,
+        fprintf(stderr, "[adopt-cen f=%u] cls=%u faces=%u moby=%08X fkey=%08X br=%02X bj=%u%u%u ext=%.1f walk=%06X/%06X/%06X adopt=%06X/%06X/%06X\n",
+                openpete_frame, c->cls, c->frame_faces, c->ex_moby, c->ex_fkey, c->ex_br,
+                c->ex_bj[0], c->ex_bj[1], c->ex_bj[2], (double)c->ex_ext,
                 c->ex_walk[0], c->ex_walk[1], c->ex_walk[2],
                 c->ex_adopt[0], c->ex_adopt[1], c->ex_adopt[2]);
         c->frame_faces = 0;
@@ -3246,14 +3284,14 @@ static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
          * match at all). Genuine transients keep their authored UVs, so real
          * adoptions still pass; a neighbour's UV triple does not. */
         if ((w->textured != 0) != (P->tex != 0)) continue;
+        /* Vertex correspondence = the permutation that won the match, a
+         * bijection. An independent nearest-vertex pick per walk vertex is not:
+         * on a face a few px across two walk vertices land on the same prim
+         * vertex and the face adopts one corner's colour twice — a gouraud
+         * gradient collapsed to a flat pair, on every small untextured face,
+         * every frame (386 of the 439 class-2 adoptions in one movie). */
         int bj[3];
-        for (int k = 0; k < 3; k++) {          /* per-vertex: nearest prim vertex (order-independent) */
-            double bd = 1e18; bj[k] = 0;
-            for (int j = 0; j < 3; j++) {
-                double dx = w->v[k].sx - P->x[j], dy = w->v[k].sy - P->y[j];
-                double d = dx * dx + dy * dy; if (d < bd) { bd = d; bj[k] = j; }
-            }
-        }
+        tri_match_cost_sq_perm(w, P, bj);
         if (w->textured) {
             int uvok = 1;
             for (int k = 0; k < 3 && uvok; k++)
@@ -3273,7 +3311,7 @@ static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
         }
         if (changed) {
             recoloured++;
-            if (adopt_census_on()) adopt_census_note(wi, walk_rgb);
+            if (adopt_census_on()) adopt_census_note(wi, walk_rgb, bj);
             if (s_dyncol_n < MAX_DYNCOL) {     /* cache by face identity for the sub-tick replay */
                 dyncol_t* d = &s_dyncol[s_dyncol_n++];
                 d->moby = s_wtri_moby[wi]; d->fkey = s_wtri_fkey[wi];
@@ -6105,6 +6143,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             s_wtri_ui[s_gout.n]      = 0;
             s_wtri_front[s_gout.n]   = h->front;
             s_wtri_fogsup[s_gout.n]  = h->fogsup;
+            s_wtri_br[s_gout.n]      = 0;
             s_wtri_cls[s_gout.n]     = h->cls;
             s_wtri_moby[s_gout.n]    = h->moby;
             s_wtri_fkey[s_gout.n]    = s_hold_fkey[h->off + t];
