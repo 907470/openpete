@@ -4563,8 +4563,12 @@ static int run_host_loop(const openpete_options_t* opts) {
             s_eager.active = 0;
             OPL_INFO_F("eager", "%s", "disengaged (inline presents)");
         }
+        /* openpete_unlock_fps is computed at the loop tail, so on the first
+         * iteration it does not yet reflect a skip fast-forward armed at
+         * boot; read the fast-forward flag directly as well. */
         const bool native_intermediate =
             !headless_block && !openpete_unlock_fps &&
+            !openpete_skip_present_until_level &&
             g_openpete_interp_enabled &&
             openpete_interp_enabled() &&
             !did_present_this_iter &&

@@ -3064,8 +3064,13 @@ static void upload_synced_textures(void)
      * present, which has no scene of its own in the ring. */
     const uint32_t upto = s_ps_slot ? s_ps_slot->scene_id : UINT32_MAX;
     SDL_LockMutex(vram_mx());
+    static int s_vjlog = -1; static int s_vjlog_n = 0;   /* diagnostic: entries applied per present */
+    if (s_vjlog < 0) { const char* e = getenv("OPENPETE_DIAG_PRESENT_LOG"); s_vjlog = (e && *e) ? atoi(e) : 0; }
     while (s_vj_n > 0) {
         const vram_jentry_t *e = &s_vj[s_vj_head];
+        if (s_vjlog_n < s_vjlog * 4) { s_vjlog_n++; extern unsigned openpete_frame;
+            fprintf(stderr, "[vram-journal] apply f=%u scene_id=%u full=%d nrects=%d bytes=%zu queued=%d\n",
+                    openpete_frame, e->scene_id, e->full, e->nrects, e->pix_bytes, s_vj_n); }
         if (upto != UINT32_MAX && (int32_t)(e->scene_id - upto) > 0) {
             static int s_held_log = 0;   /* diagnostic: a journal head held back by scene order */
             if (s_held_log < 20) {
@@ -9956,6 +9961,24 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
 {
     s_last_frame_presented = 0;
     ps_apply_geometry();
+    /* Diagnostic (OPENPETE_DIAG_PRESENT_LOG=N): the first N presents' size and
+     * scene state, plus every present made while a skip fast-forward holds. */
+    static int s_dpl = -1; static int s_dpl_n = 0;
+    if (s_dpl < 0) { const char* e = getenv("OPENPETE_DIAG_PRESENT_LOG"); s_dpl = (e && *e) ? atoi(e) : 0; }
+    extern int openpete_skip_present_until_level; extern unsigned openpete_frame;
+    const bool dpl_now = s_dpl > 0 && (s_dpl_n < s_dpl || openpete_skip_present_until_level);
+    if (dpl_now) {
+        int pw = 0, ph = 0; SDL_GetWindowSizeInPixels(s_nr.window, &pw, &ph);
+        int scene_n = 0; uint32_t bg_ = 0, fade_ = 0, freeze_ = 0; int hud_ = 0;
+        scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_, NULL);
+        fprintf(stderr, "[dpl] f=%u skip=%d stage=%d slot=%p sdl=%dx%d win=%dx%d pend=%dx%d layout=%dx%d ref=%dx%d ss=%dx%d tk=%dx%d od=%dx%d rtt=%dx%d frozen=%d scene_n=%d freeze=0x%x journal=%d have_ref=%d\n",
+                openpete_frame, openpete_skip_present_until_level, s_stage_target, (const void*)s_ps_slot,
+                pw, ph, s_nr.win_w, s_nr.win_h, s_nr.pending_w, s_nr.pending_h,
+                s_nr.layout_win_w, s_nr.layout_win_h, s_nr.ref_w, s_nr.ref_h, s_nr.ss_w, s_nr.ss_h,
+                s_nr.tk_w, s_nr.tk_h, s_nr.od_w, s_nr.od_h, s_nr.rtt_w, s_nr.rtt_h,
+                (int)s_nr.frozen_valid, scene_n, freeze_, s_vj_n, (int)have_ref);
+        s_dpl_n++;
+    }
     /* Detect window-size changes WITHOUT polling SDL events (the host loop
      * owns the event queue, and stealing events would starve PsyCross input). */
     int pw = 0, ph = 0;
@@ -10061,9 +10084,23 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
         s_diag_recreate = 9;               /* fired; never again */
         rhi_notify_resize_immediate(s_nr.dev);
     }
+    /* Diagnostic (OPENPETE_DIAG_REFUSE_FIRST_PRESENT=N): the first N presents
+     * of the run are skipped as if the swapchain had refused them, without a
+     * window resize, on any host. Under --skip-to-level the first present of
+     * the run is the first present after the fast-forward resumes. */
+    static int s_diag_refuse = -1; static int s_diag_refused = 0; static int s_diag_after = 0; static int s_diag_seen = 0;
+    if (s_diag_refuse < 0) { const char* e = getenv("OPENPETE_DIAG_REFUSE_FIRST_PRESENT"); s_diag_refuse = (e && *e) ? atoi(e) : 0;
+                             const char* a = getenv("OPENPETE_DIAG_REFUSE_AFTER"); s_diag_after = (a && *a) ? atoi(a) : 0; }
+    const bool diag_refuse_now = s_diag_refuse > 0 && s_diag_seen >= s_diag_after && s_diag_refused < s_diag_refuse;
+    s_diag_seen++;
+    if (diag_refuse_now) {
+        s_diag_refused++;
+        fprintf(stderr, "[diag] present f=%u refused by the diagnostic (%d/%d)\n", openpete_frame, s_diag_refused, s_diag_refuse);
+    }
     int bf_ok;
     { OP_PROF_ACCUM_SCOPE("gpu.beginframe");   /* fence wait + swapchain acquire */
-      bf_ok = s_stage_target >= 0 ? rhi_begin_frame_staged(s_nr.dev) : rhi_begin_frame(s_nr.dev); }
+      bf_ok = diag_refuse_now ? 0 : s_stage_target >= 0 ? rhi_begin_frame_staged(s_nr.dev) : rhi_begin_frame(s_nr.dev); }
+    if (dpl_now) fprintf(stderr, "[dpl] f=%u bf_ok=%d\n", openpete_frame, bf_ok);
     if (!bf_ok)
         return; /* swapchain recreating or window minimized — skip this present */
     openpete_native_scene_retire(rhi_frame_serial(s_nr.dev));
