@@ -3097,6 +3097,71 @@ static void dyncol_note_moby(uint32_t m) {
 #define ADG_OFF  128      /* origin shift so mild off-screen centroids still bucket */
 #define ADG_W    24
 #define ADG_H    16
+
+/* Adoption census (OPENPETE_MOBY_ADOPT_CENSUS=1). Every accepted adoption is
+ * a face whose emitted prim colour differs from the walk's post-render
+ * re-derivation: a render-time-transient colour, or a residual cross-match
+ * the identity gates let through. Counted per moby class with one example
+ * face per class (walk vs adopted RGB); one line per canonical frame and
+ * class, plus a totals line at exit for harnesses to grep. */
+typedef struct {
+    uint16_t cls;
+    uint32_t faces, frames, frame_faces;
+    uint32_t ex_moby, ex_fkey, ex_walk[3], ex_adopt[3];
+} adopt_cen_t;
+#define ADOPT_CEN_MAX 64
+static adopt_cen_t s_acen[ADOPT_CEN_MAX];
+static int s_acen_n, s_acen_on = -1;
+static uint32_t s_acen_frames, s_acen_faces;
+
+static void adopt_census_exit(void) {
+    fprintf(stderr, "moby adopt census: frames=%u faces=%u classes=%d",
+            s_acen_frames, s_acen_faces, s_acen_n);
+    for (int i = 0; i < s_acen_n; i++)
+        fprintf(stderr, " cls=%u:faces=%u,frames=%u", s_acen[i].cls, s_acen[i].faces, s_acen[i].frames);
+    fprintf(stderr, "\n");
+}
+
+static int adopt_census_on(void) {
+    if (s_acen_on < 0) {
+        const char* e = getenv("OPENPETE_MOBY_ADOPT_CENSUS");
+        s_acen_on = (e && *e && *e != '0') ? 1 : 0;
+        if (s_acen_on) atexit(adopt_census_exit);
+    }
+    return s_acen_on;
+}
+
+static void adopt_census_note(int wi, const uint32_t walk_rgb[3]) {
+    const uint16_t cls = s_wtri_cls[wi];
+    adopt_cen_t* c = NULL;
+    for (int i = 0; i < s_acen_n; i++) if (s_acen[i].cls == cls) { c = &s_acen[i]; break; }
+    if (!c) {
+        if (s_acen_n >= ADOPT_CEN_MAX) return;
+        c = &s_acen[s_acen_n++]; memset(c, 0, sizeof *c); c->cls = cls;
+    }
+    c->faces++; c->frame_faces++; s_acen_faces++;
+    if (c->frame_faces == 1) {   /* the frame's first face is the class's example */
+        c->ex_moby = s_wtri_moby[wi]; c->ex_fkey = s_wtri_fkey[wi];
+        for (int k = 0; k < 3; k++) { c->ex_walk[k] = walk_rgb[k]; c->ex_adopt[k] = s_wtri[wi].v[k].rgb & 0xFFFFFFu; }
+    }
+}
+
+/* Per canonical frame: one line per class that adopted this frame. */
+static void adopt_census_frame(void) {
+    int any = 0;
+    for (int i = 0; i < s_acen_n; i++) {
+        adopt_cen_t* c = &s_acen[i];
+        if (!c->frame_faces) continue;
+        any = 1; c->frames++;
+        fprintf(stderr, "[adopt-cen f=%u] cls=%u faces=%u moby=%08X fkey=%08X walk=%06X/%06X/%06X adopt=%06X/%06X/%06X\n",
+                openpete_frame, c->cls, c->frame_faces, c->ex_moby, c->ex_fkey,
+                c->ex_walk[0], c->ex_walk[1], c->ex_walk[2],
+                c->ex_adopt[0], c->ex_adopt[1], c->ex_adopt[2]);
+        c->frame_faces = 0;
+    }
+    if (any) s_acen_frames++;
+}
+
 static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
     static int cell_head[ADG_W * ADG_H];
     static int cell_next[MAX_PTRI];
@@ -3197,6 +3262,8 @@ static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
             if (!uvok) continue;
         }
         int changed = 0;
+        uint32_t walk_rgb[3];
+        for (int k = 0; k < 3; k++) walk_rgb[k] = w->v[k].rgb & 0xFFFFFFu;
         for (int k = 0; k < 3; k++) {
             uint32_t pc = P->rgb[bj[k]] & 0xFFFFFFu;
             if ((w->v[k].rgb & 0xFFFFFFu) != pc) {
@@ -3206,6 +3273,7 @@ static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
         }
         if (changed) {
             recoloured++;
+            if (adopt_census_on()) adopt_census_note(wi, walk_rgb);
             if (s_dyncol_n < MAX_DYNCOL) {     /* cache by face identity for the sub-tick replay */
                 dyncol_t* d = &s_dyncol[s_dyncol_n++];
                 d->moby = s_wtri_moby[wi]; d->fkey = s_wtri_fkey[wi];
@@ -3914,6 +3982,7 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
          * mobys. (recolor_walk_from_prims, the env-metal variant, stays SPEC-only.) */
         if (!is_spec) {
             int rc = adopt_prim_colors();
+            if (rc && adopt_census_on()) adopt_census_frame();
             s_tier_adopt += rc;
             if (s_dyncol_n > s_tier_dyncol_hi) s_tier_dyncol_hi = s_dyncol_n;
             if (s_dynmoby_n > s_tier_dynmoby_hi) s_tier_dynmoby_hi = s_dynmoby_n;
