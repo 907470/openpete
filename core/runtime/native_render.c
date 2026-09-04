@@ -3066,7 +3066,15 @@ static void upload_synced_textures(void)
     SDL_LockMutex(vram_mx());
     while (s_vj_n > 0) {
         const vram_jentry_t *e = &s_vj[s_vj_head];
-        if (upto != UINT32_MAX && (int32_t)(e->scene_id - upto) > 0) break;
+        if (upto != UINT32_MAX && (int32_t)(e->scene_id - upto) > 0) {
+            static int s_held_log = 0;   /* diagnostic: a journal head held back by scene order */
+            if (s_held_log < 20) {
+                s_held_log++;
+                fprintf(stderr, "[vram-journal] held: head scene_id=%u full=%d nrects=%d, present upto=%u, queued=%d\n",
+                        e->scene_id, e->full, e->nrects, upto, s_vj_n);
+            }
+            break;
+        }
         vram_journal_apply(e);
         vram_journal_pop();
     }
