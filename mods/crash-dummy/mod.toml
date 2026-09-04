@@ -1,9 +1,8 @@
-# crash-dummy — PoC ladder rung 6 (notes/plans/openpete-modding-framework.md)
+# crash-dummy — CI fixture: crashes the game on purpose.
 #
-# DELIBERATELY CRASHES THE GAME (null dereference on the 100th
-# CameraUpdate call). Exists to prove crash attribution: the engine's
-# crash report must name this mod ("MOD ATTRIBUTION: ... mod
-# 'crash-dummy'"). Dev/test rung — never enable it to play.
+# Dereferences NULL on the 100th CameraUpdate call so the crash report can
+# be checked for the line naming this mod ("MOD ATTRIBUTION: ... mod
+# 'crash-dummy'"). Never enable it to play.
 
 [mod]
 id      = "crash-dummy"

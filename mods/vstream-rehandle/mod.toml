@@ -1,19 +1,13 @@
-# vstream-rehandle — CI/bench fixture: every animated model's vertex
-# streams routed through stream handles.
+# vstream-rehandle — CI fixture: every animated model's vertex streams
+# routed through stream handles.
 #
 # After each model-install pass, walks g_Models and rewrites the 21-bit
-# stream field of EVERY animation frame word in the level to a stream
-# handle. mode 1 binds each handle to the stream where it already is (the
-# data does not move: pure resolver cost, pixel-identical by
-# construction); mode 2 copies each stream into the guest arena and binds
-# the handle to the copy — the total-conversion shape, every vertex read
-# in the level served from arena memory, which is what prices the region
-# path. Either way the rendered frame must match stock exactly, which is
-# the proof that all 21 substituted readers resolve handles the way they
-# resolved addresses.
-#
-# Frame words are gameplay-readable, so the modset tag carries this mod
-# and the oracle is expected to diverge.
+# stream field of every animation frame word in the level to a stream
+# handle. Mode 1 binds each handle to the stream where it already is (the
+# data does not move); mode 2 copies each stream into the arena and binds
+# the handle to the copy. Either way the rendered frame must match stock
+# exactly. Frame words are gameplay-readable, so the mod is mutative and
+# the oracle is expected to diverge.
 
 [mod]
 id      = "vstream-rehandle"

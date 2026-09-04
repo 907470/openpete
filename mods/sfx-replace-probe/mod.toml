@@ -1,18 +1,16 @@
-# sfx-replace-probe — the sim-neutrality fixture for the sfx_replace verb.
+# sfx-replace-probe — CI fixture: sfx_replace leaves the sound's end tick
+# stock.
 #
-# Registers, from code, a replacement for one SoundTable slot: a
-# synthesized two-second buzz, deliberately far LONGER than any stock
-# one-shot it can land on. The guest polls each voice through
-# SpuGetKeyStatus and frees the sound slot (writing the sound-ref byte)
-# on the tick the STOCK sample ends; a replacement that moved that tick
-# would be a gameplay-state divergence. check_mods.sh runs the attract
-# demo with and without this mod under OPENPETE_SFX_END_LOG=1 and
-# requires every key-on/end transition to land on the same VBL.
+# Registers, from code, a replacement for one sound-table slot: a
+# synthesised two-second buzz, longer than any stock one-shot it can land
+# on. The game polls each voice through SpuGetKeyStatus and frees the
+# sound slot on the tick the stock sample ends; a replacement that moved
+# that tick would diverge gameplay state. check_mods.sh runs the attract
+# demo with and without this mod under OPENPETE_SFX_END_LOG=1 and requires
+# every key-on and end transition to land on the same VBL.
 #
-# config.toml: probe.sound = the slot name to replace (default
-# pickupDing — a one-shot the attract demo keys about every 500 VBLs;
-# the charge sound loops, so its end is the game's key-off, not the
-# sample's, and it cannot exhibit the defect).
+# config.toml: probe.sound = the slot name to replace (default pickupDing,
+# a one-shot the attract demo keys about every 500 VBLs).
 
 [mod]
 id      = "sfx-replace-probe"

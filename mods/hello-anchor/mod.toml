@@ -1,8 +1,8 @@
-# hello-anchor — PoC ladder rung 1 (notes/plans/openpete-modding-framework.md)
+# hello-anchor — the smallest code mod: a named override that logs and
+# calls base().
 #
-# Named-tier override + base(): log-only, so it must be sim-neutral even
-# when ENABLED (the observer-neutrality inertness gate — the oracle run
-# with this mod loaded must stay byte-exact vs real hardware).
+# Log-only, so it writes no guest RAM and gameplay stays byte-identical
+# with it enabled.
 
 [mod]
 id      = "hello-anchor"

@@ -1,31 +1,17 @@
-# moby-instance-tint — the refine callback made visible.
+# moby-instance-tint — a refine callback made visible.
 #
-# A selector on ALL mobys with a refine callback that tints each instance
+# A selector on all mobys with a refine callback that tints each instance
 # by a hash of its guest address, so every moby renders a distinct stable
-# colour. The hash is deliberate: if the callback were running once per
-# CLASS rather than once per instance, every moby of a kind would come out
-# identical and you would see it immediately.
+# colour. If the callback ran once per class rather than once per
+# instance, every moby of a kind would come out identical.
 #
-# A real mod keys the callback on gameplay state (m_State FLAMED, a
-# per-instance timer, distance) and scopes the SELECTOR to a class first
-# — that ordering is the point of the three-layer seam.
+# A real mod keys the callback on gameplay state (m_State, a per-instance
+# timer, distance) and scopes the selector to a class first.
 #
-# This mod found a real engine bug the first time it ran, which is the
-# argument for un-atticking a demonstrator the moment its surface lands.
-# A callback returning MANY DISTINCT outcomes used to lose most of its
-# instances (per-vaddr hash repainted 218 px where a constant block
-# repainted all 1586), because slot ids were interned during the walk and
-# stamped into the tag AFTER scene_begin_frame had reset the intern
-# table. The slot is now resolved at stamp time from the banked identity
-# (moby ptr + class) — bank identity, never outcomes. Keep the per-vaddr
-# hash: a shared-block callback cannot detect that class of bug.
-#
-# COST NOTE: instances whose uniform blocks are byte-identical share one
-# slot and stay in one batch, so cost tracks DISTINCT OUTCOMES, not
-# matches. A per-vaddr hash is the worst case by construction — this
-# all-moby demo interns ~100 slots and so costs ~100 extra draws. Scope
-# real selectors to a class + a rare state to stay cheap; the [gpu-pass]
-# and draw-count instruments name the cost.
+# Cost: instances whose uniform blocks are byte-identical share one slot
+# and one batch, so cost follows distinct outcomes, not matches. A
+# per-address hash is the worst case: this all-moby demo interns about
+# 100 slots and costs about 100 extra draws.
 
 [mod]
 id = "moby-instance-tint"

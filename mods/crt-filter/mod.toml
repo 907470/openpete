@@ -1,8 +1,8 @@
-# crt-filter — the mod-shader demo (plans/openpete-mod-shaders.md S3).
+# crt-filter — a config-driven CRT post-process pass.
 #
-# Ships GLSL source; the engine compiles it on load (S1 compile
-# service). Pure postfx: reads the composed frame, writes pixels —
-# sim-neutral BY CONSTRUCTION (shaders cannot touch guest RAM).
+# Ships GLSL source that the engine compiles on load; the [[config]] rows
+# drive the pass's uniform block. Post-process only: reads the composed
+# frame, writes pixels.
 
 [mod]
 id      = "crt-filter"

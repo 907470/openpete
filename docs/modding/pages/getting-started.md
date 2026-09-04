@@ -1,82 +1,64 @@
 # Getting started
 
-## Anatomy of a mod
+## Where `mods/` lives
 
-A mod is a directory under `mods/` named for the mod's ID:
+| Install | `mods/` location |
+|---|---|
+| Windows | Next to `openpete-spyro1.exe` |
+| Linux `.tar.xz`, AppImage | `~/.local/share/openpete/mods/` (`$XDG_DATA_HOME/openpete/mods/` when set) |
+| `portable = true` at the top level of `openpete.toml` | Next to the executable, when that directory is writable |
+
+On Linux a writable `mods/` directory already present next to the
+executable is used in place of the per-user path. `--mods-dir DIR` or
+`OPENPETE_MODS_DIR` overrides every location above.
+
+## Enabling mods
+
+`mods/enabled.txt` lists enabled mod IDs, one per line; `#` starts a
+comment. Without the file every mod in the directory loads, in
+lexicographic order. Order is priority: on a function hooked by several
+mods, the mod listed later runs first and `base()` descends toward earlier
+mods, then the original game code.
+
+`--mods a,b` or `OPENPETE_MODS=a,b` replaces the list for one run.
+`--mods ""` runs without mods.
+
+The M overlay's Mods section toggles a loaded mod at the next tick
+boundary and edits its settings. It does not reorder mods.
+
+## Directory layout
 
 | Path | Contents |
 |---|---|
-| `mod.toml` | The manifest. See [Manifest and config](manifest.md). |
+| `mod.toml` | Manifest. See [Manifest](manifest.md). |
 | `config.toml` | Optional player-editable settings, read through `api->config_*`. |
 | `src/*.c` | C sources, compiled on load against `<exe>/sdk/`. |
-| `assets/` | Overlay root: `textures/`, `music/`, `sfx/`, and `levels/`. Optional, like `src/`. |
-| `data/` | Per-mod persistent directory, created on demand. |
-| `.build/` | The engine's compile cache. Don't commit it. |
+| `shaders/*.vert`, `*.frag` | GLSL, compiled on load. See [Shaders](shaders.md). |
+| `assets/` | Overlay root: `textures/`, `music/`, `sfx/`, `levels/`. |
+| `data/` | Per-mod persistent directory, created on first `api->data_dir()` call. |
+| `.build/` | The engine's compile cache. Not part of a release. |
 
-A `<id>.zip` archive with `mod.toml` at its root loads identically. The
-engine unpacks it and caches it by content hash.
+An `<id>.zip` with `mod.toml` at the archive root loads the same way: the
+engine unpacks it under `mods/.unpacked/<id>/` and skips the unpack while
+the zip's hash is unchanged. A folder and a zip with the same ID resolve
+to the folder.
 
-### Where the mods directory lives
+## A declarative mod
 
-The engine compiles mods in place, so `mods/` sits wherever the install
-keeps the files it writes:
+Assets are picked up by file convention, with no manifest block:
 
-| Install | Location of `mods/` |
-|---|---|
-| Windows | Next to `openpete-spyro1.exe` |
-| Linux `.tar.xz` | `~/.local/share/openpete/mods/` |
-| Linux AppImage | `~/.local/share/openpete/mods/` |
-| Any install with `portable = true` | Next to the executable |
+- `assets/music/track_NN.wav` replaces music track NN.
+- `assets/textures/<name>.png` replaces a texture in the native renderer.
+- `assets/sfx/<name>.wav` replaces a sound effect.
 
-An AppImage is a read-only file, so it always uses the per-user path. To
-point the engine somewhere else, such as a development checkout, pass
-`--mods-dir DIR` or set `OPENPETE_MODS_DIR`. Either one overrides all of
-the preceding locations.
+Manifest blocks cover what files alone cannot: `[[level]]` wires a custom
+level, `[[material]]` re-shades geometry the engine draws, `[[config]]`
+declares settings the engine renders, `[[binding]]` declares a
+rebindable key. See [Manifest](manifest.md).
 
-### How mods are enabled and ordered
+## A code mod
 
-`mods/enabled.txt` lists the enabled mods, one ID per line. Order
-determines priority: mods later in the list run first on shared
-overrides, and `base()` descends toward earlier mods and then to the
-game's original code.
-
-To run a different set for a single session without editing the install,
-pass `--mods hello,other-mod`. The same ordering rule applies, and
-`--mods ""` runs the game without mods.
-
-## Declare assets and manifest blocks
-
-A manifest plus files is already a complete mod, with no compile step
-and no API version to pin.
-
-The engine picks up assets by convention:
-
-- `assets/music/track_20.wav` replaces the title theme. See
-  `music-swap`.
-- `assets/textures/<name>.png` replaces a texture in the
-  native renderer. See `hd-single-texture`. The texture-dump tooling
-  names these files for you.
-- `assets/levels/<stem>.WAD` and `<stem>.OVL`, plus a `[[level]]`
-  manifest block, make a playable custom level. The engine handles the
-  slot claim, the warp row, and disc serving. See `grim-garden`.
-
-Manifest blocks cover the rest of the tier. `[[level]]` wires a custom
-level, `[[material]]` re-shades geometry the engine already draws,
-`[[config]]` declares settings that the engine renders for you, and
-`[[binding]]` claims a rebindable hotkey. See
-[Manifest and config](manifest.md) for all of them.
-
-These blocks work the same way in a mod that also ships C. Declaring
-your settings with `[[config]]` saves you the widget code either way, so
-reach for a block whenever one covers what you want, and for `src/*.c`
-when you need behavior the engine can't be told about.
-
-## Create a code mod
-
-The following mod logs a line every few seconds from inside the override
-chain.
-
-1.  Write the manifest to `mods/hello/mod.toml`:
+1. `mods/hello/mod.toml`:
 
     ``` toml
     [mod]
@@ -84,10 +66,10 @@ chain.
     name    = "Hello"
     version = "0.1.0"
     api     = 2
-    sim_mutative = false # log-only observer: never writes guest RAM
+    sim_mutative = false   # never writes guest RAM
     ```
 
-2.  Write the source to `mods/hello/src/hello.c`:
+2. `mods/hello/src/hello.c`:
 
     ``` c
     #include <openpete_mod_api.h>
@@ -97,9 +79,9 @@ chain.
     static unsigned calls;
 
     static void on_camera_update(CPUState* cpu) {
-        if ((++calls % 300u) == 0u)   /* ~every 10 s at 29.913 ticks/s */
+        if ((++calls % 300u) == 0u)   /* every ~10 s at 29.913 ticks/s */
             g_api->log(g_self, OP_MOD_LOG_INFO, "CameraUpdate call #%u", calls);
-        g_api->base(cpu);                 /* pre-hook: us first, original last */
+        g_api->base(cpu);
     }
 
     int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
@@ -108,77 +90,45 @@ chain.
     }
     ```
 
-3.  Add `hello` to `mods/enabled.txt`.
+3. Add `hello` to `mods/enabled.txt` and launch.
 
-4.  Launch the game.
+The engine hashes the sources, compiles them when the hash changed (a
+"COMPILING MODS" splash stage), loads the object, and runs
+`openpete_mod_entry`. A compile failure disables the mod and writes the
+error to `mods/hello/.build/compile.log`; the game still starts. A
+non-zero return from the entry point disables the mod.
 
-The engine hashes your sources, compiles them with the bundled toolchain
-(a splash progress stage on cold boots, and a no-op on warm ones), calls
-`dlopen` on the result, and runs your entry point. A compile failure
-disables the mod and logs the error. It never blocks the launch.
+`api = N` is the minimum engine API version the mod needs. The loader
+refuses a mod whose pin exceeds the engine's version before compiling it.
+The API struct is append-only, so a newer engine always satisfies an older
+pin. Never compare `api->api_version` with `!=`; guard a single late entry
+with `if (api->api_version >= N)`.
 
-!!! note "Shipping a prebuilt object"
-    A mod with no `src/` but a `.build/<id>.so` (or `.dll`) loads as-is.
-    Every code object must export an ABI descriptor recording the api it
-    was built against; the engine adds it to its own compile lines, so a
-    hand-built object has to compile `<sdk>/openpete_mod_abi.c` alongside
-    its sources (or put `OPENPETE_MOD_ABI_DEFINE()` in one of them). An
-    object with no descriptor, or one built for a newer api than the
-    engine, is refused with a log line naming both versions.
+### Ways to hook a function
 
-!!! note "Don't check the API version in code"
-    The `api` key in `mod.toml` is the *minimum* version your mod needs,
-    and the loader refuses an older engine before your entry point runs.
-    Never compare versions with `!=`: the API struct is append-only, so
-    an engine newer than your pin is exactly what you want. If a single
-    call needs a later version than the rest of the mod, guard that call
-    alone with `if (api->api_version >= N)`.
+1. **By name.** `api->override_name(self, "CameraUpdate", fn)`. Names come
+   from the [function reference](reference/functions.md) and survive
+   engine updates.
+2. **Through a prototype.** Functions with a natural signature get typed
+   wrappers in `openpete_sdk_wrappers.h`: `OP_OVERRIDE_IMPL_Foo`,
+   `op_base_Foo(cpu, ...)`, `op_call_Foo(cpu, ...)`, with guest-to-host
+   pointer marshalling.
+3. **By address.** `api->override_addr(self, 0x8003xxxx, fn)`. Arguments
+   are in `cpu->a0..a3`, the return value in `cpu->v0`. Addresses are
+   pinned to the SCUS-94228 binary; the loader logs a warning on a mod's
+   first raw registration.
 
-## Choose a way to hook game functions
+## Iterating
 
-Three tiers reach the game's code, from most stable to most precise:
-
-1.  **By name.** `api->override_name(self, "CameraUpdate", fn)` is
-    stable across engine updates. The names come from the
-    [function reference](reference/functions.md).
-2.  **Through a prototype.** Functions with natural signatures get
-    generated wrappers in `openpete_sdk_wrappers.h`:
-    `OP_OVERRIDE_IMPL_Foo`, `op_base_Foo(cpu, ...)`, and
-    `op_call_Foo(cpu, ...)`, with typed arguments and guest-to-host
-    pointer marshalling.
-3.  **By address.** `api->override_addr` reaches any address. Arguments
-    arrive in `cpu->a0` through `cpu->a3`, and the return value goes in
-    `cpu->v0`. Raw addresses are region-pinned and can drift across
-    decompilation updates, so the loader warns once per mod on the first
-    raw registration.
-
-## Iterate on a mod
-
-**Hot reload.** Launch with `OPENPETE_MOD_HOT_RELOAD=1`, and edits to
-your sources or to `config.toml` go live mid-session: the loader
-recompiles and swaps the chain at a tick boundary. Your mod's own
-variables don't survive the swap, because your entry point re-runs on
-the fresh object. Re-derive whatever you need from guest state there.
-
-**Testing.** `python3 tools/modtest.py mods/<id>` runs a mod against a
-declared scenario, using the same harness that CI uses.
-`scripts/check_mods.sh` runs the whole ladder. The declarations live in
-a `modtest.toml` file beside `mod.toml`. See
-[Manifest and config](manifest.md).
-
-**Logs.** Lines from `api->log` carry the tag `mod:<id>`. Crashes are
-attributed to the innermost mod on the override stack.
-
-## Follow these rules
-
-- **Do sim work on the sim thread only.** Guest reads and writes,
-  `call`, and registrations all belong in tick context, which means
-  inside overrides or your entry point. Present hooks are render-pure,
-  and the loader enforces it.
-- **Say so if your C never writes guest RAM.** A mod that ships C is
-  assumed to change gameplay, which keeps the player's saves tagged
-  honestly. Set `sim_mutative = false` when yours doesn't. A mod with no
-  C needs no declaration at all. See
-  [Concepts](concepts.md#whether-your-mod-changes-gameplay).
-- **Keep game data out of your repository and your zip.** Ship
-  generators, not rips.
+- **Hot reload.** With `OPENPETE_MOD_HOT_RELOAD=1` the loader polls
+  `src/`, `shaders/`, and `config.toml` every 64 ticks, recompiles what
+  changed, and swaps the mod at a tick boundary. The entry point re-runs
+  on the new object; host statics do not survive, arena allocations do
+  (see [Guest memory](code.md#guest-memory)).
+- **Logs.** `api->log` lines carry the tag `mod:<id>`. A crash inside an
+  override is reported with `MOD ATTRIBUTION` naming the innermost mod on
+  the override stack.
+- **Testing.** In the openpete source tree, `python3 tools/modtest.py
+  mods/<id>` runs the scenario declared in a `modtest.toml` beside
+  `mod.toml`, and `scripts/check_mods.sh` runs every in-tree mod. Neither
+  tool ships in the distribution.

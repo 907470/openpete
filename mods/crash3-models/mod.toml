@@ -3,10 +3,10 @@
 # The Spyro 1 disc ships a Crash 3 demo (S0/*.NSF). tools/crash3/convert.py
 # decodes its models and encodes each as a Spyro 1 animated-moby Model
 # blob into assets/crash3_s1pack.bin (textures in assets/textures/own/).
-# This mod parks the chosen model in the mod arena and installs it over
-# the chosen moby class from a PatchMobyModelPointers post-hook. Static
-# pose only: every animation / frame a live moby sits on resolves to the
-# one converted pose.
+# The mod parks the chosen model in the arena and installs it over the
+# chosen moby class from a PatchMobyModelPointers post-hook. Static pose
+# only: every animation frame a live moby sits on resolves to the one
+# converted pose.
 
 [mod]
 id      = "crash3-models"

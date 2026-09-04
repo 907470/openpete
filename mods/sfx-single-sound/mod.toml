@@ -1,16 +1,12 @@
-# sfx-single-sound — the asset overlay's sound namespace, declaratively.
+# sfx-single-sound — one replacement sound effect, no code.
 #
-# Ships assets/sfx/gemPickup.wav — a symbolic-identity replacement for
-# the SoundTable slot the game plays when Spyro collects a gem. No code
-# at all: a mod can be pure sounds. The file is a synthesized two-note
-# chime (original content, not disc-derived) so the override is
-# unmissable on the first gem.
+# Ships assets/sfx/gemPickup.wav, a symbolic-identity replacement for the
+# sound-table slot the game plays when Spyro collects a gem. The file is a
+# synthesised two-note chime (original content, not disc-derived).
 #
-# A symbolic file replaces the ROLE in every level; to replace one
-# specific recording instead, name the file by its content hash from
-# `--dump-sfx-pack` (see docs: Sounds). Sound mods are presentation-only:
-# the substitution happens below everything the game can observe, so the
-# oracle stays byte-exact.
+# A symbolic file replaces the role in every level; to replace one
+# specific recording, name the file by its content hash from
+# --dump-sfx-pack (see the Sounds page).
 
 [mod]
 id      = "sfx-single-sound"

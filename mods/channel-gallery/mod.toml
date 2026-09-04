@@ -1,20 +1,18 @@
-# channel-gallery — a material selector per render channel, toggled live.
+# channel-gallery — one material selector per render channel, toggled live.
 #
-# Every row registers the SAME highlight shader with a DIFFERENT selector, so
-# what you see when you tick a row is exactly what that selector claims. It is
-# the quickest way to answer "can I shade only X?" for some X, and the quickest
-# way to find out that X is not separately addressable.
+# Every row registers the same highlight shader with a different selector,
+# so ticking a row shows exactly what that selector claims. It answers
+# "can I shade only X?" for each channel and key, and shows which draw
+# paths are not separately addressable.
 #
 # Display-only: materials reshade what the renderer already drew and cannot
-# move, reorder or re-composite anything, so the simulation is untouched.
+# move, reorder or re-composite anything.
 #
-# KEEP THIS CURRENT. The rows are claims about the engine: one that lights
-# says "selectable", one that stays dark says "not yet". Anything that
-# changes what is selectable or routable updates this mod in the same
-# change — a new channel or key gets a row, a newly-reachable draw path
-# gets its row re-verified. Rows that cannot light yet STAY, labelled as
-# known gaps; deleting them to look complete throws away the information
-# that makes the gallery worth having.
+# Rows are claims about the engine: a row that lights is selectable, a row
+# that stays dark is not yet. A change to what is selectable updates this
+# mod in the same change: a new channel or key gets a row, a newly
+# reachable draw path gets its row re-verified. Rows that cannot light yet
+# stay, labelled as known gaps.
 
 [mod]
 id      = "channel-gallery"

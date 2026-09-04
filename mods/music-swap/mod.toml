@@ -1,10 +1,8 @@
-# music-swap — PoC ladder rung 8: the asset overlay's audio namespace
-# (rides the music-WAV-override identity: track_NN.wav).
+# music-swap — one replacement music track, no code.
 #
-# Ships assets/music/track_20.wav (the title theme becomes a 440 Hz
-# tone). Mod roots outrank the base assets/music/ dir, so this wins even
-# when the user has their own track_20.wav installed. Pure assets, no
-# code. Host-side audio only: the oracle must stay byte-exact.
+# Ships assets/music/track_20.wav (the title theme becomes a 440 Hz tone).
+# Mod roots outrank the base assets/music/ directory, so this wins even
+# when the player has their own track_20.wav installed.
 
 [mod]
 id      = "music-swap"

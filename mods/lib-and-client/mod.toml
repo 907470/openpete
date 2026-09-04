@@ -1,10 +1,9 @@
-# lib-and-client — PoC ladder rung 5 (notes/plans/openpete-modding-framework.md)
+# lib-and-client — CI fixture: the client half of demo-lib.
 #
-# The client half: declares a hard dependency on demo-lib. Proves the
-# dependency topo-sort (demo-lib's entry runs first even when this mod
-# is listed BEFORE it in enabled.txt) and the missing-dep error UX
-# (enable this without demo-lib to see the actionable error). Log-only:
-# sim-neutral.
+# Declares a hard dependency on demo-lib and checks that demo-lib's entry
+# runs first even when this mod is listed before it in enabled.txt, and
+# that enabling it without demo-lib produces the missing-dependency error.
+# Log-only.
 
 [mod]
 id      = "lib-and-client"

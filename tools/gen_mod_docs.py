@@ -13,12 +13,11 @@ mkdocs-material site (see docs/modding/ and scripts/build-mod-docs.sh):
   globals.md    <- manifest/globals.toml (the OP_GADDR_* surface)
   structs.md    <- generated openpete_game_structs.h (typed guest-RAM
                    views + offset tables recovered from the pins)
-  gallery.md    <- mods/*/mod.toml (the gallery IS the documentation)
+  gallery.md    <- mods/*/mod.toml header comments (CI fixtures omitted)
 
 Stdlib only, deterministic output (no timestamps): re-running on
-unchanged inputs is byte-identical, so build stamps and CI diffs stay
-honest. Prose comes from the same comment blocks the compiler sees —
-there is no second copy of the truth to rot.
+unchanged inputs is byte-identical. Prose comes from the comment blocks
+the compiler sees, so there is no second copy to drift.
 """
 import argparse
 import re
@@ -447,14 +446,23 @@ def gen_structs(structs_header: Path) -> str:
 
 # ── gallery.md ───────────────────────────────────────────────────────────
 
+# In-tree mods that exist to exercise the loader in CI, not to show a
+# mod author a mechanism. They are omitted from the gallery.
+FIXTURES = {
+    "arena-canary", "arena-probe", "chain-duo-a", "chain-duo-b",
+    "crash-dummy", "demo-lib", "lib-and-client", "raw-probe",
+    "sfx-replace-probe", "vstream-rehandle",
+}
+
+
 def gen_gallery(mods_dir: Path) -> str:
-    out = [GEN_NOTE, "# Example gallery\n"]
-    out.append("Every mechanism ships with a working, CI-tested example "
-               "mod. Start from the one nearest to your idea. This page is "
-               "extracted from each `mods/<id>/mod.toml` file.\n")
-    n = 0
+    out = [GEN_NOTE, "# Examples\n"]
+    out.append("Working example mods from the openpete source tree, "
+               "extracted from each `mods/<id>/mod.toml` header. Start "
+               "from the one nearest to your idea.\n")
+    groups = {"declarative": [], "code": []}
     for toml in sorted(mods_dir.glob("*/mod.toml")):
-        if ".unpacked" in toml.parts:
+        if ".unpacked" in toml.parts or toml.parent.name in FIXTURES:
             continue
         text = toml.read_text(encoding="utf-8")
         desc = []
@@ -468,27 +476,35 @@ def gen_gallery(mods_dir: Path) -> str:
             fields.setdefault(m.group(1), unq(m.group(2)))
         mid = fields.get("id", toml.parent.name)
         title = fields.get("name", mid)
-        out.append(f"## `{mid}` — {title}\n")
-        bits = [f"v{fields.get('version', '?')}"]
-        if "tier" in fields:
-            bits.append(f"tier: {fields['tier']}")
         srcs = sorted(p.name for p in (toml.parent / "src").glob("*.c"))
         sm = fields.get("sim_mutative")
         mutative = (sm == "true") if sm in ("true", "false") \
             else bool(srcs) or "[[level]]" in text
-        if not mutative:
-            bits.append("writes no guest RAM")
+        bits = [f"v{fields.get('version', '?')}"]
+        bits.append("writes guest RAM" if mutative else "writes no guest RAM")
+        blocks = sorted({b for b in re.findall(r"^\[\[(\w+)\]\]", text, re.M)})
+        if blocks:
+            bits.append(", ".join(f"`[[{b}]]`" for b in blocks))
         if srcs:
             bits.append("src: " + ", ".join(f"`{s}`" for s in srcs))
-        else:
-            bits.append("declarative")
-        out.append(" · ".join(bits) + "\n")
-        if desc:
-            out.append(md_prose(" ".join(desc)) + "\n")
-        n += 1
-    out.append(f"\n*The gallery holds {n} mods. Run the whole ladder "
-               "with `scripts/check_mods.sh`, or test a single mod with "
-               "`python3 tools/modtest.py mods/<id>`.*\n")
+        sec = [f"### `{mid}` — {title}\n", " · ".join(bits) + "\n"]
+        # A blank comment line in the header is a paragraph break.
+        paras, cur = [], []
+        for d in desc:
+            if d:
+                cur.append(d)
+            elif cur:
+                paras.append(" ".join(cur)); cur = []
+        if cur:
+            paras.append(" ".join(cur))
+        sec.extend(md_prose(pg) + "\n" for pg in paras)
+        groups["code" if srcs else "declarative"].append("\n".join(sec))
+    n = 0
+    for head, key in (("## Declarative", "declarative"), ("## Code", "code")):
+        if groups[key]:
+            out.append(head + "\n")
+            out.extend(groups[key])
+            n += len(groups[key])
     return "\n".join(out), n
 
 

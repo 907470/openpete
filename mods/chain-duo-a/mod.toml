@@ -1,10 +1,9 @@
-# chain-duo-a — one half of PoC ladder rung 4 (chain-duo).
+# chain-duo-a — CI fixture: one of two mods overriding CameraUpdate.
 #
-# Together with chain-duo-b: two mods overriding the SAME function
-# (CameraUpdate). The enabled-list order decides who is outermost —
-# later in enabled.txt = higher priority = runs first, base() descends
-# toward earlier mods, then the original. scripts/check_mods.sh runs
-# both orderings and asserts the nesting flips. Log-only: sim-neutral.
+# With chain-duo-b, checks that enabled-list order sets chain priority:
+# the mod listed later runs first and base() descends toward the earlier
+# one, then the original. scripts/check_mods.sh runs both orderings and
+# asserts the nesting flips. Log-only.
 
 [mod]
 id      = "chain-duo-a"

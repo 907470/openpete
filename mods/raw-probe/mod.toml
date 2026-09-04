@@ -1,10 +1,8 @@
-# raw-probe — PoC ladder rung 2 (notes/plans/openpete-modding-framework.md)
+# raw-probe — CI fixture: an override by raw address.
 #
-# Raw-tier override: hooks a bare vaddr (an un-decompiled func_XXXXXXXX)
-# and reads its arguments straight from the cpu context (a0..a3). The
-# tier declaration below makes the loader print the "unstable symbols"
-# warning — raw addresses are pinned to this binary and may break as the
-# decomp renames/rematches functions. Log-only: sim-neutral.
+# Hooks a bare vaddr (an un-decompiled func_XXXXXXXX) and reads its
+# arguments from cpu->a0..a3. Raw addresses are pinned to this binary and
+# the loader warns once on the first raw registration. Log-only.
 
 [mod]
 id      = "raw-probe"

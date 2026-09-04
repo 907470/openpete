@@ -1,8 +1,7 @@
-# demo-lib — the library half of PoC ladder rung 5 (lib-and-client).
+# demo-lib — CI fixture: the library half of lib-and-client.
 #
-# A dependency whose entry must run before any dependent's. Clients
-# declare `deps = ["demo-lib"]`; the topo-sort guarantees this entry has
-# already run when theirs does. Log-only: sim-neutral.
+# Clients declare deps = ["demo-lib"]; the dependency sort guarantees this
+# entry point has run before theirs. Log-only.
 
 [mod]
 id      = "demo-lib"

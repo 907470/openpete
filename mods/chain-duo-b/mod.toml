@@ -1,5 +1,4 @@
-# chain-duo-b — one half of PoC ladder rung 4 (chain-duo).
-# See chain-duo-a/mod.toml for the rung description.
+# chain-duo-b — CI fixture: the other half of chain-duo-a.
 
 [mod]
 id      = "chain-duo-b"

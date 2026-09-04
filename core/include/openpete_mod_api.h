@@ -263,9 +263,10 @@ typedef struct openpete_mod_api {
     /** @name Overrides
      * Attach an override to a guest function by symbol name (resolved
      * through openpete_sdk_symbols.h, e.g. "CameraUpdate") or by PSX vaddr
-     * (the manifest must declare `tier = "raw"`). Priority is the
-     * enabled-list order: overrides from later-listed mods run first, and
-     * base() walks toward earlier mods and then the recompiled original.
+     * (pinned to this binary; the loader warns once per mod on the first
+     * raw registration). Priority is the enabled-list order: overrides
+     * from later-listed mods run first, and base() walks toward earlier
+     * mods and then the recompiled original.
      * @{ */
     /**
      * @brief Attach an override by PSX vaddr.
@@ -679,9 +680,10 @@ typedef struct openpete_mod_api {
      * one with a distinct block per instance costs a draw each. Scope the
      * selector tightly and let the callback decide the rare cases.
      *
-     * Available on channels with a stable per-instance identity (moby);
-     * on other channels register declaratively and drive the material
-     * with material_set_params().
+     * Available on the moby channel (keyed per instance) and on terrain
+     * (keyed per texture id or the untextured band, asked once per
+     * present); on other channels register declaratively and drive the
+     * material with material_set_params().
      * @since api 4
      */
     int (*material_register_refine)(openpete_mod_t* self,

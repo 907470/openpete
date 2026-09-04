@@ -1,35 +1,27 @@
-# declarative-reshade — a shader mod with NO C code.
+# declarative-reshade — a shader mod with no C code.
 #
-# This whole mod is a manifest plus one .frag. There is no src/ directory,
-# no openpete_mod_entry, nothing to compile against the SDK: the [[material]]
-# rows below ARE the mod. Anyone who can write a fragment shader can ship a
-# reshade without learning the C ABI, and everything they need to say about
-# WHICH geometry it hits is a key in this file.
+# The mod is this manifest plus one .frag: no src/, no entry point,
+# nothing compiled. The [[material]] rows below are the mod.
 #
-# It exists as much to prove the tier as to be useful. `channel-gallery` is
-# the C-side demonstrator; this is its zero-C twin, and the two together are
-# the claim that the seam is expressible from either side.
-#
-# Selector keys (all optional; omit one and it matches everything):
+# Selector keys (all optional; an omitted key matches everything):
 #   channel  any | moby | terrain | player | flame | particle | sky |
 #            shadow | tracer | portal
-#   ident    channel-local identity (flame ribbon/caps, particle kind,
-#            shadow caster kind, portal preview rung)
+#   ident    channel-local identity (flame ribbon or caps, particle kind,
+#            shadow caster kind, portal preview kind)
 #   class    moby class
-#   texture  terrain Tiledef id 0..127
-#   level    level id — sector and texture ids are per-level, so a keyed
-#            row usually wants this too
+#   texture  terrain texture-record id 0..127
+#   level    level id; texture ids are per level, so a keyed row usually
+#            needs this too
 #   tier     "hp" | "lp"        (omit = both)
 #   textured true | false       (omit = both)
 #   env_anim true               (animated terrain env faces only)
 #   params   floats handed to the shader as its uniform block
 #   enabled  false to ship a row switched off
 #
-# A key the engine does not recognise is REFUSED, never ignored: a typo that
-# silently widened the selection would repaint geometry you never asked for.
-#
-# Display-only: materials reshade what the renderer already drew. They
-# cannot move, reorder or re-composite geometry, so gameplay is untouched.
+# A key the engine does not recognise is refused, never ignored: a typo
+# that silently widened the selection would repaint geometry the row never
+# named. Display-only: materials cannot move, reorder or re-composite
+# geometry.
 
 [mod]
 id      = "declarative-reshade"

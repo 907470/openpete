@@ -1,11 +1,10 @@
 # crt-beans — CRT display simulation (port of Andrew Duffey's crt-beans,
 # the "fast" 3-pass variant; MIT, see LICENSE).
 #
-# Physically-motivated spot/scanline model: electron-beam spot brightness
-# AND width vary with signal intensity, so scanlines stay correct at any
-# output resolution, plus an aperture-grille phosphor mask. Pure postfx:
-# reads the composed frame, writes pixels — sim-neutral BY CONSTRUCTION
-# (shaders cannot touch guest RAM).
+# Electron-beam spot brightness and width vary with signal intensity, so
+# scanlines stay correct at any output resolution, plus an aperture-grille
+# phosphor mask. Post-process only: reads the composed frame, writes
+# pixels.
 
 [mod]
 id      = "crt-beans"

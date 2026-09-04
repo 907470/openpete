@@ -424,8 +424,8 @@ add_dependencies(openpete-spyro1 spyro1_game_structs)
 # guarded: the docs rebuild exactly when an input changed — "the docs
 # never lie" is a build property, not a policy.
 set(_mod_docs_stamp ${CMAKE_CURRENT_BINARY_DIR}/moddocs.stamp)
-file(GLOB _mod_docs_manifests ${CMAKE_SOURCE_DIR}/mods/*/mod.toml)
-file(GLOB _mod_docs_pages ${CMAKE_SOURCE_DIR}/docs/modding/pages/*.md)
+file(GLOB _mod_docs_manifests CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/mods/*/mod.toml)
+file(GLOB _mod_docs_pages CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/docs/modding/pages/*.md)
 add_custom_command(
     OUTPUT  ${_mod_docs_stamp}
     COMMAND ${CMAKE_SOURCE_DIR}/scripts/build-mod-docs.sh

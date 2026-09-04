@@ -1,13 +1,8 @@
-# hd-single-texture — PoC ladder rung 7: the asset overlay's texture
-# namespace (reuses the landed HD-texture-pack identity model).
+# hd-single-texture — one replacement texture, no code.
 #
-# Ships assets/textures/title_ui.png — a symbolic-identity
-# replacement for the 512x256 title-screen UI atlas (the identity the
-# game layer annotates as "title_ui"). No code at all: a mod can be pure
-# assets. The magenta/cyan checker makes the override unmissable on the
-# title screen (native renderer; live window / --record).
-#
-# Asset mods are display-only: the oracle must stay byte-exact.
+# Ships assets/textures/title_ui.png, a symbolic-identity replacement for
+# the 512x256 title-screen UI atlas. The magenta/cyan checker makes the
+# override visible on the title screen (native renderer).
 
 [mod]
 id      = "hd-single-texture"

@@ -1,15 +1,9 @@
-# recolored-artisans — PoC ladder rung 9: level-segment replacement
-# through the CdRead chokepoint (the asset overlay's WAD namespace).
+# recolored-artisans — a level-data replacement produced by a generator.
 #
-# Mods may not ship derived game data, so this mod ships a GENERATOR:
-# run ./generate.sh <your-disc.cue> once and it derives a recoloured
-# Artisans Data blob (magenta cyclorama background) from YOUR disc into
+# Mods may not ship derived game data, so this mod ships a generator: run
+# ./generate.sh <your-disc.cue> once and it derives a recoloured Artisans
+# data blob (magenta cyclorama background) from your disc into
 # assets/wad/level10.data.bin. Ungenerated, the mod is inert.
-#
-# The CI proof of this namespace lives in scripts/check_mods.sh: a
-# byte-identical override served during the attract demo keeps the PSX
-# oracle byte-exact (transparent chokepoint), and an edited blob loads
-# clean via --skip-to-level.
 
 [mod]
 id      = "recolored-artisans"

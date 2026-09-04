@@ -1,11 +1,11 @@
 # teapot-dragons — every crystallised dragon statue is a Utah teapot.
 #
-# A mod-SDK stress test: the densest single model the S1 animated moby
-# format admits (255-vertex count byte, 9-bit face indices), parked in the
-# mod arena and installed over the level's crystal-dragon class (250, the
-# last model of every level) from a PatchMobyModelPointers post-hook.
-# Geometry is generated from the public-domain Newell teapot patch data by
-# tools/gen_teapot.py into assets/teapot_s1pack.bin (no game-derived data).
+# The densest single model the Spyro 1 animated-moby format admits
+# (255-vertex count byte, 9-bit face indices), parked in the arena and
+# installed over the level's crystal-dragon class (250, the last model of
+# every level) from a PatchMobyModelPointers post-hook. Geometry is
+# generated from the public-domain Newell teapot patch data by
+# tools/gen_teapot.py into assets/teapot_s1pack.bin.
 
 [mod]
 id      = "teapot-dragons"
