@@ -61,6 +61,6 @@ sector range; the engine serves the mod's bytes to every disc read that
 lands inside that level's entry. An overlay replacement must match the
 stock size, since code loads into a fixed buffer; a data replacement may
 be any size. These files are disc-derived, so a mod ships a generator
-that writes them on the player's machine (`recolored-artisans`, see
+that writes them on the player's machine (see
 [Publishing](publishing.md)). Custom levels in their own slot use
 `assets/levels/` instead, see [Levels](levels.md).

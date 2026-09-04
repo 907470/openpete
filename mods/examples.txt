@@ -8,5 +8,4 @@ hud-stopwatch
 crt-beans
 declarative-example
 channel-gallery
-recolored-artisans
 teapot-dragons

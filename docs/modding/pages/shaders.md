@@ -77,9 +77,7 @@ mirror the layout in the C struct by hand. `postfx_set_uniforms` copies
 the bytes verbatim, at most 1024.
 
 Example: `crt-beans` (a three-pass CRT model, shipped under
-`sdk/examples/`). In the source tree only: `mods/crt-filter` (a
-config-driven `COMPOSITE` pass) and `mods/scene-sepia` (a `SCENE` pass
-under the HUD).
+`sdk/examples/`).
 
 ## Materials
 
@@ -227,7 +225,6 @@ Results are memoised per instance and the call count is not part of the
 contract, so the callback must be a pure function of its key and
 tick-stable guest state. Instances whose blocks are byte-identical share
 one slot and one batch, so cost follows the number of distinct outcomes,
-not the number of matches. `mods/moby-instance-tint` (source tree only)
-is the worst case by construction: one distinct block per instance.
-`channel-gallery` (shipped under `sdk/examples/`) registers materials
-from C over every selectable surface.
+not the number of matches; one distinct block per instance is the
+worst case. `channel-gallery` (shipped under `sdk/examples/`) registers
+materials from C over every selectable surface.

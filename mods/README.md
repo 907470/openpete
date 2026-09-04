@@ -13,7 +13,7 @@ only mods you trust. A mod with no `src/` directory never loads code.
 
 Mods must not ship data derived from a Spyro disc. Ship a generator that
 derives the assets from the player's own disc; `recolored-artisans`
-shows the pattern.
+(source tree only) shows the pattern.
 
 ## Documentation
 
@@ -32,10 +32,9 @@ The site lands in `build/<preset>/games/spyro-1/moddocs/site/index.html`.
 
 `examples.txt` names the mods `scripts/package-dist.sh --with-mod-sdk`
 stages into `<exe>/sdk/examples/`; the documentation's Examples page
-lists them first. Every entry ships only original content.
+lists exactly those. Every entry ships only original content.
 
-Examples, listed on the documentation's Examples page:
-`declarative-example`, `music-swap`,
+In-tree mods: `declarative-example`, `music-swap`,
 `hd-single-texture`, `sfx-single-sound`, `declarative-reshade`,
 `recolored-artisans`, `grim-garden`, and `spyro15-cliff-town` are
 declarative; `hello-anchor`, `double-gems`, `natural-gems`,

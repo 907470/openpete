@@ -48,6 +48,4 @@ sort alphabetically, five per world.
 
 Do not commit or zip game-derived data. Ship a derivation script that
 writes `assets/levels/` from the player's own disc image, such as an
-xdelta patch applied to the disc. `mods/grim-garden` and
-`mods/spyro15-cliff-town` in the source tree show the pattern; neither
-ships in the distribution.
+xdelta patch applied to the disc.
