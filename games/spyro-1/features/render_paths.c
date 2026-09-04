@@ -184,7 +184,15 @@ static void render_paths_feed_audit_census(void) {
 }
 
 static void render_paths_feed_audit(void) {
-    if (openpete_native_scene_frame() == 0xFFFFFFFFu) return;  /* no native scene this frame */
+    /* One audit per canonical scene. The commit runs on every canonical
+     * present; when the game stops rendering (a level-exit freeze, a
+     * transition) the presents continue and the scene keeps the last frame's
+     * counts while the intervals were already cleared, so a scene is audited
+     * only on the first commit after it was built. */
+    static unsigned s_last_scene = 0xFFFFFFFFu;
+    const unsigned sf = openpete_native_scene_frame();
+    if (sf == 0xFFFFFFFFu || sf == s_last_scene) return;
+    s_last_scene = sf;
     if (!s_feed_audit_registered) { s_feed_audit_registered = 1; atexit(render_paths_feed_audit_census); }
     static int s_assert = -1;
     if (s_assert < 0) { const char* e = getenv("OPENPETE_RENDER_PATH_FEED_ASSERT"); s_assert = (e && *e && *e != '0'); }

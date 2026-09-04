@@ -1886,9 +1886,14 @@ static int on_800580F4_glows(CPUState* cpu, uint32_t addr)     { (void)addr; ret
 static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr)  { (void)addr; return on_particle_renderer(cpu, func_800584C4, "sparkles", 0); }
 
 /* Dragon-rescue star flash (func_80058864): a single-record effect, not in the
- * particle pools, so it gets its own thin hook (no census, no RP_PARTICLES
- * bracket). Run the real renderer (g_HudOT prims for the PsyCross path), capture
- * its F3 prims for the A/B, then feed the float star. Display-only. */
+ * particle pools, so it gets its own thin hook (no census). Run the real
+ * renderer (g_HudOT prims for the PsyCross path), capture its F3 prims for the
+ * A/B, then feed the float star. Display-only. The star shares RP_PARTICLES
+ * with the pool feeders: the sub-tick re-extract replays it only while that
+ * path is canon-drawn, so the hook records its polybuf interval and marks the
+ * path whenever the native feed emitted — on a frame where only the star
+ * draws, nothing else would, and the star would flash on canonical presents
+ * and vanish on the intermediates. */
 static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = verify_enabled();
@@ -1900,9 +1905,13 @@ static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
     { OP_PROF_ACCUM_SCOPE("particle.srend");
       func_80058864(cpu); }                        /* run the real renderer */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
+    render_path_record(RP_PARTICLES, startp, endp);
 
     if ((feed || verify) && endp > startp) { s_prim_n = 0; capture_prims(cpu, startp, endp); }
-    if (feed) dragonstar_feed_native(cpu);
+    if (feed) {
+        dragonstar_feed_native(cpu);
+        if (s_dstri_n > 0) render_path_mark_drawn(RP_PARTICLES);
+    }
 
     if (verify && endp > startp && openpete_frame >= verify_frame()) {
         static int s_dumped = 0;
