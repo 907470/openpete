@@ -13,10 +13,14 @@
 // state + capture its emitted prims afterwards, so determinism holds by
 // construction. The native path only mirrors the GEOMETRY in float.
 //
-// Three sub-renderers hooked; all record RP_PARTICLES (retiring the thin
-// render_paths.c bracket on func_800573C8). func_800573C8 is called ~9x/frame
-// (one per occlusion/gamestate pass); glows+sparkles once/frame. Each call
-// brackets the polybuf cursor and appends to the native scene.
+// Three sub-renderers hooked, one render path each (RP_PARTICLES, RP_GLOW,
+// RP_SPARKLE): the game calls them independently — a dragon-rescue cutscene
+// renders particles every tick but never calls the glow or sparkle renderer,
+// while their pools keep active records — so the sub-tick spine must gate each
+// feeder on ITS renderer having drawn, not on the family. func_800573C8 is
+// called ~9x/frame (one per occlusion/gamestate pass); glows+sparkles
+// once/frame. Each call brackets the polybuf cursor and appends to the native
+// scene.
 //
 // Gated by OPENPETE_PARTICLE_VERIFY (dump/A/B) or a native renderer mode
 // (--renderer vk|ab|diff; scene feed); inert fall-through otherwise.
@@ -1788,9 +1792,10 @@ static unsigned verify_frame(void) {
 }
 
 /* Shared hook body: run the real renderer once, capture its prims, record the
- * RP_PARTICLES polybuf range, (dump in verify mode). `tag` selects the dump
- * label + which gamestate pools to print. */
-static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const char* tag, int dump_pools_too) {
+ * renderer's polybuf range on its own path, (dump in verify mode). `tag`
+ * selects the dump label + which gamestate pools to print. */
+static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const char* tag,
+                                render_path_t path, int dump_pools_too) {
     int verify = verify_enabled();
     int feed   = openpete_native_render_enabled();
     if (!verify && !feed && !render_paths_active()) return 0;  /* inert: normal dispatch */
@@ -1802,7 +1807,7 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
       realfn(cpu); }                               /* run the real renderer (verdict bytes) */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
-    render_path_record(RP_PARTICLES, startp, endp);
+    render_path_record(path, startp, endp);
 
     /* sel-class census (uncapped) — sweep tool to find which levels spawn each
      * particle class. The pool histogram detects a class even when culled (it
@@ -1851,7 +1856,7 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
 
     /* feed the native geometry into the scene: FT4 particles (tag 'p'), glow
      * rings (tag 'g'), or sparkle twinkles (tag 's'). */
-    if (feed && endp > startp && render_path_enabled(RP_PARTICLES)) {
+    if (feed && endp > startp && render_path_enabled(path)) {
         if (tag[0] == 'p')      particle_feed_native(cpu);
         else if (tag[0] == 'g') glow_feed_native(cpu);
         else if (tag[0] == 's') sparkle_feed_native(cpu);
@@ -1881,9 +1886,9 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
     return 1;
 }
 
-static int on_800573C8_particles(CPUState* cpu, uint32_t addr) { (void)addr; return on_particle_renderer(cpu, func_800573C8, "particles", 1); }
-static int on_800580F4_glows(CPUState* cpu, uint32_t addr)     { (void)addr; return on_particle_renderer(cpu, func_800580F4, "glows", 0); }
-static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr)  { (void)addr; return on_particle_renderer(cpu, func_800584C4, "sparkles", 0); }
+static int on_800573C8_particles(CPUState* cpu, uint32_t addr) { (void)addr; return on_particle_renderer(cpu, func_800573C8, "particles", RP_PARTICLES, 1); }
+static int on_800580F4_glows(CPUState* cpu, uint32_t addr)     { (void)addr; return on_particle_renderer(cpu, func_800580F4, "glows", RP_GLOW, 0); }
+static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr)  { (void)addr; return on_particle_renderer(cpu, func_800584C4, "sparkles", RP_SPARKLE, 0); }
 
 /* Dragon-rescue star flash (func_80058864): a single-record effect, not in the
  * particle pools, so it gets its own thin hook (no census). Run the real
@@ -1929,22 +1934,27 @@ static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
  * stay present on intermediates (per-particle pos+=α·vel lerp lands in step 5). */
 void particle_native_reextract(CPUState* cpu) {
     if (!openpete_native_render_enabled()) return;
-    if (!render_path_enabled(RP_PARTICLES)) return;
-    /* Skip when the canonical frame drew no particles (e.g. a level transition) —
-     * else the spine replays the previous level's particle pool over the
-     * cyclorama. */
-    if (!render_path_canon_drawn(RP_PARTICLES)) return;
+    /* Each feeder replays only when ITS .s renderer drew on the canonical
+     * tick. The pools outlive the renderers: a level transition stops all
+     * three (else the spine replays the previous level's pool over the
+     * cyclorama), and a dragon-rescue cutscene keeps rendering particles while
+     * the glow and sparkle renderers are never called, leaving Sparx's glow
+     * active in its pool but absent from every canonical present. */
+    const int part = render_path_enabled(RP_PARTICLES) && render_path_canon_drawn(RP_PARTICLES);
+    const int glow = render_path_enabled(RP_GLOW)      && render_path_canon_drawn(RP_GLOW);
+    const int spar = render_path_enabled(RP_SPARKLE)   && render_path_canon_drawn(RP_SPARKLE);
+    if (!part && !glow && !spar) return;
     /* Channel-phase interp on for the re-extract feeds only (every present when
      * the sub-tick spine is active — canonical-lag leg + intermediates); reset
      * so the canonical inline hook feeds stay integer/byte-exact for the A/Bs.
      * Covers particle spin/size/extents + line far endpoints + sparkle
      * life/spin (see the s_phase_now block). */
     s_phase_now = openpete_interp_present_now();
-    particle_feed_native(cpu);
-    glow_feed_native(cpu);
-    sparkle_feed_native(cpu);
+    if (part) particle_feed_native(cpu);
+    if (glow) glow_feed_native(cpu);
+    if (spar) sparkle_feed_native(cpu);
     s_phase_now = 0;
-    dragonstar_feed_native(cpu);   /* self-gates on the D_80076248 active flag */
+    if (part) dragonstar_feed_native(cpu);   /* self-gates on the D_80076248 active flag; shares RP_PARTICLES */
 }
 
 static const feature_dispatch_entry_t particle_dispatch[] = {

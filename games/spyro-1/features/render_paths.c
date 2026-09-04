@@ -15,7 +15,7 @@
 
 static const char* const k_names[RP_COUNT] = {
     "cyclorama", "spyro", "moby", "terrain", "shadow", "flame", "particles", "tracer",
-    "transition", "portal",
+    "transition", "portal", "glow", "sparkle",
 };
 
 static uint32_t s_mask   = 0;      /* bit per selected path */
@@ -41,7 +41,7 @@ void render_paths_init(const char* spec) {
         if (matched >= 0) s_mask |= (1u << matched);
         else fprintf(stderr, "[render-paths] unknown path '%s' (known: "
                              "cyclorama,spyro,moby,terrain,shadow,flame,particles,"
-                             "tracer,transition,portal)\n", tok);
+                             "tracer,transition,portal,glow,sparkle)\n", tok);
     }
 
     fprintf(stderr, "[render-paths] isolating:");
@@ -163,10 +163,18 @@ bool render_path_canon_drawn(render_path_t p) {
  * rate. Untagged tris (family 0) and families without a path are not
  * auditable. Reported per path on first occurrence and in the exit census;
  * OPENPETE_RENDER_PATH_FEED_ASSERT=1 aborts on the first one. */
-static const int k_tag_family_path[16] = {
-    -1, RP_MOBY, RP_TERRAIN, RP_SPYRO, RP_FLAME, RP_PARTICLES, RP_CYCLORAMA,
-    RP_SHADOW, RP_TRACER, RP_PORTAL, -1, -1, -1, -1, -1, -1
+/* A family maps to the SET of paths that may have emitted it: the particle
+ * family (5) is fed by three independent .s renderers, each with its own path,
+ * so it reads as drawn when any of them drew. The first path in the set names
+ * the family in reports. */
+#define RPM(p) (1u << (unsigned)(p))
+static const uint32_t k_tag_family_paths[16] = {
+    0, RPM(RP_MOBY), RPM(RP_TERRAIN), RPM(RP_SPYRO), RPM(RP_FLAME),
+    RPM(RP_PARTICLES) | RPM(RP_GLOW) | RPM(RP_SPARKLE), RPM(RP_CYCLORAMA),
+    RPM(RP_SHADOW), RPM(RP_TRACER), RPM(RP_PORTAL), 0, 0, 0, 0, 0, 0
 };
+static int family_first_path(uint32_t m) { for (int p = 0; p < RP_COUNT; p++) if (m & RPM(p)) return p; return -1; }
+static bool family_canon_drawn(uint32_t m) { for (int p = 0; p < RP_COUNT; p++) if ((m & RPM(p)) && render_path_canon_drawn((render_path_t)p)) return true; return false; }
 static uint32_t s_feed_audit_frames[RP_COUNT];   /* frames with unmarked feed, per path */
 static uint32_t s_feed_audit_tris[RP_COUNT];     /* tris fed on those frames, per path */
 static uint32_t s_feed_audit_fed_frames[RP_COUNT]; /* frames the path fed at all (engagement) */
@@ -199,10 +207,10 @@ static void render_paths_feed_audit(void) {
     uint32_t n[16];
     openpete_native_scene_tag_family_counts(n);
     for (int f = 1; f < 16; f++) {
-        const int p = k_tag_family_path[f];
+        const int p = family_first_path(k_tag_family_paths[f]);
         if (p < 0 || n[f] == 0) continue;
         s_feed_audit_fed_frames[p]++;
-        if (render_path_canon_drawn((render_path_t)p)) continue;
+        if (family_canon_drawn(k_tag_family_paths[f])) continue;
         if (s_feed_audit_frames[p]++ == 0 || s_assert)
             fprintf(stderr, "[render-paths] DEFECT f=%u path=%s fed %u native tris with no polybuf "
                     "interval and no render_path_mark_drawn; sub-tick presents drop it\n",

@@ -36,6 +36,9 @@ typedef enum {
     RP_TRACER,    /* additive tracer/beam (func_800189F0) — charge streak, fireball trail */
     RP_TRANSITION,/* level-exit / balloonist cross-fade backdrop (func_8004F000) */
     RP_PORTAL,    /* portal skybox previews (func_80050BE0 RenderPortals) */
+    RP_GLOW,      /* additive glow rings (func_800580F4); a separate .s renderer the game
+                   * skips in some states (dragon-rescue cutscenes) while the pool stays active */
+    RP_SPARKLE,   /* sparkle twinkles (func_800584C4), same independence as RP_GLOW */
     RP_COUNT
 } render_path_t;
 

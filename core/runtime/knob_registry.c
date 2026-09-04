@@ -870,7 +870,7 @@ static const knob_desc_t g_builtin[] = {
     /* -------- Debug (toggles / tunables) -------- */
     { "render_paths", "Render paths", "Debug", "--render-paths", NULL,
       "Render only the named paths in isolation (cyclorama,spyro,moby,"
-      "terrain,shadow,flame,particles,tracer,transition,portal). Empty or "
+      "terrain,shadow,flame,particles,tracer,transition,portal,glow,sparkle). Empty or "
       "\"(all)\" clears the selection. Live once the game module binds its "
       "setter.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
