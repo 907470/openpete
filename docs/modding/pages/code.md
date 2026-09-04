@@ -75,8 +75,9 @@ translate them again before following them.
 - Take addresses from the `OP_GADDR_*` constants in
   [Globals](reference/globals.md) and the `OP_FNADDR_*` constants in
   `openpete_sdk_symbols.h`.
-- `op_read_u32(api, va)`, `op_write_u32(api, va, v)`, `op_read_s32`,
-  `op_read_u8`, `op_write_u8` are inline helpers in the API header; each
+- `op_read_u32(api, va)`, `op_write_u32(api, va, v)` and their siblings
+  for every width and signedness, `op_read_{u,s}{8,16,32}` and
+  `op_write_{u,s}{8,16,32}`, are inline helpers in the API header; each
   takes the API table as its first argument.
 
 ### The arena

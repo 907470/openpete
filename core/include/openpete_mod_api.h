@@ -827,7 +827,11 @@ typedef struct openpete_mod_abi {
         (uint32_t)sizeof(openpete_mod_api_t) }
 
 /** @name Typed guest accessors
- * A read of an unmapped address returns 0; a write to one is dropped.
+ * One read and one write per width and signedness: `op_read_{u,s}{8,16,32}`
+ * and `op_write_{u,s}{8,16,32}`. A read of an unmapped address returns 0;
+ * a write to one is dropped. Alignment is the guest's: a 16-bit access on
+ * an odd address or a 32-bit access off a 4-byte boundary is a bus error
+ * on the PSX and is not something the game's data does.
  * @{ */
 static inline uint32_t op_read_u32(const openpete_mod_api_t* api, uint32_t va) {
     void* p = api->guest(va);
@@ -841,6 +845,26 @@ static inline void op_write_u32(const openpete_mod_api_t* api, uint32_t va,
 static inline int32_t op_read_s32(const openpete_mod_api_t* api, uint32_t va) {
     return (int32_t)op_read_u32(api, va);
 }
+static inline void op_write_s32(const openpete_mod_api_t* api, uint32_t va,
+                                int32_t v) {
+    op_write_u32(api, va, (uint32_t)v);
+}
+static inline uint16_t op_read_u16(const openpete_mod_api_t* api, uint32_t va) {
+    void* p = api->guest(va);
+    return p ? *(uint16_t*)p : 0u;
+}
+static inline void op_write_u16(const openpete_mod_api_t* api, uint32_t va,
+                                uint16_t v) {
+    void* p = api->guest(va);
+    if (p) *(uint16_t*)p = v;
+}
+static inline int16_t op_read_s16(const openpete_mod_api_t* api, uint32_t va) {
+    return (int16_t)op_read_u16(api, va);
+}
+static inline void op_write_s16(const openpete_mod_api_t* api, uint32_t va,
+                                int16_t v) {
+    op_write_u16(api, va, (uint16_t)v);
+}
 static inline uint8_t op_read_u8(const openpete_mod_api_t* api, uint32_t va) {
     void* p = api->guest(va);
     return p ? *(uint8_t*)p : 0u;
@@ -849,6 +873,13 @@ static inline void op_write_u8(const openpete_mod_api_t* api, uint32_t va,
                                uint8_t v) {
     void* p = api->guest(va);
     if (p) *(uint8_t*)p = v;
+}
+static inline int8_t op_read_s8(const openpete_mod_api_t* api, uint32_t va) {
+    return (int8_t)op_read_u8(api, va);
+}
+static inline void op_write_s8(const openpete_mod_api_t* api, uint32_t va,
+                               int8_t v) {
+    op_write_u8(api, va, (uint8_t)v);
 }
 /** @} */
 
