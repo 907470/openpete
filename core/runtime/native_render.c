@@ -10040,12 +10040,17 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
      * swapchain on the first canonical present, reproducing on any host
      * the ordering Windows produces when a fullscreen resize arrives while
      * --skip-to-level suppresses presents. */
-    static int s_diag_recreate = -1;   /* 1 = recreate only; 2 = resize the window to 1280x720 first */
+    static int s_diag_recreate = -1;   /* 1 = recreate only; 2 = resize the window to 1280x720 first;
+                                        * 3 = enter borderless fullscreen first */
     if (s_diag_recreate < 0) { const char* e = getenv("OPENPETE_DIAG_RECREATE_FIRST_PRESENT"); s_diag_recreate = (e && *e) ? atoi(e) : 0; }
-    if (s_diag_recreate == 1 || s_diag_recreate == 2) {
+    if (s_diag_recreate >= 1 && s_diag_recreate <= 3) {
         if (s_diag_recreate == 2 && s_nr.window) SDL_SetWindowSize(s_nr.window, 1280, 720);
+        if (s_diag_recreate == 3 && s_nr.window) {
+            SDL_SetWindowFullscreenMode(s_nr.window, NULL);
+            SDL_SetWindowFullscreen(s_nr.window, true);
+        }
         fprintf(stderr, "[diag] swapchain recreate forced on the first present (mode %d)\n", s_diag_recreate);
-        s_diag_recreate = 3;
+        s_diag_recreate = 9;               /* fired; never again */
         rhi_notify_resize_immediate(s_nr.dev);
     }
     int bf_ok;
