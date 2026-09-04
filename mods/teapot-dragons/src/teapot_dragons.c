@@ -4,7 +4,7 @@
  *        Utah teapot. A model-replacement mod built on the arena and the
  *        vertex-stream handle table.
  *
- * Two phases:
+ * Three parts:
  *
  * 1. Entry reads assets/teapot_s1pack.bin (written by tools/gen_teapot.py),
  *    parks the model payload in the mod arena with guest_alloc, relocates
@@ -19,6 +19,14 @@
  *    into the parked one and points the row at the park. The game nulls
  *    and re-installs the row on every level load and dragon-cutscene
  *    load, so the hook re-fires per level and is idempotent within one.
+ * 3. A hook around LoadDragonCutscene keeps the game's own invariant
+ *    that the class-250 row bounds the level's model buffer. Stage 0 of
+ *    that loader sizes the cutscene read as the distance from the model
+ *    buffer to that row, because the statue is the last model in the
+ *    buffer; with the row pointing at the park the distance is enormous,
+ *    the loader takes its "fits" path, and the read overruns the buffer
+ *    into live level data. The hook shows the loader the stock row for
+ *    the duration of stage 0 and puts the teapot back afterwards.
  *
  * debug.dump logs the stock model and the live statue mobys once per
  * level. It is the calibration that sized the generator, kept because a
@@ -73,6 +81,8 @@ static uint8_t*      s_file;       /**< The whole file, host memory. */
 static uint8_t*      s_payload;    /**< Relocated model bytes inside s_file. */
 static uint32_t      s_park;       /**< Guest vaddr of the parked payload. */
 static uint32_t      s_model;      /**< Guest vaddr of the Model header. */
+static uint32_t      s_stock;      /**< Row value the game installed before the teapot: the
+                                    *   stock statue, the last model in the level's buffer. */
 static int           s_patched_levels;
 /** @} */
 
@@ -349,6 +359,7 @@ static void on_patch_models(CPUState* cpu)
         if (memcmp((uint8_t*)park_host + off, s_payload + off, w) != 0)
             memcpy(park_host, s_payload, s_pack.payload_size);
     }
+    s_stock = stock;
     stock |= 0x80000000u;
     for (b = 0; b < 16; b++)
         op_write_u8(g_api, s_model + 4u + (uint32_t)b, rd8(stock + 4u + (uint32_t)b));
@@ -359,6 +370,33 @@ static void on_patch_models(CPUState* cpu)
     g_api->log(g_self, OP_MOD_LOG_INFO, "level %d: class 250 %08x -> teapot %08x",
                (int)rd32(OP_GADDR_g_LevelId), stock, s_model);
     publish_status();
+}
+
+/**
+ * @brief Hook around LoadDragonCutscene: restore the game's model-buffer
+ *        bound for the loader's sizing stage.
+ *
+ * `g_DragonCutscene.m_Stage` 0 computes the read length from the row; no
+ * other stage reads the row. The stock row goes in before base() and the
+ * teapot comes back after, so gameplay never renders a frame with the
+ * stock statue. The hook only acts once a level install has recorded
+ * the stock value.
+ */
+#define DRAGON_CUTSCENE_STAGE_OFF 0x2Cu  /**< int m_Stage in g_DragonCutscene. */
+
+static void on_load_dragon_cutscene(CPUState* cpu)
+{
+    uint32_t row = OP_GADDR_g_Models + STATUE_CLASS * 4u;
+    int swapped = 0;
+
+    if (s_file && s_stock && rd32(row) == s_model &&
+        rd32(OP_GADDR_g_DragonCutscene + DRAGON_CUTSCENE_STAGE_OFF) == 0u) {
+        op_write_u32(g_api, row, s_stock);
+        swapped = 1;
+    }
+    g_api->base(cpu);
+    if (swapped && rd32(row) == s_stock)
+        op_write_u32(g_api, row, s_model);
 }
 
 /**
@@ -397,6 +435,7 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self)
     publish_status();
     if (api->override_addr(self, OP_FNADDR_PatchMobyModelPointers, on_patch_models) != 0) return -1;
     if (api->override_addr(self, OP_FNADDR_func_80020F34, on_specular_render) != 0) return -1;
+    if (api->override_name(self, "LoadDragonCutscene", on_load_dragon_cutscene) != 0) return -1;
     api->log(self, OP_MOD_LOG_INFO, "teapot-dragons: armed (dump=%d)", s_dump);
     return 0;
 }

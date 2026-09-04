@@ -21,6 +21,9 @@ flag.
 The mod parks the payload in the mod arena, exchanges each frame word's
 stream offset for a stream handle, and installs the model over class 250
 from a `PatchMobyModelPointers` post-hook, copying the level's own sound
-and collision words into the header. `debug.dump` logs the stock model
+and collision words into the header. A hook around `LoadDragonCutscene`
+shows that loader the stock row while it sizes the cutscene read, since
+the game measures its model buffer up to the class-250 row; a model
+parked outside the buffer would otherwise make the read overrun it. `debug.dump` logs the stock model
 and the statue mobys once per level; a replacement for another class
 starts from that dump.
