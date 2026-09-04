@@ -9,14 +9,18 @@
 #
 # What each part demonstrates:
 #
-# assets/textures/title_ui.png
-#   A texture replacement named by symbolic identity: title_ui is the
-#   512x256 title-screen UI atlas. A magenta and cyan checker, so the
-#   substitution is visible on the title screen. The other name form,
-#   <label>-<thash>-<box>-<phash>-<bpp>bpp.png, names one texture by
-#   content; OPENPETE_TEXPACK_DUMP_DIR writes every drawn texture under
-#   that name. A larger PNG is an HD replacement: the renderer samples
-#   the file at its own resolution.
+# assets/textures/57c653dc7ca515a1-0x0+256x129-a2fb97e3755b706b-8bpp.png
+#   A texture replacement named by content: the upload's hash, the texel
+#   box within the upload, the palette hash and the bit depth. This one is
+#   the title-screen logo, a 256x129 box of the 512x256 title UI atlas.
+#   Run the game with OPENPETE_TEXPACK_DUMP_DIR=<dir> set and every drawn
+#   texture is written under its content name, so a replacement starts by
+#   copying a dumped file's name. The image is a 512x258 magenta and cyan
+#   checker, twice the box in each axis: the renderer samples a
+#   replacement at its own resolution, so a larger file is an HD
+#   replacement. The other name form, <name>.png, names a texture by a
+#   symbolic identity the game layer annotates, such as title_ui for the
+#   whole atlas.
 #
 # assets/music/manifest.txt + assets/music/title_theme.wav
 #   A music replacement through the manifest form: each line maps a
