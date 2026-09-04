@@ -13,6 +13,11 @@
 #   scripts/check_dist_first_boot.sh              # the .tar.xz artifact
 #   scripts/check_dist_first_boot.sh --appimage   # the AppImage artifact
 #
+# OPENPETE_DIST_ARTIFACT=<file> skips the packaging step and gates that
+# already-built .tar.xz or .AppImage instead; with it set, no build tree is
+# needed, so the gate runs on a second machine from a copy of this script
+# alone. OPENPETE_DISC and OPENPETE_TRACE name the disc and the golden.
+#
 # The AppImage variant is the same chain against a different artifact,
 # plus the three things only a read-only, path-varying mount can get
 # wrong: nothing may be written inside the payload, the module cache must
@@ -52,11 +57,17 @@ GLIBC_MAX=2.31
 GLIBCXX_MAX=3.4.28
 
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
-TRACE=tests/golden/spyro-1/psxtrace-demo-20k.bin
+TRACE="${OPENPETE_TRACE:-tests/golden/spyro-1/psxtrace-demo-20k.bin}"
+ARTIFACT="${OPENPETE_DIST_ARTIFACT:-}"
 [[ -f "$DISC" ]] || { echo "[dist-gate] disc missing: $DISC" >&2; exit 64; }
 [[ -f "$TRACE" ]] || { echo "[dist-gate] golden missing: $TRACE" >&2; exit 64; }
-[[ -x build/linux-release-shared/games/spyro-1/openpete-spyro1 ]] \
-    || { echo "[dist-gate] build linux-release-shared first" >&2; exit 64; }
+if [[ -n "$ARTIFACT" ]]; then
+    [[ -f "$ARTIFACT" ]] || { echo "[dist-gate] artifact missing: $ARTIFACT" >&2; exit 64; }
+    case "$ARTIFACT" in *.AppImage) APPIMAGE=1 ;; esac
+else
+    [[ -x build/linux-release-shared/games/spyro-1/openpete-spyro1 ]] \
+        || { echo "[dist-gate] build linux-release-shared first" >&2; exit 64; }
+fi
 
 WORK=$(mktemp -d "${TMPDIR:-/tmp}/openpete-dist-gate.XXXXXX")
 trap 'rm -rf "$WORK"' EXIT
@@ -73,12 +84,17 @@ DATA="$XDG_DATA_HOME/openpete"
 DISC_ABS=$(realpath "$DISC")
 TRACE_ABS=$(realpath "$TRACE")
 
-echo "[dist-gate] packaging..."
-# --with-mod-sdk: releases ship without the mod SDK, but the boot-time
-# mod compiler is still a supported path, so the gate packages it in.
-pkg_args=(linux --with-mod-sdk --out "$WORK/dist")
-[[ $APPIMAGE -eq 1 ]] && pkg_args+=(--appimage)
-scripts/package-dist.sh "${pkg_args[@]}" >/dev/null
+if [[ -n "$ARTIFACT" ]]; then
+    echo "[dist-gate] using $(basename "$ARTIFACT")..."
+    mkdir -p "$WORK/dist"
+    cp "$ARTIFACT" "$WORK/dist/"
+else
+    echo "[dist-gate] packaging..."
+    # Releases ship the mod SDK; the gate packages the same way.
+    pkg_args=(linux --with-mod-sdk --out "$WORK/dist")
+    [[ $APPIMAGE -eq 1 ]] && pkg_args+=(--appimage)
+    scripts/package-dist.sh "${pkg_args[@]}" >/dev/null
+fi
 
 if [[ $APPIMAGE -eq 1 ]]; then
     image=$(ls "$WORK"/dist/*.AppImage)
