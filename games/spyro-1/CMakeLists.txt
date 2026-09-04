@@ -455,7 +455,13 @@ add_custom_target(mod_docs ALL DEPENDS ${_mod_docs_stamp})
 # link, and every mod would keep building against the old contract with
 # no diagnostic. copy_if_different over a dozen small files is cheap
 # enough to run unconditionally.
+# The directory is removed first: a file dropped from this list would
+# otherwise survive in the build tree and ship with the archive, since
+# package-dist copies the staged directory whole. Mod build keys hash the
+# SDK sources, so the fresh copies' timestamps do not force recompiles.
 add_custom_target(spyro1_sdk_stage ALL
+    COMMAND ${CMAKE_COMMAND} -E rm -rf
+            $<TARGET_FILE_DIR:openpete-spyro1>/sdk
     COMMAND ${CMAKE_COMMAND} -E make_directory
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
