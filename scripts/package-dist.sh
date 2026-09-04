@@ -79,6 +79,9 @@ sign_pe() {  # sign_pe <file> — no-op unless --sign was given
 # where the tag is the point.
 VERSION="${OPENPETE_DIST_VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
 NAME="openpete-spyro1-${VERSION}-${PLATFORM}-x86_64"
+# Absolute: the example-staging loop below runs inside `cd mods/<id>`
+# subshells, where a relative --out no longer resolves.
+OUT=$(realpath -m "$OUT")
 STAGE="$OUT/$NAME"
 
 stage_common() {  # stage_common <build-game-dir>
@@ -121,9 +124,13 @@ stage_common() {  # stage_common <build-game-dir>
             # (modtest.toml) behind; config.toml is the mod's shipped
             # knob defaults and stays.
             mkdir -p "$STAGE/sdk/examples/$ex"
+            # xargs, not find -exec: a failed cp then fails the package
+            # instead of leaving an empty example directory behind.
             (cd "mods/$ex" && find . -type f \
-                ! -path './.build/*' ! -name modtest.toml \
-                -exec cp --parents {} "$STAGE/sdk/examples/$ex/" \;)
+                ! -path './.build/*' ! -name modtest.toml -print0 \
+                | xargs -0 cp --parents -t "$STAGE/sdk/examples/$ex/")
+            [[ -f "$STAGE/sdk/examples/$ex/mod.toml" ]] \
+                || { echo "[package-dist] $ex staged without mod.toml" >&2; exit 1; }
         done < mods/examples.txt
         # The drop-in mods/ folder only belongs here where mods actually
         # resolve next to the exe. Under the per-user layout (POSIX
