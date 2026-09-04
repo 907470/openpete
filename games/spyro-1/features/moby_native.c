@@ -4015,6 +4015,12 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
         }
         { OP_PROF_ACCUM_SCOPE("moby.build");
           build_walk_tris(cpu); }             /* 3a.2b walk; SPEC dedups vs s_reg_moby; shading baked (#1) */
+        /* The walk admits what its own cull mirror admits; on a tick where the
+         * .s pass emitted nothing (an empty interval: the portal-entry tick
+         * culls every record) but the walk still produced tris, the path
+         * must read canon-drawn or the spine drops those tris on every
+         * intermediate present while the canonical present shows them. */
+        if (s_gout.n > 0 && end <= start) render_path_mark_drawn(RP_MOBY);
         /* Adopt render-time-animated colours the post-render walk can't see (e.g.
          * the boundary-barrier shimmer). REGULAR only; no-op for static-colour
          * mobys. (recolor_walk_from_prims, the env-metal variant, stays SPEC-only.) */
