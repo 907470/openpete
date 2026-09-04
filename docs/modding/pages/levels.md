@@ -1,5 +1,10 @@
 # Custom levels
 
+!!! warning "Custom overlays are WIP"
+
+    Custom levels that ship their own code overlay are a work in progress. The engine
+    will load them into game memory, but they are not currently recompiled and executed.
+
 A `[[level]]` block plus two files under `assets/levels/` makes a
 playable custom level with no C. The engine claims the level slot,
 declares the WAD table-of-contents entry, serves the files when the game
