@@ -109,7 +109,7 @@ Every selector key is optional; an omitted key matches everything:
 |---|---|
 | `frag`, `vert` | Shader paths relative to the mod |
 | `channel` | `any`, `moby`, `terrain`, `player`, `flame`, `particle`, `sky`, `shadow`, `tracer`, `portal` |
-| `ident` | Channel-local identity: flame ribbon or caps, particle kind, shadow caster kind, portal preview kind |
+| `ident` | Channel-local identity: flame ribbon (0) or caps (1); particle `(kind << 8) \| sel` with kinds 0 quads, 1 lines, 2 glow rings, 3 sparkle flares, 4 sparkle lines, 5 dragon star (`OP_PART_*`); shadow caster kind; portal preview kind |
 | `class` | Moby class |
 | `texture` | Terrain texture-record ID, 0 to 127 |
 | `level` | Level ID. Texture IDs are per level, so a `texture` row usually needs this |

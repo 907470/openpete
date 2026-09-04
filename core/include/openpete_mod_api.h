@@ -145,6 +145,28 @@ enum {
     OP_PORTAL_DOME    = 1,  /**< Full gouraud dome, close up. */
     OP_PORTAL_BLENDED = 2,  /**< Fogged dome, medium cross-dissolve. */
 };
+/**
+ * @brief Particle kinds: the high byte of the `ident` key for #OP_CHAN_PARTICLE.
+ *
+ * The particle feeder draws six effects. The ident of a draw is
+ * `(kind << 8) | sel`, where `sel` is the game's own particle class for
+ * the two kinds that carry one (quads and lines) and 0 otherwise.
+ * #OP_PART_IDENT builds the key. The ident match is exact, so a kind
+ * that carries a class is claimed one class per row. Glow rings and
+ * sparkles are separate game renderers that share this channel; a
+ * glow-only or sparkle-only material keys on the kind with `sel` 0.
+ */
+enum {
+    OP_PART_QUAD  = 0,  /**< Textured billboard quads; `sel` = particle class. */
+    OP_PART_LINE  = 1,  /**< Streak lines; `sel` = particle class. */
+    OP_PART_GLOW  = 2,  /**< Additive glow rings around collectables. */
+    OP_PART_FLARE = 3,  /**< Sparkle flares (the twinkle quads). */
+    OP_PART_SPARK = 4,  /**< Sparkle lines. */
+    OP_PART_STAR  = 5,  /**< Dragon-rescue star fan. */
+};
+/** @brief The `ident` key for one particle kind and class; `sel` is 0 for kinds without a class. */
+#define OP_PART_IDENT(kind, sel) \
+    ((int)(((unsigned)(kind) << 8) | ((unsigned)(sel) & 0xFFu)))
 /** @brief Legacy 0-based path values; prefer `OP_CHAN_*`. */
 enum { OP_RP_MOBY = 0, OP_RP_TERRAIN = 1 };
 /**
@@ -174,8 +196,8 @@ typedef struct openpete_mod_material_selector {
     uint32_t struct_size; /**< `sizeof(*this)` at the mod's compile time; the engine refuses a size it does not know. */
     int      channel;     /**< `OP_CHAN_*`; -1 = any channel. */
     int      ident;       /**< Channel-local identity, meaning per channel: flame ribbon or cap,
-                           *   particle `(kind << 8 | sel)`, shadow caster kind, portal preview
-                           *   kind. -1 = any. Player, sky and tracer emit only 0. */
+                           *   particle `OP_PART_*` kind `(kind << 8 | sel)`, shadow caster kind,
+                           *   portal preview kind. -1 = any. Player, sky and tracer emit only 0. */
     int      moby_class;  /**< Moby only; -1 = any. */
     int      texture;     /**< Terrain texture-record id 0..127; -1 = any. */
     int      level;       /**< `g_LevelId`; -1 = any. Sector and texture ids are per level, so a

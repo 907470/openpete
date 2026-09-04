@@ -50,16 +50,9 @@
 static const openpete_mod_api_t* g_api;
 static openpete_mod_t*           g_self;
 
-/**
- * @brief Particle identities for the ident key.
- *
- * ident is the channel-local identity the engine attaches to each draw:
- * flame ribbon or caps, the particle (kind << 8 | sel) pair, shadow
- * caster kind. A channel whose feeder has no identity to give emits 0.
- */
-enum { PART_QUAD = 0, PART_LINE = 1, PART_GLOW = 2,
-       PART_FLARE = 3, PART_SPARK = 4, PART_STAR = 5 };
-#define PART(kind) (((kind) << 8) | 0)
+/* Particle rows key on the kind alone (sel 0): the kinds a row names
+ * carry no game class, so kind << 8 is their whole ident. */
+#define PART(kind) OP_PART_IDENT((kind), 0)
 
 /** @brief One gallery row: a selector, a colour, and its live state. */
 typedef struct {
@@ -125,13 +118,13 @@ static row_t g_rows[] = {
   { "Particle billboards", "The textured sparkle quads. Toggle it against the "
                            "glow row to see the ident key split one channel: "
                            "the quads recolour, the glow ring stays stock.",
-    OP_CHAN_PARTICLE, PART(PART_QUAD), -1, {1.00f, 0.50f, 0.50f}, 0, -1 },
+    OP_CHAN_PARTICLE, PART(OP_PART_QUAD), -1, {1.00f, 0.50f, 0.50f}, 0, -1 },
   { "Particle glows",  "Glow rings around collectables.",
-    OP_CHAN_PARTICLE, PART(PART_GLOW), -1, {0.50f, 1.00f, 0.50f}, 0, -1 },
+    OP_CHAN_PARTICLE, PART(OP_PART_GLOW), -1, {0.50f, 1.00f, 0.50f}, 0, -1 },
   { "Particle sparkles","Gem sparkle flares.",
-    OP_CHAN_PARTICLE, PART(PART_FLARE), -1, {1.00f, 1.00f, 0.40f}, 0, -1 },
+    OP_CHAN_PARTICLE, PART(OP_PART_FLARE), -1, {1.00f, 1.00f, 0.40f}, 0, -1 },
   { "Dragon star",     "The rescue star - only during a dragon cutscene.",
-    OP_CHAN_PARTICLE, PART(PART_STAR), -1, {0.40f, 0.90f, 1.00f}, 0, -1 },
+    OP_CHAN_PARTICLE, PART(OP_PART_STAR), -1, {0.40f, 0.90f, 1.00f}, 0, -1 },
   { "Tracers",         "Beam streaks (Gnasty's zaps).",
     OP_CHAN_TRACER, -1, -1, {1.00f, 0.10f, 0.10f}, 0, -1 },
   /* A portal shows the destination level's sky through a different
