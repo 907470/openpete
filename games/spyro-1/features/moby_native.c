@@ -648,9 +648,8 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
  * Same carve-out as the hook: only when the zero-distance tier is near-band
  * ((md<<8) >= 1024) — sub-near is effect-AUTHORED fade (ring puffs shrink
  * m_Renderer) and keeps the canonical value. */
-static int record_zsf4(CPUState* cpu, uint32_t rec, int* raw_out) {
+static int record_zsf4(CPUState* cpu, uint32_t rec) {
     int zsf4 = (int)(int16_t)(cpu->read_word(rec + 0x2C) >> 16);
-    if (raw_out) *raw_out = zsf4;
     if (openpete_no_lod) {
         uint32_t mob = cpu->read_word(rec + 0x34);
         if (mob >= 0x80000000u) {
@@ -687,7 +686,6 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock
                  float env_az;
                  uint32_t frameA;
                  uint32_t frameA_p, header_p; float clr_alpha;
-                 int zsf4_raw;
                  uint8_t spec_solo;
                  uint8_t heat;     /* m_SpecularMetalColor byte2 (moby+0x4E),
                                     * snapshotted at capture: the flame-heat
@@ -717,11 +715,6 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock
                  whose addr is then 0 — there is no live +0x1600 record behind them);
                  zsf4 = per-moby colour fade level (high16 of the cull record's matrix word @+0x2C,
                  cfc2 gte_ctrl[30]); see moby_color_fade_ir0 */
-                 /* zsf4_raw (trailing field, set after the positional literal) =
-                 * the CANONICAL verdict before the --no-lod neutralize. When they
-                 * differ and raw < 1024, the .s prims carry fog-band colours the
-                 * native walk intentionally dropped — adopt_prim_colors must not
-                 * copy them back (the --no-lod distant-chest saturation). */
 static rec_meta s_recs[MAX_RECORDS]; static int s_nrecs;
 
 /* Flame-heat scalar from a moby's m_SpecularMetalColor word. TWO writer
@@ -745,20 +738,15 @@ static int moby_heat_scalar(uint32_t ms) {
  * host-side records (no live cull record to read +0x2C from) and looks the fade up
  * here, so fading effect mobys (ring puffs) fade on intermediate presents too
  * instead of flickering back to full brightness. Cleared once per canonical frame. */
-static struct { uint32_t moby; int zsf4; int zsf4_raw; } s_fade_snap[MAX_RECORDS]; static int s_fade_snap_n;
+static struct { uint32_t moby; int zsf4; } s_fade_snap[MAX_RECORDS]; static int s_fade_snap_n;
 static void fade_snap_clear(void) { s_fade_snap_n = 0; }
-static void fade_snap_put2(uint32_t moby, int zsf4, int zsf4_raw) {
+static void fade_snap_put(uint32_t moby, int zsf4) {
     if (moby < 0x80000000u) return;
     for (int i = 0; i < s_fade_snap_n; i++)
-        if (s_fade_snap[i].moby == moby) { s_fade_snap[i].zsf4 = zsf4; s_fade_snap[i].zsf4_raw = zsf4_raw; return; }
+        if (s_fade_snap[i].moby == moby) { s_fade_snap[i].zsf4 = zsf4; return; }
     if (s_fade_snap_n < MAX_RECORDS) {
-        s_fade_snap[s_fade_snap_n].moby = moby; s_fade_snap[s_fade_snap_n].zsf4 = zsf4;
-        s_fade_snap[s_fade_snap_n].zsf4_raw = zsf4_raw; s_fade_snap_n++;
+        s_fade_snap[s_fade_snap_n].moby = moby; s_fade_snap[s_fade_snap_n].zsf4 = zsf4; s_fade_snap_n++;
     }
-}
-static int fade_snap_get_raw(uint32_t moby, int dflt) {
-    for (int i = 0; i < s_fade_snap_n; i++) if (s_fade_snap[i].moby == moby) return s_fade_snap[i].zsf4_raw;
-    return dflt;
 }
 static int fade_snap_get(uint32_t moby, int dflt) {
     for (int i = 0; i < s_fade_snap_n; i++) if (s_fade_snap[i].moby == moby) return s_fade_snap[i].zsf4;
@@ -849,14 +837,7 @@ static long s_tier_lpskip;   /* far-tier records skipped by the LP vertex count 
                               * (no LP mesh): the .s draws NOTHING for them */
 static long s_shband_cull;   /* SHADED-walk mobys skipped by the .s 3-axis distance-band
                               * cull mirror (block_80022B40..90 — the distant-gem hide) */
-static long s_adopt_fogskip; /* adopt candidates skipped by the --no-lod fog-suppression
-                              * gate (the .s prim colours are the fog we neutralized) */
 static long s_tier_mirror_ok, s_tier_mirror_bad;
-static long s_tier_adopt;   /* adopt_prim_colors recolours since last print — a far-palette
-                             * mismatch floods this (the pre-fix flicker); healthy is ~0 */
-static long s_tier_dyncol_hi, s_tier_dynmoby_hi;   /* per-tick cache high-waters vs the
-                             * MAX_DYNCOL(1024)/32 caps — an overflow means intermediates
-                             * revert to native colour = canonical-cadence flicker */
 static long s_hold_replayed;   /* Tier-2 hold: moby replays served per census window */
 static int tier_dbg_on(void) {
     static int s = -1;
@@ -922,8 +903,7 @@ static int project_all_records_inner(CPUState* cpu) {
          * vertex-count read ([hdr+8+(ZSF4>>31)], 0 = record skipped) needs it.
          * Snapshotted into fade_snap below, so the sub-tick re-extract
          * inherits the (--no-lod-neutralized) tier too. */
-        int zsf4_raw;
-        int zsf4 = record_zsf4(cpu, rec, &zsf4_raw);
+        int zsf4 = record_zsf4(cpu, rec);
         int got = moby_project_record(cpu, rec, zsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         for (int j = 0; j < got; j++) s_proj[s_proj_n + j].rec = nrec;  /* tag source record */
         if (nrec < MAX_RECORDS) {
@@ -942,9 +922,8 @@ static int project_all_records_inner(CPUState* cpu) {
                 atan2f((float)(int32_t)cpu->read_word(rec + 0x18),
                        (float)(int32_t)cpu->read_word(rec + 0x10)),
                 cpu->read_word(rec + 0x08), 0u, 0u, 0.f };
-            s_recs[nrec].zsf4_raw = zsf4_raw;
             s_recs[nrec].heat = (uint8_t)moby_heat_scalar(cpu->read_word(s_recs[nrec].moby + 0x4Cu));
-            fade_snap_put2(s_recs[nrec].moby, zsf4, zsf4_raw);
+            fade_snap_put(s_recs[nrec].moby, zsf4);
             if (moby_trace_target() && s_recs[nrec].moby == moby_trace_target())
                 fprintf(stderr, "[moby-trace f=%u] %08X IN-QUEUE rec=%08X zsf4=%d got=%d mat=%s\n",
                         openpete_frame, s_recs[nrec].moby, rec, zsf4, got,
@@ -1435,9 +1414,8 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * Computed BEFORE the decode: the tier-adjusted vertex-count read
          * ([hdr+8+(ZSF4>>31)], 0 = skip) hides far no-LP-mesh mobys (gems). */
         int rmd   = (int)(cpu->read_byte(m + 0x4B) & 0x3Fu);
-        int rzsf4_raw = (int)(int16_t)(uint16_t)((((uint32_t)rmd << 8)
+        int rzsf4 = (int)(int16_t)(uint16_t)((((uint32_t)rmd << 8)
                     - (uint32_t)f.TR_raw[2]) & 0xFFFFu);
-        int rzsf4 = rzsf4_raw;
         /* --no-lod parity with the game-side zsf4-store hook: neutralize the
          * distance term for records that are near-band at zero distance */
         if (openpete_no_lod && (rmd << 8) >= 1024) rzsf4 = rmd << 8;
@@ -1448,8 +1426,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
              * yet live now that the reveal has no distance ceiling: a wrapped
              * verdict re-enters the 0 < ZSF4 < 1024 fog band and re-fades a moby
              * that is unambiguously far-tier, cycling every 65536 view units.
-             * Saturate instead. zsf4_raw below keeps the faithful truncation —
-             * it exists to say what the .s would have computed. */
+             * Saturate instead. */
             int v = (rmd << 8) - (int)f.TR_raw[2];
             rzsf4 = v < -32768 ? -32768 : (v > 32767 ? 32767 : v);
         }
@@ -1467,10 +1444,9 @@ static int append_revealed_regular_inner(CPUState* cpu) {
             moby_tier_faceblock(cpu, f.header, rzsf4), f.w0,
             f.metal, f.mscol, m, rzsf4,
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA, 0u, 0u, 0.f };
-        s_recs[s_nrecs].zsf4_raw = rzsf4_raw;
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
         s_recs[s_nrecs].spec_solo = 1;   /* sole feeder: walk applies the SPEC face treatment */
-        fade_snap_put2(m, rzsf4, rzsf4_raw);
+        fade_snap_put(m, rzsf4);
         if (revealed < MAX_RECORDS) revlist[revealed] = m;
         /* census diag: projected screen centroid + vert count of this reveal */
         if (revealed < MAX_RECORDS) {
@@ -1578,14 +1554,6 @@ typedef struct {
 static ntri_t s_wtri[MAX_NTRI];   /* cursor lives in s_gout.n (see mn_out) */
 static uint8_t s_wtri_mode[MAX_NTRI]; /* shaded only: 0=gouraud 1=flat-basic 2=flat-metal */
 static uint8_t s_wtri_ui[MAX_NTRI];   /* 1 = this tri's moby is a HUD/UI overlay (draw on top) */
-/* Emit branch of the tri, low 3 bits: 1 strip tri, 2 fresh tri (v0,v1,v2),
- * 3 fresh tri (v3,v1,v2), 4 quad half (v0,v1,v2), 5 quad half (v1,v3,v2);
- * 0x10 textured, 0x20 spec-highlight strip. Census/probe provenance only. */
-static uint8_t s_wtri_br[MAX_NTRI];
-static _Thread_local uint8_t s_emit_br;
-static uint8_t s_wtri_fogsup[MAX_NTRI]; /* 1 = --no-lod suppressed this record's fog band: the .s
-                                         * prims carry fogged colours the walk dropped — adopt
-                                         * must NOT copy them back (distant-chest saturation) */
 static uint8_t s_wtri_front[MAX_NTRI]; /* 1 = this tri's moby is a dragon-rescue CUTSCENE actor
                                         * (matches a g_DragonCutscene pointer): route to
                                         * OPENPETE_SCENE_ACTOR_FRONT so draw_native_scene front-
@@ -1598,7 +1566,6 @@ static uint8_t s_wtri_front[MAX_NTRI]; /* 1 = this tri's moby is a dragon-rescue
  * each other's moby identity, HUD routing and OT bias. */
 static _Thread_local int     s_cur_ui;      /* set per-record by the walks before emitting its tris */
 static _Thread_local int     s_cur_front;   /* per-record: 1 = a g_DragonCutscene actor (front-pass) */
-static _Thread_local int     s_cur_fogsup;  /* per-record: --no-lod dropped a live fog band here */
 
 /* The dragon-rescue cutscene actor set the game maintains (g_DragonCutscene,
  * struct @0x80077030): the rescued dragon + the cutscene Spyro/dragon mobys.
@@ -1667,12 +1634,12 @@ static _Thread_local mn_walkdiag* t_diag = &s_wdiag[0];
  * arrays so emit_wtri needs no knowledge of which it is filling. */
 typedef struct {
     ntri_t*   tri;  uint32_t* fkey; uint32_t* moby; uint16_t* cls;
-    uint8_t*  ui;   uint8_t*  front; uint8_t* fogsup; uint8_t* mangle; uint8_t* br;
+    uint8_t*  ui;   uint8_t*  front; uint8_t* mangle;
     int8_t*   dofs;
     int n, cap;
 } mn_out;
 static mn_out s_gout = { s_wtri, s_wtri_fkey, s_wtri_moby, s_wtri_cls, s_wtri_ui,
-                         s_wtri_front, s_wtri_fogsup, s_wtri_mangle, s_wtri_br, s_wtri_dofs,
+                         s_wtri_front, s_wtri_mangle, s_wtri_dofs,
                          0, MAX_NTRI };
 static _Thread_local mn_out* t_out = &s_gout;
 
@@ -1717,13 +1684,11 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     }
     O->ui[O->n] = (uint8_t)s_cur_ui;       /* HUD/UI tag for this tri (current record) */
     O->front[O->n] = (uint8_t)s_cur_front;    /* cutscene actor (front-pass eligible) */
-    O->fogsup[O->n] = (uint8_t)s_cur_fogsup;  /* --no-lod fog-suppressed record */
-    O->moby[O->n] = s_cur_moby_key;           /* colour-cache identity (see s_dyncol) */
+    O->moby[O->n] = s_cur_moby_key;           /* face identity: moby address */
     O->dofs[O->n] = s_cur_moby_dofs;
     O->mangle[O->n] = (uint8_t)((a->unr || b->unr || c->unr ||
                                  a->sat || b->sat || c->sat) ? 1 : 0);
     O->fkey[O->n] = s_emit_fkey;
-    O->br[O->n] = s_emit_br;
     O->cls[O->n] = s_cur_moby_cls;            /* provenance tag (mod-shaders S6) */
     ntri_t* t = &O->tri[O->n++];
     t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez, a->tvz};
@@ -2106,7 +2071,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == mob) { dup = 1; break; }
             if (dup) continue;
         }
-        s_cur_moby_key = mob;     /* colour-cache identity for this record's tris */
+        s_cur_moby_key = mob;     /* face identity for this record's tris */
         s_cur_moby_cls = mob ? (uint16_t)cpu->read_half(mob + 0x36) : 0; /* m_Class */
         s_cur_moby_dofs = mob ? (int8_t)cpu->read_byte(mob + 0x47u) : 0; /* og OT bias */
         /* Run-once mobys emit nothing. The record stays in s_recs (the .s cull
@@ -2159,14 +2124,6 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
         /* Front-pass eligibility: this moby is one of the dragon-rescue cutscene
          * actors (g_DragonCutscene). Only for real actors (ui==0). */
         s_cur_front = s_cur_ui == 0 && moby_is_cutscene_actor(cpu, mob);
-        /* --no-lod fog suppression marker: the neutralize replaced a canonical
-         * verdict that was IN the fog band (raw < 1024) — the .s prims for this
-         * record carry fogged colours (vk mode never arms the game-side
-         * neutralize channel), so adopt_prim_colors must skip its tris or the
-         * fog leaks back in (the distant-chest saturation). Exempt records
-         * (effect-authored fades, adj == raw) keep adopting — their ladder is
-         * canonical in both walks, so the adopt delta is true transients. */
-        s_cur_fogsup = (openpete_no_lod && R->zsf4 != R->zsf4_raw && R->zsf4_raw < 1024) ? 1 : 0;
         uint32_t fb = R->faceblock;
         if (fb < 0x80000000u || R->proj_n <= 0) continue;
         const fcache_t* FC = s_pre_FC[r];   /* Tier-1 decode, resolved by the prologue */
@@ -2497,22 +2454,18 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                             "drawn full-additive (no quarter-add pipe) f=%u -- FIX moby_native.c:1074",
                             openpete_frame);
 
-            const uint8_t brflags = (uint8_t)((textured ? 0x10u : 0u) | (F->hl ? 0x20u : 0u));
             if (emit_a) {
                 s_emit_fkey = PACK_FKEY(i0,i1,i2);
-                s_emit_br = (uint8_t)(brflags | (!fresh ? 1u : emit_b ? 4u : 2u));
                 emit_wtri(p0,p1,p2, c0,c1,c2, u[0],v[0],u[1],v[1],u[2],v[2],
                           textured,tpx,tpy,clx,cly,bpp,blend);
             }
             if (emit_b) {
                 if (b_is_v3tri) {        /* tri-2nd (v3,v1,v2) */
                     s_emit_fkey = PACK_FKEY(i3,i1,i2);
-                    s_emit_br = (uint8_t)(brflags | 3u);
                     emit_wtri(p3,p1,p2, c3,c1,c2, u[3],v[3],u[1],v[1],u[2],v[2],
                               textured,tpx,tpy,clx,cly,bpp,blend);
                 } else {                 /* quad 2nd half (v1,v3,v2) */
                     s_emit_fkey = PACK_FKEY(i1,i3,i2);
-                    s_emit_br = (uint8_t)(brflags | 5u);
                     emit_wtri(p1,p3,p2, c1,c3,c2, u[1],v[1],u[3],v[3],u[2],v[2],
                               textured,tpx,tpy,clx,cly,bpp,blend);
                 }
@@ -2647,13 +2600,11 @@ static int walk_slabs_ready(int nw) {
         O->cls    = (uint16_t*)malloc(sizeof(uint16_t)* MAX_NTRI);
         O->ui     = (uint8_t*) malloc(MAX_NTRI);
         O->front  = (uint8_t*) malloc(MAX_NTRI);
-        O->fogsup = (uint8_t*) malloc(MAX_NTRI);
         O->mangle = (uint8_t*) malloc(MAX_NTRI);
-        O->br     = (uint8_t*) malloc(MAX_NTRI);
         O->dofs   = (int8_t*)  malloc(MAX_NTRI);
         O->cap = MAX_NTRI;
         if (!O->tri || !O->fkey || !O->moby || !O->cls || !O->ui || !O->front ||
-            !O->fogsup || !O->mangle || !O->br || !O->dofs) return 0;
+            !O->mangle || !O->dofs) return 0;
     }
     return 1;
 }
@@ -2699,8 +2650,6 @@ static void walk_parallel(CPUState* cpu, int is_spec) {
         memcpy(&s_wtri_cls[s_gout.n],    &O->cls[st],    (size_t)n * sizeof(uint16_t));
         memcpy(&s_wtri_ui[s_gout.n],     &O->ui[st],     (size_t)n);
         memcpy(&s_wtri_front[s_gout.n],  &O->front[st],  (size_t)n);
-        memcpy(&s_wtri_fogsup[s_gout.n], &O->fogsup[st], (size_t)n);
-        memcpy(&s_wtri_br[s_gout.n],     &O->br[st],     (size_t)n);
         memcpy(&s_wtri_mangle[s_gout.n], &O->mangle[st], (size_t)n);
         memcpy(&s_wtri_dofs[s_gout.n],   &O->dofs[st],   (size_t)n);
         s_gout.n += n;
@@ -2768,28 +2717,6 @@ static double tri_match_cost(const ntri_t* w, const ptri* p) {
     }
     return bestmax;
 }
-/* Squared variant (no sqrt) for the hot adopt match: returns the best (min over
- * the 6 vertex permutations) max-squared-vertex-distance. sqrt is monotonic, so
- * the argmin permutation/prim and the `> tol` decision are identical when the
- * caller compares against tol*tol — just far cheaper (adopt calls this ~tens of
- * thousands of times per canonical frame at a moby-dense vista). */
-/* out_bj (optional) receives the argmin permutation: out_bj[k] = the prim
- * vertex paired with walk vertex k, a bijection by construction. */
-static double tri_match_cost_sq_perm(const ntri_t* w, const ptri* p, int* out_bj) {
-    static const int perm[6][3]={{0,1,2},{0,2,1},{1,0,2},{1,2,0},{2,0,1},{2,1,0}};
-    double bestmax=1e36; int bi=0;
-    for (int pi=0;pi<6;pi++){
-        double mx=0;
-        for (int k=0;k<3;k++){
-            double dx=w->v[k].sx-p->x[perm[pi][k]], dy=w->v[k].sy-p->y[perm[pi][k]];
-            double d=dx*dx+dy*dy; if(d>mx)mx=d;
-        }
-        if(mx<bestmax){bestmax=mx;bi=pi;}
-    }
-    if (out_bj) for (int k=0;k<3;k++) out_bj[k]=perm[bi][k];
-    return bestmax;
-}
-static double tri_match_cost_sq(const ntri_t* w, const ptri* p) { return tri_match_cost_sq_perm(w, p, NULL); }
 static void compare_walk_vs_prims(void) {
     build_prim_tris();
     static int s_cmp_dumped = 0; int s_cmp_dump = !s_cmp_dumped; s_cmp_dumped = 1;
@@ -3056,310 +2983,6 @@ static void recolor_walk_from_prims(void) {
             w->clut_x = (cl & 0x3F) * 16; w->clut_y = (cl >> 6) & 0x1FF;
         }
     }
-}
-
-/* Render-time-transient COLOUR adoption (REGULAR path only).
- *
- * A few effect mobys compute ANIMATED per-vertex gouraud colours *inside*
- * func_8001F798 and revert the faceblock colour slot before the renderer
- * returns — e.g. the level-boundary "invisible barrier" ripple, whose colour
- * word at face+0x04 reads the resting 0x00000001 (→ a flat grey) both BEFORE
- * and AFTER the render pass, holding the real blue↔black shimmer gradient only
- * transiently DURING it. Our walk re-derives colour from the faceblock *after*
- * the pass, so it sees the resting value and the effect renders flat/grey.
- *
- * The value is provably not in stable gamestate, so it can't be re-derived;
- * the captured prims, however, hold the authoritative final colour the game
- * actually drew. Adopt that per-vertex where it disagrees with the walk.
- *
- * Scoped to REGULAR (plain cbase-lookup colour): the SHADED path lights in
- * float (higher precision than the 8-bit prim — the HDR path) and the SPECULAR
- * pass bakes its own additive highlight; neither may be overwritten, so this is
- * NOT called on those paths. Static-colour mobys are untouched — walk == prim,
- * so the per-vertex "only if different" gate is a no-op for them. RGB only
- * (geometry / UV / depth / blend stay fully native). Self-detecting: any future
- * render-time-animated colour is corrected with zero per-effect code; the
- * returned count surfaces where it happens (see the OPL_DEBUG at the call site).
- * Display-only / oracle-inert (the .s already ran; we only recolour our tris). */
-/* Per-face transient-colour cache: one entry per walk tri the canonical adopt
- * actually changed, keyed by face identity (moby + topology index triple). The
- * sub-tick re-extract replays from this by identity (no screen-space re-match).
- * Tiny in practice — only render-time-animated faces (the barrier) land here, so
- * when it's empty the sub-tick path is O(1). */
-typedef struct { uint32_t moby, fkey, rgb[3]; } dyncol_t;
-#define MAX_DYNCOL 1024
-static dyncol_t s_dyncol[MAX_DYNCOL]; static int s_dyncol_n;
-static uint32_t s_dynmoby[32]; static int s_dynmoby_n;   /* distinct mobys present in s_dyncol (fast reject) */
-
-static void dyncol_note_moby(uint32_t m) {
-    for (int i = 0; i < s_dynmoby_n; i++) if (s_dynmoby[i] == m) return;
-    if (s_dynmoby_n < (int)(sizeof(s_dynmoby)/sizeof(s_dynmoby[0]))) s_dynmoby[s_dynmoby_n++] = m;
-}
-
-/* Adopt per-vertex RGB into s_wtri[] from a prim-triangle set PT[pn], matching
- * by screen position (centroid prune + order-independent vertex distance <= tol).
- * RGB only, only-where-different; returns the count of changed tris. Every tri it
- * changes is appended to s_dyncol[] keyed by the tri's face identity, so the
- * sub-tick can replay it without re-matching. Canonical-frame only (the live
- * geometry exactly matches the prims there, tol=4px). */
-/* Spatial hash grid over prim centroids (32px cells) so each walk tri checks only
- * the prims in its centroid's 3x3 cell neighbourhood, not all `pn` prims. Turns
- * the match from O(walk×prim) into ~O(walk+prim). Same RESULT: the centroid prune
- * is 32px = the cell size, so the true nearest prim always lies in the 3x3 window
- * (±96px); the grid only removes candidates the prune would have rejected anyway.
- * (The canonical adopt runs inside the sim-tick, which caps the frame rate at high
- * FPS — at a moby-dense vista the old O(walk×prim) match cost ~5.6ms/tick.) */
-#define ADG_CELL 32
-#define ADG_OFF  128      /* origin shift so mild off-screen centroids still bucket */
-#define ADG_W    24
-#define ADG_H    16
-
-/* Adoption census (OPENPETE_MOBY_ADOPT_CENSUS=1). Every accepted adoption is
- * a face whose emitted prim colour differs from the walk's post-render
- * re-derivation: a render-time-transient colour, or a residual cross-match
- * the identity gates let through. Counted per moby class with one example
- * face per class (walk vs adopted RGB); one line per canonical frame and
- * class, plus a totals line at exit for harnesses to grep. */
-typedef struct {
-    uint16_t cls;
-    uint32_t faces, frames, frame_faces;
-    uint32_t br[8], tex, hl;      /* emit branch / textured / highlight tallies (s_wtri_br) */
-    uint32_t dup;                 /* faces whose walk->prim vertex map hit one prim vertex twice */
-    uint32_t tiny;                /* faces whose screen extent is under 4 px in x or y */
-    uint32_t ex_moby, ex_fkey, ex_walk[3], ex_adopt[3]; uint8_t ex_br, ex_bj[3]; float ex_ext;
-} adopt_cen_t;
-#define ADOPT_CEN_MAX 64
-static adopt_cen_t s_acen[ADOPT_CEN_MAX];
-static int s_acen_n, s_acen_on = -1;
-static uint32_t s_acen_frames, s_acen_faces;
-
-static void adopt_census_exit(void) {
-    fprintf(stderr, "moby adopt census: frames=%u faces=%u classes=%d",
-            s_acen_frames, s_acen_faces, s_acen_n);
-    for (int i = 0; i < s_acen_n; i++) {
-        const adopt_cen_t* c = &s_acen[i];
-        fprintf(stderr, " cls=%u:faces=%u,frames=%u,br=%u/%u/%u/%u/%u/%u,tex=%u,hl=%u,dup=%u,tiny=%u",
-                c->cls, c->faces, c->frames, c->br[0], c->br[1], c->br[2], c->br[3], c->br[4], c->br[5], c->tex, c->hl, c->dup, c->tiny);
-    }
-    fprintf(stderr, "\n");
-}
-
-static int adopt_census_on(void) {
-    if (s_acen_on < 0) {
-        const char* e = getenv("OPENPETE_MOBY_ADOPT_CENSUS");
-        s_acen_on = (e && *e && *e != '0') ? 1 : 0;
-        if (s_acen_on) atexit(adopt_census_exit);
-    }
-    return s_acen_on;
-}
-
-static void adopt_census_note(int wi, const uint32_t walk_rgb[3], const int bj[3]) {
-    const uint16_t cls = s_wtri_cls[wi];
-    adopt_cen_t* c = NULL;
-    for (int i = 0; i < s_acen_n; i++) if (s_acen[i].cls == cls) { c = &s_acen[i]; break; }
-    if (!c) {
-        if (s_acen_n >= ADOPT_CEN_MAX) return;
-        c = &s_acen[s_acen_n++]; memset(c, 0, sizeof *c); c->cls = cls;
-    }
-    c->faces++; c->frame_faces++; s_acen_faces++;
-    c->br[s_wtri_br[wi] & 7u]++;
-    if (s_wtri_br[wi] & 0x10u) c->tex++;
-    if (s_wtri_br[wi] & 0x20u) c->hl++;
-    const int dup = (bj[0] == bj[1] || bj[1] == bj[2] || bj[0] == bj[2]);
-    const ntri_t* w = &s_wtri[wi];
-    float xlo = w->v[0].sx, xhi = xlo, ylo = w->v[0].sy, yhi = ylo;
-    for (int k = 1; k < 3; k++) {
-        if (w->v[k].sx < xlo) xlo = w->v[k].sx; if (w->v[k].sx > xhi) xhi = w->v[k].sx;
-        if (w->v[k].sy < ylo) ylo = w->v[k].sy; if (w->v[k].sy > yhi) yhi = w->v[k].sy;
-    }
-    const float ext = (xhi - xlo) > (yhi - ylo) ? (xhi - xlo) : (yhi - ylo);
-    if (dup) c->dup++;
-    if ((xhi - xlo) < 4.0f || (yhi - ylo) < 4.0f) c->tiny++;
-    if (c->frame_faces == 1) {   /* the frame's first face is the class's example */
-        c->ex_moby = s_wtri_moby[wi]; c->ex_fkey = s_wtri_fkey[wi]; c->ex_br = s_wtri_br[wi];
-        for (int k = 0; k < 3; k++) c->ex_bj[k] = (uint8_t)bj[k];
-        c->ex_ext = ext;
-        for (int k = 0; k < 3; k++) { c->ex_walk[k] = walk_rgb[k]; c->ex_adopt[k] = s_wtri[wi].v[k].rgb & 0xFFFFFFu; }
-    }
-}
-
-/* Per canonical frame: one line per class that adopted this frame. */
-static void adopt_census_frame(void) {
-    int any = 0;
-    for (int i = 0; i < s_acen_n; i++) {
-        adopt_cen_t* c = &s_acen[i];
-        if (!c->frame_faces) continue;
-        any = 1; c->frames++;
-        fprintf(stderr, "[adopt-cen f=%u] cls=%u faces=%u moby=%08X fkey=%08X br=%02X bj=%u%u%u ext=%.1f walk=%06X/%06X/%06X adopt=%06X/%06X/%06X\n",
-                openpete_frame, c->cls, c->frame_faces, c->ex_moby, c->ex_fkey, c->ex_br,
-                c->ex_bj[0], c->ex_bj[1], c->ex_bj[2], (double)c->ex_ext,
-                c->ex_walk[0], c->ex_walk[1], c->ex_walk[2],
-                c->ex_adopt[0], c->ex_adopt[1], c->ex_adopt[2]);
-        c->frame_faces = 0;
-    }
-    if (any) s_acen_frames++;
-}
-
-static int adopt_colors_from_ptri(const ptri* PT, int pn, double tol) {
-    static int cell_head[ADG_W * ADG_H];
-    static int cell_next[MAX_PTRI];
-    static double s_pcx[MAX_PTRI], s_pcy[MAX_PTRI];   /* prim centroids, cached */
-    for (int i = 0; i < ADG_W * ADG_H; i++) cell_head[i] = -1;
-    if (pn > MAX_PTRI) pn = MAX_PTRI;
-    for (int pi = 0; pi < pn; pi++) {
-        double pcx = (PT[pi].x[0] + PT[pi].x[1] + PT[pi].x[2]) / 3.0;
-        double pcy = (PT[pi].y[0] + PT[pi].y[1] + PT[pi].y[2]) / 3.0;
-        s_pcx[pi] = pcx; s_pcy[pi] = pcy;
-        int cx = (int)((pcx + ADG_OFF) / ADG_CELL); if (cx < 0) cx = 0; else if (cx >= ADG_W) cx = ADG_W - 1;
-        int cy = (int)((pcy + ADG_OFF) / ADG_CELL); if (cy < 0) cy = 0; else if (cy >= ADG_H) cy = ADG_H - 1;
-        int c = cy * ADG_W + cx;
-        cell_next[pi] = cell_head[c]; cell_head[c] = pi;
-    }
-    double tol_sq = tol * tol;
-    int recoloured = 0;
-    for (int wi = 0; wi < s_gout.n; wi++) {
-        ntri_t* w = &s_wtri[wi];
-        /* Speck gate: a tri only a few px across can't display a colour
-         * transient — but at vista density (thousands of 2-5px mobys, ~48k
-         * tris under --no-lod) it's exactly what the NN match cross-pairs
-         * with a NEIGHBOUR moby's tri inside the 4px tolerance (verified: the
-         * vertex-level colour A/B is 100% while adopt floods 56k/s and slams
-         * the s_dyncol/s_dynmoby caps at the --no-lod overview). Adopting a
-         * neighbour's colours = speck noise + canonical-cadence flicker once
-         * the replay cache overflows. Only sizeable faces participate; the
-         * genuine transients (the boundary-barrier ripple) are large faces. */
-        {
-            double bx0 = w->v[0].sx, bx1 = bx0, by0 = w->v[0].sy, by1 = by0;
-            for (int k = 1; k < 3; k++) {
-                if (w->v[k].sx < bx0) bx0 = w->v[k].sx; else if (w->v[k].sx > bx1) bx1 = w->v[k].sx;
-                if (w->v[k].sy < by0) by0 = w->v[k].sy; else if (w->v[k].sy > by1) by1 = w->v[k].sy;
-            }
-            if (bx1 - bx0 < 6.0 && by1 - by0 < 6.0) continue;
-        }
-        /* --no-lod fog-suppression gate: this tri's record had a live canonical
-         * fog band the walk neutralized. The .s prim colours ARE the fog —
-         * adopting them re-fogs exactly what the flag turned off (the distant-
-         * chest orange saturation). Exempt (effect-fade) records pass through. */
-        if (s_wtri_fogsup[wi]) { s_adopt_fogskip++; continue; }
-        double wcx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0;
-        double wcy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0;
-        int wcxg = (int)((wcx + ADG_OFF) / ADG_CELL); if (wcxg < 0) wcxg = 0; else if (wcxg >= ADG_W) wcxg = ADG_W - 1;
-        int wcyg = (int)((wcy + ADG_OFF) / ADG_CELL); if (wcyg < 0) wcyg = 0; else if (wcyg >= ADG_H) wcyg = ADG_H - 1;
-        double best = 1e36, best2 = 1e36; int bp = -1, bp2 = -1;
-        for (int gy = wcyg - 1; gy <= wcyg + 1; gy++) {
-            if (gy < 0 || gy >= ADG_H) continue;
-            for (int gx = wcxg - 1; gx <= wcxg + 1; gx++) {
-                if (gx < 0 || gx >= ADG_W) continue;
-                for (int pi = cell_head[gy * ADG_W + gx]; pi >= 0; pi = cell_next[pi]) {
-                    if (fabs(s_pcx[pi] - wcx) > 32.0 || fabs(s_pcy[pi] - wcy) > 32.0) continue;   /* centroid prune */
-                    double c = tri_match_cost_sq(w, &PT[pi]);
-                    if (c < best) { best2 = best; bp2 = bp; best = c; bp = pi; }
-                    else if (c < best2) { best2 = c; bp2 = pi; }
-                }
-            }
-        }
-        if (bp < 0 || best > tol_sq) continue;   /* no confident match -> keep native colour */
-        /* AMBIGUITY REJECT: stacked fan slivers and a folded quad's two halves
-         * put a SECOND prim inside the adoption tolerance with different
-         * colours; sub-pixel drift then flips which one is "best" per tick and
-         * the face adopts its neighbour's (or the fold's dark back-half's)
-         * colours for that tick — a whole-poly colour strobe at tick rate.
-         * When a colour-disagreeing runner-up is also within tolerance the
-         * pairing is not evidence: keep the native colour (correct for every
-         * non-transient face; genuine transients are lone large faces). */
-        if (bp2 >= 0 && best2 <= tol_sq) {
-            const ptri *A = &PT[bp], *B = &PT[bp2];
-            int same = 1;
-            for (int k = 0; k < 3 && same; k++)
-                if ((A->rgb[k] & 0xFFFFFFu) != (B->rgb[k] & 0xFFFFFFu)) same = 0;
-            if (!same) continue;
-        }
-        const ptri* P = &PT[bp];
-        /* IDENTITY EVIDENCE: geometric proximity alone can pick a NEIGHBOUR
-         * when the face's own prim is absent that tick (og NCLIP-culled it at
-         * the boundary) — a lone confident-looking match the ambiguity reject
-         * above cannot catch, flat-recolouring the face for one tick. A
-         * textured face carries its identity in its UVs: pair vertices by
-         * position and require per-corner UV agreement (and textured-ness to
-         * match at all). Genuine transients keep their authored UVs, so real
-         * adoptions still pass; a neighbour's UV triple does not. */
-        if ((w->textured != 0) != (P->tex != 0)) continue;
-        /* Vertex correspondence = the permutation that won the match, a
-         * bijection. An independent nearest-vertex pick per walk vertex is not:
-         * on a face a few px across two walk vertices land on the same prim
-         * vertex and the face adopts one corner's colour twice — a gouraud
-         * gradient collapsed to a flat pair, on every small untextured face,
-         * every frame (386 of the 439 class-2 adoptions in one movie). */
-        int bj[3];
-        tri_match_cost_sq_perm(w, P, bj);
-        if (w->textured) {
-            int uvok = 1;
-            for (int k = 0; k < 3 && uvok; k++)
-                if (abs((int)w->v[k].u - P->u[bj[k]]) > 2 ||
-                    abs((int)w->v[k].v - P->v[bj[k]]) > 2) uvok = 0;
-            if (!uvok) continue;
-        }
-        int changed = 0;
-        uint32_t walk_rgb[3];
-        for (int k = 0; k < 3; k++) walk_rgb[k] = w->v[k].rgb & 0xFFFFFFu;
-        for (int k = 0; k < 3; k++) {
-            uint32_t pc = P->rgb[bj[k]] & 0xFFFFFFu;
-            if ((w->v[k].rgb & 0xFFFFFFu) != pc) {
-                w->v[k].rgb = (w->v[k].rgb & 0xFF000000u) | pc;   /* keep alpha byte, swap RGB */
-                changed = 1;
-            }
-        }
-        if (changed) {
-            recoloured++;
-            if (adopt_census_on()) adopt_census_note(wi, walk_rgb, bj);
-            if (s_dyncol_n < MAX_DYNCOL) {     /* cache by face identity for the sub-tick replay */
-                dyncol_t* d = &s_dyncol[s_dyncol_n++];
-                d->moby = s_wtri_moby[wi]; d->fkey = s_wtri_fkey[wi];
-                for (int k = 0; k < 3; k++) d->rgb[k] = w->v[k].rgb & 0xFFFFFFu;
-                dyncol_note_moby(s_wtri_moby[wi]);
-            }
-        }
-    }
-    return recoloured;
-}
-
-/* Canonical path: build prims from the live REG capture, rebuild the per-face
- * transient-colour cache, then adopt at 4px (which fills the cache). Runs once per
- * sim tick (30Hz); the O(walk×prim) match it pays is amortised there, NOT on the
- * per-present sub-tick (which replays the cache by identity, see below). */
-static int adopt_prim_colors(void) {
-    build_prim_tris();   /* s_ptri[] from the captured .s prims (s_gte) */
-    s_dyncol_n = 0; s_dynmoby_n = 0;
-    int rc = adopt_colors_from_ptri(s_ptri, s_ptri_n, 4.0);
-    return rc;
-}
-
-/* Sub-tick path: replay the canonical transient colours by FACE IDENTITY (moby +
- * topology index triple) — no screen-space re-match. O(1) when no render-time-
- * animated moby was on screen this tick (s_dyncol empty, the common case); else
- * O(walk × dyncol) gated by a distinct-moby fast reject, so only the handful of
- * dynamic mobys' tris pay the lookup. Stable across intermediates: colour is held
- * at the canonical value (it isn't interpolated between sim ticks), so no
- * grey↔cyan flicker and no mis-colouring of neighbouring mobys. */
-static int adopt_prim_colors_subtick(void) {
-    if (s_dyncol_n == 0) return 0;
-    int applied = 0;
-    for (int wi = 0; wi < s_gout.n; wi++) {
-        uint32_t mob = s_wtri_moby[wi];
-        int dyn = 0;
-        for (int i = 0; i < s_dynmoby_n; i++) if (s_dynmoby[i] == mob) { dyn = 1; break; }
-        if (!dyn) continue;                          /* this moby has no transient faces */
-        uint32_t fk = s_wtri_fkey[wi];
-        for (int d = 0; d < s_dyncol_n; d++) {
-            if (s_dyncol[d].moby != mob || s_dyncol[d].fkey != fk) continue;
-            ntri_t* w = &s_wtri[wi];
-            for (int k = 0; k < 3; k++)
-                w->v[k].rgb = (w->v[k].rgb & 0xFF000000u) | (s_dyncol[d].rgb[k] & 0xFFFFFFu);
-            applied++;
-            break;
-        }
-    }
-    return applied;
 }
 
 /* ---- specular env-reflection UV (#1), native float ---------------------
@@ -3947,20 +3570,18 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
         static int s_tier_cnt = 0;
         if (++s_tier_cnt >= 30) {
             fprintf(stderr, "[moby-tier f=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld lpskip=%ld shband=%ld | "
-                    "zsf4-mirror ok=%ld bad=%ld | adopt=%ld fogskip=%ld dyncol-hi=%ld/%d dynmoby-hi=%ld/32 | "
+                    "zsf4-mirror ok=%ld bad=%ld | "
                     "proj=%ldus walk=%ldus rexwalk=%ldus dec=%ldus fld=%ldus rvdec=%ldus rvfld=%ldus rv=%ldus fan=%ldus mrg=%ldus faces=%ld/%ld calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld par=%ld/%ld\n",
                     openpete_frame, s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade,
-                    s_tier_gpfskip, s_tier_lpskip, s_shband_cull, s_tier_mirror_ok, s_tier_mirror_bad, s_tier_adopt, s_adopt_fogskip,
-                    s_tier_dyncol_hi, MAX_DYNCOL, s_tier_dynmoby_hi,
+                    s_tier_gpfskip, s_tier_lpskip, s_shband_cull, s_tier_mirror_ok, s_tier_mirror_bad,
                     s_us_proj, s_us_walk, s_us_walk_rex, s_us_dec, s_us_fields,
                     s_us_rvdec, s_us_rvfields, s_us_reveal,
                     s_us_fanout, s_us_merge, s_walk_faces, s_walk_runs,
                     s_us_calls, s_fc_hit, s_fc_miss,
                     s_fp_hit, s_fp_miss, s_clerp_recs, s_hold_replayed,
                     s_walk_par, s_walk_par + s_walk_serial);
-            s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = s_tier_lpskip = s_shband_cull = s_adopt_fogskip = 0;
-            s_tier_mirror_ok = s_tier_mirror_bad = 0; s_tier_adopt = 0; s_tier_cnt = 0;
-            s_tier_dyncol_hi = s_tier_dynmoby_hi = 0;
+            s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = s_tier_lpskip = s_shband_cull = 0;
+            s_tier_mirror_ok = s_tier_mirror_bad = 0; s_tier_cnt = 0;
             s_us_proj = s_us_walk = s_us_walk_rex = s_us_calls = 0;
             s_us_dec = s_us_fields = s_us_rvdec = s_us_rvfields = s_us_reveal = 0;
             s_us_fanout = s_us_merge = 0;
@@ -4021,18 +3642,6 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
          * must read canon-drawn or the spine drops those tris on every
          * intermediate present while the canonical present shows them. */
         if (s_gout.n > 0 && end <= start) render_path_mark_drawn(RP_MOBY);
-        /* Adopt render-time-animated colours the post-render walk can't see (e.g.
-         * the boundary-barrier shimmer). REGULAR only; no-op for static-colour
-         * mobys. (recolor_walk_from_prims, the env-metal variant, stays SPEC-only.) */
-        if (!is_spec) {
-            int rc = adopt_prim_colors();
-            if (rc && adopt_census_on()) adopt_census_frame();
-            s_tier_adopt += rc;
-            if (s_dyncol_n > s_tier_dyncol_hi) s_tier_dyncol_hi = s_dyncol_n;
-            if (s_dynmoby_n > s_tier_dynmoby_hi) s_tier_dynmoby_hi = s_dynmoby_n;
-            if (rc) OPL_DEBUG_F("native", "adopt_prim_colors: recoloured %d walk tri(s) from prims "
-                                "(render-time-animated colour) f=%u", rc, openpete_frame);
-        }
         { OP_PROF_ACCUM_SCOPE("moby.feed");
           push_scene_moby(); }                /* recolor_walk_from_prims dropped: colour already native
                                                * (walk +0x1100/base), env-UV now native (build_walk_tris) */
@@ -5128,10 +4737,9 @@ static int build_shaded_walk_tris(CPUState* cpu) {
                         : !(openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot) ? "ACTOR"
                         : model_3d ? "HUD3D" : "HUDflat");
         }
-        s_cur_moby_key = R->moby; s_emit_fkey = 0u;   /* colour-cache identity (shaded never matches the regular cache) */
+        s_cur_moby_key = R->moby; s_emit_fkey = 0u;   /* face identity (shaded tris carry no topology key) */
         s_cur_moby_cls = R->moby ? (uint16_t)cpu->read_half(R->moby + 0x36) : 0;
         s_cur_moby_dofs = R->moby ? (int8_t)cpu->read_byte(R->moby + 0x47u) : 0; /* og OT bias (rot>>24) */
-        s_cur_fogsup = 0;         /* shaded mobys have no fog band — never fog-suppressed */
         s_cur_ui = openpete_ui_moby_is_addr_static(R->moby) ? 2
                  : (openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot) ? (model_3d ? 2 : 1)
                  : 0;
@@ -5747,9 +5355,8 @@ static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, in
  * from the occl cache (< OPENPETE_MOBY_HOLD_PX, default 10, 0 = off), not
  * HUD/UI (special projection), origin safely in front of the camera, same
  * canonical epoch (a new tick always re-extracts — gameplay state only
- * changes at ticks, so no discontinuity can hide inside an epoch). Capture
- * happens AFTER adopt_prim_colors_subtick ran on the capturing present, so
- * replayed colours carry the transient-adopt result. Display-only. */
+ * changes at ticks, so no discontinuity can hide inside an epoch).
+ * Display-only. */
 #define HOLD_TRI_MAX  32768
 #define HOLD_MOBY_MAX 512
 static ntri_t   s_hold_tri[HOLD_TRI_MAX];
@@ -5758,7 +5365,7 @@ static uint8_t  s_hold_mode[HOLD_TRI_MAX];
 typedef struct { uint32_t moby; unsigned epoch; int off, n, spec;
                  double sx, sy, trz;              /* captured origin projection + view-Z */
                  uint16_t cls;                    /* m_Class at capture (provenance tag) */
-                 uint8_t front, fogsup; } hold_t; /* per-moby emit flags at capture */
+                 uint8_t front; } hold_t;         /* per-moby emit flags at capture */
 static hold_t   s_hold[HOLD_MOBY_MAX];
 static int      s_hold_n, s_hold_tri_n;
 static unsigned s_hold_epoch;
@@ -6064,7 +5671,6 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             f.w0, f.metal, f.mscol, mobys[i], zsf4,
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA,
             fap, hdrp, (float)balpha };
-        s_recs[s_nrecs].zsf4_raw = fade_snap_get_raw(mobys[i], zsf4);
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
         s_proj_n += got; s_nrecs++;
     }
@@ -6091,16 +5697,9 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         append_revealed_regular(cpu);
     }
     build_walk_tris(cpu);                       /* SPEC: build_walk_tris dedups vs s_reg_moby */
-    /* Sub-tick: adopt render-time-animated colours (the barrier shimmer) from the
-     * canonical REG prim snapshot so they don't flicker grey↔cyan between
-     * canonical and intermediate presents. Must use the snapshot, NOT live s_gte:
-     * the canonical SPEC pass's capture_gte zeroes s_gte after REG, so it's empty
-     * by present time. */
-    if (!is_spec) adopt_prim_colors_subtick();
     /* Tier-2 hold capture: any freshly-extracted speck-sized moby (extent from
-     * its just-refreshed occl rect) banks its built tris — AFTER the adopt so
-     * replays carry transient colours. Runs whenever a small moby extracted
-     * (not just the epoch's first present): dedup via hold_find. */
+     * its just-refreshed occl rect) banks its built tris. Runs whenever a small
+     * moby extracted (not just the epoch's first present): dedup via hold_find. */
     if (hold_px_max() > 0) {
         int hpx = hold_px_max();
         for (int r = 0; r < s_nrecs && s_hold_n < HOLD_MOBY_MAX; r++) {
@@ -6113,11 +5712,10 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             double sx, sy;
             if (!hold_project_origin(cpu, s_rec_tr[r], &sx, &sy)) continue;
             int off = s_hold_tri_n, n = 0;
-            uint16_t hcls = 0; uint8_t hfront = 0, hfogsup = 0;
+            uint16_t hcls = 0; uint8_t hfront = 0;
             for (int wi = 0; wi < s_gout.n && s_hold_tri_n < HOLD_TRI_MAX; wi++) {
                 if (s_wtri_moby[wi] != mob) continue;
-                if (n == 0) { hcls = s_wtri_cls[wi]; hfront = s_wtri_front[wi];
-                              hfogsup = s_wtri_fogsup[wi]; }
+                if (n == 0) { hcls = s_wtri_cls[wi]; hfront = s_wtri_front[wi]; }
                 s_hold_tri[s_hold_tri_n]  = s_wtri[wi];
                 s_hold_fkey[s_hold_tri_n] = s_wtri_fkey[wi];
                 s_hold_mode[s_hold_tri_n] = s_wtri_mode[wi];
@@ -6126,17 +5724,16 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             hold_t* h = &s_hold[s_hold_n++];
             h->moby = mob; h->epoch = s_hold_epoch; h->off = off; h->n = n;
             h->spec = is_spec; h->sx = sx; h->sy = sy; h->trz = s_rec_tr[r][2];
-            h->cls = hcls; h->front = hfront; h->fogsup = hfogsup;
+            h->cls = hcls; h->front = hfront;
         }
     }
     /* Tier-2 hold replay: append the banked tris, translated by the origin
-     * delta, view-Z rescaled. Appended AFTER the adopt (colours already carry
-     * the capture-present's adopt; identity replay would be a no-op anyway). */
+     * delta, view-Z rescaled. */
     for (int k = 0; k < nreplay; k++) {
         const hold_t* h = replays[k].h;
         float dx = (float)replays[k].dx, dy = (float)replays[k].dy;
         float vzs = (float)replays[k].vzs;
-        /* cls/front/fogsup are re-stamped per replayed tri below: without
+        /* cls/front are re-stamped per replayed tri below: without
          * them the replayed tris kept whatever stale values these arrays
          * held at their indices, so a held moby lost its mod material on
          * every intermediate present (distant decor flickering stock-bright
@@ -6148,8 +5745,6 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         for (int t = 0; t < h->n && s_gout.n < MAX_NTRI; t++) {
             s_wtri_ui[s_gout.n]      = 0;
             s_wtri_front[s_gout.n]   = h->front;
-            s_wtri_fogsup[s_gout.n]  = h->fogsup;
-            s_wtri_br[s_gout.n]      = 0;
             s_wtri_cls[s_gout.n]     = h->cls;
             s_wtri_moby[s_gout.n]    = h->moby;
             s_wtri_fkey[s_gout.n]    = s_hold_fkey[h->off + t];
