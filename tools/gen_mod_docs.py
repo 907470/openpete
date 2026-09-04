@@ -13,7 +13,8 @@ mkdocs-material site (see docs/modding/ and scripts/build-mod-docs.sh):
   globals.md    <- manifest/globals.toml (the OP_GADDR_* surface)
   structs.md    <- generated openpete_game_structs.h (typed guest-RAM
                    views + offset tables recovered from the pins)
-  gallery.md    <- mods/*/mod.toml header comments (CI fixtures omitted)
+  gallery.md    <- mod.toml header comments of the mods in
+                   mods/examples.txt (the SDK-shipped set)
   cpustate.md   <- third_party/psxrecomp/runner/include/psx_runtime.h
                    (the CPUState an override receives: struct prose +
                    one row per field)
@@ -497,14 +498,6 @@ def gen_structs(structs_header: Path) -> str:
 
 # ── gallery.md ───────────────────────────────────────────────────────────
 
-# In-tree mods that exist to exercise the loader in CI, not to show a
-# mod author a mechanism. They are omitted from the gallery.
-FIXTURES = {
-    "arena-canary", "arena-probe", "chain-duo-a", "chain-duo-b",
-    "crash-dummy", "demo-lib", "lib-and-client", "raw-probe",
-    "sfx-replace-probe", "vstream-rehandle",
-}
-
 
 def read_examples(mods_dir: Path) -> list:
     """mods/examples.txt: the ids package-dist.sh stages into
@@ -519,26 +512,17 @@ def read_examples(mods_dir: Path) -> list:
 def gen_gallery(mods_dir: Path) -> str:
     out = [GEN_NOTE, "# Examples\n"]
     shipped = read_examples(mods_dir)
-    out.append("Working example mods, extracted from each "
-               "`mods/<id>/mod.toml` header. Start from the one nearest "
-               "to your idea.\n")
-    if shipped:
-        out.append("The first group ships with the SDK under "
-                   "`<exe>/sdk/examples/<id>/`: copy one into your `mods` "
-                   "directory to run it. The rest live only in the "
-                   "openpete source tree.\n")
-    groups = {"shipped": [], "declarative": [], "code": []}
-    tomls = sorted(mods_dir.glob("*/mod.toml"))
-    by_id = {t.parent.name: t for t in tomls}
+    out.append("The example mods that ship with the SDK under "
+               "`<exe>/sdk/examples/<id>/`, extracted from each one's "
+               "`mod.toml` header. Copy one into your `mods` directory "
+               "to run it; start from the one nearest to your idea.\n")
+    by_id = {t.parent.name: t for t in mods_dir.glob("*/mod.toml")}
     missing = [e for e in shipped if e not in by_id]
     if missing:
         sys.exit(f"gen_mod_docs: mods/examples.txt names {missing} "
                  f"but no such mod directory exists")
-    order = [by_id[e] for e in shipped] + \
-            [t for t in tomls if t.parent.name not in shipped]
-    for toml in order:
-        if ".unpacked" in toml.parts or toml.parent.name in FIXTURES:
-            continue
+    sections = []
+    for toml in (by_id[e] for e in shipped):
         text = toml.read_text(encoding="utf-8")
         desc = []
         for line in text.splitlines():
@@ -562,7 +546,7 @@ def gen_gallery(mods_dir: Path) -> str:
             bits.append(", ".join(f"`[[{b}]]`" for b in blocks))
         if srcs:
             bits.append("src: " + ", ".join(f"`{s}`" for s in srcs))
-        sec = [f"### `{mid}` — {title}\n", " · ".join(bits) + "\n"]
+        sec = [f"## `{mid}` — {title}\n", " · ".join(bits) + "\n"]
         # A blank comment line in the header is a paragraph break.
         paras, cur = [], []
         for d in desc:
@@ -573,18 +557,9 @@ def gen_gallery(mods_dir: Path) -> str:
         if cur:
             paras.append(" ".join(cur))
         sec.extend(md_prose(pg) + "\n" for pg in paras)
-        key = "shipped" if toml.parent.name in shipped \
-            else ("code" if srcs else "declarative")
-        groups[key].append("\n".join(sec))
-    n = 0
-    for head, key in (("## Shipped with the SDK", "shipped"),
-                      ("## In the source tree: declarative", "declarative"),
-                      ("## In the source tree: code", "code")):
-        if groups[key]:
-            out.append(head + "\n")
-            out.extend(groups[key])
-            n += len(groups[key])
-    return "\n".join(out), n
+        sections.append("\n".join(sec))
+    out.extend(sections)
+    return "\n".join(out), len(sections)
 
 
 # ── cpustate.md ──────────────────────────────────────────────────────────
