@@ -1,4 +1,4 @@
-# Publishing Recommendations
+# Publishing recommendations
 
 ## Ship no game bytes
 
