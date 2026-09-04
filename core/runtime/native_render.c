@@ -10036,6 +10036,18 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
 
     const int pt_on = openpete_phase_timers_on();
     uint64_t pt_t0 = pt_on ? openpete_phase_now_us() : 0, pt_t1;
+    /* Diagnostic: OPENPETE_DIAG_RECREATE_FIRST_PRESENT=1 rebuilds the
+     * swapchain on the first canonical present, reproducing on any host
+     * the ordering Windows produces when a fullscreen resize arrives while
+     * --skip-to-level suppresses presents. */
+    static int s_diag_recreate = -1;   /* 1 = recreate only; 2 = resize the window to 1280x720 first */
+    if (s_diag_recreate < 0) { const char* e = getenv("OPENPETE_DIAG_RECREATE_FIRST_PRESENT"); s_diag_recreate = (e && *e) ? atoi(e) : 0; }
+    if (s_diag_recreate == 1 || s_diag_recreate == 2) {
+        if (s_diag_recreate == 2 && s_nr.window) SDL_SetWindowSize(s_nr.window, 1280, 720);
+        fprintf(stderr, "[diag] swapchain recreate forced on the first present (mode %d)\n", s_diag_recreate);
+        s_diag_recreate = 3;
+        rhi_notify_resize_immediate(s_nr.dev);
+    }
     int bf_ok;
     { OP_PROF_ACCUM_SCOPE("gpu.beginframe");   /* fence wait + swapchain acquire */
       bf_ok = s_stage_target >= 0 ? rhi_begin_frame_staged(s_nr.dev) : rhi_begin_frame(s_nr.dev); }
