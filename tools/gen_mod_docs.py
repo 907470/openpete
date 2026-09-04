@@ -240,16 +240,20 @@ def gen_api(api_header: Path) -> str:
     body = body[body.index("{") + 1: body.index("} openpete_mod_api_t;")]
 
     members = 0
+    sections = []          # rendered per-entry sections, in header order
+    index = []             # (group, name, since, brief) for the index table
+    group = ""
     for comments, decl in split_members(body):
         prose = ""
         for c in comments:
             text = strip_comment(c)
             if text.startswith("@name"):
                 first, _, restp = text.partition("\n")
-                out.append(f"## {first[len('@name'):].strip()}\n")
+                group = first[len('@name'):].strip()
+                sections.append(f"## {group}\n")
                 restp = restp.replace("@{", "").strip()
                 if restp:
-                    out.append(md_prose(dox_to_md(restp)) + "\n")
+                    sections.append(md_prose(dox_to_md(restp)) + "\n")
             elif text.strip() in ("@}", ""):
                 continue
             else:
@@ -258,11 +262,46 @@ def gen_api(api_header: Path) -> str:
             continue
         name_m = MEMBER_NAME_RE.search(decl)
         name = name_m.group(1) if name_m else decl.split()[-1].rstrip(";")
-        out.append(f"### `api->{name}`\n")
-        out.append(f"```c\n{decl}\n```\n")
+        sections.append(f"### `api->{name}`\n")
+        sections.append(f"```c\n{decl}\n```\n")
         if prose:
-            out.append(md_prose(dox_to_md(prose)) + "\n")
+            sections.append(md_prose(dox_to_md(prose)) + "\n")
+        since_m = re.search(r"@since\s+api\s+(\d+)", prose)
+        # @brief runs to the next blank line or @tag; the index keeps
+        # its first sentence.
+        brief_m = re.search(r"@brief\s+(.*?)(?:\n\s*\n|\n\s*@|\Z)", prose,
+                            re.S)
+        brief = ""
+        if brief_m:
+            brief = " ".join(brief_m.group(1).split())
+            cut = re.search(r"\.(\s|$)", brief)
+            if cut:
+                brief = brief[:cut.start() + 1]
+            brief = brief.replace("#OPENPETE", "OPENPETE")
+        index.append((group, name,
+                      since_m.group(1) if since_m else "", brief))
         members += 1
+
+    # Index: one row per entry with the api version it appeared in, so a
+    # mod pinning `api = N` can see at a glance which entries it may use.
+    out.append("## Index\n")
+    out.append("Every entry and the api version that introduced it. A mod "
+               "declaring `api = N` in its manifest may use entries with "
+               "Since ≤ N; the loader refuses a newer pin than the engine "
+               "provides.\n")
+    out.append("| Entry | Since | Group | Brief |")
+    out.append("|---|---|---|---|")
+    for grp, name, since, brief in index:
+        anchor = f"api-{name}"  # mkdocs slug of "`api->name`"
+        since_cell = f"api {since}" if since else "—"
+        out.append(f"| [`api->{name}`](#{anchor}) | {since_cell} | {grp} "
+                   f"| {md_prose(brief)} |")
+    out.append("")
+    missing_since = [n for _, n, s_, _ in index if not s_]
+    if missing_since:
+        print(f"[gen_mod_docs] WARNING: no @since on {missing_since}",
+              file=sys.stderr)
+    out.extend(sections)
 
     # convenience accessors at the tail of the header
     tail = src[src.index("} openpete_mod_api_t;") + len("} openpete_mod_api_t;"):]
@@ -455,13 +494,37 @@ FIXTURES = {
 }
 
 
+def read_examples(mods_dir: Path) -> list:
+    """mods/examples.txt: the ids package-dist.sh stages into
+    <exe>/sdk/examples/, one per line, comments with #."""
+    f = mods_dir / "examples.txt"
+    if not f.exists():
+        return []
+    return [l.strip() for l in f.read_text(encoding="utf-8").splitlines()
+            if l.strip() and not l.startswith("#")]
+
+
 def gen_gallery(mods_dir: Path) -> str:
     out = [GEN_NOTE, "# Examples\n"]
-    out.append("Working example mods from the openpete source tree, "
-               "extracted from each `mods/<id>/mod.toml` header. Start "
-               "from the one nearest to your idea.\n")
-    groups = {"declarative": [], "code": []}
-    for toml in sorted(mods_dir.glob("*/mod.toml")):
+    shipped = read_examples(mods_dir)
+    out.append("Working example mods, extracted from each "
+               "`mods/<id>/mod.toml` header. Start from the one nearest "
+               "to your idea.\n")
+    if shipped:
+        out.append("The first group ships with the SDK under "
+                   "`<exe>/sdk/examples/<id>/`: copy one into your `mods` "
+                   "directory to run it. The rest live only in the "
+                   "openpete source tree.\n")
+    groups = {"shipped": [], "declarative": [], "code": []}
+    tomls = sorted(mods_dir.glob("*/mod.toml"))
+    by_id = {t.parent.name: t for t in tomls}
+    missing = [e for e in shipped if e not in by_id]
+    if missing:
+        sys.exit(f"gen_mod_docs: mods/examples.txt names {missing} "
+                 f"but no such mod directory exists")
+    order = [by_id[e] for e in shipped] + \
+            [t for t in tomls if t.parent.name not in shipped]
+    for toml in order:
         if ".unpacked" in toml.parts or toml.parent.name in FIXTURES:
             continue
         text = toml.read_text(encoding="utf-8")
@@ -498,9 +561,13 @@ def gen_gallery(mods_dir: Path) -> str:
         if cur:
             paras.append(" ".join(cur))
         sec.extend(md_prose(pg) + "\n" for pg in paras)
-        groups["code" if srcs else "declarative"].append("\n".join(sec))
+        key = "shipped" if toml.parent.name in shipped \
+            else ("code" if srcs else "declarative")
+        groups[key].append("\n".join(sec))
     n = 0
-    for head, key in (("## Declarative", "declarative"), ("## Code", "code")):
+    for head, key in (("## Shipped with the SDK", "shipped"),
+                      ("## In the source tree: declarative", "declarative"),
+                      ("## In the source tree: code", "code")):
         if groups[key]:
             out.append(head + "\n")
             out.extend(groups[key])

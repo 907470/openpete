@@ -443,6 +443,7 @@ add_custom_command(
             ${CMAKE_SOURCE_DIR}/docs/modding/mkdocs.yml
             ${_mod_docs_manifests}
             ${_mod_docs_pages}
+            ${CMAKE_SOURCE_DIR}/mods/examples.txt
     COMMENT "Building mod-author docs (gen_mod_docs.py + mkdocs)")
 add_custom_target(mod_docs ALL DEPENDS ${_mod_docs_stamp})
 

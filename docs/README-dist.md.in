@@ -39,7 +39,7 @@ states/         savestate slots
 logs/           openpete.log — attach to a bug report
 library/        your ingested disc and its compiled code
 mods/           drop-in mods
-sdk/            mod SDK headers (only when packaged with the SDK)
+sdk/            mod SDK: headers, docs/, examples/ (only when packaged with it)
 recomp/         the bundled compiler and recompiler
 ```
 <!-- @end -->
@@ -106,9 +106,12 @@ A source mod runs inside the game process with the same privileges as
 the game. There is no sandbox. Install only mods you trust, as you would
 any other program. A mod with no `src/` directory never loads code.
 
-Mod authors: the SDK documentation is built from the source tree
-(`cmake --build --preset linux-release --target mod_docs`) and starts at
-"Getting started".
+Mod authors: when this build carries the SDK, its documentation is at
+`sdk/docs/index.html` (start at "Getting started") and `sdk/examples/`
+holds working example mods. Copy one into the `mods` directory above to
+run it; nothing under `sdk/` loads on its own. Without the SDK, the
+documentation is built from the source tree
+(`cmake --build --preset linux-release --target mod_docs`).
 
 ## Reporting a problem
 

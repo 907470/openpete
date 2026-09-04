@@ -251,9 +251,17 @@ grep -q "rebuilding it from your disc" "$WORK/repair.log" \
     || { echo "[dist-gate] FAIL: unusable module did not trigger a rebuild" >&2;
          exit 2; }
 
-echo "[dist-gate] drop-in source mod compiles + loads on boot..."
+# The staged example is the drop-in: sdk/examples/ sits next to the
+# binary (AppImage: usr/). Its presence with the docs site proves the
+# --with-mod-sdk staging, and the compile proves the example.
+sdkdir="$(dirname "$BIN")/sdk"
+[[ -d "$sdkdir/examples/hello-anchor" ]] \
+    || { echo "[dist-gate] FAIL: $sdkdir/examples/hello-anchor not staged" >&2; exit 2; }
+[[ -f "$sdkdir/docs/index.html" ]] \
+    || { echo "[dist-gate] FAIL: $sdkdir/docs/index.html not staged (mkdocs missing at package time?)" >&2; exit 2; }
+echo "[dist-gate] drop-in source mod (from sdk/examples) compiles + loads on boot..."
 mkdir -p "$DATA/mods"
-cp -r mods/hello-anchor "$DATA/mods/"
+cp -r "$sdkdir/examples/hello-anchor" "$DATA/mods/"
 rm -rf "$DATA/mods/hello-anchor/.build"
 "${APP[@]}" --headless --frame-limit 300 \
       --run-recomp 0x80012204 --max-runtime-seconds 300 \

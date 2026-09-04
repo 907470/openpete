@@ -30,6 +30,10 @@ The site lands in `build/<preset>/games/spyro-1/moddocs/site/index.html`.
 
 ## In-tree mods
 
+`examples.txt` names the mods `scripts/package-dist.sh --with-mod-sdk`
+stages into `<exe>/sdk/examples/`; the documentation's Examples page
+lists them first. Every entry ships only original content.
+
 Examples, listed on the documentation's Examples page: `music-swap`,
 `hd-single-texture`, `sfx-single-sound`, `declarative-reshade`,
 `recolored-artisans`, `grim-garden`, and `spyro15-cliff-town` are

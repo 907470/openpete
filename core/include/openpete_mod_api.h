@@ -257,7 +257,8 @@ typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
 
 /** @brief The engine's function table, passed to the mod entry point. */
 typedef struct openpete_mod_api {
-    /** @brief The engine's #OPENPETE_MOD_API_VERSION; compare with `<`, never `!=`. */
+    /** @brief The engine's #OPENPETE_MOD_API_VERSION; compare with `<`, never `!=`.
+     * @since api 1 */
     uint32_t api_version;
 
     /** @name Overrides

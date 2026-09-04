@@ -95,6 +95,32 @@ stage_common() {  # stage_common <build-game-dir>
         # toolchain. The SDK is a handful of headers, and read-only —
         # unlike mods/ it belongs in the install.
         cp -a "$B/sdk" "$STAGE/sdk"
+        # The mod-author docs site (mod_docs target; built only when
+        # mkdocs is installed) and the example mods named in
+        # mods/examples.txt ride with the SDK, so a zip holder has the
+        # reference and working mods without the repository. Examples
+        # live under sdk/, not mods/: a mod dropped into mods/ is live on
+        # the next boot, and an example is copied there on purpose.
+        if [[ -f "$B/moddocs/site/index.html" ]]; then
+            cp -a "$B/moddocs/site" "$STAGE/sdk/docs"
+        else
+            echo "[package-dist] WARNING: $B/moddocs/site missing (mkdocs" \
+                 "not installed?) — sdk/docs/ not staged" >&2
+        fi
+        mkdir -p "$STAGE/sdk/examples"
+        while read -r ex; do
+            [[ -z "$ex" || "$ex" == \#* ]] && continue
+            [[ -f "mods/$ex/mod.toml" ]] \
+                || { echo "[package-dist] mods/examples.txt names $ex but" \
+                          "mods/$ex/mod.toml does not exist" >&2; exit 1; }
+            # Leaves build products (.build/) and the CI harness file
+            # (modtest.toml) behind; config.toml is the mod's shipped
+            # knob defaults and stays.
+            mkdir -p "$STAGE/sdk/examples/$ex"
+            (cd "mods/$ex" && find . -type f \
+                ! -path './.build/*' ! -name modtest.toml \
+                -exec cp --parents {} "$STAGE/sdk/examples/$ex/" \;)
+        done < mods/examples.txt
         # The drop-in mods/ folder only belongs here where mods actually
         # resolve next to the exe. Under the per-user layout (POSIX
         # default, and the only option for a read-only AppImage) the

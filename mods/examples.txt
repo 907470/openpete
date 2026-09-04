@@ -1,0 +1,13 @@
+# Mods staged into <exe>/sdk/examples/ by package-dist.sh --with-mod-sdk,
+# one id per line, in the order the documentation's Examples page lists
+# them. Every entry ships only original content (no disc-derived bytes,
+# no third-party assets without a licence file in the mod directory).
+hello-anchor
+natural-gems
+hud-stopwatch
+crt-beans
+declarative-reshade
+channel-gallery
+sfx-single-sound
+recolored-artisans
+teapot-dragons

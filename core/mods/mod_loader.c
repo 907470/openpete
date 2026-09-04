@@ -642,6 +642,8 @@ static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
 static int mod_compute_key(const char* mod_dir, const char* sdk_dir,
                            char key_out[65]);
 static void sdk_prefix_drop(void);
+static int mods_sdk_present(const char* sdk_dir);
+static void mods_sdk_missing_notice(const char* sdk_dir);
 static int config_compute_key(const char* mod_dir, char key_out[65]);
 static int mod_compile(const char* mod_dir, const char* id,
                        const char* sdk_dir, const char* key,
@@ -662,6 +664,12 @@ static void mod_hot_reload(struct openpete_mod* mod) {
      * (registrations and all) instead of leaving the mod inert. The
      * Mods-panel Apply reaches this path, so a stray syntax error must
      * cost a log line, not the session's mod. */
+    if (!mods_sdk_present(s_sdk_dir)) {
+        mods_sdk_missing_notice(s_sdk_dir);
+        OPL_ERROR_F("mods", "%s: reload needs the SDK — keeping the "
+                    "running object", mod->id);
+        return;
+    }
     static unsigned s_hot_n = 0;
     char hot_path[MOD_PATH_MAX + 32];
     snprintf(hot_path, sizeof hot_path, "%s/.build/%s.hot%u" MOD_DL_EXT,
@@ -2235,6 +2243,18 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
          * as-is, never hashed or compiled, skipped by hot reload. */
         OPL_INFO_F("mods", "%s: binary-only mod (no src/), loading %s "
                    "as-is", mod->id, so_path);
+    } else if (!mods_sdk_present(sdk_dir)) {
+        mods_sdk_missing_notice(sdk_dir);
+        snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT,
+                 mod->dir, mod->id);
+        if (file_mtime(so_path) == (time_t)-1) {
+            OPL_ERROR_F("mods", "%s: has src/ but no SDK to compile it "
+                        "against and no prebuilt %s — disabled",
+                        mod->id, so_path);
+            return -1;
+        }
+        OPL_INFO_F("mods", "%s: no SDK, loading prebuilt %s as-is",
+                   mod->id, so_path);
     } else {
         if (build_mod(mod, sdk_dir, so_path, sizeof so_path) != 0)
             return -1;
@@ -2695,6 +2715,28 @@ static void mods_sdk_dir(char* out, size_t cap) {
     snprintf(out, cap, "%ssdk", base ? base : "./");
 }
 
+/* An install packaged without --with-mod-sdk has no <exe>/sdk. The
+ * compile would then fail inside the compiler with a header-not-found in
+ * compile.log, which names nothing; this check names the cause once and
+ * lets the callers skip the compile. The api header is the probe: it is
+ * the one file every compile line includes. */
+static int mods_sdk_present(const char* sdk_dir) {
+    char p[MOD_PATH_MAX + 32];
+    snprintf(p, sizeof p, "%s/openpete_mod_api.h", sdk_dir);
+    struct stat st;
+    return stat(p, &st) == 0 && S_ISREG(st.st_mode);
+}
+
+static void mods_sdk_missing_notice(const char* sdk_dir) {
+    static int s_said = 0;
+    if (s_said) return;
+    s_said = 1;
+    OPL_WARN_F("mods", "no sdk/ next to the exe (%s): this build was "
+               "packaged without the mod SDK — source mods are not "
+               "compiled; a prebuilt .build/<id>" MOD_DL_EXT " still "
+               "loads as-is", sdk_dir);
+}
+
 /* ---- compile-on-boot prepare (openpete-mod-compile-on-boot) ---------- */
 
 struct mods_prepare_ctx {
@@ -2740,6 +2782,16 @@ int openpete_mods_prepare(const openpete_options_t* opts,
                                MODS_MAX);
     if (n_refs <= 0) return 0;
     mods_sdk_dir(c.sdk_dir, sizeof c.sdk_dir);
+    if (!mods_sdk_present(c.sdk_dir)) {
+        for (int i = 0; i < n_refs; i++) {
+            char key[65];
+            if (mod_compute_key(c.refs[i].dir, c.sdk_dir, key) == 0) {
+                mods_sdk_missing_notice(c.sdk_dir); /* a src/ mod exists */
+                break;
+            }
+        }
+        return 0;
+    }
     c.progress = progress;
 
     /* Pass 1: pure hashing — milliseconds; no window, no compile. */
@@ -2796,6 +2848,11 @@ int openpete_mods_compile_all(const openpete_options_t* opts) {
 
     char sdk_dir[MOD_PATH_MAX];
     mods_sdk_dir(sdk_dir, sizeof sdk_dir);
+    if (!mods_sdk_present(sdk_dir)) {
+        mods_sdk_missing_notice(sdk_dir);
+        OPL_ERROR_F("mods", "--compile-mods: no SDK at %s", sdk_dir);
+        return -1;
+    }
 
     int n_compiled = 0, n_cached = 0, n_failed = 0;
     for (int i = 0; i < n_ids; i++) {
