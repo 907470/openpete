@@ -70,4 +70,5 @@ mod engine-rendered settings and rebindable keys with no UI code.
 - [Publishing](publishing.md): what a mod must get right before release.
 - Reference, generated from the SDK sources: [API](reference/api.md),
   [functions](reference/functions.md), [globals](reference/globals.md),
-  [game structs](reference/structs.md), [examples](reference/gallery.md).
+  [game structs](reference/structs.md), [CPUState](reference/cpustate.md),
+  [examples](reference/gallery.md).

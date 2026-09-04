@@ -14,6 +14,9 @@ mkdocs-material site (see docs/modding/ and scripts/build-mod-docs.sh):
   structs.md    <- generated openpete_game_structs.h (typed guest-RAM
                    views + offset tables recovered from the pins)
   gallery.md    <- mods/*/mod.toml header comments (CI fixtures omitted)
+  cpustate.md   <- third_party/psxrecomp/runner/include/psx_runtime.h
+                   (the CPUState an override receives: struct prose +
+                   one row per field)
 
 Stdlib only, deterministic output (no timestamps): re-running on
 unchanged inputs is byte-identical. Prose comes from the comment blocks
@@ -584,6 +587,55 @@ def gen_gallery(mods_dir: Path) -> str:
     return "\n".join(out), n
 
 
+# ── cpustate.md ──────────────────────────────────────────────────────────
+
+SCALAR_FIELD_RE = re.compile(
+    r"^\s*(\w+)\s+([\w, ]+?)(\[\d+\])?;\s*/\*\*<\s*(.*?)\s*\*/")
+FNPTR_FIELD_RE = re.compile(
+    r"^\s*([\w ]+?)\s*\(\*(\w+)\)(\([^)]*\));\s*/\*\*<\s*(.*?)\s*\*/")
+
+
+def gen_cpustate(runtime_header: Path):
+    """psx_runtime.h -> cpustate.md: the struct's comment block as prose
+    and a table with one row per declarator (a line declaring several
+    registers with one comment becomes one row per register)."""
+    out = [GEN_NOTE, "# CPUState\n"]
+    if not runtime_header.exists():
+        out.append(f"!!! warning\n    `{runtime_header.name}` not found.\n")
+        return "\n".join(out), 0
+    src = runtime_header.read_text(encoding="utf-8")
+    m = re.search(r"(/\*\*(?:(?!\*/).)*?\*/)\s*typedef struct CPUState \{(.*?)\} CPUState;",
+                  src, re.S)
+    if not m:
+        sys.exit("gen_mod_docs: CPUState not found in psx_runtime.h")
+    out.append(md_prose(dox_to_md(strip_comment(m.group(1)))) + "\n")
+    out.append("Declared in `psx_runtime.h`, shipped in `sdk/`; include it "
+               "beside `openpete_mod_api.h`, which only forward-declares "
+               "the type.\n")
+    rows = []
+    for line in m.group(2).splitlines():
+        fm = FNPTR_FIELD_RE.match(line)
+        if fm:
+            ret, name, params, brief = fm.groups()
+            rows.append((f"{ret.strip()} (*{name}){params}", "",
+                         md_prose(dox_to_md(brief))))
+            continue
+        fm = SCALAR_FIELD_RE.match(line)
+        if not fm:
+            continue
+        ctype, names, suffix, brief = fm.groups()
+        for name in [n.strip() for n in names.split(",")]:
+            rows.append((name + (suffix or ""), ctype,
+                         md_prose(dox_to_md(brief))))
+    out.append("## Fields\n")
+    out.append("| Field | Type | Meaning |")
+    out.append("|---|---|---|")
+    for decl, ctype, brief in rows:
+        out.append(f"| `{decl}` | {('`' + ctype + '`') if ctype else '—'} | {brief} |")
+    out.append("")
+    return "\n".join(out), len(rows)
+
+
 # ── main ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -604,6 +656,9 @@ def main():
                     help="generated openpete_game_structs.h (default: "
                          "search known build dirs)")
     ap.add_argument("--mods-dir", default=REPO / "mods", type=Path)
+    ap.add_argument("--psx-runtime",
+                    default=REPO / "third_party/psxrecomp/runner/include/psx_runtime.h",
+                    type=Path)
     ap.add_argument("--out",
                     default=REPO / "docs/modding/pages/reference",
                     type=Path)
@@ -625,18 +680,22 @@ def main():
     gl_md, n_gl = gen_globals(args.globals_)
     st_md, n_st = gen_structs(structs)
     ga_md, n_mods = gen_gallery(args.mods_dir)
+    cs_md, n_cs = gen_cpustate(args.psx_runtime)
 
     for fname, content in (("api.md", api_md), ("functions.md", fn_md),
                            ("globals.md", gl_md), ("structs.md", st_md),
-                           ("gallery.md", ga_md)):
+                           ("gallery.md", ga_md), ("cpustate.md", cs_md)):
         (args.out / fname).write_text(content, encoding="utf-8")
 
+    if n_cs < 40:   # 32 GPRs + pc/hi/lo + 3 arrays + 10 callbacks
+        sys.exit(f"gen_mod_docs: only {n_cs} CPUState fields parsed — the "
+                 "struct layout or comment style changed; fix the extractor")
     if n_api < 25:  # 28 entries + api_version at api v1
         sys.exit(f"gen_mod_docs: only {n_api} API members parsed — the "
                  "header layout changed; fix the extractor")
     print(f"[gen_mod_docs] api: {n_api} members | functions: {n_fn} "
           f"({n_proto} prototyped) | globals: {n_gl} | structs: {n_st} | "
-          f"gallery: {n_mods} mods -> {args.out}")
+          f"gallery: {n_mods} mods | cpustate: {n_cs} fields -> {args.out}")
 
 
 if __name__ == "__main__":

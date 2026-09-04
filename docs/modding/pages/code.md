@@ -39,6 +39,8 @@ counter before and after.
 layer, so the callee's own override chain runs. Write `cpu->a0..a3`
 before, read `cpu->v0` after. The register fields are declared in
 `psx_runtime.h` (in `sdk/`); include it alongside the API header.
+The register conventions an override relies on are in the
+[CPUState reference](reference/cpustate.md).
 
 ## Tick context and present context
 

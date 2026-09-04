@@ -60,4 +60,5 @@ nav:
       - Functions: reference/functions.md
       - Globals: reference/globals.md
       - Game structs: reference/structs.md
+      - CPUState: reference/cpustate.md
       - Examples: reference/gallery.md
