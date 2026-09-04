@@ -109,7 +109,10 @@ any other program. A mod with no `src/` directory never loads code.
 Mod authors: when this build carries the SDK, its documentation is at
 `sdk/docs/index.html` (start at "Getting started") and `sdk/examples/`
 holds working example mods. Copy one into the `mods` directory above to
-run it; nothing under `sdk/` loads on its own. Without the SDK, the
+run it; nothing under `sdk/` loads on its own. In the AppImage both sit
+inside the read-only image: run `./OpenPete-*.AppImage --appimage-extract`
+once and open `squashfs-root/usr/sdk/docs/index.html` and
+`squashfs-root/usr/sdk/examples/`. Without the SDK, the
 documentation is built from the source tree
 (`cmake --build --preset linux-release --target mod_docs`).
 
