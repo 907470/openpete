@@ -125,20 +125,3 @@ entry point re-runs with the new values without a recompile.
 ## enabled.txt and --mods
 
 See [Enabling mods](getting-started.md#enabling-mods).
-
-## modtest.toml
-
-Used only by `tools/modtest.py` in the openpete source tree. Not read by
-the engine.
-
-``` toml
-[test]
-frames        = 8000
-input         = "test/scenario.bk2"          # optional input movie
-args          = "--skip-to-level artisans"   # one string, not an array
-expect_log    = ["my-mod: it worked"]        # substring asserts
-expect_oracle = "skip"                       # pass | fail | skip (default)
-```
-
-`expect_oracle = "pass"` asserts that gameplay state stays byte-identical
-to the reference with the mod loaded; `"fail"` asserts a divergence.

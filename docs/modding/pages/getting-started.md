@@ -128,18 +128,3 @@ with `if (api->api_version >= N)`.
    header only forward-declares `CPUState`. Addresses are
    pinned to the SCUS-94228 binary; the loader logs a warning on a mod's
    first raw registration.
-
-## Iterating
-
-- **Hot reload.** With `OPENPETE_MOD_HOT_RELOAD=1` the loader polls
-  `src/`, `shaders/`, and `config.toml` every 64 ticks, recompiles what
-  changed, and swaps the mod at a tick boundary. The entry point re-runs
-  on the new object; host statics do not survive, arena allocations do
-  (see [Guest memory](code.md#guest-memory)).
-- **Logs.** `api->log` lines carry the tag `mod:<id>`. A crash inside an
-  override is reported with `MOD ATTRIBUTION` naming the innermost mod on
-  the override stack.
-- **Testing.** In the openpete source tree, `python3 tools/modtest.py
-  mods/<id>` runs the scenario declared in a `modtest.toml` beside
-  `mod.toml`, and `scripts/check_mods.sh` runs every in-tree mod. Neither
-  tool ships in the distribution.

@@ -10,9 +10,9 @@ the engine compiles on load against the SDK next to the executable.
     There is no sandbox and no signing. Install only mods you trust. A mod
     with no `src/` directory never loads code.
 
-## Two tiers
+## Declarative mods
 
-**Declarative.** Everything a mod expresses through `mod.toml` and files:
+Everything a mod expresses through `mod.toml` and files:
 replacement textures, music, sounds, custom levels, shader materials,
 player settings, and hotkeys. Nothing compiles, so there is no ABI and no
 API version to track. This mod is complete:
@@ -29,7 +29,9 @@ id      = "my-music"
 version = "1.0.0"
 ```
 
-**Code.** C under `src/` reaches the game's functions and state through
+## Code mods
+
+C under `src/` reaches the game's functions and state through
 `openpete_mod_api.h`. The engine compiles the sources at boot with the
 bundled toolchain and hooks game functions through a per-function
 override chain:

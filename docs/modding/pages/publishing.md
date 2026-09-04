@@ -1,4 +1,4 @@
-# Publishing
+# Publishing Recommendations
 
 ## Ship no game bytes
 
@@ -58,6 +58,3 @@ A `.zip` with `mod.toml` at its root, plus `src/`, `shaders/`, `assets/`,
 `README`, and `LICENSE`. Players drop it into `mods/` unchanged. Do not
 zip a wrapping folder, and leave out `.build/` (compile cache) and
 `data/` (per-player state).
-
-`tools/modget.py` in the openpete source tree installs mods from a JSON
-mod-source listing a zip URL and a mandatory sha256 per entry.

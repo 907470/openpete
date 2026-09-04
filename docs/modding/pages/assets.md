@@ -54,8 +54,8 @@ There is no music census tool; indices come from the game's
 
 ## Level data
 
-`assets/wad/level<ID>.data.bin` replaces one level's data segment and
-`assets/wad/level<ID>.ovl.bin` its code overlay, where ID is the logical
+`assets/wad/level<ID>.WAD` replaces one level's data segment and
+`assets/wad/level<ID>.OVL` its code overlay, where ID is the logical
 level id (10 = Artisans). The game loads everything from one WAD file by
 sector range; the engine serves the mod's bytes to every disc read that
 lands inside that level's entry. An overlay replacement must match the
