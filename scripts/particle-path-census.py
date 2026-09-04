@@ -21,10 +21,12 @@ BIN = os.environ.get("OPENPETE_BIN", os.path.join(ROOT, "build/linux-release/gam
 DISC = os.environ.get("OPENPETE_DISC", os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue"))
 EXIT_RE = re.compile(r"particle path census: ticks=(\d+) glow: active=(\d+) ran=(\d+) exposed=(\d+) first=(\d+) \| "
                      r"sparkle: active=(\d+) ran=(\d+) exposed=(\d+) first=(\d+) \| "
-                     r"star: active=(\d+) ran=(\d+) exposed=(\d+) first=(\d+)")
+                     r"star: active=(\d+) ran=(\d+) exposed=(\d+) first=(\d+) \| "
+                     r"sparkle-walk: ticks=(\d+) extra_ticks=(\d+) extra=(\d+) missing_ticks=(\d+) missing=(\d+) extra_first=(\d+)")
 KEYS = ["ticks", "glow_active", "glow_ran", "glow_exposed", "glow_first",
         "spark_active", "spark_ran", "spark_exposed", "spark_first",
-        "star_active", "star_ran", "star_exposed", "star_first"]
+        "star_active", "star_ran", "star_exposed", "star_first",
+        "sw_ticks", "sw_extra_ticks", "sw_extra", "sw_missing_ticks", "sw_missing", "sw_extra_first"]
 
 
 def read_manifest(path):
@@ -87,20 +89,23 @@ def write_report(out, results, fails):
              "exposed = ticks where the pool holds active records, the renderer did not draw, and the gate that",
              "would replay it was open (glow/sparkle: any sibling drew = the retired shared gating; star: the",
              "particle path drew = the live gating). first = first VBL of that row's first exposed tick.", "",
-             "| row | ticks | glow act/ran/exposed (first) | sparkle act/ran/exposed (first) | star act/ran/exposed (first) |",
-             "|---|---|---|---|---|"]
+             "sparkle-walk: on the canonical sparkle hook, native twinkles minus .s twinkles: extra ticks/twinkles (first VBL), missing ticks/twinkles.", "",
+             "| row | ticks | glow act/ran/exposed (first) | sparkle act/ran/exposed (first) | star act/ran/exposed (first) | sparkle-walk extra ticks/twinkles (first) | missing ticks/twinkles |",
+             "|---|---|---|---|---|---|---|"]
     for slug, d in sorted(results, key=lambda r: -(r[1]["glow_exposed"] + r[1]["spark_exposed"] + r[1]["star_exposed"])):
         for k in tot:
             tot[k] += d[k]
         lines.append(f"| {slug} | {d['ticks']} | {d['glow_active']}/{d['glow_ran']}/{d['glow_exposed']} ({d['glow_first']}) | "
                      f"{d['spark_active']}/{d['spark_ran']}/{d['spark_exposed']} ({d['spark_first']}) | "
-                     f"{d['star_active']}/{d['star_ran']}/{d['star_exposed']} ({d['star_first']}) |")
+                     f"{d['star_active']}/{d['star_ran']}/{d['star_exposed']} ({d['star_first']}) | "
+                     f"{d['sw_extra_ticks']}/{d['sw_extra']} ({d['sw_extra_first']}) | {d['sw_missing_ticks']}/{d['sw_missing']} |")
     lines += ["", "## Totals", "", f"ticks={tot['ticks']}",
               f"glow: active={tot['glow_active']} ran={tot['glow_ran']} exposed={tot['glow_exposed']}",
               f"sparkle: active={tot['spark_active']} ran={tot['spark_ran']} exposed={tot['spark_exposed']}",
-              f"star: active={tot['star_active']} ran={tot['star_ran']} exposed={tot['star_exposed']}", ""]
+              f"star: active={tot['star_active']} ran={tot['star_ran']} exposed={tot['star_exposed']}",
+              f"sparkle-walk: ticks={tot['sw_ticks']} extra_ticks={tot['sw_extra_ticks']} extra={tot['sw_extra']} missing_ticks={tot['sw_missing_ticks']} missing={tot['sw_missing']}", ""]
     open(os.path.join(out, "report.md"), "w").write("\n".join(lines))
-    print("\n".join(lines[-6:]))
+    print("\n".join(lines[-7:]))
     return 0 if not fails else 1
 
 

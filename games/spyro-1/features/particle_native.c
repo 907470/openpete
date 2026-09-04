@@ -1806,12 +1806,30 @@ typedef struct {
 } pcen_tick_t;
 static pcen_tick_t s_pcen; static int s_pcen_on = -1;
 static uint32_t s_pcen_ticks, s_pcen_active[3], s_pcen_ran[3], s_pcen_exposed[3], s_pcen_first[3];
+/* Sparkle walk vs .s on the canonical hook: twinkles the native walk emits
+ * beyond what the .s drew (extra) and short of it (missing), per tick. */
+static uint32_t s_pcen_sp_ticks, s_pcen_sp_extra_ticks, s_pcen_sp_extra, s_pcen_sp_missing_ticks, s_pcen_sp_missing, s_pcen_sp_extra_first;
 static void particle_path_census_exit(void) {
     fprintf(stderr, "particle path census: ticks=%u glow: active=%u ran=%u exposed=%u first=%u | "
-            "sparkle: active=%u ran=%u exposed=%u first=%u | star: active=%u ran=%u exposed=%u first=%u\n",
+            "sparkle: active=%u ran=%u exposed=%u first=%u | star: active=%u ran=%u exposed=%u first=%u | "
+            "sparkle-walk: ticks=%u extra_ticks=%u extra=%u missing_ticks=%u missing=%u extra_first=%u\n",
             s_pcen_ticks, s_pcen_active[0], s_pcen_ran[0], s_pcen_exposed[0], s_pcen_first[0],
             s_pcen_active[1], s_pcen_ran[1], s_pcen_exposed[1], s_pcen_first[1],
-            s_pcen_active[2], s_pcen_ran[2], s_pcen_exposed[2], s_pcen_first[2]);
+            s_pcen_active[2], s_pcen_ran[2], s_pcen_exposed[2], s_pcen_first[2],
+            s_pcen_sp_ticks, s_pcen_sp_extra_ticks, s_pcen_sp_extra, s_pcen_sp_missing_ticks, s_pcen_sp_missing, s_pcen_sp_extra_first);
+}
+static void sparkle_build(CPUState* cpu);
+/* Called on the sparkle hook after the .s ran and its prims were captured
+ * (s_prim[] holds them when it emitted anything). Two LINE_F (0x40) per twinkle. */
+static void particle_path_census_sparkle(CPUState* cpu, int captured) {
+    if (s_pcen_on != 1) return;
+    sparkle_build(cpu);
+    int native = s_sline_n / 2, prims = 0;
+    if (captured) for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x40) prims++;
+    prims /= 2;
+    s_pcen_sp_ticks++;
+    if (native > prims) { if (s_pcen_sp_extra_ticks++ == 0) s_pcen_sp_extra_first = openpete_frame; s_pcen_sp_extra += (uint32_t)(native - prims); }
+    if (native < prims) { s_pcen_sp_missing_ticks++; s_pcen_sp_missing += (uint32_t)(prims - native); }
 }
 static void particle_path_census_flush(void) {
     pcen_tick_t* t = &s_pcen;
@@ -1921,6 +1939,7 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
         s_prim_n = 0;
         capture_prims(cpu, startp, endp);
     }
+    if (tag[0] == 's') particle_path_census_sparkle(cpu, (feed || verify) && endp > startp);
 
     /* feed the native geometry into the scene: FT4 particles (tag 'p'), glow
      * rings (tag 'g'), or sparkle twinkles (tag 's'). */
