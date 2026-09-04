@@ -21,7 +21,7 @@ title = "GRIM GARDEN"      # optional: in-game title when it differs from name
   stock size. Omit the overlay to run the stock one. Extension case does
   not matter.
 - Up to 4 `[[level]]` blocks per mod.
-- Custom levels from every mod share the game's single free level slot,
+- Custom levels from every mod currently share level slot
   ID 65, so per-level progress (gems, dragons) is shared between them.
   `replace = true` takes over the donor's slot instead, and the donor's
   homeworld portal preview then shows the custom level's own skybox,
