@@ -1791,6 +1791,73 @@ static unsigned verify_frame(void) {
     return f;
 }
 
+/* Per-tick path census (OPENPETE_PARTICLE_PATH_CENSUS=1). The three pools
+ * outlive their renderers: a pool can hold active records on a tick where the
+ * game never called that renderer, or called it and it emitted nothing. Under
+ * the retired shared-path gating any such tick replayed the pool on every
+ * intermediate present whenever any sibling renderer had drawn; the dragon
+ * star still shares RP_PARTICLES, so its exposure is the live number. One
+ * record per tick (openpete_frame at the hook), evaluated when the next tick's
+ * first hook arrives; a totals line at exit for the corpus harness. */
+typedef struct {
+    unsigned frame; int ran_p, ran_g, ran_s, ran_star;
+    uint32_t bytes_p, bytes_g, bytes_s, bytes_star;
+    int pool_glow, pool_spark, pool_star;
+} pcen_tick_t;
+static pcen_tick_t s_pcen; static int s_pcen_on = -1;
+static uint32_t s_pcen_ticks, s_pcen_active[3], s_pcen_ran[3], s_pcen_exposed[3], s_pcen_first[3];
+static void particle_path_census_exit(void) {
+    fprintf(stderr, "particle path census: ticks=%u glow: active=%u ran=%u exposed=%u first=%u | "
+            "sparkle: active=%u ran=%u exposed=%u first=%u | star: active=%u ran=%u exposed=%u first=%u\n",
+            s_pcen_ticks, s_pcen_active[0], s_pcen_ran[0], s_pcen_exposed[0], s_pcen_first[0],
+            s_pcen_active[1], s_pcen_ran[1], s_pcen_exposed[1], s_pcen_first[1],
+            s_pcen_active[2], s_pcen_ran[2], s_pcen_exposed[2], s_pcen_first[2]);
+}
+static void particle_path_census_flush(void) {
+    pcen_tick_t* t = &s_pcen;
+    if (t->frame == 0) return;
+    s_pcen_ticks++;
+    /* Retired gating: RP_PARTICLES drawn by any sibling; current star gating: the
+     * path the star shares (particles or the star itself) drawn. */
+    const int any_drawn  = t->bytes_p > 0 || t->bytes_g > 0 || t->bytes_s > 0 || t->bytes_star > 0;
+    const int part_drawn = t->bytes_p > 0 || t->bytes_star > 0;
+    const int active[3] = { t->pool_glow, t->pool_spark, t->pool_star };
+    const int drew[3]   = { t->ran_g && t->bytes_g > 0, t->ran_s && t->bytes_s > 0, t->ran_star && t->bytes_star > 0 };
+    const int ran[3]    = { t->ran_g, t->ran_s, t->ran_star };
+    const int gate[3]   = { any_drawn, any_drawn, part_drawn };
+    for (int k = 0; k < 3; k++) {
+        if (active[k]) s_pcen_active[k]++;
+        if (ran[k]) s_pcen_ran[k]++;
+        if (active[k] && !drew[k] && gate[k]) {
+            if (s_pcen_exposed[k]++ == 0) s_pcen_first[k] = t->frame;
+        }
+    }
+}
+static void particle_path_census_note(CPUState* cpu, char tag, uint32_t bytes) {
+    if (s_pcen_on < 0) {
+        const char* e = getenv("OPENPETE_PARTICLE_PATH_CENSUS");
+        s_pcen_on = (e && *e && *e != '0') ? 1 : 0;
+        if (s_pcen_on) atexit(particle_path_census_exit);
+    }
+    if (!s_pcen_on) return;
+    if (s_pcen.frame != openpete_frame) {
+        particle_path_census_flush();
+        memset(&s_pcen, 0, sizeof s_pcen);
+        s_pcen.frame = openpete_frame;
+        for (int i = 0; i < 16 && !s_pcen.pool_glow; i++)
+            if (cpu->read_word(D_GLOWS + (uint32_t)i*0x24) != 0) s_pcen.pool_glow = 1;
+        for (int i = 0; i < 8 && !s_pcen.pool_spark; i++)
+            if ((cpu->read_word(G_SPARKLES + (uint32_t)i*0x18 + 0xC) & 0xFF) != 0) s_pcen.pool_spark = 1;
+        s_pcen.pool_star = cpu->read_word(D_DRAGONSTAR) != 0;
+    }
+    switch (tag) {
+    case 'p': s_pcen.ran_p = 1; s_pcen.bytes_p += bytes; break;
+    case 'g': s_pcen.ran_g = 1; s_pcen.bytes_g += bytes; break;
+    case 's': s_pcen.ran_s = 1; s_pcen.bytes_s += bytes; break;
+    default:  s_pcen.ran_star = 1; s_pcen.bytes_star += bytes; break;
+    }
+}
+
 /* Shared hook body: run the real renderer once, capture its prims, record the
  * renderer's polybuf range on its own path, (dump in verify mode). `tag`
  * selects the dump label + which gamestate pools to print. */
@@ -1808,6 +1875,7 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(path, startp, endp);
+    particle_path_census_note(cpu, tag[0], endp - startp);
 
     /* sel-class census (uncapped) — sweep tool to find which levels spawn each
      * particle class. The pool histogram detects a class even when culled (it
@@ -1911,6 +1979,7 @@ static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
       func_80058864(cpu); }                        /* run the real renderer */
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
     render_path_record(RP_PARTICLES, startp, endp);
+    particle_path_census_note(cpu, '*', endp - startp);
 
     if ((feed || verify) && endp > startp) { s_prim_n = 0; capture_prims(cpu, startp, endp); }
     if (feed) {
