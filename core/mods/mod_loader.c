@@ -204,7 +204,12 @@ struct openpete_mod {
              char music[64]; char title[40]; }
           levels[4];
     int   n_levels;
-    char  build_key[65]; /* content-hash build key (hot-reload watch) */
+    char  build_key[65]; /* content-hash build key (hot-reload watch);
+                          * empty for a prebuilt object loaded without
+                          * the SDK */
+    char  obj_path[MOD_PATH_MAX]; /* the object dl was opened from; a
+                          * reload with an unchanged build key copies
+                          * it instead of compiling */
     char  cfg_key[65];   /* config.toml content hash (hot-reload watch;
                           * a config edit re-enters entry without a
                           * recompile — the cached object is reused) */
@@ -652,50 +657,66 @@ typedef int (*mod_entry_fn)(const openpete_mod_api_t*, openpete_mod_t*);
 static const openpete_mod_api_t s_api;
 
 /* Reload one mod in place at a tick boundary: sweep every registration
- * it owns, re-parse + rebuild + dlopen a FRESH object (unique .hotN
- * name — the old object stays resident by design), re-run entry. The
- * mod's own host state does NOT cross the reload: entry re-runs and
- * re-derives it. */
+ * it owns, re-parse, dlopen a FRESH object (unique .hotN name — the old
+ * object stays resident by design), re-run entry. The mod's own host
+ * state does NOT cross the reload: entry re-runs and re-derives it.
+ *
+ * Only a changed source key compiles. A reload for a config.toml or
+ * shader edit copies the object already loaded to the fresh name, so
+ * it needs neither the SDK nor a compiler: a build whose exe cannot
+ * spawn a toolchain still re-enters entry with the fresh values. */
 static void mod_hot_reload(struct openpete_mod* mod) {
-    OPL_INFO_F("mods", "hot reload: %s (source or config change)", mod->id);
+    char key[65];
+    int need_compile = mod->build_key[0] != '\0' &&
+                       mod_compute_key(mod->dir, s_sdk_dir, key) == 0 &&
+                       strcmp(key, mod->build_key) != 0;
+    OPL_INFO_F("mods", "hot reload: %s (%s)", mod->id,
+               need_compile ? "source change" : "config or shader change");
 
     /* Build and open the fresh object BEFORE touching anything live: a
      * reload that cannot produce a loadable object keeps the running one
      * (registrations and all) instead of leaving the mod inert. The
      * Mods-panel Apply reaches this path, so a stray syntax error must
      * cost a log line, not the session's mod. */
-    if (!mods_sdk_present(s_sdk_dir)) {
-        mods_sdk_missing_notice(s_sdk_dir);
-        OPL_ERROR_F("mods", "%s: reload needs the SDK — keeping the "
-                    "running object", mod->id);
-        return;
-    }
     static unsigned s_hot_n = 0;
     char hot_path[MOD_PATH_MAX + 32];
     snprintf(hot_path, sizeof hot_path, "%s/.build/%s.hot%u" MOD_DL_EXT,
              mod->dir, mod->id, ++s_hot_n);
+    const char* src_obj = mod->obj_path;
+    if (need_compile) {
+        if (!mods_sdk_present(s_sdk_dir)) {
+            mods_sdk_missing_notice(s_sdk_dir);
+            OPL_ERROR_F("mods", "%s: reload needs the SDK — keeping the "
+                        "running object", mod->id);
+            return;
+        }
 #ifdef _WIN32
-    /* The boot-loaded base DLL is file-locked on Windows: compile
-     * straight to the unique .hotN name and skip the stamp — the base
-     * DLL goes stale, so the next boot recompiles it once and
-     * re-stamps. */
-    char key[65];
-    if (mod_compute_key(mod->dir, s_sdk_dir, key) != 0 ||
-        mod_compile(mod->dir, mod->id, s_sdk_dir, key, hot_path, 0) != 0) {
-        OPL_ERROR_F("mods", "%s: reload compile failed — keeping the "
-                    "running object", mod->id);
-        return;
-    }
-    snprintf(mod->build_key, sizeof mod->build_key, "%s", key);
+        /* The boot-loaded base DLL is file-locked on Windows: compile
+         * straight to the unique .hotN name and skip the stamp — the
+         * base DLL goes stale, so the next boot recompiles it once and
+         * re-stamps. */
+        if (mod_compile(mod->dir, mod->id, s_sdk_dir, key, hot_path, 0) != 0) {
+            OPL_ERROR_F("mods", "%s: reload compile failed — keeping the "
+                        "running object", mod->id);
+            return;
+        }
+        snprintf(mod->build_key, sizeof mod->build_key, "%s", key);
+        src_obj = hot_path;
 #else
-    char so_path[MOD_PATH_MAX];
-    if (build_mod(mod, s_sdk_dir, so_path, sizeof so_path) != 0) {
-        OPL_ERROR_F("mods", "%s: reload compile failed — keeping the "
-                    "running object", mod->id);
-        return;
+        static char so_path[MOD_PATH_MAX];
+        if (build_mod(mod, s_sdk_dir, so_path, sizeof so_path) != 0) {
+            OPL_ERROR_F("mods", "%s: reload compile failed — keeping the "
+                        "running object", mod->id);
+            return;
+        }
+        src_obj = so_path;
+#endif
     }
-    {   /* copy: a fresh inode guarantees dlopen loads a fresh object */
-        FILE* in = fopen(so_path, "rb");
+    if (strcmp(src_obj, hot_path) != 0) {
+        /* copy: a fresh inode (a fresh path on Windows) guarantees the
+         * loader opens a fresh object rather than handing back the one
+         * already resident */
+        FILE* in = fopen(src_obj, "rb");
         FILE* outf = in ? fopen(hot_path, "wb") : NULL;
         if (!in || !outf) {
             if (in) fclose(in);
@@ -711,7 +732,6 @@ static void mod_hot_reload(struct openpete_mod* mod) {
         fclose(in);
         fclose(outf);
     }
-#endif
     void* dl = mod_dlopen(hot_path);
     if (!dl) {
         OPL_ERROR_F("mods", "%s: reload dlopen failed: %s — keeping the "
@@ -753,6 +773,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
         return;
     }
     mod->dl = dl; /* old object deliberately stays resident */
+    snprintf(mod->obj_path, sizeof mod->obj_path, "%s", hot_path);
     mod_resolve_ui_section(mod, dl);
     /* Re-entry registered every surface in its default (enabled) state;
      * a live-disabled mod must come back disabled, not resurrected. And
@@ -786,6 +807,9 @@ static void hot_reload_poll(void) {
         /* Deferred-entry rows (never entered) reload nothing: no code
          * of theirs is live; their first enable uses the boot object. */
         if (!mod->dl || !mod->has_src || !mod->entered) continue;
+        /* A prebuilt object loaded without the SDK has no build key and
+         * no source watch. */
+        if (!mod->build_key[0]) continue;
         /* Key-only recompute (pure hashing, ms); the compile happens
          * inside mod_hot_reload on a real change. config.toml is watched
          * too — a config-only edit reloads against the cached object, so
@@ -2266,6 +2290,7 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
                     mod_dlerror());
         return -1;
     }
+    snprintf(mod->obj_path, sizeof mod->obj_path, "%s", so_path);
     if (mod_check_abi(mod->dl, mod->id, so_path) != 0) {
         mod->dl = NULL; /* the object stays mapped; nothing in it runs */
         return -1;
