@@ -309,6 +309,11 @@ static bool openpete_split_applies(const openpete_options_t* opts)
 
 /* Set once the worker has finished, so main can leave its pump loop. */
 static SDL_AtomicInt g_worker_done;
+/* Incremented once per host-loop iteration on the sim thread. The pump
+ * thread reads it to tell a hung sim (a runaway guest loop, a deadlocked
+ * feeder) from a busy one, and to force the process down when a quit
+ * request goes unanswered. */
+static SDL_AtomicInt g_sim_heartbeat;
 
 static bool openpete_handle_event(SDL_Event* ev);
 
@@ -2775,6 +2780,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     }
 
     while (!quit) {
+        SDL_AddAtomicInt(&g_sim_heartbeat, 1);
         /* Top-of-loop unlock peek used *only* to gate sim_due under
          * --render-fps>0. The authoritative `unlock_fps` write
          * (openpete_unlock_fps + g_skipSwapInterval) still happens at the
@@ -5461,7 +5467,45 @@ static int run_split_threaded(const openpete_options_t* opts)
      * whatever was last published, so this period bounds input staleness.
      * SDL_WaitEventTimeout parks the thread instead of spinning, and still
      * wakes immediately when an event arrives. */
+    /* Sim liveness. A guest-side hang (a corrupted model walk, an OT loop)
+     * leaves the worker spinning forever with the window still pumping,
+     * so the process would outlive every quit request. Once the loop has
+     * started, silence past the stall bound is logged with the last
+     * heartbeat, and a quit request the worker has not honoured within
+     * the grace period ends the process from here. */
+    enum { SIM_STALL_WARN_MS = 5000, SIM_QUIT_GRACE_MS = 3000 };
+    int    hb_last = SDL_GetAtomicInt(&g_sim_heartbeat);
+    Uint64 hb_last_ms = SDL_GetTicks();
+    Uint64 quit_req_ms = 0;
+    int    stall_logged = 0;
     while (!SDL_GetAtomicInt(&g_worker_done)) {
+        {
+            const int    hb  = SDL_GetAtomicInt(&g_sim_heartbeat);
+            const Uint64 now = SDL_GetTicks();
+            if (hb != hb_last) {
+                if (stall_logged)
+                    OPL_INFO_F("host", "sim thread resumed after %llu ms",
+                               (unsigned long long)(now - hb_last_ms));
+                hb_last = hb; hb_last_ms = now; stall_logged = 0;
+            } else if (hb > 0 && !stall_logged &&
+                       now - hb_last_ms >= SIM_STALL_WARN_MS) {
+                stall_logged = 1;
+                OPL_WARN_F("host", "sim thread has made no progress for %llu ms "
+                           "(heartbeat %d): the game is hung; closing the "
+                           "window exits", (unsigned long long)(now - hb_last_ms), hb);
+            }
+            if (g_shutdown_requested) {
+                if (!quit_req_ms) quit_req_ms = now ? now : 1;
+                else if (now - quit_req_ms >= SIM_QUIT_GRACE_MS) {
+                    OPL_ERROR_F("host", "sim thread did not stop within %d ms of "
+                                "the quit request (heartbeat %d, last progress "
+                                "%llu ms ago): forcing exit", SIM_QUIT_GRACE_MS, hb,
+                                (unsigned long long)(now - hb_last_ms));
+                    openpete_log_file_sync();
+                    _exit(OPENPETE_EXIT_PANIC);
+                }
+            }
+        }
         /* Four instants per iteration, so a stall on this thread can be
          * attributed rather than merely noticed. A Win32 modal resize or move
          * runs the OS's own loop inside the event pump, which is where the
