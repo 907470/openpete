@@ -889,6 +889,9 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
 #define OPENPETE_TAG_PORTAL(kind, slot)   OPENPETE_TAG_PATH(9u, (kind), (slot))
 
 void openpete_native_scene_set_tag(uint32_t tag);
+/* Accepted-tri count per tag family (bits 31:28, index 0 = untagged) of the
+ * scene being accumulated; reset with the scene. */
+void openpete_native_scene_tag_family_counts(uint32_t out[16]);
 /* Arm/disarm the tag as a batch-split key (material-selector registry). */
 void openpete_native_set_tag_split(int on);
 /* Set the panel-0 background fill colour (rgba, byte order R,G,B,A) — drawn

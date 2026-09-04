@@ -154,8 +154,59 @@ bool render_path_canon_drawn(render_path_t p) {
  * (openpete_native_register_commit). Runs once per canonical render, after the
  * game fiber's render + DrawOTag, before the sub-tick re-extract: latch the
  * canon-drawn mask, then clear the intervals for the next frame. */
+/* Feed audit: every native tri carries a provenance tag whose family (bits
+ * 31:28) names the render path that emitted it. A path that fed geometry this
+ * canonical frame but recorded no polybuf interval and no mark_drawn reads as
+ * not canon-drawn, so the sub-tick spine drops it on every intermediate
+ * present: geometry on the canonical present, gone between ticks. Detected
+ * here, at the commit, instead of by watching the screen at a high present
+ * rate. Untagged tris (family 0) and families without a path are not
+ * auditable. Reported per path on first occurrence and in the exit census;
+ * OPENPETE_RENDER_PATH_FEED_ASSERT=1 aborts on the first one. */
+static const int k_tag_family_path[16] = {
+    -1, RP_MOBY, RP_TERRAIN, RP_SPYRO, RP_FLAME, RP_PARTICLES, RP_CYCLORAMA,
+    RP_SHADOW, RP_TRACER, RP_PORTAL, -1, -1, -1, -1, -1, -1
+};
+static uint32_t s_feed_audit_frames[RP_COUNT];   /* frames with unmarked feed, per path */
+static uint32_t s_feed_audit_tris[RP_COUNT];     /* tris fed on those frames, per path */
+static uint32_t s_feed_audit_fed_frames[RP_COUNT]; /* frames the path fed at all (engagement) */
+static int      s_feed_audit_registered = 0;
+
+static void render_paths_feed_audit_census(void) {
+    uint32_t fed = 0, bad = 0;
+    for (int p = 0; p < RP_COUNT; p++) { fed += s_feed_audit_fed_frames[p]; bad += s_feed_audit_frames[p]; }
+    fprintf(stderr, "render-paths: feed audit: fed_path_frames=%u unmarked_path_frames=%u",
+            fed, bad);
+    for (int p = 0; p < RP_COUNT; p++)
+        if (s_feed_audit_frames[p])
+            fprintf(stderr, " %s=%u(%u tris)", k_names[p], s_feed_audit_frames[p], s_feed_audit_tris[p]);
+    fprintf(stderr, "\n");
+}
+
+static void render_paths_feed_audit(void) {
+    if (openpete_native_scene_frame() == 0xFFFFFFFFu) return;  /* no native scene this frame */
+    if (!s_feed_audit_registered) { s_feed_audit_registered = 1; atexit(render_paths_feed_audit_census); }
+    static int s_assert = -1;
+    if (s_assert < 0) { const char* e = getenv("OPENPETE_RENDER_PATH_FEED_ASSERT"); s_assert = (e && *e && *e != '0'); }
+    uint32_t n[16];
+    openpete_native_scene_tag_family_counts(n);
+    for (int f = 1; f < 16; f++) {
+        const int p = k_tag_family_path[f];
+        if (p < 0 || n[f] == 0) continue;
+        s_feed_audit_fed_frames[p]++;
+        if (render_path_canon_drawn((render_path_t)p)) continue;
+        if (s_feed_audit_frames[p]++ == 0 || s_assert)
+            fprintf(stderr, "[render-paths] DEFECT f=%u path=%s fed %u native tris with no polybuf "
+                    "interval and no render_path_mark_drawn; sub-tick presents drop it\n",
+                    openpete_frame, k_names[p], n[f]);
+        s_feed_audit_tris[p] += n[f];
+        if (s_assert) abort();
+    }
+}
+
 static void render_paths_commit(void) {
     render_paths_canon_snapshot();
+    render_paths_feed_audit();
     render_paths_frame_reset();
     /* Same anchor drives the canonical-render epoch: captures taken during the
      * present that just committed become the (only) fresh set for the sub-tick

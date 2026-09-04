@@ -353,6 +353,11 @@ void openpete_native_scene_overlay_accum_reset(void) {
 /* Provenance-tag state (S6). s_tag_split_ext is armed by the material-
  * selector registry (S8); the env flags are the dev instruments. */
 static uint32_t s_cur_tag;        /* sticky, stamped by add_tri */
+/* Accepted tris per provenance-tag family (tag bits 31:28) in the scene
+ * being accumulated. Reset with the scene. Read at the canonical commit by
+ * the render-path feed audit: a family that fed geometry belongs to a path
+ * that must be canon-drawn, or the sub-tick spine drops it. */
+static uint32_t s_scene_fam_n[16];
 /* The terrain fog ladder is exactly 16 rows (delta 0..15); anything outside
  * that is not a ladder row and must never reach the CLUT arithmetic, which
  * would index VRAM out of bounds. */
@@ -363,6 +368,9 @@ static int      s_tag_split_env = -1;   /* OPENPETE_TAG_SPLIT: force key join */
 static int      s_tag_split_ext = 0;    /* armed by registered selectors (S8) */
 
 void openpete_native_scene_set_tag(uint32_t tag) { s_cur_tag = tag; }
+void openpete_native_scene_tag_family_counts(uint32_t out[16]) {
+    memcpy(out, s_scene_fam_n, sizeof s_scene_fam_n);
+}
 /* Sticky CLUT-ladder row (see openpete_native_scene_set_fog_delta). Ambient
  * state rather than a scene-tri field on purpose: the feeder-facing tri is
  * filled field-by-field by a dozen feeders that never memset it, so a new
@@ -643,7 +651,7 @@ void openpete_native_scene_sig_report(int canonical)
             s_eager_stamp ? s_eager_stamp : openpete_frame);
 }
 
-void openpete_native_scene_begin(void) { s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
+void openpete_native_scene_begin(void) { s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
 
 /* Frame-keyed reset: the first feeder of each game frame clears; later feeders
  * (in any order) append, so the cyclorama + world + mobys compose into one
@@ -701,7 +709,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             s_scene_hist_head = slot;
             if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
         }
-        s_scene_n = 0; s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_scene_frame = frame;
+        s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_scene_frame = frame;
         /* Per-instance material slots are per-feed-cycle: reset here (the
          * canonical present's reset) as well as in scene_begin (the sub-tick
          * one). Without this, a TIME-VARYING per-instance uniform (e.g. an
@@ -821,6 +829,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].carry = carry;        /* explicit 2D-UI sub-tick carry flag */
         s_scene[s_scene_n].group = group;        /* portal grouping id (PORTAL_* only) */
         s_scene[s_scene_n].tag = s_cur_tag;      /* sticky provenance (set_tag) */
+        s_scene_fam_n[s_cur_tag >> 28]++;
         s_scene[s_scene_n].fog_delta = s_cur_fog_delta;  /* sticky (set_fog_delta) */
         if (s_cur_tag && tag_tint_on()) {
             /* Coverage instrument: hash the tag to a stable tint and modulate
@@ -1079,7 +1088,7 @@ void openpete_native_scene_commit_fade(void) {
          * it too, and drop the degenerate geometry (reset Spyro + bg) so only the
          * held freeze shows, exactly as on a settled freeze frame. */
         s_scene_freeze = new_freeze;
-        s_scene_n = 0;
+        s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n);
     }
     s_overlay_carry_freeze = new_freeze;
     s_game_freeze_seen = 0;
