@@ -10091,7 +10091,18 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     static int s_diag_refuse = -1; static int s_diag_refused = 0; static int s_diag_after = 0; static int s_diag_seen = 0;
     if (s_diag_refuse < 0) { const char* e = getenv("OPENPETE_DIAG_REFUSE_FIRST_PRESENT"); s_diag_refuse = (e && *e) ? atoi(e) : 0;
                              const char* a = getenv("OPENPETE_DIAG_REFUSE_AFTER"); s_diag_after = (a && *a) ? atoi(a) : 0; }
-    const bool diag_refuse_now = s_diag_refuse > 0 && s_diag_seen >= s_diag_after && s_diag_refused < s_diag_refuse;
+    static int s_diag_every = -1;   /* OPENPETE_DIAG_REFUSE_EVERY=M: also refuse every Mth present */
+    if (s_diag_every < 0) { const char* e = getenv("OPENPETE_DIAG_REFUSE_EVERY"); s_diag_every = (e && *e) ? atoi(e) : 0; }
+    static const char* s_diag_vbls = NULL; static int s_diag_vbls_init = 0;   /* OPENPETE_DIAG_REFUSE_VBLS=a,b,c: refuse every present made at those VBLs */
+    if (!s_diag_vbls_init) { s_diag_vbls_init = 1; s_diag_vbls = getenv("OPENPETE_DIAG_REFUSE_VBLS"); }
+    bool diag_vbl_hit = false;
+    if (s_diag_vbls && *s_diag_vbls) {
+        const char* c = s_diag_vbls;
+        while (*c) { char* e2; unsigned long v = strtoul(c, &e2, 10); if (e2 == c) break; if (v == openpete_frame) { diag_vbl_hit = true; break; } c = (*e2 == ',') ? e2 + 1 : e2; }
+    }
+    const bool diag_refuse_now = (s_diag_refuse > 0 && s_diag_seen >= s_diag_after && s_diag_refused < s_diag_refuse) ||
+                                 (s_diag_every > 0 && (s_diag_seen + s_diag_after) % s_diag_every == s_diag_every - 1) ||   /* AFTER = phase */
+                                 diag_vbl_hit;
     s_diag_seen++;
     if (diag_refuse_now) {
         s_diag_refused++;
