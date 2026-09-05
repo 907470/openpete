@@ -432,4 +432,44 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         LABELS "slow;determinism;soak"
         TIMEOUT 7200
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # Savestate restore-at-yield gate. Per corpus movie, three headless legs
+    # (clean, --state-stress 1, --state-stress-rewind 25) whose
+    # --gameplay-hash-log outputs must agree byte-for-byte, plus the runahead
+    # stanzas: --runahead 2 must leave the COMMITTED timeline identical to
+    # clean, the read-only prediction oracle must report >= 50 checks with
+    # zero mismatches (a driver that never speculates would pass the compare
+    # trivially), and a portal entry must still complete its level load under
+    # speculation. Slow (~20 headless sessions); `ctest -L savestate` or the
+    # script directly. Skips (exit 64) if the binary / disc / movies are
+    # absent. See notes/plans/openpete-savestate-frame-step-rewind.md.
+    add_test(NAME state_roundtrip
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_state_roundtrip.sh)
+    set_tests_properties(state_roundtrip PROPERTIES
+        LABELS "slow;determinism;savestate"
+        # Each leg self-limits at `timeout 600`; headroom for ~20 of them.
+        TIMEOUT 7200
+        SKIP_RETURN_CODE 64
+        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
+    # Sub-tick present gameplay-state gate. The psx oracle replays canonical
+    # ticks only, so an intermediate present that writes gameplay-readable RAM
+    # and mis-restores it is invisible to it. Per movie, two headless legs of
+    # the same binary — intermediate re-extracts armed vs not — whose
+    # gameplay-hash logs must be identical, with a per-present bracket check
+    # that names the region a leak came from, and the canonical leg compared
+    # against the blessed baseline under tests/state-baselines/. Refuses to
+    # pass at zero sub-tick presents (exit 3, VACUOUS). Runs the `quick`
+    # corpus here; `--corpus full` is the arc-end sweep. Skips (exit 64) if
+    # the binary or disc are absent.
+    add_test(NAME subtick_state
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_subtick_state.py)
+    set_tests_properties(subtick_state PROPERTIES
+        LABELS "slow;determinism"
+        # Four headless legs, each self-limited at --max-runtime-seconds 280.
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 endif()

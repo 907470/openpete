@@ -1,12 +1,14 @@
 #!/bin/bash
-# Moby-vs-terrain contact gate: capture one scenedump per pose and report
+# Moby-vs-terrain contact probe. Captures one scenedump per pose and reports
 # pixels whose moby-vs-terrain winner flips between the shipped ordering
 # depth (authored OT shifts baked in) and TRUE view-Z geometry.
-# See scripts/moby_contact_gate.py for the model. Baseline is nonzero while
-# terrain W1/W2 offsets and moby m_DepthOffset pulls live in stored depth;
-# the gate is the P6b/P6e "goes clean" instrument.
+# See scripts/moby_contact_gate.py for the model.
 #
-# Usage: scripts/check_moby_contact.sh [outdir]
+# Report-only, not a CTest gate: the baseline is nonzero while terrain W1/W2
+# offsets and moby m_DepthOffset pulls live in stored depth, so the number is
+# read against the P6b/P6e "goes clean" target rather than against zero.
+#
+# Usage: scripts/probe_moby_contact.sh [outdir]
 #   MAX_VIOL=<n>  fail (exit 2) if any pose exceeds n violation px (default:
 #                 report-only)
 set -u

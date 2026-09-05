@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# check_egg_hud_keying.sh — egg-hud-3d's parked eggs keep a stable
+# probe_egg_hud_keying.sh — egg-hud-3d's parked eggs keep a stable
 # per-object interpolation identity.
 #
 # The engine keys per-object interpolation by moby ADDRESS outside the HUD
@@ -16,7 +16,10 @@
 # the check counts spawns per key against the number of visibility
 # episodes the mod reports: spawns == episodes.
 #
-# Usage: scripts/check_egg_hud_keying.sh   (repo root). Exit 0 = PASS.
+# Windowed-only, so it is not a CTest gate: the headless harnesses cannot
+# reach the per-object capture path this instrument reads.
+#
+# Usage: scripts/probe_egg_hud_keying.sh   (repo root). Exit 0 = PASS.
 set -u
 export OPENPETE_VIBRATION=0
 cd "$(dirname "$0")/.."

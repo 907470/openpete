@@ -77,8 +77,14 @@ from pathlib import Path
 os.environ.setdefault("OPENPETE_VIBRATION", "0")
 
 ROOT = Path(__file__).resolve().parent.parent
-EXE = ROOT / "build" / "linux-release" / "games" / "spyro-1" / "openpete-spyro1"
-DISC = ROOT / "games" / "spyro-1" / "spyro-1" / "build" / "SCUS-94228.cue"
+# OPENPETE_BIN/OPENPETE_DISC let a caller point at a build tree other than
+# linux-release; CTest passes the configured binary this way.
+EXE = Path(os.environ.get(
+    "OPENPETE_BIN",
+    ROOT / "build" / "linux-release" / "games" / "spyro-1" / "openpete-spyro1"))
+DISC = Path(os.environ.get(
+    "OPENPETE_DISC",
+    ROOT / "games" / "spyro-1" / "spyro-1" / "build" / "SCUS-94228.cue"))
 BK2DIR = ROOT / "games" / "spyro-1" / "bk2"
 BASEDIR = ROOT / "tests" / "state-baselines"
 ENTRY = "0x80012204"

@@ -29,8 +29,14 @@ export OPENPETE_VIBRATION=0
 
 cd "$(dirname "$0")/.."
 
-BIN=build/linux-release/games/spyro-1/openpete-spyro1
-DISC=games/spyro-1/spyro-1/build/SCUS-94228.cue
+BIN=${OPENPETE_BIN:-build/linux-release/games/spyro-1/openpete-spyro1}
+DISC=${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}
+
+# Exit 64 = SKIP (the CTest SKIP_RETURN_CODE), so a checkout without a built
+# binary or without the disc reports "not run" rather than a failure.
+if [ ! -x "$BIN" ]; then echo "SKIP: no binary at $BIN"; exit 64; fi
+if [ ! -f "$DISC" ]; then echo "SKIP: no disc at $DISC"; exit 64; fi
+
 OUT="${TMPDIR:-/tmp}/openpete-state-roundtrip.$$"
 mkdir -p "$OUT"
 trap 'rm -rf "$OUT"' EXIT
@@ -44,6 +50,10 @@ if [ ${#MOVIES[@]} -eq 0 ]; then
         games/spyro-1/bk2/beast_makers_wall.bk2
     )
 fi
+
+for m in "${MOVIES[@]}"; do
+    if [ ! -f "$m" ]; then echo "SKIP: no movie at $m"; exit 64; fi
+done
 
 run() { # $1 movie  $2 csv  $3 extra-args...
     local movie="$1" csv="$2"; shift 2
