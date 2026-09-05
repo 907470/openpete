@@ -61,26 +61,14 @@ static const uint16_t kBk2P1DigitalMask[16] = {
  * pipe-delimited segments. Segment 1 (P1) starts with 4 comma-terminated
  * analog ints (LX, LY, RX, RY — 0..255, 128 = centre), then a 17-char
  * digital tail (16 buttons + MODE). */
-static int bk2_decode_frame(const char* line, size_t line_len, bk2_frame_t* out) {
+static int bk2_decode_port(const char* seg, size_t seg_len, bk2_frame_t* out) {
     out->buttons = 0xFFFF;
     out->axes[0] = out->axes[1] = out->axes[2] = out->axes[3] = 128;
 
-    /* Find segment boundaries — bounded scan, no NUL assumption. */
-    if (line_len < 3 || line[0] != '|') return -1;
-    const char* seg0 = line + 1;
-    const char* seg0_end = (const char*)memchr(seg0, '|', line_len - 1);
-    if (!seg0_end) return -1;
-    size_t after = (size_t)(seg0_end - line) + 1;
-    if (after >= line_len) return -1;
-    const char* seg1 = line + after;
-    const char* seg1_end = (const char*)memchr(seg1, '|', line_len - after);
-    if (!seg1_end) return -1;
-    size_t seg1_len = (size_t)(seg1_end - seg1);
-
     /* Parse the 4 analog axes, each an int up to its comma. Octoshock always
      * emits all 4 (default 128); clamp into the PSX 0..255 range. */
-    const char* p = seg1;
-    const char* end = seg1 + seg1_len;
+    const char* p = seg;
+    const char* end = seg + seg_len;
     for (int a = 0; a < 4; a++) {
         while (p < end && (*p == ' ' || *p == '\t')) p++;
         int neg = 0;
@@ -111,6 +99,44 @@ static int bk2_decode_frame(const char* line, size_t line_len, bk2_frame_t* out)
     return 0;
 }
 
+/* Decode one input line. Segment 0 is the system bus and is skipped; segment
+ * 1 is player 1 and segment 2, when the movie declares one, is player 2.
+ * `*out_ports` receives how many player segments actually decoded. */
+static int bk2_decode_frame(const char* line, size_t line_len,
+                            bk2_frame_t* p1, bk2_frame_t* p2, int* out_ports) {
+    p1->buttons = 0xFFFF;
+    p1->axes[0] = p1->axes[1] = p1->axes[2] = p1->axes[3] = 128;
+    if (p2) {
+        p2->buttons = 0xFFFF;
+        p2->axes[0] = p2->axes[1] = p2->axes[2] = p2->axes[3] = 128;
+    }
+    if (out_ports) *out_ports = 0;
+
+    /* Walk the pipe-delimited segments — bounded scan, no NUL assumption. */
+    if (line_len < 3 || line[0] != '|') return -1;
+    size_t pos = 1;
+    const char* seg[3];
+    size_t seg_len[3];
+    int nseg = 0;
+    while (nseg < 3 && pos < line_len) {
+        const char* s0 = line + pos;
+        const char* e0 = (const char*)memchr(s0, '|', line_len - pos);
+        if (!e0) break;
+        seg[nseg] = s0;
+        seg_len[nseg] = (size_t)(e0 - s0);
+        nseg++;
+        pos = (size_t)(e0 - line) + 1;
+    }
+    if (nseg < 2) return -1;   /* need the system segment and player 1 */
+
+    if (bk2_decode_port(seg[1], seg_len[1], p1) != 0) return -1;
+    if (out_ports) *out_ports = 1;
+
+    if (nseg >= 3 && p2 && bk2_decode_port(seg[2], seg_len[2], p2) == 0)
+        if (out_ports) *out_ports = 2;
+    return 0;
+}
+
 int bk2_movie_parse_log(const char* text, size_t len, bk2_movie_t* out) {
     memset(out, 0, sizeof(*out));
 
@@ -135,8 +161,11 @@ int bk2_movie_parse_log(const char* text, size_t len, bk2_movie_t* out) {
     }
 
     out->frames = (bk2_frame_t*)malloc((size_t)capacity * sizeof(bk2_frame_t));
-    if (!out->frames) {
+    out->p2_frames = (bk2_frame_t*)malloc((size_t)capacity * sizeof(bk2_frame_t));
+    if (!out->frames || !out->p2_frames) {
         OPL_ERROR_F("bk2", "out of memory (%d frames)", capacity);
+        free(out->frames); free(out->p2_frames);
+        out->frames = out->p2_frames = NULL;
         return -1;
     }
 
@@ -154,8 +183,9 @@ int bk2_movie_parse_log(const char* text, size_t len, bk2_movie_t* out) {
         if (line_len > 0 && p[line_len - 1] == '\r') line_len--;
 
         if (line_len > 0 && p[0] == '|' && (line_len < 2 || p[1] != '[')) {
-            bk2_frame_t fr;
-            if (bk2_decode_frame(p, line_len, &fr) != 0) {
+            bk2_frame_t fr, fr2;
+            int ports = 0;
+            if (bk2_decode_frame(p, line_len, &fr, &fr2, &ports) != 0) {
                 if (errors < 3) {
                     OPL_ERROR_F("bk2", "malformed frame at index %d (skipped)",
                                 frame_count);
@@ -163,8 +193,11 @@ int bk2_movie_parse_log(const char* text, size_t len, bk2_movie_t* out) {
                 errors++;
                 fr.buttons = 0xFFFF;
                 fr.axes[0] = fr.axes[1] = fr.axes[2] = fr.axes[3] = 128;
+                fr2 = fr;
             }
+            if (ports >= 2 && out->players < 2) out->players = 2;
             out->frames[frame_count] = fr;
+            out->p2_frames[frame_count] = fr2;
             /* "Has input" for first-input offset detection: a button down OR
              * any stick off-centre (an analog-only movie still has a start). */
             int has_input = (fr.buttons != 0xFFFF) ||
@@ -217,5 +250,6 @@ int bk2_movie_load(const char* path, bk2_movie_t* out) {
 void bk2_movie_free(bk2_movie_t* m) {
     if (!m) return;
     free(m->frames);
+    free(m->p2_frames);
     memset(m, 0, sizeof(*m));
 }

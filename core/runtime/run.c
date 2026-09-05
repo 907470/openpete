@@ -2333,11 +2333,21 @@ static int run_host_init(const openpete_options_t* opts) {
  * ports it restaged from the log match what that VBL originally carried.
  * Without it the N-port carry is untested code and a rewind gate over an
  * all-empty log proves nothing about it. */
+/* 0 off, 1 generate-and-verify, 2 verify-only (OPENPETE_SYNTH_PADS=verify).
+ *
+ * The two modes exist because a round-trip cannot be checked against a
+ * generator that is still running: replaying a recording of the synthetic
+ * stream with the generator ON would overwrite the bytes that came back off
+ * disk with the bytes they are supposed to be compared against, and pass
+ * regardless. Verify-only leaves the staged slots as the replay path filled
+ * them and only checks them. */
 static int synth_pads_enabled(void) {
     static int s_on = -1;
     if (s_on < 0) {
         const char* v = getenv("OPENPETE_SYNTH_PADS");
-        s_on = (v && *v && *v != '0') ? 1 : 0;
+        if (!v || !*v || *v == '0')       s_on = 0;
+        else if (v[0] == 'v' || v[0] == 'V') s_on = 2;
+        else                              s_on = 1;
     }
     return s_on;
 }
@@ -2355,8 +2365,9 @@ static void synth_pad_for(unsigned frame, int slot,
 }
 
 /* Do slots 1-3 of `rec` carry exactly the synthetic stream for `frame`? */
-static int synth_pads_match(const openpete_input_rec_t* rec, unsigned frame) {
-    for (int sl = 1; sl < OPENPETE_PAD_SLOTS; sl++) {
+static int synth_pads_match_upto(const openpete_input_rec_t* rec, unsigned frame,
+                                 int last_slot) {
+    for (int sl = 1; sl <= last_slot; sl++) {
         uint16_t b; unsigned char ax[4];
         synth_pad_for(frame, sl, &b, ax);
         const openpete_input_port_t* pt = &rec->port[sl];
@@ -2364,6 +2375,13 @@ static int synth_pads_match(const openpete_input_rec_t* rec, unsigned frame) {
             return 0;
     }
     return 1;
+}
+
+/* How many slots the current mode can hold to the synthetic stream: all of
+ * them while generating, but only player 2 on a two-player movie replay. */
+static int synth_pads_match(const openpete_input_rec_t* rec, unsigned frame) {
+    const int last = (synth_pads_enabled() == 2) ? 1 : OPENPETE_PAD_SLOTS - 1;
+    return synth_pads_match_upto(rec, frame, last);
 }
 
 /* VBLs each pad slot was recorded present for. Slot 0 is every logged VBL by
@@ -3793,9 +3811,22 @@ static int run_host_loop(const openpete_options_t* opts) {
                 sn.axes[2], sn.axes[3], sn.axes[0], sn.axes[1] };
             input_log_stage_port(sl, sn.bits, slot_axes);
         }
+        /* Under bk2 replay the extra player comes from the movie, not from
+         * whatever is plugged in: the latch above was cleared when the movie
+         * claimed the channel. Movie axes are already in the log's bk2
+         * order, so they need no reordering. A movie declaring one port
+         * leaves the slot absent, which is what it recorded. */
+        if (bk2_active && bk2.players >= 2 && bk2.p2_frames) {
+            int bf2 = (int)openpete_frame - bk2_offset;
+            if (bf2 >= 0 && bf2 < bk2.frame_count) {
+                const bk2_frame_t* f2 = &bk2.p2_frames[bf2];
+                input_log_stage_port(1, f2->buttons, f2->axes);
+            }
+        }
+
         /* The harness overrides live devices so the N-port carry stays
          * testable on a machine with one pad, or none. */
-        if (synth_pads_enabled()) {
+        if (synth_pads_enabled() == 1) {
             for (int sl = 1; sl < OPENPETE_PAD_SLOTS; sl++) {
                 uint16_t b; unsigned char ax[4];
                 synth_pad_for(openpete_frame, sl, &b, ax);

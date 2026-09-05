@@ -30,6 +30,12 @@ typedef struct {
 
 typedef struct {
     bk2_frame_t* frames;
+    /* Player 2, one entry per frame, neutral where the movie declares only
+     * one port. `players` says whether any frame actually carried a second
+     * segment — a movie can only declare its port count for its whole
+     * length, since the format has no per-frame connect column. */
+    bk2_frame_t* p2_frames;
+    int          players;        /* 1 or 2 */
     int          frame_count;
     int          first_input_frame; /* index of first frame with any button down,
                                       * or frame_count if the movie has no input */

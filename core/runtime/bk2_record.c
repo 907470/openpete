@@ -141,31 +141,74 @@ void bk2_record_note(uint16_t bits, int log_idx) {
     s_rec.prev_bits = bits;
 }
 
-/* Render one frame line into `out` (must hold >= 64 chars). Returns
- * bytes written (excluding NUL). The 4 axes are emitted %5d (fixed width,
- * matching Octoshock's "  128" columns) so every line is the same length. */
-static int format_frame(char* out, const bk2_frame_t* fr) {
-    /* Constant segment 0 + 4 analog axes. */
-    int n = sprintf(out, "|    1,...|%5d,%5d,%5d,%5d,",
-                    fr->axes[0], fr->axes[1], fr->axes[2], fr->axes[3]);
-    /* 16 digital chars + 1 MODE + closing pipe + newline. */
-    for (int i = 0; i < 16; i++) {
-        out[n++] = (fr->buttons & kButtonChars[i].mask) ? '.' : kButtonChars[i].letter;
-    }
+/* Append one player's segment: 4 axes then the 17 digital columns.
+ *
+ * Octoshock emits a port as axes first, then bool buttons — the order
+ * BizHawk's log-entry generator produces by walking the controller
+ * definition's axes before its buttons — so a second player is this same
+ * segment again under a "P2 " prefix. Axes are %5d to match its PadLeft(5). */
+static int format_port(char* out, const openpete_input_port_t* p) {
+    int n = sprintf(out, "%5d,%5d,%5d,%5d,",
+                    p->axes[0], p->axes[1], p->axes[2], p->axes[3]);
+    for (int i = 0; i < 16; i++)
+        out[n++] = (p->bits & kButtonChars[i].mask) ? '.' : kButtonChars[i].letter;
     out[n++] = '.';   /* MODE column — replay is always analog, no toggle */
     out[n++] = '|';
+    return n;
+}
+
+/* Render one frame line into `out` (must hold >= 64 chars per player).
+ * Returns bytes written (excluding NUL). Every line is the same length, so
+ * the buffer size can be computed from one probe. */
+static int format_frame_rec(char* out, const openpete_input_rec_t* r,
+                            int players) {
+    /* Constant segment 0: disc-select 1, then Open|Close|Reset unpressed. */
+    int n = sprintf(out, "|    1,...|");
+    for (int pl = 0; pl < players; pl++)
+        n += format_port(out + n, &r->port[pl]);
     out[n++] = '\n';
     out[n] = '\0';
     return n;
 }
 
-static const char* const kLogKey =
-    "[Input]\r\n"
-    "LogKey:#Disc Select|Open|Close|Reset|"
-    "#P1 LStick X|P1 LStick Y|P1 RStick X|P1 RStick Y|"
-    "P1 Up|P1 Down|P1 Left|P1 Right|P1 Select|P1 Start|"
-    "P1 Square|P1 Triangle|P1 Circle|P1 Cross|"
-    "P1 L1|P1 R1|P1 L2|P1 R2|P1 L3|P1 R3|P1 MODE|\r\n";
+/* One player's column names, in the order Octoshock's controller definition
+ * yields them. `%d` takes the player number. */
+static const char* const kPortKeyFmt =
+    "#P%d LStick X|P%d LStick Y|P%d RStick X|P%d RStick Y|"
+    "P%d Up|P%d Down|P%d Left|P%d Right|P%d Select|P%d Start|"
+    "P%d Square|P%d Triangle|P%d Circle|P%d Cross|"
+    "P%d L1|P%d R1|P%d L2|P%d R2|P%d L3|P%d R3|P%d MODE|";
+
+/* Build the [Input] header for `players` ports. The key is documentation
+ * rather than a parsing directive — BizHawk reads frames positionally
+ * against whatever controller definition the core is configured for, which
+ * is why a multi-player movie also has to carry SyncSettings. */
+static int format_log_key(char* out, size_t cap, int players) {
+    int n = snprintf(out, cap, "[Input]\r\n"
+                     "LogKey:#Disc Select|Open|Close|Reset|");
+    for (int pl = 1; pl <= players; pl++) {
+        int p = pl;
+        n += snprintf(out + n, cap - (size_t)n, kPortKeyFmt,
+                      p, p, p, p, p, p, p, p, p, p, p,
+                      p, p, p, p, p, p, p, p, p, p, p);
+    }
+    n += snprintf(out + n, cap - (size_t)n, "\r\n");
+    return n;
+}
+
+/* Core sync settings for a two-player movie.
+ *
+ * A movie whose log key declares two ports only parses against a core
+ * configured for two, so the player count has to travel with the movie.
+ * Octoshock takes it from this lump: DualShock (2) in each of the PSX's two
+ * real controller ports, which are Devices8 slots 0 and 4 — slots 1-3 and
+ * 5-7 exist only behind a multitap, and Spyro never used one. Memcards
+ * matches the core's own default so nothing else about the session shifts. */
+static const char* const kSyncSettings2P =
+    "{\"EnableLEC\":false,\"FIOConfig\":{"
+    "\"Multitaps\":[false,false],"
+    "\"Memcards\":[true,false],"
+    "\"Devices8\":[2,0,0,0,2,0,0,0]}}";
 
 static const char* const kInputTrailer = "[/Input]\r\n";
 
@@ -184,15 +227,26 @@ int bk2_record_finalize(void) {
     int frame_count = input_log_count() - s_rec.start_idx;
     if (frame_count < 0) frame_count = 0;   /* defensive (log reset under us) */
 
+    /* How many ports the movie declares. A slot that was present for any
+     * recorded frame is a player for the whole movie: BizHawk fixes the port
+     * count in SyncSettings, and no per-frame connect/disconnect column
+     * exists to say otherwise, so a slot that comes and goes serialises its
+     * absent frames as neutral. */
+    int players = 1;
+    for (int i = 0; i < frame_count; i++) {
+        const openpete_input_rec_t* r = input_log_get(s_rec.start_idx + i);
+        if (r && r->port[1].present) { players = 2; break; }
+    }
+
     /* Build Input Log.txt in memory: header + N frame lines + trailer. */
-    size_t key_len     = strlen(kLogKey);
+    char key_buf[1024];
+    size_t key_len     = (size_t)format_log_key(key_buf, sizeof key_buf, players);
     size_t trailer_len = strlen(kInputTrailer);
-    /* Each frame line is exactly 53 bytes ("|    1,...|  128,  128,  128,  128,"
-     * = 32, then 16 digital + 1 MODE + '|' + '\n' = 19. Total 51 + '\r' for
-     * BizHawk-style CRLF? We write LF; readers we care about handle either.) */
-    char frame_buf[64];
-    bk2_frame_t probe = { 0xFFFF, {128, 128, 128, 128} };
-    int  frame_line_len = format_frame(frame_buf, &probe);
+    /* Every line is the same width, so one probe sizes the buffer. */
+    char frame_buf[192];
+    openpete_input_rec_t probe;
+    for (int i = 0; i < OPENPETE_PAD_SLOTS; i++) input_port_clear(&probe.port[i]);
+    int  frame_line_len = format_frame_rec(frame_buf, &probe, players);
     size_t log_size = key_len
                     + (size_t)frame_count * (size_t)frame_line_len
                     + trailer_len;
@@ -204,18 +258,11 @@ int bk2_record_finalize(void) {
         return -1;
     }
     char* p = log;
-    memcpy(p, kLogKey, key_len); p += key_len;
+    memcpy(p, key_buf, key_len); p += key_len;
     for (int i = 0; i < frame_count; i++) {
         const openpete_input_rec_t* r = input_log_get(s_rec.start_idx + i);
         if (!r) break;   /* defensive; log frozen mid-recording */
-        /* Player 1 only; the player 2-4 columns are a later phase. */
-        const openpete_input_port_t* p1 = &r->port[0];
-        bk2_frame_t fr;
-        fr.buttons = p1->bits;
-        fr.axes[0] = p1->axes[0]; fr.axes[1] = p1->axes[1];
-        fr.axes[2] = p1->axes[2]; fr.axes[3] = p1->axes[3];
-        int n = format_frame(p, &fr);
-        p += n;
+        p += format_frame_rec(p, r, players);
     }
     memcpy(p, kInputTrailer, trailer_len); p += trailer_len;
     *p = '\0';
@@ -238,6 +285,15 @@ int bk2_record_finalize(void) {
     if (!mz_zip_writer_add_mem(&zip, "Input Log.txt", log, (size_t)(p - log),
                                MZ_DEFAULT_COMPRESSION)) {
         OPL_ERROR_F("bk2-record", "Input Log.txt add failed");
+        goto out_close;
+    }
+    /* Only a multi-player movie carries this: a one-player recording stays
+     * byte-identical to what this writer has always produced, and loads
+     * against whatever single-pad configuration the user already has. */
+    if (players > 1 &&
+        !mz_zip_writer_add_mem(&zip, "SyncSettings.json", kSyncSettings2P,
+                               strlen(kSyncSettings2P), MZ_DEFAULT_COMPRESSION)) {
+        OPL_ERROR_F("bk2-record", "SyncSettings.json add failed");
         goto out_close;
     }
     if (!mz_zip_writer_finalize_archive(&zip)) {
