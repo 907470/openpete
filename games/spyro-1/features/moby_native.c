@@ -1237,23 +1237,11 @@ static int append_revealed_regular_inner(CPUState* cpu) {
     uint32_t trc_m = moby_trace_target();
     #define TRC(fmt, ...) do { if (m == trc_m) fprintf(stderr, \
         "[moby-trace f=%u] %08X " fmt "\n", openpete_frame, m, ##__VA_ARGS__); } while (0)
-    /* OPENPETE_MOBY_RANGE_CENSUS: per-present tally of every reveal-loop exit,
-     * plus the worst out-of-range candidate's axis delta / view-Z against the
-     * threshold that rejected it. A moby missing from a distant vantage is
-     * either range-rejected (rng>0, and maxd/maxrz says by how much) or lost to
-     * the record/vertex caps (cap>0) — the two have the same symptom on screen
-     * and opposite fixes. */
-    static int s_rcen = -1;
-    if (s_rcen < 0) { const char* e = getenv("OPENPETE_MOBY_RANGE_CENSUS"); s_rcen = (e && *e && *e != '0'); }
-    struct { int live, dead, runonce, dup, spec, nomodel, behind, rng, ceded, offwin, occl, dec0, cap; } cen = {0};
-    int32_t cen_maxd = 0; double cen_maxrz = 0.0; int32_t cen_t4e = 0;
     while (m >= 0x80000000u && guard++ < 4096) {
         uint8_t stt = cpu->read_byte(m + 0x48);
         if (stt == 0xFF) break;                        /* array sentinel */
-        if (stt >= 0x80) { cen.dead++; TRC("skip=dead stt=%02X", stt); m += 0x58; continue; }      /* dead/inactive */
-        cen.live++;
+        if (stt >= 0x80) { TRC("skip=dead stt=%02X", stt); m += 0x58; continue; }      /* dead/inactive */
         if (moby_run_once_hidden(cpu, m, (unsigned)cpu->read_half(m + 0x36))) {
-            cen.runonce++;
             TRC("skip=run-once (retires on its first update)");
             m += 0x58; continue;
         }
@@ -1262,7 +1250,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * a held off-4:3 speck is never double-drawn by the reveal) */
         int dup = 0;
         for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == m) { dup = 1; break; }
-        if (dup) { cen.dup++; TRC("skip=REG-dedup (queued/culled/replayed this pass)"); m += 0x58; continue; }
+        if (dup) { TRC("skip=REG-dedup (queued/culled/replayed this pass)"); m += 0x58; continue; }
         /* SPECULAR-queue mobys are fed by the SPEC pass (its cone cull is not
          * 4:3 — the native walk draws the whole queue), WITH the per-face
          * specular treatment the REG walk lacks. Revealing them here too drew
@@ -1295,12 +1283,12 @@ static int append_revealed_regular_inner(CPUState* cpu) {
                         openpete_frame, m, (unsigned)cpu->read_half(m + 0x36), stt,
                         (unsigned)cpu->read_byte(m + 0x50), bok ? f.TR_raw[2] : -1, dsx, bok);
         }
-        if (!bok) { cen.nomodel++; TRC("skip=no-anim-model"); m += 0x58; continue; }  /* shaded/invalid */
+        if (!bok) { TRC("skip=no-anim-model"); m += 0x58; continue; }  /* shaded/invalid */
         double rx = (double)f.TR_raw[0], rz = (double)f.TR_raw[2];           /* origin in view space (world/4) */
         /* per-moby radius = AnimationHeader byte[7]<<4 (view units) — the .s
          * cone's X-bias + its behind-camera reject both use it (@8001F2A0) */
         double rr = (double)((int)cpu->read_byte(f.header + 7) << 4);
-        if (rz + rr <= 0.0) { cen.behind++; TRC("skip=behind-cam rz=%.0f rr=%.0f", rz, rr); m += 0x58; continue; }  /* behind camera (.s: MAC3 + r <= 0) */
+        if (rz + rr <= 0.0) { TRC("skip=behind-cam rz=%.0f rr=%.0f", rz, rr); m += 0x58; continue; }  /* behind camera (.s: MAC3 + r <= 0) */
         /* Distance admission = the .s cull's EXACT 3-axis box test (F158
          * @8001F1F8..F260; the earlier radial view-Z mirror was strictly
          * narrower and dropped far-off-axis mobys the .s draws — the
@@ -1358,15 +1346,8 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         TRC("b51=%02X rad=%02X d=(%d,%d,%d) t4c=%d t4e=%d rz=%.0f admit_canon=%d prev=%d",
             (unsigned)cpu->read_byte(m + 0x51), rad_byte, d0, d1, d2, t4c, t4e, rz,
             admit_canon, reveal_prev_has(m));
-        if (in_spec_snap && admit_canon) { cen.spec++; TRC("skip=SPEC-dedup (in range)"); m += 0x58; continue; }
+        if (in_spec_snap && admit_canon) { TRC("skip=SPEC-dedup (in range)"); m += 0x58; continue; }
         if (!REVEAL_BOX(t4e) || rz >= (double)t4e) {
-            cen.rng++;
-            if (s_rcen) {   /* worst offender: how far past the threshold it sat */
-                int32_t a0 = d0 < 0 ? -d0 : d0, a1 = d1 < 0 ? -d1 : d1, a2 = d2 < 0 ? -d2 : d2;
-                int32_t mx = a0 > a1 ? a0 : a1; if (a2 > mx) mx = a2;
-                if (mx > cen_maxd) { cen_maxd = mx; cen_t4e = t4e; }
-                if (rz > cen_maxrz) cen_maxrz = rz;
-            }
             TRC("skip=out-of-range"); m += 0x58; continue;
         } /* out of draw range (canonical or nl ceiling) */
         #undef REVEAL_BOX
@@ -1383,8 +1364,8 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * there and not in the queue was cull-rejected for a non-box reason —
          * leave it); central + beyond-canonical is the no-lod clause's NEW
          * coverage. */
-        if (central && admit_canon) { cen.ceded++; TRC("skip=ceded-to-canon sx=%.0f", sx); m += 0x58; continue; }
-        if (sx < (double)xlo - margin || sx > (double)xhi + margin) { cen.offwin++; TRC("skip=off-window sx=%.0f", sx); m += 0x58; continue; }  /* outside widened view (+radius) */
+        if (central && admit_canon) { TRC("skip=ceded-to-canon sx=%.0f", sx); m += 0x58; continue; }
+        if (sx < (double)xlo - margin || sx > (double)xhi + margin) { TRC("skip=off-window sx=%.0f", sx); m += 0x58; continue; }  /* outside widened view (+radius) */
         /* Occlusion cull, exactly as the queue pass tests its own records: a
          * moby behind nearer world-opaque depth costs a full decode + walk for
          * pixels the depth test erases. Placed after the admission tests above
@@ -1399,14 +1380,13 @@ static int append_revealed_regular_inner(CPUState* cpu) {
             ver_check = occl_verify_begin(m);
             if (!ver_check) {
                 s_occl_seen++; s_occl_culled++;
-                cen.occl++;
                 if (occl_rev_n < MAX_RECORDS) occl_rev[occl_rev_n++] = m;
                 TRC("skip=occluded");
                 m += 0x58; continue;
             }
         }
         s_occl_seen++;
-        if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) { cen.cap++; break; }
+        if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
         /* ZSF4 mirrored from the cull's formula (@8001F404) — there is no live
          * record behind a revealed moby to read the verdict from. Validated by
@@ -1435,7 +1415,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
           got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0, 0.0, -1.0, f.TR_raw, f.TR_frac, f.M,
                                     rzsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
           if (t0) s_us_rvdec += (long)(openpete_phase_now_us() - t0); }
-        if (got <= 0) { cen.dec0++; TRC("skip=decode-0 zsf4=%d", rzsf4); m += 0x58; continue; }
+        if (got <= 0) { TRC("skip=decode-0 zsf4=%d", rzsf4); m += 0x58; continue; }
         TRC("REVEALED got=%d zsf4=%d", got, rzsf4);
         if (ver_check) occl_verify_end(m, s_proj + off, got);
         else occl_cache_update(cpu, m, s_proj + off, got, f.TR_frac, f.header);
@@ -1460,19 +1440,6 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         m += 0x58;
     }
     #undef TRC
-    if (s_rcen) {
-        {
-            static unsigned last = 0xFFFFFFFFu; static int pass = 0;
-            pass = (openpete_frame == last) ? pass + 1 : 0;   /* 0 = canonical, >0 = sub-tick */
-            last = openpete_frame;
-            fprintf(stderr, "[moby-range f=%u.%d] live=%d revealed=%d | rng=%d cap=%d dec0=%d offwin=%d occl=%d "
-                    "ceded=%d dup=%d spec=%d nomodel=%d behind=%d runonce=%d dead=%d | maxd=%d vs t4e=%d maxrz=%.0f "
-                    "| recs=%d/%d verts=%d/%d\n",
-                    openpete_frame, pass, cen.live, revealed, cen.rng, cen.cap, cen.dec0, cen.offwin, cen.occl,
-                    cen.ceded, cen.dup, cen.spec, cen.nomodel, cen.behind, cen.runonce, cen.dead,
-                    cen_maxd, cen_t4e, cen_maxrz, s_nrecs, MAX_RECORDS, s_proj_n, MAX_PROJ);
-        }
-    }
     /* Publish this call's ADMITTED set (drawn + occlusion-culled) as the next
      * call's hysteresis set — the widening mirrors what the .s cull would have
      * admitted, which the display-side cull must not perturb. */
@@ -1481,26 +1448,6 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         memcpy(s_rev_prev, revlist, (size_t)hn * sizeof(uint32_t));
         for (int k = 0; k < occl_rev_n && hn < MAX_RECORDS; k++) s_rev_prev[hn++] = occl_rev[k];
         s_rev_prev_n = hn;
-    }
-    /* OPENPETE_MOBY_REVEAL_CENSUS: per-present reveal counts (flicker check —
-     * pre-fix the count alternated N,0,0,0 between canonical and sub-tick
-     * presents; post-fix it holds steady). */
-    {
-        static int cen = -1; static int lines = 0;
-        if (cen < 0) { const char* e = getenv("OPENPETE_MOBY_REVEAL_CENSUS"); cen = (e && *e && *e != '0'); }
-        static int prev = 0;
-        if (cen && lines < 600 && (revealed > 0 || prev > 0)) {
-            lines++;
-            fprintf(stderr, "[reveal-census] f=%u nl=%d@%p F=%.3f revealed=%d",
-                    openpete_frame, openpete_no_lod, (void*)&openpete_no_lod,
-                    (double)F, revealed);
-            for (int i = 0; i < revealed && i < 8; i++)
-                fprintf(stderr, " %08X/%04X@(%.0f,%.0f)v%d", revlist[i],
-                        (unsigned)cpu->read_half(revlist[i] + 0x36),
-                        (double)revsx[i], (double)revsy[i], revnv[i]);
-            fprintf(stderr, "\n");
-        }
-        prev = revealed;
     }
     static int s_logged = 0;
     if (!s_logged && revealed > 0) {
@@ -3166,40 +3113,6 @@ static void push_scene_moby(void) {
                 "(3a.2b independent face-stream walk) frame %u\n", s_gout.n, openpete_frame);
     }
     openpete_native_scene_begin_frame(openpete_frame);
-    /* TEMP forensics (OPENPETE_MBCEN=1): one line per emitted moby per PRESENT —
-     * tri count, screen bbox, fed-depth range. Offline the strobe hunt reads
-     * this as a per-present set and names mobys that appear for a single
-     * isolated present (the 1-frame flash). */
-    { static int s_cen = -1; static unsigned s_pres = 0;
-      if (s_cen < 0) { const char* e = getenv("OPENPETE_MBCEN"); s_cen = (e && *e && *e != '0'); }
-      if (s_cen) {
-          s_pres++;
-          struct { uint32_t m; int cls, n; float x0,y0,x1,y1,z0,z1; } acc[512];
-          int na = 0;
-          for (int i = 0; i < s_gout.n; i++) {
-              const ntri_t* w = &s_wtri[i];
-              int j = 0;
-              for (; j < na; j++) if (acc[j].m == s_wtri_moby[i]) break;
-              if (j == na) {
-                  if (na >= 512) continue;
-                  acc[na].m = s_wtri_moby[i]; acc[na].cls = s_wtri_cls[i]; acc[na].n = 0;
-                  acc[na].x0 = acc[na].y0 = acc[na].z0 = 1e30f;
-                  acc[na].x1 = acc[na].y1 = acc[na].z1 = -1e30f;
-                  na++;
-              }
-              acc[j].n++;
-              for (int k = 0; k < 3; k++) {
-                  float x = w->v[k].sx, y = w->v[k].sy, z = w->v[k].vz;
-                  if (x < acc[j].x0) acc[j].x0 = x; if (x > acc[j].x1) acc[j].x1 = x;
-                  if (y < acc[j].y0) acc[j].y0 = y; if (y > acc[j].y1) acc[j].y1 = y;
-                  if (z < acc[j].z0) acc[j].z0 = z; if (z > acc[j].z1) acc[j].z1 = z;
-              }
-          }
-          for (int j = 0; j < na; j++)
-              fprintf(stderr, "[mbcen] p=%u f=%u m=%08X cls=%03X n=%d bb=%.0f,%.0f,%.0f,%.0f vz=%.0f,%.0f\n",
-                      s_pres, openpete_frame, acc[j].m, acc[j].cls, acc[j].n,
-                      acc[j].x0, acc[j].y0, acc[j].x1, acc[j].y1, acc[j].z0, acc[j].z1);
-      } }
     /* OPENPETE_MOBY_TRIDBG="x0,y0,x1,y1,fA,fB": dump every walk tri whose
      * centroid falls in the PSX-screen box for frames [fA,fB] — offline
      * identity diff (moby+fkey) across frames names which attribute flaps.
@@ -3231,40 +3144,6 @@ static void push_scene_moby(void) {
      * icon): the in-game 3D HUD icons (treasure/dragon/lives, the static g_Hud
      * range) go to HUD3D so their own faces Z-sort (depth-off paints them
      * inside-out); the flat near-OT text/2D billboards stay HUD. */
-    /* DEV rank override (mechanism spike): OPENPETE_MOBY_RANK_FILE names a
-     * table of "fkey rank" pairs (hex fkey, decimal rank >= 1) derived
-     * offline from an OT dump for ONE pose. A matching face feeds
-     * (rank, present-local moby ordinal) into the scene tri, which routes
-     * it through the rank image + same-moby painter select — the select
-     * mechanism end-to-end with zero runtime rank-source machinery.
-     * Display-only; absent env = zero cost, zero behaviour change. */
-    static int s_rankf = -1;
-    static uint32_t s_rank_moby[8192];   /* 0 = any moby (clone-safe files list the ptr) */
-    static uint32_t s_rank_key[8192];
-    static int      s_rank_val[8192];
-    static int      s_rank_n = 0;
-    if (s_rankf < 0) {
-        s_rankf = 0;
-        const char* e = getenv("OPENPETE_MOBY_RANK_FILE");
-        if (e && *e) {
-            FILE* fp = fopen(e, "r");
-            if (fp) {
-                char line[128];
-                while (s_rank_n < 8192 && fgets(line, sizeof line, fp)) {
-                    unsigned mb, k; int r;
-                    if (sscanf(line, "%x %x %d", &mb, &k, &r) == 3) {
-                        s_rank_moby[s_rank_n] = mb;
-                    } else if (sscanf(line, "%x %d", &k, &r) == 2) {
-                        s_rank_moby[s_rank_n] = 0;
-                    } else continue;
-                    s_rank_key[s_rank_n] = k; s_rank_val[s_rank_n] = r; s_rank_n++;
-                }
-                fclose(fp);
-                s_rankf = s_rank_n > 0;
-                fprintf(stderr, "[moby-rank] loaded %d fkey ranks from %s\n", s_rank_n, e);
-            }
-        }
-    }
     /* Production rank source: snapshot THIS pose's eligible faces, then
      * match — the matcher walks the CURRENT tick's OT chain (complete in
      * the drawing buffer DrawOTag hasn't submitted yet) for pose-exact
@@ -3372,14 +3251,7 @@ static void push_scene_moby(void) {
         int rank_ok = t.blend == 0 && s_wtri_moby[i] && s_wtri_ui[i] == 0 &&
                       !s_wtri_mangle[i];
         int rank = 0;
-        if (rank_ok && s_rankf == 1) {          /* forensics file OVERRIDES */
-            for (int ri = 0; ri < s_rank_n; ri++) {
-                if (s_rank_key[ri] != s_wtri_fkey[i]) continue;
-                if (s_rank_moby[ri] && s_rank_moby[ri] != s_wtri_moby[i]) continue;
-                rank = s_rank_val[ri];
-                break;
-            }
-        } else if (rank_ok && openpete_mobyrank_on()) {
+        if (rank_ok && openpete_mobyrank_on()) {
             rank = openpete_mobyrank_lookup(s_wtri_moby[i], s_wtri_fkey[i]);
         }
         if (rank > 0) {
@@ -4412,20 +4284,6 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             }
         }
         uint32_t cls = cpu->read_half(m + 0x36);
-        /* OPENPETE_GEM_DUMP=<frame>: one-shot collectable inventory (addr, cls,
-         * pos, settle substate, WasDrawn) around that frame — locates gem
-         * clusters + their settle state for idle-anim repros (this instrument
-         * found the beast-makers unsettled-gem statues). */
-        {
-            static int gd = -2;
-            if (gd == -2) { const char* e = getenv("OPENPETE_GEM_DUMP"); gd = e ? atoi(e) : -1; }
-            if (gd >= 0 && openpete_frame > (unsigned)gd && openpete_frame < (unsigned)gd + 3u
-                && (cls == 14u || (cls >= 83u && cls <= 87u)))
-                fprintf(stderr, "[gem-dump f=%u] %08X cls=%u pos=(%d,%d,%d) b50=%02X sub=%u wd=%u\n",
-                        openpete_frame, m, cls,
-                        (int32_t)cpu->read_word(m+0x0C), (int32_t)cpu->read_word(m+0x10), (int32_t)cpu->read_word(m+0x14),
-                        cpu->read_byte(m+0x50), cpu->read_byte(m+0x49), cpu->read_byte(m+0x51));
-        }
         uint32_t mraw  = cpu->read_word(G_MODELS + cls*4u); /* RAW entry — bit31 is a colour-mode switch */
         uint32_t model = mraw;                              if (model<0x80000000u) model|=0x80000000u;
         uint32_t vraw  = cpu->read_word(model + 0x4u);
@@ -5200,29 +5058,6 @@ static int occl_record_culled(CPUState* cpu, uint32_t moby) {
     int culled = openpete_native_occl_query(rx0 - inf, ry0 - inf,
                                             rx1 + inf, ry1 + inf,
                                             rvz - vzs * aged);
-    /* OPENPETE_MOBY_OCCL_DUMP: rate-limited raw-rect dump (diagnosis). CULLED
-     * verdicts print with the comparison values (need vs the farthest grid
-     * cell in the scanned rect) so a wrong cull names its own cause: vz_min
-     * way off scale, or grid cells implausibly near, or a thin margin. */
-    {
-        static int dump = -1;
-        if (dump < 0) { const char* e2 = getenv("OPENPETE_MOBY_OCCL_DUMP"); dump = (e2 && *e2 && *e2 != '0'); }
-        if (dump) {
-            static uint64_t t0 = 0; static int n = 0, nc = 0;
-            uint64_t now = openpete_phase_now_us();
-            if (now - t0 >= 1000000u) { t0 = now; n = 0; nc = 0; }
-            if (culled && nc < 64) {
-                nc++;
-                fprintf(stderr, "[occl-CULL f=%u] moby=%08x rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f inf=%.0f age=%u scan_max=%.0f need=%.0f\n",
-                        openpete_frame, moby, rx0, ry0, rx1, ry1, rvz, inf, age,
-                        openpete_native_occl_last_scan_max(), rvz - 600.0f * aged - 1500.0f);
-            } else if (!culled && n < 8) {
-                n++;
-                fprintf(stderr, "[occl-rect f=%u] moby=%08x rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f inf=%.0f pan=%.1f age=%u -> 0\n",
-                        openpete_frame, moby, rx0, ry0, rx1, ry1, rvz, inf, s_occl_pan_px, age);
-            }
-        }
-    }
     return culled;
 }
 

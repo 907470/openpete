@@ -80,8 +80,8 @@ const feature_module_t* const openpete_features[] = {
     &terrain_native_module,
     /* 2D-from-OT native UI: hooks func_800168DC (the 2D addPrim chokepoint) to
      * feed the title logo / "PRESS START" / HUD text sprites into the native
-     * scene's HUD overlay layer. Inert unless a native renderer mode or
-     * OPENPETE_UISPRITE_DUMP is set. */
+     * scene's HUD overlay layer. Inert unless a native renderer mode is
+     * active. */
     &ui_sprite_native_module,
     /* Native PORTAL skybox previews: re-derives the destination-level dome
      * shown inside homeworld portal arches (driven by RenderPortals

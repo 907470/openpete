@@ -246,26 +246,6 @@ static void terrain_dump(CPUState* cpu) {
         fprintf(stderr, "\n");
     }
 
-    /* Tiledef table dump (OPENPETE_TERRAIN_TABLEDUMP): for each tile, show both
-     * halves of the LQ table and the HQ table — find where the bpp8 (tpage mode 1)
-     * detail tiles actually live (medallion = tpage 0x008E). */
-    if (getenv("OPENPETE_TERRAIN_TABLEDUMP")) {
-        uint32_t lq = lqTex, hq = hqTex;
-        int found8_lq0=0,found8_lq8=0,found8_hq0=0,found8_hq8=0;
-        for (int tile = 0; tile < 128; tile++) {
-            uint32_t lq0w1 = rd(cpu, lq + tile*16 + 4), lq8w1 = rd(cpu, lq + tile*16 + 12);
-            uint32_t hq0w1 = rd(cpu, hq + tile*16 + 4), hq8w1 = rd(cpu, hq + tile*16 + 12);
-            int lq0m=((lq0w1>>16)>>7)&3, lq8m=((lq8w1>>16)>>7)&3;
-            int hq0m=((hq0w1>>16)>>7)&3, hq8m=((hq8w1>>16)>>7)&3;
-            if(lq0m==1)found8_lq0++; if(lq8m==1)found8_lq8++;
-            if(hq0m==1)found8_hq0++; if(hq8m==1)found8_hq8++;
-            if (tile < 8) fprintf(stderr,
-                "  tile[%d] LQ[+0]tpage=%04X LQ[+8]tpage=%04X HQ[+0]tpage=%04X HQ[+8]tpage=%04X\n",
-                tile, lq0w1>>16, lq8w1>>16, hq0w1>>16, hq8w1>>16);
-        }
-        fprintf(stderr, "[tabledump] bpp8(mode1) counts: LQ[+0]=%d LQ[+8]=%d HQ[+0]=%d HQ[+8]=%d\n",
-            found8_lq0, found8_lq8, found8_hq0, found8_hq8);
-    }
 }
 
 /* ---- native gamestate walk (float) + geometry A/B ------------------------- */
@@ -1661,36 +1641,6 @@ static void tsc_tag_gapfill(CPUState* cpu, tscache_t* C,
                             uint32_t sectorPtr, uint32_t sectorCnt) {
     if (getenv("OPENPETE_TERRAIN_FIELDCENSUS"))
         tsc_field_census(cpu, sectorPtr, sectorCnt);
-    /* One-shot per-level tally of how the sector table splits by LOD class —
-     * sizes the set where the two tiers can actually coexist. */
-    if (getenv("OPENPETE_TERRAIN_TIERCENSUS")) {
-        static uint32_t last_key;
-        uint32_t ck = sectorPtr ^ (sectorCnt * 2654435761u);
-        if (ck != last_key) {
-            last_key = ck;
-            int both = 0, forceLP = 0, noHP = 0, noLP = 0, hpOnly = 0, lpOnly = 0, tot = 0;
-            long lpF_overlap = 0, lpF_tot = 0, hpF_tot = 0;
-            uint32_t n = sectorCnt > 1024 ? 1024 : sectorCnt;
-            for (uint32_t i = 0; i < n; i++) {
-                uint32_t s = rd(cpu, sectorPtr + i * 4); if (!s) continue;
-                uint32_t g0 = rd(cpu, s + 0x04), g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
-                int flags = (int)(g0 & 0xE000);
-                int nLpF = (int)((g3 >> 16) & 0xFF), nHpF = (int)((g4 >> 16) & 0xFF);
-                tot++; lpF_tot += nLpF; hpF_tot += nHpF;
-                if (flags & 0x8000) { forceLP++; lpF_overlap += nLpF; }
-                else if (flags & 0x4000) noHP++;
-                else if (flags & 0x2000) noLP++;
-                else if (nHpF && nLpF) { both++; lpF_overlap += nLpF; }
-                else if (nHpF) hpOnly++;
-                else if (nLpF) lpOnly++;
-            }
-            fprintf(stderr, "[tiercensus] sectors=%d forceLP(0x8000)=%d both(plain)=%d "
-                            "noHP(0x4000)=%d noLP(0x2000)=%d hpOnly=%d lpOnly=%d "
-                            "lpFaces=%ld hpFaces=%ld lpFacesInOverlap=%ld\n",
-                    tot, forceLP, both, noHP, noLP, hpOnly, lpOnly,
-                    lpF_tot, hpF_tot, lpF_overlap);
-        }
-    }
     if (!C->lpF || !C->lpV) return;
     C->nGapfill = 0;
     /* The table keys on the sector INDEX; the cache keys on the sector
@@ -1908,68 +1858,6 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         }
     }
     return C;
-}
-
-/* OPENPETE_TERRAIN_MESHDUMP="12,45,..." (or "all"): one-shot dump of sector
- * LP+HP meshes — world verts, face indices, raw face words, per-face gapfill
- * verdicts — for offline geometry analysis (near-LP-gap classifier). Walks
- * the WHOLE sector table (not just the vislist) once openpete_frame reaches
- * OPENPETE_TERRAIN_MESHDUMP_FRAME; dump at the analysis frame — the sector
- * table at first walk (~level load) is NOT the steady-state table. */
-static void md_dump_sector(CPUState* cpu, uint32_t i, const tscache_t* SC) {
-    fprintf(stderr, "[md-sec] s=%u flags=%04X origin=%d,%d,%d centre=%d,%d,%d rad=%d "
-            "nLpV=%d nLpF=%d nHpV=%d nHpF=%d nGap=%d\n", i, SC->flags,
-            SC->originX, SC->originY, SC->originZ, SC->centreX, SC->centreY, SC->centreZ,
-            SC->radius, SC->nLpV, SC->nLpF, SC->nHpV, SC->nHpF, SC->nGapfill);
-    for (int k = 0; k < SC->nLpV; k++)
-        fprintf(stderr, "[md-v] s=%u t=lp k=%d p=%d,%d,%d\n", i, k,
-                SC->originX + SC->lpV[k].x, SC->originY + SC->lpV[k].y, SC->originZ + SC->lpV[k].z);
-    for (int k = 0; k < SC->nHpV; k++)
-        fprintf(stderr, "[md-v] s=%u t=hp k=%d p=%d,%d,%d\n", i, k,
-                SC->originX + SC->hpV[k].x, SC->originY + SC->hpV[k].y, SC->originZ + SC->hpV[k].z);
-    for (int f2 = 0; f2 < SC->nLpF; f2++) {
-        const tsface_t* F2 = &SC->lpF[f2];
-        fprintf(stderr, "[md-f] s=%u t=lp f=%d i=%d,%d,%d,%d q=%d gf=%d w0=%08X w1=%08X\n",
-                i, f2, F2->i0, F2->i1, F2->i2, F2->i3, F2->quad, F2->gapfill,
-                rd(cpu, SC->lpFaces + (uint32_t)f2 * 8u),
-                rd(cpu, SC->lpFaces + (uint32_t)f2 * 8u + 4u));
-    }
-    for (int f2 = 0; f2 < SC->nHpF; f2++) {
-        const tsface_t* F2 = &SC->hpF[f2];
-        fprintf(stderr, "[md-f] s=%u t=hp f=%d i=%d,%d,%d,%d q=%d w0=%08X w1=%08X w2=%08X w3=%08X\n",
-                i, f2, F2->i0, F2->i1, F2->i2, F2->i3, F2->quad,
-                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u),
-                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u + 4u),
-                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u + 8u),
-                rd(cpu, SC->hpFaces + (uint32_t)f2 * 16u + 12u));
-    }
-}
-static void md_dump_all(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt,
-                        uint32_t lqTable, uint32_t hqTable, int texTblMode) {
-    static const char* s_mdump = (const char*)-1;
-    static int s_mdframe, s_mddone;
-    if (s_mdump == (const char*)-1) {
-        s_mdump = getenv("OPENPETE_TERRAIN_MESHDUMP");
-        const char* e = getenv("OPENPETE_TERRAIN_MESHDUMP_FRAME");
-        s_mdframe = (e && *e) ? atoi(e) : 0;
-        if (s_mdump) fprintf(stderr, "[md-init] env=%s frame=%d\n", s_mdump, s_mdframe);
-    }
-    if (!s_mdump || !*s_mdump || s_mddone) return;
-    if (openpete_frame < (unsigned)s_mdframe) return;
-    s_mddone = 1;
-    fprintf(stderr, "[md-fire] frame=%u sectorPtr=%08X sectorCnt=%u\n",
-            openpete_frame, sectorPtr, sectorCnt);
-    int all = (strcmp(s_mdump, "all") == 0);
-    for (uint32_t i = 0; i < sectorCnt && i < 1024; i++) {
-        if (!all) {
-            char buf[16]; snprintf(buf, sizeof buf, ",%u,", i);
-            char pad[512]; snprintf(pad, sizeof pad, ",%s,", s_mdump);
-            if (!strstr(pad, buf)) continue;
-        }
-        uint32_t s = rd(cpu, sectorPtr + i * 4);
-        if (!s) continue;
-        md_dump_sector(cpu, i, tsc_get(cpu, s, lqTable, hqTable, texTblMode, 0, sectorPtr, sectorCnt));
-    }
 }
 
 /* Geometry (vertex) env-anim liveness — the artisans lowering-wall fix.
@@ -2326,60 +2214,6 @@ static uint32_t terrain_color_h(int noHP, const uint8_t* lp, const uint8_t* near
  * vertices (LP for 0x4000 "no-HP" sectors), then walk the HP faces (16B) / LP
  * faces (8B) into triangles. Camera-relative GTE-vector per r_environment.s
  * 0x80026238-0x800262C0 (matrix = g_Camera+0x00; world axes = origin+field). */
-/* Camera-INDEPENDENT per-level ABR census (OPENPETE_TERRAIN_ABRSCAN). Walks EVERY
- * sector and EVERY HP face (no visibility/frustum gate, no projection) and tallies
- * the semi-transparent (ABE, face word2 bit 0x80) terrain faces by ABR blend mode
- * (from the LQ Tiledef tpage): 1=alpha (B+F)/2, 2=additive, 3=subtract, 4=mode3.
- * This answers "which levels CONTAIN mode-0 alpha terrain" across the whole game
- * via a --skip-to-level sweep, with no dependence on where the camera looked — the
- * gap that a playthrough (or my demo+spawn census) can leave. A back-to-front
- * transparency sort can only ever matter where alpha(mode 1) terrain exists AND
- * overlaps in view; this scan finds the necessary condition exhaustively. Prints
- * once per level (first call at openpete_frame>=1800, i.e. loaded). Display-only. */
-static void terrain_abr_scan(CPUState* cpu) {
-    static int s_on = -1;
-    if (s_on < 0) { const char* e = getenv("OPENPETE_TERRAIN_ABRSCAN"); s_on = (e && *e && *e != '0') ? 1 : 0; }
-    if (!s_on) return;
-    static int s_done = 0;
-    if (s_done || openpete_frame < 1800u) return;
-    s_done = 1;
-
-    uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
-    uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
-    uint32_t lqTable   = rd(cpu, G_ENVIRONMENT + ENV_LQTEX);
-    long abe[5] = {0,0,0,0,0};   /* index by mat.blend (0..4); ABE faces only */
-    long hpFaces = 0, abeFaces = 0, secWalked = 0;
-
-    for (uint32_t i = 0; i < sectorCnt; i++) {       /* ALL sectors — no visibility gate */
-        uint32_t s = rd(cpu, sectorPtr + i * 4);
-        if (!s) continue;
-        secWalked++;
-        uint32_t w1  = rd(cpu, s + 0x04);
-        uint32_t lpw = rd(cpu, s + 0x10), hpw = rd(cpu, s + 0x14);
-        if (w1 & 0x4000) continue;                   /* no-HP (LP-only) sector: untextured */
-        int nLpV = lpw & 0xFF, nLpC = (lpw >> 8) & 0xFF, nLpF = (lpw >> 16) & 0xFF;
-        int nHpV = hpw & 0xFF, nHpC = (hpw >> 8) & 0xFF, nHpF = (hpw >> 16) & 0xFF;
-        int hpVertsOff = (int)((hpw >> 24) & 0xFF);
-        (void)nLpV; (void)nLpC; (void)nLpF;
-        uint32_t verts = s + 0x1C + (uint32_t)hpVertsOff * 4;
-        uint32_t faces = verts + (uint32_t)(nHpV + nHpC * 2) * 4;
-        for (int f = 0; f < nHpF; f++) {
-            uint32_t w2 = rd(cpu, faces + (uint32_t)f * 16u + 8);
-            hpFaces++;
-            if (!(w2 & 0x80)) continue;              /* opaque (or 0xFF untextured) */
-            int tb = (int)(int8_t)(w2 & 0xFF);
-            tmat mat; float tu[4], tv[4]; memset(&mat, 0, sizeof(mat));
-            terrain_texmat(cpu, lqTable, tb, 0, &mat, tu, tv);
-            int b = mat.blend; if (b < 0 || b > 4) b = 0;
-            abeFaces++; abe[b]++;
-        }
-    }
-    fprintf(stderr,
-        "ABR-SCAN frame=%u sectors=%ld hpFaces=%ld abeFaces=%ld  "
-        "ABE-by-mode[alpha=%ld add=%ld sub=%ld mode3=%ld]\n",
-        openpete_frame, secWalked, hpFaces, abeFaces, abe[1], abe[2], abe[3], abe[4]);
-}
-
 /* OPENPETE_TERRAIN_VISDBG: falsify the widescreen candidate set's correctness
  * invariant. Prints ONCE (once loaded): the .s's canonical 4:3 visible count
  * (D_800771C8==0xFF) vs the occlusion candidate set, and how many visible
@@ -3119,30 +2953,6 @@ static int tgpu_hdfold_face(const tmat* m,
  * accumulator lerp the mesh cannot bake), 5 = HD-fold unbakeable face (see
  * tgpu_hdfold_face). sec_index = the level sector index (the
  * authored-correction key). */
-/* TEMP probe (OPENPETE_TERRAIN_BUCKET_CENSUS=1): per bake, how many BLENDED
- * faces carry a material bucket and how many do not. A blend arena holding
- * both is the only shape in which splitting it into a stock pass and a
- * material pass can reorder anything — so this is what says whether an
- * ordering A/B tested the mixed case or a trivially-ordered one. */
-static long s_bkc_blend_mat, s_bkc_blend_stock, s_bkc_op_mat, s_bkc_op_stock;
-static int tgpu_bucket_census_on(void) {
-    static int on = -1;
-    if (on < 0) { const char* e = getenv("OPENPETE_TERRAIN_BUCKET_CENSUS");
-                  on = (e && *e && *e != '0'); }
-    return on;
-}
-static void tgpu_bucket_census(int blended, int bucket) {
-    if (blended) { if (bucket) s_bkc_blend_mat++; else s_bkc_blend_stock++; }
-    else         { if (bucket) s_bkc_op_mat++;    else s_bkc_op_stock++; }
-}
-/* Which Tiledef ids land on BLENDED HP faces — the keys a texture-scoped
- * selector can use to split one blend arena's drawn faces across buckets. */
-static uint32_t s_bkc_blend_tex[4];
-static void tgpu_bucket_census_tex(int texid, int blended) {
-    if (blended && texid >= 0 && texid < 128)
-        s_bkc_blend_tex[texid >> 5] |= 1u << (texid & 31);
-}
-
 static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                              uint32_t hqTable, int sec_index, int with_var) {
     /* UV-scroll is mirrored: the accumulator-change tile generations rebuild
@@ -3203,8 +3013,6 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                      | (((uint32_t)F->otbias & 0x1Fu) << 24);
         T.matf0 = tgpu_pack_mat0(&F->mat)    /* untextured (blend may be set) */
                 | ((uint32_t)lp_bucket << 24);
-        if (tgpu_bucket_census_on())
-            tgpu_bucket_census(F->mat.blend != 0, lp_bucket);
         uint32_t rc[4];
         rc[0] = rd(cpu, SC->lpColBase + F->c0) & 0xFFFFFFu;
         rc[1] = rd(cpu, SC->lpColBase + F->c1) & 0xFFFFFFu;
@@ -3264,11 +3072,6 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
             (F->tb == -1) ? -1 : (F->tb & 0x7F), F->tgen != 0, 0);
         T.matf0 = tgpu_pack_mat0(&F->mat) | ((uint32_t)hp_bucket << 24);
         T.matf1 = (uint32_t)(F->mat.clut_raw & 0xFFFF);
-        if (tgpu_bucket_census_on()) {
-            int blended = F->mat.blend != 0 || F->matN.blend != 0;
-            tgpu_bucket_census(blended, hp_bucket);
-            tgpu_bucket_census_tex((F->tb == -1) ? -1 : (F->tb & 0x7F), blended);
-        }
         T.matn0 = tgpu_pack_mat0(&F->matN); T.matn1 = (uint32_t)(F->matN.clut_raw & 0xFFFF);
         /* Scroll tile id (flags16 bits 5-12): the vertex stage adds the
          * per-build fractional V offset for this Tiledef (zero when the
@@ -3595,24 +3398,6 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
     }
     if (T->unbuildable == 0) T->ownFrame = openpete_frame;
     return T->unbuildable;
-}
-
-static void tgpu_bucket_census_print(void) {
-    if (!tgpu_bucket_census_on()) return;
-    static long last;
-    long tot = s_bkc_blend_mat + s_bkc_blend_stock + s_bkc_op_mat + s_bkc_op_stock;
-    if (tot == last) return;
-    last = tot;
-    fprintf(stderr, "[bkt-cen] baked faces: blended mat=%ld stock=%ld | "
-                    "opaque mat=%ld stock=%ld%s\n",
-            s_bkc_blend_mat, s_bkc_blend_stock, s_bkc_op_mat, s_bkc_op_stock,
-            (s_bkc_blend_mat && s_bkc_blend_stock)
-                ? "  <- MIXED blend arena" : "");
-    fprintf(stderr, "[bkt-cen] Tiledefs on blended HP faces:");
-    for (int t = 0; t < 128; t++)
-        if (s_bkc_blend_tex[t >> 5] & (1u << (t & 31)))
-            fprintf(stderr, " %d", t);
-    fprintf(stderr, "\n");
 }
 
 static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
@@ -4740,7 +4525,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_vanim_pres++;                /* new build → prior lerp/roll bank stamps go stale */
     terrain_texrecords(cpu);
     terrain_animdbg(cpu);
-    terrain_abr_scan(cpu);
     tsc_census();
     {   /* OPENPETE_TERRAIN_OCCL_DBG: occlusion-cull census (~1/120 walks) */
         static int on = -1, n; static long prev_tris;
@@ -4869,20 +4653,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * tier-swap that note protects is verified against the green-stripe regression
      * at the fogged horizon under --no-lod, not just the seam view.) */
     int lod_handoff = s_lod_handoff && !openpete_no_lod;
-    /* Cross-feeder global-consistency probe (rides the reveal-census env):
-     * prints the nl/fog values THIS walk sees + the global's address, so a
-     * per-module duplicate of openpete_no_lod / openpete_fog_scale shows up
-     * as a value or address mismatch vs the [reveal-census] line. */
-    {
-        static int s_p = -1; static unsigned s_last = 0;
-        if (s_p < 0) { const char* e = getenv("OPENPETE_MOBY_REVEAL_CENSUS"); s_p = (e && *e && *e != '0'); }
-        if (s_p && openpete_frame >= s_last + 100u) {
-            s_last = openpete_frame;
-            fprintf(stderr, "[terrain-walk] f=%u nl=%d@%p fogscale=%.4f handoff=%d faithful=%d\n",
-                    openpete_frame, openpete_no_lod, (void*)&openpete_no_lod,
-                    s_fogscale, lod_handoff, tier_faithful);
-        }
-    }
     if (s_nearz < 0.0) {     /* near plane in world/16 view-Z (env-tunable) */
         const char* e = getenv("OPENPETE_TERRAIN_NEARZ");
         s_nearz = (e && *e) ? atof(e) : 1.0;
@@ -5015,7 +4785,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
     uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
     tsc_vert_anim_refresh(cpu, sectorPtr, sectorCnt);  /* geometry env-anim liveness */
-    md_dump_all(cpu, sectorPtr, sectorCnt, lqTable, hqTable, texTblMode);  /* offline-analysis dump (env-gated) */
     /* Visible-sector index set: canonical 4:3 verdict (D_800771C8) at native
      * aspect; occlusion-group candidate set in widescreen (terrain_vislist). */
     static uint16_t visidx[1024];
@@ -5543,7 +5312,6 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     s_tgcl_nearb - cen0[9], s_tgcl_nodraw - cen0[10],
                     s_tgcl_prim - cen0[11], s_tgcl_pcov - cen0[12]);
         tgpu_census();
-        tgpu_bucket_census_print();
         if (op_prof_on()) {   /* the claim-ratchet metric, per present */
             static int id_secs = -1, id_claims = -1;
             if (id_secs < 0)   id_secs   = op_prof_intern("tc.secs");
@@ -6526,9 +6294,8 @@ static void terrain_feed_native(CPUState* cpu) {
     openpete_native_scene_set_presnap(1);
     /* OPENPETE_TERRAIN_PXPROBE=x,y[,f0,f1] (walk space): print every terrain
      * tri covering that point with its identity + depth inputs, for VBLs in
-     * [f0,f1] (default 1899-1904). The terrain-side complement of
-     * OPENPETE_SCENEPROBE: sec/face/tier/slots attribution the scene probe
-     * cannot give. */
+     * [f0,f1] (default 1899-1904). Gives the sector/face/tier/slot attribution
+     * behind a pixel, which the completed scene no longer carries. */
     { static int s_pxp = -1; static float ppx, ppy;
       static unsigned pf0 = 1899, pf1 = 1904;
       if (s_pxp < 0) { const char* e = getenv("OPENPETE_TERRAIN_PXPROBE");

@@ -59,9 +59,7 @@ controls is Moby+0x51), not by hashing a whole moby pool — pools
 contain hundreds of other gameplay-controlled bytes that any
 unrelated render-channel leak can perturb. See
 `moby_pool_state` (open) for the catch-all that owns the pool
-regions; `OPENPETE_HASHTIME_MWD_DUMP` (game_extras_impl.c) gives a
-direct per-frame check that the m_WasDrawn byte itself matches
-across aspects."""
+regions."""
 substitution_sites = [
     # iter-start clear (force-pass billboards) — GENERATED (void replace_call):
     # `mwasdrawn_clear_store(cpu, ea, val)` sets the native flags to 1 then stores.

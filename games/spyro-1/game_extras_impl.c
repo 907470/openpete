@@ -92,120 +92,9 @@ void game_on_overlay_init(CPUState* cpu) {
 
 extern unsigned openpete_frame;
 
-/* --- Optional write-watcher for channel-leak investigations -------------
- *
- * Set the following env vars to log every byte/half/word write that
- * touches [LO, HI):
- *
- *   OPENPETE_WATCH_LO=0x80070C00
- *   OPENPETE_WATCH_HI=0x80071000
- *   OPENPETE_WATCH_FRAME_MAX=20         (optional; cap noise)
- *
- * Output: stderr, one line per write:
- *   WATCH frame=N pc=0xPPPPPPPP addr=0xAAAAAAAA size=B val=0xVV
- *
- * Regen with `OPENPETE_REGEN_PC_TRACKING=1 bash scripts/regen-recomp.sh`
- * first so cpu->pc reflects the writing MIPS instruction. The recipe
- * for closing a render→gameplay channel is in
- * notes/plans/openpete-presentation-decoupling.md "Order of
- * operations for each new channel". */
-static struct {
-    void (*orig_w)(uint32_t, uint32_t);
-    void (*orig_h)(uint32_t, uint16_t);
-    void (*orig_b)(uint32_t, uint8_t);
-    CPUState* cpu;
-    uint32_t lo, hi;
-    int frame_min;
-    int frame_max;
-    int active;
-} g_watch = {0};
-
-static int watch_should_log(uint32_t addr) {
-    if (!g_watch.active) return 0;
-    if (addr < g_watch.lo || addr >= g_watch.hi) return 0;
-    if (g_watch.frame_min > 0
-        && (int)openpete_frame < g_watch.frame_min) return 0;
-    if (g_watch.frame_max > 0
-        && (int)openpete_frame > g_watch.frame_max) return 0;
-    return 1;
-}
-static void watch_log(uint32_t addr, uint32_t val, int size) {
-    extern int openpete_speculative;
-    fprintf(stderr,
-            "WATCH%s frame=%u pc=0x%08x ra=0x%08x addr=0x%08x size=%d val=0x%0*x\n",
-            openpete_speculative ? "-SPEC" : "",
-            openpete_frame, g_watch.cpu->pc, g_watch.cpu->ra,
-            addr, size, size * 2, val);
-}
-static void watch_w(uint32_t a, uint32_t v) {
-    /* A 4-byte store overlaps the watch range if any of its 4 bytes
-     * fall inside; check the start byte (most common case) and then
-     * the tail byte to catch stores straddling the LO boundary. */
-    if (watch_should_log(a) || watch_should_log(a + 3)) watch_log(a, v, 4);
-    g_watch.orig_w(a, v);
-}
-static void watch_h(uint32_t a, uint16_t v) {
-    if (watch_should_log(a)) watch_log(a, v, 2);
-    g_watch.orig_h(a, v);
-}
-static void watch_b(uint32_t a, uint8_t v) {
-    if (watch_should_log(a)) watch_log(a, v, 1);
-    g_watch.orig_b(a, v);
-}
-
-static void install_watch_from_env(CPUState* cpu) {
-    const char* lo_s = getenv("OPENPETE_WATCH_LO");
-    const char* hi_s = getenv("OPENPETE_WATCH_HI");
-    if (!lo_s || !hi_s) return;
-    g_watch.cpu       = cpu;
-    g_watch.lo        = (uint32_t)strtoul(lo_s, NULL, 0);
-    g_watch.hi        = (uint32_t)strtoul(hi_s, NULL, 0);
-    const char* fm_s  = getenv("OPENPETE_WATCH_FRAME_MAX");
-    g_watch.frame_max = fm_s ? atoi(fm_s) : 0;
-    const char* fn_s  = getenv("OPENPETE_WATCH_FRAME_MIN");
-    g_watch.frame_min = fn_s ? atoi(fn_s) : 0;
-    g_watch.orig_w    = cpu->write_word;
-    g_watch.orig_h    = cpu->write_half;
-    g_watch.orig_b    = cpu->write_byte;
-    cpu->write_word   = watch_w;
-    cpu->write_half   = watch_h;
-    cpu->write_byte   = watch_b;
-    g_watch.active    = 1;
-    fprintf(stderr,
-            "[watch] installed: [0x%08x, 0x%08x) frame_max=%d\n",
-            g_watch.lo, g_watch.hi, g_watch.frame_max);
-}
-
 void game_apply_runtime_quirks(CPUState* cpu) {
     (void)cpu;
     /* TODO Phase 1c — preamble fixes, known-bad-instruction workarounds. */
-}
-
-/* moby_pool_state diagnostic: dump per-iteration cone-test inputs at
- * 0x80022C0C for a target slot/frame range. Active iff
- * OPENPETE_DIAG_CONE_SLOT is set. Reads g_LevelMobys head pointer at
- * 0x80075828, computes slot = (fp - *g_LevelMobys) / 0x58, and only
- * logs when slot matches and frame is in [from,to]. The substitution
- * at code_generator.cpp 0x80022C0C calls openpete_diag_cone_dump after
- * computing the verdict — see render_channels.toml moby_pool_state. */
-static int s_diag_cone_active = -1;
-static int s_diag_cone_slot   = -1;
-static int s_diag_cone_from   = 0;
-static int s_diag_cone_to     = 0;
-
-static void diag_cone_init(void) {
-    if (s_diag_cone_active != -1) return;
-    const char* slot_s = getenv("OPENPETE_DIAG_CONE_SLOT");
-    if (!slot_s) { s_diag_cone_active = 0; return; }
-    s_diag_cone_slot = atoi(slot_s);
-    const char* from_s = getenv("OPENPETE_DIAG_CONE_FROM");
-    const char* to_s   = getenv("OPENPETE_DIAG_CONE_TO");
-    s_diag_cone_from = from_s ? atoi(from_s) : 0;
-    s_diag_cone_to   = to_s   ? atoi(to_s)   : 0x7fffffff;
-    s_diag_cone_active = 1;
-    fprintf(stderr,
-            "[diag-cone] slot=%d frames=[%d,%d]\n",
-            s_diag_cone_slot, s_diag_cone_from, s_diag_cone_to);
 }
 
 /* §7.5 terrain-reproject validation probe (read-only). Per terrain
@@ -263,48 +152,6 @@ void openpete_envvert_probe(void* cpu_v, uint32_t w0, uint32_t w1,
     fwrite(b, 1, 48, s_ev_fp);
 }
 
-void openpete_diag_cone_dump(void* cpu_v,
-                             int32_t mac1_abs,
-                             int32_t mac3,
-                             uint8_t native_pass) {
-    diag_cone_init();
-    if (!s_diag_cone_active) return;
-    if ((int)openpete_frame < s_diag_cone_from
-        || (int)openpete_frame > s_diag_cone_to) return;
-    CPUState* cpu = (CPUState*)cpu_v;
-    /* g_LevelMobys head pointer at 0x80075828 — *(uint32_t*) deref via
-     * read_word. Compute slot = ($fp - head) / 0x58. */
-    uint32_t head = cpu->read_word(0x80075828u);
-    if (!head) return;
-    uint32_t fp = cpu->fp;
-    if (fp < head) return;
-    uint32_t off = fp - head;
-    if (off % 0x58u) return;
-    int slot = (int)(off / 0x58u);
-    if (s_diag_cone_slot >= 0 && slot != s_diag_cone_slot) return;
-    /* Class is at offset 0x36 (lhu $s5, 0x36($fp) at 0x80022BD4). */
-    uint16_t cls = cpu->read_half(fp + 0x36u);
-    /* Position bytes (8-bit signed coords at 0x14/0x16/0x18 in PSX
-     * convention, but Spyro mobys store world XYZ as int32 at 0x0c?
-     * Just dump a few well-known fields that don't touch presentation. */
-    int32_t pos_x = (int32_t)cpu->read_word(fp + 0x0Cu);
-    int32_t pos_y = (int32_t)cpu->read_word(fp + 0x10u);
-    int32_t pos_z = (int32_t)cpu->read_word(fp + 0x14u);
-    /* MAC2 lives in gte_data[26]; useful for the Y-cone follow-up at
-     * 0x80022C48..C68 which culls on `MAC3+403-3*|MAC2| <= 0`. */
-    int32_t mac2 = (int32_t)cpu->gte_data[26];
-    fprintf(stderr,
-            "[diag-cone] f=%u slot=%d cls=0x%04x fp=0x%08x "
-            "|MAC1|=%d MAC2=%d MAC3=%d 4*(|MAC1|-102)=%d 3*(MAC3+77)=%d "
-            "verdict=%u pos=(%d,%d,%d)\n",
-            openpete_frame, slot, cls, fp,
-            mac1_abs, mac2, mac3,
-            4 * (mac1_abs - 102),
-            3 * (mac3 + 77),
-            (unsigned)native_pass,
-            pos_x, pos_y, pos_z);
-}
-
 /* --skip-to-level: load directly into a specific level instead of the
  * normal title-screen + Press-Start + save-file-picker flow.
  *
@@ -357,130 +204,17 @@ int game_resolve_level_arg(const char* arg) {
 }
 
 void game_on_hash_emit(uint32_t frame) {
-    const char* df = getenv("OPENPETE_HASHTIME_CSF_FRAME");
-    if (!df || frame != (uint32_t)atoi(df)) return;
-    uint8_t* ram = openpete_psx_get_ram();
-
-    const char* dp = getenv("OPENPETE_HASHTIME_CSF_DUMP");
-    if (dp) {
-        FILE* fp = fopen(dp, "w");
-        if (fp) {
-            for (uint32_t i = 0; i < 256; i++) {
-                fprintf(fp, "%u,%u\n", i, ram[(0x800771C8u + i) & 0x1FFFFFFFu]);
-            }
-            fclose(fp);
-        }
-    }
-
-    const char* rp = getenv("OPENPETE_HASHTIME_RAM_DUMP");
-    if (rp) {
-        FILE* fp = fopen(rp, "wb");
-        if (fp) {
-            fwrite(ram, 1, 2u * 1024u * 1024u, fp);
-            fclose(fp);
-        }
-    }
-
-    const char* mp = getenv("OPENPETE_HASHTIME_MWD_DUMP");
-    if (mp) {
-        FILE* fp = fopen(mp, "w");
-        if (fp) {
-            uint32_t lvl_ptr = *(uint32_t*)(ram + (0x80075828u & 0x1FFFFFFFu));
-            uint32_t dyn_ptr = *(uint32_t*)(ram + (0x80075890u & 0x1FFFFFFFu));
-            /* Per-byte pool dump: each row "pool,idx,offset,byte". Set
-             * OPENPETE_HASHTIME_MWD_BYTES=1 to dump every byte; otherwise
-             * dump only m_WasDrawn (offset 0x51). */
-            int dump_bytes = (getenv("OPENPETE_HASHTIME_MWD_BYTES") != NULL);
-            if (dump_bytes) {
-                fprintf(fp, "pool,idx,offset,byte\n");
-            } else {
-                fprintf(fp, "pool,idx,m_WasDrawn\n");
-            }
-            if (lvl_ptr) {
-                for (uint32_t i = 0; i < 512; i++) {
-                    if (dump_bytes) {
-                        for (uint32_t b = 0; b < 0x58u; b++) {
-                            uint32_t off = (lvl_ptr + i * 0x58u + b) & 0x1FFFFFFFu;
-                            fprintf(fp, "L,%u,%u,%u\n", i, b, ram[off]);
-                        }
-                    } else {
-                        uint32_t off = (lvl_ptr + i * 0x58u + 0x51u) & 0x1FFFFFFFu;
-                        fprintf(fp, "L,%u,%u\n", i, ram[off]);
-                    }
-                }
-            }
-            if (dyn_ptr) {
-                for (uint32_t i = 0; i < 128; i++) {
-                    if (dump_bytes) {
-                        for (uint32_t b = 0; b < 0x70u; b++) {
-                            uint32_t off = (dyn_ptr + i * 0x70u + b) & 0x1FFFFFFFu;
-                            fprintf(fp, "D,%u,%u,%u\n", i, b, ram[off]);
-                        }
-                    } else {
-                        uint32_t off = (dyn_ptr + i * 0x70u + 0x51u) & 0x1FFFFFFFu;
-                        fprintf(fp, "D,%u,%u\n", i, ram[off]);
-                    }
-                }
-            }
-            fclose(fp);
-        }
-    }
-}
-
-/* --- Per-tick word peek (OPENPETE_PEEK_ADDR) -----------------------------
- *
- * Companion to the write watcher above, which only sees stores routed through
- * cpu->write_*. This samples a guest word at every tick boundary and prints
- * it BOTH ways: straight out of the RAM block, and through cpu->read_word.
- *
- *   RAM value changes with no watched store in between
- *       -> something wrote it outside cpu->write_* (host path, DMA, thunk).
- *   RAM and cpu->read_word disagree
- *       -> the read path is returning something other than what is resident,
- *          which implicates address formation rather than any writer.
- *
- * Env: OPENPETE_PEEK_ADDR=0x800756ac [OPENPETE_PEEK_FRAME_MIN/MAX] */
-static uint32_t s_peek_addr = 0;
-static int      s_peek_min  = 0;
-static int      s_peek_max  = 0;
-static int      s_peek_init = 0;
-
-static void peek_tick(CPUState* cpu) {
-    if (!s_peek_init) {
-        const char* a = getenv("OPENPETE_PEEK_ADDR");
-        const char* lo = getenv("OPENPETE_PEEK_FRAME_MIN");
-        const char* hi = getenv("OPENPETE_PEEK_FRAME_MAX");
-        s_peek_init = 1;
-        s_peek_addr = a ? (uint32_t)strtoul(a, NULL, 0) : 0;
-        s_peek_min  = lo ? atoi(lo) : 0;
-        s_peek_max  = hi ? atoi(hi) : 0;
-    }
-    if (!s_peek_addr) return;
-    if (s_peek_min > 0 && (int)openpete_frame < s_peek_min) return;
-    if (s_peek_max > 0 && (int)openpete_frame > s_peek_max) return;
-    {
-        uint8_t* ram = openpete_psx_get_ram();
-        uint32_t raw = 0;
-        memcpy(&raw, ram + (s_peek_addr & 0x1FFFFFFFu), 4);
-        fprintf(stderr,
-                "PEEK frame=%u addr=0x%08x ram=0x%08x read_word=0x%08x "
-                "s0=0x%08x s1=0x%08x s2=0x%08x gp=0x%08x sp=0x%08x\n",
-                openpete_frame, s_peek_addr, raw, cpu->read_word(s_peek_addr),
-                cpu->s0, cpu->s1, cpu->s2, cpu->gp, cpu->sp);
-    }
+    (void)frame;
+    /* Hook point for per-game state dumps aligned with the hash log's
+     * timing. Spyro needs none. */
 }
 
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     (void)frame_counter;
 
-    peek_tick(cpu);
-
-    /* Install env-var write-watcher on the first frame, after the
-     * runtime has wired cpu->write_byte/half/word. */
-    static int s_watch_init_done = 0;
-    if (!s_watch_init_done) {
-        s_watch_init_done = 1;
-        install_watch_from_env(cpu);
+    static int s_ui_range_done = 0;
+    if (!s_ui_range_done) {
+        s_ui_range_done = 1;
         /* Register the static UI-moby range. g_Hud.m_Mobys[12] lives
          * at PSX vaddr 0x80077FEC (g_Hud at 0x80077FA8 + offset 0x44),
          * sizeof(Moby)=0x58, so the range is
@@ -655,145 +389,10 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     }
 }
 
-/* --- G2 (transform-interp §7): moby slot/address-reuse probe ---------
- * Read-only. Each canonical game tick (this hook fires once per tick,
- * after the fiber yields with consistent RAM — run.c:1321), walk
- * g_LevelMobys and dump {tick, frame, addr, m_Class, m_State,
- * AnimationState, m_Position} per live moby. The G2 question: within
- * the 1–2-frame lag window, does a slot/address get reused by a
- * different logical object such that {addr, m_Class, liveness} reads
- * as false continuity? Analyzed offline.
- *
- * Offsets anchored from the instruction-verified m_Class@+0x36
- * (lhu $s5,0x36($fp) @ 0x80022BD4) + moby.h declaration order:
- *   +0x0C m_Position (i32 x/y/z)   +0x36 m_Class (i16)
- *   +0x3C m_AnimationState (m_Animation,_,m_Frame,m_NextFrame,
- *          m_FrameProgress @ +0x3C..+0x40)   +0x48 m_State (u8)
- * stride 0x58, terminator m_State==0xFF (decomp loaders.c:696).
- * Gate: OPENPETE_G2_LOG=path  OPENPETE_G2_LOG_SKIP=frame
- *       OPENPETE_G2_LOG_TICKS=N (self-closes => clean file under timeout)
- */
-extern unsigned openpete_frame;
-static FILE*    s_g2_fp        = NULL;
-static int      s_g2_init      = 0;
-static uint32_t s_g2_skip      = 0;
-static uint32_t s_g2_tick_cap  = 3000;
-static uint32_t s_g2_ticks     = 0;
-static uint32_t s_g2_last_tick = 0xFFFFFFFFu;
-
 void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
-    (void)frame_counter;
-
-    /* --- G3: per-tick g_Camera log (independent of G2; must run
-     * BEFORE any G2 early-return). g_Camera @ 0x80076DD0 (camera.h,
-     * SHORTMATRIX=0x14): m_ViewMatrix @ +0x14 (9 shorts raw),
-     * m_Position @ +0x28 (3 i32), m_Rotation @ +0x4C (3 i16),
-     * m_State @ +0x58 (u32). Env OPENPETE_CAM_LOG / _SKIP / _TICKS. */
-    {
-        static FILE* s_cam_fp = NULL;
-        static int   s_cam_init = 0;
-        static uint32_t s_cam_skip = 0, s_cam_cap = 250, s_cam_n = 0;
-        if (!s_cam_init) {
-            s_cam_init = 1;
-            const char* p = getenv("OPENPETE_CAM_LOG");
-            if (p && *p) {
-                const char* sk = getenv("OPENPETE_CAM_LOG_SKIP");
-                if (sk && *sk) s_cam_skip = (uint32_t)atoi(sk);
-                const char* tc = getenv("OPENPETE_CAM_LOG_TICKS");
-                if (tc && *tc) s_cam_cap = (uint32_t)atoi(tc);
-                s_cam_fp = fopen(p, "wb");
-                if (s_cam_fp) {
-                    uint32_t h[8] = { 0x4C4D4143u /*"CAML"*/, 1u, 48u,
-                                      0,0,0,0,0 };
-                    fwrite(h, sizeof(h), 1, s_cam_fp);
-                }
-            }
-        }
-        if (s_cam_fp && openpete_frame >= s_cam_skip) {
-            if (s_cam_n >= s_cam_cap) {
-                fflush(s_cam_fp); fclose(s_cam_fp); s_cam_fp = NULL;
-            } else {
-                s_cam_n++;
-                uint32_t C = 0x80076DD0u;
-                uint8_t cb[48];
-                uint32_t lt = cpu->read_word(0x800758C8u);
-                memcpy(cb + 0, &openpete_frame, 4);
-                memcpy(cb + 4, &lt, 4);
-                for (int k = 0; k < 9; k++) {
-                    int16_t v = (int16_t)cpu->read_half(C + 0x14u + k*2u);
-                    memcpy(cb + 8 + k * 2, &v, 2);
-                }
-                for (int k = 0; k < 3; k++) {
-                    int32_t v = (int32_t)cpu->read_word(C + 0x28u + k*4u);
-                    memcpy(cb + 26 + k * 4, &v, 4);
-                }
-                for (int k = 0; k < 3; k++) {
-                    int16_t v = (int16_t)cpu->read_half(C + 0x4Cu + k*2u);
-                    memcpy(cb + 38 + k * 2, &v, 2);
-                }
-                uint32_t cstate = cpu->read_word(C + 0x58u);
-                memcpy(cb + 44, &cstate, 4);
-                fwrite(cb, 1, 48, s_cam_fp);
-            }
-        }
-    }
-
-    if (!s_g2_init) {
-        s_g2_init = 1;
-        const char* p = getenv("OPENPETE_G2_LOG");
-        if (p && *p) {
-            const char* sk = getenv("OPENPETE_G2_LOG_SKIP");
-            if (sk && *sk) s_g2_skip = (uint32_t)atoi(sk);
-            const char* tc = getenv("OPENPETE_G2_LOG_TICKS");
-            if (tc && *tc) s_g2_tick_cap = (uint32_t)atoi(tc);
-            s_g2_fp = fopen(p, "wb");
-            if (s_g2_fp) {
-                uint32_t h[8] = { 0x47324C47u /*"GL2G"*/, 1u, 32u,
-                                  0,0,0,0,0 };
-                fwrite(h, sizeof(h), 1, s_g2_fp);
-                fflush(s_g2_fp);
-            }
-        }
-    }
-    if (!s_g2_fp) return;
-    if (openpete_frame < s_g2_skip) return;
-    (void)s_g2_last_tick;
-    /* game_on_frame is ALREADY once-per-canonical-tick (run.c:1321,
-     * ticked_this_iter), so no dedup needed. */
-    if (s_g2_ticks >= s_g2_tick_cap) {                     /* self-close */
-        fflush(s_g2_fp); fclose(s_g2_fp); s_g2_fp = NULL; return;
-    }
-    s_g2_ticks++;
-
-    uint32_t tick = cpu->read_word(0x800758C8u);           /* g_LevelTicks */
-    uint32_t gs   = cpu->read_word(0x800757D8u);           /* g_Gamestate */
-    uint32_t base = cpu->read_word(0x80075828u);           /* g_LevelMobys */
-    if (!base) return;                                     /* no moby pool yet */
-
-    for (uint32_t i = 0; i < 4096u; i++) {
-        uint32_t m = base + i * 0x58u;
-        uint8_t st = cpu->read_byte(m + 0x48u);            /* m_State */
-        if (st == 0xFFu) break;                            /* list terminator */
-        int16_t  cls = (int16_t)cpu->read_half(m + 0x36u);
-        int32_t  px  = (int32_t)cpu->read_word(m + 0x0Cu);
-        int32_t  py  = (int32_t)cpu->read_word(m + 0x10u);
-        int32_t  pz  = (int32_t)cpu->read_word(m + 0x14u);
-        uint8_t  an  = cpu->read_byte(m + 0x3Cu);          /* m_Animation */
-        uint8_t  fr  = cpu->read_byte(m + 0x3Eu);          /* m_Frame */
-        uint8_t  nf  = cpu->read_byte(m + 0x3Fu);          /* m_NextFrame */
-        uint8_t  fp  = cpu->read_byte(m + 0x40u);          /* m_FrameProgress */
-        uint8_t  buf[32];
-        memcpy(buf +  0, &tick, 4);
-        memcpy(buf +  4, &openpete_frame, 4);
-        memcpy(buf +  8, &m,    4);
-        memcpy(buf + 12, &px,   4);
-        memcpy(buf + 16, &py,   4);
-        memcpy(buf + 20, &pz,   4);
-        memcpy(buf + 24, &cls,  2);
-        buf[26] = st; buf[27] = an; buf[28] = fr;
-        buf[29] = nf; buf[30] = fp; buf[31] = (uint8_t)gs;
-        fwrite(buf, 1, 32, s_g2_fp);
-    }
+    (void)cpu; (void)frame_counter;
+    /* Fires once per canonical tick, after the fiber yields with consistent
+     * RAM. Spyro needs no post-tick work. */
 }
 
 /* Each Spyro overlay's first word at 0x8007AA38 is its id (LEVEL_BALLOON

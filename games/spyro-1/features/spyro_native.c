@@ -1213,110 +1213,7 @@ static void spyro_walk_eval(CPUState* cpu, walk_stats* st) {
     }
     st->walk = s_swtri_n; st->expected = en; st->n = n; st->cnt_ok = (s_swtri_n == en);
 }
-/* OPENPETE_SPYRO_MISSDUMP=1 (with VERIFY): order-INDEPENDENT coverage — for
- * every captured .s prim, NN-match its centroid against the walk tris and
- * print the unmatched ones with material words. Names exactly what the walk
- * fails to produce (the in-order compare above cascades on one insertion, so
- * its % is unusable for this). */
-static void spyro_missdump(void) {
-    static int s_md = -1; static int s_done = 0;
-    if (s_md < 0) { const char* e = getenv("OPENPETE_SPYRO_MISSDUMP"); s_md = (e && *e && *e != '0'); }
-    if (!s_md || s_done > 6) return;
-    s_done++;
-    int missn = 0;
-    for (int p = 0; p < s_gte_n; p++) {
-        prim_t* pr = &s_gte[p];
-        if (pr->nv < 3) continue;
-        double pcx = 0, pcy = 0;
-        for (int k = 0; k < pr->nv; k++) { pcx += pr->x[k]; pcy += pr->y[k]; }
-        pcx /= pr->nv; pcy /= pr->nv;
-        double best = 1e18;
-        for (int w = 0; w < s_swtri_n; w++) {
-            double wcx = (s_swtri[w].v[0].sx + s_swtri[w].v[1].sx + s_swtri[w].v[2].sx) / 3.0;
-            double wcy = (s_swtri[w].v[0].sy + s_swtri[w].v[1].sy + s_swtri[w].v[2].sy) / 3.0;
-            double d = fabs(wcx - pcx) + fabs(wcy - pcy);
-            if (d < best) best = d;
-        }
-        int bw = -1;
-        for (int w = 0; w < s_swtri_n; w++) {
-            double wcx = (s_swtri[w].v[0].sx + s_swtri[w].v[1].sx + s_swtri[w].v[2].sx) / 3.0;
-            double wcy = (s_swtri[w].v[0].sy + s_swtri[w].v[1].sy + s_swtri[w].v[2].sy) / 3.0;
-            double d = fabs(wcx - pcx) + fabs(wcy - pcy);
-            if (d <= best + 0.001) bw = w;
-        }
-        if (best > 4.0) {
-            fprintf(stderr, "[spyro-miss f=%u] prim[%d] code=%02X nv=%d ctr=(%.0f,%.0f) nn=%.1f rgb0=%06X clut=%04X tpage=%04X uv0=(%d,%d) raw1=%08X\n",
-                    openpete_frame, p, pr->code, pr->nv, pcx, pcy, best,
-                    pr->rgb[0] & 0xFFFFFF, pr->clut & 0xFFFF, pr->tpage & 0xFFFF,
-                    pr->u[0], pr->v[0], pr->nraw > 1 ? pr->raw[1] : 0);
-            missn++;
-        } else if (bw >= 0) {
-            /* position-matched: report big colour deltas (per-channel L1 on v0) */
-            uint32_t wc = s_swtri[bw].v[0].rgb & 0xFFFFFF, pc = pr->rgb[0] & 0xFFFFFF;
-            int dr = (int)(wc & 0xFF) - (int)(pc & 0xFF);
-            int dg = (int)((wc >> 8) & 0xFF) - (int)((pc >> 8) & 0xFF);
-            int db = (int)((wc >> 16) & 0xFF) - (int)((pc >> 16) & 0xFF);
-            int dl = (dr<0?-dr:dr) + (dg<0?-dg:dg) + (db<0?-db:db);
-            if (dl > 96) {
-                static int s_cm = 0;
-                if (s_cm++ < 24)
-                    fprintf(stderr, "[spyro-colmiss f=%u] prim[%d] ctr=(%.0f,%.0f) walk=%06X prim=%06X clut=%04X uv0=(%d,%d)\n",
-                            openpete_frame, p, pcx, pcy, wc, pc, pr->clut & 0xFFFF, pr->u[0], pr->v[0]);
-            }
-        }
-    }
-    fprintf(stderr, "[spyro-miss f=%u] unmatched prims: %d/%d\n", openpete_frame, missn, s_gte_n);
-}
-
-/* OPENPETE_SPYRO_EXTRADUMP=1 (with VERIFY): the REVERSE of spyro_missdump —
- * every walk tri whose centroid has no .s tri near it, i.e. geometry the walk
- * INVENTS. (missdump answers "what does the walk fail to produce?"; a face that
- * paints where the .s drew nothing needs the opposite question.) The expected
- * tri list splits quads GT4-style, so the two centroid sets align 1:1. A clean
- * 0/N here says a wrong-looking face is a SHADING fault, not a cull/split one. */
-static void spyro_extradump(void) {
-    static int s_ed = -1; static int s_done = 0;
-    if (s_ed < 0) { const char* e = getenv("OPENPETE_SPYRO_EXTRADUMP"); s_ed = (e && *e && *e != '0'); }
-    if (!s_ed || s_done > 6) return;
-    s_done++;
-    static double ecx[MAX_SWTRI], ecy[MAX_SWTRI]; int en = 0;
-    for (int p = 0; p < s_gte_n && en + 2 < MAX_SWTRI; p++) {
-        prim_t* pr = &s_gte[p];
-        if (pr->nv < 3) continue;
-        int splits = (pr->nv == 4) ? 2 : 1;
-        for (int s = 0; s < splits; s++) {
-            int a,b,c; if (s == 0) { a=0;b=1;c=2; } else { a=1;b=3;c=2; }
-            ecx[en] = (pr->x[a]+pr->x[b]+pr->x[c])/3.0;
-            ecy[en] = (pr->y[a]+pr->y[b]+pr->y[c])/3.0;
-            en++;
-        }
-    }
-    int extra = 0;
-    for (int w = 0; w < s_swtri_n; w++) {
-        swtri* t = &s_swtri[w];
-        double wcx = (t->v[0].sx + t->v[1].sx + t->v[2].sx)/3.0;
-        double wcy = (t->v[0].sy + t->v[1].sy + t->v[2].sy)/3.0;
-        double best = 1e18;
-        for (int e = 0; e < en; e++) {
-            double d = fabs(ecx[e]-wcx) + fabs(ecy[e]-wcy);
-            if (d < best) best = d;
-        }
-        if (best > 3.0) {
-            fprintf(stderr, "[spyro-extra f=%u] tri[%d] ctr=(%.1f,%.1f) nn=%.1f vz=(%.0f,%.0f,%.0f) rgb=%06X,%06X,%06X clut=(%d,%d) uv0=(%d,%d)\n",
-                    openpete_frame, w, wcx, wcy, best,
-                    t->v[0].vz, t->v[1].vz, t->v[2].vz,
-                    t->v[0].rgb & 0xFFFFFF, t->v[1].rgb & 0xFFFFFF, t->v[2].rgb & 0xFFFFFF,
-                    t->clut_x, t->clut_y, t->v[0].u, t->v[0].v);
-            extra++;
-        }
-    }
-    fprintf(stderr, "[spyro-extra f=%u] unmatched walk tris: %d/%d (expected tris=%d)\n",
-            openpete_frame, extra, s_swtri_n, en);
-}
-
 static void spyro_walk_compare(CPUState* cpu) {
-    spyro_missdump();
-    spyro_extradump();
     walk_stats st; spyro_walk_eval(cpu, &st);
     fprintf(stderr, "[spyro-walk f=%u] walk=%d expected=%d (prims=%d) %s pos=%.1f%% rgb=%.1f%% uv=%.1f%%  first_bad=%d\n",
             openpete_frame, st.walk, st.expected, s_gte_n, st.cnt_ok ? "CNT-OK" : "CNT-MISMATCH",
@@ -1335,26 +1232,6 @@ static void spyro_walk_compare(CPUState* cpu) {
 static void spyro_feed_walk_ex(CPUState* cpu, int reproject) {
     if (reproject) spyro_project_all(cpu);  /* native float verts -> s_sproj (skip if caller filled it) */
     build_spyro_walk(cpu);                  /* face-stream topology+colour+UV -> s_swtri */
-    /* OPENPETE_SPYRO_WALKBOX="x0,y0,x1,y1,frame": dump the FEED build's walk
-     * tris with a centroid in the PSX-screen box — position/vz/material/blend,
-     * i.e. exactly what gets pushed into the scene from this region. */
-    { static int s_wb = -1; static int bx0,by0,bx1,by1,bf;
-      if (s_wb < 0) { const char* e = getenv("OPENPETE_SPYRO_WALKBOX");
-          s_wb = 0;
-          if (e && sscanf(e, "%d,%d,%d,%d,%d", &bx0,&by0,&bx1,&by1,&bf) >= 5) s_wb = 1; }
-      if (s_wb == 1 && openpete_frame >= (unsigned)bf && openpete_frame < (unsigned)bf + 3) {
-          for (int i = 0; i < s_swtri_n; i++) {
-              swtri* w = &s_swtri[i];
-              double cx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0;
-              double cy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0;
-              if (cx < bx0 || cx > bx1 || cy < by0 || cy > by1) continue;
-              fprintf(stderr, "[spyro-wbox f=%u] tri[%d] ctr=(%.0f,%.0f) vz=(%.0f,%.0f,%.0f) rgb0=%06X tex=%d tp=(%d,%d) clut=(%d,%d) bpp=%d blend=%d uv0=(%d,%d)\n",
-                      openpete_frame, i, cx, cy,
-                      w->v[0].vz, w->v[1].vz, w->v[2].vz,
-                      w->v[0].rgb & 0xFFFFFF, w->textured, w->tpage_x, w->tpage_y,
-                      w->clut_x, w->clut_y, w->bpp, w->blend, w->v[0].u, w->v[0].v);
-          }
-      } }
     if (s_swtri_n <= 0) return;
     /* .s OT key, Spyro walk: r_pete keys every SEGMENT at
      * max(0, (segment-origin viewZ >> 7) − g_Spyro.sortDepth) (@80023F8C,

@@ -3582,17 +3582,6 @@ static int run_host_loop(const openpete_options_t* opts) {
              * key for it and ships unbound so nothing changes by default. */
             bool alt_enter = openpete_keymap_scancode_down(SDL_SCANCODE_RETURN) &&
                              (openpete_host_input_modstate() & SDL_KMOD_ALT) != 0;
-            /* OPENPETE_FS_TOGGLE_AT_VBL=n: toggle fullscreen once when the VBL
-             * counter reaches n — the fullscreen transition, reproducible
-             * from a harness. Diagnostic only. */
-            {
-                static long s_fs_at = -2;
-                if (s_fs_at == -2) { const char *e = getenv("OPENPETE_FS_TOGGLE_AT_VBL"); s_fs_at = (e && *e) ? atol(e) : -1; }
-                if (s_fs_at >= 0 && (long)openpete_frame >= s_fs_at) {
-                    g_native_fs_toggle_request = 1; s_fs_at = -1;
-                    OPL_INFO_F("native", "fullscreen toggle requested at VBL %u", openpete_frame);
-                }
-            }
             if ((alt_enter && !prev_alt_enter) ||
                 openpete_key_pressed(OPK_FULLSCREEN) ||
                 g_native_fs_toggle_request) {
@@ -4083,29 +4072,6 @@ static int run_host_loop(const openpete_options_t* opts) {
                         openpete_interp_recapture_committed();
                     }
                 }
-
-                /* Spine health probe (OPENPETE_INTERP_QUERYTEST): confirm the
-                 * interp ring PAIRS consecutive snapshots when gameplay state
-                 * differs (paired=1) vs dedupes a static screen (paired=0).
-                 * Verifies the one runtime-dependent piece of the sub-tick
-                 * spine in the reliable headless level-load path. Read-only. */
-                {
-                    static int qt = -1;
-                    if (qt < 0) { const char* e = getenv("OPENPETE_INTERP_QUERYTEST"); qt = (e && *e && *e != '0'); }
-                    if (qt && (openpete_frame % 120u) == 0) {
-                        double a = 0.0;
-                        const openpete_interp_snapshot_t *pv = NULL, *cv = NULL;
-                        int paired = openpete_interp_query(
-                            op_now(), g_openpete_tick_period_ns, &a, &pv, &cv);
-                        fprintf(stderr, "[interp-query f=%u] paired=%d captures=%llu dedupe=%llu\n",
-                                openpete_frame, paired,
-                                (unsigned long long)openpete_interp_total_captures(),
-                                (unsigned long long)openpete_interp_total_dedupe_skips());
-                    }
-                }
-                /* Numerical LOO gate lives game-side (it needs g_Camera/g_Spyro
-                 * addresses; core stays address-free) — see
-                 * spyro_interp_regions.c::spyro_interp_capture_objs. */
             }
         }
 

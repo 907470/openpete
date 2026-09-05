@@ -823,20 +823,6 @@ static void particle_build(CPUState* cpu) {
 
 static void particle_compare(CPUState* cpu) {
     particle_build(cpu);
-    /* OPENPETE_PARTICLE_PRIMDUMP=1 (with VERIFY): print every captured .s prim
-     * with position/colour — locates content og draws that the native pool walk
-     * doesn't produce (e.g. the burning-enemy smoke question: are the big black
-     * blobs .s PARTICLE prims at all?). */
-    if (getenv("OPENPETE_PARTICLE_PRIMDUMP")) {
-        for (int p = 0; p < s_prim_n; p++) {
-            prim_t* pr = &s_prim[p];
-            fprintf(stderr, "[part-prim f=%u] code=%02X nv=%d ctr=(%.0f,%.0f) rgb0=%06X stp=%d tpage=%04X\n",
-                    openpete_frame, pr->code, pr->nv,
-                    pr->nv ? (pr->x[0]+pr->x[1]+pr->x[2]+pr->x[3])/(pr->nv==3?3.0:4.0) : -1.0,
-                    pr->nv ? (pr->y[0]+pr->y[1]+pr->y[2]+pr->y[3])/(pr->nv==3?3.0:4.0) : -1.0,
-                    pr->rgb[0] & 0xFFFFFF, pr->stp, pr->tpage & 0xFFFF);
-        }
-    }
     int ft4 = 0; for (int p = 0; p < s_prim_n; p++) if (s_prim[p].code == 0x2C || s_prim[p].code == 0x2E) ft4++;
     int natft4 = 0; for (int q = 0; q < s_fq_n; q++) if (s_fq[q].sel != 0) natft4++;  /* sel 0 = non-FT4 */
     int n = natft4 < ft4 ? natft4 : ft4;
@@ -1894,37 +1880,6 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
 
     render_path_record(path, startp, endp);
     particle_path_census_note(cpu, tag[0], endp - startp);
-
-    /* sel-class census (uncapped) — sweep tool to find which levels spawn each
-     * particle class. The pool histogram detects a class even when culled (it
-     * found sel 1 at f3797 despite 0 rendered), so it reliably answers "does this
-     * level use sel N?". Run per-level via --skip-to-level + a bk2/gameplay:
-     *   [selnew] announces the first sighting of each class (grep this per level),
-     *   [selsum] is a periodic running max. tag 'p' only. */
-    if (tag[0] == 'p' && getenv("OPENPETE_PARTICLE_CENSUS")) {
-        static int seen[8] = {0}, announced[8] = {0};
-        static unsigned lastsum = 0;
-        int sh[8] = {0}; uint32_t pp = s_part_pool;
-        for (int i = 0; i < 320; i++, pp += 0x20) {
-            uint32_t hdr = cpu->read_word(pp);
-            int sel = (int)((hdr >> 8) & 0xFF);
-            if (sel == 0xFF) break;
-            if (sel & 0x80) continue;
-            sh[sel < 7 ? sel : 7]++;
-        }
-        for (int s = 0; s < 8; s++) {
-            if (sh[s] > seen[s]) seen[s] = sh[s];
-            if (sh[s] && !announced[s]) {
-                announced[s] = 1;
-                fprintf(stderr, "[selnew f=%u] sel %d FIRST SEEN (count=%d)\n", openpete_frame, s, sh[s]);
-            }
-        }
-        if (openpete_frame - lastsum >= 1024) {
-            lastsum = openpete_frame;
-            fprintf(stderr, "[selsum f=%u] max-seen s0=%d s1=%d s2=%d s3=%d s4=%d s5=%d s6+=%d\n",
-                    openpete_frame, seen[0], seen[1], seen[2], seen[3], seen[4], seen[5], seen[7]);
-        }
-    }
 
     if (verify) {
         static int s_trace[3] = {0,0,0};

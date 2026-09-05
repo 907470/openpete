@@ -853,35 +853,6 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
                 s_scene[s_scene_n].v[k].rgba = (c & 0xFF000000u) | (b << 16) | (g << 8) | r;
             }
         }
-        /* OPENPETE_SCENE_TRIDUMP="VBL:path": one-shot text dump of every scene
-         * tri fed during the first present of that VBL — PRE-snap float screen
-         * coords + category/tag, for offline seam-geometry classification. */
-        {
-            static const char* td_env; static int td_init, td_done, td_vbl = -1;
-            static FILE* td_f; static unsigned td_open_frame;
-            extern unsigned openpete_frame;
-            if (!td_init) { td_init = 1; td_env = getenv("OPENPETE_SCENE_TRIDUMP");
-                            if (td_env) td_vbl = atoi(td_env); }
-            if (td_env && !td_done) {
-                if (!td_f && (unsigned)td_vbl == openpete_frame) {
-                    const char* c = strchr(td_env, ':');
-                    if (c && c[1]) td_f = fopen(c + 1, "w");
-                    td_open_frame = openpete_frame;
-                }
-                if (td_f && openpete_frame != td_open_frame) {
-                    fclose(td_f); td_f = NULL; td_done = 1;
-                } else if (td_f) {
-                    const scene_tri_t* st = &s_scene[s_scene_n];
-                    fprintf(td_f, "%d %d %u %u", category, st->blend,
-                            (unsigned)s_cur_tag, (unsigned)st->group);
-                    for (int k = 0; k < 3; k++)
-                        fprintf(td_f, " %.9g %.9g %.9g",
-                                (double)st->v[k].sx, (double)st->v[k].sy,
-                                (double)st->v[k].z);
-                    fputc('\n', td_f);
-                }
-            }
-        }
         /* --vertex-precision integer: re-snap the (still 512x240) screen coords to
          * the PSX integer pixel grid — the polygon wobble. TRUNCATE (floor), not
          * round: the GTE derives SXY via MAC0 >> 16, an arithmetic shift = floor,
@@ -3069,13 +3040,8 @@ static void upload_synced_textures(void)
      * present, which has no scene of its own in the ring. */
     const uint32_t upto = s_ps_slot ? s_ps_slot->scene_id : UINT32_MAX;
     SDL_LockMutex(vram_mx());
-    static int s_vjlog = -1; static int s_vjlog_n = 0;   /* diagnostic: entries applied per present */
-    if (s_vjlog < 0) { const char* e = getenv("OPENPETE_DIAG_PRESENT_LOG"); s_vjlog = (e && *e) ? atoi(e) : 0; }
     while (s_vj_n > 0) {
         const vram_jentry_t *e = &s_vj[s_vj_head];
-        if (s_vjlog_n < s_vjlog * 4) { s_vjlog_n++; extern unsigned openpete_frame;
-            fprintf(stderr, "[vram-journal] apply f=%u scene_id=%u full=%d nrects=%d bytes=%zu queued=%d\n",
-                    openpete_frame, e->scene_id, e->full, e->nrects, e->pix_bytes, s_vj_n); }
         if (upto != UINT32_MAX && (int32_t)(e->scene_id - upto) > 0) {
             static int s_held_log = 0;   /* diagnostic: a journal head held back by scene order */
             if (s_held_log < 20) {
@@ -3658,38 +3624,6 @@ static void native_depth_prepass(void)
                         P[0][2], P[1][2], P[2][2],
                         nl > 1e-9 ? fabs(N[2])/nl : -1.0);
                 printed++;
-            }
-        }
-    }
-
-    /* OPENPETE_OCCL_TRIDUMP=SX,SY[,MINFRAME]: print EVERY scene tri covering
-     * the given PSX point — category/blend/textured + per-vert view-Z — the
-     * direct "what is actually fed at this pixel" comparison for occlusion
-     * triage. MINFRAME filters on openpete_frame (default 0). */
-    {
-        extern unsigned openpete_frame;
-        const char* td = getenv("OPENPETE_OCCL_TRIDUMP");
-        static int td_prints = 0;
-        if (td && *td && td_prints < 40) {
-            float psx = 0, psy = 0; unsigned fmin = 0;
-            if (sscanf(td, "%f,%f,%u", &psx, &psy, &fmin) >= 2 && openpete_frame >= fmin) {
-                for (int t = 0; t < scene_n && td_prints < 40; t++) {
-                    float x0 = scene[t].v[0].sx, x1 = scene[t].v[1].sx, x2 = scene[t].v[2].sx;
-                    float y0 = scene[t].v[0].sy, y1 = scene[t].v[1].sy, y2 = scene[t].v[2].sy;
-                    if (psx < fminf(x0, fminf(x1, x2)) || psx > fmaxf(x0, fmaxf(x1, x2))) continue;
-                    if (psy < fminf(y0, fminf(y1, y2)) || psy > fmaxf(y0, fmaxf(y1, y2))) continue;
-                    fprintf(stderr, "[occl-uv] u=(%.2f,%.2f,%.2f) v=(%.2f,%.2f,%.2f) koff=%.1f\n",
-                            scene[t].v[0].u, scene[t].v[1].u, scene[t].v[2].u,
-                            scene[t].v[0].v, scene[t].v[1].v, scene[t].v[2].v,
-                            scene[t].koff);
-                    fprintf(stderr, "[occl-tri f=%u] cat=%d blend=%d tex=%d sxy=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) vz=(%.0f,%.0f,%.0f)\n",
-                            s_scene_frame, scene[t].category, scene[t].blend, scene[t].textured,
-                            x0, y0, x1, y1, x2, y2,
-                            4096.0f * scene[t].v[0].z / (1.0f - scene[t].v[0].z),
-                            4096.0f * scene[t].v[1].z / (1.0f - scene[t].v[1].z),
-                            4096.0f * scene[t].v[2].z / (1.0f - scene[t].v[2].z));
-                    td_prints++;
-                }
             }
         }
     }
@@ -4392,59 +4326,6 @@ static void native_occl_downsample(void)
         s_occl_vay = m->vay; s_occl_vby = m->vby;
         s_occl_stamp = m->stamp;
         s_occl_have = 1;
-        /* OPENPETE_OCCL_GRID_DUMP=MINFRAME: write the decoded grid as a PGM
-         * (bright = near, black = far/sky) once, plus the affine — lining it
-         * up against a same-frame screenshot exposes orientation/alignment
-         * bugs instantly. */
-        {
-            extern unsigned openpete_frame;
-            static int dumped = 0;
-            const char* gd = getenv("OPENPETE_OCCL_GRID_DUMP");
-            if (gd && *gd && !dumped && openpete_frame >= (unsigned)atoi(gd)) {
-                dumped = 1;
-                FILE* f = fopen("/tmp/occl-grid.pgm", "wb");
-                if (f) {
-                    fprintf(f, "P5\n%d %d\n255\n", OCCL_GW, OCCL_GH);
-                    for (int i = 0; i < OCCL_GW * OCCL_GH; i++) {
-                        float vz = s_occl_vz[i];
-                        int px = (vz > 1e30f) ? 0 : (int)(255.0f * 8192.0f / (vz + 8192.0f));
-                        fputc(px < 0 ? 0 : px > 255 ? 255 : px, f);
-                    }
-                    fclose(f);
-                    fprintf(stderr, "[occl-grid-dump f=%u] /tmp/occl-grid.pgm  affine uax=%g ubx=%g vay=%g vby=%g  psx(440,51)->uv(%.3f,%.3f)->cell(%d,%d)\n",
-                            openpete_frame, s_occl_uax, s_occl_ubx, s_occl_vay, s_occl_vby,
-                            s_occl_uax * 440.0f + s_occl_ubx, s_occl_vay * 51.0f + s_occl_vby,
-                            (int)floorf((s_occl_uax * 440.0f + s_occl_ubx) * OCCL_GW),
-                            (int)floorf((s_occl_vay * 51.0f + s_occl_vby) * OCCL_GH));
-                    static const int probes[][2] = { {55,9}, {60,2}, {32,40}, {5,5}, {32,20} };
-                    for (int p = 0; p < 5; p++) {
-                        int i = probes[p][1] * OCCL_GW + probes[p][0];
-                        fprintf(stderr, "[occl-grid-cell] (%d,%d) raw RGBA=%02x %02x %02x %02x -> vz=%g\n",
-                                probes[p][0], probes[p][1],
-                                raw[i*4+0], raw[i*4+1], raw[i*4+2], raw[i*4+3], s_occl_vz[i]);
-                    }
-                }
-            }
-        }
-        /* OPENPETE_OCCL_SELFTEST: end-to-end depth-path probe — a screen-centre
-         * rect at effectively infinite view-Z must read CULLED whenever the
-         * centre cells hold opaque terrain (they do in normal gameplay; a
-         * sky-centred shot legitimately reads 0). Proves grid render →
-         * readback → decode → scan without needing a wall scene. */
-        static int st = -1;
-        if (st < 0) { const char* e = getenv("OPENPETE_OCCL_SELFTEST"); st = (e && *e && *e != '0'); }
-        if (st) {
-            static uint64_t t0 = 0;
-            uint64_t now = openpete_phase_now_us();
-            if (now - t0 >= 1000000u) {
-                t0 = now;
-                int sus = s_occl_suspend; s_occl_suspend = 0;   /* probe past the gate */
-                int far_probe = openpete_native_occl_query(248.0f, 114.0f, 264.0f, 126.0f, 1.0e8f);
-                s_occl_suspend = sus;
-                fprintf(stderr, "[occl-selftest] centre far-probe=%d (1 ⇔ opaque terrain covers screen centre)\n",
-                        far_probe);
-            }
-        }
     } else if (got) {
         s_occl_fifo_tail = s_occl_fifo_head;   /* desync (shouldn't happen) — resync empty */
     }
@@ -6277,53 +6158,6 @@ static void scene_probes(scene_tri_t* sc, int n)
                         (double)T->v[k].z, (double)T->v[k].pvz, T->v[k].rgba);
             fprintf(stderr, "\n");
         }
-      } }
-    /* OPENPETE_SCENEPROBE=x,y — every completed scene triangle whose
-     * screen triangle covers that point (PSX census space: 512 wide,
-     * 240 tall with the 8-line overscan band), in FEED order, with its
-     * layer and the depth it will hand the rasterizer at that point.
-     * Answers "who covers this pixel and who should win" from the
-     * renderer's own scene, not from a feeder's intent. */
-    { static int sp = -1; static float spx, spy;
-      if (sp < 0) { const char* e = getenv("OPENPETE_SCENEPROBE");
-          sp = (e && *e && sscanf(e, "%f,%f", &spx, &spy) == 2) ? 1 : 0; }
-      if (sp) {
-        static const char* CATN[14] = { "WORLD","ACTOR","HUD","PLAYER","OVERLAY",
-            "HUD_PANEL","HUD3D","PORTAL_CYCLORAMA","PORTAL_MASK","PORTAL_GUARD",
-            "SKY","WORLD_FILL","SHADOW","ACTOR_FRONT" };
-        int hits = 0; float best = 2.0f; int bestc = -1;
-        for (int ti = 0; ti < n; ti++) {
-            const scene_tri_t* T = &sc[ti];
-            const float ax = T->v[0].sx, ay = T->v[0].sy;
-            const float e1x = T->v[1].sx-ax, e1y = T->v[1].sy-ay;
-            const float e2x = T->v[2].sx-ax, e2y = T->v[2].sy-ay;
-            const float det = e1x*e2y - e2x*e1y;
-            if (det > -1e-6f && det < 1e-6f) continue;
-            const float rx = spx-ax, ry = spy-ay;
-            const float b1 = (rx*e2y - e2x*ry)/det;
-            const float b2 = (e1x*ry - rx*e1y)/det;
-            const float b0 = 1.0f - b1 - b2;
-            if (b0 < -0.001f || b1 < -0.001f || b2 < -0.001f) continue;
-            const float z = b0*T->v[0].z + b1*T->v[1].z + b2*T->v[2].z;
-            const int c = T->category;
-            fprintf(stderr, "[sceneprobe f=%u %.1f,%.1f] #%d cat=%d(%s) grp=%d tex=%d "
-                            "blend=%d z=%.6f (verts %.6f/%.6f/%.6f) "
-                            "rgb=%06X/%06X/%06X xy=(%.1f,%.1f)(%.1f,%.1f)(%.1f,%.1f)\n",
-                    s_scene_frame, (double)spx, (double)spy, ti, c,
-                    (c >= 0 && c < 14) ? CATN[c] : "?", T->group, T->textured,
-                    T->blend, (double)z,
-                    (double)T->v[0].z, (double)T->v[1].z, (double)T->v[2].z,
-                    T->v[0].rgba & 0xFFFFFFu, T->v[1].rgba & 0xFFFFFFu,
-                    T->v[2].rgba & 0xFFFFFFu,
-                    (double)T->v[0].sx, (double)T->v[0].sy,
-                    (double)T->v[1].sx, (double)T->v[1].sy,
-                    (double)T->v[2].sx, (double)T->v[2].sy);
-            hits++;
-            if (z < best) { best = z; bestc = c; }
-        }
-        fprintf(stderr, "[sceneprobe f=%u %.1f,%.1f] %d covering tri(s); NEAREST z=%.6f cat=%d(%s)\n",
-                s_scene_frame, (double)spx, (double)spy, hits, (double)best,
-                bestc, (bestc >= 0 && bestc < 14) ? CATN[bestc] : "none");
       } }
     portal_cover_check(sc, n);
 }
@@ -9966,24 +9800,6 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
 {
     s_last_frame_presented = 0;
     ps_apply_geometry();
-    /* Diagnostic (OPENPETE_DIAG_PRESENT_LOG=N): the first N presents' size and
-     * scene state, plus every present made while a skip fast-forward holds. */
-    static int s_dpl = -1; static int s_dpl_n = 0;
-    if (s_dpl < 0) { const char* e = getenv("OPENPETE_DIAG_PRESENT_LOG"); s_dpl = (e && *e) ? atoi(e) : 0; }
-    extern int openpete_skip_present_until_level; extern unsigned openpete_frame;
-    const bool dpl_now = s_dpl > 0 && (s_dpl_n < s_dpl || openpete_skip_present_until_level);
-    if (dpl_now) {
-        int pw = 0, ph = 0; SDL_GetWindowSizeInPixels(s_nr.window, &pw, &ph);
-        int scene_n = 0; uint32_t bg_ = 0, fade_ = 0, freeze_ = 0; int hud_ = 0;
-        scene_present_buf(&scene_n, &bg_, &fade_, &freeze_, &hud_, NULL);
-        fprintf(stderr, "[dpl] f=%u skip=%d stage=%d slot=%p sdl=%dx%d win=%dx%d pend=%dx%d layout=%dx%d ref=%dx%d ss=%dx%d tk=%dx%d od=%dx%d rtt=%dx%d frozen=%d scene_n=%d freeze=0x%x journal=%d have_ref=%d\n",
-                openpete_frame, openpete_skip_present_until_level, s_stage_target, (const void*)s_ps_slot,
-                pw, ph, s_nr.win_w, s_nr.win_h, s_nr.pending_w, s_nr.pending_h,
-                s_nr.layout_win_w, s_nr.layout_win_h, s_nr.ref_w, s_nr.ref_h, s_nr.ss_w, s_nr.ss_h,
-                s_nr.tk_w, s_nr.tk_h, s_nr.od_w, s_nr.od_h, s_nr.rtt_w, s_nr.rtt_h,
-                (int)s_nr.frozen_valid, scene_n, freeze_, s_vj_n, (int)have_ref);
-        s_dpl_n++;
-    }
     /* Detect window-size changes WITHOUT polling SDL events (the host loop
      * owns the event queue, and stealing events would starve PsyCross input). */
     int pw = 0, ph = 0;
@@ -10072,51 +9888,9 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
 
     const int pt_on = openpete_phase_timers_on();
     uint64_t pt_t0 = pt_on ? openpete_phase_now_us() : 0, pt_t1;
-    /* Diagnostic: OPENPETE_DIAG_RECREATE_FIRST_PRESENT=1 rebuilds the
-     * swapchain on the first canonical present, reproducing on any host
-     * the ordering Windows produces when a fullscreen resize arrives while
-     * --skip-to-level suppresses presents. */
-    static int s_diag_recreate = -1;   /* 1 = recreate only; 2 = resize the window to 1280x720 first;
-                                        * 3 = enter borderless fullscreen first */
-    if (s_diag_recreate < 0) { const char* e = getenv("OPENPETE_DIAG_RECREATE_FIRST_PRESENT"); s_diag_recreate = (e && *e) ? atoi(e) : 0; }
-    if (s_diag_recreate >= 1 && s_diag_recreate <= 3) {
-        if (s_diag_recreate == 2 && s_nr.window) SDL_SetWindowSize(s_nr.window, 1280, 720);
-        if (s_diag_recreate == 3 && s_nr.window) {
-            SDL_SetWindowFullscreenMode(s_nr.window, NULL);
-            SDL_SetWindowFullscreen(s_nr.window, true);
-        }
-        fprintf(stderr, "[diag] swapchain recreate forced on the first present (mode %d)\n", s_diag_recreate);
-        s_diag_recreate = 9;               /* fired; never again */
-        rhi_notify_resize_immediate(s_nr.dev);
-    }
-    /* Diagnostic (OPENPETE_DIAG_REFUSE_FIRST_PRESENT=N): the first N presents
-     * of the run are skipped as if the swapchain had refused them, without a
-     * window resize, on any host. Under --skip-to-level the first present of
-     * the run is the first present after the fast-forward resumes. */
-    static int s_diag_refuse = -1; static int s_diag_refused = 0; static int s_diag_after = 0; static int s_diag_seen = 0;
-    if (s_diag_refuse < 0) { const char* e = getenv("OPENPETE_DIAG_REFUSE_FIRST_PRESENT"); s_diag_refuse = (e && *e) ? atoi(e) : 0;
-                             const char* a = getenv("OPENPETE_DIAG_REFUSE_AFTER"); s_diag_after = (a && *a) ? atoi(a) : 0; }
-    static int s_diag_every = -1;   /* OPENPETE_DIAG_REFUSE_EVERY=M: also refuse every Mth present */
-    if (s_diag_every < 0) { const char* e = getenv("OPENPETE_DIAG_REFUSE_EVERY"); s_diag_every = (e && *e) ? atoi(e) : 0; }
-    static const char* s_diag_vbls = NULL; static int s_diag_vbls_init = 0;   /* OPENPETE_DIAG_REFUSE_VBLS=a,b,c: refuse every present made at those VBLs */
-    if (!s_diag_vbls_init) { s_diag_vbls_init = 1; s_diag_vbls = getenv("OPENPETE_DIAG_REFUSE_VBLS"); }
-    bool diag_vbl_hit = false;
-    if (s_diag_vbls && *s_diag_vbls) {
-        const char* c = s_diag_vbls;
-        while (*c) { char* e2; unsigned long v = strtoul(c, &e2, 10); if (e2 == c) break; if (v == openpete_frame) { diag_vbl_hit = true; break; } c = (*e2 == ',') ? e2 + 1 : e2; }
-    }
-    const bool diag_refuse_now = (s_diag_refuse > 0 && s_diag_seen >= s_diag_after && s_diag_refused < s_diag_refuse) ||
-                                 (s_diag_every > 0 && (s_diag_seen + s_diag_after) % s_diag_every == s_diag_every - 1) ||   /* AFTER = phase */
-                                 diag_vbl_hit;
-    s_diag_seen++;
-    if (diag_refuse_now) {
-        s_diag_refused++;
-        fprintf(stderr, "[diag] present f=%u refused by the diagnostic (%d/%d)\n", openpete_frame, s_diag_refused, s_diag_refuse);
-    }
     int bf_ok;
     { OP_PROF_ACCUM_SCOPE("gpu.beginframe");   /* fence wait + swapchain acquire */
-      bf_ok = diag_refuse_now ? 0 : s_stage_target >= 0 ? rhi_begin_frame_staged(s_nr.dev) : rhi_begin_frame(s_nr.dev); }
-    if (dpl_now) fprintf(stderr, "[dpl] f=%u bf_ok=%d\n", openpete_frame, bf_ok);
+      bf_ok = s_stage_target >= 0 ? rhi_begin_frame_staged(s_nr.dev) : rhi_begin_frame(s_nr.dev); }
     if (!bf_ok)
         return; /* swapchain recreating or window minimized — skip this present */
     openpete_native_scene_retire(rhi_frame_serial(s_nr.dev));

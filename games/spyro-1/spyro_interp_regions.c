@@ -433,39 +433,6 @@ static void spyro_interp_capture_objs(void) {
                 openpete_frame, tracked, paired, spawned, despawned);
     }
 
-    /* Numerical LOO gate (OPENPETE_INTERP_LOO) — Gate 2 of the high-FPS plan,
-     * as an instrument not eyeballs. Hold 3 consecutive real ticks; reconstruct
-     * the MIDDLE by lerping the outer two (the exact α=0.5 lerp the spine uses)
-     * and compare to the real middle: err = |½(p[N-1]+p[N+1]) − p[N]| — the
-     * chord-vs-curve interpolation error. Small vs the per-tick motion ⇒ the
-     * lerp faithfully reconstructs canonical motion (= smooth). Read-only. */
-    static int loo = -1;
-    if (loo < 0) { const char* e = getenv("OPENPETE_INTERP_LOO"); loo = (e && *e && *e != '0'); }
-    if (loo) {
-        static int32_t ch[3][3], sh[3][3]; static int ln = 0;
-        for (int s = 0; s < 2; s++) for (int k = 0; k < 3; k++) { ch[s][k]=ch[s+1][k]; sh[s][k]=sh[s+1][k]; }
-        for (int k = 0; k < 3; k++) { ch[2][k]=(int32_t)rd32(0x80076DD0u+0x28u+(uint32_t)k*4u);
-                                      sh[2][k]=(int32_t)rd32(0x80078A58u+0x00u+(uint32_t)k*4u); }
-        if (ln < 3) ln++;
-        if (ln >= 3) {
-            double cd=0, sd=0, cm=0, sm=0;
-            for (int k = 0; k < 3; k++) {
-                double c=0.5*((double)ch[0][k]+ch[2][k])-ch[1][k]; cd+=c*c;
-                double s=0.5*((double)sh[0][k]+sh[2][k])-sh[1][k]; sd+=s*s;
-                double cmo=(double)ch[2][k]-ch[1][k]; cm+=cmo*cmo;
-                double smo=(double)sh[2][k]-sh[1][k]; sm+=smo*smo;
-            }
-            cd=sqrt(cd); sd=sqrt(sd); cm=sqrt(cm); sm=sqrt(sm);
-            static double cs=0, cmx=0, ss=0, smx=0, cms=0, sms=0; static long lc=0;
-            if (cd < 5000.0 && sd < 5000.0) {   /* exclude cuts (snapped, not lerped) */
-                cs+=cd; if(cd>cmx)cmx=cd; ss+=sd; if(sd>smx)smx=sd; cms+=cm; sms+=sm; lc++;
-            }
-            if (lc > 0 && (openpete_frame % 600u) == 0)
-                fprintf(stderr, "[interp-loo f=%u] n=%ld | CAMERA lerp-err mean=%.2f max=%.1f vs motion/tick=%.1f | "
-                        "SPYRO lerp-err mean=%.2f max=%.1f vs motion/tick=%.1f (world units)\n",
-                        openpete_frame, lc, cs/lc, cmx, cms/lc, ss/lc, smx, sms/lc);
-        }
-    }
 }
 
 void spyro_interp_register(void) {
