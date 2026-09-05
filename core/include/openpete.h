@@ -543,8 +543,8 @@ typedef struct openpete_options {
      * at the OpenAL layer via PsyX_SPUAL_SetMute + PsyX_XA_ForceGain +
      * music_override_set_forced_gain. Engine-level, so no game-specific
      * globals or per-frame stamping is needed. Defaults to false (audio
-     * on) — the shipping game has sound; pass --mute 1 (or drop it in an
-     * openpete.opts) to silence a dev/CI build. Note this only clamps gain
+     * on) — the shipping game has sound; pass --mute 1 (or set it in
+     * openpete.toml) to silence a dev/CI build. Note this only clamps gain
      * on already-created AL sources; it never gates device/context init,
      * so a headless run with no audio device is silent either way. */
     bool mute;
@@ -583,7 +583,7 @@ typedef struct openpete_options {
     /* Content for the "<bk2_record_path>.args" sidecar written next to a
      * --bk2-record capture. Holds the launch flags passed *directly* on
      * the command line (excluding every --bk2-* flag and anything sourced
-     * from openpete.opts) so replaying the recording via --bk2 re-applies
+     * from openpete.toml) so replaying the recording via --bk2 re-applies
      * the same scenario. NULL = don't write a sidecar. Heap-owned and
      * intentionally leaked for program lifetime (built in
      * openpete_options_parse). */
@@ -759,7 +759,6 @@ typedef struct openpete_options {
      * Handled by game main alongside --compile-mods, so the whole config
      * stack is already resolved by the time they run. */
     int         config_report;   /* --config-report: print the resolution table */
-    int         config_convert;  /* --convert-config: legacy .opts/.env -> .toml */
     int         keys_report;     /* --keys-report: print the resolved keymap */
 
     /* Host-backed memory card (save/load). The game reaches the card only

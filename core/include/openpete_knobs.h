@@ -59,8 +59,8 @@ typedef enum {
 
 typedef enum {
     KNOB_SRC_DEFAULT,   /* built-in default (neither CLI nor env supplied) */
-    KNOB_SRC_ENV,       /* env var (incl. openpete.env, merged at boot) */
-    KNOB_SRC_CLI        /* explicit flag (incl. openpete.opts / bk2 splices) */
+    KNOB_SRC_ENV,       /* env var (incl. an openpete.toml [env] table) */
+    KNOB_SRC_CLI        /* explicit flag (incl. openpete.toml / bk2 splices) */
 } knob_src_t;
 
 #define KNOB_STR_MAX 256

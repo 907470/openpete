@@ -51,7 +51,7 @@ few KB on disk).
 
 `--bk2-record` also drops a `<name>.bk2.args` sidecar (see below)
 capturing the flags you *typed* — minus every `--bk2*` flag and
-anything inherited from `openpete.opts` — so a later `--bk2 <name>.bk2`
+anything inherited from `openpete.toml` — so a later `--bk2 <name>.bk2`
 reproduces the scenario without re-typing `--skip-to-level`, `--no-lod`,
 etc. Committing the `.args` next to the `.bk2` is what makes the fixture
 self-contained.

@@ -11,10 +11,9 @@ add_library(openpete_core STATIC
     runtime/log_file.c
     runtime/options.c
 
-    # openpete.toml: the layered config file that replaced the openpete.opts
-    # argv splice and the openpete.env setenv pass. config.c is SDL-free so
+    # openpete.toml: the layered config file for persistent settings,
+    # resolved into an argv splice and a setenv pass. config.c is SDL-free so
     # the resolver can be unit-tested standalone (tests/unit/config_resolve_test.c).
-    # See notes/plans/openpete-config-consolidation.md.
     runtime/config.c
     runtime/config_schema.c
 

@@ -1,3 +1,3 @@
 # openpete --bk2-record: launch args auto-captured for replay via --bk2
-# (excludes --bk2* flags and anything sourced from openpete.opts)
+# (excludes --bk2* flags and anything sourced from openpete.toml)
 --skip-to-level stone_hill

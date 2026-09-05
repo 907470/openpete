@@ -87,7 +87,7 @@ def check(exe, allow_untuned=False):
 
 def print_surface(exe, mods_dir=None, texpack_dir=None):
     exe_dir = os.path.dirname(os.path.abspath(exe))
-    sidecars = [f for f in ("openpete.toml", "openpete.opts", "openpete.env")
+    sidecars = [f for f in ("openpete.toml",)
                 if os.path.isfile(os.path.join(exe_dir, f))]
     print("bench_guard: exe=%s" % exe)
     print("bench_guard: sidecars=%s mods_dir=%s texpack_dir=%s"

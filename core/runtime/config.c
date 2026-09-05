@@ -39,9 +39,7 @@
 /* ------------------------------------------------------------------ */
 
 enum {
-    TIER_LEGACY_ENV = 1,
-    TIER_LEGACY_OPTS,
-    TIER_GLOBAL,
+    TIER_GLOBAL = 1,
     TIER_GAME,
     TIER_DISC_SERIAL,
     TIER_DISC_SHA,
@@ -765,7 +763,7 @@ static int harvest_saved(int file) {
 }
 
 /* ------------------------------------------------------------------ */
-/* legacy openpete.opts / openpete.env                                */
+/* argv tokenizing                                                    */
 /* ------------------------------------------------------------------ */
 
 /* Every openpete flag starts with "--", so a following token that doesn't
@@ -773,130 +771,22 @@ static int harvest_saved(int file) {
  * -100") working, which an "any leading dash" rule would break. */
 static int token_is_flag(const char *t) { return t && t[0] == '-' && t[1] == '-'; }
 
-static int legacy_opts_load(const char *dir) {
+/* ------------------------------------------------------------------ */
+/* retired sidecars                                                   */
+/* ------------------------------------------------------------------ */
+
+/* openpete.opts (an argv splice) and openpete.env (a setenv pass) are no
+ * longer read. Say so once per file rather than letting a settings file
+ * that used to work go silently dead. */
+static void warn_retired_sidecars(const char *dir) {
+    static const char *const names[] = { "openpete.opts", "openpete.env" };
     char path[CFG_PATH_MAX];
-    path_join(path, sizeof path, dir, "openpete.opts");
-    FILE *f = fopen(path, "rb");
-    if (!f) return 0;
-
-    fprintf(stderr, "openpete: config: %s is deprecated — run "
-                    "--convert-config to move it into openpete.toml\n", path);
-
-    char line[4096];
-    char *toks[128];
-    int ntok = 0;
-    while (fgets(line, sizeof line, f) && ntok < 128) {
-        char *p = line;
-        while (*p) {
-            while (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') p++;
-            if (!*p) break;
-            if (*p == '#') { while (*p && *p != '\n') p++; continue; }
-            char *start = p;
-            while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') p++;
-            if (*p) *p++ = '\0';
-            if (ntok < 128) {
-                char *dup = (char *)malloc(strlen(start) + 1);
-                if (!dup) { fclose(f); return -1; }
-                strcpy(dup, start);
-                toks[ntok++] = dup;
-            }
-        }
-    }
-    fclose(f);
-
-    for (int i = 0; i < ntok; i++) {
-        const char *flag = toks[i];
-        if (!token_is_flag(flag)) {
-            fprintf(stderr, "openpete: config: %s: stray token '%s' (expected a "
-                            "--flag)\n", path, flag);
-            return -1;
-        }
-        int ki = cfg_schema_find_cli(flag);
-        const cfg_knob_t *k = (ki >= 0) ? &cfg_schema(NULL)[ki] : NULL;
-        int is_alias = (k && k->alias && !strcmp(k->alias, flag));
-        int takes_value = !(k && (k->flag_valueless || is_alias));
-
-        const char *val = NULL;
-        if (takes_value && i + 1 < ntok && !token_is_flag(toks[i + 1]))
-            val = toks[++i];
-
-        contrib_t *c = contrib_new();
-        if (!c) return -1;
-        c->knob = ki;
-        c->rank = RANK(TIER_LEGACY_OPTS, 0, SP_ARGS);
-        c->spelling = SP_ARGS;
-        snprintf(c->key, sizeof c->key, "%s", flag);
-        snprintf(c->origin, sizeof c->origin, "openpete.opts");
-        if (is_alias) {
-            c->has_value = 1;
-            snprintf(c->value, sizeof c->value, "%s", k->alias_value);
-        } else if (val) {
-            c->has_value = 1;
-            snprintf(c->value, sizeof c->value, "%s", val);
-        } else {
-            c->valueless = 1;
-        }
-    }
-    return 1;
-}
-
-static int legacy_env_load(const char *dir) {
-    static const char *const names[] = { "openpete.env", ".env" };
-    char path[CFG_PATH_MAX];
-    FILE *f = NULL;
-    for (size_t i = 0; i < sizeof names / sizeof names[0] && !f; i++) {
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
         path_join(path, sizeof path, dir, names[i]);
-        f = fopen(path, "r");
+        if (!file_exists(path)) continue;
+        fprintf(stderr, "openpete: config: %s is no longer read; put these "
+                        "settings in openpete.toml\n", path);
     }
-    if (!f) return 0;
-
-    fprintf(stderr, "openpete: config: %s is deprecated — run "
-                    "--convert-config to move it into openpete.toml\n", path);
-
-    char line[1024];
-    while (fgets(line, sizeof line, f)) {
-        char *p = line;
-        while (*p == ' ' || *p == '\t') p++;
-        if (!*p || *p == '#' || *p == '\n' || *p == '\r') continue;
-        if (!strncmp(p, "export ", 7)) p += 7;
-        char *eq = strchr(p, '=');
-        if (!eq || eq == p) continue;
-        char *ke = eq;
-        while (ke > p && (ke[-1] == ' ' || ke[-1] == '\t')) ke--;
-        *ke = '\0';
-        char *v = eq + 1;
-        while (*v == ' ' || *v == '\t') v++;
-        char *ve = v + strlen(v);
-        while (ve > v && (ve[-1] == '\n' || ve[-1] == '\r' ||
-                          ve[-1] == ' '  || ve[-1] == '\t')) ve--;
-        *ve = '\0';
-        if (ve - v >= 2 && (v[0] == '"' || v[0] == '\'') && ve[-1] == v[0]) {
-            ve[-1] = '\0'; v++;
-        }
-
-        /* Refuse rather than truncate: a silently shortened variable name
-         * would set a DIFFERENT variable, which is worse than not setting
-         * one. Nothing real comes close to these bounds. */
-        size_t klen = strlen(p), vlen = strlen(v);
-        if (klen >= sizeof ((contrib_t *)0)->key ||
-            vlen >= sizeof ((contrib_t *)0)->value) {
-            fprintf(stderr, "openpete: config: %s: skipping over-long entry "
-                            "'%.32s...'\n", path, p);
-            continue;
-        }
-
-        contrib_t *c = contrib_new();
-        if (!c) { fclose(f); return -1; }
-        c->knob = cfg_schema_find_env(p);
-        c->rank = RANK(TIER_LEGACY_ENV, 0, SP_ENV);
-        c->spelling = SP_ENV;
-        c->has_value = 1;
-        memcpy(c->key, p, klen + 1);
-        memcpy(c->value, v, vlen + 1);
-        snprintf(c->origin, sizeof c->origin, "openpete.env");
-    }
-    fclose(f);
-    return 1;
 }
 
 /* ------------------------------------------------------------------ */
@@ -1175,10 +1065,6 @@ int openpete_config_apply(int argc, char **argv, int typed_argc,
         else if (!strcmp(argv[i], "--config-report")) s_report_requested = 1;
         else if (!strcmp(argv[i], "--keys-report")) openpete_keymap_request_report();
         else if (!strcmp(argv[i], "--config") && i + 1 < argc) explicit_path = argv[i + 1];
-        /* Converting is a file operation, not a launch: reading the legacy
-         * files here would warn about them twice and apply settings to a
-         * process whose only job is to rewrite them. */
-        else if (!strcmp(argv[i], "--convert-config")) s_no_config = 1;
     }
     if (!explicit_path) {
         const char *e = getenv("OPENPETE_CONFIG");
@@ -1225,12 +1111,7 @@ int openpete_config_apply(int argc, char **argv, int typed_argc,
             s_file_n = 2;
         }
 
-        /* Legacy files sit below every toml tier: the toml is the
-         * intentional config, these are on their way out. */
-        if (!explicit_path && have_exedir) {
-            if (legacy_env_load(exedir) < 0) return -1;
-            if (legacy_opts_load(exedir) < 0) return -1;
-        }
+        if (!explicit_path && have_exedir) warn_retired_sidecars(exedir);
 
         for (int f = 0; f < s_file_n; f++) {
             if (!s_file_path[f][0]) continue;
@@ -1515,80 +1396,3 @@ int openpete_config_reset_saved(void) {
     return openpete_config_save_flush();
 }
 
-/* ------------------------------------------------------------------ */
-/* --convert-config                                                   */
-/* ------------------------------------------------------------------ */
-
-static int rename_bak(const char *path) {
-    char bak[CFG_PATH_MAX + 8];
-    snprintf(bak, sizeof bak, "%s.bak", path);
-    remove(bak);
-    return rename(path, bak);
-}
-
-int openpete_config_convert_legacy(void) {
-    char dir[CFG_PATH_MAX];
-    if (openpete_exe_dir(dir, sizeof dir) != 0) {
-        fprintf(stderr, "openpete: --convert-config: cannot locate the executable\n");
-        return 3;
-    }
-    char opts_path[CFG_PATH_MAX], env_path[CFG_PATH_MAX], out_path[CFG_PATH_MAX];
-    path_join(opts_path, sizeof opts_path, dir, "openpete.opts");
-    path_join(env_path, sizeof env_path, dir, "openpete.env");
-    path_join(out_path, sizeof out_path, dir, "openpete.toml");
-
-    int have_opts = file_exists(opts_path);
-    int have_env  = file_exists(env_path);
-    if (!have_opts && !have_env) {
-        fprintf(stderr, "openpete: --convert-config: nothing to convert "
-                        "(no openpete.opts or openpete.env next to the exe)\n");
-        return 0;
-    }
-    if (file_exists(out_path)) {
-        fprintf(stderr, "openpete: --convert-config: %s already exists — move it "
-                        "aside first (this would overwrite it)\n", out_path);
-        return 3;
-    }
-
-    /* Reuse the loaders: they already know the two syntaxes, and reading
-     * through them means the conversion cannot disagree with the runtime
-     * about what the legacy files said. */
-    s_contrib_n = 0;
-    if (have_env  && legacy_env_load(dir)  < 0) return 3;
-    if (have_opts && legacy_opts_load(dir) < 0) return 3;
-
-    FILE *f = fopen(out_path, "wb");
-    if (!f) {
-        fprintf(stderr, "openpete: --convert-config: cannot write %s: %s\n",
-                out_path, strerror(errno));
-        return 3;
-    }
-    fprintf(f, "# openpete.toml — converted from openpete.opts / openpete.env.\n"
-               "# Both legacy files mapped onto the global scope: their flags\n"
-               "# and variables mean exactly what they meant before.\n");
-
-    int wrote_env = 0, wrote_args = 0;
-    for (int i = 0; i < s_contrib_n; i++) {
-        if (s_contrib[i].spelling != SP_ENV) continue;
-        if (!wrote_env) { fprintf(f, "\n[env]\n"); wrote_env = 1; }
-        fprintf(f, "%s = \"%s\"\n", s_contrib[i].key, s_contrib[i].value);
-    }
-    for (int i = 0; i < s_contrib_n; i++) {
-        const contrib_t *c = &s_contrib[i];
-        if (c->spelling != SP_ARGS) continue;
-        if (!wrote_args) { fprintf(f, "\n[args]\n"); wrote_args = 1; }
-        if (c->valueless) fprintf(f, "\"%s\" = true\n", c->key);
-        else              fprintf(f, "\"%s\" = \"%s\"\n", c->key, c->value);
-    }
-    fclose(f);
-
-    if (have_opts) rename_bak(opts_path);
-    if (have_env)  rename_bak(env_path);
-
-    fprintf(stderr, "openpete: --convert-config: wrote %s\n", out_path);
-    if (have_opts) fprintf(stderr, "openpete:   openpete.opts -> openpete.opts.bak\n");
-    if (have_env)  fprintf(stderr, "openpete:   openpete.env  -> openpete.env.bak\n");
-    fprintf(stderr, "openpete: verify with --config-report before deleting the .bak files\n");
-    s_contrib_n = 0;
-    return 0;
-}

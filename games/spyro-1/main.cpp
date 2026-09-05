@@ -135,7 +135,6 @@ int main(int argc, char** argv) {
     /* Config utility modes: the stack is resolved, so answer and exit. */
     if (opts.config_report) { openpete_config_report(stdout); return 0; }
     if (opts.keys_report)   { openpete_keymap_report(stdout); return 0; }
-    if (opts.config_convert) return openpete_config_convert_legacy();
 
     /* Bring the logger and its file mirror up before the recomp module is
      * attached. First boot builds that module, and a build that fails is

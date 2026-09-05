@@ -163,18 +163,16 @@ static int expand_bk2_sidecar(int argc, char** argv, int* out_argc, char*** out_
     return rc;
 }
 
-/* openpete.opts and openpete.env used to be read here — an argv splice and
- * a setenv pass with no defined relationship to each other. Both are now
- * layers of openpete.toml, resolved by core/runtime/config.c, which is
- * also what still reads the legacy files (at the bottom of the stack)
- * until they are retired. */
+/* Persistent settings come from openpete.toml, resolved by
+ * core/runtime/config.c, which materializes the winning layer as an argv
+ * splice or a setenv before this parser runs. */
 
 /* --bk2-record args sidecar helpers -----------------------------------
  *
  * When --bk2-record captures a session, we drop a "<bk2>.args" sidecar
  * mirroring the launch flags so `--bk2 <recording>` re-applies the same
  * scenario (see expand_bk2_sidecar). The captured flags come from the
- * *original* argv — before the openpete.opts / bk2-sidecar splices — so
+ * *original* argv — before the openpete.toml / bk2-sidecar splices — so
  * only what the user typed on the command line is recorded, not the
  * machine-local persistent defaults. Every --bk2* flag is filtered out:
  * they control recording/replay, not the scenario. Re-emitting
@@ -205,7 +203,7 @@ static int bk2_flag_value_tokens(const char* a, const char* next) {
 static char* build_bk2_record_args(int argc, char** argv) {
     static const char header[] =
         "# openpete --bk2-record: launch args auto-captured for replay via --bk2\n"
-        "# (excludes --bk2* flags and anything sourced from openpete.opts)\n";
+        "# (excludes --bk2* flags and anything sourced from openpete.toml)\n";
     const size_t hlen = sizeof(header) - 1;  /* without NUL */
 
     size_t len = hlen;
@@ -320,7 +318,6 @@ static void print_help(const char* display_name, const char* argv0) {
         "  bare keys < [env] < [args]. --config-report shows what won and what it beat.\n"
         "  --config PATH  use only this file      --no-config  ignore every config file\n"
         "  --config-report  print the resolution table and exit\n"
-        "  --convert-config  rewrite legacy openpete.opts/.env as openpete.toml and exit\n"
         "  Keys and pad buttons rebind the same way, under [keys.pad] / [keys.host]\n"
         "  in any scope (e.g. [game.spyro-1.keys.host]). Bind a key by its name\n"
         "  (\"F5\", \"Left Shift\"), a pad input with the pad: prefix (\"pad:south\",\n"
@@ -1284,8 +1281,6 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->config_report = 1;
         } else if (strcmp(a, "--keys-report") == 0) {
             opts->keys_report = 1;
-        } else if (strcmp(a, "--convert-config") == 0) {
-            opts->config_convert = 1;
         } else if (strcmp(a, "--card-dir") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->card_dir = v; i++;

@@ -2,30 +2,23 @@
 #define OPENPETE_CONFIG_H
 
 /*
- * openpete.toml — the single layered config file.
+ * openpete.toml — the single layered config file, and the only place a
+ * persistent setting is written.
  *
- * Replaces the two sidecar files this project grew organically (an
- * `openpete.opts` whose tokens were spliced into argv, and an
- * `openpete.env` whose KEY=VALUE lines were setenv'd). Both are still
- * read, at the bottom of the stack, until they are retired.
- *
- * PRECEDENCE (ascending — later wins). See
- * notes/plans/openpete-config-consolidation.md for the derivation:
+ * PRECEDENCE (ascending — later wins):
  *
  *    0  built-in defaults
- *    1  legacy openpete.env
- *    2  legacy openpete.opts
- *    3  openpete.toml   global scope
- *    4  openpete.toml   [game.<id>]
- *    5  openpete.toml   [disc.<SERIAL>]
- *    6  openpete.toml   [disc.<sha256>]
- *    7  openpete.toml   [saved]           (written by the in-game menus)
- *    8  the real process environment
- *    9  <movie>.bk2.args sidecar
- *   10  the command line as typed
- *   11  an in-game edit (a live mutation, not a layer)
+ *    1  openpete.toml   global scope
+ *    2  openpete.toml   [game.<id>]
+ *    3  openpete.toml   [disc.<SERIAL>]
+ *    4  openpete.toml   [disc.<sha256>]
+ *    5  openpete.toml   [saved]           (written by the in-game menus)
+ *    6  the real process environment
+ *    7  <movie>.bk2.args sidecar
+ *    8  the command line as typed
+ *    9  an in-game edit (a live mutation, not a layer)
  *
- * Tiers 3-6 subdivide by FILE (exe-dir < user-dir) and then by SPELLING
+ * Tiers 1-4 subdivide by FILE (exe-dir < user-dir) and then by SPELLING
  * (bare keys < [env] < [args]) — scope is the major sort key, notation
  * the minor one, and in-file spellings rank as their real-world
  * counterparts do so that moving a line between the file and the shell
@@ -134,13 +127,6 @@ int openpete_config_reset_saved(void);
 
 /* Path the managed zone is written to, for UI display. Never NULL. */
 const char* openpete_config_save_path(void);
-
-/* ---- migration ------------------------------------------------------ */
-
-/* --convert-config: write an openpete.toml equivalent to whatever legacy
- * openpete.opts / openpete.env exist, rename the originals to .bak, and
- * report. Returns an OPENPETE_EXIT_* code; the caller exits with it. */
-int openpete_config_convert_legacy(void);
 
 #ifdef __cplusplus
 }

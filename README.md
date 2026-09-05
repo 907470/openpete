@@ -220,13 +220,12 @@ you type or a variable you export for that launch — so scripts and movie
 replays stay reproducible. When a row is in that position the menu marks
 it *pinned*, naming the override.
 
-### Upgrading from openpete.opts / openpete.env
+### Retired: openpete.opts / openpete.env
 
-Both still work, ranked below every `openpete.toml` layer, and warn once
-per launch. `--convert-config` rewrites them as an equivalent
-`openpete.toml` (their flags become `[args]`, their variables `[env]`),
-renames the originals to `.bak`, and leaves you to check
-`--config-report` before deleting them.
+Neither file is read any more; if one is sitting next to the executable,
+openpete prints a line saying it is ignored. Their flags and variables are
+written as `[args]` and `[env]` entries in `openpete.toml` instead — see
+[Config file](#config-file).
 
 ## Recording gameplay video
 
