@@ -53,9 +53,6 @@ jobs:
           bash scripts/setup_appimagetool.sh
           bash scripts/setup_linux_clang.sh
 
-      - name: Apply third-party patches
-        run: ./tools/apply_third_party_patches.sh
-
       - name: Build PSXRecomp (linux + mingw)
         run: |
           cmake -S third_party/psxrecomp/recompiler \

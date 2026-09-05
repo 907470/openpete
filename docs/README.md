@@ -45,6 +45,8 @@ focused references and TL;DRs.
 
 ## Recompiler & system boundaries
 
+- [`psycross/`](psycross/README.md) — the fork the PsyCross submodule tracks
+  and one record per change on it (symptom, root cause, fix, verification).
 - [`psycross-boundary.md`](psycross-boundary.md) — the PsyCross (PSYQ
   re-implementation) ABI boundary, including LP64/LLP64 type-width pitfalls.
 

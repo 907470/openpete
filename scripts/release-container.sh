@@ -53,7 +53,6 @@ uidmap=(--user "$(id -u):$(id -g)")
 [[ "$ENGINE" == podman ]] && uidmap=(--userns=keep-id)
 
 "$ENGINE" run --rm -v "$PWD:/src" "${uidmap[@]}" "$IMAGE" bash -euo pipefail -c '
-    ./tools/apply_third_party_patches.sh
     cmake -S third_party/psxrecomp/recompiler -B third_party/psxrecomp/build \
           -G Ninja -DCMAKE_BUILD_TYPE=Release
     cmake --build third_party/psxrecomp/build -j

@@ -26,28 +26,24 @@ game-agnostic so a future Spyro 2 or 3 port reuses the same runtime.
 # 1. Initialize submodules.
 git submodule update --init --recursive
 
-# 2. Apply local patches to vendored third-party submodules
-#    (e.g. PsyCross Linux build fixes — see patches/ for sources).
-./tools/apply_third_party_patches.sh
-
-# 3. Validate setup (disc image + submodules + decomp build artifacts).
+# 2. Validate setup (disc image + submodules + decomp build artifacts).
 ./scripts/setup.sh
 
-# 4. Build for native Linux. Requires `libopenal-dev` (PsyCross audio) and
+# 3. Build for native Linux. Requires `libopenal-dev` (PsyCross audio) and
 #    libav* (the --record video encoder; see "Recording gameplay video").
 sudo apt install libopenal-dev \
     libavformat-dev libavcodec-dev libavutil-dev libswscale-dev
 cmake --preset linux-release
 cmake --build build/linux-release -j
 
-# 5. (Optional) cross-compile to Windows from WSL2. NOTE: --record video
+# 4. (Optional) cross-compile to Windows from WSL2. NOTE: --record video
 #    capture is compiled out of the Windows cross build (no MinGW libav);
 #    the rest of the game is unaffected. See "Recording gameplay video".
 sudo apt install gcc-mingw-w64-x86-64-posix g++-mingw-w64-x86-64-posix
 cmake --preset windows-mingw
 cmake --build build/windows-mingw -j
 
-# 6. Run the developer-loop sanity check.
+# 5. Run the developer-loop sanity check.
 ./build/linux-release/games/spyro-1/openpete-spyro1 \
     --headless --frame-limit 60 --screenshot-on-frame 30 \
     --screenshot-output ./shot.bmp --max-runtime-seconds 30 --log-format json
