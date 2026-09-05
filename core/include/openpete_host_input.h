@@ -93,6 +93,12 @@ void openpete_host_input_last(openpete_pad_snapshot_t* out);
  * latched for the input log and reach the guest only through a mod. */
 int openpete_host_input_latched_slot(int slot, openpete_pad_snapshot_t* out);
 
+/* VBLs `slot` decoded through its [keys.padN] bindings rather than the shared
+ * controller merge. Zero on a slot the user re-mapped means the re-map never
+ * took, which no comparison of the resulting bytes can distinguish from a
+ * re-map that happens to agree with the default. */
+unsigned long long openpete_host_input_slot_keymap_decodes(int slot);
+
 /* op_now() at the moment the last snapshot was published, or 0 before the
  * first one. The consumer runs on a different thread from the producer, so
  * "how stale was the input this tick consumed" is a real quantity now rather

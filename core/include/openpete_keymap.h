@@ -44,10 +44,13 @@ typedef struct {
     unsigned char kind;    /* km_srckind_t */
     signed char   invert;  /* KM_SRC_PADAXIS only: "pad:-leftx" */
     short         code;    /* SDL scancode / gamepad button / gamepad axis */
-    /* Pad slot the source reads, for the "pad2:"/"pad3:"/"pad4:" prefixes.
-     * 0 is the unqualified "pad:", player 1's device — so every binding
-     * written before the qualifier existed keeps reading exactly what it
-     * always did. Meaningless for KM_SRC_KEY: there is one keyboard. */
+    /* Which player's device the source reads, 1-based; 0 means UNQUALIFIED.
+     * The distinction matters inside a [keys.padN] block, where an
+     * unqualified "pad:" reads that block's own player — so player 2's cross
+     * can be written "pad:south" rather than forcing "pad2:" on every row —
+     * while an explicit "padM:" still cross-wires deliberately. For host
+     * actions, unqualified means player 1, as it always did.
+     * Meaningless for KM_SRC_KEY: there is one keyboard. */
     unsigned char device;
 } km_source_t;
 
@@ -313,6 +316,42 @@ typedef struct {
 } openpete_keymap_input_fns;
 
 void openpete_keymap_set_input(const openpete_keymap_input_fns* fns);
+
+/* ---- resolving against a caller's own snapshot ----------------------- */
+
+/* Reads supplied by a caller that already holds the input state it wants the
+ * bindings resolved against, rather than letting them reach for live SDL.
+ * That is what keeps an extra player's pad decode replayable: it is resolved
+ * on the producer side from the sample being published, so the bytes a tick
+ * consumes are the bytes the input log records for it. Any member may be
+ * NULL, reading as "not held". */
+typedef struct {
+    int (*key_down)(void* ctx, int scancode);            /* 0/1 */
+    int (*pad_button)(void* ctx, int slot, int button);  /* 0/1 */
+    int (*pad_axis)(void* ctx, int slot, int axis);      /* [-32768, 32767] */
+    void* ctx;
+} openpete_keymap_reader_t;
+
+/* Level state / analog value of `a`, resolved against `rd` (NULL = the
+ * installed live reads). `default_slot` serves sources with no explicit
+ * "padN:" qualifier, so a [keys.pad2] row written "pad:south" reads player
+ * 2's device. Unlike openpete_key_down these do not consult the edge latch:
+ * they resolve the bindings directly, so a caller running outside the
+ * host-loop poll order gets this instant's answer rather than the last
+ * poll's. */
+int   openpete_keymap_action_down_via(openpete_action_t a, int default_slot,
+                                      const openpete_keymap_reader_t* rd);
+float openpete_keymap_action_axis_via(openpete_action_t a, int default_slot,
+                                      const openpete_keymap_reader_t* rd);
+
+/* As above, returning the raw [-32768, 32767] value of the winning source
+ * instead of a deadzoned float, for callers reproducing a fixed-point axis
+ * conversion. A digital source that is held reads as full throw. */
+int   openpete_keymap_action_axis_raw_via(openpete_action_t a, int default_slot,
+                                          const openpete_keymap_reader_t* rd);
+
+/* Number of sources bound to `a`; 0 means the action is unbound. */
+int   openpete_keymap_action_bound(openpete_action_t a);
 
 /* Install the SDL-backed lookups and reads (keymap_sdl.c). Call before
  * openpete_keymap_init, which parses every registry default and needs

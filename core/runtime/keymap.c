@@ -157,12 +157,12 @@ static int km_parse_token(const char* tok, km_source_t* src, const char* where,
     int pad_device = -1;
     const char* pad_name = NULL;
     if (strncmp(buf, "pad:", 4) == 0) {
-        pad_device = 0;
+        pad_device = 0;                      /* unqualified */
         pad_name = buf + 4;
     } else if (strncmp(buf, "pad", 3) == 0 &&
-               buf[3] >= '2' && buf[3] <= '0' + OPENPETE_PAD_SLOTS &&
+               buf[3] >= '1' && buf[3] <= '0' + OPENPETE_PAD_SLOTS &&
                buf[4] == ':') {
-        pad_device = buf[3] - '1';
+        pad_device = buf[3] - '0';           /* 1-based player number */
         pad_name = buf + 5;
     }
 
@@ -520,15 +520,57 @@ static int           g_suspend_kbd;
  * feels the same as the hardcoded read it replaces. */
 #define KM_AXIS_DEAD    8000
 
+/* Where a resolution reads from.
+ *
+ * `rd` NULL means the installed live reads — the host path, unchanged.
+ * A non-NULL reader lets a caller resolve the same bindings against its own
+ * snapshot, which is what keeps player 2's pad decode replayable: it is
+ * decoded on the producer side from the sample being published, not from
+ * whatever SDL happens to hold when a consumer later asks.
+ *
+ * `default_slot` serves sources with no explicit "padN:" qualifier, so an
+ * unqualified "pad:" inside a [keys.pad2] block reads player 2's device. */
+typedef struct {
+    const openpete_keymap_reader_t* rd;
+    int default_slot;
+} km_resolve_t;
+
+static const km_resolve_t KM_RESOLVE_LIVE = { NULL, 0 };
+
+static int km_src_slot(const km_resolve_t* c, const km_source_t* s) {
+    return s->device ? s->device - 1 : c->default_slot;
+}
+
+static int km_read_key(const km_resolve_t* c, int code) {
+    if (g_suspend_kbd) return 0;
+    /* The event filter already acted on this press. */
+    if (km_key_consumed(code)) return 0;
+    if (c->rd) return c->rd->key_down ? c->rd->key_down(c->rd->ctx, code) : 0;
+    return s_in.key_down ? s_in.key_down(code) : 0;
+}
+
+static int km_read_btn(const km_resolve_t* c, const km_source_t* s) {
+    const int slot = km_src_slot(c, s);
+    if (c->rd)
+        return c->rd->pad_button ? c->rd->pad_button(c->rd->ctx, slot, s->code) : 0;
+    if (slot > 0)
+        return s_in.pad_button_slot ? s_in.pad_button_slot(slot, s->code) : 0;
+    return s_in.pad_button ? s_in.pad_button(s->code) : 0;
+}
+
 /* Raw axis value for a source, sign-corrected for "pad:-leftx" and routed to
  * the source's pad slot. One reader for both the digital-press test and the
  * analog read, so a slot can never be honoured by one and ignored by the
  * other. */
-static int km_src_axis_raw(const km_source_t* s) {
+static int km_src_axis_raw(const km_resolve_t* c, const km_source_t* s) {
+    const int slot = km_src_slot(c, s);
     int v;
-    if (s->device) {
+    if (c->rd) {
+        if (!c->rd->pad_axis) return 0;
+        v = c->rd->pad_axis(c->rd->ctx, slot, s->code);
+    } else if (slot > 0) {
         if (!s_in.pad_axis_slot) return 0;
-        v = s_in.pad_axis_slot(s->device, s->code);
+        v = s_in.pad_axis_slot(slot, s->code);
     } else {
         if (!s_in.pad_axis) return 0;
         v = s_in.pad_axis(s->code);
@@ -536,39 +578,90 @@ static int km_src_axis_raw(const km_source_t* s) {
     return v * (s->invert < 0 ? -1 : 1);
 }
 
-static int km_src_down(const km_source_t* s) {
+static int km_src_down(const km_resolve_t* c, const km_source_t* s) {
     switch (s->kind) {
     case KM_SRC_KEY:
-        if (g_suspend_kbd) return 0;
-        /* The event filter already acted on this press. */
-        if (km_key_consumed(s->code)) return 0;
-        return s_in.key_down ? s_in.key_down(s->code) : 0;
+        return km_read_key(c, s->code);
     case KM_SRC_PADBTN:
-        if (s->device)
-            return s_in.pad_button_slot
-                 ? s_in.pad_button_slot(s->device, s->code) : 0;
-        return s_in.pad_button ? s_in.pad_button(s->code) : 0;
-    case KM_SRC_PADAXIS: {
-        int v = km_src_axis_raw(s);
-        return v > KM_AXIS_PRESS;
-    }
+        return km_read_btn(c, s);
+    case KM_SRC_PADAXIS:
+        return km_src_axis_raw(c, s) > KM_AXIS_PRESS;
     default: return 0;
     }
 }
 
-static int km_action_down(openpete_action_t a) {
+static int km_action_down(const km_resolve_t* c, openpete_action_t a) {
     if ((unsigned)a >= OPK_ACTION_COUNT) return 0;
     const km_binding_t* b = &g_bind[a];
     for (int i = 0; i < b->n; i++)
-        if (km_src_down(&b->src[i])) return 1;
+        if (km_src_down(c, &b->src[i])) return 1;
     return 0;
+}
+
+static float km_action_axis(const km_resolve_t* c, openpete_action_t a) {
+    if ((unsigned)a >= OPK_ACTION_COUNT) return 0.0f;
+    const km_binding_t* b = &g_bind[a];
+    /* First non-neutral source wins rather than summing: with two sticks
+     * bound to one axis, summing would let a centred-but-drifting pad
+     * bias the other. Deterministic and order-stable. */
+    for (int i = 0; i < b->n; i++) {
+        const km_source_t* s = &b->src[i];
+        if (s->kind == KM_SRC_PADAXIS) {
+            int v = km_src_axis_raw(c, s);
+            if (v > KM_AXIS_DEAD || v < -KM_AXIS_DEAD) {
+                float f = (float)v / 32767.0f;
+                return f > 1.0f ? 1.0f : (f < -1.0f ? -1.0f : f);
+            }
+        } else if (km_src_down(c, s)) {
+            return 1.0f;
+        }
+    }
+    return 0.0f;
+}
+
+int openpete_keymap_action_down_via(openpete_action_t a, int default_slot,
+                                    const openpete_keymap_reader_t* rd) {
+    const km_resolve_t c = { rd, default_slot };
+    return km_action_down(&c, a);
+}
+
+float openpete_keymap_action_axis_via(openpete_action_t a, int default_slot,
+                                      const openpete_keymap_reader_t* rd) {
+    const km_resolve_t c = { rd, default_slot };
+    return km_action_axis(&c, a);
+}
+
+int openpete_keymap_action_axis_raw_via(openpete_action_t a, int default_slot,
+                                        const openpete_keymap_reader_t* rd) {
+    if ((unsigned)a >= OPK_ACTION_COUNT) return 0;
+    const km_resolve_t c = { rd, default_slot };
+    const km_binding_t* b = &g_bind[a];
+    /* Same first-non-neutral-source rule as the float form, returning the
+     * unscaled value: a pad decode has to reproduce the game's own
+     * fixed-point axis conversion, and a float round-trip through a deadzone
+     * would give the extra players a centre band player 1 does not have. */
+    for (int i = 0; i < b->n; i++) {
+        const km_source_t* s = &b->src[i];
+        if (s->kind == KM_SRC_PADAXIS) {
+            int v = km_src_axis_raw(&c, s);
+            if (v > KM_AXIS_DEAD || v < -KM_AXIS_DEAD) return v;
+        } else if (km_src_down(&c, s)) {
+            return 32767;
+        }
+    }
+    return 0;
+}
+
+int openpete_keymap_action_bound(openpete_action_t a) {
+    return (unsigned)a < OPK_ACTION_COUNT ? g_bind[a].n : 0;
 }
 
 void openpete_keymap_poll(void) {
     km_release_consumed();
     memcpy(g_prev, g_held, sizeof g_prev);
     for (int i = 0; i < OPK_ACTION_COUNT; i++)
-        g_held[i] = (unsigned char)km_action_down((openpete_action_t)i);
+        g_held[i] = (unsigned char)km_action_down(&KM_RESOLVE_LIVE,
+                                                  (openpete_action_t)i);
 }
 
 int openpete_key_down(openpete_action_t a) {
@@ -581,24 +674,7 @@ int openpete_key_pressed(openpete_action_t a) {
 }
 
 float openpete_key_axis(openpete_action_t a) {
-    if ((unsigned)a >= OPK_ACTION_COUNT) return 0.0f;
-    const km_binding_t* b = &g_bind[a];
-    /* First non-neutral source wins rather than summing: with two sticks
-     * bound to one axis, summing would let a centred-but-drifting pad
-     * bias the other. Deterministic and order-stable. */
-    for (int i = 0; i < b->n; i++) {
-        const km_source_t* s = &b->src[i];
-        if (s->kind == KM_SRC_PADAXIS) {
-            int v = km_src_axis_raw(s);
-            if (v > KM_AXIS_DEAD || v < -KM_AXIS_DEAD) {
-                float f = (float)v / 32767.0f;
-                return f > 1.0f ? 1.0f : (f < -1.0f ? -1.0f : f);
-            }
-        } else if (km_src_down(s)) {
-            return 1.0f;
-        }
-    }
-    return 0.0f;
+    return km_action_axis(&KM_RESOLVE_LIVE, a);
 }
 
 void openpete_keymap_suspend_keyboard(int on) { g_suspend_kbd = on ? 1 : 0; }
@@ -620,7 +696,7 @@ int openpete_keymap_scancode_down(int scancode) {
 }
 
 int openpete_keymap_source_down(const km_source_t* s) {
-    return s ? km_src_down(s) : 0;
+    return s ? km_src_down(&KM_RESOLVE_LIVE, s) : 0;
 }
 
 int openpete_keymap_key_binds(openpete_action_t a, int scancode) {
@@ -674,7 +750,7 @@ static void km_format_binding(const km_binding_t* b, char* out, size_t cap) {
                 snprintf(piece, sizeof piece, "%s", nm ? nm : "?");
         } else {
             char padpfx[8];
-            if (s->device) snprintf(padpfx, sizeof padpfx, "pad%d:", s->device + 1);
+            if (s->device) snprintf(padpfx, sizeof padpfx, "pad%d:", s->device);
             else           snprintf(padpfx, sizeof padpfx, "pad:");
             snprintf(piece, sizeof piece, "%s%s%s", padpfx,
                      (s->kind == KM_SRC_PADAXIS && s->invert < 0) ? "-" : "",
@@ -813,7 +889,7 @@ const char* openpete_keymap_mod_effective_key(const char* mod_id,
             snprintf(buf, sizeof buf, "%s", nm ? nm : "?");
         else {
             char padpfx[8];
-            if (s->device) snprintf(padpfx, sizeof padpfx, "pad%d:", s->device + 1);
+            if (s->device) snprintf(padpfx, sizeof padpfx, "pad%d:", s->device);
             else           snprintf(padpfx, sizeof padpfx, "pad:");
             snprintf(buf, sizeof buf, "%s%s%s", padpfx,
                      (s->kind == KM_SRC_PADAXIS && s->invert < 0) ? "-" : "",

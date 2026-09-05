@@ -1,5 +1,6 @@
 #include "openpete_host_input.h"
 #include "openpete_input_log.h"
+#include "openpete_keymap.h"
 #include "openpete_log.h"
 #include "openpete_rumble.h"
 
@@ -731,6 +732,136 @@ unsigned openpete_host_input_seqlock_failures(void)
     return atomic_load_explicit(&s_snap_retry_fail, memory_order_relaxed);
 }
 
+/* Resolve bindings against the snapshot this sample is being built from,
+ * rather than letting them reach for live SDL themselves. Same published
+ * state the slot decode below reads, so a re-mapped player and a
+ * default-mapped one cannot disagree about which instant they describe. */
+static int kmr_key(void* ctx, int scancode)
+{
+    (void)ctx; return openpete_host_input_key_down(scancode);
+}
+static int kmr_btn(void* ctx, int slot, int button)
+{
+    (void)ctx; return openpete_host_input_pad_button_slot(slot, button);
+}
+static int kmr_axis(void* ctx, int slot, int axis)
+{
+    (void)ctx; return openpete_host_input_pad_axis_slot(slot, axis);
+}
+
+static const openpete_keymap_reader_t kSlotReader = {
+    kmr_key, kmr_btn, kmr_axis, NULL
+};
+
+/* PSX pad bit per action, as offsets into a player's action block. The blocks
+ * are generated from one list, so the same offsets address every player. Bit
+ * values and the 16384 press threshold match the controller merge, so a
+ * re-mapped player behaves like a default-mapped one. */
+static const struct { int off; unsigned short mask; } kPadBits[] = {
+    { OPK_PAD_CROSS      - OPK_PAD_CROSS, 0x4000 },
+    { OPK_PAD_CIRCLE     - OPK_PAD_CROSS, 0x2000 },
+    { OPK_PAD_SQUARE     - OPK_PAD_CROSS, 0x8000 },
+    { OPK_PAD_TRIANGLE   - OPK_PAD_CROSS, 0x1000 },
+    { OPK_PAD_L1         - OPK_PAD_CROSS, 0x0400 },
+    { OPK_PAD_L2         - OPK_PAD_CROSS, 0x0100 },
+    { OPK_PAD_L3         - OPK_PAD_CROSS, 0x0002 },
+    { OPK_PAD_R1         - OPK_PAD_CROSS, 0x0800 },
+    { OPK_PAD_R2         - OPK_PAD_CROSS, 0x0200 },
+    { OPK_PAD_R3         - OPK_PAD_CROSS, 0x0004 },
+    { OPK_PAD_START      - OPK_PAD_CROSS, 0x0008 },
+    { OPK_PAD_SELECT     - OPK_PAD_CROSS, 0x0001 },
+    { OPK_PAD_DPAD_UP    - OPK_PAD_CROSS, 0x0010 },
+    { OPK_PAD_DPAD_DOWN  - OPK_PAD_CROSS, 0x0040 },
+    { OPK_PAD_DPAD_LEFT  - OPK_PAD_CROSS, 0x0080 },
+    { OPK_PAD_DPAD_RIGHT - OPK_PAD_CROSS, 0x0020 },
+};
+
+/* VBLs each slot decoded through its [keys.padN] bindings rather than the
+ * shared merge. A re-map that silently failed to take would otherwise look
+ * exactly like one that was never written. */
+static unsigned long long s_slot_keymap_decodes[OPENPETE_PAD_SLOTS];
+
+unsigned long long openpete_host_input_slot_keymap_decodes(int slot)
+{
+    return (slot >= 0 && slot < OPENPETE_PAD_SLOTS)
+         ? s_slot_keymap_decodes[slot] : 0;
+}
+
+/* Is anything bound under this player's [keys.padN] block? */
+static int keymap_slot_bound(int slot)
+{
+    const int base = OPK_PAD_BLOCK_FIRST(slot);
+    for (size_t i = 0; i < sizeof(kPadBits) / sizeof(kPadBits[0]); i++)
+        if (openpete_keymap_action_bound((openpete_action_t)(base + kPadBits[i].off)))
+            return 1;
+    static const int kAxisOff[] = {
+        OPK_PAD_LEFT_X - OPK_PAD_CROSS,  OPK_PAD_LEFT_Y - OPK_PAD_CROSS,
+        OPK_PAD_RIGHT_X - OPK_PAD_CROSS, OPK_PAD_RIGHT_Y - OPK_PAD_CROSS,
+        OPK_PAD_STICK_UP - OPK_PAD_CROSS, OPK_PAD_STICK_DOWN - OPK_PAD_CROSS,
+        OPK_PAD_STICK_LEFT - OPK_PAD_CROSS, OPK_PAD_STICK_RIGHT - OPK_PAD_CROSS,
+    };
+    for (size_t i = 0; i < sizeof(kAxisOff) / sizeof(kAxisOff[0]); i++)
+        if (openpete_keymap_action_bound((openpete_action_t)(base + kAxisOff[i])))
+            return 1;
+    return 0;
+}
+
+/* Apply one player's [keys.padN] bindings over an already-decoded pad.
+ *
+ * The merge result is the base and only BOUND rows override it, so re-mapping
+ * one button re-maps exactly that button instead of silently unbinding every
+ * row the user did not mention. Runs on the producer side, against the sample
+ * being published, so the bytes reach the input log and replay reproduces
+ * them — a decode from live SDL at consume time would not. */
+static void keymap_decode_slot(int slot, unsigned short* io_bits,
+                               unsigned char io_axes[4])
+{
+    const int base = OPK_PAD_BLOCK_FIRST(slot);
+    unsigned short bits = *io_bits;
+
+    for (size_t i = 0; i < sizeof(kPadBits) / sizeof(kPadBits[0]); i++) {
+        openpete_action_t a = (openpete_action_t)(base + kPadBits[i].off);
+        if (!openpete_keymap_action_bound(a)) continue;
+        if (openpete_keymap_action_down_via(a, slot, &kSlotReader))
+            bits = (unsigned short)(bits & ~kPadBits[i].mask);   /* active-low */
+        else
+            bits = (unsigned short)(bits | kPadBits[i].mask);
+    }
+    *io_bits = bits;
+
+    /* Axes use the same fixed-point conversion the controller merge applies,
+     * so a re-mapped stick and a default one share a centre and a scale. */
+    static const struct { int off; int idx; } kAxes[] = {
+        { OPK_PAD_RIGHT_X - OPK_PAD_CROSS, 0 },
+        { OPK_PAD_RIGHT_Y - OPK_PAD_CROSS, 1 },
+        { OPK_PAD_LEFT_X  - OPK_PAD_CROSS, 2 },
+        { OPK_PAD_LEFT_Y  - OPK_PAD_CROSS, 3 },
+    };
+    for (size_t i = 0; i < sizeof(kAxes) / sizeof(kAxes[0]); i++) {
+        openpete_action_t a = (openpete_action_t)(base + kAxes[i].off);
+        if (!openpete_keymap_action_bound(a)) continue;
+        int v = openpete_keymap_action_axis_raw_via(a, slot, &kSlotReader);
+        io_axes[kAxes[i].idx] = (unsigned char)((v / 256) + 128);
+    }
+
+    /* Digital left stick, overriding the analog read only while held — the
+     * keyboard-as-stick rule the merge applies for player 1. */
+    {
+        static const struct { int off; int idx; unsigned char val; } kStick[] = {
+            { OPK_PAD_STICK_LEFT  - OPK_PAD_CROSS, 2, 0   },
+            { OPK_PAD_STICK_RIGHT - OPK_PAD_CROSS, 2, 255 },
+            { OPK_PAD_STICK_UP    - OPK_PAD_CROSS, 3, 0   },
+            { OPK_PAD_STICK_DOWN  - OPK_PAD_CROSS, 3, 255 },
+        };
+        for (size_t i = 0; i < sizeof(kStick) / sizeof(kStick[0]); i++) {
+            openpete_action_t a = (openpete_action_t)(base + kStick[i].off);
+            if (!openpete_keymap_action_bound(a)) continue;
+            if (openpete_keymap_action_down_via(a, slot, &kSlotReader))
+                io_axes[kStick[i].idx] = kStick[i].val;
+        }
+    }
+}
+
 void openpete_host_input_sample(bool alt_held)
 {
     unsigned short bits = PAD_NEUTRAL_BITS;
@@ -757,10 +888,16 @@ void openpete_host_input_sample(bool alt_held)
 
     /* Slots 1-3, decoded from their own devices through the same merge slot 0
      * uses, so a mapping or centre-convention change cannot reach one player
-     * and not the others. Alt gates every slot: the Alt of Alt+Enter is a
-     * window command, not four simultaneous Starts. A slot with no device
-     * publishes invalid rather than neutral, which is what lets the log
-     * distinguish "nobody plugged in" from "holding nothing". */
+     * and not the others. A slot with no device publishes invalid rather than
+     * neutral, which is what lets the log distinguish "nobody plugged in"
+     * from "holding nothing".
+     *
+     * The Alt gate deliberately does NOT extend here. It exists so the Enter
+     * of Alt+Enter cannot reach the game as Start, which is a fact about
+     * player 1's keyboard; these slots are decoded from their own gamepads.
+     * Gating them would drop every other player's pad — recorded as
+     * disconnected for those VBLs — because player 1 reached for a window
+     * shortcut. */
     openpete_pad_snapshot_t extra[OPENPETE_PAD_SLOTS - 1];
     memset(extra, 0, sizeof(extra));
     {
@@ -768,10 +905,16 @@ void openpete_host_input_sample(bool alt_held)
         host_slot_gamepads(slot_gp);
         for (int sl = 1; sl < OPENPETE_PAD_SLOTS; sl++) {
             openpete_pad_snapshot_t* d = &extra[sl - 1];
-            if (!slot_gp[sl] || alt_held) continue;   /* leaves valid = false */
+            if (!slot_gp[sl]) continue;              /* leaves valid = false */
             unsigned short sb = PAD_NEUTRAL_BITS;
             unsigned char  sa[4] = { 128, 128, 128, 128 };
+            /* [keys.padN] re-maps this player; with nothing bound the shared
+             * controller merge gives them a working default pad. */
             PsyX_Pad_DecodeGamepad(slot_gp[sl], &sb, sa);
+            if (keymap_slot_bound(sl)) {
+                keymap_decode_slot(sl, &sb, sa);
+                s_slot_keymap_decodes[sl]++;
+            }
             d->bits = sb;
             memcpy(d->axes, sa, sizeof(d->axes));
             d->valid = true;

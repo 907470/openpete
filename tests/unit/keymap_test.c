@@ -6,6 +6,7 @@
  * of tests/unit/CMakeLists.txt) and, more usefully, lets the test drive
  * held/released input directly to exercise the edge latch. */
 
+#include "openpete_input_log.h"   /* OPENPETE_PAD_SLOTS */
 #include "openpete_keymap.h"
 
 #include <stdio.h>
@@ -166,6 +167,126 @@ static void test_pad2_unbound(void) {
     CHECK(n_sources(OPK_PAD2_CROSS) == 0, "pad2.cross must default unbound");
     CHECK(set1("pad2", "cross", "pad:south", 100, "global") == 0,
           "pad2 should still accept a binding");
+}
+
+/* ---- per-slot reads (players 2-4) ------------------------------------ */
+
+/* Fake pad state addressed by slot, plus a record of which slot was asked:
+ * a routing bug that always reads slot 0 still returns plausible values, so
+ * the slot the resolver ASKED for is the thing under test. */
+static unsigned char g_slot_btns[OPENPETE_PAD_SLOTS][256];
+static int           g_slot_axes[OPENPETE_PAD_SLOTS][256];
+static int           g_last_slot_asked;
+
+static int slot_btn(void* ctx, int slot, int code) {
+    (void)ctx;
+    g_last_slot_asked = slot;
+    return (slot >= 0 && slot < OPENPETE_PAD_SLOTS && code >= 0 && code < 256)
+         ? g_slot_btns[slot][code] : 0;
+}
+static int slot_axis(void* ctx, int slot, int code) {
+    (void)ctx;
+    g_last_slot_asked = slot;
+    return (slot >= 0 && slot < OPENPETE_PAD_SLOTS && code >= 0 && code < 256)
+         ? g_slot_axes[slot][code] : 0;
+}
+static int slot_key(void* ctx, int c) { (void)ctx; return fake_key(c); }
+
+static const openpete_keymap_reader_t g_slot_reader = {
+    slot_key, slot_btn, slot_axis, NULL
+};
+
+static void slot_reset(void) {
+    memset(g_slot_btns, 0, sizeof g_slot_btns);
+    memset(g_slot_axes, 0, sizeof g_slot_axes);
+    g_last_slot_asked = -1;
+}
+
+/* "pad2:" .. "pad4:" record a 1-based player; bare "pad:" stays unqualified,
+ * which is what lets it mean "this block's player" inside [keys.padN] and
+ * "player 1" everywhere else. */
+static void test_pad_device_qualifier(void) {
+    openpete_keymap_init();
+    km_source_t s[KM_MAX_SOURCES];
+
+    CHECK(set1("pad2", "cross", "pad2:south", 100, "global") == 0, "bind pad2:south");
+    CHECK(openpete_keymap_sources(OPK_PAD2_CROSS, s, KM_MAX_SOURCES) == 1 &&
+          s[0].device == 2, "pad2: must record player 2");
+
+    CHECK(set1("pad3", "cross", "pad4:south", 100, "global") == 0, "bind pad4:south");
+    CHECK(openpete_keymap_sources(OPK_PAD3_CROSS, s, KM_MAX_SOURCES) == 1 &&
+          s[0].device == 4, "pad4: must record player 4");
+
+    CHECK(set1("pad2", "circle", "pad:east", 100, "global") == 0, "bind pad:east");
+    CHECK(openpete_keymap_sources(OPK_PAD2_CIRCLE, s, KM_MAX_SOURCES) == 1 &&
+          s[0].device == 0, "bare pad: must stay unqualified");
+}
+
+/* An unqualified source reads the slot the caller names, so a [keys.pad2] row
+ * can be written "pad:south" without every row needing a "pad2:" prefix. */
+static void test_pad_reader_default_slot(void) {
+    openpete_keymap_init();
+    fake_reset();
+    slot_reset();
+    const int south = fake_to_code(KM_SRC_PADBTN, "south");
+
+    CHECK(set1("pad2", "cross", "pad:south", 100, "global") == 0, "bind pad2.cross");
+
+    g_slot_btns[1][south] = 1;    /* player 2's device only */
+    CHECK(openpete_keymap_action_down_via(OPK_PAD2_CROSS, 1, &g_slot_reader) == 1,
+          "default_slot 1 must read player 2's device");
+    CHECK(g_last_slot_asked == 1, "resolver must ask for slot 1");
+
+    g_slot_btns[1][south] = 0;
+    g_slot_btns[0][south] = 1;    /* player 1 pressing must not reach player 2 */
+    CHECK(openpete_keymap_action_down_via(OPK_PAD2_CROSS, 1, &g_slot_reader) == 0,
+          "player 1's button must not press player 2's cross");
+}
+
+/* An explicit qualifier wins over the caller's default, so a slot can be
+ * cross-wired on purpose. */
+static void test_pad_explicit_qualifier_wins(void) {
+    openpete_keymap_init();
+    fake_reset();
+    slot_reset();
+    const int south = fake_to_code(KM_SRC_PADBTN, "south");
+
+    CHECK(set1("pad2", "cross", "pad3:south", 100, "global") == 0, "bind pad3:south");
+    g_slot_btns[2][south] = 1;
+    CHECK(openpete_keymap_action_down_via(OPK_PAD2_CROSS, 1, &g_slot_reader) == 1,
+          "explicit pad3: must read slot 2 despite default_slot 1");
+    CHECK(g_last_slot_asked == 2, "resolver must ask for slot 2");
+}
+
+/* The raw axis form keeps the sign of "pad:-leftx" and routes to the same
+ * slot, so a re-mapped stick cannot pick up a deadzone or a flipped sign the
+ * default-mapped one does not have. */
+static void test_pad_reader_axis(void) {
+    openpete_keymap_init();
+    fake_reset();
+    slot_reset();
+    const int leftx = fake_to_code(KM_SRC_PADAXIS, "leftx");
+
+    CHECK(set1("pad2", "left_x", "pad:-leftx", 100, "global") == 0, "bind pad2.left_x");
+    g_slot_axes[1][leftx] = 20000;
+    CHECK(openpete_keymap_action_axis_raw_via(OPK_PAD2_LEFT_X, 1, &g_slot_reader)
+              == -20000, "raw axis must invert and read slot 1");
+    CHECK(g_last_slot_asked == 1, "axis resolver must ask for slot 1");
+}
+
+/* A qualified source with no slot-aware reader installed must read as
+ * not-held rather than falling back to player 1, or a mistyped prefix
+ * quietly controls someone else. */
+static void test_pad_qualified_without_reader(void) {
+    openpete_keymap_init();
+    fake_reset();
+    const int south = fake_to_code(KM_SRC_PADBTN, "south");
+
+    CHECK(set1("host", "menu", "pad3:south", 100, "global") == 0, "bind pad3:south");
+    g_btns[south] = 1;            /* player 1's device is pressing */
+    openpete_keymap_poll();
+    CHECK(openpete_key_down(OPK_MENU) == 0,
+          "pad3: must not fall back to player 1's device");
 }
 
 /* A higher scope replaces the action's whole list; "none" and an empty
@@ -521,6 +642,11 @@ int main(void) {
     test_defaults_parse();
     test_dev_unbound_by_default();
     test_pad2_unbound();
+    test_pad_device_qualifier();
+    test_pad_reader_default_slot();
+    test_pad_explicit_qualifier_wins();
+    test_pad_reader_axis();
+    test_pad_qualified_without_reader();
     test_unbind();
     test_replace_not_append();
     test_per_action_merge();
