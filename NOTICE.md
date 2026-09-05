@@ -26,6 +26,17 @@ where noted, the upstream license texts) ships in every release archive.
 | MinGW-w64 CRT / winpthreads (static) | Zlib / BSD / public domain (permissive)        | https://www.mingw-w64.org                                                                   |
 | OpenAL Soft 1.25.1 (`OpenAL32.dll`)  | LGPL v2                                        | https://github.com/kcat/openal-soft                                                         |
 
+## Bundled data — shipped alongside the binary
+
+Data files copied into every release archive. Not linked into
+`openpete-spyro1`; read at runtime.
+
+| Component                                | License | Upstream                                          |
+| ---------------------------------------- | ------- | ------------------------------------------------- |
+| SDL_GameControllerDB (`gamecontrollerdb.txt`) | Zlib    | https://github.com/mdqinc/SDL_GameControllerDB |
+
+Refreshed with `scripts/update_gamecontrollerdb.sh`.
+
 ## Bundled first-boot toolchain — mere aggregation
 
 Shipped as separate executables under `recomp/tools/`, invoked as
