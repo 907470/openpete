@@ -41,6 +41,11 @@ games/<game>/
 └── main.cpp                    # tiny entry: parse opts, hand off to core
 ```
 
+`symbols.toml` and `globals.toml` come from `scripts/regen-manifest.sh`.
+`psyq.toml` has its own generator, run when the decomp's PSYQ object changes:
+`python3 tools/gen_psyq_toml.py <game>/build/psx.map build/asm/psyq.o
+games/<game>/manifest/psyq.toml`. `overlays.toml` is hand-maintained.
+
 ## 3. Implement `game_extras.h`
 
 Fill in **identity** first (entry point from PSX EXE header, CRC32 of the

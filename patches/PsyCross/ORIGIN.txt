@@ -1,3 +1,12 @@
-upstream: https://github.com/OpenSWE1R/psycross (PsyCross, the cross-platform PSYQ shim)
-files: full source tree (include/, src/, CMakeLists.txt) — fetched 2026-04-25
-notes: vendored verbatim. See PATCHES/ for local diffs (Linux build fixes).
+submodule: third_party/PsyCross (PsyCross, the cross-platform PSY-Q shim)
+fork:      https://github.com/tyscorp/PsyCross.git — https://github.com/tyscorp/PsyCross
+branch:    openpete
+upstream:  https://github.com/OpenDriver2/PsyCross
+
+The submodule tracks the `openpete` branch of the fork, not upstream. Every
+patch in PATCHES/ is already a commit on that branch, so a fresh
+`git submodule update --init` needs no patching; PATCHES/ is the reviewable
+record of each change and its verification, and the fallback for a pin that
+predates one. APPLIED_AT maps each patch to the fork commit that carries it.
+tools/apply_third_party_patches.sh reconciles the two and fails when the pin
+lacks a patch.
