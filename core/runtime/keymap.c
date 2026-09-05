@@ -7,6 +7,7 @@
  * resolver links into console unit tests alongside the config resolver
  * with nothing but tomlc99 in the link line. */
 
+#include "openpete_input_log.h"
 #include "openpete_keymap.h"
 #include "openpete_log.h"
 
@@ -29,19 +30,22 @@ typedef struct {
 
 #define KM_ROW_HOST(sym, id, k, c, f, d, p) { id, KM_DOM_HOST, k, c, f, d, p },
 #define KM_ROW_PAD(sym, id, k, c, f, d, p)  { id, KM_DOM_PAD,  k, c, f, d, p },
-/* Player 2 exists so `[keys.pad2]` is a valid namespace rather than an
- * "unknown key" error, but it defaults to UNBOUND and carries no flags:
- * giving it P1's defaults would make every P2 row collide with its P1
- * twin, and KM_REQUIRED on a surface nobody has configured would warn on
- * every stock boot. PsyCross also shares one controller map across both
- * slots (PsyX_Pad_UpdateGameControllerInput), so a bound P2 is inert
- * until that is split — the pad stamp says so out loud. */
+/* Players 2-4 default to UNBOUND and carry no flags: giving them P1's
+ * defaults would make every row collide with its P1 twin, and KM_REQUIRED on
+ * a surface nobody has configured would warn on every stock boot. Their
+ * devices are decoded through the shared controller merge, so an extra
+ * player has working buttons with nothing bound here; these rows exist to
+ * re-map that player, which the decode does not consult yet. */
 #define KM_ROW_PAD2(sym, id, k, c, f, d, p) { id, KM_DOM_PAD2, k, c, 0u, "none", p },
+#define KM_ROW_PAD3(sym, id, k, c, f, d, p) { id, KM_DOM_PAD3, k, c, 0u, "none", p },
+#define KM_ROW_PAD4(sym, id, k, c, f, d, p) { id, KM_DOM_PAD4, k, c, 0u, "none", p },
 
 static const km_action_def_t g_actions[] = {
     OPENPETE_KEYMAP_HOST_ACTIONS(KM_ROW_HOST)
     OPENPETE_KEYMAP_PAD_ACTIONS(KM_ROW_PAD)
     OPENPETE_KEYMAP_PAD_ACTIONS(KM_ROW_PAD2)
+    OPENPETE_KEYMAP_PAD_ACTIONS(KM_ROW_PAD3)
+    OPENPETE_KEYMAP_PAD_ACTIONS(KM_ROW_PAD4)
 };
 
 /* One row per action; the enum and this table are generated from the same
@@ -148,10 +152,25 @@ static int km_parse_token(const char* tok, km_source_t* src, const char* where,
 
     memset(src, 0, sizeof *src);
 
+    /* "pad:" is player 1; "pad2:".."pad4:" address the other host pad slots.
+     * The digit is the player number, so the slot index is one less. */
+    int pad_device = -1;
+    const char* pad_name = NULL;
     if (strncmp(buf, "pad:", 4) == 0) {
-        const char* name = buf + 4;
+        pad_device = 0;
+        pad_name = buf + 4;
+    } else if (strncmp(buf, "pad", 3) == 0 &&
+               buf[3] >= '2' && buf[3] <= '0' + OPENPETE_PAD_SLOTS &&
+               buf[4] == ':') {
+        pad_device = buf[3] - '1';
+        pad_name = buf + 5;
+    }
+
+    if (pad_device >= 0) {
+        const char* name = pad_name;
         int invert = 0;
         if (*name == '-') { invert = 1; name++; }
+        src->device = (unsigned char)pad_device;
 
         /* Buttons first, then axes: SDL names them from disjoint tables,
          * and trying the button table first means "pad:start" is never
@@ -192,7 +211,8 @@ static int km_parse_token(const char* tok, km_source_t* src, const char* where,
         }
     }
     OPL_ERROR_F("keys", "%s: %s.%s: no key named '%s' (gamepad bindings "
-                "need the 'pad:' prefix, e.g. \"pad:south\")",
+                "need a pad prefix, e.g. \"pad:south\" for player 1 or "
+                "\"pad2:south\" for player 2)",
                 where, domain, action, buf);
     return -1;
 }
@@ -241,7 +261,8 @@ static int km_parse_list(const char* const* tokens, int n,
 /* ------------------------------------------------------------------ */
 
 static const char* km_domain_name(int d) {
-    return d == KM_DOM_PAD ? "pad" : d == KM_DOM_PAD2 ? "pad2" : "host";
+    return d == KM_DOM_PAD  ? "pad"  : d == KM_DOM_PAD2 ? "pad2"
+         : d == KM_DOM_PAD3 ? "pad3" : d == KM_DOM_PAD4 ? "pad4" : "host";
 }
 
 void openpete_keymap_init(void) {
@@ -283,6 +304,8 @@ static int km_find(const char* domain, const char* action) {
     if (km_streq_ci(domain, "host")) dom = KM_DOM_HOST;
     else if (km_streq_ci(domain, "pad"))  dom = KM_DOM_PAD;
     else if (km_streq_ci(domain, "pad2")) dom = KM_DOM_PAD2;
+    else if (km_streq_ci(domain, "pad3")) dom = KM_DOM_PAD3;
+    else if (km_streq_ci(domain, "pad4")) dom = KM_DOM_PAD4;
     if (dom < 0) return -1;
     for (int i = 0; i < OPK_ACTION_COUNT; i++)
         if (g_actions[i].domain == (unsigned char)dom &&
@@ -333,10 +356,12 @@ int openpete_keymap_set(const char* domain, const char* action,
     if (idx < 0) {
         int dom = km_streq_ci(domain, "pad")  ? KM_DOM_PAD
                 : km_streq_ci(domain, "pad2") ? KM_DOM_PAD2
+                : km_streq_ci(domain, "pad3") ? KM_DOM_PAD3
+                : km_streq_ci(domain, "pad4") ? KM_DOM_PAD4
                 : km_streq_ci(domain, "host") ? KM_DOM_HOST : -1;
         if (dom < 0) {
             OPL_ERROR_F("keys", "%s: unknown [keys] namespace '%s' "
-                        "(expected pad, pad2, host or mod.<id>)",
+                        "(expected pad, pad2, pad3, pad4, host or mod.<id>)",
                         where ? where : "config", domain);
             return -1;
         }
@@ -495,6 +520,22 @@ static int           g_suspend_kbd;
  * feels the same as the hardcoded read it replaces. */
 #define KM_AXIS_DEAD    8000
 
+/* Raw axis value for a source, sign-corrected for "pad:-leftx" and routed to
+ * the source's pad slot. One reader for both the digital-press test and the
+ * analog read, so a slot can never be honoured by one and ignored by the
+ * other. */
+static int km_src_axis_raw(const km_source_t* s) {
+    int v;
+    if (s->device) {
+        if (!s_in.pad_axis_slot) return 0;
+        v = s_in.pad_axis_slot(s->device, s->code);
+    } else {
+        if (!s_in.pad_axis) return 0;
+        v = s_in.pad_axis(s->code);
+    }
+    return v * (s->invert < 0 ? -1 : 1);
+}
+
 static int km_src_down(const km_source_t* s) {
     switch (s->kind) {
     case KM_SRC_KEY:
@@ -503,10 +544,12 @@ static int km_src_down(const km_source_t* s) {
         if (km_key_consumed(s->code)) return 0;
         return s_in.key_down ? s_in.key_down(s->code) : 0;
     case KM_SRC_PADBTN:
+        if (s->device)
+            return s_in.pad_button_slot
+                 ? s_in.pad_button_slot(s->device, s->code) : 0;
         return s_in.pad_button ? s_in.pad_button(s->code) : 0;
     case KM_SRC_PADAXIS: {
-        if (!s_in.pad_axis) return 0;
-        int v = s_in.pad_axis(s->code) * (s->invert < 0 ? -1 : 1);
+        int v = km_src_axis_raw(s);
         return v > KM_AXIS_PRESS;
     }
     default: return 0;
@@ -546,8 +589,7 @@ float openpete_key_axis(openpete_action_t a) {
     for (int i = 0; i < b->n; i++) {
         const km_source_t* s = &b->src[i];
         if (s->kind == KM_SRC_PADAXIS) {
-            if (!s_in.pad_axis) continue;
-            int v = s_in.pad_axis(s->code) * (s->invert < 0 ? -1 : 1);
+            int v = km_src_axis_raw(s);
             if (v > KM_AXIS_DEAD || v < -KM_AXIS_DEAD) {
                 float f = (float)v / 32767.0f;
                 return f > 1.0f ? 1.0f : (f < -1.0f ? -1.0f : f);
@@ -631,7 +673,10 @@ static void km_format_binding(const km_binding_t* b, char* out, size_t cap) {
             else
                 snprintf(piece, sizeof piece, "%s", nm ? nm : "?");
         } else {
-            snprintf(piece, sizeof piece, "pad:%s%s",
+            char padpfx[8];
+            if (s->device) snprintf(padpfx, sizeof padpfx, "pad%d:", s->device + 1);
+            else           snprintf(padpfx, sizeof padpfx, "pad:");
+            snprintf(piece, sizeof piece, "%s%s%s", padpfx,
                      (s->kind == KM_SRC_PADAXIS && s->invert < 0) ? "-" : "",
                      nm ? nm : "?");
         }
@@ -766,10 +811,14 @@ const char* openpete_keymap_mod_effective_key(const char* mod_id,
         const char* nm = s_to_name ? s_to_name(s->kind, s->code) : NULL;
         if (s->kind == KM_SRC_KEY)
             snprintf(buf, sizeof buf, "%s", nm ? nm : "?");
-        else
-            snprintf(buf, sizeof buf, "pad:%s%s",
+        else {
+            char padpfx[8];
+            if (s->device) snprintf(padpfx, sizeof padpfx, "pad%d:", s->device + 1);
+            else           snprintf(padpfx, sizeof padpfx, "pad:");
+            snprintf(buf, sizeof buf, "%s%s%s", padpfx,
                      (s->kind == KM_SRC_PADAXIS && s->invert < 0) ? "-" : "",
                      nm ? nm : "?");
+        }
         return buf;
     }
     return fallback;

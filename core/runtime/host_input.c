@@ -1,4 +1,5 @@
 #include "openpete_host_input.h"
+#include "openpete_input_log.h"
 #include "openpete_log.h"
 #include "openpete_rumble.h"
 
@@ -32,7 +33,12 @@
  * side of its copy, retries. The producer never blocks inside the critical
  * section (a dozen bytes of stores), so a reader converges immediately. */
 typedef struct {
-    openpete_pad_snapshot_t snap;
+    /* One snapshot per pad slot, published together under one sequence
+     * number: the slots are sampled in the same host iteration and a reader
+     * that could see slot 0 from this iteration and slot 1 from the previous
+     * would attribute a co-op input pair to a tick that never saw it.
+     * `snap[i].valid` doubles as "a device drove this slot". */
+    openpete_pad_snapshot_t snap[OPENPETE_PAD_SLOTS];
     int64_t                 ns;    /* op_now() at publish */
 } host_pad_sample_t;
 
@@ -55,7 +61,7 @@ static _Atomic unsigned s_snap_retry_fail;
  * `s_latched_seq` is what makes an input measurement attributable: it names
  * WHICH published sample a tick consumed, where a timestamp comparison can
  * only guess from ordering. */
-static openpete_pad_snapshot_t s_latched_snap;
+static openpete_pad_snapshot_t s_latched_snap[OPENPETE_PAD_SLOTS];
 static int64_t                 s_latched_ns;
 static unsigned                s_latched_seq;
 
@@ -260,8 +266,14 @@ int openpete_host_input_legacy(void)
  * SDL virtual joystick drives that whole path for real — SDL emits a genuine
  * SDL_EVENT_GAMEPAD_ADDED, the pump routes it, PsyCross opens the pad, and
  * decode reads it like any other controller. Diagnostic only. */
-static SDL_Joystick* s_vpad;
-static int s_vpad_state = -1;   /* -1 unresolved, 0 off, 1 requested */
+/* Virtual pads. Index 0 is the original single pad the rumble recorder
+ * probes; OPENPETE_INPUT_VGAMEPAD=N attaches N of them so the per-slot decode
+ * and the N-port log can be exercised on a machine with no controllers, where
+ * slots 1-3 would otherwise sit absent and make any verdict about them
+ * vacuous. */
+static SDL_Joystick* s_vpads[OPENPETE_PAD_SLOTS];
+#define s_vpad (s_vpads[0])
+static int s_vpad_state = -1;   /* -1 unresolved, 0 off, else the pad count */
 
 /* ---- rumble recorder (the vibration oracle) -----------------------------
  *
@@ -334,9 +346,12 @@ static void vgamepad_maybe_attach(void)
 {
     if (s_vpad_state < 0) {
         const char* e = getenv("OPENPETE_INPUT_VGAMEPAD");
-        s_vpad_state = (e && *e && *e != '0') ? 1 : 0;
+        /* Bare "1" keeps the historical single-pad meaning. */
+        s_vpad_state = (e && *e && *e != '0') ? atoi(e) : 0;
+        if (s_vpad_state < 0) s_vpad_state = 0;
+        if (s_vpad_state > OPENPETE_PAD_SLOTS) s_vpad_state = OPENPETE_PAD_SLOTS;
     }
-    if (s_vpad_state != 1 || s_vpad)
+    if (s_vpad_state < 1 || s_vpad)
         return;
 
     /* SDL_INIT_GAMEPAD is brought up by PsyX_Pad_InitSystem; attaching before
@@ -344,27 +359,37 @@ static void vgamepad_maybe_attach(void)
     if (!SDL_WasInit(SDL_INIT_GAMEPAD))
         return;
 
-    SDL_VirtualJoystickDesc desc;
-    SDL_INIT_INTERFACE(&desc);
-    desc.type       = SDL_JOYSTICK_TYPE_GAMEPAD;
-    desc.naxes      = SDL_GAMEPAD_AXIS_COUNT;
-    desc.nbuttons   = SDL_GAMEPAD_BUTTON_COUNT;
-    desc.name       = "openpete virtual pad";
-    desc.button_mask = 0xFFFFu;
-    desc.axis_mask   = 0x3Fu;
-    desc.Rumble      = vpad_rumble_cb;
+    SDL_JoystickID id = 0;
+    const int want = s_vpad_state;
+    for (int v = 0; v < want; v++) {
+        SDL_VirtualJoystickDesc desc;
+        SDL_INIT_INTERFACE(&desc);
+        desc.type       = SDL_JOYSTICK_TYPE_GAMEPAD;
+        desc.naxes      = SDL_GAMEPAD_AXIS_COUNT;
+        desc.nbuttons   = SDL_GAMEPAD_BUTTON_COUNT;
+        desc.name       = "openpete virtual pad";
+        desc.button_mask = 0xFFFFu;
+        desc.axis_mask   = 0x3Fu;
+        /* Only pad 0 carries the rumble callback: the recorder counts motor
+         * commands globally, and a second reporting pad would make the
+         * self-probe ambiguous about which device answered. */
+        desc.Rumble      = (v == 0) ? vpad_rumble_cb : NULL;
 
-    SDL_JoystickID id = SDL_AttachVirtualJoystick(&desc);
-    if (!id) {
-        OPL_WARN_F("input", "virtual gamepad attach failed: %s", SDL_GetError());
-        s_vpad_state = 0;
-        return;
-    }
-    s_vpad = SDL_OpenJoystick(id);
-    if (!s_vpad) {
-        OPL_WARN_F("input", "virtual gamepad open failed: %s", SDL_GetError());
-        s_vpad_state = 0;
-        return;
+        SDL_JoystickID vid = SDL_AttachVirtualJoystick(&desc);
+        if (!vid) {
+            OPL_WARN_F("input", "virtual gamepad %d attach failed: %s",
+                       v, SDL_GetError());
+            if (v == 0) { s_vpad_state = 0; return; }
+            break;
+        }
+        s_vpads[v] = SDL_OpenJoystick(vid);
+        if (!s_vpads[v]) {
+            OPL_WARN_F("input", "virtual gamepad %d open failed: %s",
+                       v, SDL_GetError());
+            if (v == 0) { s_vpad_state = 0; return; }
+            break;
+        }
+        if (v == 0) id = vid;
     }
     /* Attaching is not the same as being usable: the pad only reaches decode
      * if SDL exposes it as a *gamepad* (it needs a mapping — on some platforms
@@ -426,24 +451,38 @@ static void vgamepad_drive(unsigned frame)
         SDL_GAMEPAD_BUTTON_START,
     };
     const int n = (int)(sizeof(kBtn) / sizeof(kBtn[0]));
-    unsigned slot = (frame / 8u) % (unsigned)(n + 1);
 
-    for (int i = 0; i < n; i++)
-        SDL_SetJoystickVirtualButton(s_vpad, kBtn[i], (unsigned)i == slot);
+    for (int v = 0; v < OPENPETE_PAD_SLOTS; v++) {
+        if (!s_vpads[v]) continue;
+        /* Phase-shift per pad so no two virtual pads ever hold the same
+         * button on the same VBL: a per-slot routing bug that crossed two
+         * devices would otherwise still look correct. */
+        unsigned f = frame + (unsigned)v * 3u;
+        unsigned slot = (f / 8u) % (unsigned)(n + 1);
 
-    Sint16 sweep = (Sint16)(((int)(frame % 100u) - 50) * 600);
-    SDL_SetJoystickVirtualAxis(s_vpad, SDL_GAMEPAD_AXIS_LEFTX, sweep);
-    SDL_SetJoystickVirtualAxis(s_vpad, SDL_GAMEPAD_AXIS_LEFTY, (Sint16)-sweep);
+        for (int i = 0; i < n; i++)
+            SDL_SetJoystickVirtualButton(s_vpads[v], kBtn[i],
+                                         (unsigned)i == slot);
+
+        Sint16 sweep = (Sint16)(((int)(f % 100u) - 50) * 600);
+        SDL_SetJoystickVirtualAxis(s_vpads[v], SDL_GAMEPAD_AXIS_LEFTX, sweep);
+        SDL_SetJoystickVirtualAxis(s_vpads[v], SDL_GAMEPAD_AXIS_LEFTY,
+                                   (Sint16)-sweep);
+    }
 }
 
 /* ---- host SDL input-state snapshot (see the header) --------------------- */
 
 typedef struct {
-    bool     keys[SDL_SCANCODE_COUNT];
     bool     buttons[SDL_GAMEPAD_BUTTON_COUNT];
     Sint16   axes[SDL_GAMEPAD_AXIS_COUNT];
-    unsigned mods;
     bool     have_pad;
+} host_pad_state_t;
+
+typedef struct {
+    bool     keys[SDL_SCANCODE_COUNT];
+    unsigned mods;
+    host_pad_state_t pads[OPENPETE_PAD_SLOTS];
 } host_sdl_state_t;
 
 static host_sdl_state_t s_sdl_state[2];
@@ -461,6 +500,93 @@ static SDL_Gamepad* host_first_gamepad(void)
         SDL_free(ids);
     }
     return found;
+}
+
+/* Which physical gamepad drives each pad slot.
+ *
+ * Slot 0 stays exactly what it has always been — the binding layer's first
+ * pad — so player 1 is unaffected by the existence of the other slots. Slots
+ * 1-3 take the remaining connected gamepads in enumeration order, skipping
+ * both slot 0's device and the one PsyCross tracks as its own P1: player 1 is
+ * decoded through PsyCross while these slots are decoded here, and a device
+ * appearing in both would drive two players at once.
+ *
+ * Enumeration order is the default assignment. It is stable for a fixed set
+ * of devices but not across a replug, which is what the GUID table overrides.
+ * `out[i]` is NULL for an unfilled slot. */
+/* Gamepads openpete opened for slots 1-3.
+ *
+ * SDL_GetGamepadFromID resolves only devices somebody has already OPENED as a
+ * gamepad, and PsyCross opens at most its own two. A third and fourth
+ * controller are therefore invisible to enumeration until opened here — the
+ * slots stay empty with the devices sitting right there. openpete owns these
+ * handles because it owns those slots; PsyCross's own are never closed here. */
+#define HOST_OWNED_PADS 8
+static struct { SDL_JoystickID id; SDL_Gamepad* gp; } s_owned[HOST_OWNED_PADS];
+
+/* Resolve a device to a gamepad handle, opening it if nothing else has. */
+static SDL_Gamepad* host_gamepad_for_id(SDL_JoystickID id)
+{
+    SDL_Gamepad* gp = SDL_GetGamepadFromID(id);
+    if (gp) return gp;
+    if (!SDL_IsGamepad(id)) return NULL;   /* no mapping: not a gamepad here */
+
+    for (int i = 0; i < HOST_OWNED_PADS; i++)
+        if (s_owned[i].id == id && s_owned[i].gp) return s_owned[i].gp;
+
+    for (int i = 0; i < HOST_OWNED_PADS; i++) {
+        if (s_owned[i].gp) continue;
+        gp = SDL_OpenGamepad(id);
+        if (!gp) {
+            OPL_WARN_F("input", "could not open gamepad id=%u for a pad slot: %s",
+                       (unsigned)id, SDL_GetError());
+            return NULL;
+        }
+        s_owned[i].id = id;
+        s_owned[i].gp = gp;
+        return gp;
+    }
+    return NULL;
+}
+
+/* Release handles whose device is gone, so a replug does not exhaust the
+ * table and leave a later slot unfillable. */
+static void host_owned_prune(const SDL_JoystickID* ids, int n)
+{
+    for (int i = 0; i < HOST_OWNED_PADS; i++) {
+        if (!s_owned[i].gp) continue;
+        int live = 0;
+        for (int k = 0; k < n; k++) if (ids[k] == s_owned[i].id) { live = 1; break; }
+        if (live) continue;
+        SDL_CloseGamepad(s_owned[i].gp);
+        s_owned[i].gp = NULL;
+        s_owned[i].id = 0;
+    }
+}
+
+static void host_slot_gamepads(SDL_Gamepad* out[OPENPETE_PAD_SLOTS])
+{
+    for (int i = 0; i < OPENPETE_PAD_SLOTS; i++) out[i] = NULL;
+
+    SDL_Gamepad* p1_host = host_first_gamepad();
+    SDL_Gamepad* p1_psyx = (SDL_Gamepad*)PsyX_Pad_GetGamepad(0);
+    out[0] = p1_host;
+
+    int n = 0;
+    SDL_JoystickID* ids = SDL_GetGamepads(&n);
+    if (!ids) return;
+    host_owned_prune(ids, n);
+
+    int slot = 1;
+    for (int i = 0; i < n && slot < OPENPETE_PAD_SLOTS; i++) {
+        SDL_Gamepad* gp = host_gamepad_for_id(ids[i]);
+        if (!gp || gp == p1_host || gp == p1_psyx) continue;
+        int dup = 0;
+        for (int k = 1; k < slot; k++) if (out[k] == gp) dup = 1;
+        if (dup) continue;
+        out[slot++] = gp;
+    }
+    SDL_free(ids);
 }
 
 void openpete_host_input_publish_sdl(void)
@@ -483,16 +609,21 @@ void openpete_host_input_publish_sdl(void)
 
     d->mods = (unsigned)SDL_GetModState();
 
-    SDL_Gamepad* gp = host_first_gamepad();
-    d->have_pad = (gp != NULL);
-    if (gp) {
-        for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; b++)
-            d->buttons[b] = SDL_GetGamepadButton(gp, (SDL_GamepadButton)b);
-        for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++)
-            d->axes[a] = SDL_GetGamepadAxis(gp, (SDL_GamepadAxis)a);
-    } else {
-        memset(d->buttons, 0, sizeof(d->buttons));
-        memset(d->axes, 0, sizeof(d->axes));
+    SDL_Gamepad* slot_gp[OPENPETE_PAD_SLOTS];
+    host_slot_gamepads(slot_gp);
+    for (int sl = 0; sl < OPENPETE_PAD_SLOTS; sl++) {
+        host_pad_state_t* ps = &d->pads[sl];
+        SDL_Gamepad* gp = slot_gp[sl];
+        ps->have_pad = (gp != NULL);
+        if (gp) {
+            for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; b++)
+                ps->buttons[b] = SDL_GetGamepadButton(gp, (SDL_GamepadButton)b);
+            for (int a = 0; a < SDL_GAMEPAD_AXIS_COUNT; a++)
+                ps->axes[a] = SDL_GetGamepadAxis(gp, (SDL_GamepadAxis)a);
+        } else {
+            memset(ps->buttons, 0, sizeof(ps->buttons));
+            memset(ps->axes, 0, sizeof(ps->axes));
+        }
     }
 
     /* Release: the buffer's contents must be visible before the index that
@@ -514,18 +645,36 @@ int openpete_host_input_key_down(int scancode)
     return host_sdl_read()->keys[scancode] ? 1 : 0;
 }
 
+int openpete_host_input_pad_button_slot(int slot, int button)
+{
+    if (slot < 0 || slot >= OPENPETE_PAD_SLOTS) return 0;
+    if (button < 0 || button >= SDL_GAMEPAD_BUTTON_COUNT) return 0;
+    const host_pad_state_t* ps = &host_sdl_read()->pads[slot];
+    return (ps->have_pad && ps->buttons[button]) ? 1 : 0;
+}
+
+int openpete_host_input_pad_axis_slot(int slot, int axis)
+{
+    if (slot < 0 || slot >= OPENPETE_PAD_SLOTS) return 0;
+    if (axis < 0 || axis >= SDL_GAMEPAD_AXIS_COUNT) return 0;
+    const host_pad_state_t* ps = &host_sdl_read()->pads[slot];
+    return ps->have_pad ? ps->axes[axis] : 0;
+}
+
+int openpete_host_input_pad_connected(int slot)
+{
+    if (slot < 0 || slot >= OPENPETE_PAD_SLOTS) return 0;
+    return host_sdl_read()->pads[slot].have_pad ? 1 : 0;
+}
+
 int openpete_host_input_pad_button(int button)
 {
-    if (button < 0 || button >= SDL_GAMEPAD_BUTTON_COUNT) return 0;
-    const host_sdl_state_t* st = host_sdl_read();
-    return (st->have_pad && st->buttons[button]) ? 1 : 0;
+    return openpete_host_input_pad_button_slot(0, button);
 }
 
 int openpete_host_input_pad_axis(int axis)
 {
-    if (axis < 0 || axis >= SDL_GAMEPAD_AXIS_COUNT) return 0;
-    const host_sdl_state_t* st = host_sdl_read();
-    return st->have_pad ? st->axes[axis] : 0;
+    return openpete_host_input_pad_axis_slot(0, axis);
 }
 
 unsigned openpete_host_input_modstate(void)
@@ -535,15 +684,18 @@ unsigned openpete_host_input_modstate(void)
 
 /* Publish one whole sample. Returns its sequence number (even, stable). */
 static unsigned pad_publish(unsigned short bits, const unsigned char axes[4],
+                            const openpete_pad_snapshot_t* extra,
                             int64_t now_ns)
 {
     const unsigned seq = atomic_load_explicit(&s_snap_seq, memory_order_relaxed);
     atomic_store_explicit(&s_snap_seq, seq + 1u, memory_order_relaxed);
     SDL_MemoryBarrierRelease();          /* odd count visible before the bytes */
 
-    s_snap_live.snap.bits = bits;
-    memcpy(s_snap_live.snap.axes, axes, sizeof(s_snap_live.snap.axes));
-    s_snap_live.snap.valid = true;
+    s_snap_live.snap[0].bits = bits;
+    memcpy(s_snap_live.snap[0].axes, axes, sizeof(s_snap_live.snap[0].axes));
+    s_snap_live.snap[0].valid = true;
+    for (int sl = 1; sl < OPENPETE_PAD_SLOTS; sl++)
+        s_snap_live.snap[sl] = extra ? extra[sl - 1] : (openpete_pad_snapshot_t){0};
     s_snap_live.ns = now_ns;
 
     SDL_MemoryBarrierRelease();          /* bytes visible before the even count */
@@ -603,8 +755,31 @@ void openpete_host_input_sample(bool alt_held)
     if (pulse_on())
         pulse_apply(&bits);
 
+    /* Slots 1-3, decoded from their own devices through the same merge slot 0
+     * uses, so a mapping or centre-convention change cannot reach one player
+     * and not the others. Alt gates every slot: the Alt of Alt+Enter is a
+     * window command, not four simultaneous Starts. A slot with no device
+     * publishes invalid rather than neutral, which is what lets the log
+     * distinguish "nobody plugged in" from "holding nothing". */
+    openpete_pad_snapshot_t extra[OPENPETE_PAD_SLOTS - 1];
+    memset(extra, 0, sizeof(extra));
+    {
+        SDL_Gamepad* slot_gp[OPENPETE_PAD_SLOTS];
+        host_slot_gamepads(slot_gp);
+        for (int sl = 1; sl < OPENPETE_PAD_SLOTS; sl++) {
+            openpete_pad_snapshot_t* d = &extra[sl - 1];
+            if (!slot_gp[sl] || alt_held) continue;   /* leaves valid = false */
+            unsigned short sb = PAD_NEUTRAL_BITS;
+            unsigned char  sa[4] = { 128, 128, 128, 128 };
+            PsyX_Pad_DecodeGamepad(slot_gp[sl], &sb, sa);
+            d->bits = sb;
+            memcpy(d->axes, sa, sizeof(d->axes));
+            d->valid = true;
+        }
+    }
+
     const int64_t now_ns = (int64_t)op_now();
-    const unsigned seq = pad_publish(bits, axes, now_ns);
+    const unsigned seq = pad_publish(bits, axes, extra, now_ns);
 
     /* Pad edges go to the pacing log from HERE — the producer side — because
      * the quantity of interest is when the press was seen relative to the
@@ -637,7 +812,7 @@ void openpete_host_input_seed_neutral(void)
      * Seeding neutral means the override is active from the first tick and
      * the live path is unreachable on the consumer thread by construction. */
     const unsigned char neutral[4] = { 128, 128, 128, 128 };
-    pad_publish(PAD_NEUTRAL_BITS, neutral, (int64_t)op_now());
+    pad_publish(PAD_NEUTRAL_BITS, neutral, NULL, (int64_t)op_now());
 }
 
 void openpete_host_input_latch(bool claimed)
@@ -652,7 +827,8 @@ void openpete_host_input_latch(bool claimed)
          * fully-claimed run (bk2) is every number the log reports. */
         s_latched_ns  = 0;
         s_latched_seq = 0;
-        s_latched_snap.valid = false;
+        for (int sl = 0; sl < OPENPETE_PAD_SLOTS; sl++)
+            s_latched_snap[sl].valid = false;
         return;
     }
 
@@ -662,25 +838,36 @@ void openpete_host_input_latch(bool claimed)
      * did this tick consume" answerable rather than inferred from ordering. */
     host_pad_sample_t cur;
     const unsigned seq = pad_read_stable(&cur);
-    if (!seq || !cur.snap.valid) return;
+    if (!seq || !cur.snap[0].valid) return;
 
-    s_latched_snap = cur.snap;
+    for (int sl = 0; sl < OPENPETE_PAD_SLOTS; sl++)
+        s_latched_snap[sl] = cur.snap[sl];
     s_latched_ns   = cur.ns;
     s_latched_seq  = seq;
 
-    g_PsyX_Pad_InputOverride     = cur.snap.bits;
-    g_PsyX_Pad_AnalogOverride[0] = cur.snap.axes[0];
-    g_PsyX_Pad_AnalogOverride[1] = cur.snap.axes[1];
-    g_PsyX_Pad_AnalogOverride[2] = cur.snap.axes[2];
-    g_PsyX_Pad_AnalogOverride[3] = cur.snap.axes[3];
+    /* Only slot 0 reaches the guest. Slots 1-3 are latched for the input log
+     * and the mod API; nothing stamps them into a PSX pad buffer. */
+    g_PsyX_Pad_InputOverride     = cur.snap[0].bits;
+    g_PsyX_Pad_AnalogOverride[0] = cur.snap[0].axes[0];
+    g_PsyX_Pad_AnalogOverride[1] = cur.snap[0].axes[1];
+    g_PsyX_Pad_AnalogOverride[2] = cur.snap[0].axes[2];
+    g_PsyX_Pad_AnalogOverride[3] = cur.snap[0].axes[3];
     g_PsyX_Pad_OverrideActive    = 1;
+}
+
+int openpete_host_input_latched_slot(int slot, openpete_pad_snapshot_t* out)
+{
+    if (!out) return 0;
+    if (slot < 0 || slot >= OPENPETE_PAD_SLOTS) { out->valid = false; return 0; }
+    *out = s_latched_snap[slot];
+    return out->valid ? 1 : 0;
 }
 
 void openpete_host_input_last(openpete_pad_snapshot_t* out)
 {
     host_pad_sample_t cur;
     if (!out) return;
-    if (pad_read_stable(&cur)) *out = cur.snap;
+    if (pad_read_stable(&cur)) *out = cur.snap[0];
     else                       out->valid = false;
 }
 
@@ -702,7 +889,7 @@ unsigned openpete_host_input_latched_seq(void)
 
 unsigned short openpete_host_input_latched_bits(void)
 {
-    return s_latched_snap.valid ? s_latched_snap.bits : PAD_NEUTRAL_BITS;
+    return s_latched_snap[0].valid ? s_latched_snap[0].bits : PAD_NEUTRAL_BITS;
 }
 
 void openpete_host_input_parity_enable(void)
@@ -750,10 +937,10 @@ void openpete_host_input_parity_check(bool claimed)
      * channel defaults to 128, and routing live input through the channel must
      * not quietly adopt 128). The decode itself needs no comparison: both
      * paths call PsyX_Pad_DecodeP1, so they agree by construction. */
-    if (!s_latched_snap.valid)
+    if (!s_latched_snap[0].valid)
         return;                       /* nothing was consumed this iteration */
-    const unsigned short ref_bits = s_latched_snap.bits;
-    const unsigned char* ref_axes = s_latched_snap.axes;
+    const unsigned short ref_bits = s_latched_snap[0].bits;
+    const unsigned char* ref_axes = s_latched_snap[0].axes;
 
     /* Staleness probe: the producer must have published something new since
      * the last latch. Under the split it republishes on its own cadence, so

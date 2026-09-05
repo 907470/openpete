@@ -73,10 +73,25 @@ void openpete_host_input_publish_sdl(void);
 int      openpete_host_input_key_down(int scancode);
 int      openpete_host_input_pad_button(int button);
 int      openpete_host_input_pad_axis(int axis);
+
+/* The same reads, addressed by pad slot. Slot 0 is what the unqualified forms
+ * above return; slots 1-3 are the additional connected gamepads, in the order
+ * host_slot_gamepads assigns them. A slot with no device reads as all-released
+ * and centred, which openpete_host_input_pad_connected distinguishes from a
+ * device that is genuinely idle. */
+int      openpete_host_input_pad_button_slot(int slot, int button);
+int      openpete_host_input_pad_axis_slot(int slot, int axis);
+int      openpete_host_input_pad_connected(int slot);
 unsigned openpete_host_input_modstate(void);
 
 /* Last published snapshot (diagnostics / the parity instrument). */
 void openpete_host_input_last(openpete_pad_snapshot_t* out);
+
+/* The snapshot this iteration's latch consumed for one pad slot. Returns 1
+ * when a device drove the slot, 0 otherwise (with `out->valid` false). Slot 0
+ * is the sample that was stamped into the override channel; slots 1-3 are
+ * latched for the input log and reach the guest only through a mod. */
+int openpete_host_input_latched_slot(int slot, openpete_pad_snapshot_t* out);
 
 /* op_now() at the moment the last snapshot was published, or 0 before the
  * first one. The consumer runs on a different thread from the producer, so

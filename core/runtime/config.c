@@ -541,7 +541,7 @@ static int harvest_keys(const toml_table_t *keys, int tier, int file,
      * applies and every binding ranks at SP_BASE for its scope. */
     const int rank = RANK(tier, file, SP_BASE);
 
-    static const char *const domains[] = { "pad", "pad2", "host" };
+    static const char *const domains[] = { "pad", "pad2", "pad3", "pad4", "host" };
     for (size_t d = 0; d < sizeof domains / sizeof domains[0]; d++) {
         const toml_table_t *tab = toml_table_in(keys, domains[d]);
         if (tab && harvest_keys_domain(tab, domains[d], rank, origin, where) != 0)
@@ -589,9 +589,10 @@ static int harvest_keys(const toml_table_t *keys, int tier, int file,
         const char *key = toml_key_in(keys, i);
         if (!key) break;
         if (!strcmp(key, "pad") || !strcmp(key, "pad2") ||
+            !strcmp(key, "pad3") || !strcmp(key, "pad4") ||
             !strcmp(key, "host") || !strcmp(key, "mod")) continue;
         fprintf(stderr, "openpete: config: %s: unknown [keys.%s] — expected "
-                        "pad, pad2, host or mod.<id>\n", where, key);
+                        "pad, pad2, pad3, pad4, host or mod.<id>\n", where, key);
         return -1;
     }
     return 0;

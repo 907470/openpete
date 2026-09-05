@@ -55,6 +55,14 @@ static int km_sdl_pad_axis(int axis) {
     return openpete_host_input_pad_axis(axis);
 }
 
+static int km_sdl_pad_button_slot(int slot, int button) {
+    return openpete_host_input_pad_button_slot(slot, button);
+}
+
+static int km_sdl_pad_axis_slot(int slot, int axis) {
+    return openpete_host_input_pad_axis_slot(slot, axis);
+}
+
 /* SDL's own button vocabulary is still the mapping-database spelling —
  * "a", "b", "x", "y" — which names the four face buttons by an Xbox
  * layout rather than by position, so "pad:a" means different physical
@@ -145,7 +153,8 @@ static const char* km_sdl_key_label(int scancode) {
 
 void openpete_keymap_install_sdl(void) {
     static const openpete_keymap_input_fns fns = {
-        km_sdl_key_down, km_sdl_pad_button, km_sdl_pad_axis
+        km_sdl_key_down, km_sdl_pad_button, km_sdl_pad_axis,
+        km_sdl_pad_button_slot, km_sdl_pad_axis_slot
     };
     openpete_keymap_set_lookup(km_sdl_name_to_code, km_sdl_code_to_name,
                                km_sdl_key_label);

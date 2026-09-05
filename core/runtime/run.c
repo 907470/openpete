@@ -813,10 +813,12 @@ extern SDL_Window* g_window;
  * the pad bits itself through the g_PsyX_Pad_InputOverride channel — a
  * change to the replay-critical path, deliberately not folded in here.
  *
- * `[keys.pad2]` is accepted by the config but inert: PsyCross uses the one
- * g_cfg_controllerMapping for both slots (see the "TODO: separate mapping
- * for Pad 2" in PsyX_Pad_UpdateGameControllerInput), so a P2 map has
- * nowhere to land. Say so rather than pretend it took. */
+ * This stamp covers player 1 only. Players 2-4 are decoded host-side from
+ * their own devices and never pass through these PsyCross mapping structs,
+ * so a `[keys.pad2..4]` map has nothing to stamp here — those players get
+ * their buttons from the shared controller merge instead. Re-mapping one of
+ * them is not wired yet; the warning below says so rather than let a bound
+ * row look like it took. */
 static void stamp_psx_pad_bindings(void) {
     /* Every field of both structs, paired with the action that feeds it.
      * A table rather than 20 assignments so a new pad action is one row. */
@@ -934,13 +936,16 @@ static void stamp_psx_pad_bindings(void) {
         }
     }
 
-    /* P2 is a valid namespace but has nowhere to land; only say so if the
-     * user actually bound something there. */
+    /* Players 2-4 have working pads without any binding here, but their
+     * decode still runs the shared controller merge, so a row bound under
+     * [keys.pad2..4] does not yet change what that player's buttons do.
+     * Only say so if the user actually bound something there. */
     for (int a = OPK_PAD2_CROSS; a < OPK_ACTION_COUNT; a++) {
         km_source_t src[KM_MAX_SOURCES];
         if (openpete_keymap_sources((openpete_action_t)a, src, KM_MAX_SOURCES)) {
-            OPL_WARN_F("keys", "[keys.pad2] is inert: PsyCross shares one "
-                       "controller map across both pad slots");
+            OPL_WARN_F("keys", "[keys.pad2..4] rows are parsed but do not "
+                       "re-map that player yet: players 2-4 decode through "
+                       "the shared controller mapping");
             break;
         }
     }
@@ -2361,6 +2366,18 @@ static int synth_pads_match(const openpete_input_rec_t* rec, unsigned frame) {
     return 1;
 }
 
+/* VBLs each pad slot was recorded present for. Slot 0 is every logged VBL by
+ * construction; a zero on slots 1-3 is what separates "the extra players were
+ * carried" from "nothing was ever plugged in", which no downstream comparison
+ * can distinguish on its own. */
+static unsigned long long s_slot_present_vbls[OPENPETE_PAD_SLOTS] = {0};
+
+/* VBLs on which two slots carried different bytes. Presence alone cannot
+ * catch a routing bug that fed one device into several slots: crossed slots
+ * are present every VBL and identical every VBL. A pair that never differs
+ * over a whole run was never independently routed. */
+static unsigned long long s_slot_differed[OPENPETE_PAD_SLOTS][OPENPETE_PAD_SLOTS] = {{0}};
+
 static unsigned long long s_synth_stage_checks = 0;
 static unsigned long long s_synth_stage_mismatches = 0;
 static unsigned long long s_synth_rewind_checks = 0;
@@ -3764,6 +3781,20 @@ static int run_host_loop(const openpete_options_t* opts) {
             const unsigned char no_buffer[4] = { 128, 128, 128, 128 };
             input_log_stage_port(0, 0xFFFF, no_buffer);
         }
+        /* Slots 1-3 from this iteration's latch. Absent when no device drives
+         * the slot, and absent whenever a higher-priority writer claimed the
+         * channel: under bk2 replay or the settings menu the extra players
+         * are driven by the movie, not by whatever is plugged in. */
+        for (int sl = 1; sl < OPENPETE_PAD_SLOTS; sl++) {
+            openpete_pad_snapshot_t sn;
+            if (!openpete_host_input_latched_slot(sl, &sn)) continue;
+            /* Snapshot axes are PSX pad->analog order; the log stores bk2. */
+            const unsigned char slot_axes[4] = {
+                sn.axes[2], sn.axes[3], sn.axes[0], sn.axes[1] };
+            input_log_stage_port(sl, sn.bits, slot_axes);
+        }
+        /* The harness overrides live devices so the N-port carry stays
+         * testable on a machine with one pad, or none. */
         if (synth_pads_enabled()) {
             for (int sl = 1; sl < OPENPETE_PAD_SLOTS; sl++) {
                 uint16_t b; unsigned char ax[4];
@@ -4258,6 +4289,20 @@ static int run_host_loop(const openpete_options_t* opts) {
                     s_synth_stage_mismatches++;
             }
             input_log_stage_p1_readback(bits, bk2axes);
+            for (int sl = 0; sl < OPENPETE_PAD_SLOTS; sl++)
+                if (input_log_staged()->port[sl].present)
+                    s_slot_present_vbls[sl] += ticks;
+            for (int a = 0; a < OPENPETE_PAD_SLOTS; a++) {
+                const openpete_input_port_t* pa = &input_log_staged()->port[a];
+                if (!pa->present) continue;
+                for (int b = a + 1; b < OPENPETE_PAD_SLOTS; b++) {
+                    const openpete_input_port_t* pb = &input_log_staged()->port[b];
+                    if (!pb->present) continue;
+                    if (pa->bits != pb->bits ||
+                        memcmp(pa->axes, pb->axes, 4) != 0)
+                        s_slot_differed[a][b] += ticks;
+                }
+            }
             for (unsigned t = 0; t < ticks; t++) {
                 int idx = input_log_append_staged();
                 if (bk2_recording) bk2_record_note(bits, idx);
@@ -5414,6 +5459,15 @@ static int run_host_loop(const openpete_options_t* opts) {
     OPL_INFO_F("input-log",
                "slot-0 staging: %llu check(s), %llu mismatch(es)",
                s_p1_stage_checks, s_p1_stage_mismatches);
+    OPL_INFO_F("input-log",
+               "pad slots present (VBLs): p1=%llu p2=%llu p3=%llu p4=%llu",
+               s_slot_present_vbls[0], s_slot_present_vbls[1],
+               s_slot_present_vbls[2], s_slot_present_vbls[3]);
+    OPL_INFO_F("input-log",
+               "pad slot independence (VBLs differing): "
+               "p1/p2=%llu p1/p3=%llu p1/p4=%llu p2/p3=%llu p2/p4=%llu p3/p4=%llu",
+               s_slot_differed[0][1], s_slot_differed[0][2], s_slot_differed[0][3],
+               s_slot_differed[1][2], s_slot_differed[1][3], s_slot_differed[2][3]);
     if (synth_pads_enabled())
         OPL_INFO_F("input-log",
                    "synthetic slots 1-3: %llu stage check(s)/%llu mismatch(es), "

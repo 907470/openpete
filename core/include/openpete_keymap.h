@@ -44,6 +44,11 @@ typedef struct {
     unsigned char kind;    /* km_srckind_t */
     signed char   invert;  /* KM_SRC_PADAXIS only: "pad:-leftx" */
     short         code;    /* SDL scancode / gamepad button / gamepad axis */
+    /* Pad slot the source reads, for the "pad2:"/"pad3:"/"pad4:" prefixes.
+     * 0 is the unqualified "pad:", player 1's device — so every binding
+     * written before the qualifier existed keeps reading exactly what it
+     * always did. Meaningless for KM_SRC_KEY: there is one keyboard. */
+    unsigned char device;
 } km_source_t;
 
 /* Most actions bind one key plus one pad source; four is slack enough
@@ -52,7 +57,8 @@ typedef struct {
 
 /* ---- domains, kinds, contexts --------------------------------------- */
 
-typedef enum { KM_DOM_HOST = 0, KM_DOM_PAD, KM_DOM_PAD2, KM_DOM_COUNT } km_domain_t;
+typedef enum { KM_DOM_HOST = 0, KM_DOM_PAD, KM_DOM_PAD2,
+               KM_DOM_PAD3, KM_DOM_PAD4, KM_DOM_COUNT } km_domain_t;
 
 typedef enum { KM_DIGITAL = 0, KM_AXIS } km_kind_t;
 
@@ -247,18 +253,28 @@ typedef enum {
   X(RIGHT_Y,  "right_y",  KM_AXIS, KM_CTX_GAMEPLAY, 0,                         \
         "pad:righty",     "PSX pad: right stick Y")
 
-/* Action ids. HOST first, then P1's pad, then P2's — the enum and the
+/* Action ids. HOST first, then one pad block per player — the enum and the
  * registry are generated from the same lists so they cannot drift. */
 #define KM_ENUM_HOST(sym, id, k, c, f, d, p)  OPK_##sym,
 #define KM_ENUM_PAD(sym, id, k, c, f, d, p)   OPK_PAD_##sym,
 #define KM_ENUM_PAD2(sym, id, k, c, f, d, p)  OPK_PAD2_##sym,
+#define KM_ENUM_PAD3(sym, id, k, c, f, d, p)  OPK_PAD3_##sym,
+#define KM_ENUM_PAD4(sym, id, k, c, f, d, p)  OPK_PAD4_##sym,
 
 typedef enum {
     OPENPETE_KEYMAP_HOST_ACTIONS(KM_ENUM_HOST)
     OPENPETE_KEYMAP_PAD_ACTIONS(KM_ENUM_PAD)
     OPENPETE_KEYMAP_PAD_ACTIONS(KM_ENUM_PAD2)
+    OPENPETE_KEYMAP_PAD_ACTIONS(KM_ENUM_PAD3)
+    OPENPETE_KEYMAP_PAD_ACTIONS(KM_ENUM_PAD4)
     OPK_ACTION_COUNT
 } openpete_action_t;
+
+/* First action of one player's pad block. The blocks are generated from one
+ * list, so a decoder can walk any player's with the same offsets. */
+#define OPK_PAD_BLOCK_FIRST(player) \
+    ((player) == 0 ? OPK_PAD_CROSS : (player) == 1 ? OPK_PAD2_CROSS \
+   : (player) == 2 ? OPK_PAD3_CROSS : OPK_PAD4_CROSS)
 
 /* ---- name lookup seam ----------------------------------------------- */
 
@@ -287,6 +303,13 @@ typedef struct {
     int (*key_down)(int scancode);     /* 0/1 */
     int (*pad_button)(int button);     /* 0/1 */
     int (*pad_axis)(int axis);         /* [-32768, 32767] */
+    /* Slot-qualified reads, for sources carrying a device > 0. Optional: a
+     * NULL pair makes every such source read as "not held" rather than
+     * silently falling back to player 1's device, which would let a mistyped
+     * "pad2:" quietly control player 1. The unqualified pair above still
+     * serves device 0, so existing bindings do not change path. */
+    int (*pad_button_slot)(int slot, int button);
+    int (*pad_axis_slot)(int slot, int axis);
 } openpete_keymap_input_fns;
 
 void openpete_keymap_set_input(const openpete_keymap_input_fns* fns);
