@@ -2315,6 +2315,67 @@ static int run_host_init(const openpete_options_t* opts) {
  *
  * libco fibers are created and switched here, on the one thread that owns them
  * for their whole life. */
+/* Pre-yield-staging equality instrument. The input record is staged before
+ * the tick so an in-tick reader can see it, but the bytes the log stores for
+ * slot 0 remain the post-yield guest readback. These count how often the two
+ * were compared and how often they disagreed; a nonzero mismatch means an
+ * in-tick slot-0 read would see bytes the log never recorded. */
+/* Synthetic pad stream for slots 1-3 (OPENPETE_SYNTH_PADS=1), the harness
+ * that lets the N-port log be exercised before host sampling exists to fill
+ * those slots. The bytes are a pure function of the VBL index and the slot,
+ * so any consumer can recompute what the record must hold: the append path
+ * checks the staged ports survived the tick, and the rewind burst checks the
+ * ports it restaged from the log match what that VBL originally carried.
+ * Without it the N-port carry is untested code and a rewind gate over an
+ * all-empty log proves nothing about it. */
+static int synth_pads_enabled(void) {
+    static int s_on = -1;
+    if (s_on < 0) {
+        const char* v = getenv("OPENPETE_SYNTH_PADS");
+        s_on = (v && *v && *v != '0') ? 1 : 0;
+    }
+    return s_on;
+}
+
+static void synth_pad_for(unsigned frame, int slot,
+                          uint16_t* bits, unsigned char axes[4]) {
+    /* Distinct per slot and per VBL, and never 0xFFFF-with-centred-sticks,
+     * so a dropped port is not mistaken for a legitimately idle one. */
+    unsigned k = frame * 7u + (unsigned)slot * 1361u;
+    *bits   = (uint16_t)~(1u << (k % 16));      /* one button held */
+    axes[0] = (unsigned char)(k % 251u);
+    axes[1] = (unsigned char)((k / 3u) % 251u);
+    axes[2] = (unsigned char)((k / 7u) % 251u);
+    axes[3] = (unsigned char)((k / 11u) % 251u);
+}
+
+/* Do slots 1-3 of `rec` carry exactly the synthetic stream for `frame`? */
+static int synth_pads_match(const openpete_input_rec_t* rec, unsigned frame) {
+    for (int sl = 1; sl < OPENPETE_PAD_SLOTS; sl++) {
+        uint16_t b; unsigned char ax[4];
+        synth_pad_for(frame, sl, &b, ax);
+        const openpete_input_port_t* pt = &rec->port[sl];
+        if (!pt->present || pt->bits != b || memcmp(pt->axes, ax, 4) != 0)
+            return 0;
+    }
+    return 1;
+}
+
+static unsigned long long s_synth_stage_checks = 0;
+static unsigned long long s_synth_stage_mismatches = 0;
+static unsigned long long s_synth_rewind_checks = 0;
+static unsigned long long s_synth_rewind_mismatches = 0;
+
+static unsigned long long s_p1_stage_checks = 0;
+static unsigned long long s_p1_stage_mismatches = 0;
+/* First disagreement, kept for the report: a count alone cannot say whether
+ * the cause is a one-off boot transient or a live decode path. */
+static unsigned s_p1_stage_first_frame = 0;
+static uint16_t s_p1_stage_first_staged_bits = 0;
+static uint16_t s_p1_stage_first_read_bits = 0;
+static unsigned char s_p1_stage_first_staged_axes[4] = {0};
+static unsigned char s_p1_stage_first_read_axes[4] = {0};
+
 static int run_host_loop(const openpete_options_t* opts) {
     /* Which half of the input seam this thread owns (see run_host_init). */
     const bool split = openpete_split_applies(opts);
@@ -3319,11 +3380,32 @@ static int run_host_loop(const openpete_options_t* opts) {
                                       (int)(openpete_frame - kf->frame);
                             const openpete_input_rec_t* r = input_log_get(idx);
                             if (r) {
-                                g_PsyX_Pad_InputOverride = r->bits;
-                                g_PsyX_Pad_AnalogOverride[0] = r->axes[2];
-                                g_PsyX_Pad_AnalogOverride[1] = r->axes[3];
-                                g_PsyX_Pad_AnalogOverride[2] = r->axes[0];
-                                g_PsyX_Pad_AnalogOverride[3] = r->axes[1];
+                                /* Re-stage the whole record, not just the
+                                 * override: a re-executed tick must read
+                                 * every slot exactly as the log recorded it,
+                                 * or the burst replays player 1 faithfully
+                                 * and the other players from stale bytes. */
+                                input_log_stage_reset();
+                                for (int sl = 0; sl < OPENPETE_PAD_SLOTS; sl++) {
+                                    const openpete_input_port_t* pt = &r->port[sl];
+                                    if (pt->present)
+                                        input_log_stage_port(sl, pt->bits, pt->axes);
+                                }
+                                if (synth_pads_enabled()) {
+                                    /* The log is the only carrier here: these
+                                     * ports came off disk-free storage that
+                                     * the append path wrote a burst ago. */
+                                    s_synth_rewind_checks++;
+                                    if (!synth_pads_match(input_log_staged(),
+                                                          openpete_frame))
+                                        s_synth_rewind_mismatches++;
+                                }
+                                const openpete_input_port_t* p1 = &r->port[0];
+                                g_PsyX_Pad_InputOverride = p1->bits;
+                                g_PsyX_Pad_AnalogOverride[0] = p1->axes[2];
+                                g_PsyX_Pad_AnalogOverride[1] = p1->axes[3];
+                                g_PsyX_Pad_AnalogOverride[2] = p1->axes[0];
+                                g_PsyX_Pad_AnalogOverride[3] = p1->axes[1];
                                 g_PsyX_Pad_OverrideActive = 1;
                             }
                             unsigned before = openpete_frame;
@@ -3658,6 +3740,48 @@ static int run_host_loop(const openpete_options_t* opts) {
             pace_latch_bits = openpete_host_input_latched_bits();
             PsyX_Pad_InternalPadUpdates();
             openpete_host_input_parity_check(ovr_claimed);
+        }
+
+        /* Stage this tick's input record. Every override writer — bk2
+         * replay, the settings menu, devui, the live host latch — has
+         * stamped the channel by now, so slot 0's staged bytes are the ones
+         * the tick is about to consume, published early enough for a
+         * consumer running INSIDE the tick to read them. Slots 1-3 stay
+         * empty until host sampling fills them.
+         *
+         * An inactive override means PsyCross decodes live inside the tick
+         * and there is nothing to stage yet; the post-yield readback below
+         * fills slot 0 in that case. */
+        input_log_stage_reset();
+        /* Before the game calls PadInitDirect there is no pad buffer, so the
+         * post-yield readback reports PsyCross's no-buffer default rather
+         * than anything the host stamped. Staging that same default keeps
+         * the staged record equal to what the log will carry, instead of
+         * publishing a host value the guest has nowhere to receive. */
+        bool p1_ready  = PsyX_Pad_P1Ready() != 0;
+        bool p1_staged = p1_ready && g_PsyX_Pad_OverrideActive != 0;
+        if (!p1_ready) {
+            const unsigned char no_buffer[4] = { 128, 128, 128, 128 };
+            input_log_stage_port(0, 0xFFFF, no_buffer);
+        }
+        if (synth_pads_enabled()) {
+            for (int sl = 1; sl < OPENPETE_PAD_SLOTS; sl++) {
+                uint16_t b; unsigned char ax[4];
+                synth_pad_for(openpete_frame, sl, &b, ax);
+                input_log_stage_port(sl, b, ax);
+            }
+        }
+        if (p1_staged) {
+            /* PSX pad->analog order is RX,RY,LX,LY; the log stores bk2
+             * order, LX,LY,RX,RY. */
+            const unsigned char staged_axes[4] = {
+                (unsigned char)g_PsyX_Pad_AnalogOverride[2],
+                (unsigned char)g_PsyX_Pad_AnalogOverride[3],
+                (unsigned char)g_PsyX_Pad_AnalogOverride[0],
+                (unsigned char)g_PsyX_Pad_AnalogOverride[1],
+            };
+            input_log_stage_port(0, (uint16_t)g_PsyX_Pad_InputOverride,
+                                 staged_axes);
         }
 
         /* Hand control to the game until the next VSync(0) yield. Gated so
@@ -4109,8 +4233,33 @@ static int run_host_loop(const openpete_options_t* opts) {
             unsigned char ax[4];                 /* PSX pad->analog order: RX,RY,LX,LY */
             PsyX_Pad_GetLastP1Analog(ax);
             unsigned char bk2axes[4] = { ax[2], ax[3], ax[0], ax[1] };  /* -> LX,LY,RX,RY */
+            /* The guest readback stays the truth the log stores for slot 0.
+             * When the override was stamped pre-yield the staged bytes are
+             * that same value published early, and the counter proves it:
+             * a nonzero mismatch means an in-tick slot-0 read saw bytes the
+             * log never recorded, which would desync replay. */
+            if (p1_staged) {
+                const openpete_input_port_t* st = &input_log_staged()->port[0];
+                s_p1_stage_checks++;
+                if (st->bits != bits || memcmp(st->axes, bk2axes, 4) != 0) {
+                    if (s_p1_stage_mismatches == 0) {
+                        s_p1_stage_first_frame = openpete_frame;
+                        s_p1_stage_first_staged_bits = st->bits;
+                        s_p1_stage_first_read_bits = bits;
+                        memcpy(s_p1_stage_first_staged_axes, st->axes, 4);
+                        memcpy(s_p1_stage_first_read_axes, bk2axes, 4);
+                    }
+                    s_p1_stage_mismatches++;
+                }
+            }
+            if (synth_pads_enabled()) {
+                s_synth_stage_checks++;
+                if (!synth_pads_match(input_log_staged(), frame_before_yield))
+                    s_synth_stage_mismatches++;
+            }
+            input_log_stage_p1_readback(bits, bk2axes);
             for (unsigned t = 0; t < ticks; t++) {
-                int idx = input_log_append(bits, bk2axes);
+                int idx = input_log_append_staged();
                 if (bk2_recording) bk2_record_note(bits, idx);
             }
         }
@@ -5258,6 +5407,31 @@ static int run_host_loop(const openpete_options_t* opts) {
         openpete_disc_cache_shutdown(); }
     /* Report before PsyX_Shutdown: the instrument reads PsyCross pad state. */
     openpete_host_input_parity_report();
+
+    /* Staged-vs-readback equality for slot 0. Zero checks means the override
+     * channel was never stamped before a tick (no host-owned input at all),
+     * which makes the mismatch count uninformative rather than clean. */
+    OPL_INFO_F("input-log",
+               "slot-0 staging: %llu check(s), %llu mismatch(es)",
+               s_p1_stage_checks, s_p1_stage_mismatches);
+    if (synth_pads_enabled())
+        OPL_INFO_F("input-log",
+                   "synthetic slots 1-3: %llu stage check(s)/%llu mismatch(es), "
+                   "%llu rewind check(s)/%llu mismatch(es)",
+                   s_synth_stage_checks, s_synth_stage_mismatches,
+                   s_synth_rewind_checks, s_synth_rewind_mismatches);
+    if (s_p1_stage_mismatches)
+        OPL_ERROR_F("input-log",
+                    "slot-0 staging first mismatch at frame %u: "
+                    "staged bits=0x%04X axes=%u,%u,%u,%u; "
+                    "readback bits=0x%04X axes=%u,%u,%u,%u",
+                    s_p1_stage_first_frame,
+                    s_p1_stage_first_staged_bits,
+                    s_p1_stage_first_staged_axes[0], s_p1_stage_first_staged_axes[1],
+                    s_p1_stage_first_staged_axes[2], s_p1_stage_first_staged_axes[3],
+                    s_p1_stage_first_read_bits,
+                    s_p1_stage_first_read_axes[0], s_p1_stage_first_read_axes[1],
+                    s_p1_stage_first_read_axes[2], s_p1_stage_first_read_axes[3]);
 
     /* Vibration census. Emitted unconditionally because the numbers only mean
      * something together, and every one of them is a zero in some legitimate

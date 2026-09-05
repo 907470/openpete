@@ -11,7 +11,50 @@ static int s_count = 0;
 static int s_capacity = 0;
 static int s_alloc_failed = 0;
 
-int input_log_append(uint16_t bits, const uint8_t axes[4]) {
+/* The record for the tick about to run; see the staging note in the header. */
+static openpete_input_rec_t s_staged;
+
+void input_port_clear(openpete_input_port_t* p) {
+    p->bits = 0xFFFF;
+    p->axes[0] = p->axes[1] = p->axes[2] = p->axes[3] = 128;
+    p->present = 0;
+}
+
+void input_log_stage_reset(void) {
+    for (int i = 0; i < OPENPETE_PAD_SLOTS; i++)
+        input_port_clear(&s_staged.port[i]);
+}
+
+void input_log_stage_port(int slot, uint16_t bits, const uint8_t axes[4]) {
+    if (slot < 0 || slot >= OPENPETE_PAD_SLOTS) return;
+    openpete_input_port_t* p = &s_staged.port[slot];
+    p->bits = bits;
+    if (axes) memcpy(p->axes, axes, 4);
+    else      p->axes[0] = p->axes[1] = p->axes[2] = p->axes[3] = 128;
+    p->present = 1;
+}
+
+void input_log_stage_p1_readback(uint16_t bits, const uint8_t axes[4]) {
+    openpete_input_port_t* p = &s_staged.port[0];
+    p->bits = bits;
+    if (axes) memcpy(p->axes, axes, 4);
+    else      p->axes[0] = p->axes[1] = p->axes[2] = p->axes[3] = 128;
+    p->present = 1;
+}
+
+const openpete_input_rec_t* input_log_staged(void) { return &s_staged; }
+
+int input_log_read_slot(int slot, openpete_input_port_t* out) {
+    if (!out) return 0;
+    if (slot < 0 || slot >= OPENPETE_PAD_SLOTS) {
+        input_port_clear(out);
+        return 0;
+    }
+    *out = s_staged.port[slot];
+    return 1;
+}
+
+int input_log_append_staged(void) {
     if (s_alloc_failed) return -1;
     if (s_count == s_capacity) {
         int new_cap = s_capacity ? s_capacity * 2 : 16 * 1024;
@@ -28,10 +71,7 @@ int input_log_append(uint16_t bits, const uint8_t axes[4]) {
         s_log = g;
         s_capacity = new_cap;
     }
-    openpete_input_rec_t* r = &s_log[s_count];
-    r->bits = bits;
-    if (axes) memcpy(r->axes, axes, 4);
-    else      r->axes[0] = r->axes[1] = r->axes[2] = r->axes[3] = 128;
+    s_log[s_count] = s_staged;
     return s_count++;
 }
 
@@ -51,4 +91,5 @@ void input_log_reset(void) {
     s_log = NULL;
     s_count = s_capacity = 0;
     s_alloc_failed = 0;
+    input_log_stage_reset();
 }

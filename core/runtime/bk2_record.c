@@ -208,10 +208,12 @@ int bk2_record_finalize(void) {
     for (int i = 0; i < frame_count; i++) {
         const openpete_input_rec_t* r = input_log_get(s_rec.start_idx + i);
         if (!r) break;   /* defensive; log frozen mid-recording */
+        /* Player 1 only; the player 2-4 columns are a later phase. */
+        const openpete_input_port_t* p1 = &r->port[0];
         bk2_frame_t fr;
-        fr.buttons = r->bits;
-        fr.axes[0] = r->axes[0]; fr.axes[1] = r->axes[1];
-        fr.axes[2] = r->axes[2]; fr.axes[3] = r->axes[3];
+        fr.buttons = p1->bits;
+        fr.axes[0] = p1->axes[0]; fr.axes[1] = p1->axes[1];
+        fr.axes[2] = p1->axes[2]; fr.axes[3] = p1->axes[3];
         int n = format_frame(p, &fr);
         p += n;
     }
