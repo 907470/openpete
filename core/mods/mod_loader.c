@@ -2414,7 +2414,9 @@ static int topo_visit(topo_ctx_t* c, int i) { /* 0 = ok, -1 = failed */
 /* Unpack <mods_dir>/<id>.zip to <mods_dir>/.unpacked/<id>/ ("folder or
  * zip, identical" — P1 build+load). The zip's content hash is stamped
  * next to the unpack dir, so an unchanged zip is never re-extracted;
- * mod.toml must sit at the zip ROOT. Entry paths are sanitized (no
+ * mod.toml sits at the zip root, or inside a single top-level directory
+ * that wraps every entry (the layout "zip the folder" produces); that
+ * wrapper is stripped on extraction. Entry paths are sanitized (no
  * absolute paths, no ".."). Returns 0 = unpacked/current. */
 static int mod_unpack_zip(const char* mods_dir, const char* id) {
     char zip_path[MOD_PATH_MAX];
@@ -2457,6 +2459,37 @@ static int mod_unpack_zip(const char* mods_dir, const char* id) {
     mod_mkdir(dest);
     int files = 0, ok = 1;
     mz_uint n = mz_zip_reader_get_num_files(&zip);
+
+    /* Wrapper detection: when no root-level mod.toml exists and every
+     * entry shares one top-level directory, that directory is stripped
+     * from each path so the mod lands at .unpacked/<id>/ directly. */
+    char wrap[MOD_PATH_MAX] = "";
+    size_t wrap_len = 0;
+    {
+        int root_toml = 0, single = 1;
+        for (mz_uint i = 0; i < n && single; i++) {
+            mz_zip_archive_file_stat st;
+            if (!mz_zip_reader_file_stat(&zip, i, &st)) { single = 0; break; }
+            if (strcmp(st.m_filename, "mod.toml") == 0) root_toml = 1;
+            const char* slash = strchr(st.m_filename, '/');
+            if (!slash) { single = 0; break; } /* root-level file */
+            size_t len = (size_t)(slash - st.m_filename) + 1;
+            if (wrap_len == 0) {
+                if (len >= sizeof wrap) { single = 0; break; }
+                memcpy(wrap, st.m_filename, len);
+                wrap[len] = '\0';
+                wrap_len = len;
+            } else if (len != wrap_len ||
+                       memcmp(wrap, st.m_filename, len) != 0) {
+                single = 0;
+            }
+        }
+        if (root_toml || !single) wrap_len = 0;
+        if (wrap_len)
+            OPL_INFO_F("mods", "%s.zip: stripping wrapper directory \"%s\"",
+                       id, wrap);
+    }
+
     for (mz_uint i = 0; i < n; i++) {
         mz_zip_archive_file_stat st;
         if (!mz_zip_reader_file_stat(&zip, i, &st)) { ok = 0; break; }
@@ -2466,8 +2499,10 @@ static int mod_unpack_zip(const char* mods_dir, const char* id) {
             ok = 0;
             break;
         }
+        const char* rel = st.m_filename + wrap_len;
+        if (!*rel) continue; /* the wrapper directory entry itself */
         char out[MOD_PATH_MAX];
-        snprintf(out, sizeof out, "%s/%s", dest, st.m_filename);
+        snprintf(out, sizeof out, "%s/%s", dest, rel);
         if (mz_zip_reader_is_file_a_directory(&zip, i)) {
             mod_mkdir(out);
             continue;
@@ -2490,8 +2525,8 @@ static int mod_unpack_zip(const char* mods_dir, const char* id) {
     mz_zip_reader_end(&zip);
     if (!ok) return -1;
     if (file_mtime(probe) == (time_t)-1) {
-        OPL_ERROR_F("mods", "%s.zip: no mod.toml at the archive root — "
-                    "skipped", id);
+        OPL_ERROR_F("mods", "%s.zip: no mod.toml at the archive root "
+                    "(or inside a single wrapper directory) — skipped", id);
         return -1;
     }
     sf = fopen(stamp, "wb");

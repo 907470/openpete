@@ -43,8 +43,9 @@ it. The [Examples](reference/gallery.md) page lists them first.
 | `data/` | Per-mod persistent directory, created on first `api->data_dir()` call. |
 | `.build/` | The engine's compile cache. Not part of a release. |
 
-An `<id>.zip` with `mod.toml` at the archive root loads the same way: the
-engine unpacks it under `mods/.unpacked/<id>/` and skips the unpack while
+An `<id>.zip` with `mod.toml` at the archive root, or inside a single
+top-level directory that wraps every entry (the layout "zip the folder"
+produces), loads the same way: the engine unpacks it under `mods/.unpacked/<id>/` and skips the unpack while
 the zip's hash is unchanged. A folder and a zip with the same ID resolve
 to the folder.
 
