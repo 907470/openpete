@@ -415,13 +415,13 @@ static void build_captured_colors(void) {
  * palette fog. With both channels implemented the exact decode is strictly
  * closer (identity join: 100% within ±4 at EVERY band; the lerp is Δ67-112
  * off in deep fog). OPENPETE_TERRAIN_FOGDPCS=0 restores the lerp (A/B);
- * OPENPETE_TERRAIN_LOD_HANDOFF=1 is the old .s-handoff experiment.
+ * OPENPETE_TERRAIN_LOD_HANDOFF=0 restores HP-everywhere beyond fog saturation (A/B).
  * Colour words are 0x00BBGGRR (R=byte0), matching the captured prim RGB. LP
  * faces are NEVER fogged in the .s (raw working palette at all distances —
  * identity-join-proven); noHP=1 keeps that. */
 static double s_fogscale = -1.0;    /* SZ = fogscale·m3; shipped default 1.0 (see above) */
 static int s_fogdpcs = -1;          /* OPENPETE_TERRAIN_FOGDPCS: GTE-exact DPCS blend */
-static int s_lod_handoff = -1;      /* OPENPETE_TERRAIN_LOD_HANDOFF (experiment) */
+static int s_lod_handoff = -1;      /* OPENPETE_TERRAIN_LOD_HANDOFF: HP->LP swap beyond fog saturation, default on */
 static int s_gapfill_en = -1;       /* OPENPETE_TERRAIN_GAPFILL (near-LP-gap fill, default on) */
 static int s_tier_faithful = -1;    /* OPENPETE_TERRAIN_LOD_FAITHFUL: .s sector binning + exact fog (W2.6-c) */
 static int s_clutfog = -1;          /* OPENPETE_TERRAIN_CLUTFOG: .s per-face CLUT-row fog ladder (default ON) */
