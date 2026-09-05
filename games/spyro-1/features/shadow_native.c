@@ -231,13 +231,13 @@ static void shadow_spyro_dump(CPUState* cpu) {
 }
 
 /* ===========================================================================
- *  NATIVE WALK — re-derive the moby shadows from gamestate in float (3b.2).
- *  The scaffold's int16 PSX-resolution prims give neither sub-pixel/HD geometry
- *  nor sub-tick interpolation; this reproduces the per-moby ground-point
- *  projection, the oriented-quad matrix assembly (two MVMVA passes per packed
- *  orientation index), the 4 fan corners and the distance fade, projecting in
- *  float. Validated SXY-shape against the captured FT3 prims (the .s int16
- *  output as the oracle), then it replaces the scaffold.
+ *  NATIVE WALK — re-derive the moby shadows from gamestate in float.
+ *  Reproduces the per-moby ground-point projection, the oriented-quad matrix
+ *  assembly (two MVMVA passes per packed orientation index), the 4 fan corners
+ *  and the distance fade, projecting in float so the geometry carries
+ *  sub-pixel/HD precision and sub-tick interpolation. The VERIFY path compares
+ *  the SXY shape against the captured FT3 prims (the .s int16 output as the
+ *  oracle).
  * =========================================================================== */
 static int clamp16i(long v) { return v < -32768 ? -32768 : (v > 32767 ? 32767 : (int)v); }
 
@@ -785,70 +785,6 @@ static void shadow_spyro_compare(CPUState* cpu) {
             openpete_frame, s_sptri_n, g3, n, nv?sum/nv:0, worst, over2, n);
 }
 
-/* ===========================================================================
- *  SCAFFOLD FEED — feed the captured .s prims with the correct PSX semantics
- *  (mode-0 semi-transparent). Geometry (SXY) comes straight from the .s prims
- *  — byte-exact — so this proves the mode-0 pipeline (textured + the new
- *  untextured-alpha path) end-to-end before the native geometry walk replaces
- *  the prim coupling. Depth is a single representative ground depth (the native
- *  walk gives per-vertex Z).
- * =========================================================================== */
-static float scaffold_depth(void) {
-    return openpete_native_depth_from_viewz(openpete_worldvz_full(2048.0f));   /* mid ground depth */
-}
-
-/* moby shadows: each captured prim is a textured FT3 (code 0x26), ABR mode 0. */
-static void shadow_moby_feed_scaffold(CPUState* cpu) {
-    (void)cpu;
-    if (s_gte_n <= 0) return;
-    float depth = scaffold_depth();
-    openpete_native_scene_begin_frame(openpete_frame);
-    openpete_native_scene_set_tag(OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_MOBY, 0));
-    for (int p = 0; p < s_gte_n; p++) {
-        prim_t* t = &s_gte[p];
-        if (t->nv < 3 || !t->textured) continue;
-        int tpx = (t->tpage & 0xF) * 64, tpy = ((t->tpage >> 4) & 1) * 256;
-        int mode = (t->tpage >> 7) & 3, bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
-        int clx = (t->clut & 0x3F) * 16, cly = (t->clut >> 6) & 0x1FF;
-        openpete_scene_tri st = {0};
-        for (int k = 0; k < 3; k++) {
-            st.v[k].sx = t->x[k]; st.v[k].sy = t->y[k]; st.v[k].z = depth;
-            st.v[k].u = (float)t->u[k]; st.v[k].v = (float)t->v[k];
-            st.v[k].rgba = (t->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
-        }
-        st.textured = 1; st.tpage_x = tpx; st.tpage_y = tpy;
-        st.clut_x = clx; st.clut_y = cly; st.bpp = bpp; st.blend = 3; /* ABR mode 2 (subtract) */
-        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_SHADOW, 0);
-    }
-    openpete_native_scene_set_tag(0);
-}
-
-/* Spyro shadow: each captured G3 (code 0x32) is an untextured gouraud tri, ABR
- * mode 2 (B-F, subtractive: the shadow grey darkens the ground). Feed untextured
- * blend=3; the subtract blend reverse-subtracts the vertex colour (srcF=ONE, so
- * alpha is irrelevant — the grey at the anchor darkens, black at the rim no-ops). */
-static void shadow_spyro_feed_scaffold(CPUState* cpu) {
-    (void)cpu;
-    if (s_gte_n <= 0) return;
-    float depth = scaffold_depth();
-    openpete_native_scene_begin_frame(openpete_frame);
-    openpete_native_scene_set_tag(OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_PLAYER, 0));
-    for (int p = 0; p < s_gte_n; p++) {
-        prim_t* t = &s_gte[p];
-        if (t->nv < 3 || t->textured) continue;       /* skip the E1 mini-packet */
-        openpete_scene_tri st = {0};
-        for (int k = 0; k < 3; k++) {
-            st.v[k].sx = t->x[k]; st.v[k].sy = t->y[k]; st.v[k].z = depth;
-            st.v[k].u = 0.0f; st.v[k].v = 0.0f;
-            st.v[k].rgba = (t->rgb[k] & 0xFFFFFFu) | 0xFF000000u;
-        }
-        st.textured = 0; st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
-        st.blend = 3;                                  /* untextured subtract (ABR mode 2) */
-        openpete_native_scene_add_tri(&st, OPENPETE_SCENE_SHADOW, 0);
-    }
-    openpete_native_scene_set_tag(0);
-}
-
 /* ---- gating --------------------------------------------------------------- */
 static int shadow_verify_enabled(void) {
     static int v = -1;
@@ -878,10 +814,7 @@ static int on_80059F8C_shadow_moby(CPUState* cpu, uint32_t addr) {
     if ((feed || verify) && endp > startp) capture_prims(cpu, startp, endp);
 
     if (feed && endp > startp && render_path_enabled(RP_SHADOW)) {
-        if (getenv("OPENPETE_SHADOW_SCAFFOLD"))
-            shadow_moby_feed_scaffold(cpu);          /* fallback: .s-prim scaffold */
-        else
-            shadow_moby_feed_native(cpu);            /* native gamestate walk (default) */
+        shadow_moby_feed_native(cpu);                /* native gamestate walk */
     }
 
     if (verify && endp > startp && openpete_frame >= shadow_verify_frame()) {
@@ -910,10 +843,7 @@ static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
     if ((feed || verify) && endp > startp) capture_prims(cpu, startp, endp);
 
     if (feed && endp > startp && render_path_enabled(RP_SHADOW)) {
-        if (getenv("OPENPETE_SHADOW_SCAFFOLD"))
-            shadow_spyro_feed_scaffold(cpu);         /* fallback: .s-prim scaffold */
-        else
-            shadow_spyro_feed_native(cpu);           /* native gamestate walk (default) */
+        shadow_spyro_feed_native(cpu);               /* native gamestate walk */
     }
 
     if (verify && endp > startp && openpete_frame >= shadow_verify_frame()) {

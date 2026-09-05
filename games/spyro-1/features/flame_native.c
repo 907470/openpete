@@ -224,8 +224,7 @@ static void flame_report(CPUState* cpu) {
  * rotation matrix g_Camera+0x00..0x10. The IR vector is swizzled exactly as
  * Spyro's TR_body: IR1=cam.y-flame.y, IR2=cam.z-flame.z, IR3=flame.x-cam.x (each
  * truncated to int16 by mtc2). TR[i] = (R · IR) >> 12. The result becomes the
- * GTE TR for every flame vertex (R is then replaced by the attach matrix). For
- * the scaffold we only need TR[2] = the camera-space depth. */
+ * GTE TR for every flame vertex (R is then replaced by the attach matrix). */
 static int s16(int v) { return (int)(int16_t)(uint32_t)v; }
 
 static void flame_origin_tr(CPUState* cpu, double tr[3]) {
@@ -248,14 +247,13 @@ static void flame_origin_tr(CPUState* cpu, double tr[3]) {
         tr[i] = (R[i][0]*ir1 + R[i][1]*ir2 + R[i][2]*ir3) / 4096.0;
 }
 
-/* ---- native gamestate walk (3b.1: float geometry for HD + frame-gen) ------
- * Re-derive the flame ribbon from gamestate in float — the scaffold's int16
- * PSX-resolution prims can give neither sub-pixel/HD geometry nor sub-tick
- * interpolation, so this reproduces the procedural generation (spine curve +
- * sine flicker + ribbon assembly) and projects in float. Validated SXY-shape
- * against the captured prims (the .s int16 output as the oracle), then it
- * replaces the scaffold. Stage 1 = the STRIP ribbon (GT4 textured additive);
- * the first-cell caps (G3) follow. */
+/* ---- native gamestate walk (float geometry for HD + frame-gen) ------------
+ * Re-derive the flame ribbon from gamestate in float: reproduces the procedural
+ * generation (spine curve + sine flicker + ribbon assembly) and projects in
+ * float, so the geometry carries sub-pixel/HD precision and sub-tick
+ * interpolation. The ribbon is the STRIP (GT4 textured additive) plus the
+ * first-cell caps (G3). The VERIFY path compares the SXY shape against the
+ * captured prims (the .s int16 output as the oracle). */
 static int rd_s16(CPUState* cpu, uint32_t addr) {
     uint32_t w = cpu->read_word(addr & ~3u);
     return (int)(int16_t)((addr & 2u) ? (w >> 16) : (w & 0xFFFF));
@@ -570,58 +568,11 @@ static void flame_strip_compare(CPUState* cpu) {
             openpete_frame, s_fcap_n, g3, cn, cnv ? csum/cnv : 0, cworst, cover4, cn);
 }
 
-/* ---- scaffold feed (3b.1 stage: feed the .s prims with additive blend) -----
- * Decode the captured .s flame prims and push them into the native scene with
- * the correct PSX semantics: the GT4 strip (code 0x3E) is textured + ADDITIVE
- * (blend=2, ABR mode 1); the G3 caps (code 0x30) are untextured opaque gouraud.
- * Geometry (SXY) comes straight from the .s prims — byte-exact — so this proves
- * the additive pipeline end-to-end with a real consumer before the native
- * geometry walk replaces the prim coupling. Depth is the flame origin's
- * camera-space Z (a single representative depth for the small billboard; the
- * native walk gives per-vertex Z). */
-static void flame_feed_scaffold(CPUState* cpu) {
-    if (s_gte_n <= 0) return;
-    double tr[3]; flame_origin_tr(cpu, tr);
-    float vz = (float)tr[2];
-    float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(vz));
-    openpete_native_scene_begin_frame(openpete_frame);   /* append after world + actors */
-    for (int p = 0; p < s_gte_n; p++) {
-        prim_t* t = &s_gte[p];
-        if (t->nv < 3) continue;
-        int tpx = (t->tpage & 0xF) * 64, tpy = ((t->tpage >> 4) & 1) * 256;
-        int mode = (t->tpage >> 7) & 3, bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
-        int clx = (t->clut & 0x3F) * 16, cly = (t->clut >> 6) & 0x1FF;
-        int blend = t->textured ? 2 : 0;   /* GT4 strip = additive; G3 cap = opaque */
-        /* Ribbon and caps differ in blend, so they must be separately
-         * addressable: a material that reshades the additive ribbon has no
-         * business repainting the opaque base. */
-        openpete_native_scene_set_tag(OPENPETE_TAG_FLAME(
-            t->textured ? OPENPETE_TAG_FLAME_RIBBON : OPENPETE_TAG_FLAME_CAPS, 0));
-        int splits = (t->nv == 4) ? 2 : 1;
-        for (int s = 0; s < splits; s++) {
-            int a, b, c;
-            if (s == 0) { a = 0; b = 1; c = 2; } else { a = 1; b = 3; c = 2; }  /* GT4 split */
-            int idx[3] = { a, b, c };
-            openpete_scene_tri st = {0};
-            for (int k = 0; k < 3; k++) {
-                int j = idx[k];
-                st.v[k].sx = t->x[j]; st.v[k].sy = t->y[j]; st.v[k].z = depth;
-                st.v[k].u = (float)t->u[j]; st.v[k].v = (float)t->v[j];
-                st.v[k].rgba = (t->rgb[j] & 0xFFFFFFu) | 0xFF000000u;
-            }
-            st.textured = t->textured; st.tpage_x = tpx; st.tpage_y = tpy;
-            st.clut_x = clx; st.clut_y = cly; st.bpp = bpp; st.blend = blend;
-            openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
-        }
-    }
-    openpete_native_scene_set_tag(0);
-}
-
-/* ---- native walk feed (3b.1 endpoint: float geometry from gamestate) -------
+/* ---- native walk feed (float geometry from gamestate) ---------------------
  * Feed the native ribbon (strip quads, textured additive) + base caps (G3
  * untextured opaque) re-derived from gamestate — no .s prim dependency, so it
  * runs at the sub-tick gamestate the host re-renders. Per-vertex view-Z gives
- * correct depth (vs the scaffold's single billboard depth). */
+ * the ribbon correct depth along its length. */
 static void flame_feed_native(CPUState* cpu) {
     flame_build_strip(cpu);                  /* fills s_fquad (strip) + s_fcap (caps) */
     if (s_fquad_n <= 0 && s_fcap_n <= 0) return;
@@ -694,10 +645,7 @@ static int on_80058D64_flame_native(CPUState* cpu, uint32_t addr) {
     if ((feed || verify) && endp > startp) capture_prims(cpu, startp, endp);
 
     if (feed && endp > startp && render_path_enabled(RP_FLAME)) {
-        if (getenv("OPENPETE_FLAME_SCAFFOLD"))
-            flame_feed_scaffold(cpu);             /* fallback: .s-prim scaffold */
-        else
-            flame_feed_native(cpu);               /* native gamestate walk (default) */
+        flame_feed_native(cpu);                   /* native gamestate walk */
     }
 
     if (verify && endp > startp && openpete_frame >= flame_verify_frame()) {
