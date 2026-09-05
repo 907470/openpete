@@ -67,10 +67,39 @@ present.
 
 ## Guest memory
 
-Guest RAM is a 2 MB little-endian mirror. `api->guest(vaddr)` returns a
-host pointer for a kuseg, kseg0, or kseg1 address; `api->guest_addr`
-converts back. Pointer fields inside guest structs hold guest addresses;
-translate them again before following them.
+A mod works in two address spaces. The game's code and data use guest
+addresses: 32-bit values that on the console named a byte of its 2 MB RAM.
+Your C code uses host pointers. openpete keeps the guest RAM as a byte
+array in the game process, so every guest address corresponds to a host
+pointer, and the API converts between the two:
+
+- `api->guest(vaddr)` takes a guest address and returns the host pointer
+  to the same byte. It returns NULL for an address that maps nothing,
+  including guest address 0.
+- `api->guest_addr(ptr)` takes a host pointer obtained from `api->guest`,
+  `guest_alloc`, or arithmetic on either, and returns its guest address.
+  It returns 0 for a pointer outside guest memory.
+
+Three guest address forms name the same byte: 0x00xxxxxx, 0x80xxxxxx and
+0xA0xxxxxx. The game's own pointers use the 0x80 form. `api->guest`
+accepts all three.
+
+Guest memory is little-endian on every supported host, so reading a
+`uint32_t` through the host pointer gives the value the game sees.
+
+A pointer field inside a guest struct holds a guest address, not a host
+pointer. Dereferencing it in C reads the wrong memory. Pass it through
+`api->guest` first. The reverse holds when writing: a guest struct field
+that the game will follow must receive a guest address from
+`api->guest_addr`, never a raw host pointer.
+
+Host pointers are valid for the current process only. Store guest
+addresses in anything that persists: the arena, savestates, or a struct
+the game reads.
+
+Guest memory covers the 2 MB RAM, the 1 KB scratchpad at 0x1F800000, and
+every block returned by `guest_alloc` (see The arena below). All three
+resolve through `api->guest`.
 
 - Use the [typed structs](reference/structs.md). Their layouts are pinned
   with `_Static_assert`, so a layout change fails the mod's compile.
