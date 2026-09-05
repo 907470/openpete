@@ -412,8 +412,63 @@ struct rhi_buffer {
      * waited in rhi_begin_frame before its slot is reused). 0 = single
      * (static) buffer. */
     VkDeviceSize   ring_stride;
+    /* Generations within one frame slot (rhi_create_vertex_buffer_dynamic_gens):
+     * a write that follows a bind in the same frame moves to the next
+     * generation, so the draw already recorded against the previous data
+     * keeps it; the GPU reads host-visible memory at execution, not at
+     * record. Physical slot = frame * gens + gen. gens <= 1: one generation,
+     * the write overwrites in place. */
+    uint32_t       gens, gen_cur;
+    uint64_t       gen_serial;   /* frame serial gen_cur/gen_bound belong to */
+    bool           gen_bound;    /* current generation referenced by a draw */
     rhi_device    *dev;        /* for frame indexing in rhi_update_buffer */
 };
+
+/* Same-frame rewrite accounting (engagement evidence for the generation
+ * mechanism): bumps = writes that moved to a fresh generation; overflows =
+ * writes that had no generation left and overwrote bound data in place. */
+static uint64_t s_ring_gen_bumps, s_ring_gen_overflows, s_dbg_gw, s_dbg_gb;
+static uint64_t s_frame_serial;
+static bool ring_gen_dbg(void)
+{
+    static int v = -1;
+    if (v < 0) { const char *e = getenv("OPENPETE_RING_GEN_DBG"); v = (e && *e && *e != '0'); }
+    return v;
+}
+/* Slot index for the next write of a ring buffer inside the active frame. */
+static uint32_t ring_write_slot(rhi_buffer *buf)
+{
+    rhi_device *dev = buf->dev;
+    if (buf->gens <= 1) return (uint32_t)dev->frame;
+    s_dbg_gw++;
+    if (buf->gen_serial != s_frame_serial) {
+        buf->gen_serial = s_frame_serial; buf->gen_cur = 0; buf->gen_bound = false;
+    } else if (buf->gen_bound) {
+        if (buf->gen_cur + 1 < buf->gens) { buf->gen_cur++; s_ring_gen_bumps++; }
+        else {
+            s_ring_gen_overflows++;
+            static bool once; if (!once) { once = true;
+                RHI_LOG("ring buffer: %u generations exhausted in frame %llu; overwriting bound data\n",
+                        buf->gens, (unsigned long long)s_frame_serial); }
+        }
+        buf->gen_bound = false;
+    }
+    return (uint32_t)dev->frame * buf->gens + buf->gen_cur;
+}
+/* Slot index a bind inside the active frame references. */
+static uint32_t ring_bind_slot(rhi_buffer *buf)
+{
+    rhi_device *dev = buf->dev;
+    if (!buf || buf->gens <= 1) return (uint32_t)dev->frame;
+    s_dbg_gb++;
+    if (buf->gen_serial != s_frame_serial) {
+        buf->gen_serial = s_frame_serial; buf->gen_cur = 0;
+    }
+    buf->gen_bound = true;
+    return (uint32_t)dev->frame * buf->gens + buf->gen_cur;
+}
+uint64_t rhi_ring_gen_bumps(void) { return s_ring_gen_bumps; }
+uint64_t rhi_ring_gen_overflows(void) { return s_ring_gen_overflows; }
 
 struct rhi_pipeline {
     VkPipeline       pipeline;
@@ -1808,6 +1863,10 @@ bool rhi_is_headless(const rhi_device *dev)
 
 void rhi_destroy(rhi_device *dev)
 {
+    if (ring_gen_dbg())
+        fprintf(stderr, "[rhi/vk] ring generations: bumps=%llu overflows=%llu vb_gen_writes=%llu vb_gen_binds=%llu\n",
+                (unsigned long long)s_ring_gen_bumps, (unsigned long long)s_ring_gen_overflows,
+                (unsigned long long)s_dbg_gw, (unsigned long long)s_dbg_gb);
     if (!dev) return;
     if (dev->device) vkDeviceWaitIdle(dev->device);
 
@@ -1867,7 +1926,6 @@ bool rhi_frame_active(const rhi_device *dev)
     return dev && dev->frame_active;
 }
 
-static uint64_t s_frame_serial = 0;
 uint64_t rhi_frame_serial(rhi_device *dev) { (void)dev; return s_frame_serial; }
 
 /* Report any present-path phase that blocks long enough to threaten the sim.
@@ -2920,13 +2978,20 @@ rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes)
     return b;
 }
 
-rhi_buffer *rhi_create_vertex_buffer_dynamic(rhi_device *dev, size_t bytes)
+rhi_buffer *rhi_create_vertex_buffer_dynamic_gens(rhi_device *dev, size_t bytes,
+                                                  uint32_t gens)
 {
-    rhi_buffer *b = create_host_buffer(dev, bytes * RHI_FRAMES_IN_FLIGHT,
+    if (gens < 1) gens = 1;
+    rhi_buffer *b = create_host_buffer(dev, bytes * RHI_FRAMES_IN_FLIGHT * gens,
                                        VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
                                        /*prefer_cached=*/false);
-    if (b) b->ring_stride = (VkDeviceSize)bytes;
+    if (b) { b->ring_stride = (VkDeviceSize)bytes; b->gens = gens; }
     return b;
+}
+
+rhi_buffer *rhi_create_vertex_buffer_dynamic(rhi_device *dev, size_t bytes)
+{
+    return rhi_create_vertex_buffer_dynamic_gens(dev, bytes, 1);
 }
 
 void rhi_update_buffer_range(rhi_buffer *buf, const void *data,
@@ -2942,10 +3007,10 @@ void rhi_update_buffer_range(rhi_buffer *buf, const void *data,
         return;
     }
     if (buf->dev && buf->dev->frame_active) {
-        memcpy((uint8_t *)buf->mapped + buf->ring_stride * buf->dev->frame + offset,
+        memcpy((uint8_t *)buf->mapped + buf->ring_stride * ring_write_slot(buf) + offset,
                data, bytes);
     } else {
-        for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++)
+        for (uint32_t i = 0; i < RHI_FRAMES_IN_FLIGHT * (buf->gens ? buf->gens : 1); i++)
             memcpy((uint8_t *)buf->mapped + buf->ring_stride * i + offset,
                    data, bytes);
     }
@@ -2964,12 +3029,12 @@ void rhi_update_buffer(rhi_buffer *buf, const void *data, size_t bytes)
     if (buf->dev && buf->dev->frame_active) {
         /* In-frame: write only the current frame's slot (its fence was waited
          * in rhi_begin_frame, so no in-flight GPU read can see this write). */
-        memcpy((uint8_t *)buf->mapped + buf->ring_stride * buf->dev->frame,
+        memcpy((uint8_t *)buf->mapped + buf->ring_stride * ring_write_slot(buf),
                data, bytes);
     } else {
         /* Outside a frame (init / rare re-layout under rhi_wait_idle): fill
          * every slot so any frame parity binds the same content. */
-        for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++)
+        for (uint32_t i = 0; i < RHI_FRAMES_IN_FLIGHT * (buf->gens ? buf->gens : 1); i++)
             memcpy((uint8_t *)buf->mapped + buf->ring_stride * i, data, bytes);
     }
 }
@@ -4545,10 +4610,21 @@ int rhi_rebuild_pipelines(rhi_device *dev)
 
 /* ---- rhi_ubo: fixed-size uniform blocks × frame ring (S2) ---------- */
 
+/* Generations per frame slot for a uniform block: a write to a block that a
+ * draw in the same frame already bound moves to the next generation
+ * (physical block = (frame * RHI_UBO_GENS + gen) * blocks + block), so the
+ * recorded draw keeps the data it was bound to. A block written more than
+ * RHI_UBO_GENS times after binds in one frame overwrites the last generation
+ * in place (counted in rhi_ring_gen_overflows). */
+#define RHI_UBO_GENS 4u
+
 struct rhi_ubo {
     rhi_buffer     *buf;         /* HOST_VISIBLE|COHERENT, UNIFORM usage */
     uint32_t        block_size;  /* aligned to minUniformBufferOffsetAlignment */
     uint32_t        blocks;      /* per frame slot */
+    uint8_t        *gen;         /* [blocks] current generation this frame */
+    uint8_t        *bound;       /* [blocks] generation referenced by a draw */
+    uint64_t        gen_serial;  /* frame serial gen[]/bound[] belong to */
     VkDescriptorSet set;         /* 2 dynamic-UBO bindings into buf */
     VkDescriptorSet set1;        /* 1 dynamic-UBO binding (rhi_ubo_bind_at) */
     rhi_device     *dev;
@@ -4563,10 +4639,15 @@ rhi_ubo *rhi_create_ubo(rhi_device *dev, uint32_t block_size, uint32_t blocks)
     u->blocks = blocks;
     u->block_size = (uint32_t)((block_size + dev->ubo_align - 1) &
                                ~(dev->ubo_align - 1));
-    size_t total = (size_t)u->block_size * blocks * RHI_FRAMES_IN_FLIGHT;
+    size_t total = (size_t)u->block_size * blocks * RHI_FRAMES_IN_FLIGHT * RHI_UBO_GENS;
     u->buf = create_host_buffer(dev, total, VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT,
                                 /*prefer_cached=*/false);
-    if (!u->buf) { free(u); return NULL; }
+    u->gen = calloc(blocks, 1);
+    u->bound = calloc(blocks, 1);
+    if (!u->buf || !u->gen || !u->bound) {
+        if (u->buf) rhi_destroy_buffer(dev, u->buf);
+        free(u->gen); free(u->bound); free(u); return NULL;
+    }
     memset(u->buf->mapped, 0, total);   /* unwritten blocks read as zeros */
 
     VkDescriptorSetAllocateInfo ai = {
@@ -4616,18 +4697,40 @@ rhi_ubo *rhi_create_ubo(rhi_device *dev, uint32_t block_size, uint32_t blocks)
     return u;
 }
 
+/* Reset the per-block generation state on the first touch of a new frame. */
+static void ubo_frame_sync(rhi_ubo *ubo)
+{
+    if (ubo->gen_serial == s_frame_serial) return;
+    ubo->gen_serial = s_frame_serial;
+    memset(ubo->gen, 0, ubo->blocks);
+    memset(ubo->bound, 0, ubo->blocks);
+}
+static size_t ubo_phys(const rhi_ubo *ubo, uint32_t block)
+{
+    return ((size_t)ubo->dev->frame * RHI_UBO_GENS + ubo->gen[block]) * ubo->blocks + block;
+}
+
 void rhi_ubo_write(rhi_ubo *ubo, uint32_t block, const void *data, uint32_t len)
 {
     if (!ubo || !data || block >= ubo->blocks) return;
     if (len > ubo->block_size) len = ubo->block_size;
-    size_t slot = ubo->dev->frame_active ? ubo->dev->frame : 0;
-    uint8_t *dst = (uint8_t *)ubo->buf->mapped +
-        ((size_t)slot * ubo->blocks + block) * ubo->block_size;
     if (ubo->dev->frame_active) {
-        memcpy(dst, data, len);
+        ubo_frame_sync(ubo);
+        if (ubo->bound[block]) {
+            if (ubo->gen[block] + 1u < RHI_UBO_GENS) { ubo->gen[block]++; s_ring_gen_bumps++; }
+            else {
+                s_ring_gen_overflows++;
+                static bool once; if (!once) { once = true;
+                    RHI_LOG("ubo block %u: %u generations exhausted in frame %llu; overwriting bound data\n",
+                            block, RHI_UBO_GENS, (unsigned long long)s_frame_serial); }
+            }
+            ubo->bound[block] = 0;
+        }
+        memcpy((uint8_t *)ubo->buf->mapped + ubo_phys(ubo, block) * ubo->block_size,
+               data, len);
     } else {
-        /* Outside a frame: fill every parity (init-time writes). */
-        for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++)
+        /* Outside a frame: fill every parity and generation (init-time writes). */
+        for (uint32_t i = 0; i < RHI_FRAMES_IN_FLIGHT * RHI_UBO_GENS; i++)
             memcpy((uint8_t *)ubo->buf->mapped +
                        ((size_t)i * ubo->blocks + block) * ubo->block_size,
                    data, len);
@@ -4639,10 +4742,11 @@ void rhi_ubo_bind(rhi_device *dev, rhi_ubo *ubo, uint32_t block_a,
 {
     if (!dev || !ubo || !dev->frame_active || !dev->cur_layout) return;
     if (block_a >= ubo->blocks || block_b >= ubo->blocks) return;
-    uint32_t base = (uint32_t)dev->frame * ubo->blocks;
+    ubo_frame_sync(ubo);
+    ubo->bound[block_a] = ubo->bound[block_b] = 1;
     uint32_t offs[2] = {
-        (base + block_a) * ubo->block_size,
-        (base + block_b) * ubo->block_size,
+        (uint32_t)ubo_phys(ubo, block_a) * ubo->block_size,
+        (uint32_t)ubo_phys(ubo, block_b) * ubo->block_size,
     };
     vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
                             dev->cur_layout, 3, 1, &ubo->set, 2, offs);
@@ -4652,7 +4756,9 @@ void rhi_ubo_bind_at(rhi_device *dev, rhi_ubo *ubo, uint32_t set, uint32_t block
 {
     if (!dev || !ubo || !ubo->set1 || !dev->frame_active || !dev->cur_layout) return;
     if (block >= ubo->blocks) return;
-    uint32_t off = ((uint32_t)dev->frame * ubo->blocks + block) * ubo->block_size;
+    ubo_frame_sync(ubo);
+    ubo->bound[block] = 1;
+    uint32_t off = (uint32_t)ubo_phys(ubo, block) * ubo->block_size;
     vkCmdBindDescriptorSets(dev->cmd[dev->frame], VK_PIPELINE_BIND_POINT_GRAPHICS,
                             dev->cur_layout, set, 1, &ubo->set1, 1, &off);
 }
@@ -4663,6 +4769,7 @@ void rhi_destroy_ubo(rhi_device *dev, rhi_ubo *ubo)
     if (ubo->set1) vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &ubo->set1);
     if (ubo->set) vkFreeDescriptorSets(dev->device, dev->desc_pool, 1, &ubo->set);
     rhi_destroy_buffer(dev, ubo->buf);
+    free(ubo->gen); free(ubo->bound);
     free(ubo);
 }
 
@@ -4862,8 +4969,9 @@ void rhi_bind_pipeline(rhi_device *dev, rhi_pipeline *pipe)
 void rhi_bind_vertex_buffer(rhi_device *dev, rhi_buffer *buf)
 {
     if (!dev->frame_active) return;
-    /* Dynamic ring buffers bind the current frame's slot (see rhi_buffer). */
-    VkDeviceSize off = buf->ring_stride * dev->frame;
+    /* Dynamic ring buffers bind the current frame's slot and generation
+     * (see rhi_buffer); a static buffer has ring_stride 0. */
+    VkDeviceSize off = buf->ring_stride ? buf->ring_stride * ring_bind_slot(buf) : 0;
     vkCmdBindVertexBuffers(dev->cmd[dev->frame], 0, 1, &buf->buffer, &off);
 }
 
@@ -4871,8 +4979,8 @@ void rhi_bind_vertex_buffer2(rhi_device *dev, rhi_buffer *buf, rhi_buffer *prev)
 {
     if (!dev->frame_active) return;
     VkBuffer bufs[2] = { buf->buffer, prev->buffer };
-    VkDeviceSize offs[2] = { buf->ring_stride * dev->frame,
-                             prev->ring_stride * dev->frame };
+    VkDeviceSize offs[2] = { buf->ring_stride ? buf->ring_stride * ring_bind_slot(buf) : 0,
+                             prev->ring_stride ? prev->ring_stride * ring_bind_slot(prev) : 0 };
     vkCmdBindVertexBuffers(dev->cmd[dev->frame], 0, 2, bufs, offs);
 }
 

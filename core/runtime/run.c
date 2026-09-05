@@ -1140,7 +1140,7 @@ static struct {
  * and the price is a CONSTANT few milliseconds of display latency in place
  * of a hold of the same length thirty times a second.
  *
- * OPENPETE_EAGER=1 enables (off by default). OPENPETE_EAGER_POLICY=greedy
+ * OPENPETE_EAGER=0 disables (on by default). OPENPETE_EAGER_POLICY=greedy
  * swaps the divisor ladder for "as many scenes as fit, evenly spaced across
  * the span" -- the A/B partner for the question whether uniform-on-grid
  * beats more-frames-off-grid. OPENPETE_EAGER_LEVEL=n pins the divisor;

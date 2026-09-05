@@ -2398,7 +2398,12 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * upload's vkQueueWaitIdle drain. panels/diff_quad/ovl_quad/fs_quad update
      * rarely (init / re-layout) under rhi_wait_idle and stay single. */
     rhi_buffer   *panels_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * NR_PANELS * 6);
-    rhi_buffer   *scene_vb  = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
+    /* The reference-diff and A/B variants draw the scene twice per frame
+     * (native_rtt, then the live target) with different projections, so the
+     * scene, prepass and terrain-key buffers need a second generation there;
+     * the shipped path fills each once per frame and stays single. */
+    const uint32_t scene_gens = (s_nr.diff_mode || s_nr.ab_mode) ? 2u : 1u;
+    rhi_buffer   *scene_vb  = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS, scene_gens);
     rhi_buffer   *diff_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_buffer   *fs_quad_vb = rhi_create_vertex_buffer(dev, sizeof(rhi_vertex) * 6);
     rhi_buffer   *overlay_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * OVL_MAX_VERTS);
@@ -2434,13 +2439,13 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         OPL_ERROR_F("native", "hole-fill pipelines unavailable; terrain LP hole-fill disabled");
     }
     rhi_texture  *occl_grid = rhi_create_render_target(dev, OCCL_GW, OCCL_GH);
-    rhi_buffer   *prepass_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
+    rhi_buffer   *prepass_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS, scene_gens);
     /* Optional P6b key-pass resources (graceful fallback: NULL → the feeder
      * emits koff=0, LP fragments never sample, terrain contests at raw true
      * depth — the OT_BIAS=0 look). The key IMAGE allocates lazily per target
      * size (ensure_terrain_key_depth). */
     rhi_pipeline *terrain_key_pipe = rhi_create_pipeline(dev, &terrain_key_desc);
-    rhi_buffer   *terrain_key_vb = rhi_create_vertex_buffer_dynamic(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS);
+    rhi_buffer   *terrain_key_vb = rhi_create_vertex_buffer_dynamic_gens(dev, sizeof(rhi_vertex) * SCENE_VB_VERTS, scene_gens);
     if (!terrain_key_pipe || !terrain_key_vb) {
         if (terrain_key_pipe) { rhi_destroy_pipeline(dev, terrain_key_pipe); terrain_key_pipe = NULL; }
         if (terrain_key_vb)   { rhi_destroy_buffer(dev, terrain_key_vb);     terrain_key_vb = NULL; }

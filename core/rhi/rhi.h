@@ -555,6 +555,18 @@ rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes);
  * host-visible type. Same overlap rules as rhi_create_vertex_buffer. */
 rhi_buffer *rhi_create_vertex_buffer_device(rhi_device *dev, size_t bytes);
 rhi_buffer *rhi_create_vertex_buffer_dynamic(rhi_device *dev, size_t bytes);
+/* Ring buffer with `gens` generations per frame slot. A write that follows
+ * a bind in the same frame lands in the next generation, so the draw
+ * recorded against the earlier data still reads it at GPU execution. Use
+ * for a buffer refilled and drawn more than once per frame (the scene
+ * buffers when the reference-diff or A/B variant renders the scene twice).
+ * Memory = bytes x RHI_FRAMES_IN_FLIGHT x gens. */
+rhi_buffer *rhi_create_vertex_buffer_dynamic_gens(rhi_device *dev, size_t bytes,
+                                                  uint32_t gens);
+/* Counters of same-frame rewrites that moved to a fresh generation, and of
+ * rewrites that found none left and overwrote bound data (a defect). */
+uint64_t    rhi_ring_gen_bumps(void);
+uint64_t    rhi_ring_gen_overflows(void);
 void        rhi_update_buffer(rhi_buffer *buf, const void *data, size_t bytes);
 /* Ranged variant: write `bytes` at byte `offset` within the (per-slot)
  * buffer. For passes that bump-allocate several batches into one ring slot
@@ -619,7 +631,11 @@ rhi_pipeline *rhi_create_pipeline_spv(rhi_device *dev,
  * visible to vertex+fragment). block_size is rounded up to the device's
  * minUniformBufferOffsetAlignment. Write targets the CURRENT frame slot
  * (same parity contract as rhi_create_vertex_buffer_dynamic: write
- * every frame that binds). Bind attaches set 3 of a postfx pipeline.
+ * every frame that binds). A block rewritten after a bind in the same
+ * frame moves to a fresh generation (up to four per frame), so the
+ * postfx chains at the SCENE and COMPOSITE points, which both fill
+ * block 0 and the per-pass blocks, each read their own uniforms.
+ * Bind attaches set 3 of a postfx pipeline.
  *
  * rhi_ubo_bind_at attaches ONE block through a single-binding layout at
  * an arbitrary set index instead. Set 3 is the shader-contract set — its
