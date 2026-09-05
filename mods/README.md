@@ -47,7 +47,9 @@ CI fixtures, not examples: `arena-canary`, `arena-probe`, `chain-duo-a`,
 `chain-duo-b`, `crash-dummy`, `demo-lib`, `lib-and-client`, `raw-probe`,
 `sfx-replace-probe`, `vstream-rehandle`. `scripts/check_mods.sh` runs
 every mod's `modtest.toml`; `python3 tools/modtest.py mods/<id>` runs
-one.
+one. A mod whose assets are derived locally from a disc and never
+committed lists them in `requires`, and the runner skips it by name when
+they are absent instead of passing or failing.
 
 `tools/modget.py` installs mods from a JSON mod-source that names a zip
 URL and a mandatory sha256 per entry.

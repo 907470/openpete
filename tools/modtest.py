@@ -23,13 +23,20 @@ modtest.toml schema (CI-side, next to mod.toml):
                                #         assertions only
     expect_log = ["..."]       # substrings that must appear in the log
     input = "test/movie.bk2"   # optional bk2 replay, relative to mod dir
+    requires = ["path", ...]   # inputs the test cannot run without,
+                               #   relative to the repo root. Any one
+                               #   missing SKIPs the mod, naming the
+                               #   absent path. For mods whose assets are
+                               #   derived locally from a disc and are
+                               #   never committed.
 
 The fixture is composed automatically: the mod + its hard-dependency
 closure (deps resolved as sibling directories), enabled in
 dependency-first order.
 
 Env: OPENPETE_BIN, OPENPETE_DISC — same defaults as check_mods.sh.
-Exit 0 = all mods green; 1 = any failure.
+Exit 0 = all executed [test] blocks green; 1 = any failure, or
+no [test] block executed at all.
 """
 
 import argparse
@@ -85,7 +92,8 @@ def parse_manifest(mod_dir: Path):
             section = line.strip("[]").strip()
             if section == "test":
                 m["test"] = {"frames": 8000, "expect_oracle": "skip",
-                             "expect_log": [], "input": None, "args": None}
+                             "expect_log": [], "input": None, "args": None,
+                             "requires": []}
             continue
         if "=" not in line:
             continue
@@ -106,6 +114,8 @@ def parse_manifest(mod_dir: Path):
                 m["test"]["input"] = val.strip('"')
             elif key == "args":
                 m["test"]["args"] = val.strip('"')
+            elif key == "requires":
+                m["test"]["requires"] = ARR_RE.findall(val)
     return m
 
 
@@ -129,12 +139,23 @@ def dep_closure(mod_dir: Path):
 
 
 def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
+    """Run one mod's [test] block. Returns ("pass"|"skip"|"fail", reason)."""
     man = parse_manifest(mod_dir)
     test = man["test"]
     mid = man["id"]
     if test is None:
-        print(f"[modtest] {mid}: no [test] block — SKIP")
-        return True
+        reason = "no [test] block"
+        print(f"[modtest] {mid}: SKIP — {reason}")
+        return "skip", reason
+
+    # A test whose inputs are derived locally (converted from a disc) and
+    # never committed cannot run on a fresh clone. Skip it by name rather
+    # than failing on the absence or passing without the assets.
+    for req in test["requires"]:
+        if not (REPO / req).exists():
+            reason = f"missing input {req}"
+            print(f"[modtest] {mid}: SKIP — {reason}")
+            return "skip", reason
 
     with tempfile.TemporaryDirectory(prefix="openpete-modtest-") as tmp:
         fixture = Path(tmp)
@@ -166,7 +187,29 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
                            capture_output=True, text=True)
         out = r.stdout + r.stderr
 
+        # The oracle reports 64 when the golden trace, the binary, or the
+        # disc is absent. Nothing was compared, so the mod is skipped by
+        # name rather than counted green.
+        if mode in ("pass", "fail") and r.returncode == 64:
+            reason = "psx oracle prerequisites missing (exit 64)"
+            print(f"[modtest] {mid}: SKIP — {reason}")
+            return "skip", reason
+
         ok = True
+        # Engagement floor for a plain run: a [test] block with no
+        # expect_log would otherwise report PASS for a run that crashed on
+        # startup. A clean run exits 0 and prints its own exit line. The
+        # oracle modes are excluded because their exit code IS the verdict
+        # (2 = divergence, which "fail" mode requires); the verdict-string
+        # checks below carry the engagement proof there.
+        if mode not in ("pass", "fail"):
+            if r.returncode != 0:
+                print(f"[modtest] {mid}: FAIL — run exited {r.returncode}")
+                ok = False
+            elif "openpete-exit: reason=" not in out:
+                print(f"[modtest] {mid}: FAIL — "
+                      "run printed no openpete-exit line")
+                ok = False
         if mode == "pass" and "verdict: PASS" not in out:
             print(f"[modtest] {mid}: FAIL — oracle did not PASS")
             ok = False
@@ -183,7 +226,7 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
                   f"{len(test['expect_log'])} log asserts)")
         elif verbose:
             print(out[-3000:])
-        return ok
+        return ("pass" if ok else "fail"), ""
 
 
 def main():
@@ -199,10 +242,30 @@ def main():
         "OPENPETE_DISC",
         str(REPO / "games/spyro-1/spyro-1/build/SCUS-94228.cue"))
 
-    ok = True
+    passed, failed, skipped = [], [], []
     for mod_dir in args.mods:
-        ok &= run_one(mod_dir, bin_path, disc, args.verbose)
-    return 0 if ok else 1
+        status, reason = run_one(mod_dir, bin_path, disc, args.verbose)
+        if status == "pass":
+            passed.append(mod_dir.name)
+        elif status == "skip":
+            skipped.append((mod_dir.name, reason))
+        else:
+            failed.append(mod_dir.name)
+
+    n = len(args.mods)
+    print(f"[modtest] summary: {n} mod(s) — {len(passed)} passed, "
+          f"{len(skipped)} skipped, {len(failed)} failed")
+    for mid, reason in skipped:
+        print(f"[modtest]   skipped: {mid} — {reason}")
+    for mid in failed:
+        print(f"[modtest]   failed: {mid}")
+
+    # A run that executed nothing proves nothing: report it as a failure
+    # rather than as a green gate.
+    if not passed and not failed:
+        print("[modtest] no [test] block executed — VACUOUS")
+        return 1
+    return 1 if failed else 0
 
 
 if __name__ == "__main__":

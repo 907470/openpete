@@ -3,3 +3,5 @@
 frames     = 2400
 args       = "--skip-to-level artisans"
 expect_log = ["crash3-models: pack: Cr10G", "class 250 00161700 -> Cr10G"]
+# Converted from a Crash 3 disc by tools/crash3/convert.py; never committed.
+requires   = ["mods/crash3-models/assets/crash3_s1pack.bin"]

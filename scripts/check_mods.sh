@@ -599,14 +599,20 @@ fi
 
 # ── 12. [test]-block rungs through the real modtest runner ──────────────
 say "[test] blocks via tools/modtest.py (the harness modders run)"
-if python3 tools/modtest.py mods/hello-anchor mods/raw-probe \
-        mods/double-gems mods/natural-gems mods/lib-and-client \
-        mods/hud-stopwatch \
-        mods/arena-probe mods/arena-canary mods/vstream-rehandle \
-        mods/hd-single-texture mods/music-swap mods/declarative-example \
-        mods/spyro3 \
-        mods/supercharge-anywhere; then
-    ok "modtest runner: all [test] blocks green"
+# Every mod that declares a modtest.toml runs, so adding one to a mod is
+# all it takes to enter the gate. Sorted under LC_ALL=C so the run order
+# is the same on every machine. mods-attic/ is not scanned. A mod whose
+# assets are derived locally and never committed declares `requires` and
+# the runner skips it by name; the runner exits non-zero if the whole
+# list executed nothing.
+modtest_mods=()
+while IFS= read -r manifest; do
+    modtest_mods+=("$(dirname "$manifest")")
+done < <(find mods -mindepth 2 -maxdepth 2 -name modtest.toml | LC_ALL=C sort)
+if [ "${#modtest_mods[@]}" -eq 0 ]; then
+    bad "no mods/*/modtest.toml found"
+elif python3 tools/modtest.py "${modtest_mods[@]}"; then
+    ok "modtest runner: ${#modtest_mods[@]} [test] blocks green"
 else
     bad "modtest runner reported failures"
 fi
