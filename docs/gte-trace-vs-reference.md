@@ -87,10 +87,11 @@ cp src/mips/openbios/openbios.bin ./openbios.bin
 
 ### Run the Lua dumper
 
-`scripts/pcsx-redux-gte-dump.lua` sets one Exec breakpoint per cop2 PC
-(populated from r_pete + r_environment in PSX.EXE), counts VSync events
-as frames, and emits a CSV at `/tmp/pcsx-redux-gte.csv` in the same
-column layout as the in-tree dumper.
+`scripts/pcsx-redux-gte-dump-loading-text.lua` sets one Exec breakpoint
+per cop2 PC (populated from r_pete + r_environment in PSX.EXE), counts
+VSync events as frames, and emits a CSV at
+`/tmp/pcsx-redux-gte-loading-text.csv` in the same column layout as the
+in-tree dumper.
 
 Two non-obvious requirements:
 
@@ -108,7 +109,7 @@ cd .tools/pcsx-redux
 ./pcsx-redux --no-ui --debugger --interpreter \
     --bios ./openbios.bin \
     --iso <spyro>/spyro-1/build/SCUS-94228.cue \
-    --run --dofile ../../scripts/pcsx-redux-gte-dump.lua
+    --run --dofile ../../scripts/pcsx-redux-gte-dump-loading-text.lua
 ```
 
 To regenerate the cop2 PC list (different game, or you want a wider

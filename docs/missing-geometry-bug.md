@@ -109,9 +109,9 @@ By elimination, in priority order:
 
 `pcsx-redux` and `openbios.bin` are already built at
 `.tools/pcsx-redux/`. The existing dumper at
-`scripts/pcsx-redux-gte-dump.lua` works for the titlescreen cutscene; it
-needs adapting to (a) reach Artisans Homeworld at frame ~2470 and (b)
-break on `func_80023AC4` instead of the cop2 op list.
+`scripts/pcsx-redux-gte-dump-loading-text.lua` works for the loading-text
+scene; it needs adapting to (a) reach Artisans Homeworld at frame ~2470
+and (b) break on `func_80023AC4` instead of the cop2 op list.
 
 Reaching arbitrary in-game state from a fresh OpenBIOS boot is gappy
 (documented in `docs/gte-trace-vs-reference.md`). The pragmatic path is:

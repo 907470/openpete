@@ -830,14 +830,6 @@ static uint64_t tp_id_key(const texture_pack_id *id)
 
 uint64_t texture_pack_id_hashkey(const texture_pack_id *id) { return tp_id_key(id); }
 
-static void tp_id_filename(const texture_pack_id *id, const char *dir,
-                           char *buf, size_t n)
-{
-    snprintf(buf, n, "%s/%016llx-%dx%d+%dx%d-%016llx-%dbpp.png",
-             dir, (unsigned long long)id->thash, id->box_x, id->box_y,
-             id->box_w, id->box_h, (unsigned long long)id->phash, id->bpp);
-}
-
 /* ---- replacement lookup (Phase 3) ----------------------------------------- */
 
 static int texture_pack_match_locked(const texture_pack_id *id, texture_pack_repl *out) {

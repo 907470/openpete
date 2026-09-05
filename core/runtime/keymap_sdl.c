@@ -19,20 +19,6 @@
 
 #include <string.h>
 
-static SDL_Gamepad* km_first_gamepad(void) {
-    /* Re-queried per call rather than cached: pads hot-plug, and the
-     * list walk is a cheap array scan inside SDL. */
-    int n = 0;
-    SDL_JoystickID* ids = SDL_GetGamepads(&n);
-    SDL_Gamepad* found = NULL;
-    if (ids) {
-        for (int i = 0; i < n && !found; i++)
-            found = SDL_GetGamepadFromID(ids[i]);
-        SDL_free(ids);
-    }
-    return found;
-}
-
 /* Every keyboard-sourced binding reads through here. A pass-through: the
  * real keyboard always drives bindings, including while a gamepad is
  * connected.

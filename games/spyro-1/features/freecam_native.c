@@ -26,8 +26,7 @@
 // Not yet ported: render-region resync (the practice ROM raycasts the floor
 // under the camera to pick the terrain sector to draw, so flying far from
 // Spyro keeps geometry visible). Without it the drawn set stays keyed to
-// Spyro's frozen sector — fine for looking around the current area. See the
-// TODO at the bottom.
+// Spyro's frozen sector — fine for looking around the current area.
 
 #include "features/freecam_native.h"
 #include "spyro_native_reextract.h"   /* terrain_native_topdown_pose / _sweep_pose (--freecam-pose, --freecam-path) */

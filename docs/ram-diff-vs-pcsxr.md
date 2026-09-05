@@ -210,7 +210,7 @@ land in identical CPU state at hit 1:
 pc=0x8001ED5C sp=0x801FFFD8 ra=0x80012284 gp=0x80075264
 ```
 
-so cmp-masked.py's stack masking works as designed.
+so the differ's stack masking works as designed.
 
 ### Frame-0 heap diff — synchronous-CD timing skew (resolved as known)
 
