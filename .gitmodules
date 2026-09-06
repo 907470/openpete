@@ -8,7 +8,7 @@
 [submodule "third_party/SDL"]
 	path = third_party/SDL
 	url = https://github.com/libsdl-org/SDL.git
-	branch = main
+	branch = release-3.4.x
 [submodule "games/spyro-1/spyro-1"]
 	path = games/spyro-1/spyro-1
 	url = git@github.com:TheMobyCollective/spyro-1.git

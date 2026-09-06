@@ -38,12 +38,14 @@ if(EMSCRIPTEN)
         CACHE STRING "OpenAL link flag (Emscripten built-in)" FORCE)
 endif()
 
-# SDL3 is built from the third_party/SDL submodule, pinned to a recent
-# main commit for Steam Controller (2026) support. See
-# notes/plans/openpete-sdl3-upgrade.md. Static link, no shared lib, no
-# SDL test apps — produces the SDL3::SDL3-static target consumed by
-# openpete_core and PsyCross. Replaces the old find_package(SDL2) +
-# SDL2-mingw prebuilt path.
+# SDL3 is built from the third_party/SDL submodule, pinned to the
+# release-3.4.x branch (currently the release-3.4.16 tag) rather than to
+# main: the release branch carries the 2026 Steam Controller support the
+# pin was originally taken from main for, and carries it further along —
+# input report formats, touchpads and the rumble fix all landed there
+# after that commit. Static link, no shared lib, no SDL test apps —
+# produces the SDL3::SDL3-static target consumed by openpete_core and
+# PsyCross.
 set(SDL_STATIC ON  CACHE BOOL "" FORCE)
 set(SDL_SHARED OFF CACHE BOOL "" FORCE)
 set(SDL_TEST   OFF CACHE BOOL "" FORCE)
