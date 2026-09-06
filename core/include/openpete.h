@@ -529,6 +529,13 @@ typedef struct openpete_options {
      * openpete_devui_init reads it once. Display-only. */
     int devui_open;
 
+    /* --devui-inject-mouse X,Y (debug): post this cursor position into the
+     * dev overlay's imgui IO before every frame, so an unattended run can
+     * park the pointer over a widget and read the hover state out of the
+     * log. Windowed native-vk runs only. NULL/empty = unset (defer to
+     * OPENPETE_DEVUI_INJECT_MOUSE, else no injection). Boot-latched:
+     * openpete_devui_init parses it once. Display-only. */
+
     /* BizHawk .bk2 movie replay. Full pad-bitstream fidelity (holds,
      * releases, gamepad, analog). NULL = disabled. See
      * notes/plans/openpete-bk2-input.md. */

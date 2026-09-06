@@ -390,6 +390,11 @@ static void path_get_str(const knob_desc_t *k, char *buf, size_t cap) {
 
 /* ---- CLI debug rows (boot-parsed; display-only) ---- */
 
+static void injectmouse_get_str(const knob_desc_t *k, char *buf, size_t cap) {
+    const char *env = k->env ? getenv(k->env) : NULL;
+    snprintf(buf, cap, "%s", (env && *env) ? env : "(off)");
+}
+
 static void renderpaths_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     (void)k;
     const char *v = (g_opts && g_opts->render_paths && *g_opts->render_paths)
@@ -1097,6 +1102,16 @@ static const knob_desc_t g_builtin[] = {
       "panel live.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "devui_inject_mouse", "Park the overlay mouse", "Debug",
+      NULL, "OPENPETE_DEVUI_INJECT_MOUSE",
+      "Post a fixed cursor position (window pixels, \"X,Y\") into this "
+      "overlay's input every present, so an unattended run can hover a "
+      "widget and read the result out of the log instead of needing a hand "
+      "on the mouse. Parsed once by the overlay's init, so the row shows "
+      "the boot value.",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, injectmouse_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "fillpick", "Fill-tag inspector", "Debug", NULL, "OPENPETE_FILLPICK",
       "Pick the terrain face under the crosshair and re-judge its LP fill "

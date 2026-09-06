@@ -15,6 +15,7 @@ extern const uint32_t openpete_imgui_table_entries;
 extern const uint8_t  openpete_imgui_table_sha256[32];
 
 static _Thread_local int      t_depth = 0;
+static _Thread_local int      t_no_input = 0;
 static _Thread_local int      t_mod_index = -1;
 static _Thread_local uint64_t t_calls = 0;
 static _Thread_local const char* t_hook_owner = NULL;
@@ -42,17 +43,30 @@ int openpete_imgui_body_active(void)
 
 void openpete_imgui_body_enter(int mod_index)
 {
+    openpete_imgui_body_enter_always(mod_index, 0);
+}
+
+void openpete_imgui_body_enter_always(int mod_index, int no_input)
+{
     if (t_depth == 0) {
         t_mod_index = mod_index;
         t_calls = 0;
+        t_no_input = no_input ? 1 : 0;
     }
     t_depth++;
 }
 
 void openpete_imgui_body_leave(void)
 {
-    if (t_depth > 0 && --t_depth == 0)
+    if (t_depth > 0 && --t_depth == 0) {
         t_mod_index = -1;
+        t_no_input = 0;
+    }
+}
+
+int openpete_imgui_always_closed(void)
+{
+    return t_depth > 0 && t_no_input;
 }
 
 uint64_t openpete_imgui_calls_take(void)

@@ -699,9 +699,10 @@ OPENPETE_MOD_UI_SECTION(ui_draw)
     out.append("## Where the calls are legal\n")
     out.append(
         "Inside a UI section body, and nowhere else. A body runs on the "
-        "compose thread, inside the engine's ImGui frame, in the mod's node "
-        "of the Mods section — so only while the dev overlay is open and "
-        "the mod is enabled.\n")
+        "compose thread, inside the engine's ImGui frame, while the mod is "
+        "enabled. A plain `OPENPETE_MOD_UI_SECTION` body runs in the mod's "
+        "node of the Mods section, so only while the dev overlay is open; "
+        "an always section (below) runs on every present.\n")
     out.append(
         "A call from a present hook or a tick hook is dropped: those run "
         "outside the frame and on another thread, where Dear ImGui's own "
@@ -717,6 +718,52 @@ OPENPETE_MOD_UI_SECTION(ui_draw)
         "vtable and the annex mix freely in one body. An `ImGui_Begin` "
         "inside the mod's node opens an independent top-level window, which "
         "is Dear ImGui's documented behaviour.\n")
+
+    out.append("## Always-on sections\n")
+    out.append(
+        "Register the body with the flags form to run it on every present "
+        "instead of only inside the Mods panel:\n")
+    out.append("""```c
+OPENPETE_MOD_UI_SECTION_FLAGS(ui_draw, OPENPETE_MOD_UI_ALWAYS)
+```
+""")
+    out.append(
+        "This is how a mod keeps a stats window or a draw-list overlay on "
+        "screen during play. The rules that change with it:\n")
+    out.append(
+        "- **The body owns its windows.** It runs at top level, not inside "
+        "a tree node — a node the player collapsed must not make a window "
+        "disappear — so every widget emitted outside an `ImGui_Begin` "
+        "lands in Dear ImGui's default debug window. Open a window and put "
+        "the content in it.\n"
+        "- **No input while the overlay is closed.** The game keeps the "
+        "mouse and the keyboard, and the engine puts "
+        "`ImGuiWindowFlags_NoInputs` on every window the body opens: no "
+        "clicks, no nav, no hover. `ui->overlay_open()` returns 1 while the "
+        "overlay is up, which is when widgets in an always window can be "
+        "used; draw the interactive half only then. `ImGui_GetMousePos` "
+        "still reports the game's cursor.\n"
+        "- **The pass is skipped while the in-game settings menu is "
+        "open.** The menu and the dev overlay are mutually exclusive input "
+        "owners and the menu is drawn first, so an always window would "
+        "paint over it.\n"
+        "- **`ui_status` lines stay in the mod's node** in the Mods "
+        "section, where the rest of the mod's row is.\n"
+        "- **Always windows are not on the chrome anchor ledger** "
+        "(`openpete_overlay_anchor.h`), which places the perf readout and "
+        "the toasts. Position your own windows.\n")
+    out.append(
+        "**Chrome, not content.** Dear ImGui records into the live present "
+        "only, so an always window is never in a `--record` capture, a "
+        "screenshot, or an A/B compose, and it is drawn on top of a "
+        "COMPOSITE postfx chain rather than through it. A HUD that must "
+        "appear in captures belongs in the draw service (`draw_text`), "
+        "which is drawn pre-chain as content. The two paths have opposite "
+        "record policy on purpose.\n")
+    out.append(
+        "The containment below is unchanged for an always body: same guard "
+        "wrappers, same error bracket, same three-strike refusal, same "
+        "engagement counter.\n")
     out.append(
         "The purity rule is unchanged and matters more here: guest access, "
         "game calls and registration are refused inside a body. Read guest "
@@ -803,8 +850,11 @@ OPENPETE_MOD_UI_SECTION(ui_draw)
         "`mods/imgui-panel` is the worked example: a tick hook samples the "
         "level's mobys into a host-side ring, and the section draws it as a "
         "plot, a table, a floating window with a colour editor, and a "
-        "foreground draw-list marker. Two of its settings rows deliberately "
-        "break the rules above so the containment paths can be watched.\n")
+        "foreground draw-list marker. Its section is an always section: the "
+        "stats window and the marker draw every present, the detail window "
+        "only while the overlay is open. Two of its settings rows "
+        "deliberately break the rules above so the containment paths can be "
+        "watched.\n")
     return "\n".join(out), len(deny)
 
 

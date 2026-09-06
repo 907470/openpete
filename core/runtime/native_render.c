@@ -9965,7 +9965,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
          * passes all failed still lands here: off_image was restored for
          * the blit and the load pass draws on that. */
         if (native_postfx_point_active(0) && overlay_was_live &&
-            openpete_devui_is_open()) {
+            openpete_devui_frame_wanted()) {
             rhi_begin_offscreen_load(s_nr.dev);
             openpete_devui_render(s_nr.dev);
             rhi_end_offscreen(s_nr.dev);

@@ -184,4 +184,18 @@ Mods section, while that overlay is open. For anything beyond those eleven
 lists, fonts — `openpete_imgui.h` hands a mod the whole Dear ImGui C API:
 see [Dear ImGui annex](reference/imgui.md).
 
+**Always-on sections.** `OPENPETE_MOD_UI_SECTION_FLAGS(fn,
+OPENPETE_MOD_UI_ALWAYS)` registers a body that runs on every present
+instead, whatever the overlay is doing — a stats readout, a draw-list
+overlay. It runs at top level, not inside the mod's node, so it owns its
+windows: every widget it emits outside an `ImGui_Begin` lands in Dear
+ImGui's default debug window. With the overlay closed its windows take no
+mouse and no keyboard, so the game keeps both; `ui->overlay_open()` says
+which state the present is in. `ui_status` lines still appear in the mod's
+node. The pass is skipped while the in-game settings menu is open.
+
+An always window is chrome, not content: it is never recorded and never
+appears in screenshots or A/B composes. `draw_text` is the recorded-HUD
+path.
+
 Full contracts: [API reference](reference/api.md).

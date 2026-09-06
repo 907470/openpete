@@ -221,6 +221,9 @@ typedef struct {
                           * RAM? Declared, or derived by the engine. */
     int has_ui;          /* a UI section (register_ui / annex descriptor)
                           * or a live ui_status block */
+    int ui_always;       /* the section carries OPENPETE_MOD_UI_ALWAYS: its
+                          * body draws from the overlay's top-level pass on
+                          * every present, not inside this mod's node */
     int has_assets;      /* assets/ overlay root (boot-scoped tier) */
     int has_src;
     int has_cfg;         /* [[config]] schema rows in the manifest */
@@ -271,9 +274,28 @@ int openpete_mods_cfg_apply(int mod_index, int n,
 
 /* Run mod i's registered UI section with the overlay's widget vtable.
  * Sets the render-purity guard (openpete_mods_in_present) around the
- * callback. No-op for mods without a registration / disabled mods. */
+ * callback. No-op for mods without a registration / disabled mods.
+ *
+ * Draws the mod's ui_status block, then its body — unless the section is
+ * flagged OPENPETE_MOD_UI_ALWAYS, whose body belongs to the always pass
+ * below and would otherwise run twice per present. */
 struct openpete_mod_ui;
 void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui);
+
+/* The always pass: run mod i's body if, and only if, its section is
+ * flagged OPENPETE_MOD_UI_ALWAYS. No ui_status lines — those stay in the
+ * mod's node of the Mods panel. @p no_input raises the guard bit that puts
+ * ImGuiWindowFlags_NoInputs on every window the body opens, which the
+ * caller sets while the dev overlay is closed and the game owns the mouse. */
+void openpete_mods_ui_draw_always(int i, const struct openpete_mod_ui* ui,
+                                  int no_input);
+
+/* Enabled mods with an always-flagged body, counted by one scan of the mod
+ * table. The overlay asks per present whether an ImGui frame is wanted at
+ * all; a count derived here cannot drift out of step with the loader's own
+ * enable flips and registration strips the way a cross-thread counter
+ * would. */
+int openpete_mods_ui_always_count(void);
 
 /* Drop a mod's UI section for the rest of the session, with one log line
  * naming @p why. The mod keeps running; only its section stops drawing.

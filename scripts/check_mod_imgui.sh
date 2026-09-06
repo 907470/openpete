@@ -9,7 +9,7 @@
 # the first present) and the imgui-panel fixture, and reads the verdict off
 # the log.
 #
-# Three legs, each its own session:
+# Six legs, each its own session:
 #   engaged     stock fixture -> "imgui annex engaged (N calls)", N > 0.
 #                               Without it every other leg is vacuous: a
 #                               bound table that nothing calls proves nothing.
@@ -22,13 +22,25 @@
 #                               functions, because the engine reports each
 #                               (mod, function) pair once and the two
 #                               dispatch sites can share a thread.
+#   closed      overlay never opened, the mouse parked on the always
+#                               window's button -> the engaged line (the
+#                               body ran with no overlay at all) and a
+#                               hovered count of 0: an always window is
+#                               display-only while the overlay is closed.
+#   hover       the same injection with the overlay open -> a hovered count
+#                               above 0. The positive control: without it a
+#                               zero from the closed leg could be a
+#                               mis-aimed cursor rather than NoInputs.
+#   composite   crt-beans enabled alongside the fixture -> the engaged line
+#                               under a COMPOSITE postfx chain, which moves
+#                               the overlay to the post-chain render site.
 #
 # Each leg opens a real 640x480 window on the current display and drives it
 # unattended. Clicking one steers the overlay it is measuring, so leave the
 # windows alone while it runs.
 #
 # Usage: scripts/check_mod_imgui.sh [--out=DIR] [--frames=N] [--keep]
-# Exit:  0 all three legs pass | 1 a leg failed | 64 skipped (missing
+# Exit:  0 all six legs pass | 1 a leg failed | 64 skipped (missing
 #        binary / disc / display / Vulkan loader)
 
 set -uo pipefail
@@ -50,7 +62,7 @@ for arg in "$@"; do
         --out=*)    OUT_DIR="${arg#--out=}" ;;
         --frames=*) FRAMES="${arg#--frames=}" ;;
         --keep)     KEEP=1 ;;
-        --help|-h)  sed -n '2,33p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --help|-h)  sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown arg: $arg" >&2; exit 64 ;;
     esac
 done
@@ -58,6 +70,17 @@ done
 BIN="${OPENPETE_BIN:-build/linux-release/games/spyro-1/openpete-spyro1}"
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
 FIXTURE="mods/imgui-panel"
+COMPOSITE_MOD="mods/crt-beans"
+
+# Window size, and the cursor coordinate that lands on the always window's
+# "hover me" button. The fixture pins that window at x=16, 68px up from the
+# bottom edge, with no title bar and a 200x36 button one window padding (8px)
+# in — so the button spans x 24..224, y 420..456 in a 640x480 window and its
+# centre is (124, 438). Below the dev config panel, which ends 96px short of
+# the bottom, so the button stays hoverable while the panel is up.
+WIN_W=640
+WIN_H=480
+HOVER_XY="124,438"
 
 [[ -x "$BIN"  ]] || { echo "SKIP: missing binary $BIN (build the preset first)" >&2; exit 64; }
 [[ -f "$DISC" ]] || { echo "SKIP: missing disc $DISC" >&2; exit 64; }
@@ -83,6 +106,10 @@ rm -rf "$OUT_DIR"
 mkdir -p "$OUT_DIR/mods"
 cp -r "$FIXTURE" "$OUT_DIR/mods/imgui-panel"
 rm -rf "$OUT_DIR/mods/imgui-panel/.build"
+if [[ -d "$COMPOSITE_MOD" ]]; then
+    cp -r "$COMPOSITE_MOD" "$OUT_DIR/mods/crt-beans"
+    rm -rf "$OUT_DIR/mods/crt-beans/.build"
+fi
 
 fails=0
 verdict() {  # verdict LEG PASS|FAIL detail...
@@ -93,6 +120,8 @@ verdict() {  # verdict LEG PASS|FAIL detail...
 
 # run_leg NAME [KEY=VALUE ...] — one session with the fixture configured by
 # the given config.toml rows. Leaves the log at $OUT_DIR/<name>.log.
+# LEG_OPEN (default 1) drives --devui-open; LEG_MODS (default imgui-panel)
+# the enabled modset; LEG_INJECT, when non-empty, OPENPETE_DEVUI_INJECT_MOUSE.
 run_leg() {
     local name="$1"; shift
     local log="$OUT_DIR/$name.log"
@@ -101,10 +130,14 @@ run_leg() {
     : > "$cfg"
     local kv
     for kv in "$@"; do echo "${kv%%=*} = ${kv#*=}" >> "$cfg"; done
-    "$BIN" --disc "$DISC" \
-           --renderer vk --window 640x480 \
-           --devui-open 1 \
-           --mods-dir "$OUT_DIR/mods" --mods imgui-panel \
+    local extra=()
+    local -a envs=()
+    [[ -n "${LEG_INJECT:-}" ]] && envs+=(OPENPETE_DEVUI_INJECT_MOUSE="$LEG_INJECT")
+    env "${envs[@]}" "$BIN" --disc "$DISC" \
+           --renderer vk --window "${WIN_W}x${WIN_H}" \
+           --devui-open "${LEG_OPEN:-1}" \
+           --mods-dir "$OUT_DIR/mods" --mods "${LEG_MODS:-imgui-panel}" \
+           "${extra[@]}" \
            --frame-limit "$FRAMES" --max-runtime-seconds 300 \
            --mute 1 --no-log-file \
            > "$log" 2>&1
@@ -165,10 +198,69 @@ else
     verdict guard FAIL "session did not produce a usable log"
 fi
 
+# ── legs 4-6: always-on sections ──────────────────────────────────────────
+# The fixture's section carries OPENPETE_MOD_UI_ALWAYS, so its body runs on
+# every present whatever the overlay is doing. It reports, once a second,
+# the presents in which the always window's button was hovered; the last
+# such line is the run's tally.
+
+engaged_calls() {  # engaged_calls LOG -> N, empty when the line is absent
+    sed -n 's/.*imgui annex engaged (\([0-9]\+\) calls).*/\1/p' "$1" | head -1
+}
+hover_tally() {    # hover_tally LOG -> "N M" from the last hovered line
+    sed -n 's/.*imgui-panel: hovered \([0-9]\+\)\/\([0-9]\+\) presents.*/\1 \2/p' \
+        "$1" | tail -1
+}
+
+# ── leg 4: the body runs with the overlay closed, and takes no input ───────
+if LEG_OPEN=0 LEG_INJECT="$HOVER_XY" run_leg closed; then
+    calls=$(engaged_calls "$OUT_DIR/closed.log")
+    read -r hov pres <<< "$(hover_tally "$OUT_DIR/closed.log")"
+    if [[ -z "${calls:-}" || "$calls" -le 0 ]]; then
+        verdict closed FAIL "no 'imgui annex engaged (N calls)' with N > 0 without --devui-open; see $OUT_DIR/closed.log"
+    elif [[ -z "${pres:-}" || "$pres" -le 0 ]]; then
+        verdict closed FAIL "the always body never reported a present count; see $OUT_DIR/closed.log"
+    elif [[ "$hov" -ne 0 ]]; then
+        verdict closed FAIL "always window took the mouse with the overlay closed: hovered $hov/$pres presents"
+    else
+        verdict closed PASS "$calls call(s) with the overlay never opened, hovered $hov/$pres presents"
+    fi
+else
+    verdict closed FAIL "session did not produce a usable log"
+fi
+
+# ── leg 5: the same cursor, overlay open — the positive control ───────────
+if LEG_INJECT="$HOVER_XY" run_leg hover; then
+    read -r hov pres <<< "$(hover_tally "$OUT_DIR/hover.log")"
+    if [[ -n "${hov:-}" && "$hov" -gt 0 ]]; then
+        verdict hover PASS "hovered $hov/$pres presents with the overlay open"
+    else
+        verdict hover FAIL "the parked cursor ($HOVER_XY) never hovered the always window's button with the overlay open (saw ${hov:-none}/${pres:-none}); the closed leg's zero would be vacuous — see $OUT_DIR/hover.log"
+    fi
+else
+    verdict hover FAIL "session did not produce a usable log"
+fi
+
+# ── leg 6: an always window survives a COMPOSITE postfx chain ─────────────
+if [[ -d "$OUT_DIR/mods/crt-beans" ]]; then
+    if LEG_OPEN=0 LEG_MODS="imgui-panel,crt-beans" run_leg composite; then
+        calls=$(engaged_calls "$OUT_DIR/composite.log")
+        if [[ -n "${calls:-}" && "$calls" -gt 0 ]]; then
+            verdict composite PASS "$calls call(s) under a COMPOSITE chain (post-chain render site)"
+        else
+            verdict composite FAIL "no 'imgui annex engaged (N calls)' with crt-beans enabled; see $OUT_DIR/composite.log"
+        fi
+    else
+        verdict composite FAIL "session did not produce a usable log"
+    fi
+else
+    verdict composite FAIL "missing $COMPOSITE_MOD (the COMPOSITE chain leg has nothing to enable)"
+fi
+
 if [[ $fails -eq 0 ]]; then
-    echo "[mod-imgui] verdict: PASS (3/3 legs)"
+    echo "[mod-imgui] verdict: PASS (6/6 legs)"
     [[ $KEEP == 1 ]] || rm -rf "$OUT_DIR"
     exit 0
 fi
-echo "[mod-imgui] verdict: FAIL ($fails/3 legs); logs kept under $OUT_DIR"
+echo "[mod-imgui] verdict: FAIL ($fails/6 legs); logs kept under $OUT_DIR"
 exit 1

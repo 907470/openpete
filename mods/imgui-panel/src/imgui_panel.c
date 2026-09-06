@@ -20,6 +20,16 @@
  *   and calls ImGui. A guest read from here would sample the tick at an
  *   arbitrary point and a guest write would not survive a replay.
  *
+ * The section is registered with OPENPETE_MOD_UI_ALWAYS, so the body runs
+ * on every present at top level rather than inside the mod's node of the
+ * Mods panel. An always body owns its windows: the stats window and the
+ * foreground marker draw whatever the overlay is doing, and the detail
+ * window (plot, table, colour editor) is opened only while
+ * ui->overlay_open() reports the overlay is up, since a panel nobody can
+ * click is clutter over the game. With the overlay closed the engine puts
+ * ImGuiWindowFlags_NoInputs on every window the body opens, which the
+ * hover counter below measures.
+ *
  * An ImGui call from anywhere but a section body is dropped by the
  * engine's guard wrappers, returns a zeroed value and logs the mod and
  * the function once. The "hook_call" config row provokes exactly that.
@@ -58,6 +68,7 @@ static openpete_mod_t*           g_self;
 /* ── host-side copy the section reads ──────────────────────────────── */
 
 #define RING_N    240   /**< About eight seconds of ticks. */
+#define HOVER_LOG_TICKS 30  /**< About one second of ticks. */
 #define NEAREST_N  10
 
 /** Live moby count, one sample per tick, oldest at s_ring_head. */
@@ -80,6 +91,15 @@ static unsigned    s_ticks;
  * Host-side: a widget writes it on the compose thread, the same thread
  * that reads it back, and no guest byte depends on it. */
 static float s_marker_col[3] = { 0.95f, 0.75f, 0.20f };
+
+/** Hover instrument for the stats window's button. Written by the body on
+ * the compose thread, read by the tick hook for the log line: an always
+ * window is display-only while the overlay is closed, so a run with the
+ * overlay closed must report 0 hovered out of many presents and the same
+ * run with it open must report more than 0. */
+static unsigned s_present_n;
+static unsigned s_hover_n;
+static unsigned s_hover_logged;
 
 /* ── config ────────────────────────────────────────────────────────── */
 
@@ -148,6 +168,15 @@ static void on_gamestate_update(CPUState* cpu) {
     if (!s_ticks)
         g_api->log(g_self, OP_MOD_LOG_INFO, "imgui-panel: sampling mobys");
     s_ticks++;
+    /* One line a second, from the tick hook because the mod API has no
+     * shutdown callback to report a final tally from: the last line a run
+     * emits is that run's tally. HOVER_LOG_TICKS is one second of ticks. */
+    if (s_ticks - s_hover_logged >= HOVER_LOG_TICKS) {
+        s_hover_logged = s_ticks;
+        g_api->log(g_self, OP_MOD_LOG_INFO,
+                    "imgui-panel: hovered %u/%u presents",
+                    s_hover_n, s_present_n);
+    }
     g_api->base(cpu);
 }
 
@@ -163,57 +192,93 @@ static void on_present(const openpete_present_ctx_t* ctx) {
 
 /* ── UI section: host copy in, ImGui out ───────────────────────────── */
 
-static void ui_draw(const openpete_mod_ui_t* ui) {
+/** Stats window geometry, in window pixels, chosen so the button sits in
+ * the strip below the dev config panel (which is 540 wide at y 24 and ends
+ * 96px short of the bottom edge) and stays hoverable while that panel is
+ * up. The window has no title bar, so its content starts one window
+ * padding in. */
+#define STATS_X       16.0f
+#define STATS_UP      68.0f   /**< Window top, measured up from the bottom. */
+#define STATS_W      240.0f
+#define STATS_H       52.0f
+#define STATS_BTN_W  200.0f
+#define STATS_BTN_H   36.0f
+
+static void draw_stats_window(void) {
+    ImGuiIO* io = ImGui_GetIO();
     ImDrawList* fg;
-    ImVec2 at;
+    const ImGuiWindowFlags flags =
+        ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
+        ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoCollapse |
+        ImGuiWindowFlags_NoSavedSettings;
+
+    /* Always, not FirstUseEver: the harness parks a cursor at a fixed
+     * coordinate, so the window may not drift with a saved ini. */
+    ImGui_SetNextWindowPos((ImVec2){ STATS_X, io->DisplaySize.y - STATS_UP },
+                           ImGuiCond_Always);
+    ImGui_SetNextWindowSize((ImVec2){ STATS_W, STATS_H }, ImGuiCond_Always);
+    if (ImGui_Begin("imgui-panel stats", NULL, flags)) {
+        ImGui_ButtonEx("hover me", (ImVec2){ STATS_BTN_W, STATS_BTN_H });
+        s_present_n++;
+        if (ImGui_IsItemHovered(0)) s_hover_n++;
+    }
+    ImGui_End();
+
+    /* The foreground draw list needs no window of its own, so the marker
+     * rides every present next to the stats window. */
+    fg = ImGui_GetForegroundDrawList();
+    ImDrawList_AddCircleEx(fg,
+                           (ImVec2){ STATS_X + STATS_W + 24.0f,
+                                     io->DisplaySize.y - STATS_UP + 24.0f },
+                           18.0f,
+                           IM_COL32((int)(s_marker_col[0] * 255.0f),
+                                    (int)(s_marker_col[1] * 255.0f),
+                                    (int)(s_marker_col[2] * 255.0f), 255),
+                           24, 2.0f);
+}
+
+/** Plot, table and colour editor: only worth screen space while the
+ * overlay is open, because with it closed nothing here can be clicked. */
+static void draw_detail_window(const openpete_mod_ui_t* ui) {
     int i;
 
-    ui->text("%d live moby(s), %u tick(s) sampled", s_live_count, s_ticks);
+    ImGui_SetNextWindowSize((ImVec2){ 320.0f, 0.0f }, ImGuiCond_FirstUseEver);
+    if (ImGui_Begin("imgui-panel details", NULL, 0)) {
+        ui->text("%d live moby(s), %u tick(s) sampled", s_live_count,
+                 s_ticks);
 
-    /* The ring is written head-first and wraps, so the plot is handed the
-     * head as its offset rather than being rotated into a scratch copy. */
-    ImGui_PlotLinesEx("live mobys", s_ring, s_ring_filled,
-                      s_ring_filled == RING_N ? s_ring_head : 0,
-                      NULL, 0.0f, 260.0f, (ImVec2){ 0.0f, 60.0f },
-                      (int)sizeof(float));
+        /* The ring is written head-first and wraps, so the plot is handed
+         * the head as its offset rather than being rotated into a scratch
+         * copy. */
+        ImGui_PlotLinesEx("live mobys", s_ring, s_ring_filled,
+                          s_ring_filled == RING_N ? s_ring_head : 0,
+                          NULL, 0.0f, 260.0f, (ImVec2){ 0.0f, 60.0f },
+                          (int)sizeof(float));
 
-    ImGui_SeparatorText("nearest to Spyro");
-    if (ImGui_BeginTable("imgui-panel-nearest", 3,
-                         ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
-                         ImGuiTableFlags_SizingStretchProp)) {
-        ImGui_TableSetupColumn("class", 0);
-        ImGui_TableSetupColumn("distance", 0);
-        ImGui_TableSetupColumn("position", 0);
-        ImGui_TableHeadersRow();
-        for (i = 0; i < s_near_n; i++) {
-            ImGui_TableNextRow();
-            ImGui_TableNextColumn();
-            ImGui_Text("%d", s_near[i].cls);
-            ImGui_TableNextColumn();
-            ImGui_Text("%u", s_near[i].dist);
-            ImGui_TableNextColumn();
-            ImGui_Text("%d, %d, %d", s_near[i].x, s_near[i].y, s_near[i].z);
-        }
-        ImGui_EndTable();
-    }
-    if (!s_near_n)
-        ui->text_disabled("no level mobys yet");
-
-    /* An ImGui_Begin inside the Mods panel's tree node opens an
-     * independent top-level window, which is Dear ImGui's documented
-     * behaviour and the reason a body can own a window at all. */
-    ImGui_SetNextWindowSize((ImVec2){ 260.0f, 0.0f }, ImGuiCond_FirstUseEver);
-    if (ImGui_Begin("imgui-panel marker", NULL, 0)) {
         ImGui_ColorEdit3("marker", s_marker_col, 0);
-        ImGui_Text("drawn on the foreground draw list");
-        at = ImGui_GetCursorScreenPos();
-        fg = ImGui_GetForegroundDrawList();
-        ImDrawList_AddCircleEx(fg, (ImVec2){ at.x + 24.0f, at.y + 24.0f },
-                               18.0f,
-                               IM_COL32((int)(s_marker_col[0] * 255.0f),
-                                        (int)(s_marker_col[1] * 255.0f),
-                                        (int)(s_marker_col[2] * 255.0f), 255),
-                               24, 2.0f);
+
+        ImGui_SeparatorText("nearest to Spyro");
+        if (ImGui_BeginTable("imgui-panel-nearest", 3,
+                             ImGuiTableFlags_Borders | ImGuiTableFlags_RowBg |
+                             ImGuiTableFlags_SizingStretchProp)) {
+            ImGui_TableSetupColumn("class", 0);
+            ImGui_TableSetupColumn("distance", 0);
+            ImGui_TableSetupColumn("position", 0);
+            ImGui_TableHeadersRow();
+            for (i = 0; i < s_near_n; i++) {
+                ImGui_TableNextRow();
+                ImGui_TableNextColumn();
+                ImGui_Text("%d", s_near[i].cls);
+                ImGui_TableNextColumn();
+                ImGui_Text("%u", s_near[i].dist);
+                ImGui_TableNextColumn();
+                ImGui_Text("%d, %d, %d", s_near[i].x, s_near[i].y,
+                           s_near[i].z);
+            }
+            ImGui_EndTable();
+        }
+        if (!s_near_n)
+            ui->text_disabled("no level mobys yet");
     }
     /* The whole point of the row: with it on the window is never ended,
      * Dear ImGui reports a recoverable error, and the engine's bracket
@@ -221,7 +286,17 @@ static void ui_draw(const openpete_mod_ui_t* ui) {
     if (!s_break_end)
         ImGui_End();
 }
-OPENPETE_MOD_UI_SECTION(ui_draw)
+
+static void ui_draw(const openpete_mod_ui_t* ui) {
+    draw_stats_window();
+    if (ui->overlay_open())
+        draw_detail_window(ui);
+    else if (s_break_end)
+        /* Keep the bracket exercised with the overlay closed too: the
+         * detail window is where the missing End lives. */
+        draw_detail_window(ui);
+}
+OPENPETE_MOD_UI_SECTION_FLAGS(ui_draw, OPENPETE_MOD_UI_ALWAYS)
 
 int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     g_api = api; g_self = self;

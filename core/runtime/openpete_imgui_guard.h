@@ -41,6 +41,17 @@ void openpete_imgui_count_call(void);
 void openpete_imgui_body_enter(int mod_index);
 void openpete_imgui_body_leave(void);
 
+/* Same, for a body the always pass is running with the dev overlay closed.
+ * @p no_input raises a second thread-local bit for the depth of the body,
+ * read by openpete_imgui_always_closed(). */
+void openpete_imgui_body_enter_always(int mod_index, int no_input);
+
+/* Non-zero while this thread is inside an always-section body drawn with
+ * the overlay closed. The ImGui_Begin / ImGui_BeginChild wrappers OR
+ * ImGuiWindowFlags_NoInputs into their flags argument on it, so a window a
+ * mod draws during play never eats the mouse the game is reading. */
+int openpete_imgui_always_closed(void);
+
 /* Reads and zeroes this thread's call counter. Called after a body so the
  * count reported is the count for that body. */
 uint64_t openpete_imgui_calls_take(void);

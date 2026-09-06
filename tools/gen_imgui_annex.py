@@ -291,7 +291,21 @@ def emit_macros(entries, out_path):
     return "\n".join(lines) + "\n"
 
 
+# Per-function prologue for the guard wrapper: the named window-flags
+# parameter gains ImGuiWindowFlags_NoInputs while an always-section body is
+# drawing with the dev overlay closed. NoInputs is per window (no mouse, no
+# nav, no nav focus, and hovered tests skip the window), so it belongs on the
+# call that creates the window; a global config flag would also silence the
+# engine's own panels, which stay interactive with the overlay closed.
+NO_INPUT_FLAG_ARG = {
+    "ImGui_Begin":        "flags",
+    "ImGui_BeginChild":   "window_flags",
+    "ImGui_BeginChildID": "window_flags",
+}
+
+
 def emit_guard(entries, twins, digest, out_path):
+    hooked = set()
     lines = [banner(out_path),
              "",
              "#include <stdarg.h>",
@@ -326,6 +340,16 @@ def emit_guard(entries, twins, digest, out_path):
         lines.append("        " + drop)
         lines.append("    }")
         lines.append("    openpete_imgui_count_call();")
+        flag_arg = NO_INPUT_FLAG_ARG.get(name)
+        if flag_arg:
+            if flag_arg not in arg_names(fn):
+                raise SystemExit(
+                    "gen_imgui_annex: %s has no parameter %r for the "
+                    "NoInputs hook (dear_bindings renamed it)"
+                    % (name, flag_arg))
+            lines.append("    if (openpete_imgui_always_closed())")
+            lines.append("        %s |= ImGuiWindowFlags_NoInputs;" % flag_arg)
+            hooked.add(name)
         if is_varargs(fn):
             names = arg_names(fn)
             last = names[-1]
@@ -346,6 +370,16 @@ def emit_guard(entries, twins, digest, out_path):
         lines.append("}")
         lines.extend(["#endif"] * len(conds))
         lines.append("")
+
+    # Every window-opening entry must have taken the hook. A denylist entry
+    # or an upstream rename would otherwise drop the no-input rule silently,
+    # and a mod's always window would start eating the game's mouse.
+    missing = sorted(set(NO_INPUT_FLAG_ARG) - hooked)
+    if missing:
+        raise SystemExit(
+            "gen_imgui_annex: no table entry for %s, so the NoInputs hook "
+            "was not emitted; update NO_INPUT_FLAG_ARG to the current "
+            "dear_bindings names" % ", ".join(missing))
 
     lines.append("extern \"C\" const openpete_imgui_table_t "
                  "openpete_imgui_engine_table;")

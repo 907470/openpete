@@ -37,6 +37,7 @@ extern "C" {
 #include "openpete_knobs.h"
 #include "openpete_config.h"
 #include "openpete_log.h"
+#include "openpete_menu.h"
 #include "openpete_mods.h"
 #include "openpete_mod_ui.h"
 
@@ -56,12 +57,34 @@ static bool        s_open   = false;
 static bool        s_boot_reveal = false;
 static rhi_device *s_dev    = nullptr;
 static char        s_ini_path[1024];
+/* --devui-inject-mouse X,Y: a cursor position posted into imgui's IO before
+ * every NewFrame, so an unattended run can park the pointer over a widget
+ * and the hover state can be measured. Off unless both coordinates parse. */
+static bool        s_inject_mouse = false;
+static float       s_inject_x = 0.0f, s_inject_y = 0.0f;
 
 int openpete_devui_open_requested(const struct openpete_options *opts)
 {
     if (opts && opts->devui_open >= 0) return opts->devui_open ? 1 : 0;
     const char *e = getenv("OPENPETE_DEVUI_OPEN");
     return (e && *e && *e != '0') ? 1 : 0;
+}
+
+int openpete_devui_inject_mouse_requested(float *x, float *y)
+{
+    /* Harness-only knob (env var, no CLI spelling): automation parks the
+     * cursor so an unattended run can hover a widget. */
+    const char *v = getenv("OPENPETE_DEVUI_INJECT_MOUSE");
+    if (!v || !*v) return 0;
+    char *end = nullptr;
+    float px = strtof(v, &end);
+    if (!end || *end != ',') return 0;
+    char *end2 = nullptr;
+    float py = strtof(end + 1, &end2);
+    if (!end2 || end2 == end + 1) return 0;
+    if (x) *x = px;
+    if (y) *y = py;
+    return 1;
 }
 
 int openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
@@ -74,6 +97,9 @@ int openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
     if (!rhi_get_imgui_info(dev, &info)) return 0;
 
     knob_registry_init(opts);
+    s_inject_mouse =
+        openpete_devui_inject_mouse_requested(&s_inject_x, &s_inject_y)
+            != 0;
 
     IMGUI_CHECKVERSION();
     ImGui::CreateContext();
@@ -553,6 +579,8 @@ static int mui_input_text(const char *label, char *buf, int cap)
 static void mui_separator(void) { ImGui::Separator(); }
 static void mui_same_line(void) { ImGui::SameLine(); }
 
+static int mui_overlay_open(void) { return s_open ? 1 : 0; }
+
 static void mui_tooltip(const char *text)
 {
     if (text && ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip))
@@ -562,7 +590,8 @@ static void mui_tooltip(const char *text)
 static const openpete_mod_ui_t s_mod_ui = {
     mui_text,       mui_text_disabled, mui_button,    mui_checkbox,
     mui_slider_int, mui_slider_float,  mui_combo,     mui_input_text,
-    mui_separator,  mui_same_line,     mui_tooltip,   {},
+    mui_separator,  mui_same_line,     mui_tooltip,   mui_overlay_open,
+    {},
 };
 
 static void mod_row_tooltip(const openpete_mods_menu_info_t *mi)
@@ -756,13 +785,24 @@ static void mod_body_error_cb(ImGuiContext *, void *user_data,
                 "%s", (const char *)user_data, msg ? msg : "");
 }
 
-/* Consecutive presents whose body errored, per mod index. Indices are
- * fixed for the session (the loader loads its whole set at boot); an index
- * past the array is simply not counted, so the loader's own cap does not
- * have to be mirrored here. */
-static int s_mod_body_err_streak[64];
+/* Consecutive presents whose body errored, per pass and mod index. Indices
+ * are fixed for the session (the loader loads its whole set at boot); an
+ * index past the array is simply not counted, so the loader's own cap does
+ * not have to be mirrored here.
+ *
+ * Per pass, because the two passes run in the same present and only one of
+ * them runs a given mod's body: for an always section the node pass draws
+ * ui_status lines and nothing else, so a shared counter would see a clean
+ * bracket from that pass every present and reset a streak the always pass
+ * was accumulating — the refusal would never fire. */
+static int s_mod_body_err_streak[2][64];
 
-static void draw_mod_section_bracketed(int mod_index, const char *mod_id)
+/* @p always picks the pass: 0 draws the mod's node contents (status lines
+ * plus a plain body), 1 draws an always-flagged body at top level. @p
+ * no_input is 1 on an always pass with the overlay closed, which puts
+ * ImGuiWindowFlags_NoInputs on every window the body opens. */
+static void draw_mod_section_bracketed(int mod_index, const char *mod_id,
+                                       bool always, bool no_input)
 {
     ImGuiContext &g  = *ImGui::GetCurrentContext();
     ImGuiIO      &io = ImGui::GetIO();
@@ -788,7 +828,10 @@ static void draw_mod_section_bracketed(int mod_index, const char *mod_id)
     g.ErrorCallbackUserData = (void *)mod_id;
     s_mod_body_errored      = false;
 
-    openpete_mods_ui_draw(mod_index, &s_mod_ui);
+    if (always)
+        openpete_mods_ui_draw_always(mod_index, &s_mod_ui, no_input ? 1 : 0);
+    else
+        openpete_mods_ui_draw(mod_index, &s_mod_ui);
 
     ImGui::ErrorRecoveryTryToRecoverState(&recovery);
 
@@ -804,13 +847,14 @@ static void draw_mod_section_bracketed(int mod_index, const char *mod_id)
     g.ErrorCallback                     = cb_save;
     g.ErrorCallbackUserData             = cb_user_save;
 
-    if (mod_index < 0 || mod_index >= IM_ARRAYSIZE(s_mod_body_err_streak))
+    const int pass = always ? 1 : 0;
+    if (mod_index < 0 || mod_index >= IM_ARRAYSIZE(s_mod_body_err_streak[0]))
         return;
     if (!s_mod_body_errored) {
-        s_mod_body_err_streak[mod_index] = 0;
+        s_mod_body_err_streak[pass][mod_index] = 0;
         return;
     }
-    if (++s_mod_body_err_streak[mod_index] >= 3)
+    if (++s_mod_body_err_streak[pass][mod_index] >= 3)
         openpete_mods_ui_refuse_section(
             mod_index, "its body reported a Dear ImGui error on three "
                        "consecutive presents");
@@ -874,7 +918,8 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
                                   ImGuiTreeNodeFlags_SpanAvailWidth)) {
                 mod_row_tooltip(&mi);
                 draw_mod_config_rows(i, &mi);
-                if (mi.has_ui) draw_mod_section_bracketed(i, mi.id);
+                if (mi.has_ui)
+                    draw_mod_section_bracketed(i, mi.id, false, false);
                 if (has_levels) draw_custom_level_rows(mi.id);
                 ImGui::TreePop();
             } else {
@@ -1163,6 +1208,40 @@ static void draw_fillpick_panel(void)
     ImGui::End();
 }
 
+/* ------------------------------------------------------------------ */
+/* Always-on mod sections                                             */
+/* ------------------------------------------------------------------ */
+
+/* Bodies flagged OPENPETE_MOD_UI_ALWAYS, drawn at top level on every
+ * present. Top level and not the Mods panel's tree node: a node the user
+ * collapsed must not make a mod's window disappear, and the panel does not
+ * exist at all while the overlay is closed.
+ *
+ * Skipped while the settings menu is open. The menu and the overlay are
+ * mutually exclusive input owners, and both compose branches draw the menu
+ * before this frame is recorded, so an always window would paint over it. */
+static void draw_always_sections(void)
+{
+    if (openpete_menu_is_open()) return;
+    const int n = openpete_mods_count();
+    for (int i = 0; i < n; i++) {
+        openpete_mods_menu_info_t mi;
+        if (!openpete_mods_menu_info(i, &mi)) continue;
+        if (!mi.enabled || !mi.ui_always) continue;
+        ImGui::PushID(mi.id);
+        draw_mod_section_bracketed(i, mi.id, true, !s_open);
+        ImGui::PopID();
+    }
+}
+
+int openpete_devui_frame_wanted(void)
+{
+    if (!s_inited) return 0;
+    if (s_open) return 1;
+    if (openpete_fillpick_active()) return 1;
+    return openpete_mods_ui_always_count() > 0 ? 1 : 0;
+}
+
 void openpete_devui_render(struct rhi_device *dev)
 {
     /* The inspector's crosshair + panel ride the same imgui frame as the
@@ -1177,19 +1256,38 @@ void openpete_devui_render(struct rhi_device *dev)
     devui_drain_events();
 
     bool fillpick = openpete_fillpick_active() != 0;
-    if (!s_open && !fillpick) return;
+    const int always_n = openpete_mods_ui_always_count();
+    if (!s_open && !fillpick && always_n == 0) return;
     if (dev != s_dev) return;
     void *cb = rhi_current_command_buffer(dev);
     if (!cb) return;
 
-    /* First open: adopt late-settling boot values (render-fps pacer). */
-    static bool s_late_stamped = false;
-    if (!s_late_stamped) { knob_registry_late_stamp(); s_late_stamped = true; }
+    /* First open: adopt late-settling boot values (render-fps pacer). An
+     * always section runs the frame with the overlay closed, so the stamp
+     * waits for the open that gives it its meaning. */
+    if (s_open) {
+        static bool s_late_stamped = false;
+        if (!s_late_stamped) { knob_registry_late_stamp(); s_late_stamped = true; }
+    }
+
+    ImGuiIO &io = ImGui::GetIO();
+    /* The SDL3 backend re-applies the cursor shape and calls SDL_ShowCursor
+     * on every NewFrame unless this flag is set. With an always section the
+     * frame runs every present, which would undo the host loop's idle
+     * cursor hide. Decided per present from the open state rather than on
+     * its edges, so the first frame that draws the panel is the frame that
+     * gets imgui's cursors back. */
+    if (s_open) io.ConfigFlags &= ~ImGuiConfigFlags_NoMouseCursorChange;
+    else        io.ConfigFlags |=  ImGuiConfigFlags_NoMouseCursorChange;
 
     ImGui_ImplVulkan_NewFrame();
     ImGui_ImplSDL3_NewFrame();
+    /* After the backend's own IO update, which would otherwise overwrite
+     * the parked position with the real pointer. */
+    if (s_inject_mouse) io.AddMousePosEvent(s_inject_x, s_inject_y);
     ImGui::NewFrame();
     if (s_open) draw_panel();
+    if (always_n > 0) draw_always_sections();
     if (fillpick) { draw_fillpick_crosshair(); draw_fillpick_panel(); }
     ImGui::Render();
     devui_publish_io_wants();

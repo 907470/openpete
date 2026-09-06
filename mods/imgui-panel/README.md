@@ -8,8 +8,30 @@ A tick hook — an override on `GamestateUpdate`, which runs every tick from
 the title screen on — walks the level moby array, counts the live mobys
 into a host-side ring and copies the ten nearest to Spyro. The UI section
 then draws that copy with the full C API: `ImGui_PlotLines` over the ring,
-an `ImGui_BeginTable` of the ten nearest, an `ImGui_Begin` window with an
-`ImGui_ColorEdit3`, and a circle on the foreground draw list.
+an `ImGui_BeginTable` of the ten nearest, an `ImGui_ColorEdit3`, and a
+circle on the foreground draw list.
+
+The section is registered with `OPENPETE_MOD_UI_SECTION_FLAGS(ui_draw,
+OPENPETE_MOD_UI_ALWAYS)`, so the body runs on every present rather than
+only inside the mod's node of the Mods panel. It opens two windows of its
+own, which is what an always body has to do: at top level there is no
+containing node, and a widget outside an `ImGui_Begin` would land in Dear
+ImGui's default debug window. The stats window and the marker draw
+whatever the overlay is doing; the detail window with the plot, the table
+and the colour editor opens only while `ui->overlay_open()` reports the
+overlay is up, since with it closed the engine puts
+`ImGuiWindowFlags_NoInputs` on the mod's windows and nothing in them can
+be clicked.
+
+The stats window carries a button and the mod logs, once a second, the
+presents in which that button was hovered:
+
+```
+imgui-panel: hovered N/M presents
+```
+
+N is 0 for every present drawn with the overlay closed, which is the
+measurement of the no-input rule.
 
 The split is the rule, not a style choice. Guest RAM is read in the tick
 hook, on the sim thread, inside the tick. The section body runs on the
@@ -32,5 +54,6 @@ paths visible:
   hook, both outside any section body. The engine drops each call, returns
   a zeroed value, and names the mod and the function once.
 
-`scripts/check_mod_imgui.sh` drives both rows and the engagement counter in
-a windowed run; `modtest.toml` covers compile, load and bind headless.
+`scripts/check_mod_imgui.sh` drives both rows, the engagement counter and
+the hover tally in a windowed run; `modtest.toml` covers compile, load and
+bind headless.

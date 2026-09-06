@@ -47,6 +47,7 @@
 #include "miniz.h"              /* zip mods (folder or zip, identical) */
 
 #include <stdarg.h>
+#include <stdatomic.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -220,17 +221,27 @@ struct openpete_mod {
                           * what actually recompiles) */
     int   has_src;       /* 0 = binary-only/assets-only: never compiled,
                           * skipped by the hot-reload watch */
-    int   enabled;       /* live-toggle state */
+    /* Live-toggle state. Atomic because an always section makes the
+     * compose thread read it on every present while the tick boundary
+     * writes it. */
+    _Atomic int enabled;
     int   boot_on;       /* in the boot enabled set (vs a deferred-entry
                           * load-all row, which starts disabled) */
     int   entered;       /* openpete_mod_entry has run; load-all rows
                           * defer it to their first enable so a
                           * boot-disabled mod runs zero code */
     int   has_assets;    /* assets/ overlay root exists (boot-scoped) */
-    openpete_mod_ui_body_fn ui_body; /* UI-annex descriptor body
+    /* Atomic for the same reason as enabled, plus hot reload: the swap
+     * happens on the sim thread while the compose thread may be about to
+     * call through the pointer. The old object stays resident, so a body
+     * already running finishes against valid code. */
+    _Atomic openpete_mod_ui_body_fn ui_body; /* UI-annex descriptor body
                                       * (openpete_mod_ui_section symbol,
                                       * resolved at dlopen, ABI-checked;
                                       * NULL = none) */
+    int   ui_always;     /* OPENPETE_MOD_UI_ALWAYS: the body runs from the
+                          * overlay's top-level always pass on every
+                          * present instead of inside the mod's node */
     /* ui_status line block: accumulates within a tick, lazily reset on
      * the mod's first call in a NEW tick — a one-shot line printed at
      * entry or on a level event persists until repainted. */
@@ -311,6 +322,7 @@ static void mod_strip_registrations(struct openpete_mod* mod) {
     openpete_mods_material_remove_owner(mod->id);
     openpete_mods_shader_remove_owner(mod->id);
     mod->ui_body   = NULL;
+    mod->ui_always = 0;
     mod->toggle_fn = NULL;
 }
 
@@ -321,6 +333,7 @@ static void mod_strip_registrations(struct openpete_mod* mod) {
  * section is refused with a log line and the mod itself keeps running. */
 static void mod_resolve_ui_section(struct openpete_mod* mod, void* dl) {
     mod->ui_body = NULL;
+    mod->ui_always = 0;
     const openpete_mod_ui_section_t* d = (const openpete_mod_ui_section_t*)
         mod_dlsym(dl, "openpete_mod_ui_section");
     if (!d) return;
@@ -335,6 +348,7 @@ static void mod_resolve_ui_section(struct openpete_mod* mod, void* dl) {
         return;
     }
     mod->ui_body = d->body;
+    mod->ui_always = (d->flags & OPENPETE_MOD_UI_ALWAYS) ? 1 : 0;
 }
 
 /* Bind the mod's ImGui annex (openpete_imgui.h) before any of its code
@@ -899,6 +913,7 @@ int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out) {
     out->entered     = m->entered;
     out->sim_mutative = mod_is_mutative(m);
     out->has_ui      = m->ui_body != NULL || m->status_n > 0;
+    out->ui_always   = m->ui_always;
     out->has_assets  = m->has_assets;
     out->has_src     = m->has_src;
     out->has_cfg     = m->n_cfg;
@@ -966,20 +981,15 @@ int openpete_mods_cfg_apply(int mod_index, int n,
  * guard makes guest access / game calls / registration refuse inside
  * the callback, exactly as in present hooks: widgets mutate host-side
  * mod state, tick hooks consume it. */
-void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui) {
-    if (i < 0 || i >= s_mod_count || !ui) return;
-    struct openpete_mod* m = &s_mods[i];
-    if (!m->enabled) return;
-    for (int l = 0; l < m->status_n; l++)
-        ui->text("%s", m->status[l]);
-    if (m->status_trunc)
-        ui->text_disabled("... (ui_status block truncated)");
-    if (!m->ui_body) return;
+static void mod_ui_run_body(struct openpete_mod* m, int i,
+                            openpete_mod_ui_body_fn body,
+                            const struct openpete_mod_ui* ui,
+                            int no_input) {
     openpete_mods_in_present = 1;
     /* The body depth is what makes an ImGui annex call legal: the guard
      * wrappers drop a call from anywhere else. */
-    openpete_imgui_body_enter(i);
-    m->ui_body(ui);
+    openpete_imgui_body_enter_always(i, no_input);
+    body(ui);
     openpete_imgui_body_leave();
     openpete_mods_in_present = 0;
     m->imgui_calls = openpete_imgui_calls_take();
@@ -988,6 +998,41 @@ void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui) {
         OPL_INFO_F("mods", "%s: imgui annex engaged (%llu calls)",
                    m->id, (unsigned long long)m->imgui_calls);
     }
+}
+
+void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui) {
+    if (i < 0 || i >= s_mod_count || !ui) return;
+    struct openpete_mod* m = &s_mods[i];
+    if (!m->enabled) return;
+    for (int l = 0; l < m->status_n; l++)
+        ui->text("%s", m->status[l]);
+    if (m->status_trunc)
+        ui->text_disabled("... (ui_status block truncated)");
+    /* An always section draws from the top-level pass instead: a body
+     * inside the mod's tree node would vanish when the node is collapsed,
+     * and drawing it in both places would run it twice per present. */
+    openpete_mod_ui_body_fn body = m->ui_body;
+    if (!body || m->ui_always) return;
+    mod_ui_run_body(m, i, body, ui, 0);
+}
+
+void openpete_mods_ui_draw_always(int i, const struct openpete_mod_ui* ui,
+                                  int no_input) {
+    if (i < 0 || i >= s_mod_count || !ui) return;
+    struct openpete_mod* m = &s_mods[i];
+    if (!m->enabled || !m->ui_always) return;
+    openpete_mod_ui_body_fn body = m->ui_body;
+    if (!body) return;
+    mod_ui_run_body(m, i, body, ui, no_input);
+}
+
+int openpete_mods_ui_always_count(void) {
+    int n = 0;
+    for (int i = 0; i < s_mod_count; i++) {
+        struct openpete_mod* m = &s_mods[i];
+        if (m->ui_always && m->enabled && m->ui_body) n++;
+    }
+    return n;
 }
 
 int openpete_mods_ui_refuse_section(int i, const char* why) {
