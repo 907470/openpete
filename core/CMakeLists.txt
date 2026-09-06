@@ -343,14 +343,78 @@ target_link_libraries(openpete_core PUBLIC openpete_rhi)
 # at rhi_create, and volk.c is compiled ONLY there, so no duplicate symbols).
 # See notes/plans/openpete-imgui-config-overlay.md.
 set(IMGUI_DIR ${CMAKE_SOURCE_DIR}/third_party/imgui)
+
+# dear_bindings (third_party/dear_bindings, generated output vendored from the
+# release matching the pinned ImGui tag) is the C API mods call. The two must
+# describe the same ImGui: a stale dcimgui.h would declare functions the
+# library does not define and lay out ImGuiIO differently, so the version is
+# compared here rather than discovered at link or at runtime. Refresh with
+# scripts/update-dear-bindings.sh.
+set(DCIMGUI_DIR ${CMAKE_SOURCE_DIR}/third_party/dear_bindings)
+file(STRINGS ${DCIMGUI_DIR}/dcimgui.h _dcimgui_ver_line
+     REGEX "^#define +IMGUI_VERSION_NUM +[0-9]+")
+file(STRINGS ${IMGUI_DIR}/imgui.h _imgui_ver_line
+     REGEX "^#define +IMGUI_VERSION_NUM +[0-9]+")
+string(REGEX MATCH "[0-9]+" _dcimgui_ver "${_dcimgui_ver_line}")
+string(REGEX MATCH "[0-9]+" _imgui_ver "${_imgui_ver_line}")
+if(NOT _dcimgui_ver OR NOT _imgui_ver OR NOT _dcimgui_ver STREQUAL _imgui_ver)
+    message(FATAL_ERROR
+        "Dear ImGui version mismatch: third_party/dear_bindings/dcimgui.h "
+        "reports IMGUI_VERSION_NUM '${_dcimgui_ver}', "
+        "third_party/imgui/imgui.h reports '${_imgui_ver}'. "
+        "Run scripts/update-dear-bindings.sh.")
+endif()
+
+# The annex: a function-pointer table over the dear_bindings API, generated
+# from its JSON metadata. openpete_imgui_table.h and openpete_imgui_macros.h
+# are staged into the mod SDK; openpete_imgui_guard.cpp is the engine side,
+# one call-site-checking wrapper per entry.
+set(_imgui_annex_dir ${CMAKE_CURRENT_BINARY_DIR}/imgui_annex)
+set(_imgui_annex_outputs
+    ${_imgui_annex_dir}/openpete_imgui_table.h
+    ${_imgui_annex_dir}/openpete_imgui_macros.h
+    ${_imgui_annex_dir}/openpete_imgui_guard.cpp)
+# The two headers are staged into the mod SDK from games/<game>/.
+set(OPENPETE_IMGUI_ANNEX_DIR ${_imgui_annex_dir} CACHE INTERNAL
+    "Generated ImGui annex headers")
+add_custom_command(
+    OUTPUT  ${_imgui_annex_outputs}
+    COMMAND ${CMAKE_COMMAND} -E make_directory ${_imgui_annex_dir}
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_imgui_annex.py
+            --json ${DCIMGUI_DIR}/dcimgui.json
+            --out-dir ${_imgui_annex_dir}
+    DEPENDS ${DCIMGUI_DIR}/dcimgui.json
+            ${CMAKE_SOURCE_DIR}/tools/gen_imgui_annex.py
+    COMMENT "Generating the ImGui mod annex (gen_imgui_annex.py)"
+    VERBATIM)
+
 add_library(openpete_imgui STATIC
     ${IMGUI_DIR}/imgui.cpp
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
+    # imgui_demo.cpp defines the five ImGui::Show* functions dcimgui.cpp
+    # references; without it the exe does not link.
+    ${IMGUI_DIR}/imgui_demo.cpp
     ${IMGUI_DIR}/backends/imgui_impl_sdl3.cpp
     ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
+    ${DCIMGUI_DIR}/dcimgui.cpp
+    ${_imgui_annex_dir}/openpete_imgui_guard.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime/imgui_guard.c
 )
+target_include_directories(openpete_imgui PRIVATE
+    ${DCIMGUI_DIR}
+    ${_imgui_annex_dir}
+    ${CMAKE_CURRENT_SOURCE_DIR}/include
+    ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+# The Linux exe links -rdynamic. Without this, a prebuilt mod object built
+# against raw dcimgui.h — no annex, no version check, no guard — would resolve
+# ImGui_Begin to the exe at dlopen and drive the context directly, while the
+# same object fails to load on Windows. Hidden on both, so it fails on both.
+set_source_files_properties(
+    ${DCIMGUI_DIR}/dcimgui.cpp
+    ${_imgui_annex_dir}/openpete_imgui_guard.cpp
+    PROPERTIES COMPILE_OPTIONS "$<$<NOT:$<CXX_COMPILER_ID:MSVC>>:-fvisibility=hidden>")
 # volk + vulkan headers are PUBLIC: imgui_impl_vulkan.h #includes volk.h under
 # IMGUI_IMPL_VULKAN_USE_VOLK, so any TU that includes the backend header (the
 # dev UI) needs the same include paths and defines.

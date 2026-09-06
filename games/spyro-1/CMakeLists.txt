@@ -474,6 +474,11 @@ add_custom_target(spyro1_sdk_stage ALL
             ${_mod_sdk_gen}/openpete_sdk_wrappers.h
             ${_mod_sdk_gen}/openpete_game_structs.h
             ${CMAKE_SOURCE_DIR}/core/mods/sdk/openpete_mod_abi.c
+            ${CMAKE_SOURCE_DIR}/core/include/openpete_imgui.h
+            ${CMAKE_SOURCE_DIR}/third_party/dear_bindings/dcimgui.h
+            ${CMAKE_SOURCE_DIR}/third_party/imgui/imconfig.h
+            ${OPENPETE_IMGUI_ANNEX_DIR}/openpete_imgui_table.h
+            ${OPENPETE_IMGUI_ANNEX_DIR}/openpete_imgui_macros.h
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk
     COMMAND ${CMAKE_COMMAND} -E make_directory
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk/shaders

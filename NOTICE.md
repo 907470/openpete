@@ -19,6 +19,7 @@ where noted, the upstream license texts) ships in every release archive.
 | stb_image_write                      | public domain / MIT (dual)                     | https://github.com/nothings/stb                                                             |
 | libco                                | ISC                                            | https://github.com/higan-emu/libco                                                          |
 | xxHash                               | BSD-2-Clause                                   | https://github.com/Cyan4973/xxHash                                                          |
+| dear_bindings (generated C API)      | MIT                                            | https://github.com/dearimgui/dear_bindings                                                  |
 | glad (GL loader)                     | MIT                                            | https://github.com/Dav1dde/glad                                                             |
 | volk (Vulkan loader)                 | MIT                                            | https://github.com/zeux/volk                                                                |
 | Vulkan-Headers                       | Apache-2.0                                     | https://github.com/KhronosGroup/Vulkan-Headers                                              |
