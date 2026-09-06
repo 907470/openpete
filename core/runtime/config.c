@@ -26,12 +26,9 @@
 #include <stdlib.h>
 #include <string.h>
 
-#ifdef _WIN32
-#define OPCFG_SEP '\\'
-#else
+#ifndef _WIN32
 #include <unistd.h>
 #include <limits.h>
-#define OPCFG_SEP '/'
 #endif
 
 /* ------------------------------------------------------------------ */
@@ -120,14 +117,6 @@ static char s_scope_sha[80];
 /* ------------------------------------------------------------------ */
 /* paths                                                              */
 /* ------------------------------------------------------------------ */
-
-static void path_join(char *out, size_t cap, const char *dir, const char *leaf) {
-    size_t n = strlen(dir);
-    if (n && (dir[n - 1] == '/' || dir[n - 1] == '\\'))
-        snprintf(out, cap, "%s%s", dir, leaf);
-    else
-        snprintf(out, cap, "%s%c%s", dir, OPCFG_SEP, leaf);
-}
 
 static int file_exists(const char *p) {
     FILE *f = fopen(p, "rb");
@@ -783,7 +772,7 @@ static void warn_retired_sidecars(const char *dir) {
     static const char *const names[] = { "openpete.opts", "openpete.env" };
     char path[CFG_PATH_MAX];
     for (size_t i = 0; i < sizeof names / sizeof names[0]; i++) {
-        path_join(path, sizeof path, dir, names[i]);
+        openpete_paths_join(path, sizeof path, dir, names[i]);
         if (!file_exists(path)) continue;
         fprintf(stderr, "openpete: config: %s is no longer read; put these "
                         "settings in openpete.toml\n", path);
@@ -1102,13 +1091,13 @@ int openpete_config_apply(int argc, char **argv, int typed_argc,
             }
         } else {
             if (have_exedir)
-                path_join(s_file_path[0], CFG_PATH_MAX, exedir, "openpete.toml");
+                openpete_paths_join(s_file_path[0], CFG_PATH_MAX, exedir, "openpete.toml");
             /* Named, not created: the per-user file is read whether or not
              * it is the write target, and a portable install must not leave
              * an empty directory behind in AppData just for having looked. */
             char userdir[CFG_PATH_MAX];
             if (openpete_paths_user_config_dir(userdir, sizeof userdir, 0) == 0)
-                path_join(s_file_path[1], CFG_PATH_MAX, userdir, "openpete.toml");
+                openpete_paths_join(s_file_path[1], CFG_PATH_MAX, userdir, "openpete.toml");
             s_file_n = 2;
         }
 

@@ -373,6 +373,7 @@ static void path_get_str(const knob_desc_t *k, char *buf, size_t cap) {
         if      (!strcmp(k->id, "disc"))        cli = g_opts->disc_path;
         else if (!strcmp(k->id, "texpack_dir")) cli = g_opts->texpack_dir;
         else if (!strcmp(k->id, "sfxpack_dir")) cli = g_opts->sfxpack_dir;
+        else if (!strcmp(k->id, "controller_db")) cli = g_opts->controller_db;
         else if (!strcmp(k->id, "mods_dir"))    cli = g_opts->mods_dir;
         else if (!strcmp(k->id, "mods"))        cli = g_opts->mods_enabled;
         else if (!strcmp(k->id, "card_dir"))    cli = g_opts->card_dir;
@@ -772,6 +773,15 @@ static const knob_desc_t g_builtin[] = {
 
     { "texpack_dir", "Texture pack dir", "Paths", "--texpack-dir", "OPENPETE_TEXPACK_DIR",
       "HD texture-replacement PNG directory (scanned once at renderer init).",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, path_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "controller_db", "Controller DB", "Paths", "--controller-db", "OPENPETE_CONTROLLER_DB",
+      "Extra SDL controller-mapping database, loaded after the shipped "
+      "gamecontrollerdb.txt and the per-user one and outranking both. A pad "
+      "SDL has no mapping for never reaches the decode path; one line for one "
+      "GUID is enough to fix that. Read once while the gamepad subsystem "
+      "comes up.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, path_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 

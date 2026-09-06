@@ -59,7 +59,7 @@ int openpete_exe_dir(char* out, size_t cap) {
     return 0;
 }
 
-static void path_join(char* out, size_t cap, const char* dir, const char* leaf) {
+void openpete_paths_join(char* out, size_t cap, const char* dir, const char* leaf) {
     size_t n = strlen(dir);
     if (n && (dir[n - 1] == '/' || dir[n - 1] == '\\'))
         snprintf(out, cap, "%s%s", dir, leaf);
@@ -81,7 +81,7 @@ static int dir_exists(const char* p) {
  * Program Files virtualization store, read-only mounts). So ask by doing. */
 static int dir_writable(const char* dir) {
     char probe[OPP_PATH_MAX + 32];
-    path_join(probe, sizeof probe, dir, ".openpete-write-probe");
+    openpete_paths_join(probe, sizeof probe, dir, ".openpete-write-probe");
     FILE* f = fopen(probe, "wb");
     if (!f) return 0;
     fclose(f);
@@ -174,7 +174,7 @@ static int user_openpete_dir(char* out, size_t cap, int create,
                   posix_fallback) != 0)
         return -1;
     char dir[OPP_PATH_MAX + 16];
-    path_join(dir, sizeof dir, base, "openpete");
+    openpete_paths_join(dir, sizeof dir, base, "openpete");
     if (strlen(dir) >= cap) {
         OPL_ERROR_F("paths", "%s", "per-user openpete path too long");
         return -1;
@@ -219,7 +219,7 @@ static void hint_legacy_state(const char* leaf, const char* portable_dir) {
     char base[OPP_PATH_MAX];
     if (user_state_dir(base, sizeof base, 0) != 0) return;
     char legacy[OPP_PATH_MAX + 16];
-    path_join(legacy, sizeof legacy, base, leaf);
+    openpete_paths_join(legacy, sizeof legacy, base, leaf);
     if (!dir_exists(legacy)) return;
     OPL_INFO_F("paths", "%s now live in %s; the previous location %s still "
                         "holds the old files", leaf, portable_dir, legacy);
@@ -235,7 +235,7 @@ int openpete_paths_state_dir(const char* leaf, char* out, size_t cap, int create
     }
 
     char dir[OPP_PATH_MAX + 16];
-    path_join(dir, sizeof dir, base, leaf);
+    openpete_paths_join(dir, sizeof dir, base, leaf);
     if (strlen(dir) >= cap) {
         OPL_ERROR_F("paths", "%s-dir path too long", leaf);
         return -1;
@@ -260,7 +260,7 @@ static int adopt_install_dir(const char* leaf, char* out, size_t cap) {
     char base[OPP_PATH_MAX];
     if (openpete_exe_dir(base, sizeof base) != 0) return 0;
     char dir[OPP_PATH_MAX + 16];
-    path_join(dir, sizeof dir, base, leaf);
+    openpete_paths_join(dir, sizeof dir, base, leaf);
     if (!dir_exists(dir) || strlen(dir) >= cap) return 0;
     if (!dir_writable(dir)) return 0;
     snprintf(out, cap, "%s", dir);
@@ -277,7 +277,7 @@ int openpete_paths_data_dir(const char* leaf, char* out, size_t cap, int create)
     }
 
     char dir[OPP_PATH_MAX + 16];
-    path_join(dir, sizeof dir, base, leaf);
+    openpete_paths_join(dir, sizeof dir, base, leaf);
     if (strlen(dir) >= cap) {
         OPL_ERROR_F("paths", "%s-dir path too long", leaf);
         return -1;

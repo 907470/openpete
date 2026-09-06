@@ -726,6 +726,13 @@ typedef struct openpete_options {
      * <exe>/assets/sfx. Mods' assets/sfx/ always join. */
     const char* sfxpack_dir;
 
+    /* --controller-db PATH: an extra SDL controller-mapping database, loaded
+     * after the shipped and per-user ones and so outranking both. NULL =
+     * unset (defer to the OPENPETE_CONTROLLER_DB env). Host input only;
+     * a mapping decides which physical button reaches the decode path, never
+     * what the guest reads for a given decoded button. */
+    const char* controller_db;
+
     /* --mods-dir PATH: mods root (each subdir with a mod.toml is a mod;
      * enabled.txt fixes the order = priority). NULL = unset (defer to
      * env OPENPETE_MODS_DIR, else <exe>/mods). A missing directory means

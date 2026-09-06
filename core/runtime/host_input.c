@@ -2,6 +2,7 @@
 #include "openpete_input_log.h"
 #include "openpete_keymap.h"
 #include "openpete_log.h"
+#include "openpete_paths.h"
 #include "openpete_rumble.h"
 
 #include "PsyX/PsyX_public.h"
@@ -276,6 +277,7 @@ static SDL_Joystick* s_vpads[OPENPETE_PAD_SLOTS];
 #define s_vpad (s_vpads[0])
 static int s_vpad_state = -1;   /* -1 unresolved, 0 off, else the pad count */
 
+
 /* ---- rumble recorder (the vibration oracle) -----------------------------
  *
  * Vibration has no pixels and no gameplay-state bytes, so the golden, oracle
@@ -488,6 +490,226 @@ typedef struct {
 
 static host_sdl_state_t s_sdl_state[2];
 static SDL_AtomicInt    s_sdl_state_cur;   /* index of the readable buffer */
+
+/* ---- controller mapping database ------------------------------------- */
+
+/* A pad SDL has no mapping for is not a gamepad as far as SDL_IsGamepad is
+ * concerned, so it never reaches the decode path at all. Mappings come from
+ * files, and the whole point of loading them here is that a user can add one
+ * without rebuilding or repacking anything.
+ *
+ * Precedence, lowest first. SDL's compiled-in database sits below every file;
+ * inline SDL_GAMECONTROLLERCONFIG mappings sit above every file, because SDL
+ * gives those PRIORITY_USER while every file load is PRIORITY_API. Among
+ * files, SDL overwrites an existing GUID when the incoming priority is equal
+ * or higher — so for files, load order alone is the precedence:
+ *
+ *   1  SDL's compiled-in database
+ *   2  the file named by SDL_HINT_GAMECONTROLLERCONFIG_FILE, if the user
+ *      exported it (SDL loads this itself during gamepad init)
+ *   3  <exe dir>/gamecontrollerdb.txt, the copy shipped in the release
+ *   4  <user config dir>/gamecontrollerdb.txt, the user's own additions
+ *   5  --controller-db / OPENPETE_CONTROLLER_DB / controller_db
+ *
+ * Every file is merged into one table, so a user file holding a single line
+ * for a single pad is enough; there is no need to copy the shipped database
+ * to change one entry. Step 3 is skipped when the user set the hint, so an
+ * explicit hint file means what it says rather than being half-overridden.
+ *
+ * Loading happens after the gamepad subsystem is up, which is also what makes
+ * a late-added mapping usable: SDL emits an ADDED event for a joystick that
+ * gains a mapping it did not have, and the pad opens on the next poll.
+ *
+ * Note for anyone adding a caller: SDL_ReloadGamepadMappings() rebuilds the
+ * table from the compiled-in database plus the two hints only, dropping
+ * everything loaded here. It must be followed by another call to this. */
+
+#define MAP_PATH_MAX   1024
+#define MAP_FILES_MAX  4
+
+static struct {
+    char path[MAP_PATH_MAX];
+    const char* what;   /* the role, for the log: "shipped", "user", ... */
+} s_map_file[MAP_FILES_MAX];
+static int s_map_file_n;
+
+static bool map_file_exists(const char* path)
+{
+    SDL_PathInfo info;
+    return SDL_GetPathInfo(path, &info) && info.type == SDL_PATHTYPE_FILE;
+}
+
+/* Loads one database, recording it as a provenance source when it lands.
+ * Returns whether it loaded, so a caller can fall back to another location. */
+static bool map_load_file(const char* path, const char* what)
+{
+    if (!path || !*path) return false;
+    if (!map_file_exists(path)) {
+        OPL_INFO_F("input", "mappings: no %s database at %s", what, path);
+        return false;
+    }
+    int added = SDL_AddGamepadMappingsFromFile(path);
+    if (added < 0) {
+        /* Present but unreadable or malformed: the user meant to be heard,
+         * so this is louder than a file that simply is not there. */
+        OPL_WARN_F("input", "mappings: %s database %s failed to load: %s",
+                   what, path, SDL_GetError());
+        return false;
+    }
+    OPL_INFO_F("input", "mappings: %s database %s (+%d)", what, path, added);
+    if (s_map_file_n < MAP_FILES_MAX) {
+        SDL_strlcpy(s_map_file[s_map_file_n].path, path, MAP_PATH_MAX);
+        s_map_file[s_map_file_n].what = what;
+        s_map_file_n++;
+    }
+    return true;
+}
+
+/* Does `line` map `guid` on the platform this build runs on? A mapping whose
+ * platform field names a different OS is parsed and discarded by SDL, so a
+ * file that merely mentions the GUID is not the file that supplied it. */
+static bool map_line_matches(const char* line, const char* guid)
+{
+    if (SDL_strncasecmp(line, guid, 32) != 0 || line[32] != ',') return false;
+    const char* plat = SDL_strstr(line, "platform:");
+    if (!plat) return true;   /* no platform field: applies everywhere */
+    plat += 9;
+    const char* self = SDL_GetPlatform();
+    size_t n = SDL_strlen(self);
+    return SDL_strncmp(plat, self, n) == 0 && (plat[n] == ',' || plat[n] == '\0' ||
+                                               plat[n] == '\r' || plat[n] == '\n');
+}
+
+/* Which loaded file last supplied `guid`, or NULL when the mapping can only
+ * have come from SDL's compiled-in database.
+ *
+ * SDL exposes no provenance for a mapping, so the files are re-scanned back
+ * to front and the first hit wins — the same order that decided the table.
+ * Rescanning is affordable because it runs once, for the pads attached at
+ * that moment, and answers the question a bug report actually turns on:
+ * whether the user's own file is the one being used. */
+static const char* map_source_for(const char* guid)
+{
+    for (int i = s_map_file_n - 1; i >= 0; i--) {
+        SDL_IOStream* io = SDL_IOFromFile(s_map_file[i].path, "rb");
+        if (!io) continue;
+        char line[1024];
+        size_t len = 0;
+        bool hit = false;
+        for (;;) {
+            char c;
+            if (SDL_ReadIO(io, &c, 1) != 1) c = '\n';
+            else if (c != '\n') {
+                if (len + 1 < sizeof line) line[len++] = c;
+                continue;
+            }
+            line[len] = '\0';
+            if (len && map_line_matches(line, guid)) { hit = true; break; }
+            len = 0;
+            if (SDL_GetIOStatus(io) == SDL_IO_STATUS_EOF) break;
+        }
+        SDL_CloseIO(io);
+        if (hit) return s_map_file[i].what;
+    }
+    return NULL;
+}
+
+/* One device, reported the way map_log_pads reports the boot-present ones. */
+static void map_log_one(SDL_JoystickID id)
+{
+    char guid[33] = "";
+    SDL_GUID g = SDL_GetJoystickGUIDForID(id);
+    SDL_GUIDToString(g, guid, sizeof guid);
+    const char* name = SDL_GetJoystickNameForID(id);
+    char* mapping = SDL_GetGamepadMappingForGUID(g);
+    if (mapping) {
+        const char* src = map_source_for(guid);
+        OPL_INFO_F("input", "pad %s \"%s\" mapped from %s",
+                   guid, name ? name : "?", src ? src : "SDL's built-in database");
+        /* The resolved mapping itself, not just its origin: "my file is
+         * loaded" and "my file is what this pad uses" are different claims,
+         * and only the second one answers a bug report. */
+        OPL_INFO_F("input", "pad %s mapping: %.240s", guid, mapping);
+        SDL_free(mapping);
+    } else {
+        OPL_WARN_F("input", "pad %s \"%s\" has NO mapping — add a line for "
+                            "this GUID to the user database",
+                   guid, name ? name : "?");
+    }
+}
+
+/* One line per attached pad: what SDL sees, and where its mapping came from.
+ * A count of mappings loaded per file would not answer either question — the
+ * loader keeps only the lines whose platform field matches, so a count says
+ * nothing about whose line won for the pad in the user's hands. */
+static void map_log_pads(void)
+{
+    int n = 0;
+    SDL_JoystickID* ids = SDL_GetJoysticks(&n);
+    if (!ids) return;
+    if (n == 0) OPL_INFO_F("input", "mappings: no joysticks attached");
+    for (int i = 0; i < n; i++) map_log_one(ids[i]);
+    SDL_free(ids);
+}
+
+void openpete_host_input_pad_arrived(unsigned int joystick_id)
+{
+    /* Deliberately hung off JOYSTICK_ADDED rather than GAMEPAD_ADDED: the
+     * latter fires only for a device SDL already has a mapping for, which is
+     * exactly the device nobody needs a diagnostic about. */
+    map_log_one((SDL_JoystickID)joystick_id);
+}
+
+void openpete_host_input_load_mappings(const char* cli_path)
+{
+    const char* hint = SDL_GetHint(SDL_HINT_GAMECONTROLLERCONFIG_FILE);
+    /* Read, never written. An exported variable already outranks SDL_SetHint
+     * (which fails outright rather than replacing it), so honouring the user
+     * here is a matter of not fighting them for the shipped file's sake. */
+    if (hint && *hint)
+        OPL_INFO_F("input", "mappings: SDL_GAMECONTROLLERCONFIG_FILE=%s "
+                            "(loaded by SDL; shipped database skipped)", hint);
+
+    char exedir[MAP_PATH_MAX] = "";
+    char shipped[MAP_PATH_MAX] = "";
+    if (!(hint && *hint)) {
+        bool got = false;
+        if (openpete_exe_dir(exedir, sizeof exedir) == 0) {
+            openpete_paths_join(shipped, sizeof shipped, exedir, "gamecontrollerdb.txt");
+            got = map_load_file(shipped, "shipped");
+        }
+        /* A packaged build stages the database next to the executable; a build
+         * tree keeps it at the repo root, which is where a dev run is launched
+         * from. Falling back to the working directory keeps those runs on the
+         * same mappings the release has. */
+        if (!got) map_load_file("gamecontrollerdb.txt", "shipped (working directory)");
+    }
+
+    char userdir[MAP_PATH_MAX] = "";
+    if (openpete_paths_user_config_dir(userdir, sizeof userdir, 0) == 0) {
+        char user[MAP_PATH_MAX];
+        openpete_paths_join(user, sizeof user, userdir, "gamecontrollerdb.txt");
+        /* Under the portable layout the config directory IS the exe directory,
+         * so this is the file already loaded above. Editing that one in place
+         * is the supported route there; loading it twice would only produce a
+         * second, confusing log line. */
+        if (SDL_strcmp(user, shipped) != 0)
+            map_load_file(user, "user");
+    }
+
+    if (!cli_path || !*cli_path) cli_path = SDL_getenv("OPENPETE_CONTROLLER_DB");
+    if (cli_path && *cli_path) map_load_file(cli_path, "--controller-db");
+
+    /* Steam exports this for its virtual pad, and SDL ranks inline mappings
+     * above every file — so "my file is ignored" has exactly one explanation
+     * that no amount of file logging would reveal. */
+    const char* inline_cfg = SDL_GetHint(SDL_HINT_GAMECONTROLLERCONFIG);
+    if (inline_cfg && *inline_cfg)
+        OPL_INFO_F("input", "mappings: SDL_GAMECONTROLLERCONFIG is set — its "
+                            "inline mappings outrank every file above");
+
+    map_log_pads();
+}
 
 /* First connected gamepad, matching the binding layer's "first pad wins". */
 static SDL_Gamepad* host_first_gamepad(void)

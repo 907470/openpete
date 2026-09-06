@@ -44,6 +44,10 @@ extern "C" {
  * Returns 0 on success, -1 if it cannot be determined. */
 int openpete_exe_dir(char* out, size_t cap);
 
+/* <dir><sep><leaf>, using the platform separator and tolerating a `dir` that
+ * already ends in one. Truncates rather than overruns. */
+void openpete_paths_join(char* out, size_t cap, const char* dir, const char* leaf);
+
 /* Select the layout: 1 portable, 0 user, -1 platform default. Called by
  * the config reader for a `portable` directive; invalidates the cached
  * resolution, so it may run after a probe. */

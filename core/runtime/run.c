@@ -391,6 +391,10 @@ static bool openpete_handle_event(SDL_Event* ev) {
     /* Dev overlay sees every event (imgui io bookkeeping; frames only run
      * while it is open), including ones consumed below. */
     openpete_devui_process_event(ev);
+    /* A device arriving after the mapping databases loaded still resolves
+     * against them; say which one supplied it, or that none did. */
+    if (ev->type == SDL_EVENT_JOYSTICK_ADDED)
+        openpete_host_input_pad_arrived(ev->jdevice.which);
     /* Any mouse activity re-arms the idle-hide timer applied in the host
      * loop. Buttons and the wheel count as well as motion: a user clicking
      * without moving is still using the pointer. */
@@ -2021,6 +2025,11 @@ static int run_host_init(const openpete_options_t* opts) {
     /* PsyX_Sys_InitialiseInput just wrote its hardcoded pad maps; replace
      * them with the resolved [keys.pad] bindings. */
     stamp_psx_pad_bindings();
+
+    /* The gamepad subsystem is up now, which is the earliest point a mapping
+     * can be added and the latest one at which it still reaches a pad that
+     * was already attached. */
+    openpete_host_input_load_mappings(opts->controller_db);
 
     /* App icon decoded at build time from the PSX save-file header
      * (the red gem from the BIOS memory-card screen). The Win32 .rc

@@ -33,6 +33,20 @@ typedef struct openpete_pad_snapshot {
  * decodes and injects). Diagnostic A/B only. */
 int openpete_host_input_legacy(void);
 
+/* Loads the controller-mapping databases and logs what each attached pad
+ * resolved to. Call once, after the gamepad subsystem is up: a mapping added
+ * before it exists is discarded, and one added after still reaches a pad that
+ * is already attached. `cli_path` is --controller-db, NULL when unset (the
+ * OPENPETE_CONTROLLER_DB environment variable is the fallback).
+ *
+ * Runs on both input paths — the legacy one needs mappings just as much. */
+void openpete_host_input_load_mappings(const char* cli_path);
+
+/* Reports one device's mapping provenance as it arrives, for the pads that
+ * were not attached when the databases loaded. Hung off JOYSTICK_ADDED, not
+ * GAMEPAD_ADDED: the latter fires only for a device SDL can already map. */
+void openpete_host_input_pad_arrived(unsigned int joystick_id);
+
 /* Producer. Decodes live SDL input (as of the last event pump) and publishes
  * it. `alt_held` suppresses the sample the way PsyX_UpdateInput's own Alt gate
  * does, so Alt+Enter cannot register as Start; a suppressed sample republishes

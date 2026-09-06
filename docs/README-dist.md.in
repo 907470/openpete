@@ -34,6 +34,7 @@ Windows keeps everything in the program's own folder, next to
 
 ```
 openpete.toml   your settings
+gamecontrollerdb.txt  controller mappings (see below)
 cards/          memory cards (the game's own saves)
 states/         savestate slots
 logs/           openpete.log — attach to a bug report
@@ -49,6 +50,7 @@ program itself:
 
 ```
 ~/.config/openpete/openpete.toml   your settings
+~/.config/openpete/gamecontrollerdb.txt   your controller mappings (see below)
 ~/.local/state/openpete/cards/     memory cards (the game's own saves)
 ~/.local/state/openpete/states/    savestate slots
 ~/.local/state/openpete/logs/      openpete.log — attach to a bug report
@@ -62,6 +64,36 @@ Set `portable = true` at the top of `openpete.toml` to keep all of them
 in the program's own folder instead. That works for the `.tar.xz`; the
 AppImage is a read-only file, so it always uses the paths above.
 <!-- @end -->
+
+## Controllers
+
+Most pads work with no setup. If yours is not recognised, or its buttons
+are in the wrong places, you can add a mapping without touching anything
+that ships with the game.
+
+<!-- @windows -->
+Edit `gamecontrollerdb.txt` next to `openpete-spyro1.exe` and add a line
+for your pad. Keep a copy of that line somewhere else: extracting a new
+release over this folder replaces the file.
+<!-- @end -->
+<!-- @linux -->
+Create `~/.config/openpete/gamecontrollerdb.txt` and put a line for your
+pad in it. One line is enough — it is merged with the mappings that ship
+with the game, and yours wins wherever both describe the same pad, so
+there is no need to copy the whole file. It also survives upgrades,
+which is why it is the right place to put it even though the AppImage
+also carries its own copy.
+<!-- @end -->
+
+Mappings come from https://github.com/mdqinc/SDL_GameControllerDB, which
+documents how to generate a line for a pad that has none. Two other
+routes work if you already use them: `SDL_GAMECONTROLLERCONFIG_FILE`
+names a mapping file to load instead of the one that ships here, and
+`--controller-db PATH` loads one more file on top of everything above.
+
+`logs/openpete.log` records every mapping file that was looked for, and
+for each pad the mapping that was actually used and where it came from —
+worth reading before filing a controller bug.
 
 ## Notes
 

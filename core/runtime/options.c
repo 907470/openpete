@@ -405,6 +405,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             (default: env OPENPETE_SFXPACK_DIR, else assets/sfx next to the exe)\n"
         "  --texpack-dir PATH         directory of HD texture-replacement PNGs (default: env OPENPETE_TEXPACK_DIR,\n"
         "                             else <exe>/assets/textures/). Native renderer only.\n"
+        "  --controller-db PATH       extra SDL controller-mapping database, loaded after the shipped one and\n"
+        "                             the per-user gamecontrollerdb.txt, so it outranks both (default: env\n"
+        "                             OPENPETE_CONTROLLER_DB, else neither).\n"
         "  --mods-dir PATH            mods root: each subdir with a mod.toml is a mod, compiled on load;\n"
         "                             enabled.txt fixes order (= priority). Default: env OPENPETE_MODS_DIR,\n"
         "                             else <exe>/mods. No directory = no mods, byte-identical vanilla.\n"
@@ -619,6 +622,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->record_cfr          = 0.0;   /* 0 = true VFR (wall-clock PTS) */
     opts->record_frames       = 0;     /* 0 = record until the run ends */
     opts->texpack_dir         = NULL;  /* NULL = unset; env OPENPETE_TEXPACK_DIR / built-in dir */
+    opts->controller_db       = NULL;  /* NULL = unset; env OPENPETE_CONTROLLER_DB */
     opts->sfxpack_dir         = NULL;  /* NULL = unset; env OPENPETE_SFXPACK_DIR / built-in dir */
     opts->mods_dir            = NULL;  /* NULL = unset; env OPENPETE_MODS_DIR / <exe>/mods */
     opts->mods_enabled        = NULL;  /* NULL = unset; env OPENPETE_MODS / mods/enabled.txt */
@@ -1256,6 +1260,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--texpack-dir") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->texpack_dir = v; i++;
+        } else if (strcmp(a, "--controller-db") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->controller_db = v; i++;
         } else if (strcmp(a, "--mods-dir") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->mods_dir = v; i++;
