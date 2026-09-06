@@ -20,6 +20,9 @@
  */
 
 #include "imgui.h"
+/* The error bracket around a mod UI section body uses the recovery API and
+ * the context's error callback, both internal. */
+#include "imgui_internal.h"
 #include "imgui_impl_sdl3.h"
 #include "imgui_impl_vulkan.h"
 
@@ -564,6 +567,9 @@ static void mod_row_tooltip(const openpete_mods_menu_info_t *mi)
                             "its level");
     if (mi->enabled && !mi->has_ui && !mi->has_cfg)
         ImGui::TextDisabled("no controls registered");
+    if (mi->imgui_calls)
+        ImGui::TextDisabled("imgui annex: %llu calls last present",
+                            (unsigned long long)mi->imgui_calls);
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
 }
@@ -706,6 +712,91 @@ static void draw_mod_config_rows(int mod_index,
     }
 }
 
+/* ── Mod UI section bracket ──────────────────────────────────────────
+ * A body is mod C driving the engine's ImGui context directly (the annex,
+ * openpete_imgui.h). Dear ImGui reports unbalanced Begin/End, Push/Pop and
+ * similar misuse as recoverable user errors; the bracket stores the stack
+ * sizes before the body and recovers to them after, so a mod that leaves a
+ * window open does not swallow the panel or the frame. The body also holds
+ * a writable ImGuiStyle and ImGuiIO, so both are snapshotted and put back.
+ * ImGui's own reaction is silenced: the assert is inert under NDEBUG and
+ * would abort the process in linux-debug, and the tooltip would paint over
+ * the panel, so the engine logs the error instead. A body that errors on
+ * three consecutive presents loses its section for the session.
+ *
+ * io.FontGlobalScale is not in the snapshot: it is compiled out under
+ * IMGUI_DISABLE_OBSOLETE_FUNCTIONS, and its replacement style.FontScaleMain
+ * rides the style copy. */
+static bool s_mod_body_errored = false;
+
+static void mod_body_error_cb(ImGuiContext *, void *user_data,
+                              const char *msg)
+{
+    s_mod_body_errored = true;
+    OPL_ERROR_F("mods", "%s: Dear ImGui error inside the mod's UI section: "
+                "%s", (const char *)user_data, msg ? msg : "");
+}
+
+/* Consecutive presents whose body errored, per mod index. Indices are
+ * fixed for the session (the loader loads its whole set at boot); an index
+ * past the array is simply not counted, so the loader's own cap does not
+ * have to be mirrored here. */
+static int s_mod_body_err_streak[64];
+
+static void draw_mod_section_bracketed(int mod_index, const char *mod_id)
+{
+    ImGuiContext &g  = *ImGui::GetCurrentContext();
+    ImGuiIO      &io = ImGui::GetIO();
+
+    ImGuiErrorRecoveryState recovery;
+    ImGui::ErrorRecoveryStoreState(&recovery);
+
+    const ImGuiStyle       style_save    = g.Style;
+    const char *const      ini_save      = io.IniFilename;
+    const char *const      log_save      = io.LogFilename;
+    const ImGuiConfigFlags flags_save    = io.ConfigFlags;
+    void *const            user_save     = io.UserData;
+    void *const            renderer_save = io.BackendRendererUserData;
+    void *const            platform_save = io.BackendPlatformUserData;
+    const bool             assert_save   = io.ConfigErrorRecoveryEnableAssert;
+    const bool             tooltip_save  = io.ConfigErrorRecoveryEnableTooltip;
+    ImGuiErrorCallback     cb_save       = g.ErrorCallback;
+    void *const            cb_user_save  = g.ErrorCallbackUserData;
+
+    io.ConfigErrorRecoveryEnableAssert  = false;
+    io.ConfigErrorRecoveryEnableTooltip = false;
+    g.ErrorCallback         = mod_body_error_cb;
+    g.ErrorCallbackUserData = (void *)mod_id;
+    s_mod_body_errored      = false;
+
+    openpete_mods_ui_draw(mod_index, &s_mod_ui);
+
+    ImGui::ErrorRecoveryTryToRecoverState(&recovery);
+
+    g.Style                             = style_save;
+    io.IniFilename                      = ini_save;
+    io.LogFilename                      = log_save;
+    io.ConfigFlags                      = flags_save;
+    io.UserData                         = user_save;
+    io.BackendRendererUserData          = renderer_save;
+    io.BackendPlatformUserData          = platform_save;
+    io.ConfigErrorRecoveryEnableAssert  = assert_save;
+    io.ConfigErrorRecoveryEnableTooltip = tooltip_save;
+    g.ErrorCallback                     = cb_save;
+    g.ErrorCallbackUserData             = cb_user_save;
+
+    if (mod_index < 0 || mod_index >= IM_ARRAYSIZE(s_mod_body_err_streak))
+        return;
+    if (!s_mod_body_errored) {
+        s_mod_body_err_streak[mod_index] = 0;
+        return;
+    }
+    if (++s_mod_body_err_streak[mod_index] >= 3)
+        openpete_mods_ui_refuse_section(
+            mod_index, "its body reported a Dear ImGui error on three "
+                       "consecutive presents");
+}
+
 static bool mod_row_matches(const ImGuiTextFilter &f,
                             const openpete_mods_menu_info_t *mi)
 {
@@ -763,7 +854,7 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
                                   ImGuiTreeNodeFlags_SpanAvailWidth)) {
                 mod_row_tooltip(&mi);
                 draw_mod_config_rows(i, &mi);
-                if (mi.has_ui) openpete_mods_ui_draw(i, &s_mod_ui);
+                if (mi.has_ui) draw_mod_section_bracketed(i, mi.id);
                 if (has_levels) draw_custom_level_rows(mi.id);
                 ImGui::TreePop();
             } else {

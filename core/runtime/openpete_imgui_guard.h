@@ -45,6 +45,18 @@ void openpete_imgui_body_leave(void);
  * count reported is the count for that body. */
 uint64_t openpete_imgui_calls_take(void);
 
+/* Resolve a mod's annex descriptor (the openpete_imgui_annex symbol, see
+ * core/include/openpete_imgui.h) against the engine's table and, when the
+ * two agree, write the table into the mod's slot. @p annex is that symbol,
+ * @p path the object it came from; both strings are used for the log line
+ * only. Returns 1 when the mod may run — bound, or no descriptor at all,
+ * which means the mod did not opt in — and 0 when the descriptor disagrees
+ * with this engine, in which case the mod must be disabled: its table
+ * pointer stays null and its first ImGui_* call from any hook would
+ * dereference it. */
+int openpete_imgui_annex_bind(const void* annex, const char* mod_id,
+                              const char* path);
+
 /* Mod id for a refusal message. The loader installs the resolver, which owns
  * the mapping from index to id; until then the index is printed. The returned
  * pointer must stay valid for the process lifetime. */

@@ -41,6 +41,7 @@
 #include "openpete_log.h"
 #include "openpete_host_input.h"
 #include "openpete_keymap.h"     /* [keys.mod.<id>] binding overrides */
+#include "../runtime/openpete_imgui_guard.h" /* ImGui annex bind */
 #include "../host/sha256.h"     /* content-hash build cache key */
 #include "../host/host_spawn.h" /* silent compiler spawn + cc identity */
 #include "miniz.h"              /* zip mods (folder or zip, identical) */
@@ -238,6 +239,8 @@ struct openpete_mod {
     int      status_trunc;
     unsigned status_tick;
     openpete_mod_toggle_fn toggle_fn; /* live-toggle notification */
+    uint64_t imgui_calls;  /* ImGui annex calls the last body made */
+    int      imgui_engaged;/* the first non-zero count has been logged */
     void* dl;
 };
 
@@ -332,6 +335,20 @@ static void mod_resolve_ui_section(struct openpete_mod* mod, void* dl) {
         return;
     }
     mod->ui_body = d->body;
+}
+
+/* Bind the mod's ImGui annex (openpete_imgui.h) before any of its code
+ * runs. No descriptor: the mod did not opt in and nothing is bound. A
+ * descriptor that disagrees with the engine's table disables the mod the
+ * way a failed abi check does — a section-only refusal would leave a live
+ * mod holding a null table, and its first ImGui_* call from any hook would
+ * dereference it. Each hot-reload object binds its own copy, since the
+ * pointer lives in the object. */
+static int mod_resolve_imgui_annex(struct openpete_mod* mod, void* dl,
+                                   const char* path) {
+    const void* d = mod_dlsym(dl, "openpete_imgui_annex");
+    if (!d) return 0;
+    return openpete_imgui_annex_bind(d, mod->id, path) ? 0 : -1;
 }
 
 static const openpete_sdk_symbol_t* s_symbols = NULL;
@@ -646,7 +663,7 @@ static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
                      char* so_path, size_t so_path_len);
 static int mod_compute_key(const char* mod_dir, const char* sdk_dir,
                            char key_out[65]);
-static void sdk_prefix_drop(void);
+static void sdk_prefix_recheck(const char* sdk_dir);
 static int mods_sdk_present(const char* sdk_dir);
 static void mods_sdk_missing_notice(const char* sdk_dir);
 static int config_compute_key(const char* mod_dir, char key_out[65]);
@@ -739,6 +756,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
         return;
     }
     if (mod_check_abi(dl, mod->id, hot_path) != 0) return;
+    if (mod_resolve_imgui_annex(mod, dl, hot_path) != 0) return;
     mod_entry_fn entry = (mod_entry_fn)mod_dlsym(dl, "openpete_mod_entry");
     if (!entry) {
         OPL_ERROR_F("mods", "%s: reload object has no openpete_mod_entry "
@@ -801,7 +819,8 @@ static void hot_reload_poll(void) {
     if (!s_hot) return;
     static unsigned s_cnt = 0;
     if (++s_cnt % 64u) return;
-    sdk_prefix_drop(); /* an SDK edit must show up in this round's keys */
+    sdk_prefix_recheck(s_sdk_dir); /* an SDK edit must show up in
+                                    * this round's keys */
     for (int i = 0; i < s_mod_count; i++) {
         struct openpete_mod* mod = &s_mods[i];
         /* Deferred-entry rows (never entered) reload nothing: no code
@@ -883,6 +902,7 @@ int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out) {
     out->has_assets  = m->has_assets;
     out->has_src     = m->has_src;
     out->has_cfg     = m->n_cfg;
+    out->imgui_calls = m->imgui_calls;
     return 1;
 }
 
@@ -956,8 +976,29 @@ void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui) {
         ui->text_disabled("... (ui_status block truncated)");
     if (!m->ui_body) return;
     openpete_mods_in_present = 1;
+    /* The body depth is what makes an ImGui annex call legal: the guard
+     * wrappers drop a call from anywhere else. */
+    openpete_imgui_body_enter(i);
     m->ui_body(ui);
+    openpete_imgui_body_leave();
     openpete_mods_in_present = 0;
+    m->imgui_calls = openpete_imgui_calls_take();
+    if (m->imgui_calls && !m->imgui_engaged) {
+        m->imgui_engaged = 1;
+        OPL_INFO_F("mods", "%s: imgui annex engaged (%llu calls)",
+                   m->id, (unsigned long long)m->imgui_calls);
+    }
+}
+
+int openpete_mods_ui_refuse_section(int i, const char* why) {
+    if (i < 0 || i >= s_mod_count) return -1;
+    struct openpete_mod* m = &s_mods[i];
+    if (!m->ui_body) return 0;
+    m->ui_body = NULL;
+    m->imgui_calls = 0;  /* the panel's "last present" count is gone too */
+    OPL_ERROR_F("mods", "%s: UI section refused for this session — %s",
+                m->id, why ? why : "");
+    return 0;
 }
 
 int openpete_mods_set_mod_enabled(const char* id, int on) {
@@ -1912,8 +1953,45 @@ static int mod_list_srcs(const char* mod_dir,
 static openpete_sha256_ctx s_sdk_prefix;
 static char                s_sdk_prefix_dir[MOD_PATH_MAX];
 static int                 s_sdk_prefix_ok = 0;
+static uint64_t            s_sdk_prefix_stamp;
 
-static void sdk_prefix_drop(void) { s_sdk_prefix_ok = 0; }
+static const char* const sdk_inputs[] = {
+    "openpete_mod_api.h", "openpete_mod_ui.h", "openpete_sdk_symbols.h",
+    "openpete_sdk_wrappers.h", "psx_runtime.h",
+    "openpete_game_structs.h",
+    "openpete_mod_abi.c",
+    "openpete_imgui.h", "openpete_imgui_table.h",
+    "openpete_imgui_macros.h", "dcimgui.h", "imconfig.h",
+};
+#define SDK_INPUT_COUNT (sizeof sdk_inputs / sizeof sdk_inputs[0])
+
+/* mtime and size of every hashed input, folded into one number. The
+ * digest is what decides a build key; this only decides whether the
+ * digest is recomputed. */
+static uint64_t sdk_prefix_stamp(const char* sdk_dir) {
+    uint64_t h = 1469598103934665603ull;
+    for (size_t i = 0; i < SDK_INPUT_COUNT; i++) {
+        char p[MOD_PATH_MAX];
+        snprintf(p, sizeof p, "%s/%s", sdk_dir, sdk_inputs[i]);
+        struct stat st;
+        uint64_t v = 0;
+        if (stat(p, &st) == 0)
+            v = (uint64_t)st.st_mtime * 1000003ull + (uint64_t)st.st_size;
+        h = (h ^ v) * 1099511628211ull;
+    }
+    return h;
+}
+
+/* Drop the cached prefix only when one of its inputs moved. The SDK half
+ * is about 600 KB and hashing it costs a few milliseconds; the hot-reload
+ * watch runs on the sim thread every 64 ticks, where stat()ing twelve
+ * files instead is microseconds. */
+static void sdk_prefix_recheck(const char* sdk_dir) {
+    if (!s_sdk_prefix_ok) return;
+    if (strcmp(s_sdk_prefix_dir, sdk_dir) != 0 ||
+        sdk_prefix_stamp(sdk_dir) != s_sdk_prefix_stamp)
+        s_sdk_prefix_ok = 0;
+}
 
 static const openpete_sha256_ctx* sdk_prefix(const char* sdk_dir) {
     if (s_sdk_prefix_ok && strcmp(s_sdk_prefix_dir, sdk_dir) == 0)
@@ -1926,19 +2004,14 @@ static const openpete_sha256_ctx* sdk_prefix(const char* sdk_dir) {
         const char* ident = mods_cc_identity();
         openpete_sha256_update(&hc, ident, strlen(ident));
     }
-    static const char* const sdk_inputs[] = {
-        "openpete_mod_api.h", "openpete_mod_ui.h", "openpete_sdk_symbols.h",
-        "openpete_sdk_wrappers.h", "psx_runtime.h",
-        "openpete_game_structs.h",
-        "openpete_mod_abi.c",
-    };
-    for (size_t i = 0; i < sizeof sdk_inputs / sizeof sdk_inputs[0]; i++) {
+    for (size_t i = 0; i < SDK_INPUT_COUNT; i++) {
         char p[MOD_PATH_MAX];
         snprintf(p, sizeof p, "%s/%s", sdk_dir, sdk_inputs[i]);
         (void)hash_file(&hc, p); /* absent header = stable no-op */
     }
     s_sdk_prefix = hc;
     snprintf(s_sdk_prefix_dir, sizeof s_sdk_prefix_dir, "%s", sdk_dir);
+    s_sdk_prefix_stamp = sdk_prefix_stamp(sdk_dir);
     s_sdk_prefix_ok = 1;
     return &s_sdk_prefix;
 }
@@ -2291,7 +2364,8 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
         return -1;
     }
     snprintf(mod->obj_path, sizeof mod->obj_path, "%s", so_path);
-    if (mod_check_abi(mod->dl, mod->id, so_path) != 0) {
+    if (mod_check_abi(mod->dl, mod->id, so_path) != 0 ||
+        mod_resolve_imgui_annex(mod, mod->dl, so_path) != 0) {
         mod->dl = NULL; /* the object stays mapped; nothing in it runs */
         return -1;
     }
@@ -2939,6 +3013,10 @@ int openpete_mods_compile_all(const openpete_options_t* opts) {
 }
 
 int openpete_mods_init(const openpete_options_t* opts) {
+    /* The ImGui guard attributes a refused call by mod index; the loader
+     * owns the index-to-id mapping. */
+    openpete_imgui_guard_set_mod_id_fn(openpete_mods_id);
+
     /* Pure vk windowed = native is the sole display and the PSX ordering table
      * is not rasterized, so render-function overrides are visual no-ops. Under
      * psycross / ab / diff / headless the PSX path still rasterizes. */

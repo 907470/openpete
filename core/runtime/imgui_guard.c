@@ -6,7 +6,13 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "openpete_imgui.h"   /* the descriptor the loader resolves */
 #include "openpete_log.h"
+
+/* Emitted next to the wrappers by tools/gen_imgui_annex.py. */
+extern const openpete_imgui_table_t openpete_imgui_engine_table;
+extern const uint32_t openpete_imgui_table_entries;
+extern const uint8_t  openpete_imgui_table_sha256[32];
 
 static _Thread_local int      t_depth = 0;
 static _Thread_local int      t_mod_index = -1;
@@ -95,4 +101,46 @@ void openpete_imgui_guard_refused(const char* fn)
     OPL_ERROR_F("mods", "%s: %s called outside the mod's UI section "
                         "(from a present or tick hook) — dropped",
                 openpete_imgui_guard_mod_id(idx), fn);
+}
+
+int openpete_imgui_annex_bind(const void* annex, const char* mod_id,
+                              const char* path)
+{
+    const openpete_imgui_annex_t* d = (const openpete_imgui_annex_t*)annex;
+    if (!d) return 1; /* no descriptor: the mod did not opt in */
+
+    if (d->magic != 0x4F504947u || !d->slot) {
+        OPL_ERROR_F("mods", "%s: %s exports a malformed ImGui annex "
+                    "descriptor (magic 0x%08x); rebuild the mod against "
+                    "this SDK — disabled",
+                    mod_id, path, (unsigned)d->magic);
+        return 0;
+    }
+
+    /* IMGUI_VERSION_NUM is XYYZZ, which does not map back to the dotted
+     * string, so the engine names its own version from IMGUI_VERSION and
+     * the mod's from the number it was built with. */
+    const int same_version =
+        d->imgui_version_num == (uint32_t)IMGUI_VERSION_NUM;
+    if (!same_version ||
+        d->table_size != (uint32_t)sizeof(openpete_imgui_table_t) ||
+        memcmp(d->table_sha256, openpete_imgui_table_sha256, 32) != 0) {
+        OPL_ERROR_F("mods", "%s: %s was built against Dear ImGui version "
+                    "%u (table %u bytes) and this engine has " IMGUI_VERSION
+                    " (version %u, %u bytes)%s; a mod bound to a table "
+                    "whose slots have moved calls the wrong function on "
+                    "its first widget — rebuild the mod against this SDK "
+                    "— disabled",
+                    mod_id, path, (unsigned)d->imgui_version_num,
+                    (unsigned)d->table_size, (unsigned)IMGUI_VERSION_NUM,
+                    (unsigned)sizeof(openpete_imgui_table_t),
+                    same_version ? ", so the SDK table itself changed" : "");
+        return 0;
+    }
+
+    *d->slot = &openpete_imgui_engine_table;
+    OPL_INFO_F("mods", "%s: imgui annex bound (ImGui " IMGUI_VERSION
+               ", %u entries)",
+               mod_id, (unsigned)openpete_imgui_table_entries);
+    return 1;
 }

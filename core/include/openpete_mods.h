@@ -224,6 +224,9 @@ typedef struct {
     int has_assets;      /* assets/ overlay root (boot-scoped tier) */
     int has_src;
     int has_cfg;         /* [[config]] schema rows in the manifest */
+    uint64_t imgui_calls; /* ImGui annex calls the section's last body
+                           * made; 0 = the mod does not use the annex,
+                           * or its section has not drawn yet */
 } openpete_mods_menu_info_t;
 int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out);
 
@@ -271,6 +274,12 @@ int openpete_mods_cfg_apply(int mod_index, int n,
  * callback. No-op for mods without a registration / disabled mods. */
 struct openpete_mod_ui;
 void openpete_mods_ui_draw(int i, const struct openpete_mod_ui* ui);
+
+/* Drop a mod's UI section for the rest of the session, with one log line
+ * naming @p why. The mod keeps running; only its section stops drawing.
+ * The overlay calls this when a body misbehaves often enough that leaving
+ * it in the panel costs more than losing it. */
+int openpete_mods_ui_refuse_section(int i, const char* why);
 
 int  openpete_mods_set_mod_enabled(const char* id, int on);
 /* cpu: live game CPU — applied toggles notify the mod's toggle hook in
