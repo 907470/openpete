@@ -3763,24 +3763,6 @@ static void shaded_dump(CPUState* cpu, uint32_t start, uint32_t end) {
 static op_time_t s_rot_now = 0;
 void moby_native_set_rot_interp(int on) { s_rot_now = on ? openpete_interp_present_now() : 0; }
 
-static int rnd_i(double x) { return (int)(x >= 0.0 ? x + 0.5 : x - 0.5); }
-
-/* sin/cos at SUB-BYTE angle resolution: linearly interpolate adjacent entries of
- * the game's in-RAM sin/cos table. The table is 256/circle at the integer grid
- * (index = byte<<1, int16 Q12); blending adjacent entries is exact at integer
- * angles and smooth between, so the rendered rotation is no longer locked to the
- * 1.4°/step byte grid. fb is a byte-angle in [0,256) after wrap. */
-static void sincos_interp(CPUState* cpu, double fb, int* s_out, int* c_out) {
-    while (fb < 0.0) fb += 256.0;
-    while (fb >= 256.0) fb -= 256.0;
-    int b0 = (int)fb; double frac = fb - (double)b0;
-    uint32_t i0 = (uint32_t)b0 << 1, i1 = (uint32_t)((b0 + 1) & 0xFF) << 1;
-    double s0=(int16_t)cpu->read_half(D_SIN_TABLE+i0),       s1=(int16_t)cpu->read_half(D_SIN_TABLE+i1);
-    double c0=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+i0), c1=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+i1);
-    *s_out = rnd_i(s0 + (s1 - s0) * frac);
-    *c_out = rnd_i(c0 + (c1 - c0) * frac);
-}
-
 /* Shortest-arc interpolated byte angle (256/circle) between two byte endpoints. */
 static double lerp_byte_angle(int prev_b, int curr_b, double t) {
     int d = curr_b - prev_b;
@@ -3937,7 +3919,7 @@ static double gem_idle_phase(CPUState* cpu, uint32_t m, uint32_t cls, uint32_t p
 }
 
 static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t moby, int out[3][3]) {
-    int sy, cy, sx, cx, sz, cz;
+    ngte_euler_sc e;
     int composed = 0;
     /* Idle-anim override: a FROZEN collectable renders the pose its own math
      * would produce had it kept ticking. Billboards excluded (the tally/HUD
@@ -3951,8 +3933,8 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
                     uint8_t t0 = 0;
                     double ph = gem_idle_phase(cpu, moby, cls, props, &t0);
                     int si, ci, s0, c0;
-                    sincos_interp(cpu, ph, &si, &ci);
-                    sincos_interp(cpu, (double)t0, &s0, &c0);
+                    ngte_sincos_interp(cpu, ph, &si, &ci);
+                    ngte_sincos_interp(cpu, (double)t0, &s0, &c0);
                     /* float mirror of ((s16)lut>>shift): /128 gems, /512 statue.
                      * Wobble as a DELTA around the frozen RAM pose: at ph==t0
                      * this IS the RAM euler (seamless seed), and for a SETTLED
@@ -3965,9 +3947,9 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
                     double fZ = (double)cpu->read_byte(moby + 0x44) + ((double)ci - (double)c0) / div;
                     double fX = (double)cpu->read_byte(moby + 0x45) + ((double)si - (double)s0) / div;
                     double fY = (double)cpu->read_byte(moby + 0x46);   /* untouched by the handler */
-                    sincos_interp(cpu, fY, &sy, &cy);
-                    sincos_interp(cpu, fX, &sx, &cx);
-                    sincos_interp(cpu, fZ, &sz, &cz);
+                    ngte_sincos_interp(cpu, fY, &e.sy, &e.cy);
+                    ngte_sincos_interp(cpu, fX, &e.sx, &e.cx);
+                    ngte_sincos_interp(cpu, fZ, &e.sz, &e.cz);
                     composed = 1; s_idle_active++;
                     if (moby_trace_target() == moby)
                         fprintf(stderr, "[moby-idle f=%u] %08X ph=%.1f base=%u eul=(%.1f,%.1f,%.1f)\n",
@@ -4014,23 +3996,13 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
         double fZ = lerp_byte_angle(o->prev[0x44], o->curr[0x44], t);
         double fX = lerp_byte_angle(o->prev[0x45], o->curr[0x45], t);
         double fY = lerp_byte_angle(o->prev[0x46], o->curr[0x46], t);
-        sincos_interp(cpu, fY, &sy, &cy);
-        sincos_interp(cpu, fX, &sx, &cx);
-        sincos_interp(cpu, fZ, &sz, &cz);
+        ngte_sincos_interp(cpu, fY, &e.sy, &e.cy);
+        ngte_sincos_interp(cpu, fX, &e.sx, &e.cx);
+        ngte_sincos_interp(cpu, fZ, &e.sz, &e.cz);
     } else if (!composed) {
-        uint32_t rot = cpu->read_word(moby + 0x44u);
-        uint32_t iy=(rot>>15)&0x1FEu, ix=(rot&0xFF00u)>>7, iz=(rot&0xFFu)<<1;
-        sy=(int16_t)cpu->read_half(D_SIN_TABLE+iy); cy=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+iy);
-        sx=(int16_t)cpu->read_half(D_SIN_TABLE+ix); cx=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+ix);
-        sz=(int16_t)cpu->read_half(D_SIN_TABLE+iz); cz=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+iz);
+        ngte_euler_sincos(cpu, cpu->read_word(moby + 0x44u), &e);
     }
-    int Ry[3][3]={{cy,0,-sy},{0,4096,0},{sy,0,cy}};
-    int Rx[3][3]={{4096,0,0},{0,cx,-sx},{0,sx,cx}};
-    int Rz[3][3]={{cz,-sz,0},{sz,cz,0},{0,0,4096}};
-    int t1[3][3], t2[3][3];
-    ngte_mat_mul3(start, Ry, t1);
-    ngte_mat_mul3(t1, Rx, t2);
-    ngte_mat_mul3(t2, Rz, out);
+    ngte_compose_euler(start, &e, out);
 }
 
 static void shaded_verify(CPUState* cpu) {

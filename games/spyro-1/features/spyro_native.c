@@ -492,47 +492,21 @@ static int spyro_native_mat(void) {
     return v;
 }
 
-static int spyro_rnd_i(double x) { return (int)(x >= 0.0 ? x + 0.5 : x - 0.5); }
-
-/* sin/cos at SUB-BYTE angle resolution: linearly interpolate adjacent entries of
- * the in-RAM sin/cos table (256/circle at the integer grid; index = byte<<1, int16
- * Q12) so the composed matrix renders below the 1.4°/step byte grid. fb is a
- * byte-angle in [0,256) after wrap. (Twin of moby_native's sincos_interp.) */
-static void spyro_sincos_interp(CPUState* cpu, double fb, int* s_out, int* c_out) {
-    while (fb < 0.0) fb += 256.0;
-    while (fb >= 256.0) fb -= 256.0;
-    int b0 = (int)fb; double frac = fb - (double)b0;
-    uint32_t i0 = (uint32_t)b0 << 1, i1 = (uint32_t)((b0 + 1) & 0xFF) << 1;
-    double s0=(int16_t)cpu->read_half(D_SIN_TABLE+i0),       s1=(int16_t)cpu->read_half(D_SIN_TABLE+i1);
-    double c0=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+i0), c1=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+i1);
-    *s_out = spyro_rnd_i(s0 + (s1 - s0) * frac);
-    *c_out = spyro_rnd_i(c0 + (c1 - c0) * frac);
-}
-
 /* M = start·Ry·Rx·Rz from a packed euler word (g_Spyro[0xC/0x10/0x14]). rot==0
  * -> identity (sin@0=0, cos@0=4096) so M=start (the sticky / no-rotation case).
  * `seg` (0 body / 1 head / 2 tail; -1 = none) selects the sub-tick float angles
  * the orchestrator handed in when s_rot_active[seg] is set — rendering rotation
  * below the byte grid; otherwise the canonical byte-exact table lookup is used. */
 static void spyro_compose_euler(CPUState* cpu, const int start[3][3], uint32_t rot, int out[3][3], int seg) {
-    int sy, cy, sx, cx, sz, cz;
+    ngte_euler_sc e;
     if (seg >= 0 && seg < 3 && s_rot_active[seg]) {
-        spyro_sincos_interp(cpu, s_rot_ang[seg][0], &sz, &cz);   /* Z (+0 byte) */
-        spyro_sincos_interp(cpu, s_rot_ang[seg][1], &sx, &cx);   /* X (+1 byte) */
-        spyro_sincos_interp(cpu, s_rot_ang[seg][2], &sy, &cy);   /* Y (+2 byte) */
+        ngte_sincos_interp(cpu, s_rot_ang[seg][0], &e.sz, &e.cz);   /* Z (+0 byte) */
+        ngte_sincos_interp(cpu, s_rot_ang[seg][1], &e.sx, &e.cx);   /* X (+1 byte) */
+        ngte_sincos_interp(cpu, s_rot_ang[seg][2], &e.sy, &e.cy);   /* Y (+2 byte) */
     } else {
-        uint32_t iy = (rot>>15)&0x1FEu, ix = (rot&0xFF00u)>>7, iz = (rot&0xFFu)<<1;
-        sy=(int16_t)cpu->read_half(D_SIN_TABLE+iy);       cy=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+iy);
-        sx=(int16_t)cpu->read_half(D_SIN_TABLE+ix);       cx=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+ix);
-        sz=(int16_t)cpu->read_half(D_SIN_TABLE+iz);       cz=(int16_t)cpu->read_half(D_SIN_TABLE+0x80u+iz);
+        ngte_euler_sincos(cpu, rot, &e);
     }
-    int Ry[3][3]={{cy,0,-sy},{0,4096,0},{sy,0,cy}};
-    int Rx[3][3]={{4096,0,0},{0,cx,-sx},{0,sx,cx}};
-    int Rz[3][3]={{cz,-sz,0},{sz,cz,0},{0,0,4096}};
-    int t1[3][3], t2[3][3];
-    ngte_mat_mul3(start, Ry, t1);
-    ngte_mat_mul3(t1, Rx, t2);
-    ngte_mat_mul3(t2, Rz, out);
+    ngte_compose_euler(start, &e, out);
 }
 
 static inline int spyro_sat16(int v) { return v < -32768 ? -32768 : (v > 32767 ? 32767 : v); }

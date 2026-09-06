@@ -76,4 +76,24 @@ int ngte_dpcs_ch(int c8, int fc12, int ir0);
  * a scaled model matrix times a rotation exceeds int32 before the shift. */
 void ngte_mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]);
 
+/* The game's in-RAM sin/cos table (D_SIN_TABLE): 256 entries per circle,
+ * int16 Q12, cos at +0x80 bytes. A byte angle indexes it at byte<<1. */
+
+/* sin/cos at fractional byte-angle resolution: lerp adjacent table
+ * entries. Exact at integer angles, smooth between, so a rotation renders
+ * below the 1.4°/step byte grid. fb wraps into [0,256). */
+void ngte_sincos_f(CPUState* cpu, double fb, double* s_out, double* c_out);
+
+/* ngte_sincos_f rounded to the nearest int for Q12 matrix composition. */
+void ngte_sincos_interp(CPUState* cpu, double fb, int* s_out, int* c_out);
+
+/* Byte-exact table lookups for a packed euler word (Z=byte0, X=byte1,
+ * Y=byte2; m_Rotation@+0x44). rot==0 gives sin 0 / cos 4096 on every axis. */
+typedef struct { int sy, cy, sx, cx, sz, cz; } ngte_euler_sc;
+void ngte_euler_sincos(CPUState* cpu, uint32_t rot, ngte_euler_sc* e);
+
+/* out = start·Ry·Rx·Rz in Q12, the order the game's MVMVA sequence applies
+ * (func_80022A2C block_80022DBC..80022F34). */
+void ngte_compose_euler(const int start[3][3], const ngte_euler_sc* e, int out[3][3]);
+
 #endif /* OPENPETE_NATIVE_GTE_H */

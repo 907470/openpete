@@ -366,21 +366,6 @@ static double lerp_wrap_b(int p, int c, double a) {
     return (double)p + (double)d * a;
 }
 
-/* sin/cos at fractional TABLE-ENTRY resolution (256 entries/circle, int16 Q12,
- * cos at +0x80 bytes = +64 entries): lerp adjacent entries — exact at integer
- * entries, so the canonical value is reproduced at alpha ∈ {0,1}. `ef` is in
- * entries (byte-angle units); callers pass byte offsets / 2. */
-static void sincos_entry_f(CPUState* cpu, double ef, double* s_out, double* c_out) {
-    while (ef < 0.0) ef += 256.0;
-    while (ef >= 256.0) ef -= 256.0;
-    int b0 = (int)ef; double fr = ef - (double)b0;
-    uint32_t i0 = (uint32_t)b0 * 2u, i1 = (uint32_t)((b0 + 1) & 0xFF) * 2u;
-    double s0 = rd_s16(cpu, D_SIN_TABLE + i0),       s1 = rd_s16(cpu, D_SIN_TABLE + i1);
-    double c0 = rd_s16(cpu, D_SIN_TABLE + i0 + 128), c1 = rd_s16(cpu, D_SIN_TABLE + i1 + 128);
-    *s_out = s0 + (s1 - s0) * fr;
-    *c_out = c0 + (c1 - c0) * fr;
-}
-
 /* OPENPETE_PART_PHASE_DBG: per-present one-line trace of the first phase-lerped
  * particle (spin/size channels) — fractional values prove the sub-tick sweep. */
 static int part_phase_dbg(void) {
@@ -603,7 +588,7 @@ static void particle_build(CPUState* cpu) {
                  * float sin/cos. Identical to the integer path at alpha=1. */
                 double szf = lerp_b((int)((pv.B >> 16) & 0xFF), (int)((pv.cB >> 16) & 0xFF), pv.alpha);
                 double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(pv.cB >> 24), pv.alpha) + 32.0;
-                double sf, cf; sincos_entry_f(cpu, ef, &sf, &cf);
+                double sf, cf; ngte_sincos_f(cpu, ef, &sf, &cf);
                 a2 = szf * sf / 1024.0; a3 = szf * cf / 1024.0;
                 if (part_phase_dbg() && !s_ppdbg_done) { s_ppdbg_done = 1;
                     fprintf(stderr, "[part-phase f=%u] slot=%d sel=2 lerp ang=%.2f sz=%.2f (raw %d/%d)\n",
@@ -637,7 +622,7 @@ static void particle_build(CPUState* cpu) {
                  * cleared by the &0x1FE); wrap-lerp + float sin/cos. */
                 double szf = lerp_b((int)((pv.B >> 16) & 0xFF), (int)((pv.cB >> 16) & 0xFF), pv.alpha);
                 double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(pv.cB >> 24), pv.alpha);
-                double sf, cf; sincos_entry_f(cpu, ef, &sf, &cf);
+                double sf, cf; ngte_sincos_f(cpu, ef, &sf, &cf);
                 eS = szf * sf / 4096.0; eC = szf * cf / 4096.0;
                 if (part_phase_dbg() && !s_ppdbg_done) { s_ppdbg_done = 1;
                     fprintf(stderr, "[part-phase f=%u] slot=%d sel=%d lerp ang=%.2f sz=%.2f (raw %d/%d)\n",
@@ -797,7 +782,7 @@ static void particle_build(CPUState* cpu) {
             if (part_phase_prev(pp, &pv)) {
                 double szf = lerp_b((int)((pv.B >> 16) & 0xFF), (int)((pv.cB >> 16) & 0xFF), pv.alpha);
                 double ef  = lerp_wrap_b((int)(pv.B >> 24), (int)(pv.cB >> 24), pv.alpha) + 32.0;
-                double sf, cf; sincos_entry_f(cpu, ef, &sf, &cf);
+                double sf, cf; ngte_sincos_f(cpu, ef, &sf, &cf);
                 a2 = szf * sf / 1024.0; a3 = szf * cf / 1024.0;
             } else {
                 int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)angIdx);
@@ -1429,7 +1414,7 @@ static void sparkle_build(CPUState* cpu) {
             double fade8f = dff * 256.0 / (double)speed;
             if (fade8f < 0.0) fade8f = 0.0; else if (fade8f > 255.0) fade8f = 255.0;
             scaledFade = (256.0 - fade8f) * (double)fade;
-            sincos_entry_f(cpu, angf, &sinv, &cosv);
+            ngte_sincos_f(cpu, angf, &sinv, &cosv);
         } else {
             /* canonical integer path — byte-exact for the A/B harness */
             int df = speed - newLife; if (df < 0) df = -df;

@@ -4,6 +4,7 @@
 // visual gate.
 
 #include "native_gte.h"
+#include "spyro1_symbols.gen.h"   /* D_SIN_TABLE */
 
 void ngte_unpack_matrix(uint32_t w0, uint32_t w1, uint32_t w2,
                         uint32_t w3, uint32_t w4, int M[3][3]) {
@@ -89,4 +90,41 @@ void ngte_mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]) {
     for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
         O[i][j] = (int)(((int64_t)A[i][0]*B[0][j] + (int64_t)A[i][1]*B[1][j] +
                          (int64_t)A[i][2]*B[2][j]) >> 12);
+}
+
+void ngte_sincos_f(CPUState* cpu, double fb, double* s_out, double* c_out) {
+    while (fb < 0.0) fb += 256.0;
+    while (fb >= 256.0) fb -= 256.0;
+    int b0 = (int)fb; double frac = fb - (double)b0;
+    uint32_t i0 = (uint32_t)b0 << 1, i1 = (uint32_t)((b0 + 1) & 0xFF) << 1;
+    double s0 = (int16_t)cpu->read_half(D_SIN_TABLE + i0),        s1 = (int16_t)cpu->read_half(D_SIN_TABLE + i1);
+    double c0 = (int16_t)cpu->read_half(D_SIN_TABLE + 0x80u + i0), c1 = (int16_t)cpu->read_half(D_SIN_TABLE + 0x80u + i1);
+    *s_out = s0 + (s1 - s0) * frac;
+    *c_out = c0 + (c1 - c0) * frac;
+}
+
+static int ngte_rnd_i(double x) { return (int)(x >= 0.0 ? x + 0.5 : x - 0.5); }
+
+void ngte_sincos_interp(CPUState* cpu, double fb, int* s_out, int* c_out) {
+    double s, c;
+    ngte_sincos_f(cpu, fb, &s, &c);
+    *s_out = ngte_rnd_i(s);
+    *c_out = ngte_rnd_i(c);
+}
+
+void ngte_euler_sincos(CPUState* cpu, uint32_t rot, ngte_euler_sc* e) {
+    uint32_t iy = (rot >> 15) & 0x1FEu, ix = (rot & 0xFF00u) >> 7, iz = (rot & 0xFFu) << 1;
+    e->sy = (int16_t)cpu->read_half(D_SIN_TABLE + iy); e->cy = (int16_t)cpu->read_half(D_SIN_TABLE + 0x80u + iy);
+    e->sx = (int16_t)cpu->read_half(D_SIN_TABLE + ix); e->cx = (int16_t)cpu->read_half(D_SIN_TABLE + 0x80u + ix);
+    e->sz = (int16_t)cpu->read_half(D_SIN_TABLE + iz); e->cz = (int16_t)cpu->read_half(D_SIN_TABLE + 0x80u + iz);
+}
+
+void ngte_compose_euler(const int start[3][3], const ngte_euler_sc* e, int out[3][3]) {
+    int Ry[3][3] = {{e->cy, 0, -e->sy}, {0, 4096, 0}, {e->sy, 0, e->cy}};
+    int Rx[3][3] = {{4096, 0, 0}, {0, e->cx, -e->sx}, {0, e->sx, e->cx}};
+    int Rz[3][3] = {{e->cz, -e->sz, 0}, {e->sz, e->cz, 0}, {0, 0, 4096}};
+    int t1[3][3], t2[3][3];
+    ngte_mat_mul3(start, Ry, t1);
+    ngte_mat_mul3(t1, Rx, t2);
+    ngte_mat_mul3(t2, Rz, out);
 }

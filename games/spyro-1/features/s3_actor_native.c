@@ -239,21 +239,9 @@ static double s3_scale(void) {
  * spyro_compose_euler, byte-table path). */
 static void s3_compose_euler(CPUState* cpu, const int PM[3][3], uint32_t rot,
                              int out[3][3]) {
-    uint32_t iy = (rot >> 15) & 0x1FEu, ix = (rot & 0xFF00u) >> 7,
-             iz = (rot & 0xFFu) << 1;
-    int sy = (int16_t)cpu->read_half(D_SIN_TABLE + iy);
-    int cy = (int16_t)cpu->read_half(D_SIN_TABLE + 0x80u + iy);
-    int sx = (int16_t)cpu->read_half(D_SIN_TABLE + ix);
-    int cx = (int16_t)cpu->read_half(D_SIN_TABLE + 0x80u + ix);
-    int sz = (int16_t)cpu->read_half(D_SIN_TABLE + iz);
-    int cz = (int16_t)cpu->read_half(D_SIN_TABLE + 0x80u + iz);
-    int Ry[3][3] = {{cy,0,-sy},{0,4096,0},{sy,0,cy}};
-    int Rx[3][3] = {{4096,0,0},{0,cx,-sx},{0,sx,cx}};
-    int Rz[3][3] = {{cz,-sz,0},{sz,cz,0},{0,0,4096}};
-    int t1[3][3], t2[3][3];
-    ngte_mat_mul3(PM, Ry, t1);
-    ngte_mat_mul3(t1, Rx, t2);
-    ngte_mat_mul3(t2, Rz, out);
+    ngte_euler_sc e;
+    ngte_euler_sincos(cpu, rot, &e);
+    ngte_compose_euler(PM, &e, out);
 }
 
 static s3_v3  s_dv[S3_MAX_VERTS];        /* decoded (blended) model verts */
