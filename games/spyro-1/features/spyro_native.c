@@ -492,13 +492,6 @@ static int spyro_native_mat(void) {
     return v;
 }
 
-/* int 3x3 multiply with the GTE's per-step >>12 truncation (the column-rotate
- * the .s does via MVMVA; 64-bit accum to match the GTE's intermediate width). */
-static void spyro_mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]) {
-    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
-        O[i][j] = (int)(((int64_t)A[i][0]*B[0][j] + (int64_t)A[i][1]*B[1][j] + (int64_t)A[i][2]*B[2][j]) >> 12);
-}
-
 static int spyro_rnd_i(double x) { return (int)(x >= 0.0 ? x + 0.5 : x - 0.5); }
 
 /* sin/cos at SUB-BYTE angle resolution: linearly interpolate adjacent entries of
@@ -537,9 +530,9 @@ static void spyro_compose_euler(CPUState* cpu, const int start[3][3], uint32_t r
     int Rx[3][3]={{4096,0,0},{0,cx,-sx},{0,sx,cx}};
     int Rz[3][3]={{cz,-sz,0},{sz,cz,0},{0,0,4096}};
     int t1[3][3], t2[3][3];
-    spyro_mat_mul3(start, Ry, t1);
-    spyro_mat_mul3(t1, Rx, t2);
-    spyro_mat_mul3(t2, Rz, out);
+    ngte_mat_mul3(start, Ry, t1);
+    ngte_mat_mul3(t1, Rx, t2);
+    ngte_mat_mul3(t2, Rz, out);
 }
 
 static inline int spyro_sat16(int v) { return v < -32768 ? -32768 : (v > 32767 ? 32767 : v); }

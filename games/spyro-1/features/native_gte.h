@@ -71,4 +71,9 @@ void ngte_project_gte(const int M[3][3], const double TR[3],
  * fc12 = 12-bit-expanded far colour, ir0 = 1.3.12 blend factor. */
 int ngte_dpcs_ch(int c8, int fc12, int ir0);
 
+/* O = (A · B) >> 12 on Q12 3x3 matrices, the column-rotate the game does
+ * via MVMVA. Accumulates in 64 bits: the GTE's MAC is 44 bits wide, and
+ * a scaled model matrix times a rotation exceeds int32 before the shift. */
+void ngte_mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]);
+
 #endif /* OPENPETE_NATIVE_GTE_H */

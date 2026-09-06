@@ -3747,11 +3747,6 @@ static void shaded_dump(CPUState* cpu, uint32_t start, uint32_t end) {
  * Set-matches the decoded verts vs the captured shaded prims, like the regular
  * vertex A/B. */
 
-static void mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]) {
-    for (int i=0;i<3;i++) for (int j=0;j<3;j++)
-        O[i][j] = (A[i][0]*B[0][j] + A[i][1]*B[1][j] + A[i][2]*B[2][j]) >> 12;
-}
-
 /* Compose the moby's full euler rotation onto `start`, mirroring func_80022A2C's
  * matrix build (block_80022DBC..80022F34): out = start·Ry·Rx·Rz, applied in that
  * order. The per-axis rotation columns come straight from the .s's MVMVA inputs
@@ -4033,9 +4028,9 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
     int Rx[3][3]={{4096,0,0},{0,cx,-sx},{0,sx,cx}};
     int Rz[3][3]={{cz,-sz,0},{sz,cz,0},{0,0,4096}};
     int t1[3][3], t2[3][3];
-    mat_mul3(start, Ry, t1);
-    mat_mul3(t1, Rx, t2);
-    mat_mul3(t2, Rz, out);
+    ngte_mat_mul3(start, Ry, t1);
+    ngte_mat_mul3(t1, Rx, t2);
+    ngte_mat_mul3(t2, Rz, out);
 }
 
 static void shaded_verify(CPUState* cpu) {

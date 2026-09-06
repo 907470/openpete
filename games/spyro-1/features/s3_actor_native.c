@@ -234,12 +234,6 @@ static double s3_scale(void) {
     return v;
 }
 
-static void s3_mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]) {
-    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
-        O[i][j] = (int)(((int64_t)A[i][0]*B[0][j] + (int64_t)A[i][1]*B[1][j] +
-                         (int64_t)A[i][2]*B[2][j]) >> 12);
-}
-
 /* M = PM * Ry*Rx*Rz from a packed byte-euler word — the same
  * composition the S1 player renderer uses (spyro_native.c
  * spyro_compose_euler, byte-table path). */
@@ -257,9 +251,9 @@ static void s3_compose_euler(CPUState* cpu, const int PM[3][3], uint32_t rot,
     int Rx[3][3] = {{4096,0,0},{0,cx,-sx},{0,sx,cx}};
     int Rz[3][3] = {{cz,-sz,0},{sz,cz,0},{0,0,4096}};
     int t1[3][3], t2[3][3];
-    s3_mat_mul3(PM, Ry, t1);
-    s3_mat_mul3(t1, Rx, t2);
-    s3_mat_mul3(t2, Rz, out);
+    ngte_mat_mul3(PM, Ry, t1);
+    ngte_mat_mul3(t1, Rx, t2);
+    ngte_mat_mul3(t2, Rz, out);
 }
 
 static s3_v3  s_dv[S3_MAX_VERTS];        /* decoded (blended) model verts */

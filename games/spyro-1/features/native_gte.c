@@ -84,3 +84,9 @@ int ngte_dpcs_ch(int c8, int fc12, int ir0) {
     if (out > 255) out = 255;
     return (int)out;
 }
+
+void ngte_mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]) {
+    for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
+        O[i][j] = (int)(((int64_t)A[i][0]*B[0][j] + (int64_t)A[i][1]*B[1][j] +
+                         (int64_t)A[i][2]*B[2][j]) >> 12);
+}
