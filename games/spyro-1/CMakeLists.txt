@@ -435,6 +435,9 @@ add_custom_command(
     COMMAND ${CMAKE_COMMAND} -E touch ${_mod_docs_stamp}
     DEPENDS ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_api.h
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_ui.h
+            ${CMAKE_SOURCE_DIR}/core/include/openpete_imgui.h
+            ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui.h
+            ${CMAKE_SOURCE_DIR}/tools/gen_imgui_annex.py
             ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
             ${CMAKE_CURRENT_SOURCE_DIR}/manifest/globals.toml
             ${CMAKE_CURRENT_SOURCE_DIR}/manifest/prototypes.toml

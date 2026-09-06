@@ -38,6 +38,13 @@ int  openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
                          const struct openpete_options *opts);
 void openpete_devui_shutdown(void);
 
+/* Whether --devui-open / OPENPETE_DEVUI_OPEN asks for the overlay to start
+ * open. The CLI value wins when it is set (0 or 1); the env var decides
+ * otherwise. Exposed so a caller that knows the overlay will never exist
+ * (headless, --renderer psycross) can say so instead of the flag going
+ * silently nowhere. */
+int  openpete_devui_open_requested(const struct openpete_options *opts);
+
 int  openpete_devui_available(void);
 int  openpete_devui_toggle(void);        /* returns new open state */
 int  openpete_devui_is_open(void);

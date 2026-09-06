@@ -521,6 +521,14 @@ typedef struct openpete_options {
      * impl parses it. NULL/empty = all paths (no filtering). */
     const char* render_paths;
 
+    /* --devui-open 0|1 (debug): open the dev config overlay (the M panel) as
+     * soon as it initializes, instead of waiting for the M key. Windowed
+     * native-vk runs only — the overlay is never created headless or under
+     * --renderer psycross, where the flag logs that it is inert. -1 = unset
+     * (defer to the OPENPETE_DEVUI_OPEN env, else closed). Boot-latched:
+     * openpete_devui_init reads it once. Display-only. */
+    int devui_open;
+
     /* BizHawk .bk2 movie replay. Full pad-bitstream fidelity (holds,
      * releases, gamepad, analog). NULL = disabled. See
      * notes/plans/openpete-bk2-input.md. */

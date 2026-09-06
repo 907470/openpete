@@ -1089,6 +1089,15 @@ static const knob_desc_t g_builtin[] = {
     ENVROW_LIVE("TERRAIN_TIERONLY", "Debug", "0",
         "Draw only LP (1) or only HP (2) tier."),
 
+    { "devui_open", "Open this overlay at boot", "Debug", "--devui-open", "OPENPETE_DEVUI_OPEN",
+      "Open this panel as soon as it initializes instead of waiting for the "
+      "M key, expanding the Mods list and every mod node once so an "
+      "unattended windowed run reaches a mod UI section body. Read once by "
+      "the overlay's init, so the row shows the boot value; M toggles the "
+      "panel live.",
+      KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
     { "fillpick", "Fill-tag inspector", "Debug", NULL, "OPENPETE_FILLPICK",
       "Pick the terrain face under the crosshair and re-judge its LP fill "
       "tag live (P key). Display-only audit tool for the frozen list in "
@@ -1420,6 +1429,13 @@ void knob_registry_init(const struct openpete_options *opts) {
             k->stored_num = opts->record_cfr;
         } else if (!strcmp(k->id, "record_frames")) {
             k->stored_num = opts->record_frames;
+        } else if (!strcmp(k->id, "devui_open")) {
+            if (opts->devui_open >= 0) {
+                k->stored_num = opts->devui_open ? 1 : 0;
+            } else {
+                const char *e = getenv("OPENPETE_DEVUI_OPEN");
+                k->stored_num = (e && *e && *e != '0') ? 1 : 0;
+            }
         } else if (!strcmp(k->id, "record_fps_overlay")) {
             if (opts->record_fps_overlay >= 0) {
                 k->stored_num = opts->record_fps_overlay ? 1 : 0;

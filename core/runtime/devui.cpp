@@ -43,11 +43,26 @@ extern "C" {
 #include <stdarg.h>
 #include <stdio.h>
 #include <string.h>
+#include <stdlib.h>
 
 static bool        s_inited = false;
 static bool        s_open   = false;
+/* One present's worth of "reveal": the panel window uncollapsed, the Mods
+ * header and every mod node open. Set only when --devui-open opened the
+ * overlay, because a run nobody is driving has no way to click a tree node
+ * open, and a mod's UI section body runs only inside its node. Dear ImGui
+ * does not persist node state, so this is the only way an unattended
+ * windowed run reaches a body. */
+static bool        s_boot_reveal = false;
 static rhi_device *s_dev    = nullptr;
 static char        s_ini_path[1024];
+
+int openpete_devui_open_requested(const struct openpete_options *opts)
+{
+    if (opts && opts->devui_open >= 0) return opts->devui_open ? 1 : 0;
+    const char *e = getenv("OPENPETE_DEVUI_OPEN");
+    return (e && *e && *e != '0') ? 1 : 0;
+}
 
 int openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
                         const struct openpete_options *opts)
@@ -98,7 +113,10 @@ int openpete_devui_init(struct rhi_device *dev, struct SDL_Window *win,
 
     s_dev    = dev;
     s_inited = true;
-    OPL_INFO_F("devui", "%s", "dev config overlay ready (M toggles)");
+    s_open   = openpete_devui_open_requested(opts) != 0;
+    s_boot_reveal = s_open;
+    OPL_INFO_F("devui", "dev config overlay ready (M toggles)%s",
+               s_open ? " — open at boot (--devui-open)" : "");
     return 1;
 }
 
@@ -110,6 +128,7 @@ void openpete_devui_shutdown(void)
     ImGui::DestroyContext();
     s_inited = false;
     s_open   = false;
+    s_boot_reveal = false;
     s_dev    = nullptr;
 }
 
@@ -820,7 +839,7 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
     }
     if (!any) return;
 
-    if (filter.IsActive()) ImGui::SetNextItemOpen(true);
+    if (filter.IsActive() || s_boot_reveal) ImGui::SetNextItemOpen(true);
     if (!ImGui::CollapsingHeader("Mods", ImGuiTreeNodeFlags_DefaultOpen))
         return;
 
@@ -850,6 +869,7 @@ static void draw_mods_section(const ImGuiTextFilter &filter)
 
         const bool has_levels = mod_owns_custom_levels(mi.id);
         if (mi.enabled && (mi.has_ui || mi.has_cfg || has_levels)) {
+            if (s_boot_reveal) ImGui::SetNextItemOpen(true);
             if (ImGui::TreeNodeEx(mi.name,
                                   ImGuiTreeNodeFlags_SpanAvailWidth)) {
                 mod_row_tooltip(&mi);
@@ -953,6 +973,7 @@ static void draw_panel(void)
     ImGuiIO &io = ImGui::GetIO();
     ImGui::SetNextWindowPos(ImVec2(24, 24), ImGuiCond_FirstUseEver);
     ImGui::SetNextWindowSize(ImVec2(540, io.DisplaySize.y - 96), ImGuiCond_FirstUseEver);
+    if (s_boot_reveal) ImGui::SetNextWindowCollapsed(false, ImGuiCond_Always);
 
     bool open = s_open;
     if (!ImGui::Begin("openpete config", &open)) {
@@ -1037,6 +1058,7 @@ static void draw_panel(void)
 
     ImGui::End();
     s_open = open;
+    s_boot_reveal = false;
 }
 
 /* ------------------------------------------------------------------ */

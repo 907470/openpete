@@ -255,6 +255,7 @@ keeps the running instance.
 | Fog retarget | `texpack_fog_shift(self, scale_rgb, offset_rgb 0..255)`; NULL,NULL = stock | tick | no |
 | Files | `data_dir(self)` → absolute path | any | no |
 | Custom panel | `openpete_mod_ui.h` widget vtable via `OPENPETE_MOD_UI_SECTION(fn)` at file scope in one TU; separately versioned (`OPENPETE_MOD_UI_ABI`), no stability promise; body runs in present context | present | no |
+| Beyond the eleven widgets | `openpete_imgui.h`: the whole Dear ImGui C API, opted into with `OPENPETE_MOD_IMGUI()` at file scope in one TU. Calls are legal only inside a section body — anywhere else they are dropped and logged; lifecycle and input-injection calls are absent from the table and fail the mod's compile. See reference/imgui.md | present | no |
 
 ### Timing landmarks (cold boot into the attract demo)
 

@@ -154,6 +154,7 @@ mod that wrote guest bytes restores the stock bytes on `on = 0`.
 |---|---|---|
 | Draw HUD text | `draw_text` | No |
 | Show status lines in the Mods section | `ui_status` | No |
+| Draw a panel of your own | `openpete_mod_ui.h`, or `openpete_imgui.h` for the whole Dear ImGui API | No |
 | Announce an event on screen | `notify` | No |
 | Replace a game sound from code | `sfx_replace` | No |
 | Play the mod's own WAV | `sfx_play` | No |
@@ -173,5 +174,14 @@ game's gold chrome, shown for a few seconds regardless of any overlay.
 `% / ? + ^ . ' :`; other characters render as a space), coalesces toasts
 that share a key, is rate-limited per mod, and is a no-op on runahead
 and rewind ticks.
+
+**Panels.** `openpete_mod_ui.h` mirrors eleven widgets (text, button,
+checkbox, sliders, combo, input text, separator, same-line, tooltip) over
+the engine's overlay; register a body with `OPENPETE_MOD_UI_SECTION(fn)` at
+file scope in one source file and it draws inside the mod's node of the
+Mods section, while that overlay is open. For anything beyond those eleven
+— windows, tables, plots, tree nodes, tabs, popups, colour editors, draw
+lists, fonts — `openpete_imgui.h` hands a mod the whole Dear ImGui C API:
+see [Dear ImGui annex](reference/imgui.md).
 
 Full contracts: [API reference](reference/api.md).

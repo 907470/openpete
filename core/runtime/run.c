@@ -2006,6 +2006,14 @@ static int run_host_init(const openpete_options_t* opts) {
                g_psyx_null_gpu ? "null-GPU (library-only: no window/GL)"
                                : "opening window",
                (int)opts->headless);
+    /* The dev overlay exists only in the native-vk window path, so a run
+     * without one has nothing for --devui-open to open. Saying so beats a
+     * flag that silently does nothing. */
+    if (openpete_devui_open_requested(opts)
+        && (opts->headless || opts->renderer != OPENPETE_RENDERER_VK))
+        OPL_INFO_F("devui", "%s", "--devui-open is inert in this run: the "
+                   "dev config overlay exists only in a windowed native-vk "
+                   "session");
     /* Headless still uses the real GL driver — SDL's "offscreen" video driver
      * hands back a context with NULL gl* function pointers, so the first call
      * from GR_InitialisePSX segfaults. A GPU/display backend (X/Wayland/WSLg/

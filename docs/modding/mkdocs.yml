@@ -71,6 +71,7 @@ nav:
   - Publishing: publishing.md
   - Reference:
       - API: reference/api.md
+      - Dear ImGui annex: reference/imgui.md
       - Functions: reference/functions.md
       - Globals: reference/globals.md
       - Game structs: reference/structs.md

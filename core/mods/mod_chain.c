@@ -28,6 +28,7 @@
 #include "openpete_mod_api.h"
 #include "openpete_log.h"
 #include "openpete_time.h" /* per-mod time instrument */
+#include "../runtime/openpete_imgui_guard.h" /* hook-owner attribution */
 
 #include <stdio.h>  /* snprintf — owner-state table */
 #include <stdlib.h> /* getenv — timer dump toggle */
@@ -159,7 +160,14 @@ static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
             f->chain = chain;
             f->link  = idx;
             f->child_ns = 0;
+            /* Names the mod in an ImGui-annex refusal: an override runs on
+             * the sim thread, outside any UI section body, so the guard has
+             * no mod index. Restored rather than cleared, since a link's
+             * base() descent re-enters here for the next owner. */
+            const char* owner_save = openpete_imgui_guard_hook_owner();
+            openpete_imgui_guard_set_hook_owner(chain->links[idx].owner_id);
             chain->links[idx].fn(cpu);
+            openpete_imgui_guard_set_hook_owner(owner_save);
             const op_time_t span = op_now() - t0;
             s_frame_depth--;
             openpete_mods_time_add(chain->links[idx].owner_id,

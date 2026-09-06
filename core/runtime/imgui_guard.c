@@ -17,6 +17,7 @@ extern const uint8_t  openpete_imgui_table_sha256[32];
 static _Thread_local int      t_depth = 0;
 static _Thread_local int      t_mod_index = -1;
 static _Thread_local uint64_t t_calls = 0;
+static _Thread_local const char* t_hook_owner = NULL;
 
 static const char* (*s_mod_id_fn)(int mod_index) = NULL;
 
@@ -28,6 +29,7 @@ static const char* (*s_mod_id_fn)(int mod_index) = NULL;
 #define SEEN_MAX 64
 typedef struct {
     int         mod_index;
+    const char* owner;      /* hook owner id when the index is -1 */
     const char* fn;         /* generated string literal, never freed */
 } seen_entry_t;
 static _Thread_local seen_entry_t t_seen[SEEN_MAX];
@@ -65,6 +67,16 @@ void openpete_imgui_count_call(void)
     t_calls++;
 }
 
+void openpete_imgui_guard_set_hook_owner(const char* id)
+{
+    t_hook_owner = id;
+}
+
+const char* openpete_imgui_guard_hook_owner(void)
+{
+    return t_hook_owner;
+}
+
 void openpete_imgui_guard_set_mod_id_fn(const char* (*fn)(int mod_index))
 {
     s_mod_id_fn = fn;
@@ -89,18 +101,24 @@ const char* openpete_imgui_guard_mod_id(int mod_index)
 void openpete_imgui_guard_refused(const char* fn)
 {
     int idx = t_mod_index;
+    /* Outside a body there is no index; the hook dispatch that is running
+     * mod code names the owner instead. */
+    const char* owner = (idx < 0) ? t_hook_owner : NULL;
     for (int i = 0; i < t_seen_count; i++) {
-        if (t_seen[i].mod_index == idx && strcmp(t_seen[i].fn, fn) == 0)
+        if (t_seen[i].mod_index == idx && t_seen[i].owner == owner &&
+            strcmp(t_seen[i].fn, fn) == 0)
             return;
     }
     if (t_seen_count < SEEN_MAX) {
         t_seen[t_seen_count].mod_index = idx;
+        t_seen[t_seen_count].owner = owner;
         t_seen[t_seen_count].fn = fn;
         t_seen_count++;
     }
     OPL_ERROR_F("mods", "%s: %s called outside the mod's UI section "
                         "(from a present or tick hook) — dropped",
-                openpete_imgui_guard_mod_id(idx), fn);
+                (owner && owner[0]) ? owner
+                                    : openpete_imgui_guard_mod_id(idx), fn);
 }
 
 int openpete_imgui_annex_bind(const void* annex, const char* mod_id,

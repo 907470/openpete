@@ -18,6 +18,9 @@ mkdocs-material site (see docs/modding/ and scripts/build-mod-docs.sh):
   cpustate.md   <- third_party/psxrecomp/runner/include/psx_runtime.h
                    (the CPUState an override receives: struct prose +
                    one row per field)
+  imgui.md      <- third_party/imgui/imgui.h (the version the engine
+                   builds) x tools/gen_imgui_annex.py (the denylist that
+                   generator applies) — the Dear ImGui annex page
 
 Stdlib only, deterministic output (no timestamps): re-running on
 unchanged inputs is byte-identical. Prose comes from the comment blocks
@@ -611,6 +614,200 @@ def gen_cpustate(runtime_header: Path):
     return "\n".join(out), len(rows)
 
 
+
+# ── imgui.md ─────────────────────────────────────────────────────────────
+
+def imgui_version(imgui_header: Path) -> str:
+    """The Dear ImGui version the engine builds against, from the pinned
+    header. Never hard-coded here: the page would then claim a version the
+    SDK does not ship the moment the submodule moves."""
+    m = re.search(r'^#define\s+IMGUI_VERSION\s+"([^"]+)"',
+                  imgui_header.read_text(encoding="utf-8"), re.M)
+    if not m:
+        sys.exit(f"gen_mod_docs: no IMGUI_VERSION in {imgui_header}")
+    return m.group(1)
+
+
+def imgui_denylist(annex_gen: Path) -> list:
+    """The denied families, taken from the generator that applies them, so
+    the page and the table cannot disagree."""
+    import importlib.util
+    spec = importlib.util.spec_from_file_location("gen_imgui_annex", annex_gen)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    return list(mod.DENY_DOC)
+
+
+def gen_imgui(imgui_header: Path, annex_gen: Path):
+    ver = imgui_version(imgui_header)
+    deny = imgui_denylist(annex_gen)
+    out = [GEN_NOTE, "# Dear ImGui annex\n"]
+    out.append(
+        f"`openpete_imgui.h` hands a mod the whole Dear ImGui C API — "
+        f"Dear ImGui {ver}, through the C bindings "
+        f"[dear_bindings](https://github.com/dearimgui/dear_bindings) "
+        f"generates — driving the engine's own ImGui context.\n")
+    out.append(
+        "[`openpete_mod_ui.h`](api.md) stays the simple path: eleven "
+        "widgets, no opt-in, and no ImGui version in the mod's build. Reach "
+        "for this header when those eleven are not enough — windows, "
+        "tables, plots, tree nodes, tabs, popups, colour editors, drag and "
+        "input widgets, draw lists, fonts.\n")
+
+    out.append("## Opting in\n")
+    out.append(
+        "Include the header and place the macro at file scope in exactly "
+        "one source file of the mod:\n")
+    out.append("""```c
+#include <openpete_mod_api.h>
+#include <openpete_mod_ui.h>
+#include <openpete_imgui.h>
+
+OPENPETE_MOD_IMGUI()
+
+static void ui_draw(const openpete_mod_ui_t* ui) {
+    (void)ui;
+    if (ImGui_Begin("my window", NULL, 0)) {
+        ImGui_Text("hello from a mod");
+    }
+    ImGui_End();
+}
+OPENPETE_MOD_UI_SECTION(ui_draw)
+```
+""")
+    out.append(
+        "`OPENPETE_MOD_IMGUI()` defines the function-pointer table every "
+        "`ImGui_*` call reads and exports the descriptor the loader "
+        "resolves when it opens the mod. A mod without the macro "
+        "references no table and nothing is bound. Nothing is added to the "
+        "mod's compile line and the mod still links no engine symbol: an "
+        "`ImGui_*` name is a macro over one table entry.\n")
+    out.append(
+        "The descriptor pins the Dear ImGui version, the table size and a "
+        "digest of the table's entries. A prebuilt object built against a "
+        "different SDK is refused and its mod disabled, because a mod bound "
+        "to a table whose slots have moved would call the wrong function on "
+        "its first widget. A source mod never meets that refusal: the SDK "
+        "headers are part of the mod's build key, so a Dear ImGui bump "
+        "recompiles it at the next boot.\n")
+    out.append(
+        "Binding is logged once per mod:\n\n"
+        "```\n"
+        "mods: <id>: imgui annex bound (ImGui " + ver + ", N entries)\n"
+        "```\n")
+
+    out.append("## Where the calls are legal\n")
+    out.append(
+        "Inside a UI section body, and nowhere else. A body runs on the "
+        "compose thread, inside the engine's ImGui frame, in the mod's node "
+        "of the Mods section — so only while the dev overlay is open and "
+        "the mod is enabled.\n")
+    out.append(
+        "A call from a present hook or a tick hook is dropped: those run "
+        "outside the frame and on another thread, where Dear ImGui's own "
+        "checks are compiled out and the failure would be a null-window "
+        "dereference. The call returns a zeroed value and the engine logs "
+        "the mod and the function once:\n\n"
+        "```\n"
+        "mods: <id>: ImGui_Begin called outside the mod's UI section "
+        "(from a present or tick hook) — dropped\n"
+        "```\n")
+    out.append(
+        "The body still receives the `openpete_mod_ui_t*` argument, so the "
+        "vtable and the annex mix freely in one body. An `ImGui_Begin` "
+        "inside the mod's node opens an independent top-level window, which "
+        "is Dear ImGui's documented behaviour.\n")
+    out.append(
+        "The purity rule is unchanged and matters more here: guest access, "
+        "game calls and registration are refused inside a body. Read guest "
+        "RAM in a tick hook, copy what the panel needs into host memory, "
+        "and let the body read the copy.\n")
+
+    out.append("## Calls the table does not carry\n")
+    out.append(
+        "These are absent from the table and from the macros. The "
+        "`dcimgui.h` declaration stays, so calling one fails the mod's own "
+        "compile with an undefined reference, which is the diagnostic "
+        "wanted:\n")
+    for line in deny:
+        # The generator's prose names bare identifiers; a trailing * is part
+        # of the family name, so each goes in a code span rather than
+        # through the italics escape.
+        out.append("- " + re.sub(r"\bIm(?:Gui|Font|Draw)(?:\w|\*)*",
+                                 lambda m: "`" + m.group(0) + "`", line))
+    out.append("")
+    out.append(
+        "Scope: the list protects the frame and context lifecycle and the "
+        "input path. It does not protect data reachable through structs. "
+        "`ImGui_GetIO()` returns a writable `ImGuiIO`, and a mod can "
+        "address another panel by name. That is unguarded by design: mod C "
+        "runs with the game's privileges. The bracket below puts a named "
+        "set of those fields back after every body, and the rest stays a "
+        "mod author's responsibility.\n")
+    out.append(
+        "`ImGui_GetIO`, `ImGui_GetStyle`, `ImGui_GetWindowDrawList`, "
+        "`ImGui_GetForegroundDrawList`, the `ImDrawList_*` family and "
+        "`ImGui_ShowDemoWindow` are all callable: they are the point of the "
+        "escape hatch.\n")
+
+    out.append("## What contains a body\n")
+    out.append(
+        "Dear ImGui reports unbalanced `Begin`/`End`, `Push`/`Pop` and "
+        "similar misuse as recoverable user errors. The engine brackets "
+        "every body:\n")
+    out.append(
+        "- the ImGui stack sizes are stored before the body and recovered "
+        "after it, so a window left open does not swallow the panel or the "
+        "frame;\n"
+        "- `ImGuiStyle` and the `ImGuiIO` fields a body can reach "
+        "(`IniFilename`, `LogFilename`, `ConfigFlags`, `UserData`, and the "
+        "backend user-data pointers) are snapshotted and put back;\n"
+        "- Dear ImGui's own assert and error tooltip are switched off for "
+        "the body and the engine logs the error against the mod instead:\n")
+    out.append(
+        "```\n"
+        "mods: <id>: Dear ImGui error inside the mod's UI section: "
+        "Missing End()\n"
+        "```\n")
+    out.append(
+        "A body that errors on three consecutive presents loses its section "
+        "for the rest of the session, with one more line saying so, so one "
+        "broken mod cannot flood the log or distort the panel. Misuse Dear "
+        "ImGui cannot recover from — a null `ImDrawList*`, a bad pointer "
+        "into `ImGuiIO` — crashes the process, which is the existing "
+        "contract for mod C.\n")
+    out.append(
+        "Calls that reach Dear ImGui are counted per body. The first "
+        "non-zero count is logged and the running count shows in the mod's "
+        "tooltip in the Mods panel:\n\n"
+        "```\n"
+        "mods: <id>: imgui annex engaged (N calls)\n"
+        "```\n")
+
+    out.append("## Learning the API\n")
+    out.append(
+        "The API is upstream's, so this page does not restate it. Names "
+        "follow dear_bindings: `ImGui::Begin` is `ImGui_Begin`, a call "
+        "passing every optional argument is the `...Ex` form "
+        "(`ImGui_PlotLinesEx`), an overload takes a type suffix "
+        "(`ImGui_ComboChar`), and a member function takes its struct's "
+        "prefix (`ImDrawList_AddLine`). The reference is the comment block "
+        "on each declaration in `sdk/dcimgui.h`, and "
+        "`ImGui_ShowDemoWindow()` — callable from a body — is the live "
+        "catalogue every Dear ImGui user reads.\n")
+    out.append(
+        "One thing a mod cannot do: take the address of an `ImGui_*` "
+        "function. Take the table entry instead "
+        "(`openpete_imgui_tbl->ImGui_Begin`).\n")
+    out.append(
+        "`mods/imgui-panel` is the worked example: a tick hook samples the "
+        "level's mobys into a host-side ring, and the section draws it as a "
+        "plot, a table, a floating window with a colour editor, and a "
+        "foreground draw-list marker. Two of its settings rows deliberately "
+        "break the rules above so the containment paths can be watched.\n")
+    return "\n".join(out), len(deny)
+
+
 # ── main ─────────────────────────────────────────────────────────────────
 
 def main():
@@ -634,6 +831,12 @@ def main():
     ap.add_argument("--psx-runtime",
                     default=REPO / "third_party/psxrecomp/runner/include/psx_runtime.h",
                     type=Path)
+    ap.add_argument("--imgui-header",
+                    default=REPO / "third_party/imgui/imgui.h",
+                    type=Path)
+    ap.add_argument("--imgui-annex-gen",
+                    default=REPO / "tools/gen_imgui_annex.py",
+                    type=Path)
     ap.add_argument("--out",
                     default=REPO / "docs/modding/pages/reference",
                     type=Path)
@@ -656,10 +859,12 @@ def main():
     st_md, n_st = gen_structs(structs)
     ga_md, n_mods = gen_gallery(args.mods_dir)
     cs_md, n_cs = gen_cpustate(args.psx_runtime)
+    ig_md, n_deny = gen_imgui(args.imgui_header, args.imgui_annex_gen)
 
     for fname, content in (("api.md", api_md), ("functions.md", fn_md),
                            ("globals.md", gl_md), ("structs.md", st_md),
-                           ("gallery.md", ga_md), ("cpustate.md", cs_md)):
+                           ("gallery.md", ga_md), ("cpustate.md", cs_md),
+                           ("imgui.md", ig_md)):
         (args.out / fname).write_text(content, encoding="utf-8")
 
     if n_cs < 40:   # 32 GPRs + pc/hi/lo + 3 arrays + 10 callbacks
@@ -670,7 +875,8 @@ def main():
                  "header layout changed; fix the extractor")
     print(f"[gen_mod_docs] api: {n_api} members | functions: {n_fn} "
           f"({n_proto} prototyped) | globals: {n_gl} | structs: {n_st} | "
-          f"gallery: {n_mods} mods | cpustate: {n_cs} fields -> {args.out}")
+          f"gallery: {n_mods} mods | cpustate: {n_cs} fields | "
+          f"imgui: {n_deny} denied families -> {args.out}")
 
 
 if __name__ == "__main__":

@@ -57,6 +57,14 @@ uint64_t openpete_imgui_calls_take(void);
 int openpete_imgui_annex_bind(const void* annex, const char* mod_id,
                               const char* path);
 
+/* The mod whose hook this thread is currently inside, or NULL on the way
+ * out. A refusal raised outside a section body has no mod index to name, so
+ * the dispatch sites that run mod code — the present-hook loop and the
+ * override chain — leave the owner id here for the message. One pointer
+ * store per dispatch; the string is the mod's own id and outlives the call. */
+void openpete_imgui_guard_set_hook_owner(const char* id);
+const char* openpete_imgui_guard_hook_owner(void);
+
 /* Mod id for a refusal message. The loader installs the resolver, which owns
  * the mapping from index to id; until then the index is printed. The returned
  * pointer must stay valid for the process lifetime. */

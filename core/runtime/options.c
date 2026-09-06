@@ -501,6 +501,11 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             cyclorama,spyro,moby,terrain,shadow,flame,particles,glow,sparkle,\n"
         "                             tracer,transition,portal. Lets a path be\n"
         "                             compared in isolation. Presentation-only; gameplay state unaffected.\n"
+        "  --devui-open 0|1           open the dev config overlay (M panel) as soon as it\n"
+        "                             initializes instead of waiting for the M key, with the Mods\n"
+        "                             list and every mod node expanded once, so an unattended run\n"
+        "                             reaches a mod UI section body (on|off also accepted).\n"
+        "                             Windowed native-vk runs only; inert elsewhere.\n"
         "  --render-stats             with --renderer diff, log per-frame + aggregate colour-diff\n"
         "                             statistics (mean/max/within-tol/diff-px); pair with --render-paths to\n"
         "                             measure one path's accuracy. Opt-in (per-frame GPU readback).\n"
@@ -619,6 +624,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->record_pixfmt       = "yuv420p";
     opts->record_audio_encoder = "aac";
     opts->record_fps_overlay  = -1;    /* -1 = unset; default off (env OPENPETE_FPS_IN_RECORD) */
+    opts->devui_open          = -1;    /* -1 = unset; default closed (env OPENPETE_DEVUI_OPEN) */
     opts->record_cfr          = 0.0;   /* 0 = true VFR (wall-clock PTS) */
     opts->record_frames       = 0;     /* 0 = record until the run ends */
     opts->texpack_dir         = NULL;  /* NULL = unset; env OPENPETE_TEXPACK_DIR / built-in dir */
@@ -1209,6 +1215,15 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--record-audio-encoder") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->record_audio_encoder = v; i++;
+        } else if (strcmp(a, "--devui-open") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->devui_open = 1;
+            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->devui_open = 0;
+            else {
+                fprintf(stderr, "openpete: --devui-open expects 0|1 (on|off also accepted), got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            i++;
         } else if (strcmp(a, "--record-fps-overlay") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             /* Accept 0|1 (preferred) plus on|off, matching --vsync. */

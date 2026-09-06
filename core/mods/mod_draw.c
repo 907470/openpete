@@ -35,6 +35,7 @@
 #include "openpete_interp_objs.h"   /* g_openpete_tick_period_ns */
 #include "openpete_time.h"
 #include "openpete_fiber.h" /* openpete_frame */
+#include "../runtime/openpete_imgui_guard.h" /* hook-owner attribution */
 
 #include <stdio.h>
 #include <string.h>
@@ -312,7 +313,11 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
         for (int i = 0; i < s_phook_count; i++) {
             if (s_phooks[i].disabled) continue;
             const op_time_t t0 = op_now(); /* clock-guard: wall */ /* hook cost span */
+            /* Names the mod in an ImGui-annex refusal: a present hook runs
+             * outside any UI section body, so the guard has no mod index. */
+            openpete_imgui_guard_set_hook_owner(s_phooks[i].owner_id);
             s_phooks[i].fn(&ctx);
+            openpete_imgui_guard_set_hook_owner(NULL);
             openpete_mods_time_add(s_phooks[i].owner_id, op_now() - t0, 1); /* clock-guard: wall */
         }
         openpete_mods_in_present = 0;

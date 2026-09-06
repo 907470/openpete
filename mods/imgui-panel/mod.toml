@@ -1,0 +1,41 @@
+# imgui-panel: the Dear ImGui annex (openpete_imgui.h) driving a real panel.
+#
+# A tick hook counts the level's live mobys into a host-side ring and
+# copies the ten nearest to Spyro. The UI section then draws that copy
+# with the full ImGui C API: a plot over the ring, a table of the ten,
+# a floating window with a colour editor, and a foreground draw-list
+# marker. Every guest read is in the tick hook; the section reads the
+# host copy only, which is the purity rule for a body that runs on the
+# compose thread.
+#
+# Two Containment toggles, both off by default, drive the engine's
+# containment paths for scripts/check_mod_imgui.sh: one drops an
+# ImGui_End so the error bracket has something to recover, one calls
+# ImGui_Text from a present hook so the guard has something to refuse.
+
+[mod]
+id      = "imgui-panel"
+name    = "ImGui Panel"
+version = "0.1.0"
+api     = 11
+state   = "none"       # host-side ring only; nothing to save
+runahead = "pure"      # reads guest RAM, writes none
+sim_mutative = false
+
+# Deliberate misuse, for the containment harness. Leave both off unless
+# you want to watch the engine catch a broken body.
+[[config]]
+key = "break_end"
+type = "bool"
+default = false
+label = "Omit an ImGui_End"
+group = "Containment"
+help = "Leave the floating window open so the error bracket recovers it; three presents of that refuses the section"
+
+[[config]]
+key = "hook_call"
+type = "bool"
+default = false
+label = "Call ImGui_Text from a present hook"
+group = "Containment"
+help = "Register a present hook that calls into the annex from outside the UI section, where the guard drops it"

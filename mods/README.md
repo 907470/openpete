@@ -41,7 +41,7 @@ declarative; `hello-anchor`, `double-gems`, `natural-gems`,
 `hud-stopwatch`, `crt-filter`, `crt-beans`, `scene-sepia`,
 `channel-gallery`, `moby-instance-tint`, `egg-hud-3d`, `teapot-dragons`,
 `crash3-models`, `crystalfissure-dark-artisans`, `supercharge-anywhere`,
-and `spyro3` ship code.
+`imgui-panel`, and `spyro3` ship code.
 
 CI fixtures, not examples: `arena-canary`, `arena-probe`, `chain-duo-a`,
 `chain-duo-b`, `crash-dummy`, `demo-lib`, `lib-and-client`, `raw-probe`,
