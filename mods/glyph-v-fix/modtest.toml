@@ -1,0 +1,5 @@
+# modtest.toml — CI declaration for tools/modtest.py.
+[test]
+frames     = 2400
+args       = "--skip-to-level town_square"
+expect_log = ["'V' model 801fde18: 17 faces -> 18", "cap w0=00010a11 w1=0098b500"]

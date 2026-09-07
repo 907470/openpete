@@ -1,0 +1,43 @@
+# glyph-v-fix: restore the missing end-cap face on the 'V' glyph model.
+#
+# The HUD letter model for 'V' (moby class 447) ships 17 faces where the
+# letter's own symmetry needs 18: the right arm has three side walls
+# (outer edge, top end cap, inner edge) and the left arm has only two —
+# its top end cap is absent, so the top-left of every 'V' the game draws
+# in 3D text is a hole into the glyph's interior.
+#
+# The face stream cannot grow in place: the 'W' model header begins at
+# the byte after the last 'V' face. The mod copies the stream to the mod
+# arena, appends the missing quad, and points the model header at the
+# copy.
+
+[mod]
+id      = "glyph-v-fix"
+name    = "Glyph V Fix"
+version = "1.0.0"
+api     = 11
+# The parked face stream is rebuilt from the live model on every install,
+# so a state load needs nothing carried across.
+state    = "rebuildable"
+# The hook writes only the parked stream and two fields of the model
+# header; it has no host-side effects to suppress while speculating.
+runahead = "pure"
+# Writes guest RAM (the model header), so the modset tag covers cards
+# played with it.
+sim_mutative = true
+
+[[config]]
+key = "glyph_v.enabled"
+type = "bool"
+default = true
+label = "Fix the 'V' glyph"
+group = "Glyph V Fix"
+help = "Restore the missing top-left end-cap face on the 3D letter 'V'"
+
+[[config]]
+key = "debug.dump"
+type = "bool"
+default = false
+label = "Dump the glyph model"
+group = "Debug"
+help = "Log the decoded vertex and face streams of the 'V' model once"
