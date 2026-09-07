@@ -4411,6 +4411,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             int shot_key = opts->screenshot_ticks_keyed ? (int)openpete_canon_tick
                                                         : (int)openpete_frame;
             static bool s_shot_fired[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
+            static bool s_shot_armed[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
             /* --screenshot-native-only skips the -og leg: PsyCross isn't rasterizing
              * (openpete_psycross_renders == 0), so the present FBO this reads is
              * stale. The native -vk dump below is the sole output. */
@@ -4418,6 +4419,11 @@ static int run_host_loop(const openpete_options_t* opts) {
                              si < opts->screenshot_frame_count; ++si) {
                 if (s_shot_fired[si]) continue;
                 if (shot_key < opts->screenshot_frames[si]) continue;
+                /* PsyCross rasterizes an OT on the present AFTER the one that
+                 * submitted it, so the FBO on the keyed present holds the
+                 * previous tick. The native -vk dump composes the newest tick;
+                 * take the -og one present later so both show the same tick. */
+                if (!s_shot_armed[si]) { s_shot_armed[si] = true; continue; }
                 s_shot_fired[si] = true;
                 char base[1024], path[1100];
                 openpete_screenshot_format_path(opts->screenshot_output,

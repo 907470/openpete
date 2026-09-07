@@ -509,7 +509,12 @@ static int scene_delay_depth(void) {
      * dump reads the current scene (the frame the window just presented;
      * "-ab showed two copies of -og / -diff black" was this). */
     if (s_scene_ref_compare) return AB_DIFF_SCENE_DELAY;
-    if (s_scene_shot_compose && s_scene_shot_lag) return AB_DIFF_SCENE_DELAY;
+    /* The screenshot compose reads the CURRENT scene: the frame keyed F shows
+     * the newest tick's feed. The live present composes within a fraction of a
+     * tick of that instant (the eager lag tracks the tick's execution tail),
+     * so this is the fixed definition nearest the window. The PsyCross -og
+     * capture is deferred one present to sit on the same tick. */
+    (void)s_scene_shot_lag;
     return 0;
 }
 

@@ -7,7 +7,7 @@
 # native-only path:
 #   canonical   VBL-keyed frames                -> <name>__canon__<frame>-vk.png
 #   intermediate deterministic alpha=0.5 frames  -> <name>__inter__<frame>-vk.png
-#   identity     alpha=0 re-extract on the canon frames -> <name>__ident__<frame>-vk.png
+#   identity     alpha=1 re-extract on the canon frames -> <name>__ident__<frame>-vk.png
 #                (not a golden tile: presentation-ident-check.py diffs it against the
 #                 canon tile of the same frame from the same capture)
 # Both legs are gameplay-neutral display captures; the same-binary depth kill
@@ -110,9 +110,9 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze
   # freeze frames dump dark (frozen_tex is a live-window-only snapshot). Off
   # elsewhere — it renders an extra frame per present.
   local freeze_arg=(); [[ -n "$freeze" ]] && freeze_arg=(--screenshot-freeze-backdrop)
-  # The identity leg is the intermediate re-extract phased onto the tick stamp
-  # (alpha 0), which must reproduce the canonical dump of the same frame.
-  local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=0)
+  # The identity leg is the intermediate re-extract phased onto the newest tick's
+  # stamp (alpha 1), which must reproduce the canonical dump of the same frame.
+  local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=1)
   # Always capture at 16:9 so the golden catches widescreen (Hor+) artifacts —
   # the revealed side world and the reveal-edge seams a 4:3 dump can't see. The
   # headless native-only capture honors --aspect (openpete_native_widescreen_factor

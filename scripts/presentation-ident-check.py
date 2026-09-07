@@ -2,7 +2,8 @@
 """presentation-ident-check.py — the sub-tick spine's identity check.
 
 The corpus captures an `ident` leg: the intermediate re-extract phased onto the
-tick stamp (OPENPETE_INTERMEDIATE_ALPHA=0) on every canonical frame. A complete
+newest tick's stamp (OPENPETE_INTERMEDIATE_ALPHA=1) on every canonical frame, the
+tick the canonical dump composes. A complete
 spine reproduces the canonical dump of that frame pixel for pixel, so each
 `<row>__<lod>ident__<f>-vk.png` is diffed against `<row>__<lod>canon__<f>-vk.png`
 from the SAME candidate directory. No golden image is involved.

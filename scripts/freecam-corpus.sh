@@ -9,7 +9,7 @@
 # camera so the view holds still), and capture two legs on the native-only path:
 #   canonical    a pinned VBL frame                  -> <slug>__<lod>canon__<f>-vk.png
 #   intermediate deterministic alpha=0.5 at +50      -> <slug>__<lod>inter__<f>-vk.png
-#   identity     alpha=0 re-extract on the canon frame -> <slug>__<lod>ident__<f>-vk.png
+#   identity     alpha=1 re-extract on the canon frame -> <slug>__<lod>ident__<f>-vk.png
 #                (not a golden tile; presentation-ident-check.py diffs it against canon)
 # at 16:9, at every LOD mode in CAP_LODS. The freecam freezes the camera but NOT
 # world animation, so the canonical leg is pinned to a fixed frame (deterministic
@@ -102,7 +102,7 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose
   local tag; tag="$(lod_tag "$lod")"
   local out="$OUTDIR/${slug}__${tag}${leg}__{n}.png"
   local log; log="$(mktemp)"
-  local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=0)
+  local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=1)
   env "${leg_env[@]}" timeout 300 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 --renderer vk \
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" --skip-to-level "$level" --freecam-pose "$pose" \
     --screenshot-native-only "$flag" "$target" --screenshot-output "$out" \
