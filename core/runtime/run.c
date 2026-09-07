@@ -4598,12 +4598,20 @@ static int run_host_loop(const openpete_options_t* opts) {
                     pace_canon_extract_ns = op_now() - rex_t0;
                     g_openpete_canon_lag_leg = 0;
                     if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
-                } else {
-                    /* Spine off (unlock / paused / interp disabled): the carry is
-                     * never applied, so drop this tick's feed-time accumulation —
-                     * a long spine-off stretch must not pool stale 2D-UI tris
-                     * that would flash when the spine re-engages. */
-                    openpete_native_scene_overlay_accum_reset();
+                } else if (openpete_native_render_enabled()) {
+                    /* Spine off (unlock / paused / interp disabled / headless):
+                     * commit the tick's accumulation all the same, so the carry
+                     * always holds the LAST canonical present's 2D set. The carry
+                     * outlives this present: the headless intermediate leg applies
+                     * it through its explicit re-extract, and the live spine
+                     * applies it on the first sub-tick present after unlock
+                     * releases. Dropping the accumulation here instead left the
+                     * carry at whatever the last spine-on present captured — the
+                     * title logo, when Tab is held from the title screen — and
+                     * that set was re-applied over VRAM the level had since
+                     * overwritten. This block runs once per game DrawOTag, so
+                     * nothing pools across presents. */
+                    openpete_native_scene_capture_overlay();
                 }
             }
 

@@ -345,10 +345,6 @@ static void (*s_overlay_precapture)(void);
 void openpete_native_scene_register_overlay_precapture(void (*fn)(void)) {
     s_overlay_precapture = fn;
 }
-void openpete_native_scene_overlay_accum_reset(void) {
-    s_overlay_accum_n = 0;
-    s_overlay_accum_dropped = 0;
-}
 
 /* Provenance-tag state (S6). s_tag_split_ext is armed by the material-
  * selector registry (S8); the env flags are the dev instruments. */

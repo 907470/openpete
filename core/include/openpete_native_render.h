@@ -1151,10 +1151,6 @@ void openpete_native_scene_apply_overlay(double alpha);
  * before the carry commits — by the canonical present every post-link prim
  * mutation is done, so the flush is exact. */
 void openpete_native_scene_register_overlay_precapture(void (*fn)(void));
-/* Drop the pending accumulation without committing it. Call on canonical
- * presents that SKIP capture_overlay (spine off / unlock) so a long spine-off
- * stretch doesn't pool stale 2D-UI tris that would flash when it re-engages. */
-void openpete_native_scene_overlay_accum_reset(void);
 /* Roll the fade ramp's prev/curr — call on each CANONICAL present (before the
  * re-extract) so apply_overlay can interpolate the fade sub-tick. */
 void openpete_native_scene_commit_fade(void);
