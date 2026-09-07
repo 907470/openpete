@@ -70,13 +70,24 @@ The other examples are original to this project and carry the root licence.
 
 ## Linux AppImage — bundled at runtime
 
+Every library under `usr/lib/` ships its notice as
+`usr/licences/<soname>.txt`; packaging fails on a bundled library with no
+notice.
+
 | Component                              | License                              | Notes                                                              |
 | -------------------------------------- | ------------------------------------ | ------------------------------------------------------------------ |
-| OpenAL Soft (`usr/lib/libopenal.so.1`) | LGPL v2                              | dynamic linking preserved; `OpenAL-COPYING.txt` rides in the image |
+| OpenAL Soft (`usr/lib/libopenal.so.1`) | LGPL v2                              | dynamic linking preserved                                          |
+| sndio (`usr/lib/libsndio.so.7`)        | ISC                                  | required by OpenAL Soft (`DT_NEEDED`), unmodified                  |
+| libbsd (`usr/lib/libbsd.so.0`)         | BSD-2/BSD-3/ISC and others           | required by sndio, unmodified                                      |
+| libmd (`usr/lib/libmd.so.0`)           | BSD-2/BSD-3 and others               | required by libbsd, unmodified                                     |
 | AppImage type-2 runtime                | MIT                                  | the launcher stub prepended to the squashfs                        |
 
 Graphics, display-server and audio-device libraries are deliberately **not**
-bundled — they must bind to the host's drivers.
+bundled — they must bind to the host's drivers. sndio is bundled despite
+being an audio library because it is a client of the `sndiod` daemon rather
+than of a device: with no daemon running, OpenAL falls through to its ALSA
+or PulseAudio backend, both of which still resolve against the host. ALSA
+itself stays unbundled, so `libasound.so.2` remains a host requirement.
 
 ## Trademarks
 

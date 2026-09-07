@@ -163,10 +163,81 @@ stage_common() {  # stage_common <build-game-dir>
 }
 
 # Libraries an AppImage must NEVER carry: graphics, display-server and
-# audio-device clients bind to the host's drivers, and a bundled copy
-# shadowing the host's breaks on exactly the machines the image is meant
-# to run on. Asserted after staging rather than trusted.
-APPIMAGE_FORBIDDEN='^lib(GL|GLX|GLdispatch|EGL|GLESv2|vulkan|X11|Xext|Xrandr|Xi|xcb|wayland|drm|gbm|asound|pulse|pulsecommon|sndio|jack)'
+# audio-device clients whose protocol is versioned against a host driver
+# or daemon. A bundled copy shadowing the host's breaks on exactly the
+# machines the image is meant to run on. Asserted after staging rather
+# than trusted.
+#
+# sndio is deliberately absent from this list. It is a socket client to
+# sndiod, not a device driver, and libopenal.so.1 carries a DT_NEEDED on
+# it: a package manager installs the two together, but an AppImage
+# carries OpenAL past the package manager, so an image without libsndio
+# aborts in ld.so on any host that lacks it -- whatever its audio stack.
+APPIMAGE_FORBIDDEN='^lib(GL|GLX|GLdispatch|EGL|GLESv2|vulkan|X11|Xext|Xrandr|Xi|xcb|wayland|drm|gbm|asound|pulse|pulsecommon|jack)'
+
+# The C++ and C runtimes always come from the host: bundling them is what
+# the glibc floor exists to prevent, and both are backward compatible, so
+# a host copy at or above the floor satisfies a binary built against it.
+# The floor assertion in check_dist_first_boot.sh is what guarantees that,
+# not the closure check below.
+APPIMAGE_HOST_CORE='^(ld-linux[^/]*|libc|libm|libdl|libpthread|librt|libresolv|libutil|libstdc\+\+|libgcc_s)\.so'
+
+# Every bundled library ships its licence. The map is the authority: a
+# library the closure pulls in with no entry here fails packaging, so a
+# notice can never be silently omitted for a dependency nobody chose.
+declare -A APPIMAGE_LIB_LICENCE=(
+    [libopenal.so.1]=third_party/OpenAL-mingw/COPYING
+    [libsndio.so.7]=docs/appimage/licences/libsndio.so.7.txt
+    [libbsd.so.0]=docs/appimage/licences/libbsd.so.0.txt
+    [libmd.so.0]=docs/appimage/licences/libmd.so.0.txt
+)
+
+# DT_NEEDED name and resolved path of every direct dependency of a file.
+elf_needed() { readelf -d "$1" | sed -n 's/.*NEEDED.*\[\(.*\)\].*/\1/p'; }
+elf_soname() { readelf -d "$1" | sed -n 's/.*SONAME.*\[\(.*\)\].*/\1/p'; }
+
+# Stage a library under its SONAME (the name ld.so will search for, not
+# the versioned filename) and recurse into its own DT_NEEDED, so a
+# dependency-of-a-dependency cannot be forgotten. Host-core and forbidden
+# names are left for the host to resolve.
+bundle_lib() {  # bundle_lib <appdir> <library-path>
+    local APPDIR="$1" src="$2" so n path
+    so=$(elf_soname "$src"); [[ -n "$so" ]] || so=$(basename "$src")
+    if [[ -e "$APPDIR/usr/lib/$so" ]]; then return 0; fi
+    cp -L "$src" "$APPDIR/usr/lib/$so"
+    while read -r n; do
+        [[ -n "$n" ]] || continue
+        if [[ "$n" =~ $APPIMAGE_HOST_CORE || "$n" =~ $APPIMAGE_FORBIDDEN ]]; then
+            continue
+        fi
+        if [[ -e "$APPDIR/usr/lib/$n" ]]; then continue; fi
+        path=$(ldd "$src" | awk -v n="$n" '$1==n {print $3}')
+        [[ -n "$path" && -f "$path" ]] || {
+            echo "[package] cannot resolve $n, needed by $so" >&2; exit 1; }
+        bundle_lib "$APPDIR" "$path"
+    done < <(elf_needed "$src")
+}
+
+# Every DT_NEEDED of the payload resolves inside the AppDir or is a name
+# the host is required to provide. This is the assertion that catches an
+# omitted dependency; the forbidden-list check below only catches an
+# included one, which is why it could never have caught libsndio.
+assert_appdir_closure() {  # assert_appdir_closure <appdir> <file>...
+    local APPDIR="$1"; shift
+    local f n miss=""
+    for f in "$@"; do
+        while read -r n; do
+            [[ -n "$n" ]] || continue
+            if [[ "$n" =~ $APPIMAGE_HOST_CORE || "$n" =~ $APPIMAGE_FORBIDDEN ]]; then
+                continue
+            fi
+            if [[ -e "$APPDIR/usr/lib/$n" ]]; then continue; fi
+            miss+=" $n(<-$(basename "$f"))"
+        done < <(elf_needed "$f")
+    done
+    [[ -z "$miss" ]] || {
+        echo "[package] unbundled dependencies:$miss" >&2; exit 1; }
+}
 
 build_appimage() {  # build_appimage <stage-dir>
     local S="$1"
@@ -204,8 +275,21 @@ build_appimage() {  # build_appimage <stage-dir>
     local al
     al=$(ldd "$S/openpete-spyro1" | awk '/libopenal\.so/ {print $3}')
     [[ -n "$al" && -f "$al" ]] || { echo "[package] libopenal.so.1 not found" >&2; exit 1; }
-    cp -L "$al" "$APPDIR/usr/lib/libopenal.so.1"
-    cp third_party/OpenAL-mingw/COPYING "$APPDIR/usr/OpenAL-COPYING.txt"
+    bundle_lib "$APPDIR" "$al"
+
+    mkdir -p "$APPDIR/usr/licences"
+    local so lic
+    for so in $(ls "$APPDIR/usr/lib"); do
+        lic="${APPIMAGE_LIB_LICENCE[$so]:-}"
+        [[ -n "$lic" && -f "$lic" ]] || {
+            echo "[package] $so is bundled with no licence: add it to" \
+                 "APPIMAGE_LIB_LICENCE" >&2; exit 1; }
+        cp "$lic" "$APPDIR/usr/licences/$so.txt"
+    done
+    echo "[package] bundled libs:" $(ls "$APPDIR/usr/lib")
+
+    assert_appdir_closure "$APPDIR" "$APPDIR/usr/openpete-spyro1" \
+        "$APPDIR"/usr/lib/*.so*
 
     local bad
     bad=$(ls "$APPDIR/usr/lib" | grep -E "$APPIMAGE_FORBIDDEN" || true)

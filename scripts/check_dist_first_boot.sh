@@ -145,8 +145,29 @@ fi
 if [[ $APPIMAGE -eq 1 ]]; then
     echo "[dist-gate] no driver/display libraries bundled..."
     bad=$(find "$appdir" -name 'lib*.so*' -printf '%f\n' | sort -u \
-          | grep -E '^lib(GL|GLX|GLdispatch|EGL|GLESv2|vulkan|X11|Xext|Xrandr|Xi|xcb|wayland|drm|gbm|asound|pulse|pulsecommon|sndio|jack)' || true)
+          | grep -E '^lib(GL|GLX|GLdispatch|EGL|GLESv2|vulkan|X11|Xext|Xrandr|Xi|xcb|wayland|drm|gbm|asound|pulse|pulsecommon|jack)' || true)
     [[ -z "$bad" ]] || { echo "[dist-gate] FAIL: bundled driver libraries: $bad" >&2; exit 2; }
+
+    # The check above only catches a library we wrongly included. This one
+    # catches one we wrongly omitted, which is the failure a user sees: a
+    # DT_NEEDED that resolves on the packaging machine and nowhere else
+    # aborts in ld.so before main. Everything the payload needs must be in
+    # usr/lib, be part of the C runtime, or be a host driver the image is
+    # required not to carry.
+    echo "[dist-gate] dependency closure..."
+    host_core='^(ld-linux[^/]*|libc|libm|libdl|libpthread|librt|libresolv|libutil|libstdc\+\+|libgcc_s)\.so'
+    drivers='^lib(GL|GLX|GLdispatch|EGL|GLESv2|vulkan|X11|Xext|Xrandr|Xi|xcb|wayland|drm|gbm|asound|pulse|pulsecommon|jack)'
+    miss=""
+    while read -r f; do
+        while read -r n; do
+            [[ -n "$n" ]] || continue
+            [[ "$n" =~ $host_core || "$n" =~ $drivers ]] && continue
+            [[ -e "$appdir/usr/lib/$n" ]] && continue
+            miss+=" $n(<-$(basename "$f"))"
+        done < <(readelf -d "$f" | sed -n 's/.*NEEDED.*\[\(.*\)\].*/\1/p')
+    done < <(printf '%s\n' "$BIN" "$appdir"/usr/lib/*.so*)
+    [[ -z "$miss" ]] || {
+        echo "[dist-gate] FAIL: unbundled dependencies:$miss" >&2; exit 2; }
 fi
 
 echo "[dist-gate] first boot (--ingest)..."
