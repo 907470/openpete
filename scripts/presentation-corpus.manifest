@@ -20,6 +20,14 @@
 #             reach a pause / flight-results / level-exit state so the green
 #             frozen-world backdrop is captured instead of a dark clear. Renders
 #             an extra frame per present, so set it ONLY on freeze-reaching bk2s.
+#   pins      optional 5th field: comma-separated frames that are ALWAYS sampled, on
+#             top of the evenly-spaced grid and never subsampled away. The grid is
+#             derived from movie length, so it lands where the arithmetic puts it and
+#             routinely misses the frame a defect was actually observed at; a pin names
+#             that frame. A pin is captured on BOTH legs at the SAME frame (canon@F and
+#             inter@F), unlike a grid sample whose intermediate sits at F+interval/2.
+#             Pins are additive — the grid's own samples keep the numbers they have, so
+#             adding one leaves every existing golden tile untouched.
 #
 # The frame-limit and both sample grids are DERIVED from the bk2's own length (the
 # input-frame count in its Input Log.txt). The base grid steps by `interval` from
@@ -32,57 +40,57 @@
 # enough for the shared 1700 start (movie > 1800 frames). UI-only / cutscene /
 # demo / TAS bk2s that need a bespoke start are tracked separately (plan §fan-out).
 #
-# name                                     | start | interval
-alban-rescue                             | 1700
-artisans-balloonist                      | 1700  | 100 | freeze
-artisans-bridge                          | 1700
-artisans-bridge-hq                       | 1700
-artisans-distant-water-gaps              | 1700
-artisans-distant-water-gaps-2            | 1700
-artisans-lp-waterfall                    | 1700
-artisans-water-platform-missing-polys    | 1700
-beast-makers-distant-portal              | 1700
-beast-makers-wild-flight-text            | 1700
-beast_makers_wall                        | 1700
+# name                                     | start | int. | freeze | pins
+alban-rescue                             | 1700  | 100  |        | 1756,1760
+artisans-balloonist                      | 1700  | 100  | freeze | 3130,3520
+artisans-bridge                          | 1700  | 100  |        | 1701,2000
+artisans-bridge-hq                       | 1700  | 100  |        | 2320
+artisans-distant-water-gaps              | 1700  | 100  |        | 2600,2650
+artisans-distant-water-gaps-2            | 1700  | 100  |        | 2680,2730
+artisans-lp-waterfall                    | 1700  | 100  |        | 1784,1792
+artisans-water-platform-missing-polys    | 1700  | 100  |        | 2160
+beast-makers-distant-portal              | 1700  | 100  |        | 2022
+beast-makers-wild-flight-text            | 1700  | 100  |        | 3310
+beast_makers_wall                        | 1700  | 100  |        | 1828
 camera-rotate-taps                       | 1700
-chest-destruction                        | 1700
-chest-saturation                         | 1700
-cliff-town-specular                      | 1700
-cliff-town-vista                         | 1700
-cyclorama-portal                         | 1700
-dark-hollow-shadow                       | 1700
-dark-hollow-shadow-2                     | 1700
-dream-weavers-crash                      | 1700
-egg                                      | 1700
-exit-level                               | 1700  | 100 | freeze
+chest-destruction                        | 1700  | 100  |        | 2332,2610
+chest-saturation                         | 1700  | 100  |        | 1763,1929
+cliff-town-specular                      | 1700  | 100  |        | 1792
+cliff-town-vista                         | 1700  | 100  |        | 1783,2000
+cyclorama-portal                         | 1700  | 100  |        | 1905,2075
+dark-hollow-shadow                       | 1700  | 100  |        | 2700
+dark-hollow-shadow-2                     | 1700  | 100  |        | 2068
+dream-weavers-crash                      | 1700  | 100  |        | 1657
+egg                                      | 1700  | 100  |        | 3015,3603
+exit-level                               | 1700  | 100  | freeze | 1689,1800
 fairy-kiss                               | 1700
-flame                                    | 1700
+flame                                    | 1700  | 100  |        | 1655,1667
 glide-flutter                            | 1700
-gnasty_gnorc_attack                      | 1700
-hq-texture-switch                        | 1700
-key                                      | 1700
-level-transition                         | 1700
+gnasty_gnorc_attack                      | 1700  | 100  |        | 1796,1808
+hq-texture-switch                        | 1700  | 100  |        | 2260
+key                                      | 1700  | 100  |        | 2435,3579
+level-transition                         | 1700  | 100  |        | 1850,2050
 level-transition-framebuffer             | 1700
-level-transition-gems                    | 1700
-low-fps                                  | 1700
-magic-crafters-balloonist                | 1700
-magic-crafters-portal-cyclorama          | 1700
-moby-crossfade                           | 1700
-moving-terrain                           | 1700
-nestor                                   | 1700
+level-transition-gems                    | 1700  | 100  |        | 2440,2800
+low-fps                                  | 1700  | 100  |        | 3000
+magic-crafters-balloonist                | 1700  | 100  |        | 3580
+magic-crafters-portal-cyclorama          | 1700  | 100  |        | 2075,2945
+moby-crossfade                           | 1700  | 100  |        | 1802,1808
+moving-terrain                           | 1700  | 100  |        | 2263,2438
+nestor                                   | 1700  | 100  |        | 1710,1875
 particle-circling-stars                  | 1700
 pause-menu-text-moby-swim                | 1700  | 100 | freeze
-peace-keepers-terrain-culling            | 1700
-portal-cyclorama-cull                    | 1700
-portal-ground-disocclusion               | 1700
-roll-animation                           | 1700
-rotation                                 | 1700
-specular-flame                           | 1700
-spyro-dragon-pedastal-depth              | 1700
-spyro-shadow-wall-disocclusion           | 1700
-stone-hill-distant-terrain               | 1700
-sunny-flight-exit                        | 1700  | 100 | freeze
-toasty-moving-terrain-z-fighting         | 1700
-town-square-delvin-rescue                | 1700
-town-square-portal-entry                 | 1700
+peace-keepers-terrain-culling            | 1700  | 100  |        | 3230,3238
+portal-cyclorama-cull                    | 1700  | 100  |        | 2000,2156
+portal-ground-disocclusion               | 1700  | 100  |        | 2440,2444
+roll-animation                           | 1700  | 100  |        | 1674
+rotation                                 | 1700  | 100  |        | 2140
+specular-flame                           | 1700  | 100  |        | 2620
+spyro-dragon-pedastal-depth              | 1700  | 100  |        | 3635
+spyro-shadow-wall-disocclusion           | 1700  | 100  |        | 2700,3450
+stone-hill-distant-terrain               | 1700  | 100  |        | 3020,3090
+sunny-flight-exit                        | 1700  | 100  | freeze | 2466
+toasty-moving-terrain-z-fighting         | 1700  | 100  |        | 3111
+town-square-delvin-rescue                | 1700  | 100  |        | 2574,2621
+town-square-portal-entry                 | 1700  | 100  |        | 2200,2767
 widescreen-culling                       | 1700

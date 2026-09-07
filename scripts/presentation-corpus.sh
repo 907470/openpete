@@ -157,36 +157,48 @@ PY
 # then subsampled to at most MAX_SAMPLES EVENLY-SPACED frames (first and last kept)
 # — broad within-movie coverage without one dense golden per bk2. The intermediate
 # leg is each kept canonical frame + interval/2 (the +half offset that lands the
-# deterministic alpha=0.5 present between snapshot stamps). args: start fc interval maxs
+# deterministic alpha=0.5 present between snapshot stamps).
+#
+# PINNED frames (the row's 5th field) are added on top of that grid and are never
+# subsampled away. The evenly-spaced grid is derived from movie length, so it lands
+# wherever the arithmetic puts it and routinely misses the frame a defect was actually
+# observed at; a pin names that frame explicitly. A pin contributes BOTH legs at the
+# SAME frame (canon@F and inter@F, not F+interval/2), because the point is to hold the
+# exact frame someone looked at, on the canonical and the sub-tick surface alike.
+# Pins are additive: the grid's own samples keep the numbers they already have, so
+# adding a pin re-blesses nothing that already exists. args: start fc interval maxs pins
 compute_grid() {
-  python3 - "$1" "$2" "$3" "$4" <<'PY'
+  python3 - "$1" "$2" "$3" "$4" "${5:-}" <<'PY'
 import sys
 start, fc, interval, maxs = (int(x) for x in sys.argv[1:5])
+pins = sorted({int(x) for x in (sys.argv[5] if len(sys.argv) > 5 else "").split(",") if x.strip()})
 end = start + interval * ((fc - start) // interval + 1)
-canon = list(range(start, end + 1, interval))
-if maxs > 0 and len(canon) > maxs:
-    idx = sorted(set(round(i * (len(canon) - 1) / (maxs - 1)) for i in range(maxs)))
-    canon = [canon[j] for j in idx]
-inter = [p + interval // 2 for p in canon]
+grid = list(range(start, end + 1, interval))
+if maxs > 0 and len(grid) > maxs:
+    idx = sorted(set(round(i * (len(grid) - 1) / (maxs - 1)) for i in range(maxs)))
+    grid = [grid[j] for j in idx]
+canon = sorted(set(grid) | set(pins))
+inter = sorted({p + interval // 2 for p in grid} | set(pins))
 flim = max(canon[-1], inter[-1]) + 1
 print(",".join(map(str, canon)) + "|" + ",".join(map(str, inter)) + "|" + str(flim))
 PY
 }
 
 fail=0 ran=0
-while IFS='|' read -r name start interval freeze; do
+while IFS='|' read -r name start interval freeze pins; do
   name="$(echo "$name" | tr -d ' \t')"
   [[ -z "$name" || "${name:0:1}" == "#" ]] && continue
   [[ "$name" == *"$FILTER"* ]] || continue
   start="$(echo "$start" | tr -d ' \t')"
   interval="$(echo "$interval" | tr -d ' \t')"; interval="${interval:-100}"
   freeze="$(echo "$freeze" | tr -d ' \t')"   # 4th field non-empty => --screenshot-freeze-backdrop
+  pins="$(echo "$pins" | tr -d ' \t')"       # 5th field: explicit frames, never subsampled
   bk2="games/spyro-1/bk2/${name}.bk2"
   if [[ ! -f "$bk2" ]]; then echo "  SKIP row: no bk2 $bk2"; continue; fi
   fc="$(bk2_frames "$bk2")"
   if ! [[ "$fc" =~ ^[0-9]+$ ]] || [[ "$fc" -le "$start" ]]; then
     echo "  SKIP row $name: bad/short bk2 length ($fc) vs start ($start)"; continue; fi
-  grid="$(compute_grid "$start" "$fc" "$interval" "$MAX_SAMPLES")"
+  grid="$(compute_grid "$start" "$fc" "$interval" "$MAX_SAMPLES" "$pins")"
   canon="${grid%%|*}"; rest="${grid#*|}"; inter="${rest%%|*}"; flim="${rest##*|}"
   ncanon=$(awk -F, '{print NF}' <<<"$canon"); ninter=$(awk -F, '{print NF}' <<<"$inter")
   # The binary caps ONE --screenshot list at OPENPETE_MAX_SCREENSHOT_FRAMES (64);
@@ -196,7 +208,7 @@ while IFS='|' read -r name start interval freeze; do
     echo "        screenshot cap — lower OPENPETE_MAX_SAMPLES or raise this row's interval."
     fail=1; continue; fi
   ran=$((ran+1))
-  echo "[$name] movie=$fc frame-limit=$flim  canon=[$canon]  inter=[$inter]  lods=[$CAP_LODS]${freeze:+  freeze}"
+  echo "[$name] movie=$fc frame-limit=$flim  canon=[$canon]  inter=[$inter]  lods=[$CAP_LODS]${freeze:+  freeze}${pins:+  pins=$pins}"
   # Sweep both LOD modes: original (untagged golden) + extended (lodext__ tag).
   for lod in $CAP_LODS; do
     cj_run run_one "$name" "$flim" canon --screenshot-on-frame "$canon" "$lod" "$freeze"
