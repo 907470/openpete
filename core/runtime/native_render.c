@@ -999,6 +999,11 @@ void openpete_native_scene_set_actor_front(int front) { s_scene_actor_front = fr
 static scene_tri_t s_overlay_carry[OVERLAY_CARRY_MAX];      /* curr (latest canonical capture) */
 static int                s_overlay_carry_n;
 static uint32_t           s_overlay_carry_freeze;
+/* The previous canonical tick's freeze word, so the freeze fade (bits 30:24)
+ * interpolates sub-tick like the fade word: the exit-level freeze darkens one
+ * CLUT step per tick, and applying the newest word on every sub-tick present
+ * put the intermediates a step ahead of the canonical frame. */
+static uint32_t           s_overlay_prev_freeze;
 /* The previous canonical carry set, so apply_overlay can interpolate the SCREEN
  * POSITION of an animated 2D-UI element across sub-ticks — the title-logo drop-in
  * slide moves a few px/tick; held (un-interpolated) it staircases at 30 Hz just
@@ -1057,8 +1062,20 @@ void openpete_native_scene_commit_fade(void) {
         s_scene_freeze = new_freeze;
         s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n);
     }
+    s_overlay_prev_freeze  = prev_freeze;
     s_overlay_carry_freeze = new_freeze;
     s_game_freeze_seen = 0;
+}
+
+/* Lerp two packed freeze words (bit31 active, [30:24] fade shift, [23:0]
+ * tint). Only the fade shift moves; a tint change or an activation edge snaps. */
+static uint32_t freeze_lerp(uint32_t a, uint32_t b, double t) {
+    if (!(b & (1u << 31))) return 0;
+    if (!(a & (1u << 31))) return b;
+    if ((a & 0xFFFFFFu) != (b & 0xFFFFFFu)) return b;
+    int af = (int)((a >> 24) & 0x7Fu), bf = (int)((b >> 24) & 0x7Fu);
+    int f = (int)(af + (bf - af) * t + 0.5);
+    return (b & 0x80FFFFFFu) | ((uint32_t)f << 24);
 }
 
 /* Lerp two packed fade words (bit31 active, [25:24] ABR mode, [23:0] rgb). */
@@ -1216,7 +1233,7 @@ void openpete_native_scene_apply_overlay(double alpha) {
         tri.carry = 2;                             /* mark re-applied so the next capture skips it */
         s_scene[s_scene_n++] = tri;
     }
-    s_scene_freeze = s_overlay_carry_freeze;
+    s_scene_freeze = freeze_lerp(s_overlay_prev_freeze, s_overlay_carry_freeze, oalpha);
     s_scene_fade   = fade_lerp(s_fade_prev, s_fade_curr, oalpha);
 }
 
