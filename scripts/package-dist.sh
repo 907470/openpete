@@ -185,11 +185,16 @@ APPIMAGE_HOST_CORE='^(ld-linux[^/]*|libc|libm|libdl|libpthread|librt|libresolv|l
 # Every bundled library ships its licence. The map is the authority: a
 # library the closure pulls in with no entry here fails packaging, so a
 # notice can never be silently omitted for a dependency nobody chose.
+#
+# Keyed on the library name with every version suffix stripped, because
+# the SONAME is distro-specific -- Debian 11 ships sndio as
+# libsndio.so.7.0 where later releases ship libsndio.so.7, and the licence
+# does not change with the soname.
 declare -A APPIMAGE_LIB_LICENCE=(
-    [libopenal.so.1]=third_party/OpenAL-mingw/COPYING
-    [libsndio.so.7]=docs/appimage/licences/libsndio.so.7.txt
-    [libbsd.so.0]=docs/appimage/licences/libbsd.so.0.txt
-    [libmd.so.0]=docs/appimage/licences/libmd.so.0.txt
+    [libopenal]=third_party/OpenAL-mingw/COPYING
+    [libsndio]=docs/appimage/licences/libsndio.txt
+    [libbsd]=docs/appimage/licences/libbsd.txt
+    [libmd]=docs/appimage/licences/libmd.txt
 )
 
 # DT_NEEDED name and resolved path of every direct dependency of a file.
@@ -280,10 +285,11 @@ build_appimage() {  # build_appimage <stage-dir>
     mkdir -p "$APPDIR/usr/licences"
     local so lic
     for so in $(ls "$APPDIR/usr/lib"); do
-        lic="${APPIMAGE_LIB_LICENCE[$so]:-}"
+        lic="${APPIMAGE_LIB_LICENCE[${so%%.so*}]:-}"
         [[ -n "$lic" && -f "$lic" ]] || {
             echo "[package] $so is bundled with no licence: add it to" \
                  "APPIMAGE_LIB_LICENCE" >&2; exit 1; }
+        # Named for what actually shipped, soname and all.
         cp "$lic" "$APPDIR/usr/licences/$so.txt"
     done
     echo "[package] bundled libs:" $(ls "$APPDIR/usr/lib")
