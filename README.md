@@ -415,11 +415,16 @@ and the round-trip check.
 
 ## Disc requirement
 
-Original *Spyro the Dragon* (NTSC-U, SCUS-94228) BIN/CUE pair. The .bin's
-SHA256 must be `95f03abf97c9ff0b2a64888ed7dbbb4b59a7b4363cf188cd0a562b95cfd4809f`.
-`scripts/setup.sh` validates this. Point the `OPENPETE_DISC` environment
-variable at your `.bin` (or pass `--disc` on the command line); the dev
-default is `<repo>/../roms/SCUS-94228/SCUS-94228.bin`.
+Original *Spyro the Dragon* (NTSC-U, SCUS-94228) BIN/CUE pair, as a single
+MODE2/2352 data track of 281270 sectors. The .bin's SHA256 must be
+`fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37`; that is
+the Redump-verified image, whose SHA1 `cf3ce6bedeb89dfbc40990336180f3b9b0f40d9f`
+and MD5 `387185f71cd0043fd75a19521dc75104` can be checked against Redump's
+own database entry. The same image covers the Original, Greatest Hits, and
+Collectors' Edition pressings. `scripts/setup.sh` validates the SHA256.
+Point the `OPENPETE_DISC` environment variable at your `.bin` (or pass
+`--disc` on the command line); the dev default is
+`<repo>/../roms/SCUS-94228/SCUS-94228.bin`.
 
 End-user distribution builds don't use this path at all — they ingest a
 disc into a local library on first run (see

@@ -5,7 +5,7 @@
 // runtime quirks are TODO until Phase 1b.
 //
 // Disc image: <spyro>/roms/SCUS-94228/SCUS-94228.cue
-// Disc BIN SHA256: 95f03abf97c9ff0b2a64888ed7dbbb4b59a7b4363cf188cd0a562b95cfd4809f
+// Disc BIN SHA256: fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37
 // PSX EXE: SCUS_942.28 (CRC32 over full header+body)
 
 #include "game_extras.h"

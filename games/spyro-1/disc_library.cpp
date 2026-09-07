@@ -60,7 +60,7 @@ namespace {
 
 /* README-pinned retail NTSC-U disc hash. */
 constexpr const char* kRetailSha =
-    "95f03abf97c9ff0b2a64888ed7dbbb4b59a7b4363cf188cd0a562b95cfd4809f";
+    "fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37";
 
 std::string exe_dir() {
 #ifdef _WIN32
