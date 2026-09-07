@@ -712,8 +712,26 @@ void openpete_mods_material_frame_reset(void);
 void openpete_mods_set_level(int level_id);
 int  openpete_mods_material_slot_count(void);   /* 1 + interned slots */
 const void* openpete_mods_material_slot_uniforms(int slot, uint32_t* len);
-typedef struct { uint32_t len; unsigned char bytes[256]; } openpete_mods_material_slot_snap_t;
-int  openpete_mods_material_slots_snapshot(openpete_mods_material_slot_snap_t* out, int cap);
+/* The material view: the per-present interned-slot table (bytes AND the
+ * slot -> material / material -> static-slot indices) as one immutable
+ * snapshot. The sim thread captures it at scene publish; the present
+ * thread composes a published scene through it, so every index it binds
+ * refers to the bytes it uploaded. Reading the live table from the present
+ * thread races openpete_mods_material_frame_reset, which zeroes every
+ * static slot before re-minting it: a read in that window binds block 0
+ * (the engine block) as the mod's uniforms. */
+#define OPENPETE_MODS_MATERIAL_VIEW_SLOTS 128
+#define OPENPETE_MODS_MATERIAL_VIEW_MATS   32
+typedef struct {
+    int slot_n;                                   /* 1 + interned slots */
+    struct { int mat; uint32_t len; unsigned char bytes[256]; }
+        slots[OPENPETE_MODS_MATERIAL_VIEW_SLOTS];
+    int static_slot[OPENPETE_MODS_MATERIAL_VIEW_MATS];   /* 0 = no params */
+    int ter_bucket_max;
+} openpete_mods_material_view_t;
+void openpete_mods_material_view_capture(openpete_mods_material_view_t* out);
+/* Present thread: resolve/bind through `v` until set back to NULL (live). */
+void openpete_mods_material_view_set(const openpete_mods_material_view_t* v);
 /* Enabled-list position of a mod (0-based load order; -1 unknown). */
 int  openpete_mods_load_index_of(openpete_mod_t* self);
 /* Last present-flush ctx (mod_draw.c) — the postfx engine UBO's

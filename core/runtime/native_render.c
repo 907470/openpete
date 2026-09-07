@@ -294,7 +294,6 @@ static int                s_scene_n;
  * overwriting bytes a still-pending scene draws. */
 enum { SS_FREE = 0, SS_PENDING, SS_PRESENTING, SS_PRESENTED };
 #define SCENE_RING 48
-#define SCENE_MAT_SLOTS 128
 typedef struct {
     scene_tri_t *tri; int cap, n;
     uint32_t bg, fade, freeze; int hud_under, actor_front;
@@ -306,7 +305,7 @@ typedef struct {
     int       suppress_player;
     openpete_shadow_decal_params shadow;
     uint32_t  pctx_tick; float pctx_alpha; int pctx_canonical;
-    openpete_mods_material_slot_snap_t mat[SCENE_MAT_SLOTS]; int mat_n;
+    openpete_mods_material_view_t matview;   /* interned material slots at publish */
     /* scheduling */
     uint32_t  scene_id;
     op_time_t target_ns;           /* the present instant alpha was computed for */
@@ -9135,7 +9134,7 @@ static void fill_material_ubo(void)
                                    MAT_UBO_BLOCKS);
     if (!s_mat_ubo) return;
     write_engine_block(s_mat_ubo, 0, 0, 0);
-    int nslots = s_ps_slot ? s_ps_slot->mat_n : openpete_mods_material_slot_count();   /* 1 + interned */
+    int nslots = s_ps_slot ? s_ps_slot->matview.slot_n : openpete_mods_material_slot_count();   /* 1 + interned */
     /* Per-instance material census (OPENPETE_MATERIAL_STATS=1): the peak
      * interned-slot count is the structural proof that per-instance
      * callbacks produce distinct outcomes AND the batcher splits by
@@ -9153,7 +9152,7 @@ static void fill_material_ubo(void)
     }
     for (int s = 1; s < nslots && s < MAT_UBO_BLOCKS - 1; s++) {
         uint32_t len = 0;
-        const void* p = s_ps_slot ? (len = s_ps_slot->mat[s].len, (const void*)s_ps_slot->mat[s].bytes)
+        const void* p = s_ps_slot ? (len = s_ps_slot->matview.slots[s].len, (const void*)s_ps_slot->matview.slots[s].bytes)
                                   : openpete_mods_material_slot_uniforms(s, &len);
         if (p && len) rhi_ubo_write(s_mat_ubo, 1 + s, p, len);
     }
@@ -9590,7 +9589,7 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
     sl->suppress_player = s_suppress_player;
     sl->shadow = s_shadow_decal;
     openpete_mods_present_ctx(&sl->pctx_tick, &sl->pctx_alpha, &sl->pctx_canonical);
-    sl->mat_n = openpete_mods_material_slots_snapshot(sl->mat, SCENE_MAT_SLOTS);
+    openpete_mods_material_view_capture(&sl->matview);
     sl->scene_id = s_scene_id_next++;
     sl->target_ns = target_ns; sl->alpha = alpha; sl->paired = paired; sl->kind = kind;
     sl->presented_serial = 0;
@@ -9790,6 +9789,7 @@ static int render_scene_impl(int slot, int stage, uint64_t record_pts_us)
     notex_apply_pending();
     truescope_apply_pending();
     s_ps_slot = sl;
+    openpete_mods_material_view_set(&sl->matview);
     s_stage_target = stage;
     const uint64_t before = rhi_frame_serial(s_nr.dev);
     render_frame_common(record_pts_us, false);
@@ -9802,6 +9802,7 @@ static int render_scene_impl(int slot, int stage, uint64_t record_pts_us)
       if (sl->n <= maxn) pt_dump_maybe(after != before, sl->frame, sl->stamp, sl->freeze); }
     s_stage_target = -1;
     rhi_set_present_blocking(s_nr.dev, false);
+    openpete_mods_material_view_set(NULL);
     s_ps_slot = NULL;
     const int did = after != before && s_last_frame_presented;
     /* PRESENTED here means "its GPU reads are in flight under render serial

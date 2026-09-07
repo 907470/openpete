@@ -919,6 +919,8 @@ static int s_mat_has_instance;   /* cached: any live selector has a callback */
 /* Per-present interned per-instance slots (S8b). Index 0 reserved
  * (= "defer to draw-time class resolve"); 1.. are interned outcomes. */
 #define MOD_MATERIAL_SLOTS 128
+_Static_assert(MOD_MATERIAL_SLOTS == OPENPETE_MODS_MATERIAL_VIEW_SLOTS, "view mirrors the slot table");
+_Static_assert(MOD_MATERIAL_MAX == OPENPETE_MODS_MATERIAL_VIEW_MATS, "view mirrors the material table");
 typedef struct {
     int      mat;            /* winning selector index */
     uint32_t len;
@@ -926,6 +928,13 @@ typedef struct {
 } mat_slot_t;
 static mat_slot_t s_mat_slots[MOD_MATERIAL_SLOTS];
 static int s_mat_slot_n = 1;    /* next free; 0 is the reserved sentinel */
+
+/* The present thread's view of the slot table (NULL = the live table, for
+ * the single-threaded path). See openpete_mods_material_view_t. */
+static const openpete_mods_material_view_t* s_mat_view;
+static int view_slot_n(void) { return s_mat_view ? s_mat_view->slot_n : s_mat_slot_n; }
+static int view_slot_mat(int s) { return s_mat_view ? s_mat_view->slots[s].mat : s_mat_slots[s].mat; }
+static int view_static_slot(int m) { return s_mat_view ? s_mat_view->static_slot[m] : s_mats[m].static_slot; }
 
 /* Slot ids are minted from ONE global counter but stamped into per-path
  * tag fields of differing width, so the table can never outgrow the
@@ -1040,6 +1049,7 @@ int openpete_mods_material_terrain_bucket(int texid, int env, int lp) {
 }
 
 int openpete_mods_material_terrain_bucket_max(void) {
+    if (s_mat_view) return s_mat_view->ter_bucket_max;
     int max = 0, level = openpete_mods_current_level();
     for (int i = 0; i < s_mat_count; i++) {
         if (!terrain_sel_usable(&s_mats[i], level)) continue;
@@ -1066,7 +1076,7 @@ int openpete_mods_material_terrain_bucket_gpu(
         if (slot == OPENPETE_MATERIAL_TERRAIN_STOCK || slot <= 0) return -1;
         out->uniform_slot = slot;
     } else {
-        out->uniform_slot = m->static_slot;
+        out->uniform_slot = view_static_slot(bucket - 1);
     }
     out->frag_spv = openpete_mods_shader_spv_terrain(m->frag, &out->frag_words);
     if (!out->frag_spv || out->frag_words == 0) return -1;
@@ -1334,14 +1344,17 @@ int  openpete_mods_material_slot_count(void) { return s_mat_slot_n; }
  * native_render.c). `cap` is the caller's slot capacity; returns the count
  * copied (1 + interned). Bytes are packed at OPENPETE_MATERIAL_UNIFORMS_MAX
  * stride so the compose can index them the same way as the live table. */
-int openpete_mods_material_slots_snapshot(openpete_mods_material_slot_snap_t* out, int cap) {
-    int n = s_mat_slot_n < cap ? s_mat_slot_n : cap;
-    for (int i = 1; i < n; i++) {
-        out[i].len = s_mat_slots[i].len;
-        memcpy(out[i].bytes, s_mat_slots[i].bytes, s_mat_slots[i].len);
+void openpete_mods_material_view_capture(openpete_mods_material_view_t* out) {
+    out->slot_n = s_mat_slot_n;
+    for (int i = 1; i < s_mat_slot_n; i++) {
+        out->slots[i].mat = s_mat_slots[i].mat;
+        out->slots[i].len = s_mat_slots[i].len;
+        memcpy(out->slots[i].bytes, s_mat_slots[i].bytes, s_mat_slots[i].len);
     }
-    return n;
+    for (int i = 0; i < MOD_MATERIAL_MAX; i++) out->static_slot[i] = s_mats[i].static_slot;
+    out->ter_bucket_max = openpete_mods_material_terrain_bucket_max();
 }
+void openpete_mods_material_view_set(const openpete_mods_material_view_t* v) { s_mat_view = v; }
 
 const void* openpete_mods_material_slot_uniforms(int slot, uint32_t* len) {
     if (slot <= 0 || slot >= s_mat_slot_n) { if (len) *len = 0; return NULL; }
@@ -1499,7 +1512,7 @@ int openpete_mods_material_terrain_untex_slot(CPUState* cpu) {
  * revisits, so a rebuild through it would cache a pipeline nothing can
  * ever destroy. Both cases fall back to the stock draw. */
 static int material_slot_usable(int slot) {
-    int m = s_mat_slots[slot].mat;
+    int m = view_slot_mat(slot);
     return m >= 0 && m < s_mat_count && s_mats[m].live &&
            openpete_mods_is_enabled(s_mats[m].owner);
 }
@@ -1520,7 +1533,7 @@ static int material_fill_gpu(int best, int uniform_slot,
     out->owner = m->owner;
     /* A per-instance slot always wins; otherwise fall back to this
      * material's static block (0 = no params at all). */
-    out->uniform_slot = uniform_slot > 0 ? uniform_slot : m->static_slot;
+    out->uniform_slot = uniform_slot > 0 ? uniform_slot : view_static_slot(best);
     return best;
 }
 
@@ -1537,9 +1550,9 @@ int openpete_mods_material_resolve(uint32_t tag,
         int slot = (int)((tag >> 16) & 0xFFFu);
         if (slot == OPENPETE_MATERIAL_SLOT_STOCK) return -1;   /* declined */
         if (slot != 0) {
-            if (slot >= s_mat_slot_n) return -1;    /* stale (post-reset) */
+            if (slot >= view_slot_n()) return -1;   /* stale (post-reset) */
             if (!material_slot_usable(slot)) return -1;   /* toggled/swept */
-            return material_fill_gpu(s_mat_slots[slot].mat, slot, out);
+            return material_fill_gpu(view_slot_mat(slot), slot, out);
         }
         /* slot 0 → fall through to declarative class resolve */
     }
@@ -1549,9 +1562,9 @@ int openpete_mods_material_resolve(uint32_t tag,
         int slot = (int)((tag >> 16) & 0x1FFu);
         if (slot == OPENPETE_MATERIAL_TERRAIN_STOCK) return -1;   /* declined */
         if (slot != 0) {
-            if (slot >= s_mat_slot_n) return -1;    /* stale (post-reset) */
+            if (slot >= view_slot_n()) return -1;   /* stale (post-reset) */
             if (!material_slot_usable(slot)) return -1;   /* toggled/swept */
-            return material_fill_gpu(s_mat_slots[slot].mat, slot, out);
+            return material_fill_gpu(view_slot_mat(slot), slot, out);
         }
         /* slot 0 → fall through to declarative resolve */
     }
