@@ -33,6 +33,7 @@
 #include "openpete_rewind.h"
 #include "openpete_record.h"
 #include "openpete_native_render.h"
+#include "openpete_ident_audit.h"
 #include "openpete_menu.h"
 #include "openpete_devui.h"
 #include "openpete_camlock.h"
@@ -4673,6 +4674,20 @@ static int run_host_loop(const openpete_options_t* opts) {
                     openpete_native_render_screenshot_all(base);
                     if (pt_was) openpete_present_thread_set_active(1);
                 }
+            }
+
+            /* Every-tick identity audit (OPENPETE_IDENT_AUDIT=<start VBL>):
+             * compose this present's canonical scene and the alpha-1 re-extract
+             * of the same tick, and report their pixel difference. Placed
+             * between the two dump blocks so both still see the untouched
+             * canonical scene — the audit restores it before returning. */
+            if (openpete_ident_audit_armed()) {
+                const int pt_was = openpete_present_thread_active();
+                if (pt_was) openpete_present_thread_set_active(0);
+                openpete_ident_audit_present(&g_game.cpu, openpete_frame,
+                                             openpete_canon_tick,
+                                             opts->screenshot_output);
+                if (pt_was) openpete_present_thread_set_active(1);
             }
 
             /* Presentation-golden intermediate leg: deterministic sub-tick

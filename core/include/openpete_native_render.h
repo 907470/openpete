@@ -1181,6 +1181,21 @@ void openpete_native_render_record_flush(void);
  * nonzero otherwise (including when the native path is disabled). */
 int openpete_native_render_screenshot_all(const char *base);
 
+/* In-memory twin of the above: the same compose (same capture target, same
+ * widescreen widen, same scene selection) read back into a malloc'd top-down
+ * RGBA buffer instead of written as a PNG. *out is the caller's to free; *w and
+ * *h receive the capture extent. Returns 0 on success. */
+int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h);
+
+/* Save / restore the accumulating scene (s_scene and its per-frame scalars).
+ * A caller that drives a re-extract only to inspect its output brackets it with
+ * these: the re-extract rebuilds s_scene in place, and the next frame's
+ * begin_frame would otherwise snapshot that rebuilt scene into the frame-history
+ * ring in place of the canonical one. save returns 0 on success; restore is a
+ * no-op when nothing is saved. */
+int  openpete_native_scene_save(void);
+void openpete_native_scene_restore(void);
+
 /* Intermediate (sub-tick alpha=0.5) capture: make the next
  * openpete_native_render_screenshot_all compose the CURRENT scene (depth 0)
  * instead of the lagged frame-history slot. The re-extract builds the

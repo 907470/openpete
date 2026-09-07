@@ -35,6 +35,7 @@
 #include "openpete_log.h"
 #include "openpete_time.h"   /* op_now — overlay's own sub-tick alpha (camera-independent) */
 #include "openpete_subtick_view.h" /* engagement report at shutdown */
+#include "openpete_ident_audit.h"  /* headless bring-up gate: the audit is a consumer */
 #include "openpete_interp.h" /* deterministic present clock for the overlay sub-tick alpha */
 #include "openpete_interp_objs.h" /* tick stamp + period for the overlay sub-tick alpha */
 #include "openpete_record.h" /* native --record capture seam */
@@ -719,6 +720,50 @@ void openpete_native_scene_begin_frame(unsigned frame) {
          * and the material silently falls back to stock. */
         openpete_mods_material_frame_reset();
     }
+}
+
+/* Accumulating-scene save/restore. A re-extract rebuilds s_scene in place, so a
+ * caller that drives one purely to look at the result must put the canonical
+ * scene back: the next openpete_native_scene_begin_frame snapshots whatever
+ * sits in s_scene into the frame-history ring, and censuses it on the way past.
+ * Saves only the live prefix (s_scene_n tris); the buffer is grown on demand and
+ * never shrinks, so a steady-state caller allocates once. Returns 0 on success;
+ * a failed save returns nonzero and leaves nothing to restore. */
+static scene_tri_t *s_scene_saved;
+static int          s_scene_saved_cap;
+static int          s_scene_saved_n = -1;   /* -1 = nothing saved */
+static uint32_t     s_scene_saved_fam[16];
+static uint32_t     s_scene_saved_bg, s_scene_saved_fade, s_scene_saved_freeze;
+static int          s_scene_saved_hud_under, s_scene_saved_actor_front, s_scene_saved_dropped;
+
+int openpete_native_scene_save(void) {
+    if (s_scene_n > s_scene_saved_cap) {
+        scene_tri_t *g = realloc(s_scene_saved, (size_t)s_scene_n * sizeof(scene_tri_t));
+        if (!g) return 1;
+        s_scene_saved = g; s_scene_saved_cap = s_scene_n;
+    }
+    if (s_scene_n > 0) memcpy(s_scene_saved, s_scene, (size_t)s_scene_n * sizeof(scene_tri_t));
+    s_scene_saved_n = s_scene_n;
+    memcpy(s_scene_saved_fam, s_scene_fam_n, sizeof s_scene_fam_n);
+    s_scene_saved_bg = s_scene_bg; s_scene_saved_fade = s_scene_fade;
+    s_scene_saved_freeze = s_scene_freeze;
+    s_scene_saved_hud_under = s_scene_hud_under;
+    s_scene_saved_actor_front = s_scene_actor_front;
+    s_scene_saved_dropped = s_scene_dropped;
+    return 0;
+}
+
+void openpete_native_scene_restore(void) {
+    if (s_scene_saved_n < 0) return;
+    if (s_scene_saved_n > 0) memcpy(s_scene, s_scene_saved, (size_t)s_scene_saved_n * sizeof(scene_tri_t));
+    s_scene_n = s_scene_saved_n;
+    memcpy(s_scene_fam_n, s_scene_saved_fam, sizeof s_scene_fam_n);
+    s_scene_bg = s_scene_saved_bg; s_scene_fade = s_scene_saved_fade;
+    s_scene_freeze = s_scene_saved_freeze;
+    s_scene_hud_under = s_scene_saved_hud_under;
+    s_scene_actor_front = s_scene_saved_actor_front;
+    s_scene_dropped = s_scene_saved_dropped;
+    s_scene_saved_n = -1;
 }
 
 /* The frame stamp of the scene currently accumulating in s_scene
@@ -1758,8 +1803,12 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * native OFF, so those gates are unaffected. The live present loop never runs
      * headless; only openpete_native_render_screenshot_all is driven (run.c). */
     const bool headless = opts->headless;
+    /* The identity audit is a headless native consumer too: it composes the
+     * scene twice per canonical present and never writes a PNG, so it arms the
+     * surfaceless bring-up on its own. */
     if (headless && opts->screenshot_frame_count <= 0 &&
-                    opts->screenshot_intermediate_count <= 0) {
+                    opts->screenshot_intermediate_count <= 0 &&
+                    !openpete_ident_audit_armed()) {
         OPL_WARN_F("native", "--renderer vk|ab|diff ignored under --headless (no screenshots requested)");
         return 0;
     }
@@ -10032,7 +10081,11 @@ static void path_with_suffix(const char *base, const char *suffix,
     else     snprintf(out, cap, "%s%s", base, suffix);
 }
 
-static int native_render_screenshot_all_impl(const char *base);
+/* cap_out/cap_w/cap_h: when cap_out is non-NULL the composed native RGBA frame
+ * is handed to the caller (malloc'd, top-down, alpha forced opaque) and no PNG
+ * is written — the in-memory form of the same compose the -vk dump writes. */
+static int native_render_screenshot_all_impl(const char *base, unsigned char **cap_out,
+                                             int *cap_w, int *cap_h);
 
 /* Capture-time freeze-backdrop maintenance. Render the CURRENT world frame into
  * shot_frozen so a later freeze-frame dump has the frozen-world backdrop to tint
@@ -10108,7 +10161,8 @@ void openpete_native_render_snapshot_frozen(float cap_wf)
  * and writes the single -vk PNG. Content-sized (no window letterbox); the ab/
  * diff variants are not produced (there is no PsyCross reference in native-only
  * mode). Returns 0 on success. base is the caller's screenshot path stem. */
-static int native_shot_widescreen(const char *base, int H, float cap_wf)
+static int native_shot_widescreen(const char *base, int H, float cap_wf,
+                                  unsigned char **cap_out, int *cap_w, int *cap_h)
 {
     const int Wc = (int)((double)s_nr.ref_w * (double)cap_wf + 0.5);
     rhi_texture *rt = ensure_shot_rtt(Wc, H);
@@ -10162,6 +10216,13 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf)
     if (!rhi_read_render_target(s_nr.dev, rt, nat, px * 4, &nw, &nh)) { free(nat); return 1; }
     for (size_t i = 0; i < px; i++) nat[i * 4 + 3] = 0xFF;   /* GPU blend alpha → opaque */
 
+    if (cap_out) {   /* in-memory readback: hand over the buffer, write no PNG */
+        *cap_out = nat;
+        if (cap_w) *cap_w = Wc;
+        if (cap_h) *cap_h = H;
+        return 0;
+    }
+
     int rc = 0;
     char path[1100];
     path_with_suffix(base, "-vk", path, sizeof(path));
@@ -10187,10 +10248,28 @@ int openpete_native_render_screenshot_all(const char *base)
      * scene is exactly the tercache LIVE state (the staged/live promote
      * mirrors the canonical lag). */
     openpete_tercache_frame_select(scene_present_stamp());
-    int r = native_render_screenshot_all_impl(base);
+    int r = native_render_screenshot_all_impl(base, NULL, NULL, NULL);
     s_scene_shot_compose = 0;
     s_scene_shot_lag = 0;
     return r;
+}
+
+/* In-memory twin of openpete_native_render_screenshot_all: same compose, same
+ * bracket, same capture target and widen — the frame lands in a malloc'd RGBA
+ * buffer instead of a PNG. The caller owns *out. Returns 0 on success. */
+int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h)
+{
+    if (!out) return 1;
+    *out = NULL;
+    truescope_apply_pending();
+    s_scene_shot_compose = 1;
+    s_scene_shot_lag = s_nr.headless ? 1 : 0;
+    openpete_tercache_frame_select(scene_present_stamp());
+    int r = native_render_screenshot_all_impl("ident-audit", out, w, h);
+    s_scene_shot_compose = 0;
+    s_scene_shot_lag = 0;
+    if (r != 0 && *out) { free(*out); *out = NULL; }
+    return r || !*out;
 }
 
 /* Blocking off_image readback → PNG. Shared by the A/B present capture and the
@@ -10217,7 +10296,8 @@ static int shot_write_offscreen(const char *path, const char *what)
     return rc;
 }
 
-static int native_render_screenshot_all_impl(const char *base)
+static int native_render_screenshot_all_impl(const char *base, unsigned char **cap_out,
+                                             int *cap_w, int *cap_h)
 {
     ps_apply_geometry();
     if (!s_nr.enabled || !base) return 1;
@@ -10235,7 +10315,7 @@ static int native_render_screenshot_all_impl(const char *base)
      *   - intermediate capture (s_scene_shot_nodelay): the caller re-extracted
      *     a sub-tick scene precisely to have it RECOMPOSED deterministically. */
     bool live_vk = false;
-    if (!s_nr.headless && !s_nr.diff_mode && !s_nr.ab_mode && !s_scene_shot_nodelay) {
+    if (!s_nr.headless && !s_nr.diff_mode && !s_nr.ab_mode && !s_scene_shot_nodelay && !cap_out) {
         char lp[1100];
         path_with_suffix(base, "-vk", lp, sizeof(lp));
         live_vk = shot_write_offscreen(lp, "vk (live present)") == 0;
@@ -10282,7 +10362,7 @@ static int native_render_screenshot_all_impl(const char *base)
     if (!with_ref && !s_scene_ref_compare) {
         float cap_wf = openpete_native_widescreen_factor();
         if (cap_wf > 1.0001f)
-            return native_shot_widescreen(base, s_nr.ref_h, cap_wf);
+            return native_shot_widescreen(base, s_nr.ref_h, cap_wf, cap_out, cap_w, cap_h);
     }
 
     /* Compose every variant at the REFERENCE resolution rather than the window
@@ -10375,6 +10455,13 @@ static int native_render_screenshot_all_impl(const char *base)
      * force opaque so the PNGs don't show viewer transparency checkerboard.
      * ab inherits from nat/ref below; dif already writes 0xFF. */
     for (size_t i = 0; i < frame_px; i++) nat[i * 4 + 3] = 0xFF;
+    if (cap_out) {   /* in-memory readback: hand over the buffer, write no PNG */
+        *cap_out = nat;
+        if (cap_w) *cap_w = W;
+        if (cap_h) *cap_h = H;
+        free(ref); free(ab); free(dif);
+        return 0;
+    }
     if (with_ref) {
         /* The PsyCross readback is GL bottom-up; flip to top-down to match the RTT. */
         for (int y = 0; y < H; y++)

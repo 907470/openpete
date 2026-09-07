@@ -184,6 +184,12 @@ add_library(openpete_core STATIC
     runtime/native_render.c
     runtime/native_vram.c
 
+    # Sub-tick spine identity audit (OPENPETE_IDENT_AUDIT). Composes the
+    # canonical scene and the alpha-1 re-extract of the same tick each
+    # canonical present and reports their pixel difference; a pure observer of
+    # the run it measures.
+    runtime/ident_audit.c
+
     # Per-feature modules. See notes/plans/openpete-feature-modules.md.
     features/no_lod.c
     features/widescreen.c
