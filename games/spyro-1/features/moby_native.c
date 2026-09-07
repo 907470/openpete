@@ -178,6 +178,12 @@ static int moby_gte_near_fixup(const int M[3][3], const double TR[3],
  * the moby's prev/curr snapshots for sub-tick float rotation interpolation. */
 static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t moby, int out[3][3]);
 
+/* Forward decls: the dragon-rescue cutscene actor selector and its ownership
+ * window, defined with the cutscene struct offsets later in this file. The
+ * widescreen reveal (below) consults both. */
+static int moby_is_cutscene_actor(CPUState* cpu, uint32_t mob);
+static int moby_cutscene_owns_draw(CPUState* cpu);
+
 /* ---- ground-truth capture: decode prims F798 emitted ---------------- */
 /* Walk by OT tag length (stride=((w0>>24)+1)*4) — robust regardless of the
  * exact per-code layout. Decode XY/RGB/UV by code byte (prim[0x7]); the
@@ -1245,6 +1251,17 @@ static int append_revealed_regular_inner(CPUState* cpu) {
             TRC("skip=run-once (retires on its first update)");
             m += 0x58; continue;
         }
+        /* The cutscene renderer draws the rescue actors itself, under a camera
+         * framed on exactly those actors. They never enter the .s REG queue, so
+         * the dedup below cannot see them, and their radius routinely exceeds
+         * their view-Z during the cutscene — a mesh straddling the camera plane
+         * has no valid projection through this path and smears across the
+         * frame. They are also tagged ACTOR_FRONT and depth-punched, so an
+         * actor pulled into the widened view draws through the world. */
+        if (moby_cutscene_owns_draw(cpu) && moby_is_cutscene_actor(cpu, m)) {
+            TRC("skip=cutscene-actor (drawn by the cutscene producer)");
+            m += 0x58; continue;
+        }
         /* dedup vs every REG-handled moby (s_reg_moby: the .s queue set, plus —
          * on the sub-tick re-extract — occl-culled and hold-replayed mobys, so
          * a held off-4:3 speck is never double-drawn by the reveal) */
@@ -1528,6 +1545,15 @@ static int moby_is_cutscene_actor(CPUState* cpu, uint32_t mob) {
     return mob == cpu->read_word(G_DRAGONCUTSCENE_RESCUED) ||
            mob == cpu->read_word(G_DRAGONCUTSCENE_CUTDRAGON) ||
            mob == cpu->read_word(G_DRAGONCUTSCENE_CUTSPYRO);
+}
+
+/* The cutscene renderer (func_8001CFDC) owns the actor set above while
+ * g_Gamestate is GS_Dragon and m_State is 1..6. State 0 is the ordinary full
+ * draw; past state 6 the full level moby set is re-queued, so the actors are
+ * no longer drawn by a producer of their own. */
+static int moby_cutscene_owns_draw(CPUState* cpu) {
+    uint32_t st = cpu->read_word(0x80077058u);
+    return cpu->read_word(0x800757D8u) == 8u && st >= 1u && st <= 6u;
 }
 
 /* Render-time-animated colour cache (the boundary-barrier shimmer). Identity of
@@ -4764,9 +4790,7 @@ static void shaded_pcol_scratch_check(CPUState* cpu) {
 static void moby_native_set_actor_front(CPUState* cpu) {
     static int s_en = -1;
     if (s_en < 0) { const char* e = getenv("OPENPETE_ACTOR_FRONT"); s_en = (e && *e) ? (*e != '0') : 1; }
-    uint32_t st = cpu->read_word(0x80077058u);
-    openpete_native_scene_set_actor_front(
-        s_en && cpu->read_word(0x800757D8u) == 8u && st >= 1u && st <= 6u);
+    openpete_native_scene_set_actor_front(s_en && moby_cutscene_owns_draw(cpu));
 }
 
 static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
