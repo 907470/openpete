@@ -4692,7 +4692,18 @@ static int run_host_loop(const openpete_options_t* opts) {
                                    "(spawn/load/static) — capturing canonical pose",
                                    opts->screenshot_intermediate_frames[si]);
                     op_time_t curr_ns = openpete_interp_curr_tick_ns();
-                    openpete_interp_set_present_target(curr_ns + g_openpete_tick_period_ns / 2);
+                    /* OPENPETE_INTERMEDIATE_ALPHA=<0..1> (harness): the sub-tick
+                     * phase of the capture as a fraction of the tick period. 0
+                     * and 1 sit on the tick stamps themselves, so the re-extract
+                     * can be diffed against the canonical dump of the same tick
+                     * as an identity check on the spine. Default 0.5. */
+                    static double s_int_alpha = -1.0;
+                    if (s_int_alpha < 0.0) {
+                        const char* e = getenv("OPENPETE_INTERMEDIATE_ALPHA");
+                        s_int_alpha = (e && *e) ? atof(e) : 0.5;
+                        if (s_int_alpha < 0.0) s_int_alpha = 0.0; else if (s_int_alpha > 1.0) s_int_alpha = 1.0;
+                    }
+                    openpete_interp_set_present_target(curr_ns + (op_time_t)((double)g_openpete_tick_period_ns * s_int_alpha));
                     ire(&g_game.cpu);                      /* s_scene @ sub-tick midpoint */
                     openpete_interp_set_present_target(0); /* restore op_now() fallback */
                     char base[1024];
@@ -4706,8 +4717,8 @@ static int run_host_loop(const openpete_options_t* opts) {
                     openpete_native_render_screenshot_all(base);
                     openpete_native_render_set_capture_nodelay(0);
                     OPL_INFO_F("screenshot",
-                               "wrote intermediate alpha=0.5 native -vk on frame %u (target=%d, paired=%d)",
-                               openpete_frame, opts->screenshot_intermediate_frames[si], paired);
+                               "wrote intermediate alpha=%.3f native -vk on frame %u (target=%d, paired=%d)",
+                               s_int_alpha, openpete_frame, opts->screenshot_intermediate_frames[si], paired);
                 }
             }
 
