@@ -7,6 +7,9 @@
 # native-only path:
 #   canonical   VBL-keyed frames                -> <name>__canon__<frame>-vk.png
 #   intermediate deterministic alpha=0.5 frames  -> <name>__inter__<frame>-vk.png
+#   identity     alpha=0 re-extract on the canon frames -> <name>__ident__<frame>-vk.png
+#                (not a golden tile: presentation-ident-check.py diffs it against the
+#                 canon tile of the same frame from the same capture)
 # Both legs are gameplay-neutral display captures; the same-binary depth kill
 # switch (OPENPETE_DEPTH_AFFINE) selects legacy vs candidate depth so golden and
 # candidate differ ONLY by the change under test.
@@ -107,6 +110,9 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze
   # freeze frames dump dark (frozen_tex is a live-window-only snapshot). Off
   # elsewhere — it renders an extra frame per present.
   local freeze_arg=(); [[ -n "$freeze" ]] && freeze_arg=(--screenshot-freeze-backdrop)
+  # The identity leg is the intermediate re-extract phased onto the tick stamp
+  # (alpha 0), which must reproduce the canonical dump of the same frame.
+  local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=0)
   # Always capture at 16:9 so the golden catches widescreen (Hor+) artifacts —
   # the revealed side world and the reveal-edge seams a 4:3 dump can't see. The
   # headless native-only capture honors --aspect (openpete_native_widescreen_factor
@@ -116,7 +122,7 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze
   # silent (a fanned-out corpus otherwise plays dozens of instances).
   # --no-config: golden images are compared pixel-for-pixel, so the run has
   # to be independent of any openpete.toml on the machine capturing them.
-  timeout 300 "$BIN" --headless --no-config --disc "$DISC" --run-recomp 0x80012204 --renderer vk \
+  env "${leg_env[@]}" timeout 300 "$BIN" --headless --no-config --disc "$DISC" --run-recomp 0x80012204 --renderer vk \
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" \
     --bk2 "games/spyro-1/bk2/${name}.bk2" --screenshot-native-only \
     "$flag" "$targets" --screenshot-output "$out" \
@@ -213,6 +219,7 @@ while IFS='|' read -r name start interval freeze pins; do
   for lod in $CAP_LODS; do
     cj_run run_one "$name" "$flim" canon --screenshot-on-frame "$canon" "$lod" "$freeze"
     cj_run run_one "$name" "$flim" inter --screenshot-intermediate-on-frame "$inter" "$lod" "$freeze"
+    cj_run run_one "$name" "$flim" ident --screenshot-intermediate-on-frame "$canon" "$lod" "$freeze"
   done
 done < "$MANIFEST"
 cj_wait || fail=1

@@ -31,7 +31,10 @@ DEFAULT_GOLDEN = "tests/golden/spyro-1/presentation"
 
 
 def list_vk(d):
-    return sorted(f for f in os.listdir(d) if f.endswith("-vk.png")) if os.path.isdir(d) else []
+    # __ident__ tiles are the alpha-0 identity leg: compared against the canon
+    # tile of the same capture by presentation-ident-check.py, never golden.
+    return sorted(f for f in os.listdir(d)
+                  if f.endswith("-vk.png") and "__ident__" not in f) if os.path.isdir(d) else []
 
 
 def diff_pair(golden, cand, diff_out):

@@ -34,6 +34,7 @@ for a in "$@"; do case "$a" in --all) all=1;; *) filters+=("$a");; esac; done
 
 promoted=0
 for f in "$CAND"/*-vk.png; do
+  [[ "$f" == *__ident__* ]] && continue   # identity-leg tile: never a golden
   base="$(basename "$f")"
   if [[ $all -eq 0 ]]; then
     match=0

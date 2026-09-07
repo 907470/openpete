@@ -21,7 +21,8 @@
 # diff, then run presentation-corpus-promote.sh against that directory. Only a
 # whole-corpus re-bless needs --bless. PRESENTATION_GOLDEN_KEEP=0 discards them.
 #
-# Exit: 0 = matches golden, 1 = divergence, 64 = SKIP (prereqs missing).
+# Exit: 0 = matches golden and the identity leg is within baseline, 1 = divergence
+#       or identity exceed, 64 = SKIP (prereqs missing).
 #
 # See notes/plans/openpete-presentation-golden.md.
 set -u
@@ -68,13 +69,26 @@ if [[ $frc -eq 1 ]]; then echo "[presentation-golden] FAIL: freecam capture inco
 
 if [[ $BLESS -eq 1 ]]; then
   scripts/presentation-corpus-promote.sh "$OUT" --all
+  python3 scripts/presentation-ident-check.py "$OUT" --bless
   echo "[presentation-golden] blessed — review 'git diff --cached --stat' and commit"
   exit 0
 fi
 
+# Identity leg: the alpha-0 re-extract against the canon tile of the same
+# capture (no golden). Runs whether or not the golden diff below passes, so
+# one run reports both verdicts.
+python3 scripts/presentation-ident-check.py "$OUT"
+irc=$?
+
 python3 scripts/presentation-corpus-diff.py "$OUT" --diff-out "$OUT/diff"
 drc=$?
 if [[ $drc -eq 64 ]]; then echo "[presentation-golden] SKIP (diff prereqs missing)"; exit 64; fi
+if [[ $irc -ne 0 && $irc -ne 64 ]]; then
+  echo "[presentation-golden] FAIL: identity leg exceeds its baseline (see EXCEED lines above)."
+  echo "  A raised count is a sub-tick spine regression. Re-baseline only for a"
+  echo "  deliberate change: scripts/presentation-ident-check.py $OUT --bless"
+  [[ $drc -eq 0 ]] && exit 1
+fi
 if [[ $drc -ne 0 ]]; then
   echo "[presentation-golden] FAIL: candidate diverged from golden."
   echo "  Candidate images kept in: $OUT"
