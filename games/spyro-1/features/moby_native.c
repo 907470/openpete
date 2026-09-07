@@ -1222,6 +1222,17 @@ static int append_revealed_regular_inner(CPUState* cpu) {
      *    same 0x7F<<8 view-Z the saturated compare admitted. */
     int nl = openpete_no_lod;
     if (F <= 1.0f && !nl) return 0;                     /* 4:3, LOD faithful — nothing to reveal */
+    /* While the rescue cutscene owns the draw it renders its own actor set and
+     * no level geometry, so the widened view must add none either. Revealing
+     * only the off-window mobys put props in the side strips while the same
+     * props inside the 4:3 window were ceded to a queue that does not draw
+     * them — present at the edges, absent from the centre of one scene. The
+     * cutscene actors are excluded by the same rule: they are drawn by the
+     * cutscene renderer, are depth-punched as ACTOR_FRONT, and their radius
+     * exceeds their view-Z through most of the cutscene, so a revealed copy
+     * straddles the camera plane and has no valid projection. Applies at every
+     * LOD — extended LOD reaches the cutscene through this builder too. */
+    if (moby_cutscene_owns_draw(cpu)) return 0;
     float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
     double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
     double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
@@ -1249,17 +1260,6 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         if (stt >= 0x80) { TRC("skip=dead stt=%02X", stt); m += 0x58; continue; }      /* dead/inactive */
         if (moby_run_once_hidden(cpu, m, (unsigned)cpu->read_half(m + 0x36))) {
             TRC("skip=run-once (retires on its first update)");
-            m += 0x58; continue;
-        }
-        /* The cutscene renderer draws the rescue actors itself, under a camera
-         * framed on exactly those actors. They never enter the .s REG queue, so
-         * the dedup below cannot see them, and their radius routinely exceeds
-         * their view-Z during the cutscene — a mesh straddling the camera plane
-         * has no valid projection through this path and smears across the
-         * frame. They are also tagged ACTOR_FRONT and depth-punched, so an
-         * actor pulled into the widened view draws through the world. */
-        if (moby_cutscene_owns_draw(cpu) && moby_is_cutscene_actor(cpu, m)) {
-            TRC("skip=cutscene-actor (drawn by the cutscene producer)");
             m += 0x58; continue;
         }
         /* dedup vs every REG-handled moby (s_reg_moby: the .s queue set, plus —
