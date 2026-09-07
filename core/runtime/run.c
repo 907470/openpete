@@ -764,8 +764,11 @@ static int load_cpu_seed(CPUState* cpu, const char* path) {
 /* PsyCross window/GL initialiser. Must be called before any libgpu/libgte
  * call (ResetGraph, SetGeomScreen, etc.) — those touch internal SDL/GL
  * state set up here. */
-extern void PsyX_Initialise(char* windowName, int screenWidth,
-                            int screenHeight, int fullscreen, int startHidden);
+/* Returns 0 if the window, core or PSX GPU state failed to come up. Ignoring
+ * that leaves PsyCross's GL entry points unresolved, and the first libgpu call
+ * jumps through a null proc pointer. */
+extern int PsyX_Initialise(char* windowName, int screenWidth,
+                           int screenHeight, int fullscreen, int startHidden);
 extern void PsyX_Shutdown(void);
 #include "openpete_disc_cache.h"
 extern void PsyX_CDFS_Init(const char* imageFileName, int track, int sectorSize);
@@ -1016,8 +1019,24 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
     /* libgpu/libgte calls touch internal SDL/GL state that PsyX_Initialise
      * sets up. For the smoke-test path we still want PsyCross alive. */
     OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window", WIN_W, WIN_H);
-    PsyX_Initialise((char*)opts->display_name, WIN_W, WIN_H, /*fullscreen=*/0,
-                    /*startHidden=*/opts->headless ? 1 : 0);
+    int psyx_ok = PsyX_Initialise((char*)opts->display_name, WIN_W, WIN_H,
+                                  /*fullscreen=*/0,
+                                  /*startHidden=*/opts->headless ? 1 : 0);
+    /* --headless still opens a GL context: PsyCross rasterizes the OT for the
+     * oracle, so g_psyx_null_gpu stays 0 and SDL_INIT_VIDEO must succeed. A
+     * session with no display reachable fails here. Stopping now names the
+     * cause; continuing would crash at the first ResetGraph with a null GL
+     * proc and no explanation. */
+    if (!psyx_ok) {
+        OPL_ERROR_F("boot",
+                    "PsyCross init failed (SDL: %s). No display is reachable; "
+                    "even --headless needs one, because PsyCross rasterizes "
+                    "for the oracle. Over ssh, export XDG_RUNTIME_DIR and "
+                    "WAYLAND_DISPLAY (or DISPLAY) from the login session.",
+                    SDL_GetError());
+        return OPENPETE_EXIT_PANIC;
+    }
+
     /* PsyX_Sys_InitialiseInput just wrote its hardcoded pad maps; replace
      * them with the resolved [keys.pad] bindings. */
     stamp_psx_pad_bindings();
@@ -2029,8 +2048,24 @@ static int run_host_init(const openpete_options_t* opts) {
      * Keyboard focus moves to the Vulkan window; gamepad input is
      * focus-independent. */
     bool native_renderer = (opts->renderer != OPENPETE_RENDERER_PSYCROSS);
-    PsyX_Initialise((char*)opts->display_name, win_w, win_h, /*fullscreen=*/0,
-                    /*startHidden=*/(opts->headless || native_renderer) ? 1 : 0);
+    int psyx_ok = PsyX_Initialise((char*)opts->display_name, win_w, win_h,
+                                  /*fullscreen=*/0,
+                                  /*startHidden=*/(opts->headless || native_renderer) ? 1 : 0);
+    /* --headless still opens a GL context: PsyCross rasterizes the OT for the
+     * oracle, so g_psyx_null_gpu stays 0 and SDL_INIT_VIDEO must succeed. A
+     * session with no display reachable fails here. Stopping now names the
+     * cause; continuing would crash at the first ResetGraph with a null GL
+     * proc and no explanation. */
+    if (!psyx_ok) {
+        OPL_ERROR_F("boot",
+                    "PsyCross init failed (SDL: %s). No display is reachable; "
+                    "even --headless needs one, because PsyCross rasterizes "
+                    "for the oracle. Over ssh, export XDG_RUNTIME_DIR and "
+                    "WAYLAND_DISPLAY (or DISPLAY) from the login session.",
+                    SDL_GetError());
+        return OPENPETE_EXIT_PANIC;
+    }
+
     /* PsyX_Sys_InitialiseInput just wrote its hardcoded pad maps; replace
      * them with the resolved [keys.pad] bindings. */
     stamp_psx_pad_bindings();
