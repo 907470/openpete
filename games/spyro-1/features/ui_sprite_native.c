@@ -39,6 +39,7 @@ extern unsigned openpete_frame;
  * layer. Layout (verified by the dump): word[1]=rgb|code, [2]=xy0,[3]=uv0|clut,
  * [4]=xy1,[5]=uv1|tpage,[6]=xy2,[7]=uv2,[8]=xy3,[9]=uv3. XY: x=lo16,y=hi16
  * (signed). PSX FT4 corner order TL,TR,BL,BR -> two tris (0,1,2)+(1,3,2). */
+static int s_flush_at_capture;   /* set while the capture-boundary flush feeds */
 static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
     int sx[4], sy[4], u[4], v[4];
     uint32_t xyw[4], uvw[4];
@@ -55,7 +56,14 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
     uint32_t rgba = (w1 & 0xFFFFFFu) | 0xFF000000u;
     int abe = (int)((w1>>24)&0x2u);   /* code bit1 = semi-transparent (ABR mode 0) */
 
-    openpete_native_scene_begin_frame(openpete_frame);   /* idempotent within a frame */
+    /* The capture-boundary flush runs at the canonical present, where
+     * openpete_frame may already be the next VBL: beginning THAT frame would
+     * push the finished scene into the history ring a VBL early and start a
+     * new scene holding only this sprite, and the lagged headless compose then
+     * reads the wrong slot (the canonical dump jumps a tick). Append to the
+     * live scene instead — the sprite belongs to the frame that deferred it. */
+    unsigned live = openpete_native_scene_frame();
+    openpete_native_scene_begin_frame((s_flush_at_capture && live != 0xFFFFFFFFu) ? live : openpete_frame);
     static const int idx[2][3] = { {0,1,2}, {1,3,2} };   /* TL,TR,BL,BR -> 2 tris */
     for (int t=0;t<2;t++) {
         openpete_scene_tri tri; memset(&tri,0,sizeof(tri));
@@ -276,7 +284,10 @@ static void flush_pending(CPUState* cpu) {
 }
 
 static void on_overlay_precapture(void) {
-    if (s_cpu && openpete_native_render_enabled()) flush_pending(s_cpu);
+    if (!s_cpu || !openpete_native_render_enabled()) return;
+    s_flush_at_capture = 1;
+    flush_pending(s_cpu);
+    s_flush_at_capture = 0;
 }
 
 static int on_800168DC(CPUState* cpu, uint32_t addr) {
