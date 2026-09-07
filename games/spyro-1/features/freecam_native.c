@@ -246,6 +246,16 @@ static void freecam_path_step(CPUState* cpu) {
     }
 }
 
+static void freecam_apply_pose(CPUState* cpu, const char* s);
+
+/* A scripted pose (OPENPETE_FREECAM_POSE / --freecam-pose) waiting to be
+ * stamped. The engage hook runs before the guest fiber, so a pose written
+ * there lands one frame point too early: the camera position jumps while the
+ * matrices the guest builds this frame are still the follow camera's, and the
+ * frame is snapshot in that half-applied state. Held here instead and stamped
+ * from freecam_drive, so position and matrices settle within one frame. */
+static const char* s_pending_pose = NULL;
+
 /* Drive the camera from input + force all-sector drawing. Runs IN PLACE OF
  * CameraFollowSpyro (see freecam_native_should_freeze), i.e. at the exact frame
  * point the follow logic normally runs, so the camera we write is what the
@@ -253,6 +263,15 @@ static void freecam_path_step(CPUState* cpu) {
  * consume that same frame — and suppressing CameraFollowSpyro is also what lets
  * us own m_OcclusionGroup (the game's raycast that sets it lives there). */
 static void freecam_drive(CPUState* cpu) {
+    /* Stamp a queued scripted pose here, at the follow logic's own frame
+     * point, before the axes are read: the same frame's matrix setup then
+     * consumes it, so no frame renders the new position under the old
+     * orientation. */
+    if (s_pending_pose) {
+        const char* pose = s_pending_pose;
+        s_pending_pose = NULL;
+        freecam_apply_pose(cpu, pose);
+    }
     /* A scripted path owns the camera outright — the interactive axes would
      * fight it, and a headless run has none to read anyway. */
     if (s_path.active) {
@@ -493,7 +512,7 @@ void freecam_native_maybe_autoengage(CPUState* cpu) {
         /* A path supersedes a single pose: it stamps the camera every tick,
          * so an initial jump would only be overwritten on the next one. */
         if (path && *path) freecam_path_parse(path);
-        else if (pose && *pose) freecam_apply_pose(cpu, pose);
+        else if (pose && *pose) s_pending_pose = pose;
     }
 }
 

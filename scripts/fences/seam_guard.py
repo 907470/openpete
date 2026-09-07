@@ -73,7 +73,10 @@ WINDOW_ALLOW = {
 
 EXEMPT = re.compile(r"seam-guard:\s*display-owner")
 
-SKIP_DIRS = {".git", "build", "__pycache__", "third_party", "dist",
+# "notes" holds local tooling, including git worktrees: whole
+# copies of this repo whose paths do not match the allow-lists below, so every
+# owner file in one reads as a violation. Only the working tree is scanned.
+SKIP_DIRS = {".git", "notes", "build", "__pycache__", "third_party", "dist",
              "mods-attic", "node_modules", "tests"}
 SUFFIXES = (".c", ".cpp", ".h", ".hpp")
 
