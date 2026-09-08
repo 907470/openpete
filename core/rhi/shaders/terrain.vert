@@ -998,12 +998,16 @@ void main()
     vKoff = koff;
 
     /* ---- KEY pass: rasterise the flat og key as depth (terrain_key.vert
-     * mirror, including the CPU path's z round-trip) ---- */
+     * mirror) ----
+     * terrain_key.vert receives the key already encoded as z = K/(K+4096) by
+     * the CPU feed and decodes it back; here the cache holds K itself, so it
+     * is used directly. The two agree to within float rounding (~0.1 world
+     * units at range), orders of magnitude inside the contest's 64-world tie
+     * margin. */
     if (keyPass) {
         if (koff <= 0.25) { kill_vert(); return; }   /* keyed faces only */
         float K  = koff - 0.5;
-        float zk = clamp(K / (K + 4096.0), 0.0, 0.9999);
-        float kv = max(4096.0 * zk / max(1.0 - zk, 1e-6), 1.0);
+        float kv = max(K, 1.0);
         vec2 cxy = clip_of(proj_of(mo));
         gl_Position = vec4(cxy * kv, kv * kv / (kv + 4096.0), kv);
         float fvz = float(mo.z) * 16.0;              /* TRUE per-vertex view-Z */

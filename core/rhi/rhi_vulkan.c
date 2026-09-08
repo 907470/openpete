@@ -4149,19 +4149,26 @@ static VkShaderModule load_shader_module(rhi_device *dev, const char *filename)
  * change. desc->postfx selects the mod-postfx layout — no vertex input
  * (fullscreen triangle from gl_VertexIndex), sets 0..2 = one sampler
  * each, set 3 = the dynamic-UBO pair. */
-/* Vertex-stage specialization constant 0 (`DEPTH_AFFINE`): selects the scene
- * shaders' depth encoding at pipeline creation — 0 = legacy z=vz/(vz+4096),
- * 1 = screen-affine z_ndc=1-1/vz. Set once from OPENPETE_DEPTH_AFFINE before the
- * pipelines are built; only psx_scene.vert / quad.vert declare constant_id 0, so
- * attaching the entry to every pipeline's vertex stage is a no-op elsewhere. */
+/* Specialization constant 0 (`DEPTH_AFFINE`): selects the scene shaders' depth
+ * encoding at pipeline creation — 0 = legacy z=vz/(vz+4096), 1 = screen-affine
+ * z_ndc=1-1/vz. Set once from OPENPETE_DEPTH_AFFINE before the pipelines are
+ * built. Declared by the stages that emit the depth (psx_scene.vert, quad.vert,
+ * terrain.vert) and by every stage that decodes gl_FragCoord.z back to view-Z
+ * (hd_tex_cutout.frag, quad_key.frag, psx_scene_key.frag, terrain_shade.glsl,
+ * openpete_psx_material.glsl) — the decode must follow the encode, which is why
+ * the entry is attached to BOTH stages below. A stage that declares no spec
+ * constant ignores it, so attaching it everywhere is a no-op elsewhere. */
 static VkBool32 s_vs_depth_affine = VK_FALSE;
 void rhi_set_depth_affine(int on) { s_vs_depth_affine = on ? VK_TRUE : VK_FALSE; }
 
 /* Vertex-stage specialization constant 1 (`AFFINE_UV`): PSX-affine UV/colour
  * interpolation (--texture-mapping affine). Like DEPTH_AFFINE it is captured
  * at pipeline creation — set it before the pipelines are built, or follow a
- * live change with rhi_rebuild_pipelines to re-bake the existing ones; only
- * psx_scene.vert / quad.vert declare constant_id 1. */
+ * live change with rhi_rebuild_pipelines to re-bake the existing ones.
+ * Declared by psx_scene.vert, quad.vert, terrain.vert, terrain_key.vert and
+ * moby_rank.vert: the key and rank stages have to select the same texel
+ * lookups the scene draw samples, or a raster stamps where the face's own
+ * paint discards. */
 static VkBool32 s_vs_affine_uv = VK_FALSE;
 void rhi_set_affine_uv(int on) { s_vs_affine_uv = on ? VK_TRUE : VK_FALSE; }
 
