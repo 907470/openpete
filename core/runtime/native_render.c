@@ -8763,7 +8763,10 @@ static bool compose_variant(int variant, bool have_ref)
         int td, th, tl, tn, tg[8];
         openpete_tercache_frame_stats(&td, &th, &tl, &tn, tg);
         char gb[512]; openpete_tercache_frame_globals(gb, sizeof gb);
-        openpete_tercache_frame_slots(gb, sizeof gb);
+        /* Append: frame_slots writes from index 0, so it must be handed the
+         * tail of the buffer or it overwrites the globals. */
+        const size_t gblen = strlen(gb);
+        openpete_tercache_frame_slots(gb + gblen, (int)(sizeof gb - gblen));
         fprintf(stderr, "[freeze f=%u stamp=%08x] world=%d n=%d W=%d A=%d freeze=%08x tc_src=%d drawn=%d | %s\n",
                 s_scene_frame, scene_present_stamp(), (int)world_frame, sn, cw, ca, sfreeze,
                 openpete_tercache_frame_source(), td, gb);
