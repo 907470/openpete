@@ -14,8 +14,33 @@ name = "__main"
 from = "reference::games/spyro-3/spyro-3/asm/psyq.s"
 
 [[names]]
+addr = 0x800548a4
+name = "ResetCallback"
+from = "LIBETC.LIB::INTR"
+
+[[names]]
+addr = 0x800548d4
+name = "InterruptCallback"
+from = "LIBETC.LIB::INTR"
+
+[[names]]
+addr = 0x80054904
+name = "DMACallback"
+from = "LIBETC.LIB::INTR"
+
+[[names]]
 addr = 0x80054934
 name = "VSyncCallback"
+from = "LIBETC.LIB::INTR"
+
+[[names]]
+addr = 0x80054968
+name = "VSyncCallbacks"
+from = "LIBETC.LIB::INTR"
+
+[[names]]
+addr = 0x80054998
+name = "StopCallback"
 from = "LIBETC.LIB::INTR"
 
 [[names]]
@@ -46,6 +71,16 @@ from = "LIBGPU.LIB::SYS"
 [[names]]
 addr = 0x80055968
 name = "ClearImage"
+from = "LIBGPU.LIB::SYS"
+
+[[names]]
+addr = 0x800559f8
+name = "LoadImage"
+from = "LIBGPU.LIB::SYS"
+
+[[names]]
+addr = 0x80055a58
+name = "StoreImage"
 from = "LIBGPU.LIB::SYS"
 
 [[names]]
@@ -264,6 +299,11 @@ name = "PadStartCom"
 from = "LIBPAD.LIB::PDMAIINI"
 
 [[names]]
+addr = 0x8005b344
+name = "PadStopCom"
+from = "LIBPAD.LIB::PDMAIINI"
+
+[[names]]
 addr = 0x8005b388
 name = "_padInitSioMode"
 from = "LIBPAD.LIB::PDRESRES"
@@ -452,4 +492,9 @@ from = "LIBC2.LIB::PUTCHAR"
 addr = 0x80060090
 name = "_putchar_flash"
 from = "LIBC2.LIB::PUTCHAR"
+
+[[names]]
+addr = 0x800600fc
+name = "_SpuDataCallback"
+from = "LIBSPU.LIB::S_DCB"
 

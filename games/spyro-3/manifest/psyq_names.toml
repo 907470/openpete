@@ -44,6 +44,11 @@ name = "ClearImage"
 from = "LIBGPU.LIB::SYS"
 
 [[names]]
+addr = 0x8005a478
+name = "LoadImage"
+from = "LIBGPU.LIB::SYS"
+
+[[names]]
 addr = 0x8005a4d8
 name = "MoveImage"
 from = "LIBGPU.LIB::SYS"
@@ -94,8 +99,33 @@ name = "rand"
 from = "LIBC2.LIB::RAND"
 
 [[names]]
+addr = 0x8005c684
+name = "ResetCallback"
+from = "LIBETC.LIB::INTR"
+
+[[names]]
+addr = 0x8005c6b4
+name = "InterruptCallback"
+from = "LIBETC.LIB::INTR"
+
+[[names]]
+addr = 0x8005c6e4
+name = "DMACallback"
+from = "LIBETC.LIB::INTR"
+
+[[names]]
 addr = 0x8005c714
 name = "VSyncCallback"
+from = "LIBETC.LIB::INTR"
+
+[[names]]
+addr = 0x8005c748
+name = "VSyncCallbacks"
+from = "LIBETC.LIB::INTR"
+
+[[names]]
+addr = 0x8005c778
+name = "StopCallback"
 from = "LIBETC.LIB::INTR"
 
 [[names]]
@@ -279,6 +309,11 @@ name = "PadStartCom"
 from = "LIBPAD.LIB::PDMAIINI"
 
 [[names]]
+addr = 0x8005ff54
+name = "PadStopCom"
+from = "LIBPAD.LIB::PDMAIINI"
+
+[[names]]
 addr = 0x8005ff98
 name = "_padInitSioMode"
 from = "LIBPAD.LIB::PDRESRES"
@@ -437,6 +472,11 @@ from = "LIBC2.LIB::PUTCHAR"
 addr = 0x800642cc
 name = "_padSetRC2wait"
 from = "LIBPAD.LIB::PDRESRES"
+
+[[names]]
+addr = 0x800649cc
+name = "_SpuDataCallback"
+from = "LIBSPU.LIB::S_DCB"
 
 [[names]]
 addr = 0x80064a2c

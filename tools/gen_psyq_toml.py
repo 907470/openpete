@@ -15,8 +15,31 @@ func_<addr>. Since the recompiler emits psyq_<name> and the thunk layer
 overrides by name, such a function reaches no thunk. Pass --names with the
 output of tools/gen_psyq_names.py to substitute the recovered names.
 
+Only the symbols listed here are treated as external by the recompiler; a PSYQ
+function left out of the manifest has its body translated like any other code.
+That is the right treatment for PSYQ's internal helpers, which are ordinary
+logic over PSX RAM: stubbing them aborts on a call that would simply have
+worked.
+
+It is the wrong treatment for anything that touches the hardware registers at
+0x1F80xxxx. PsyCross owns those devices host-side, so openpete does not model
+them; translated, such a function polls a status bit that never changes and the
+game waits forever. Those must stay external so a thunk answers for them -- or,
+until one exists, so the stub says which.
+
+PSYQ's device drivers reach the hardware through the BIOS jump tables with an
+indirect call, which no static scan follows and for which the recompiler has no
+code at all, so scanning for a register access does not find them. They are
+identified by name instead: the libcd, libspu, libpad, libgpu and libetc
+internals all carry a family prefix.
+
+--thunked-only keeps a symbol external when the thunk layer implements it,
+--hardware-from keeps the ones that name a hardware register directly, and the
+device-driver families below are kept external unconditionally.
+
 Usage:
     gen_psyq_toml.py <psx.map> <psyq-object> <out.toml> [--names <names.toml>]
+                     [--thunked-only <thunks.cpp> ...]
 
 Example:
     gen_psyq_toml.py games/spyro-1/spyro-1/build/psx.map \\
@@ -112,6 +135,61 @@ def emit_toml(base: int, end: int, syms, out: Path, source: str):
     out.write_text("\n".join(lines) + "\n")
 
 
+# PSYQ's device-driver internals. Translating one runs library code that
+# expects a BIOS behind it and a device openpete does not model, and the symptom
+# is a poll that never completes rather than a crash.
+DEVICE_PREFIXES = ("CD_", "_spu_", "_pad", "_SpuInit", "_GPU_", "startIntr",
+                   "_patch_gte", "_dirFail", "Spu", "Pad", "Cd")
+
+
+def is_device_internal(name: str) -> bool:
+    return name.startswith(DEVICE_PREFIXES)
+
+
+def hardware_touching(psyq_s: Path):
+    """-> {label} for every PSYQ function that reaches a 0x1F80xxxx register.
+
+    A hardware access is a `lui` of the I/O segment (0x1F80 uncached, 0x9F80 /
+    0xBF80 through the other kseg mappings). The set is closed over calls: a
+    function whose callee touches hardware is itself unsafe to translate.
+    """
+    text = psyq_s.read_text(errors="replace")
+    label_re = re.compile(r"^glabel\s+(\S+)", re.M)
+    insn_re = re.compile(
+        r"^\s*/\* [0-9A-Fa-f]+ [0-9A-Fa-f]{8} [0-9A-Fa-f]{8} \*/\s+(\S+)\s*(.*)$")
+
+    bodies, calls, cur = {}, {}, None
+    for line in text.splitlines():
+        m = label_re.match(line)
+        if m:
+            cur = m.group(1)
+            bodies[cur] = False
+            calls[cur] = set()
+            continue
+        if cur is None:
+            continue
+        i = insn_re.match(line)
+        if not i:
+            continue
+        op, rest = i.group(1), i.group(2)
+        if op == "lui" and re.search(r"0x(1F80|9F80|BF80)", rest, re.I):
+            bodies[cur] = True
+        elif op in ("jal", "j"):
+            t = rest.strip().split()[0] if rest.strip() else ""
+            if t:
+                calls[cur].add(t)
+
+    hw = {k for k, v in bodies.items() if v}
+    changed = True
+    while changed:
+        changed = False
+        for fn, callees in calls.items():
+            if fn not in hw and (callees & hw):
+                hw.add(fn)
+                changed = True
+    return hw
+
+
 def read_names(path: Path):
     """-> {addr: name} from a gen_psyq_names.py manifest."""
     names, addr = {}, None
@@ -127,6 +205,16 @@ def read_names(path: Path):
 
 def main():
     argv = sys.argv[1:]
+    hw_source = None
+    if "--hardware-from" in argv:
+        i = argv.index("--hardware-from")
+        hw_source = Path(argv[i + 1])
+        del argv[i:i + 2]
+    thunk_sources = []
+    while "--thunked-only" in argv:
+        i = argv.index("--thunked-only")
+        thunk_sources.append(Path(argv[i + 1]))
+        del argv[i:i + 2]
     names_path = None
     if "--names" in argv:
         i = argv.index("--names")
@@ -154,12 +242,34 @@ def main():
                 out.append((addr, name))
         syms = out
 
+    hardware = set()
+    if hw_source is not None:
+        hardware = hardware_touching(hw_source)
+
+    kept = None
+    if thunk_sources:
+        implemented = set()
+        for src in thunk_sources:
+            implemented |= set(re.findall(
+                r"\bpsyq_(\w+)\s*\(\s*CPUState\s*\*\s*cpu\s*\)\s*\{",
+                src.read_text()))
+        if not implemented:
+            sys.exit("error: found no psyq_ thunk definitions in %s"
+                     % ", ".join(str(p) for p in thunk_sources))
+        before = len(syms)
+        syms = [(a, n) for a, n in syms
+                if n in implemented or n in hardware or is_device_internal(n)]
+        kept = (len(syms), before, len(implemented), len(hardware))
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     emit_toml(base, end, syms, out_path, source=str(map_path))
     print(
         f"Wrote {len(syms)} PSYQ symbols "
         f"(range 0x{base:08x}..0x{end:08x}) to {out_path}"
         + (f"; {renamed} named from {names_path.name}" if names_path else "")
+        + (f"; kept {kept[0]} of {kept[1]} external "
+           f"({kept[2]} thunked, {kept[3]} touch hardware), rest translated"
+           if kept else "")
     )
 
 

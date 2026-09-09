@@ -9,6 +9,7 @@
 #include "game_extras.h"
 #include "openpete_psx.h"
 #include "spyro_overlay_table.h"
+#include "psyq_game_hooks.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -97,6 +98,15 @@ int  game_validate_cheats_arg(const char* spec) { (void)spec; return -1; }
  * original address, so the rewrite is identity here. Making the window
  * per-game belongs to the recompiler, not to this file. */
 uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
+
+/* This game waits for a frame by polling VSync(-1) until the count changes
+ * rather than by calling VSync(0), so the layer must let a VBL land during the
+ * poll or the loop never exits. */
+unsigned psyq_game_vsync_poll_advance(void) { return 1; }
+
+/* Every overlay of this game loads at main_BSS_END; its first word is the
+ * overlay id, which re-points the dispatcher after each load. */
+uint32_t psyq_game_overlay_vaddr(void) { return 0x8006D264u; }
 
 /* Disc layout is not mapped for this game yet. */
 const game_disc_layout_t* game_get_disc_layout(void) { return NULL; }

@@ -6,23 +6,19 @@ range_start = 0x8005478c
 range_end   = 0x8006012c
 
 [[symbols]]
-name = "start"
-addr = 0x8005478c
-
-[[symbols]]
 name = "__main"
 addr = 0x80054834
 
 [[symbols]]
-name = "func_800548A4"
+name = "ResetCallback"
 addr = 0x800548a4
 
 [[symbols]]
-name = "func_800548D4"
+name = "InterruptCallback"
 addr = 0x800548d4
 
 [[symbols]]
-name = "func_80054904"
+name = "DMACallback"
 addr = 0x80054904
 
 [[symbols]]
@@ -30,76 +26,20 @@ name = "VSyncCallback"
 addr = 0x80054934
 
 [[symbols]]
-name = "func_80054968"
+name = "VSyncCallbacks"
 addr = 0x80054968
 
 [[symbols]]
-name = "func_80054998"
+name = "StopCallback"
 addr = 0x80054998
-
-[[symbols]]
-name = "func_800549C8"
-addr = 0x800549c8
-
-[[symbols]]
-name = "func_800549D8"
-addr = 0x800549d8
-
-[[symbols]]
-name = "func_800549F0"
-addr = 0x800549f0
-
-[[symbols]]
-name = "func_80054AC8"
-addr = 0x80054ac8
-
-[[symbols]]
-name = "func_80054C98"
-addr = 0x80054c98
-
-[[symbols]]
-name = "func_80054DE0"
-addr = 0x80054de0
-
-[[symbols]]
-name = "func_80054E80"
-addr = 0x80054e80
-
-[[symbols]]
-name = "func_80054EF8"
-addr = 0x80054ef8
 
 [[symbols]]
 name = "PadInitDirect"
 addr = 0x80054f1c
 
 [[symbols]]
-name = "func_8005507C"
-addr = 0x8005507c
-
-[[symbols]]
 name = "func_800550E4"
 addr = 0x800550e4
-
-[[symbols]]
-name = "func_800551D8"
-addr = 0x800551d8
-
-[[symbols]]
-name = "func_800551E8"
-addr = 0x800551e8
-
-[[symbols]]
-name = "func_800552A4"
-addr = 0x800552a4
-
-[[symbols]]
-name = "func_80055520"
-addr = 0x80055520
-
-[[symbols]]
-name = "func_80055558"
-addr = 0x80055558
 
 [[symbols]]
 name = "ResetGraph"
@@ -118,19 +58,15 @@ name = "DrawSync"
 addr = 0x800557e4
 
 [[symbols]]
-name = "func_8005584C"
-addr = 0x8005584c
-
-[[symbols]]
 name = "ClearImage"
 addr = 0x80055968
 
 [[symbols]]
-name = "func_800559F8"
+name = "LoadImage"
 addr = 0x800559f8
 
 [[symbols]]
-name = "func_80055A58"
+name = "StoreImage"
 addr = 0x80055a58
 
 [[symbols]]
@@ -150,180 +86,20 @@ name = "PutDispEnv"
 addr = 0x80055ca0
 
 [[symbols]]
-name = "SetDrawEnv"
-addr = 0x80056198
-
-[[symbols]]
-name = "func_80056390"
-addr = 0x80056390
-
-[[symbols]]
-name = "func_80056600"
-addr = 0x80056600
-
-[[symbols]]
-name = "func_80056620"
-addr = 0x80056620
-
-[[symbols]]
-name = "func_800566B8"
-addr = 0x800566b8
-
-[[symbols]]
-name = "func_80056750"
-addr = 0x80056750
-
-[[symbols]]
-name = "func_8005676C"
-addr = 0x8005676c
-
-[[symbols]]
-name = "func_800567EC"
-addr = 0x800567ec
-
-[[symbols]]
-name = "func_80056804"
-addr = 0x80056804
-
-[[symbols]]
-name = "func_800568E4"
-addr = 0x800568e4
-
-[[symbols]]
-name = "func_80056B14"
-addr = 0x80056b14
-
-[[symbols]]
-name = "func_80056D50"
-addr = 0x80056d50
-
-[[symbols]]
-name = "func_80056FD0"
-addr = 0x80056fd0
-
-[[symbols]]
-name = "func_80056FF4"
-addr = 0x80056ff4
-
-[[symbols]]
-name = "func_80057008"
-addr = 0x80057008
-
-[[symbols]]
-name = "func_80057048"
-addr = 0x80057048
-
-[[symbols]]
-name = "func_80057090"
-addr = 0x80057090
-
-[[symbols]]
-name = "func_800570C0"
-addr = 0x800570c0
-
-[[symbols]]
-name = "func_800570E4"
-addr = 0x800570e4
-
-[[symbols]]
-name = "func_80057394"
-addr = 0x80057394
-
-[[symbols]]
-name = "func_800575F4"
-addr = 0x800575f4
-
-[[symbols]]
-name = "func_80057744"
-addr = 0x80057744
-
-[[symbols]]
-name = "func_80057880"
-addr = 0x80057880
-
-[[symbols]]
-name = "func_800578B4"
-addr = 0x800578b4
-
-[[symbols]]
-name = "func_800579F8"
-addr = 0x800579f8
-
-[[symbols]]
 name = "_GPU_ResetCallback"
 addr = 0x80057a98
-
-[[symbols]]
-name = "func_80057AC0"
-addr = 0x80057ac0
-
-[[symbols]]
-name = "func_80057AE8"
-addr = 0x80057ae8
-
-[[symbols]]
-name = "func_80057AF8"
-addr = 0x80057af8
-
-[[symbols]]
-name = "D_80057B18"
-addr = 0x80057b18
 
 [[symbols]]
 name = "InitGeom"
 addr = 0x80057b20
 
 [[symbols]]
-name = "func_80057BA8"
-addr = 0x80057ba8
-
-[[symbols]]
-name = "func_80057BDC"
-addr = 0x80057bdc
-
-[[symbols]]
-name = "func_80057E50"
-addr = 0x80057e50
-
-[[symbols]]
-name = "func_80057F20"
-addr = 0x80057f20
-
-[[symbols]]
 name = "CdRead"
 addr = 0x80058108
 
 [[symbols]]
-name = "func_800582A4"
-addr = 0x800582a4
-
-[[symbols]]
 name = "CdInit"
 addr = 0x800582b8
-
-[[symbols]]
-name = "func_80058348"
-addr = 0x80058348
-
-[[symbols]]
-name = "func_80058384"
-addr = 0x80058384
-
-[[symbols]]
-name = "func_800583AC"
-addr = 0x800583ac
-
-[[symbols]]
-name = "func_800583D4"
-addr = 0x800583d4
-
-[[symbols]]
-name = "func_80058408"
-addr = 0x80058408
-
-[[symbols]]
-name = "func_80058428"
-addr = 0x80058428
 
 [[symbols]]
 name = "PadGetState"
@@ -346,42 +122,6 @@ name = "PadSetMainMode"
 addr = 0x80058718
 
 [[symbols]]
-name = "func_80058760"
-addr = 0x80058760
-
-[[symbols]]
-name = "func_800587B4"
-addr = 0x800587b4
-
-[[symbols]]
-name = "func_800587C4"
-addr = 0x800587c4
-
-[[symbols]]
-name = "func_800587D4"
-addr = 0x800587d4
-
-[[symbols]]
-name = "func_800587E4"
-addr = 0x800587e4
-
-[[symbols]]
-name = "func_800587F0"
-addr = 0x800587f0
-
-[[symbols]]
-name = "func_80058810"
-addr = 0x80058810
-
-[[symbols]]
-name = "func_80058830"
-addr = 0x80058830
-
-[[symbols]]
-name = "func_80058844"
-addr = 0x80058844
-
-[[symbols]]
 name = "CdControl"
 addr = 0x80058858
 
@@ -392,22 +132,6 @@ addr = 0x80058994
 [[symbols]]
 name = "CdControlB"
 addr = 0x80058ac8
-
-[[symbols]]
-name = "func_80058C14"
-addr = 0x80058c14
-
-[[symbols]]
-name = "func_80058C34"
-addr = 0x80058c34
-
-[[symbols]]
-name = "func_80058C54"
-addr = 0x80058c54
-
-[[symbols]]
-name = "func_80058C78"
-addr = 0x80058c78
 
 [[symbols]]
 name = "CdIntToPos"
@@ -426,10 +150,6 @@ name = "VSync"
 addr = 0x80058edc
 
 [[symbols]]
-name = "func_80059054"
-addr = 0x80059054
-
-[[symbols]]
 name = "SetDefDispEnv"
 addr = 0x800590ec
 
@@ -446,16 +166,8 @@ name = "rand"
 addr = 0x80059d2c
 
 [[symbols]]
-name = "func_80059D5C"
-addr = 0x80059d5c
-
-[[symbols]]
 name = "MulMatrix0"
 addr = 0x80059d6c
-
-[[symbols]]
-name = "ScaleMatrix"
-addr = 0x80059e7c
 
 [[symbols]]
 name = "SpuSetTransferStartAddr"
@@ -468,10 +180,6 @@ addr = 0x8005a01c
 [[symbols]]
 name = "strlen"
 addr = 0x8005a0bc
-
-[[symbols]]
-name = "func_8005A0FC"
-addr = 0x8005a0fc
 
 [[symbols]]
 name = "SpuIsTransferCompleted"
@@ -498,104 +206,12 @@ name = "SpuSetVoiceAttr"
 addr = 0x8005a4a8
 
 [[symbols]]
-name = "func_8005AAA8"
-addr = 0x8005aaa8
-
-[[symbols]]
-name = "func_8005AB08"
-addr = 0x8005ab08
-
-[[symbols]]
-name = "func_8005AB18"
-addr = 0x8005ab18
-
-[[symbols]]
-name = "D_8005AB58"
-addr = 0x8005ab58
-
-[[symbols]]
-name = "func_8005AB60"
-addr = 0x8005ab60
-
-[[symbols]]
-name = "func_8005AB78"
-addr = 0x8005ab78
-
-[[symbols]]
-name = "strcpy"
-addr = 0x8005ab88
-
-[[symbols]]
-name = "func_8005ABD8"
-addr = 0x8005abd8
-
-[[symbols]]
-name = "setjmp"
-addr = 0x8005abe8
-
-[[symbols]]
-name = "func_8005AC24"
-addr = 0x8005ac24
-
-[[symbols]]
 name = "startIntrVSync"
 addr = 0x8005ac34
 
 [[symbols]]
-name = "func_8005AC8C"
-addr = 0x8005ac8c
-
-[[symbols]]
-name = "func_8005ACF8"
-addr = 0x8005acf8
-
-[[symbols]]
-name = "func_8005AD24"
-addr = 0x8005ad24
-
-[[symbols]]
 name = "startIntrDMA"
 addr = 0x8005ad54
-
-[[symbols]]
-name = "func_8005ADA0"
-addr = 0x8005ada0
-
-[[symbols]]
-name = "func_8005AF20"
-addr = 0x8005af20
-
-[[symbols]]
-name = "func_8005AFCC"
-addr = 0x8005afcc
-
-[[symbols]]
-name = "func_8005AFF4"
-addr = 0x8005aff4
-
-[[symbols]]
-name = "func_8005B004"
-addr = 0x8005b004
-
-[[symbols]]
-name = "func_8005B014"
-addr = 0x8005b014
-
-[[symbols]]
-name = "func_8005B024"
-addr = 0x8005b024
-
-[[symbols]]
-name = "func_8005B034"
-addr = 0x8005b034
-
-[[symbols]]
-name = "func_8005B044"
-addr = 0x8005b044
-
-[[symbols]]
-name = "func_8005B054"
-addr = 0x8005b054
 
 [[symbols]]
 name = "_padIsVsync"
@@ -610,7 +226,7 @@ name = "PadStartCom"
 addr = 0x8005b278
 
 [[symbols]]
-name = "func_8005B344"
+name = "PadStopCom"
 addr = 0x8005b344
 
 [[symbols]]
@@ -634,72 +250,16 @@ name = "_padClrIntSio0"
 addr = 0x8005bc34
 
 [[symbols]]
-name = "func_8005BCC4"
-addr = 0x8005bcc4
-
-[[symbols]]
-name = "func_8005BCF8"
-addr = 0x8005bcf8
-
-[[symbols]]
-name = "func_8005BD2C"
-addr = 0x8005bd2c
-
-[[symbols]]
-name = "func_8005BE3C"
-addr = 0x8005be3c
-
-[[symbols]]
 name = "_dirFailAuto"
 addr = 0x8005c0a0
-
-[[symbols]]
-name = "func_8005C180"
-addr = 0x8005c180
-
-[[symbols]]
-name = "bzero"
-addr = 0x8005c1b8
-
-[[symbols]]
-name = "func_8005C1E8"
-addr = 0x8005c1e8
 
 [[symbols]]
 name = "memcpy"
 addr = 0x8005c1f8
 
 [[symbols]]
-name = "func_8005C238"
-addr = 0x8005c238
-
-[[symbols]]
 name = "_patch_gte"
 addr = 0x8005c254
-
-[[symbols]]
-name = "func_8005C300"
-addr = 0x8005c300
-
-[[symbols]]
-name = "D_8005C318"
-addr = 0x8005c318
-
-[[symbols]]
-name = "D_8005C330"
-addr = 0x8005c330
-
-[[symbols]]
-name = "func_8005C334"
-addr = 0x8005c334
-
-[[symbols]]
-name = "puts"
-addr = 0x8005c344
-
-[[symbols]]
-name = "func_8005C3A4"
-addr = 0x8005c3a4
 
 [[symbols]]
 name = "CD_sync"
@@ -734,22 +294,6 @@ name = "CD_getsector2"
 addr = 0x8005d598
 
 [[symbols]]
-name = "func_8005D684"
-addr = 0x8005d684
-
-[[symbols]]
-name = "func_8005D690"
-addr = 0x8005d690
-
-[[symbols]]
-name = "func_8005D768"
-addr = 0x8005d768
-
-[[symbols]]
-name = "func_8005D778"
-addr = 0x8005d778
-
-[[symbols]]
 name = "_padSendAtLoadInfo"
 addr = 0x8005d784
 
@@ -766,68 +310,8 @@ name = "_padLoadActInfo"
 addr = 0x8005dab0
 
 [[symbols]]
-name = "func_8005DB84"
-addr = 0x8005db84
-
-[[symbols]]
-name = "func_8005DC2C"
-addr = 0x8005dc2c
-
-[[symbols]]
-name = "func_8005E024"
-addr = 0x8005e024
-
-[[symbols]]
-name = "func_8005E08C"
-addr = 0x8005e08c
-
-[[symbols]]
-name = "func_8005E0A8"
-addr = 0x8005e0a8
-
-[[symbols]]
-name = "func_8005E170"
-addr = 0x8005e170
-
-[[symbols]]
-name = "func_8005E208"
-addr = 0x8005e208
-
-[[symbols]]
-name = "func_8005E25C"
-addr = 0x8005e25c
-
-[[symbols]]
-name = "func_8005E2BC"
-addr = 0x8005e2bc
-
-[[symbols]]
-name = "func_8005E2DC"
-addr = 0x8005e2dc
-
-[[symbols]]
-name = "func_8005E2F0"
-addr = 0x8005e2f0
-
-[[symbols]]
-name = "func_8005E310"
-addr = 0x8005e310
-
-[[symbols]]
-name = "func_8005E330"
-addr = 0x8005e330
-
-[[symbols]]
-name = "func_8005E350"
-addr = 0x8005e350
-
-[[symbols]]
 name = "_spu_init"
 addr = 0x8005e368
-
-[[symbols]]
-name = "func_8005E5E8"
-addr = 0x8005e5e8
 
 [[symbols]]
 name = "_spu_FiDMA"
@@ -858,48 +342,8 @@ name = "_spu_FsetPCR"
 addr = 0x8005ecb4
 
 [[symbols]]
-name = "func_8005ED0C"
-addr = 0x8005ed0c
-
-[[symbols]]
-name = "func_8005ED34"
-addr = 0x8005ed34
-
-[[symbols]]
 name = "_spu_Fw1ts"
 addr = 0x8005ed5c
-
-[[symbols]]
-name = "memchr"
-addr = 0x8005edc4
-
-[[symbols]]
-name = "memmove"
-addr = 0x8005ee14
-
-[[symbols]]
-name = "strcat"
-addr = 0x8005ee84
-
-[[symbols]]
-name = "func_8005EF34"
-addr = 0x8005ef34
-
-[[symbols]]
-name = "func_8005EF44"
-addr = 0x8005ef44
-
-[[symbols]]
-name = "func_8005EF54"
-addr = 0x8005ef54
-
-[[symbols]]
-name = "func_8005EF64"
-addr = 0x8005ef64
-
-[[symbols]]
-name = "func_8005EF74"
-addr = 0x8005ef74
 
 [[symbols]]
 name = "_SpuInit"
@@ -910,24 +354,8 @@ name = "SpuStart"
 addr = 0x8005f06c
 
 [[symbols]]
-name = "func_8005F0E4"
-addr = 0x8005f0e4
-
-[[symbols]]
 name = "_spu_note2pitch"
 addr = 0x8005f0f4
-
-[[symbols]]
-name = "prnt"
-addr = 0x8005f1c4
-
-[[symbols]]
-name = "func_8005F864"
-addr = 0x8005f864
-
-[[symbols]]
-name = "func_8005F874"
-addr = 0x8005f874
 
 [[symbols]]
 name = "_padSetRC2wait"
@@ -956,36 +384,4 @@ addr = 0x8005fb10
 [[symbols]]
 name = "func_8005FBD4"
 addr = 0x8005fbd4
-
-[[symbols]]
-name = "func_8005FF74"
-addr = 0x8005ff74
-
-[[symbols]]
-name = "func_8005FF84"
-addr = 0x8005ff84
-
-[[symbols]]
-name = "_putchar"
-addr = 0x8005ff94
-
-[[symbols]]
-name = "_putchar_flash"
-addr = 0x80060090
-
-[[symbols]]
-name = "func_800600CC"
-addr = 0x800600cc
-
-[[symbols]]
-name = "func_800600DC"
-addr = 0x800600dc
-
-[[symbols]]
-name = "func_800600EC"
-addr = 0x800600ec
-
-[[symbols]]
-name = "func_800600FC"
-addr = 0x800600fc
 

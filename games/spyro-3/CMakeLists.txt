@@ -56,16 +56,21 @@ add_executable(openpete-spyro3
     game_extras_impl.c
     feature_list.c
     psyq_stub_runtime.c
-    ${GAME_GENERATED}/psyq_stubs.c)
+    ${GAME_GENERATED}/psyq_stubs.c
+    # The shared PSYQ-to-PsyCross layer, plus the inert defaults for every
+    # per-game hook it asks for. This game declares none yet, so its PSYQ
+    # internal-state mirrors are empty: the thunks write no PSX RAM of their
+    # own rather than another game's addresses.
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_thunks.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_game_hooks_default.c)
 
 target_include_directories(openpete-spyro3 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
     ${CMAKE_CURRENT_SOURCE_DIR}/../common
     ${GAME_GENERATED})
 
-# No thunk layer yet: the generated psyq_stubs.c supplies a weak
-# abort-on-call body for every PSYQ symbol, so the binary links and runs until
-# the first PSYQ call and then names the surface it needs.
+# Any PSYQ symbol the shared layer does not implement still resolves to the
+# generated weak abort stub, which names the surface on first call.
 target_link_libraries(openpete-spyro3 PRIVATE
     spyro3_recomp_module
     openpete_core)

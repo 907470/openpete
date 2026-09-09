@@ -1,10 +1,17 @@
-/* games/spyro-1/psyq_thunks.cpp — PSYQ → PsyCross ABI thunks.
+/* games/common/psyq_thunks.cpp — PSYQ → PsyCross ABI thunks, shared by every
+ * game.
  *
  * The recompiler emits PSYQ-targeted JALs as `psyq_NAME(cpu)` (with
- * --external-prefix=psyq_). This file provides hand-written bodies for
- * every named PSYQ function Spyro calls during Initialize() and the main
- * loop, translating between MIPS calling convention (args in a0..a3 +
- * sp-relative slots, return in v0) and PsyCross's native C signatures.
+ * --external-prefix=psyq_). This file provides hand-written bodies for the
+ * named PSYQ functions a game calls, translating between the MIPS calling
+ * convention (args in a0..a3 + sp-relative slots, return in v0) and PsyCross's
+ * native C signatures.
+ *
+ * Nothing here is specific to one game. What is — the PSYQ-internal structures
+ * a thunk mirrors into PSX RAM at a game's own addresses, the stack frame each
+ * real PSYQ function leaves behind, and couplings to a game's own features —
+ * is reached through psyq_game_hooks.h, whose every hook has an inert default.
+ * A game supplies only what it has.
  *
  * The auto-generated abort stubs in psyq_stubs.c are weak; these strong
  * definitions override them at link time. Anything *not* thunked here
@@ -21,10 +28,10 @@
 extern "C" {
 #include "openpete_fiber.h"
 #include "openpete_log.h"
-#include "mod_wad_overlay.h" /* rung 9: level-segment asset overlay */
 #include "openpete_ticker.h"
 #include "openpete_psx.h"
 #include "openpete_memcard.h"
+#include "psyq_game_hooks.h"
 }
 
 #include <cstdio>
@@ -94,8 +101,6 @@ extern "C" {
  * notes/plans/openpete-music-wav-override.md. */
 #include "music_override.h"
 #include "openpete_mods.h"          /* custom-level song lookup + SFX overlay */
-#include "features/render_paths.h"  /* --render-paths OT-walk filter */
-#include "features/moby_rank.h"     /* same-moby painter rank source (OT-walk ingest) */
 #include "openpete_profile.h"       /* game-fiber cost split (--profile-out) */
 
 /* PsyCross internals shared with the libcd thunks below. */
@@ -140,6 +145,12 @@ extern "C" {
 
 /* PSX vaddr (held in cpu->aN) → host pointer via openpete_core's memory map. */
 #define PTR(addr) ((void*)openpete_psx_to_host_ptr((uint32_t)(addr)))
+/* A guest NULL must stay NULL. PTR(0) resolves to the host address of PSX RAM
+ * offset 0, which is a valid pointer, so a PSYQ call that writes through an
+ * optional out-parameter would silently overwrite the start of guest RAM
+ * instead of skipping the write. Every optional pointer argument goes through
+ * this. */
+#define PTR_OPT(addr) ((addr) ? PTR(addr) : nullptr)
 
 /* PSYQ callbacks (CdReadCallback, VSyncCallback) take a PSX function
  * pointer that the compiled C wants invoked when the underlying event
@@ -194,6 +205,9 @@ static void invoke_psx_callback(CPUState* cpu, uint32_t cb_addr,
 
 /* --- libgcc/crt0 --------------------------------------------------------- */
 
+/* Defined below, with the libgpu thunks it is mostly used by. */
+static void psyq_mirror_stack_frame(CPUState* cpu, psyq_frame_site_t site);
+
 void psyq___main(CPUState* cpu) {
     /* libgcc constructor-runner. Real PSYQ __main at 0x8005B988:
      *   - load *(0x800730BC) — "already initialized" flag
@@ -207,20 +221,8 @@ void psyq___main(CPUState* cpu) {
      * first halt point inside Initialize(). Replicating them keeps the
      * "first frame == pcsx-redux RAM" invariant intact for the diff loop
      * (see docs/ram-diff-vs-pcsxr.md). */
-    const uint32_t INIT_FLAG_ADDR = 0x800730BCu;
-    if (cpu->read_word(INIT_FLAG_ADDR) == 0u) {
-        cpu->write_word(INIT_FLAG_ADDR, 1u);
-    }
-    /* Mirror __main's stack-frame use. PSYQ pushes 16 bytes (sp-=16) and
-     * stores ra at sp+12. The recompiler's calling convention doesn't need
-     * a frame for the thunk, but pcsx-redux executes the real MIPS code
-     * which leaves these bytes on the stack; matching them gives a clean
-     * byte-for-byte alignment at function-entry halt points. */
-    uint32_t sp_before = cpu->sp;
-    cpu->sp = sp_before - 16u;
-    cpu->write_word(cpu->sp + 12u, cpu->ra);
-    /* PSYQ restores sp before returning (lw ra, 12(sp); addiu sp, sp, 16). */
-    cpu->sp = sp_before;
+    psyq_game_mirror_main(cpu);
+    psyq_mirror_stack_frame(cpu, PSYQ_FRAME_MAIN);
 }
 
 /* --- libetc -------------------------------------------------------------- */
@@ -256,10 +258,33 @@ void psyq_VSync(CPUState* cpu) {
     }
 
     if (mode < 0) {
+        /* Query. A game that waits with VSync(0) advances the counter itself,
+         * and for it this returns immediately with the count unchanged. A game
+         * that instead polls this call until the count moves would otherwise
+         * spin against a counter nothing else advances, so after the number of
+         * consecutive polls that game declares, yield once and let a VBL
+         * land. */
+        static unsigned polls = 0u;
+        unsigned limit = psyq_game_vsync_poll_advance();
+        if (limit != 0u && ++polls >= limit) {
+            polls = 0u;
+            SDL_AddAtomicInt(&openpete_vbl, 1);
+            PsyX_SPUAL_TickEnvelope(735);
+            /* Yield even during fast boot. Fast boot suppresses yields so the
+             * pre-render spins run at full speed, and it ends at the first
+             * DrawOTag -- which a game polling here has not reached yet. Never
+             * yielding would leave the host loop unrun and the wait
+             * unsatisfiable. Only a game that declares a poll limit reaches
+             * this path at all. */
+            if (openpete_host_fiber) {
+                openpete_yield_to_host();
+                if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
+            }
+            observed = SDL_GetAtomicInt(&openpete_vbl);
+        }
         cpu->v0 = (uint32_t)observed;
         return;
     }
-
     int wait = (mode == 0) ? 1 : mode;
     SDL_AddAtomicInt(&openpete_vbl, wait);
 
@@ -303,16 +328,27 @@ void psyq_VSyncCallback(CPUState* cpu) {
     OPL_INFO_F("thunks", "VSyncCallback registered: 0x%08X", cpu->a0);
     g_vsync_cb = cpu->a0;
     cpu->v0 = 0u;
-    /* Real PSYQ VSyncCallback also stashes the cb pointer in libgpu's
-     * vtable at 0x800749D0 (the slot func_8005DE58 reads on each VSync
-     * IRQ). PsyCross dispatches the cb host-side, so we mirror the write
-     * for byte-faithful diffs. */
-    cpu->write_word(0x800749D0u, cpu->a0);
+    psyq_game_mirror_vsync_callback(cpu, cpu->a0);
 }
 
 void psyq_StopCallback(CPUState* cpu) {
     cpu->v0 = (uint32_t)StopCallback();
 }
+
+/* Clears every registered callback and returns the previous VSync one. PSYQ
+ * calls this from its own init path before installing handlers. */
+void psyq_ResetCallback(CPUState* cpu) {
+    cpu->v0 = (uint32_t)ResetCallback();
+}
+
+/* The remaining libetc registrations return the previous handler and are
+ * otherwise inert here: PsyCross services the interrupt sources host-side and
+ * never dispatches a guest handler for them, so recording the address would
+ * promise a call that never arrives. Returning 0 says "there was no previous
+ * handler", which is what a first registration sees on hardware too. */
+void psyq_InterruptCallback(CPUState* cpu) { cpu->v0 = 0u; }
+void psyq_DMACallback(CPUState* cpu)       { cpu->v0 = 0u; }
+void psyq_VSyncCallbacks(CPUState* cpu)    { cpu->v0 = 0u; }
 
 /* --- libgpu -------------------------------------------------------------- */
 
@@ -333,15 +369,23 @@ void psyq_StopCallback(CPUState* cpu) {
  *
  * `s_pushes` is a {offset, value} list of additional saved-reg writes
  * matching real PSYQ's prologue. Pass NULL/0 for ra-only. */
-struct PsxStackPush { uint32_t offset; uint32_t value; };
-static void psyq_mirror_stack_frame(CPUState* cpu, uint32_t frame_size,
-                                    uint32_t ra_off,
-                                    const PsxStackPush* pushes, size_t n) {
+/* Replay a real PSYQ function's prologue into the guest stack.
+ *
+ * A PSYQ function pushes a frame and stores ra plus some saved registers; an
+ * empty C thunk leaves those slots at whatever was there before, which reads
+ * as a RAM difference at every call. The frame is per function and per PSYQ
+ * revision, so the descriptor comes from the game; a game that declares none
+ * mirrors nothing. */
+static void psyq_mirror_stack_frame(CPUState* cpu, psyq_frame_site_t site) {
+    psyq_game_frame_t f;
+    if (!psyq_game_stack_frame(site, &f)) return;
+
+    const uint32_t sregs[5] = { cpu->s0, cpu->s1, cpu->s2, cpu->s3, cpu->s4 };
     uint32_t sp_b = cpu->sp;
-    cpu->sp = sp_b - frame_size;
-    cpu->write_word(cpu->sp + ra_off, cpu->ra);
-    for (size_t i = 0; i < n; i++) {
-        cpu->write_word(cpu->sp + pushes[i].offset, pushes[i].value);
+    cpu->sp = sp_b - f.frame_size;
+    cpu->write_word(cpu->sp + f.ra_off, cpu->ra);
+    for (uint8_t i = 0; i < f.n_sregs && i < 5u; i++) {
+        cpu->write_word(cpu->sp + 16u + 4u * i, sregs[i]);
     }
     cpu->sp = sp_b;
 }
@@ -353,109 +397,29 @@ void psyq_ResetGraph(CPUState* cpu) {
     int mode = (int)cpu->a0;
     cpu->v0 = (uint32_t)ResetGraph(mode);
 
-    int sub = mode & 7;
-    if (sub == 0 || sub == 3 || sub == 5) {
-        const uint32_t ENV = 0x80074A64u;
-        /* memset(ENV, 0, 128) */
-        for (uint32_t a = ENV; a < ENV + 128u; a += 4u) cpu->write_word(a, 0u);
-        /* sb gpu_type @ENV+0; sb 1 @ENV+1 */
-        cpu->write_byte(ENV + 0u, 0u);   /* NTSC */
-        cpu->write_byte(ENV + 1u, 1u);
-        /* halfwords pulled from PSYQ tables at 0x80074AE4 / 0x80074AF8.
-         * For NTSC (gpu_type=0) the table low-halfwords are 0x0400 and
-         * 0x0200 — confirmed by xxd of pcsx-redux's RAM dump. */
-        cpu->write_half(ENV + 4u, 0x0400u);
-        cpu->write_half(ENV + 6u, 0x0200u);
-        /* Observed pcsx-redux: byte at ENV+8 (0x80074A6C) = 1. Source not
-         * yet localised in disassembly; matched by observation so the diff
-         * stays clean. */
-        cpu->write_byte(ENV + 8u, 1u);
-        /* memset(ENV+16, 0xFF, 92) -> 0x80074A74..0x80074ACF */
-        for (uint32_t a = ENV + 16u; a < ENV + 16u + 92u; a += 4u) {
-            cpu->write_word(a, 0xFFFFFFFFu);
-        }
-        /* memset(ENV+108, 0xFF, 20) -> 0x80074AD0..0x80074AE3 */
-        for (uint32_t a = ENV + 108u; a < ENV + 108u + 20u; a += 4u) {
-            cpu->write_word(a, 0xFFFFFFFFu);
-        }
-    }
-
-    /* func_80061DEC effects (called by ResetGraph): three word writes plus
-     * the BIOS-side gpu-type cache. Hardcoded results for NTSC mode 0:
-     * func_8005DF44 returns 0 ((sub==0 || sub==3 || sub==5) only). */
-    cpu->write_word(0x80074B6Cu, 0u);
-    cpu->write_word(0x80074B68u, 0u);
-
-    /* Post-ResetGraph snapshot from pcsx-redux RAM at MemoryCardInit halt.
-     * 60 EXE bytes scattered across libgpu's vtable / dispatch / GPU command
-     * scratch areas. Real PSYQ libgpu writes these via a chain of helpers
-     * (`func_8005DDC8` -> *(D_800749AC)+0xC, `func_8005DF60` walks the
-     * 0x80073924 control struct, `func_80061DEC` updates the helper-table
-     * trio at 0x80074B68/6C/78, and the 0x80075978 region holds queued GP0
-     * env packets). openpete uses PsyCross stubs and never enters those
-     * helpers, so we replay the observed post-init values directly. NTSC
-     * mode 0; values verified against pcsx-redux dumps (gp=0x80075264,
-     * sp=0x801FFFF8 at boot). */
-    if (sub == 0 || sub == 3 || sub == 5) {
-        /* libgpu callback control struct at 0x80073924+ */
-        cpu->write_word(0x80073924u, 0x00000001u);
-        cpu->write_word(0x80073928u, 0x8005E560u);  /* fnptr */
-        cpu->write_word(0x80073934u, 0x8005E680u);  /* fnptr */
-        cpu->write_word(0x80073954u, 0x00000009u);
-        cpu->write_word(0x8007395Cu, 0x8005DFC8u);  /* fnptr */
-        cpu->write_word(0x80073960u, 0x8007493Cu);
-        cpu->write_word(0x80073964u, 0x801FFFF8u);  /* boot sp */
-        cpu->write_word(0x80073968u, 0x80073924u);  /* self ref */
-        cpu->write_word(0x80073970u, 0x00000001u);
-        cpu->write_word(0x80073988u, 0x80075264u);  /* boot gp */
-        /* libgpu vtable patch slots (indirected through D_800749AC) */
-        cpu->write_word(0x80074990u, 0x8005E804u);
-        cpu->write_word(0x800749A0u, 0x8005E5D8u);
-        /* GP0 dispatch state at 0x80074B58+ (set by func_80061F48 in real
-         * PSYQ; we cache the post-init values). */
-        cpu->write_word(0x80074B58u, 0x80060FD8u);
-        cpu->write_word(0x80074B5Cu, 0x801FFF78u);  /* inner sub-call sp */
-        cpu->write_word(0x80074B70u, 0x00000009u);
-        cpu->write_word(0x80074B78u, 0x00000009u);
-        cpu->write_word(0x80074B7Cu, 0x000000F0u);
-        /* Pre-built GP0 env packet block at 0x80075978 — pcsxr ends
-         * GraphicsInit with these queued; openpete-PsyCross drains
-         * commands a different way so the slot stays zero without help. */
-        cpu->write_word(0x80075978u, 0x05FFFFFFu);
-        cpu->write_word(0x8007597Cu, 0xE6000000u);
-        cpu->write_word(0x80075980u, 0xE1000000u);
-        cpu->write_word(0x80075984u, 0x02000000u);
-        cpu->write_word(0x8007598Cu, 0x01FF0200u);
-    }
+    psyq_game_mirror_resetgraph(cpu, mode);
 
     /* ResetGraph's own MIPS prologue: sp -= 32; sw s0,16; sw s1,20; sw ra,24.
      * (sw s2 at +20 was overwritten by sw s1 at the same slot.) */
-    PsxStackPush rg_pushes[] = {
-        {16u, cpu->s0},
-        {20u, cpu->s1},
-    };
-    psyq_mirror_stack_frame(cpu, 32u, 24u, rg_pushes, 2);
+    psyq_mirror_stack_frame(cpu, PSYQ_FRAME_RESETGRAPH);
 }
 
 void psyq_SetDispMask(CPUState* cpu) {
     SetDispMask((int)cpu->a0);
     /* Real SetDispMask @0x8005F6C8: sp -= 32; sw s0,16; sw s1,20; sw ra,24. */
-    PsxStackPush p[] = {{16u, cpu->s0}, {20u, cpu->s1}};
-    psyq_mirror_stack_frame(cpu, 32u, 24u, p, 2);
+    psyq_mirror_stack_frame(cpu, PSYQ_FRAME_SETDISPMASK);
 }
 
 void psyq_SetGraphDebug(CPUState* cpu) {
     cpu->v0 = (uint32_t)SetGraphDebug((int)cpu->a0);
     /* Real SetGraphDebug @0x8005F53C: sp -= 24; sw s0,16; sw ra,20. */
-    PsxStackPush p[] = {{16u, cpu->s0}};
-    psyq_mirror_stack_frame(cpu, 24u, 20u, p, 1);
+    psyq_mirror_stack_frame(cpu, PSYQ_FRAME_SETGRAPHDEBUG);
 }
 
 void psyq_DrawSync(CPUState* cpu) {
     cpu->v0 = (uint32_t)DrawSync((int)cpu->a0);
     /* Real DrawSync @0x8005F764: sp -= 24; sw s0,16; sw ra,20. */
-    PsxStackPush p[] = {{16u, cpu->s0}};
-    psyq_mirror_stack_frame(cpu, 24u, 20u, p, 1);
+    psyq_mirror_stack_frame(cpu, PSYQ_FRAME_DRAWSYNC);
 }
 
 void psyq_ClearImage(CPUState* cpu) {
@@ -464,10 +428,7 @@ void psyq_ClearImage(CPUState* cpu) {
                                    (u_char)cpu->a2,
                                    (u_char)cpu->a3);
     /* Real ClearImage @0x8005F8F8: sp -= 40; sw s0,16; s1,20; s2,24; s3,28; ra,32. */
-    PsxStackPush p[] = {
-        {16u, cpu->s0}, {20u, cpu->s1}, {24u, cpu->s2}, {28u, cpu->s3},
-    };
-    psyq_mirror_stack_frame(cpu, 40u, 32u, p, 4);
+    psyq_mirror_stack_frame(cpu, PSYQ_FRAME_CLEARIMAGE);
 }
 
 void psyq_LoadImage(CPUState* cpu) {
@@ -498,10 +459,7 @@ void psyq_PutDispEnv(CPUState* cpu) {
     PutDispEnv(env);
     openpete_native_set_display_rect(env->disp.x, env->disp.y, env->disp.w, env->disp.h);
     /* Real PutDispEnv @0x80060030: sp -= 40; sw s0,16; s1,20; s2,24; s3,28; ra,32. */
-    PsxStackPush p[] = {
-        {16u, cpu->s0}, {20u, cpu->s1}, {24u, cpu->s2}, {28u, cpu->s3},
-    };
-    psyq_mirror_stack_frame(cpu, 40u, 32u, p, 4);
+    psyq_mirror_stack_frame(cpu, PSYQ_FRAME_PUTDISPENV);
 }
 
 void psyq_PutDrawEnv(CPUState* cpu) {
@@ -516,10 +474,7 @@ void psyq_PutDrawEnv(CPUState* cpu) {
      * clear is black but g_Cyclorama still holds the previous level's sky). */
     openpete_native_set_clear_color(env->isbg, env->r0, env->g0, env->b0);
     /* Real PutDrawEnv @0x8005FDD8: sp -= 32; sw s0,16; s1,20; s2,24; ra,28. */
-    PsxStackPush p[] = {
-        {16u, cpu->s0}, {20u, cpu->s1}, {24u, cpu->s2},
-    };
-    psyq_mirror_stack_frame(cpu, 32u, 28u, p, 3);
+    psyq_mirror_stack_frame(cpu, PSYQ_FRAME_PUTDRAWENV);
 }
 
 /* Hor+ widescreen (--aspect) is implemented at the GTE-instruction
@@ -550,11 +505,7 @@ void psyq_SetDefDrawEnv(CPUState* cpu) {
                   (int)cpu->read_word(cpu->sp + 0x10));
     /* Real SetDefDrawEnv @0x8005EA94: sp -= 40; sw s0,16; s1,20; s2,24;
      * s3,28; s4,32; ra,36. */
-    PsxStackPush p[] = {
-        {16u, cpu->s0}, {20u, cpu->s1}, {24u, cpu->s2},
-        {28u, cpu->s3}, {32u, cpu->s4},
-    };
-    psyq_mirror_stack_frame(cpu, 40u, 36u, p, 5);
+    psyq_mirror_stack_frame(cpu, PSYQ_FRAME_SETDEFDRAWENV);
 }
 
 void psyq_SetDrawMode(CPUState* cpu) {
@@ -640,7 +591,7 @@ void psyq_DrawOTag(CPUState* cpu) {
     /* Same-moby painter rank source: record this walk's geometry prims (walk
      * position = og paint order) as the FALLBACK rank table — the feeder's
      * primary source walks the g_WorldOT buckets directly, pose-exact. */
-    openpete_mobyrank_ot_begin(openpete_frame);
+    psyq_game_ot_begin();
 
     /* OPENPETE_OT_DUMP_FRAMES=A-B → for openpete_frame in [A,B], dump every
      * DrawOTag call's slot list to OPENPETE_OT_DUMP_PATH (default
@@ -762,11 +713,11 @@ void psyq_DrawOTag(CPUState* cpu) {
          * untouched (the OT itself is never modified), so gameplay state is
          * unaffected. Control/env prims (plen==0, or code 0xE0/0xA0/0x00) always
          * pass so the draw-env / image loads still set up the framebuffer. */
-        if (render_paths_active()) {
+        if (psyq_game_render_paths_active()) {
             uint8_t cb = (plen != 0u) ? host[7] : 0u;
             uint8_t hi = cb & 0xF0u;
             bool is_geom = (plen != 0u) && (hi >= 0x20u && hi <= 0x70u);
-            if (is_geom && !render_path_addr_visible(addr)) {
+            if (is_geom && !psyq_game_render_path_addr_visible(addr)) {
                 if (next == 0x00FFFFFFu) break;
                 addr = next | 0x80000000u;
                 continue;
@@ -931,7 +882,7 @@ void psyq_DrawOTag(CPUState* cpu) {
                 s_total_slots++;
                 { uint8_t hi = code_byte & 0xF0u;
                   if (hi == 0x20u || hi == 0x30u)
-                      openpete_mobyrank_ot_prim(code_byte, host + 4,
+                      psyq_game_ot_prim_full(code_byte, host + 4,
                                                 (unsigned)payload_bytes); }
             } else {
                 s_anchor_slots++;
@@ -960,7 +911,7 @@ void psyq_DrawOTag(CPUState* cpu) {
         addr = next | 0x80000000u;
     }
     if (dump) std::fflush(dump);
-    openpete_mobyrank_ot_end();
+    psyq_game_ot_end();
 
     /* --render-paths: the per-path polybuf intervals were recorded during this
      * frame's render pass and consumed by the walk above. The "canon drawn" mask
@@ -1142,56 +1093,12 @@ void psyq_PadInitDirect(CPUState* cpu) {
     PadInitDirect((unsigned char*)PTR(buf0),
                   (unsigned char*)PTR(buf1));
 
-    /* Real PSYQ PadInitDirect (0x8006A4xx region) sets up libpad's pad-state
-     * machine: a 10-entry dispatch table at 0x800751BC (one fnptr per
-     * PadStateXxx), plus per-slot bookkeeping at 0x80075C58+ and 0x80075D40+
-     * (pointers to actuator buffers, byte masks, status caches). PsyCross's
-     * libpad implementation tracks state host-side and never writes those
-     * PSX-side bytes, leaving 60+ EXE/data bytes zero on our side. Replay
-     * the observed values verbatim — function pointers are PSYQ code (not
-     * relocated), the buffer addresses come from a0/a1. */
-
-    /* Pad-state dispatch table @ 0x800751BC (10 PSYQ fnptrs). */
-    static const struct { uint32_t off; uint32_t val; } pad_dispatch[] = {
-        {0x800751BCu, 0x8006B1D8u},
-        {0x800751C0u, 0x8006B170u},
-        {0x800751C4u, 0x8006B2DCu},
-        {0x800751C8u, 0x8006B398u},
-        {0x800751CCu, 0x8006B614u},
-        {0x800751D0u, 0x8006B64Cu},
-        {0x800751D4u, 0x8006B6D4u},
-        {0x800751D8u, 0x8006BAE8u},
-        {0x800751DCu, 0x8006B7A8u},
-        {0x800751E0u, 0x8006B2CCu},
-        {0x800751F0u, 0x80075D18u},
-        {0x800751F4u, 0x00000001u},
-    };
-    for (size_t i = 0; i < sizeof(pad_dispatch)/sizeof(pad_dispatch[0]); i++) {
-        cpu->write_word(pad_dispatch[i].off, pad_dispatch[i].val);
-    }
-
-    /* Per-pad slot tables. Buffer pointers depend on a0/a1; the rest are
-     * PSYQ data. Slot 0 ("g_PadBuffer") writes through 0x80075D40+; slot 1
-     * ("g_PadBufferSecondController") through 0x80075E38+. Inner pointers
-     * (0x80075CAB / 0x80075CF3 / 0x80075C88 / 0x80075CD0) are PSYQ
-     * scratch-buffer locations inside the same data block. */
-    cpu->write_word(0x80075C58u, 0x0000B058u);
-    cpu->write_word(0x80075C5Cu, 0x8006969Cu);
-    cpu->write_word(0x80075C60u, 0x80069634u);
-    cpu->write_word(0x80075D28u, 0x80075D18u);
-    cpu->write_word(0x80075D40u, buf0);
-    cpu->write_word(0x80075D48u, buf1);
-    cpu->write_word(0x80075D4Cu, 0x00000002u);
-    cpu->write_word(0x80075D54u, 0x80075C88u);
-    cpu->write_word(0x80075D58u, 0x80075CD0u);
-    cpu->write_word(0x80075D74u, 0xFFFFFF00u);
-    cpu->write_word(0x80075D78u, 0x00FFFFFFu);
-    cpu->write_word(0x80075E18u, 0x80075E08u);
-    cpu->write_word(0x80075E38u, buf1);
-    cpu->write_word(0x80075E44u, 0x80075CABu);
-    cpu->write_word(0x80075E48u, 0x80075CF3u);
-    cpu->write_word(0x80075E64u, 0xFFFFFF00u);
-    cpu->write_word(0x80075E68u, 0x00FFFFFFu);
+    /* The rest of what real PadInitDirect leaves in PSX RAM -- libpad's
+     * pad-state dispatch table and its per-slot bookkeeping -- is PSYQ's own
+     * data at this game's addresses, and the table entries are pointers into
+     * PSYQ code, so both are specific to a game and a PSYQ revision. PsyCross
+     * tracks pad state host-side and writes none of it. */
+    psyq_game_mirror_pad_init(cpu, buf0, buf1);
 }
 
 /* PSYQ libpad slot-2 canonical-state mirror.
@@ -1219,10 +1126,7 @@ void psyq_PadInitDirect(CPUState* cpu) {
  * Closes the last open region in the PCSX-Redux oracle gate
  * ('pad_input_buffers'); see manifest/gameplay_state_regions.toml. */
 static void psyq_libpad_mirror_canonical_slot2(CPUState* cpu) {
-    /* slot-2 buffer: 8 bytes packed as two LE u32 writes. */
-    cpu->write_word(0x80078E50u, 0x000000FFu);  /* FF 00 00 00 */
-    cpu->write_word(0x80078E54u, 0x00000000u);  /* 00 00 00 00 */
-    cpu->write_word(0x80078E9Cu, 0x00000190u);
+    psyq_game_mirror_pad_slot2(cpu);
 }
 
 void psyq_PadStartCom(CPUState* cpu) {
@@ -1379,7 +1283,7 @@ static int cdcontrol_host(u_char com, u_char* param, u_char* result) {
     if (com == CdlSetloc && param) {
         /* Track the head position for the level-segment asset overlay
          * (mod_wad_overlay.c) — CdRead has no location arg. */
-        mod_wad_setloc((uint32_t)CdPosToInt((CdlLOC*)param));
+        psyq_game_cd_setloc(param);
     }
     if (com == CdlSetfilter) {
         CdlFILTER* f = (CdlFILTER*)param;
@@ -1403,8 +1307,8 @@ static int cdcontrol_host(u_char com, u_char* param, u_char* result) {
 
 void psyq_CdControl(CPUState* cpu) {
     u_char com = (u_char)cpu->a0;
-    u_char* param = (u_char*)PTR(cpu->a1);
-    u_char* result = (u_char*)PTR(cpu->a2);
+    u_char* param = (u_char*)PTR_OPT(cpu->a1);
+    u_char* result = (u_char*)PTR_OPT(cpu->a2);
     OPL_INFO_F("thunks", "CdControl com=0x%02X param=0x%08X result=0x%08X",
                (unsigned)com, cpu->a1, cpu->a2);
     cpu->v0 = (uint32_t)cdcontrol_host(com, param, result);
@@ -1421,7 +1325,7 @@ extern "C" int openpete_CdControl(u_char com, u_char* param, u_char* result) {
 
 void psyq_CdControlB(CPUState* cpu) {
     u_char com = (u_char)cpu->a0;
-    u_char* param = (u_char*)PTR(cpu->a1);
+    u_char* param = (u_char*)PTR_OPT(cpu->a1);
 
     /* XA streaming arming. Spyro's SetMusicState issues exactly:
      *   CdControlB(CdlSetmode,   {SF|RT|Speed})
@@ -1431,7 +1335,7 @@ void psyq_CdControlB(CPUState* cpu) {
     switch (com) {
         case CdlSetloc:
             if (param)
-                mod_wad_setloc((uint32_t)CdPosToInt((CdlLOC*)param));
+                psyq_game_cd_setloc(param);
             break;
         case CdlSetmode: {
             uint8_t mode = param ? param[0] : 0;
@@ -1534,11 +1438,8 @@ void psyq_CdRead(CPUState* cpu) {
     /* Level-segment asset overlay (rung 9): serve mod-supplied bytes over
      * the just-drained read BEFORE the game's loader parses them. Also
      * advances the tracked head position. */
-    mod_wad_apply((uint8_t*)buf, sectors);
-    /* Verify g_CdState.m_IsReading at 0x80076BB8 is cleared after the cb. */
+    psyq_game_cd_apply_buf((uint8_t*)buf, sectors);
     uint8_t* ram = openpete_psx_get_ram();
-    uint32_t before = 0;
-    memcpy(&before, ram + 0x76BB8, 4);
     if (g_native_cd_read_cb != nullptr) {
         /* Native registrar (post-rewriter init.c). Fire the host cb
          * directly — no cpu dispatch round-trip needed. */
@@ -1546,25 +1447,54 @@ void psyq_CdRead(CPUState* cpu) {
     } else {
         invoke_psx_callback(cpu, g_cd_read_cb, /*intr=CdlComplete=*/2u, 0u);
     }
-    uint32_t after = 0;
-    memcpy(&after, ram + 0x76BB8, 4);
-    if (after != 0u) {
-        OPL_WARN_F("thunks",
-                   "CdRead: m_IsReading still set after callback (before=%u after=%u cb=0x%08X native_cb=%p)",
-                   before, after, g_cd_read_cb, (void*)g_native_cd_read_cb);
-    }
+    psyq_game_cd_read_done(cpu, g_cd_read_cb);
 
-    /* After the bytes have actually settled in RAM, peek the overlay-id
-     * word at 0x8007AA38. The recompiler treats `LEVEL_BALLOON(id, …)` as
-     * `LONG(id)`, so the id is the first word of every overlay; cutscene
-     * scratch writes to the same vaddr have a different first word and
-     * leave the tracker unchanged. */
-    if (cpu->a1 == 0x8007AA38u) {
+    /* Once the bytes have settled, the first word at the overlay vaddr is the
+     * overlay id, so re-point the dispatcher at whichever overlay is now
+     * resident. A write to that vaddr that is not an overlay carries a
+     * different first word and leaves the tracker unchanged. */
+    uint32_t ovl = psyq_game_overlay_vaddr();
+    if (ovl != 0u && cpu->a1 == ovl) {
         uint32_t magic = 0;
-        memcpy(&magic, ram + 0x7AA38, 4);
+        memcpy(&magic, ram + (ovl & 0x1FFFFFu), 4);
         spyro_set_active_overlay_by_magic(magic);
     }
 }
+
+/* libcd's internals, as distinct from the API above.
+ *
+ * PSYQ reaches the drive through the BIOS jump tables with an indirect call,
+ * so these cannot be translated: the recompiler has no BIOS, and the symptom
+ * is a status poll that never completes rather than a crash. They map onto
+ * PsyCross's equivalents, which complete synchronously.
+ *
+ * The names come from the SDK's own export tables, recovered by signature
+ * match; a decomp that splats the PSYQ text without symbols has none of them.
+ */
+void psyq_CD_sync(CPUState* cpu) {
+    u_char scratch[8];
+    u_char* result = (cpu->a1 != 0u) ? (u_char*)PTR(cpu->a1) : scratch;
+    cpu->v0 = (uint32_t)CdSync((int)cpu->a0, result);
+}
+
+void psyq_CD_datasync(CPUState* cpu) {
+    u_char scratch[8];
+    u_char* result = (cpu->a1 != 0u) ? (u_char*)PTR(cpu->a1) : scratch;
+    cpu->v0 = (uint32_t)CdReadSync((int)cpu->a0, result);
+}
+
+void psyq_CD_getsector(CPUState* cpu) {
+    cpu->v0 = (uint32_t)CdGetSector(PTR(cpu->a0), (int)cpu->a1);
+}
+
+void psyq_CD_init(CPUState* cpu) {
+    cpu->v0 = (uint32_t)CdInit();
+}
+
+/* No drive-side queue to drain or volume register to program: PsyCross owns
+ * the device and applies both host-side. */
+void psyq_CD_flush(CPUState* cpu)   { cpu->v0 = 0u; }
+void psyq_CD_initvol(CPUState* cpu) { cpu->v0 = 0u; }
 
 void psyq_CdSync(CPUState* cpu) {
     int mode = (int)cpu->a0;
@@ -1718,86 +1648,12 @@ extern "C" void PsyX_SPUAL_StopOrphans(void);
  * ADPCM into the free SPU tail after the level bank. Everything here is
  * host-side: guest RAM and the SPU bank image stay byte-stock.
  */
-#include "spyro1_sfx_names.h" /* generated: all 256 slot names */
-
-/* Mod-facing aliases that predate the generated table; they resolve to
- * the slot name and keep working forever. */
-static const struct { const char* alias; uint8_t slot; } k_sfx_aliases[] = {
-    {"gem_pickup", 0x00},   {"chest_break", 0x03},
-    {"spyro_charge", 0x04}, {"super_charge", 0x05},
-    {"exit_vortex", 0x1A},  {"spyro_stars", 0x1B},
-    {"water_splash", 0x1D}, {"spyro_walk", 0x1E},
-    {"spyro_unsquish", 0x20}, {"flight_pling", 0x21},
-    {"flight_collected", 0x23}, {"moby_poof", 0x26},
-    {"spyro_flame", 0x28},  {"menu_sound", 0x2C},
-    {"menu_cursor", 0x2D},  {"menu_confirm", 0x2E},
-    {"pickup_ding", 0x2F},
-};
-static const char* spyro_sfx_canon(const char* name) {
-    for (const auto& a : k_sfx_aliases)
-        if (strcmp(a.alias, name) == 0) return spyro1_sfx_slot_names[a.slot];
-    return name;
-}
-
-#define SPYRO_SPU_SOUNDDEFS_VA  0x800761D0u /* g_Spu.m_SoundDefinitions */
-#define SPYRO_SPU_SOUNDTABLE_VA 0x800761D4u /* g_Spu.m_SoundTable */
-#define SPYRO_CUTSCENE_DEF_VA   0x800778F0u /* g_CutsceneSoundDef: a ONE-entry
-                                             * def the cutscene/title/speech
-                                             * code points m_SoundDefinitions
-                                             * at while the level TABLE stays */
-#define SPYRO_SOUNDDEF_STRIDE   0x14u
-#define SPYRO_SPU_BANK_BLAST    (0x80000u - 0x1010u) /* level SPU upload */
-
-/* Slot names whose def owns `spu_addr` in the CURRENT tables. When the
- * game has pointed m_SoundDefinitions at the one-entry cutscene def the
- * level table is meaningless for it: no slot names then. */
-static int spyro_sfx_slot_names(uint32_t spu_addr, const char** out, int max) {
-    uint32_t defs_va  = *(uint32_t*)PTR(SPYRO_SPU_SOUNDDEFS_VA);
-    uint32_t table_va = *(uint32_t*)PTR(SPYRO_SPU_SOUNDTABLE_VA);
-    if (!defs_va || !table_va || defs_va == SPYRO_CUTSCENE_DEF_VA) return 0;
-    const uint8_t* table = (const uint8_t*)PTR(table_va);
-    const uint8_t* defs  = (const uint8_t*)PTR(defs_va);
-    int count = *(const int32_t*)PTR(table_va + 256);
-    if (!table || !defs || count <= 0 || count > 256) return 0;
-    int n = 0;
-    for (int slot = 0; slot < SPYRO1_SFX_SLOT_COUNT && n < max; slot++) {
-        uint8_t id = table[slot];
-        if (id >= count) continue;
-        uint32_t addr;
-        memcpy(&addr, defs + id * SPYRO_SOUNDDEF_STRIDE, 4);
-        if (addr == spu_addr) out[n++] = spyro1_sfx_slot_names[slot];
-    }
-    return n;
-}
-
-/* ── sfx pack glue ──
- * The pack folds a replacement's pitch into its buffer rate using the
- * base pitch the game will keep refreshing the voice with: the
- * ActiveSound's m_Pitch (the def's, or the per-play override), read
- * from guest RAM. g_Spu.m_ActiveSounds[24] follows SpuCommonAttr (0x28
- * bytes); ActiveSound is 0x1C bytes with m_Pitch at +8. */
-#define SPYRO_SPU_VA            0x80075F08u /* g_Spu */
-#define SPYRO_ACTIVESOUND_OFF   0x28u
-#define SPYRO_ACTIVESOUND_SIZE  0x1Cu
-static int spyro_sfx_base_pitch(int voice) {
-    if (voice < 0 || voice >= 24) return 0;
-    uint32_t p = *(uint32_t*)PTR(SPYRO_SPU_VA + SPYRO_ACTIVESOUND_OFF +
-                                 (uint32_t)voice * SPYRO_ACTIVESOUND_SIZE + 8u);
-    return (p > 0 && p < 0x4000u) ? (int)p : 0;
-}
 static uint32_t s_spu_xfer_addr; /* SpuSetTransferStartAddr, advanced by SpuWrite */
-static void spyro_sfx_pack_arm(void) {
-    static int s_armed = 0;
-    if (s_armed) return;
-    s_armed = 1;
-    sfx_pack_set_pitch_reader(spyro_sfx_base_pitch);
-    sfx_pack_set_name_resolver(spyro_sfx_slot_names);
-}
 
 void psyq_SpuInit(CPUState* cpu) {
     (void)cpu;
     SpuInit();
-    openpete_mods_sfx_set_canon(spyro_sfx_canon);
+    psyq_game_sfx_arm();
 }
 
 /* Music level is the product of the two hardware stages the XA stream passes
@@ -1856,7 +1712,7 @@ static int sfx_key_log_on(void) {
 static void sfx_key_log_attr(const SpuVoiceAttr* attr) {
     if (!sfx_key_log_on() || !(attr->mask & SPU_VOICE_WDSA)) return;
     const char* names[1];
-    int n = spyro_sfx_slot_names(attr->addr, names, 1);
+    int n = psyq_game_sfx_slot_names(attr->addr, names, 1);
     for (int v = 0; v < 24; v++)
         if (attr->voice & (1u << v))
             fprintf(stderr, "[sfx-attr f=%u v=%d addr=%#x pitch=%#x name=%s]\n",
@@ -1924,9 +1780,9 @@ void psyq_SpuWrite(CPUState* cpu) {
      * sfx pack's identity cache follows the same two-tier rule: a blast
      * is a new generation, any other write (dragon speech lands over the
      * top of the bank mid-level) forgets just the addresses it covers. */
-    spyro_sfx_pack_arm();
+    psyq_game_sfx_arm();
     unsigned int len = (unsigned int)cpu->a1;
-    if (len == SPYRO_SPU_BANK_BLAST) {
+    if (len != 0u && len == psyq_game_spu_bank_blast_len()) {
         sfx_pack_generation_bump();
         PsyX_SPUAL_StopOrphans(); /* a new level: no tails from the old one */
     } else {
@@ -1961,22 +1817,10 @@ void psyq_SpuIsTransferCompleted(CPUState* cpu) {
 void psyq_MemCardInit(CPUState* cpu) {
     openpete_memcard_init();
 
-    /* Real PSYQ MemCardInit (0x8006626C) clears two state words then
-     * jumps into func_80067E70, which OpenEvent-registers a chain of
-     * BIOS events and threads handlers through PSYQ's libgpu-style
-     * control struct. The card-side struct lives at 0x800748F0+ and
-     * shadows the same ABI as libgpu's at 0x80073924. PsyCross stubs
-     * skip the entire chain, so 15 EXE bytes remain zero on our side.
-     * Replay the observed post-init values directly. */
-    cpu->write_byte(0x80074904u, 0x01u);          /* "card init done" */
-    cpu->write_word(0x8007490Cu, 0x8005E124u);    /* fnptr */
-    cpu->write_word(0x80074924u, 0x80073924u);    /* libgpu struct backref */
-    cpu->write_byte(0x8007492Cu, 0x01u);
-    cpu->write_word(0x80074938u, 0x8005DFD8u);    /* fnptr */
-    cpu->write_byte(0x800749E0u, 0x05u);          /* registered handler count */
+    psyq_game_mirror_memcard_init(cpu);
 
     /* MemCardInit's MIPS prologue: sp -= 0x18; sw ra,0x10(sp). */
-    psyq_mirror_stack_frame(cpu, 0x18u, 0x10u, NULL, 0);
+    psyq_mirror_stack_frame(cpu, PSYQ_FRAME_MEMCARDINIT);
 }
 
 void psyq_MemCardStart(CPUState* cpu) {
@@ -2091,10 +1935,10 @@ void psyq_strlen(CPUState* cpu) {
  *     seed = seed * 0x41C64E6D + 0x3039
  *     return (seed >> 16) & 0x7FFF */
 extern "C" uint8_t* openpete_psx_get_ram(void);
-static constexpr uint32_t PSYQ_RAND_SEED_VADDR = 0x80075AC0u;
+
 static inline uint32_t psyq_seed_load(void) {
     const uint8_t* ram = openpete_psx_get_ram();
-    uint32_t off = PSYQ_RAND_SEED_VADDR & 0x1FFFFFu;
+    uint32_t off = psyq_game_rand_seed_addr() & 0x1FFFFFu;
     return  (uint32_t)ram[off]
          | ((uint32_t)ram[off + 1] << 8)
          | ((uint32_t)ram[off + 2] << 16)
@@ -2102,7 +1946,7 @@ static inline uint32_t psyq_seed_load(void) {
 }
 static inline void psyq_seed_store(uint32_t v) {
     uint8_t* ram = openpete_psx_get_ram();
-    uint32_t off = PSYQ_RAND_SEED_VADDR & 0x1FFFFFu;
+    uint32_t off = psyq_game_rand_seed_addr() & 0x1FFFFFu;
     ram[off    ] = (uint8_t)(v        & 0xFF);
     ram[off + 1] = (uint8_t)((v >> 8 ) & 0xFF);
     ram[off + 2] = (uint8_t)((v >> 16) & 0xFF);

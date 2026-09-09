@@ -203,6 +203,8 @@ endif()
 add_executable(openpete-spyro1
     main.cpp
     game_extras_impl.c
+    psyq_hooks.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_game_hooks_default.c
     mod_wad_overlay.c
     feature_list.c
     features/render_paths.c
@@ -250,7 +252,7 @@ add_executable(openpete-spyro1
     # generated stubs so under MinGW link order lets the thunk's strong
     # def win against the stub's strong def (paired with
     # --allow-multiple-definition).
-    psyq_thunks.cpp
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_thunks.cpp
     recomp_extract.cpp
     sfx_census.cpp
     disc_library.cpp
@@ -300,6 +302,7 @@ endif()
 # openpete_core (which adds psxrecomp/runner/include).
 target_include_directories(openpete-spyro1 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common
     ${SPYRO_GENERATED}
     ${CMAKE_CURRENT_BINARY_DIR}/gen)
 

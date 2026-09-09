@@ -62,13 +62,76 @@ def mask(w):
     op = w >> 26
     if op in (0x02, 0x03):      # j/jal: absolute target, fixed at link time
         return w & 0xFC000000
-    if op in IMM16:
+    if op == 0x0f:              # lui: the high half of a relocated address
         return w & 0xFFFF0000
     return w
 
 
+def mask_seq(ws):
+    """Mask the fields a relocation rewrites, and only those.
+
+    A 16-bit immediate is link-dependent only when it is the low half of a
+    relocated address: the instruction after a `lui` into the same register, or
+    a $gp-relative access. Every other immediate is a struct field offset or a
+    stack displacement, identical however the code is linked, and masking it
+    discards the field that tells otherwise-identical functions apart -- PSYQ's
+    callback trampolines differ from each other in nothing else.
+    """
+    out = []
+    tainted = set()          # registers currently holding a lui'd address half
+    for w in ws:
+        op = w >> 26
+        rs = (w >> 21) & 0x1F
+        rt = (w >> 16) & 0x1F
+        m = mask(w)
+        # $gp-relative access, or the %lo half of an address a lui put in rs.
+        # The pair is not always adjacent -- the compiler schedules other
+        # instructions between them -- so the taint lasts until rs is written
+        # by something other than that lui.
+        if op in IMM16 and (rs == 28 or rs in tainted):
+            m = w & 0xFFFF0000
+        out.append(m)
+        if op == 0x0f:
+            tainted.add(rt)
+        elif op == 0x09 and rs in tainted:
+            # addiu completes lui/addiu: rt now holds a finished address, so a
+            # later load through it is still relocation-dependent.
+            tainted.add(rt)
+        elif op in IMM16:
+            # Any other I-type writing rt leaves a loaded or computed value
+            # there, not an address half. A load through it afterwards carries
+            # a struct offset, which must stay in the comparison.
+            tainted.discard(rt)
+        elif op == 0:
+            rd = (w >> 11) & 0x1F
+            tainted.discard(rd)
+    return tuple(out)
+
+
 def mseq(ws):
-    return tuple(mask(w) for w in ws)
+    """Permissive: mask every 16-bit immediate.
+
+    A library member is unrelocated, so an address half reads as 0 there and as
+    a real value in the linked game. Masking all of them matches across that
+    difference reliably; it also discards struct offsets, which makes some
+    short functions indistinguishable. Those are separated by sseq below rather
+    than by tightening this one, which loses genuine matches.
+    """
+    out = []
+    for w in ws:
+        op = w >> 26
+        out.append(w & 0xFFFF0000 if op in IMM16 else mask(w))
+    return tuple(out)
+
+
+def sseq(ws):
+    """Strict: mask only what a relocation can actually rewrite.
+
+    Keeps struct offsets and stack displacements, which is what tells PSYQ's
+    callback trampolines apart -- they differ in nothing but the field offset
+    they load through.
+    """
+    return mask_seq(ws)
 
 
 def parse_psyq_s(path):
@@ -108,9 +171,10 @@ def build_sections(sdk):
                 k = len(store)
                 store.append((lib, member, si, ws,
                               {o: nm for nm, s, o in xdefs if s == si}))
-                mw = [mask(w) for w in ws]
+                # Index with the same masking the lookup uses; per-word
+                # masking is not equivalent once the mask is context-sensitive.
                 for i in range(n - NGRAM + 1):
-                    index[tuple(mw[i:i + NGRAM])].append((k, i))
+                    index[mseq(ws[i:i + NGRAM])].append((k, i))
     return store, index
 
 
@@ -125,11 +189,22 @@ def locate(funcs, store, index):
         for k, i in index.get(mseq(ws[:NGRAM]), ()):
             lib, member, _si, lws, xd = store[k]
             if i + len(ws) <= len(lws) and mseq(lws[i:i + len(ws)]) == full:
-                hits.append((lib, member, xd.get(i * 4)))
+                hits.append((lib, member, xd.get(i * 4),
+                             sseq(lws[i:i + len(ws)])))
         if not hits:
             unmatched.append((label, vaddr, 'no library member matches the body'))
             continue
-        names = {h[2] for h in hits if h[2]}
+        named_hits = [h for h in hits if h[2]]
+        names = {h[2] for h in named_hits}
+        if len(names) > 1:
+            # Several symbols share this body under the permissive mask.
+            # Re-compare keeping the fields a relocation cannot rewrite.
+            strict = sseq(ws)
+            refined = [h for h in named_hits
+                       if h[3] is not None and h[3] == strict]
+            if len({h[2] for h in refined}) == 1:
+                names = {refined[0][2]}
+                hits = refined
         if len(names) == 1:
             named[label] = (names.pop(), hits[0][0], hits[0][1])
         elif len(names) > 1:
@@ -158,16 +233,22 @@ def name_from_reference(funcs, named, ref_path):
     matched by the same masked-body comparison used against the libraries.
     """
     ref = parse_psyq_s(ref_path)
-    index = {}
+    index, strict_index = {}, {}
     for label, (_va, ws) in ref.items():
         if label.startswith(('func_', 'D_', 'jtbl_')) or len(ws) < NGRAM:
             continue
         index.setdefault(mseq(ws), []).append(label)
+        strict_index.setdefault(sseq(ws), []).append(label)
     added = 0
     for label, (_va, ws) in funcs.items():
         if label in named or len(ws) < NGRAM:
             continue
         hits = index.get(mseq(ws))
+        if hits and len(set(hits)) > 1:
+            # Separate them on the fields a relocation cannot rewrite.
+            strict = strict_index.get(sseq(ws))
+            if strict and len(set(strict)) == 1:
+                hits = strict
         if hits and len(set(hits)) == 1:
             named[label] = (hits[0], 'reference', ref_path)
             added += 1
