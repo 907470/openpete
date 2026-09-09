@@ -1,59 +1,75 @@
-# openpete ↔ PCSX-Redux RAM-diff workflow
+# openpete ↔ PCSX-Redux single-shot RAM diff
 
-A primitive for the iterative-debugging loop: run pcsx-redux to a chosen
-PC, capture its 2 MB main RAM and CPU state; run openpete from the same
-seed up to the same PC; byte-diff the two RAMs. Any diverging byte is a
-candidate openpete recompiler / PSYQ-thunk bug.
+Run PCSX-Redux to a chosen PC and capture its 2 MB main RAM plus CPU
+state; run openpete from the same seed to the same PC; byte-diff the two
+RAMs. Any diverging byte is a candidate recompiler or PSYQ-thunk defect.
 
-## Two modes
+## Relationship to the DuckStation oracle
 
-**Single-shot (this document).** Capture pcsxr's RAM at one PC; run
-openpete to the same PC; one byte diff. Used for halt-PC bisection.
+The canonical PSX oracle is DuckStation (`docs/duckstation-oracle.md`,
+`scripts/check_psx_oracle.sh`): real SCPH1001 BIOS, per-tick hashes of
+the regions in `manifest/gameplay_state_regions.toml`, 20k-tick soak.
+PCSX-Redux runs OpenBIOS and its GPU emulation wedges in Spyro 1's
+cyclorama renderer around VBL 120, so it cannot produce a long trace.
 
-**Streaming oracle.** Capture per-VBL records into a `.psxtrace` file;
-openpete consumes it via `--psxtrace-verify` and diffs every traced
-frame in one run. See the **Streaming oracle** section near the end of
-this document. Phase 2 of `notes/plans/openpete-determinism-enforcement.md`.
+What PCSX-Redux still provides that the oracle does not: a full 2 MB RAM
+image at an exact instant, over the whole address space rather than the
+manifest regions, with a matching CPU-register dump. That is the tool for
+attributing a byte-level difference to a specific function, and for
+verifying a PSYQ thunk writes what the real PSYQ library writes. The
+DuckStation oracle names the first divergent tick and region; this names
+the bytes. `scripts/capture_psx_oracle_ds.sh` supersedes
+`scripts/capture_psx_oracle.sh` for trace capture; the PCSX-Redux path
+below is kept for these single-shot dumps.
 
-Companion to [gte-trace-vs-reference](gte-trace-vs-reference.md): GTE
-verifies math, this verifies _whole-game state_ over an arbitrary span of
-execution.
+Companion to [gte-trace-vs-reference](gte-trace-vs-reference.md), which
+verifies GTE math rather than whole-RAM state.
 
 ## Components
 
 ### openpete flags
 
-| Flag                     | What                                                                                                                                                                                            |
-| ------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `--seed-ram PATH`        | Overwrite `g_ram` (2 MB) from PATH **after** EXE-load, so openpete starts from the same RAM pcsx-redux had at the seed PC.                                                                      |
-| `--seed-cpu PATH`        | Overwrite the 32 GPRs + pc/hi/lo + cop0 + GTE banks from PATH (528-byte `'CSv1'` blob). Suppresses any `--test-recomp-gp` override.                                                             |
-| `--halt-at-pc HEX`       | When `psx_override_dispatch` sees the recomp call into the function at HEX, dump `g_ram` to `--ram-dump-output` and `_Exit(0)`. Hooked at function-call boundary, so the dump instant is exact. |
-| `--ram-dump-on-frame N`  | Dump after frame N's game code yields. Used for "post-vsync" snapshots when you don't want to halt; pairs with PCSXR_DUMP_VSYNCS on the Lua side.                                               |
-| `--ram-dump-output PATH` | Shared output path for both halt-at-pc and ram-dump-on-frame.                                                                                                                                   |
+Parsed in `core/runtime/options.c`; help text under the debug block.
 
-### pcsx-redux Lua (`scripts/pcsx-redux-ram-dump.lua`)
+| Flag | Effect |
+| --- | --- |
+| `--seed-ram PATH` | Overwrite `g_ram` (2 MB) from PATH after EXE load, so openpete starts from the RAM PCSX-Redux had at the seed PC. |
+| `--seed-cpu PATH` | Overwrite the 32 GPRs, pc/hi/lo, cop0 and both GTE banks from a 528-byte `'CSv1'` blob (`load_cpu_seed`, `core/runtime/run.c`). Suppresses any `--test-recomp-gp` override. |
+| `--halt-at-pc HEX` | When `psx_override_dispatch` sees a call into the function at HEX, dump `g_ram` to `--ram-dump-output` and `_Exit(0)`. Fires at a function-call boundary, so the dump instant is exact. |
+| `--halt-hit N` | Dump on the Nth (1-indexed) call to `--halt-at-pc`; default 1. |
+| `--ram-dump-on-frame N` | Dump after VBL N's game code yields, without halting. |
+| `--ram-dump-output PATH` | Output path for all three dump modes; default `./ram.bin`. |
 
-Driven by env vars (no edit-and-rerun loop):
+### PCSX-Redux Lua (`scripts/pcsx-redux-ram-dump.lua`)
 
-| Var                 | Default              | What                                                                                                                                                                 |
-| ------------------- | -------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `PCSXR_DUMP_PC`     | `0x8003385c`         | Target PC. BP fires here.                                                                                                                                            |
-| `PCSXR_DUMP_OUT`    | `/tmp/pcsxr_ram.bin` | RAM (2 MB) output path.                                                                                                                                              |
-| `PCSXR_DUMP_CPU`    | _(unset)_            | Optional CPU output path (528 bytes, `'CSv1'` format). Omit to skip.                                                                                                 |
-| `PCSXR_DUMP_VSYNCS` | `0`                  | When 0, dump fires immediately on BP hit. Larger values count vblank events after BP and dump on the Nth — useful when you want a "+N vsync after PC" capture. |
+Driven by environment variables.
 
-Requires pcsx-redux launched with `--debugger`; see the same caveat in
-`gte-trace-vs-reference.md`.
+| Var | Default | Effect |
+| --- | --- | --- |
+| `PCSXR_DUMP_PC` | `0x8003385c` | Target PC; the breakpoint fires here. |
+| `PCSXR_DUMP_OUT` | `/tmp/pcsxr_ram.bin` | RAM (2 MB) output path. |
+| `PCSXR_DUMP_CPU` | unset | Optional CPU output path (528 bytes, `'CSv1'`). Omit to skip. |
+| `PCSXR_DUMP_HITS` | `0` | Non-zero dumps on the Nth breakpoint hit and ignores `PCSXR_DUMP_VSYNCS`. |
+| `PCSXR_DUMP_VSYNCS` | `0` | 0 dumps immediately on the hit. Larger values count vblank events after the hit and dump on the Nth. |
+
+The script clears `PCSX.settings.emulator.Mcd{1,2}Inserted` and calls
+`PCSX.hardResetEmulator()` before running, so PCSX-Redux boots without
+memory-card slot bookkeeping. openpete has no BIOS-side memcard state,
+and leaving the slots inserted puts hundreds of unmatchable bytes in the
+diff.
+
+PCSX-Redux must be launched with `--debugger` for breakpoints to fire.
 
 ### `'CSv1'` CPU-state file format
 
-528 bytes, little-endian throughout:
+528 bytes, little-endian. Produced by the Lua `dump_cpu` helper, consumed
+by `load_cpu_seed` in `core/runtime/run.c`.
 
 ```
 offset  size  field
    0    4     magic 0x31765343 ('CSv1')
-   4    128   gpr[32]   in MIPS order: zero, at, v0, v1, a0..a3,
-                        t0..t7, s0..s7, t8, t9, k0, k1, gp, sp, fp, ra
+   4    128   gpr[32]  in MIPS order: zero, at, v0, v1, a0..a3,
+                       t0..t7, s0..s7, t8, t9, k0, k1, gp, sp, fp, ra
  132    4     pc
  136    4     hi
  140    4     lo
@@ -62,12 +78,11 @@ offset  size  field
  400    128   gte_ctrl[32]
 ```
 
-Producer: the Lua dumper (`dump_cpu` helper).
-Consumer: openpete `load_cpu_seed` in `core/runtime/run.c`.
-
 ## Recipe
 
-Two pcsxr captures, one openpete run, one diff.
+Two PCSX-Redux captures, one openpete run, one diff. The seed PC is a
+point both engines are known to agree on; the oracle PC is the point
+under investigation.
 
 ```sh
 PCSXR=openpete/.tools/pcsx-redux/pcsx-redux
@@ -75,38 +90,27 @@ SCRIPT=openpete/scripts/pcsx-redux-ram-dump.lua
 DISC=spyro-1/build/SCUS-94228.cue
 BIOS=openpete/.tools/pcsx-redux/openbios.bin
 
-# 1. Seed snapshot — pcsxr at SEED_PC (pre-divergence point).
-SEED_PC=0x80012204    # Spyro 1 main entry
-PCSXR_DUMP_PC=$SEED_PC \
-PCSXR_DUMP_OUT=/tmp/seed.ram \
-PCSXR_DUMP_CPU=/tmp/seed.cpu \
+SEED_PC=0x80012204     # Spyro 1 main entry
+PCSXR_DUMP_PC=$SEED_PC PCSXR_DUMP_OUT=/tmp/seed.ram PCSXR_DUMP_CPU=/tmp/seed.cpu \
     $PCSXR --no-ui --debugger --interpreter \
         --bios $BIOS --iso $DISC --run --dofile $SCRIPT
 
-# 2. Oracle snapshot — pcsxr at ORACLE_PC (the point we want openpete to match).
-ORACLE_PC=0x8003385c  # Spyro 1 GamestateUpdate (post-Initialize)
-PCSXR_DUMP_PC=$ORACLE_PC \
-PCSXR_DUMP_OUT=/tmp/oracle.ram \
-PCSXR_DUMP_CPU=/tmp/oracle.cpu \
+ORACLE_PC=0x8003385c   # GamestateUpdate, post-Initialize
+PCSXR_DUMP_PC=$ORACLE_PC PCSXR_DUMP_OUT=/tmp/oracle.ram PCSXR_DUMP_CPU=/tmp/oracle.cpu \
     $PCSXR --no-ui --debugger --interpreter \
         --bios $BIOS --iso $DISC --run --dofile $SCRIPT
 
-# 3. openpete — seed both, halt at oracle, dump.
 openpete/build/linux-release/games/spyro-1/openpete-spyro1 \
-    --disc $DISC \
-    --run-recomp 0x80012204 \
-    --seed-ram /tmp/seed.ram \
-    --seed-cpu /tmp/seed.cpu \
-    --halt-at-pc $ORACLE_PC \
-    --headless \
-    --ram-dump-output /tmp/op.ram
+    --disc $DISC --headless \
+    --run-recomp $SEED_PC \
+    --seed-ram /tmp/seed.ram --seed-cpu /tmp/seed.cpu \
+    --halt-at-pc $ORACLE_PC --ram-dump-output /tmp/op.ram
 
-# 4. Diff.
-cmp -l /tmp/op.ram /tmp/oracle.ram | wc -l         # how many bytes differ
-cmp -l /tmp/op.ram /tmp/oracle.ram | head -20      # first divergences
+cmp -l /tmp/op.ram /tmp/oracle.ram | wc -l    # bytes differing
+cmp -l /tmp/op.ram /tmp/oracle.ram | head -20 # first divergences
 ```
 
-To produce a region histogram and direction breakdown, awk over `cmp -l`:
+Region histogram from the `cmp -l` output:
 
 ```sh
 cmp -l /tmp/op.ram /tmp/oracle.ram > /tmp/cmp.txt
@@ -122,173 +126,93 @@ awk '{
     /tmp/cmp.txt
 ```
 
+Mask the stack below `sp` on both sides before reading a stack figure:
+`sp` is GPR 29, at offset 120 of each side's `'CSv1'` dump, and the bytes below
+it are dead sub-frames plus BIOS scratch (`cdrom:SYSTEM.CNF;1` and
+similar) that no game code reads. Unmasked, they dominate the stack
+column and read as divergence.
+
 ## Picking a halt PC
 
-The PC you halt at must be a **recompiled function entry** — it's matched
-by `psx_override_dispatch`, which fires at function-call boundaries, not
-mid-instruction. Look up function symbols in `spyro-1/build/psx.map`:
+The halt PC must be the entry of a recompiled game function. The
+recompiler emits `if (psx_override_dispatch(cpu, 0xADDR)) return;` at the
+top of every generated body
+(`third_party/psxrecomp/recompiler/src/code_generator.cpp:1973`), and
+`--halt-at-pc` is checked inside that call (`core/runtime/dispatch.c`,
+`psx_override_dispatch`).
+
+A PSYQ address has no generated body: it is a `case 0xADDR:
+psyq_FOO(cpu); return 1;` arm in
+`games/spyro-1/generated/PSX.EXE_dispatch.c`, which never reaches the
+override gate. A halt on a PSYQ PC silently never fires.
+
+Symbols come from the decompile's map file:
 
 ```sh
 grep -E "GamestateUpdate|GamestateDraw|Initialize" spyro-1/build/psx.map
 ```
 
-For Spyro 1, useful candidates inside `Initialize()` (for bisection):
-the first few functions main calls in order. Halt at each in sequence
-and watch where the diff jumps from "small" to "large" — the first
-"large" PC is the first diverging function.
+`GamestateDraw` (`0x8001ED5C`) is the canonical per-VBL pin: `main()`
+calls it once per VBL after `GamestateUpdate()` returns, so
+`--halt-at-pc 0x8001ED5C --halt-hit N` and `PCSXR_DUMP_PC=0x8001ED5C
+PCSXR_DUMP_HITS=N` land both engines in the same call at the same depth.
+It is also the default anchor of both oracle capture scripts.
 
-## Bisection inside `Initialize()` — current baseline (2026-04-26)
+Do not pin by VBL count instead. `--ram-dump-on-frame N` counts
+`VSync(0)` syscalls, where openpete is yielded inside its PsyCross stub;
+`PCSXR_DUMP_VSYNCS=N` counts the emulator's vblank events, where
+PCSX-Redux is inside the BIOS vblank IRQ handler. The two counters name different
+instants and different call stacks.
 
-With the recipe above and Spyro 1's `main → Initialize() → ...`, halting
-both sides at function-entry boundaries via `--halt-at-pc`. **Halt PCs
-must be game functions, not PSYQ thunks** — the dispatch chain handles
-PSYQ as `case 0xADDR: psyq_FOO(cpu); return 1`, which bypasses
-`psx_override_dispatch`, so a halt on a PSYQ PC will silently never fire.
-Game functions (anything with a recompiled body in `PSX.EXE_full.c`) hit
-the override gate and halt cleanly.
+## Known non-defect divergences
 
-Sweep across `Initialize()`'s game-function call chain, with
-`--seed-ram` + `--seed-cpu` from main entry. Four columns per halt:
-raw baseline, after `psyq___main` thunk fix, after the libgpu thunk
-pass (commits `2d3e998` + `4cf43cb` + `89e67dd`), and after the
-no-memcards Lua tweak (the dump script flips
-`PCSX.settings.emulator.Mcd{1,2}Inserted = false` and
-`PCSX.hardResetEmulator()` so pcsxr boots without slot bookkeeping —
-matches openpete, which has no BIOS-side memcard state):
+### Synchronous CdRead
 
-| halt at                           | baseline | +\_\_main | +libgpu | +no-mcd |
-| --------------------------------- | -------: | --------: | ------: | ------: |
-| `0x80012204` main entry           |        0 |         0 |       0 |       0 |
-| `0x800122a8` GraphicsInitialize   |        5 |         0 |       0 |       0 |
-| `0x80012460` MemoryCardInitialize |      386 |       381 |     247 | **247** |
-| `0x800123c8` GamepadInitialize    |      778 |       773 |     642 | **512** |
-| `0x8005595c` SpuInitialize        |      910 |       905 |     780 | **656** |
-| `0x80012480` CDInitialize         |      936 |       931 |     812 | **675** |
-| `0x8001256c` MusicInitialize      |    1,155 |     1,150 |   1,041 | **901** |
-| `0x8003385c` GamestateUpdate      |   1.14 M |     (n/a) |   (n/a) |   (n/a) |
+`psyq_CdRead` (`games/spyro-1/psyq_thunks.cpp`) calls `CdReadSync(0,
+NULL)` inline, so a transfer completes before the thunk returns.
+PCSX-Redux runs real PSX cycle counts and leaves the same transfer
+pending across many VBLs. Immediately after a large read, openpete's
+target buffer is populated and PCSX-Redux's is not; the diff converges as
+PCSX-Redux catches up. The affected ranges are the `buf=` addresses in
+openpete's `thunks: CdRead` log lines. This is a timing skew, not a
+recompiler defect. The same skew is why the DuckStation oracle flags the
+three CD-load pool regions `cd_load_transient` in
+`manifest/gameplay_state_regions.toml`.
 
-After the libgpu/libcard/libpad replay pass (`psyq_MemCardInit` +
-`psyq_PadInitDirect` + `psyq_VSyncCallback` post-init writes — commits
-`de18c29` + `2e3c242`) and switching to **sp-masked diff** (zero
-stack-region bytes below sp on both sides; sp comes from each side's
-'CSv1' CPU dump):
+Closing it byte-exactly would need `CdReadSync` deferred across host
+yields at the PSX single-speed rate (~150 KB/s), or a settle wait that
+halts N VBLs past the target PC. Halting tens of VBLs past the read
+already brings the heap diff down by an order of magnitude.
 
-| halt at        | masked total | kernel | EXE | post-EXE |
-| -------------- | -----------: | -----: | --: | -------: |
-| MemoryCardInit |           69 |     69 |   0 |        0 |
-| GamepadInit    |          303 |    303 |   0 |        0 |
-| SpuInit        |          340 |    311 |   7 |       22 |
-| CDInit         |          343 |    305 |  16 |       22 |
-| MusicInit      |          529 |    385 | 113 |       31 |
+### libpad-driven kernel growth
 
-Stack diff is now **zero** at every halt — sp masking confirms the
-118+ bytes of stack divergence we saw earlier were all pre-call sub-
-frames and `cdrom:SYSTEM.CNF;1` BIOS scratch that lived below sp,
-not live state the game would ever read.
+`PadInitDirect` / `PadStartCom` / `VSyncCallback(PadVSync)` leave BIOS
+event-manager state that the C thunks do not reproduce, and the slot-2
+pad buffer holds a different idle pattern on each side. The
+`pad_input_buffers` region of `manifest/gameplay_state_regions.toml` is
+masked for this reason.
 
-### Frame-N pinning via game-function hit count
+### PSYQ sub-call stack frames
 
-`--ram-dump-on-frame N` and `PCSXR_DUMP_VSYNCS=N` are _not_ equivalent:
-the openpete counter ticks on `VSync(0)` syscalls (PsyCross-side stub
-yield), while the pcsxr counter ticks on vblank events (PSX
-hardware vblank IRQ inside openbios). The two counters disagree on
-"frame N" because pcsxr is _inside the BIOS VSync IRQ handler_ at
-vblank time while openpete is yielded inside its PsyCross stub
-— different sp / call-stack states.
+Real PSYQ functions call further into libgpu and the BIOS; each callee
+pushes its own frame below the caller's. openpete's thunks mirror only
+the top-level frame, leaving the region between the mirrored frame and
+the caller's `sp` zero on the openpete side.
 
-Use **Nth-call pinning on a per-frame game function** instead. New
-flags:
+## Making a thunk byte-faithful
 
-openpete: `--halt-hit N` (default 1)
-pcsxr: `PCSXR_DUMP_HITS=N` (env)
+The residual after seeding is dominated by bytes PCSX-Redux wrote by
+executing real PSYQ MIPS code that openpete's C thunks do not write. Two
+mechanisms cover most of it.
 
-`GamestateDraw` (0x8001ED5C) is the canonical pin: called once per
-frame from `main()` after `GamestateUpdate()` returns. Both engines
-land in identical CPU state at hit 1:
+Direct writes. `psyq_ResetGraph` writes the 128-byte env struct at
+`0x80074A64` and three helper-table words at `0x80074B68`, `0x80074B6C`
+and `0x80074B78`, replicating what the real function's callees leave
+behind (NTSC mode 0 only). `psyq___main` writes the initialised sentinel
+at `0x800730BC`.
 
-```
-pc=0x8001ED5C sp=0x801FFFD8 ra=0x80012284 gp=0x80075264
-```
-
-so the differ's stack masking works as designed.
-
-### Frame-0 heap diff — synchronous-CD timing skew (resolved as known)
-
-Masked diff at `--halt-at-pc 0x8001ED5C --halt-hit N` (Nth call to
-`GamestateDraw`):
-
-| hit N |  total | kernel | EXE | post-EXE |       heap |
-| ----: | -----: | -----: | --: | -------: | ---------: |
-|     1 | 79,702 |    402 | 247 |       28 | **79,025** |
-|     5 | 79,893 |    421 | 340 |       84 |     79,048 |
-|    10 | 73,632 |    426 | 348 |       84 |     72,774 |
-|    30 |  6,722 |    434 | 348 |       84 |  **5,856** |
-
-The 79 KB heap diff at frame 0 is **op-only nonzero** at clusters from
-0x80147BB0 to 0x801C5800. Bisection: heap diff is 0 at every halt
-inside `Initialize()` (through `func_8005B7D8`, `StartCutscenePlayback`,
-`func_8002D170`); it appears once main's loop is reached. The smoking
-gun is in the openpete log — two large CdReads land before the first
-`GamestateDraw`:
-
-```
-thunks: CdRead sectors=128 buf=0x80147BB0 mode=0x80   # 256 KB
-thunks: CdRead sectors=116 buf=0x8018B800 mode=0x80   # 237 KB
-```
-
-These addresses cover the diff region exactly.
-
-**Root cause**: `psyq_CdRead`
-([games/spyro-1/psyq_thunks.cpp:1101](../games/spyro-1/psyq_thunks.cpp))
-calls `CdReadSync(0, NULL)` _inline_, so every CdRead transfer
-completes synchronously before the thunk returns. pcsxr's interpreter,
-running real PSX cycle counts, leaves those transfers pending across
-many frames; the bytes show up gradually as the CD subsystem ticks.
-The diff converges from 79 KB → 5.8 KB between frame 1 and frame 30 as
-pcsxr catches up.
-
-**Status**: known timing skew, not an openpete recompiler bug.
-Genuine same-instant frame-0 RAM parity would require either:
-
-- (a) deferring `CdReadSync` to fire over many host yields (mirrors
-  real PSX ~150 KB/sec single-speed throughput),
-- (b) a "settle" wait — halt N frames after the target PC and let
-  pcsxr's pending reads complete before diffing, or
-- (c) live with the skew, mask CD-target buffers in the differ.
-
-Halting at frame 30+ already gives a clean ≪10 KB heap diff — that's
-the practical baseline for "frames 1-10 verification" work going
-forward. The libgpu kernel/EXE init residual (~700 bytes) is unchanged
-across frames and is the remaining bug surface for byte-exact parity.
-
-The libgpu pass is two pieces: (a) `psyq_ResetGraph` writes the
-128-byte env struct at `0x80074A64` plus three helper-table words at
-`0x80074B68/6C/78` — recovers ~117 bytes one-time; (b) every libgpu
-thunk now calls `psyq_mirror_stack_frame(...)` to write its MIPS
-prologue's saved-register pushes to the PSX stack, recovering ~10–20
-bytes per call point and propagating downstream.
-
-Direction of every cluster up through MusicInit: **pcsxr-only nonzero ≫
-openpete-only**. That is, the bytes that differ are bytes pcsxr wrote
-(via real PSYQ MIPS code) that openpete's C thunks didn't write. So the
-remaining bug surface is "PSYQ thunks aren't byte-faithful with the real
-PSYQ libraries pcsxr executes."
-
-### Already-faithful thunks
-
-- `psyq___main` (commit `2d3e998`). The 5 bytes that diverged at the
-  GraphicsInitialize halt before this fix were: a "init done" sentinel
-  byte at `0x800730BC`, plus 4 bytes of saved-`ra` in `__main`'s own
-  stack frame at `0x801FFFD4`. GraphicsInit halt diff went 5 → 0.
-- `psyq_ResetGraph` (commit `4cf43cb`). Writes the 128-byte env struct
-  at `0x80074A64` plus three helper-table words via `func_80061DEC`'s
-  effects. NTSC mode 0 only.
-- libgpu prologue mirrors (commit `89e67dd`). `SetDispMask`,
-  `SetGraphDebug`, `DrawSync`, `ClearImage`, `PutDrawEnv`, `PutDispEnv`,
-  `SetDefDrawEnv` each call `psyq_mirror_stack_frame(...)` matching the
-  real MIPS function's prologue (`sp -= N; sw ra/s0..` slots).
-
-### `psyq_mirror_stack_frame` helper
+Prologue mirrors. `psyq_mirror_stack_frame` writes a MIPS prologue's
+saved-register pushes to the PSX stack:
 
 ```cpp
 struct PsxStackPush { uint32_t offset; uint32_t value; };
@@ -297,112 +221,16 @@ static void psyq_mirror_stack_frame(CPUState* cpu, uint32_t frame_size,
                                     const PsxStackPush* pushes, size_t n);
 ```
 
-Pattern for any new PSYQ thunk: disassemble the real function's
-prologue, read off `addiu sp, sp, -N` and the `sw <reg>, off(sp)`
-instructions, encode as a `PsxStackPush` array. `ra` is mandatory and
-gets its own dedicated `ra_off` parameter. The helper restores `sp`
-before returning — caller's invariants stay intact.
-
-### Big remaining offenders, in priority order
-
-1. **libgpu kernel/EXE init residual** — 69 kernel bytes + 60 EXE bytes
-   constant from MemoryCardInit on. Driven by `ResetGraph`'s sub-calls
-   (`func_8005DDC8` -> a vtable slot, `func_80061DEC`, etc.) into
-   PSYQ's BIOS event-manager / GPU-command dispatch tables. Kernel
-   range: 0x05FC8..0x09245 (EvCB-stride 0x1C visible at 0x08F35..0x08FA5
-   confirms event-control-block init). EXE range: 0x80073924..0x8007398B,
-   0x80074990..0x800749A3, 0x80074B58..0x80074B7C, 0x80075978..0x8007598F
-   — libgpu's command-buffer dispatch / vtable init.
-2. **libpad-driven kernel growth** — kernel diff jumps from 69 (at
-   MemCardInit halt) to 303 (at GamepadInit halt). 234 bytes of
-   `PadInitDirect` / `PadStartCom` / `VSyncCallback(PadVSync)` BIOS
-   event-manager state.
-3. **Sub-call stack frames** — real `ResetGraph` calls `Memset`,
-   `func_80061DEC`, etc.; each pushes its own frame _below_ ResetGraph's.
-   Our mirror only covers the top-level frame, leaving the
-   `caller_sp - resetgraph_frame - sub_call_frame` regions zero (~110
-   bytes residual at MemoryCardInit).
-4. **PsyCross-side scratch on the stack** (e.g. `CDFS_Init` writes the
-   `STEM.CNF;1` filename at `0x801FFE30`). Real PSYQ doesn't write that
-   string there. Hard to suppress without rewriting PsyCross's path
-   handling.
-
-### Heap explosion past `MusicInit`
-
-The jump from 1,150 → 1.14M bytes between MusicInitialize and
-GamestateUpdate is dominated by the rest of `Initialize()`:
-`InitGeom`, `SetGeomOffset`/`Screen`, the RGB24 image-decompression loop
-(`func_80017F24`, ~360 KB Memset writes), `WadInitialize` + `CDLoadSync`
-(reads 2 KB of WAD header into `g_OverlaySpacePointer`), and lots of
-PSYQ display traffic. Bisecting _that_ requires intermediate halt PCs
-inside the image loop or post-WAD; many of those would-be halt points
-are PSYQ functions that won't fire on `--halt-at-pc`. A separate diff
-loop using `--ram-dump-on-frame` may be more practical for that span.
-
-So the harness is sound — register state, RAM seed, halt instant are all
-verified working byte-for-byte at main entry, and the bisection has
-revealed that the remaining bug surface is concentrated in PSYQ thunks.
+For a new thunk: disassemble the real function's prologue, read off
+`addiu sp, sp, -N` and each `sw <reg>, off(sp)`, and encode the latter as
+a `PsxStackPush` array. `ra` is mandatory and takes the dedicated
+`ra_off` parameter. The helper restores `sp` before returning.
 
 ## Files
 
-- `scripts/pcsx-redux-ram-dump.lua` — single-shot capture script
-- `core/runtime/run.c` — `load_cpu_seed`, `seed-ram` block
-- `core/runtime/dispatch.c` — `openpete_halt_at_pc` hook in `psx_override_dispatch`
+- `scripts/pcsx-redux-ram-dump.lua` — capture script
+- `core/runtime/run.c` — `load_cpu_seed`, seed-ram block
+- `core/runtime/dispatch.c` — halt-at-pc hook in `psx_override_dispatch`
 - `core/runtime/options.c` — flag parsing
 - `core/include/openpete.h` — option fields
-
-## Streaming oracle (`.psxtrace`)
-
-The single-shot recipe above captures one frame at one PC. The
-streaming oracle captures *every* per-VBL record into one file so
-openpete can diff the entire span in one run. Used by the
-`psx_oracle_match` ctest entry (Phase 2 of
-`notes/plans/openpete-determinism-enforcement.md`).
-
-Components:
-
-- `scripts/pcsx-redux-trace.lua` — Lua dumper. Streams per-frame
-  `(frame_no, pad1, pad2, pc, 2 MB RAM)` to `PCSXR_TRACE_OUT` until
-  `PCSXR_TRACE_FRAMES` frames have elapsed past `PCSXR_TRACE_PC`.
-- `tools/psxtrace_format.py` — format spec + Python codec. Use
-  `python -m tools.psxtrace_format info <path>` to inspect, or
-  `… compress src dst` to recompress raw → zstd (~50–100 MB ship form).
-- `core/runtime/psxtrace_verify.c` — openpete-side consumer. Diffs
-  each record's RAM against live `g_ram` and latches first divergence.
-- `--psxtrace-verify PATH` / `--psxtrace-keep-going` — openpete CLI
-  flags.
-- `scripts/check_psx_oracle.sh` + ctest `psx_oracle_match` (label
-  `slow;oracle`, skipped automatically when the baseline asset is
-  absent).
-
-Capture recipe:
-
-```sh
-PCSXR_TRACE_OUT=tests/golden/spyro-1/psxtrace-titlescreen-baseline.bin \
-PCSXR_TRACE_FRAMES=600 \
-.tools/pcsx-redux/pcsx-redux \
-    --no-ui --interpreter --debugger \
-    --bios .tools/pcsx-redux/openbios.bin \
-    --iso  /path/to/SCUS-94228.cue \
-    --run --dofile scripts/pcsx-redux-trace.lua
-```
-
-Verify:
-
-```sh
-ctest -L oracle --output-on-failure
-# or directly:
-scripts/check_psx_oracle.sh
-```
-
-V1 limits (planned follow-ups):
-
-- C reader handles raw records only; pre-decompress zstd traces with
-  the Python codec.
-- No controller-input replay yet — openpete uses whatever pad-input
-  source it would normally have. To match a recorded run, supply the
-  same `--bk2` movie that drove the pcsxr capture (or hold the same
-  inputs externally).
-- Diff is over the full 2 MB. Manifest-restricted mode (gameplay
-  regions only) lands alongside the integration with
-  `gameplay_state_regions.toml`.
+- `games/spyro-1/psyq_thunks.cpp` — thunk bodies, `psyq_mirror_stack_frame`

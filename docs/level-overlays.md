@@ -1,150 +1,212 @@
 # Level overlays: code ↔ data, and how openpete recompiles them
 
-`level-format.md` covers the per-level **data** blob (geometry, textures, object
-placement). This doc covers the per-level **code overlay** that runs that data,
-how the two are bound at runtime in the original game, and how openpete's
-recompiler turns 23 mutually-exclusive overlays into co-resident C.
+`level-format.md` covers the per-level data blob (geometry, textures, object
+placement). This doc covers the per-level code overlay that runs that data, how
+the two are bound at runtime in the original game, and how openpete's
+recompiler turns 37 same-address overlays into co-resident C.
 
 ## 1. Why overlays exist
 
-The PSX has 2 MiB of RAM. Spyro can't fit the behaviour code for every level's
-mobys, particles, and balloonist/flight logic in memory at once, so each level
-ships a **code overlay**: a raw `.text + .rodata + .data` blob that is streamed
-from the WAD into a fixed RAM window and executed there. Only one overlay is
-resident at a time — the next level's overlay overwrites the previous one's
-bytes.
+The PSX has 2 MiB of RAM. Spyro does not fit the behaviour code for every
+level's mobys, particles, and balloonist/flight logic in memory at once, so
+each level ships a code overlay: a raw `.text + .rodata + .data + .bss` blob
+streamed from the WAD into a fixed RAM window and executed there. Only one
+overlay is resident at a time; the next level's overlay overwrites the previous
+one's bytes.
 
 Per the WAD layout (`level-format.md` §1), each `g_WadHeader.m_LevelEntry[i]`
-carries **both** halves:
+carries both halves (`spyro-1/include/wad.h`, `m_LevelEntry[36]`, last entry
+empty):
 
 ```
 m_LevelEntry[i].m_Overlay { offset, length }   // the code blob, this doc
 m_LevelEntry[i].m_Data    { offset, length }   // the data blob, level-format.md
 ```
 
-`LoadLevel` stage 2 streams the overlay to `g_OverlaySpacePointer`
-(`= &main_BSS_END`, i.e. immediately after the main EXE's BSS); stage 8 streams
-the data. They are independent CD reads to independent RAM regions.
+`LoadLevel` (`spyro-1/src/loaders.c`) is a stage machine driven by
+`g_LoadStage`. Stage 2 sets `g_LevelId` from `g_NextLevelId`, calls
+`SetOverlayPointers`, then issues `CDLoadAsync(..., g_OverlaySpacePointer,
+m_Overlay.m_Length, m_Overlay.m_Offset, 600)`. The data blob is read in later
+stages from `m_Data.m_Offset`: stage 3 the `LevelHeader`, stages 4-5 the VRAM
+image, stage 8 the level data, stage 9 the models, stage 11 the scene. Code and
+data are independent CD reads to independent RAM regions.
 
 ## 2. The overlay RAM window and id word
 
-All level overlays load to the **same kseg0 virtual address: `0x8007AA38`**
-(`g_OverlaySpacePointer` resolves there at link time). The overlay window spans
-roughly `0x8007AA38 .. 0x8008EA38` (~0x14000 bytes — the range openpete's
-fn-pointer harvester scans).
+All level overlays load to the same kseg0 virtual address `0x8007AA38`.
+`g_OverlaySpacePointer` is initialized to `&main_BSS_END`
+(`spyro-1/src/overlay_pointers.c`), which the link resolves to `0x8007aa38`
+(`spyro-1/build/psx.map`, `main_BSS_END`). openpete's fn-pointer harvester
+scans `0x8007AA38:0x8008EA38`, a 0x14000-byte window
+(`scripts/regen-recomp.sh`, `--overlay-range`).
 
-The original build's `overlays.ld` inserts a **LONG id word at the head of each
-overlay section** (the "magic"). At runtime the first word at `0x8007AA38` tells
-you which overlay's bytes are currently live. The id-to-name mapping (from
-openpete's auto-generated table):
+`spyro-1/overlays.ld` defines the overlay sections through three macros —
+`LEVEL`, `LEVEL_BALLOON`, `LEVEL_FLIGHT` — each of which emits `LONG(overlay_id)`
+as the first word of the section, ahead of any code or rodata. At runtime the
+first word at `0x8007AA38` therefore identifies which overlay's bytes are live.
+Sections are padded to a 2048-byte sector boundary.
 
-```
-credits=47   titlescreen=48
-level_10=11  level_11=12  level_12=13  level_13=14  level_14=15  level_15=16
-level_20=17  level_21=18  ...          (one id per level slot)
-```
-
-Filename → section-name convention (from the matching decomp's `build/wad/`):
+Filename → section-name → id, as `scripts/regen-recomp.sh` classifies the
+matching decomp's `build/wad/*.ovl`:
 
 ```
-level_<F>_*_code.ovl  ->  overlay_id = F + 11
-                          section "level_NN", NN = (F/6 + 1)*10 + (F%6)
+level_<F>_*_code.ovl  ->  id = F + 11, section "level_NN", NN = (F/6 + 1)*10 + (F%6)
 titlescreen_code.ovl  ->  id 48
 credits.ovl           ->  id 47
 ```
 
+So `level_0_artisans_home_code.ovl` is section `level_10` with id 11,
+`level_10_peace_keepers_doctor_shemp_code.ovl` is section `level_24` with id 21,
+and the last level slot `level_64` has id 45. The ids in `overlays.ld` match:
+`.level_10 { LEVEL_BALLOON(11, level_10) }`. 35 level overlays plus the
+titlescreen and credits overlays make 37 entries in
+`games/spyro-1/generated/spyro_overlay_table.c`.
+
 ## 3. Binding code to data: `SetOverlayPointers` and the callback slots
 
-The main EXE never calls overlay functions by symbol. Instead the overlay
-exports its entry points by writing **function pointers into fixed RAM slots**
-that the main engine calls indirectly. `SetOverlayPointers`
-(`spyro-1/src/overlay_pointers.c`, called from `LoadLevel` stage 2) installs the
-current level's pointers into globals like:
+The main EXE never calls overlay functions by symbol. The binding is a fixed set
+of RAM slots holding function pointers, which the engine calls indirectly.
+`SetOverlayPointers` (`spyro-1/src/overlay_pointers.c`, called from `LoadLevel`
+stage 2) switches on `g_LevelId` and installs the current level's pointers.
+The slots, with the decomp's names for them
+(`spyro-1/include/overlay_pointers.h`):
 
 ```c
-extern Moby *(*g_SpawnMoby)(int pClass, Moby *pParent);   // per-level moby spawn
-extern void  (*g_UpdateMoby)();
-extern void  (*D_800758E4)(...);                           // g_ParticleSpawn
-extern void  (*g_UpdateParticle)(int);
-extern void  (*D_8007574C)();                              // balloonist camera
-extern int   (*D_800758C4)(int, Vector3D*, int);           // flight timer draw
-// ... balloonist/flight callbacks, etc.
+g_Buffers.m_CopyBuf                                 // per-level copy-buffer routine
+Moby *(*g_SpawnMoby)(int pClass, Moby *pParent);
+void  (*g_UpdateMoby)();
+void  (*D_800758E4)(int pAmount, int pClass, void*, void*);  // g_ParticleSpawn
+void  (*g_UpdateParticle)(int);
+void  (*D_800757A0)();                              // g_BalloonistTriggerCode
+void  (*D_800758A8)();                              // g_BalloonistCloseDialogue
+void  (*D_8007574C)();                              // g_BalloonistCameraCode
+void  (*D_800758D8)();                              // g_BalloonistTalkCode
+void  (*D_80075694)();                              // g_UnkFunc1Flight
+void  (*D_800757A8)(int pUnk);                      // g_UnkFunc2Flight
+void  (*g_FlightResultsUpdate)();
+void  (*D_8007567C)();                              // g_DrawGameState7
+int   (*D_800758C4)(int pTimer, Vector3D*, int);    // g_DrawTime
 ```
 
-In the decomp these per-level functions are named with the `FOR_LEVELS` /
-`NAME_OVERLAY_FUNCTION` macro machinery, yielding symbols like
-`func_level_10_8007XXXX`. Each level slot fills the same handful of slots with
-its own implementations. The engine's generic update loop then calls
-`g_SpawnMoby(...)`, `g_UpdateMoby()`, etc., and execution lands inside whichever
-overlay is resident.
+Not every level fills every slot. A plain level fills the five moby/particle/
+copy-buffer slots and leaves the rest holding the previous level's values (the
+unset assignments are commented out in `SetOverlayPointers`, matching the
+original). Balloonist levels add the four `Balloonist*` slots; flight levels add
+the five flight slots.
 
-**This indirection is the seam openpete exploits and must preserve.** The data
-blob (`level-format.md`) references moby *classes* by index; the overlay
-supplies the *behaviour* for those classes via these slots. Data and code are
-matched by being loaded together for the same `m_LevelEntry[i]`.
+Two naming schemes coexist in the decomp for overlay functions, and they refer
+to the same address space:
 
-## 4. How openpete recompiles 23 overlays into one binary
+- Matched functions are emitted by the `NAME_OVERLAY_FUNCTION` /
+  `NAME_OVERLAY_FUNCTION_LEVEL` macros in `spyro-1/include/overlay_pointers.h`,
+  which paste the per-TU `#define LEVEL <NN>` onto a generic name. The shared
+  bodies live in `spyro-1/include/overlays/{moby_spawn,balloonist,flight}.inc.h`
+  and yield `SpawnMoby_level_15`, `Balloonist1_level_10`, `Flight4_level_15`.
+  `FOR_LEVELS`, `FOR_BALLOONS`, and `FOR_FLIGHTS` in the header enumerate which
+  slots are shared so far.
+- Unmatched functions keep the `func_level_<NN>_<addr>` name from
+  `spyro-1/asm/nonmatchings/overlays/level_<NN>/`, e.g.
+  `func_level_15_8007CFB4`. `NN` here is the section number, not the WAD file
+  index.
 
-psxrecomp does static (build-time) translation of MIPS → C. Overlays break two
-of its assumptions: (a) they're raw blobs with no PS1-EXE header, and (b) they
-all share one virtual address, so their symbols collide. The pipeline in
-`scripts/regen-recomp.sh` solves both.
+The engine's generic update loop calls `g_SpawnMoby(...)`, `g_UpdateMoby()`, and
+the rest, and execution lands inside whichever overlay is resident. This
+indirection is the seam openpete preserves. The data blob references moby
+classes by index; the overlay supplies the behaviour for those classes through
+these slots. Data and code are matched by being loaded together for the same
+`m_LevelEntry[i]`.
+
+## 4. How openpete recompiles 37 overlays into one binary
+
+psxrecomp does static (build-time) translation of MIPS to C. Overlays break two
+of its assumptions: they are raw blobs with no PS1-EXE header, and they all
+share one virtual address, so their symbols collide. `scripts/regen-recomp.sh`
+solves both, one overlay at a time in `process_overlay`.
 
 ### 4.1 Raw-blob input (`--raw-bin`)
 
-PSXRecomp ingests the raw `.ovl` bytes directly:
-`--raw-bin --load-addr=0x8007AA38 --output-stem=<name>.bin`. Internally it
-synthesizes the 2 KiB `PS-X EXE` header the parser expects — byte-identical
-to a real EXE that loads the overlay at its window; only the entry point is
-faked (real entries come from `--forced-entry`/`--extra-funcs`, not the
-header). This replaced the out-of-tree `tools/synth_overlay_exe.py` wrapper
-(distribution D2.2) so the first-boot pipeline can recompile carved overlay
-segments with no python.
+psxrecomp ingests the raw `.ovl` bytes:
+`--raw-bin --load-addr=0x8007AA38 --output-stem=<name>.bin`. It prepends a
+2 KiB `PS-X EXE` header in memory (`third_party/psxrecomp/recompiler/src/main_psx.cpp`,
+the `raw_bin` branch): magic, `initial_pc` = `initial_load_address` =
+`--load-addr`, `initial_gp` = 0, `file_size` = blob size. The entry point is a
+placeholder — real entry points come from `--forced-entry` and `--extra-funcs`.
+`--raw-bin` requires a KSEG0 load address. This replaced an out-of-tree
+`tools/synth_overlay_exe.py` wrapper so the first-boot compile pipeline can
+recompile carved overlay segments without python.
 
 ### 4.2 Per-overlay symbol namespace
 
-Each overlay is translated with `--func-prefix=<name>` so its functions don't
-collide with the other 22 overlays (all at `0x8007AA38`). The generated
-dispatcher `psx_dispatch_compiled` is then `sed`-renamed to
-`psx_dispatch_<name>` so all overlays link together.
+Each overlay is translated with `--func-prefix=func_<name>_` so its functions do
+not collide with the other 36 at `0x8007AA38`; `level_24`'s functions are
+`func_level_24_8007AC8C` and so on. The generated dispatcher
+`psx_dispatch_compiled` is then `sed`-renamed to `psx_dispatch_<name>` in
+`<name>.bin_dispatch.c` so all overlays link together.
 
 ### 4.3 Multi-pass forced-entry discovery
 
-Because overlay entry points are reached *indirectly* (function-pointer slots,
-jump tables, handwritten `jr` returns), psxrecomp can't find them all
-statically. `process_overlay` runs two seeding passes, then loops a third until
-it converges:
+Overlay entry points are reached indirectly (function-pointer slots, jump
+tables, handwritten `jr` returns), so psxrecomp cannot find them all
+statically. `process_overlay` runs two seeding passes, then loops until it
+converges:
 
-1. **Pass 1** — seed with handwritten-asm dispatch targets
-   (`extract_asm_dispatch_targets.py` / `extract_handwritten_ra_returns.py`)
-   plus the overlay-fn-pointer constants harvested from the *main EXE*
-   (`extract_overlay_func_pointers.py` scans `lui+addiu` immediate pairs that
-   resolve into the overlay window). The fn-pointer list is filtered per overlay
-   to drop entries landing on delay slots in *this* overlay's bytes.
-2. **Pass 2** — add jump-table targets discovered from pass-1 output
-   (`extract_jumptable_targets.py`), and emit `external_jals.txt`.
-3. **Pass 3+** — add cross-piece split targets (`extract_split_targets.py`),
-   repeating until no new target appears (5 passes max). psxrecomp emits a
+1. Pass 1 seeds with the per-binary handwritten-asm dispatch targets from
+   `games/spyro-1/manifest/asm_dispatch_targets/<name>.txt` (regenerated by
+   `tools/extract_asm_dispatch_targets.py` and
+   `tools/extract_handwritten_ra_returns.py`), any hand-curated entries in
+   `games/spyro-1/manifest/forced_entries/<name>.txt`, and the overlay
+   fn-pointer constants harvested from the main EXE by
+   `tools/extract_overlay_func_pointers.py`, which scans `lui+addiu` immediate
+   pairs resolving into the overlay window.
+   `tools/filter_overlay_fn_pointers.py` then drops entries that land on a
+   delay slot in this overlay's bytes: forcing an entry on a delay slot makes
+   psxrecomp split the preceding function so that its post-`jal` continuation
+   becomes an unreachable dispatch entry.
+2. Pass 2 adds jump-table targets discovered from pass-1 output
+   (`tools/extract_jumptable_targets.py`) and emits `external_jals.txt`.
+3. Passes 3 and up add cross-piece split targets
+   (`tools/extract_split_targets.py`), repeating until no new target appears, at
+   most five passes; an unconverged overlay aborts the regen. psxrecomp emits a
    guest function as several C pieces when a piece boundary is forced — an
-   external JAL needs its continuation separately dispatchable, a forced entry
-   can land mid-range — and writes every transfer across such a boundary as
-   `call_by_address(<target>); return;`. Each target needs a forced entry or it
-   stub-misses at runtime, and the stub *returns* instead of transferring, so
-   the guest epilogue never runs and `cpu->sp` leaks a stack frame per call.
-   The loop is required because promoting a target splits its containing
-   function, which can expose further cross-piece transfers.
+   external JAL needs its continuation separately dispatchable, and a forced
+   entry can land mid-range — and writes every transfer across such a boundary
+   as `call_by_address(<target>); return;`. A target with no registered entry
+   stub-misses at runtime, and the stub returns instead of transferring, so the
+   guest epilogue never runs and `cpu->sp` leaks one stack frame per call until
+   it walks out of RAM. The loop is required because promoting a target splits
+   its containing function, which can expose further cross-piece transfers.
 
-Out-of-range forced entries are silently dropped by psxrecomp, so a single
-union list of fn-pointer targets can be fed to every overlay.
+`FunctionAnalyzer::add_forced_entry`
+(`third_party/psxrecomp/recompiler/src/function_analysis.cpp`) discards any
+address outside the image, so one union list of fn-pointer targets can be fed to
+every overlay.
 
-### 4.4 Runtime overlay routing (`dispatch_chain.c`)
+The main EXE is recompiled last, so each overlay's `external_jals.txt` can be
+folded into its forced-entry set: overlays JAL into main-EXE bytes (gem
+accounting, level setup, audio helpers) that the main-EXE static JAL pass cannot
+see.
 
-Since all overlays share `0x8007AA38`, only the *resident* one may match a
-dispatch. openpete tracks the active overlay by the id word:
+`OPENPETE_REGEN_SCOPE=main_exe` re-translates only the main EXE and reuses the
+overlay outputs and registry on disk. `OPENPETE_REGEN_PC_TRACKING=1` adds
+`--emit-pc-tracking` for exact-instruction write attribution.
+
+### 4.4 Converged manifest
+
+After a full regen, `scripts/emit-recomp-manifest.sh` snapshots the converged
+inputs into `games/spyro-1/manifest/recomp/SCUS-94228/`: one `[[overlay]]` table
+per overlay with its name, id, `func_prefix`, `load_addr`, WAD filename, input
+sha256, and final forced-entry list. The first-boot compile pipeline runs a
+single psxrecomp pass per binary from that manifest, with no discovery and no
+python. `scripts/verify-recomp-manifest.sh` proves single-pass equals
+multi-pass.
+
+### 4.5 Runtime overlay routing (`dispatch_chain.c`)
+
+Since all overlays share `0x8007AA38`, only the resident one may match a
+dispatch. `games/spyro-1/dispatch_chain.c` tracks the resident overlay in
+`s_active`:
 
 ```c
-// psyq_CdRead reads the first word at 0x8007AA38 after each disc transfer
-// and calls spyro_set_active_overlay_by_magic(id).
 int psx_dispatch_compiled(CPUState* cpu, uint32_t addr) {
     if (psx_dispatch_main_exe(cpu, addr)) return 1;   // main EXE always live
     if (s_active) return s_active->fn(cpu, addr);      // only the resident overlay
@@ -152,49 +214,74 @@ int psx_dispatch_compiled(CPUState* cpu, uint32_t addr) {
 }
 ```
 
-The `magic → name → dispatcher` table lives in the auto-generated
-`games/spyro-1/generated/spyro_overlay_table.c`; `dispatch_chain.c` selects
-`s_active` whenever a CD read swaps the resident bytes. This means **openpete's
-overlay correctness depends on faithfully simulating the CD read that loads the
-overlay** — the id word must land at `0x8007AA38` for routing to flip. See the
-CD-drive-simulation plan.
+`psyq_CdRead` (`games/spyro-1/psyq_thunks.cpp`) updates `s_active` after the
+bytes have settled: when the read's destination `cpu->a1` is exactly
+`0x8007AA38`, it reads the first word from RAM and calls
+`spyro_set_active_overlay_by_magic(magic)`. An unrecognized id leaves the
+tracker alone, which is what makes cutscene-style loads to the same vaddr safe
+for routing — their first word is never an overlay id. Those loads still clobber
+the overlay's bytes.
+
+The id → name → dispatcher table is the auto-generated
+`games/spyro-1/generated/spyro_overlay_table.c`, declared by
+`games/spyro-1/spyro_overlay_table.h`. Savestates carry the active id in the
+game-side extra payload (`game_state_extra_save` in
+`games/spyro-1/game_extras_impl.c`, field `ovl` at offset 8, version 2 and up)
+rather than re-deriving it from the RAM marker, because a cutscene-style load
+can legitimately overwrite that word before the snapshot is taken.
+`game_on_state_loaded` re-reads the word as the fallback path.
 
 ## 5. Decomp ⇄ recomp boundary for overlays
 
-A level overlay is in one of two states in openpete at any time:
+Every overlay currently runs as psxrecomp's translated C. No overlay TU appears
+in `SPYRO_NATIVE_SOURCES` in `games/spyro-1/CMakeLists.txt`; only the main-EXE
+side `overlay_pointers.rewritten.c` is rewritten, and the shipping presets
+(`cmake/presets/linux-release.cmake`, `windows-mingw.cmake`, `wasm.cmake`) pin
+`OPENPETE_SKIP_DECOMP=ON`, which drops the rewritten TUs entirely and runs the
+full recomp path.
 
-- **Recompiled** — psxrecomp's translated C runs the overlay (current default
-  for most overlays). Behaviour is bit-exact with the original MIPS.
-- **Decomped** — once `spyro-1/src/overlays/level_NN/*.c` matches, those
-  functions can be swapped in via the manifest/thunk infrastructure (Phase 2+),
-  same as any other function. The decomp already has matched overlay sources for
-  several levels (`spyro-1/src/overlays/level_{10,15,20,...}/`), each split into
-  `moby.c`, `particle.c`, `terminator.c`, `flight.c`, `balloonist.c`.
+The decomp has partially matched overlay sources under
+`spyro-1/src/overlays/level_<NN>/`, split into `moby.c`, `particle.c`,
+`terminator.c`, plus `balloonist.c` or `flight.c` where the level has one. Each
+file is a mix of `INCLUDE_ASM` stubs and shared `.inc.h` bodies. Swapping such a
+function into openpete uses the same manifest/thunk infrastructure as any other
+function; nothing in the overlay path is special-cased against it.
 
-Either way the **function-pointer slot mechanism (§3) is unchanged** — a
-decomped overlay installs the same `g_SpawnMoby` etc. pointers the recompiled
-one would. The seam is address-stable, which is exactly why the
-generic-hook/per-ROM-anchor refactor (`openpete-generic-hook-anchor-refactor`)
-and the modding framework can target overlay behaviour by named anchor.
+Either way the function-pointer slot mechanism (§3) is unchanged: a decomped
+overlay installs the same `g_SpawnMoby` pointers the recompiled one would. The
+seam is address-stable, which is why the named-anchor hook refactor
+(`notes/plans/openpete-generic-hook-anchor-refactor.md`) and the modding
+framework can target overlay behaviour by anchor.
 
 ## 6. Gotchas for openpete work
 
-- **One overlay resident at a time.** Never assume two level overlays' symbols
-  coexist in RAM — they don't. Cross-level references go through the main EXE.
-- **Routing follows the CD read.** If a feature short-circuits or reorders disc
-  loads (fast-load, custom CD sim, savestates), it must still deposit the
+- One overlay resident at a time. Two level overlays' symbols never coexist in
+  RAM. Cross-level references go through the main EXE.
+- Routing follows the CD read. A feature that short-circuits or reorders disc
+  loads (fast-load, custom CD simulation, savestates) must still leave the
   correct id word at `0x8007AA38` and call
-  `spyro_set_active_overlay_by_magic`, or dispatch silently runs the wrong
-  overlay (stub-miss or, worse, plausible-but-wrong code).
-- **Regen ordering.** `regen-recomp.sh` needs `PSX.EXE_full.c` from a prior run
-  to harvest fn-pointer constants; the very first run misses them (acceptable,
-  fixed on the second). Re-run after bumping psxrecomp, changing a forced-entry,
-  or pulling a new EXE/overlay dump.
-- **Stale `generated/`.** An un-converged regen leaves a partial overlay table
-  and causes moby-queue corruption mid-demo (this has bitten before — Dr Shemp
-  hang traced to a 36-entry `main_exe_dispatch_stubs.txt` shortfall). If overlay
-  behaviour goes wrong after a toolchain change, re-run `regen-recomp.sh` to
-  convergence before debugging the C.
+  `spyro_set_active_overlay_by_magic`, or dispatch runs the wrong overlay: a
+  stub miss, or plausible-but-wrong code. See
+  `notes/plans/openpete-cd-drive-simulation.md`.
+- Regen ordering. `regen-recomp.sh` harvests fn-pointer constants from
+  `generated/PSX.EXE_full.c` produced by a prior run; on a first run into an
+  empty `generated/` the harvest is skipped and those entries are missing until
+  the second invocation. Re-run after bumping psxrecomp, editing a forced-entry
+  list, or pulling a new EXE or overlay dump.
+- Under-converged main-EXE stubs. The main EXE is recompiled in two passes:
+  pass 1 writes a scratch `generated/_main_exe_pass1/PSX.EXE_full.c`, from which
+  `tools/extract_dispatch_call_by_address.py` derives
+  `generated/main_exe_dispatch_stubs.txt` (37 entries as committed); pass 2
+  folds those in and produces the linked `generated/PSX.EXE_full.c`. The
+  `SetOverlayPointers` jump table lives behind those stubs, so a short stubs
+  file means some level swaps never re-install their fn-pointer slots, the
+  previous overlay's stale pointers get `jalr`'d, and dispatch cascades into
+  stub misses. Pass 1 deletes pass 2's outputs first so a failed pass 2 cannot
+  leave a stale converged file to link.
+- No third pass on the main EXE. Adding a single forced entry to the main EXE
+  shifts function-boundary detection enough to lose pre-existing dispatch
+  entries; the split-target loop is enabled for overlays only. The mechanism is
+  not understood and the investigation is deferred.
 
-See `level-format.md` for the data side and `level-modding.md` for how custom
-levels / mods interact with both halves.
+See `level-format.md` for the data side and `modding/pages/levels.md` for how
+custom levels are built and shipped.

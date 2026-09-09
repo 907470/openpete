@@ -1,118 +1,161 @@
-# PsyCross-boundary audit
+# The PsyCross ABI boundary
 
-> Phase 1.5 of the source-rewriter plan (`notes/plans/openpete-source-rewriter.md`).
-> Confirms that Pass 1's struct-relayout assumptions hold against PsyCross's
-> actual internals before later phases commit to layout changes, and identifies
-> APIs whose `u_long *` boundary stride needs Pass 5b normalization.
+PsyCross is openpete's re-implementation of the PSYQ SDK. Two kinds of
+caller cross into it:
 
-## 1. `u_long *` taking PsyCross APIs
+- The PSYQ thunks (`games/spyro-1/psyq_thunks.cpp`), which unpack a
+  recompiled MIPS call's registers and re-issue it as a host call. This is
+  the path every shipping preset takes.
+- Rewritten decomp C, which calls PsyCross directly as native code. This is
+  decomp mode, pinned off in every non-debug preset; the source rewriter
+  that produces it is dormant (`notes/plans/openpete-source-rewriter.md`,
+  `status: blocked`).
 
-`u_long` is `unsigned long` (PsyCross/include/psx/types.h:33). 8 bytes on
-LP64 (Linux x86_64), 4 bytes on LLP64 (MinGW). Public PsyCross APIs that
-take `u_long *` are listed in `libcd.h` / `libgpu.h`. Spyro's matching-decomp
-source (under `spyro-1/src/`) calls only two of them from C — the rest only
-appear inside MIPS asm or are unused.
+The hazard on both paths is the same: PsyCross's public signatures are the
+PSYQ ones, but its structs and its `long`-family types are laid out for the
+host, while the buffers the game hands it are laid out for the PSX
+(ILP32). This document records which types diverge and which APIs are
+stride-safe.
 
-| API                         | Used by Spyro C? | Internal stride | Verdict |
-|-----------------------------|------------------|-----------------|---------|
-| `CdRead(int, u_long*, int)` | yes (`cd.c`)     | byte (`(unsigned char*)buf`) | safe — Pass 5b no-op |
-| `LoadImage(RECT16*, u_long*)` | yes (`initialization.c`) | byte (`(unsigned short*)p` then `GR_CopyVRAM`) | safe — Pass 5b no-op |
-| `StoreImage`, `LoadImage2`, `StoreImage2` | no | byte (same path as `LoadImage`) | safe |
-| `CdReadFile`                | no               | re-enters `CdRead` | safe |
-| `OpenTIM`, `OpenTMD`        | no               | byte-walks the TIM blob | safe |
-| `LoadClut`, `LoadClut2`, `LoadTPage` | no       | call `LoadImage` | safe |
-| `ClearOTag`, `ClearOTagR`, `DrawOTag*`, `DumpOTag`, `BreakDraw`, `FntFlush`, `KanjiFntFlush`, `CheckPrim`, `Krom2Tim` | no — called only from MIPS asm in Spyro | OT_TAG-strided (host layout) | **see §2** |
+## 1. Width-divergent types
 
-**Conclusion:** Pass 5b is currently a *no-op* for Spyro's migration set —
-neither `CdRead` nor `LoadImage` strides as host `unsigned long`, so no shim
-is needed. The pass should still be implemented as a guard so future TUs that
-call `OpenTIM`/`ClearOTag`/etc. directly from C surface as a hard error rather
-than silently mis-stride.
+`u_long` is `unsigned long` (`third_party/PsyCross/include/psx/types.h:33`):
+4 bytes on PSX, 8 on LP64 (Linux x86_64), 4 on LLP64 (MinGW). Every pointer
+type is 4 bytes on PSX and 8 on both host models. `tools/rewrite/types.py`
+classifies a composite as divergent if any transitive leaf field is one of
+these.
 
-## 2. OT_TAG layout mismatch
+A `u_long *` parameter is therefore not by itself a hazard — the hazard is
+an implementation that strides the buffer as host `unsigned long`. PsyCross
+routines that byte-walk or cast to `unsigned short *` / `unsigned char *`
+are safe with a PSX-laid buffer.
 
-`OT_TAG` (libgpu.h:371) embeds `DECLARE_P_ADDR_PTAG` which on x86_64 expands to:
+## 2. `u_long *`-taking PsyCross APIs
 
-```c
-uintptr_t addr;        /* 8 bytes on x64 */
-uint len : 16;
-uint pgxp_index : 16;
+| API | Implementation | Internal stride | Verdict |
+|-----|----------------|-----------------|---------|
+| `CdRead` | `LIBCD.C:553` | stores `(unsigned char *)buf`; `CdReadSync` `memcpy`s sectors through it | safe |
+| `CdReadFile` | `LIBCD.C:351` | re-enters `CdRead` | safe |
+| `LoadImage`, `LoadImage2` | `LIBGPU.C:75`, `LIBGPU.C:82` | `(unsigned short *)p` into `GR_CopyVRAM` | safe |
+| `StoreImage`, `StoreImage2` | `LIBGPU.C:182`, `LIBGPU.C:188` | `(unsigned short *)p` into `GR_ReadVRAM` | safe |
+| `LoadClut`, `LoadClut2`, `LoadTPage` | `LIBGPU.C:642`, `:650`, `:589` | call `LoadImage` | safe |
+| `ClearOTag`, `ClearOTagR` | `LIBGPU.C:197`, `:219` | `(OT_TAG *)ot`, then `setaddr`/`setlen` per element | host-strided, see §3 |
+| `DrawOTag`, `DrawOTagEnv` | `LIBGPU.C:433`, `:427` | walks the chain as host `OT_TAG` | host-strided, see §3 |
+| `BreakDraw`, `FntFlush`, `KanjiFntFlush` | `LIBGPU.C:839`, `:669`, `:663` | no `u_long *` parameter (`u_long *` is the return type) | not a boundary |
+| `OpenTIM`, `OpenTMD`, `DrawOTag2`, `DumpOTag`, `CheckPrim`, `Krom2Tim` | declared in `libgpu.h`, no definition in the submodule | — | a call is a link error |
+
+Among the TUs currently enabled in `games/spyro-1/manifest/native.toml`,
+`cd.c`'s three `CdRead` calls are the only `u_long *` boundary crossings.
+`LoadImage` is called from `spyro-1/src/initialization.c`,
+`spyro-1/src/loaders.c`, `spyro-1/src/gamestates/init.c`,
+`spyro-1/src/gamestates/draw.c` and `spyro-1/include/overlays/flight.inc.h`,
+none of which are enabled.
+
+## 3. `OT_TAG` and the host prim header
+
+Every PsyCross primitive begins with `DECLARE_P_ADDR`, whose expansion is
+target-conditional (`libgpu.h:330`-`libgpu.h:384`). On x86_64 and on
+wasm32 it is a `uintptr_t addr` plus two 16-bit fields, `P_LEN == 3`
+(12 bytes); on other 32-bit hosts `P_LEN == 2` (8 bytes). The wasm32 branch
+pads the pointer region deliberately so its layout is byte-identical to
+amd64, because openpete's OT walk assumes the 12-byte header. The PSX
+header is a single 4-byte word: `unsigned addr:24, unsigned len:8`, which
+is what `DECLARE_P_ADDR_PTAG` degrades to when `USE_EXTENDED_PRIM_POINTERS`
+is off.
+
+`OT_TAG` (`libgpu.h:390`) is nothing but that header, so it is 12 bytes on
+the host against 4 on the PSX. The divergence is intentional: PsyCross
+needs a real host pointer per prim, which does not fit in 24 bits.
+
+Consequence: a `g_ram`-aliased OT buffer (`g_Buffers.m_HudOTStart`,
+`g_WorldOT`) cannot be handed to `ClearOTag` or the `DrawOTag` family. The
+PSX-laid 4-byte stride does not accommodate 12-byte host entries; the
+callee would write past the buffer and read garbage tags.
+
+openpete resolves this in the thunk rather than in the buffer.
+`psyq_DrawOTag` (`games/spyro-1/psyq_thunks.cpp`) does not forward the PSX
+pointer: it walks the PSX-laid chain in `g_ram`, rebuilds it into a
+host-side `P_TAG` scratch arena outside `g_ram` (one host slot per PSX
+entry, payload copied verbatim, `addr` fields re-chained to the next host
+slot, the last pointed at PsyCross's `prim_terminator`), and draws that.
+The same scratch is what the native renderer's extraction walk parses.
+
+For rewritten decomp C there is no equivalent bridge. A native TU that
+called an OT-tag API would need a per-call copy shim; no enabled TU does.
+
+## 4. PSYQ structs embedded in `spyro-1/include/`
+
+| Type | Embedded in | Host vs PSX layout |
+|------|-------------|--------------------|
+| `CdlLOC` | `g_CdState.m_ReadLoc` (`spyro-1/include/cd.h:17`) | identical, 4 × `u_char` |
+| `CdlFILE` | declared only, not embedded | identical: `CdlLOC` + `u_int` + `char[16]` |
+| `CdlATV` | `g_CdMusic.m_Aud` (`spyro-1/include/music.h:22`) | identical, 4 × `u_char` |
+| `RECT` | `g_HudEggTargetRect`, `HUD.m_SpriteRect` | identical: `#define RECT RECT16` in `games/spyro-1/decomp/psyq_compat.h:27`, 4 × `short` |
+| `MATRIX` | gameplay headers | identical: PsyCross declares `int t[3]`, not `long t[3]` (`libgte.h:10`) |
+| `DISPENV` | `g_DB[N].m_DispEnv` | identical: `RECT16` × 2 + 4 × `u_char` (`libgpu.h:752`) |
+| `DRAWENV` | `g_DB[N].m_DrawEnv` (`spyro-1/include/graphics.h:16`) | divergent tail, see below |
+
+`DRAWENV` (`libgpu.h:744`) ends in a `DR_ENV dr_env` field.  `DR_ENV`
+(`libgpu.h:730`) is `DECLARE_P_ADDR` plus `u_int code[15]`, so it is 72
+bytes on x86_64 against 64 on the PSX, and the `uintptr_t` forces 8-byte
+alignment, moving the field itself from offset 28 to offset 32. Everything
+ahead of it — `clip`, `ofs`, `tw`, `tpage`, `dtd`, `dfe`, `isbg`,
+`r0`/`g0`/`b0` — agrees with PSX layout byte for byte.
+
+`g_DB` is aliased into `g_ram` by a linker `--defsym` (`gen_defsyms.py`, via
+`scripts/regen-manifest.sh`). That alias is only sound because access to it
+is field-level and confined to the agreeing prefix: no aggregate `DRAWENV`
+copy is made, and PsyCross's `PutDrawEnv`/`SetDefDrawEnv` write `dr_env`
+through their own host-laid view, so the `dr_env` bytes sitting in `g_ram`
+are never updated and are never read back.
+
+A future native TU that needs the recompiled side to observe `dr_env`
+writes, or the reverse, would need the rewriter to emit a host-laid and a
+PSX-laid copy of the global and route each side to its own.
+
+## 5. Pass 5b: the boundary guard
+
+`tools/rewrite/pass_psyq_boundary.py` implements the guard, wired into the
+rewriter at `tools/rewrite_tu.py:266`; a violation prints and exits 3.
+
+It walks every `CallExpr` in the TU, and for any callee with a `u_long *`
+(canonically `unsigned long *`) parameter, requires the callee to be in
+`SAFE_PSYQ_API`. Anything else is a hard error, so the next TU to migrate
+surfaces the boundary explicitly instead of mis-striding silently.
+`BLOCKED_PSYQ_API` only refines the error message.
+
+Two known limitations:
+
+- The guard filters call sites to those whose location file equals the TU's
+  main file. Calls inside a textually included body — `flight.inc.h` calls
+  `LoadImage` and `StoreImage` — are invisible to it. Both are on the safe
+  list, so nothing is currently missed, but the filter is a hole, not a
+  policy.
+- `SAFE_PSYQ_API` lists `OpenTIM` and `OpenTMD`, which have no definition
+  in the submodule. Calling either fails at link time rather than at the
+  guard.
+
+## 6. Re-deriving this
+
+Enumerate the `u_long *` surface:
+
+```sh
+grep -n 'u_long *\*' third_party/PsyCross/include/psx/*.h
 ```
 
-PSX-side `OT_TAG` is `unsigned addr:24, unsigned len:8` = 4 bytes. So the
-host struct is 12 bytes vs. 4 bytes on PSX. PsyCross has *already* diverged
-the layout to its own host-friendly form (controlled by
-`USE_EXTENDED_PRIM_POINTERS` in libgpu.h:330) — this is intentional, not a
-bug we can patch out.
+For each hit, read the definition under `third_party/PsyCross/src/psx/` and
+classify the stride: a cast to `unsigned char *`, `unsigned short *` or
+`uint32_t *` is safe; a cast to `OT_TAG *` or any prim struct is host-laid.
 
-**Implication for native migration:** g_ram-aliased OT buffers (e.g.
-`g_Buffers.m_HudOTStart`) cannot be passed directly to PsyCross's
-`ClearOTag` / `DrawOTag` family from native code. The PSX-laid 4-byte
-stride won't accommodate 12-byte host OT_TAG entries.
+Find the callers that matter — the TUs enabled in
+`games/spyro-1/manifest/native.toml`, not the whole decomp corpus:
 
-**Mitigation (deferred):** Spyro doesn't call any OT-tag API from C today —
-all of `addPrim`/`setaddr`/`ClearOTag`/`DrawOTag` traffic lives in MIPS asm.
-When that migrates, the rewriter will need a `[[psyq_boundary_copy]]` shim
-that allocates a host-side `OT_TAG[]` scratch outside g_ram and bridges the
-PSX vaddr handle to the host buffer. Track in plan §5 risks.
+```sh
+grep -nE '\b(LoadImage|CdRead|ClearOTag|DrawOTag)[A-Za-z0-9_]*\s*\(' ../spyro-1/src/<tu>.c
+```
 
-## 3. PSYQ structs embedded in `spyro-1/include/`
-
-| Type     | Embedded in            | Host vs PSX layout |
-|----------|------------------------|--------------------|
-| `CdlLOC` | `g_CdState.m_ReadLoc`  | identical (4 × `u_char`) |
-| `CdlFILE`| (decl only, no embed)  | identical (CdlLOC + u_int + char[16]) |
-| `CdlATV` | `g_CdMusic.m_Aud`      | identical (4 × `u_char`) |
-| `RECT`   | macro alias of `RECT16`| identical (4 × `short`) |
-| `MATRIX` | gameplay headers       | PsyCross uses `int t[3]` not `long t[3]` — identical |
-| `DRAWENV`| `g_DB[N].m_DrawEnv`    | **divergent** — embeds DR_ENV with `uintptr_t addr` field (12 bytes on x64 vs 4 on PSX) |
-| `DISPENV`| `g_DB[N].m_DispEnv`    | identical (RECT16×2 + 4×u_char) |
-
-**Implication:** `g_DB`'s `--defsym` aliasing into g_ram is unsafe on the host
-side because `DRAWENV.dr_env` has a different size. PsyCross calls (`PutDrawEnv`,
-`SetDefDrawEnv`, etc.) take `DRAWENV*` and stride at host size.
-
-Today this is masked because:
-- `g_DB` reads/writes from C are field-level (not aggregate copies), and
-  the fields up to `b0` agree with PSX layout.
-- The `DR_ENV dr_env` tail isn't read by `initialization.c`'s C code — only
-  PsyCross's `PutDrawEnv` writes through it, using its own host-laid view.
-- If the recomp side reads `g_DB[N].m_DrawEnv` via `gp+offset`, only the PSX-laid
-  prefix is in g_ram; the `dr_env` tail in g_ram is never updated by PsyCross.
-  Recomp side doesn't appear to read it, so we get away with it.
-
-**Recommended fix (future):** the rewriter detects DRAWENV-bearing globals
-and emits a host-laid + PSX-laid pair, with PsyCross writes going to the
-host side and recomp-visible reads going to the PSX side. Pre-condition for
-migrating any TU that sets up draw envs from C and lets recomp read the
-prefix back. `initialization.c` already does this — but only the prefix
-fields, so it works today.
-
-## 4. Decisions
-
-- **Pass 5b** lands as a guard pass in Phase 4: walk every `CallExpr` whose
-  callee parameter type is `u_long *`, verify the target API is in the safe
-  list (§1). Hard-error on any other PsyCross API.
-- **OT-tag boundary** is a Phase 7+ concern. No native TU on the migration
-  list today calls an OT-tag API from C.
-- **DRAWENV `dr_env` tail** is on the watch-list. If a future native TU
-  needs the recomp side to observe `dr_env` writes (or vice versa), the
-  rewriter needs the dual-layout treatment described above. For now the
-  prefix-only access pattern in `initialization.c` is safe.
-- No PsyCross patch is required at this time. No `[[psyq_boundary_copy]]`
-  shim entry is needed for any current API call.
-
-## 5. Methodology
-
-- Public `u_long *` APIs enumerated by:
-  ```sh
-  grep -n "u_long.*\*" third_party/PsyCross/include/psx/*.h
-  ```
-- Spyro C call-sites enumerated by:
-  ```sh
-  grep -hoE "\b(LoadImage|CdRead|...)\b" spyro-1/src/*.c spyro-1/include/*.h | sort -u
-  ```
-- PSYQ-struct layout audited via `tools/rewrite/types.py` (the PSX-layout
-  calculator) compared against the PsyCross header definitions byte-by-byte
-  for primitive-only structs; manual inspection for structs with macro-driven
-  layouts (DRAWENV).
+Struct layouts: `tools/rewrite/types.py` computes PSX sizes from libclang
+under the `mipsel-unknown-elf` target;
+`python3 -m tools.rewrite.validate_layouts` checks those sizes against the
+symbol gaps in `psx.map`. Macro-driven layouts (`DECLARE_P_ADDR`) need
+reading the header, since the expansion is target-conditional.

@@ -1,30 +1,89 @@
 # OpenPete — Spyro the Dragon PC port (@VERSION@, @PLATFORM@)
 
-OpenPete plays _Spyro the Dragon_ (PSX, 1998) natively on your PC —
-widescreen, high framerate, HD texture packs — while keeping gameplay
-**bit-identical to original PlayStation hardware**.
+OpenPete plays Spyro the Dragon (PSX, 1998) natively on your PC: widescreen,
+high framerate, supersampling, HD texture packs and mods, with gameplay state
+bit-identical to original PlayStation hardware.
 
-**You need your own disc.** OpenPete ships no game content: on first
-run it reads your disc image, rebuilds the game's code for your machine,
-and stores everything in its disc library (see "Where your files go").
-This takes under a minute; after that the original file is never needed
-again.
+You supply the disc. OpenPete ships no game content. On first run it copies
+your disc image into its own library and compiles the game's code for your
+machine: about 26 seconds on a 16-thread desktop, 45 to 90 seconds on a
+four-core laptop. After that the original image is never needed again and the
+game starts straight into play. Installing a new OpenPete release recompiles
+once more (12 to 50 seconds), then starts fast again.
+
+## Requirements
+
+- Your own Spyro the Dragon (NTSC-U) disc, dumped to a `.bin`/`.cue` pair.
+- A 64-bit x86-64 machine with a GPU driver supporting Vulkan 1.2.
+- About 700 MB of disk: the library keeps its own copy of the disc image
+  (~640 MB, one copy per distinct disc) plus ~26 MB per compiled build.
+<!-- @linux -->
+- glibc 2.31 or newer (Debian 11, Ubuntu 20.04, or later).
+<!-- @end -->
 
 ## Quick start
 
-1. Dump your _Spyro the Dragon_ (NTSC-U) disc to a `.bin`/`.cue` pair.
+1. Dump your disc to a `.bin`/`.cue` pair.
 <!-- @windows -->
-2. Run openpete-spyro1.exe
-3. Drag and drop your `.bin` or `.cue` into the Window.
+2. Run `openpete-spyro1.exe`.
+3. Drag your `.bin` or `.cue` onto the window, or press Space (or A on a pad)
+   to browse for it. You can also pass the path on the command line
+   (`openpete-spyro1.exe mydisc.cue`) or open the image from Explorer with
+   "Open with".
 <!-- @end -->
 <!-- @linux -->
-2. Make it executable and run it — `chmod +x OpenPete-*.AppImage` then
-   `./OpenPete-*.AppImage` for the AppImage, or `./openpete-spyro1` from
-   the extracted `.tar.xz`.
-3. Drag and drop your `.bin` or `.cue` into the window. You can also
-   hand it over on the command line (`./OpenPete-*.AppImage mydisc.cue`)
-   or from your file manager's "Open with".
+2. Make it executable and run it: `chmod +x OpenPete-*.AppImage` then
+   `./OpenPete-*.AppImage` for the AppImage, or `./openpete-spyro1` from the
+   extracted `.tar.xz`.
+3. Drag your `.bin` or `.cue` onto the window, or press Space (or A on a pad)
+   to browse for it. You can also pass the path on the command line
+   (`./OpenPete-*.AppImage mydisc.cue`) or use your file manager's "Open with".
 <!-- @end -->
+
+## Controls
+
+Keyboard defaults for the PlayStation pad:
+
+| Pad | Key | Pad | Key |
+| --- | --- | --- | --- |
+| Cross | C | Circle | V |
+| Square | X | Triangle | Z |
+| D-pad | arrow keys | Left stick | W A S D |
+| Start | Return | Select | Space |
+| L1 / L2 / L3 | Left Shift / Left Ctrl / `[` | R1 / R2 / R3 | Right Shift / Right Ctrl / `]` |
+
+Any connected gamepad plays the game with its own buttons; no keyboard is
+needed.
+
+OpenPete's own keys:
+
+| Key | Action |
+| --- | --- |
+| Escape | open/close the settings menu |
+| Alt+Enter | toggle fullscreen |
+| Tab | hold to fast-forward |
+| F7 / F8 | pause / advance one tick while paused |
+| 1 / 2 / 3 | savestate: save, load, cycle the active slot |
+| Backspace | hold to rewind (only with `--rewind N`) |
+| F | free camera; T drops Spyro at it |
+| I / L | toggle interpolation / extended sector detail |
+| M | dev config overlay |
+
+Every action above rebinds under `[keys.pad]` and `[keys.host]` in
+`openpete.toml`; `--keys-report` prints every action, its binding, and where
+that binding came from.
+
+## Settings
+
+The settings menu (Escape) covers windowed/fullscreen, aspect, FPS target,
+vsync, supersampling, vertex wobble, texture mapping, dither, sector LOD, free
+camera, and the enabled mods; its SETTINGS row writes your choices into
+`openpete.toml`, and EXIT GAME quits. This build ships `openpete.toml` preset
+to fullscreen with 2x supersampling.
+
+Everything else is a command-line flag or an `openpete.toml` key of the same
+name. `openpete-spyro1 --help` lists the flags; `--config-report` prints which
+setting won and what it overrode.
 
 ## Where your files go
 
@@ -33,15 +92,17 @@ Windows keeps everything in the program's own folder, next to
 `openpete-spyro1.exe`:
 
 ```
-openpete.toml   your settings
+openpete.toml         your settings
 gamecontrollerdb.txt  controller mappings (see below)
-cards/          memory cards (the game's own saves)
-states/         savestate slots
-logs/           openpete.log — attach to a bug report
-library/        your ingested disc and its compiled code
-mods/           drop-in mods
-sdk/            mod SDK: headers, docs/, examples/ (only when packaged with it)
-recomp/         the bundled compiler and recompiler
+cards/                memory cards (the game's own saves)
+states/               savestate slots
+logs/                 openpete.log — attach to a bug report
+library/              your ingested disc and its compiled code
+mods/                 drop-in mods
+assets/               your own texture packs, sounds and music
+bk2/                  input recordings
+sdk/                  mod SDK: headers, docs/, examples/ (only when packaged with it)
+recomp/               the bundled compiler and recompiler
 ```
 <!-- @end -->
 <!-- @linux -->
@@ -49,114 +110,107 @@ OpenPete follows the XDG directories, so nothing is written next to the
 program itself:
 
 ```
-~/.config/openpete/openpete.toml   your settings
+~/.config/openpete/openpete.toml          your settings
 ~/.config/openpete/gamecontrollerdb.txt   your controller mappings (see below)
 ~/.local/state/openpete/cards/     memory cards (the game's own saves)
 ~/.local/state/openpete/states/    savestate slots
 ~/.local/state/openpete/logs/      openpete.log — attach to a bug report
 ~/.local/share/openpete/library/   your ingested disc and its compiled code
 ~/.local/share/openpete/mods/      drop-in mods
-~/.local/share/openpete/assets/    your own texture packs and music
+~/.local/share/openpete/assets/    your own texture packs, sounds and music
 ~/.local/share/openpete/bk2/       input recordings
 ```
 
-Set `portable = true` at the top of `openpete.toml` to keep all of them
-in the program's own folder instead. That works for the `.tar.xz`; the
-AppImage is a read-only file, so it always uses the paths above.
+Set `portable = true` at the top of `openpete.toml` to keep all of them in the
+program's own folder instead. That works for the `.tar.xz`; the AppImage is a
+read-only file, so it always uses the paths above.
 <!-- @end -->
 
 ## Controllers
 
-Most pads work with no setup. If yours is not recognised, or its buttons
-are in the wrong places, you can add a mapping without touching anything
-that ships with the game.
+Most pads work with no setup. If yours is not recognised, or its buttons are
+in the wrong places, you can add a mapping without touching anything that
+ships with the game.
 
 <!-- @windows -->
-Edit `gamecontrollerdb.txt` next to `openpete-spyro1.exe` and add a line
-for your pad. Keep a copy of that line somewhere else: extracting a new
-release over this folder replaces the file.
+Edit `gamecontrollerdb.txt` next to `openpete-spyro1.exe` and add a line for
+your pad. Keep a copy of that line somewhere else: extracting a new release
+over this folder replaces the file.
 <!-- @end -->
 <!-- @linux -->
-Create `~/.config/openpete/gamecontrollerdb.txt` and put a line for your
-pad in it. One line is enough — it is merged with the mappings that ship
-with the game, and yours wins wherever both describe the same pad, so
-there is no need to copy the whole file. It also survives upgrades,
-which is why it is the right place to put it even though the AppImage
-also carries its own copy.
+Create `~/.config/openpete/gamecontrollerdb.txt` and put a line for your pad
+in it. One line is enough: it is merged with the mappings that ship with the
+game, and yours wins wherever both describe the same pad. It also survives
+upgrades, unlike the copy inside the AppImage or the tarball.
 <!-- @end -->
 
 Mappings come from https://github.com/mdqinc/SDL_GameControllerDB, which
-documents how to generate a line for a pad that has none. Two other
-routes work if you already use them: `SDL_GAMECONTROLLERCONFIG_FILE`
-names a mapping file to load instead of the one that ships here, and
-`--controller-db PATH` loads one more file on top of everything above.
+documents how to generate a line for a pad that has none. Two other routes
+work if you already use them: `SDL_GAMECONTROLLERCONFIG_FILE` names a mapping
+file to load instead of the one that ships here, and `--controller-db PATH`
+loads one more file on top of everything above.
 
-`logs/openpete.log` records every mapping file that was looked for, and
-for each pad the mapping that was actually used and where it came from —
-worth reading before filing a controller bug.
+`openpete.log` records every mapping file that was looked for, and for each
+pad the mapping that was actually used and where it came from.
 
 ## Notes
 
 <!-- @linux -->
-- The AppImage carries its own compiler, so first run needs nothing
-  installed. The `.tar.xz` uses your system `cc` unless it was packaged
-  with a bundled one (`sudo apt install gcc` or equivalent).
-- If the AppImage exits with a FUSE error, your distribution no longer
-  installs libfuse by default. Either install it, or run the image
-  without it: `./OpenPete-*.AppImage --appimage-extract-and-run`.
-- To get OpenPete into your application menu, either install
-  `appimaged`/Gear Lever, or copy
-  `com.openpete.OpenPete.desktop` and `com.openpete.OpenPete.png` out of
-  `./OpenPete-*.AppImage --appimage-extract` into
-  `~/.local/share/applications` and `~/.local/share/icons` and point
+- The AppImage carries its own compiler, so first run needs nothing installed.
+  The `.tar.xz` uses your system `cc` unless it was packaged with a bundled one
+  (`sudo apt install gcc` or equivalent).
+- If the AppImage exits with a FUSE error, your distribution no longer installs
+  libfuse by default. Either install it, or run the image without it:
+  `./OpenPete-*.AppImage --appimage-extract-and-run`.
+- To get OpenPete into your application menu, either install `appimaged`/Gear
+  Lever, or copy `com.openpete.OpenPete.desktop` and
+  `com.openpete.OpenPete.png` out of `./OpenPete-*.AppImage --appimage-extract`
+  into `~/.local/share/applications` and `~/.local/share/icons` and point
   `Exec=` at where you keep the image.
 <!-- @end -->
 <!-- @windows -->
-- Windows may show a SmartScreen warning ("Windows protected your PC")
-  because the download is new and unsigned — click "More info" → "Run
-  anyway". If in doubt, verify the download against the published
-  `.sha256` checksum first.
-- Windows: install to a reasonably short path (e.g. `C:\Games\OpenPete`);
-  very deep folders can hit Windows' path-length limit during first run.
+- An unsigned download makes Windows show a SmartScreen warning ("Windows
+  protected your PC"): click "More info", then "Run anyway". If in doubt,
+  verify the download against the published `.sha256` checksum first.
+- Install to a reasonably short path (for example `C:\Games\OpenPete`); very
+  deep folders can hit Windows' path-length limit during first run.
 <!-- @end -->
 
 ## Mods
 
 A mod is a folder (or a `.zip`) dropped into the `mods` directory above,
-holding a `mod.toml` manifest plus any of `assets/` (replacement
-textures, music, sounds, custom levels) and `src/*.c`. Source mods are
-compiled on the next start against the `sdk` folder next to the program,
-by the same compiler that built your disc's module; a start that has
-mods to compile shows "COMPILING MODS" on the splash. If there is no
-`sdk` folder next to the program, this build was packaged without the
-mod SDK: source mods are disabled and mods made only of a manifest and
-assets still load. `mods/enabled.txt` (one mod ID per
-line) fixes which mods load and in what order; without it every mod
-loads, alphabetically.
+holding a `mod.toml` manifest plus any of `assets/` (replacement textures,
+music, sounds, custom levels) and `src/*.c`. Source mods are compiled on the
+next start against the `sdk` folder next to the program, by the same compiler
+that built your disc's module; a start that has mods to compile shows
+"COMPILING MODS" on the splash. If there is no `sdk` folder next to the
+program, this build was packaged without the mod SDK: source mods are
+disabled, and mods made only of a manifest and assets still load.
+`mods/enabled.txt` (one mod ID per line) fixes which mods load and in what
+order; without it every mod loads, alphabetically.
 
-A source mod runs inside the game process with the same privileges as
-the game. There is no sandbox. Install only mods you trust, as you would
-any other program. A mod with no `src/` directory never loads code.
+A source mod runs inside the game process with the same privileges as the
+game. There is no sandbox. Install only mods you trust, as you would any other
+program. A mod with no `src/` directory never loads code.
 
 Mod authors: when this build carries the SDK, its documentation is at
-`sdk/docs/index.html` (start at "Getting started") and `sdk/examples/`
-holds working example mods. Copy one into the `mods` directory above to
-run it; nothing under `sdk/` loads on its own. In the AppImage both sit
-inside the read-only image: run `./OpenPete-*.AppImage --appimage-extract`
-once and open `squashfs-root/usr/sdk/docs/index.html` and
-`squashfs-root/usr/sdk/examples/`. Without the SDK, the
-documentation is built from the source tree
+`sdk/docs/index.html` (start at "Getting started") and `sdk/examples/` holds
+working example mods. Copy one into the `mods` directory above to run it;
+nothing under `sdk/` loads on its own. In the AppImage both sit inside the
+read-only image: run `./OpenPete-*.AppImage --appimage-extract` once and open
+`squashfs-root/usr/sdk/docs/index.html` and `squashfs-root/usr/sdk/examples/`.
+Without the SDK, the documentation is built from the source tree
 (`cmake --build --preset linux-release --target mod_docs`).
 
 ## Reporting a problem
 
-Every run mirrors its diagnostics to `openpete.log` in the `logs`
-directory above — the startup sequence, what it decided about your disc
-and your hardware, any driver errors, and the crash dump if it crashed.
-Attach it. The previous run is kept alongside it as `openpete.log.1`,
-which is the one you want when a relaunch made the problem go away.
+Every run mirrors its diagnostics to `openpete.log` in the `logs` directory
+above: the startup sequence, what it decided about your disc and your
+hardware, any driver errors, and the crash dump if it crashed. Attach it. The
+previous run is kept alongside it as `openpete.log.1`, which is the one to
+attach when a relaunch made the problem go away.
 
-Nothing in it identifies you beyond the paths OpenPete itself uses.
+Nothing in the log identifies you beyond the paths OpenPete itself uses.
 
-_OpenPete is not affiliated with Sony, Insomniac Games, or Activision.
-Spyro the Dragon is a trademark of its respective owners._
+OpenPete is not affiliated with Sony, Insomniac Games, or Activision. Spyro
+the Dragon is a trademark of its respective owners.

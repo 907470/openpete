@@ -1,8 +1,9 @@
 # GTE side-by-side trace workflow
 
-Verifies psxrecomp's GTE math against two independent implementations by
-running all three on identical pre-state for every COP2 op in a frame
-window and CSV-dumping the post-state. Three rows per op:
+Runs three independent GTE implementations on identical pre-state for every
+COP2 op inside a VBL window and dumps the post-state to CSV. Divergence
+between any pair localizes a GTE math bug to one engine. Three rows per
+logged op:
 
 | `engine` | source |
 |----------|--------|
@@ -10,31 +11,50 @@ window and CSV-dumping the post-state. Three rows per op:
 | `psy`    | PsyCross's GTE (`third_party/PsyCross/src/gte/PsyX_GTE.cpp`) |
 | `pcsx`   | pcsx-redux's GTE, vendored at `third_party/pcsx_redux_gte/` |
 
-As of commit 9467e0e + the pcsx-redux vendoring, all three are bit-identical
-on 32,962 ops captured during Spyro 1's titlescreen cutscene frames
-1100-1110. So the GTE is *triply* verified, and the user-reported peak
-flicker has to come from somewhere downstream of the GTE math.
+A bug shared by two codebases derived from a common ancestor survives a
+2-way diff. pcsx-redux's GTE was written from the Nocash spec independently
+of PsyCross, so a 3-way bit-identical match is the stronger claim
+(`third_party/pcsx_redux_gte/README.md`).
 
 ## In-tree usage
 
-All three engines are already linked into `openpete-spyro1`, so this needs
-no setup beyond an env var.
+All three engines link into `openpete-spyro1` on the `linux-release`
+preset, so this needs no setup beyond env vars. On `windows-mingw` the
+vendored engine is off: `third_party/pcsx_redux_gte` needs C++23 and
+MinGW-GCC 10 caps at C++20, so `CMakeLists.txt` defaults
+`OPENPETE_BUILD_PCSX_REDUX_GTE` OFF when cross-compiling and
+`core/runtime/pcsxr_gte_stub.c` supplies a `pcsxr_gte_run` that zeroes the
+post-state. Every `pcsx` row is then all-zero and the 3-way diff is
+meaningless; trace on Linux.
 
 ```sh
-# openpete_frame is now anchored at the first DrawOTag, so splash frames
-# don't count toward the trace window. Frame numbers below are in the new
-# numbering (subtract ~850 from the old fast-boot-relative numbering).
 rm -f /tmp/openpete-gte.csv
 OPENPETE_GTE_TRACE=/tmp/openpete-gte.csv \
 OPENPETE_GTE_TRACE_LO=250 OPENPETE_GTE_TRACE_HI=261 \
 OPENPETE_GTE_TRACE_OPS='01,06,30,2D,2E' \
-./build/linux-release/games/spyro-1/openpete-spyro1 --headless \
-    --disc <spyro>/spyro-1/build/SCUS-94228.cue \
+build/linux-release/games/spyro-1/openpete-spyro1 --headless \
+    --disc games/spyro-1/spyro-1/build/SCUS-94228.cue \
     --run-recomp 0x80012204 --frame-limit 265
 ```
 
-Output is three rows per logged op, in the order `rec`, `psy`, `pcsx`.
-Diff them pairwise:
+Knobs, all read once on the first COP2 op and parsed in `gte_trace_init()`
+(`third_party/psxrecomp/runner/src/gte.cpp`):
+
+- `OPENPETE_GTE_TRACE` — output CSV path. Unset disables the logger.
+- `OPENPETE_GTE_TRACE_LO` / `_HI` — half-open `openpete_frame` window,
+  `[LO, HI)`. The logger closes the file on the first op at or past `HI`.
+  Defaults are 1100 and 1111; those predate the anchoring of
+  `openpete_frame` to the first `psyq_DrawOTag` call
+  (`core/include/openpete_fiber.h`), which removed the splash VBLs from the
+  count, so always set the window explicitly.
+- `OPENPETE_GTE_TRACE_OPS` — comma-separated hex `func` values. Default
+  `01,06,30,2D,2E`.
+
+`openpete_frame` is a VBL counter, not a tick counter.
+
+Output is three rows per logged op in the order `rec`, `psy`, `pcsx`. The
+multi-vertex ops RTPT, NCDT, NCT and NCCT emit one triple per vertex,
+labelled `_v0`, `_v1`, `_v2`. Diff pairwise, with the engine column blanked:
 
 ```sh
 awk -F, 'NR==1 || $2=="rec"'  /tmp/openpete-gte.csv > /tmp/rec.csv
@@ -46,29 +66,28 @@ diff <(awk -F, '{$2="";print}' /tmp/rec.csv) \
      <(awk -F, '{$2="";print}' /tmp/pcsx.csv)
 ```
 
-The expected outcome is empty diffs. As of commit 9467e0e + the pcsx-redux
-vendoring, every triple on Spyro 1's titlescreen cutscene matches bit-for-
-bit — this is the canary that catches future GTE regressions.
+Both diffs are empty on a healthy tree. The logged columns are the decoded
+CP2D/CP2C register file: the input vector, translation, rotation matrix,
+screen offsets, `H`, `DQA`, `DQB`, `MAC0-3`, `IR0-3`, `SZ0-3`, `SXY0-2`,
+`RGB0-2`, and `FLAG`.
 
 Op codes: `01`=RTPS, `06`=NCLIP, `0C`=OP, `10`=DPCS, `11`=INTPL, `12`=MVMVA,
 `13`=NCDS, `14`=CDP, `16`=NCDT, `1B`=NCCS, `1C`=CC, `1E`=NCS, `20`=NCT,
 `28`=SQR, `29`=DPCL, `2A`=DPCT, `2D`=AVSZ3, `2E`=AVSZ4, `30`=RTPT, `3D`=GPF,
-`3E`=GPL, `3F`=NCCT.
+`3E`=GPL, `3F`=NCCT. An unrecognized `func` is logged as `UNK`.
 
-## Live pcsx-redux replay (alternative when you need real-game-state)
+## Live pcsx-redux replay
 
-The vendored pcsx-redux GTE above runs *only* on pre-state captured by
-openpete. If you need to validate against pcsx-redux running the actual
-disc — e.g. to rule out openpete's MIPS recompiler producing different
-*inputs* to the GTE than the original code path would — use the live
-emulator path below. (Note: as of openpete commit 9467e0e + the vendored
-GTE, all three engines bit-match on captured pre-state, so this is rarely
-needed in practice.)
+The vendored `pcsx` engine runs only on pre-state captured by openpete, so
+it cannot detect openpete's MIPS recompiler feeding the GTE different
+different inputs than the original code path would. Ruling that out needs
+pcsx-redux running the actual disc. See also
+[ram-diff-vs-pcsxr](ram-diff-vs-pcsxr.md), which compares whole-RAM
+snapshots for the same class of question.
 
 ### Build pcsx-redux on Linux (one-time)
 
-The clone in `.tools/pcsx-redux/` (gitignored) is ready. Build needs apt
-deps:
+The clone lives at `.tools/pcsx-redux/` (gitignored). Build deps:
 
 ```sh
 sudo apt-get install -y build-essential clang g++ pkg-config \
@@ -77,43 +96,42 @@ sudo apt-get install -y build-essential clang g++ pkg-config \
     libuv1-dev zlib1g-dev g++-mipsel-linux-gnu cpp-mipsel-linux-gnu \
     binutils-mipsel-linux-gnu
 cd .tools/pcsx-redux
-# FFmpeg 4.4 (Ubuntu 22.04) needs the audio-file reader stubbed; 5+ has the
-# new AVChannelLayout / swr_alloc_set_opts2 API. A reader whose every open
-# fails is enough.
-make openbios            # build OpenBIOS first (used as bootstrap)
+make openbios            # OpenBIOS bootstrap, built first
 make BUILD=Release -j8   # higher -j may OOM-kill cc1plus
 cp src/mips/openbios/openbios.bin ./openbios.bin
 ```
 
+On FFmpeg 4.4 (Ubuntu 22.04) its audio-file reader does not compile: it
+uses the `AVChannelLayout` / `swr_alloc_set_opts2` API introduced in FFmpeg
+5. Stubbing the reader so that every open fails is enough for this
+workflow.
+
 ### Run the Lua dumper
 
-`scripts/pcsx-redux-gte-dump-loading-text.lua` sets one Exec breakpoint
-per cop2 PC (populated from r_pete + r_environment in PSX.EXE), counts
-VSync events as frames, and emits a CSV at
-`/tmp/pcsx-redux-gte-loading-text.csv` in the same column layout as the
-in-tree dumper.
+`scripts/pcsx-redux-gte-dump-loading-text.lua` sets one Exec breakpoint per
+COP2 PC (the list is inline in the script, covering `r_pete` and
+`r_environment` in PSX.EXE), counts VSync events as frames, and writes
+`/tmp/pcsx-redux-gte-loading-text.csv` in the in-tree dumper's column
+layout.
 
 Two non-obvious requirements:
 
-  1. **Pass `--debugger`**. Without it breakpoints (Lua or otherwise)
-     never fire, and nothing reports it.
-  2. **The invoker must return `true`** to keep the breakpoint armed.
-     A falsy return deletes the breakpoint,
-     so a BP that returns `false` fires exactly once. Returning `nil`
-     also deletes (it's coerced to false at the C boundary).
-
-Invocation:
+1. Pass `--debugger`. Without it
+   breakpoints — Lua or otherwise — silently never fire.
+2. The breakpoint invoker must return `true`. A falsy invoker
+   return is a delete request, so an invoker returning `false` fires
+   exactly once; `nil` is coerced to false at the C boundary and also
+   deletes.
 
 ```sh
 cd .tools/pcsx-redux
 ./pcsx-redux --no-ui --debugger --interpreter \
     --bios ./openbios.bin \
-    --iso <spyro>/spyro-1/build/SCUS-94228.cue \
+    --iso ../../games/spyro-1/spyro-1/build/SCUS-94228.cue \
     --run --dofile ../../scripts/pcsx-redux-gte-dump-loading-text.lua
 ```
 
-To regenerate the cop2 PC list (different game, or you want a wider
-range):
+Regenerate the COP2 PC list for a different binary or a wider range with:
 
 ```sh
 mipsel-linux-gnu-objdump -d games/spyro-1/spyro-1/build/PSX.EXE \
@@ -123,20 +141,12 @@ mipsel-linux-gnu-objdump -d games/spyro-1/spyro-1/build/PSX.EXE \
 
 ### Known gap: reaching the cutscene from a fresh boot
 
-OpenBIOS doesn't fully implement the pad-poll commands Spyro 1 issues
-(it logs `Unknown command for pad: 43` and ignores them), so scripted
-`setOverride(3)` Start presses don't advance past the title screen. A
-real Sony BIOS (e.g. SCPH-1001) would handle this — but that path
-currently SIGSEGVs pcsx-redux on `--run`, so neither path is end-to-end
-clean here without manual intervention.
+OpenBIOS does not implement the pad-poll commands Spyro 1 issues — it logs
+`Unknown command for pad: 43` and ignores them — so the script's scheduled
+`setOverride` Start presses do not advance past the title screen. A real
+SCPH-1001 BIOS handles those commands, but that path SIGSEGVs pcsx-redux on
+`--run`. Neither path reaches the cutscene unattended.
 
-Workaround until that's fixed: run pcsx-redux interactively (drop
-`--no-ui`), navigate manually to the cutscene with the keyboard, save
-state at the cutscene entry, then re-run with the Lua script + a
-preloaded save state to dump from the cutscene frame range.
-
-Or — the simpler path — sidestep the live-emulation requirement
-entirely by vendoring pcsx-redux's GTE into openpete and adding a
-third "pcsx" engine to the in-tree trace logger. The GTE math has no
-dependencies beyond a stub `g_emulator->m_cpu->m_regs.{CP2D,CP2C}`
-register file plus PGXP no-ops. Same diff recipe, no input replay.
+Workaround: run pcsx-redux interactively (drop `--no-ui`), navigate to the
+cutscene by keyboard, save state at the entry, then re-run with the Lua
+script and that save state preloaded.
