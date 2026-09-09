@@ -55,8 +55,9 @@ set(SDL_TEST   OFF CACHE BOOL "" FORCE)
 set(SDL_X11_XTEST OFF CACHE BOOL "" FORCE)
 add_subdirectory(third_party/SDL)
 
-# Which games to enable. Phase 0b only spyro-1 is wired up.
-set(OPENPETE_GAMES "spyro-1" CACHE STRING "Games to build (semicolon-separated)")
+# Which games to enable. A game whose generated/ has no recompiled output
+# warns and skips itself, so listing one costs nothing until it is regenerated.
+set(OPENPETE_GAMES "spyro-1;spyro-2;spyro-3" CACHE STRING "Games to build (semicolon-separated)")
 
 # In-process GLSL→SPIR-V for the mod shader compile service
 # (notes/plans/openpete-mod-shaders.md S1). glslang 15.4.0 pinned:
