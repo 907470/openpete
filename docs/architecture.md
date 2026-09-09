@@ -68,8 +68,11 @@ added only if the game's IRQ semantics force it. Clocks are NTSC-exact: tick
 ## Presentation
 
 `--renderer` selects the display path (`core/runtime/options.c:727`):
-`vk` (the native Vulkan renderer, default), `psycross` (the legacy GL path),
-`ab`, and `diff`. Headless runs fall back to PsyCross.
+`vk` (the native Vulkan renderer), `psycross` (the legacy GL path), `ab`, and
+`diff`. Headless runs fall back to PsyCross. The default is per game: Spyro 1
+starts on `vk`; Spyro 2 and Spyro 3 start on `psycross`, because the native
+renderer's extraction walks decode Spyro 1's structures and would draw another
+game's geometry with them. `--help` names each game's own default.
 
 The native renderer extracts scenes from gameplay state and draws them in
 float through openpete's own RHI (`core/rhi/rhi_vulkan.c`), with the

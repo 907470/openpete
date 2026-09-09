@@ -382,8 +382,9 @@ draw that samples inside its texel box (one tile file serves both terrain
 LOD tiers). Partial packs are fine — anything without a replacement draws
 the original. `OPENPETE_TEXPACK_DIR=<dir>` overrides the pack location.
 
-Replacement applies in the native (`--renderer vk`, default) display path;
-`--headless` and the PsyCross reference path always render the originals.
+Replacement applies in the native (`--renderer vk`) display path, which is the
+default for Spyro 1; `--headless` and the PsyCross reference path always render
+the originals.
 
 ## Custom sounds (sfx packs)
 

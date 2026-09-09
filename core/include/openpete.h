@@ -450,6 +450,13 @@ typedef struct openpete_options {
      * --headless. See openpete_renderer_t above. */
     openpete_renderer_t renderer;
 
+    /* The renderer this game starts with when --renderer is absent, which is
+     * also the one print_help marks as the default. A game with no native
+     * renderer walks sets both this and `renderer` through
+     * openpete_options_set_default_renderer, before parsing, so an explicit
+     * --renderer still wins and the help text still names what it will get. */
+    openpete_renderer_t default_renderer;
+
     /* In-process continuation from the first-run splash: when non-NULL, an
      * SDL_Window* (void* keeps this header SDL-free) that the windowed vk
      * renderer adopts — retitle/resize/make-resizable — instead of opening
@@ -823,6 +830,11 @@ typedef struct openpete_options {
 
 /* Defaults: 0 / unlimited / not-headless / log plain. */
 void openpete_options_init(openpete_options_t* opts);
+
+/* Set the game's starting renderer and the one help calls the default. Call
+ * between openpete_options_init and openpete_options_parse. */
+void openpete_options_set_default_renderer(openpete_options_t* opts,
+                                           openpete_renderer_t r);
 
 /* Parse argv into opts. Unknown flags return OPENPETE_EXIT_SETUP_ERROR;
  * caller should propagate the exit code. argv[0] is treated as program name. */

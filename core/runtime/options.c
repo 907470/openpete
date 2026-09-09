@@ -306,7 +306,14 @@ static char* resolve_default_bk2_record_path(void) {
  * distributed build shows a clean, user-facing flag list; a one-line note
  * replaces it. This is display-only: every flag still PARSES and works in every
  * build regardless of whether it appears here. */
-static void print_help(const char* display_name, const char* argv0) {
+void openpete_options_set_default_renderer(openpete_options_t* opts,
+                                           openpete_renderer_t r) {
+    opts->renderer         = r;
+    opts->default_renderer = r;
+}
+
+static void print_help(const char* display_name, const char* argv0,
+                       openpete_renderer_t default_renderer) {
     fprintf(stderr,
         "OpenPete %s\n"
         "Usage: %s [options] [DISC-IMAGE]\n"
@@ -328,7 +335,7 @@ static void print_help(const char* display_name, const char* argv0) {
         "                             loader (default 1): guest disc reads never wait on the file. 0 =\n"
         "                             read the file per sector (A/B). Bytes identical either way.\n"
         "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields (defaults to the game's entry point)\n"
-        "  --renderer MODE            display renderer: vk (native, full-window — default) | psycross (legacy GL) |\n"
+        "  --renderer MODE            display renderer: vk (native, full-window%s) | psycross (legacy GL%s) |\n"
         "                             ab (native|psycross side-by-side) | diff (|native - psycross| colour diff)\n"
         "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
         "  --aspect W:H|auto          Hor+ widescreen. auto (default) = follow the window/fullscreen\n"
@@ -447,7 +454,9 @@ static void print_help(const char* display_name, const char* argv0) {
         "  --bk2-record [PATH]        write live pad input to a BizHawk .bk2 (combinable with --bk2 to extend a movie).\n"
         "                             With no PATH, records to <exe_dir>/bk2/<timestamp>.bk2. Also writes a\n"
         "                             <PATH>.args sidecar of the launch flags (minus --bk2*) for replay via --bk2.\n",
-        display_name, argv0);
+        display_name, argv0,
+        default_renderer == OPENPETE_RENDERER_VK       ? " — default" : "",
+        default_renderer == OPENPETE_RENDERER_PSYCROSS ? " — default" : "");
 
     /* The --record family only exists where libav* could be linked. Without
      * OPENPETE_HAS_LIBAV record.c is the warn-and-ignore stub, so listing these
@@ -598,7 +607,8 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->runahead            = 0;
     opts->log_format          = OPENPETE_LOG_PLAIN;
     opts->log_file            = NULL;  /* unset: env, else <state>/logs/openpete.log */
-    opts->renderer            = OPENPETE_RENDERER_VK;  /* native Vulkan is the default display (windowed); --renderer psycross for the legacy GL path. Inert under --headless (native disabled → PsyCross). */
+    opts->renderer            = OPENPETE_RENDERER_VK;  /* native Vulkan is the default display (windowed); --renderer psycross for the legacy GL path. Inert under --headless (native disabled → PsyCross). A game without native renderer walks overrides both this and default_renderer before parsing. */
+    opts->default_renderer    = OPENPETE_RENDERER_VK;
     opts->mute                = false; /* audio on by default; --mute 1 to silence */
     opts->sfx_volume          = -1;    /* -1 = unset; the game's own slider stands */
     opts->music_volume        = -1;
@@ -1402,7 +1412,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 return OPENPETE_EXIT_SETUP_ERROR;
             i++;
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
-            print_help(opts->display_name, argv[0]);
+            print_help(opts->display_name, argv[0], opts->default_renderer);
             return OPENPETE_EXIT_SETUP_ERROR; /* treat as setup-only invocation */
         } else if (a[0] != '-' && !opts->ingest_path && !opts->disc_path
                    && !opts->exe_path && arg_is_disc_image(a)) {

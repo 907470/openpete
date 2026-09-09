@@ -23,6 +23,10 @@ int main(int argc, char** argv) {
     openpete_options_t opts;
     openpete_options_init(&opts);
     opts.display_name = game_get_display_name();
+    /* No native renderer walks exist for this game: the native path would draw
+     * its geometry with Spyro 1's decode, so PsyCross is what it starts with.
+     * An explicit --renderer still wins, since this runs before parsing. */
+    openpete_options_set_default_renderer(&opts, OPENPETE_RENDERER_PSYCROSS);
     opts.run_recomp_hint_addr = 0x8001200Cu;
 
     openpete_config_set_game_id(game_get_id());
