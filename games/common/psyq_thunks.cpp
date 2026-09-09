@@ -294,10 +294,14 @@ void psyq_VSync(CPUState* cpu) {
     PsyX_SPUAL_TickEnvelope(wait * 735);
 
     if (openpete_fast_boot_active) {
-        /* Fast-boot: don't yield. Initialize()'s splash spins consume vbl
-         * with no work, and we want them at full CPU speed. PadVSync would
-         * be writing g_PadBuffer based on pre-input state, so skip the
-         * VSync callback too. */
+        /* Fast-boot: don't yield to the host, so the boot spins run at full
+         * CPU speed and openpete_frame stays anchored at 0 until the first
+         * frame of real content. The game's own per-frame callbacks still
+         * run: a loader that advances its state machine from the VSync
+         * handler or the pad/card interrupt line makes no progress without
+         * them, and would spin here forever. */
+        if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
+        psyq_pump_pad_card_intr(cpu);
     } else if (openpete_host_fiber) {
         openpete_yield_to_host();
         if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
@@ -613,16 +617,6 @@ void psyq_DrawOTag(CPUState* cpu) {
     /* The OT rebuild is openpete's own work on the game fiber, so it lands
      * inside the sim-tick bracket rather than any render-side phase. */
     op_accum_scope prof_("psyq.drawotag");
-    /* First DrawOTag is the natural transition from "boot init" to "game is
-     * rendering." Anchor `openpete_frame` here: from now on, every VSync(0)
-     * yields to the host and ticks the host-facing counter. */
-    if (openpete_fast_boot_active) {
-        openpete_fast_boot_active = 0;
-        OPL_INFO_F("boot",
-                   "fast-boot ended at vbl=%d (first DrawOTag); openpete_frame "
-                   "anchored to 0", SDL_GetAtomicInt(&openpete_vbl));
-    }
-
     saved_ot_t* B = g_ot_cur;
     uint8_t*  g_ot_scratch      = B->scratch;
     size_t&   g_ot_scratch_used = B->scratch_used;
@@ -691,6 +685,13 @@ void psyq_DrawOTag(CPUState* cpu) {
      * draw-env (0xE0), or unknown. Also tracks the last frame DrawOTag
      * fired in, so we can confirm whether the cutscene main loop keeps
      * issuing draws past the early-boot window. Dumped every 60 frames. */
+    /* Drawing primitives (codes 0x20-0x7F: polygons, lines, sprites) emitted
+     * by THIS walk. Attribute commands (0xE0) and the terminator do not
+     * count. A game that draws its loading screen emits exactly one -- the
+     * background fill -- so this is what separates "rendering" from "still
+     * loading" for the fast-boot anchor below. */
+    unsigned draw_prims_this_call = 0;
+
     static uint32_t s_hist[16] = {0};
     static uint32_t s_anchor_slots = 0;
     static uint32_t s_total_slots  = 0;
@@ -923,6 +924,8 @@ void psyq_DrawOTag(CPUState* cpu) {
                 openpete_primitives_drawn++;
                 s_hist[(code_byte & 0xF0u) >> 4u]++;
                 s_total_slots++;
+                if (code_byte >= 0x20u && code_byte < 0x80u)
+                    draw_prims_this_call++;
                 { uint8_t hi = code_byte & 0xF0u;
                   if (hi == 0x20u || hi == 0x30u)
                       psyq_game_ot_prim_full(code_byte, host + 4,
@@ -1019,6 +1022,21 @@ void psyq_DrawOTag(CPUState* cpu) {
          * colour every other frame. The host now only EndScene/SwapWindow when
          * this flag is set. */
         openpete_present_pending = 1;
+    }
+
+    /* The transition from "boot init" to "game is rendering" is the first OT
+     * that draws a scene, not the first DrawOTag call. A game whose loading
+     * screen is a single background fill issues DrawOTag every frame while it
+     * reads from the disc; anchoring on that runs the whole load at wall-clock
+     * pace behind a blank screen. Requiring more than one drawing primitive
+     * holds fast boot until real content, and is inert for a game whose first
+     * OT is already a scene. */
+    if (openpete_fast_boot_active && draw_prims_this_call > 1u) {
+        openpete_fast_boot_active = 0;
+        OPL_INFO_F("boot",
+                   "fast-boot ended at vbl=%d (first OT with %u drawing "
+                   "primitives); openpete_frame anchored to 0",
+                   SDL_GetAtomicInt(&openpete_vbl), draw_prims_this_call);
     }
 
     s_hist_calls++;
