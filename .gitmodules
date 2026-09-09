@@ -18,3 +18,9 @@
 [submodule "third_party/imgui"]
 	path = third_party/imgui
 	url = https://github.com/ocornut/imgui.git
+[submodule "games/spyro-2/spyro-2"]
+	path = games/spyro-2/spyro-2
+	url = git@github.com:TheMobyCollective/spyro-2.git
+[submodule "games/spyro-3/spyro-3"]
+	path = games/spyro-3/spyro-3
+	url = git@github.com:TheMobyCollective/spyro-3.git

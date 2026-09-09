@@ -3,9 +3,14 @@
 #
 # Runs three checks before allowing the project to build:
 #   1. Disc image exists at the expected location and matches the known SHA256.
-#   2. The Spyro 1 matching-decomp submodule has been built at least once
+#   2. Each game's matching-decomp submodule has been built at least once
 #      (psx.map produced) — psx.map drives the recompiler manifest in Phase 1a.
 #   3. Submodules are initialized.
+#
+# The PSYQ SDK is a user-supplied developer prerequisite: it is Sony
+# proprietary and is never redistributed with this project. Spyro 2's decomp
+# needs its headers to compile at all, so this script detects their absence and
+# says what to place where; it does not obtain them.
 #
 # Returns exit code 3 (OPENPETE_EXIT_SETUP_ERROR) on any failure.
 
@@ -58,23 +63,82 @@ for path in "${required[@]}"; do
     fi
 done
 
-echo
-echo "==> Spyro 1 matching-decomp build artifacts"
-SPYRO1_MAP="$OPENPETE_ROOT/games/spyro-1/spyro-1/build/psx.map"
-SPYRO1_EXE="$OPENPETE_ROOT/games/spyro-1/spyro-1/build/PSX.EXE"
-if [[ -f "$SPYRO1_MAP" ]]; then
-    green "  ok: $SPYRO1_MAP"
-else
-    yellow "  missing: $SPYRO1_MAP"
-    yellow "  Build the matching decomp at least once:"
-    yellow "    cd games/spyro-1/spyro-1 && make"
-    yellow "  (Phase 1a needs the map; Phase 0b builds without it.)"
-fi
-if [[ -f "$SPYRO1_EXE" ]]; then
-    green "  ok: $SPYRO1_EXE"
-else
-    yellow "  missing: $SPYRO1_EXE  (Phase 1b will need this)"
-fi
+# Per game: the decomp checkout, its build command, and the artifacts the
+# recompiler manifest is generated from. A game whose submodule is absent is
+# reported and skipped rather than failing the run, so a spyro-1-only tree
+# still passes.
+check_decomp() {
+    local game="$1" build_cmd="$2"
+    local root="$OPENPETE_ROOT/games/$game/$game"
+
+    echo
+    echo "==> $game matching-decomp build artifacts"
+    if [[ ! -d "$root" ]] || [[ -z "$(ls -A "$root" 2>/dev/null)" ]]; then
+        yellow "  submodule not checked out: games/$game/$game"
+        yellow "    git submodule update --init games/$game/$game"
+        return
+    fi
+
+    # maspsx rewrites the compiler output before the assembler sees it. Both
+    # decomps invoke it in a pipeline whose exit status is the assembler's, so
+    # an uninitialized maspsx yields empty assembly, zero-byte objects, and a
+    # build that reports success until the link finds symbols missing.
+    if [[ -f "$root/.gitmodules" ]] && grep -q maspsx "$root/.gitmodules" 2>/dev/null; then
+        if [[ -f "$root/tools/maspsx/maspsx.py" ]]; then
+            green "  ok: tools/maspsx"
+        else
+            red "  missing: games/$game/$game/tools/maspsx (nested submodule)"
+            red "    git -C games/$game/$game submodule update --init tools/maspsx"
+            red "    Without it the build appears to succeed and produces empty objects."
+            errs=$((errs+1))
+        fi
+    fi
+
+    local map="$root/build/psx.map"
+    local exe="$root/build/PSX.EXE"
+    if [[ -f "$map" ]]; then
+        green "  ok: games/$game/$game/build/psx.map"
+    else
+        yellow "  missing: games/$game/$game/build/psx.map"
+        yellow "    cd games/$game/$game && $build_cmd"
+    fi
+    if [[ -f "$exe" ]]; then
+        green "  ok: games/$game/$game/build/PSX.EXE"
+    else
+        yellow "  missing: games/$game/$game/build/PSX.EXE"
+    fi
+}
+
+# Spyro 2 compiles against the PSYQ 4.7 headers. They are Sony proprietary and
+# not distributable, so the decomp cannot build from a clean clone without a
+# copy the developer supplies. Detect and diagnose; never fetch.
+check_psyq_headers() {
+    local game="$1" version="$2"
+    local inc="$OPENPETE_ROOT/games/$game/$game/psyq/include"
+
+    [[ -d "$OPENPETE_ROOT/games/$game/$game" ]] || return
+    if [[ -f "$inc/libgpu.h" ]]; then
+        green "  ok: games/$game/$game/psyq/include (PSYQ $version headers)"
+    else
+        yellow "  missing: games/$game/$game/psyq/include (PSYQ $version headers)"
+        yellow "    Supply your own copy of the PSYQ $version SDK; it is Sony"
+        yellow "    proprietary and is not distributed with this project."
+        yellow "    Extract the SDK's include/ there, lowercasing filenames and"
+        yellow "    keeping the sys/ subdirectory: the sources include lowercase"
+        yellow "    names, the archive ships uppercase."
+    fi
+}
+
+check_decomp spyro-1 "make"
+# `make` alone builds a single object and exits 0 — the Makefile's default goal
+# is one .o, not the game. The target that builds everything is `all`.
+check_decomp spyro-2 "make all -j\"\$(nproc)\""
+check_psyq_headers spyro-2 4.7
+# build.py verifies its own output with hashlib.file_digest, which needs Python
+# 3.11; on an older interpreter the build completes and then the verifier
+# raises AttributeError. Check the output with sha256sum instead, remapping the
+# `build.wad/` entries in sha256sum.txt onto the `build/wad/` the build writes.
+check_decomp spyro-3 "python3 ./build_multiproc.py"
 
 echo
 if [[ $errs -gt 0 ]]; then
