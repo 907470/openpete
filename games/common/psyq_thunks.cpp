@@ -276,31 +276,9 @@ void psyq_VSync(CPUState* cpu) {
     }
 
     if (mode < 0) {
-        /* Query. A game that waits with VSync(0) advances the counter itself,
-         * and for it this returns immediately with the count unchanged. A game
-         * that instead polls this call until the count moves would otherwise
-         * spin against a counter nothing else advances, so after the number of
-         * consecutive polls that game declares, yield once and let a VBL
-         * land. */
-        static unsigned polls = 0u;
-        unsigned limit = psyq_game_vsync_poll_advance();
-        if (limit != 0u && ++polls >= limit) {
-            polls = 0u;
-            SDL_AddAtomicInt(&openpete_vbl, 1);
-            PsyX_SPUAL_TickEnvelope(735);
-            /* Yield even during fast boot. Fast boot suppresses yields so the
-             * pre-render spins run at full speed, and it ends at the first
-             * DrawOTag -- which a game polling here has not reached yet. Never
-             * yielding would leave the host loop unrun and the wait
-             * unsatisfiable. Only a game that declares a poll limit reaches
-             * this path at all. */
-            if (openpete_host_fiber) {
-                openpete_yield_to_host();
-                if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
-                psyq_pump_pad_card_intr(cpu);
-            }
-            observed = SDL_GetAtomicInt(&openpete_vbl);
-        }
+        /* Query: read the counter, wait for nothing. Every Spyro game's
+         * frame wait is `VSync(0); VSync(-1); while (cur - ref < 2)`, so
+         * VSync(0) advances the counter and this call only observes it. */
         cpu->v0 = (uint32_t)observed;
         return;
     }

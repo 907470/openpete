@@ -58,10 +58,6 @@ void psyq_game_mirror_pad_slot2(CPUState* cpu) { (void)cpu; }
 void psyq_game_mirror_memcard_init(CPUState* cpu) { (void)cpu; }
 #endif
 
-#ifndef PSYQ_GAME_PROVIDES_VSYNC_POLL_ADVANCE
-unsigned psyq_game_vsync_poll_advance(void) { return 0u; }
-#endif
-
 #ifndef PSYQ_GAME_PROVIDES_RAND_SEED_ADDR
 uint32_t psyq_game_rand_seed_addr(void) { return 0u; }
 #endif

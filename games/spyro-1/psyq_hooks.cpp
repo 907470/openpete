@@ -250,7 +250,6 @@ extern "C" uint32_t psyq_game_overlay_vaddr(void) { return 0x8007AA38u; }
 
 /* Spyro 1 waits on VSync(0), which advances the counter directly, so its poll
  * limit is zero: the poll path advances nothing. */
-extern "C" unsigned psyq_game_vsync_poll_advance(void) { return 0u; }
 
 /* Spyro 1 registers its read-completion handler through psyq_CdReadCallback,
  * so the thunk layer holds it and no guest RAM slot names it. */

@@ -71,21 +71,6 @@ void psyq_game_mirror_pad_init(CPUState* cpu, uint32_t buf0, uint32_t buf1);
 void psyq_game_mirror_pad_slot2(CPUState* cpu);
 void psyq_game_mirror_memcard_init(CPUState* cpu);
 
-/* How many consecutive VSync query calls (mode < 0) with no intervening wait
- * should pass before the layer yields to the host and lets the VBL counter
- * advance.
- *
- * The counter is yield-driven so that a frame costs a fixed number of yields
- * whatever the wall clock does, which is what makes replay reproducible. A
- * game that waits by calling VSync(0) advances it itself and needs nothing
- * here, so the default is 0 -- never. A game that instead polls VSync(-1)
- * until the count changes would spin forever against a counter only it can
- * advance, and returns a small positive number to break that.
- *
- * Returning non-zero costs determinism in proportion: the counter then also
- * moves for reasons outside the game's own wait calls. */
-unsigned psyq_game_vsync_poll_advance(void);
-
 /* PSYQ's rand seed lives in the library's own data. 0 means this game has no
  * seed slot located yet, and the LCG then runs on host-side state: still
  * correct as a generator, just not observable in guest RAM. */
