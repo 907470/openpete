@@ -106,12 +106,16 @@ cards/            memory cards — card1.mcr, card2.mcr
 states/           savestate slots
 library/          ingested discs and their compiled modules
 mods/
+screenshots/      PNGs the screenshot key writes
 ```
 
 On **Linux** the first three go to the per-user directories instead
 (`~/.config/openpete` for the config, `~/.local/state/openpete` for cards
 and states), because that is where a Linux install is expected to put
-them. `library/` and `mods/` are always next to the exe on both.
+them. `library/` and `mods/` are always next to the exe on both;
+`screenshots/` follows on Linux to `~/.local/share/openpete/screenshots`
+unless a `screenshots/` folder already sits next to the exe, in which case
+that one is used.
 
 Either platform will do either — say so at the top of `openpete.toml`:
 
@@ -154,6 +158,11 @@ A list binds several sources to one action; `"none"` or `[]` unbinds.
 Escape quits by default; `quit = "none"` turns that off, and Escape still
 dismisses an open menu or overlay. The window close button always quits
 whatever `quit` is bound to.
+
+`F12` saves a PNG of the frame on screen — the native renderer's own
+output, so it carries whatever the window is showing (widescreen, mods,
+overlays). It lands in `screenshots/` (see "Where your files go") under a
+timestamped name; rebind it as `screenshot` under `[keys.host]`.
 
 `--keys-report` prints every action, what it's bound to, which section
 bound it, and the label your keyboard layout gives each key. Development

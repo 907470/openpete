@@ -75,7 +75,7 @@ int openpete_paths_user_config_dir(char* out, size_t cap, int create);
 int openpete_paths_state_dir(const char* leaf, char* out, size_t cap, int create);
 
 /* Directory holding a class of bulk user data — `leaf` is "library",
- * "mods", "assets" or "bk2". Same portable-vs-user rule as the state
+ * "mods", "assets", "bk2" or "screenshots". Same portable-vs-user rule as the state
  * dirs, but the per-user spelling is the XDG *data* directory: these hold
  * ingested discs, compiled modules and user-authored content, not
  * machine-local session state.

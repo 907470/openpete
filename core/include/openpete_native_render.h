@@ -1155,11 +1155,12 @@ void openpete_native_scene_register_overlay_precapture(void (*fn)(void));
  * re-extract) so apply_overlay can interpolate the fade sub-tick. */
 void openpete_native_scene_commit_fade(void);
 
-/* Capture the native A/B window (the offscreen target — both panels, the
- * native render + the reference) to a PNG at `path`. Call after
- * openpete_native_render_frame so the offscreen holds the latest frame.
+/* Capture the offscreen target — whatever the last present blitted, so the
+ * A/B panel composite in ab/diff and the plain native frame otherwise — to a
+ * PNG at `path`. Call after openpete_native_render_frame so the offscreen holds
+ * the latest frame. `what` labels the log line (NULL reads as "offscreen").
  * Returns 0 on success, nonzero if disabled or on failure. */
-int openpete_native_render_screenshot(const char *path);
+int openpete_native_render_screenshot(const char *path, const char *what);
 
 /* --record shutdown drain: flush the async readback ring's still-queued tail
  * frames to the encoder (in PTS order) before openpete_record_shutdown()

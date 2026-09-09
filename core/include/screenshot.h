@@ -29,6 +29,11 @@ int  openpete_screenshot_path_is_png(const char* path);
  * top-down) to `path` as PNG via stb_image_write. Returns 0 on success. */
 int  openpete_write_png_rgba(const char* path, const void* pixels, int w, int h);
 
+/* Name the next player-facing screenshot: "<screenshots dir>/openpete-<local
+ * timestamp>.png", with a numeric suffix when that name is taken. Creates the
+ * directory. Returns 0 on success, -1 on failure (nothing written to `out`). */
+int  openpete_screenshot_user_path(char* out, size_t cap);
+
 #ifdef __cplusplus
 }
 #endif

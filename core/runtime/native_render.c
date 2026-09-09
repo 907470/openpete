@@ -10542,11 +10542,11 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
     return rc;
 }
 
-int openpete_native_render_screenshot(const char *path)
+int openpete_native_render_screenshot(const char *path, const char *what)
 {
     ps_apply_geometry();
     if (!s_nr.enabled || !path) return 1;
-    return shot_write_offscreen(path, "A/B");
+    return shot_write_offscreen(path, what ? what : "offscreen");
 }
 
 /* --record shutdown drain: the async ring still holds the last few presents

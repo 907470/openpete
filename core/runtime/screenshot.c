@@ -6,6 +6,9 @@
 
 #include "screenshot.h"
 #include "openpete_log.h"
+#include "openpete_paths.h"
+
+#include <time.h>
 
 #include <ctype.h>
 #include <stdint.h>
@@ -93,4 +96,45 @@ int openpete_screenshot_path_is_png(const char* path) {
             && tolower((unsigned char)e[1]) == 'p'
             && tolower((unsigned char)e[2]) == 'n'
             && tolower((unsigned char)e[3]) == 'g');
+}
+
+int openpete_screenshot_user_path(char* out, size_t cap) {
+    if (!out || cap == 0) return -1;
+    out[0] = '\0';
+
+    /* Screenshots are output, so the directory has to be writable: next to the
+     * exe in a portable install, under the per-user data directory otherwise —
+     * which is also where a read-only install medium (an AppImage mount,
+     * Program Files) lands. A relative path is the last resort, so a run whose
+     * exe location cannot be determined still saves something. */
+    char dir[1024];
+    if (openpete_paths_data_dir("screenshots", dir, sizeof dir, 0) != 0)
+        snprintf(dir, sizeof dir, "screenshots");
+    if (!SDL_CreateDirectory(dir)) {  /* mkdir -p; true if it already exists */
+        OPL_ERROR_F("screenshot", "could not create %s: %s", dir, SDL_GetError());
+        return -1;
+    }
+
+    char stamp[24];
+    time_t now = time(NULL);
+    /* localtime() (not _r/_s): this runs once per keypress on the host loop,
+     * so the shared-buffer caveat doesn't apply, and it avoids the
+     * platform-specific reentrant variants. */
+    struct tm* tmv = localtime(&now);
+    if (!tmv || strftime(stamp, sizeof stamp, "%Y%m%d-%H%M%S", tmv) == 0)
+        snprintf(stamp, sizeof stamp, "screenshot");
+
+    /* One-second stamp resolution, so a second shot within the same second
+     * would overwrite the first: suffix until the name is free. */
+    for (int n = 1; n < 1000; n++) {
+        char leaf[64];
+        if (n == 1) snprintf(leaf, sizeof leaf, "openpete-%s.png", stamp);
+        else        snprintf(leaf, sizeof leaf, "openpete-%s-%d.png", stamp, n);
+        openpete_paths_join(out, cap, dir, leaf);
+        SDL_PathInfo info;
+        if (!SDL_GetPathInfo(out, &info)) return 0;   /* nothing there: take it */
+    }
+    OPL_ERROR_F("screenshot", "no free filename for %s/openpete-%s", dir, stamp);
+    out[0] = '\0';
+    return -1;
 }

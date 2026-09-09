@@ -222,6 +222,11 @@ void openpete_request_shutdown(void) { g_shutdown_requested = 1; }
  * heavy SDL_SetWindowFullscreen call runs in the loop, not the filter. */
 static volatile sig_atomic_t g_native_fs_toggle_request = 0;
 
+/* Player screenshot pending (the `screenshot` binding). Raised where the
+ * bindings are sampled, consumed at the capture site below in the same
+ * host-loop iteration — both on this thread, so a plain int is enough. */
+static int s_screenshot_request = 0;
+
 /* Ask for a windowed <-> fullscreen toggle from any thread.
  * SDL_SetWindowFullscreen belongs to the thread that owns the window (on
  * Win32 a cross-thread call SendMessages into a pump that may be busy, or
@@ -3606,6 +3611,14 @@ static int run_host_loop(const openpete_options_t* opts) {
                 g_step_one = true;
             }
 
+            /* Player screenshot. The key edge only raises the request: the
+             * capture is a blocking readback of the native renderer's
+             * offscreen, and the device belongs to the present thread while
+             * eager is engaged, so it runs beside the --screenshot-on-frame
+             * dumps further down this iteration, under the same handoff. */
+            if (openpete_key_pressed(OPK_SCREENSHOT))
+                s_screenshot_request = 1;
+
             /* Live on/off A/B for interpolation itself. Off = intermediate
              * renders present the lagged frame unchanged (a clean "is
              * frame-gen doing anything perceptible?" test). A development
@@ -4710,6 +4723,30 @@ static int run_host_loop(const openpete_options_t* opts) {
                 }
             }
 
+            /* Player screenshot (the `screenshot` binding, F12 by default).
+             * One unsuffixed PNG of the frame the window just showed: a
+             * readback of the offscreen the present blitted, so it carries the
+             * sub-tick scene, mods, postfx and overlays as presented, rather
+             * than the reference-aligned recompose the --screenshot-on-frame
+             * variants above need. Native display only — PsyCross is the
+             * reference rasterizer, not a display this port ships. The capture
+             * logs the file it wrote, so nothing is reported twice here. */
+            if (s_screenshot_request) {
+                s_screenshot_request = 0;
+                char path[1024];
+                if (!openpete_native_render_enabled()) {
+                    OPL_WARN_F("screenshot",
+                               "no native renderer: nothing to capture");
+                } else if (openpete_screenshot_user_path(path, sizeof path) == 0) {
+                    /* The device is the present thread's while eager is
+                     * engaged: take it back for the capture, then return it. */
+                    const int pt_was = openpete_present_thread_active();
+                    if (pt_was) openpete_present_thread_set_active(0);
+                    openpete_native_render_screenshot(path, "player");
+                    if (pt_was) openpete_present_thread_set_active(1);
+                }
+            }
+
             /* Every-tick identity audit (OPENPETE_IDENT_AUDIT=<start VBL>):
              * compose this present's canonical scene and the alpha-1 re-extract
              * of the same tick, and report their pixel difference. Placed
@@ -5078,7 +5115,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 openpete_screenshot_format_path(opts->screenshot_output,
                                                 (int)openpete_frame,
                                                 s_presents_captured, path, sizeof(path));
-                openpete_native_render_screenshot(path);
+                openpete_native_render_screenshot(path, "native-intermediate");
                 OPL_INFO_F("screenshot",
                            "wrote %s on frame %u (present=%d, native-intermediate)",
                            path, openpete_frame, s_presents_captured);

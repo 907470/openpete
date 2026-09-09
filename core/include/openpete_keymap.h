@@ -122,6 +122,9 @@ typedef enum {
    * row is either a value or an action, never both. */                        \
   X(MENU_SELECT,"menu_select",KM_DIGITAL, KM_CTX_MENU,   0,                    \
         "Return,pad:south",   "settings menu: activate the selected action")   \
+  /* --- capture ------------------------------------------------------ */     \
+  X(SCREENSHOT,"screenshot",KM_DIGITAL, KM_CTX_ALWAYS,   0,                    \
+        "F12",            "save a PNG of the current frame")                   \
   /* --- savestates / rewind / pacing --------------------------------- */     \
   X(STATE_SAVE, "savestate_save",  KM_DIGITAL, KM_CTX_GAMEPLAY, 0,             \
         "1",              "quick-save to the active slot")                     \

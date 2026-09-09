@@ -1212,7 +1212,8 @@ void openpete_config_report(FILE *out) {
                 openpete_paths_portable() ? "portable (next to the exe)"
                                           : "per-user directories");
         static const char* const kState[] = { "cards", "states", "logs" };
-        static const char* const kData[]  = { "library", "mods", "assets", "bk2" };
+        static const char* const kData[]  = { "library", "mods", "assets", "bk2",
+                                             "screenshots" };
         for (size_t i = 0; i < sizeof kState / sizeof kState[0]; i++)
             if (openpete_paths_state_dir(kState[i], dir, sizeof dir, 0) == 0)
                 fprintf(out, "  %-8s %s\n", kState[i], dir);
