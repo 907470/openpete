@@ -226,6 +226,18 @@ tripwire for that audit.
   it. The oracle hashes RAM, not VRAM, so this does not affect it; it would
   need fixing before regtest could drive visual regression tests.
 
+- The reference frame is 83 CPU ticks longer than the hardware frame.
+  The reference counts 3413 GPU ticks per NTSC line (measured);
+  the hardware line is 227.5
+  colour-subcarrier cycles, 3412.5 GPU ticks, which is what
+  `core/include/openpete_time.h` and encode (2250000/37609 Hz). The
+  reference therefore runs 59.81734 Hz against 59.82611 Hz, 0.0147 % slow,
+  one frame of wall-clock drift every 113 s. Guest state is unaffected: the
+  guest counts VBLs, guest-timed models count VBLs, and the gate samples at
+  anchor PCs. A model that converts cycles to VBL fractions against a
+  DuckStation golden uses the reference's 566,204 CPU ticks per VBL; against
+  hardware, 566,121.
+
 ## Related
 
 - `notes/plans/openpete-psx-oracle-ci.md` — gate design, the transient
