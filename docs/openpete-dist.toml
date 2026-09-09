@@ -1,6 +1,5 @@
 [game.spyro-1]
 fullscreen = true
-ssaa = 2
 
 [game.spyro-1.keys.host]
 devui = "M"
