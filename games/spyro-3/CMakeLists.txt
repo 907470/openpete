@@ -55,14 +55,22 @@ add_executable(openpete-spyro3
     main.cpp
     game_extras_impl.c
     feature_list.c
+    game_icon_none.c
     psyq_stub_runtime.c
-    ${GAME_GENERATED}/psyq_stubs.c
-    # The shared PSYQ-to-PsyCross layer, plus the inert defaults for every
-    # per-game hook it asks for. This game declares none yet, so its PSYQ
-    # internal-state mirrors are empty: the thunks write no PSX RAM of their
-    # own rather than another game's addresses.
+
+    # The shared PSYQ-to-PsyCross layer, plus the default for every per-game
+    # hook this game does not name in psyq_game_provides.h. Listed BEFORE the
+    # generated stubs so under MinGW link order lets a thunk's strong
+    # definition win against the stub's (paired with
+    # --allow-multiple-definition).
     ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_thunks.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_game_hooks_default.c)
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_game_hooks_default.c
+
+    # PSYQ symbol stubs — abort-on-call. On ELF these are weak so any thunk
+    # strongly defines them; on MinGW the macro becomes strong and the link
+    # order plus --allow-multiple-definition resolves the collision in the
+    # thunk's favour.
+    ${GAME_GENERATED}/psyq_stubs.c)
 
 target_include_directories(openpete-spyro3 PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
@@ -74,6 +82,20 @@ target_include_directories(openpete-spyro3 PRIVATE
 target_link_libraries(openpete-spyro3 PRIVATE
     spyro3_recomp_module
     openpete_core)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
+    target_link_options(openpete-spyro3 PRIVATE -Wl,--allow-multiple-definition)
+
+    # OpenAL on Windows is always a runtime DLL load (no static .a in the
+    # openal-soft prebuilt). Copy the renamed soft_oal.dll next to the .exe so
+    # the loader resolves OpenAL32.dll without a system install; without it the
+    # process fails to start before main() runs.
+    add_custom_command(TARGET openpete-spyro3 POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            "${CMAKE_SOURCE_DIR}/third_party/OpenAL-mingw/x86_64-w64-mingw32/bin/OpenAL32.dll"
+            "$<TARGET_FILE_DIR:openpete-spyro3>/OpenAL32.dll"
+        VERBATIM)
+endif()
 
 if(TARGET SDL3::SDL3main)
     target_link_libraries(openpete-spyro3 PRIVATE SDL3::SDL3main)

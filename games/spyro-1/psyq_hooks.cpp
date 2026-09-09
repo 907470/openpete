@@ -248,6 +248,14 @@ extern "C" void psyq_game_cd_apply_buf(unsigned char* buf, int sectors) {
 /* Every overlay loads at this one vaddr; the id is its first word. */
 extern "C" uint32_t psyq_game_overlay_vaddr(void) { return 0x8007AA38u; }
 
+/* Spyro 1 waits on VSync(0), which advances the counter directly, so its poll
+ * limit is zero: the poll path advances nothing. */
+extern "C" unsigned psyq_game_vsync_poll_advance(void) { return 0u; }
+
+/* Spyro 1 registers its read-completion handler through psyq_CdReadCallback,
+ * so the thunk layer holds it and no guest RAM slot names it. */
+extern "C" uint32_t psyq_game_cd_read_cb_addr(void) { return 0u; }
+
 /* g_CdState.m_IsReading must be clear once the completion callback has run. */
 extern "C" void psyq_game_cd_read_done(CPUState* cpu, uint32_t read_cb) {
     (void)cpu;
