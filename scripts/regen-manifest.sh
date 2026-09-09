@@ -2,7 +2,7 @@
 # Regenerate the spyro-1 manifest + the artifacts driven from it.
 #
 # Inputs:
-#   spyro-1/build/psx.map         — parsed for symbol addresses
+#   games/spyro-1/spyro-1/build/psx.map — parsed for symbol addresses
 #   games/spyro-1/manifest/native.toml — hand-curated native config
 #
 # Outputs (all under games/spyro-1/):
@@ -11,16 +11,16 @@
 #   generated/native_aliases.cmake — --defsym block
 #   generated/native_dispatch.c   — psx_override_dispatch_game switch
 #
-# Run after `make` in spyro-1/ or after editing native.toml. Equivalent
+# Run after `make` in the decomp submodule or after editing native.toml. Equivalent
 # to the regen-recomp.sh role for the recompiled-overlay pipeline.
 
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PSX_MAP="${PSX_MAP:-../spyro-1/build/psx.map}"
-INCLUDE_DIR="${INCLUDE_DIR:-../spyro-1/include}"
+PSX_MAP="${PSX_MAP:-games/spyro-1/spyro-1/build/psx.map}"
+INCLUDE_DIR="${INCLUDE_DIR:-games/spyro-1/spyro-1/include}"
 PSYQ_INCLUDE_DIR="${PSYQ_INCLUDE_DIR:-third_party/PsyCross/include/psx}"
-SPYRO_SRC_DIR="${SPYRO_SRC_DIR:-../spyro-1/src}"
+SPYRO_SRC_DIR="${SPYRO_SRC_DIR:-games/spyro-1/spyro-1/src}"
 MANIFEST_DIR="games/spyro-1/manifest"
 GENERATED_DIR="games/spyro-1/generated"
 REWRITTEN_DIR="$GENERATED_DIR/rewritten"

@@ -9,7 +9,7 @@ metadata, committed like the forced-entry lists, and builds never need
 the (private) decomp checkout.
 
 Run (dev machine, whenever decomp headers advance):
-  tools/gen_proto_db.py --headers ../spyro-1/include \
+  tools/gen_proto_db.py --headers games/spyro-1/spyro-1/include \
       --out games/spyro-1/manifest/prototypes.toml
 
 Parses the decomp's uniform single-line declaration style:
