@@ -1415,8 +1415,8 @@ void psyq_CdRead(CPUState* cpu) {
     int sectors = (int)cpu->a0;
     u_long* buf = (u_long*)PTR(cpu->a1);
     int     mode = (int)cpu->a2;
-    OPL_INFO_F("thunks", "CdRead sectors=%d buf=0x%08X mode=0x%02X",
-               sectors, cpu->a1, mode);
+    OPL_INFO_F("thunks", "CdRead sectors=%d buf=0x%08X mode=0x%02X ra=0x%08X",
+               sectors, cpu->a1, mode, cpu->ra);
 
     cpu->v0 = (uint32_t)CdRead(sectors, buf, mode);
     /* PsyCross's CdRead only enqueues; CdReadSync drains the queue into
