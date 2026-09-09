@@ -253,6 +253,7 @@ static void openpete_halt_dump_and_exit(CPUState* cpu, uint32_t addr) {
     if (cpu) openpete_halt_dump_cpu(cpu, addr);
     fflush(stdout);
     fflush(stderr);
+    openpete_log_file_sync();
     /* Bypass the host-fiber teardown — we just want a clean exit with the
      * dump on disk. The host loop's normal exit path requires yielding back
      * through SDL/PsyCross which can hang under headless GL on WSL. */
@@ -269,9 +270,11 @@ static void openpete_halt_dump_and_exit(CPUState* cpu, uint32_t addr) {
  * than `openpete_frame` so fast-boot iterations — which advance vbl but not
  * frame — don't look like hangs.)
  *
- * On trip: write a ring of the last HANG_RING entries (addr, ra, sp) to
- * `OPENPETE_HANG_TRACE` (default ./hang-trace.bin) and `_Exit(2)`.
- * Format: u32 magic 'HANG', u32 count, u32 head_index, then count×{u32 addr, u32 ra, u32 sp}.
+ * On trip: write three rings of (addr, ra, sp) to `OPENPETE_HANG_TRACE`
+ * (default ./hang-trace.bin) and `_Exit(2)`. Format: u32 magic 'HANG2', then
+ * for each ring a u32 count, a u32 head index, and count*{u32 addr, u32 ra,
+ * u32 sp}: the entry ring for the tripping interval, the entry ring as it
+ * stood at the previous vbl boundary, and the recent ring.
  * Disabled when `OPENPETE_HANG_THRESHOLD=0`. */
 #define HANG_RING 4096u
 struct hang_entry { uint32_t addr; uint32_t ra; uint32_t sp; };
@@ -282,6 +285,13 @@ static uint32_t s_hang_head = 0u;
  * loop began — the snapshot preserves it. */
 static struct hang_entry s_hang_ring_prev[HANG_RING];
 static uint32_t s_hang_head_prev = 0u;
+/* The two rings above hold the FIRST HANG_RING dispatches of an interval, so a
+ * loop that starts later than that leaves no trace in either. This one is
+ * written on every dispatch and keeps only the most recent entries, which is
+ * the loop itself. */
+#define HANG_RECENT 512u
+static struct hang_entry s_hang_recent[HANG_RECENT];
+static uint32_t s_hang_recent_head = 0u;
 static uint32_t s_hang_calls_since_tick = 0u;
 static uint32_t s_hang_last_vbl = 0u;
 static int s_hang_threshold_inited = 0;
@@ -294,15 +304,20 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr) {
     if (!path || !*path) path = "./hang-trace.bin";
     FILE* fp = fopen(path, "wb");
     if (fp) {
-        uint32_t magic = 0x474E4148u;  /* 'HANG' */
+        uint32_t magic = 0x32474E48u;  /* 'HNG2' */
         uint32_t count = HANG_RING;
+        uint32_t recent = HANG_RECENT;
         fwrite(&magic, 4, 1, fp);
         fwrite(&count, 4, 1, fp);
         fwrite(&s_hang_head, 4, 1, fp);
         fwrite(s_hang_ring, sizeof(s_hang_ring[0]), HANG_RING, fp);
         /* Pre-loop snapshot: ring as it stood at the last frame boundary. */
+        fwrite(&count, 4, 1, fp);
         fwrite(&s_hang_head_prev, 4, 1, fp);
         fwrite(s_hang_ring_prev, sizeof(s_hang_ring_prev[0]), HANG_RING, fp);
+        fwrite(&recent, 4, 1, fp);
+        fwrite(&s_hang_recent_head, 4, 1, fp);
+        fwrite(s_hang_recent, sizeof(s_hang_recent[0]), HANG_RECENT, fp);
         fclose(fp);
     }
     /* Also dump 2 MB RAM so post-mortem can inspect any address. */
@@ -320,6 +335,9 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr) {
                 s_hang_calls_since_tick, s_hang_last_vbl, trip_addr,
                 path, rampath);
     fflush(stdout); fflush(stderr);
+    /* stderr is a pipe drained by the log pump thread; _Exit would take the
+     * watchdog's own diagnosis down with the process before it is copied. */
+    openpete_log_file_sync();
     _Exit(2);
 }
 
@@ -355,6 +373,10 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
             s_hang_ring[s_hang_head].sp   = cpu ? cpu->sp : 0u;
             s_hang_head = (s_hang_head + 1u) % HANG_RING;
         }
+        s_hang_recent[s_hang_recent_head].addr = addr;
+        s_hang_recent[s_hang_recent_head].ra   = cpu ? cpu->ra : 0u;
+        s_hang_recent[s_hang_recent_head].sp   = cpu ? cpu->sp : 0u;
+        s_hang_recent_head = (s_hang_recent_head + 1u) % HANG_RECENT;
     }
     /* Pad-read probe: the guest function that consumes the pad buffer. Sited
      * here rather than in the game's native-dispatch switch because every

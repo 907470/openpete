@@ -259,16 +259,26 @@ process_overlay() {
     local split_found="$OUT/$name/split_targets.txt"
     local split_accum="$OUT/$name/extra_funcs.split.txt"
     local combined="$OUT/$name/extra_funcs.combined.txt"
+    local orphan_found="$OUT/$name/orphan_blocks.txt"
     local converged=0 pass
     : > "$split_accum"
     for pass in 1 2 3 4 5; do
         python3 tools/extract_split_targets.py \
             "$OUT/$name/$name.bin_full.c" "$split_found" \
             --binary="$ovl_path" --load-addr="$load_addr" 2>&1 | sed 's/^/  /'
-        if ! grep -q '^0x' "$split_found"; then converged=1; break; fi
+        # Landing pads of a computed `jr`: emitted, but no emitted control
+        # flow reaches them. Same failure as an unresolved split target and
+        # the same remedy, so they converge in the same loop.
+        python3 tools/extract_orphan_blocks.py \
+            "$OUT/$name/$name.bin_full.c" "$orphan_found" 2>&1 | sed 's/^/  /'
+        if ! grep -qh '^0x' "$split_found" "$orphan_found"; then
+            converged=1; break
+        fi
         echo "[regen] $name: split-target pass $pass" \
-             "($(grep -c '^0x' "$split_found") unresolved)"
-        { grep '^0x' "$split_accum" || true; grep '^0x' "$split_found"; } \
+             "($(grep -c '^0x' "$split_found" || true) unresolved," \
+             "$(grep -c '^0x' "$orphan_found" || true) orphan)"
+        { grep '^0x' "$split_accum" || true
+          grep -h '^0x' "$split_found" "$orphan_found" || true; } \
             | sort -u > "$split_accum.tmp"
         mv "$split_accum.tmp" "$split_accum"
         cat "$second_funcs" "$split_accum" > "$combined"
@@ -281,9 +291,9 @@ process_overlay() {
     # warning: at runtime it stub-misses and leaks a guest stack frame per
     # call. Abort rather than register an overlay that will corrupt RAM.
     if (( converged == 0 )); then
-        echo "[regen] ERROR: $name still has unresolved split targets after" \
-             "$((pass)) passes:" >&2
-        grep '^0x' "$split_found" >&2
+        echo "[regen] ERROR: $name still has unresolved split targets or" \
+             "orphan blocks after $((pass)) passes:" >&2
+        grep -h '^0x' "$split_found" "$orphan_found" >&2
         exit 1
     fi
     sed -i "s/\bpsx_dispatch_compiled\b/psx_dispatch_${name}/g" \
@@ -437,15 +447,19 @@ echo "[regen]   pass 2 (final, with $(grep -c '^0x' "$OUT/main_exe_dispatch_stub
 if [[ "${MAIN_EXE_THIRD_PASS:-0}" != "0" ]]; then
     main_exe_load=$(python3 -c "import struct,sys;print(hex(struct.unpack_from('<I',open(sys.argv[1],'rb').read(),0x18)[0]))" "$PSX_EXE")
     split_found="$OUT/main_exe_split_targets.txt"
+    orphan_found="$OUT/main_exe_orphan_blocks.txt"
     for pass in 1 2 3 4 5; do
         python3 tools/extract_split_targets.py \
             "$OUT/PSX.EXE_full.c" "$split_found" \
             --binary="$PSX_EXE" --load-addr="$main_exe_load" \
             --require-emitted-insn 2>&1 | sed 's/^/  /'
-        grep -q '^0x' "$split_found" || break
+        python3 tools/extract_orphan_blocks.py \
+            "$OUT/PSX.EXE_full.c" "$orphan_found" 2>&1 | sed 's/^/  /'
+        grep -qh '^0x' "$split_found" "$orphan_found" || break
         echo "[regen]   split pass $pass:" \
-             "$(grep -c '^0x' "$split_found") target(s) promoted"
-        grep '^0x' "$split_found" >> "$main_exe_extra"
+             "$(grep -c '^0x' "$split_found" || true) split," \
+             "$(grep -c '^0x' "$orphan_found" || true) orphan target(s) promoted"
+        grep -h '^0x' "$split_found" "$orphan_found" >> "$main_exe_extra"
         "$PSXRECOMP" "$PSX_EXE" \
             --output-dir="$OUT" \
             --extra-funcs="$main_exe_extra" \
