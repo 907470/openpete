@@ -1,33 +1,51 @@
 #!/usr/bin/env bash
-# regen-recomp.sh — re-run psxrecomp on Spyro 1's PSX.EXE plus every
-# overlay in the matching-decomp's build/wad/. Outputs land under
-# games/spyro-1/generated/. Run whenever you bump psxrecomp, change a
-# forced-entry, or pull a new EXE dump.
+# regen-recomp.sh — re-run psxrecomp on one game's PSX.EXE plus every
+# overlay in its matching-decomp's build/wad/. Run whenever you bump
+# psxrecomp, change a forced-entry, or pull a new EXE dump.
+#
+# Which game is selected by GAME= (default spyro-1); its paths, overlay
+# vaddr and options come from games/<game>/recomp.conf.
+#
+#   GAME=spyro-2 bash scripts/regen-recomp.sh
 #
 # Inputs (relative to repo root):
-#   third_party/psxrecomp/build/PSXRecomp           — recompiler binary
-#   games/spyro-1/spyro-1/build/PSX.EXE              — main EXE input
-#   games/spyro-1/spyro-1/build/wad/*.ovl            — overlay binaries
-#   games/spyro-1/manifest/psyq.toml                 — PSYQ symbol manifest
+#   third_party/psxrecomp/build/PSXRecomp   — recompiler binary
+#   games/<game>/recomp.conf                — per-game paths and addresses
+#   $PSX_EXE                                — main EXE input
+#   $WAD_DIR/*.ovl                          — overlay binaries
+#   games/<game>/manifest/psyq.toml         — PSYQ symbol manifest
 #
-# All overlays share kseg0 vaddr 0x8007AA38 — only one is in RAM at a
+# All of a game's overlays share one kseg0 vaddr — only one is in RAM at a
 # time, so per-overlay symbol namespaces are disambiguated via
 # --func-prefix. The generated dispatch fn is sed-renamed from
 # `psx_dispatch_compiled` to `psx_dispatch_<name>` so each overlay can
 # coexist at link.
 #
-# Outputs (overwritten):
-#   games/spyro-1/generated/PSX.EXE_full.c
-#   games/spyro-1/generated/PSX.EXE_dispatch.c
-#   games/spyro-1/generated/discovered_functions.log
-#   games/spyro-1/generated/<name>/<name>.bin_full.c
-#   games/spyro-1/generated/<name>/<name>.bin_dispatch.c
-#   games/spyro-1/generated/<name>/jumptable_targets.txt
-#   games/spyro-1/generated/spyro_overlay_table.c            (auto table)
+# Outputs (overwritten), all under games/<game>/generated/:
+#   PSX.EXE_full.c
+#   PSX.EXE_dispatch.c
+#   discovered_functions.log
+#   <name>/<name>.bin_full.c
+#   <name>/<name>.bin_dispatch.c
+#   <name>/jumptable_targets.txt
+#   spyro_overlay_table.c            (auto table)
 
 set -euo pipefail
 
 cd "$(dirname "$0")/.."
+
+GAME="${GAME:-spyro-1}"
+GAME_CONF="games/$GAME/recomp.conf"
+if [[ ! -f "$GAME_CONF" ]]; then
+    echo "regen-recomp: no $GAME_CONF — is GAME=$GAME right?" >&2
+    exit 1
+fi
+# shellcheck source=/dev/null
+source "$GAME_CONF"
+for v in DECOMP_DIR PSX_EXE WAD_DIR ASM_DIR OVERLAY_LOAD_ADDR OVERLAY_RANGE; do
+    [[ -n "${!v:-}" ]] || { echo "regen-recomp: $GAME_CONF sets no $v" >&2; exit 1; }
+done
+echo "[regen] game=$GAME  exe=$PSX_EXE  overlays=$WAD_DIR @ $OVERLAY_LOAD_ADDR"
 
 PSXRECOMP="third_party/psxrecomp/build/PSXRecomp"
 if [[ ! -x "$PSXRECOMP" ]]; then
@@ -45,12 +63,12 @@ if [[ "${OPENPETE_REGEN_PC_TRACKING:-0}" != "0" ]]; then
     echo "[regen] PC tracking ENABLED (OPENPETE_REGEN_PC_TRACKING set)"
 fi
 
-OUT="games/spyro-1/generated"
-WAD_DIR="games/spyro-1/spyro-1/build/wad"
+OUT="games/$GAME/generated"
 JTBL_TOOL="tools/extract_jumptable_targets.py"
 FNPTR_TOOL="tools/extract_overlay_func_pointers.py"
-PSYQ_MANIFEST="games/spyro-1/manifest/psyq.toml"
-ASM_TARGETS_DIR="games/spyro-1/manifest/asm_dispatch_targets"
+PSYQ_MANIFEST="games/$GAME/manifest/psyq.toml"
+ASM_TARGETS_DIR="games/$GAME/manifest/asm_dispatch_targets"
+FORCED_ENTRIES_DIR="games/$GAME/manifest/forced_entries"
 CHANNEL_SITES="$OUT/channel_sites.txt"
 
 mkdir -p "$OUT"
@@ -60,9 +78,17 @@ mkdir -p "$OUT"
 # --channel-sites so the env/moby queue-head substitutions are data-driven
 # (no Spyro addresses hardcoded in code_generator.cpp for that shape). See
 # notes/plans/openpete-generic-hook-anchor-refactor.md.
-echo "[regen] Generating $CHANNEL_SITES from manifest/render_channels.toml"
-python3 tools/gen_channel_sites.py \
-    --manifest manifest/render_channels.toml --out "$CHANNEL_SITES"
+# A game with no render-channel manifest gets no --channel-sites at all:
+# that table is a list of one game's addresses, and feeding it to another
+# substitutes at addresses that mean something different there.
+if [[ -n "${CHANNEL_MANIFEST:-}" ]]; then
+    echo "[regen] Generating $CHANNEL_SITES from $CHANNEL_MANIFEST"
+    python3 tools/gen_channel_sites.py \
+        --manifest "$CHANNEL_MANIFEST" --out "$CHANNEL_SITES"
+else
+    echo "[regen] no CHANNEL_MANIFEST for $GAME — recompiling without channel sites"
+    rm -f "$CHANNEL_SITES"
+fi
 
 # Scoped regen: OPENPETE_REGEN_SCOPE=main_exe re-translates only the main
 # EXE (the only binary --channel-sites is passed to), reusing the overlay
@@ -93,10 +119,11 @@ python3 tools/gen_psyq_stubs.py --prefix psyq_ \
 # be a known dispatch entry). Order matters — the ra-return tool merges
 # into the file the first tool wrote.
 echo "[regen] Refreshing $ASM_TARGETS_DIR/"
+mkdir -p "$ASM_TARGETS_DIR"
 python3 tools/extract_asm_dispatch_targets.py \
-    games/spyro-1/spyro-1/asm "$ASM_TARGETS_DIR" >/dev/null
+    "$ASM_DIR" "$ASM_TARGETS_DIR" >/dev/null
 python3 tools/extract_handwritten_ra_returns.py \
-    games/spyro-1/spyro-1/asm "$ASM_TARGETS_DIR" >/dev/null
+    "$ASM_DIR" "$ASM_TARGETS_DIR" >/dev/null
 
 # Harvest overlay function-pointer-table targets from main EXE constants.
 # The main EXE installs per-level callbacks into fixed RAM slots via
@@ -113,7 +140,7 @@ FNPTR_FILE="$OUT/overlay_fn_pointers.txt"
 if [[ -f "$OUT/PSX.EXE_full.c" ]]; then
     echo "[regen] Harvesting overlay fn-pointer constants from PSX.EXE_full.c"
     python3 "$FNPTR_TOOL" "$OUT/PSX.EXE_full.c" "$FNPTR_FILE" \
-        --overlay-range=0x8007AA38:0x8008EA38 >/dev/null
+        --overlay-range="$OVERLAY_RANGE" >/dev/null
 else
     echo "[regen] PSX.EXE_full.c not yet generated — skipping fn-pointer harvest"
     : > "$FNPTR_FILE"
@@ -175,7 +202,7 @@ process_overlay() {
     # psxrecomp accepts a single --extra-funcs= file.
     local first_funcs="$OUT/$name/extra_funcs.first.txt"
     local fnptr_filtered="$OUT/$name/fn_pointers.txt"
-    local curated="games/spyro-1/manifest/forced_entries/$name.txt"
+    local curated="$FORCED_ENTRIES_DIR/$name.txt"
     : > "$first_funcs"
     [[ -n "$asm_targets" ]] && cat "$asm_targets" >> "$first_funcs"
     [[ -f "$curated" ]] && grep '^0x' "$curated" >> "$first_funcs"
@@ -266,15 +293,19 @@ process_overlay() {
 
 # --- Overlay registry ---------------------------------------------------
 #
-# Filename convention from the matching decomp's build/wad/:
-#   level_<F>_*_code.ovl  — overlay_id = F + 11, section name "level_NN"
-#                            where NN = (F/6 + 1)*10 + (F%6).
-#   titlescreen_code.ovl  — overlay_id = 48
-#   credits.ovl           — overlay_id = 47
+# The overlay id is the LONG at the head of each overlay section, placed
+# there by the decomp's overlays.ld. The runtime reads that same word out of
+# RAM once an overlay is resident to know whose bytes are live, so reading it
+# from the blob here uses the game's own value rather than re-deriving one.
 #
-# Overlay-id is the LONG inserted at the head of each overlay section by
-# overlays.ld; psyq_thunks.cpp reads it from RAM at 0x8007AA38 to know
-# which overlay's bytes are live and routes dispatch accordingly.
+# Spyro 1's ids were previously computed from the filename
+# (level_<F>_*_code.ovl -> F+11, titlescreen -> 48, credits -> 47). Reading
+# the word reproduces all 37 of those exactly, and the arithmetic does not
+# generalise: Spyro 2 orders ids independently of its filenames
+# (level_30 is id 15 while level_31 is 14, and level_10 is 5).
+#
+# The section name is the filename stem with any trailing _code dropped,
+# which is what the decomp's own overlays.ld calls the section.
 
 OVERLAY_NAMES=()
 declare -A OVERLAY_MAGIC=()
@@ -284,47 +315,20 @@ register_overlay() {
     OVERLAY_MAGIC["$1"]="$2"
 }
 
-# Auto-discover every overlay in the WAD dir and classify by filename:
-#   titlescreen_code.ovl  — name=titlescreen,  magic=48
-#   credits.ovl           — name=credits,      magic=47
-#   level_F_*_code.ovl    — name=level_NN,     magic=F+11,
-#                           NN = (F/6 + 1)*10 + (F%6)
-# Per-overlay fn-pointer-table targets are picked up automatically by
-# the FNPTR_FILE harvest above. The titlescreen forced-entries are
-# main-EXE→overlay direct JAL targets that aren't covered by the
-# external-JALs round-trip — kept until that mechanism becomes
-# symmetric.
-for ovl_path in "$WAD_DIR"/*.ovl; do
-    [[ "$REGEN_SCOPE" == "full" ]] || break
-    [[ -f "$ovl_path" ]] || continue
-    base=$(basename "$ovl_path")
-    name=""; magic=""; extra=()
-    case "$base" in
-        titlescreen_code.ovl)
-            name=titlescreen; magic=48
-            # Hand-curated forced entries live in
-            # manifest/forced_entries/titlescreen.txt (folded into the
-            # extra-funcs lists inside process_overlay).
-            ;;
-        credits.ovl)
-            name=credits; magic=47
-            ;;
-        level_*_code.ovl)
-            F=$(sed -E 's/^level_([0-9]+)_.*$/\1/' <<< "$base")
-            [[ "$F" =~ ^[0-9]+$ ]] || { echo "[regen] skipping unrecognized $base"; continue; }
-            H=$((F / 6 + 1)); S=$((F % 6))
-            name="level_$((H * 10 + S))"
-            magic=$((F + 11))
-            ;;
-        *)
-            echo "[regen] skipping unrecognized $base"
-            continue
-            ;;
-    esac
-    if process_overlay "$name" "$ovl_path" "func_${name}_" 0x8007AA38 "${extra[@]}"; then
-        register_overlay "$name" "$magic"
-    fi
-done
+# tools/overlay_registry.py resolves each blob's id (its first word, the value
+# the runtime reads back out of RAM) and its linker section name, which is what
+# the generated dispatch function and the forced-entry files are keyed on.
+OVERLAY_LIST="$OUT/overlay_registry.txt"
+python3 tools/overlay_registry.py "$DECOMP_DIR" "$WAD_DIR" > "$OVERLAY_LIST"
+
+if [[ "$REGEN_SCOPE" == "full" ]]; then
+    while read -r magic name ovl_path; do
+        [[ -n "$name" ]] || continue
+        if process_overlay "$name" "$ovl_path" "func_${name}_" "$OVERLAY_LOAD_ADDR"; then
+            register_overlay "$name" "$magic"
+        fi
+    done < "$OVERLAY_LIST"
+fi
 
 # --- Main EXE -----------------------------------------------------------
 #
@@ -352,7 +356,10 @@ main_exe_targets=$(asm_targets_for main_exe)
 [[ -n "$main_exe_targets" ]] && cat "$main_exe_targets" >> "$main_exe_extra"
 # Hand-curated forced entries (formerly --forced-entry literals here) —
 # single source of truth shared with the converged-manifest emission.
-grep '^0x' games/spyro-1/manifest/forced_entries/main_exe.txt >> "$main_exe_extra"
+# Hand-curated forced entries, if this game has any yet.
+if [[ -f "$FORCED_ENTRIES_DIR/main_exe.txt" ]]; then
+    grep '^0x' "$FORCED_ENTRIES_DIR/main_exe.txt" >> "$main_exe_extra" || true
+fi
 for f in "$OUT"/*/external_jals.txt; do
     [[ -f "$f" ]] && cat "$f" >> "$main_exe_extra"
 done
@@ -384,7 +391,7 @@ common_psx_args=(
     --external-symbols="$PSYQ_MANIFEST"
     --external-prefix=psyq_
     --skip-on-error
-    --channel-sites="$CHANNEL_SITES"
+    ${CHANNEL_MANIFEST:+--channel-sites="$CHANNEL_SITES"}
     ${PCTRACK_FLAG:+$PCTRACK_FLAG}
 )
 pass1_dir="$OUT/_main_exe_pass1"
@@ -395,7 +402,7 @@ mkdir -p "$pass1_dir"
 rm -f "$OUT/PSX.EXE_full.c" "$OUT/PSX.EXE_dispatch.c" \
       "$OUT/main_exe_dispatch_stubs.txt"
 echo "[regen]   pass 1 (stub discovery) → $pass1_dir/"
-"$PSXRECOMP" games/spyro-1/spyro-1/build/PSX.EXE \
+"$PSXRECOMP" "$PSX_EXE" \
     --output-dir="$pass1_dir" \
     --extra-funcs="$main_exe_extra" \
     "${common_psx_args[@]}" >/dev/null
@@ -403,7 +410,7 @@ python3 tools/extract_dispatch_call_by_address.py \
     "$pass1_dir/PSX.EXE_full.c" "$OUT/main_exe_dispatch_stubs.txt" 2>&1 | sed 's/^/  /'
 cat "$OUT/main_exe_dispatch_stubs.txt" >> "$main_exe_extra"
 echo "[regen]   pass 2 (final, with $(grep -c '^0x' "$OUT/main_exe_dispatch_stubs.txt") JT-stub forced entries) → $OUT/PSX.EXE_full.c"
-"$PSXRECOMP" games/spyro-1/spyro-1/build/PSX.EXE \
+"$PSXRECOMP" "$PSX_EXE" \
     --output-dir="$OUT" \
     --extra-funcs="$main_exe_extra" \
     "${common_psx_args[@]}"
@@ -448,17 +455,19 @@ fi
 # from the freshly-recompiled reference binary (needs discovered_functions.log
 # for the function-scoped tier). Fails the regen if any determinism-critical
 # site can't be uniquely anchored — the Tier-3 (romhack) prerequisite.
-echo "[regen] Generating $OUT/channel_signatures.txt (determinism-critical anchors)"
-python3 tools/gen_channel_signatures.py \
-    --manifest manifest/render_channels.toml \
-    --exe games/spyro-1/spyro-1/build/PSX.EXE \
-    --out "$OUT/channel_signatures.txt"
+if [[ -n "${CHANNEL_MANIFEST:-}" ]]; then
+    echo "[regen] Generating $OUT/channel_signatures.txt (determinism-critical anchors)"
+    python3 tools/gen_channel_signatures.py \
+        --manifest "$CHANNEL_MANIFEST" \
+        --exe "$PSX_EXE" \
+        --out "$OUT/channel_signatures.txt"
+fi
 
 # Snapshot the converged per-binary inputs as committed metadata for the
 # single-pass first-boot pipeline (distribution D2.1). Skipped in scoped
 # mode — the converged manifest describes the STOCK full-regen state, and
 # a mod-site bake is a local dev configuration, not a distribution input.
-if [[ "$REGEN_SCOPE" == "full" ]]; then
+if [[ "$REGEN_SCOPE" == "full" && "$GAME" == "spyro-1" ]]; then
     echo "[regen] Emitting converged recomp manifest"
     bash scripts/emit-recomp-manifest.sh
 else

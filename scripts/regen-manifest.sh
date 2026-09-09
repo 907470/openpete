@@ -1,11 +1,14 @@
 #!/usr/bin/env bash
-# Regenerate the spyro-1 manifest + the artifacts driven from it.
+# Regenerate one game's manifest + the artifacts driven from it.
+#
+# Which game is selected by GAME= (default spyro-1):
+#   GAME=spyro-2 bash scripts/regen-manifest.sh
 #
 # Inputs:
-#   games/spyro-1/spyro-1/build/psx.map — parsed for symbol addresses
-#   games/spyro-1/manifest/native.toml — hand-curated native config
+#   games/<game>/<game>/build/psx.map — parsed for symbol addresses
+#   games/<game>/manifest/native.toml — hand-curated native config
 #
-# Outputs (all under games/spyro-1/):
+# Outputs (all under games/<game>/):
 #   manifest/symbols.toml         — auto from psx.map
 #   manifest/globals.toml         — auto from psx.map
 #   generated/native_aliases.cmake — --defsym block
@@ -17,20 +20,31 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-PSX_MAP="${PSX_MAP:-games/spyro-1/spyro-1/build/psx.map}"
-INCLUDE_DIR="${INCLUDE_DIR:-games/spyro-1/spyro-1/include}"
+GAME="${GAME:-spyro-1}"
+PSX_MAP="${PSX_MAP:-games/$GAME/$GAME/build/psx.map}"
+INCLUDE_DIR="${INCLUDE_DIR:-games/$GAME/$GAME/include}"
 PSYQ_INCLUDE_DIR="${PSYQ_INCLUDE_DIR:-third_party/PsyCross/include/psx}"
-SPYRO_SRC_DIR="${SPYRO_SRC_DIR:-games/spyro-1/spyro-1/src}"
-MANIFEST_DIR="games/spyro-1/manifest"
-GENERATED_DIR="games/spyro-1/generated"
+SPYRO_SRC_DIR="${SPYRO_SRC_DIR:-games/$GAME/$GAME/src}"
+MANIFEST_DIR="games/$GAME/manifest"
+GENERATED_DIR="games/$GAME/generated"
 REWRITTEN_DIR="$GENERATED_DIR/rewritten"
 
 if [[ ! -f "$PSX_MAP" ]]; then
-    echo "regen-manifest: $PSX_MAP not found — build spyro-1 first" >&2
+    echo "regen-manifest: $PSX_MAP not found — build the $GAME decomp first" >&2
     exit 1
 fi
 
+mkdir -p "$MANIFEST_DIR" "$GENERATED_DIR"
 python3 tools/build_manifest.py "$PSX_MAP" "$MANIFEST_DIR"
+
+# A game with no native.toml compiles no decomp TU natively: everything routes
+# through the recompiler. The AST rewriter has nothing to do, and the four
+# generators below emit empty artifacts from an empty manifest.
+if [[ ! -f "$MANIFEST_DIR/native.toml" ]]; then
+    echo "regen-manifest: no $MANIFEST_DIR/native.toml — $GAME is fully recompiled,"
+    echo "                symbols.toml and globals.toml written, nothing else to do."
+    exit 0
+fi
 
 # Run the AST rewriter for every native source. Each TU emits
 # <stem>.rewritten.c (compiled by host CMake instead of the original) plus
