@@ -5341,11 +5341,18 @@ static int run_host_loop(const openpete_options_t* opts) {
             }
         } else {
             /* Wall-clock dual-pacer. sim deadline advances on sim-due
-             * iters; render deadline advances every outer iter; we
-             * sleep to the sooner of the two so an under-paced render
-             * doesn't starve the sim or vice-versa. */
+             * iters that actually ticked; render deadline advances every
+             * outer iter; we sleep to the sooner of the two so an
+             * under-paced render doesn't starve the sim or vice-versa.
+             *
+             * ticked_this_iter gates the sim step for the same reason the
+             * legacy pacer above gates it: a dispatch.c no-tick stub yield
+             * returns without bumping openpete_frame, and charging it a VBL
+             * period of wall time slows the guest in proportion to how many
+             * such yields a frame takes. A game with one per frame runs at
+             * two thirds speed. */
             op_time_t now2 = op_now();
-            if (sim_due) {
+            if (sim_due && ticked_this_iter) {
                 op_deadline_advance(&next_sim, sim_period, 1);
                 if (now2 - next_sim.at > slip_threshold_ns) {
                     op_time_t behind = now2 - next_sim.at;
