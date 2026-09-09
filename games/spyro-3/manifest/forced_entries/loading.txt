@@ -1,0 +1,6 @@
+# The loading overlay's state-machine entry. Its first two instructions
+# (lui/lw of the state global at 0x8006C518) sit immediately after a run
+# of string literals, and the analyzer's data run covers them, so the
+# function is discovered at its frame setup 0x80074954 instead and the
+# entry the main EXE calls is never emitted.
+0x8007494C

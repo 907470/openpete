@@ -43,6 +43,14 @@ word-aligned. A MIPS instruction address always is, so a misaligned target is
 proof that the bytes which produced it were data being decoded as code -- the
 same header, landing inside the image rather than past its end. Promoting one
 is meaningless: there is no instruction there to enter.
+
+--require-emitted-insn additionally keeps only targets the recompiler emitted
+an instruction for. A word-aligned in-image address can still sit inside a run
+the analyzer classified as data, where there is likewise no instruction to
+enter; alignment alone does not catch that. The main EXE needs this because a
+data run there is a string table rather than an overlay header, so its decoded
+addresses are aligned and in range. It is opt-in: an overlay reaching
+convergence by promoting such an address keeps whatever behaviour it has today.
 """
 
 from __future__ import annotations
@@ -65,6 +73,7 @@ SPLIT_RE = re.compile(
 )
 
 DEF_RE = re.compile(r"^void func_\w*?([0-9A-Fa-f]{8})\(CPUState\* cpu\)$")
+INSN_RE = re.compile(r"/\* 0x([0-9A-Fa-f]{8}): 0x[0-9A-Fa-f]{8} \*/")
 
 
 def main(argv: list[str]) -> int:
@@ -75,6 +84,8 @@ def main(argv: list[str]) -> int:
                     help="raw image bytes, for range filtering")
     ap.add_argument("--load-addr", default=None,
                     help="load address of --binary (e.g. 0x8007AA38)")
+    ap.add_argument("--require-emitted-insn", action="store_true",
+                    help="keep only targets with an emitted instruction")
     args = ap.parse_args(argv[1:])
 
     lo = hi = None
@@ -87,6 +98,7 @@ def main(argv: list[str]) -> int:
 
     defined: set[int] = set()
     targets: set[int] = set()
+    emitted: set[int] = set()
     dropped = 0
     misaligned = 0
     with args.source.open("r", encoding="utf-8") as fh:
@@ -95,6 +107,10 @@ def main(argv: list[str]) -> int:
             if d:
                 defined.add(int(d.group(1), 16))
                 continue
+            if args.require_emitted_insn:
+                i = INSN_RE.search(line)
+                if i:
+                    emitted.add(int(i.group(1), 16))
             m = SPLIT_RE.search(line)
             if not m:
                 continue
@@ -107,6 +123,10 @@ def main(argv: list[str]) -> int:
                 continue
             targets.add(addr)
 
+    non_code = 0
+    if args.require_emitted_insn:
+        non_code = len(targets - emitted)
+        targets &= emitted
     unresolved = sorted(targets - defined)
     with args.out.open("w", encoding="utf-8") as fh:
         fh.write("# unresolved split targets — auto-extracted by"
@@ -117,6 +137,8 @@ def main(argv: list[str]) -> int:
     note = f", {dropped} out-of-image ignored" if dropped else ""
     if misaligned:
         note += f", {misaligned} misaligned ignored"
+    if non_code:
+        note += f", {non_code} without an emitted instruction ignored"
     print(f"{len(unresolved)} unresolved of {len(targets)} split targets{note}"
           f" -> {args.out}")
     return 0

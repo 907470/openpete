@@ -414,16 +414,44 @@ echo "[regen]   pass 2 (final, with $(grep -c '^0x' "$OUT/main_exe_dispatch_stub
     --output-dir="$OUT" \
     --extra-funcs="$main_exe_extra" \
     "${common_psx_args[@]}"
-# NOTE: main-EXE jal-cont third-pass deliberately disabled. Adding a
-# single forced entry (0x800661D0) reproducibly broke the level_24 demo
-# entry path with stub misses at 0x8005AC40 + 0x8008772C — adding any
-# forced entry to main-EXE evidently shifts function-boundary detection
-# in a way that loses pre-existing dispatch entries. The overlay path
-# is safe (per-overlay third-pass green); main-EXE remains a deferred
-# investigation. If a future pass-3 turns out to be needed, the
-# pass1/full.c split above generalizes naturally — diff
-# pass1/PSX.EXE_full.c against PSX.EXE_full.c to surface what the
-# folded forced-entries changed.
+# Third pass: promote cross-piece split targets to real entries, the
+# same convergence the overlay path runs. A transfer that crosses a
+# piece boundary can only be emitted as `call_by_address(<target>);
+# return;`, and a target with no registered entry stub-misses. The stub
+# returns instead of transferring control, so the guest epilogue never
+# runs. Handwritten asm that parks the scratchpad base in `sp` and uses
+# it as a general register then leaks that value into ordinary C code,
+# and the next frame is built below the scratchpad where it maps to no
+# host address.
+#
+# --require-emitted-insn is what makes this safe on a main EXE: string
+# tables sit between functions here, so an address the analyzer decoded
+# out of one is word-aligned and in range and passes the overlay path's
+# two filters. Keeping only targets with an emitted instruction drops
+# those (21 of 21 reported for Spyro 3, all in its data tail).
+#
+# Off for Spyro 1: its one reported target is 0x800661D0, and promoting
+# that reproducibly broke the level_24 demo entry path with stub misses
+# at 0x8005AC40 + 0x8008772C — adding a forced entry there shifts
+# function-boundary detection so pre-existing dispatch entries are lost.
+if [[ "${MAIN_EXE_THIRD_PASS:-0}" != "0" ]]; then
+    main_exe_load=$(python3 -c "import struct,sys;print(hex(struct.unpack_from('<I',open(sys.argv[1],'rb').read(),0x18)[0]))" "$PSX_EXE")
+    split_found="$OUT/main_exe_split_targets.txt"
+    for pass in 1 2 3 4 5; do
+        python3 tools/extract_split_targets.py \
+            "$OUT/PSX.EXE_full.c" "$split_found" \
+            --binary="$PSX_EXE" --load-addr="$main_exe_load" \
+            --require-emitted-insn 2>&1 | sed 's/^/  /'
+        grep -q '^0x' "$split_found" || break
+        echo "[regen]   split pass $pass:" \
+             "$(grep -c '^0x' "$split_found") target(s) promoted"
+        grep '^0x' "$split_found" >> "$main_exe_extra"
+        "$PSXRECOMP" "$PSX_EXE" \
+            --output-dir="$OUT" \
+            --extra-funcs="$main_exe_extra" \
+            "${common_psx_args[@]}"
+    done
+fi
 sed -i 's/\bpsx_dispatch_compiled\b/psx_dispatch_main_exe/g' \
     "$OUT/PSX.EXE_dispatch.c"
 
