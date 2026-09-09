@@ -1376,7 +1376,7 @@ void psyq_CdControlB(CPUState* cpu) {
         default: break;
     }
 
-    cpu->v0 = (uint32_t)CdControlB(com, param, (u_char*)PTR(cpu->a2));
+    cpu->v0 = (uint32_t)CdControlB(com, param, (u_char*)PTR_OPT(cpu->a2));
 }
 
 /* `g_CD_com` is the "last command" int CdLastCom() returns. `readMode`
@@ -1398,7 +1398,7 @@ void psyq_CdControlF(CPUState* cpu) {
         cpu->v0 = 0u;  /* CdControlF returns int (0) for the GetlocP case */
         return;
     }
-    cpu->v0 = (uint32_t)CdControlF(com, (u_char*)PTR(cpu->a1));
+    cpu->v0 = (uint32_t)CdControlF(com, (u_char*)PTR_OPT(cpu->a1));
 }
 
 /* Active-overlay tracker (defined in dispatch_chain.c). Each overlay's
