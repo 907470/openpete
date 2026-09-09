@@ -467,11 +467,16 @@ fi
 # single-pass first-boot pipeline (distribution D2.1). Skipped in scoped
 # mode — the converged manifest describes the STOCK full-regen state, and
 # a mod-site bake is a local dev configuration, not a distribution input.
-if [[ "$REGEN_SCOPE" == "full" && "$GAME" == "spyro-1" ]]; then
+# The converged manifest feeds the single-pass first-boot pipeline, which is
+# Spyro 1's distribution path only. A scoped regen describes a local mod-site
+# bake rather than the stock full-regen state, so it emits nothing either.
+if [[ "$GAME" != "spyro-1" ]]; then
+    echo "[regen] converged manifest is spyro-1's distribution path — not emitted for $GAME"
+elif [[ "$REGEN_SCOPE" != "full" ]]; then
+    echo "[regen] SCOPED regen: skipping converged-manifest emission"
+else
     echo "[regen] Emitting converged recomp manifest"
     bash scripts/emit-recomp-manifest.sh
-else
-    echo "[regen] SCOPED regen: skipping converged-manifest emission"
 fi
 
 echo "[regen] Done — rebuild the project to pick up the new C output."

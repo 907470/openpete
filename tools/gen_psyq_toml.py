@@ -10,8 +10,13 @@ JAL targets that fall in the range are emitted as extern declarations + a
 thunk; their MIPS bodies are NOT translated. PsyCross provides the C
 implementations.
 
+A decomp that splats the PSYQ runtime without symbols names every function
+func_<addr>. Since the recompiler emits psyq_<name> and the thunk layer
+overrides by name, such a function reaches no thunk. Pass --names with the
+output of tools/gen_psyq_names.py to substitute the recovered names.
+
 Usage:
-    gen_psyq_toml.py <psx.map> <psyq-object> <out.toml>
+    gen_psyq_toml.py <psx.map> <psyq-object> <out.toml> [--names <names.toml>]
 
 Example:
     gen_psyq_toml.py games/spyro-1/spyro-1/build/psx.map \\
@@ -67,8 +72,26 @@ def parse(map_path: Path, psyq_obj: str):
         # Skip local jumptable labels.
         if name.startswith(".L"):
             continue
+        # The decomp's `nonmatching` macro emits a marker symbol beside the
+        # real one at the same address. It marks "not yet byte-matching"; it is
+        # not a function, and emitting it would give two entries per function.
+        if name.endswith(".NON_MATCHING"):
+            continue
         syms.append((addr, name))
-    return base, end, syms
+
+    # Several symbols can still share an address. A generated placeholder next
+    # to a real name is the same function under two spellings, so keep the
+    # real one; two real names at one address are aliases and the first wins.
+    best = {}
+    order = []
+    for addr, name in syms:
+        placeholder = name.startswith(("func_", "D_"))
+        if addr not in best:
+            best[addr] = name
+            order.append(addr)
+        elif best[addr].startswith(("func_", "D_")) and not placeholder:
+            best[addr] = name
+    return base, end, [(a, best[a]) for a in order]
 
 
 def emit_toml(base: int, end: int, syms, out: Path, source: str):
@@ -89,18 +112,54 @@ def emit_toml(base: int, end: int, syms, out: Path, source: str):
     out.write_text("\n".join(lines) + "\n")
 
 
+def read_names(path: Path):
+    """-> {addr: name} from a gen_psyq_names.py manifest."""
+    names, addr = {}, None
+    for line in path.read_text().splitlines():
+        line = line.strip()
+        if line.startswith("addr"):
+            addr = int(line.split("=", 1)[1].strip(), 16)
+        elif line.startswith("name") and addr is not None:
+            names[addr] = line.split("=", 1)[1].strip().strip('"')
+            addr = None
+    return names
+
+
 def main():
-    if len(sys.argv) != 4:
+    argv = sys.argv[1:]
+    names_path = None
+    if "--names" in argv:
+        i = argv.index("--names")
+        names_path = Path(argv[i + 1])
+        del argv[i:i + 2]
+    if len(argv) != 3:
         sys.exit(__doc__)
-    map_path = Path(sys.argv[1])
-    psyq_obj = sys.argv[2]
-    out_path = Path(sys.argv[3])
+    map_path = Path(argv[0])
+    psyq_obj = argv[1]
+    out_path = Path(argv[2])
     base, end, syms = parse(map_path, psyq_obj)
+
+    renamed = 0
+    if names_path is not None:
+        recovered = read_names(names_path)
+        out = []
+        for addr, name in syms:
+            new = recovered.get(addr)
+            # Only a generated placeholder is replaced: a name the decomp
+            # carries is human-recovered and outranks a signature match.
+            if new and name.startswith(("func_", "D_")):
+                out.append((addr, new))
+                renamed += 1
+            else:
+                out.append((addr, name))
+        syms = out
+
     out_path.parent.mkdir(parents=True, exist_ok=True)
     emit_toml(base, end, syms, out_path, source=str(map_path))
     print(
         f"Wrote {len(syms)} PSYQ symbols "
         f"(range 0x{base:08x}..0x{end:08x}) to {out_path}"
+        + (f"; {renamed} named from {names_path.name}" if names_path else "")
     )
 
 

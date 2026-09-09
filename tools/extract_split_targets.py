@@ -31,12 +31,18 @@ Usage:
         [--binary=<raw-bytes> --load-addr=0xADDR]
 
 Passing the binary enables range filtering, which is what makes convergence
-reachable. Every level overlay opens with a 0x254-byte header struct — id word,
-pointer table, balloonist dialogue strings — and the fn-pointer harvester can't
-distinguish the overlay base (the CdRead destination) from a callback, so it
-forces an entry there and psxrecomp decodes the header as MIPS. The resulting
-branch targets land past the end of the image; they can never be resolved and
-are never executed.
+reachable. Every level overlay opens with a header struct — id word, pointer
+table, dialogue strings — and the fn-pointer harvester can't distinguish the
+overlay base (the CdRead destination) from a callback, so it forces an entry
+there and psxrecomp decodes the header as MIPS. The resulting branch targets
+land past the end of the image; they can never be resolved and are never
+executed.
+
+Targets inside the image are filtered the same way when they are not
+word-aligned. A MIPS instruction address always is, so a misaligned target is
+proof that the bytes which produced it were data being decoded as code -- the
+same header, landing inside the image rather than past its end. Promoting one
+is meaningless: there is no instruction there to enter.
 """
 
 from __future__ import annotations
@@ -82,6 +88,7 @@ def main(argv: list[str]) -> int:
     defined: set[int] = set()
     targets: set[int] = set()
     dropped = 0
+    misaligned = 0
     with args.source.open("r", encoding="utf-8") as fh:
         for line in fh:
             d = DEF_RE.match(line.rstrip("\n"))
@@ -95,6 +102,9 @@ def main(argv: list[str]) -> int:
             if lo is not None and not (lo <= addr < hi):
                 dropped += 1
                 continue
+            if addr % 4:
+                misaligned += 1
+                continue
             targets.add(addr)
 
     unresolved = sorted(targets - defined)
@@ -105,6 +115,8 @@ def main(argv: list[str]) -> int:
             fh.write(f"0x{t:08X}\n")
 
     note = f", {dropped} out-of-image ignored" if dropped else ""
+    if misaligned:
+        note += f", {misaligned} misaligned ignored"
     print(f"{len(unresolved)} unresolved of {len(targets)} split targets{note}"
           f" -> {args.out}")
     return 0
