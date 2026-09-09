@@ -258,7 +258,7 @@ name = "func_8005CCD8"
 addr = 0x8005ccd8
 
 [[symbols]]
-name = "func_8005CCFC"
+name = "PadInitDirect"
 addr = 0x8005ccfc
 
 [[symbols]]
@@ -366,11 +366,11 @@ name = "PadInfoAct"
 addr = 0x8005de70
 
 [[symbols]]
-name = "func_8005DF44"
+name = "PadSetActAlign"
 addr = 0x8005df44
 
 [[symbols]]
-name = "func_8005DF7C"
+name = "PadSetMainMode"
 addr = 0x8005df7c
 
 [[symbols]]
@@ -462,7 +462,7 @@ name = "SpuGetAllKeysStatus"
 addr = 0x8005eb70
 
 [[symbols]]
-name = "func_8005EBFC"
+name = "SpuInit"
 addr = 0x8005ebfc
 
 [[symbols]]

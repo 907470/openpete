@@ -6,11 +6,11 @@ range_start = 0x8005478c
 range_end   = 0x8006012c
 
 [[symbols]]
-name = "func_8005478C"
+name = "start"
 addr = 0x8005478c
 
 [[symbols]]
-name = "func_80054834"
+name = "__main"
 addr = 0x80054834
 
 [[symbols]]
@@ -70,7 +70,7 @@ name = "func_80054EF8"
 addr = 0x80054ef8
 
 [[symbols]]
-name = "func_80054F1C"
+name = "PadInitDirect"
 addr = 0x80054f1c
 
 [[symbols]]
@@ -338,11 +338,11 @@ name = "PadInfoAct"
 addr = 0x8005860c
 
 [[symbols]]
-name = "func_800586E0"
+name = "PadSetActAlign"
 addr = 0x800586e0
 
 [[symbols]]
-name = "func_80058718"
+name = "PadSetMainMode"
 addr = 0x80058718
 
 [[symbols]]
@@ -410,11 +410,11 @@ name = "func_80058C78"
 addr = 0x80058c78
 
 [[symbols]]
-name = "func_80058C98"
+name = "CdIntToPos"
 addr = 0x80058c98
 
 [[symbols]]
-name = "func_80058D9C"
+name = "CdPosToInt"
 addr = 0x80058d9c
 
 [[symbols]]
@@ -490,7 +490,7 @@ name = "SpuGetAllKeysStatus"
 addr = 0x8005a3fc
 
 [[symbols]]
-name = "func_8005A488"
+name = "SpuInit"
 addr = 0x8005a488
 
 [[symbols]]

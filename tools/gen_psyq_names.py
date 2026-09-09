@@ -23,8 +23,14 @@ Three outcomes are reported separately rather than as one hit rate:
              to it by one, and it is recompiled like ordinary code
   unmatched  no member verifies, with the reason given
 
+Some functions in the PSYQ text are not library members at all: __main is
+emitted by the compiler, so no .LIB carries it and no signature match can name
+it. --reference names those from another decomp's psyq.s that already carries
+a human-recovered name, matched by the same masked-body comparison.
+
 Usage:
     gen_psyq_names.py <asm/psyq.s> <psyq-sdk-dir-or-zip> <out.toml>
+                      [--reference <other/asm/psyq.s> ...]
     gen_psyq_names.py <asm/psyq.s> <psyq-sdk> --report
 """
 import re
@@ -143,11 +149,42 @@ def locate(funcs, store, index):
     return named, static, unmatched
 
 
+def name_from_reference(funcs, named, ref_path):
+    """Name still-unnamed functions from a reference psyq.s's real labels.
+
+    Some functions in the PSYQ text are not library members: __main is emitted
+    by the compiler, so no .LIB carries it and no signature match can reach it.
+    Another decomp that already carries the human-recovered label supplies it,
+    matched by the same masked-body comparison used against the libraries.
+    """
+    ref = parse_psyq_s(ref_path)
+    index = {}
+    for label, (_va, ws) in ref.items():
+        if label.startswith(('func_', 'D_', 'jtbl_')) or len(ws) < NGRAM:
+            continue
+        index.setdefault(mseq(ws), []).append(label)
+    added = 0
+    for label, (_va, ws) in funcs.items():
+        if label in named or len(ws) < NGRAM:
+            continue
+        hits = index.get(mseq(ws))
+        if hits and len(set(hits)) == 1:
+            named[label] = (hits[0], 'reference', ref_path)
+            added += 1
+    return added
+
+
 def main():
-    if len(sys.argv) < 3:
+    argv = sys.argv[1:]
+    refs = []
+    while '--reference' in argv:
+        i = argv.index('--reference')
+        refs.append(argv[i + 1])
+        del argv[i:i + 2]
+    if len(argv) < 2:
         sys.exit(__doc__)
-    psyq_s, sdk = sys.argv[1], sys.argv[2]
-    out = sys.argv[3] if len(sys.argv) > 3 else '--report'
+    psyq_s, sdk = argv[0], argv[1]
+    out = argv[2] if len(argv) > 2 else '--report'
 
     funcs = parse_psyq_s(psyq_s)
     if not funcs:
@@ -157,6 +194,18 @@ def main():
     if not store:
         sys.exit('error: no library sections read from %s' % sdk)
     named, static, unmatched = locate(funcs, store, index)
+
+    for ref in refs:
+        n = name_from_reference(funcs, named, ref)
+        sys.stderr.write("  %d name(s) from reference %s\n" % (n, ref))
+    # A reference name claimed by more than one function identifies none of
+    # them, exactly as for a library match: short stubs differing only in a
+    # masked immediate are indistinguishable by body.
+    contested = {n for n, c in Counter(v[0] for v in named.values()).items() if c > 1}
+    for label in [l for l, v in named.items() if v[0] in contested]:
+        nm = named.pop(label)[0]
+        unmatched.append((label, funcs[label][0],
+                          'symbol %s is claimed by several functions' % nm))
 
     # Where the decomp already carries a hand-recovered name, the matcher must
     # agree with it. A disagreement means the matcher is wrong, not the human.

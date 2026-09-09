@@ -4,6 +4,11 @@
 # keep their generated func_<addr> name.
 
 [[names]]
+addr = 0x800594ec
+name = "__main"
+from = "reference::../spyro-1/asm/psyq.s"
+
+[[names]]
 addr = 0x8005956c
 name = "VSync"
 from = "LIBETC.LIB::VSYNC"
@@ -94,6 +99,11 @@ name = "VSyncCallback"
 from = "LIBETC.LIB::INTR"
 
 [[names]]
+addr = 0x8005ccfc
+name = "PadInitDirect"
+from = "reference::../spyro-1/asm/psyq.s"
+
+[[names]]
 addr = 0x8005d35c
 name = "SetGeomOffset"
 from = "LIBGTE.LIB::REG12"
@@ -127,6 +137,16 @@ from = "LIBPAD.LIB::PDENT3"
 addr = 0x8005de70
 name = "PadInfoAct"
 from = "LIBPAD.LIB::PDENT4"
+
+[[names]]
+addr = 0x8005df44
+name = "PadSetActAlign"
+from = "reference::../spyro-1/asm/psyq.s"
+
+[[names]]
+addr = 0x8005df7c
+name = "PadSetMainMode"
+from = "reference::../spyro-1/asm/psyq.s"
 
 [[names]]
 addr = 0x8005e0bc
@@ -179,6 +199,11 @@ name = "SpuGetAllKeysStatus"
 from = "LIBSPU.LIB::SR_GAKS"
 
 [[names]]
+addr = 0x8005ebfc
+name = "SpuInit"
+from = "reference::../spyro-1/asm/psyq.s"
+
+[[names]]
 addr = 0x8005ec1c
 name = "SpuSetVoiceAttr"
 from = "LIBSPU.LIB::S_SVA"
@@ -192,6 +217,11 @@ from = "LIBGTE.LIB::MTX_08"
 addr = 0x8005f35c
 name = "MulMatrix0"
 from = "LIBGTE.LIB::MTX_000"
+
+[[names]]
+addr = 0x8005f46c
+name = "CdIntToPos"
+from = "reference::../spyro-1/asm/psyq.s"
 
 [[names]]
 addr = 0x8005f5fc

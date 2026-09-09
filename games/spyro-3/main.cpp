@@ -23,7 +23,7 @@ int main(int argc, char** argv) {
     openpete_options_t opts;
     openpete_options_init(&opts);
     opts.display_name = game_get_display_name();
-    opts.run_recomp_hint_addr = 0x00000000u;
+    opts.run_recomp_hint_addr = 0x8001200Cu;
 
     openpete_config_set_game_id(game_get_id());
 
