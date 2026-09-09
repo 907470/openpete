@@ -57,6 +57,9 @@ IMM16 = {0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f,
 
 NGRAM = 8
 
+# LNK relocation kind that patches a 26-bit jump target.
+RELOC_JUMP = 0x4a
+
 
 def mask(w):
     op = w >> 26
@@ -153,14 +156,18 @@ def parse_psyq_s(path):
 
 
 def build_sections(sdk):
-    """-> (store, index). store[k] = (lib, member, section, words, {byte_off: name})"""
+    """-> (store, index).
+
+    store[k] = (lib, member, section, words, {byte_off: exported name},
+                {byte_off: symbol a jump relocation there calls)
+    """
     store, index = [], defaultdict(list)
     for lib, members in sorted(load_all(sdk).items()):
         for member, _syms, blob in members:
             if not blob:
                 continue
             try:
-                secs, xdefs, _ = parse_lnk(blob)
+                secs, xdefs, _, relocs, symbols = parse_lnk(blob)
             except Exception:
                 continue
             for si, b in secs.items():
@@ -170,7 +177,10 @@ def build_sections(sdk):
                 ws = list(struct.unpack('<%dI' % n, bytes(b[:n * 4])))
                 k = len(store)
                 store.append((lib, member, si, ws,
-                              {o: nm for nm, s, o in xdefs if s == si}))
+                              {o: nm for nm, s, o in xdefs if s == si},
+                              {o: symbols[sym] for sec, o, kind, sym in relocs
+                               if sec == si and kind == RELOC_JUMP
+                               and sym in symbols}))
                 # Index with the same masking the lookup uses; per-word
                 # masking is not equivalent once the mask is context-sensitive.
                 for i in range(n - NGRAM + 1):
@@ -179,7 +189,8 @@ def build_sections(sdk):
 
 
 def locate(funcs, store, index):
-    named, static, unmatched = {}, {}, []
+    named, static, unmatched, anchors, where = {}, {}, [], {}, {}
+    ambiguous = {}
     for label, (vaddr, ws) in funcs.items():
         if len(ws) < NGRAM:
             unmatched.append((label, vaddr, 'below the %d-instruction floor' % NGRAM))
@@ -187,10 +198,10 @@ def locate(funcs, store, index):
         full = mseq(ws)
         hits = []
         for k, i in index.get(mseq(ws[:NGRAM]), ()):
-            lib, member, _si, lws, xd = store[k]
+            lib, member, _si, lws, xd, _jr = store[k]
             if i + len(ws) <= len(lws) and mseq(lws[i:i + len(ws)]) == full:
                 hits.append((lib, member, xd.get(i * 4),
-                             sseq(lws[i:i + len(ws)])))
+                             sseq(lws[i:i + len(ws)]), k, i))
         if not hits:
             unmatched.append((label, vaddr, 'no library member matches the body'))
             continue
@@ -204,14 +215,27 @@ def locate(funcs, store, index):
                        if h[3] is not None and h[3] == strict]
             if len({h[2] for h in refined}) == 1:
                 names = {refined[0][2]}
-                hits = refined
+                hits = named_hits = refined
         if len(names) == 1:
-            named[label] = (names.pop(), hits[0][0], hits[0][1])
+            # Take the member and offset from the hit that carries the name:
+            # the body can also match unexported code elsewhere, and anchoring
+            # a section on one of those places every other export wrongly.
+            nm = names.pop()
+            nh = next(h for h in named_hits if h[2] == nm)
+            named[label] = (nm, nh[0], nh[1])
+            where[label] = (nh[4], nh[5])
+            anchors.setdefault(nh[4], set()).add(vaddr - nh[5] * 4)
         elif len(names) > 1:
-            unmatched.append((label, vaddr, 'matches several symbols: '
-                              + ','.join(sorted(names))))
+            ambiguous[label] = named_hits
         else:
             static[label] = (hits[0][0], hits[0][1])
+
+    # A function whose body matches several exported symbols is a library
+    # wrapper: whom it calls tells them apart once the unambiguous names are in.
+    resolve_by_call_target(funcs, named, where, store, ambiguous)
+    for label, hits in ambiguous.items():
+        unmatched.append((label, funcs[label][0], 'matches several symbols: '
+                          + ','.join(sorted({h[2] for h in hits}))))
 
     # A symbol claimed by more than one function identifies none of them: short
     # functions differing only in a masked immediate are indistinguishable by
@@ -221,7 +245,97 @@ def locate(funcs, store, index):
         nm = named.pop(label)[0]
         unmatched.append((label, funcs[label][0],
                           'symbol %s is claimed by several functions' % nm))
-    return named, static, unmatched
+    return named, static, unmatched, anchors
+
+
+def resolve_by_call_target(funcs, named, where, store, ambiguous):
+    """Separate same-shaped functions by whom they call.
+
+    A one-line library wrapper is a stack frame around a single jal, so masking
+    the jump target -- which a relocation rewrites -- makes every such wrapper
+    identical to every other. The member's relocation names the callee, and the
+    image's jal points at a concrete address, so a claimant is the real one only
+    when its call lands on the function that already carries the callee's name.
+    Claimants whose call lands elsewhere are dropped, which leaves the group
+    uncontested when exactly one survives.
+    """
+    addr_of = {}
+    once = {n for n, c in Counter(v[0] for v in named.values()).items() if c == 1}
+    for label, (nm, _lib, _member) in named.items():
+        if nm in once:
+            addr_of[nm] = funcs[label][0]
+    present = {v[1] for nm, v in ((v[0], v) for v in named.values()) if nm in once}
+    resolved = 0
+    for label in list(ambiguous):
+        vaddr, ws = funcs[label]
+        keep = []
+        for hit in ambiguous[label]:
+            k, i = hit[4], hit[5]
+            jr = store[k][5]
+            ok, checked = True, 0
+            for j, w in enumerate(ws):
+                callee = jr.get((i + j) * 4)
+                if callee is None or (w >> 26) != 0x03:
+                    continue
+                if callee not in addr_of:
+                    continue        # the callee has no name yet: says nothing
+                checked += 1
+                target = ((vaddr + j * 4) & 0xF0000000) | ((w & 0x03FFFFFF) << 2)
+                if addr_of[callee] != target:
+                    ok = False
+                    break
+            if ok and checked:
+                keep.append(hit)
+        if len({h[2] for h in keep}) > 1:
+            # Two libraries can define the same wrapper around the same callee.
+            # Only one of them is linked into this image, and a library that is
+            # linked has other symbols named in it.
+            keep = [h for h in keep if h[0] in present] or keep
+        if len({h[2] for h in keep}) == 1:
+            named[label] = (keep[0][2], keep[0][0], keep[0][1])
+            where[label] = (keep[0][4], keep[0][5])
+            del ambiguous[label]
+            resolved += 1
+    return resolved
+
+
+def name_from_anchors(funcs, named, store, anchors):
+    """Name the remaining exports of a section whose placement is already known.
+
+    A whole-body match fixes where a library section sits in the image: the
+    matched function's address minus its offset within the section is the
+    section's base. Every other symbol the section exports then has a computed
+    address, and the function at that address is named when its body matches
+    the library code there. This reaches exports whose own body match failed --
+    a function the decomp split at a different boundary, or one shorter than
+    the n-gram floor.
+    """
+    by_addr = {}
+    for label, (vaddr, ws) in funcs.items():
+        by_addr.setdefault(vaddr, []).append((label, ws))
+    taken = {v[0] for v in named.values()}
+    added = 0
+    for k, bases in anchors.items():
+        if len(bases) != 1:
+            continue        # the same section placed twice names nothing
+        base = next(iter(bases))
+        lib, member, _si, lws, xd, _jr = store[k]
+        for off, nm in xd.items():
+            if nm in taken:
+                continue
+            cand = by_addr.get(base + off)
+            if not cand or len(cand) != 1:
+                continue
+            label, ws = cand[0]
+            if label in named:
+                continue
+            i = off // 4
+            if i + len(ws) > len(lws) or mseq(lws[i:i + len(ws)]) != mseq(ws):
+                continue
+            named[label] = (nm, lib, member)
+            taken.add(nm)
+            added += 1
+    return added
 
 
 def name_from_reference(funcs, named, ref_path):
@@ -274,7 +388,9 @@ def main():
     store, index = build_sections(sdk)
     if not store:
         sys.exit('error: no library sections read from %s' % sdk)
-    named, static, unmatched = locate(funcs, store, index)
+    named, static, unmatched, anchors = locate(funcs, store, index)
+    sys.stderr.write("  %d name(s) from section anchoring\n"
+                     % name_from_anchors(funcs, named, store, anchors))
 
     for ref in refs:
         n = name_from_reference(funcs, named, ref)

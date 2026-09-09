@@ -4,14 +4,9 @@
 # keep their generated func_<addr> name.
 
 [[names]]
-addr = 0x8005478c
-name = "start"
-from = "reference::games/spyro-3/spyro-3/asm/psyq.s"
-
-[[names]]
 addr = 0x80054834
 name = "__main"
-from = "reference::games/spyro-3/spyro-3/asm/psyq.s"
+from = "reference::games/spyro-1/spyro-1/asm/psyq.s"
 
 [[names]]
 addr = 0x800548a4
@@ -46,7 +41,7 @@ from = "LIBETC.LIB::INTR"
 [[names]]
 addr = 0x80054f1c
 name = "PadInitDirect"
-from = "reference::../spyro-1/asm/psyq.s"
+from = "reference::games/spyro-1/spyro-1/asm/psyq.s"
 
 [[names]]
 addr = 0x8005557c
@@ -146,12 +141,22 @@ from = "LIBPAD.LIB::PDENT4"
 [[names]]
 addr = 0x800586e0
 name = "PadSetActAlign"
-from = "reference::../spyro-1/asm/psyq.s"
+from = "reference::games/spyro-1/spyro-1/asm/psyq.s"
 
 [[names]]
 addr = 0x80058718
 name = "PadSetMainMode"
-from = "reference::../spyro-1/asm/psyq.s"
+from = "reference::games/spyro-1/spyro-1/asm/psyq.s"
+
+[[names]]
+addr = 0x800587f0
+name = "CdFlush"
+from = "LIBCD.LIB::S_008"
+
+[[names]]
+addr = 0x80058810
+name = "CdSync"
+from = "LIBCD.LIB::S_012"
 
 [[names]]
 addr = 0x80058858
@@ -169,14 +174,29 @@ name = "CdControlB"
 from = "LIBCD.LIB::S_016"
 
 [[names]]
+addr = 0x80058c14
+name = "CdGetSector"
+from = "LIBCD.LIB::S_021"
+
+[[names]]
+addr = 0x80058c34
+name = "CdGetSector2"
+from = "LIBCD.LIB::S_022"
+
+[[names]]
+addr = 0x80058c78
+name = "CdDataSync"
+from = "LIBCD.LIB::S_024"
+
+[[names]]
 addr = 0x80058c98
 name = "CdIntToPos"
-from = "reference::../spyro-1/asm/psyq.s"
+from = "reference::games/spyro-1/spyro-1/asm/psyq.s"
 
 [[names]]
 addr = 0x80058d9c
 name = "CdPosToInt"
-from = "reference::../spyro-1/asm/psyq.s"
+from = "reference::games/spyro-1/spyro-1/asm/psyq.s"
 
 [[names]]
 addr = 0x80058e1c
@@ -209,6 +229,11 @@ name = "rand"
 from = "LIBC2.LIB::RAND"
 
 [[names]]
+addr = 0x80059d5c
+name = "srand"
+from = "LIBC2.LIB::RAND"
+
+[[names]]
 addr = 0x80059d6c
 name = "MulMatrix0"
 from = "LIBGTE.LIB::MTX_000"
@@ -234,6 +259,11 @@ name = "strlen"
 from = "LIBC2.LIB::STRLEN"
 
 [[names]]
+addr = 0x8005a0fc
+name = "SpuRead"
+from = "LIBSPU.LIB::S_R"
+
+[[names]]
 addr = 0x8005a15c
 name = "SpuIsTransferCompleted"
 from = "LIBSPU.LIB::S_ITC"
@@ -256,12 +286,17 @@ from = "LIBSPU.LIB::SR_GAKS"
 [[names]]
 addr = 0x8005a488
 name = "SpuInit"
-from = "reference::../spyro-1/asm/psyq.s"
+from = "LIBSPU.LIB::S_I"
 
 [[names]]
 addr = 0x8005a4a8
 name = "SpuSetVoiceAttr"
 from = "LIBSPU.LIB::S_SVA"
+
+[[names]]
+addr = 0x8005aaa8
+name = "SpuWrite"
+from = "LIBSPU.LIB::S_W"
 
 [[names]]
 addr = 0x8005ab88

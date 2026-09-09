@@ -30,29 +30,40 @@ def _pstr(d, p):
 
 
 def _expr(d, p):
-    """Relocation expression tree. Returns the position after it."""
+    """Relocation expression tree.
+
+    Returns (position after it, referenced symbol index or None). A tree that
+    references exactly one symbol yields that symbol; anything else yields
+    None, since the reference is then not a plain call or data address."""
     op, p = _u8(d, p)
     if op == 0x00:            # literal
         _, p = _u32(d, p)
-    elif op in (0x02, 0x04, 0x0c, 0x16):   # symbol / section base / start / end
+        return p, None
+    if op == 0x02:            # symbol
+        idx, p = _u16(d, p)
+        return p, idx
+    if op in (0x04, 0x0c, 0x16):           # section base / start / end
         _, p = _u16(d, p)
-    elif op in (0x2c, 0x2e, 0x32):         # add / sub / div
-        p = _expr(d, p)
-        p = _expr(d, p)
-    else:
-        raise Desync("expr op 0x%02x at %d" % (op, p - 1))
-    return p
+        return p, None
+    if op in (0x2c, 0x2e, 0x32):           # add / sub / div
+        p, a = _expr(d, p)
+        p, b = _expr(d, p)
+        return p, (a if b is None else (b if a is None else None))
+    raise Desync("expr op 0x%02x at %d" % (op, p - 1))
 
 
 def parse_lnk(d):
-    """-> (sections, xdefs, locals)
-    sections: {index: bytearray}; xdefs/locals: [(name, section, offset)]."""
+    """-> (sections, xdefs, locals, relocs, symbols)
+    sections: {index: bytearray}; xdefs/locals: [(name, section, offset)];
+    relocs: [(section, offset, kind, symbol index or None)];
+    symbols: {index: name} for every symbol the object names."""
     if d[:4] != b'LNK\x02':
         raise Desync("not LNK")
     p = 4
     sections = defaultdict(bytearray)
     cur = None
     xdefs, locs = [], []
+    relocs, symbols = [], {}
     n = len(d)
     while p < n:
         tag, p = _u8(d, p)
@@ -68,18 +79,21 @@ def parse_lnk(d):
             ln, p = _u32(d, p)
             sections[cur] += b'\x00' * ln
         elif tag == 0x0a:                     # relocation
-            _, p = _u8(d, p)                  # patch kind
-            _, p = _u16(d, p)                 # offset in section
-            p = _expr(d, p)
+            kind, p = _u8(d, p)
+            off, p = _u16(d, p)               # offset in the current section
+            p, sym = _expr(d, p)
+            relocs.append((cur, off, kind, sym))
         elif tag == 0x0c:                     # exported symbol
-            _, p = _u16(d, p)                 # symbol index
+            idx, p = _u16(d, p)
             sec, p = _u16(d, p)
             off, p = _u32(d, p)
             nm, p = _pstr(d, p)
             xdefs.append((nm, sec, off))
+            symbols[idx] = nm
         elif tag == 0x0e:                     # imported symbol
-            _, p = _u16(d, p)
-            _, p = _pstr(d, p)
+            idx, p = _u16(d, p)
+            nm, p = _pstr(d, p)
+            symbols[idx] = nm
         elif tag == 0x10:                     # section definition
             idx, p = _u16(d, p)
             _, p = _u16(d, p)                 # group
@@ -111,7 +125,7 @@ def parse_lnk(d):
             raise Desync("unhandled debug tag 0x%02x at %d" % (tag, p - 1))
         else:
             raise Desync("tag 0x%02x at %d" % (tag, p - 1))
-    return sections, xdefs, locs
+    return sections, xdefs, locs, relocs, symbols
 
 
 def read_lib(data):
