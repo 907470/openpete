@@ -54,11 +54,10 @@ extern "C" void openpete_debug_triangle_init(void) {
     setRGB0(&s_drawenv, 0x00, 0x40, 0x60);  /* dark teal */
 }
 
-/* Screenshot dumper. PsyCross ships a `PsyX_TakeScreenshot()` but it produces
- * an upside-down image: glReadPixels returns rows bottom-up (GL origin is
- * bottom-left), SDL_CreateSurfaceFrom treats row 0 as the surface top,
- * and SDL_SaveBMP then re-flips during BMP encoding — net effect, one extra
- * flip. We re-implement here with an explicit row flip. */
+/* Screenshot dumper for the PsyCross present FBO. The row flip below is
+ * required: glReadPixels returns rows bottom-up (GL origin is bottom-left),
+ * SDL_CreateSurfaceFrom treats row 0 as the surface top, and SDL_SaveBMP
+ * re-flips during BMP encoding — without it the image lands upside-down. */
 extern "C" void openpete_psyx_take_screenshot(const char* path) {
     /* PsyCross in null-GPU library mode has no GL context — every gl* pointer
      * is unloaded and GR_PresentCroppedToWindow/glReadPixels would segfault.
