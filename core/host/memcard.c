@@ -426,6 +426,13 @@ void openpete_memcard_stop(void)
     s_mc_status = MC_SYNC_NOTHING;
 }
 
+/* Both channel encodings reach the same slot: libmcrd passes the raw PSX port
+ * (port A = 0x00, port B = 0x10) and the BIOS card API passes a plain 0 or 1. */
+static int mc_chan_slot(int chan)
+{
+    return (chan & 0x0F) ? (chan & 1) : ((chan >> 4) & 1);
+}
+
 static int mc_probe(int chan, int func, int* out_cmds, int* out_rslt)
 {
     int slot = (chan >> 4) & 1;
@@ -555,4 +562,42 @@ int openpete_memcard_sync(int mode, int* out_cmds, int* out_rslt)
     if (out_cmds && s_mc_cmds != -1) *out_cmds = s_mc_cmds;
     if (out_rslt && s_mc_rslt != -1) *out_rslt = s_mc_rslt;
     return s_mc_status;
+}
+
+/* --- raw frame access ----------------------------------------------------
+ *
+ * The BIOS card API addresses the card as 1024 numbered 128-byte frames and
+ * knows nothing of the directory the libmcrd surface above works through.
+ * Both reach the same image, so a save written through either is readable
+ * through the other and by any emulator or real card.
+ */
+
+int openpete_memcard_present(int chan)
+{
+    int slot = mc_chan_slot(chan);
+    return s_present[slot] ? 1 : 0;
+}
+
+int openpete_memcard_read_frame(int chan, int frame, void* dst_host)
+{
+    int slot = mc_chan_slot(chan);
+    if (!s_present[slot] || !dst_host) return -1;
+    if (frame < 0 || frame >= MC_CARD_SIZE / MC_SECTOR_SIZE) return -1;
+    mc_ensure_loaded(slot);
+    memcpy(dst_host, s_card[slot] + (size_t)frame * MC_SECTOR_SIZE,
+           MC_SECTOR_SIZE);
+    return 0;
+}
+
+int openpete_memcard_write_frame(int chan, int frame, const void* src_host)
+{
+    int slot = mc_chan_slot(chan);
+    if (!s_present[slot] || !src_host) return -1;
+    if (frame < 0 || frame >= MC_CARD_SIZE / MC_SECTOR_SIZE) return -1;
+    mc_ensure_loaded(slot);
+    mc_modset_on_write(slot);
+    memcpy(s_card[slot] + (size_t)frame * MC_SECTOR_SIZE, src_host,
+           MC_SECTOR_SIZE);
+    mc_flush(slot);
+    return 0;
 }

@@ -49,6 +49,8 @@ PSYQ_HOOK_WEAK void psyq_game_cd_read_done(CPUState* cpu, uint32_t read_cb) {
     (void)cpu; (void)read_cb;
 }
 
+PSYQ_HOOK_WEAK uint32_t psyq_game_cd_read_cb_addr(void) { return 0u; }
+
 PSYQ_HOOK_WEAK int  psyq_game_render_paths_active(void) { return 0; }
 PSYQ_HOOK_WEAK int  psyq_game_render_path_addr_visible(uint32_t addr) {
     (void)addr;

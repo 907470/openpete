@@ -84,6 +84,14 @@ int  openpete_memcard_format(int chan);
  * status (1 = finished, 0 = active, -1 = nothing registered). */
 int  openpete_memcard_sync(int mode, int* out_cmds, int* out_rslt);
 
+/* --- BIOS card surface (called by the psx_bios.c A0/B0 gate) -------------
+ * The BIOS addresses the card as 1024 numbered 128-byte frames rather than
+ * by file name; both views are the same image. chan is 0/1 or the raw port
+ * encoding. Return 0 on success, -1 when the slot is empty or out of range. */
+int  openpete_memcard_present(int chan);
+int  openpete_memcard_read_frame (int chan, int frame, void* dst_host);
+int  openpete_memcard_write_frame(int chan, int frame, const void* src_host);
+
 #ifdef __cplusplus
 }
 #endif

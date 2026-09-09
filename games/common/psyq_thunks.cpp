@@ -163,6 +163,16 @@ extern "C" {
 #include "openpete_recomp_module.h"
 
 static uint32_t g_cd_read_cb     = 0;
+
+/* PSYQ's interrupt-callback table: one guest handler per PSX interrupt line,
+ * installed through the libetc setter the thunk below intercepts. Index 7 is
+ * the controller/memory-card port, whose handler is the pump a BIOS-driven
+ * card driver advances its state machine in. openpete has no interrupt
+ * controller, so each installed handler is driven from the VBL the transfer
+ * it services would have completed within. */
+#define PSYQ_INTR_SLOTS 11
+#define PSYQ_INTR_PAD_CARD 7
+static uint32_t g_intr_cb[PSYQ_INTR_SLOTS];
 /* Native cd.c (post-rewriter) registers a host-side callback via
  * openpete_CdReadCallback. psyq_CdRead checks both this and g_cd_read_cb;
  * one-or-the-other is set depending on whether the registrar was native
@@ -201,6 +211,14 @@ static void invoke_psx_callback(CPUState* cpu, uint32_t cb_addr,
     }
     cpu->a0 = s_a0; cpu->a1 = s_a1; cpu->a2 = s_a2; cpu->a3 = s_a3;
     cpu->ra = s_ra; cpu->v0 = s_v0; cpu->v1 = s_v1;
+}
+
+/* Run the controller/memory-card interrupt handler for one VBL. On hardware
+ * the port raises this line once per transfer; the pad is polled every VBL,
+ * so one call per VBL advances the driver at the rate the game expects. */
+static void psyq_pump_pad_card_intr(CPUState* cpu) {
+    uint32_t cb = g_intr_cb[PSYQ_INTR_PAD_CARD];
+    if (cb) invoke_psx_callback(cpu, cb, 0, 0);
 }
 
 /* --- libgcc/crt0 --------------------------------------------------------- */
@@ -279,6 +297,7 @@ void psyq_VSync(CPUState* cpu) {
             if (openpete_host_fiber) {
                 openpete_yield_to_host();
                 if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
+                psyq_pump_pad_card_intr(cpu);
             }
             observed = SDL_GetAtomicInt(&openpete_vbl);
         }
@@ -304,11 +323,13 @@ void psyq_VSync(CPUState* cpu) {
     } else if (openpete_host_fiber) {
         openpete_yield_to_host();
         if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
+        psyq_pump_pad_card_intr(cpu);
     } else {
         /* No fiber loop (smoke-test path) — fall back to PsyCross's busy
          * wait so audio/timer semantics still match. */
         if (mode == 0) (void)VSync(0);
         if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
+        psyq_pump_pad_card_intr(cpu);
     }
 
     /* PSYQ libpad parity: PsyCross's input poll (which fired during the
@@ -341,14 +362,58 @@ void psyq_ResetCallback(CPUState* cpu) {
     cpu->v0 = (uint32_t)ResetCallback();
 }
 
+/* DMA completion handlers, by channel.
+ *
+ * A PSYQ transfer ends in a DMA interrupt, and libcd's read path finishes its
+ * work in the channel-3 handler: it is what tells the game a read landed.
+ * PsyCross performs the transfer host-side and raises no interrupt, so unless
+ * the thunk layer records this handler and calls it when the transfer is done,
+ * a game that waits on its own read-completion bookkeeping waits forever.
+ *
+ * PSX DMA has 7 channels; 3 is the CD-ROM. */
+#define PSYQ_DMA_CHANNELS 7
+static uint32_t g_dma_cb[PSYQ_DMA_CHANNELS];
+
+void psyq_DMACallback(CPUState* cpu) {
+    uint32_t ch = cpu->a0;
+    uint32_t prev = 0u;
+    if (ch < PSYQ_DMA_CHANNELS) {
+        prev = g_dma_cb[ch];
+        g_dma_cb[ch] = cpu->a1;
+        OPL_INFO_F("thunks", "DMACallback ch=%u -> 0x%08X", ch, cpu->a1);
+    }
+    cpu->v0 = prev;   /* PSYQ returns the handler it replaced */
+}
+
+/* Fire a channel's completion handler, if the game registered one. */
+static void psyq_dma_complete(CPUState* cpu, uint32_t ch) {
+    if (ch < PSYQ_DMA_CHANNELS && g_dma_cb[ch]) {
+        invoke_psx_callback(cpu, g_dma_cb[ch], ch, 0u);
+    }
+}
+
 /* The remaining libetc registrations return the previous handler and are
- * otherwise inert here: PsyCross services the interrupt sources host-side and
- * never dispatches a guest handler for them, so recording the address would
- * promise a call that never arrives. Returning 0 says "there was no previous
- * handler", which is what a first registration sees on hardware too. */
+ * otherwise inert: PsyCross services those interrupt sources host-side and
+ * dispatches no guest handler for them, so recording the address would promise
+ * a call that never arrives. Returning 0 says "there was no previous handler",
+ * which is what a first registration sees on hardware too. */
 void psyq_InterruptCallback(CPUState* cpu) { cpu->v0 = 0u; }
-void psyq_DMACallback(CPUState* cpu)       { cpu->v0 = 0u; }
-void psyq_VSyncCallbacks(CPUState* cpu)    { cpu->v0 = 0u; }
+/* Installs a guest handler in the interrupt-callback table: a0 selects the
+ * interrupt line, a1 is the handler, and the previous handler is returned. */
+void psyq_VSyncCallbacks(CPUState* cpu) {
+    uint32_t slot = cpu->a0;
+    if (slot >= PSYQ_INTR_SLOTS) {
+        OPL_WARN_F("thunks", "interrupt callback for line %u out of range",
+                   slot);
+        cpu->v0 = 0u;
+        return;
+    }
+    OPL_INFO_F("thunks", "interrupt callback line %u -> 0x%08X", slot,
+               cpu->a1);
+    uint32_t prev = g_intr_cb[slot];
+    g_intr_cb[slot] = cpu->a1;
+    cpu->v0 = prev;
+}
 
 /* --- libgpu -------------------------------------------------------------- */
 
@@ -1147,6 +1212,10 @@ void psyq_PadInfoMode(CPUState* cpu) {
     cpu->v0 = (uint32_t)PadInfoMode((int)cpu->a0, (int)cpu->a1, (int)cpu->a2);
 }
 
+void psyq_PadInfoAct(CPUState* cpu) {
+    cpu->v0 = (uint32_t)PadInfoAct((int)cpu->a0, (int)cpu->a1, (int)cpu->a2);
+}
+
 void psyq_PadSetMainMode(CPUState* cpu) {
     /* PsyCross: UNIMPLEMENTED. Treat as success so GamepadInitialize moves on. */
     (void)cpu;
@@ -1445,9 +1514,20 @@ void psyq_CdRead(CPUState* cpu) {
          * directly — no cpu dispatch round-trip needed. */
         g_native_cd_read_cb(/*intr=CdlComplete=*/2u, /*result=*/nullptr);
     } else {
-        invoke_psx_callback(cpu, g_cd_read_cb, /*intr=CdlComplete=*/2u, 0u);
+        uint32_t cb = g_cd_read_cb;
+        if (cb == 0u) {
+            /* libcd is translated in this game's image: CdReadCallback stored
+             * the handler in guest RAM instead of reaching the thunk. */
+            uint32_t slot = psyq_game_cd_read_cb_addr();
+            if (slot != 0u) cb = cpu->read_word(slot);
+        }
+        invoke_psx_callback(cpu, cb, /*intr=CdlComplete=*/2u, 0u);
     }
     psyq_game_cd_read_done(cpu, g_cd_read_cb);
+
+    /* The transfer is complete; on hardware that is a channel-3 DMA interrupt,
+     * and libcd's read path does its bookkeeping in that handler. */
+    psyq_dma_complete(cpu, 3u);
 
     /* Once the bytes have settled, the first word at the overlay vaddr is the
      * overlay id, so re-point the dispatcher at whichever overlay is now

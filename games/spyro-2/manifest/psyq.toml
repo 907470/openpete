@@ -38,10 +38,6 @@ name = "PadInitDirect"
 addr = 0x80054f1c
 
 [[symbols]]
-name = "func_800550E4"
-addr = 0x800550e4
-
-[[symbols]]
 name = "ResetGraph"
 addr = 0x8005557c
 
@@ -122,6 +118,14 @@ name = "PadSetMainMode"
 addr = 0x80058718
 
 [[symbols]]
+name = "CdFlush"
+addr = 0x800587f0
+
+[[symbols]]
+name = "CdSync"
+addr = 0x80058810
+
+[[symbols]]
 name = "CdControl"
 addr = 0x80058858
 
@@ -132,6 +136,18 @@ addr = 0x80058994
 [[symbols]]
 name = "CdControlB"
 addr = 0x80058ac8
+
+[[symbols]]
+name = "CdGetSector"
+addr = 0x80058c14
+
+[[symbols]]
+name = "CdGetSector2"
+addr = 0x80058c34
+
+[[symbols]]
+name = "CdDataSync"
+addr = 0x80058c78
 
 [[symbols]]
 name = "CdIntToPos"
@@ -166,6 +182,10 @@ name = "rand"
 addr = 0x80059d2c
 
 [[symbols]]
+name = "srand"
+addr = 0x80059d5c
+
+[[symbols]]
 name = "MulMatrix0"
 addr = 0x80059d6c
 
@@ -180,6 +200,10 @@ addr = 0x8005a01c
 [[symbols]]
 name = "strlen"
 addr = 0x8005a0bc
+
+[[symbols]]
+name = "SpuRead"
+addr = 0x8005a0fc
 
 [[symbols]]
 name = "SpuIsTransferCompleted"
@@ -204,6 +228,10 @@ addr = 0x8005a488
 [[symbols]]
 name = "SpuSetVoiceAttr"
 addr = 0x8005a4a8
+
+[[symbols]]
+name = "SpuWrite"
+addr = 0x8005aaa8
 
 [[symbols]]
 name = "startIntrVSync"
@@ -232,18 +260,6 @@ addr = 0x8005b344
 [[symbols]]
 name = "_padInitSioMode"
 addr = 0x8005b388
-
-[[symbols]]
-name = "func_8005B6BC"
-addr = 0x8005b6bc
-
-[[symbols]]
-name = "func_8005B7AC"
-addr = 0x8005b7ac
-
-[[symbols]]
-name = "func_8005B9BC"
-addr = 0x8005b9bc
 
 [[symbols]]
 name = "_padClrIntSio0"
@@ -360,28 +376,4 @@ addr = 0x8005f0f4
 [[symbols]]
 name = "_padSetRC2wait"
 addr = 0x8005f884
-
-[[symbols]]
-name = "func_8005F8A4"
-addr = 0x8005f8a4
-
-[[symbols]]
-name = "func_8005F944"
-addr = 0x8005f944
-
-[[symbols]]
-name = "func_8005F98C"
-addr = 0x8005f98c
-
-[[symbols]]
-name = "func_8005FA64"
-addr = 0x8005fa64
-
-[[symbols]]
-name = "func_8005FB10"
-addr = 0x8005fb10
-
-[[symbols]]
-name = "func_8005FBD4"
-addr = 0x8005fbd4
 

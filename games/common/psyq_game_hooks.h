@@ -109,6 +109,13 @@ void psyq_game_cd_apply_buf(unsigned char* buf, int sectors);
  * its own read-in-flight bookkeeping actually cleared. */
 void psyq_game_cd_read_done(CPUState* cpu, uint32_t read_cb);
 
+/* Address of libcd's read-completion callback slot in PSX RAM, for a game that
+ * links libcd's own CdReadCallback rather than reaching the thunk: the
+ * registration stores the guest handler there and never reaches
+ * psyq_CdRead's tracked callback. 0 when the game registers through the
+ * thunk. */
+uint32_t psyq_game_cd_read_cb_addr(void);
+
 /* Render-path filter and moby ranking consumed by the OT walk. */
 int  psyq_game_render_paths_active(void);
 int  psyq_game_render_path_addr_visible(uint32_t addr);

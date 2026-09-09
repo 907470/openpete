@@ -110,6 +110,11 @@ static void note_miss(uint32_t addr, uint32_t ra, uint32_t sp) {
 void call_by_address(CPUState* cpu, uint32_t addr) {
     if (s_recomp_module->dispatch(cpu, addr)) return;
 
+    /* A jump to 0xA0/0xB0/0xC0 is a BIOS service call, not a missing
+     * translation: the BIOS is not part of the recompiled image. */
+    extern int openpete_psx_bios_call(CPUState* cpu, uint32_t addr);
+    if (openpete_psx_bios_call(cpu, addr)) return;
+
     /* Unknown target. Could be an overlay function that lives in the EXE
      * load image but wasn't part of the recompiler input, or a renamed PSYQ
      * symbol that fell off the manifest. Stub-and-continue: zero out v0 so

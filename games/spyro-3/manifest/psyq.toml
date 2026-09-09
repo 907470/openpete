@@ -106,10 +106,6 @@ name = "PadInitDirect"
 addr = 0x8005ccfc
 
 [[symbols]]
-name = "func_8005CEC4"
-addr = 0x8005cec4
-
-[[symbols]]
 name = "SetGeomOffset"
 addr = 0x8005d35c
 
@@ -146,6 +142,14 @@ name = "PadSetMainMode"
 addr = 0x8005df7c
 
 [[symbols]]
+name = "CdFlush"
+addr = 0x8005e054
+
+[[symbols]]
+name = "CdSync"
+addr = 0x8005e074
+
+[[symbols]]
 name = "CdControl"
 addr = 0x8005e0bc
 
@@ -156,6 +160,14 @@ addr = 0x8005e1f8
 [[symbols]]
 name = "CdControlB"
 addr = 0x8005e32c
+
+[[symbols]]
+name = "CdGetSector"
+addr = 0x8005e478
+
+[[symbols]]
+name = "CdGetSector2"
+addr = 0x8005e498
 
 [[symbols]]
 name = "SetDefDrawEnv"
@@ -232,18 +244,6 @@ addr = 0x8005ff54
 [[symbols]]
 name = "_padInitSioMode"
 addr = 0x8005ff98
-
-[[symbols]]
-name = "func_800602CC"
-addr = 0x800602cc
-
-[[symbols]]
-name = "func_800603BC"
-addr = 0x800603bc
-
-[[symbols]]
-name = "func_800605CC"
-addr = 0x800605cc
 
 [[symbols]]
 name = "_padClrIntSio0"
@@ -354,32 +354,12 @@ name = "_padSetRC2wait"
 addr = 0x800642cc
 
 [[symbols]]
-name = "func_800642EC"
-addr = 0x800642ec
-
-[[symbols]]
-name = "func_8006438C"
-addr = 0x8006438c
-
-[[symbols]]
-name = "func_800643D4"
-addr = 0x800643d4
-
-[[symbols]]
-name = "func_800644AC"
-addr = 0x800644ac
-
-[[symbols]]
-name = "func_80064558"
-addr = 0x80064558
-
-[[symbols]]
-name = "func_8006461C"
-addr = 0x8006461c
-
-[[symbols]]
 name = "SpuSetTransferStartAddr"
 addr = 0x80064a2c
+
+[[symbols]]
+name = "SpuWrite"
+addr = 0x80064a8c
 
 [[symbols]]
 name = "SpuIsTransferCompleted"
