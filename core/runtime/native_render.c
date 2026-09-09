@@ -1380,7 +1380,7 @@ void openpete_native_precreate_window(const openpete_options_t *opts,
     nr_resolve_window_size(opts, win_w, win_h, /*ab_mode=*/false, &w, &h);
 
     const char *title = (opts->display_name && opts->display_name[0])
-                        ? opts->display_name : "Spyro the Dragon";
+                        ? opts->display_name : "openpete";
     s_precreated_win = SDL_CreateWindow(title, w, h,
                                         SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
     if (!s_precreated_win) {
@@ -1888,7 +1888,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
                           : diff_mode ? "openpete — native renderer (diff)"
                           : (opts->display_name && opts->display_name[0])
                                       ? opts->display_name
-                                      : "Spyro the Dragon";
+                                      : "openpete";
         /* Either the first-run splash's window or one the host precreated.
          * Both exist so the window is owned by the thread that will pump it:
          * Win32 delivers a window's messages only to its creating thread. */

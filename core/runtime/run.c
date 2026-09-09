@@ -2075,23 +2075,22 @@ static int run_host_init(const openpete_options_t* opts) {
      * was already attached. */
     openpete_host_input_load_mappings(opts->controller_db);
 
-    /* App icon decoded at build time from the PSX save-file header
-     * (the red gem from the BIOS memory-card screen). The Win32 .rc
-     * resource handles taskbar / .exe shortcut / alt-tab on Windows;
-     * SDL_SetWindowIcon covers the live window on every platform.
-     * Weakly referenced so a build that opts out of the icon
-     * generator step still links. */
+    /* App icon, emitted at build time by the game's own icon step as
+     * RGBA8 plus its dimensions. The Win32 .rc resource handles taskbar /
+     * .exe shortcut / alt-tab on Windows; SDL_SetWindowIcon covers the
+     * live window on every platform. Weakly referenced so a build that
+     * opts out of the icon generator step still links. */
     if (g_window) {
-        extern const uint8_t openpete_spyro1_icon_rgba[]
+        extern const uint8_t openpete_game_icon_rgba[]
             __attribute__((weak));
-        extern const int openpete_spyro1_icon_w __attribute__((weak));
-        extern const int openpete_spyro1_icon_h __attribute__((weak));
-        if (&openpete_spyro1_icon_w && openpete_spyro1_icon_w > 0) {
+        extern const int openpete_game_icon_w __attribute__((weak));
+        extern const int openpete_game_icon_h __attribute__((weak));
+        if (&openpete_game_icon_w && openpete_game_icon_w > 0) {
             SDL_Surface* icon = SDL_CreateSurfaceFrom(
-                openpete_spyro1_icon_w, openpete_spyro1_icon_h,
+                openpete_game_icon_w, openpete_game_icon_h,
                 SDL_PIXELFORMAT_RGBA32,
-                (void*)openpete_spyro1_icon_rgba,
-                openpete_spyro1_icon_w * 4);
+                (void*)openpete_game_icon_rgba,
+                openpete_game_icon_w * 4);
             if (icon) {
                 SDL_SetWindowIcon(g_window, icon);
                 SDL_DestroySurface(icon);
@@ -2102,13 +2101,13 @@ static int run_host_init(const openpete_options_t* opts) {
      * default path (PsyCross runs null-GPU and creates no window at all).
      * Handed over rather than applied: that window does not exist yet. */
     {
-        extern const uint8_t openpete_spyro1_icon_rgba[] __attribute__((weak));
-        extern const int openpete_spyro1_icon_w __attribute__((weak));
-        extern const int openpete_spyro1_icon_h __attribute__((weak));
-        if (&openpete_spyro1_icon_w && openpete_spyro1_icon_w > 0)
-            openpete_native_set_icon(openpete_spyro1_icon_rgba,
-                                     openpete_spyro1_icon_w,
-                                     openpete_spyro1_icon_h);
+        extern const uint8_t openpete_game_icon_rgba[] __attribute__((weak));
+        extern const int openpete_game_icon_w __attribute__((weak));
+        extern const int openpete_game_icon_h __attribute__((weak));
+        if (&openpete_game_icon_w && openpete_game_icon_w > 0)
+            openpete_native_set_icon(openpete_game_icon_rgba,
+                                     openpete_game_icon_w,
+                                     openpete_game_icon_h);
     }
 
     if (opts->headless && g_window) {
