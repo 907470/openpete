@@ -381,6 +381,11 @@ extern "C" int spyro1_dump_sfx_pack(const char* cue_path, const char* out_dir,
         std::fprintf(stderr, "dump-sfx-pack: needs a directory\n");
         return -1;
     }
+    if (!(cue_path && cue_path[0]) && !(extra_wads && extra_wads[0])) {
+        std::fprintf(stderr, "dump-sfx-pack: no disc and no --dump-sfx-wads: "
+                             "nothing to walk\n");
+        return -1;
+    }
     std::error_code ec;
     std::filesystem::path out(out_dir);
     std::filesystem::create_directories(out, ec);
@@ -454,5 +459,12 @@ extern "C" int spyro1_dump_sfx_pack(const char* cue_path, const char* out_dir,
     OPL_INFO_F("sfxdump", "entries=%d sources=%d dumped=%d dup=%d no_end=%d "
                "failed=%d -> %s", st.entries, st.sources, st.dumped, st.dup,
                st.no_end, st.failed, out_dir);
+    if (st.entries == 0) {
+        /* Every source walked cleanly and none existed: the inputs opened
+         * but carried no sample bank. Reporting success here hands a
+         * caller an empty pack that looks like a finished census. */
+        OPL_ERROR_F("sfxdump", "%s", "no entries walked");
+        return 2;
+    }
     return (st.no_end == 0 && st.failed == 0) ? 0 : 2;
 }

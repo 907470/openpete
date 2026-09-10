@@ -182,10 +182,19 @@ int main(int argc, char** argv) {
         return openpete_mods_compile_all(&opts) == 0 ? 0 : 1;
 
     /* sfx pack census (--dump-sfx-pack): walk the disc's WAD (+ custom
-     * level files) and exit. Needs the disc only. */
-    if (opts.dump_sfx_pack_dir)
+     * level files) and exit. Needs a disc, which is the library's most
+     * recent entry unless --disc names one: opts.disc_path is empty until
+     * the library resolves it, and walking an empty path yields an empty
+     * census. The splash stays off — this is a batch command and must not
+     * open a window to ask which version to census. */
+    if (opts.dump_sfx_pack_dir) {
+        if (!opts.disc_path && !opts.exe_path) {
+            spyro1_splash_set_enabled(0);
+            (void)spyro1_library_resolve(&opts, nullptr, 0);
+        }
         return spyro1_dump_sfx_pack(opts.disc_path, opts.dump_sfx_pack_dir,
                                     opts.dump_sfx_wads) == 0 ? 0 : 1;
+    }
 
     /* Distribution D2.5: resolve disc + module through the
      * content-addressed library (--ingest copies an image in; no disc

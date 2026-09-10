@@ -20,7 +20,7 @@ so a sound mod never moves gameplay state.
 ## Dump, edit, drop in
 
 ```
-openpete-spyro1 --disc SCUS-94228.cue --dump-sfx-pack dump/
+openpete-spyro1 --dump-sfx-pack dump/
 ```
 
 reads every sample from the disc's WAD (every level, the cutscenes, the
