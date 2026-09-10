@@ -9727,9 +9727,19 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
      * bars-free PSX display is 4:3 corrected for the vertical overscan crop
      * (aspect = 4/3 * disp_h/clip_h), at a ~2x-internal reference so the
      * off-display RT stays crisp. Only the aspect matters to the layout (fit_cell
-     * cancels the absolute scale); the size feeds native_rtt. Gated vk-only —
-     */
-    if (!have_ref) {
+     * cancels the absolute scale); the size feeds native_rtt.
+     *
+     * Gated on the SCENE predicate, and it has to be. In PsyCross display mode
+     * the reference IS the picture, and its extent comes from PsyCross's
+     * present FBO, which is sized from the window and the game's overscan crop
+     * (4/3 * disp_h/clip_h). The estimate below lands on the same numbers only
+     * when clip_h is 224 — Spyro 1. For a 216-row clip it derives 640x432
+     * against PsyCross's 664x448, so a frame where PsyCross produced nothing
+     * (a load, or before its first present) would overwrite the real extent
+     * with a wrong one, and the next real frame would destroy and rebuild
+     * ref_tex under rhi_wait_idle. Leave the last known reference extent
+     * alone instead; update_layout is change-keyed and will not churn. */
+    if (!have_ref && s_nr.scene_live) {
         int dh = s_nr.disp_h > 0 ? s_nr.disp_h : 240;
         int ch = s_nr.clip_h > 0 ? s_nr.clip_h : 224;
         int rh = ch * 2;
