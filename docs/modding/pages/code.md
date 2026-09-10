@@ -194,8 +194,4 @@ mouse and no keyboard, so the game keeps both; `ui->overlay_open()` says
 which state the present is in. `ui_status` lines still appear in the mod's
 node. The pass is skipped while the in-game settings menu is open.
 
-An always window is chrome, not content: it is never recorded and never
-appears in screenshots or A/B composes. `draw_text` is the recorded-HUD
-path.
-
 Full contracts: [API reference](reference/api.md).

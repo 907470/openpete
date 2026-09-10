@@ -71,7 +71,8 @@ nav:
   - Code mods: code.md
   - ImGui: imgui.md
   - Assets:
-      - Textures and music: assets.md
+      - Textures: textures.md
+      - Music: music.md
       - Sounds: sounds.md
       - Custom levels: levels.md
   - Shaders: shaders.md

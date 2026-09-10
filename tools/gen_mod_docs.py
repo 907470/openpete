@@ -606,8 +606,8 @@ USES_LINK = (
     (re.compile(r"openpete_mod_ui\.h|`OPENPETE_MOD_UI_\w+`|`ui->\w+`"),
      "api.md#ui-widgets"),
     (re.compile(r"\[\[material\]\]"), "../shaders.md#materials"),
-    (re.compile(r"assets/textures/"), "../assets.md#textures"),
-    (re.compile(r"assets/music/"), "../assets.md#music"),
+    (re.compile(r"assets/textures/"), "../textures.md"),
+    (re.compile(r"assets/music/"), "../music.md"),
     (re.compile(r"assets/sfx/"), "../sounds.md"),
     (re.compile(r"shaders/"), "../shaders.md"),
 )

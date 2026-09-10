@@ -64,7 +64,7 @@ mod engine-rendered settings and rebindable keys with no UI code.
   `enabled.txt`.
 - [Code mods](code.md): the override chain, tick and present contexts,
   guest memory, services.
-- Assets: [textures and music](assets.md), [sounds](sounds.md),
+- Assets: [textures](textures.md), [music](music.md), [sounds](sounds.md),
   [custom levels](levels.md).
 - [Shaders](shaders.md): post-process passes and material selectors.
 - [Publishing](publishing.md): what a mod must get right before release.

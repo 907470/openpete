@@ -76,7 +76,7 @@ eggs    = 1                # optional: replace-mode, first three worlds only
 - Without `music`, the level plays the donor's track. With it, the engine
   plays the WAV whenever the level starts its music and sizes the game's
   loop bookkeeping to the file's length. Format: see
-  [Music](assets.md#music).
+  [Music](music.md).
 - `name` appears in the inventory rows, on the entry title card, and in
   the homeworld portal's floating letters (in replace mode, in place of
   the donor's name). Names are filtered to `A-Z`, `0-9`, space, and
