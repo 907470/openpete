@@ -65,7 +65,14 @@ eggs    = 1                # optional: replace-mode, first three worlds only
   first three worlds. The game's egg table has one row per level for
   those worlds and none at all for the shared slot, so the engine drops
   an `eggs` declaration it cannot place and says so in the log. The rest
-  of the block still applies.
+  of the block still applies. The refusal is not a formality: the shared
+  slot's index falls outside the table and lands in the memory-card save
+  header, so a level on the shared slot can never show an egg count.
+- The drop happens when the level is registered, which reads `replace`
+  from this file. Switching a live level to replace-donor mode from the
+  Mods panel does NOT bring a dropped `eggs` back — the value is already
+  gone for that session. Set `replace = true` here and restart to make an
+  egg count apply.
 - Without `music`, the level plays the donor's track. With it, the engine
   plays the WAV whenever the level starts its music and sizes the game's
   loop bookkeeping to the file's length. Format: see
