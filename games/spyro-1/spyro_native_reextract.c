@@ -471,98 +471,18 @@ static void cl_apply(uint8_t* cam) {
     }
 }
 
-/* ---- cutscene path-follower smoothing (title flyby & friends) ----------------
+/* ---- cutscene path-follower helpers -----------------------------------------
  * Cutscene actors (main-EXE func_8002BFE0/func_8002C0EC) ride a packed
- * polyline: one word per waypoint, three 10-bit coords ×256 (so the path data
- * itself is quantized to a 256-unit grid), advanced at idx = t/div with a
- * coarse 64ths lerp between wp[idx] and wp[idx+1]. Faithfully sub-tick-lerping
- * those canonical positions renders the quantization as a per-axis ~512-unit
- * staircase — the titlescreen-flyby shimmer (the camera rides a SEPARATE
- * full-precision 24-byte record table, which is why only the mobys jitter).
- * Present-side we re-evaluate the SAME waypoint array as a uniform cubic
- * B-spline over wp[i-1..i+2] at the exact fractional parameter: C2-smooth,
- * full look-ahead (the path is static data in RAM), stays within the waypoint
- * hull (≤ ~one quantization step from canonical, bound-guarded below), and
- * writes nothing gameplay-readable. OPENPETE_CUTSCENE_PATH_SMOOTH=0 disables. */
+ * polyline held in g_CutsceneLayout: one word per waypoint, three 10-bit
+ * coords ×256, advanced at idx = t/div with a coarse 64ths lerp between
+ * wp[idx] and wp[idx+1]. The actors are the first `count` entries of
+ * g_LevelMobys and the decoder writes their position at +0x0C; the camera
+ * rides a separate full-precision 24-byte record table at +0x10. */
 static int cut_rd32(uint32_t va, uint32_t* out) {
     if (va < 0x80000000u || va >= 0x80200000u - 4u) return 0;
     const uint8_t* p = (const uint8_t*)openpete_psx_to_host_ptr(va);
     if (!p) return 0;
     memcpy(out, p, 4);
-    return 1;
-}
-
-/* Invert the packed polyline: find u (fractional waypoint index) such that
- * path(u) == pos, where pos is a CANONICAL actor position — an exact
- * lerp(wp[i], wp[i+1], f) the game's decoder wrote (f is a coarse 64ths
- * fraction, so on-segment matches are near-exact in integer world units).
- * Searches segments around `hint` (the actor's last solved index; paths are
- * walked monotonically). Returns 1 and writes *out_u on a match. Repeated-
- * waypoint HOLD runs are inherently ambiguous — the search order (outward
- * from hint, forward first) picks the hint-nearest match, which keeps u
- * continuous through a hold. */
-/* Test whether pos lies on segment [wp[i], wp[i+1]]; writes the fraction. */
-static int cutpath_on_segment(uint32_t path, int i, const int32_t* pos, double* out_f) {
-    uint32_t wa, wb;
-    if (i < 0) return 0;
-    if (!cut_rd32(path + (uint32_t)i * 4u, &wa)) return 0;
-    if (!cut_rd32(path + (uint32_t)(i + 1) * 4u, &wb)) return 0;
-    int32_t A[3], B[3];
-    A[0] = (int32_t)(((wa >> 20) & 0x3FFu) << 8); B[0] = (int32_t)(((wb >> 20) & 0x3FFu) << 8);
-    A[1] = (int32_t)(((wa >> 10) & 0x3FFu) << 8); B[1] = (int32_t)(((wb >> 10) & 0x3FFu) << 8);
-    A[2] = (int32_t)((wa & 0x3FFu) << 8);         B[2] = (int32_t)((wb & 0x3FFu) << 8);
-    /* fraction from the axis with the largest span, then verify all axes */
-    int ax = 0; int32_t span = 0;
-    for (int c = 0; c < 3; c++) {
-        int32_t d = B[c] - A[c]; if (d < 0) d = -d;
-        if (d > span) { span = d; ax = c; }
-    }
-    double f;
-    if (span == 0) {                      /* hold segment: any f — need exact pos */
-        if (pos[0] != A[0] || pos[1] != A[1] || pos[2] != A[2]) return 0;
-        f = 0.0;
-    } else {
-        f = (double)(pos[ax] - A[ax]) / (double)(B[ax] - A[ax]);
-        if (f < -0.01 || f > 1.01) return 0;
-        for (int c = 0; c < 3; c++) {
-            double e = (double)A[c] + ((double)B[c] - (double)A[c]) * f;
-            if (fabs(e - (double)pos[c]) > 4.0) return 0;
-        }
-        if (f < 0.0) f = 0.0; else if (f > 1.0) f = 1.0;
-    }
-    *out_f = f;
-    return 1;
-}
-
-#define CUTPATH_SCAN_MAX 512
-
-static int cutpath_solve_u(uint32_t path, const int32_t* pos, int hint, double* out_u) {
-    if (hint < 0) hint = 0;
-    /* fast window: hint, hint+1, hint-1, hint+2, ... (forward bias) — the
-     * common per-present case where u has barely moved */
-    for (int step = 0; step <= 12; step++) {
-        int i = (step & 1) ? hint - (step + 1) / 2 : hint + step / 2;
-        double f;
-        if (cutpath_on_segment(path, i, pos, &f)) { *out_u = (double)i + f; return 1; }
-    }
-    /* wide scan (park→motion transitions, joins, long holds): pick the match
-     * nearest the hint, forward-preferred. Without this, one fast-window miss
-     * freezes the hint and the path walks out of reach — a0/a1 silently fell
-     * back to the quantized staircase mid-flyby (census showed engage loss). */
-    int best_i = -1; double best_f = 0.0; long best_score = 0;
-    for (int i = 0; i < CUTPATH_SCAN_MAX; i++) {
-        double f;
-        if (!cutpath_on_segment(path, i, pos, &f)) {
-            uint32_t w;
-            if (!cut_rd32(path + (uint32_t)i * 4u, &w)) break;   /* end of readable path */
-            continue;
-        }
-        long d = (long)(i - hint); if (d < 0) d = -d;
-        long score = 2 * d - (i >= hint ? 1 : 0);
-        if (best_i < 0 || score < best_score) { best_i = i; best_f = f; best_score = score; }
-    }
-    if (best_i < 0) return 0;
-    *out_u = (double)best_i + best_f;
     return 1;
 }
 
@@ -581,218 +501,6 @@ int spyro_cutpath_is_actor(uint32_t m) {
     if (off % MOBY_STRIDE) return 0;
     if (!cut_rd32(cs + 0x0C, &cnt) || cnt == 0 || cnt > 8u) return 0;
     return (off / MOBY_STRIDE) < cnt;
-}
-
-static int cutpath_smooth_pos(uint32_t m, const int32_t* pp, const int32_t* cp,
-                              double a, uint32_t cam_tick, int32_t* out) {
-    static int s_on = -1;
-    if (s_on < 0) {
-        /* DEFAULT OFF (2026-07-04, fourth eyeball round): the canonical
-         * RENDERED flyby trajectory is ALREADY SMOOTH — the flight clips'
-         * baked whole-body animation was authored against the exact
-         * quantized path, so the composite (path + anim) cancels the
-         * 256-grid staircase. Smoothing the path channel ALONE un-cancels
-         * the anim's complementary wiggle and injects staircase noise into
-         * the composite — the spline itself was the residual jitter. The
-         * correct high-FPS rendering is the plain faithful lerp of both
-         * channels at ONE coherent alpha (correct now that the stamp/alpha/
-         * present clocks are fixed — their breakage was the ORIGINAL
-         * regression). OPENPETE_CUTSCENE_PATH_SMOOTH=1 re-enables for A/B. */
-        const char* e = getenv("OPENPETE_CUTSCENE_PATH_SMOOTH");
-        s_on = (e && *e == '1');
-    }
-    if (!s_on) return 0;
-    uint32_t cs, base, cnt;
-    if (!cut_rd32(G_CUTSCENE, &cs) || cs < 0x80000000u || cs >= 0x80200000u) return 0;
-    /* actors are the first `count` entries of g_LevelMobys (the decoder walks
-     * *(g_LevelMobys) + k*0x58 and writes position at +0x0C) */
-    if (!cut_rd32(G_LEVELMOBYS, &base) || base < 0x80000000u || base >= 0x80200000u) return 0;
-    if (m < base) return 0;
-    uint32_t off = m - base;
-    if (off % MOBY_STRIDE) return 0;
-    uint32_t k = off / MOBY_STRIDE;
-    if (!cut_rd32(cs + 0x0C, &cnt) || cnt == 0 || cnt > 8u || k >= cnt) return 0;
-
-    uint32_t path;
-    if (!cut_rd32(cs + 0x14 + 4u * k, &path) || path < 0x80000000u || path >= 0x80200000u) return 0;
-
-    /* Path parameter = a CONSTANT-RATE COASTING CLOCK, phase-locked to the
-     * position solves. The game's true clock advances u at a perfectly
-     * uniform rate (u = t/div, t += const per tick); repeated waypoints
-     * (holds / mini-pauses) are QUANTIZER DUPLICATES — pauses in POSITION,
-     * never in path time. The position-inversion is degenerate there, and
-     * rendering the faithful solved-u reproduced the quantizer's stop-go at
-     * 8-15 Hz — a ±5-15 px sawtooth riding the true curve (the third
-     * windows-eyeball failure: canonical-vs-interp overlay showed canonical
-     * SMOOTH with the interp wiggling around it). So: per-actor clock
-     * coasts `rate` waypoints per tick (rate = damped EMA of solved per-tick
-     * advance), corrected toward each tick's solve by 1/8 — but ONLY when
-     * this tick's canonical position MOVED (a hold-ambiguous solve pins to a
-     * segment and must not drag the clock); |error| > 1.5 wp = a genuine
-     * cut/park-exit → resync (snap). The cutscene clock at cs+0 itself is
-     * NOT usable: it advances per 60 Hz VBL, twice per tick, async with
-     * presents (the second eyeball failure — "jumping back in the path"). */
-    static struct {
-        uint32_t cs; int hint[8]; long nosolve[8];
-        double clk_prev[8], clk_curr[8], rate[8];
-        int32_t last_cp[8][3];
-        uint32_t last_tick[8];
-        uint8_t have_clk[8];
-    } s_uh;
-    if (s_uh.cs != cs) {
-        memset(&s_uh, 0, sizeof s_uh);
-        s_uh.cs = cs;
-    }
-    int cp_moved = memcmp(s_uh.last_cp[k], cp, 12) != 0;
-    int tick_rolled = cam_tick != 0 && cam_tick != s_uh.last_tick[k];
-    double dticks = tick_rolled && s_uh.last_tick[k] != 0
-                  ? (double)(cam_tick - s_uh.last_tick[k]) / 2.0 : 1.0;
-    if (dticks < 1.0) dticks = 1.0; else if (dticks > 4.0) dticks = 4.0;
-
-    if (!s_uh.have_clk[k]) {
-        /* engage: need an unambiguous solve of a MOVING position */
-        double u_prev, u_curr;
-        if (!cp_moved ||
-            !cutpath_solve_u(path, cp, s_uh.hint[k], &u_curr) ||
-            !cutpath_solve_u(path, pp, (int)u_curr, &u_prev) ||
-            u_curr <= u_prev + 0.05 || u_curr > u_prev + 2.0) {
-            s_uh.nosolve[k]++;
-            memcpy(s_uh.last_cp[k], cp, 12);
-            if (tick_rolled) s_uh.last_tick[k] = cam_tick;
-            return 0;
-        }
-        s_uh.hint[k]     = (int)u_curr;
-        s_uh.clk_curr[k] = u_curr;
-        s_uh.clk_prev[k] = u_prev;
-        s_uh.rate[k]     = (u_curr - u_prev) / dticks;
-        if (s_uh.rate[k] < 0.1) s_uh.rate[k] = 0.1; else if (s_uh.rate[k] > 1.5) s_uh.rate[k] = 1.5;
-        s_uh.have_clk[k] = 1;
-    } else if (tick_rolled) {
-        /* coast one (or more) ticks at the estimated rate */
-        s_uh.clk_prev[k] = s_uh.clk_curr[k];
-        s_uh.clk_curr[k] += s_uh.rate[k] * dticks;
-        if (cp_moved) {
-            double u_curr;
-            if (cutpath_solve_u(path, cp, s_uh.hint[k], &u_curr)) {
-                double err = u_curr - s_uh.clk_curr[k];
-                if (err > 1.5 || err < -1.5) {
-                    /* genuine discontinuity (park exit / cut): resync hard */
-                    s_uh.clk_curr[k] = u_curr;
-                    s_uh.clk_prev[k] = u_curr - s_uh.rate[k] * dticks;
-                } else {
-                    s_uh.clk_curr[k] += err / 8.0;
-                    /* rate: damped EMA of the solved per-tick advance */
-                    double inst = (u_curr - s_uh.clk_prev[k]) / dticks;
-                    if (inst > 0.05 && inst < 1.5)
-                        s_uh.rate[k] += (inst - s_uh.rate[k]) * 0.1;
-                }
-                s_uh.hint[k] = (int)u_curr;
-            } else {
-                s_uh.nosolve[k]++;   /* coast through solver dropouts */
-            }
-        }
-        /* cp unchanged across a tick (hold): pure coast — the true clock
-         * never pauses; the bound guard below limits how far we may run
-         * ahead of a genuinely PARKED actor before disengaging. */
-    }
-    memcpy(s_uh.last_cp[k], cp, 12);
-    if (tick_rolled) s_uh.last_tick[k] = cam_tick;
-    if (!s_uh.have_clk[k]) return 0;
-
-    double u = s_uh.clk_prev[k] + (s_uh.clk_curr[k] - s_uh.clk_prev[k]) * a;
-    int i = (int)floor(u);
-    double s = u - (double)i;
-    /* No end-of-path index clamp: the authored paths tail-pad with repeated
-     * copies of the final waypoint (the spline converges to the endpoint on
-     * its own), and a genuine overrun into garbage is caught by the bound
-     * guard below. (An earlier clamp keyed on cs+0x08 froze the spline
-     * mid-flyby — that field is the CAMERA record count (t/2-indexed), not
-     * the cutscene end clock.) */
-    double wx[6], wy[6], wz[6];               /* wp[i-2 .. i+3] */
-    for (int j = 0; j < 6; j++) {
-        int idx = i - 2 + j;
-        if (idx < 0) idx = 0;
-        uint32_t w;
-        if (!cut_rd32(path + (uint32_t)idx * 4u, &w)) return 0;
-        wx[j] = (double)(((w >> 20) & 0x3FFu) << 8);
-        wy[j] = (double)(((w >> 10) & 0x3FFu) << 8);
-        wz[j] = (double)((w & 0x3FFu) << 8);
-    }
-    double cpx[4] = { wx[1], wx[2], wx[3], wx[4] };
-    double cpy[4] = { wy[1], wy[2], wy[3], wy[4] };
-    double cpz[4] = { wz[1], wz[2], wz[3], wz[4] };
-    /* PARK-boundary endpoint reflection: a uniform B-spline only APPROXIMATES
-     * its control points, so leaving/entering a long equal-waypoint PARK run
-     * the curve sits (Q−P)/6 off the actual park position — a ~1/6-waypoint
-     * POP when motion resumes. Reflecting the outer control point across the
-     * boundary (C0' = 2·C1 − C2; C3' = 2·C2 − C1) makes the spline hit the
-     * park position EXACTLY at s=0/s=1 — the standard clamped end condition.
-     * Gated on a TRIPLE equal run (the extra wp[i-2]/wp[i+3] sample): 1-2
-     * waypoint MINI-PAUSES during motion are quantization artifacts of slow
-     * segments and must be rolled through smoothly, not turned into hard
-     * stop-starts. All-equal windows are unaffected (reflection is a no-op). */
-    if (cpx[0] == cpx[1] && cpy[0] == cpy[1] && cpz[0] == cpz[1] &&
-        wx[0] == cpx[1] && wy[0] == cpy[1] && wz[0] == cpz[1]) {
-        cpx[0] = 2.0 * cpx[1] - cpx[2];
-        cpy[0] = 2.0 * cpy[1] - cpy[2];
-        cpz[0] = 2.0 * cpz[1] - cpz[2];
-    }
-    if (cpx[3] == cpx[2] && cpy[3] == cpy[2] && cpz[3] == cpz[2] &&
-        wx[5] == cpx[2] && wy[5] == cpy[2] && wz[5] == cpz[2]) {
-        cpx[3] = 2.0 * cpx[2] - cpx[1];
-        cpy[3] = 2.0 * cpy[2] - cpy[1];
-        cpz[3] = 2.0 * cpz[2] - cpz[1];
-    }
-    /* uniform cubic B-spline basis at s */
-    double s2 = s * s, s3 = s2 * s;
-    double b0 = (1.0 - 3.0 * s + 3.0 * s2 - s3) / 6.0;
-    double b1 = (4.0 - 6.0 * s2 + 3.0 * s3) / 6.0;
-    double b2 = (1.0 + 3.0 * s + 3.0 * s2 - 3.0 * s3) / 6.0;
-    double b3 = s3 / 6.0;
-    double sm[3];
-    sm[0] = b0 * cpx[0] + b1 * cpx[1] + b2 * cpx[2] + b3 * cpx[3];
-    sm[1] = b0 * cpy[0] + b1 * cpy[1] + b2 * cpy[2] + b3 * cpy[3];
-    sm[2] = b0 * cpz[0] + b1 * cpz[1] + b2 * cpz[2] + b3 * cpz[3];
-    /* Bound guard WITH HYSTERESIS: the smooth position must stay near the
-     * canonical prev→curr lerp — anti-garbage (stale cutscene state,
-     * misassociated actor slot, path overrun). The deviation is α-dependent,
-     * so a single threshold ALTERNATES verdicts between neighbouring presents
-     * right at the engage/disengage boundary — at 480 fps that renders as a
-     * violent flicker between the spline and faithful positions (the first
-     * windows-eyeball failure of this feature). Two thresholds + a per-actor
-     * latch make every transition a single snap instead. */
-    double dev = 0.0;
-    for (int c = 0; c < 3; c++) {
-        double g = (double)pp[c] + ((double)cp[c] - (double)pp[c]) * a;
-        double d = fabs(sm[c] - g);
-        if (d > dev) dev = d;
-    }
-    static uint8_t s_engaged[8];
-    static uint32_t s_eng_cs = 0;
-    if (s_eng_cs != cs) { memset(s_engaged, 0, sizeof s_engaged); s_eng_cs = cs; }
-    if (s_engaged[k]) { if (dev > 1536.0) s_engaged[k] = 0; }
-    else              { if (dev <  512.0) s_engaged[k] = 1; }
-    /* OPENPETE_CUTPATH_DBG: per-actor engage/reject census, once a second. */
-    {
-        static int s_dbg = -1;
-        if (s_dbg < 0) { const char* e = getenv("OPENPETE_CUTPATH_DBG"); s_dbg = (e && *e && *e != '0'); }
-        if (s_dbg) {
-            static long s_n[8][2]; static unsigned s_lastf = 0;
-            s_n[k][s_engaged[k] ? 0 : 1]++;
-            if (openpete_frame >= s_lastf + 60u) {
-                s_lastf = openpete_frame;
-                fprintf(stderr, "[cutpath f=%u]", openpete_frame);
-                for (int q = 0; q < 8; q++) if (s_n[q][0] | s_n[q][1] | s_uh.nosolve[q])
-                    fprintf(stderr, " a%d=%ld/%ld/%ld", q, s_n[q][0], s_n[q][1], s_uh.nosolve[q]);
-                fprintf(stderr, " (engaged/rejected/nosolve)\n");
-                memset(s_n, 0, sizeof s_n);
-                memset(s_uh.nosolve, 0, sizeof s_uh.nosolve);
-            }
-        }
-    }
-    if (!s_engaged[k]) { s_uh.have_clk[k] = 0; return 0; }  /* re-engage resyncs the clock */
-    for (int c = 0; c < 3; c++) out[c] = (int32_t)llround(sm[c]);
-    return 1;
 }
 
 /* ---- transient .s render-pass scratch bracket --------------------------------
@@ -1716,26 +1424,11 @@ static void spyro_native_reextract_body(void* cpu_v) {
                                 if (st) mh = st;
                             }
                             moby_save_n++;
-                            /* Cutscene path-followers first: if this moby is a
-                             * cutscene actor, evaluate its packed waypoint
-                             * polyline as a smooth B-spline (de-quantizes the
-                             * 256-grid path data — the titlescreen-flyby
-                             * shimmer). The spline runs on the GLOBAL tick
-                             * phase (camera alpha when paired) so its cadence
-                             * is uniform even though the actor's canonical
-                             * position only rolls every other tick. */
-                            int m_herm = 0; int32_t p2[3]; int have_p2 = 0;
-                            int32_t sm3[3];
-                            if (cutpath_smooth_pos(m, pp, cp, paired ? alpha : ma,
-                                                   curr ? curr->tick : 0u, sm3)) {
-                                for (int k = 0; k < 3; k++)
-                                    memcpy(mh + MOBY_POS + k * 4, &sm3[k], 4);
-                                fpos_set(m, sm3, sm3, 0.0);
-                            } else {
                             /* pred1: use the cubic Hermite (centered start-tangent)
                              * when this moby has a valid prev2 whose prev2->prev step
                              * is itself continuous — else the linear prev->curr lerp.
                              * Same per-object alpha + 1-tick latency either way. */
+                            int m_herm = 0; int32_t p2[3]; int have_p2 = 0;
                             if (o->have_prev2) {
                                 memcpy(p2, o->prev2 + MOBY_POS, 12);
                                 double e2x=(double)pp[0]-p2[0], e2y=(double)pp[1]-p2[1], e2z=(double)pp[2]-p2[2];
@@ -1763,7 +1456,6 @@ static void spyro_native_reextract_body(void* cpu_v) {
                              * (not just the camera component). */
                             if (m_herm) fpos_set_h(m, p2, pp, cp, ma);
                             else        fpos_set(m, pp, cp, ma);
-                            }
                             /* OPENPETE_MOBY_POSTRACE_CLS=<cls>: per-present lerp
                              * trace for mobys of that class (jitter forensics). */
                             {
