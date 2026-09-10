@@ -57,8 +57,11 @@ typedef enum {
  * so the oracle / determinism gates (which run headless) are unaffected by the
  * default. See notes/plans/openpete-native-renderer.md. */
 typedef enum {
-    OPENPETE_RENDERER_PSYCROSS = 0,  /* legacy: PsyCross GL, no native window */
-    OPENPETE_RENDERER_VK,            /* default: native Vulkan renderer, sole display */
+    /* PsyCross GL rasterizes; the native Vulkan window DISPLAYS its frame
+     * (read back per present). No native scene is extracted. */
+    OPENPETE_RENDERER_PSYCROSS = 0,
+    /* Default: the native Vulkan renderer both rasterizes and displays. */
+    OPENPETE_RENDERER_VK,
 } openpete_renderer_t;
 
 /* Vertex screen-coordinate precision (`--vertex-precision`). The native renderer
@@ -236,7 +239,7 @@ typedef struct openpete_options {
      * a --record capture carries one texel per PSX pixel — the authentic
      * raster and its aliasing, not a supersampled resample of it. The window
      * blit scales it up, so only the sampling grid changes. Ignored unless
-     * PsyCross rasterizes (--renderer psycross|ab|diff). */
+     * PsyCross rasterizes (--renderer psycross). */
     int psycross_native_raster;
 
     /* Texture/colour interpolation (`--texture-mapping perspective|affine`).
@@ -292,7 +295,7 @@ typedef struct openpete_options {
     /* `--screenshot-native-only`: capture the native `-vk` variant ALONE —
      * skip the PsyCross OT rasterization (`openpete_psycross_renders`, which a
      * screenshot request otherwise forces on for the `-og` reference) and the
-     * `-og`/`-ab`/`-diff` composition. Gameplay-neutral (the render→gameplay
+     * `-og`/`-vk` composition. Gameplay-neutral (the render→gameplay
      * channel writes come from the recompiled render funcs, upstream of OT
      * rasterization; this is also the normal windowed pure-vk play path). The
      * presentation-golden corpus's default capture path — its single biggest
@@ -440,7 +443,7 @@ typedef struct openpete_options {
      * (the title-screen overlay is untranslated until Phase 1d.5/Phase 2). */
     bool debug_triangle;
 
-    /* Active renderer / display mode (--renderer psycross|vk|ab|diff). Default
+    /* Active renderer / display mode (--renderer psycross|vk). Default
      * OPENPETE_RENDERER_PSYCROSS = the original behavior (PsyCross owns the one
      * window, no native Vulkan window). The other modes open the native
      * renderer's Vulkan window and start PsyCross hidden. Pure display
@@ -460,8 +463,8 @@ typedef struct openpete_options {
      * renderer adopts — retitle/resize/make-resizable — instead of opening
      * a second window, so one OS window carries splash and game. Set by the
      * game's main between splash teardown and openpete_run(); only handed
-     * over in windowed vk mode (PsyCross/ab/diff windows are created by
-     * their own paths and close the splash as before). Display-only. */
+     * over in windowed vk mode; other modes open their own window and close
+     * the splash as before. Display-only. */
     void* adopted_window;
 
     /* --ssaa N (default 1): supersampling factor for the native vk LIVE window.
@@ -471,7 +474,7 @@ typedef struct openpete_options {
      * Range 1..OPENPETE_SSAA_MAX, further capped to the GPU's max image size
      * (so a large value degrades gracefully). Display-only — no gameplay effect;
      * under --headless and on --renderer psycross. The native_rtt that backs
-     * the -vk/-ab/-diff screenshots + DIFF mode stays at reference resolution
+     * the -vk screenshots + DIFF mode stays at reference resolution
      * so the A/B-vs-PsyCross comparison stays 1:1 pixel-exact. */
     int ssaa;
 

@@ -6949,7 +6949,7 @@ static int32_t s_terrain_saved_occGroup = -1;
 static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = terrain_verify_enabled();
-    int feed   = openpete_native_render_enabled();
+    int feed   = openpete_native_scene_enabled();
     if (!verify && !feed && !render_paths_active()) return 0;  /* inert: normal dispatch */
     static int s_in = 0; if (s_in) return 0; s_in = 1;
 
@@ -7038,7 +7038,7 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
  * of stepping at 29.913 Hz. `interp_on` = camera bracketed (else snap to cur,
  * matching the rest of the scene on unpaired/camera-cut presents). */
 void terrain_native_reextract(CPUState* cpu, double alpha, int interp_on) {
-    if (!openpete_native_render_enabled()) return;
+    if (!openpete_native_scene_enabled()) return;
     if (!render_path_enabled(RP_TERRAIN)) return;
     /* Reproduce terrain ONLY if the canonical frame drew it. During a level
      * transition the game stops calling func_800258F0 (no world to render), but

@@ -64,7 +64,7 @@ void openpete_ident_audit_present(void *cpu, unsigned vbl, unsigned tick,
 {
     if (!openpete_ident_audit_armed()) return;
     if ((int)vbl < s_start) return;
-    if (!openpete_native_render_enabled()) return;
+    if (!openpete_native_scene_enabled()) return;
     openpete_native_reextract_fn ire = openpete_native_get_reextract();
     if (!ire) return;
 

@@ -12,7 +12,7 @@
  *
  * Rendering: records into the offscreen pass (off_rp) at the live-present
  * compose point, after the SSAA resolve — so the panel is always at 1x window
- * resolution and never reaches ab/diff/screenshot composes (the caller gates
+ * resolution and never reaches screenshot composes (the caller gates
  * on s_overlay_live). The Vulkan backend rides volk's loaded pointers
  * (IMGUI_IMPL_VULKAN_USE_VOLK); its pipeline is built against off_rp once —
  * swapchain rebuilds recreate off_rp with identical formats, which keeps the

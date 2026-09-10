@@ -449,7 +449,7 @@ static int  s_shown_n = -1;   /* -1 = nothing pushed yet */
 static int  s_shown_anchor = -1;
 
 void text_moby_native_perf_overlay(CPUState* cpu) {
-    if (!openpete_native_render_enabled()) return;   /* inert headless: no cache, no draw */
+    if (!openpete_native_scene_enabled()) return;   /* inert headless: no cache, no draw */
     text_moby_native_cache(cpu);                     /* snapshot the font as soon as available */
     int level = openpete_native_perf_stats_level();
     if (level <= OPENPETE_PERF_OFF || !text_moby_native_ready()) {
@@ -679,7 +679,7 @@ static float measure_string(const char* str, float cap_h) {
  * it to the native renderer (draw_menu_overlay draws it over the panel). Reads
  * the menu's shared layout so text lands on the panel's rows. Pure presentation. */
 void text_moby_native_menu(CPUState* cpu) {
-    if (!openpete_native_render_enabled()) return;
+    if (!openpete_native_scene_enabled()) return;
     text_moby_native_cache(cpu);
     if (!openpete_menu_is_open() || !text_moby_native_ready()) {
         openpete_native_set_menu_glyphs(NULL, 0);
@@ -795,7 +795,7 @@ static void osd_fit_text(const char* src, float cap_h, float avail,
 }
 
 void text_moby_native_osd(CPUState* cpu) {
-    if (!openpete_native_render_enabled()) return;
+    if (!openpete_native_scene_enabled()) return;
     text_moby_native_cache(cpu);
     if (!openpete_osd_enabled() || !text_moby_native_ready()) {
         openpete_native_set_osd_glyphs(NULL, 0, NULL, 0);

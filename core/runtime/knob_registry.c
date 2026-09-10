@@ -55,9 +55,11 @@ static int nearest_enum_idx(const float *vals, int n, float v) {
 /* Rows the O menu moves through the renderer's own setters must read the
  * renderer back, not a registry-side shadow: the menu bypasses set_num, so a
  * shadowed row would still report its boot value and "save edited settings"
- * would skip the pick entirely. Until the renderer is up (its state settles
- * after the registry stamps boot values, and never at all in headless /
- * PsyCross-only runs) the stored boot value is the live value. */
+ * would skip the pick entirely. Until the native renderer is up (its state
+ * settles after the registry stamps boot values, and never at all under
+ * --headless) the stored boot value is the live value. Keyed on the DISPLAY
+ * predicate: these rows are display state, and in psycross mode the native
+ * window and its accessors are real even though no native scene is walked. */
 #define KNOB_LIVE_OR_STORED(k) \
     do { if (!openpete_native_render_enabled()) return (k)->stored_num; } while (0)
 
@@ -679,9 +681,9 @@ static const knob_desc_t g_builtin[] = {
       fogscale_get, fogscale_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "renderer", "Renderer", "Display", "--renderer", NULL,
-      "Display mode: native Vulkan (vk, default), legacy GL (psycross), "
-      "side-by-side (ab), or per-pixel diff (diff). Decides which windows "
-      "and devices exist at boot.",
+      "Which rasterizer draws the picture: the native Vulkan renderer (vk, "
+      "default) or the PsyCross GL reference (psycross). The native window "
+      "displays either one.",
       KNOB_ENUM, KNOB_RESTART_ONLY, ENUM_ROW(k_renderer_names), 0, 0,
       renderer_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 

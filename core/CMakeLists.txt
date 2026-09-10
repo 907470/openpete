@@ -179,9 +179,8 @@ add_library(openpete_core STATIC
     # --vertex-trace-log PATH is given. Consumed by
     # scripts/analyze-vtrace.py.
 
-    # Native Vulkan renderer A/B harness (--native-ab). Host-side display
-    # consumer built on core/rhi; never writes PSX RAM. Phase 1c of
-    # notes/plans/openpete-native-renderer.md.
+    # Native Vulkan renderer. Host-side display consumer built on core/rhi;
+    # never writes PSX RAM.
     runtime/native_render.c
     runtime/native_vram.c
 
@@ -338,9 +337,8 @@ target_compile_definitions(openpete_core
 
 # Native renderer foundation: the thin RHI + Vulkan backend (core/rhi).
 # Always available (added unconditionally by the top-level CMakeLists);
-# runtime/native_render.c is the only consumer for now and is inert unless
-# --native-ab is passed. PUBLIC so the RHI's headers (and its embedded SPIR-V)
-# reach any downstream renderer TUs. See openpete-native-renderer.md.
+# runtime/native_render.c is the only consumer for now. PUBLIC so the RHI's
+# headers (and its embedded SPIR-V) reach any downstream renderer TUs.
 target_link_libraries(openpete_core PUBLIC openpete_rhi)
 
 # ImGui (third_party/imgui, pinned release tag) — the M-key dev config

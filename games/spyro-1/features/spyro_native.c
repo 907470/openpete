@@ -24,7 +24,7 @@
 // Determinism: never writes PSX RAM. Calls the real renderer exactly once
 // (behaviour-identical to the normal dispatch fall-through) and only READS
 // state afterwards. Gated by OPENPETE_SPYRO_VERIFY (dump/A/B) or a native
-// renderer mode (--renderer vk|ab|diff; scene feed); inert fall-through otherwise.
+// renderer mode (--renderer vk; scene feed); inert fall-through otherwise.
 
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
@@ -1332,7 +1332,7 @@ int spyro1_actor_emit(CPUState* cpu, int kind, const void* pose, int len,
         actor_emit_diag("bad-blob", p->magic, p->version);
         return 0;
     }
-    if (!openpete_native_render_enabled()) return 0;
+    if (!openpete_native_scene_enabled()) return 0;
     /* Scene liveness: append ONLY to a live, recently built scene. During a
      * load stall the renderer holds the last composed frame — begin_frame
      * with a newer stamp would snapshot-and-wipe it (black flash). */
@@ -1450,7 +1450,7 @@ static unsigned spyro_verify_frame(void) {
 static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = spyro_verify_enabled();
-    int feed   = openpete_native_render_enabled();
+    int feed   = openpete_native_scene_enabled();
     /* --render-paths also needs the bracket so the OT filter knows this path's
      * polybuf range, even when not feeding/verifying. Mods loaded also arms
      * the bracket: the actor-pose snapshot below needs it (headless too —
@@ -1527,7 +1527,7 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
  * (no func_80023AC4 call, no verdict writes). spyro_feed_walk reads g_Camera
  * (→ smooth orientation) and g_Spyro (position lerp lands in step 3). */
 void spyro_player_native_reextract(CPUState* cpu) {
-    if (!openpete_native_render_enabled()) return;
+    if (!openpete_native_scene_enabled()) return;
     /* Only re-extract the gameplay Spyro on sub-ticks if the canonical frame
      * actually drew him (func_80023AC4 emitted prims → RP_SPYRO recorded). In
      * dragon-rescue cutscenes the gameplay-Spyro render is SUPPRESSED and Spyro is

@@ -194,9 +194,10 @@ static void openpete_psxtrace_on_anchor(uint32_t addr) {
  * only the sim-tick timing pin) and PsyX_EndScene auto-no-ops via begin_scene_flag,
  * so there's no redundant GL draw and no second vsync swap on the hidden window.
  * It STAYS true (PsyCross renders) whenever the native renderer isn't the display
- * or its output is still needed: headless / psycross mode / native
- * bring-up failure / --record (taps the PsyCross present FBO) / --screenshot
- * (the -og + native -ab/-diff reference variants). Read by psyq_DrawOTag. */
+ * or its output is still needed: headless / psycross mode (where the native
+ * window DISPLAYS the PsyCross frame, so the rasterization is the picture) /
+ * native bring-up failure / --record (taps the PsyCross present FBO) /
+ * --screenshot (the -og reference). Read by psyq_DrawOTag. */
 int openpete_psycross_renders = 1;
 
 /* Master interpolation/frame-gen toggle ('I' key). Gates the native
@@ -1966,9 +1967,6 @@ static int run_host_init(const openpete_options_t* opts) {
      * aspect (--aspect only sizes the window above). */
     if (opts->renderer == OPENPETE_RENDERER_PSYCROSS) {
         widescreen_apply_fov(opts);
-        if (opts->fullscreen)
-            OPL_WARN_F("display", "%s", "--fullscreen is native-renderer-only "
-                       "(the PsyCross GL window has no fullscreen path); ignored");
     } else {
         if (opts->fov_deg > 0.0f) {
             OPL_WARN_F("fov", "--fov is PsyCross-reference-mode only for now "
@@ -2047,12 +2045,14 @@ static int run_host_init(const openpete_options_t* opts) {
      * focus — GL/FBO rendering works fine without it ever being shown.
      * (Both apply only when PsyCross's renderer actually initialises —
      * PsyCross mode; null-GPU vk creates no window or context at all.) */
-    /* Hide PsyCross's GL window whenever a native renderer owns the display:
-     * PsyCross then renders to its FBO only. */
-    bool native_renderer = (opts->renderer != OPENPETE_RENDERER_PSYCROSS);
+    /* PsyCross renders to its FBO only; the native Vulkan window is the
+     * display in every mode. What reaches the screen is either the native
+     * scene (--renderer vk) or PsyCross's read-back frame (--renderer
+     * psycross), and either way this GL window is not it. Created unmapped
+     * and shown again below only if native bring-up fails. */
     int psyx_ok = PsyX_Initialise((char*)opts->display_name, win_w, win_h,
                                   /*fullscreen=*/0,
-                                  /*startHidden=*/(opts->headless || native_renderer) ? 1 : 0);
+                                  /*startHidden=*/1);
     /* --headless still opens a GL context: PsyCross rasterizes the OT for the
      * oracle, so g_psyx_null_gpu stays 0 and SDL_INIT_VIDEO must succeed. A
      * session with no display reachable fails here. Stopping now names the
@@ -2143,6 +2143,14 @@ static int run_host_init(const openpete_options_t* opts) {
      * one that pumps. Bring-up adopts it exactly as it adopts the splash's. */
     openpete_native_precreate_window(opts, win_w, win_h);
     (void)openpete_native_render_init(opts, win_w, win_h);
+    /* Bring-up failed in a windowed run: PsyCross's own GL window is the only
+     * display left, so map the window that was created hidden above. Without
+     * this the run would present to nothing and look like a hang. */
+    if (!opts->headless && !openpete_native_render_enabled() && g_window) {
+        SDL_ShowWindow(g_window);
+        OPL_WARN_F("boot", "%s", "native display unavailable — showing "
+                   "PsyCross's own GL window instead");
+    }
     openpete_native_set_perf_stats(opts->perf_stats);   /* stats overlay level (O / M menus move it live) */
     openpete_native_set_perf_anchor(opts->perf_position);  /* which corner it anchors to (--perf-position) */
     openpete_osd_set_enabled(opts->osd);
@@ -2207,7 +2215,7 @@ static int run_host_init(const openpete_options_t* opts) {
         OPL_WARN_F("boot", "%s", "native renderer unavailable but PsyCross is "
                    "in null-GPU mode — no display path this run");
     OPL_INFO_F("boot", "PsyCross OT rasterization: %s (renderer=%d native=%d)",
-               openpete_psycross_renders ? "ON" : "OFF (native vk owns display)",
+               openpete_psycross_renders ? "ON" : "OFF (the native scene is the picture)",
                (int)opts->renderer, (int)openpete_native_render_enabled());
 
     signal(SIGINT,  openpete_on_sigint);
@@ -2929,7 +2937,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     openpete_menu_init(opts, refresh_hz);
 
     /* Eager production (OPENPETE_EAGER=1): windowed native display only. */
-    if (openpete_native_render_enabled() && !opts->headless && openpete_present_thread_start()) {
+    if (openpete_native_scene_enabled() && !opts->headless && openpete_present_thread_start()) {
         eager_init();
         s_eager_ftl.log = &frame_time_log;
         s_eager_ftl.start_ns = &frame_time_log_start_ns;
@@ -4486,7 +4494,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                                                 /*present=*/0,
                                                 base, sizeof(base));
                 /* PsyCross reference render -> "<base>-og.png" so it sits
-                 * alongside the native -vk/-ab/-diff variants dumped below. */
+                 * alongside the native "-vk" dumped below. */
                 const char *odot = strrchr(base, '.');
                 if (odot) snprintf(path, sizeof(path), "%.*s-og%s",
                                    (int)(odot - base), base, odot);
@@ -4590,7 +4598,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * canonical -vk; the explicit alpha=0.5 capture below owns the
                  * sub-tick leg instead. */
                 const int spine_on = lag_re && !opts->headless &&
-                    openpete_native_render_enabled() && !openpete_unlock_fps &&
+                    openpete_native_scene_enabled() && !openpete_unlock_fps &&
                     g_openpete_interp_enabled && openpete_interp_enabled() &&
                     !(g_paused && !g_step_one);
                 /* Eager production takes the whole present path from here:
@@ -4659,7 +4667,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                     pace_canon_extract_ns = op_now() - rex_t0;
                     g_openpete_canon_lag_leg = 0;
                     if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
-                } else if (openpete_native_render_enabled()) {
+                } else if (openpete_native_scene_enabled()) {
                     /* Spine off (unlock / paused / interp disabled / headless):
                      * commit the tick's accumulation all the same, so the carry
                      * always holds the LAST canonical present's 2D set. The carry
@@ -4703,7 +4711,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * freeze/empty frames, so once the game pauses it holds the last world
              * frame. Off by default (an extra render per present); enabled only for
              * bk2s/poses that reach a freeze state. */
-            if (opts->screenshot_freeze_backdrop && openpete_native_render_enabled()
+            if (opts->screenshot_freeze_backdrop && openpete_native_scene_enabled()
                 && (opts->screenshot_frame_count > 0 || opts->screenshot_intermediate_count > 0))
                 openpete_native_render_snapshot_frozen(openpete_native_widescreen_factor());
 
@@ -4776,7 +4784,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * blocked. Keyed on openpete_frame (VBL): fires on the first present
              * at/after each target. Deterministic capture (enabled above) pins the
              * ring stamps to a fixed grid so alpha lands at exactly 0.5. */
-            if (openpete_native_render_enabled() && opts->screenshot_intermediate_count > 0) {
+            if (openpete_native_scene_enabled() && opts->screenshot_intermediate_count > 0) {
                 openpete_native_reextract_fn ire = openpete_native_get_reextract();
                 static bool s_int_shot[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
                 for (int si = 0; ire && si < opts->screenshot_intermediate_count; ++si) {
@@ -4903,7 +4911,7 @@ static int run_host_loop(const openpete_options_t* opts) {
             g_openpete_interp_enabled &&
             openpete_interp_enabled() &&
             !did_present_this_iter &&
-            openpete_native_render_enabled() &&
+            openpete_native_scene_enabled() &&
             native_re != NULL &&
             !(g_paused && !g_step_one);
         /* Predictive shed: an intermediate present is optional, and a tick is

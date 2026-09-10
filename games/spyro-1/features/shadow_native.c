@@ -25,7 +25,7 @@
 // Determinism: never writes PSX RAM. Calls each real renderer exactly once
 // (behaviour-identical to normal dispatch) then only READS state afterwards.
 // Gated by OPENPETE_SHADOW_VERIFY (dump/A/B) or a native renderer mode
-// (--renderer vk|ab|diff; scene feed); inert fall-through otherwise.
+// (--renderer vk; scene feed); inert fall-through otherwise.
 
 #include "feature_registry.h"
 #include "openpete_vstream.h"
@@ -800,7 +800,7 @@ static unsigned shadow_verify_frame(void) {
 static int on_80059F8C_shadow_moby(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = shadow_verify_enabled();
-    int feed   = openpete_native_render_enabled();
+    int feed   = openpete_native_scene_enabled();
     if (!verify && !feed && !render_paths_active()) return 0;  /* inert: normal dispatch */
     static int s_in = 0; if (s_in) return 0; s_in = 1;
 
@@ -829,7 +829,7 @@ static int on_80059F8C_shadow_moby(CPUState* cpu, uint32_t addr) {
 static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = shadow_verify_enabled();
-    int feed   = openpete_native_render_enabled();
+    int feed   = openpete_native_scene_enabled();
     if (!verify && !feed && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
 
@@ -860,7 +860,7 @@ static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
  * shadows project under their owners onto the ground; they follow the owners'
  * (currently tick-N) poses and the interpolated camera. */
 void shadow_native_reextract(CPUState* cpu) {
-    if (!openpete_native_render_enabled()) return;
+    if (!openpete_native_scene_enabled()) return;
     if (!render_path_enabled(RP_SHADOW)) return;
     /* Skip when the canonical frame drew no shadows (e.g. a level transition) —
      * else the spine replays stale moby/Spyro shadows over the cyclorama. */

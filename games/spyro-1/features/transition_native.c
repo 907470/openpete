@@ -241,7 +241,7 @@ static void probe_log(const char* name, const char* what, CPUState* cpu, unsigne
 /* ---- cross-fade hook (func_8004F000): run the real renderer, capture + feed ---- */
 static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    int feed = openpete_native_render_enabled();
+    int feed = openpete_native_scene_enabled();
     static unsigned last_probe = 0xFFFFFFFFu;
     probe_log("func_8004F000", "edge-fill/cross-fade (GS_ExitLevel + GS_Balloonist)", cpu, &last_probe);
     if (!feed && !render_paths_active()) return 0;        /* inert: normal dispatch */
@@ -321,7 +321,7 @@ static int on_8004F000_crossfade(CPUState* cpu, uint32_t addr) {
  * cross-fade) calls func_8004F000, fed by its own hook above. */
 static int on_8001C694(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    int feed = openpete_native_render_enabled();
+    int feed = openpete_native_scene_enabled();
     static unsigned last = 0xFFFFFFFFu;
     probe_log("func_8001C694", "GS_ExitLevel grayscale freeze + cross-fade", cpu, &last);
     if (!feed && !render_paths_active()) return 0;        /* inert: normal dispatch */
@@ -377,7 +377,7 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
  * hook's recorded polybuf interval — so the dome isn't painted over the next
  * level once the transition ends (the hook stops emitting → the mask bit drops). */
 void transition_native_reextract(CPUState* cpu) {
-    if (!openpete_native_render_enabled()) return;
+    if (!openpete_native_scene_enabled()) return;
     if (!render_path_canon_drawn(RP_TRANSITION)) return;
     crossfade_extract(cpu);
     crossfade_feed_native();

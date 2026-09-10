@@ -493,7 +493,7 @@ void psyq_MoveImage(CPUState* cpu) {
     cpu->v0 = (uint32_t)MoveImage(r, (int)cpu->a1, (int)cpu->a2);
 }
 
-/* The native renderer (--renderer vk|ab|diff) draws the scanned-out framebuffer; feed it
+/* The native renderer (--renderer vk) draws the scanned-out framebuffer; feed it
  * the display framebuffer (DISPENV disp) + the drawn region (DRAWENV clip, used
  * to crop the overscan). Forward-declared (extern "C", core C TUs) to avoid
  * pulling the core header into this thunk file. No-ops when disabled. */

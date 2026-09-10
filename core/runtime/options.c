@@ -335,12 +335,13 @@ static void print_help(const char* display_name, const char* argv0,
         "                             loader (default 1): guest disc reads never wait on the file. 0 =\n"
         "                             read the file per sector (A/B). Bytes identical either way.\n"
         "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields (defaults to the game's entry point)\n"
-        "  --renderer MODE            display renderer: vk (native, full-window%s) | psycross (legacy GL%s)\n"
+        "  --renderer MODE            which rasterizer draws: vk (native Vulkan%s) | psycross\n"
+        "                             (the GL reference%s). The native window displays either.\n"
         "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
         "  --aspect W:H|auto          Hor+ widescreen. auto (default) = follow the window/fullscreen\n"
         "                             shape, filling it live on resize; W:H (e.g. 16:9, 21:9) = fixed\n"
         "                             render aspect (sizes the window; bars when the window mismatches)\n"
-        "  --fov DEG                  horizontal FOV override (PsyCross reference mode only; default ~50°, range 30-140)\n"
+        "  --fov DEG                  horizontal FOV override (--renderer psycross only; default ~50°, range 30-140)\n"
         "  --ssaa N                   native vk supersampling 1..4 (default 1=off); renders the live\n"
         "                             window at NxN res and box-downsamples. The 4x ceiling keeps the\n"
         "                             render targets inside an 8GB card at 1080p; higher factors are\n"
@@ -603,7 +604,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->runahead            = 0;
     opts->log_format          = OPENPETE_LOG_PLAIN;
     opts->log_file            = NULL;  /* unset: env, else <state>/logs/openpete.log */
-    opts->renderer            = OPENPETE_RENDERER_VK;  /* native Vulkan is the default display (windowed); --renderer psycross for the legacy GL path. Inert under --headless (native disabled → PsyCross). A game without native renderer walks overrides both this and default_renderer before parsing. */
+    opts->renderer            = OPENPETE_RENDERER_VK;  /* the native Vulkan renderer both rasterizes and displays; --renderer psycross keeps the GL reference as the rasterizer and displays its frame in the same native window. Inert under --headless, where native stays off and PsyCross rasterizes for the oracle. A game without native renderer walks overrides both this and default_renderer before parsing. */
     opts->default_renderer    = OPENPETE_RENDERER_VK;
     opts->mute                = false; /* audio on by default; --mute 1 to silence */
     opts->sfx_volume          = -1;    /* -1 = unset; the game's own slider stands */

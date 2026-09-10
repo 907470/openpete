@@ -2028,7 +2028,7 @@ static int s_leaf_in = 0;
  * in on_80050BE0 before the real RenderPortals runs. */
 static uint32_t s_fed_portal[8]; static int s_fed_n = 0;
 static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), int kind) {
-    int feed = openpete_native_render_enabled();   /* --renderer vk|ab|diff live */
+    int feed = openpete_native_scene_enabled();   /* --renderer vk live */
     if (!portal_dump_enabled() && !feed && !render_paths_active()) return 0; /* inert */
     if (s_leaf_in) return 0;
     s_leaf_in = 1;
@@ -2395,7 +2395,7 @@ static void feed_revealed_portals(CPUState* cpu) {
 static int s_rp_in = 0;
 static int on_80050BE0(CPUState* cpu, uint32_t a) {
     (void)a;
-    int feed = openpete_native_render_enabled();
+    int feed = openpete_native_scene_enabled();
     if (!portal_dump_enabled() && !feed && !render_paths_active()) return 0;
     if (s_rp_in) return 0;
     s_rp_in = 1;
@@ -2442,7 +2442,7 @@ static void portal_native_apply_options(const openpete_options_t* opts) {
  * then restores them. Display-only: never perturbs gameplay RAM, never runs
  * headless (the spine doesn't run headless). */
 void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
-    if (!openpete_native_render_enabled()) return;
+    if (!openpete_native_scene_enabled()) return;
     if (s_pcap_n == 0) return;
     /* Don't replay a STALE capture. During a level-load transition (e.g. warping
      * THROUGH a portal — "ENTERING STONE HILL…") the normal draw loop stops, so

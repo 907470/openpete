@@ -254,7 +254,7 @@ int spyro1_s3_actor_emit(CPUState* cpu, const void* pose, int len,
     const spyro1_s3_actor_pose_t* p = (const spyro1_s3_actor_pose_t*)pose;
     if (p->magic != SPYRO1_S3_POSE_MAGIC ||
         p->version != SPYRO1_S3_POSE_VERSION) return 0;
-    if (!openpete_native_render_enabled()) return 0;
+    if (!openpete_native_scene_enabled()) return 0;
     unsigned sf = openpete_native_scene_frame();
     if (sf == 0xFFFFFFFFu || (unsigned)(openpete_frame - sf) > 6u) return 0;
 

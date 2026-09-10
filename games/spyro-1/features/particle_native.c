@@ -23,7 +23,7 @@
 // scene.
 //
 // Gated by OPENPETE_PARTICLE_VERIFY (dump/A/B) or a native renderer mode
-// (--renderer vk|ab|diff; scene feed); inert fall-through otherwise.
+// (--renderer vk; scene feed); inert fall-through otherwise.
 
 #include "feature_registry.h"
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
@@ -1853,7 +1853,7 @@ static void particle_path_census_note(CPUState* cpu, char tag, uint32_t bytes) {
 static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const char* tag,
                                 render_path_t path, int dump_pools_too) {
     int verify = verify_enabled();
-    int feed   = openpete_native_render_enabled();
+    int feed   = openpete_native_scene_enabled();
     if (!verify && !feed && !render_paths_active()) return 0;  /* inert: normal dispatch */
     static int s_in = 0; if (s_in) return 0; s_in = 1;
 
@@ -1929,7 +1929,7 @@ static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr)  { (void)addr; ret
 static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = verify_enabled();
-    int feed   = openpete_native_render_enabled();
+    int feed   = openpete_native_scene_enabled();
     if (!verify && !feed) return 0;                /* inert: normal dispatch */
     static int s_in = 0; if (s_in) return 0; s_in = 1;
 
@@ -1961,7 +1961,7 @@ static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
  * verdicts). Pool walks self-limit to live particles; Sparx + ambient sparkles
  * stay present on intermediates (per-particle pos+=α·vel lerp lands in step 5). */
 void particle_native_reextract(CPUState* cpu) {
-    if (!openpete_native_render_enabled()) return;
+    if (!openpete_native_scene_enabled()) return;
     /* Each feeder replays only when ITS .s renderer drew on the canonical
      * tick. The pools outlive the renderers: a level transition stops all
      * three (else the spine replays the previous level's pool over the

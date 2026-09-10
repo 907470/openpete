@@ -1373,6 +1373,12 @@ void openpete_native_set_icon(const void* rgba32, int w, int h)
 
 static struct {
     bool          enabled;
+    /* Native scene extraction and interpolation are running: the feature
+     * modules feed the scene ring, the sub-tick spine re-extracts, and compose
+     * draws that scene. False in PsyCross display mode, where the native window
+     * is up but the picture it shows is PsyCross's read-back frame and no
+     * native scene exists to walk. */
+    bool          scene_live;
     bool          headless;     /* W1.1: surfaceless capture (no window/present); screenshots only */
     SDL_Window   *window;
     rhi_device   *dev;
@@ -1457,7 +1463,8 @@ static struct {
      * content mapping (scene_to_clip via p0_hx) is the centred 4:3 sub-rect;
      * the reveal extends to ±p0_hx*ws_factor (the render rect), which fit_cell
      * fits into the window with bars (none under AUTO — the rect IS the
-     * window shape). vk-only (ab/diff stay 4:3). See update_layout. */
+     * window shape). Applies to the native scene only; the psycross-mode
+     * reference blit stays 4:3. See update_layout. */
     float         ws_factor;
 
     /* Active PSX display region (DISPENV `disp` rect, VRAM px), from the
@@ -1672,8 +1679,18 @@ static void fit_cell(float cx, float cy, float chx, float chy,
 
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h)
 {
-    if (!opts || opts->renderer == OPENPETE_RENDERER_PSYCROSS)
-        return 0; /* PsyCross owns the display — native window inert */
+    if (!opts)
+        return 0;
+
+    /* PsyCross mode under --headless: PsyCross rasterizes for the oracle and
+     * writes the -og capture off its own FBO. There is no native scene to
+     * compose and nothing for a surfaceless device to draw, so native stays
+     * off — the behaviour this mode had before the native window became its
+     * display. Checked ahead of the vk headless guard below, which admits
+     * surfaceless bring-up when screenshots or the identity audit are armed;
+     * neither has a native consumer here. */
+    if (opts->headless && opts->renderer == OPENPETE_RENDERER_PSYCROSS)
+        return 0;
 
     /* W1.1: under --headless, bring the native renderer up SURFACELESS purely to
      * service screenshots (CI visual-regression capture under lavapipe) — but
@@ -1688,7 +1705,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     if (headless && opts->screenshot_frame_count <= 0 &&
                     opts->screenshot_intermediate_count <= 0 &&
                     !openpete_ident_audit_armed()) {
-        OPL_WARN_F("native", "--renderer vk|ab|diff ignored under --headless (no screenshots requested)");
+        OPL_WARN_F("native", "--renderer vk ignored under --headless (no screenshots requested)");
         return 0;
     }
     s_nr.headless = headless;
@@ -2422,6 +2439,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     }
 
     s_nr.enabled     = true;
+    s_nr.scene_live  = (opts->renderer == OPENPETE_RENDERER_VK);
     s_nr.window      = win;
     s_nr.dev         = dev;
     s_nr.win_w       = w;
@@ -2612,6 +2630,11 @@ const char* openpete_native_render_present_mode(void)
 bool openpete_native_render_enabled(void)
 {
     return s_nr.enabled;
+}
+
+bool openpete_native_scene_enabled(void)
+{
+    return s_nr.enabled && s_nr.scene_live;
 }
 
 /* Re-present the last composed frame without recomposing it.
@@ -3115,7 +3138,7 @@ static void update_layout(void)
         int fit_h = have_clip ? s_nr.ref_h  : NR_VRAM_H;
 
         /* Hor+ widen factor: how much wider the render view is than 4:3.
-         * vk-only; ab/diff stay 4:3 vs the reference. FIXED --aspect (>0)
+         * Native scene only; the reference panel is 4:3. FIXED --aspect (>0)
          * derives it from the flag; AUTO (0, the default) derives it from the
          * CELL shape so the render rect exactly fills the window — re-derived
          * here on every size change (resize/fullscreen), since the layout
@@ -3158,12 +3181,19 @@ static void update_layout(void)
          * the --aspect area). */
         build_panel(&verts[0], cx, 0.0f, s_nr.p0_hx, hy, 0.0f, 0.0f, (float)uv_w, (float)uv_h);
     }
-    /* Panel 1 — reference (RGBA8, bottom-up: v0=1 top .. v1=0 bottom), UVs
-     * normalized (blit uses texture()). Only in A/B mode (np >= 2). */
-    if (np >= 2) {
-        float cx = -1.0f + 3.0f * chx, hx, hy;
-        fit_cell(cx, 0.0f, chx, 1.0f, s_nr.ref_w, s_nr.ref_h, s_nr.win_w, s_nr.win_h, &hx, &hy);
-        build_panel(&verts[6], cx, 0.0f, hx, hy, 0.0f, 1.0f, 1.0f, 0.0f);
+    /* Panel 1 — PsyCross's read-back frame, the display source when no native
+     * scene is produced (--renderer psycross). Aspect-fit into the whole
+     * window, so a window that is not the reference shape letterboxes rather
+     * than stretching. RGBA8 sampled with texture(), so UVs are NORMALIZED,
+     * and the GL readback is bottom-up, so v runs 1 at the top to 0 at the
+     * bottom — both differ from panel 0, which addresses the VRAM texture in
+     * texel units top-down. Drawing panel 0 with the reference bound samples
+     * one clamped edge texel and fills the window with a flat colour. */
+    if (!s_nr.scene_live) {
+        float hx, hy;
+        fit_cell(0.0f, 0.0f, 1.0f, 1.0f, s_nr.ref_w, s_nr.ref_h,
+                 s_nr.win_w, s_nr.win_h, &hx, &hy);
+        build_panel(&verts[6], 0.0f, 0.0f, hx, hy, 0.0f, 1.0f, 1.0f, 0.0f);
     }
 
     /* The VB may still be read by an in-flight frame; layout changes are rare
@@ -4015,7 +4045,7 @@ static void native_terrain_key_pass(int full_extent, int vw, int vh)
         }
       } }
     /* BUMP-ALLOCATE within the ring slot: one rhi frame can run SEVERAL
-     * scene targets (the ab/diff variants: native_rtt + offscreen), each
+     * scene targets (native_rtt and the windowed offscreen), each
      * with its own key batch — and a second same-frame rhi_update_buffer at
      * offset 0 would clobber the vertex data a RECORDED-but-unexecuted
      * earlier key pass reads at submit (one command buffer per frame). At
@@ -6095,7 +6125,7 @@ static bool draw_native_scene(bool full_extent)
      * level-name flyby: clear is black, g_Cyclorama still holds the old sky). Both
      * are gamestate (derive-from-gamestate principle holds); the draw-env clear is
      * just the more robust source. scene_bg is the fallback (no auto-clear), then
-     * the PsyCross readback corner (ab/diff harness / isolated --render-paths). */
+     * scene_bg is the fallback (no auto-clear). */
     uint32_t bg = ps_drawenv_clear() ? ps_drawenv_clear() : scene_bg;
 
     /* Empty scene: normally return false so the caller re-displays the PSX VRAM
@@ -8510,6 +8540,38 @@ static void scene_postfx_split(void)
 
 static void compose_variant(void)
 {
+    /* PsyCross display mode: there is no native scene to walk. The picture is
+     * PsyCross's finished frame, pulled into ref_tex by
+     * sync_reference_texture and uploaded with the VRAM textures, blitted
+     * through panel 1, which update_layout aspect-fits to the whole window
+     * (letterbox bars where the window is not the reference shape). Postfx, the mod HUD and chrome compose over it
+     * exactly as they compose over a native scene, which is the whole point of
+     * the mode: one display path for every game.
+     *
+     * No SSAA and no freeze snapshot: both resample or capture a native scene
+     * render, and there is none. A missing ref_tex (PsyCross has not presented
+     * a frame yet) leaves the clear, one present long. */
+    if (!s_nr.scene_live) {
+        rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
+        if (s_nr.ref_tex && s_nr.layout_ref_w > 0) {
+            bind_scene_pipe(s_nr.blit_pipe);
+            rhi_bind_vram(s_nr.dev, s_nr.ref_tex);
+            rhi_bind_vertex_buffer(s_nr.dev, s_nr.panels_vb);
+            rhi_draw(s_nr.dev, 6, 6);   /* panel 1: the reference panel */
+        }
+        scene_postfx_split();                     /* SCENE point (S5) */
+        draw_mod_overlay();                       /* mod HUD (content) */
+        if (s_overlay_live) {
+            draw_perf_overlay();
+            draw_osd_overlay();
+            draw_menu_overlay();
+        }
+        if (s_overlay_live && !native_postfx_point_active(0))
+            openpete_devui_render(s_nr.dev);
+        rhi_end_offscreen(s_nr.dev);
+        return;
+    }
+
     int sn; uint32_t sbg, sfade, sfreeze;
     const scene_tri_t* scene = scene_present_buf(&sn, &sbg, &sfade, &sfreeze, NULL, NULL);
     uint32_t bg = sbg;   /* gamestate clear (== the PSX draw-env clear) */
@@ -8662,8 +8724,8 @@ static void compose_variant(void)
     scene_postfx_split();
     draw_mod_overlay();
     bool froze = chrome_split_capture(world_frame);   /* backdrop before chrome */
-    /* Chrome — vk live present only (kept off ab/diff so comparison images
-     * stay clean, and off screenshots/dumps where s_overlay_live is 0). */
+    /* Chrome — the live present only, never screenshots or dumps, where
+     * s_overlay_live is 0. */
     if (s_overlay_live) {
         draw_perf_overlay();
         draw_osd_overlay();
@@ -9464,8 +9526,9 @@ void openpete_native_render_frame(uint64_t record_pts_us)
 }
 
 /* Compose and present one ring slot. The present thread's entry: no VRAM or
- * reference sync here (the guest side did the sync while the guest was idle;
- * the reference exists only in ab/diff, which never run eager), the mod
+ * reference sync here (the guest side did the sync while the guest was idle,
+ * and the only mode that displays the reference — psycross — never runs
+ * eager, since it starts no present thread), the mod
  * registry is held for reading across the compose, and the slot moves to
  * PRESENTED with the serial of the frame that carries it — or back to FREE
  * when the swapchain declined, which is a refused present, not a shown one.
@@ -9967,8 +10030,8 @@ static int native_shot_widescreen(const char *base, int H, float cap_wf,
 }
 
 /* Wrapper: the screenshot compose uses the reference-aligned scene depth (see
- * s_scene_shot_compose) so -vk/-ab/-diff show the SAME game frame as the -og
- * PsyCross capture beside them. Flag set/cleared here so the impl's early
+ * s_scene_shot_compose) so -vk shows the SAME game frame as the -og
+ * PsyCross capture beside it. Flag set/cleared here so the impl's early
  * returns can't leak it into the live present path. */
 int openpete_native_render_screenshot_all(const char *base)
 {
@@ -10051,6 +10114,15 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
         path_with_suffix(base, "-vk", lp, sizeof(lp));
         live_vk = shot_write_offscreen(lp, "vk (live present)") == 0;
     }
+
+    /* PsyCross display mode: the offscreen the present just blitted holds
+     * PsyCross's frame with the mod HUD, postfx and chrome over it, which is
+     * exactly what the window showed and the only image this mode has. The
+     * recompose below builds a native scene at reference resolution; there is
+     * no native scene here, so it would overwrite a truthful capture with a
+     * blank one. */
+    if (!s_nr.scene_live)
+        return live_vk ? 0 : 1;
 
     /* Re-sync VRAM + reference so the dump matches the just-presented frame. */
     sync_vram_texture();

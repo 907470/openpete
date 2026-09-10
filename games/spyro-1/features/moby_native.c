@@ -3440,7 +3440,7 @@ static unsigned moby_verify_frame(void) {
  * safe: calls the real render exactly once, only reads gamestate afterward. */
 static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const char* mat) {
     int verify = moby_verify_enabled();
-    int feed   = openpete_native_render_enabled();
+    int feed   = openpete_native_scene_enabled();
     s_cur_mat = mat;
     s_rec_base = REC_BASE;
     (void)mat;
@@ -3688,7 +3688,7 @@ static void moby_reveal_dbg(CPUState* cpu) {
 
 static int on_8001F798_moby_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    if (!moby_verify_enabled() && !openpete_native_render_enabled() && !render_paths_active()) return 0;
+    if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     fade_snap_clear();                             /* refresh per-moby ZSF4 fade snapshot this canonical frame */
     moby_native_pass(cpu, func_8001F798, "REG");   /* regular material */
@@ -3698,7 +3698,7 @@ static int on_8001F798_moby_native(CPUState* cpu, uint32_t addr) {
 }
 static int on_80020F34_moby_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    if (!moby_verify_enabled() && !openpete_native_render_enabled() && !render_paths_active()) return 0;
+    if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     moby_native_pass(cpu, func_80020F34, "SPEC");  /* specular: same geometry, +0x1600 base */
     s_in = 0;
@@ -4796,7 +4796,7 @@ static void moby_native_set_actor_front(CPUState* cpu) {
 static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = moby_verify_enabled();
-    int feed   = openpete_native_render_enabled();
+    int feed   = openpete_native_scene_enabled();
     if (!verify && !feed && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
@@ -5593,7 +5593,7 @@ static int moby_census_on(void) {
 }
 
 void moby_native_reextract(CPUState* cpu) {
-    if (!openpete_native_render_enabled()) return;
+    if (!openpete_native_scene_enabled()) return;
     /* Only replay mobys the canonical frame actually drew. During a level
      * transition the moby render path may not fire (or only for the collected-gem
      * mobys); gating on the canon-drawn mask reproduces exactly that set instead

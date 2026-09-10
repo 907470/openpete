@@ -190,7 +190,7 @@ static void tracer_build_and_feed(CPUState* cpu) {
  * the real renderer (verdict), then re-derive + feed natively. */
 static int on_800189F0_tracer(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    int feed = openpete_native_render_enabled();
+    int feed = openpete_native_scene_enabled();
     if (!feed && !render_paths_active()) return 0;        /* inert: normal dispatch */
 
     static int s_in = 0;
@@ -214,7 +214,7 @@ static int on_800189F0_tracer(CPUState* cpu, uint32_t addr) {
 
 /* Sub-tick re-extract: replay the snapshot against the interpolated camera. */
 void tracer_native_reextract(CPUState* cpu) {
-    if (!openpete_native_render_enabled()) return;
+    if (!openpete_native_scene_enabled()) return;
     if (!render_path_enabled(RP_TRACER)) return;
     /* Liveness gate (matches every other feeder): only replay if the most recent
      * canonical frame actually drew a tracer. Without this, when the canonical

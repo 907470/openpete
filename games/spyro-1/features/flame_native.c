@@ -19,7 +19,7 @@
 // Determinism: never writes PSX RAM. Calls the real renderer exactly once
 // (behaviour-identical to normal dispatch) and only READS state afterwards.
 // Gated by OPENPETE_FLAME_VERIFY (dump/A/B) or a native renderer mode
-// (--renderer vk|ab|diff; scene feed); inert fall-through otherwise.
+// (--renderer vk; scene feed); inert fall-through otherwise.
 
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
@@ -629,7 +629,7 @@ static unsigned flame_verify_frame(void) {
 static int on_80058D64_flame_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = flame_verify_enabled();
-    int feed   = openpete_native_render_enabled();
+    int feed   = openpete_native_scene_enabled();
     /* --render-paths also needs the bracket so the OT filter knows this path's
      * polybuf range, even when not feeding/verifying. */
     if (!verify && !feed && !render_paths_active()) return 0;  /* inert: normal dispatch runs it */
@@ -664,7 +664,7 @@ static int on_80058D64_flame_native(CPUState* cpu, uint32_t addr) {
  * stale ribbon). The ribbon attaches to Spyro's (bracketed) pose and projects
  * through the interpolated g_Camera, so it stays coherent with the scene. */
 void flame_native_reextract(CPUState* cpu) {
-    if (!openpete_native_render_enabled()) return;
+    if (!openpete_native_scene_enabled()) return;
     if (!render_path_enabled(RP_FLAME)) return;
     /* Belt-and-braces with the m_IsFlameActive self-gate below: only replay the
      * flame if the canonical frame drew it (skips stale ribbons during a level

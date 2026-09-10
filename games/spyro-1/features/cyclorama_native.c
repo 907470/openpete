@@ -512,7 +512,7 @@ static unsigned s_cyc_curr_frame = 0xFFFFFFFFu;             /* VBL of the curr c
 static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = cyc_verify_enabled();
-    int feed   = openpete_native_render_enabled();   /* --renderer vk|ab|diff live */
+    int feed   = openpete_native_scene_enabled();   /* --renderer vk live */
     /* --render-paths also needs the bracket so the OT filter knows this path's
      * polybuf range, even when not feeding/verifying. */
     if (!verify && !feed && !render_paths_active()) return 0;  /* zero overhead */
@@ -576,7 +576,7 @@ static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
  * implausibly (a cut — keep the lerp from turning the long way round).
  * push_scene also re-sets the scene background. */
 void cyclorama_native_reextract(CPUState* cpu, double alpha, int interp_on) {
-    if (!openpete_native_render_enabled()) return;
+    if (!openpete_native_scene_enabled()) return;
     /* Only replay the sky dome if the canonical frame drew it. In cyclorama-less
      * states (e.g. the black level-name flyby) the saved matrices are stale; the
      * draw-env clear (black) shows through instead. The sky-having transitions

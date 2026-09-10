@@ -250,8 +250,8 @@ int main(int argc, char** argv) {
     /* In-process continuation: the splash's job ends where the game
      * window begins. In the default windowed vk mode the game ADOPTS the
      * splash window (native_render retitles + reuses it) so the window
-     * never closes and reopens; PsyCross/ab/diff create their own windows
-     * and close the splash as before. Progress is unhooked either way —
+     * never closes and reopens; psycross mode opens its own window and
+     * closes the splash as before. Progress is unhooked either way —
      * nothing may lazy-reopen a splash window mid-game. */
     spyro1_progress_cb = NULL;
     if (opts.renderer == OPENPETE_RENDERER_VK && !opts.headless)
@@ -273,7 +273,7 @@ int main(int argc, char** argv) {
 
     /* High-FPS spine: register the sub-tick re-feed orchestrator with the
      * native renderer so intermediate presents rebuild the scene against an
-     * interpolated camera. Inert unless --renderer vk|ab|diff + --render-fps
+     * interpolated camera. Inert unless --renderer vk + --render-fps
      * exceeds the sim rate. */
     spyro_native_reextract_init();
 

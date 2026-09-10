@@ -14,7 +14,7 @@
  * A/B comparison; the end state hides PsyCross (FBO-only, read back as the
  * "reference") and the Vulkan window is the only one shown.
  *
- * Gated entirely by --renderer vk|ab|diff. With --renderer psycross (the
+ * Gated entirely by --renderer vk. With --renderer psycross (the
  * default) every entry point is an inert no-op, so normal/headless runs are
  * byte-for-byte unaffected.
  */
@@ -52,8 +52,18 @@ void openpete_native_precreate_window(const openpete_options_t *opts,
 
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h);
 
-/* True once init succeeded and the native A/B display is live. */
+/* True once init succeeded and the native Vulkan window owns the display.
+ * Answers "is the native window the display?" — it says nothing about where
+ * the picture comes from. True in PsyCross display mode, where the window
+ * shows PsyCross's read-back frame. */
 bool openpete_native_render_enabled(void);
+
+/* True when a native SCENE is being extracted, interpolated and drawn: the
+ * feature modules feed the ring, the sub-tick spine re-extracts, and compose
+ * walks the tri list. Implies openpete_native_render_enabled(); the converse
+ * does not hold. Every consumer that walks, extracts from, or composes the
+ * native scene asks this one, not the display predicate above. */
+bool openpete_native_scene_enabled(void);
 
 /* Device identity for the pacing log's environment block. Both return a
  * static string valid for the process ("unknown" / "none" before the device
@@ -101,7 +111,7 @@ void openpete_native_request_fullscreen_toggle(void);
 int openpete_native_fullscreen_active(void);
 
 /* Performance-stats overlay (vk live window). Drawn only on the live vk
- * present (never ab/diff/screenshots). The level is one of the
+ * present (never screenshots). The level is one of the
  * OPENPETE_PERF_* values in openpete_perf_stats.h, which also owns the
  * numbers; the renderer holds the level because it gates the draw and sizes
  * the supersample region. Driven by --perf-stats, the Performance stats row
@@ -1155,9 +1165,9 @@ void openpete_native_scene_register_overlay_precapture(void (*fn)(void));
  * re-extract) so apply_overlay can interpolate the fade sub-tick. */
 void openpete_native_scene_commit_fade(void);
 
-/* Capture the offscreen target — whatever the last present blitted, so the
- * A/B panel composite in ab/diff and the plain native frame otherwise — to a
- * PNG at `path`. Call after openpete_native_render_frame so the offscreen holds
+/* Capture the offscreen target — whatever the last present blitted, which is
+ * the native frame in vk mode and PsyCross's read-back frame in psycross
+ * mode, chrome and postfx included — to a PNG at `path`. Call after openpete_native_render_frame so the offscreen holds
  * the latest frame. `what` labels the log line (NULL reads as "offscreen").
  * Returns 0 on success, nonzero if disabled or on failure. */
 int openpete_native_render_screenshot(const char *path, const char *what);
@@ -1169,16 +1179,14 @@ int openpete_native_render_screenshot(const char *path, const char *what);
  * active. Blocks (the device is torn down right after). */
 void openpete_native_render_record_flush(void);
 
-/* Dump every native renderer variant for one --screenshot-on-frame target,
- * regardless of the live --renderer mode, writing each to `base` with
- * "-vk"/"-ab"/"-diff" inserted before the extension. In a windowed pure-vk run
- * the -vk variant is a READBACK of the just-presented off_image — ground truth
- * for what the window showed (sub-tick interp scene, mods, postfx, overlays);
- * headless / ab / diff runs recompose the canonical lagged scene instead (the
- * only option without a live present). -ab (native|reference) and -diff
- * (|native - ref|) are always recomposed, -og-aligned, for the PsyCross
- * compare. The reference ("-og") is captured separately by the caller.
- * Restores the live layout afterwards. Returns 0 if all variants were written,
+/* Dump the native view of one --screenshot-on-frame target, writing it to
+ * `base` with "-vk" inserted before the extension. In a windowed run the -vk
+ * image is a READBACK of the just-presented off_image — ground truth for what
+ * the window showed (sub-tick interp scene, mods, postfx, overlays). Headless
+ * recomposes the canonical lagged scene instead, the only option without a
+ * live present; psycross mode, which has no native scene to recompose, writes
+ * the readback and stops. The reference ("-og") is captured separately by the
+ * caller. Restores the live layout afterwards. Returns 0 if all variants were written,
  * nonzero otherwise (including when the native path is disabled). */
 int openpete_native_render_screenshot_all(const char *base);
 

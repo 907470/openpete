@@ -284,7 +284,7 @@ static void flush_pending(CPUState* cpu) {
 }
 
 static void on_overlay_precapture(void) {
-    if (!s_cpu || !openpete_native_render_enabled()) return;
+    if (!s_cpu || !openpete_native_scene_enabled()) return;
     s_flush_at_capture = 1;
     flush_pending(s_cpu);
     s_flush_at_capture = 0;
@@ -292,7 +292,7 @@ static void on_overlay_precapture(void) {
 
 static int on_800168DC(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    int feed = openpete_native_render_enabled();
+    int feed = openpete_native_scene_enabled();
     if (!feed) return 0;                        /* inert: normal dispatch runs it */
     if (!s_cpu) {                               /* one-time: arm the capture-boundary flush */
         s_cpu = cpu;
@@ -368,7 +368,7 @@ static int on_800168DC(CPUState* cpu, uint32_t addr) {
  * PsyCross reference unchanged); we only READ its arguments. */
 static int on_800190D4(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    if (!openpete_native_render_enabled()) return 0;   /* inert: normal dispatch runs it */
+    if (!openpete_native_scene_enabled()) return 0;   /* inert: normal dispatch runs it */
     static int s_in = 0;
     if (s_in) return 0;                                /* re-entry from our own call -> real body */
     s_in = 1;
