@@ -4724,12 +4724,17 @@ static int run_host_loop(const openpete_options_t* opts) {
                 for (int si = 0; si < opts->screenshot_frame_count; ++si) {
                     if (s_ab_shot[si]) continue;
                     if (shot_key < opts->screenshot_frames[si]) continue;
-                    /* PsyCross display mode: -vk is a READBACK of PsyCross's
-                     * present FBO, so it carries the same one-present OT lag
-                     * the -og arm above exists to cancel. Arm it identically or
-                     * the two legs of the same target show different ticks and
-                     * the pair stops being a comparison. In vk mode the compose
-                     * is the newest tick and no arm is wanted. */
+                    /* The native leg NEVER lags: it composes the newest tick
+                     * at the keyed present, and every PsyCross-sourced leg
+                     * arms itself to catch up. That is the direction the
+                     * correction runs in, always.
+                     *
+                     * In vk mode this leg is that native compose, so it takes
+                     * no arm. In PsyCross display mode it is a READBACK of
+                     * PsyCross's present FBO and carries the same one-present
+                     * OT lag the -og arm above cancels, so it takes the same
+                     * arm. Both legs of a target then name one tick, and a
+                     * target names the same tick in either mode. */
                     if (!openpete_native_scene_enabled() && !s_ab_armed[si]) {
                         s_ab_armed[si] = true;
                         continue;
