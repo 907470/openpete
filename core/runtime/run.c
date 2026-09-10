@@ -4720,9 +4720,20 @@ static int run_host_loop(const openpete_options_t* opts) {
              * "<out>-og.png" above. */
             if (openpete_native_render_enabled() && opts->screenshot_frame_count > 0) {
                 static bool s_ab_shot[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
+                static bool s_ab_armed[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
                 for (int si = 0; si < opts->screenshot_frame_count; ++si) {
                     if (s_ab_shot[si]) continue;
                     if (shot_key < opts->screenshot_frames[si]) continue;
+                    /* PsyCross display mode: -vk is a READBACK of PsyCross's
+                     * present FBO, so it carries the same one-present OT lag
+                     * the -og arm above exists to cancel. Arm it identically or
+                     * the two legs of the same target show different ticks and
+                     * the pair stops being a comparison. In vk mode the compose
+                     * is the newest tick and no arm is wanted. */
+                    if (!openpete_native_scene_enabled() && !s_ab_armed[si]) {
+                        s_ab_armed[si] = true;
+                        continue;
+                    }
                     s_ab_shot[si] = true;
                     char base[1024];
                     openpete_screenshot_format_path(opts->screenshot_output,
