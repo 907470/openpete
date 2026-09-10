@@ -46,6 +46,25 @@ set -euo pipefail
 # (scripts/fences/rumble_guard.py enforces this.)
 export OPENPETE_VIBRATION=0
 
+# PsyCross rasterizes the OT for the oracle, so every run here needs a
+# reachable display even under --headless. An ssh session carries none of the
+# login session's, and the resulting failure is a boot-time SDL error a long
+# way from its cause. Adopt the login session's socket when the environment
+# names no display and one is there to adopt; say so, because a run against a
+# borrowed display should not look like a run that had one.
+if [[ -z "${WAYLAND_DISPLAY:-}${DISPLAY:-}" ]]; then
+    : "${XDG_RUNTIME_DIR:=/run/user/$(id -u)}"
+    for sock in "$XDG_RUNTIME_DIR"/wayland-*; do
+        [[ -S "$sock" ]] || continue
+        export XDG_RUNTIME_DIR WAYLAND_DISPLAY="${sock##*/}"
+        echo "[dist-gate] no display in the environment — adopting $WAYLAND_DISPLAY"
+        break
+    done
+    if [[ -z "${WAYLAND_DISPLAY:-}" && -S /tmp/.X11-unix/X0 ]]; then
+        export DISPLAY=:0
+        echo "[dist-gate] no display in the environment — adopting DISPLAY=:0"
+    fi
+fi
 
 cd "$(dirname "$0")/.."
 

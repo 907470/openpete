@@ -52,11 +52,23 @@ scripts/setup_appimagetool.sh
 uidmap=(--user "$(id -u):$(id -g)")
 [[ "$ENGINE" == podman ]] && uidmap=(--userns=keep-id)
 
+# The SDK ships in every release, so it is staged unless the caller opts out
+# with --no-mod-sdk. Leaving it to be remembered per invocation is how an
+# artifact reaches the dist gate with no sdk/ in it: the gate treats a missing
+# SDK as a hard failure, which is the right verdict but arrives an hour into
+# packaging and a full re-pack later.
+pkg_args=("$@")
+if [[ " ${pkg_args[*]} " == *" --no-mod-sdk "* ]]; then
+    pkg_args=("${pkg_args[@]/--no-mod-sdk}")
+elif [[ " ${pkg_args[*]} " != *" --with-mod-sdk "* ]]; then
+    pkg_args+=(--with-mod-sdk)
+fi
+
 "$ENGINE" run --rm -v "$PWD:/src" "${uidmap[@]}" "$IMAGE" bash -euo pipefail -c '
     cmake -S third_party/psxrecomp/recompiler -B third_party/psxrecomp/build \
           -G Ninja -DCMAKE_BUILD_TYPE=Release
     cmake --build third_party/psxrecomp/build -j
     cmake --preset linux-release-shared
     cmake --build build/linux-release-shared -j
-    scripts/package-dist.sh linux --toolchain .tools/clang '"$*"'
+    scripts/package-dist.sh linux --toolchain .tools/clang '"${pkg_args[*]}"'
 '

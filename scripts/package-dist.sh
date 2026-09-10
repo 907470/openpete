@@ -31,6 +31,13 @@
 # compiler (documented in README-dist); the AppImage always bundles one,
 # since needing nothing installed is the point of it.
 set -euo pipefail
+
+# Staging runs the built exe (--compile-mods) to fill each mod's .build, and
+# vibration ships on by default: nobody is holding a pad during packaging, and
+# the buzzing shows up in no log, so it would never surface on its own.
+# (scripts/fences/rumble_guard.py enforces this.)
+export OPENPETE_VIBRATION=0
+
 cd "$(dirname "$0")/.."
 
 PLATFORM="${1:-}"
@@ -78,6 +85,19 @@ sign_pe() {  # sign_pe <file> — no-op unless --sign was given
 # names the build without implying a release; leave it unset for releases,
 # where the tag is the point.
 VERSION="${OPENPETE_DIST_VERSION:-$(git describe --tags --always --dirty 2>/dev/null || echo dev)}"
+# The version is the artifact's name, which is the one thing about a build a
+# stranger reads before running it. A describe that fell through to a commit
+# suffix means this checkout cannot see the tag — the tag lives on another
+# machine, or was never made — and the artifact would carry the PREVIOUS
+# release's number. Name that here rather than let it surface as a filename
+# nobody notices until it is published.
+case "$VERSION" in
+    *-g[0-9a-f]*|dev|*-dirty)
+        echo "[package] note: version '$VERSION' is not a clean tag." >&2
+        echo "[package]   a release artifact wants OPENPETE_DIST_VERSION=vX.Y.Z," \
+             "or a checkout that can see the tag (git fetch --tags)." >&2
+        ;;
+esac
 NAME="openpete-spyro1-${VERSION}-${PLATFORM}-x86_64"
 # Absolute: the example-staging loop below runs inside `cd mods/<id>`
 # subshells, where a relative --out no longer resolves.
