@@ -34,10 +34,8 @@ A mod shades what the engine draws; it cannot add draws of its own.
 int frag = api->shader_register(self, "shaders/crt.frag");
 ```
 
-The path is relative to the mod and the extension selects the stage.
-Keep shaders under `shaders/`: that directory is the one hot reload
-watches under `OPENPETE_MOD_HOT_RELOAD=1`. The call returns `-1` for a
-missing file or a compile error.
+The path is relative to the mod and the extension selects the stage. The
+call returns `-1` for a missing file or a compile error.
 
 Every shader includes the binding contract:
 

@@ -76,6 +76,7 @@ nav:
       - Sounds: sounds.md
       - Custom levels: levels.md
   - Shaders: shaders.md
+  - Iteration and testing: testing-and-iteration.md
   - Publishing: publishing.md
   - Glossary: glossary.md
   - Reference:

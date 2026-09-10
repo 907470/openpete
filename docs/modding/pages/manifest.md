@@ -129,9 +129,8 @@ the mod stays enabled. Bools read as 0/1 through `config_int` and
 `config_float`; ints read through `config_float`; floats truncate through
 `config_int`; strings never coerce.
 
-Read the config in the entry point. Under `OPENPETE_MOD_HOT_RELOAD=1` an
-edit to `config.toml` reloads the mod against the cached object, so the
-entry point re-runs with the new values without a recompile.
+Read the config in the entry point. An edit to `config.toml` takes effect
+on the next launch.
 
 ## enabled.txt and --mods
 
