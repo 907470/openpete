@@ -1,10 +1,10 @@
 /**
  * @file openpete_imgui.h
- * @brief The full Dear ImGui C API inside a mod UI section.
+ * @brief The full ImGui C API inside a mod UI section.
  *
  * Not covered by #OPENPETE_MOD_API_VERSION and carrying no stability
- * promise, like openpete_mod_ui.h: the surface is Dear ImGui's, and a Dear
- * ImGui bump is a source-visible change. Mods ship as source and rebuild
+ * promise, like openpete_mod_ui.h: the surface is ImGui's, and an ImGui
+ * bump is a source-visible change. Mods ship as source and rebuild
  * against the staged SDK, so a bump costs a recompile; a prebuilt object
  * built against a different version is refused at load.
  *
@@ -29,7 +29,7 @@
  * engine logs the function and the mod once, and the call returns a zeroed
  * value.
  *
- * The API is Dear ImGui's own: names follow dear_bindings
+ * The API is ImGui's own: names follow dear_bindings
  * (`ImGui::Begin` is `ImGui_Begin`, a call with every optional argument is
  * the `...Ex` form), and the reference is the comment block on each
  * declaration in `dcimgui.h` plus `ImGui_ShowDemoWindow()`.
@@ -77,18 +77,18 @@ extern const openpete_imgui_table_t* openpete_imgui_tbl;
  * and disables the mod on a mismatch, since a mod bound to a table whose
  * slots have moved would call the wrong function on its first widget.
  */
-typedef struct openpete_imgui_annex {
+typedef struct openpete_imgui_desc {
     uint32_t magic;             /**< 'OPIG' = 0x4F504947. */
     uint32_t imgui_version_num; /**< IMGUI_VERSION_NUM at compile time. */
     uint32_t table_size;        /**< sizeof(openpete_imgui_table_t). */
     uint8_t  table_sha256[32];  /**< Digest of the table's entry text. */
     const openpete_imgui_table_t** slot; /**< Where to write the table. */
-} openpete_imgui_annex_t;
+} openpete_imgui_desc_t;
 
 /** @brief Defines the table pointer and exports the descriptor. */
 #define OPENPETE_MOD_IMGUI()                                              \
     const openpete_imgui_table_t* openpete_imgui_tbl = 0;                 \
-    const openpete_imgui_annex_t openpete_imgui_annex = {                 \
+    const openpete_imgui_desc_t openpete_imgui_desc = {                 \
         0x4F504947u, (uint32_t)IMGUI_VERSION_NUM,                         \
         (uint32_t)sizeof(openpete_imgui_table_t),                         \
         OPENPETE_IMGUI_TABLE_SHA256_INIT,                                 \

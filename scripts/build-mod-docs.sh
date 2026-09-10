@@ -3,7 +3,8 @@
 #
 # Two stages, degrading gracefully:
 #   1. tools/gen_mod_docs.py (stdlib python) extracts the reference
-#      pages into docs/modding/pages/reference/ — ALWAYS runs.
+#      pages into docs/modding/pages/reference/ and the ImGui page into
+#      docs/modding/pages/ — ALWAYS runs.
 #   2. mkdocs builds the HTML site — runs when mkdocs is importable
 #      (pip install mkdocs-material), otherwise prints a notice and
 #      exits 0 so builds on minimal machines stay green (the markdown
@@ -14,7 +15,7 @@
 #                             [--site-dir <dir>] [--serve]
 #
 # Wired into the build as the `mod_docs` CMake target (stamp-guarded:
-# a no-op unless the API header, manifests, gallery or pages changed).
+# a no-op unless the API header, manifests, examples or pages changed).
 
 set -euo pipefail
 cd "$(dirname "$0")/.."

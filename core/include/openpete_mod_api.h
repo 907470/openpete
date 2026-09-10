@@ -17,8 +17,8 @@
  * appended, never moved, retyped or removed, and the loader refuses a
  * prebuilt object built against an earlier api. The manifest `api = N`
  * pin is the minimum version the mod needs; check `api_version < N`,
- * never `!=`. The two annexes — the widget vtable (openpete_mod_ui.h) and
- * the Dear ImGui escape hatch (openpete_imgui.h) — are versioned
+ * never `!=`. The two extension headers — the widget vtable (openpete_mod_ui.h) and
+ * the ImGui escape hatch (openpete_imgui.h) — are versioned
  * separately and carry no stability promise. Each entry states the
  * version it appeared in with `@since`.
  *
@@ -469,7 +469,7 @@ typedef struct openpete_mod_api {
      * ui_status again, so a line printed once stays visible and a per-tick
      * printer repaints its block each tick. The block truncates past about
      * 24 lines. Custom panels use openpete_mod_ui.h, or openpete_imgui.h
-     * for the whole Dear ImGui C API.
+     * for the whole ImGui C API.
      * @since api 1
      */
     void (*ui_status)(openpete_mod_t* self, const char* fmt, ...);

@@ -159,15 +159,15 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1"
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
-    # ImGui-annex containment gate: the mods fixture proves the annex binds
+    # ImGui containment gate: the mods fixture proves the table binds
     # headless, but every guard it installs runs only inside a UI section
     # body, and a body needs an open overlay — so this leg opens one in a
     # real window and reads engagement, the error bracket and the
     # out-of-body refusal off the log. Skips (64) with no display.
     # See notes/plans/openpete-mod-imgui-escape-hatch.md.
-    add_test(NAME mod_imgui_annex
+    add_test(NAME mod_imgui
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_mod_imgui.sh)
-    set_tests_properties(mod_imgui_annex PROPERTIES
+    set_tests_properties(mod_imgui PROPERTIES
         LABELS "mods"
         TIMEOUT 900
         SKIP_RETURN_CODE 64

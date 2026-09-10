@@ -313,7 +313,7 @@ void openpete_mods_present_flush(CPUState* cpu, int canonical) {
         for (int i = 0; i < s_phook_count; i++) {
             if (s_phooks[i].disabled) continue;
             const op_time_t t0 = op_now(); /* clock-guard: wall */ /* hook cost span */
-            /* Names the mod in an ImGui-annex refusal: a present hook runs
+            /* Names the mod in an ImGui refusal: a present hook runs
              * outside any UI section body, so the guard has no mod index. */
             openpete_imgui_guard_set_hook_owner(s_phooks[i].owner_id);
             s_phooks[i].fn(&ctx);

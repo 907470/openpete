@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # scripts/update-dear-bindings.sh — refresh third_party/dear_bindings/ from the
-# dear_bindings release that matches the pinned Dear ImGui.
+# dear_bindings release that matches the pinned ImGui.
 #
 # dear_bindings publishes its generated output per release, so the engine build
 # needs neither the generator nor its Python dependency (ply). The release is
@@ -22,7 +22,7 @@ FILES=(dcimgui.h dcimgui.cpp dcimgui.json LICENSE.txt)
 imgui_ver=$(sed -n 's/^#define IMGUI_VERSION  *"\([^"]*\)".*/\1/p' \
             third_party/imgui/imgui.h | head -1)
 [[ -n "$imgui_ver" ]] || { echo "[dear-bindings] no IMGUI_VERSION in third_party/imgui/imgui.h" >&2; exit 1; }
-echo "[dear-bindings] pinned Dear ImGui $imgui_ver"
+echo "[dear-bindings] pinned ImGui $imgui_ver"
 
 # The bindings half of the tag moves independently; take the newest release
 # whose ImGui half matches.
@@ -60,7 +60,7 @@ readme="$DEST/README.md"
 if [[ -f "$readme" ]]; then
     tmp_readme="$readme.tmp"
     rm -f "$tmp_readme"
-    sed -e "s|^Release: .*|Release: \`$tag\` (Dear ImGui \`v$imgui_ver\`).|" \
+    sed -e "s|^Release: .*|Release: \`$tag\` (ImGui \`v$imgui_ver\`).|" \
         "$readme" > "$tmp_readme"
     mv "$tmp_readme" "$readme"
     grep -q "^Release: \`$tag\`" "$readme" || {
@@ -70,5 +70,5 @@ fi
 funcs=$(python3 -c 'import json,sys; print(len(json.load(open(sys.argv[1]))["functions"]))' \
         "$DEST/dcimgui.json")
 echo "[dear-bindings] installed $tag — $funcs functions"
-echo "[dear-bindings] regenerate the annex by rebuilding; review the table diff"
+echo "[dear-bindings] regenerate the table by rebuilding; review the table diff"
 exit 0

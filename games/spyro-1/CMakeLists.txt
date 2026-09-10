@@ -421,7 +421,7 @@ add_dependencies(openpete-spyro1 spyro1_game_structs)
 
 # --- Mod-author docs (notes/plans/openpete-mod-docs.md) ---
 # tools/gen_mod_docs.py extracts the SDK surface (api header, symbol/
-# global/prototype manifests, typed structs, mod gallery) into markdown;
+# global/prototype manifests, typed structs, mod examples) into markdown;
 # scripts/build-mod-docs.sh then builds the mkdocs-material site when
 # mkdocs is installed (notice + green build when it isn't). Stamp-
 # guarded: the docs rebuild exactly when an input changed — "the docs
@@ -429,6 +429,9 @@ add_dependencies(openpete-spyro1 spyro1_game_structs)
 set(_mod_docs_stamp ${CMAKE_CURRENT_BINARY_DIR}/moddocs.stamp)
 file(GLOB _mod_docs_manifests CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/mods/*/mod.toml)
 file(GLOB _mod_docs_pages CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/docs/modding/pages/*.md)
+# pages/imgui.md is written by the command below, so listing it as an input
+# would make the stamp depend on its own output.
+list(REMOVE_ITEM _mod_docs_pages ${CMAKE_SOURCE_DIR}/docs/modding/pages/imgui.md)
 file(GLOB _mod_docs_assets CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/docs/modding/pages/assets/javascripts/*)
 add_custom_command(
     OUTPUT  ${_mod_docs_stamp}
@@ -440,7 +443,7 @@ add_custom_command(
             ${CMAKE_SOURCE_DIR}/core/include/openpete_mod_ui.h
             ${CMAKE_SOURCE_DIR}/core/include/openpete_imgui.h
             ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui.h
-            ${CMAKE_SOURCE_DIR}/tools/gen_imgui_annex.py
+            ${CMAKE_SOURCE_DIR}/tools/gen_imgui_table.py
             ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
             ${CMAKE_CURRENT_SOURCE_DIR}/manifest/globals.toml
             ${CMAKE_CURRENT_SOURCE_DIR}/manifest/prototypes.toml
@@ -483,8 +486,8 @@ add_custom_target(spyro1_sdk_stage ALL
             ${CMAKE_SOURCE_DIR}/core/include/openpete_imgui.h
             ${CMAKE_SOURCE_DIR}/third_party/dear_bindings/dcimgui.h
             ${CMAKE_SOURCE_DIR}/third_party/imgui/imconfig.h
-            ${OPENPETE_IMGUI_ANNEX_DIR}/openpete_imgui_table.h
-            ${OPENPETE_IMGUI_ANNEX_DIR}/openpete_imgui_macros.h
+            ${OPENPETE_IMGUI_TABLE_DIR}/openpete_imgui_table.h
+            ${OPENPETE_IMGUI_TABLE_DIR}/openpete_imgui_macros.h
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk
     COMMAND ${CMAKE_COMMAND} -E make_directory
             $<TARGET_FILE_DIR:openpete-spyro1>/sdk/shaders

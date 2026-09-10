@@ -219,7 +219,7 @@ typedef struct {
                           * enable) */
     int sim_mutative;    /* effective verdict: does the mod write guest
                           * RAM? Declared, or derived by the engine. */
-    int has_ui;          /* a UI section (register_ui / annex descriptor)
+    int has_ui;          /* a UI section (register_ui / section descriptor)
                           * or a live ui_status block */
     int ui_always;       /* the section carries OPENPETE_MOD_UI_ALWAYS: its
                           * body draws from the overlay's top-level pass on
@@ -227,8 +227,8 @@ typedef struct {
     int has_assets;      /* assets/ overlay root (boot-scoped tier) */
     int has_src;
     int has_cfg;         /* [[config]] schema rows in the manifest */
-    uint64_t imgui_calls; /* ImGui annex calls the section's last body
-                           * made; 0 = the mod does not use the annex,
+    uint64_t imgui_calls; /* ImGui calls the section's last body
+                           * made; 0 = the mod does not use ImGui,
                            * or its section has not drawn yet */
 } openpete_mods_menu_info_t;
 int openpete_mods_menu_info(int i, openpete_mods_menu_info_t* out);

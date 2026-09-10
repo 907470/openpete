@@ -1,9 +1,9 @@
 /**
  * @file imgui_panel.c
- * @brief imgui-panel: the Dear ImGui annex driving a real panel.
+ * @brief imgui-panel: the full ImGui C API driving a real panel.
  *
  * The eleven-widget vtable in openpete_mod_ui.h is the simple path.
- * openpete_imgui.h is the escape hatch: the whole Dear ImGui C API,
+ * openpete_imgui.h is the escape hatch: the whole ImGui C API,
  * reached through a table the loader binds at dlopen. Opting in is the
  * OPENPETE_MOD_IMGUI() line below; nothing else changes about how the
  * mod is built or loaded.
@@ -187,7 +187,7 @@ static void on_present(const openpete_present_ctx_t* ctx) {
     /* A present hook runs on the extracting thread, outside the engine's
      * NewFrame/Render pair. The engine drops this and names the mod once;
      * the point of the row is to see that happen. */
-    ImGui_Text("imgui-panel: this call never reaches Dear ImGui");
+    ImGui_Text("imgui-panel: this call never reaches ImGui");
 }
 
 /* ── UI section: host copy in, ImGui out ───────────────────────────── */
@@ -281,7 +281,7 @@ static void draw_detail_window(const openpete_mod_ui_t* ui) {
             ui->text_disabled("no level mobys yet");
     }
     /* The whole point of the row: with it on the window is never ended,
-     * Dear ImGui reports a recoverable error, and the engine's bracket
+     * ImGui reports a recoverable error, and the engine's bracket
      * recovers the stack and refuses this section after three presents. */
     if (!s_break_end)
         ImGui_End();
@@ -305,11 +305,11 @@ int openpete_mod_entry(const openpete_mod_api_t* api, openpete_mod_t* self) {
     s_break_end = api->config_bool(self, "break_end", 0);
     s_hook_call = api->config_bool(self, "hook_call", 0);
 
-    api->ui_status(self, "open this section to drive Dear ImGui directly");
+    api->ui_status(self, "open this section to drive ImGui directly");
     if (s_break_end)
         api->ui_status(self, "break_end: an ImGui_End is omitted on purpose");
     if (s_hook_call) {
-        api->ui_status(self, "hook_call: a present hook calls into the annex");
+        api->ui_status(self, "hook_call: a present hook calls into ImGui");
         if (api->register_present_hook(self, on_present) != 0) return -1;
     }
     return api->override_name(self, "GamestateUpdate", on_gamestate_update);

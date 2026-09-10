@@ -41,7 +41,7 @@
 #include "openpete_log.h"
 #include "openpete_host_input.h"
 #include "openpete_keymap.h"     /* [keys.mod.<id>] binding overrides */
-#include "../runtime/openpete_imgui_guard.h" /* ImGui annex bind */
+#include "../runtime/openpete_imgui_guard.h" /* ImGui table bind */
 #include "../host/sha256.h"     /* content-hash build cache key */
 #include "../host/host_spawn.h" /* silent compiler spawn + cc identity */
 #include "miniz.h"              /* zip mods (folder or zip, identical) */
@@ -235,7 +235,7 @@ struct openpete_mod {
      * happens on the sim thread while the compose thread may be about to
      * call through the pointer. The old object stays resident, so a body
      * already running finishes against valid code. */
-    _Atomic openpete_mod_ui_body_fn ui_body; /* UI-annex descriptor body
+    _Atomic openpete_mod_ui_body_fn ui_body; /* UI section descriptor body
                                       * (openpete_mod_ui_section symbol,
                                       * resolved at dlopen, ABI-checked;
                                       * NULL = none) */
@@ -250,7 +250,7 @@ struct openpete_mod {
     int      status_trunc;
     unsigned status_tick;
     openpete_mod_toggle_fn toggle_fn; /* live-toggle notification */
-    uint64_t imgui_calls;  /* ImGui annex calls the last body made */
+    uint64_t imgui_calls;  /* ImGui calls the last body made */
     int      imgui_engaged;/* the first non-zero count has been logged */
     void* dl;
 };
@@ -326,7 +326,7 @@ static void mod_strip_registrations(struct openpete_mod* mod) {
     mod->toggle_fn = NULL;
 }
 
-/* Resolve the UI annex's registration descriptor (see
+/* Resolve the UI section's registration descriptor (see
  * openpete_mod_ui.h). The abi check runs at LOAD so the prebuilt-DLL
  * fallback path (which compile-on-load cannot rebuild) fails loudly
  * instead of calling through a stale vtable shape: on mismatch the
@@ -339,7 +339,7 @@ static void mod_resolve_ui_section(struct openpete_mod* mod, void* dl) {
     if (!d) return;
     if (d->magic != 0x4F505549u || d->abi != OPENPETE_MOD_UI_ABI ||
         !d->body) {
-        OPL_ERROR_F("mods", "%s: UI annex ABI mismatch (mod built for "
+        OPL_ERROR_F("mods", "%s: UI section ABI mismatch (mod built for "
                     "abi %u, engine has %u) — section refused; the mod "
                     "itself still runs. Rebuild the mod against the "
                     "current SDK.", mod->id,
@@ -351,18 +351,18 @@ static void mod_resolve_ui_section(struct openpete_mod* mod, void* dl) {
     mod->ui_always = (d->flags & OPENPETE_MOD_UI_ALWAYS) ? 1 : 0;
 }
 
-/* Bind the mod's ImGui annex (openpete_imgui.h) before any of its code
+/* Bind the mod's ImGui table (openpete_imgui.h) before any of its code
  * runs. No descriptor: the mod did not opt in and nothing is bound. A
  * descriptor that disagrees with the engine's table disables the mod the
  * way a failed abi check does — a section-only refusal would leave a live
  * mod holding a null table, and its first ImGui_* call from any hook would
  * dereference it. Each hot-reload object binds its own copy, since the
  * pointer lives in the object. */
-static int mod_resolve_imgui_annex(struct openpete_mod* mod, void* dl,
+static int mod_resolve_imgui(struct openpete_mod* mod, void* dl,
                                    const char* path) {
-    const void* d = mod_dlsym(dl, "openpete_imgui_annex");
+    const void* d = mod_dlsym(dl, "openpete_imgui_desc");
     if (!d) return 0;
-    return openpete_imgui_annex_bind(d, mod->id, path) ? 0 : -1;
+    return openpete_imgui_bind(d, mod->id, path) ? 0 : -1;
 }
 
 static const openpete_sdk_symbol_t* s_symbols = NULL;
@@ -770,7 +770,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
         return;
     }
     if (mod_check_abi(dl, mod->id, hot_path) != 0) return;
-    if (mod_resolve_imgui_annex(mod, dl, hot_path) != 0) return;
+    if (mod_resolve_imgui(mod, dl, hot_path) != 0) return;
     mod_entry_fn entry = (mod_entry_fn)mod_dlsym(dl, "openpete_mod_entry");
     if (!entry) {
         OPL_ERROR_F("mods", "%s: reload object has no openpete_mod_entry "
@@ -986,7 +986,7 @@ static void mod_ui_run_body(struct openpete_mod* m, int i,
                             const struct openpete_mod_ui* ui,
                             int no_input) {
     openpete_mods_in_present = 1;
-    /* The body depth is what makes an ImGui annex call legal: the guard
+    /* The body depth is what makes an ImGui call legal: the guard
      * wrappers drop a call from anywhere else. */
     openpete_imgui_body_enter_always(i, no_input);
     body(ui);
@@ -995,7 +995,7 @@ static void mod_ui_run_body(struct openpete_mod* m, int i,
     m->imgui_calls = openpete_imgui_calls_take();
     if (m->imgui_calls && !m->imgui_engaged) {
         m->imgui_engaged = 1;
-        OPL_INFO_F("mods", "%s: imgui annex engaged (%llu calls)",
+        OPL_INFO_F("mods", "%s: ImGui engaged (%llu calls)",
                    m->id, (unsigned long long)m->imgui_calls);
     }
 }
@@ -2410,7 +2410,7 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
     }
     snprintf(mod->obj_path, sizeof mod->obj_path, "%s", so_path);
     if (mod_check_abi(mod->dl, mod->id, so_path) != 0 ||
-        mod_resolve_imgui_annex(mod, mod->dl, so_path) != 0) {
+        mod_resolve_imgui(mod, mod->dl, so_path) != 0) {
         mod->dl = NULL; /* the object stays mapped; nothing in it runs */
         return -1;
     }

@@ -255,7 +255,7 @@ keeps the running instance.
 | Fog retarget | `texpack_fog_shift(self, scale_rgb, offset_rgb 0..255)`; NULL,NULL = stock | tick | no |
 | Files | `data_dir(self)` → absolute path | any | no |
 | Custom panel | `openpete_mod_ui.h` widget vtable via `OPENPETE_MOD_UI_SECTION(fn)` at file scope in one TU; separately versioned (`OPENPETE_MOD_UI_ABI`), no stability promise; body runs in present context | present | no |
-| Beyond the eleven widgets | `openpete_imgui.h`: the whole Dear ImGui C API, opted into with `OPENPETE_MOD_IMGUI()` at file scope in one TU. Calls are legal only inside a section body — anywhere else they are dropped and logged; lifecycle and input-injection calls are absent from the table and fail the mod's compile. See reference/imgui.md | present | no |
+| Beyond the eleven widgets | `openpete_imgui.h`: the whole ImGui C API, opted into with `OPENPETE_MOD_IMGUI()` at file scope in one TU. Calls are legal only inside a section body — anywhere else they are dropped and logged; lifecycle and input-injection calls are absent from the table and fail the mod's compile. See pages/imgui.md | present | no |
 
 ### Timing landmarks (cold boot into the attract demo)
 
@@ -299,10 +299,11 @@ d = 1 − 1/viewZ, decode viewZ = 1/(1−d)), 2 `op_prev_frame`, 3.0
 `op_engine` UBO: `op_time, op_alpha, op_tick, op_present, op_canonical,
 op_aspect, op_resolution, op_window, op_scene_rect (uv rect of the 4:3
 content), op_scene_grid (512, 240, 224 visible rows, widen factor)`.
-Points: COMPOSITE (after HUD, before blit), SCENE (before HUD),
-PRESENT refused. Passes run every present. Cross-mod order = enabled-list
-priority; `order` breaks ties within a mod, lower first. 64 passes engine-
-wide. `op_uv` (0,0) = top-left; `texture(op_prev_pass, op_uv)` is identity.
+Points: `OP_POSTFX_COMPOSITE` (after HUD, before blit), `OP_POSTFX_SCENE`
+(before HUD), `OP_POSTFX_PRESENT` refused. Passes run every present.
+Cross-mod order = enabled-list priority; `order` breaks ties within a mod,
+lower first. 64 passes engine-wide. `op_uv` (0,0) = top-left;
+`texture(op_prev_pass, op_uv)` is identity.
 
 ### Materials
 

@@ -17,7 +17,7 @@ fails on a mismatch.
 | --- | --- |
 | `dcimgui.h` | C declarations. Included by mods through `openpete_imgui.h`. |
 | `dcimgui.cpp` | C++ implementation calling `ImGui::*`. Compiled into `openpete_imgui` with hidden visibility. |
-| `dcimgui.json` | Metadata (signatures, varargs, array bounds, `#if` conditionals) read by `tools/gen_imgui_annex.py`. |
+| `dcimgui.json` | Metadata (signatures, varargs, array bounds, `#if` conditionals) read by `tools/gen_imgui_table.py`. |
 | `LICENSE.txt` | MIT, upstream. |
 
 ## Updating
@@ -30,6 +30,6 @@ scripts/update-dear-bindings.sh
 
 which reads `IMGUI_VERSION` from `third_party/imgui/imgui.h`, downloads the
 four files from the matching release, rewrites the `Release:` line above, and
-validates the download before installing it. Rebuild afterwards: the annex
+validates the download before installing it. Rebuild afterwards: the table
 table is regenerated from `dcimgui.json`, its digest changes, and every source
 mod recompiles at the next boot.

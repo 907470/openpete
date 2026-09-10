@@ -71,4 +71,4 @@ mod engine-rendered settings and rebindable keys with no UI code.
 - Reference, generated from the SDK sources: [API](reference/api.md),
   [functions](reference/functions.md), [globals](reference/globals.md),
   [game structs](reference/structs.md), [CPUState](reference/cpustate.md),
-  [examples](reference/gallery.md).
+  [examples](reference/examples.md).

@@ -2,10 +2,10 @@
 # Engine-repo concern, not part of the mod manifest format.
 #
 # Headless never opens the overlay, so no section body runs here: this
-# run proves the annex compiles, loads and binds. Engagement and the
+# run proves the table compiles, loads and binds. Engagement and the
 # containment paths need a window and are asserted by
 # scripts/check_mod_imgui.sh.
 [test]
 frames        = 8000
 expect_oracle = "pass"
-expect_log    = ["imgui-panel: imgui annex bound"]
+expect_log    = ["imgui-panel: ImGui bound"]

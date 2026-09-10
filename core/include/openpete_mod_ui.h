@@ -32,7 +32,7 @@
 extern "C" {
 #endif
 
-/** @brief Annex ABI generation, checked at load. */
+/** @brief UI section ABI generation, checked at load. */
 #define OPENPETE_MOD_UI_ABI 2u
 
 /**
@@ -86,7 +86,7 @@ typedef struct openpete_mod_ui {
  *
  * An always body owns its windows: it runs at top level, not inside a
  * tree node, so every widget it emits outside an ImGui_Begin lands in
- * Dear ImGui's default debug window. With the overlay closed its windows
+ * ImGui's default debug window. With the overlay closed its windows
  * take no mouse and no keyboard - the game keeps both - and
  * openpete_mod_ui_t::overlay_open reports which state the present is in.
  */

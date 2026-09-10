@@ -1,16 +1,16 @@
 #!/usr/bin/env bash
-# check_mod_imgui.sh — the ImGui annex's containment, proved in a window.
+# check_mod_imgui.sh — the mod ImGui containment, proved in a window.
 #
-# Everything the annex guards runs only inside a mod UI section body, and a
+# Everything the table guards runs only inside a mod UI section body, and a
 # body runs only while the dev overlay is open. Headless never opens it, so
-# the mods CI fixture can prove the annex compiles, loads and binds and
+# the mods CI fixture can prove the table compiles, loads and binds and
 # nothing more. This script is the other half: it launches the game windowed
 # with --devui-open (which opens the overlay and expands the mod's node at
 # the first present) and the imgui-panel fixture, and reads the verdict off
 # the log.
 #
 # Six legs, each its own session:
-#   engaged     stock fixture -> "imgui annex engaged (N calls)", N > 0.
+#   engaged     stock fixture -> "ImGui engaged (N calls)", N > 0.
 #                               Without it every other leg is vacuous: a
 #                               bound table that nothing calls proves nothing.
 #   bracket     break_end=1   -> the attributed "Missing End()" error, and
@@ -148,8 +148,8 @@ run_leg() {
         tail -5 "$log" | sed 's/^/    /' >&2
         return 2
     fi
-    if ! grep -q "imgui annex bound" "$log"; then
-        echo "[mod-imgui] $name: the fixture never bound the annex" >&2
+    if ! grep -q "ImGui bound" "$log"; then
+        echo "[mod-imgui] $name: the fixture never bound the table" >&2
         tail -5 "$log" | sed 's/^/    /' >&2
         return 2
     fi
@@ -158,12 +158,12 @@ run_leg() {
 
 # ── leg 1: engagement ─────────────────────────────────────────────────────
 if run_leg engaged; then
-    line=$(grep -m1 "imgui annex engaged" "$OUT_DIR/engaged.log")
+    line=$(grep -m1 "ImGui engaged" "$OUT_DIR/engaged.log")
     calls=$(sed -n 's/.*engaged (\([0-9]\+\) calls).*/\1/p' <<< "$line")
     if [[ -n "${calls:-}" && "$calls" -gt 0 ]]; then
         verdict engaged PASS "$calls call(s):$(sed 's/.*\] //' <<< "$line")"
     else
-        verdict engaged FAIL "no 'imgui annex engaged (N calls)' with N > 0 in $OUT_DIR/engaged.log"
+        verdict engaged FAIL "no 'ImGui engaged (N calls)' with N > 0 in $OUT_DIR/engaged.log"
     fi
 else
     verdict engaged FAIL "session did not produce a usable log"
@@ -171,9 +171,9 @@ fi
 
 # ── leg 2: the error bracket and the three-strike refusal ─────────────────
 if run_leg bracket break_end=true; then
-    err=$(grep -m1 "Dear ImGui error inside the mod's UI section" "$OUT_DIR/bracket.log")
+    err=$(grep -m1 "ImGui error inside the mod's UI section" "$OUT_DIR/bracket.log")
     ref=$(grep -m1 "UI section refused for this session" "$OUT_DIR/bracket.log")
-    n_err=$(grep -c "Dear ImGui error inside the mod's UI section" "$OUT_DIR/bracket.log")
+    n_err=$(grep -c "ImGui error inside the mod's UI section" "$OUT_DIR/bracket.log")
     if [[ -n "$err" && "$err" == *"imgui-panel"* && "$err" == *"Missing End()"* \
           && -n "$ref" && "$ref" == *"imgui-panel"* && "$n_err" -ge 3 ]]; then
         verdict bracket PASS "$n_err attributed error(s), then:$(sed 's/.*\] //' <<< "$ref")"
@@ -205,7 +205,7 @@ fi
 # such line is the run's tally.
 
 engaged_calls() {  # engaged_calls LOG -> N, empty when the line is absent
-    sed -n 's/.*imgui annex engaged (\([0-9]\+\) calls).*/\1/p' "$1" | head -1
+    sed -n 's/.*ImGui engaged (\([0-9]\+\) calls).*/\1/p' "$1" | head -1
 }
 hover_tally() {    # hover_tally LOG -> "N M" from the last hovered line
     sed -n 's/.*imgui-panel: hovered \([0-9]\+\)\/\([0-9]\+\) presents.*/\1 \2/p' \
@@ -217,7 +217,7 @@ if LEG_OPEN=0 LEG_INJECT="$HOVER_XY" run_leg closed; then
     calls=$(engaged_calls "$OUT_DIR/closed.log")
     read -r hov pres <<< "$(hover_tally "$OUT_DIR/closed.log")"
     if [[ -z "${calls:-}" || "$calls" -le 0 ]]; then
-        verdict closed FAIL "no 'imgui annex engaged (N calls)' with N > 0 without --devui-open; see $OUT_DIR/closed.log"
+        verdict closed FAIL "no 'ImGui engaged (N calls)' with N > 0 without --devui-open; see $OUT_DIR/closed.log"
     elif [[ -z "${pres:-}" || "$pres" -le 0 ]]; then
         verdict closed FAIL "the always body never reported a present count; see $OUT_DIR/closed.log"
     elif [[ "$hov" -ne 0 ]]; then
@@ -248,7 +248,7 @@ if [[ -d "$OUT_DIR/mods/crt-beans" ]]; then
         if [[ -n "${calls:-}" && "$calls" -gt 0 ]]; then
             verdict composite PASS "$calls call(s) under a COMPOSITE chain (post-chain render site)"
         else
-            verdict composite FAIL "no 'imgui annex engaged (N calls)' with crt-beans enabled; see $OUT_DIR/composite.log"
+            verdict composite FAIL "no 'ImGui engaged (N calls)' with crt-beans enabled; see $OUT_DIR/composite.log"
         fi
     else
         verdict composite FAIL "session did not produce a usable log"

@@ -1,6 +1,6 @@
 # imgui-panel
 
-The Dear ImGui escape hatch (`openpete_imgui.h`) driving a real panel. The
+The ImGui escape hatch (`openpete_imgui.h`) driving a real panel. The
 eleven-widget vtable in `openpete_mod_ui.h` is the simple path; this mod is
 what the other path looks like.
 
@@ -15,7 +15,7 @@ The section is registered with `OPENPETE_MOD_UI_SECTION_FLAGS(ui_draw,
 OPENPETE_MOD_UI_ALWAYS)`, so the body runs on every present rather than
 only inside the mod's node of the Mods panel. It opens two windows of its
 own, which is what an always body has to do: at top level there is no
-containing node, and a widget outside an `ImGui_Begin` would land in Dear
+containing node, and a widget outside an `ImGui_Begin` would land in
 ImGui's default debug window. The stats window and the marker draw
 whatever the overlay is doing; the detail window with the plot, the table
 and the colour editor opens only while `ui->overlay_open()` reports the
@@ -47,10 +47,10 @@ table and nothing is bound.
 Two Containment rows, both off by default, make the engine's containment
 paths visible:
 
-- `break_end` omits an `ImGui_End`. Dear ImGui reports a recoverable error,
+- `break_end` omits an `ImGui_End`. ImGui reports a recoverable error,
   the engine logs it against this mod and recovers the stack; three
   consecutive presents of that and the section is refused for the session.
-- `hook_call` calls into the annex from a present hook and from the tick
+- `hook_call` calls into ImGui from a present hook and from the tick
   hook, both outside any section body. The engine drops each call, returns
   a zeroed value, and names the mod and the function once.
 

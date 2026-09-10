@@ -6,21 +6,25 @@ mkdocs-material site (see docs/modding/ and scripts/build-mod-docs.sh):
 
   api.md        <- core/include/openpete_mod_api.h   (the API contract:
                    struct members with their comment blocks, section
-                   splitters, supporting types)
+                   splitters, supporting types) + core/include/
+                   openpete_mod_ui.h (the separately versioned widget
+                   vtable, appended as `## UI widgets`)
   functions.md  <- manifest/symbols.toml x prototypes.toml (overridable
                    functions: address, kind, natural signature +
                    op_call_*/op_base_* wrapper availability)
   globals.md    <- manifest/globals.toml (the OP_GADDR_* surface)
   structs.md    <- generated openpete_game_structs.h (typed guest-RAM
                    views + offset tables recovered from the pins)
-  gallery.md    <- mod.toml header comments of the mods in
+  examples.md   <- mod.toml header comments of the mods in
                    mods/examples.txt (the SDK-shipped set)
   cpustate.md   <- third_party/psxrecomp/runner/include/psx_runtime.h
                    (the CPUState an override receives: struct prose +
                    one row per field)
   imgui.md      <- third_party/imgui/imgui.h (the version the engine
-                   builds) x tools/gen_imgui_annex.py (the denylist that
-                   generator applies) — the Dear ImGui annex page
+                   builds) x tools/gen_imgui_table.py (the denylist that
+                   generator applies) — the ImGui page. Written to
+                   pages/, one level above the reference set: it is a
+                   guide, not an extracted catalogue.
 
 Stdlib only, deterministic output (no timestamps): re-running on
 unchanged inputs is byte-identical. Prose comes from the comment blocks
@@ -332,6 +336,88 @@ def gen_api(api_header: Path) -> str:
     return "\n".join(out), members
 
 
+def scan_ui_items(pre: str):
+    """(comment, code) pairs for the documented items of
+    openpete_mod_ui.h: the ABI and flag defines, the widget struct, the
+    body typedef and the two registration macros. A macro is reported by
+    its first line, since its body is the descriptor the doc block
+    describes, not something a mod writes."""
+    items, i, n, comment = [], 0, len(pre), ""
+    while i < n:
+        i += len(pre[i:]) - len(pre[i:].lstrip())
+        if i >= n:
+            break
+        if pre.startswith("/*", i):
+            end = pre.index("*/", i) + 2
+            comment = pre[i:end]
+            i = end
+            continue
+        if pre.startswith("#", i) and not pre.startswith("#define", i):
+            # a guard line (#endif and friends): skipping it keeps the
+            # declaration scan below from swallowing the struct after it
+            i = pre.index("\n", i) + 1
+            comment = ""
+            continue
+        if pre.startswith("#define", i):
+            end = pre.index("\n", i)
+            first = pre[i:end]
+            while pre[end - 1] == "\\":
+                end = pre.index("\n", end + 1)
+            items.append((comment, first.rstrip(" \\").rstrip()))
+            comment = ""
+            i = end
+            continue
+        depth, j = 0, i
+        while j < n:
+            c = pre[j]
+            if c == "{":
+                depth += 1
+            elif c == "}":
+                depth -= 1
+            elif c == ";" and depth == 0:
+                break
+            j += 1
+        code = pre[i:j + 1].strip()
+        if code.startswith("typedef"):
+            items.append((comment, code))
+        comment = ""
+        i = j + 1
+    return items
+
+
+def gen_mod_ui(ui_header: Path):
+    """The `## UI widgets` section of api.md: openpete_mod_ui.h, the
+    separately versioned header the api struct does not cover."""
+    src = ui_header.read_text(encoding="utf-8")
+
+    intro = ""
+    m = re.match(r"\s*(/\*\*(?:[^*]|\*(?!/))*\*/)", src)
+    if m:
+        intro = "\n".join(l for l in strip_comment(m.group(1)).splitlines()
+                           if not l.startswith("@file"))
+        intro = dox_to_md(intro).strip()
+
+    out = ["## UI widgets\n"]
+    out.append(f"A section body draws with this header, extracted from "
+               f"`{ui_header.relative_to(REPO)}`. The staged copy lives at "
+               f"`<exe>/sdk/openpete_mod_ui.h`. It carries its own abi, "
+               f"checked at load, and is not covered by "
+               f"`OPENPETE_MOD_API_VERSION`. The whole ImGui C API is "
+               f"available instead through "
+               f"[`openpete_imgui.h`](../imgui.md).\n")
+    if intro:
+        out.append(md_prose(intro) + "\n")
+
+    pre = src[src.index('extern "C" {') + len('extern "C" {'):
+              src.rindex("#ifdef __cplusplus")]
+    items = scan_ui_items(pre)
+    for comment, code in items:
+        if comment.strip():
+            out.append(md_prose(dox_to_md(strip_comment(comment))) + "\n")
+        out.append(f"```c\n{code}\n```\n")
+    return "\n".join(out), len(items)
+
+
 # ── functions.md ─────────────────────────────────────────────────────────
 
 def fmt_param(p: str) -> str:
@@ -499,7 +585,7 @@ def gen_structs(structs_header: Path) -> str:
     return "\n".join(out), n
 
 
-# ── gallery.md ───────────────────────────────────────────────────────────
+# ── examples.md ──────────────────────────────────────────────────────────
 
 
 def read_examples(mods_dir: Path) -> list:
@@ -512,7 +598,7 @@ def read_examples(mods_dir: Path) -> list:
             if l.strip() and not l.startswith("#")]
 
 
-def gen_gallery(mods_dir: Path) -> str:
+def gen_examples(mods_dir: Path) -> str:
     out = [GEN_NOTE, "# Examples\n"]
     shipped = read_examples(mods_dir)
     out.append("The example mods that ship with the SDK under "
@@ -618,7 +704,7 @@ def gen_cpustate(runtime_header: Path):
 # ── imgui.md ─────────────────────────────────────────────────────────────
 
 def imgui_version(imgui_header: Path) -> str:
-    """The Dear ImGui version the engine builds against, from the pinned
+    """The ImGui version the engine builds against, from the pinned
     header. Never hard-coded here: the page would then claim a version the
     SDK does not ship the moment the submodule moves."""
     m = re.search(r'^#define\s+IMGUI_VERSION\s+"([^"]+)"',
@@ -628,33 +714,70 @@ def imgui_version(imgui_header: Path) -> str:
     return m.group(1)
 
 
-def imgui_denylist(annex_gen: Path) -> list:
+def imgui_denylist(table_gen: Path) -> list:
     """The denied families, taken from the generator that applies them, so
     the page and the table cannot disagree."""
     import importlib.util
-    spec = importlib.util.spec_from_file_location("gen_imgui_annex", annex_gen)
+    spec = importlib.util.spec_from_file_location("gen_imgui_table", table_gen)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     return list(mod.DENY_DOC)
 
 
-def gen_imgui(imgui_header: Path, annex_gen: Path):
+def gen_imgui(imgui_header: Path, table_gen: Path):
     ver = imgui_version(imgui_header)
-    deny = imgui_denylist(annex_gen)
-    out = [GEN_NOTE, "# Dear ImGui annex\n"]
+    deny = imgui_denylist(table_gen)
+    out = [GEN_NOTE, "# ImGui\n"]
     out.append(
-        f"`openpete_imgui.h` hands a mod the whole Dear ImGui C API — "
-        f"Dear ImGui {ver}, through the C bindings "
+        f"`openpete_imgui.h` gives a mod access to the ImGui C API (ImGui {ver}, "
+        f"through the C bindings "
         f"[dear_bindings](https://github.com/dearimgui/dear_bindings) "
-        f"generates — driving the engine's own ImGui context.\n")
+        f"generates).\n")
     out.append(
-        "[`openpete_mod_ui.h`](api.md) stays the simple path: eleven "
-        "widgets, no opt-in, and no ImGui version in the mod's build. Reach "
-        "for this header when those eleven are not enough — windows, "
+        "- [ImGui docs](https://github.com/ocornut/imgui/wiki)\n"
+        "- Generated bindings: `<exe>/sdk/dcimgui.h`\n"
+        "- `ImGui_ShowDemoWindow()` draws a "
+        "running demo of every widget\n")
+    out.append(
+        "Names follow dear_bindings: "
+        "`ImGui::Begin` is `ImGui_Begin`, a call passing every optional "
+        "argument is the `...Ex` form (`ImGui_PlotLinesEx`), an overload "
+        "takes a type suffix (`ImGui_ComboChar`), and a member function "
+        "takes its struct's prefix (`ImDrawList_AddLine`). A mod cannot take "
+        "the address of an `ImGui_*` function, since the name is a macro "
+        "over a table entry; use the entry "
+        "(`openpete_imgui_tbl->ImGui_Begin`).\n")
+    out.append(
+        "[`openpete_mod_ui.h`](reference/api.md#ui-widgets) stays the simple "
+        "path: eleven "
+        "widgets, no macro to add, and no ImGui version in the mod's build. Use "
+        "this header when those eleven are not enough: windows, "
         "tables, plots, tree nodes, tabs, popups, colour editors, drag and "
         "input widgets, draw lists, fonts.\n")
 
-    out.append("## Opting in\n")
+    out.append("## Terms\n")
+    out.append(
+        "| Term | Meaning |\n"
+        "|---|---|\n"
+        "| body | The function registered as the mod's UI, run by the "
+        "engine inside its ImGui frame. Every `ImGui_*` call a mod makes "
+        "is made here. |\n"
+        "| section | A mod's registered UI, drawn in the mod's node of the "
+        "Mods panel. |\n"
+        "| always section | A section registered with "
+        "`OPENPETE_MOD_UI_ALWAYS`, whose body runs at top level on every "
+        "present instead of inside the mod's node. |\n"
+        "| table | The function-pointer table (`openpete_imgui_tbl`) every "
+        "`ImGui_*` macro reads, one entry per callable ImGui function. |\n"
+        "| descriptor | The symbol `OPENPETE_MOD_IMGUI()` exports, which "
+        "the loader checks against the engine's table before binding. |\n"
+        "| overlay | The dev overlay, opened with the M key. Its Mods "
+        "panel gives each mod a node. |\n"
+        "| present | One drawn frame, as distinct from a tick, the "
+        "29.913 Hz simulation step. Presents per tick depend on the "
+        "machine. |\n")
+
+    out.append("## Adding ImGui to a mod\n")
     out.append(
         "Include the header and place the macro at file scope in exactly "
         "one source file of the mod:\n")
@@ -683,17 +806,17 @@ OPENPETE_MOD_UI_SECTION(ui_draw)
         "mod's compile line and the mod still links no engine symbol: an "
         "`ImGui_*` name is a macro over one table entry.\n")
     out.append(
-        "The descriptor pins the Dear ImGui version, the table size and a "
+        "The descriptor pins the ImGui version, the table size and a "
         "digest of the table's entries. A prebuilt object built against a "
         "different SDK is refused and its mod disabled, because a mod bound "
         "to a table whose slots have moved would call the wrong function on "
-        "its first widget. A source mod never meets that refusal: the SDK "
-        "headers are part of the mod's build key, so a Dear ImGui bump "
+        "its first widget. A source mod is never refused: the SDK "
+        "headers are part of the mod's build key, so an ImGui bump "
         "recompiles it at the next boot.\n")
     out.append(
         "Binding is logged once per mod:\n\n"
         "```\n"
-        "mods: <id>: imgui annex bound (ImGui " + ver + ", N entries)\n"
+        "mods: <id>: ImGui bound (" + ver + ", N entries)\n"
         "```\n")
 
     out.append("## Where the calls are legal\n")
@@ -704,8 +827,9 @@ OPENPETE_MOD_UI_SECTION(ui_draw)
         "node of the Mods section, so only while the dev overlay is open; "
         "an always section (below) runs on every present.\n")
     out.append(
-        "A call from a present hook or a tick hook is dropped: those run "
-        "outside the frame and on another thread, where Dear ImGui's own "
+        "A call from a [present hook or a tick hook]"
+        "(code.md#tick-context-and-present-context) is dropped: those run "
+        "outside the frame and on another thread, where ImGui's own "
         "checks are compiled out and the failure would be a null-window "
         "dereference. The call returns a zeroed value and the engine logs "
         "the mod and the function once:\n\n"
@@ -714,10 +838,17 @@ OPENPETE_MOD_UI_SECTION(ui_draw)
         "(from a present or tick hook) — dropped\n"
         "```\n")
     out.append(
+        "A body draws and nothing else: guest access, game calls and "
+        "override registration are refused inside one, as they are inside "
+        "[a present hook](reference/api.md#api-register_present_hook). "
+        "Read [guest RAM](code.md#guest-memory) in a tick hook, copy what "
+        "the panel needs into host memory, and let the body read the "
+        "copy.\n")
+    out.append(
         "The body still receives the `openpete_mod_ui_t*` argument, so the "
-        "vtable and the annex mix freely in one body. An `ImGui_Begin` "
+        "vtable and the ImGui calls mix freely in one body. An `ImGui_Begin` "
         "inside the mod's node opens an independent top-level window, which "
-        "is Dear ImGui's documented behaviour.\n")
+        "is ImGui's documented behaviour.\n")
 
     out.append("## Always-on sections\n")
     out.append(
@@ -728,79 +859,65 @@ OPENPETE_MOD_UI_SECTION_FLAGS(ui_draw, OPENPETE_MOD_UI_ALWAYS)
 ```
 """)
     out.append(
-        "This is how a mod keeps a stats window or a draw-list overlay on "
+        "An always section keeps a stats window or a draw-list overlay on "
         "screen during play. The rules that change with it:\n")
     out.append(
         "- **The body owns its windows.** It runs at top level, not inside "
-        "a tree node — a node the player collapsed must not make a window "
-        "disappear — so every widget emitted outside an `ImGui_Begin` "
-        "lands in Dear ImGui's default debug window. Open a window and put "
+        "a tree node (a node the player collapsed must not make a window "
+        "disappear), so every widget emitted outside an `ImGui_Begin` "
+        "lands in ImGui's default debug window. Open a window and put "
         "the content in it.\n"
         "- **No input while the overlay is closed.** The game keeps the "
         "mouse and the keyboard, and the engine puts "
         "`ImGuiWindowFlags_NoInputs` on every window the body opens: no "
         "clicks, no nav, no hover. `ui->overlay_open()` returns 1 while the "
         "overlay is up, which is when widgets in an always window can be "
-        "used; draw the interactive half only then. `ImGui_GetMousePos` "
+        "used; draw interactive widgets only then. `ImGui_GetMousePos` "
         "still reports the game's cursor.\n"
         "- **The pass is skipped while the in-game settings menu is "
         "open.** The menu and the dev overlay are mutually exclusive input "
         "owners and the menu is drawn first, so an always window would "
         "paint over it.\n"
-        "- **`ui_status` lines stay in the mod's node** in the Mods "
-        "section, where the rest of the mod's row is.\n"
-        "- **Always windows are not on the chrome anchor ledger** "
-        "(`openpete_overlay_anchor.h`), which places the perf readout and "
-        "the toasts. Position your own windows.\n")
+        "- **[`ui_status`](reference/api.md#api-ui_status) lines stay in the "
+        "mod's node** in the Mods "
+        "section, where the rest of the mod's row is.\n")
     out.append(
-        "**Chrome, not content.** Dear ImGui records into the live present "
-        "only, so an always window is never in a `--record` capture, a "
-        "screenshot, or an A/B compose, and it is drawn on top of a "
-        "COMPOSITE postfx chain rather than through it. A HUD that must "
-        "appear in captures belongs in the draw service (`draw_text`), "
-        "which is drawn pre-chain as content. The two paths have opposite "
-        "record policy on purpose.\n")
-    out.append(
-        "The containment below is unchanged for an always body: same guard "
-        "wrappers, same error bracket, same three-strike refusal, same "
-        "engagement counter.\n")
-    out.append(
-        "The purity rule is unchanged and matters more here: guest access, "
-        "game calls and registration are refused inside a body. Read guest "
-        "RAM in a tick hook, copy what the panel needs into host memory, "
-        "and let the body read the copy.\n")
+        "ImGui draws into the live present "
+        "only, so an always window is never in a `--record` capture or a "
+        "screenshot, and it is drawn on top of an "
+        "[`OP_POSTFX_COMPOSITE` chain](shaders.md#post-process-passes) rather "
+        "than through it. A HUD that must "
+        "appear in captures belongs in the draw service "
+        "([`draw_text`](reference/api.md#api-draw_text)), "
+        "which is drawn pre-chain as content.\n")
 
-    out.append("## Calls the table does not carry\n")
+    out.append("## Calls not in the table\n")
     out.append(
-        "These are absent from the table and from the macros. The "
-        "`dcimgui.h` declaration stays, so calling one fails the mod's own "
-        "compile with an undefined reference, which is the diagnostic "
-        "wanted:\n")
+        "The table omits these, and the macros with them, so calling one "
+        "fails the mod's compile with an undefined reference to the "
+        "`dcimgui.h` declaration.\n")
+    out.append("| Family | Calls |")
+    out.append("|---|---|")
     for line in deny:
         # The generator's prose names bare identifiers; a trailing * is part
         # of the family name, so each goes in a code span rather than
         # through the italics escape.
-        out.append("- " + re.sub(r"\bIm(?:Gui|Font|Draw)(?:\w|\*)*",
-                                 lambda m: "`" + m.group(0) + "`", line))
+        line = re.sub(r"\bIm(?:Gui|Font|Draw)(?:\w|\*)*",
+                      lambda m: "`" + m.group(0) + "`", line)
+        family, calls = line.split(": ", 1)
+        # A family whose entry ends in a second sentence (one name kept out
+        # of the denial) carries it as a parenthetical, so the cell stays a
+        # list of names.
+        calls, _, note = calls.rstrip(".").partition(". ")
+        if note:
+            calls += " (" + note[0].lower() + note[1:] + ")"
+        out.append("| " + family + " | " + calls + " |")
     out.append("")
-    out.append(
-        "Scope: the list protects the frame and context lifecycle and the "
-        "input path. It does not protect data reachable through structs. "
-        "`ImGui_GetIO()` returns a writable `ImGuiIO`, and a mod can "
-        "address another panel by name. That is unguarded by design: mod C "
-        "runs with the game's privileges. The bracket below puts a named "
-        "set of those fields back after every body, and the rest stays a "
-        "mod author's responsibility.\n")
-    out.append(
-        "`ImGui_GetIO`, `ImGui_GetStyle`, `ImGui_GetWindowDrawList`, "
-        "`ImGui_GetForegroundDrawList`, the `ImDrawList_*` family and "
-        "`ImGui_ShowDemoWindow` are all callable: they are the point of the "
-        "escape hatch.\n")
 
-    out.append("## What contains a body\n")
+    out.append("## Error handling\n")
     out.append(
-        "Dear ImGui reports unbalanced `Begin`/`End`, `Push`/`Pop` and "
-        "similar misuse as recoverable user errors. The engine brackets "
+        "ImGui reports unbalanced `Begin`/`End`, `Push`/`Pop` and "
+        "similar issues as recoverable user errors. The engine brackets "
         "every body:\n")
     out.append(
         "- the ImGui stack sizes are stored before the body and recovered "
@@ -809,52 +926,20 @@ OPENPETE_MOD_UI_SECTION_FLAGS(ui_draw, OPENPETE_MOD_UI_ALWAYS)
         "- `ImGuiStyle` and the `ImGuiIO` fields a body can reach "
         "(`IniFilename`, `LogFilename`, `ConfigFlags`, `UserData`, and the "
         "backend user-data pointers) are snapshotted and put back;\n"
-        "- Dear ImGui's own assert and error tooltip are switched off for "
+        "- ImGui's own assert and error tooltip are switched off for "
         "the body and the engine logs the error against the mod instead:\n")
     out.append(
         "```\n"
-        "mods: <id>: Dear ImGui error inside the mod's UI section: "
+        "mods: <id>: ImGui error inside the mod's UI section: "
         "Missing End()\n"
         "```\n")
     out.append(
-        "A body that errors on three consecutive presents loses its section "
-        "for the rest of the session, with one more line saying so, so one "
-        "broken mod cannot flood the log or distort the panel. Misuse Dear "
-        "ImGui cannot recover from — a null `ImDrawList*`, a bad pointer "
-        "into `ImGuiIO` — crashes the process, which is the existing "
-        "contract for mod C.\n")
-    out.append(
-        "Calls that reach Dear ImGui are counted per body. The first "
-        "non-zero count is logged and the running count shows in the mod's "
-        "tooltip in the Mods panel:\n\n"
-        "```\n"
-        "mods: <id>: imgui annex engaged (N calls)\n"
-        "```\n")
+        "A body that errors on three consecutive presents is logged once "
+        "more and then stops drawing for the rest of the session, so it "
+        "cannot flood the log or keep drawing a broken section. Issues ImGui "
+        "cannot recover from (a null `ImDrawList*`, a bad pointer "
+        "into `ImGuiIO`) crash the process.\n")
 
-    out.append("## Learning the API\n")
-    out.append(
-        "The API is upstream's, so this page does not restate it. Names "
-        "follow dear_bindings: `ImGui::Begin` is `ImGui_Begin`, a call "
-        "passing every optional argument is the `...Ex` form "
-        "(`ImGui_PlotLinesEx`), an overload takes a type suffix "
-        "(`ImGui_ComboChar`), and a member function takes its struct's "
-        "prefix (`ImDrawList_AddLine`). The reference is the comment block "
-        "on each declaration in `sdk/dcimgui.h`, and "
-        "`ImGui_ShowDemoWindow()` — callable from a body — is the live "
-        "catalogue every Dear ImGui user reads.\n")
-    out.append(
-        "One thing a mod cannot do: take the address of an `ImGui_*` "
-        "function. Take the table entry instead "
-        "(`openpete_imgui_tbl->ImGui_Begin`).\n")
-    out.append(
-        "`mods/imgui-panel` is the worked example: a tick hook samples the "
-        "level's mobys into a host-side ring, and the section draws it as a "
-        "plot, a table, a floating window with a colour editor, and a "
-        "foreground draw-list marker. Its section is an always section: the "
-        "stats window and the marker draw every present, the detail window "
-        "only while the overlay is open. Two of its settings rows "
-        "deliberately break the rules above so the containment paths can be "
-        "watched.\n")
     return "\n".join(out), len(deny)
 
 
@@ -864,6 +949,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--api-header",
                     default=REPO / "core/include/openpete_mod_api.h",
+                    type=Path)
+    ap.add_argument("--ui-header",
+                    default=REPO / "core/include/openpete_mod_ui.h",
                     type=Path)
     ap.add_argument("--symbols",
                     default=REPO / "games/spyro-1/manifest/symbols.toml",
@@ -884,12 +972,16 @@ def main():
     ap.add_argument("--imgui-header",
                     default=REPO / "third_party/imgui/imgui.h",
                     type=Path)
-    ap.add_argument("--imgui-annex-gen",
-                    default=REPO / "tools/gen_imgui_annex.py",
+    ap.add_argument("--imgui-table-gen",
+                    default=REPO / "tools/gen_imgui_table.py",
                     type=Path)
     ap.add_argument("--out",
                     default=REPO / "docs/modding/pages/reference",
                     type=Path)
+    ap.add_argument("--out-pages", dest="out_pages",
+                    default=REPO / "docs/modding/pages",
+                    type=Path,
+                    help="where the non-reference generated pages go")
     args = ap.parse_args()
 
     structs = args.structs
@@ -904,18 +996,20 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
 
     api_md, n_api = gen_api(args.api_header)
+    ui_md, n_ui = gen_mod_ui(args.ui_header)
+    api_md = api_md.rstrip("\n") + "\n\n" + ui_md
     fn_md, n_fn, n_proto = gen_functions(args.symbols, args.protos)
     gl_md, n_gl = gen_globals(args.globals_)
     st_md, n_st = gen_structs(structs)
-    ga_md, n_mods = gen_gallery(args.mods_dir)
+    ex_md, n_mods = gen_examples(args.mods_dir)
     cs_md, n_cs = gen_cpustate(args.psx_runtime)
-    ig_md, n_deny = gen_imgui(args.imgui_header, args.imgui_annex_gen)
+    ig_md, n_deny = gen_imgui(args.imgui_header, args.imgui_table_gen)
 
     for fname, content in (("api.md", api_md), ("functions.md", fn_md),
                            ("globals.md", gl_md), ("structs.md", st_md),
-                           ("gallery.md", ga_md), ("cpustate.md", cs_md),
-                           ("imgui.md", ig_md)):
+                           ("examples.md", ex_md), ("cpustate.md", cs_md)):
         (args.out / fname).write_text(content, encoding="utf-8")
+    (args.out_pages / "imgui.md").write_text(ig_md, encoding="utf-8")
 
     if n_cs < 40:   # 32 GPRs + pc/hi/lo + 3 arrays + 10 callbacks
         sys.exit(f"gen_mod_docs: only {n_cs} CPUState fields parsed — the "
@@ -923,10 +1017,12 @@ def main():
     if n_api < 25:  # 28 entries + api_version at api v1
         sys.exit(f"gen_mod_docs: only {n_api} API members parsed — the "
                  "header layout changed; fix the extractor")
-    print(f"[gen_mod_docs] api: {n_api} members | functions: {n_fn} "
+    print(f"[gen_mod_docs] api: {n_api} members (+{n_ui} ui) | "
+          f"functions: {n_fn} "
           f"({n_proto} prototyped) | globals: {n_gl} | structs: {n_st} | "
-          f"gallery: {n_mods} mods | cpustate: {n_cs} fields | "
-          f"imgui: {n_deny} denied families -> {args.out}")
+          f"examples: {n_mods} mods | cpustate: {n_cs} fields | "
+          f"imgui: {n_deny} denied families -> {args.out}, "
+          f"{args.out_pages}/imgui.md")
 
 
 if __name__ == "__main__":

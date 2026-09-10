@@ -160,7 +160,7 @@ static void run_link(CPUState* cpu, mod_chain_t* chain, int idx) {
             f->chain = chain;
             f->link  = idx;
             f->child_ns = 0;
-            /* Names the mod in an ImGui-annex refusal: an override runs on
+            /* Names the mod in an ImGui refusal: an override runs on
              * the sim thread, outside any UI section body, so the guard has
              * no mod index. Restored rather than cleared, since a link's
              * base() descent re-enters here for the next owner. */

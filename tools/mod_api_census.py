@@ -114,7 +114,7 @@ def main() -> int:
     w(f"- The api struct (`openpete_mod_api_t`) has **{len(api_entries)}** "
       "function-pointer entries; the UI vtable (`openpete_mod_ui_t`) has "
       f"**{len(ui_entries)}** (openpete_mod_ui.h, the separately-versioned "
-      f"annex); **{len(typedefs)}** file-scope callback "
+      f"UI header); **{len(typedefs)}** file-scope callback "
       "typedefs exist alongside. Counts of \"the API surface\" must name "
       "which of these they include.")
     w(f"- Header version: api v{api_version}.")

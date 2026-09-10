@@ -1,7 +1,7 @@
-/* core/runtime/openpete_imgui_guard.h — containment for the ImGui annex.
+/* core/runtime/openpete_imgui_guard.h — containment for the mod ImGui table.
  *
  * Every entry of the engine's ImGui table is a generated wrapper
- * (openpete_imgui_guard.cpp, from tools/gen_imgui_annex.py) that asks
+ * (openpete_imgui_guard.cpp, from tools/gen_imgui_table.py) that asks
  * openpete_imgui_body_active() where it was called from. Inside a mod UI
  * section body the call goes through and is counted; anywhere else — a
  * present hook on the extracting thread, a tick hook on the sim thread — it
@@ -31,7 +31,7 @@ int openpete_imgui_body_active(void);
  * the wrong place reports itself without flooding the log. */
 void openpete_imgui_guard_refused(const char* fn);
 
-/* One call that reached Dear ImGui, for the engagement counter. */
+/* One call that reached ImGui, for the engagement counter. */
 void openpete_imgui_count_call(void);
 
 /* Raised around a body by the loader's section dispatch. @p mod_index
@@ -56,16 +56,16 @@ int openpete_imgui_always_closed(void);
  * count reported is the count for that body. */
 uint64_t openpete_imgui_calls_take(void);
 
-/* Resolve a mod's annex descriptor (the openpete_imgui_annex symbol, see
+/* Resolve a mod's ImGui descriptor (the openpete_imgui_desc symbol, see
  * core/include/openpete_imgui.h) against the engine's table and, when the
- * two agree, write the table into the mod's slot. @p annex is that symbol,
+ * two agree, write the table into the mod's slot. @p desc is that symbol,
  * @p path the object it came from; both strings are used for the log line
  * only. Returns 1 when the mod may run — bound, or no descriptor at all,
  * which means the mod did not opt in — and 0 when the descriptor disagrees
  * with this engine, in which case the mod must be disabled: its table
  * pointer stays null and its first ImGui_* call from any hook would
  * dereference it. */
-int openpete_imgui_annex_bind(const void* annex, const char* mod_id,
+int openpete_imgui_bind(const void* desc, const char* mod_id,
                               const char* path);
 
 /* The mod whose hook this thread is currently inside, or NULL on the way

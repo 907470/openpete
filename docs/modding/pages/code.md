@@ -154,7 +154,7 @@ mod that wrote guest bytes restores the stock bytes on `on = 0`.
 |---|---|---|
 | Draw HUD text | `draw_text` | No |
 | Show status lines in the Mods section | `ui_status` | No |
-| Draw a panel of your own | `openpete_mod_ui.h`, or `openpete_imgui.h` for the whole Dear ImGui API | No |
+| Draw a panel of your own | `openpete_mod_ui.h`, or `openpete_imgui.h` for the whole ImGui API | No |
 | Announce an event on screen | `notify` | No |
 | Replace a game sound from code | `sfx_replace` | No |
 | Play the mod's own WAV | `sfx_play` | No |
@@ -181,14 +181,14 @@ the engine's overlay; register a body with `OPENPETE_MOD_UI_SECTION(fn)` at
 file scope in one source file and it draws inside the mod's node of the
 Mods section, while that overlay is open. For anything beyond those eleven
 — windows, tables, plots, tree nodes, tabs, popups, colour editors, draw
-lists, fonts — `openpete_imgui.h` hands a mod the whole Dear ImGui C API:
-see [Dear ImGui annex](reference/imgui.md).
+lists, fonts — `openpete_imgui.h` hands a mod the whole ImGui C API:
+see [ImGui](imgui.md).
 
 **Always-on sections.** `OPENPETE_MOD_UI_SECTION_FLAGS(fn,
 OPENPETE_MOD_UI_ALWAYS)` registers a body that runs on every present
 instead, whatever the overlay is doing — a stats readout, a draw-list
 overlay. It runs at top level, not inside the mod's node, so it owns its
-windows: every widget it emits outside an `ImGui_Begin` lands in Dear
+windows: every widget it emits outside an `ImGui_Begin` lands in
 ImGui's default debug window. With the overlay closed its windows take no
 mouse and no keyboard, so the game keeps both; `ui->overlay_open()` says
 which state the present is in. `ui_status` lines still appear in the mod's

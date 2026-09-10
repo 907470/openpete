@@ -1,4 +1,4 @@
-/* core/runtime/imgui_guard.c — body-active state behind the ImGui annex
+/* core/runtime/imgui_guard.c — body-active state behind the mod ImGui table
  * guard wrappers. See openpete_imgui_guard.h. */
 
 #include "openpete_imgui_guard.h"
@@ -9,7 +9,7 @@
 #include "openpete_imgui.h"   /* the descriptor the loader resolves */
 #include "openpete_log.h"
 
-/* Emitted next to the wrappers by tools/gen_imgui_annex.py. */
+/* Emitted next to the wrappers by tools/gen_imgui_table.py. */
 extern const openpete_imgui_table_t openpete_imgui_engine_table;
 extern const uint32_t openpete_imgui_table_entries;
 extern const uint8_t  openpete_imgui_table_sha256[32];
@@ -135,14 +135,14 @@ void openpete_imgui_guard_refused(const char* fn)
                                     : openpete_imgui_guard_mod_id(idx), fn);
 }
 
-int openpete_imgui_annex_bind(const void* annex, const char* mod_id,
+int openpete_imgui_bind(const void* desc, const char* mod_id,
                               const char* path)
 {
-    const openpete_imgui_annex_t* d = (const openpete_imgui_annex_t*)annex;
+    const openpete_imgui_desc_t* d = (const openpete_imgui_desc_t*)desc;
     if (!d) return 1; /* no descriptor: the mod did not opt in */
 
     if (d->magic != 0x4F504947u || !d->slot) {
-        OPL_ERROR_F("mods", "%s: %s exports a malformed ImGui annex "
+        OPL_ERROR_F("mods", "%s: %s exports a malformed ImGui "
                     "descriptor (magic 0x%08x); rebuild the mod against "
                     "this SDK — disabled",
                     mod_id, path, (unsigned)d->magic);
@@ -157,7 +157,7 @@ int openpete_imgui_annex_bind(const void* annex, const char* mod_id,
     if (!same_version ||
         d->table_size != (uint32_t)sizeof(openpete_imgui_table_t) ||
         memcmp(d->table_sha256, openpete_imgui_table_sha256, 32) != 0) {
-        OPL_ERROR_F("mods", "%s: %s was built against Dear ImGui version "
+        OPL_ERROR_F("mods", "%s: %s was built against ImGui version "
                     "%u (table %u bytes) and this engine has " IMGUI_VERSION
                     " (version %u, %u bytes)%s; a mod bound to a table "
                     "whose slots have moved calls the wrong function on "
@@ -171,7 +171,7 @@ int openpete_imgui_annex_bind(const void* annex, const char* mod_id,
     }
 
     *d->slot = &openpete_imgui_engine_table;
-    OPL_INFO_F("mods", "%s: imgui annex bound (ImGui " IMGUI_VERSION
+    OPL_INFO_F("mods", "%s: ImGui bound (" IMGUI_VERSION
                ", %u entries)",
                mod_id, (unsigned)openpete_imgui_table_entries);
     return 1;

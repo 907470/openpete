@@ -29,7 +29,7 @@ boundary and edits its settings. It does not reorder mods.
 
 A distribution packaged with the SDK carries working examples under
 `<exe>/sdk/examples/<id>/`; copy one into your `mods` directory to run
-it. The [Examples](reference/gallery.md) page lists them first.
+it. The [Examples](reference/examples.md) page lists them first.
 
 ## Directory layout
 

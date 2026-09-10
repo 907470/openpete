@@ -892,7 +892,7 @@ uint64_t rhi_gpu_results_token(const rhi_device *dev);
 
 /* ---- dev-UI (imgui) integration seam -------------------------------------
  *
- * The ONE deliberate hole in the opaque-handle abstraction: the Dear ImGui
+ * The ONE deliberate hole in the opaque-handle abstraction: the ImGui
  * Vulkan backend must be initialized against the real device + the offscreen
  * render pass. Handles are typed as void pointers / uint64_t so rhi.h stays
  * Vulkan-free; the sole consumer (core/runtime/devui.cpp) casts them back.

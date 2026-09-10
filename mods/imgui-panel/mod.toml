@@ -1,4 +1,4 @@
-# imgui-panel: the Dear ImGui annex (openpete_imgui.h) driving a real panel.
+# imgui-panel: the full ImGui C API (openpete_imgui.h) driving a real panel.
 #
 # A tick hook counts the level's live mobys into a host-side ring and
 # copies the ten nearest to Spyro. The UI section then draws that copy
@@ -38,4 +38,4 @@ type = "bool"
 default = false
 label = "Call ImGui_Text from a present hook"
 group = "Containment"
-help = "Register a present hook that calls into the annex from outside the UI section, where the guard drops it"
+help = "Register a present hook that calls into ImGui from outside the UI section, where the guard drops it"

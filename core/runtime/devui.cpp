@@ -1,5 +1,5 @@
 /*
- * M-key dev config overlay — Dear ImGui panel over the knob registry.
+ * M-key dev config overlay — ImGui panel over the knob registry.
  *
  * One window, sections as collapsing headers, a text filter, per-row source
  * tag (cli/env/default + edited + the winning openpete.toml layer), tooltips
@@ -51,7 +51,7 @@ static bool        s_open   = false;
 /* One present's worth of "reveal": the panel window uncollapsed, the Mods
  * header and every mod node open. Set only when --devui-open opened the
  * overlay, because a run nobody is driving has no way to click a tree node
- * open, and a mod's UI section body runs only inside its node. Dear ImGui
+ * open, and a mod's UI section body runs only inside its node. ImGui
  * does not persist node state, so this is the only way an unattended
  * windowed run reaches a body. */
 static bool        s_boot_reveal = false;
@@ -616,7 +616,7 @@ static void mod_row_tooltip(const openpete_mods_menu_info_t *mi)
     if (mi->enabled && !mi->has_ui && !mi->has_cfg)
         ImGui::TextDisabled("no controls registered");
     if (mi->imgui_calls)
-        ImGui::TextDisabled("imgui annex: %llu calls last present",
+        ImGui::TextDisabled("ImGui: %llu calls last present",
                             (unsigned long long)mi->imgui_calls);
     ImGui::PopTextWrapPos();
     ImGui::EndTooltip();
@@ -761,8 +761,8 @@ static void draw_mod_config_rows(int mod_index,
 }
 
 /* ── Mod UI section bracket ──────────────────────────────────────────
- * A body is mod C driving the engine's ImGui context directly (the annex,
- * openpete_imgui.h). Dear ImGui reports unbalanced Begin/End, Push/Pop and
+ * A body is mod C driving the engine's ImGui context directly (the mod table,
+ * openpete_imgui.h). ImGui reports unbalanced Begin/End, Push/Pop and
  * similar misuse as recoverable user errors; the bracket stores the stack
  * sizes before the body and recovers to them after, so a mod that leaves a
  * window open does not swallow the panel or the frame. The body also holds
@@ -781,7 +781,7 @@ static void mod_body_error_cb(ImGuiContext *, void *user_data,
                               const char *msg)
 {
     s_mod_body_errored = true;
-    OPL_ERROR_F("mods", "%s: Dear ImGui error inside the mod's UI section: "
+    OPL_ERROR_F("mods", "%s: ImGui error inside the mod's UI section: "
                 "%s", (const char *)user_data, msg ? msg : "");
 }
 
@@ -856,7 +856,7 @@ static void draw_mod_section_bracketed(int mod_index, const char *mod_id,
     }
     if (++s_mod_body_err_streak[pass][mod_index] >= 3)
         openpete_mods_ui_refuse_section(
-            mod_index, "its body reported a Dear ImGui error on three "
+            mod_index, "its body reported an ImGui error on three "
                        "consecutive presents");
 }
 
