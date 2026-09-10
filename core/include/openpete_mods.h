@@ -469,6 +469,15 @@ typedef struct {
      * inventory, entry title card, portal name arc). NULL restores the
      * stock name. 0 ok. */
     int (*set_level_name)(CPUState* cpu, int level_id, const char* name);
+
+    /* Reconcile a level's target totals on the three EXE count tables.
+     * A non-negative value is written; a negative one restores what the
+     * table held at boot, which is how a level index is given back.
+     * `eggs` is ignored for an index the egg table has no row for.
+     * Writes only differing bytes, so a per-tick call is cheap once the
+     * tables agree. Returns bytes written, or -1 for an unknown level. */
+    int (*set_level_counts)(CPUState* cpu, int level_id,
+                            int dragons, int gems, int eggs);
     /* Per-tick driver: while `on`, the donor level's homeworld portal
      * renders the custom level's own skybox (parsed from
      * <dir>/levels/<stem>.WAD, parked in the guest arena);
@@ -485,10 +494,22 @@ void openpete_mods_set_level_ops(const openpete_level_ops_t* ops);
  * manifest block; the registry owns slot time-sharing, guest TOC
  * declarations and warps — no mod code involved. Rows sort by NAME
  * (the menu's alphabetical Custom World buckets). */
+/* A level's target totals, as the manifest declared them. Each field is
+ * negative when the block did not declare it, which leaves that table on
+ * its stock row; no legal value is negative, so the sentinel cannot
+ * collide with a declaration. `eggs` is dropped at registration for a
+ * level index the 18-entry egg table has no row for. */
+typedef struct {
+    int dragons;   /* 0..255,   -1 undeclared */
+    int gems;      /* 0..32767, -1 undeclared */
+    int eggs;      /* 0..255,   -1 undeclared */
+} openpete_level_counts_t;
+
 int  openpete_mods_custom_register(const char* mod_id, const char* name,
                                    const char* stem, const char* dir,
                                    const char* donor, int replace,
                                    const char* music, const char* title,
+                                   const openpete_level_counts_t* counts,
                                    const char* log_tag);
 typedef struct {
     const char* name;   /* human name (sort key) */

@@ -2478,6 +2478,12 @@ static int run_host_loop(const openpete_options_t* opts) {
      * Eager's engage/disengage re-claims at every later handoff. */
     openpete_native_display_claim();
 
+    /* Last point at which guest RAM still holds exactly what the EXE
+     * loader and the seed blocks put there: the fiber below is what first
+     * executes guest code, and a --state-load-on-frame restore happens
+     * later still, inside the frame loop. */
+    game_on_boot(&g_game.cpu);
+
     openpete_host_fiber = co_active();
     /* 8 MB fiber stack — Spyro's deepest reasonable call chain is well under
      * 1 MB but PSYQ + recompiler shadow stacks add up; budget generously. */

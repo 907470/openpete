@@ -57,6 +57,15 @@ void game_on_overlay_init(CPUState* cpu);     /* one-time, post-WadInit */
  * preamble fixes, known-bad-instruction workarounds, etc. */
 void game_apply_runtime_quirks(CPUState* cpu);
 
+/* --- Post-boot, pre-execution ---
+ * Fires once after the EXE image is resident in guest RAM and after any
+ * host-side seeding, but before the game fiber is created, so no guest
+ * instruction has run. Use it to snapshot EXE .data the engine intends
+ * to overwrite later: a snapshot taken any later can capture a value the
+ * engine itself wrote, and a savestate load can replace the RAM it would
+ * have read. */
+void game_on_boot(CPUState* cpu);
+
 /* --- Per-frame callbacks (rare; e.g., DMA timing hacks).
  * `game_on_frame_pre`  fires immediately BEFORE handing control to the
  *                      game fiber for a tick — use it to mutate state

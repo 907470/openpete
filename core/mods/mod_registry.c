@@ -100,6 +100,7 @@ int openpete_mods_moby_classes(uint16_t* out, int cap) {
 static void registry_tick(CPUState* cpu);
 static void level_slots_tick(CPUState* cpu);
 static void custom_tick(CPUState* cpu);
+static void counts_tick(CPUState* cpu);
 static int ensure_hooked(const char* log_tag) {
     if (s_hooked) return 0;
     if (!s_ops) {
@@ -123,6 +124,10 @@ static void registry_tick(CPUState* cpu) {
 
     level_slots_tick(cpu);
     custom_tick(cpu);
+    /* After custom_tick, not inside it: the warp path returns early on
+     * several branches, and a claim made this tick must reach the tables
+     * this tick — the all-gems test reads them before the next one. */
+    counts_tick(cpu);
 
     int lvl = s_ops->level_id(cpu);
     /* Any live level ends an in-flight slot transition: either we arrived
@@ -346,7 +351,16 @@ typedef struct {
     char music[1088];      /* custom song WAV, "" = none */
     double music_sec;      /* its duration; 0 = file missing/bad */
     char title[40];        /* in-game title override; "" = use name */
+    openpete_level_counts_t counts; /* declared target totals; a field is
+                                     * -1 when the manifest declared none,
+                                     * leaving that table on its stock row */
+    uint8_t counts_clash_logged;    /* lost a donor to a lower-ordinal row;
+                                     * latched so the clash logs once */
 } custom_level_t;
+
+/* The target-egg table covers the first three worlds only, so a level
+ * index at or above this has no egg row. */
+#define EGG_TABLE_ROWS 18
 
 static custom_level_t s_customs[CUSTOM_MAX];
 static int s_custom_count = 0;
@@ -394,6 +408,7 @@ int openpete_mods_custom_register(const char* mod_id, const char* name,
                                   const char* stem, const char* dir,
                                   const char* donor, int replace,
                                   const char* music, const char* title,
+                                  const openpete_level_counts_t* counts,
                                   const char* log_tag) {
     if (!mod_id || !name || !name[0] || !stem || !stem[0] || !dir)
         return -1;
@@ -418,6 +433,29 @@ int openpete_mods_custom_register(const char* mod_id, const char* name,
     r->donor_id = donor_id;
     r->replace_mode = replace ? 1 : 0;
     r->declared_replace = 0;
+    r->counts.dragons = r->counts.gems = r->counts.eggs = -1;
+    if (counts) {
+        r->counts = *counts;
+        /* An egg total needs a row in the 18-entry table. A replace row
+         * takes the donor's index; a slot row lands on the shared free
+         * slot, which is past the table entirely. Drop the declaration
+         * rather than carry a value nothing can display — the row still
+         * registers, and its gem and dragon totals still apply. */
+        int idx = replace ? (donor_id / 10 - 1) * 6 + donor_id % 10 : -1;
+        if (r->counts.eggs >= 0 && (idx < 0 || idx >= EGG_TABLE_ROWS)) {
+            if (idx < 0)
+                OPL_WARN_F(log_tag, "level \"%s\": eggs = %d dropped — a "
+                           "slot-mode level has no row in the %d-entry "
+                           "egg table", name, r->counts.eggs,
+                           EGG_TABLE_ROWS);
+            else
+                OPL_WARN_F(log_tag, "level \"%s\": eggs = %d dropped — "
+                           "donor index %d is outside the %d-entry egg "
+                           "table", name, r->counts.eggs, idx,
+                           EGG_TABLE_ROWS);
+            r->counts.eggs = -1;
+        }
+    }
     char p[1088];
     struct stat st;
     r->data_size = openpete_mods_custom_asset_path(dir, stem, 0, p, sizeof p)
@@ -547,6 +585,102 @@ static void custom_env_schedule(unsigned tick_no) {
             s_custom_warp = i;
             OPL_INFO_F("mods", "custom warp scheduled: \"%s\"", s_name);
         }
+}
+
+/* A row is live when its data file was found and its mod is enabled.
+ * Mode-independent, unlike custom_tick's `want`, which also asks whether
+ * the row is currently a replace row. */
+static int custom_row_live(const custom_level_t* r) {
+    return r->data_size && openpete_mods_is_enabled(r->mod_id);
+}
+
+/* Bytes the count reconcile has written this session — the engagement
+ * counter a gate needs to tell a passing run from one that never ran. */
+static unsigned long s_counts_writes = 0;
+
+/* Which registered row, if any, owns a level's target totals this tick.
+ *
+ * Every slot-mode row resolves to the SAME shared-slot index, so the
+ * owner there is the row that actually holds the slot, not every row
+ * that could hold it; without that distinction two enabled slot rows
+ * would both claim the index and loop order would decide what the
+ * player sees.
+ *
+ * Two live replace rows on one donor is a conflict between manifests.
+ * The lowest-ordinal row wins, so the choice is stable across ticks
+ * rather than dependent on iteration order, and the clash is logged once
+ * per losing row instead of every tick. */
+static int counts_declarer_for(int level_id) {
+    if (s_custom_slot_id && level_id == s_custom_slot_id) {
+        if (s_custom_active < 0) return -1;
+        const custom_level_t* a = &s_customs[s_custom_active];
+        if (a->replace_mode || !custom_row_live(a)) return -1;
+        return s_custom_active;
+    }
+    int found = -1;
+    for (int i = 0; i < s_custom_count; i++) {
+        custom_level_t* r = &s_customs[i];
+        if (!r->replace_mode || r->donor_id != level_id) continue;
+        if (!custom_row_live(r)) continue;
+        if (found < 0) { found = i; continue; }
+        if (!r->counts_clash_logged) {
+            r->counts_clash_logged = 1;
+            OPL_WARN_F("mods", "custom level \"%s\" and \"%s\" both "
+                       "replace level %d — \"%s\" declares its target "
+                       "totals", s_customs[found].name, r->name,
+                       level_id, s_customs[found].name);
+        }
+    }
+    return found;
+}
+
+/* Reconcile the target totals of every level index a registered row
+ * could own. Idempotent: the op writes only bytes that differ, so this
+ * costs three guest reads per index once the tables agree.
+ *
+ * Reconciling beats writing on the edges where rows go live and stop
+ * being live. The shared slot has no undeclare edge at all, a mode flip
+ * from the Mods panel is unguarded, and a savestate load replaces the
+ * tables with no edge firing in either direction; a rule evaluated every
+ * tick has none of those holes, and needs no hook on the state path. */
+static void counts_tick(CPUState* cpu) {
+    if (!s_level_ops || !s_level_ops->set_level_counts) return;
+
+    int ids[CUSTOM_MAX + 1];
+    int n = 0;
+    if (s_custom_slot_id) ids[n++] = s_custom_slot_id;
+    for (int i = 0; i < s_custom_count; i++) {
+        int id = s_customs[i].donor_id;
+        int dup = 0;
+        for (int j = 0; j < n; j++)
+            if (ids[j] == id) { dup = 1; break; }
+        if (!dup) ids[n++] = id;
+    }
+
+    for (int k = 0; k < n; k++) {
+        int d = counts_declarer_for(ids[k]);
+        const openpete_level_counts_t* c = d >= 0 ? &s_customs[d].counts
+                                                  : NULL;
+        int wrote = s_level_ops->set_level_counts(
+            cpu, ids[k], c ? c->dragons : -1, c ? c->gems : -1,
+            c ? c->eggs : -1);
+        if (wrote > 0) {
+            s_counts_writes += (unsigned long)wrote;
+            /* Only an ownership change reaches this: the op writes
+             * nothing once the tables hold what the rule asks for. A
+             * line per tick would mean that idempotence had broken. */
+            OPL_INFO_F("mods", "level %d target totals: %s (dragons=%d "
+                       "gems=%d eggs=%d, %d B, %lu total)", ids[k],
+                       c ? s_customs[d].name : "stock",
+                       c ? c->dragons : -1, c ? c->gems : -1,
+                       c ? c->eggs : -1, wrote, s_counts_writes);
+        }
+    }
+}
+
+unsigned long openpete_mods_registry_counts_writes(void);
+unsigned long openpete_mods_registry_counts_writes(void) {
+    return s_counts_writes;
 }
 
 /* Per-tick driver: keep replace declarations in sync with each row's

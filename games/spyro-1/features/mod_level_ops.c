@@ -43,6 +43,22 @@
 #define SLOT_INDEX         35
 #define SLOT_LEVEL_ID      65
 
+/* Target totals: three EXE tables, all indexed world * 6 + level. The
+ * inventory rows read the dragon and gem tables and the HUD's all-gems
+ * test reads the gem table; nothing in the game writes any of them, so
+ * the engine is their only writer.
+ *
+ * g_TargetEggCounts covers the first three worlds only. The byte after
+ * its last entry (0x8006F493) begins g_MemCardSaveHeader at 0x8006F494,
+ * so an out-of-range egg index does not land in padding — it corrupts
+ * the header the game writes to a memory card. Every egg write is gated
+ * on the index having a row. */
+#define ADDR_G_TARGETDRAGONS 0x8006F414u
+#define ADDR_G_TARGETGEMS    0x8006F438u
+#define ADDR_G_TARGETEGGS    0x8006F480u
+#define COUNT_TABLE_ROWS     36
+#define EGG_TABLE_ROWS       18
+
 #define ADDR_G_GAMESTATE   0x800757D8u
 #define ADDR_G_LEVELID     0x8007596Cu
 #define ADDR_G_NEXTLEVELID 0x800758B4u
@@ -199,6 +215,66 @@ static int level_index_of(int level_id) {
     if (level_id == SLOT_LEVEL_ID) return SLOT_INDEX;
     if (level_id < 10 || level_id > 64) return -1;
     return (level_id / 10 - 1) * 6 + level_id % 10;
+}
+
+/* The count tables as the EXE shipped them, snapshotted before any guest
+ * instruction runs. Capturing lazily on first write instead would read
+ * whatever is in RAM at that moment, which a savestate load can have
+ * replaced with a previously-declared value — the stock row would then be
+ * lost for the rest of the session. */
+static uint8_t  s_stock_dragons[COUNT_TABLE_ROWS];
+static uint16_t s_stock_gems[COUNT_TABLE_ROWS];
+static uint8_t  s_stock_eggs[EGG_TABLE_ROWS];
+static int      s_stock_captured;
+
+void spyro1_mod_level_capture_stock_counts(CPUState* cpu) {
+    for (int i = 0; i < COUNT_TABLE_ROWS; i++) {
+        s_stock_dragons[i] =
+            (uint8_t)cpu->read_byte(ADDR_G_TARGETDRAGONS + (uint32_t)i);
+        s_stock_gems[i] =
+            (uint16_t)cpu->read_half(ADDR_G_TARGETGEMS + 2u * (uint32_t)i);
+    }
+    for (int i = 0; i < EGG_TABLE_ROWS; i++)
+        s_stock_eggs[i] =
+            (uint8_t)cpu->read_byte(ADDR_G_TARGETEGGS + (uint32_t)i);
+    s_stock_captured = 1;
+}
+
+/* Reconcile one level's target totals. A non-negative value is written;
+ * a negative one restores what the table held at boot, which is how a
+ * row that stops being live gives its index back. `eggs` is ignored for
+ * an index with no row in the egg table. Only differing bytes are
+ * written, so calling this every tick costs three reads once the tables
+ * already agree. Returns the number of bytes written. */
+static int ops_set_level_counts(CPUState* cpu, int level_id,
+                                int dragons, int gems, int eggs) {
+    int idx = level_index_of(level_id);
+    if (idx < 0 || idx >= COUNT_TABLE_ROWS || !s_stock_captured) return -1;
+
+    int wrote = 0;
+    uint32_t a = ADDR_G_TARGETDRAGONS + (uint32_t)idx;
+    uint8_t want8 = dragons >= 0 ? (uint8_t)dragons : s_stock_dragons[idx];
+    if ((uint8_t)cpu->read_byte(a) != want8) {
+        cpu->write_byte(a, want8);
+        wrote++;
+    }
+
+    a = ADDR_G_TARGETGEMS + 2u * (uint32_t)idx;
+    uint16_t want16 = gems >= 0 ? (uint16_t)gems : s_stock_gems[idx];
+    if ((uint16_t)cpu->read_half(a) != want16) {
+        cpu->write_half(a, want16);
+        wrote += 2;
+    }
+
+    if (idx < EGG_TABLE_ROWS) {
+        a = ADDR_G_TARGETEGGS + (uint32_t)idx;
+        uint8_t wantE = eggs >= 0 ? (uint8_t)eggs : s_stock_eggs[idx];
+        if ((uint8_t)cpu->read_byte(a) != wantE) {
+            cpu->write_byte(a, wantE);
+            wrote++;
+        }
+    }
+    return wrote;
 }
 
 static uint8_t s_name_override[37]; /* indices our titles occupy */
@@ -599,6 +675,7 @@ static const openpete_level_ops_t s_spyro1_level_ops = {
     .enter_level      = ops_enter_level,
     .read_level_data  = ops_read_level_data,
     .set_level_name   = ops_set_level_name,
+    .set_level_counts = ops_set_level_counts,
     .replace_sky_tick = ops_replace_sky_tick,
 };
 

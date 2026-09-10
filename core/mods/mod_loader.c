@@ -204,7 +204,10 @@ struct openpete_mod {
     /* [[level]] blocks: declarative custom levels (registered with the
      * content registry at load; the engine owns slot/TOC/warp). */
     struct { char name[64]; char files[64]; char donor[24]; int replace;
-             char music[64]; char title[40]; }
+             char music[64]; char title[40];
+             /* Target totals; -1 = the block declared none, leaving that
+              * table on its stock row. */
+             int dragons; int gems; int eggs; }
           levels[4];
     int   n_levels;
     char  build_key[65]; /* content-hash build key (hot-reload watch);
@@ -787,6 +790,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
     mod->n_deps = mod->n_bindings = 0;
     mod->n_cfg = 0;
     mod->n_mat_rows = 0;   /* re-parsed below; else a reload appends dupes */
+    mod->n_levels = 0;     /* same: [[level]] blocks are re-parsed below */
     mod->state_decl = mod->ra_decl = 0;
     char dir_copy[MOD_PATH_MAX];
     snprintf(dir_copy, sizeof dir_copy, "%s", mod->dir);
@@ -1492,6 +1496,23 @@ static time_t file_mtime(const char* path) {
     return st.st_mtime;
 }
 
+/* Read an optional non-negative [[level]] count key. Absent leaves -1,
+ * which keeps that table on its stock row. A value outside the table's
+ * own type is refused by name rather than truncated: a wrapped write
+ * would show a number the author never typed. */
+static int level_count_key(toml_table_t* lt, const char* key, int max,
+                           const char* path, const char* name) {
+    toml_datum_t d = toml_int_in(lt, key);
+    if (!d.ok) return -1;
+    if (d.u.i < 0 || d.u.i > max) {
+        OPL_ERROR_F("mods", "%s: [[level]] \"%s\": %s = %lld is outside "
+                    "0..%d — ignored", path, name, key,
+                    (long long)d.u.i, max);
+        return -1;
+    }
+    return (int)d.u.i;
+}
+
 static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
     char path[MOD_PATH_MAX];
     snprintf(path, sizeof path, "%s/mod.toml", mod_dir);
@@ -1755,6 +1776,14 @@ static int parse_manifest(const char* mod_dir, struct openpete_mod* mod) {
                 snprintf(mod->levels[mod->n_levels].title,
                          sizeof mod->levels[0].title, "%s",
                          lti.ok ? lti.u.s : "");
+                /* Bounds are the guest tables' own element types:
+                 * u_char, short, u_char. */
+                mod->levels[mod->n_levels].dragons =
+                    level_count_key(lt, "dragons", 255, path, ln.u.s);
+                mod->levels[mod->n_levels].gems =
+                    level_count_key(lt, "gems", 32767, path, ln.u.s);
+                mod->levels[mod->n_levels].eggs =
+                    level_count_key(lt, "eggs", 255, path, ln.u.s);
                 mod->n_levels++;
             } else {
                 OPL_ERROR_F("mods", "%s: [[level]] needs name, files and "
@@ -2352,7 +2381,12 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
         snprintf(assets, sizeof assets, "%s/assets", mod->dir);
         struct stat st;
         mod->has_assets = (stat(assets, &st) == 0 && S_ISDIR(st.st_mode));
-        for (int i = 0; i < mod->n_levels; i++)
+        for (int i = 0; i < mod->n_levels; i++) {
+            openpete_level_counts_t counts = {
+                mod->levels[i].dragons,
+                mod->levels[i].gems,
+                mod->levels[i].eggs,
+            };
             (void)openpete_mods_custom_register(mod->id,
                                                 mod->levels[i].name,
                                                 mod->levels[i].files,
@@ -2361,7 +2395,9 @@ static int load_mod(struct openpete_mod* mod, const char* sdk_dir,
                                                 mod->levels[i].replace,
                                                 mod->levels[i].music,
                                                 mod->levels[i].title,
+                                                &counts,
                                                 mod->log_tag);
+        }
     }
     if (!mod->has_src) {
         snprintf(so_path, sizeof so_path, "%s/.build/%s" MOD_DL_EXT,

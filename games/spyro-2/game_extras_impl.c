@@ -42,6 +42,7 @@ int  game_on_overlay_load(uint32_t overlay_id) {
 void game_on_overlay_init(CPUState* cpu) { (void)cpu; }
 
 void game_apply_runtime_quirks(CPUState* cpu) { (void)cpu; }
+void game_on_boot(CPUState* cpu) { (void)cpu; }
 
 /* --- Per-tick hooks --- */
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {

@@ -90,6 +90,16 @@ void game_on_overlay_init(CPUState* cpu) {
     /* TODO Phase 1b — runs once after WadInit. */
 }
 
+/* mod_level_ops.c — same private-decl pattern main.cpp uses. */
+void spyro1_mod_level_capture_stock_counts(CPUState* cpu);
+
+void game_on_boot(CPUState* cpu) {
+    /* The target gem/dragon/egg tables are EXE .data that the custom-level
+     * registry overwrites per level; snapshot the shipped values while
+     * they are still the only thing in those bytes. */
+    spyro1_mod_level_capture_stock_counts(cpu);
+}
+
 extern unsigned openpete_frame;
 
 void game_apply_runtime_quirks(CPUState* cpu) {
