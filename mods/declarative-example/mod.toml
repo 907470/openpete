@@ -1,56 +1,19 @@
 # declarative-example: every feature a mod can use with no code, in one
-# mod. No src/, no entry point, nothing compiled on the host. The mod is
+# mod. No src/, no entry point, nothing compiled on the host: the mod is
 # this manifest, three asset files and one fragment shader.
 #
-# Custom levels ([[level]]) are the one declarative feature not shown
-# here; the Custom levels page and grim-garden cover them. [[binding]]
-# and [[config]] rows are read by a mod's own code, so they belong to a
-# code mod; hud-stopwatch shows both.
+# Each asset root is matched by filename, so replacing a texture, a track
+# or a sound is a matter of naming a file correctly. The [[material]] rows
+# then reshade the engine's own draws through selector keys alone. Custom
+# levels are the one declarative feature not shown here; the Custom levels
+# page covers them. [[binding]] and [[config]] rows are read by a mod's own
+# code, so they belong to a code mod, and hud-stopwatch shows both.
 #
-# What each part demonstrates:
-#
-# assets/textures/57c653dc7ca515a1-0x0+256x129-a2fb97e3755b706b-8bpp.png
-#   A texture replacement named by content: the upload's hash, the texel
-#   box within the upload, the palette hash and the bit depth. This one is
-#   the title-screen logo, a 256x129 box of the 512x256 title UI atlas.
-#   Run the game with OPENPETE_TEXPACK_DUMP_DIR=<dir> set and every drawn
-#   texture is written under its content name, so a replacement starts by
-#   copying a dumped file's name. The image is a 512x258 magenta and cyan
-#   checker, twice the box in each axis: the renderer samples a
-#   replacement at its own resolution, so a larger file is an HD
-#   replacement. The other name form, <name>.png, names a texture by a
-#   symbolic identity the game layer annotates, such as title_ui for the
-#   whole atlas.
-#
-# assets/music/manifest.txt + assets/music/title_theme.wav
-#   A music replacement through the manifest form: each line maps a
-#   track index to a file in this directory. The shorter form is a file
-#   named track_NN.wav with no manifest. Track 20 is the title theme;
-#   the file is a 440 Hz tone, so the substitution is audible at once.
-#
-# assets/sfx/gemPickup.wav
-#   A sound replacement named by role. gemPickup is the sound-table slot
-#   the game plays when Spyro collects a gem, in every level. The other
-#   forms name one recording by content hash. The file is a synthesised
-#   two-note chime. The game still decides duration, pitch, variance,
-#   volume and looping; a -flat suffix pins the file to its own rate.
-#
-# [[material]] rows + shaders/tint.frag
-#   Each row registers the shader with a selector. The engine decides per
-#   draw whether the shader runs; the shader receives the colour the
-#   engine was about to write and returns the colour to write. A material
-#   inherits its draw group's blend mode and draw order and changes colour
-#   math only. The rows below use every selector key that needs no
-#   per-level id: channel, ident, tier, textured, env_anim, params,
-#   enabled. class, texture and level key on ids that differ per level.
-#
-# Nothing in an asset-only mod reaches guest RAM: every substitution
-# happens on the host, so gameplay is byte-identical with the mod
-# enabled, and the engine derives sim_mutative = false from the absence
-# of src/ and [[level]].
-#
-# When several enabled mods ship the same file or select the same draw,
-# the mod listed later in enabled.txt wins.
+# uses: `[[material]]` rows - five selectors, each pairing one fragment shader with a different channel, so the same shader shades a different subset per row
+# uses: `assets/textures/` - one HD replacement named by content identity, the form the texture dump writes
+# uses: `assets/music/` - a track replacement plus a manifest.txt mapping index to file
+# uses: `assets/sfx/` - a symbolic slot replacement, the form that follows whatever the current level maps to that slot
+# uses: `shaders/*.frag` - the material shader the rows share, written against openpete_psx_material.glsl
 
 [mod]
 id      = "declarative-example"

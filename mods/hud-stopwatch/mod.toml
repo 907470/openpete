@@ -1,11 +1,21 @@
 # hud-stopwatch: an "M:SS.hh" gameplay stopwatch drawn as HUD text.
 #
-# A tick hook counts sim ticks; a present hook evaluates the time at
-# ctx->alpha and draws it, so the hundredths advance smoothly at a high
-# --render-fps. The engine never interpolates mod visuals; the mod owns
-# its sub-tick curve. Time base: sim ticks / 29.913. The mod draws
-# through draw_text only and writes no guest RAM. A [[binding]] resets
-# the watch.
+# A tick hook counts sim ticks and a present hook evaluates the time at
+# ctx->alpha, so the hundredths advance smoothly at a high --render-fps
+# rather than stepping 29.913 times a second. That split is the pattern
+# for any mod with a moving visual: the engine never interpolates mod
+# visuals, so the mod owns its own sub-tick curve. Time base is sim ticks
+# divided by 29.913; the mod draws through draw_text only and writes no
+# guest RAM.
+#
+# uses: `api->override_name` - a CameraUpdate pre-hook, used as the per-tick clock source
+# uses: `api->base` - hands control back so the camera still updates
+# uses: `api->register_present_hook` - runs once per present, where the sub-tick time is evaluated
+# uses: `api->draw_text` - draws the clock in overlay space, in the game's HUD gold
+# uses: `api->binding_down` - reads the reset key, which the player can rebind without touching the mod
+# uses: `api->config_float` - reads the three layout rows the Mods panel renders
+# uses: `api->ui_status` - shows running state and the reset count
+# uses: `api->log` - one line when the watch starts ticking
 
 [mod]
 id      = "hud-stopwatch"

@@ -2,13 +2,19 @@
 # the "fast" three-pass variant (MIT, see LICENSE).
 #
 # Electron-beam spot brightness and width vary with signal intensity, so
-# scanlines stay correct at any output resolution. An aperture-grille
-# phosphor mask follows. Post-process only: the passes read the composed
-# frame and write pixels, and the mod never touches guest RAM.
+# the scanlines stay correct at any output resolution instead of aliasing
+# against the pixel grid; an aperture-grille phosphor mask follows. The
+# three passes chain in registration order over the composed frame, and
+# one parameter block feeds all three. Post-process only: the passes read
+# pixels and write pixels, and the mod never touches guest RAM.
 #
-# The [[config]] rows below are the schema the Mods panel renders. The
-# values live in config.toml; a committed edit reloads the mod and entry
-# re-reads them. Each help string is what the panel shows as a tooltip.
+# uses: `api->shader_register` - compiles each of the three fragment shaders at load
+# uses: `api->postfx_register` - places each pass at OP_POSTFX_COMPOSITE, after the HUD, with its order in the chain
+# uses: `api->postfx_set_uniforms` - hands all three passes the same parameter block
+# uses: `api->postfx_enable` - switches the chain on, since a pass is registered disabled
+# uses: `api->config_float` - reads the seven [[config]] rows the Mods panel renders
+# uses: `api->log` - names a shader that failed to build, so the log says why the effect is missing
+# uses: `api->ui_status` - reports how many of the three passes are live
 
 [mod]
 id      = "crt-beans"

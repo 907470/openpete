@@ -59,6 +59,11 @@ markdown_extensions:
   - pymdownx.superfences
   - pymdownx.keys
 
+# Anchor links are info-level by default, so a stale #section target would
+# survive --strict. The generated pages link into each other by anchor.
+validation:
+  anchors: warn
+
 nav:
   - Home: index.md
   - Getting started: getting-started.md

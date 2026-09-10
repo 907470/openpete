@@ -1,11 +1,19 @@
-# natural-gems: every gem pickup counts double, written against the
-# typed wrapper surface.
+# natural-gems: every gem pickup counts double, written against the typed
+# wrapper surface.
 #
-# OP_OVERRIDE_IMPL_CollectItem gives the override a typed Moby*
-# parameter, op_base_CollectItem falls through with natural arguments,
-# and op_call_Sin makes a typed call into an unrelated game function.
-# The mod writes g_GemTotal, so it is mutative: a memory card played
-# with it enabled carries the modset tag.
+# The raw override tier hands a body `CPUState*` and leaves it to read
+# a0-a3 and write v0. The typed wrappers exist so a prototyped function
+# can be overridden with its natural C signature instead, and this mod is
+# that surface end to end: a typed body, a typed fall-through, and a typed
+# call into an unrelated game function. It writes `g_GemTotal`, so it is
+# mutative and a memory card played with it enabled carries the modset tag.
+#
+# uses: `OP_OVERRIDE_IMPL_CollectItem` - declares the override body with a typed `Moby*` parameter instead of raw registers
+# uses: `OP_REGISTER_OVERRIDE_CollectItem` - attaches that body without naming an address or a string
+# uses: `op_base_CollectItem` - falls through to the original with the same typed arguments
+# uses: `op_call_Sin` - calls an unrelated game function from inside the override, saving and restoring the argument registers around it
+# uses: `api->log` - reports the doubled pickup and the result of the nested call
+# uses: `api->ui_status` - shows the running totals in the Mods panel
 
 [mod]
 id      = "natural-gems"

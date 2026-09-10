@@ -594,6 +594,47 @@ def gen_structs(structs_header: Path) -> str:
 # ── examples.md ──────────────────────────────────────────────────────────
 
 
+# Where a "uses:" row points, from examples.md in pages/reference/. An
+# api-> entry has its own section in api.md; everything else lands on the
+# page that documents the surface, since neither the widget vtable nor the
+# function table gives its members anchors.
+USES_LINK = (
+    (re.compile(r"`(OP_OVERRIDE_IMPL|OP_REGISTER_OVERRIDE)_\w+`"),
+     "spyro-1/functions.md"),
+    (re.compile(r"`(op_base|op_call)_\w+`"), "spyro-1/functions.md"),
+    (re.compile(r"openpete_imgui\.h"), "../imgui.md"),
+    (re.compile(r"openpete_mod_ui\.h|`OPENPETE_MOD_UI_\w+`|`ui->\w+`"),
+     "api.md#ui-widgets"),
+    (re.compile(r"\[\[material\]\]"), "../shaders.md#materials"),
+    (re.compile(r"assets/textures/"), "../assets.md#textures"),
+    (re.compile(r"assets/music/"), "../assets.md#music"),
+    (re.compile(r"assets/sfx/"), "../sounds.md"),
+    (re.compile(r"shaders/"), "../shaders.md"),
+)
+
+
+def link_uses(cell: str, api_names: set, mid: str) -> str:
+    """Link each name in a uses: row to the page documenting it. The row
+    may name several entries, so each comma-separated token is linked on
+    its own."""
+    out = []
+    for token in cell.split(", "):
+        m = re.fullmatch(r"`api->(\w+)`", token)
+        if m:
+            if m.group(1) not in api_names:
+                sys.exit(f"gen_mod_docs: {mid} documents {token} in a "
+                         f"uses: line but api.md has no such entry")
+            out.append(f"[{token}](api.md#api-{m.group(1)})")
+            continue
+        for rx, href in USES_LINK:
+            if rx.search(token):
+                out.append(f"[{token}]({href})")
+                break
+        else:
+            out.append(token)
+    return ", ".join(out)
+
+
 def read_examples(mods_dir: Path) -> list:
     """mods/examples.txt: the ids package-dist.sh stages into
     <exe>/sdk/examples/, one per line, comments with #."""
@@ -604,7 +645,7 @@ def read_examples(mods_dir: Path) -> list:
             if l.strip() and not l.startswith("#")]
 
 
-def gen_examples(mods_dir: Path) -> str:
+def gen_examples(mods_dir: Path, api_names: set) -> str:
     out = [GEN_NOTE, "# Examples\n"]
     shipped = read_examples(mods_dir)
     out.append("The example mods that ship with the SDK under "
@@ -642,16 +683,41 @@ def gen_examples(mods_dir: Path) -> str:
         if srcs:
             bits.append("src: " + ", ".join(f"`{s}`" for s in srcs))
         sec = [f"## `{mid}` — {title}\n", " · ".join(bits) + "\n"]
-        # A blank comment line in the header is a paragraph break.
-        paras, cur = [], []
+        # A blank comment line in the header is a paragraph break; a
+        # "uses:" line leaves the prose and becomes a row of the API table.
+        paras, cur, uses = [], [], []
         for d in desc:
+            if d.startswith("uses:"):
+                what, _, why = d[len("uses:"):].strip().partition(" - ")
+                uses.append((what.strip(), why.strip()))
+                continue
             if d:
                 cur.append(d)
             elif cur:
                 paras.append(" ".join(cur)); cur = []
         if cur:
             paras.append(" ".join(cur))
+        # The header opens "<id>: ...", which names the file's subject in
+        # the source and repeats the heading on the page.
+        if paras and paras[0].startswith(mid + ": "):
+            first = paras[0][len(mid) + 2:]
+            paras[0] = first[0].upper() + first[1:]
         sec.extend(md_prose(pg) + "\n" for pg in paras)
+        if uses:
+            # A row naming an api-> or ui-> entry the sources do not call
+            # is stale documentation, so the extraction refuses it.
+            src_text = "".join(f.read_text(encoding="utf-8")
+                               for f in sorted((toml.parent / "src").glob("*.c")))
+            for what, _why in uses:
+                m = re.fullmatch(r"`?(api|ui)->(\w+)`?", what)
+                if m and ("->" + m.group(2) + "(") not in src_text:
+                    sys.exit(f"gen_mod_docs: {mid} documents {what} in a "
+                             f"uses: line but no src/*.c calls it")
+            sec.append("| Uses | Why |")
+            sec.append("|---|---|")
+            sec.extend(f"| {link_uses(what, api_names, mid)} | {why} |"
+                       for what, why in uses)
+            sec.append("")
         sections.append("\n".join(sec))
     out.extend(sections)
     return "\n".join(out), len(sections)
@@ -1013,7 +1079,8 @@ def main():
     fn_md, n_fn, n_proto = gen_functions(args.symbols, args.protos)
     gl_md, n_gl = gen_globals(args.globals_)
     st_md, n_st = gen_structs(structs)
-    ex_md, n_mods = gen_examples(args.mods_dir)
+    api_names = set(re.findall(r"^### `api->(\w+)`", api_md, re.M))
+    ex_md, n_mods = gen_examples(args.mods_dir, api_names)
     cs_md, n_cs = gen_cpustate(args.psx_runtime)
     ig_md, n_deny = gen_imgui(args.imgui_header, args.imgui_table_gen)
 

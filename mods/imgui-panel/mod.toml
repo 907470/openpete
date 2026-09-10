@@ -1,17 +1,29 @@
 # imgui-panel: the full ImGui C API (openpete_imgui.h) driving a real panel.
 #
 # A tick hook counts the level's live mobys into a host-side ring and
-# copies the ten nearest to Spyro. The UI section then draws that copy
-# with the full ImGui C API: a plot over the ring, a table of the ten,
-# a floating window with a colour editor, and a foreground draw-list
-# marker. Every guest read is in the tick hook; the section reads the
-# host copy only, which is the purity rule for a body that runs on the
-# compose thread.
+# copies the ten nearest to Spyro. The UI section then draws that copy: a
+# plot over the ring, a table of the ten, a floating window with a colour
+# editor, and a foreground draw-list marker. Every guest read happens in
+# the tick hook and the section reads the host copy only, which is the
+# rule for a body running on the compose thread. The section is an always
+# section, so the stats window and the marker draw every present while the
+# detail window waits for the overlay.
 #
-# Two Containment toggles, both off by default, drive the engine's
-# containment paths for scripts/check_mod_imgui.sh: one drops an
-# ImGui_End so the error bracket has something to recover, one calls
-# ImGui_Text from a present hook so the guard has something to refuse.
+# Two Containment toggles ship off. Each drives one of the engine's
+# containment paths for scripts/check_mod_imgui.sh: one omits an
+# ImGui_End so the error bracket has something to recover, the other
+# calls ImGui_Text from a present hook so the guard has something to drop.
+#
+# uses: `openpete_imgui.h` - the whole ImGui C API through OPENPETE_MOD_IMGUI(), for the plot, table, colour editor and draw list the widget vtable cannot express
+# uses: `OPENPETE_MOD_UI_SECTION_FLAGS` - registers the body as an always section, running on every present rather than only inside the Mods panel
+# uses: `ui->overlay_open` - draws the interactive half only while the overlay is up, since an always window takes no input when it is closed
+# uses: `ui->text`, `ui->text_disabled` - the vtable and the ImGui calls mix freely in one body
+# uses: `api->override_name` - a GamestateUpdate hook, the per-tick sampler
+# uses: `api->base` - hands control back after sampling
+# uses: `api->register_present_hook` - registered only by the containment toggle, to make a call from the wrong context
+# uses: `api->config_bool` - the two containment toggles
+# uses: `api->ui_status` - explains in the Mods panel what the toggles do
+# uses: `api->log` - one line when sampling starts
 
 [mod]
 id      = "imgui-panel"

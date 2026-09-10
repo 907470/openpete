@@ -1,12 +1,24 @@
 # teapot-dragons: every crystallised dragon statue is a Utah teapot.
 #
-# The densest single model the Spyro 1 animated-moby format admits (a
-# 255-vertex count byte, 9-bit face indices), parked in the mod arena
-# and installed over the level's crystal-dragon class (250, the last
-# model of every level) from a PatchMobyModelPointers post-hook. The
-# geometry is generated from the public-domain Newell teapot patch data
-# by tools/gen_teapot.py into assets/teapot_s1pack.bin, so the mod ships
-# no disc-derived bytes.
+# The densest single model the Spyro 1 animated-moby format admits, a
+# 255-vertex count byte against 9-bit face indices, parked in the mod
+# arena and installed over the level's crystal-dragon class from a model
+# post-hook. Class 250 is the last model of every level and its table row
+# bounds the model buffer the rescue cutscene loads into, so the mod shows
+# the stock row to that loader and its own row to everything else.
+#
+# The geometry is generated from the public-domain Newell teapot patch
+# data by tools/gen_teapot.py into assets/teapot_s1pack.bin.
+#
+# uses: `api->guest_alloc` - parks the model pack in the mod arena, which savestates and rewind carry like any other guest bytes
+# uses: `api->vstream_handle` - the animation frame word holds a 21-bit field that cannot address the arena, so each stream is requested as a handle instead
+# uses: `api->override_addr` - hooks PatchMobyModelPointers, which runs several times per level over the same models
+# uses: `api->override_name` - hooks LoadDragonCutscene, where the stock model row has to be restored
+# uses: `api->base` - lets the game do its own patching first, then overwrites the one row
+# uses: `api->guest` - resolves the parked vaddr to a host pointer before writing the model header
+# uses: `api->data_dir` - locates the generated asset pack next to the mod
+# uses: `api->config_bool` - an enable switch and a debug dump, both from the Mods panel
+# uses: `api->log`, `api->ui_status` - report the install per level load and the parked address
 
 [mod]
 id      = "teapot-dragons"
