@@ -4524,11 +4524,16 @@ static int run_host_loop(const openpete_options_t* opts) {
              * stamps the FPS overlay. PTS is the wall-clock capture instant
              * in microseconds; the first frame anchors t=0. Reads the present
              * FBO at internal resolution (bars-free). No-op when disabled.
-             * Only the PsyCross path here — when the native renderer owns the
-             * display, the on-screen frame is captured by the async readback ring
-             * inside openpete_native_render_frame below, so a vk recording holds
-             * the native SSAA/widescreen frame, not the PsyCross reference. */
-            if (!openpete_native_render_enabled())
+             * Keyed on the SCENE predicate, not the display one. When a native
+             * scene is being drawn, the async readback ring inside
+             * openpete_native_render_frame below captures the on-screen frame,
+             * so a vk recording holds the native SSAA/widescreen frame. In
+             * PsyCross display mode the offscreen holds a blit that update_layout
+             * has already aspect-fitted into the window — letterboxed, and
+             * downscaled wherever the window is not the reference extent — so
+             * recording it would be strictly worse than reading the present FBO
+             * here at internal resolution, bars-free. */
+            if (!openpete_native_scene_enabled())
                 openpete_record_capture_frame((uint64_t)(op_now() / 1000));
             PsyX_EndScene();
             openpete_present_pending = 0;

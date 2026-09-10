@@ -463,8 +463,8 @@ typedef struct openpete_options {
      * renderer adopts — retitle/resize/make-resizable — instead of opening
      * a second window, so one OS window carries splash and game. Set by the
      * game's main between splash teardown and openpete_run(); only handed
-     * over in windowed vk mode; other modes open their own window and close
-     * the splash as before. Display-only. */
+     * over in any windowed run, since every windowed mode displays through the
+     * native window. Headless closes the splash instead. Display-only. */
     void* adopted_window;
 
     /* --ssaa N (default 1): supersampling factor for the native vk LIVE window.

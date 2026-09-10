@@ -52,10 +52,12 @@ void openpete_native_precreate_window(const openpete_options_t *opts,
 
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h);
 
-/* True once init succeeded and the native Vulkan window owns the display.
- * Answers "is the native window the display?" — it says nothing about where
- * the picture comes from. True in PsyCross display mode, where the window
- * shows PsyCross's read-back frame. */
+/* True once native bring-up succeeded: a Vulkan device exists and this process
+ * composes through it. Says nothing about where the picture comes from — it is
+ * true in PsyCross display mode, where the window shows PsyCross's read-back
+ * frame. Nor does it promise a window: headless bring-up is surfaceless and
+ * still sets this, so a consumer that needs an actual display must check
+ * headless separately. */
 bool openpete_native_render_enabled(void);
 
 /* True when a native SCENE is being extracted, interpolated and drawn: the

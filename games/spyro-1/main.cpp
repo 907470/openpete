@@ -248,13 +248,13 @@ int main(int argc, char** argv) {
                           spyro1_splash_run_task);
 
     /* In-process continuation: the splash's job ends where the game
-     * window begins. In the default windowed vk mode the game ADOPTS the
-     * splash window (native_render retitles + reuses it) so the window
-     * never closes and reopens; psycross mode opens its own window and
-     * closes the splash as before. Progress is unhooked either way —
-     * nothing may lazy-reopen a splash window mid-game. */
+     * window begins. Every windowed run ADOPTS the splash window
+     * (native_render retitles + reuses it) so the window never closes and
+     * reopens — both renderer modes display through the native window, so
+     * both want the handover. Headless closes it. Progress is unhooked
+     * either way — nothing may lazy-reopen a splash window mid-game. */
     spyro1_progress_cb = NULL;
-    if (opts.renderer == OPENPETE_RENDERER_VK && !opts.headless)
+    if (!opts.headless)
         opts.adopted_window = spyro1_splash_detach_window();
     else
         spyro1_splash_close();

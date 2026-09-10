@@ -1334,8 +1334,10 @@ void openpete_native_precreate_window(const openpete_options_t *opts,
                                       int win_w, int win_h)
 {
     if (s_precreated_win || opts->adopted_window) return;
-    /* Only the single-window vk path; headless has no window at all. */
-    if (opts->headless || opts->renderer != OPENPETE_RENDERER_VK) return;
+    /* Every windowed mode now brings the native window up and displays through
+     * it, so every windowed mode wants the single-window handover. Headless has
+     * no window at all. */
+    if (opts->headless) return;
 
     int w, h;
     nr_resolve_window_size(opts, win_w, win_h, &w, &h);
@@ -9861,7 +9863,11 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
      * unless recording is active). MUST run before end_frame, while this frame
      * slot is still current — the copy is appended to the frame's command
      * buffer. */
-    if (openpete_record_active()) {
+    /* Scene-gated: without a native scene this offscreen is an aspect-fitted
+     * blit of PsyCross's frame, and run.c records that mode from the present
+     * FBO instead. Capturing here too would put two frames per present into
+     * one encoder. */
+    if (openpete_record_active() && s_nr.scene_live) {
         rhi_gpu_zone_begin(s_nr.dev, "record");
         record_cycle(record_pts_us);
         rhi_gpu_zone_end(s_nr.dev);
