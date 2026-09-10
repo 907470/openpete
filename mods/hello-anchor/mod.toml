@@ -10,6 +10,7 @@
 id      = "hello-anchor"
 name    = "Hello Anchor"
 version = "0.1.0"
+game    = "spyro-1"
 api     = 1
 # state: what the engine must carry for this mod across a state load.
 # "none" = the mod keeps no data derived from guest history; a counter

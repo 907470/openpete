@@ -17,6 +17,7 @@
 id = "moby-instance-tint"
 name = "Moby Instance Tint"
 version = "0.2.0"
+game    = "spyro-1"
 api = 5            # material_register_refine; engine-owned main()
 state = "none"     # GPU-only; nothing to save
 runahead = "pure"  # no tick hooks

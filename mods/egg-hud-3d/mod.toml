@@ -16,6 +16,7 @@
 id      = "egg-hud-3d"
 name    = "3D Egg Icons"
 version = "0.1.0"
+game    = "spyro-1"
 api     = 1
 state    = "rebuildable"   # the park is re-derived from the game's own egg state every tick
 runahead = "pure"          # tick hooks touch guest state only

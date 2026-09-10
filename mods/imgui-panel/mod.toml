@@ -17,6 +17,7 @@
 id      = "imgui-panel"
 name    = "ImGui Panel"
 version = "0.1.0"
+game    = "spyro-1"
 api     = 11
 state   = "none"       # host-side ring only; nothing to save
 runahead = "pure"      # reads guest RAM, writes none

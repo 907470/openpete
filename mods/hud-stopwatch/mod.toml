@@ -11,6 +11,7 @@
 id      = "hud-stopwatch"
 name    = "HUD Stopwatch"
 version = "0.1.0"
+game    = "spyro-1"
 api     = 1
 sim_mutative = false  # writes no guest RAM: outside the save modset tag
 

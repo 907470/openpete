@@ -13,6 +13,7 @@
 id      = "vstream-rehandle"
 name    = "Vertex Streams via Handles"
 version = "0.1.0"
+game    = "spyro-1"
 api     = 9
 state    = "rebuildable"
 runahead = "pure"

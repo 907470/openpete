@@ -8,6 +8,7 @@
 id      = "raw-probe"
 name    = "Raw Probe"
 version = "0.1.0"
+game    = "spyro-1"
 api     = 1
 state    = "none"      # counters + last-seen registers
 runahead = "host-fx"   # periodic logs — suppressible

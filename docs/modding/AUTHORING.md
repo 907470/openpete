@@ -79,6 +79,9 @@ descriptor from before the api-11 layout freeze.
 id      = "my-mod"      # required; = directory/zip name
 version = "0.1.0"       # required
 name    = "My Mod"      # Mods panel label, default id
+game    = "spyro-1"     # or a list; omit = every title. Exact match, so an
+                        # unknown id loads nowhere. Filtered at discovery: a
+                        # mod for another title never compiles here
 api     = 11            # minimum OPENPETE_MOD_API_VERSION; omit with no src/
 deps    = ["lib-mod"]   # hard deps; cycle or missing dep disables this mod
 sim_mutative = false    # writes guest RAM? see §7

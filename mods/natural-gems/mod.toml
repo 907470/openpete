@@ -11,6 +11,7 @@
 id      = "natural-gems"
 name    = "Natural Gems"
 version = "0.1.0"
+game    = "spyro-1"
 api     = 1
 state    = "none"      # session counters only; nothing to carry across a state load
 runahead = "host-fx"   # logs on pickup; the engine suppresses them during speculation

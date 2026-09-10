@@ -16,6 +16,7 @@
 id      = "sfx-replace-probe"
 name    = "SFX Replace Probe"
 version = "0.1.0"
+game    = "spyro-1"
 api     = 1
 state    = "none"
 runahead = "pure"

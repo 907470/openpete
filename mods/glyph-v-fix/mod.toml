@@ -15,6 +15,7 @@
 id      = "glyph-v-fix"
 name    = "Glyph V Fix"
 version = "1.0.0"
+game    = "spyro-1"
 api     = 11
 # The parked face stream is rebuilt from the live model on every install,
 # so a state load needs nothing carried across.

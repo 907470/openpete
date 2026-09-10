@@ -12,6 +12,7 @@
 id      = "crash3-models"
 name    = "Crash 3 Models"
 version = "0.1.0"
+game    = "spyro-1"
 api     = 10
 state    = "rebuildable"   # the park is re-copied on every fresh level
 runahead = "pure"

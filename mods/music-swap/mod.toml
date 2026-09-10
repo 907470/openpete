@@ -8,4 +8,5 @@
 id      = "music-swap"
 name    = "Music Swap"
 version = "0.1.0"
+game    = "spyro-1"
 api     = 1

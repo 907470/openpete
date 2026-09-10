@@ -19,6 +19,7 @@
 id      = "channel-gallery"
 name    = "Channel Gallery"
 version = "0.1.0"
+game    = "spyro-1"
 api     = 6            # material_set_selector (live class picker)
 state    = "none"      # GPU-only; nothing to carry across a state load
 runahead = "pure"      # no tick hooks

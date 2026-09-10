@@ -8,6 +8,7 @@
 id      = "crash-dummy"
 name    = "Crash Dummy"
 version = "0.1.0"
+game    = "spyro-1"
 api     = 1
 state    = "none"      # call counter only
 runahead = "host-fx"   # binding read + deliberate fault

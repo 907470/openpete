@@ -8,5 +8,6 @@
 id      = "hd-single-texture"
 name    = "HD Single Texture"
 version = "0.1.0"
+game    = "spyro-1"
 api     = 1
 

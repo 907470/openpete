@@ -13,6 +13,7 @@
 id      = "supercharge-anywhere"
 name    = "Supercharge Anywhere"
 version = "0.3.0"
+game    = "spyro-1"
 api     = 9              # vstream_handle (injected frame words)
 state    = "rebuildable"  # only host fact the world depends on is the
                           # park vaddr; the park bytes are canonical RAM

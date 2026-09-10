@@ -41,6 +41,7 @@
 #include "openpete_log.h"
 #include "openpete_host_input.h"
 #include "openpete_keymap.h"     /* [keys.mod.<id>] binding overrides */
+#include "game_extras.h"      /* game_get_id: [mod] game targeting */
 #include "../runtime/openpete_imgui_guard.h" /* ImGui table bind */
 #include "../host/sha256.h"     /* content-hash build cache key */
 #include "../host/host_spawn.h" /* silent compiler spawn + cc identity */
@@ -2687,11 +2688,105 @@ static int mods_root(const openpete_options_t* opts, char* mods_dir,
     return openpete_paths_data_dir("mods", mods_dir, mods_dir_cap, 0);
 }
 
+/* Resolve a candidate id to its mod dir: the folder, or the zip's
+ * .unpacked/<id>/ when no folder carries a mod.toml. */
+static void mod_ref_resolve(const char* mods_dir, const char* id,
+                            mod_ref_t* r) {
+    snprintf(r->id, sizeof r->id, "%s", id);
+    snprintf(r->dir, sizeof r->dir, "%s/%s", mods_dir, id);
+    char probe[MOD_PATH_MAX + 12];
+    snprintf(probe, sizeof probe, "%s/mod.toml", r->dir);
+    if (file_mtime(probe) == (time_t)-1) /* zip-unpacked mod */
+        snprintf(r->dir, sizeof r->dir, "%s/.unpacked/%s", mods_dir, id);
+}
+
+/* Append one declared game id to the mismatch text, comma-separated,
+ * saturating at the buffer rather than overrunning it. Returns the new
+ * used length. */
+static size_t want_append(char* want, size_t cap, size_t used,
+                          const char* id) {
+    if (used + 1 >= cap) return used;
+    int wrote = snprintf(want + used, cap - used, "%s%s",
+                         used ? ", " : "", id);
+    if (wrote < 0) return used;
+    used += (size_t)wrote;
+    return used >= cap ? cap - 1 : used;
+}
+
+/* Does this manifest's [mod] game name this game? Read here rather than
+ * in parse_manifest because discovery feeds the pre-boot compile pass as
+ * well as the loader: a mod for another title has to leave the candidate
+ * set before its C is handed to this game's SDK. The value is one id or
+ * an array of them, matched exactly against this game's id; an absent
+ * key targets every game. A value naming no game the exe knows matches
+ * nothing, so a misspelling narrows a mod's reach instead of widening
+ * it. `want` receives the declared ids on a mismatch, so the log can
+ * name them. A manifest that will not open or parse stays a candidate —
+ * parse_manifest reports that case with the message it deserves. */
+static int mod_targets_this_game(const char* mod_dir, char* want,
+                                 size_t want_cap) {
+    char path[MOD_PATH_MAX + 12];
+    snprintf(path, sizeof path, "%s/mod.toml", mod_dir);
+    FILE* fp = fopen(path, "r");
+    if (!fp) return 1;
+    char errbuf[256];
+    toml_table_t* root = toml_parse_file(fp, errbuf, sizeof errbuf);
+    fclose(fp);
+    if (!root) return 1;
+
+    int match = 1;
+    toml_table_t* t = toml_table_in(root, "mod");
+    if (t) {
+        const char* self = game_get_id();
+        toml_datum_t g = toml_string_in(t, "game");
+        toml_array_t* ga = toml_array_in(t, "game");
+        if (g.ok) {
+            match = self && strcmp(g.u.s, self) == 0;
+            if (!match) (void)want_append(want, want_cap, 0, g.u.s);
+            free(g.u.s);
+        } else if (ga) {
+            /* An empty array, or one holding no strings, names no game:
+             * nothing matches, which is the same narrowing direction as
+             * a misspelling. */
+            int n = toml_array_nelem(ga);
+            size_t used = 0;
+            match = 0;
+            for (int i = 0; i < n; i++) {
+                toml_datum_t d = toml_string_at(ga, i);
+                if (!d.ok) continue;
+                if (self && strcmp(d.u.s, self) == 0) match = 1;
+                used = want_append(want, want_cap, used, d.u.s);
+                free(d.u.s);
+            }
+            if (match) want[0] = 0;
+        }
+    }
+    toml_free(root);
+    return match;
+}
+
+/* Discovery-time filter: resolve the candidate's dir and drop it when
+ * its manifest targets another game, saying so once per boot. */
+static int scan_keep_for_game(const char* mods_dir, const char* id) {
+    mod_ref_t r;
+    mod_ref_resolve(mods_dir, id, &r);
+    char want[96];
+    want[0] = 0;
+    if (mod_targets_this_game(r.dir, want, sizeof want)) return 1;
+    char shown[112];
+    if (want[0]) snprintf(shown, sizeof shown, "game \"%s\"", want);
+    else         snprintf(shown, sizeof shown, "no game");
+    OPL_INFO_F("mods", "%s targets %s — skipped (this is %s)",
+               id, shown, game_get_id());
+    return 0;
+}
+
 /* Scan the mods root for candidate ids: subdirs containing mod.toml,
  * plus <id>.zip archives (unpacked to .unpacked/<id>/, content-hash
  * stamped so re-extraction only happens when the zip changes). A
  * folder and a zip with the same id: the folder wins (consumers probe
- * the folder first when resolving the dir). Returns the count. */
+ * the folder first when resolving the dir). A mod whose manifest names
+ * another game is not a candidate here at all. Returns the count. */
 static int mods_scan(const char* mods_dir, char ids[][MOD_ID_MAX],
                      int max) {
     DIR* d = opendir(mods_dir);
@@ -2706,7 +2801,8 @@ static int mods_scan(const char* mods_dir, char ids[][MOD_ID_MAX],
             char id[MOD_ID_MAX];
             snprintf(id, sizeof id, "%.*s", (int)(nl - 4), e->d_name);
             if (n_ids >= max) { n_over++; continue; }
-            if (mod_unpack_zip(mods_dir, id) == 0)
+            if (mod_unpack_zip(mods_dir, id) == 0 &&
+                scan_keep_for_game(mods_dir, id))
                 snprintf(ids[n_ids++], MOD_ID_MAX, "%s", id);
             continue;
         }
@@ -2715,6 +2811,7 @@ static int mods_scan(const char* mods_dir, char ids[][MOD_ID_MAX],
                  e->d_name);
         if (file_mtime(manifest) == (time_t)-1) continue;
         if (n_ids >= max) { n_over++; continue; }
+        if (!scan_keep_for_game(mods_dir, e->d_name)) continue;
         snprintf(ids[n_ids++], MOD_ID_MAX, "%s", e->d_name);
     }
     closedir(d);
@@ -2725,18 +2822,6 @@ static int mods_scan(const char* mods_dir, char ids[][MOD_ID_MAX],
                     "build can load — %d skipped in directory order",
                     n_over, max, n_over);
     return n_ids;
-}
-
-/* Resolve a candidate id to its mod dir: the folder, or the zip's
- * .unpacked/<id>/ when no folder carries a mod.toml. */
-static void mod_ref_resolve(const char* mods_dir, const char* id,
-                            mod_ref_t* r) {
-    snprintf(r->id, sizeof r->id, "%s", id);
-    snprintf(r->dir, sizeof r->dir, "%s/%s", mods_dir, id);
-    char probe[MOD_PATH_MAX + 12];
-    snprintf(probe, sizeof probe, "%s/mod.toml", r->dir);
-    if (file_mtime(probe) == (time_t)-1) /* zip-unpacked mod */
-        snprintf(r->dir, sizeof r->dir, "%s/.unpacked/%s", mods_dir, id);
 }
 
 static int cmp_id_row(const void* a, const void* b) {

@@ -12,6 +12,7 @@
 id      = "teapot-dragons"
 name    = "Teapot Dragons"
 version = "0.1.0"
+game    = "spyro-1"
 api     = 10
 state    = "rebuildable"   # the park is re-copied on every fresh level, so a state load needs nothing carried
 runahead = "pure"          # hooks only rewrite the park and the model row; no host effects

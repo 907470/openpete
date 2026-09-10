@@ -8,6 +8,7 @@
 [mod]
 id      = "my-mod"        # the directory or zip name; enabled.txt and --mods use that name
 name    = "My Mod"        # shown in the Mods section; defaults to id
+game    = "spyro-1"       # or ["spyro-1", "spyro-3"]; omit = all
 version = "0.1.0"
 api     = 1               # minimum OPENPETE_MOD_API_VERSION; omit for a mod with no src/
 deps    = ["other-mod"]   # hard dependencies: their entry points run first
@@ -15,6 +16,16 @@ sim_mutative = false      # see below
 state    = "none"         # "none" | "rebuildable": permits rewind with this mod loaded
 runahead = "pure"         # "pure" | "host-fx": permits runahead with this mod loaded
 ```
+
+**`game`.** Which game the mod is for: one id (`"spyro-1"`, `"spyro-2"`,
+`"spyro-3"`) or an array of them. `mods/` is shared across the
+openpete ports, so a mod that only makes sense under one of them names it
+here and the others never see it: a mod naming no game this exe runs is dropped
+during discovery, before it is compiled, listed in the Mods panel, or
+counted by `enabled.txt`. Omitting the key targets every title, which is
+right for a mod built entirely from portable engine surfaces (e.g. shaders).
+Ids are matched exactly against the running game's id, so a misspelling
+matches nothing and the mod loads nowhere.
 
 **`deps`.** Dependencies are topologically sorted ahead of enabled-list
 order, so a library's entry point runs before its clients' regardless of

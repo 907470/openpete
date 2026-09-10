@@ -4,6 +4,7 @@
 id      = "chain-duo-b"
 name    = "Chain Duo B"
 version = "0.1.0"
+game    = "spyro-1"
 api     = 1
 state    = "none"      # call counter only
 runahead = "host-fx"   # nesting logs — suppressible
