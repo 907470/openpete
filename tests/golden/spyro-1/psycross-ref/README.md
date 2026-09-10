@@ -3,10 +3,12 @@
 Frozen PsyCross (legacy GL renderer) output over a curated set of scenes,
 captured **before** PsyCross is retired. Two purposes:
 
-1. **The reference that replaces A/B once PsyCross is gone.** Today the native
-   Vulkan renderer is validated side-by-side against PsyCross (`--renderer ab`).
-   When PsyCross is deleted (native-renderer plan, Wave-2/PsyCross-deletion),
-   that live reference disappears — this archive preserves it.
+1. **The reference that replaces the live comparison once PsyCross is gone.**
+   The side-by-side and colour-diff renderer modes that once validated the
+   native renderer against PsyCross were retired 2026-09-10 (see
+   openpete-renderer-mode-consolidation); this archive is what remains of that
+   comparison, and it outlives PsyCross's own deletion (native-renderer plan,
+   Wave-2/PsyCross-deletion).
 2. **The reference leg for the future native visual-regression gate** (plan
    W1.2): compare a headless native `-vk` render at the same (scene, frame)
    against these.

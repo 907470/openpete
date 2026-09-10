@@ -335,8 +335,7 @@ static void print_help(const char* display_name, const char* argv0,
         "                             loader (default 1): guest disc reads never wait on the file. 0 =\n"
         "                             read the file per sector (A/B). Bytes identical either way.\n"
         "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields (defaults to the game's entry point)\n"
-        "  --renderer MODE            display renderer: vk (native, full-window%s) | psycross (legacy GL%s) |\n"
-        "                             ab (native|psycross side-by-side) | diff (|native - psycross| colour diff)\n"
+        "  --renderer MODE            display renderer: vk (native, full-window%s) | psycross (legacy GL%s)\n"
         "  --window WxH               SDL window size (default 640x480; internal render still 512x240)\n"
         "  --aspect W:H|auto          Hor+ widescreen. auto (default) = follow the window/fullscreen\n"
         "                             shape, filling it live on resize; W:H (e.g. 16:9, 21:9) = fixed\n"
@@ -515,9 +514,6 @@ static void print_help(const char* display_name, const char* argv0,
         "                             list and every mod node expanded once, so an unattended run\n"
         "                             reaches a mod UI section body (on|off also accepted).\n"
         "                             Windowed native-vk runs only; inert elsewhere.\n"
-        "  --render-stats             with --renderer diff, log per-frame + aggregate colour-diff\n"
-        "                             statistics (mean/max/within-tol/diff-px); pair with --render-paths to\n"
-        "                             measure one path's accuracy. Opt-in (per-frame GPU readback).\n"
         "  --log-format json|plain    structured stderr (default plain)\n"
         "  --log-level SPEC           e.g. cd:debug,*:info; env OPENPETE_LOG=...\n"
         "  --log-file PATH            mirror stderr to PATH instead of the default\n"
@@ -526,12 +522,12 @@ static void print_help(const char* display_name, const char* argv0,
         "  --screenshot-on-frame N[,N2,...]  save image at each listed frame; can be passed once with a comma list.\n"
         "                             In a windowed pure-vk run, -vk.png is a READBACK of the exact\n"
         "                             presented frame (sub-tick interp, mods, overlays included);\n"
-        "                             headless/ab/diff runs recompose the canonical scene instead.\n"
+        "                             headless runs recompose the canonical scene instead.\n"
         "  --screenshot-on-tick N[,N2,...]   same, keyed on canonical draw-ticks instead of VBL frames.\n"
         "                             Tick-keyed captures hit the same sim moment run-to-run (the\n"
         "                             frame<->tick mapping drifts with host timing); used by the visual gates.\n"
-        "                             The PsyCross render is written as <out>-og.png; native modes add -vk/-ab/-diff.png\n"
-        "  --screenshot-native-only   capture the native -vk variant alone: skip PsyCross OT rasterization and -og/-ab/-diff (presentation-golden corpus path)\n"
+        "                             The PsyCross render is written as <out>-og.png; the native render as <out>-vk.png\n"
+        "  --screenshot-native-only   capture the native -vk variant alone: skip PsyCross OT rasterization and -og (presentation-golden corpus path)\n"
         "  --screenshot-intermediate-on-frame N[,...]  deterministic sub-tick (alpha 0.5) native captures at each VBL, headless-capable; implies --screenshot-native-only\n"
         "  --screenshot-freeze-backdrop  maintain the green freeze backdrop during headless capture so pause/results/exit dumps aren't dark (renders an extra frame per present)\n"
         "  --screenshot-output PATH   screenshot path template (default ./screenshot.png); supports {n} for sim frame and {p} for present index; .png ext writes PNG, otherwise BMP\n"
@@ -738,10 +734,8 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             if      (strcmp(v, "psycross") == 0) opts->renderer = OPENPETE_RENDERER_PSYCROSS;
             else if (strcmp(v, "vk")       == 0) opts->renderer = OPENPETE_RENDERER_VK;
-            else if (strcmp(v, "ab")       == 0) opts->renderer = OPENPETE_RENDERER_AB;
-            else if (strcmp(v, "diff")     == 0) opts->renderer = OPENPETE_RENDERER_DIFF;
             else {
-                fprintf(stderr, "openpete: --renderer expects psycross|vk|ab|diff, got: %s\n", v);
+                fprintf(stderr, "openpete: --renderer expects psycross|vk, got: %s\n", v);
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
             i++;
@@ -764,8 +758,6 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                         v, OPENPETE_SSAA_MAX, OPENPETE_SSAA_MAX);
                 opts->ssaa = OPENPETE_SSAA_MAX;
             }
-        } else if (strcmp(a, "--render-stats") == 0) {
-            opts->render_stats = true;
         } else if (strcmp(a, "--osd") == 0) {
             const char *v = (i + 1 < argc) ? argv[++i] : "";
             if      (!strcmp(v, "on")  || !strcmp(v, "1")) opts->osd = 1;

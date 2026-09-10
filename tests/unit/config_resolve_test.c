@@ -275,15 +275,16 @@ static void case_saved_tier(void) {
 static void case_false_suppresses(void) {
     run_t r = run("false suppresses an inherited flag",
         "[args]\n"
-        "\"--render-stats\" = true\n"
+        "\"--screenshot-freeze-backdrop\" = true\n"
         "[game.spyro-1.args]\n"
-        "\"--render-stats\" = false\n", NULL, 0);
-    expect_no_flag(&r, "--render-stats");
+        "\"--screenshot-freeze-backdrop\" = false\n", NULL, 0);
+    expect_no_flag(&r, "--screenshot-freeze-backdrop");
 
     r = run("...and true emits it",
         "[args]\n"
-        "\"--render-stats\" = true\n", NULL, 0);
-    CHECK(arg_index(&r, "--render-stats") >= 0, "--render-stats should be emitted");
+        "\"--screenshot-freeze-backdrop\" = true\n", NULL, 0);
+    CHECK(arg_index(&r, "--screenshot-freeze-backdrop") >= 0,
+          "--screenshot-freeze-backdrop should be emitted");
 }
 
 /* --no-lod is --lod extended. If the resolver treated them as unrelated

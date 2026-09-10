@@ -11,7 +11,7 @@ static const char *const v_anchor[]   = { "top-left", "top-center", "top-right",
 static const char *const v_vprec[]    = { "subpixel", "integer", NULL };
 static const char *const v_texmap[]   = { "perspective", "affine", NULL };
 static const char *const v_lod[]      = { "original", "extended", NULL };
-static const char *const v_renderer[] = { "psycross", "vk", "ab", "diff", NULL };
+static const char *const v_renderer[] = { "psycross", "vk", NULL };
 static const char *const v_logfmt[]   = { "plain", "json", NULL };
 
 /* Ordered to mirror knob_registry.c's sections so the two read side by
@@ -81,7 +81,6 @@ static const cfg_knob_t g_schema[] = {
 
     /* -------- Debug -------- */
     { "render_paths",     "--render-paths",     NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
-    { "render_stats",     "--render-stats",     NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       1 },
     { "log_level",        "--log-level",        "OPENPETE_LOG",          CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "log_format",       "--log-format",       NULL,                    CFG_ENUM,   v_logfmt,   NULL,       NULL,       0 },
     { "log_file",         "--log-file",         "OPENPETE_LOG_FILE",     CFG_STRING, NULL,       NULL,       NULL,       0 },

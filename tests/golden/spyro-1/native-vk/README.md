@@ -15,8 +15,8 @@ captured **headless** through a software rasterizer (surfaceless Vulkan / lavapi
   ~exactly. The tolerance (`center_crop_diff.py` threshold + count) only absorbs
   minor run-to-run FP/order noise — it is **not** a fidelity budget against
   PsyCross. For native-vs-PsyCross *fidelity* comparison, use the
-  `../psycross-ref` archive with `--renderer ab`/`diff` (where the native scene
-  is frame-delayed to match PsyCross's lagged present).
+  `../psycross-ref` archive; the live side-by-side and colour-diff renderer
+  modes that once served this were retired 2026-09-10.
 - Determinism note: these are captured under lavapipe with a fixed ICD. A large
   GPU/driver change could perturb pixels; the gate forces the software
   rasterizer (`VK_ICD_FILENAMES`/`MESA_LOADER_DRIVER_OVERRIDE=llvmpipe`) so it

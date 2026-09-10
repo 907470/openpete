@@ -194,7 +194,7 @@ static void openpete_psxtrace_on_anchor(uint32_t addr) {
  * only the sim-tick timing pin) and PsyX_EndScene auto-no-ops via begin_scene_flag,
  * so there's no redundant GL draw and no second vsync swap on the hidden window.
  * It STAYS true (PsyCross renders) whenever the native renderer isn't the display
- * or its output is still needed: headless / psycross|ab|diff modes / native
+ * or its output is still needed: headless / psycross mode / native
  * bring-up failure / --record (taps the PsyCross present FBO) / --screenshot
  * (the -og + native -ab/-diff reference variants). Read by psyq_DrawOTag. */
 int openpete_psycross_renders = 1;
@@ -299,7 +299,7 @@ static int openpete_thread_split_enabled(void)
 }
 
 /* Only the default windowed pure-vk configuration splits. Everything else —
- * headless, --renderer psycross|ab|diff, screenshot capture — keeps PsyCross
+ * headless, --renderer psycross, screenshot capture — keeps PsyCross
  * rasterizing, which means a thread-affine GL context created on whichever
  * thread runs bring-up, and those are also the modes every gate runs in. They
  * stay single-threaded until this path has proven itself. */
@@ -2010,15 +2010,15 @@ static int run_host_init(const openpete_options_t* opts) {
      * no GL context, no PSX GPU state; every GL-touching GR entry point
      * early-returns). Kills the hidden-window GL context AND the per-frame
      * GL tax the libgpu thunks were still paying on it (DrawSync/LoadImage2
-     * texture uploads + framebuffer PBO readbacks). ab/diff/psycross modes
+     * texture uploads + framebuffer PBO readbacks). PsyCross mode
      * need PsyCross's real renderer as the reference and init as before.
      * The CPU-side vram array stays live in null-GPU mode, so StoreImage
      * readbacks the game does are byte-identical to the prior hidden-window
      * behaviour minus the (never-rendered) framebuffer PBO path. */
     /* Null-GPU applies exactly when PsyCross would never rasterize anything:
      * windowed pure-vk with no screenshot requests (the play path). Everything
-     * that needs the PsyCross REFERENCE — ab/diff, the -og/-ab/-diff
-     * screenshot variants, present-sequence capture — and headless (native
+     * that needs the PsyCross REFERENCE — the -og screenshot variant,
+     * present-sequence capture — and headless (native
      * render disabled there; PsyCross still rasterizes for the oracle) keeps
      * the full GL init. Mirrors the openpete_psycross_renders computation
      * below: if that would be 1, PsyCross needs its GPU. */
@@ -2046,12 +2046,9 @@ static int run_host_init(const openpete_options_t* opts) {
      * is created unmapped via startHidden so it never flashes or steals
      * focus — GL/FBO rendering works fine without it ever being shown.
      * (Both apply only when PsyCross's renderer actually initialises —
-     * psycross/ab/diff; null-GPU vk creates no window or context at all.) */
-    /* Hide PsyCross's GL window when a native renderer mode owns the display
-     * (--renderer ab|diff): PsyCross renders to its FBO only and we read it
-     * back into the Vulkan window, which becomes the single visible one.
-     * Keyboard focus moves to the Vulkan window; gamepad input is
-     * focus-independent. */
+     * PsyCross mode; null-GPU vk creates no window or context at all.) */
+    /* Hide PsyCross's GL window whenever a native renderer owns the display:
+     * PsyCross then renders to its FBO only. */
     bool native_renderer = (opts->renderer != OPENPETE_RENDERER_PSYCROSS);
     int psyx_ok = PsyX_Initialise((char*)opts->display_name, win_w, win_h,
                                   /*fullscreen=*/0,
@@ -2136,7 +2133,7 @@ static int run_host_init(const openpete_options_t* opts) {
     if (openpete_record_init(opts) != 0)
         return OPENPETE_EXIT_SETUP_ERROR;
 
-    /* --renderer vk|ab|diff: bring up the native Vulkan renderer's window. SDL
+    /* --renderer vk: bring up the native Vulkan renderer's window. SDL
      * is already initialized by PsyX_Initialise. Pass the same resolved window
      * size handed to PsyCross so the native window matches the game's. A
      * bring-up failure is non-fatal — we log and run PsyCross-only. The
@@ -2182,20 +2179,24 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_native_set_fps_in_record(opts->record_fps_overlay);  /* --record-fps-overlay */
 
     /* Decide whether PsyCross still rasterizes the OT (see the global's comment).
-     * Only a pure, successfully-brought-up native vk display with no comparison/
-     * capture consumer lets us skip the redundant GL submission. Everything else
-     * (headless, ab/diff, native bring-up failure, --screenshot) keeps PsyCross
-     * rendering. NOTE: --record does NOT force it on for the native display — the
+     * Only a pure, successfully-brought-up native vk display with no capture
+     * consumer lets us skip the redundant GL submission. Everything else
+     * (headless, PsyCross mode, native bring-up failure, --screenshot) keeps
+     * PsyCross rendering. NOTE: --record does NOT force it on for the native display — the
      * native --record path reads the native offscreen directly (rhi_read_offscreen,
      * self-synchronizing), so forcing PsyCross to ALSO render every frame just
      * doubled the GPU work and throttled the capture to ~8 fps. (Headless --record
      * still uses PsyCross — native is disabled there, so the first term is true.) */
     openpete_psycross_renders =
         (!openpete_native_render_enabled()                 /* headless / psycross / bring-up failed */
-         || opts->renderer != OPENPETE_RENDERER_VK         /* ab/diff need the PsyCross reference */
+         /* PsyCross mode: PsyCross IS the rasterizer, so it always renders.
+          * Redundant with the term above only while PsyCross mode creates no
+          * native device — keep it stated in its own right, because it is the
+          * whole rasterization decision the moment that changes. */
+         || opts->renderer == OPENPETE_RENDERER_PSYCROSS
          /* --screenshot-native-only discards the PsyCross reference, so don't pay
           * the GL OT walk to build it — the native -vk dump reads gamestate. */
-         || (opts->screenshot_frame_count > 0 && !opts->screenshot_native_only) /* -og + native -ab/-diff */
+         || (opts->screenshot_frame_count > 0 && !opts->screenshot_native_only) /* -og leg */
          || opts->screenshot_presents_start >= 0)          /* present-sequence capture (-og leg) */
         /* null-GPU hard override: no GL context exists, so PsyCross MUST NOT
          * rasterize regardless of the terms above (the reachable case is a
@@ -4677,7 +4678,7 @@ static int run_host_loop(const openpete_options_t* opts) {
 
             /* Native renderer: present one frame to the Vulkan window now that
              * PsyCross's present FBO is freshly rendered (read back here as the
-             * reference). No-op unless --renderer vk|ab|diff. */
+             * reference). No-op unless --renderer vk. */
             /* Mod draw service: commit the finished tick's draw commands,
              * run present hooks, push the overlay (near-zero cost modless).
              * See core/mods/mod_draw.c. */
@@ -4706,10 +4707,9 @@ static int run_host_loop(const openpete_options_t* opts) {
                 && (opts->screenshot_frame_count > 0 || opts->screenshot_intermediate_count > 0))
                 openpete_native_render_snapshot_frozen(openpete_native_widescreen_factor());
 
-            /* Native screenshots: on the same --screenshot-on-frame targets,
-             * dump every native variant — "<out>-vk.png", "<out>-ab.png",
-             * "<out>-diff.png" — regardless of the live --renderer mode, so the
-             * native views sit beside the PsyCross "<out>-og.png" above. */
+            /* Native screenshot: on the same --screenshot-on-frame targets,
+             * dump "<out>-vk.png" so the native view sits beside the PsyCross
+             * "<out>-og.png" above. */
             if (openpete_native_render_enabled() && opts->screenshot_frame_count > 0) {
                 static bool s_ab_shot[OPENPETE_MAX_SCREENSHOT_FRAMES] = {0};
                 for (int si = 0; si < opts->screenshot_frame_count; ++si) {

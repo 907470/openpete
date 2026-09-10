@@ -277,7 +277,7 @@ static int fogscale_set(knob_desc_t *k, double v) {
     return 0;
 }
 
-static const char *const k_renderer_names[] = { "psycross", "vk", "ab", "diff" };
+static const char *const k_renderer_names[] = { "psycross", "vk" };
 static double renderer_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->renderer : 1.0; }
 
 static void window_get_str(const knob_desc_t *k, char *buf, size_t cap) {
@@ -400,10 +400,6 @@ static void renderpaths_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     const char *v = (g_opts && g_opts->render_paths && *g_opts->render_paths)
                         ? g_opts->render_paths : NULL;
     snprintf(buf, cap, "%s", v ? v : "(all)");
-}
-
-static double renderstats_get(const knob_desc_t *k) {
-    (void)k; return (g_opts && g_opts->render_stats) ? 1.0 : 0.0;
 }
 
 static void loglevel_get_str(const knob_desc_t *k, char *buf, size_t cap) {
@@ -891,11 +887,6 @@ static const knob_desc_t g_builtin[] = {
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, renderpaths_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
-    { "render_stats", "Render stats", "Debug", "--render-stats", NULL,
-      "Per-frame colour-diff statistics (diff renderer only).",
-      KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
-      renderstats_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
-
     { "log_level", "Log level", "Debug", "--log-level", "OPENPETE_LOG",
       "Per-subsystem stderr log levels, e.g. cd:debug,*:info. Applying "
       "REPLACES all boot rules with the typed spec (empty = *:info).",
@@ -967,7 +958,7 @@ static const knob_desc_t g_builtin[] = {
     ENVROW_LATCHED("HUD6_NOSORT", "Debug", "0",
         "A/B: keep bucket-6 submission order (skip z sort)."),
     ENVROW_LATCHED("NATIVE_SCENE_DELAY", "Debug", "0",
-        "Force scene-history depth for compose (alignment sweeps)."),
+        "Compose from a past completed frame instead of the current one."),
     ENVROW_LATCHED("TAG_SPLIT", "Debug", "0",
         "Force batch split by mod scene-tag."),
     ENVROW_LATCHED("TAG_TINT", "Debug", "0",
