@@ -73,8 +73,9 @@ nav:
   - Publishing: publishing.md
   - Reference:
       - API: reference/api.md
-      - Functions: reference/functions.md
-      - Globals: reference/globals.md
-      - Game structs: reference/structs.md
       - CPUState: reference/cpustate.md
       - Examples: reference/examples.md
+      - Spyro 1:
+          - Functions: reference/spyro-1/functions.md
+          - Globals: reference/spyro-1/globals.md
+          - Game structs: reference/spyro-1/structs.md

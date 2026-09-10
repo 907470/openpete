@@ -101,10 +101,10 @@ Guest memory covers the 2 MB RAM, the 1 KB scratchpad at 0x1F800000, and
 every block returned by `guest_alloc` (see The arena below). All three
 resolve through `api->guest`.
 
-- Use the [typed structs](reference/structs.md). Their layouts are pinned
+- Use the [typed structs](reference/spyro-1/structs.md). Their layouts are pinned
   with `_Static_assert`, so a layout change fails the mod's compile.
 - Take addresses from the `OP_GADDR_*` constants in
-  [Globals](reference/globals.md) and the `OP_FNADDR_*` constants in
+  [Globals](reference/spyro-1/globals.md) and the `OP_FNADDR_*` constants in
   `openpete_sdk_symbols.h`.
 - `op_read_u32(api, va)`, `op_write_u32(api, va, v)` and their siblings
   for every width and signedness, `op_read_{u,s}{8,16,32}` and

@@ -117,7 +117,7 @@ with `if (api->api_version >= N)`.
 ### Ways to hook a function
 
 1. **By name.** `api->override_name(self, "CameraUpdate", fn)`. Names come
-   from the [function reference](reference/functions.md) and survive
+   from the [function reference](reference/spyro-1/functions.md) and survive
    engine updates.
 2. **Through a prototype.** Functions with a natural signature get typed
    wrappers in `openpete_sdk_wrappers.h`: `OP_OVERRIDE_IMPL_Foo`,

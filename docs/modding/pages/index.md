@@ -69,6 +69,8 @@ mod engine-rendered settings and rebindable keys with no UI code.
 - [Shaders](shaders.md): post-process passes and material selectors.
 - [Publishing](publishing.md): what a mod must get right before release.
 - Reference, generated from the SDK sources: [API](reference/api.md),
-  [functions](reference/functions.md), [globals](reference/globals.md),
-  [game structs](reference/structs.md), [CPUState](reference/cpustate.md),
+  [functions](reference/spyro-1/functions.md),
+  [globals](reference/spyro-1/globals.md),
+  [game structs](reference/spyro-1/structs.md),
+  [CPUState](reference/cpustate.md),
   [examples](reference/examples.md).

@@ -9,12 +9,18 @@ mkdocs-material site (see docs/modding/ and scripts/build-mod-docs.sh):
                    splitters, supporting types) + core/include/
                    openpete_mod_ui.h (the separately versioned widget
                    vtable, appended as `## UI widgets`)
-  functions.md  <- manifest/symbols.toml x prototypes.toml (overridable
+  spyro-1/functions.md
+                <- manifest/symbols.toml x prototypes.toml (overridable
                    functions: address, kind, natural signature +
                    op_call_*/op_base_* wrapper availability)
-  globals.md    <- manifest/globals.toml (the OP_GADDR_* surface)
-  structs.md    <- generated openpete_game_structs.h (typed guest-RAM
+  spyro-1/globals.md
+                <- manifest/globals.toml (the OP_GADDR_* surface)
+  spyro-1/structs.md
+                <- generated openpete_game_structs.h (typed guest-RAM
                    views + offset tables recovered from the pins)
+
+  The three above come from one game's manifests; the rest describe the
+  engine, so they sit a level up from the per-game slug.
   examples.md   <- mod.toml header comments of the mods in
                    mods/examples.txt (the SDK-shipped set)
   cpustate.md   <- third_party/psxrecomp/runner/include/psx_runtime.h
@@ -978,6 +984,11 @@ def main():
     ap.add_argument("--out",
                     default=REPO / "docs/modding/pages/reference",
                     type=Path)
+    ap.add_argument("--out-game", dest="out_game",
+                    default=REPO / "docs/modding/pages/reference/spyro-1",
+                    type=Path,
+                    help="where the pages extracted from one game's "
+                         "manifests go")
     ap.add_argument("--out-pages", dest="out_pages",
                     default=REPO / "docs/modding/pages",
                     type=Path,
@@ -994,6 +1005,7 @@ def main():
                 break
 
     args.out.mkdir(parents=True, exist_ok=True)
+    args.out_game.mkdir(parents=True, exist_ok=True)
 
     api_md, n_api = gen_api(args.api_header)
     ui_md, n_ui = gen_mod_ui(args.ui_header)
@@ -1005,10 +1017,12 @@ def main():
     cs_md, n_cs = gen_cpustate(args.psx_runtime)
     ig_md, n_deny = gen_imgui(args.imgui_header, args.imgui_table_gen)
 
-    for fname, content in (("api.md", api_md), ("functions.md", fn_md),
-                           ("globals.md", gl_md), ("structs.md", st_md),
-                           ("examples.md", ex_md), ("cpustate.md", cs_md)):
+    for fname, content in (("api.md", api_md), ("examples.md", ex_md),
+                           ("cpustate.md", cs_md)):
         (args.out / fname).write_text(content, encoding="utf-8")
+    for fname, content in (("functions.md", fn_md), ("globals.md", gl_md),
+                           ("structs.md", st_md)):
+        (args.out_game / fname).write_text(content, encoding="utf-8")
     (args.out_pages / "imgui.md").write_text(ig_md, encoding="utf-8")
 
     if n_cs < 40:   # 32 GPRs + pc/hi/lo + 3 arrays + 10 callbacks
@@ -1022,7 +1036,7 @@ def main():
           f"({n_proto} prototyped) | globals: {n_gl} | structs: {n_st} | "
           f"examples: {n_mods} mods | cpustate: {n_cs} fields | "
           f"imgui: {n_deny} denied families -> {args.out}, "
-          f"{args.out_pages}/imgui.md")
+          f"{args.out_game}, {args.out_pages}/imgui.md")
 
 
 if __name__ == "__main__":
