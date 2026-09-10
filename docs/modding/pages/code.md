@@ -115,7 +115,7 @@ resolve through `api->guest`.
 
 `api->guest_alloc(self, size, align, flags, &host_view)` bump-allocates
 guest-addressable bytes and returns a host view of the same block. The
-bytes are timeline state: savestates, rewind, runahead, and process
+bytes are [timeline state](glossary.md): savestates, rewind, runahead, and process
 handoff carry and restore them like guest RAM. Mutable per-session state
 (a cooldown, a spawned-set bitmap, a counter) belongs here. Host statics
 do not roll back; keep them for caches, file handles, and UI drafts.

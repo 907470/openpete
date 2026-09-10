@@ -9,12 +9,24 @@ and a log line; the mod still loads.
 Shaders run on the GPU and cannot touch guest RAM. C code may read game
 state to feed uniforms; nothing flows back.
 
-| Tier | API | Effect |
+| Kind | API | Effect |
 |---|---|---|
 | Post-process | `shader_register`, `postfx_register`, `postfx_enable`, `postfx_set_uniforms` | Fullscreen fragment passes over the composed frame: CRT simulation, grading, scanlines |
 | Material | `[[material]]` rows, or `material_register` | Replaces the fragment shading of a subset of the engine's own draws: a moby class, a terrain tier, the flame plume. The manifest form needs no C |
 
 A mod shades what the engine draws; it cannot add draws of its own.
+
+## Glossary
+
+| Term | Meaning |
+|---|---|
+| selector | The set of keys deciding which of the engine's draws a material repaints. Every key is optional and an omitted key matches everything, so a selector widens as keys are left out. |
+| channel | The family of draws a selector names: `moby`, `terrain`, `player`, `flame`, `particle`, `sky`, `shadow`, `tracer`, `portal`, or `any`. |
+| ident | An identity within one channel, since a channel covers several kinds of draw: a flame's ribbon against its caps, a particle kind and class, a portal preview kind. |
+| tier | Which terrain detail level a face belongs to, `hp` or `lp`. Omit the key to take both. |
+| pass | One fullscreen post-process draw a mod registers. Passes run every present. |
+| point | Where in the frame a pass runs: `OP_POSTFX_SCENE` before the HUD, `OP_POSTFX_COMPOSITE` after it. |
+| refine callback | A callback run during extraction, once per matched instance, returning that instance's uniform block or declining the match. |
 
 ## Registering a shader
 
@@ -63,7 +75,7 @@ Injection points:
   at `op_scene_depth`.
 - `OP_POSTFX_PRESENT`: reserved; registration is refused.
 
-Passes run on every present, canonical and sub-tick. Order across mods
+Passes run on every present. Order across mods
 follows enabled-list priority; `order` breaks ties within one mod, lower
 first.
 

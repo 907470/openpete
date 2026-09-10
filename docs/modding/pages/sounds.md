@@ -6,6 +6,17 @@ tables, the sample bank in SPU RAM, the voice's start address and pitch,
 and the tick on which the game is told the sound has ended are untouched,
 so a sound mod never moves gameplay state.
 
+## Glossary
+
+| Term | Meaning |
+|---|---|
+| voice | One SPU playback channel. A voice is mono, and the game pans it. |
+| slot | A sound-table entry the game plays by name, such as `gemPickup`. |
+| definition | A slot's binding to one sample at one base pitch. The same slot resolves to different definitions in different levels. |
+| hash | The content identity of the original sample. A sample shipped in several levels hashes the same, so one file replaces it everywhere. |
+| tag | The `-p<pitch>` suffix, which pins a file to one definition instead of to every use of the sample. |
+| ring out | What a replacement longer than the original does: keeps playing on a separate channel after the game frees the voice. |
+
 ## Dump, edit, drop in
 
 ```

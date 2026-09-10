@@ -71,6 +71,7 @@ nav:
       - Custom levels: levels.md
   - Shaders: shaders.md
   - Publishing: publishing.md
+  - Glossary: glossary.md
   - Reference:
       - API: reference/api.md
       - CPUState: reference/cpustate.md

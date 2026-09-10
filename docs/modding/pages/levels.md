@@ -10,6 +10,16 @@ playable custom level with no C. The engine claims the level slot,
 declares the WAD table-of-contents entry, serves the files when the game
 streams the level, and restores everything when the mod is disabled.
 
+## Glossary
+
+| Term | Meaning |
+|---|---|
+| donor | The stock level whose code the custom level was authored against, named by `lower_snake` name or by id 10 to 64. |
+| stem | The `files` value: the shared basename of `<stem>.WAD` and `<stem>.OVL` under `assets/levels/`. |
+| slot | The level id the game itself sees. Custom levels share slot 65, and with it per-level progress, unless `replace` takes the donor's slot. |
+| WAD | A level's data segment: its geometry, textures, mobys and skybox. Any size. |
+| code overlay | A level's `.OVL` half, the per-level code the game loads into a fixed buffer, which is why it must keep the donor's stock size. |
+
 ``` toml
 [[level]]
 name  = "Grim Garden"      # menu name and sort key; also the in-game title
