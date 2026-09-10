@@ -111,24 +111,44 @@ done
 
 # ── per-channel rungs ─────────────────────────────────────────────────
 # tag | bk2 | frame | row | min-px (0 = must paint NOTHING) | label
+#
+# Pin a frame where the channel's geometry is stable for several VBL either
+# side, not where its reach is largest: a pose one VBL before the geometry
+# leaves the screen reads as a healthy number until anything shifts the
+# capture phase, and then reads as zero. The moby shadow sits on screen from
+# ~1960 to 1998 (96-128 px across that window, 0 px from 1999); the refine
+# band shrinks monotonically through the flame scene (2771 px at 1794 falling
+# to 726 px by 1802), so its pin sits high on that slope.
 RUNGS="
 terrain|flame|1800|1|20000|terrain, both LOD tiers
 moby|flame|1800|2|400|mobys
 player|flame|1800|4|1500|player (Spyro is not a moby)
 flameribbon|flame|1800|6|10000|flame ribbon (additive, textured)
 particlequad|flame|1800|10|30|particle billboards (textured, blended)
-shadowmoby|artisans-bridge|2000|8|60|moby shadows (DECAL profile: engine keeps the occlusion verdict)
+shadowmoby|artisans-bridge|1986|8|60|moby shadows (DECAL profile: engine keeps the occlusion verdict)
 shadowplayer|artisans-bridge|2000|9|0|player shadow (KNOWN GAP — and it must paint nothing, not paint LESS: this row DELETED the shadow, 3099 px, because deferring a tri removes it from the plain span and this bucket then skipped the spans)
 sky|cyclorama-portal|2000|5|3000|cyclorama sky
 portal|cyclorama-portal|2000|15|3000|portal previews (all three rungs)
-terrainrefine|flame|1800|20|1000|terrain refine callback (untextured band)
+terrainrefine|flame|1794|20|1000|terrain refine callback (untextured band)
 "
 
 while IFS='|' read -r tag bk2 frame row minpx label; do
     [ -z "${tag// }" ] && continue
-    base="$WORK/base_flame-1800-vk.png"
-    [ "$bk2" = "cyclorama-portal" ] && base="$WORK/base_portal-2000-vk.png"
-    [ "$bk2" = "artisans-bridge" ]  && base="$WORK/base_bridge-2000-vk.png"
+    # The diff is the material's reach, so both sides must be the SAME
+    # moment. A rung pinned away from its scene's baseline frame therefore
+    # gets its own baseline at that frame, captured once and reused.
+    case "$bk2" in
+        cyclorama-portal) base="$WORK/base_portal-2000-vk.png"; scene_frame=2000 ;;
+        artisans-bridge)  base="$WORK/base_bridge-2000-vk.png"; scene_frame=2000 ;;
+        *)                base="$WORK/base_flame-1800-vk.png";  scene_frame=1800 ;;
+    esac
+    if [ "$frame" != "$scene_frame" ]; then
+        btag="base_${bk2}_$frame"
+        base="$WORK/$btag-$frame-vk.png"
+        if [ ! -s "$base" ] && ! run_rows "$btag" "$bk2" "$frame" "" ""; then
+            bad "no baseline for $bk2 at frame $frame (see $WORK/$btag.log)"; continue
+        fi
+    fi
     say "$label"
     if ! run_rows "$tag" "$bk2" "$frame" "$row" ""; then
         bad "no capture for row $row (see $WORK/$tag.log)"; continue
