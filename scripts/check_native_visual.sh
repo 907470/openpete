@@ -131,6 +131,7 @@ fi
 # --- compare (or bless) each scene -----------------------------------------
 IFS=',' read -ra TICK_ARR <<< "$TICKS"
 declare -i fail=0 checked=0
+declare -a FAILED=()
 for f in "${TICK_ARR[@]}"; do
     cand="$OUT_DIR/demo-${f}-vk.png"
     gold="$GOLDEN_DIR/demo-tick-${f}-vk.png"
@@ -159,10 +160,64 @@ for f in "${TICK_ARR[@]}"; do
     else
         echo "  FAIL  tick $f diverged from golden"
         echo "$out" | sed 's/^/        /'
+        FAILED+=("$f")
         fail=1
     fi
     checked+=1
 done
+
+# --- why did it fail: a render change, or a different moment? --------------
+# These goldens are keyed on a tick but composed at whatever phase the engine
+# presents at, so a change to WHICH tick the headless compose reads restages
+# every scene by one tick. That reads as a total failure — once the camera is
+# moving, a one-tick offset resamples every textured pixel, so divergence goes
+# to 90%+ and looks like the renderer broke — while the composition, geometry
+# and shading are in fact identical. The two cases need opposite responses, so
+# the run distinguishes them itself: re-capture the failing ticks one tick
+# either side and see whether the goldens reproduce there. One extra capture,
+# only ever on a failure that already costs someone an afternoon.
+if [[ $fail -ne 0 && ${#FAILED[@]} -gt 0 ]]; then
+    declare -i explained=0
+    for off in -1 1; do
+        shifted=""
+        for f in "${FAILED[@]}"; do shifted+="${shifted:+,}$((f + off))"; done
+        "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
+               --renderer vk --screenshot-on-tick "$shifted" \
+               --screenshot-output "$OUT_DIR/phase${off}-{n}.png" \
+               --frame-limit "$FRAME_LIMIT" --max-runtime-seconds 600 \
+               > "$OUT_DIR/phase${off}.log" 2>&1 || continue
+        declare -i matched=0
+        for f in "${FAILED[@]}"; do
+            cand="$OUT_DIR/phase${off}-$((f + off))-vk.png"
+            gold="$GOLDEN_DIR/demo-tick-${f}-vk.png"
+            [[ -f "$cand" ]] || continue
+            read -r gw gh < <(python3 -c "from PIL import Image;i=Image.open('$gold');print(i.width,i.height)")
+            python3 scripts/center_crop_diff.py --baseline "$gold" --candidate "$cand" \
+                    --crop-w "$gw" --crop-h "$gh" --diff-threshold "$DIFF_THRESHOLD" \
+                    --max-divergent "$MAX_DIVERGENT" >/dev/null 2>&1 && matched+=1
+        done
+        if [[ $matched -eq ${#FAILED[@]} ]]; then
+            echo
+            echo "[native-visual] every failing tick reproduces its golden at tick${off:+ }${off}."
+            echo "[native-visual] This is a CAPTURE-PHASE shift, not a render change: the goldens"
+            echo "[native-visual] hold a different tick than this build composes. Re-bless them"
+            echo "[native-visual] (--bless) once that shift is the intended one."
+            explained=1
+            break
+        elif [[ $matched -gt 0 ]]; then
+            echo
+            echo "[native-visual] $matched of ${#FAILED[@]} failing ticks reproduce at tick${off:+ }${off}:"
+            echo "[native-visual] a capture-phase shift explains part of this, but not all of it."
+            explained=1
+        fi
+    done
+    if [[ $explained -eq 0 ]]; then
+        echo
+        echo "[native-visual] no failing tick reproduces its golden one tick either side, so the"
+        echo "[native-visual] cheap explanation is out: this is a render change, not a restaging."
+        echo "[native-visual] Adjudicate the diffs against the PSX -og reference before blessing."
+    fi
+fi
 
 if [[ "$BLESS" == 1 ]]; then
     echo "[native-visual] bless complete"
