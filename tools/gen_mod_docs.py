@@ -761,7 +761,7 @@ def gen_imgui(imgui_header: Path, table_gen: Path):
         "tables, plots, tree nodes, tabs, popups, colour editors, drag and "
         "input widgets, draw lists, fonts.\n")
 
-    out.append("## Terms\n")
+    out.append("## Glossary\n")
     out.append(
         "| Term | Meaning |\n"
         "|---|---|\n"
