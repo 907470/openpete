@@ -12,8 +12,8 @@
 
 ## Basic iteration
 
-Edit `src/`, `shaders/`, `assets/` or `config.toml`,
-start the game.
+Edit `src/`, `shaders/`, `assets/` or `config.toml`, then start the
+game.
 
 Compile every mod with a `src/` directory without booting the game:
 
@@ -73,23 +73,29 @@ produces no output at all is diagnosed from these two files.
 
 `--keys-report` prints the live map, including rebindings.
 
-## Flags for scripted runs
+## CLI args for scripted runs
 
 `--help` is the authority for the build in use. These are the flags a
 mod's test run is built from.
+
+The word "frame" in a flag name means VBL, the PSX vertical blank.
+There are exactly two VBLs per tick (59.826 Hz against 29.913), so
+`--frame-limit 1760` is 880 ticks. See the [glossary](glossary.md) for tick, VBL and
+present.
 
 | Flag | Effect |
 |---|---|
 | `--mods ID[,ID...]` | Run exactly these mods, overriding `enabled.txt`. `--mods ""` runs none: the vanilla baseline. |
 | `--headless` | No window. Pass with `--frame-limit`, `--max-runtime-seconds` or `--bk2-stop-on-end`; without one of those the run never ends. |
-| `--frame-limit N` | Exit after N rendered frames. |
-| `--max-runtime-seconds N` | SIGTERM after N seconds of wall clock. Terminates a run that hangs before reaching its frame limit. |
+| `--frame-limit N` | Exit after N VBLs. |
+| `--max-runtime-seconds N` | SIGTERM after N seconds of wall clock. Terminates a run that hangs before reaching its VBL limit. |
 | `--mute 1` | Mute the audio device. |
+| `--vibration 0` | Disables controller vibration. Silent under `--headless` and while the window is unfocused. |
 | `--skip-to-level L` | Boot into level L, by numeric id (`11`) or name (`stone_hill`). An unknown name prints the list. |
-| `--unlock-frames LIST` | Fast-forward inside frame ranges, e.g. `0-1756`. Windowed runs only: a headless run is already unlocked. |
-| `--screenshot-on-frame N[,N...]` | Capture at each listed frame. |
-| `--screenshot-on-tick N[,N...]` | Capture at each listed canonical tick. The frame-to-tick mapping varies with host timing; tick-keyed captures hit the same simulation moment run to run. |
-| `--screenshot-output PATH` | Path template. `{n}` expands to the frame, `{p}` to the present index. |
+| `--unlock-frames LIST` | Fast-forward inside VBL ranges, e.g. `0-1756`. Windowed runs only: a headless run is already unlocked. |
+| `--screenshot-on-frame N[,N...]` | Capture at each listed VBL. |
+| `--screenshot-on-tick N[,N...]` | Capture at each listed tick. |
+| `--screenshot-output PATH` | Path template. `{n}` expands to the VBL. |
 | `--screenshot-native-only` | Write the native `-vk` image only. |
 | `--freecam-pose STR` | Engage the free camera at a fixed pose once the level is live. |
 | `--bk2 PATH` | Replay a recorded input movie. |
@@ -98,10 +104,11 @@ mod's test run is built from.
 | `--log-file PATH` | Mirror the log to PATH. |
 | `--devui-open 1` | Open the dev overlay with every mod node expanded as soon as it initializes, so an unattended windowed run reaches a mod's UI section body. |
 
-Each capture writes two files: `<out>-vk.png` is the native render,
-`<out>-og.png` the PsyCross reference. `--screenshot-native-only` skips
-the second. A headless run recomposes the canonical scene; a windowed
-native run reads back the presented frame, including sub-tick
+A capture writes two files: `<out>-vk.png` is the native render,
+`<out>-og.png` the PsyCross reference. The recipes below pass
+`--screenshot-native-only`, which skips the PsyCross rasterization and
+writes `-vk` alone. A headless run recomposes the canonical scene;
+a windowed native run reads back the present itself, including sub-tick
 interpolation and overlays.
 
 The final line of a run goes to stdout, not to the log file:
@@ -110,25 +117,22 @@ The final line of a run goes to stdout, not to the log file:
 openpete-exit: reason=frame-limit frames=1760 ms=8311 code=0
 ```
 
-`frames` is the last `openpete_frame` and `code` the process exit status.
-`reason` is the terminating condition: `frame-limit`,
-`max-runtime-seconds`, `bk2-end`, `user-quit`, `window-closed`,
-`game-returned`, or `screenshot-failed` when a requested capture could not
-be written.
+`frames` is a VBL count, so this run covered 880 ticks.
 
 ## Recipes
 
 ### Screenshot at the start of a level
 
-At frame 1756 the level is live, the fly-in has finished and the HUD has
-not yet appeared.
+VBL 1756 is the first one after the level has loaded and the HUD has
+disappeared.
 
 ```
 openpete-spyro1 --headless \
   --mods your_mod \
-  --skip-to-level 11 \
+  --skip-to-level stone_hill \
   --screenshot-on-frame 1756 \
   --screenshot-output shot.png \
+  --screenshot-native-only \
   --frame-limit 1760 \
   --mute 1
 ```
@@ -137,73 +141,95 @@ Run again with `--mods ""` for the stock image to diff against.
 
 ### Screenshot from a fixed camera pose
 
-Applies to a change gameplay does not read: a shader, a texture pack, a
+Applies to a test not involving gameplay: a shader, a texture pack, a
 model. The pose fixes the camera, so two runs frame the scene identically.
 
 Run windowed, press ++f++, move the camera, quit. The free camera logs
-its pose on every change; the last line is the pose at quit:
+its pose on every change, so the last such line is the pose at quit:
 
 ```
-grep 'freecam: pos=' ~/.local/state/openpete/logs/openpete.log | tail -1
-# freecam: pos=(12480, -8032, 1216) yaw=1024 pitch=-256
+  5.9192 [info ] freecam: pos=(12480, -8032, 1216) yaw=1024 pitch=-256
 ```
 
-`--freecam-pose` takes that string verbatim:
+Extract the last one:
+
+```
+grep -oE 'pos=\([^)]*\) yaw=-?[0-9]+ pitch=-?[0-9]+' \
+  ~/.local/state/openpete/logs/openpete.log | tail -1
+# pos=(12480, -8032, 1216) yaw=1024 pitch=-256
+```
+
+That prints the freecam pose, which is what `--freecam-pose` takes:
 
 ```
 openpete-spyro1 --headless \
   --mods your_mod \
-  --skip-to-level 11 \
+  --skip-to-level stone_hill \
   --freecam-pose "pos=(12480, -8032, 1216) yaw=1024 pitch=-256" \
-  --screenshot-on-frame 1800 \
+  --screenshot-on-frame 1756 \
   --screenshot-output pose.png \
-  --frame-limit 1804 \
+  --screenshot-native-only \
+  --frame-limit 1760 \
   --mute 1
 ```
 
-The free camera writes the occlusion group in guest RAM to force every
-sector drawn. That is a gameplay-state write, so a pose capture is valid
-for comparing images and invalid for comparing gameplay.
-
 ### Recorded input replay
 
-Applies to a change gameplay does read. A `.bk2` movie holds one pad state
-per frame, so a replay reproduces the run tick for tick.
+Applies to a test involving getting into a specific gameplay state.
 
 Record. Play to the state under test, then quit:
 
 ```
-openpete-spyro1 --skip-to-level 11 --bk2-record test.bk2
+openpete-spyro1 --mods your_mod \
+  --skip-to-level stone_hill \
+  --bk2-record test.bk2
 ```
 
-Replay with the mod loaded:
+Replay:
 
 ```
 openpete-spyro1 --headless \
   --mods your_mod \
   --bk2 test.bk2 \
   --bk2-stop-on-end \
-  --mute 1
+  --mute 1 \
+  --vibration 0
 ```
 
 `--bk2-record` also writes a `test.bk2.args` sidecar holding the launch
 flags. `--bk2` reads it, so `--skip-to-level` does not need repeating.
 
-To find the frame to capture, pause with ++f7++, step with ++f8++ to the
-target state, and quit. The exit line reports the frame:
+To find a VBL to capture, pause with ++f7++, step with ++f8++ to the
+target state, and quit. The run's last line reports it:
 
 ```
-openpete-spyro1 --bk2 test.bk2 | grep openpete-exit
-# openpete-exit: reason=user-quit frames=2314 ms=41022 code=0
+openpete-exit: reason=user-quit frames=95 ms=1577 code=0
 ```
 
-`--screenshot-on-frame` takes a comma list, so one run can sample several
-candidate frames.
+Extract the count:
 
-Replay limits:
+```
+openpete-spyro1 --bk2 test.bk2 2>/dev/null | grep -oE 'frames=[0-9]+' | cut -d= -f2
+# 95
+```
 
-- A movie holds PSX pad state only. A mod's `[[binding]]` rows are not
-  recorded and not replayed.
-- The free camera writes guest RAM. Using it while recording desyncs the
-  replay.
-- `--bk2-record` truncates an existing file without warning.
+`--screenshot-on-frame` can also bisect for the target VBL. It takes a
+comma list, so one run can sample several candidates.
+
+```
+openpete-spyro1 --headless \
+  --mods your_mod \
+  --bk2 test.bk2 \
+  --bk2-stop-on-end \
+  --screenshot-on-frame 1700,1800,1900 \
+  --screenshot-output bisect-{n}.png \
+  --screenshot-native-only \
+  --mute 1
+```
+
+Caveats:
+
+- `.bk2`s record and replay PSX pad state only. A mod's `[[binding]]` rows are not
+  recorded and not replayed, nor are freecam or rewinds.
+- Don't use freecam while recording; it desyncs the replay.
+- `--bk2-record` overwrites an existing file without warning.
