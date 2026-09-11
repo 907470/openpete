@@ -1609,13 +1609,10 @@ void psyq_CdSync(CPUState* cpu) {
             cs_calls_this_frame = 0u;
         }
         if (limit && ++cs_calls_this_frame > limit) {
-            uint8_t* ram = openpete_psx_get_ram();
-            uint32_t isReading = 0u;
-            memcpy(&isReading, ram + 0x76BB8, 4);
             OPL_ERROR_F("thunks",
                         "psyq_CdSync spin guard: %u calls in frame=%u "
-                        "(rc=%d m_IsReading=%u s0=0x%08X ra=0x%08X) — exiting",
-                        cs_calls_this_frame, openpete_frame, rc, isReading,
+                        "(rc=%d s0=0x%08X ra=0x%08X) — exiting",
+                        cs_calls_this_frame, openpete_frame, rc,
                         cpu->s0, cpu->ra);
             std::fflush(stdout); std::fflush(stderr);
             std::_Exit(3);
@@ -1660,12 +1657,9 @@ void psyq_CdSync(CPUState* cpu) {
     /* Don't log every CdSync — busy-loops would flood. Sample every 1024. */
     static uint32_t calls = 0;
     if ((++calls & 0x3FFFFFu) == 1u) {
-        uint8_t* ram = openpete_psx_get_ram();
-        uint32_t isReading = 0u;
-        memcpy(&isReading, ram + 0x76BB8, 4);
         OPL_INFO_F("thunks",
-                   "CdSync(%d) -> %d (call #%u) m_IsReading=%u s0=0x%08X ra=0x%08X",
-                   mode, rc, calls, isReading, cpu->s0, cpu->ra);
+                   "CdSync(%d) -> %d (call #%u) s0=0x%08X ra=0x%08X",
+                   mode, rc, calls, cpu->s0, cpu->ra);
     }
     cpu->v0 = (uint32_t)rc;
 }
