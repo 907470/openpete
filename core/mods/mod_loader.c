@@ -39,7 +39,9 @@
 #include "openpete_mod_api.h"
 #include "openpete_mod_ui.h"
 #include "openpete_log.h"
+#include "openpete_fiber.h"      /* openpete_speculative / openpete_replaying */
 #include "openpete_host_input.h"
+#include "openpete_host_mouse.h" /* mouse_read / mouse_capture */
 #include "openpete_keymap.h"     /* [keys.mod.<id>] binding overrides */
 #include "game_extras.h"      /* game_get_id: [mod] game targeting */
 #include "../runtime/openpete_imgui_guard.h" /* ImGui table bind */
@@ -195,6 +197,13 @@ struct openpete_mod {
                         * 1 it does. Drives the save modset tag. */
     mod_binding_t bindings[MOD_BINDINGS_MAX]; /* declared host keys */
     int   n_bindings;
+    /* mouse_read markers, one set per hook kind (0 tick/entry, 1 present):
+     * the totals this mod last consumed from that cadence. */
+    struct {
+        uint64_t press[OPENPETE_MOUSE_BUTTONS];
+        int64_t  mx, my, wheel;
+        int      valid;
+    } mouse_mark[2];
     mod_cfg_row_t cfg_rows[MOD_CFG_ROWS_MAX]; /* [[config]] schema */
     int   n_cfg;
     mod_material_row_t mat_rows[MOD_MATERIAL_ROWS_MAX]; /* [[material]] */
@@ -319,6 +328,8 @@ static int mod_check_abi(void* dl, const char* id, const char* path) {
  * chains, draws or materials and then returned nonzero must not leave
  * them live under an id the loader has just declared disabled. */
 static void mod_strip_registrations(struct openpete_mod* mod) {
+    openpete_host_mouse_request_capture(OPENPETE_MOUSE_CAP_MOD0 + (int)(mod - s_mods), 0);
+    memset(mod->mouse_mark, 0, sizeof mod->mouse_mark);
     openpete_mods_chain_remove_owner(mod->id);
     openpete_mods_draw_remove_owner(mod->id);
     openpete_mods_registry_remove_owner(mod->id);
@@ -675,6 +686,7 @@ static char s_sdk_dir[MOD_PATH_MAX];
 
 /* defined later in this file */
 static int parse_manifest(const char* mod_dir, struct openpete_mod* mod);
+static void mod_register_key_defaults(const struct openpete_mod* mod, int enabled);
 static int mod_enter_deferred(struct openpete_mod* mod);
 
 static int build_mod(struct openpete_mod* mod, const char* sdk_dir,
@@ -799,6 +811,7 @@ static void mod_hot_reload(struct openpete_mod* mod) {
                     "now INERT until the next successful reload", mod->id);
         return;
     }
+    mod_register_key_defaults(mod, mod->enabled);   /* bindings re-parsed */
     openpete_mods_config_load(mod, mod->dir, mod->log_tag);
     (void)config_compute_key(mod->dir, mod->cfg_key);
     (void)openpete_mods_shader_watch_key(mod->dir, mod->shader_key);
@@ -1213,6 +1226,8 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
         openpete_mods_draw_set_owner_enabled(id, on);
         openpete_mods_registry_set_owner_enabled(id, on);
         openpete_keymap_set_mod_enabled(id, on);
+        if (!on) openpete_host_mouse_request_capture(
+                     OPENPETE_MOUSE_CAP_MOD0 + (int)(mod - s_mods), 0);
         mod->enabled = on;
         s_toggle_epoch++;
         OPL_INFO_F("mods", "live toggle: %s %s (tick %u)",
@@ -1348,6 +1363,73 @@ static int api_binding_down(openpete_mod_t* self, const char* name) {
     }
     OPL_ERROR_F(self->log_tag, "binding \"%s\" not declared in mod.toml",
                 name);
+    return 0;
+}
+
+/* The host mouse for a mod (api 12). Markers are per hook kind: tick
+ * hooks run on the sim worker and present hooks on the present thread, so
+ * one marker would split the deltas between the two. */
+static int api_mouse_read(openpete_mod_t* self, openpete_mod_mouse_t* out) {
+    if (!self || !out) return -1;
+    if (out->struct_size != (uint32_t)sizeof(openpete_mod_mouse_t)) {
+        OPL_ERROR_F(self->log_tag, "mouse_read: struct_size %u, engine expects %u "
+                    "(rebuild against this SDK)", out->struct_size,
+                    (unsigned)sizeof(openpete_mod_mouse_t));
+        return -1;
+    }
+    if (!openpete_host_mouse_initialised()) return -1;
+    const int kind = openpete_mods_in_present ? 1 : 0;
+    /* A tick hook under speculation or rewind replay reads the deltas
+     * without consuming them: the committed tick that follows sees the
+     * whole motion. */
+    const int advance = kind == 1 || (!openpete_speculative && !openpete_replaying);
+
+    openpete_mouse_state_t st;
+    openpete_host_input_mouse(&st);
+    uint64_t press[OPENPETE_MOUSE_BUTTONS];
+    for (int b = 0; b < OPENPETE_MOUSE_BUTTONS; b++)
+        press[b] = openpete_host_mouse_press_total(b);
+    const int64_t mx = openpete_host_mouse_motion_total(0);
+    const int64_t my = openpete_host_mouse_motion_total(1);
+    const int64_t wh = openpete_host_mouse_wheel_total();
+    const int owned = openpete_host_mouse_owned() != OPENPETE_MOUSE_OWNED_NONE;
+
+    struct openpete_mod* m = self;
+    if (!m->mouse_mark[kind].valid) {
+        /* First read from this cadence: nothing before it is a delta. */
+        memcpy(m->mouse_mark[kind].press, press, sizeof press);
+        m->mouse_mark[kind].mx = mx; m->mouse_mark[kind].my = my;
+        m->mouse_mark[kind].wheel = wh;
+        m->mouse_mark[kind].valid = 1;
+    }
+    const int64_t dx = mx - m->mouse_mark[kind].mx;
+    const int64_t dy = my - m->mouse_mark[kind].my;
+    const int64_t dw = wh - m->mouse_mark[kind].wheel;
+    if (advance) {
+        memcpy(m->mouse_mark[kind].press, press, sizeof press);
+        m->mouse_mark[kind].mx = mx; m->mouse_mark[kind].my = my;
+        m->mouse_mark[kind].wheel = wh;
+    }
+
+    memset(out, 0, sizeof *out);
+    out->struct_size = (uint32_t)sizeof(openpete_mod_mouse_t);
+    out->px = st.px; out->py = st.py;
+    out->x  = st.win_h > 0.0f ? st.px / st.win_h : 0.0f;
+    out->y  = st.win_h > 0.0f ? st.py / st.win_h : 0.0f;
+    out->in_window = st.in_window;
+    out->captured  = (uint8_t)openpete_host_mouse_captured();
+    out->owned_by_overlay = (uint8_t)owned;
+    if (!owned) {
+        out->dx = (float)dx; out->dy = (float)dy;
+        out->wheel = (float)dw / (float)OPENPETE_MOUSE_WHEEL_UNIT;
+        out->buttons = st.buttons;
+    }
+    return 0;
+}
+
+static int api_mouse_capture(openpete_mod_t* self, int on) {
+    if (!self) return -1;
+    openpete_host_mouse_request_capture(OPENPETE_MOUSE_CAP_MOD0 + (int)(self - s_mods), on);
     return 0;
 }
 
@@ -1488,6 +1570,9 @@ static const openpete_mod_api_t s_api = {
     /* pillar 8: audio */
     .sfx_replace   = openpete_mods_sfx_replace,
     .sfx_play      = api_sfx_play,
+    /* pillar 9: the host mouse (api 12) */
+    .mouse_read    = api_mouse_read,
+    .mouse_capture = api_mouse_capture,
     /* declared input bindings */
     .binding_down  = api_binding_down,
     /* pillar 9: game data + texture packs (api 2) */

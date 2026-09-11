@@ -57,6 +57,39 @@ typedef struct openpete_mod openpete_mod_t;
  */
 typedef void (*openpete_mod_override_fn)(CPUState* cpu);
 
+/** @name Mouse
+ * Button bits of openpete_mod_mouse_t::buttons.
+ * @{ */
+#define OPENPETE_MOD_MOUSE_LEFT   0x01u
+#define OPENPETE_MOD_MOUSE_MIDDLE 0x02u
+#define OPENPETE_MOD_MOUSE_RIGHT  0x04u
+#define OPENPETE_MOD_MOUSE_X1     0x08u
+#define OPENPETE_MOD_MOUSE_X2     0x10u
+/** @} */
+
+/**
+ * @brief The host mouse as read by openpete_mod_api::mouse_read.
+ *
+ * Set `struct_size` to `sizeof(openpete_mod_mouse_t)` before the call; the
+ * engine refuses any other size. `x, y` are overlay space (units of window
+ * height, y in [0,1], origin top-left, the space draw_text uses); `px, py`
+ * are window points and are undefined while `captured`. `dx, dy` are mouse
+ * counts and `wheel` is in notches, each since this mod's previous read
+ * from the same hook kind (tick or present).
+ */
+typedef struct openpete_mod_mouse {
+    uint32_t struct_size;   /**< sizeof(openpete_mod_mouse_t) at the mod's compile time. */
+    float    x, y;          /**< Overlay space. */
+    float    px, py;        /**< Window points; undefined while captured. */
+    float    dx, dy;        /**< Counts since this mod's previous read from this hook kind. */
+    float    wheel;         /**< Notches since that read, up positive. */
+    uint32_t buttons;       /**< OPENPETE_MOD_MOUSE_* mask. */
+    uint8_t  in_window;     /**< The pointer is over the window. */
+    uint8_t  captured;      /**< Relative mode is applied (the pointer is hidden and unbounded). */
+    uint8_t  owned_by_overlay; /**< The settings menu or the dev overlay owns the mouse; buttons and deltas read 0. */
+    uint8_t  reserved_;
+} openpete_mod_mouse_t;
+
 /** @brief Context handed to a present hook (openpete_mod_api::register_present_hook). */
 typedef struct openpete_present_ctx {
     uint32_t tick;   /**< Sim tick counter. */
@@ -276,7 +309,7 @@ typedef int (*openpete_mod_refine_fn)(const openpete_mod_material_key_t* key,
                                       void* out, uint32_t cap);
 
 /** @brief The api version this header describes. */
-#define OPENPETE_MOD_API_VERSION 11u
+#define OPENPETE_MOD_API_VERSION 12u
 
 /** @brief The engine's function table, passed to the mod entry point. */
 typedef struct openpete_mod_api {
@@ -804,6 +837,40 @@ typedef struct openpete_mod_api {
      */
     void (*notify)(openpete_mod_t* self, const char* key,
                    uint32_t timeout_ms, const char* fmt, ...);
+    /** @} */
+
+    /** @name Mouse
+     * @{ */
+    /**
+     * @brief Read the host mouse.
+     *
+     * Position, buttons and the deltas since this mod's previous read from
+     * the same hook kind: tick hooks and present hooks keep separate
+     * markers, so one cadence never steals the other's motion. While an
+     * overlay owns the mouse (`owned_by_overlay`) buttons and deltas read 0
+     * and the markers still advance. From a tick hook during runahead
+     * speculation or rewind replay the deltas are returned without
+     * advancing the marker, so the committed tick sees the whole motion.
+     * Reading host input in a tick hook diverges gameplay from a replay by
+     * design, as binding_down does.
+     * @param out  `out->struct_size` must be `sizeof(openpete_mod_mouse_t)`.
+     * @return 0, or -1 for a wrong struct_size or a channel that is not
+     *         initialised.
+     * @since api 12
+     */
+    int (*mouse_read)(openpete_mod_t* self, openpete_mod_mouse_t* out);
+    /**
+     * @brief Request relative mouse mode (hidden, unbounded pointer).
+     *
+     * This mod's request bit; the engine applies relative mode while any
+     * owner (a mod, the free camera) requests it and no overlay owns the
+     * mouse, releasing it under the settings menu and the dev overlay
+     * without dropping the request. Cleared when the mod is disabled or
+     * unloaded. Host state only; legal from any context.
+     * @return 0.
+     * @since api 12
+     */
+    int (*mouse_capture)(openpete_mod_t* self, int on);
     /** @} */
 } openpete_mod_api_t;
 

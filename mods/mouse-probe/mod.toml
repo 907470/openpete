@@ -1,0 +1,42 @@
+# mouse-probe: the host mouse as a mod sees it.
+#
+# A tick hook and an always UI section each call api->mouse_read and log
+# what changed, so the two hook kinds show their separate delta markers:
+# the tick hook's deltas are the motion since its previous tick, the
+# section's the motion since its previous present, and neither steals the
+# other's. A `mouse:right` binding shows a mod.toml key spelled as a mouse
+# button; the `capture` row asks for relative mouse mode through
+# api->mouse_capture. Display-only: no guest RAM is written.
+#
+# uses: `api->mouse_read` - position, buttons, and per-hook-kind deltas from both a tick hook and a UI section
+# uses: `api->mouse_capture` - requests relative mouse mode, gated on a config row
+# uses: `api->binding_down` - a binding whose mod.toml key is a mouse button
+# uses: `api->override_name` - a CameraUpdate pre-hook, the per-tick sampler
+# uses: `api->base` - hands control back after sampling
+# uses: `api->config_bool` - the capture toggle
+# uses: `api->ui_status` - the last tick-hook reading in the Mods panel
+# uses: `ui->text` - the last present-side reading, drawn every present
+# uses: `api->log` - one line per change from the tick hook
+
+[mod]
+id      = "mouse-probe"
+name    = "Mouse Probe"
+version = "0.1.0"
+game    = "spyro-1"
+api     = 12
+state   = "none"       # host-side readings only
+runahead = "pure"      # reads host input, writes no guest RAM
+sim_mutative = false
+
+[[binding]]
+name    = "fire"
+key     = "mouse:right"
+purpose = "probe: logs while held"
+
+[[config]]
+key = "capture"
+type = "bool"
+default = false
+label = "Capture the mouse"
+group = "Probe"
+help = "Request relative mouse mode (hidden, unbounded pointer) while enabled"

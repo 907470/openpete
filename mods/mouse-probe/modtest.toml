@@ -1,0 +1,10 @@
+# modtest.toml — this repo's CI declaration for tools/modtest.py.
+# Engine-repo concern, not part of the mod manifest format.
+#
+# Headless never presents, so only the tick hook runs here; the
+# present-side reading and the capture bit need a window.
+[test]
+args          = "--skip-to-level artisans"
+frames        = 3000
+expect_oracle = "skip"
+expect_log    = ["mouse-probe"]
