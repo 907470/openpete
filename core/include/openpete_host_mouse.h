@@ -88,6 +88,10 @@ typedef struct {
  * native renderer has none (headless keeps a hidden SDL window). */
 void openpete_host_mouse_init(struct SDL_Window* fallback_window);
 int  openpete_host_mouse_initialised(void);
+/* 1 when an inject script is loaded: imgui then follows the channel's
+ * event-derived position instead of SDL's own (which a pushed event never
+ * moves), so the script's hover reaches imgui widgets too. */
+int  openpete_host_mouse_inject_active(void);
 
 /* Every dequeued SDL event passes through here before any other handler. */
 void openpete_host_mouse_handle_event(const union SDL_Event* ev);
@@ -125,6 +129,11 @@ int  openpete_host_mouse_captured(void);            /* applied state */
  * clear latch. Repeated requests before consumption are idempotent. */
 void openpete_host_mouse_request_menu(int open);
 int  openpete_host_mouse_take_menu_request(int* open);
+
+/* The `shot` inject verb asks for a player screenshot (the F12 path, a
+ * live capture of the presented window), so a scripted run can show what
+ * the pointer did. Consumed by the host loop. */
+int  openpete_host_mouse_take_screenshot_request(void);
 
 /* ---- double-click fullscreen gate ------------------------------------ */
 

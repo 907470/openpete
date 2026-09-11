@@ -3316,6 +3316,10 @@ static int run_host_loop(const openpete_options_t* opts) {
                     if (openpete_key_pressed(OPK_MENU_LEFT))  openpete_menu_adjust(-1);
                     if (openpete_key_pressed(OPK_MENU_RIGHT)) openpete_menu_adjust(+1);
                     if (openpete_key_pressed(OPK_MENU_SELECT)) openpete_menu_activate();
+                    /* Pointer: hover, click, wheel, the X glyph. After the
+                     * keys so a key and a click in one iteration apply in
+                     * a fixed order. */
+                    openpete_menu_mouse_poll();
                 }
                 prev_menu_close = close_k;
 
@@ -4836,7 +4840,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * variants above need. Native display only — PsyCross is the
              * reference rasterizer, not a display this port ships. The capture
              * logs the file it wrote, so nothing is reported twice here. */
-            if (s_screenshot_request) {
+            if (s_screenshot_request || openpete_host_mouse_take_screenshot_request()) {
                 s_screenshot_request = 0;
                 char path[1024];
                 if (!openpete_native_render_enabled()) {

@@ -1108,7 +1108,7 @@ static const knob_desc_t g_builtin[] = {
 
     ENVROW_LATCHED("MOUSE_INJECT", "Debug", "",
         "Path of a mouse-event script (\"<pump-iteration> move x y | down b | "
-        "up b | click2 b | rel dx dy | wheel n | menu 0|1 | capture 0|1\") "
+        "up b | click2 b | rel dx dy | wheel n | menu 0|1 | capture 0|1 | shot\") "
         "pushed through the event pump as SDL events, so an unattended run "
         "drives every mouse consumer. Read once at boot."),
     ENVROW_LATCHED("MOUSE_PROBE", "Debug", "0",

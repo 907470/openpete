@@ -19,9 +19,13 @@
 #include "openpete_freecam.h"        /* freecam active/toggle (FREECAM row) */
 #include "openpete_mods.h"           /* loaded-mod enumeration (MOD rows) */
 #include "features/no_lod.h"         /* openpete_no_lod_set */
+#include "openpete_host_input.h"     /* the published mouse snapshot */
+#include "openpete_host_mouse.h"     /* totals, ownership, probe */
 
+#include <math.h>
 #include <stddef.h>
 #include <stdio.h>
+#include <string.h>
 
 /* --- rows ---------------------------------------------------------------- */
 enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
@@ -370,6 +374,127 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
     s_cursor = 0;
 }
 
+/* --- mouse consumer ------------------------------------------------------ */
+
+/* Markers: the press and wheel totals this consumer last consumed. Snapped
+ * to the current totals on the open edge and on every poll where the dev
+ * overlay owns the mouse, so a press made before the menu opened or on the
+ * fill-tag inspector's panel is never delivered as a row click. */
+static uint64_t s_m_press[OPENPETE_MOUSE_BUTTONS];
+static int64_t  s_m_wheel;
+static float    s_m_px = -1.0f, s_m_py = -1.0f;
+
+static void menu_mouse_snap(void) {
+    for (int b = 0; b < OPENPETE_MOUSE_BUTTONS; b++)
+        s_m_press[b] = openpete_host_mouse_press_total(b);
+    s_m_wheel = openpete_host_mouse_wheel_total();
+    /* The position too: a pointer resting on a row when the menu opens or
+     * the overlay closes is not a hover until it moves. */
+    openpete_mouse_state_t st;
+    openpete_host_input_mouse(&st);
+    s_m_px = st.px; s_m_py = st.py;
+}
+
+static int64_t wheel_notches(int64_t total) {
+    const int64_t u = OPENPETE_MOUSE_WHEEL_UNIT;
+    return total >= 0 ? total / u : -((-total + u - 1) / u);
+}
+
+/* Rows whose apply performs an action rather than setting a value: they
+ * take a deliberate left click only. */
+static int row_action_only(int row) {
+    return row == ROW_DISPLAY || row == ROW_SAVE || row == ROW_QUIT;
+}
+
+void openpete_menu_mouse_poll(void) {
+    if (!s_open) return;
+    if (openpete_host_mouse_owned() == OPENPETE_MOUSE_OWNED_DEVUI) {
+        menu_mouse_snap();
+        return;
+    }
+    openpete_mouse_state_t st;
+    openpete_host_input_mouse(&st);
+
+    uint64_t press[OPENPETE_MOUSE_BUTTONS];
+    for (int b = 0; b < OPENPETE_MOUSE_BUTTONS; b++)
+        press[b] = openpete_host_mouse_press_total(b);
+    const int64_t wheel = openpete_host_mouse_wheel_total();
+    const int64_t left  = (int64_t)(press[OPENPETE_MOUSE_BTN_LEFT]  - s_m_press[OPENPETE_MOUSE_BTN_LEFT]);
+    const int64_t right = (int64_t)(press[OPENPETE_MOUSE_BTN_RIGHT] - s_m_press[OPENPETE_MOUSE_BTN_RIGHT]);
+    const int64_t notch = wheel_notches(wheel) - wheel_notches(s_m_wheel);
+    memcpy(s_m_press, press, sizeof press);
+    s_m_wheel = wheel;
+
+    if (st.win_h <= 0.0f) return;
+    /* Overlay space: units of window height, origin top-left. The divisor is
+     * the point height, so a display scale cancels. */
+    const float x = st.px / st.win_h, y = st.py / st.win_h;
+    openpete_menu_layout_t L;
+    openpete_menu_get_layout(&L);
+
+    const int in_panel = x >= L.panel_x0 && x <= L.panel_x1 &&
+                         y >= L.panel_y0 && y <= L.panel_y1;
+    int hit = -1;
+    if (in_panel)
+        for (int i = 0; i < L.row_count; i++)
+            if (fabsf(y - L.row_y[i]) <= L.row_h * 0.5f) { hit = i; break; }
+    const int in_close = x >= L.close_x && x <= L.close_x + L.close_cap_h &&
+                         y >= L.close_y && y <= L.close_y + L.close_cap_h;
+
+    /* Hover: only a pointer move can take the cursor, and only to a row that
+     * differs, so a resting pointer never overrides keyboard nav and a move
+     * within the row never disarms EXIT. */
+    if (st.px != s_m_px || st.py != s_m_py) {
+        s_m_px = st.px; s_m_py = st.py;
+        if (hit >= 0 && hit != s_cursor) {
+            openpete_menu_set_cursor(hit);
+            openpete_host_mouse_probe_log("menu", "hover row=%d (%g,%g)", hit, x, y);
+        }
+    }
+
+    for (int64_t n = 0; n < left; n++) {
+        if (in_close) {
+            openpete_host_mouse_probe_log("menu", "click X -> close");
+            openpete_menu_toggle();
+            return;
+        }
+        if (hit < 0) {
+            openpete_host_mouse_probe_log("menu", "click outside rows (%g,%g) ignored", x, y);
+            continue;
+        }
+        if (hit != s_cursor) openpete_menu_set_cursor(hit);
+        if (openpete_menu_row_centered(hit)) {
+            openpete_host_mouse_probe_log("menu", "click row=%d -> activate", hit);
+            openpete_menu_activate();
+        } else {
+            openpete_host_mouse_probe_log("menu", "click row=%d -> adjust +1", hit);
+            openpete_menu_adjust(+1);
+        }
+    }
+    for (int64_t n = 0; n < right; n++) {
+        if (hit < 0 || row_action_only(hit)) {
+            openpete_host_mouse_probe_log("menu", "right click row=%d inert", hit);
+            continue;
+        }
+        if (hit != s_cursor) openpete_menu_set_cursor(hit);
+        openpete_host_mouse_probe_log("menu", "right click row=%d -> adjust -1", hit);
+        openpete_menu_adjust(-1);
+    }
+    if (notch) {
+        if (hit < 0 || row_action_only(hit)) {
+            openpete_host_mouse_probe_log("menu", "wheel %lld row=%d inert",
+                                          (long long)notch, hit);
+        } else {
+            if (hit != s_cursor) openpete_menu_set_cursor(hit);
+            for (int64_t n = notch > 0 ? notch : -notch; n > 0; n--) {
+                openpete_host_mouse_probe_log("menu", "wheel row=%d -> adjust %+d",
+                                              hit, notch > 0 ? 1 : -1);
+                openpete_menu_adjust(notch > 0 ? +1 : -1);
+            }
+        }
+    }
+}
+
 int openpete_menu_toggle(void) {
     s_open = !s_open;
     if (s_open) {
@@ -386,6 +511,7 @@ int openpete_menu_toggle(void) {
         s_texmap_idx  = openpete_native_get_texture_mapping();   /* M-overlay row moves it */
         s_dither_idx  = openpete_native_get_dither();            /* M-overlay row moves it */
         s_quit_armed  = 0;   /* never re-open onto a primed EXIT */
+        menu_mouse_snap();   /* a press before this open is not a click */
         log_state("opened");
     } else {
         OPL_INFO_F("menu", "%s", "closed");
@@ -436,6 +562,13 @@ void openpete_menu_get_layout(openpete_menu_layout_t* out) {
      * value ("EXTENDED") room before the right border. */
     out->label_x = 0.300f;   /* label RIGHT-edge column */
     out->value_x = 0.335f;   /* value LEFT column        */
+    /* Close glyph: a square in the panel's top-right corner, above the
+     * title's line and clear of its right end, so it reads as a corner
+     * button rather than a superscript on the title. */
+    const float close_pad = 0.020f, close_cap = 0.050f;
+    out->close_cap_h = close_cap;
+    out->close_x     = out->panel_x1 - close_pad - close_cap;
+    out->close_y     = out->panel_y0 + close_pad;
 }
 
 const char* openpete_menu_title(void) { return "SETTINGS"; }
@@ -458,6 +591,13 @@ void openpete_menu_nav(int dy) {
     if (!s_open) return;
     s_cursor = wrap_idx(s_cursor + (dy > 0 ? 1 : -1), ROW_COUNT);
     s_quit_armed = 0;   /* leaving the row (or arriving) always re-arms safe */
+    log_state("cursor");
+}
+
+void openpete_menu_set_cursor(int row) {
+    if (!s_open || row < 0 || row >= ROW_COUNT || row == s_cursor) return;
+    s_cursor = row;
+    s_quit_armed = 0;
     log_state("cursor");
 }
 

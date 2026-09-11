@@ -39,6 +39,7 @@ static _Atomic uint64_t s_capture_req;   /* one bit per OPENPETE_MOUSE_CAP_* */
 static _Atomic int      s_captured;
 static _Atomic int      s_menu_req;      /* 0 none, 1 = want closed, 2 = want open */
 static _Atomic unsigned s_dbl_count;
+static _Atomic int      s_shot_req;      /* the `shot` verb: a player screenshot */
 static _Atomic unsigned s_pump_iter;
 
 /* ---- probe ------------------------------------------------------------- */
@@ -48,7 +49,8 @@ static int s_probe;
 /* ---- injection --------------------------------------------------------- */
 
 typedef enum {
-    INJ_MOVE, INJ_DOWN, INJ_UP, INJ_CLICK2, INJ_REL, INJ_WHEEL, INJ_MENU, INJ_CAPTURE
+    INJ_MOVE, INJ_DOWN, INJ_UP, INJ_CLICK2, INJ_REL, INJ_WHEEL, INJ_MENU, INJ_CAPTURE,
+    INJ_SHOT
 } inj_verb_t;
 
 typedef struct {
@@ -123,6 +125,8 @@ static void inj_load(const char* path)
             L.verb = INJ_MENU; L.a = (float)atoi(arg1);
         } else if (!strcmp(verb, "capture") && n >= 3) {
             L.verb = INJ_CAPTURE; L.a = (float)atoi(arg1);
+        } else if (!strcmp(verb, "shot")) {
+            L.verb = INJ_SHOT;
         } else {
             ok = 0;
         }
@@ -218,6 +222,9 @@ static void inj_step(unsigned iter)
             openpete_host_mouse_request_capture(OPENPETE_MOUSE_CAP_HARNESS,
                                                 L->a != 0.0f);
             break;
+        case INJ_SHOT:
+            atomic_store_explicit(&s_shot_req, 1, memory_order_release);
+            break;
         }
         if (s_probe)
             OPL_INFO_F("mouse", "inject iter=%u ms=%u line=%d verb=%d", iter, ms,
@@ -249,6 +256,7 @@ void openpete_host_mouse_init(struct SDL_Window* fallback_window)
 }
 
 int openpete_host_mouse_initialised(void) { return s_inited; }
+int openpete_host_mouse_inject_active(void) { return s_inj_n > 0; }
 
 /* ---- events ------------------------------------------------------------ */
 
@@ -474,6 +482,11 @@ int openpete_host_mouse_take_menu_request(int* open)
     if (!r) return 0;
     if (open) *open = (r == 2);
     return 1;
+}
+
+int openpete_host_mouse_take_screenshot_request(void)
+{
+    return atomic_exchange_explicit(&s_shot_req, 0, memory_order_acq_rel);
 }
 
 /* ---- double-click gate ------------------------------------------------- */

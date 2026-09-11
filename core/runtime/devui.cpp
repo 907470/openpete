@@ -34,6 +34,10 @@ extern "C" {
 #include "openpete.h"
 #include "openpete_devui.h"
 #include "openpete_fillpick.h"
+extern "C" {
+#include "openpete_host_input.h"   /* C-only header: the mouse snapshot read */
+}
+#include "openpete_host_mouse.h"
 #include "openpete_knobs.h"
 #include "openpete_config.h"
 #include "openpete_log.h"
@@ -1298,7 +1302,16 @@ void openpete_devui_render(struct rhi_device *dev)
     ImGui_ImplSDL3_NewFrame();
     /* After the backend's own IO update, which would otherwise overwrite
      * the parked position with the real pointer. */
-    if (s_inject_mouse) io.AddMousePosEvent(s_inject_x, s_inject_y);
+    if (s_inject_mouse) {
+        io.AddMousePosEvent(s_inject_x, s_inject_y);
+    } else if (openpete_host_mouse_inject_active()) {
+        /* A scripted run: the backend just read SDL's pointer, which a
+         * pushed event never moves; follow the channel's event-derived
+         * position so the script's hover reaches these widgets. */
+        openpete_mouse_state_t st;
+        openpete_host_input_mouse(&st);
+        io.AddMousePosEvent(st.px, st.py);
+    }
     ImGui::NewFrame();
     if (s_open) draw_panel();
     if (always_n > 0) draw_always_sections();

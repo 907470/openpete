@@ -50,6 +50,10 @@ typedef struct {
     float title_y, title_cap_h;
     float row_cap_h;       /* glyph cap height for a row */
     float label_x, value_x;/* left edge of the label / value glyph columns */
+    /* The close glyph: a square at the panel's top right holding an X. The
+     * glyph builder places the X from it and the mouse consumer tests a
+     * left press against it, so geometry and hit-test share one source. */
+    float close_x, close_y, close_cap_h;   /* top-left corner, side */
 } openpete_menu_layout_t;
 
 void openpete_menu_get_layout(openpete_menu_layout_t* out);
@@ -69,6 +73,19 @@ int         openpete_menu_row_centered(int row);
 
 /* Move the row cursor: dy < 0 = up, dy > 0 = down (wraps). No-op unless open. */
 void openpete_menu_nav(int dy);
+
+/* Put the cursor on `row` (the pointer's hit row). Disarms EXIT like nav, so
+ * callers invoke it only when the row differs from the cursor. */
+void openpete_menu_set_cursor(int row);
+
+/* The mouse consumer. Called once per host iteration while the menu is open,
+ * after the keyboard/pad nav: hover moves the cursor on a pointer move, a
+ * left press acts on the hit row (adjust +1, or activate on EXIT) or closes
+ * the menu through the X glyph, a right press adjusts -1 on value rows, and
+ * each wheel notch over a value row adjusts by one. DISPLAY, SETTINGS and
+ * EXIT take left click only. Reads the host mouse channel as its MENU owner
+ * and snaps its markers while the dev overlay owns the mouse. */
+void openpete_menu_mouse_poll(void);
 
 /* Change the focused row's value: dx < 0 = previous, dx > 0 = next (wraps), and
  * apply it live via the matching setter. No-op unless open, and on an ACTION

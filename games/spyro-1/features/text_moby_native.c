@@ -755,6 +755,14 @@ void text_moby_native_menu(CPUState* cpu) {
         emit_string(&cx, value, L.value_x, L.row_y[r] - vcap * 0.5f, vcap,
                     MENU_TXT_TINT, wob);
     }
+    /* Close glyph: one X centred in the layout's square at the panel's top
+     * right. Not a row: no wobble, no cursor. The mouse consumer tests a
+     * left press against the same square. */
+    {
+        const float xw = measure_string("X", L.close_cap_h);
+        emit_string(&cx, "X", L.close_x + 0.5f * (L.close_cap_h - xw),
+                    L.close_y, L.close_cap_h, MENU_TXT_TINT, -1);
+    }
     /* Gold frame — same rotating light as the rows above (cx still carries it). */
     cx.n += emit_lit_border(&cx, L.panel_x0, L.panel_y0, L.panel_x1, L.panel_y1,
                             MENU_BORDER_BT, s_menu_buf + cx.n, MENU_TXT_MAX - cx.n);
