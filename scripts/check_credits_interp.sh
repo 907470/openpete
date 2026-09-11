@@ -1,6 +1,7 @@
 #!/usr/bin/env bash
 # check_credits_interp.sh — sub-tick interpolation of the credits-roll
-# letters (--skip-to-level credits, GS_Credits with g_CreditsStage < 99).
+# letters (--skip-to-level credits / credits_100, GS_Credits with
+# g_CreditsStage < 99).
 #
 # The roll draws two kinds of HUD-pool billboard moby at once: a settled
 # line (static screen position, rotation 0) and a line flying in (position,
@@ -20,8 +21,15 @@
 #             and the rightmost glyph's centroid lies strictly between theirs
 #             (a snapped position equals one neighbour).
 #   keys      OPENPETE_INTERP_OBJS_KEYLOG: a HUD-pool key spawns only when a
-#             line spawns — none in the window after the second line lands
-#             (a key renamed on the polybuf flip spawns every other tick).
+#             line spawns — none in the window after a line lands (a key
+#             renamed on the polybuf flip spawns every other tick).
+#
+# Two cases: the short roll early in its sequence (two lines on screen) and
+# the full roll late in its sequence (three lines, and record slots reused
+# ~60 times). Each case names its mid-flight canonical frame and the row
+# bands (fractions of the frame height) holding the settled and flying
+# lines, plus the line-spawn frame and the end of the quiet window for the
+# key census.
 #
 # Runs as a leg of scripts/check_presentation_golden.sh (the ctest gate);
 # standalone for iteration. Exit 0 PASS, 1 FAIL, 64 SKIP (binary / disc /
@@ -38,42 +46,51 @@ python3 -c 'import PIL, numpy' 2>/dev/null || { echo "credits-interp: SKIP (pyth
 WORK="$(mktemp -d /tmp/openpete-credits-interp.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 
-# Frames: the second line ("Universal Interactive Studios:" settled, a
-# name line flying in) is on screen from 4168; 4206-4210 sit mid-flight.
-C0=4206; I0=4207; C1=4208; I1=4209; C2=4210
-LIM=4212
+# target:C1:settled-band:flying-band:line-spawn:window-end:line-length. C1 is
+# the middle canonical; captures are C1-2, C1-1 (intermediate), C1, C1+1
+# (intermediate), C1+2. line-length is the number of letters the line
+# spawning at line-spawn has: every one must spawn a key, including a letter
+# that reuses a departed letter's record slot with the same class (the
+# generation in the key). The short roll: "Universal Interactive Studios:"
+# settled, an 11-letter name line flying in. The full roll, late: a
+# 13-letter line whose spawn reuses 8 same-class slots.
+CASES="credits:4208:0.28,0.40:0.42,0.58:4168:4230:11 credits_100:7488:0.26,0.40:0.46,0.56:7448:7660:13"
 
-run() {  # leg out-flag out-name frame-list [env...]
-    local leg="$1" flag="$2" name="$3" frames="$4"; shift 4
-    env "$@" timeout 300 "$BIN" --headless --no-config --disc "$DISC" --run-recomp 0x80012204 \
-        --renderer vk --mute 1 --aspect 4:3 --skip-to-level credits --screenshot-native-only \
-        --render-paths moby "$flag" "$frames" --screenshot-output "$WORK/${name}_{n}.png" \
-        --frame-limit "$LIM" >"$WORK/$leg.log" 2>&1
+run() {  # target leg out-flag out-name frame-list limit [env...]
+    local target="$1" leg="$2" flag="$3" name="$4" frames="$5" lim="$6"; shift 6
+    env "$@" timeout 600 "$BIN" --headless --no-config --disc "$DISC" --run-recomp 0x80012204 \
+        --renderer vk --mute 1 --aspect 4:3 --skip-to-level "$target" --screenshot-native-only \
+        --render-paths moby "$flag" "$frames" --screenshot-output "$WORK/${target}_${name}_{n}.png" \
+        --frame-limit "$lim" >"$WORK/${target}_$leg.log" 2>&1
 }
-run canon --screenshot-on-frame canon "$C0,$C1,$C2"
-run inter --screenshot-intermediate-on-frame inter "$I0,$I1"
-run ident --screenshot-intermediate-on-frame ident "$C1" OPENPETE_INTERMEDIATE_ALPHA=1
-for f in canon_$C0 canon_$C1 canon_$C2 inter_$I0 inter_$I1 ident_$C1; do
-    [[ -f "$WORK/$f-vk.png" ]] || { echo "credits-interp: FAIL capture missing $f"; exit 1; }
-done
 
-# Keying census over the whole second line: keylog lines carry the frame.
-OPENPETE_INTERP_OBJS_KEYLOG=1 timeout 300 "$BIN" --headless --no-config --disc "$DISC" \
-    --run-recomp 0x80012204 --renderer vk --mute 1 --aspect 4:3 --skip-to-level credits \
-    --screenshot-native-only --render-paths moby --screenshot-intermediate-on-frame 4229 \
-    --screenshot-output "$WORK/keys_{n}.png" --frame-limit 4230 >"$WORK/keys.log" 2>&1
+rc=0
+for case in $CASES; do
+    IFS=: read -r T C1 SETB FLYB SPAWN WEND NLET <<<"$case"
+    C0=$((C1-2)); I0=$((C1-1)); I1=$((C1+1)); C2=$((C1+2)); LIM=$((C1+4))
+    run "$T" canon --screenshot-on-frame canon "$C0,$C1,$C2" "$LIM"
+    run "$T" inter --screenshot-intermediate-on-frame inter "$I0,$I1" "$LIM"
+    run "$T" ident --screenshot-intermediate-on-frame ident "$C1" "$LIM" OPENPETE_INTERMEDIATE_ALPHA=1
+    for f in canon_$C0 canon_$C1 canon_$C2 inter_$I0 inter_$I1 ident_$C1; do
+        [[ -f "$WORK/${T}_$f-vk.png" ]] || { echo "credits-interp: FAIL [$T] capture missing $f"; exit 1; }
+    done
+    # Key census: keylog lines carry the frame; the intermediate request is
+    # what enables per-object capture headless.
+    run "$T" keys --screenshot-intermediate-on-frame keys "$((WEND-1))" "$WEND" OPENPETE_INTERP_OBJS_KEYLOG=1
 
-python3 - "$WORK" "$C0" "$I0" "$C1" "$I1" "$C2" <<'PY'
+    python3 - "$WORK" "$T" "$C1" "$SETB" "$FLYB" "$SPAWN" "$WEND" "$NLET" <<'PY' || rc=1
 import sys, re
 import numpy as np
 from PIL import Image
-W, C0, I0, C1, I1, C2 = sys.argv[1], *map(int, sys.argv[2:])
-def load(n): return np.array(Image.open(f"{W}/{n}-vk.png").convert("RGB")).astype(int)
+W, T = sys.argv[1], sys.argv[2]
+C1, SPAWN, WEND, NLET = int(sys.argv[3]), int(sys.argv[6]), int(sys.argv[7]), int(sys.argv[8])
+setb = tuple(map(float, sys.argv[4].split(","))); flyb = tuple(map(float, sys.argv[5].split(",")))
+C0, I0, I1, C2 = C1 - 2, C1 - 1, C1 + 1, C1 + 2
+def load(n): return np.array(Image.open(f"{W}/{T}_{n}-vk.png").convert("RGB")).astype(int)
 c0, i0, c1, i1, c2, ident = (load(n) for n in (f"canon_{C0}", f"inter_{I0}", f"canon_{C1}",
                                                 f"inter_{I1}", f"canon_{C2}", f"ident_{C1}"))
 H = c0.shape[0]
-# Bands (fractions of the 4:3 frame): the settled title line and the flying name line.
-SET = slice(int(H * 0.28), int(H * 0.40)); FLY = slice(int(H * 0.42), int(H * 0.58))
+SET = slice(int(H * setb[0]), int(H * setb[1])); FLY = slice(int(H * flyb[0]), int(H * flyb[1]))
 def glyph_mask(a): return (a[..., 0] > 90) & (a[..., 1] > 90) & (a[..., 2] < 80)
 def blobs(a):
     cols = glyph_mask(a[FLY]).any(axis=0); out = []; s = None
@@ -83,7 +100,7 @@ def blobs(a):
     return [b for b in out if b is not None]
 fails = []
 def check(name, ok, detail):
-    print(f"{'ok  ' if ok else 'FAIL'} {name}: {detail}")
+    print(f"{'ok  ' if ok else 'FAIL'} [{T}] {name}: {detail}")
     if not ok: fails.append(name)
 
 # Engagement: letters drawn in both bands; the flying line moves.
@@ -113,15 +130,19 @@ ok = bool(b1 and bi and b2) and (min(b1[-1], b2[-1]) < bi[-1] < max(b1[-1], b2[-
 check("flying.between", ok, f"rightmost glyph centroid x: canonical {C1}={b1[-1] if b1 else None}, "
       f"intermediate {I1}={bi[-1] if bi else None}, canonical {C2}={b2[-1] if b2 else None}")
 
-# keys: pool-key spawns only at line spawns
-log = open(f"{W}/keys.log", errors="replace").read()
+# keys: every letter of the new line spawns a key (a same-class slot reuse
+# that kept its key would pair the new letter with the departed one), and
+# none spawns afterwards
+log = open(f"{W}/{T}_keys.log", errors="replace").read()
 spawns = [(int(f), k) for f, k in re.findall(r"\[interp-objs\] f=(\d+) spawn key=([0-9a-f]{8})", log)]
 pool = [(f, k) for f, k in spawns if k[0] in "456"]
-at_line = [k for f, k in pool if f == 4168]
-after = [(f, k) for f, k in pool if 4168 < f <= 4230]
-check("keys.engage", len(at_line) >= 5, f"{len(at_line)} pool keys spawned at the line spawn (4168)")
-check("keys.stable", len(after) == 0, f"{len(after)} pool-key spawns in 4169..4230: {sorted(set(after))[:6]}")
+at_line = [k for f, k in pool if f == SPAWN]
+after = [(f, k) for f, k in pool if SPAWN < f <= WEND]
+check("keys.spawn", len(at_line) == NLET, f"{len(at_line)} pool keys spawned at the line spawn ({SPAWN}), line has {NLET} letters")
+check("keys.stable", len(after) == 0, f"{len(after)} pool-key spawns in {SPAWN+1}..{WEND}: {sorted(set(after))[:6]}")
 
-if fails: print("credits-interp: FAIL", ", ".join(fails)); sys.exit(1)
-print("credits-interp: PASS")
+if fails: print(f"credits-interp: FAIL [{T}]", ", ".join(fails)); sys.exit(1)
 PY
+done
+[[ $rc -eq 0 ]] && echo "credits-interp: PASS"
+exit $rc
