@@ -69,9 +69,31 @@ static int tokenize_sidecar_args(char* buf, char** tokens, int max_tokens) {
             fprintf(stderr, "openpete: too many tokens in args file (max %d)\n", max_tokens);
             return -1;
         }
-        tokens[n++] = p;
-        while (*p && *p != ' ' && *p != '\t' && *p != '\n' && *p != '\r') p++;
-        if (*p) *p++ = '\0';
+        /* A token that is empty or carries whitespace is written
+         * double-quoted, with \" and \\ escapes inside. Unescaping runs in
+         * place: `out` never outruns `p`, since every escape sequence is
+         * longer than the byte it produces and a quote produces none. */
+        char* out = p;
+        int   quoted = 0;
+        tokens[n++] = out;
+        while (*p) {
+            if (quoted) {
+                if (*p == '"') { quoted = 0; p++; continue; }
+                if (*p == '\\' && (p[1] == '"' || p[1] == '\\')) {
+                    *out++ = p[1]; p += 2; continue;
+                }
+            } else {
+                if (*p == ' ' || *p == '\t' || *p == '\n' || *p == '\r') break;
+                if (*p == '"') { quoted = 1; p++; continue; }
+            }
+            *out++ = *p++;
+        }
+        if (quoted) {
+            fprintf(stderr, "openpete: unterminated quote in args file\n");
+            return -1;
+        }
+        if (*p) p++;      /* step past the separator before it is overwritten */
+        *out = '\0';
     }
     return n;
 }
@@ -180,6 +202,41 @@ static int expand_bk2_sidecar(int argc, char** argv, int* out_argc, char*** out_
  * --bk2 replay flag would make a recording-while-replaying session try
  * to replay the *old* movie instead of the new one. */
 
+/* A token survives a bare whitespace split only if it is non-empty, holds
+ * no whitespace, and does not open a comment. Everything else is quoted by
+ * sidecar_emit_token and put back by tokenize_sidecar_args. */
+static int sidecar_needs_quotes(const char* a) {
+    if (!*a || *a == '#') return 1;
+    for (const char* q = a; *q; q++)
+        if (*q == ' ' || *q == '\t' || *q == '\n' || *q == '\r' ||
+            *q == '"' || *q == '\\')
+            return 1;
+    return 0;
+}
+
+static size_t sidecar_token_len(const char* a) {
+    size_t n;
+    if (!sidecar_needs_quotes(a)) return strlen(a);
+    n = 2;  /* the enclosing quotes */
+    for (const char* q = a; *q; q++) n += (*q == '"' || *q == '\\') ? 2 : 1;
+    return n;
+}
+
+static char* sidecar_emit_token(char* p, const char* a) {
+    if (!sidecar_needs_quotes(a)) {
+        size_t n = strlen(a);
+        memcpy(p, a, n);
+        return p + n;
+    }
+    *p++ = '"';
+    for (const char* q = a; *q; q++) {
+        if (*q == '"' || *q == '\\') *p++ = '\\';
+        *p++ = *q;
+    }
+    *p++ = '"';
+    return p;
+}
+
 static int is_bk2_flag(const char* a) {
     return strncmp(a, "--bk2", 5) == 0;
 }
@@ -212,7 +269,7 @@ static char* build_bk2_record_args(int argc, char** argv) {
             i += bk2_flag_value_tokens(argv[i], (i + 1 < argc) ? argv[i + 1] : NULL);
             continue;
         }
-        len += strlen(argv[i]) + 1;  /* token + separator */
+        len += sidecar_token_len(argv[i]) + 1;  /* token + separator */
     }
 
     char* buf = (char*)malloc(len + 2);  /* +2: newline fixup + NUL */
@@ -224,8 +281,7 @@ static char* build_bk2_record_args(int argc, char** argv) {
             i += bk2_flag_value_tokens(argv[i], (i + 1 < argc) ? argv[i + 1] : NULL);
             continue;
         }
-        size_t n = strlen(argv[i]);
-        memcpy(p, argv[i], n); p += n;
+        p = sidecar_emit_token(p, argv[i]);
         *p++ = ' ';
     }
     if (p > buf && p[-1] == ' ') p[-1] = '\n';  /* last separator -> newline */

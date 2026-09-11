@@ -333,9 +333,6 @@ Caveats:
   recorded and not replayed, nor are freecam or rewinds.
 - Don't use freecam while recording; it desyncs the replay.
 - `--bk2-record` overwrites an existing file without warning.
-- Recording with `--mods ""` writes a sidecar that cannot be replayed:
-  the empty value is written unquoted. Edit the .args file manually to
-  remove for now.
 
 ### One render path at a time
 
