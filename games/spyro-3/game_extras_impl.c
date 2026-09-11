@@ -67,11 +67,8 @@ void game_on_state_loaded(CPUState* cpu) {
     (void)cpu;
 }
 
-uint32_t game_state_extra_size(void) { return 0u; }
-void game_state_extra_save(void* dst) { (void)dst; }
-void game_state_extra_load(const void* src, uint32_t size) {
-    (void)src; (void)size;
-}
+/* The extra savestate payload is the shared thunk layer's latch pack
+ * (games/common/psyq_thunk_state.c). */
 
 /* No gameplay-live probe yet: reporting "not live" keeps the in-memory
  * snapshot users (rewind keyframes, runahead) disabled rather than letting

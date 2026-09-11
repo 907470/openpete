@@ -205,6 +205,7 @@ add_executable(openpete-spyro1
     game_extras_impl.c
     psyq_hooks.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_game_hooks_default.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_thunk_state.c
     mod_wad_overlay.c
     feature_list.c
     features/render_paths.c

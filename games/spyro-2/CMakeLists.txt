@@ -65,6 +65,7 @@ add_executable(openpete-spyro2
     # --allow-multiple-definition).
     ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_thunks.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_game_hooks_default.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_thunk_state.c
 
     # PSYQ symbol stubs — abort-on-call. On ELF these are weak so any thunk
     # strongly defines them; on MinGW the macro becomes strong and the link

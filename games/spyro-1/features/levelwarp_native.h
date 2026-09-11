@@ -42,7 +42,7 @@ void spyro1_levelwarp_on_tick(CPUState* cpu);
 /* Savestate participation. The warp FSM is host state that gates guest
  * writes, so it has to travel with every snapshot — including the quiet
  * per-tick rewind/runahead ones, whose rollback would otherwise strand a
- * half-applied warp. Mirrors spyro1_thunk_state_save/load. */
+ * half-applied warp, beside the thunk layer's latch pack. */
 void spyro1_levelwarp_state_save(uint32_t* phase, uint32_t* target,
                                  uint32_t* ticks);
 void spyro1_levelwarp_state_load(uint32_t phase, uint32_t target,

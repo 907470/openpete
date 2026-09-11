@@ -117,17 +117,9 @@ static bool s_xa_armed       = false;
 static int  s_xa_filter_file = 1;
 static int  s_xa_filter_chan = 0;
 
-/* Guest-mutated thunk latches for the savestate extra payload
- * (game_extras_impl.c). CdlSetmode flips s_xa_armed (RT|SF arms the XA
- * music route, the loader's data mode disarms it) and callback
- * registrations swap guest vaddrs — a rolled-back speculative tick that
- * ran transition code leaves them on the abandoned branch otherwise,
- * and the committed timeline's next CdlReadS routes down the wrong
- * path. Declared early; definitions live after the statics they pack. */
-extern "C" void spyro1_thunk_state_save(uint32_t* cd_cb, uint32_t* vs_cb,
-                                        uint32_t* xa_word);
-extern "C" void spyro1_thunk_state_load(uint32_t cd_cb, uint32_t vs_cb,
-                                        uint32_t xa_word);
+/* The latch pack these statics and the callback tables below serialize into
+ * for the savestate; definitions follow the last table. */
+#include "psyq_thunk_state.h"
 #include "psx/gtereg.h"
 #include "PsyX/PsyX_public.h"
 
@@ -180,24 +172,6 @@ static uint32_t g_intr_cb[PSYQ_INTR_SLOTS];
 typedef void (*native_cd_read_cb_t)(unsigned char intr, unsigned char* result);
 static native_cd_read_cb_t g_native_cd_read_cb = nullptr;
 static uint32_t g_vsync_cb       = 0;
-
-extern "C" void spyro1_thunk_state_save(uint32_t* cd_cb, uint32_t* vs_cb,
-                                        uint32_t* xa_word) {
-    *cd_cb = g_cd_read_cb;
-    *vs_cb = g_vsync_cb;
-    *xa_word = (s_xa_armed ? 1u : 0u)
-             | ((uint32_t)(s_xa_filter_file & 0xFF) << 8)
-             | ((uint32_t)(s_xa_filter_chan & 0xFF) << 16);
-}
-
-extern "C" void spyro1_thunk_state_load(uint32_t cd_cb, uint32_t vs_cb,
-                                        uint32_t xa_word) {
-    g_cd_read_cb     = cd_cb;
-    g_vsync_cb       = vs_cb;
-    s_xa_armed       = (xa_word & 1u) != 0;
-    s_xa_filter_file = (int)((xa_word >> 8) & 0xFF);
-    s_xa_filter_chan = (int)((xa_word >> 16) & 0xFF);
-}
 
 static void invoke_psx_callback(CPUState* cpu, uint32_t cb_addr,
                                 uint32_t a0, uint32_t a1) {
@@ -374,6 +348,99 @@ static void psyq_dma_complete(CPUState* cpu, uint32_t ch) {
     }
 }
 
+/* --- The latch pack (psyq_thunk_state.h) --------------------------------- */
+
+static void put_word(uint8_t* p, uint32_t i, uint32_t v) {
+    memcpy(p + 4u * i, &v, 4);
+}
+static uint32_t get_word(const uint8_t* p, uint32_t i) {
+    uint32_t v;
+    memcpy(&v, p + 4u * i, 4);
+    return v;
+}
+
+extern "C" uint32_t psyq_thunk_state_size(void) { return PSYQ_THUNK_STATE_BYTES; }
+
+extern "C" void psyq_thunk_state_save(void* dst) {
+    uint8_t* p = (uint8_t*)dst;
+    put_word(p, 0, PSYQ_THUNK_STATE_PACK_VER);
+    put_word(p, 1, g_cd_read_cb);
+    put_word(p, 2, g_vsync_cb);
+    put_word(p, 3, s_xa_armed ? 1u : 0u);
+    put_word(p, 4, (uint32_t)s_xa_filter_file);
+    put_word(p, 5, (uint32_t)s_xa_filter_chan);
+    for (uint32_t i = 0; i < PSYQ_INTR_SLOTS; i++)
+        put_word(p, 6u + i, g_intr_cb[i]);
+    for (uint32_t i = 0; i < PSYQ_DMA_CHANNELS; i++)
+        put_word(p, 6u + PSYQ_INTR_SLOTS + i, g_dma_cb[i]);
+}
+
+extern "C" int psyq_thunk_state_load(const void* src, uint32_t size) {
+    const uint8_t* p = (const uint8_t*)src;
+    if (size < PSYQ_THUNK_STATE_BYTES) return -1;
+    if (get_word(p, 0) != PSYQ_THUNK_STATE_PACK_VER) return -1;
+    g_cd_read_cb     = get_word(p, 1);
+    g_vsync_cb       = get_word(p, 2);
+    s_xa_armed       = get_word(p, 3) != 0u;
+    s_xa_filter_file = (int)get_word(p, 4);
+    s_xa_filter_chan = (int)get_word(p, 5);
+    for (uint32_t i = 0; i < PSYQ_INTR_SLOTS; i++)
+        g_intr_cb[i] = get_word(p, 6u + i);
+    for (uint32_t i = 0; i < PSYQ_DMA_CHANNELS; i++)
+        g_dma_cb[i] = get_word(p, 6u + PSYQ_INTR_SLOTS + i);
+    return 0;
+}
+
+extern "C" void psyq_thunk_state_load_v4(uint32_t cd_cb, uint32_t vs_cb,
+                                         uint32_t xa_word) {
+    g_cd_read_cb     = cd_cb;
+    g_vsync_cb       = vs_cb;
+    s_xa_armed       = (xa_word & 1u) != 0;
+    s_xa_filter_file = (int)((xa_word >> 8) & 0xFF);
+    s_xa_filter_chan = (int)((xa_word >> 16) & 0xFF);
+}
+
+/* Every latch the pack covers, set to a value no guest registration produces
+ * (a distinct odd vaddr per slot; the filter fields outside 0..255). */
+extern "C" void psyq_thunk_state_scramble(void) {
+    g_cd_read_cb     = 0xA5A50001u;
+    g_vsync_cb       = 0xA5A50003u;
+    s_xa_armed       = !s_xa_armed;
+    s_xa_filter_file = 0x1FF;
+    s_xa_filter_chan = 0x2FF;
+    for (uint32_t i = 0; i < PSYQ_INTR_SLOTS; i++)
+        g_intr_cb[i] = 0xB5B50001u + 2u * i;
+    for (uint32_t i = 0; i < PSYQ_DMA_CHANNELS; i++)
+        g_dma_cb[i] = 0xC5C50001u + 2u * i;
+}
+
+extern "C" int psyq_thunk_state_selftest(void) {
+    uint8_t before[PSYQ_THUNK_STATE_BYTES], scrambled[PSYQ_THUNK_STATE_BYTES],
+            after[PSYQ_THUNK_STATE_BYTES];
+    psyq_thunk_state_save(before);
+    psyq_thunk_state_scramble();
+    psyq_thunk_state_save(scrambled);
+    const int engaged = memcmp(before, scrambled, sizeof before) != 0;
+    const int loaded = psyq_thunk_state_load(before, sizeof before) == 0;
+    psyq_thunk_state_save(after);
+    const int same = memcmp(before, after, sizeof before) == 0;
+    /* The scrambled image must differ from the saved one in every field the
+     * pack carries, or a field the scramble missed is one the check cannot
+     * see. Field 0 is the version and is the same in both. */
+    uint32_t fields_unchanged = 0;
+    for (uint32_t i = 1; i < PSYQ_THUNK_STATE_WORDS; i++)
+        if (get_word(before, i) == get_word(scrambled, i)) fields_unchanged++;
+    const int ok = engaged && loaded && same && fields_unchanged == 0;
+    OPL_INFO_F("savestate",
+               "thunk-state selftest: %s (%u bytes, scramble changed %u/%u "
+               "fields, load=%d, roundtrip=%s)",
+               ok ? "PASS" : "FAIL", (unsigned)PSYQ_THUNK_STATE_BYTES,
+               (unsigned)(PSYQ_THUNK_STATE_WORDS - 1u - fields_unchanged),
+               (unsigned)(PSYQ_THUNK_STATE_WORDS - 1u), loaded,
+               same ? "identical" : "DIFFERS");
+    return ok ? 0 : -1;
+}
+
 /* The remaining libetc registrations return the previous handler and are
  * otherwise inert: PsyCross services those interrupt sources host-side and
  * dispatches no guest handler for them, so recording the address would promise
@@ -443,6 +510,19 @@ static void psyq_mirror_stack_frame(CPUState* cpu, psyq_frame_site_t site) {
 void psyq_ResetGraph(CPUState* cpu) {
     int mode = (int)cpu->a0;
     cpu->v0 = (uint32_t)ResetGraph(mode);
+
+    /* Harness: the latch-pack round trip runs once, at the first PSYQ boot
+     * call every game makes, and the process exits on its verdict. */
+    static bool s_selftest_done = false;
+    if (!s_selftest_done) {
+        s_selftest_done = true;
+        const char* e = std::getenv("OPENPETE_THUNK_STATE_SELFTEST");
+        if (e && *e && *e != '0') {
+            const int rc = psyq_thunk_state_selftest();
+            std::fflush(stdout); std::fflush(stderr);
+            std::_Exit(rc == 0 ? 0 : 3);
+        }
+    }
 
     psyq_game_mirror_resetgraph(cpu, mode);
 

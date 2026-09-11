@@ -24,6 +24,7 @@
 #include "features/crash_demo_woah.h"
 #include "features/freecam_native.h"
 #include "features/levelwarp_native.h"
+#include "psyq_thunk_state.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -459,33 +460,34 @@ int game_is_gameplay_live(CPUState* cpu) {
  *       code otherwise leaves them on the abandoned branch.
  *   v4: + dev-overlay level-warp FSM (features/levelwarp_native.c). The
  *       phase gates guest writes across several ticks, so a rewind past a
- *       half-applied warp has to restore it alongside the RAM it wrote. */
+ *       half-applied warp has to restore it alongside the RAM it wrote.
+ *   v5: the thunk latches are the shared layer's pack
+ *       (games/common/psyq_thunk_state.h: callbacks, drive mode and filter,
+ *       the interrupt- and DMA-callback tables) in place of v3's three
+ *       words; the warp words follow it. v3/v4 blobs load through the
+ *       pack's legacy adapter. */
 extern uint32_t spyro1_mod_wad_cursor_get(void);
 extern void     spyro1_mod_wad_cursor_set(uint32_t s);
-extern void     spyro1_thunk_state_save(uint32_t* cd_cb, uint32_t* vs_cb,
-                                        uint32_t* xa_word);
-extern void     spyro1_thunk_state_load(uint32_t cd_cb, uint32_t vs_cb,
-                                        uint32_t xa_word);
 
-uint32_t game_state_extra_size(void) { return 36u; }
+#define EXTRA_V5_PACK_OFF 12u
+#define EXTRA_V5_WARP_OFF (EXTRA_V5_PACK_OFF + PSYQ_THUNK_STATE_BYTES)
+#define EXTRA_V5_SIZE     (EXTRA_V5_WARP_OFF + 12u)
+
+uint32_t game_state_extra_size(void) { return EXTRA_V5_SIZE; }
 
 void game_state_extra_save(void* dst) {
     uint8_t* p = (uint8_t*)dst;
-    uint32_t ver = 4u, cur = spyro1_mod_wad_cursor_get();
+    uint32_t ver = 5u, cur = spyro1_mod_wad_cursor_get();
     uint32_t ovl = spyro_get_active_overlay_magic();
-    uint32_t cd_cb, vs_cb, xa;
     uint32_t wphase, wtarget, wticks;
-    spyro1_thunk_state_save(&cd_cb, &vs_cb, &xa);
     spyro1_levelwarp_state_save(&wphase, &wtarget, &wticks);
     memcpy(p +  0, &ver, 4);
     memcpy(p +  4, &cur, 4);
     memcpy(p +  8, &ovl, 4);
-    memcpy(p + 12, &cd_cb, 4);
-    memcpy(p + 16, &vs_cb, 4);
-    memcpy(p + 20, &xa, 4);
-    memcpy(p + 24, &wphase, 4);
-    memcpy(p + 28, &wtarget, 4);
-    memcpy(p + 32, &wticks, 4);
+    psyq_thunk_state_save(p + EXTRA_V5_PACK_OFF);
+    memcpy(p + EXTRA_V5_WARP_OFF + 0, &wphase, 4);
+    memcpy(p + EXTRA_V5_WARP_OFF + 4, &wtarget, 4);
+    memcpy(p + EXTRA_V5_WARP_OFF + 8, &wticks, 4);
 }
 
 void game_state_extra_load(const void* src, uint32_t size) {
@@ -500,12 +502,23 @@ void game_state_extra_load(const void* src, uint32_t size) {
         memcpy(&ovl, p + 8, 4);
         if (ovl) spyro_set_active_overlay_by_magic(ovl);
     }
+    if (ver >= 5u) {
+        if (size < EXTRA_V5_SIZE) return;
+        (void)psyq_thunk_state_load(p + EXTRA_V5_PACK_OFF,
+                                    PSYQ_THUNK_STATE_BYTES);
+        uint32_t wphase, wtarget, wticks;
+        memcpy(&wphase,  p + EXTRA_V5_WARP_OFF + 0, 4);
+        memcpy(&wtarget, p + EXTRA_V5_WARP_OFF + 4, 4);
+        memcpy(&wticks,  p + EXTRA_V5_WARP_OFF + 8, 4);
+        spyro1_levelwarp_state_load(wphase, wtarget, wticks);
+        return;
+    }
     if (ver >= 3u && size >= 24u) {
         uint32_t cd_cb, vs_cb, xa;
         memcpy(&cd_cb, p + 12, 4);
         memcpy(&vs_cb, p + 16, 4);
         memcpy(&xa,    p + 20, 4);
-        spyro1_thunk_state_load(cd_cb, vs_cb, xa);
+        psyq_thunk_state_load_v4(cd_cb, vs_cb, xa);
     }
     if (ver >= 4u && size >= 36u) {
         uint32_t wphase, wtarget, wticks;
