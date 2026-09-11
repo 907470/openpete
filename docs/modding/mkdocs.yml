@@ -34,6 +34,7 @@ theme:
     - search.suggest
     - search.highlight
     - content.code.copy
+    - content.tabs.link
     - toc.integrate
 
 # The SDK ships this site as static files opened from disk. Under file://
@@ -57,6 +58,8 @@ markdown_extensions:
       permalink: true
   - pymdownx.highlight
   - pymdownx.superfences
+  - pymdownx.tabbed:
+      alternate_style: true
   - pymdownx.keys
 
 # Anchor links are info-level by default, so a stale #section target would
