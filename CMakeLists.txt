@@ -251,7 +251,9 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # the debug-freecam poses. Re-bless an intended change with
     # scripts/check_presentation_golden.sh --bless; scope a fast subset with
     # --filter=<bk2-substr>. Skips (exit 64) if the binary / disc / Vulkan loader /
-    # PIL are absent. See notes/plans/openpete-presentation-golden.md.
+    # PIL are absent. Also runs the credits-roll interpolation leg
+    # (scripts/check_credits_interp.sh) so it cannot be skipped separately.
+    # See notes/plans/openpete-presentation-golden.md.
     add_test(NAME presentation_golden
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_presentation_golden.sh
                      --build-dir=${CMAKE_BINARY_DIR})
@@ -260,20 +262,6 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         # The whole corpus replays ~53 bk2 movies + the freecam poses (~35 min);
         # generous headroom so a loaded host doesn't spuriously time out.
         TIMEOUT 3600
-        SKIP_RETURN_CODE 64
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
-    # Sub-tick interpolation of the credits-roll letters (headless, llvmpipe):
-    # the settled line holds its pose on intermediate presents, the flying
-    # line lands between its canonical neighbours in position/depth/rotation,
-    # the alpha-1 intermediate reproduces the canonical dump, and HUD-pool
-    # interp keys spawn only when a line spawns. Each check carries an
-    # engagement condition. See scripts/check_credits_interp.sh.
-    add_test(NAME credits_interp
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_credits_interp.sh)
-    set_tests_properties(credits_interp PROPERTIES
-        LABELS "slow;presentation"
-        TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 

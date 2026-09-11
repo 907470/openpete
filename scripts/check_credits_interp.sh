@@ -23,7 +23,9 @@
 #             line spawns — none in the window after the second line lands
 #             (a key renamed on the polybuf flip spawns every other tick).
 #
-# Exit 0 PASS, 1 FAIL, 64 SKIP (binary / disc / python+PIL missing).
+# Runs as a leg of scripts/check_presentation_golden.sh (the ctest gate);
+# standalone for iteration. Exit 0 PASS, 1 FAIL, 64 SKIP (binary / disc /
+# python+PIL missing).
 set -u
 export OPENPETE_VIBRATION=0
 cd "$(dirname "$0")/.."

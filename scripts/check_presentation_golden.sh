@@ -21,8 +21,15 @@
 # diff, then run presentation-corpus-promote.sh against that directory. Only a
 # whole-corpus re-bless needs --bless. PRESENTATION_GOLDEN_KEEP=0 discards them.
 #
-# Exit: 0 = matches golden and the identity leg is within baseline, 1 = divergence
-#       or identity exceed, 64 = SKIP (prereqs missing).
+# A third leg, scripts/check_credits_interp.sh, runs after the corpus capture:
+# sub-tick interpolation of the credits-roll letters (settled-line pose,
+# fly-in position/depth/rotation, key stability), a case the corpus bk2s do
+# not reach. It runs whether or not the diff passes, so one run reports every
+# verdict; it is not gated by --filter.
+#
+# Exit: 0 = matches golden, the identity leg is within baseline and the credits
+#       leg passes; 1 = divergence, identity exceed or credits failure;
+#       64 = SKIP (prereqs missing).
 #
 # See notes/plans/openpete-presentation-golden.md.
 set -u
@@ -80,9 +87,18 @@ fi
 python3 scripts/presentation-ident-check.py "$OUT"
 irc=$?
 
+# Credits leg (no golden: the checks are relations between one run's own
+# canonical and intermediate captures).
+scripts/check_credits_interp.sh
+crc=$?
+
 python3 scripts/presentation-corpus-diff.py "$OUT" --diff-out "$OUT/diff"
 drc=$?
 if [[ $drc -eq 64 ]]; then echo "[presentation-golden] SKIP (diff prereqs missing)"; exit 64; fi
+if [[ $crc -ne 0 && $crc -ne 64 ]]; then
+  echo "[presentation-golden] FAIL: credits interpolation leg (see the credits-interp lines above)."
+  [[ $drc -eq 0 ]] && exit 1
+fi
 if [[ $irc -ne 0 && $irc -ne 64 ]]; then
   echo "[presentation-golden] FAIL: identity leg exceeds its baseline (see EXCEED lines above)."
   echo "  A raised count is a sub-tick spine regression. Re-baseline only for a"
@@ -98,5 +114,6 @@ if [[ $drc -ne 0 ]]; then
   echo "    scripts/presentation-corpus-promote.sh $OUT --all                    # whole corpus"
   exit 1
 fi
+[[ $crc -eq 64 ]] && echo "[presentation-golden] credits leg SKIPPED (prereqs missing)"
 echo "[presentation-golden] PASS: corpus matches golden"
 exit 0
