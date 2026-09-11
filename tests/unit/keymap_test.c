@@ -6,6 +6,7 @@
  * of tests/unit/CMakeLists.txt) and, more usefully, lets the test drive
  * held/released input directly to exercise the edge latch. */
 
+#include "openpete_host_mouse.h"  /* OPENPETE_MOUSE_OWNED_*, wheel unit */
 #include "openpete_input_log.h"   /* OPENPETE_PAD_SLOTS */
 #include "openpete_keymap.h"
 
@@ -86,14 +87,32 @@ static int fake_key(int c)  { return (c >= 0 && c < 256) ? g_keys[c] : 0; }
 static int fake_btn(int c)  { return (c >= 0 && c < 256) ? g_btns[c] : 0; }
 static int fake_axis(int c) { return (c >= 0 && c < 256) ? g_axes[c] : 0; }
 
+/* The fake mouse channel: a button mask, running totals, and an owner. */
+static unsigned  g_mouse_mask;
+static long long g_mouse_motion[2];
+static long long g_mouse_wheel;
+static int       g_mouse_owned;
+
+static int       fake_mouse_btn(int c)   { return (g_mouse_mask >> c) & 1u; }
+static long long fake_mouse_motion(int a) { return (a >= 0 && a < 2) ? g_mouse_motion[a] : 0; }
+static long long fake_mouse_wheel(void)   { return g_mouse_wheel; }
+static int       fake_mouse_owned(void)   { return g_mouse_owned; }
+
 static void fake_reset(void) {
     memset(g_keys, 0, sizeof g_keys);
     memset(g_btns, 0, sizeof g_btns);
     memset(g_axes, 0, sizeof g_axes);
+    g_mouse_mask = 0;
+    memset(g_mouse_motion, 0, sizeof g_mouse_motion);
+    g_mouse_wheel = 0;
+    g_mouse_owned = OPENPETE_MOUSE_OWNED_NONE;
 }
 
 static void install_fakes(void) {
-    static const openpete_keymap_input_fns fns = { fake_key, fake_btn, fake_axis };
+    static const openpete_keymap_input_fns fns = {
+        fake_key, fake_btn, fake_axis, NULL, NULL,
+        fake_mouse_btn, fake_mouse_motion, fake_mouse_wheel, fake_mouse_owned
+    };
     openpete_keymap_set_lookup(fake_to_code, fake_to_name, NULL);
     openpete_keymap_set_input(&fns);
 }
@@ -636,6 +655,246 @@ static void test_mod_bindings(void) {
           "and carry the configured key");
 }
 
+/* ---- mouse sources ---------------------------------------------------- */
+
+static int set_mod1(const char* mod, const char* name, const char* val) {
+    const char* toks[1] = { val };
+    return openpete_keymap_set_mod(mod, name, toks, 1, 100, "test");
+}
+
+/* Parse acceptance and rejection by domain and by action class. */
+static void test_mouse_parse(void) {
+    openpete_keymap_init();
+    CHECK(set1("host", "teleport", "mouse:right", 100, "g") == 0,
+          "mouse:right on a host digital action");
+    CHECK(has_source(OPK_TELEPORT, KM_SRC_MOUSEBTN, KM_MOUSE_RIGHT),
+          "and it lands as KM_SRC_MOUSEBTN right");
+    CHECK(set1("host", "look_axis_x", "pad:rightx,mouse:x", 100, "g") == 0,
+          "mouse:x alongside a stick on a KM_DELTA action");
+    CHECK(has_source(OPK_LOOK_AXIS_X, KM_SRC_MOUSEAXIS, KM_MOUSE_X),
+          "and it lands as KM_SRC_MOUSEAXIS x");
+    CHECK(set1("host", "look_axis_y", "mouse:-y", 100, "g") == 0, "mouse:-y");
+    {
+        km_source_t src[KM_MAX_SOURCES];
+        int n = openpete_keymap_sources(OPK_LOOK_AXIS_Y, src, KM_MAX_SOURCES);
+        CHECK(n == 1 && src[0].kind == KM_SRC_MOUSEAXIS && src[0].invert < 0,
+              "mouse:-y carries the invert");
+    }
+    CHECK(set1("host", "speed_up", "],mouse:wheel_up", 100, "g") == 0,
+          "a wheel pulse on a digital action");
+    CHECK(set_mod1("probe", "fire", "mouse:right") == 0,
+          "mouse:right on a mod binding");
+    CHECK(set_mod1("probe", "go", "pad:north") == 0,
+          "pad:north on a mod binding");
+
+    /* Rejections. */
+    CHECK(set1("pad", "cross", "mouse:left", 100, "g") != 0,
+          "the pad domain must reject a mouse source");
+    CHECK(set1("pad2", "cross", "mouse:left", 100, "g") != 0, "pad2 too");
+    CHECK(set1("pad3", "cross", "mouse:left", 100, "g") != 0, "pad3 too");
+    CHECK(set1("pad4", "cross", "mouse:left", 100, "g") != 0, "pad4 too");
+    CHECK(set1("host", "teleport", "mouse:x", 100, "g") != 0,
+          "mouse motion on a digital action must be an error");
+    CHECK(set1("host", "fly_axis_x", "mouse:x", 100, "g") != 0,
+          "mouse motion on an axis without a delta consumer must be an error");
+    CHECK(set1("host", "menu_close", "mouse:wheel_up", 100, "g") != 0,
+          "a pulse on a KM_LEVEL action must be an error");
+    CHECK(set1("host", "fly_forward", "mouse:wheel_down", 100, "g") != 0,
+          "a pulse on a level-read freecam key must be an error");
+    CHECK(set1("host", "fly_axis_x", "mouse:wheel_up", 100, "g") != 0,
+          "a pulse on an axis action must be an error");
+    CHECK(set_mod1("probe", "fire", "mouse:wheel_up") != 0,
+          "a pulse on a mod binding must be an error");
+    CHECK(set_mod1("probe", "fire", "mouse:x") != 0,
+          "motion on a mod binding must be an error");
+    CHECK(set1("host", "teleport", "mouse:-left", 100, "g") != 0,
+          "inverting a mouse button must be an error");
+    CHECK(set1("host", "teleport", "mouse:nosuch", 100, "g") != 0,
+          "an unknown mouse name must be an error");
+    CHECK(has_source(OPK_TELEPORT, KM_SRC_MOUSEBTN, KM_MOUSE_RIGHT),
+          "a rejected value must leave the old binding intact");
+}
+
+/* Resolve-time clauses: the MENU-context unreachable warning, the menu
+ * gesture warning, the one-device clash, and the left_bound predicate. */
+static void test_mouse_resolve(void) {
+    openpete_keymap_init();
+    CHECK(set1("host", "menu_up", "Up,mouse:x1", 100, "g") == 0, "menu_up+x1");
+    CHECK(openpete_keymap_resolve() == 1,
+          "a mouse source on a MENU action is unreachable and warns once");
+
+    openpete_keymap_init();
+    CHECK(set1("host", "menu_close", "pad:start,mouse:middle", 100, "g") == 0,
+          "menu_close+middle");
+    CHECK(openpete_keymap_resolve() == 0,
+          "menu_close is exempt from the unreachable clause");
+
+    openpete_keymap_init();
+    CHECK(set1("host", "menu", "O,mouse:left", 100, "g") == 0, "menu+left");
+    CHECK(openpete_keymap_resolve() == 1,
+          "menu on mouse:left is a menu gesture and warns");
+    CHECK(openpete_keymap_mouse_left_bound(),
+          "left_bound is true with a mouse:left source");
+
+    openpete_keymap_init();
+    CHECK(set1("host", "menu", "O,mouse:wheel_up", 100, "g") == 0, "menu+wheel");
+    CHECK(openpete_keymap_resolve() == 1,
+          "menu on a wheel source is a menu gesture and warns");
+
+    openpete_keymap_init();
+    CHECK(set1("host", "menu", "O,mouse:middle", 100, "g") == 0, "menu+middle");
+    CHECK(openpete_keymap_resolve() == 0,
+          "menu on mouse:middle is reachable and not a gesture");
+    CHECK(!openpete_keymap_mouse_left_bound(),
+          "left_bound is false without a mouse:left source");
+
+    openpete_keymap_init();
+    CHECK(set1("host", "teleport", "mouse:left", 100, "g") == 0, "teleport left");
+    CHECK(set1("host", "pause", "mouse:left", 100, "g") == 0, "pause left");
+    CHECK(openpete_keymap_resolve() == 1,
+          "mouse:left bound twice in one context is a clash");
+
+    /* A mod binding counts toward left_bound, and is seen when registered
+     * after resolve. */
+    openpete_keymap_init();
+    CHECK(openpete_keymap_resolve() == 0, "stock");
+    CHECK(!openpete_keymap_mouse_left_bound(), "stock: no mouse:left");
+    CHECK(set_mod1("probe", "fire", "mouse:left") == 0, "mod left");
+    CHECK(openpete_keymap_mouse_left_bound(),
+          "a mod binding registered after resolve sets left_bound");
+    CHECK(set_mod1("probe", "fire", "F6") == 0, "mod rebound");
+    CHECK(!openpete_keymap_mouse_left_bound(),
+          "and rebinding it clears left_bound");
+}
+
+/* Buttons are levels through the arbitrated view; pulses count notches
+ * per poll; deltas sum signed counts with the invert applied. */
+static void test_mouse_live(void) {
+    openpete_keymap_init();
+    fake_reset();
+    CHECK(set1("host", "teleport", "mouse:right", 100, "g") == 0, "teleport right");
+    CHECK(set1("host", "speed_up", "],mouse:wheel_up", 100, "g") == 0, "speed_up");
+    CHECK(set1("host", "speed_down", "[,mouse:wheel_down", 100, "g") == 0, "speed_down");
+    CHECK(set1("host", "look_axis_x", "mouse:x", 100, "g") == 0, "look x");
+    CHECK(set1("host", "look_axis_y", "mouse:-y", 100, "g") == 0, "look -y");
+    openpete_keymap_poll();
+
+    /* Button level and edge. */
+    g_mouse_mask = OPENPETE_MOUSE_RIGHT;
+    openpete_keymap_poll();
+    CHECK(openpete_key_down(OPK_TELEPORT), "right held reads down");
+    CHECK(openpete_key_pressed(OPK_TELEPORT), "and pressed on its first poll");
+    openpete_keymap_poll();
+    CHECK(!openpete_key_pressed(OPK_TELEPORT), "held: no second press");
+    g_mouse_mask = 0;
+    openpete_keymap_poll();
+    CHECK(!openpete_key_down(OPK_TELEPORT), "released");
+
+    /* Two notches in one poll: two pulses, one press. */
+    g_mouse_wheel += 2 * OPENPETE_MOUSE_WHEEL_UNIT;
+    openpete_keymap_poll();
+    CHECK(openpete_key_pulses(OPK_SPEED_UP) == 2, "two notches -> two pulses (got %d)",
+          openpete_key_pulses(OPK_SPEED_UP));
+    CHECK(openpete_key_pressed(OPK_SPEED_UP), "pulses read as pressed");
+    CHECK(!openpete_key_edge(OPK_SPEED_UP), "but not as a held edge");
+    CHECK(openpete_key_pulses(OPK_SPEED_DOWN) == 0, "the other direction is quiet");
+    /* Consecutive polls: one notch each. */
+    g_mouse_wheel -= OPENPETE_MOUSE_WHEEL_UNIT;
+    openpete_keymap_poll();
+    CHECK(openpete_key_pulses(OPK_SPEED_DOWN) == 1, "one notch down");
+    g_mouse_wheel -= OPENPETE_MOUSE_WHEEL_UNIT;
+    openpete_keymap_poll();
+    CHECK(openpete_key_pulses(OPK_SPEED_DOWN) == 1, "and another on the next poll");
+    openpete_keymap_poll();
+    CHECK(openpete_key_pulses(OPK_SPEED_DOWN) == 0 && !openpete_key_pressed(OPK_SPEED_DOWN),
+          "no notch: no pulse, no press");
+    /* Fractional travel accumulates across polls. */
+    g_mouse_wheel += OPENPETE_MOUSE_WHEEL_UNIT / 2;
+    openpete_keymap_poll();
+    CHECK(openpete_key_pulses(OPK_SPEED_UP) == 0, "half a notch is not a pulse");
+    g_mouse_wheel += OPENPETE_MOUSE_WHEEL_UNIT / 2;
+    openpete_keymap_poll();
+    CHECK(openpete_key_pulses(OPK_SPEED_UP) == 1, "two halves make one notch");
+    /* The key edge and a pulse in one poll are both there for a consumer
+     * stepping edge + pulses; pressed still reads once. */
+    g_keys[fake_to_code(KM_SRC_KEY, "]")] = 1;
+    g_mouse_wheel += OPENPETE_MOUSE_WHEEL_UNIT;
+    openpete_keymap_poll();
+    CHECK(openpete_key_edge(OPK_SPEED_UP) == 1 && openpete_key_pulses(OPK_SPEED_UP) == 1,
+          "edge and pulse in one poll");
+    CHECK(openpete_key_pressed(OPK_SPEED_UP) == 1, "pressed is one, not two");
+    g_keys[fake_to_code(KM_SRC_KEY, "]")] = 0;
+
+    /* Deltas: signed counts since the previous poll, invert applied. */
+    g_mouse_motion[0] += 17; g_mouse_motion[1] += -5;
+    openpete_keymap_poll();
+    CHECK(openpete_key_delta(OPK_LOOK_AXIS_X) == 17, "x delta 17 (got %lld)",
+          openpete_key_delta(OPK_LOOK_AXIS_X));
+    CHECK(openpete_key_delta(OPK_LOOK_AXIS_Y) == 5, "mouse:-y negates (got %lld)",
+          openpete_key_delta(OPK_LOOK_AXIS_Y));
+    openpete_keymap_poll();
+    CHECK(openpete_key_delta(OPK_LOOK_AXIS_X) == 0, "no motion: zero delta");
+    CHECK(openpete_key_axis(OPK_LOOK_AXIS_X) == 0.0f,
+          "a displacement has no level: the axis read stays centred");
+}
+
+/* The arbitrated view: neutral while an overlay owns the mouse, markers
+ * snapped so nothing made under it is delivered when it closes; menu and
+ * menu_close exempt from the menu's ownership only. */
+static void test_mouse_owned(void) {
+    openpete_keymap_init();
+    fake_reset();
+    CHECK(set1("host", "teleport", "mouse:right", 100, "g") == 0, "teleport right");
+    CHECK(set1("host", "menu", "O,mouse:middle", 100, "g") == 0, "menu middle");
+    CHECK(set1("host", "speed_up", "mouse:wheel_up", 100, "g") == 0, "speed_up");
+    CHECK(set1("host", "look_axis_x", "mouse:x", 100, "g") == 0, "look x");
+    openpete_keymap_poll();
+
+    g_mouse_owned = OPENPETE_MOUSE_OWNED_MENU;
+    g_mouse_mask = OPENPETE_MOUSE_RIGHT | OPENPETE_MOUSE_MIDDLE;
+    g_mouse_wheel += 3 * OPENPETE_MOUSE_WHEEL_UNIT;
+    g_mouse_motion[0] += 40;
+    openpete_keymap_poll();
+    CHECK(!openpete_key_down(OPK_TELEPORT), "menu owns: a button reads neutral");
+    CHECK(openpete_key_down(OPK_MENU), "menu is exempt from the menu's ownership");
+    CHECK(openpete_key_pulses(OPK_SPEED_UP) == 0, "menu owns: no pulses");
+    CHECK(openpete_key_delta(OPK_LOOK_AXIS_X) == 0, "menu owns: no delta");
+    {
+        long long w, mx, my;
+        openpete_keymap_mouse_markers(&w, &mx, &my);
+        CHECK(w == g_mouse_wheel && mx == g_mouse_motion[0],
+              "the markers advanced to the totals under the owner");
+    }
+    g_mouse_owned = OPENPETE_MOUSE_OWNED_NONE;
+    openpete_keymap_poll();
+    CHECK(openpete_key_pulses(OPK_SPEED_UP) == 0 && openpete_key_delta(OPK_LOOK_AXIS_X) == 0,
+          "motion made under the owner is never delivered late");
+    CHECK(openpete_key_down(OPK_TELEPORT), "released ownership: the held button reads");
+
+    g_mouse_owned = OPENPETE_MOUSE_OWNED_DEVUI;
+    openpete_keymap_poll();
+    CHECK(!openpete_key_down(OPK_MENU), "menu is not exempt from the overlay's ownership");
+    CHECK(!openpete_key_down(OPK_TELEPORT), "nor is anything else");
+}
+
+/* Mouse sources never route into a pad reader, and the formatter prints
+ * them with the mouse: prefix. */
+static void test_mouse_reader_and_format(void) {
+    openpete_keymap_init();
+    fake_reset();
+    CHECK(set1("host", "teleport", "mouse:right", 100, "g") == 0, "teleport right");
+    g_mouse_mask = OPENPETE_MOUSE_RIGHT;
+    openpete_keymap_poll();
+    openpete_keymap_reader_t rd = { NULL, NULL, NULL, NULL };
+    CHECK(!openpete_keymap_action_down_via(OPK_TELEPORT, 0, &rd),
+          "a pad reader never sees a mouse source");
+    CHECK(openpete_keymap_action_down_via(OPK_TELEPORT, 0, NULL),
+          "the live path does");
+    CHECK(set_mod1("probe", "fire", "mouse:right") == 0, "mod right");
+    CHECK(strcmp(openpete_keymap_mod_effective_key("probe", "fire", "Q"),
+                 "mouse:right") == 0, "the effective-key formatter spells mouse:");
+}
+
 int main(void) {
     install_fakes();
 
@@ -663,6 +922,11 @@ int main(void) {
     test_quit_binding();
     test_consume_key();
     test_mod_bindings();
+    test_mouse_parse();
+    test_mouse_resolve();
+    test_mouse_live();
+    test_mouse_owned();
+    test_mouse_reader_and_format();
 
     if (g_fail) {
         printf("keymap_test: %d failure(s)\n", g_fail);

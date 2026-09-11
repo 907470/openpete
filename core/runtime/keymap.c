@@ -7,10 +7,12 @@
  * resolver links into console unit tests alongside the config resolver
  * with nothing but tomlc99 in the link line. */
 
+#include "openpete_host_mouse.h"   /* OPENPETE_MOUSE_OWNED_* */
 #include "openpete_input_log.h"
 #include "openpete_keymap.h"
 #include "openpete_log.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -66,6 +68,10 @@ typedef struct {
 } km_binding_t;
 
 static km_binding_t g_bind[OPK_ACTION_COUNT];
+
+/* Per-action wheel pulses and mouse motion counts of the current poll. */
+static unsigned  g_pulses[OPK_ACTION_COUNT];
+static long long g_delta[OPK_ACTION_COUNT];
 
 /* ------------------------------------------------------------------ */
 /* seams                                                              */
@@ -123,6 +129,35 @@ static void km_release_consumed(void) {
 /* ------------------------------------------------------------------ */
 /* token parsing                                                      */
 /* ------------------------------------------------------------------ */
+
+/* SDL has no mouse-button name table, so the `mouse:` vocabulary lives
+ * here and the lookup seam is untouched for the two mouse kinds. */
+static const struct { const char* name; unsigned char kind; short code; }
+g_mouse_names[] = {
+    { "left",       KM_SRC_MOUSEBTN,  KM_MOUSE_LEFT },
+    { "middle",     KM_SRC_MOUSEBTN,  KM_MOUSE_MIDDLE },
+    { "right",      KM_SRC_MOUSEBTN,  KM_MOUSE_RIGHT },
+    { "x1",         KM_SRC_MOUSEBTN,  KM_MOUSE_X1 },
+    { "x2",         KM_SRC_MOUSEBTN,  KM_MOUSE_X2 },
+    { "wheel_up",   KM_SRC_MOUSEBTN,  KM_MOUSE_WHEEL_UP },
+    { "wheel_down", KM_SRC_MOUSEBTN,  KM_MOUSE_WHEEL_DOWN },
+    { "x",          KM_SRC_MOUSEAXIS, KM_MOUSE_X },
+    { "y",          KM_SRC_MOUSEAXIS, KM_MOUSE_Y },
+};
+
+static const char* km_mouse_name(int kind, int code) {
+    for (size_t i = 0; i < sizeof g_mouse_names / sizeof g_mouse_names[0]; i++)
+        if (g_mouse_names[i].kind == kind && g_mouse_names[i].code == code)
+            return g_mouse_names[i].name;
+    return NULL;
+}
+
+static int km_is_mouse_kind(int kind) {
+    return kind == KM_SRC_MOUSEBTN || kind == KM_SRC_MOUSEAXIS;
+}
+
+static int km_find(const char* domain, const char* action);
+static int km_streq_ci(const char* a, const char* b);
 
 static int km_streq_ci(const char* a, const char* b) {
     for (; *a && *b; a++, b++) {
@@ -198,6 +233,87 @@ static int km_parse_token(const char* tok, km_source_t* src, const char* where,
         return -1;
     }
 
+    /* "mouse:" sources. Accepted in the host and mod.<id> domains only: the
+     * player-1 pad domain is pushed to PsyCross as gamepad codes and the
+     * padN reader has no mouse member, so a mouse source there could never
+     * be read. */
+    if (strncmp(buf, "mouse:", 6) == 0) {
+        const char* name = buf + 6;
+        int invert = 0;
+        if (*name == '-') { invert = 1; name++; }
+        if (km_streq_ci(domain, "pad")  || km_streq_ci(domain, "pad2") ||
+            km_streq_ci(domain, "pad3") || km_streq_ci(domain, "pad4")) {
+            OPL_ERROR_F("keys", "%s: %s.%s: mouse sources bind host and mod "
+                        "actions only; the pad domains reach the game as "
+                        "gamepad codes", where, domain, action);
+            return -1;
+        }
+        const struct { const char* name; unsigned char kind; short code; }* m = NULL;
+        for (size_t i = 0; i < sizeof g_mouse_names / sizeof g_mouse_names[0]; i++)
+            if (km_streq_ci(g_mouse_names[i].name, name)) {
+                m = (const void*)&g_mouse_names[i];
+                break;
+            }
+        if (!m) {
+            OPL_ERROR_F("keys", "%s: %s.%s: no mouse button or axis named '%s' "
+                        "(left right middle x1 x2 wheel_up wheel_down x y)",
+                        where, domain, action, name);
+            return -1;
+        }
+        const int is_mod = strncmp(domain, "mod.", 4) == 0;
+        const int idx = is_mod ? -1 : km_find(domain, action);
+        const unsigned flags = idx >= 0 ? g_actions[idx].flags : 0u;
+        const int akind = idx >= 0 ? (int)g_actions[idx].kind : KM_DIGITAL;
+
+        if (m->kind == KM_SRC_MOUSEAXIS) {
+            /* A displacement, not a level: legal only where a consumer reads
+             * openpete_key_delta, or it would bind and do nothing. */
+            if (is_mod) {
+                OPL_ERROR_F("keys", "%s: %s.%s: 'mouse:%s' is motion; a mod "
+                            "reads motion through mouse_read, not a binding",
+                            where, domain, action, name);
+                return -1;
+            }
+            if (idx >= 0 && !(flags & KM_DELTA)) {
+                OPL_ERROR_F("keys", "%s: %s.%s: 'mouse:%s' is a displacement "
+                            "and %s reads a %s; only look_axis_x and "
+                            "look_axis_y take mouse motion", where, domain,
+                            action, name, action,
+                            akind == KM_AXIS ? "level axis" : "button");
+                return -1;
+            }
+            src->kind   = KM_SRC_MOUSEAXIS;
+            src->code   = m->code;
+            src->invert = (signed char)(invert ? -1 : 1);
+            return 1;
+        }
+        if (invert) {
+            OPL_ERROR_F("keys", "%s: %s.%s: '-' inverts an axis, and "
+                        "'mouse:%s' is a button", where, domain, action, name);
+            return -1;
+        }
+        if (KM_MOUSE_IS_PULSE(m->code)) {
+            /* A wheel notch is a pulse with no level. binding_down is a level
+             * read from a game-tick hook, and a KM_LEVEL action is read
+             * through openpete_key_down; neither can ever see it. */
+            if (is_mod) {
+                OPL_ERROR_F("keys", "%s: %s.%s: 'mouse:%s' is a pulse and a "
+                            "mod binding is read as a level", where, domain,
+                            action, name);
+                return -1;
+            }
+            if (idx >= 0 && (akind == KM_AXIS || (flags & KM_LEVEL))) {
+                OPL_ERROR_F("keys", "%s: %s.%s: 'mouse:%s' is a pulse and %s "
+                            "is read as a level", where, domain, action, name,
+                            action);
+                return -1;
+            }
+        }
+        src->kind = KM_SRC_MOUSEBTN;
+        src->code = m->code;
+        return 1;
+    }
+
     /* Bare name == keyboard scancode. The `pad:` prefix is mandatory
      * precisely so this branch never has to guess: SDL's scancode and
      * gamepad-button name tables both contain "a", "b", "back" and
@@ -268,6 +384,8 @@ static const char* km_domain_name(int d) {
 void openpete_keymap_init(void) {
     memset(g_bind, 0, sizeof g_bind);
     g_consumed_n = 0;
+    memset(g_pulses, 0, sizeof g_pulses);
+    memset(g_delta, 0, sizeof g_delta);
     for (int i = 0; i < OPK_ACTION_COUNT; i++) {
         const km_action_def_t* a = &g_actions[i];
         km_binding_t* b = &g_bind[i];
@@ -445,6 +563,8 @@ static int km_src_same(const km_source_t* a, const km_source_t* b) {
      * drives a pair of directions (menu_up on "pad:-lefty", menu_down on
      * "pad:lefty"). Only the same half of the same axis is a clash. */
     if (a->kind == KM_SRC_PADAXIS) return a->invert == b->invert;
+    /* A mouse motion source delivers the whole displacement to every action
+     * it is bound to whatever its sign, so mouse:x and mouse:-x contest. */
     return 1;
 }
 
@@ -452,6 +572,43 @@ typedef struct { int a, b; const char* why; } km_conflict_t;
 #define KM_MAX_CONFLICTS 32
 static km_conflict_t g_conflicts[KM_MAX_CONFLICTS];
 static int g_conflict_n;
+
+/* [keys.mod.<id>] rows are stored separately: mods are discovered after
+ * the config is read, so their names cannot be validated against a
+ * registry at harvest time the way pad/host actions are. */
+typedef struct {
+    char        mod[40];
+    char        name[24];
+    km_source_t src[KM_MAX_SOURCES];
+    int         n;
+    int         rank;
+} km_mod_bind_t;
+
+#define KM_MAX_MOD_BINDS 64
+static km_mod_bind_t g_modbind[KM_MAX_MOD_BINDS];
+static int g_modbind_n;
+
+/* Whether any host or mod binding carries mouse:left. Read on the pump
+ * thread by the double-click fullscreen gate, so two presses of a
+ * mouse:left-bound action cannot also flip the window. */
+static _Atomic int g_left_bound;
+
+static void km_recompute_left_bound(void) {
+    int found = 0;
+    for (int i = 0; i < OPK_ACTION_COUNT && !found; i++)
+        for (int x = 0; x < g_bind[i].n; x++)
+            if (g_bind[i].src[x].kind == KM_SRC_MOUSEBTN &&
+                g_bind[i].src[x].code == KM_MOUSE_LEFT) { found = 1; break; }
+    for (int i = 0; i < g_modbind_n && !found; i++)
+        for (int x = 0; x < g_modbind[i].n; x++)
+            if (g_modbind[i].src[x].kind == KM_SRC_MOUSEBTN &&
+                g_modbind[i].src[x].code == KM_MOUSE_LEFT) { found = 1; break; }
+    atomic_store_explicit(&g_left_bound, found, memory_order_relaxed);
+}
+
+int openpete_keymap_mouse_left_bound(void) {
+    return atomic_load_explicit(&g_left_bound, memory_order_relaxed);
+}
 
 int openpete_keymap_resolve(void) {
     int warnings = 0;
@@ -500,6 +657,43 @@ int openpete_keymap_resolve(void) {
                    g_actions[i].id, g_actions[i].purpose);
         warnings++;
     }
+
+    /* Mouse reachability. The settings menu owns the mouse while the MENU
+     * context is live, so every mouse source on a MENU action reads neutral;
+     * menu_close is exempt from that ownership (it may close what a mouse
+     * button opened) and so from this clause. The menu's own gestures (left
+     * and right click on a row, the wheel over a row) are consumed outside
+     * the keymap, so a `menu` or `menu_close` binding on them would make
+     * every row click also toggle or close the menu. */
+    for (int i = 0; i < OPK_ACTION_COUNT; i++) {
+        const km_action_def_t* a = &g_actions[i];
+        const km_binding_t* b = &g_bind[i];
+        for (int x = 0; x < b->n; x++) {
+            const km_source_t* src = &b->src[x];
+            if (!km_is_mouse_kind(src->kind)) continue;
+            const char* nm = km_mouse_name(src->kind, src->code);
+            if (a->ctx == KM_CTX_MENU && i != OPK_MENU_CLOSE) {
+                OPL_WARN_F("keys", "%s.%s binds mouse:%s, which is unreachable: "
+                           "the settings menu owns the mouse while it is open",
+                           km_domain_name(a->domain), a->id, nm ? nm : "?");
+                warnings++;
+                continue;
+            }
+            if ((i == OPK_MENU || i == OPK_MENU_CLOSE) &&
+                src->kind == KM_SRC_MOUSEBTN &&
+                (src->code == KM_MOUSE_LEFT || src->code == KM_MOUSE_RIGHT ||
+                 (i == OPK_MENU && KM_MOUSE_IS_PULSE(src->code)))) {
+                OPL_WARN_F("keys", "%s.%s binds mouse:%s, a settings-menu "
+                           "gesture: every %s would also %s the menu",
+                           km_domain_name(a->domain), a->id, nm ? nm : "?",
+                           KM_MOUSE_IS_PULSE(src->code) ? "wheel notch over a row"
+                                                        : "row click",
+                           i == OPK_MENU ? "toggle" : "close");
+                warnings++;
+            }
+        }
+    }
+    km_recompute_left_bound();
     return warnings;
 }
 
@@ -533,9 +727,34 @@ static int           g_suspend_kbd;
 typedef struct {
     const openpete_keymap_reader_t* rd;
     int default_slot;
+    /* The action is exempt from the settings menu's mouse ownership (OPK_MENU
+     * and OPK_MENU_CLOSE, so a mouse-bound `menu` can close what it opened).
+     * Never exempt from the dev overlay's. */
+    int menu_exempt;
 } km_resolve_t;
 
-static const km_resolve_t KM_RESOLVE_LIVE = { NULL, 0 };
+static const km_resolve_t KM_RESOLVE_LIVE = { NULL, 0, 0 };
+
+static int km_mouse_owned(void) {
+    return s_in.mouse_owned ? s_in.mouse_owned() : OPENPETE_MOUSE_OWNED_NONE;
+}
+
+/* The arbitrated view: a mouse source reads neutral while an overlay owns
+ * the mouse. */
+static int km_mouse_neutral(int owned, int menu_exempt) {
+    if (owned == OPENPETE_MOUSE_OWNED_DEVUI) return 1;
+    if (owned == OPENPETE_MOUSE_OWNED_MENU && !menu_exempt) return 1;
+    return 0;
+}
+
+static int km_read_mouse_btn(const km_resolve_t* c, const km_source_t* s) {
+    /* A pad reader resolves the replayable pad decode; the mouse never
+     * routes into it. A pulse source has no level. */
+    if (c->rd) return 0;
+    if (KM_MOUSE_IS_PULSE(s->code)) return 0;
+    if (km_mouse_neutral(km_mouse_owned(), c->menu_exempt)) return 0;
+    return s_in.mouse_button ? s_in.mouse_button(s->code) : 0;
+}
 
 static int km_src_slot(const km_resolve_t* c, const km_source_t* s) {
     return s->device ? s->device - 1 : c->default_slot;
@@ -586,15 +805,25 @@ static int km_src_down(const km_resolve_t* c, const km_source_t* s) {
         return km_read_btn(c, s);
     case KM_SRC_PADAXIS:
         return km_src_axis_raw(c, s) > KM_AXIS_PRESS;
+    case KM_SRC_MOUSEBTN:
+        return km_read_mouse_btn(c, s);
+    case KM_SRC_MOUSEAXIS:
+        return 0;   /* a displacement has no level */
     default: return 0;
     }
+}
+
+static int km_menu_exempt(openpete_action_t a) {
+    return a == OPK_MENU || a == OPK_MENU_CLOSE;
 }
 
 static int km_action_down(const km_resolve_t* c, openpete_action_t a) {
     if ((unsigned)a >= OPK_ACTION_COUNT) return 0;
     const km_binding_t* b = &g_bind[a];
+    km_resolve_t cc = *c;
+    cc.menu_exempt = km_menu_exempt(a);
     for (int i = 0; i < b->n; i++)
-        if (km_src_down(c, &b->src[i])) return 1;
+        if (km_src_down(&cc, &b->src[i])) return 1;
     return 0;
 }
 
@@ -612,6 +841,8 @@ static float km_action_axis(const km_resolve_t* c, openpete_action_t a) {
                 float f = (float)v / 32767.0f;
                 return f > 1.0f ? 1.0f : (f < -1.0f ? -1.0f : f);
             }
+        } else if (s->kind == KM_SRC_MOUSEAXIS) {
+            continue;   /* a displacement has no level to return */
         } else if (km_src_down(c, s)) {
             return 1.0f;
         }
@@ -656,21 +887,80 @@ int openpete_keymap_action_bound(openpete_action_t a) {
     return (unsigned)a < OPK_ACTION_COUNT ? g_bind[a].n : 0;
 }
 
+/* Wheel pulses and motion deltas: one marker per total, advanced every
+ * poll whether or not anything is bound, so motion made while an overlay
+ * owned the mouse is dropped rather than delivered late. */
+static long long g_wheel_last;
+static long long g_motion_last[KM_MOUSE_AXIS_COUNT];
+
+static long long km_floordiv_unit(long long v) {
+    const long long u = OPENPETE_MOUSE_WHEEL_UNIT;
+    return v >= 0 ? v / u : -((-v + u - 1) / u);
+}
+
 void openpete_keymap_poll(void) {
     km_release_consumed();
     memcpy(g_prev, g_held, sizeof g_prev);
     for (int i = 0; i < OPK_ACTION_COUNT; i++)
         g_held[i] = (unsigned char)km_action_down(&KM_RESOLVE_LIVE,
                                                   (openpete_action_t)i);
+
+    const long long wheel = s_in.mouse_wheel_total ? s_in.mouse_wheel_total() : 0;
+    const long long notches = km_floordiv_unit(wheel) - km_floordiv_unit(g_wheel_last);
+    g_wheel_last = wheel;
+    long long dm[KM_MOUSE_AXIS_COUNT];
+    for (int ax = 0; ax < KM_MOUSE_AXIS_COUNT; ax++) {
+        long long t = s_in.mouse_motion_total ? s_in.mouse_motion_total(ax) : 0;
+        dm[ax] = t - g_motion_last[ax];
+        g_motion_last[ax] = t;
+    }
+    const int owned = km_mouse_owned();
+
+    for (int i = 0; i < OPK_ACTION_COUNT; i++) {
+        g_pulses[i] = 0;
+        g_delta[i]  = 0;
+        const km_binding_t* b = &g_bind[i];
+        if (km_mouse_neutral(owned, km_menu_exempt((openpete_action_t)i))) continue;
+        for (int x = 0; x < b->n; x++) {
+            const km_source_t* s = &b->src[x];
+            if (s->kind == KM_SRC_MOUSEBTN) {
+                if (s->code == KM_MOUSE_WHEEL_UP && notches > 0)
+                    g_pulses[i] += (unsigned)notches;
+                else if (s->code == KM_MOUSE_WHEEL_DOWN && notches < 0)
+                    g_pulses[i] += (unsigned)(-notches);
+            } else if (s->kind == KM_SRC_MOUSEAXIS) {
+                g_delta[i] += dm[s->code] * (s->invert < 0 ? -1 : 1);
+            }
+        }
+    }
 }
 
 int openpete_key_down(openpete_action_t a) {
     return (unsigned)a < OPK_ACTION_COUNT ? g_held[a] : 0;
 }
 
-int openpete_key_pressed(openpete_action_t a) {
+int openpete_key_edge(openpete_action_t a) {
     if ((unsigned)a >= OPK_ACTION_COUNT) return 0;
     return g_held[a] && !g_prev[a];
+}
+
+int openpete_key_pulses(openpete_action_t a) {
+    return (unsigned)a < OPK_ACTION_COUNT ? (int)g_pulses[a] : 0;
+}
+
+int openpete_key_pressed(openpete_action_t a) {
+    if ((unsigned)a >= OPK_ACTION_COUNT) return 0;
+    return (g_held[a] && !g_prev[a]) || g_pulses[a] > 0;
+}
+
+long long openpete_key_delta(openpete_action_t a) {
+    return (unsigned)a < OPK_ACTION_COUNT ? g_delta[a] : 0;
+}
+
+void openpete_keymap_mouse_markers(long long* wheel, long long* mx, long long* my) {
+    if (wheel) *wheel = g_wheel_last;
+    if (mx) *mx = g_motion_last[KM_MOUSE_X];
+    if (my) *my = g_motion_last[KM_MOUSE_Y];
 }
 
 float openpete_key_axis(openpete_action_t a) {
@@ -712,22 +1002,6 @@ int openpete_keymap_key_binds(openpete_action_t a, int scancode) {
 /* the report                                                         */
 /* ------------------------------------------------------------------ */
 
-/* [keys.mod.<id>] rows are stored separately: mods are discovered after
- * the config is read, so their names cannot be validated against a
- * registry at harvest time the way pad/host actions are. */
-typedef struct {
-    char        mod[40];
-    char        name[24];
-    km_source_t src[KM_MAX_SOURCES];
-    int         n;
-    int         rank;
-} km_mod_bind_t;
-
-#define KM_MAX_MOD_BINDS 64
-static km_mod_bind_t g_modbind[KM_MAX_MOD_BINDS];
-static int g_modbind_n;
-
-
 static int s_report_requested;
 void openpete_keymap_request_report(void) { s_report_requested = 1; }
 int  openpete_keymap_report_requested(void) { return s_report_requested; }
@@ -739,7 +1013,12 @@ static void km_format_binding(const km_binding_t* b, char* out, size_t cap) {
         const km_source_t* s = &b->src[i];
         const char* nm = s_to_name ? s_to_name(s->kind, s->code) : NULL;
         char piece[80];
-        if (s->kind == KM_SRC_KEY) {
+        if (km_is_mouse_kind(s->kind)) {
+            const char* mn = km_mouse_name(s->kind, s->code);
+            snprintf(piece, sizeof piece, "mouse:%s%s",
+                     (s->kind == KM_SRC_MOUSEAXIS && s->invert < 0) ? "-" : "",
+                     mn ? mn : "?");
+        } else if (s->kind == KM_SRC_KEY) {
             /* Print the layout's own label next to the (positional)
              * scancode name when they differ, so a non-QWERTY user can
              * see which physical key to press without guessing. */
@@ -859,6 +1138,7 @@ int openpete_keymap_set_mod(const char* mod_id, const char* name,
         memcpy(g_modbind[i].src, src, sizeof src);
         g_modbind[i].n = cnt;
         g_modbind[i].rank = rank;
+        km_recompute_left_bound();
         return 0;
     }
     if (g_modbind_n >= KM_MAX_MOD_BINDS) {
@@ -872,6 +1152,7 @@ int openpete_keymap_set_mod(const char* mod_id, const char* name,
     memcpy(m->src, src, sizeof src);
     m->n = cnt;
     m->rank = rank;
+    km_recompute_left_bound();
     return 0;
 }
 
@@ -885,7 +1166,12 @@ const char* openpete_keymap_mod_effective_key(const char* mod_id,
         if (g_modbind[i].n == 0) return "(unbound)";
         const km_source_t* s = &g_modbind[i].src[0];
         const char* nm = s_to_name ? s_to_name(s->kind, s->code) : NULL;
-        if (s->kind == KM_SRC_KEY)
+        if (km_is_mouse_kind(s->kind)) {
+            const char* mn = km_mouse_name(s->kind, s->code);
+            snprintf(buf, sizeof buf, "mouse:%s%s",
+                     (s->kind == KM_SRC_MOUSEAXIS && s->invert < 0) ? "-" : "",
+                     mn ? mn : "?");
+        } else if (s->kind == KM_SRC_KEY)
             snprintf(buf, sizeof buf, "%s", nm ? nm : "?");
         else {
             char padpfx[8];

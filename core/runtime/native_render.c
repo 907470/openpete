@@ -2696,6 +2696,13 @@ void openpete_native_toggle_fullscreen(void)
                         "DISPLAY: %s", !fs ? "FULLSCREEN" : "WINDOWED");
 }
 
+/* The native window, or NULL before it exists or when the renderer is off
+ * (headless, PsyCross-only). The mouse channel applies relative mode to it. */
+SDL_Window* openpete_native_render_window(void)
+{
+    return s_nr.enabled ? s_nr.window : NULL;
+}
+
 /* Live fullscreen state, read straight from the SDL window flags — the O-menu
  * DISPLAY row displays this each frame (no shadow index), so it can never
  * drift from the Alt+Enter / double-click toggles. 0 when there is no native

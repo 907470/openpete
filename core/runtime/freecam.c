@@ -5,6 +5,7 @@
 #include "openpete_freecam.h"
 #include "openpete_log.h"
 
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -37,6 +38,18 @@ void openpete_freecam_set_axes(const openpete_freecam_axes* ax) {
 
 void openpete_freecam_get_axes(openpete_freecam_axes* out) {
     if (out) *out = s_axes;
+}
+
+static _Atomic long long s_look_count_x, s_look_count_y;
+
+void openpete_freecam_add_look_counts(long long dx, long long dy) {
+    if (dx) atomic_fetch_add_explicit(&s_look_count_x, dx, memory_order_relaxed);
+    if (dy) atomic_fetch_add_explicit(&s_look_count_y, dy, memory_order_relaxed);
+}
+
+void openpete_freecam_look_counts(long long* x, long long* y) {
+    if (x) *x = atomic_load_explicit(&s_look_count_x, memory_order_relaxed);
+    if (y) *y = atomic_load_explicit(&s_look_count_y, memory_order_relaxed);
 }
 
 void openpete_freecam_request_teleport(void) {

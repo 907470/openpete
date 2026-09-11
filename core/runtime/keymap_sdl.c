@@ -16,6 +16,7 @@
 #include <SDL3/SDL.h>
 
 #include "openpete_host_input.h"
+#include "openpete_host_mouse.h"
 
 #include <string.h>
 
@@ -61,6 +62,24 @@ static int km_sdl_pad_button_slot(int slot, int button) {
 
 static int km_sdl_pad_axis_slot(int slot, int axis) {
     return openpete_host_input_pad_axis_slot(slot, axis);
+}
+
+/* Mouse buttons read the published snapshot like the keys above; the
+ * totals are the channel's own atomics, readable from any thread. */
+static int km_sdl_mouse_button(int code) {
+    return openpete_host_input_mouse_button(code);
+}
+
+static long long km_sdl_mouse_motion_total(int axis) {
+    return (long long)openpete_host_mouse_motion_total(axis);
+}
+
+static long long km_sdl_mouse_wheel_total(void) {
+    return (long long)openpete_host_mouse_wheel_total();
+}
+
+static int km_sdl_mouse_owned(void) {
+    return openpete_host_mouse_owned();
 }
 
 /* SDL's own button vocabulary is still the mapping-database spelling —
@@ -154,7 +173,9 @@ static const char* km_sdl_key_label(int scancode) {
 void openpete_keymap_install_sdl(void) {
     static const openpete_keymap_input_fns fns = {
         km_sdl_key_down, km_sdl_pad_button, km_sdl_pad_axis,
-        km_sdl_pad_button_slot, km_sdl_pad_axis_slot
+        km_sdl_pad_button_slot, km_sdl_pad_axis_slot,
+        km_sdl_mouse_button, km_sdl_mouse_motion_total,
+        km_sdl_mouse_wheel_total, km_sdl_mouse_owned
     };
     openpete_keymap_set_lookup(km_sdl_name_to_code, km_sdl_code_to_name,
                                km_sdl_key_label);

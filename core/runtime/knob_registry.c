@@ -1106,6 +1106,15 @@ static const knob_desc_t g_builtin[] = {
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, injectmouse_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
+    ENVROW_LATCHED("MOUSE_INJECT", "Debug", "",
+        "Path of a mouse-event script (\"<pump-iteration> move x y | down b | "
+        "up b | click2 b | rel dx dy | wheel n | menu 0|1 | capture 0|1\") "
+        "pushed through the event pump as SDL events, so an unattended run "
+        "drives every mouse consumer. Read once at boot."),
+    ENVROW_LATCHED("MOUSE_PROBE", "Debug", "0",
+        "Log the mouse channel on change and every consumer gesture with its "
+        "outcome. Read once at boot."),
+
     { "fillpick", "Fill-tag inspector", "Debug", NULL, "OPENPETE_FILLPICK",
       "Pick the terrain face under the crosshair and re-judge its LP fill "
       "tag live (P key). Display-only audit tool for the frozen list in "

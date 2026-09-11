@@ -23,6 +23,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "openpete_host_mouse.h"
+
 typedef struct openpete_pad_snapshot {
     unsigned short bits;      /* active-low, released = 1 */
     unsigned char  axes[4];   /* PSX pad->analog order: RX, RY, LX, LY */
@@ -97,6 +99,12 @@ int      openpete_host_input_pad_button_slot(int slot, int button);
 int      openpete_host_input_pad_axis_slot(int slot, int axis);
 int      openpete_host_input_pad_connected(int slot);
 unsigned openpete_host_input_modstate(void);
+
+/* The mouse half of the same snapshot: event-derived position (window
+ * points), window size in points, button mask and in-window flag, copied
+ * from the mouse channel at publish. `button_index` is OPENPETE_MOUSE_BTN_*. */
+void     openpete_host_input_mouse(openpete_mouse_state_t* out);
+int      openpete_host_input_mouse_button(int button_index);
 
 /* Last published snapshot (diagnostics / the parity instrument). */
 void openpete_host_input_last(openpete_pad_snapshot_t* out);

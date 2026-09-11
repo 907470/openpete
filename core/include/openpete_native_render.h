@@ -112,6 +112,9 @@ void openpete_native_request_fullscreen_toggle(void);
  * keeping a shadow index, so it stays in sync with Alt+Enter / double-click. */
 int openpete_native_fullscreen_active(void);
 
+/* The native SDL window, or NULL when there is none. */
+struct SDL_Window* openpete_native_render_window(void);
+
 /* Performance-stats overlay (vk live window). Drawn only on the live vk
  * present (never screenshots). The level is one of the
  * OPENPETE_PERF_* values in openpete_perf_stats.h, which also owns the

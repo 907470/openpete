@@ -37,13 +37,31 @@ typedef enum {
     KM_SRC_NONE = 0,
     KM_SRC_KEY,       /* keyboard scancode */
     KM_SRC_PADBTN,    /* gamepad button */
-    KM_SRC_PADAXIS    /* gamepad axis (invert flips the sign) */
+    KM_SRC_PADAXIS,   /* gamepad axis (invert flips the sign) */
+    KM_SRC_MOUSEBTN,  /* mouse button (a level) or wheel direction (a pulse) */
+    KM_SRC_MOUSEAXIS  /* mouse motion: a displacement in counts, not a level */
 } km_srckind_t;
+
+/* KM_SRC_MOUSEBTN codes. The five buttons are levels read from the mask;
+ * the two wheel directions are PULSE sources: they have no level, and the
+ * poll counts notches into a per-action pulse count instead. The wheel is
+ * the one mouse dimension with a +/- split, because its consumers are
+ * digital actions; motion has none, because its consumers are signed axes. */
+enum {
+    KM_MOUSE_LEFT = 0, KM_MOUSE_MIDDLE, KM_MOUSE_RIGHT, KM_MOUSE_X1, KM_MOUSE_X2,
+    KM_MOUSE_WHEEL_UP, KM_MOUSE_WHEEL_DOWN,
+    KM_MOUSE_BTN_COUNT
+};
+#define KM_MOUSE_IS_PULSE(code) ((code) >= KM_MOUSE_WHEEL_UP)
+
+/* KM_SRC_MOUSEAXIS codes ("mouse:x", "mouse:-y"). */
+enum { KM_MOUSE_X = 0, KM_MOUSE_Y, KM_MOUSE_AXIS_COUNT };
 
 typedef struct {
     unsigned char kind;    /* km_srckind_t */
-    signed char   invert;  /* KM_SRC_PADAXIS only: "pad:-leftx" */
-    short         code;    /* SDL scancode / gamepad button / gamepad axis */
+    signed char   invert;  /* KM_SRC_PADAXIS / KM_SRC_MOUSEAXIS: "pad:-leftx" */
+    short         code;    /* SDL scancode / gamepad button / gamepad axis /
+                            * KM_MOUSE_* */
     /* Which player's device the source reads, 1-based; 0 means UNQUALIFIED.
      * The distinction matters inside a [keys.padN] block, where an
      * unqualified "pad:" reads that block's own player — so player 2's cross
@@ -86,6 +104,15 @@ typedef enum {
                             * a config binds it back. */
 #define KM_REQUIRED 0x2u   /* losing every source makes something
                             * unreachable; warn (never error) at resolve. */
+#define KM_LEVEL    0x4u   /* consumed through openpete_key_down: a pulse
+                            * source (mouse wheel) has no level and can never
+                            * fire it, so the parser rejects one here. */
+#define KM_DELTA    0x8u   /* consumed through openpete_key_delta: the only
+                            * actions a mouse motion source may bind to. On
+                            * any other action a displacement would bind and
+                            * do nothing, so the parser rejects it there.
+                            * scripts/fences/keymap_flags.py checks both
+                            * flags against their consumer sites. */
 
 /* ---- the action registry -------------------------------------------- */
 
@@ -114,7 +141,7 @@ typedef enum {
   X(MENU_RIGHT,"menu_right",KM_DIGITAL, KM_CTX_MENU,     KM_REQUIRED,          \
         "Right,pad:dpright,pad:leftx,pad:south",                               \
         "settings menu: increase value")                                       \
-  X(MENU_CLOSE,"menu_close",KM_DIGITAL, KM_CTX_MENU,     0,                    \
+  X(MENU_CLOSE,"menu_close",KM_DIGITAL, KM_CTX_MENU,     KM_LEVEL,                    \
         "pad:start,pad:east", "settings menu: close (on release)")             \
   /* Activates ACTION rows (EXIT GAME), which ignore left/right entirely —
    * cycling a value must never be able to fire a button. Cross doubles as
@@ -132,13 +159,13 @@ typedef enum {
         "2",              "quick-load from the active slot")                   \
   X(STATE_CYCLE,"savestate_cycle", KM_DIGITAL, KM_CTX_GAMEPLAY, 0,             \
         "3",              "cycle the active savestate slot")                   \
-  X(REWIND,     "rewind",          KM_DIGITAL, KM_CTX_GAMEPLAY, 0,             \
+  X(REWIND,     "rewind",          KM_DIGITAL, KM_CTX_GAMEPLAY, KM_LEVEL,             \
         "Backspace",      "hold to rewind (needs --rewind)")                   \
   X(PAUSE,      "pause",           KM_DIGITAL, KM_CTX_ALWAYS,   0,             \
         "F7",             "pause / resume the sim")                            \
-  X(FRAME_STEP, "frame_step",      KM_DIGITAL, KM_CTX_ALWAYS,   0,             \
+  X(FRAME_STEP, "frame_step",      KM_DIGITAL, KM_CTX_ALWAYS,   KM_LEVEL,             \
         "F8",             "advance one tick while paused")                     \
-  X(TURBO,      "turbo",           KM_DIGITAL, KM_CTX_ALWAYS,   0,             \
+  X(TURBO,      "turbo",           KM_DIGITAL, KM_CTX_ALWAYS,   KM_LEVEL,             \
         "Tab",            "hold to run unlocked (fast-forward)")               \
   X(FULLSCREEN, "fullscreen",      KM_DIGITAL, KM_CTX_ALWAYS,   0,             \
         "none",           "toggle fullscreen (Alt+Enter always works too)")    \
@@ -154,25 +181,25 @@ typedef enum {
         "G",              "lock the presented view while the sim runs")        \
   X(TELEPORT,   "teleport",  KM_DIGITAL, KM_CTX_ALWAYS,  0,                    \
         "T",              "drop Spyro at the free camera")                     \
-  X(FLY_FORWARD,"fly_forward", KM_DIGITAL, KM_CTX_FREECAM, 0,                  \
+  X(FLY_FORWARD,"fly_forward", KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
         "W",              "free camera: move forward")                         \
-  X(FLY_BACK,   "fly_back",    KM_DIGITAL, KM_CTX_FREECAM, 0,                  \
+  X(FLY_BACK,   "fly_back",    KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
         "S",              "free camera: move back")                            \
-  X(FLY_LEFT,   "fly_left",    KM_DIGITAL, KM_CTX_FREECAM, 0,                  \
+  X(FLY_LEFT,   "fly_left",    KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
         "A",              "free camera: strafe left")                          \
-  X(FLY_RIGHT,  "fly_right",   KM_DIGITAL, KM_CTX_FREECAM, 0,                  \
+  X(FLY_RIGHT,  "fly_right",   KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
         "D",              "free camera: strafe right")                         \
-  X(FLY_UP,     "fly_up",      KM_DIGITAL, KM_CTX_FREECAM, 0,                  \
+  X(FLY_UP,     "fly_up",      KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
         "Space,pad:rightshoulder", "free camera: rise")                        \
-  X(FLY_DOWN,   "fly_down",    KM_DIGITAL, KM_CTX_FREECAM, 0,                  \
+  X(FLY_DOWN,   "fly_down",    KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
         "Left Shift,pad:leftshoulder", "free camera: descend")                 \
-  X(LOOK_UP,    "look_up",     KM_DIGITAL, KM_CTX_FREECAM, 0,                  \
+  X(LOOK_UP,    "look_up",     KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
         "Up",             "free camera: pitch up")                             \
-  X(LOOK_DOWN,  "look_down",   KM_DIGITAL, KM_CTX_FREECAM, 0,                  \
+  X(LOOK_DOWN,  "look_down",   KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
         "Down",           "free camera: pitch down")                           \
-  X(LOOK_LEFT,  "look_left",   KM_DIGITAL, KM_CTX_FREECAM, 0,                  \
+  X(LOOK_LEFT,  "look_left",   KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
         "Left",           "free camera: yaw left")                             \
-  X(LOOK_RIGHT, "look_right",  KM_DIGITAL, KM_CTX_FREECAM, 0,                  \
+  X(LOOK_RIGHT, "look_right",  KM_DIGITAL, KM_CTX_FREECAM, KM_LEVEL,                  \
         "Right",          "free camera: yaw right")                            \
   X(SPEED_UP,   "speed_up",    KM_DIGITAL, KM_CTX_FREECAM, 0,                  \
         "],pad:righttrigger", "free camera: faster")                           \
@@ -182,9 +209,9 @@ typedef enum {
         "pad:leftx",      "free camera: strafe axis")                          \
   X(FLY_AXIS_Y, "fly_axis_y",  KM_AXIS,    KM_CTX_FREECAM, 0,                  \
         "pad:-lefty",     "free camera: forward axis")                         \
-  X(LOOK_AXIS_X,"look_axis_x", KM_AXIS,    KM_CTX_FREECAM, 0,                  \
+  X(LOOK_AXIS_X,"look_axis_x", KM_AXIS,    KM_CTX_FREECAM, KM_DELTA,                  \
         "pad:rightx",     "free camera: yaw axis")                             \
-  X(LOOK_AXIS_Y,"look_axis_y", KM_AXIS,    KM_CTX_FREECAM, 0,                  \
+  X(LOOK_AXIS_Y,"look_axis_y", KM_AXIS,    KM_CTX_FREECAM, KM_DELTA,                  \
         "pad:-righty",    "free camera: pitch axis")                           \
   /* --- development instruments (KM_DEV: unbound unless configured) --- */    \
   X(INTERP_TOGGLE, "interp_toggle", KM_DIGITAL, KM_CTX_ALWAYS, KM_DEV,         \
@@ -316,6 +343,15 @@ typedef struct {
      * serves device 0, so existing bindings do not change path. */
     int (*pad_button_slot)(int slot, int button);
     int (*pad_axis_slot)(int slot, int axis);
+    /* The mouse channel (openpete_host_mouse.h). `mouse_button` is the level
+     * of KM_MOUSE_LEFT..X2 from the published snapshot; the totals are the
+     * channel's running counts (motion axis KM_MOUSE_X/Y in counts, wheel in
+     * 1/256 notch); `mouse_owned` is OPENPETE_MOUSE_OWNED_*. A NULL member
+     * reads as released / no motion / unowned. */
+    int       (*mouse_button)(int code);
+    long long (*mouse_motion_total)(int axis);
+    long long (*mouse_wheel_total)(void);
+    int       (*mouse_owned)(void);
 } openpete_keymap_input_fns;
 
 void openpete_keymap_set_input(const openpete_keymap_input_fns* fns);
@@ -398,8 +434,29 @@ int openpete_keymap_resolve(void);
 void openpete_keymap_poll(void);
 
 int   openpete_key_down(openpete_action_t a);     /* level: held now */
-int   openpete_key_pressed(openpete_action_t a);  /* edge: pressed this poll */
+/* Pressed this poll: the held && !prev edge, OR at least one wheel pulse. One
+ * press per poll whatever the source mix. */
+int   openpete_key_pressed(openpete_action_t a);
+/* The pure held && !prev edge, and the wheel notches counted into `a` this
+ * poll. A consumer that must step once per notch uses edge + pulses. */
+int   openpete_key_edge(openpete_action_t a);
+int   openpete_key_pulses(openpete_action_t a);
 float openpete_key_axis(openpete_action_t a);     /* [-1, 1], deadzoned */
+/* Signed mouse counts since the previous poll summed over the KM_DELTA
+ * action's mouse:x / mouse:y sources, invert applied, no deadzone, no
+ * clamp; 0 while an overlay owns the mouse (the markers still advance, so
+ * motion made under an overlay is never delivered late). */
+long long openpete_key_delta(openpete_action_t a);
+
+/* 1 when any host action or [keys.mod.*] binding carries a mouse:left
+ * source. Recomputed at resolve and at every mod-binding registration; read
+ * on the pump thread by the double-click fullscreen gate. */
+int openpete_keymap_mouse_left_bound(void);
+
+/* The poll's mouse markers (the totals it last consumed): wheel in 1/256
+ * notch, motion in counts. Diagnostics: the probe logs them across an
+ * ownership change to show the snap. */
+void openpete_keymap_mouse_markers(long long* wheel, long long* mx, long long* my);
 
 /* While an overlay owns the keyboard, KEYBOARD sources go inert but pad
  * sources keep working — mouse-only devui interaction is meant to leave

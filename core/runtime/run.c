@@ -9,6 +9,7 @@
 #include "openpete_fiber.h"
 #include "openpete_log.h"
 #include "openpete_host_input.h"
+#include "openpete_host_mouse.h"
 #include "openpete_rumble.h"
 #include "openpete_psx.h"
 #include "openpete_discontinuity.h"
@@ -395,6 +396,9 @@ static void openpete_pump_events(void) {
  * Now that openpete owns the only pump, consuming an event is just declining
  * to forward it, and everything runs in one place in a defined order. */
 static bool openpete_handle_event(SDL_Event* ev) {
+    /* The mouse channel derives position, mask and the running totals from
+     * the event stream (openpete_host_mouse.h); every consumer reads those. */
+    openpete_host_mouse_handle_event(ev);
     /* Dev overlay sees every event (imgui io bookkeeping; frames only run
      * while it is open), including ones consumed below. */
     openpete_devui_process_event(ev);
@@ -416,10 +420,14 @@ static bool openpete_handle_event(SDL_Event* ev) {
         return false;  /* never reaches PsyCross, so PsyX_Exit stays unreachable */
     }
     /* Double-click toggles native-window fullscreen (see the host loop) —
-     * unless the click landed on the dev overlay. */
+     * unless the click landed on the dev overlay, the settings menu is open,
+     * a camera or mod has requested capture, or some action binds
+     * mouse:left (two quick presses of it are not a window gesture). */
     if (ev->type == SDL_EVENT_MOUSE_BUTTON_DOWN &&
         ev->button.button == SDL_BUTTON_LEFT && ev->button.clicks == 2 &&
-        !openpete_devui_wants_mouse()) {
+        !openpete_devui_wants_mouse() &&
+        openpete_host_mouse_double_click_allowed()) {
+        openpete_host_mouse_double_click_engaged();
         g_native_fs_toggle_request = 1;
     }
     if (ev->type == SDL_EVENT_WINDOW_CLOSE_REQUESTED) {
@@ -445,9 +453,9 @@ static bool openpete_handle_event(SDL_Event* ev) {
 
         /* Escape dismisses an open overlay whatever `quit` is bound to —
          * a UI convention rather than a binding, and it keeps unbinding
-         * quit from stranding a panel open. (The filter runs during the
-         * main-thread event pump, same thread as the host loop, so
-         * reading the open flags here is race-free.)
+         * quit from stranding a panel open. (The open flags are plain
+         * cross-thread reads; the menu close is routed through a request
+         * the host loop consumes at its poll point.)
          *
          * Consuming the key is what stops the dismiss fighting a polled
          * binding on the same key: with `menu` bound to Escape the poll
@@ -460,7 +468,11 @@ static bool openpete_handle_event(SDL_Event* ev) {
             return false;
         }
         if (esc && openpete_menu_is_open()) {
-            openpete_menu_toggle();
+            /* Requested, not toggled: under the thread split this runs on
+             * the pump thread, and the host loop's pad-override clear latch
+             * reads the open flag twice per iteration. The request lands
+             * between those reads. */
+            openpete_host_mouse_request_menu(0);
             openpete_keymap_consume_key(ev->key.scancode);
             return false;
         }
@@ -2369,6 +2381,11 @@ static int run_host_init(const openpete_options_t* opts) {
         }
     }
 
+    /* The mouse channel: event-derived state, totals, the injection seam.
+     * Headless keeps PsyCross's hidden window, so the channel initialises
+     * there too; the native window, when there is one, is found lazily. */
+    openpete_host_mouse_init(g_window);
+
     return 0;
 }
 
@@ -2926,6 +2943,7 @@ static int run_host_loop(const openpete_options_t* opts) {
      * open/closed state itself so the pad override is cleared exactly
      * once on the closing transition. */
     bool prev_menu_close = false;   /* Start/Circle closes on RELEASE */
+    int  prev_mouse_owner = OPENPETE_MOUSE_OWNED_NONE;
     bool prev_menu_open = false;
     bool prev_devui_kb = false;
 
@@ -3206,8 +3224,10 @@ static int run_host_loop(const openpete_options_t* opts) {
         /* Under the thread split the cursor is main's business (see
          * openpete_cursor_update): SetCursor only reaches a window from the
          * thread that owns it. Unsplit, this loop IS that thread. */
-        if (!openpete_split_applies(opts))
+        if (!openpete_split_applies(opts)) {
             openpete_cursor_update(opts->headless);
+            openpete_host_mouse_apply_capture();
+        }
 
         /* Sample every binding once per iteration; openpete_key_pressed()
          * below reads the edge this computed. Reads SDL's keyboard/gamepad
@@ -3217,6 +3237,24 @@ static int run_host_loop(const openpete_options_t* opts) {
          * openpete_handle_event consumes QUIT/CLOSE/ESC without forwarding
          * them, so PsyCross's exit-on-quit path never fires. */
         openpete_keymap_poll();
+        if (openpete_host_mouse_probe()) {
+            /* Across an ownership change the poll's markers show the snap:
+             * they sit at the totals, so nothing made under the overlay is
+             * delivered when it closes. */
+            static int probe_prev_owner = -1;
+            const int owner = openpete_host_mouse_owned();
+            if (owner != probe_prev_owner) {
+                long long w, mx, my;
+                openpete_keymap_mouse_markers(&w, &mx, &my);
+                openpete_host_mouse_probe_log("keymap",
+                    "owner %d -> %d; markers wheel=%lld mx=%lld my=%lld "
+                    "(totals %lld %lld %lld)", probe_prev_owner, owner, w, mx, my,
+                    (long long)openpete_host_mouse_wheel_total(),
+                    (long long)openpete_host_mouse_motion_total(0),
+                    (long long)openpete_host_mouse_motion_total(1));
+                probe_prev_owner = owner;
+            }
+        }
 
         /* Dev config overlay. Mutually exclusive with the settings menu —
          * two input-owning overlays with different capture models is
@@ -3235,6 +3273,21 @@ static int run_host_loop(const openpete_options_t* opts) {
                 openpete_menu_toggle();
                 if (openpete_menu_is_open()) openpete_devui_close();
             }
+            /* A target state requested from another thread (the pump's
+             * Escape dismiss, the `menu` inject verb). Consumed here so the
+             * toggle lands between two reads of the override clear latch,
+             * and mirrors the OPK_MENU block: opening closes the overlay. */
+            {
+                int want_open = 0;
+                if (openpete_host_mouse_take_menu_request(&want_open) &&
+                    (want_open != 0) != (openpete_menu_is_open() != 0)) {
+                    openpete_menu_toggle();
+                    if (openpete_menu_is_open()) openpete_devui_close();
+                    openpete_host_mouse_probe_log("menu", "request %s -> open=%d",
+                                                  want_open ? "open" : "close",
+                                                  openpete_menu_is_open());
+                }
+            }
 
             if (openpete_menu_is_open()) {
                 /* Keyboard and pad both drive nav through one binding per
@@ -3243,7 +3296,14 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * pad's own view of these buttons is held neutral while the
                  * menu is open, so this cannot double up with gameplay. */
                 bool close_k = openpete_key_down(OPK_MENU_CLOSE);
-                if (!close_k && prev_menu_close) {
+                /* A mouse-bound menu_close held while the pointer drifts
+                 * onto the fill-tag inspector reads a release as the
+                 * arbitrated view goes neutral; a release edge on a poll
+                 * where the owner changed is not a release. */
+                const int mouse_owner = openpete_host_mouse_owned();
+                const bool owner_changed = mouse_owner != prev_mouse_owner;
+                prev_mouse_owner = mouse_owner;
+                if (!close_k && prev_menu_close && !owner_changed) {
                     /* Close on the RELEASE edge of Start/Circle. The game pad
                      * is held neutral only while the menu is open, so closing
                      * on the press would let the still-held button bleed into
@@ -3756,13 +3816,22 @@ static int run_host_loop(const openpete_options_t* opts) {
                 ax.look_pitch  = FC_CLAMP(k_pit + p_pit);
                 #undef FC_CLAMP
                 openpete_freecam_set_axes(&ax);
+                /* Mouse look: the look axes' mouse:x / mouse:y sources are
+                 * displacements, accumulated into running count totals the
+                 * camera drives consume against their own markers. Host
+                 * state; no guest store here. */
+                openpete_freecam_add_look_counts(
+                    openpete_key_delta(OPK_LOOK_AXIS_X),
+                    openpete_key_delta(OPK_LOOK_AXIS_Y));
 
-                /* Speed step, edge-triggered. The shoulder buttons that used
-                 * to be read separately are now just extra sources on the
-                 * same two actions. */
-                if (openpete_key_pressed(OPK_SPEED_DOWN))
+                /* Speed step: one step per key or button edge plus one per
+                 * wheel notch counted into the action this poll, so several
+                 * notches in one iteration step several times. */
+                for (int n = openpete_key_edge(OPK_SPEED_DOWN)
+                           + openpete_key_pulses(OPK_SPEED_DOWN); n > 0; n--)
                     openpete_freecam_adjust_speed(-1);
-                if (openpete_key_pressed(OPK_SPEED_UP))
+                for (int n = openpete_key_edge(OPK_SPEED_UP)
+                           + openpete_key_pulses(OPK_SPEED_UP); n > 0; n--)
                     openpete_freecam_adjust_speed(+1);
             }
 
@@ -3840,6 +3909,7 @@ static int run_host_loop(const openpete_options_t* opts) {
              * published. That asymmetry is the whole point of the seam — the
              * consumer never touches SDL. */
             if (!split) {
+                openpete_host_mouse_pump_iteration();
                 openpete_pump_events();
                 /* Re-publish now the pump has refreshed SDL, so the pad sample
                  * and this iteration's consumers see current state rather than
@@ -5910,6 +5980,7 @@ static int run_split_threaded(const openpete_options_t* opts)
         const int64_t hp_t0 = (int64_t)op_now();
         SDL_WaitEventTimeout(NULL, 1);
         const int64_t hp_waited = (int64_t)op_now();
+        openpete_host_mouse_pump_iteration();
         openpete_pump_events();
         const int64_t hp_pumped = (int64_t)op_now();
         openpete_host_input_publish_sdl();
@@ -5920,6 +5991,9 @@ static int run_split_threaded(const openpete_options_t* opts)
         /* Idle-hide of the OS cursor. Another window op that belongs to this
          * thread, and cheap: one atomic read plus three flag reads. */
         openpete_cursor_update(opts->headless);
+        /* Relative mouse mode is a window op too: applied here from the
+         * capture request bits and the overlay ownership state. */
+        openpete_host_mouse_apply_capture();
 
         /* Window ops belong to this thread. The worker raises the flag (from
          * a binding or Alt+Enter) and main performs the SDL call. */

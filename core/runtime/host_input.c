@@ -1,4 +1,5 @@
 #include "openpete_host_input.h"
+#include "openpete_host_mouse.h"
 #include "openpete_input_log.h"
 #include "openpete_keymap.h"
 #include "openpete_log.h"
@@ -247,7 +248,9 @@ static unsigned s_parity_last_seq;
 /* OPENPETE_INPUT_LEGACY=1 restores the pre-ownership input path (PsyCross
  * pumps, decodes and injects on its own). Kept only while the host-owned path
  * is being proven: it is the A/B that shows the two produce identical gameplay,
- * and the bisect switch if they ever stop doing so. */
+ * and the bisect switch if they ever stop doing so. The mouse channel sees no
+ * events on this path: the snapshot carries SDL's own position and button
+ * mask, and the press, motion and wheel totals never advance. */
 int openpete_host_input_legacy(void)
 {
     static int v = -1;
@@ -486,6 +489,7 @@ typedef struct {
     bool     keys[SDL_SCANCODE_COUNT];
     unsigned mods;
     host_pad_state_t pads[OPENPETE_PAD_SLOTS];
+    openpete_mouse_state_t mouse;   /* event-derived, see openpete_host_mouse.h */
 } host_sdl_state_t;
 
 static host_sdl_state_t s_sdl_state[2];
@@ -831,6 +835,15 @@ void openpete_host_input_publish_sdl(void)
     }
 
     d->mods = (unsigned)SDL_GetModState();
+    openpete_host_mouse_producer_read(&d->mouse);
+    if (openpete_host_input_legacy()) {
+        /* PsyCross pumps on this path and openpete_handle_event never runs,
+         * so the event-derived state above is empty: read SDL's own position
+         * and mask instead. Presses, deltas and the wheel stay at zero. */
+        float mx = 0.0f, my = 0.0f;
+        d->mouse.buttons = (unsigned)SDL_GetMouseState(&mx, &my);
+        d->mouse.px = mx; d->mouse.py = my;
+    }
 
     SDL_Gamepad* slot_gp[OPENPETE_PAD_SLOTS];
     host_slot_gamepads(slot_gp);
@@ -903,6 +916,17 @@ int openpete_host_input_pad_axis(int axis)
 unsigned openpete_host_input_modstate(void)
 {
     return host_sdl_read()->mods;
+}
+
+void openpete_host_input_mouse(openpete_mouse_state_t* out)
+{
+    if (out) *out = host_sdl_read()->mouse;
+}
+
+int openpete_host_input_mouse_button(int button_index)
+{
+    if (button_index < 0 || button_index >= OPENPETE_MOUSE_BUTTONS) return 0;
+    return (host_sdl_read()->mouse.buttons >> button_index) & 1u;
 }
 
 /* Publish one whole sample. Returns its sequence number (even, stable). */

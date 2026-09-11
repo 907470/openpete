@@ -229,7 +229,20 @@ static void devui_publish_io_wants(void)
     const ImGuiIO &io = ImGui::GetIO();
     SDL_SetAtomicInt(&s_wants_kb,
                      (s_open && (io.WantCaptureKeyboard || io.WantTextInput)) ? 1 : 0);
-    SDL_SetAtomicInt(&s_wants_mouse, (s_open && io.WantCaptureMouse) ? 1 : 0);
+    /* The fill-tag inspector draws its interactive panel with the overlay
+     * closed, so its hover counts: a click aimed at its buttons must not
+     * also reach the game or the settings menu under it. */
+    const bool mouse_frame = s_open || openpete_fillpick_active() != 0;
+    SDL_SetAtomicInt(&s_wants_mouse, (mouse_frame && io.WantCaptureMouse) ? 1 : 0);
+}
+
+/* A frame that returns before publishing leaves nothing stale standing: a
+ * closed overlay must read as not wanting the mouse, or the mouse channel
+ * would report the overlay as its owner until the next frame that draws. */
+static void devui_publish_none(void)
+{
+    SDL_SetAtomicInt(&s_wants_kb, 0);
+    SDL_SetAtomicInt(&s_wants_mouse, 0);
 }
 
 int openpete_devui_wants_keyboard(void)
@@ -240,7 +253,8 @@ int openpete_devui_wants_keyboard(void)
 
 int openpete_devui_wants_mouse(void)
 {
-    if (!s_inited || !s_open) return 0;
+    if (!s_inited) return 0;
+    if (!s_open && !openpete_fillpick_active()) return 0;
     return SDL_GetAtomicInt(&s_wants_mouse);
 }
 
@@ -1257,10 +1271,10 @@ void openpete_devui_render(struct rhi_device *dev)
 
     bool fillpick = openpete_fillpick_active() != 0;
     const int always_n = openpete_mods_ui_always_count();
-    if (!s_open && !fillpick && always_n == 0) return;
-    if (dev != s_dev) return;
+    if (!s_open && !fillpick && always_n == 0) { devui_publish_none(); return; }
+    if (dev != s_dev) { devui_publish_none(); return; }
     void *cb = rhi_current_command_buffer(dev);
-    if (!cb) return;
+    if (!cb) { devui_publish_none(); return; }
 
     /* First open: adopt late-settling boot values (render-fps pacer). An
      * always section runs the frame with the overlay closed, so the stamp

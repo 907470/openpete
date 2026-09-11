@@ -59,6 +59,15 @@ void openpete_freecam_set_axes(const openpete_freecam_axes* ax);
 /* Read the latched input intent (module → game drive). */
 void openpete_freecam_get_axes(openpete_freecam_axes* out);
 
+/* Mouse look: running totals of the look axes' mouse displacement, in
+ * counts, accumulated by the host loop every iteration the freecam or
+ * camlock is engaged (run.c → module). Unlike the axes they are never
+ * rewritten: each consumer keeps the total it last applied and takes the
+ * difference, so a slow drag below one unit per tick still adds up and a
+ * speculated or replayed tick applies nothing twice. */
+void openpete_freecam_add_look_counts(long long dx, long long dy);
+void openpete_freecam_look_counts(long long* x, long long* y);
+
 /* Request that the player be moved to the free camera's position (the T-key
  * edge). Only meaningful while engaged. The host loop latches the request;
  * the game side consumes it on the next tick — it needs the game fiber to
