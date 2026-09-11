@@ -94,13 +94,13 @@ present.
 | `--skip-to-level L` | Boot into level L, by numeric id (`11`) or name (`stone_hill`). An unknown name prints the list. |
 | `--unlock-frames LIST` | Fast-forward inside VBL ranges, e.g. `0-1756`. Windowed runs only: a headless run is already unlocked. |
 | `--screenshot-on-frame N[,N...]` | Capture at each listed VBL. |
-| `--screenshot-on-tick N[,N...]` | Capture at each listed tick. |
+| `--screenshot-on-tick N[,N...]` | Capture at each listed tick. Which VBL a tick lands on shifts with host timing, so tick-keyed captures are the reproducible ones. |
 | `--screenshot-output PATH` | Path template. `{n}` expands to the VBL. |
 | `--screenshot-native-only` | Write the native `-vk` image only. |
 | `--freecam-pose STR` | Engage the free camera at a fixed pose once the level is live. |
 | `--bk2 PATH` | Replay a recorded input movie. |
 | `--bk2-record [PATH]` | Record live pad input to a movie. |
-| `--bk2-stop-on-end` | Exit after the last recorded frame instead of holding the last input. |
+| `--bk2-stop-on-end` | Exit after the last recorded VBL instead of holding the last input. |
 | `--log-file PATH` | Mirror the log to PATH. |
 | `--devui-open 1` | Open the dev overlay with every mod node expanded as soon as it initializes, so an unattended windowed run reaches a mod's UI section body. |
 
@@ -203,14 +203,14 @@ To find a VBL to capture, pause with ++f7++, step with ++f8++ to the
 target state, and quit. The run's last line reports it:
 
 ```
-openpete-exit: reason=user-quit frames=95 ms=1577 code=0
+openpete-exit: reason=user-quit frames=2000 ms=33430 code=0
 ```
 
 Extract the count:
 
 ```
 openpete-spyro1 --bk2 test.bk2 2>/dev/null | grep -oE 'frames=[0-9]+' | cut -d= -f2
-# 95
+# 2000
 ```
 
 `--screenshot-on-frame` can also bisect for the target VBL. It takes a
