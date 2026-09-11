@@ -895,6 +895,45 @@ static void test_mouse_reader_and_format(void) {
                  "mouse:right") == 0, "the effective-key formatter spells mouse:");
 }
 
+/* A mod's own key registers at rank 0 under mod.<id>; a config row replaces
+ * it whatever the order; a key that fails to parse registers unbound; a
+ * disabled mod's mouse:left leaves the double-click scan. */
+static void test_mod_defaults(void) {
+    openpete_keymap_init();
+    km_source_t s[KM_MAX_SOURCES];
+    int n = -1;
+    CHECK(openpete_keymap_set_mod_default("dflt", "go", "pad:north", "m.toml") == 0,
+          "a mod default parses pad:north under mod.<id>");
+    CHECK(openpete_keymap_mod_binding("dflt", "go", s, 4, &n) && n == 1 &&
+          s[0].kind == KM_SRC_PADBTN, "and is found as the binding");
+    CHECK(openpete_keymap_set_mod_default("dflt", "bad", "mouse:wheel_up", "m.toml") != 0,
+          "a pulse key is a parse error");
+    CHECK(openpete_keymap_mod_binding("dflt", "bad", s, 4, &n) && n == 0,
+          "and registers unbound");
+
+    /* Override before default (the boot order): the default does not win. */
+    CHECK(set_mod1("dflt", "fire", "F6") == 0, "config override first");
+    CHECK(openpete_keymap_set_mod_default("dflt", "fire", "mouse:left", "m.toml") == 0,
+          "default after");
+    CHECK(openpete_keymap_mod_binding("dflt", "fire", s, 4, &n) && n == 1 &&
+          s[0].kind == KM_SRC_KEY, "the override stands");
+    CHECK(!openpete_keymap_mouse_left_bound(), "the shadowed default does not bind left");
+    /* Default then override. */
+    CHECK(openpete_keymap_set_mod_default("dflt", "warp", "mouse:left", "m.toml") == 0,
+          "default warp");
+    CHECK(openpete_keymap_mouse_left_bound(), "a mouse:left default binds left");
+    openpete_keymap_set_mod_enabled("dflt", 0);
+    CHECK(!openpete_keymap_mouse_left_bound(), "a disabled mod's default leaves the scan");
+    openpete_keymap_set_mod_enabled("dflt", 1);
+    CHECK(openpete_keymap_mouse_left_bound(), "and re-enters on enable");
+    CHECK(set_mod1("dflt", "warp", "F5") == 0, "override warp");
+    CHECK(openpete_keymap_mod_binding("dflt", "warp", s, 4, &n) && n == 1 &&
+          s[0].kind == KM_SRC_KEY, "the override replaces the default");
+    CHECK(!openpete_keymap_mouse_left_bound(), "and left is unbound again");
+    CHECK(strcmp(openpete_keymap_mod_effective_key("dflt", "go", "?"), "pad:north") == 0,
+          "the effective key of a default is its parsed spelling");
+}
+
 int main(void) {
     install_fakes();
 
@@ -927,6 +966,7 @@ int main(void) {
     test_mouse_live();
     test_mouse_owned();
     test_mouse_reader_and_format();
+    test_mod_defaults();
 
     if (g_fail) {
         printf("keymap_test: %d failure(s)\n", g_fail);

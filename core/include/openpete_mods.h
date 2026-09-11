@@ -79,6 +79,12 @@ void openpete_mods_set_symbol_table(const openpete_sdk_symbol_t* table,
  * continues; mods never brick a launch). */
 int openpete_mods_init(const openpete_options_t* opts);
 
+/* Parse every discovered manifest and register its [[binding]] keys with
+ * the keymap (mod.<id> domain, rank 0) without loading anything. For the
+ * --keys-report path, which prints before openpete_mods_init runs; init
+ * registers the same rows itself. */
+void openpete_mods_register_key_defaults(const openpete_options_t* opts);
+
 /* Compile-on-boot UX pass (plan openpete-mod-compile-on-boot): compile
  * any enabled source mod whose content-hash build key is stale, BEFORE
  * openpete_mods_init() — the game calls this while its splash is still

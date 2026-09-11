@@ -1212,6 +1212,7 @@ void openpete_mods_tick_boundary(CPUState* cpu, unsigned canonical_tick) {
         openpete_mods_chain_set_owner_enabled(id, on);
         openpete_mods_draw_set_owner_enabled(id, on);
         openpete_mods_registry_set_owner_enabled(id, on);
+        openpete_keymap_set_mod_enabled(id, on);
         mod->enabled = on;
         s_toggle_epoch++;
         OPL_INFO_F("mods", "live toggle: %s %s (tick %u)",
@@ -1332,6 +1333,11 @@ const char* openpete_mods_modset_tag(void) {
 static int api_binding_down(openpete_mod_t* self, const char* name) {
     if (!self || !name) return 0;
 
+    /* Every declared [[binding]] is registered with the keymap at load
+     * (the mod's own key at rank 0, a [keys.mod.<id>] row above it), so
+     * the read is a keymap source read: it honours the keyboard suspend
+     * and the consumed-key latch like every host action, and a key that
+     * did not parse reads 0. */
     km_source_t src[KM_MAX_SOURCES];
     int n = 0;
     if (openpete_keymap_mod_binding(self->id, name, src, KM_MAX_SOURCES, &n)) {
@@ -1340,13 +1346,21 @@ static int api_binding_down(openpete_mod_t* self, const char* name) {
                 return 1;
         return 0;
     }
-
-    for (int i = 0; i < self->n_bindings; i++)
-        if (strcmp(self->bindings[i].name, name) == 0)
-            return api_host_key_down(self->bindings[i].key);
     OPL_ERROR_F(self->log_tag, "binding \"%s\" not declared in mod.toml",
                 name);
     return 0;
+}
+
+/* Register a parsed manifest's [[binding]] keys with the keymap under the
+ * mod.<id> domain. Runs for every discovered mod at init and again for
+ * the --keys-report path, which prints before any mod loads. */
+static void mod_register_key_defaults(const struct openpete_mod* mod, int enabled) {
+    char where[MOD_PATH_MAX + 16];
+    snprintf(where, sizeof where, "%s/mod.toml", mod->dir);
+    for (int i = 0; i < mod->n_bindings; i++)
+        (void)openpete_keymap_set_mod_default(mod->id, mod->bindings[i].name,
+                                              mod->bindings[i].key, where);
+    openpete_keymap_set_mod_enabled(mod->id, enabled);
 }
 
 /* Guest scratch arena: sim-visible state — tick context only. */
@@ -3178,6 +3192,18 @@ int openpete_mods_compile_all(const openpete_options_t* opts) {
     return n_failed;
 }
 
+void openpete_mods_register_key_defaults(const openpete_options_t* opts) {
+    char mods_dir[MOD_PATH_MAX];
+    mod_ref_t refs[MODS_MAX];
+    int n_refs = mods_discover(opts, mods_dir, sizeof mods_dir, refs, MODS_MAX);
+    static struct openpete_mod scratch;   /* ~7 KB; see the note in init */
+    for (int i = 0; i < n_refs; i++) {
+        memset(&scratch, 0, sizeof scratch);
+        if (parse_manifest(refs[i].dir, &scratch) != 0) continue;
+        mod_register_key_defaults(&scratch, refs[i].boot_on);
+    }
+}
+
 int openpete_mods_init(const openpete_options_t* opts) {
     /* The ImGui guard attributes a refused call by mod index; the loader
      * owns the index-to-id mapping. */
@@ -3216,6 +3242,7 @@ int openpete_mods_init(const openpete_options_t* opts) {
         memset(mod, 0, sizeof(*mod));
         if (parse_manifest(refs[i].dir, mod) != 0) continue;
         mod->boot_on = refs[i].boot_on;
+        mod_register_key_defaults(mod, mod->boot_on);
         n_pending++;
     }
 
@@ -3270,8 +3297,10 @@ int openpete_mods_init(const openpete_options_t* opts) {
         struct openpete_mod* mod = &s_mods[s_mod_count];
         *mod = pending[i];
         if (load_mod(mod, sdk_dir,
-                     pending[i].boot_on || must_enter[i]) != 0)
+                     pending[i].boot_on || must_enter[i]) != 0) {
+            openpete_keymap_set_mod_enabled(mod->id, 0);
             continue;
+        }
         mod->enabled = mod->boot_on;
         load_ok[i] = 1;
         s_mod_count++;

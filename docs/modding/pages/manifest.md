@@ -53,13 +53,18 @@ history can be re-derived from guest RAM after a jump.
 ``` toml
 [[binding]]
 name    = "warp"          # read with api->binding_down(self, "warp")
-key     = "F6"            # default key
+key     = "F6"            # default source(s), keymap spelling
 purpose = "warp home"     # shown to the player
 ```
 
-Up to 8 rows. Conflicts across the enabled set are reported at load.
-Players rebind under `[keys.mod.<id>]` in `openpete.toml` with keyboard
-names, gamepad names such as `pad:north`, or `none`.
+Up to 8 rows. `key` takes the keymap's spelling: a keyboard name, a
+gamepad source (`pad:north`, `pad:-lefty`), a mouse button
+(`mouse:right`), or a comma-separated list (`"F6,pad:north"`). Wheel
+notches and mouse motion are not bindable (the read is a level); a key
+that fails to parse is logged at load and reads 0. Conflicts across the
+enabled set are reported at load. Players rebind under `[keys.mod.<id>]`
+in `openpete.toml` with the same spellings, or `none`. The read is inert
+while the dev overlay owns the keyboard, like every host action.
 
 ### `[[config]]`
 

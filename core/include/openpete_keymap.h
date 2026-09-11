@@ -423,6 +423,19 @@ int openpete_keymap_set_mod(const char* mod_id, const char* name,
                             const char* const* tokens, int n,
                             int rank, const char* where);
 
+/* A mod's own mod.toml `key` for `name`, registered at rank 0 under the
+ * mod.<id> domain, so `key = "pad:north"` and `key = "mouse:right"` work
+ * with no config override. A [keys.mod.<id>] row at any rank replaces it.
+ * A key that fails to parse registers UNBOUND and returns -1: the mod's
+ * binding_down then reads 0, as for an unbound override. `where` names
+ * the manifest for the error. */
+int openpete_keymap_set_mod_default(const char* mod_id, const char* name,
+                                    const char* key, const char* where);
+
+/* Follow a mod's live enabled state: a disabled mod's bindings leave the
+ * mouse:left scan behind the double-click gate. */
+void openpete_keymap_set_mod_enabled(const char* mod_id, int on);
+
 /* Pick winners and run the conflict + KM_REQUIRED scans. Returns the
  * number of warnings emitted (0 = clean); never fails a boot. */
 int openpete_keymap_resolve(void);
@@ -483,9 +496,10 @@ void openpete_keymap_report(FILE* out);
 int openpete_keymap_report_requested(void);
 void openpete_keymap_request_report(void);
 
-/* Resolve a mod's declared binding name to an action-less source list.
- * [keys.mod.<id>] overrides the mod's own mod.toml `key`; returns 1 and
- * fills `out` when the config bound it, 0 when the mod's own key stands. */
+/* Resolve a mod's declared binding name to an action-less source list: the
+ * [keys.mod.<id>] override when there is one, else the mod's registered
+ * mod.toml `key`. Returns 1 and fills `out` (n may be 0: unbound), 0 when
+ * the name was never registered. */
 int openpete_keymap_mod_binding(const char* mod_id, const char* name,
                                 km_source_t* out, int cap, int* out_n);
 

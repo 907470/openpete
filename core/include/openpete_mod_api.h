@@ -612,12 +612,18 @@ typedef struct openpete_mod_api {
      *
      * Declared bindings (`{name, key, purpose}`) are conflict-checked
      * across the enabled set at load, and the user rebinds through
-     * openpete.toml `[keys.mod.<id>]` (keyboard names, gamepad names such
-     * as "pad:north", or "none"). Reading host input in a tick hook
-     * diverges gameplay from a replay by design; display-only reads
-     * belong in present hooks.
-     * @return 1 while the bound host key is held; an undeclared name logs
-     *         an error and returns 0.
+     * openpete.toml `[keys.mod.<id>]`. The `key` spelling is the keymap's:
+     * a keyboard name, a gamepad source ("pad:north", "pad:-lefty"), a
+     * mouse button ("mouse:right"), a comma-separated list, or "none".
+     * Wheel notches and mouse motion are not bindable here (this is a
+     * level read); a key that fails to parse is logged at load and reads
+     * 0. The read goes through the keymap, so it is inert while the dev
+     * overlay owns the keyboard and while a press has been consumed by the
+     * overlay's Escape dismiss, like every host action. Reading host input
+     * in a tick hook diverges gameplay from a replay by design;
+     * display-only reads belong in present hooks.
+     * @return 1 while any source of the binding is held; an undeclared
+     *         name logs an error and returns 0.
      * @since api 1
      */
     int (*binding_down)(openpete_mod_t* self, const char* name);

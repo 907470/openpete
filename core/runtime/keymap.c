@@ -573,20 +573,47 @@ typedef struct { int a, b; const char* why; } km_conflict_t;
 static km_conflict_t g_conflicts[KM_MAX_CONFLICTS];
 static int g_conflict_n;
 
-/* [keys.mod.<id>] rows are stored separately: mods are discovered after
- * the config is read, so their names cannot be validated against a
- * registry at harvest time the way pad/host actions are. */
+/* Mod bindings are stored apart from the action registry: a mod's
+ * [[binding]] names are not knowable at config time. One entry per
+ * (mod, name): the mod's own `key` registers at rank 0 (origin "mod") and a
+ * [keys.mod.<id>] row at its scope's rank (origin "config") replaces it.
+ * The table grows on demand; `enabled` follows the mod's live state so a
+ * disabled mod's defaults leave the left_bound scan. */
 typedef struct {
     char        mod[40];
     char        name[24];
     km_source_t src[KM_MAX_SOURCES];
     int         n;
     int         rank;
+    unsigned char is_default;   /* origin: the mod's own key, not a config row */
+    unsigned char enabled;
 } km_mod_bind_t;
 
-#define KM_MAX_MOD_BINDS 64
-static km_mod_bind_t g_modbind[KM_MAX_MOD_BINDS];
-static int g_modbind_n;
+static km_mod_bind_t* g_modbind;
+static int g_modbind_n, g_modbind_cap;
+
+static km_mod_bind_t* km_modbind_find(const char* mod_id, const char* name) {
+    for (int i = 0; i < g_modbind_n; i++)
+        if (!strcmp(g_modbind[i].mod, mod_id) && !strcmp(g_modbind[i].name, name))
+            return &g_modbind[i];
+    return NULL;
+}
+
+static km_mod_bind_t* km_modbind_add(const char* mod_id, const char* name) {
+    if (g_modbind_n == g_modbind_cap) {
+        int cap = g_modbind_cap ? g_modbind_cap * 2 : 32;
+        km_mod_bind_t* grown = realloc(g_modbind, sizeof *grown * (size_t)cap);
+        if (!grown) return NULL;
+        g_modbind = grown;
+        g_modbind_cap = cap;
+    }
+    km_mod_bind_t* m = &g_modbind[g_modbind_n++];
+    memset(m, 0, sizeof *m);
+    snprintf(m->mod, sizeof m->mod, "%s", mod_id);
+    snprintf(m->name, sizeof m->name, "%s", name);
+    m->enabled = 1;
+    return m;
+}
 
 /* Whether any host or mod binding carries mouse:left. Read on the pump
  * thread by the double-click fullscreen gate, so two presses of a
@@ -600,7 +627,7 @@ static void km_recompute_left_bound(void) {
             if (g_bind[i].src[x].kind == KM_SRC_MOUSEBTN &&
                 g_bind[i].src[x].code == KM_MOUSE_LEFT) { found = 1; break; }
     for (int i = 0; i < g_modbind_n && !found; i++)
-        for (int x = 0; x < g_modbind[i].n; x++)
+        for (int x = 0; x < g_modbind[i].n && g_modbind[i].enabled; x++)
             if (g_modbind[i].src[x].kind == KM_SRC_MOUSEBTN &&
                 g_modbind[i].src[x].code == KM_MOUSE_LEFT) { found = 1; break; }
     atomic_store_explicit(&g_left_bound, found, memory_order_relaxed);
@@ -1093,8 +1120,10 @@ void openpete_keymap_report(FILE* out) {
             km_format_binding(&tmp, bind, sizeof bind);
             char id[72];
             snprintf(id, sizeof id, "%s.%s", g_modbind[i].mod, g_modbind[i].name);
-            fprintf(out, "  %-22s %-42s %-16s %s\n", id, bind, "config",
-                    "mod binding override");
+            fprintf(out, "  %-22s %-42s %-16s %s\n", id, bind,
+                    g_modbind[i].is_default ? "mod default" : "config",
+                    g_modbind[i].is_default ? "mod binding (mod.toml key)"
+                                            : "mod binding override");
         }
     }
 
@@ -1119,41 +1148,57 @@ void openpete_keymap_report(FILE* out) {
 /* mod bindings                                                       */
 /* ------------------------------------------------------------------ */
 
-int openpete_keymap_set_mod(const char* mod_id, const char* name,
-                            const char* const* tokens, int n,
-                            int rank, const char* where) {
+static int km_set_mod(const char* mod_id, const char* name,
+                      const char* const* tokens, int n, int rank,
+                      int is_default, const char* where) {
     if (!mod_id || !name) return -1;
     km_source_t src[KM_MAX_SOURCES];
     int cnt = 0;
     char dom[48];
     snprintf(dom, sizeof dom, "mod.%s", mod_id);
-    if (km_parse_list(tokens, n, src, &cnt, where ? where : "config",
-                      dom, name) != 0)
-        return -1;
+    int parsed = km_parse_list(tokens, n, src, &cnt, where ? where : "config",
+                               dom, name);
+    if (parsed != 0 && !is_default) return -1;
+    /* A mod key that fails to parse still registers, unbound, so the mod's
+     * binding_down reads 0 the way an unbound config override does. */
+    if (parsed != 0) cnt = 0;
 
-    for (int i = 0; i < g_modbind_n; i++) {
-        if (strcmp(g_modbind[i].mod, mod_id) || strcmp(g_modbind[i].name, name))
-            continue;
-        if (rank < g_modbind[i].rank) return 0;
-        memcpy(g_modbind[i].src, src, sizeof src);
-        g_modbind[i].n = cnt;
-        g_modbind[i].rank = rank;
-        km_recompute_left_bound();
-        return 0;
+    km_mod_bind_t* m = km_modbind_find(mod_id, name);
+    if (m) {
+        if (rank < m->rank) return parsed == 0 ? 0 : -1;
+    } else {
+        m = km_modbind_add(mod_id, name);
+        if (!m) {
+            OPL_WARN_F("keys", "out of memory registering %s.%s", mod_id, name);
+            return -1;
+        }
     }
-    if (g_modbind_n >= KM_MAX_MOD_BINDS) {
-        OPL_WARN_F("keys", "too many [keys.mod.*] bindings; ignoring %s.%s",
-                   mod_id, name);
-        return 0;
-    }
-    km_mod_bind_t* m = &g_modbind[g_modbind_n++];
-    snprintf(m->mod, sizeof m->mod, "%s", mod_id);
-    snprintf(m->name, sizeof m->name, "%s", name);
     memcpy(m->src, src, sizeof src);
     m->n = cnt;
     m->rank = rank;
+    m->is_default = (unsigned char)(is_default ? 1 : 0);
     km_recompute_left_bound();
-    return 0;
+    return parsed == 0 ? 0 : -1;
+}
+
+int openpete_keymap_set_mod(const char* mod_id, const char* name,
+                            const char* const* tokens, int n,
+                            int rank, const char* where) {
+    return km_set_mod(mod_id, name, tokens, n, rank, 0, where);
+}
+
+int openpete_keymap_set_mod_default(const char* mod_id, const char* name,
+                                    const char* key, const char* where) {
+    const char* tok[1] = { key };
+    return km_set_mod(mod_id, name, tok, 1, 0, 1, where);
+}
+
+void openpete_keymap_set_mod_enabled(const char* mod_id, int on) {
+    if (!mod_id) return;
+    for (int i = 0; i < g_modbind_n; i++)
+        if (!strcmp(g_modbind[i].mod, mod_id))
+            g_modbind[i].enabled = (unsigned char)(on ? 1 : 0);
+    km_recompute_left_bound();
 }
 
 const char* openpete_keymap_mod_effective_key(const char* mod_id,
