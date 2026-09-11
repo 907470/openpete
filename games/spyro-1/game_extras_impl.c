@@ -20,6 +20,7 @@
 #include "features/audio_volume_native.h"
 #include "features/vibration_native.h"
 #include "features/cheats_native.h"
+#include "features/credits_skip.h"
 #include "features/crash_demo_woah.h"
 #include "features/freecam_native.h"
 #include "features/levelwarp_native.h"
@@ -193,6 +194,14 @@ static int s_skip_applied     = 0;
 static uint32_t s_skip_ffwd_deadline = 0;
 
 void game_set_skip_to_level(int level_id) {
+    /* The credits are entered from a live level (features/credits_skip.c
+     * replays the "CREDITS" pad code on the first playable tick), so a
+     * credits target skips into Artisans first; the roll returns there. */
+    if (level_id == SPYRO1_LEVEL_CREDITS ||
+        level_id == SPYRO1_LEVEL_CREDITS_FULL) {
+        spyro1_credits_skip_arm(level_id == SPYRO1_LEVEL_CREDITS_FULL);
+        level_id = 10;
+    }
     s_skip_to_level = level_id;
     s_skip_applied  = 0;
     /* Fast-forward presents to the level for runtime warps exactly as for
@@ -388,7 +397,12 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
         uint32_t gs = cpu->read_word(0x800757D8u); /* g_Gamestate */
         if (!s_skip_ffwd_deadline)
             s_skip_ffwd_deadline = frame_counter + 4000u;
-        if ((s_skip_applied && gs == 0u /*GS_Playing*/) ||
+        /* A credits skip passes through GS_Playing for one tick on its way
+         * to GS_Credits (15); presents resume on the roll, not the level. */
+        int playable = (gs == 0u /*GS_Playing*/ &&
+                        !spyro1_credits_skip_pending()) ||
+                       gs == 15u /*GS_Credits*/;
+        if ((s_skip_applied && playable) ||
             frame_counter > s_skip_ffwd_deadline) {
             openpete_skip_present_until_level = 0;
             s_skip_ffwd_deadline = 0;

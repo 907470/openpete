@@ -502,8 +502,10 @@ static void print_help(const char* display_name, const char* argv0,
         "                             look_axis_y = \"pad:-righty,mouse:-y\"; \"mouse:y\" inverts, \"none\" unbinds\n"
         "  --skip-to-level L          load directly into level L: numeric id (10=Artisans, 63=Gnasty) or\n"
         "                             lower_snake_case name (stone_hill, doctor_shemp, gnasty_gnorc, ...);\n"
-        "                             an unknown name prints the full list. Windowed runs fast-forward the\n"
-        "                             logos/title/loading (black window) until the level is playable\n"
+        "                             no value or an unknown name prints the list. credits / credits_100 play\n"
+        "                             the short (Gnasty defeated) / full (100%) credits, returning to\n"
+        "                             Artisans. Windowed runs fast-forward the logos/title/loading\n"
+        "                             (black window) until the level is playable\n"
         "  --cheats A,B,...           apply the game's own built-in cheat codes without entering them on\n"
         "                             the pad: 99_lives, unlock_all_levels (an unknown name prints the\n"
         "                             list). Applied once a level is live, and again for each new session\n"
@@ -1226,7 +1228,13 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--debug-triangle") == 0) {
             opts->debug_triangle = true;
         } else if (strcmp(a, "--skip-to-level") == 0) {
-            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            /* No value (end of argv, or the next word is a flag): print the
+             * target list, as --help does. Level names never start with '-'. */
+            if (i + 1 >= argc || argv[i + 1][0] == '-') {
+                (void)game_resolve_level_arg("");
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            v = argv[i + 1];
             opts->skip_to_level = game_resolve_level_arg(v);
             if (opts->skip_to_level < 0) {
                 fprintf(stderr, "openpete: --skip-to-level: unknown level '%s'\n", v);

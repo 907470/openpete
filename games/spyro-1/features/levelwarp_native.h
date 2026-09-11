@@ -29,7 +29,7 @@ const spyro1_level_t* spyro1_level_table(size_t* out_count);
 
 /* Resolve a --skip-to-level style argument (numeric id, level name, or
  * alias; '-' accepted for '_', case-insensitive) to a level id. Returns -1
- * for an unknown name, printing the valid list to stderr. */
+ * for an unknown or empty name, printing the valid list to stderr. */
 int spyro1_level_resolve(const char* arg);
 
 /* Drive the warp state machine: drain a queued overlay request, ride the

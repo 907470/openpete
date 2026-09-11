@@ -232,6 +232,7 @@ add_executable(openpete-spyro1
     features/audio_volume_native.c
     features/vibration_native.c
     features/cheats_native.c
+    features/credits_skip.c
     features/crash_demo_woah.c
     features/levelwarp_native.c
 

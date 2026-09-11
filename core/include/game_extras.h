@@ -124,8 +124,9 @@ void game_set_skip_to_level(int level_id); /* 0 = disabled */
 /* Resolve a --skip-to-level argument to a level id. Accepts the game's
  * numeric ids verbatim ("11") and per-game lower_snake_case level names
  * ("stone_hill", "doctor_shemp"). Returns the level id, or -1 if the
- * name is unknown (impl prints the valid names to stderr — this runs in
- * CLI-parse context). */
+ * name is unknown or empty (impl prints the valid names to stderr — this
+ * runs in CLI-parse context; an empty arg is `--skip-to-level` with no
+ * value, asking for the list). */
 int game_resolve_level_arg(const char* arg);
 
 /* Validate a --cheats spec ("99_lives,unlock_all_levels") against the game's

@@ -57,6 +57,7 @@
 #include "features/levelwarp_native.h"
 
 #include "feature_registry.h"
+#include "features/credits_skip.h" /* SPYRO1_LEVEL_CREDITS* pseudo ids */
 #include "game_extras.h"    /* game_set_skip_to_level (title-screen route) */
 #include "openpete_fiber.h" /* openpete_speculative */
 #include "openpete_freecam.h"
@@ -154,6 +155,16 @@ static const struct { const char* name; int id; } k_level_aliases[] = {
 };
 #define LEVEL_ALIAS_COUNT (sizeof(k_level_aliases) / sizeof(k_level_aliases[0]))
 
+/* Non-level --skip-to-level targets (features/credits_skip.c). Not in
+ * k_levels: the dropdown's in-level warp route drives the game's exit-level
+ * sequence, which has no credits arm. */
+static const struct { const char* name; int id; } k_pseudo_levels[] = {
+    { "credits",      SPYRO1_LEVEL_CREDITS },
+    { "credits_100",  SPYRO1_LEVEL_CREDITS_FULL },
+    { "full_credits", SPYRO1_LEVEL_CREDITS_FULL },
+};
+#define PSEUDO_LEVEL_COUNT (sizeof(k_pseudo_levels) / sizeof(k_pseudo_levels[0]))
+
 /* Display names in table order — the dropdown's enum_values. Built once at
  * apply-options time; the registry copies the row but NOT the strings it
  * points at, so this array has to outlive the process (it is static). */
@@ -169,13 +180,17 @@ static void print_valid_names(void) {
     fprintf(stderr, "valid level names:\n");
     for (i = 0; i < LEVEL_COUNT; i++)
         fprintf(stderr, "  %-18s (%d)\n", k_levels[i].name, k_levels[i].id);
+    for (i = 0; i < PSEUDO_LEVEL_COUNT; i++)
+        fprintf(stderr, "  %-18s (%d)\n", k_pseudo_levels[i].name,
+                k_pseudo_levels[i].id);
 }
 
 int spyro1_level_resolve(const char* arg) {
     size_t i, n;
     char   norm[32];
 
-    if (!arg || !arg[0]) return -1;
+    /* No value: the list is the answer (`--skip-to-level` alone). */
+    if (!arg || !arg[0]) { print_valid_names(); return -1; }
 
     /* All-digits → numeric level id, passed through verbatim. */
     for (i = 0; arg[i] && isdigit((unsigned char)arg[i]); i++) {}
@@ -192,6 +207,8 @@ int spyro1_level_resolve(const char* arg) {
         if (strcmp(norm, k_levels[i].name) == 0) return k_levels[i].id;
     for (i = 0; i < LEVEL_ALIAS_COUNT; i++)
         if (strcmp(norm, k_level_aliases[i].name) == 0) return k_level_aliases[i].id;
+    for (i = 0; i < PSEUDO_LEVEL_COUNT; i++)
+        if (strcmp(norm, k_pseudo_levels[i].name) == 0) return k_pseudo_levels[i].id;
 
     print_valid_names();
     return -1;
