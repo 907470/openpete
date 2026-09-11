@@ -251,6 +251,84 @@ extern "C" uint32_t psyq_game_overlay_vaddr(void) { return 0x8007AA38u; }
 /* Spyro 1 waits on VSync(0), which advances the counter directly, so its poll
  * limit is zero: the poll path advances nothing. */
 
+/* --- Music route -------------------------------------------------------- */
+
+/* g_CdMusic.m_CurrentTrack (first field), psx.map 0x800774B0. The
+ * CdlSetfilter args cannot identify a music track (file is always 1; chan is
+ * only track-within-XA-file), so read the game's own index. Every play path
+ * writes m_CurrentTrack before issuing CdlReadS (music.c:28, music.c:51-68,
+ * loaders.c:776). */
+#define SPYRO_MUSIC_TRACKS 48
+
+static int spyro_current_music_track(void) {
+    int32_t track = 0;
+    memcpy(&track, openpete_psx_get_ram() + 0x774B0, sizeof(track));
+    return (track >= 0 && track < SPYRO_MUSIC_TRACKS) ? (int)track : -1;
+}
+
+extern "C" void psyq_game_music_route(int sector, psyq_music_route_t* out) {
+    (void)sector;
+    const int track = spyro_current_music_track();
+    out->track = track;
+
+    /* Custom-level song ([[level]] music): resolved against the guest's
+     * level id at the moment it starts the stream. Prefer g_NextLevelId
+     * (same rule as the WAD overlay's latch): the level's first start
+     * fires inside LoadLevelScene, where the slot's donor alias has
+     * g_LevelId temporarily swapped to the DONOR — g_NextLevelId still
+     * names the slot. Loop restarts fire outside the alias, where both
+     * agree. */
+    int32_t level_id = 0;
+    memcpy(&level_id, openpete_psx_get_ram() + 0x758B4, sizeof(level_id));
+    if (level_id < 10 || level_id > 65)
+        memcpy(&level_id, openpete_psx_get_ram() + 0x7596C,
+               sizeof(level_id));
+    double mdur = 0.0;
+    const char* mfile =
+        openpete_mods_custom_music_for((int)level_id, &mdur);
+    out->custom_path = mfile;
+
+    /* Guest-deterministic half (snapshotted; runs during speculation):
+     * keep the guest's loop bookkeeping sane for a custom song. The
+     * track keeps the DONOR's number (inherited at slot claim), but its
+     * m_MusicTable end is stretched to the WAV's length so the guest
+     * re-issues its loop ReadS when the song actually ends — 150
+     * group-sectors per second (37.8 kHz stereo XA = 18.75 audio
+     * sectors/s under the 8-sector interleave). Restored to stock the
+     * next time the track starts without a custom song. The stock end is
+     * host state that decides a guest RAM write and is not snapshotted. */
+    if (track >= 0) {
+        uint8_t* ram = openpete_psx_get_ram();
+        const uint32_t ent = 0x774B0u + 8u + 8u * (uint32_t)track;
+        int32_t tstart = 0, tend = 0;
+        memcpy(&tstart, ram + ent, 4);
+        memcpy(&tend, ram + ent + 4u, 4);
+        static int32_t s_stock_end[SPYRO_MUSIC_TRACKS];
+        static uint8_t s_stock_known[SPYRO_MUSIC_TRACKS];
+        if (!s_stock_known[track]) {
+            s_stock_end[track] = tend;
+            s_stock_known[track] = 1;
+        }
+        if (mfile && mdur > 0.0) {
+            int32_t want = tstart + (int32_t)(mdur * 150.0 + 0.5);
+            if (tend != want) memcpy(ram + ent + 4u, &want, 4);
+        } else if (s_stock_known[track] && tend != s_stock_end[track]) {
+            memcpy(ram + ent + 4u, &s_stock_end[track], 4);
+        }
+        if (mfile) {
+            /* Pin the easter-egg swap away: the game's easter table has
+             * no row for the free slot's index 35 (an OOB read into the
+             * XA offset table), and a custom level shouldn't swap to
+             * retail songs mid-play regardless. */
+            const int32_t never = 0x7FFFFFFF;
+            memcpy(ram + 0x774B0u + 540u, &never, 4);
+        }
+    }
+    if (mfile && !openpete_speculative)
+        openpete_logf(2, "music", "custom-level song for level %d: %s (%.1fs "
+                      "loop)", (int)level_id, mfile, mdur);
+}
+
 /* Spyro 1 registers its read-completion handler through psyq_CdReadCallback,
  * so the thunk layer holds it and no guest RAM slot names it. */
 extern "C" uint32_t psyq_game_cd_read_cb_addr(void) { return 0u; }

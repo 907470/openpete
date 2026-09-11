@@ -122,8 +122,11 @@ set +e
 # (the options parser takes the last occurrence).
 # --no-config: the gate's verdict must not depend on whatever openpete.toml
 # happens to sit next to the exe or in the runner's home directory.
+# --mods "": no mod runs, so no custom-level song can reach the music route
+# and the run's XA path is the stock one the golden was captured against.
 "$BIN" --headless \
     --no-config \
+    --mods "" \
     --disc "$DISC" \
     --run-recomp 0x80012204 \
     --mute 1 \

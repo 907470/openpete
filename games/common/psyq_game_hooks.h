@@ -94,6 +94,19 @@ void psyq_game_cd_apply_buf(unsigned char* buf, int sectors);
  * its own read-in-flight bookkeeping actually cleared. */
 void psyq_game_cd_read_done(CPUState* cpu, uint32_t read_cb);
 
+/* Music route for a streaming read issued under an XA mode. The shared body
+ * anchors the virtual head, calls this, and then starts a custom song by path,
+ * a WAV override by track, or the XA decoder at the sector, in that order.
+ * `track` is the game's own music index (-1: none, so no override by track);
+ * `custom_path` is a WAV a mod mapped to the current level (NULL: none). Any
+ * guest RAM a game writes here for a custom song runs during runahead
+ * speculation too and rolls back with the tick. */
+typedef struct {
+    int         track;
+    const char* custom_path;
+} psyq_music_route_t;
+void psyq_game_music_route(int sector, psyq_music_route_t* out);
+
 /* Address of libcd's read-completion callback slot in PSX RAM, for a game that
  * links libcd's own CdReadCallback rather than reaching the thunk: the
  * registration stores the guest handler there and never reaches

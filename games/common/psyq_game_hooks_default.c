@@ -84,6 +84,14 @@ void psyq_game_cd_read_done(CPUState* cpu, uint32_t read_cb) {
 uint32_t psyq_game_cd_read_cb_addr(void) { return 0u; }
 #endif
 
+#ifndef PSYQ_GAME_PROVIDES_MUSIC_ROUTE
+void psyq_game_music_route(int sector, psyq_music_route_t* out) {
+    (void)sector;
+    out->track = -1;            /* no override by track */
+    out->custom_path = NULL;    /* no custom song: plain XA at the sector */
+}
+#endif
+
 #ifndef PSYQ_GAME_PROVIDES_RENDER_PATHS_ACTIVE
 int  psyq_game_render_paths_active(void) { return 0; }
 #endif
