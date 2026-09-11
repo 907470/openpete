@@ -229,3 +229,19 @@ target_include_directories(vstream_test PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
 set_target_properties(vstream_test PROPERTIES C_STANDARD 99)
 add_test(NAME vstream_test COMMAND vstream_test)
+
+# text_moby_id_test — the HUD text-glyph provenance table
+# (games/spyro-1/features/text_moby_id.c): keys are the emitter call, not
+# the pool address; a generation survives its own draw's drain and is
+# cleared by a drain with no emit between it (a draw that allocates pool
+# mobys without the text emitters, e.g. the credits roll); the class guard.
+add_executable(text_moby_id_test
+    text_moby_id_test.c
+    ${CMAKE_SOURCE_DIR}/games/spyro-1/features/text_moby_id.c)
+target_include_directories(text_moby_id_test PRIVATE
+    ${CMAKE_SOURCE_DIR}/core/include
+    ${CMAKE_SOURCE_DIR}/games/spyro-1/features
+    ${CMAKE_SOURCE_DIR}/games/spyro-1
+    ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
+set_target_properties(text_moby_id_test PROPERTIES C_STANDARD 99)
+add_test(NAME text_moby_id_test COMMAND text_moby_id_test)

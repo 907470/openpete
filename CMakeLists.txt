@@ -263,6 +263,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Sub-tick interpolation of the credits-roll letters (headless, llvmpipe):
+    # the settled line holds its pose on intermediate presents, the flying
+    # line lands between its canonical neighbours in position/depth/rotation,
+    # the alpha-1 intermediate reproduces the canonical dump, and HUD-pool
+    # interp keys spawn only when a line spawns. Each check carries an
+    # engagement condition. See scripts/check_credits_interp.sh.
+    add_test(NAME credits_interp
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_credits_interp.sh)
+    set_tests_properties(credits_interp PROPERTIES
+        LABELS "slow;presentation"
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # The pacing analysis suite's own maths, against synthetic inputs with
     # known answers. Fast, no PSX boot, no display: a wrong Allan deviation or
     # a mis-set gate tolerance is worse than none, because it looks
