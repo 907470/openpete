@@ -75,6 +75,7 @@ void openpete_interp_objs_begin_tick(void) {
     s_stat_spawned = 0;
 }
 
+extern unsigned openpete_frame;
 void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) {
     if (key == 0 || !data) return;
     if (len > BLOB) len = BLOB;
@@ -130,7 +131,7 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
                 s_keylog = (e && *e && *e != '0') ? 1 : 0;
             }
             if (s_keylog)
-                fprintf(stderr, "[interp-objs] spawn key=%08x\n", key);
+                fprintf(stderr, "[interp-objs] f=%u spawn key=%08x\n", openpete_frame, key);
         }
     }
     memcpy(s_tab[i].curr, data, len);

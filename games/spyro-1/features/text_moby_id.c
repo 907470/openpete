@@ -22,9 +22,11 @@
 // it back to D_800756FC), so the first emit of the next tick sees the pool
 // pointer jump back UP. That reset — or a change of pool base, which happens
 // when the polybuf double-buffer flips — starts a new generation and clears
-// the table. A draw that drains mid-way and emits again reuses the same
-// addresses for different glyphs, so each drain also bumps a pass counter that
-// participates in the key.
+// the table. A draw that emits no text at all (the credits roll allocates its
+// letters directly) never reaches that check, so the drain is hooked too: the
+// first drain after an emit closes the generation, and a second drain with no
+// emit in between clears it, since the records then describe mobys that
+// another allocator has overwritten with matching classes.
 
 #include <stdint.h>
 #include <string.h>
@@ -66,6 +68,7 @@ static uint32_t s_ncalls;
 
 static uint32_t s_last_ptr;    /* pool cursor after the previous call */
 static uint32_t s_last_base;   /* pool base seen with it */
+static int      s_closed;      /* a drain has run since the last emit */
 
 /* MOBYCLASS_* values the emitters map characters to (moby.h). */
 #define CLS_EXCLAMATION 75u
@@ -182,6 +185,7 @@ static int text_emit_entry(CPUState* cpu, int spaced) {
      * the point past which the previous generation's records describe mobys
      * that are about to be overwritten). */
     if (base != s_last_base || cur > s_last_ptr) text_id_clear();
+    s_closed = 0;
 
     /* Call ordinal for this callsite within the generation. */
     uint32_t ra = cpu->ra;
@@ -224,9 +228,20 @@ static int on_800181AC_text(CPUState* cpu, uint32_t addr) {
     return text_emit_entry(cpu, 1);
 }
 
+/* func_80018880 (pool drain) entry: the generation's records stay valid for
+ * this tick's capture and presents; a second drain without an emit means a
+ * whole draw allocated no text, and the records are stale. */
+static int on_80018880_drain(CPUState* cpu, uint32_t addr) {
+    (void)cpu; (void)addr;
+    if (s_closed) text_id_clear();
+    s_closed = 1;
+    return 0;
+}
+
 static const feature_dispatch_entry_t text_moby_id_dispatch[] = {
     { 0x80017FE4u, on_80017FE4_text },   /* func_80017FE4 — plain text */
     { 0x800181ACu, on_800181AC_text },   /* func_800181AC — spacing-aware */
+    { 0x80018880u, on_80018880_drain },  /* func_80018880 — pool drain */
     { 0u, NULL },
 };
 

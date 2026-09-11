@@ -113,14 +113,73 @@ static const openpete_interp_region_t s_spyro_interp_regions[] = {
 #define G_TRANS_GEMS    0x8007571Cu  /* g_LevelTransGems — TransGem[64] @ g_SonyImage+0x2800 */
 #define G_RECENT_GEMS   0x80077DB8u  /* g_RecentGemsCollected[32] — u_char class per gem */
 #define TRANS_GEM_MAX   32u          /* both the fly-out update and the draw loop stop at 32 */
+#define G_GAMESTATE     0x800757D8u  /* g_Gamestate */
+#define G_CREDITS_STAGE 0x80075704u  /* g_CreditsStage: <99 = the overlay's letter roll */
+#define G_CREDITS_RECS  0x8007589Cu  /* D_8007589C — CreditsLetter[] (overlay space) */
+#define G_CREDITS_COUNT 0x800756E4u  /* D_800756E4 — records in use */
+#define CREDITS_REC_STRIDE 0x1Cu
+#define CREDITS_REC_STATE  0x04u     /* 1 flying in, 2 settled, 0 departing (= free for reuse) */
+#define CREDITS_REC_MAX    128u
+#define GS_CREDITS      15u
 
 static uint32_t rd32(uint32_t addr);
 
+/* Credits letter roll (func_credits_8007BFD0, GS_Credits with g_CreditsStage
+ * < 99): the draw allocates exactly one pool moby per CreditsLetter record,
+ * in record order, so a moby's absolute pool ordinal IS its record index.
+ * The update allocates a new letter into the first record whose state byte
+ * is 0 (a letter still flying out) and otherwise appends, so the index is
+ * stable for a letter's whole life but is handed to the next line's letter
+ * the tick the old one is overwritten. A same-class ordinal fails here: the
+ * old line's letters sit at lower indices than the settled title, and each
+ * one that departs renames every later letter of its class, pairing a
+ * settled letter with the departed one's rotation. Reuse of an index is
+ * observed once per tick at capture as the state byte returning to 1
+ * (flying in) and bumps a per-index generation folded into the key, so a
+ * new letter never pairs with the one it replaced. */
+static uint8_t s_credits_state[CREDITS_REC_MAX];
+static uint8_t s_credits_gen[CREDITS_REC_MAX];
+
+static int credits_roll_active(void) {
+    return rd32(G_GAMESTATE) == GS_CREDITS && (int32_t)rd32(G_CREDITS_STAGE) < 99;
+}
+
+static void credits_track_generations(void) {
+    if (!credits_roll_active()) {
+        memset(s_credits_state, 0, sizeof(s_credits_state));
+        return;
+    }
+    uint32_t recs = rd32(G_CREDITS_RECS), cnt = rd32(G_CREDITS_COUNT);
+    if (recs < 0x80000000u || cnt > CREDITS_REC_MAX) return;
+    for (uint32_t k = 0; k < CREDITS_REC_MAX; k++) {
+        const uint8_t* r = (k < cnt) ? (const uint8_t*)openpete_psx_to_host_ptr(recs + k * CREDITS_REC_STRIDE) : NULL;
+        uint8_t st = r ? r[CREDITS_REC_STATE] : 0;
+        if (st == 1u && s_credits_state[k] != 1u) s_credits_gen[k]++;
+        s_credits_state[k] = st;
+    }
+}
+
 /* See spyro_interp_regions.h. Tried in order of how much of the game's own
- * state backs the identity: emitter-call provenance for text glyphs, the
- * fly-out source slot for tally gems, then a class-relative pool ordinal for
- * everything else in the HUD pool, and finally the moby's own address. */
+ * state backs the identity: the record index for credits letters,
+ * emitter-call provenance for text glyphs, the fly-out source slot for tally
+ * gems, then a class-relative pool ordinal for everything else in the HUD
+ * pool, and finally the moby's own address. */
 uint32_t spyro_interp_moby_key(uint32_t m) {
+    /* Credits letters: (class, record index, generation) — see
+     * credits_track_generations. */
+    {
+        uint32_t top = rd32(G_HUD_POOL_TOP);
+        uint32_t delta = (top >= 0x80000000u && m < top) ? top - m : 0u;
+        if (delta != 0u && delta <= CREDITS_REC_MAX * MOBY_STRIDE &&
+            (delta % MOBY_STRIDE) == 0u && credits_roll_active()) {
+            uint32_t k = delta / MOBY_STRIDE - 1u;
+            const uint8_t* mh = (const uint8_t*)openpete_psx_to_host_ptr(m);
+            uint16_t cls = 0; if (mh) memcpy(&cls, mh + 0x36u, 2);
+            return 0x60000000u | ((uint32_t)(cls & 0x3FFu) << 16) |
+                   ((uint32_t)(s_credits_gen[k] & 0x3Fu) << 10) | (k & 0x3FFu);
+        }
+    }
+
     /* Text glyphs first: a glyph emitted by func_80017FE4 / func_800181AC has a
      * real provenance identity — "the Nth character of the Mth call from
      * callsite C" — recorded by text_moby_id.c. It beats every position-derived
@@ -248,6 +307,7 @@ static uint32_t rd32(uint32_t addr) {
  * (moby_native.c::append_revealed_regular). */
 static void spyro_interp_capture_objs(void) {
     openpete_interp_objs_begin_tick();
+    credits_track_generations();
 
     uint32_t arr = rd32(G_LEVELMOBYS);
     if (arr >= 0x80000000u) {
