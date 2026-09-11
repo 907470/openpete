@@ -16,8 +16,25 @@ static bool                  s_teleport_req = false;
 
 bool openpete_freecam_active(void) { return s_active; }
 
+static _Atomic unsigned s_engage_gen;
+static _Atomic float    s_mouse_sens = 1.0f;
+
+unsigned openpete_freecam_engage_generation(void) {
+    return atomic_load_explicit(&s_engage_gen, memory_order_relaxed);
+}
+
+void openpete_freecam_set_mouse_sensitivity(float s) {
+    if (!(s >= 0.0f)) return;   /* rejects negatives and NaN */
+    atomic_store_explicit(&s_mouse_sens, s, memory_order_relaxed);
+}
+
+float openpete_freecam_mouse_sensitivity(void) {
+    return atomic_load_explicit(&s_mouse_sens, memory_order_relaxed);
+}
+
 void openpete_freecam_toggle(void) {
     s_active = !s_active;
+    atomic_fetch_add_explicit(&s_engage_gen, 1u, memory_order_relaxed);
     memset(&s_axes, 0, sizeof s_axes);
     /* A request only makes sense against the pose that was on screen when it
      * was made, so it never survives a toggle in either direction. */

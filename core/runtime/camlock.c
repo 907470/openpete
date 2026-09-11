@@ -4,9 +4,11 @@
 
 #include "openpete_camlock.h"
 #include "openpete_freecam.h"   /* shared fly axes + speed step */
+#include "openpete_host_mouse.h" /* probe log */
 #include "openpete_log.h"
 
 #include <math.h>
+#include <stdatomic.h>
 #include <stdlib.h>
 #include <string.h>
 
@@ -27,6 +29,12 @@
  * selects the row so both cameras feel identical at a given step. */
 static const double s_move_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 25, 100, 300, 500, 800 };
 static const double s_turn_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 10,  25,  35,  50,  75 };
+
+static _Atomic unsigned s_engage_gen;
+
+unsigned openpete_camlock_engage_generation(void) {
+    return atomic_load_explicit(&s_engage_gen, memory_order_relaxed);
+}
 
 static bool   s_active     = false;
 static bool   s_pose_valid = false;
@@ -68,6 +76,7 @@ static void cl_env_init(void) {
             s_pose_valid = true;
             s_moved      = true;   /* scripted pose: build matrices from it */
             s_active     = true;
+            atomic_fetch_add_explicit(&s_engage_gen, 1u, memory_order_relaxed);
             OPL_INFO_F("camlock", "scripted pose (%ld, %ld, %ld) yaw=%ld pitch=%ld",
                        v[0], v[1], v[2], n >= 4 ? v[3] : 0, n >= 5 ? v[4] : 0);
         } else {
@@ -75,7 +84,10 @@ static void cl_env_init(void) {
                        "OPENPETE_CAMLOCK_POSE needs at least x,y,z (got %d numbers)", n);
         }
     }
-    if (!s_active && eng && *eng && *eng != '0') s_active = true;
+    if (!s_active && eng && *eng && *eng != '0') {
+        s_active = true;
+        atomic_fetch_add_explicit(&s_engage_gen, 1u, memory_order_relaxed);
+    }
 }
 
 bool openpete_camlock_active(void) {
@@ -86,6 +98,7 @@ bool openpete_camlock_active(void) {
 void openpete_camlock_toggle(void) {
     cl_env_init();
     s_active = !s_active;
+    atomic_fetch_add_explicit(&s_engage_gen, 1u, memory_order_relaxed);
     if (s_active) {
         /* Re-latch from the live camera on every engage: the view moved on
          * since the last session, and the user expects the lock to grab
@@ -115,12 +128,34 @@ void openpete_camlock_get_pose(double* x, double* y, double* z,
     if (yaw) *yaw = s_yaw;  if (pitch) *pitch = s_pitch;
 }
 
+/* Mouse look markers, this consumer's own: the count total at the last
+ * rebase and the angle already applied since. Present thread only. */
+static long long s_mb_x, s_mb_y, s_ma_x, s_ma_y;
+static unsigned  s_gen_seen = ~0u;
+static float     s_sens_seen = -1.0f;
+
 void openpete_camlock_integrate(double dt_ticks) {
     if (!s_active || !s_pose_valid) return;
     openpete_freecam_axes ax;
     openpete_freecam_get_axes(&ax);
+
+    /* Mouse term: a displacement, not a rate, so no dt scale. Rebased on
+     * engage, on a sensitivity change, and on a clamped pitch apply. */
+    long long tx, ty;
+    openpete_freecam_look_counts(&tx, &ty);
+    const unsigned gen  = openpete_camlock_engage_generation();
+    const float    sens = openpete_freecam_mouse_sensitivity();
+    if (gen != s_gen_seen || sens != s_sens_seen) {
+        s_mb_x = tx; s_mb_y = ty; s_ma_x = 0; s_ma_y = 0;
+        s_gen_seen = gen; s_sens_seen = sens;
+    }
+    const long long target_x = llround(OPENPETE_FREECAM_MOUSE_K * (double)sens * (double)(tx - s_mb_x));
+    const long long target_y = llround(OPENPETE_FREECAM_MOUSE_K * (double)sens * (double)(ty - s_mb_y));
+    const long long mdx = target_x - s_ma_x, mdy = target_y - s_ma_y;
+    s_ma_x = target_x; s_ma_y = target_y;
+
     if (ax.move_fwd == 0.0f && ax.move_strafe == 0.0f && ax.move_up == 0.0f &&
-        ax.look_yaw == 0.0f && ax.look_pitch == 0.0f)
+        ax.look_yaw == 0.0f && ax.look_pitch == 0.0f && mdx == 0 && mdy == 0)
         return;
     if (dt_ticks < 0.0) dt_ticks = 0.0;
     if (dt_ticks > 4.0) dt_ticks = 4.0;   /* hitch guard: no warp after a stall */
@@ -132,10 +167,17 @@ void openpete_camlock_integrate(double dt_ticks) {
     /* Same look/move basis as the freecam drive (freecam_native.c): turning
      * right lowers yaw, looking up lowers pitch; forward from (yaw, pitch)
      * in the world x/y plane with Z up. */
-    s_yaw   -= (double)ax.look_yaw   * turn;
-    s_pitch -= (double)ax.look_pitch * turn;
-    if (s_pitch >  CL_PITCH_LIMIT) s_pitch =  CL_PITCH_LIMIT;
-    if (s_pitch < -CL_PITCH_LIMIT) s_pitch = -CL_PITCH_LIMIT;
+    s_yaw   -= (double)ax.look_yaw   * turn + (double)mdx;
+    s_pitch -= (double)ax.look_pitch * turn + (double)mdy;
+    if (s_pitch > CL_PITCH_LIMIT || s_pitch < -CL_PITCH_LIMIT) {
+        s_pitch = s_pitch > 0 ? CL_PITCH_LIMIT : -CL_PITCH_LIMIT;
+        /* Clamped: rebase the pitch markers so the first opposite-sign
+         * count moves the pose instead of unwinding an overshoot. */
+        s_mb_y = ty; s_ma_y = 0;
+    }
+    if (mdx || mdy)
+        openpete_host_mouse_probe_log("camlock", "mouse apply dx=%lld dy=%lld -> yaw=%.0f pitch=%.0f",
+                                      mdx, mdy, s_yaw, s_pitch);
 
     const double ry = s_yaw   * (2.0 * M_PI / CL_ANGLE_FULL);
     const double rp = s_pitch * (2.0 * M_PI / CL_ANGLE_FULL);

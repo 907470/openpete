@@ -31,7 +31,9 @@
 #include "features/freecam_native.h"
 #include "spyro_native_reextract.h"   /* terrain_native_topdown_pose / _sweep_pose (--freecam-pose, --freecam-path) */
 #include "openpete_freecam.h"
+#include "openpete_fiber.h"     /* openpete_speculative / openpete_replaying */
 #include "openpete_fillpick.h"  /* scripted engage of the LP fill-tag inspector */
+#include "openpete_host_mouse.h" /* probe log */
 #include "openpete_log.h"
 #include "psx_runtime_internal.h"        /* CPUState + its read/write callbacks */
 
@@ -294,6 +296,39 @@ static void freecam_drive(CPUState* cpu) {
     int32_t pitch = (int16_t)cpu->read_half(CAM_PITCH);
     yaw   -= (int32_t)lround((double)ax.look_yaw   * turn);
     pitch -= (int32_t)lround((double)ax.look_pitch * turn);
+
+    /* Mouse look. The host loop accumulates the look axes' mouse counts into
+     * running totals; this consumer keeps the total at its last rebase and
+     * the angle already applied, and on each COMMITTED tick applies
+     * round(k * sensitivity * (total - base)) - applied. Speculated
+     * (runahead) and replayed (rewind) ticks apply nothing: they are
+     * re-executed or erased, and the committed tick that follows sees the
+     * whole motion. The pose after N ticks is exact between rebases; a rebase
+     * happens on engage (generation counter), on a sensitivity change, and,
+     * for pitch, on a clamped apply so reversing the mouse moves at once. */
+    static long long mb_x, mb_y, ma_x, ma_y;
+    static unsigned  gen_seen = ~0u;
+    static float     sens_seen = -1.0f;
+    long long mdx = 0, mdy = 0, tx = 0, ty = 0;
+    const int committed = !openpete_speculative && !openpete_replaying;
+    if (committed) {
+        openpete_freecam_look_counts(&tx, &ty);
+        const unsigned gen  = openpete_freecam_engage_generation();
+        const float    sens = openpete_freecam_mouse_sensitivity();
+        if (gen != gen_seen || sens != sens_seen) {
+            mb_x = tx; mb_y = ty; ma_x = 0; ma_y = 0;
+            gen_seen = gen; sens_seen = sens;
+        }
+        const long long target_x = llround(OPENPETE_FREECAM_MOUSE_K * (double)sens * (double)(tx - mb_x));
+        const long long target_y = llround(OPENPETE_FREECAM_MOUSE_K * (double)sens * (double)(ty - mb_y));
+        mdx = target_x - ma_x; mdy = target_y - ma_y;
+        ma_x = target_x; ma_y = target_y;
+        /* Mouse right turns right (lowers yaw); the default `mouse:-y`
+         * spelling makes mouse up a positive count, which looks up (lowers
+         * pitch). */
+        yaw   -= (int32_t)mdx;
+        pitch -= (int32_t)mdy;
+    }
     /* OPENPETE_FREECAM_SPIN=<yaw-units-per-tick>: scripted continuous yaw
      * sweep (4096 = full turn), on top of input — lets one run profile every
      * view direction (perf-vs-direction hunts, e.g. gnorc_cove 2026-07-10). */
@@ -306,8 +341,13 @@ static void freecam_drive(CPUState* cpu) {
         }
         yaw += s_spin;
     }
-    if (pitch >  PITCH_LIMIT) pitch =  PITCH_LIMIT;
-    if (pitch < -PITCH_LIMIT) pitch = -PITCH_LIMIT;
+    if (pitch > PITCH_LIMIT || pitch < -PITCH_LIMIT) {
+        pitch = pitch > 0 ? PITCH_LIMIT : -PITCH_LIMIT;
+        if (committed) { mb_y = ty; ma_y = 0; }   /* rebase pitch on clamp */
+    }
+    if (mdx || mdy)
+        openpete_host_mouse_probe_log("freecam", "mouse apply dx=%lld dy=%lld -> yaw=%d pitch=%d",
+                                      mdx, mdy, (int)(int16_t)yaw, (int)(int16_t)pitch);
     cpu->write_half(CAM_YAW,   (uint16_t)(int16_t)yaw);
     cpu->write_half(CAM_PITCH, (uint16_t)(int16_t)pitch);
 

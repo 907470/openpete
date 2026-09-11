@@ -68,6 +68,24 @@ void openpete_freecam_get_axes(openpete_freecam_axes* out);
 void openpete_freecam_add_look_counts(long long dx, long long dy);
 void openpete_freecam_look_counts(long long* x, long long* y);
 
+/* Mouse look scale: angle units (a full turn is 4096) per count at
+ * sensitivity 1.0. 0.5 is one full turn per 8192 counts, about 26 cm at
+ * 800 counts per inch. A consumer applies
+ * round(OPENPETE_FREECAM_MOUSE_K * sensitivity * (total - base)). */
+#define OPENPETE_FREECAM_MOUSE_K 0.5
+
+/* --mouse-sensitivity / mouse_sensitivity, live. Consumers read it at every
+ * apply and rebase when it changed, so a change never rotates
+ * retroactively. */
+void  openpete_freecam_set_mouse_sensitivity(float s);
+float openpete_freecam_mouse_sensitivity(void);
+
+/* Engage generation: bumped by every toggle. A consumer compares it at its
+ * own apply site and rebases its mouse markers when it differs, so an
+ * engage from any thread (key binding, O menu row, M overlay row, env pose)
+ * starts the mouse term from the totals as they stand then. */
+unsigned openpete_freecam_engage_generation(void);
+
 /* Request that the player be moved to the free camera's position (the T-key
  * edge). Only meaningful while engaged. The host loop latches the request;
  * the game side consumes it on the next tick — it needs the game fiber to

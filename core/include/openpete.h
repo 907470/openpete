@@ -594,6 +594,10 @@ typedef struct openpete_options {
      * guest write there would leave the oracle and determinism gates measuring
      * a quietly modified game. */
     int vibration;      /* --vibration 0..10, -1 = leave the game's setting alone */
+    /* --mouse-sensitivity: multiplier on the freecam/camlock mouse look
+     * (angle units per count = OPENPETE_FREECAM_MOUSE_K * this); < 0 = unset
+     * (1.0). */
+    float mouse_sensitivity;
 
     /* Content for the "<bk2_record_path>.args" sidecar written next to a
      * --bk2-record capture. Holds the launch flags passed *directly* on

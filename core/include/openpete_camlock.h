@@ -40,6 +40,10 @@ bool openpete_camlock_active(void);
  * already returns every present's bytes. */
 void openpete_camlock_toggle(void);
 
+/* Engage generation (see openpete_freecam_engage_generation): bumped by the
+ * toggle and by the env engage, compared at the present-thread apply. */
+unsigned openpete_camlock_engage_generation(void);
+
 /* True once the flown pose holds real values (scripted pose, or latched by
  * the game side). While false the game side must derive one before flying. */
 bool openpete_camlock_pose_valid(void);

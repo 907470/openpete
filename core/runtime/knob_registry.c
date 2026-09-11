@@ -346,6 +346,13 @@ static int musicvol_set(knob_desc_t *k, double v) { (void)k; openpete_set_music_
 
 /* Vibration is the same shape: the setter moves a host request, and the guest
  * enable flag is written by the per-game feature on its tick hook. */
+static double mousesens_get(const knob_desc_t *k) { (void)k; return (double)openpete_freecam_mouse_sensitivity(); }
+static int mousesens_set(knob_desc_t *k, double v) {
+    if (!(v >= 0.0) || v > 100.0) return -1;
+    openpete_freecam_set_mouse_sensitivity((float)v);
+    k->stored_num = v;
+    return 0;
+}
 static double vibration_get(const knob_desc_t *k) { (void)k; return (double)openpete_get_vibration(); }
 static int vibration_set(knob_desc_t *k, double v) { (void)k; openpete_set_vibration((int)v); return 0; }
 
@@ -757,6 +764,15 @@ static const knob_desc_t g_builtin[] = {
       "options menu; the motors are always silent headless or unfocused.",
       KNOB_INT, KNOB_LIVE, NULL, 0, -1, 10,
       vibration_get, vibration_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "mouse_sensitivity", "Mouse sensitivity", "Input", "--mouse-sensitivity", NULL,
+      "Mouse look scale for the free camera and the camlock: angle units per "
+      "count = 0.5 * this, so 1.0 is one full turn per 8192 counts. Read at "
+      "every apply; a change rebases the mouse term, so it never rotates the "
+      "view retroactively. Mouse look itself binds through the look_axis_x/y "
+      "keymap actions (mouse:x, mouse:-y).",
+      KNOB_FLOAT, KNOB_LIVE, NULL, 0, 0.0, 100.0,
+      mousesens_get, mousesens_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     /* -------- Paths -------- */
     { "disc", "Disc image", "Paths", "--disc", NULL,
@@ -1438,6 +1454,8 @@ void knob_registry_init(const struct openpete_options *opts) {
             k->stored_num = opts->music_volume;
         } else if (!strcmp(k->id, "vibration")) {
             k->stored_num = opts->vibration;
+        } else if (!strcmp(k->id, "mouse_sensitivity")) {
+            k->stored_num = opts->mouse_sensitivity >= 0.0f ? opts->mouse_sensitivity : 1.0;
         } else if (!strcmp(k->id, "record_cfr")) {
             k->stored_num = opts->record_cfr;
         } else if (!strcmp(k->id, "record_frames")) {

@@ -43,6 +43,8 @@ int    openpete_get_music_volume(void)         { return -1; }
 void   openpete_set_music_volume(int v)        { (void)v; }
 int    openpete_get_vibration(void)            { return -1; }
 void   openpete_set_vibration(int v)           { (void)v; }
+float  openpete_freecam_mouse_sensitivity(void)     { return 1.0f; }
+void   openpete_freecam_set_mouse_sensitivity(float s) { (void)s; }
 int    openpete_get_render_fps(void)           { return 60; }
 void   openpete_set_render_fps(int fps)        { (void)fps; }
 double openpete_get_tick_scale(void)           { return 1.0; }

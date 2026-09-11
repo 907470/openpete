@@ -209,10 +209,13 @@ typedef enum {
         "pad:leftx",      "free camera: strafe axis")                          \
   X(FLY_AXIS_Y, "fly_axis_y",  KM_AXIS,    KM_CTX_FREECAM, 0,                  \
         "pad:-lefty",     "free camera: forward axis")                         \
-  X(LOOK_AXIS_X,"look_axis_x", KM_AXIS,    KM_CTX_FREECAM, KM_DELTA,                  \
-        "pad:rightx",     "free camera: yaw axis")                             \
-  X(LOOK_AXIS_Y,"look_axis_y", KM_AXIS,    KM_CTX_FREECAM, KM_DELTA,                  \
-        "pad:-righty",    "free camera: pitch axis")                           \
+  /* The mouse rides the look axes as a displacement source alongside the
+   * stick; "mouse:y" in place of "mouse:-y" inverts, "pad:rightx" alone
+   * disables mouse look. */                                                   \
+  X(LOOK_AXIS_X,"look_axis_x", KM_AXIS,    KM_CTX_FREECAM, KM_DELTA,           \
+        "pad:rightx,mouse:x",   "free camera: yaw axis")                       \
+  X(LOOK_AXIS_Y,"look_axis_y", KM_AXIS,    KM_CTX_FREECAM, KM_DELTA,           \
+        "pad:-righty,mouse:-y", "free camera: pitch axis")                     \
   /* --- development instruments (KM_DEV: unbound unless configured) --- */    \
   X(INTERP_TOGGLE, "interp_toggle", KM_DIGITAL, KM_CTX_ALWAYS, KM_DEV,         \
         "I",              "toggle frame interpolation")                        \

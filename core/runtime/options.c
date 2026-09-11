@@ -496,6 +496,10 @@ static void print_help(const char* display_name, const char* argv0,
         "                             0 silences the motors without changing that setting.\n"
         "                             10 is the full measured response. Always silent when\n"
         "                             headless or when the window is not focused.\n"
+        "  --mouse-sensitivity S      mouse look scale for the free camera and camlock (default 1.0;\n"
+        "                             0.5 = one full turn per 8192 counts). Mouse look binds through\n"
+        "                             [keys.host] look_axis_x = \"pad:rightx,mouse:x\" and\n"
+        "                             look_axis_y = \"pad:-righty,mouse:-y\"; \"mouse:y\" inverts, \"none\" unbinds\n"
         "  --skip-to-level L          load directly into level L: numeric id (10=Artisans, 63=Gnasty) or\n"
         "                             lower_snake_case name (stone_hill, doctor_shemp, gnasty_gnorc, ...);\n"
         "                             an unknown name prints the full list. Windowed runs fast-forward the\n"
@@ -666,6 +670,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->sfx_volume          = -1;    /* -1 = unset; the game's own slider stands */
     opts->music_volume        = -1;
     opts->vibration           = -1;    /* -1 = unset; the game's own setting stands */
+    opts->mouse_sensitivity   = -1.0f; /* -1 = unset (1.0) */
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
     opts->perf_stats          = OPENPETE_PERF_FPS;  /* the counter, no pacing readout; --perf-stats / O-menu SHOW FPS row */
     /* Top-RIGHT: the stats block and the notifications both default to a
@@ -1459,6 +1464,17 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             if (parse_volume_arg(a, v, &opts->vibration) != 0)
                 return OPENPETE_EXIT_SETUP_ERROR;
+            i++;
+        } else if (strcmp(a, "--mouse-sensitivity") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            char* end = NULL;
+            double d = strtod(v, &end);
+            if (!end || *end || !(d >= 0.0) || d > 100.0) {
+                fprintf(stderr, "openpete: --mouse-sensitivity expects a number "
+                        "in 0..100, got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            opts->mouse_sensitivity = (float)d;
             i++;
         } else if (strcmp(a, "--help") == 0 || strcmp(a, "-h") == 0) {
             print_help(opts->display_name, argv[0], opts->default_renderer);

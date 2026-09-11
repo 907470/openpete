@@ -55,6 +55,7 @@ static const cfg_knob_t g_schema[] = {
     { "sfx",              "--sfx",              NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "music",            "--music",            NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "vibration",        "--vibration",        "OPENPETE_VIBRATION",    CFG_INT,    NULL,       NULL,       NULL,       0 },
+    { "mouse_sensitivity","--mouse-sensitivity", NULL,                   CFG_FLOAT,  NULL,       NULL,       NULL,       0 },
 
     /* -------- Paths -------- */
     { "disc",             "--disc",             NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },

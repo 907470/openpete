@@ -2168,6 +2168,8 @@ static int run_host_init(const openpete_options_t* opts) {
     openpete_osd_set_enabled(opts->osd);
     openpete_osd_set_anchor(opts->osd_position);
     openpete_osd_set_default_timeout_ms(opts->osd_timeout_ms);
+    if (opts->mouse_sensitivity >= 0.0f)
+        openpete_freecam_set_mouse_sensitivity(opts->mouse_sensitivity);
     /* OPENPETE_OSD_DEMO=N seeds N sample toasts at startup. The OSD is
      * otherwise driven entirely by live user action — a menu row, a hotkey, a
      * mod — which a headless or scripted capture cannot perform, so a gate
@@ -3775,6 +3777,11 @@ static int run_host_loop(const openpete_options_t* opts) {
             }
             if (openpete_freecam_active() && openpete_camlock_active())
                 openpete_camlock_toggle();   /* freecam engaged while locked wins */
+            /* Either camera engaged asks for relative mouse mode; the request
+             * is arbitrated against the overlays and applied on the
+             * window-owning thread. Dropped on disengage. */
+            openpete_host_mouse_request_capture(OPENPETE_MOUSE_CAP_CAMERA,
+                openpete_freecam_active() || openpete_camlock_active());
 
             /* Drop Spyro at the camera and hand the camera back to the game.
              * Latched as a one-shot request — the move needs the game fiber, so
