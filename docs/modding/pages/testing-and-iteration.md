@@ -15,7 +15,7 @@
 Edit `src/`, `shaders/`, `assets/` or `config.toml`, then start the
 game.
 
-Compile every mod with a `src/` directory without booting the game:
+Alternatively, compile every mod with a `src/` directory without booting the game:
 
 ```
 openpete-spyro1 --compile-mods [--mods-dir mods]
@@ -101,6 +101,7 @@ present.
 | `--bk2 PATH` | Replay a recorded input movie. |
 | `--bk2-record [PATH]` | Record live pad input to a movie. |
 | `--bk2-stop-on-end` | Exit after the last recorded VBL instead of holding the last input. |
+| `--render-paths LIST` | Draw only the named render paths. Presentation only: gameplay state is unaffected. |
 | `--log-file PATH` | Mirror the log to PATH. |
 | `--devui-open 1` | Open the dev overlay with every mod node expanded as soon as it initializes, so an unattended windowed run reaches a mod's UI section body. |
 
@@ -233,3 +234,23 @@ Caveats:
   recorded and not replayed, nor are freecam or rewinds.
 - Don't use freecam while recording; it desyncs the replay.
 - `--bk2-record` overwrites an existing file without warning.
+
+### One render path at a time
+
+`--render-paths` draws only the paths named, which isolates a shader or
+material whose effect is hard to pick out of a full scene. The paths are
+`cyclorama`, `spyro`, `moby`, `terrain`, `shadow`, `flame`, `particles`,
+`glow`, `sparkle`, `tracer`, `transition` and `portal`.
+
+```
+openpete-spyro1 --headless \
+  --mods your_mod \
+  --skip-to-level stone_hill \
+  --render-paths terrain \
+  --screenshot-on-frame 1756 \
+  --screenshot-output terrain.png \
+  --screenshot-native-only \
+  --frame-limit 1760 \
+  --mute 1
+```
+
