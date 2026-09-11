@@ -4339,15 +4339,17 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
                     int32_t pp[3], cp[3];
                     memcpy(pp, o->prev + 0x0Cu, 12); memcpy(cp, o->curr + 0x0Cu, 12);
                     double ddx=(double)cp[0]-pp[0], ddy=(double)cp[1]-pp[1], ddz=(double)cp[2]-pp[2];
-                    /* billboard coords are SCREEN px — a 5000 guard never fires.
-                     * 64 px/tick is ~4x the tally gem's flight speed; a same-class
-                     * slot shift (gem inheriting another gem's slot) jumps farther
-                     * and snaps. */
+                    /* px/py are SCREEN px — a 5000 guard never fires. 64 px/tick
+                     * is ~4x the tally gem's flight speed; a same-class slot shift
+                     * (gem inheriting another gem's slot) jumps farther and snaps.
+                     * pz is DEPTH (the billboard's perspective scale) on a
+                     * different unit: the credits letters fly in at ~375/tick, so
+                     * it stays out of the guard. */
                     /* stale prev = a relaid-out submenu glyph paired with the old
                      * glyph that last held its pool slot → snap (leave bf at the
                      * canonical curr) so the letter appears in place instead of
                      * swimming from the previous word's position. */
-                    if (pcls2 == ccls2 && ddx*ddx + ddy*ddy + ddz*ddz <= 64.0*64.0 &&
+                    if (pcls2 == ccls2 && ddx*ddx + ddy*ddy <= 64.0*64.0 &&
                         !moby_interp_pair_stale(o->prev_ns, o->curr_ns)) {
                         double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
                         if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
