@@ -82,7 +82,7 @@ def run_level(exe, level, args, out_dir):
     opp = os.path.join(out_dir, "%s.opp" % level)
     shot = os.path.join(out_dir, "%s.png" % level)
     cmd = [
-        exe, "--disc", tr(DISC), "--run-recomp", "0x80012204",
+        exe, "--disc", tr(DISC),
         "--skip-to-level", level, "--freecam-pose", "topdown",
         "--lod", args.lod,
         "--extract-threads", str(args.extract_threads),

@@ -215,6 +215,20 @@ def main():
         i = argv.index("--thunked-only")
         thunk_sources.append(Path(argv[i + 1]))
         del argv[i:i + 2]
+    entry_exe = None
+    if "--exe" in argv:
+        # The header's entry is the crt0, which the runtime dispatches; it is
+        # never a JAL target and must be translated, never stubbed.
+        i = argv.index("--exe")
+        entry_exe = Path(argv[i + 1])
+        del argv[i:i + 2]
+    translate = set()
+    while "--translate" in argv:
+        # A symbol the crt0 reaches before main (InitHeap) that has no host
+        # body and must be translated.
+        i = argv.index("--translate")
+        translate.add(argv[i + 1])
+        del argv[i:i + 2]
     names_path = None
     if "--names" in argv:
         i = argv.index("--names")
@@ -241,6 +255,13 @@ def main():
             else:
                 out.append((addr, name))
         syms = out
+
+    if entry_exe is not None:
+        import struct
+        entry = struct.unpack_from("<I", entry_exe.read_bytes(), 0x10)[0]
+        syms = [(a, n) for a, n in syms if a != entry]
+    if translate:
+        syms = [(a, n) for a, n in syms if n not in translate]
 
     hardware = set()
     if hw_source is not None:

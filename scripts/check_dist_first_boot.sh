@@ -240,7 +240,6 @@ needed=$(objdump -p "$module" | awk '/NEEDED/ {print $2}' || true)
 
 echo "[dist-gate] full 20k oracle on the dist exe + self-built module..."
 "${APP[@]}" --headless \
-      --run-recomp 0x80012204 \
       --psxtrace-verify "$TRACE_ABS" \
       --frame-limit 200000 > "$WORK/oracle.log" 2>&1 \
     || { echo "[dist-gate] FAIL: oracle divergence or crash" >&2;
@@ -279,7 +278,7 @@ for input in "$appdir"/usr/recomp/manifest/channel_sites.txt \
              "$appdir"/recomp/manifest/channel_sites.txt; do
     [[ -f "$input" ]] && { echo "# dist-gate upgrade probe" >> "$input"; break; }
 done
-"${APP[@]}" --headless --frame-limit 60 --run-recomp 0x80012204 \
+"${APP[@]}" --headless --frame-limit 60 \
       --max-runtime-seconds 900 > "$WORK/upgrade.log" 2>&1 \
     || { echo "[dist-gate] FAIL: boot after an emission-input change crashed" >&2;
          tail -20 "$WORK/upgrade.log" >&2; exit 2; }
@@ -299,7 +298,7 @@ active=$(grep -o "shared recomp module attached: .*" "$WORK/upgrade.log" \
          | tail -1 | sed "s/.*attached: //")
 [[ -f "$active" ]] || { echo "[dist-gate] FAIL: no active module path in the log" >&2; exit 2; }
 printf '\177ELF not a recomp module' > "$active"
-"${APP[@]}" --headless --frame-limit 60 --run-recomp 0x80012204 \
+"${APP[@]}" --headless --frame-limit 60 \
       --max-runtime-seconds 900 > "$WORK/repair.log" 2>&1 \
     || { echo "[dist-gate] FAIL: an unusable module was fatal instead of" \
               "being rebuilt" >&2; tail -20 "$WORK/repair.log" >&2; exit 2; }
@@ -320,7 +319,7 @@ mkdir -p "$DATA/mods"
 cp -r "$sdkdir/examples/hello-anchor" "$DATA/mods/"
 rm -rf "$DATA/mods/hello-anchor/.build"
 "${APP[@]}" --headless --frame-limit 300 \
-      --run-recomp 0x80012204 --max-runtime-seconds 300 \
+ --max-runtime-seconds 300 \
       > "$WORK/mod-boot.log" 2>&1 \
     || { echo "[dist-gate] FAIL: boot with drop-in mod crashed" >&2;
          tail -20 "$WORK/mod-boot.log" >&2; exit 2; }

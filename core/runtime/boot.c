@@ -90,8 +90,13 @@ int openpete_psx_boot(CPUState* cpu, const uint8_t* bytes, size_t len) {
     cpu->sp = sp_base + h.initial_sp_offset;
     cpu->gp = h.initial_gp;
     cpu->pc = h.initial_pc;
+    /* The BIOS's Exec sets fp to the same stack address and jumps with ra
+     * at its own return, 0xBFC03D60 in SCPH-1001; the crt0 stores that ra
+     * in a .sbss word before it calls main. */
+    cpu->fp = cpu->sp;
+    cpu->ra = 0xBFC03D60u;
 
-    OPL_INFO_F("boot", "BSS zeroed (%u bytes); sp=0x%08X gp=0x%08X pc=0x%08X",
-               h.memfill_size, cpu->sp, cpu->gp, cpu->pc);
+    OPL_INFO_F("boot", "BSS zeroed (%u bytes); sp=0x%08X fp=0x%08X gp=0x%08X ra=0x%08X pc=0x%08X",
+               h.memfill_size, cpu->sp, cpu->fp, cpu->gp, cpu->ra, cpu->pc);
     return 0;
 }

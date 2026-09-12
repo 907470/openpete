@@ -58,7 +58,7 @@ echo "bench-fps: exe=$EXE  fps=$FPS  frames=$FRAMES  log=$LOG"
 # Windows .exe, and an exported knob does not cross that boundary without
 # WSLENV — an argument cannot be dropped that way.
 # (scripts/fences/rumble_guard.py enforces that this is here.)
-"$EXE" --disc "$DISC_ARG" --run-recomp 0x80012204 --renderer vk \
+"$EXE" --disc "$DISC_ARG" --renderer vk \
        --render-fps "$FPS" --frame-limit "$FRAMES" --vsync 0 \
        --max-runtime-seconds 1200 --vibration 0 \
        --frame-time-log "$LOG_ARG" "${EXTRA[@]}"

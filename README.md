@@ -254,12 +254,12 @@ or `--record-audio-encoder NAME` to pick a different encoder.
 # Record the attract demo to an .mkv (recommended container).
 ./build/linux-release/games/spyro-1/openpete-spyro1 \
     --disc games/spyro-1/spyro-1/build/SCUS-94228.cue \
-    --run-recomp 0x80012204 --record gameplay.mkv
+ --record gameplay.mkv
 
 # Widescreen + higher internal resolution, custom quality.
 ./build/linux-release/games/spyro-1/openpete-spyro1 \
     --disc games/spyro-1/spyro-1/build/SCUS-94228.cue \
-    --run-recomp 0x80012204 --aspect 21:9 --window 1920x1080 \
+ --aspect 21:9 --window 1920x1080 \
     --record gameplay.mkv --record-crf 18
 ```
 

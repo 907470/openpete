@@ -123,7 +123,7 @@ or `~/code/spyro/spyro-1/build/SCUS-94228.cue`. The shipped golden holds
 20000 records over 33 regions, covering four-plus level loads and
 gameplay, and replays in roughly two and a half minutes.
 
-The script runs openpete `--headless --no-config --run-recomp 0x80012204
+The script runs openpete `--headless --no-config
 --mute 1 --psxtrace-verify <trace> --frame-limit <N>`. `--no-config` keeps
 the verdict independent of any `openpete.toml` beside the exe or in the
 runner's home directory. `--mute 1` sits before the pass-through flags so a

@@ -119,7 +119,6 @@ typedef struct openpete_options {
      * and --run-recomp is omitted, the parser errors with a generic message.
      * core/ stays game-agnostic by reading this field; per-game main.cpp
      * populates it. */
-    uint32_t run_recomp_hint_addr;
 
     /* Run-loop control */
     int frame_limit;              /* 0 = unlimited */

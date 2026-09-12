@@ -59,7 +59,7 @@ def run_row(slug, args, frame_limit, outdir, timeout_s):
     logs = os.path.join(outdir, "logs"); os.makedirs(logs, exist_ok=True)
     shots = os.path.join(outdir, "shots"); os.makedirs(shots, exist_ok=True)
     # The hooks run headless only when a native capture is requested.
-    cmd = [BIN, "--headless", "--no-config", "--disc", DISC, "--run-recomp", "0x80012204",
+    cmd = [BIN, "--headless", "--no-config", "--disc", DISC,
            "--renderer", "vk", "--mute", "1", "--aspect", "16:9", "--lod", "original", "--mods", "",
            "--screenshot-native-only", "--screenshot-on-frame", str(frame_limit - 5),
            "--screenshot-output", os.path.join(shots, f"{slug}__{{n}}.png"),

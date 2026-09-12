@@ -87,7 +87,6 @@ DISC = Path(os.environ.get(
     ROOT / "games" / "spyro-1" / "spyro-1" / "build" / "SCUS-94228.cue"))
 BK2DIR = ROOT / "games" / "spyro-1" / "bk2"
 BASEDIR = ROOT / "tests" / "state-baselines"
-ENTRY = "0x80012204"
 
 # Chosen for what they put in the BRACKETED regions, not for scene variety:
 # the two pools (up to 1024 moby records, 512 particle slots) are the largest
@@ -136,7 +135,7 @@ def run_leg(bk2, hashlog, frames, armed, shotdir, verbose, head=0):
     env_extra = {}
     cmd = [
         str(EXE), "--headless", "--no-config", "--disc", str(DISC),
-        "--run-recomp", ENTRY, "--renderer", "vk", "--mute", "1",
+ "--renderer", "vk", "--mute", "1",
         "--bk2", str(BK2DIR / f"{bk2}.bk2"),
         "--gameplay-hash-log", str(hashlog),
         # Stop when the movie ends rather than at a guessed frame count; the

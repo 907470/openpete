@@ -1,0 +1,7 @@
+# Hand-curated forced entries for the main EXE recompile (regen-recomp.sh
+# reads this file by name).
+#
+# 0x80059444 — the EXE header's entry (the crt0): sets sp, fp and gp, stores
+#              the BIOS return address, calls InitHeap then main. Not a JAL
+#              target, so discovery never finds it.
+0x80059444

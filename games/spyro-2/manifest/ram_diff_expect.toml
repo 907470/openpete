@@ -38,11 +38,11 @@ loop  = 0x8001B140
 # the baseline in the same change as its fix) and refuses another hit. A
 # hex-spelled anchor needs its own row, keyed by that spelling.
 [psyq_internal_baseline]
-first = { bytes = 215, ranges = 27, digest = "5d40d1c575d5c277", hit = 1 }
+first = { bytes = 204, ranges = 26, digest = "7123af76d85ea4c5", hit = 1 }
 # The loop count includes 0x8006671B, the track byte of the last CdlSetloc
 # position: libcd copies the caller's 4-byte CdlLOC, CdIntToPos fills three,
-# and the fourth is stack residue at a different depth on each side (P24a).
-loop  = { bytes = 1269, ranges = 89, digest = "9488a9e44b98e7c0", hit = 1700 }
+# and the fourth is dead stack content that differs between the sides.
+loop  = { bytes = 1258, ranges = 88, digest = "1da9f97101ad1bcb", hit = 1700 }
 
 [bios_stack]
 low = 0x801FFB50
@@ -87,14 +87,6 @@ end    = 0x8006AB54
 name   = "D_8006AB4C (pad receive words, init.c)"
 reason = "the analog pad's poll answer; openpete's pad model answers a digital poll"
 owner  = "P16"
-
-[[expect]]
-class  = "stack_residue"
-start  = 0x801FF900
-end    = 0x801FFB50
-name   = "dead stack frames below the loop anchor's stack pointer"
-reason = "hardware's interrupt dispatch and callback frames land here; openpete's callbacks run from the VBL pump"
-owner  = "openpete-guest-interrupt-delivery"
 
 # libcd's state block: the bytes its translated getters read, written by the
 # shared CD thunks. A differing byte here is a defective mirror.
@@ -147,17 +139,6 @@ name   = "D_80068238 (copy of D_80068370, spyroupdate/func_800313E4)"
 reason = "copy of the pad flag bytes above"
 owner  = "P16"
 
-# Bytes that follow from openpete entering main instead of the crt0, which
-# sets sp and fp 8 bytes above openpete's seed; P24a of
-# openpete-spyro2-3-bringup removes them.
-[[expect]]
-class  = "entry_state"
-start  = 0x8006AA10
-end    = 0x8006AA18
-name   = "D_8006A9EC+0x24, +0x28 (saved sp and fp, spyrodraw/func_80041DBC)"
-reason = "the crt0 enters main with sp = fp = 0x801FFFF8; openpete enters with sp = 0x801FFFF0, fp = 0"
-owner  = "openpete-spyro2-3-bringup"
-
 [[expect]]
 class  = "vbl_count"
 start  = 0x800682EC
@@ -165,3 +146,15 @@ end    = 0x800682F0
 name   = "D_800682EC (VBLs since the last CdRead was issued; zeroed by str/func_80013810 and peers, incremented by the VBL callback pad/func_800125C8)"
 reason = "advances per VBL; hardware spends the load's wall time in VBLs that openpete's synchronous CdRead does not"
 owner  = "openpete-psx-oracle-ci"
+
+# Words the crt0 and InitHeap write on the way to main: the heap base and
+# size, and the BIOS return address the crt0 stores.
+[[populated]]
+start  = 0x80065098
+length = 0x8
+name   = "heap base and size (crt0, InitHeap)"
+
+[[populated]]
+start  = 0x80067188
+length = 0x4
+name   = "BIOS Exec return address stored by the crt0"

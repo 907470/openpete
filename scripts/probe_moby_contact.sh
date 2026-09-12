@@ -44,7 +44,7 @@ for spec in "${POSES[@]}"; do
   IFS='|' read -r name level pose frame <<< "$spec"
   log="$OUT/$name.log"
   if [ ! -s "$log" ] || ! grep -q '\[scenedump' "$log"; then
-    args=(--headless --disc "$DISC" --run-recomp 0x80012204 --renderer vk
+    args=(--headless --disc "$DISC" --renderer vk
           --mute 1 --aspect 4:3 --lod original --skip-to-level "$level"
           --screenshot-on-frame "$frame" --frame-limit $((frame + 4))
           --screenshot-output "$OUT/$name-{n}.png" --max-runtime-seconds 380)

@@ -109,7 +109,7 @@ mkdir -p "$OUT_DIR"
 # --- capture: one headless run emits every -vk frame -----------------------
 LOG="$OUT_DIR/capture.log"
 echo "[native-visual] capturing -vk ticks {$TICKS} headless (device: software vk)"
-"$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
+"$BIN" --headless --disc "$DISC" \
        --renderer vk \
        --screenshot-on-tick "$TICKS" \
        --screenshot-output "$OUT_DIR/demo-{n}.png" \
@@ -181,7 +181,7 @@ if [[ $fail -ne 0 && ${#FAILED[@]} -gt 0 ]]; then
     for off in -1 1; do
         shifted=""
         for f in "${FAILED[@]}"; do shifted+="${shifted:+,}$((f + off))"; done
-        "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
+        "$BIN" --headless --disc "$DISC" \
                --renderer vk --screenshot-on-tick "$shifted" \
                --screenshot-output "$OUT_DIR/phase${off}-{n}.png" \
                --frame-limit "$FRAME_LIMIT" --max-runtime-seconds 600 \

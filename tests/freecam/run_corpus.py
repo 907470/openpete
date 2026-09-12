@@ -43,7 +43,7 @@ def run_game(binary, disc, case, gapfill, outdir, tag):
         env["MESA_LOADER_DRIVER_OVERRIDE"] = "llvmpipe"
     if case.get("pose"):
         env["OPENPETE_FREECAM_POSE"] = case["pose"]
-    args = [binary, "--headless", "--disc", disc, "--run-recomp", "0x80012204",
+    args = [binary, "--headless", "--disc", disc,
             "--renderer", "vk"]
     if case.get("level"):
         args += ["--skip-to-level", case["level"]]

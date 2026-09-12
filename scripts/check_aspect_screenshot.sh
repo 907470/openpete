@@ -150,7 +150,7 @@ run_one() {
     local shot_file="${out_png%.png}-vk.png"
     local log="$OUT_DIR/log-$label.txt"
     rm -f "$out_png" "$shot_file"
-    local args=(--headless --disc "$DISC" --run-recomp 0x80012204
+    local args=(--headless --disc "$DISC"
                 --frame-limit "$((FRAME + 5))"
                 --window "${win_w}x720"
                 --screenshot-on-frame "$FRAME"

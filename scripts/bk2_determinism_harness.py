@@ -33,7 +33,6 @@ ROOT = Path(__file__).resolve().parent.parent
 EXE  = ROOT / "build" / "linux-release" / "games" / "spyro-1" / "openpete-spyro1"
 DISC = ROOT / "games" / "spyro-1" / "spyro-1" / "build" / "SCUS-94228.cue"
 BK2  = ROOT / "games" / "spyro-1" / "bk2" / "frame-time-test.bk2"
-ENTRY = "0x80012204"
 TOTAL_FRAMES = 3419  # baseline run-length; harness reseeds within this range
 
 
@@ -59,7 +58,6 @@ def run_once(label, unlock_spec, out_dir):
     cmd = [
         str(EXE),
         "--disc", str(DISC),
-        "--run-recomp", ENTRY,
         "--bk2", str(BK2),
         "--bk2-stop-on-end",
         "--position-log", str(pos),

@@ -25,7 +25,7 @@ captured **before** PsyCross is retired. Two purposes:
 
 ## Corpus
 
-Deterministic attract demo (`--run-recomp 0x80012204`), sim-frame → scene:
+Deterministic attract demo, sim-frame → scene:
 
 | File | Frame | Scene |
 |------|-------|-------|
@@ -50,12 +50,12 @@ DISC=games/spyro-1/spyro-1/build/SCUS-94228.cue
 REF=tests/golden/spyro-1/psycross-ref
 
 # demo scenes (one headless run)
-$BIN --headless --disc $DISC --run-recomp 0x80012204 \
+$BIN --headless --disc $DISC \
   --screenshot-on-frame 2000,4000,5000,9000,14000,18000,19000 \
   --screenshot-output $REF/demo-{n}.png --frame-limit 19100
 
 # pause-freeze scene
-$BIN --headless --disc $DISC --run-recomp 0x80012204 \
+$BIN --headless --disc $DISC \
   --skip-to-level 10 --bk2 games/spyro-1/bk2/pause-menu.bk2 \
   --screenshot-on-frame 1185 --screenshot-output $REF/freeze-{n}.png --frame-limit 1240
 ```

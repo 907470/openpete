@@ -143,6 +143,10 @@ set -e
 
 [[ -s "$REF" ]] || { echo "[ram-diff] FAIL: reference dump not produced (anchor never hit?)" >&2; exit 2; }
 [[ -s "$OP"  ]] || { echo "[ram-diff] FAIL: openpete dump not produced (rc=$OP_RC; see $OPLOG)" >&2; exit 2; }
+# The run must have entered through the EXE header's entry (the crt0).
+HDR_PC=$(grep -o 'PSX EXE: pc=0x[0-9A-Fa-f]*' "$OPLOG" | head -1 | grep -o '0x.*')
+DISP_PC=$(grep -o 'game fiber: dispatching 0x[0-9A-Fa-f]*' "$OPLOG" | head -1 | grep -o '0x.*')
+[[ -n "$HDR_PC" && "$HDR_PC" == "$DISP_PC" ]] || { echo "[ram-diff] FAIL: dispatched entry ${DISP_PC:-none} is not the EXE entry ${HDR_PC:-none}" >&2; exit 2; }
 
 REGIONS=()
 [[ "$GAME" == "spyro-1" ]] && REGIONS=(--regions "$ROOT/manifest/gameplay_state_regions.toml")

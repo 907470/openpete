@@ -37,7 +37,7 @@ loop  = 0x80055400
 # the baseline in the same change as its fix) and refuses another hit. A
 # hex-spelled anchor needs its own row, keyed by that spelling.
 [psyq_internal_baseline]
-first = { bytes = 214, ranges = 27, digest = "9ae55dff985c50c6", hit = 1 }
+first = { bytes = 203, ranges = 26, digest = "d5f0fa86381c802a", hit = 1 }
 
 [bios_stack]
 low = 0x801FFB50
@@ -74,3 +74,15 @@ name   = "libcd block 0x8006B568 last CdlSetloc position (CdLastPos)"
 start  = 0x8006B584
 length = 0x2
 name   = "libcd block 0x8006B568 mode and last command (CdMode, CdLastCom)"
+
+# Words the crt0 and InitHeap write on the way to main: the heap base and
+# size, and the BIOS return address the crt0 stores.
+[[populated]]
+start  = 0x80069F00
+length = 0x8
+name   = "heap base and size (crt0, InitHeap)"
+
+[[populated]]
+start  = 0x8006C7F4
+length = 0x4
+name   = "BIOS Exec return address stored by the crt0"

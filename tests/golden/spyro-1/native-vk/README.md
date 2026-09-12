@@ -24,7 +24,7 @@ captured **headless** through a software rasterizer (surfaceless Vulkan / lavapi
 
 ## Corpus
 
-Deterministic attract demo (`--run-recomp 0x80012204`), the SAME sim moments as
+Deterministic attract demo, the SAME sim moments as
 `../psycross-ref` so the two archives line up scene-for-scene — but keyed on
 **canonical draw-ticks** (`--screenshot-on-tick`), not VBL frames. Frame-keyed
 captures forked run-to-run because the VBL↔tick mapping drifts with host timing

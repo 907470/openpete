@@ -11,9 +11,8 @@ map = "games/spyro-1/spyro-1/build/psx.map"
 id   = "SCUS-94228"
 path = "games/spyro-1/spyro-1/build/SCUS-94228.cue"
 
-
 [openpete]
-args = ["--run-recomp", "0x80012204"]
+args = []
 
 [reference]
 # The oracle golden's configuration: a non-persistent card in slot 1.
@@ -41,8 +40,8 @@ loop  = 0x8001ED5C
 # the baseline in the same change as its fix) and refuses another hit. A
 # hex-spelled anchor needs its own row, keyed by that spelling.
 [psyq_internal_baseline]
-first = { bytes = 171, ranges = 29, digest = "3693e3d6194bd9ff", hit = 1 }
-loop = { bytes = 285, ranges = 30, digest = "f9de489efc99343a", hit = 700 }
+first = { bytes = 160, ranges = 28, digest = "ea3aa705961d863f", hit = 1 }
+loop = { bytes = 274, ranges = 29, digest = "d64e55ff2336d42d", hit = 700 }
 
 [bios_stack]
 low = 0x801FFB50
@@ -310,3 +309,15 @@ name   = "libcd block 0x80074E38 last CdlSetloc position (CdLastPos)"
 start  = 0x80074E54
 length = 0x2
 name   = "libcd block 0x80074E38 mode and last command (CdMode, CdLastCom)"
+
+# Words the crt0 and InitHeap write on the way to main: the heap base and
+# size, and the BIOS return address the crt0 stores.
+[[populated]]
+start  = 0x800730C0
+length = 0x8
+name   = "heap base and size (crt0, InitHeap)"
+
+[[populated]]
+start  = 0x80075640
+length = 0x4
+name   = "BIOS Exec return address stored by the crt0"

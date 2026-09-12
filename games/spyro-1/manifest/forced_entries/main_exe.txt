@@ -13,3 +13,7 @@
 0x80038620
 0x8005A7B0
 0x8005A848
+# 0x8005B8E0 — the EXE header's entry (the crt0): sets sp, fp and gp, stores
+#              the BIOS return address, calls InitHeap then main. Not a JAL
+#              target, so discovery never finds it.
+0x8005B8E0

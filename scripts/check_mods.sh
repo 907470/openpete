@@ -68,7 +68,7 @@ run_game() { # run_game <mods_dir> <frames> [extra flags...] -> stdout+stderr
     local dir="$1" frames="$2"
     shift 2
     timeout 300 "$BIN" --headless --disc "$DISC" \
-        --run-recomp 0x80012204 --frame-limit "$frames" --mods-dir "$dir" \
+ --frame-limit "$frames" --mods-dir "$dir" \
         "$@" 2>&1
 }
 
@@ -363,7 +363,7 @@ fi
 # ── 8. asset overlay: texture namespace scan + overlay-duel (rungs 7+10) ─
 say "asset overlay: mod texture joins the pack (rung 7 scan)"
 fixture "$WORK/tex" hd-single-texture
-out="$(timeout 300 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
+out="$(timeout 300 "$BIN" --headless --disc "$DISC" \
         --frame-limit 300 --mods-dir "$WORK/tex" \
         --screenshot-on-frame 200 \
         --screenshot-output "$WORK/tex-{n}.png" 2>&1)"
@@ -421,7 +421,7 @@ mkdir -p "$WORK/duel"
 ln -sfn "$WORK/duelsrc/duel-a" "$WORK/duel/duel-a"
 ln -sfn "$WORK/duelsrc/duel-b" "$WORK/duel/duel-b"
 run_duel() { # run_duel -> stdout+stderr (short native-init headless run)
-    timeout 300 "$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
+    timeout 300 "$BIN" --headless --disc "$DISC" \
         --frame-limit 300 --mods-dir "$WORK/duel" \
         --screenshot-on-frame 200 \
         --screenshot-output "$WORK/duel-{n}.png" 2>&1
@@ -581,7 +581,7 @@ if python3 tools/extract_wad_entry.py --disc "$DISC" --level 10 \
     ln -sfn "$WORK/wadsrc/wad-recolor" "$WORK/wadrc/wad-recolor"
     printf 'wad-recolor\n' > "$WORK/wadrc/enabled.txt"
     out="$(timeout 300 "$BIN" --headless --disc "$DISC" \
-            --run-recomp 0x80012204 --skip-to-level 10 --frame-limit 2600 \
+ --skip-to-level 10 --frame-limit 2600 \
             --mods-dir "$WORK/wadrc" 2>&1)"
     if printf '%s\n' "$out" | grep -q "wad overlay: level 10 data served from wad-recolor"; then
         ok "recoloured blob served"
@@ -795,7 +795,7 @@ CARDS="$WORK/cards"; mkdir -p "$CARDS"
 fixture "$WORK/ss-gems" double-gems
 fixture "$WORK/ss-observer" hello-anchor
 mc_run() { OPENPETE_CARD_DIR="$CARDS" timeout 120 "$BIN" --headless \
-    --disc "$DISC" --run-recomp 0x80012204 --frame-limit 300 "$@" 2>&1; }
+    --disc "$DISC" --frame-limit 300 "$@" 2>&1; }
 out="$(mc_run)"
 if [ ! -e "$CARDS/card1.mcr.modset" ] && \
    ! printf '%s\n' "$out" | grep -q "memcard.*modset"; then
@@ -1077,7 +1077,7 @@ fi
 say "mod shaders: SCENE point processes the scene under the HUD"
 if command -v ffmpeg >/dev/null 2>&1 && python3 -c "import PIL" 2>/dev/null; then
     fixture "$WORK/sepia" scene-sepia
-    timeout 300 "$BIN" --disc "$DISC" --run-recomp 0x80012204 \
+    timeout 300 "$BIN" --disc "$DISC" \
         --skip-to-level 10 --frame-limit 2600 --mods-dir "$WORK/sepia" \
         --record "$WORK/sepia/probe.mkv" > "$WORK/sepia.log" 2>&1 || true
     if [ -s "$WORK/sepia/probe.mkv" ] &&
@@ -1181,7 +1181,7 @@ if python3 -c "import PIL" 2>/dev/null; then
     for leg in none decl; do
         d="$WORK/decl"; [ "$leg" = none ] && d="$WORK/declnone"
         timeout 300 "$BIN" --headless --no-config --disc "$DISC" \
-            --run-recomp 0x80012204 --renderer vk --mute 1 \
+ --renderer vk --mute 1 \
             --bk2 games/spyro-1/bk2/flame.bk2 --screenshot-native-only \
             --mods-dir "$d" --screenshot-on-frame 1800 \
             --screenshot-output "$WORK/decl-$leg-{n}.png" \

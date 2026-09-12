@@ -40,7 +40,6 @@ Capture is a one-flag operation:
 ```sh
 build/linux-release/games/spyro-1/openpete-spyro1 \
     --disc games/spyro-1/spyro-1/build/SCUS-94228.cue \
-    --run-recomp 0x80012204 \
     --bk2-record games/spyro-1/bk2/<descriptive-name>.bk2
 ```
 

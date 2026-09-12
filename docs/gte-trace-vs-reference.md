@@ -34,7 +34,7 @@ OPENPETE_GTE_TRACE_LO=250 OPENPETE_GTE_TRACE_HI=261 \
 OPENPETE_GTE_TRACE_OPS='01,06,30,2D,2E' \
 build/linux-release/games/spyro-1/openpete-spyro1 --headless \
     --disc games/spyro-1/spyro-1/build/SCUS-94228.cue \
-    --run-recomp 0x80012204 --frame-limit 265
+ --frame-limit 265
 ```
 
 Knobs, all read once on the first COP2 op and parsed in `gte_trace_init()`

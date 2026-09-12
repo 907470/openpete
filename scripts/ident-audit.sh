@@ -90,7 +90,7 @@ run_one() {  # name start frame_limit lodmode freeze
   # --mute keeps a fanned-out sweep silent. --screenshot-output only names where
   # OPENPETE_IDENT_AUDIT_DUMP would put its PNGs; no dump is taken without it.
   OPENPETE_IDENT_AUDIT="$start" timeout 900 "$BIN" \
-    --headless --no-config --disc "$DISC" --run-recomp 0x80012204 --renderer vk \
+    --headless --no-config --disc "$DISC" --renderer vk \
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" \
     --bk2 "games/spyro-1/bk2/${name}.bk2" --screenshot-native-only \
     --screenshot-output "$OUTDIR/${name}__{n}.png" \

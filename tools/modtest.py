@@ -173,7 +173,6 @@ def run_one(mod_dir: Path, bin_path: str, disc: str, verbose: bool):
                    "--", "--mods-dir", str(fixture)]
         else:
             cmd = [bin_path, "--headless", "--disc", disc,
-                   "--run-recomp", "0x80012204",
                    "--frame-limit", frames, "--mods-dir", str(fixture)]
         if test["input"]:
             cmd += ["--bk2", str(mod_dir / test["input"]), "--bk2-stop-on-end"]

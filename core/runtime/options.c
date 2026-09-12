@@ -1508,34 +1508,12 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         }
     }
 
-    /* Required-flag validation. Without a dispatch path the runtime falls
-     * through to an SDL spin loop that never enters game code, which is
-     * silently confusing — surface the missing flag explicitly.
-     *
-     * Test/diagnostic modes that legitimately don't need --run-recomp
-     * (--test-segv stays at the crash-handler smoke stage; --test-recomp-call
-     * dispatches its own fn and exits) are exempt. Both still require an
-     * EXE source (--disc or --exe-path) — except --test-segv which just
-     * raises a signal and never touches the EXE. */
-    bool is_segv_test = opts->test_recomp_segv;
-    bool is_call_test = opts->test_recomp_call_addr != 0;
-
     /* The EXE-source requirement is deferred to
      * openpete_options_require_exe_source(): the game may resolve a
      * disc AFTER parse via the content-addressed library (--ingest, or
-     * a no-argument boot of an installed entry). */
-
-    if (!is_segv_test && !is_call_test && opts->run_recomp_addr == 0) {
-        if (opts->run_recomp_hint_addr != 0) {
-            /* No explicit --run-recomp: dispatch the game's default entry
-             * (the per-game hint). The user can still override on the CLI. */
-            opts->run_recomp_addr = opts->run_recomp_hint_addr;
-        } else {
-            fprintf(stderr, "openpete: --run-recomp HEX is required (no entry "
-                            "point given; pass the PSX vaddr of the game's main)\n");
-            return OPENPETE_EXIT_SETUP_ERROR;
-        }
-    }
+     * a no-argument boot of an installed entry). Without --run-recomp the
+     * runtime dispatches the EXE header's entry, the crt0, once the header
+     * has been read. */
 
     /* --bk2-record post-processing (after validation, so we don't mkdir on
      * a bad invocation): fill in the default path when none was given, and

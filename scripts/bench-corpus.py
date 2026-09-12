@@ -71,7 +71,7 @@ def run_movie(exe, movie_path, opp_path, args, log_path):
     # collides with --profile-out's fopen on the Windows exe and leaks stderr
     # into the .opp. fps comes from the trace's own present cadence anyway.
     cmd = [
-        exe, "--disc", disc, "--run-recomp", "0x80012204",
+        exe, "--disc", disc,
         "--bk2", bk2, "--bk2-stop-on-end",
         "--renderer", "vk", "--vsync", "0",
         "--render-fps", str(args.render_fps),

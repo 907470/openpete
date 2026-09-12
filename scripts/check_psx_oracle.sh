@@ -137,13 +137,21 @@ set +e
     --no-config \
     --mods "" \
     --disc "$DISC" \
-    --run-recomp 0x80012204 \
     --mute 1 \
     --psxtrace-verify "$TRACE" \
     --frame-limit "$LIMIT" \
     "${EXTRA[@]}" \
     "${PASSTHRU[@]}" 2>&1 | tee "$LOG"
 rc=${PIPESTATUS[0]}
+
+# The run must have entered through the EXE header's entry (the crt0); an
+# explicit --run-recomp at main leaves the stack 8 bytes lower than hardware.
+HDR_PC=$(grep -o 'PSX EXE: pc=0x[0-9A-Fa-f]*' "$LOG" | head -1 | grep -o '0x.*')
+DISP_PC=$(grep -o 'game fiber: dispatching 0x[0-9A-Fa-f]*' "$LOG" | head -1 | grep -o '0x.*')
+if [[ -z "$HDR_PC" || "$HDR_PC" != "$DISP_PC" ]]; then
+    echo "[psx-oracle] FAIL: dispatched entry ${DISP_PC:-none} is not the EXE entry ${HDR_PC:-none}" >&2
+    exit 2
+fi
 set -e
 echo "[psx-oracle] exit code=$rc"
 

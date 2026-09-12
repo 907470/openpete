@@ -27,7 +27,6 @@ int main(int argc, char** argv) {
      * its geometry with Spyro 1's decode, so PsyCross is what it starts with.
      * An explicit --renderer still wins, since this runs before parsing. */
     openpete_options_set_default_renderer(&opts, OPENPETE_RENDERER_PSYCROSS);
-    opts.run_recomp_hint_addr = 0x80011ADCu;
 
     openpete_config_set_game_id(game_get_id());
 
@@ -45,14 +44,6 @@ int main(int argc, char** argv) {
 
     /* The runtime reaches recompiled code only through this descriptor. */
     if (openpete_recomp_register(&spyro2_recomp_module) != 0) return 1;
-
-    /* gp is set by PSYQ's _96_init boot stub, which is not recompiled, and
-     * main()'s prologue assumes it already holds. Without it every
-     * gp-relative store lands near PSX address 0 instead of the real global.
-     * The value is _gp from the decomp's psx.map. --test-recomp-gp overrides. */
-    if (opts.run_recomp_addr != 0 && opts.test_recomp_gp == 0) {
-        opts.test_recomp_gp = 0x80066D38u;
-    }
 
     return openpete_run(&opts);
 }

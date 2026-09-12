@@ -149,7 +149,7 @@ run_cell() {
     local tag; tag=$(cell_tag "$scenario" "$aspect" "$fov")
     local hash="$OUT_DIR/h-$tag.csv"
     local log="$OUT_DIR/log-$tag.txt"
-    local args=(--headless --disc "$DISC" --run-recomp 0x80012204
+    local args=(--headless --disc "$DISC"
                 --frame-limit "$FRAMES"
                 --gameplay-hash-log "$hash"
                 --max-runtime-seconds 300)

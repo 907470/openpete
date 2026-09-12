@@ -83,7 +83,7 @@ run_one() {
     local hash="$OUT_DIR/hash-$label.csv"
     local log="$OUT_DIR/log-$label.txt"
     # --no-config: a personal openpete.toml must not sway the comparison.
-    local args=(--headless --no-config --disc "$DISC" --run-recomp 0x80012204
+    local args=(--headless --no-config --disc "$DISC"
                 --mute 1
                 --frame-limit "$FRAMES"
                 --position-log "$pos"

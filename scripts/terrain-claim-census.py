@@ -115,7 +115,7 @@ def run_row(kind, slug, args, target_frame, lod, outdir, mods_dir=""):
     shots = os.path.join(outdir, "shots")
     os.makedirs(shots, exist_ok=True)
     cmd = [BIN, "--headless", "--no-config", "--disc", DISC,
-           "--run-recomp", "0x80012204", "--renderer", "vk", "--mute", "1",
+ "--renderer", "vk", "--mute", "1",
            "--aspect", "16:9", "--lod", lod, "--terrain-cache", "1",
            "--screenshot-native-only",
            "--screenshot-on-frame", str(target_frame),

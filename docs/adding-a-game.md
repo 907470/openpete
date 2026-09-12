@@ -61,9 +61,15 @@ gitignored (`.gitignore:11-12`). `psyq.toml` has its own generator, run when
 the decomp's PSYQ object changes:
 
 ```bash
-python3 tools/gen_psyq_toml.py games/<game>/<game>/build/psx.map \
+python3 tools/gen_psyq_toml.py --exe games/<game>/<game>/build/PSX.EXE \
+        games/<game>/<game>/build/psx.map \
         build/asm/psyq.o games/<game>/manifest/psyq.toml
 ```
+
+`--exe` drops the header's entry, the crt0 the runtime dispatches, from the
+stubbed set; `--translate NAME` (repeatable) drops a symbol the crt0 reaches
+before `main`, such as `InitHeap`, when the manifest is not filtered with
+`--thunked-only`.
 
 The second argument is the object-file name as it appears in the map, not a
 path on disk.

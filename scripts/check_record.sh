@@ -80,7 +80,7 @@ probe() { ffprobe -v error "$@"; }
 OUT1="$OUT_DIR/plain.mkv"
 rm -f "$OUT1"
 LOG1="$OUT_DIR/plain.log"
-"$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
+"$BIN" --headless --disc "$DISC" \
        --frame-limit "$FRAMES" --mute off --record "$OUT1" >"$LOG1" 2>&1
 
 # A build configured without libav accepts --record and warns that it is
@@ -172,10 +172,10 @@ fi
 # record 640x480 / 900x600 and its aspect would follow the window).
 OUT2A="$OUT_DIR/wide-a.mkv"; OUT2B="$OUT_DIR/wide-b.mkv"
 rm -f "$OUT2A" "$OUT2B"
-"$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
+"$BIN" --headless --disc "$DISC" \
        --frame-limit 120 --aspect 21:9 --window 640x480 \
        --record "$OUT2A" >"$OUT_DIR/wide-a.log" 2>&1
-"$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 \
+"$BIN" --headless --disc "$DISC" \
        --frame-limit 120 --aspect 21:9 --window 900x600 \
        --record "$OUT2B" >"$OUT_DIR/wide-b.log" 2>&1
 
@@ -204,7 +204,7 @@ OUT3="$OUT_DIR/cfr.mp4"
 LOG3="$OUT_DIR/cfr.log"
 CFR_FRAMES=90
 rm -f "$OUT3"
-"$BIN" --headless --disc "$DISC" --run-recomp 0x80012204 --mute 1 \
+"$BIN" --headless --disc "$DISC" --mute 1 \
        --record-cfr 29.913 --record-frames "$CFR_FRAMES" \
        --record "$OUT3" >"$LOG3" 2>&1
 
