@@ -1733,7 +1733,12 @@ static int cd_command_host(u_char com, u_char* param) {
             return 0;
         case CdlSetmode:
             cd_set_mode(param ? param[0] : 0u);
-            return 0;
+            return 1;
+        case CdlNop:
+            /* Status request: the status byte was mirrored above; nothing
+             * else to do. Neither this nor CdlSetmode reaches PsyCross,
+             * whose CdControlF has no arm for them. */
+            return 1;
         case CdlSetfilter: {
             CdlFILTER* f = (CdlFILTER*)param;
             if (f) {
