@@ -131,20 +131,12 @@ python3 tools/extract_handwritten_ra_returns.py \
 # that resolve to code inside whichever overlay is swapped in. Each
 # overlay then receives its in-range subset as forced-entries; psxrecomp
 # silently drops out-of-range entries so a single union list works.
-#
-# This requires PSX.EXE_full.c to already exist from a prior run (the
-# constants don't depend on overlay external_jals, so last-run's main
-# EXE output is fine). On the very first run, skip — overlay regen will
-# miss these entries until the second invocation, which is acceptable.
+# The pairs are read from the EXE's text segment, so the harvest depends
+# on nothing a previous regen produced.
 FNPTR_FILE="$OUT/overlay_fn_pointers.txt"
-if [[ -f "$OUT/PSX.EXE_full.c" ]]; then
-    echo "[regen] Harvesting overlay fn-pointer constants from PSX.EXE_full.c"
-    python3 "$FNPTR_TOOL" "$OUT/PSX.EXE_full.c" "$FNPTR_FILE" \
-        --overlay-range="$OVERLAY_RANGE" >/dev/null
-else
-    echo "[regen] PSX.EXE_full.c not yet generated — skipping fn-pointer harvest"
-    : > "$FNPTR_FILE"
-fi
+echo "[regen] Harvesting overlay fn-pointer constants from $PSX_EXE"
+python3 "$FNPTR_TOOL" "$PSX_EXE" "$FNPTR_FILE" \
+    --overlay-range="$OVERLAY_RANGE" >/dev/null
 
 # Resolve the asm_dispatch_targets file for a binary, or empty string if
 # none. Overlays share vaddr 0x8007AA38 with different bytes — passing
@@ -517,6 +509,10 @@ if [[ "$GAME" != "spyro-1" ]]; then
 elif [[ "$REGEN_SCOPE" != "full" ]]; then
     echo "[regen] SCOPED regen: skipping converged-manifest emission"
 else
+    # The emitter fails when the committed snapshot differs from what this
+    # regen converged to; the generated/ tree above is complete either way.
+    # OPENPETE_MANIFEST_BLESS=1 moves the snapshot (commit it with the
+    # input change that moved it).
     echo "[regen] Emitting converged recomp manifest"
     bash scripts/emit-recomp-manifest.sh
 fi

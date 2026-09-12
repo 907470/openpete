@@ -12,11 +12,20 @@
 # with no discovery and no python. Called by regen-recomp.sh after a
 # regen; runnable standalone off the last regen's outputs.
 # scripts/verify-recomp-manifest.sh proves single-pass ≡ multi-pass.
+#
+# The committed snapshot is a distribution input, so it never changes as a
+# side effect of a regen: the snapshot is emitted to a scratch directory and
+# compared with the committed one, and a difference fails the run. The only
+# way to move the committed snapshot is OPENPETE_MANIFEST_BLESS=1, in the
+# change set that moved the inputs (a forced-entry or psyq.toml edit, a
+# psxrecomp bump).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
 OUT=games/spyro-1/generated
-MAN=games/spyro-1/manifest/recomp/SCUS-94228
+COMMITTED=games/spyro-1/manifest/recomp/SCUS-94228
+MAN=$(mktemp -d "${TMPDIR:-/tmp}/openpete-manifest-emit.XXXXXX")
+trap 'rm -rf "$MAN"' EXIT
 FORCED=games/spyro-1/manifest/forced_entries
 WAD_DIR=games/spyro-1/spyro-1/build/wad
 EXE=games/spyro-1/spyro-1/build/PSX.EXE
@@ -98,4 +107,30 @@ for row in "${ROWS[@]}"; do
     count=$((count + 1))
 done
 
-echo "[emit-manifest] $MAN: main_exe + $count overlays"
+echo "[emit-manifest] emitted main_exe + $count overlays"
+
+# --- compare with the committed snapshot ----------------------------------
+if [[ ! -d "$COMMITTED" ]]; then
+    mkdir -p "$COMMITTED"
+fi
+if diff -rq "$MAN" "$COMMITTED" >/dev/null; then
+    echo "[emit-manifest] $COMMITTED matches the regen"
+    exit 0
+fi
+echo "[emit-manifest] $COMMITTED differs from what this regen converged to:"
+diff -rq "$MAN" "$COMMITTED" | sed 's/^/  /' || true
+for f in "$MAN"/*.funcs.txt; do
+    c="$COMMITTED/$(basename "$f")"
+    [[ -f "$c" ]] || continue
+    added=$(comm -23 "$f" "$c" | wc -l); removed=$(comm -13 "$f" "$c" | wc -l)
+    if (( added + removed )); then echo "  $(basename "$f"): +$added -$removed"; fi
+done
+if [[ "${OPENPETE_MANIFEST_BLESS:-0}" != "0" ]]; then
+    rm -rf "$COMMITTED"
+    cp -a "$MAN" "$COMMITTED"
+    echo "[emit-manifest] BLESSED: $COMMITTED rewritten; commit it with the change that moved the inputs"
+    exit 0
+fi
+echo "[emit-manifest] FAIL: the committed snapshot is stale. Re-run with" \
+     "OPENPETE_MANIFEST_BLESS=1 and commit $COMMITTED alongside the input change." >&2
+exit 1

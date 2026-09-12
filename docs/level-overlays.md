@@ -200,6 +200,13 @@ single psxrecomp pass per binary from that manifest, with no discovery and no
 python. `scripts/verify-recomp-manifest.sh` proves single-pass equals
 multi-pass.
 
+The committed snapshot is a distribution input, so the emitter compares what
+the regen converged to against it and fails on any difference instead of
+rewriting it; a regen from a fresh checkout therefore proves the snapshot
+current. A forced-entry, `psyq.toml`, or psxrecomp change that moves discovery
+re-runs the regen with `OPENPETE_MANIFEST_BLESS=1` and commits the snapshot in
+the same change.
+
 ### 4.5 Runtime overlay routing (`dispatch_chain.c`)
 
 Since all overlays share `0x8007AA38`, only the resident one may match a
@@ -263,11 +270,10 @@ framework can target overlay behaviour by anchor.
   `spyro_set_active_overlay_by_magic`, or dispatch runs the wrong overlay: a
   stub miss, or plausible-but-wrong code. See
   `notes/plans/openpete-cd-drive-simulation.md`.
-- Regen ordering. `regen-recomp.sh` harvests fn-pointer constants from
-  `generated/PSX.EXE_full.c` produced by a prior run; on a first run into an
-  empty `generated/` the harvest is skipped and those entries are missing until
-  the second invocation. Re-run after bumping psxrecomp, editing a forced-entry
-  list, or pulling a new EXE or overlay dump.
+- Regen inputs. `regen-recomp.sh` harvests fn-pointer constants from the
+  PSX.EXE bytes, so a run into an empty `generated/` is complete. Re-run after
+  bumping psxrecomp, editing a forced-entry list, or pulling a new EXE or
+  overlay dump.
 - Under-converged main-EXE stubs. The main EXE is recompiled in two passes:
   pass 1 writes a scratch `generated/_main_exe_pass1/PSX.EXE_full.c`, from which
   `tools/extract_dispatch_call_by_address.py` derives

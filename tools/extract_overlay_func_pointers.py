@@ -11,85 +11,89 @@ to code inside whichever overlay is currently swapped in.
 The static recompiler can't follow this data flow (the call slot is
 read+jalr'd, target unknown statically), so each callback shows up as a
 runtime stub-miss. To pre-populate the forced-entry set, we scan the
-recompiled main EXE C for the materialized `lui+addiu` constants and
-keep the ones whose resulting address falls inside any overlay's vaddr
-range.
+main EXE's text for the materialized `lui+addiu` constants and keep the
+ones whose resulting address falls inside any overlay's vaddr range.
 
-The scan walks line-by-line; when a register is loaded with a `<<16`
-constant immediately followed by an `addiu`-style `+ IMM` on the same
-register, we compute the resulting KSEG0 address and emit it if in
-range. Constants in code not adjacent in the source line stream get
-missed, but psxrecomp emits the pair on consecutive lines in practice.
+The scan decodes the PS-X EXE's text segment word by word as MIPS. A
+`lui` leaves a pending high half on its destination register; an `addiu`
+whose source register holds a pending high half folds the immediate into
+it, and any other instruction that writes a register drops that
+register's pending half. This is the same register-lifetime walk the
+recompiler's C output would show, taken from the binary itself so the
+harvest needs no prior recompile.
 
 Usage:
-    extract_overlay_func_pointers.py <PSX.EXE_full.c> --overlay-range=LO:HI <out>
+    extract_overlay_func_pointers.py <PSX.EXE> --overlay-range=LO:HI <out>
 
 The range is inclusive-low/exclusive-high of the overlay vaddr window
 (all Spyro 1 level overlays share 0x8007AA38..0x80089FFF; the largest
-overlay is 81920 bytes -> 0x8008E A38, but most fit comfortably under
-0x8008A000).
+overlay is 81920 bytes -> 0x8008EA38).
 """
 import argparse
-import re
-import sys
+import struct
 from pathlib import Path
 
 
-# Patterns from psxrecomp's C output:
-#   cpu->v0 = 0x8008 << 16;  /* 0x80080000 */  /* ... */
-#   cpu->v0 = cpu->v0 + 22476;  /* ... */         (signed)
-LUI_RE = re.compile(
-    r'cpu->(\w+)\s*=\s*0x([0-9A-Fa-f]+)\s*<<\s*16\s*;'
-)
-# `addiu rt, rs, IMM` where rt and rs are the same reg — combine.
-# psxrecomp emits both the in-place + and rs!=rt forms; we accept both.
-ADDIU_RE = re.compile(
-    r'cpu->(\w+)\s*=\s*cpu->(\w+)\s*\+\s*(-?\d+)\s*;'
-)
+OP_SPECIAL = 0x00
+OP_REGIMM = 0x01
+OP_J = 0x02
+OP_JAL = 0x03
+OP_ADDIU = 0x09
+OP_LUI = 0x0F
+# Opcodes that write no register: branches, jumps (jal writes ra, handled),
+# stores, swc2.
+OPS_NO_WRITE = {0x04, 0x05, 0x06, 0x07, OP_REGIMM, OP_J,
+                0x28, 0x29, 0x2A, 0x2B, 0x2E, 0x3A}
 
 
-def harvest(c_path: Path, lo: int, hi: int) -> set[int]:
+def s16(x: int) -> int:
+    return x - 0x10000 if x & 0x8000 else x
+
+
+def harvest(exe_path: Path, lo: int, hi: int) -> set[int]:
+    exe = exe_path.read_bytes()
+    if exe[:8] != b'PS-X EXE':
+        raise SystemExit(f'{exe_path}: not a PS-X EXE')
+    text_size = struct.unpack_from('<I', exe, 0x1C)[0]
+    text = exe[0x800:0x800 + text_size]
+
     targets: set[int] = set()
-    # Per-register pending high half. Cleared on overwrite that's not an
-    # addiu fold.
-    high: dict[str, int] = {}
-    with c_path.open() as f:
-        for line in f:
-            m = LUI_RE.search(line)
-            if m:
-                reg = m.group(1)
-                val = int(m.group(2), 16) << 16
-                high[reg] = val
-                continue
-            m = ADDIU_RE.search(line)
-            if m:
-                rt, rs, imm_s = m.group(1), m.group(2), int(m.group(3))
-                if rt == rs and rs in high:
-                    addr = (high[rt] + imm_s) & 0xFFFFFFFF
-                    if lo <= addr < hi:
-                        targets.add(addr)
-                    # Whether or not in range, the high half is consumed.
+    # Per-register pending high half from a lui.
+    high: dict[int, int] = {}
+    for off in range(0, len(text) - 3, 4):
+        w = struct.unpack_from('<I', text, off)[0]
+        op = w >> 26
+        rs = (w >> 21) & 31
+        rt = (w >> 16) & 31
+        rd = (w >> 11) & 31
+        imm = w & 0xFFFF
+        if op == OP_LUI:
+            high[rt] = imm << 16
+        elif op == OP_ADDIU:
+            if rs in high:
+                addr = (high[rs] + s16(imm)) & 0xFFFFFFFF
+                if lo <= addr < hi:
+                    targets.add(addr)
+                if rt == rs:
                     del high[rt]
-                elif rt != rs and rs in high:
-                    addr = (high[rs] + imm_s) & 0xFFFFFFFF
-                    if lo <= addr < hi:
-                        targets.add(addr)
-                    high[rt] = addr  # rt now holds full address
                 else:
-                    # Unrelated arithmetic; rt's pending high is gone.
-                    high.pop(rt, None)
-                continue
-            # Any other assignment to a tracked reg invalidates its high.
-            assign = re.search(r'cpu->(\w+)\s*=', line)
-            if assign:
-                high.pop(assign.group(1), None)
+                    high[rt] = addr  # rt now holds the full address
+            else:
+                high.pop(rt, None)
+        elif op == OP_SPECIAL:
+            high.pop(rd, None)
+        elif op == OP_JAL:
+            high.pop(31, None)
+        elif op not in OPS_NO_WRITE:
+            # Every other opcode (ALU-immediate, loads, mfc0/mfc2/cfc2)
+            # writes rt.
+            high.pop(rt, None)
     return targets
 
 
 def main() -> int:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument('main_c', type=Path,
-                   help='psxrecomp PSX.EXE_full.c')
+    p.add_argument('exe', type=Path, help='PS-X EXE (the main executable)')
     p.add_argument('out_file', type=Path)
     p.add_argument('--overlay-range', required=True,
                    help='LO:HI in hex, e.g. 0x8007AA38:0x8008A000')
@@ -97,11 +101,11 @@ def main() -> int:
     lo_s, hi_s = args.overlay_range.split(':')
     lo, hi = int(lo_s, 0), int(hi_s, 0)
 
-    targets = harvest(args.main_c, lo, hi)
+    targets = harvest(args.exe, lo, hi)
     with args.out_file.open('w') as f:
         f.write(
             f"# {args.out_file.name} — auto-generated by\n"
-            f"# tools/extract_overlay_func_pointers.py from {args.main_c.name}.\n"
+            f"# tools/extract_overlay_func_pointers.py from {args.exe.name}.\n"
             f"# Do not hand-edit. Range 0x{lo:08X}..0x{hi:08X};"
             f" {len(targets)} candidate fn-pointer constants.\n"
         )
