@@ -1,8 +1,0 @@
-# The memory-card completion callback the game hands to OpenEvent. Two
-# inter-function padding nops at 0x8007E3D4 are folded into the function, so
-# it is discovered 8 bytes early and the registered address resolves to no
-# entry: the BIOS event dispatch finds no body, the handler never sets the
-# flag at 0x8007F16C, and the card wait loop at 0x8007E820 — which contains
-# no call, so it can neither be preempted nor seen by the hang watchdog —
-# spins forever.
-0x8007E3DC

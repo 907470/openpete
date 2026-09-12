@@ -58,6 +58,7 @@ private:
 
     // Find function start by scanning backward from jr $ra
     uint32_t find_function_start(uint32_t return_addr);
+    uint32_t skip_padding(uint32_t cand);
 
     // Detect if a region is likely a data section masquerading as code
     bool is_likely_data_section(uint32_t start_addr, uint32_t end_addr) const;

@@ -69,6 +69,27 @@ bool FunctionAnalyzer::is_branch_or_jump(uint32_t instr) {
     return false;
 }
 
+uint32_t FunctionAnalyzer::skip_padding(uint32_t cand) {
+    // Inter-function padding: up to three zero words between a function's
+    // `jr $ra` delay slot and the next function's first instruction. A
+    // candidate left on a padding word registers an entry the game never
+    // jumps to, while the real entry (the word after the run) resolves to
+    // nothing: a callback installed by address then stub-misses. The bound
+    // is empirical over the three Spyro binaries and their overlays: runs
+    // after an epilogue are 1-3 words (241 sites) or 6 and more (data), never
+    // 4-5. A longer run leaves the candidate where it is, so a zero table
+    // that a PSYQ label names does not move.
+    for (uint32_t n = 0; n < 3; n++) {
+        auto w = exe_.read_word(cand + n * 4);
+        if (!w.has_value() || *w != 0u) {
+            return n == 0 ? cand : cand + n * 4;
+        }
+    }
+    auto after = exe_.read_word(cand + 12);
+    if (after.has_value() && *after != 0u) return cand + 12;
+    return cand;
+}
+
 uint32_t FunctionAnalyzer::find_function_start(uint32_t return_addr) {
     // Scan backward from jr $ra to find function start
     // Heuristic: Look for prologue or function alignment (16-byte boundary after prev function)
@@ -112,8 +133,9 @@ uint32_t FunctionAnalyzer::find_function_start(uint32_t return_addr) {
         // Check if we hit another function's return
         if (is_jr_ra(instr)) {
             // We've gone too far backward and hit another function
-            // Return the address after this jr $ra (+ 8 for delay slot and alignment)
-            return search_addr + 8;
+            // Return the address after this jr $ra (+ 8 for the delay slot),
+            // then past any inter-function padding.
+            return skip_padding(search_addr + 8);
         }
     }
 
@@ -291,7 +313,7 @@ FunctionAnalysisResult FunctionAnalyzer::analyze() {
         if (!a.has_value() || !b.has_value()) continue;
         // Match `jr $ra; nop` — the standard MIPS function epilogue.
         if (!is_jr_ra(*a) || *b != 0u) continue;
-        uint32_t cand = addr + 8;
+        uint32_t cand = skip_padding(addr + 8);
         if (starts_snapshot.count(cand)) continue;  // already discovered
         // Look ahead up to 8 instructions for a prologue. Stop early on
         // another jr $ra (definitely not the same function) or on a
