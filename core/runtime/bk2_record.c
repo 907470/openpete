@@ -19,6 +19,7 @@
 #include "bk2_record.h"
 #include "bk2_movie.h"   /* bk2_frame_t */
 #include "openpete_discontinuity.h"
+#include "openpete_fiber.h"      /* openpete_cd_load_delay */
 #include "openpete_input_log.h"
 #include "openpete_log.h"
 
@@ -220,6 +221,18 @@ static const char* const kHeader =
     "Core Octoshock\r\n"
     "rerecordCount 0\r\n";
 
+/* The header plus the load delay the movie was recorded under. Loads consume
+ * VBLs, so every input after a load lands on a different tick under another
+ * value; replay refuses the mismatch. A movie recorded instant carries no
+ * line and stays byte-identical to what this writer always produced. */
+static int build_header(char* out, size_t cap) {
+    int n = snprintf(out, cap, "%s", kHeader);
+    if (openpete_cd_load_delay > 0)
+        n += snprintf(out + n, cap - (size_t)n, "LoadDelay %d\r\n",
+                      openpete_cd_load_delay);
+    return n;
+}
+
 int bk2_record_finalize(void) {
     if (!s_rec.active) return 0;
 
@@ -277,7 +290,9 @@ int bk2_record_finalize(void) {
                     mz_zip_get_error_string(mz_zip_get_last_error(&zip)));
         goto out;
     }
-    if (!mz_zip_writer_add_mem(&zip, "Header.txt", kHeader, strlen(kHeader),
+    char header[256];
+    build_header(header, sizeof header);
+    if (!mz_zip_writer_add_mem(&zip, "Header.txt", header, strlen(header),
                                MZ_DEFAULT_COMPRESSION)) {
         OPL_ERROR_F("bk2-record", "Header.txt add failed");
         goto out_close;

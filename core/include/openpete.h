@@ -262,6 +262,13 @@ typedef struct openpete_options {
      * path, for A/B. Display/timing-only; bytes identical. */
     int         disc_cache;
 
+    /* VBLs of guest time every level load waits, spent by deferring the
+     * completion of the load's disc reads (games/common/psyq_thunks.cpp).
+     * -1 = unset: the game's own default (game_get_load_delay_default).
+     * 0 = instant. Written into a recorded bk2's header; replay under a
+     * different value is refused. --load-delay / OPENPETE_LOAD_DELAY. */
+    int         load_delay;
+
     /* Screenshot. Pass `--screenshot-on-frame N[,N2,...]` to fire on each
      * listed frame; the path template can contain `{n}` to substitute the
      * frame number per shot. Output extension `.png` writes PNG via

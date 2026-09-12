@@ -2869,12 +2869,30 @@ static int run_host_loop(const openpete_options_t* opts) {
         }
     }
 
+    /* Level-load duration, constant for the run: the option, else the game's
+     * own default. Resolved before the movie load so a bk2 recorded under
+     * another value is refused up front. */
+    openpete_cd_load_delay = (opts->load_delay >= 0)
+                               ? opts->load_delay
+                               : (int)game_get_load_delay_default();
+    OPL_INFO_F("cd", "load delay: %d VBL(s) per level load%s",
+               openpete_cd_load_delay,
+               opts->load_delay >= 0 ? " (--load-delay)" : " (game default)");
+
     /* --bk2: load BizHawk movie once, picked up per-frame in the loop. */
     bk2_movie_t bk2 = {0};
     int  bk2_offset = 0;
     bool bk2_active = (opts->bk2_path && *opts->bk2_path);
     if (bk2_active) {
         if (bk2_movie_load(opts->bk2_path, &bk2) != 0) {
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
+        if (bk2.load_delay != openpete_cd_load_delay) {
+            OPL_ERROR_F("bk2", "%s was recorded with a load delay of %d VBL(s); "
+                        "this run uses %d. Pass --load-delay %d to replay it.",
+                        opts->bk2_path, bk2.load_delay, openpete_cd_load_delay,
+                        bk2.load_delay);
+            bk2_movie_free(&bk2);
             return OPENPETE_EXIT_SETUP_ERROR;
         }
         /* Default offset is 0: openpete_frame is anchored at the first

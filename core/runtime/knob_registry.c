@@ -229,6 +229,14 @@ static double disccache_get(const knob_desc_t *k) {
     (void)k;
     return openpete_disc_cache_active() ? 1 : 0;
 }
+/* The resolved level-load delay (core/runtime/fiber.c), declared here rather
+ * than through openpete_fiber.h, whose SDL atomics the unit test does not
+ * link. */
+extern int openpete_cd_load_delay;
+static double loaddelay_get(const knob_desc_t *k) {
+    (void)k;
+    return openpete_cd_load_delay;
+}
 static double tercache_get(const knob_desc_t *k) {
     (void)k;
     return openpete_tercache_ready() ? 1 : 0;   /* cache actually came up */
@@ -789,6 +797,15 @@ static const knob_desc_t g_builtin[] = {
       "bytes identical either way.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       disccache_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "load_delay", "Load delay (VBLs)", "Paths", "--load-delay", "OPENPETE_LOAD_DELAY",
+      "VBLs of guest time every level load waits: the load's disc reads land "
+      "at once and their completion is deferred, so the game's own wait runs "
+      "for the same count on every machine (0 = instant). Omitted = the game's "
+      "default. A bk2 records the value and replays only under it. Boot-"
+      "latched; a load in flight reads the value it started with.",
+      KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 3600,
+      loaddelay_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "texpack_dir", "Texture pack dir", "Paths", "--texpack-dir", "OPENPETE_TEXPACK_DIR",
       "HD texture-replacement PNG directory (scanned once at renderer init).",

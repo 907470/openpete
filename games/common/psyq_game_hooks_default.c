@@ -89,6 +89,10 @@ void psyq_game_cd_read_done(CPUState* cpu, uint32_t read_cb) {
     (void)cpu; (void)read_cb;
 }
 #endif
+#ifndef PSYQ_GAME_PROVIDES_CD_READ_IN_LOAD
+int      psyq_game_cd_read_in_load(CPUState* cpu) { (void)cpu; return 0; }
+uint32_t psyq_game_cd_read_delay_cap(void)        { return 0u; }
+#endif
 
 #ifndef PSYQ_GAME_PROVIDES_CD_READ_CB_ADDR
 uint32_t psyq_game_cd_read_cb_addr(void) { return 0u; }

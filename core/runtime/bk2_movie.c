@@ -241,8 +241,24 @@ int bk2_movie_load(const char* path, bk2_movie_t* out) {
     }
 
     int rc = bk2_movie_parse_log((const char*)log_data, log_size, out);
-
     mz_free(log_data);
+
+    /* Header.txt is optional metadata; the one line replay depends on is the
+     * load delay the movie was recorded under (absent = instant). */
+    size_t hdr_size = 0;
+    char* hdr = (char*)mz_zip_reader_extract_file_to_heap(&zip, "Header.txt",
+                                                          &hdr_size, 0);
+    if (hdr) {
+        const char* key = "LoadDelay ";
+        for (size_t i = 0; i + strlen(key) < hdr_size; i++) {
+            if ((i == 0 || hdr[i - 1] == '\n') &&
+                memcmp(hdr + i, key, strlen(key)) == 0) {
+                out->load_delay = atoi(hdr + i + strlen(key));
+                break;
+            }
+        }
+        mz_free(hdr);
+    }
     mz_zip_reader_end(&zip);
     return rc;
 }

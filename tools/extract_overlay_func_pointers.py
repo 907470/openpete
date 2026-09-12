@@ -22,6 +22,11 @@ belongs to:
   R1           A store by an overlay's own bytes, outside such cases, belongs
                to that overlay (Spyro 3 levels install their callback
                themselves).
+  R4           A jump-read slot inside the overlay window is a word of the
+               resident overlay's own image (Spyro 3 keeps a table of
+               per-level entry points in the overlay header, which the EXE
+               `jalr`s through); the word at that slot in each overlay's
+               blob belongs to that overlay when it lies in the window.
   R3           Any other cross-binary store into a jump-read slot is an
                error naming the site, unless a curated forced-entry row
                already names the target.
@@ -360,14 +365,19 @@ def main():
                     curated[f.stem].add(int(s, 16))
     curated_targets = set().union(*curated.values()) if curated else set()
 
-    # Pass 1: every binary, linear walk: stores and jump-read words.
+    # Pass 1: every binary, linear walk: stores and jump-read words. A
+    # slot-fed site is a jr/jalr whose register was loaded straight from a
+    # fixed word; a site fed through a table index or a struct field is not
+    # one, and its targets are the recompiler's own discovery.
     walks = {}
     jump_read = set()
+    slot_sites = set()
     for b in binaries:
         wk = Walker(b, lo, hi)
         wk.run()
         walks[b.name] = wk
         jump_read |= wk.jump_read
+        slot_sites |= {site for site, rs, src in wk.jr_sites if src is not None}
 
     report = []
     attributed = defaultdict(set)       # overlay -> {target}
@@ -451,6 +461,17 @@ def main():
             attributed[b.name].add(val)
             attribution_source.setdefault((b.name, val), 'R1')
 
+    # R4: slots the loader fills, as words of each overlay's own image.
+    for slot in sorted(jump_read):
+        if not (lo <= slot < hi):
+            continue
+        for name, b in overlays.items():
+            val = b.word(slot)
+            if val is None or not (lo <= val < hi):
+                continue
+            attributed[name].add(val)
+            attribution_source.setdefault((name, val), 'R4')
+
     # Validator.
     validator_dropped = []
     final = defaultdict(set)
@@ -528,6 +549,8 @@ def main():
                 f'{"0x%08X" % level_id_addr if level_id_addr is not None else "unset"}\n')
         f.write(f'jump-read slots ({len(jump_read)}): ' +
                 ' '.join(f'0x{w:08X}' for w in sorted(jump_read)) + '\n')
+        f.write(f'slot-fed sites ({len(slot_sites)}): ' +
+                ' '.join(f'0x{w:08X}' for w in sorted(slot_sites)) + '\n')
         for line in report:
             f.write(line + '\n')
         f.write(f'total entries {total}; calibration {cal_hit}/{cal_all}\n')

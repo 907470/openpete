@@ -26,6 +26,19 @@ const char* game_get_id(void)             { return "spyro-3"; }
  * reads. */
 uint32_t game_get_pad_read_pc(void) { return 0u; }
 
+/* The load must keep a disc read in flight across at least 33 main-loop
+ * frames (two VBLs each): the EXE's per-frame function at 0x8002CA50 walks a
+ * checksum over the EXE and the loading overlay only on frames a read is
+ * pending (func_800503F8 non-zero) and only while the loading state
+ * 0x8006C518 is 2..7, 5120 bytes per frame over 164139 bytes, and the
+ * state machine's state 7 waits for the walk's cursor (0x8006C6B8) to reach
+ * its end before it hands over to the level. With reads completing inside
+ * the frame that issued them the walk never starts. The first read of a
+ * load is one sector, whose retry timeout is 121 VBLs (sectors + 120, at
+ * func_80050400), so the per-read cap stays under it; 90 VBLs on that read
+ * gives the walk 45 frames. */
+uint32_t game_get_load_delay_default(void) { return 90u; }
+
 /* --- Memory layout --- */
 uint32_t game_get_ram_size(void)              { return 2u * 1024u * 1024u; }
 uint32_t game_get_compiled_range_start(void)  { return 0x80010000u; }
@@ -101,6 +114,20 @@ uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
  * overlay id, which re-points the dispatcher after each load. */
 uint32_t psyq_game_overlay_vaddr(void) { return 0x800742D0u; }
 
+/* A read belongs to a level load while the loading overlay's state machine
+ * (entry 0x8007494C, state word 0x8006C518) is in states 2..7, the window
+ * the EXE's checksum walk runs in; those reads are issued through the
+ * asynchronous path (func_80050680) and polled from the main loop by
+ * func_80050400. State 0 reads the loading overlay itself and states below
+ * 2 belong to no load, so each pass through the loader opens a new budget.
+ * The cap keeps every deferred read under the loader's shortest retry
+ * timeout, 121 VBLs for a one-sector read. */
+int psyq_game_cd_read_in_load(CPUState* cpu) {
+    uint32_t state = cpu->read_word(0x8006C518u);
+    return state >= 2u && state <= 7u;
+}
+uint32_t psyq_game_cd_read_delay_cap(void) { return 100u; }
+
 /* libcd is translated in this image, so CdReadCallback (func_8005DB08) stores the
  * read-completion handler here rather than in the thunk layer. */
 uint32_t psyq_game_cd_read_cb_addr(void) { return 0x8006B3D0u; }
@@ -111,3 +138,4 @@ uint32_t psyq_game_libcd_block_addr(void) { return 0x8006B568u; }
 
 /* Disc layout is not mapped for this game yet. */
 const game_disc_layout_t* game_get_disc_layout(void) { return NULL; }
+

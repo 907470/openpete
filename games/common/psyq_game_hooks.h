@@ -111,6 +111,24 @@ void psyq_game_cd_apply_buf(unsigned char* buf, int sectors);
  * its own read-in-flight bookkeeping actually cleared. */
 void psyq_game_cd_read_done(CPUState* cpu, uint32_t read_cb);
 
+/* Level-load delay (openpete_cd_load_delay): every level load costs a fixed
+ * number of VBLs of guest time, spent by deferring the completion of the
+ * load's reads. The thunk layer opens a budget at the first read of a load
+ * and defers each read of that load by up to the cap until the budget is
+ * spent.
+ *
+ * cd_read_in_load: 1 when the read being issued belongs to a level load the
+ * game waits on from its main loop, returning to VSync between polls; the
+ * deferred completion fires from the VBL, so a read the game spins on in
+ * guest code without a VBL never completes under a delay and must answer 0.
+ * A load begins at a read answering 1 after one answering 0.
+ *
+ * cd_read_delay_cap: the most VBLs one read may stay in flight, below the
+ * game's own retry timeout (the count after which its loader re-issues the
+ * read); 0 = no per-read cap. */
+int      psyq_game_cd_read_in_load(CPUState* cpu);
+uint32_t psyq_game_cd_read_delay_cap(void);
+
 /* Music route for a streaming read issued under an XA mode. The shared body
  * anchors the virtual head, calls this, and then starts a custom song by path,
  * a WAV override by track, or the XA decoder at the sector, in that order.

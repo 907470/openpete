@@ -390,6 +390,9 @@ static void print_help(const char* display_name, const char* argv0,
         "  --disc-cache 0|1           keep the disc image resident in memory, filled by a background\n"
         "                             loader (default 1): guest disc reads never wait on the file. 0 =\n"
         "                             read the file per sector (A/B). Bytes identical either way.\n"
+        "  --load-delay N             VBLs of guest time every level load waits (the game's default\n"
+        "                             when omitted; 0 = instant). Recorded into a bk2's header and\n"
+        "                             checked on replay.\n"
         "  --run-recomp HEX           dispatch fn at HEX in a fiber; main loop with VSync yields (defaults to the game's entry point)\n"
         "  --renderer MODE            which rasterizer draws: vk (native Vulkan%s) | psycross\n"
         "                             (the GL reference%s). The native window displays either.\n"
@@ -730,6 +733,8 @@ void openpete_options_init(openpete_options_t* opts) {
       opts->terrain_cache = (e && *e) ? (atoi(e) != 0) : 1; }
     { const char* e = getenv("OPENPETE_DISC_CACHE");
       opts->disc_cache = (e && *e) ? (atoi(e) != 0) : 1; }
+    { const char* e = getenv("OPENPETE_LOAD_DELAY");
+      opts->load_delay = (e && *e) ? atoi(e) : -1; }
     opts->lod                 = OPENPETE_LOD_ORIGINAL;  /* authentic PSX LOD band; --lod extended (a.k.a. --no-lod) for full detail at any distance */
 }
 
@@ -1023,6 +1028,13 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--disc-cache") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->disc_cache = atoi(v) != 0; i++;
+        } else if (strcmp(a, "--load-delay") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            opts->load_delay = atoi(v); i++;
+            if (opts->load_delay < 0) {
+                fprintf(stderr, "openpete: --load-delay must be >= 0\n");
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
         } else if (strcmp(a, "--terrain-cache") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->terrain_cache = atoi(v) != 0; i++;

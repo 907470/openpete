@@ -25,6 +25,10 @@
  *   [24]     setloc_sector  last CdlSetloc (pack_ver 2)
  *   [25]     cd_reading     1 while a CdlReadS stream runs, cleared by
  *                           CdlPause, CdlStop or a data read (pack_ver 3)
+ *   [26]     defer_owed     VBLs until the deferred data read completes
+ *   [27]     defer_pending  1 while a data read's completion is deferred
+ *   [28]     load_budget    VBLs the current level load has left to spend
+ *   [29]     load_prev      in-load bit of the previous read (pack_ver 4)
  */
 #ifndef OPENPETE_PSYQ_THUNK_STATE_H
 #define OPENPETE_PSYQ_THUNK_STATE_H
@@ -35,11 +39,12 @@
 extern "C" {
 #endif
 
-#define PSYQ_THUNK_STATE_PACK_VER 3u
-#define PSYQ_THUNK_STATE_WORDS    26u
+#define PSYQ_THUNK_STATE_PACK_VER 4u
+#define PSYQ_THUNK_STATE_WORDS    30u
 #define PSYQ_THUNK_STATE_BYTES    (PSYQ_THUNK_STATE_WORDS * 4u)
 #define PSYQ_THUNK_STATE_V1_BYTES 96u
 #define PSYQ_THUNK_STATE_V2_BYTES 100u
+#define PSYQ_THUNK_STATE_V3_BYTES 104u
 
 /* The byte length of a pack whose first word is `ver`; 0 for a version this
  * layer does not know. */

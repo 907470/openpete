@@ -71,6 +71,14 @@ uint32_t game_get_pad_read_pc(void) {
     return 0x80053C68u;
 }
 
+/* Loads are instant until this game classifies its load reads: LoadLevel's
+ * CDLoadAsync reads are polled from the main loop, but the titlescreen demo
+ * load spins `while (g_LoadStage < 6) LoadLevel(1);` with no VSync and
+ * CDLoadSync's second loop tests m_IsReading before it calls CdSync, so a
+ * deferred completion at either site would never fire. The oracle golden
+ * and every recorded bk2 carry this value. */
+uint32_t game_get_load_delay_default(void) { return 0u; }
+
 /* --- Memory layout (PSX defaults; overrides come in Phase 1b) --- */
 
 uint32_t game_get_ram_size(void)             { return 2u * 1024u * 1024u; }

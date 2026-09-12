@@ -36,6 +36,12 @@ const char* game_get_id(void);                /* "spyro-1" — the [game.<id>] c
  * unmeasured rather than as zero reads. */
 uint32_t    game_get_pad_read_pc(void);
 
+/* VBLs of guest time every level load waits when --load-delay is unset: the
+ * game's shipped load duration. A game whose loader depends on disc reads
+ * staying in flight across its main-loop frames (a checksum walk that only
+ * advances while a read is pending) needs a floor here; 0 = instant. */
+uint32_t    game_get_load_delay_default(void);
+
 /* --- Memory layout ---
  * compiled_range / overlay_range are PSX-side virtual addresses; the
  * impl supplies the values for its game. */

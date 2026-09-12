@@ -93,6 +93,12 @@ extern int openpete_ra_input_edge;
  * has progressed from boot init to issuing real draw commands. */
 extern int      openpete_fast_boot_active;
 
+/* VBLs of guest time every level load waits, resolved from --load-delay or
+ * the game's default before the guest starts; the thunk layer defers each
+ * load read's completion against it. Constant for the run: a recorded bk2
+ * carries it and replay under another value is refused. */
+extern int      openpete_cd_load_delay;
+
 /* --skip-to-level "fast-boot to the level": while set, the host loop skips
  * presents AND the frame pacer (like fast-boot, but AFTER the first DrawOTag),
  * so the logos / title / loading / level-load all fast-forward with a black

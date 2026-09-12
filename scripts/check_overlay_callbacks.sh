@@ -12,18 +12,22 @@
 #   G2  no in-window dispatch missed; every sweep row's target overlay became
 #       resident; every resident overlay shows at least one computed (`jalr`)
 #       dispatch, or none when the harvester attributed it nothing.
-#   G3  every cross-binary `jalr` pair (overlay, target), the call site
-#       outside the overlay window, is in that overlay's attributed set
-#       (generated/<overlay>/fn_pointers.txt plus the curated rows of
-#       manifest/forced_entries/<overlay>.txt); a pair attributed to another
-#       overlay is reported as stale_slot (the slot still holds a previous
-#       level's constant) and any other pair is a rule defect. A direct (`jal`)
-#       pair must name a function start of the resident overlay. A `jalr`
-#       from inside the window (an overlay calling through its own tables) is
-#       counted, not judged: those targets are the recompiler's own discovery.
+#   G3  every cross-binary `jalr` pair (overlay, target) from a slot-fed
+#       site (the harvester's list: a `jalr` whose register was loaded from
+#       a fixed word; call site outside the overlay window) is in that
+#       overlay's attributed set (generated/<overlay>/fn_pointers.txt plus the
+#       curated rows of manifest/forced_entries/<overlay>.txt); a pair
+#       attributed to another overlay is reported as stale_slot (the slot
+#       still holds a previous level's constant) and any other pair is a rule
+#       defect. A direct (`jal`) pair, and a `jalr` fed through a table index
+#       or a struct field (a moby class table in the level's data), must name
+#       a function start of the resident overlay. A `jalr` from inside the
+#       window (an overlay calling through its own tables) is counted, not
+#       judged: those targets are the recompiler's own discovery.
 #
-# Spyro 3 has no --skip-to-level, so its row is one plain boot; no level
-# overlay becomes resident and its G3 line is reported as unengaged.
+# Spyro 3 has no --skip-to-level, so its row is one plain boot through the
+# attract loop, long enough (OPENPETE_BOOT_FRAME_LIMIT, 9000 VBLs) for three
+# demo levels to become resident; G2 fails if none does.
 #
 #   scripts/check_overlay_callbacks.sh [spyro-1|spyro-2|spyro-3 ...]
 #
@@ -35,6 +39,7 @@ cd "$(dirname "$0")/.."
 GAMES=("$@")
 [[ ${#GAMES[@]} -eq 0 ]] && GAMES=(spyro-1 spyro-2 spyro-3)
 FRAMES="${OPENPETE_FRAME_LIMIT:-2400}"
+BOOT_FRAMES="${OPENPETE_BOOT_FRAME_LIMIT:-9000}"
 JOBS="${OPENPETE_CALLBACK_JOBS:-8}"
 BUILD="${OPENPETE_BUILD_DIR:-build/linux-release}"
 OUT="${OPENPETE_CALLBACK_OUT:-$BUILD/overlay-callbacks}"
@@ -81,12 +86,14 @@ for game in "${GAMES[@]}"; do
         local name="$1" exe="$2" disc="$3" dir="$4" frames="$5"
         local skip=()
         [[ "$name" != "boot" ]] && skip=(--skip-to-level "$name")
+        [[ "$name" == "boot" ]] && frames="$OPENPETE_BOOT_FRAMES_RESOLVED"
         OPENPETE_DISPATCH_CENSUS="$dir/$name.census" \
         timeout 900 "$exe" --headless --no-card --mute 1 --vibration 0 \
             --disc "$disc" "${skip[@]}" --frame-limit "$frames" --no-log-file \
             > "$dir/$name.log" 2>&1 || echo "[overlay-callbacks] $name: exit $?" >> "$dir/$name.log"
     }
     export -f run_row
+    export OPENPETE_BOOT_FRAMES_RESOLVED="$BOOT_FRAMES"
     cut -d' ' -f1 "$rows" | xargs -P "$JOBS" -I{} bash -c 'run_row "$@"' _ {} "$exe" "$disc" "$dir" "$FRAMES"
 
     if ! python3 - "$game" "$dir" "$rows" <<'EOF'; then status=1; fi
@@ -104,6 +111,8 @@ def addrs(path):
 report = (gen / 'overlay_fn_report.txt').read_text()
 m = re.search(r'window 0x([0-9A-F]+)\.\.0x([0-9A-F]+)', report)
 win_lo, win_hi = int(m.group(1), 16), int(m.group(2), 16)
+m = re.search(r'slot-fed sites \(\d+\): (.*)', report)
+slot_sites = {int(x, 16) for x in m.group(1).split()} if m else set()
 attributed, starts = {}, {}
 for d in gen.iterdir():
     if (d / 'fn_pointers.txt').exists():
@@ -117,6 +126,7 @@ for o, s in attributed.items():
 fails, notes = [], []
 resident_all, jalr_by_ovl = set(), {}
 intra = 0
+data_fed = 0
 for line in rows.read_text().split('\n'):
     if not line.strip():
         continue
@@ -137,8 +147,13 @@ for line in rows.read_text().split('\n'):
         if cls == 'jalr':
             if win_lo <= ra < win_hi:
                 intra += 1
-            else:
+            elif ra - 8 in slot_sites:
                 jalr_by_ovl.setdefault(ovl, set()).add(tgt)
+            else:
+                data_fed += 1
+                if ovl in starts and tgt not in starts[ovl]:
+                    fails.append(f'{name}: {ovl} data-fed jalr target 0x{tgt:08X} '
+                                 f'(ra 0x{ra:08X}) is not a function start')
         elif cls == 'jal':
             if tgt not in starts.get(ovl, set()):
                 fails.append(f'{name}: {ovl} direct jal target 0x{tgt:08X} is not a function start')
@@ -166,13 +181,15 @@ for ovl in sorted(resident_all):
 engaged = sum(len(v) for v in jalr_by_ovl.values())
 print(f'[overlay-callbacks] {game}: {len(rows.read_text().split())//2} rows, '
       f'{len(resident_all - {"none"})} overlays resident, {engaged} cross-binary jalr pairs, '
-      f'{intra} intra-overlay jalr dispatches, {len(notes)} stale_slot, {len(fails)} failures')
+      f'{intra} intra-overlay and {data_fed} data-fed jalr dispatches, '
+      f'{len(notes)} stale_slot, {len(fails)} failures')
 for n in notes:
     print('  ' + n)
 for f in fails:
     print('  FAIL ' + f)
-if game == 'spyro-3' and not any(o.startswith('level_') for o in resident_all):
-    print('  G3 unengaged: no level overlay resident (no --skip-to-level for spyro-3)')
+if not any(o.startswith('level_') for o in resident_all):
+    print('  FAIL G2: no level overlay became resident (VACUOUS)')
+    fails.append('vacuous')
 sys.exit(1 if fails else 0)
 EOF
 done

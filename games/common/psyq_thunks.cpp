@@ -316,8 +316,10 @@ void psyq___main(CPUState* cpu) {
 
 /* --- libetc -------------------------------------------------------------- */
 
-/* Forward decl: defined later, called from inside psyq_VSync below. */
+/* Forward decls: defined later, called from inside psyq_VSync below. */
 static void psyq_libpad_mirror_canonical_slot2(CPUState* cpu);
+static void psyq_vbl_body(CPUState* cpu, int wait);
+static void cd_defer_tick(CPUState* cpu, uint32_t vbls);
 
 void psyq_VSync(CPUState* cpu) {
     /* libetc semantics:
@@ -354,6 +356,15 @@ void psyq_VSync(CPUState* cpu) {
         return;
     }
     int wait = (mode == 0) ? 1 : mode;
+    psyq_vbl_body(cpu, wait);
+    cpu->v0 = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+}
+
+/* One waited VBL: the counter, the SPU envelope, the yield, the game's VSync
+ * callback and the port pump, then the libpad mirror and any disc completion
+ * that came due. The VSync callback is gameplay-visible (tick counters, the
+ * pad read), so every VBL the guest waits runs exactly this. */
+static void psyq_vbl_body(CPUState* cpu, int wait) {
     SDL_AddAtomicInt(&openpete_vbl, wait);
 
     /* Advance PsyCross's deterministic ADSR envelope simulation in
@@ -381,7 +392,7 @@ void psyq_VSync(CPUState* cpu) {
     } else {
         /* No fiber loop (smoke-test path) — fall back to PsyCross's busy
          * wait so audio/timer semantics still match. */
-        if (mode == 0) (void)VSync(0);
+        if (wait == 1) (void)VSync(0);
         if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
         psyq_pump_pad_card_intr(cpu);
     }
@@ -393,7 +404,9 @@ void psyq_VSync(CPUState* cpu) {
      * game's next read. */
     psyq_libpad_mirror_canonical_slot2(cpu);
 
-    cpu->v0 = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+    /* A disc read the drive would still be busy with: its completion is the
+     * last thing this VBL delivers, after the frame's own callbacks. */
+    cd_defer_tick(cpu, (uint32_t)wait);
 }
 
 void psyq_VSyncCallback(CPUState* cpu) {
@@ -446,6 +459,86 @@ static void psyq_dma_complete(CPUState* cpu, uint32_t ch) {
     }
 }
 
+/* --- Level-load delay -----------------------------------------------------
+ *
+ * A data read lands in the frame that issued it; on hardware the drive holds
+ * it in flight for many VBLs and the game waits, polling its own bookkeeping
+ * from the main loop. openpete_cd_load_delay is the number of VBLs of guest
+ * time every level load spends in that wait, the same on every machine: the
+ * bytes still land at once, and what is deferred is the completion the game
+ * waits for (the read callback, libcd's post-read status and the channel-3
+ * DMA handler), fired from the VBL body once the owed count has elapsed.
+ *
+ * The budget opens at the first read of a load (psyq_game_cd_read_in_load
+ * turning 1) and each read of the load takes up to the game's per-read cap
+ * from it until it is spent; a game with no classifier leaves every read
+ * instant. A second read issued while one is deferred (the game's retry
+ * after its own timeout) completes the deferred one first, in order.
+ *
+ * All of it is guest-timed state and travels in the latch pack: a rolled-back
+ * speculative tick must not leave a completion owed on an abandoned branch. */
+static uint32_t s_cd_defer_owed    = 0;  /* VBLs until the deferred read completes */
+static uint32_t s_cd_defer_pending = 0;  /* 1 while a completion is deferred */
+static uint32_t s_cd_load_budget   = 0;  /* VBLs the current load has left to spend */
+static uint32_t s_cd_load_prev     = 0;  /* in_load of the previous read (edge) */
+
+/* The tail of a data read: the completion the game waits on. */
+static void cd_read_complete(CPUState* cpu) {
+    if (g_native_cd_read_cb != nullptr) {
+        /* Native registrar (post-rewriter init.c). Fire the host cb
+         * directly — no cpu dispatch round-trip needed. */
+        g_native_cd_read_cb(/*intr=CdlComplete=*/2u, /*result=*/nullptr);
+    } else {
+        uint32_t cb = g_cd_read_cb;
+        if (cb == 0u) {
+            /* libcd is translated in this game's image: CdReadCallback stored
+             * the handler in guest RAM instead of reaching the thunk. */
+            uint32_t slot = psyq_game_cd_read_cb_addr();
+            if (slot != 0u) cb = cpu->read_word(slot);
+        }
+        invoke_psx_callback(cpu, cb, /*intr=CdlComplete=*/2u, 0u);
+    }
+    psyq_game_cd_read_done(cpu, g_cd_read_cb);
+    /* libcd's ready callback issues CdlPause after the last sector; the
+     * command byte and the idle status are what the game reads afterwards. */
+    g_CD_com = CdlPause;
+    s_cd_reading = 0u;
+    cd_mirror_com(CdlPause);
+    cd_mirror_status(0x02u);
+
+    /* The transfer is complete; on hardware that is a channel-3 DMA interrupt,
+     * and libcd's read path does its bookkeeping in that handler. */
+    psyq_dma_complete(cpu, 3u);
+}
+
+/* The VBLs this read stays in flight: the load budget, capped per read. */
+static uint32_t cd_read_delay_for(CPUState* cpu, int sectors) {
+    const uint32_t in_load = psyq_game_cd_read_in_load(cpu) ? 1u : 0u;
+    if (in_load && !s_cd_load_prev) {
+        s_cd_load_budget = (uint32_t)(openpete_cd_load_delay > 0
+                                          ? openpete_cd_load_delay : 0);
+        if (s_cd_load_budget)
+            OPL_INFO_F("cd", "load delay: load opened at a %d-sector read, "
+                       "%u VBL(s) to spend", sectors, s_cd_load_budget);
+    }
+    s_cd_load_prev = in_load;
+    if (!in_load) { s_cd_load_budget = 0u; return 0u; }
+    uint32_t d = s_cd_load_budget;
+    const uint32_t cap = psyq_game_cd_read_delay_cap();
+    if (cap && d > cap) d = cap;
+    s_cd_load_budget -= d;
+    return d;
+}
+
+/* One VBL elapsed: a deferred completion owed nothing more fires now. */
+static void cd_defer_tick(CPUState* cpu, uint32_t vbls) {
+    if (!s_cd_defer_pending) return;
+    s_cd_defer_owed = (vbls >= s_cd_defer_owed) ? 0u : s_cd_defer_owed - vbls;
+    if (s_cd_defer_owed) return;
+    s_cd_defer_pending = 0u;
+    cd_read_complete(cpu);
+}
+
 /* --- The latch pack (psyq_thunk_state.h) --------------------------------- */
 
 static void put_word(uint8_t* p, uint32_t i, uint32_t v) {
@@ -473,12 +566,17 @@ extern "C" void psyq_thunk_state_save(void* dst) {
         put_word(p, 6u + PSYQ_INTR_SLOTS + i, g_dma_cb[i]);
     put_word(p, 24, (uint32_t)s_cd_setloc_sector);
     put_word(p, 25, s_cd_reading);
+    put_word(p, 26, s_cd_defer_owed);
+    put_word(p, 27, s_cd_defer_pending);
+    put_word(p, 28, s_cd_load_budget);
+    put_word(p, 29, s_cd_load_prev);
 }
 
 extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
     if (ver == 1u) return PSYQ_THUNK_STATE_V1_BYTES;
     if (ver == 2u) return PSYQ_THUNK_STATE_V2_BYTES;
-    if (ver == 3u) return PSYQ_THUNK_STATE_BYTES;
+    if (ver == 3u) return PSYQ_THUNK_STATE_V3_BYTES;
+    if (ver == 4u) return PSYQ_THUNK_STATE_BYTES;
     return 0u;
 }
 
@@ -510,6 +608,11 @@ extern "C" int psyq_thunk_state_load(const void* src, uint32_t size) {
     /* A pack without the latch predates the status mirror: idle is the value
      * that read the same as an unwritten block. */
     s_cd_reading = (ver >= 3u) ? get_word(p, 25) : 0u;
+    /* A pack without the load-delay words predates it: nothing deferred. */
+    s_cd_defer_owed    = (ver >= 4u) ? get_word(p, 26) : 0u;
+    s_cd_defer_pending = (ver >= 4u) ? get_word(p, 27) : 0u;
+    s_cd_load_budget   = (ver >= 4u) ? get_word(p, 28) : 0u;
+    s_cd_load_prev     = (ver >= 4u) ? get_word(p, 29) : 0u;
     return 0;
 }
 
@@ -530,6 +633,10 @@ extern "C" void psyq_thunk_state_scramble(void) {
     s_cd_mode        = (uint8_t)~s_cd_mode;
     s_cd_setloc_sector = 0x00D5D5D5;
     s_cd_reading     = 0x3u;
+    s_cd_defer_owed    = 0xD5D50005u;
+    s_cd_defer_pending = 0x7u;
+    s_cd_load_budget   = 0xD5D50009u;
+    s_cd_load_prev     = 0xBu;
     s_xa_filter_file = 0x1FF;
     s_xa_filter_chan = 0x2FF;
     for (uint32_t i = 0; i < PSYQ_INTR_SLOTS; i++)
@@ -1777,31 +1884,25 @@ void psyq_CdRead(CPUState* cpu) {
      * advances the tracked head position. */
     psyq_game_cd_apply_buf((uint8_t*)buf, sectors);
     uint8_t* ram = openpete_psx_get_ram();
-    if (g_native_cd_read_cb != nullptr) {
-        /* Native registrar (post-rewriter init.c). Fire the host cb
-         * directly — no cpu dispatch round-trip needed. */
-        g_native_cd_read_cb(/*intr=CdlComplete=*/2u, /*result=*/nullptr);
-    } else {
-        uint32_t cb = g_cd_read_cb;
-        if (cb == 0u) {
-            /* libcd is translated in this game's image: CdReadCallback stored
-             * the handler in guest RAM instead of reaching the thunk. */
-            uint32_t slot = psyq_game_cd_read_cb_addr();
-            if (slot != 0u) cb = cpu->read_word(slot);
-        }
-        invoke_psx_callback(cpu, cb, /*intr=CdlComplete=*/2u, 0u);
-    }
-    psyq_game_cd_read_done(cpu, g_cd_read_cb);
-    /* libcd's ready callback issues CdlPause after the last sector; the
-     * command byte and the idle status are what the game reads afterwards. */
-    g_CD_com = CdlPause;
-    s_cd_reading = 0u;
-    cd_mirror_com(CdlPause);
-    cd_mirror_status(0x02u);
 
-    /* The transfer is complete; on hardware that is a channel-3 DMA interrupt,
-     * and libcd's read path does its bookkeeping in that handler. */
-    psyq_dma_complete(cpu, 3u);
+    /* A completion still owed from the previous read fires before this
+     * read's, in issue order: the game re-issued after its own timeout. */
+    if (s_cd_defer_pending) {
+        OPL_WARN_F("cd", "load delay: read issued with %u VBL(s) still owed; "
+                   "completing the deferred read first", s_cd_defer_owed);
+        s_cd_defer_pending = 0u;
+        s_cd_defer_owed = 0u;
+        cd_read_complete(cpu);
+    }
+    const uint32_t delay = cd_read_delay_for(cpu, sectors);
+    if (delay) {
+        s_cd_defer_pending = 1u;
+        s_cd_defer_owed = delay;
+        OPL_INFO_F("cd", "load delay: %d-sector read deferred %u VBL(s) "
+                   "(vbl=%d)", sectors, delay, SDL_GetAtomicInt(&openpete_vbl));
+    } else {
+        cd_read_complete(cpu);
+    }
 
     /* Once the bytes have settled, the first word at the overlay vaddr is the
      * overlay id, so re-point the dispatcher at whichever overlay is now

@@ -39,6 +39,9 @@ typedef struct {
     int          frame_count;
     int          first_input_frame; /* index of first frame with any button down,
                                       * or frame_count if the movie has no input */
+    int          load_delay;        /* Header.txt "LoadDelay N": the VBLs every
+                                      * level load waited when the movie was
+                                      * recorded; 0 when the header has no line */
 } bk2_movie_t;
 
 /* Load a .bk2 zip. Reads "Input Log.txt", parses Octoshock P1 digital

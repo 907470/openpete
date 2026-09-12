@@ -27,6 +27,9 @@ const char* game_get_id(void)             { return "spyro-2"; }
  * reads. */
 uint32_t game_get_pad_read_pc(void) { return 0u; }
 
+/* No load-read classifier for this game yet, so loads are instant. */
+uint32_t game_get_load_delay_default(void) { return 0u; }
+
 /* --- Memory layout --- */
 uint32_t game_get_ram_size(void)              { return 2u * 1024u * 1024u; }
 uint32_t game_get_compiled_range_start(void)  { return 0x80010000u; }

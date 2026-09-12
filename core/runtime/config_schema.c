@@ -60,6 +60,7 @@ static const cfg_knob_t g_schema[] = {
     /* -------- Paths -------- */
     { "disc",             "--disc",             NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "disc_cache",       "--disc-cache",       "OPENPETE_DISC_CACHE",   CFG_BOOL,   NULL,       NULL,       NULL,       0 },
+    { "load_delay",       "--load-delay",       "OPENPETE_LOAD_DELAY",   CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "texpack_dir",      "--texpack-dir",      "OPENPETE_TEXPACK_DIR",  CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "sfxpack_dir",      "--sfxpack-dir",      "OPENPETE_SFXPACK_DIR",  CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "controller_db",    "--controller-db",    "OPENPETE_CONTROLLER_DB", CFG_STRING, NULL,      NULL,       NULL,       0 },
