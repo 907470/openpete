@@ -23,6 +23,8 @@
  *   [6..16]  intr_cb[11]  interrupt-callback table
  *   [17..23] dma_cb[7]    DMA-callback table
  *   [24]     setloc_sector  last CdlSetloc (pack_ver 2)
+ *   [25]     cd_reading     1 while a CdlReadS stream runs, cleared by
+ *                           CdlPause, CdlStop or a data read (pack_ver 3)
  */
 #ifndef OPENPETE_PSYQ_THUNK_STATE_H
 #define OPENPETE_PSYQ_THUNK_STATE_H
@@ -33,10 +35,15 @@
 extern "C" {
 #endif
 
-#define PSYQ_THUNK_STATE_PACK_VER 2u
-#define PSYQ_THUNK_STATE_WORDS    25u
+#define PSYQ_THUNK_STATE_PACK_VER 3u
+#define PSYQ_THUNK_STATE_WORDS    26u
 #define PSYQ_THUNK_STATE_BYTES    (PSYQ_THUNK_STATE_WORDS * 4u)
 #define PSYQ_THUNK_STATE_V1_BYTES 96u
+#define PSYQ_THUNK_STATE_V2_BYTES 100u
+
+/* The byte length of a pack whose first word is `ver`; 0 for a version this
+ * layer does not know. */
+uint32_t psyq_thunk_state_bytes_for(uint32_t ver);
 
 uint32_t psyq_thunk_state_size(void);
 void     psyq_thunk_state_save(void* dst);   /* dst has PSYQ_THUNK_STATE_BYTES */

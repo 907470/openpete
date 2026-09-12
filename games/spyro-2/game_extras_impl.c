@@ -105,5 +105,9 @@ uint32_t psyq_game_overlay_vaddr(void) { return 0x8006D264u; }
  * read-completion handler here rather than in the thunk layer. */
 uint32_t psyq_game_cd_read_cb_addr(void) { return 0x800663B8u; }
 
+/* libcd's state block, read by the translated CdStatus, CdLastPos, CdMode and
+ * CdLastCom. */
+uint32_t psyq_game_libcd_block_addr(void) { return 0x80066700u; }
+
 /* Disc layout is not mapped for this game yet. */
 const game_disc_layout_t* game_get_disc_layout(void) { return NULL; }

@@ -37,7 +37,7 @@ loop  = 0x80055400
 # the baseline in the same change as its fix) and refuses another hit. A
 # hex-spelled anchor needs its own row, keyed by that spelling.
 [psyq_internal_baseline]
-first = { bytes = 217, ranges = 27, digest = "4c832999cf633df1", hit = 1 }
+first = { bytes = 214, ranges = 27, digest = "9ae55dff985c50c6", hit = 1 }
 
 [bios_stack]
 low = 0x801FFB50
@@ -58,3 +58,19 @@ start  = 0x800725EC
 length = 0x1CE4
 source = "psx.map:8642 .bss psyq.bss.o"
 
+# libcd's state block: the bytes its translated getters read, written by the
+# shared CD thunks. A differing byte here is a defective mirror.
+[[populated]]
+start  = 0x8006B574
+length = 0x1
+name   = "libcd block 0x8006B568 CD status (CdStatus)"
+
+[[populated]]
+start  = 0x8006B580
+length = 0x4
+name   = "libcd block 0x8006B568 last CdlSetloc position (CdLastPos)"
+
+[[populated]]
+start  = 0x8006B584
+length = 0x2
+name   = "libcd block 0x8006B568 mode and last command (CdMode, CdLastCom)"

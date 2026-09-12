@@ -72,6 +72,9 @@ uint32_t psyq_game_libgpu_env_addr(void) { return 0u; }
 #ifndef PSYQ_GAME_PROVIDES_LIBGPU_CLEAR_BLOCK_ADDR
 uint32_t psyq_game_libgpu_clear_block_addr(void) { return 0u; }
 #endif
+#ifndef PSYQ_GAME_PROVIDES_LIBCD_BLOCK_ADDR
+uint32_t psyq_game_libcd_block_addr(void) { return 0u; }
+#endif
 
 #ifndef PSYQ_GAME_PROVIDES_CD_SETLOC
 void psyq_game_cd_setloc(const void* cdl_loc) { (void)cdl_loc; }

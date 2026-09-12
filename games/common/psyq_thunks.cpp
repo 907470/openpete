@@ -118,6 +118,7 @@ extern "C" int g_cdXaStartVBL;
  * the stream. */
 static uint8_t s_cd_mode          = 0;
 static int     s_cd_setloc_sector = 0;
+static uint32_t s_cd_reading      = 0;   /* a CdlReadS stream is running */
 static int     s_xa_filter_file   = 1;
 static int     s_xa_filter_chan   = 0;
 
@@ -127,6 +128,39 @@ static int     s_xa_filter_chan   = 0;
 static uint32_t s_cnt_mode_rt_cleared = 0;
 static uint32_t s_cnt_reads_rt_clear  = 0;
 static uint32_t s_cnt_stream_starts   = 0;
+
+/* libcd keeps the drive's last status byte, the last CdlSetloc position, the
+ * mode byte and the last command in a block of its own data that CdStatus,
+ * CdLastPos, CdMode and CdLastCom read; a game that translates those getters
+ * reads the block directly. The thunks write it where the library would.
+ * Status carries the drive's motor-on bit always, its reading bit while a
+ * streaming read runs, and never the shell-open, seek, or error bits. */
+static void cd_mirror_byte(uint32_t off, uint8_t v) {
+    uint32_t base = psyq_game_libcd_block_addr();
+    if (base == 0u) return;
+    openpete_psx_get_ram()[(base + off) & 0x1FFFFFu] = v;
+}
+static void cd_mirror_status(uint8_t st)  { cd_mirror_byte(0x0Cu, st); }
+static void cd_mirror_mode(uint8_t mode)  { cd_mirror_byte(0x1Cu, mode); }
+static void cd_mirror_com(uint8_t com)    { cd_mirror_byte(0x1Du, com); }
+static void cd_mirror_pos(const u_char* loc) {
+    for (uint32_t i = 0; i < 4u; i++) cd_mirror_byte(0x18u + i, loc[i]);
+}
+/* The status byte libcd stores from a command's first response, which
+ * carries the drive's status at the acknowledgement for every command except
+ * the two location queries, whose responses are the position. A CdlReadS is
+ * acknowledged before its reading starts, so the reading bit appears only
+ * through a later command; a stream never polled with a status command
+ * keeps the idle value. */
+static uint8_t cd_live_status(void) {
+    return (uint8_t)(0x02u | (s_cd_reading ? 0x20u : 0u));
+}
+/* Music level is the product of the two hardware stages the XA stream passes
+ * through: its own CD input volume, then the SPU main volume applied to the
+ * summed mix. Both arrive via separate SpuSetCommonAttr masks, so they are
+ * tracked apart and recombined whenever either moves. */
+static float s_cdVolume      = 1.0f;
+static float s_spuMainVolume = 1.0f;
 
 /* The latch pack these statics and the callback tables below serialize into
  * for the savestate; definitions follow the last table. */
@@ -385,6 +419,14 @@ extern "C" void psyq_thunk_state_save(void* dst) {
     for (uint32_t i = 0; i < PSYQ_DMA_CHANNELS; i++)
         put_word(p, 6u + PSYQ_INTR_SLOTS + i, g_dma_cb[i]);
     put_word(p, 24, (uint32_t)s_cd_setloc_sector);
+    put_word(p, 25, s_cd_reading);
+}
+
+extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
+    if (ver == 1u) return PSYQ_THUNK_STATE_V1_BYTES;
+    if (ver == 2u) return PSYQ_THUNK_STATE_V2_BYTES;
+    if (ver == 3u) return PSYQ_THUNK_STATE_BYTES;
+    return 0u;
 }
 
 /* A pack written before the mode byte was mirrored holds an armed bit in the
@@ -400,7 +442,7 @@ extern "C" int psyq_thunk_state_load(const void* src, uint32_t size) {
     if (size < PSYQ_THUNK_STATE_V1_BYTES) return -1;
     const uint32_t ver = get_word(p, 0);
     if (ver < 1u || ver > PSYQ_THUNK_STATE_PACK_VER) return -1;
-    if (ver >= 2u && size < PSYQ_THUNK_STATE_BYTES) return -1;
+    if (size < psyq_thunk_state_bytes_for(ver)) return -1;
     g_cd_read_cb     = get_word(p, 1);
     g_vsync_cb       = get_word(p, 2);
     s_cd_mode        = (ver >= 2u) ? (uint8_t)get_word(p, 3)
@@ -412,6 +454,9 @@ extern "C" int psyq_thunk_state_load(const void* src, uint32_t size) {
     for (uint32_t i = 0; i < PSYQ_DMA_CHANNELS; i++)
         g_dma_cb[i] = get_word(p, 6u + PSYQ_INTR_SLOTS + i);
     if (ver >= 2u) s_cd_setloc_sector = (int)get_word(p, 24);
+    /* A pack without the latch predates the status mirror: idle is the value
+     * that read the same as an unwritten block. */
+    s_cd_reading = (ver >= 3u) ? get_word(p, 25) : 0u;
     return 0;
 }
 
@@ -431,6 +476,7 @@ extern "C" void psyq_thunk_state_scramble(void) {
     g_vsync_cb       = 0xA5A50003u;
     s_cd_mode        = (uint8_t)~s_cd_mode;
     s_cd_setloc_sector = 0x00D5D5D5;
+    s_cd_reading     = 0x3u;
     s_xa_filter_file = 0x1FF;
     s_xa_filter_chan = 0x2FF;
     for (uint32_t i = 0; i < PSYQ_INTR_SLOTS; i++)
@@ -1430,6 +1476,7 @@ void psyq_PadSetAct(CPUState* cpu) {
 void psyq_CdInit(CPUState* cpu) {
     int rc = CdInit();
     OPL_INFO_F("thunks", "CdInit -> %d", rc);
+    cd_mirror_status(0x02u);   /* motor on, idle */
     cpu->v0 = (uint32_t)rc;
 }
 
@@ -1494,6 +1541,7 @@ static void cd_set_mode(uint8_t mode) {
     if ((s_cd_mode & CdlModeRT) && !(mode & CdlModeRT))
         s_cnt_mode_rt_cleared++;
     s_cd_mode = mode;
+    cd_mirror_mode(mode);
 }
 
 /* One host body for CdControl, CdControlB and CdControlF: mirror the drive
@@ -1503,10 +1551,20 @@ static void cd_set_mode(uint8_t mode) {
  * would seek the image file the XA pump owns, or on the F path start a
  * spooler thread over it), 0 when PsyCross still runs it. */
 static int cd_command_host(u_char com, u_char* param) {
+    g_CD_com = com;   /* CdLastCom() reports the command as issued */
+    cd_mirror_com(com);
+    if (com != CdlGetlocP && com != CdlGetlocL) cd_mirror_status(cd_live_status());
+    /* libcd keeps the position a positional command carries: measured for
+     * CdlSetloc and a CdlReadS with a parameter; the other three take the
+     * same parameter. */
+    if (param && (com == CdlReadS || com == CdlReadN || com == CdlSeekL ||
+                  com == CdlSeekP))
+        cd_mirror_pos(param);
     switch (com) {
         case CdlSetloc:
             if (param) {
                 s_cd_setloc_sector = CdPosToInt((CdlLOC*)param);
+                cd_mirror_pos(param);
                 /* Head position for the level-segment asset overlay: CdRead
                  * has no location arg. */
                 psyq_game_cd_setloc(param);
@@ -1527,12 +1585,12 @@ static int cd_command_host(u_char com, u_char* param) {
             /* A CdlReadS with no param reads from the drive's last Setloc. */
             const int sector = param ? CdPosToInt((CdlLOC*)param)
                                      : s_cd_setloc_sector;
+            s_cd_reading = 1u;
             if (!(s_cd_mode & CdlModeRT)) {
                 s_cnt_reads_rt_clear++;
                 return 0;
             }
             start_music_stream(sector);
-            g_CD_com = com;   /* CdLastCom() still reports the command */
             return 1;
         }
         case CdlPause:
@@ -1545,6 +1603,11 @@ static int cd_command_host(u_char com, u_char* param) {
                 if (PsyX_XA_IsActive()) PsyX_XA_Stop();
                 music_override_stop();
             }
+            /* Pause and Stop complete with a second response whose status is
+             * idle; the motor-off bit a CdlStop clears on hardware is not
+             * measured. A CdlReadN's completion is written by psyq_CdRead. */
+            s_cd_reading = 0u;
+            if (com != CdlReadN) cd_mirror_status(0x02u);
             return 0;
         default:
             return 0;
@@ -1607,6 +1670,7 @@ void psyq_CdControlF(CPUState* cpu) {
      * ourselves for CdLastCom and skip PsyCross's switch entirely. */
     if (com == CdlGetlocP) {
         g_CD_com = com;
+        cd_mirror_com(com);
         cpu->v0 = 0u;  /* CdControlF returns int (0) for the GetlocP case */
         return;
     }
@@ -1674,6 +1738,12 @@ void psyq_CdRead(CPUState* cpu) {
         invoke_psx_callback(cpu, cb, /*intr=CdlComplete=*/2u, 0u);
     }
     psyq_game_cd_read_done(cpu, g_cd_read_cb);
+    /* libcd's ready callback issues CdlPause after the last sector; the
+     * command byte and the idle status are what the game reads afterwards. */
+    g_CD_com = CdlPause;
+    s_cd_reading = 0u;
+    cd_mirror_com(CdlPause);
+    cd_mirror_status(0x02u);
 
     /* The transfer is complete; on hardware that is a channel-3 DMA interrupt,
      * and libcd's read path does its bookkeeping in that handler. */
@@ -1879,13 +1949,6 @@ void psyq_SpuInit(CPUState* cpu) {
     SpuInit();
     psyq_game_sfx_arm();
 }
-
-/* Music level is the product of the two hardware stages the XA stream passes
- * through: its own CD input volume, then the SPU main volume applied to the
- * summed mix. Both arrive via separate SpuSetCommonAttr masks, so they are
- * tracked apart and recombined whenever either moves. */
-static float s_cdVolume      = 1.0f;
-static float s_spuMainVolume = 1.0f;
 
 static void spyro_apply_music_gain(void) {
     const float g = s_cdVolume * s_spuMainVolume;

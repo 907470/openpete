@@ -247,6 +247,7 @@ extern "C" void psyq_game_cd_apply_buf(unsigned char* buf, int sectors) {
  * D_80075978). */
 extern "C" uint32_t psyq_game_libgpu_env_addr(void) { return 0x80074A64u; }
 extern "C" uint32_t psyq_game_libgpu_clear_block_addr(void) { return 0x80075978u; }
+extern "C" uint32_t psyq_game_libcd_block_addr(void) { return 0x80074E38u; }
 
 /* Every overlay loads at this one vaddr; the id is its first word. */
 extern "C" uint32_t psyq_game_overlay_vaddr(void) { return 0x8007AA38u; }

@@ -464,8 +464,9 @@ int game_is_gameplay_live(CPUState* cpu) {
  *   v5: the thunk latches are the shared layer's pack
  *       (games/common/psyq_thunk_state.h: callbacks, drive mode and filter,
  *       the interrupt- and DMA-callback tables) in place of v3's three
- *       words; the warp words follow it. v3/v4 blobs load through the
- *       pack's legacy adapter. */
+ *       words; the warp words follow it at the length the pack's own
+ *       version word gives, so a blob saved under an earlier pack version
+ *       still loads. v3/v4 blobs load through the pack's legacy adapter. */
 extern uint32_t spyro1_mod_wad_cursor_get(void);
 extern void     spyro1_mod_wad_cursor_set(uint32_t s);
 
@@ -503,13 +504,17 @@ void game_state_extra_load(const void* src, uint32_t size) {
         if (ovl) spyro_set_active_overlay_by_magic(ovl);
     }
     if (ver >= 5u) {
-        if (size < EXTRA_V5_SIZE) return;
-        (void)psyq_thunk_state_load(p + EXTRA_V5_PACK_OFF,
-                                    PSYQ_THUNK_STATE_BYTES);
+        uint32_t pack_ver, pack_len;
+        if (size < EXTRA_V5_PACK_OFF + 4u) return;
+        memcpy(&pack_ver, p + EXTRA_V5_PACK_OFF, 4);
+        pack_len = psyq_thunk_state_bytes_for(pack_ver);
+        if (pack_len == 0u || size < EXTRA_V5_PACK_OFF + pack_len + 12u) return;
+        (void)psyq_thunk_state_load(p + EXTRA_V5_PACK_OFF, pack_len);
         uint32_t wphase, wtarget, wticks;
-        memcpy(&wphase,  p + EXTRA_V5_WARP_OFF + 0, 4);
-        memcpy(&wtarget, p + EXTRA_V5_WARP_OFF + 4, 4);
-        memcpy(&wticks,  p + EXTRA_V5_WARP_OFF + 8, 4);
+        const uint8_t* w = p + EXTRA_V5_PACK_OFF + pack_len;
+        memcpy(&wphase,  w + 0, 4);
+        memcpy(&wtarget, w + 4, 4);
+        memcpy(&wticks,  w + 8, 4);
         spyro1_levelwarp_state_load(wphase, wtarget, wticks);
         return;
     }

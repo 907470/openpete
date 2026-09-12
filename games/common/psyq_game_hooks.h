@@ -95,6 +95,12 @@ uint32_t psyq_game_libgpu_env_addr(void);
  * when not located. */
 uint32_t psyq_game_libgpu_clear_block_addr(void);
 
+/* libcd's state block: status byte at +0xC, the last CdlSetloc position at
+ * +0x18 (4 bytes), the mode byte at +0x1C and the last command at +0x1D,
+ * which the library's CdStatus, CdLastPos, CdMode and CdLastCom read. 0
+ * when not located. */
+uint32_t psyq_game_libcd_block_addr(void);
+
 /* Asset overlay: a game may redirect a disc read at its own granularity.
  * setloc takes the CdlLOC the game passed to CdControl; apply is handed the
  * landed sector buffer so the game can substitute its own bytes. */
