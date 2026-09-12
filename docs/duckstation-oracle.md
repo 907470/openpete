@@ -173,6 +173,15 @@ distinguishable from a flickering one.
   regions diverge and for how long.
 - `OPENPETE_PSXTRACE_HEAL_WINDOW` — CD-load transient tolerance in ticks;
   see below.
+- `OPENPETE_PSXTRACE_POKE=ADDR:BYTE:FRAME` — negative control. The verifier
+  writes one byte into guest RAM at the anchor of that frame, before the
+  hashes are taken. A run under it must fail at that frame in the region
+  holding the address; a PASS means the gate is not looking at that byte.
+  For example `OPENPETE_PSXTRACE_POKE=0x8007582C:7:2000` with
+  `OPENPETE_FRAME_LIMIT=8000` fails at tick 2000 in `g_SpyroLifeCount`.
+- `OPENPETE_ORACLE_LOG` — keep the run's full console log at this path
+  (default: a temp file the script deletes). The script reads the exit-time
+  `music: summary:` line from it.
 
 ### Sidecar artifacts
 
@@ -183,6 +192,19 @@ oracle's. Those artifacts come from the PCSX-Redux capture path
 (`scripts/capture_psx_oracle.sh`, a two-stage Lua capture). The shipped
 DuckStation golden has none: it is captured from power-on and openpete
 replays the same boot.
+
+## Checking the gate is not vacuous
+
+Three checks, each cheap, establish that a PASS is a comparison and not an
+accident. `tools/check_ds_region_mirror.py` shows the two region tables
+agree. A fresh 5-record capture at the default anchor must verify PASS,
+and one captured with `-psxtrace-anchor-hit 2` must fail at record 0 (one
+tick of offset changes every live region's hash). A poke run
+(`OPENPETE_PSXTRACE_POKE`) must fail at the poked tick in the poked
+region. The golden's first records are byte-equal to a fresh capture, and
+the 2 MB dump `-dump-ram-at-anchor` writes at the armed hit hashes to the
+values the same hit's record holds, so the dump and the trace describe one
+instant.
 
 ## CD-load transients
 

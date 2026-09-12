@@ -218,6 +218,34 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
         }
     }
     (void)pad2; (void)pc;
+    /* Negative control (harness): OPENPETE_PSXTRACE_POKE=ADDR:BYTE:FRAME
+     * writes one byte into guest RAM at the anchor of that frame, before
+     * the hashes are taken. A verify run under it must report a
+     * non-transient divergence at that frame in the region holding ADDR;
+     * a PASS means the gate is not looking at that byte. */
+    {
+        static int      s_poke_parsed = 0;
+        static uint32_t s_poke_addr = 0, s_poke_frame = 0;
+        static uint8_t  s_poke_val = 0;
+        if (!s_poke_parsed) {
+            s_poke_parsed = 1;
+            const char* e = getenv("OPENPETE_PSXTRACE_POKE");
+            if (e && *e) {
+                unsigned a = 0, v = 0, f = 0;
+                if (sscanf(e, "%i:%i:%u", &a, &v, &f) == 3) {
+                    s_poke_addr = a; s_poke_val = (uint8_t)v; s_poke_frame = f;
+                    s_poke_parsed = 2;
+                }
+            }
+        }
+        if (s_poke_parsed == 2 && frame_no == s_poke_frame) {
+            uint8_t* ram = openpete_psx_get_ram();
+            uint32_t off = s_poke_addr & (OPENPETE_PSX_RAM_SIZE - 1u);
+            OPL_INFO_F("psxtrace", "poke: frame=%u 0x%08X: 0x%02X -> 0x%02X",
+                       frame_no, s_poke_addr, ram[off], s_poke_val);
+            ram[off] = s_poke_val;
+        }
+    }
     /* Compute openpete's hashes for THIS frame. */
     uint64_t op_per[OPENPETE_PSXTRACE_MAX_REGIONS];
     uint64_t total_op = gameplay_hash_compute_ex(op_per);
