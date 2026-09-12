@@ -17,10 +17,12 @@
  *   [0]      pack_ver (PSYQ_THUNK_STATE_PACK_VER)
  *   [1]      cd_cb      guest CdReadCallback handler vaddr
  *   [2]      vs_cb      guest VSyncCallback handler vaddr
- *   [3]      cd_mode    1 when a CdlSetmode with RT|SF armed the XA route
+ *   [3]      cd_mode    the drive's mode byte (CdlSetmode); pack_ver 1 held
+ *                       an armed bit here, widened on load
  *   [4]      cd_filter_file, [5] cd_filter_chan (CdlSetfilter)
  *   [6..16]  intr_cb[11]  interrupt-callback table
  *   [17..23] dma_cb[7]    DMA-callback table
+ *   [24]     setloc_sector  last CdlSetloc (pack_ver 2)
  */
 #ifndef OPENPETE_PSYQ_THUNK_STATE_H
 #define OPENPETE_PSYQ_THUNK_STATE_H
@@ -31,9 +33,10 @@
 extern "C" {
 #endif
 
-#define PSYQ_THUNK_STATE_PACK_VER 1u
-#define PSYQ_THUNK_STATE_WORDS    24u
+#define PSYQ_THUNK_STATE_PACK_VER 2u
+#define PSYQ_THUNK_STATE_WORDS    25u
 #define PSYQ_THUNK_STATE_BYTES    (PSYQ_THUNK_STATE_WORDS * 4u)
+#define PSYQ_THUNK_STATE_V1_BYTES 96u
 
 uint32_t psyq_thunk_state_size(void);
 void     psyq_thunk_state_save(void* dst);   /* dst has PSYQ_THUNK_STATE_BYTES */

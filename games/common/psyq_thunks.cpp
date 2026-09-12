@@ -109,13 +109,24 @@ extern "C" int readMode;  /* 0=RM_DATA, 1=RM_XA_AUDIO */
 extern "C" int g_cdXaStartLBA;   /* virtual music head anchor — LIBCD.C */
 extern "C" int g_cdXaStartVBL;
 
-/* Spyro music streaming state. CdControlB(CdlSetmode) with RT|SF arms XA;
- * CdControlB(CdlSetfilter) records file/chan; CdControlB(CdlReadS) starts
- * streaming at the requested sector. CdControlB(CdlPause/Stop/CdlReadN)
- * stops it. State is small enough to keep file-static. */
-static bool s_xa_armed       = false;
-static int  s_xa_filter_file = 1;
-static int  s_xa_filter_chan = 0;
+/* Drive state mirrored from the guest's commands, on every entry (CdControl,
+ * CdControlB, CdControlF, and the mode CdRead sets). libcd has no arm flag:
+ * CdlSetmode writes the drive's mode byte, and ADPCM sectors route to the SPU
+ * during any read while CdlModeRT is set, so a CdlReadS streams music iff the
+ * mirrored mode has RT. CdlSetfilter records file/chan; CdlSetloc latches the
+ * sector a later CdlReadS with no param reads from; CdlPause/Stop/ReadN stop
+ * the stream. */
+static uint8_t s_cd_mode          = 0;
+static int     s_cd_setloc_sector = 0;
+static int     s_xa_filter_file   = 1;
+static int     s_xa_filter_chan   = 0;
+
+/* Engagement counters for the routing above, printed once at exit under the
+ * `music` tag: mode writes that cleared RT while it was set, CdlReadS issued
+ * with RT clear (a read that did not stream), and stream starts. */
+static uint32_t s_cnt_mode_rt_cleared = 0;
+static uint32_t s_cnt_reads_rt_clear  = 0;
+static uint32_t s_cnt_stream_starts   = 0;
 
 /* The latch pack these statics and the callback tables below serialize into
  * for the savestate; definitions follow the last table. */
@@ -366,28 +377,41 @@ extern "C" void psyq_thunk_state_save(void* dst) {
     put_word(p, 0, PSYQ_THUNK_STATE_PACK_VER);
     put_word(p, 1, g_cd_read_cb);
     put_word(p, 2, g_vsync_cb);
-    put_word(p, 3, s_xa_armed ? 1u : 0u);
+    put_word(p, 3, (uint32_t)s_cd_mode);
     put_word(p, 4, (uint32_t)s_xa_filter_file);
     put_word(p, 5, (uint32_t)s_xa_filter_chan);
     for (uint32_t i = 0; i < PSYQ_INTR_SLOTS; i++)
         put_word(p, 6u + i, g_intr_cb[i]);
     for (uint32_t i = 0; i < PSYQ_DMA_CHANNELS; i++)
         put_word(p, 6u + PSYQ_INTR_SLOTS + i, g_dma_cb[i]);
+    put_word(p, 24, (uint32_t)s_cd_setloc_sector);
+}
+
+/* A pack written before the mode byte was mirrored holds an armed bit in the
+ * mode field. Spyro 1 sets exactly two modes: SF|RT|Speed to stream and Speed
+ * for data, so the bit widens to those. */
+static uint8_t cd_mode_from_armed_bit(uint32_t armed) {
+    return armed ? (uint8_t)(CdlModeRT | CdlModeSF | CdlModeSpeed)
+                 : (uint8_t)CdlModeSpeed;
 }
 
 extern "C" int psyq_thunk_state_load(const void* src, uint32_t size) {
     const uint8_t* p = (const uint8_t*)src;
-    if (size < PSYQ_THUNK_STATE_BYTES) return -1;
-    if (get_word(p, 0) != PSYQ_THUNK_STATE_PACK_VER) return -1;
+    if (size < PSYQ_THUNK_STATE_V1_BYTES) return -1;
+    const uint32_t ver = get_word(p, 0);
+    if (ver < 1u || ver > PSYQ_THUNK_STATE_PACK_VER) return -1;
+    if (ver >= 2u && size < PSYQ_THUNK_STATE_BYTES) return -1;
     g_cd_read_cb     = get_word(p, 1);
     g_vsync_cb       = get_word(p, 2);
-    s_xa_armed       = get_word(p, 3) != 0u;
+    s_cd_mode        = (ver >= 2u) ? (uint8_t)get_word(p, 3)
+                                   : cd_mode_from_armed_bit(get_word(p, 3));
     s_xa_filter_file = (int)get_word(p, 4);
     s_xa_filter_chan = (int)get_word(p, 5);
     for (uint32_t i = 0; i < PSYQ_INTR_SLOTS; i++)
         g_intr_cb[i] = get_word(p, 6u + i);
     for (uint32_t i = 0; i < PSYQ_DMA_CHANNELS; i++)
         g_dma_cb[i] = get_word(p, 6u + PSYQ_INTR_SLOTS + i);
+    if (ver >= 2u) s_cd_setloc_sector = (int)get_word(p, 24);
     return 0;
 }
 
@@ -395,7 +419,7 @@ extern "C" void psyq_thunk_state_load_v4(uint32_t cd_cb, uint32_t vs_cb,
                                          uint32_t xa_word) {
     g_cd_read_cb     = cd_cb;
     g_vsync_cb       = vs_cb;
-    s_xa_armed       = (xa_word & 1u) != 0;
+    s_cd_mode        = cd_mode_from_armed_bit(xa_word & 1u);
     s_xa_filter_file = (int)((xa_word >> 8) & 0xFF);
     s_xa_filter_chan = (int)((xa_word >> 16) & 0xFF);
 }
@@ -405,7 +429,8 @@ extern "C" void psyq_thunk_state_load_v4(uint32_t cd_cb, uint32_t vs_cb,
 extern "C" void psyq_thunk_state_scramble(void) {
     g_cd_read_cb     = 0xA5A50001u;
     g_vsync_cb       = 0xA5A50003u;
-    s_xa_armed       = !s_xa_armed;
+    s_cd_mode        = (uint8_t)~s_cd_mode;
+    s_cd_setloc_sector = 0x00D5D5D5;
     s_xa_filter_file = 0x1FF;
     s_xa_filter_chan = 0x2FF;
     for (uint32_t i = 0; i < PSYQ_INTR_SLOTS; i++)
@@ -1344,6 +1369,7 @@ static void start_music_stream(int sector) {
     /* One line per track start / loop (every couple of minutes), so a
      * music report can be read off an ordinary log: the gap between two
      * of these is the loop period the guest measured. */
+    s_cnt_stream_starts++;
     OPL_INFO_F("music", "stream start: track %d LBA %d chan %d vbl %d",
                route.track, sector, s_xa_filter_chan, g_cdXaStartVBL);
     if (route.custom_path &&
@@ -1359,33 +1385,87 @@ static void start_music_stream(int sector) {
     PsyX_XA_Start(sector, s_xa_filter_file, s_xa_filter_chan);
 }
 
-/* Shared body — used by both psyq_CdControl (recomp path, args from
- * cpu->aN as PSX vaddrs) and openpete_CdControl (native path, args are
- * already host pointers). Avoids the host_to_psx round-trip that breaks
- * when native callers pass a stack-local u_char/CdlLOC buffer. */
+static void cd_exit_summary(void) {
+    OPL_INFO_F("music", "summary: stream_starts=%u mode_rt_cleared=%u "
+               "reads_rt_clear=%u",
+               s_cnt_stream_starts, s_cnt_mode_rt_cleared,
+               s_cnt_reads_rt_clear);
+}
+
+/* The drive's mode byte, written by CdlSetmode on any entry and by the mode
+ * argument libcd's CdRead sets before its own read. */
+static void cd_set_mode(uint8_t mode) {
+    static bool s_summary_armed = false;
+    if (!s_summary_armed) {
+        s_summary_armed = true;
+        std::atexit(cd_exit_summary);
+    }
+    if ((s_cd_mode & CdlModeRT) && !(mode & CdlModeRT))
+        s_cnt_mode_rt_cleared++;
+    s_cd_mode = mode;
+}
+
+/* One host body for CdControl, CdControlB and CdControlF: mirror the drive
+ * state the command writes, and own a streaming CdlReadS. `param` is a host
+ * pointer or NULL. Returns 1 when the command was consumed here and must not
+ * reach PsyCross (a CdlReadS that started the music stream: PsyCross's body
+ * would seek the image file the XA pump owns, or on the F path start a
+ * spooler thread over it), 0 when PsyCross still runs it. */
+static int cd_command_host(u_char com, u_char* param) {
+    switch (com) {
+        case CdlSetloc:
+            if (param) {
+                s_cd_setloc_sector = CdPosToInt((CdlLOC*)param);
+                /* Head position for the level-segment asset overlay: CdRead
+                 * has no location arg. */
+                psyq_game_cd_setloc(param);
+            }
+            return 0;
+        case CdlSetmode:
+            cd_set_mode(param ? param[0] : 0u);
+            return 0;
+        case CdlSetfilter: {
+            CdlFILTER* f = (CdlFILTER*)param;
+            if (f) {
+                s_xa_filter_file = (int)f->file;
+                s_xa_filter_chan = (int)f->chan;
+            }
+            return 0;
+        }
+        case CdlReadS: {
+            /* A CdlReadS with no param reads from the drive's last Setloc. */
+            const int sector = param ? CdPosToInt((CdlLOC*)param)
+                                     : s_cd_setloc_sector;
+            if (!(s_cd_mode & CdlModeRT)) {
+                s_cnt_reads_rt_clear++;
+                return 0;
+            }
+            start_music_stream(sector);
+            g_CD_com = com;   /* CdLastCom() still reports the command */
+            return 1;
+        }
+        case CdlPause:
+        case CdlStop:
+        case CdlReadN:
+            /* A data read or a stop ends the stream; PsyCross's read would
+             * seek the same image file. Host audio only, so not under
+             * speculation (see start_music_stream). */
+            if (!openpete_speculative) {
+                if (PsyX_XA_IsActive()) PsyX_XA_Stop();
+                music_override_stop();
+            }
+            return 0;
+        default:
+            return 0;
+    }
+}
+
+/* Used by both psyq_CdControl (recomp path, args from cpu->aN as PSX vaddrs)
+ * and openpete_CdControl (native path, args are already host pointers). The
+ * native path avoids the host_to_psx round-trip that breaks when a caller
+ * passes a stack-local u_char/CdlLOC buffer. */
 static int cdcontrol_host(u_char com, u_char* param, u_char* result) {
-    if (com == CdlSetloc && param) {
-        /* Track the head position for the level-segment asset overlay
-         * (mod_wad_overlay.c) — CdRead has no location arg. */
-        psyq_game_cd_setloc(param);
-    }
-    if (com == CdlSetfilter) {
-        CdlFILTER* f = (CdlFILTER*)param;
-        if (f) {
-            s_xa_filter_file = (int)f->file;
-            s_xa_filter_chan = (int)f->chan;
-        }
-    } else if (com == CdlReadS && s_xa_armed && param) {
-        CdlLOC* loc = (CdlLOC*)param;
-        start_music_stream(CdPosToInt(loc));
-        g_CD_com = com;
-        return 1;
-    } else if (com == CdlPause || com == CdlStop) {
-        if (!openpete_speculative) {           /* see start_music_stream */
-            if (PsyX_XA_IsActive()) PsyX_XA_Stop();
-            music_override_stop();
-        }
-    }
+    if (cd_command_host(com, param)) return 1;
     return CdControl(com, param, result);
 }
 
@@ -1410,56 +1490,10 @@ extern "C" int openpete_CdControl(u_char com, u_char* param, u_char* result) {
 void psyq_CdControlB(CPUState* cpu) {
     u_char com = (u_char)cpu->a0;
     u_char* param = (u_char*)PTR_OPT(cpu->a1);
-
-    /* XA streaming arming. Spyro's SetMusicState issues exactly:
-     *   CdControlB(CdlSetmode,   {SF|RT|Speed})
-     *   CdControlB(CdlSetfilter, {file=1, chan=track%8})
-     *   CdControlB(CdlReadS,     &startLoc)
-     * which is the canonical "start XA streaming" sequence. */
-    switch (com) {
-        case CdlSetloc:
-            if (param)
-                psyq_game_cd_setloc(param);
-            break;
-        case CdlSetmode: {
-            uint8_t mode = param ? param[0] : 0;
-            s_xa_armed = ((mode & CdlModeRT) && (mode & CdlModeSF));
-            break;
-        }
-        case CdlSetfilter: {
-            CdlFILTER* f = (CdlFILTER*)param;
-            if (f) {
-                s_xa_filter_file = (int)f->file;
-                s_xa_filter_chan = (int)f->chan;
-            }
-            break;
-        }
-        case CdlReadS: {
-            if (s_xa_armed && param) {
-                CdlLOC* loc = (CdlLOC*)param;
-                int sector = CdPosToInt(loc);
-                start_music_stream(sector);
-                /* Skip PsyCross's CdControlB body — it would flip readMode
-                 * to RM_DATA and seek g_imageFile, which our XA pump owns
-                 * for the duration of the stream. We still set g_CD_com so
-                 * CdLastCom() reports correctly. */
-                g_CD_com = com;
-                cpu->v0 = 1u;
-                return;
-            }
-            break;
-        }
-        case CdlPause:
-        case CdlStop:
-        case CdlReadN:
-            if (!openpete_speculative) {       /* see start_music_stream */
-                if (PsyX_XA_IsActive()) PsyX_XA_Stop();
-                music_override_stop();
-            }
-            break;
-        default: break;
+    if (cd_command_host(com, param)) {
+        cpu->v0 = 1u;
+        return;
     }
-
     cpu->v0 = (uint32_t)CdControlB(com, param, (u_char*)PTR_OPT(cpu->a2));
 }
 
@@ -1470,6 +1504,9 @@ void psyq_CdControlB(CPUState* cpu) {
 
 void psyq_CdControlF(CPUState* cpu) {
     u_char com = (u_char)cpu->a0;
+    u_char* param = (u_char*)PTR_OPT(cpu->a1);
+    OPL_INFO_F("thunks", "CdControlF com=0x%02X param=0x%08X",
+               (unsigned)com, cpu->a1);
     /* PsyCross's CdControlF treats CdlGetlocP as "the caller is starting
      * CDDA/XA streaming" and flips readMode to RM_XA_AUDIO. Spyro's music
      * loop calls CdControlF(CdlGetlocP, NULL) just to poll the current
@@ -1482,7 +1519,11 @@ void psyq_CdControlF(CPUState* cpu) {
         cpu->v0 = 0u;  /* CdControlF returns int (0) for the GetlocP case */
         return;
     }
-    cpu->v0 = (uint32_t)CdControlF(com, (u_char*)PTR_OPT(cpu->a1));
+    if (cd_command_host(com, param)) {
+        cpu->v0 = 1u;   /* libcd: 1 on success; PsyCross's body returns 0 */
+        return;
+    }
+    cpu->v0 = (uint32_t)CdControlF(com, param);
 }
 
 /* Active-overlay tracker (defined in dispatch_chain.c). Each overlay's
@@ -1502,6 +1543,9 @@ void psyq_CdRead(CPUState* cpu) {
     OPL_INFO_F("thunks", "CdRead sectors=%d buf=0x%08X mode=0x%02X ra=0x%08X",
                sectors, cpu->a1, mode, cpu->ra);
 
+    /* libcd's CdRead issues CdlSetmode with this mode before its read;
+     * PsyCross's only enqueues the read, so the mirror is written here. */
+    cd_set_mode((uint8_t)mode);
     cpu->v0 = (uint32_t)CdRead(sectors, buf, mode);
     /* PsyCross's CdRead only enqueues; CdReadSync drains the queue into
      * the buffer. Spyro polls via CdSync (which doesn't drain), so we

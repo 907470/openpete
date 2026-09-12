@@ -116,6 +116,15 @@ BK2="${TRACE}.bk2"
 # Safety belt only — psxtrace-eof exits first. The 20k-tick demo reaches
 # EOF at ~37k openpete frames, so the default must clear that comfortably.
 LIMIT="${OPENPETE_FRAME_LIMIT:-200000}"
+# Full console log, captured so the exit-time music summary can be checked;
+# OPENPETE_ORACLE_LOG keeps it at a path of your choosing, else it is deleted.
+if [[ -n "${OPENPETE_ORACLE_LOG:-}" ]]; then
+    LOG="$OPENPETE_ORACLE_LOG"
+else
+    LOG="${TMPDIR:-/tmp}/psx-oracle.$$.log"
+    trap 'rm -f "$LOG"' EXIT
+fi
+rm -f "$LOG"
 
 set +e
 # --mute 1 sits before PASSTHRU so a forwarded `-- --mute 0` still wins
@@ -133,8 +142,29 @@ set +e
     --psxtrace-verify "$TRACE" \
     --frame-limit "$LIMIT" \
     "${EXTRA[@]}" \
-    "${PASSTHRU[@]}"
-rc=$?
+    "${PASSTHRU[@]}" 2>&1 | tee "$LOG"
+rc=${PIPESTATUS[0]}
 set -e
 echo "[psx-oracle] exit code=$rc"
+
+# Music routing engagement: the shared CD body prints one summary
+# line at exit. On this golden the loader's data-mode CdlSetmode clears RT
+# after every stream start (mode_rt_cleared > 0 proves the mirrored mode
+# byte is written), and no CdlReadS is issued with RT clear (== 0 proves
+# every restart streams). A missing line means the body never ran.
+if [[ "$rc" == "0" ]]; then
+    SUMMARY=$(grep -o 'music: summary: .*' "$LOG" | tail -1)
+    if [[ -z "$SUMMARY" ]]; then
+        echo "[psx-oracle] music routing: no summary line (body never engaged)" >&2
+        rc=2
+    else
+        echo "[psx-oracle] $SUMMARY"
+        CLEARED=$(sed -n 's/.*mode_rt_cleared=\([0-9]*\).*/\1/p' <<<"$SUMMARY")
+        RTCLEAR=$(sed -n 's/.*reads_rt_clear=\([0-9]*\).*/\1/p' <<<"$SUMMARY")
+        if [[ "${CLEARED:-0}" == "0" || "${RTCLEAR:-1}" != "0" ]]; then
+            echo "[psx-oracle] music routing: mode_rt_cleared=$CLEARED reads_rt_clear=$RTCLEAR (expected >0 and 0)" >&2
+            rc=2
+        fi
+    fi
+fi
 exit "$rc"
