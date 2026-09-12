@@ -1,0 +1,69 @@
+# games/spyro-2/manifest/ram_diff_expect.toml — what a whole-RAM diff against
+# the DuckStation reference is expected to show at this game's anchors
+# (scripts/check_ram_diff.sh, tools/ram_diff.py).
+#
+# A range leaves this file only by a fix that makes the bytes agree, never
+# by a re-bless. Every listed class is capped at 25% of RAM by the tool.
+
+map = "games/spyro-2/spyro-2/build/psx.map"
+
+[disc]
+id = "SCUS-94425"
+
+[openpete]
+args = []
+
+[reference]
+# openpete's Spyro 2 stalls at its first card wait with a card present (P8):
+# no card on either side.
+card = "none"
+# The reference module's configuration these baselines were taken under:
+# SCPH-1001 BIOS with the regtest host's fast-boot patch, NTSC-U disc, analog
+# controller in port 1. A changed setting moves the kernel and bios_stack
+# baselines; state the change here when it happens.
+bios      = "SCPH-1001"
+fast_boot = true
+
+[anchors]
+# first: entry of the function issuing the game's first CdRead
+# (ra 0x800138E8); no load has been issued on either side at hit 1.
+first = 0x80013810
+# loop: not yet named (bring-up P19b).
+
+# psyq_internal ratchet: differing bytes, ranges, a digest of the differing
+# offsets and the hit, measured inside the PSYQ extents when this file was
+# written; the tool fails on any change in either direction (a drop tightens
+# the baseline in the same change as its fix) and refuses another hit. A
+# hex-spelled anchor needs its own row, keyed by that spelling.
+[psyq_internal_baseline]
+first = { bytes = 218, ranges = 27, digest = "c2ed1340c38578e1", hit = 1 }
+
+[bios_stack]
+low = 0x801FFB50
+
+# PSYQ library sections, from the decomp link map (spyro-2/build/psx.map).
+[[psyq_internal]]
+start  = 0x80064F14
+length = 0x1E24
+source = "psx.map:5208 .data psyq.data.o"
+
+[[psyq_internal]]
+start  = 0x80067188
+length = 0x4
+source = "psx.map:6096 .sbss psyq.sbss.o"
+
+[[psyq_internal]]
+start  = 0x8006B580
+length = 0x1CE4
+source = "psx.map:7552 .bss psyq.bss.o"
+
+# DRAWENV.dr_env: the DR_ENV packet libgpu's PutDrawEnv builds inside the
+# game's own DRAWENV (offset 0x1C, 64 bytes); the thunk layer does not
+# write it. A shared-layer mirror gap, found by this instrument.
+[[expect]]
+class  = "psyq_mirror_gap"
+start  = 0x800699B8
+end    = 0x800699F8
+name   = "DRAWENV.dr_env at 0x8006999C (D_800699B7+1)"
+reason = "PutDrawEnv's packed DR_ENV, not written by the thunk"
+owner  = "P21"

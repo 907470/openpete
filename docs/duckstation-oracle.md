@@ -206,6 +206,32 @@ the 2 MB dump `-dump-ram-at-anchor` writes at the armed hit hashes to the
 values the same hit's record holds, so the dump and the trace describe one
 instant.
 
+## Whole-RAM diff at an anchor
+
+`scripts/check_ram_diff.sh <game> [--anchor first|loop|HEX] [--hit N]
+[--ref-hit M] [--keep DIR]` compares the reference's 2 MB RAM with
+openpete's at a translated function's entry: the module runs with
+`-dump-ram-at-anchor` (and `-card1 none` when the game's expectation file
+says so), openpete with `--halt-at-pc`/`--halt-hit`, and
+`tools/ram_diff.py` sorts every differing range into a class from
+`games/<game>/manifest/ram_diff_expect.toml`, in this order: the exact
+words openpete's PSYQ mirrors write (`populated`; a difference here is a
+defective mirror and fails), the kernel area, the PSYQ library's own
+section extents from the decomp link map (`psyq_internal`, ratcheted per
+anchor against the counts recorded in the file), the BIOS's stack frames,
+data openpete landed synchronously that hardware still had in flight
+(computed from the CdRead lines in openpete's log; any such byte means the
+anchor sits inside a load and the run does not pass), and named ranges
+with a reason and an owner. Anything else is unexpected and fails; the
+union of expected differing bytes is capped at 25% of RAM. The anchor must
+be a dispatch-table entry whose entry block is not a loop head, since the
+module counts executions of the instruction and openpete counts calls.
+Each game's file names a `first` anchor, the entry of the function issuing
+its first CdRead, where no read has been issued on either side; Spyro 1
+also names its `loop` anchor, GamestateDraw, where hit N is the same
+manifest state on both sides by the oracle and the whole-RAM residue is
+what the tool reports. A range leaves the expectation file only by a fix.
+
 ## CD-load transients
 
 Three regions in `manifest/gameplay_state_regions.toml` carry

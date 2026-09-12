@@ -22,6 +22,11 @@ the bytes. `scripts/capture_psx_oracle_ds.sh` supersedes
 `scripts/capture_psx_oracle.sh` for trace capture; the PCSX-Redux path
 below is kept for these single-shot dumps.
 
+The DuckStation module now takes the same single-shot dump
+(`-dump-ram-at-anchor`), and `scripts/check_ram_diff.sh` runs both sides
+and classifies the diff (see `duckstation-oracle.md`, "Whole-RAM diff at
+an anchor"); the PCSX-Redux path below is the forensic fallback.
+
 Companion to [gte-trace-vs-reference](gte-trace-vs-reference.md), which
 verifies GTE math rather than whole-RAM state.
 
