@@ -32,6 +32,10 @@ typedef struct {
 
 extern const spyro_overlay_entry_t spyro_overlay_table[];
 extern const size_t                spyro_overlay_table_count;
+/* The shared overlay vaddr window [lo, hi): every overlay of the game loads
+ * at lo, and hi bounds the largest one. */
+extern const uint32_t              spyro_overlay_window_lo;
+extern const uint32_t              spyro_overlay_window_hi;
 
 /* Look up an overlay by its id-magic; NULL if unknown. */
 const spyro_overlay_entry_t* spyro_overlay_find(uint32_t magic);

@@ -127,7 +127,7 @@ set(SPYRO_MODULE_SOURCES
     # Auto-generated overlay registry — id-magic -> dispatcher.
     ${SPYRO_GENERATED}/spyro_overlay_table.c
     # Fans psx_dispatch_compiled out to main EXE + active overlay.
-    dispatch_chain.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common/overlay_dispatch.c
     # The descriptor the host resolves (openpete_recomp_module.h).
     module_main.c)
 
@@ -167,6 +167,7 @@ else()
 endif()
 target_include_directories(spyro1_recomp_module PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common
     ${SPYRO_GENERATED}
     # Include dirs only — the shared module must NOT link openpete_core
     # (a second copy of core state inside the module would be wrong).
@@ -653,9 +654,9 @@ if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
             ${_rdir}/manifest
         COMMAND ${CMAKE_COMMAND} -E make_directory ${_rdir}/src
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_CURRENT_SOURCE_DIR}/dispatch_chain.c
+            ${CMAKE_CURRENT_SOURCE_DIR}/../common/overlay_dispatch.c
             ${CMAKE_CURRENT_SOURCE_DIR}/module_main.c
-            ${CMAKE_CURRENT_SOURCE_DIR}/spyro_overlay_table.h
+            ${CMAKE_CURRENT_SOURCE_DIR}/../common/spyro_overlay_table.h
             ${CMAKE_SOURCE_DIR}/core/include/openpete_recomp_module.h
             ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
             ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime_internal.h

@@ -1,0 +1,180 @@
+#!/usr/bin/env bash
+# check_overlay_callbacks.sh — the overlay callback gate.
+#
+# Every overlay function the game reaches by a computed jump must be a
+# dispatch entry of the overlay that is resident (a miss stub-returns
+# v0=v1=0 and the callback never runs), and every such entry must be one the
+# harvester attributed to that overlay from the bytes
+# (tools/extract_overlay_func_pointers.py), not one native discovery happened
+# to emit. The gate replays a --skip-to-level sweep with the dispatch census
+# on (OPENPETE_DISPATCH_CENSUS, games/common/overlay_dispatch.c) and judges:
+#
+#   G2  no in-window dispatch missed; every sweep row's target overlay became
+#       resident; every resident overlay shows at least one computed (`jalr`)
+#       dispatch, or none when the harvester attributed it nothing.
+#   G3  every cross-binary `jalr` pair (overlay, target), the call site
+#       outside the overlay window, is in that overlay's attributed set
+#       (generated/<overlay>/fn_pointers.txt plus the curated rows of
+#       manifest/forced_entries/<overlay>.txt); a pair attributed to another
+#       overlay is reported as stale_slot (the slot still holds a previous
+#       level's constant) and any other pair is a rule defect. A direct (`jal`)
+#       pair must name a function start of the resident overlay. A `jalr`
+#       from inside the window (an overlay calling through its own tables) is
+#       counted, not judged: those targets are the recompiler's own discovery.
+#
+# Spyro 3 has no --skip-to-level, so its row is one plain boot; no level
+# overlay becomes resident and its G3 line is reported as unengaged.
+#
+#   scripts/check_overlay_callbacks.sh [spyro-1|spyro-2|spyro-3 ...]
+#
+# Exit 0 PASS, 1 FAIL, 64 SKIP (binary or disc missing). OPENPETE_FRAME_LIMIT
+# overrides the 2400 VBLs per row; OPENPETE_CALLBACK_JOBS the parallelism.
+set -euo pipefail
+cd "$(dirname "$0")/.."
+
+GAMES=("$@")
+[[ ${#GAMES[@]} -eq 0 ]] && GAMES=(spyro-1 spyro-2 spyro-3)
+FRAMES="${OPENPETE_FRAME_LIMIT:-2400}"
+JOBS="${OPENPETE_CALLBACK_JOBS:-8}"
+BUILD="${OPENPETE_BUILD_DIR:-build/linux-release}"
+OUT="${OPENPETE_CALLBACK_OUT:-$BUILD/overlay-callbacks}"
+
+disc_for() {
+    case "$1" in
+        spyro-1) echo "${OPENPETE_DISC_SPYRO1:-../roms/SCUS-94228/SCUS-94228.cue}" ;;
+        spyro-2) echo "${OPENPETE_DISC_SPYRO2:-../roms/SCUS-94425/SCUS-94425.cue}" ;;
+        spyro-3) echo "${OPENPETE_DISC_SPYRO3:-../roms/SCUS-94467/SCUS-94467.cue}" ;;
+    esac
+}
+
+status=0
+for game in "${GAMES[@]}"; do
+    exe="$BUILD/games/$game/openpete-${game/-/}"
+    disc="$(disc_for "$game")"
+    if [[ ! -x "$exe" || ! -f "$disc" ]]; then
+        echo "[overlay-callbacks] $game: SKIP (missing $exe or $disc)"
+        status=64
+        continue
+    fi
+    dir="$OUT/$game"
+    rm -rf "$dir"; mkdir -p "$dir"
+
+    # Rows: "<skip name> <overlay name>" from the game's own level table; a
+    # game without the flag runs one plain boot.
+    rows="$dir/rows.txt"
+    "$exe" --skip-to-level 2>&1 \
+        | awk '/^  [a-z]/ { name=$1; n=$2; gsub(/[()]/, "", n); print name, n }' \
+        > "$rows.raw" || true
+    : > "$rows"
+    while read -r name n; do
+        case "$name" in
+            credits) echo "$name credits" ;;
+            credits_100|full_credits) continue ;;
+            *) echo "$name level_$n" ;;
+        esac
+    done < "$rows.raw" >> "$rows"
+    if [[ ! -s "$rows" ]]; then
+        echo "boot title" > "$rows"
+    fi
+
+    run_row() {
+        local name="$1" exe="$2" disc="$3" dir="$4" frames="$5"
+        local skip=()
+        [[ "$name" != "boot" ]] && skip=(--skip-to-level "$name")
+        OPENPETE_DISPATCH_CENSUS="$dir/$name.census" \
+        timeout 900 "$exe" --headless --no-card --mute 1 --vibration 0 \
+            --disc "$disc" "${skip[@]}" --frame-limit "$frames" --no-log-file \
+            > "$dir/$name.log" 2>&1 || echo "[overlay-callbacks] $name: exit $?" >> "$dir/$name.log"
+    }
+    export -f run_row
+    cut -d' ' -f1 "$rows" | xargs -P "$JOBS" -I{} bash -c 'run_row "$@"' _ {} "$exe" "$disc" "$dir" "$FRAMES"
+
+    if ! python3 - "$game" "$dir" "$rows" <<'EOF'; then status=1; fi
+import re, sys
+from pathlib import Path
+game, dir_, rows = sys.argv[1], Path(sys.argv[2]), Path(sys.argv[3])
+gen = Path(f'games/{game}/generated')
+curated_dir = Path(f'games/{game}/manifest/forced_entries')
+
+def addrs(path):
+    if not path.exists():
+        return set()
+    return {int(m, 16) for m in re.findall(r'^(0x[0-9A-Fa-f]+)', path.read_text(), re.M)}
+
+report = (gen / 'overlay_fn_report.txt').read_text()
+m = re.search(r'window 0x([0-9A-F]+)\.\.0x([0-9A-F]+)', report)
+win_lo, win_hi = int(m.group(1), 16), int(m.group(2), 16)
+attributed, starts = {}, {}
+for d in gen.iterdir():
+    if (d / 'fn_pointers.txt').exists():
+        attributed[d.name] = addrs(d / 'fn_pointers.txt') | addrs(curated_dir / f'{d.name}.txt')
+        starts[d.name] = addrs(d / 'discovered_functions.log')
+owner = {}
+for o, s in attributed.items():
+    for a in s:
+        owner.setdefault(a, set()).add(o)
+
+fails, notes = [], []
+resident_all, jalr_by_ovl = set(), {}
+intra = 0
+for line in rows.read_text().split('\n'):
+    if not line.strip():
+        continue
+    name, target = line.split()
+    census = dir_ / f'{name}.census'
+    if not census.exists():
+        fails.append(f'{name}: no census written')
+        continue
+    resident = set()
+    for rec in census.read_text().split('\n'):
+        f = rec.split()
+        if len(f) != 5:
+            continue
+        ovl, tgt, ra, cls, res = f[0], int(f[1], 16), int(f[2], 16), f[3], f[4]
+        resident.add(ovl)
+        if res == 'missed':
+            fails.append(f'{name}: {ovl} missed 0x{tgt:08X} ({cls}, ra 0x{ra:08X})')
+        if cls == 'jalr':
+            if win_lo <= ra < win_hi:
+                intra += 1
+            else:
+                jalr_by_ovl.setdefault(ovl, set()).add(tgt)
+        elif cls == 'jal':
+            if tgt not in starts.get(ovl, set()):
+                fails.append(f'{name}: {ovl} direct jal target 0x{tgt:08X} is not a function start')
+    if name != 'boot' and target not in resident:
+        fails.append(f'{name}: target overlay {target} never resident (saw {sorted(resident)})')
+    resident_all |= resident
+
+for ovl in sorted(resident_all):
+    if ovl == 'none':
+        continue
+    pairs = jalr_by_ovl.get(ovl, set())
+    attr = attributed.get(ovl, set())
+    harvested = addrs(gen / ovl / 'fn_pointers.txt')
+    if not pairs and harvested:
+        fails.append(f'{ovl}: resident with {len(harvested)} attributed entries but no jalr dispatch (VACUOUS)')
+    for a in sorted(pairs):
+        if a in attr:
+            continue
+        others = owner.get(a, set()) - {ovl}
+        if others:
+            notes.append(f'stale_slot: {ovl} dispatched 0x{a:08X}, attributed to {sorted(others)}')
+        else:
+            fails.append(f'G3: {ovl} jalr 0x{a:08X} is attributed to no overlay')
+
+engaged = sum(len(v) for v in jalr_by_ovl.values())
+print(f'[overlay-callbacks] {game}: {len(rows.read_text().split())//2} rows, '
+      f'{len(resident_all - {"none"})} overlays resident, {engaged} cross-binary jalr pairs, '
+      f'{intra} intra-overlay jalr dispatches, {len(notes)} stale_slot, {len(fails)} failures')
+for n in notes:
+    print('  ' + n)
+for f in fails:
+    print('  FAIL ' + f)
+if game == 'spyro-3' and not any(o.startswith('level_') for o in resident_all):
+    print('  G3 unengaged: no level overlay resident (no --skip-to-level for spyro-3)')
+sys.exit(1 if fails else 0)
+EOF
+done
+[[ $status -eq 0 ]] && echo "[overlay-callbacks] verdict: PASS" || echo "[overlay-callbacks] verdict: FAIL/SKIP ($status)"
+exit $status

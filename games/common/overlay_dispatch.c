@@ -13,6 +13,8 @@
 
 #include <stddef.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
 
 /* Local declaration instead of openpete_log.h: this TU is part of the
  * recomp-module source kit, which must stay self-contained (openpete_log.h
@@ -46,8 +48,64 @@ uint32_t spyro_get_active_overlay_magic(void) {
     return s_active ? s_active->magic : 0u;
 }
 
+/* Set by the recompiled code at every `jalr` site, immediately before its
+ * call_by_address, and cleared by the first dispatch that follows: the
+ * census cannot otherwise tell a `jalr` from a `jr <reg>` that follows a
+ * `jal` in the same function, since cpu->ra is the last link, not the site. */
+int psx_dispatch_from_jalr = 0;
+
+/* OPENPETE_DISPATCH_CENSUS=<file>: every dispatch whose target lies in the
+ * overlay window is appended as
+ *   <resident overlay name> <target> <ra> <class> <resolved|missed>
+ * where class is `jalr` (a computed call), `jal` (the EXE calling an overlay
+ * function by constant), `host` (a BIOS event or PSYQ callback thunk, which
+ * dispatch with ra = 0xDEADBEEF) or `jr` (anything else). The window is the
+ * shared overlay vaddr range from the registry's first entry's dispatcher
+ * table: every overlay of a game loads at one address, and the table lists
+ * the base and the largest extent. */
+static FILE* s_census = NULL;
+static int   s_census_checked = 0;
+
+static void census_open(void) {
+    const char* path;
+    s_census_checked = 1;
+    path = getenv("OPENPETE_DISPATCH_CENSUS");
+    if (!path || !path[0]) return;
+    s_census = fopen(path, "w");
+}
+
+static void census_record(CPUState* cpu, uint32_t addr, uint32_t ra,
+                          int from_jalr, int resolved) {
+    const char* cls;
+    if (addr < spyro_overlay_window_lo || addr >= spyro_overlay_window_hi) return;
+    if (ra == 0xDEADBEEFu) {
+        cls = "host";
+    } else if (from_jalr) {
+        cls = "jalr";
+    } else if ((ra & 3u) == 0u && ra - 8u >= 0x80000000u &&
+               ra - 8u < 0x80200000u) {
+        uint32_t site = cpu->read_word(ra - 8u);
+        cls = ((site >> 26) == 3u &&
+               (((ra - 8u) & 0xF0000000u) | ((site & 0x03FFFFFFu) << 2)) == addr)
+              ? "jal" : "jr";
+    } else {
+        cls = "jr";
+    }
+    fprintf(s_census, "%s %08X %08X %s %s\n",
+            s_active ? s_active->name : "none", addr, ra, cls,
+            resolved ? "resolved" : "missed");
+}
+
 int psx_dispatch_compiled(CPUState* cpu, uint32_t addr) {
+    /* The class and the link register are read before the callee runs: the
+     * callee's own jalr sites rewrite both. */
+    int      from_jalr = psx_dispatch_from_jalr;
+    uint32_t ra        = cpu->ra;
+    int hit;
+    psx_dispatch_from_jalr = 0;
     if (psx_dispatch_main_exe(cpu, addr)) return 1;
-    if (s_active) return s_active->fn(cpu, addr);
-    return 0;
+    hit = s_active ? s_active->fn(cpu, addr) : 0;
+    if (!s_census_checked) census_open();
+    if (s_census) census_record(cpu, addr, ra, from_jalr, hit);
+    return hit;
 }

@@ -138,19 +138,6 @@ python3 tools/extract_asm_dispatch_targets.py \
 python3 tools/extract_handwritten_ra_returns.py \
     "$ASM_DIR" "$ASM_TARGETS_DIR" >/dev/null
 
-# Harvest overlay function-pointer-table targets from main EXE constants.
-# The main EXE installs per-level callbacks into fixed RAM slots via
-# `lui+addiu` immediate pairs (e.g. `0x80080000 + 22476 = 0x800857CC`)
-# that resolve to code inside whichever overlay is swapped in. Each
-# overlay then receives its in-range subset as forced-entries; psxrecomp
-# silently drops out-of-range entries so a single union list works.
-# The pairs are read from the EXE's text segment, so the harvest depends
-# on nothing a previous regen produced.
-FNPTR_FILE="$OUT/overlay_fn_pointers.txt"
-echo "[regen] Harvesting overlay fn-pointer constants from $PSX_EXE"
-python3 "$FNPTR_TOOL" "$PSX_EXE" "$FNPTR_FILE" \
-    --overlay-range="$OVERLAY_RANGE" >/dev/null
-
 # Resolve the asm_dispatch_targets file for a binary, or empty string if
 # none. Overlays share vaddr 0x8007AA38 with different bytes — passing
 # main-EXE entries to an overlay regen would silently fail psxrecomp's
@@ -197,26 +184,16 @@ process_overlay() {
     )
 
     echo "[regen] $name: first-pass recomp"
-    # First pass: handwritten-asm dispatch targets + fn-pointer-table
-    # constants harvested from main EXE (jtbl doesn't exist yet).
-    # The fn-pointer list is filtered per-overlay to drop entries that
-    # land on delay slots in *this* overlay's bytes — forcing entry on
-    # a delay slot makes psxrecomp split the prior function such that
-    # its post-jal continuation address becomes an unreachable
-    # dispatch entry (runtime stub miss).
-    # psxrecomp accepts a single --extra-funcs= file.
+    # First pass: handwritten-asm dispatch targets + the overlay's own
+    # attributed callback entries (jtbl doesn't exist yet). psxrecomp
+    # accepts a single --extra-funcs= file.
     local first_funcs="$OUT/$name/extra_funcs.first.txt"
     local fnptr_filtered="$OUT/$name/fn_pointers.txt"
     local curated="$FORCED_ENTRIES_DIR/$name.txt"
     : > "$first_funcs"
     [[ -n "$asm_targets" ]] && cat "$asm_targets" >> "$first_funcs"
     [[ -f "$curated" ]] && grep '^0x' "$curated" >> "$first_funcs"
-    if [[ -s "$FNPTR_FILE" ]]; then
-        python3 tools/filter_overlay_fn_pointers.py \
-            "$FNPTR_FILE" "$ovl_path" "$fnptr_filtered" \
-            --load-addr="$load_addr" 2>&1 | sed 's/^/  /'
-        cat "$fnptr_filtered" >> "$first_funcs"
-    fi
+    [[ -f "$fnptr_filtered" ]] && { grep '^0x' "$fnptr_filtered" || true; } >> "$first_funcs"
     run_psxrecomp "$ovl_path" "${base_args[@]}" \
         --extra-funcs="$first_funcs" "${extra_args[@]}"
 
@@ -233,7 +210,7 @@ process_overlay() {
     [[ -n "$asm_targets" ]] && cat "$asm_targets" >> "$second_funcs"
     [[ -f "$curated" ]] && grep '^0x' "$curated" >> "$second_funcs"
     [[ -f "$jtbl" ]] && cat "$jtbl" >> "$second_funcs"
-    [[ -f "$fnptr_filtered" ]] && cat "$fnptr_filtered" >> "$second_funcs"
+    [[ -f "$fnptr_filtered" ]] && { grep '^0x' "$fnptr_filtered" || true; } >> "$second_funcs"
     echo "[regen] $name: second-pass recomp with jumptable forced entries"
     run_psxrecomp "$ovl_path" "${base_args[@]}" \
         --extra-funcs="$second_funcs" \
@@ -335,6 +312,23 @@ register_overlay() {
 # the generated dispatch function and the forced-entry files are keyed on.
 OVERLAY_LIST="$OUT/overlay_registry.txt"
 python3 tools/overlay_registry.py "$DECOMP_DIR" "$WAD_DIR" > "$OVERLAY_LIST"
+
+# Per-overlay callback entries. The game installs per-level callbacks into
+# fixed RAM slots as `lui+addiu` constants and `jalr`s through them; the
+# harvester reads the EXE and every blob, keeps the constants whose slot is
+# jump-read, and attributes each to the overlay the installing code names:
+# a case of the switch keyed on LEVEL_ID_ADDR (the game's level id, from
+# recomp.conf) goes to `level_<id>`, an overlay's own store goes to itself,
+# and any other cross-binary install is an error. Output:
+# $OUT/<overlay>/fn_pointers.txt and $OUT/overlay_fn_report.txt. Runs before
+# the overlays so every overlay's first pass has its entries.
+echo "[regen] Attributing overlay callback entries from $PSX_EXE and $WAD_DIR"
+python3 "$FNPTR_TOOL" "$PSX_EXE" \
+    --overlay-range="$OVERLAY_RANGE" \
+    --registry="$OVERLAY_LIST" \
+    --out-dir="$OUT" \
+    --curated-dir="$FORCED_ENTRIES_DIR" \
+    ${LEVEL_ID_ADDR:+--level-id-addr="$LEVEL_ID_ADDR"}
 
 if [[ "$REGEN_SCOPE" == "full" ]]; then
     while read -r magic name ovl_path; do
@@ -495,6 +489,8 @@ echo "[regen] Generating $OUT/spyro_overlay_table.c (${#OVERLAY_NAMES[@]} overla
     done
     echo "};"
     echo "const size_t spyro_overlay_table_count = sizeof(spyro_overlay_table) / sizeof(spyro_overlay_table[0]);"
+    echo "const uint32_t spyro_overlay_window_lo = ${OVERLAY_RANGE%%:*}u;"
+    echo "const uint32_t spyro_overlay_window_hi = ${OVERLAY_RANGE##*:}u;"
 } > "$OUT/spyro_overlay_table.c"
 fi
 

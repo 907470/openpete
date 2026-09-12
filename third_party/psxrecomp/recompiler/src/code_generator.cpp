@@ -1996,7 +1996,11 @@ std::string CodeGenerator::translate_basic_block(
                     ss << config_.indent << fmt::format("{} = 0x{:08X};  /* jalr return addr */\n",
                                                         reg_name(rd), addr + 8);
 
-                    // Dispatch indirect call — target is a runtime register value
+                    // Dispatch indirect call — target is a runtime register value.
+                    // The flag tells the dispatcher's census this is a computed
+                    // call, since cpu->ra alone cannot separate it from a
+                    // `jr <reg>` following a `jal`.
+                    ss << config_.indent << "psx_dispatch_from_jalr = 1;\n";
                     ss << config_.indent << fmt::format("call_by_address(cpu, {});  /* jalr {} */\n",
                                                         reg_name(rs), reg_name(rs));
 
@@ -2309,6 +2313,9 @@ std::string CodeGenerator::generate_file(
     // This provides: CPUState typedef, gte_execute, call_by_address,
     // psx_syscall, psx_override_dispatch, and all other runtime API.
     ss << "#include \"psx_runtime_internal.h\"\n\n";
+    // Defined by the game's dispatcher TU; set at every jalr site (see the
+    // JumpLinkReg emission) so the dispatch census can classify the call.
+    ss << "extern int psx_dispatch_from_jalr;\n\n";
 
     // Emit reference implementations for unaligned memory helpers.
     // These implement the MIPS lwl/lwr/swl/swr semantics.

@@ -282,7 +282,10 @@ bool emit_overlay_table(const fs::path& out, const std::vector<Overlay>& ovls) {
         f << "    { " << o.magic << ", \"" << o.name << "\", psx_dispatch_"
           << o.name << " },\n";
     f << "};\nconst size_t spyro_overlay_table_count = "
-         "sizeof(spyro_overlay_table) / sizeof(spyro_overlay_table[0]);\n";
+         "sizeof(spyro_overlay_table) / sizeof(spyro_overlay_table[0]);\n"
+         /* The overlay window of games/spyro-1/recomp.conf (OVERLAY_RANGE). */
+         "const uint32_t spyro_overlay_window_lo = 0x8007AA38u;\n"
+         "const uint32_t spyro_overlay_window_hi = 0x8008EA38u;\n";
     return f.good();
 }
 
@@ -595,7 +598,7 @@ extern "C" int spyro1_recomp_build_module(const char* disc_path,
     std::vector<fs::path> tus;
     for (auto& e : fs::directory_iterator(gen))
         if (e.path().extension() == ".c") tus.push_back(e.path());
-    tus.push_back(src / "dispatch_chain.c");
+    tus.push_back(src / "overlay_dispatch.c");
     tus.push_back(src / "module_main.c");
 
     const std::string arch = module_arch_flags();  /* -march=native etc. */
