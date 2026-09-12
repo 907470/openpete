@@ -1787,17 +1787,36 @@ int openpete_runahead_get(void) { return s_runahead_live; }
  * audio only — never gameplay state. (Toggling OFF while paused unmutes
  * the pause silence until resume; harmless dev-tool edge.) */
 static int s_mute = 0;
+/* Transient mute held while the skip-to-level present fast-forward is up:
+ * the logos, title and loading the fast-forward hides also play their audio,
+ * so the same gains stay clamped until presents resume. Layered over s_mute
+ * (the baseline), never replacing it. */
+static int s_skip_mute = 0;
 
-void openpete_set_mute(int on) {
+static void apply_mute_gains(void) {
     extern int  PsyX_SPUAL_SetMute(int on_off);
     extern void PsyX_XA_ForceGain(float linear_gain);
-    s_mute = on ? 1 : 0;
-    PsyX_SPUAL_SetMute(s_mute);
-    PsyX_XA_ForceGain(s_mute ? 0.0f : -1.0f);
-    music_override_set_forced_gain(s_mute ? 0.0f : -1.0f);
+    int on = s_mute || s_skip_mute;
+    PsyX_SPUAL_SetMute(on);
+    PsyX_XA_ForceGain(on ? 0.0f : -1.0f);
+    music_override_set_forced_gain(on ? 0.0f : -1.0f);
     /* Mod one-shots are AL sources outside the SPU mixer, so the SPU mute
      * flag above does not cover them. */
-    openpete_mod_sound_set_mute(s_mute);
+    openpete_mod_sound_set_mute(on);
+}
+
+void openpete_set_mute(int on) {
+    s_mute = on ? 1 : 0;
+    apply_mute_gains();
+}
+
+/* Follows openpete_skip_present_until_level: called wherever the flag can
+ * have changed (boot arming, each host iteration), applies on edges only. */
+static void skip_mute_sync(void) {
+    int want = openpete_skip_present_until_level ? 1 : 0;
+    if (want == s_skip_mute) return;
+    s_skip_mute = want;
+    apply_mute_gains();
 }
 
 int openpete_get_mute(void) { return s_mute; }
@@ -2384,6 +2403,7 @@ static int run_host_init(const openpete_options_t* opts) {
      * them when the relevant in-game globals are ready. The setter itself
      * arms the present fast-forward (openpete_skip_present_until_level). */
     game_set_skip_to_level(opts->skip_to_level);
+    skip_mute_sync();
 
     /* Fast-boot gate is on by default (see fiber.c). psyq_DrawOTag clears it
      * the first time real draw commands hit, so host yields engage exactly
@@ -3704,7 +3724,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                  * --mute, possibly toggled since via the dev overlay). */
                 {
                     extern int PsyX_SPUAL_SetMute(int on_off);
-                    PsyX_SPUAL_SetMute(g_paused ? 1 : openpete_get_mute());
+                    PsyX_SPUAL_SetMute(g_paused ? 1 : (openpete_get_mute() || s_skip_mute));
                 }
                 /* A paused game is not producing actuator bytes, but the last
                  * pair it published would keep being re-issued; silence the
@@ -5457,6 +5477,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                             unlock_frame_in_ranges(opts, openpete_frame);
         bool unlock_fps = tab_unlock || sched_unlock ||
                           openpete_skip_present_until_level;
+        skip_mute_sync();
         if ((unlock_fps ? 1 : 0) != pace_unlock_prev)
             openpete_pace_window(OP_PACE_W_UNLOCK, unlock_fps ? 1 : 0);
         pace_unlock_prev = unlock_fps ? 1 : 0;
