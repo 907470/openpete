@@ -1618,7 +1618,53 @@ std::string CodeGenerator::translate_basic_block(
                     // intervening write to jr_rs. When matched, emit `return;`
                     // — the C call returns naturally to the caller, whose
                     // `goto block_<ra>` then runs the tail exactly once.
+                    //
+                    // Memory-spill form of the same idiom: the function stores
+                    // $ra to a fixed word (`lui $at,hi; addiu $at,lo; sw $ra,
+                    // off($at)`), calls helpers that clobber $ra, then reloads
+                    // that word into a temporary and `jr`s it (spyro2's
+                    // 0x8001C2F8 spills to 0x8006A9F4 and returns via `jr $t7`;
+                    // spyro3's 0x8004F6C4 to 0x80071548). The back-scan meets
+                    // the reload first (`lw $jr_rs, off(base)`); the word it
+                    // names is composed from the base register's `lui`/`addiu`
+                    // definition, and the scan continues for a `sw $ra` to the
+                    // same composed word with no other store to that word in
+                    // between. Matching on the word, not the register, is what
+                    // separates the reload from an earlier unrelated write to
+                    // the same temporary (`t7 = a0` at 0x8001C300).
+                    auto compose_reg = [&](uint32_t use_addr, uint32_t reg,
+                                           uint32_t* out) -> bool {
+                        // Walk back from `use_addr` for reg's definition:
+                        // addiu reg, src, imm (then compose src) or lui reg.
+                        int32_t acc = 0;
+                        uint32_t want = reg;
+                        for (int k = 1; k <= 16; k++) {
+                            auto w = exe_.read_word(use_addr - (uint32_t)(k * 4));
+                            if (!w) return false;
+                            uint32_t i  = *w;
+                            uint32_t op = (i >> 26) & 0x3F;
+                            uint32_t rs = (i >> 21) & 0x1F;
+                            uint32_t rt = (i >> 16) & 0x1F;
+                            uint32_t rd = (i >> 11) & 0x1F;
+                            int16_t  im = (int16_t)(i & 0xFFFF);
+                            if (op == 0x0F && rt == want) {           // lui
+                                *out = (uint32_t)(((uint32_t)(i & 0xFFFF) << 16) + (uint32_t)acc);
+                                return true;
+                            }
+                            if ((op == 0x08 || op == 0x09) && rt == want) {  // addi/addiu
+                                acc += im;
+                                want = rs;
+                                continue;
+                            }
+                            bool writes = (op == 0x00 && rd == want) ||
+                                          (op >= 0x08 && op <= 0x0F && rt == want) ||
+                                          (op >= 0x20 && op <= 0x27 && rt == want);
+                            if (writes) return false;
+                        }
+                        return false;
+                    };
                     bool jr_is_saved_ra = false;
+                    bool jr_is_spilled_ra = false;
                     if (jr_rs != 31u) {  // skip the trivial jr $ra
                         // Scan up to 200 instructions back. Don't stop at
                         // cfg.function_start: forced-entry manifests can split
@@ -1639,6 +1685,37 @@ std::string CodeGenerator::translate_basic_block(
                             if ((s_op == 0x08 || s_op == 0x09) &&
                                 s_rs == 31u && s_rt == jr_rs && s_im == 0) {
                                 jr_is_saved_ra = true;
+                                break;
+                            }
+                            // The reload of the memory-spill form.
+                            if (s_op == 0x23 && s_rt == jr_rs) {
+                                uint32_t base = 0;
+                                if (compose_reg(sa, s_rs, &base)) {
+                                    uint32_t spill = base + (uint32_t)(int32_t)s_im;
+                                    for (int b2 = back + 1; b2 <= 200; b2++) {
+                                        uint32_t sa2 = block.exit_instr.address - (uint32_t)(b2 * 4);
+                                        auto w2 = exe_.read_word(sa2);
+                                        if (!w2) break;
+                                        uint32_t i2  = *w2;
+                                        uint32_t op2 = (i2 >> 26) & 0x3F;
+                                        if (op2 != 0x2B) continue;          // sw
+                                        uint32_t rs2 = (i2 >> 21) & 0x1F;
+                                        uint32_t rt2 = (i2 >> 16) & 0x1F;
+                                        int16_t  im2 = (int16_t)(i2 & 0xFFFF);
+                                        uint32_t base2 = 0;
+                                        if (!compose_reg(sa2, rs2, &base2)) continue;
+                                        if (base2 + (uint32_t)(int32_t)im2 != spill) continue;
+                                        // First store to the spill word walking
+                                        // back: it must be the $ra spill.
+                                        jr_is_spilled_ra = (rt2 == 31u);
+                                        break;
+                                    }
+                                }
+                                if (jr_is_spilled_ra) {
+                                    jr_is_saved_ra = true;
+                                    fmt::print("  ra-spill return: jr {} at 0x{:08X} reloads the spilled $ra\n",
+                                               reg_name(jr_rs), block.exit_instr.address);
+                                }
                                 break;
                             }
                             // Any other instruction that writes to jr_rs

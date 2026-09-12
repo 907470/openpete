@@ -53,6 +53,19 @@ if [[ ! -x "$PSXRECOMP" ]]; then
     exit 1
 fi
 
+# The recompiler reports every `jr <reg>` it rewrites to `return` because the
+# register reloads a spilled $ra (`ra-spill return: jr $t7 at 0x...`). Each
+# binary is translated more than once, so the sites are collected and
+# deduplicated, then compared with RA_SPILL_RETURNS from recomp.conf (spyro-1
+# 0, spyro-2 1, spyro-3 1): a detector regression silently re-emits the miss
+# path, which returns v0=v1=0 and yields inside the guest function.
+RA_SPILL_LOG="$(mktemp)"
+trap 'rm -f "$RA_SPILL_LOG"' EXIT
+run_psxrecomp() {
+    "$PSXRECOMP" "$@" | tee -a "$RA_SPILL_LOG"
+    return "${PIPESTATUS[0]}"
+}
+
 # Optional debug build mode: emits `cpu->pc = X;` before each MIPS insn
 # so write-watchers / state-diff harness can attribute every memory
 # write to a specific instruction. Adds one store per emitted insn —
@@ -204,7 +217,7 @@ process_overlay() {
             --load-addr="$load_addr" 2>&1 | sed 's/^/  /'
         cat "$fnptr_filtered" >> "$first_funcs"
     fi
-    "$PSXRECOMP" "$ovl_path" "${base_args[@]}" \
+    run_psxrecomp "$ovl_path" "${base_args[@]}" \
         --extra-funcs="$first_funcs" "${extra_args[@]}"
 
     local jtbl="$OUT/$name/jumptable_targets.txt"
@@ -222,7 +235,7 @@ process_overlay() {
     [[ -f "$jtbl" ]] && cat "$jtbl" >> "$second_funcs"
     [[ -f "$fnptr_filtered" ]] && cat "$fnptr_filtered" >> "$second_funcs"
     echo "[regen] $name: second-pass recomp with jumptable forced entries"
-    "$PSXRECOMP" "$ovl_path" "${base_args[@]}" \
+    run_psxrecomp "$ovl_path" "${base_args[@]}" \
         --extra-funcs="$second_funcs" \
         --emit-external-jals="$OUT/$name/external_jals.txt" \
         "${extra_args[@]}"
@@ -274,7 +287,7 @@ process_overlay() {
             | sort -u > "$split_accum.tmp"
         mv "$split_accum.tmp" "$split_accum"
         cat "$second_funcs" "$split_accum" > "$combined"
-        "$PSXRECOMP" "$ovl_path" "${base_args[@]}" \
+        run_psxrecomp "$ovl_path" "${base_args[@]}" \
             --extra-funcs="$combined" \
             --emit-external-jals="$OUT/$name/external_jals.txt" \
             "${extra_args[@]}"
@@ -404,7 +417,7 @@ mkdir -p "$pass1_dir"
 rm -f "$OUT/PSX.EXE_full.c" "$OUT/PSX.EXE_dispatch.c" \
       "$OUT/main_exe_dispatch_stubs.txt"
 echo "[regen]   pass 1 (stub discovery) → $pass1_dir/"
-"$PSXRECOMP" "$PSX_EXE" \
+run_psxrecomp "$PSX_EXE" \
     --output-dir="$pass1_dir" \
     --extra-funcs="$main_exe_extra" \
     "${common_psx_args[@]}" >/dev/null
@@ -412,7 +425,7 @@ python3 tools/extract_dispatch_call_by_address.py \
     "$pass1_dir/PSX.EXE_full.c" "$OUT/main_exe_dispatch_stubs.txt" 2>&1 | sed 's/^/  /'
 cat "$OUT/main_exe_dispatch_stubs.txt" >> "$main_exe_extra"
 echo "[regen]   pass 2 (final, with $(grep -c '^0x' "$OUT/main_exe_dispatch_stubs.txt") JT-stub forced entries) → $OUT/PSX.EXE_full.c"
-"$PSXRECOMP" "$PSX_EXE" \
+run_psxrecomp "$PSX_EXE" \
     --output-dir="$OUT" \
     --extra-funcs="$main_exe_extra" \
     "${common_psx_args[@]}"
@@ -452,7 +465,7 @@ if [[ "${MAIN_EXE_THIRD_PASS:-0}" != "0" ]]; then
              "$(grep -c '^0x' "$split_found" || true) split," \
              "$(grep -c '^0x' "$orphan_found" || true) orphan target(s) promoted"
         grep -h '^0x' "$split_found" "$orphan_found" >> "$main_exe_extra"
-        "$PSXRECOMP" "$PSX_EXE" \
+        run_psxrecomp "$PSX_EXE" \
             --output-dir="$OUT" \
             --extra-funcs="$main_exe_extra" \
             "${common_psx_args[@]}"
@@ -484,6 +497,14 @@ echo "[regen] Generating $OUT/spyro_overlay_table.c (${#OVERLAY_NAMES[@]} overla
     echo "const size_t spyro_overlay_table_count = sizeof(spyro_overlay_table) / sizeof(spyro_overlay_table[0]);"
 } > "$OUT/spyro_overlay_table.c"
 fi
+
+ra_spill_found=$( { grep -h 'ra-spill return:' "$RA_SPILL_LOG" || true; } | sort -u | wc -l)
+if [[ "$ra_spill_found" != "${RA_SPILL_RETURNS:-0}" ]]; then
+    echo "[regen] ra-spill returns: found $ra_spill_found, $GAME_CONF expects ${RA_SPILL_RETURNS:-0}:" >&2
+    { grep -h 'ra-spill return:' "$RA_SPILL_LOG" || true; } | sort -u >&2
+    exit 1
+fi
+echo "[regen] ra-spill returns: $ra_spill_found (matches recomp.conf)"
 
 # Calibrate + verify signature anchors for the determinism-critical channels
 # from the freshly-recompiled reference binary (needs discovered_functions.log
