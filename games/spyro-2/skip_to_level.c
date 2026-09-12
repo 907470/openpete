@@ -16,6 +16,8 @@
 //                                0 = title
 //   g_LevelIndex     0x80066F54  linear index 0..28 via the byte table at
 //                                0x80064940; overlay id = index + 5
+//   g_LevelTick      0x80067008  ticks since the level began running; 0
+//                                through the load and the overlay swap
 // Sub-state 6's handler (0x8007A34C) waits for the timer to reach 12, then
 // runs the picker (0x8007A3D4): g_NextLevelNum = list[g_DemoIndex++],
 // g_DemoMode = 1, demo input buffer pointers, g_LoaderState = 2. The pad
@@ -38,6 +40,7 @@
 #define S2_NEXT_LEVEL_NUM  0x80066F90u
 #define S2_DEMO_MODE       0x80067024u
 #define S2_LOADER_STATE    0x80066EECu
+#define S2_LEVEL_TICK      0x80067008u
 
 #define S2_SUBSTATE_IDLE     2u
 #define S2_SUBSTATE_TIMEOUT  6u
@@ -142,7 +145,11 @@ void spyro2_skip_set(int number) {
 }
 
 int spyro2_skip_gameplay_live(CPUState* cpu) {
-    return cpu->read_word(S2_LOADER_STATE) == S2_LOADER_RESIDENT;
+    /* The loader reports the overlay resident about 45 VBLs before the level
+     * runs its first tick; the window would hold the last presented loading
+     * frame across that gap, so the level's own tick counter decides. */
+    return cpu->read_word(S2_LOADER_STATE) == S2_LOADER_RESIDENT &&
+           cpu->read_word(S2_LEVEL_TICK) != 0u;
 }
 
 void spyro2_skip_on_tick(CPUState* cpu, uint32_t frame_counter) {
