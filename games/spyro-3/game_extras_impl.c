@@ -11,6 +11,8 @@
 #include "spyro_overlay_table.h"
 #include "psyq_game_hooks.h"
 #include "skip_to_level.h"
+#include "openpete_log.h"
+#include "openpete_fiber.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -150,6 +152,38 @@ int psyq_game_cd_read_in_load(CPUState* cpu) {
     return 1;
 }
 uint32_t psyq_game_cd_read_delay_cap(void) { return 100u; }
+
+/* The checksum walk's verdict. Loading state 8 in func_8002CA50 (0x8002CD24)
+ * takes it once per level load: when the cursor 0x8006C6B8 has not reached
+ * 0x8007B6E4 or the CRC 0x8006C6B4 is not 0, a rand()-picked word of the
+ * table at 0x8002AB38 is zeroed and the game misbehaves later with no
+ * message; otherwise both words are cleared. Both conditions are readable at
+ * the walk's entry on the state-8 frame, so the verdict is logged there,
+ * once per load, before the game acts on it. A mismatch on the retail disc
+ * means the walk ran over the wrong bytes or too few frames (a load path the
+ * classifier above does not cover, or a load delay below the floor). */
+static void checksum_verdict(CPUState* cpu) {
+    static uint32_t s_last_state = 0;
+    uint32_t state = cpu->read_word(0x8006C518u);
+    if (state == 8u && s_last_state != 8u) {
+        uint32_t cursor = cpu->read_word(0x8006C6B8u);
+        uint32_t crc    = cpu->read_word(0x8006C6B4u);
+        if (cursor != 0x8007B6E4u || crc != 0u)
+            OPL_WARN_F("cd", "checksum walk failed: cursor 0x%08X (end 0x8007B6E4), "
+                       "crc 0x%08X (want 0) at vbl=%d; the game will poison a word "
+                       "of its table at 0x8002AB38",
+                       cursor, crc, SDL_GetAtomicInt(&openpete_vbl));
+        else
+            OPL_INFO_F("cd", "checksum walk passed (vbl=%d)",
+                       SDL_GetAtomicInt(&openpete_vbl));
+    }
+    s_last_state = state;
+}
+
+int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
+    if (addr == 0x8002CA50u) checksum_verdict(cpu);
+    return 0;
+}
 
 /* libcd is translated in this image, so CdReadCallback (func_8005DB08) stores the
  * read-completion handler here rather than in the thunk layer. */
