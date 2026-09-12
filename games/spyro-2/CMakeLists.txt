@@ -55,6 +55,7 @@ add_executable(openpete-spyro2
     main.cpp
     game_extras_impl.c
     feature_list.c
+    skip_to_level.c
     game_icon_none.c
     psyq_stub_runtime.c
 

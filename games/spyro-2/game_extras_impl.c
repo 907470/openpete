@@ -10,6 +10,7 @@
 #include "openpete_psx.h"
 #include "spyro_overlay_table.h"
 #include "psyq_game_hooks.h"
+#include "skip_to_level.h"
 
 #include <stddef.h>
 #include <stdint.h>
@@ -46,7 +47,9 @@ void game_on_boot(CPUState* cpu) { (void)cpu; }
 
 /* --- Per-tick hooks --- */
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
-    (void)cpu; (void)frame_counter;
+    /* --skip-to-level: drives the title's demo-timeout transition toward the
+     * target and holds the demo flag clear. Inert without the flag. */
+    spyro2_skip_on_tick(cpu, frame_counter);
 }
 void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
     (void)cpu; (void)frame_counter;
@@ -70,10 +73,10 @@ void game_on_state_loaded(CPUState* cpu) {
 /* The extra savestate payload is the shared thunk layer's latch pack
  * (games/common/psyq_thunk_state.c). */
 
-/* No gameplay-live probe yet: reporting "not live" keeps the in-memory
- * snapshot users (rewind keyframes, runahead) disabled rather than letting
- * them capture a state whose steadiness has not been established. */
-int game_is_gameplay_live(CPUState* cpu) { (void)cpu; return 0; }
+/* A level overlay resident with its state machine running (loader state -1).
+ * Title, loading and the exit transition report "not live", which keeps the
+ * in-memory snapshot users (rewind keyframes, runahead) out of them. */
+int game_is_gameplay_live(CPUState* cpu) { return spyro2_skip_gameplay_live(cpu); }
 
 /* The player struct is not localised for this game yet. Non-zero means "not
  * ready", which is what the position log expects before the struct exists. */
@@ -83,8 +86,8 @@ int game_get_player_position(int32_t* out_x, int32_t* out_y, int32_t* out_z) {
 }
 
 /* --- CLI --- */
-void game_set_skip_to_level(int level_id) { (void)level_id; }
-int  game_resolve_level_arg(const char* arg) { (void)arg; return -1; }
+void game_set_skip_to_level(int level_id) { spyro2_skip_set(level_id); }
+int  game_resolve_level_arg(const char* arg) { return spyro2_level_resolve(arg); }
 int  game_validate_cheats_arg(const char* spec) { (void)spec; return -1; }
 
 /* The recompiler carries a compiled-in substitution for a `lui 0x8007` +
