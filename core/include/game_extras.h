@@ -135,6 +135,17 @@ void game_set_skip_to_level(int level_id); /* 0 = disabled */
  * value, asking for the list). */
 int game_resolve_level_arg(const char* arg);
 
+/* --skip-to-cutscene: a target the game enters from a live level rather
+ * than through the title screen (Spyro 1: credits / credits_100). Called
+ * after game_set_skip_to_level, so the impl can default the level it
+ * enters from when no level skip is armed. 0 = disabled. */
+void game_set_skip_to_cutscene(int cutscene_id);
+
+/* Resolve a --skip-to-cutscene argument as game_resolve_level_arg does a
+ * level: the id, or -1 with the valid names printed (an empty arg asks
+ * for the list; a game without cutscene targets says so). */
+int game_resolve_cutscene_arg(const char* arg);
+
 /* Validate a --cheats spec ("99_lives,unlock_all_levels") against the game's
  * own built-in cheat codes. Returns 0 when every name is known, -1 otherwise
  * (impl prints the valid names to stderr — this runs in CLI-parse context, so

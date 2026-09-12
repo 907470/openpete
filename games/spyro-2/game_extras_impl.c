@@ -13,6 +13,7 @@
 #include "skip_to_level.h"
 
 #include <stddef.h>
+#include <stdio.h>
 #include <stdint.h>
 
 /* --- Identity --- */
@@ -92,6 +93,13 @@ int game_get_player_position(int32_t* out_x, int32_t* out_y, int32_t* out_z) {
 void game_set_skip_to_level(int level_id) { spyro2_skip_set(level_id); }
 int  game_resolve_level_arg(const char* arg) { return spyro2_level_resolve(arg); }
 int  game_validate_cheats_arg(const char* spec) { (void)spec; return -1; }
+/* No cutscene targets: every --skip-to-cutscene value is refused. */
+void game_set_skip_to_cutscene(int cutscene_id) { (void)cutscene_id; }
+int  game_resolve_cutscene_arg(const char* arg) {
+    (void)arg;
+    fprintf(stderr, "%s has no --skip-to-cutscene targets\n", game_get_display_name());
+    return -1;
+}
 
 /* The recompiler carries a compiled-in substitution for a `lui 0x8007` +
  * `addiu` pair composing into [0x8006FCF4, 0x80072E94), rewriting it to

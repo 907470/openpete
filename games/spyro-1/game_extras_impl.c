@@ -203,14 +203,6 @@ static int s_skip_applied     = 0;
 static uint32_t s_skip_ffwd_deadline = 0;
 
 void game_set_skip_to_level(int level_id) {
-    /* The credits are entered from a live level (features/credits_skip.c
-     * replays the "CREDITS" pad code on the first playable tick), so a
-     * credits target skips into Artisans first; the roll returns there. */
-    if (level_id == SPYRO1_LEVEL_CREDITS ||
-        level_id == SPYRO1_LEVEL_CREDITS_FULL) {
-        spyro1_credits_skip_arm(level_id == SPYRO1_LEVEL_CREDITS_FULL);
-        level_id = 10;
-    }
     s_skip_to_level = level_id;
     s_skip_applied  = 0;
     /* Fast-forward presents to the level for runtime warps exactly as for
@@ -227,6 +219,18 @@ void game_set_skip_to_level(int level_id) {
 /* The level id/name table lives with the dev-overlay warp feature
  * (features/levelwarp_native.c) so the dropdown and --skip-to-level
  * resolve against exactly one list. */
+/* The credits are entered from a live level (features/credits_skip.c
+ * replays the "CREDITS" pad code on the first playable tick), so a credits
+ * target rides a level skip: --skip-to-level's own target when armed, else
+ * Artisans. The roll returns to that level. */
+void game_set_skip_to_cutscene(int cutscene_id) {
+    if (cutscene_id != SPYRO1_CUTSCENE_CREDITS &&
+        cutscene_id != SPYRO1_CUTSCENE_CREDITS_FULL) return;
+    spyro1_credits_skip_arm(cutscene_id == SPYRO1_CUTSCENE_CREDITS_FULL);
+    if (s_skip_to_level <= 0) game_set_skip_to_level(10);
+}
+int game_resolve_cutscene_arg(const char* arg) { return spyro1_cutscene_resolve(arg); }
+
 int game_resolve_level_arg(const char* arg) {
     return spyro1_level_resolve(arg);
 }

@@ -821,6 +821,12 @@ typedef struct openpete_options {
      * the first DrawOTag), so this loads as fast as the EXE allows. */
     int skip_to_level;
 
+    /* --skip-to-cutscene C: a non-level target (Spyro 1: the credits rolls)
+     * the per-game impl enters from a live level; combined with
+     * --skip-to-level it enters from that level, else from the game's
+     * default. 0 = disabled. */
+    int skip_to_cutscene;
+
     /* --cheats a,b,...: comma-separated names of the game's OWN built-in
      * cheat codes to apply automatically, so the pad code never has to be
      * entered. The per-game feature module owns the name table and applies

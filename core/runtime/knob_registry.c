@@ -508,6 +508,7 @@ static int env_set_str(knob_desc_t *k, const char *v) {
 /* ---- Gameplay / debug ---- */
 
 static double skiplevel_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->skip_to_level : 0.0; }
+static double skipcutscene_get(const knob_desc_t *k) { (void)k; return g_opts ? (double)g_opts->skip_to_cutscene : 0.0; }
 
 static void cheats_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     (void)k;
@@ -848,6 +849,12 @@ static const knob_desc_t g_builtin[] = {
       "at boot.",
       KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 99,
       skiplevel_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "skip_to_cutscene", "Skip to cutscene", "Gameplay", "--skip-to-cutscene", NULL,
+      "Play a cutscene id from a live level (Spyro 1: 1 short credits, 2 "
+      "full credits). One-shot at boot.",
+      KNOB_INT, KNOB_RESTART_ONLY, NULL, 0, 0, 99,
+      skipcutscene_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "freecam", "Free camera", "Gameplay", NULL, "OPENPETE_FREECAM",
       "Debug free camera (same toggle as the F key / stick click). "
@@ -1495,6 +1502,8 @@ void knob_registry_init(const struct openpete_options *opts) {
             k->stored_num = opts->renderer;
         } else if (!strcmp(k->id, "skip_to_level")) {
             k->stored_num = opts->skip_to_level;
+        } else if (!strcmp(k->id, "skip_to_cutscene")) {
+            k->stored_num = opts->skip_to_cutscene;
         } else if (!strcmp(k->id, "log_format")) {
             k->stored_num = opts->log_format;
         } else if (!strcmp(k->id, "freecam") || !strcmp(k->id, "camlock")) {

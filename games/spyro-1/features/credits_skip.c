@@ -1,4 +1,4 @@
-// games/spyro-1/features/credits_skip.c — `--skip-to-level credits`.
+// games/spyro-1/features/credits_skip.c — `--skip-to-cutscene credits`.
 //
 // The game reaches its credits through InitCreditsSequence (0x8002D228),
 // which clears the framebuffer, kills sound, resets Spyro, sets
@@ -8,10 +8,10 @@
 // (func_800333DC, stage 99) reloads the level it was entered from; -1 there
 // sends the player to Gnorc Gnexus, or Artisans at 14000 gems.
 //
-// A credits skip is a normal --skip-to-level into Artisans (the skip
-// machinery in game_extras_impl.c owns the title-screen induction and the
-// progress/lives reset) followed by that exact cheat effect on the first
-// live tick: D_80075818 = g_LevelId, g_CreditsSequence for the full roll,
+// A credits skip is a normal --skip-to-level (the flag's own target, else
+// Artisans; the skip machinery in game_extras_impl.c owns the title-screen
+// induction and the progress/lives reset) followed by that exact cheat
+// effect on the first live tick: D_80075818 = g_LevelId, g_CreditsSequence for the full roll,
 // then InitCreditsSequence called in guest context. The call has to run
 // inside the game fiber (CDLoadSync yields on the CD), so it is made from a
 // dispatch hook on GamestateUpdate (0x8003385C), the first function main()
@@ -30,7 +30,11 @@
 #include "openpete_log.h"
 #include "psx_runtime_internal.h" /* CPUState + its read/write callbacks */
 
+#include <ctype.h>
 #include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
 
 #define ADDR_GAMESTATE_UPDATE     0x8003385Cu
 #define ADDR_INIT_CREDITS_SEQUENCE 0x8002D228u
@@ -45,6 +49,47 @@
 #define GS_PLAYING 0u
 
 void call_by_address(CPUState* cpu, uint32_t addr); /* psx_runtime.h */
+
+static const struct { const char* name; int id; } k_cutscenes[] = {
+    { "credits",      SPYRO1_CUTSCENE_CREDITS },
+    { "credits_100",  SPYRO1_CUTSCENE_CREDITS_FULL },
+    { "full_credits", SPYRO1_CUTSCENE_CREDITS_FULL },
+};
+#define CUTSCENE_COUNT (sizeof(k_cutscenes) / sizeof(k_cutscenes[0]))
+
+static void print_valid_names(void) {
+    size_t i;
+    fprintf(stderr, "valid cutscene names:\n");
+    for (i = 0; i < CUTSCENE_COUNT; i++)
+        fprintf(stderr, "  %-18s (%d)\n", k_cutscenes[i].name, k_cutscenes[i].id);
+}
+
+int spyro1_cutscene_resolve(const char* arg) {
+    size_t i, n;
+    char   norm[32];
+
+    if (!arg || !arg[0]) { print_valid_names(); return -1; }
+
+    for (i = 0; arg[i] && isdigit((unsigned char)arg[i]); i++) {}
+    if (!arg[i]) {
+        int id = atoi(arg);
+        for (i = 0; i < CUTSCENE_COUNT; i++)
+            if (k_cutscenes[i].id == id) return id;
+        print_valid_names();
+        return -1;
+    }
+
+    for (n = 0; arg[n] && n < sizeof(norm) - 1; n++) {
+        char c = (char)tolower((unsigned char)arg[n]);
+        norm[n] = (c == '-') ? '_' : c;
+    }
+    norm[n] = '\0';
+    for (i = 0; i < CUTSCENE_COUNT; i++)
+        if (strcmp(norm, k_cutscenes[i].name) == 0) return k_cutscenes[i].id;
+
+    print_valid_names();
+    return -1;
+}
 
 static int s_armed = 0;
 static int s_full  = 0;
@@ -83,7 +128,7 @@ static int on_gamestate_update(CPUState* cpu, uint32_t addr) {
     call_by_address(cpu, ADDR_INIT_CREDITS_SEQUENCE);
     cpu->ra = ra;
 
-    OPL_INFO_F("skip-to-level", "%s credits started from level %u; the "
+    OPL_INFO_F("skip-to-cutscene", "%s credits started from level %u; the "
                "roll returns there", s_full ? "full (100%)" : "short",
                (unsigned)level);
     return 0;

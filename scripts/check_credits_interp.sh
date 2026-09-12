@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # check_credits_interp.sh — sub-tick interpolation of the credits-roll
-# letters (--skip-to-level credits / credits_100, GS_Credits with
+# letters (--skip-to-cutscene credits / credits_100, GS_Credits with
 # g_CreditsStage < 99).
 #
 # The roll draws two kinds of HUD-pool billboard moby at once: a settled
@@ -59,7 +59,7 @@ CASES="credits:4208:0.28,0.40:0.42,0.58:4168:4230:11 credits_100:7488:0.26,0.40:
 run() {  # target leg out-flag out-name frame-list limit [env...]
     local target="$1" leg="$2" flag="$3" name="$4" frames="$5" lim="$6"; shift 6
     env "$@" timeout 600 "$BIN" --headless --no-config --disc "$DISC" \
-        --renderer vk --mute 1 --aspect 4:3 --skip-to-level "$target" --screenshot-native-only \
+        --renderer vk --mute 1 --aspect 4:3 --skip-to-cutscene "$target" --screenshot-native-only \
         --render-paths moby "$flag" "$frames" --screenshot-output "$WORK/${target}_${name}_{n}.png" \
         --frame-limit "$lim" >"$WORK/${target}_$leg.log" 2>&1
 }

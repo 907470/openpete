@@ -33,6 +33,7 @@ jq '.' /tmp/log.json | head -20
 | `--frame-limit N` | Exit after N VBLs. A tick is two VBLs. |
 | `--max-runtime-seconds N` | Wall-clock SIGTERM after N seconds. |
 | `--skip-to-level L` | Boot into level L — numeric id (10 = Artisans, 63 = Gnasty) or `lower_snake_case` name — instead of the attract demo. An unknown name prints the list. |
+| `--skip-to-cutscene C` | Play cutscene C from a live level (`--skip-to-level`'s target, else the game's default). Spyro 1: `credits` / `credits_100`, the short and the 100% roll; the roll returns to the level it started from. An unknown name prints the list. |
 | `--bk2 PATH` | Replay a BizHawk movie (Octoshock P1 pad) as input. The reproducible input source. |
 | `--screenshot-on-frame N[,N2...]` | Save an image at each listed VBL. `--screenshot-on-tick` keys on canonical draw-ticks instead, which hit the same sim moment run-to-run; the visual gates use the tick form. |
 | `--screenshot-output PATH` | Path template; `{n}` expands to the sim frame, `{p}` to the present index. A `.png` extension writes PNG, otherwise BMP. |

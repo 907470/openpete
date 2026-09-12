@@ -15,9 +15,10 @@ static const char *const v_renderer[] = { "psycross", "vk", NULL };
 static const char *const v_logfmt[]   = { "plain", "json", NULL };
 
 /* Ordered to mirror knob_registry.c's sections so the two read side by
- * side. `aspect`, `window` and `skip_to_level` are CFG_STRING because
- * their CLI vocabulary is a small language ("auto"/"16:9", "1920x1080",
- * a level id or a lower_snake_case name), validated by the flag parser
+ * side. `aspect`, `window`, `skip_to_level` and `skip_to_cutscene` are
+ * CFG_STRING because their CLI vocabulary is a small language
+ * ("auto"/"16:9", "1920x1080", a level or cutscene id or a
+ * lower_snake_case name), validated by the flag parser
  * that already owns those messages — re-implementing that here would put
  * the error text in two places. */
 static const cfg_knob_t g_schema[] = {
@@ -70,6 +71,7 @@ static const cfg_knob_t g_schema[] = {
 
     /* -------- Gameplay entry -------- */
     { "skip_to_level",    "--skip-to-level",    NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
+    { "skip_to_cutscene", "--skip-to-cutscene", NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "cheats",           "--cheats",           NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
     { "freecam",          NULL,                 "OPENPETE_FREECAM",      CFG_BOOL,   NULL,       NULL,       NULL,       0 },
     { "camlock",          NULL,                 "OPENPETE_CAMLOCK",      CFG_BOOL,   NULL,       NULL,       NULL,       0 },

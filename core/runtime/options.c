@@ -505,10 +505,13 @@ static void print_help(const char* display_name, const char* argv0,
         "                             look_axis_y = \"pad:-righty,mouse:-y\"; \"mouse:y\" inverts, \"none\" unbinds\n"
         "  --skip-to-level L          load directly into level L: the game's numeric level id or its\n"
         "                             lower_snake_case name; no value or an unknown name prints this\n"
-        "                             game's list. Spyro 1 also takes credits / credits_100 (the short\n"
-        "                             Gnasty-defeated / full 100%% credits, returning to Artisans).\n"
-        "                             Windowed runs fast-forward the logos/title/loading (black window,\n"
-        "                             audio muted) until the level is playable\n"
+        "                             game's list. Windowed runs fast-forward the logos/title/loading\n"
+        "                             (black window, audio muted) until the level is playable\n"
+        "  --skip-to-cutscene C       play cutscene C, entered from a live level: --skip-to-level's\n"
+        "                             target if given, else the game's default. No value or an unknown\n"
+        "                             name prints this game's list (Spyro 1: credits / credits_100, the\n"
+        "                             short Gnasty-defeated / full 100%% roll; the roll returns to the\n"
+        "                             level it started from)\n"
         "  --cheats A,B,...           apply the game's own built-in cheat codes without entering them on\n"
         "                             the pad: 99_lives, unlock_all_levels (an unknown name prints the\n"
         "                             list). Applied once a level is live, and again for each new session\n"
@@ -1250,6 +1253,18 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->skip_to_level = game_resolve_level_arg(v);
             if (opts->skip_to_level < 0) {
                 fprintf(stderr, "openpete: --skip-to-level: unknown level '%s'\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            i++;
+        } else if (strcmp(a, "--skip-to-cutscene") == 0) {
+            if (i + 1 >= argc || argv[i + 1][0] == '-') {
+                (void)game_resolve_cutscene_arg("");
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            v = argv[i + 1];
+            opts->skip_to_cutscene = game_resolve_cutscene_arg(v);
+            if (opts->skip_to_cutscene < 0) {
+                fprintf(stderr, "openpete: --skip-to-cutscene: unknown cutscene '%s'\n", v);
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
             i++;

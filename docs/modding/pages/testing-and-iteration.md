@@ -100,6 +100,7 @@ present.
 | `--mute 1`                       | Mute the audio device.                                                                                                                                                                  |
 | `--vibration 0`                  | Disables controller vibration. Silent under `--headless` and while the window is unfocused.                                                                                             |
 | `--skip-to-level L`              | Boot into level L, by numeric id (`11`) or name (`stone_hill`). An unknown name prints the list.                                                                                        |
+| `--skip-to-cutscene C`           | Play cutscene C from a live level: `credits` / `credits_100` (Spyro 1), entered from `--skip-to-level`'s target or Artisans. An unknown name prints the list.                            |
 | `--unlock-frames LIST`           | Fast-forward inside VBL ranges, e.g. `0-1756`. Windowed runs only: a headless run is already unlocked.                                                                                  |
 | `--screenshot-on-frame N[,N...]` | Capture at each listed VBL.                                                                                                                                                             |
 | `--screenshot-on-tick N[,N...]`  | Capture at each listed tick. Which VBL a tick lands on shifts with host timing, so tick-keyed captures are the reproducible ones.                                                       |

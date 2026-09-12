@@ -2403,6 +2403,7 @@ static int run_host_init(const openpete_options_t* opts) {
      * them when the relevant in-game globals are ready. The setter itself
      * arms the present fast-forward (openpete_skip_present_until_level). */
     game_set_skip_to_level(opts->skip_to_level);
+    game_set_skip_to_cutscene(opts->skip_to_cutscene);
     skip_mute_sync();
 
     /* Fast-boot gate is on by default (see fiber.c). psyq_DrawOTag clears it

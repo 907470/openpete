@@ -64,28 +64,29 @@ for game in "${GAMES[@]}"; do
     dir="$OUT/$game"
     rm -rf "$dir"; mkdir -p "$dir"
 
-    # Rows: "<skip name> <overlay name>" from the game's own level table; a
-    # game without the flag runs one plain boot.
+    # Rows: "<skip name> <overlay name> <flag>" from the game's own level
+    # table plus its cutscene table (credits: the short roll covers the
+    # overlay); a game without the flag runs one plain boot.
     rows="$dir/rows.txt"
     "$exe" --skip-to-level 2>&1 \
         | awk '/^  [a-z]/ { name=$1; n=$2; gsub(/[()]/, "", n); print name, n }' \
         > "$rows.raw" || true
     : > "$rows"
     while read -r name n; do
-        case "$name" in
-            credits) echo "$name credits" ;;
-            credits_100|full_credits) continue ;;
-            *) echo "$name level_$n" ;;
-        esac
+        echo "$name level_$n --skip-to-level"
     done < "$rows.raw" >> "$rows"
+    cutscenes="$("$exe" --skip-to-cutscene 2>&1 || true)"
+    if grep -q '^  credits ' <<< "$cutscenes"; then
+        echo "credits credits --skip-to-cutscene" >> "$rows"
+    fi
     if [[ ! -s "$rows" ]]; then
         echo "boot title" > "$rows"
     fi
 
     run_row() {
-        local name="$1" exe="$2" disc="$3" dir="$4" frames="$5"
+        local name="$1" exe="$2" disc="$3" dir="$4" frames="$5" flag="$6"
         local skip=()
-        [[ "$name" != "boot" ]] && skip=(--skip-to-level "$name")
+        [[ "$name" != "boot" ]] && skip=("$flag" "$name")
         [[ "$name" == "boot" ]] && frames="$OPENPETE_BOOT_FRAMES_RESOLVED"
         OPENPETE_DISPATCH_CENSUS="$dir/$name.census" \
         timeout 900 "$exe" --headless --no-card --mute 1 --vibration 0 \
@@ -94,7 +95,8 @@ for game in "${GAMES[@]}"; do
     }
     export -f run_row
     export OPENPETE_BOOT_FRAMES_RESOLVED="$BOOT_FRAMES"
-    cut -d' ' -f1 "$rows" | xargs -P "$JOBS" -I{} bash -c 'run_row "$@"' _ {} "$exe" "$disc" "$dir" "$FRAMES"
+    while read -r name _ flag; do echo "$name ${flag:---skip-to-level}"; done < "$rows" \
+        | xargs -P "$JOBS" -L1 bash -c 'run_row "$5" "$1" "$2" "$3" "$4" "$6"' _ "$exe" "$disc" "$dir" "$FRAMES"
 
     if ! python3 - "$game" "$dir" "$rows" <<'EOF'; then status=1; fi
 import re, sys
@@ -130,7 +132,7 @@ data_fed = 0
 for line in rows.read_text().split('\n'):
     if not line.strip():
         continue
-    name, target = line.split()
+    name, target = line.split()[:2]
     census = dir_ / f'{name}.census'
     if not census.exists():
         fails.append(f'{name}: no census written')

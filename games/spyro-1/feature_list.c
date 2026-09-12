@@ -104,10 +104,10 @@ const feature_module_t* const openpete_features[] = {
      * effects are written from game_on_frame_pre once a level is live —
      * see features/cheats_native.c). Inert without the flag. */
     &cheats_native_module,
-    /* --skip-to-level credits / credits_100: replays the "CREDITS" pad code
+    /* --skip-to-cutscene credits / credits_100: replays the "CREDITS" pad code
      * (InitCreditsSequence in guest context, from a GamestateUpdate entry
      * hook) on the first live tick of the level the skip lands in. Inert
-     * unless armed by game_set_skip_to_level. */
+     * unless armed by game_set_skip_to_cutscene. */
     &credits_skip_module,
     /* Dev-overlay level warp (M menu): a level dropdown + Jump button that
      * rides the game's own exit-level -> load sequence to any level, plus
