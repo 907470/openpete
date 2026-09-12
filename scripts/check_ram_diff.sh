@@ -71,7 +71,7 @@ case "$ANCHOR" in
 esac
 [[ -n "$PC" ]] || { echo "[ram-diff] SKIP: anchor '$ANCHOR' not named in $EXPECT" >&2; exit 64; }
 PC="$(printf '0x%08X' "$PC")"
-if [[ -n "$DISC_REL" ]]; then DISC="$ROOT/$DISC_REL"; else DISC="$ROOT/../roms/$DISC_ID/$DISC_ID.cue"; fi
+if [[ -n "$DISC_REL" ]]; then DISC="$ROOT/$DISC_REL"; else DISC="$ROOT/games/$GAME/$GAME/build/$DISC_ID.cue"; fi
 DISC="${OPENPETE_DISC:-$DISC}"
 [[ -f "$DISC" ]] || { echo "[ram-diff] SKIP: disc missing: $DISC" >&2; exit 64; }
 

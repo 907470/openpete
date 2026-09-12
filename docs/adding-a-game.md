@@ -160,7 +160,7 @@ every vaddr through the recompiler; every release preset sets it ON, e.g.
 
 These are not parameterized by game and must be generalized or copied:
 
-- `scripts/setup.sh` — hardcodes the SCUS-94228 disc SHA256 and the
+- `scripts/setup.sh` — hardcodes the SCUS-94228 rebuilt-disc path and the
   `games/spyro-1/spyro-1` submodule path.
 - `scripts/regen-manifest.sh` — hardcoded `MANIFEST_DIR`/`GENERATED_DIR`
   under `games/spyro-1/`; defaults `PSX_MAP` to the sibling checkout

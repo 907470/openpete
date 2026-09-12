@@ -17,9 +17,11 @@
 set -uo pipefail
 
 OPENPETE_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-# Dev default, relative to the repo (override with OPENPETE_DISC).
-DISC_BIN_DEFAULT="$OPENPETE_ROOT/../roms/SCUS-94228/SCUS-94228.bin"
-EXPECTED_SHA256="fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37"
+# Dev default: the disc rebuilt from the decomp output (override with
+# OPENPETE_DISC). The rebuild is not byte-identical to the Redump image, so it
+# is checked for presence only; the Redump SHA256 is enforced at ingest by
+# games/spyro-1/disc_library.cpp.
+DISC_BIN_DEFAULT="$OPENPETE_ROOT/games/spyro-1/spyro-1/build/SCUS-94228.bin"
 
 DISC_BIN="${OPENPETE_DISC:-$DISC_BIN_DEFAULT}"
 
@@ -32,18 +34,11 @@ errs=0
 echo "==> Disc image"
 if [[ ! -f "$DISC_BIN" ]]; then
     red "  missing: $DISC_BIN"
-    red "  override with OPENPETE_DISC=/path/to/SCUS-94228.bin"
+    red "  build it with build-iso.sh, or override with"
+    red "  OPENPETE_DISC=/path/to/SCUS-94228.bin"
     errs=$((errs+1))
 else
-    actual=$(sha256sum "$DISC_BIN" | awk '{print $1}')
-    if [[ "$actual" == "$EXPECTED_SHA256" ]]; then
-        green "  ok: $DISC_BIN ($actual)"
-    else
-        red   "  sha256 mismatch:"
-        red   "    expected: $EXPECTED_SHA256"
-        red   "    actual:   $actual"
-        errs=$((errs+1))
-    fi
+    green "  ok: $DISC_BIN"
 fi
 
 echo

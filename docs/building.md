@@ -79,7 +79,7 @@ preset, including the `*-shared` distribution ones.
 
    This step is independent of OpenPete and may take longer than the
    OpenPete build itself. `scripts/setup.sh` checks for its outputs, for
-   the initialized submodules, and for the reference disc's SHA-256.
+   the initialized submodules, and for the rebuilt disc.
 
 2. Build the recompiler, then run it over the EXE and every overlay.
 

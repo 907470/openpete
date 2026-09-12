@@ -46,9 +46,9 @@ OUT="${OPENPETE_CALLBACK_OUT:-$BUILD/overlay-callbacks}"
 
 disc_for() {
     case "$1" in
-        spyro-1) echo "${OPENPETE_DISC_SPYRO1:-../roms/SCUS-94228/SCUS-94228.cue}" ;;
-        spyro-2) echo "${OPENPETE_DISC_SPYRO2:-../roms/SCUS-94425/SCUS-94425.cue}" ;;
-        spyro-3) echo "${OPENPETE_DISC_SPYRO3:-../roms/SCUS-94467/SCUS-94467.cue}" ;;
+        spyro-1) echo "${OPENPETE_DISC_SPYRO1:-games/spyro-1/spyro-1/build/SCUS-94228.cue}" ;;
+        spyro-2) echo "${OPENPETE_DISC_SPYRO2:-games/spyro-2/spyro-2/build/SCUS-94425.cue}" ;;
+        spyro-3) echo "${OPENPETE_DISC_SPYRO3:-games/spyro-3/spyro-3/build/SCUS-94467.cue}" ;;
     esac
 }
 
