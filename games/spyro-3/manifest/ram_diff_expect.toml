@@ -27,8 +27,9 @@ fast_boot = true
 # first: entry of the function issuing the game's first CdRead
 # (ra 0x80050650); no load has been issued on either side at hit 1.
 first = 0x80050578
-# loop: not yet named (bring-up P19b); the game does not leave its title
-# overlay until P10 lands.
+# loop: func_80055400, the first call of each main-loop iteration in
+# func_8001200C (init, then { func_80055400; func_8001E638 } forever).
+loop  = 0x80055400
 
 # psyq_internal ratchet: differing bytes, ranges, a digest of the differing
 # offsets and the hit, measured inside the PSYQ extents when this file was

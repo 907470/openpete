@@ -28,7 +28,9 @@ fast_boot = true
 # first: entry of the function issuing the game's first CdRead
 # (ra 0x800138E8); no load has been issued on either side at hit 1.
 first = 0x80013810
-# loop: not yet named (bring-up P19b).
+# loop: func_8001B140, the first call of each main-loop iteration in
+# func_80011ADC (init, then { func_8001B140; func_800156FC } forever).
+loop  = 0x8001B140
 
 # psyq_internal ratchet: differing bytes, ranges, a digest of the differing
 # offsets and the hit, measured inside the PSYQ extents when this file was
@@ -37,6 +39,7 @@ first = 0x80013810
 # hex-spelled anchor needs its own row, keyed by that spelling.
 [psyq_internal_baseline]
 first = { bytes = 218, ranges = 27, digest = "c2ed1340c38578e1", hit = 1 }
+loop  = { bytes = 1275, ranges = 88, digest = "b5ab5081ea39632e", hit = 1700 }
 
 [bios_stack]
 low = 0x801FFB50
@@ -57,3 +60,35 @@ start  = 0x8006B580
 length = 0x1CE4
 source = "psx.map:7552 .bss psyq.bss.o"
 
+# Named ranges at the loop anchor.
+[[expect]]
+class  = "vbl_count"
+start  = 0x80066F9C
+end    = 0x80066FA4
+name   = "D_80066F9C, D_80066FA0 (VBL counters, draw/func_800156FC)"
+reason = "advance per VBL; hardware spends the load's wall time in VBLs that openpete's synchronous CdRead does not"
+owner  = "openpete-psx-oracle-ci"
+
+[[expect]]
+class  = "pad_model"
+start  = 0x8006A960
+end    = 0x8006A964
+name   = "D_8006A960 (stick centre bytes, pad/func_800121B0)"
+reason = "the analog pad answers 0x80 per axis; openpete's pad model answers 0x7F"
+owner  = "P16"
+
+[[expect]]
+class  = "pad_model"
+start  = 0x8006AB4C
+end    = 0x8006AB54
+name   = "D_8006AB4C (pad receive words, init.c)"
+reason = "the analog pad's poll answer; openpete's pad model answers a digital poll"
+owner  = "P16"
+
+[[expect]]
+class  = "stack_residue"
+start  = 0x801FF900
+end    = 0x801FFB50
+name   = "dead stack frames below the loop anchor's stack pointer"
+reason = "hardware's interrupt dispatch and callback frames land here; openpete's callbacks run from the VBL pump"
+owner  = "openpete-guest-interrupt-delivery"
