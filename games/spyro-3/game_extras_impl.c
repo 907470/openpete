@@ -119,16 +119,35 @@ uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
 uint32_t psyq_game_overlay_vaddr(void) { return 0x800742D0u; }
 
 /* A read belongs to a level load while the loading overlay's state machine
- * (entry 0x8007494C, state word 0x8006C518) is in states 2..7, the window
- * the EXE's checksum walk runs in; those reads are issued through the
- * asynchronous path (func_80050680) and polled from the main loop by
- * func_80050400. State 0 reads the loading overlay itself and states below
- * 2 belong to no load, so each pass through the loader opens a new budget.
+ * (entry 0x8007494C, state word loadStage 0x8006C518) is in states 2..7, the
+ * window the EXE's checksum walk (func_8002CA50) runs in; those reads are
+ * issued through the asynchronous path (func_80050680) and polled from the
+ * main loop by func_80050400. State 0 reads the loading overlay itself and
+ * states below 2 belong to no load, so each pass through the loader opens a
+ * new budget.
+ *
+ * The walk hashes only on frames a read is in flight, so the budget must be
+ * spent on reads the walk observes. Entering a level through a portal
+ * (game.state 0x8006E344 == GAMESTATE_LOADING_GLIDE, 7) runs the overlay's
+ * loading-image sequence (func_loading_80076538) on pauseData sub-state
+ * 0x8006FBC8: sub-state 2 fetches the loading image (the read issued at
+ * 0x8007665C, flagged in D_8007232C) and polls it to completion without
+ * calling the walk; the state machine's own reads start in sub-state 3, where
+ * the walk runs every frame. A budget spent on the image fetch leaves the walk
+ * with no read in flight, the cursor never reaches its end, and the overlay's
+ * final `while (loadStage < 8) func_8002CA50()` spin (0x80076D98), which never
+ * calls VSync, hangs. The image fetch is therefore classified as not in load.
+ * The title path (GAMESTATE_LOADING_IMG, 5) reads its image synchronously
+ * through func_80050578 before the state machine starts and is unaffected.
+ *
  * The cap keeps every deferred read under the loader's shortest retry
  * timeout, 121 VBLs for a one-sector read. */
 int psyq_game_cd_read_in_load(CPUState* cpu) {
     uint32_t state = cpu->read_word(0x8006C518u);
-    return state >= 2u && state <= 7u;
+    if (state < 2u || state > 7u) return 0;
+    if (cpu->read_word(0x8006E344u) == 7u && cpu->read_word(0x8006FBC8u) == 2u)
+        return 0;
+    return 1;
 }
 uint32_t psyq_game_cd_read_delay_cap(void) { return 100u; }
 
