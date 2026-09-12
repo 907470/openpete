@@ -772,7 +772,10 @@ void psyq_SetDrawMode(CPUState* cpu) {
     SetDrawMode(&tmp, (int)cpu->a1, (int)cpu->a2, (int)cpu->a3,
                 (RECT16*)PTR(cpu->read_word(cpu->sp + 0x10)));
     uint32_t p = cpu->a0;
-    cpu->write_byte(p + 3, (uint8_t)getlen(&tmp));  /* PSX tag len (high byte) */
+    /* libgpu's SetDrawMode stores a length of 2 (the E1 and E2 words);
+     * PsyCross's setDrawMode macro stores 3, which the OT walk would send
+     * as a third command word. */
+    cpu->write_byte(p + 3, 2u);                     /* PSX tag len (high byte) */
     cpu->write_word(p + 4, (uint32_t)tmp.code[0]);  /* code[0] = draw mode */
     cpu->write_word(p + 8, (uint32_t)tmp.code[1]);  /* code[1] = tex window */
 }
