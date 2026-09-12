@@ -35,9 +35,10 @@ uint32_t game_get_pad_read_pc(void) { return 0u; }
  * its end before it hands over to the level. With reads completing inside
  * the frame that issued them the walk never starts. The first read of a
  * load is one sector, whose retry timeout is 121 VBLs (sectors + 120, at
- * func_80050400), so the per-read cap stays under it; 90 VBLs on that read
- * gives the walk 45 frames. */
-uint32_t game_get_load_delay_default(void) { return 90u; }
+ * func_80050400), so the per-read cap stays under it. 66 VBLs on that read
+ * is the measured floor: 64 leaves the loader in state 7, 66 loads every
+ * demo level. */
+uint32_t game_get_load_delay_default(void) { return 66u; }
 
 /* --- Memory layout --- */
 uint32_t game_get_ram_size(void)              { return 2u * 1024u * 1024u; }
