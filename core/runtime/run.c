@@ -2008,6 +2008,22 @@ static int run_host_init(const openpete_options_t* opts) {
     extern int g_psyx_audioCaptureMode;
     g_psyx_audioCaptureMode =
         (opts->record_path && !opts->record_no_audio) ? 1 : 0;
+    /* OPENPETE_AUDIO_DUMP=PATH: the same loopback capture, drained into a raw
+     * s16 stereo 44.1 kHz file every VSync (psyq_VSync), so a headless run
+     * yields the mixed SPU output as a measurable signal. The recorder owns
+     * the capture ring when both are asked for. */
+    {
+        const char* dump = getenv("OPENPETE_AUDIO_DUMP");
+        if (dump && *dump) {
+            if (opts->record_path) {
+                OPL_WARN_F("audio", "OPENPETE_AUDIO_DUMP ignored: --record owns the capture ring");
+            } else {
+                extern int openpete_audio_dump_armed;
+                openpete_audio_dump_armed = 1;
+                g_psyx_audioCaptureMode = 1;
+            }
+        }
+    }
 
     /* --psycross-native-raster: size the reference renderer's present FBO to
      * the console display grid instead of the window. Read per scene begin, so

@@ -123,8 +123,9 @@ extern int g_cdXaStartVBL;
  * 5 = virtual XA music-head anchor joined the CD section. */
 /* 6 = arena section v2: high-arena ledger + the arena's used bytes.
  * 7 = arena section v3: one ledger with allocation + stream-handle rows;
- *     the low-park ledger is gone with the low allocator. */
-#define OPENPETE_STATE_ABI 7u
+ *     the low-park ledger is gone with the low allocator.
+ * 8 = SPUALVoiceState carries the voice head (consumed_dec_fp). */
+#define OPENPETE_STATE_ABI 8u
 
 /* Just the register file — the function-pointer tail of CPUState is
  * runtime-only, must not be saved or restored. */

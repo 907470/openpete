@@ -46,7 +46,59 @@ extern "C" {
 #include "psx/libcd.h"
 #include "psx/libpad.h"
 #include "psx/libspu.h"
+#include <dirent.h>
 extern "C" void PsyX_SPUAL_TickEnvelope(int samples);
+extern "C" int  PsyX_SPUAL_CaptureDrain(int16_t* out, int max_frames);
+extern "C" unsigned int PsyX_SPUAL_ResyncCount(void);
+extern "C" unsigned int PsyX_SPUAL_LastWriteResyncMask(void);
+extern "C" unsigned int PsyX_SPUAL_LastResyncMicros(void);
+extern "C" unsigned int PsyX_SPUAL_HeadBoundBreaks(void);
+extern "C" void PsyX_SPUAL_CaptureStats(unsigned long long* produced, unsigned long long* dropped);
+
+/* OPENPETE_AUDIO_DUMP: set by the host when the env var names a file and no
+ * recorder owns the capture ring; every VSync drains the ring into it. */
+int openpete_audio_dump_armed = 0;
+static void audio_dump_drain(void) {
+    static FILE* f = NULL;
+    static int tried = 0;
+    if (!openpete_audio_dump_armed) return;
+    if (!f) {
+        if (tried) return;
+        tried = 1;
+        const char* path = getenv("OPENPETE_AUDIO_DUMP");
+        f = path ? fopen(path, "wb") : NULL;
+        if (!f) { OPL_WARN_F("audio", "OPENPETE_AUDIO_DUMP: cannot open %s", path ? path : "(null)"); return; }
+        /* The ring holds every frame rendered since SpuInit: sample 0 of the
+         * file is the VBL that many frames before this one (735 per VBL). */
+        OPL_INFO_F("audio", "dump: %s (s16 stereo 44100) vbl_now=%d",
+                   path, SDL_GetAtomicInt(&openpete_vbl));
+    }
+    int16_t buf[4096 * 2];
+    int n;
+    static unsigned long long total = 0;
+    static int first = 1;
+    while ((n = PsyX_SPUAL_CaptureDrain(buf, 4096)) > 0) {
+        fwrite(buf, sizeof(int16_t) * 2, (size_t)n, f);
+        total += (unsigned long long)n;
+        if (n < 4096) break;
+    }
+    if (first && total > 0) {
+        first = 0;
+        OPL_INFO_F("audio", "dump: first drain %llu frames at vbl %d: sample 0 is vbl %.3f",
+                   total, SDL_GetAtomicInt(&openpete_vbl),
+                   (double)SDL_GetAtomicInt(&openpete_vbl) - (double)total / 735.0);
+    }
+    /* A frame the ring dropped before this drain is a hole in the file:
+     * every later sample is early by it. */
+    unsigned long long produced = 0, dropped = 0;
+    PsyX_SPUAL_CaptureStats(&produced, &dropped);
+    static unsigned long long reported = 0;
+    if (dropped != reported) {
+        reported = dropped;
+        OPL_ERROR_F("audio", "dump: capture ring dropped %llu frames; the file is not a timeline", dropped);
+    }
+    fflush(f);
+}
 
 /* Saved-OT capture: each psyq_DrawOTag rebuilds the PSX OT chain into a
  * host scratch buffer (PsyCross P_TAG slots, guest->host translated)
@@ -311,6 +363,7 @@ void psyq_VSync(CPUState* cpu) {
      * envelope sim is independent of the OpenAL playback path, so this
      * is correct in both audio-on and headless runs. */
     PsyX_SPUAL_TickEnvelope(wait * 735);
+    audio_dump_drain();
 
     if (openpete_fast_boot_active) {
         /* Fast-boot: don't yield to the host, so the boot spins run at full
@@ -1525,9 +1578,10 @@ static void start_music_stream(int sector) {
 
 static void cd_exit_summary(void) {
     OPL_INFO_F("music", "summary: stream_starts=%u mode_rt_cleared=%u "
-               "reads_rt_clear=%u",
+               "reads_rt_clear=%u spu_resyncs=%u spu_head_bound_breaks=%u",
                s_cnt_stream_starts, s_cnt_mode_rt_cleared,
-               s_cnt_reads_rt_clear);
+               s_cnt_reads_rt_clear, PsyX_SPUAL_ResyncCount(),
+               PsyX_SPUAL_HeadBoundBreaks());
 }
 
 /* The drive's mode byte, written by CdlSetmode on any entry and by the mode
@@ -2030,6 +2084,10 @@ void psyq_SpuGetVoiceVolume(CPUState* cpu) {
 
 void psyq_SpuSetKey(CPUState* cpu) {
     SpuSetKey((int)cpu->a0, (unsigned int)cpu->a1);
+    if (sfx_key_log_on())
+        fprintf(stderr, "[spu-key f=%u vbl=%d on=%d mask=%#x ra=%#x]\n",
+                openpete_frame, SDL_GetAtomicInt(&openpete_vbl), (int)cpu->a0,
+                cpu->a1, cpu->ra);
 }
 
 /* OPENPETE_SFX_END_LOG=1: one line per voice key-status transition the
@@ -2059,6 +2117,10 @@ void psyq_SpuGetAllKeysStatus(CPUState* cpu) {
 
 void psyq_SpuRead(CPUState* cpu) {
     cpu->v0 = SpuRead((unsigned char*)PTR(cpu->a0), (unsigned int)cpu->a1);
+    if (sfx_key_log_on())
+        fprintf(stderr, "[spu-read f=%u spu=%#x dst=%#x len=%#x ra=%#x]\n",
+                openpete_frame, s_spu_xfer_addr, cpu->a0, cpu->a1, cpu->ra);
+    s_spu_xfer_addr += (unsigned int)cpu->a1;
 }
 
 void psyq_SpuWrite(CPUState* cpu) {
@@ -2076,6 +2138,50 @@ void psyq_SpuWrite(CPUState* cpu) {
         sfx_pack_invalidate_range(s_spu_xfer_addr, len);
     }
     cpu->v0 = SpuWrite((unsigned char*)PTR(cpu->a0), len);
+    if (sfx_key_log_on()) {
+        fprintf(stderr, "[spu-write f=%u vbl=%d spu=%#x src=%#x len=%#x ra=%#x]\n",
+                openpete_frame, SDL_GetAtomicInt(&openpete_vbl), s_spu_xfer_addr,
+                cpu->a0, len, cpu->ra);
+        unsigned int mask = PsyX_SPUAL_LastWriteResyncMask();
+        if (mask)
+            fprintf(stderr, "[spu-resync f=%u mask=%#x gap_us=%u]\n", openpete_frame,
+                    mask, PsyX_SPUAL_LastResyncMicros());
+    }
+    /* OPENPETE_SPU_WRITE_DUMP=DIR: every payload as DIR/<vbl>_<spu addr>.bin,
+     * the input of tools/audio_ring_check.py. */
+    {
+        static const char* dir = NULL;
+        static int tried = 0;
+        if (!tried) {
+            tried = 1;
+            dir = getenv("OPENPETE_SPU_WRITE_DUMP");
+            if (dir && !*dir) dir = NULL;
+            /* The directory holds this run's payloads only: an earlier run's
+             * files would be read as chunks this run never wrote. */
+            if (dir) {
+                DIR* d = opendir(dir);
+                if (d) {
+                    struct dirent* e;
+                    while ((e = readdir(d)) != NULL) {
+                        size_t n = strlen(e->d_name);
+                        if (n > 4 && strcmp(e->d_name + n - 4, ".bin") == 0) {
+                            char old[1024];
+                            snprintf(old, sizeof old, "%s/%s", dir, e->d_name);
+                            remove(old);
+                        }
+                    }
+                    closedir(d);
+                }
+            }
+        }
+        if (dir) {
+            char path[1024];
+            snprintf(path, sizeof path, "%s/%08d_%06x.bin", dir,
+                     SDL_GetAtomicInt(&openpete_vbl), s_spu_xfer_addr);
+            FILE* f = fopen(path, "wb");
+            if (f) { fwrite(PTR(cpu->a0), 1, len, f); fclose(f); }
+        }
+    }
     s_spu_xfer_addr += len;
 }
 
