@@ -4,7 +4,7 @@
 // window title + future disc validation. Memory layout, overlays, and
 // runtime quirks are TODO until Phase 1b.
 //
-// Disc image: <spyro>/roms/SCUS-94228/SCUS-94228.cue
+// Disc image: games/spyro-1/spyro-1/build/SCUS-94228.cue
 // Disc BIN SHA256: fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37
 // PSX EXE: SCUS_942.28 (CRC32 over full header+body)
 

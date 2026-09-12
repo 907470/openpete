@@ -21,7 +21,7 @@
 #       [--anchor-pc 0x8001ED5C] [--hit 1] [--bk2 path/to/movie.bk2]
 #
 # Required env / inferred:
-#   OPENPETE_DISC    disc image (default $HOME/code/spyro/spyro-1/build/SCUS-94228.cue)
+#   OPENPETE_DISC    disc image (default games/spyro-1/spyro-1/build/SCUS-94228.cue)
 #   OPENPETE_BIN     openpete built binary (only used to locate gen/regions.lua)
 #   OPENPETE_BUILD   openpete CMake build dir (default build/linux-release)
 #
@@ -55,7 +55,7 @@ if [[ -z "$OUT" ]]; then
     echo "[capture] --out required" >&2; exit 64
 fi
 
-DISC="${OPENPETE_DISC:-$HOME/code/spyro/spyro-1/build/SCUS-94228.cue}"
+DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
 BUILD="${OPENPETE_BUILD:-build/linux-release}"
 REGIONS="$BUILD/games/spyro-1/gen/openpete_state_regions.gen.lua"
 PCSXR=".tools/pcsx-redux/pcsx-redux"

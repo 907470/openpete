@@ -38,7 +38,7 @@ done
 [[ -n "$OUT" ]] || { echo "[capture-ds] --out required" >&2; exit 64; }
 
 DS_BIN="third_party/duckstation/build-regtest/bin/duckstation-regtest"
-DISC="${OPENPETE_DISC:-$HOME/code/spyro/spyro-1/build/SCUS-94228.cue}"
+DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
 
 if [[ ! -x "$DS_BIN" ]]; then
     echo "[capture-ds] binary missing: $DS_BIN" >&2
