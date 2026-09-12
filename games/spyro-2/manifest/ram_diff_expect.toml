@@ -57,13 +57,3 @@ start  = 0x8006B580
 length = 0x1CE4
 source = "psx.map:7552 .bss psyq.bss.o"
 
-# DRAWENV.dr_env: the DR_ENV packet libgpu's PutDrawEnv builds inside the
-# game's own DRAWENV (offset 0x1C, 64 bytes); the thunk layer does not
-# write it. A shared-layer mirror gap, found by this instrument.
-[[expect]]
-class  = "psyq_mirror_gap"
-start  = 0x800699B8
-end    = 0x800699F8
-name   = "DRAWENV.dr_env at 0x8006999C (D_800699B7+1)"
-reason = "PutDrawEnv's packed DR_ENV, not written by the thunk"
-owner  = "P21"

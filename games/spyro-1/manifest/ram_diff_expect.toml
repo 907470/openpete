@@ -238,24 +238,6 @@ length = 0x4
 name   = "psyq_hooks.cpp write_word"
 
 # Named ranges: game state the two sides fill differently for a known reason.
-# DRAWENV.dr_env: the DR_ENV packet libgpu's PutDrawEnv builds inside the
-# game's own DRAWENV (offset 0x1C, 64 bytes); the thunk layer does not
-# write it. A shared-layer mirror gap, found by this instrument.
-[[expect]]
-class  = "psyq_mirror_gap"
-start  = 0x80076EFC
-end    = 0x80076F3C
-name   = "g_DB[0].draw.dr_env"
-reason = "PutDrawEnv's packed DR_ENV, not written by the thunk"
-owner  = "P21"
-
-[[expect]]
-class  = "psyq_mirror_gap"
-start  = 0x80076F80
-end    = 0x80076FC0
-name   = "g_DB[1].draw.dr_env"
-reason = "PutDrawEnv's packed DR_ENV, not written by the thunk"
-owner  = "P21"
 
 [[expect]]
 class  = "pad_model"

@@ -614,8 +614,42 @@ void psyq_PutDispEnv(CPUState* cpu) {
     psyq_mirror_stack_frame(cpu, PSYQ_FRAME_PUTDISPENV);
 }
 
+/* libgpu's PutDrawEnv packs the environment into env->dr_env before sending
+ * it, and the packet stays in the caller's struct: a tag of 6 words, or 9
+ * with the clear primitive when isbg is set, then E3 (draw area top-left),
+ * E4 (bottom-right), E5 (offset), E1 (texture page, dither, draw-on-display),
+ * E2 (texture window), E6 (mask), and the clear's colour, position and size.
+ * PsyCross's PutDrawEnv copies the struct to a host variable and writes no
+ * packet, so it is built here from the same fields, into guest RAM. */
+static void psyq_pack_draw_env(DRAWENV* env) {
+    uint32_t code[9];
+    int n = 0;
+    const int x1 = env->clip.x + env->clip.w - 1;
+    const int y1 = env->clip.y + env->clip.h - 1;
+    code[n++] = 0xE3000000u | ((uint32_t)(env->clip.y & 0x3FF) << 10) | (uint32_t)(env->clip.x & 0x3FF);
+    code[n++] = 0xE4000000u | ((uint32_t)(y1 & 0x3FF) << 10) | (uint32_t)(x1 & 0x3FF);
+    code[n++] = 0xE5000000u | ((uint32_t)(env->ofs[1] & 0x7FF) << 11) | (uint32_t)(env->ofs[0] & 0x7FF);
+    code[n++] = 0xE1000000u | (uint32_t)(env->tpage & 0x9FF) | ((uint32_t)(env->dtd & 1) << 9)
+              | ((uint32_t)(env->dfe & 1) << 10);
+    code[n++] = 0xE2000000u | ((uint32_t)((env->tw.y >> 3) & 0x1F) << 15)
+              | ((uint32_t)((env->tw.x >> 3) & 0x1F) << 10)
+              | ((uint32_t)(((-env->tw.h) >> 3) & 0x1F) << 5)
+              | (uint32_t)(((-env->tw.w) >> 3) & 0x1F);
+    code[n++] = 0xE6000000u;
+    if (env->isbg) {
+        code[n++] = 0x02000000u | ((uint32_t)env->b0 << 16) | ((uint32_t)env->g0 << 8) | env->r0;
+        code[n++] = ((uint32_t)(env->clip.y & 0xFFFF) << 16) | (uint32_t)(env->clip.x & 0xFFFF);
+        code[n++] = ((uint32_t)(env->clip.h & 0xFFFF) << 16) | (uint32_t)(env->clip.w & 0xFFFF);
+    }
+    const uint32_t tag = 0x00FFFFFFu | ((uint32_t)n << 24);
+    uint8_t* p = (uint8_t*)&env->dr_env;
+    memcpy(p, &tag, 4);
+    for (int i = 0; i < n; i++) memcpy(p + 4 + 4 * i, &code[i], 4);
+}
+
 void psyq_PutDrawEnv(CPUState* cpu) {
     DRAWENV* env = (DRAWENV*)PTR(cpu->a0);
+    psyq_pack_draw_env(env);
     PutDrawEnv(env);
     openpete_native_set_draw_clip(env->clip.x, env->clip.y, env->clip.w, env->clip.h);
     /* The actually-cleared framebuffer background = the gamestate draw-env clear
