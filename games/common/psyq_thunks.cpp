@@ -1444,7 +1444,7 @@ void psyq_DrawOTag(CPUState* cpu) {
     s_hist_calls++;
     if (openpete_frame >= s_last_dump + 60u) {
         s_last_dump = openpete_frame;
-        OPL_INFO_F("thunks",
+        OPL_DEBUG_F("thunks",
                    "DrawOTag@f%u calls=%u prims=%u anchors=%u hist "
                    "0x:%u 1x:%u 2x:%u 3x:%u 4x:%u 5x:%u 6x:%u 7x:%u "
                    "8x:%u 9x:%u Ax:%u Bx:%u Cx:%u Dx:%u Ex:%u Fx:%u",
@@ -1820,7 +1820,7 @@ void psyq_CdControlB(CPUState* cpu) {
 void psyq_CdControlF(CPUState* cpu) {
     u_char com = (u_char)cpu->a0;
     u_char* param = (u_char*)PTR_OPT(cpu->a1);
-    OPL_INFO_F("thunks", "CdControlF com=0x%02X param=0x%08X",
+    OPL_DEBUG_F("thunks", "CdControlF com=0x%02X param=0x%08X",
                (unsigned)com, cpu->a1);
     /* PsyCross's CdControlF treats CdlGetlocP as "the caller is starting
      * CDDA/XA streaming" and flips readMode to RM_XA_AUDIO. Spyro's music
