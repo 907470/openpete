@@ -96,28 +96,26 @@ extern "C" void psyq_game_mirror_resetgraph(CPUState* cpu, int mode) {
         }
     }
 
-    /* func_80061DEC effects (called by ResetGraph): three word writes plus
-     * the BIOS-side gpu-type cache. Hardcoded results for NTSC mode 0:
-     * func_8005DF44 returns 0 ((sub==0 || sub==3 || sub==5) only). */
-    cpu->write_word(0x80074B6Cu, 0u);
-    cpu->write_word(0x80074B68u, 0u);
+    /* func_80061DEC (called by ResetGraph) also zeroes the callback ring's
+     * head and tail at 0x80074B68/6C; they are zero from BSS already and
+     * advance with hardware's interrupt dispatch afterwards, so they are
+     * not written here. */
 
-    /* Post-ResetGraph snapshot from pcsx-redux RAM at MemoryCardInit halt.
-     * 60 EXE bytes scattered across libgpu's vtable / dispatch / GPU command
-     * scratch areas. Real PSYQ libgpu writes these via a chain of helpers
-     * (`func_8005DDC8` -> *(D_800749AC)+0xC, `func_8005DF60` walks the
-     * 0x80073924 control struct, `func_80061DEC` updates the helper-table
-     * trio at 0x80074B68/6C/78, and the 0x80075978 region holds queued GP0
-     * env packets). openpete uses PsyCross stubs and never enters those
-     * helpers, so we replay the observed post-init values directly. NTSC
-     * mode 0; values verified against pcsx-redux dumps (gp=0x80075264,
-     * sp=0x801FFFF8 at boot). */
+    /* The post-ResetGraph state of libgpu's control structures, as the
+     * SCPH-1001 BIOS leaves them: libgpu writes these through helpers that
+     * reach the BIOS jump tables (`func_8005DDC8` -> *(D_800749AC)+0xC,
+     * `func_8005DF60` walks the 0x80073924 control struct, `func_80061DEC`
+     * updates the trio at 0x80074B68/6C/78), so the values are replayed. NTSC
+     * mode 0, gp=0x80075264, sp=0x801FFFF8 at boot. Not written here: the
+     * interrupt-dispatch context at 0x80074B58 (handler, sp, argument of the
+     * callback in flight) and the counters at 0x80074B7C/0x80074B80, which
+     * hardware's interrupt timing decides. */
     if (sub == 0 || sub == 3 || sub == 5) {
         /* libgpu callback control struct at 0x80073924+ */
         cpu->write_word(0x80073924u, 0x00000001u);
         cpu->write_word(0x80073928u, 0x8005E560u);  /* fnptr */
         cpu->write_word(0x80073934u, 0x8005E680u);  /* fnptr */
-        cpu->write_word(0x80073954u, 0x00000009u);
+        cpu->write_word(0x80073954u, 0x0000000Du);  /* enabled-source mask */
         cpu->write_word(0x8007395Cu, 0x8005DFC8u);  /* fnptr */
         cpu->write_word(0x80073960u, 0x8007493Cu);
         cpu->write_word(0x80073964u, 0x801FFFF8u);  /* boot sp */
@@ -127,16 +125,10 @@ extern "C" void psyq_game_mirror_resetgraph(CPUState* cpu, int mode) {
         /* libgpu vtable patch slots (indirected through D_800749AC) */
         cpu->write_word(0x80074990u, 0x8005E804u);
         cpu->write_word(0x800749A0u, 0x8005E5D8u);
-        /* GP0 dispatch state at 0x80074B58+ (set by func_80061F48 in real
-         * PSYQ; we cache the post-init values). */
-        cpu->write_word(0x80074B58u, 0x80060FD8u);
-        cpu->write_word(0x80074B5Cu, 0x801FFF78u);  /* inner sub-call sp */
-        cpu->write_word(0x80074B70u, 0x00000009u);
+        cpu->write_word(0x80074B70u, 0x0000000Du);  /* enabled-source mask */
         cpu->write_word(0x80074B78u, 0x00000009u);
-        cpu->write_word(0x80074B7Cu, 0x000000F0u);
-        /* Pre-built GP0 env packet block at 0x80075978 — pcsxr ends
-         * GraphicsInit with these queued; openpete-PsyCross drains
-         * commands a different way so the slot stays zero without help. */
+        /* The fill-packet block after ResetGraph's own clear of VRAM
+         * (512x511 at the origin, black); ClearImage rewrites it. */
         cpu->write_word(0x80075978u, 0x05FFFFFFu);
         cpu->write_word(0x8007597Cu, 0xE6000000u);
         cpu->write_word(0x80075980u, 0xE1000000u);
@@ -188,17 +180,23 @@ extern "C" void psyq_game_mirror_pad_init(CPUState* cpu, uint32_t buf0, uint32_t
      * ("g_PadBufferSecondController") through 0x80075E38+. Inner pointers
      * (0x80075CAB / 0x80075CF3 / 0x80075C88 / 0x80075CD0) are PSYQ
      * scratch-buffer locations inside the same data block. */
-    cpu->write_word(0x80075C58u, 0x0000B058u);
+    /* 0x80075C58 holds the kernel work address the BIOS's pad driver
+     * returns to libpad; SCPH-1001 answers 0x74A8. */
+    cpu->write_word(0x80075C58u, 0x000074A8u);
     cpu->write_word(0x80075C5Cu, 0x8006969Cu);
     cpu->write_word(0x80075C60u, 0x80069634u);
-    cpu->write_word(0x80075D28u, 0x80075D18u);
-    cpu->write_word(0x80075D40u, buf0);
-    cpu->write_word(0x80075D48u, buf1);
-    cpu->write_word(0x80075D4Cu, 0x00000002u);
-    cpu->write_word(0x80075D54u, 0x80075C88u);
-    cpu->write_word(0x80075D58u, 0x80075CD0u);
-    cpu->write_word(0x80075D74u, 0xFFFFFF00u);
-    cpu->write_word(0x80075D78u, 0x00FFFFFFu);
+    /* libpad's control block at 0x80075D18: pointers into itself and into
+     * libpad's own routines, the slot-0 receive buffer at +0x30, and the
+     * port control bytes. */
+    static const uint32_t k_pad_block[25] = {
+        0x80075D7Cu, 0x80075D80u, 0x80075D8Cu, 0x00000000u, 0x80075D18u,
+        0x8006A74Cu, 0x8006A768u, 0x00000000u, 0x8006FCCCu, 0x00000000u,
+        0x80075800u, 0x80075D3Cu, 0u /* buf0 */, 0x00000102u, 0x00000000u,
+        0x80075C88u, 0x80075CD0u, 0x00FF0908u, 0x00000600u, 0x00000000u,
+        0x01000100u, 0x00000000u, 0x00000000u, 0xFF010000u, 0x00FFFFFFu,
+    };
+    for (uint32_t i = 0; i < 25u; i++)
+        cpu->write_word(0x80075D18u + 4u * i, i == 12u ? buf0 : k_pad_block[i]);
     cpu->write_word(0x80075E18u, 0x80075E08u);
     cpu->write_word(0x80075E38u, buf1);
     cpu->write_word(0x80075E44u, 0x80075CABu);
@@ -244,6 +242,11 @@ extern "C" void psyq_game_cd_setloc(const void* cdl_loc) {
 extern "C" void psyq_game_cd_apply_buf(unsigned char* buf, int sectors) {
     mod_wad_apply((uint8_t*)buf, sectors);
 }
+
+/* libgpu's environment block and fill-packet block (psx.map D_80074A64,
+ * D_80075978). */
+extern "C" uint32_t psyq_game_libgpu_env_addr(void) { return 0x80074A64u; }
+extern "C" uint32_t psyq_game_libgpu_clear_block_addr(void) { return 0x80075978u; }
 
 /* Every overlay loads at this one vaddr; the id is its first word. */
 extern "C" uint32_t psyq_game_overlay_vaddr(void) { return 0x8007AA38u; }

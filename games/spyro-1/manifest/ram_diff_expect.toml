@@ -41,8 +41,8 @@ loop  = 0x8001ED5C
 # the baseline in the same change as its fix) and refuses another hit. A
 # hex-spelled anchor needs its own row, keyed by that spelling.
 [psyq_internal_baseline]
-first = { bytes = 198, ranges = 31, digest = "bbfeafcbc1bf64de", hit = 1 }
-loop = { bytes = 313, ranges = 32, digest = "b43010bf1117d6ef", hit = 700 }
+first = { bytes = 174, ranges = 29, digest = "ebfaaf9ae10a7735", hit = 1 }
+loop = { bytes = 291, ranges = 30, digest = "ea8f34e41e0e8969", hit = 700 }
 
 [bios_stack]
 low = 0x801FFB50
@@ -74,9 +74,10 @@ length = 0x14
 source = "D_80078EA0, referenced only by psyq.s (game.bss placement)"
 
 # PSYQ-internal words openpete's mirrors write, derived by hand on 2026-09-11
-# from every write_word and table site in games/spyro-1/psyq_hooks.cpp; a new
-# site there adds a row here. A differing byte here is a defective or
-# incomplete mirror, never expected.
+# from every write_word, table and block site in games/spyro-1/psyq_hooks.cpp
+# and the libgpu copies in games/common/psyq_thunks.cpp; a new site there
+# adds a row here. A differing byte here is a defective or incomplete
+# mirror, never expected.
 [[populated]]
 start  = 0x80073924
 length = 0x8
@@ -135,26 +136,21 @@ name   = "psyq_hooks.cpp write_word"
 [[populated]]
 start  = 0x800749D0
 length = 0x4
-name   = "psyq_game_mirror_vsync_callback slot"
+name   = "VSyncCallback slot (psyq_game_mirror_vsync_callback)"
 
 [[populated]]
 start  = 0x80074A64
 length = 0x80
-name   = "libgpu environment block, 128 bytes zeroed then filled (psyq_game_mirror_resetgraph)"
+name   = "libgpu environment block: header, current DRAWENV at +0x10, current DISPENV at +0x6C (ResetGraph, PutDrawEnv, PutDispEnv)"
 
 [[populated]]
-start  = 0x80074B58
-length = 0x8
-name   = "psyq_hooks.cpp write_word"
-
-[[populated]]
-start  = 0x80074B68
-length = 0xC
+start  = 0x80074B70
+length = 0x4
 name   = "psyq_hooks.cpp write_word"
 
 [[populated]]
 start  = 0x80074B78
-length = 0x8
+length = 0x4
 name   = "psyq_hooks.cpp write_word"
 
 [[populated]]
@@ -169,13 +165,8 @@ name   = "psyq_hooks.cpp write_word"
 
 [[populated]]
 start  = 0x80075978
-length = 0x10
-name   = "psyq_hooks.cpp write_word"
-
-[[populated]]
-start  = 0x8007598C
-length = 0x4
-name   = "psyq_hooks.cpp write_word"
+length = 0x34
+name   = "libgpu fill-packet block (ResetGraph clear, ClearImage)"
 
 [[populated]]
 start  = 0x80075C58
@@ -183,29 +174,9 @@ length = 0xC
 name   = "psyq_hooks.cpp write_word"
 
 [[populated]]
-start  = 0x80075D28
-length = 0x4
-name   = "psyq_hooks.cpp write_word"
-
-[[populated]]
-start  = 0x80075D40
-length = 0x4
-name   = "psyq_hooks.cpp write_word"
-
-[[populated]]
-start  = 0x80075D48
-length = 0x8
-name   = "psyq_hooks.cpp write_word"
-
-[[populated]]
-start  = 0x80075D54
-length = 0x8
-name   = "psyq_hooks.cpp write_word"
-
-[[populated]]
-start  = 0x80075D74
-length = 0x8
-name   = "psyq_hooks.cpp write_word"
+start  = 0x80075D18
+length = 0x64
+name   = "libpad control block (psyq_game_mirror_pad_init)"
 
 [[populated]]
 start  = 0x80075E18
@@ -292,4 +263,33 @@ start  = 0x80077DFC
 end    = 0x80077E04
 name   = "D_80077DD8+0x24..+0x2C (saved sp, fp of a handwritten register-save block, collision.s func_8004AE38)"
 reason = "the guest stack depth at that save differs between the two sides; which call chain differs is an open unknown"
+owner  = "openpete-guest-interrupt-delivery"
+
+# libetc's interrupt-dispatch state: the handler, stack pointer and argument
+# of the callback in flight, the callback ring's head and tail indices, and
+# two counters advanced per interrupt. Hardware's interrupt timing and the
+# BIOS boot's VBL count decide them; openpete dispatches callbacks from its
+# VBL pump on the guest's own stack.
+[[expect]]
+class  = "irq_dispatch"
+start  = 0x80074B58
+end    = 0x80074B64
+name   = "libetc callback context (handler, sp, argument)"
+reason = "hardware runs the handler from the interrupt on the kernel stack; the values are the last dispatch's registers"
+owner  = "openpete-guest-interrupt-delivery"
+
+[[expect]]
+class  = "irq_dispatch"
+start  = 0x80074B68
+end    = 0x80074B70
+name   = "libetc callback ring head and tail"
+reason = "count of callbacks queued and dispatched by the interrupt path"
+owner  = "openpete-guest-interrupt-delivery"
+
+[[expect]]
+class  = "irq_dispatch"
+start  = 0x80074B7C
+end    = 0x80074B84
+name   = "libetc interrupt counters"
+reason = "advance per interrupt since the BIOS boot; openpete's VBL count starts at the EXE entry"
 owner  = "openpete-guest-interrupt-delivery"

@@ -574,8 +574,56 @@ void psyq_DrawSync(CPUState* cpu) {
     psyq_mirror_stack_frame(cpu, PSYQ_FRAME_DRAWSYNC);
 }
 
+/* libgpu's ClearImage clamps the rectangle in place against the VRAM size in
+ * its environment block, then builds its fill packet in the fill-packet block:
+ * for a rectangle whose x and width are multiples of 64, a 5-word packet (E6,
+ * E1, the 02 fill, position, size); otherwise 8 words that open the whole
+ * draw area (E3, E4, E5, E6, E1), draw a 60 tile, and chain to 3 words that
+ * restore the current draw area from the environment block's DRAWENV. The
+ * restore words carry the same E3/E4/E5 payloads PutDrawEnv packs. */
+static void psyq_mirror_clear_image(RECT16* rect, uint32_t color24) {
+    const uint32_t env = psyq_game_libgpu_env_addr();
+    const uint32_t blk = psyq_game_libgpu_clear_block_addr();
+    if (!env || !blk) return;
+    const uint8_t* e = (const uint8_t*)PTR(env);
+    int16_t vram_w, vram_h;
+    memcpy(&vram_w, e + 4, 2);
+    memcpy(&vram_h, e + 6, 2);
+    if (rect->w < 0) rect->w = 0; else if (rect->w > vram_w - 1) rect->w = (short)(vram_w - 1);
+    if (rect->h < 0) rect->h = 0; else if (rect->h > vram_h - 1) rect->h = (short)(vram_h - 1);
+    /* libgpu takes the E1 payload from the GPU status register's low 11 bits
+     * (the texture page the last E1 command set); openpete keeps no GPU
+     * status word, and the reference reads zero at every anchor measured,
+     * so zero is written. A ClearImage issued while those bits are set on
+     * hardware is a named unknown here. */
+    const uint32_t e1 = 0xE1000000u | ((color24 >> 31) << 10);
+    const uint32_t xy = ((uint32_t)(uint16_t)rect->y << 16) | (uint16_t)rect->x;
+    const uint32_t wh = ((uint32_t)(uint16_t)rect->h << 16) | (uint16_t)rect->w;
+    uint32_t w[13];
+    int n;
+    if (((uint16_t)rect->x & 0x3Fu) == 0u && ((uint16_t)rect->w & 0x3Fu) == 0u) {
+        w[0] = 0x05FFFFFFu; w[1] = 0xE6000000u; w[2] = e1;
+        w[3] = 0x02000000u | (color24 & 0xFFFFFFu); w[4] = xy; w[5] = wh;
+        n = 6;
+    } else {
+        const DRAWENV* cur = (const DRAWENV*)(e + 0x10);
+        const int x1 = cur->clip.x + cur->clip.w - 1, y1 = cur->clip.y + cur->clip.h - 1;
+        w[0] = 0x08000000u | ((blk + 0x24u) & 0xFFFFFFu);
+        w[1] = 0xE3000000u; w[2] = 0xE4FFFFFFu; w[3] = 0xE5000000u; w[4] = 0xE6000000u;
+        w[5] = e1; w[6] = 0x60000000u | (color24 & 0xFFFFFFu); w[7] = xy; w[8] = wh;
+        w[9] = 0x03FFFFFFu;
+        w[10] = 0xE3000000u | ((uint32_t)(cur->clip.y & 0x3FF) << 10) | (uint32_t)(cur->clip.x & 0x3FF);
+        w[11] = 0xE4000000u | ((uint32_t)(y1 & 0x3FF) << 10) | (uint32_t)(x1 & 0x3FF);
+        w[12] = 0xE5000000u | ((uint32_t)(cur->ofs[1] & 0x7FF) << 11) | (uint32_t)(cur->ofs[0] & 0x7FF);
+        n = 13;
+    }
+    memcpy(PTR(blk), w, 4u * (uint32_t)n);
+}
+
 void psyq_ClearImage(CPUState* cpu) {
-    cpu->v0 = (uint32_t)ClearImage((RECT16*)PTR(cpu->a0),
+    RECT16* rect = (RECT16*)PTR(cpu->a0);
+    psyq_mirror_clear_image(rect, ((cpu->a3 & 0xFFu) << 16) | ((cpu->a2 & 0xFFu) << 8) | (cpu->a1 & 0xFFu));
+    cpu->v0 = (uint32_t)ClearImage(rect,
                                    (u_char)cpu->a1,
                                    (u_char)cpu->a2,
                                    (u_char)cpu->a3);
@@ -608,6 +656,9 @@ extern "C" void openpete_native_set_clear_color(int isbg, int r, int g, int b);
 
 void psyq_PutDispEnv(CPUState* cpu) {
     DISPENV* env = (DISPENV*)PTR(cpu->a0);
+    /* libgpu keeps a copy of the current DISPENV in its environment block. */
+    if (psyq_game_libgpu_env_addr())
+        memcpy(PTR(psyq_game_libgpu_env_addr() + 0x6Cu), env, 0x14u);
     PutDispEnv(env);
     openpete_native_set_display_rect(env->disp.x, env->disp.y, env->disp.w, env->disp.h);
     /* Real PutDispEnv @0x80060030: sp -= 40; sw s0,16; s1,20; s2,24; s3,28; ra,32. */
@@ -650,6 +701,9 @@ static void psyq_pack_draw_env(DRAWENV* env) {
 void psyq_PutDrawEnv(CPUState* cpu) {
     DRAWENV* env = (DRAWENV*)PTR(cpu->a0);
     psyq_pack_draw_env(env);
+    /* libgpu keeps a copy of the current DRAWENV in its environment block. */
+    if (psyq_game_libgpu_env_addr())
+        memcpy(PTR(psyq_game_libgpu_env_addr() + 0x10u), env, 0x5Cu);
     PutDrawEnv(env);
     openpete_native_set_draw_clip(env->clip.x, env->clip.y, env->clip.w, env->clip.h);
     /* The actually-cleared framebuffer background = the gamestate draw-env clear

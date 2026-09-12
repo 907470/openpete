@@ -84,6 +84,17 @@ uint32_t psyq_game_rand_seed_addr(void);
  * overlays needs this; only the address differs. */
 uint32_t psyq_game_overlay_vaddr(void);
 
+/* libgpu's own environment block: 128 bytes holding the GPU type, the VRAM
+ * size, a copy of the current DRAWENV at +0x10 (0x5C bytes) and of the current
+ * DISPENV at +0x6C (0x14 bytes), which PutDrawEnv and PutDispEnv refresh. 0
+ * when the game's block is not located. */
+uint32_t psyq_game_libgpu_env_addr(void);
+
+/* libgpu's fill-packet block, the 13 words its ClearImage builds and sends
+ * (tag, draw-area and fill primitives, restore of the current draw area). 0
+ * when not located. */
+uint32_t psyq_game_libgpu_clear_block_addr(void);
+
 /* Asset overlay: a game may redirect a disc read at its own granularity.
  * setloc takes the CdlLOC the game passed to CdControl; apply is handed the
  * landed sector buffer so the game can substitute its own bytes. */
