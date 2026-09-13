@@ -33,10 +33,20 @@ int  game_on_overlay_load(uint32_t overlay_id) {
 }
 void game_on_overlay_init(CPUState* cpu) { (void)cpu; }
 
+
 void game_apply_runtime_quirks(CPUState* cpu) { (void)cpu; }
 /* The write census installs over the store hooks before any guest
  * instruction runs; inert without OPENPETE_WRITE_CENSUS. */
-void game_on_boot(CPUState* cpu) { write_census_install(cpu); }
+void game_on_boot(CPUState* cpu) {
+    /* The atlas and the cutscene overlays are staged into a scratch buffer and
+     * copied into the overlay region, so the disc read that fetched them never
+     * named them; the dispatcher re-derives the resident one from the id word
+     * instead. */
+    spyro_overlay_set_resync(psyq_overlay_resync_from_ram);
+    /* The write census installs over the store hooks before any guest
+     * instruction runs; inert without OPENPETE_WRITE_CENSUS. */
+    write_census_install(cpu);
+}
 
 /* --- Per-tick hooks --- */
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
@@ -70,12 +80,7 @@ void game_on_hash_emit(uint32_t frame) { (void)frame; }
  * restored RAM decides which dispatcher is valid, and the id is the first word
  * of the overlay region. */
 void game_on_state_loaded(CPUState* cpu) {
-    uint8_t* ram = openpete_psx_get_ram();
-    if (!ram) return;
-    uint32_t off = psyq_game_overlay_vaddr() & 0x001FFFFFu;
-    uint32_t id  = (uint32_t)ram[off] | ((uint32_t)ram[off + 1] << 8) |
-                   ((uint32_t)ram[off + 2] << 16) | ((uint32_t)ram[off + 3] << 24);
-    spyro_set_active_overlay_by_magic(id);
+    psyq_overlay_resync_from_ram();
     (void)cpu;
 }
 

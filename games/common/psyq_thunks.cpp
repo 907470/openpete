@@ -1921,6 +1921,16 @@ void psyq_CdRead(CPUState* cpu) {
     }
 }
 
+void psyq_overlay_resync_from_ram(void) {
+    uint32_t ovl = psyq_game_overlay_vaddr();
+    uint8_t* ram = openpete_psx_get_ram();
+    if (ovl == 0u || !ram) return;
+    uint32_t magic = 0;
+    memcpy(&magic, ram + (ovl & 0x1FFFFFu), 4);
+    if (magic != spyro_get_active_overlay_magic())
+        spyro_set_active_overlay_by_magic(magic);
+}
+
 /* libcd's internals, as distinct from the API above.
  *
  * PSYQ reaches the drive through the BIOS jump tables with an indirect call,

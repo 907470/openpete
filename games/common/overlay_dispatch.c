@@ -26,6 +26,14 @@ extern int psx_dispatch_main_exe(CPUState* cpu, uint32_t addr);
 
 static const spyro_overlay_entry_t* s_active = NULL;
 
+/* Host-side re-derivation of the resident overlay, registered at boot by a
+ * game whose overlays can arrive without a disc read announcing them. The
+ * overlay vaddr and the RAM base are the executable's, so the module reaches
+ * them through this pointer rather than importing them. */
+static void (*s_resync)(void);
+
+void spyro_overlay_set_resync(void (*fn)(void)) { s_resync = fn; }
+
 const spyro_overlay_entry_t* spyro_overlay_find(uint32_t magic) {
     for (size_t i = 0; i < spyro_overlay_table_count; ++i) {
         if (spyro_overlay_table[i].magic == magic) {
@@ -104,6 +112,17 @@ int psx_dispatch_compiled(CPUState* cpu, uint32_t addr) {
     int hit;
     psx_dispatch_from_jalr = 0;
     if (psx_dispatch_main_exe(cpu, addr)) return 1;
+    /* Confirm the tracker still names the resident overlay before its table
+     * decides this call. Two overlays of one game share the vaddr and their
+     * entry addresses overlap, so a stale tracker does not reliably miss: it
+     * can resolve the address in the outgoing overlay's table and run the
+     * wrong function against the incoming overlay's data. Only a dispatch
+     * into the overlay window can be wrong this way, and those are a handful
+     * per tick, so the check costs one word read where it matters and
+     * nothing anywhere else. */
+    if (s_resync && addr >= spyro_overlay_window_lo &&
+        addr < spyro_overlay_window_hi)
+        s_resync();
     hit = s_active ? s_active->fn(cpu, addr) : 0;
     if (!s_census_checked) census_open();
     if (s_census) census_record(cpu, addr, ra, from_jalr, hit);

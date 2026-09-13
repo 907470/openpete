@@ -159,6 +159,12 @@ void psyq_game_ot_prim_full(unsigned code_byte, const void* payload,
                             unsigned payload_bytes);
 void psyq_game_ot_end(void);
 
+/* Re-derive the resident overlay from the id word at psyq_game_overlay_vaddr()
+ * and re-point the dispatcher if it names a different overlay. A game passes
+ * this to spyro_overlay_set_resync() at boot when its overlays can be copied
+ * into the overlay region rather than read straight into it. */
+void psyq_overlay_resync_from_ram(void);
+
 /* Sound-effect name tables, registered with the sfx pack when a game has them.
  * slot_names resolves an SPU sample address back to the game's own slot names
  * and returns how many it wrote; 0 when the game names no sounds. */

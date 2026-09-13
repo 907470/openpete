@@ -46,6 +46,15 @@ void spyro_set_active_overlay_by_magic(uint32_t magic);
 /* Id-magic of the overlay currently resident, or 0 before any has loaded. */
 uint32_t spyro_get_active_overlay_magic(void);
 
+/* Register a callback that re-derives the resident overlay from guest RAM.
+ * It is invoked before the active overlay's table is consulted, so a game
+ * whose overlays can be staged elsewhere and copied into the overlay region
+ * -- arriving without the disc read that would have announced them -- never
+ * dispatches against the outgoing overlay's table.
+ * psyq_overlay_resync_from_ram (games/common/psyq_game_hooks.h) is the
+ * implementation every such game passes. */
+void spyro_overlay_set_resync(void (*fn)(void));
+
 #ifdef __cplusplus
 }
 #endif
