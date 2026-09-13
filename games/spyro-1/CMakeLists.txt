@@ -230,7 +230,8 @@ add_executable(openpete-spyro1
     features/text_moby_native.c
     features/text_moby_id.c
     features/transition_native.c
-    features/freecam_native.c
+    features/freecam.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common/freecam_game.c
     features/audio_volume_native.c
     features/vibration_native.c
     features/cheats_native.c

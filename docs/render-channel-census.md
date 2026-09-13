@@ -56,7 +56,7 @@ Non-feeders in the directory (no `add_tri` call): `moby_rank.c`,
 `render_paths.c`, `render_decouple.c`, `polybuf_guard.c`,
 `crash_demo_woah.c`, `vibration_native.c`, `text_moby_native.c` (glyphs go
 to the separate overlay-glyph channel, not a scene category),
-`text_moby_id.c`, `cheats_native.c`, `freecam_native.c`,
+`text_moby_id.c`, `cheats_native.c`, `freecam.c` (with `games/common/freecam_game.c`),
 `levelwarp_native.c`, `audio_volume_native.c`, `mod_level_ops.c`,
 `mod_moby_ops.c`, `native_gte.c`. No `add_tri` callers exist outside
 `games/spyro-1/features/`.

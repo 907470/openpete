@@ -22,7 +22,8 @@
 #include "features/cheats_native.h"
 #include "features/credits_skip.h"
 #include "features/crash_demo_woah.h"
-#include "features/freecam_native.h"
+#include "freecam_game.h"
+#include "openpete_fillpick.h"
 #include "features/levelwarp_native.h"
 #include "psyq_thunk_state.h"
 
@@ -259,7 +260,21 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
 
     /* Optional scripted engage of the debug free camera (OPENPETE_FREECAM=1),
      * once gameplay is live. Interactive F / stick-click use is independent. */
-    freecam_native_maybe_autoengage(cpu);
+    freecam_maybe_autoengage(cpu);
+
+    /* The fill-tag inspector engages on the same "level is live" gate — a
+     * scripted pick run sets OPENPETE_FILLPICK=1 alongside
+     * OPENPETE_FREECAM_POSE and reads the [fillpick] lines off stderr. */
+    {
+        static int s_fp_done = 0;
+        if (!s_fp_done && (int32_t)cpu->read_word(0x80075864u) < 0) {   /* g_LoadStage */
+            s_fp_done = 1;
+            const char* e = getenv("OPENPETE_FILLPICK");
+            if (e && *e && *e != '0') openpete_fillpick_set_active(1);
+            e = getenv("OPENPETE_FILLPICK_PREVIEW");
+            if (e && *e && *e != '0') openpete_fillpick_set_preview(1);
+        }
+    }
 
     /* --cheats: apply the game's own built-in cheat effects once a level is
      * live, re-armed at the title screen so each new session gets them. Inert
@@ -653,7 +668,7 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
      * CameraFollowSpyro (on this game fiber) and suppress it + UpdateSpyro so
      * nothing overwrites the camera and Spyro holds still. Inactive → returns
      * 0 (the hot path is one bool test), so the normal build is unaffected. */
-    if (freecam_native_should_freeze(cpu, addr)) {
+    if (freecam_should_freeze(cpu, addr)) {
         return 1;
     }
 

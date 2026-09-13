@@ -7,7 +7,8 @@
  * it lives in core alongside the other host input handling (run.c). The
  * game-specific half — reading g_Camera, applying the motion, and freezing
  * the game's camera-follow / player-update functions while active — lives in
- * games/<game>/features/freecam_native.c and reads this state each tick.
+ * games/common/freecam_game.c behind a per-game descriptor
+ * (games/<game>/features/freecam.c) and reads this state each tick.
  *
  * Ported from C0mposer's Spyro-1-Practice-Rom (src/freecam.c): freeze the
  * follow logic, then drive the camera position/angle directly. Debug tool —
@@ -18,7 +19,7 @@
 #include <stdbool.h>
 
 /* Discrete speed steps (slowest → fastest). The per-step move/turn magnitudes
- * live game-side (freecam_native.c), keyed by this index. */
+ * live game-side (the freecam descriptor), keyed by this index. */
 #define OPENPETE_FREECAM_SPEED_STEPS 5
 
 /* Per-axis movement/look intent, each component a signed magnitude in
@@ -50,8 +51,16 @@ typedef struct openpete_freecam_axes {
 bool openpete_freecam_active(void);
 
 /* Toggle engaged/disengaged (the F-key edge). Clears the latched axes so a
- * key held across the toggle doesn't carry stale intent into the new state. */
-void openpete_freecam_toggle(void);
+ * key held across the toggle doesn't carry stale intent into the new state.
+ * Returns false when the engage is refused: while a bk2 movie is replaying
+ * or recording, a free camera would freeze the player update and desync the
+ * movie from its inputs, so the off→on edge is refused with a WARN; the
+ * on→off edge always passes. */
+bool openpete_freecam_toggle(void);
+
+/* True while a bk2 movie is replaying or recording (set by the run loop). */
+bool openpete_bk2_active(void);
+void openpete_bk2_set_active(bool active);
 
 /* Latch this iteration's input intent (run.c → module). */
 void openpete_freecam_set_axes(const openpete_freecam_axes* ax);

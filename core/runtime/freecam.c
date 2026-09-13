@@ -1,6 +1,7 @@
 // core/runtime/freecam.c — host-side state for the debug free camera (F).
-// See openpete_freecam.h. Generic, address-free; the Spyro-specific camera
-// drive + function-freeze lives in games/spyro-1/features/freecam_native.c.
+// See openpete_freecam.h. Generic, address-free; the camera drive and
+// function-freeze live in games/common/freecam_game.c behind each game's
+// descriptor (games/<game>/features/freecam.c).
 
 #include "openpete_freecam.h"
 #include "openpete_log.h"
@@ -32,7 +33,15 @@ float openpete_freecam_mouse_sensitivity(void) {
     return atomic_load_explicit(&s_mouse_sens, memory_order_relaxed);
 }
 
-void openpete_freecam_toggle(void) {
+static bool s_bk2_active = false;
+bool openpete_bk2_active(void) { return s_bk2_active; }
+void openpete_bk2_set_active(bool active) { s_bk2_active = active; }
+
+bool openpete_freecam_toggle(void) {
+    if (!s_active && s_bk2_active) {
+        OPL_WARN_F("freecam", "engage refused: a bk2 movie is replaying or recording");
+        return false;
+    }
     s_active = !s_active;
     atomic_fetch_add_explicit(&s_engage_gen, 1u, memory_order_relaxed);
     memset(&s_axes, 0, sizeof s_axes);
@@ -47,6 +56,7 @@ void openpete_freecam_toggle(void) {
     } else {
         OPL_INFO_F("freecam", "OFF — camera returned to the game");
     }
+    return true;
 }
 
 void openpete_freecam_set_axes(const openpete_freecam_axes* ax) {

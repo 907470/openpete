@@ -25,7 +25,7 @@
 #define CL_PITCH_LIMIT 992.0   /* 0x3E0 */
 
 /* Per-TICK move (world units) / turn (angle units) magnitudes per speed
- * step — the freecam's tables (freecam_native.c); the shared speed index
+ * step — the freecam's tables (the Spyro 1 freecam descriptor); the shared speed index
  * selects the row so both cameras feel identical at a given step. */
 static const double s_move_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 25, 100, 300, 500, 800 };
 static const double s_turn_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 10,  25,  35,  50,  75 };
@@ -164,7 +164,7 @@ void openpete_camlock_integrate(double dt_ticks) {
     const double speed = s_move_speed[si] * dt_ticks;
     const double turn  = s_turn_speed[si] * dt_ticks;
 
-    /* Same look/move basis as the freecam drive (freecam_native.c): turning
+    /* Same look/move basis as the freecam drive (freecam_game.c): turning
      * right lowers yaw, looking up lowers pitch; forward from (yaw, pitch)
      * in the world x/y plane with Z up. */
     s_yaw   -= (double)ax.look_yaw   * turn + (double)mdx;

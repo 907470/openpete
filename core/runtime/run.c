@@ -2884,6 +2884,7 @@ static int run_host_loop(const openpete_options_t* opts) {
     bk2_movie_t bk2 = {0};
     int  bk2_offset = 0;
     bool bk2_active = (opts->bk2_path && *opts->bk2_path);
+    openpete_bk2_set_active(bk2_active || bk2_recording);
     if (bk2_active) {
         if (bk2_movie_load(opts->bk2_path, &bk2) != 0) {
             return OPENPETE_EXIT_SETUP_ERROR;
@@ -3819,8 +3820,8 @@ static int run_host_loop(const openpete_options_t* opts) {
              * lower, the speed keys / triggers step the speed, and teleport
              * drops Spyro here and hands the camera back. We own only the
              * toggle + input latch here; the camera write and the
-             * CameraFollowSpyro / UpdateSpyro freeze are game-side
-             * (games/spyro-1/features/freecam_native.c). Latched as level-held
+             * camera-follow / player-update freeze are game-side
+             * (games/common/freecam_game.c). Latched as level-held
              * axes so movement continues while held, consumed once per game
              * tick in game_on_frame_pre. Keyboard and pad sum (then clamp), so
              * either or both drive it. */
@@ -3849,7 +3850,7 @@ static int run_host_loop(const openpete_options_t* opts) {
 
             /* Drop Spyro at the camera and hand the camera back to the game.
              * Latched as a one-shot request — the move needs the game fiber, so
-             * freecam_native applies it (and disengages) on the next tick; the
+             * freecam_game applies it (and disengages) on the next tick; the
              * request is dropped if the camera isn't engaged. Edge-tracked out
              * here rather than under the engaged branch so a teleport key
              * already held when the camera engages doesn't count as a press. */

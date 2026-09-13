@@ -56,6 +56,8 @@ MARKER = "clock-guard: wall"
 GUARDED = (
     "games/spyro-1/spyro_native_reextract.c",
     "games/spyro-1/features/*_native.c",
+    "games/spyro-1/features/freecam.c",
+    "games/common/freecam_game.c",
     "games/spyro-1/features/*_interp*.c",
     "core/runtime/native_render.c",
     "core/runtime/openpete_interp.c",
