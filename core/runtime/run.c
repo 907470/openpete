@@ -300,16 +300,19 @@ static int openpete_thread_split_enabled(void)
     return v;
 }
 
-/* Only the default windowed pure-vk configuration splits. Everything else —
- * headless, --renderer psycross, screenshot capture — keeps PsyCross
- * rasterizing, which means a thread-affine GL context created on whichever
- * thread runs bring-up, and those are also the modes every gate runs in. They
- * stay single-threaded until this path has proven itself. */
+/* Every windowed play configuration splits: pure vk, and psycross display
+ * mode, where PsyCross rasterizes on the worker through the GL context that
+ * bring-up created on main (run_split_threaded hands it across). Headless and
+ * screenshot capture stay single-threaded: those are the modes every gate
+ * runs in, and a modal window loop cannot reach them. Without the split the
+ * sim shares main with the window's message pump, and a Win32 move or size
+ * loop parks it for the whole gesture. */
 static bool openpete_split_applies(const openpete_options_t* opts)
 {
     return openpete_thread_split_enabled()
         && !opts->headless
-        && opts->renderer == OPENPETE_RENDERER_VK
+        && (opts->renderer == OPENPETE_RENDERER_VK
+            || opts->renderer == OPENPETE_RENDERER_PSYCROSS)
         && opts->screenshot_frame_count <= 0
         && opts->screenshot_presents_start < 0
         && !openpete_host_input_legacy();
@@ -5945,10 +5948,23 @@ static int run_recomp_fiber(const openpete_options_t* opts) {
 static int  s_worker_rc;
 static const openpete_options_t* s_worker_opts;
 
+/* PsyCross's GL context and the hidden window it was created on. A GL
+ * context is current on one thread at a time: bring-up creates it current on
+ * main, the worker takes it for the life of the host loop (psycross mode
+ * rasterizes the OT and reads the present FBO back there), and main takes it
+ * back for PsyX_Shutdown. Both NULL under null-GPU vk, which has no context. */
+static SDL_GLContext s_psyx_gl_ctx;
+static SDL_Window*   s_psyx_gl_win;
+
 static int SDLCALL openpete_sim_thread(void* unused)
 {
     (void)unused;
+    if (s_psyx_gl_ctx && !SDL_GL_MakeCurrent(s_psyx_gl_win, s_psyx_gl_ctx))
+        OPL_ERROR_F("boot", "GL context handoff to the sim thread failed: %s",
+                    SDL_GetError());
     s_worker_rc = run_host_loop(s_worker_opts);
+    if (s_psyx_gl_ctx)
+        SDL_GL_MakeCurrent(s_psyx_gl_win, NULL);
     SDL_SetAtomicInt(&g_worker_done, 1);
     return 0;
 }
@@ -5984,6 +6000,13 @@ static int run_split_threaded(const openpete_options_t* opts)
     openpete_host_input_seed_neutral();
     openpete_host_input_publish_sdl();
 
+    /* Release PsyCross's GL context from this thread so the worker can take
+     * it; main makes no GL call between here and the join. */
+    s_psyx_gl_ctx = SDL_GL_GetCurrentContext();
+    s_psyx_gl_win = SDL_GL_GetCurrentWindow();
+    if (s_psyx_gl_ctx)
+        SDL_GL_MakeCurrent(s_psyx_gl_win, NULL);
+
     s_worker_opts = opts;
     SDL_SetAtomicInt(&g_worker_done, 0);
     /* Explicit, large stack. The host loop and everything it calls used to
@@ -6001,6 +6024,8 @@ static int run_split_threaded(const openpete_options_t* opts)
     if (!th) {
         OPL_ERROR_F("boot", "SDL_CreateThread(openpete-sim) failed: %s — "
                             "running single-threaded", SDL_GetError());
+        if (s_psyx_gl_ctx)
+            SDL_GL_MakeCurrent(s_psyx_gl_win, s_psyx_gl_ctx);
         return run_recomp_fiber(opts);
     }
     OPL_INFO_F("boot", "%s", "thread split: main owns window+pump, worker owns the sim");
@@ -6090,7 +6115,10 @@ static int run_split_threaded(const openpete_options_t* opts)
 
     /* Worker is joined, so nothing else touches the device or the window.
      * These run here because they own main-thread resources (see the matching
-     * comment in run_host_loop). */
+     * comment in run_host_loop). PsyX_Shutdown destroys the GL context, which
+     * must be current on the destroying thread. */
+    if (s_psyx_gl_ctx)
+        SDL_GL_MakeCurrent(s_psyx_gl_win, s_psyx_gl_ctx);
     openpete_native_render_shutdown();
     openpete_disc_cache_shutdown();
     PsyX_Shutdown();
