@@ -1650,6 +1650,16 @@ static void tsc_tag_gapfill(CPUState* cpu, tscache_t* C,
     for (uint32_t i = 0; i < n; i++)
         if (rd(cpu, sectorPtr + i * 4) == C->s) { secIdx = (int)i; break; }
     int level = (int)(int32_t)rd(cpu, 0x8007596C);   /* g_LevelId */
+    /* The credits overlay (func_credits_8007AA50) loads its own scene builds
+     * through LoadLevelData, indexed by g_CreditsSequence, and never writes
+     * g_LevelId — it keeps the id of the level the credits were entered from.
+     * Those scenes are re-indexed subsets of their source levels (no sector
+     * keeps its index), so a g_LevelId-keyed lookup lands the entering
+     * level's tags on unrelated sectors: an Artisans fill face became the
+     * near ground of the Stone Hill credits scene, drawn as untextured LP over
+     * the HP. No credits scene has been swept, so under GS_Credits every face
+     * is untagged (the table's absent-means-not-a-fill contract). */
+    if (rd(cpu, 0x800757D8) == 15u) secIdx = -1;    /* g_Gamestate == GS_Credits */
     for (int f = 0; f < C->nLpF; f++) {
         tsface_t* F = &C->lpF[f];
         F->gapfill = 0;
