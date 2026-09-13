@@ -11,7 +11,7 @@ mkdocs-material site (see docs/modding/ and scripts/build-mod-docs.sh):
                    vtable, appended as `## UI widgets`)
   spyro-1/functions.md
                 <- manifest/symbols.toml x prototypes.toml (overridable
-                   functions: address, kind, natural signature +
+                   functions: address, natural signature +
                    op_call_*/op_base_* wrapper availability)
   spyro-1/globals.md
                 <- manifest/globals.toml (the OP_GADDR_* surface)
@@ -640,7 +640,7 @@ def gen_functions(symbols: Path, protos_path: Path, linker: SourceLinker) -> str
     rows = []
     for f in funcs:
         name = unq(f.get("name", ""))
-        rows.append((name, f.get("addr", "?"), unq(f.get("kind", "")),
+        rows.append((name, f.get("addr", "?"),
                      unq(f.get("source_file", ""))))
     rows.sort(key=lambda r: r[0].lower())
     n_proto = sum(1 for r in rows if r[0] in protos)
@@ -667,17 +667,17 @@ def gen_functions(symbols: Path, protos_path: Path, linker: SourceLinker) -> str
     out.append(source_note(linker))
 
     letter = None
-    for name, addr, kind, srcf in rows:
+    for name, addr, srcf in rows:
         l = name[0].upper() if name[:1].isalpha() else "#"
         if l != letter:
             letter = l
             out.append(f"\n## {letter}\n")
-            out.append("| Function | Address | Kind | Signature | Source |")
-            out.append("|---|---|---|---|---|")
+            out.append("| Function | Address | Signature | Source |")
+            out.append("|---|---|---|---|")
         sig = protos.get(name)
         sigcell = f"`{sig}` + wrappers" if sig else "raw tier"
         rel, line = linker.function(name, srcf) if srcf else (srcf, None)
-        out.append(f"| `{name}` | `{addr}` | {kind} | {sigcell} | "
+        out.append(f"| `{name}` | `{addr}` | {sigcell} | "
                    f"{linker.cell(rel, line)} |")
     out.append("")
     return "\n".join(out), len(rows), n_proto
