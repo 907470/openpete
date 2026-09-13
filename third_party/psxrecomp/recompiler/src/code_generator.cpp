@@ -2487,10 +2487,17 @@ std::string CodeGenerator::generate_file(
                     if (targets.back() >= f.end_addr) break;
 
                     uint32_t orig_end = f.end_addr;
-                    bool orig_data = f.is_data_section;
 
                     f.end_addr = targets[0];
                     f.size = f.end_addr - f.start_addr;
+                    /* Re-decide against the new span. A function whose
+                     * original extent ran into a data blob is classified as
+                     * data for the whole span; the pieces split out of it are
+                     * separate spans and mostly code, and inheriting the old
+                     * verdict emits them as empty stubs that silently return
+                     * to a caller expecting work to have happened. */
+                    f.is_data_section = FunctionAnalyzer::is_likely_data_section(
+                        exe_, f.start_addr, f.end_addr);
                     affected.insert(f.start_addr);
 
                     for (size_t ti = 0; ti < targets.size(); ti++) {
@@ -2502,7 +2509,8 @@ std::string CodeGenerator::generate_file(
                         nf.has_prologue = false;
                         nf.has_epilogue = false;
                         nf.stack_frame_size = 0;
-                        nf.is_data_section = orig_data;
+                        nf.is_data_section = FunctionAnalyzer::is_likely_data_section(
+                            exe_, nf.start_addr, nf.end_addr);
                         new_funcs.push_back(nf);
                         known_addrs.insert(nf.start_addr);
                         affected.insert(nf.start_addr);

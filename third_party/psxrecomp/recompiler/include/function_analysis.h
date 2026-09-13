@@ -50,6 +50,13 @@ public:
     // Check if instruction is a branch or jump (has a delay slot)
     static bool is_branch_or_jump(uint32_t instr);
 
+    // True if [start, end) reads as data rather than code (invalid JAL
+    // targets and undefined opcodes above size-graduated ratios). Static so
+    // a pass that resizes a function can re-decide for the new span instead
+    // of carrying the old span's verdict.
+    static bool is_likely_data_section(const PS1Executable& exe,
+                                       uint32_t start_addr, uint32_t end_addr);
+
 private:
     const PS1Executable& exe_;
 

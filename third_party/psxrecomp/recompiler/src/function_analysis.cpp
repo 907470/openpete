@@ -144,6 +144,11 @@ uint32_t FunctionAnalyzer::find_function_start(uint32_t return_addr) {
 }
 
 bool FunctionAnalyzer::is_likely_data_section(uint32_t start_addr, uint32_t end_addr) const {
+    return is_likely_data_section(exe_, start_addr, end_addr);
+}
+
+bool FunctionAnalyzer::is_likely_data_section(const PS1Executable& exe_,
+                                              uint32_t start_addr, uint32_t end_addr) {
     uint32_t size = end_addr - start_addr;
     if (size < 100) return false;  // Minimum check size
 
