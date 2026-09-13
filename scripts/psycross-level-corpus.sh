@@ -15,7 +15,16 @@
 #
 # Usage:
 #   scripts/psycross-level-corpus.sh <game> <outdir> [--tick N] [--filter SUB]
+#                                    [--exe linux|windows]
 #     game      spyro-2 | spyro-3 | spyro-1
+#     --exe     which build to drive. linux-release rasterizes through software
+#               GL; windows-mingw reaches the real GPU driver. The two are NOT
+#               interchangeable for this instrument: the sampled-range bounds
+#               are computed from a screen-space derivative, and a bound left
+#               on a texel edge rounds one way under one driver and the other
+#               way under the other, so a defect can be absent on one and
+#               present on the other from identical shader logic. A run records
+#               the GL version string it actually got, in driver.txt.
 #     --tick N  canonical draw tick to capture. The default is per-game,
 #               because the three reach a live level by different routes:
 #               Spyro 2 and 3 hand off to the loader by frame ~850, so tick 560
@@ -48,22 +57,33 @@ shift 2
 
 TICK=""
 FILTER=""
+EXE="linux"
 while [[ $# -gt 0 ]]; do case "$1" in
   --tick)   TICK="$2"; shift 2;;
   --tick=*) TICK="${1#--tick=}"; shift;;
   --filter) FILTER="$2"; shift 2;;
   --filter=*) FILTER="${1#--filter=}"; shift;;
+  --exe)    EXE="$2"; shift 2;;
+  --exe=*)  EXE="${1#--exe=}"; shift;;
   *) echo "unknown argument: $1" >&2; exit 64;;
 esac; done
 
 case "$GAME" in
-  spyro-1) BIN="build/linux-release/games/spyro-1/openpete-spyro1"
-           DISC="games/spyro-1/spyro-1/build/SCUS-94228.cue";;
-  spyro-2) BIN="build/linux-release/games/spyro-2/openpete-spyro2"
-           DISC="games/spyro-2/spyro-2/build/SCUS-94425.cue";;
-  spyro-3) BIN="build/linux-release/games/spyro-3/openpete-spyro3"
-           DISC="games/spyro-3/spyro-3/build/SCUS-94467.cue";;
+  spyro-1) N=1; DISC="games/spyro-1/spyro-1/build/SCUS-94228.cue";;
+  spyro-2) N=2; DISC="games/spyro-2/spyro-2/build/SCUS-94425.cue";;
+  spyro-3) N=3; DISC="games/spyro-3/spyro-3/build/SCUS-94467.cue";;
   *) echo "unknown game: $GAME" >&2; exit 64;;
+esac
+case "$EXE" in
+  linux)   BIN="build/linux-release/games/$GAME/openpete-spyro$N";;
+  windows) BIN="build/windows-mingw/games/$GAME/openpete-spyro$N.exe"
+           # The Mesa overrides below are Linux loader settings and do not
+           # reach a Windows child (see scripts/lib/wslenv.sh); the exe uses
+           # whatever GL its own driver provides, which is the point of this
+           # leg. --vibration 0 is passed on the command line, so the
+           # unattended-launcher rule does not depend on the environment.
+           unset LIBGL_ALWAYS_SOFTWARE MESA_LOADER_DRIVER_OVERRIDE;;
+  *) echo "unknown --exe: $EXE (want linux|windows)" >&2; exit 64;;
 esac
 # Per-game default; --tick still wins.
 if [[ -z "$TICK" ]]; then
@@ -77,7 +97,9 @@ fi
 # and every expected tile is asserted afterwards.
 rm -rf "$OUT"; mkdir -p "$OUT"
 
-mapfile -t LEVELS < <("$BIN" --skip-to-level 2>&1 |
+# tr -d '\r': a Windows exe writes CRLF, and the trailing carriage return
+# defeats the anchored match, which then reports the game as having no levels.
+mapfile -t LEVELS < <("$BIN" --skip-to-level 2>&1 | tr -d '\r' |
                       awk '/^ +[a-z0-9_]+ +\([0-9]+\)$/ {print $1}')
 [[ ${#LEVELS[@]} -gt 0 ]] || { echo "[psycross-corpus] SKIP: no levels" >&2; exit 64; }
 if [[ -n "$FILTER" ]]; then
@@ -104,10 +126,16 @@ capture_level() {
   return 0
 }
 
-echo "[psycross-corpus] $GAME: ${#LEVELS[@]} level(s) at tick $TICK, ${CORPUS_JOBS} job(s)"
+echo "[psycross-corpus] $GAME: ${#LEVELS[@]} level(s) at tick $TICK, ${CORPUS_JOBS} job(s), exe=$EXE"
 fail=0
 for lvl in "${LEVELS[@]}"; do cj_run capture_level "$lvl"; done
 cj_wait || fail=1
+
+# Which GL actually rendered these tiles. A corpus captured on one driver
+# cannot speak for another, and the string is the only record of which one it
+# was.
+grep -hoiE "\*OpenGL version: .*" "$OUT"/*.log 2>/dev/null | head -1 > "$OUT/driver.txt"
+echo "[psycross-corpus] $GAME: $(cat "$OUT/driver.txt" 2>/dev/null || echo 'GL version not logged')"
 
 # Engagement counter: a run that wrote nothing is a failure, not a clean pass.
 n=$(find "$OUT" -name '*-og.png' | wc -l)
