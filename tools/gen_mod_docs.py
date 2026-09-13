@@ -18,6 +18,10 @@ mkdocs-material site (see docs/modding/ and scripts/build-mod-docs.sh):
   spyro-1/structs.md
                 <- generated openpete_game_structs.h (typed guest-RAM
                    views + offset tables recovered from the pins)
+  The Source column of the function and global tables and the "Defined
+  in" line of each struct link to the definition in the decompilation
+  repository (games/spyro-1/spyro-1: the .gitmodules url, the checked-out
+  commit, and the line found by scanning the file symbols.toml names).
 
   The three above come from one game's manifests; the rest describe the
   engine, so they sit a level up from the per-game slug.
@@ -455,7 +459,181 @@ def parse_protos(path: Path):
     return protos
 
 
-def gen_functions(symbols: Path, protos_path: Path) -> str:
+# ── source links ─────────────────────────────────────────────────────────
+
+class SourceLinker:
+    """Resolves a manifest symbol to its definition line in the decomp
+    checkout and renders a link pinned to the checked-out commit.
+
+    psx.map names the object each symbol came from, not the line, so the
+    line is recovered by scanning the source: `glabel`/`dlabel` in .s
+    files, a file-scope definition in .c files, `typedef struct ... }
+    Name;` in headers. A symbol the scan does not find links to the file;
+    a file that does not exist renders as plain text. Without a GitHub
+    url or a resolvable commit every cell is plain text."""
+
+    FUNC_MACRO_RE = re.compile(r'^INCLUDE_ASM\w*\("([^"]+)",\s*(\w+)\)')
+
+    def __init__(self, decomp_dir: Path, base_url, sha):
+        self.dir = decomp_dir
+        self.base = base_url
+        self.sha = sha
+        self._files = {}
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.base and self.sha)
+
+    def lines(self, rel: str):
+        if rel not in self._files:
+            p = self.dir / rel
+            self._files[rel] = (p.read_text(encoding="utf-8",
+                                            errors="replace").splitlines()
+                                if p.is_file() else None)
+        return self._files[rel]
+
+    def url(self, rel: str, line=None, end=None) -> str:
+        u = f"{self.base}/blob/{self.sha}/{rel}"
+        if line:
+            u += f"#L{line}" + (f"-L{end}" if end and end != line else "")
+        return u
+
+    def cell(self, rel: str, line=None, end=None) -> str:
+        """Markdown for one Source cell: `[path:line](url)` or plain."""
+        if not rel:
+            return ""
+        label = rel + (f":{line}" if line else "")
+        if not self.enabled or self.lines(rel) is None:
+            return f"`{label}`"
+        return f"[`{label}`]({self.url(rel, line, end)})"
+
+    def _find(self, rel: str, pattern):
+        ls = self.lines(rel)
+        if ls is None:
+            return None
+        for i, l in enumerate(ls, 1):
+            if pattern.match(l):
+                return i
+        return None
+
+    def function(self, name: str, rel: str):
+        """(file, line) of a function definition; the INCLUDE_ASM site of
+        a non-matching function redirects to its .s file."""
+        # `name.NON_MATCHING` is the alias INCLUDE_ASM emits for the
+        # C body kept beside the assembly; it has the same definition.
+        name = name.removesuffix(".NON_MATCHING")
+        if rel.endswith(".s"):
+            return rel, self._find(rel, re.compile(rf"^glabel {name}\b"))
+        ls = self.lines(rel)
+        if ls is None:
+            return rel, None
+        defn = re.compile(rf"^(?!\s)(?!extern\b)[^;{{}}]*\b{name}\s*\(")
+        for i, l in enumerate(ls, 1):
+            m = self.FUNC_MACRO_RE.match(l)
+            if m and m.group(2) == name:
+                asm = f"{m.group(1)}/{name}.s"
+                if self.lines(asm) is not None:
+                    return asm, self._find(asm, re.compile(rf"^glabel {name}\b"))
+                return rel, i
+            if defn.match(l) and ("{" in l or not l.rstrip().endswith(";")):
+                return rel, i
+        # A per-level overlay function `Base_level_N` is defined as
+        # `NAME_OVERLAY_FUNCTION(Base)` in a .inc.h the overlay's .c
+        # includes once per level.
+        m = re.fullmatch(r"(\w+)_level_(\d+)", name)
+        if m:
+            macro = re.compile(
+                rf"^(?!\s)[^;{{}}]*\bNAME_OVERLAY_FUNCTION(?:_LEVEL)?\("
+                rf"\s*{m.group(1)}\s*[,)]")
+            for l in ls:
+                inc = re.match(r'#include\s+"([^"]+)"', l)
+                if not inc:
+                    continue
+                for cand in (f"include/{inc.group(1)}",
+                             str(Path(rel).parent / inc.group(1))):
+                    line = self._find(cand, macro)
+                    if line:
+                        return cand, line
+        return rel, None
+
+    def global_(self, name: str, rel: str):
+        if rel.endswith(".s"):
+            return rel, self._find(rel, re.compile(rf"^[dg]label {name}\b"))
+        # A file-scope definition: starts in column 0, is not a prototype
+        # or extern, and the name is followed by a subscript, `=` or `;`.
+        return rel, self._find(rel, re.compile(
+            rf"^(?!\s)(?!extern\b)(?!typedef\b)[^(;]*\b{name}\b"
+            rf"\s*(\[[^\]]*\]\s*)*(=|;)"))
+
+    def struct(self, name: str, headers):
+        """(file, first line, last line) of `typedef struct ... } Name;`
+        across the given include/ headers."""
+        close = re.compile(rf"^\}}\s*{name}\s*;")
+        opener = re.compile(r"^typedef\s+struct\b")
+        for rel in headers:
+            ls = self.lines(rel)
+            if ls is None:
+                continue
+            for i, l in enumerate(ls, 1):
+                if close.match(l):
+                    start = i
+                    for j in range(i - 1, 0, -1):
+                        if opener.match(ls[j - 1]):
+                            start = j
+                            break
+                    return rel, start, i
+        return None
+
+
+def decomp_remote(gitmodules: Path, sub_path: str):
+    """GitHub web url of a submodule from .gitmodules, or None when the
+    url is not a GitHub repository (ssh aliases like `github-x:o/r.git`
+    and `git@github.com:o/r.git` are recognised)."""
+    if not gitmodules.exists():
+        return None
+    cur = None
+    for l in gitmodules.read_text(encoding="utf-8").splitlines():
+        l = l.strip()
+        m = re.match(r"path\s*=\s*(\S+)", l)
+        if m:
+            cur = m.group(1)
+            continue
+        m = re.match(r"url\s*=\s*(\S+)", l)
+        if m and cur == sub_path:
+            u = m.group(1)
+            m2 = (re.match(r"https?://github\.com/([^/]+)/([^/]+?)(?:\.git)?/?$", u)
+                  or re.match(r"(?:git@github\.com|[\w-]*github[\w-]*):([^/]+)/([^/]+?)(?:\.git)?$", u))
+            return f"https://github.com/{m2.group(1)}/{m2.group(2)}" if m2 else None
+    return None
+
+
+def decomp_commit(decomp_dir: Path):
+    """Commit of the checkout the manifests were built from: the
+    submodule's HEAD, else the gitlink recorded in the parent repository."""
+    import subprocess
+    for cmd in (["git", "-C", str(decomp_dir), "rev-parse", "HEAD"],
+                ["git", "-C", str(REPO), "rev-parse",
+                 "HEAD:" + str(decomp_dir.relative_to(REPO))]):
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=10)
+        except (OSError, ValueError, subprocess.SubprocessError):
+            continue
+        sha = r.stdout.strip()
+        if r.returncode == 0 and re.fullmatch(r"[0-9a-f]{40}", sha):
+            return sha
+    return None
+
+
+def source_note(linker: SourceLinker) -> str:
+    if not linker.enabled:
+        return ""
+    return (f"Source links open the definition in "
+            f"[the decompilation]({linker.base}) at commit "
+            f"[`{linker.sha[:10]}`]({linker.base}/tree/{linker.sha}), the "
+            "checkout this SDK was generated from.\n")
+
+
+def gen_functions(symbols: Path, protos_path: Path, linker: SourceLinker) -> str:
     funcs = read_toml_blocks(symbols, "function")
     protos = parse_protos(protos_path)
 
@@ -486,6 +664,7 @@ def gen_functions(symbols: Path, protos_path: Path) -> str:
         "that isn't named yet. Those names resolve forever under the "
         "decompilation promotion contract, but the loader warns you once "
         "a stable name exists.\n")
+    out.append(source_note(linker))
 
     letter = None
     for name, addr, kind, srcf in rows:
@@ -497,14 +676,16 @@ def gen_functions(symbols: Path, protos_path: Path) -> str:
             out.append("|---|---|---|---|---|")
         sig = protos.get(name)
         sigcell = f"`{sig}` + wrappers" if sig else "raw tier"
-        out.append(f"| `{name}` | `{addr}` | {kind} | {sigcell} | {srcf} |")
+        rel, line = linker.function(name, srcf) if srcf else (srcf, None)
+        out.append(f"| `{name}` | `{addr}` | {kind} | {sigcell} | "
+                   f"{linker.cell(rel, line)} |")
     out.append("")
     return "\n".join(out), len(rows), n_proto
 
 
 # ── globals.md ───────────────────────────────────────────────────────────
 
-def gen_globals(globals_path: Path) -> str:
+def gen_globals(globals_path: Path, linker: SourceLinker) -> str:
     gl = read_toml_blocks(globals_path, "global")
     rows = sorted(
         ((unq(g.get("name", "")), g.get("addr", "?"),
@@ -528,6 +709,7 @@ def gen_globals(globals_path: Path) -> str:
         "addresses, so translate them again before you follow them. A "
         "`D_80XXXXXX` name belongs to the part of the decompilation that "
         "isn't named yet.\n")
+    out.append(source_note(linker))
     letter = None
     for name, addr, section, srcf in rows:
         l = name.lstrip("gD_")[:1].upper() or "#"
@@ -538,14 +720,16 @@ def gen_globals(globals_path: Path) -> str:
             out.append(f"\n## {letter}\n")
             out.append("| Global | Address | Section | Source |")
             out.append("|---|---|---|---|")
-        out.append(f"| `{name}` | `{addr}` | {section} | {srcf} |")
+        rel, line = linker.global_(name, srcf) if srcf else (srcf, None)
+        out.append(f"| `{name}` | `{addr}` | {section} | "
+                   f"{linker.cell(rel, line)} |")
     out.append("")
     return "\n".join(out), len(rows)
 
 
 # ── structs.md ───────────────────────────────────────────────────────────
 
-def gen_structs(structs_header: Path) -> str:
+def gen_structs(structs_header: Path, linker: SourceLinker) -> str:
     out = [GEN_NOTE, "# Game structs\n"]
     if not structs_header or not structs_header.exists():
         out.append("!!! warning\n    `openpete_game_structs.h` wasn\'t "
@@ -560,6 +744,10 @@ def gen_structs(structs_header: Path) -> str:
                           if not l.startswith("@file"))
         out.append("\n".join("> " + l for l in md_prose(
             dox_to_md(intro).strip()).splitlines()) + "\n")
+    out.append(source_note(linker))
+    headers = sorted(p.relative_to(linker.dir).as_posix()
+                     for p in (linker.dir / "include").glob("*.h")
+                     ) if (linker.dir / "include").is_dir() else []
 
     sizes = dict(re.findall(
         r'_Static_assert\(sizeof\((\w+)\)\s*==\s*(0x[0-9a-fA-F]+|\d+)', src))
@@ -574,6 +762,11 @@ def gen_structs(structs_header: Path) -> str:
         name, body = m.group(1), m.group(0)
         out.append(f"## `{name}`\n")
         meta = []
+        where = linker.struct(name, headers)
+        if where:
+            rel, first, last = where
+            meta.append("Defined in " + linker.cell(rel, first, last)
+                        .replace(f":{first}`", f":{first}-{last}`"))
         if name in sizes:
             meta.append(f"`sizeof == {sizes[name]}`")
         if meta:
@@ -1034,6 +1227,10 @@ def main():
     ap.add_argument("--protos",
                     default=REPO / "games/spyro-1/manifest/prototypes.toml",
                     type=Path)
+    ap.add_argument("--decomp-dir", dest="decomp_dir",
+                    default=REPO / "games/spyro-1/spyro-1", type=Path,
+                    help="decompilation checkout the manifests were "
+                         "built from; source links resolve against it")
     ap.add_argument("--structs", type=Path, default=None,
                     help="generated openpete_game_structs.h (default: "
                          "search known build dirs)")
@@ -1073,12 +1270,23 @@ def main():
     args.out.mkdir(parents=True, exist_ok=True)
     args.out_game.mkdir(parents=True, exist_ok=True)
 
+    linker = SourceLinker(
+        args.decomp_dir,
+        decomp_remote(REPO / ".gitmodules",
+                      args.decomp_dir.resolve().relative_to(REPO).as_posix()
+                      if args.decomp_dir.resolve().is_relative_to(REPO)
+                      else ""),
+        decomp_commit(args.decomp_dir))
+    if not linker.enabled:
+        print("[gen_mod_docs] no decomp remote/commit: source cells "
+              "unlinked", file=sys.stderr)
+
     api_md, n_api = gen_api(args.api_header)
     ui_md, n_ui = gen_mod_ui(args.ui_header)
     api_md = api_md.rstrip("\n") + "\n\n" + ui_md
-    fn_md, n_fn, n_proto = gen_functions(args.symbols, args.protos)
-    gl_md, n_gl = gen_globals(args.globals_)
-    st_md, n_st = gen_structs(structs)
+    fn_md, n_fn, n_proto = gen_functions(args.symbols, args.protos, linker)
+    gl_md, n_gl = gen_globals(args.globals_, linker)
+    st_md, n_st = gen_structs(structs, linker)
     api_names = set(re.findall(r"^### `api->(\w+)`", api_md, re.M))
     ex_md, n_mods = gen_examples(args.mods_dir, api_names)
     cs_md, n_cs = gen_cpustate(args.psx_runtime)

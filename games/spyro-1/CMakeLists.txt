@@ -386,6 +386,16 @@ add_dependencies(openpete-spyro1 spyro1_game_structs)
 # guarded: the docs rebuild exactly when an input changed — "the docs
 # never lie" is a build property, not a policy.
 set(_mod_docs_stamp ${CMAKE_CURRENT_BINARY_DIR}/moddocs.stamp)
+# The reference pages link every symbol to the decomp checkout at its
+# commit; the reflog is appended on every HEAD move, so it stands in for
+# "the submodule commit changed".
+execute_process(
+    COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1 rev-parse --git-path logs/HEAD
+    OUTPUT_VARIABLE _mod_docs_decomp_head OUTPUT_STRIP_TRAILING_WHITESPACE
+    ERROR_QUIET RESULT_VARIABLE _mod_docs_git_rc)
+if(NOT _mod_docs_git_rc EQUAL 0 OR NOT EXISTS ${_mod_docs_decomp_head})
+    set(_mod_docs_decomp_head "")
+endif()
 file(GLOB _mod_docs_manifests CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/mods/*/mod.toml)
 file(GLOB _mod_docs_pages CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/docs/modding/pages/*.md)
 # pages/imgui.md is written by the command below, so listing it as an input
@@ -414,6 +424,7 @@ add_custom_command(
             ${_mod_docs_pages}
             ${_mod_docs_assets}
             ${CMAKE_SOURCE_DIR}/mods/examples.txt
+            ${_mod_docs_decomp_head}
     COMMENT "Building mod-author docs (gen_mod_docs.py + mkdocs)")
 add_custom_target(mod_docs ALL DEPENDS ${_mod_docs_stamp})
 
