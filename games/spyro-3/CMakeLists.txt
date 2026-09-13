@@ -55,6 +55,7 @@ add_executable(openpete-spyro3
     main.cpp
     game_extras_impl.c
     skip_to_level.c
+    features/freecam.c
     feature_list.c
     game_icon_none.c
     psyq_stub_runtime.c
@@ -67,6 +68,8 @@ add_executable(openpete-spyro3
     ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_thunks.cpp
     ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_game_hooks_default.c
     ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_thunk_state.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common/write_census.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/../common/freecam_game.c
 
     # PSYQ symbol stubs — abort-on-call. On ELF these are weak so any thunk
     # strongly defines them; on MinGW the macro becomes strong and the link

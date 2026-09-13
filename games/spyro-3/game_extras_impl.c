@@ -10,13 +10,17 @@
 #include "openpete_psx.h"
 #include "spyro_overlay_table.h"
 #include "psyq_game_hooks.h"
+#include "write_census.h"
+#include "freecam_game.h"
 #include "skip_to_level.h"
 #include "openpete_log.h"
 #include "openpete_fiber.h"
 
 #include <stddef.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
+#include <string.h>
 
 /* --- Identity --- */
 uint32_t    game_get_entry_point(void)    { return 0x80059444u; }
@@ -60,13 +64,22 @@ int  game_on_overlay_load(uint32_t overlay_id) {
 void game_on_overlay_init(CPUState* cpu) { (void)cpu; }
 
 void game_apply_runtime_quirks(CPUState* cpu) { (void)cpu; }
-void game_on_boot(CPUState* cpu) { (void)cpu; }
+/* The write census installs over the store hooks before any guest
+ * instruction runs; inert without OPENPETE_WRITE_CENSUS. */
+void game_on_boot(CPUState* cpu) { write_census_install(cpu); }
 
 /* --- Per-tick hooks --- */
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     /* --skip-to-level: drives the title's demo-timeout transition toward the
      * target and holds isDemoMode clear. Inert without the flag. */
     spyro3_skip_on_tick(cpu, frame_counter);
+    /* Scripted engage of the debug free camera (OPENPETE_FREECAM=1 /
+     * OPENPETE_FREECAM_POSE / OPENPETE_FREECAM_PATH) once gameplay is live. */
+    freecam_maybe_autoengage(cpu);
+    /* Write census: every fiber resume in a tick happens inside Draw's VSync
+     * waits, after the view matrix has been built, so a store seen from here
+     * until the next phase entry precedes it for that tick. */
+    if (write_census_active()) write_census_set_phase(0);
 }
 void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
     (void)cpu; (void)frame_counter;
@@ -95,11 +108,19 @@ void game_on_state_loaded(CPUState* cpu) {
  * in-memory snapshot users (rewind keyframes, runahead) out of them. */
 int game_is_gameplay_live(CPUState* cpu) { return spyro3_skip_gameplay_live(cpu); }
 
-/* The player struct is not localised for this game yet. Non-zero means "not
- * ready", which is what the position log expects before the struct exists. */
+/* g_Spyro (0x80070328) holds the position in its first three words. */
 int game_get_player_position(int32_t* out_x, int32_t* out_y, int32_t* out_z) {
-    (void)out_x; (void)out_y; (void)out_z;
-    return -1;
+    uint8_t* ram = openpete_psx_get_ram();
+    if (!ram) return -1;
+    const uint32_t base = 0x80070328u - 0x80000000u;
+    int32_t x, y, z;
+    memcpy(&x, ram + base + 0, 4);
+    memcpy(&y, ram + base + 4, 4);
+    memcpy(&z, ram + base + 8, 4);
+    *out_x = x;
+    *out_y = y;
+    *out_z = z;
+    return 0;
 }
 
 /* --- CLI --- */
@@ -189,7 +210,12 @@ static void checksum_verdict(CPUState* cpu) {
 }
 
 int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
+    /* Debug free camera (F): while engaged and gameplay is live, drive the
+     * camera in place of func_8001204C and suppress it and the player update
+     * func_8003E83C. Inactive: one bool test. */
+    if (freecam_should_freeze(cpu, addr)) return 1;
     if (addr == 0x8002CA50u) checksum_verdict(cpu);
+    if (write_census_active()) write_census_note_entry(addr);
     return 0;
 }
 
