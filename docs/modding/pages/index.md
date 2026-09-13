@@ -73,4 +73,9 @@ mod engine-rendered settings and rebindable keys with no UI code.
   [globals](reference/spyro-1/globals.md),
   [game structs](reference/spyro-1/structs.md),
   [CPUState](reference/cpustate.md),
-  [examples](reference/examples.md).
+  [examples](reference/examples.md). Every symbol links to its definition
+  in the decompilation at the commit the build used. Spyro 2 and Spyro 3
+  have the same three pages ([functions](reference/spyro-2/functions.md),
+  [globals](reference/spyro-3/globals.md), ...) describing their
+  decompilations; neither game has a mod SDK yet, so those names are not
+  hookable by name and their structs carry no pins.

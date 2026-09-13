@@ -394,16 +394,24 @@ add_dependencies(openpete-spyro1 spyro1_game_structs)
 # guarded: the docs rebuild exactly when an input changed — "the docs
 # never lie" is a build property, not a policy.
 set(_mod_docs_stamp ${CMAKE_CURRENT_BINARY_DIR}/moddocs.stamp)
-# The reference pages link every symbol to the decomp checkout at its
-# commit; the reflog is appended on every HEAD move, so it stands in for
-# "the submodule commit changed".
-execute_process(
-    COMMAND git -C ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1 rev-parse --git-path logs/HEAD
-    OUTPUT_VARIABLE _mod_docs_decomp_head OUTPUT_STRIP_TRAILING_WHITESPACE
-    ERROR_QUIET RESULT_VARIABLE _mod_docs_git_rc)
-if(NOT _mod_docs_git_rc EQUAL 0 OR NOT EXISTS ${_mod_docs_decomp_head})
-    set(_mod_docs_decomp_head "")
-endif()
+# The reference pages cover every game's manifests and decomp headers and
+# link each symbol to the decomp checkout at its commit; the reflog is
+# appended on every HEAD move, so it stands in for "the submodule commit
+# changed".
+set(_mod_docs_game_inputs "")
+foreach(_g spyro-1 spyro-2 spyro-3)
+    execute_process(
+        COMMAND git -C ${CMAKE_SOURCE_DIR}/games/${_g}/${_g} rev-parse --git-path logs/HEAD
+        OUTPUT_VARIABLE _head OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET RESULT_VARIABLE _rc)
+    if(_rc EQUAL 0 AND EXISTS ${_head})
+        list(APPEND _mod_docs_game_inputs ${_head})
+    endif()
+    file(GLOB _hdrs CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/games/${_g}/${_g}/include/*.h)
+    list(APPEND _mod_docs_game_inputs ${_hdrs}
+         ${CMAKE_SOURCE_DIR}/games/${_g}/manifest/symbols.toml
+         ${CMAKE_SOURCE_DIR}/games/${_g}/manifest/globals.toml)
+endforeach()
 file(GLOB _mod_docs_manifests CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/mods/*/mod.toml)
 file(GLOB _mod_docs_pages CONFIGURE_DEPENDS ${CMAKE_SOURCE_DIR}/docs/modding/pages/*.md)
 # pages/imgui.md is written by the command below, so listing it as an input
@@ -421,9 +429,9 @@ add_custom_command(
             ${CMAKE_SOURCE_DIR}/core/include/openpete_imgui.h
             ${CMAKE_SOURCE_DIR}/third_party/imgui/imgui.h
             ${CMAKE_SOURCE_DIR}/tools/gen_imgui_table.py
-            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
-            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/globals.toml
+            ${_mod_docs_game_inputs}
             ${CMAKE_CURRENT_SOURCE_DIR}/manifest/prototypes.toml
+            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/struct_layout.toml
             ${_mod_sdk_gen}/openpete_game_structs.h
             ${CMAKE_SOURCE_DIR}/tools/gen_mod_docs.py
             ${CMAKE_SOURCE_DIR}/scripts/build-mod-docs.sh
@@ -432,7 +440,6 @@ add_custom_command(
             ${_mod_docs_pages}
             ${_mod_docs_assets}
             ${CMAKE_SOURCE_DIR}/mods/examples.txt
-            ${_mod_docs_decomp_head}
     COMMENT "Building mod-author docs (gen_mod_docs.py + mkdocs)")
 add_custom_target(mod_docs ALL DEPENDS ${_mod_docs_stamp})
 

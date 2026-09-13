@@ -90,3 +90,11 @@ nav:
           - Functions: reference/spyro-1/functions.md
           - Globals: reference/spyro-1/globals.md
           - Game structs: reference/spyro-1/structs.md
+      - Spyro 2:
+          - Functions: reference/spyro-2/functions.md
+          - Globals: reference/spyro-2/globals.md
+          - Game structs: reference/spyro-2/structs.md
+      - Spyro 3:
+          - Functions: reference/spyro-3/functions.md
+          - Globals: reference/spyro-3/globals.md
+          - Game structs: reference/spyro-3/structs.md
