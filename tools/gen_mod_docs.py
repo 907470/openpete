@@ -640,6 +640,10 @@ def gen_functions(symbols: Path, protos_path: Path, linker: SourceLinker) -> str
     rows = []
     for f in funcs:
         name = unq(f.get("name", ""))
+        # INCLUDE_ASM emits `name.NON_MATCHING` beside `name` at the same
+        # address; a mod hooks the base name.
+        if name.endswith(".NON_MATCHING"):
+            continue
         rows.append((name, f.get("addr", "?"),
                      unq(f.get("source_file", ""))))
     rows.sort(key=lambda r: r[0].lower())
