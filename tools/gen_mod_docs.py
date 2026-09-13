@@ -769,14 +769,12 @@ def gen_structs(structs_header: Path, linker: SourceLinker) -> str:
         where = linker.struct(name, headers)
         if where:
             rel, first, last = where
-            meta.append("Defined in " + linker.cell(rel, first, last)
+            meta.append("Source: " + linker.cell(rel, first, last)
                         .replace(f":{first}`", f":{first}-{last}`"))
         if name in sizes:
-            meta.append(f"`sizeof == {sizes[name]}`")
+            meta.append(f"Size: `{sizes[name]}`")
         if meta:
-            out.append(" · ".join(meta) + ". The layout is pinned, so "
-                       "drift fails the mod's compile rather than a "
-                       "player's session.\n")
+            out.append("  \n".join(meta) + "\n")
         if name in offsets:
             out.append("| Field | Offset |")
             out.append("|---|---|")
