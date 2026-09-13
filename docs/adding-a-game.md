@@ -115,6 +115,8 @@ build/linux-release/games/<game>/openpete-<tag> --headless --no-card \
 a line-7 interrupt the host does not deliver yet. A PSYQ entry with no thunk
 aborts with its name; `OPENPETE_PSYQ_STUB_CONTINUE=1` logs each distinct one
 and continues, which enumerates the untranslated surface in one run.
+`scripts/psyq_stub_census.sh <game>` does that across every level the game's
+`--skip-to-level` lists and reports which untranslated symbols were reached.
 
 `scripts/check_ram_diff.sh <game>` compares whole RAM against DuckStation at
 an anchor; the Spyro 1 oracle golden and presentation golden have no
