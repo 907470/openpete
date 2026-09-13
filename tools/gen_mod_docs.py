@@ -733,7 +733,8 @@ def gen_globals(globals_path: Path, linker: SourceLinker) -> str:
 
 # ── structs.md ───────────────────────────────────────────────────────────
 
-def gen_structs(structs_header: Path, linker: SourceLinker) -> str:
+def gen_structs(structs_header: Path, linker: SourceLinker,
+                layout_toml: Path = None) -> str:
     out = [GEN_NOTE, "# Game structs\n"]
     if not structs_header or not structs_header.exists():
         out.append("!!! warning\n    `openpete_game_structs.h` wasn\'t "
@@ -757,20 +758,27 @@ def gen_structs(structs_header: Path, linker: SourceLinker) -> str:
         r'_Static_assert\(sizeof\((\w+)\)\s*==\s*(0x[0-9a-fA-F]+|\d+)', src))
     offsets = {}
     for s, f, off in re.findall(
-            r'_Static_assert\(offsetof\((\w+),\s*(\w+)\)\s*==\s*'
+            r'_Static_assert\(offsetof\((\w+),\s*([\w.\[\]]+)\)\s*==\s*'
             r'(0x[0-9a-fA-F]+|\d+)', src):
         offsets.setdefault(s, []).append((f, off))
+    n_pins = len(sizes) + sum(len(v) for v in offsets.values())
 
-    n = 0
-    for m in re.finditer(r"typedef struct (\w+) \{(.*?)\} \1;", src, re.S):
-        name, body = m.group(1), m.group(0)
+    # PSYQ types are emitted ahead of the game structs and have no decomp
+    # source range; they are listed in their own section.
+    sys.path.insert(0, str(REPO / "tools"))
+    import psyq_types as P
+    psyq = set(P.psyq_names())
+
+    def emit(name, body):
         out.append(f"## `{name}`\n")
         meta = []
-        where = linker.struct(name, headers)
+        where = linker.struct(name, headers) if name not in psyq else None
         if where:
             rel, first, last = where
             meta.append("Source: " + linker.cell(rel, first, last)
                         .replace(f":{first}`", f":{first}-{last}`"))
+        elif name in psyq:
+            meta.append("Source: PSYQ SDK (`tools/psyq_types.py`)")
         if name in sizes:
             meta.append(f"Size: `{sizes[name]}`")
         if meta:
@@ -782,8 +790,32 @@ def gen_structs(structs_header: Path, linker: SourceLinker) -> str:
                 out.append(f"| `{f}` | `{off}` |")
             out.append("")
         out.append(f"```c\n{body.strip()}\n```\n")
-        n += 1
-    return "\n".join(out), n
+
+    game, psyq_blocks = [], []
+    for m in re.finditer(r"typedef struct (\w+) \{(.*?)\} \1;", src, re.S):
+        (psyq_blocks if m.group(1) in psyq else game).append(
+            (m.group(1), m.group(0)))
+    game.sort(key=lambda t: t[0].lower())
+    for name, body in game:
+        emit(name, body)
+    if psyq_blocks:
+        out.append("## PSYQ types\n")
+        out.append("Types from the PlayStation SDK that the game structs "
+                   "embed. Their layouts are pinned like every other struct; "
+                   "`RECT` and `MATRIX` complete the forward declarations "
+                   "the wrappers header makes.\n")
+        for name, body in psyq_blocks:
+            emit(name, body)
+
+    if layout_toml and layout_toml.exists():
+        t = layout_toml.read_text(encoding="utf-8")
+        n_toml = (len(re.findall(r"^size = ", t, re.M))
+                  + len(re.findall(r"\{ name = ", t)))
+        if n_toml != n_pins:
+            sys.exit(f"gen_mod_docs: {n_pins} pins on the structs page, "
+                     f"{n_toml} in {layout_toml.name}; the pin extractor "
+                     "missed some")
+    return "\n".join(out), len(game) + len(psyq_blocks)
 
 
 # ── examples.md ──────────────────────────────────────────────────────────
@@ -1236,6 +1268,10 @@ def main():
     ap.add_argument("--structs", type=Path, default=None,
                     help="generated openpete_game_structs.h (default: "
                          "search known build dirs)")
+    ap.add_argument("--layout", type=Path,
+                    default=REPO / "games/spyro-1/manifest/struct_layout.toml",
+                    help="struct_layout.toml; the structs page must carry "
+                         "exactly its pins")
     ap.add_argument("--mods-dir", default=REPO / "mods", type=Path)
     ap.add_argument("--psx-runtime",
                     default=REPO / "third_party/psxrecomp/runner/include/psx_runtime.h",
@@ -1288,7 +1324,7 @@ def main():
     api_md = api_md.rstrip("\n") + "\n\n" + ui_md
     fn_md, n_fn, n_proto = gen_functions(args.symbols, args.protos, linker)
     gl_md, n_gl = gen_globals(args.globals_, linker)
-    st_md, n_st = gen_structs(structs, linker)
+    st_md, n_st = gen_structs(structs, linker, args.layout)
     api_names = set(re.findall(r"^### `api->(\w+)`", api_md, re.M))
     ex_md, n_mods = gen_examples(args.mods_dir, api_names)
     cs_md, n_cs = gen_cpustate(args.psx_runtime)

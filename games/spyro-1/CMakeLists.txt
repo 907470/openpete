@@ -356,17 +356,25 @@ add_custom_command(
     COMMENT "Generating mod SDK symbol table + natural wrappers (gen_mod_sdk.py)")
 target_sources(openpete-spyro1 PRIVATE ${_mod_sdk_gen}/sdk_symbols_table.c)
 
-# Typed game structs for mods (P1 SDK-gen): curated decomp layouts with
-# guest-pointer fields rewritten to uint32_t + _Static_assert pins.
+# Typed game structs for mods: every decomp typedef struct plus the PSYQ
+# types they embed, guest-pointer fields rewritten to uint32_t, pinned by
+# _Static_asserts read from manifest/struct_layout.toml (the MIPS layout
+# probed by scripts/regen-struct-layout.sh; committed, so no build needs
+# the MIPS compiler). The generator refuses a toml probed from other
+# headers than the checkout's.
+file(GLOB _spyro1_decomp_headers CONFIGURE_DEPENDS
+     ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include/*.h)
 add_custom_command(
     OUTPUT  ${_mod_sdk_gen}/openpete_game_structs.h
     COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_game_structs.py
             --include ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include
+            --layout ${CMAKE_CURRENT_SOURCE_DIR}/manifest/struct_layout.toml
             --out ${_mod_sdk_gen}/openpete_game_structs.h
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include/moby.h
-            ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include/vector.h
-            ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/include/matrix.h
+    DEPENDS ${_spyro1_decomp_headers}
+            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/struct_layout.toml
             ${CMAKE_SOURCE_DIR}/tools/gen_game_structs.py
+            ${CMAKE_SOURCE_DIR}/tools/psyq_types.py
+            ${CMAKE_SOURCE_DIR}/tools/probe_struct_layout.py
     COMMENT "Generating typed game structs for the mod SDK (gen_game_structs.py)")
 add_custom_target(spyro1_game_structs ALL
     COMMAND ${CMAKE_COMMAND} -E make_directory
