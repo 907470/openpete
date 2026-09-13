@@ -4655,6 +4655,39 @@ static int run_host_loop(const openpete_options_t* opts) {
                            opts->screenshot_frames[si],
                            opts->screenshot_ticks_keyed ? "tick" : "frame");
             }
+            /* OPENPETE_VRAM_DUMP=<path> writes PsyCross's 1024x512 16-bit
+             * VRAM mirror once, on the frame or tick named by
+             * OPENPETE_VRAM_DUMP_FRAME (default: the first keyed screenshot).
+             * The mirror is CPU-side, so this is independent of GL state and
+             * works headless. Raw little-endian u16, row-major. */
+            {
+                static bool s_vram_dumped = false;
+                const char *vd = getenv("OPENPETE_VRAM_DUMP");
+                if (vd && *vd && !s_vram_dumped) {
+                    const char *vf = getenv("OPENPETE_VRAM_DUMP_FRAME");
+                    int want = vf && *vf ? atoi(vf)
+                             : (opts->screenshot_frame_count > 0
+                                    ? opts->screenshot_frames[0] : -1);
+                    if (want >= 0 && shot_key >= want) {
+                        extern void GR_ReadVRAM(unsigned short *dst, int x, int y,
+                                                int dst_w, int dst_h);
+                        static unsigned short vram[1024 * 512];
+                        GR_ReadVRAM(vram, 0, 0, 1024, 512);
+                        FILE *vfh = fopen(vd, "wb");
+                        if (vfh) {
+                            size_t n = fwrite(vram, sizeof vram, 1, vfh);
+                            fclose(vfh);
+                            s_vram_dumped = true;
+                            OPL_INFO_F("vram-dump",
+                                       "wrote %s (1024x512 u16) on frame %u tick %u%s",
+                                       vd, openpete_frame, openpete_canon_tick,
+                                       n == 1 ? "" : " (SHORT WRITE)");
+                        } else {
+                            OPL_WARN_F("vram-dump", "cannot open %s", vd);
+                        }
+                    }
+                }
+            }
             if (opts->screenshot_presents_start >= 0
                     && (int)openpete_frame >= opts->screenshot_presents_start
                     && s_presents_captured < opts->screenshot_presents_count) {
