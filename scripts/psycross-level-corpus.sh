@@ -40,6 +40,9 @@
 set -u
 
 # Unattended launcher: nobody is holding the pad (scripts/fences/rumble_guard.py).
+# Forwarded rather than exported, because WSL does not pass the Linux
+# environment to a Windows child: an exported knob would silently not arrive
+# for the --exe windows leg and the run would use the default.
 export OPENPETE_VIBRATION=0
 # PsyCross rasterizes through software GL headless, so the capture needs no GPU
 # and does not race whatever the user has on screen.
@@ -49,6 +52,9 @@ export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/corpus-jobs.sh
 source scripts/corpus-jobs.sh
+# shellcheck source=scripts/lib/wslenv.sh
+. scripts/lib/wslenv.sh
+wslenv_forward OPENPETE_VIBRATION=0
 
 GAME="${1:-}"; OUT="${2:-}"
 [[ -z "$GAME" || -z "$OUT" ]] && {
@@ -99,7 +105,7 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 
 # tr -d '\r': a Windows exe writes CRLF, and the trailing carriage return
 # defeats the anchored match, which then reports the game as having no levels.
-mapfile -t LEVELS < <("$BIN" --skip-to-level 2>&1 | tr -d '\r' |
+mapfile -t LEVELS < <(env "${WSLENV_ARGS[@]}" "$BIN" --skip-to-level 2>&1 | tr -d '\r' |
                       awk '/^ +[a-z0-9_]+ +\([0-9]+\)$/ {print $1}')
 [[ ${#LEVELS[@]} -gt 0 ]] || { echo "[psycross-corpus] SKIP: no levels" >&2; exit 64; }
 if [[ -n "$FILTER" ]]; then
@@ -112,6 +118,7 @@ FRAME_LIMIT=$(( TICK * 2 + 700 ))
 
 capture_level() {
   local lvl="$1" log="$OUT/$1.log"
+  env "${WSLENV_ARGS[@]}" \
   "$BIN" --headless --disc "$DISC" --skip-to-level "$lvl" \
          --no-card --mute 1 --vibration 0 \
          --screenshot-on-tick "$TICK" \
