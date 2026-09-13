@@ -661,9 +661,9 @@ def gen_functions(symbols: Path, protos_path: Path, linker: SourceLinker) -> str
         "wrappers in `openpete_sdk_wrappers.h`: `OP_OVERRIDE_IMPL_Name`, "
         "`OP_REGISTER_OVERRIDE_Name`, `op_base_Name`, and "
         "`op_call_Name`, which give you typed arguments, pointer "
-        "marshalling, and argument-register save and restore. Everything "
-        "else uses the raw tier: read `cpu->a0` through `cpu->a3`, and "
-        "write `cpu->v0`.\n\n"
+        "marshalling, and argument-register save and restore. A function "
+        "with an empty Signature cell has no prototype: read `cpu->a0` "
+        "through `cpu->a3`, and write `cpu->v0`.\n\n"
         "A `func_XXXXXXXX` name belongs to the part of the decompilation "
         "that isn't named yet. Those names resolve forever under the "
         "decompilation promotion contract, but the loader warns you once "
@@ -679,7 +679,7 @@ def gen_functions(symbols: Path, protos_path: Path, linker: SourceLinker) -> str
             out.append("| Function | Address | Signature | Source |")
             out.append("|---|---|---|---|")
         sig = protos.get(name)
-        sigcell = f"`{sig}` + wrappers" if sig else "raw tier"
+        sigcell = f"`{sig}` + wrappers" if sig else ""
         rel, line = linker.function(name, srcf) if srcf else (srcf, None)
         out.append(f"| `{name}` | `{addr}` | {sigcell} | "
                    f"{linker.cell(rel, line)} |")
