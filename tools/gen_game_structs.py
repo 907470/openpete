@@ -73,6 +73,70 @@ PTR_FIELD_RE = re.compile(
     r"^(\s*)((?:struct\s+\w+|\w+)\s*\*+)\s*(\w+)\s*;(.*)$")
 
 
+def strip_comments(text: str) -> str:
+    return re.sub(r"//[^\n]*|/\*.*?\*/", "", text, flags=re.S)
+
+
+def enumerate_structs(include_dir: Path):
+    """Every top-level `typedef struct [tag] { ... } Name;` in include/*.h,
+    as (header basename, Name, raw body) in file order."""
+    out = []
+    for h in sorted(include_dir.glob("*.h")):
+        text = h.read_text(encoding="utf-8")
+        for m in TYPEDEF_START_RE.finditer(text):
+            depth, i = 1, m.end()
+            while depth and i < len(text):
+                depth += text[i] == "{"
+                depth -= text[i] == "}"
+                i += 1
+            tail = re.match(r"\s*(\w+)\s*;", text[i:])
+            if tail:
+                out.append((h.name, tail.group(1), text[m.end():i - 1]))
+    return out
+
+
+def member_paths(body: str, prefix: str = ""):
+    """Dotted member paths of a struct body usable in offsetof: every
+    declarator at depth 0, recursing into anonymous nested struct/union
+    members. Bitfield members are omitted (offsetof on a bitfield is a
+    constraint violation); their enclosing member is still listed."""
+    body = strip_comments(body)
+    paths, depth, cur, nested = [], 0, "", None
+    for ch in body:
+        if depth > 0:
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    cur = "\0"   # the declarator that follows names a block
+                    continue
+            nested += ch
+            continue
+        if ch == "{":
+            depth, nested = 1, ""
+            continue
+        if ch != ";":
+            cur += ch
+            continue
+        decl, cur = cur.strip(), ""
+        is_nested = decl.startswith("\0")
+        decl = decl.lstrip("\0").strip()
+        if not decl or re.search(r":\s*\d+$", decl):
+            continue
+        # Declarator names are the words followed by `,` or the end, after
+        # optional subscripts; a type word never sits in that position.
+        names = re.findall(r"(\w+)\s*((?:\[[^\]]*\]\s*)*)(?:,|$)", decl)
+        for n, subs in names:
+            full = f"{prefix}{n}"
+            paths.append(full)
+            if is_nested:
+                # an array of nested blocks is walked through element 0
+                elem = full + "[0]" * subs.count("[")
+                paths.extend(member_paths(nested, elem + "."))
+    return paths
+
+
 def extract(header_text: str, name: str) -> str:
     """Brace-matched typedef body (handles nested unions/structs)."""
     for m in TYPEDEF_START_RE.finditer(header_text):
