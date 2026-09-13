@@ -1,12 +1,11 @@
 // games/spyro-1/game_extras_impl.c — Spyro 1's per-game hooks.
 //
-// Phase 0b fills in only the identity hooks needed for the empty binary's
-// window title + future disc validation. Memory layout, overlays, and
-// runtime quirks are TODO until Phase 1b.
+// Identity is generated from recomp.conf (game_identity.c); this file holds
+// the behavioural hooks: overlay handling, runtime quirks, the per-tick
+// entries, savestate, and the CLI resolvers.
 //
 // Disc image: games/spyro-1/spyro-1/build/SCUS-94228.cue
 // Disc BIN SHA256: fc866b2a02e010a6658f8af2de28bb3001eb33513e5924af014e35643c6dee37
-// PSX EXE: SCUS_942.28 (CRC32 over full header+body)
 
 #include "game_extras.h"
 #include "feature_registry.h"
@@ -23,6 +22,7 @@
 #include "features/credits_skip.h"
 #include "features/crash_demo_woah.h"
 #include "freecam_game.h"
+#include "write_census.h"
 #include "openpete_fillpick.h"
 #include "features/levelwarp_native.h"
 #include "psyq_thunk_state.h"
@@ -31,35 +31,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-
-/* --- Identity --- */
-
-uint32_t game_get_entry_point(void) {
-    /* From spyro-1/build/PSX.EXE header (initial_pc field). */
-    return 0x8005B8E0u;
-}
-
-const char* game_get_exe_filename(void) {
-    return "SCUS_942.28";
-}
-
-uint32_t game_get_expected_crc32(void) {
-    /* CRC32 of spyro-1/build/PSX.EXE (full file, 2 KB header + body).
-     * Re-compute if the matching decomp's binary changes:
-     *   python3 -c "import zlib; print(hex(zlib.crc32(open('build/PSX.EXE','rb').read())))"
-     */
-    return 0xC56EB4EEu;
-}
-
-const char* game_get_display_name(void) {
-    return "Spyro the Dragon";
-}
-
-const char* game_get_id(void) {
-    /* Stable machine id, not the display name: it keys the [game.spyro-1]
-     * scope in openpete.toml, so it has to survive a title-casing whim. */
-    return "spyro-1";
-}
 
 uint32_t game_get_pad_read_pc(void) {
     /* PadVSync (spyro-1/src/gamepad.c) @ 0x80053C68 — the game's once-per-
@@ -79,14 +50,6 @@ uint32_t game_get_pad_read_pc(void) {
  * deferred completion at either site would never fire. The oracle golden
  * and every recorded bk2 carry this value. */
 uint32_t game_get_load_delay_default(void) { return 0u; }
-
-/* --- Memory layout (PSX defaults; overrides come in Phase 1b) --- */
-
-uint32_t game_get_ram_size(void)             { return 2u * 1024u * 1024u; }
-uint32_t game_get_compiled_range_start(void) { return 0x80010000u; }
-uint32_t game_get_compiled_range_end(void)   { return 0x80075800u; } /* load_addr + load_size */
-uint32_t game_get_overlay_range_start(void)  { return 0x80100000u; } /* TODO Phase 1b */
-uint32_t game_get_overlay_range_end(void)    { return 0x801F0000u; } /* TODO Phase 1b */
 
 /* --- Overlays / quirks / per-frame --- */
 
@@ -109,6 +72,9 @@ void game_on_boot(CPUState* cpu) {
      * registry overwrites per level; snapshot the shipped values while
      * they are still the only thing in those bytes. */
     spyro1_mod_level_capture_stock_counts(cpu);
+    /* The write census installs over the store hooks before any guest
+     * instruction runs; inert without OPENPETE_WRITE_CENSUS. */
+    write_census_install(cpu);
 }
 
 extern unsigned openpete_frame;

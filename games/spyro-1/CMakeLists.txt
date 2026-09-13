@@ -1,11 +1,11 @@
 # games/spyro-1/CMakeLists.txt — Spyro 1 binary.
 #
-# Sources include the recompiled main EXE plus every overlay translated
-# by scripts/regen-recomp.sh. Each overlay is recompiled with a unique
-# --func-prefix and its `psx_dispatch_compiled` is sed-renamed to
-# `psx_dispatch_<name>` so they all coexist at link. dispatch_chain.c
-# fans calls out to the active overlay via the auto-generated table in
-# generated/spyro_overlay_table.c.
+# The module and executable skeleton come from cmake/openpete_game.cmake;
+# this file adds what only this game has: the native-decomp TUs and their
+# link-time aliases, the shared-linkage attach and export surface, the mod
+# SDK and its docs, the build-time mod compile, the decomp-derived icon, the
+# SoundTable names, the state-region tables, the Windows subsystem and ASLR
+# choices, and the browser link.
 
 set(SPYRO_GENERATED ${CMAKE_CURRENT_SOURCE_DIR}/generated)
 
@@ -28,16 +28,6 @@ option(OPENPETE_SKIP_DECOMP
 option(OPENPETE_FUNC_TRACE
        "Instrument the generated EXE for per-function CPU tracing"
        OFF)
-
-# Pick up every recompiled overlay automatically. CONFIGURE_DEPENDS
-# re-runs the GLOB on subsequent cmake invocations so newly-regen'd
-# overlays get picked up without a manual reconfigure.
-file(GLOB SPYRO_OVERLAY_FULL_C
-    CONFIGURE_DEPENDS
-    "${SPYRO_GENERATED}/*/*.bin_full.c")
-file(GLOB SPYRO_OVERLAY_DISPATCH_C
-    CONFIGURE_DEPENDS
-    "${SPYRO_GENERATED}/*/*.bin_dispatch.c")
 
 # Native-decomp TU list. Centralized so OPENPETE_SKIP_DECOMP can drop
 # them in one place — both from add_executable() and from the per-source
@@ -91,20 +81,14 @@ else()
         ${SPYRO_GENERATED}/native_thunks.cpp)
 endif()
 
-# --- ROM-derived recomp module (distribution seam, plan D0/D1) ----------
+# --- ROM-derived recomp module -----------------------------------------
 #
-# Everything ROM-derived lives in this library behind the
-# openpete_recomp_module descriptor (module_main.c): the recompiled main
-# EXE + every overlay, the overlay registry, and dispatch_chain.c.
-# psyq_stubs.c intentionally stays EXE-side next to psyq_thunks.cpp —
-# PE has no dynamic symbol preemption, so module-side weak stubs would
-# shadow the strong thunks on Windows (D0-spike finding).
-#
-# OPENPETE_RECOMP_LINKAGE selects how it reaches the exe:
+# OPENPETE_RECOMP_LINKAGE selects how the spyro1_recomp_module built by
+# openpete_add_game reaches the exe:
 #   static — OBJECT library linked straight in (dev default;
 #            byte-identical link semantics, no archive member pulling).
-#   shared — spyro1-recomp.{so,dll} + dlopen loader (distribution D1;
-#            the same sources users boot-compile in D2).
+#   shared — spyro1-recomp.{so,dll} + dlopen loader (the distribution
+#            build; the same sources users boot-compile at first run).
 set(OPENPETE_RECOMP_LINKAGE "static" CACHE STRING
     "Recomp module linkage: static (dev) or shared (distribution)")
 set_property(CACHE OPENPETE_RECOMP_LINKAGE PROPERTY STRINGS static shared)
@@ -115,66 +99,6 @@ if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared" AND NOT OPENPETE_SKIP_DECOMP)
         "(hybrid decomp mode is static-only: --defsym aliases + native "
         "thunks assume one image)")
 endif()
-
-set(SPYRO_MODULE_SOURCES
-    # Recompiled main EXE. Its `psx_dispatch_compiled` is sed-renamed to
-    # `psx_dispatch_main_exe` by regen-recomp.sh.
-    ${SPYRO_GENERATED}/PSX.EXE_full.c
-    ${SPYRO_GENERATED}/PSX.EXE_dispatch.c
-    # Every translated overlay (titlescreen, credits, level_10..level_64).
-    ${SPYRO_OVERLAY_FULL_C}
-    ${SPYRO_OVERLAY_DISPATCH_C}
-    # Auto-generated overlay registry — id-magic -> dispatcher.
-    ${SPYRO_GENERATED}/spyro_overlay_table.c
-    # Fans psx_dispatch_compiled out to main EXE + active overlay.
-    ${CMAKE_CURRENT_SOURCE_DIR}/../common/overlay_dispatch.c
-    # The descriptor the host resolves (openpete_recomp_module.h).
-    module_main.c)
-
-if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
-    add_library(spyro1_recomp_module SHARED ${SPYRO_MODULE_SOURCES})
-    # Route the exe-exported DATA symbols through the import table
-    # (__declspec(dllimport)) instead of fragile PE pseudo-relocation —
-    # see psx_runtime.h. Module TUs only; the exe DEFINES those symbols.
-    target_compile_definitions(spyro1_recomp_module PRIVATE
-        OPENPETE_RECOMP_MODULE_BUILD)
-    set_target_properties(spyro1_recomp_module PROPERTIES
-        OUTPUT_NAME "spyro1-recomp"
-        PREFIX ""                       # spyro1-recomp.so, not lib*.so
-        POSITION_INDEPENDENT_CODE ON
-        # LTO stays OFF for the module even when the preset turns on IPO
-        # globally: the shipped module is compiled at first boot (plain
-        # -O2, no LTO — LTO over ~1.6M lines would blow the boot budget),
-        # so this CMake-built .so/.dll is only a dev artifact and gets no
-        # value from LTO. The base exe + runtime DO get LTO (below).
-        INTERPROCEDURAL_OPTIMIZATION OFF)
-    if(NOT WIN32)
-        # Bind module-internal references internally — matches PE
-        # semantics (no cross-image preemption) so both OSes behave
-        # identically, and skips PLT interposition on internal calls.
-        target_link_options(spyro1_recomp_module PRIVATE
-            -Wl,-Bsymbolic-functions)
-        # Module->host imports resolve at dlopen against the exe's
-        # -rdynamic exports; leave them undefined at link.
-        target_link_options(spyro1_recomp_module PRIVATE
-            -Wl,--unresolved-symbols=ignore-all)
-    endif()
-else()
-    add_library(spyro1_recomp_module OBJECT ${SPYRO_MODULE_SOURCES})
-    # Usage requirements only (psx_runtime.h et al.); OBJECT libraries
-    # don't embed their dependencies.
-    target_link_libraries(spyro1_recomp_module PRIVATE openpete_core)
-endif()
-target_include_directories(spyro1_recomp_module PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../common
-    ${SPYRO_GENERATED}
-    # Include dirs only — the shared module must NOT link openpete_core
-    # (a second copy of core state inside the module would be wrong).
-    $<TARGET_PROPERTY:openpete_core,INTERFACE_INCLUDE_DIRECTORIES>)
-set_target_properties(spyro1_recomp_module PROPERTIES
-    C_STANDARD 99
-    C_STANDARD_REQUIRED ON)
 
 # Host-side attach TU + (shared) the generated export surface.
 if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
@@ -201,79 +125,96 @@ else()
     set(SPYRO_RECOMP_ATTACH_SOURCES recomp_attach_static.c)
 endif()
 
-add_executable(openpete-spyro1
-    main.cpp
-    game_extras_impl.c
-    psyq_hooks.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_game_hooks_default.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_thunk_state.c
-    mod_wad_overlay.c
-    feature_list.c
-    features/render_paths.c
-    features/polybuf_guard.c
-    features/render_decouple.c
-    features/native_gte.c
-    features/cyclorama_native.c
-    features/moby_native.c
-    features/moby_rank.c
-    features/spyro_native.c
-    features/s3_actor_native.c
-    features/mod_moby_ops.c
-    features/mod_level_ops.c
-    features/flame_native.c
-    features/shadow_native.c
-    features/particle_native.c
-    features/tracer_native.c
-    features/terrain_native.c
-    features/ui_sprite_native.c
-    features/portal_native.c
-    features/text_moby_native.c
-    features/text_moby_id.c
-    features/transition_native.c
-    features/freecam.c
-    ${CMAKE_CURRENT_SOURCE_DIR}/../common/freecam_game.c
-    features/audio_volume_native.c
-    features/vibration_native.c
-    features/cheats_native.c
-    features/credits_skip.c
-    features/crash_demo_woah.c
-    features/levelwarp_native.c
+# App icon. Two sources (distribution D3):
+#   OPENPETE_ROM_FREE_ICON=OFF (dev default) — decoded from the PSX
+#     save-file header's CLUT+icon data (save_file.h:39): the authentic
+#     memcard icon, which is GAME BYTES and must not ship.
+#   OPENPETE_ROM_FREE_ICON=ON (dist presets) — original procedural icon
+#     from tools/gen_dist_icon.py; also drops the build's dependency on
+#     the private decomp submodule's assets.
+# Either path emits a C source for SDL_SetWindowIcon (Linux/macOS +
+# live-window fallback on Windows), passed to openpete_add_game as the
+# ICON_SOURCE, and (below the call) a .ico for the Win32 resource.
+option(OPENPETE_ROM_FREE_ICON
+       "Use the original (non-ROM) distribution icon" OFF)
+set(_spyro_icon_c ${CMAKE_CURRENT_BINARY_DIR}/gen/openpete_spyro1_icon.c)
+if(OPENPETE_ROM_FREE_ICON)
+    set(_spyro_icon_tool ${CMAKE_SOURCE_DIR}/tools/gen_dist_icon.py)
+    set(_spyro_icon_c_cmd python3 ${_spyro_icon_tool} --c ${_spyro_icon_c})
+    set(_spyro_icon_deps ${_spyro_icon_tool})
+else()
+    set(_spyro_icon_src
+        ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/assets/save_header.databin.bin)
+    set(_spyro_icon_tool ${CMAKE_SOURCE_DIR}/tools/mcs_icon_to_ico.py)
+    set(_spyro_icon_c_cmd python3 ${_spyro_icon_tool} ${_spyro_icon_src}
+        --c ${_spyro_icon_c})
+    set(_spyro_icon_deps ${_spyro_icon_src} ${_spyro_icon_tool})
+endif()
+add_custom_command(
+    OUTPUT  ${_spyro_icon_c}
+    COMMAND ${CMAKE_COMMAND} -E make_directory
+            ${CMAKE_CURRENT_BINARY_DIR}/gen
+    COMMAND ${_spyro_icon_c_cmd}
+    DEPENDS ${_spyro_icon_deps}
+    COMMENT "Generating openpete_spyro1_icon.c")
 
-    # Phase 3 / Phase 4 — native translations of spyro-1/src/*.c compiled
-    # via the AST rewriter (tools/rewrite_tu.py). Each native TU is
-    # rewritten by scripts/regen-manifest.sh into
-    # ${SPYRO_GENERATED}/rewritten/<stem>.rewritten.c — Pass 2 redirects
-    # diverging bare globals through __psx_<name> uint32 storage that
-    # gen_defsyms.py aliases into g_ram. CMake compiles the rewritten
-    # source, never the original. Suppressed when OPENPETE_SKIP_DECOMP=ON.
-    ${SPYRO_DECOMP_TUS}
+include(${CMAKE_SOURCE_DIR}/cmake/openpete_game.cmake)
+openpete_add_game(spyro-1
+    MAIN           main.cpp
+    FEATURE_LIST   feature_list.c
+    ICON_SOURCE    ${_spyro_icon_c}
+    MODULE_LINKAGE ${OPENPETE_RECOMP_LINKAGE}
+    SOURCES
+        psyq_hooks.cpp
+        mod_wad_overlay.c
+        features/render_paths.c
+        features/polybuf_guard.c
+        features/render_decouple.c
+        features/native_gte.c
+        features/cyclorama_native.c
+        features/moby_native.c
+        features/moby_rank.c
+        features/spyro_native.c
+        features/s3_actor_native.c
+        features/mod_moby_ops.c
+        features/mod_level_ops.c
+        features/flame_native.c
+        features/shadow_native.c
+        features/particle_native.c
+        features/tracer_native.c
+        features/terrain_native.c
+        features/ui_sprite_native.c
+        features/portal_native.c
+        features/text_moby_native.c
+        features/text_moby_id.c
+        features/transition_native.c
+        features/freecam.c
+        features/audio_volume_native.c
+        features/vibration_native.c
+        features/cheats_native.c
+        features/credits_skip.c
+        features/crash_demo_woah.c
+        features/levelwarp_native.c
 
-    # ROM-derived recomp code lives in spyro1_recomp_module (above);
-    # the attach TU registers it (static) or dlopens it (shared).
-    ${SPYRO_RECOMP_ATTACH_SOURCES}
+        # Native translations of spyro-1/src/*.c compiled via the AST
+        # rewriter (tools/rewrite_tu.py). Each native TU is rewritten by
+        # scripts/regen-manifest.sh into
+        # ${SPYRO_GENERATED}/rewritten/<stem>.rewritten.c — Pass 2 redirects
+        # diverging bare globals through __psx_<name> uint32 storage that
+        # gen_defsyms.py aliases into g_ram. CMake compiles the rewritten
+        # source, never the original. Suppressed when OPENPETE_SKIP_DECOMP=ON.
+        ${SPYRO_DECOMP_TUS}
 
-    # Hand-written PSYQ → PsyCross ABI thunks. Listed BEFORE the
-    # generated stubs so under MinGW link order lets the thunk's strong
-    # def win against the stub's strong def (paired with
-    # --allow-multiple-definition).
-    ${CMAKE_CURRENT_SOURCE_DIR}/../common/psyq_thunks.cpp
-    recomp_extract.cpp
-    sfx_census.cpp
-    disc_library.cpp
-    splash.c
-    write_trace.cpp
+        # The attach TU registers the module (static) or dlopens it (shared).
+        ${SPYRO_RECOMP_ATTACH_SOURCES}
 
-    # PSYQ symbol stubs — abort-on-call. On ELF these are weak so any
-    # thunk strongly defines them; on MinGW the macro becomes strong
-    # and the link order + --allow-multiple-definition resolves the
-    # collision in the thunk's favor.
-    ${SPYRO_GENERATED}/psyq_stubs.c
-    psyq_stub_runtime.c
-)
+        recomp_extract.cpp
+        sfx_census.cpp
+        disc_library.cpp
+        splash.c
+        write_trace.cpp)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
-    target_link_options(openpete-spyro1 PRIVATE
-        -Wl,--allow-multiple-definition)
     if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
         # Distribution build: GUI subsystem so no console window pops up
         # for end users. main.cpp reattaches stdout/stderr to the parent
@@ -285,30 +226,44 @@ if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
         target_link_options(openpete-spyro1 PRIVATE -mconsole)
     endif()
     if(NOT OPENPETE_SKIP_DECOMP)
-        # Disable ASLR — DECOMP MODE ONLY. The Phase 3/4 native-decomp
-        # globals are link-aliased into g_ram via
-        # -Wl,--defsym=name=g_ram+offset. On ELF this produces a PIE-aware
-        # relocation; on PE/COFF the MinGW linker can't represent the
-        # absolute symbol ("stripping non-representable symbol …"), so the
-        # absolute address gets baked into call sites with no entry in
-        # .reloc. ASLR then moves g_ram at load time, the baked addresses
-        # rot, and the first decomp global access faults. Full-recomp
-        # builds (SKIP_DECOMP=ON — every release/dist preset) have no
-        # defsym aliases, so they keep ASLR (distribution D3: helps the
-        # AV/SmartScreen posture).
+        # Disable ASLR — DECOMP MODE ONLY. The native-decomp globals are
+        # link-aliased into g_ram via -Wl,--defsym=name=g_ram+offset. On ELF
+        # this produces a PIE-aware relocation; on PE/COFF the MinGW linker
+        # can't represent the absolute symbol ("stripping non-representable
+        # symbol …"), so the absolute address gets baked into call sites
+        # with no entry in .reloc. ASLR then moves g_ram at load time, the
+        # baked addresses rot, and the first decomp global access faults.
+        # Full-recomp builds (SKIP_DECOMP=ON — every release/dist preset)
+        # have no defsym aliases, so they keep ASLR (helps the AV/SmartScreen
+        # posture).
         target_link_options(openpete-spyro1 PRIVATE
             -Wl,--disable-dynamicbase
             -Wl,--disable-high-entropy-va)
     endif()
 endif()
 
-# Generated C addresses psx_runtime.h via the include path provided by
-# openpete_core (which adds psxrecomp/runner/include).
-target_include_directories(openpete-spyro1 PRIVATE
-    ${CMAKE_CURRENT_SOURCE_DIR}
-    ${CMAKE_CURRENT_SOURCE_DIR}/../common
-    ${SPYRO_GENERATED}
-    ${CMAKE_CURRENT_BINARY_DIR}/gen)
+# The Win32 icon resource and VERSIONINFO (openpete-spyro1.rc.in). Version
+# is the dist versioning scheme's placeholder until real release tags exist.
+if(WIN32)
+    set(_spyro_icon_ico ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro1.ico)
+    set(_spyro_icon_rc  ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro1.rc)
+    if(OPENPETE_ROM_FREE_ICON)
+        set(_spyro_icon_ico_cmd python3 ${_spyro_icon_tool} --ico ${_spyro_icon_ico})
+    else()
+        set(_spyro_icon_ico_cmd python3 ${_spyro_icon_tool} ${_spyro_icon_src}
+            --ico ${_spyro_icon_ico})
+    endif()
+    add_custom_command(
+        OUTPUT  ${_spyro_icon_ico}
+        COMMAND ${_spyro_icon_ico_cmd}
+        DEPENDS ${_spyro_icon_deps}
+        COMMENT "Generating openpete-spyro1.ico")
+    set(OPENPETE_VERSION_NUM "0,1,0,0")
+    set(OPENPETE_VERSION_STR "0.1.0")
+    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/openpete-spyro1.rc.in
+                   ${_spyro_icon_rc} @ONLY)
+    target_sources(openpete-spyro1 PRIVATE ${_spyro_icon_ico} ${_spyro_icon_rc})
+endif()
 
 # SoundTable slot names (tools/gen_sfx_names.py over the decomp's
 # sound_table.h): one table shared by the sfx resolver, the sfx pack's
@@ -602,43 +557,36 @@ if(OPENPETE_COMPILE_MODS)
         add_dependencies(spyro1_mods openpete-spyro1 spyro1_sdk_stage)
     endif()
 endif()
-
-if(OPENPETE_RECOMP_LINKAGE STREQUAL "static")
-    target_link_libraries(openpete-spyro1 PRIVATE spyro1_recomp_module)
-else()
-    target_link_libraries(openpete-spyro1 PRIVATE ${CMAKE_DL_LIBS})
-    if(WIN32)
-        # The exe exports exactly the curated surface (the .def rides the
-        # link line); the module DLL links an implib generated from the
-        # same .def so its imports name openpete-spyro1.exe.
-        target_link_options(openpete-spyro1 PRIVATE ${_module_def})
-        set_property(TARGET openpete-spyro1 APPEND PROPERTY
-            LINK_DEPENDS ${_module_def})
-        # GNU LTO does not treat .def exports as liveness roots: with IPO
-        # on, the otherwise-unreferenced ABI surface (psyq_* thunks,
-        # dispatch, GTE entry points) is dead-code-eliminated and ld
-        # silently emits the exports as absolute-0 — the module's first
-        # PSYQ import then jumps to image_base+0xC0000000 (DEP crash).
-        # Force IPO off for the exe regardless of cache/preset state.
-        set_target_properties(openpete-spyro1 PROPERTIES
-            INTERPROCEDURAL_OPTIMIZATION OFF)
-        if(NOT CMAKE_DLLTOOL)
-            set(CMAKE_DLLTOOL x86_64-w64-mingw32-dlltool)
-        endif()
-        set(_module_implib
-            ${CMAKE_CURRENT_BINARY_DIR}/gen/libopenpete-exe-exports.a)
-        add_custom_command(
-            OUTPUT  ${_module_implib}
-            COMMAND ${CMAKE_DLLTOOL} -d ${_module_def} -l ${_module_implib}
-                    -D openpete-spyro1.exe
-            DEPENDS ${_module_def}
-            COMMENT "dlltool: exe-export implib for the recomp module")
-        add_custom_target(spyro1_module_implib DEPENDS ${_module_implib})
-        add_dependencies(spyro1_recomp_module spyro1_module_implib)
-        target_link_libraries(spyro1_recomp_module PRIVATE ${_module_implib})
+if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared" AND WIN32)
+    # The exe exports exactly the curated surface (the .def rides the
+    # link line); the module DLL links an implib generated from the
+    # same .def so its imports name openpete-spyro1.exe.
+    target_link_options(openpete-spyro1 PRIVATE ${_module_def})
+    set_property(TARGET openpete-spyro1 APPEND PROPERTY
+        LINK_DEPENDS ${_module_def})
+    # GNU LTO does not treat .def exports as liveness roots: with IPO
+    # on, the otherwise-unreferenced ABI surface (psyq_* thunks,
+    # dispatch, GTE entry points) is dead-code-eliminated and ld
+    # silently emits the exports as absolute-0 — the module's first
+    # PSYQ import then jumps to image_base+0xC0000000 (DEP crash).
+    # Force IPO off for the exe regardless of cache/preset state.
+    set_target_properties(openpete-spyro1 PROPERTIES
+        INTERPROCEDURAL_OPTIMIZATION OFF)
+    if(NOT CMAKE_DLLTOOL)
+        set(CMAKE_DLLTOOL x86_64-w64-mingw32-dlltool)
     endif()
+    set(_module_implib
+        ${CMAKE_CURRENT_BINARY_DIR}/gen/libopenpete-exe-exports.a)
+    add_custom_command(
+        OUTPUT  ${_module_implib}
+        COMMAND ${CMAKE_DLLTOOL} -d ${_module_def} -l ${_module_implib}
+                -D openpete-spyro1.exe
+        DEPENDS ${_module_def}
+        COMMENT "dlltool: exe-export implib for the recomp module")
+    add_custom_target(spyro1_module_implib DEPENDS ${_module_implib})
+    add_dependencies(spyro1_recomp_module spyro1_module_implib)
+    target_link_libraries(spyro1_recomp_module PRIVATE ${_module_implib})
 endif()
-target_link_libraries(openpete-spyro1 PRIVATE openpete_core)
 
 # Shared-linkage builds stage the first-boot inputs next to the exe:
 # the converged manifests, the 5-file module source kit, and (when
@@ -656,7 +604,7 @@ if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
         COMMAND ${CMAKE_COMMAND} -E make_directory ${_rdir}/src
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_CURRENT_SOURCE_DIR}/../common/overlay_dispatch.c
-            ${CMAKE_CURRENT_SOURCE_DIR}/module_main.c
+            ${CMAKE_SOURCE_DIR}/games/common/module_main.c
             ${CMAKE_CURRENT_SOURCE_DIR}/../common/spyro_overlay_table.h
             ${CMAKE_SOURCE_DIR}/core/include/openpete_recomp_module.h
             ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include/psx_runtime.h
@@ -687,75 +635,6 @@ if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
             VERBATIM)
     endif()
 endif()
-
-# App icon. Two sources (distribution D3):
-#   OPENPETE_ROM_FREE_ICON=OFF (dev default) — decoded from the PSX
-#     save-file header's CLUT+icon data (save_file.h:39): the authentic
-#     memcard icon, which is GAME BYTES and must not ship.
-#   OPENPETE_ROM_FREE_ICON=ON (dist presets) — original procedural icon
-#     from tools/gen_dist_icon.py; also drops the build's dependency on
-#     the private decomp submodule's assets.
-# Either path emits a .ico for the Win32 resource and a C source for
-# SDL_SetWindowIcon (Linux/macOS + live-window fallback on Windows).
-option(OPENPETE_ROM_FREE_ICON
-       "Use the original (non-ROM) distribution icon" OFF)
-set(_spyro_icon_c ${CMAKE_CURRENT_BINARY_DIR}/gen/openpete_spyro1_icon.c)
-if(OPENPETE_ROM_FREE_ICON)
-    set(_spyro_icon_tool ${CMAKE_SOURCE_DIR}/tools/gen_dist_icon.py)
-    set(_spyro_icon_c_cmd python3 ${_spyro_icon_tool} --c ${_spyro_icon_c})
-    set(_spyro_icon_deps ${_spyro_icon_tool})
-else()
-    set(_spyro_icon_src
-        ${CMAKE_CURRENT_SOURCE_DIR}/spyro-1/assets/save_header.databin.bin)
-    set(_spyro_icon_tool ${CMAKE_SOURCE_DIR}/tools/mcs_icon_to_ico.py)
-    set(_spyro_icon_c_cmd python3 ${_spyro_icon_tool} ${_spyro_icon_src}
-        --c ${_spyro_icon_c})
-    set(_spyro_icon_deps ${_spyro_icon_src} ${_spyro_icon_tool})
-endif()
-add_custom_command(
-    OUTPUT  ${_spyro_icon_c}
-    COMMAND ${CMAKE_COMMAND} -E make_directory
-            ${CMAKE_CURRENT_BINARY_DIR}/gen
-    COMMAND ${_spyro_icon_c_cmd}
-    DEPENDS ${_spyro_icon_deps}
-    COMMENT "Generating openpete_spyro1_icon.c")
-target_sources(openpete-spyro1 PRIVATE ${_spyro_icon_c})
-
-if(WIN32)
-    set(_spyro_icon_ico ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro1.ico)
-    set(_spyro_icon_rc  ${CMAKE_CURRENT_BINARY_DIR}/openpete-spyro1.rc)
-    if(OPENPETE_ROM_FREE_ICON)
-        set(_spyro_icon_ico_cmd python3 ${_spyro_icon_tool} --ico ${_spyro_icon_ico})
-    else()
-        set(_spyro_icon_ico_cmd python3 ${_spyro_icon_tool} ${_spyro_icon_src}
-            --ico ${_spyro_icon_ico})
-    endif()
-    add_custom_command(
-        OUTPUT  ${_spyro_icon_ico}
-        COMMAND ${_spyro_icon_ico_cmd}
-        DEPENDS ${_spyro_icon_deps}
-        COMMENT "Generating openpete-spyro1.ico")
-    # Icon + VERSIONINFO (openpete-spyro1.rc.in). Version is the dist
-    # versioning scheme's placeholder until real release tags exist.
-    set(OPENPETE_VERSION_NUM "0,1,0,0")
-    set(OPENPETE_VERSION_STR "0.1.0")
-    configure_file(${CMAKE_CURRENT_SOURCE_DIR}/openpete-spyro1.rc.in
-                   ${_spyro_icon_rc} @ONLY)
-    target_sources(openpete-spyro1 PRIVATE ${_spyro_icon_ico} ${_spyro_icon_rc})
-endif()
-
-# Backtrace symbols: pass -rdynamic so non-static functions resolve to names
-# in the crash handler's backtrace_symbols_fd output. Cheap (~bigger symtab)
-# and only relevant on the Linux/glibc build path.
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_options(openpete-spyro1 PRIVATE -rdynamic)
-endif()
-
-# SDL3's platform entry shim. Required by the TU including <SDL3/SDL_main.h>.
-if(TARGET SDL3::SDL3main)
-    target_link_libraries(openpete-spyro1 PRIVATE SDL3::SDL3main)
-endif()
-
 # Emscripten / WebAssembly browser link.
 #
 #  ASYNCIFY        — required twice over: (1) libco's emscripten backend
@@ -828,29 +707,10 @@ add_custom_command(TARGET openpete-spyro1 POST_BUILD
         -P ${CMAKE_SOURCE_DIR}/cmake/copy_if_missing.cmake
     VERBATIM)
 
-set_target_properties(openpete-spyro1 PROPERTIES
-    C_STANDARD 99
-    C_STANDARD_REQUIRED ON
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON
-)
-
-# The generated C is large (now millions of lines across all overlays)
-# and the recompiler emits a few patterns the compiler should not nag
-# about (unused labels, unused variables held for future use). Mute
-# warnings on every generated TU.
-set_source_files_properties(
-    ${SPYRO_GENERATED}/PSX.EXE_dispatch.c
-    ${SPYRO_OVERLAY_FULL_C}
-    ${SPYRO_OVERLAY_DISPATCH_C}
-    PROPERTIES
-        COMPILE_FLAGS "-w"
-)
-
-# The main EXE TU carries the same -w, plus -finstrument-functions under
-# OPENPETE_FUNC_TRACE (per-function CPU tracing). The exclude-list keeps the
-# hot unaligned-access helpers and the dispatch switch uninstrumented. When the
-# option is OFF, only -w is applied → zero instrumentation, byte-identical code.
+# Under OPENPETE_FUNC_TRACE the main EXE TU carries -finstrument-functions
+# on top of its -w (per-function CPU tracing). The exclude-list keeps the hot
+# unaligned-access helpers and the dispatch switch uninstrumented. When the
+# option is OFF nothing is added: zero instrumentation, byte-identical code.
 if(OPENPETE_FUNC_TRACE)
     set(_functrace_full_flags
         "-w -finstrument-functions -finstrument-functions-exclude-function-list=psx_lwl,psx_lwr,psx_swl,psx_swr,psx_dispatch")
@@ -872,14 +732,12 @@ if(OPENPETE_FUNC_TRACE)
     set_source_files_properties(${_functrace_symtab} PROPERTIES
         COMPILE_FLAGS "-w"
         INCLUDE_DIRECTORIES "${CMAKE_SOURCE_DIR}/core/include")
-else()
-    set(_functrace_full_flags "-w")
+    set_source_files_properties(
+        ${SPYRO_GENERATED}/PSX.EXE_full.c
+        PROPERTIES
+            COMPILE_FLAGS "${_functrace_full_flags}"
+    )
 endif()
-set_source_files_properties(
-    ${SPYRO_GENERATED}/PSX.EXE_full.c
-    PROPERTIES
-        COMPILE_FLAGS "${_functrace_full_flags}"
-)
 
 # Common compile flags for any spyro-1/src/*.c TU compiled natively.
 #
@@ -929,15 +787,4 @@ if(NOT OPENPETE_SKIP_DECOMP)
     # core/runtime/cpu.c.
     include(${SPYRO_GENERATED}/native_aliases.cmake)
     target_link_options(openpete-spyro1 PRIVATE ${SPYRO_NATIVE_DEFSYMS})
-endif()
-
-# OpenAL on Windows is always a runtime DLL load (no static .a in the
-# openal-soft prebuilt). Copy the renamed soft_oal.dll next to the .exe
-# so the loader resolves OpenAL32.dll without a system install.
-if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
-    add_custom_command(TARGET openpete-spyro1 POST_BUILD
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            "${CMAKE_SOURCE_DIR}/third_party/OpenAL-mingw/x86_64-w64-mingw32/bin/OpenAL32.dll"
-            "$<TARGET_FILE_DIR:openpete-spyro1>/OpenAL32.dll"
-        VERBATIM)
 endif()

@@ -71,9 +71,9 @@ repo under `notes/plans/openpete-*.md`.
 
 ## Porting
 
-- [`adding-a-game.md`](adding-a-game.md) — recipe for wiring a second PSX
-  title into `core/`: manifests, codegen, the registration surfaces, and
-  what is still Spyro-1-specific.
+- [`adding-a-game.md`](adding-a-game.md) — how a PSX title becomes an
+  `openpete-<game>` executable: `recomp.conf`, manifests and codegen,
+  `openpete_add_game`, the per-game hooks, and what stays Spyro-1-specific.
 
 ## Distribution
 

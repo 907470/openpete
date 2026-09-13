@@ -1,13 +1,12 @@
 // core/include/game_extras.h — the per-game abstraction.
 //
-// Every behavior that differs between Spyro 1, 2, 3 (entry point, CRC,
-// overlay layout, runtime quirks, disc layout) is declared here and
-// implemented by the per-game `games/<game>/game_extras_impl.c`.
+// Every behavior that differs between Spyro 1, 2, 3 (identity, overlay
+// handling, runtime quirks, per-tick hooks, disc layout) is declared here and
+// implemented by the per-game `games/<game>/game_extras_impl.c`, except the
+// identity group, which the build generates from `games/<game>/recomp.conf`.
 //
 // Rule: nothing in core/ may reference a game-specific address, symbol,
 // or struct. If `grep -r "0x800" core/` returns a hit, it's a bug.
-//
-// See notes/plans/openpete-pc-port.md.
 
 #ifndef OPENPETE_GAME_EXTRAS_H
 #define OPENPETE_GAME_EXTRAS_H
@@ -18,15 +17,14 @@
 extern "C" {
 #endif
 
-// Forward decl — the recompiled CPU state. Defined in core/runtime/cpu_state.h
-// once Phase 1b lands. For Phase 0b, treat it as opaque.
+// Forward decl — the recompiled CPU state (psx_runtime.h).
 struct CPUState;
 typedef struct CPUState CPUState;
 
-/* --- Identity --- */
-uint32_t    game_get_entry_point(void);
+/* --- Identity ---
+ * Defined by the generated game_identity.c (tools/gen_game_identity.py over
+ * games/<id>/recomp.conf), not by the game's hand-written sources. */
 const char* game_get_exe_filename(void);      /* e.g. "SCUS_942.28" */
-uint32_t    game_get_expected_crc32(void);    /* sanity check against user's dump */
 const char* game_get_display_name(void);      /* "Spyro the Dragon" */
 const char* game_get_id(void);                /* "spyro-1" — the [game.<id>] config scope */
 
@@ -41,15 +39,6 @@ uint32_t    game_get_pad_read_pc(void);
  * staying in flight across its main-loop frames (a checksum walk that only
  * advances while a read is pending) needs a floor here; 0 = instant. */
 uint32_t    game_get_load_delay_default(void);
-
-/* --- Memory layout ---
- * compiled_range / overlay_range are PSX-side virtual addresses; the
- * impl supplies the values for its game. */
-uint32_t game_get_ram_size(void);             /* typically 2 MiB */
-uint32_t game_get_compiled_range_start(void);
-uint32_t game_get_compiled_range_end(void);
-uint32_t game_get_overlay_range_start(void);
-uint32_t game_get_overlay_range_end(void);
 
 /* --- Overlay handling (intercept point) ---
  * Called when the game issues its native overlay-load. Implementations

@@ -1,0 +1,237 @@
+# cmake/openpete_game.cmake — one game's targets from its directory.
+#
+# openpete_add_game(<id>
+#     [MAIN <file>]                   # entry TU; default games/common/game_main.cpp
+#     [FEATURE_LIST <file>]           # default games/common/feature_list_none.c
+#     [ICON_SOURCE <file>]            # default games/common/game_icon_none.c
+#     [MODULE_LINKAGE static|shared]  # default static
+#     [SOURCES <file>...]             # exe TUs beyond the skeleton
+#     [MODULE_SOURCES <file>...])     # module TUs beyond the generated code
+#
+# Called from games/<id>/CMakeLists.txt; a game whose generated/ holds no
+# recompiled output is skipped with a warning. <id> is the directory name
+# and the game's config-scope id ("spyro-2"); the target names drop its
+# hyphen:
+# module `<tag>_recomp_module`, executable `openpete-<tag>`. After the call
+# the caller's scope holds OPENPETE_GAME_TAG, OPENPETE_GAME_EXE,
+# OPENPETE_GAME_MODULE, OPENPETE_GAME_GENERATED and OPENPETE_GAME_GEN_DIR
+# (the build-tree gen/ directory), for the sources a game adds on top.
+#
+# A game supplies games/<id>/recomp.conf, game_extras_impl.c and
+# psyq_game_provides.h; everything else is shared:
+#
+#  - The module: the recompiled main EXE plus every overlay translated by
+#    scripts/regen-recomp.sh. Each overlay is recompiled with a unique
+#    --func-prefix and its `psx_dispatch_compiled` is sed-renamed to
+#    `psx_dispatch_<name>` so they coexist at link; games/common/
+#    overlay_dispatch.c fans calls out to the active overlay through the
+#    generated spyro_overlay_table.c, and module_main.c is the descriptor
+#    the host resolves.
+#  - The executable: the entry TU, the generated identity TU
+#    (tools/gen_game_identity.py over recomp.conf), the shared PSYQ-to-
+#    PsyCross layer with the inert default for every hook the game does not
+#    name in psyq_game_provides.h, the freecam body, the write census, and
+#    the generated abort-on-call PSYQ stubs with their runtime.
+#
+# Shared linkage builds the module as <tag>-recomp.{so,dll} for dlopen at
+# boot; the exe-side attach TU, export surface and implib are the game's
+# (games/spyro-1/CMakeLists.txt).
+
+function(openpete_add_game GAME_ID)
+    cmake_parse_arguments(G
+        ""
+        "MAIN;FEATURE_LIST;ICON_SOURCE;MODULE_LINKAGE"
+        "SOURCES;MODULE_SOURCES"
+        ${ARGN})
+    if(G_UNPARSED_ARGUMENTS)
+        message(FATAL_ERROR "openpete_add_game(${GAME_ID}): unknown arguments ${G_UNPARSED_ARGUMENTS}")
+    endif()
+
+    string(REPLACE "-" "" _tag "${GAME_ID}")
+    set(_exe openpete-${_tag})
+    set(_module ${_tag}_recomp_module)
+    set(_common ${CMAKE_SOURCE_DIR}/games/common)
+    set(_generated ${CMAKE_CURRENT_SOURCE_DIR}/generated)
+    set(_gen_dir ${CMAKE_CURRENT_BINARY_DIR}/gen)
+
+    if(NOT EXISTS ${_generated}/PSX.EXE_full.c)
+        message(WARNING
+            "${GAME_ID}: no recompiled output in generated/ — run "
+            "`GAME=${GAME_ID} bash scripts/regen-recomp.sh` first. Skipping target.")
+        return()
+    endif()
+
+    if(NOT G_MAIN)
+        set(G_MAIN ${_common}/game_main.cpp)
+    endif()
+    if(NOT G_FEATURE_LIST)
+        set(G_FEATURE_LIST ${_common}/feature_list_none.c)
+    endif()
+    if(NOT G_ICON_SOURCE)
+        set(G_ICON_SOURCE ${_common}/game_icon_none.c)
+    endif()
+    if(NOT G_MODULE_LINKAGE)
+        set(G_MODULE_LINKAGE static)
+    endif()
+
+    # CONFIGURE_DEPENDS re-runs the GLOB so newly regenerated overlays are
+    # picked up without a manual reconfigure.
+    file(GLOB _overlay_full_c     CONFIGURE_DEPENDS "${_generated}/*/*.bin_full.c")
+    file(GLOB _overlay_dispatch_c CONFIGURE_DEPENDS "${_generated}/*/*.bin_dispatch.c")
+
+    set(_module_sources
+        ${_generated}/PSX.EXE_full.c
+        ${_generated}/PSX.EXE_dispatch.c
+        ${_overlay_full_c}
+        ${_overlay_dispatch_c}
+        ${_generated}/spyro_overlay_table.c
+        ${_common}/overlay_dispatch.c
+        ${_common}/module_main.c
+        ${G_MODULE_SOURCES})
+
+    if(G_MODULE_LINKAGE STREQUAL "shared")
+        add_library(${_module} SHARED ${_module_sources})
+        # Route the exe-exported DATA symbols through the import table
+        # (__declspec(dllimport)) instead of PE pseudo-relocation; see
+        # psx_runtime.h. Module TUs only; the exe defines those symbols.
+        target_compile_definitions(${_module} PRIVATE OPENPETE_RECOMP_MODULE_BUILD)
+        set_target_properties(${_module} PROPERTIES
+            OUTPUT_NAME "${_tag}-recomp"
+            PREFIX ""                       # <tag>-recomp.so, not lib*.so
+            POSITION_INDEPENDENT_CODE ON
+            # The shipped module is compiled at first boot at plain -O2, so
+            # this CMake-built .so/.dll is a dev artifact and gets no LTO
+            # even when the preset turns IPO on globally.
+            INTERPROCEDURAL_OPTIMIZATION OFF)
+        if(NOT WIN32)
+            # Bind module-internal references internally, matching PE
+            # semantics (no cross-image preemption), and leave the
+            # module->host imports to resolve at dlopen against the exe's
+            # -rdynamic exports.
+            target_link_options(${_module} PRIVATE
+                -Wl,-Bsymbolic-functions
+                -Wl,--unresolved-symbols=ignore-all)
+        endif()
+    else()
+        add_library(${_module} OBJECT ${_module_sources})
+        # Usage requirements only (psx_runtime.h et al.); OBJECT libraries
+        # do not embed their dependencies.
+        target_link_libraries(${_module} PRIVATE openpete_core)
+    endif()
+    target_include_directories(${_module} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${_common}
+        ${_generated}
+        # Include dirs only: a shared module must not link openpete_core (a
+        # second copy of core state inside the module would be wrong).
+        $<TARGET_PROPERTY:openpete_core,INTERFACE_INCLUDE_DIRECTORIES>)
+    set_target_properties(${_module} PROPERTIES
+        C_STANDARD 99
+        C_STANDARD_REQUIRED ON)
+
+    # The generated translation units are enormous and entirely machine-
+    # written: warnings on them are noise. The hand-written module TUs keep
+    # theirs.
+    set_source_files_properties(
+        ${_generated}/PSX.EXE_full.c
+        ${_generated}/PSX.EXE_dispatch.c
+        ${_overlay_full_c}
+        ${_overlay_dispatch_c}
+        PROPERTIES COMPILE_FLAGS "-w")
+
+    # Identity: the game_extras.h identity accessors and the address-only
+    # PSYQ hooks, from recomp.conf.
+    set(_identity_c ${_gen_dir}/game_identity.c)
+    add_custom_command(
+        OUTPUT  ${_identity_c}
+        COMMAND ${CMAKE_COMMAND} -E make_directory ${_gen_dir}
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_game_identity.py
+                --game ${GAME_ID}
+                --conf ${CMAKE_CURRENT_SOURCE_DIR}/recomp.conf
+                --out  ${_identity_c}
+        DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/recomp.conf
+                ${CMAKE_SOURCE_DIR}/tools/gen_game_identity.py
+        COMMENT "Generating ${GAME_ID} game_identity.c (gen_game_identity.py)")
+
+    add_executable(${_exe}
+        ${G_MAIN}
+        game_extras_impl.c
+        ${_identity_c}
+        ${G_FEATURE_LIST}
+        ${G_ICON_SOURCE}
+        ${G_SOURCES}
+
+        # The shared PSYQ-to-PsyCross layer, plus the default for every
+        # per-game hook this game does not name in psyq_game_provides.h.
+        # Listed BEFORE the generated stubs so under MinGW link order lets a
+        # thunk's strong definition win against the stub's (paired with
+        # --allow-multiple-definition).
+        ${_common}/psyq_thunks.cpp
+        ${_common}/psyq_game_hooks_default.c
+        ${_common}/psyq_thunk_state.c
+        ${_common}/write_census.c
+        ${_common}/freecam_game.c
+
+        # PSYQ symbol stubs, abort-on-call. On ELF these are weak so any
+        # thunk strongly defines them; on MinGW the macro becomes strong and
+        # the link order plus --allow-multiple-definition resolves the
+        # collision in the thunk's favour. psyq_stubs.c stays exe-side: PE
+        # has no dynamic symbol preemption, so module-side weak stubs would
+        # shadow the strong thunks on Windows.
+        ${_generated}/psyq_stubs.c
+        ${_common}/psyq_stub_runtime.c)
+
+    # Generated C addresses psx_runtime.h via the include path provided by
+    # openpete_core (which adds psxrecomp/runner/include).
+    target_include_directories(${_exe} PRIVATE
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${_common}
+        ${_generated}
+        ${_gen_dir})
+    set_target_properties(${_exe} PROPERTIES
+        C_STANDARD 99
+        C_STANDARD_REQUIRED ON
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON)
+
+    if(G_MODULE_LINKAGE STREQUAL "static")
+        target_link_libraries(${_exe} PRIVATE ${_module})
+    else()
+        target_link_libraries(${_exe} PRIVATE ${CMAKE_DL_LIBS})
+    endif()
+    target_link_libraries(${_exe} PRIVATE openpete_core)
+
+    if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
+        target_link_options(${_exe} PRIVATE -Wl,--allow-multiple-definition)
+        # OpenAL on Windows is always a runtime DLL load (no static .a in the
+        # openal-soft prebuilt). Copy the renamed soft_oal.dll next to the
+        # .exe so the loader resolves OpenAL32.dll without a system install;
+        # without it the process fails to start before main() runs.
+        add_custom_command(TARGET ${_exe} POST_BUILD
+            COMMAND ${CMAKE_COMMAND} -E copy_if_different
+                "${CMAKE_SOURCE_DIR}/third_party/OpenAL-mingw/x86_64-w64-mingw32/bin/OpenAL32.dll"
+                "$<TARGET_FILE_DIR:${_exe}>/OpenAL32.dll"
+            VERBATIM)
+    endif()
+
+    # Backtrace symbols: non-static functions resolve to names in the crash
+    # handler's backtrace_symbols_fd output, and a shared module resolves
+    # its host imports against these exports.
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(${_exe} PRIVATE -rdynamic)
+    endif()
+
+    # SDL3's platform entry shim, required by the TU including
+    # <SDL3/SDL_main.h>.
+    if(TARGET SDL3::SDL3main)
+        target_link_libraries(${_exe} PRIVATE SDL3::SDL3main)
+    endif()
+
+    set(OPENPETE_GAME_TAG       ${_tag}       PARENT_SCOPE)
+    set(OPENPETE_GAME_EXE       ${_exe}       PARENT_SCOPE)
+    set(OPENPETE_GAME_MODULE    ${_module}    PARENT_SCOPE)
+    set(OPENPETE_GAME_GENERATED ${_generated} PARENT_SCOPE)
+    set(OPENPETE_GAME_GEN_DIR   ${_gen_dir}   PARENT_SCOPE)
+    set(OPENPETE_GAME_OVERLAY_FULL_C     ${_overlay_full_c}     PARENT_SCOPE)
+    set(OPENPETE_GAME_OVERLAY_DISPATCH_C ${_overlay_dispatch_c} PARENT_SCOPE)
+endfunction()

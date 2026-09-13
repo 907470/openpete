@@ -15,9 +15,11 @@
 //  - Couplings to one game's own features (its asset overlay, its render-path
 //    filter, its sfx tables).
 //
-// Every hook has a weak default that does nothing, so a game supplies only
-// what it has. A game with no mirror declared writes no PSX RAM from the thunk
-// layer rather than writing another game's addresses.
+// Every hook has an inert default (psyq_game_hooks_default.c), so a game
+// supplies only what it has; a game with no mirror declared writes no PSX RAM
+// from the thunk layer rather than writing another game's addresses. The
+// three address-only hooks marked below come from the generated
+// game_identity.c instead.
 
 #ifndef OPENPETE_PSYQ_GAME_HOOKS_H
 #define OPENPETE_PSYQ_GAME_HOOKS_H
@@ -78,10 +80,10 @@ uint32_t psyq_game_rand_seed_addr(void);
 
 /* --- Game feature couplings -------------------------------------------- */
 
-/* The vaddr every overlay of this game loads at, or 0 if it uses none. After a
- * disc read lands there, the first word is the overlay id and the dispatcher
- * is re-pointed at that overlay's translated code. Every game that uses
- * overlays needs this; only the address differs. */
+/* The vaddr every overlay of this game loads at (game_identity.c, from
+ * recomp.conf OVERLAY_LOAD_ADDR). After a disc read lands there, the first
+ * word is the overlay id and the dispatcher is re-pointed at that overlay's
+ * translated code. */
 uint32_t psyq_game_overlay_vaddr(void);
 
 /* libgpu's own environment block: 128 bytes holding the GPU type, the VRAM
@@ -95,10 +97,10 @@ uint32_t psyq_game_libgpu_env_addr(void);
  * when not located. */
 uint32_t psyq_game_libgpu_clear_block_addr(void);
 
-/* libcd's state block: status byte at +0xC, the last CdlSetloc position at
- * +0x18 (4 bytes), the mode byte at +0x1C and the last command at +0x1D,
- * which the library's CdStatus, CdLastPos, CdMode and CdLastCom read. 0
- * when not located. */
+/* libcd's state block (game_identity.c, from recomp.conf LIBCD_BLOCK_ADDR):
+ * status byte at +0xC, the last CdlSetloc position at +0x18 (4 bytes), the
+ * mode byte at +0x1C and the last command at +0x1D, which the library's
+ * CdStatus, CdLastPos, CdMode and CdLastCom read. */
 uint32_t psyq_game_libcd_block_addr(void);
 
 /* Asset overlay: a game may redirect a disc read at its own granularity.
@@ -142,11 +144,11 @@ typedef struct {
 } psyq_music_route_t;
 void psyq_game_music_route(int sector, psyq_music_route_t* out);
 
-/* Address of libcd's read-completion callback slot in PSX RAM, for a game that
- * links libcd's own CdReadCallback rather than reaching the thunk: the
- * registration stores the guest handler there and never reaches
- * psyq_CdRead's tracked callback. 0 when the game registers through the
- * thunk. */
+/* Address of libcd's read-completion callback slot in PSX RAM
+ * (game_identity.c, from recomp.conf CD_READ_CB_ADDR), for a game that links
+ * libcd's own CdReadCallback rather than reaching the thunk: the registration
+ * stores the guest handler there and never reaches psyq_CdRead's tracked
+ * callback. 0 when the game registers through the thunk. */
 uint32_t psyq_game_cd_read_cb_addr(void);
 
 /* Render-path filter and moby ranking consumed by the OT walk. */

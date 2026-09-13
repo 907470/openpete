@@ -1,6 +1,9 @@
-// games/spyro-2/main.cpp — Spyro 2: Ripto's Rage! binary entry point.
+// games/common/game_main.cpp — the entry point of a game with no host-side
+// services of its own.
 //
-// Parse options, attach the recompiled module, hand off to core's run loop.
+// Parse options, register the recompiled module, hand off to core's run loop.
+// A game that resolves a disc library, drives a splash, or registers mod
+// services supplies its own main TU instead (games/spyro-1/main.cpp).
 // SDL3's SDL_main.h re-#defines main -> SDL_main and supplies the platform
 // entry shim; it must be included by the TU defining main().
 
@@ -13,7 +16,7 @@
 
 #include <cstdio>
 
-extern "C" const openpete_recomp_module spyro2_recomp_module;
+extern "C" const openpete_recomp_module openpete_game_recomp_module;
 
 int main(int argc, char** argv) {
     /* abort() does not flush, and the PSYQ stubs use it to surface an
@@ -23,9 +26,10 @@ int main(int argc, char** argv) {
     openpete_options_t opts;
     openpete_options_init(&opts);
     opts.display_name = game_get_display_name();
-    /* No native renderer walks exist for this game: the native path would draw
-     * its geometry with Spyro 1's decode, so PsyCross is what it starts with.
-     * An explicit --renderer still wins, since this runs before parsing. */
+    /* A game on this main has no native renderer walks: the native path would
+     * draw its geometry with Spyro 1's decode, so PsyCross is what it starts
+     * with. An explicit --renderer still wins, since this runs before
+     * parsing. */
     openpete_options_set_default_renderer(&opts, OPENPETE_RENDERER_PSYCROSS);
 
     openpete_config_set_game_id(game_get_id());
@@ -43,7 +47,7 @@ int main(int argc, char** argv) {
     }
 
     /* The runtime reaches recompiled code only through this descriptor. */
-    if (openpete_recomp_register(&spyro2_recomp_module) != 0) return 1;
+    if (openpete_recomp_register(&openpete_game_recomp_module) != 0) return 1;
 
     return openpete_run(&opts);
 }

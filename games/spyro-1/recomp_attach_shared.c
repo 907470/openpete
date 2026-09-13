@@ -7,7 +7,7 @@
 //
 //   1. dlopen/LoadLibrary the module (default: platform library name
 //      next to the exe; --recomp-module overrides).
-//   2. Resolve + register the `spyro1_recomp_module` descriptor
+//   2. Resolve + register the `openpete_game_recomp_module` descriptor
 //      (openpete_recomp_register refuses an ABI-version mismatch).
 //   3. Resolve the host->module forwarders below.
 //
@@ -21,6 +21,7 @@
 // module automatically; nothing else to update).
 #include "recomp_attach.h"
 #include "openpete_recomp_module.h"
+#include "spyro_overlay_table.h"
 #include "openpete_log.h"
 #include "splash.h"
 
@@ -62,6 +63,7 @@ SPYRO1_MODULE_FUNCS(DECL_PTR)
 
 static void (*p_set_overlay)(uint32_t);
 static uint32_t (*p_get_overlay_magic)(void);
+static const spyro_overlay_entry_t* (*p_overlay_find)(uint32_t);
 
 #define DEF_FWD(n) \
     void n(CPUState* cpu) { p_##n(cpu); }
@@ -70,6 +72,9 @@ SPYRO1_MODULE_FUNCS(DEF_FWD)
 
 void spyro_set_active_overlay_by_magic(uint32_t magic) { p_set_overlay(magic); }
 uint32_t spyro_get_active_overlay_magic(void) { return p_get_overlay_magic(); }
+const spyro_overlay_entry_t* spyro_overlay_find(uint32_t magic) {
+    return p_overlay_find(magic);
+}
 
 static void* g_module;
 static int s_missing;
@@ -136,8 +141,8 @@ static const openpete_recomp_module* bind_module(const char* path,
     if (!g_module) { *why = "cannot be loaded"; return NULL; }
 
     const openpete_recomp_module* desc =
-        (const openpete_recomp_module*)mod_sym(g_module, "spyro1_recomp_module");
-    if (!desc) *why = "has no spyro1_recomp_module descriptor";
+        (const openpete_recomp_module*)mod_sym(g_module, "openpete_game_recomp_module");
+    if (!desc) *why = "has no openpete_game_recomp_module descriptor";
     else if (desc->abi_version != OPENPETE_RECOMP_ABI_VERSION)
         *why = "was built against a different module ABI";
 
@@ -150,6 +155,7 @@ static const openpete_recomp_module* bind_module(const char* path,
 #undef LOAD_PTR
         p_set_overlay = (void (*)(uint32_t))need("spyro_set_active_overlay_by_magic");
         p_get_overlay_magic = (uint32_t (*)(void))need("spyro_get_active_overlay_magic");
+        p_overlay_find = (const spyro_overlay_entry_t* (*)(uint32_t))need("spyro_overlay_find");
         if (s_missing) *why = "is missing symbols the host needs";
     }
 

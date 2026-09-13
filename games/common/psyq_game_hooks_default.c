@@ -2,7 +2,9 @@
 // per-game PSYQ hook.
 //
 // A game supplies only the hooks it has and names them in its own
-// psyq_game_provides.h; this file defines the rest. The defaults are inert: no
+// psyq_game_provides.h; this file defines the rest. psyq_game_overlay_vaddr,
+// psyq_game_libcd_block_addr and psyq_game_cd_read_cb_addr have no default
+// here: the generated game_identity.c defines them for every game. The defaults are inert: no
 // PSX RAM is written, no filter rejects anything, no table is registered. A
 // game whose PSYQ-internal mirrors have not been constructed therefore writes
 // nothing rather than writing another game's addresses, and the resulting gap
@@ -62,18 +64,11 @@ void psyq_game_mirror_memcard_init(CPUState* cpu) { (void)cpu; }
 uint32_t psyq_game_rand_seed_addr(void) { return 0u; }
 #endif
 
-#ifndef PSYQ_GAME_PROVIDES_OVERLAY_VADDR
-uint32_t psyq_game_overlay_vaddr(void) { return 0u; }
-#endif
-
 #ifndef PSYQ_GAME_PROVIDES_LIBGPU_ENV_ADDR
 uint32_t psyq_game_libgpu_env_addr(void) { return 0u; }
 #endif
 #ifndef PSYQ_GAME_PROVIDES_LIBGPU_CLEAR_BLOCK_ADDR
 uint32_t psyq_game_libgpu_clear_block_addr(void) { return 0u; }
-#endif
-#ifndef PSYQ_GAME_PROVIDES_LIBCD_BLOCK_ADDR
-uint32_t psyq_game_libcd_block_addr(void) { return 0u; }
 #endif
 
 #ifndef PSYQ_GAME_PROVIDES_CD_SETLOC
@@ -92,10 +87,6 @@ void psyq_game_cd_read_done(CPUState* cpu, uint32_t read_cb) {
 #ifndef PSYQ_GAME_PROVIDES_CD_READ_IN_LOAD
 int      psyq_game_cd_read_in_load(CPUState* cpu) { (void)cpu; return 0; }
 uint32_t psyq_game_cd_read_delay_cap(void)        { return 0u; }
-#endif
-
-#ifndef PSYQ_GAME_PROVIDES_CD_READ_CB_ADDR
-uint32_t psyq_game_cd_read_cb_addr(void) { return 0u; }
 #endif
 
 #ifndef PSYQ_GAME_PROVIDES_MUSIC_ROUTE

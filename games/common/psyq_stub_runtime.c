@@ -1,4 +1,4 @@
-// games/spyro-2/psyq_stub_runtime.c — backing implementation for the generated
+// games/common/psyq_stub_runtime.c — backing implementation for the generated
 // psyq_stubs.c. It lives outside the generated file because that file avoids
 // <stdio.h>/<stdlib.h>: PSYQ exports names like printf, exit and sprintf,
 // which would collide with libc.
