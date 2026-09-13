@@ -99,13 +99,12 @@ def enumerate_structs(include_dir: Path):
     return out
 
 
-def member_paths(body: str, prefix: str = ""):
-    """Dotted member paths of a struct body usable in offsetof: every
-    declarator at depth 0, recursing into anonymous nested struct/union
-    members. Bitfield members are omitted (offsetof on a bitfield is a
-    constraint violation); their enclosing member is still listed."""
+def walk_members(body: str, prefix: str = ""):
+    """Every member of a struct body as (dotted path, bitfield width or
+    None), recursing into anonymous nested struct/union members (an array
+    of nested blocks is walked through element 0)."""
     body = strip_comments(body)
-    paths, depth, cur, nested = [], 0, "", None
+    out, depth, cur, nested = [], 0, "", None
     for ch in body:
         if depth > 0:
             if ch == "{":
@@ -126,19 +125,33 @@ def member_paths(body: str, prefix: str = ""):
         decl, cur = cur.strip(), ""
         is_nested = decl.startswith("\0")
         decl = decl.lstrip("\0").strip()
-        if not decl or re.search(r":\s*\d+$", decl):
+        if not decl:
+            continue
+        bm = re.search(r"(\w+)\s*:\s*(\d+)$", decl)
+        if bm:
+            out.append((f"{prefix}{bm.group(1)}", int(bm.group(2))))
             continue
         # Declarator names are the words followed by `,` or the end, after
         # optional subscripts; a type word never sits in that position.
-        names = re.findall(r"(\w+)\s*((?:\[[^\]]*\]\s*)*)(?:,|$)", decl)
-        for n, subs in names:
+        for n, subs in re.findall(r"(\w+)\s*((?:\[[^\]]*\]\s*)*)(?:,|$)", decl):
             full = f"{prefix}{n}"
-            paths.append(full)
+            out.append((full, None))
             if is_nested:
-                # an array of nested blocks is walked through element 0
                 elem = full + "[0]" * subs.count("[")
-                paths.extend(member_paths(nested, elem + "."))
-    return paths
+                out.extend(walk_members(nested, elem + "."))
+    return out
+
+
+def member_paths(body: str, prefix: str = ""):
+    """Dotted member paths usable in offsetof: every member except
+    bitfields (offsetof on a bitfield is a constraint violation); a
+    bitfield's enclosing member is still listed."""
+    return [p for p, w in walk_members(body, prefix) if w is None]
+
+
+def bitfield_paths(body: str, prefix: str = ""):
+    """(dotted path, width) of every bitfield member."""
+    return [(p, w) for p, w in walk_members(body, prefix) if w is not None]
 
 
 def transform_body(body: str) -> str:
@@ -200,7 +213,7 @@ def read_layout(path: Path):
         size = int(re.search(r"^size = (0x[0-9a-fA-F]+)", chunk, re.M).group(1), 16)
         fields = [(f, int(o, 16)) for f, o in re.findall(
             r'\{ name = "([^"]+)", offset = (0x[0-9a-fA-F]+) \}', chunk)]
-        structs[name] = (size, fields)
+        structs[name] = (size, fields)   # bitfield rows (bit =) carry no pin
     return (sha.group(1) if sha else None), structs
 
 

@@ -444,6 +444,8 @@ fields = [
   { name = "m_SectorIndex", offset = 0x4a },
   { name = "m_Renderer", offset = 0x4b },
   { name = "m_Renderer.flags", offset = 0x4b },
+  { name = "m_Renderer.flags.m_Distance", bit = 600, width = 7 },
+  { name = "m_Renderer.flags.m_ShinyRenderer", bit = 607, width = 1 },
   { name = "m_Renderer.raw", offset = 0x4b },
   { name = "m_SpecularMetalColor", offset = 0x4c },
   { name = "m_SpecularMetalType", offset = 0x4f },
@@ -464,6 +466,9 @@ size = 0x8
 fields = [
   { name = "m", offset = 0x0 },
   { name = "m.m_Props", offset = 0x0 },
+  { name = "m.m_Props.m_VertexOffset", bit = 0, width = 21 },
+  { name = "m.m_Props.m_CollisionModel", bit = 21, width = 3 },
+  { name = "m.m_Props.m_FrameSound", bit = 24, width = 8 },
   { name = "m.m_Data", offset = 0x0 },
   { name = "m_VertexColorOffset", offset = 0x4 },
   { name = "m_Shadow", offset = 0x6 },

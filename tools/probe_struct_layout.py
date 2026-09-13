@@ -74,11 +74,21 @@ def sym(path: str) -> str:
 
 def probe_tu(include_dir: Path, structs, extra_names):
     lines = [f'#include "{h.name}"' for h in sorted(include_dir.glob("*.h"))]
+    keep = []
     for _, name, body in structs:
         lines.append(f"unsigned long sz_{name} = sizeof({name}) + {BIAS};")
         for path in G.member_paths(body):
             lines.append(f"unsigned long off_{name}__{sym(path)} "
                          f"= __builtin_offsetof({name}, {path}) + {BIAS};")
+        # A bitfield has no offsetof; an object with only that field set
+        # to all ones is emitted as data, and its bytes give the bit range.
+        for path, width in G.bitfield_paths(body):
+            v = f"bf_{name}__{sym(path)}"
+            lines.append(f"static const {name} {v} = {{ .{path} = "
+                         f"{(1 << width) - 1:#x}u }};")
+            keep.append(v)
+    if keep:
+        lines.append("const void *bf_keep[] = { " + ", ".join(f"&{v}" for v in keep) + " };")
     for name, paths in extra_names:
         lines.append(f"unsigned long sz_{name} = sizeof({name}) + {BIAS};")
         for path in paths:
@@ -88,17 +98,34 @@ def probe_tu(include_dir: Path, structs, extra_names):
 
 
 def read_asm(path: Path):
-    vals, cur = {}, None
+    """{sz_/off_ symbol: value} and {bf_ symbol: bytes of the object}."""
+    vals, images, cur, img = {}, {}, None, None
     for l in path.read_text().splitlines():
-        m = re.match(r"^(sz_\w+|off_\w+):", l)
+        m = re.match(r"^(sz_\w+|off_\w+|bf_\w+):", l)
         if m:
             cur = m.group(1)
+            img = [] if cur.startswith("bf_") else None
+            if img is not None:
+                images[cur] = img
+            continue
+        if img is not None:
+            m = re.match(r"\s*\.(byte|half|short|word|long|space)\s+(-?\d+)", l)
+            if not m:
+                if re.match(r"\s*\.(globl|type|size|align|section)\b", l) and img:
+                    img = None
+                continue
+            kind, n = m.group(1), int(m.group(2))
+            if kind == "space":
+                img.extend([0] * n)
+            else:
+                width = {"byte": 1, "half": 2, "short": 2, "word": 4, "long": 4}[kind]
+                img.extend((n & ((1 << (8 * width)) - 1)).to_bytes(width, "little"))
             continue
         m = re.match(r"\s*\.(?:word|long|4byte)\s+(-?\d+)", l)
         if m and cur:
             vals[cur] = int(m.group(1)) - BIAS
             cur = None
-    return vals
+    return vals, images
 
 
 def bss_globals(decomp: Path, sizes: dict):
@@ -149,10 +176,22 @@ def main():
                            capture_output=True, text=True)
         if r.returncode:
             sys.exit(f"[probe] {CC} failed:\n{r.stderr}")
-        vals = read_asm(td / "probe.s")
+        vals, images = read_asm(td / "probe.s")
 
     errors = []
     sizes = {n: vals[f"sz_{n}"] for _, n, _ in structs}
+    bits = {}   # (struct, path) -> (first bit, width), bit 0 = struct start
+    for _, name, body in structs:
+        for path, width in G.bitfield_paths(body):
+            img = images[f"bf_{name}__{sym(path)}"]
+            img = img + [0] * (sizes[name] - len(img))
+            n = int.from_bytes(bytes(img), "little")
+            set_bits = [i for i in range(8 * sizes[name]) if n >> i & 1]
+            if len(set_bits) != width or set_bits != list(range(set_bits[0], set_bits[0] + width)):
+                errors.append(f"{name}.{path}: bitfield image {set_bits} is not "
+                              f"{width} contiguous bits")
+                continue
+            bits[(name, path)] = (set_bits[0], width)
     sizes.update({n: vals[f"sz_{n}"] for n, _ in psyq})
 
     # unk_0xNNN names encode offsets.
@@ -214,16 +253,20 @@ def main():
            f'headers_sha256 = "{h.hexdigest()}"',
            ""]
     for header, name, body in structs + [("psyq", n, None) for n, _ in psyq]:
-        paths = (G.member_paths(body) if body is not None
-                 else dict(psyq)[name])
+        members = (G.walk_members(body) if body is not None
+                   else [(p, None) for p in dict(psyq)[name]])
         out.append("[[struct]]")
         out.append(f'name = "{name}"')
         out.append(f'header = "{header}"')
         out.append(f"size = {sizes[name]:#x}")
         out.append("fields = [")
-        for pth in paths:
-            off = vals["off_%s__%s" % (name, sym(pth))]
-            out.append(f'  {{ name = "{pth}", offset = {off:#x} }},')
+        for pth, width in members:
+            if width is None:
+                off = vals["off_%s__%s" % (name, sym(pth))]
+                out.append(f'  {{ name = "{pth}", offset = {off:#x} }},')
+            else:
+                bit, w = bits[(name, pth)]
+                out.append(f'  {{ name = "{pth}", bit = {bit}, width = {w} }},')
         out.append("]")
         out.append("")
     for name, t, count, space, slack in globs:
@@ -239,7 +282,8 @@ def main():
     n_pins = sum(1 + len(G.member_paths(b)) for _, _, b in structs) + \
         sum(1 + len(p) for _, p in psyq)
     print(f"[probe] {len(structs)} structs + {len(psyq)} PSYQ types, "
-          f"{n_pins} pins, {n_unk} unk_0x checks, {len(globs)} .bss globals "
+          f"{n_pins} pins, {len(bits)} bitfields, {n_unk} unk_0x checks, "
+          f"{len(globs)} .bss globals "
           f"({sum(1 for g in globs if g[4] == 'split')} split) -> {args.out}")
 
 

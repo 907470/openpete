@@ -813,6 +813,31 @@ def gen_structs(structs_header: Path, linker: SourceLinker,
         offsets.setdefault(s, []).append((f, off))
     n_pins = len(sizes) + sum(len(v) for v in offsets.values())
 
+    # Bitfields have no offsetof pin; the layout toml carries their bit
+    # ranges, probed from the MIPS compiler's data image. The toml's field
+    # order is declaration order, so it drives the table when present.
+    rows = {}
+    if layout_toml and layout_toml.exists():
+        t = layout_toml.read_text(encoding="utf-8")
+        for chunk in t.split("[[struct]]")[1:]:
+            chunk = chunk.split("[[global]]")[0]
+            sname = re.search(r'^name = "(\w+)"', chunk, re.M).group(1)
+            rr, offs = [], {}
+            for m in re.finditer(r'\{ name = "([^"]+)", (offset = (0x[0-9a-fA-F]+)'
+                                 r'|bit = (\d+), width = (\d+)) \}', chunk):
+                if m.group(3):
+                    offs[m.group(1)] = int(m.group(3), 16)
+                    rr.append((m.group(1), f"`{m.group(3)}`"))
+                else:
+                    # bit range within the enclosing member's storage
+                    bit, w = int(m.group(4)), int(m.group(5))
+                    parent = re.sub(r"\[0\]", "", m.group(1).rsplit(".", 1)[0])
+                    base = offs.get(parent, 0)
+                    lo = bit - 8 * base
+                    span = f"bit {lo}" if w == 1 else f"bits {lo}-{lo + w - 1}"
+                    rr.append((m.group(1), f"`{base:#x}` {span}"))
+            rows[sname] = rr
+
     # PSYQ types are emitted ahead of the game structs and have no decomp
     # source range; they are listed in their own section.
     sys.path.insert(0, str(REPO / "tools"))
@@ -833,11 +858,12 @@ def gen_structs(structs_header: Path, linker: SourceLinker,
             meta.append(f"Size: `{sizes[name]}`")
         if meta:
             out.append("  \n".join(meta) + "\n")
-        if name in offsets:
+        table = rows.get(name) or [(f, f"`{off}`") for f, off in offsets.get(name, [])]
+        if table:
             out.append("| Field | Offset |")
             out.append("|---|---|")
-            for f, off in offsets[name]:
-                out.append(f"| `{f}` | `{off}` |")
+            for f, cell in table:
+                out.append(f"| `{f}` | {cell} |")
             out.append("")
         out.append(f"```c\n{body.strip()}\n```\n")
 
@@ -860,7 +886,7 @@ def gen_structs(structs_header: Path, linker: SourceLinker,
     if layout_toml and layout_toml.exists():
         t = layout_toml.read_text(encoding="utf-8")
         n_toml = (len(re.findall(r"^size = ", t, re.M))
-                  + len(re.findall(r"\{ name = ", t)))
+                  + len(re.findall(r", offset = ", t)))   # bit rows carry no pin
         if n_toml != n_pins:
             sys.exit(f"gen_mod_docs: {n_pins} pins on the structs page, "
                      f"{n_toml} in {layout_toml.name}; the pin extractor "
