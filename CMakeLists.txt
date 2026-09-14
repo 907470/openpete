@@ -118,6 +118,14 @@ add_subdirectory(core/rhi)
 
 add_subdirectory(core)
 
+# Host-side unit tests (no PSX boot, just pure-function checks). Testing is
+# enabled before the game directories so their per-game ctest rows
+# (state_regions_derivation_<game>) register.
+option(OPENPETE_BUILD_TESTS "Build host-side unit tests" ON)
+if(OPENPETE_BUILD_TESTS)
+    enable_testing()
+endif()
+
 foreach(game IN LISTS OPENPETE_GAMES)
     if(EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/games/${game}/CMakeLists.txt")
         add_subdirectory(games/${game})
@@ -126,10 +134,7 @@ foreach(game IN LISTS OPENPETE_GAMES)
     endif()
 endforeach()
 
-# Host-side unit tests (no PSX boot, just pure-function checks).
-option(OPENPETE_BUILD_TESTS "Build host-side unit tests" ON)
 if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMakeLists.txt")
-    enable_testing()
     add_subdirectory(tests/unit)
 
     # Integration test: gameplay-state-vs-presentation determinism.

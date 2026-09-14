@@ -500,6 +500,28 @@ void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
      * crash, fast smoke) before the trace's end, an open burst is merely
      * unverified, not a failure — only promote when we actually hit EOF. */
     int eof_reached = (t->records_consumed >= t->frame_count);
+    /* Ratchet: a tolerated row's divergence count over the full run may
+     * not exceed the baseline its manifest row records. */
+    if (eof_reached) {
+        for (uint32_t r = 0; r < t->region_count; r++) {
+            if (r >= (uint32_t)openpete_state_region_count) break;
+            int32_t base = openpete_state_regions[r].diverge_baseline;
+            if (base < 0) continue;
+            uint64_t n = t->per_region_diverge_count[r];
+            if (n > (uint64_t)base) {
+                OPL_ERROR_F("psxtrace",
+                            "ratchet: region=%u (%s) diverged on %llu records, "
+                            "baseline %d",
+                            r, t->region_names[r], (unsigned long long)n, base);
+                if (!t->hard_failed) {
+                    t->hard_failed      = 1;
+                    t->hard_fail_frame  = t->frame_count;
+                    t->hard_fail_region = (int32_t)r;
+                    t->hard_fail_reason = "ratchet";
+                }
+            }
+        }
+    }
     for (uint32_t r = 0; r < t->region_count; r++) {
         if (t->transient_open_frame[r] < 0) continue;
         const int neutral = (r < (uint32_t)openpete_state_region_count)

@@ -26,10 +26,12 @@
 # environment and cyclorama pointers, the title sequence). openpete lands
 # a read instantly where the reference lands it over the load's VBLs, so
 # each diverges for the load window and re-converges at its end (heal
-# window 600 ticks); openpete-per-game-oracle P6 charges the reference's
-# VBLs and removes the flags. No CdRead destination lies inside the main
+# window 600 ticks); the flags come off once openpete charges the
+# reference's VBLs per read. No CdRead destination lies inside the main
 # image (the level images load at 0x8007AA38 and 0x8007DDE8), so no
-# partial sector landing reaches these rows.
+# partial sector landing reaches these rows. Every tolerated row carries
+# diverge_baseline, the records it diverged on over the golden; a full
+# run exceeding it fails.
 #
 # render_scratch rows are the four render-side ranges inside the main
 # image: the three channels audited in manifest/render_channels.toml
@@ -38,9 +40,9 @@
 # diverge on the default run (identical counts under --renderer psycross):
 # openpete's stock render pass emits a different flat-shaded packet set
 # on some ticks while every strict row stays identical over the 20k
-# golden. Both are gameplay_neutral (hashed, logged, never hard-fail) by
-# the neutrality review of 2026-09-14, with the per-row divergence counts as
-# a ratchet; owner openpete-per-game-oracle P12.
+# golden. Both are classified gameplay_neutral (hashed, logged, never
+# hard-fail; owner in the plan ledger), their diverge_baseline the
+# ratchet until the packet is attributed.
 #
 # Carve-outs (commented rows; the ranges are subtracted above):
 #   pad_model       g_PadBuffer 0x800786A0-C4, g_Pad stick calibration
@@ -55,6 +57,33 @@
 #   psyq_internal   libgpu's queued-command ring 0x80078EA0-0x8007A6A8 sits
 #                   in game .bss (psyq.s 0x80061980); the host libgpu never
 #                   writes it
+#
+# Of the [[populated]] mirror rows (the words the CD, pad, gpu and crt0
+# thunks write where the library would), only the libcd block and the two
+# crt0 words are hashed: a grep of every symbol inside the other rows (the
+# libgpu environment and fill-packet blocks, the libpad control block, the
+# VSyncCallback slot, the libcd/libetc write_word sites) over the decomp's
+# non-PSYQ asm and C finds no reference, and of the translated PSYQ getters
+# the game calls only CdLastCom returns a byte from them.
+
+# The arguments tools/derive_state_regions.py derived the direct rows from;
+# `--check` re-derives and compares (ctest state_regions_derivation_spyro-1).
+[derivation]
+named = [
+  "psyq_rand_seed=0x80075AC0:4", "g_Spyro=0x80078A58:0x2A4",
+  "g_LevelIndex=0x80075964:4", "g_UnprocessedFrames=0x80075760:4",
+  "render_prim_color_scratch=0x800705F4:0xD00:render_scratch",
+  "render_moby_queues=0x800718F4:0xC00:render_scratch",
+  "render_dedup_flags=0x80077868:0x20:render_scratch",
+  "render_prim_cursor=0x800757B0:4:render_scratch",
+  "g_CDMaxReadTime=0x800756E0:4", "g_DeltaTime=0x800756CC:4",
+  "g_LoadStage=0x80075864:4", "g_CDReadTime=0x8007588C:4",
+  "g_Spu=0x80075F08:0x340", "level_tables=0x80076278:0x900",
+  "g_CdState=0x80076B90:0x30", "g_CdMusic_head=0x800774B0:0x208",
+  "g_CdMusic_tail=0x800776C4:0x14", "g_NewCyclorama=0x80077780:0x14",
+  "g_Environment_g_Buffers=0x800785A8:0x60", "g_TitlescreenState=0x80078D78:0x5C",
+]
+min_row = 4
 
 [[region]]
 name        = "render_prim_color_scratch"
@@ -72,11 +101,11 @@ description      = "g_SonyImage.m_WorldNearQueued[256] / m_WorldFarQueued[256] /
 # Diverges from the reference on 131 of the 20k golden records at the
 # default (identical count under --renderer psycross): the stock render
 # pass in openpete queues a different prim set on those ticks, moving the
-# primitive-buffer cursor below with it. gameplay_neutral by the
-# neutrality review of 2026-09-14 (every strict row identical over the golden);
-# the count is a ratchet, baseline 131; owner openpete-per-game-oracle
-# P12 (stock render-pass packet parity).
+# primitive-buffer cursor below with it. Classified gameplay_neutral:
+# every strict row is identical over the golden; the count is the
+# ratchet.
 gameplay_neutral = true
+diverge_baseline = 131
 
 [[region]]
 name              = "g_DeltaTime"
@@ -85,6 +114,7 @@ length            = 0x4
 class             = "gameplay"
 description       = "VBLs elapsed since the previous tick, as the game measured them; the first tick after a load counts the read wait on the reference"
 cd_load_transient = true
+diverge_baseline  = 16
 
 [[region]]
 name              = "g_CDMaxReadTime"
@@ -93,6 +123,7 @@ length            = 0x4
 class             = "gameplay"
 description       = "Longest CdRead wait the load code has seen, in VBLs"
 cd_load_transient = true
+diverge_baseline  = 2452
 
 [[region]]
 name        = "g_UnprocessedFrames"
@@ -111,11 +142,11 @@ description      = "D_800757B0: the primitive-buffer bump cursor the renderers a
 # Differs from the reference by whole POLY_F3/F4 packets (0x18-byte
 # multiples) on 5290 of the 20k golden records at the default (identical
 # count under --renderer psycross): openpete's stock render pass emits a
-# different flat-shaded packet set on those ticks. gameplay_neutral by
-# the neutrality review of 2026-09-14 (every strict row identical over the
-# golden); the count is a ratchet, baseline 5290; owner
-# openpete-per-game-oracle P12 (stock render-pass packet parity).
+# different flat-shaded packet set on those ticks. Classified
+# gameplay_neutral: every strict row is identical over the golden; the
+# count is the ratchet.
 gameplay_neutral = true
+diverge_baseline = 5290
 
 [[region]]
 name              = "g_LoadStage"
@@ -124,6 +155,7 @@ length            = 0x4
 class             = "gameplay"
 description       = "Level-load state machine stage"
 cd_load_transient = true
+diverge_baseline  = 2390
 
 [[region]]
 name              = "g_CDReadTime"
@@ -132,6 +164,7 @@ length            = 0x4
 class             = "gameplay"
 description       = "VBLs the current CdRead has been waiting"
 cd_load_transient = true
+diverge_baseline  = 2413
 
 [[region]]
 name        = "g_LevelIndex"
@@ -153,11 +186,10 @@ start             = 0x80075F08
 length            = 0x340
 class             = "gameplay"
 description       = "SPU definition table and sound-request slots the level load fills"
-# Beyond the load window a request slot (+0x35..+0x4B) differs for one
-# tick when the host SPU resolves a play request a tick later than
-# hardware (the sub-VBL cascade residual, openpete-psx-oracle-ci); the
-# result byte lands in g_DragonCutscene+0x54, masked in its extent row.
+mask_offsets      = [0x34, 0x35, 0x36, 0x37, 0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47, 0x48, 0x49, 0x4A, 0x4B]
+mask_reason       = "+0x34..+0x4B: a sound-request slot the host SPU resolves one tick later than hardware (the voice answer lands in g_DragonCutscene+0x54, masked in its extent row); the same host-precision residual as the moby m_SoundChannel masks"
 cd_load_transient = true
+diverge_baseline  = 1786
 
 [[region]]
 name              = "level_tables"
@@ -166,6 +198,7 @@ length            = 0x900
 class             = "gameplay"
 description       = "D_80076278 and g_Models (model table): tables the level load fills as its sectors arrive"
 cd_load_transient = true
+diverge_baseline  = 2199
 
 [[region]]
 name              = "g_CdState"
@@ -174,6 +207,7 @@ length            = 0x30
 class             = "gameplay"
 description       = "CD load bookkeeping: current read position, sector counts and the wait counter"
 cd_load_transient = true
+diverge_baseline  = 2605
 
 [[region]]
 name              = "g_CdMusic_head"
@@ -182,6 +216,7 @@ length            = 0x208
 class             = "gameplay"
 description       = "XA music stream state before the music_head carve-out (+0x208..+0x214): track, filter and the request the load code re-arms"
 cd_load_transient = true
+diverge_baseline  = 244
 
 [[region]]
 name              = "g_CdMusic_tail"
@@ -190,6 +225,7 @@ length            = 0x14
 class             = "gameplay"
 description       = "XA music stream state after the music_head carve-out: the stream start flags"
 cd_load_transient = true
+diverge_baseline  = 244
 
 [[region]]
 name              = "g_NewCyclorama"
@@ -198,6 +234,7 @@ length            = 0x14
 class             = "gameplay"
 description       = "Cyclorama pointers the load code publishes when the sky sectors land"
 cd_load_transient = true
+diverge_baseline  = 1592
 
 [[region]]
 name        = "render_dedup_flags"
@@ -213,6 +250,7 @@ length            = 0x60
 class             = "gameplay"
 description       = "g_Environment and g_Buffers: level environment header and buffer pointers set as the load lands them"
 cd_load_transient = true
+diverge_baseline  = 2199
 
 [[region]]
 name         = "g_Spyro"
@@ -230,6 +268,7 @@ length            = 0x5C
 class             = "gameplay"
 description       = "Title-screen sequence state; +0xC..+0x11 advance while the reference is still loading the demo level"
 cd_load_transient = true
+diverge_baseline  = 252
 
 # .data extent 0: 206 symbols; named: spyro_StateDefaultAnimation, spyro_AnimationDetails, spyro_FlameBlockedInAnimation, g_HudMobyTargetPos, g_HudEggTargetRect, g_HudOpeningOffsets, g_HudClosingOffsets, g_LifeOrbXYTarget, g_CutscenePitchTable, g_DemoLevelIds, g_DemoLengths, g_DemoStartPositions, g_GameOverTextXY, g_GameOverTextZ, g_GrayscalePalette, g_FairyDialogueBoxSizes, g_TargetDragonCounts, g_TargetGemCounts, g_TargetEggCounts, g_MemCardSaveHeader, g_DragonNames, g_HomeworldNames, g_LevelNames, g_BalloonistNames, g_BalloonistDialogueIndices, g_BalloonistDialogue, g_TitlescreenAnimIn, g_TitlescreenAnimOut, g_TitlescreenSPUOffsets, g_TitlescreenSelColors, g_TitlescreenSprites, g_SonyImage
 [[region]]
@@ -366,7 +405,7 @@ start        = 0x80076BC0
 length       = 0x7FC
 class        = "gameplay"
 mask_offsets = [0x4C4, 0x7C8, 0x7C9, 0x7CA, 0x7CB]
-mask_reason  = "+0x4C4 g_DragonCutscene+0x54 (0x80077084): the SPU voice the host allocator answered to a play request, resolved one tick later than hardware on some ticks (sub-VBL cascade residual, openpete-psx-oracle-ci); +0x7C8..+0x7CB g_Pad.m_LeftStickMoved (0x80077388): derived from the pad buffer the reference polls during the streaming load's blocked VBLs (pad_model, openpete-spyro2-3-bringup P16), one tick per streaming load"
+mask_reason  = "+0x4C4 g_DragonCutscene+0x54 (0x80077084): the SPU voice the host allocator answered to a play request, resolved one tick later than hardware on some ticks (host-precision residual, as the m_SoundChannel masks); +0x7C8..+0x7CB g_Pad.m_LeftStickMoved (0x80077388): derived from the pad buffer the reference polls during the streaming load's blocked VBLs (the pad-model carve-out of ram_diff_expect.toml), one tick per streaming load"
 
 # .bss extent 18: 1 symbols; named: g_LevelGemCount
 [[region]]
@@ -460,6 +499,7 @@ class        = "gameplay"
 # never reaches gameplay. Logged, never hard-fails; the coupling tripwire
 # is the seed and the moby rows.
 gameplay_neutral = true
+diverge_baseline = 0
 description  = "Particle pool behind *g_Particles; render-side drawn flag audited gameplay-neutral"
 
 [[region]]
@@ -477,6 +517,7 @@ mask_reason       = "Moby.m_SoundChannel: the SPU voice the host allocator answe
 # for the load's duration against the hardware-timed reference, then
 # re-converges.
 cd_load_transient = true
+diverge_baseline = 1417
 
 [[region]]
 name             = "g_DynMobys_pool"
@@ -490,6 +531,7 @@ description      = "Dynamic-spawn moby pool behind *g_DynMobys; the Moby starts 
 mask_per_element = [0x6C]
 mask_reason      = "Moby.m_SoundChannel (Moby at +0x18 in the 0x70 stride)"
 cd_load_transient = true
+diverge_baseline = 972
 
 [[region]]
 name             = "g_Sparx_moby"
@@ -502,14 +544,19 @@ description      = "Sparx companion: the single Moby behind *g_Sparx"
 mask_per_element = [0x54]
 mask_reason      = "Moby.m_SoundChannel: the SPU voice the host allocator answered"
 cd_load_transient = true
+diverge_baseline = 981
 
 # ─── libcd mirror ──────────────────────────────────────────────────────
 # Of libcd's state block (0x80074E38, written by the shared CD thunks) the
 # game reads one byte: CdLastCom, from music.c (`CdLastCom() == CdlGetlocP`).
 # CdStatus, CdLastPos and CdMode have no caller outside psyq.s in this
-# game, so they are not gameplay-readable here. The byte follows the
-# drive's command sequence, which runs ahead on openpete during a load
-# (the stream restarts before the reference's level read completes).
+# game (grep of the recompiled main image and overlays for the four
+# getters: only psyq_CdLastCom is called), so they are not
+# gameplay-readable here. The byte follows the drive's command sequence,
+# which runs ahead on openpete during a load (the XA stream restarts
+# before the reference's level read completes): it is the one psyq_mirror
+# row tolerated as a load transient, 40 bursts of at most 130 ticks over
+# the golden, until openpete charges the reference's VBLs per read.
 
 [[region]]
 name        = "libcd_CdLastCom"
@@ -518,6 +565,7 @@ length      = 0x1
 class       = "psyq_mirror"
 description = "libcd block 0x80074E38: last command byte (CdLastCom), read by music.c"
 cd_load_transient = true
+diverge_baseline = 2473
 
 # crt0 mirrors, set once at boot.
 [[region]]

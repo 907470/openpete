@@ -91,7 +91,7 @@ owner  = "P16"
 # Loop anchor, hit 1: the title's own VSync loop ran 6 more frames on the
 # reference while the 10 pre-anchor reads were in flight (0.4 VBL/sector
 # there, none in openpete). Removed by the oracle consumer charging the
-# pre-anchor reads their sidecar VBLs (openpete-per-game-oracle D5d).
+# pre-anchor reads their sidecar VBLs.
 [[expect]]
 class  = "load_timing"
 start  = 0x8006700C

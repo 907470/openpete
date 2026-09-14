@@ -176,6 +176,14 @@ function(openpete_add_game GAME_ID)
                     ${CMAKE_SOURCE_DIR}/tools/gen_state_regions.py
             COMMENT "Generating ${GAME_ID} gameplay_state_regions.gen.h + flat table + lua mirror")
         set(_regions_sources ${_regions_header})
+        # The manifest's direct rows must equal their derivation from the
+        # link map and the current expect file: an expect row deleted by a
+        # fix re-derives the manifest in the same change.
+        add_test(NAME state_regions_derivation_${GAME_ID}
+                 COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/derive_state_regions.py
+                         --check ${_regions_manifest})
+        set_tests_properties(state_regions_derivation_${GAME_ID}
+                             PROPERTIES LABELS "fence;oracle")
     endif()
 
     add_executable(${_exe}

@@ -24,6 +24,16 @@ Prints TOML `[[region]]` rows to stdout; the manifest is assembled by hand
 from this output plus the indirect (pool) rows, which need the decomp's
 struct facts. `tools/check_regions_containment.py OLD.flat NEW.flat` then
 proves the assembled table hashes every byte the table it replaces hashed.
+
+    tools/derive_state_regions.py --check games/spyro-1/manifest/gameplay_state_regions.toml
+
+re-derives the direct rows from the manifest's own `[derivation]` table
+(`named`, `overlay`, `min_row`: the arguments above) against the current
+expect file and fails (exit 2) when the manifest's direct rows (every row
+with a start/length whose class is not psyq_mirror) differ in extent from
+the derivation, or when the derivation drops a fragment. An expect row
+deleted by a fix therefore forces the manifest to be re-derived in the
+same change (ctest `state_regions_derivation_<game>`).
 """
 from __future__ import annotations
 
@@ -77,9 +87,62 @@ def subtract(ranges, holes):
     return sorted(out)
 
 
-def main() -> int:
+def check_manifest(path: Path) -> int:
+    """Compare a manifest's direct rows with the derivation its [derivation]
+    table describes; exit 2 on any difference or dropped fragment."""
+    with open(path, "rb") as fh:
+        man = tomllib.load(fh)
+    d = man.get("derivation")
+    if not d:
+        print(f"[derivation] {path}: no [derivation] table", file=sys.stderr)
+        return 2
+    game = path.resolve().parents[1].name
+    argv = [game] + [f"--named={n}" for n in d.get("named", [])]
+    if d.get("overlay"):
+        argv.append(f"--overlay={d['overlay']}")
+    argv += ["--min-row", str(d.get("min_row", 4))]
+    import io, contextlib
+    buf = io.StringIO()
+    with contextlib.redirect_stdout(buf):
+        rc = main(argv)
+    if rc != 0:
+        print(buf.getvalue(), file=sys.stderr)
+        return 2
+    derived = set()
+    dropped = 0
+    cur = {}
+    for line in buf.getvalue().splitlines():
+        if line.startswith("# dropped fragment"):
+            dropped += 1
+        m = re.match(r"(start|length)\s*=\s*(0x[0-9A-Fa-f]+)", line)
+        if m:
+            cur[m.group(1)] = int(m.group(2), 16)
+            if "start" in cur and "length" in cur:
+                derived.add((cur["start"], cur["length"]))
+                cur = {}
+    manifest = {(int(r["start"]), int(r["length"])) for r in man.get("region", [])
+                if "start" in r and r.get("kind", "direct") == "direct"
+                and r.get("class") != "psyq_mirror"}
+    missing = sorted(derived - manifest)
+    extra = sorted(manifest - derived)
+    for s0, n in missing:
+        print(f"[derivation] derived row 0x{s0:08X}+0x{n:X} not in manifest")
+    for s0, n in extra:
+        print(f"[derivation] manifest row 0x{s0:08X}+0x{n:X} not derived")
+    if dropped:
+        print(f"[derivation] derivation dropped {dropped} fragment(s) below min_row")
+    print(f"[derivation] {game}: {len(derived)} derived direct rows, {len(manifest)} manifest direct rows, "
+          f"{len(missing) + len(extra)} differ, {dropped} dropped")
+    if missing or extra or dropped:
+        print("[derivation] FAIL: re-derive the manifest against the current expect file")
+        return 2
+    print("[derivation] PASS")
+    return 0
+
+
+def main(argv=None) -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("game")
+    ap.add_argument("game", nargs="?")
     ap.add_argument("--named", action="append", default=[],
                     help="NAME=ADDR:LEN[:class] carved out of the extents as its own row")
     ap.add_argument("--min-row", type=int, default=4,
@@ -87,7 +150,13 @@ def main() -> int:
     ap.add_argument("--overlay", metavar="START:LEN",
                     help="overlay image union (OVERLAY_LOAD_ADDR, largest image); emitted as "
                          "cd_load_transient rows cut at the [[expect]] ranges inside it")
-    a = ap.parse_args()
+    ap.add_argument("--check", metavar="MANIFEST",
+                    help="re-derive from the manifest's [derivation] table and compare")
+    a = ap.parse_args(argv)
+    if a.check:
+        return check_manifest(Path(a.check))
+    if not a.game:
+        ap.error("game required")
 
     gdir = ROOT / "games" / a.game
     map_path = gdir / a.game / "build" / "psx.map"

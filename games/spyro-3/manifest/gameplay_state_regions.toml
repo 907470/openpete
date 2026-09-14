@@ -16,19 +16,28 @@
 #
 # Row fields beyond the generator's (start/length or the indirect_array
 # keys, mask_offsets/mask_per_element, cd_load_transient, gameplay_neutral,
-# constant_ok): `class` is gameplay | render_scratch | psyq_mirror. Every
-# row is gameplay on the stock path; the OT and primitive buffers inside
-# the .bss extents become render_scratch rows when a presentation layer
-# reaches this game (openpete-per-game-oracle D4).
+# constant_ok): `class` is gameplay | render_scratch | psyq_mirror. No row
+# is render_scratch yet: no OT or primitive buffer of this game has been
+# located inside the main image (Spyro 2's DR_MODE packets and both games'
+# ordering tables sit in level RAM, outside these rows). A render-side
+# range found inside an extent when the golden lands is split out as a
+# named render_scratch row, never absorbed by a flag on the extent.
 #
 # Carve-outs (commented rows; the ranges are subtracted above):
 #   load_timing  D_8006C644, D_8006E484, D_8006C7CC, title overlay 0x80080EE0,
 #                0x80080F64-0x80080F69, 0x80080FC4-0x80080FE1 — counters the
 #                title's VSync loop advances while the reference spends
-#                0.4 VBL/sector on the 13 pre-anchor reads; owner
-#                openpete-per-game-oracle (D5d pre-anchor charge)
+#                0.4 VBL/sector on the 13 pre-anchor reads; removed
+#                once openpete charges the pre-anchor reads their VBLs
 #   pad_model    D_8007143C, D_800718DC, pad2 — the analog pad's poll
-#                answer; owner openpete-spyro2-3-bringup P16
+#                answer (the pad-model carve-out of ram_diff_expect.toml)
+
+# The arguments tools/derive_state_regions.py derived the direct rows from;
+# `--check` re-derives and compares (ctest state_regions_derivation_spyro-3).
+[derivation]
+named   = ["psyq_rand_seed=0x80073F3C:4", "levelIndex=0x8006C58C:4"]
+overlay = "0x800742D0:0x2D800"
+min_row = 4
 
 [[region]]
 name        = "levelIndex"

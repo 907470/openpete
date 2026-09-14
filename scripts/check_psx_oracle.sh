@@ -5,25 +5,30 @@
 # oracle hashes (one per gameplay-state region) are value-equality
 # compared against openpete's live hashes; first mismatch = first leak.
 #
-# The 3 CD-load pool regions (g_LevelMobys_pool / g_DynMobys_pool /
-# g_Sparx_moby) are flagged cd_load_transient in the manifest: they
-# legitimately diverge for the duration of a synchronous CdRead (openpete
-# drains instantly; the oracle is hardware-timed) and re-converge, so the
-# verifier tolerates a *healing* divergence there. A non-transient region
-# differing, or a transient that never re-converges, is a hard failure.
-# See notes/plans/openpete-psx-oracle-ci.md.
+# Rows flagged cd_load_transient in the manifest (the moby pools and the
+# main-image state the level load fills or advances while sectors arrive)
+# legitimately diverge for a load's duration (openpete lands a read
+# instantly; the reference lands it over the load's VBLs) and re-converge;
+# the verifier tolerates a divergence there that heals within the window.
+# Rows flagged gameplay_neutral are hashed and logged and never fail on a
+# divergence; their per-record divergence count is bounded by the row's
+# diverge_baseline. Any other row differing, or a transient that never
+# re-converges, is a hard failure.
 #
 # Usage:
 #   scripts/check_psx_oracle.sh [trace-path] [-- <extra openpete flags>]
 #
 # Anything after `--` is forwarded verbatim to the openpete binary, so the
-# same golden can be used to prove a presentation feature is gameplay-
-# neutral — run openpete WITH the feature flag against the STOCK golden; a
-# PASS means the flag perturbed no gameplay-state region vs real hardware:
+# same golden can be used to prove a feature with a game-side producer is
+# gameplay-neutral — run openpete WITH the feature flag against the STOCK
+# golden; a PASS means the flag perturbed no gameplay-state region vs real
+# hardware:
 #   scripts/check_psx_oracle.sh -- --no-lod
-#   scripts/check_psx_oracle.sh -- --aspect 16:9
-#   scripts/check_psx_oracle.sh -- --fov 90 --no-lod
-#   scripts/check_psx_oracle.sh custom.bin -- --aspect 16:9
+#   scripts/check_psx_oracle.sh -- --renderer psycross
+#   scripts/check_psx_oracle.sh custom.bin -- --no-lod
+# A native-renderer display flag (--aspect, --fov, --ssaa) has no game-side
+# producer: the run hashes the stock gameplay stream whatever its value and
+# proves nothing about the flag; the windowed oracle row covers that class.
 # (Flags with values need the `--` separator so the value isn't mistaken
 #  for the trace path.)
 #
@@ -41,8 +46,16 @@
 #
 # Env knobs:
 #   OPENPETE_BIN, OPENPETE_DISC
-#   OPENPETE_FRAME_LIMIT (default 8000 — safety belt; psxtrace-eof exits first)
+#   OPENPETE_FRAME_LIMIT (default 200000 — safety belt; psxtrace-eof exits
+#                         first; a smaller value makes a smoke run that
+#                         cannot PASS as a full run)
+#   OPENPETE_ORACLE_RECORDS (default 20000) — the record count the golden
+#                         must carry and the run must consume for a PASS
 #   PSXTRACE_KEEP_GOING=1   diff every frame, don't stop on first mismatch
+#   OPENPETE_ORACLE_ALLOW_KNOBS=<reason> admits OPENPETE_PSXTRACE_HEAL_WINDOW
+#                         and OPENPETE_PSXTRACE_VBL_POLICY from the caller's
+#                         environment; otherwise the run refuses them, since
+#                         either weakens or changes the verdict
 #
 # Exit codes:
 #   0   bit-identical hashes for every traced frame
@@ -113,6 +126,29 @@ if [[ "$TRACE_BUILD" != "$DS_PIN" ]]; then
         exit 64
     fi
 fi
+
+# The golden must be the full run: its header record count equals the
+# expected count, and the verdict below is a PASS only when the run consumed
+# every record. A truncated capture is self-consistent (the capture module
+# patches the header to the records written) and would otherwise pass.
+RECORDS="${OPENPETE_ORACLE_RECORDS:-20000}"
+TRACE_RECORDS="$(python3 -m tools.psxtrace_format info "$TRACE" | sed -n 's/^version=.* frames=\([0-9]*\) .*/\1/p')"
+if [[ "$TRACE_RECORDS" != "$RECORDS" ]]; then
+    echo "[psx-oracle] golden $TRACE holds ${TRACE_RECORDS:-?} records, expected $RECORDS (OPENPETE_ORACLE_RECORDS)" >&2
+    exit 64
+fi
+
+# Verifier knobs that change the verdict are not inherited from the shell.
+for _k in OPENPETE_PSXTRACE_HEAL_WINDOW OPENPETE_PSXTRACE_VBL_POLICY; do
+    if [[ -n "${!_k:-}" ]]; then
+        if [[ -n "${OPENPETE_ORACLE_ALLOW_KNOBS:-}" ]]; then
+            echo "[psx-oracle] WARNING: $_k=${!_k} from the environment; allowed: $OPENPETE_ORACLE_ALLOW_KNOBS"
+        else
+            echo "[psx-oracle] $_k is set in the environment; unset it or set OPENPETE_ORACLE_ALLOW_KNOBS=<reason>" >&2
+            exit 64
+        fi
+    fi
+done
 
 EXTRA=()
 [[ "${PSXTRACE_KEEP_GOING:-0}" != "0" ]] && EXTRA+=(--psxtrace-keep-going)
@@ -202,6 +238,11 @@ fi
 # Runs that reach EOF only: a truncated smoke run leaves late-changing rows
 # constant for no reason of their own.
 if [[ "$rc" == "0" ]] && grep -q 'openpete-exit: reason=psxtrace-eof' "$LOG"; then
+    CONSUMED=$(sed -n 's/.*psxtrace: summary: records=\([0-9]*\) .*/\1/p' "$LOG" | tail -1)
+    if [[ "$CONSUMED" != "$RECORDS" ]]; then
+        echo "[psx-oracle] run consumed ${CONSUMED:-?} records, expected $RECORDS" >&2
+        rc=2
+    fi
     UNJUST=$(sed -n 's/.*zero-change regions unjustified: *//p' "$LOG" | tail -1)
     if [[ -z "$UNJUST" ]]; then
         echo "[psx-oracle] region engagement: no zero-change summary line" >&2

@@ -72,7 +72,7 @@ source = "psx.map:8642 .bss psyq.bss.o"
 # each), openpete none; the title's own VSync loop runs during them, so
 # every counter it advances or zeroes at a read is ahead on the reference.
 # Removed by the oracle consumer charging the pre-anchor synchronous reads
-# their sidecar VBLs (openpete-per-game-oracle D5d).
+# their sidecar VBLs.
 [[expect]]
 class  = "load_timing"
 start  = 0x8006C644
@@ -125,7 +125,7 @@ owner  = "openpete-per-game-oracle"
 # since the program started. The reference's includes the VBLs its 13
 # pre-anchor reads took and its BIOS boot; openpete's counts from its own
 # start. Aligned when the oracle consumer charges the pre-anchor reads and
-# the boot offset (openpete-per-game-oracle D5d).
+# the boot offset.
 [[expect]]
 class  = "vbl_count"
 start  = 0x8006C5D4

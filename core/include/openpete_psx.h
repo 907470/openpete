@@ -136,6 +136,12 @@ typedef struct {
      * gate fails a PASS that lists one without this flag. The manifest row
      * carries `constant_ok = true` and the reason. */
     uint8_t     constant_ok;
+    /* Ratchet for a tolerated row (cd_load_transient or gameplay_neutral):
+     * the most records the row may diverge on over a full run. A run that
+     * reaches the trace's end with a higher count fails; -1 = unbounded.
+     * The manifest row carries `diverge_baseline = N` from the measured
+     * golden. */
+    int32_t     diverge_baseline;
 } OpenpeteStateRegion;
 extern const OpenpeteStateRegion* openpete_state_regions;
 extern size_t                     openpete_state_region_count;

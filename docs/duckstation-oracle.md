@@ -147,6 +147,14 @@ or `~/code/spyro/spyro-1/build/SCUS-94228.cue`. The shipped golden holds
 20000 records over the manifest's rows (Spyro 1: 54), covering four-plus
 level loads and gameplay, and replays in roughly two and a half minutes.
 
+The golden must hold `OPENPETE_ORACLE_RECORDS` records (default 20000)
+and a PASS requires the run to have consumed every one; a capture cut
+short by `-frames` is self-consistent (the module patches the header to
+the records written) and is refused. `OPENPETE_PSXTRACE_HEAL_WINDOW` and
+`OPENPETE_PSXTRACE_VBL_POLICY` in the caller's environment are refused
+unless `OPENPETE_ORACLE_ALLOW_KNOBS=<reason>` is set, since either changes
+the verdict.
+
 The script runs openpete `--headless --no-config
 --mute 1 --psxtrace-verify <trace> --frame-limit <N>`. `--no-config` keeps
 the verdict independent of any `openpete.toml` beside the exe or in the
@@ -155,15 +163,20 @@ forwarded `-- --mute 0` still wins. `OPENPETE_VIBRATION=0` is exported for
 the run (fenced by `scripts/fences/rumble_guard.py`).
 
 Anything after `--` is forwarded verbatim to openpete. This is how a
-presentation feature is proven gameplay-neutral: run openpete with the
-feature flag against the stock golden, and a PASS means the flag perturbed
-no gameplay-state region relative to hardware.
+feature with a game-side producer is proven gameplay-neutral: run openpete
+with the feature flag against the stock golden, and a PASS means the flag
+perturbed no gameplay-state region relative to hardware.
 
 ```sh
 scripts/check_psx_oracle.sh -- --no-lod
-scripts/check_psx_oracle.sh -- --aspect 16:9
-scripts/check_psx_oracle.sh custom.bin -- --fov 90 --no-lod
+scripts/check_psx_oracle.sh -- --renderer psycross
+scripts/check_psx_oracle.sh custom.bin -- --no-lod
 ```
+
+A native-renderer display flag (`--aspect`, `--fov`, `--ssaa`) has no
+game-side producer: the headless run hashes the stock gameplay stream
+whatever its value and proves nothing about the flag. That class belongs
+to the windowed oracle row.
 
 A flag that takes a value needs the `--` separator, otherwise its value is
 read as the trace path.
@@ -335,6 +348,22 @@ The Spyro 1 table is derived from the link map
 replacement table hashes every byte the previous one hashed. A residual
 inside a row becomes a `mask_offsets` entry with its owner in
 `mask_reason`, never a dropped row.
+
+Every tolerated row (`cd_load_transient` or `gameplay_neutral`) carries
+`diverge_baseline = N`, the records it diverged on over the golden it was
+measured against; a run that reaches the trace's end with a higher count
+fails (`hard fail: ratchet`). The generator refuses the field on a strict
+row. The summary names the first divergence in a row that is not
+`gameplay_neutral` (`first_non_neutral_div=`) and, on a FAIL, the row and
+reason (`non-transient`, `unhealed`, `unhealed-eof`, `ratchet`).
+
+Each manifest carries a `[derivation]` table (the `--named`, `--overlay`
+and `min_row` arguments its direct rows were derived with);
+`tools/derive_state_regions.py --check MANIFEST` re-derives against the
+current `ram_diff_expect.toml` and fails on any extent difference or
+dropped fragment (ctest `state_regions_derivation_<game>`, labels
+`fence;oracle`), so an expect row deleted by a fix re-derives the manifest
+in the same change.
 
 `g_Particles_pool` carries `gameplay_neutral = true` instead: its
 divergence is logged and never fails, on the strength of a 20k keep-going

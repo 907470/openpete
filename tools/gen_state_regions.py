@@ -58,7 +58,8 @@ def flatten_regions(regions: list) -> list:
     Row keys: kind (DIRECT / INDIRECT_ARRAY / INDIRECT_ARRAY_END_PTR /
     INDIRECT_ARRAY_COUNT), start, length, aux, elem_size, name, mask
     (tuple of offsets), mask_per_element (0/1), cd_load_transient (0/1),
-    gameplay_neutral (0/1), constant_ok (0/1).
+    gameplay_neutral (0/1), constant_ok (0/1), diverge_baseline (records the
+    row may diverge on over a full run; -1 = unbounded).
     """
     rows = []
     for r in regions:
@@ -130,8 +131,11 @@ def flatten_regions(regions: list) -> list:
             "cd_load_transient": 1 if r.get("cd_load_transient", False) else 0,
             "gameplay_neutral": 1 if r.get("gameplay_neutral", False) else 0,
             "constant_ok": 1 if r.get("constant_ok", False) else 0,
+            # Ratchet on the records a tolerated row diverges on; only a
+            # cd_load_transient or gameplay_neutral row carries one.
+            "diverge_baseline": int(r.get("diverge_baseline", -1)),
             # gameplay | render_scratch | psyq_mirror; manifest annotation,
-            # not part of the table (per-game oracle D4).
+            # not part of the table.
             "cls": r.get("class"),
         })
     return rows
@@ -152,6 +156,9 @@ def check_names(rows: list) -> None:
         name = row["name"]
         if row["cls"] is not None and row["cls"] not in ROW_CLASSES:
             raise ValueError(f"region {name!r}: class {row['cls']!r} not in {ROW_CLASSES}")
+        if row["diverge_baseline"] >= 0 and not (row["cd_load_transient"] or row["gameplay_neutral"]):
+            raise ValueError(f"region {name!r}: diverge_baseline on a row that is neither "
+                             "cd_load_transient nor gameplay_neutral (a strict row fails on its first divergence)")
         if any(c.isspace() for c in name):
             raise ValueError(f"region name {name!r} contains whitespace")
         if len(name.encode()) > NAME_MAX_BYTES:
@@ -257,7 +264,8 @@ def main() -> int:
             f"    {{ OPENPETE_REGION_{row['kind']}, 0x{row['start']:08X}u, 0x{row['length']:X}u, "
             f"0x{row['aux']:08X}u, 0x{row['elem_size']:X}u, \"{row['name']}\", "
             f"{mask_sym}, {len(row['mask'])}, {row['mask_per_element']}, "
-            f"{row['cd_load_transient']}, {row['gameplay_neutral']}, {row['constant_ok']} }},"
+            f"{row['cd_load_transient']}, {row['gameplay_neutral']}, {row['constant_ok']}, "
+            f"{row['diverge_baseline']} }},"
         )
     lines.append("};")
     lines.append("")
