@@ -182,7 +182,7 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
      * so iterate ALL sectors instead (the full 360° dome is in RAM; the
      * per-sector radius cull below + the near-plane clip + the scissor confine
      * it to the visible frustum). Display-only. */
-    int ws = vw.F > 1.0001f;
+    int ws = vw.extended;   /* Hor+ or a wider FOV */
     uint32_t sectors[1024]; uint32_t nSectors = 0;
     if ((int32_t)a0 < 0 || ws) {
         if (sectorCount > 1024) sectorCount = 1024;

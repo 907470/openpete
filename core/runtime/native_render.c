@@ -600,8 +600,53 @@ static int scene_sig_on(void)
     return on;
 }
 
+/* OPENPETE_SCENE_POS_SIG=1: the CONTINUOUS half, per draw category — an
+ * order-independent hash over every vertex's screen position (exact float
+ * bits) with the tri count, plus one bucket for the particle HUD bursts
+ * (tag path 5, sel 4 and 5). A display policy that must leave the HUD
+ * where the game put it (--fov) is checked by this: the HUD, HUD3D,
+ * HUD_PANEL and OVERLAY hashes and the burst bucket are equal across the
+ * policy's settings while the world categories differ. Census only. */
+static int scene_pos_sig_on(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("OPENPETE_SCENE_POS_SIG"); on = (e && *e && *e != '0'); }
+    return on;
+}
+static void scene_pos_sig_report(int canonical)
+{
+    enum { NCAT = 16 };
+    uint64_t h[NCAT] = {0}, hb = 0; int n[NCAT] = {0}, nb = 0;
+    for (int t = 0; t < s_scene_n; t++) {
+        const scene_tri_t *tr = &s_scene[t];
+        uint64_t k = 0;
+        for (int i = 0; i < 3; i++) {
+            uint32_t bx, by;
+            memcpy(&bx, &tr->v[i].sx, 4); memcpy(&by, &tr->v[i].sy, 4);
+            k = (k + bx) * 0x9E3779B97F4A7C15ull;
+            k = (k + by) * 0x9E3779B97F4A7C15ull;
+        }
+        k ^= k >> 29;
+        int c = tr->category;
+        if (c < 0 || c >= NCAT) c = NCAT - 1;
+        h[c] += k; n[c]++;
+        if ((tr->tag >> 28) == 5u) {
+            unsigned sel = tr->tag & 0xFFu;
+            if (sel == 4u || sel == 5u) { hb += k; nb++; }
+        }
+    }
+    extern unsigned openpete_frame;
+    fprintf(stderr, "[scene-pos] f=%u leg=%s", openpete_frame, canonical ? "CANON" : "inter");
+    static const char *names[14] = { "WORLD", "ACTOR", "HUD", "PLAYER", "OVERLAY", "HUD_PANEL", "HUD3D",
+                                     "PORTAL_CYC", "PORTAL_MASK", "PORTAL_GUARD", "SKY", "WORLD_FILL", "SHADOW", "ACTOR_FRONT" };
+    for (int c = 0; c < 14; c++)
+        fprintf(stderr, " %s=%016llx/%d", names[c], (unsigned long long)h[c], n[c]);
+    fprintf(stderr, " BURST=%016llx/%d\n", (unsigned long long)hb, nb);
+}
+
 void openpete_native_scene_sig_report(int canonical)
 {
+    if (scene_pos_sig_on()) scene_pos_sig_report(canonical);
     if (!scene_sig_on()) return;
     extern unsigned openpete_frame;
     uint64_t set_h = 0, cnt_h = 0; int distinct = 0;
@@ -7511,6 +7556,20 @@ void openpete_native_set_fov(float deg) {
 }
 float openpete_native_fov_deg(void) { return s_fov_deg; }
 int   openpete_native_visible_rows(void) { return s_nr.clip_h > 0 ? s_nr.clip_h : 224; }
+/* The projection the feeders last built a view from: the label's inputs. */
+static double s_fov_lbl_H, s_fov_lbl_yrow;
+void openpete_native_fov_note_canon(double H_canon, double y_row) { s_fov_lbl_H = H_canon; s_fov_lbl_yrow = y_row; }
+int openpete_native_fov_angles(double* v_deg, double* h_deg) {
+    const double H = s_fov_lbl_H > 0.0 ? s_fov_lbl_H : 341.0, yr = s_fov_lbl_yrow > 0.0 ? s_fov_lbl_yrow : 0.625;
+    const double pi = 3.14159265358979323846;
+    double v = s_fov_deg > 0.0f ? (double)s_fov_deg
+             : 2.0 * atan((0.5 * (double)openpete_native_visible_rows()) / (yr * H)) * 180.0 / pi;
+    double s = s_fov_tan_pending > 0.0 ? ((0.5 * (double)openpete_native_visible_rows()) / (yr * H)) / s_fov_tan_pending : 1.0;
+    double h = 2.0 * atan(256.0 * (double)openpete_native_widescreen_factor() / (H * s)) * 180.0 / pi;
+    if (v_deg) *v_deg = v;
+    if (h_deg) *h_deg = h;
+    return s_fov_lbl_H > 0.0;
+}
 double openpete_native_fov_h_scale(double H_canon, double y_row) {
     if (s_fov_tan <= 0.0 || H_canon <= 0.0 || y_row <= 0.0) return 1.0;
     double tref = (0.5 * (double)openpete_native_visible_rows()) / (y_row * H_canon);
@@ -10097,6 +10156,7 @@ int openpete_native_render_screenshot_all(const char *base)
      * scene is exactly the tercache LIVE state (the staged/live promote
      * mirrors the canonical lag). */
     openpete_tercache_frame_select(scene_present_stamp());
+    if (scene_pos_sig_on()) scene_pos_sig_report(1);   /* the scene this dump composes */
     int r = native_render_screenshot_all_impl(base, NULL, NULL, NULL);
     s_scene_shot_compose = 0;
     s_scene_shot_lag = 0;

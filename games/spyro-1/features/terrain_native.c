@@ -2232,7 +2232,7 @@ static uint32_t terrain_color_h(int noHP, const uint8_t* lp, const uint8_t* near
  * wrong (offset/format) and widescreen would gap even at 4:3. Display-only. */
 static int s_visdbg = -1;
 static void terrain_visdbg(CPUState* cpu, uint32_t sectorCnt, int group,
-                           uint32_t occCnt, const uint16_t* cand, int cn, int ws) {
+                           uint32_t occCnt, const uint16_t* cand, int cn, int n, int ws) {
     static int s_done = 0;
     if (s_done || openpete_frame < 1800u) return;
     s_done = 1;
@@ -2245,8 +2245,8 @@ static void terrain_visdbg(CPUState* cpu, uint32_t sectorCnt, int group,
     }
     fprintf(stderr,
         "[terrain-vis] frame=%u group=%d occCnt=%u candidates=%d  vis4:3=%d "
-        "missingFromCandidates=%d  (sectors=%u ws=%d)\n",
-        openpete_frame, group, occCnt, cn, vis43, missing, sectorCnt, ws);
+        "missingFromCandidates=%d  n=%d (sectors=%u ws=%d)\n",
+        openpete_frame, group, occCnt, cn, vis43, missing, n, sectorCnt, ws);
 }
 
 /* Build the set of sector indices to render this frame.
@@ -2288,7 +2288,7 @@ static ngte_view s_view;
 
 static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int32_t group) {
     if (sectorCnt > 1024) sectorCnt = 1024;
-    int ws = s_view.F > 1.0001f;
+    int ws = s_view.extended;   /* Hor+ or a wider FOV: the 4:3 verdict is too narrow */
     if (s_visdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_VISDBG"); s_visdbg = (e && *e && *e != '0'); }
     {   /* OPENPETE_TERRAIN_ALLVIS=1: walk ALL sectors (bypass D_VISIBILITY /
          * occlusion groups) — A/B probe for view-dependent sector culling. */
@@ -2317,7 +2317,7 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
         } else {
             for (uint32_t i = 0; i < sectorCnt && n < 1024; i++) out[n++] = (uint16_t)i;
         }
-        if (s_visdbg) terrain_visdbg(cpu, sectorCnt, group, occCnt, out, n, ws);
+        if (s_visdbg) terrain_visdbg(cpu, sectorCnt, group, occCnt, out, n, n, ws);
         return n;
     }
 
@@ -2336,7 +2336,7 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
                 if (idx < sectorCnt) cand[cn++] = idx;
             }
         } else for (uint32_t i = 0; i < sectorCnt && cn < 1024; i++) cand[cn++] = (uint16_t)i;
-        terrain_visdbg(cpu, sectorCnt, group, occCnt, cand, cn, ws);
+        terrain_visdbg(cpu, sectorCnt, group, occCnt, cand, cn, n, ws);
     }
     return n;
 }
@@ -3994,12 +3994,15 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * verdict is not mirrorable there — use the TRUE facing
              * (unsaturated float cross), which still culls genuine
              * back-to-back near wall pairs. */
-            int unrOvf = 0;
+            int unrOvf = 0, unrEff = 0;
             {   const int ci[4] = { i0, i1, i2, i3 };
                 int nc2 = quad ? 4 : 3;
-                for (int q2 = 0; q2 < nc2; q2++)
-                    if (sv[ci[q2]].m3 < s_H / 8.0) { unrOvf = 1; break; }
+                for (int q2 = 0; q2 < nc2; q2++) {
+                    if (sv[ci[q2]].m3 < s_view.H_canon / 8.0) unrOvf = 1;  /* the GTE's H: the regime does not move with --fov */
+                    if (sv[ci[q2]].m3 < s_view.H_eff / 8.0) unrEff = 1;
+                }
             }
+            NGTE_LIMIT(NGTE_SITE_TERRAIN_UNR, unrOvf, unrEff);
             #define NSAT(v) (unrOvf ? (double)(v) : GTE_SAT(v))
             double nx0 = NSAT(sv[i0].sx), ny0 = NSAT(sv[i0].sy);
             double nx1 = NSAT(sv[i1].sx), ny1 = NSAT(sv[i1].sy);

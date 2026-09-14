@@ -1016,6 +1016,13 @@ int    openpete_native_visible_rows(void);
 /* Horizontal FOV, degrees, the current window displays for the canonical
  * H_canon under the active Hor+ factor and FOV scale: 2·atan(256·F / H_eff). */
 double openpete_native_fov_horizontal_deg(double H_canon, double y_row);
+/* Label inputs: the feeders note the projection they build views from
+ * (H_canon and the camera's Y-row scale); the angles derive the vertical FOV
+ * shown (the setting, or the game's own at the default) and the horizontal
+ * FOV at the live Hor+ factor. Returns 0 while no view has been built (the
+ * angles then assume H 341, Y row 0.625). */
+void  openpete_native_fov_note_canon(double H_canon, double y_row);
+int   openpete_native_fov_angles(double* v_deg, double* h_deg);
 
 /* Present one native frame to the Vulkan window. Call after PsyX_EndScene so
  * PsyCross's present FBO is freshly rendered (the future "reference"). Does

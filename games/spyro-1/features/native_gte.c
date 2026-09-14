@@ -8,6 +8,28 @@
 #include "openpete_native_render.h"
 #include "spyro_native_reextract.h"  /* openpete_native_interp_pos */
 
+#include <stdio.h>
+#include <stdlib.h>
+
+ngte_census_t ngte_census;
+int ngte_census_on;
+static void ngte_census_print(void) {
+    static const char* site[NGTE_SITE_N] = { "raw_sat", "gte_sat", "part_cap", "moby_near", "terrain_unr" };
+    fprintf(stderr, "[fov-census]");
+    for (int i = 0; i < NGTE_SITE_N; i++)
+        fprintf(stderr, " %s=%lu/eff%lu", site[i], ngte_census.hit[i], ngte_census.eff[i]);
+    fprintf(stderr, " sxy_bound=%lu bb_untagged=%lu reveal_admitted=%lu\n",
+            ngte_census.sxy_bound, ngte_census.bb_untagged, ngte_census.reveal_admitted);
+}
+static void ngte_census_arm(void) {
+    static int armed = 0;
+    if (armed) return;
+    armed = 1;
+    const char* e = getenv("OPENPETE_FOV_CENSUS");
+    ngte_census_on = (e && *e && *e != '0') ? 1 : 0;
+    if (ngte_census_on) atexit(ngte_census_print);
+}
+
 void ngte_unpack_matrix(uint32_t w0, uint32_t w1, uint32_t w2,
                         uint32_t w3, uint32_t w4, int M[3][3]) {
     M[0][0] = (int16_t)(w0 & 0xFFFF); M[0][1] = (int16_t)(w0 >> 16); M[0][2] = (int16_t)(w1 & 0xFFFF);
@@ -29,6 +51,7 @@ void ngte_mac(const int M[3][3], double vx, double vy, double vz,
 }
 
 void ngte_view_build(CPUState* cpu, ngte_view* v) {
+    ngte_census_arm();
     ngte_read_matrix(cpu, G_CAMERA + 0x00, v->cam_M);
     v->cam_ram[0] = (double)(int32_t)cpu->read_word(G_CAMERA + 0x28);
     v->cam_ram[1] = (double)(int32_t)cpu->read_word(G_CAMERA + 0x2C);
@@ -38,6 +61,7 @@ void ngte_view_build(CPUState* cpu, ngte_view* v) {
     v->ofx     = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
     v->ofy     = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
     v->H_canon = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    openpete_native_fov_note_canon(v->H_canon, NGTE_Y_ROW);
     v->s       = openpete_native_fov_h_scale(v->H_canon, NGTE_Y_ROW);
     v->H_eff   = v->H_canon * v->s;
     v->F       = openpete_native_widescreen_factor();
@@ -63,9 +87,13 @@ double ngte_project_raw(const int M[3][3], const double TR[3],
     double z = (mac3 != 0.0) ? mac3 : 1.0;
     *out_sx = ofx_px + mac1 * H / z;
     *out_sy = ofy_px + mac2 * H / z;
-    if (out_sat) *out_sat = (mac1 > 32767.0 || mac1 < -32768.0 ||
-                             mac2 > 32767.0 || mac2 < -32768.0 ||
-                             mac3 <= 0.0 || H >= 2.0 * mac3);
+    /* Limit mirrors read the GTE's H: the regime is the hardware's, not the
+     * display's (H_eff moves with --fov, H_canon does not). */
+    if (out_sat) {
+        int ir = (mac1 > 32767.0 || mac1 < -32768.0 || mac2 > 32767.0 || mac2 < -32768.0 || mac3 <= 0.0);
+        *out_sat = ir || v->H_canon >= 2.0 * mac3;
+        NGTE_LIMIT(NGTE_SITE_RAW_SAT, *out_sat, ir || H >= 2.0 * mac3);
+    }
     return mac3;
 }
 
@@ -76,15 +104,24 @@ void ngte_screen_gte(double m1, double m2, double m3,
     /* IR1/IR2 = MAC saturated to int16 (the GTE projects from saturated IR). */
     double ir1 = m1 < -32768.0 ? -32768.0 : (m1 > 32767.0 ? 32767.0 : m1);
     double ir2 = m2 < -32768.0 ? -32768.0 : (m2 > 32767.0 ? 32767.0 : m2);
-    /* SZ3 = MAC3 saturated to [0,0xFFFF]; divide caps to 0x1FFFF when near. */
+    /* SZ3 = MAC3 saturated to [0,0xFFFF]; the divide caps at 0x1FFFF when
+     * SZ3 <= H/2 — the GTE's H (H_canon), so the regime does not move with
+     * --fov. The capped quotient scales with the view (H_eff/sz3 =
+     * s·H_canon/sz3), so the cap is NGTE_DIV_CAP·s: one arithmetic form
+     * on both sides of the regime boundary. The SXY bound is applied to
+     * the projected output: a vertex the hardware pinned at the edge stays
+     * at the edge of the scaled view instead of inside it. */
     double sz3 = m3 < 0.0 ? 0.0 : (m3 > 65535.0 ? 65535.0 : m3);
-    int sat = (sz3 <= 0.0 || H >= 2.0 * sz3);
-    double q = sat ? NGTE_DIV_CAP : (H / sz3);
+    int sat = (sz3 <= 0.0 || v->H_canon >= 2.0 * sz3);
+    double q = sat ? NGTE_DIV_CAP * v->s : (H / sz3);
+    NGTE_LIMIT(NGTE_SITE_GTE_SAT, sat, sz3 <= 0.0 || H >= 2.0 * sz3);
     double sx = ofx + ir1 * q;
     double sy = ofy + ir2 * q;
     if (sxy_clamp) {
-        if (sx < -NGTE_SXY_BOUND) sx = -NGTE_SXY_BOUND; else if (sx > NGTE_SXY_BOUND - 1.0) sx = NGTE_SXY_BOUND - 1.0;
-        if (sy < -NGTE_SXY_BOUND) sy = -NGTE_SXY_BOUND; else if (sy > NGTE_SXY_BOUND - 1.0) sy = NGTE_SXY_BOUND - 1.0;
+        int hit = 0;
+        if (sx < -NGTE_SXY_BOUND) { sx = -NGTE_SXY_BOUND; hit = 1; } else if (sx > NGTE_SXY_BOUND - 1.0) { sx = NGTE_SXY_BOUND - 1.0; hit = 1; }
+        if (sy < -NGTE_SXY_BOUND) { sy = -NGTE_SXY_BOUND; hit = 1; } else if (sy > NGTE_SXY_BOUND - 1.0) { sy = NGTE_SXY_BOUND - 1.0; hit = 1; }
+        if (hit) NGTE_CENSUS_HIT(sxy_bound);
     }
     o->sx = sx; o->sy = sy;
     o->m1 = m1; o->m2 = m2; o->m3 = m3;

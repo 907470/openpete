@@ -27,7 +27,6 @@
 #include "openpete_record.h"
 #include "openpete_rewind.h"
 #include "features/no_lod.h"
-#include "features/widescreen.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -323,9 +322,10 @@ static int runahead_set(knob_desc_t *k, double v) {
     return 0;
 }
 
+static double fov_get(const knob_desc_t *k) { (void)k; return (double)openpete_native_fov_deg(); }
 static int fov_set(knob_desc_t *k, double v) {
-    if (v < 0.0) return -1;
-    widescreen_set_fov((float)v);
+    if (v < 0.0 || (v > 0.0 && v < 30.0) || v > 120.0) return -1;
+    openpete_native_set_fov((float)v);
     k->stored_num = v;
     return 0;
 }
@@ -571,6 +571,14 @@ static const knob_desc_t g_builtin[] = {
       KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_aspect_names), 0, 0,
       aspect_get, aspect_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
+    { "fov", "Field of view", "Display", "--fov", NULL,
+      "Vertical FOV of the visible band in degrees, 30-120 (0 = the game's "
+      "projection, 55). The horizontal FOV follows the Hor+ aspect: 74 at "
+      "4:3, 90 at 16:9 for the default. Native renderer only; applies at "
+      "the next present.",
+      KNOB_FLOAT, KNOB_LIVE, NULL, 0, 0, 120,
+      fov_get, fov_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
     { "ssaa", "Supersampling", "Display", "--ssaa", NULL,
       "Native supersampling factor. Applying reallocates the render target "
       "next present (brief hitch at large factors; GPU-max capped).",
@@ -735,13 +743,6 @@ static const knob_desc_t g_builtin[] = {
       "accumulated rewind history; ~2 MiB per second.",
       KNOB_INT, KNOB_LIVE, NULL, 0, 0, 600,
       get_stored, rewind_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
-
-    { "fov", "FOV override", "Pacing", "--fov", NULL,
-      "Horizontal FOV in degrees (0 = game default; native 4:3 is ~50.4). "
-      "The GTE re-reads the override per projection, so it applies "
-      "immediately - PsyCross reference renderer only (inert in vk).",
-      KNOB_FLOAT, KNOB_LIVE, NULL, 0, 0, 170,
-      get_stored, fov_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     /* -------- Audio -------- */
     { "mute", "Mute", "Audio", "--mute", NULL,

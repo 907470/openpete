@@ -81,7 +81,7 @@ typedef struct {
     double dof_xy[2];  /* ofx, ofy        */
     double dH[2];      /* H, poly-anim alpha */
     double dnear[2];   /* near-plane view-Z (clip mirror), reserved */
-    double dspare[2];  /* reserved — see the 32-byte stride note below */
+    double dspare[2];  /* x: H_canon (limit-regime mirrors); y unused — see the 32-byte stride note below */
     int32_t fog[4];    /* fogRefBase, gflags, cullRefS2, 0 */
     float sdv[128][4]; /* per-tile scroll V offsets (lq, hqA, hqB, 0) */
     /* Portal inner-rim cull frames (portal_rim_classify mirror; all fp64).

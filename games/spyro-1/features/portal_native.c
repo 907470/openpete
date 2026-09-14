@@ -1831,7 +1831,7 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
         uint32_t c0 = cpu->read_word(S + 0x00), c1 = cpu->read_word(S + 0x04);
         int cvx = (int16_t)(c0 & 0xFFFF), cvy = (int16_t)(c0 >> 16), cvz = (int16_t)(c1 >> 16), radius = (int16_t)(c1 & 0xFFFF);
         double cm3 = (M[2][0]*(double)cvx + M[2][1]*(double)cvy + M[2][2]*(double)cvz) / 4096.0;
-        if (s_view.F <= 1.0f && cm3 <= (double)radius) continue;
+        if (!s_view.extended && cm3 <= (double)radius) continue;
 
         uint32_t h8 = cpu->read_word(S + 0x08), hC = cpu->read_word(S + 0x0C), hF = cpu->read_word(S + 0x10);
         int centerX = (int16_t)(h8 & 0xFFFF), centerY = (int16_t)(h8 >> 16), centerZ = (int16_t)(hC >> 16);
@@ -2218,14 +2218,13 @@ static int on_8004F4BC(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cp
  * RAM (D_CLIPRECT is bracketed save/restore render scratch). */
 static void feed_revealed_portals(CPUState* cpu) {
     ngte_view_build(cpu, &s_view);
-    float F = s_view.F;
     int nolod = nolod_portal_dome_on();
     /* Widescreen reveals off-4:3 portals; --no-lod ALSO reveals
      * distance-culled ones at any aspect — the no-lod terrain renders the
      * arch at any range, but the .s RenderPortals distance-culls the portal
      * itself, leaving a visible arch with an empty opening
      * (beast-makers-distant-portal.bk2 f2022). */
-    if (F <= 1.0f && !nolod) return;
+    if (!s_view.extended && !nolod) return;   /* canonical view: the .s draws every portal it admits */
     const float xlo = s_view.xlo, xhi = s_view.xhi;
     uint32_t n = cpu->read_word(G_PORTALCOUNT); if (n > 6) n = 6;
     int revealed = 0;
@@ -2379,8 +2378,8 @@ static void feed_revealed_portals(CPUState* cpu) {
     static int s_logged = 0;
     if (!s_logged && revealed > 0) {
         s_logged = 1;
-        fprintf(stderr, "[portal-reveal] frame=%u F=%.3f drew %d off-4:3 portal preview(s) "
-                "the .s culled\n", openpete_frame, F, revealed);
+        fprintf(stderr, "[portal-reveal] frame=%u F=%.3f s=%.3f drew %d off-4:3 portal preview(s) "
+                "the .s culled\n", openpete_frame, s_view.F, s_view.s, revealed);
     }
 }
 

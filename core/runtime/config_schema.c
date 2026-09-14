@@ -43,13 +43,13 @@ static const cfg_knob_t g_schema[] = {
     { "fog_scale",        "--fog-scale",        NULL,                    CFG_FLOAT,  NULL,       NULL,       NULL,       0 },
     { "renderer",         "--renderer",         NULL,                    CFG_ENUM,   v_renderer, NULL,       NULL,       0 },
     { "window",           "--window",           NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },
+    { "fov",              "--fov",              NULL,                    CFG_FLOAT,  NULL,       NULL,       NULL,       0 },
 
     /* -------- Pacing -------- */
     { "render_fps",       "--render-fps",       NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "tick_scale",       "--tick-scale",       NULL,                    CFG_FLOAT,  NULL,       NULL,       NULL,       0 },
     { "runahead",         "--runahead",         NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "rewind",           "--rewind",           NULL,                    CFG_INT,    NULL,       NULL,       NULL,       0 },
-    { "fov",              "--fov",              NULL,                    CFG_FLOAT,  NULL,       NULL,       NULL,       0 },
 
     /* -------- Audio -------- */
     { "mute",             "--mute",             NULL,                    CFG_BOOL,   NULL,       NULL,       NULL,       0 },

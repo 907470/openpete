@@ -62,6 +62,36 @@ typedef struct {
 } ngte_view;
 
 void ngte_view_build(CPUState* cpu, ngte_view* v);
+
+/* Engagement census of the --fov policy (OPENPETE_FOV_CENSUS=1 arms it and
+ * prints at exit). Every GTE hardware-limit mirror keys on H_canon; each
+ * site also evaluates the same test at H_eff and both verdicts are counted,
+ * so one run shows per site that the regime engaged (hit > 0), that the
+ * display H would have moved it (eff != hit when s != 1) and that it did
+ * not (hit is the same code at every FOV; at s = 1 the two are equal).
+ * sxy_bound counts the SXY pin on the scaled output, which moves with s by
+ * design. bb_untagged counts shaded-walk billboard records with no HUD tag
+ * (expected 0: every billboard anchor is a game-authored screen
+ * coordinate). reveal_admitted counts mobys the reveal admitted host-side
+ * (0 at the canonical view). */
+enum { NGTE_SITE_RAW_SAT, NGTE_SITE_GTE_SAT, NGTE_SITE_PART_CAP,
+       NGTE_SITE_MOBY_NEAR, NGTE_SITE_TERRAIN_UNR, NGTE_SITE_N };
+typedef struct {
+    unsigned long hit[NGTE_SITE_N];   /* the limit test at H_canon */
+    unsigned long eff[NGTE_SITE_N];   /* the same test at H_eff */
+    unsigned long sxy_bound;
+    unsigned long bb_untagged;
+    unsigned long reveal_admitted;
+} ngte_census_t;
+extern ngte_census_t ngte_census;
+extern int ngte_census_on;
+#define NGTE_CENSUS_HIT(field) \
+    ((void)(ngte_census_on ? __atomic_fetch_add(&ngte_census.field, 1ul, __ATOMIC_RELAXED) : 0ul))
+/* One limit site: canon is the verdict the code acts on, eff the verdict the
+ * display H would have given. */
+#define NGTE_LIMIT(site, canon, eff_) \
+    ((void)(ngte_census_on ? ((canon) ? __atomic_fetch_add(&ngte_census.hit[site], 1ul, __ATOMIC_RELAXED) : 0ul, \
+                              (eff_)  ? __atomic_fetch_add(&ngte_census.eff[site], 1ul, __ATOMIC_RELAXED) : 0ul) : 0ul))
 /* *c = *v with s = 1.0, H_eff = H_canon: the view for records whose screen
  * position the game authored (HUD, billboards) and for instruments that
  * compare against canonical prims. */

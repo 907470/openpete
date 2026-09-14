@@ -9,12 +9,6 @@
 #include "psx/gtereg.h"   // PsyCross GTERegisters / GTE_operator (used as
                           // ground-truth reference for the GTE trace logger)
 
-/* FOV + verdict GTE hooks (eff_H, canonical-SX FIFO).
- * static inline — codegen byte-identical to the open-coded math this
- * replaced; verified via objdump-diff. See
- * .claude/plans/openpete-feature-modules.md Phase 3. */
-#include "features/widescreen_gte_inline.h"
-
 /* Renderer-foundation Phase 0 (world-space cache). gte_rtps_internal
  * emits per-vertex entries here; PsyCross's OT walker consumes them. */
 
@@ -295,15 +289,9 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
     // Step 2: Push SZ FIFO
     gte->push_sz(gte->MAC3);
 
-    /* --fov GTE H override — see core/features/widescreen_gte_inline.h.
-     * 0 sentinel reduces to native PSX GTE math. (The Hor+ OFX widening
-     * that used to sit next to this was retired 2026-07-06 with the
-     * PsyCross-mode --aspect substitution stack; projection is always
-     * canonical now.) */
-    int32_t eff_H   = widescreen_eff_h((int32_t)gte->H);
-
-    // Step 3: Perspective division
-    int32_t h_div_sz = gte_divide((uint16_t)eff_H, gte->SZ[3], gte->FLAG);
+    // Step 3: Perspective division. Always the game's H: FOV is a native
+    // renderer display policy and never reaches the GTE.
+    int32_t h_div_sz = gte_divide((uint16_t)gte->H, gte->SZ[3], gte->FLAG);
 
     // Step 4: Project to screen coordinates
     int64_t sx = ((int64_t)gte->OFX + (int64_t)gte->IR1 * h_div_sz) >> 16;
@@ -350,8 +338,9 @@ void gte_rtps_internal(GTEState* gte, int16_t* V, bool setMac0) {
      * `openpete_canonical_sx2_q16` (top of FIFO = latest projection) and
      * test it directly against the canonical 4:3 thresholds (0 and
      * 0x02000000) — exact verdict, no rounding. */
-    int64_t canonical_sx_q16 = (int64_t)gte->OFX + (int64_t)gte->IR1 * h_div_sz;
-    widescreen_push_canonical_sx_q16(canonical_sx_q16);
+    openpete_canonical_sx0_q16 = openpete_canonical_sx1_q16;
+    openpete_canonical_sx1_q16 = openpete_canonical_sx2_q16;
+    openpete_canonical_sx2_q16 = (int64_t)gte->OFX + (int64_t)gte->IR1 * h_div_sz;
 
     // Step 5: Depth cueing (MAC0/IR0) — only for last vertex of RTPT or RTPS
     if (setMac0) {

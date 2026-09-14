@@ -47,7 +47,6 @@
 #include "openpete_vstream.h"
 #include "../host/sfx_pack.h"
 #include "features/no_lod.h"
-#include "features/widescreen.h"
 #include "openpete_state.h"
 #include "openpete_fnv1a64.h"
 #include "openpete_psxtrace.h"
@@ -1988,24 +1987,18 @@ static int run_host_init(const openpete_options_t* opts) {
                    win_w, win_h, (double)opts->aspect_w_over_h, (double)crop_factor);
     }
 
-    /* --fov derivation (GTE H override) lives in core/features/
-     * widescreen.c — PsyCross reference mode only (the native renderer
-     * projects canonically; its FOV policy is Phase-7 work).
-     *
-     * The PsyCross-mode --aspect substitution stack — projection widening
-     * (GTE OFX + GL ortho), the cull-widening knobs, the render bracket,
-     * env all-walk arm and cyclorama multi-pass — was RETIRED 2026-07-06
-     * (Phase 6, openpete-native-renderer.md). Every renderer mode now runs
-     * the game's verdict producers pure canonical 4:3 by construction;
-     * widescreen is a native-renderer display policy driven by the window
-     * aspect (--aspect only sizes the window above). */
+    /* --fov and --aspect are native-renderer display policies: every
+     * renderer mode runs the game's verdict producers pure canonical 4:3,
+     * the native feeders project through the effective H and widen Hor+
+     * from the window aspect (core/runtime/native_render.c). PsyCross
+     * reference mode has neither. */
     if (opts->renderer == OPENPETE_RENDERER_PSYCROSS) {
-        widescreen_apply_fov(opts);
+        if (opts->fov_deg > 0.0f)
+            OPL_WARN_F("fov", "--fov is a native-renderer policy; inert under "
+                       "--renderer psycross");
     } else {
-        if (opts->fov_deg > 0.0f) {
-            OPL_WARN_F("fov", "--fov is PsyCross-reference-mode only for now "
-                       "(native FOV policy is Phase-7 work); ignored");
-        }
+        if (opts->fov_deg > 0.0f)
+            openpete_native_set_fov(opts->fov_deg);
         if (opts->aspect_w_over_h > 0.0f) {
             OPL_INFO_F("aspect", "--aspect %.4f sizes the window; the native "
                        "renderer widens Hor+ at the display layer from "

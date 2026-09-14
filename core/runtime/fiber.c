@@ -24,7 +24,6 @@ int          openpete_fast_boot_active = 1;
 int          openpete_cd_load_delay    = 0;
 int          openpete_skip_present_until_level = 0;
 int          openpete_skip_ffwd_windowed       = 0;
-int          openpete_fov_h_override    = 0;
 /* openpete_no_lod lives in core/features/no_lod.c. (The Hor+ widening
  * factor/knob-staging globals that used to sit here were retired
  * 2026-07-06 with the PsyCross-mode --aspect substitution stack.) */

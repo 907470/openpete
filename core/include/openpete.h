@@ -160,12 +160,10 @@ typedef struct openpete_options {
     int window_w;
     int window_h;
 
-    /* Horizontal FOV override in degrees (0 = no override; game's native
-     * SetGeomScreen value is used). Implemented by intercepting
-     * psyq_SetGeomScreen and replacing the GTE H register with
-     * 160 / tan(fov/2) — i.e. the H that produces the requested
-     * horizontal FOV at the PSX's 320-wide projection plane. See
-     * notes/plans/openpete-widescreen-fov.md "FOV slider". */
+    /* Vertical FOV of the visible band in degrees, native renderer only
+     * (0 = the game's projection, 55° vertical). Applied through
+     * openpete_native_set_fov: the feeders project through a scaled H, the
+     * GTE and every gameplay-readable byte stay canonical. */
     float fov_deg;
 
     /* Target display aspect ratio (width / height), native renderer only —

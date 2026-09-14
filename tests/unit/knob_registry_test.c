@@ -103,7 +103,9 @@ int    openpete_disc_cache_active(void)            { return 0; }
 int    openpete_cd_load_delay = 0;
 int    openpete_native_get_dither(void)            { return s_native_dither; }
 void   openpete_native_set_dither(int on)          { s_native_dither = on ? 1 : 0; }
-void   widescreen_set_fov(float deg)           { (void)deg; }
+static float s_native_fov;
+void   openpete_native_set_fov(float deg)      { s_native_fov = deg; }
+float  openpete_native_fov_deg(void)           { return s_native_fov; }
 int    openpete_native_get_texture_mapping(void)   { return s_native_texmap; }
 void   openpete_native_set_texture_mapping(int m)  { s_native_texmap = m ? 1 : 0; }
 int    openpete_native_get_notex(void)             { return 0; }

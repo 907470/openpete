@@ -59,14 +59,9 @@ const openpete_recomp_module* openpete_recomp_module_get(void) {
  * Phase 1b, but the symbol must exist for link. */
 uint32_t g_ps1_frame = 0;
 
-/* Widescreen knob storage moved to core/features/widescreen.c
- * (psx_runtime_clip_x_{mask,threshold}, _moby_cone_extra_q12,
- * _native_cone_pass, _native_part_pass,
- * _native_clip_x_{in,low_in}_widened_space, _portal_clip_x_max(_plus_1),
- * _fullbleed_x_max, openpete_canonical_sx{0,1,2}_q16). The recompiler-
- * generated C reaches them via the same psx_runtime.h externs as before;
- * only the defining TU changed. See Phase 2.1c in
- * notes/plans/openpete-feature-modules.md. */
+/* The canonical-SX FIFO (openpete_canonical_sx{0,1,2}_q16) is defined in
+ * core/features/widescreen.c; the recompiler-generated C reaches it via
+ * the psx_runtime.h externs. */
 
 /* Phase 1d: when the recompiled main EXE calls into an overlay we haven't
  * translated yet, stub-and-continue rather than abort. The Phase 2 manifest

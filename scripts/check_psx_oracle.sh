@@ -175,4 +175,18 @@ if [[ "$rc" == "0" ]]; then
         fi
     fi
 fi
+
+# Engaged form: with OPENPETE_IDENT_AUDIT=<VBL> set, the native
+# feeders compose every canonical present surfaceless and print one
+# `[ident-audit ..]` row per present. A PASS with zero rows never ran the
+# presentation diff the run was meant to clear.
+if [[ "$rc" == "0" && -n "${OPENPETE_IDENT_AUDIT:-}" ]]; then
+    ROWS=$(grep -c '^\[ident-audit ' "$LOG" || true)
+    if [[ "${ROWS:-0}" == "0" ]]; then
+        echo "[psx-oracle] ident-audit: 0 rows (native never composed; VACUOUS)" >&2
+        rc=2
+    else
+        echo "[psx-oracle] ident-audit: $ROWS presents composed"
+    fi
+fi
 exit "$rc"

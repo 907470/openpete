@@ -131,12 +131,6 @@ void openpete_yield_to_host(void);
  * still drive frame_limit/max-runtime exits. Phase 2 retires this. */
 void openpete_yield_to_host_no_tick(void);
 
-/* Horizontal-FOV override expressed as a target GTE H register value.
- * 0 = no override. Set once at boot from --fov (PsyCross renderer
- * mode); consumed by widescreen_eff_h in gte_rtps_internal. See
- * notes/plans/openpete-widescreen-fov.md "FOV slider". */
-extern int openpete_fov_h_override;
-
 /* openpete_no_lod has moved to core/features/no_lod.h (declared there
  * and in third_party/psxrecomp/runner/include/psx_runtime.h for the
  * recompiler-generated C). */

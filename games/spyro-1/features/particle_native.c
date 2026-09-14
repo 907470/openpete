@@ -389,6 +389,14 @@ static void load_matrix_at(CPUState* cpu, uint32_t base, int R[3][3]) {
  * bounds); each build entry rebuilds it, the cull helpers read it. */
 static ngte_view s_pv;
 
+/* GTE divide-cap regime for an inline projection: SZ3 <= H/2 at the GTE's H
+ * (Hc); the verdict at the display H (He) is counted alongside. */
+static int part_cap(double sz3, double Hc, double He) {
+    int c = (sz3 <= 0.0 || Hc >= 2.0 * sz3);
+    NGTE_LIMIT(NGTE_SITE_PART_CAP, c, sz3 <= 0.0 || He >= 2.0 * sz3);
+    return c;
+}
+
 /* RTPS one view-space vertex (TR=0) through R -> screen + the view-space MAC */
 typedef struct { double sx, sy, m1, m2, m3; } projres;
 
@@ -521,6 +529,8 @@ static void particle_build(CPUState* cpu) {
     double s7 = v->cam[0] / 4.0, t8 = v->cam[1] / 4.0, t9 = v->cam[2] / 4.0;
     double ofx = v->ofx, ofy = v->ofy;
     double H   = v->H_eff;
+    ngte_view vc; ngte_view_canon(v, &vc);   /* HUD bursts (sel 4/5) project where the game put them */
+    const double Hc = v->H_canon, qcap = NGTE_DIV_CAP * v->s;  /* GTE limit regime on the GTE's H; capped quotient scales with the view */
 
     uint32_t pp = s_part_pool;                          /* pool the .s walked (hook-entry) */
     for (int i = 0; i < 320 && s_fq_n < MAX_FQUAD; i++, pp += 0x20) {
@@ -597,7 +607,7 @@ static void particle_build(CPUState* cpu) {
             double C[4][2] = { {-a2,-a3}, {a3,-a2}, {-a3,a2}, {a2,a3} };
             double TR0 = c.m1*4.0, TR1 = c.m2*4.0, TR2 = c.m3*4.0;
             double sz3 = TR2 < 0 ? 0 : (TR2 > 65535 ? 65535 : TR2);
-            double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? NGTE_DIV_CAP : (double)H/sz3;
+            double qd = part_cap(sz3, Hc, H) ? qcap : (double)H/sz3;
             for (int k = 0; k < 4; k++) {                /* R'=diag(4096,2560,4096)+TR */
                 double m1 = C[k][0] + TR0;
                 double m2 = C[k][1]*2560.0/4096.0 + TR1;
@@ -740,8 +750,8 @@ static void particle_build(CPUState* cpu) {
                 }
             }
             projres e0, e1;
-            proj_view(ofx, ofy, v, (double)X0, (double)Y0, (double)Z0, &e0);
-            proj_view(ofx, ofy, v, X1f, Y1f, Z1f, &e1);
+            proj_view(ofx, ofy, &vc, (double)X0, (double)Y0, (double)Z0, &e0);
+            proj_view(ofx, ofy, &vc, X1f, Y1f, Z1f, &e1);
             int sz3 = (int)(e0.m3 < 0 ? 0 : (e0.m3 > 65535 ? 65535 : e0.m3));
             uint32_t col0 = cpu->read_word(pp + 0x10), col1 = cpu->read_word(pp + 0x14);
             if (sz3 <= 64 || sz3 >= 2048) continue;      /* sel-4 SZ window 64..2048 */
@@ -787,7 +797,8 @@ static void particle_build(CPUState* cpu) {
             }
             double Cc[4][2] = { {-a2,-a3}, {a3,-a2}, {-a3,a2}, {a2,a3} };  /* same as sel 2 */
             double sz3 = TR2 > 65535 ? 65535 : TR2;
-            double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? NGTE_DIV_CAP : (double)H/sz3;
+            /* HUD burst: canonical projection, the cap regime on the same H */
+            double qd = part_cap(sz3, Hc, Hc) ? NGTE_DIV_CAP : (double)Hc/sz3;
             for (int k = 0; k < 4; k++) {                /* diag(4096,2560,4096) + TR */
                 double m1 = Cc[k][0] + TR0;
                 double m2 = Cc[k][1]*2560.0/4096.0 + TR1;
@@ -1320,6 +1331,7 @@ static void sparkle_build(CPUState* cpu) {
     double camX = v->cam[0], camY = v->cam[1], camZ = v->cam[2];
     double ofx = v->ofx, ofy = v->ofy;
     double H   = v->H_eff;
+    const double Hc = v->H_canon, qcap = NGTE_DIV_CAP * v->s;  /* GTE limit regime on the GTE's H; capped quotient scales with the view */
 
     for (int i = 0; i < 8 && s_sline_n + 2 <= MAX_SLINE; i++) {
         uint32_t sp = G_SPARKLES + (uint32_t)i*0x18;
@@ -1417,7 +1429,7 @@ static void sparkle_build(CPUState* cpu) {
         double a3 = c.m3 > 4096.0 ? c.m3 : 4096.0;
         double TR0 = c.m1*2.0, TR1 = c.m2*2.0, TR2 = c.m3*2.0;
         double sz3 = TR2 < 0 ? 0 : (TR2 > 65535 ? 65535 : TR2);
-        double qd = (sz3 <= 0.0 || H >= 2.0*sz3) ? NGTE_DIV_CAP : (double)H/sz3;
+        double qd = part_cap(sz3, Hc, H) ? qcap : (double)H/sz3;
         int styleByte = (int)(cpu->read_word(sp + 0x10) >> 24);  /* pad byte +0x13 */
         int style = styleByte & 0x0F;
         int hue = (styleByte >> 4) & 0x0F;                   /* 1..6 = k_s3_glint row+1 */
@@ -1630,6 +1642,7 @@ static void dragonstar_build(CPUState* cpu) {
     double camX = v->cam[0], camY = v->cam[1], camZ = v->cam[2];
     double ofx = v->ofx, ofy = v->ofy;
     double H   = v->H_eff;
+    const double Hc = v->H_canon, qcap = NGTE_DIV_CAP * v->s;  /* GTE limit regime on the GTE's H; capped quotient scales with the view */
 
     int px = (int)cpu->read_word(D_DRAGONSTAR+0x04);
     int py = (int)cpu->read_word(D_DRAGONSTAR+0x08);
@@ -1665,7 +1678,7 @@ static void dragonstar_build(CPUState* cpu) {
         double mac2 = (Me[1][0]*vx + Me[1][2]*vz)/4096.0 + try_;
         double mac3 = (Me[2][0]*vx + Me[2][2]*vz)/4096.0 + trz;
         double sz3 = mac3 < 0.0 ? 0.0 : (mac3 > 65535.0 ? 65535.0 : mac3);
-        double q = (sz3 <= 0.0 || H >= 2.0 * sz3) ? NGTE_DIV_CAP : (H / sz3);
+        double q = part_cap(sz3, Hc, H) ? qcap : (H / sz3);
         rx[m] = ofx + clamp16(mac1) * q;
         ry[m] = ofy + clamp16(mac2) * q;
     }

@@ -101,7 +101,7 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
     dvec2 dH;       /* x: H (projection distance), y: poly-anim sub-tick
                      * alpha (1.0 on canonical builds; TERRAIN_ANIM only)   */
     dvec2 dnear;    /* x: near-plane view-Z (TERRAIN_NEAR clip mirror)      */
-    dvec2 dspare;   /* reserved (keeps the dvec4 runs below 32-B aligned)   */
+    dvec2 dspare;   /* x: H_canon, the GTE's H (limit-regime mirrors); y unused */
     ivec4 fog;      /* x: fogRefBase, y: gflags, z: cullRefS2, w: unused  */
     vec4  sdv[128]; /* per-tile scroll V offsets (lq, hqA, hqB, 0)        */
     /* Portal inner-rim cull frames (portal_rim_classify mirror, fp64).
@@ -575,11 +575,12 @@ void main()
     /* ---- NCLIP (both halves; the near verdict gates on half 1) ----
      * Cross products run on DOUBLES OF THE FLOAT screen coords (the CPU's
      * NSAT(sv.sx)); the GTE [-1024,1023] saturation is waived in the UNR
-     * divide-overflow regime (any corner m3 < H/8 — the .s's own SXY there
-     * is pinned garbage, so the TRUE facing is used). */
+     * divide-overflow regime (any corner m3 < H_canon/8, the GTE's H, so
+     * the regime does not move with --fov — the .s's own SXY there is
+     * pinned garbage, so the TRUE facing is used). */
     vec2 p0f = proj_of(m0), p1f = proj_of(m1), p2f = proj_of(m2), p3f = proj_of(m3c);
-    bool unr_ovf = (m0.z < g.dH.x / 8.0lf) || (m1.z < g.dH.x / 8.0lf) ||
-                   (m2.z < g.dH.x / 8.0lf) || (quad && m3c.z < g.dH.x / 8.0lf);
+    bool unr_ovf = (m0.z < g.dspare.x / 8.0lf) || (m1.z < g.dspare.x / 8.0lf) ||
+                   (m2.z < g.dspare.x / 8.0lf) || (quad && m3c.z < g.dspare.x / 8.0lf);
     double nx0 = nsat(p0f.x, unr_ovf), ny0 = nsat(p0f.y, unr_ovf);
     double nx1 = nsat(p1f.x, unr_ovf), ny1 = nsat(p1f.y, unr_ovf);
     double nx2 = nsat(p2f.x, unr_ovf), ny2 = nsat(p2f.y, unr_ovf);

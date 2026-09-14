@@ -400,7 +400,9 @@ static void print_help(const char* display_name, const char* argv0,
         "  --aspect W:H|auto          Hor+ widescreen. auto (default) = follow the window/fullscreen\n"
         "                             shape, filling it live on resize; W:H (e.g. 16:9, 21:9) = fixed\n"
         "                             render aspect (sizes the window; bars when the window mismatches)\n"
-        "  --fov DEG                  horizontal FOV override (--renderer psycross only; default ~50°, range 30-140)\n"
+        "  --fov DEG                  vertical FOV of the visible band, native renderer (default 55°,\n"
+        "                             range 30-120; the horizontal FOV follows the Hor+ aspect: 74° at\n"
+        "                             4:3, 90° at 16:9 for the default). Inert under --renderer psycross.\n"
         "  --ssaa N                   native vk supersampling 1..4 (default 1=off); renders the live\n"
         "                             window at NxN res and box-downsamples. The 4x ceiling keeps the\n"
         "                             render targets inside an 8GB card at 1080p; higher factors are\n"
@@ -961,11 +963,11 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         } else if (strcmp(a, "--fov") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             opts->fov_deg = (float)atof(v); i++;
-            if (opts->fov_deg < 30.0f || opts->fov_deg > 140.0f) {
-                fprintf(stderr, "openpete: --fov clamped to [30,140]; got %.2f\n",
+            if (opts->fov_deg < 30.0f || opts->fov_deg > 120.0f) {
+                fprintf(stderr, "openpete: --fov clamped to [30,120]; got %.2f\n",
                         opts->fov_deg);
                 if (opts->fov_deg < 30.0f) opts->fov_deg = 30.0f;
-                if (opts->fov_deg > 140.0f) opts->fov_deg = 140.0f;
+                if (opts->fov_deg > 120.0f) opts->fov_deg = 120.0f;
             }
         } else if (strcmp(a, "--vertex-precision") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;

@@ -144,6 +144,19 @@ static int s_code_hist[256]; static int s_uncoded_hist[256];
  * the shaded walk projects through s_view_shd. */
 static ngte_view s_view;
 static ngte_view s_view_shd;
+/* Canonical twins (s = 1.0): the view for records whose screen position the
+ * game authored — HUD icons (address-range tagged) and every billboard-path
+ * record. Rebuilt with their source views. */
+static ngte_view s_view_canon;
+static ngte_view s_view_shd_canon;
+static void moby_view_build(CPUState* cpu)     { ngte_view_build(cpu, &s_view);     ngte_view_canon(&s_view,     &s_view_canon); }
+static void moby_view_shd_build(CPUState* cpu) { ngte_view_build(cpu, &s_view_shd); ngte_view_canon(&s_view_shd, &s_view_shd_canon); }
+/* The regular-walk view a record projects through: HUD-range mobys keep the
+ * game's projection, the rest take the pass view. */
+static const ngte_view* moby_record_view(uint32_t mob) {
+    return (openpete_ui_moby_is_addr_static(mob) || openpete_ui_moby_is_addr_ui(mob))
+        ? &s_view_canon : &s_view;
+}
 
 /* Float RTPS mirror WITH translation: ngte_project_raw (shared, W2.3).
  * Returns view-Z (MAC3); caller owns the near-plane policy. */
@@ -173,7 +186,9 @@ static int moby_gte_near_fixup(const int M[3][3], const double TR[3],
                                double vx, double vy, double vz, double vzz,
                                double ofx, double ofy, const ngte_view* v,
                                double* sx, double* sy) {
-    if (vzz > 0.0 && v->H_eff < 2.0 * vzz) return 0;
+    int in = !(vzz > 0.0 && v->H_canon < 2.0 * vzz);   /* the GTE's regime: H_canon, not the display's H */
+    NGTE_LIMIT(NGTE_SITE_MOBY_NEAR, in, !(vzz > 0.0 && v->H_eff < 2.0 * vzz));
+    if (!in) return 0;
     ngte_proj gp;
     ngte_project_gte(M, TR, vx, vy, vz, ofx, ofy, v, 1, &gp);
     *sx = gp.sx; *sy = gp.sy;
@@ -436,7 +451,8 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
                                uint32_t header_p, double blend_alpha, double gpf_frac,
                                const int TR_raw[3],
                                const double TR_frac[3],
-                               const int M[3][3], int zsf4, proj_xy* out, int cap) {
+                               const int M[3][3], int zsf4, const ngte_view* v,
+                               proj_xy* out, int cap) {
     if (header < 0x80000000u || frameA < 0x80000000u) return 0;
     /* C2_TR (projection translation) = (TR_stored << 2) >> m_Scale  [F798
      * @8001F858/8001F8C8]. m_Scale is the per-model shrink factor (AnimationHeader
@@ -545,7 +561,6 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
         if (centre_full > 0.0)
             ot_centre = centre_full;
     }
-    const ngte_view* v = &s_view;
     double ofx = v->ofx, ofy = v->ofy;
 
     int s5    = (cpu->read_byte(header + 6) & 0xFF) + 1;
@@ -685,7 +700,8 @@ static int moby_project_record(CPUState* cpu, uint32_t rec, int zsf4, proj_xy* o
                       (int32_t)cpu->read_word(rec + 0x14),
                       (int32_t)cpu->read_word(rec + 0x18) };
     int M[3][3]; ngte_read_matrix(cpu, rec + 0x1C, M);
-    return moby_decode_project(cpu, header, frameA, frameB, w0, 0, 0, 0, 0, 0.0, -1.0, TR_raw, NULL, M, zsf4, out, cap);
+    const ngte_view* v = moby_record_view(cpu->read_word(rec + 0x34));   /* the record's moby (rec_meta.moby) */
+    return moby_decode_project(cpu, header, frameA, frameB, w0, 0, 0, 0, 0, 0.0, -1.0, TR_raw, NULL, M, zsf4, v, out, cap);
 }
 
 #define MAX_PROJ 32768
@@ -1209,7 +1225,6 @@ static int append_revealed_regular(CPUState* cpu) {
     return n;
 }
 static int append_revealed_regular_inner(CPUState* cpu) {
-    float F = s_view.F;
     /* Two reveal modes, composable — each mirrors a retired game-side
      * producer widening, so admission is deliberately liveness-BLIND
      * (the .s cull never tested liveness; the canonical PSX draws
@@ -1217,14 +1232,14 @@ static int append_revealed_regular_inner(CPUState* cpu) {
      * camera-cull, animation is Spyro's update disk. The live-only v1
      * of this reveal culled every static prop/chest/idle enemy at the
      * 4:3 boundary — user-reported 2026-07-05):
-     *  - WIDESCREEN (F > 1): off-4:3 mobys the canonical 4:3 X-cone
-     *    skipped (parity with the retired cone widening).
+     *  - EXTENDED VIEW (Hor+ or a wider FOV): off-4:3 mobys the canonical
+     *    4:3 X-cone skipped (parity with the retired cone widening).
      *  - --no-lod (native display policy; the game-side producer stack
      *    is PsyCross-only now): mobys BEYOND the canonical draw range —
      *    parity with the retired m_Distance saturation. Ceiling = the
      *    same 0x7F<<8 view-Z the saturated compare admitted. */
     int nl = openpete_no_lod;
-    if (F <= 1.0f && !nl) return 0;                     /* 4:3, LOD faithful — nothing to reveal */
+    if (!s_view.extended && !nl) return 0;              /* canonical view, LOD faithful — nothing to reveal */
     /* While the rescue cutscene owns the draw it renders its own actor set and
      * no level geometry, so the widened view must add none either. Revealing
      * only the off-window mobys put props in the side strips while the same
@@ -1373,13 +1388,19 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         #undef REVEAL_BOX
         if (rz <= 0.0) { TRC("skip=camera-plane"); m += 0x58; continue; }    /* camera-plane straddler: no stable projection */
         double sx = ofx + rx * H / rz;                                       /* projected centroid X (m_Scale cancels) */
+        double sxc = ofx + rx * s_view.H_canon / rz;                         /* the same at the game's H: the .s queue's territory */
         /* Radius margin: the .s cone admits by CENTRE ± radius bias
          * (4(|x| - 25r/32) < 3(z + 19r/32)), so a wide prop whose centroid
          * sits past the window edge but whose body pokes in is still drawn
          * (the user-reported edge tree, cls 0xDF, centroid sx=-104 at
          * xlo=-85). Mirror it as a projected-radius margin on the bounds. */
         double margin = (25.0 * rr / 32.0) * H / rz;
-        int central = (sx >= 0.0 && sx <= 512.0);
+        /* central is tested at the CANONICAL projection: the .s cone is wider
+         * than the 4:3 screen by the radius bias, so no canonically-central
+         * moby is cone-rejected; a moby central only in a wider view can be
+         * cone-rejected and must not be ceded to a queue that does not hold
+         * it. The window test below uses the effective projection. */
+        int central = (sxc >= 0.0 && sxc <= 512.0);
         /* central + canonically-admitted = the .s queue's territory (anything
          * there and not in the queue was cull-rejected for a non-box reason —
          * leave it); central + beyond-canonical is the no-lod clause's NEW
@@ -1433,7 +1454,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         int got;
         { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
           got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0, 0.0, -1.0, f.TR_raw, f.TR_frac, f.M,
-                                    rzsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+                                    rzsf4, moby_record_view(m), s_proj + s_proj_n, MAX_PROJ - s_proj_n);
           if (t0) s_us_rvdec += (long)(openpete_phase_now_us() - t0); }
         if (got <= 0) { TRC("skip=decode-0 zsf4=%d", rzsf4); m += 0x58; continue; }
         TRC("REVEALED got=%d zsf4=%d", got, rzsf4);
@@ -1457,6 +1478,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
             revnv[revealed] = got;
         }
         s_proj_n += got; s_nrecs++; revealed++;
+        NGTE_CENSUS_HIT(reveal_admitted);
         m += 0x58;
     }
     #undef TRC
@@ -1472,8 +1494,8 @@ static int append_revealed_regular_inner(CPUState* cpu) {
     static int s_logged = 0;
     if (!s_logged && revealed > 0) {
         s_logged = 1;
-        fprintf(stderr, "[moby-reveal-feed] frame=%u F=%.3f host-built %d revealed regular mobys "
-                "(off-4:3, live) appended to the native scene\n", openpete_frame, F, revealed);
+        fprintf(stderr, "[moby-reveal-feed] frame=%u F=%.3f s=%.3f host-built %d revealed regular mobys "
+                "(off-4:3, live) appended to the native scene\n", openpete_frame, s_view.F, s_view.s, revealed);
     }
     /* Admitted, not drawn: a present whose every reveal was occlusion-culled
      * still exercised this producer, and the caller's render-path mark keys off
@@ -3445,7 +3467,7 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
     s_cur_mat = mat;
     s_rec_base = REC_BASE;
     (void)mat;
-    ngte_view_build(cpu, &s_view);
+    moby_view_build(cpu);
 
     uint32_t start = cpu->read_word(POLYBUF_CURSOR);
     { OP_PROF_ACCUM_SCOPE("moby.srend");
@@ -3663,9 +3685,10 @@ static void moby_reveal_dbg(CPUState* cpu) {
         if (rz - radius >= 0.0) { m += 0x58; continue; }  /* beyond render distance */
         double arx = rx < 0 ? -rx : rx;
         /* X-cone (r_moby.s 0x80022C04): cull if 4*(|rx|-102) - 3*S*(rz+77) >= 0;
-         * S=1 → 4:3 (slope 0.75), S=F → widened horizontal half-FOV. */
+         * S=1 → 4:3 (slope 0.75), S=F/s → the view's horizontal half-FOV
+         * (Hor+ widens by F, a wider FOV divides H by s). */
         int pass43   = (4.0*(arx-102.0) - 3.0*       (rz+77.0)) < 0.0;
-        int passwide = (4.0*(arx-102.0) - 3.0*(double)F*(rz+77.0)) < 0.0;
+        int passwide = (4.0*(arx-102.0) - 3.0*((double)F / v.s)*(rz+77.0)) < 0.0;
         if (pass43)   in43++;
         if (passwide) inwide++;
         if (passwide && !pass43) {
@@ -4317,6 +4340,13 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
          * layer instead of being world-depth-sorted (else nearer terrain occludes
          * them). Only billboards carry this; 3D shaded mobys keep their own depth. */
         int near_ot = billboard && (((pz >> 7) - ((int32_t)rot >> 24)) <= 0);
+        /* Per-record view: a billboard anchors at a game-authored screen
+         * coordinate (mofx/mofy = its screen position) and a HUD-range moby
+         * is drawn where the game put it, so both project canonical; a 3D
+         * actor projects through the pass view. */
+        int hud_rec = openpete_ui_moby_is_addr_static(m) || openpete_ui_moby_is_addr_ui(m);
+        const ngte_view* rv = (billboard || hud_rec) ? &s_view_shd_canon : v;
+        if (billboard && !hud_rec && !near_ot) NGTE_CENSUS_HIT(bb_untagged);
         int M[3][3]; double TR[3]; double mofx, mofy;
         double vz_scale = 1.0;   /* depth -> full-world (set for the 3D path below) */
         if (billboard) {
@@ -4475,9 +4505,9 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * within-moby depth so the Z-buffer couldn't separate a moby's faces
              * (interior/back faces would punch through the front). Per-vertex Z is
              * what the real Z-buffer needs. */
-            double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,v, &sx,&sy,&sat);
+            double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,rv, &sx,&sy,&sat);
             int unr = moby_gte_near_fixup(M, TR, (double)VX,(double)VY,(double)VZ, vzz,
-                                          mofx, mofy, v, &sx, &sy);
+                                          mofx, mofy, rv, &sx, &sy);
             if (vzz > 0.0) { if (vzz<pvzmin) pvzmin=vzz; if (vzz>pvzmax) pvzmax=vzz; }
             double fvz = vzz*vz_scale;
             /* Fed depth stays TRUE per-vertex (see the regular walk's twin):
@@ -4810,7 +4840,7 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_MOBY, startp, endp);  /* polybuf range for the OT filter */
-    ngte_view_build(cpu, &s_view_shd);
+    moby_view_shd_build(cpu);
 
     if (feed) {                                 /* feed shaded mobys to the scene — fully native */
         s_cur_mat = "SHD";
@@ -5470,7 +5500,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
           got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0,
                                     fap, fbp, w0p, hdrp, balpha, gpf_frac,
-                                    f.TR_raw, f.TR_frac, f.M, zsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+                                    f.TR_raw, f.TR_frac, f.M, zsf4, moby_record_view(mobys[i]),
+                                    s_proj + s_proj_n, MAX_PROJ - s_proj_n);
           if (t0) s_us_dec += (long)(openpete_phase_now_us() - t0); }
         if (got <= 0) continue;
         /* OPENPETE_MOBY_POSTRACE_CLS: final SUBMITTED screen-space centroid —
@@ -5633,7 +5664,7 @@ void moby_native_reextract(CPUState* cpu) {
      * verbatim when the tick ended under a different one, else the
      * interpolated bracket). */
     spyro_native_prod_camera_enter(SPYRO_PROD_MOBYREG);
-    ngte_view_build(cpu, &s_view);
+    moby_view_build(cpu);
     if (reg_fresh) {
         nm = reextract_record_pass(cpu, "REG");
         reg_walk = s_gout.n;
@@ -5662,7 +5693,7 @@ void moby_native_reextract(CPUState* cpu) {
     if (shd_fresh) {
         s_cur_mat = "SHD";
         spyro_native_prod_camera_enter(SPYRO_PROD_SHADED);
-        ngte_view_build(cpu, &s_view_shd);
+        moby_view_shd_build(cpu);
         build_shaded_walk_tris(cpu);
         spyro_native_prod_camera_leave();
         push_scene_moby();

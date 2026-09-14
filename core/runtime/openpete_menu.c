@@ -28,7 +28,7 @@
 #include <string.h>
 
 /* --- rows ---------------------------------------------------------------- */
-enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
+enum { ROW_DISPLAY, ROW_ASPECT, ROW_FOV, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
        ROW_WOBBLE, ROW_TEXMAP, ROW_DITHER, ROW_LOD, ROW_FREECAM, ROW_SAVE,
        ROW_QUIT,
        ROW_COUNT,
@@ -41,7 +41,7 @@ enum { ROW_DISPLAY, ROW_ASPECT, ROW_FPS, ROW_SHOWFPS, ROW_VSYNC, ROW_SSAA,
        ROW_MODSEL, ROW_MODEN, ROW_FOG };
 
 static const char* const ROW_LABEL[ROW_COUNT] = {
-    "DISPLAY", "ASPECT", "FPS", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE",
+    "DISPLAY", "ASPECT", "FOV", "FPS", "SHOW FPS", "VSYNC", "SSAA", "WOBBLE",
     "TEXTURES", "DITHER", "LOD", "FREECAM", "SETTINGS", "EXIT GAME",
 };
 
@@ -51,7 +51,7 @@ static const char* const ROW_LABEL[ROW_COUNT] = {
  * with the key and then with the row should see one toast repaint, not two
  * stack. */
 static const char* const ROW_OSD_KEY[ROW_COUNT] = {
-    "menu.display", "menu.aspect", "menu.fps", "menu.showfps", "menu.vsync",
+    "menu.display", "menu.aspect", "menu.fov", "menu.fps", "menu.showfps", "menu.vsync",
     "menu.ssaa", "menu.wobble", "menu.texmap", "menu.dither", "menu.lod",
     "menu.freecam", "menu.settings", "menu.quit",
 };
@@ -83,6 +83,14 @@ static const struct { const char* label; float wh; } s_aspect[] = {
     { "32:9",  32.0f / 9.0f  },
 };
 #define N_ASPECT ((int)(sizeof(s_aspect) / sizeof(s_aspect[0])))
+
+/* FOV ladder: index 0 = the game's projection (setter 0), then vertical
+ * degrees in 5° steps over the flag's [30,120] range. */
+#define FOV_MIN 30
+#define FOV_MAX 120
+#define FOV_STEP 5
+#define N_FOV (1 + (FOV_MAX - FOV_MIN) / FOV_STEP)
+static float fov_val(int idx) { return idx <= 0 ? 0.0f : (float)(FOV_MIN + (idx - 1) * FOV_STEP); }
 
 /* Ladder stops at OPENPETE_SSAA_MAX — 8X/16X ask for more render-target VRAM
  * than an 8GB card has (see openpete.h). 3X is a genuine rung, not a
@@ -122,6 +130,7 @@ static int s_fps_count = 0;
 static int s_open       = 0;
 static int s_cursor     = 0;
 static int s_aspect_idx = 0;   /* AUTO     */
+static int s_fov_idx    = 0;   /* default  */
 static int s_fps_idx    = 0;   /* first ladder entry (30) */
 static int s_showfps_idx = 1;  /* ON — mirrors the live vk FPS overlay */
 static int s_vsync_idx  = 1;   /* ON       */
@@ -191,6 +200,16 @@ static const char* value_str(int row, char* buf, int buflen) {
     case ROW_DISPLAY:
         return openpete_native_fullscreen_active() ? "FULLSCREEN" : "WINDOWED";
     case ROW_ASPECT: return s_aspect[s_aspect_idx].label;
+    case ROW_FOV: {
+        /* Both angles for the live aspect: the vertical is the setting, the
+         * horizontal follows Hor+. The default reads DEFAULT, the value column
+         * being too narrow for the game's own pair as well. */
+        if (s_fov_idx <= 0) return "DEFAULT";
+        double v = 0.0, h = 0.0;
+        openpete_native_fov_angles(&v, &h);
+        snprintf(buf, (size_t)buflen, "%.0fV %.0fH", v, h);
+        return buf;
+    }
     case ROW_FPS: {
         int v = (s_fps_idx < s_fps_count) ? s_fps_vals[s_fps_idx] : 0;
         if (v >= FPS_UNLIMITED) return "UNLIMITED";
@@ -258,6 +277,7 @@ static void log_state(const char* what) {
 static void apply_row(int row) {
     switch (row) {
     case ROW_ASPECT:   openpete_native_set_aspect(s_aspect[s_aspect_idx].wh); break;
+    case ROW_FOV:      openpete_native_set_fov(fov_val(s_fov_idx));            break;
     case ROW_FPS:      openpete_set_render_fps(s_fps_vals[s_fps_idx]);         break;
     case ROW_SHOWFPS:  openpete_native_set_fps_overlay(s_showfps_idx);         break;
     case ROW_VSYNC:    openpete_native_set_vsync(s_vsync_idx);                 break;
@@ -331,6 +351,13 @@ void openpete_menu_init(const openpete_options_t* opts, int refresh_hz) {
         s_aspect_idx = best;
     } else {
         s_aspect_idx = 0;   /* AUTO */
+    }
+    /* FOV: nearest ladder step to the launch --fov (0 = the game's projection). */
+    if (opts->fov_deg > 0.0f) {
+        int i = (int)((opts->fov_deg - (float)FOV_MIN) / (float)FOV_STEP + 0.5f) + 1;
+        s_fov_idx = i < 1 ? 1 : (i >= N_FOV ? N_FOV - 1 : i);
+    } else {
+        s_fov_idx = 0;
     }
 
     /* FPS: exact/nearest in the ladder, seeded from the LIVE pacer target —
@@ -618,6 +645,7 @@ void openpete_menu_adjust(int dx) {
         openpete_native_request_fullscreen_toggle();
         break;
     case ROW_ASPECT:   s_aspect_idx = wrap_idx(s_aspect_idx + step, N_ASPECT);   break;
+    case ROW_FOV:      s_fov_idx    = wrap_idx(s_fov_idx    + step, N_FOV);       break;
     case ROW_FPS:      s_fps_idx    = wrap_idx(s_fps_idx    + step, s_fps_count); break;
     case ROW_SHOWFPS:  s_showfps_idx = wrap_idx(s_showfps_idx + step, 2);         break;
     case ROW_VSYNC:    s_vsync_idx  = wrap_idx(s_vsync_idx  + step, 2);           break;
