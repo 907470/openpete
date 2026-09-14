@@ -19,6 +19,21 @@
  * brackets (spyro_native_reextract.c). Modless the list holds the composer's
  * one call and the k=0 iteration is the old singleton path exactly.
  *
+ * Shadow records (P2): every canonical shadow-hook call appends the
+ * D_SPYROSHADOW bytes the walk reads, bound to the model record of the same
+ * epoch whose g_Spyro position equals the live one at the hook (the mod calls
+ * model, shadow, flame per player with the same state swapped in); a shadow
+ * with no such model record (hidden player, blink) appends a pairing-only
+ * model record at its call ordinal and binds to that. A shadow record takes
+ * its model record's pairing and clock; only its own anchor bytes are
+ * bracketed, between it and the previous list's shadow of the paired model.
+ *
+ * Flame records (P3): the same shape for the flame hook — the g_SpyroFlame
+ * bytes the ribbon walk reads (it reads no g_Spyro field), bound to the
+ * model record at the live g_Spyro position, bracketed (origin, attach
+ * matrix, strand counters) against the previous list's flame of the paired
+ * model.
+ *
  * OPENPETE_SPYRO_RECDBG=1 prints the epoch census at commit, a per-present
  * line per record on the intermediates and a run summary at exit.
  */
@@ -42,10 +57,16 @@ enum { SPYRO_REC_MODEL = 0, SPYRO_REC_SHADOW = 1, SPYRO_REC_FLAME = 2, SPYRO_REC
 #define SPYRO_REC_SEG_LEN    0x100u   /* seg scratch row G_SCRATCH+0x1900 */
 #define SPYRO_REC_FK_LEN     0x300u   /* Fairy-Kiss colour row G_SCRATCH+0x1D00 */
 #define SPYRO_REC_SXY_LEN    0x400u   /* projected SXY scratchpad 0x1F800000 */
+#define SPYRO_REC_SHADOW_LEN 0x28u    /* D_SPYROSHADOW region (spyro_interp_regions.c) */
+#define SPYRO_REC_FLAME_LEN  0xD0u    /* g_SpyroFlame region (spyro_interp_regions.c) */
 #define SPYRO_REC_PAIR_B     400.0    /* pairing bound B, units per tick (P0) */
 
 typedef struct {
-    uint8_t  spyro[SPYRO_REC_SPYRO_LEN];
+    uint8_t  spyro[SPYRO_REC_SPYRO_LEN];  /* the hook's g_Spyro: the staged base */
+    uint8_t  src[SPYRO_REC_SPYRO_LEN];    /* the lerp source (position, rotation, clocks): the same bytes,
+                                           * except under --runahead where the one-record rule puts the
+                                           * ring's LED bytes here (the singleton lerped those over the
+                                           * committed base, which the shadow's silhouette selectors read) */
     uint8_t  seg[SPYRO_REC_SEG_LEN];
     uint8_t  fk[SPYRO_REC_FK_LEN];
     uint8_t  sxy[SPYRO_REC_SXY_LEN];
@@ -55,6 +76,22 @@ typedef struct {
     int8_t   pair2;              /* index in the list before that (via pair), -1 */
 } spyro_model_rec_t;
 
+typedef struct {
+    uint8_t  sh[SPYRO_REC_SHADOW_LEN];   /* D_SPYROSHADOW at the hook: anchor, Y words, flags, over-water */
+    uint8_t  src[SPYRO_REC_SHADOW_LEN];  /* the anchor lerp source (the ring's led bytes under --runahead, else sh) */
+    int8_t   model;                      /* index of the model record it renders under */
+    uint8_t  drawn;                      /* 1 = a hook call; 0 = pairing-only: the ring's tick-end bytes for the
+                                          * ring's dragon when its shadow hook did not fire (the anchor is written
+                                          * every tick), so the shadow's first tick lerps like the singleton did */
+} spyro_shadow_rec_t;
+
+typedef struct {
+    uint8_t  fl[SPYRO_REC_FLAME_LEN];    /* g_SpyroFlame at the hook: origin, strand counters, attach matrix, active */
+    uint8_t  src[SPYRO_REC_FLAME_LEN];   /* the bracket's lerp source (as above) */
+    int8_t   model;                      /* index of the model record it renders under */
+    uint8_t  drawn;                      /* as above */
+} spyro_flame_rec_t;
+
 /* ---- canonical side (game fiber) ------------------------------------- */
 
 /* Model hook: append this call's record (after the renderer ran, endp >
@@ -63,8 +100,15 @@ typedef struct {
  * hook emits — or -1 when refused (speculative fire, cap). */
 int  spyro_records_model_append(struct CPUState* cpu, uint32_t rp_start, uint32_t rp_end);
 
-/* Shadow/flame hooks (P2/P3 make these records; P0 instrument now). */
-void spyro_records_hook_observe(int feeder, struct CPUState* cpu);
+/* Shadow hook: append this call's record (after the renderer ran, endp >
+ * startp). Binds to the epoch's model record at the live g_Spyro position,
+ * appending a pairing-only one when none was drawn. Returns the index of
+ * the model record it bound to — the PLAYER slot of the shadow's tag — or
+ * -1 when refused (speculative fire, cap). */
+int  spyro_records_shadow_append(struct CPUState* cpu);
+
+/* Flame hook: the same, for the flame record. */
+int  spyro_records_flame_append(struct CPUState* cpu);
 
 /* Once per canonical present from spyro_native_canon_epoch_commit, after the
  * DIRECT ring captured the tick: closes the epoch's list into the store. */
@@ -85,6 +129,19 @@ const spyro_model_rec_t* spyro_records_prev(int k);
 const spyro_model_rec_t* spyro_records_prev2(int k);
 /* Whether record k interpolates this present (paired and the ring bracketed). */
 int  spyro_records_lerps(int k);
+/* Shadow records of the current list: count, record j, and the previous
+ * list's shadow bound to the model record j's model paired with (NULL when
+ * the model is unpaired or that model drew no shadow). */
+int  spyro_records_shadow_count(void);
+const spyro_shadow_rec_t* spyro_records_shadow_curr(int j);
+const spyro_shadow_rec_t* spyro_records_shadow_prev(int j);
+/* RECDBG per-present line for shadow record j (staged anchor). */
+void spyro_records_shadow_note(int j, const int32_t* staged_anchor);
+/* Flame records, the same way. */
+int  spyro_records_flame_count(void);
+const spyro_flame_rec_t* spyro_records_flame_curr(int j);
+const spyro_flame_rec_t* spyro_records_flame_prev(int j);
+void spyro_records_flame_note(int j, const int32_t* staged_origin);
 /* RECDBG per-present line for record k (staged position, pairing, alpha). */
 void spyro_records_present_note(int k, const int32_t* staged_pos);
 void spyro_records_present_end(void);

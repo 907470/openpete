@@ -126,7 +126,7 @@ while IFS='|' read -r name src players frame em es ef pairs note; do
   if [[ $verdict != ok ]]; then echo "FAIL     $name (canon f=$frame): $verdict"; fail=1; continue; fi
   echo "ok       $name (canon f=$frame): calls m/s/f=$got_m/$got_s/$got_f mm=$mm — $note"
 
-  # Intermediate leg: run-wide staging checks now; per-record pairing in P1.
+  # Intermediate leg: run-wide staging checks, then the per-record asserts.
   rc=$(run_leg "$name" inter "$src" "$players" "$frame")
   log="$OUT/$name-inter.log"
   if [[ $rc -ne 0 ]]; then echo "FAIL     $name: intermediate leg rc=$rc (see $log)"; fail=1; continue; fi
@@ -134,8 +134,9 @@ while IFS='|' read -r name src players frame em es ef pairs note; do
   if [[ "${writes:-x}" != 0 ]]; then echo "FAIL     $name (inter): view write census cpu_writes_while_open=${writes:-missing}"; fail=1; continue; fi
   if grep -q 'RESTORE MISMATCH' "$log"; then echo "FAIL     $name (inter): RESTORE MISMATCH (see $log)"; fail=1; continue; fi
   # Per-record asserts: drawn count, pairing index per record, paired records
-  # interpolate and stage within B/2 of their canonical position.
-  iv=$(python3 scripts/spyro-records-check.py "$log" "$frame" "$em" "$pairs"); irc=$?
+  # interpolate and stage within B/2 of their canonical position; shadow and
+  # flame record counts, each bound to a record of the list, lerping when it is.
+  iv=$(python3 scripts/spyro-records-check.py "$log" "$frame" "$em" "$pairs" "$es" "$ef"); irc=$?
   case $irc in
     0)  echo "ok       $name (inter): ${iv#ok       }";;
     64) echo "vacuous  $name (inter): ${iv#vacuous  }";;

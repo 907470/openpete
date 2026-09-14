@@ -730,12 +730,14 @@ static void shadow_spyro_build(CPUState* cpu) {
     }
 }
 
-/* feed the native Spyro shadow (untextured G3 fan, ABR mode 2 -> blend=3) */
-static void shadow_spyro_feed_native(CPUState* cpu) {
+/* feed the native Spyro shadow (untextured G3 fan, ABR mode 2 -> blend=3).
+ * `slot`: the model record the shadow renders under (spyro_records.h), the
+ * PLAYER slot of its tag. */
+static void shadow_spyro_feed_native(CPUState* cpu, int slot) {
     shadow_spyro_build(cpu);
     if (s_sptri_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
-    openpete_native_scene_set_tag(OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_PLAYER, 0));
+    openpete_native_scene_set_tag(OPENPETE_TAG_SHADOW(OPENPETE_TAG_SHADOW_PLAYER, (uint32_t)(slot < 0 ? 0 : slot)));
     for (int i = 0; i < s_sptri_n; i++) {
         sptri* c = &s_sptri[i];
         openpete_scene_tri st = {0};
@@ -832,12 +834,13 @@ static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_SHADOW, startp, endp);
-    if (endp > startp) spyro_records_hook_observe(SPYRO_REC_SHADOW, cpu);
+    int slot = 0;
+    if (endp > startp) slot = spyro_records_shadow_append(cpu);   /* the shadow record, bound to its model record */
 
     if ((feed || verify) && endp > startp) capture_prims(cpu, startp, endp);
 
     if (feed && endp > startp && render_path_enabled(RP_SHADOW)) {
-        shadow_spyro_feed_native(cpu);               /* native gamestate walk */
+        shadow_spyro_feed_native(cpu, slot);         /* native gamestate walk */
     }
 
     if (verify && endp > startp && openpete_frame >= shadow_verify_frame()) {
@@ -849,10 +852,10 @@ static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
-/* Sub-tick re-extract (high-FPS spine): reproduce moby + Spyro drop-shadows
+/* Sub-tick re-extract (high-FPS spine): reproduce the moby drop-shadows
  * from the current gamestate — extract-only (no render_fn, no verdicts). The
  * shadows project under their owners onto the ground; they follow the owners'
- * (currently tick-N) poses and the interpolated camera. */
+ * interpolated poses and the interpolated camera. */
 void shadow_native_reextract(CPUState* cpu) {
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_enabled(RP_SHADOW)) return;
@@ -860,7 +863,16 @@ void shadow_native_reextract(CPUState* cpu) {
      * else the spine replays stale moby/Spyro shadows over the cyclorama. */
     if (!render_path_canon_drawn(RP_SHADOW)) return;
     shadow_moby_feed_native(cpu);
-    shadow_spyro_feed_native(cpu);
+}
+
+/* The Spyro drop-shadow of one shadow record: the record loop in
+ * spyro_native_reextract.c calls this once per record with that record's
+ * g_Spyro fields and anchor staged. Same gates as the moby shadows above. */
+void shadow_spyro_native_reextract(CPUState* cpu, int slot) {
+    if (!openpete_native_scene_enabled()) return;
+    if (!render_path_enabled(RP_SHADOW)) return;
+    if (!render_path_canon_drawn(RP_SHADOW)) return;
+    shadow_spyro_feed_native(cpu, slot);
 }
 
 static const feature_dispatch_entry_t shadow_dispatch[] = {

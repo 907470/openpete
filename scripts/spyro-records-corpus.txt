@@ -5,8 +5,9 @@
 # and asserts the OPENPETE_SPYRO_RECDBG epoch line at the case frame: the hook
 # call counts per feeder (model / shadow / flame) on that canonical tick, zero
 # byte mismatches between the last hook's bytes and the DIRECT ring, zero
-# speculative refusals, one epoch per VBL. P1 adds the intermediate leg's
-# per-record asserts (record count and pairing index per feeder).
+# speculative refusals, one epoch per VBL. The intermediate leg asserts the
+# per-record lines (model count and pairing index, shadow and flame counts
+# and bindings).
 #
 # Fields (pipe-separated):
 #   name       case id
@@ -31,8 +32,9 @@ artisans-entry-2p|level:artisans|2|1584|4|4|0|-,-,-,-|level-entry tick: the game
 glide-4p|glide-flutter|4|1760|4|1|0|0,1,2,3|player 1 gliding: four models, one shadow (extra dragons shadowless in the air)
 sunny-flight-3p|sunny-flight-exit|3|1600|3|0|0|0,1,2|flight level: three dragons side by side (193 apart), no shadows
 tas-blink-1of3|tas|3|5588|3|1|0|0,1,2|three models, one shadow (tas f5588: player 1 charging away from the formation)
-tas-shadows-2of3|tas|3|7698|1|3|0|0|one model, three shadows: players 2-3 hidden with their shadows drawn from f7578 on (pairing-only model records)
+tas-shadows-2of3|tas|3|7698|1|3|0|2|one model, three shadows: players 2-3 hidden with their shadows drawn from f7578 on (their shadow hooks append pairing-only model records 0-1 at their call ordinal; player 1 is record 2)
 tas-shadow-only|tas|3|6394|0|1|0|?|no model call, one shadow (the hidden-player shadow-only draw; the ring is frozen here)
+flame-3p|flame|3|1800|3|3|1|0,1,2|player 1 breathing fire: three models, three shadows, one flame (player 1, record 2)
 #
 # Not reachable headless (each needs a second controller or a live menu):
 #   menu preview draw (coop_draw.c:263-266); player 1 idle with player 2

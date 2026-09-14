@@ -153,9 +153,10 @@ int terrain_native_topdown_pose(struct CPUState* cpu, int32_t v[5]);
 int terrain_native_sweep_pose(struct CPUState* cpu, int corner, int32_t v[5]);
 void moby_native_reextract(struct CPUState* cpu);
 void shadow_native_reextract(struct CPUState* cpu);
+void shadow_spyro_native_reextract(struct CPUState* cpu, int slot);
 void spyro_player_native_reextract(struct CPUState* cpu);
 void particle_native_reextract(struct CPUState* cpu);
-void flame_native_reextract(struct CPUState* cpu);
+void flame_native_reextract(struct CPUState* cpu, int slot);
 void tracer_native_reextract(struct CPUState* cpu);
 /* Level-transition / balloonist cross-fade backdrop: replays the captured
  * screen-space gouraud mesh (gated on whether func_8004F000 ran this canonical

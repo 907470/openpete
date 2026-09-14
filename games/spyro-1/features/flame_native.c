@@ -573,12 +573,13 @@ static void flame_strip_compare(CPUState* cpu) {
  * untextured opaque) re-derived from gamestate — no .s prim dependency, so it
  * runs at the sub-tick gamestate the host re-renders. Per-vertex view-Z gives
  * the ribbon correct depth along its length. */
-static void flame_feed_native(CPUState* cpu) {
+static void flame_feed_native(CPUState* cpu, int slot) {
     flame_build_strip(cpu);                  /* fills s_fquad (strip) + s_fcap (caps) */
     if (s_fquad_n <= 0 && s_fcap_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
+    const uint32_t tslot = (uint32_t)(slot < 0 ? 0 : slot);   /* the model record it renders under */
 
-    openpete_native_scene_set_tag(OPENPETE_TAG_FLAME(OPENPETE_TAG_FLAME_RIBBON, 0));
+    openpete_native_scene_set_tag(OPENPETE_TAG_FLAME(OPENPETE_TAG_FLAME_RIBBON, tslot));
     for (int i = 0; i < s_fquad_n; i++) {
         fquad* q = &s_fquad[i];
         /* GT4 -> two tris: (v0,v1,v2) + (v1,v3,v2) */
@@ -597,7 +598,7 @@ static void flame_feed_native(CPUState* cpu) {
             openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
         }
     }
-    openpete_native_scene_set_tag(OPENPETE_TAG_FLAME(OPENPETE_TAG_FLAME_CAPS, 0));
+    openpete_native_scene_set_tag(OPENPETE_TAG_FLAME(OPENPETE_TAG_FLAME_CAPS, tslot));
     for (int i = 0; i < s_fcap_n; i++) {
         fcap* c = &s_fcap[i];
         openpete_scene_tri st = {0};
@@ -641,12 +642,13 @@ static int on_80058D64_flame_native(CPUState* cpu, uint32_t addr) {
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_FLAME, startp, endp);   /* polybuf range for the OT filter */
-    if (endp > startp) spyro_records_hook_observe(SPYRO_REC_FLAME, cpu);
+    int slot = 0;
+    if (endp > startp) slot = spyro_records_flame_append(cpu);   /* the flame record, bound to its model record */
 
     if ((feed || verify) && endp > startp) capture_prims(cpu, startp, endp);
 
     if (feed && endp > startp && render_path_enabled(RP_FLAME)) {
-        flame_feed_native(cpu);                   /* native gamestate walk */
+        flame_feed_native(cpu, slot);             /* native gamestate walk */
     }
 
     if (verify && endp > startp && openpete_frame >= flame_verify_frame()) {
@@ -659,12 +661,14 @@ static int on_80058D64_flame_native(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
-/* Sub-tick re-extract (high-FPS spine): rebuild Spyro's flame ribbon from
- * gamestate — extract-only. Self-gated on m_IsFlameActive (the .s renderer is
- * only called while breathing fire, so feeding unconditionally would draw a
- * stale ribbon). The ribbon attaches to Spyro's (bracketed) pose and projects
- * through the interpolated g_Camera, so it stays coherent with the scene. */
-void flame_native_reextract(CPUState* cpu) {
+/* Sub-tick re-extract (high-FPS spine): rebuild one flame record's ribbon
+ * from gamestate — extract-only; the record loop in spyro_native_reextract.c
+ * calls this once per flame record with its g_SpyroFlame bytes staged.
+ * Self-gated on m_IsFlameActive (the .s renderer is only called while
+ * breathing fire, so feeding unconditionally would draw a stale ribbon). The
+ * ribbon attaches to the staged pose and projects through the interpolated
+ * g_Camera, so it stays coherent with the scene. */
+void flame_native_reextract(CPUState* cpu, int slot) {
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_enabled(RP_FLAME)) return;
     /* Belt-and-braces with the m_IsFlameActive self-gate below: only replay the
@@ -672,7 +676,7 @@ void flame_native_reextract(CPUState* cpu) {
      * transition where the active flag could lag the suppressed render). */
     if (!render_path_canon_drawn(RP_FLAME)) return;
     if (cpu->read_word(G_SPYROFLAME + FL_ACTIVE) == 0) return;   /* not breathing fire */
-    flame_feed_native(cpu);
+    flame_feed_native(cpu, slot);
 }
 
 static const feature_dispatch_entry_t flame_dispatch[] = {
