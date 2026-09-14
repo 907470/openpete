@@ -6,9 +6,11 @@ still moving; the FEATURES survive engine-side, and each mod returns
 when its surface re-lands as an append-only pillar.
 
 - `ghost-lite`, `triangle-flutter` — actor render service
-  (capture_actor_pose / draw_actor / suppress_player_draw): pinned to
-  the vk renderer's actor path, which is being reworked. Re-add as a
-  pillar once that path settles.
+  (capture_actor_pose / draw_actor / suppress_player_draw). The engine
+  half (kind 0 player pose replay, kind 1 S3 player model) was DELETED
+  2026-09-14 under `openpete-native-multi-spyro-subtick`: extra dragons
+  are records of the game's own render calls, not mod-supplied poses.
+  These two no longer build against any header in the tree.
 - (`crystalfissure-dark-artisans` and `moby-instance-tint` RETURNED: both
   live in `mods/` again, on `texpack_fog_shift` (api 2) and
   `material_register_refine` (api 4). Un-atticking moby-instance-tint is

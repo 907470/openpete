@@ -302,7 +302,6 @@ typedef struct {
     uint32_t  drawenv_clear;
     int       geom[8];
     openpete_hud_vert *ovl; int ovl_cap, ovl_n;
-    int       suppress_player;
     openpete_shadow_decal_params shadow;
     uint32_t  pctx_tick; float pctx_alpha; int pctx_canonical;
     openpete_mods_material_view_t matview;   /* interned material slots at publish */
@@ -318,7 +317,6 @@ static int          s_ring_head = -1;          /* last published */
 static SDL_Mutex   *s_ring_mx;
 static const scene_slot_t *s_ps_slot;          /* compose source: NULL = live */
 static uint32_t ps_drawenv_clear(void);
-static int      ps_suppress_player(void);
 static const openpete_shadow_decal_params *ps_shadow(void);
 static unsigned ps_frame(void);
 static void     ps_apply_geometry(void);
@@ -785,9 +783,9 @@ void openpete_native_scene_restore(void) {
 }
 
 /* The frame stamp of the scene currently accumulating in s_scene
- * (0xFFFFFFFF = none yet). Late feeders (the mod actor-render service)
- * use it to append ONLY to a live scene: calling begin_frame with a
- * newer frame would snapshot-and-wipe a held scene during load stalls. */
+ * (0xFFFFFFFF = none yet). Late feeders use it to append ONLY to a live
+ * scene: calling begin_frame with a newer frame would snapshot-and-wipe a
+ * held scene during load stalls. */
 unsigned openpete_native_scene_frame(void) { return s_scene_frame; }
 
 /* Stamp of the scene scene_present_buf() would return under the CURRENT
@@ -805,13 +803,6 @@ static unsigned scene_present_stamp(void) {
 }
 
 
-/* Mod actor render service: suppress the PLAYER-category scene tris for
- * the NEXT presented frame (the flutter's hover window draws a stand-in
- * actor instead). Set per present by the mod draw service's flush;
- * cleared after each native render. Draw-only — occlusion/census
- * consumers still see the player's coverage. */
-static int s_suppress_player;
-void openpete_native_set_player_suppress(int on) { s_suppress_player = on ? 1 : 0; }
 /* --vertex-precision (`--vertex-precision integer`, live via the O-menu). When
  * set, openpete_native_scene_add_tri_grouped rounds each 3D-world vertex's PSX
  * screen coordinate (sx,sy — still in 512x240 display space at that point) to
@@ -6286,8 +6277,6 @@ static bool draw_native_scene(bool full_extent)
             if (scene[t].category == OPENPETE_SCENE_HUD ||
                 scene[t].category == OPENPETE_SCENE_HUD3D ||
                 scene[t].category == OPENPETE_SCENE_HUD_PANEL) continue;  /* -> HUD passes */
-            if (ps_suppress_player() &&
-                scene[t].category == OPENPETE_SCENE_PLAYER) continue;
             int b = scene[t].blend; if (b < 0 || b > 3) b = 0;   /* untextured class */
             if (b != gb) continue;
             if (gb == 0 && gc >= 0 && scene[t].category != gc) continue;
@@ -6651,7 +6640,6 @@ static bool draw_native_scene(bool full_extent)
             if (!scene[t].textured) continue;
             if (tx_start + (txtri + 1) * 3 > SCENE_VB_VERTS) break;
             int cat = scene[t].category;
-            if (ps_suppress_player() && cat == OPENPETE_SCENE_PLAYER) continue;
             int belongs;
             if (b == 6) belongs = (cat == OPENPETE_SCENE_HUD);
             else if (b == 9) {
@@ -9421,7 +9409,6 @@ static void ps_apply_geometry(void) {
     s_nr.clip_x = g[4]; s_nr.clip_y = g[5]; s_nr.clip_w = g[6]; s_nr.clip_h = g[7];
 }
 static uint32_t ps_drawenv_clear(void)  { return s_ps_slot ? s_ps_slot->drawenv_clear : s_drawenv_clear; }
-static int      ps_suppress_player(void){ return s_ps_slot ? s_ps_slot->suppress_player : s_suppress_player; }
 static const openpete_shadow_decal_params *ps_shadow(void) { return s_ps_slot ? &s_ps_slot->shadow : &s_shadow_decal; }
 static unsigned ps_frame(void)          { return s_ps_slot ? s_ps_slot->frame : s_scene_frame; }
 
@@ -9483,7 +9470,6 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
     }
     sl->ovl_n = sl->ovl_cap >= s_mod_overlay_n ? s_mod_overlay_n : 0;
     if (sl->ovl_n > 0) memcpy(sl->ovl, s_mod_overlay_verts, (size_t)sl->ovl_n * sizeof(openpete_hud_vert));
-    sl->suppress_player = s_suppress_player;
     sl->shadow = s_shadow_decal;
     openpete_mods_present_ctx(&sl->pctx_tick, &sl->pctx_alpha, &sl->pctx_canonical);
     openpete_mods_material_view_capture(&sl->matview);

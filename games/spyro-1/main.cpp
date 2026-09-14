@@ -83,11 +83,6 @@ extern const size_t                openpete_sdk_symbol_count;
 int text_moby_native_mod_emit(const char* str, float x, float y,
                               float cap_h, unsigned rgb,
                               void* out_verts, int cap);
-/* Actor render service (features/spyro_native.c, rung 16): pose capture +
- * recorded-pose ghost emit, registered with the core draw service below. */
-int spyro1_actor_pose_capture(int kind, void* buf, int cap);
-int spyro1_actor_emit(CPUState* cpu, int kind, const void* pose, int len,
-                      uint32_t tint_rgba);
 /* Moby-type registry game ops (features/mod_moby_ops.c, rung 11). */
 void spyro1_moby_ops_register(void);
 /* Level-slot registry game ops (features/mod_level_ops.c, rung 12). */
@@ -158,10 +153,6 @@ int main(int argc, char** argv) {
     /* ...and the draw service's text rasterizer (Spyro's 3D gold
      * text-moby glyphs — the same font as the FPS overlay). */
     openpete_mods_draw_set_text_fn(text_moby_native_mod_emit);
-    /* ...and the actor render service (rung 16): live-pose capture +
-     * recorded-pose ghost emit through the native Spyro extractor. */
-    openpete_mods_draw_set_actor_fns(spyro1_actor_pose_capture,
-                                     spyro1_actor_emit);
     /* ...and the content registries' game ops (rungs 11+12). */
     spyro1_moby_ops_register();
     spyro1_level_ops_register();
