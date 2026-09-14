@@ -2445,17 +2445,26 @@ void psyq_strlen(CPUState* cpu) {
  *     return (seed >> 16) & 0x7FFF */
 extern "C" uint8_t* openpete_psx_get_ram(void);
 
+/* A game whose seed slot is not located (psyq_game_rand_seed_addr() == 0)
+ * keeps the LCG state here; masking 0 into RAM offset 0 would write the
+ * kernel's exception-vector area. */
+static uint32_t psyq_seed_host;
+
 static inline uint32_t psyq_seed_load(void) {
+    uint32_t addr = psyq_game_rand_seed_addr();
+    if (!addr) return psyq_seed_host;
     const uint8_t* ram = openpete_psx_get_ram();
-    uint32_t off = psyq_game_rand_seed_addr() & 0x1FFFFFu;
+    uint32_t off = addr & 0x1FFFFFu;
     return  (uint32_t)ram[off]
          | ((uint32_t)ram[off + 1] << 8)
          | ((uint32_t)ram[off + 2] << 16)
          | ((uint32_t)ram[off + 3] << 24);
 }
 static inline void psyq_seed_store(uint32_t v) {
+    uint32_t addr = psyq_game_rand_seed_addr();
+    if (!addr) { psyq_seed_host = v; return; }
     uint8_t* ram = openpete_psx_get_ram();
-    uint32_t off = psyq_game_rand_seed_addr() & 0x1FFFFFu;
+    uint32_t off = addr & 0x1FFFFFu;
     ram[off    ] = (uint8_t)(v        & 0xFF);
     ram[off + 1] = (uint8_t)((v >> 8 ) & 0xFF);
     ram[off + 2] = (uint8_t)((v >> 16) & 0xFF);

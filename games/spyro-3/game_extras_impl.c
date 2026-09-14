@@ -168,6 +168,11 @@ int psyq_game_cd_read_in_load(CPUState* cpu) {
 }
 uint32_t psyq_game_cd_read_delay_cap(void) { return 100u; }
 
+/* PSYQ's rand seed: the word `rand` (0x8005C644) loads, steps by
+ * seed * 0x41C64E6D + 0x3039 and stores back, and `srand` (0x8005C674)
+ * overwrites, at D_80073F3C in the library's .bss. */
+uint32_t psyq_game_rand_seed_addr(void) { return 0x80073F3Cu; }
+
 /* The checksum walk's verdict. Loading state 8 in func_8002CA50 (0x8002CD24)
  * takes it once per level load: when the cursor 0x8006C6B8 has not reached
  * 0x8007B6E4 or the CRC 0x8006C6B4 is not 0, a rand()-picked word of the

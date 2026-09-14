@@ -42,7 +42,7 @@ first = { bytes = 204, ranges = 26, digest = "7123af76d85ea4c5", hit = 1 }
 # The loop count includes 0x8006671B, the track byte of the last CdlSetloc
 # position: libcd copies the caller's 4-byte CdlLOC, CdIntToPos fills three,
 # and the fourth is dead stack content that differs between the sides.
-loop  = { bytes = 1258, ranges = 88, digest = "1da9f97101ad1bcb", hit = 1700 }
+loop  = { bytes = 1254, ranges = 88, digest = "74ef5af6fe887edb", hit = 1700 }
 
 [bios_stack]
 low = 0x801FFB50

@@ -130,5 +130,10 @@ int  game_resolve_cutscene_arg(const char* arg) {
  * per-game belongs to the recompiler, not to this file. */
 uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
 
+/* PSYQ's rand seed: the word `rand` (0x80059D2C) loads, steps by
+ * seed * 0x41C64E6D + 0x3039 and stores back, and `srand` (0x80059D5C)
+ * overwrites, at D_8006D144 in the library's .bss. */
+uint32_t psyq_game_rand_seed_addr(void) { return 0x8006D144u; }
+
 /* Disc layout is not mapped for this game yet. */
 const game_disc_layout_t* game_get_disc_layout(void) { return NULL; }
