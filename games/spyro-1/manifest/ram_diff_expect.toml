@@ -69,8 +69,8 @@ source = "D_80076B78, stored by PSYQ code at 0x80069D08 (psyq.s:16492-16493)"
 
 [[psyq_internal]]
 start  = 0x80078EA0
-length = 0x14
-source = "D_80078EA0, referenced only by psyq.s (game.bss placement)"
+length = 0x1808
+source = "libgpu's queued-command ring placed in game .bss: head/tail/count words D_80078EA0..A8 and the 0x60-byte entries from D_80078EAC to g_LevelVortexExitFlags (psyq.s 0x80061980 indexes D_80078EAC by slot*0x60); referenced only by psyq.s, openpete's host libgpu never writes it"
 
 # PSYQ-internal words openpete's mirrors write, derived by hand on 2026-09-11
 # from every write_word, table and block site in games/spyro-1/psyq_hooks.cpp

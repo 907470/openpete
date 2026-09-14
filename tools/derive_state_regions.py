@@ -12,11 +12,18 @@ its symbol count and its role-named (`g_`/lower-case) symbols as a comment;
 
     tools/derive_state_regions.py spyro-3 \\
         --named psyq_rand_seed=0x80073F3C:4:gameplay \\
-        --named levelIndex=0x8006C58C:4:gameplay
+        --named levelIndex=0x8006C58C:4:gameplay \\
+        --overlay 0x800742D0:0x2D800
+
+`--overlay START:LEN` adds the overlay image union as `cd_load_transient`
+rows cut at the `[[expect]]` ranges inside it. A named row's flags
+(`cd_load_transient`, `constant_ok`, `gameplay_neutral`, masks,
+descriptions) are added when the manifest is assembled.
 
 Prints TOML `[[region]]` rows to stdout; the manifest is assembled by hand
 from this output plus the indirect (pool) rows, which need the decomp's
-struct facts.
+struct facts. `tools/check_regions_containment.py OLD.flat NEW.flat` then
+proves the assembled table hashes every byte the table it replaces hashed.
 """
 from __future__ import annotations
 

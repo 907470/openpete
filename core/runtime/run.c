@@ -5719,11 +5719,16 @@ static int run_host_loop(const openpete_options_t* opts) {
     if (psxtrace) {
         OPL_INFO_F("psxtrace",
                    "summary: records=%u frames_compared=%llu "
-                   "hash_mismatches=%llu first_div_frame=%u",
+                   "hash_mismatches=%llu first_div_frame=%u "
+                   "first_non_neutral_div=%s frame=%u",
                    psxtrace->records_consumed,
                    (unsigned long long)psxtrace->frames_compared,
                    (unsigned long long)psxtrace->hashes_diverged,
-                   psxtrace->diverged ? psxtrace->first_divergent_frame : 0u);
+                   psxtrace->diverged ? psxtrace->first_divergent_frame : 0u,
+                   psxtrace->strict_diverged
+                       ? psxtrace->region_names[psxtrace->first_strict_divergent_region]
+                       : "none",
+                   psxtrace->strict_diverged ? psxtrace->first_strict_divergent_frame : 0u);
         /* Per-region divergence frequency: how many of frames_compared
          * each region diverged on. Stable region == real persistent
          * state difference; flickering region == aliasing or genuinely

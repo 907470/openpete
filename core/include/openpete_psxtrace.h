@@ -61,6 +61,12 @@ typedef struct {
     int32_t  first_divergent_region;     /* -1 = total-only mismatch */
     uint64_t first_divergent_oracle;
     uint64_t first_divergent_op;
+    /* First divergence in a row that is not gameplay_neutral (a strict
+     * or cd_load_transient row); the neutral rows diverge by
+     * classification and would otherwise own the first-divergence report. */
+    int      strict_diverged;
+    uint32_t first_strict_divergent_frame;
+    int32_t  first_strict_divergent_region;
 
     /* The gate verdict. Set when a region that is NOT cd_load_transient
      * diverges, OR a cd_load_transient region diverges and fails to

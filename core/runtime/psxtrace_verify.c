@@ -49,6 +49,7 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
     memset(t, 0, sizeof(*t));
     t->path = path;
     t->first_divergent_region = -1;
+    t->first_strict_divergent_region = -1;
     t->hard_fail_region = -1;
     /* CD-load transient tolerance window (ticks). Largest legitimate
      * level-load burst observed in the 20k demo is ~310 ticks; default
@@ -423,6 +424,11 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
                 t->first_divergent_oracle = oracle_per[r];
                 t->first_divergent_op     = op_per[r];
             }
+            if (!neutral && !t->strict_diverged) {
+                t->strict_diverged = 1;
+                t->first_strict_divergent_frame  = frame_no;
+                t->first_strict_divergent_region = (int32_t)r;
+            }
             if (!transient) {
                 /* A non-transient region differing is a hard regression. */
                 if (!t->hard_failed) {
@@ -496,6 +502,18 @@ void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
     int eof_reached = (t->records_consumed >= t->frame_count);
     for (uint32_t r = 0; r < t->region_count; r++) {
         if (t->transient_open_frame[r] < 0) continue;
+        const int neutral = (r < (uint32_t)openpete_state_region_count)
+                          && openpete_state_regions[r].gameplay_neutral;
+        if (neutral) {
+            /* A gameplay_neutral row has no heal window; an open burst at
+             * EOF is counted, never promoted. */
+            OPL_INFO_F("psxtrace",
+                       "gameplay_neutral region=%u (%s) diverging at EOF "
+                       "(burst opened tick %lld)",
+                       r, t->region_names[r],
+                       (long long)t->transient_open_frame[r]);
+            continue;
+        }
         if (eof_reached) {
             OPL_ERROR_F("psxtrace",
                         "CD-load transient in region=%u (%s) opened at tick "
@@ -515,6 +533,15 @@ void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
                        t->records_consumed, t->frame_count, r, t->region_names[r],
                        (long long)t->transient_open_frame[r]);
         }
+    }
+    if (t->hard_failed) {
+        int32_t r = t->hard_fail_region;
+        OPL_INFO_F("psxtrace",
+                   "  hard fail: %s at frame=%u region=%d (%s)",
+                   t->hard_fail_reason ? t->hard_fail_reason : "?",
+                   t->hard_fail_frame, (int)r,
+                   (r >= 0 && r < (int32_t)t->region_count)
+                       ? t->region_names[r] : "<total>");
     }
     OPL_INFO_F("psxtrace",
                "verdict: %s (hard_failed=%d, CD-load transients absorbed=%llu, "

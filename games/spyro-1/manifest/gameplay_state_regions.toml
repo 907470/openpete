@@ -1,411 +1,537 @@
-# gameplay_state_regions.toml — addresses whose divergence between
-# presentation modes is a determinism failure.
+# games/spyro-1/manifest/gameplay_state_regions.toml — the gameplay-readable
+# bytes the oracle hashes every tick. Generated into the
+# build by tools/gen_state_regions.py (cmake/openpete_game.cmake): the C
+# table the exe registers, the flat table the DuckStation capture module
+# reads, and their shared FNV-1a-64 in the trace header.
 #
-# This manifest is the contract underpinning the "1:1 with PSX
-# hardware" North Star. The aspect_determinism CTest gate hashes
-# these regions per-frame and asserts byte-identity across
-# presentation settings. Anything OUTSIDE these regions is
-# presentation scratch (OT, prim buffers, render-side caches) and is
-# excluded from the gate.
+# Derivation (tools/derive_state_regions.py spyro-1): the main image's
+# .data/.sdata/.sbss/.bss extents from spyro-1/build/psx.map, minus the
+# psyq_internal extents and every [[expect]] range of ram_diff_expect.toml
+# (pad_model, music_head, boot_timing, callback_stack, irq_dispatch; the
+# whole-RAM diff at the first and loop anchors names every one), the named
+# rows carved out, the rest coalesced: one row per extent, symbol names as
+# comments. Then the pool rows (particles, level mobys, dynamic mobys,
+# Sparx) behind their head pointers and the libcd mirror byte the game
+# reads. The table replaced the hand-written 33-row (2232 B) table; every
+# byte the old table hashed is hashed here
+# (tools/check_regions_containment.py OLD.flat NEW.flat).
 #
-# Address sources:
-#   - games/spyro-1/spyro-1/build/psx.map   (linker-resolved globals)
-#   - games/spyro-1/spyro-1/include/*.h      (struct sizes)
-#   - bisect findings (notes/plans/openpete-presentation-decoupling.md)
+# Row fields beyond the generator's (start/length or the indirect_array
+# keys, mask_offsets/mask_per_element, cd_load_transient, gameplay_neutral,
+# constant_ok): `class` is gameplay | render_scratch | psyq_mirror.
 #
-# Editing rules:
-#   - PRs that touch presentation surface and add a new region MUST
-#     justify why it's gameplay-state and not presentation scratch.
-#   - PRs that REMOVE or SHRINK a region must demonstrate (via the
-#     harness) that no real coupling lives in the removed bytes.
-#   - When the decomp progresses and a struct's exact size becomes
-#     known, tighten the corresponding `length` field.
-
-# ─── Singletons in the main EXE's .bss/.sbss ──────────────────────────
-# Verified addresses from psx.map / nm output 2026-05-03.
+# cd_load_transient rows in the main image hold the state the level load
+# fills or advances while sectors arrive (load stage and wait counters,
+# the SPU and model tables, CD bookkeeping, the XA stream request, the
+# environment and cyclorama pointers, the title sequence). openpete lands
+# a read instantly where the reference lands it over the load's VBLs, so
+# each diverges for the load window and re-converges at its end (heal
+# window 600 ticks); openpete-per-game-oracle P6 charges the reference's
+# VBLs and removes the flags. No CdRead destination lies inside the main
+# image (the level images load at 0x8007AA38 and 0x8007DDE8), so no
+# partial sector landing reaches these rows.
+#
+# render_scratch rows are the four render-side ranges inside the main
+# image: the three channels audited in manifest/render_channels.toml
+# (prim colour scratch, the moby prim queues, the dedup flags), sized from
+# sony_image.h, and the primitive-buffer cursor. The queues and the cursor
+# diverge on the default run (identical counts under --renderer psycross):
+# openpete's stock render pass emits a different flat-shaded packet set
+# on some ticks while every strict row stays identical over the 20k
+# golden. Both are gameplay_neutral (hashed, logged, never hard-fail) by
+# the neutrality review of 2026-09-14, with the per-row divergence counts as
+# a ratchet; owner openpete-per-game-oracle P12.
+#
+# Carve-outs (commented rows; the ranges are subtracted above):
+#   pad_model       g_PadBuffer 0x800786A0-C4, g_Pad stick calibration
+#                   0x800773BC-0x80077420 — the analog pad's poll answer
+#   music_head      g_CdMusic+0x208..+0x214 — XA stream position bookkeeping
+#   boot_timing     D_80075950 VSync(-1) pair, g_LevelTicks — the boot's VBL
+#                   count; g_UnprocessedFrames is kept as its own row
+#   callback_stack  D_80077DD8+0x24..+0x2C — saved sp/fp of collision.s
+#                   func_8004AE38's register-save block
+#   irq_dispatch    libetc callback context, ring head/tail, counters
+#                   0x80074B58-0x80074B84
+#   psyq_internal   libgpu's queued-command ring 0x80078EA0-0x8007A6A8 sits
+#                   in game .bss (psyq.s 0x80061980); the host libgpu never
+#                   writes it
 
 [[region]]
-name        = "g_HudMobys"
-start       = 0x80075710
-length      = 0x4
-description = "Pointer to HUD-moby pool (gem counters, life icons, etc.)"
+name        = "render_prim_color_scratch"
+start       = 0x800705F4
+length      = 0xD00
+class       = "render_scratch"
+description = "g_SonyImage.u.m_Draw.unk_0x900[0xD00] (sony_image.h): prim-packet colour scratch written by r_moby.s GTE depth cueing (PC 0x8001FE78); no gameplay reads (manifest/render_channels.toml sector_visibility_flags, audited_clean); identical to the reference on all 20k golden records"
 
 [[region]]
-name        = "g_GameTick"
-start       = 0x8007572C
-length      = 0x4
-description = "Master frame counter incremented in GamestateUpdate"
+name             = "render_moby_queues"
+start            = 0x800718F4
+length           = 0xC00
+class            = "render_scratch"
+description      = "g_SonyImage.m_WorldNearQueued[256] / m_WorldFarQueued[256] / m_ShadedMobys[256] (sony_image.h): render-side prim queues pushed by r_environment.s (PCs 0x80025B74 / 0x80025BA4), Memset-cleared per frame, read only by the render module (render_channels.toml moby_render_queue, audited_clean)"
+# Diverges from the reference on 131 of the 20k golden records at the
+# default (identical count under --renderer psycross): the stock render
+# pass in openpete queues a different prim set on those ticks, moving the
+# primitive-buffer cursor below with it. gameplay_neutral by the
+# neutrality review of 2026-09-14 (every strict row identical over the golden);
+# the count is a ratchet, baseline 131; owner openpete-per-game-oracle
+# P12 (stock render-pass packet parity).
+gameplay_neutral = true
 
 [[region]]
-name        = "g_MobyAllocPtr"
-start       = 0x8007573C
-length      = 0x4
-description = "Bump allocator cursor for dynamic moby spawns"
+name              = "g_DeltaTime"
+start             = 0x800756CC
+length            = 0x4
+class             = "gameplay"
+description       = "VBLs elapsed since the previous tick, as the game measured them; the first tick after a load counts the read wait on the reference"
+cd_load_transient = true
 
 [[region]]
-name        = "g_KeyMoby"
-start       = 0x80075758
-length      = 0x4
-description = "Pointer to current key moby (gates inventory)"
-# Constant over the attract-demo golden: written only when Spyro picks up a
-# key, and the demo trajectory collects none.
-constant_ok = true
+name              = "g_CDMaxReadTime"
+start             = 0x800756E0
+length            = 0x4
+class             = "gameplay"
+description       = "Longest CdRead wait the load code has seen, in VBLs"
+cd_load_transient = true
 
 [[region]]
 name        = "g_UnprocessedFrames"
 start       = 0x80075760
 length      = 0x4
-description = "Frame-pacing accumulator read by main loop"
-# Constant over the attract-demo golden on the reference as well: the 10
-# reference lag frames the VBL stamps show do not move it.
+class       = "gameplay"
+description = "Ticks the main loop still owes; differs from the reference only at the first anchor (boot_timing) and is constant over the attract-demo golden"
 constant_ok = true
 
 [[region]]
-name        = "g_MobyPods"
-start       = 0x800757F8
-length      = 0x4
-description = "Pointer to moby pod chain (linked iteration in update list)"
+name             = "render_prim_cursor"
+start            = 0x800757B0
+length           = 0x4
+class            = "render_scratch"
+description      = "D_800757B0: the primitive-buffer bump cursor the renderers allocate packets from (gamestates/draw.c, r_*.s); reset per frame, read by no gameplay code"
+# Differs from the reference by whole POLY_F3/F4 packets (0x18-byte
+# multiples) on 5290 of the 20k golden records at the default (identical
+# count under --renderer psycross): openpete's stock render pass emits a
+# different flat-shaded packet set on those ticks. gameplay_neutral by
+# the neutrality review of 2026-09-14 (every strict row identical over the
+# golden); the count is a ratchet, baseline 5290; owner
+# openpete-per-game-oracle P12 (stock render-pass packet parity).
+gameplay_neutral = true
 
 [[region]]
-name        = "g_Particles"
-start       = 0x80075824
-length      = 0x4
-description = "Particle pool head pointer"
+name              = "g_LoadStage"
+start             = 0x80075864
+length            = 0x4
+class             = "gameplay"
+description       = "Level-load state machine stage"
+cd_load_transient = true
 
 [[region]]
-name        = "g_LevelMobys"
-start       = 0x80075828
-length      = 0x4
-description = "Level-static moby array head pointer"
+name              = "g_CDReadTime"
+start             = 0x8007588C
+length            = 0x4
+class             = "gameplay"
+description       = "VBLs the current CdRead has been waiting"
+cd_load_transient = true
 
 [[region]]
-name        = "g_DynMobys"
-start       = 0x80075890
+name        = "g_LevelIndex"
+start       = 0x80075964
 length      = 0x4
-description = "Dynamic moby pool head pointer"
-
-[[region]]
-name        = "g_Sparx"
-start       = 0x80075898
-length      = 0x4
-description = "Pointer to Sparx moby (companion dragonfly state)"
+class       = "gameplay"
+description = "Current level index, carved out of the .sbss extent as its own row"
 
 [[region]]
 name        = "psyq_rand_seed"
 start       = 0x80075AC0
 length      = 0x4
-description = "PSYQ libc rand() state. Critical: any divergent advance of this seed drifts every subsequent random gameplay event."
-
-# ─── g_Camera ─────────────────────────────────────────────────────────
-# camera.h `Camera` struct. Sized to the commented
-# `static_assert(sizeof(Camera) == 0x110)`. Trimmed from 0x200 to
-# 0x110 on 2026-05-04 after the PCSX-Redux oracle gate showed the
-# only g_Camera divergence was bytes inside g_DB[] (libgpu's DRAWENV
-# / DISPENV / DR_ENV command packets, which sit immediately after
-# g_Camera in memory and which PsyCross handles host-side without
-# mirroring to PSX RAM). g_DB is pure render-side state, not
-# gameplay-readable.
+class       = "gameplay"
+description = "PSYQ rand/srand seed word (libc .bss, inside the subtracted psyq_internal extent); every RNG-driven divergence trips here first"
 
 [[region]]
-name        = "g_Camera"
-start       = 0x80076DD0
-length      = 0x110
-description = "Camera struct: ProjectionMatrix, ViewMatrix, m_Position, m_Rotation, simulation/sphere coords, focus, state flags."
-
-# ─── g_Spyro ──────────────────────────────────────────────────────────
-# Moby (0x58) + Spyro-specific tail (animation rig, breath state,
-# health, inventory counts, etc.). Sized to spyro.h's `Spyro` struct
-# (commented `static_assert(sizeof(Spyro) == 0x2a4, ...)`). Trimmed
-# from 0x500 to 0x2A4 on 2026-05-04 after the PCSX-Redux oracle gate
-# attributed the only frame-0 divergence to libpad slot-2 buffer
-# bytes adjacent in memory (~0x80078E50), *not* inside Spyro itself.
-# Those bytes are isolated as their own region below so we don't
-# mask real Spyro-state leaks behind constant PSYQ libpad skew.
+name              = "g_Spu"
+start             = 0x80075F08
+length            = 0x340
+class             = "gameplay"
+description       = "SPU definition table and sound-request slots the level load fills"
+# Beyond the load window a request slot (+0x35..+0x4B) differs for one
+# tick when the host SPU resolves a play request a tick later than
+# hardware (the sub-VBL cascade residual, openpete-psx-oracle-ci); the
+# result byte lands in g_DragonCutscene+0x54, masked in its extent row.
+cd_load_transient = true
 
 [[region]]
-name        = "g_Spyro"
-start       = 0x80078A58
-length      = 0x2A4
-description = "Spyro Moby instance + Spyro-specific physics/animation/HUD state"
-# SPU voice-slot indices stored by PlaySound when allocating channels for
-# damage-/charge-sound effects. The values depend on which voices the
-# allocator's `for i in 0..23` scan found free at call time, which is in
-# turn driven by SPU envelope precision in the host emulator (DS:
-# sample-accurate, OP: VBL-quantized). Both are valid implementations of
-# the libspu contract; the bytes themselves aren't gameplay-meaningful.
+name              = "level_tables"
+start             = 0x80076278
+length            = 0x900
+class             = "gameplay"
+description       = "D_80076278 and g_Models (model table): tables the level load fills as its sectors arrive"
+cd_load_transient = true
+
+[[region]]
+name              = "g_CdState"
+start             = 0x80076B90
+length            = 0x30
+class             = "gameplay"
+description       = "CD load bookkeeping: current read position, sector counts and the wait counter"
+cd_load_transient = true
+
+[[region]]
+name              = "g_CdMusic_head"
+start             = 0x800774B0
+length            = 0x208
+class             = "gameplay"
+description       = "XA music stream state before the music_head carve-out (+0x208..+0x214): track, filter and the request the load code re-arms"
+cd_load_transient = true
+
+[[region]]
+name              = "g_CdMusic_tail"
+start             = 0x800776C4
+length            = 0x14
+class             = "gameplay"
+description       = "XA music stream state after the music_head carve-out: the stream start flags"
+cd_load_transient = true
+
+[[region]]
+name              = "g_NewCyclorama"
+start             = 0x80077780
+length            = 0x14
+class             = "gameplay"
+description       = "Cyclorama pointers the load code publishes when the sky sectors land"
+cd_load_transient = true
+
+[[region]]
+name        = "render_dedup_flags"
+start       = 0x80077868
+length      = 0x20
+class       = "render_scratch"
+description = "Per-call scratch of func_80051FEC: cleared at entry, filled and consumed within the call (render_channels.toml dedup_flag_table, audited_clean)"
+
+[[region]]
+name              = "g_Environment_g_Buffers"
+start             = 0x800785A8
+length            = 0x60
+class             = "gameplay"
+description       = "g_Environment and g_Buffers: level environment header and buffer pointers set as the load lands them"
+cd_load_transient = true
+
+[[region]]
+name         = "g_Spyro"
+start        = 0x80078A58
+length       = 0x2A4
+class        = "gameplay"
+description  = "Player state (Spyro struct, include/spyro.h)"
 mask_offsets = [0x2A0, 0x2A1]
-mask_reason  = "m_damageSoundChannel / m_chargeSoundChannel — host SPU-precision-derived"
-
-# ─── PSYQ libpad slot-2 buffer + companion globals ────────────────────
-# Real PSYQ on PCSX-Redux fills this with the slot-2 controller status
-# (FF 00 00 00 00 00 00 00 = empty slot). openpete's psyq_PadInitDirect
-# thunk leaves a different pattern (00 FF FF FF 80 80 80 80 — looks like
-# a connected analog pad with neutral sticks). Documented PSYQ thunk
-# skew per docs/ram-diff-vs-pcsxr.md "libpad-driven kernel growth".
+mask_reason  = "m_damageSoundChannel / m_chargeSoundChannel: the SPU voice the host allocator answered, host-precision-derived"
 
 [[region]]
-name        = "pad_input_buffers"
-start       = 0x80078E50
-length      = 0x50
-description = "PSYQ libpad slot-2 buffer + adjacent globals (D_80078E9C, etc.)"
+name              = "g_TitlescreenState"
+start             = 0x80078D78
+length            = 0x5C
+class             = "gameplay"
+description       = "Title-screen sequence state; +0xC..+0x11 advance while the reference is still loading the demo level"
+cd_load_transient = true
 
-# ─── Sbss render-side scratch with known leak channels ───────────────
-# These are *small* tables in main-exe sbss that the renderer writes
-# during draw and gameplay reads next frame. Documented leak channels.
-# Status of each is tracked separately in render_channels.toml (Phase 4).
-
-# 0x80070000-0x80070FFF was originally tracked here as
-# `render_channel:sector_visibility_flags`. Audited 2026-05-03 and
-# confirmed to be `g_SonyImage.u.m_Draw.unk_0x900[]` — render-side
-# prim-packet color scratch, not gameplay state. Writer PC
-# 0x8001FE78 (r_moby.s GTE depth-cueing). No gameplay reads.
-# See manifest/render_channels.toml `sector_visibility_flags`
-# (status: audited_clean) for the audit trail.
-
-# 0x80071000..0x80071FFF was tracked as `render_channel:moby_render_queue`.
-# Audited 2026-05-03 (PC tracking + decomp grep): the range covers
-# g_SonyImage.m_WorldNearQueued / m_WorldFarQueued / m_ShadedMobys —
-# all render-side prim queues. Writers are r_environment.s queue-push
-# at PCs 0x80025B74 / 0x80025BA4, plus per-frame Memset clears. Readers
-# are all in the render module (gamestates/draw.c, flight.inc.h);
-# no asm code outside renderers reads from these offsets. Position-log
-# byte-identical across 3000-frame aspect harness. See
-# manifest/render_channels.toml `moby_render_queue` (status:
-# audited_clean) for the audit trail and the balloonist-transplant
-# caveat.
-
-# 0x80077868..0x80077888 was tracked as `render_channel:dedup_flag_table`.
-# Audited 2026-05-03: it's per-call scratch internal to func_80051FEC
-# (cleared at entry, filled+consumed within the call, no external
-# references). See manifest/render_channels.toml `dedup_flag_table`
-# (status: audited_clean).
-
+# .data extent 0: 206 symbols; named: spyro_StateDefaultAnimation, spyro_AnimationDetails, spyro_FlameBlockedInAnimation, g_HudMobyTargetPos, g_HudEggTargetRect, g_HudOpeningOffsets, g_HudClosingOffsets, g_LifeOrbXYTarget, g_CutscenePitchTable, g_DemoLevelIds, g_DemoLengths, g_DemoStartPositions, g_GameOverTextXY, g_GameOverTextZ, g_GrayscalePalette, g_FairyDialogueBoxSizes, g_TargetDragonCounts, g_TargetGemCounts, g_TargetEggCounts, g_MemCardSaveHeader, g_DragonNames, g_HomeworldNames, g_LevelNames, g_BalloonistNames, g_BalloonistDialogueIndices, g_BalloonistDialogue, g_TitlescreenAnimIn, g_TitlescreenAnimOut, g_TitlescreenSPUOffsets, g_TitlescreenSelColors, g_TitlescreenSprites, g_SonyImage
 [[region]]
-name        = "render_channel:class_skip_flags"
-start       = 0x800771C8
-length      = 0x100
-description = """Rendered world sectors flags. Written by r_environment.s at PC 0x80025B50 during the per-cell cull pass; read by func_800521C0 to clear m_WasDrawn=0 on mobys whose owning sector wasn't rendered. func_800258F0 clears 0x100 bytes at entry (loop at 0x80025990); see manifest/render_channels.toml for the closure mechanism."""
+name   = "main_data_8006bbe0"
+start  = 0x8006BBE0
+length = 0x4A14
+class  = "gameplay"
 
-# ─── Moby pools — indirect regions ────────────────────────────────────
-# Moby data lives in dynamic level-overlay RAM whose location moves
-# between levels. A direct start..start+length region would cover
-# megabytes of overlay code/data that legitimately differs between
-# aspects (textures, models, OT scratch loaded at variable times) and
-# would drown the gate in noise.
-#
-# `kind = "indirect_array"` regions tell the runtime to dereference
-# the PSX vaddr at `base_ptr` and hash `element_size * max_elements`
-# bytes starting at the resulting pointer. NULL/unmapped pointers are
-# skipped (pool not allocated yet, e.g. during the title-screen
-# preroll before a level loads).
-#
-# `max_elements` is a generous cap. Optional `live_end_ptr_addr` /
-# `live_count_addr` clamp the hashed length to the live extent so
-# unallocated tail slots (stale heap garbage left behind by level
-# overlay loads, render scratch, etc.) don't pollute the hash with
-# non-gameplay differences. Allocation *count* is itself tracked via
-# the singleton g_MobyAllocPtr / g_DynMobyCount regions, so a real
-# divergence in spawn order still trips the gate via those.
+# .data extent 1: g_SonyImage.u.m_Draw from unk_0x1600 to the end of the union (identical to the reference over the golden)
+[[region]]
+name   = "main_data_800712f4"
+start  = 0x800712F4
+length = 0x600
+class  = "gameplay"
+
+# .data extent 2: 2 symbols; named: CheatTable
+[[region]]
+name   = "main_data_800724f4"
+start  = 0x800724F4
+length = 0xBC8
+class  = "gameplay"
+
+# .sdata extent 3: 30 symbols; named: g_GameOverTextRot, g_GameOverRotY, g_GameOverRotZ, g_GameOverSkyboxRotY, g_GameOverSkyboxRotZ, g_GameOverLetterDisplayTicks, g_HomeworldNamesLength, _stacksize, _ramsize
+[[region]]
+name        = "main_sdata_80075264"
+start       = 0x80075264
+length      = 0x3DC
+class       = "gameplay"
+# Constant over the attract-demo golden: game-over text state and the
+# crt0 stack/RAM sizes are written by paths the demo never enters.
+constant_ok = true
+
+# .sbss extent 4: 25 symbols; named: g_CutsceneIdx, g_CutsceneLayout, g_TracerCount, g_PreviousLevelIndex, g_IsFlightLevel, g_DynMobyCount, g_DynMobyMax, g_LevelTransTicks, g_LevelTransHudActive, g_UpdateParticle, g_NGemsSinceLevelEntry
+[[region]]
+name   = "main_sbss_80075668"
+start  = 0x80075668
+length = 0x64
+class  = "gameplay"
+
+# .sbss extent 5: 4 symbols; named: g_HasLevelTransition, g_ActAvailable
+[[region]]
+name        = "main_sbss_800756d0"
+start       = 0x800756D0
+length      = 0x10
+class       = "gameplay"
+# g_HasLevelTransition, g_ActAvailable and two words: constant over the
+# attract-demo golden (the demo enters no level transition of that kind).
+constant_ok = true
+
+# .sbss extent 6: 30 symbols; named: g_DynMobySpaceEnd, g_CreditsTimer, g_CreditsStage, g_ScreenBorderEnabled, g_HudMobys, g_DemoMode, g_SurfaceBelowFlags, g_LevelTransGems, g_GameTick, g_UpdateMoby, g_ParticleAllocPtr, g_MobyAllocPtr, g_LevelTransChestDuration, g_DragonTotal, g_KeyMoby
+[[region]]
+name   = "main_sbss_800756e4"
+start  = 0x800756E4
+length = 0x7C
+class  = "gameplay"
+
+# .sbss extent 7: 18 symbols; named: g_CreditsBuffer, g_MobyCollisionChain, g_StateSwitch, g_ActEnabled, g_CreditsSequence
+[[region]]
+name   = "main_sbss_80075764"
+start  = 0x80075764
+length = 0x4C
+class  = "gameplay"
+
+# .sbss extent 8: 44 symbols; named: g_MobyPodCount, g_DemoIndex, g_CreditsDataPtr, g_FlightResultsUpdate, g_Gamestate, g_CreditsTotalEntries, g_ActivePad, g_PreviousLevelId, g_MobyPods, g_CollisionTriangleIndex, g_EggTotal, g_IsSpyroHidden, g_HudOT, g_WorldOT, g_Particles, g_LevelMobys, g_SpyroLifeCount, g_KeyFlag, g_DemoDataPtr, g_GemTotal
+[[region]]
+name   = "main_sbss_800757b4"
+start  = 0x800757B4
+length = 0xB0
+class  = "gameplay"
+
+# .sbss extent 9: 8 symbols; named: g_PadMutex, g_CreditsDisplayedCount, g_LevelCheatActive, g_DemoFadeTimer, g_CurDB
+[[region]]
+name   = "main_sbss_80075868"
+start  = 0x80075868
+length = 0x24
+class  = "gameplay"
+
+# .sbss extent 10: 14 symbols; named: g_DynMobys, g_Sparx, g_SavedFairyKissTimer, g_PortalLevelId, g_NextLevelId, g_PortalCount
+[[region]]
+name   = "main_sbss_80075890"
+start  = 0x80075890
+length = 0x38
+class  = "gameplay"
+
+# .sbss extent 11: 35 symbols; named: g_SpawnMoby, g_LifeOrbCount, cheat_HomeworldSelected, cheat_LevelSelected, g_Fade, g_SkipLowPolyWorld, cheat_InputCounter, g_PropsAllocPtr, g_GameOverTicks, g_PadSwapFlag
+[[region]]
+name   = "main_sbss_800758cc"
+start  = 0x800758CC
+length = 0x84
+class  = "gameplay"
+
+# .sbss extent 12: 3 symbols; named: g_Homeworld
+[[region]]
+name   = "main_sbss_80075958"
+start  = 0x80075958
+length = 0xC
+class  = "gameplay"
+
+# .sbss extent 13: 3 symbols; named: g_CreditsEntryIndex, g_LevelId
+[[region]]
+name   = "main_sbss_80075968"
+start  = 0x80075968
+length = 0x10
+class  = "gameplay"
+
+# .bss extent 14: 2 symbols; named: g_MobyShadows
+[[region]]
+name   = "main_bss_80075ef8"
+start  = 0x80075EF8
+length = 0x10
+class  = "gameplay"
+
+# .bss extent 15: 1 symbols
+[[region]]
+name        = "main_bss_80076248"
+start       = 0x80076248
+length      = 0x30
+class       = "gameplay"
+# D_80076248 (0x30 bytes between g_Spu and D_80076278): constant over the
+# attract-demo golden.
+constant_ok = true
+
+# .bss extent 16: 4 symbols; named: g_CollisionPoint
+[[region]]
+name   = "main_bss_80076b80"
+start  = 0x80076B80
+length = 0x10
+class  = "gameplay"
+
+# .bss extent 17: 17 symbols; named: cheat_InputBuffer, g_LevelHeader, g_Camera, g_DB, g_LevelEggCount, g_DragonCutscene, g_Sparkles, g_TracerPointCount, g_LevelDragonCount, g_CollisionNormal, g_Pad
+[[region]]
+name         = "main_bss_80076bc0"
+start        = 0x80076BC0
+length       = 0x7FC
+class        = "gameplay"
+mask_offsets = [0x4C4, 0x7C8, 0x7C9, 0x7CA, 0x7CB]
+mask_reason  = "+0x4C4 g_DragonCutscene+0x54 (0x80077084): the SPU voice the host allocator answered to a play request, resolved one tick later than hardware on some ticks (sub-VBL cascade residual, openpete-psx-oracle-ci); +0x7C8..+0x7CB g_Pad.m_LeftStickMoved (0x80077388): derived from the pad buffer the reference polls during the streaming load's blocked VBLs (pad_model, openpete-spyro2-3-bringup P16), one tick per streaming load"
+
+# .bss extent 18: 1 symbols; named: g_LevelGemCount
+[[region]]
+name   = "main_bss_80077420"
+start  = 0x80077420
+length = 0x90
+class  = "gameplay"
+
+# .bss extent 19: 1 symbols; named: g_PadBackup
+[[region]]
+name   = "main_bss_800776d8"
+start  = 0x800776D8
+length = 0xA8
+class  = "gameplay"
+
+# .bss extent 20: 12 symbols
+[[region]]
+name   = "main_bss_80077794"
+start  = 0x80077794
+length = 0xD4
+class  = "gameplay"
+
+# .bss extent 21: 5 symbols; named: g_Checkpoint, g_CutsceneSoundDef, g_RecentGemsCollected
+[[region]]
+name   = "main_bss_80077888"
+start  = 0x80077888
+length = 0x574
+class  = "gameplay"
+
+# .bss extent 22: 8 symbols; named: g_Hud, g_EnvironmentAnimations
+[[region]]
+name   = "main_bss_80077e04"
+start  = 0x80077E04
+length = 0x7A4
+class  = "gameplay"
+
+# .bss extent 23: 12 symbols; named: g_FlightObjectiveActiveSlots, g_FlightCourseRecords, g_FlightObjectiveCounters, g_Portals, g_TracerLists, g_FlightCollected
+[[region]]
+name   = "main_bss_80078608"
+start  = 0x80078608
+length = 0x98
+class  = "gameplay"
+
+# .bss extent 24: 3 symbols; named: g_SpyroFlame, g_Cyclorama
+[[region]]
+name   = "main_bss_800786c4"
+start  = 0x800786C4
+length = 0x394
+class  = "gameplay"
+
+# .bss extent 25: 1 symbols; named: g_FairyCutscene
+[[region]]
+name        = "main_bss_80078cfc"
+start       = 0x80078CFC
+length      = 0x7C
+class       = "gameplay"
+# g_FairyCutscene: constant over the attract-demo golden (no fairy
+# cutscene plays).
+constant_ok = true
+
+# .bss extent 26: 7 symbols; named: g_PadBufferSecondController, g_VisitedFlags
+[[region]]
+name   = "main_bss_80078dd4"
+start  = 0x80078DD4
+length = 0xCC
+class  = "gameplay"
+
+# .bss extent 27: 4 symbols; named: g_LevelVortexExitFlags, g_WadHeader
+[[region]]
+name   = "main_bss_8007a6a8"
+start  = 0x8007A6A8
+length = 0x390
+class  = "gameplay"
+
+# ─── Pools — indirect rows ─────────────────────────────────────────────
+# Moby and particle data live in level RAM whose location moves between
+# levels; the rows dereference the head pointer at base_ptr every tick.
 
 [[region]]
 name         = "g_Particles_pool"
 kind         = "indirect_array"
 base_ptr     = 0x80075824            # g_Particles head pointer (Particle*)
 element_size = 0x20                  # sizeof(Particle): 4-byte header + 28-byte data
-max_elements = 256                   # 0x2000 bytes total — see src/4BEF8.c (m_SharedAnimations - 0x2000)
-# AUDIT 2026-06-08: render-side, gameplay-neutral (proven, not assumed).
-# At --aspect >=21:9 the widened renderers consume more of the shared
-# polybuf before the particle pass (func_800573C8), so its per-particle
-# buffer check (0x80057C10 `t7-fp`) skips boundary particles that 4:3
-# draws — flipping their m_03 drawn-flag (byte 0x03; cascades to 0x01).
-# EMPIRICAL PROOF this never reaches gameplay: the full 20k 32:9 oracle
-# (keep-going) diverges in g_Particles_pool for 4882 frames yet
-# psyq_rand_seed, g_Spyro, g_Camera, g_Sparx and g_MobyAllocPtr stay
-# bit-identical to hardware for all 20000 ticks; the only other diverging
-# regions (g_LevelMobys/g_DynMobys/g_Sparx_moby) show the SAME counts as
-# stock 4:3 (universal CD-load transients), so g_Particles_pool is the
-# sole 32:9-induced divergence and it stays contained. The manifest's old
-# "propagates into RNG" note was a hypothesis the oracle has now refuted
-# for the demo. Marked gameplay_neutral (logged, never hard-fails); the
-# audit obligation is held open by keeping psyq_rand_seed / g_Spyro /
-# g_Sparx tracked — if particles ever DO drive gameplay RNG, those trip.
-# (Render-side m_03 is presentation state, like the audited-out
-# 0x80071xxx moby-render-queue.) If we later want byte-exact particles,
-# the fix is to make func_800573C8's buffer check use the canonical 4:3
-# cursor.
+max_elements = 256                   # 0x2000 bytes total — src/4BEF8.c (m_SharedAnimations - 0x2000)
+class        = "gameplay"
+# Render-side drawn flag (byte 0x03, cascading to 0x01) flips when a
+# widened renderer consumes more of the shared polybuf before the particle
+# pass (func_800573C8's buffer check at 0x80057C10); the full 20k 32:9
+# oracle diverged here for 4882 frames while psyq_rand_seed, g_Spyro,
+# g_Camera, g_Sparx and g_MobyAllocPtr stayed bit-identical, so the flag
+# never reaches gameplay. Logged, never hard-fails; the coupling tripwire
+# is the seed and the moby rows.
 gameplay_neutral = true
-description  = "Particle pool. Render-side drawn-flag/scratch — audited gameplay-neutral (see AUDIT above); divergence logged but never hard-fails. Coupling tripwire: psyq_rand_seed/g_Spyro/g_Sparx stay tracked."
-
-[[region]]
-name         = "g_Sparkles_pool"
-kind         = "direct"
-start        = 0x80077108
-length       = 0x180                 # 16 sparkles × 0x18 bytes — psx.map symbol g_Sparkles
-description  = "g_Sparkles[16]: short-lived sparkle effects spawned by SpawnSparkleAt (moby_helpers.c). The +0xC byte is the in_use tag — alloc state cascades into rotation-matrix updates because SpawnSparkleAt only calls UPDATE_PROP_ROTMATRIX on successful alloc. Render-cull at r_particles.s 0x80058648/0x80058654 frees slots when sparkles go off-screen — closure (sparkle_alloc_state channel) makes that cull use the canonical-SX side channel so kill verdict matches 4:3 regardless of widening."
+description  = "Particle pool behind *g_Particles; render-side drawn flag audited gameplay-neutral"
 
 [[region]]
 name              = "g_LevelMobys_pool"
 kind              = "indirect_array"
 base_ptr          = 0x80075828
-element_size      = 0x58              # sizeof(Moby), cf. include/moby.h:471
+element_size      = 0x58              # sizeof(Moby), include/moby.h:471
 max_elements      = 512
 live_end_ptr_addr = 0x8007573C        # g_MobyAllocPtr — bump cursor; live = *end_ptr - *base_ptr
-description       = "Static-level moby array, indexed via *g_LevelMobys."
-# Moby.m_SoundChannel — see g_Spyro mask_reason. Per-element offset
-# repeats every element_size bytes throughout the live extent.
+class             = "gameplay"
+description       = "Static-level moby array behind *g_LevelMobys, to the g_MobyAllocPtr bump cursor"
 mask_per_element  = [0x54]
-mask_reason       = "Moby.m_SoundChannel — host SPU-precision-derived"
-# Refreshed in-place by synchronous psyq_CdRead (level/streaming loads).
-# Diverges for the load's duration vs the hardware-timed oracle, then
-# re-converges — the gate tolerates a *healing* divergence here. See
-# notes/plans/openpete-psx-oracle-ci.md. Removed once CD timing is modelled.
+mask_reason       = "Moby.m_SoundChannel: the SPU voice the host allocator answered"
+# Refreshed in place by CdRead during level and streaming loads; diverges
+# for the load's duration against the hardware-timed reference, then
+# re-converges.
 cd_load_transient = true
 
 [[region]]
 name             = "g_DynMobys_pool"
 kind             = "indirect_array"
 base_ptr         = 0x80075890
-element_size     = 0x70              # Moby (0x58) + per-slot dyn header (0x18); cf. moby.h:512
+element_size     = 0x70              # Moby (0x58) + per-slot dyn header (0x18); moby.h:512
 max_elements     = 128
 live_count_addr  = 0x800756A4        # g_DynMobyCount; live = *count * element_size
-description      = "Dynamic-spawn moby pool, indexed via *g_DynMobys. Element stride is 0x70 not 0x58 — pool reserves a 24-byte header per slot ahead of the Moby."
-# Moby.m_SoundChannel at 0x54 within the embedded Moby. The Moby starts
-# at +0x18 within the 0x70-byte slot, so per-element offset is 0x6C.
+class            = "gameplay"
+description      = "Dynamic-spawn moby pool behind *g_DynMobys; the Moby starts at +0x18 of each 0x70 slot"
 mask_per_element = [0x6C]
-mask_reason      = "Moby.m_SoundChannel (Moby starts at +0x18 in 0x70 stride)"
-# See g_LevelMobys_pool: refreshed by synchronous CdRead; healing
-# divergence tolerated by the gate. Removed once CD timing is modelled.
+mask_reason      = "Moby.m_SoundChannel (Moby at +0x18 in the 0x70 stride)"
 cd_load_transient = true
 
 [[region]]
-name         = "g_Sparx_moby"
-kind         = "indirect_array"
-base_ptr     = 0x80075898
-element_size = 0x58
-max_elements = 1
-description  = "Sparx companion: single Moby behind *g_Sparx."
+name             = "g_Sparx_moby"
+kind             = "indirect_array"
+base_ptr         = 0x80075898
+element_size     = 0x58
+max_elements     = 1
+class            = "gameplay"
+description      = "Sparx companion: the single Moby behind *g_Sparx"
 mask_per_element = [0x54]
-mask_reason      = "Moby.m_SoundChannel — host SPU-precision-derived"
-# See g_LevelMobys_pool: refreshed by synchronous CdRead; healing
-# divergence tolerated by the gate. Removed once CD timing is modelled.
+mask_reason      = "Moby.m_SoundChannel: the SPU voice the host allocator answered"
 cd_load_transient = true
 
-# ─── Gem-collection state ─────────────────────────────────────────────
-# Added 2026-06-08: gem count is gameplay-critical output (speedrun/TAS
-# verification) that was previously only verified TRANSITIVELY (via its
-# bit-identical inputs g_Spyro/moby-pools/psyq_rand_seed). Now tracked
-# directly. The 20k attract demo collects 45 gems, so this is exercised.
-# Confirmed bit-identical across stock 4:3 / --no-lod / --aspect 32:9 at
-# every tick before adding (cross-config gem dump). Sizes from psx.map
-# (g_GemTotal..g_LoadStage = 4B; g_NGems..g_DeltaTime = 4B;
-# g_LevelGemCount[36]..g_CdMusic = 0x90B). Appended last to keep the
-# existing region indices stable.
+# ─── libcd mirror ──────────────────────────────────────────────────────
+# Of libcd's state block (0x80074E38, written by the shared CD thunks) the
+# game reads one byte: CdLastCom, from music.c (`CdLastCom() == CdlGetlocP`).
+# CdStatus, CdLastPos and CdMode have no caller outside psyq.s in this
+# game, so they are not gameplay-readable here. The byte follows the
+# drive's command sequence, which runs ahead on openpete during a load
+# (the stream restarts before the reference's level read completes).
 
 [[region]]
-name         = "g_GemTotal"
-kind         = "direct"
-start        = 0x80075860
-length       = 0x4
-description  = "Total gems collected across all levels (gGemTotal)."
+name        = "libcd_CdLastCom"
+start       = 0x80074E55
+length      = 0x1
+class       = "psyq_mirror"
+description = "libcd block 0x80074E38: last command byte (CdLastCom), read by music.c"
+cd_load_transient = true
 
+# crt0 mirrors, set once at boot.
 [[region]]
-name         = "g_NGemsSinceLevelEntry"
-kind         = "direct"
-start        = 0x800756C8
-length       = 0x4
-description  = "Gems collected since the current level was entered."
-
-[[region]]
-name         = "g_LevelGemCount"
-kind         = "direct"
-start        = 0x80077420
-length       = 0x90
-description  = "Per-level collected-gem counts, int[36] (TOTAL_LEVEL_COUNT)."
-
-# ─── Player progression / inventory / world position ──────────────────
-# Added 2026-06-08 (Tier 1). The gate covered per-frame simulation but
-# had gaps in discrete progression state. All confirmed outside existing
-# regions; sizes from psx.map (symbol .. next-symbol). Appended last to
-# keep existing region indices stable. g_DeltaTime deliberately NOT
-# tracked (frame-pacing/presentation). g_Hud/g_RecentGemsCollected
-# deferred pending a gameplay-vs-presentation audit.
-
-[[region]]
-name         = "g_SpyroLifeCount"
-kind         = "direct"
-start        = 0x8007582C
-length       = 0x4
-description  = "Spyro lives remaining."
-
-[[region]]
-name         = "g_DragonTotal"
-kind         = "direct"
-start        = 0x80075750
-length       = 0x4
-description  = "Total dragons freed (completion %)."
-# Constant over the attract-demo golden: the demo frees no dragon.
+name        = "crt0_heap"
+start       = 0x800730C0
+length      = 0x8
+class       = "psyq_mirror"
+description = "heap base and size (crt0, InitHeap)"
 constant_ok = true
 
 [[region]]
-name         = "g_EggTotal"
-kind         = "direct"
-start        = 0x80075810
-length       = 0x4
-description  = "Total eggs collected."
-# Constant over the attract-demo golden: the demo collects no egg.
-constant_ok = true
-
-[[region]]
-name         = "g_LevelDragonCount"
-kind         = "direct"
-start        = 0x800772D8
-length       = 0x90
-description  = "Per-level freed-dragon counts, int[36]."
-# Constant over the attract-demo golden: the demo frees no dragon.
-constant_ok = true
-
-[[region]]
-name         = "g_LevelEggCount"
-kind         = "direct"
-start        = 0x80076FE8
-length       = 0x48
-description  = "Per-level egg counts, int[18] (LEVEL_PER_HOMEWORLD*3)."
-# Constant over the attract-demo golden: the demo collects no egg.
-constant_ok = true
-
-[[region]]
-name         = "g_LevelIndex"
-kind         = "direct"
-start        = 0x80075964
-length       = 0x4
-description  = "Current level index."
-
-[[region]]
-name         = "g_Homeworld"
-kind         = "direct"
-start        = 0x8007595C
-length       = 0x4
-description  = "Current homeworld index."
-
-[[region]]
-name         = "g_NextLevelId"
-kind         = "direct"
-start        = 0x800758B4
-length       = 0x4
-description  = "Pending level-transition target id."
-
-[[region]]
-name         = "g_Checkpoint"
-kind         = "direct"
-start        = 0x80077888
-length       = 0x68
-description  = "Checkpoint/respawn state (position, level gem count snapshot)."
-
-[[region]]
-name         = "g_FlightCourseRecords"
-kind         = "direct"
-start        = 0x80078618
-length       = 0x18
-description  = "Flight-course best records, int[6] (HOMEWORLD_COUNT)."
-# Constant over the attract-demo golden: the demo enters no flight course.
+name        = "crt0_exec_return"
+start       = 0x80075640
+length      = 0x4
+class       = "psyq_mirror"
+description = "BIOS Exec return address stored by the crt0"
 constant_ok = true

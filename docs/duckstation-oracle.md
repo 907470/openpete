@@ -144,8 +144,8 @@ scripts/check_psx_oracle.sh [trace-path] [-- <extra openpete flags>]
 Defaults: trace `tests/golden/spyro-1/psxtrace-demo-20k.bin`, binary
 `build/linux-release/games/spyro-1/openpete-spyro1`, disc `$OPENPETE_DISC`
 or `~/code/spyro/spyro-1/build/SCUS-94228.cue`. The shipped golden holds
-20000 records over 33 regions, covering four-plus level loads and
-gameplay, and replays in roughly two and a half minutes.
+20000 records over the manifest's rows (Spyro 1: 54), covering four-plus
+level loads and gameplay, and replays in roughly two and a half minutes.
 
 The script runs openpete `--headless --no-config
 --mute 1 --psxtrace-verify <trace> --frame-limit <N>`. `--no-config` keeps
@@ -302,12 +302,19 @@ what the tool reports. A range leaves the expectation file only by a fix.
 
 ## CD-load transients
 
-Three regions in `games/spyro-1/manifest/gameplay_state_regions.toml` carry
-`cd_load_transient = true`: `g_LevelMobys_pool`, `g_DynMobys_pool`, and
-`g_Sparx_moby`. All three are refreshed in place by synchronous
-`psyq_CdRead`. openpete drains a read instantly while the oracle is
-hardware-timed, so the pools legitimately differ for the duration of a
-level or streaming load and then re-converge.
+Rows in `games/<game>/manifest/gameplay_state_regions.toml` carrying
+`cd_load_transient = true` are of two kinds. The pool rows
+(`g_LevelMobys_pool`, `g_DynMobys_pool`, `g_Sparx_moby` on Spyro 1) are
+CdRead destinations refreshed in place. The main-image rows (load stage
+and wait counters, the SPU and model tables, CD bookkeeping, the XA
+stream request, environment and cyclorama pointers, the title sequence,
+`g_DeltaTime`, the `CdLastCom` mirror byte) hold the state the load code
+fills or advances as sectors arrive. openpete lands a read instantly
+while the reference lands it over the load's VBLs, so both kinds differ
+for the duration of a level or streaming load and re-converge at its
+end. The Spyro 1 manifest's head comment lists the rows; the
+openpete-per-game-oracle plan (P6) charges the reference's VBLs on
+openpete's side and removes the main-image flags.
 
 The verifier (`core/runtime/psxtrace_verify.c`) tracks each transient
 region's divergence burst independently. A burst that re-converges is
@@ -318,8 +325,16 @@ load burst measured in the 20k demo is about 310 ticks.
 `OPENPETE_PSXTRACE_HEAL_WINDOW` overrides it.
 
 Any region without the flag is a hard failure on its first differing
-record. This carve-out is the only divergence the gate accepts, and it
-disappears once CD timing is modelled.
+record.
+
+The Spyro 1 table is derived from the link map
+(`tools/derive_state_regions.py`: the main image's sections minus the
+`psyq_internal` extents and the `[[expect]]` ranges of
+`ram_diff_expect.toml`, named rows carved out, the rest coalesced), and
+`tools/check_regions_containment.py OLD.flat NEW.flat` proves a
+replacement table hashes every byte the previous one hashed. A residual
+inside a row becomes a `mask_offsets` entry with its owner in
+`mask_reason`, never a dropped row.
 
 `g_Particles_pool` carries `gameplay_neutral = true` instead: its
 divergence is logged and never fails, on the strength of a 20k keep-going
