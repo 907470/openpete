@@ -1,0 +1,263 @@
+# games/spyro-2/manifest/gameplay_state_regions.toml — the gameplay-readable
+# bytes the oracle hashes every tick. Generated into the
+# build by tools/gen_state_regions.py (cmake/openpete_game.cmake): the C
+# table the exe registers, the flat table the DuckStation capture module
+# reads, and their shared FNV-1a-64 in the trace header.
+#
+# Derivation (tools/derive_state_regions.py spyro-2): the main image's
+# .data/.sdata/.sbss/.bss extents from spyro-2/build/psx.map, minus the
+# psyq_internal extents and every [[expect]] range of ram_diff_expect.toml
+# (vbl_count, cd_timing and pad_model classes established by the loop
+# anchor PASS at hit 1700, load_timing at hit 1), the named rows carved out, the rest coalesced:
+# one row per extent (Spyro 2's map names no roles; D_<addr> symbols are
+# counted). Then the overlay image union (--overlay 0x8006D264:0x1F000: one
+# row per piece between the [[expect]] ranges inside it, each a CdRead
+# destination), the moby array, and the libcd mirror rows.
+#
+# Row fields beyond the generator's (start/length or the indirect_array
+# keys, mask_offsets/mask_per_element, cd_load_transient, gameplay_neutral,
+# constant_ok): `class` is gameplay | render_scratch | psyq_mirror. Every
+# row is gameplay on the stock path; the OT and primitive buffers inside
+# the .bss extents become render_scratch rows when a presentation layer
+# reaches this game (openpete-per-game-oracle D4).
+#
+# Carve-outs (commented rows; the ranges are subtracted above):
+#   vbl_count   D_80066F9C/D_80066FA0 (VBL counters), D_800682EC (VBLs since
+#               the last CdRead) — the reference spends the load's wall time
+#               in VBLs that openpete's synchronous CdRead does not; owner
+#               openpete-per-game-oracle (D5d synchronous-read charge)
+#   load_timing D_8006700C, D_80067160, title overlay 0x8007F02C, 0x8007F06C-
+#               0x8007F071, 0x8007F090, 0x8007F0EC-0x8007F0F1, 0x8007F14C-
+#               0x8007F169 (step index table), 0x8007F180-0x8007F185 (per-step
+#               flags) — the title sequence sits one step further on the
+#               reference at hit 1, its counters 6 VBLs ahead; owner
+#               openpete-per-game-oracle (D5d pre-anchor charge)
+#   cd_timing   D_8006830C/D_80068310, D_80068324 — stream-seek countdown and
+#               head position; owner openpete-cd-drive-simulation
+#   pad_model   D_8006A960, D_8006AB4C, D_80068370, D_80068238 — the analog
+#               pad's poll answer; owner openpete-spyro2-3-bringup P16
+
+[[region]]
+name        = "g_LevelIndex"
+start       = 0x80066F54
+length      = 0x4
+class       = "gameplay"
+description = "Linear level index 0..28 (D_80066F54; games/spyro-2/skip_to_level.c), carved out of the .sbss extent as its own row"
+
+[[region]]
+name        = "psyq_rand_seed"
+start       = 0x8006D144
+length      = 0x4
+class       = "gameplay"
+description = "PSYQ rand/srand seed word D_8006D144 (libc .bss, inside the subtracted psyq_internal extent). Seeded from root counter 2 (func_8001AAA4: srand(*0x1F801120)) and with 1234 by the loader in demo mode"
+
+# .data extent 0: 876 symbols
+[[region]]
+name   = "main_data_8006012c"
+start  = 0x8006012C
+length = 0x4DE8
+class  = "gameplay"
+
+# .sdata extent 1: 139 symbols
+[[region]]
+name   = "main_sdata_80066d38"
+start  = 0x80066D38
+length = 0x1A0
+class  = "gameplay"
+
+# .sbss extent 2: 62 symbols
+[[region]]
+name   = "main_sbss_80066ed8"
+start  = 0x80066ED8
+length = 0x7C
+class  = "gameplay"
+
+# .sbss extent 3: 34 symbols
+[[region]]
+name   = "main_sbss_80066f58"
+start  = 0x80066F58
+length = 0x44
+class  = "gameplay"
+
+# .sbss extent 4: 54 symbols
+[[region]]
+name   = "main_sbss_80066fa4"
+start  = 0x80066FA4
+length = 0x68
+class  = "gameplay"
+
+# .sbss extent 5: 166 symbols
+[[region]]
+name   = "main_sbss_8006700d"
+start  = 0x8006700D
+length = 0x153
+class  = "gameplay"
+
+# .sbss extent 6: 18 symbols
+[[region]]
+name   = "main_sbss_80067161"
+start  = 0x80067161
+length = 0x27
+class  = "gameplay"
+
+# .bss extent 7: 486 symbols
+[[region]]
+name   = "main_bss_8006718c"
+start  = 0x8006718C
+length = 0x10AC
+class  = "gameplay"
+
+# .bss extent 8: 16 symbols
+[[region]]
+name   = "main_bss_8006823c"
+start  = 0x8006823C
+length = 0xB0
+class  = "gameplay"
+
+# .bss extent 9: 14 symbols
+[[region]]
+name   = "main_bss_800682f0"
+start  = 0x800682F0
+length = 0x1C
+class  = "gameplay"
+
+# .bss extent 10: 6 symbols
+[[region]]
+name   = "main_bss_80068314"
+start  = 0x80068314
+length = 0x10
+class  = "gameplay"
+
+# .bss extent 11: 28 symbols
+[[region]]
+name   = "main_bss_80068328"
+start  = 0x80068328
+length = 0x48
+class  = "gameplay"
+
+# .bss extent 12: 650 symbols
+[[region]]
+name   = "main_bss_80068374"
+start  = 0x80068374
+length = 0x25EC
+class  = "gameplay"
+
+# .bss extent 13: 46 symbols
+[[region]]
+name   = "main_bss_8006a964"
+start  = 0x8006A964
+length = 0x1E8
+class  = "gameplay"
+
+# .bss extent 14: 154 symbols
+[[region]]
+name   = "main_bss_8006ab54"
+start  = 0x8006AB54
+length = 0xA2C
+class  = "gameplay"
+
+# overlay image union 0x8006D264-0x8008C264, cut at 6 expect range(s) into 7 row(s); every piece is a CdRead destination
+[[region]]
+name   = "overlay_image_0"
+start  = 0x8006D264
+length = 0x11DC8
+class  = "gameplay"
+cd_load_transient = true
+
+[[region]]
+name   = "overlay_image_1"
+start  = 0x8007F02D
+length = 0x3F
+class  = "gameplay"
+cd_load_transient = true
+
+[[region]]
+name   = "overlay_image_2"
+start  = 0x8007F071
+length = 0x1F
+class  = "gameplay"
+cd_load_transient = true
+
+[[region]]
+name   = "overlay_image_3"
+start  = 0x8007F091
+length = 0x5B
+class  = "gameplay"
+cd_load_transient = true
+
+[[region]]
+name   = "overlay_image_4"
+start  = 0x8007F0F1
+length = 0x5B
+class  = "gameplay"
+cd_load_transient = true
+
+[[region]]
+name   = "overlay_image_5"
+start  = 0x8007F169
+length = 0x17
+class  = "gameplay"
+cd_load_transient = true
+
+[[region]]
+name   = "overlay_image_6"
+start  = 0x8007F185
+length = 0xD0DF
+class  = "gameplay"
+cd_load_transient = true
+
+# The moby array in level RAM: D_80066F14 points at the first Moby (stride
+# 0x58), and the array ends at the first element whose state byte (+0x48)
+# is -1 (updatemobys.s 0x80040EEC loop exits on it; no count word). Cap
+# 1024 elements; the attract demo holds up to 310.
+[[region]]
+name          = "moby_array"
+kind          = "indirect_array"
+base_ptr      = 0x80066F14
+element_size  = 0x58
+max_elements  = 1024
+live_sentinel = { offset = 0x48, value = 0xFF }
+class         = "gameplay"
+description   = "Level and allocated mobys behind *D_80066F14, to the state == -1 terminator"
+cd_load_transient = true
+
+# libcd's state block, written by the shared CD thunks and read by the
+# translated CdStatus/CdLastPos/CdMode/CdLastCom every tick
+# (ram_diff_expect.toml [[populated]]). A differing byte is a thunk defect.
+[[region]]
+name        = "libcd_CdStatus"
+start       = 0x8006670C
+length      = 0x1
+class       = "psyq_mirror"
+description = "libcd block 0x80066700: CD status byte (CdStatus)"
+
+[[region]]
+name        = "libcd_CdLastPos"
+start       = 0x80066718
+length      = 0x3
+class       = "psyq_mirror"
+description = "libcd block 0x80066700: last CdlSetloc position (CdLastPos), minute/second/sector"
+
+[[region]]
+name        = "libcd_CdMode_CdLastCom"
+start       = 0x8006671C
+length      = 0x2
+class       = "psyq_mirror"
+description = "libcd block 0x80066700: drive mode (mode | 0x20 after a CdRead) and last command"
+
+# crt0 mirrors, set once at boot.
+[[region]]
+name        = "crt0_heap"
+start       = 0x80065098
+length      = 0x8
+class       = "psyq_mirror"
+description = "heap base and size (crt0, InitHeap)"
+constant_ok = true
+
+[[region]]
+name        = "crt0_exec_return"
+start       = 0x80067188
+length      = 0x4
+class       = "psyq_mirror"
+description = "BIOS Exec return address stored by the crt0"
+constant_ok = true

@@ -77,6 +77,9 @@ def main() -> int:
                     help="NAME=ADDR:LEN[:class] carved out of the extents as its own row")
     ap.add_argument("--min-row", type=int, default=4,
                     help="drop coalesced fragments shorter than this many bytes (default 4)")
+    ap.add_argument("--overlay", metavar="START:LEN",
+                    help="overlay image union (OVERLAY_LOAD_ADDR, largest image); emitted as "
+                         "cd_load_transient rows cut at the [[expect]] ranges inside it")
     a = ap.parse_args()
 
     gdir = ROOT / "games" / a.game
@@ -143,7 +146,25 @@ def main() -> int:
         print('class  = "gameplay"')
         print()
         total += hi - lo
-    print(f"# {len(rows) + len(named)} direct rows, {total} bytes", file=sys.stderr)
+    n_rows = len(rows) + len(named)
+    if a.overlay:
+        o_lo, o_len = (int(x, 0) for x in a.overlay.split(":"))
+        o_hi = o_lo + o_len
+        holes_in = [(s, e) for s, e in holes if s < o_hi and e > o_lo]
+        pieces = subtract([(o_lo, o_hi)], holes_in)
+        print(f"# overlay image union 0x{o_lo:08X}-0x{o_hi:08X}, cut at {len(holes_in)} expect range(s) "
+              f"into {len(pieces)} row(s); every piece is a CdRead destination")
+        for i, (lo, hi) in enumerate(pieces):
+            print("[[region]]")
+            print(f'name   = "overlay_image_{i}"')
+            print(f"start  = 0x{lo:08X}")
+            print(f"length = 0x{hi - lo:X}")
+            print('class  = "gameplay"')
+            print("cd_load_transient = true")
+            print()
+            total += hi - lo
+            n_rows += 1
+    print(f"# {n_rows} direct rows, {total} bytes", file=sys.stderr)
     return 0
 
 

@@ -7,10 +7,12 @@
 # Derivation (tools/derive_state_regions.py spyro-3): the main image's
 # .data/.sdata/.sbss/.bss extents from spyro-3/build/psx.map, minus the
 # psyq_internal extents and every [[expect]] range of ram_diff_expect.toml
-# (load_timing and pad_model classes, measured at the loop anchor, hit 1,
-# the only pre-load hit aligned on both sides), the named rows carved out,
+# (load_timing, vbl_count and pad_model classes, measured at the loop
+# anchor, hits 1 and 2, the pre-load hits aligned on both sides), the named rows carved out,
 # the rest coalesced: one row per extent, symbol names as comments. Then
-# the overlay image union, the moby pool, and the libcd mirror rows.
+# the overlay image union (--overlay 0x800742D0:0x2D800: one row per piece
+# between the [[expect]] ranges inside it, each a CdRead destination), the
+# moby array, and the libcd mirror rows.
 #
 # Row fields beyond the generator's (start/length or the indirect_array
 # keys, mask_offsets/mask_per_element, cd_load_transient, gameplay_neutral,
@@ -133,28 +135,34 @@ start  = 0x80072019
 length = 0x5D3
 class  = "gameplay"
 
-# Every overlay (title, loading, cutscenes, levels: 60 images, largest
-# .level_50 at 0x2D800) loads at 0x800742D0 (recomp.conf OVERLAY_LOAD_ADDR,
-# psx.map ovlHeader). The union is one row. It is a CdRead destination
-# (20-89 sector reads in the attract loop), so it diverges while the
-# reference lands sectors that openpete landed at issue.
+# overlay image union 0x800742D0-0x800A1AD0, cut at 3 expect range(s) into 4 row(s); every piece is a CdRead destination
 [[region]]
-name        = "overlay_image"
-start       = 0x800742D0
-length      = 0x2D800
-class       = "gameplay"
-description = "Union of every overlay image at the overlay vaddr (.text, .data, .bss of the resident overlay; stale bytes of larger earlier overlays past its end)"
+name   = "overlay_image_0"
+start  = 0x800742D0
+length = 0xCC10
+class  = "gameplay"
 cd_load_transient = true
-# The three title-overlay load_timing ranges of ram_diff_expect.toml
-# (0x80080EE0, 0x80080F64-0x80080F69, 0x80080FC4-0x80080FE1), as offsets
-# from the overlay vaddr; owner openpete-per-game-oracle (D5d).
-mask_offsets = [0xCC10,
-                0xCC94, 0xCC95, 0xCC96, 0xCC97, 0xCC98,
-                0xCCF4, 0xCCF5, 0xCCF6, 0xCCF7, 0xCCF8, 0xCCF9, 0xCCFA, 0xCCFB,
-                0xCCFC, 0xCCFD, 0xCCFE, 0xCCFF, 0xCD00, 0xCD01, 0xCD02, 0xCD03,
-                0xCD04, 0xCD05, 0xCD06, 0xCD07, 0xCD08, 0xCD09, 0xCD0A, 0xCD0B,
-                0xCD0C, 0xCD0D, 0xCD0E, 0xCD0F, 0xCD10]
-mask_reason  = "title overlay load_timing counters (ram_diff_expect.toml)"
+
+[[region]]
+name   = "overlay_image_1"
+start  = 0x80080EE1
+length = 0x83
+class  = "gameplay"
+cd_load_transient = true
+
+[[region]]
+name   = "overlay_image_2"
+start  = 0x80080F69
+length = 0x5B
+class  = "gameplay"
+cd_load_transient = true
+
+[[region]]
+name   = "overlay_image_3"
+start  = 0x80080FE1
+length = 0x20AEF
+class  = "gameplay"
+cd_load_transient = true
 
 # The moby array in level RAM: g_MobyArrayPtr (0x8006C550) points at the
 # first Moby (stride 0x58: savepoint.c divides by 0x58), the level's mobys

@@ -250,11 +250,15 @@ def main():
         direct = [((r["start"] & RAM_MASK), (r["start"] & RAM_MASK) + r["length"], r["name"])
                   for r in regs if r.get("kind", "direct") == "direct"]
         hits = [(i, j, nm) for i, j, _ in classes["unexpected"] + classes["populated"]
+                + classes["load_in_flight"]
                 for lo, hi, nm in direct if i < hi and j > lo]
-        print(f"[ram-diff]   unexpected ranges intersecting a direct manifest region: {len(hits)}")
+        print(f"[ram-diff]   unexpected/in-flight ranges intersecting a direct manifest region: {len(hits)}")
         for i, j, nm in hits[:10]:
             print(f"[ram-diff]     0x{i:06X}-0x{j:06X} {nm}")
 
+    for i, j, c in classes["load_in_flight"][:args.list]:
+        print(f"[ram-diff]   load_in_flight 0x{i:06X}-0x{j:06X} {c:5d} B  {owner(syms, i):40s} "
+              f"(zero on the reference, written on openpete by a CdRead issued before the halt)")
     for i, j, c in classes["populated"]:
         nm = next(n for lo, hi, n in populated if lo <= i < hi)
         print(f"[ram-diff]   populated mirror differs 0x{i:06X}-0x{j:06X} {c:5d} B  {nm}")

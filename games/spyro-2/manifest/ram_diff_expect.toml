@@ -88,6 +88,74 @@ name   = "D_8006AB4C (pad receive words, init.c)"
 reason = "the analog pad's poll answer; openpete's pad model answers a digital poll"
 owner  = "P16"
 
+# Loop anchor, hit 1: the title's own VSync loop ran 6 more frames on the
+# reference while the 10 pre-anchor reads were in flight (0.4 VBL/sector
+# there, none in openpete). Removed by the oracle consumer charging the
+# pre-anchor reads their sidecar VBLs (openpete-per-game-oracle D5d).
+[[expect]]
+class  = "load_timing"
+start  = 0x8006700C
+end    = 0x8006700D
+name   = "D_8006700C (title frame counter)"
+reason = "advances per title-loop frame during the pre-anchor reads"
+owner  = "openpete-per-game-oracle"
+
+[[expect]]
+class  = "load_timing"
+start  = 0x80067160
+end    = 0x80067161
+name   = "D_80067160 (copy of the title frame counter)"
+reason = "advances per title-loop frame during the pre-anchor reads"
+owner  = "openpete-per-game-oracle"
+
+[[expect]]
+class  = "load_timing"
+start  = 0x8007F02C
+end    = 0x8007F02D
+name   = "title overlay 0x8007F02C (sequence step)"
+reason = "title sequence one step further on the reference"
+owner  = "openpete-per-game-oracle"
+
+[[expect]]
+class  = "load_timing"
+start  = 0x8007F06C
+end    = 0x8007F071
+name   = "title overlay 0x8007F06C-0x8007F070 (step timer and index)"
+reason = "title sequence one step further on the reference"
+owner  = "openpete-per-game-oracle"
+
+[[expect]]
+class  = "load_timing"
+start  = 0x8007F090
+end    = 0x8007F091
+name   = "title overlay 0x8007F090 (sequence flag)"
+reason = "title sequence one step further on the reference"
+owner  = "openpete-per-game-oracle"
+
+[[expect]]
+class  = "load_timing"
+start  = 0x8007F0EC
+end    = 0x8007F0F1
+name   = "title overlay 0x8007F0EC-0x8007F0F0 (frame counter copies)"
+reason = "derived from the title frame counter"
+owner  = "openpete-per-game-oracle"
+
+[[expect]]
+class  = "load_timing"
+start  = 0x8007F14C
+end    = 0x8007F169
+name   = "title overlay 0x8007F14C-0x8007F168 (index table, entries (n, 0, 0, 0xF1); one entry further on the reference)"
+reason = "title sequence one step further on the reference"
+owner  = "openpete-per-game-oracle"
+
+[[expect]]
+class  = "load_timing"
+start  = 0x8007F180
+end    = 0x8007F185
+name   = "title overlay 0x8007F180-0x8007F184 (per-step flag words; the set flag sits at step 0 on openpete, step 1 on the reference)"
+reason = "title sequence one step further on the reference"
+owner  = "openpete-per-game-oracle"
+
 # libcd's state block: the bytes its translated getters read, written by the
 # shared CD thunks. A differing byte here is a defective mirror.
 [[populated]]
