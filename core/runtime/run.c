@@ -559,7 +559,8 @@ uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
         uint32_t live_len = reg->length;
         const int is_indirect = (reg->kind == OPENPETE_REGION_INDIRECT_ARRAY
                               || reg->kind == OPENPETE_REGION_INDIRECT_ARRAY_END_PTR
-                              || reg->kind == OPENPETE_REGION_INDIRECT_ARRAY_COUNT);
+                              || reg->kind == OPENPETE_REGION_INDIRECT_ARRAY_COUNT
+                              || reg->kind == OPENPETE_REGION_INDIRECT_ARRAY_SENTINEL);
         uint32_t base_vaddr = 0;
         /* Gameplay-state regions are canonical-2 MB by contract (regions
          * registered via psx_runtime_register_region are presentation-
@@ -611,6 +612,18 @@ uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region) {
                     | ((uint32_t)ram[aux_off + 3] << 24);
                 uint64_t live = (uint64_t)cnt * (uint64_t)reg->elem_size;
                 if (live < (uint64_t)live_len) live_len = (uint32_t)live;
+            }
+        } else if (reg->kind == OPENPETE_REGION_INDIRECT_ARRAY_SENTINEL) {
+            const uint32_t es = reg->elem_size;
+            const uint32_t s_off = reg->aux & 0xFFu;
+            const uint8_t  s_val = (uint8_t)((reg->aux >> 8) & 0xFFu);
+            if (es > 0u && s_off < es) {
+                uint32_t n = 0;
+                while ((uint64_t)(n + 1u) * es <= live_len &&
+                       base_off + (uint64_t)n * es + s_off < RAM_BYTES &&
+                       ram[base_off + n * es + s_off] != s_val)
+                    n++;
+                live_len = n * es;
             }
         }
         uint32_t end = base_off + live_len;

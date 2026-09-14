@@ -1,0 +1,151 @@
+#!/usr/bin/env python3
+"""derive_state_regions.py — print the link-map-derived direct rows of a
+game's gameplay_state_regions.toml.
+
+The rows are the main image's .data/.sdata/.sbss/.bss extents (psx.map
+`main_<SECTION>_START/END`) minus the `[[psyq_internal]]` extents and every
+`[[expect]]` range of games/<game>/manifest/ram_diff_expect.toml, with the
+named rows given on the command line carved out as rows of their own, the
+rest coalesced into one row per remaining extent. Each coalesced row lists
+its symbol count and its role-named (`g_`/lower-case) symbols as a comment;
+`D_<addr>` names are counted, not listed.
+
+    tools/derive_state_regions.py spyro-3 \\
+        --named psyq_rand_seed=0x80073F3C:4:gameplay \\
+        --named levelIndex=0x8006C58C:4:gameplay
+
+Prints TOML `[[region]]` rows to stdout; the manifest is assembled by hand
+from this output plus the indirect (pool) rows, which need the decomp's
+struct facts.
+"""
+from __future__ import annotations
+
+import argparse
+import re
+import sys
+from pathlib import Path
+
+try:
+    import tomllib
+except ImportError:
+    import tomli as tomllib  # type: ignore
+
+ROOT = Path(__file__).resolve().parents[1]
+SECTIONS = ("DATA", "SDATA", "SBSS", "BSS")
+
+
+def read_map(path: Path):
+    bounds = {}
+    symbols = []  # (addr, name)
+    sym_re = re.compile(r"^\s+0x([0-9a-f]{16})\s+([A-Za-z_][A-Za-z0-9_.]*)\s*$")
+    bound_re = re.compile(r"^\s+0x([0-9a-f]{16})\s+main_(\w+)_(START|END) = \.")
+    with open(path) as fh:
+        for line in fh:
+            m = bound_re.match(line)
+            if m:
+                bounds[(m.group(2), m.group(3))] = int(m.group(1), 16)
+                continue
+            m = sym_re.match(line)
+            if m:
+                symbols.append((int(m.group(1), 16), m.group(2)))
+    return bounds, symbols
+
+
+def subtract(ranges, holes):
+    out = []
+    for lo, hi in ranges:
+        cur = [(lo, hi)]
+        for hlo, hhi in holes:
+            nxt = []
+            for a, b in cur:
+                if hhi <= a or hlo >= b:
+                    nxt.append((a, b))
+                else:
+                    if hlo > a:
+                        nxt.append((a, hlo))
+                    if hhi < b:
+                        nxt.append((hhi, b))
+            cur = nxt
+        out.extend(cur)
+    return sorted(out)
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("game")
+    ap.add_argument("--named", action="append", default=[],
+                    help="NAME=ADDR:LEN[:class] carved out of the extents as its own row")
+    ap.add_argument("--min-row", type=int, default=4,
+                    help="drop coalesced fragments shorter than this many bytes (default 4)")
+    a = ap.parse_args()
+
+    gdir = ROOT / "games" / a.game
+    map_path = gdir / a.game / "build" / "psx.map"
+    expect_path = gdir / "manifest" / "ram_diff_expect.toml"
+    bounds, symbols = read_map(map_path)
+    with open(expect_path, "rb") as fh:
+        expect = tomllib.load(fh)
+
+    extents = []
+    for sec in SECTIONS:
+        lo, hi = bounds.get((sec, "START")), bounds.get((sec, "END"))
+        if lo is None or hi is None or hi <= lo:
+            print(f"# main_{sec}: absent", file=sys.stderr)
+            continue
+        extents.append((lo, hi))
+        print(f"# main_{sec}: 0x{lo:08X}-0x{hi:08X} ({hi - lo} bytes)")
+
+    holes = []
+    for row in expect.get("psyq_internal", []):
+        s, n = int(row["start"]), int(row["length"])
+        holes.append((s, s + n))
+        print(f"# minus psyq_internal 0x{s:08X}-0x{s + n:08X} ({row.get('source', '')})")
+    for row in expect.get("expect", []):
+        s, e = int(row["start"]), int(row["end"])
+        holes.append((s, e))
+        print(f"# minus expect {row['class']} 0x{s:08X}-0x{e:08X} ({row.get('name', '')})")
+    named = []
+    for spec in a.named:
+        name, rest = spec.split("=", 1)
+        parts = rest.split(":")
+        addr, ln = int(parts[0], 0), int(parts[1], 0)
+        cls = parts[2] if len(parts) > 2 else "gameplay"
+        named.append((addr, ln, name, cls))
+        holes.append((addr, addr + ln))
+
+    rows = subtract(extents, holes)
+    rows = [(lo, hi) for lo, hi in rows if hi - lo >= a.min_row]
+    dropped = [(lo, hi) for lo, hi in subtract(extents, holes) if hi - lo < a.min_row]
+    for lo, hi in dropped:
+        print(f"# dropped fragment 0x{lo:08X}-0x{hi:08X} ({hi - lo} bytes)")
+
+    total = 0
+    print()
+    for addr, ln, name, cls in sorted(named):
+        print("[[region]]")
+        print(f'name   = "{name}"')
+        print(f"start  = 0x{addr:08X}")
+        print(f"length = 0x{ln:X}")
+        print(f'class  = "{cls}"')
+        print()
+        total += ln
+    for i, (lo, hi) in enumerate(rows):
+        syms = [(s, n) for s, n in symbols if lo <= s < hi]
+        role = [n for _, n in syms if not n.startswith("D_")]
+        sec = next((sec for sec in SECTIONS
+                    if bounds.get((sec, "START"), 1) <= lo < bounds.get((sec, "END"), 0)), "?")
+        print(f"# .{sec.lower()} extent {i}: {len(syms)} symbols" +
+              (f"; named: {', '.join(role[:40])}" + (" ..." if len(role) > 40 else "") if role else ""))
+        print("[[region]]")
+        print(f'name   = "main_{sec.lower()}_{lo:08x}"')
+        print(f"start  = 0x{lo:08X}")
+        print(f"length = 0x{hi - lo:X}")
+        print('class  = "gameplay"')
+        print()
+        total += hi - lo
+    print(f"# {len(rows) + len(named)} direct rows, {total} bytes", file=sys.stderr)
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

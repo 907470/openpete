@@ -1,0 +1,216 @@
+# games/spyro-3/manifest/gameplay_state_regions.toml — the gameplay-readable
+# bytes the oracle hashes every tick. Generated into the
+# build by tools/gen_state_regions.py (cmake/openpete_game.cmake): the C
+# table the exe registers, the flat table the DuckStation capture module
+# reads, and their shared FNV-1a-64 in the trace header.
+#
+# Derivation (tools/derive_state_regions.py spyro-3): the main image's
+# .data/.sdata/.sbss/.bss extents from spyro-3/build/psx.map, minus the
+# psyq_internal extents and every [[expect]] range of ram_diff_expect.toml
+# (load_timing and pad_model classes, measured at the loop anchor, hit 1,
+# the only pre-load hit aligned on both sides), the named rows carved out,
+# the rest coalesced: one row per extent, symbol names as comments. Then
+# the overlay image union, the moby pool, and the libcd mirror rows.
+#
+# Row fields beyond the generator's (start/length or the indirect_array
+# keys, mask_offsets/mask_per_element, cd_load_transient, gameplay_neutral,
+# constant_ok): `class` is gameplay | render_scratch | psyq_mirror. Every
+# row is gameplay on the stock path; the OT and primitive buffers inside
+# the .bss extents become render_scratch rows when a presentation layer
+# reaches this game (openpete-per-game-oracle D4).
+#
+# Carve-outs (commented rows; the ranges are subtracted above):
+#   load_timing  D_8006C644, D_8006E484, D_8006C7CC, title overlay 0x80080EE0,
+#                0x80080F64-0x80080F69, 0x80080FC4-0x80080FE1 — counters the
+#                title's VSync loop advances while the reference spends
+#                0.4 VBL/sector on the 13 pre-anchor reads; owner
+#                openpete-per-game-oracle (D5d pre-anchor charge)
+#   pad_model    D_8007143C, D_800718DC, pad2 — the analog pad's poll
+#                answer; owner openpete-spyro2-3-bringup P16
+
+[[region]]
+name        = "levelIndex"
+start       = 0x8006C58C
+length      = 0x4
+class       = "gameplay"
+description = "Current level index (decomp name; psx.map:7624), carved out of the .sbss extent as its own row"
+
+[[region]]
+name        = "psyq_rand_seed"
+start       = 0x80073F3C
+length      = 0x4
+class       = "gameplay"
+description = "PSYQ rand/srand seed word D_80073F3C (libc .bss, inside the subtracted psyq_internal extent). Seeded from root counter 2 (func_80054E5C: srand(*0x1F801120)) at boot and with 1234 when the demo starts (loaders/func_8002B810)"
+
+# .data extent 0: 273 symbols; named: g_CheatCodes, speedwayRecords, sparx, sparxDefaults, g_Sin, g_Cos, SkillPoints, lvlIdToIndex, levelIndexToHomeworldLevelId, g_HudEntries, g_LoadingScreenStrings, g_LoadingScreenStringTables
+[[region]]
+name   = "main_data_80064f9c"
+start  = 0x80064F9C
+length = 0x4F60
+class  = "gameplay"
+
+# .sdata extent 1: 67 symbols; named: speechLba, localDifficultyOverride
+[[region]]
+name   = "main_sdata_8006c3b0"
+start  = 0x8006C3B0
+length = 0x144
+class  = "gameplay"
+
+# .sbss extent 2: 43 symbols; named: loadStage, g_Portals, currentDemoInput, g_MobyArrayPtr, mobyArrayPtr
+[[region]]
+name   = "main_sbss_8006c4f4"
+start  = 0x8006C4F4
+length = 0x98
+class  = "gameplay"
+
+# .sbss extent 3: 21 symbols; named: dragonModelPtr, g_CurrentLevel, currentLevel, area, pauseMenuButtonPresses
+[[region]]
+name   = "main_sbss_8006c590"
+start  = 0x8006C590
+length = 0x44
+class  = "gameplay"
+
+# .sbss extent 4: 27 symbols; named: g_PortalCount
+[[region]]
+name   = "main_sbss_8006c5dc"
+start  = 0x8006C5DC
+length = 0x68
+class  = "gameplay"
+
+# .sbss extent 5: 107 symbols; named: deltaTime, soundTablePtr, g_SoundTablePtr, isDemoMode, g_SpuDefinitionsPtr, spuDataPtr, g_AllocatedMobyArrayPtr, allocatedMobysPtr, language, collectionAreaOffset
+[[region]]
+name   = "main_sbss_8006c645"
+start  = 0x8006C645
+length = 0x187
+class  = "gameplay"
+
+# .sbss extent 6: 8 symbols
+[[region]]
+name   = "main_sbss_8006c7cd"
+start  = 0x8006C7CD
+length = 0x27
+class  = "gameplay"
+
+# .bss extent 7: 199 symbols; named: unsavedData, savedData, wadHeader, g_Camera, camera, game, g_Layout, streamingData
+[[region]]
+name   = "main_bss_8006c7f8"
+start  = 0x8006C7F8
+length = 0x1C8C
+class  = "gameplay"
+
+# .bss extent 8: 30 symbols; named: g_Pad, pad
+[[region]]
+name   = "main_bss_8006e485"
+start  = 0x8006E485
+length = 0x84
+class  = "gameplay"
+
+# .bss extent 9: 347 symbols; named: speedwayData, g_CheatFlags, pauseData, pauseData2, g_ActiveSounds, eggsCollectedArray, spyro, g_Spyro, g_CheatBuffer, demoPadState
+[[region]]
+name   = "main_bss_8006e50e"
+start  = 0x8006E50E
+length = 0x2F2E
+class  = "gameplay"
+
+# .bss extent 10: 90 symbols; named: progressFlags
+[[region]]
+name   = "main_bss_80071440"
+start  = 0x80071440
+length = 0x49C
+class  = "gameplay"
+
+# .bss extent 11: 60 symbols; named: g_CollisionData, g_Hud
+[[region]]
+name   = "main_bss_800718e4"
+start  = 0x800718E4
+length = 0x734
+class  = "gameplay"
+
+# .bss extent 12: 76 symbols; named: levelWadHeader, loadingData
+[[region]]
+name   = "main_bss_80072019"
+start  = 0x80072019
+length = 0x5D3
+class  = "gameplay"
+
+# Every overlay (title, loading, cutscenes, levels: 60 images, largest
+# .level_50 at 0x2D800) loads at 0x800742D0 (recomp.conf OVERLAY_LOAD_ADDR,
+# psx.map ovlHeader). The union is one row. It is a CdRead destination
+# (20-89 sector reads in the attract loop), so it diverges while the
+# reference lands sectors that openpete landed at issue.
+[[region]]
+name        = "overlay_image"
+start       = 0x800742D0
+length      = 0x2D800
+class       = "gameplay"
+description = "Union of every overlay image at the overlay vaddr (.text, .data, .bss of the resident overlay; stale bytes of larger earlier overlays past its end)"
+cd_load_transient = true
+# The three title-overlay load_timing ranges of ram_diff_expect.toml
+# (0x80080EE0, 0x80080F64-0x80080F69, 0x80080FC4-0x80080FE1), as offsets
+# from the overlay vaddr; owner openpete-per-game-oracle (D5d).
+mask_offsets = [0xCC10,
+                0xCC94, 0xCC95, 0xCC96, 0xCC97, 0xCC98,
+                0xCCF4, 0xCCF5, 0xCCF6, 0xCCF7, 0xCCF8, 0xCCF9, 0xCCFA, 0xCCFB,
+                0xCCFC, 0xCCFD, 0xCCFE, 0xCCFF, 0xCD00, 0xCD01, 0xCD02, 0xCD03,
+                0xCD04, 0xCD05, 0xCD06, 0xCD07, 0xCD08, 0xCD09, 0xCD0A, 0xCD0B,
+                0xCD0C, 0xCD0D, 0xCD0E, 0xCD0F, 0xCD10]
+mask_reason  = "title overlay load_timing counters (ram_diff_expect.toml)"
+
+# The moby array in level RAM: g_MobyArrayPtr (0x8006C550) points at the
+# first Moby (stride 0x58: savepoint.c divides by 0x58), the level's mobys
+# run to g_AllocatedMobyArrayPtr (0x8006C704) and allocated mobys follow;
+# the array ends at the first element whose state byte (+0x48) is -1
+# (updatemobys.s 0x800556D8 loop exits on it; no count word exists). Both
+# pointers sit inside the .sbss rows above. Cap 1024 elements; the attract
+# demo holds 97-119.
+[[region]]
+name          = "moby_array"
+kind          = "indirect_array"
+base_ptr      = 0x8006C550
+element_size  = 0x58
+max_elements  = 1024
+live_sentinel = { offset = 0x48, value = 0xFF }
+class         = "gameplay"
+description   = "Level and allocated mobys behind *g_MobyArrayPtr, to the state == -1 terminator"
+cd_load_transient = true
+
+# libcd's state block, written by the shared CD thunks and read by the
+# translated CdStatus/CdLastPos/CdMode/CdLastCom every tick
+# (ram_diff_expect.toml [[populated]]). A differing byte is a thunk defect.
+[[region]]
+name        = "libcd_CdStatus"
+start       = 0x8006B574
+length      = 0x1
+class       = "psyq_mirror"
+description = "libcd block 0x8006B568: CD status byte (CdStatus)"
+
+[[region]]
+name        = "libcd_CdLastPos"
+start       = 0x8006B580
+length      = 0x4
+class       = "psyq_mirror"
+description = "libcd block 0x8006B568: last CdlSetloc position (CdLastPos)"
+
+[[region]]
+name        = "libcd_CdMode_CdLastCom"
+start       = 0x8006B584
+length      = 0x2
+class       = "psyq_mirror"
+description = "libcd block 0x8006B568: drive mode (mode | 0x20 after a CdRead) and last command"
+
+# crt0 mirrors, set once at boot.
+[[region]]
+name        = "crt0_heap"
+start       = 0x80069F00
+length      = 0x8
+class       = "psyq_mirror"
+description = "heap base and size (crt0, InitHeap)"
+constant_ok = true
+
+[[region]]
+name        = "crt0_exec_return"
+start       = 0x8006C7F4
+length      = 0x4
+class       = "psyq_mirror"
+description = "BIOS Exec return address stored by the crt0"
+constant_ok = true

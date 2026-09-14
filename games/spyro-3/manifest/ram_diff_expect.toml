@@ -63,6 +63,110 @@ start  = 0x800725EC
 length = 0x1CE4
 source = "psx.map:8642 .bss psyq.bss.o"
 
+# Named ranges at the loop anchor, hit 1 (the only pre-load hit aligned on
+# both sides: from hit 5 on the reference has bytes in flight). Nine ranges,
+# 27 bytes, in two classes.
+
+# The reference spends 0.4 VBL per sector on the 13 reads before the first
+# anchor hit (title image, loading overlay, title overlay: 41 to 128 VBLs
+# each), openpete none; the title's own VSync loop runs during them, so
+# every counter it advances or zeroes at a read is ahead on the reference.
+# Removed by the oracle consumer charging the pre-anchor synchronous reads
+# their sidecar VBLs (openpete-per-game-oracle D5d).
+[[expect]]
+class  = "load_timing"
+start  = 0x8006C644
+end    = 0x8006C645
+name   = "D_8006C644 (load progress counter, zeroed in loaders/func_8002B810, read by draw/func_8001D424 and the loading overlay)"
+reason = "counts frames of the title loop while the pre-anchor reads are in flight on the reference"
+owner  = "openpete-per-game-oracle"
+
+[[expect]]
+class  = "load_timing"
+start  = 0x8006E484
+end    = 0x8006E485
+name   = "D_8006E484 (frames since the current CdRead was issued, zeroed before each CdRead in str/func_800503F8, func_80050578, func_80050680)"
+reason = "the reference's reads take VBLs the title loop counts; openpete's complete in the issuing frame"
+owner  = "openpete-per-game-oracle"
+
+[[expect]]
+class  = "load_timing"
+start  = 0x8006C7CC
+end    = 0x8006C7CD
+name   = "D_8006C7CC (frame counter pad/func_8003A584 zeroes and copies to D_8006C648)"
+reason = "advances per title-loop frame; the reference ran more frames during its pre-anchor reads"
+owner  = "openpete-per-game-oracle"
+
+[[expect]]
+class  = "load_timing"
+start  = 0x80080EE0
+end    = 0x80080EE1
+name   = "D_title_80080EE0 (title overlay state flag)"
+reason = "title sequence state after more frames on the reference"
+owner  = "openpete-per-game-oracle"
+
+[[expect]]
+class  = "load_timing"
+start  = 0x80080F64
+end    = 0x80080F69
+name   = "title overlay 0x80080F64 (holds copies of the D_8006C7CC value)"
+reason = "derived from the frame counter above"
+owner  = "openpete-per-game-oracle"
+
+[[expect]]
+class  = "load_timing"
+start  = 0x80080FC4
+end    = 0x80080FE1
+name   = "D_title_80080FC4 (title overlay index table, entries (n, 0, 0, 0xF1); one entry further on the reference)"
+reason = "title sequence advanced one step further on the reference"
+owner  = "openpete-per-game-oracle"
+
+# VSync(-1) readings the draw loop stores (draw/Draw.s): absolute VBL counts
+# since the program started. The reference's includes the VBLs its 13
+# pre-anchor reads took and its BIOS boot; openpete's counts from its own
+# start. Aligned when the oracle consumer charges the pre-anchor reads and
+# the boot offset (openpete-per-game-oracle D5d).
+[[expect]]
+class  = "vbl_count"
+start  = 0x8006C5D4
+end    = 0x8006C5DC
+name   = "D_8006C5D4, D_8006C5D8 (VSync(-1) readings, draw/Draw.s)"
+reason = "absolute VBL counters; the reference spent 0.4 VBL/sector on the pre-anchor reads that openpete completed at issue"
+owner  = "openpete-per-game-oracle"
+
+# The analog pad's poll answer, as Spyro 2's pad_model class.
+[[expect]]
+class  = "pad_model"
+start  = 0x8006E509
+end    = 0x8006E50E
+name   = "g_Pad+1..+5 (libpad receive buffer: pad type, status and mode bytes)"
+reason = "the reference's analog pad answers type/mode bytes openpete's digital pad model does not"
+owner  = "P16"
+
+[[expect]]
+class  = "pad_model"
+start  = 0x8007143C
+end    = 0x80071440
+name   = "D_8007143C (stick centre bytes, init/func_8002A9D0)"
+reason = "the analog pad answers 0x80 per axis; openpete's pad model answers 0x7F"
+owner  = "P16"
+
+[[expect]]
+class  = "pad_model"
+start  = 0x800718DC
+end    = 0x800718E4
+name   = "D_800718DC (pad receive words, init/func_8002A9D0)"
+reason = "the analog pad's poll answer; openpete's pad model answers a digital poll"
+owner  = "P16"
+
+[[expect]]
+class  = "pad_model"
+start  = 0x80072018
+end    = 0x80072019
+name   = "pad2 (libpad port-2 receive buffer, status byte)"
+reason = "the reference answers port 2 with status 0; openpete's pad model answers 1"
+owner  = "P16"
+
 # libcd's state block: the bytes its translated getters read, written by the
 # shared CD thunks. A differing byte here is a defective mirror.
 [[populated]]

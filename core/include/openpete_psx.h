@@ -72,6 +72,11 @@ typedef enum {
      * g_MobyAllocPtr). */
     OPENPETE_REGION_INDIRECT_ARRAY_END_PTR  = 2, /* aux = addr of end ptr (u32 PSX vaddr); live = *aux - *start */
     OPENPETE_REGION_INDIRECT_ARRAY_COUNT    = 3, /* aux = addr of int count; live = *aux * elem_size */
+    /* Pool terminated by a sentinel byte inside an element: aux = sentinel
+     * offset within the element (low 8 bits) | sentinel value << 8; live =
+     * the elements before the first whose byte at that offset equals the
+     * value, the terminator excluded. Cap at `length` when none is found. */
+    OPENPETE_REGION_INDIRECT_ARRAY_SENTINEL = 4,
 } OpenpeteStateRegionKind;
 
 typedef struct {
