@@ -9,7 +9,12 @@
  * Format spec: tools/psxtrace_format.py.
  *
  * v2 always carries hashes; an optional RAM payload (header flag bit 1)
- * enables per-byte attribution when a hash mismatch fires.
+ * enables per-byte attribution when a hash mismatch fires. Header flag
+ * bit 2 adds the FNV-1a-64 of the region table the capture hashed with,
+ * bit 3 the git hash of the capturing DuckStation build; open() refuses a
+ * trace without bit 2, one whose table hash or region names differ from
+ * the registered table, and one carrying a flag bit this reader does not
+ * know (its header block would misalign the records).
  */
 
 #ifndef OPENPETE_PSXTRACE_H
@@ -44,6 +49,10 @@ typedef struct {
     /* Region names from the trace header. Used for the divergence message. */
     char region_names[OPENPETE_PSXTRACE_MAX_REGIONS]
                      [OPENPETE_PSXTRACE_REGION_NAME_MAX];
+    /* Header blocks: the table hash (flag bit 2) and the capturing build's
+     * git hash (flag bit 3; empty string when absent). */
+    uint64_t table_hash;
+    char     scm_hash[64];
 
     /* Latched on first divergence of ANY kind (incl. tolerated CD-load
      * transients). Kept for diagnostics / the per-region count summary. */

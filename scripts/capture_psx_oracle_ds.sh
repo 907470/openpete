@@ -39,6 +39,7 @@ done
 
 DS_BIN="third_party/duckstation/build-regtest/bin/duckstation-regtest"
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
+MANIFEST="${OPENPETE_REGIONS_MANIFEST:-manifest/gameplay_state_regions.toml}"
 
 if [[ ! -x "$DS_BIN" ]]; then
     echo "[capture-ds] binary missing: $DS_BIN" >&2
@@ -47,11 +48,34 @@ if [[ ! -x "$DS_BIN" ]]; then
 fi
 [[ -f "$DISC" ]] || { echo "[capture-ds] disc missing: $DISC" >&2; exit 1; }
 
-# The capture module's region table is a hand-written copy of the
-# manifest; a golden captured from a drifted copy would hash different
-# bytes than openpete and fail every run against it.
-python3 tools/check_ds_region_mirror.py || {
-    echo "[capture-ds] refusing to capture: DuckStation region mirror differs from the manifest" >&2
+# A golden is evidence only if a rebuild from the pinned fork commit
+# reproduces it: the binary's build stamp must be the commit the
+# submodule pointer names, and that worktree must be clean. The pointer
+# is read from the index: it moves in the same openpete commit as the
+# golden, so at capture time it is staged, not yet committed.
+DS_DIR="third_party/duckstation"
+DS_PIN="$(git ls-files -s "$DS_DIR" | awk '{print $2}')"
+DS_HEAD="$(git -C "$DS_DIR" rev-parse HEAD)"
+DS_BUILD="$(strings "$DS_BIN" | grep -E "^[0-9a-f]{40}$" | head -1 || true)"
+if [[ -z "$DS_BUILD" ]]; then
+    echo "[capture-ds] refusing: no git hash stamped in $DS_BIN" >&2; exit 1
+fi
+if [[ "$DS_BUILD" != "$DS_HEAD" ]]; then
+    echo "[capture-ds] refusing: binary built from $DS_BUILD, fork checkout is $DS_HEAD (rebuild the fork)" >&2; exit 1
+fi
+if [[ "$DS_HEAD" != "$DS_PIN" ]]; then
+    echo "[capture-ds] refusing: fork checkout $DS_HEAD is not the pinned submodule commit $DS_PIN" >&2; exit 1
+fi
+if [[ -n "$(git -C "$DS_DIR" status --porcelain)" ]]; then
+    echo "[capture-ds] refusing: fork worktree is dirty; commit it and move the submodule pointer first" >&2; exit 1
+fi
+
+# The module hashes the regions the manifest lists at this commit: the
+# flat table is generated immediately before the capture, never reused.
+REGIONS_FLAT="${TMPDIR:-/tmp}/openpete-capture-regions.$$.flat"
+trap 'rm -f "$REGIONS_FLAT"' EXIT
+python3 tools/gen_state_regions.py --manifest "$MANIFEST" --out-flat "$REGIONS_FLAT" || {
+    echo "[capture-ds] refusing to capture: region table generation failed" >&2
     exit 1
 }
 
@@ -77,6 +101,7 @@ sh -c '"$@" 2>&1; exit 0' _ "$DS_BIN" \
     -psxtrace-anchor-pc "$ANCHOR_PC" \
     -psxtrace-anchor-hit "$HIT" \
     -psxtrace-frames "$FRAMES" \
+    -psxtrace-regions "$REGIONS_FLAT" \
     -console \
     "$DISC" \
   | grep -E "psxtrace|FPS|Exiting" \
@@ -91,4 +116,7 @@ if [[ "$OUT" == tests/golden/* ]] && ! python3 scripts/fences/no-ram-dump.py che
     echo "[capture-ds] FAIL: refusing a RAM-carrying trace under tests/golden/ (deleted $OUT)" >&2
     exit 1
 fi
-python3 -m tools.psxtrace_format info "$OUT" | head -3
+python3 -m tools.psxtrace_format info "$OUT" | head -4
+python3 -m tools.psxtrace_format info "$OUT" | grep -q "^scm_hash=$DS_BUILD\$" || {
+    echo "[capture-ds] FAIL: trace does not carry the build hash $DS_BUILD" >&2; exit 1
+}

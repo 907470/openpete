@@ -128,12 +128,17 @@ typedef struct {
 } OpenpeteStateRegion;
 extern const OpenpeteStateRegion* openpete_state_regions;
 extern size_t                     openpete_state_region_count;
+/* FNV-1a-64 of the flat table text (gen_state_regions.py --out-flat) the
+ * registered table was generated from; a .psxtrace golden carries the hash
+ * of the table its capture hashed with, and the verifier refuses one that
+ * differs. */
+extern uint64_t                   openpete_state_regions_table_hash;
 
 /* Install the per-game region table. Call from game main before
  * openpete_run() (explicit registration — weak-symbol override
  * mis-resolves under the MinGW PE linker). */
 void openpete_state_regions_register(const OpenpeteStateRegion* regions,
-                                     size_t count);
+                                     size_t count, uint64_t table_hash);
 
 /* Map a PSX virtual address to a host pointer. Returns NULL if `addr` is
  * unmapped, OR if `addr == 0` (treated as PSX NULL). PSYQ thunks use this

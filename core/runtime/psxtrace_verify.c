@@ -16,8 +16,12 @@ extern uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region);
 
 #define PSXTRACE_VERSION        2u
 #define PSXTRACE_FRMR_MAGIC     0x524D5246u  /* 'FRMR' */
-#define PSXTRACE_FLAG_ZSTD      0x1u
-#define PSXTRACE_FLAG_HAS_RAM   0x2u
+#define PSXTRACE_FLAG_ZSTD       0x1u
+#define PSXTRACE_FLAG_HAS_RAM    0x2u
+#define PSXTRACE_FLAG_TABLE_HASH 0x4u
+#define PSXTRACE_FLAG_SCM_HASH   0x8u
+#define PSXTRACE_FLAGS_KNOWN     (PSXTRACE_FLAG_ZSTD | PSXTRACE_FLAG_HAS_RAM | \
+                                  PSXTRACE_FLAG_TABLE_HASH | PSXTRACE_FLAG_SCM_HASH)
 
 static int read_u32_le(FILE* fp, uint32_t* out) {
     uint8_t b[4];
@@ -92,6 +96,13 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
                     path, t->region_count, OPENPETE_PSXTRACE_MAX_REGIONS);
         goto fail;
     }
+    if (t->flags & ~PSXTRACE_FLAGS_KNOWN) {
+        OPL_ERROR_F("psxtrace",
+                    "%s: header flags 0x%x carry bits this reader does not "
+                    "know (0x%x); its header blocks would misalign the records",
+                    path, t->flags, t->flags & ~PSXTRACE_FLAGS_KNOWN);
+        goto fail;
+    }
     /* Read and parse names blob. */
     if (names_len > 0) {
         uint8_t* blob = (uint8_t*)malloc(names_len);
@@ -112,9 +123,40 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
             }
             memcpy(t->region_names[r], blob + i, copy);
             t->region_names[r][copy] = 0;
+            /* A name the buffer cannot hold whole cannot be compared whole. */
+            if (copy != nlen) {
+                free(blob);
+                OPL_ERROR_F("psxtrace", "%s: region %u name is %u bytes, max %u",
+                            path, r, nlen, OPENPETE_PSXTRACE_REGION_NAME_MAX - 1u);
+                goto fail;
+            }
             i += nlen;
         }
         free(blob);
+    }
+    /* Header blocks follow the names blob in flag-bit order. */
+    if (t->flags & PSXTRACE_FLAG_TABLE_HASH) {
+        uint32_t lo, hi;
+        if (read_u32_le(t->fp, &lo) || read_u32_le(t->fp, &hi)) {
+            OPL_ERROR_F("psxtrace", "%s: truncated table-hash block", path);
+            goto fail;
+        }
+        t->table_hash = ((uint64_t)hi << 32) | lo;
+    }
+    if (t->flags & PSXTRACE_FLAG_SCM_HASH) {
+        uint8_t n;
+        if (fread(&n, 1, 1, t->fp) != 1) {
+            OPL_ERROR_F("psxtrace", "%s: truncated scm-hash block", path);
+            goto fail;
+        }
+        char tmp[256];
+        if (fread(tmp, 1, n, t->fp) != n) {
+            OPL_ERROR_F("psxtrace", "%s: truncated scm-hash block", path);
+            goto fail;
+        }
+        uint32_t copy = n < sizeof(t->scm_hash) - 1u ? n : (uint32_t)sizeof(t->scm_hash) - 1u;
+        memcpy(t->scm_hash, tmp, copy);
+        t->scm_hash[copy] = 0;
     }
     if (t->flags & PSXTRACE_FLAG_HAS_RAM) {
         if (t->flags & PSXTRACE_FLAG_ZSTD) {
@@ -135,6 +177,37 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
                     path, t->region_count, openpete_state_region_count);
         goto fail;
     }
+    /* Row order and names must be the registered table's: a hash column
+     * compared under another row's name is a wrong verdict, not a
+     * divergence. */
+    for (uint32_t r = 0; r < t->region_count; r++) {
+        const char* want = openpete_state_regions[r].name ? openpete_state_regions[r].name : "";
+        if (strcmp(t->region_names[r], want) != 0) {
+            OPL_ERROR_F("psxtrace",
+                        "%s: region %u is \"%s\" in the trace but \"%s\" in the "
+                        "registered table — manifest differs from capture",
+                        path, r, t->region_names[r], want);
+            goto fail;
+        }
+    }
+    /* Same names with edited geometry (start/length/mask) would fail at
+     * record 0 in that row, indistinguishable from a game divergence; the
+     * table hash separates the two. */
+    if (!(t->flags & PSXTRACE_FLAG_TABLE_HASH)) {
+        OPL_ERROR_F("psxtrace",
+                    "%s: no table-hash block (captured before the module "
+                    "read its table from the manifest) — recapture",
+                    path);
+        goto fail;
+    }
+    if (t->table_hash != openpete_state_regions_table_hash) {
+        OPL_ERROR_F("psxtrace",
+                    "%s: table hash 0x%016llx but the registered table is "
+                    "0x%016llx — manifest differs from capture",
+                    path, (unsigned long long)t->table_hash,
+                    (unsigned long long)openpete_state_regions_table_hash);
+        goto fail;
+    }
     /* Peek the first record's pc field so callers can use it as the
      * dispatch-anchor default (the trace was captured at hits of this
      * PC; openpete should advance() at the same PC for epoch parity).
@@ -153,10 +226,11 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
     if (save >= 0) fseek(t->fp, save, SEEK_SET);
     OPL_INFO_F("psxtrace",
                "opened %s: v%u frames=%u regions=%u flags=0x%x has_ram=%d "
-               "anchor_pc=0x%08X",
+               "anchor_pc=0x%08X table=0x%016llx build=%s",
                path, t->version, t->frame_count, t->region_count,
                t->flags, !!(t->flags & PSXTRACE_FLAG_HAS_RAM),
-               t->inferred_anchor_pc);
+               t->inferred_anchor_pc, (unsigned long long)t->table_hash,
+               t->scm_hash[0] ? t->scm_hash : "-");
     return 0;
 fail:
     if (t->fp) { fclose(t->fp); t->fp = NULL; }

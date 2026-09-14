@@ -120,6 +120,16 @@ DS_CARD=()
 OP_CARD=()
 [[ "$CARD" == "none" ]] && OP_CARD=(--no-card)
 
+# The dump rides on the module's psxtrace breakpoint, and the module needs a
+# region table for the throwaway trace: the game's own manifest when it has
+# one, else Spyro 1's (the rows hashed do not matter here; the trace is
+# discarded).
+REGIONS_TOML="$GDIR/manifest/gameplay_state_regions.toml"
+[[ -f "$REGIONS_TOML" ]] || REGIONS_TOML="$ROOT/manifest/gameplay_state_regions.toml"
+python3 "$ROOT/tools/gen_state_regions.py" --manifest "$REGIONS_TOML" --out-flat "$WORK/regions.flat" >/dev/null || {
+    echo "[ram-diff] region table generation failed from $REGIONS_TOML" >&2; exit 1
+}
+
 echo "[ram-diff] $GAME anchor=$ANCHOR pc=$PC hit=$HIT ref-hit=$REF_HIT card=${CARD:-nonpersistent}"
 ulimit -c 0
 # The module aborts on exit after a capture; its exit status is not the verdict.
@@ -130,6 +140,7 @@ sh -c '"$@" >/dev/null 2>&1; exit 0' _ "$DS_BIN" \
     -psxtrace-anchor-pc "$PC" \
     -psxtrace-anchor-hit "$REF_HIT" \
     -psxtrace-frames 1 \
+    -psxtrace-regions "$WORK/regions.flat" \
     -dump-ram-at-anchor "$REF" \
     "${DS_CARD[@]}" \
     -console \

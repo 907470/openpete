@@ -19,11 +19,17 @@ Layout (little-endian throughout):
      8   4   version          u32 = 2
     12   4   frame_count      u32   (0 = streaming/unknown; finalised by closer)
     16   4   ram_size         u32 = 0x200000
-    20   4   flags            u32   (bit 0: ram zstd-compressed; bit 1: has-ram)
+    20   4   flags            u32   (bit 0: ram zstd-compressed; bit 1: has-ram;
+                                    bit 2: table-hash block; bit 3: scm-hash block)
     24   4   region_count     u32 = N
     28   4   names_total_len  u32 = sum of (1 + len(name)) over the N names
     32   4   reserved         u32 = 0
     36   ...                  N records of (u8 len, len bytes ASCII name)
+   ...                        if (flags & FLAG_TABLE_HASH): u64 FNV-1a-64 of the
+                                  regions file the capture hashed from
+                                  (gen_state_regions.py --out-flat)
+   ...                        if (flags & FLAG_SCM_HASH): u8 len, len bytes ASCII
+                                  git hash of the capturing DuckStation build
 
   Per-frame record (variable):
 
@@ -58,8 +64,10 @@ RECORD_MAGIC = 0x524D5246  # 'FRMR'
 HEADER_FMT = "<8sIIIIIII"
 HEADER_SIZE = struct.calcsize(HEADER_FMT)
 
-FLAG_ZSTD     = 1 << 0
-FLAG_HAS_RAM  = 1 << 1
+FLAG_ZSTD       = 1 << 0
+FLAG_HAS_RAM    = 1 << 1
+FLAG_TABLE_HASH = 1 << 2
+FLAG_SCM_HASH   = 1 << 3
 
 
 @dataclass(frozen=True)
@@ -70,6 +78,8 @@ class TraceHeader:
     flags: int
     region_count: int
     region_names: List[str] = field(default_factory=list)
+    table_hash: Optional[int] = None
+    scm_hash: Optional[str] = None
 
     @property
     def zstd(self) -> bool:
@@ -120,13 +130,24 @@ def _parse_names(blob: bytes, count: int) -> List[str]:
 def write_header(fp: BinaryIO,
                  region_names: List[str],
                  frame_count: int = 0,
-                 flags: int = 0) -> None:
+                 flags: int = 0,
+                 table_hash: Optional[int] = None,
+                 scm_hash: Optional[str] = None) -> None:
+    if table_hash is not None:
+        flags |= FLAG_TABLE_HASH
+    if scm_hash is not None:
+        flags |= FLAG_SCM_HASH
     blob = _names_blob(region_names)
     fp.write(struct.pack(HEADER_FMT,
                          MAGIC, VERSION, frame_count,
                          RAM_SIZE, flags, len(region_names),
                          len(blob), 0))
     fp.write(blob)
+    if flags & FLAG_TABLE_HASH:
+        fp.write(struct.pack("<Q", table_hash or 0))
+    if flags & FLAG_SCM_HASH:
+        b = (scm_hash or "").encode("ascii")[:255]
+        fp.write(bytes([len(b)]) + b)
 
 
 def read_header(fp: BinaryIO) -> TraceHeader:
@@ -145,8 +166,23 @@ def read_header(fp: BinaryIO) -> TraceHeader:
     if len(blob) != names_len:
         raise ValueError("psxtrace: truncated names blob")
     names = _parse_names(blob, region_count)
+    table_hash = None
+    scm_hash = None
+    if flags & FLAG_TABLE_HASH:
+        raw = fp.read(8)
+        if len(raw) != 8:
+            raise ValueError("psxtrace: truncated table-hash block")
+        table_hash = struct.unpack("<Q", raw)[0]
+    if flags & FLAG_SCM_HASH:
+        n = fp.read(1)
+        if len(n) != 1:
+            raise ValueError("psxtrace: truncated scm-hash block")
+        raw = fp.read(n[0])
+        if len(raw) != n[0]:
+            raise ValueError("psxtrace: truncated scm-hash block")
+        scm_hash = raw.decode("ascii", errors="replace")
     return TraceHeader(version, frame_count, ram_size, flags,
-                       region_count, names)
+                       region_count, names, table_hash, scm_hash)
 
 
 def write_record(fp: BinaryIO,
@@ -239,6 +275,10 @@ def main_cli(argv: Optional[list] = None) -> int:
                   f"ram=0x{hdr.ram_size:x} flags=0x{hdr.flags:x} "
                   f"zstd={hdr.zstd} has_ram={hdr.has_ram} "
                   f"regions={hdr.region_count}")
+            if hdr.table_hash is not None:
+                print(f"table_hash=0x{hdr.table_hash:016X}")
+            if hdr.scm_hash is not None:
+                print(f"scm_hash={hdr.scm_hash}")
             for i, n in enumerate(hdr.region_names):
                 print(f"  region[{i}] = {n}")
             n_seen = 0

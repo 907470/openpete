@@ -20,5 +20,6 @@
 
 void spyro_state_regions_register(void) {
     openpete_state_regions_register(openpete_state_regions_table,
-                                    OPENPETE_STATE_REGION_COUNT);
+                                    OPENPETE_STATE_REGION_COUNT,
+                                    OPENPETE_STATE_REGIONS_TABLE_HASH);
 }

@@ -281,27 +281,32 @@ add_custom_target(spyro1_sfx_names DEPENDS ${CMAKE_CURRENT_BINARY_DIR}/gen/spyro
 add_dependencies(openpete-spyro1 spyro1_sfx_names)
 
 # Gameplay-state-regions table: generate from manifest, wrap in a TU
-# that registers the table with openpete_core's extern hooks. See
-# manifest/gameplay_state_regions.toml +
-# notes/plans/openpete-determinism-enforcement.md Phase 1.
+# that registers the table with openpete_core's extern hooks. The flat
+# form is what the DuckStation capture module reads (-psxtrace-regions);
+# the header carries its FNV-1a-64 so the verifier can refuse a golden
+# hashed from another table. See manifest/gameplay_state_regions.toml.
 set(_spyro_state_regions_manifest
     ${CMAKE_SOURCE_DIR}/manifest/gameplay_state_regions.toml)
 set(_spyro_state_regions_header
     ${CMAKE_CURRENT_BINARY_DIR}/gen/gameplay_state_regions.gen.h)
+set(_spyro_state_regions_flat
+    ${CMAKE_CURRENT_BINARY_DIR}/gen/gameplay_state_regions.flat)
 set(_spyro_state_regions_lua
     ${CMAKE_CURRENT_BINARY_DIR}/gen/openpete_state_regions.gen.lua)
 add_custom_command(
     OUTPUT  ${_spyro_state_regions_header}
+            ${_spyro_state_regions_flat}
             ${_spyro_state_regions_lua}
     COMMAND ${CMAKE_COMMAND} -E make_directory
             ${CMAKE_CURRENT_BINARY_DIR}/gen
     COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_state_regions.py
             --manifest ${_spyro_state_regions_manifest}
             --out      ${_spyro_state_regions_header}
+            --out-flat ${_spyro_state_regions_flat}
             --out-lua  ${_spyro_state_regions_lua}
     DEPENDS ${_spyro_state_regions_manifest}
             ${CMAKE_SOURCE_DIR}/tools/gen_state_regions.py
-    COMMENT "Generating Spyro gameplay_state_regions.gen.h + lua mirror")
+    COMMENT "Generating Spyro gameplay_state_regions.gen.h + flat table + lua mirror")
 
 # Curated PSX symbol aliases: generate spyro1_symbols.gen.h from the hand-
 # maintained alias manifest, validated by address against globals.toml /

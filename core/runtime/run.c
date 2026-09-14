@@ -526,11 +526,13 @@ static void position_log_emit(FILE* fp, unsigned frame, int vbl) {
  * frame — useless but link-safe. */
 const OpenpeteStateRegion* openpete_state_regions = NULL;
 size_t openpete_state_region_count = 0;
+uint64_t openpete_state_regions_table_hash = 0;
 
 void openpete_state_regions_register(const OpenpeteStateRegion* regions,
-                                     size_t count) {
+                                     size_t count, uint64_t table_hash) {
     openpete_state_regions = regions;
     openpete_state_region_count = count;
+    openpete_state_regions_table_hash = table_hash;
 }
 
 /* FNV1a-64 hash over every gameplay-readable region the per-game TU

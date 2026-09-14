@@ -94,6 +94,26 @@ if [[ ! -f "$DISC" ]]; then
     exit 64
 fi
 
+# The golden names the fork build that captured it; a golden from a commit
+# beside the pinned submodule pointer is evidence no rebuild reproduces.
+# OPENPETE_ORACLE_ALLOW_FORK_DRIFT=<reason> is the declared escape.
+DS_PIN="$(git ls-files -s third_party/duckstation | awk '{print $2}')"
+TRACE_BUILD="$(python3 -m tools.psxtrace_format info "$TRACE" | sed -n 's/^scm_hash=//p')"
+if [[ -z "$TRACE_BUILD" ]]; then
+    echo "[psx-oracle] golden $TRACE carries no capturing-build hash; recapture" >&2
+    exit 64
+fi
+if [[ "$TRACE_BUILD" != "$DS_PIN" ]]; then
+    if [[ -n "${OPENPETE_ORACLE_ALLOW_FORK_DRIFT:-}" ]]; then
+        echo "[psx-oracle] WARNING: golden captured by fork $TRACE_BUILD, pinned $DS_PIN;" \
+             "allowed: $OPENPETE_ORACLE_ALLOW_FORK_DRIFT"
+    else
+        echo "[psx-oracle] golden captured by fork build $TRACE_BUILD but the submodule pins $DS_PIN" >&2
+        echo "[psx-oracle] recapture from the pin, or set OPENPETE_ORACLE_ALLOW_FORK_DRIFT=<reason>" >&2
+        exit 64
+    fi
+fi
+
 EXTRA=()
 [[ "${PSXTRACE_KEEP_GOING:-0}" != "0" ]] && EXTRA+=(--psxtrace-keep-going)
 

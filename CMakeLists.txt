@@ -357,20 +357,6 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             LABELS "determinism"
             TIMEOUT 120
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
-        # DuckStation mirror of the gameplay-state manifest. The psxtrace
-        # capture module in the DuckStation fork hand-copies
-        # manifest/gameplay_state_regions.toml; both sides hash the same
-        # bytes only while the two tables reduce to identical rows. Skips
-        # when the submodule is not checked out.
-        add_test(NAME ds_region_mirror
-                 COMMAND ${Python3_EXECUTABLE}
-                         ${CMAKE_CURRENT_SOURCE_DIR}/tools/check_ds_region_mirror.py)
-        set_tests_properties(ds_region_mirror PROPERTIES
-            LABELS "determinism;oracle"
-            TIMEOUT 30
-            SKIP_RETURN_CODE 64
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 
     # No PSX RAM dump in the tree (scripts/fences/no-ram-dump.py). The

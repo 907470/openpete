@@ -57,19 +57,41 @@ The format constants in `psxtrace_capture.cpp` mirror
 `core/include/openpete_fnv1a64.h`; a drift in either produces a golden
 openpete can never match.
 
-### Region-table mirror
+### Region table
 
-`kRegions` in `psxtrace_capture.cpp` is a hand-written copy of
-`manifest/gameplay_state_regions.toml`. `tools/check_ds_region_mirror.py`
-diffs the two row by row (kind, start, length, aux, element size, name,
-mask offsets, per-element flag), exits 0 identical, 1 on any difference,
-64 when the submodule is not checked out. It runs as the ctest
-`ds_region_mirror` (`CMakeLists.txt:382`) and
-`scripts/capture_psx_oracle_ds.sh` refuses to capture while the tables
-differ.
+The module carries no region table. `-psxtrace-regions PATH` names a
+line-per-region text file that `tools/gen_state_regions.py --out-flat`
+writes from the game's manifest (kind, start, length, aux, element size,
+per-element flag, mask offsets, name; header line
+`psxtrace-regions <version> <fields>`), and the module refuses an
+unreadable, empty or malformed file, another format version or field
+count, a name over 63 bytes, or more than 128 rows. The same generator
+run writes the C header openpete compiles, so both sides hash one
+reduction of the manifest. The capture script generates the file into
+scratch immediately before each capture.
+
+Two hashes travel in the trace header (flag bits 2 and 3, each a block
+after the names blob): the FNV-1a-64 of the regions file, which the
+generator also emits as `OPENPETE_STATE_REGIONS_TABLE_HASH`, and the git
+hash of the capturing DuckStation build. `openpete_psxtrace_open` refuses
+a golden with no table hash, one whose table hash differs from the
+registered table ("manifest differs from capture": an edited
+start/length/mask under a stable name would otherwise fail at record 0
+in that row, indistinguishable from a game divergence), and one whose
+region names or order differ from the registered table.
 
 The `cd_load_transient` and `gameplay_neutral` flags are openpete-side gate
-policy, not inputs to the hash; they are not mirrored and not compared.
+policy, not inputs to the hash; they are not in the file.
+
+### Fork provenance
+
+A golden is reproducible only from the fork commit the submodule pins.
+`scripts/capture_psx_oracle_ds.sh` refuses when the binary's build stamp
+differs from the fork checkout's HEAD, when that HEAD is not the staged
+submodule pointer, or when the fork worktree is dirty (the stamp cannot
+see dirtiness: `git describe --dirty` finds no tag in the fork). The gate
+refuses a golden whose build hash differs from the pinned commit unless
+`OPENPETE_ORACLE_ALLOW_FORK_DRIFT=<reason>` names why.
 
 ## Setup
 
@@ -103,9 +125,11 @@ four VBLs per tick, while the attract demo itself is 1:1.
 `--anchor-pc` and `--hit` override the anchor; `--max-runtime-frames`
 overrides the cap.
 
-The script verifies the region mirror, runs the capture with software GL
-(`LIBGL_ALWAYS_SOFTWARE=1`, `MESA_LOADER_DRIVER_OVERRIDE=llvmpipe`),
-asserts the trace exists, and prints `tools.psxtrace_format info` on it.
+The script checks fork provenance, generates the region file, runs the
+capture with software GL (`LIBGL_ALWAYS_SOFTWARE=1`,
+`MESA_LOADER_DRIVER_OVERRIDE=llvmpipe`), asserts the trace exists and
+carries the build hash, deletes a RAM-carrying trace under `tests/golden/`,
+and prints `tools.psxtrace_format info` on it.
 
 Re-blessing the shipped golden is only legal for an intentional
 gameplay-behaviour change, after reviewing the diff. A golden is
@@ -196,8 +220,8 @@ replays the same boot.
 ## Checking the gate is not vacuous
 
 Three checks, each cheap, establish that a PASS is a comparison and not an
-accident. `tools/check_ds_region_mirror.py` shows the two region tables
-agree. A fresh 5-record capture at the default anchor must verify PASS,
+accident. The trace's table hash equals the registered table's (the
+verifier refuses otherwise). A fresh 5-record capture at the default anchor must verify PASS,
 and one captured with `-psxtrace-anchor-hit 2` must fail at record 0 (one
 tick of offset changes every live region's hash). A poke run
 (`OPENPETE_PSXTRACE_POKE`) must fail at the poked tick in the poked
