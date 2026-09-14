@@ -4,7 +4,9 @@
 // visual gate.
 
 #include "native_gte.h"
-#include "spyro1_symbols.gen.h"   /* D_SIN_TABLE */
+#include "spyro1_symbols.gen.h"   /* D_SIN_TABLE, G_CAMERA */
+#include "openpete_native_render.h"
+#include "spyro_native_reextract.h"  /* openpete_native_interp_pos */
 
 void ngte_unpack_matrix(uint32_t w0, uint32_t w1, uint32_t w2,
                         uint32_t w3, uint32_t w4, int M[3][3]) {
@@ -26,10 +28,34 @@ void ngte_mac(const int M[3][3], double vx, double vy, double vz,
     *m3 = (M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0;
 }
 
+void ngte_view_build(CPUState* cpu, ngte_view* v) {
+    ngte_read_matrix(cpu, G_CAMERA + 0x00, v->cam_M);
+    v->cam_ram[0] = (double)(int32_t)cpu->read_word(G_CAMERA + 0x28);
+    v->cam_ram[1] = (double)(int32_t)cpu->read_word(G_CAMERA + 0x2C);
+    v->cam_ram[2] = (double)(int32_t)cpu->read_word(G_CAMERA + 0x30);
+    v->cam_interp = openpete_native_interp_pos(G_CAMERA, v->cam) ? 1 : 0;
+    if (!v->cam_interp) { v->cam[0] = v->cam_ram[0]; v->cam[1] = v->cam_ram[1]; v->cam[2] = v->cam_ram[2]; }
+    v->ofx     = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
+    v->ofy     = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
+    v->H_canon = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    v->s       = openpete_native_fov_h_scale(v->H_canon, NGTE_Y_ROW);
+    v->H_eff   = v->H_canon * v->s;
+    v->F       = openpete_native_widescreen_factor();
+    openpete_native_widescreen_x_bounds(&v->xlo, &v->xhi);
+    v->extended = (v->F > 1.0001f || v->s < 1.0);
+}
+
+void ngte_view_canon(const ngte_view* v, ngte_view* c) {
+    *c = *v;
+    c->s = 1.0;
+    c->H_eff = c->H_canon;
+}
+
 double ngte_project_raw(const int M[3][3], const double TR[3],
                         double vx, double vy, double vz,
-                        double ofx_px, double ofy_px, double H,
+                        double ofx_px, double ofy_px, const ngte_view* v,
                         double* out_sx, double* out_sy, int* out_sat) {
+    const double H = v->H_eff;
     double t0 = TR ? TR[0] : 0.0, t1 = TR ? TR[1] : 0.0, t2 = TR ? TR[2] : 0.0;
     double mac1 = t0 + (M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0;
     double mac2 = t1 + (M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0;
@@ -44,8 +70,9 @@ double ngte_project_raw(const int M[3][3], const double TR[3],
 }
 
 void ngte_screen_gte(double m1, double m2, double m3,
-                     double ofx, double ofy, double H,
+                     double ofx, double ofy, const ngte_view* v,
                      int sxy_clamp, ngte_proj* o) {
+    const double H = v->H_eff;
     /* IR1/IR2 = MAC saturated to int16 (the GTE projects from saturated IR). */
     double ir1 = m1 < -32768.0 ? -32768.0 : (m1 > 32767.0 ? 32767.0 : m1);
     double ir2 = m2 < -32768.0 ? -32768.0 : (m2 > 32767.0 ? 32767.0 : m2);
@@ -66,13 +93,13 @@ void ngte_screen_gte(double m1, double m2, double m3,
 
 void ngte_project_gte(const int M[3][3], const double TR[3],
                       double vx, double vy, double vz,
-                      double ofx, double ofy, double H,
+                      double ofx, double ofy, const ngte_view* v,
                       int sxy_clamp, ngte_proj* o) {
     double t0 = TR ? TR[0] : 0.0, t1 = TR ? TR[1] : 0.0, t2 = TR ? TR[2] : 0.0;
     double mac1 = t0 + (M[0][0]*vx + M[0][1]*vy + M[0][2]*vz) / 4096.0;
     double mac2 = t1 + (M[1][0]*vx + M[1][1]*vy + M[1][2]*vz) / 4096.0;
     double mac3 = t2 + (M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0;
-    ngte_screen_gte(mac1, mac2, mac3, ofx, ofy, H, sxy_clamp, o);
+    ngte_screen_gte(mac1, mac2, mac3, ofx, ofy, v, sxy_clamp, o);
 }
 
 int ngte_dpcs_ch(int c8, int fc12, int ir0) {

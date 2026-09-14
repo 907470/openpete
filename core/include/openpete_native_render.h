@@ -996,6 +996,27 @@ float openpete_native_widescreen_factor(void);
  * reject (replacing the hard 0 / 512 edges). */
 void  openpete_native_widescreen_x_bounds(float *xlo, float *xhi);
 
+/* ---- field of view display policy ------------------------------------
+ *
+ * --fov DEG is the vertical FOV of the visible band (clip_h rows), the one
+ * FOV number Hor+ keeps aspect-invariant. The feeders project with
+ * H_eff = H_canon · s, s = tan(vref/2) / tan(fov/2), vref = 2·atan((clip_h/2)
+ * / (y_row · H_canon)), where H_canon is the GTE's H and y_row the game's
+ * camera-matrix Y scale (the feeder passes both). deg <= 0 is the default:
+ * the scale is the literal 1.0 and H_eff == H_canon bit-for-bit. The
+ * tangent is latched once per present (scene begin), so a live change
+ * cannot split one present across two H values. Renderer state only; the
+ * game's verdict producers keep the canonical H. */
+void   openpete_native_set_fov(float deg);
+float  openpete_native_fov_deg(void);             /* 0 = default */
+double openpete_native_fov_h_scale(double H_canon, double y_row);
+/* Rows of the visible band the panel shows (224 on Spyro 1; 224 before the
+ * first frame). */
+int    openpete_native_visible_rows(void);
+/* Horizontal FOV, degrees, the current window displays for the canonical
+ * H_canon under the active Hor+ factor and FOV scale: 2·atan(256·F / H_eff). */
+double openpete_native_fov_horizontal_deg(double H_canon, double y_row);
+
 /* Present one native frame to the Vulkan window. Call after PsyX_EndScene so
  * PsyCross's present FBO is freshly rendered (the future "reference"). Does
  * NOT pump SDL events — the host loop owns the event queue, which PsyCross's

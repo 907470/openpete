@@ -227,18 +227,17 @@ static void flame_report(CPUState* cpu) {
  * GTE TR for every flame vertex (R is then replaced by the attach matrix). */
 static int s16(int v) { return (int)(int16_t)(uint32_t)v; }
 
-static void flame_origin_tr(CPUState* cpu, double tr[3]) {
+static void flame_origin_tr(CPUState* cpu, const ngte_view* v, double tr[3]) {
     int fx = (int)cpu->read_word(G_SPYROFLAME + FL_POS + 0);
     int fy = (int)cpu->read_word(G_SPYROFLAME + FL_POS + 4);
     int fz = (int)cpu->read_word(G_SPYROFLAME + FL_POS + 8);
-    int cx = (int)cpu->read_word(G_CAMERA + 0x28);
-    int cy = (int)cpu->read_word(G_CAMERA + 0x2C);
-    int cz = (int)cpu->read_word(G_CAMERA + 0x30);
+    int cx = (int)v->cam_ram[0];   /* integer camera, as the .s loads it */
+    int cy = (int)v->cam_ram[1];
+    int cz = (int)v->cam_ram[2];
     int ir1 = s16(cy - fy);   /* C2_IR1 */
     int ir2 = s16(cz - fz);   /* C2_IR2 */
     int ir3 = s16(fx - cx);   /* C2_IR3 */
-    int R[3][3];
-    ngte_read_matrix(cpu, G_CAMERA + 0x00, R);
+    const int (*R)[3] = v->cam_M;
     /* Fractional matrix-scale (÷4096.0, not >>12) so the ribbon's camera-space
      * origin tracks the smooth sub-tick camera instead of stepping ~1 view-unit
      * per present (same fix as the moby/terrain deltas; the s16 IR delta above is
@@ -265,10 +264,10 @@ static void flame_load_matrix(CPUState* cpu, uint32_t base, int R[3][3]) {
 }
 
 /* RTPS one local vertex through R + TR (shift 12) -> screen (float) + view-Z */
-static void flame_project(const int R[3][3], const double TR[3], double ofx, double ofy, double H,
+static void flame_project(const int R[3][3], const double TR[3], double ofx, double ofy, const ngte_view* v,
                           double vx, double vy, double vz, float* sx, float* sy, float* sz) {
     ngte_proj o;   /* shared GTE-faithful pipeline, ±1024 SXY bound ON (W2.3) */
-    ngte_project_gte(R, TR, vx, vy, vz, ofx, ofy, H, 1, &o);
+    ngte_project_gte(R, TR, vx, vy, vz, ofx, ofy, v, 1, &o);
     *sx = (float)o.sx; *sy = (float)o.sy; *sz = (float)o.m3;
 }
 
@@ -305,7 +304,7 @@ static void flame_read_cross(CPUState* cpu, uint32_t p,
 typedef struct { float sx, sy, sz; } fpt;
 static void flame_cross_section(CPUState* cpu, uint32_t p, int amp,
                                 const int R[3][3], const double TR[3],
-                                double ofx, double ofy, double H, fpt* e0, fpt* e1) {
+                                double ofx, double ofy, const ngte_view* v, fpt* e0, fpt* e1) {
     int Xraw, Z, idx, sIdx;
     flame_read_cross(cpu, p, &Xraw, &Z, &idx, &sIdx);
     int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)sIdx + 0x80);
@@ -313,9 +312,9 @@ static void flame_cross_section(CPUState* cpu, uint32_t p, int amp,
     int co = (amp * cosv) >> 11;
     int si = (amp * sinv) >> 11;
     /* VXY0 = (co - Xraw, si - idx); VXY1 = (-co - Xraw, -si - idx); both at Z */
-    flame_project(R, TR, ofx, ofy, H, (double)(co - Xraw), (double)(si - idx), (double)Z,
+    flame_project(R, TR, ofx, ofy, v, (double)(co - Xraw), (double)(si - idx), (double)Z,
                   &e0->sx, &e0->sy, &e0->sz);
-    flame_project(R, TR, ofx, ofy, H, (double)(-co - Xraw), (double)(-si - idx), (double)Z,
+    flame_project(R, TR, ofx, ofy, v, (double)(-co - Xraw), (double)(-si - idx), (double)Z,
                   &e1->sx, &e1->sy, &e1->sz);
 }
 
@@ -360,11 +359,11 @@ static void emit_cap(const fpt* a, const fpt* b, const fpt* c,
  * strand: no caps AND no strip). */
 static int flame_first_cell(CPUState* cpu, uint32_t s7, int super,
                             const int R[3][3], const double TR[3],
-                            double ofx, double ofy, double H) {
+                            double ofx, double ofy, const ngte_view* v) {
     uint32_t w0c = cpu->read_word(s7), w1c = cpu->read_word(s7 + 4);
     int Xc = s16(w0c >> 16), Zc = s16(w0c & 0xFFFF), idxc = s16(w1c & 0xFFFF);
     fpt t5;  /* spine centre (no flicker) */
-    flame_project(R, TR, ofx, ofy, H, (double)(-Xc), (double)(-idxc), (double)Zc,
+    flame_project(R, TR, ofx, ofy, v, (double)(-Xc), (double)(-idxc), (double)Zc,
                   &t5.sx, &t5.sy, &t5.sz);
     int sz = (int)t5.sz; if (sz < 0) sz = 0; else if (sz > 0xFFFF) sz = 0xFFFF;
     if (((sz >> 7) - 2) < 0) return 1;              /* near-cull -> skip strand */
@@ -378,11 +377,11 @@ static int flame_first_cell(CPUState* cpu, uint32_t s7, int super,
     int t0 = -co, t1 = si;
     if (super) { t0 >>= 1; t1 >>= 1; }
     fpt e0, e1, e2;
-    flame_project(R, TR, ofx, ofy, H, (double)(t1 - Xraw2), (double)(t0 - idx2), (double)Z2,
+    flame_project(R, TR, ofx, ofy, v, (double)(t1 - Xraw2), (double)(t0 - idx2), (double)Z2,
                   &e0.sx, &e0.sy, &e0.sz);                       /* VXY0 */
-    flame_project(R, TR, ofx, ofy, H, (double)(co - Xraw2), (double)(si - idx2), (double)Z2,
+    flame_project(R, TR, ofx, ofy, v, (double)(co - Xraw2), (double)(si - idx2), (double)Z2,
                   &e1.sx, &e1.sy, &e1.sz);                       /* VXY1 */
-    flame_project(R, TR, ofx, ofy, H, (double)(-co - Xraw2), (double)(-si - idx2), (double)Z2,
+    flame_project(R, TR, ofx, ofy, v, (double)(-co - Xraw2), (double)(-si - idx2), (double)Z2,
                   &e2.sx, &e2.sy, &e2.sz);                       /* VXY2 */
 
     uint32_t cb = D_FLAME_UV + (super ? 16u : 0u);
@@ -401,11 +400,11 @@ static void flame_build_strip(CPUState* cpu) {
     uint32_t fb = G_SPYROFLAME;
     int super = (int)cpu->read_word(fb + FL_SUPER) != 0;
     int R[3][3]; double TR[3];
+    ngte_view view; ngte_view_build(cpu, &view);   /* one projection view per walk */
+    const ngte_view* v = &view;
     flame_load_matrix(cpu, fb + FL_ATTACH, R);
-    flame_origin_tr(cpu, TR);
-    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
-    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
-    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
+    flame_origin_tr(cpu, v, TR);
+    double ofx = v->ofx, ofy = v->ofy;
 
     static int dbg = -1;
     if (dbg < 0) { const char* e = getenv("OPENPETE_FLAME_DEBUG"); dbg = (e && *e && *e != '0'); }
@@ -434,7 +433,7 @@ static void flame_build_strip(CPUState* cpu) {
         int gp = (!((int32_t)(s7 - s5b) > 0) && !((int32_t)(v1b - s7) <= 0)) ? 1 : 0;
 
         if (gp) {                                    /* first cell: the base caps */
-            if (flame_first_cell(cpu, s7, super, R, TR, ofx, ofy, H))
+            if (flame_first_cell(cpu, s7, super, R, TR, ofx, ofy, v))
                 continue;                            /* near-cull -> skip strand */
         }
         s7 -= 0x10;                                  /* .L8005920C */
@@ -477,7 +476,7 @@ static void flame_build_strip(CPUState* cpu) {
             gp_acc += prev_sxy0;        /* add gp, gp, at */
             int amp = (byte2 <= 0 || gp_acc == 0) ? 8 : (super ? 0x40 : 0x2C);
             fpt c0, c1;
-            flame_cross_section(cpu, s7, amp, R, TR, ofx, ofy, H, &c0, &c1);
+            flame_cross_section(cpu, s7, amp, R, TR, ofx, ofy, v, &c0, &c1);
             s7 -= 0x10;
             /* pack edge0's SXY (the GTE SXY0 the .s reads into `at`) for next +gp */
             prev_sxy0 = (int32_t)(((uint32_t)(uint16_t)(int16_t)lrintf(c0.sx))

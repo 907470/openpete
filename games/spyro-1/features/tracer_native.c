@@ -79,19 +79,19 @@ static void tracer_snapshot(CPUState* cpu) {
 
 /* func_80017B48 in float: world point -> screen (sx,sy) + true full-scale
  * view-Z. Permuted/negated axes; pure float (no GTE int16 clamp / div cap). */
-static int tracer_project(const int R[3][3], const double cam[3],
-                         double ofx, double ofy, double H,
+static int tracer_project(const ngte_view* v,
                          int X, int Y, int Z,
                          double* sx, double* sy, double* vz) {
+    const double* cam = v->cam_ram;   /* integer camera, as the .s loads it */
     double V0 = cam[1] - Y;   /* camY - Y */
     double V1 = cam[2] - Z;   /* camZ - Z */
     double V2 = X - cam[0];   /* X - camX */
     double m1, m2, m3;
-    ngte_mac(R, V0, V1, V2, &m1, &m2, &m3);
+    ngte_mac(v->cam_M, V0, V1, V2, &m1, &m2, &m3);
     *vz = m3;
     if (m3 <= 1.0) { *sx = *sy = 0.0; return 0; }   /* at/behind camera */
-    *sx = ofx + m1 * H / m3;
-    *sy = ofy + m2 * H / m3;
+    *sx = v->ofx + m1 * v->H_eff / m3;
+    *sy = v->ofy + m2 * v->H_eff / m3;
     return 1;
 }
 
@@ -112,14 +112,8 @@ static void emit_tri(double ax, double ay, double az, uint32_t acol,
  * sub-ticks) and feed the additive ribbon with true per-vertex depth. */
 static void tracer_build_and_feed(CPUState* cpu) {
     if (s_nsets <= 0) return;
-    int R[3][3]; double cam[3];
-    ngte_read_matrix(cpu, G_CAMERA + 0, R);
-    cam[0]=(int32_t)cpu->read_word(G_CAMERA + 0x28);
-    cam[1]=(int32_t)cpu->read_word(G_CAMERA + 0x2C);
-    cam[2]=(int32_t)cpu->read_word(G_CAMERA + 0x30);
-    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
-    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
-    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
+    ngte_view view; ngte_view_build(cpu, &view);   /* one projection view per feed */
+    const ngte_view* v = &view;
     int is_gnasty = (cpu->read_word(G_LEVELID) == 63u);   /* level 63: thin + green */
     int wshift    = is_gnasty ? 2 : 0;
     openpete_native_scene_set_tag(OPENPETE_TAG_TRACER(0));
@@ -141,14 +135,14 @@ static void tracer_build_and_feed(CPUState* cpu) {
             int f = ts->pt[i].f;
             if (f >= 81) continue;            /* fully faded -> skip (prev unchanged) */
             double sx, sy, vz;
-            if (!tracer_project(R, cam, ofx, ofy, H, ts->pt[i].x, ts->pt[i].y, ts->pt[i].z, &sx, &sy, &vz))
+            if (!tracer_project(v, ts->pt[i].x, ts->pt[i].y, ts->pt[i].z, &sx, &sy, &vz))
                 continue;
             /* screen direction to the neighbouring point (next; backward at the end) */
             int j = (i + 1 < ts->count) ? i + 1 : i - 1;
             double dx = 0.0, dy = 0.0;
             if (j >= 0) {
                 double nx, ny, nvz;
-                if (tracer_project(R, cam, ofx, ofy, H, ts->pt[j].x, ts->pt[j].y, ts->pt[j].z, &nx, &ny, &nvz)) {
+                if (tracer_project(v, ts->pt[j].x, ts->pt[j].y, ts->pt[j].z, &nx, &ny, &nvz)) {
                     dx = nx - sx; dy = ny - sy;
                 }
             }

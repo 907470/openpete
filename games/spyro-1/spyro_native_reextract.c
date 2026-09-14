@@ -1027,7 +1027,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
             if (c < worst) worst = c;
         }
         if (worst > 1.0) worst = 1.0; else if (worst < -1.0) worst = -1.0;
-        moby_native_set_occl_pan((float)(acos(worst) * 400.0)); /* rad/tick → px/tick (H≈288 + margin) */
+        moby_native_set_occl_pan((float)(acos(worst) * 400.0)); /* rad/tick → px/tick at the canonical H (≈288 + margin); the consumer scales it by the view H scale */
     } else if (!cam_cut) {
         openpete_native_occl_suspend(2);
     }

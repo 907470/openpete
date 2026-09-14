@@ -137,12 +137,20 @@ static prim_t s_gte[MAX_PRIMS]; static int s_gte_n;
 static int s_code_hist[256]; static int s_uncoded_hist[256];
 
 /* ---- helpers (shared with the cyclorama harness conventions) -------- */
+/* The projection view of the pass in flight: one per producer pass, built at
+ * the pass entry (inside the producer-camera bracket on the sub-tick
+ * re-extract, so a held producer camera reaches it). The regular and
+ * specular walks, the reveal builder and the occlusion cache share s_view;
+ * the shaded walk projects through s_view_shd. */
+static ngte_view s_view;
+static ngte_view s_view_shd;
+
 /* Float RTPS mirror WITH translation: ngte_project_raw (shared, W2.3).
  * Returns view-Z (MAC3); caller owns the near-plane policy. */
 static double project(const int M[3][3], const double TR[3], double vx, double vy, double vz,
-                      double ofx_px, double ofy_px, double H,
+                      double ofx_px, double ofy_px, const ngte_view* v,
                       double* out_sx, double* out_sy, int* out_sat) {
-    return ngte_project_raw(M, TR, vx, vy, vz, ofx_px, ofy_px, H, out_sx, out_sy, out_sat);
+    return ngte_project_raw(M, TR, vx, vy, vz, ofx_px, ofy_px, v, out_sx, out_sy, out_sat);
 }
 
 /* GTE near-plane mirror for one projected vertex.
@@ -163,11 +171,11 @@ static double project(const int M[3][3], const double TR[3], double vx, double v
  * Returns 1 when the vertex was in the regime (and sx/sy were replaced). */
 static int moby_gte_near_fixup(const int M[3][3], const double TR[3],
                                double vx, double vy, double vz, double vzz,
-                               double ofx, double ofy, double H,
+                               double ofx, double ofy, const ngte_view* v,
                                double* sx, double* sy) {
-    if (vzz > 0.0 && H < 2.0 * vzz) return 0;
+    if (vzz > 0.0 && v->H_eff < 2.0 * vzz) return 0;
     ngte_proj gp;
-    ngte_project_gte(M, TR, vx, vy, vz, ofx, ofy, H, 1, &gp);
+    ngte_project_gte(M, TR, vx, vy, vz, ofx, ofy, v, 1, &gp);
     *sx = gp.sx; *sy = gp.sy;
     return 1;
 }
@@ -537,9 +545,8 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
         if (centre_full > 0.0)
             ot_centre = centre_full;
     }
-    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
-    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
-    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
+    const ngte_view* v = &s_view;
+    double ofx = v->ofx, ofy = v->ofy;
 
     int s5    = (cpu->read_byte(header + 6) & 0xFF) + 1;
     /* .s tier-adjusted vertex COUNT [@8001F9D4..FA04 / spec twin @80021178]:
@@ -598,8 +605,8 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
             vz = vzp + (vz - vzp) * blend_alpha;
         }
         double sx, sy; int sat;
-        double vzz = project(M, TR, vx, vy, vz, ofx, ofy, H, &sx, &sy, &sat);
-        int unr = moby_gte_near_fixup(M, TR, vx, vy, vz, vzz, ofx, ofy, H, &sx, &sy);
+        double vzz = project(M, TR, vx, vy, vz, ofx, ofy, v, &sx, &sy, &sat);
+        int unr = moby_gte_near_fixup(M, TR, vx, vy, vz, vzz, ofx, ofy, v, &sx, &sy);
         /* The Z-buffer needs FULL-WORLD view-Z so mobys sort vs terrain / Spyro /
          * each other. project's mac3 is in the m_scale-adjusted world/4 scale
          * (C2_TR = (stored<<2)>>m_scale, stored is world/4), so multiply by
@@ -1010,12 +1017,12 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
     f->metal = (int)((f->mscol >> 24) & 0xFFu);
     /* M = ProjMatrix . Ry . Rx . Rz(m_Rotation) — the SAME euler compose the shaded
      * path uses (verified bit-exact there); m_Rotation @ moby+0x44. */
-    int PM[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x00, PM);
+    int PM[3][3]; memcpy(PM, s_view.cam_M, sizeof PM);
     shaded_compose_euler(cpu, PM, moby, f->M);
     /* TR = ProjMatrix . swizzled (cam-moby)>>2  (the cull's centre MVMVA: IR1=(cy-my)>>2,
      * IR2=(cz-mz)>>2, IR3=(mx-cx)>>2; MAC=(PM·IR)>>12). NOT scaled by m_Scale or <<1
      * here — moby_decode_project applies (<<2)>>m_Scale, matching the .s record store. */
-    int32_t cx=(int32_t)cpu->read_word(G_CAMERA+0x28), cy=(int32_t)cpu->read_word(G_CAMERA+0x2C), cz=(int32_t)cpu->read_word(G_CAMERA+0x30);
+    int32_t cx=(int32_t)s_view.cam_ram[0], cy=(int32_t)s_view.cam_ram[1], cz=(int32_t)s_view.cam_ram[2];
     int32_t mx=(int32_t)cpu->read_word(moby+0x0C), my=(int32_t)cpu->read_word(moby+0x10), mz=(int32_t)cpu->read_word(moby+0x14);
     int32_t Vy=(cy-my)>>2, Vz=(cz-mz)>>2, Vx=(mx-cx)>>2;
     /* 64-bit accumulate: the products reach 4096*|V|, so an int32 sum wraps once
@@ -1037,11 +1044,10 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
      * Sub-tick floor fix: prefer the FRACTIONAL interpolated camera + moby
      * positions (un-rounded) over the floored RAM, so neither the camera component
      * nor the moby's own motion steps on the 1-world-unit lerp32 grid. */
-    double cfx=(double)cx, cfy=(double)cy, cfz=(double)cz;
+    double cfx=s_view.cam[0], cfy=s_view.cam[1], cfz=s_view.cam[2];
     double mfx=(double)mx, mfy=(double)my, mfz=(double)mz;
-    int fpos_hit = 0, cam_hit = 0;
-    { double cf[3], mf[3];
-      if (openpete_native_interp_pos(G_CAMERA, cf)) { cfx=cf[0]; cfy=cf[1]; cfz=cf[2]; cam_hit=1; }
+    int fpos_hit = 0, cam_hit = s_view.cam_interp;
+    { double mf[3];
       if (openpete_native_interp_pos(moby,     mf)) { mfx=mf[0]; mfy=mf[1]; mfz=mf[2]; fpos_hit=1; } }
     /* OPENPETE_REG_INTERP_MISS: regular/specular mobys with NO fractional position
      * (not reached by the spine's lerp walk → they step at the sim rate while the
@@ -1074,15 +1080,12 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
  * most of the held path's residual cost. Callers guarantee the moby extracted
  * as an animated record this epoch, so the model checks are skipped. */
 static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]) {
-    int PM[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x00, PM);
-    double cfx=(double)(int32_t)cpu->read_word(G_CAMERA+0x28),
-           cfy=(double)(int32_t)cpu->read_word(G_CAMERA+0x2C),
-           cfz=(double)(int32_t)cpu->read_word(G_CAMERA+0x30);
+    const int (*PM)[3] = s_view.cam_M;
+    double cfx=s_view.cam[0], cfy=s_view.cam[1], cfz=s_view.cam[2];
     double mfx=(double)(int32_t)cpu->read_word(moby+0x0C),
            mfy=(double)(int32_t)cpu->read_word(moby+0x10),
            mfz=(double)(int32_t)cpu->read_word(moby+0x14);
-    { double cf[3], mf[3];
-      if (openpete_native_interp_pos(G_CAMERA, cf)) { cfx=cf[0]; cfy=cf[1]; cfz=cf[2]; }
+    { double mf[3];
       if (openpete_native_interp_pos(moby,     mf)) { mfx=mf[0]; mfy=mf[1]; mfz=mf[2]; } }
     double dVy=(cfy-mfy)/4.0, dVz=(cfz-mfz)/4.0, dVx=(mfx-cfx)/4.0;
     for (int i=0;i<3;i++)
@@ -1206,7 +1209,7 @@ static int append_revealed_regular(CPUState* cpu) {
     return n;
 }
 static int append_revealed_regular_inner(CPUState* cpu) {
-    float F = openpete_native_widescreen_factor();
+    float F = s_view.F;
     /* Two reveal modes, composable — each mirrors a retired game-side
      * producer widening, so admission is deliberately liveness-BLIND
      * (the .s cull never tested liveness; the canonical PSX draws
@@ -1233,9 +1236,9 @@ static int append_revealed_regular_inner(CPUState* cpu) {
      * straddles the camera plane and has no valid projection. Applies at every
      * LOD — extended LOD reaches the cutscene through this builder too. */
     if (moby_cutscene_owns_draw(cpu)) return 0;
-    float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
-    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
-    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
+    float xlo = s_view.xlo, xhi = s_view.xhi;
+    double ofx = s_view.ofx;
+    double H   = s_view.H_eff;
     /* OPENPETE_REVEAL_DBG=frame — reveal-admission forensics: dumps every
      * builder candidate near the window edge (cls/state/rad/rz/sx/bok) on
      * the target frame, so a missing edge moby can be attributed to its
@@ -2021,7 +2024,6 @@ static int build_walk_tris(CPUState* cpu) {
     if (s_walk_in_rex) s_us_walk_rex += dt; else s_us_walk += dt;
     return n;
 }
-static double s_walk_H = 365.0;   /* GTE projection distance (ctrl[26]) for sprite extents */
 /* Faces resolved by the serial prologue, one entry per record. The walk itself
  * must not resolve them: the decode patches guest RAM in place and restores it,
  * and both face caches allocate and evict — none of which is safe to run on
@@ -2642,7 +2644,6 @@ static void walk_parallel(CPUState* cpu, int is_spec) {
 
 static int build_walk_tris_inner(CPUState* cpu) {
     specular_env_load(cpu);   /* refresh metalMatrix + metal Tiledef (cheap; SPEC env-UV) */
-    s_walk_H = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
     s_gout.n = 0;
     memset(s_wdiag, 0, sizeof(s_wdiag));
     int is_spec = (s_cur_mat && s_cur_mat[0]=='S' && s_cur_mat[1]=='P');
@@ -3444,6 +3445,7 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
     s_cur_mat = mat;
     s_rec_base = REC_BASE;
     (void)mat;
+    ngte_view_build(cpu, &s_view);
 
     uint32_t start = cpu->read_word(POLYBUF_CURSOR);
     { OP_PROF_ACCUM_SCOPE("moby.srend");
@@ -3625,11 +3627,12 @@ static void moby_reveal_dbg(CPUState* cpu) {
     if (s_done || openpete_frame < 1850u) return;
     s_done = 1;
 
-    float F = openpete_native_widescreen_factor();   /* 1.0 at native 4:3 */
-    int M[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x00, M);   /* moby transform uses ProjMatrix */
-    int camx = (int32_t)cpu->read_word(G_CAMERA + 0x28);
-    int camy = (int32_t)cpu->read_word(G_CAMERA + 0x2C);
-    int camz = (int32_t)cpu->read_word(G_CAMERA + 0x30);
+    ngte_view v; ngte_view_build(cpu, &v);
+    float F = v.F;                                   /* 1.0 at native 4:3 */
+    int M[3][3]; memcpy(M, v.cam_M, sizeof M);       /* moby transform uses ProjMatrix */
+    int camx = (int32_t)v.cam_ram[0];
+    int camy = (int32_t)v.cam_ram[1];
+    int camz = (int32_t)v.cam_ram[2];
     int spx = (int32_t)cpu->read_word(G_SPYRO + 0x00);
     int spy = (int32_t)cpu->read_word(G_SPYRO + 0x04);
 
@@ -4036,10 +4039,11 @@ static void shaded_verify(CPUState* cpu) {
      * (each with its own R = ProjMatrix . Ry(m_Rotation axis0) and TR =
      * ProjMatrix . (pos - cam)) and accumulate, then A/B vs all shaded prims.
      * (axis0 = Y confirmed; axis1/2 euler TODO for fuller rotations.) */
-    int PM[3][3]; ngte_read_matrix(cpu, G_CAMERA, PM);
-    int32_t cx=(int32_t)cpu->read_word(G_CAMERA+0x28), cy=(int32_t)cpu->read_word(G_CAMERA+0x2C), cz=(int32_t)cpu->read_word(G_CAMERA+0x30);
-    double ofx=(double)((int32_t)cpu->gte_ctrl[24]>>16), ofy=(double)((int32_t)cpu->gte_ctrl[25]>>16);
-    double H=(double)(cpu->gte_ctrl[26]&0xFFFFu);
+    /* Compares against the game's own prims: the canonical projection. */
+    ngte_view vc; ngte_view_canon(&s_view_shd, &vc);
+    int PM[3][3]; memcpy(PM, vc.cam_M, sizeof PM);
+    int32_t cx=(int32_t)vc.cam_ram[0], cy=(int32_t)vc.cam_ram[1], cz=(int32_t)vc.cam_ram[2];
+    double ofx=vc.ofx, ofy=vc.ofy;
     static proj_xy sv[8192]; int n=0; int nmoby=0;
     for (int r=0; r<256; r++) {
         uint32_t m = cpu->read_word(SHADED_BASE + (uint32_t)r*4u);
@@ -4075,7 +4079,7 @@ static void shaded_verify(CPUState* cpu) {
             uint32_t w = cpu->read_byte(p) | (cpu->read_byte(p+1)<<8) | (cpu->read_byte(p+2)<<16);
             int VZ=((int32_t)(w<<24))>>23, VX=((int32_t)(w<<16))>>23, VY=((int32_t)(w<<8))>>23;
             double sx,sy; int sat;
-            project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
+            project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,&vc, &sx,&sy,&sat);
             sv[n].sx=(float)sx; sv[n].sy=(float)sy; sv[n].sat=sat; n++;
         }
     }
@@ -4218,14 +4222,13 @@ static shaded_rec s_shrecs[256]; static int s_nshrecs;
  * out[]. Returns vertex count. Shared by shaded_verify + the feed. Also records
  * per-moby metadata in s_shrecs[] for the native topology walk. */
 static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
-    int PM[3][3]; ngte_read_matrix(cpu, G_CAMERA, PM);
-    int32_t cx=(int32_t)cpu->read_word(G_CAMERA+0x28), cy=(int32_t)cpu->read_word(G_CAMERA+0x2C), cz=(int32_t)cpu->read_word(G_CAMERA+0x30);
+    const ngte_view* v = &s_view_shd;
+    int PM[3][3]; memcpy(PM, v->cam_M, sizeof PM);
+    int32_t cx=(int32_t)v->cam_ram[0], cy=(int32_t)v->cam_ram[1], cz=(int32_t)v->cam_ram[2];
     /* Sub-tick floor fix: fractional interpolated camera (un-rounded) for the
-     * camera-relative delta below; falls back to the floored RAM at 30 Hz. */
-    double cfx=(double)cx, cfy=(double)cy, cfz=(double)cz;
-    { double cf[3]; if (openpete_native_interp_pos(G_CAMERA, cf)) { cfx=cf[0]; cfy=cf[1]; cfz=cf[2]; } }
-    double ofx=(double)((int32_t)cpu->gte_ctrl[24]>>16), ofy=(double)((int32_t)cpu->gte_ctrl[25]>>16);
-    double H=(double)(cpu->gte_ctrl[26]&0xFFFFu);
+     * camera-relative delta below; the floored RAM at 30 Hz. */
+    double cfx=v->cam[0], cfy=v->cam[1], cfz=v->cam[2];
+    double ofx=v->ofx, ofy=v->ofy;
     /* directional light dir (int16-truncated on ctc2 into the LCM), refreshed
      * each frame from D_800770C8+0/+4/+8 (block_80022AD0). */
     s_shL[0]=(int16_t)cpu->read_word(D_SPEC_LIGHT+0); s_shL[1]=(int16_t)cpu->read_word(D_SPEC_LIGHT+4); s_shL[2]=(int16_t)cpu->read_word(D_SPEC_LIGHT+8);
@@ -4472,9 +4475,9 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * within-moby depth so the Z-buffer couldn't separate a moby's faces
              * (interior/back faces would punch through the front). Per-vertex Z is
              * what the real Z-buffer needs. */
-            double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,H, &sx,&sy,&sat);
+            double vzz = project(M,TR,(double)VX,(double)VY,(double)VZ, mofx,mofy,v, &sx,&sy,&sat);
             int unr = moby_gte_near_fixup(M, TR, (double)VX,(double)VY,(double)VZ, vzz,
-                                          mofx, mofy, H, &sx, &sy);
+                                          mofx, mofy, v, &sx, &sy);
             if (vzz > 0.0) { if (vzz<pvzmin) pvzmin=vzz; if (vzz>pvzmax) pvzmax=vzz; }
             double fvz = vzz*vz_scale;
             /* Fed depth stays TRUE per-vertex (see the regular walk's twin):
@@ -4807,6 +4810,7 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_MOBY, startp, endp);  /* polybuf range for the OT filter */
+    ngte_view_build(cpu, &s_view_shd);
 
     if (feed) {                                 /* feed shaded mobys to the scene — fully native */
         s_cur_mat = "SHD";
@@ -4994,7 +4998,7 @@ static int occl_refresh_bounds(CPUState* cpu, uint32_t moby, const occl_rect_t* 
     double tr[3], sx, sy;
     build_moby_record_tr(cpu, moby, tr);
     if (!hold_project_origin(cpu, tr, &sx, &sy)) return 0;   /* too near to project: extract */
-    double H     = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
+    double H     = s_view.H_eff;
     double scale = (double)e->atrz / tr[2];                  /* screen px per anchor px */
     double hr    = (double)e->arad * H / tr[2];              /* radius box half-extent */
     double ax0 = sx + ((double)e->x0 - e->asx) * scale, ax1 = sx + ((double)e->x1 - e->asx) * scale;
@@ -5035,17 +5039,19 @@ static int occl_record_culled(CPUState* cpu, uint32_t moby) {
         own = 0.0f;
     } else {
         /* Own-motion allowance ≈ 256 world units/tick at an overestimated H≈400:
-         * px = 400·256/vz. Camera pan rides s_occl_pan_px (measured per tick).
+         * px = 400·256/vz, scaled by the view's H scale (the pan allowance is
+         * measured at the canonical H and scaled the same way). Camera pan
+         * rides s_occl_pan_px (measured per tick).
          * Own-motion allowance: the 256-u/tick model floor OR the moby's MEASURED
          * screen motion ×1.5, whichever is larger — fast movers (birds ~750 u/tick)
          * beat the model by 3× and could stay culled ≤3 presents while emerging
          * from cover (found by the OCCL_VERIFY audit, magic-crafters f2154). */
         float vzm = e->vz_min < 512.0f ? 512.0f : e->vz_min;
-        own = 102400.0f / vzm;
+        own = 102400.0f * (float)s_view.s / vzm;
         if (e->mot * 1.5f > own) own = e->mot * 1.5f;
     }
     float aged = (float)age + 1.0f;
-    float inf = 8.0f + aged * (s_occl_pan_px + own);
+    float inf = 8.0f + aged * (s_occl_pan_px * (float)s_view.s + own);
     float vzs = 600.0f;
     if (e->mot_vz * 1.5f > vzs) vzs = e->mot_vz * 1.5f;
     int culled = openpete_native_occl_query(rx0 - inf, ry0 - inf,
@@ -5082,9 +5088,9 @@ static void occl_proj_bounds(const proj_xy* p, int n, float* px0, float* py0,
 static int occl_query_at(float x0, float y0, float x1, float y1, float vzmin,
                          float mot, float mot_vz) {
     float vzm = vzmin < 512.0f ? 512.0f : vzmin;
-    float own = 102400.0f / vzm;
+    float own = 102400.0f * (float)s_view.s / vzm;
     if (mot * 1.5f > own) own = mot * 1.5f;
-    float inf = 8.0f + (s_occl_pan_px + own);
+    float inf = 8.0f + (s_occl_pan_px * (float)s_view.s + own);
     float vzs = 600.0f;
     if (mot_vz * 1.5f > vzs) vzs = mot_vz * 1.5f;
     return openpete_native_occl_query(x0 - inf, y0 - inf, x1 + inf, y1 + inf, vzmin - vzs);
@@ -5104,8 +5110,7 @@ static void occl_verify_end(uint32_t moby, const proj_xy* p, int n) {
     /* Classify: a fresh rect fully outside the visible extent produces ZERO
      * pixels regardless of the verdict — the conservative inflation merely
      * crossed the boundary. Only on-screen fresh rects are real events. */
-    float xlo, xhi;
-    openpete_native_widescreen_x_bounds(&xlo, &xhi);
+    float xlo = s_view.xlo, xhi = s_view.xhi;
     int zeropx = (x1 < xlo || x0 > xhi || y1 < 0.0f || y0 > 224.0f);
     if (!zeropx) s_ver_wrong++;
     fprintf(stderr, "[occl-VERIFY-%s f=%u] moby=%08x cached rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f age=%u "
@@ -5192,6 +5197,7 @@ static uint32_t s_hold_fkey[HOLD_TRI_MAX];
 static uint8_t  s_hold_mode[HOLD_TRI_MAX];
 typedef struct { uint32_t moby; unsigned epoch; int off, n, spec;
                  double sx, sy, trz;              /* captured origin projection + view-Z */
+                 double H;                        /* projection distance the tris were built with */
                  uint16_t cls;                    /* m_Class at capture (provenance tag) */
                  uint8_t front; } hold_t;         /* per-moby emit flags at capture */
 static hold_t   s_hold[HOLD_MOBY_MAX];
@@ -5212,9 +5218,10 @@ static hold_t* hold_find(uint32_t moby, int spec) {
  * m_Scale shift cancels in the x/z ratio, so raw TR is exact here. */
 static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, double* sy) {
     if (tr[2] < 64.0) return 0;                    /* too near / behind: no hold */
-    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
-    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
-    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFFu);
+    (void)cpu;
+    double ofx = s_view.ofx;
+    double ofy = s_view.ofy;
+    double H   = s_view.H_eff;
     *sx = ofx + tr[0] * H / tr[2];
     *sy = ofy + tr[1] * H / tr[2];
     return 1;
@@ -5306,7 +5313,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * occl_cache_update. */
         if (hold_px_max() > 0) {
             const hold_t* h = hold_find(mobys[i], is_spec);
-            if (h && h->n > 0 && h->trz > 1.0 && nreplay < MAX_RECORDS) {
+            if (h && h->n > 0 && h->trz > 1.0 && h->H == s_view.H_eff && nreplay < MAX_RECORDS) {
                 double tr[3], sx, sy;
                 build_moby_record_tr(cpu, mobys[i], tr);
                 if (hold_project_origin(cpu, tr, &sx, &sy)) {
@@ -5552,6 +5559,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             hold_t* h = &s_hold[s_hold_n++];
             h->moby = mob; h->epoch = s_hold_epoch; h->off = off; h->n = n;
             h->spec = is_spec; h->sx = sx; h->sy = sy; h->trz = s_rec_tr[r][2];
+            h->H = s_view.H_eff;
             h->cls = hcls; h->front = hfront;
         }
     }
@@ -5625,6 +5633,7 @@ void moby_native_reextract(CPUState* cpu) {
      * verbatim when the tick ended under a different one, else the
      * interpolated bracket). */
     spyro_native_prod_camera_enter(SPYRO_PROD_MOBYREG);
+    ngte_view_build(cpu, &s_view);
     if (reg_fresh) {
         nm = reextract_record_pass(cpu, "REG");
         reg_walk = s_gout.n;
@@ -5653,6 +5662,7 @@ void moby_native_reextract(CPUState* cpu) {
     if (shd_fresh) {
         s_cur_mat = "SHD";
         spyro_native_prod_camera_enter(SPYRO_PROD_SHADED);
+        ngte_view_build(cpu, &s_view_shd);
         build_shaded_walk_tris(cpu);
         spyro_native_prod_camera_leave();
         push_scene_moby();

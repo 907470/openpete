@@ -8,6 +8,7 @@
 #pragma once
 #include <stdint.h>
 #include "psx_runtime_internal.h"
+#include "native_gte.h"     /* ngte_view: the caller's projection view */
 
 /* Portal-guard gate (terrain PORTAL_GUARD experiment): true while a portal
  * fed sky within the last couple of presents. */
@@ -63,7 +64,7 @@ typedef struct {
  * Live-derived per call from g_Portals + the camera RAM, so canonical and
  * sub-tick presents each get the plane matching their own camera bracket.
  * Returns the count (0 when no portal sky is active). */
-int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int max);
+int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max);
 
 /* Plane-cover near margin M in world units (OPENPETE_PORTAL_PLANE_MARGIN,
  * default 256): inside an opening's footprint the preview covers everything

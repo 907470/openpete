@@ -2279,9 +2279,16 @@ static void terrain_visdbg(CPUState* cpu, uint32_t sectorCnt, int group,
  * the exact input the .s used to build D_800771C8, so it's the ground truth
  * even for the in-level/overlay callers that bypass func_8002B9CC (which a
  * re-derivation from g_Camera.m_OcclusionGroup would miss). */
+/* The projection view of the current terrain pass (camera matrix and
+ * position, GTE offsets, canonical and effective H, Hor+ bounds). Built once
+ * at terrain_build entry; the feed that follows (rim frames, portal planes,
+ * the conform census) reads the same view, so the plane fit and the frames
+ * derived from it share one H. */
+static ngte_view s_view;
+
 static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int32_t group) {
     if (sectorCnt > 1024) sectorCnt = 1024;
-    int ws = openpete_native_widescreen_factor() > 1.0001f;
+    int ws = s_view.F > 1.0001f;
     if (s_visdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_VISDBG"); s_visdbg = (e && *e && *e != '0'); }
     {   /* OPENPETE_TERRAIN_ALLVIS=1: walk ALL sectors (bypass D_VISIBILITY /
          * occlusion groups) — A/B probe for view-dependent sector culling. */
@@ -4532,6 +4539,7 @@ static void walk_sector_job(int item, int worker, void* arg) {
 }
 
 static void terrain_build(CPUState* cpu, int32_t occGroup) {
+    ngte_view_build(cpu, &s_view);
     s_vanim_pres++;                /* new build → prior lerp/roll bank stamps go stale */
     terrain_texrecords(cpu);
     terrain_animdbg(cpu);
@@ -4688,7 +4696,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * the pixels needing attribution are exactly the ones nothing drew. */
     if (s_facemap < 0) { const char* e = getenv("OPENPETE_TERRAIN_FACEMAP"); s_facemap = (e && *e) ? atoi(e) : 0; }
     s_facemap_active = s_facemap && !s_facemap_done && openpete_frame >= (unsigned)s_facemap;
-    int M[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x00, M);   /* m_ProjectionMatrix */
+    int M[3][3]; memcpy(M, s_view.cam_M, sizeof M);   /* m_ProjectionMatrix */
     int Mbin[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x14, Mbin); /* .s sector-binning matrix (LP/HP LOD lists) */
     {   /* World->view scale bound for the rim broadphase's sphere radius: M is
          * not orthonormal (the Y row bakes a ~0.625 squash), so a world-space
@@ -4707,9 +4715,9 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                          (double)M[2][2]*M[2][2]) / 4096.0;
         if (s_tgpu_l3 < 1e-6) s_tgpu_l3 = 1.0;
     }
-    s_ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
-    s_ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
-    s_H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    s_ofx = s_view.ofx;
+    s_ofy = s_view.ofy;
+    s_H   = s_view.H_eff;
     /* Arm the fill-tag inspector's pick point set for this walk (see fp_begin:
      * the crosshair, plus an optional grid sweep). */
     s_fp_on = openpete_fillpick_active();
@@ -4727,15 +4735,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * interpolated camera position (un-rounded) so terrain — which is purely
      * camera-driven — is TRULY continuous, not just stepped at the 1-world-unit
      * lerp32 grid. Falls back to the (floored) RAM at the 30 Hz lockstep. */
-    double camx, camy, camz;
-    { double cf[3];
-      if (openpete_native_interp_pos(G_CAMERA, cf)) {
-          camx = cf[0] / 16.0; camy = cf[1] / 16.0; camz = cf[2] / 16.0;
-      } else {
-          camx = (double)(int32_t)rd(cpu, G_CAMERA + 0x28) / 16.0;
-          camy = (double)(int32_t)rd(cpu, G_CAMERA + 0x2C) / 16.0;
-          camz = (double)(int32_t)rd(cpu, G_CAMERA + 0x30) / 16.0;
-      } }
+    double camx = s_view.cam[0] / 16.0, camy = s_view.cam[1] / 16.0, camz = s_view.cam[2] / 16.0;
     int fogRefBase = (int32_t)rd(cpu, G_ENVIRONMENT + ENV_LODDIST) >> 2;  /* §10 */
     /* Publish this walk's fog-ladder ramp for the CONTINUOUS pack-fog model
      * (HD-replaced draws only; see texture_pack_fog_ladder_set): the .s row
@@ -4885,7 +4885,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                && texTblMode == 0;
     s_tgpu_pplane_n = 0; s_tgpu_claim_all = 0; s_tgpu_rim_ok = 0;
     if (tgpu_on && openpete_portal_sky_recent()) {
-        s_tgpu_pplane_n = openpete_portal_sky_planes(cpu, s_tgpu_pplane, 6);
+        s_tgpu_pplane_n = openpete_portal_sky_planes(cpu, &s_view, s_tgpu_pplane, 6);
         /* Recent portal but planes momentarily gone: claim everything (safe). */
         if (s_tgpu_pplane_n == 0) s_tgpu_claim_all = 1;
         else s_tgpu_rim_ok = tgpu_portal_frames(cpu);
@@ -4895,7 +4895,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         memset(&tcg, 0, sizeof(tcg));
         for (int r = 0; r < 3; r++)
             for (int c = 0; c < 3; c++) tcg.mrow[r][c] = (float)M[r][c];
-        tcg.ofx = s_ofx; tcg.ofy = s_ofy; tcg.H = s_H;
+        tcg.ofx = s_ofx; tcg.ofy = s_ofy; tcg.H = s_H; tcg.H_canon = s_view.H_canon;
         tcg.camx = camx; tcg.camy = camy; tcg.camz = camz;
         tcg.fogscale = s_fogscale;
         /* Poly-anim lerp alpha: sub-tick paired builds carry the spine's
@@ -5745,9 +5745,9 @@ static rim_frame_t s_rimfr[6];
 static double s_rim_ofx, s_rim_ofy, s_rim_H;
 
 static void rim_frames_derive(CPUState* cpu) {
-    s_rim_ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
-    s_rim_ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
-    s_rim_H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    s_rim_ofx = s_view.ofx;
+    s_rim_ofy = s_view.ofy;
+    s_rim_H   = s_view.H_eff;
     for (int pi = 0; pi < s_pplane_n; pi++) {
         rim_frame_t* rf = &s_rimfr[pi];
         const openpete_portal_skyplane* pp = &s_pplane[pi];
@@ -6086,7 +6086,7 @@ static void terrain_feed_native(CPUState* cpu) {
     }
     /* Active portal-sky opening planes, derived against THIS present's camera
      * bracket (canonical or sub-tick interpolated) so plane and verts agree. */
-    s_pplane_n = s_pconform ? openpete_portal_sky_planes(cpu, s_pplane, 6) : 0;
+    s_pplane_n = s_pconform ? openpete_portal_sky_planes(cpu, &s_view, s_pplane, 6) : 0;
     /* Republish the openings for the core-side plane-cover invariant sweep
      * (OPENPETE_PORTAL_COVER_CHECK) — core sees the complete scene but not
      * the game-side plane provider. */
@@ -6136,9 +6136,7 @@ static void terrain_feed_native(CPUState* cpu) {
                          s_fit = (e && *e) ? 1 : -1; s_fit_f = (e && *e) ? (unsigned)atoi(e) : 0; }
       if (s_fit == 1 && openpete_frame >= s_fit_f && s_pplane_n > 0) {
         s_fit = -1;                                  /* one shot */
-        const double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
-        const double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
-        const double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+        const double ofx = s_view.ofx, ofy = s_view.ofy, H = s_view.H_eff;
         for (int pi = 0; pi < s_pplane_n && H >= 1.0; pi++) {
           const openpete_portal_skyplane* pp = &s_pplane[pi];
           if (pp->vn < 3) continue;
@@ -6161,8 +6159,7 @@ static void terrain_feed_native(CPUState* cpu) {
            * along the wrong axes. Emitting both axes in (U,W) coordinates lets
            * the fit be converted exactly. */
           double zx, zy, zz;              /* world +Z, in view space */
-          { int Mc[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x00, Mc);
-            ngte_mac(Mc, 0.0, -1.0, 0.0, &zx, &zy, &zz); }
+          ngte_mac(s_view.cam_M, 0.0, -1.0, 0.0, &zx, &zy, &zz);
           { const double zd = zx*nx + zy*ny + zz*nz;    /* project into plane */
             zx -= zd*nx; zy -= zd*ny; zz -= zd*nz; }
           const double zl = sqrt(zx*zx + zy*zy + zz*zz);
@@ -6229,9 +6226,7 @@ static void terrain_feed_native(CPUState* cpu) {
                          s_rim = (e && *e) ? 1 : -1; s_rim_f = (e && *e) ? (unsigned)atoi(e) : 0; }
       if (s_rim == 1 && openpete_frame >= s_rim_f && s_pplane_n > 0) {
         s_rim = -1;                                  /* one shot */
-        const double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
-        const double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
-        const double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+        const double ofx = s_view.ofx, ofy = s_view.ofy, H = s_view.H_eff;
         for (int pi = 0; pi < s_pplane_n; pi++) {
           const openpete_portal_skyplane* pp = &s_pplane[pi];
           double nx = pp->a * H, ny = pp->b * H;
@@ -7165,7 +7160,10 @@ int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
     uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
     uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
     if (!sectorPtr || !sectorCnt || sectorCnt > 1024) return 0;
-    double H = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    /* The pose is written into g_Camera by freecam, so it is derived at the
+     * canonical H: a display FOV must not reach that write. */
+    ngte_view pv, cv; ngte_view_build(cpu, &pv); ngte_view_canon(&pv, &cv);
+    double H = cv.H_eff;
     if (H < 1.0) H = 400.0;
     /* Pass 1: true vertex bounds (both banks) → centre + level top. */
     double mm[5] = { 1e18, -1e18, 1e18, -1e18, -1e18 };  /* minx,maxx,miny,maxy,maxz */

@@ -102,18 +102,21 @@ static unsigned portal_dump_frame(void) {
     return f;
 }
 
-static double project_world(CPUState* cpu, double wx, double wy, double wz, double* out_sx, double* out_sy);
+static double project_world(CPUState* cpu, const ngte_view* v, double wx, double wy, double wz, double* out_sx, double* out_sy);
+/* The projection view of the pass in progress (leaf hook, RenderPortals
+ * reveal, sub-tick replay), built at each entry. */
+static ngte_view s_view;
 
 typedef struct { float x, y, r, g, b; } pgv;   /* gouraud screen vertex (clipping) */
 typedef struct { float x, y; double vz; } ppt; /* projected portal-outline point  */
 /* Owning portal of a leaf: skybox-pointer match (dome/close), else screen-centre
  * match (far/medium flat). Returns the Portal* or 0. */
-static uint32_t owning_portal_ptr(CPUState* cpu, uint32_t a0, double cx, double cy);
+static uint32_t owning_portal_ptr(CPUState* cpu, const ngte_view* v, uint32_t a0, double cx, double cy);
 /* Project a portal's outline (m_Points) to screen with per-point view-Z. Returns
  * the count (>=3) iff every point is in front of the camera, else 0 (the portal
  * is a tilted planar window — its sky is depth-interpolated across this polygon
  * instead of drawn flat, so the stone frame occludes it correctly at an angle). */
-static int    portal_outline_screen(CPUState* cpu, uint32_t p, ppt* poly, int maxn);
+static int    portal_outline_screen(CPUState* cpu, const ngte_view* v, uint32_t p, ppt* poly, int maxn);
 
 /* Per-portal opening-polygon correction, in world units, along the opening
  * plane's own horizontal/vertical axes.
@@ -312,7 +315,7 @@ static void dump_portal_table(CPUState* cpu) {
         int npts        = (int32_t)cpu->read_word(p + 0x04);
         /* Centroid of the outline points (p+0x20 + 12*k), projected as the game
          * does — confirms which portals are on-screen + their view-Z. */
-        double sx, sy, vz = project_world(cpu, (int32_t)cpu->read_word(p + 0x20),
+        double sx, sy, vz = project_world(cpu, &s_view, (int32_t)cpu->read_word(p + 0x20),
                                           (int32_t)cpu->read_word(p + 0x24),
                                           (int32_t)cpu->read_word(p + 0x28), &sx, &sy);
         fprintf(stderr, "  portal[%u]@%08X skybox=%08X levelId=%d npts=%d%s bg=%06X -> screen(%.0f,%.0f) viewZ=%.0f\n",
@@ -353,7 +356,7 @@ static void dump_portal_table(CPUState* cpu) {
         if (npts >= 3 && npts <= 16 && vz > 1.0) {
             fprintf(stderr, "    outline:");
             for (int k = 0; k < npts; k++) {
-                double ox, oy, ovz = project_world(cpu,
+                double ox, oy, ovz = project_world(cpu, &s_view,
                         (int32_t)cpu->read_word(p + 0x20 + k*12),
                         (int32_t)cpu->read_word(p + 0x24 + k*12),
                         (int32_t)cpu->read_word(p + 0x28 + k*12), &ox, &oy);
@@ -440,27 +443,21 @@ static int          s_dome_prev_valid = 0, s_dome_curr_valid = 0;
  * (TR=0) with a PERMUTED/NEGATED vertex feed: GTE V = (-(wy-cy), -(wz-cz),
  * (wx-cx)). The per-point distance >>shift it applies cancels in the MAC1/MAC3
  * ratio, so float needs no shift. Returns the full-world view-space Z (MAC3);
- * fills screen sx/sy. OFX/OFY/H from the live GTE control regs. */
+ * fills screen sx/sy. Camera, OFX/OFY and H from the pass view. */
 /* World coordinates are DOUBLE, not int. m_Points are authored as integers, but
  * a corrected outline lands between them, and truncating it back to whole world
  * units shifts the whole opening by up to a unit before it is ever projected.
  * That is invisible at a distance and a pixel of misplacement up close, which
  * is exactly where the opening meeting its stone is judged. */
-static double project_world(CPUState* cpu, double wx, double wy, double wz,
+static double project_world(CPUState* cpu, const ngte_view* v, double wx, double wy, double wz,
                             double* out_sx, double* out_sy) {
-    int M[3][3];
-    ngte_read_matrix(cpu, G_CAMERA + 0x00, M);
-    int cx = (int32_t)cpu->read_word(G_CAMERA + 0x28);
-    int cy = (int32_t)cpu->read_word(G_CAMERA + 0x2C);
-    int cz = (int32_t)cpu->read_word(G_CAMERA + 0x30);
-    double vx = -(wy - (double)cy);    /* GTE VX = -(world.y - cam.y) */
-    double vy = -(wz - (double)cz);    /* GTE VY = -(world.z - cam.z) */
-    double vz =  (wx - (double)cx);    /* GTE VZ =  (world.x - cam.x) */
+    (void)cpu;
+    double vx = -(wy - v->cam_ram[1]);    /* GTE VX = -(world.y - cam.y) */
+    double vy = -(wz - v->cam_ram[2]);    /* GTE VY = -(world.z - cam.z) */
+    double vz =  (wx - v->cam_ram[0]);    /* GTE VZ =  (world.x - cam.x) */
     double mac1, mac2, mac3;
-    ngte_mac(M, vx, vy, vz, &mac1, &mac2, &mac3);
-    double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
-    double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
-    double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    ngte_mac(v->cam_M, vx, vy, vz, &mac1, &mac2, &mac3);
+    const double ofx = v->ofx, ofy = v->ofy, H = v->H_eff;
     double z = (mac3 > 1.0) ? mac3 : 1.0;
     if (out_sx) *out_sx = ofx + mac1 * H / z;
     if (out_sy) *out_sy = ofy + mac2 * H / z;
@@ -475,13 +472,13 @@ static double project_world(CPUState* cpu, double wx, double wy, double wz,
  * Used by BOTH the dome path and the flat far/medium quad. -1 if all behind.
  * `nudge` picks the corrected outline (render) or the authored one (anything
  * describing the arch's own geometry). */
-static double portal_outline_maxvz(CPUState* cpu, uint32_t p, int nudge) {
+static double portal_outline_maxvz(CPUState* cpu, const ngte_view* v, uint32_t p, int nudge) {
     double W[16][3];
     const int npts = portal_outline_world(cpu, p, W, nudge);
     if (!npts) return -1.0;
     double maxvz = -1.0;
     for (int k = 0; k < npts; k++) {
-        const double vz = project_world(cpu, W[k][0], W[k][1], W[k][2], 0, 0);
+        const double vz = project_world(cpu, v, W[k][0], W[k][1], W[k][2], 0, 0);
         if (vz > maxvz) maxvz = vz;
     }
     return maxvz;
@@ -493,8 +490,11 @@ static double portal_outline_maxvz(CPUState* cpu, uint32_t p, int nudge) {
  * whose clip-rect centre drifts onto another portal — the f2075 "portal vanished").
  * Far/medium flat leaves carry a stack/global colour ptr with no skybox link →
  * fall back to the portal whose centroid projects nearest the clip-rect centre. */
-static uint32_t owning_portal_ptr(CPUState* cpu, uint32_t a0, double cx, double cy) {
+static uint32_t owning_portal_ptr(CPUState* cpu, const ngte_view* v, uint32_t a0, double cx, double cy) {
     uint32_t n = cpu->read_word(G_PORTALCOUNT); if (n > 6) n = 6;
+    /* The clip-rect centre is a screen coordinate the game produced at its own
+     * H, so the centroid is matched against it through the canonical view. */
+    ngte_view vc; ngte_view_canon(v, &vc);
     for (uint32_t i = 0; i < n; i++) {                  /* skybox-pointer match */
         uint32_t p = cpu->read_word(G_PORTALS + i * 4); if (!p) continue;
         uint32_t sb = cpu->read_word(p + 0x00);
@@ -511,7 +511,7 @@ static uint32_t owning_portal_ptr(CPUState* cpu, uint32_t a0, double cx, double 
             az += (int32_t)cpu->read_word(p + 0x28 + k*12);
         }
         ax /= npts; ay /= npts; az /= npts;
-        double sx, sy, vz = project_world(cpu, ax, ay, az, &sx, &sy);
+        double sx, sy, vz = project_world(cpu, &vc, ax, ay, az, &sx, &sy);
         if (vz <= 1.0) continue;
         double dx = sx - cx, dy = sy - cy, d = dx*dx + dy*dy;
         if (d < best_d) { best_d = d; best_p = p; }
@@ -521,9 +521,9 @@ static uint32_t owning_portal_ptr(CPUState* cpu, uint32_t a0, double cx, double 
 
 /* Single fallback view-Z (farthest outline point) for when the tilted-plane path
  * can't be used (an outline point is behind the camera). */
-static double portal_viewz(CPUState* cpu, uint32_t a0, double cx, double cy) {
-    uint32_t p = owning_portal_ptr(cpu, a0, cx, cy);
-    return p ? portal_outline_maxvz(cpu, p, 1) : -1.0;   /* render depth */
+static double portal_viewz(CPUState* cpu, const ngte_view* v, uint32_t a0, double cx, double cy) {
+    uint32_t p = owning_portal_ptr(cpu, v, a0, cx, cy);
+    return p ? portal_outline_maxvz(cpu, v, p, 1) : -1.0;   /* render depth */
 }
 
 /* Project the portal outline (m_Points) to screen, per-point view-Z. Returns the
@@ -531,26 +531,26 @@ static double portal_viewz(CPUState* cpu, uint32_t a0, double cx, double cy) {
 /* The AUTHORED outline projected — the opening as the artists placed it,
  * before any per-portal correction. A corrected outline reaches past it into
  * the arch, and that band cannot be depth-treated like the opening interior. */
-static int portal_outline_screen_raw(CPUState* cpu, uint32_t p, ppt* poly, int maxn) {
+static int portal_outline_screen_raw(CPUState* cpu, const ngte_view* v, uint32_t p, ppt* poly, int maxn) {
     double W[16][3];
     const int npts = portal_outline_world(cpu, p, W, 0);
     if (!npts || npts > maxn) return 0;
     for (int k = 0; k < npts; k++) {
         double sx, sy;
-        const double vz = project_world(cpu, W[k][0], W[k][1], W[k][2], &sx, &sy);
+        const double vz = project_world(cpu, v, W[k][0], W[k][1], W[k][2], &sx, &sy);
         if (vz <= 1.0) return 0;
         poly[k].x = (float)sx; poly[k].y = (float)sy; poly[k].vz = vz;
     }
     return npts;
 }
 
-static int portal_outline_screen(CPUState* cpu, uint32_t p, ppt* poly, int maxn) {
+static int portal_outline_screen(CPUState* cpu, const ngte_view* v, uint32_t p, ppt* poly, int maxn) {
     double W[16][3];
     const int npts = portal_outline_world(cpu, p, W, 1);
     if (!npts || npts > maxn) return 0;
     for (int k = 0; k < npts; k++) {
         double sx, sy;
-        const double vz = project_world(cpu, W[k][0], W[k][1], W[k][2], &sx, &sy);
+        const double vz = project_world(cpu, v, W[k][0], W[k][1], W[k][2], &sx, &sy);
         if (vz <= 1.0) return 0;              /* a point behind the camera */
         poly[k].x = (float)sx; poly[k].y = (float)sy; poly[k].vz = vz;
     }
@@ -585,15 +585,12 @@ static int fit_invz(const ppt* poly, int n, double* a, double* b, double* c) {
  *   1/vz = ( n_x·(sx−ofx)/H + n_y·(sy−ofy)/H + n_z ) / k
  * which is the a·x + b·y + c form plane_depth consumes. Returns 0 when
  * degenerate (collinear outline points / camera on the plane). */
-static int portal_plane_invz(CPUState* cpu, uint32_t p,
+static int portal_plane_invz(CPUState* cpu, const ngte_view* v, uint32_t p,
                              double* pa, double* pb, double* pc) {
     int npts = (int32_t)cpu->read_word(p + 0x04);
     if (npts < 3 || npts > 16) return 0;
-    int M[3][3];
-    ngte_read_matrix(cpu, G_CAMERA + 0x00, M);
-    int cx = (int32_t)cpu->read_word(G_CAMERA + 0x28);
-    int cy = (int32_t)cpu->read_word(G_CAMERA + 0x2C);
-    int cz = (int32_t)cpu->read_word(G_CAMERA + 0x30);
+    const int (*M)[3] = v->cam_M;
+    const double cx = v->cam_ram[0], cy = v->cam_ram[1], cz = v->cam_ram[2];
     int idx[3] = { 0, npts / 3, (2 * npts) / 3 };        /* spread trio (fit_invz) */
     if (idx[1] == idx[0]) idx[1] = 1;
     if (idx[2] == idx[1]) idx[2] = npts - 1;
@@ -614,9 +611,7 @@ static int portal_plane_invz(CPUState* cpu, uint32_t p,
     if (nn < 1e-6) return 0;                             /* collinear outline */
     double k0 = nx*V[0][0] + ny*V[0][1] + nz*V[0][2];    /* n·P = k0, cam at origin */
     if (k0 > -1e-3*nn && k0 < 1e-3*nn) return 0;         /* camera ~on the plane */
-    double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
-    double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
-    double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    const double ofx = v->ofx, ofy = v->ofy, H = v->H_eff;
     if (H < 1.0) return 0;
     *pa = nx / (H * k0);
     *pb = ny / (H * k0);
@@ -892,7 +887,7 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
 static void outline_offset(const ppt* poly, int pn, const double* d, float* ex, float* ey);
 static double portal_aperture_margin_world(void);
 static double portal_margin_for(CPUState* cpu, uint32_t p);
-static void margin_px_per_vertex(CPUState* cpu, const ppt* poly, int pn,
+static void margin_px_per_vertex(CPUState* cpu, const ngte_view* v, const ppt* poly, int pn,
                                  double world, double* out);
 static void emit_aperture_ring(const ppt* poly, int pn, const double* dpx,
                                uint32_t rgba, int channel);
@@ -908,8 +903,9 @@ int openpete_portal_sky_recent(void) {
  * Portal*). The plane + bbox are derived LIVE from g_Portals and the camera,
  * NOT from the capture, so the sub-tick reextract's interpolated camera
  * bracket yields a plane consistent with the terrain verts of the same
- * present. */
-int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int max) {
+ * present. `v` is the caller's pass view, so the fit and the terrain it
+ * clamps share one camera, offset and H. */
+int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) {
     /* OPENPETE_PORTAL_PLANES_DBG: name the reason a portal produced no plane
      * entry. Every bail here is silent otherwise, and "no colours at all" was
      * repeatedly mistaken for "the classifier rejected everything". */
@@ -940,11 +936,11 @@ int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int
         for (int j = 0; j < n; j++) if (out[j].portal == p) { dup = 1; break; }
         if (dup) continue;
         openpete_portal_skyplane* o = &out[n];
-        if (!portal_plane_invz(cpu, p, &o->a, &o->b, &o->c)) {
+        if (!portal_plane_invz(cpu, v, p, &o->a, &o->b, &o->c)) {
             if (dbg) fprintf(stderr, "[pplanes f=%u] cap%d p=%08X plane-FAIL\n", openpete_frame, i, p);
             continue;
         }
-        o->back_vz = portal_outline_maxvz(cpu, p, s_rimnud);
+        o->back_vz = portal_outline_maxvz(cpu, v, p, s_rimnud);
         if (o->back_vz <= 1.0) {              /* whole outline behind the camera */
             if (dbg) fprintf(stderr, "[pplanes f=%u] cap%d p=%08X back_vz=%.1f\n", openpete_frame, i, p, o->back_vz);
             continue;
@@ -957,13 +953,9 @@ int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int
             double Wv[16][3];
             const int npts = portal_outline_world(cpu, p, Wv, s_rimnud);
             if (npts) {
-                int M[3][3];
-                ngte_read_matrix(cpu, G_CAMERA + 0x00, M);
-                const int ccx = (int32_t)cpu->read_word(G_CAMERA + 0x28);
-                const int ccy = (int32_t)cpu->read_word(G_CAMERA + 0x2C);
-                const int ccz = (int32_t)cpu->read_word(G_CAMERA + 0x30);
+                const double ccx = v->cam_ram[0], ccy = v->cam_ram[1], ccz = v->cam_ram[2];
                 for (int k = 0; k < npts; k++)
-                    ngte_mac(M, -(Wv[k][1] - ccy), -(Wv[k][2] - ccz), (Wv[k][0] - ccx),
+                    ngte_mac(v->cam_M, -(Wv[k][1] - ccy), -(Wv[k][2] - ccz), (Wv[k][0] - ccx),
                              &o->vx[k], &o->vy[k], &o->vz[k]);
                 o->vn = npts;
             }
@@ -976,8 +968,8 @@ int openpete_portal_sky_planes(CPUState* cpu, openpete_portal_skyplane* out, int
          * wedge out of the stone (artisans->stone_hill, whose opening is the
          * most-corrected of the ten). The sink must ask where the ORIGINAL
          * opening was, exactly as the rim classifier does. */
-        int pn = s_rimnud ? portal_outline_screen(cpu, p, poly, 16)
-                          : portal_outline_screen_raw(cpu, p, poly, 16);
+        int pn = s_rimnud ? portal_outline_screen(cpu, v, p, poly, 16)
+                          : portal_outline_screen_raw(cpu, v, p, poly, 16);
         if (dbg && pn < 3) fprintf(stderr, "[pplanes f=%u] cap%d p=%08X pn=%d vn=%d\n", openpete_frame, i, p, pn, o->vn);
         /* The conformance sink needs the PROJECTED polygon (coverage
          * confinement) — with a point behind the camera there is none, so no
@@ -1087,7 +1079,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
      * floor occludes it exactly at the frame, instead of a single flat depth
      * that makes the floor eat the near part (f2945). */
     uint32_t p = portal_hint ? portal_hint
-                             : owning_portal_ptr(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
+                             : owning_portal_ptr(cpu, &s_view, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
     /* Backstop push-back RETIRED (W2.6-b): a skybox-linked flat (the dome's
      * backstop) used to sink behind the dome by x1.0625/x1.125 so the dome won
      * the depth test — dead since the W2.6 stencil groups: within a group the
@@ -1105,7 +1097,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
      * colour inset in the portal" report). */
     s_portal_group = (int)(p ? cpu->read_word(p + 0x00) : a0);
     ppt poly[16];
-    int pn = p ? portal_outline_screen(cpu, p, poly, 16) : 0;
+    int pn = p ? portal_outline_screen(cpu, &s_view, p, poly, 16) : 0;
     /* The sky's OT bucket: canonical leaves read the LIVE D_PORTAL_DEPTH the
      * .s just computed for THIS portal (correct even when the outline is
      * unavailable — a point behind the camera at close/steep range); the
@@ -1157,7 +1149,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
          * behind-depth ring below, matching the mask ring's extent. */
         const double fmargin = portal_margin_for(cpu, p);
         double fpx[16], fzero[16];
-        margin_px_per_vertex(cpu, poly, pn, fmargin, fpx);
+        margin_px_per_vertex(cpu, &s_view, poly, pn, fmargin, fpx);
         for (int i = 0; i < pn; i++) fzero[i] = 0.0;
         float fx[16], fy[16];
         outline_offset(poly, pn, (s_aperture_ok && fmargin < 0.0) ? fpx : fzero, fx, fy);
@@ -1198,7 +1190,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
      * the floor still meets the opening's near side instead of eating it (the
      * f2945 failure re-appeared here as one constant farthest-outline depth).
      * Constant farthest-outline depth remains the last resort. */
-    double vz = portal_viewz(cpu, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
+    double vz = portal_viewz(cpu, &s_view, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
     int crossed = (vz <= 1.0);
     if (crossed) vz = 2.0;     /* crossed → nearest (was 16384 far-sentinel) */
     set_sky_ot_push();
@@ -1211,7 +1203,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
      * near cover must win everything. */
     if (!crossed && cm3) depth = sky_min2(depth, cz3, cm3);
     double fa = 0, fb = 0, fc = 0;
-    int fplane = (!crossed && p) && portal_plane_invz(cpu, p, &fa, &fb, &fc);
+    int fplane = (!crossed && p) && portal_plane_invz(cpu, &s_view, p, &fa, &fb, &fc);
     float cxx[4] = { (float)x0, (float)x1, (float)x1, (float)x0 };
     float cyy[4] = { (float)y0, (float)y0, (float)y1, (float)y1 };
     int idx[2][3] = { {0,1,2}, {0,2,3} };
@@ -1371,9 +1363,10 @@ static double portal_aperture_margin_world(void) {
     return v;
 }
 /* Per-vertex screen offset for a world-unit margin at this outline's depths. */
-static void margin_px_per_vertex(CPUState* cpu, const ppt* poly, int pn,
+static void margin_px_per_vertex(CPUState* cpu, const ngte_view* v, const ppt* poly, int pn,
                                  double world, double* out) {
-    const double H = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    (void)cpu;
+    const double H = v->H_eff;
     for (int i = 0; i < pn; i++) {
         const double vz = (poly[i].vz > 1.0) ? poly[i].vz : 1.0;
         out[i] = world * H / vz;
@@ -1548,7 +1541,7 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
      * marking is a union, so a widened interior marks the band at plane depth
      * and the behind-depth strip underneath it becomes dead geometry. */
     ppt raw[16];
-    int rn = portal ? portal_outline_screen_raw(cpu, portal, raw, 16) : 0;
+    int rn = portal ? portal_outline_screen_raw(cpu, &s_view, portal, raw, 16) : 0;
     int corrected = (rn == pn);
     if (corrected) {
         int moved = 0;
@@ -1559,7 +1552,7 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
     const ppt* interior = corrected ? raw : poly;   /* uncorrected = bit-identical */
     const double margin = portal_margin_for(cpu, portal);
     double mpx[16], mzero[16];
-    margin_px_per_vertex(cpu, interior, pn, margin, mpx);
+    margin_px_per_vertex(cpu, &s_view, interior, pn, margin, mpx);
     for (int i = 0; i < pn; i++) mzero[i] = 0.0;
     float ex[16], ey[16];
     outline_offset(interior, pn, (margin < 0.0) ? mpx : mzero, ex, ey);
@@ -1589,7 +1582,7 @@ static void emit_portal_aperture(CPUState* cpu, uint32_t portal, const ppt* poly
      * had to be moved, which is where it was needed most. */
     if (margin > 0.0)
     {   double rpx[16];
-        margin_px_per_vertex(cpu, poly, pn, margin, rpx);
+        margin_px_per_vertex(cpu, &s_view, poly, pn, margin, rpx);
         emit_aperture_ring(poly, pn, rpx, 0xFF000000u, OPENPETE_SCENE_PORTAL_MASK);
     }
     if (corrected) {
@@ -1747,9 +1740,7 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
     int M[3][3];
     ngte_unpack_matrix(cpu->gte_ctrl[0], cpu->gte_ctrl[1], cpu->gte_ctrl[2],
                        cpu->gte_ctrl[3], cpu->gte_ctrl[4], M);
-    double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
-    double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
-    double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    const double ofx = s_view.ofx, ofy = s_view.ofy, H = s_view.H_eff;
 
     if (canonical)
         s_ot_vz = 128.0 * (double)(int32_t)cpu->read_word(D_PORTAL_DEPTH);
@@ -1758,7 +1749,7 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
     else
         s_ot_vz = 0.0;
     double cx = (x0 + x1) * 0.5, cy = (y0 + y1) * 0.5;
-    double vz = portal_viewz(cpu, skybox, cx, cy);
+    double vz = portal_viewz(cpu, &s_view, skybox, cx, cy);
     int crossed = (vz <= 1.0);
     if (crossed) vz = 2.0;     /* camera crossed the plane → nearest (see feed_portal_quad) */
 
@@ -1766,8 +1757,8 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
      * field, so each dome pixel takes the portal-plane depth (the stone frame
      * occludes it into the arch shape even at a sharp angle, f2945). Falls back to
      * the rect clip + constant depth when an outline point is behind the camera. */
-    uint32_t p = owning_portal_ptr(cpu, skybox, cx, cy);
-    ppt poly[16]; int pn = p ? portal_outline_screen(cpu, p, poly, 16) : 0;
+    uint32_t p = owning_portal_ptr(cpu, &s_view, skybox, cx, cy);
+    ppt poly[16]; int pn = p ? portal_outline_screen(cpu, &s_view, p, poly, 16) : 0;
     /* A revealed (culled) portal has no live/captured bucket — the outline
      * mirror (validated == live) supplies it so the push agrees with the
      * flat fan the reveal already emitted. */
@@ -1788,7 +1779,7 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
      * opening's near edge instead of eating it. No outline registration
      * (s_skyout stays 0): the whole dome sits at plane depth incl. the rect
      * spill, which now only beats stone within the O(16-unit) sky margin. */
-    if (!use_plane && !crossed && p && portal_plane_invz(cpu, p, &pa, &pb, &pc))
+    if (!use_plane && !crossed && p && portal_plane_invz(cpu, &s_view, p, &pa, &pb, &pc))
         use_plane = 1;
     /* Register the outline for the two-region sky-depth split (see
      * emit_split_by_outline): orient CCW by signed area. */
@@ -1840,7 +1831,7 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
         uint32_t c0 = cpu->read_word(S + 0x00), c1 = cpu->read_word(S + 0x04);
         int cvx = (int16_t)(c0 & 0xFFFF), cvy = (int16_t)(c0 >> 16), cvz = (int16_t)(c1 >> 16), radius = (int16_t)(c1 & 0xFFFF);
         double cm3 = (M[2][0]*(double)cvx + M[2][1]*(double)cvy + M[2][2]*(double)cvz) / 4096.0;
-        if (openpete_native_widescreen_factor() <= 1.0f && cm3 <= (double)radius) continue;
+        if (s_view.F <= 1.0f && cm3 <= (double)radius) continue;
 
         uint32_t h8 = cpu->read_word(S + 0x08), hC = cpu->read_word(S + 0x0C), hF = cpu->read_word(S + 0x10);
         int centerX = (int16_t)(h8 & 0xFFFF), centerY = (int16_t)(h8 >> 16), centerZ = (int16_t)(hC >> 16);
@@ -1917,7 +1908,7 @@ static void dump_leaf(CPUState* cpu, const char* which, uint32_t a0, uint32_t a1
     int ry0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x0) >> 16, ry1 = (int32_t)cpu->read_word(D_CLIPRECT + 0x4) >> 16;
     int rx0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x8) >> 16, rx1 = (int32_t)cpu->read_word(D_CLIPRECT + 0xC) >> 16;
     uint32_t col = (a0 >= 0x80010000u && a0 < 0x80200000u) ? (cpu->read_word(a0) & 0xFFFFFF) : 0xFFFFFFFFu;
-    double vz = portal_viewz(cpu, a0, (rx0 + rx1) * 0.5, (ry0 + ry1) * 0.5);
+    double vz = portal_viewz(cpu, &s_view, a0, (rx0 + rx1) * 0.5, (ry0 + ry1) * 0.5);
     uint32_t fog = cpu->read_word(D_BLEND_TARGET) & 0xFFFFFF, ir0 = cpu->read_word(D_FOG_FACTOR) & 0xFFFF;
     fprintf(stderr, "[portal-dump f=%u] %s a0=%08X colour=%06X clip x[%d,%d] y[%d,%d] "
                     "OTdepth=%d matchedViewZ=%.0f nativeZ=%.3f  prims=%u bytes  fogFC=%06X IR0=%u(t=%.3f)\n",
@@ -1930,18 +1921,17 @@ static void dump_leaf(CPUState* cpu, const char* which, uint32_t a0, uint32_t a1
      * X extends past the rect's clamped edge, the dome/flat-fallback (clipped to
      * the rect) is cut at the 4:3 boundary while the stone arch widens → mismatch. */
     {
-        uint32_t pp = owning_portal_ptr(cpu, a0, (rx0 + rx1) * 0.5, (ry0 + ry1) * 0.5);
-        ppt poly[16]; int pn = pp ? portal_outline_screen(cpu, pp, poly, 16) : 0;
+        uint32_t pp = owning_portal_ptr(cpu, &s_view, a0, (rx0 + rx1) * 0.5, (ry0 + ry1) * 0.5);
+        ppt poly[16]; int pn = pp ? portal_outline_screen(cpu, &s_view, pp, poly, 16) : 0;
         if (pn >= 3) {
             float oxlo = poly[0].x, oxhi = poly[0].x, oylo = poly[0].y, oyhi = poly[0].y;
             for (int i = 1; i < pn; i++) {
                 if (poly[i].x < oxlo) oxlo = poly[i].x; if (poly[i].x > oxhi) oxhi = poly[i].x;
                 if (poly[i].y < oylo) oylo = poly[i].y; if (poly[i].y > oyhi) oyhi = poly[i].y;
             }
-            float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
             fprintf(stderr, "    outline-bbox x[%.0f,%.0f] y[%.0f,%.0f] (rect x[%d,%d]) wsF=%.3f visX[%.0f,%.0f]\n",
                     oxlo, oxhi, oylo, oyhi, rx0, rx1,
-                    openpete_native_widescreen_factor(), xlo, xhi);
+                    s_view.F, s_view.xlo, s_view.xhi);
         }
     }
     /* For the dome leaf (F4BC, a0=skybox), capture everything the float walk
@@ -2036,6 +2026,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
     uint32_t start = cpu->read_word(POLYBUF_CURSOR);
     real(cpu);
     uint32_t end = cpu->read_word(POLYBUF_CURSOR);
+    ngte_view_build(cpu, &s_view);   /* the GTE state the leaf left behind */
     static int s_reports = 0;
     if (s_want_dump_this_frame() && s_reports < 512) { dump_leaf(cpu, which, a0, a1, a2, start, end); s_reports++; }
     if (feed) {
@@ -2113,7 +2104,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
         if (nolod_force) {
             int ry0=(int32_t)cpu->read_word(D_CLIPRECT+0x0)>>16, ry1=(int32_t)cpu->read_word(D_CLIPRECT+0x4)>>16;
             int rx0=(int32_t)cpu->read_word(D_CLIPRECT+0x8)>>16, rx1=(int32_t)cpu->read_word(D_CLIPRECT+0xC)>>16;
-            uint32_t fp = owning_portal_ptr(cpu, a0, (rx0+rx1)*0.5, (ry0+ry1)*0.5);
+            uint32_t fp = owning_portal_ptr(cpu, &s_view, a0, (rx0+rx1)*0.5, (ry0+ry1)*0.5);
             uint32_t sb = fp ? cpu->read_word(fp + 0x00) : 0;
             if (sb >= 0x80010000u && sb < 0x80200000u) {
                 forced_fp = fp;
@@ -2158,7 +2149,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
         {
             int ry0=(int32_t)cpu->read_word(D_CLIPRECT+0x0)>>16, ry1=(int32_t)cpu->read_word(D_CLIPRECT+0x4)>>16;
             int rx0=(int32_t)cpu->read_word(D_CLIPRECT+0x8)>>16, rx1=(int32_t)cpu->read_word(D_CLIPRECT+0xC)>>16;
-            uint32_t fp = owning_portal_ptr(cpu, a0, (rx0+rx1)*0.5, (ry0+ry1)*0.5);
+            uint32_t fp = owning_portal_ptr(cpu, &s_view, a0, (rx0+rx1)*0.5, (ry0+ry1)*0.5);
             if (fp && s_fed_n < 8) s_fed_portal[s_fed_n++] = fp;
             if (s_pcap_n < PORTAL_CAP_MAX) {
                 portal_cap_t* c = &s_pcap[s_pcap_n++];
@@ -2226,7 +2217,8 @@ static int on_8004F4BC(CPUState* cpu, uint32_t a) { (void)a; return leaf_hook(cp
  * Inert at 4:3 (F=1). Display-only — reads g_Portals + camera, never writes PSX
  * RAM (D_CLIPRECT is bracketed save/restore render scratch). */
 static void feed_revealed_portals(CPUState* cpu) {
-    float F = openpete_native_widescreen_factor();
+    ngte_view_build(cpu, &s_view);
+    float F = s_view.F;
     int nolod = nolod_portal_dome_on();
     /* Widescreen reveals off-4:3 portals; --no-lod ALSO reveals
      * distance-culled ones at any aspect — the no-lod terrain renders the
@@ -2234,7 +2226,7 @@ static void feed_revealed_portals(CPUState* cpu) {
      * itself, leaving a visible arch with an empty opening
      * (beast-makers-distant-portal.bk2 f2022). */
     if (F <= 1.0f && !nolod) return;
-    float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
+    const float xlo = s_view.xlo, xhi = s_view.xhi;
     uint32_t n = cpu->read_word(G_PORTALCOUNT); if (n > 6) n = 6;
     int revealed = 0;
     openpete_native_scene_begin_frame(openpete_frame);   /* append; world/cyclorama began it */
@@ -2247,7 +2239,7 @@ static void feed_revealed_portals(CPUState* cpu) {
         uint32_t skybox = cpu->read_word(p + 0x00);
         if (skybox < 0x80010000u || skybox >= 0x80200000u) continue;
         ppt poly[16];
-        int pn = portal_outline_screen(cpu, p, poly, 16); /* >=3 iff every outline pt is in front */
+        int pn = portal_outline_screen(cpu, &s_view, p, poly, 16); /* >=3 iff every outline pt is in front */
         if (pn < 3) continue;
         float oxlo = poly[0].x, oxhi = poly[0].x, oylo = poly[0].y, oyhi = poly[0].y;
         for (int k = 1; k < pn; k++) {
@@ -2408,7 +2400,7 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
     s_dome_prev_valid = s_dome_curr_valid;
     s_dome_curr_valid = 0;
     static int s_reports = 0;
-    if (s_want_dump_this_frame() && s_reports < 8) { dump_portal_table(cpu); s_reports++; }
+    if (s_want_dump_this_frame() && s_reports < 8) { ngte_view_build(cpu, &s_view); dump_portal_table(cpu); s_reports++; }
     { OP_PROF_ACCUM_SCOPE("portal.srend");
       func_80050BE0(cpu); }                    /* real RenderPortals: on-4:3 portals fed via leaves */
     if (feed) feed_revealed_portals(cpu);     /* widescreen: off-4:3 portals the .s culled */
@@ -2457,6 +2449,7 @@ void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
      * on_80050BE0 runs+feeds, so the bit goes false the moment RenderPortals stops
      * — exactly the staleness signal we need. */
     if (!render_path_canon_drawn(RP_PORTAL)) return;
+    ngte_view_build(cpu, &s_view);
     {   /* OPENPETE_LOAD_CENSUS: replay-fire census (liveness-gate verification). */
         static int cen = -1;
         if (cen < 0) { const char* e = getenv("OPENPETE_LOAD_CENSUS"); cen = (e && *e && *e != '0'); }
@@ -2532,7 +2525,7 @@ void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
                           c->clip[2], c->clip[0], c->clip[3], c->clip[1]); }
         if (c->portal) {
             ppt rp[16];
-            int rn = portal_outline_screen(cpu, c->portal, rp, 16);
+            int rn = portal_outline_screen(cpu, &s_view, c->portal, rp, 16);
             if (rn >= 3) {
                 float lx0 = rp[0].x, lx1 = rp[0].x, ly0 = rp[0].y, ly1 = rp[0].y;
                 for (int k = 1; k < rn; k++) {
@@ -2551,7 +2544,7 @@ void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
                  * the dome the mask's extent makes both representations cover
                  * the same pixels on every present. */
                 double mpx[16];
-                margin_px_per_vertex(cpu, rp, rn, portal_margin_for(cpu, c->portal), mpx);
+                margin_px_per_vertex(cpu, &s_view, rp, rn, portal_margin_for(cpu, c->portal), mpx);
                 double mmax = 0.0;
                 for (int k = 0; k < rn; k++) { const double a = mpx[k] < 0 ? -mpx[k] : mpx[k];
                                                if (a > mmax) mmax = a; }

@@ -385,8 +385,9 @@ static int glow_anim_dbg(void) {
 static void load_matrix_at(CPUState* cpu, uint32_t base, int R[3][3]) {
     ngte_read_matrix(cpu, base, R);
 }
-/* camera rotation/projection matrix (g_Camera+0x00, 5 words -> 9 int16) */
-static void load_cam_matrix(CPUState* cpu, int R[3][3]) { load_matrix_at(cpu, G_CAMERA, R); }
+/* The projection view of the running build (camera, offsets, H, Hor+
+ * bounds); each build entry rebuilds it, the cull helpers read it. */
+static ngte_view s_pv;
 
 /* RTPS one view-space vertex (TR=0) through R -> screen + the view-space MAC */
 typedef struct { double sx, sy, m1, m2, m3; } projres;
@@ -395,20 +396,20 @@ typedef struct { double sx, sy, m1, m2, m3; } projres;
  * particles) store view-space coords and feed them to the GTE as the TR with the
  * vertex = (0,0,0), so MAC=(X,Y,Z) and SX=OFX+X*H/Z (the camera matrix is
  * multiplied by V=0, so it drops out). No swizzle. */
-static void proj_view(double ofx, double ofy, double H,
+static void proj_view(double ofx, double ofy, const ngte_view* v,
                       double X, double Y, double Z, projres* o);
-static void proj2(const int R[3][3], double ofx, double ofy, double H,
+static void proj2(const int R[3][3], double ofx, double ofy, const ngte_view* v,
                   double vx, double vy, double vz, projres* o) {
     ngte_proj r;   /* shared pipeline, NO ±1024 SXY saturation — float,
                     * widescreen reveal needs the true X (W2.3) */
-    ngte_project_gte(R, NULL, vx, vy, vz, ofx, ofy, H, 0, &r);
+    ngte_project_gte(R, NULL, vx, vy, vz, ofx, ofy, v, 0, &r);
     o->sx = r.sx; o->sy = r.sy; o->m1 = r.m1; o->m2 = r.m2; o->m3 = r.m3;
 }
 
-static void proj_view(double ofx, double ofy, double H,
+static void proj_view(double ofx, double ofy, const ngte_view* v,
                       double X, double Y, double Z, projres* o) {
     ngte_proj r;   /* view-space point: MAC=(X,Y,Z), divide-only (W2.3) */
-    ngte_screen_gte(X, Y, Z, ofx, ofy, H, 0, &r);
+    ngte_screen_gte(X, Y, Z, ofx, ofy, v, 0, &r);
     o->sx = r.sx; o->sy = r.sy; o->m1 = r.m1; o->m2 = r.m2; o->m3 = r.m3;
 }
 
@@ -422,7 +423,7 @@ static int screen_rect_cull(double sxf, double syf) {
     /* horizontal edges widen for widescreen (Hor+): [0,512] at 4:3 (exactly the
      * .s SX<=0 / SX>=512 reject), wider when the window is. signed SX so the
      * negative left-reveal isn't mistaken for a wrapped large value. */
-    float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
+    float xlo = s_pv.xlo, xhi = s_pv.xhi;
     if (SX <= (int)xlo)         return 1;    /* left of the screen  */
     if (SX >= (int)xhi)         return 1;    /* right of the screen */
     return 0;
@@ -433,7 +434,7 @@ static int screen_rect_cull(double sxf, double syf) {
  * s5=bottom, s6=right; left = SX<=0), on the packed int32 SXY like the .s. */
 static int clip4_cull(const float* sx, const float* sy) {
     /* horizontal edges widen for widescreen (Hor+); vertical stays 4:3. */
-    float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
+    float xlo = s_pv.xlo, xhi = s_pv.xhi;
     int top = 1, bot = 1, left = 1, right = 1;
     for (int k = 0; k < 4; k++) {
         int SX = (int)lrintf(sx[k]), SY = (int)lrintf(sy[k]);
@@ -509,22 +510,17 @@ static int sz_and_lod_cull(double mac3, int texsub_hi) {
 
 static void particle_build(CPUState* cpu) {
     s_fq_n = 0; s_pline_n = 0; s_ppdbg_done = 0;
-    int R[3][3]; load_cam_matrix(cpu, R);
+    ngte_view_build(cpu, &s_pv);
+    const ngte_view* v = &s_pv;
+    int R[3][3]; memcpy(R, v->cam_M, sizeof R);
     /* Camera at FRACTIONAL /4 (not >>2): the particle positions (A/B) are int16
      * world/4 gameplay storage we can't change, but flooring the CAMERA to /4
      * added a camera-correlated step on EVERY particle under panning. Carrying the
-     * camera's low 2 bits (÷4.0) tracks the smooth sub-tick camera. */
-    /* Sub-tick floor fix: prefer the FRACTIONAL interpolated camera (un-rounded)
-     * so particles don't gain a camera-correlated 1-unit step under panning. */
-    double s7, t8, t9;
-    { double cf[3];
-      if (openpete_native_interp_pos(G_CAMERA, cf)) { s7 = cf[0]/4.0; t8 = cf[1]/4.0; t9 = cf[2]/4.0; }
-      else { s7 = (double)(int32_t)cpu->read_word(G_CAMERA+0x28) / 4.0;   /* camX/4 */
-             t8 = (double)(int32_t)cpu->read_word(G_CAMERA+0x2C) / 4.0;   /* camY/4 */
-             t9 = (double)(int32_t)cpu->read_word(G_CAMERA+0x30) / 4.0; } /* camZ/4 */ }
-    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
-    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
-    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
+     * camera's low 2 bits (÷4.0) tracks the smooth sub-tick camera (the view
+     * holds the un-rounded interpolated camera when bracketed). */
+    double s7 = v->cam[0] / 4.0, t8 = v->cam[1] / 4.0, t9 = v->cam[2] / 4.0;
+    double ofx = v->ofx, ofy = v->ofy;
+    double H   = v->H_eff;
 
     uint32_t pp = s_part_pool;                          /* pool the .s walked (hook-entry) */
     for (int i = 0; i < 320 && s_fq_n < MAX_FQUAD; i++, pp += 0x20) {
@@ -542,7 +538,7 @@ static void particle_build(CPUState* cpu) {
         fquad q; q.sel = sel;
 
         if (sel == 3) {                                 /* depth-cued screen rect */
-            projres c; proj2(R, ofx, ofy, H, (double)VYb, (double)VZb, (double)VXb, &c);
+            projres c; proj2(R, ofx, ofy, v, (double)VYb, (double)VZb, (double)VXb, &c);
             if (screen_rect_cull(c.sx, c.sy)) continue;
             if (sz_and_lod_cull(c.m3, texsub_hi)) continue;
             /* GTE reciprocal-Z, kept in DOUBLE for a sub-pixel billboard footprint.
@@ -575,7 +571,7 @@ static void particle_build(CPUState* cpu) {
             decode_material(cpu, pp, mclass, &q);
             s_fq[s_fq_n++] = q;
         } else if (sel == 2) {                          /* affine sin/cos billboard */
-            projres c; proj2(R, ofx, ofy, H, (double)VYb, (double)VZb, (double)VXb, &c);
+            projres c; proj2(R, ofx, ofy, v, (double)VYb, (double)VZb, (double)VXb, &c);
             if (screen_rect_cull(c.sx, c.sy)) continue;
             if (sz_and_lod_cull(c.m3, texsub_hi)) continue;
             int sizeB = (int)((B >> 16) & 0xFF);
@@ -636,7 +632,7 @@ static void particle_build(CPUState* cpu) {
             double cz[4] = { (double)VXb+eC, (double)VXb+eS, (double)VXb-eS, (double)VXb-eC };
             projres pr[4]; double zsum = 0;
             for (int k = 0; k < 4; k++) {
-                proj2(R, ofx, ofy, H, cx[k], (double)VZb, cz[k], &pr[k]);
+                proj2(R, ofx, ofy, v, cx[k], (double)VZb, cz[k], &pr[k]);
                 q.sx[k] = (float)pr[k].sx; q.sy[k] = (float)pr[k].sy; q.sz[k] = (float)pr[k].m3;
                 zsum += pr[k].m3 < 0 ? 0 : (pr[k].m3 > 65535 ? 65535 : pr[k].m3);
             }
@@ -647,7 +643,7 @@ static void particle_build(CPUState* cpu) {
             decode_material(cpu, pp, mclass, &q);
             s_fq[s_fq_n++] = q;
         } else if (sel == 0) {                          /* TILE / 1px dot (block_80057F98) */
-            projres c; proj2(R, ofx, ofy, H, (double)VYb, (double)VZb, (double)VXb, &c);
+            projres c; proj2(R, ofx, ofy, v, (double)VYb, (double)VZb, (double)VXb, &c);
             int sz3 = (int)(c.m3 < 0 ? 0 : (c.m3 > 65535 ? 65535 : c.m3));
             if (sz3 == 0 || sz3 >= 8192) continue;      /* SZ window (SZ3!=0 .. 8192) */
             if (screen_rect_cull(c.sx, c.sy)) continue;
@@ -700,8 +696,8 @@ static void particle_build(CPUState* cpu) {
                 }
             }
             projres e0, e1;
-            proj2(R, ofx, ofy, H, (double)VYb, (double)VZb, (double)VXb, &e0);   /* EP0 */
-            proj2(R, ofx, ofy, H, (t8 - Y1), (t9 - Z1), (X1 - s7), &e1);         /* EP1 */
+            proj2(R, ofx, ofy, v, (double)VYb, (double)VZb, (double)VXb, &e0);   /* EP0 */
+            proj2(R, ofx, ofy, v, (t8 - Y1), (t9 - Z1), (X1 - s7), &e1);         /* EP1 */
             int sz3 = (int)(e0.m3 < 0 ? 0 : (e0.m3 > 65535 ? 65535 : e0.m3));
             if (sz3 == 0 || sz3 >= 8192) continue;       /* EP0 SZ window */
             if (screen_rect_cull(e0.sx, e0.sy)) continue; /* EP0 screen-rect */
@@ -744,8 +740,8 @@ static void particle_build(CPUState* cpu) {
                 }
             }
             projres e0, e1;
-            proj_view(ofx, ofy, H, (double)X0, (double)Y0, (double)Z0, &e0);
-            proj_view(ofx, ofy, H, X1f, Y1f, Z1f, &e1);
+            proj_view(ofx, ofy, v, (double)X0, (double)Y0, (double)Z0, &e0);
+            proj_view(ofx, ofy, v, X1f, Y1f, Z1f, &e1);
             int sz3 = (int)(e0.m3 < 0 ? 0 : (e0.m3 > 65535 ? 65535 : e0.m3));
             uint32_t col0 = cpu->read_word(pp + 0x10), col1 = cpu->read_word(pp + 0x14);
             if (sz3 <= 64 || sz3 >= 2048) continue;      /* sel-4 SZ window 64..2048 */
@@ -1033,18 +1029,13 @@ static gtri s_gtri[MAX_GTRI]; static int s_gtri_n;
 
 static void glow_build(CPUState* cpu) {
     s_gtri_n = 0;
-    int R[3][3]; load_cam_matrix(cpu, R);
+    ngte_view_build(cpu, &s_pv);
+    const ngte_view* v = &s_pv;
+    int R[3][3]; memcpy(R, v->cam_M, sizeof R);
     /* RAW world units (no >>2); fractional interpolated camera when bracketed
      * (sub-tick floor fix), else floored RAM. */
-    double camX, camY, camZ;
-    { double cf[3];
-      if (openpete_native_interp_pos(G_CAMERA, cf)) { camX = cf[0]; camY = cf[1]; camZ = cf[2]; }
-      else { camX = (double)(int32_t)cpu->read_word(G_CAMERA+0x28);
-             camY = (double)(int32_t)cpu->read_word(G_CAMERA+0x2C);
-             camZ = (double)(int32_t)cpu->read_word(G_CAMERA+0x30); } }
-    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
-    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
-    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
+    double camX = v->cam[0], camY = v->cam[1], camZ = v->cam[2];
+    double ofx = v->ofx, ofy = v->ofy;
 
     int gdbg_done = 0;                                /* one glow-phase line per walk */
     for (int i = 0; i < 16 && s_gtri_n < MAX_GTRI; i++) {
@@ -1142,7 +1133,7 @@ static void glow_build(CPUState* cpu) {
 
         /* swizzle like particles but in raw world units: GTE-X=camY-py,
          * GTE-Y=camZ-pz, GTE-Z=px-camX; TR=0 through the camera matrix. */
-        projres c; proj2(R, ofx, ofy, H, camY - ((double)py + offyf),
+        projres c; proj2(R, ofx, ofy, v, camY - ((double)py + offyf),
                          camZ - ((double)pz + offzf), ((double)px + offxf) - camX, &c);
         double mac3 = c.m3;
         if (mac3 <= 0.0) continue;                    /* behind camera */
@@ -1321,18 +1312,14 @@ static const uint32_t k_s3_glint[6][3] = {
 static void sparkle_build(CPUState* cpu) {
     s_sline_n = 0;
     s_sstar_n = 0;
-    int R[3][3]; load_cam_matrix(cpu, R);
+    ngte_view_build(cpu, &s_pv);
+    const ngte_view* v = &s_pv;
+    int R[3][3]; memcpy(R, v->cam_M, sizeof R);
     /* RAW (the .s shifts the diff >>2); fractional interpolated camera when
      * bracketed (sub-tick floor fix), else floored RAM. */
-    double camX, camY, camZ;
-    { double cf[3];
-      if (openpete_native_interp_pos(G_CAMERA, cf)) { camX = cf[0]; camY = cf[1]; camZ = cf[2]; }
-      else { camX = (double)(int32_t)cpu->read_word(G_CAMERA+0x28);
-             camY = (double)(int32_t)cpu->read_word(G_CAMERA+0x2C);
-             camZ = (double)(int32_t)cpu->read_word(G_CAMERA+0x30); } }
-    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
-    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
-    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
+    double camX = v->cam[0], camY = v->cam[1], camZ = v->cam[2];
+    double ofx = v->ofx, ofy = v->ofy;
+    double H   = v->H_eff;
 
     for (int i = 0; i < 8 && s_sline_n + 2 <= MAX_SLINE; i++) {
         uint32_t sp = G_SPARKLES + (uint32_t)i*0x18;
@@ -1349,7 +1336,7 @@ static void sparkle_build(CPUState* cpu) {
         double VXg = (double)(camY - py) / 4.0;      /* GTE-X (÷4 fractional, not >>2) */
         double VYg = (double)(camZ - pz) / 4.0;      /* GTE-Y */
         double VZg = (double)(px - camX) / 4.0;      /* GTE-Z */
-        projres c; proj2(R, ofx, ofy, H, VXg, VYg, VZg, &c);
+        projres c; proj2(R, ofx, ofy, v, VXg, VYg, VZg, &c);
         if (c.m3 <= 0.0) continue;
 
         /* SCALE: fade8 = |m_Speed − newLife|·256/m_Speed → scaledFade pulses the
@@ -1637,23 +1624,19 @@ static void dragonstar_build(CPUState* cpu) {
     s_dstri_n = 0;
     if (cpu->read_word(D_DRAGONSTAR + 0x00) == 0) return;       /* inactive */
 
-    int Rc[3][3]; load_cam_matrix(cpu, Rc);
-    double camX, camY, camZ;
-    { double cf[3];
-      if (openpete_native_interp_pos(G_CAMERA, cf)) { camX = cf[0]; camY = cf[1]; camZ = cf[2]; }
-      else { camX = (double)(int32_t)cpu->read_word(G_CAMERA+0x28);
-             camY = (double)(int32_t)cpu->read_word(G_CAMERA+0x2C);
-             camZ = (double)(int32_t)cpu->read_word(G_CAMERA+0x30); } }
-    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
-    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
-    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
+    ngte_view_build(cpu, &s_pv);
+    const ngte_view* v = &s_pv;
+    int Rc[3][3]; memcpy(Rc, v->cam_M, sizeof Rc);
+    double camX = v->cam[0], camY = v->cam[1], camZ = v->cam[2];
+    double ofx = v->ofx, ofy = v->ofy;
+    double H   = v->H_eff;
 
     int px = (int)cpu->read_word(D_DRAGONSTAR+0x04);
     int py = (int)cpu->read_word(D_DRAGONSTAR+0x08);
     int pz = (int)cpu->read_word(D_DRAGONSTAR+0x0C);
 
     /* TR = view-space centre (camera matrix · swizzle); project it (V=0). */
-    projres c; proj2(Rc, ofx, ofy, H, (double)(camY-py), (double)(camZ-pz), (double)(px-camX), &c);
+    projres c; proj2(Rc, ofx, ofy, v, (double)(camY-py), (double)(camZ-pz), (double)(px-camX), &c);
     double trx = c.m1, try_ = c.m2, trz = c.m3;
     if (trz <= 0.0) return;                                     /* behind camera */
 

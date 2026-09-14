@@ -624,7 +624,8 @@ void openpete_native_scene_sig_report(int canonical)
             s_eager_stamp ? s_eager_stamp : openpete_frame);
 }
 
-void openpete_native_scene_begin(void) { s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
+static void fov_latch(void);
+void openpete_native_scene_begin(void) { fov_latch(); s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
 
 /* Frame-keyed reset: the first feeder of each game frame clears; later feeders
  * (in any order) append, so the cyclorama + world + mobys compose into one
@@ -638,6 +639,7 @@ static bool scene_has_world(const scene_tri_t* scene, int n);     /* defined bel
 static int s_scene_dropped;       /* tris refused this frame (cap hit) — capdbg */
 void openpete_native_scene_begin_frame(unsigned frame) {
     if (frame != s_scene_frame) {
+        fov_latch();
         if (s_scene_frame != 0xFFFFFFFFu) {  /* a completed frame is sitting in s_scene */
             /* Permanent safety net: if the scene cap is ever exceeded, terrain/
              * mobys silently vanish — warn once so the cap can be raised rather
@@ -7492,6 +7494,34 @@ int  openpete_native_fps_value(void) { return s_fps_value; }
 /* Live presentation setters (in-game settings menu). Display-only: they touch
  * only s_nr (renderer state), consumed by the next native present; never
  * gameplay RAM. See notes/plans/openpete-ingame-settings-menu.md. */
+static float  s_fov_deg;          /* 0 = default */
+static double s_fov_tan_pending;  /* tan(fov/2), 0 at the default; set live */
+static double s_fov_tan;          /* latched at scene begin */
+static void fov_latch(void) { s_fov_tan = s_fov_tan_pending; }
+
+void openpete_native_set_fov(float deg) {
+    if (deg > 0.0f && deg < 1.0f) deg = 1.0f;
+    if (deg > 179.0f) deg = 179.0f;
+    if (deg <= 0.0f) deg = 0.0f;
+    if (deg == s_fov_deg) return;
+    s_fov_deg = deg;
+    s_fov_tan_pending = deg > 0.0f ? tan((double)deg * 0.5 * 3.14159265358979323846 / 180.0) : 0.0;
+    /* The occlusion grid was built at the old H: every cached rect is wrong. */
+    openpete_native_occl_suspend(2);
+}
+float openpete_native_fov_deg(void) { return s_fov_deg; }
+int   openpete_native_visible_rows(void) { return s_nr.clip_h > 0 ? s_nr.clip_h : 224; }
+double openpete_native_fov_h_scale(double H_canon, double y_row) {
+    if (s_fov_tan <= 0.0 || H_canon <= 0.0 || y_row <= 0.0) return 1.0;
+    double tref = (0.5 * (double)openpete_native_visible_rows()) / (y_row * H_canon);
+    return tref / s_fov_tan;
+}
+double openpete_native_fov_horizontal_deg(double H_canon, double y_row) {
+    double H_eff = H_canon * openpete_native_fov_h_scale(H_canon, y_row);
+    if (H_eff <= 0.0) return 0.0;
+    return 2.0 * atan(256.0 * (double)openpete_native_widescreen_factor() / H_eff) * 180.0 / 3.14159265358979323846;
+}
+
 void openpete_native_set_aspect(float w_over_h) {
     s_nr.aspect_wh = (w_over_h > 0.0f) ? w_over_h : 0.0f;
     /* Fixed aspect picked live (O menu): resize the window width to match,

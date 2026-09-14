@@ -65,10 +65,10 @@ static cyc_tri s_gte[MAX_TRIS];    static int s_gte_n;
  * H >= 2*SZ3 divide cap). Returns view-space Z (MAC3); caller treats
  * <=0 as behind-camera. */
 static double project(const int M[3][3], int vx, int vy, int vz,
-                      double ofx_px, double ofy_px, double H,
+                      double ofx_px, double ofy_px, const ngte_view* v,
                       double* out_sx, double* out_sy, int* out_sat) {
     return ngte_project_raw(M, NULL, (double)vx, (double)vy, (double)vz,
-                            ofx_px, ofy_px, H, out_sx, out_sy, out_sat);
+                            ofx_px, ofy_px, v, out_sx, out_sy, out_sat);
 }
 
 /* ---- near-plane clip (mirrors terrain_native.c::clip_push_tri) -------
@@ -97,8 +97,9 @@ static cyc_cv cyc_lerp(cyc_cv a, cyc_cv b) {       /* crossing at m3 == CYC_NEAR
 /* Project an in-front cyc_cv to screen and push to s_native, applying the
  * widescreen-aware horizontal trivial reject (vertical stays 4:3). */
 static void cyc_push_tri(cyc_cv a, cyc_cv b, cyc_cv c, int gouraud,
-                         double ofx, double ofy, double H) {
-    float xlo, xhi; openpete_native_widescreen_x_bounds(&xlo, &xhi);
+                         const ngte_view* vw) {
+    const float xlo = vw->xlo, xhi = vw->xhi;
+    const double ofx = vw->ofx, ofy = vw->ofy, H = vw->H_eff;
     cyc_cv v[3] = { a, b, c }; float sx[3], sy[3];
     for (int k = 0; k < 3; k++) {
         double z = v[k].m3 != 0.0 ? v[k].m3 : 1.0;
@@ -135,7 +136,7 @@ static uint32_t cyc_fade(uint32_t rgb, uint32_t fc, int ir0) {
  * resulting polygon (fan). 0 clipped -> 1 tri; 1 -> quad (2 tris); 2 -> 1 tri;
  * fully behind -> dropped. */
 static void cyc_clip_emit(cyc_cv a, cyc_cv b, cyc_cv c, int gouraud,
-                          double ofx, double ofy, double H) {
+                          const ngte_view* vw) {
     cyc_cv in[3] = { a, b, c }, out[4]; int nout = 0;
     for (int i = 0; i < 3; i++) {
         cyc_cv cur = in[i], nxt = in[(i + 1) % 3];
@@ -144,8 +145,8 @@ static void cyc_clip_emit(cyc_cv a, cyc_cv b, cyc_cv c, int gouraud,
         if (ci != ni && nout < 4) out[nout++] = cyc_lerp(cur, nxt);
     }
     if (nout < 3) return;
-    cyc_push_tri(out[0], out[1], out[2], gouraud, ofx, ofy, H);
-    if (nout == 4) cyc_push_tri(out[0], out[2], out[3], gouraud, ofx, ofy, H);
+    cyc_push_tri(out[0], out[1], out[2], gouraud, vw);
+    if (nout == 4) cyc_push_tri(out[0], out[2], out[3], gouraud, vw);
 }
 
 /* ---- native extraction (the Phase-2 deliverable) -------------------- */
@@ -167,9 +168,9 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
                           const int Mcull[3][3], const int Mdraw[3][3],
                           uint32_t fade_rgb, int fade_ir0) {
     s_native_n = 0;
-    double ofx = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
-    double ofy = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
-    double H   = (double)(uint16_t)(cpu->gte_ctrl[26] & 0xFFFF);
+    /* One projection view for this pass: offsets, H and the Hor+ bounds. The
+     * cull/draw matrices come from the hook's a1/a2, not the view. */
+    ngte_view vw; ngte_view_build(cpu, &vw);
 
     uint32_t sectorCount = cpu->read_word(G_CYCLORAMA + 0x00);
     uint32_t sectorsBase = cpu->read_word(G_CYCLORAMA + 0x04);
@@ -181,7 +182,7 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
      * so iterate ALL sectors instead (the full 360° dome is in RAM; the
      * per-sector radius cull below + the near-plane clip + the scissor confine
      * it to the visible frustum). Display-only. */
-    int ws = openpete_native_widescreen_factor() > 1.0001f;
+    int ws = vw.F > 1.0001f;
     uint32_t sectors[1024]; uint32_t nSectors = 0;
     if ((int32_t)a0 < 0 || ws) {
         if (sectorCount > 1024) sectorCount = 1024;
@@ -216,7 +217,7 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
             int cull_vz = (int16_t)(c1 >> 16);
             int radius  = (int16_t)(c1 & 0xFFFF);
             double dsx, dsy;
-            double cull_mac3 = project(Mcull, cull_vx, cull_vy, cull_vz, 0, 0, H, &dsx, &dsy, NULL);
+            double cull_mac3 = project(Mcull, cull_vx, cull_vy, cull_vz, 0, 0, &vw, &dsx, &dsy, NULL);
             if (cull_mac3 <= (double)radius) continue;
         }
 
@@ -271,7 +272,7 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
             cyc_cv A = { pm1[i0], pm2[i0], pz[i0], cc0 };
             cyc_cv B = { pm1[i1], pm2[i1], pz[i1], cc1 };
             cyc_cv C = { pm1[i2], pm2[i2], pz[i2], cc2 };
-            cyc_clip_emit(A, B, C, gouraud, ofx, ofy, H);
+            cyc_clip_emit(A, B, C, gouraud, &vw);
         }
     }
 }

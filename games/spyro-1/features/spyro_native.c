@@ -354,10 +354,10 @@ void spyro_native_set_rot_interp(const int* active, const double* ang /*3x3, row
  * the path that already matched to ~0.8px). The UNR reciprocal's sub-pixel
  * wobble is not reproduced (our true divide is strictly closer to ideal). */
 static double project(const int M[3][3], const double TR[3], double vx, double vy, double vz,
-                      double ofx_px, double ofy_px, double H,
+                      double ofx_px, double ofy_px, const ngte_view* v,
                       double* out_sx, double* out_sy, int* out_sat) {
     ngte_proj o;   /* shared GTE-faithful pipeline, ±1024 SXY bound ON (W2.3) */
-    ngte_project_gte(M, TR, vx, vy, vz, ofx_px, ofy_px, H, 1, &o);
+    ngte_project_gte(M, TR, vx, vy, vz, ofx_px, ofy_px, v, 1, &o);
     *out_sx = o.sx;
     *out_sy = o.sy;
     if (out_sat) *out_sat = o.sat;
@@ -419,7 +419,7 @@ static int spyro_decode_vertex(CPUState* cpu, int is2, int32_t corr,
  * width combos of .L800244D8/.L80024580/.L800246B4/.L800247D8 + wide escapes,
  * with per-vertex width switching (see spyro_decode_vertex). */
 static int spyro_project_segment(CPUState* cpu, uint32_t entry, const int M[3][3], const double TR[3],
-                                 double ofx, double ofy, double H, int seg, int count) {
+                                 double ofx, double ofy, const ngte_view* v, int seg, int count) {
     uint32_t fd = cpu->read_word(entry + 0x00);
     int a2 = (fd & 0x1000u) != 0;           /* current frame-A width (per-vertex) */
     int b2 = (fd & 0x2000u) != 0;           /* current frame-B width (per-vertex) */
@@ -444,7 +444,7 @@ static int spyro_project_segment(CPUState* cpu, uint32_t entry, const int M[3][3
             VZ = (double)aZ + blend * (bZ - aZ);
         }
         double sx, sy; int sat;
-        double vz = project(M, TR, VX, VY, VZ, ofx, ofy, H, &sx, &sy, &sat);
+        double vz = project(M, TR, VX, VY, VZ, ofx, ofy, v, &sx, &sy, &sat);
         s_sproj[s_sproj_n].sx = (float)sx; s_sproj[s_sproj_n].sy = (float)sy;
         s_sproj[s_sproj_n].vz = (float)vz; s_sproj[s_sproj_n].sat = sat; s_sproj[s_sproj_n].seg = seg;
         s_sproj_n++; emitted++;
@@ -544,10 +544,9 @@ static void spyro_seam_tr(const int Mb[3][3], const double TRb[3], int32_t jw, i
 }
 
 /* Fill s_xf[3] = {M,TR,present} from gamestate. */
-static void spyro_derive_phaseA(CPUState* cpu) {
+static void spyro_derive_phaseA(CPUState* cpu, const ngte_view* v) {
     memset(s_xf, 0, sizeof s_xf);
-    int PM[3][3]; ngte_read_matrix(cpu, G_CAMERA, PM);  /* camera m_ProjectionMatrix @ +0x00 */
-    int32_t cx=(int32_t)cpu->read_word(G_CAMERA+0x28), cy=(int32_t)cpu->read_word(G_CAMERA+0x2C), cz=(int32_t)cpu->read_word(G_CAMERA+0x30);
+    int PM[3][3]; memcpy(PM, v->cam_M, sizeof PM);   /* camera m_ProjectionMatrix @ +0x00 */
     int32_t sx=(int32_t)cpu->read_word(G_SPYRO+0x00), sy=(int32_t)cpu->read_word(G_SPYRO+0x04), sz=(int32_t)cpu->read_word(G_SPYRO+0x08);
     /* Sub-tick floor fix (item 22a, folded into the camera tier): prefer the
      * FRACTIONAL interpolated camera + Spyro positions (un-rounded) and drop the
@@ -556,10 +555,9 @@ static void spyro_derive_phaseA(CPUState* cpu) {
      * canonical 30 Hz lockstep the resolver returns 0 → integer deltas → the
      * derived TR is the same value, just carried as a double (the int16 path never
      * wrapped: the camera follows Spyro, so |cam−spyro| ≪ 32767). */
-    double cfx=(double)cx, cfy=(double)cy, cfz=(double)cz;
+    double cfx=v->cam[0], cfy=v->cam[1], cfz=v->cam[2];
     double sfx=(double)sx, sfy=(double)sy, sfz=(double)sz;
-    { double cf[3], sf[3];
-      if (openpete_native_interp_pos(G_CAMERA, cf)) { cfx=cf[0]; cfy=cf[1]; cfz=cf[2]; }
+    { double sf[3];
       if (!s_pose_ovr.active &&
           openpete_native_interp_pos(G_SPYRO,  sf)) { sfx=sf[0]; sfy=sf[1]; sfz=sf[2]; } }
     /* Recorded-pose replay (mod actor render): position/rotation come from
@@ -608,7 +606,8 @@ static void spyro_derive_phaseA(CPUState* cpu) {
 typedef struct { int seg_n; int m_max[3]; int tr_max[3]; int worst_m, worst_tr; } mat_stats;
 static void spyro_matrix_eval(CPUState* cpu, mat_stats* ms) {
     memset(ms, 0, sizeof *ms);
-    spyro_derive_phaseA(cpu);
+    ngte_view v; ngte_view_build(cpu, &v);
+    spyro_derive_phaseA(cpu, &v);
     int M0[3][3]; ngte_read_matrix(cpu, SEG_SCRATCH + 0x10, M0);   /* body (seg0) scratch matrix */
     for (int s = 0; s < 3; s++) {
         uint32_t e = SEG_SCRATCH + (uint32_t)s*SEG_STRIDE;
@@ -647,7 +646,8 @@ static void spyro_phaseA_dump(CPUState* cpu) {
             (int32_t)cpu->read_word(G_SPYRO+0x00), (int32_t)cpu->read_word(G_SPYRO+0x04),
             (int32_t)cpu->read_word(G_SPYRO+0x08), cpu->read_word(G_SPYRO+0xC),
             cpu->read_word(G_SPYRO+0x10), cpu->read_word(G_SPYRO+0x14), cpu->read_byte(G_SPYRO+0x24));
-    spyro_derive_phaseA(cpu);
+    ngte_view v; ngte_view_build(cpu, &v);
+    spyro_derive_phaseA(cpu, &v);
     for (int s=0;s<3;s++) {
         uint32_t e = SEG_SCRATCH + (uint32_t)s*SEG_STRIDE;
         if (cpu->read_word(e)==0) break;
@@ -672,15 +672,16 @@ static void spyro_phaseA_dump(CPUState* cpu) {
 /* Walk the 3 segment scratch entries, decode + project all verts to s_sproj. */
 static int spyro_project_all(CPUState* cpu) {
     s_sproj_n = 0;
-    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
-    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
-    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
+    /* One projection view for this pass: camera, offsets, H. */
+    ngte_view view; ngte_view_build(cpu, &view);
+    const ngte_view* v = &view;
+    double ofx = v->ofx, ofy = v->ofy;
     int native = spyro_native_mat();
     /* Recorded-pose replay always derives natively: the scratch's own M/TR
      * (the OPENPETE_SPYRO_SCRATCH_MAT regression path) were built with the
      * CAPTURE-time camera and would project the ghost through a stale view. */
     if (s_pose_ovr.active) native = 1;
-    if (native) spyro_derive_phaseA(cpu);            /* M+TR from gamestate (Phase A) */
+    if (native) spyro_derive_phaseA(cpu, v);         /* M+TR from gamestate (Phase A) */
     int M[3][3]; double TR[3]; int have_mat = 0;
     int nseg = 0;
     int prev_end = 0;                                /* cumulative scratchpad byte offset */
@@ -710,7 +711,7 @@ static int spyro_project_all(CPUState* cpu) {
             TR[0]=s_xf[s].TR[0]; TR[1]=s_xf[s].TR[1]; TR[2]=s_xf[s].TR[2];
             have_mat = 1;
             s_lastseg_start = s_sproj_n;
-            s_lastseg_n = spyro_project_segment(cpu, entry, M, TR, ofx, ofy, H, s, count);
+            s_lastseg_n = spyro_project_segment(cpu, entry, M, TR, ofx, ofy, v, s, count);
             s_lastseg_id = s; nseg++;
             continue;
         }
@@ -731,7 +732,7 @@ static int spyro_project_all(CPUState* cpu) {
         TR[2] = (double)(int32_t)cpu->read_word(entry + 0x0C);
         if (!have_mat) continue;                     /* no matrix yet (shouldn't happen for seg0) */
         s_lastseg_start = s_sproj_n;
-        s_lastseg_n = spyro_project_segment(cpu, entry, M, TR, ofx, ofy, H, s, count);
+        s_lastseg_n = spyro_project_segment(cpu, entry, M, TR, ofx, ofy, v, s, count);
         s_lastseg_id = s;
         nseg++;
     }

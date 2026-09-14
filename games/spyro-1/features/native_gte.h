@@ -27,6 +27,46 @@
 #define NGTE_DIV_CAP   (131071.0 / 65536.0)
 #define NGTE_SXY_BOUND 1024.0
 
+/* The game's camera matrix scales its screen-Y row by this (row norms
+ * 4096/2560/4096): the vertical FOV of a clip_h-row band is
+ * 2·atan((clip_h/2) / (NGTE_Y_ROW · H)). */
+#define NGTE_Y_ROW 0.625
+
+/* One projection view per producer pass: every input a feeder needs to
+ * project into PSX screen space, read once from the CPU state the pass
+ * runs under (the staged g_Camera, which a held producer camera swaps) and
+ * from the renderer's display policy. Built inside the producer-camera
+ * bracket where one exists, so the bracket's integer-camera rule
+ * (openpete_native_interp_pos returns 0 for G_CAMERA) reaches cam[].
+ *
+ * H_canon is the GTE's H: every hardware-limit mirror (IR16 saturation,
+ * divide cap, near-fixup regime, UNR overflow regime) reads it. H_eff =
+ * H_canon · s is the projection distance the feeder draws with; s is the
+ * --fov scale (1.0 exactly at the default, so H_eff == H_canon
+ * bit-for-bit). F / xlo / xhi are the Hor+ factor and its screen-X range;
+ * extended is 1 when the view shows more than the canonical 4:3 frame
+ * (F > 1 or s < 1) and the feeders must admit what the game's verdicts
+ * dropped. */
+typedef struct {
+    int    cam_M[3][3];   /* g_Camera projection matrix (+0x00), Q12 */
+    double cam_ram[3];    /* camera position, integer staged RAM (+0x28..0x30) */
+    double cam[3];        /* camera position, sub-tick interpolated when
+                           * available, else cam_ram */
+    int    cam_interp;    /* 1 = cam[] came from the interp spine */
+    double ofx, ofy;      /* gte_ctrl[24], [25] / 65536 */
+    double H_canon;       /* gte_ctrl[26] */
+    double s;             /* --fov scale, latched per present */
+    double H_eff;         /* H_canon · s */
+    float  F, xlo, xhi;   /* Hor+ factor and screen-X bounds */
+    int    extended;      /* view wider than the canonical 4:3 frame */
+} ngte_view;
+
+void ngte_view_build(CPUState* cpu, ngte_view* v);
+/* *c = *v with s = 1.0, H_eff = H_canon: the view for records whose screen
+ * position the game authored (HUD, billboards) and for instruments that
+ * compare against canonical prims. */
+void ngte_view_canon(const ngte_view* v, ngte_view* c);
+
 /* Unpack a GTE SHORTMATRIX (5 words = 9 packed int16) from raw words —
  * for callers whose source is the GTE control regs, not RAM. */
 void ngte_unpack_matrix(uint32_t w0, uint32_t w1, uint32_t w2,
@@ -39,13 +79,15 @@ void ngte_read_matrix(CPUState* cpu, uint32_t p, int M[3][3]);
 void ngte_mac(const int M[3][3], double vx, double vy, double vz,
               double* m1, double* m2, double* m3);
 
-/* Raw-float projection family. TR may be NULL (treated as zero).
+/* Raw-float projection family. TR may be NULL (treated as zero). ofx/ofy
+ * are per-call (the shaded walk's billboards project about their own
+ * anchor); H comes from the view.
  * z-floor: mac3 != 0 ? mac3 : 1.0 (exactly-zero guard only — callers
  * cull/clip on the RETURNED mac3, which is unfloored). out_sat mirrors
  * the GTE's would-have-saturated flags. Returns mac3 (view-Z). */
 double ngte_project_raw(const int M[3][3], const double TR[3],
                         double vx, double vy, double vz,
-                        double ofx_px, double ofy_px, double H,
+                        double ofx_px, double ofy_px, const ngte_view* v,
                         double* out_sx, double* out_sy, int* out_sat);
 
 /* GTE-faithful projection family output. m1/m2/m3 are the UNsaturated
@@ -58,13 +100,13 @@ typedef struct {
 
 /* The divide half alone, for callers that already have view-space MACs. */
 void ngte_screen_gte(double m1, double m2, double m3,
-                     double ofx, double ofy, double H,
+                     double ofx, double ofy, const ngte_view* v,
                      int sxy_clamp, ngte_proj* o);
 
 /* Full GTE-faithful projection. TR may be NULL (treated as zero). */
 void ngte_project_gte(const int M[3][3], const double TR[3],
                       double vx, double vy, double vz,
-                      double ofx, double ofy, double H,
+                      double ofx, double ofy, const ngte_view* v,
                       int sxy_clamp, ngte_proj* o);
 
 /* GTE DPCS single channel, bit-exact integer mirror: c8 = 8-bit colour,

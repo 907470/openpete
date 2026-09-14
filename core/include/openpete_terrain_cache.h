@@ -129,6 +129,7 @@ enum {
 typedef struct {
     float   mrow[3][3];   /* g_Camera+0x00 projection matrix, raw int16 values */
     double  ofx, ofy, H;  /* GTE screen offset + projection distance           */
+    double  H_canon;      /* the GTE's H: the hardware-limit mirrors read it    */
     double  camx, camy, camz;  /* fractional camera, world/16                  */
     double  fogscale;     /* s_fogscale (SZ = fogscale * m3)                   */
     double  vanim_alpha;  /* poly-anim sub-tick lerp alpha (1.0 = canonical /

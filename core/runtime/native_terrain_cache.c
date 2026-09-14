@@ -672,6 +672,7 @@ void openpete_tercache_frame_begin(const openpete_tercache_globals *g,
     gu->dH[0]      = g->H;
     gu->dH[1]      = g->vanim_alpha;   /* poly-anim lerp alpha (anim stage) */
     gu->dnear[0]   = g->nearz;         /* near-plane clip zc (near stage)   */
+    gu->dspare[0]  = g->H_canon;       /* canonical H (limit-regime mirrors) */
     gu->fog[0] = g->fog_ref_base;
     gu->fog[1] = (int32_t)g->gflags;
     gu->fog[2] = g->cull_ref_s2;

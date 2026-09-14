@@ -241,11 +241,6 @@ static void shadow_spyro_dump(CPUState* cpu) {
  * =========================================================================== */
 static int clamp16i(long v) { return v < -32768 ? -32768 : (v > 32767 ? 32767 : (int)v); }
 
-/* load the camera rotation matrix (g_Camera+0x00..0x10, 5 words -> 9 int16) */
-static void load_cam_matrix(CPUState* cpu, int R[3][3]) {
-    ngte_read_matrix(cpu, G_CAMERA + 0, R);
-}
-
 /* MVMVA(sf=1, mx=rotation, v=V0, cv=none, lm=0): IR = clamp16((R·v)>>12). */
 static void mvmva_ir(const int R[3][3], int vx, int vy, int vz, int ir[3]) {
     for (int i = 0; i < 3; i++) {
@@ -261,10 +256,10 @@ static void ground_tr(const int C[3][3], double vx, double vy, double vz, double
 
 /* RTPS one local vertex through R + integer TR (shift 12) -> float screen + view-Z */
 typedef struct { float sx, sy, sz; } spt;
-static void sh_proj(const int R[3][3], const double TR[3], double ofx, double ofy, double H,
+static void sh_proj(const int R[3][3], const double TR[3], double ofx, double ofy, const ngte_view* v,
                     double vx, double vy, double vz, spt* o) {
     ngte_proj r;   /* shared GTE-faithful pipeline, ±1024 SXY bound ON (W2.3) */
-    ngte_project_gte(R, TR, vx, vy, vz, ofx, ofy, H, 1, &r);
+    ngte_project_gte(R, TR, vx, vy, vz, ofx, ofy, v, 1, &r);
     o->sx = (float)r.sx; o->sy = (float)r.sy; o->sz = (float)r.m3;
 }
 
@@ -326,7 +321,7 @@ static void assemble_matrix(CPUState* cpu, const int C[3][3], int idxA, int idxB
  * feeder ORDER); the textured moby decal ignores it and takes its per-moby plane
  * from the fan's own gl_FragCoord.z. Fills *p; the caller pushes it via
  * openpete_native_set_shadow_decal_params. Display-only (never writes PSX RAM). */
-static void shadow_build_decal_params(CPUState* cpu, const int C[3][3],
+static void shadow_build_decal_params(CPUState* cpu, const ngte_view* v, const int C[3][3],
                                       double ofx, double ofy, double H,
                                       openpete_shadow_decal_params* p) {
     double a = C[0][0], b = C[0][1], c = C[0][2];
@@ -345,7 +340,7 @@ static void shadow_build_decal_params(CPUState* cpu, const int C[3][3],
         p->cam_col1[i] = (float)inv[1][i];
         p->cam_col2[i] = (float)inv[2][i];
     }
-    p->cam_pos_up = (float)(int32_t)cpu->read_word(G_CAMERA + 0x30);      /* game z field */
+    p->cam_pos_up = (float)v->cam_ram[2];                                  /* game z field */
     p->ofx = (float)ofx; p->ofy = (float)ofy; p->h = (float)H;
     p->ground_up = (float)(int32_t)cpu->read_word(D_SPYROSHADOW + 0x18);  /* Spyro plane */
     const char* wh = getenv("OPENPETE_SHADOW_WALL_HEIGHT");
@@ -370,13 +365,14 @@ static moshtri s_mosh[MAX_MOSH]; static int s_mosh_n;
 
 static void shadow_moby_build(CPUState* cpu) {
     s_mosh_n = 0;
-    int C[3][3]; load_cam_matrix(cpu, C);
+    ngte_view view; ngte_view_build(cpu, &view);   /* one projection view per walk */
+    const ngte_view* v = &view;
+    int C[3][3]; memcpy(C, v->cam_M, sizeof C);
     uint32_t list_end = cpu->read_word(G_MOBYSHADOWS + 0x08);
     uint32_t uv0 = cpu->read_word(G_MOBYSHADOWS + 0x00);
     uint32_t uv1 = cpu->read_word(G_MOBYSHADOWS + 0x04);
-    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
-    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
-    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
+    double ofx = v->ofx, ofy = v->ofy;
+    double H   = v->H_eff;
     /* Hand the depth-aware decal the camera-reconstruction params so the TEXTURED
      * moby-shadow decal (shadow_decal_tex.frag) can reject wall/steep/raised
      * terrain per pixel — the same fix Spyro's silhouette shadow got. Set here
@@ -385,19 +381,14 @@ static void shadow_moby_build(CPUState* cpu) {
      * Spyro feeder's (same camera; ground_up read from D_SpyroShadow), so feeder
      * order is irrelevant. Display-only. */
     { openpete_shadow_decal_params p;
-      shadow_build_decal_params(cpu, C, ofx, ofy, H, &p);
+      shadow_build_decal_params(cpu, v, C, ofx, ofy, H, &p);
       openpete_native_set_shadow_decal_params(&p); }
     /* Camera at FRACTIONAL /4 (not >>2): the moby BODY got the ÷4.0 delta fix but
      * its drop-shadow still floored cam+pos to /4 integers, so the shadow stepped
      * in 4-world-unit chunks under camera motion. Carry the low 2 bits. Sub-tick
      * floor fix: prefer the FRACTIONAL interpolated camera (un-rounded) so the
      * shadow tracks the smooth camera below the 1-world-unit lerp32 grid too. */
-    double cam0, cam1, cam2;
-    { double cf[3];
-      if (openpete_native_interp_pos(G_CAMERA, cf)) { cam0 = cf[0]/4.0; cam1 = cf[1]/4.0; cam2 = cf[2]/4.0; }
-      else { cam0 = (double)(int32_t)cpu->read_word(G_CAMERA+0x28) / 4.0;
-             cam1 = (double)(int32_t)cpu->read_word(G_CAMERA+0x2C) / 4.0;
-             cam2 = (double)(int32_t)cpu->read_word(G_CAMERA+0x30) / 4.0; } }
+    double cam0 = v->cam[0] / 4.0, cam1 = v->cam[1] / 4.0, cam2 = v->cam[2] / 4.0;
     /* FT3 material (constant across the fan): UV0=uv0, UV1=uv1, UV2=uv0+0x1F00 */
     int u0=(int)(uv0&0xFF), v0t=(int)((uv0>>8)&0xFF);
     int u1=(int)(uv1&0xFF), v1t=(int)((uv1>>8)&0xFF);
@@ -434,7 +425,7 @@ static void shadow_moby_build(CPUState* cpu) {
         double vz = pfx / 4.0 - cam0;
         double TR[3]; ground_tr(C, vx, vy, vz, TR);
         if (TR[2] - 4096.0 >= 0.0) continue;                /* Z cull (floor(x)>=N ⟺ x>=N) */
-        spt anchor; sh_proj(C, ZERO, ofx, ofy, H, vx, vy, vz, &anchor);
+        spt anchor; sh_proj(C, ZERO, ofx, ofy, v, vx, vy, vz, &anchor);
 
         int idxB = (int)((sd >> 16) & 0x3F);
         int idxA = (int)((sd >> 22) & 0x3F);
@@ -442,10 +433,10 @@ static void shadow_moby_build(CPUState* cpu) {
 
         int rlo = s16(radius & 0xFFFF), rhi = s16((radius >> 16) & 0xFFFF);
         spt c[4];
-        sh_proj(Rp, TR, ofx, ofy, H,  0,    0,    rlo, &c[0]);   /* RTPT V0 */
-        sh_proj(Rp, TR, ofx, ofy, H,  rlo,  rhi,  0,   &c[1]);   /* RTPT V1 */
-        sh_proj(Rp, TR, ofx, ofy, H,  0,    0,   -rlo, &c[2]);   /* RTPT V2 */
-        sh_proj(Rp, TR, ofx, ofy, H, -rlo,  0,    0,   &c[3]);   /* RTPS 4th */
+        sh_proj(Rp, TR, ofx, ofy, v,  0,    0,    rlo, &c[0]);   /* RTPT V0 */
+        sh_proj(Rp, TR, ofx, ofy, v,  rlo,  rhi,  0,   &c[1]);   /* RTPT V1 */
+        sh_proj(Rp, TR, ofx, ofy, v,  0,    0,   -rlo, &c[2]);   /* RTPT V2 */
+        sh_proj(Rp, TR, ofx, ofy, v, -rlo,  0,    0,   &c[3]);   /* RTPS 4th */
 
         if (sh_nclip(&c[0], &c[1], &c[2]) < 0.0) continue;       /* backface */
         /* anchor extent culls (match the .s prim count) */
@@ -610,24 +601,25 @@ static void shadow_spyro_build(CPUState* cpu) {
     s_sptri_n = 0;
     if ((int)cpu->read_word(D_SPYROSHADOW + 0x24) > 0) return;     /* over water: no shadow */
 
-    int C[3][3]; load_cam_matrix(cpu, C);
-    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
-    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
-    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
+    ngte_view view; ngte_view_build(cpu, &view);   /* one projection view per walk */
+    const ngte_view* v = &view;
+    int C[3][3]; memcpy(C, v->cam_M, sizeof C);
+    double ofx = v->ofx, ofy = v->ofy;
+    double H   = v->H_eff;
 
     /* ground anchor: (shadowPos - camPos) swizzled, RTPS through camera (TR=0) */
     int sposx = (int)cpu->read_word(D_SPYROSHADOW + 0x10);
     int sposy = (int)cpu->read_word(D_SPYROSHADOW + 0x14);
     int sposz = (int)cpu->read_word(D_SPYROSHADOW + 0x18);
-    int camx = (int)cpu->read_word(G_CAMERA + 0x28);
-    int camy = (int)cpu->read_word(G_CAMERA + 0x2C);
-    int camz = (int)cpu->read_word(G_CAMERA + 0x30);
+    int camx = (int)v->cam_ram[0];   /* integer camera, as the .s loads it */
+    int camy = (int)v->cam_ram[1];
+    int camz = (int)v->cam_ram[2];
     int avx = s16(camy - sposy);     /* VX0 */
     int avy = s16(camz - sposz);     /* VY0 */
     int avz = s16(sposx - camx);     /* VZ0 */
     double TR[3]; ground_tr(C, avx, avy, avz, TR);   /* avx/avy/avz stay s16 (faithful, 1-unit) */
     double ZERO[3] = {0,0,0};
-    spt anchor; sh_proj(C, ZERO, ofx, ofy, H, avx, avy, avz, &anchor);
+    spt anchor; sh_proj(C, ZERO, ofx, ofy, v, avx, avy, avz, &anchor);
 
     /* Hand the depth-aware shadow decal the camera reconstruction params (so the
      * shader can recover each terrain pixel's world-Y from the depth pre-pass and
@@ -641,14 +633,14 @@ static void shadow_spyro_build(CPUState* cpu) {
         /* Camera reconstruction params (inverse matrix / ofx-ofy-h / ground
          * plane / thresholds) — shared with the moby decal via the helper. */
         openpete_shadow_decal_params p;
-        shadow_build_decal_params(cpu, C, ofx, ofy, H, &p);
+        shadow_build_decal_params(cpu, v, C, ofx, ofy, H, &p);
         openpete_native_set_shadow_decal_params(&p);
         /* OPENPETE_SHADOW_DECAL_DEBUG: validate the FULL world reconstruction
          * (all three camera columns + swizzle inverse) CPU-side against the
          * anchor's known world position — the shader runs the same formulas. */
         if (getenv("OPENPETE_SHADOW_DECAL_DEBUG")) {
             /* Validate with the PUSHED inverse — the same math the shader runs. */
-            spt a2; sh_proj(C, ZERO, ofx, ofy, H, avx, avy, avz, &a2);
+            spt a2; sh_proj(C, ZERO, ofx, ofy, v, avx, avy, avz, &a2);
             double vz = a2.sz;
             double M1 = (a2.sx - ofx) * vz / H, M2 = (a2.sy - ofy) * vz / H, M3 = vz;
             double V0 = (p.cam_col0[0]*M1 + p.cam_col0[1]*M2 + p.cam_col0[2]*M3) / 4096.0;
@@ -723,7 +715,7 @@ static void shadow_spyro_build(CPUState* cpu) {
         double VX = (double)ring_r[k] * rhi / 1024.0;
         double VY = (double)ring_y[k] * 4.0;
         double VZ = (double)ring_r[k] * rlo / 1024.0;
-        sh_proj(Rh, TR, ofx, ofy, H, VX, VY, VZ, &strip[k]);
+        sh_proj(Rh, TR, ofx, ofy, v, VX, VY, VZ, &strip[k]);
     }
 
     /* G3 fan: (anchor, strip[k], strip[k+1]); color0=0x608080, c1=c2=0 */

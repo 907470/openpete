@@ -285,21 +285,17 @@ int spyro1_s3_actor_emit(CPUState* cpu, const void* pose, int len,
     /* Camera transform: PM * euler(rot), TR = PM*(cam - pos)/4096 — the
      * same derivation as the S1 ghost (spyro_native.c spyro_derive_phaseA
      * body case), against the CURRENT camera. */
-    int PM[3][3]; ngte_read_matrix(cpu, G_CAMERA, PM);
-    double cfx = (double)(int32_t)cpu->read_word(G_CAMERA + 0x28);
-    double cfy = (double)(int32_t)cpu->read_word(G_CAMERA + 0x2C);
-    double cfz = (double)(int32_t)cpu->read_word(G_CAMERA + 0x30);
-    { double cf[3];
-      if (openpete_native_interp_pos(G_CAMERA, cf)) { cfx = cf[0]; cfy = cf[1]; cfz = cf[2]; } }
+    ngte_view view; ngte_view_build(cpu, &view);   /* one projection view per emit */
+    const ngte_view* v = &view;
+    int PM[3][3]; memcpy(PM, v->cam_M, sizeof PM);
+    double cfx = v->cam[0], cfy = v->cam[1], cfz = v->cam[2];
     double IR1 = cfy - p->pos[1], IR2 = cfz - p->pos[2], IR3 = p->pos[0] - cfx;
     double TR[3];
     for (int i = 0; i < 3; i++)
         TR[i] = (PM[i][0]*IR1 + PM[i][1]*IR2 + PM[i][2]*IR3) / 4096.0;
     int M[3][3]; s3_compose_euler(cpu, PM, p->rot, M);
 
-    double ofx = (double)((int32_t)cpu->gte_ctrl[24] >> 16);
-    double ofy = (double)((int32_t)cpu->gte_ctrl[25] >> 16);
-    double H   = (double)(cpu->gte_ctrl[26] & 0xFFFF);
+    double ofx = v->ofx, ofy = v->ofy;
     double sc  = s3_scale();
 
     { static int s_dbg = -1;
@@ -324,7 +320,7 @@ int spyro1_s3_actor_emit(CPUState* cpu, const void* pose, int len,
     for (int i = 0; i < nv; i++) {
         ngte_proj o;
         ngte_project_gte(M, TR, s_dv[i].x * sc, s_dv[i].y * sc,
-                         s_dv[i].z * sc, ofx, ofy, H, 1, &o);
+                         s_dv[i].z * sc, ofx, ofy, v, 1, &o);
         s_px[i] = (float)o.sx; s_py[i] = (float)o.sy;
         s_pz[i] = (float)o.m3; s_sat[i] = o.sat;
         nsat += o.sat ? 1 : 0;
