@@ -37,12 +37,17 @@
 # image: the three channels audited in manifest/render_channels.toml
 # (prim colour scratch, the moby prim queues, the dedup flags), sized from
 # sony_image.h, and the primitive-buffer cursor. The queues and the cursor
-# diverge on the default run (identical counts under --renderer psycross):
-# openpete's stock render pass emits a different flat-shaded packet set
-# on some ticks while every strict row stays identical over the 20k
-# golden. Both are classified gameplay_neutral (hashed, logged, never
-# hard-fail; owner in the plan ledger), their diverge_baseline the
-# ratchet until the packet is attributed.
+# diverge on the default run: the DEMO MODE text letters wobble by
+# COSINE_8((g_LevelTicks * 4 + i * 12) & 0xFF) (gamestates/draw.c
+# func_80018908), and g_LevelTicks is the VBL counter PadVSync increments,
+# which runs ahead on the reference (boot offset, lag frames, load VBLs:
+# 3 at hit 1950, 263 at hit 3000; the boot_timing carve-out of
+# ram_diff_expect.toml). The three GTE engines and the reference agree on
+# every GTE instruction of a divergent tick (13871 ops, inputs and
+# outputs), so no GTE or recompiler defect is involved. Both rows are
+# classified gameplay_neutral (hashed, logged, never hard-fail) with
+# diverge_baseline as the ratchet until openpete charges the reference's
+# VBLs, after which they are expected to converge and lose the flag.
 #
 # Carve-outs (commented rows; the ranges are subtracted above):
 #   pad_model       g_PadBuffer 0x800786A0-C4, g_Pad stick calibration
@@ -99,11 +104,10 @@ length           = 0xC00
 class            = "render_scratch"
 description      = "g_SonyImage.m_WorldNearQueued[256] / m_WorldFarQueued[256] / m_ShadedMobys[256] (sony_image.h): render-side prim queues pushed by r_environment.s (PCs 0x80025B74 / 0x80025BA4), Memset-cleared per frame, read only by the render module (render_channels.toml moby_render_queue, audited_clean)"
 # Diverges from the reference on 131 of the 20k golden records at the
-# default (identical count under --renderer psycross): the stock render
-# pass in openpete queues a different prim set on those ticks, moving the
-# primitive-buffer cursor below with it. Classified gameplay_neutral:
-# every strict row is identical over the golden; the count is the
-# ratchet.
+# default: the DEMO MODE text letters (head comment) are queued with a
+# g_LevelTicks-dependent rotation, so the packet count a letter needs
+# differs on some ticks. Classified gameplay_neutral: every strict row is
+# identical over the golden; the count is the ratchet.
 gameplay_neutral = true
 diverge_baseline = 131
 
@@ -140,11 +144,11 @@ length           = 0x4
 class            = "render_scratch"
 description      = "D_800757B0: the primitive-buffer bump cursor the renderers allocate packets from (gamestates/draw.c, r_*.s); reset per frame, read by no gameplay code"
 # Differs from the reference by whole POLY_F3/F4 packets (0x18-byte
-# multiples) on 5290 of the 20k golden records at the default (identical
-# count under --renderer psycross): openpete's stock render pass emits a
-# different flat-shaded packet set on those ticks. Classified
-# gameplay_neutral: every strict row is identical over the golden; the
-# count is the ratchet.
+# multiples) on 5290 of the 20k golden records at the default: the DEMO
+# MODE text letters (head comment) rotate by a g_LevelTicks-dependent
+# angle, and a letter's flat-shaded packet count follows its angle.
+# Classified gameplay_neutral: every strict row is identical over the
+# golden; the count is the ratchet.
 gameplay_neutral = true
 diverge_baseline = 5290
 

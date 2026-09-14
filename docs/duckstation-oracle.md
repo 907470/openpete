@@ -83,6 +83,19 @@ region names or order differ from the registered table.
 The `cd_load_transient` and `gameplay_neutral` flags are openpete-side gate
 policy, not inputs to the hash; they are not in the file.
 
+### GTE instruction log
+
+`-psxtrace-gte-log PATH -psxtrace-gte-vbl LO:HI` (with `-cpu Interpreter`;
+the log records only under the interpreter) writes one CSV row per
+GTE instruction the reference executes while its VBLANK count is in
+`[LO, HI)`, in the layout openpete's `OPENPETE_GTE_TRACE` writes (engine
+`ds`, last column the guest PC). openpete's trace for the same tick
+(`OPENPETE_GTE_TRACE_LO/HI` in `openpete_frame`, which is the VBL count
+minus the fast-boot anchor the log names) diffs row for row against it;
+a record's `pad2` stamp gives the reference window for a hit. A
+difference in an instruction's inputs at the same PC is upstream of the
+GTE; a difference in its outputs on equal inputs is a GTE defect.
+
 ### Fork provenance
 
 A golden is reproducible only from the fork commit the submodule pins.

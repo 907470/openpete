@@ -977,6 +977,9 @@ uint32_t gte_cfc2(GTEState* gte, uint8_t reg) {
 //
 // Diff with: awk -F, '$2=="rec"' trace.csv > rec; '$2=="psy"' > psy;
 //            '$2=="pcsx"' > pcsx; diff rec psy; diff rec pcsx.
+// The last column is the guest PC of the instruction; the DuckStation fork's
+// -psxtrace-gte-log writes the same columns (engine "ds") from the reference
+// under -cpu Interpreter, so the two sides diff row for row.
 // ---------------------------------------------------------------------------
 // PsyCross GTERegisters / GTE_operator pulled in via psx/gtereg.h above.
 
@@ -1037,7 +1040,7 @@ FILE* gte_trace_init() {
         "SZ0,SZ1,SZ2,SZ3,"
         "SXY0,SXY1,SXY2,"
         "RGB0,RGB1,RGB2,"
-        "FLAG\n");
+        "FLAG,PC\n");
     std::fprintf(stdout, "[GTE-TRACE] writing to %s frames [%u,%u) ops=0x%llX\n",
                  path, g_gte_trace.frame_lo, g_gte_trace.frame_hi,
                  (unsigned long long)g_gte_trace.op_mask);
@@ -1104,7 +1107,7 @@ void gte_trace_emit(FILE* fp, const DecodedGTE& d, const char* engine,
         "%u,%u,%u,%u,"
         "0x%08X,0x%08X,0x%08X,"
         "0x%08X,0x%08X,0x%08X,"
-        "0x%08X\n",
+        "0x%08X,0x%08X\n",
         openpete_frame, engine, op_label, vidx,
         d.V[vi][0], d.V[vi][1], d.V[vi][2],
         d.TR[0], d.TR[1], d.TR[2],
@@ -1117,7 +1120,7 @@ void gte_trace_emit(FILE* fp, const DecodedGTE& d, const char* engine,
         (unsigned)d.SZ[0], (unsigned)d.SZ[1], (unsigned)d.SZ[2], (unsigned)d.SZ[3],
         d.SXY[0], d.SXY[1], d.SXY[2],
         d.RGB[0], d.RGB[1], d.RGB[2],
-        d.FLAG);
+        d.FLAG, openpete_gte_caller_pc);
 }
 
 void emit_op_rows(FILE* fp, const DecodedGTE& d_rec, const DecodedGTE& d_psy,
