@@ -206,6 +206,19 @@ distinguishable from a flickering one.
 - `OPENPETE_ORACLE_LOG` — keep the run's full console log at this path
   (default: a temp file the script deletes). The script reads the exit-time
   `music: summary:` line from it.
+- `OPENPETE_PSXTRACE_VBL_POLICY=exact|log` — how a per-record VBL-delta
+  mismatch is judged (default `log`). Every record carries the reference's
+  VBLANK count at the hit (header flag bit 4, in `pad2`); openpete stamps
+  its own `openpete_vbl` at the same hit, and the verifier compares the
+  deltas between consecutive records (absolutes differ by the boot
+  offset). `exact` hard-fails the first mismatch (reason `vbl-delta`,
+  both deltas named); `log` counts them. The exit summary prints both
+  sides' delta histograms (bin `>=16` collects the rest). `exact` refuses
+  a trace without stamps.
+- `OPENPETE_ANCHOR_VBL_LOG=PATH` — one `hit vbl` line per anchor hit,
+  with or without a trace (`--psxtrace-anchor-pc HEX` arms the counter
+  alone). `tools/psxtrace_loads.py vbl TRACE PATH` prints both histograms
+  and the first mismatching record.
 
 ### Sidecar artifacts
 
@@ -216,6 +229,29 @@ oracle's. Those artifacts come from the PCSX-Redux capture path
 (`scripts/capture_psx_oracle.sh`, a two-stage Lua capture). The shipped
 DuckStation golden has none: it is captured from power-on and openpete
 replays the same boot.
+
+### CD read recorder
+
+`capture_psx_oracle_ds.sh --cd-read-pc HEX --cd-read-cb-slot HEX` (the
+game's `CdRead` entry from `psyq.toml`, and `recomp.conf`'s
+`CD_READ_CB_ADDR`, the guest word libcd's `CdReadCallback` stores the
+game's handler in) writes `<trace>.loads`: one line per read with the
+record index, VBLANK count, CPU tick and scanline at issue and at
+completion, the sector count, destination and mode, and the callback's
+intr code. The handler is read from the slot at each issue and
+breakpointed, so the handler PC need not be known up front; the header
+line names the build. A read the game waits on without reaching the
+anchor between issue and completion shows `issue_rec == done_rec`
+(synchronous); one polled across hits does not (asynchronous). The script
+refuses a capture that recorded zero reads. `--cd-control-pc HEX` logs
+every `CdControl` command to `<trace>.cdctl`. openpete's side is its
+console log: `CdRead ... hit=H vbl=V`, `read instant`/`load delay: ...
+deferred`, `read complete (hit=H vbl=V)`.
+
+`tools/psxtrace_loads.py table LOADS` classifies every reference read;
+`align LOADS OPLOG` pairs them with openpete's by index, checks the
+(sectors, destination) sequence and prints the issue-hit shift and both
+sides' hit and VBL spans per read; `cdctl CDCTL` histograms the commands.
 
 ## Checking the gate is not vacuous
 

@@ -158,8 +158,32 @@ static int  openpete_halt_done           = 0;
  * instant the trace was captured at. */
 uint32_t    openpete_psxtrace_anchor_pc       = 0u;
 uint32_t    openpete_psxtrace_anchor_hit_target = 1u;
-static uint32_t openpete_psxtrace_anchor_hits = 0u;
+/* Hits of the anchor PC since boot, counted whether or not a verifier is
+ * attached; the CD read log stamps each read with it so a read can be
+ * placed against the reference's <trace>.loads sidecar. */
+uint32_t    openpete_psxtrace_anchor_hits     = 0u;
 void      (*openpete_psxtrace_dispatch_hook)(uint32_t addr) = NULL;
+
+/* OPENPETE_ANCHOR_VBL_LOG=PATH: one `hit vbl` line per anchor hit, the
+ * openpete side of the per-record VBL stamp the reference writes into
+ * each trace record. */
+static FILE* s_anchor_vbl_log = NULL;
+static int   s_anchor_vbl_log_checked = 0;
+static void anchor_vbl_log(uint32_t hit) {
+    if (!s_anchor_vbl_log_checked) {
+        s_anchor_vbl_log_checked = 1;
+        const char* p = getenv("OPENPETE_ANCHOR_VBL_LOG");
+        if (p && *p) {
+            s_anchor_vbl_log = fopen(p, "w");
+            if (s_anchor_vbl_log) fprintf(s_anchor_vbl_log, "# hit vbl\n");
+        }
+    }
+    if (s_anchor_vbl_log) {
+        /* The halt path exits without flushing stdio. */
+        fprintf(s_anchor_vbl_log, "%u %d\n", hit, SDL_GetAtomicInt(&openpete_vbl));
+        fflush(s_anchor_vbl_log);
+    }
+}
 
 /* Set while a presentation-only re-render is in flight (e.g. the
  * widescreen GamestateDraw bracket re-invokes func_8001ED5C with widened
@@ -389,11 +413,12 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
             /* unreachable */
         }
     }
-    if (openpete_psxtrace_dispatch_hook &&
-        openpete_psxtrace_anchor_pc != 0u &&
+    if (openpete_psxtrace_anchor_pc != 0u &&
         addr == openpete_psxtrace_anchor_pc) {
         openpete_psxtrace_anchor_hits++;
-        if (openpete_psxtrace_anchor_hits >= openpete_psxtrace_anchor_hit_target) {
+        anchor_vbl_log(openpete_psxtrace_anchor_hits);
+        if (openpete_psxtrace_dispatch_hook &&
+            openpete_psxtrace_anchor_hits >= openpete_psxtrace_anchor_hit_target) {
             openpete_psxtrace_dispatch_hook(addr);
         }
     }

@@ -20,7 +20,8 @@ Layout (little-endian throughout):
     12   4   frame_count      u32   (0 = streaming/unknown; finalised by closer)
     16   4   ram_size         u32 = 0x200000
     20   4   flags            u32   (bit 0: ram zstd-compressed; bit 1: has-ram;
-                                    bit 2: table-hash block; bit 3: scm-hash block)
+                                    bit 2: table-hash block; bit 3: scm-hash block;
+                                    bit 4: record pad2 holds the VBLANK count)
     24   4   region_count     u32 = N
     28   4   names_total_len  u32 = sum of (1 + len(name)) over the N names
     32   4   reserved         u32 = 0
@@ -68,6 +69,7 @@ FLAG_ZSTD       = 1 << 0
 FLAG_HAS_RAM    = 1 << 1
 FLAG_TABLE_HASH = 1 << 2
 FLAG_SCM_HASH   = 1 << 3
+FLAG_VBL_STAMP  = 1 << 4   # record pad2 = capturing side's VBLANK count at the hit
 
 
 @dataclass(frozen=True)

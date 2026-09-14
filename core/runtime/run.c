@@ -2369,6 +2369,13 @@ static int run_host_init(const openpete_options_t* opts) {
         } else {
             return OPENPETE_EXIT_SETUP_ERROR;
         }
+    } else if (opts->psxtrace_anchor_pc) {
+        /* No trace: the anchor still counts hits, for the CD read log's
+         * hit stamps and OPENPETE_ANCHOR_VBL_LOG. */
+        extern uint32_t openpete_psxtrace_anchor_pc;
+        openpete_psxtrace_anchor_pc = opts->psxtrace_anchor_pc;
+        OPL_INFO_F("psxtrace", "anchor counting: PC=0x%08X (no trace)",
+                   openpete_psxtrace_anchor_pc);
     }
 
     /* Engine-level mute: clamp the SPU AL sources and the XA stream's AL
@@ -5711,6 +5718,29 @@ static int run_host_loop(const openpete_options_t* opts) {
                                (unsigned long long)psxtrace->frames_compared);
                 }
             }
+        }
+        if (psxtrace->has_vbl_stamps) {
+            char ht[256], ho[256];
+            size_t nt = 0, no = 0;
+            for (int b = 0; b < 17; b++) {
+                if (psxtrace->vbl_hist_trace[b])
+                    nt += (size_t)snprintf(ht + nt, sizeof(ht) - nt, " %s%d:%llu",
+                                           b == 16 ? ">=" : "", b,
+                                           (unsigned long long)psxtrace->vbl_hist_trace[b]);
+                if (psxtrace->vbl_hist_op[b])
+                    no += (size_t)snprintf(ho + no, sizeof(ho) - no, " %s%d:%llu",
+                                           b == 16 ? ">=" : "", b,
+                                           (unsigned long long)psxtrace->vbl_hist_op[b]);
+            }
+            OPL_INFO_F("psxtrace",
+                       "vbl deltas: policy=%s mismatches=%llu; reference%s; openpete%s",
+                       psxtrace->vbl_policy_exact ? "exact" : "log",
+                       (unsigned long long)psxtrace->vbl_delta_mismatches, ht, ho);
+            if (psxtrace->vbl_delta_mismatches)
+                OPL_INFO_F("psxtrace", "  first vbl-delta mismatch: record %u reference %d openpete %d",
+                           psxtrace->first_vbl_mismatch_frame,
+                           psxtrace->first_vbl_mismatch_trace,
+                           psxtrace->first_vbl_mismatch_op);
         }
         /* Promote any EOF-pending CD-load transient to a hard failure and
          * log the PASS/FAIL verdict + absorbed-transient tally. */

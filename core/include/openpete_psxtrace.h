@@ -83,6 +83,23 @@ typedef struct {
     uint64_t transient_healed_bursts;    /* count of absorbed (healed) bursts */
     uint32_t heal_window;
 
+    /* Per-record VBL stamps (header flag bit 4: the trace's pad2 is the
+     * reference's VBLANK count at the hit; openpete stamps its own
+     * `openpete_vbl` at the same hit). Absolutes differ by the boot offset,
+     * so the per-record deltas are compared. OPENPETE_PSXTRACE_VBL_POLICY:
+     * `exact` hard-fails the first differing delta (reason "vbl-delta"),
+     * `log` (default) counts them. Both sides' delta histograms are kept
+     * for the summary; bin 16 collects every delta >= 16. */
+    int      has_vbl_stamps;
+    int      vbl_policy_exact;
+    uint32_t prev_trace_vbl;
+    int32_t  prev_op_vbl;
+    uint64_t vbl_delta_mismatches;
+    uint32_t first_vbl_mismatch_frame;
+    int32_t  first_vbl_mismatch_trace, first_vbl_mismatch_op;
+    uint64_t vbl_hist_trace[17];
+    uint64_t vbl_hist_op[17];
+
     /* Counts since open. */
     uint64_t frames_compared;
     uint64_t hashes_diverged;            /* per-region mismatches across run */

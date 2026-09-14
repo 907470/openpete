@@ -9,6 +9,9 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include <SDL3/SDL.h>
+extern SDL_AtomicInt openpete_vbl;
+
 /* Provided by run.c (gameplay_hash_compute_ex). Mirrors the Lua dumper's
  * scripts/openpete_state_hash.lua so the value-equality check is
  * meaningful. */
@@ -20,8 +23,10 @@ extern uint64_t gameplay_hash_compute_ex(uint64_t* out_per_region);
 #define PSXTRACE_FLAG_HAS_RAM    0x2u
 #define PSXTRACE_FLAG_TABLE_HASH 0x4u
 #define PSXTRACE_FLAG_SCM_HASH   0x8u
+#define PSXTRACE_FLAG_VBL_STAMP  0x10u
 #define PSXTRACE_FLAGS_KNOWN     (PSXTRACE_FLAG_ZSTD | PSXTRACE_FLAG_HAS_RAM | \
-                                  PSXTRACE_FLAG_TABLE_HASH | PSXTRACE_FLAG_SCM_HASH)
+                                  PSXTRACE_FLAG_TABLE_HASH | PSXTRACE_FLAG_SCM_HASH | \
+                                  PSXTRACE_FLAG_VBL_STAMP)
 
 static int read_u32_le(FILE* fp, uint32_t* out) {
     uint8_t b[4];
@@ -58,6 +63,14 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
     }
     for (uint32_t i = 0; i < OPENPETE_PSXTRACE_MAX_REGIONS; i++)
         t->transient_open_frame[i] = -1;
+    {
+        const char* vp = getenv("OPENPETE_PSXTRACE_VBL_POLICY");
+        if (vp && strcmp(vp, "exact") == 0) t->vbl_policy_exact = 1;
+        else if (vp && *vp && strcmp(vp, "log") != 0) {
+            OPL_ERROR_F("psxtrace", "OPENPETE_PSXTRACE_VBL_POLICY=%s: wanted exact or log", vp);
+            return -1;
+        }
+    }
     t->fp = fopen(path, "rb");
     if (!t->fp) {
         OPL_ERROR_F("psxtrace", "open %s failed: %s", path, strerror(errno));
@@ -157,6 +170,12 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
         uint32_t copy = n < sizeof(t->scm_hash) - 1u ? n : (uint32_t)sizeof(t->scm_hash) - 1u;
         memcpy(t->scm_hash, tmp, copy);
         t->scm_hash[copy] = 0;
+    }
+    t->has_vbl_stamps = !!(t->flags & PSXTRACE_FLAG_VBL_STAMP);
+    if (t->vbl_policy_exact && !t->has_vbl_stamps) {
+        OPL_ERROR_F("psxtrace", "%s: OPENPETE_PSXTRACE_VBL_POLICY=exact but the trace "
+                    "carries no VBL stamps — recapture", path);
+        goto fail;
     }
     if (t->flags & PSXTRACE_FLAG_HAS_RAM) {
         if (t->flags & PSXTRACE_FLAG_ZSTD) {
@@ -291,7 +310,40 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
             return -1;
         }
     }
-    (void)pad2; (void)pc;
+    (void)pc;
+    /* Per-record VBL stamp: compare this record's delta from the previous
+     * with openpete's, so a load whose cadence differs, or a skipped state,
+     * fails at its first record with both deltas named. */
+    if (t->has_vbl_stamps) {
+        const int32_t op_vbl = SDL_GetAtomicInt(&openpete_vbl);
+        if (t->records_consumed > 0) {
+            const int64_t d_trace = (int64_t)pad2 - (int64_t)t->prev_trace_vbl;
+            const int64_t d_op    = (int64_t)op_vbl - (int64_t)t->prev_op_vbl;
+            const int bt = (d_trace < 0) ? 16 : (d_trace > 16 ? 16 : (int)d_trace);
+            const int bo = (d_op < 0)    ? 16 : (d_op > 16 ? 16 : (int)d_op);
+            t->vbl_hist_trace[bt]++;
+            t->vbl_hist_op[bo]++;
+            if (d_trace != d_op) {
+                if (t->vbl_delta_mismatches == 0) {
+                    t->first_vbl_mismatch_frame = frame_no;
+                    t->first_vbl_mismatch_trace = (int32_t)d_trace;
+                    t->first_vbl_mismatch_op    = (int32_t)d_op;
+                }
+                t->vbl_delta_mismatches++;
+                if (t->vbl_policy_exact && !t->hard_failed) {
+                    t->hard_failed      = 1;
+                    t->hard_fail_frame  = frame_no;
+                    t->hard_fail_region = -1;
+                    t->hard_fail_reason = "vbl-delta";
+                    OPL_ERROR_F("psxtrace",
+                                "record %u: VBL delta %lld on the reference, %lld in openpete",
+                                frame_no, (long long)d_trace, (long long)d_op);
+                }
+            }
+        }
+        t->prev_trace_vbl = pad2;
+        t->prev_op_vbl = op_vbl;
+    }
     /* Negative control (harness): OPENPETE_PSXTRACE_POKE=ADDR:BYTE:FRAME
      * writes one byte into guest RAM at the anchor of that frame, before
      * the hashes are taken. A verify run under it must report a

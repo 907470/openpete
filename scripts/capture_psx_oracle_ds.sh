@@ -16,6 +16,14 @@
 #           --hit N (default 1)
 #           --max-runtime-frames N (DuckStation -frames cap; default
 #                                    --frames + 1000 safety pad)
+#           --cd-read-pc HEX       record every CdRead to <out>.loads (issue
+#                                  and completion stamped with record index,
+#                                  VBLANK count, CPU tick, scanline); refuses
+#                                  a capture that recorded zero reads
+#           --cd-read-cb-slot HEX  guest word holding the game's read-complete
+#                                  handler (recomp.conf CD_READ_CB_ADDR)
+#           --cd-control-pc HEX    log every CdControl command to <out>.cdctl
+#           --no-card              reference boots with no memory card
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -24,6 +32,7 @@ FRAMES=600
 ANCHOR_PC="0x8001ED5C"
 HIT=1
 MAX_RUNTIME=""
+CD_READ_PC=""; CD_READ_CB_SLOT=""; CD_CONTROL_PC=""; NO_CARD=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --out) OUT="$2"; shift 2 ;;
@@ -31,7 +40,11 @@ while [[ $# -gt 0 ]]; do
         --anchor-pc) ANCHOR_PC="$2"; shift 2 ;;
         --hit) HIT="$2"; shift 2 ;;
         --max-runtime-frames) MAX_RUNTIME="$2"; shift 2 ;;
-        -h|--help) sed -n 's/^# //p' "$0" | head -25; exit 0 ;;
+        --cd-read-pc) CD_READ_PC="$2"; shift 2 ;;
+        --cd-read-cb-slot) CD_READ_CB_SLOT="$2"; shift 2 ;;
+        --cd-control-pc) CD_CONTROL_PC="$2"; shift 2 ;;
+        --no-card) NO_CARD=1; shift ;;
+        -h|--help) sed -n 's/^# //p' "$0" | head -34; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 64 ;;
     esac
 done
@@ -79,7 +92,14 @@ python3 tools/gen_state_regions.py --manifest "$MANIFEST" --out-flat "$REGIONS_F
     exit 1
 }
 
+REC_ARGS=()
+[[ -n "$CD_READ_PC" ]] && REC_ARGS+=(-psxtrace-cd-read-pc "$CD_READ_PC")
+[[ -n "$CD_READ_CB_SLOT" ]] && REC_ARGS+=(-psxtrace-cd-read-cb-slot "$CD_READ_CB_SLOT")
+[[ -n "$CD_CONTROL_PC" ]] && REC_ARGS+=(-psxtrace-cd-control-pc "$CD_CONTROL_PC")
+[[ "$NO_CARD" == 1 ]] && REC_ARGS+=(-card1 none)
+
 mkdir -p "$(dirname "$OUT")"
+rm -f "$OUT" "$OUT.loads" "$OUT.cdctl"
 # DuckStation's -frames is *presentation* frames (not GamestateDraw hits).
 # Pad generously: ~1000 startup + 4× the requested record count handles
 # the worst case (4-vbl-per-game-frame splash logos before the title-
@@ -102,6 +122,7 @@ sh -c '"$@" 2>&1; exit 0' _ "$DS_BIN" \
     -psxtrace-anchor-hit "$HIT" \
     -psxtrace-frames "$FRAMES" \
     -psxtrace-regions "$REGIONS_FLAT" \
+    "${REC_ARGS[@]}" \
     -console \
     "$DISC" \
   | grep -E "psxtrace|FPS|Exiting" \
@@ -120,3 +141,12 @@ python3 -m tools.psxtrace_format info "$OUT" | head -4
 python3 -m tools.psxtrace_format info "$OUT" | grep -q "^scm_hash=$DS_BUILD\$" || {
     echo "[capture-ds] FAIL: trace does not carry the build hash $DS_BUILD" >&2; exit 1
 }
+if [[ -n "$CD_READ_PC" ]]; then
+    [[ -f "$OUT.loads" ]] || { echo "[capture-ds] FAIL: recorder produced no $OUT.loads" >&2; exit 1; }
+    READS="$(sed -n 's/^# reads issued=\([0-9]*\).*/\1/p' "$OUT.loads")"
+    if [[ -z "$READS" || "$READS" == 0 ]]; then
+        echo "[capture-ds] FAIL: recorder saw zero CdReads at $CD_READ_PC (wrong PC, or the run never loaded)" >&2
+        exit 1
+    fi
+    echo "[capture-ds] recorded $READS reads -> $OUT.loads"
+fi

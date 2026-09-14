@@ -482,8 +482,12 @@ static uint32_t s_cd_defer_pending = 0;  /* 1 while a completion is deferred */
 static uint32_t s_cd_load_budget   = 0;  /* VBLs the current load has left to spend */
 static uint32_t s_cd_load_prev     = 0;  /* in_load of the previous read (edge) */
 
+extern "C" uint32_t openpete_psxtrace_anchor_hits;
+
 /* The tail of a data read: the completion the game waits on. */
 static void cd_read_complete(CPUState* cpu) {
+    OPL_INFO_F("cd", "read complete (hit=%u vbl=%d)", openpete_psxtrace_anchor_hits,
+               SDL_GetAtomicInt(&openpete_vbl));
     if (g_native_cd_read_cb != nullptr) {
         /* Native registrar (post-rewriter init.c). Fire the host cb
          * directly — no cpu dispatch round-trip needed. */
@@ -1861,8 +1865,9 @@ void psyq_CdRead(CPUState* cpu) {
     int sectors = (int)cpu->a0;
     u_long* buf = (u_long*)PTR(cpu->a1);
     int     mode = (int)cpu->a2;
-    OPL_INFO_F("thunks", "CdRead sectors=%d buf=0x%08X mode=0x%02X ra=0x%08X",
-               sectors, cpu->a1, mode, cpu->ra);
+    OPL_INFO_F("thunks", "CdRead sectors=%d buf=0x%08X mode=0x%02X ra=0x%08X hit=%u vbl=%d",
+               sectors, cpu->a1, mode, cpu->ra, openpete_psxtrace_anchor_hits,
+               SDL_GetAtomicInt(&openpete_vbl));
 
     /* libcd's CdRead issues CdlSetmode with this mode before its read;
      * PsyCross's only enqueues the read, so the mirror is written here. */
@@ -1904,8 +1909,11 @@ void psyq_CdRead(CPUState* cpu) {
         s_cd_defer_pending = 1u;
         s_cd_defer_owed = delay;
         OPL_INFO_F("cd", "load delay: %d-sector read deferred %u VBL(s) "
-                   "(vbl=%d)", sectors, delay, SDL_GetAtomicInt(&openpete_vbl));
+                   "(hit=%u vbl=%d)", sectors, delay, openpete_psxtrace_anchor_hits,
+                   SDL_GetAtomicInt(&openpete_vbl));
     } else {
+        OPL_INFO_F("cd", "read instant: %d sectors (hit=%u vbl=%d)", sectors,
+                   openpete_psxtrace_anchor_hits, SDL_GetAtomicInt(&openpete_vbl));
         cd_read_complete(cpu);
     }
 
