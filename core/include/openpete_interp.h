@@ -108,6 +108,11 @@ void openpete_interp_shutdown(void);
  * the jump. init() self-registers this (plus the objs-table reset) with
  * the openpete_discontinuity broadcast. */
 void openpete_interp_reset(void);
+/* Counts openpete_interp_reset calls. A game-side store that must reset
+ * wherever the ring resets (savestate load, rewind, the runahead depth
+ * switch, adoption) compares this at its own commit instead of registering
+ * at each of those sites. */
+uint32_t openpete_interp_reset_generation(void);
 
 /* Active iff init() succeeded AND the game supplied a non-empty region
  * table AND `--render-fps` is set above the sim rate (caller's choice).

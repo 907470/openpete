@@ -17,7 +17,8 @@
 #   frame      VBL of the canonical capture (the RECDBG epoch line asserted)
 #   m|s|f      expected model / shadow / flame hook calls on that tick
 #   pairs      expected previous-record index per model record, in hook-call
-#              order, `-` = unpaired (asserted by P1; `?` = not yet written)
+#              order, `-` = unpaired, `?` = unasserted (a case with no drawn
+#              record has nothing to pair)
 #   note
 #
 # Measured 2026-09-14 (P0). Extra dragons draw FIRST, the composer's own
@@ -26,12 +27,12 @@
 #
 artisans-2p-idle|level:artisans|2|1760|2|2|0|0,1|two dragons 640 apart, idle
 artisans-4p-idle|level:artisans|4|1760|4|4|0|0,1,2,3|four dragons in formation, idle
-artisans-entry-2p|level:artisans|2|1584|4|4|0|?|level-entry tick: the game draws the player twice (modless too, 22 units apart)
+artisans-entry-2p|level:artisans|2|1584|4|4|0|-,-,-,-|level-entry tick: the game draws the player twice (modless too, 22 units apart)
 glide-4p|glide-flutter|4|1760|4|1|0|0,1,2,3|player 1 gliding: four models, one shadow (extra dragons shadowless in the air)
 sunny-flight-3p|sunny-flight-exit|3|1600|3|0|0|0,1,2|flight level: three dragons side by side (193 apart), no shadows
-tas-blink-1of3|tas|3|5588|3|1|0|?|three models, one shadow (tas f5588: player 1 charging away from the formation)
-tas-shadows-2of3|tas|3|7698|1|3|0|?|one model, three shadows: players 2-3 hidden with their shadows drawn from f7578 on (pairing-only model records)
-tas-shadow-only|tas|3|6394|0|1|0|-|no model call, one shadow (the hidden-player shadow-only draw; the ring is frozen here)
+tas-blink-1of3|tas|3|5588|3|1|0|0,1,2|three models, one shadow (tas f5588: player 1 charging away from the formation)
+tas-shadows-2of3|tas|3|7698|1|3|0|0|one model, three shadows: players 2-3 hidden with their shadows drawn from f7578 on (pairing-only model records)
+tas-shadow-only|tas|3|6394|0|1|0|?|no model call, one shadow (the hidden-player shadow-only draw; the ring is frozen here)
 #
 # Not reachable headless (each needs a second controller or a live menu):
 #   menu preview draw (coop_draw.c:263-266); player 1 idle with player 2

@@ -292,6 +292,27 @@ static void fpos_set_h(uint32_t key, const int32_t* prev2, const int32_t* prev,
         s_fpos[s_fpos_n].p[i] = hermite1((double)prev2[i], (double)prev[i], (double)curr[i], t);
     s_fpos_n++;
 }
+/* Per-record staging (the Spyro record loop) swaps the G_SPYRO entry per
+ * record and restores the ambient one after its last record. */
+static int fpos_find(uint32_t key) {
+    for (int i = 0; i < s_fpos_n; ++i) if (s_fpos[i].key == key) return i;
+    return -1;
+}
+static void fpos_drop(uint32_t key) {
+    int i = fpos_find(key);
+    if (i >= 0) s_fpos[i] = s_fpos[--s_fpos_n];
+}
+static int fpos_get(uint32_t key, double out[3]) {
+    int i = fpos_find(key);
+    if (i < 0) return 0;
+    out[0] = s_fpos[i].p[0]; out[1] = s_fpos[i].p[1]; out[2] = s_fpos[i].p[2];
+    return 1;
+}
+static void fpos_put(uint32_t key, const double p[3]) {
+    int i = fpos_find(key);
+    if (i < 0) { if (s_fpos_n >= FPOS_MAX) return; i = s_fpos_n++; s_fpos[i].key = key; }
+    s_fpos[i].p[0] = p[0]; s_fpos[i].p[1] = p[1]; s_fpos[i].p[2] = p[2];
+}
 int openpete_native_interp_pos(unsigned int key, double out[3]) {
     if (!s_fpos_active) return 0;   /* canonical render path → use live RAM */
     if (s_prod_cam_active && key == G_CAMERA) return 0;   /* held producer camera: integer RAM */
@@ -850,6 +871,138 @@ static void scratch_bracket_leave(CPUState* cpu) {
     }
 }
 
+/* ---- the Spyro record loop ----------------------------------------------
+ * One Spyro feeder pass per model record of the committed epoch
+ * (features/spyro_records.c). The ambient bracket above staged the ring's
+ * lerped g_Spyro (player 1, the modless singleton) for the feeders that read
+ * G_SPYRO per present (the moby feeder's gem gates); this loop restages
+ * record k's bytes, its position / anim-clock / rotation brackets against
+ * the record it paired from, its scratch rows (seg, Fairy-Kiss colour, SXY)
+ * and its tag slot, runs the feeder, and after the last record restores the
+ * ambient bytes and fractional-position entry. No feeder after this loop
+ * reads G_SPYRO. Modless the list holds one drawn record whose bytes are the
+ * ring's (P0: 0 mismatches), so k=0 is the singleton bracket exactly.
+ *
+ * `sp` is the ambient staged copy of the whole g_Spyro region (NULL when the
+ * view refused staging and the bracket wrote guest RAM: then this loop writes
+ * and restores guest RAM the same way, W0.3-checked). `psp_ring` is the
+ * ring's prev g_Spyro bytes, for the runahead input-edge rebase (the record
+ * whose prev bytes are the ring's prev takes the shown position the same way
+ * the singleton did). */
+static void spyro_record_overlay(uint32_t addr, const uint8_t* bytes, uint32_t len) {
+    uint8_t* h = (uint8_t*)openpete_subtick_view_stage(addr, len);
+    if (!h) h = (uint8_t*)openpete_psx_to_host_ptr(addr);   /* scratch_bracket_leave restores the rows */
+    if (h) memcpy(h, bytes, len);
+}
+
+static void spyro_records_loop(CPUState* cpu, int paired, int cam_cut, int cam_bracketed,
+                               double alpha, int use_herm,
+                               uint8_t* sp, int sp_staged, const uint8_t* psp_ring) {
+    double rec_alpha = 0.0;
+    int n = spyro_records_present_begin(paired, cam_cut, alpha, &rec_alpha);
+    if (n <= 0) { spyro_records_present_end(); return; }
+
+    uint8_t* sb = sp ? sp : (uint8_t*)openpete_psx_to_host_ptr(G_SPYRO);
+    if (!sb) { spyro_records_present_end(); return; }
+    static uint8_t ambient[SPYRO_REC_SPYRO_LEN];
+    memcpy(ambient, sb, SPYRO_REC_SPYRO_LEN);
+    double amb_f[3]; const int amb_f_ok = fpos_get(G_SPYRO, amb_f);
+    static const int frA[3] = {0x1E,0x20,0x22}, frB[3] = {0x1F,0x21,0x23}, prog[3] = {0x24,0x25,0x26};
+
+    for (int k = 0; k < n; k++) {
+        const spyro_model_rec_t* rec = spyro_records_curr(k);
+        if (!rec) break;
+        if (!rec->drawn) { spyro_records_present_note(k, (const int32_t*)rec->spyro); continue; }
+        const spyro_model_rec_t* prv = spyro_records_prev(k);
+        const spyro_model_rec_t* pv2 = spyro_records_prev2(k);
+        const int lerp = spyro_records_lerps(k) && prv != NULL;
+
+        memcpy(sb, rec->spyro, SPYRO_REC_SPYRO_LEN);
+        fpos_drop(G_SPYRO);
+        int    rot_active[3] = {0,0,0};
+        double rot_ang[3][3] = {{0}};
+        if (lerp) {
+            const uint8_t* psp = prv->spyro;
+            const uint8_t* csp = rec->spyro;
+            static uint8_t s_psp_rb[SPYRO_REC_SPYRO_LEN];
+            if (openpete_ra_input_edge && ra_rebase_on() && s_shown_sp_ok &&
+                !openpete_interp_ra_commit_active() && psp_ring &&
+                memcmp(psp, psp_ring, 12) == 0) {
+                /* Led-camera A/B config only (see the singleton bracket). */
+                memcpy(s_psp_rb, psp, SPYRO_REC_SPYRO_LEN);
+                memcpy(s_psp_rb, s_shown_sp, 12);
+                psp = s_psp_rb;
+            }
+            /* Position: pred1 over the record it paired from two ticks back,
+             * gated like the singleton (camera continuity + this record's own
+             * prev2→prev step). */
+            int herm = 0;
+            if (use_herm && pv2) {
+                const int32_t* p2 = (const int32_t*)pv2->spyro;
+                const int32_t* pp = (const int32_t*)psp;
+                double dx=(double)pp[0]-p2[0], dy=(double)pp[1]-p2[1], dz=(double)pp[2]-p2[2];
+                herm = (dx*dx + dy*dy + dz*dz <= 5000.0 * 5000.0);
+            }
+            if (herm) {
+                herm_vec3(sb, pv2->spyro, psp, csp, 0, rec_alpha);
+                fpos_set_h(G_SPYRO, (const int32_t*)pv2->spyro, (const int32_t*)psp, (const int32_t*)csp, rec_alpha);
+            } else {
+                lerp_vec3(sb, psp, csp, 0, rec_alpha);
+                fpos_set(G_SPYRO, (const int32_t*)psp, (const int32_t*)csp, rec_alpha);
+            }
+            /* Per-segment animation clock: lerp m_FrameProgress when the
+             * keyframe pair is unchanged, else snap. */
+            for (int s = 0; s < 3; s++) {
+                if (psp[frA[s]] == csp[frA[s]] && psp[frB[s]] == csp[frB[s]]) {
+                    int pa = psp[prog[s]], ca = csp[prog[s]];
+                    int la = (int)((double)pa + ((double)ca - pa) * rec_alpha + 0.5);
+                    if (la < 0) la = 0; else if (la > 255) la = 255;
+                    sb[prog[s]] = (uint8_t)la;
+                }
+            }
+            /* Body/head/tail rotation at float precision (never written back
+             * to the byte euler). Head/tail carry a 0-sentinel. */
+            for (int s = 0; s < 3; s++) {
+                uint32_t off = 0x0Cu + (uint32_t)s * 4u;
+                uint32_t pr, cr; memcpy(&pr, psp + off, 4); memcpy(&cr, csp + off, 4);
+                if (s != 0 && (pr == 0 || cr == 0)) continue;
+                for (int a = 0; a < 3; a++) {
+                    int pbk = (int)((pr >> (a*8)) & 0xFFu), cbk = (int)((cr >> (a*8)) & 0xFFu);
+                    int d = cbk - pbk; if (d > 128) d -= 256; else if (d < -128) d += 256;
+                    rot_ang[s][a] = (double)pbk + (double)d * rec_alpha;
+                }
+                rot_active[s] = 1;
+            }
+            if (psp_ring && memcmp(prv->spyro, psp_ring, 12) == 0) {   /* the ring's dragon: shown m_Position (runahead rebase) */
+                memcpy(s_shown_sp, sb, 12); s_shown_sp_ok = 1;
+            }
+        }
+        spyro_native_set_rot_interp(lerp ? rot_active : NULL, &rot_ang[0][0]);
+        spyro_native_set_anim_interp(rec_alpha, lerp && cam_bracketed);
+        spyro_native_set_anim_pair((lerp && prv->drawn) ? prv->seg : NULL, rec->seg);
+        spyro_native_set_player_slot(k);
+        /* The rows this call rendered from, over the scratch bracket's staged
+         * copies (the bracket staged the same spans; the seg row overlays the
+         * consumed records at 0x1900 like the .s does). */
+        spyro_record_overlay(G_SCRATCH + 0x1900u, rec->seg, SPYRO_REC_SEG_LEN);
+        spyro_record_overlay(G_SCRATCH + 0x1D00u, rec->fk,  SPYRO_REC_FK_LEN);
+        spyro_record_overlay(SXY_BASE,            rec->sxy, SPYRO_REC_SXY_LEN);
+
+        spyro_native_prod_camera_enter(SPROD_SPYRO);   /* Spyro's own draw camera when the tick ended under another */
+        spyro_player_native_reextract(cpu);            /* interpolated camera + this record's bracket */
+        spyro_native_prod_camera_leave();
+        spyro_records_present_note(k, (const int32_t*)sb);
+    }
+
+    /* Restore the ambient bytes and entry (player 1 via the ring). */
+    memcpy(sb, ambient, SPYRO_REC_SPYRO_LEN);
+    fpos_drop(G_SPYRO);
+    if (amb_f_ok) fpos_put(G_SPYRO, amb_f);
+    (void)sp_staged;
+    spyro_records_present_end();
+}
+
+
 /* The sub-tick present body. Always entered through the wrapper below, which
  * owns the view's begin/end pairing — this function has many exit paths and
  * an unpaired view would leave staged bytes visible to the next tick. */
@@ -1009,6 +1162,7 @@ static void spyro_native_reextract_body(void* cpu_v) {
      * switched moby occlusion culling off for the whole of any static view. */
     if (cam_cut && !pair_stale) openpete_native_occl_suspend(12);
     else if (cam_cut) moby_native_set_occl_pan(0.0f);   /* the pan estimate is stale too */
+    int use_herm = 0;   /* pred1 gate (set inside the bracket block; the record loop reads it) */
     if (paired && cam && prev && curr && !cam_cut) {
         /* Per-tick rotation = the max angle any ROW direction moved, from the
          * per-row NORMALIZED dot products. NOT the trace formula — the Spyro
@@ -1076,7 +1230,6 @@ static void spyro_native_reextract_body(void* cpu_v) {
          * on that earlier step would make the centered tangent overshoot. The
          * DIRECT-ring feeders (camera + Spyro) share this gate; mobys/anim clocks
          * stay linear for now. Same 1-tick latency either way. */
-        int use_herm = 0;
         const uint8_t* pcam2 = NULL;
         if (prev2 && hermite_enabled() && alpha >= 0.0) {
             pcam2 = prev2->data + prev2->region_offsets[0];
@@ -1157,7 +1310,10 @@ static void spyro_native_reextract_body(void* cpu_v) {
         /* Same shape as the camera above: publish the lerp into the view so
          * guest RAM is untouched, falling back to write-and-restore only if
          * staging is unavailable. */
-        sp = (uint8_t*)openpete_subtick_view_stage(G_SPYRO, SPYRO_SAVE);
+        /* The whole region: the record loop below restages each record's
+         * g_Spyro bytes into this same span (a covered address returns the
+         * same copy; a longer request would not). */
+        sp = (uint8_t*)openpete_subtick_view_stage(G_SPYRO, SPYRO_REC_SPYRO_LEN);
         sp_staged = (sp != NULL);
         if (!sp) sp = (uint8_t*)openpete_psx_to_host_ptr(G_SPYRO);
         if (sp) {
@@ -1836,9 +1992,8 @@ static void spyro_native_reextract_body(void* cpu_v) {
      * without record 14+ mobys (Sparx, distant chests) being clobbered earlier. */
     scratch_bracket_seg_restore(cpu);
     if (pt_on) pt_t0 = openpete_phase_now_us();
-    spyro_native_prod_camera_enter(SPROD_SPYRO);   /* Spyro's own draw camera when the tick ended under another */
-    spyro_player_native_reextract(cpu);   /* interpolated camera + lerped position */
-    spyro_native_prod_camera_leave();
+    spyro_records_loop(cpu, paired, cam_cut, cam_bracketed, alpha, use_herm,
+                       sp, sp_staged, prev ? prev->data + prev->region_offsets[SPYRO_REGION] : NULL);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SPYRO, pt_t1 - pt_t0); }
     particle_native_reextract(cpu);       /* particles / glows / sparkles (Sparx) */
     flame_native_reextract(cpu);          /* fire breath (self-gated on m_IsFlameActive) */
@@ -1846,6 +2001,8 @@ static void spyro_native_reextract_body(void* cpu_v) {
     flame_native_set_subframe(0.0);       /* reset: the canonical inline render uses exact keyframes */
     moby_native_set_rot_interp(0);        /* reset: canonical inline render uses byte-exact rotation */
     spyro_native_set_rot_interp(NULL, NULL); /* reset: canonical inline render uses byte-exact rotation */
+    spyro_native_set_anim_pair(NULL, NULL);  /* reset: the canonical hook owns the seg rows */
+    spyro_native_set_player_slot(0);
 
     /* Re-apply the 2D-UI overlay (letterbox + menu panel held; fade interpolated
      * by the spine alpha) on top of the re-derived 3D scene. */

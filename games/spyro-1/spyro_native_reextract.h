@@ -35,6 +35,12 @@ struct CPUState;
  * (camera bracketed). Call before spyro_player_native_reextract so Spyro's
  * animation blends sub-tick instead of stepping at the canonical tick rate. */
 void spyro_native_set_anim_interp(double alpha, int on);
+/* Per record: the seg-row pair the two-pass shape lerp blends (prev = the
+ * paired previous record's row, NULL when unpaired → no blend; curr = this
+ * record's row) and the record index (the PLAYER tag slot). Defined in
+ * features/spyro_native.c. */
+void spyro_native_set_anim_pair(const uint8_t* prev_seg, const uint8_t* curr_seg);
+void spyro_native_set_player_slot(int k);
 
 /* Sub-tick ROTATION interpolation for Spyro's body/head/tail. The orchestrator
  * interpolates g_Spyro's packed byte euler (+0xC/+0x10/+0x14) at FLOAT precision

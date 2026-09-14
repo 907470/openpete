@@ -263,25 +263,23 @@ static void spyro_dump(CPUState* cpu, uint32_t startp, uint32_t endp) {
  * fixed) → continuous phase, picking the prev pair while phase<4096 else curr.
  * The keyframe DATA pointers are model-static, so a prev entry decodes the prev
  * pair correctly; only the blend (and which entry) is chosen per phase. */
-static uint8_t s_seg_prev[SEG_BLOCK], s_seg_curr[SEG_BLOCK];
+static const uint8_t* s_seg_prev = NULL;   /* the paired previous record's seg row */
+static const uint8_t* s_seg_curr = NULL;   /* this record's seg row */
 static int     s_seg_valid = 0;       /* 0 none, 1 only curr, 2 prev+curr */
 static double  s_anim_alpha = 0.0;
 static int     s_anim_on    = 0;
+static int     s_player_slot = 0;     /* record index k: the PLAYER tag slot of the tris emitted */
 
-/* Roll prev<-curr and capture curr from the live seg scratch (canonical hook).
- * The two pose snapshots feed the two-pass shape lerp in the re-extract. */
-static void spyro_anim_capture_seg(CPUState* cpu) {
-    (void)cpu;
-    const void* h = openpete_subtick_host_ptr(SEG_SCRATCH);
-    if (!h) return;
-    if (s_seg_valid >= 1) memcpy(s_seg_prev, s_seg_curr, SEG_BLOCK);
-    memcpy(s_seg_curr, h, SEG_BLOCK);
-    s_seg_valid = (s_seg_valid >= 1) ? 2 : 1;
-}
-
-/* Orchestrator sets the sub-tick alpha + whether interpolation is active
- * (camera bracketed). Read by spyro_player_native_reextract. */
+/* Orchestrator sets, per record, the seg-row pair of the two-pass shape lerp
+ * (prev = the record it paired from, NULL when unpaired), the sub-tick alpha
+ * and whether interpolation is active, and the record's tag slot. Read by
+ * spyro_player_native_reextract; the canonical hook sets the slot alone. */
 void spyro_native_set_anim_interp(double alpha, int on) { s_anim_alpha = alpha; s_anim_on = on ? 1 : 0; }
+void spyro_native_set_anim_pair(const uint8_t* prev_seg, const uint8_t* curr_seg) {
+    s_seg_prev = prev_seg; s_seg_curr = curr_seg;
+    s_seg_valid = curr_seg ? (prev_seg ? 2 : 1) : 0;
+}
+void spyro_native_set_player_slot(int k) { s_player_slot = k < 0 ? 0 : k; }
 
 /* Sub-tick ROTATION interpolation: per-segment float byte-angles (body=0, head=1,
  * tail=2; axis k=0 Z / 1 X / 2 Y) the orchestrator interpolates from g_Spyro's
@@ -1207,7 +1205,7 @@ static void spyro_feed_walk_ex(CPUState* cpu, int reproject) {
                   sp_pull, tie_pull, reproject, s_swtri_n, mn, mx);
       } }
     openpete_native_scene_begin_frame(openpete_frame);   /* append after cyclorama + mobys */
-    openpete_native_scene_set_tag(OPENPETE_TAG_PLAYER(0));
+    openpete_native_scene_set_tag(OPENPETE_TAG_PLAYER((uint32_t)s_player_slot));
     for (int i = 0; i < s_swtri_n; i++) {
         swtri* w = &s_swtri[i];
         openpete_scene_tri st = {0};
@@ -1267,7 +1265,12 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_SPYRO, startp, endp);   /* polybuf range for the OT filter */
-    if (endp > startp) spyro_records_hook_observe(SPYRO_REC_MODEL, cpu);
+    /* One record per call: the g_Spyro bytes and scratch rows this call
+     * rendered from. Its index is the tag slot of the tris the walk below
+     * emits (player k). */
+    int slot = 0;
+    if (endp > startp) slot = spyro_records_model_append(cpu, startp, endp);
+    spyro_native_set_player_slot(slot);
 
     static int hookdbg = -1;
     if (hookdbg < 0) { const char* e = getenv("OPENPETE_CANON_CAPDBG"); hookdbg = (e && *e && *e != '0'); }
@@ -1292,7 +1295,6 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
         spyro_native_canon_capture_range(cpu, 0x1D00u, 0x300u);
         spyro_native_canon_capture_sxy(cpu);
         spyro_native_canon_capture_camera(cpu, SPYRO_PROD_SPYRO);
-        spyro_anim_capture_seg(cpu);   /* roll prev/curr seg block for sub-tick blend */
     }
 
     if (verify) {

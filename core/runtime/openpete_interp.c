@@ -120,12 +120,15 @@ void openpete_interp_shutdown(void) {
     s_enabled = 0;
 }
 
+static uint32_t s_reset_gen = 0;
 void openpete_interp_reset(void) {
     /* Invalidate the ring but keep the region-table config (total_bytes,
      * region_offsets) computed at init — only the SNAPSHOTS are stale. */
     for (int i = 0; i < 3; ++i) s_snap[i].valid = 0;
     s_head = 0;
+    s_reset_gen++;
 }
+uint32_t openpete_interp_reset_generation(void) { return s_reset_gen; }
 
 void openpete_interp_set_enabled(int on) {
     s_enabled = on ? 1 : 0;

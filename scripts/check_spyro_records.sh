@@ -16,10 +16,11 @@
 #     view census reports cpu_writes_while_open=0 (the intermediate leg), and
 #     no RESTORE MISMATCH line (OPENPETE_BRACKET_CHECK=1 on the intermediate
 #     leg).
-#   intermediate leg (--screenshot-intermediate-on-frame F): P1 adds the
-#     per-record asserts (record count per feeder on the intermediate, each
-#     record's pairing index equal to the case's `pairs`); until then that
-#     leg reports VACUOUS for the pairing assert.
+#   intermediate leg (--screenshot-intermediate-on-frame F): the per-present
+#     record lines at f=F (spyro-records-check.py): the drawn record count
+#     equals the model-call count, each record's pairing index equals the
+#     case's `pairs`, a paired record interpolates and stages within B/2 of
+#     its canonical position.
 #
 # The run is VACUOUS (exit 64) unless some case reports two or more model
 # calls on its canonical tick (the multi-record path engaged; cases expecting
@@ -132,9 +133,14 @@ while IFS='|' read -r name src players frame em es ef pairs note; do
   writes=$(sed -n 's/.*cpu_writes_while_open=\([0-9]*\).*/\1/p' "$log" | tail -1)
   if [[ "${writes:-x}" != 0 ]]; then echo "FAIL     $name (inter): view write census cpu_writes_while_open=${writes:-missing}"; fail=1; continue; fi
   if grep -q 'RESTORE MISMATCH' "$log"; then echo "FAIL     $name (inter): RESTORE MISMATCH (see $log)"; fail=1; continue; fi
-  ilines=$(grep -c "^\[recdbg present f=$frame " "$log" || true)
-  if [[ "$ilines" == 0 ]]; then echo "vacuous  $name (inter f=$frame): no per-present record lines yet (P1) — pairs=$pairs unasserted"
-  else echo "ok       $name (inter f=$frame): staging census clean"; fi
+  # Per-record asserts: drawn count, pairing index per record, paired records
+  # interpolate and stage within B/2 of their canonical position.
+  iv=$(python3 scripts/spyro-records-check.py "$log" "$frame" "$em" "$pairs"); irc=$?
+  case $irc in
+    0)  echo "ok       $name (inter): ${iv#ok       }";;
+    64) echo "vacuous  $name (inter): ${iv#vacuous  }";;
+    *)  echo "FAIL     $name (inter): ${iv#FAIL     }"; fail=1;;
+  esac
 done < "$CORPUS"
 
 if [[ $cases -eq 0 ]]; then echo "[spyro-records] SKIP: no case matched '$FILTER'"; exit 64; fi
