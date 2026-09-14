@@ -83,4 +83,12 @@ sh -c '"$@" 2>&1; exit 0' _ "$DS_BIN" \
   | tail -5
 echo "[capture-ds] done"
 [[ -f "$OUT" ]] || { echo "[capture-ds] FAIL: trace not produced" >&2; exit 1; }
+# A golden is hashes only. A trace carrying RAM payloads (FLAG_HAS_RAM) or
+# any sibling dump under tests/golden/ is deleted, not left for a later
+# `git add` to find.
+if [[ "$OUT" == tests/golden/* ]] && ! python3 scripts/fences/no-ram-dump.py check "$OUT"; then
+    rm -f "$OUT"
+    echo "[capture-ds] FAIL: refusing a RAM-carrying trace under tests/golden/ (deleted $OUT)" >&2
+    exit 1
+fi
 python3 -m tools.psxtrace_format info "$OUT" | head -3

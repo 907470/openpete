@@ -373,6 +373,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endif()
 
+    # No PSX RAM dump in the tree (scripts/fences/no-ram-dump.py). The
+    # hook half refuses `git add`/`git commit` of a dump; this half scans
+    # `git ls-files` by content (has_ram trace, 2 MB image, PS-X EXE) so a
+    # commit made outside the hook is caught before it is pushed. The scan
+    # runs its own negative controls first and refuses PASS unless they
+    # were refused.
+    add_test(NAME no_ram_dumps
+             COMMAND python3
+                     ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/no-ram-dump.py tree
+                     ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(no_ram_dumps PROPERTIES
+        LABELS "fence;oracle"
+        TIMEOUT 60
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Recompiler GTE data-register side effects: mtc2/lwc2 to $30 must
     # recompute LZCR, to $28 must unpack IR1-3. Recompiles a probe binary
     # with PSXRecomp and runs the emitted C against a harness. Skips when

@@ -30,7 +30,11 @@ while [[ $# -gt 0 ]]; do
         --anchor) ANCHOR="$2"; shift 2 ;;
         --hit) HIT="$2"; shift 2 ;;
         --ref-hit) REF_HIT="$2"; shift 2 ;;
-        --keep) KEEP="$2"; shift 2 ;;
+        --keep) KEEP="$2"
+                case "$KEEP" in tests/golden/*|*/tests/golden/*)
+                    echo "[ram-diff] --keep under tests/golden/ refused: RAM dumps never enter the repo" >&2; exit 64 ;;
+                esac
+                shift 2 ;;
         *) echo "[ram-diff] unknown arg: $1" >&2; exit 64 ;;
     esac
 done
