@@ -77,7 +77,7 @@ EXEMPT = re.compile(r"seam-guard:\s*display-owner")
 # copies of this repo whose paths do not match the allow-lists below, so every
 # owner file in one reads as a violation. Only the working tree is scanned.
 SKIP_DIRS = {".git", "notes", "build", "__pycache__", "third_party", "dist",
-             "mods-attic", "node_modules", "tests"}
+             "mods-attic", "node_modules", "tests", "generated"}
 SUFFIXES = (".c", ".cpp", ".h", ".hpp")
 
 

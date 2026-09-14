@@ -51,7 +51,7 @@ def scan_sites(root):
     down, delta = {}, {}
     for top in ("core", "games"):
         for dirpath, dirnames, filenames in os.walk(os.path.join(root, top)):
-            dirnames[:] = [d for d in dirnames if d not in ("tests", "third_party")]
+            dirnames[:] = [d for d in dirnames if d not in ("tests", "third_party", "generated")]
             for fn in filenames:
                 if not fn.endswith((".c", ".cpp", ".h")):
                     continue
