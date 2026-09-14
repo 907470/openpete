@@ -296,6 +296,11 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
             return -1;
         }
     }
+    for (uint32_t r = 0; r < t->region_count; r++) {
+        if (t->records_consumed > 0 && oracle_per[r] != t->prev_oracle_per[r])
+            t->per_region_change_count[r]++;
+        t->prev_oracle_per[r] = oracle_per[r];
+    }
     /* Optional RAM payload — read it before the diff so the file pointer
      * advances regardless of whether we use it. */
     if (t->flags & PSXTRACE_FLAG_HAS_RAM) {

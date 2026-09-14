@@ -5728,6 +5728,24 @@ static int run_host_loop(const openpete_options_t* opts) {
                 }
             }
         }
+        /* Engagement (per region): a row whose oracle hash never changed
+         * across the run was compared on a constant. */
+        if (psxtrace->frames_compared > 1) {
+            char just[1024], unjust[1024];
+            size_t nj = 0, nu = 0;
+            for (uint32_t r = 0; r < psxtrace->region_count; r++) {
+                if (psxtrace->per_region_change_count[r] != 0) continue;
+                const int ok = (r < (uint32_t)openpete_state_region_count)
+                             ? openpete_state_regions[r].constant_ok : 0;
+                if (ok) nj += (size_t)snprintf(just + nj, sizeof(just) - nj, " %s",
+                                               psxtrace->region_names[r]);
+                else    nu += (size_t)snprintf(unjust + nu, sizeof(unjust) - nu, " %s",
+                                               psxtrace->region_names[r]);
+            }
+            OPL_INFO_F("psxtrace", "zero-change regions justified (constant_ok):%s",
+                       nj ? just : " none");
+            OPL_INFO_F("psxtrace", "zero-change regions unjustified:%s", nu ? unjust : " none");
+        }
         if (psxtrace->has_vbl_stamps) {
             char ht[256], ho[256];
             size_t nt = 0, no = 0;

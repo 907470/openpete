@@ -57,7 +57,7 @@ def flatten_regions(regions: list) -> list:
     Row keys: kind (DIRECT / INDIRECT_ARRAY / INDIRECT_ARRAY_END_PTR /
     INDIRECT_ARRAY_COUNT), start, length, aux, elem_size, name, mask
     (tuple of offsets), mask_per_element (0/1), cd_load_transient (0/1),
-    gameplay_neutral (0/1).
+    gameplay_neutral (0/1), constant_ok (0/1).
     """
     rows = []
     for r in regions:
@@ -116,6 +116,7 @@ def flatten_regions(regions: list) -> list:
             "mask_per_element": per_elem,
             "cd_load_transient": 1 if r.get("cd_load_transient", False) else 0,
             "gameplay_neutral": 1 if r.get("gameplay_neutral", False) else 0,
+            "constant_ok": 1 if r.get("constant_ok", False) else 0,
         })
     return rows
 
@@ -235,7 +236,7 @@ def main() -> int:
             f"    {{ OPENPETE_REGION_{row['kind']}, 0x{row['start']:08X}u, 0x{row['length']:X}u, "
             f"0x{row['aux']:08X}u, 0x{row['elem_size']:X}u, \"{row['name']}\", "
             f"{mask_sym}, {len(row['mask'])}, {row['mask_per_element']}, "
-            f"{row['cd_load_transient']}, {row['gameplay_neutral']} }},"
+            f"{row['cd_load_transient']}, {row['gameplay_neutral']}, {row['constant_ok']} }},"
         )
     lines.append("};")
     lines.append("")

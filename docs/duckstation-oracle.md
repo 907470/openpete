@@ -255,7 +255,15 @@ sides' hit and VBL spans per read; `cdctl CDCTL` histograms the commands.
 
 ## Checking the gate is not vacuous
 
-Three checks, each cheap, establish that a PASS is a comparison and not an
+The verifier counts, per region, the records on which the oracle hash
+differed from the previous record's, and the exit summary names every
+region at zero: `zero-change regions justified (constant_ok):` for rows
+whose manifest entry carries `constant_ok = true` with its reason (a
+progression total the attract demo never advances), and `zero-change
+regions unjustified:` for the rest. On a run that reaches EOF the gate
+script fails a PASS whose unjustified list is not `none`.
+
+Three further checks, each cheap, establish that a PASS is a comparison and not an
 accident. The trace's table hash equals the registered table's (the
 verifier refuses otherwise). A fresh 5-record capture at the default anchor must verify PASS,
 and one captured with `-psxtrace-anchor-hit 2` must fail at record 0 (one

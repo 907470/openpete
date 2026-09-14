@@ -196,6 +196,22 @@ if [[ "$rc" == "0" ]]; then
     fi
 fi
 
+# Region engagement: a region whose oracle hash never changed over
+# the run was compared on a constant. The verifier names them; a row may be
+# constant only with `constant_ok = true` and its reason on the manifest row.
+# Runs that reach EOF only: a truncated smoke run leaves late-changing rows
+# constant for no reason of their own.
+if [[ "$rc" == "0" ]] && grep -q 'openpete-exit: reason=psxtrace-eof' "$LOG"; then
+    UNJUST=$(sed -n 's/.*zero-change regions unjustified: *//p' "$LOG" | tail -1)
+    if [[ -z "$UNJUST" ]]; then
+        echo "[psx-oracle] region engagement: no zero-change summary line" >&2
+        rc=2
+    elif [[ "$UNJUST" != "none" ]]; then
+        echo "[psx-oracle] region engagement: constant over the run without constant_ok: $UNJUST" >&2
+        rc=2
+    fi
+fi
+
 # Engaged form: with OPENPETE_IDENT_AUDIT=<VBL> set, the native
 # feeders compose every canonical present surfaceless and print one
 # `[ident-audit ..]` row per present. A PASS with zero rows never ran the

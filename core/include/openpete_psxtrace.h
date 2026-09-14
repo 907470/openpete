@@ -100,6 +100,13 @@ typedef struct {
     uint64_t vbl_hist_trace[17];
     uint64_t vbl_hist_op[17];
 
+    /* Engagement: records on which each region's oracle hash differed from
+     * the previous record's. A region at zero over the run is named in the
+     * summary; without `constant_ok` on its manifest row the summary line
+     * reads `zero-change regions unjustified:` and the gate script fails. */
+    uint64_t per_region_change_count[OPENPETE_PSXTRACE_MAX_REGIONS];
+    uint64_t prev_oracle_per[OPENPETE_PSXTRACE_MAX_REGIONS];
+
     /* Counts since open. */
     uint64_t frames_compared;
     uint64_t hashes_diverged;            /* per-region mismatches across run */

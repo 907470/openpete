@@ -125,6 +125,12 @@ typedef struct {
      * games/<game>/manifest/gameplay_state_regions.toml (`gameplay_neutral = true`);
      * the proof of neutrality must accompany it in the manifest. */
     uint8_t     gameplay_neutral;
+    /* The row's bytes are expected not to change over an oracle run (a
+     * value set once per level, a record table): the verifier lists every
+     * region whose hash never changed between consecutive records, and the
+     * gate fails a PASS that lists one without this flag. The manifest row
+     * carries `constant_ok = true` and the reason. */
+    uint8_t     constant_ok;
 } OpenpeteStateRegion;
 extern const OpenpeteStateRegion* openpete_state_regions;
 extern size_t                     openpete_state_region_count;

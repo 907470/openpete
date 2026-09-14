@@ -47,12 +47,18 @@ name        = "g_KeyMoby"
 start       = 0x80075758
 length      = 0x4
 description = "Pointer to current key moby (gates inventory)"
+# Constant over the attract-demo golden: written only when Spyro picks up a
+# key, and the demo trajectory collects none.
+constant_ok = true
 
 [[region]]
 name        = "g_UnprocessedFrames"
 start       = 0x80075760
 length      = 0x4
 description = "Frame-pacing accumulator read by main loop"
+# Constant over the attract-demo golden on the reference as well: the 10
+# reference lag frames the VBL stamps show do not move it.
+constant_ok = true
 
 [[region]]
 name        = "g_MobyPods"
@@ -337,6 +343,8 @@ kind         = "direct"
 start        = 0x80075750
 length       = 0x4
 description  = "Total dragons freed (completion %)."
+# Constant over the attract-demo golden: the demo frees no dragon.
+constant_ok = true
 
 [[region]]
 name         = "g_EggTotal"
@@ -344,6 +352,8 @@ kind         = "direct"
 start        = 0x80075810
 length       = 0x4
 description  = "Total eggs collected."
+# Constant over the attract-demo golden: the demo collects no egg.
+constant_ok = true
 
 [[region]]
 name         = "g_LevelDragonCount"
@@ -351,6 +361,8 @@ kind         = "direct"
 start        = 0x800772D8
 length       = 0x90
 description  = "Per-level freed-dragon counts, int[36]."
+# Constant over the attract-demo golden: the demo frees no dragon.
+constant_ok = true
 
 [[region]]
 name         = "g_LevelEggCount"
@@ -358,6 +370,8 @@ kind         = "direct"
 start        = 0x80076FE8
 length       = 0x48
 description  = "Per-level egg counts, int[18] (LEVEL_PER_HOMEWORLD*3)."
+# Constant over the attract-demo golden: the demo collects no egg.
+constant_ok = true
 
 [[region]]
 name         = "g_LevelIndex"
@@ -393,3 +407,5 @@ kind         = "direct"
 start        = 0x80078618
 length       = 0x18
 description  = "Flight-course best records, int[6] (HOMEWORLD_COUNT)."
+# Constant over the attract-demo golden: the demo enters no flight course.
+constant_ok = true
