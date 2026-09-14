@@ -3,7 +3,7 @@
 manifest so the runtime's hash-log path can compile in the canonical
 list of addresses without a runtime TOML dependency.
 
-Inputs:  manifest/gameplay_state_regions.toml
+Inputs:  games/<game>/manifest/gameplay_state_regions.toml
 Outputs: <out_dir>/gameplay_state_regions.gen.h
 
 `flatten_regions()` is the one place the manifest's per-kind fields are

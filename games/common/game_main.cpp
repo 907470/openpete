@@ -16,6 +16,7 @@
 
 #include <cstdio>
 
+extern "C" void game_state_regions_register(void);
 extern "C" const openpete_recomp_module openpete_game_recomp_module;
 
 int main(int argc, char** argv) {
@@ -48,6 +49,10 @@ int main(int argc, char** argv) {
 
     /* The runtime reaches recompiled code only through this descriptor. */
     if (openpete_recomp_register(&openpete_game_recomp_module) != 0) return 1;
+
+    /* The gameplay-state region table the oracle hashes (games/common/
+     * state_regions.c); explicit, before openpete_run(). */
+    game_state_regions_register();
 
     return openpete_run(&opts);
 }

@@ -2,7 +2,7 @@
 .psxtrace — per-frame PSX gameplay-state oracle capture (v2).
 
 The trace is a stream of FNV-1a-64 hashes (one per gameplay-state region as
-defined by manifest/gameplay_state_regions.toml) computed from PCSX-Redux,
+defined by games/<game>/manifest/gameplay_state_regions.toml) computed from PCSX-Redux,
 the canonical PSX hardware oracle. openpete computes the same hashes via
 core/runtime/run.c::gameplay_hash_compute_ex and value-equality-compares
 them at every frame; first divergence = first leak. Hash records are tiny

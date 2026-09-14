@@ -125,7 +125,7 @@ OP_CARD=()
 # one, else Spyro 1's (the rows hashed do not matter here; the trace is
 # discarded).
 REGIONS_TOML="$GDIR/manifest/gameplay_state_regions.toml"
-[[ -f "$REGIONS_TOML" ]] || REGIONS_TOML="$ROOT/manifest/gameplay_state_regions.toml"
+[[ -f "$REGIONS_TOML" ]] || REGIONS_TOML="$ROOT/games/spyro-1/manifest/gameplay_state_regions.toml"
 python3 "$ROOT/tools/gen_state_regions.py" --manifest "$REGIONS_TOML" --out-flat "$WORK/regions.flat" >/dev/null || {
     echo "[ram-diff] region table generation failed from $REGIONS_TOML" >&2; exit 1
 }
@@ -164,7 +164,7 @@ DISP_PC=$(grep -o 'game fiber: dispatching 0x[0-9A-Fa-f]*' "$OPLOG" | head -1 | 
 [[ -n "$HDR_PC" && "$HDR_PC" == "$DISP_PC" ]] || { echo "[ram-diff] FAIL: dispatched entry ${DISP_PC:-none} is not the EXE entry ${HDR_PC:-none}" >&2; exit 2; }
 
 REGIONS=()
-[[ "$GAME" == "spyro-1" ]] && REGIONS=(--regions "$ROOT/manifest/gameplay_state_regions.toml")
+[[ -f "$GDIR/manifest/gameplay_state_regions.toml" ]] && REGIONS=(--regions "$GDIR/manifest/gameplay_state_regions.toml")
 MAPARG=()
 [[ -n "$MAP" && -f "$ROOT/$MAP" ]] && MAPARG=(--map "$ROOT/$MAP")
 # The ratchet is keyed by the anchor as spelled (first, loop, or 0xHEX), so a

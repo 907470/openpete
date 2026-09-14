@@ -1591,7 +1591,7 @@ void psyq_PadInitDirect(CPUState* cpu) {
  * wouldn't persist past the first frame.
  *
  * Closes the last open region in the PCSX-Redux oracle gate
- * ('pad_input_buffers'); see manifest/gameplay_state_regions.toml. */
+ * ('pad_input_buffers'); see games/<game>/manifest/gameplay_state_regions.toml. */
 static void psyq_libpad_mirror_canonical_slot2(CPUState* cpu) {
     psyq_game_mirror_pad_slot2(cpu);
 }

@@ -8,7 +8,7 @@ RAMs. Any diverging byte is a candidate recompiler or PSYQ-thunk defect.
 
 The canonical PSX oracle is DuckStation (`docs/duckstation-oracle.md`,
 `scripts/check_psx_oracle.sh`): real SCPH1001 BIOS, per-tick hashes of
-the regions in `manifest/gameplay_state_regions.toml`, 20k-tick soak.
+the regions in `games/spyro-1/manifest/gameplay_state_regions.toml`, 20k-tick soak.
 PCSX-Redux runs OpenBIOS and its GPU emulation wedges in Spyro 1's
 cyclorama renderer around VBL 120, so it cannot produce a long trace.
 
@@ -182,7 +182,7 @@ PCSX-Redux catches up. The affected ranges are the `buf=` addresses in
 openpete's `thunks: CdRead` log lines. This is a timing skew, not a
 recompiler defect. The same skew is why the DuckStation oracle flags the
 three CD-load pool regions `cd_load_transient` in
-`manifest/gameplay_state_regions.toml`.
+`games/spyro-1/manifest/gameplay_state_regions.toml`.
 
 Closing it byte-exactly would need `CdReadSync` deferred across host
 yields at the PSX single-speed rate (~150 KB/s), or a settle wait that
@@ -194,7 +194,7 @@ already brings the heap diff down by an order of magnitude.
 `PadInitDirect` / `PadStartCom` / `VSyncCallback(PadVSync)` leave BIOS
 event-manager state that the C thunks do not reproduce, and the slot-2
 pad buffer holds a different idle pattern on each side. The
-`pad_input_buffers` region of `manifest/gameplay_state_regions.toml` is
+`pad_input_buffers` region of `games/spyro-1/manifest/gameplay_state_regions.toml` is
 masked for this reason.
 
 ### PSYQ sub-call stack frames

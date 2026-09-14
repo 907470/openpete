@@ -646,7 +646,7 @@ typedef struct openpete_options {
     const char* position_log_path;
 
     /* --gameplay-hash-log PATH (default NULL): per-yield, hash the
-     * gameplay-readable region defined by manifest/gameplay_state_regions.toml
+     * gameplay-readable region defined by games/<game>/manifest/gameplay_state_regions.toml
      * with FNV1a-64 and append `frame,vbl,hex_hash` to PATH. The
      * regions are loaded statically (compiled-in copy of the manifest)
      * so the runtime has zero runtime-config requirement. Used by

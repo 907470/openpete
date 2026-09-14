@@ -129,8 +129,9 @@ counterpart for the other games yet.
   sources listed in its `CMakeLists.txt`; the other games render through
   PsyCross (`openpete_options_set_default_renderer` in
   `games/common/game_main.cpp`).
-- `manifest/gameplay_state_regions.toml` at the repo root and the oracle
-  golden are Spyro 1's.
+- Only Spyro 1 has a `games/<game>/manifest/gameplay_state_regions.toml`
+  and an oracle golden; a game without the manifest registers an empty
+  region table and no golden can verify it.
 - `core/` still carries Spyro-named debug knobs (`SPYRO_SCRATCH_MAT`,
   `SPYRO_UNTEX` in `core/runtime/knob_registry.c`); the `core/` purity check
   refuses bare `0x800XXXXX` literals and Win32-only APIs, not Spyro-specific

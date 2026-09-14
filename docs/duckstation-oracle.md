@@ -294,7 +294,7 @@ what the tool reports. A range leaves the expectation file only by a fix.
 
 ## CD-load transients
 
-Three regions in `manifest/gameplay_state_regions.toml` carry
+Three regions in `games/spyro-1/manifest/gameplay_state_regions.toml` carry
 `cd_load_transient = true`: `g_LevelMobys_pool`, `g_DynMobys_pool`, and
 `g_Sparx_moby`. All three are refreshed in place by synchronous
 `psyq_CdRead`. openpete drains a read instantly while the oracle is
@@ -350,5 +350,5 @@ tripwire for that audit.
 
 - `notes/plans/openpete-psx-oracle-ci.md` — gate design, the transient
   policy, and the CI wiring.
-- `manifest/gameplay_state_regions.toml` — the region contract itself, with
+- `games/spyro-1/manifest/gameplay_state_regions.toml` — the region contract itself, with
   the address source and audit note for every region.

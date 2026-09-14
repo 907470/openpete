@@ -104,6 +104,11 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
                     path, ram_size);
         goto fail;
     }
+    if (t->region_count == 0) {
+        OPL_ERROR_F("psxtrace", "%s: region_count 0 — a trace over no regions verifies nothing",
+                    path);
+        goto fail;
+    }
     if (t->region_count > OPENPETE_PSXTRACE_MAX_REGIONS) {
         OPL_ERROR_F("psxtrace", "%s: region_count %u > max %u",
                     path, t->region_count, OPENPETE_PSXTRACE_MAX_REGIONS);

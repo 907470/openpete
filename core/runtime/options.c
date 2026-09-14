@@ -640,7 +640,7 @@ static void print_help(const char* display_name, const char* argv0,
         "                             CLI twin of OPENPETE_FREECAM_PATH; supersedes --freecam-pose.\n"        "  --unlock-frames LIST       force fast-forward inside ranges, e.g. 100-200,500-600 (openpete_frame)\n"
         "  --position-log PATH        append CSV (frame,vbl,x,y,z) of g_Spyro.m_Position each yield\n"
         "  --gameplay-hash-log PATH   append CSV (frame,vbl,hex_hash) of FNV1a-64 over the\n"
-        "                             gameplay-state region (manifest/gameplay_state_regions.toml).\n"
+        "                             gameplay-state region (games/<game>/manifest/gameplay_state_regions.toml).\n"
         "                             Primary determinism gate — see check_aspect_determinism.sh\n"
         "  --frame-time-log PATH      write per-present binary record (32B header + 32B/record) for scripts/measure-pacing.py\n"
         "  --pace-log PATH            write the unified pacing event log (every VBL + present, one timebase) for scripts/pacing/\n"

@@ -153,10 +153,37 @@ function(openpete_add_game GAME_ID)
                 ${CMAKE_SOURCE_DIR}/tools/gen_game_identity.py
         COMMENT "Generating ${GAME_ID} game_identity.c (gen_game_identity.py)")
 
+    # Gameplay-state region table: the manifest the oracle hashes, generated
+    # into the C header the exe compiles, the flat text the DuckStation
+    # capture module reads (-psxtrace-regions), and the PCSX-Redux Lua
+    # mirror. A game without the manifest registers an empty table and no
+    # oracle golden can verify it.
+    set(_regions_manifest ${CMAKE_CURRENT_SOURCE_DIR}/manifest/gameplay_state_regions.toml)
+    set(_regions_sources)
+    if(EXISTS ${_regions_manifest})
+        set(_regions_header ${_gen_dir}/gameplay_state_regions.gen.h)
+        set(_regions_flat   ${_gen_dir}/gameplay_state_regions.flat)
+        set(_regions_lua    ${_gen_dir}/openpete_state_regions.gen.lua)
+        add_custom_command(
+            OUTPUT  ${_regions_header} ${_regions_flat} ${_regions_lua}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${_gen_dir}
+            COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_state_regions.py
+                    --manifest ${_regions_manifest}
+                    --out      ${_regions_header}
+                    --out-flat ${_regions_flat}
+                    --out-lua  ${_regions_lua}
+            DEPENDS ${_regions_manifest}
+                    ${CMAKE_SOURCE_DIR}/tools/gen_state_regions.py
+            COMMENT "Generating ${GAME_ID} gameplay_state_regions.gen.h + flat table + lua mirror")
+        set(_regions_sources ${_regions_header})
+    endif()
+
     add_executable(${_exe}
         ${G_MAIN}
         game_extras_impl.c
         ${_identity_c}
+        ${_common}/state_regions.c
+        ${_regions_sources}
         ${G_FEATURE_LIST}
         ${G_ICON_SOURCE}
         ${G_SOURCES}
@@ -188,6 +215,10 @@ function(openpete_add_game GAME_ID)
         ${_common}
         ${_generated}
         ${_gen_dir})
+    if(NOT EXISTS ${_regions_manifest})
+        set_source_files_properties(${_common}/state_regions.c PROPERTIES
+            COMPILE_DEFINITIONS OPENPETE_STATE_REGIONS_NONE)
+    endif()
     set_target_properties(${_exe} PROPERTIES
         C_STANDARD 99
         C_STANDARD_REQUIRED ON

@@ -52,7 +52,7 @@ done
 
 DS_BIN="third_party/duckstation/build-regtest/bin/duckstation-regtest"
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
-MANIFEST="${OPENPETE_REGIONS_MANIFEST:-manifest/gameplay_state_regions.toml}"
+MANIFEST="${OPENPETE_REGIONS_MANIFEST:-games/spyro-1/manifest/gameplay_state_regions.toml}"
 
 if [[ ! -x "$DS_BIN" ]]; then
     echo "[capture-ds] binary missing: $DS_BIN" >&2

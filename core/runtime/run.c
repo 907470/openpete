@@ -2846,6 +2846,15 @@ static int run_host_loop(const openpete_options_t* opts) {
      * Phase 1 doc. */
     FILE* gameplay_hash_log_fp = NULL;
     if (opts->gameplay_hash_log_path && *opts->gameplay_hash_log_path) {
+        /* Zero registered regions hashes nothing: every frame would log the
+         * FNV offset basis and two runs would compare equal on no bytes. */
+        if (openpete_state_region_count == 0) {
+            OPL_ERROR_F("gameplay-hash-log",
+                        "this game registers no gameplay-state regions "
+                        "(no games/<game>/manifest/gameplay_state_regions.toml); "
+                        "a hash over zero regions is vacuous");
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
         gameplay_hash_log_fp = fopen(opts->gameplay_hash_log_path, "wb");
         if (!gameplay_hash_log_fp) {
             OPL_ERROR_F("gameplay-hash-log", "fopen %s failed: %s",

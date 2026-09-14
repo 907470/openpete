@@ -6,7 +6,7 @@
 # identical between them.
 #
 # PRIMARY check: per-frame FNV1a-64 hash over the gameplay-state
-# regions defined in manifest/gameplay_state_regions.toml. Catches
+# regions defined in games/spyro-1/manifest/gameplay_state_regions.toml. Catches
 # any leak that perturbs gameplay state, not just leaks that have
 # already propagated to Spyro's position. First-divergent frame is
 # the precise moment a new render→gameplay channel woke up.

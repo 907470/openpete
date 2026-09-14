@@ -38,7 +38,7 @@
 # ─── Gated channels ──────────────────────────────────────────────────
 
 # `state_regions` lists the gameplay-state-region names (matching the
-# `name` field in manifest/gameplay_state_regions.toml) that this
+# `name` field in games/spyro-1/manifest/gameplay_state_regions.toml) that this
 # channel affects. The harness uses this mapping to classify a
 # divergent region back to its owning channel — i.e. "the moby pool
 # diverged → m_WasDrawn channel → status gated → REGRESSION".

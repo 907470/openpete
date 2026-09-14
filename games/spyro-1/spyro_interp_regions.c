@@ -33,7 +33,7 @@
  * Address verification: 2026-05-14 nm of games/spyro-1/spyro-1/build/psx.elf:
  *   80076dd0 B g_Camera                   (next = 0x80076ee0 → 0x110 bytes)
  *
- * Lengths match manifest/gameplay_state_regions.toml so the same
+ * Lengths match games/spyro-1/manifest/gameplay_state_regions.toml so the same
  * boundaries the determinism gate trusts are the boundaries we
  * snapshot.
  */

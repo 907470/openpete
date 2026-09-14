@@ -62,7 +62,7 @@ def main() -> int:
     )
     ap.add_argument(
         "--state-regions",
-        default="manifest/gameplay_state_regions.toml",
+        default="games/spyro-1/manifest/gameplay_state_regions.toml",
     )
     args = ap.parse_args()
 

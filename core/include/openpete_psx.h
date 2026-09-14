@@ -51,7 +51,7 @@ uint8_t* openpete_psx_get_scratch(void);
  * yield. Per-game TUs (games/<game>/...) define the actual table; if
  * a game doesn't supply one, openpete_state_region_count == 0 and the
  * hash log is just the FNV1a-64 offset basis (effectively a no-op
- * sentinel). See manifest/gameplay_state_regions.toml +
+ * sentinel). See games/<game>/manifest/gameplay_state_regions.toml +
  * tools/gen_state_regions.py for the canonical generation path, and
  * notes/plans/openpete-determinism-enforcement.md Phase 1. */
 /* DIRECT regions live at a fixed PSX vaddr.
@@ -108,7 +108,7 @@ typedef struct {
      * .psxtrace gate tolerates such a divergence ONLY if it heals within
      * a bounded window (a permanent divergence here still fails); every
      * other region must match bit-exact every tick. Set per-region in
-     * manifest/gameplay_state_regions.toml (`cd_load_transient = true`).
+     * games/<game>/manifest/gameplay_state_regions.toml (`cd_load_transient = true`).
      * Becomes a no-op once openpete models CD timing faithfully — see
      * notes/plans/openpete-psx-oracle-ci.md. */
     uint8_t     cd_load_transient;
@@ -122,7 +122,7 @@ typedef struct {
      * trip. Same spirit as the 0x80071xxx moby-render-queue removal, but
      * keeps the region visible in per-region diagnostics rather than
      * dropping it (and avoids a golden recapture). Set per-region in
-     * manifest/gameplay_state_regions.toml (`gameplay_neutral = true`);
+     * games/<game>/manifest/gameplay_state_regions.toml (`gameplay_neutral = true`);
      * the proof of neutrality must accompany it in the manifest. */
     uint8_t     gameplay_neutral;
 } OpenpeteStateRegion;
