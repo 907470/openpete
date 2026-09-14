@@ -30,6 +30,7 @@
 #include "feature_registry.h"
 #include "openpete_vstream.h"
 #include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
+#include "spyro_records.h"           /* per-call records of the player hooks */
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
@@ -831,6 +832,7 @@ static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_SHADOW, startp, endp);
+    if (endp > startp) spyro_records_hook_observe(SPYRO_REC_SHADOW, cpu);
 
     if ((feed || verify) && endp > startp) capture_prims(cpu, startp, endp);
 

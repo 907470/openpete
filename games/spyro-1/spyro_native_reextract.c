@@ -47,6 +47,7 @@ static int ra_rebase_on(void) {
 }
 /* shown-state buffers live below the region defines (CAM_BYTES) */
 #include "spyro1_symbols.gen.h"
+#include "features/spyro_records.h"   /* per-call records of the player hooks */
 
 extern unsigned openpete_frame;
 
@@ -679,6 +680,7 @@ void spyro_native_canon_epoch_commit(void) {
                              memcmp(s_prod_cam[p], h, CAM_XFORM_BYTES) != 0;
     s_canon_epoch_ok = s_canon_epoch_now;
     s_canon_epoch_now++;
+    spyro_records_epoch_commit();               /* close the hooks' record epoch */
 }
 uint32_t spyro_native_canon_epoch_stamp(void) { return s_canon_epoch_now; }
 int spyro_native_canon_epoch_fresh(uint32_t stamp) { return stamp == s_canon_epoch_ok; }

@@ -1240,6 +1240,8 @@ static const knob_desc_t g_builtin[] = {
         "1/s particle pool-interp verdict census."),
     ENVROW_LATCHED("ANIMDBG", "Debug diagnostics", "0",
         "Spyro anim segment/blend + sub-tick vertex probe."),
+    ENVROW_LATCHED("SPYRO_RECDBG", "Debug diagnostics", "0",
+        "Per-epoch player-hook record census (calls per feeder, ring roll, hook-vs-ring bytes, pairing bound)."),
     ENVROW_LATCHED("MOBY_TIER_DBG", "Debug diagnostics", "0",
         "Extraction-tier census (proj/walk us, cache hits)."),
     ENVROW_LATCHED("MOBY_OCCL_DBG", "Debug diagnostics", "0",

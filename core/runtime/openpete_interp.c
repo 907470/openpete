@@ -156,6 +156,9 @@ op_time_t openpete_interp_det_period(void) { return s_det_period; }
 op_time_t openpete_interp_curr_tick_ns(void) {
     return (s_initialized && s_snap[s_head].valid) ? s_snap[s_head].tick_ns : 0;
 }
+const openpete_interp_snapshot_t* openpete_interp_curr_snapshot(void) {
+    return (s_initialized && s_snap[s_head].valid) ? &s_snap[s_head] : NULL;
+}
 int openpete_interp_paired(void) {
     if (!s_initialized || !s_enabled) return 0;
     const openpete_interp_snapshot_t* curr = &s_snap[s_head];

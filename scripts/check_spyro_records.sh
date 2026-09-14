@@ -1,0 +1,145 @@
+#!/usr/bin/env bash
+# check_spyro_records.sh — the multi-Spyro sub-tick harness
+# (notes/plans/openpete-native-multi-spyro-subtick.md "Instruments").
+#
+# The spyro-coop mod draws extra dragons by calling the game's own player
+# renderers once per player with the player's state swapped into g_Spyro.
+# This harness runs each case of scripts/spyro-records-corpus.txt headless
+# with the mod loaded and asserts the OPENPETE_SPYRO_RECDBG numbers (numbers from the instrument, not pixels):
+#
+#   canonical leg (--screenshot-on-frame F):
+#     the epoch line at f=F reports the expected model / shadow / flame hook
+#     call counts, epochs_vbl=1, spec=0 and mm=0/0/0 (the last hook's bytes
+#     equal the DIRECT ring's tick-end bytes for every region);
+#   both legs, run-wide:
+#     the summary reports spec_refused=0 and no byte mismatch, the subtick
+#     view census reports cpu_writes_while_open=0 (the intermediate leg), and
+#     no RESTORE MISMATCH line (OPENPETE_BRACKET_CHECK=1 on the intermediate
+#     leg).
+#   intermediate leg (--screenshot-intermediate-on-frame F): P1 adds the
+#     per-record asserts (record count per feeder on the intermediate, each
+#     record's pairing index equal to the case's `pairs`); until then that
+#     leg reports VACUOUS for the pairing assert.
+#
+# The run is VACUOUS (exit 64) unless some case reports two or more model
+# calls on its canonical tick (the multi-record path engaged; cases expecting
+# fewer are the pairing-only rows), and the store-clock record-only arm is
+# reported VACUOUS unless some case's summary reports roll_records >= 1.
+#
+# The mod is NOT in-tree. Name its source dir with SPYRO_COOP_DIR (the dir
+# holding mod.toml); the harness copies it to a scratch mods root so the
+# players setting it writes never touches the named copy. Refuses (exit 64)
+# without it.
+#
+# Usage: scripts/check_spyro_records.sh [--filter=SUBSTR] [--build-dir=DIR] [--keep]
+# Exit: 0 PASS, 1 FAIL, 64 SKIP/VACUOUS (prereqs missing or the corpus
+# cannot engage the asserts).
+set -u
+cd "$(dirname "$0")/.."
+
+FILTER=""; BUILD_DIR="build/linux-release"; KEEP=0
+for a in "$@"; do case "$a" in
+  --filter=*) FILTER="${a#--filter=}";;
+  --build-dir=*) BUILD_DIR="${a#--build-dir=}";;
+  --keep) KEEP=1;;
+  *) echo "usage: $0 [--filter=SUBSTR] [--build-dir=DIR] [--keep]" >&2; exit 64;;
+esac; done
+
+BIN="${OPENPETE_BIN:-$BUILD_DIR/games/spyro-1/openpete-spyro1}"
+DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
+CORPUS="scripts/spyro-records-corpus.txt"
+COOP="${SPYRO_COOP_DIR:-}"
+
+if [[ ! -x "$BIN" ]]; then echo "[spyro-records] SKIP: no binary at $BIN"; exit 64; fi
+if [[ ! -f "$DISC" ]]; then echo "[spyro-records] SKIP: no disc at $DISC"; exit 64; fi
+if [[ -z "$COOP" || ! -f "$COOP/mod.toml" ]]; then
+  echo "[spyro-records] SKIP: SPYRO_COOP_DIR must name the spyro-coop mod dir (mod.toml); got '${COOP}'"
+  exit 64
+fi
+
+OUT="${SPYRO_RECORDS_OUT:-build/spyro-records}"
+rm -rf "$OUT"; mkdir -p "$OUT/mods" "$OUT/shots"
+cp -r "$COOP" "$OUT/mods/spyro-coop"
+rm -rf "$OUT/mods/spyro-coop/.build"
+[[ $KEEP -eq 0 ]] && trap 'rm -rf "$OUT/mods"' EXIT
+
+# One headless run. $1 case, $2 leg (canon|inter), $3 bk2-or-level, $4 players,
+# $5 frame. Log to $OUT/<case>-<leg>.log. Headless native (the hooks) comes up
+# only when a capture is requested (native_render.c W1.1), so every leg names one.
+run_leg() {
+  local name=$1 leg=$2 src=$3 players=$4 frame=$5
+  local log="$OUT/$name-$leg.log"
+  # The mod reads and REWRITES its settings.txt (coop_settings.c), so pin the
+  # players count before every run.
+  printf 'players = %s\nrespawn = modern\nsplit = vertical\nextra_controls = controller\ndraw_p2 = 1\n' \
+    "$players" > "$OUT/mods/spyro-coop/data/settings.txt"
+  local -a srcargs capargs
+  if [[ $src == level:* ]]; then srcargs=(--skip-to-level "${src#level:}")
+  else srcargs=(--bk2 "games/spyro-1/bk2/$src.bk2"); fi
+  if [[ $leg == canon ]]; then capargs=(--screenshot-on-frame "$frame" --screenshot-native-only)
+  else capargs=(--screenshot-intermediate-on-frame "$frame"); fi
+  # --render-fps above the sim rate arms the DIRECT ring (openpete_interp.h);
+  # without it the hook-vs-ring column is vacuous (the summary's no_ring
+  # counts those epochs and the harness refuses them).
+  OPENPETE_VIBRATION=0 OPENPETE_SPYRO_RECDBG=1 OPENPETE_BRACKET_CHECK=1 \
+  timeout 600 "$BIN" --headless --no-config --disc "$DISC" --renderer vk --mute 1 --render-fps 60 \
+    --mods-dir "$OUT/mods" --mods spyro-coop "${srcargs[@]}" "${capargs[@]}" \
+    --screenshot-output "$OUT/shots/$name-$leg-{n}.png" \
+    --frame-limit "$((frame + 1))" --max-runtime-seconds 560 \
+    >/dev/null 2>"$log"
+  echo $?
+}
+
+fail=0; cases=0; engaged=0; recroll=0
+while IFS='|' read -r name src players frame em es ef pairs note; do
+  [[ -z "$name" || "$name" == \#* ]] && continue
+  [[ -n "$FILTER" && "$name" != *"$FILTER"* ]] && continue
+  cases=$((cases + 1))
+  rc=$(run_leg "$name" canon "$src" "$players" "$frame")
+  log="$OUT/$name-canon.log"
+  line=$(grep -m1 "^\[recdbg f=$frame " "$log" || true)
+  if [[ $rc -ne 0 || -z "$line" ]]; then
+    echo "FAIL     $name: canonical leg rc=$rc, no RECDBG epoch line at f=$frame (see $log)"; fail=1; continue
+  fi
+  got_m=$(sed -n 's/.* calls m=\([0-9]*\).*/\1/p' <<<"$line")
+  got_s=$(sed -n 's/.* s=\([0-9]*\) f=.*/\1/p' <<<"$line")
+  got_f=$(sed -n 's/.* f=\([0-9]*\) spec=.*/\1/p' <<<"$line")
+  spec=$(sed -n 's/.* spec=\([0-9]*\).*/\1/p' <<<"$line")
+  ev=$(sed -n 's/.* epochs_vbl=\([0-9]*\).*/\1/p' <<<"$line")
+  mm=$(sed -n 's/.* mm=\([0-9\/]*\).*/\1/p' <<<"$line")
+  sum=$(grep -m1 'recdbg-summary' "$log" || true)
+  sum_spec=$(sed -n 's/.* spec_refused=\([0-9]*\).*/\1/p' <<<"$sum")
+  sum_mm=$(sed -n 's/.* mismatch m=\([0-9]*\) s=\([0-9]*\) f=\([0-9]*\).*/\1\/\2\/\3/p' <<<"$sum")
+  sum_rr=$(sed -n 's/.* roll_records=\([0-9]*\).*/\1/p' <<<"$sum")
+  sum_nr=$(sed -n 's/.* no_ring=\([0-9]*\).*/\1/p' <<<"$sum")
+  verdict=ok
+  [[ "$got_m/$got_s/$got_f" != "$em/$es/$ef" ]] && verdict="FAIL calls m/s/f=$got_m/$got_s/$got_f expected $em/$es/$ef"
+  [[ "$spec" != 0 ]] && verdict="FAIL spec=$spec"
+  [[ "$ev" != 1 ]] && verdict="FAIL epochs_vbl=$ev"
+  [[ "$mm" != "0/0/0" ]] && verdict="FAIL hook-vs-ring mm=$mm"
+  [[ "$sum_spec" != 0 ]] && verdict="FAIL run spec_refused=$sum_spec"
+  [[ "$sum_mm" != "0/0/0" ]] && verdict="FAIL run mismatch=$sum_mm"
+  [[ "${sum_nr:-x}" != 0 ]] && verdict="FAIL ring never captured on ${sum_nr:-?} epoch(s): hook-vs-ring column vacuous"
+  [[ "${sum_rr:-0}" -ge 1 ]] && recroll=1
+  [[ "$got_m" -ge 2 ]] && engaged=1
+  if [[ $verdict != ok ]]; then echo "FAIL     $name (canon f=$frame): $verdict"; fail=1; continue; fi
+  echo "ok       $name (canon f=$frame): calls m/s/f=$got_m/$got_s/$got_f mm=$mm — $note"
+
+  # Intermediate leg: run-wide staging checks now; per-record pairing in P1.
+  rc=$(run_leg "$name" inter "$src" "$players" "$frame")
+  log="$OUT/$name-inter.log"
+  if [[ $rc -ne 0 ]]; then echo "FAIL     $name: intermediate leg rc=$rc (see $log)"; fail=1; continue; fi
+  writes=$(sed -n 's/.*cpu_writes_while_open=\([0-9]*\).*/\1/p' "$log" | tail -1)
+  if [[ "${writes:-x}" != 0 ]]; then echo "FAIL     $name (inter): view write census cpu_writes_while_open=${writes:-missing}"; fail=1; continue; fi
+  if grep -q 'RESTORE MISMATCH' "$log"; then echo "FAIL     $name (inter): RESTORE MISMATCH (see $log)"; fail=1; continue; fi
+  ilines=$(grep -c "^\[recdbg present f=$frame " "$log" || true)
+  if [[ "$ilines" == 0 ]]; then echo "vacuous  $name (inter f=$frame): no per-present record lines yet (P1) — pairs=$pairs unasserted"
+  else echo "ok       $name (inter f=$frame): staging census clean"; fi
+done < "$CORPUS"
+
+if [[ $cases -eq 0 ]]; then echo "[spyro-records] SKIP: no case matched '$FILTER'"; exit 64; fi
+[[ $recroll -eq 0 ]] && echo "[spyro-records] VACUOUS: store-clock record-only arm not reached by any case (roll_records=0 everywhere; covered by the injected-state probe, see the plan)"
+if [[ $fail -ne 0 ]]; then echo "[spyro-records] FAIL ($cases case(s); logs in $OUT)"; exit 1; fi
+if [[ $engaged -eq 0 ]]; then echo "[spyro-records] VACUOUS: no case reported >= 2 model calls on its canonical tick"; exit 64; fi
+echo "[spyro-records] PASS: $cases case(s)"
+exit 0

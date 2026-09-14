@@ -153,6 +153,10 @@ op_time_t openpete_interp_det_period(void);
  * no valid slot yet. With deterministic capture on, this is a fixed grid point;
  * add period_ns/2 to target the sub-tick midpoint. */
 op_time_t openpete_interp_curr_tick_ns(void);
+/* The newest stored snapshot itself (NULL until the ring holds one). Read-only:
+ * the per-hook record instrument compares the bytes it captured at the render
+ * hook against the ring's tick-end bytes of the same region. */
+const openpete_interp_snapshot_t* openpete_interp_curr_snapshot(void);
 
 /* 1 iff the ring holds two valid, byte-DISTINCT most-recent slots (prev != curr)
  * — i.e. a sub-tick interpolation bracket is available right now. 0 during

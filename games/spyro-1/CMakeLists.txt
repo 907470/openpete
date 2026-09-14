@@ -175,6 +175,7 @@ openpete_add_game(spyro-1
         features/moby_native.c
         features/moby_rank.c
         features/spyro_native.c
+        features/spyro_records.c
         features/mod_moby_ops.c
         features/mod_level_ops.c
         features/flame_native.c

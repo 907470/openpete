@@ -256,6 +256,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Multi-Spyro sub-tick records (notes/plans/openpete-native-multi-spyro-subtick.md):
+    # the spyro-coop mod draws N dragons through the game's own player
+    # renderers; each corpus case asserts the OPENPETE_SPYRO_RECDBG hook-call
+    # counts, the hook-vs-ring byte identity and the staging census with the
+    # mod loaded. The mod is out of tree: SPYRO_COOP_DIR names its source dir,
+    # else the test skips (exit 64).
+    add_test(NAME spyro_records
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_spyro_records.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(spyro_records PROPERTIES
+        LABELS "slow;presentation;mods"
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # The pacing analysis suite's own maths, against synthetic inputs with
     # known answers. Fast, no PSX boot, no display: a wrong Allan deviation or
     # a mis-set gate tolerance is worse than none, because it looks

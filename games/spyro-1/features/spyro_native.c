@@ -33,6 +33,7 @@
 #include "openpete_psx.h"
 #include "openpete_subtick_view.h"            /* openpete_psx_to_host_ptr (seg-scratch mix) */
 #include "spyro_native_reextract.h"  /* canon-scratch capture (sub-tick spine) */
+#include "spyro_records.h"           /* per-call records of the player hooks */
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
 #include "render_paths.h"  /* --render-paths isolation */
 
@@ -1266,6 +1267,7 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_SPYRO, startp, endp);   /* polybuf range for the OT filter */
+    if (endp > startp) spyro_records_hook_observe(SPYRO_REC_MODEL, cpu);
 
     static int hookdbg = -1;
     if (hookdbg < 0) { const char* e = getenv("OPENPETE_CANON_CAPDBG"); hookdbg = (e && *e && *e != '0'); }
