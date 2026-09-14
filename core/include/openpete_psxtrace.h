@@ -64,6 +64,14 @@ typedef struct {
     /* First divergence in a row that is not gameplay_neutral (a strict
      * or cd_load_transient row); the neutral rows diverge by
      * classification and would otherwise own the first-divergence report. */
+    /* Under the schedule: the reference's VBLs minus openpete's, cumulative,
+     * the records it has been non-zero for, and the long frames seen. */
+    int64_t  vbl_deficit;
+    uint32_t vbl_deficit_records;
+    uint32_t vbl_long_frames;
+    /* Every record's VBL stamp (pad2), read ahead at open for the schedule. */
+    uint32_t* stamps;
+    uint32_t  stamp_count;
     int      strict_diverged;
     uint32_t first_strict_divergent_frame;
     int32_t  first_strict_divergent_region;
@@ -146,6 +154,35 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t);
 void openpete_psxtrace_finalize(openpete_psxtrace_t* t);
 
 void openpete_psxtrace_close(openpete_psxtrace_t* t);
+
+/* The reference's schedule (psxtrace_schedule.c): the `<trace>.vsync`,
+ * `<trace>.loads` and `<trace>.srand` sidecars beside a golden, consumed
+ * in order by the thunk layer while the trace is verified. */
+int  openpete_sched_open(const char* trace_path);   /* 1 when any sidecar loaded */
+int  openpete_sched_active(void);
+/* The schedule tracks the reference VBLANK count openpete has reached
+ * (`pos`). Each consumer returns a target; the thunk layer charges
+ * `target - pos` VBLs (one psyq_vbl_body each) and advances pos. */
+void     openpete_sched_set_stamps(const uint32_t* stamps, uint32_t count); /* the trace's pad2 column */
+uint32_t openpete_sched_pos(void);
+void     openpete_sched_advance_pos(uint32_t vbls);
+int      openpete_sched_pos_known(void);
+int32_t  openpete_sched_counter(void);   /* the reference's VSync(-1) value at pos, -1 = unknown */
+void     openpete_sched_set_counter(int32_t counter); /* a waited row's following query value */
+/* Next waited VSync row: *target_out = VBLANK at its return, *counter_out =
+ * the counter the following query returned (-1 = none). 0 when no
+ * schedule or exhausted (a failure is recorded). */
+int  openpete_sched_next_vsync(int mode, uint32_t* target_out, int32_t* counter_out);
+/* The reference's VBLANK at anchor hit `record` (0-based record index). */
+int  openpete_sched_anchor_target(uint32_t record, uint32_t* target_out);
+/* Next read row: issue and completion VBLANK, *sync_out = 1 when the
+ * reference completed it before its next anchor hit. Refuses a row whose
+ * sectors or destination differ from the issued read. */
+int  openpete_sched_read(int sectors, uint32_t dst, uint32_t* issue_vbl_out, uint32_t* done_vbl_out, int* sync_out);
+int  openpete_sched_next_srand(uint32_t* seed_out);
+void openpete_sched_fail(const char* fmt, ...);
+int  openpete_sched_failed(const char** reason);
+void openpete_sched_summary(void);
 
 #ifdef __cplusplus
 }

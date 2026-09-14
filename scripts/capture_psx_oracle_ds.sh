@@ -23,7 +23,13 @@
 #           --cd-read-cb-slot HEX  guest word holding the game's read-complete
 #                                  handler (recomp.conf CD_READ_CB_ADDR)
 #           --cd-control-pc HEX    log every CdControl command to <out>.cdctl
+#           --vsync-pc HEX         record every waited libetc VSync call to
+#                                  <out>.vsync (the reference's VBL schedule);
+#                                  refuses a capture that recorded none
+#           --srand-pc HEX         record every srand seed to <out>.srand
 #           --no-card              reference boots with no memory card
+# A golden verified with its .vsync/.loads/.srand siblings beside it runs
+# openpete under the reference's timing (core/runtime/psxtrace_schedule.c).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
@@ -32,7 +38,7 @@ FRAMES=600
 ANCHOR_PC="0x8001ED5C"
 HIT=1
 MAX_RUNTIME=""
-CD_READ_PC=""; CD_READ_CB_SLOT=""; CD_CONTROL_PC=""; NO_CARD=0
+CD_READ_PC=""; CD_READ_CB_SLOT=""; CD_CONTROL_PC=""; VSYNC_PC=""; SRAND_PC=""; NO_CARD=0
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --out) OUT="$2"; shift 2 ;;
@@ -43,6 +49,8 @@ while [[ $# -gt 0 ]]; do
         --cd-read-pc) CD_READ_PC="$2"; shift 2 ;;
         --cd-read-cb-slot) CD_READ_CB_SLOT="$2"; shift 2 ;;
         --cd-control-pc) CD_CONTROL_PC="$2"; shift 2 ;;
+        --vsync-pc) VSYNC_PC="$2"; shift 2 ;;
+        --srand-pc) SRAND_PC="$2"; shift 2 ;;
         --no-card) NO_CARD=1; shift ;;
         -h|--help) sed -n 's/^# //p' "$0" | head -34; exit 0 ;;
         *) echo "unknown arg: $1" >&2; exit 64 ;;
@@ -94,12 +102,14 @@ python3 tools/gen_state_regions.py --manifest "$MANIFEST" --out-flat "$REGIONS_F
 
 REC_ARGS=()
 [[ -n "$CD_READ_PC" ]] && REC_ARGS+=(-psxtrace-cd-read-pc "$CD_READ_PC")
+[[ -n "$VSYNC_PC" ]] && REC_ARGS+=(-psxtrace-vsync-pc "$VSYNC_PC")
+[[ -n "$SRAND_PC" ]] && REC_ARGS+=(-psxtrace-srand-pc "$SRAND_PC")
 [[ -n "$CD_READ_CB_SLOT" ]] && REC_ARGS+=(-psxtrace-cd-read-cb-slot "$CD_READ_CB_SLOT")
 [[ -n "$CD_CONTROL_PC" ]] && REC_ARGS+=(-psxtrace-cd-control-pc "$CD_CONTROL_PC")
 [[ "$NO_CARD" == 1 ]] && REC_ARGS+=(-card1 none)
 
 mkdir -p "$(dirname "$OUT")"
-rm -f "$OUT" "$OUT.loads" "$OUT.cdctl"
+rm -f "$OUT" "$OUT.loads" "$OUT.cdctl" "$OUT.vsync" "$OUT.srand"
 # DuckStation's -frames is *presentation* frames (not GamestateDraw hits).
 # Pad generously: ~1000 startup + 4× the requested record count handles
 # the worst case (4-vbl-per-game-frame splash logos before the title-
@@ -149,4 +159,17 @@ if [[ -n "$CD_READ_PC" ]]; then
         exit 1
     fi
     echo "[capture-ds] recorded $READS reads -> $OUT.loads"
+fi
+if [[ -n "$VSYNC_PC" ]]; then
+    [[ -f "$OUT.vsync" ]] || { echo "[capture-ds] FAIL: recorder produced no $OUT.vsync" >&2; exit 1; }
+    WAITS="$(sed -n 's/^# calls=\([0-9]*\).*/\1/p' "$OUT.vsync")"
+    if [[ -z "$WAITS" || "$WAITS" == 0 ]]; then
+        echo "[capture-ds] FAIL: recorder saw zero VSync calls at $VSYNC_PC (wrong PC)" >&2
+        exit 1
+    fi
+    echo "[capture-ds] recorded $WAITS VSync calls -> $OUT.vsync"
+fi
+if [[ -n "$SRAND_PC" ]]; then
+    [[ -f "$OUT.srand" ]] || { echo "[capture-ds] FAIL: recorder produced no $OUT.srand" >&2; exit 1; }
+    echo "[capture-ds] recorded $(sed -n 's/^# calls=\([0-9]*\).*/\1/p' "$OUT.srand") srand calls -> $OUT.srand"
 fi

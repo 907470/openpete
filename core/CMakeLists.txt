@@ -49,6 +49,7 @@ add_library(openpete_core STATIC
     runtime/screenshot.c
     runtime/run.c
     runtime/psxtrace_verify.c
+    runtime/psxtrace_schedule.c
 
     # True-VFR gameplay video capture (--record). Links libav* in-process;
     # reads the present FBO so output is bars-free at internal resolution.

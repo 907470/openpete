@@ -83,6 +83,65 @@ region names or order differ from the registered table.
 The `cd_load_transient` and `gameplay_neutral` flags are openpete-side gate
 policy, not inputs to the hash; they are not in the file.
 
+### VSync and srand recorders
+
+`-psxtrace-vsync-pc HEX` (libetc `VSync`, `psyq.toml`) writes
+`<trace>.vsync`: one row per waited call (`mode >= 0`) with the VBLANK
+count at entry and return and the CPU ticks, followed by the first query
+after it with the counter value it returned; queries a game spins on are
+not logged. `-psxtrace-srand-pc HEX` writes `<trace>.srand`: every seed
+passed to `srand` with its record and VBLANK. Both are stamped with the
+record index (records written when the call was made).
+
+## The reference's schedule
+
+A golden verified with `.vsync`, `.loads` and `.srand` siblings beside it
+runs openpete under the reference's timing (`core/runtime/psxtrace_schedule.c`,
+consumed by the VSync, CdRead and srand thunks). The schedule tracks the
+reference VBLANK count openpete has reached (`pos`); each event charges
+`target - pos` VBLs as calls of the VBL body (counter, SPU envelope, yield,
+VSync callback, pad pump, deferred read completion), one per VBL, as the
+interrupt fired on the reference:
+
+- A waited `VSync` charges to its row's return VBLANK. A wait the
+  reference returned from at once charges nothing. A call with no row
+  left in the current record (the reference's frame ran long enough that
+  its wait loop never waited) charges to the record's anchor stamp and
+  consumes no row.
+- A `CdRead` with a completion in `.loads` completed before the next
+  anchor hit charges to the completion VBLANK inside the read; one that
+  completed later defers its completion by the difference; one with no
+  completion callback (Spyro 1) charges to the reference's next event
+  (the next read's issue, the next wait's entry or the next anchor stamp).
+- `VSync(-1)` returns the reference's counter: the position minus the
+  offset each waited row's following query re-derives.
+- `srand` receives the reference's seed in order.
+- A VBL the reference spent inside a tick's work (a long frame) is charged
+  by the next wait, so openpete reaches that record one VBL behind and the
+  next one ahead; the verifier's exact VBL policy admits a deficit that
+  opens and closes within two records and fails one that grows negative
+  or persists. The summary counts the long frames.
+
+A row whose shape differs from what openpete issues (mode, a read's
+sectors or destination), rows exhausted before the trace's last record,
+openpete ahead of a stamp, or a `.loads` read count short of the sidecar's
+is a schedule failure: `hard fail: schedule` with the record. The gate
+script refuses a run whose consumption summary is missing or failed.
+`OPENPETE_SCHED_LOG=path` writes every consumed row with openpete's hit.
+
+Controls: a waited row's return VBLANK moved by 5 fails at that record
+(`vbl-delta`); a row deleted is absorbed (the stamps carry the record's
+total), so a missing row is not a detectable fault and the record count
+check is the engagement. Two captures are `cmp`-identical including the
+three sidecars.
+
+What the schedule does not reproduce: the reference's time-sliced level
+loader (Spyro 1 decompresses until two VBLs have passed, so its
+intermediate state per tick is CPU time), which the `cd_load_transient`
+rows of the main image carry; and where inside a tick's work a long
+frame's interrupt landed, which leaves the VBL-derived counters one VBL
+behind on those records.
+
 ### GTE instruction log
 
 `-psxtrace-gte-log PATH -psxtrace-gte-vbl LO:HI` (with `-cpu Interpreter`;

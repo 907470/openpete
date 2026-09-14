@@ -5786,6 +5786,9 @@ static int run_host_loop(const openpete_options_t* opts) {
                            psxtrace->first_vbl_mismatch_frame,
                            psxtrace->first_vbl_mismatch_trace,
                            psxtrace->first_vbl_mismatch_op);
+            if (openpete_sched_active())
+                OPL_INFO_F("psxtrace", "  schedule: %u long frames charged at the next wait, final deficit %lld",
+                           psxtrace->vbl_long_frames, (long long)psxtrace->vbl_deficit);
         }
         /* Promote any EOF-pending CD-load transient to a hard failure and
          * log the PASS/FAIL verdict + absorbed-transient tally. */

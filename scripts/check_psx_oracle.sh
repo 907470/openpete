@@ -165,6 +165,11 @@ BK2="${TRACE}.bk2"
     echo "[psx-oracle] seed CPU: $SEED_CPU"
 [[ -f "$BK2"      ]] && EXTRA+=(--bk2 "$BK2") && \
     echo "[psx-oracle] bk2:      $BK2"
+# The reference's schedule: openpete consumes these beside the golden and
+# runs under the reference's VBL, read and seed timing (psxtrace_schedule.c).
+for _sc in vsync loads srand; do
+    [[ -f "$TRACE.$_sc" ]] && echo "[psx-oracle] schedule: $TRACE.$_sc"
+done
 
 [[ ${#PASSTHRU[@]} -gt 0 ]] && \
     echo "[psx-oracle] openpete flags: ${PASSTHRU[*]}"
@@ -242,6 +247,20 @@ if [[ "$rc" == "0" ]] && grep -q 'openpete-exit: reason=psxtrace-eof' "$LOG"; th
     if [[ "$CONSUMED" != "$RECORDS" ]]; then
         echo "[psx-oracle] run consumed ${CONSUMED:-?} records, expected $RECORDS" >&2
         rc=2
+    fi
+    # A golden with a schedule must have been consumed to its end: rows
+    # left over, or a read count short of the sidecar's, is a desync.
+    if [[ -f "$TRACE.vsync" ]]; then
+        SCHED=$(sed -n 's/.*psxtrace: schedule: consumed //p' "$LOG" | tail -1)
+        if [[ -z "$SCHED" ]]; then
+            echo "[psx-oracle] schedule: no consumption summary" >&2
+            rc=2
+        elif [[ "$SCHED" == *FAILED* ]]; then
+            echo "[psx-oracle] schedule: $SCHED" >&2
+            rc=2
+        else
+            echo "[psx-oracle] schedule: consumed $SCHED"
+        fi
     fi
     UNJUST=$(sed -n 's/.*zero-change regions unjustified: *//p' "$LOG" | tail -1)
     if [[ -z "$UNJUST" ]]; then

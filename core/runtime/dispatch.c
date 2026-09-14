@@ -416,6 +416,13 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
     if (openpete_psxtrace_anchor_pc != 0u &&
         addr == openpete_psxtrace_anchor_pc) {
         openpete_psxtrace_anchor_hits++;
+        if (openpete_psxtrace_anchor_hits >= openpete_psxtrace_anchor_hit_target) {
+            /* The reference's VBLANK at this record, charged before the
+             * hash (psxtrace_schedule.c). */
+            extern void psyq_sched_anchor(CPUState* cpu, uint32_t record) __attribute__((weak));
+            if (psyq_sched_anchor)
+                psyq_sched_anchor(cpu, openpete_psxtrace_anchor_hits - openpete_psxtrace_anchor_hit_target);
+        }
         anchor_vbl_log(openpete_psxtrace_anchor_hits);
         if (openpete_psxtrace_dispatch_hook &&
             openpete_psxtrace_anchor_hits >= openpete_psxtrace_anchor_hit_target) {

@@ -27,6 +27,7 @@
 
 extern "C" {
 #include "openpete_fiber.h"
+#include "openpete_psxtrace.h"
 #include "openpete_log.h"
 #include "openpete_ticker.h"
 #include "openpete_psx.h"
@@ -318,6 +319,7 @@ void psyq___main(CPUState* cpu) {
 
 /* Forward decls: defined later, called from inside psyq_VSync below. */
 static void psyq_libpad_mirror_canonical_slot2(CPUState* cpu);
+static void sched_charge_to(CPUState* cpu, uint32_t target, const char* what);
 static void psyq_vbl_body(CPUState* cpu, int wait);
 static void cd_defer_tick(CPUState* cpu, uint32_t vbls);
 
@@ -351,13 +353,55 @@ void psyq_VSync(CPUState* cpu) {
     if (mode < 0) {
         /* Query: read the counter, wait for nothing. Every Spyro game's
          * frame wait is `VSync(0); VSync(-1); while (cur - ref < 2)`, so
-         * VSync(0) advances the counter and this call only observes it. */
-        cpu->v0 = (uint32_t)observed;
+         * VSync(0) advances the counter and this call only observes it.
+         * Under the reference's schedule the game sees the reference's
+         * counter: openpete's plus the offset the last waited row set. */
+        int32_t sc = openpete_sched_counter();
+        cpu->v0 = (sc >= 0) ? (uint32_t)sc : (uint32_t)observed;
         return;
     }
     int wait = (mode == 0) ? 1 : mode;
-    psyq_vbl_body(cpu, wait);
-    cpu->v0 = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+    uint32_t sched_target = 0; int32_t sched_counter = -1;
+    if (openpete_sched_active() && openpete_sched_next_vsync(mode, &sched_target, &sched_counter)) {
+        /* Up to the reference's VBLANK at this wait's return; a wait the
+         * reference returned from at once charges nothing. */
+        sched_charge_to(cpu, sched_target, "VSync");
+        openpete_sched_set_counter(sched_counter);
+    } else {
+        psyq_vbl_body(cpu, wait);
+    }
+    {
+        int32_t sc = openpete_sched_counter();
+        cpu->v0 = (sc >= 0) ? (uint32_t)sc : (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+    }
+}
+
+/* Under the schedule, every VBL openpete charges is one the reference
+ * spent: one body per VBL so the VSync callback fires per VBL as the
+ * interrupt did, and the position advances with it. openpete ahead of the
+ * target is a schedule failure (an extra wait, or a read the reference
+ * completed sooner). */
+static void sched_charge_to(CPUState* cpu, uint32_t target, const char* what) {
+    uint32_t pos = openpete_sched_pos();
+    if (target < pos) {
+        openpete_sched_fail("%s: openpete at reference VBLANK %u, target %u (ahead by %u)",
+                            what, pos, target, pos - target);
+        return;
+    }
+    while (pos < target) {
+        psyq_vbl_body(cpu, 1);
+        openpete_sched_advance_pos(1);
+        pos++;
+    }
+}
+
+/* At every anchor hit the reference's stamp for the record bounds the
+ * position: openpete past it is a schedule failure; behind it is a long
+ * frame the next wait charges. */
+extern "C" void psyq_sched_anchor(CPUState* cpu, uint32_t record) {
+    uint32_t target;
+    (void)cpu;
+    (void)openpete_sched_anchor_target(record, &target);
 }
 
 /* One waited VBL: the counter, the SPU envelope, the yield, the game's VSync
@@ -1906,7 +1950,27 @@ void psyq_CdRead(CPUState* cpu) {
         s_cd_defer_owed = 0u;
         cd_read_complete(cpu);
     }
-    const uint32_t delay = cd_read_delay_for(cpu, sectors);
+    uint32_t delay;
+    uint32_t sched_issue = 0, sched_done = 0; int sched_sync = 0;
+    if (openpete_sched_active() && openpete_sched_read(sectors, cpu->a1, &sched_issue, &sched_done, &sched_sync)) {
+        if (sched_issue != openpete_sched_pos())
+            OPL_INFO_F("cd", "schedule: read issued at reference VBLANK %u, openpete at %u",
+                       sched_issue, openpete_sched_pos());
+        if (sched_sync) {
+            /* The reference completed this read before its next anchor hit:
+             * the VBLs it spent pass here, callbacks included, and the read
+             * completes instantly as the game's spin observed it. */
+            sched_charge_to(cpu, sched_done, "CdRead");
+            delay = 0;
+            OPL_INFO_F("cd", "schedule: %d-sector read charged to reference VBLANK %u synchronously",
+                       sectors, sched_done);
+        } else {
+            delay = (sched_done > openpete_sched_pos()) ? sched_done - openpete_sched_pos() : 0u;
+        }
+        (void)cd_read_delay_for(cpu, sectors);
+    } else {
+        delay = cd_read_delay_for(cpu, sectors);
+    }
     if (delay) {
         s_cd_defer_pending = 1u;
         s_cd_defer_owed = delay;
@@ -2488,6 +2552,14 @@ void psyq_rand(CPUState* cpu) {
 }
 
 void psyq_srand(CPUState* cpu) {
+    uint32_t seed;
+    if (openpete_sched_active() && openpete_sched_next_srand(&seed)) {
+        /* The reference's seed: a game that seeds from a root counter reads
+         * hardware time, which openpete answers with 0. */
+        if (seed != cpu->a0)
+            OPL_INFO_F("thunks", "schedule: srand(0x%08X) replaces the game's 0x%08X", seed, cpu->a0);
+        cpu->a0 = seed;
+    }
     psyq_seed_store(cpu->a0);
 }
 

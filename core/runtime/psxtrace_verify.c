@@ -178,6 +178,13 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
         t->scm_hash[copy] = 0;
     }
     t->has_vbl_stamps = !!(t->flags & PSXTRACE_FLAG_VBL_STAMP);
+    /* The sidecars beside the golden are the reference's schedule; under
+     * it openpete's VBLs are the reference's, so the per-record delta
+     * compare is exact unless the policy was set to log by hand. */
+    if (openpete_sched_open(path) && t->has_vbl_stamps) {
+        const char* vp = getenv("OPENPETE_PSXTRACE_VBL_POLICY");
+        if (!(vp && strcmp(vp, "log") == 0)) t->vbl_policy_exact = 1;
+    }
     if (t->vbl_policy_exact && !t->has_vbl_stamps) {
         OPL_ERROR_F("psxtrace", "%s: OPENPETE_PSXTRACE_VBL_POLICY=exact but the trace "
                     "carries no VBL stamps — recapture", path);
@@ -247,6 +254,23 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
         read_u32_le(t->fp, &peek_p2)    == 0 &&
         read_u32_le(t->fp, &peek_pc)    == 0) {
         t->inferred_anchor_pc = peek_pc;
+    }
+    /* The VBL stamps of every record, read ahead for the schedule: the
+     * reference's VBLANK at each anchor hit is charged before that
+     * record's hash. Hash-only traces have fixed-size records. */
+    if (t->has_vbl_stamps && !(t->flags & PSXTRACE_FLAG_HAS_RAM) && save >= 0) {
+        const long rec_size = 5 * 4 + 8 + 8 * (long)t->region_count;
+        t->stamps = (uint32_t*)calloc(t->frame_count ? t->frame_count : 1u, sizeof(uint32_t));
+        uint32_t n = 0;
+        for (; t->stamps && n < t->frame_count; n++) {
+            uint32_t m, f, p1, p2;
+            if (fseek(t->fp, save + rec_size * (long)n, SEEK_SET) != 0) break;
+            if (read_u32_le(t->fp, &m) || m != PSXTRACE_FRMR_MAGIC || read_u32_le(t->fp, &f) ||
+                read_u32_le(t->fp, &p1) || read_u32_le(t->fp, &p2)) break;
+            t->stamps[n] = p2;
+        }
+        t->stamp_count = n;
+        openpete_sched_set_stamps(t->stamps, n);
     }
     if (save >= 0) fseek(t->fp, save, SEEK_SET);
     OPL_INFO_F("psxtrace",
@@ -334,6 +358,20 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
             const int bo = (d_op < 0)    ? 16 : (d_op > 16 ? 16 : (int)d_op);
             t->vbl_hist_trace[bt]++;
             t->vbl_hist_op[bo]++;
+            /* Under the schedule a VBL the reference spent inside a tick's
+             * work is charged by openpete at the next wait, so openpete
+             * reaches that record one VBL behind and the next record one
+             * ahead: a deficit that opens and closes within two records.
+             * A deficit that grows negative (openpete ahead) or persists
+             * is a desync. */
+            int sched_ok = 0;
+            if (openpete_sched_active()) {
+                t->vbl_deficit += d_trace - d_op;
+                if (t->vbl_deficit == 0) t->vbl_deficit_records = 0;
+                else t->vbl_deficit_records++;
+                sched_ok = (t->vbl_deficit >= 0 && t->vbl_deficit_records <= 2);
+                if (d_trace != d_op && t->vbl_deficit > 0) t->vbl_long_frames++;
+            }
             if (d_trace != d_op) {
                 if (t->vbl_delta_mismatches == 0) {
                     t->first_vbl_mismatch_frame = frame_no;
@@ -341,7 +379,7 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
                     t->first_vbl_mismatch_op    = (int32_t)d_op;
                 }
                 t->vbl_delta_mismatches++;
-                if (t->vbl_policy_exact && !t->hard_failed) {
+                if (t->vbl_policy_exact && !sched_ok && !t->hard_failed) {
                     t->hard_failed      = 1;
                     t->hard_fail_frame  = frame_no;
                     t->hard_fail_region = -1;
@@ -381,6 +419,16 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
             OPL_INFO_F("psxtrace", "poke: frame=%u 0x%08X: 0x%02X -> 0x%02X",
                        frame_no, s_poke_addr, ram[off], s_poke_val);
             ram[off] = s_poke_val;
+        }
+    }
+    {
+        const char* why = NULL;
+        if (openpete_sched_failed(&why) && !t->hard_failed) {
+            t->hard_failed      = 1;
+            t->hard_fail_frame  = frame_no;
+            t->hard_fail_region = -1;
+            t->hard_fail_reason = "schedule";
+            OPL_ERROR_F("psxtrace", "record %u: schedule failed: %s", frame_no, why);
         }
     }
     /* Compute openpete's hashes for THIS frame. */
@@ -556,6 +604,7 @@ void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
                        (long long)t->transient_open_frame[r]);
         }
     }
+    openpete_sched_summary();
     if (t->hard_failed) {
         int32_t r = t->hard_fail_region;
         OPL_INFO_F("psxtrace",
@@ -577,4 +626,6 @@ void openpete_psxtrace_close(openpete_psxtrace_t* t) {
     if (t->fp) { fclose(t->fp); t->fp = NULL; }
     free(t->ram_buf);
     t->ram_buf = NULL;
+    free(t->stamps);
+    t->stamps = NULL;
 }
