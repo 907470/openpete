@@ -1869,9 +1869,11 @@ void psyq_CdRead(CPUState* cpu) {
                sectors, cpu->a1, mode, cpu->ra, openpete_psxtrace_anchor_hits,
                SDL_GetAtomicInt(&openpete_vbl));
 
-    /* libcd's CdRead issues CdlSetmode with this mode before its read;
-     * PsyCross's only enqueues the read, so the mirror is written here. */
-    cd_set_mode((uint8_t)mode);
+    /* libcd's CdRead ORs 0x20 into the caller's mode (its read state word,
+     * `ori v0, v0, 0x20` before the CdlSetmode it issues), so the drive's
+     * mode byte reads mode | 0x20 after a read; PsyCross's CdRead only
+     * enqueues, so the mirror is written here. */
+    cd_set_mode((uint8_t)(mode | 0x20));
     cpu->v0 = (uint32_t)CdRead(sectors, buf, mode);
     /* PsyCross's CdRead only enqueues; CdReadSync drains the queue into
      * the buffer. Spyro polls via CdSync (which doesn't drain), so we
