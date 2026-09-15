@@ -22,29 +22,33 @@ add_library(openpete_core STATIC
     # directories otherwise. SDL-free for the same reason config.c is.
     runtime/paths.c
 
+    # Host input.
     # [keys]: the input binding registry. Split the same way and for the
     # same reason as config.c — keymap.c holds the registry, the layered
     # store and the edge latches with no SDL in sight (so it links into
     # tests/unit/keymap_test.c), and keymap_sdl.c is the SDL glue that
     # turns binding names into codes and reads whether they are held.
-    runtime/keymap.c
-    runtime/keymap_sdl.c
-
+    input/keymap.c
+    input/keymap_sdl.c
     # Host-owned pad decode: producer publishes an SDL-decoded snapshot, the
     # sim-side consumer arbitrates it against the other override writers and
     # stamps the PsyCross override channel. Split producer/consumer because
-    # the pump and the sim are headed for different threads. See
+    # the pump and the sim run on different threads. See
     # openpete_host_input.h.
-    runtime/host_input.c
+    input/host_input.c
     # The host mouse channel: event-derived state, running totals, ownership
     # arbitration, capture requests and the injection seam. See
     # openpete_host_mouse.h.
-    runtime/host_mouse.c
+    input/host_mouse.c
     # Controller vibration. rumble_curve.c is the measured actuator
     # curve, kept SDL-free so the unit test can link it alone; host_rumble.c is
     # the registration / per-tick sample / per-pump apply seam.
-    runtime/rumble_curve.c
-    runtime/host_rumble.c
+    input/rumble_curve.c
+    input/host_rumble.c
+    # Per-VBL input log — single source of truth for "what was pressed at
+    # VBL i"; shared by bk2_record and the rewind/runahead drivers. See
+    # openpete_input_log.h.
+    input/input_log.c
     renderer/subtick_view.c
     renderer/screenshot.c
     runtime/run.c
@@ -61,11 +65,6 @@ add_library(openpete_core STATIC
     runtime/bk2_movie.c
     runtime/bk2_record.c
     ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c
-
-    # Per-VBL input log — single source of truth for "what was pressed at
-    # VBL i"; shared by bk2_record and the rewind/runahead drivers. See
-    # openpete_input_log.h (savestate plan P1).
-    runtime/input_log.c
 
     # Save states (F2/F4 quick save/load). See
     # plans/openpete-savestate-frame-step-rewind.md.

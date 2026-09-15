@@ -1,4 +1,4 @@
-/* core/runtime/keymap_sdl.c — the SDL half of the keymap.
+/* core/input/keymap_sdl.c — the SDL half of the keymap.
  *
  * keymap.c owns the registry, the layering and the edge latches and is
  * deliberately SDL-free so it links into console unit tests. Everything

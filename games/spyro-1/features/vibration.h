@@ -3,7 +3,7 @@
  * setting.
  *
  * The host half of --vibration (motor amplitude, and the headless / focus
- * gates) lives in core/runtime/host_rumble.c. This is the guest half: the
+ * gates) lives in core/input/host_rumble.c. This is the guest half: the
  * game's options menu carries a VIBRATION row backed by one enable flag, and
  * the flag is what decides whether the game bothers to write actuator bytes at
  * all. Presetting it is what lets a launch start with rumble off (or back on)

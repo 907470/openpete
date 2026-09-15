@@ -262,7 +262,7 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * state (re-stamped over the title screen's and a save load's reseeds,
      * released when the player toggles that row by hand). Inert without the
      * flag; the host half — motor strength, and the headless / focus gates —
-     * lives in core/runtime/host_rumble.c. */
+     * lives in core/input/host_rumble.c. */
     spyro1_vibration_on_tick(cpu);
 
     /* Dev-overlay level warp (M menu): drives the game's own exit-level ->

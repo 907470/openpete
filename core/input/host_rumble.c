@@ -1,4 +1,4 @@
-/* core/runtime/host_rumble.c — the actuator path openpete owns.
+/* core/input/host_rumble.c — the actuator path openpete owns.
  *
  * See openpete_rumble.h for why this exists at all (libpad registers a buffer;
  * PsyCross one-shotted it, so the only command ever sent was a zero at boot).

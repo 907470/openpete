@@ -1,4 +1,4 @@
-/* core/runtime/keymap.c — the action registry, the layered binding store,
+/* core/input/keymap.c — the action registry, the layered binding store,
  * and the resolver. See core/include/openpete_keymap.h for what this is
  * for and why it is SDL-free.
  *

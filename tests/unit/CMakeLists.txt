@@ -70,7 +70,7 @@ add_test(NAME openpete_hook_test_openpete COMMAND openpete_hook_test_openpete)
 # log.c comes along for OPL_WARN_F.
 add_executable(keymap_test
     keymap_test.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/keymap.c
+    ${CMAKE_SOURCE_DIR}/core/input/keymap.c
     ${CMAKE_SOURCE_DIR}/core/runtime/log.c)
 target_include_directories(keymap_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include)
@@ -105,7 +105,7 @@ add_executable(knob_registry_test
     # keymap.c rides along because config.c now seeds and resolves the
     # binding store, paths.c because it decides where the [saved] zone is
     # written. No log.c: this test stubs the log entry points itself.
-    ${CMAKE_SOURCE_DIR}/core/runtime/keymap.c
+    ${CMAKE_SOURCE_DIR}/core/input/keymap.c
     ${CMAKE_SOURCE_DIR}/core/runtime/paths.c
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
 target_include_directories(knob_registry_test PRIVATE
@@ -139,7 +139,7 @@ add_test(NAME audio_volume_test COMMAND audio_volume_test)
 # scripts/check_rumble.sh.
 add_executable(vibration_test
     vibration_test.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/rumble_curve.c
+    ${CMAKE_SOURCE_DIR}/core/input/rumble_curve.c
     ${CMAKE_SOURCE_DIR}/games/spyro-1/features/vibration.c)
 target_include_directories(vibration_test PRIVATE
     ${CMAKE_SOURCE_DIR}/games/spyro-1
@@ -161,7 +161,7 @@ add_executable(config_resolve_test
     config_resolve_test.c
     ${CMAKE_SOURCE_DIR}/core/runtime/config.c
     ${CMAKE_SOURCE_DIR}/core/runtime/config_schema.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/keymap.c
+    ${CMAKE_SOURCE_DIR}/core/input/keymap.c
     ${CMAKE_SOURCE_DIR}/core/runtime/log.c
     ${CMAKE_SOURCE_DIR}/core/runtime/paths.c
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
