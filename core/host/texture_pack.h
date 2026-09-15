@@ -8,7 +8,7 @@
  * material keys ({tpage,clut,bpp} + UV box) resolve through the registry to
  * a stable identity that survives per-level VRAM repacking.
  *
- * Game-agnostic: fed by core/runtime/native_vram.c; optional symbolic asset
+ * Game-agnostic: fed by core/renderer/native_vram.c; optional symbolic asset
  * names arrive from the game layer (games/spyro-1/) as (rect -> name)
  * annotations. Renderer-agnostic: this module never touches the RHI — the
  * native renderer's bind path queries it (Phase 4).

@@ -7,8 +7,8 @@
 // from manifest/render_channels.toml, channels m_WasDrawn /
 // no_lod_moby_distance_cull_verdict / particle_drawn_flag / sparkle_alloc_
 // state). The bespoke verdict math lives here, host-side, instead of in the
-// vendored recompiler. Moved out of core/features/widescreen.c (where they
-// had accreted) so each feature is siloed in its own CU. No Spyro addresses
+// vendored recompiler, separate from core/renderer/widescreen.c so each
+// feature is siloed in its own CU. No Spyro addresses
 // here — the address anchoring lives in the recompiler + the manifest.
 //
 // Cross-CU reads (all declared in psx_runtime.h): the canonical-SX side

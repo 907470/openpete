@@ -1,11 +1,9 @@
-// core/runtime/debug_render.cpp — Phase 1e infra-triangle.
+// core/renderer/debug_render.cpp — the `--debug-triangle` infra-triangle.
 //
-// Issues a single hard-coded POLY_F3 through PsyCross every frame so we can
-// verify the BeginScene → DrawOTag → EndScene → SwapWindow → SDL window
-// pipeline end-to-end without depending on real game content (the actual
-// Spyro draw path lives in the title-screen overlay, which is untranslated
-// during Phase 1d). Toggled with `--debug-triangle` so it doesn't pollute
-// the real-game render path once overlay translation lands.
+// Issues a single hard-coded POLY_F3 through PsyCross every frame to verify
+// the BeginScene → DrawOTag → EndScene → SwapWindow → SDL window pipeline
+// end-to-end without depending on game content. Toggled with
+// `--debug-triangle` so it doesn't pollute the real-game render path.
 //
 // Compiled as C++ because PsyCross's libgpu.h uses static_assert on struct
 // sizes; we expose a single C entry point for run.c.
@@ -46,8 +44,7 @@ extern "C" void openpete_debug_triangle_init(void) {
     /* Default draw env covering the standard 512x240 PSX viewport with a
      * teal background (so a black screenshot means "nothing rendered" vs
      * "rendered but clipped"). We `PutDrawEnv` this every frame to override
-     * whatever the game has set, since at Phase 1d Spyro's draw envs come
-     * from the title-screen overlay (untranslated). */
+     * whatever the game has set. */
     std::memset(&s_drawenv, 0, sizeof(s_drawenv));
     SetDefDrawEnv(&s_drawenv, 0, 0, 512, 240);
     s_drawenv.isbg = 1;

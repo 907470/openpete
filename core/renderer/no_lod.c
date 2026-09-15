@@ -1,16 +1,12 @@
-// core/features/no_lod.c — see features/no_lod.h.
+// core/renderer/no_lod.c — see no_lod.h.
 //
-// 2026-07-06: the game-side PRODUCER stack (openpete_no_lod_producers —
-// relocated/grown env+moby queues, distance/tier/zsf4 saturation hooks,
-// LP-face knob, polybuf grow) was DELETED with the PsyCross-mode
-// enhancement stacks (Phase 6, openpete-native-renderer.md). --no-lod is
-// a native-renderer display policy: the native feeders derive full
-// detail from gamestate (moby far-record builder + zsf4/tier
-// neutralization, terrain HQ classifier, portal always-dome, fog
-// default). In PsyCross reference mode the flag warns and is ignored —
-// the reference renders canonical PSX detail.
+// --no-lod is a native-renderer display policy with no game-side producer:
+// the native feeders derive full detail from gamestate (moby far-record
+// builder + zsf4/tier neutralization, terrain HQ classifier, portal
+// always-dome, fog default). In PsyCross reference mode the flag warns and
+// is ignored — the reference renders canonical PSX detail.
 
-#include "features/no_lod.h"
+#include "no_lod.h"
 
 #include "openpete_log.h"
 

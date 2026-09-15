@@ -62,9 +62,9 @@ GUARDED = (
     "games/spyro-1/features/*_native.c",
     "games/spyro-1/features/freecam.c",
     "games/common/freecam_game.c",
-    "core/runtime/native_render.c",
-    "core/runtime/openpete_interp.c",
-    "core/runtime/openpete_interp_objs.c",
+    "core/renderer/native_render.c",
+    "core/renderer/openpete_interp.c",
+    "core/renderer/openpete_interp_objs.c",
     "core/mods/mod_draw.c",
 )
 

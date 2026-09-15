@@ -57,7 +57,7 @@ RHI_ALLOW = {
     "core/rhi/rhi.h",              # declarations
     "core/rhi/rhi_vulkan.c",       # the implementation
     "core/rhi/smoketest.c",        # single-threaded bring-up harness
-    "core/runtime/native_render.c",  # the display owner's body
+    "core/renderer/native_render.c",  # the display owner's body
     "core/runtime/present_thread.c", # the display owner while eager is active
     "core/include/openpete_native_render.h",  # wrapper declarations
 }
@@ -65,13 +65,13 @@ RHI_ALLOW = {
 FS_TOGGLE = re.compile(r"\bopenpete_native_toggle_fullscreen\s*\(")
 FS_ALLOW = {
     "core/runtime/run.c",            # host loop: routes to the window thread
-    "core/runtime/native_render.c",  # the implementation itself
+    "core/renderer/native_render.c",  # the implementation itself
     "core/include/openpete_native_render.h",
 }
 
 WINDOW_OP = re.compile(r"\bSDL_SetWindow(Fullscreen|Size)\s*\(")
 WINDOW_ALLOW = {
-    "core/runtime/native_render.c",
+    "core/renderer/native_render.c",
     "core/runtime/run.c",
 }
 

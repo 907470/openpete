@@ -60,7 +60,7 @@ const openpete_recomp_module* openpete_recomp_module_get(void) {
 uint32_t g_ps1_frame = 0;
 
 /* The canonical-SX FIFO (openpete_canonical_sx{0,1,2}_q16) is defined in
- * core/features/widescreen.c; the recompiler-generated C reaches it via
+ * core/renderer/widescreen.c; the recompiler-generated C reaches it via
  * the psx_runtime.h externs. */
 
 /* Phase 1d: when the recompiled main EXE calls into an overlay we haven't

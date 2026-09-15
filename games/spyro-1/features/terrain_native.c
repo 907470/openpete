@@ -35,7 +35,7 @@
 #include "openpete_interp.h"         /* openpete_interp_present_now (scroll-anim alpha) */
 #include "openpete_interp_objs.h"    /* per-descriptor scroll snapshots */
 #include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
-#include "features/no_lod.h"  /* openpete_no_lod + openpete_fog_scale (--fog-scale) */
+#include "no_lod.h"  /* openpete_no_lod + openpete_fog_scale (--fog-scale) */
 #include "features/levelwarp_native.h" /* level-id -> verdicts-file spelling (fill-tag pick) */
 #include "openpete_fillpick.h"       /* LP fill-tag inspector (P): session verdicts + pick */
 #include "rhi.h"                     /* rhi_terrain_vertex (the chunk packer) */

@@ -655,12 +655,8 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
         return 1;
     }
 
-    /* Feature modules registered via core/include/feature_registry.h.
-     * Phase 1 of notes/plans/openpete-feature-modules.md: registry
-     * exists but no features are migrated yet, so this is a no-op
-     * (openpete_feature_count == 0). Phase 2 moves the widescreen
-     * dispatch arms below into core/features/widescreen.c and they
-     * start firing through here instead. */
+    /* Feature modules registered via core/include/feature_registry.h;
+     * a game with none (openpete_feature_count == 0) makes this a no-op. */
     if (feature_registry_dispatch(cpu, addr)) {
         return 1;
     }
@@ -691,8 +687,7 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
     /* Widescreen dispatch arms (0x8001ED5C render bracket, 0x8007CD38
      * titlescreen sprite, 0x800258F0 env renderer, 0x8004EBA8 cyclorama,
      * 0x80022A2C text-moby range) moved to
-     * games/spyro-1/features/widescreen.c — handled by the registry call
-     * above. See Phase 2.1b in notes/plans/openpete-feature-modules.md. */
+     * core/renderer/widescreen.c — handled by the registry call above. */
     /* Diagnostic: trace bucket-2 (gems) cull. Walks D_8006FCF4+0x2400 list,
      * computes per-moby cube + MVMVA cone test the same way the inline
      * func_80022A2C cull does, prints which gems pass / fail. Used only

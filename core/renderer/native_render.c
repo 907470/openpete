@@ -1,21 +1,15 @@
-/* core/runtime/native_render.c — native Vulkan renderer A/B harness.
+/* core/renderer/native_render.c — the native Vulkan renderer: window, scene
+ * ring, pipelines, the display path and the reference/diff panels.
  *
- * Phase 1c of notes/plans/openpete-native-renderer.md. See
- * openpete_native_render.h for the contract + the two-window rationale.
- *
- * 1c.1: RHI in the runtime, Vulkan window alongside PsyCross.
- * 1c.2: PsyCross hidden; its frame read back + shown in the single window.
- * 1c.3a: mirror PsyCross's VRAM into a native R16_UINT texture each present
- *   (proving real game VRAM reaches the native GPU path).
- * 1c.3b (this step): panel 0 renders the PSX DISPLAY REGION cropped to the
- *   visible viewport. The DISPENV disp rect (512x240, from PutDispEnv) and the
- *   DRAWENV clip rect (512x224, from PutDrawEnv) are captured; the panel
- *   samples the full disp width but only clip.h rows, dropping the symmetric
- *   8px overscan bands, and is fitted at the
- *   reference aspect so it lines up with the reference panel. The front-buffer
- *   origin follows the per-frame double-buffer flip via the material tpage.
- *   Layout: [native-display | reference]. 1c.3b-ii adds the diff panel +
- *   validates against the logo screen.
+ * See openpete_native_render.h for the contract. The window hosts the RHI
+ * with PsyCross's VRAM mirrored into a native R16_UINT texture each present;
+ * panel 0 renders the PSX display region cropped to the visible viewport.
+ * The DISPENV disp rect (512x240, from PutDispEnv) and the DRAWENV clip rect
+ * (512x224, from PutDrawEnv) are captured; the panel samples the full disp
+ * width but only clip.h rows, dropping the symmetric 8px overscan bands, and
+ * is fitted at the reference aspect so it lines up with the reference panel.
+ * The front-buffer origin follows the per-frame double-buffer flip via the
+ * material tpage. Layout: [native-display | reference].
  *
  * Determinism: nothing here touches PSX RAM or the `.s` verdict producers.
  */
@@ -62,7 +56,7 @@ extern int  GR_ReadPresentSceneRGBA(unsigned char *pixels, int w, int h,
                                     unsigned int gl_format);
 #include "openpete_native_vram.h"   /* W2.4: the owned VRAM model + native ops */
 #include "openpete_terrain_cache.h" /* terrain sector-mesh GPU cache (retained terrain) */
-#include "texture_pack.h"           /* texture-replacement registry (Phase 1+) */
+#include "texture_pack.h"           /* texture-replacement registry */
 extern void PsyX_SetVRAMDirtyCallback(void (*cb)(int x, int y, int w, int h));
 static void nr_vram_dirty_cb(int x, int y, int w, int h);   /* W2.4, defined below */
 extern void GR_ReadVRAM(unsigned short *dst, int x, int y, int dst_w, int dst_h);
@@ -177,10 +171,10 @@ typedef struct {
     float   fog_a[4], fog_b[4];
 } psx_material_hd;
 
-/* How many panels the window shows (1c.3a: VRAM + reference). */
+/* How many panels the window shows (VRAM + reference). */
 #define NR_PANELS 2
 
-/* Native 3D scene (Phase 2): screen-space triangles the game pushes in
+/* Native 3D scene: screen-space triangles the game pushes in
  * (cyclorama/sky from gamestate). Double-buffered isn't needed — the game
  * fills it during its render pass (before openpete_native_render_frame reads
  * it). begin() clears; add_tri() appends. */
@@ -1448,7 +1442,7 @@ static struct {
     rhi_texture  *vram_tex;
     uint16_t     *vram_mirror;  /* NR_VRAM_W*NR_VRAM_H */
 
-    /* Native 3D render (Phase 2): gouraud triangles (quad.vert/quad.frag) for
+    /* Native 3D render: gouraud triangles (quad.vert/quad.frag) for
      * the cyclorama/sky scene the game pushes in. Replaces the VRAM re-display
      * in panel 0 when a scene is present. */
     rhi_pipeline *gouraud_pipe;
@@ -2192,7 +2186,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = false,
         .uses_vram = true, .push_const_size = sizeof(psx_material),
     };
-    /* HD texture-replacement PoC (openpete-texture-replacement Phase 4 spike):
+    /* HD texture-replacement pipe:
      * samples a host RGBA8 replacement (hd_tex.frag) with real per-texel alpha
      * instead of the PSX VRAM decode. Depth OFF (the PoC target is a HUD-layer
      * 2D quad); push constants carry the replaced texel box. */
@@ -2246,7 +2240,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .color_write_off = true,
         .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(hd_pc),
     };
-    /* HD twins of the transparent scene pipes (Phase 5): alpha (ABR 0) and
+    /* HD twins of the transparent scene pipes: alpha (ABR 0) and
      * additive (ABR 1) — depth-tested, no depth write, mirroring their SD
      * counterparts. STP encoding: dumps bake STP texels at alpha 128, so
      * src-over on the alpha pipe reproduces (B+F)/2 while non-STP texels
@@ -3459,8 +3453,7 @@ static void native_depth_prepass(void)
      * this the recorded affine spanned only the 4:3 [0,512] rect and the
      * occl-query offscreen reject culled edge mobys that ARE visible — on
      * sub-tick presents only (canonical never occl-culls) = the widescreen
-     * edge flicker (user report 2026-07-03, probe-confirmed sx∈[-316,0]
-     * rejects at F=2.67). Also gives the shadow decal terrain depth at the
+     * edge flicker (probe-confirmed sx∈[-316,0] rejects at F=2.67). Also gives the shadow decal terrain depth at the
      * revealed edges (it samples through the same recorded affine). */
     int prev_fe = s_render_full_extent;
     float prev_wf = s_render_freeze_wf;
@@ -4519,7 +4512,7 @@ static void tex_mat_sort(const scene_tri_t* scene, int* idx, int n)
     memcpy(idx, s_txmat_out, (size_t)n * sizeof(int));
     for (int j = 0; j < m; j++) s_txmat_b[slots[j]].used = 0;
 }
-/* ---- HD texture replacement (openpete-texture-replacement Phases 3+4) -----
+/* ---- HD texture replacement ---------------------------------------------
  * Identity comes from the upload-time registry (texture_pack_resolve, per
  * TRI — run-union boxes vary with per-frame clipping); the pack match is
  * containment-based (texture_pack_match), so one tile-sized file covers LP
@@ -4527,7 +4520,7 @@ static void tex_mat_sort(const scene_tri_t* scene, int* idx, int n)
  * (The original hardcoded title-logo PoC path is retired — the generic path
  * replaced it 1:1.) */
 
-/* ---- HD replacement GPU-texture cache (Phase 4) ---------------------------
+/* ---- HD replacement GPU-texture cache ------------------------------------
  * identity hashkey -> uploaded rhi texture (linear-filtered). Slot collision
  * keeps the incumbent and falls back to SD for the newcomer (destroying an
  * in-flight texture is not frame-safe; with 512 slots and pack sizes in the
@@ -5605,8 +5598,8 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
             i += run;
             continue;
         }
-        /* Registry query — Phase-1 validation (RESOLVE_LOG), Phase-2 dump
-         * (DUMP_DIR), Phase-4 replacement. Identity is PER TRI (a run-union
+        /* Registry query — validation (RESOLVE_LOG), dump (DUMP_DIR),
+         * replacement. Identity is PER TRI (a run-union
          * box varies with per-frame clipping and tile composition); adjacent
          * tris matching the same pack file coalesce into HD sub-runs, the
          * rest draw SD in material-coalesced groups as before. */
@@ -7526,7 +7519,7 @@ int  openpete_native_fps_value(void) { return s_fps_value; }
 
 /* Live presentation setters (in-game settings menu). Display-only: they touch
  * only s_nr (renderer state), consumed by the next native present; never
- * gameplay RAM. See notes/plans/openpete-ingame-settings-menu.md. */
+ * gameplay RAM. */
 static float  s_fov_deg;          /* 0 = default */
 static double s_fov_tan_pending;  /* tan(fov/2), 0 at the default; set live */
 static double s_fov_tan;          /* latched at scene begin */
@@ -10328,7 +10321,7 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
          * faces (hd_pending_add). Live presents absorb that as one SD frame,
          * but in a headless run the only frames ARE these dumps — a single
          * screenshot bakes the gap into the PNG (mod-textured faces
-         * invisible; cost a "chests don't render" ghost hunt, 2026-07-11).
+         * invisible).
          * Flush-and-redraw until nothing new is queued: a full HD pack can
          * put hundreds of files in view at once, so one retry isn't enough. */
         if (attempt >= 8 || (s_hd_pending_n == 0 &&

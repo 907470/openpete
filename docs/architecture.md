@@ -80,7 +80,7 @@ per-game feeders in `games/spyro-1/features/spyro_native.c`. It reads
 gameplay state, asset data, and the VRAM mirror; it never writes PSX-readable
 RAM. Presentation features that do reach the recompiled path — Hor+
 widescreen, extended LOD — are `feature_module_t` entries registered per game
-(`core/features/`, `games/spyro-1/feature_list.c`) and are presumed to leak
+(`core/renderer/no_lod.c`, `games/spyro-1/feature_list.c`) and are presumed to leak
 into gameplay state until the oracle clears them.
 
 ## Per-game boundary

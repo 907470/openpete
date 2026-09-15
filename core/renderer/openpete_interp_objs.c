@@ -1,4 +1,4 @@
-/* core/runtime/openpete_interp_objs.c — per-object prev-state snapshot table.
+/* core/renderer/openpete_interp_objs.c — per-object prev-state snapshot table.
  *
  * See openpete_interp_objs.h for the contract. Open-addressing hash table
  * (linear probe) keyed by object identity. Despawn eviction is done by

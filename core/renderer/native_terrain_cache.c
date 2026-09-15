@@ -1,6 +1,5 @@
-/* native_terrain_cache.c — terrain sector-mesh GPU cache, core side.
- * See openpete_terrain_cache.h for the contract and
- * notes/plans/openpete-terrain-gpu-cache.md for the design. */
+/* core/renderer/native_terrain_cache.c — terrain sector-mesh GPU cache,
+ * core side. See openpete_terrain_cache.h for the contract. */
 
 #include "rhi.h"
 #include "openpete_terrain_cache.h"

@@ -12,7 +12,7 @@ void openpete_ui_moby_set_static_range(uint32_t lo, uint32_t hi) {
 
 /* HUD/UI moby classifier, address-range form. The per-current-moby form
  * (set_current/is_current_ui) and the per-frame TEXT range died with the
- * PsyCross --aspect stack + the render cache (2026-07-06) — the text
+ * PsyCross --aspect stack + the render cache — the text
  * range was only ever populated in PsyCross aspect mode, so on the
  * native path this has always been the static g_Hud.m_Mobys range. */
 int openpete_ui_moby_is_addr_ui(uint32_t a) {

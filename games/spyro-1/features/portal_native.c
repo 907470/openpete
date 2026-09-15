@@ -1988,7 +1988,7 @@ static void derive_dome_matrix(CPUState* cpu, int M[3][3]) {
         M[i][j] = (int)lround(R[i][j] * 4096.0);
 }
 
-#include "features/no_lod.h"   /* openpete_no_lod: --no-lod always renders the geometric dome */
+#include "no_lod.h"   /* openpete_no_lod: --no-lod always renders the geometric dome */
 
 /* --no-lod always-dome enabled? (kill switch OPENPETE_NOLOD_PORTAL_DOME=0) */
 static int nolod_portal_dome_on(void) {

@@ -46,7 +46,7 @@
 #include "openpete_mods.h"
 #include "openpete_vstream.h"
 #include "../host/sfx_pack.h"
-#include "features/no_lod.h"
+#include "no_lod.h"
 #include "openpete_state.h"
 #include "openpete_fnv1a64.h"
 #include "openpete_psxtrace.h"
@@ -824,7 +824,7 @@ extern void PsyX_UpdateInput(void);
  * speculative tick so the replayed audio is emitted once, not twice. */
 extern int PsyX_SPUAL_SetMute(int on_off);
 
-/* Phase 1e infra-triangle (core/runtime/debug_render.cpp). */
+/* The --debug-triangle infra-triangle (core/renderer/debug_render.cpp). */
 extern void openpete_debug_triangle_init(void);
 extern void openpete_debug_triangle_emit(void);
 extern void openpete_psyx_take_screenshot(const char* path);  /* BMP via SDL_SaveBMP */
@@ -1971,12 +1971,8 @@ static int run_host_init(const openpete_options_t* opts) {
                    opts->seed_ram_path, ram_size);
     }
 
-    /* Feature modules apply their CLI-derived knobs. Phase 1 of
-     * notes/plans/openpete-feature-modules.md: registry exists but
-     * no features are migrated yet (openpete_feature_count == 0), so
-     * this is a no-op. Phase 2 moves the widescreen --aspect block
-     * below into core/features/widescreen.c where it gets called via
-     * this single line. */
+    /* Feature modules apply their CLI-derived knobs; a game with no
+     * feature modules (openpete_feature_count == 0) makes this a no-op. */
     feature_registry_apply_options(opts);
 
     /* Modding framework: discover/build/load mods (P1 vertical slice,
@@ -2014,7 +2010,7 @@ static int run_host_init(const openpete_options_t* opts) {
     /* --fov and --aspect are native-renderer display policies: every
      * renderer mode runs the game's verdict producers pure canonical 4:3,
      * the native feeders project through the effective H and widen Hor+
-     * from the window aspect (core/runtime/native_render.c). PsyCross
+     * from the window aspect (core/renderer/native_render.c). PsyCross
      * reference mode has neither. */
     if (opts->renderer == OPENPETE_RENDERER_PSYCROSS) {
         if (opts->fov_deg > 0.0f)

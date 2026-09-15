@@ -142,8 +142,8 @@ int game_resolve_cutscene_arg(const char* arg);
  * the per-game feature module from opts->cheats. */
 int game_validate_cheats_arg(const char* spec);
 
-/* --no-lod setup is now a feature module — see
- * core/features/no_lod.h + games/<game>/features/no_lod.c. */
+/* --no-lod setup is a feature module — see core/include/no_lod.h and
+ * core/renderer/no_lod.c. */
 
 /* --- Disc layout (each game's WAD/asset structure differs) --- */
 typedef struct {

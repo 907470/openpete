@@ -1,9 +1,7 @@
-// core/features/no_lod.h — `--no-lod` feature module.
+// core/include/no_lod.h — `--no-lod` feature module.
 //
-// See notes/plans/openpete-disable-lods.md for the design + history.
-// 2026-07-06: the game-side producer stack was deleted (Phase 6 of
-// openpete-native-renderer.md); --no-lod is a native-renderer display
-// policy owned by the native feeders.
+// --no-lod is a native-renderer display policy owned by the native feeders;
+// there is no game-side producer.
 //
 // `openpete_no_lod` is also re-declared in
 // third_party/psxrecomp/runner/include/psx_runtime.h so recompiler-
@@ -22,7 +20,7 @@ extern "C" {
  * from --no-lod, native renderer modes only. The native feeders read it
  * as a DISPLAY policy (moby zsf4/tier neutralization + far-record
  * builder in moby_native.c, terrain HQ classifier, portal always-dome,
- * fog default). See notes/plans/openpete-disable-lods.md. */
+ * fog default). */
 extern int openpete_no_lod;
 
 /* --fog-scale: terrain fog-distance multiplier, resolved at boot in

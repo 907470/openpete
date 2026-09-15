@@ -4,7 +4,7 @@
  * must re-pass the OPENPETE_VRAM_VERIFY memcmp census against PsyCross. */
 
 #include "openpete_native_vram.h"
-#include "texture_pack.h"   /* Phase-1 registry: fed from this op seam */
+#include "texture_pack.h"   /* texture-replacement registry: fed from this op seam */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -48,11 +48,11 @@ int openpete_vram_drain_op_rects(openpete_vram_op_rect* out, int max, int* overf
     return n;
 }
 
-/* ---- Phase-0 texture-pack census (openpete-texture-replacement plan) -----
+/* ---- Texture-pack census ---------------------------------------------------
  * OPENPETE_TEXPACK_CENSUS=1: log every op with rect + (loads) a cheap 64-bit
  * content hash, one line per op, for the upload-granularity analysis (TIM vs
  * atlas packing, CLUT placement, per-level repack, hash stability across
- * runs). FNV-1a here is census-only; the Phase-1 registry uses XXH3. */
+ * runs). FNV-1a here is census-only; the registry uses XXH3. */
 extern unsigned openpete_frame;
 static int tp_census_on(void) {
     static int s = -1;

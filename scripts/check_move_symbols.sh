@@ -43,6 +43,14 @@ MODULE_DIR=$BUILD_DIR/games/$GAME/CMakeFiles/${TAG}_recomp_module.dir
 
 usage() { sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
+# A symbol whose name embeds __LINE__ (the OP_PROF_* per-site cache,
+# `op_prof_aid_<line>`) renames on every comment edit above it; the line is
+# dropped so only the site count is compared. The GCC local-symbol suffix
+# (`.<n>`) is dropped with it.
+normalize() {
+    sed -E 's/ op_prof_aid_[0-9]+(\.[0-9]+)?$/ op_prof_aid_/'
+}
+
 symbols() {
     for f in "$CORE_LIB" "$EXE"; do
         [ -e "$f" ] || { echo "check_move_symbols: missing $f (build first)" >&2; exit 1; }
@@ -54,7 +62,7 @@ symbols() {
             find "$MODULE_DIR" -name '*.o' -print0 | sort -z | xargs -0 nm --defined-only \
                 | awk 'NF==3 {print "module " $3}'
         fi
-    } | LC_ALL=C sort
+    } | normalize | LC_ALL=C sort
 }
 
 # apply_renames FILE: stdin is a symbol list; each `old new` pair rewrites

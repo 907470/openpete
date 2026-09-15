@@ -131,7 +131,7 @@ void openpete_yield_to_host(void);
  * still drive frame_limit/max-runtime exits. Phase 2 retires this. */
 void openpete_yield_to_host_no_tick(void);
 
-/* openpete_no_lod has moved to core/features/no_lod.h (declared there
+/* openpete_no_lod is declared in core/include/no_lod.h (there
  * and in third_party/psxrecomp/runner/include/psx_runtime.h for the
  * recompiler-generated C). */
 

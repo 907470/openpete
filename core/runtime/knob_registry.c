@@ -26,7 +26,7 @@
 #include "openpete_freecam.h"
 #include "openpete_record.h"
 #include "openpete_rewind.h"
-#include "features/no_lod.h"
+#include "no_lod.h"
 
 #include <math.h>
 #include <stdio.h>

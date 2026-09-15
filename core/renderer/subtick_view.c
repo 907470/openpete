@@ -1,4 +1,4 @@
-/* core/runtime/subtick_view.c — see openpete_subtick_view.h.
+/* core/renderer/subtick_view.c — see openpete_subtick_view.h.
  *
  * Lookup is on the hot path: every guest read a feeder makes during an
  * intermediate present goes through it, and the per-object pools stage on the

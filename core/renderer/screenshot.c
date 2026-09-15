@@ -1,8 +1,4 @@
-// core/runtime/screenshot.c — read SDL renderer pixels and save as PNG.
-//
-// Phase 0b uses SDL_RenderReadPixels (no GL). Phase 1b will switch to
-// glReadPixels once PsyCross owns the GL context, at which point this
-// function will gain a parallel GL path.
+// core/renderer/screenshot.c — read renderer pixels and save as PNG.
 
 #include "screenshot.h"
 #include "openpete_log.h"

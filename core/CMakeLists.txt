@@ -45,8 +45,8 @@ add_library(openpete_core STATIC
     # the registration / per-tick sample / per-pump apply seam.
     runtime/rumble_curve.c
     runtime/host_rumble.c
-    runtime/subtick_view.c
-    runtime/screenshot.c
+    renderer/subtick_view.c
+    renderer/screenshot.c
     runtime/run.c
     runtime/psxtrace_verify.c
     runtime/psxtrace_schedule.c
@@ -87,7 +87,7 @@ add_library(openpete_core STATIC
     runtime/dispatch.c
     runtime/psx_bios.c
     runtime/cdrom_mmio.c
-    runtime/openpete_ui_moby.c
+    renderer/openpete_ui_moby.c
     runtime/openpete_menu.c
 
     # Shared placement ledger for on-screen chrome (perf stats, OSD toasts):
@@ -109,7 +109,7 @@ add_library(openpete_core STATIC
 
     runtime/camlock.c
     runtime/freecam.c
-    runtime/fillpick.c
+    renderer/fillpick.c
     runtime/feature_registry.c
 
     # Modding framework P1: per-address override chains riding the
@@ -148,7 +148,7 @@ add_library(openpete_core STATIC
     # Empirical CPU+GPU performance trace (per present / canonical tick).
     # Off by default; enabled by --profile-out PATH. See openpete_profile.h.
     runtime/profile.c
-    runtime/native_terrain_cache.c
+    renderer/native_terrain_cache.c
 
     # Per-function tracing hooks (Tier B). Always compiled; the __cyg_profile
     # hooks fire only when a TU is built with -finstrument-functions
@@ -161,13 +161,13 @@ add_library(openpete_core STATIC
     # regions supplied by games/<game>/). Capture-only in v1; lerp +
     # re-emission lands in fps-unlock Phase 2a. See
     # notes/plans/openpete-fps-unlock.md.
-    runtime/openpete_interp.c
+    renderer/openpete_interp.c
 
     # Per-object prev-state snapshot table (the INDIRECT counterpart to the
     # singleton interp ring above). Keyed by object identity (game-supplied
     # walk); double-buffered for sub-tick lerp/re-feed. Step 1 of the
     # native-renderer high-FPS plan. See notes/plans/openpete-native-renderer.md.
-    runtime/openpete_interp_objs.c
+    renderer/openpete_interp_objs.c
 
     # World-space render cache. Populated per-vertex by psxrecomp's
     # gte_rtps_internal; consumed by PsyCross's OT walker (PsyX_GPU.cpp
@@ -187,8 +187,8 @@ add_library(openpete_core STATIC
 
     # Native Vulkan renderer. Host-side display consumer built on core/rhi;
     # never writes PSX RAM.
-    runtime/native_render.c
-    runtime/native_vram.c
+    renderer/native_render.c
+    renderer/native_vram.c
 
     # Sub-tick spine identity audit (OPENPETE_IDENT_AUDIT). Composes the
     # canonical scene and the alpha-1 re-extract of the same tick each
@@ -197,8 +197,8 @@ add_library(openpete_core STATIC
     runtime/ident_audit.c
 
     # Per-feature modules. See notes/plans/openpete-feature-modules.md.
-    features/no_lod.c
-    features/widescreen.c
+    renderer/no_lod.c
+    renderer/widescreen.c
 
     # Music WAV override: play user PCM WAVs from assets/music/ in place
     # of XA music. See notes/plans/openpete-music-wav-override.md.
@@ -237,7 +237,7 @@ add_library(openpete_core STATIC
     # Phase 1e infra-triangle: hardcoded POLY_F3 emit to validate the full
     # PsyCross render pipeline without depending on overlay-resident Spyro
     # code. C++ TU because PsyCross's libgpu.h uses static_assert.
-    runtime/debug_render.cpp
+    renderer/debug_render.cpp
 
     # Top-left FPS overlay drawn via direct OpenGL during PsyCross's
     # post-render hook (g_psyx_postRenderOverlay). C++ TU for the GL
@@ -343,7 +343,7 @@ target_compile_definitions(openpete_core
 
 # Native renderer foundation: the thin RHI + Vulkan backend (core/rhi).
 # Always available (added unconditionally by the top-level CMakeLists);
-# runtime/native_render.c is the only consumer for now. PUBLIC so the RHI's
+# renderer/native_render.c is the only consumer for now. PUBLIC so the RHI's
 # headers (and its embedded SPIR-V) reach any downstream renderer TUs.
 target_link_libraries(openpete_core PUBLIC openpete_rhi)
 

@@ -18,7 +18,7 @@
 #include "openpete_osd.h"           /* announce every change the player makes */
 #include "openpete_freecam.h"        /* freecam active/toggle (FREECAM row) */
 #include "openpete_mods.h"           /* loaded-mod enumeration (MOD rows) */
-#include "features/no_lod.h"         /* openpete_no_lod_set */
+#include "no_lod.h"         /* openpete_no_lod_set */
 #include "openpete_host_input.h"     /* the published mouse snapshot */
 #include "openpete_host_mouse.h"     /* totals, ownership, probe */
 

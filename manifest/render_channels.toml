@@ -73,7 +73,7 @@ substitution_sites = [
     { addr = 0x80022D98, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_mwasdrawn_store" },  # shaded
     # cone-test verdict-compute sites — GENERATED (replace_call): the hook
     # records native_cone_pass and returns the widened cull comparand. The
-    # cone slope math now lives in core/features/widescreen.c.
+    # cone slope math lives in core/renderer/widescreen.c.
     { addr = 0x8001F30C, dest = "rd", operand = "rs,rt,v1,a3", kind = "replace_call", hook = "psx_runtime_cone_widen_permoby" },  # regular
     { addr = 0x80020AB8, dest = "rd", operand = "rs,rt,v1,a3", kind = "replace_call", hook = "psx_runtime_cone_widen_permoby" },  # specular
     { addr = 0x80022C0C, dest = "rt", operand = "rs,gte27",    kind = "replace_call", hook = "psx_runtime_cone_widen_shaded"  },  # shaded
@@ -433,7 +433,7 @@ substitution_sites = [
     { addr = 0x80058028, dest = "", operand = "cpu,ea,rt", kind = "replace_call", hook = "psx_runtime_part_drawn_store" },
     # native_part_pass SETTERS — GENERATED (replace_call): record the canonical
     # 0<SX<512 verdict from the canonical-SX side channel, return the original
-    # sub/sll value. Math now in core/features/widescreen.c. sx1 = classes that
+    # sub/sll value. Math in core/renderer/widescreen.c. sx1 = classes that
     # mfc2 between two RTPSes (A04/F28); sx2 = single-RTPS classes.
     { addr = 0x80057A04, dest = "rd", operand = "rs,rt", kind = "replace_call", hook = "psx_runtime_part_cull_sx1" },  # class 4
     { addr = 0x80057F28, dest = "rd", operand = "rs,rt", kind = "replace_call", hook = "psx_runtime_part_cull_sx1" },  # class 1
@@ -762,7 +762,7 @@ family, and a future producer perturbation would be caught by them.
 """
 # GENERATED sites (kind=append_call): the recompiler emits the verbatim
 # add/sub then appends a CALL to the named hook passing the dest register
-# (operand="rd"). The verdict math lives in core/features/widescreen.c, not
+# (operand="rd"). The verdict math lives in core/renderer/widescreen.c, not
 # the recompiler. See gen_channel_sites.py / --channel-sites.
 substitution_sites = [
     # box-cull lower-bound (add; cull if rd - delta <= 0) -> _lower hook
