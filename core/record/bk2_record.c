@@ -1,4 +1,4 @@
-/* core/runtime/bk2_record.c — see bk2_record.h.
+/* core/record/bk2_record.c — see bk2_record.h.
  *
  * Output schema mirrors what BizHawk Octoshock 2.9.1 writes (the same
  * dialect bk2_movie.c parses). One Input Log frame per call to
@@ -52,9 +52,8 @@ static struct {
 /* A savestate load replaces guest state mid-recording. Frames appended
  * after the jump would splice two timelines into one non-replayable movie
  * (the replay can't reproduce the load), so finalize NOW: the .bk2 on disk
- * stays valid up to the load point, and appends after this no-op. Proper
- * truncate-to-loaded-frame support arrives with the input_log lift-out
- * (savestate plan P1). */
+ * stays valid up to the load point, and appends after this no-op. There
+ * is no truncate-to-loaded-frame support. */
 static void bk2_record_on_guest_discontinuity(void) {
     if (!s_rec.active) return;
     OPL_ERROR_F("bk2-record",

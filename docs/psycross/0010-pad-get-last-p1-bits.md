@@ -1,7 +1,7 @@
 # 0010 — Pad GetLastP1Bits accessor
 
 Adds `PsyX_Pad_GetLastP1Bits()` so the host can sample the merged P1 pad
-bitfield each frame. Used by `--bk2-record` (`core/runtime/bk2_record.c`)
+bitfield each frame. Used by `--bk2-record` (`core/record/bk2_record.c`)
 to write a BizHawk-format movie of whatever the player did, including
 SDL keyboard, gamepad, and any `--bk2` replay override — all already
 folded together by `PsyX_Pad_InternalPadUpdates` into `pad->buttons`.

@@ -2,7 +2,7 @@
  * inline Octoshock-style Input Log. Avoids a real .bk2 in CI by skipping
  * the zip layer (bk2_movie_load just unwraps a zip into the same blob). */
 
-#include "../../core/runtime/bk2_movie.h"
+#include "bk2_movie.h"
 
 #include <stdio.h>
 #include <stdlib.h>

@@ -18,7 +18,7 @@ Companion: scripts/pcsx-redux-bk2-replay.lua loads this stream and drives
 PCSX-Redux's pad-override API so
 the openpete <-> PCSX-Redux oracle can run from the same input source.
 
-The decode logic mirrors core/runtime/bk2_movie.c — keep them in sync if
+The decode logic mirrors core/record/bk2_movie.c — keep them in sync if
 the bk2 dialect changes.
 """
 
@@ -31,7 +31,7 @@ import zipfile
 from typing import List
 
 # bk2 P1 digital order → PSX pad bit *index* (not mask). Same table as in
-# core/runtime/bk2_movie.c, just keyed by index instead of OR-mask.
+# core/record/bk2_movie.c, just keyed by index instead of OR-mask.
 BK2_P1_DIGITAL_BIT = [
     4,   # 0  Up
     6,   # 1  Down

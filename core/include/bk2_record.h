@@ -1,15 +1,15 @@
-/* core/runtime/bk2_record.h — record live pad input into a BizHawk
+/* core/include/bk2_record.h — record live pad input into a BizHawk
  * (.bk2) movie zip. Sister of bk2_movie.{c,h} (replay).
  *
  * The per-VBL input buffer lives in openpete_input_log (always-on, fed by
  * the host loop); this module marks the window [begin, finalize) and
  * serializes those entries as "Input Log.txt" packed into a .bk2 zip
  * alongside a stub "Header.txt" so the file round-trips through BizHawk
- * and through our own bk2_movie_load. (Savestate plan P1 lift-out: the
- * log is shared with the rewind/runahead drivers.)
+ * and through our own bk2_movie_load. The log is shared with the
+ * rewind/runahead drivers.
  *
  * P1 digital buttons and the 4 analog axes are recorded, plus the analog-
- * mode flag (MODE column) — see openpete-bk2-input.md.
+ * mode flag (MODE column).
  */
 #ifndef OPENPETE_BK2_RECORD_H
 #define OPENPETE_BK2_RECORD_H

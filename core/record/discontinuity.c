@@ -1,4 +1,4 @@
-/* core/runtime/discontinuity.c — guest-state discontinuity broadcast.
+/* core/record/discontinuity.c — guest-state discontinuity broadcast.
  * See openpete_discontinuity.h for the contract. */
 
 #include "openpete_discontinuity.h"

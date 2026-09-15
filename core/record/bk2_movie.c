@@ -1,4 +1,4 @@
-/* core/runtime/bk2_movie.c — see bk2_movie.h.
+/* core/record/bk2_movie.c — see bk2_movie.h.
  *
  * Format reference (Octoshock 2.9.1):
  *

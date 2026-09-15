@@ -1,4 +1,4 @@
-/* core/runtime/rewind.c — see openpete_rewind.h. */
+/* core/record/rewind.c — see openpete_rewind.h. */
 
 #include "openpete_rewind.h"
 #include "openpete_discontinuity.h"

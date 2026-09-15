@@ -1,4 +1,4 @@
-// core/runtime/savestate.c — save/load of openpete game state to slot files.
+// core/record/savestate.c — save/load of openpete game state to slot files.
 //
 // v3 file layout (little-endian throughout, no padding inside the header
 // thanks to fixed-size fields):
@@ -13,13 +13,13 @@
 //   uint32_t  vram_bytes    (1 MiB — VRAM_WIDTH * VRAM_HEIGHT * 2)
 //   uint32_t  vbl           — openpete_vbl (guest-visible VSync counter);
 //                             restored so post-load wait loops don't see a
-//                             wild delta (P0 finding: one-VBL timeline skew)
+//                             wild delta (a one-VBL timeline skew)
 //   uint32_t  spu_state_bytes  — PsyX SPU voice mirror + cursors
-//   uint32_t  spu_mem_bytes    — SPU sample RAM (wrong-bank fix, P2a)
+//   uint32_t  spu_mem_bytes    — SPU sample RAM
 //   uint32_t  cd_state_bytes   — PsyCross CD head-position globals
 //   uint32_t  game_extra_bytes — opaque per-game host blob (game_extras)
 //   uint32_t  modset_tag_bytes — enabled-modset tag string (no NUL)
-//   uint32_t  arena_bytes      — low-park arena ledger (P2b)
+//   uint32_t  arena_bytes      — low-park arena ledger
 //   uint32_t  reserved[3]   = 0 (DRAWENV/DISPENV later)
 //   uint8_t   cpu_regs[cpu_bytes]
 //   uint8_t   ram[ram_bytes]
@@ -91,7 +91,7 @@ extern int PsyX_SPUAL_RestoreMem(const void* src, unsigned int size);
  * wherever the OTHER timeline left the head. The command QUEUE
  * (g_cdComQueue) is NOT saved: it holds callback pointers and is drained
  * synchronously in this port; a queued-command-in-flight save would need
- * the P3 quiescence audit first. */
+ * a quiescence audit first. */
 extern int g_cdCurrentSector;
 extern int g_cdSectorSize;
 extern int g_cdCurrentTrack;
@@ -121,7 +121,7 @@ extern int g_cdXaStartVBL;
 /* Curated state-layout ABI. Bump on ANY change to a section's layout
  * (header fields, SPUALVoiceState packing, cd_state_t, mods-section
  * framing, arena ledger, ...). Part of the ident hash, so a bump cleanly
- * orphans older files. 4 = P2b (arena section, MSv2 mods framing).
+ * orphans older files. 4 = arena section, MSv2 mods framing.
  * 5 = virtual XA music-head anchor joined the CD section. */
 /* 6 = arena section v2: high-arena ledger + the arena's used bytes.
  * 7 = arena section v3: one ledger with allocation + stream-handle rows;
@@ -148,7 +148,7 @@ typedef struct {
     uint32_t cd_state_bytes;
     uint32_t game_extra_bytes;
     uint32_t modset_tag_bytes;
-    uint32_t arena_bytes;      /* low-park arena ledger (P2b) */
+    uint32_t arena_bytes;      /* low-park arena ledger */
     uint32_t reserved[3];
 } openpete_state_header_t;
 

@@ -72,30 +72,25 @@ add_library(openpete_core STATIC
     renderer/screenshot.c
     runtime/run.c
 
-    # True-VFR gameplay video capture (--record). Links libav* in-process;
-    # reads the present FBO so output is bars-free at internal resolution.
-    # See notes/plans/openpete-record-video.md.
-    runtime/record.c
-
-    # BizHawk .bk2 movie replay (--bk2) + record (--bk2-record). See
-    # plans/openpete-bk2-input.md.
-    runtime/bk2_movie.c
-    runtime/bk2_record.c
+    # Recording and savestates: true-VFR gameplay video capture (--record;
+    # links libav* in-process and reads the present FBO so output is
+    # bars-free at internal resolution), BizHawk .bk2 movie replay (--bk2)
+    # and record (--bk2-record), save states (F2/F4 quick save/load), the
+    # rewind keyframe ring (--rewind N seconds; Backspace scrubs back;
+    # driver in run.c, see openpete_rewind.h), and the guest-state
+    # discontinuity broadcast (host caches derived from guest RAM register
+    # resync actions fired after a savestate load; see
+    # openpete_discontinuity.h).
+    record/record.c
+    record/bk2_movie.c
+    record/bk2_record.c
     ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c
+    record/savestate.c
+    record/rewind.c
+    record/discontinuity.c
 
-    # Save states (F2/F4 quick save/load). See
-    # plans/openpete-savestate-frame-step-rewind.md.
-    runtime/savestate.c
+    # The mod install's checkpoint, exec and restore path.
     runtime/handoff.c
-
-    # Guest-state discontinuity broadcast: host caches derived from guest
-    # RAM register resync actions fired after a savestate load (later:
-    # rewind restore). See openpete_discontinuity.h.
-    runtime/discontinuity.c
-
-    # Rewind keyframe ring (--rewind N seconds; Backspace scrubs back).
-    # Driver lives in run.c. See openpete_rewind.h (savestate plan P4).
-    runtime/rewind.c
 
     # The PSX machine model: RAM and the CPUState bindings, the EXE boot
     # sequence, dispatch glue and the hang watchdog, the BIOS model, the
@@ -440,7 +435,7 @@ if(OPENPETE_HIDE_DEBUG_FLAGS)
     target_compile_definitions(openpete_core PUBLIC OPENPETE_HIDE_DEBUG_FLAGS=1)
 endif()
 
-# libav* for --record gameplay video capture (runtime/record.c). On a native
+# libav* for --record gameplay video capture (record/record.c). On a native
 # build this is a hard dependency — see notes/plans/openpete-record-video.md
 # ("hard-require" decision). On Debian/Ubuntu: libavformat-dev libavcodec-dev
 # libavutil-dev libswscale-dev libswresample-dev. Min version libav* 58

@@ -1,4 +1,4 @@
-// core/runtime/record.c — `--record <path>` true-VFR gameplay video capture.
+// core/record/record.c — `--record <path>` true-VFR gameplay video capture.
 //
 // One encoded frame per game-presented frame, PTS = wall-clock capture time,
 // so playback reflects real game cadence: a load-induced drop to 24 fps shows
@@ -6,7 +6,7 @@
 // frame rate — the muxer stream time_base is microseconds and each frame
 // carries its own PTS.
 //
-// Pipeline (see notes/plans/openpete-record-video.md):
+// Pipeline:
 //
 //   [host fiber / GL thread]            [encoder thread]
 //   -------------------------           ------------------

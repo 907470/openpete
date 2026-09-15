@@ -11,7 +11,7 @@
 # console-style test fails to link with "undefined SDL_main".
 add_executable(bk2_movie_test
     bk2_movie_test.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/bk2_movie.c
+    ${CMAKE_SOURCE_DIR}/core/record/bk2_movie.c
     ${CMAKE_SOURCE_DIR}/core/diag/log.c
     ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c)
 target_include_directories(bk2_movie_test PRIVATE
