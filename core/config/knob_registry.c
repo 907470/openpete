@@ -768,8 +768,8 @@ static const knob_desc_t g_builtin[] = {
     /* -------- Input -------- */
     { "vibration", "Vibration", "Input", "--vibration", "OPENPETE_VIBRATION",
       "Controller rumble strength, 0 (off) to 10 (max); -1 leaves the game's "
-      "own vibration setting alone (the default, which means on). 10 matches "
-      "DuckStation's strength curve. The game's enable flag is stamped at a "
+      "own vibration setting alone (the default, which means on). 10 applies "
+      "the measured motor response unscaled. The game's enable flag is stamped at a "
       "tick boundary and released if the player toggles vibration in the "
       "options menu; the motors are always silent headless or unfocused.",
       KNOB_INT, KNOB_LIVE, NULL, 0, -1, 10,
