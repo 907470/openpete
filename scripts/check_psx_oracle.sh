@@ -53,6 +53,11 @@
 #
 # Env knobs:
 #   OPENPETE_BIN, OPENPETE_DISC
+#   OPENPETE_ORACLE_WINDOWED=1 windowed row: native renderer in a real window
+#                         under llvmpipe, eager present thread; FAIL unless
+#                         the present thread presented (needs a display and
+#                         the lvp ICD, else SKIP); pair with OPENPETE_FRAME_LIMIT
+#                         since the run paces to the display
 #   OPENPETE_FRAME_LIMIT (default 200000 — safety belt; psxtrace-eof exits
 #                         first; a smaller value makes a smoke run that
 #                         cannot PASS as a full run)
@@ -101,7 +106,7 @@ for _a in "$@"; do
 done
 CONF="games/$GAME/oracle.conf"
 [[ -f "$CONF" ]] || { echo "[psx-oracle] no recipe: $CONF" >&2; exit 64; }
-GOLDEN=""; FRAMES=""; DISC=""; RUN_ARGS=()
+GOLDEN=""; FRAMES=""; DISC=""; RUN_ARGS=(); MODE_RT_CLEARED_MIN=""; READS_RT_CLEAR_MAX=""
 # shellcheck disable=SC1090
 source "$CONF"
 TRACE="${TRACE:-$GOLDEN}"
@@ -219,6 +224,30 @@ else
 fi
 rm -f "$LOG"
 
+# OPENPETE_ORACLE_WINDOWED=1: the windowed row. Headless never starts the
+# present thread, native extraction's live path or eager production, so a
+# write that path could make into a hashed row is unreachable by the
+# headless gate. The windowed run draws with the native renderer under
+# software Vulkan (llvmpipe) in a real window at the display's cadence,
+# and its verdict counts only when the present thread presented.
+MODE=(--headless)
+WINDOWED="${OPENPETE_ORACLE_WINDOWED:-0}"
+if [[ "$WINDOWED" != "0" ]]; then
+    if [[ -z "${DISPLAY:-}" && -z "${WAYLAND_DISPLAY:-}" ]]; then
+        echo "[psx-oracle] windowed row needs a display (DISPLAY/WAYLAND_DISPLAY unset)" >&2
+        exit 64
+    fi
+    LVP_ICD="/usr/share/vulkan/icd.d/lvp_icd.x86_64.json"
+    if [[ ! -e "$LVP_ICD" ]]; then
+        echo "[psx-oracle] windowed row needs the llvmpipe Vulkan driver ($LVP_ICD)" >&2
+        exit 64
+    fi
+    export VK_ICD_FILENAMES="$LVP_ICD"
+    export MESA_LOADER_DRIVER_OVERRIDE=llvmpipe
+    MODE=(--renderer vk --window 640x480)
+    echo "[psx-oracle] windowed: native renderer under llvmpipe, present thread active"
+fi
+
 set +e
 # --mute 1 sits before PASSTHRU so a forwarded `-- --mute 0` still wins
 # (the options parser takes the last occurrence).
@@ -226,7 +255,7 @@ set +e
 # happens to sit next to the exe or in the runner's home directory.
 # --mods "": no mod runs, so no custom-level song can reach the music route
 # and the run's XA path is the stock one the golden was captured against.
-"$BIN" --headless \
+"$BIN" "${MODE[@]}" \
     --no-config \
     --mods "" \
     --disc "$DISC" \
@@ -248,11 +277,28 @@ fi
 set -e
 echo "[psx-oracle] exit code=$rc"
 
+# Windowed engagement: the present thread must have started and
+# presented; a run whose scenes never left the sim thread verified the
+# headless path under another name.
+if [[ "$WINDOWED" != "0" && "$rc" == "0" ]]; then
+    PRESENTED=$(sed -n 's/.*present-thread: \([0-9]*\) scene(s) presented.*/\1/p' "$LOG" | tail -1)
+    if ! grep -q 'present-thread: started' "$LOG" || [[ "${PRESENTED:-0}" == "0" ]]; then
+        echo "[psx-oracle] windowed: present thread never presented (started=$(grep -c 'present-thread: started' "$LOG"), presented=${PRESENTED:-0}); VACUOUS" >&2
+        rc=2
+    else
+        echo "[psx-oracle] windowed: $PRESENTED scene(s) presented by the present thread"
+    fi
+fi
+
 # Music routing engagement: the shared CD body prints one summary
-# line at exit. On this golden the loader's data-mode CdlSetmode clears RT
-# after every stream start (mode_rt_cleared > 0 proves the mirrored mode
-# byte is written), and no CdlReadS is issued with RT clear (== 0 proves
-# every restart streams). A missing line means the body never ran.
+# line at exit. The loader's data-mode CdlSetmode clears RT after a stream
+# start (mode_rt_cleared proves the mirrored mode byte is written), and no
+# CdlReadS is issued with RT clear (reads_rt_clear proves every restart
+# streams). The bounds are the recipe's MODE_RT_CLEARED_MIN and
+# READS_RT_CLEAR_MAX, measured on the game's golden and applied to a run
+# that reached the trace's end; a recipe without them fails with the
+# measured values printed so they can be recorded. A missing line means
+# the body never ran.
 if [[ "$rc" == "0" ]]; then
     SUMMARY=$(grep -o 'music: summary: .*' "$LOG" | tail -1)
     if [[ -z "$SUMMARY" ]]; then
@@ -262,8 +308,15 @@ if [[ "$rc" == "0" ]]; then
         echo "[psx-oracle] $SUMMARY"
         CLEARED=$(sed -n 's/.*mode_rt_cleared=\([0-9]*\).*/\1/p' <<<"$SUMMARY")
         RTCLEAR=$(sed -n 's/.*reads_rt_clear=\([0-9]*\).*/\1/p' <<<"$SUMMARY")
-        if [[ "${CLEARED:-0}" == "0" || "${RTCLEAR:-1}" != "0" ]]; then
-            echo "[psx-oracle] music routing: mode_rt_cleared=$CLEARED reads_rt_clear=$RTCLEAR (expected >0 and 0)" >&2
+        if ! grep -q 'openpete-exit: reason=psxtrace-eof' "$LOG"; then
+            :   # a truncated run (OPENPETE_FRAME_LIMIT) proves engagement only
+        elif [[ -z "${MODE_RT_CLEARED_MIN:-}" || -z "${READS_RT_CLEAR_MAX:-}" ]]; then
+            echo "[psx-oracle] music routing: $CONF lacks MODE_RT_CLEARED_MIN / READS_RT_CLEAR_MAX;" \
+                 "measured mode_rt_cleared=$CLEARED reads_rt_clear=$RTCLEAR" >&2
+            rc=2
+        elif (( ${CLEARED:-0} < MODE_RT_CLEARED_MIN || ${RTCLEAR:-0} > READS_RT_CLEAR_MAX )); then
+            echo "[psx-oracle] music routing: mode_rt_cleared=$CLEARED reads_rt_clear=$RTCLEAR" \
+                 "(expected >= $MODE_RT_CLEARED_MIN and <= $READS_RT_CLEAR_MAX)" >&2
             rc=2
         fi
     fi

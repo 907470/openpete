@@ -120,12 +120,11 @@ DS_CARD=()
 OP_CARD=()
 [[ "$CARD" == "none" ]] && OP_CARD=(--no-card)
 
-# The dump rides on the module's psxtrace breakpoint, and the module needs a
-# region table for the throwaway trace: the game's own manifest when it has
-# one, else Spyro 1's (the rows hashed do not matter here; the trace is
-# discarded).
+# The dump rides on the module's psxtrace breakpoint, and the module needs
+# the game's region table for the throwaway trace (the rows hashed do not
+# matter here; the trace is discarded). Every game carries one.
 REGIONS_TOML="$GDIR/manifest/gameplay_state_regions.toml"
-[[ -f "$REGIONS_TOML" ]] || REGIONS_TOML="$ROOT/games/spyro-1/manifest/gameplay_state_regions.toml"
+[[ -f "$REGIONS_TOML" ]] || { echo "[ram-diff] no region manifest: $REGIONS_TOML" >&2; exit 64; }
 python3 "$ROOT/tools/gen_state_regions.py" --manifest "$REGIONS_TOML" --out-flat "$WORK/regions.flat" >/dev/null || {
     echo "[ram-diff] region table generation failed from $REGIONS_TOML" >&2; exit 1
 }
@@ -163,8 +162,7 @@ HDR_PC=$(grep -o 'PSX EXE: pc=0x[0-9A-Fa-f]*' "$OPLOG" | head -1 | grep -o '0x.*
 DISP_PC=$(grep -o 'game fiber: dispatching 0x[0-9A-Fa-f]*' "$OPLOG" | head -1 | grep -o '0x.*')
 [[ -n "$HDR_PC" && "$HDR_PC" == "$DISP_PC" ]] || { echo "[ram-diff] FAIL: dispatched entry ${DISP_PC:-none} is not the EXE entry ${HDR_PC:-none}" >&2; exit 2; }
 
-REGIONS=()
-[[ -f "$GDIR/manifest/gameplay_state_regions.toml" ]] && REGIONS=(--regions "$GDIR/manifest/gameplay_state_regions.toml")
+REGIONS=(--regions "$REGIONS_TOML")
 MAPARG=()
 [[ -n "$MAP" && -f "$ROOT/$MAP" ]] && MAPARG=(--map "$ROOT/$MAP")
 # The ratchet is keyed by the anchor as spelled (first, loop, or 0xHEX), so a

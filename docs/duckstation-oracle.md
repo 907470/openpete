@@ -288,6 +288,25 @@ golden path, the disc (`OPENPETE_DISC` overrides), the binary
 (Spyro 3: `--no-card`). A missing default golden is captured first, which
 takes about fifteen minutes for 20000 records; the script exits 64 when
 the fork binary is not built. An explicit trace path is never captured.
+`OPENPETE_ORACLE_WINDOWED=1` is the windowed row (ctest
+`psx_oracle_windowed`, Spyro 1): the same golden verified with the native
+renderer drawing into a real window under llvmpipe (`VK_ICD_FILENAMES`
+set to the lvp ICD), the eager present thread active. Headless never
+starts the present thread, native extraction's live path or eager
+production, so a write that path could make into a hashed row is
+reachable only here. The run paces to the display, so the row carries
+`OPENPETE_FRAME_LIMIT=6000` (about 3000 records, the first level load
+included, ~95 s); it fails as VACUOUS unless the log carries
+`present-thread: started` and a nonzero `scene(s) presented`, and SKIPs
+without a display or the lvp ICD. Its controls: `OPENPETE_EAGER=0` trips
+the vacuity check; `OPENPETE_PSXTRACE_POKE` fails at the poked record.
+
+`scripts/check_psx_oracle_all.sh [-- flags]` runs every game's gate
+concurrently and prints one table (game, verdict, records consumed, first
+divergence outside the neutral rows); exit 2 when any game fails, 64 when
+none ran. The music-routing bounds (`MODE_RT_CLEARED_MIN`,
+`READS_RT_CLEAR_MAX`) come from the recipe and apply to a run that reached
+the trace's end; a recipe lacking them fails with the measured values.
 Each golden holds 20000 records over the manifest's rows (Spyro 1: 54),
 covering four-plus level loads and gameplay, and replays in roughly two
 and a half minutes.

@@ -5,11 +5,9 @@
 # {scenario × aspect × fov} cells, all asserted bit-identical to the
 # scenario's canonical (4:3, default-fov) cell.
 #
-# Today's single-axis aspect_determinism gate is good at catching
-# couplings that show up in the title-screen pre-roll, but a coupling
-# that only triggers in-level (e.g. via a moby AI path), or only at
-# 21:9, is invisible. This script closes that gap by sweeping the
-# product of presentation knobs and the BK2 corpus.
+# A single-axis title-screen comparison misses a coupling that only
+# triggers in-level (via a moby AI path, say), or only at 21:9. This
+# script sweeps the product of presentation knobs and the BK2 corpus.
 #
 # Pass/fail policy: divergence in an `open` channel is EXPECTED
 # (gate is documented red until those channels are closed); divergence

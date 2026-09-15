@@ -58,7 +58,6 @@ sub-tick is invisible to a headless capture.
 | Oracle | `scripts/check_psx_oracle.sh` | Gameplay state matches the PSX reference capture, tick for tick. |
 | Presentation golden | `scripts/check_presentation_golden.sh` | The rendered screenshot corpus is unchanged, or intentionally re-blessed with `--bless`. |
 | Mods | `scripts/check_mods.sh` | The mod PoC ladder, including per-mod `modtest.toml` scenarios (ctest `mod_poc_ladder`, ~10 min). |
-| Aspect determinism | `scripts/check_aspect_determinism.sh` | 16:9 position logs equal 4:3. Cheap, and strictly weaker than the oracle: a uniform corruption passes it. |
 
 Oracle internals are in [`duckstation-oracle.md`](duckstation-oracle.md).
 

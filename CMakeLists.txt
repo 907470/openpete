@@ -137,20 +137,6 @@ endforeach()
 if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMakeLists.txt")
     add_subdirectory(tests/unit)
 
-    # Integration test: gameplay-state-vs-presentation determinism.
-    # Asserts that running the headless demo at multiple aspect ratios
-    # produces bit-identical gameplay state. Slow (boots two PSX
-    # sessions); labeled `slow` so plain `ctest` skips it. Run with
-    # `ctest -L slow` or directly via the script.
-    add_test(NAME aspect_determinism
-             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_aspect_determinism.sh
-                     --build-dir=${CMAKE_BINARY_DIR}
-                     --frames=8000)
-    set_tests_properties(aspect_determinism PROPERTIES
-        LABELS "slow;determinism"
-        TIMEOUT 600
-        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-
     # Modding-framework PoC-ladder gate (modtest v0): chain-order matrix,
     # observer-neutrality vs the PSX oracle, raw-tier warning, and the
     # double-gems expected-divergence assertion. Slow (four headless
@@ -411,9 +397,26 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1")
 
+    # The windowed oracle row: the same golden verified with the native
+    # renderer drawing into a real window under llvmpipe, the eager present
+    # thread active. Headless never runs that path, so a presentation-side
+    # write into a hashed row is reachable only here. Paced to the display,
+    # hence the reduced VBL count (~3k records, the first level load
+    # included); FAIL unless the present thread presented; SKIP without a
+    # display or the lvp ICD.
+    add_test(NAME psx_oracle_windowed
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_psx_oracle.sh)
+    set_tests_properties(psx_oracle_windowed PROPERTIES
+        LABELS "slow;oracle"
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1;OPENPETE_ORACLE_WINDOWED=1;OPENPETE_FRAME_LIMIT=6000")
+
     # Matrix determinism gate — broaden coverage from one (aspect,
     # scenario) cell to a sweep across aspects × fovs × scenarios.
-    # Same expected-red-vs-regression policy as aspect_determinism.
+    # Divergence in an open channel is expected; in a gated or verified
+    # channel it is a regression.
     # Slow (boots N PSX sessions); only runs under `ctest -L slow`.
     # Phase 6 of openpete-determinism-enforcement.md.
     add_test(NAME determinism_matrix
