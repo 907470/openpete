@@ -397,6 +397,19 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1")
 
+    # One row per game with a recipe; the Spyro 1 row keeps its name above.
+    foreach(_g spyro-2 spyro-3)
+        string(REPLACE "-" "" _tag "${_g}")
+        add_test(NAME psx_oracle_match_${_g}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_psx_oracle.sh --game ${_g})
+        set_tests_properties(psx_oracle_match_${_g} PROPERTIES
+            LABELS "slow;oracle"
+            TIMEOUT 1800
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+            ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/${_g}/openpete-${_tag}")
+    endforeach()
+
     # The windowed oracle row: the same golden verified with the native
     # renderer drawing into a real window under llvmpipe, the eager present
     # thread active. Headless never runs that path, so a presentation-side

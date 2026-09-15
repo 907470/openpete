@@ -119,8 +119,20 @@ and continues, which enumerates the untranslated surface in one run.
 `--skip-to-level` lists and reports which untranslated symbols were reached.
 
 `scripts/check_ram_diff.sh <game>` compares whole RAM against DuckStation at
-an anchor; the Spyro 1 oracle golden and presentation golden have no
-counterpart for the other games yet.
+an anchor, under the game's oracle golden when it exists.
+
+The oracle gate is per game. `games/<game>/manifest/gameplay_state_regions.toml`
+lists the rows the golden hashes (derived from the link map by
+`tools/derive_state_regions.py`, minus the classes `ram_diff_expect.toml`
+names; `--check` re-derives it in ctest); `games/<game>/oracle.conf` is
+the capture and gate recipe (golden path, record count, disc, anchor,
+recorder options from `psyq.toml`, the flags the run needs, the
+music-routing bounds). The golden itself is generated, never committed:
+`scripts/check_psx_oracle.sh --game <game>` captures it from the pinned
+DuckStation fork on the first run and verifies against it after; a ctest
+row `psx_oracle_match_<game>` runs it under `ctest -L oracle`. A new game's
+acceptance is the gate at PASS over 20000 records with a POKE negative
+control failing at its record (`docs/duckstation-oracle.md`).
 
 ## 7. What stays Spyro-1-specific
 
@@ -129,9 +141,9 @@ counterpart for the other games yet.
   sources listed in its `CMakeLists.txt`; the other games render through
   PsyCross (`openpete_options_set_default_renderer` in
   `games/common/game_main.cpp`).
-- Only Spyro 1 has a `games/<game>/manifest/gameplay_state_regions.toml`
-  and an oracle golden; a game without the manifest registers an empty
-  region table and no golden can verify it.
+- The presentation golden (`tests/golden/spyro-1/presentation/`) and the
+  windowed oracle row (`psx_oracle_windowed`) exist for Spyro 1 alone,
+  since only it has the native renderer.
 - `core/` still carries Spyro-named debug knobs (`SPYRO_SCRATCH_MAT`,
   `SPYRO_UNTEX` in `core/runtime/knob_registry.c`); the `core/` purity check
   refuses bare `0x800XXXXX` literals and Win32-only APIs, not Spyro-specific
