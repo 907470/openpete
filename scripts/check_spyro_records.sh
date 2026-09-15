@@ -68,7 +68,7 @@ rm -rf "$OUT/mods/spyro-coop/.build"
 # $5 frame. Log to $OUT/<case>-<leg>.log. Headless native (the hooks) comes up
 # only when a capture is requested (native_render.c W1.1), so every leg names one.
 run_leg() {
-  local name=$1 leg=$2 src=$3 players=$4 frame=$5
+  local name=$1 leg=$2 src=$3 players=$4 frame=$5 extra=${6:-}
   local log="$OUT/$name-$leg.log"
   # The mod reads and REWRITES its settings.txt (coop_settings.c), so pin the
   # players count before every run.
@@ -86,17 +86,23 @@ run_leg() {
   timeout 600 "$BIN" --headless --no-config --disc "$DISC" --renderer vk --mute 1 --render-fps 60 \
     --mods-dir "$OUT/mods" --mods spyro-coop "${srcargs[@]}" "${capargs[@]}" \
     --screenshot-output "$OUT/shots/$name-$leg-{n}.png" \
-    --frame-limit "$((frame + 1))" --max-runtime-seconds 560 \
+    --frame-limit "$((frame + 1))" --max-runtime-seconds 560 ${extra:+$extra} \
     >/dev/null 2>"$log"
   echo $?
 }
 
 fail=0; cases=0; engaged=0; recroll=0
-while IFS='|' read -r name src players frame em es ef pairs note; do
+while IFS='|' read -r name src players frame em es ef pairs note extra; do
   [[ -z "$name" || "$name" == \#* ]] && continue
   [[ -n "$FILTER" && "$name" != *"$FILTER"* ]] && continue
   cases=$((cases + 1))
-  rc=$(run_leg "$name" canon "$src" "$players" "$frame")
+  # Optional 10th field: extra launch args (a --runahead N row exercises the
+  # led lists; its staged positions lead the canonical ones by up to N ticks,
+  # so the B/2 bound scales by 1+2N, and the summary must report led_match
+  # >= 1 with led_miss <= 1 — the level-entry tick draws the player twice
+  # and has no led counterpart of that shape).
+  ra=$(sed -n 's/.*--runahead \([0-9]*\).*/\1/p' <<<"${extra:-}")
+  rc=$(run_leg "$name" canon "$src" "$players" "$frame" "${extra:-}")
   log="$OUT/$name-canon.log"
   line=$(grep -m1 "^\[recdbg f=$frame " "$log" || true)
   if [[ $rc -ne 0 || -z "$line" ]]; then
@@ -117,9 +123,18 @@ while IFS='|' read -r name src players frame em es ef pairs note; do
   [[ "$got_m/$got_s/$got_f" != "$em/$es/$ef" ]] && verdict="FAIL calls m/s/f=$got_m/$got_s/$got_f expected $em/$es/$ef"
   [[ "$spec" != 0 ]] && verdict="FAIL spec=$spec"
   [[ "$ev" != 1 ]] && verdict="FAIL epochs_vbl=$ev"
-  [[ "$mm" != "0/0/0" ]] && verdict="FAIL hook-vs-ring mm=$mm"
+  # Under --runahead the committed hooks and the led ring differ by design
+  # (the led lists carry the difference); the memcmp columns are not asserted.
+  [[ -z "$ra" && "$mm" != "0/0/0" ]] && verdict="FAIL hook-vs-ring mm=$mm"
   [[ "$sum_spec" != 0 ]] && verdict="FAIL run spec_refused=$sum_spec"
-  [[ "$sum_mm" != "0/0/0" ]] && verdict="FAIL run mismatch=$sum_mm"
+  if [[ -n "$ra" ]]; then
+    led_match=$(sed -n 's/.* led_match=\([0-9]*\).*/\1/p' <<<"$sum")
+    led_miss=$(sed -n 's/.* led_miss=\([0-9]*\).*/\1/p' <<<"$sum")
+    [[ "${led_match:-0}" -lt 1 ]] && verdict="FAIL runahead: led_match=${led_match:-0} (no led list applied)"
+    [[ "${led_miss:-0}" -gt 1 ]] && verdict="FAIL runahead: led_miss=${led_miss:-0}"
+    note="$note (led_match=$led_match led_miss=$led_miss)"
+  fi
+  [[ -z "$ra" && "$sum_mm" != "0/0/0" ]] && verdict="FAIL run mismatch=$sum_mm"
   [[ "${sum_nr:-x}" != 0 ]] && verdict="FAIL ring never captured on ${sum_nr:-?} epoch(s): hook-vs-ring column vacuous"
   [[ "${sum_rr:-0}" -ge 1 ]] && recroll=1
   [[ "$got_m" -ge 2 ]] && engaged=1
@@ -127,7 +142,7 @@ while IFS='|' read -r name src players frame em es ef pairs note; do
   echo "ok       $name (canon f=$frame): calls m/s/f=$got_m/$got_s/$got_f mm=$mm — $note"
 
   # Intermediate leg: run-wide staging checks, then the per-record asserts.
-  rc=$(run_leg "$name" inter "$src" "$players" "$frame")
+  rc=$(run_leg "$name" inter "$src" "$players" "$frame" "${extra:-}")
   log="$OUT/$name-inter.log"
   if [[ $rc -ne 0 ]]; then echo "FAIL     $name: intermediate leg rc=$rc (see $log)"; fail=1; continue; fi
   writes=$(sed -n 's/.*cpu_writes_while_open=\([0-9]*\).*/\1/p' "$log" | tail -1)
@@ -136,7 +151,8 @@ while IFS='|' read -r name src players frame em es ef pairs note; do
   # Per-record asserts: drawn count, pairing index per record, paired records
   # interpolate and stage within B/2 of their canonical position; shadow and
   # flame record counts, each bound to a record of the list, lerping when it is.
-  iv=$(python3 scripts/spyro-records-check.py "$log" "$frame" "$em" "$pairs" "$es" "$ef"); irc=$?
+  bscale=$(( 1 + 2 * ${ra:-0} ))
+  iv=$(python3 scripts/spyro-records-check.py "$log" "$frame" "$em" "$pairs" "$es" "$ef" "$(( 400 * bscale ))"); irc=$?
   case $irc in
     0)  echo "ok       $name (inter): ${iv#ok       }";;
     64) echo "vacuous  $name (inter): ${iv#vacuous  }";;

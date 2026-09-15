@@ -43,10 +43,9 @@ typedef struct {
     spyro_flame_rec_t  fl[SPYRO_REC_MAX];
 } rec_list_t;
 
-static rec_list_t s_list;             /* accumulating */
-static uint8_t    s_led_seg[SPYRO_REC_SEG_LEN];   /* seg row of the last SPECULATIVE fire (runahead) */
-static int        s_led_seg_ok = 0;
-static uint32_t   s_cap_refused_epoch, s_spec_refused_epoch;
+static rec_list_t s_list;             /* accumulating: the committed tick's hook calls */
+static rec_list_t s_led;              /* accumulating: the speculative fires of one led frame (runahead) */
+static uint32_t   s_cap_refused_epoch, s_spec_refused_epoch, s_led_fires_epoch;
 
 /* The list is keyed by (epoch stamp, VBL): the stamp advances only at a
  * commit, which the --skip-to-level fast-forward and CD stalls skip, so a
@@ -56,6 +55,14 @@ static void list_open(void) {
     int empty = (s_list.n == 0 && s_list.nsh == 0 && s_list.nfl == 0);
     if (!empty && (s_list.stamp != stamp || s_list.frame != openpete_frame)) { s_list.n = 0; s_list.nsh = 0; s_list.nfl = 0; empty = 1; }
     if (empty) { s_list.stamp = stamp; s_list.frame = openpete_frame; }
+}
+
+/* The led list: one speculative frame's fires (runahead runs 2N speculative
+ * VBLs after the committed tick; the last draw among them is the ring's
+ * capture tick). A new frame starts a new list. */
+static void led_open(void) {
+    if (s_led.frame != openpete_frame) { s_led.n = 0; s_led.nsh = 0; s_led.nfl = 0; s_led.frame = openpete_frame; }
+    s_led_fires_epoch++;
 }
 
 
@@ -96,6 +103,7 @@ static feeder_obs_t s_prev_model;
 static unsigned s_epochs, s_spec_refused, s_cap_refused, s_roll_ring, s_roll_records, s_roll_both, s_dedupe, s_resets;
 static unsigned s_mismatch[SPYRO_REC_FEEDERS];
 static unsigned s_no_ring, s_pairing_only, s_unpaired, s_pass2;
+static unsigned s_led_fires, s_led_match, s_led_miss;   /* runahead: speculative fires; led lists applied / not */
 static int      s_max_calls[SPYRO_REC_FEEDERS];
 static int      s_max_epochs_vbl, s_epochs_this_vbl;
 static uint32_t s_last_commit_frame = 0xFFFFFFFFu;
@@ -128,28 +136,23 @@ static void observe(int feeder) {
 
 int spyro_records_model_append(struct CPUState* cpu, uint32_t rp_start, uint32_t rp_end) {
     (void)cpu;
-    /* Runahead lookahead: the hook fires on speculative ticks too; those
+    /* Runahead lookahead: the hook fires on speculative ticks too. Those
      * fires are not the canonical epoch (scratch_row_capture refuses them
-     * the same way). */
-    if (openpete_speculative) {
-        /* The led pose: the singleton's seg pair rolled on speculative fires
-         * too (unguarded, unlike the registry rows), so under runahead its
-         * shape blend was between LED poses, matching the ring's led anim
-         * clocks. Kept for the one-record case at commit. */
-        const uint8_t* seg = (const uint8_t*)openpete_psx_to_host_ptr(SEG_SCRATCH);
-        if (seg) { memcpy(s_led_seg, seg, SPYRO_REC_SEG_LEN); s_led_seg_ok = 1; }
-        s_spec_refused_epoch++;
-        return -1;
-    }
-    if (spyro_records_dbg()) observe(SPYRO_REC_MODEL);
-    list_open();
-    if (s_list.n >= SPYRO_REC_MAX) { s_cap_refused_epoch++; return -1; }
+     * the same way) — they build the led list, the lerp source of the
+     * committed records at commit. The singleton's seg pair rolled on
+     * speculative fires (unguarded, unlike the registry rows), so its shape
+     * blend was between LED poses, matching the ring's led anim clocks;
+     * the led list's seg row keeps that. */
+    rec_list_t* L = openpete_speculative ? &s_led : &s_list;
+    if (openpete_speculative) led_open();
+    else { if (spyro_records_dbg()) observe(SPYRO_REC_MODEL); list_open(); }
+    if (L->n >= SPYRO_REC_MAX) { s_cap_refused_epoch++; return -1; }
     const uint8_t* sp  = (const uint8_t*)openpete_psx_to_host_ptr(G_SPYRO);
     const uint8_t* seg = (const uint8_t*)openpete_psx_to_host_ptr(SEG_SCRATCH);
     const uint8_t* fk  = (const uint8_t*)openpete_psx_to_host_ptr(FK_SCRATCH);
     const uint8_t* sxy = (const uint8_t*)openpete_psx_to_host_ptr(SXY_BASE);
     if (!sp || !seg || !fk || !sxy) return -1;
-    spyro_model_rec_t* r = &s_list.r[s_list.n];
+    spyro_model_rec_t* r = &L->r[L->n];
     memcpy(r->spyro, sp,  SPYRO_REC_SPYRO_LEN);
     memcpy(r->src,   sp,  SPYRO_REC_SPYRO_LEN);
     memcpy(r->seg,   seg, SPYRO_REC_SEG_LEN);
@@ -157,7 +160,7 @@ int spyro_records_model_append(struct CPUState* cpu, uint32_t rp_start, uint32_t
     memcpy(r->sxy,   sxy, SPYRO_REC_SXY_LEN);
     r->rp_start = rp_start; r->rp_end = rp_end;
     r->drawn = 1; r->pair = -1; r->pair2 = -1;
-    return s_list.n++;
+    return L->n++;
 }
 
 /* The model record drawn at the live g_Spyro position — the latest, the mod
@@ -166,54 +169,54 @@ int spyro_records_model_append(struct CPUState* cpu, uint32_t rp_start, uint32_t
  * this call's ordinal: the next drawn model pairs with it and the shadow or
  * flame renders under its g_Spyro fields; never rendered itself. -1 at the
  * cap. */
-static int bind_model(const uint8_t* sp) {
-    for (int k = s_list.n - 1; k >= 0; k--)
-        if (memcmp(s_list.r[k].spyro, sp, 12) == 0) return k;
-    if (s_list.n >= SPYRO_REC_MAX) { s_cap_refused_epoch++; return -1; }
-    spyro_model_rec_t* r = &s_list.r[s_list.n];
+static int bind_model(rec_list_t* L, const uint8_t* sp) {
+    for (int k = L->n - 1; k >= 0; k--)
+        if (memcmp(L->r[k].spyro, sp, 12) == 0) return k;
+    if (L->n >= SPYRO_REC_MAX) { s_cap_refused_epoch++; return -1; }
+    spyro_model_rec_t* r = &L->r[L->n];
     memset(r, 0, sizeof *r);
     memcpy(r->spyro, sp, SPYRO_REC_SPYRO_LEN);
     memcpy(r->src,   sp, SPYRO_REC_SPYRO_LEN);
     r->drawn = 0; r->pair = -1; r->pair2 = -1;
-    s_pairing_only++;
-    return s_list.n++;
+    if (L == &s_list) s_pairing_only++;
+    return L->n++;
 }
 
 int spyro_records_shadow_append(struct CPUState* cpu) {
     (void)cpu;
-    if (openpete_speculative) { s_spec_refused_epoch++; return -1; }
-    if (spyro_records_dbg()) observe(SPYRO_REC_SHADOW);
-    list_open();
-    if (s_list.nsh >= SPYRO_REC_MAX) { s_cap_refused_epoch++; return -1; }
+    rec_list_t* L = openpete_speculative ? &s_led : &s_list;
+    if (openpete_speculative) led_open();
+    else { if (spyro_records_dbg()) observe(SPYRO_REC_SHADOW); list_open(); }
+    if (L->nsh >= SPYRO_REC_MAX) { s_cap_refused_epoch++; return -1; }
     const uint8_t* sp = (const uint8_t*)openpete_psx_to_host_ptr(G_SPYRO);
     const uint8_t* sh = (const uint8_t*)openpete_psx_to_host_ptr(D_SPYROSHADOW);
     if (!sp || !sh) return -1;
-    int m = bind_model(sp);
+    int m = bind_model(L, sp);
     if (m < 0) return -1;
-    spyro_shadow_rec_t* d = &s_list.sh[s_list.nsh];
+    spyro_shadow_rec_t* d = &L->sh[L->nsh];
     memcpy(d->sh,  sh, SPYRO_REC_SHADOW_LEN);
     memcpy(d->src, sh, SPYRO_REC_SHADOW_LEN);
     d->model = (int8_t)m; d->drawn = 1;
-    s_list.nsh++;
+    L->nsh++;
     return m;
 }
 
 int spyro_records_flame_append(struct CPUState* cpu) {
     (void)cpu;
-    if (openpete_speculative) { s_spec_refused_epoch++; return -1; }
-    if (spyro_records_dbg()) observe(SPYRO_REC_FLAME);
-    list_open();
-    if (s_list.nfl >= SPYRO_REC_MAX) { s_cap_refused_epoch++; return -1; }
+    rec_list_t* L = openpete_speculative ? &s_led : &s_list;
+    if (openpete_speculative) led_open();
+    else { if (spyro_records_dbg()) observe(SPYRO_REC_FLAME); list_open(); }
+    if (L->nfl >= SPYRO_REC_MAX) { s_cap_refused_epoch++; return -1; }
     const uint8_t* sp = (const uint8_t*)openpete_psx_to_host_ptr(G_SPYRO);
     const uint8_t* fl = (const uint8_t*)openpete_psx_to_host_ptr(G_SPYROFLAME);
     if (!sp || !fl) return -1;
-    int m = bind_model(sp);
+    int m = bind_model(L, sp);
     if (m < 0) return -1;
-    spyro_flame_rec_t* d = &s_list.fl[s_list.nfl];
+    spyro_flame_rec_t* d = &L->fl[L->nfl];
     memcpy(d->fl,  fl, SPYRO_REC_FLAME_LEN);
     memcpy(d->src, fl, SPYRO_REC_FLAME_LEN);
     d->model = (int8_t)m; d->drawn = 1;
-    s_list.nfl++;
+    L->nfl++;
     return m;
 }
 
@@ -277,12 +280,12 @@ static void summary(void) {
     fprintf(stderr,
         "[recdbg-summary] epochs=%u no_ring=%u max_calls m=%d s=%d f=%d spec_refused=%u cap_refused=%u "
         "max_epochs_per_vbl=%d roll_ring=%u roll_records=%u roll_both=%u dedupe=%u resets=%u "
-        "pairing_only=%u unpaired=%u pass2=%u "
+        "pairing_only=%u unpaired=%u pass2=%u led_fires=%u led_match=%u led_miss=%u "
         "mismatch m=%u s=%u f=%u max_model_pos_delta=%.0f "
         "maxB n=1:%.0f n>=2:%.0f minsep=%.0f\n",
         s_epochs, s_no_ring, s_max_calls[0], s_max_calls[1], s_max_calls[2], s_spec_refused, s_cap_refused,
         s_max_epochs_vbl, s_roll_ring, s_roll_records, s_roll_both, s_dedupe, s_resets,
-        s_pairing_only, s_unpaired, s_pass2,
+        s_pairing_only, s_unpaired, s_pass2, s_led_fires, s_led_match, s_led_miss,
         s_mismatch[0], s_mismatch[1], s_mismatch[2], s_max_model_delta,
         s_maxB_single, s_maxB_multi, s_minsep);
 }
@@ -332,27 +335,40 @@ void spyro_records_epoch_commit(void) {
         for (int k = 0; k < epoch.n; k++)
             if (memcmp(epoch.r[k].spyro, ring, 12) == 0) { seen = 1; break; }
         /* --runahead: the hooks fire on the committed tick, the ring holds
-         * the led one (the CARVE-OUT until P7). With ONE drawn record the
-         * singleton it replaces lerped the ring's led position, rotation
-         * and clocks over the committed hook's bytes and scratch rows; do
-         * the same — the led bytes become the lerp SOURCE, the committed
-         * ones stay the staged base (the shadow's silhouette selectors
-         * read the base; the golden's camera-rotate-taps encodes that) —
-         * so the modless runahead presentation is unchanged. N > 1
-         * records stay committed (they lag the led mobys by N ticks,
-         * measured in P0). */
-        if (openpete_runahead_get() > 0 && epoch.n == 1 && epoch.r[0].drawn) {
-            memcpy(epoch.r[0].src, ring, SPYRO_REC_SPYRO_LEN);
-            if (s_led_seg_ok) memcpy(epoch.r[0].seg, s_led_seg, SPYRO_REC_SEG_LEN);
-            /* Its shadow and flame the same way: the singleton lerped the
-             * ring's led anchor and ribbon over the committed bytes. */
-            if (epoch.nsh == 1)
-                memcpy(epoch.sh[0].src, curr->data + curr->region_offsets[s_reg[SPYRO_REC_SHADOW].ring], SPYRO_REC_SHADOW_LEN);
-            if (epoch.nfl == 1)
-                memcpy(epoch.fl[0].src, curr->data + curr->region_offsets[s_reg[SPYRO_REC_FLAME].ring], SPYRO_REC_FLAME_LEN);
+         * the led one. The singleton lerped the ring's led position,
+         * rotation and clocks over the committed hook's bytes and scratch
+         * rows; every record does the same from the led list — the
+         * speculative fires of the ring's capture tick, record k's led
+         * bytes and seg row as record k's lerp SOURCE and shape, index for
+         * index (the same hook sequence N ticks on), the committed bytes
+         * staying the staged base (the shadow's silhouette selectors read
+         * the base; the golden's camera-rotate-taps encodes that). A led
+         * list from another frame or of another shape (a blink, a reseed)
+         * leaves the records committed for that tick and is counted. */
+        if (openpete_runahead_get() > 0 && epoch.n > 0 && s_led_fires_epoch > 0) {
+            /* The led list of this epoch's speculation: fired after the
+             * committed tick, no later than the ring's capture (the ring
+             * captures at the VBL after the led draw: led=F+1 for the
+             * capture at F+2 under --runahead 1). */
+            int led_ok = (s_led.frame > epoch.frame &&
+                          s_led.frame <= curr->tick && s_led.n == epoch.n);
+            for (int k = 0; led_ok && k < epoch.n; k++)
+                if (s_led.r[k].drawn != epoch.r[k].drawn) led_ok = 0;
+            if (led_ok) {
+                for (int k = 0; k < epoch.n; k++) {
+                    memcpy(epoch.r[k].src, s_led.r[k].spyro, SPYRO_REC_SPYRO_LEN);
+                    if (epoch.r[k].drawn) memcpy(epoch.r[k].seg, s_led.r[k].seg, SPYRO_REC_SEG_LEN);
+                }
+                if (s_led.nsh == epoch.nsh)
+                    for (int j = 0; j < epoch.nsh; j++) memcpy(epoch.sh[j].src, s_led.sh[j].sh, SPYRO_REC_SHADOW_LEN);
+                if (s_led.nfl == epoch.nfl)
+                    for (int j = 0; j < epoch.nfl; j++) memcpy(epoch.fl[j].src, s_led.fl[j].fl, SPYRO_REC_FLAME_LEN);
+                s_led_match++;
+            } else s_led_miss++;
+            /* The ring's dragon is one of these records, N ticks on: no
+             * pairing-only record for it. */
             seen = 1;
         }
-        s_led_seg_ok = 0;
         if (!seen && epoch.n < SPYRO_REC_MAX) {
             spyro_model_rec_t* r = &epoch.r[epoch.n++];
             memset(r, 0, sizeof *r);
@@ -413,6 +429,7 @@ void spyro_records_epoch_commit(void) {
     s_store_epoch = spyro_native_canon_epoch_stamp() - 1u;   /* the epoch that just committed */
 
     /* ---- instrument ---- */
+    s_led_fires += s_led_fires_epoch;
     s_spec_refused += s_spec_refused_epoch;
     s_cap_refused  += s_cap_refused_epoch;
     if (dbg) {
@@ -442,10 +459,11 @@ void spyro_records_epoch_commit(void) {
         for (int f = 0; f < SPYRO_REC_FEEDERS; f++)
             if (s_obs[f].n + s_obs[f].over > s_max_calls[f]) s_max_calls[f] = s_obs[f].n + s_obs[f].over;
 
-        fprintf(stderr, "[recdbg f=%u e=%u] calls m=%d s=%d f=%d spec=%u cap=%u epochs_vbl=%d ring=%d recchg=%d "
+        fprintf(stderr, "[recdbg f=%u e=%u] calls m=%d s=%d f=%d spec=%u led=%d@%u cap=%u epochs_vbl=%d ring=%d recchg=%d "
                 "mm=%d/%d/%d mdelta=%.0f B=%.0f sep=%.0f store=%d pos=",
                 openpete_frame, s_epochs, m->n + m->over, s_obs[1].n + s_obs[1].over, s_obs[2].n + s_obs[2].over,
-                s_spec_refused_epoch, s_cap_refused_epoch, s_epochs_this_vbl, ring_rolled, rec_changed,
+                s_spec_refused_epoch, s_led_fires_epoch ? s_led.n : 0, s_led_fires_epoch ? s_led.frame : 0u,
+                s_cap_refused_epoch, s_epochs_this_vbl, ring_rolled, rec_changed,
                 mm[0], mm[1], mm[2], model_delta, B, sep, s_store[0].list.n);
         for (int k = 0; k < m->n; k++)
             fprintf(stderr, "%s(%d,%d,%d)c%u", k ? ";" : "", m->pos[k][0], m->pos[k][1], m->pos[k][2], m->cf[k]);
@@ -463,6 +481,7 @@ void spyro_records_epoch_commit(void) {
     }
     memset(s_obs, 0, sizeof s_obs);
     s_spec_refused_epoch = 0;
+    s_led_fires_epoch = 0;
     s_cap_refused_epoch = 0;
 }
 

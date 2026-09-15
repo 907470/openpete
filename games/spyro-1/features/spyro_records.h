@@ -34,6 +34,14 @@
  * matrix, strand counters) against the previous list's flame of the paired
  * model.
  *
+ * Runahead (P7): the hooks fire on the speculative ticks too, and those
+ * fires build a LED list keyed by openpete_frame. At commit the led list
+ * whose frame is the ring's capture tick supplies every record's lerp source
+ * (position, rotation, clocks) and seg row, index for index, so N dragons
+ * lead the way the singleton's one did; the committed bytes stay the staged
+ * base. A led list that does not match (count, frame) leaves the records
+ * committed and is counted.
+ *
  * OPENPETE_SPYRO_RECDBG=1 prints the epoch census at commit, a per-present
  * line per record on the intermediates and a run summary at exit.
  */
@@ -64,9 +72,9 @@ enum { SPYRO_REC_MODEL = 0, SPYRO_REC_SHADOW = 1, SPYRO_REC_FLAME = 2, SPYRO_REC
 typedef struct {
     uint8_t  spyro[SPYRO_REC_SPYRO_LEN];  /* the hook's g_Spyro: the staged base */
     uint8_t  src[SPYRO_REC_SPYRO_LEN];    /* the lerp source (position, rotation, clocks): the same bytes,
-                                           * except under --runahead where the one-record rule puts the
-                                           * ring's LED bytes here (the singleton lerped those over the
-                                           * committed base, which the shadow's silhouette selectors read) */
+                                           * except under --runahead where the led list's record goes here
+                                           * (the singleton lerped the ring's led bytes over the committed
+                                           * base, which the shadow's silhouette selectors read) */
     uint8_t  seg[SPYRO_REC_SEG_LEN];
     uint8_t  fk[SPYRO_REC_FK_LEN];
     uint8_t  sxy[SPYRO_REC_SXY_LEN];
