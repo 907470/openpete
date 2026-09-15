@@ -218,9 +218,9 @@ openpete_add_game(spyro-1
         sfx_census.cpp
         write_trace.cpp
 
-        # First-run distribution: the recompiler build, the WAD extraction,
-        # the disc library and the splash window.
-        dist/recomp_build.cpp
+        # First-run distribution: the WAD extraction, the disc library and
+        # the splash window (the module build, dist/recomp_build.cpp, is a
+        # shared-linkage attach source above).
         dist/recomp_extract.cpp
         dist/disc_library.cpp
         dist/splash.c)

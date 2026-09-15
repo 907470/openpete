@@ -96,7 +96,11 @@ cmd=${1:-}
 case "$cmd" in
 record)
     mkdir -p "$(dirname "$RECORD")"
-    symbols > "$RECORD"
+    # Written through a temp file: a missing artifact must not leave an
+    # empty record behind, which every later check would pass against.
+    tmp=$(mktemp "$(dirname "$RECORD")/.record.XXXXXX"); trap 'rm -f "$tmp"' EXIT
+    symbols > "$tmp"
+    mv -f "$tmp" "$RECORD"
     echo "check_move_symbols: recorded $(wc -l < "$RECORD") symbols to $RECORD"
     ;;
 check|accept)
