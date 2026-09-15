@@ -7,8 +7,8 @@
 # Derivation (tools/derive_state_regions.py spyro-2): the main image's
 # .data/.sdata/.sbss/.bss extents from spyro-2/build/psx.map, minus the
 # psyq_internal extents and every [[expect]] range of ram_diff_expect.toml
-# (vbl_count, cd_timing and pad_model classes established by the loop
-# anchor PASS at hit 1700, load_timing at hit 1), the named rows carved out, the rest coalesced:
+# (vbl_count and cd_timing classes established by the loop anchor PASS at
+# hit 1700, load_timing at hit 1), the named rows carved out, the rest coalesced:
 # one row per extent (Spyro 2's map names no roles; D_<addr> symbols are
 # counted). Then the overlay image union (--overlay 0x8006D264:0x1F000: one
 # row per piece between the [[expect]] ranges inside it, each a CdRead
@@ -40,9 +40,6 @@
 #               once openpete charges the pre-anchor reads their VBLs
 #   cd_timing   D_8006830C/D_80068310, D_80068324 — stream-seek countdown and
 #               head position; a stream-seek residual no read model removes
-#   pad_model   D_8006A960, D_8006AB4C, D_80068370-75, D_80068238-53, D_80068378
-#               (stick centres) — the analog
-#               pad's poll answer (the pad-model carve-out of ram_diff_expect.toml)
 
 # The arguments tools/derive_state_regions.py derived the direct rows from;
 # `--check` re-derives and compares (ctest state_regions_derivation_spyro-2).
@@ -114,21 +111,14 @@ start  = 0x80067161
 length = 0x27
 class  = "gameplay"
 
-# .bss extent 7: 486 symbols
+# .bss extent 7: 504 symbols
 [[region]]
 name   = "main_bss_8006718c"
 start  = 0x8006718C
-length = 0x10AC
+length = 0x1160
 class  = "gameplay"
 
-# .bss extent 8: 16 symbols
-[[region]]
-name   = "main_bss_80068254"
-start  = 0x80068254
-length = 0x98
-class  = "gameplay"
-
-# .bss extent 9: 14 symbols
+# .bss extent 8: 14 symbols
 [[region]]
 name   = "main_bss_800682f0"
 start  = 0x800682F0
@@ -141,34 +131,18 @@ class  = "gameplay"
 cd_load_transient = true
 diverge_baseline = 380
 
-# .bss extent 10: 6 symbols
+# .bss extent 9: 6 symbols
 [[region]]
 name   = "main_bss_80068314"
 start  = 0x80068314
 length = 0x10
 class  = "gameplay"
 
-# .bss extent 11: 28 symbols
+# .bss extent 10: 290 symbols
 [[region]]
 name   = "main_bss_80068328"
 start  = 0x80068328
-length = 0x48
-class  = "gameplay"
-
-# .bss extent 12: the two bytes between the pad flags and the stick copy
-[[region]]
-name   = "main_bss_80068376"
-start  = 0x80068376
-length = 0x2
-class  = "gameplay"
-# Constant over the attract-demo golden.
-constant_ok = true
-
-# .bss extent 13: 650 symbols
-[[region]]
-name   = "main_bss_8006838c"
-start  = 0x8006838C
-length = 0x1684
+length = 0x16E8
 class  = "gameplay"
 
 # spu/func_80050720's voice table: the state the host SPU's envelope and
@@ -184,28 +158,14 @@ host_precision = true
 diverge_baseline = 946
 description = "SPU voice table D_80069A10..D_80069E30 (spu/func_80050720, func_80050B74, func_80050D38): per-voice envelope and allocation state from the host SPU"
 
-# .bss extent 14: after the voice table
+# .bss extent 11: after the voice table, 576 symbols
 [[region]]
 name   = "main_bss_80069e30"
 start  = 0x80069E30
-length = 0xB30
+length = 0x1750
 class  = "gameplay"
 mask_offsets = [0x424, 0x425, 0x426, 0x427, 0x42C, 0x42D, 0x42E, 0x42F]
 mask_reason  = "D_8006A254 and D_8006A25C (spyroupdate/func_800351D8: the voice handles spu/func_80050A40 returned for Spyro's own sounds): the SPU voice the host allocator answered (host-precision residual, the class of Spyro 1's m_damageSoundChannel/m_chargeSoundChannel masks)"
-
-# .bss extent 13: 46 symbols
-[[region]]
-name   = "main_bss_8006a964"
-start  = 0x8006A964
-length = 0x1E8
-class  = "gameplay"
-
-# .bss extent 14: 154 symbols
-[[region]]
-name   = "main_bss_8006ab54"
-start  = 0x8006AB54
-length = 0xA2C
-class  = "gameplay"
 
 # overlay image union 0x8006D264-0x8008C264, cut at 6 expect range(s) into 7 row(s); every piece is a CdRead destination
 [[region]]

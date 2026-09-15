@@ -72,21 +72,6 @@ name   = "D_80066F9C, D_80066FA0 (VBL counters, draw/func_800156FC)"
 reason = "advance per VBL; hardware spends the load's wall time in VBLs that openpete's synchronous CdRead does not"
 owner  = "openpete-psx-oracle-ci"
 
-[[expect]]
-class  = "pad_model"
-start  = 0x8006A960
-end    = 0x8006A964
-name   = "D_8006A960 (stick centre bytes, pad/func_800121B0)"
-reason = "the analog pad answers 0x80 per axis; openpete's pad model answers 0x7F"
-owner  = "P16"
-
-[[expect]]
-class  = "pad_model"
-start  = 0x8006AB4C
-end    = 0x8006AB54
-name   = "D_8006AB4C (pad receive words, init.c)"
-reason = "the analog pad's poll answer; openpete's pad model answers a digital poll"
-owner  = "P16"
 
 # Loop anchor, hit 1: the title's own VSync loop ran 6 more frames on the
 # reference while the 10 pre-anchor reads were in flight (0.4 VBL/sector
@@ -191,29 +176,7 @@ name   = "D_80068324 (furthest CdlGetlocP position, str/func_80012CBC)"
 reason = "hardware's head starts after its seek; openpete's virtual head starts at the CdlReadS"
 owner  = "openpete-spyro2-3-bringup"
 
-[[expect]]
-class  = "pad_model"
-start  = 0x80068370
-end    = 0x80068376
-name   = "D_80068370-D_80068375 (pad type, mode-set, actuator-set, DualShock flags, pad/func_8001271C; D_80068374 the init flag, equal; D_80068375 set by pad/func_80012B58 on the DualShock path)"
-reason = "hardware's DualShock answers id 7 with two actuators; openpete's pad model answers a digital pad"
-owner  = "P16"
 
-[[expect]]
-class  = "pad_model"
-start  = 0x80068378
-end    = 0x8006838C
-name   = "D_80068378 (20 bytes: the analog sticks' centre and last values, 0x80 on hardware's DualShock, 0x7F from openpete's pad model)"
-reason = "the analog pad's poll answer; openpete's pad model answers a digital pad"
-owner  = "P16"
-
-[[expect]]
-class  = "pad_model"
-start  = 0x80068238
-end    = 0x80068254
-name   = "D_80068238-D_80068253 (copy of D_80068370-D_80068375 and of the D_80068378 stick values, spyroupdate/func_800313E4)"
-reason = "copy of the pad flag bytes above"
-owner  = "P16"
 
 [[expect]]
 class  = "vbl_count"
