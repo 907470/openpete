@@ -1,5 +1,4 @@
-// games/spyro-1/disc_library.cpp — the content-addressed disc library
-// (distribution D2.5; plan openpete-distribution-local-recomp).
+// games/spyro-1/dist/disc_library.cpp — the content-addressed disc library.
 //
 //   library/<disc_sha256>/
 //     disc.bin, disc.cue     ingested copy (cue synthesized)

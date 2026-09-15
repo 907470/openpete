@@ -121,10 +121,10 @@ the recompiled module joins the runtime:
 - `shared` — the distribution build. The recompiled code is not in the exe.
   The exe ships with a recompiler plus a compiler and builds
   `spyro1-recomp.{so,dll}` from the user's disc on first run
-  (`games/spyro-1/recomp_build.cpp`), keying the cache on a hash of the
+  (`games/spyro-1/dist/recomp_build.cpp`), keying the cache on a hash of the
   PSXRecomp binary, its emission metadata and the disc's SHA-256. Discs live
   in a content-addressed library under the user data dir, or beside the exe
-  for a portable install (`games/spyro-1/disc_library.cpp:89-92`). Subject of
+  for a portable install (`games/spyro-1/dist/disc_library.cpp:89-92`). Subject of
   `notes/plans/openpete-distribution-local-recomp.md`.
 
 Both modes build from the same sources; `shared` is an additive second
@@ -320,7 +320,7 @@ developer's real directories; `--appimage` gates the AppImage instead, and
 build tree present.
 
 `OPENPETE_PSXRECOMP` and `OPENPETE_CC`
-(`games/spyro-1/recomp_build.cpp:298,318`) override the bundled tools for
+(`games/spyro-1/dist/recomp_build.cpp:298,318`) override the bundled tools for
 dev testing of the shared path; without them the exe looks in
 `recomp/tools/` next to itself, then the repo build dir, then the system
 compiler.

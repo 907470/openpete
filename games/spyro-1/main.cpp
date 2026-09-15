@@ -88,7 +88,7 @@ void spyro1_moby_ops_register(void);
 /* Level-slot registry game ops (features/mod_level_ops.c, rung 12). */
 void spyro1_level_ops_register(void);
 }
-#include "splash.h"
+#include "dist/splash.h"
 extern "C" {
 extern void (*spyro1_progress_cb)(const char* stage, int done, int total);
 }

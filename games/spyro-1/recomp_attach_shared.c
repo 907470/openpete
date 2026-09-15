@@ -23,7 +23,7 @@
 #include "openpete_recomp_module.h"
 #include "spyro_overlay_table.h"
 #include "openpete_log.h"
-#include "splash.h"
+#include "dist/splash.h"
 
 #include <stdint.h>
 #include <stdio.h>

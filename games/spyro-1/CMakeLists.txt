@@ -119,7 +119,7 @@ if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
         COMMENT "Generating recomp-module export surface (.def + keep-alive)")
     set(SPYRO_RECOMP_ATTACH_SOURCES
         recomp_attach_shared.c
-        recomp_build.cpp
+        dist/recomp_build.cpp
         ${_module_keepalive})
 else()
     set(SPYRO_RECOMP_ATTACH_SOURCES recomp_attach_static.c)
@@ -215,11 +215,15 @@ openpete_add_game(spyro-1
         # The attach TU registers the module (static) or dlopens it (shared).
         ${SPYRO_RECOMP_ATTACH_SOURCES}
 
-        recomp_extract.cpp
         sfx_census.cpp
-        disc_library.cpp
-        splash.c
-        write_trace.cpp)
+        write_trace.cpp
+
+        # First-run distribution: the recompiler build, the WAD extraction,
+        # the disc library and the splash window.
+        dist/recomp_build.cpp
+        dist/recomp_extract.cpp
+        dist/disc_library.cpp
+        dist/splash.c)
 
 if(CMAKE_SYSTEM_NAME STREQUAL "Windows" AND MINGW)
     if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
@@ -592,7 +596,7 @@ endif()
 
 # Shared-linkage builds stage the first-boot inputs next to the exe:
 # the converged manifests, the 5-file module source kit, and (when
-# built) PSXRecomp. See recomp_build.cpp (distribution D2.4).
+# built) PSXRecomp. See dist/recomp_build.cpp.
 if(OPENPETE_RECOMP_LINKAGE STREQUAL "shared")
     set(_rdir $<TARGET_FILE_DIR:openpete-spyro1>/recomp)
     add_custom_command(TARGET openpete-spyro1 POST_BUILD

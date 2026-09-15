@@ -1,6 +1,5 @@
-// games/spyro-1/recomp_extract.cpp — carve the recomp pipeline's inputs
-// out of the user's disc (distribution D2.3; plan
-// openpete-distribution-local-recomp).
+// games/spyro-1/dist/recomp_extract.cpp — carve the recomp pipeline's inputs
+// out of the user's disc.
 //
 // Extracts PSX.EXE (iso9660 file lookup) and every code overlay
 // (WAD.WAD carve) to a directory — the first stage of the first-boot

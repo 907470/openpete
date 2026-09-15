@@ -1,13 +1,12 @@
-// games/spyro-1/recomp_build.cpp — the first-boot module build
-// (distribution D2.4; plan openpete-distribution-local-recomp).
+// games/spyro-1/dist/recomp_build.cpp — the first-boot module build.
 //
 // Turns a disc into spyro1-recomp.so with no python and no discovery:
 //
-//   extract (in-process, D2.3) ──► PSXRecomp ×38 (single pass, staged
-//   converged manifests) ──► cc -O2 -fPIC fan-out ──► link
+//   extract (in-process, recomp_extract.cpp) ──► PSXRecomp ×38 (single
+//   pass, staged converged manifests) ──► cc -O2 -fPIC fan-out ──► link
 //
-// Inputs staged next to the exe by the shared-linkage build (D2.4
-// CMake): recomp/manifest/ (converged funcs lists + manifest.toml +
+// Inputs staged next to the exe by the shared-linkage build
+// (CMake): recomp/manifest/ (converged funcs lists + manifest.toml +
 // psyq.toml + channel_sites.txt), recomp/src/ (the 5-file module source
 // kit), recomp/tools/PSXRecomp when packaged. The host compiler is
 // $OPENPETE_CC or `cc` until D3 bundles a pinned clang.
@@ -368,7 +367,7 @@ std::string cc_identity(const std::string& cc) {
  * PASS with -march=native), and the fixed-point GTE math lives in the
  * prebuilt runtime, not here.
  *
- * DEFAULT OFF, though — measured 2026-07-07: `-march=native` gave 0%
+ * DEFAULT OFF, though — measured: `-march=native` gave 0%
  * speedup on the attract-demo workload. The hot code (GTE, renderer,
  * PsyCross) is in the prebuilt runtime we can't tune per-user; the
  * module is branchy integer dispatch that neither vectorizes nor

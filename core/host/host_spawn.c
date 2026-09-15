@@ -12,7 +12,7 @@
  * `capture` is non-NULL the child's stdout+stderr are collected through
  * a pipe (the _popen replacement). Grandchildren inherit the hidden
  * console, so a whole compiler pipeline runs silently. Mirrors
- * win_run_cmd in games/spyro-1/recomp_build.cpp. */
+ * win_run_cmd in games/spyro-1/dist/recomp_build.cpp. */
 static int win_spawn(const char* cmd, char* capture, size_t cap) {
     HANDLE rd = NULL, wr = NULL;
     if (capture) {

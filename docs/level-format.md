@@ -37,7 +37,7 @@ Level data lives in `WAD.WAD`, indexed by a fixed header struct read into RAM as
 `WAD.WAD`, at disc LBA 37 (`g_CdState.m_WadSector`); every entry is an
 `OffsetLength { int m_Offset; int m_Length; }` giving a byte offset into the WAD
 and a length, and every offset is sector-aligned, so a read resolves to LBA
-`37 + m_Offset/2048` (`games/spyro-1/recomp_extract.cpp`, `kWadSector`).
+`37 + m_Offset/2048` (`games/spyro-1/dist/recomp_extract.cpp`, `kWadSector`).
 
 Byte offsets into the header, in `wad.h` field order:
 

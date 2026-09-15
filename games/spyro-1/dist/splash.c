@@ -1,7 +1,6 @@
-// games/spyro-1/splash.c — the first-run splash & disc resolver
-// (distribution D2.5b; plan openpete-distribution-local-recomp).
+// games/spyro-1/dist/splash.c — the first-run splash & disc resolver.
 //
-// One screen, four jobs (plan §"First-run splash & disc resolver"):
+// One screen, four jobs:
 //   DROP mode      — library empty, no --disc/--ingest: drag a .cue/.bin
 //                    onto the window (SDL_EVENT_DROP_FILE) to ingest it.
 //   SELECTOR mode  — several library entries: pick with ↑/↓ + Enter.

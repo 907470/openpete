@@ -10,7 +10,7 @@
 # (sniper), which keeps a Steam/Flatpak path open at no extra cost.
 #
 # Deliberately NOT here: a newer gcc. The base's own gcc 10 compiles the
-# C++17 surface (glslang, imgui, cubeb, disc_library.cpp) fine, and using
+# C++17 surface (glslang, imgui, cubeb, games/spyro-1/dist/disc_library.cpp) fine, and using
 # it is what keeps the GLIBCXX floor low for free — a backported compiler
 # would raise the floor again. Old X11/Wayland headers are harmless:
 # SDL3 dlopens those clients at runtime, but refuses to configure without

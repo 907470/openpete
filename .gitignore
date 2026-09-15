@@ -28,7 +28,7 @@ screenshot*.bmp
 # Cross-built static FFmpeg for windows-mingw --record (see scripts/setup_mingw_ffmpeg.sh)
 third_party/ffmpeg-mingw/
 third_party/ffmpeg-mingw-build/
-dist/
+/dist/
 
 # Stray disc-library from running an exe at the repo root (dist runtime dir).
 /library/
