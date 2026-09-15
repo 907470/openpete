@@ -44,7 +44,7 @@
 #include "openpete_host_mouse.h" /* mouse_read / mouse_capture */
 #include "openpete_keymap.h"     /* [keys.mod.<id>] binding overrides */
 #include "game_extras.h"      /* game_get_id: [mod] game targeting */
-#include "../runtime/openpete_imgui_guard.h" /* ImGui table bind */
+#include "../ui/openpete_imgui_guard.h" /* ImGui table bind */
 #include "../host/sha256.h"     /* content-hash build cache key */
 #include "../host/host_spawn.h" /* silent compiler spawn + cc identity */
 #include "miniz.h"              /* zip mods (folder or zip, identical) */

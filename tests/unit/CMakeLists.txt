@@ -209,7 +209,7 @@ endif()
 # line stays SDL-free like the rest of the console tests here.
 add_executable(openpete_osd_test
     openpete_osd_test.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/openpete_osd.c)
+    ${CMAKE_SOURCE_DIR}/core/ui/openpete_osd.c)
 target_include_directories(openpete_osd_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/third_party/SDL/include)

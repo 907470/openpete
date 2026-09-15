@@ -1,5 +1,5 @@
-// core/runtime/openpete_menu.c — in-game settings menu state + logic.
-// See openpete_menu.h and notes/plans/openpete-ingame-settings-menu.md.
+// core/ui/openpete_menu.c — in-game settings menu state + logic.
+// See openpete_menu.h.
 //
 // PURE PRESENTATION: every row maps to a native-renderer / host-pacer setter
 // (openpete_native_set_aspect/ssaa/vsync, openpete_set_render_fps,
@@ -186,7 +186,7 @@ static void build_fps_list(int refresh) {
     s_fps_count = n;
 }
 
-/* Mod menu rows (modding P4): MOD cycles the loaded-mod selection;
+/* Mod menu rows: MOD cycles the loaded-mod selection;
  * MOD ENABLED shows + live-toggles the selected mod (applied at the
  * next tick boundary by the loader). Data comes straight from the
  * loader enumeration — zero mods shows NONE and the rows no-op. */

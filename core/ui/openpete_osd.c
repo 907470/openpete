@@ -1,4 +1,4 @@
-/* core/runtime/openpete_osd.c — the OSD's toast ring. See openpete_osd.h.
+/* core/ui/openpete_osd.c — the OSD's toast ring. See openpete_osd.h.
  *
  * State only: no drawing, no glyphs, no renderer. What lives here is the ring,
  * the coalescing rule, the rate limit, the animation state machine and the two

@@ -1,4 +1,4 @@
-/* core/runtime/openpete_imgui_guard.h — containment for the mod ImGui table.
+/* core/ui/openpete_imgui_guard.h — containment for the mod ImGui table.
  *
  * Every entry of the engine's ImGui table is a generated wrapper
  * (openpete_imgui_guard.cpp, from tools/gen_imgui_table.py) that asks

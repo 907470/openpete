@@ -109,26 +109,26 @@ add_library(openpete_core STATIC
     psx/fiber.c
 
     renderer/openpete_ui_moby.c
-    runtime/openpete_menu.c
 
-    # Shared placement ledger for on-screen chrome (perf stats, OSD toasts):
-    # six anchors, a usable-x range that dodges the open settings panel, and a
-    # per-anchor stacking cursor so two surfaces never claim one corner. See
-    # openpete_overlay_anchor.h.
-    runtime/overlay_anchor.c
+    # Debug and in-game UI: the O settings menu; the placement ledger for
+    # on-screen chrome (six anchors, a usable-x range that dodges the open
+    # settings panel, a per-anchor stacking cursor so two surfaces never
+    # claim one corner; see openpete_overlay_anchor.h); OSD toast
+    # notifications (the ring, coalescing, rate limit and animation state
+    # machine on an injected clock; drawing lives in native_render.c and
+    # text_moby.c; see openpete_osd.h); the M-key dev config overlay (the
+    # ImGui panel over the knob registry, C++ TU, flat C API in
+    # openpete_devui.h; native-vk-only, live presents only); the G camlock
+    # and F freecam tools; and the top-left FPS overlay drawn via direct
+    # OpenGL during PsyCross's post-render hook (g_psyx_postRenderOverlay).
+    ui/openpete_menu.c
+    ui/overlay_anchor.c
+    ui/openpete_osd.c
+    ui/devui.cpp
+    ui/camlock.c
+    ui/freecam.c
+    ui/fps_overlay.cpp
 
-    # OSD toast notifications: the ring, coalescing, rate limit and animation
-    # state machine. Drawing lives in native_render.c + text_moby.c;
-    # this is state only, on an injected clock. See openpete_osd.h.
-    runtime/openpete_osd.c
-
-    # M-key dev config overlay: the ImGui panel over the knob registry
-    # (C++ TU, flat C API in openpete_devui.h). Native-vk-only, live
-    # presents only.
-    runtime/devui.cpp
-
-    runtime/camlock.c
-    runtime/freecam.c
     renderer/fillpick.c
     runtime/feature_registry.c
 
@@ -220,11 +220,6 @@ add_library(openpete_core STATIC
     # PsyCross render pipeline without depending on overlay-resident Spyro
     # code. C++ TU because PsyCross's libgpu.h uses static_assert.
     renderer/debug_render.cpp
-
-    # Top-left FPS overlay drawn via direct OpenGL during PsyCross's
-    # post-render hook (g_psyx_postRenderOverlay). C++ TU for the GL
-    # pipeline boilerplate.
-    runtime/fps_overlay.cpp
 
     # Vendored psxrecomp pieces we keep verbatim (per notes plan §5 Phase 1b
     # "keep gte.cpp + memory helpers + iso_reader"). Compiled directly here so
@@ -330,7 +325,7 @@ target_compile_definitions(openpete_core
 target_link_libraries(openpete_core PUBLIC openpete_rhi)
 
 # ImGui (third_party/imgui, pinned release tag) — the M-key dev config
-# overlay's UI library (runtime/devui.cpp). SDL3 + Vulkan backends; the Vulkan
+# overlay's UI library (ui/devui.cpp). SDL3 + Vulkan backends; the Vulkan
 # backend rides volk's already-loaded function pointers
 # (IMGUI_IMPL_VULKAN_USE_VOLK — openpete_rhi runs volkInitialize/volkLoadInstance
 # at rhi_create, and volk.c is compiled ONLY there, so no duplicate symbols).
@@ -393,13 +388,13 @@ add_library(openpete_imgui STATIC
     ${IMGUI_DIR}/backends/imgui_impl_vulkan.cpp
     ${DCIMGUI_DIR}/dcimgui.cpp
     ${_imgui_table_dir}/openpete_imgui_guard.cpp
-    ${CMAKE_CURRENT_SOURCE_DIR}/runtime/imgui_guard.c
+    ${CMAKE_CURRENT_SOURCE_DIR}/ui/imgui_guard.c
 )
 target_include_directories(openpete_imgui PRIVATE
     ${DCIMGUI_DIR}
     ${_imgui_table_dir}
     ${CMAKE_CURRENT_SOURCE_DIR}/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/runtime)
+    ${CMAKE_CURRENT_SOURCE_DIR}/ui)
 # The Linux exe links -rdynamic. Without this, a prebuilt mod object built
 # against raw dcimgui.h — no table, no version check, no guard — would resolve
 # ImGui_Begin to the exe at dlopen and drive the context directly, while the

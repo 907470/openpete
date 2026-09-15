@@ -1,4 +1,4 @@
-// core/runtime/camlock.c — host-side state for the render camera lock (G).
+// core/ui/camlock.c — host-side state for the render camera lock (G).
 // See openpete_camlock.h. Generic, address-free; the g_Camera bracket write
 // lives in the game's re-extract orchestrator.
 

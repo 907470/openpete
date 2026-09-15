@@ -1,4 +1,4 @@
-// core/runtime/freecam.c — host-side state for the debug free camera (F).
+// core/ui/freecam.c — host-side state for the debug free camera (F).
 // See openpete_freecam.h. Generic, address-free; the camera drive and
 // function-freeze live in games/common/freecam_game.c behind each game's
 // descriptor (games/<game>/features/freecam.c).

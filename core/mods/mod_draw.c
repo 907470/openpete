@@ -35,7 +35,7 @@
 #include "openpete_interp_objs.h"   /* g_openpete_tick_period_ns */
 #include "openpete_time.h"
 #include "openpete_fiber.h" /* openpete_frame */
-#include "../runtime/openpete_imgui_guard.h" /* hook-owner attribution */
+#include "../ui/openpete_imgui_guard.h" /* hook-owner attribution */
 
 #include <stdio.h>
 #include <string.h>

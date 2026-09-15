@@ -28,7 +28,7 @@
 #include "openpete_mod_api.h"
 #include "openpete_log.h"
 #include "openpete_time.h" /* per-mod time instrument */
-#include "../runtime/openpete_imgui_guard.h" /* hook-owner attribution */
+#include "../ui/openpete_imgui_guard.h" /* hook-owner attribution */
 
 #include <stdio.h>  /* snprintf — owner-state table */
 #include <stdlib.h> /* getenv — timer dump toggle */

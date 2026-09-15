@@ -3,7 +3,7 @@
 
 /*
  * M-key dev config overlay — flat C API over the ImGui panel
- * (core/runtime/devui.cpp). Everything imgui-typed stays inside the .cpp.
+ * (core/ui/devui.cpp). Everything imgui-typed stays inside the .cpp.
  *
  * Scope: native-vk live presents only. Never initialized headless or under
  * --renderer psycross; every call is a safe no-op before init/after shutdown.

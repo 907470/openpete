@@ -829,7 +829,7 @@ extern void openpete_debug_triangle_init(void);
 extern void openpete_debug_triangle_emit(void);
 extern void openpete_psyx_take_screenshot(const char* path);  /* BMP via SDL_SaveBMP */
 
-/* Top-left FPS overlay (core/runtime/fps_overlay.cpp). */
+/* Top-left FPS overlay (core/ui/fps_overlay.cpp). */
 extern void openpete_fps_overlay_emit(void);
 
 /* PsyCross internal: set non-zero to bypass SDL_GL_SetSwapInterval at the

@@ -895,7 +895,7 @@ uint64_t rhi_gpu_results_token(const rhi_device *dev);
  * The ONE deliberate hole in the opaque-handle abstraction: the ImGui
  * Vulkan backend must be initialized against the real device + the offscreen
  * render pass. Handles are typed as void pointers / uint64_t so rhi.h stays
- * Vulkan-free; the sole consumer (core/runtime/devui.cpp) casts them back.
+ * Vulkan-free; the sole consumer (core/ui/devui.cpp) casts them back.
  *
  * render_pass is the offscreen pass (off_rp). It IS destroyed+recreated on a
  * swapchain rebuild, but always with identical attachment formats — and a

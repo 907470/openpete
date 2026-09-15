@@ -4,7 +4,7 @@
 
 There's no clean external seam in PsyCross for openpete to draw on top of
 the just-finished scene before it's presented. We need this for the host's
-FPS counter (`core/runtime/fps_overlay.cpp`) — text rendered via direct GL
+FPS counter (`core/ui/fps_overlay.cpp`) — text rendered via direct GL
 on the GL backbuffer, sitting above the game's rasterised output, drawn
 once per `PsyX_EndScene` regardless of game state.
 
@@ -48,7 +48,7 @@ Spyro 1, NTSC, openpete linux-release.
 
 ## Notes
 
-- The overlay implementation in `core/runtime/fps_overlay.cpp` saves
+- The overlay implementation in `core/ui/fps_overlay.cpp` saves
   every GL knob it touches (`GL_CURRENT_PROGRAM`,
   `GL_VERTEX_ARRAY_BINDING`, `GL_ARRAY_BUFFER_BINDING`, viewport,
   blend/depth/cull/scissor enables) and restores them before returning,

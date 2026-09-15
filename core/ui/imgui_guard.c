@@ -1,4 +1,4 @@
-/* core/runtime/imgui_guard.c — body-active state behind the mod ImGui table
+/* core/ui/imgui_guard.c — body-active state behind the mod ImGui table
  * guard wrappers. See openpete_imgui_guard.h. */
 
 #include "openpete_imgui_guard.h"

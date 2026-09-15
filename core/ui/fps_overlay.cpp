@@ -1,4 +1,4 @@
-// core/runtime/fps_overlay.cpp — top-left FPS counter, drawn via direct
+// core/ui/fps_overlay.cpp — top-left FPS counter, drawn via direct
 // OpenGL during PsyCross's post-render hook.
 //
 // Wired up via `g_psyx_postRenderOverlay` (PsyX_public.h). PsyX_EndScene

@@ -1,4 +1,4 @@
-/* core/runtime/overlay_anchor.c — see openpete_overlay_anchor.h.
+/* core/ui/overlay_anchor.c — see openpete_overlay_anchor.h.
  *
  * Placement arithmetic only. The one piece of state it consults is whether the
  * settings menu is open, which decides where the usable x range starts. */
