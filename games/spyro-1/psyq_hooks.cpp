@@ -16,7 +16,7 @@
 //    filter and moby ranking, its sound-effect name tables.
 
 extern "C" {
-#include "psyq_game_hooks.h"
+#include "psyq/psyq_game_hooks.h"
 #include "openpete_psx.h"
 #include "openpete_fiber.h"
 #include "openpete_mods.h"

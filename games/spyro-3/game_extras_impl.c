@@ -9,7 +9,7 @@
 #include "game_extras.h"
 #include "openpete_psx.h"
 #include "spyro_overlay_table.h"
-#include "psyq_game_hooks.h"
+#include "psyq/psyq_game_hooks.h"
 #include "write_census.h"
 #include "freecam_game.h"
 #include "skip_to_level.h"
@@ -91,7 +91,7 @@ void game_on_state_loaded(CPUState* cpu) {
 }
 
 /* The extra savestate payload is the shared thunk layer's latch pack
- * (games/common/psyq_thunk_state.c). */
+ * (games/common/psyq/psyq_thunk_state.c). */
 
 /* A level overlay resident (loadStage -1) with game.state in gameplay. Title,
  * loading, fade-in and the exit transition report "not live", which keeps the

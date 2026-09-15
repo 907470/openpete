@@ -1,4 +1,4 @@
-// games/common/psyq_game_hooks_default.c — the inert default for every
+// games/common/psyq/psyq_game_hooks_default.c — the inert default for every
 // per-game PSYQ hook.
 //
 // A game supplies only the hooks it has and names them in its own
@@ -21,7 +21,7 @@
 // error, and one that names a hook it does not define is an undefined
 // reference. Both are loud, at link time, on every platform.
 
-#include "psyq_game_hooks.h"
+#include "psyq/psyq_game_hooks.h"
 
 // Per-game list of PSYQ_GAME_PROVIDES_* macros, from the game's own directory.
 #include "psyq_game_provides.h"

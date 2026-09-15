@@ -2,7 +2,7 @@
  *
  * Spyro reaches the memory card only through the PSYQ libmcrd MemCard*
  * wrappers, which openpete intercepts as psyq_MemCard* thunks
- * (games/spyro-1/psyq_thunks.cpp). Those thunks marshal the MIPS ABI and
+ * (games/common/psyq/psyq_thunks.cpp). Those thunks marshal the MIPS ABI and
  * call into this module, which owns two real 128 KiB PSX memory-card
  * images (.mcr) persisted to disk in a `cards` directory beside the
  * `states` one the save-states use — in the game folder for a portable

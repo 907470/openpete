@@ -58,7 +58,7 @@ Built for this investigation, still present, useful for any
 "prims reach the chain but nothing draws" question.
 
 `OPENPETE_OT_DUMP_FRAMES=A-B`, `OPENPETE_OT_DUMP_PATH=<path>`
-(`games/spyro-1/psyq_thunks.cpp:645-685`, default `/tmp/ot-dump.txt`)
+(`games/common/psyq/psyq_thunks.cpp:645-685`, default `/tmp/ot-dump.txt`)
 writes one row per OT slot per `DrawOTag` call over an `openpete_frame`
 window: `frame,slot,call,psx_addr,plen,code,payload_words`. This is what
 established that prim count and per-code distribution were unchanged

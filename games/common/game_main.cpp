@@ -13,7 +13,7 @@
 #include "openpete_log.h"
 #include "game_extras.h"
 #include "openpete_psx.h"
-#include "psyq_game_hooks.h"
+#include "psyq/psyq_game_hooks.h"
 #include "openpete_recomp_module.h"
 
 #include <cstdio>

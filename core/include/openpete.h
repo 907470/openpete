@@ -261,7 +261,7 @@ typedef struct openpete_options {
     int         disc_cache;
 
     /* VBLs of guest time every level load waits, spent by deferring the
-     * completion of the load's disc reads (games/common/psyq_thunks.cpp).
+     * completion of the load's disc reads (games/common/psyq/psyq_thunks.cpp).
      * -1 = unset: the game's own default (game_get_load_delay_default).
      * 0 = instant. Written into a recorded bk2's header; replay under a
      * different value is refused. --load-delay / OPENPETE_LOAD_DELAY. */

@@ -1,7 +1,7 @@
 /* games/spyro-2/psyq_game_provides.h — the PSYQ hooks this game defines.
  *
  * Naming a hook here suppresses its inert default in
- * games/common/psyq_game_hooks_default.c, so exactly one definition of it
+ * games/common/psyq/psyq_game_hooks_default.c, so exactly one definition of it
  * reaches the link. Adding a hook to the game without naming it here is a
  * duplicate-symbol error; naming one the game does not define is an undefined
  * reference.

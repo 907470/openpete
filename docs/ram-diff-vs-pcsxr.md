@@ -173,7 +173,7 @@ instants and different call stacks.
 
 ### Synchronous CdRead
 
-`psyq_CdRead` (`games/spyro-1/psyq_thunks.cpp`) calls `CdReadSync(0,
+`psyq_CdRead` (`games/common/psyq/psyq_thunks.cpp`) calls `CdReadSync(0,
 NULL)` inline, so a transfer completes before the thunk returns.
 PCSX-Redux runs real PSX cycle counts and leaves the same transfer
 pending across many VBLs. Immediately after a large read, openpete's
@@ -238,4 +238,4 @@ a `PsxStackPush` array. `ra` is mandatory and takes the dedicated
 - `core/psx/dispatch.c` — halt-at-pc hook in `psx_override_dispatch`
 - `core/config/options.c` — flag parsing
 - `core/include/openpete.h` — option fields
-- `games/spyro-1/psyq_thunks.cpp` — thunk bodies, `psyq_mirror_stack_frame`
+- `games/common/psyq/psyq_thunks.cpp` — thunk bodies, `psyq_mirror_stack_frame`

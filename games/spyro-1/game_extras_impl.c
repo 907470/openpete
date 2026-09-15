@@ -25,7 +25,7 @@
 #include "write_census.h"
 #include "openpete_fillpick.h"
 #include "features/levelwarp.h"
-#include "psyq_thunk_state.h"
+#include "psyq/psyq_thunk_state.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -455,7 +455,7 @@ int game_is_gameplay_live(CPUState* cpu) {
  *       phase gates guest writes across several ticks, so a rewind past a
  *       half-applied warp has to restore it alongside the RAM it wrote.
  *   v5: the thunk latches are the shared layer's pack
- *       (games/common/psyq_thunk_state.h: callbacks, drive mode and filter,
+ *       (games/common/psyq/psyq_thunk_state.h: callbacks, drive mode and filter,
  *       the interrupt- and DMA-callback tables) in place of v3's three
  *       words; the warp words follow it at the length the pack's own
  *       version word gives, so a blob saved under an earlier pack version

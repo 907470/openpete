@@ -221,7 +221,7 @@ int psx_dispatch_compiled(CPUState* cpu, uint32_t addr) {
 }
 ```
 
-`psyq_CdRead` (`games/spyro-1/psyq_thunks.cpp`) updates `s_active` after the
+`psyq_CdRead` (`games/common/psyq/psyq_thunks.cpp`) updates `s_active` after the
 bytes have settled: when the read's destination `cpu->a1` is exactly
 `0x8007AA38`, it reads the first word from RAM and calls
 `spyro_set_active_overlay_by_magic(magic)`. An unrecognized id leaves the

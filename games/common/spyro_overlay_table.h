@@ -51,7 +51,7 @@ uint32_t spyro_get_active_overlay_magic(void);
  * whose overlays can be staged elsewhere and copied into the overlay region
  * -- arriving without the disc read that would have announced them -- never
  * dispatches against the outgoing overlay's table.
- * psyq_overlay_resync_from_ram (games/common/psyq_game_hooks.h) is the
+ * psyq_overlay_resync_from_ram (games/common/psyq/psyq_game_hooks.h) is the
  * implementation every such game passes. */
 void spyro_overlay_set_resync(void (*fn)(void));
 

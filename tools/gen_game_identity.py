@@ -68,7 +68,7 @@ def main():
  * {a.conf}. Edit that file, not this one. */
 
 #include "game_extras.h"
-#include "psyq_game_hooks.h"
+#include "psyq/psyq_game_hooks.h"
 
 /* The stable machine id keys the [game.{a.game}] scope in openpete.toml. */
 const char* game_get_id(void)           {{ return {c_string(a.game)}; }}

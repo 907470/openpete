@@ -98,9 +98,9 @@ the per-tick entries, `psx_override_dispatch_game` (the per-function
 intercept, here the freecam freeze and the write census), the gameplay-live
 predicate, the player position, and the CLI resolvers.
 
-`psyq_game_provides.h` names the PSYQ hooks (`games/common/psyq_game_hooks.h`)
+`psyq_game_provides.h` names the PSYQ hooks (`games/common/psyq/psyq_game_hooks.h`)
 the game defines; each unnamed hook takes its inert default from
-`games/common/psyq_game_hooks_default.c`. Defining a hook without naming it
+`games/common/psyq/psyq_game_hooks_default.c`. Defining a hook without naming it
 is a duplicate-symbol error; naming one without defining it is an undefined
 reference.
 

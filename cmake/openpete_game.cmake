@@ -201,9 +201,9 @@ function(openpete_add_game GAME_ID)
         # Listed BEFORE the generated stubs so under MinGW link order lets a
         # thunk's strong definition win against the stub's (paired with
         # --allow-multiple-definition).
-        ${_common}/psyq_thunks.cpp
-        ${_common}/psyq_game_hooks_default.c
-        ${_common}/psyq_thunk_state.c
+        ${_common}/psyq/psyq_thunks.cpp
+        ${_common}/psyq/psyq_game_hooks_default.c
+        ${_common}/psyq/psyq_thunk_state.c
         ${_common}/write_census.c
         ${_common}/freecam_game.c
 
@@ -214,7 +214,7 @@ function(openpete_add_game GAME_ID)
         # has no dynamic symbol preemption, so module-side weak stubs would
         # shadow the strong thunks on Windows.
         ${_generated}/psyq_stubs.c
-        ${_common}/psyq_stub_runtime.c)
+        ${_common}/psyq/psyq_stub_runtime.c)
 
     # Generated C addresses psx_runtime.h via the include path provided by
     # openpete_core (which adds psxrecomp/runner/include).

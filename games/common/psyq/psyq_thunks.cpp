@@ -1,4 +1,4 @@
-/* games/common/psyq_thunks.cpp — PSYQ → PsyCross ABI thunks, shared by every
+/* games/common/psyq/psyq_thunks.cpp — PSYQ → PsyCross ABI thunks, shared by every
  * game.
  *
  * The recompiler emits PSYQ-targeted JALs as `psyq_NAME(cpu)` (with
@@ -33,7 +33,7 @@ extern "C" {
 #include "openpete_psx.h"
 #include "openpete_memcard.h"
 #include "openpete_cdrom_mmio.h"
-#include "psyq_game_hooks.h"
+#include "psyq/psyq_game_hooks.h"
 }
 
 #include <cstdio>
@@ -104,9 +104,8 @@ static void audio_dump_drain(void) {
 
 /* Saved-OT capture: each psyq_DrawOTag rebuilds the PSX OT chain into a
  * host scratch buffer (PsyCross P_TAG slots, guest->host translated)
- * and the display walk parses that. (The 1-game-frame-lag ping-pong +
- * screen-space matcher that used to live here was deleted 2026-07-06 —
- * the reference walk shows the just-built OT, bit-original.)
+ * and the display walk parses that: the reference walk shows the
+ * just-built OT, bit-original.
  *
  * Sizing (measured over a 20k-frame demo): 4:3 peaks at 2,255 slots /
  * 94 KB. 1 MB scratch + 8192 slots is ample headroom. */
@@ -151,8 +150,7 @@ extern "C" {
 }
 
 /* Music WAV override (core/host/) — plays assets/music/track_NN.wav in
- * place of the XA stream when present. See
- * notes/plans/openpete-music-wav-override.md. */
+ * place of the XA stream when present. */
 #include "music_override.h"
 #include "openpete_mods.h"          /* custom-level song lookup + SFX overlay */
 #include "openpete_profile.h"       /* game-fiber cost split (--profile-out) */
@@ -223,7 +221,7 @@ static float s_spuMainVolume = 1.0f;
 
 /* The latch pack these statics and the callback tables below serialize into
  * for the savestate; definitions follow the last table. */
-#include "psyq_thunk_state.h"
+#include "psyq/psyq_thunk_state.h"
 #include "psx/gtereg.h"
 #include "PsyX/PsyX_public.h"
 
@@ -557,9 +555,9 @@ static void sched_charge_registration(CPUState* cpu) {
 }
 
 void psyq_VSyncCallback(CPUState* cpu) {
-    /* Save the cb address; psyq_VSync invokes it once per call (Phase 1c
-     * doesn't drive a real 60Hz timer — VSync()'s thunk fires it when the
-     * compiled main loop yields). */
+    /* Save the cb address; psyq_VSync invokes it once per call (there is
+     * no real 60Hz timer — VSync()'s thunk fires it when the compiled main
+     * loop yields). */
     sched_charge_registration(cpu);
     OPL_INFO_F("thunks", "VSyncCallback registered: 0x%08X", cpu->a0);
     g_vsync_cb = cpu->a0;
@@ -1315,7 +1313,6 @@ void psyq_SetDrawMode(CPUState* cpu) {
      * copy (the Dream Weavers crash). g4/poly prims are unaffected because
      * the game builds those with inline setXY/setRGB/setcode macros (correct
      * PSX layout); only the *function* call SetDrawMode was layout-wrong.
-     * See notes/plans/openpete-ot-walk-vram-oob-crash.md.
      *
      * Fix: run SetDrawMode into a host-local extended DR_MODE, then write the
      * computed length + code words back in native PSX 4-byte-tag layout. Only
@@ -1659,10 +1656,10 @@ void psyq_DrawOTag(CPUState* cpu) {
 
         bool is_known_prim = (expected_longs != 0u);
         uint16_t lenField  = is_known_prim ? expected_longs : 0u;
-        /* PGXP per-primitive index disabled. Phase 2b Option 4 (content-
-         * keyed (sx,sy)→index map) was tried and failed: same-pixel
-         * vertex collisions caused flicker. Awaiting Option 2b
-         * (a per-address PGXP memory). */
+        /* PGXP per-primitive index disabled. A content-keyed
+         * (sx,sy)→index map was tried and failed: same-pixel vertex
+         * collisions caused flicker. A per-address PGXP memory would
+         * supply the index. */
         uint16_t pgxpField = 0xFFFFu;
         std::memcpy(out + 8,  &lenField,  2);
         std::memcpy(out + 10, &pgxpField, 2);
@@ -1737,8 +1734,8 @@ void psyq_DrawOTag(CPUState* cpu) {
      * so the inner `(primLength + P_LEN) * 4` advance lands cleanly on the
      * next slot — no over-walk into scratch. */
     if (g_ot_slot_count > 0) {
-        /* Phase 1.0 sizing probe — track high-water marks for OT memory
-         * to size the saved-prev buffers correctly. */
+        /* Sizing probe — track high-water marks for OT memory to size
+         * the saved-prev buffers correctly. */
         {
             static int      s_max_slot_count = 0;
             static size_t   s_max_scratch    = 0;
@@ -2551,8 +2548,8 @@ void psyq_CdLastCom(CPUState* cpu) {
 
 void psyq_CdMix(CPUState* cpu) {
     /* PsyCross declares CdMix but never defines it. Spyro calls it from
-     * CDInitialize() to set CD-XA mix volume; without real audio routing
-     * yet, treat as success. Phase 1d: wire to PsyCross's CD-XA path. */
+     * CDInitialize() to set CD-XA mix volume; without real audio routing,
+     * treat as success. */
     (void)cpu;
     cpu->v0 = 1u;
 }
@@ -2808,7 +2805,7 @@ void psyq_SpuIsTransferCompleted(CPUState* cpu) {
  * with the raw port encoding 0x10, out-of-bounds). We ignore it entirely
  * and marshal into openpete's host card module (core/host/memcard.c),
  * which owns two real 128 KiB .mcr images persisted under the per-user
- * state dir. See notes/plans/openpete-memcard-host-backed.md. */
+ * state dir. */
 
 void psyq_MemCardInit(CPUState* cpu) {
     openpete_memcard_init();

@@ -1,4 +1,4 @@
-// games/common/psyq_game_hooks.h — what the shared PSYQ thunk layer asks of a
+// games/common/psyq/psyq_game_hooks.h — what the shared PSYQ thunk layer asks of a
 // game.
 //
 // The thunk layer translates PSYQ calls into PsyCross for every game. Three

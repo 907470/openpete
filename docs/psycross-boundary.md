@@ -3,7 +3,7 @@
 PsyCross is openpete's re-implementation of the PSYQ SDK. Two kinds of
 caller cross into it:
 
-- The PSYQ thunks (`games/spyro-1/psyq_thunks.cpp`), which unpack a
+- The PSYQ thunks (`games/common/psyq/psyq_thunks.cpp`), which unpack a
   recompiled MIPS call's registers and re-issue it as a host call. This is
   the path every shipping preset takes.
 - Rewritten decomp C, which calls PsyCross directly as native code. This is
@@ -73,7 +73,7 @@ PSX-laid 4-byte stride does not accommodate 12-byte host entries; the
 callee would write past the buffer and read garbage tags.
 
 openpete resolves this in the thunk rather than in the buffer.
-`psyq_DrawOTag` (`games/spyro-1/psyq_thunks.cpp`) does not forward the PSX
+`psyq_DrawOTag` (`games/common/psyq/psyq_thunks.cpp`) does not forward the PSX
 pointer: it walks the PSX-laid chain in `g_ram`, rebuilds it into a
 host-side `P_TAG` scratch arena outside `g_ram` (one host slot per PSX
 entry, payload copied verbatim, `addr` fields re-chained to the next host

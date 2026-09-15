@@ -74,7 +74,7 @@ source = "libgpu's queued-command ring placed in game .bss: head/tail/count word
 
 # PSYQ-internal words openpete's mirrors write, derived by hand on 2026-09-11
 # from every write_word, table and block site in games/spyro-1/psyq_hooks.cpp
-# and the libgpu copies in games/common/psyq_thunks.cpp; a new site there
+# and the libgpu copies in games/common/psyq/psyq_thunks.cpp; a new site there
 # adds a row here. A differing byte here is a defective or incomplete
 # mirror, never expected.
 [[populated]]
