@@ -9,18 +9,19 @@ set(PSXRECOMP_RUNNER ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner)
 add_library(openpete_core STATIC
     runtime/log.c
     runtime/log_file.c
-    runtime/options.c
 
-    # openpete.toml: the layered config file for persistent settings,
-    # resolved into an argv splice and a setenv pass. config.c is SDL-free so
-    # the resolver can be unit-tested standalone (tests/unit/config_resolve_test.c).
-    runtime/config.c
-    runtime/config_schema.c
-
-    # Where the files openpete writes actually live: the game folder for a
-    # portable install (the Windows default), the platform's per-user
-    # directories otherwise. SDL-free for the same reason config.c is.
-    runtime/paths.c
+    # Configuration: the command-line flag parser, openpete.toml (the
+    # layered config file, resolved into an argv splice and a setenv pass;
+    # config.c is SDL-free so the resolver can be unit-tested standalone in
+    # tests/unit/config_resolve_test.c), the knob registry behind the M-key
+    # overlay, and the data-directory layout (the game folder for a
+    # portable install, the platform's per-user directories otherwise;
+    # SDL-free for the same reason config.c is).
+    config/options.c
+    config/config.c
+    config/config_schema.c
+    config/knob_registry.c
+    config/paths.c
 
     # Host input.
     # [keys]: the input binding registry. Split the same way and for the
@@ -110,10 +111,9 @@ add_library(openpete_core STATIC
     # this is state only, on an injected clock. See openpete_osd.h.
     runtime/openpete_osd.c
 
-    # M-key dev config overlay: table-driven knob registry (C) + ImGui
-    # panel (C++ TU, flat C API in openpete_devui.h). Native-vk-only, live
-    # presents only. See notes/plans/openpete-imgui-config-overlay.md.
-    runtime/knob_registry.c
+    # M-key dev config overlay: the ImGui panel over the knob registry
+    # (C++ TU, flat C API in openpete_devui.h). Native-vk-only, live
+    # presents only.
     runtime/devui.cpp
 
     runtime/camlock.c
@@ -542,7 +542,7 @@ if(NOT CMAKE_HOST_WIN32)
     #   - openpete_frame_time_log.c  FILETIME / GetSystemTimeAsFileTime
     #   - mods/mod_loader.c   LoadLibrary/GetProcAddress (prebuilt mod
     #                         DLL loading — Windows' dlopen analog)
-    #   - runtime/paths.c     GetModuleFileNameA (the exe directory, which
+    #   - config/paths.c      GetModuleFileNameA (the exe directory, which
     #                         is the root of the portable data layout)
     # The rest of core/ must remain game-agnostic AND platform-agnostic,
     # so keep the grep-guard but list the exempt TUs by name. New core

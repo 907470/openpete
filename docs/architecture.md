@@ -67,7 +67,7 @@ added only if the game's IRQ semantics force it. Clocks are NTSC-exact: tick
 
 ## Presentation
 
-`--renderer` selects the display path (`core/runtime/options.c:727`):
+`--renderer` selects the display path (`core/config/options.c:727`):
 `vk` (the native Vulkan renderer), `psycross` (the legacy GL path), `ab`, and
 `diff`. Headless runs fall back to PsyCross. The default is per game: Spyro 1
 starts on `vk`; Spyro 2 and Spyro 3 start on `psycross`, because the native

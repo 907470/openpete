@@ -34,7 +34,7 @@ verifies GTE math rather than whole-RAM state.
 
 ### openpete flags
 
-Parsed in `core/runtime/options.c`; help text under the debug block.
+Parsed in `core/config/options.c`; help text under the debug block.
 
 | Flag | Effect |
 | --- | --- |
@@ -236,6 +236,6 @@ a `PsxStackPush` array. `ra` is mandatory and takes the dedicated
 - `scripts/pcsx-redux-ram-dump.lua` — capture script
 - `core/runtime/run.c` — `load_cpu_seed`, seed-ram block
 - `core/psx/dispatch.c` — halt-at-pc hook in `psx_override_dispatch`
-- `core/runtime/options.c` — flag parsing
+- `core/config/options.c` — flag parsing
 - `core/include/openpete.h` — option fields
 - `games/spyro-1/psyq_thunks.cpp` — thunk bodies, `psyq_mirror_stack_frame`

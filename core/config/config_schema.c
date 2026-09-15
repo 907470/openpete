@@ -1,4 +1,4 @@
-/* core/runtime/config_schema.c — see config_schema.h for what this is for. */
+/* core/config/config_schema.c — see config_schema.h for what this is for. */
 
 #include "config_schema.h"
 

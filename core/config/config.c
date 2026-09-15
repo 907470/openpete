@@ -1,5 +1,5 @@
 /*
- * core/runtime/config.c — openpete.toml: load, resolve, materialize.
+ * core/config/config.c — openpete.toml: load, resolve, materialize.
  *
  * The precedence chain and the reason flattening is required (rather than
  * splicing every layer and letting each consumer's own CLI-beats-env rule

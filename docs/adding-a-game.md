@@ -145,6 +145,6 @@ control failing at its record (`docs/duckstation-oracle.md`).
   windowed oracle row (`psx_oracle_windowed`) exist for Spyro 1 alone,
   since only it has the native renderer.
 - `core/` still carries Spyro-named debug knobs (`SPYRO_SCRATCH_MAT`,
-  `SPYRO_UNTEX` in `core/runtime/knob_registry.c`); the `core/` purity check
+  `SPYRO_UNTEX` in `core/config/knob_registry.c`); the `core/` purity check
   refuses bare `0x800XXXXX` literals and Win32-only APIs, not Spyro-specific
   names.

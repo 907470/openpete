@@ -1,7 +1,6 @@
-// core/runtime/options.c — command-line flag parser.
+// core/config/options.c — command-line flag parser.
 //
-// Recognized flags come from notes/plans/openpete-pc-port.md Phase 0b
-// and §11.7. Unknown flags exit with OPENPETE_EXIT_SETUP_ERROR (3).
+// Unknown flags exit with OPENPETE_EXIT_SETUP_ERROR (3).
 
 #include "openpete.h"
 #include "openpete_config.h"  /* openpete.toml — the layered config file */
@@ -186,7 +185,7 @@ static int expand_bk2_sidecar(int argc, char** argv, int* out_argc, char*** out_
 }
 
 /* Persistent settings come from openpete.toml, resolved by
- * core/runtime/config.c, which materializes the winning layer as an argv
+ * core/config/config.c, which materializes the winning layer as an argv
  * splice or a setenv before this parser runs. */
 
 /* --bk2-record args sidecar helpers -----------------------------------

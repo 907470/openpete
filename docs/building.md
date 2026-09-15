@@ -185,7 +185,7 @@ What the preset files pin, beyond `CMAKE_BUILD_TYPE`:
 | `OPENPETE_RECOMP_LINKAGE=shared` | `*-shared` | the linkage axis |
 | `OPENPETE_ROM_FREE_ICON=ON` | `*-shared` | no game bytes baked into the exe |
 | `OPENPETE_ENABLE_RECORD=OFF` | `*-shared` | compiles out `--record`, dropping the libav dependency |
-| `OPENPETE_HIDE_DEBUG_FLAGS=ON` | `*-shared` | `--help` shows only the user-facing flag block. Display-only: `core/runtime/options.c` splits the help text, every flag still parses |
+| `OPENPETE_HIDE_DEBUG_FLAGS=ON` | `*-shared` | `--help` shows only the user-facing flag block. Display-only: `core/config/options.c` splits the help text, every flag still parses |
 | `OPENPETE_STAGE_MOD_DLLS=OFF` | `windows-mingw-shared` | stage mod sources only, no cmake-side DLLs — the dist exe's first-boot mod compile is the validation surface, and pre-seeding `.build/` would mask it. Default ON: cross presets pre-build every mod DLL into `<build>/games/spyro-1/mods/<id>/.build/` |
 | `OPENPETE_BUILD_PCSX_REDUX_GTE=OFF`, `OPENPETE_BUILD_TESTS=OFF` | `wasm` | trim non-browser components |
 
@@ -261,7 +261,7 @@ repo-relative paths resolved against the working directory. An explicit
 touches the first-boot machinery.
 
 Persistent settings come from `openpete.toml`, read from the exe's directory
-and then the per-user config dir (`core/runtime/config.c:1094-1100`) — never
+and then the per-user config dir (`core/config/config.c:1094-1100`) — never
 from the working directory, and no such file is staged into a dev build dir.
 `--config-report` prints the resolved settings and exits; `--config PATH`
 uses only that file; `--no-config` ignores every config file, which is what

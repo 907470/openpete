@@ -99,14 +99,14 @@ add_test(NAME psx_region_test COMMAND psx_region_test)
 # cross-check in main).
 add_executable(knob_registry_test
     knob_registry_test.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/knob_registry.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/config.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/config_schema.c
+    ${CMAKE_SOURCE_DIR}/core/config/knob_registry.c
+    ${CMAKE_SOURCE_DIR}/core/config/config.c
+    ${CMAKE_SOURCE_DIR}/core/config/config_schema.c
     # keymap.c rides along because config.c now seeds and resolves the
     # binding store, paths.c because it decides where the [saved] zone is
     # written. No log.c: this test stubs the log entry points itself.
     ${CMAKE_SOURCE_DIR}/core/input/keymap.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/paths.c
+    ${CMAKE_SOURCE_DIR}/core/config/paths.c
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
 target_include_directories(knob_registry_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
@@ -159,11 +159,11 @@ add_test(NAME vibration_test COMMAND vibration_test)
 # alongside tomlc99. See notes/plans/openpete-config-consolidation.md.
 add_executable(config_resolve_test
     config_resolve_test.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/config.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/config_schema.c
+    ${CMAKE_SOURCE_DIR}/core/config/config.c
+    ${CMAKE_SOURCE_DIR}/core/config/config_schema.c
     ${CMAKE_SOURCE_DIR}/core/input/keymap.c
     ${CMAKE_SOURCE_DIR}/core/runtime/log.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/paths.c
+    ${CMAKE_SOURCE_DIR}/core/config/paths.c
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
 target_include_directories(config_resolve_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include)

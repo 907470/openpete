@@ -10,7 +10,7 @@
 
 #include "openpete.h"
 #include "openpete_knobs.h"
-#include "../../core/runtime/config_schema.h"
+#include "../../core/config/config_schema.h"
 
 #include <stdbool.h>
 #include <stdio.h>

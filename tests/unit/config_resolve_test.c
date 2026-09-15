@@ -13,7 +13,7 @@
 #include "openpete_config.h"
 #include "openpete_keymap.h"
 #include "openpete_paths.h"
-#include "../../core/runtime/config_schema.h"
+#include "../../core/config/config_schema.h"
 
 #include <stdio.h>
 #include <stdlib.h>
