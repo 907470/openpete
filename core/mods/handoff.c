@@ -1,5 +1,4 @@
-// core/runtime/handoff.c — process handoff: checkpoint → exec → restore
-// (the modding framework's P2 item, second half).
+// core/mods/handoff.c — process handoff: checkpoint → exec → restore.
 //
 // Binary-shape operations (install/uninstall a site-hook mod, SDK
 // regen) need a NEW process image; the handoff carries the live session

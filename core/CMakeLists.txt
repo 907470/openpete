@@ -89,9 +89,6 @@ add_library(openpete_core STATIC
     record/rewind.c
     record/discontinuity.c
 
-    # The mod install's checkpoint, exec and restore path.
-    runtime/handoff.c
-
     # The PSX machine model: RAM and the CPUState bindings, the EXE boot
     # sequence, dispatch glue and the hang watchdog, the BIOS model, the
     # CD-ROM controller, the disc cache, the EXE loader, the RAM
@@ -132,11 +129,12 @@ add_library(openpete_core STATIC
     renderer/fillpick.c
     runtime/feature_registry.c
 
-    # Modding framework P1: per-address override chains riding the
-    # psx_override_dispatch prologue chokepoint + compile-on-load mod
-    # loader (mod.toml manifests via vendored tomlc99, POSIX dlopen).
-    # See notes/plans/openpete-modding-framework.md.
+    # Modding framework: per-address override chains riding the
+    # psx_override_dispatch prologue chokepoint, the compile-on-load mod
+    # loader (mod.toml manifests via vendored tomlc99, POSIX dlopen), and
+    # the mod install's checkpoint, exec and restore path (handoff.c).
     mods/mod_chain.c
+    mods/handoff.c
     mods/mod_loader.c
     mods/mod_draw.c
     mods/mod_services.c
