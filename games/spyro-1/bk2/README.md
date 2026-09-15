@@ -116,7 +116,7 @@ Read the failure tag, then:
 
 - **expected-red** — the BK2 surfaces an `open` channel; not a
   regression. Open channels are tracked in
-  `manifest/render_channels.toml`.
+  `games/spyro-1/manifest/render_channels.toml`.
 - **REGRESSION** — a `gated` channel diverged. The classifier
   output names which channel and which state region; cross-
   reference with `code_generator.cpp` substitution sites for that

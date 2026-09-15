@@ -705,7 +705,7 @@ int main(int argc, char** argv) {
     codegen.set_skip_on_error(skip_on_error);
 
     // Load the render-channel substitution table (generated from
-    // manifest/render_channels.toml). Optional — without it the data-driven
+    // games/spyro-1/manifest/render_channels.toml). Optional — without it the data-driven
     // channel shapes simply aren't substituted (identity), so a recompile
     // that forgets the flag is safe-degraded, not silently wrong.
     if (!channel_sites_path.empty()) {

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""check_channel_registry.py — reconcile manifest/render_channels.toml
+"""check_channel_registry.py — reconcile games/spyro-1/manifest/render_channels.toml
 against the address-keyed substitution table in
 third_party/psxrecomp/recompiler/src/code_generator.cpp.
 
@@ -55,7 +55,7 @@ def parse_state_region_names(toml_path: Path) -> set[str]:
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--registry", default="manifest/render_channels.toml")
+    ap.add_argument("--registry", default="games/spyro-1/manifest/render_channels.toml")
     ap.add_argument(
         "--recompiler",
         default="third_party/psxrecomp/recompiler/src/code_generator.cpp",

@@ -135,7 +135,7 @@ def find_signature(prog, hook_idx, func_idx):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--manifest", default="manifest/render_channels.toml")
+    ap.add_argument("--manifest", default="games/spyro-1/manifest/render_channels.toml")
     ap.add_argument("--exe", default="games/spyro-1/spyro-1/build/PSX.EXE")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()

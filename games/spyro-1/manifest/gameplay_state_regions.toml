@@ -34,7 +34,7 @@
 # run exceeding it fails.
 #
 # render_scratch rows are the four render-side ranges inside the main
-# image: the three channels audited in manifest/render_channels.toml
+# image: the three channels audited in games/spyro-1/manifest/render_channels.toml
 # (prim colour scratch, the moby prim queues, the dedup flags), sized from
 # sony_image.h, and the primitive-buffer cursor. The DEMO MODE text
 # letters wobble by COSINE_8((g_LevelTicks * 4 + i * 12) & 0xFF)
@@ -94,7 +94,7 @@ name        = "render_prim_color_scratch"
 start       = 0x800705F4
 length      = 0xD00
 class       = "render_scratch"
-description = "g_SonyImage.u.m_Draw.unk_0x900[0xD00] (sony_image.h): prim-packet colour scratch written by r_moby.s GTE depth cueing (PC 0x8001FE78); no gameplay reads (manifest/render_channels.toml sector_visibility_flags, audited_clean); identical to the reference on all 20k golden records"
+description = "g_SonyImage.u.m_Draw.unk_0x900[0xD00] (sony_image.h): prim-packet colour scratch written by r_moby.s GTE depth cueing (PC 0x8001FE78); no gameplay reads (games/spyro-1/manifest/render_channels.toml sector_visibility_flags, audited_clean); identical to the reference on all 20k golden records"
 
 [[region]]
 name        = "render_moby_queues"

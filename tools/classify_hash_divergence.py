@@ -52,7 +52,7 @@ def main() -> int:
     ap.add_argument("candidate", help="hash CSV from the run to classify")
     ap.add_argument(
         "--registry",
-        default="manifest/render_channels.toml",
+        default="games/spyro-1/manifest/render_channels.toml",
         help="render_channels.toml for region→channel lookup",
     )
     args = ap.parse_args()
@@ -113,7 +113,7 @@ def main() -> int:
               f"{', '.join(regions)}")
     for rname in unowned:
         print(f"  region {rname!r}: NO CHANNEL CLAIMS THIS — orphan leak; "
-              "add an entry to manifest/render_channels.toml")
+              "add an entry to games/spyro-1/manifest/render_channels.toml")
     if not diverged_region_idx:
         # Total hash diverged but no per-region column did — header
         # mismatch or stale log.

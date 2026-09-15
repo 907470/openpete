@@ -65,7 +65,7 @@ struct GeneratedFunction {
 };
 
 // A render→gameplay channel substitution site, GENERATED from
-// manifest/render_channels.toml by tools/gen_channel_sites.py and loaded at
+// games/spyro-1/manifest/render_channels.toml by tools/gen_channel_sites.py and loaded at
 // runtime via --channel-sites. This keeps Spyro-specific addresses out of the
 // recompiler source: the addresses + knob symbols live in the manifest, and
 // the recompiler only knows how to emit each generic `kind`. See

@@ -822,7 +822,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                  * canonical add; that hook (core/features/widescreen.c) clears
                  * native_dist_pass if the canonical 4:3 cull would reject. The
                  * verdict math lives in the hook, not here — addresses + hook
-                 * come from manifest/render_channels.toml via --channel-sites. */
+                 * come from games/spyro-1/manifest/render_channels.toml via --channel-sites. */
                 if (auto _cs = channel_sites_.find(addr);
                     _cs != channel_sites_.end()
                     && _cs->second.kind == ChannelSite::AppendCall) {
@@ -939,7 +939,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * `addi $rt, $rs, +imm` sites where $rs holds a pool base
                      * and the addi shifts to a queue head/limit. Their
                      * addresses, immediates and knob symbols live in
-                     * manifest/render_channels.toml (channels
+                     * games/spyro-1/manifest/render_channels.toml (channels
                      * no_lod_env_queue_offsets / no_lod_moby_reg_queue),
                      * loaded via --channel-sites — NOT hardcoded here, so this
                      * shape carries zero Spyro addresses in the recompiler.
@@ -983,7 +983,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * for letterbox/fade at func_80018F30 / func_800190D4).
                      * Same ConstLoad kind as the lui clip-threshold sites
                      * (`rt = <knob>`); addresses + knob live in
-                     * manifest/render_channels.toml (channels
+                     * games/spyro-1/manifest/render_channels.toml (channels
                      * widescreen_portal_clip_rect / widescreen_2d_fullbleed_x_max),
                      * loaded via --channel-sites. Identity at default knob (512). */
                     uint32_t rt = get_rt(instr);
@@ -1012,7 +1012,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                      * 0x201`) at 0x800517F4 / 0x80051E88 → ReplaceCall
                      * psx_runtime_portal_clip_slt(rs) = `rs < knob`. The
                      * widened compare now lives in core/features/widescreen.c;
-                     * address + hook in manifest/render_channels.toml. */
+                     * address + hook in games/spyro-1/manifest/render_channels.toml. */
                     if (auto _cs = channel_sites_.find(addr);
                         _cs != channel_sites_.end()
                         && _cs->second.kind == ChannelSite::ReplaceCall) {
@@ -1128,7 +1128,7 @@ std::string CodeGenerator::translate_instruction(uint32_t addr, uint32_t instr) 
                     /* Per-vertex right-edge SX clip thresholds (`lui $tN,
                      * 0x200` == 512<<16) across the cyclorama / moby /
                      * particle / environment renderers. Their addresses + knob
-                     * live in manifest/render_channels.toml (channel
+                     * live in games/spyro-1/manifest/render_channels.toml (channel
                      * widescreen_clip_x_threshold), loaded via --channel-sites
                      * — NOT hardcoded here. The ConstLoad kind emits
                      * `rt = <knob>`, replacing the hardcoded constant with a

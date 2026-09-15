@@ -335,7 +335,7 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
     # Channel registry audit — fast static check (no PSX boot). Cross-
-    # references manifest/render_channels.toml against the recompiler's
+    # references games/spyro-1/manifest/render_channels.toml against the recompiler's
     # address-keyed substitution table; fails on missing or orphaned
     # substitutions. See notes/plans/openpete-determinism-enforcement.md
     # Phase 4.

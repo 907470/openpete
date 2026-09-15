@@ -4,7 +4,7 @@
 // of presentation flags (--aspect / --no-lod).
 //
 // These are the named-hook implementations the recompiler calls (generated
-// from manifest/render_channels.toml, channels m_WasDrawn /
+// from games/spyro-1/manifest/render_channels.toml, channels m_WasDrawn /
 // no_lod_moby_distance_cull_verdict / particle_drawn_flag / sparkle_alloc_
 // state). The bespoke verdict math lives here, host-side, instead of in the
 // vendored recompiler, separate from core/renderer/widescreen.c so each

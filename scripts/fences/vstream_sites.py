@@ -8,7 +8,7 @@ Every reader in the game decodes it with one idiom:
     sll r, r, 11        ; drop the top 11 bits
     srl r, r, 11 | 10   ; ... and shift back (10 = Spyro's halved encoding)
 
-The srl of each pair is substituted (manifest/render_channels.toml, channel
+The srl of each pair is substituted (games/spyro-1/manifest/render_channels.toml, channel
 moby_vstream_field) with a resolver call that treats field values below the
 handle bound as stream handles. The substitution is what lets mod model data
 live outside the first 2 MB, and it is only correct if it covers EVERY
@@ -87,7 +87,7 @@ def scan_generated(root):
 
 def main():
     root = sys.argv[1] if len(sys.argv) > 1 else os.getcwd()
-    manifest = os.path.join(root, "manifest", "render_channels.toml")
+    manifest = os.path.join(root, "games", "spyro-1", "manifest", "render_channels.toml")
     if not os.path.exists(manifest):
         print(f"vstream_sites: no manifest at {manifest}", file=sys.stderr)
         return 64

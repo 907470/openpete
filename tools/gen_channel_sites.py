@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """gen_channel_sites.py — emit the recompiler's render-channel substitution
-table from manifest/render_channels.toml.
+table from games/spyro-1/manifest/render_channels.toml.
 
 This is the generation half of "render_channels.toml is the source of truth":
 gen_state_regions.py already makes gameplay_state_regions.toml authoritative
@@ -45,7 +45,7 @@ def coerce_int(v):
 
 def main() -> int:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--manifest", default="manifest/render_channels.toml")
+    ap.add_argument("--manifest", default="games/spyro-1/manifest/render_channels.toml")
     ap.add_argument("--out", required=True)
     args = ap.parse_args()
 
