@@ -36,8 +36,12 @@ leg runs the deterministic branch. So the rule becomes mechanical:
 Comment text is ignored (an explanation may name op_now() freely); only
 code is scanned.
 
+A glob in the guarded list that matches no file is refused: a file moved
+without its glob would otherwise leave the guard silently unwired.
+
 Run: python3 scripts/fences/clock_guard.py [root]
-Exit: 0 clean, 66 a scene producer reads the wall clock without saying so.
+Exit: 0 clean, 66 a scene producer reads the wall clock without saying so,
+67 a guarded glob matches no file.
 
 rumble-guard: no-launch, wslenv-guard: no-launch
 """
@@ -58,7 +62,6 @@ GUARDED = (
     "games/spyro-1/features/*_native.c",
     "games/spyro-1/features/freecam.c",
     "games/common/freecam_game.c",
-    "games/spyro-1/features/*_interp*.c",
     "core/runtime/native_render.c",
     "core/runtime/openpete_interp.c",
     "core/runtime/openpete_interp_objs.c",
@@ -109,6 +112,19 @@ def offends(text):
     return bad
 
 
+def unmatched_globs(root):
+    """Guarded globs that name no file under `root`."""
+    stale = []
+    for pat in GUARDED:
+        d = os.path.join(root, os.path.dirname(pat))
+        names = sorted(os.listdir(d)) if os.path.isdir(d) else []
+        if not any(fnmatch.fnmatch(
+                os.path.join(os.path.dirname(pat), n).replace(os.sep, "/"), pat)
+                for n in names):
+            stale.append(pat)
+    return stale
+
+
 def scan(root):
     bad = []
     for pat in GUARDED:
@@ -133,6 +149,13 @@ def main():
     root = sys.argv[1] if len(sys.argv) > 1 else \
         os.path.join(os.path.dirname(__file__), "..", "..")
     root = os.path.abspath(root)
+    stale = unmatched_globs(root)
+    if stale:
+        print("clock_guard: these guarded globs match no file; a moved "
+              "producer must move its glob:", file=sys.stderr)
+        for pat in stale:
+            print(f"  {pat}", file=sys.stderr)
+        return 67
     bad = scan(root)
     if not bad:
         return 0

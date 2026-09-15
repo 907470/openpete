@@ -39,8 +39,12 @@ call sites a runtime check would only find once they misbehave.
 
 rumble-guard: no-launch
 
+An allow-list entry that names no file is refused: it is dead after a move
+and the file at its new path reads as a violation.
+
 Run: python3 scripts/fences/seam_guard.py [root]
-Exit: 0 clean, 65 a file outside the seam touches display-owner state.
+Exit: 0 clean, 65 a file outside the seam touches display-owner state,
+67 an allow-list entry names no file.
 """
 import os
 import re
@@ -81,6 +85,12 @@ SKIP_DIRS = {".git", "notes", "build", "__pycache__", "third_party", "dist",
 SUFFIXES = (".c", ".cpp", ".h", ".hpp")
 
 
+def stale_allow(root):
+    """Allow-list entries that name no file under `root`."""
+    return sorted(rel for rel in RHI_ALLOW | FS_ALLOW | WINDOW_ALLOW
+                  if not os.path.isfile(os.path.join(root, rel)))
+
+
 def scan(root):
     bad = []
     for dirpath, dirnames, filenames in os.walk(root):
@@ -116,6 +126,13 @@ def main():
     root = sys.argv[1] if len(sys.argv) > 1 else \
         os.path.join(os.path.dirname(__file__), "..", "..")
     root = os.path.abspath(root)
+    stale = stale_allow(root)
+    if stale:
+        print("seam_guard: these allow-list entries name no file; a moved "
+              "owner file must move its entry:", file=sys.stderr)
+        for rel in stale:
+            print(f"  {rel}", file=sys.stderr)
+        return 67
     bad = scan(root)
     if not bad:
         return 0
