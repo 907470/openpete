@@ -61,6 +61,7 @@
 #include "openpete_fiber.h"  /* openpete_vbl — saved/restored via hdr.vbl */
 #include "openpete_log.h"
 #include "openpete_memcard.h" /* openpete_psx_bios_seed_ram */
+#include "openpete_psxtrace.h" /* openpete_sched_active */
 #include "openpete_mods.h"   /* per-mod state participation + modset tag */
 #include "openpete_paths.h"
 #include "openpete_psx.h"

@@ -12,6 +12,8 @@
 #include "openpete_config.h"
 #include "openpete_log.h"
 #include "game_extras.h"
+#include "openpete_psx.h"
+#include "psyq_game_hooks.h"
 #include "openpete_recomp_module.h"
 
 #include <cstdio>
@@ -53,6 +55,9 @@ int main(int argc, char** argv) {
     /* The gameplay-state region table the oracle hashes (games/common/
      * state_regions.c); explicit, before openpete_run(). */
     game_state_regions_register();
+
+    /* Root counter 2 as the game's boot reads it (the RNG seed source). */
+    openpete_psx_set_root_counter2(psyq_game_root_counter2());
 
     return openpete_run(&opts);
 }

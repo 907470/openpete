@@ -78,6 +78,11 @@ void psyq_game_mirror_memcard_init(CPUState* cpu);
  * correct as a generator, just not observable in guest RAM. */
 uint32_t psyq_game_rand_seed_addr(void);
 
+/* Root counter 2's count as the game reads it at boot (0x1F801120, an
+ * `lhu`) to seed rand: the value the hardware reference produced on the
+ * captured boot, 0 for a game that never reads it. */
+uint16_t psyq_game_root_counter2(void);
+
 /* --- Game feature couplings -------------------------------------------- */
 
 /* The vaddr every overlay of this game loads at (game_identity.c, from

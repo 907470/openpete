@@ -192,6 +192,11 @@ int      psyq_game_load_window_active(uint32_t value) { (void)value; return 0; }
  * overwrites, at D_80073F3C in the library's .bss. */
 uint32_t psyq_game_rand_seed_addr(void) { return 0x80073F3Cu; }
 
+/* Root counter 2's count as the boot's `lhu` at 0x8004F6A4 (stdutil.s)
+ * read it on the hardware reference, passed to srand: the seed every boot
+ * starts from. */
+uint16_t psyq_game_root_counter2(void) { return 0x58C7u; }
+
 /* The checksum walk's verdict. Loading state 8 in func_8002CA50 (0x8002CD24)
  * takes it once per level load: when the cursor 0x8006C6B8 has not reached
  * 0x8007B6E4 or the CRC 0x8006C6B4 is not 0, a rand()-picked word of the

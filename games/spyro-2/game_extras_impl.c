@@ -135,5 +135,10 @@ uint32_t psx_runtime_g_sony_image_base = 0x8006FCF4u;
  * overwrites, at D_8006D144 in the library's .bss. */
 uint32_t psyq_game_rand_seed_addr(void) { return 0x8006D144u; }
 
+/* Root counter 2's count as the boot's `lhu` at 0x8001C2DC (stdutil.s)
+ * read it on the hardware reference, passed to srand: the seed every boot
+ * starts from. */
+uint16_t psyq_game_root_counter2(void) { return 0x4876u; }
+
 /* Disc layout is not mapped for this game yet. */
 const game_disc_layout_t* game_get_disc_layout(void) { return NULL; }

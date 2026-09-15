@@ -202,6 +202,15 @@ uint32_t openpete_psx_call_fnptr(uint32_t vaddr,
                                  uint32_t a0, uint32_t a1,
                                  uint32_t a2, uint32_t a3);
 
+/* --- Root counter 2 ------------------------------------------------------ */
+
+/* The value a read of root counter 2's current-count register (0x1F801120)
+ * returns. openpete runs no timers; a game that seeds its RNG from the
+ * counter at boot gets this constant, the value the hardware reference
+ * produced on the captured boot, so every boot seeds as that one did. */
+void     openpete_psx_set_root_counter2(uint16_t value);
+uint16_t openpete_psx_root_counter2(void);
+
 /* --- Crash handler ------------------------------------------------------- */
 
 void openpete_psx_install_crash_handler(void);

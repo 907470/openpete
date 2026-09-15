@@ -104,10 +104,18 @@ static uint8_t* mem_ptr(uint32_t addr) {
 
 /* --- Aligned reads/writes (caller is responsible for alignment) ---------- */
 
+/* Root counter 2's current count (0x1F801120), a constant per game. */
+static uint16_t s_root_counter2 = 0;
+void     openpete_psx_set_root_counter2(uint16_t value) { s_root_counter2 = value; }
+uint16_t openpete_psx_root_counter2(void) { return s_root_counter2; }
+#define ROOT_COUNTER2_COUNT 0x1F801120u
+
 /* Reads from the BIOS ROM window compose from the ROM identification model
- * (psx_bios.c); every other unmapped address reads 0. */
+ * (psx_bios.c); root counter 2's count register answers the per-game
+ * constant; every other unmapped address reads 0. */
 static uint32_t rom_read(uint32_t addr, unsigned n) {
     uint32_t v = 0;
+    if ((addr & 0x1FFFFFFFu) == ROOT_COUNTER2_COUNT) return s_root_counter2;
     for (unsigned i = 0; i < n; i++) {
         uint8_t b;
         if (!openpete_psx_bios_rom_read8((addr + i) & 0x1FFFFFFFu, &b)) return 0;
