@@ -203,7 +203,7 @@ typedef struct {
 #define MOD_OVL_MAX_VERTS 16384 /* mod draw-service overlay verts (see draw_mod_overlay) */
 #define MENU_MAX_VERTS 256   /* in-game menu panel/border/selection quads (see draw_menu_overlay) */
 #define MENU_GLYPH_MAX 32768 /* in-game menu 3D glyph text verts (labels/values/title);
-                              * must match MENU_TXT_MAX (text_moby_native.c) — 8 rows
+                              * must match MENU_TXT_MAX (text_moby.c) — 8 rows
                               * overflowed 16384 (truncated border/last rows) */
 /* Stats-overlay supersampling: render the glyphs at OVL_SS_FACTOR× into a small
  * RGBA target covering the top-left ovl_region_w() × ovl_region_h() of the frame (in
@@ -1228,7 +1228,7 @@ void openpete_native_scene_apply_overlay(double alpha) {
         if (oalpha < 0.0) oalpha = 0.0; else if (oalpha > 1.0) oalpha = 1.0;
     }
     /* OPENPETE_ALPHA_MAP_DBG: the overlay's present-time -> interp-time mapping
-     * beside the 3D bracket's line (spyro_native_reextract.c), so a 2D-UI slide
+     * beside the 3D bracket's line (reextract.c), so a 2D-UI slide
      * stepping while the 3D scene glides is attributable in one log. */
     {
         static int s_oadbg = -1;
@@ -2042,7 +2042,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .uses_vram = false, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = 0,
     };
     /* Opaque UNTEXTURED gouraud, depth-test ON but depth-WRITE OFF: the portal-sky
-     * previews (portal_native.c, OPENPETE_SCENE_PORTAL_CYCLORAMA). They are a far
+     * previews (portal.c, OPENPETE_SCENE_PORTAL_CYCLORAMA). They are a far
      * background seen through the arch window — the arch stone's depth (written by
      * the WORLD group, drawn first) must occlude them, but they must never write
      * depth, so the actors/player drawn afterward are never per-pixel cut by the

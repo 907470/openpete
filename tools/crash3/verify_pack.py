@@ -3,7 +3,7 @@
 
 Parses every model in the pack through bit-exact mirrors of the Spyro 1
 renderer's walks (the vertex-stream literal decode and the fresh-face
-record walk from moby_native.c), checks every index against the header
+record walk from moby.c), checks every index against the header
 counts, and renders the ENCODED model — vertices from the stream, faces
 from the faceblock, texels from the atlas PNGs — so what is verified is
 what the game will read, not the converter's intermediate mesh.

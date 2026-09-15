@@ -1,7 +1,7 @@
 // core/renderer/fillpick.c — host-side state for the LP fill-tag inspector (P).
 // See openpete_fillpick.h. Generic, address-free; the projection-space pick,
 // the tag-table override and the debug tint live in the Spyro terrain feeder
-// (games/spyro-1/features/terrain_native.c).
+// (games/spyro-1/renderer/terrain.c).
 
 #include "openpete_fillpick.h"
 #include "openpete_log.h"

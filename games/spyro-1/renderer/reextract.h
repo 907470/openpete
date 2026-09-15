@@ -1,8 +1,7 @@
-/* spyro_native_reextract.h — Spyro 1's sub-tick re-feed orchestrator.
+/* games/spyro-1/renderer/reextract.h — Spyro 1's sub-tick re-feed
+ * orchestrator.
  *
- * Step 2 of the native-renderer high-FPS plan
- * (notes/plans/openpete-native-renderer.md §"Movement"). On each
- * intermediate (sub-tick) present the core spine
+ * On each intermediate (sub-tick) present the core spine
  * (openpete_native_register_reextract) calls our orchestrator, which:
  *   1. queries the interp ring for prev/curr camera + alpha,
  *   2. brackets g_Camera (save → write the interpolated camera → restore),
@@ -16,8 +15,8 @@
  * oracle gate.
  */
 
-#ifndef SPYRO_NATIVE_REEXTRACT_H
-#define SPYRO_NATIVE_REEXTRACT_H
+#ifndef SPYRO_RENDERER_REEXTRACT_H
+#define SPYRO_RENDERER_REEXTRACT_H
 
 #include <stdint.h>   /* uint32_t (canonical-render epoch API) */
 
@@ -32,17 +31,17 @@ struct CPUState;
  * the (interpolated) g_Camera the orchestrator has written, without calling
  * the game render function or touching gameplay-readable RAM. */
 /* Set the sub-tick alpha + whether keyframe-blend interpolation is active
- * (camera bracketed). Call before spyro_player_native_reextract so Spyro's
+ * (camera bracketed). Call before spyro_player_reextract so Spyro's
  * animation blends sub-tick instead of stepping at the canonical tick rate. */
 void spyro_native_set_anim_interp(double alpha, int on);
 /* Per record: the seg-row pair the two-pass shape lerp blends (prev = the
  * paired previous record's row, NULL when unpaired → no blend; curr = this
  * record's row) and the record index (the PLAYER tag slot). Defined in
- * features/spyro_native.c. */
+ * renderer/spyro.c. */
 void spyro_native_set_anim_pair(const uint8_t* prev_seg, const uint8_t* curr_seg);
 void spyro_native_set_player_slot(int k);
 /* The front-layer flatten cap is shared by the calls of one frame / present:
- * a new key opens a new group (features/spyro_native.c). */
+ * a new key opens a new group (renderer/spyro.c). */
 void spyro_native_set_flat_key(uint32_t key);
 
 /* Sub-tick ROTATION interpolation for Spyro's body/head/tail. The orchestrator
@@ -53,7 +52,7 @@ void spyro_native_set_flat_key(uint32_t key);
  * composer got. `active[s]` (s=0 body / 1 head / 2 tail) gates each segment
  * (head/tail off when sticky / mid-transition → byte-exact path); `ang` is a
  * row-major 3×3 of float byte-angles [seg][Z,X,Y]. active=NULL resets (off), so
- * the canonical inline render stays byte-exact. Defined in features/spyro_native.c. */
+ * the canonical inline render stays byte-exact. Defined in renderer/spyro.c. */
 void spyro_native_set_rot_interp(const int* active, const double* ang);
 
 /* Sub-tick moby ROTATION interpolation toggle. When on, the moby euler composer
@@ -64,7 +63,7 @@ void spyro_native_set_rot_interp(const int* active, const double* ang);
  * byte-quantized angle. Removes the 1.4°/step stair-stepping on slowly-rotating
  * mobys (gems, idle dragons, HUD icons). Set by the orchestrator around the
  * feeder re-extract; reset (off) so the canonical inline render stays byte-exact.
- * Defined in features/moby_native.c. */
+ * Defined in renderer/moby.c. */
 void moby_native_set_rot_interp(int on);
 
 /* Occlusion-cull pan allowance: the camera's rotation this tick expressed as
@@ -72,7 +71,7 @@ void moby_native_set_rot_interp(int on);
  * feeder inflates cached screen rects by it per tick of cache age, so a pan
  * cannot cull a moby whose stale rect has swept toward a wall edge. Set by
  * the orchestrator each re-extract from the prev/curr camera matrices.
- * Defined in features/moby_native.c. */
+ * Defined in renderer/moby.c. */
 void moby_native_set_occl_pan(float px_per_tick);
 
 /* The mobys the canonical .s render passes drew this tick, taken from their cull
@@ -83,15 +82,15 @@ void moby_native_set_occl_pan(float px_per_tick);
  * while everything around it interpolates. Both the interp capture and the
  * sub-tick lerp walk consult this list so that class is covered generally.
  * Returns the entry count and points *out at the (borrowed) array.
- * Defined in features/moby_native.c. */
+ * Defined in renderer/moby.c. */
 int moby_native_canon_drawn_mobys(const uint32_t** out);
 
 /* Flame sub-keyframe slide (0..1): the fractional part of the per-strand flame
  * counter advance for this sub-tick present. The flame feeder lerps each ribbon
  * cross-section between adjacent static spine records by this, so the ribbon
  * animates below the keyframe grid. Set by the orchestrator before
- * flame_native_reextract; reset to 0 after (the canonical render uses exact
- * keyframes). Defined in features/flame_native.c. */
+ * flame_reextract; reset to 0 after (the canonical render uses exact
+ * keyframes). Defined in renderer/flame.c. */
 void flame_native_set_subframe(double frac);
 
 /* Sub-tick FRACTIONAL interpolated world-position resolver (the lerp32 1-unit
@@ -106,13 +105,13 @@ void flame_native_set_subframe(double frac);
  * projection tracks the smooth sub-tick path. Returns 1 + fills out[3] when a
  * bracket is active for `key` this present; 0 otherwise (feeder falls back to
  * reading RAM, which equals the canonical curr at the 30 Hz lockstep). Defined
- * in spyro_native_reextract.c. */
+ * in reextract.c. */
 int openpete_native_interp_pos(unsigned int key, double out[3]);
 
 /* Sky dome + background: live g_Camera matrices when the canonical call used
  * them, else the stack-built (transition) matrix pair lerped prev→curr by
  * `alpha`; `interp_on` = camera bracketed (else snap to curr). */
-void cyclorama_native_reextract(struct CPUState* cpu, double alpha, int interp_on);
+void cyclorama_reextract(struct CPUState* cpu, double alpha, int interp_on);
 /* One extracted cyclorama dome triangle: screen space (float), per-vertex PSX
  * 0xBBGGRR colour. */
 typedef struct { float sx[3], sy[3]; unsigned int rgb[3]; } cyclorama_native_tri;
@@ -122,23 +121,23 @@ typedef struct { float sx[3], sy[3]; unsigned int rgb[3]; } cyclorama_native_tri
  * the 4:3 edges; this extraction uses the ACTIVE (Hor+ widened) bounds, so the
  * revealed sides of a wide frame get real dome instead of background clear.
  * Fills up to `max` triangles and returns the count. Defined in
- * cyclorama_native.c. */
+ * cyclorama.c. */
 int cyclorama_native_extract_faded(struct CPUState* cpu, cyclorama_native_tri* out, int max);
 /* Present-time draw-env clear sync (called from render_paths_commit, once per
  * canonical present): re-reads the clear colour from g_CurDB->m_DrawEnv in PSX
  * RAM — the env DrawOTag will use for the scene being presented — instead of
  * the PutDrawEnv thunk latch, which trails the OT build by one VSync and
  * flashed the stale homeworld background for one present at the portal-entry
- * transition boundary. Defined in cyclorama_native.c. */
+ * transition boundary. Defined in cyclorama.c. */
 void cyclorama_native_env_clear_commit(void);
 /* Portal previews: the dome rotation matrix is captured prev+curr per canonical
  * tick and lerped by the spine's sub-tick `alpha` (componentwise, like the camera
  * matrix); `interp_on` = camera bracketed (else snap to curr). */
-void portal_native_reextract(struct CPUState* cpu, double alpha, int interp_on);
+void portal_reextract(struct CPUState* cpu, double alpha, int interp_on);
 /* Terrain: mostly camera-driven (the bracket moves it for free), but poly-anim
  * sectors (env vert INTPL — the Sunny-Flight wall) lerp their decoded vert banks
  * prev→cur by `alpha`; `interp_on` = camera bracketed (else snap to curr). */
-void terrain_native_reextract(struct CPUState* cpu, double alpha, int interp_on);
+void terrain_reextract(struct CPUState* cpu, double alpha, int interp_on);
 /* Compute a whole-level top-down freecam pose from the live sector table:
  * camera at the level bounds' centre, looking straight down (pitch at the
  * freecam clamp), high enough that every sector's bounding sphere projects
@@ -154,17 +153,17 @@ int terrain_native_topdown_pose(struct CPUState* cpu, int32_t v[5]);
  * crossings. Fills v = {x, y, z, yaw, pitch} in world units; returns 0 when
  * no level is live. Used by `--freecam-path sweep0;sweep1;...`. */
 int terrain_native_sweep_pose(struct CPUState* cpu, int corner, int32_t v[5]);
-void moby_native_reextract(struct CPUState* cpu);
-void shadow_native_reextract(struct CPUState* cpu);
-void shadow_spyro_native_reextract(struct CPUState* cpu, int slot);
-void spyro_player_native_reextract(struct CPUState* cpu);
-void particle_native_reextract(struct CPUState* cpu);
-void flame_native_reextract(struct CPUState* cpu, int slot);
-void tracer_native_reextract(struct CPUState* cpu);
+void moby_reextract(struct CPUState* cpu);
+void shadow_reextract(struct CPUState* cpu);
+void shadow_spyro_reextract(struct CPUState* cpu, int slot);
+void spyro_player_reextract(struct CPUState* cpu);
+void particle_reextract(struct CPUState* cpu);
+void flame_reextract(struct CPUState* cpu, int slot);
+void tracer_reextract(struct CPUState* cpu);
 /* Level-transition / balloonist cross-fade backdrop: replays the captured
  * screen-space gouraud mesh (gated on whether func_8004F000 ran this canonical
  * present) so the gradient holds across sub-tick presents instead of strobing. */
-void transition_native_reextract(struct CPUState* cpu);
+void transition_reextract(struct CPUState* cpu);
 
 /* Canonical-scratch capture, called from the canonical render hooks while the
  * transient .s render-pass scratch is still live (the sub-tick re-extract
@@ -183,7 +182,7 @@ void spyro_native_canon_capture_recs(void* cpu);
  * capture is replayable on the sub-ticks after a canonical present iff it was
  * taken DURING that present — i.e. its stamp equals the last committed epoch.
  * (openpete_frame is a 60 Hz VBL counter, 2 per 30 Hz game tick, so frame==
- * frame stamp checks never match at re-extract time — the W0.6 gate was dead.)
+ * frame stamp checks never match at re-extract time.)
  *   _commit: latch the in-flight epoch as "fresh" + start the next (once per
  *            canonical present).
  *   _stamp:  the value a producer hook must store at capture time.
@@ -213,10 +212,10 @@ void spyro_native_prod_camera_leave(void);
 
 /* Register the orchestrator with the core sub-tick spine. Call once at boot,
  * after the feeders are registered. */
-void spyro_native_reextract_init(void);
+void game_reextract_init(void);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* SPYRO_NATIVE_REEXTRACT_H */
+#endif /* SPYRO_RENDERER_REEXTRACT_H */

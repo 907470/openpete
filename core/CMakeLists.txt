@@ -97,7 +97,7 @@ add_library(openpete_core STATIC
     runtime/overlay_anchor.c
 
     # OSD toast notifications: the ring, coalescing, rate limit and animation
-    # state machine. Drawing lives in native_render.c + text_moby_native.c;
+    # state machine. Drawing lives in native_render.c + text_moby.c;
     # this is state only, on an injected clock. See openpete_osd.h.
     runtime/openpete_osd.c
 

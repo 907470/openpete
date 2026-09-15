@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Regenerate games/spyro-1/features/terrain_fill_tags.h from the frozen,
+"""Regenerate games/spyro-1/renderer/terrain_fill_tags.h from the frozen,
 human-reviewed verdicts in tests/freecam/fill-tags.verdicts.
 
 Only FILL rows are emitted — absence means "not a fill face". Run after any
@@ -10,7 +10,7 @@ import os, re, sys
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 VERDICTS = f"{ROOT}/tests/freecam/fill-tags.verdicts"
-OUT = f"{ROOT}/games/spyro-1/features/terrain_fill_tags.h"
+OUT = f"{ROOT}/games/spyro-1/renderer/terrain_fill_tags.h"
 
 # g_LevelId scheme: tens = homeworld, units = HOME(0)/levels(1-3)/boss(4)/flight(5)
 LEVEL_ID = {

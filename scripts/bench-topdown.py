@@ -50,7 +50,7 @@ DISC = os.path.join(ROOT, "games/spyro-1/spyro-1/build/SCUS-94228.cue")
 DEFAULT_EXE = os.path.join(ROOT, "build/linux-release/games/spyro-1/openpete-spyro1")
 EXIT_SKIP = 64
 
-# games/spyro-1/features/levelwarp_native.c k_levels — every warpable level.
+# games/spyro-1/features/levelwarp.c k_levels — every warpable level.
 LEVELS = [
     "artisans", "stone_hill", "dark_hollow", "town_square", "toasty",
     "sunny_flight",

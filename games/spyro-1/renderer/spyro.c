@@ -1,10 +1,8 @@
-// games/spyro-1/features/spyro_native.c — Phase 3b.4 of
-// notes/plans/openpete-native-renderer.md: the SPYRO (player-avatar)
-// renderer re-derived from gamestate in float + its numerical A/B harness.
+// games/spyro-1/renderer/spyro.c — the SPYRO (player-avatar) renderer
+// re-derived from gamestate in float + its numerical A/B harness.
 //
 // Spyro (func_80023AC4 / r_pete.s) is a self-contained ~2 KLOC handwritten GTE
-// routine, distinct from the moby path in three ways the format-spike doc
-// calls out:
+// routine, distinct from the moby path in three ways:
 //   1. DELTA-ACCUMULATED vertices — each vertex is a signed (dx,dy,dz) added to
 //      a running accumulator, dual 1-byte / 2-byte encoding with a wide escape
 //      (NOT moby's random-access packed XYZ).
@@ -32,10 +30,10 @@
 #include "openpete_log.h"           /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
 #include "openpete_psx.h"
 #include "openpete_subtick_view.h"            /* openpete_psx_to_host_ptr (seg-scratch mix) */
-#include "spyro_native_reextract.h"  /* canon-scratch capture (sub-tick spine) */
-#include "spyro_records.h"           /* per-call records of the player hooks */
-#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
-#include "render_paths.h"  /* --render-paths isolation */
+#include "renderer/reextract.h"  /* canon-scratch capture (sub-tick spine) */
+#include "renderer/spyro_records.h"           /* per-call records of the player hooks */
+#include "renderer/native_gte.h"    /* shared GTE float-mirror math */
+#include "renderer/render_paths.h"  /* --render-paths isolation */
 
 #include <math.h>
 #include <stdint.h>
@@ -273,7 +271,7 @@ static int     s_player_slot = 0;     /* record index k: the PLAYER tag slot of 
 /* Orchestrator sets, per record, the seg-row pair of the two-pass shape lerp
  * (prev = the record it paired from, NULL when unpaired), the sub-tick alpha
  * and whether interpolation is active, and the record's tag slot. Read by
- * spyro_player_native_reextract; the canonical hook sets the slot alone. */
+ * spyro_player_reextract; the canonical hook sets the slot alone. */
 void spyro_native_set_anim_interp(double alpha, int on) { s_anim_alpha = alpha; s_anim_on = on ? 1 : 0; }
 void spyro_native_set_anim_pair(const uint8_t* prev_seg, const uint8_t* curr_seg) {
     s_seg_prev = prev_seg; s_seg_curr = curr_seg;
@@ -339,7 +337,7 @@ void spyro_native_set_rot_interp(const int* active, const double* ang /*3x3, row
 static double project(const int M[3][3], const double TR[3], double vx, double vy, double vz,
                       double ofx_px, double ofy_px, const ngte_view* v,
                       double* out_sx, double* out_sy, int* out_sat) {
-    ngte_proj o;   /* shared GTE-faithful pipeline, ±1024 SXY bound ON (W2.3) */
+    ngte_proj o;   /* shared GTE-faithful pipeline, ±1024 SXY bound ON */
     ngte_project_gte(M, TR, vx, vy, vz, ofx_px, ofy_px, v, 1, &o);
     *out_sx = o.sx;
     *out_sy = o.sy;
@@ -938,7 +936,7 @@ static void spyro_idx_audit(CPUState* cpu) {
             openpete_frame, exact, total, fallback, disagree,
             total ? 100.0 * disagree / total : 0.0);
 }
-/* (spyro_feed_scaffold removed 2026-06-16 — the prim-driven NN/index-recovery
+/* (spyro_feed_scaffold was removed: the prim-driven NN/index-recovery
  * feed is superseded by the independent face-stream walk spyro_feed_walk, the
  * moby-3a.2b analog. spyro_index_of/spyro_nn are kept: the verify A/B still uses
  * them. See spyro_feed_walk below the walk code.) */
@@ -1055,11 +1053,11 @@ static int build_spyro_walk(CPUState* cpu) {
         if (w1 & 1u) {
             int abr=(int)((tp>>5)&3u);   /* texpage semi-transparency mode (ABR 0-3) */
             blend = (abr==0) ? 1 : (abr==1) ? 2 : (abr==2) ? 3 : 2;
-            /* ABR-FIXME (audit 2026-06-30): ABR3 (B+F/4) has no native pipe -> drawn
+            /* ABR-FIXME: ABR3 (B+F/4) has no native pipe -> drawn
              * full-additive (too bright). Spam if a Spyro-body face ever hits it. */
             if (abr == 3)
                 OPL_ERROR_F("native", "ABR-FIXME Spyro body ABR3 (B+F/4) face -> "
-                            "drawn full-additive (no quarter-add pipe) f=%u -- FIX spyro_native.c:1087",
+                            "drawn full-additive (no quarter-add pipe) f=%u -- FIX spyro.c:1087",
                             openpete_frame);
         }
         if (fresh) {
@@ -1168,7 +1166,7 @@ static void spyro_walk_compare(CPUState* cpu) {
  * geometry from s_sproj (native float projection), the texture from VRAM (a
  * static asset). The only remaining .s coupling is spyro_nclip reading the
  * int16 SXY scratchpad for a byte-exact cull decision; that becomes a native
- * float NCLIP at the Phase-6 switch (the .s geometry turning off). */
+ * float NCLIP once the .s geometry turns off. */
 static void spyro_feed_walk_ex(CPUState* cpu, int reproject) {
     if (reproject) spyro_project_all(cpu);  /* native float verts -> s_sproj (skip if caller filled it) */
     build_spyro_walk(cpu);                  /* face-stream topology+colour+UV -> s_swtri */
@@ -1356,7 +1354,7 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
  * gamestate + the interpolated g_Camera the orchestrator wrote — extract-only
  * (no func_80023AC4 call, no verdict writes). spyro_feed_walk reads g_Camera
  * (→ smooth orientation) and g_Spyro (position lerp lands in step 3). */
-void spyro_player_native_reextract(CPUState* cpu) {
+void spyro_player_reextract(CPUState* cpu) {
     if (!openpete_native_scene_enabled()) return;
     /* Only re-extract the gameplay Spyro on sub-ticks if the canonical frame
      * actually drew him (func_80023AC4 emitted prims → RP_SPYRO recorded). In
@@ -1364,7 +1362,7 @@ void spyro_player_native_reextract(CPUState* cpu) {
      * shown as a moby (cls 511) instead; without this gate the spine would re-extract
      * the gameplay Spyro from g_Spyro state on every intermediate present, painting a
      * SECOND Spyro over the cutscene moby (same position, different pose) — the
-     * duplicate-Spyro ghost. Mirrors moby_native_reextract's RP_MOBY gate. */
+     * duplicate-Spyro ghost. Mirrors moby_reextract's RP_MOBY gate. */
     if (!render_path_canon_drawn(RP_SPYRO)) return;
 
     /* Sub-tick animation = two-pass keyframe-SHAPE interpolation. The earlier
@@ -1430,7 +1428,7 @@ static const feature_dispatch_entry_t spyro_dispatch[] = {
     { 0u, NULL },
 };
 
-const feature_module_t spyro_native_module = {
+const feature_module_t spyro_module = {
     .name           = "spyro_native",
     .apply_options  = NULL,
     .dispatch_table = spyro_dispatch,

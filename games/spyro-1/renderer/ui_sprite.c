@@ -1,5 +1,5 @@
-// games/spyro-1/features/ui_sprite_native.c — native renderer feed for the 2D
-// UI sprite/text layer (Phase: 2D-from-OT).
+// games/spyro-1/renderer/ui_sprite.c — native renderer feed for the 2D
+// UI sprite/text layer (2D-from-OT).
 //
 // The 3D scene (terrain, mobys, Spyro, particles, …) is re-derived from
 // gamestate by the other native feeders. The 2D UI — the title-screen "SPYRO
@@ -20,7 +20,7 @@
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
-#include "render_paths.h"
+#include "renderer/render_paths.h"
 #include "texture_pack.h"
 
 #include <stdint.h>
@@ -391,7 +391,7 @@ static const feature_dispatch_entry_t ui_sprite_dispatch[] = {
     { 0u, NULL },
 };
 
-const feature_module_t ui_sprite_native_module = {
+const feature_module_t ui_sprite_module = {
     .name           = "ui_sprite_native",
     .apply_options  = NULL,
     .dispatch_table = ui_sprite_dispatch,

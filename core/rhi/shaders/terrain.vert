@@ -4,7 +4,7 @@
 /* Terrain sector-mesh vertex stage — the retained-terrain GPU path
  * (extraction rearchitecture, seam 2).
  *
- * Mirrors — bit-for-bit — what the CPU walk (terrain_native.c walk_sector +
+ * Mirrors — bit-for-bit — what the CPU walk (terrain.c walk_sector +
  * terrain_feed_native) computes per present for an UNCLAIMED sector: the GTE
  * camera transform (ngte_mac + proj_screen), the per-face verdicts (NCLIP
  * two-half back-face cull with the UNR-overflow regime, the .s LP far-cull

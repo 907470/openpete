@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Fold an in-game fill-tag pick session into tests/freecam/fill-tags.verdicts
-and regenerate games/spyro-1/features/terrain_fill_tags.h.
+and regenerate games/spyro-1/renderer/terrain_fill_tags.h.
 
 The session file is written by the P-key inspector (core/renderer/fillpick.c);
 each line is `FILL|NOFILL <level> <sector> <face>`. Membership in the verdicts

@@ -1,4 +1,4 @@
-// games/spyro-1/features/levelwarp_native.c — jump to any level from the
+// games/spyro-1/features/levelwarp.c — jump to any level from the
 // dev overlay (M key), from anywhere.
 //
 // --skip-to-level only works at boot: it hijacks the title screen's demo-
@@ -54,7 +54,7 @@
 // Addresses from spyro-1/build/psx.map; g_Spyro/g_Camera field offsets
 // verified against spyro-1/include/{spyro,camera}.h.
 
-#include "features/levelwarp_native.h"
+#include "features/levelwarp.h"
 
 #include "feature_registry.h"
 #include "game_extras.h"    /* game_set_skip_to_level (title-screen route) */
@@ -546,7 +546,7 @@ void spyro1_levelwarp_on_tick(CPUState* cpu) {
     }
 }
 
-const feature_module_t levelwarp_native_module = {
+const feature_module_t levelwarp_module = {
     .name           = "levelwarp",
     .apply_options  = levelwarp_apply_options,
     .dispatch_table = NULL,

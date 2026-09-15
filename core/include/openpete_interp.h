@@ -16,7 +16,7 @@
  * Scope (this ring): the capture API, the dedupe predicate, and the
  * prev2/prev/curr query (openpete_interp_query3). The lerped re-emission
  * itself — the save-canonical → write-lerped → restore bracket around the
- * sub-tick present — is built GAME-SIDE (e.g. spyro_native_reextract.c), NOT
+ * sub-tick present — is built GAME-SIDE (e.g. reextract.c), NOT
  * here: core stays address-free, and the game owns which regions/feeders it
  * brackets plus its own restore discipline (see the game's bracket-integrity
  * self-check, OPENPETE_BRACKET_CHECK). Capturing here is read-only against

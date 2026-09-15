@@ -453,7 +453,7 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
  * (openpete_ui_moby_is_addr_static); the polybuf text mobys stay flat 2D = HUD. */
 #define OPENPETE_SCENE_HUD3D 6
 /* PORTAL_CYCLORAMA — the destination-level cyclorama preview shown inside a homeworld
- * portal arch (portal_native.c). It is a far BACKGROUND seen through the arch
+ * portal arch (portal.c). It is a far BACKGROUND seen through the arch
  * window: the arch stone must occlude it, but it must never occlude actors or
  * Spyro flying into/through the portal. Drawn in its own pass AFTER the WORLD
  * group (so it depth-tests against the already-written arch/terrain depth) but
@@ -486,7 +486,7 @@ typedef struct { float sx, sy, z; float u, v; uint32_t rgba; float pvz; } openpe
  * re-wins its own pixels — the depth-buffer realization of the mask).
  * Opaque only by construction (the defer test excludes ABE faces). */
 #define OPENPETE_SCENE_PORTAL_GUARD 9
-/* SKY — the main cyclorama dome (cyclorama_native.c). Drawn exactly like WORLD
+/* SKY — the main cyclorama dome (cyclorama.c). Drawn exactly like WORLD
  * (opaque, depth-tested, before everything else) EXCEPT it does not stencil-MARK
  * terrain coverage (W2.6-c): the WORLD group's mark defines "pixels real world
  * geometry covered", and the hole-fill LP backing (WORLD_FILL) paints only where

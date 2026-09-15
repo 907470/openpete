@@ -3,7 +3,7 @@
 # per-object interpolation identity.
 #
 # The engine keys per-object interpolation by moby ADDRESS outside the HUD
-# pool (spyro_interp_moby_key), so a parked egg's identity is stable
+# pool (game_interp_moby_key), so a parked egg's identity is stable
 # exactly when its park is: the guest arena never moves an allocation. The
 # instrument is OPENPETE_INTERP_OBJS_KEYLOG, one line per interp-object
 # SPAWN with its key; per-object capture only runs when presents outpace

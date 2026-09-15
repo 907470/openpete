@@ -1,6 +1,5 @@
-// games/spyro-1/features/cyclorama_native.c — Phase 2 of
-// notes/plans/openpete-native-renderer.md: the cyclorama/sky "native
-// 3D from gamestate" spike + its autonomous numerical A/B harness.
+// games/spyro-1/renderer/cyclorama.c — the cyclorama/sky renderer
+// re-derived from gamestate + its autonomous numerical A/B harness.
 //
 // The native renderer re-derives the sky dome from gamestate (g_Cyclorama
 // + the camera matrices) in float, instead of replaying the PSX renderer's
@@ -14,28 +13,28 @@
 // the polybuf as ground truth, run the native float extraction on the same
 // inputs, and compare screen positions (expect sub-pixel — float is more
 // precise than the GTE's 16.16) + colours (expect exact — gouraud colours
-// are copied, not projected). All headless, all numerical: the autonomous
-// Phase-2 verdict. Gated by OPENPETE_CYC_VERIFY (off => zero overhead).
+// are copied, not projected). All headless, all numerical. Gated by
+// OPENPETE_CYC_VERIFY (off => zero overhead).
 //
 // Determinism: this never writes PSX RAM. When verifying it calls the real
 // func_8004EBA8 exactly once (behaviour-identical to the normal dispatch
 // fall-through) and only READS the polybuf + g_Cyclorama afterwards.
 //
-// Format map: the format notes (asm ground
-// truth, corroborated by SpyroEdit SkySectorHeaderS1 / UpdateSky).
+// Format: func_8004EBA8's asm, corroborated by SpyroEdit
+// SkySectorHeaderS1 / UpdateSky.
 //
 // The same extraction also serves the level-exit / balloonist cross-fade
 // renderer func_8004F000 — the same dome with a DPCS colour fade — via
-// cyclorama_native_extract_faded, which transition_native.c feeds.
+// cyclorama_native_extract_faded, which transition.c feeds.
 
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, a0/a1/a2, read_word) */
 #include "openpete_psx.h"
 #include "openpete_subtick_view.h"  /* openpete_psx_to_host_ptr (present-time DRAWENV read) */
 #include "openpete_native_render.h"  /* native scene push + enabled gate */
-#include "render_paths.h"  /* --render-paths isolation */
-#include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
-#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
+#include "renderer/render_paths.h"  /* --render-paths isolation */
+#include "renderer/reextract.h"  /* sub-tick re-extract entry */
+#include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 
 #include <math.h>
 #include <stdint.h>
@@ -60,7 +59,7 @@ static cyc_tri s_gte[MAX_TRIS];    static int s_gte_n;
 /* ---- helpers -------------------------------------------------------- */
 
 /* Continuous float projection mirroring the GTE RTPS: ngte_project_raw
- * (shared, W2.3). The sat flag bins the two GTE fixed-point clamps the
+ * (shared). The sat flag bins the two GTE fixed-point clamps the
  * unclamped float path diverges from on purpose (IR16 saturation + the
  * H >= 2*SZ3 divide cap). Returns view-space Z (MAC3); caller treats
  * <=0 as behind-camera. */
@@ -71,7 +70,7 @@ static double project(const int M[3][3], int vx, int vy, int vz,
                             ofx_px, ofy_px, v, out_sx, out_sy, out_sat);
 }
 
-/* ---- near-plane clip (mirrors terrain_native.c::clip_push_tri) -------
+/* ---- near-plane clip (mirrors terrain.c::clip_push_tri) -------
  * The sky dome is a FULL 360° surround (all sectors live in RAM); at wide
  * aspect ratio the side/wrap geometry that the canonical 4:3 path near-plane
  * REJECTED (whole-tri drop when any vertex is behind the camera) is now on
@@ -149,7 +148,7 @@ static void cyc_clip_emit(cyc_cv a, cyc_cv b, cyc_cv c, int gouraud,
     if (nout == 4) cyc_push_tri(out[0], out[2], out[3], gouraud, vw);
 }
 
-/* ---- native extraction (the Phase-2 deliverable) -------------------- */
+/* ---- native extraction ---------------------------------------------- */
 /* Reads g_Cyclorama + the two matrices + GTE OFX/OFY/H from the hook, and
  * fills s_native[]. Mirrors func_8004EBA8: phase-1 sector visibility cull
  * (cull matrix a1), phase-2 per-vertex unpack + float project (draw matrix
@@ -479,7 +478,7 @@ static void push_scene(CPUState* cpu) {
         t.textured = 0;   /* cyclorama is gouraud-shaded (no texture) */
         t.tpage_x = t.tpage_y = t.clut_x = t.clut_y = t.bpp = 0;
         t.blend = 0;      /* opaque */
-        /* SKY, not WORLD (W2.6-c): drawn identically (opaque, depth-tested,
+        /* SKY, not WORLD: drawn identically (opaque, depth-tested,
          * first) but without the WORLD group's stencil coverage MARK — the sky
          * showing through a terrain seam is exactly what the LP hole-fill
          * layer must be allowed to repaint. */
@@ -576,7 +575,7 @@ static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
  * (the first and last tick of the transition), or the two endpoints diverge
  * implausibly (a cut — keep the lerp from turning the long way round).
  * push_scene also re-sets the scene background. */
-void cyclorama_native_reextract(CPUState* cpu, double alpha, int interp_on) {
+void cyclorama_reextract(CPUState* cpu, double alpha, int interp_on) {
     if (!openpete_native_scene_enabled()) return;
     /* Only replay the sky dome if the canonical frame drew it. In cyclorama-less
      * states (e.g. the black level-name flyby) the saved matrices are stale; the
@@ -679,7 +678,7 @@ static const feature_dispatch_entry_t cyc_dispatch[] = {
     { 0u, NULL },
 };
 
-const feature_module_t cyclorama_native_module = {
+const feature_module_t cyclorama_module = {
     .name           = "cyclorama_native",
     .apply_options  = NULL,
     .dispatch_table = cyc_dispatch,

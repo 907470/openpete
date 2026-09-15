@@ -1,4 +1,4 @@
-// games/spyro-1/features/cheats_native.c — --cheats: auto-apply Spyro 1's
+// games/spyro-1/features/cheats.c — --cheats: auto-apply Spyro 1's
 // own built-in cheat codes.
 //
 // The game ships a pad-code cheat table (spyro-1/src/cheats.c). Matching a
@@ -37,7 +37,7 @@
 // CheatApplyEffect's own loop bounds (32 level flags, 6 homeworlds), not the
 // declared array sizes.
 
-#include "features/cheats_native.h"
+#include "features/cheats.h"
 
 #include "feature_registry.h"
 #include "openpete_fiber.h" /* openpete_speculative */
@@ -292,7 +292,7 @@ void spyro1_cheats_on_tick(CPUState* cpu) {
     s_pending  = 0;
 }
 
-const feature_module_t cheats_native_module = {
+const feature_module_t cheats_module = {
     .name           = "cheats",
     .apply_options  = cheats_apply_options,
     .dispatch_table = NULL,

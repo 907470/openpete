@@ -1,4 +1,4 @@
-// games/spyro-1/features/render_decouple.c — Spyro 1 render→gameplay
+// games/spyro-1/renderer/render_decouple.c — Spyro 1 render→gameplay
 // decoupling: the canonical-4:3 cull verdicts that keep gameplay-readable
 // state (m_WasDrawn, particle m_03, sparkle alloc) bit-identical regardless
 // of presentation flags (--aspect / --no-lod).
@@ -32,7 +32,7 @@ uint8_t psx_runtime_native_cone_pass = 0;
 /* DISTANCE half of the box-cull verdict. native_dist_pass starts 1 each
  * iteration; the dist-gate hooks clear it if the box cull rejects. (The
  * saturated-vs-canonical mdist_thresh_delta these once subtracted out was
- * retired 2026-07-06 with the --no-lod producer stack — the .s cull is
+ * retired with the --no-lod producer stack — the .s cull is
  * canonical in every mode now, so the gates replay its own verdict.) */
 uint8_t psx_runtime_native_dist_pass = 1;
 
@@ -46,7 +46,7 @@ uint8_t psx_runtime_native_part_pass = 0;
  * `4x - 3*(MAC3+bias)` shifts after the call, byte-identical to the .s).
  * The cone-WIDENING terms these hooks used to inject (PsyCross-mode
  * --aspect: extra_q12 slope + bias_scale + mac3p floor) were retired
- * 2026-07-06 with the substitution stack; the hooks stay because the
+ * with the substitution stack; the hooks stay because the
  * verdict recording is what the channel needs.
  * `_permoby` (regular/specular) uses per-moby x-radius a2 + MAC3=v1,a3;
  * `_shaded` uses the fixed 102/77 constants + MAC3=gte_data[27]. */

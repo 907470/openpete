@@ -8,7 +8,7 @@
  * result if a writer overlapped (the previous rank map simply survives one
  * more tick). */
 
-#include "moby_rank.h"
+#include "renderer/moby_rank.h"
 #include "openpete_psx.h"
 #include "openpete_subtick_view.h"   /* openpete_psx_to_host_ptr — fresh-chain walk */
 

@@ -1,5 +1,4 @@
-// games/spyro-1/features/particle_native.c — Phase 3b.3 of
-// notes/plans/openpete-native-renderer.md: the PARTICLE renderer family
+// games/spyro-1/renderer/particle.c — the PARTICLE renderer family
 // (func_800573C8 particles + func_800580F4 glows + func_800584C4 sparkles /
 // r_particles.s) re-derived from gamestate in float + its numerical A/B
 // harness. This is the LAST 3b actor and the most complex: 7 particle sprite
@@ -26,13 +25,13 @@
 // (--renderer vk; scene feed); inert fall-through otherwise.
 
 #include "feature_registry.h"
-#include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
-#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
+#include "renderer/reextract.h"  /* sub-tick re-extract entry */
+#include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "openpete_interp.h"       /* openpete_interp_present_now (sparkle phase) */
 #include "openpete_interp_objs.h"  /* per-slot prev/curr snapshots (sparkle phase) */
-#include "render_paths.h"  /* --render-paths isolation */
+#include "renderer/render_paths.h"  /* --render-paths isolation */
 
 #include <math.h>
 #include <stdint.h>
@@ -247,12 +246,12 @@ static int rd_s16(CPUState* cpu, uint32_t addr) {
 static double clamp16(double v) { return v < -32768.0 ? -32768.0 : (v > 32767.0 ? 32767.0 : v); }
 
 /* ---- sub-tick CHANNEL-PHASE interpolation (pool-wide) ---------------------- *
- * The g_Particles position bracket (spyro_native_reextract.c) lerps only X/Y/Z;
+ * The g_Particles position bracket (reextract.c) lerps only X/Y/Z;
  * every other per-tick-animated channel — billboard SPIN (B byte3) and SIZE
  * (B byte2), sel-3 rect half-extents, sel-1/4 line FAR endpoints (B.hi + word C)
  * — was read raw-curr and stepped at 29.913 Hz while the position glided (same
- * class as the gem-sparkle twinkle phase, fixed 2026-07-14). When the re-extract
- * pass is active (s_phase_now latched by particle_native_reextract) the build
+ * class as the gem-sparkle twinkle phase). When the re-extract
+ * pass is active (s_phase_now latched by particle_reextract) the build
  * walks lerp those channels between the slot's prev/curr interp-objs snapshots
  * at FLOAT precision. Line/tile COLOURS (+0x0C/+0x10/+0x14 rgb) are HELD at
  * curr, not lerped — colour ramps can encode palette cycling where a linear rgb
@@ -260,14 +259,14 @@ static double clamp16(double v) { return v < -32768.0 ? -32768.0 : (v > 32767.0 
  * Canonical inline feeds (hook time, s_phase_now==0) stay integer/byte-exact
  * for the A/B harnesses. Render-side only: particle RAM is never written here. */
 static op_time_t s_phase_now = 0;   /* present clock; 0 = phase interp off
-                                     * (latched in particle_native_reextract) */
+                                     * (latched in particle_reextract) */
 /* One sim tick in WALL time — the per-slot alpha denominator cap, same global
- * as TICK_PERIOD_NS in spyro_native_reextract.c (--tick-scale aware: run.c
+ * as TICK_PERIOD_NS in reextract.c (--tick-scale aware: run.c
  * rescales it, else slow-motion sweeps the phase in tick_scale of a tick and
  * freezes the rest). */
 #define PART_TICK_PERIOD_NS g_openpete_tick_period_ns
 /* Phase-alpha floor — the SAME slightly-negative allowance the spine's
- * position/rotation alpha uses (spyro_native_reextract.c: alpha >= -0.35).
+ * position/rotation alpha uses (reextract.c: alpha >= -0.35).
  * The canonical present + first intermediates of a tick fire a few ms BEFORE
  * that tick's PLL grid stamp, so their raw alpha is slightly negative;
  * clamping the phase at 0 while positions extrapolate backward freezes the
@@ -299,7 +298,7 @@ static void streak_log(const char* fam, uint32_t slot,
 
 /* Guarded prev-state lookup for a g_Particles slot. Returns 1 + fills prev
  * words A/B/C + the slot's own alpha iff the SAME identity guards the position
- * bracket applies all pass (spyro_native_reextract.c pool loop) — a slot whose
+ * bracket applies all pass (reextract.c pool loop) — a slot whose
  * position SNAPPED (spawn / reuse / teleport) must not lerp its other channels,
  * or spin/size would sweep across two different particles. */
 typedef struct { uint32_t A, B, C;      /* table-PREV words */
@@ -409,14 +408,14 @@ static void proj_view(double ofx, double ofy, const ngte_view* v,
 static void proj2(const int R[3][3], double ofx, double ofy, const ngte_view* v,
                   double vx, double vy, double vz, projres* o) {
     ngte_proj r;   /* shared pipeline, NO ±1024 SXY saturation — float,
-                    * widescreen reveal needs the true X (W2.3) */
+                    * widescreen reveal needs the true X */
     ngte_project_gte(R, NULL, vx, vy, vz, ofx, ofy, v, 0, &r);
     o->sx = r.sx; o->sy = r.sy; o->m1 = r.m1; o->m2 = r.m2; o->m3 = r.m3;
 }
 
 static void proj_view(double ofx, double ofy, const ngte_view* v,
                       double X, double Y, double Z, projres* o) {
-    ngte_proj r;   /* view-space point: MAC=(X,Y,Z), divide-only (W2.3) */
+    ngte_proj r;   /* view-space point: MAC=(X,Y,Z), divide-only */
     ngte_screen_gte(X, Y, Z, ofx, ofy, v, 0, &r);
     o->sx = r.sx; o->sy = r.sy; o->m1 = r.m1; o->m2 = r.m2; o->m3 = r.m3;
 }
@@ -992,7 +991,7 @@ static void particle_feed_native(CPUState* cpu) {
         openpete_native_scene_set_tag(
             OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_QUAD, q->sel, 0));
         /* (A depth pull for the subtractive smoke was tried here and
-         * FALSIFIED 2026-07-10: the burst point is the occluder's NEAREST
+         * FALSIFIED: the burst point is the occluder's NEAREST
          * surface from the camera, so true depth never blocked the puffs —
          * the eater was the SUBTRACT-WORLD draw ORDER, fixed renderer-side
          * by drawing that bucket after the ADD group.) */
@@ -1068,9 +1067,9 @@ static void glow_build(CPUState* cpu) {
         uint32_t color = cpu->read_word(g + 0x0C) & 0xFFFFFF;
 
         /* Sub-tick phase: lerp size/colour/offset between the slot's prev/curr
-         * interp-objs snapshots (captured in spyro_interp_regions.c). The Sparx
-         * aura RAMPS size +32/tick over ~18 ticks on spawn (censused
-         * 2026-07-14) and stepped at 29.913 Hz. Guards: same owner (+0x08),
+         * interp-objs snapshots (captured in interp_regions.c). The Sparx
+         * aura RAMPS size +32/tick over ~18 ticks on spawn (censused) and
+         * stepped at 29.913 Hz. Guards: same owner (+0x08),
          * template (+0x04) and ring count — a slot reused for a different glow
          * snaps. Colour is additive light, so a per-byte linear lerp is safe. */
         double sizef = (double)size;
@@ -1126,9 +1125,9 @@ static void glow_build(CPUState* cpu) {
 
         /* OPENPETE_GLOW_ANIM_DBG: census — does the game ANIMATE glow records
          * per tick (size/colour/offset pulse)? Logs RAW values on CHANGE only;
-         * a change stream at ~tick rate = a stepping channel (verdict
-         * 2026-07-14: Sparx aura size ramps +32/tick on spawn — hence the
-         * phase lerp above). */
+         * a change stream at ~tick rate = a stepping channel (the Sparx
+         * aura size ramps +32/tick on spawn — hence the phase lerp
+         * above). */
         if (glow_anim_dbg()) {
             static uint32_t s_glast[16][6]; static int s_gseen[16];
             uint32_t cur[6] = { (uint32_t)count, (uint32_t)size, color,
@@ -1308,16 +1307,16 @@ static const uint32_t k_s3_glint[6][3] = {
  * view-Z in world/4, so the threshold is 0x1000 in c.m3 units. */
 #define S3_GLINT_NEAR_M3 4096.0
 
-/* Sub-tick twinkle-PHASE interpolation (user report 2026-07-14: gem sparkles
- * animate at 29.913 Hz regardless of --render-fps). A sparkle's position is
+/* Sub-tick twinkle-PHASE interpolation (without it gem sparkles animate at
+ * 29.913 Hz regardless of --render-fps). A sparkle's position is
  * static for its whole life — what steps is the ANIMATION phase: m_Life
  * (pulse scale) decremented per tick and m_0x0E (spin) advanced ~3·dt per
  * tick by the .s. The interp-objs table captures live g_Sparkles slots per
- * tick (spyro_interp_regions.c); when the re-extract pass is active
+ * tick (interp_regions.c); when the re-extract pass is active
  * (s_phase_now — the shared pool-wide latch above) we lerp life + spin
  * between a slot's prev/curr snapshots at its own alpha and run the fade
  * math at FLOAT precision (fade8, scaledFade, sincos_entry_f) — the same
- * treatment moby rotation got (moby_native.c sincos_interp). The canonical
+ * treatment moby rotation got (moby.c sincos_interp). The canonical
  * inline render (latch off) stays integer/byte-exact for the sparkle A/B
  * harness. Render-side only: sparkle RAM is never written. */
 static void sparkle_build(CPUState* cpu) {
@@ -1438,8 +1437,7 @@ static void sparkle_build(CPUState* cpu) {
          * drawn as the plain cross. S3's far path colours its lines
          * with word0 (asm: t2+0x06000000 at 0x8002F4D8), but that pale
          * tint on a 1px PSX line READS white — on our crisp native
-         * lines it reads salmon/green/etc (user report, 2026-07-12).
-         * Perceptual fidelity wins: far cross stays stock white. */
+         * lines it reads salmon/green/etc. Perceptual fidelity wins: far cross stays stock white. */
         if (style == 1 && hue > 0 && c.m3 >= S3_GLINT_NEAR_M3)
             style = 0;
         if (style == 1 && s_sstar_n < MAX_SSTAR) {
@@ -1956,7 +1954,7 @@ static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
  * sparkles from the current g_Particles pool — extract-only (no render_fn, no
  * verdicts). Pool walks self-limit to live particles; Sparx + ambient sparkles
  * stay present on intermediates (per-particle pos+=α·vel lerp lands in step 5). */
-void particle_native_reextract(CPUState* cpu) {
+void particle_reextract(CPUState* cpu) {
     if (!openpete_native_scene_enabled()) return;
     /* Each feeder replays only when ITS .s renderer drew on the canonical
      * tick. The pools outlive the renderers: a level transition stops all
@@ -1989,7 +1987,7 @@ static const feature_dispatch_entry_t particle_dispatch[] = {
     { 0u, NULL },
 };
 
-const feature_module_t particle_native_module = {
+const feature_module_t particle_module = {
     .name           = "particle_native",
     .apply_options  = NULL,
     .dispatch_table = particle_dispatch,

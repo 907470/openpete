@@ -198,7 +198,7 @@ static int ops_declare_data_len(CPUState* cpu, int level_id, uint32_t len) {
     return 0;
 }
 
-int spyro1_level_resolve(const char* arg); /* levelwarp_native.c */
+int spyro1_level_resolve(const char* arg); /* levelwarp.c */
 static int ops_resolve_name(const char* name) {
     return name && name[0] ? spyro1_level_resolve(name) : -1;
 }

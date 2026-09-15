@@ -1,33 +1,29 @@
-// games/spyro-1/features/portal_native.c — native re-derivation of the PORTAL
+// games/spyro-1/renderer/portal.c — native re-derivation of the PORTAL
 // skybox previews (the destination-level sky shown inside homeworld portal
 // arches), plus its falsify-before-ship capture/dump harness.
 //
-// ┌─ HIGH-FPS sub-tick spine: SUPPORTED (portal_native_reextract, 2026-06-22) ───┐
-// │ Portal previews now ride the high-FPS sub-tick spine like every other        │
-// │ feeder. The two original blockers are closed by a CAPTURE-AND-REPLAY design: │
-// │ (1) on each canonical RenderPortals the leaf hooks record every drawn        │
-// │ portal's decision (owning portal, flat/dome kind, resolved colour, fog,      │
-// │ clip rect) into s_pcap[]; portal_native_reextract (in the spine's feeder     │
-// │ list, after cyclorama) replays them on every intermediate present, so the    │
-// │ previews are re-added each sub-tick instead of vanishing. (2) The dome       │
-// │ rotation matrix is no longer read from the live GTE on the reextract (it is  │
-// │ stale on the host fiber). Instead the canonical hook snapshots the shared    │
-// │ dome matrix prev+curr each canonical tick, and the reextract LERPS prev→curr │
-// │ componentwise by the spine's sub-tick alpha — identical to how the spine     │
-// │ interpolates the camera matrix (lerp_matrix). Both the camera rotation and   │
-// │ the portal's own spin (D_80075858/D_800758FC) are baked into the snapshots,  │
-// │ so both interpolate smoothly at any framerate with NO extrapolation. (Earlier │
-// │ attempts that EXTRAPOLATED a single frozen snapshot — a relative delta, then  │
-// │ a camera-increment ΔR — skewed/wobbled/squished because the camera never sits │
-// │ still and the spin wasn't interpolated; interpolating two real snapshots is   │
-// │ the fix.) Clip rect + outline depth come from project_world, which already    │
-// │ reads the interpolated camera live. See                                      │
-// │ portal_native_reextract() below + the per-feeder table in                    │
-// │ notes/plans/openpete-native-renderer.md, "Portal cycloramas" row.         │
-// └─────────────────────────────────────────────────────────────────────────────┘
+// Sub-tick spine: portal previews ride the high-FPS re-extract like every
+// other feeder, by CAPTURE-AND-REPLAY. (1) On each canonical RenderPortals
+// the leaf hooks record every drawn portal's decision (owning portal,
+// flat/dome kind, resolved colour, fog, clip rect) into s_pcap[];
+// portal_reextract (in the spine's feeder list, after cyclorama) replays them
+// on every intermediate present, so the previews are re-added each sub-tick
+// instead of vanishing. (2) The dome rotation matrix is not read from the
+// live GTE on the reextract (it is stale on the host fiber). Instead the
+// canonical hook snapshots the shared dome matrix prev+curr each canonical
+// tick, and the reextract LERPS prev→curr componentwise by the spine's
+// sub-tick alpha — identical to how the spine interpolates the camera matrix
+// (lerp_matrix). Both the camera rotation and the portal's own spin
+// (D_80075858/D_800758FC) are baked into the snapshots, so both interpolate
+// smoothly at any framerate with NO extrapolation. (Extrapolating a single
+// frozen snapshot — a relative delta, or a camera-increment ΔR — skews,
+// wobbles and squishes because the camera never sits still and the spin is
+// not interpolated; interpolating two real snapshots is the fix.) Clip rect
+// + outline depth come from project_world, which already reads the
+// interpolated camera live. See portal_reextract() below.
 //
 // Background. The main level sky is func_8004EBA8 (handled by
-// cyclorama_native.c). The PORTAL previews are a separate pipeline driven by
+// cyclorama.c). The PORTAL previews are a separate pipeline driven by
 // func_80050BD0 (RenderPortals): for each visible portal it projects the
 // portal's own destination skybox dome with an animated rotation matrix, sets
 // a per-portal screen CLIP RECT (D_8007AA00..0C), and emits the dome prims via
@@ -39,27 +35,27 @@
 // hooked the main sky, so portal previews were missing (the arch showed the
 // hill behind it instead of the destination dome).
 //
-// This module re-derives the portal dome in float from gamestate (the chosen
-// approach: faithful to the renderer's "3D-from-gamestate, never replay GPU
-// packets" design, and widescreen-ready). Phase 1 (this commit) is the
-// capture/dump harness: hook the leaf renderers + RenderPortals, snapshot the
+// This module re-derives the portal dome in float from gamestate (faithful
+// to the renderer's "3D-from-gamestate, never replay GPU packets" design,
+// and widescreen-ready). Its capture/dump harness hooks the leaf renderers +
+// RenderPortals and snapshots the
 // inputs (skybox struct, the two matrices, clip rect, depth) and the GTE prims
 // each leaf actually emitted to the polybuf (ground truth), so the float
 // extraction can be measured against real output. Gated by OPENPETE_PORTAL_DUMP
 // (zero overhead off). Determinism: never writes PSX RAM; runs the real leaf
 // renderer exactly once (behaviour-identical fall-through) and only READS after.
 //
-// Format notes (cyclorama.h warns m_Skybox is "strange storage" — so trust the
-// dump, not the field names): see the format notes.
+// Format notes: cyclorama.h warns m_Skybox is "strange storage", so trust the
+// dump, not the field names.
 
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"
 #include "openpete_subtick_view.h"
 #include "openpete_native_render.h"
-#include "render_paths.h"
-#include "spyro_native_reextract.h"   /* portal_native_reextract export */
-#include "portal_native.h" /* cross-feeder exports (terrain OT-conformance clamp) */
-#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
+#include "renderer/render_paths.h"
+#include "renderer/reextract.h"   /* portal_reextract export */
+#include "renderer/portal.h" /* cross-feeder exports (terrain OT-conformance clamp) */
+#include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 
 #include <math.h>
 #include <stdint.h>
@@ -395,7 +391,7 @@ static void read_gte_rotmatrix(CPUState* cpu, int M[3][3]) {
 /* ---- sub-tick capture-and-replay ------------------------------------------
  * The canonical RenderPortals leaf hooks record each DRAWN portal's high-level
  * decision here (the transient clip rect / colour / GTE matrix are live only
- * during the leaf call); portal_native_reextract replays them on every
+ * during the leaf call); portal_reextract replays them on every
  * intermediate present, re-projecting the geometry against the interpolated
  * camera. One entry per leaf call = one flat quad (+ optional dome). */
 typedef struct {
@@ -417,7 +413,7 @@ static portal_cap_t s_pcap[PORTAL_CAP_MAX];
 static int          s_pcap_n = 0;     /* entries captured this canonical frame    */
 static int          s_pcap_valid = 0; /* a canonical RenderPortals has populated it*/
 static unsigned     s_pcap_frame = 0; /* openpete_frame of the populating RenderPortals */
-/* Staleness gate (W2.1 liveness unification): on_80050BE0 calls
+/* Staleness gate (liveness unification): on_80050BE0 calls
  * render_path_mark_drawn(RP_PORTAL) while the canonical frame renders; the
  * shared render_paths commit latches it into the canon-drawn mask once per
  * canonical present, BEFORE the sub-tick reextract reads it via
@@ -631,7 +627,7 @@ static int portal_plane_invz(CPUState* cpu, const ngte_view* v, uint32_t p,
  * angle that forward push made the sky poke out past the stone SIDES — it won the
  * depth test against the arch's own geometry. Sitting exactly on the opening plane
  * is the correct depth; the accepted cost is that the ~1px inner-frame edge z-fights
- * and can flicker. (The backstop push-back once noted here was retired by the W2.6
+ * and can flicker. (The backstop push-back once noted here was retired by the
  * stencil groups' in-group painter order.) */
 
 /* The portal sky's tie-break margin, in WORLD view-Z units: the sky is pulled
@@ -651,10 +647,10 @@ static int portal_plane_invz(CPUState* cpu, const ngte_view* v, uint32_t p,
  * by orders of magnitude at all playable distances. Applied to the WHOLE
  * portal sky (dome, flat preview, AND backstop) so all paths shift together
  * and the far/medium/close distance crossfade has no discontinuity. The
- * matching terrain-side OT-conformance clamp (terrain_native.c) pushes
+ * matching terrain-side OT-conformance clamp (terrain.c) pushes
  * straddling faces back by PORTAL_CLAMP_EPS_VZ (2x this), so clamped faces
  * always lose to the sky and unclamped coincident bands always win to it.
- * 16 -> 24 (2026-07-06): at 16 a residual z-fight sparkled on the inner
+ * 16 -> 24: at 16 a residual z-fight sparkled on the inner
  * edge of some arches (seen live) — the decorative band evidently sits a
  * few units in FRONT of the opening plane, not exactly on it. */
 #define PORTAL_SKY_EPS_VZ_DEFAULT 24.0
@@ -709,7 +705,7 @@ static double sky_ot_push_for(double ot_vz) {
     return (ot_vz >= 128.0 * 320.0 && sky_otpush_enabled()) ? 128.0 * 64.0 : 0.0;
 }
 /* Plane-cover near margin M (world units): the preview covers everything at
- * or behind plane − M inside the opening footprint. Sized by the 2026-08-11
+ * or behind plane − M inside the opening footprint. Sized by corpus
  * sweeps: with the og +64-slot push retired the plane ALONE covers every
  * measured behind/at-plane intruder (doorway moby, extended terrain band —
  * identical cover counts at M 0..256); the margin only widens cover into the
@@ -744,8 +740,8 @@ static float portal_cyclorama_depth(double vz) {
 }
 /* OPENPETE_PORTAL_SKY_DEPTH = ot (default) | plane | ring.
  *
- * `ot` mirrors the .s's ACTUAL OT placement (extracted from the generated C,
- * 2026-07-03): RenderPortals computes the sky's world-OT bucket as
+ * `ot` mirrors the .s's ACTUAL OT placement (extracted from the generated
+ * C): RenderPortals computes the sky's world-OT bucket as
  *   B = (Σ outline-point SZ / npts) >> 7;  if (B >= 256) B += 64;  clamp 2047
  * (block_800515C4-80051674; SZ at world scale), and the terrain walk buckets
  * each face at (Σ 4-corner SZ) >> 7 (+ the face's (w3&0x38)>>1 sort bias) —
@@ -853,7 +849,7 @@ static float plane_depth_back(double a, double b, double c, double x, double y) 
  * perspective-correct per pixel — so the bg colour shimmers through, f1910). So a
  * SKYBOX-LINKED flat (a0 == a portal's m_Skybox, or m_Skybox+0x10) is the dome's
  * BACKSTOP. Historical: it used to be pushed behind the dome by a x1.0625/x1.125
- * view-Z scale so the dome won the depth test; RETIRED by the W2.6 stencil groups
+ * view-Z scale so the dome won the depth test; RETIRED by the stencil groups
  * (in-group painter order at equal depth — the dome draws after the backstop and
  * wins per pixel). The backstop still only shows through the dome's
  * culled/near-rejected edge gaps, still far nearer than the through-hole terrain. */
@@ -864,7 +860,7 @@ static float plane_depth_back(double a, double b, double c, double x, double y) 
  * owning portal directly (captured) instead of re-matching a possibly-stale a0. */
 #define PORTAL_RGB_RESOLVE 0xFFFFFFFFu
 
-/* W2.6 — every portal-sky tri is emitted TWICE: once as the invisible stencil
+/* Every portal-sky tri is emitted TWICE: once as the invisible stencil
  * aperture MASK (PORTAL_MASK: depth-tested vs the world, carries the tie-break
  * z) and once as the visible colours (PORTAL_CYCLORAMA: depth-free,
  * stencil-gated in core). `s_portal_group` associates a portal element's mask
@@ -897,7 +893,7 @@ static unsigned s_sky_fed_frame = 0;
 int openpete_portal_sky_recent(void) {
     return s_sky_fed_frame != 0u && (openpete_frame - s_sky_fed_frame) <= 2u;
 }
-/* Plane provider for the terrain OT-conformance clamp (portal_native.h). One
+/* Plane provider for the terrain OT-conformance clamp (portal.h). One
  * entry per portal captured by the canonical leaf hooks this/last frame
  * (s_pcap holds a flat AND a dome entry for a close portal — dedup by the
  * Portal*). The plane + bbox are derived LIVE from g_Portals and the camera,
@@ -1080,9 +1076,9 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
      * that makes the floor eat the near part (f2945). */
     uint32_t p = portal_hint ? portal_hint
                              : owning_portal_ptr(cpu, &s_view, a0, (x0 + x1) * 0.5, (y0 + y1) * 0.5);
-    /* Backstop push-back RETIRED (W2.6-b): a skybox-linked flat (the dome's
+    /* Backstop push-back RETIRED: a skybox-linked flat (the dome's
      * backstop) used to sink behind the dome by x1.0625/x1.125 so the dome won
-     * the depth test — dead since the W2.6 stencil groups: within a group the
+     * the depth test — dead since the stencil groups: within a group the
      * colours draw in submission order (backstop first, dome last) with LEQUAL,
      * so at EQUAL plane depth the dome wins per pixel anyway. Everything sits
      * on the opening plane now. */
@@ -1133,7 +1129,7 @@ static int feed_portal_quad(CPUState* cpu, uint32_t a0, int a0_is_skybox,
          * 483-487): the .s flat leaf fans the OPENING POLYGON, not the clip
          * rect — below the outline's bottom edge the sky never rasters and
          * the .s shows the floor/sill there. (A rect + two-region-split
-         * variant was tried 2026-07-06 and over-covered exactly that band —
+         * variant was tried and over-covered exactly that band —
          * sky where og shows the walkway.) The wedge-class artifact at the
          * base is NOT a coverage problem: it is the depth test, fixed by the
          * terrain OT-conformance sink. */
@@ -1258,7 +1254,7 @@ static int clip_half(const pgv* in, int n, pgv* out, int axis, float val, int ke
     return m;
 }
 
-/* ---- two-region sky depth (the PSX OT placement, 2026-07-03) --------------
+/* ---- two-region sky depth (the PSX OT placement) --------------------------
  * The .s sorts the portal sky BEHIND the whole stone ring (its OT key is
  * derived from the ring — see portal_outline_maxvz), so the rect spill over
  * the arch is repainted by ANY nearer geometry (arch stone, threshold floor)
@@ -1720,7 +1716,7 @@ static void emit_clipped_gouraud(pgv v0, pgv v1, pgv v2, int x0, int y0, int x1,
  * beast_makers destination sky: its swamp-trunk faces sit early in the face
  * list so the .s paints them OVER the cloud band, but they project FARTHER
  * than the clouds, so the Z-sort buried them (truncated trunks + floating
- * shards, found in testing 2026-07-10). Mirroring the authored order also renders
+ * shards). Mirroring the authored order also renders
  * the fold correctly by construction — the PSX itself draws the fold with
  * this exact order. With LESS_OR_EQUAL the last emit wins per pixel, so we
  * emit the collected array BACKWARDS (.s-last first, .s-first on top). */
@@ -1729,7 +1725,7 @@ typedef struct { pgv a, b, c; double key; } dome_face;
 static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
                             int canonical, uint32_t fog_rgb, double fog_t) {
     if (portal_repr_skip(1)) return 0;
-    s_portal_group = (int)skybox;   /* group id for mask↔colour pairing (W2.6) */
+    s_portal_group = (int)skybox;   /* group id for mask↔colour pairing */
     int y0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x0) >> 16, y1 = (int32_t)cpu->read_word(D_CLIPRECT + 0x4) >> 16;
     int x0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x8) >> 16, x1 = (int32_t)cpu->read_word(D_CLIPRECT + 0xC) >> 16;
     if (x1 < x0) { int t = x0; x0 = x1; x1 = t; }
@@ -1825,8 +1821,8 @@ static int feed_portal_dome(CPUState* cpu, uint32_t skybox, uint32_t ot_b_hint,
          * against the DOME-FORWARD axis — correct for the 4:3 window (±26°
          * azimuth) but an off-4:3 widescreen portal peers at the dome up to
          * ±60°+ off forward, where needed sectors cross the boundary as the
-         * dome spins (user report: segments missing as it rotates, flashing
-         * the flat backstop). Under Hor+ skip the sector cull — the per-face
+         * dome spins (segments missing as it rotates, flashing the flat
+         * backstop). Under Hor+ skip the sector cull — the per-face
          * near-plane reject + the arch clip rect still bound the work. */
         uint32_t c0 = cpu->read_word(S + 0x00), c1 = cpu->read_word(S + 0x04);
         int cvx = (int16_t)(c0 & 0xFFFF), cvy = (int16_t)(c0 >> 16), cvz = (int16_t)(c1 >> 16), radius = (int16_t)(c1 & 0xFFFF);
@@ -2066,8 +2062,8 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
         }
         /* Far/medium FLAT leaves: one quad = the whole preview; the close FEA0
          * flat (a0=skybox+0x10) is the dome's authored BACKSTOP. All on the
-         * opening plane — the old x1.0625/x1.125 backstop push-back is retired
-         * (W2.6-b): in-group painter order at equal depth already lets the dome
+         * opening plane — the old x1.0625/x1.125 backstop push-back is retired:
+         * in-group painter order at equal depth already lets the dome
          * (drawn last) win per pixel, incl. the f1910 bg z-fight case. */
         int is_skybox_a0 = (a0 >= 0x80010000u && a0 < 0x80200000u);
         /* --no-lod always-dome: the .s renders far portals as a FLAT colour and
@@ -2145,7 +2141,7 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
             feed_portal_dome(cpu, a0, 0, /*canonical=*/1, fog, fog_t);
         /* Record which portal this leaf rendered (the .s only renders on-4:3 portals)
          * so the widescreen off-4:3 reveal below doesn't double-draw it. Also the
-         * sub-tick capture (replayed by portal_native_reextract every present). */
+         * sub-tick capture (replayed by portal_reextract every present). */
         {
             int ry0=(int32_t)cpu->read_word(D_CLIPRECT+0x0)>>16, ry1=(int32_t)cpu->read_word(D_CLIPRECT+0x4)>>16;
             int rx0=(int32_t)cpu->read_word(D_CLIPRECT+0x8)>>16, rx1=(int32_t)cpu->read_word(D_CLIPRECT+0xC)>>16;
@@ -2291,8 +2287,8 @@ static void feed_revealed_portals(CPUState* cpu) {
          * feed_portal_quad re-projects the outline against the interpolated
          * camera on replay. */
         /* Destination DOME for revealed portals, distance rule mirrored from
-         * RenderPortals (calibrated 2026-07-06; user report: the reveal showed
-         * the solid LQ colour where the player expects the sky cyclorama).
+         * RenderPortals (calibrated: the reveal otherwise showed the solid LQ
+         * colour where the player expects the sky cyclorama).
          * The .s leaf selection (0x80051858) draws the dome whenever its
          * distance metric t4 < 16384, with the medium band [12288,16384)
          * DPCS-fading the dome toward the flat colour by (t4-12288)/4096 — at
@@ -2404,9 +2400,9 @@ static int on_80050BE0(CPUState* cpu, uint32_t a) {
       func_80050BE0(cpu); }                    /* real RenderPortals: on-4:3 portals fed via leaves */
     if (feed) feed_revealed_portals(cpu);     /* widescreen: off-4:3 portals the .s culled */
     /* The leaves + reveal have populated s_pcap[] this canonical frame; mark it
-     * usable so portal_native_reextract replays it on the intermediate presents.
+     * usable so portal_reextract replays it on the intermediate presents.
      * (s_pcap_n may be 0 in a portal-less level — the reextract then no-ops.)
-     * The staleness gate is render_path_mark_drawn (W2.1 liveness unification):
+     * The staleness gate is render_path_mark_drawn (liveness unification):
      * the interval-less mark, NOT a polybuf interval — under widescreen the
      * native feed can contain revealed portals the .s culled (empty polybuf
      * emission, real native content), so "RenderPortals ran + fed" is the
@@ -2432,7 +2428,7 @@ static void portal_native_apply_options(const openpete_options_t* opts) {
  * matrix), runs the same feed_portal_quad/feed_portal_dome the canonical path uses,
  * then restores them. Display-only: never perturbs gameplay RAM, never runs
  * headless (the spine doesn't run headless). */
-void portal_native_reextract(CPUState* cpu, double alpha, int interp_on) {
+void portal_reextract(CPUState* cpu, double alpha, int interp_on) {
     if (!openpete_native_scene_enabled()) return;
     if (s_pcap_n == 0) return;
     /* Don't replay a STALE capture. During a level-load transition (e.g. warping
@@ -2618,7 +2614,7 @@ static const feature_dispatch_entry_t portal_dispatch[] = {
     { 0u, NULL },
 };
 
-const feature_module_t portal_native_module = {
+const feature_module_t portal_module = {
     .name           = "portal_native",
     .apply_options  = portal_native_apply_options,
     .dispatch_table = portal_dispatch,

@@ -19,7 +19,7 @@ and no blend value (`openpete_native_render.h:368-374`).
 1. For blended geometry, the category argument is decorative.
 `openpete_native_scene_add_tri` routes `blend != 0` tris by blend and
 ignores the category (`openpete_native_render.h:385`;
-`games/spyro-1/features/tracer_native.c:108` passes `OPENPETE_SCENE_ACTOR`
+`games/spyro-1/renderer/tracer.c:108` passes `OPENPETE_SCENE_ACTOR`
 with the comment "category ignored for blend!=0"). Every additive tri in
 the game — flame ribbon, particle glows and flares, the dragon star, tracer
 streaks — lands in one blend-routed bucket regardless of feeder. Splitting
@@ -39,24 +39,24 @@ All paths under `games/spyro-1/features/`.
 
 | Feeder | Categories | Tag | Blend | Textured | Identity at emit | Cross-tick caching |
 |---|---|---|---|---|---|---|
-| `moby_native.c` | ACTOR / HUD3D / HUD / ACTOR_FRONT (routed at :3202-3205) | `TAG_MOBY_SLOT` :3319, cleared :3323 | both | both | stable — guest record ptr, `m_Class`, packed face key | faceblock decode cache; Tier-2 speck hold banked per canonical epoch (:5171) |
-| `terrain_native.c` | WORLD / WORLD_FILL (:6633); PORTAL_GUARD (:6651, env-gated, default off) | `TAG_TERRAIN*` :6569, cleared :6635 | both | both | stable — sector, face, texid, tier, env | sector decode cache; retained GPU sector-mesh cache; sub-tick lerp banks |
-| `spyro_native.c` | PLAYER (:1288 walk) | `TAG_PLAYER` :1263 | both | both | singleton (`G_SPYRO`); no per-face key | seg prev/curr snapshots (sub-tick shape lerp) |
-| `portal_native.c` | PORTAL_CYCLORAMA, PORTAL_MASK (via `add_tri_grouped`) | `TAG_PORTAL(kind)` :1030, :1485; the aperture mask tris at :1583 and :1612 are untagged | 0 | no | stable per group — destination skybox guest ptr; preview kind in the tag | sub-tick capture-and-replay |
-| `cyclorama_native.c` | SKY (:485) | `TAG_SKY` :468, cleared :487 | 0 | no | loop index only, not emitted | canonical-drew replay gate |
-| `flame_native.c` | WORLD (:597 ribbon, :612 caps) | `TAG_FLAME(part)` :581, :600 | 2 ribbon / 0 caps | ribbon yes, caps no | ribbon-vs-caps only | none |
-| `particle_native.c` | WORLD (six sites) | `TAG_PARTICLE(kind, sel)` at six sites | 0/2/3, data-driven | quads yes, rest no | classifies only — feeder kind 0..5 plus the game's `sel` for quads and lines; no pool slot or pointer | snapshot + liveness gate |
-| `tracer_native.c` | ACTOR (decorative — blend 2) | `TAG_TRACER` :125 | 2 | no | none — per-tick guest point arrays, drained each tick | hook-entry snapshot replay |
-| `shadow_native.c` | SHADOW (:549 moby, :759 Spyro) | `TAG_SHADOW(kind)` :536, :746 | 3 (subtract) always | moby yes, Spyro no | caster kind only; the caster moby ptr is read at build time and not plumbed onto the tri | none |
-| `transition_native.c` | WORLD (:196 backdrop grid, :213 faded dome) | none | 0 | no | none — dome re-derived from gamestate | polybuf interval recorded for liveness only |
-| `ui_sprite_native.c` | HUD (carry=1), OVERLAY (:335), HUD_PANEL (:345) | none | 0/1/3 | mixed | none — per-tick polybuf allocation | core carry/re-apply across sub-ticks |
+| `moby.c` | ACTOR / HUD3D / HUD / ACTOR_FRONT (routed at :3202-3205) | `TAG_MOBY_SLOT` :3319, cleared :3323 | both | both | stable — guest record ptr, `m_Class`, packed face key | faceblock decode cache; Tier-2 speck hold banked per canonical epoch (:5171) |
+| `terrain.c` | WORLD / WORLD_FILL (:6633); PORTAL_GUARD (:6651, env-gated, default off) | `TAG_TERRAIN*` :6569, cleared :6635 | both | both | stable — sector, face, texid, tier, env | sector decode cache; retained GPU sector-mesh cache; sub-tick lerp banks |
+| `spyro.c` | PLAYER (:1288 walk) | `TAG_PLAYER` :1263 | both | both | singleton (`G_SPYRO`); no per-face key | seg prev/curr snapshots (sub-tick shape lerp) |
+| `portal.c` | PORTAL_CYCLORAMA, PORTAL_MASK (via `add_tri_grouped`) | `TAG_PORTAL(kind)` :1030, :1485; the aperture mask tris at :1583 and :1612 are untagged | 0 | no | stable per group — destination skybox guest ptr; preview kind in the tag | sub-tick capture-and-replay |
+| `cyclorama.c` | SKY (:485) | `TAG_SKY` :468, cleared :487 | 0 | no | loop index only, not emitted | canonical-drew replay gate |
+| `flame.c` | WORLD (:597 ribbon, :612 caps) | `TAG_FLAME(part)` :581, :600 | 2 ribbon / 0 caps | ribbon yes, caps no | ribbon-vs-caps only | none |
+| `particle.c` | WORLD (six sites) | `TAG_PARTICLE(kind, sel)` at six sites | 0/2/3, data-driven | quads yes, rest no | classifies only — feeder kind 0..5 plus the game's `sel` for quads and lines; no pool slot or pointer | snapshot + liveness gate |
+| `tracer.c` | ACTOR (decorative — blend 2) | `TAG_TRACER` :125 | 2 | no | none — per-tick guest point arrays, drained each tick | hook-entry snapshot replay |
+| `shadow.c` | SHADOW (:549 moby, :759 Spyro) | `TAG_SHADOW(kind)` :536, :746 | 3 (subtract) always | moby yes, Spyro no | caster kind only; the caster moby ptr is read at build time and not plumbed onto the tri | none |
+| `transition.c` | WORLD (:196 backdrop grid, :213 faded dome) | none | 0 | no | none — dome re-derived from gamestate | polybuf interval recorded for liveness only |
+| `ui_sprite.c` | HUD (carry=1), OVERLAY (:335), HUD_PANEL (:345) | none | 0/1/3 | mixed | none — per-tick polybuf allocation | core carry/re-apply across sub-ticks |
 
 Non-feeders in the directory (no `add_tri` call): `moby_rank.c`,
 `render_paths.c`, `render_decouple.c`, `polybuf_guard.c`,
-`crash_demo_woah.c`, `vibration_native.c`, `text_moby_native.c` (glyphs go
+`crash_demo_woah.c`, `vibration.c`, `text_moby.c` (glyphs go
 to the separate overlay-glyph channel, not a scene category),
-`text_moby_id.c`, `cheats_native.c`, `freecam.c` (with `games/common/freecam_game.c`),
-`levelwarp_native.c`, `audio_volume_native.c`, `mod_level_ops.c`,
+`text_moby_id.c`, `cheats.c`, `freecam.c` (with `games/common/freecam_game.c`),
+`levelwarp.c`, `audio_volume.c`, `mod_level_ops.c`,
 `mod_moby_ops.c`, `native_gte.c`. No `add_tri` callers exist outside
 `games/spyro-1/features/`.
 
@@ -94,7 +94,7 @@ unreachable by a material selector.
 ## The portal preview is a three-rung LOD ladder
 
 A portal shows the destination level's sky, and the game renders it three
-ways across the approach (`portal_native.c:2018-2020`, dispatched by the
+ways across the approach (`portal.c:2018-2020`, dispatched by the
 leaf hooks at :2210-2212):
 
 | Kind | Leaf | What it draws |
@@ -103,7 +103,7 @@ leaf hooks at :2210-2212):
 | `PORTAL_BLENDED` (2) | `func_80050240` | the dome with DPCS fog toward `D_800757D4` — the medium-distance cross-dissolve |
 | `PORTAL_DOME` (1) | `func_8004F4BC` | the full gouraud dome, unfogged — the close-up |
 
-The leaf sets `s_portal_kind` (`portal_native.c:2045-2047`) and the emit
+The leaf sets `s_portal_kind` (`portal.c:2045-2047`) and the emit
 stamps it into the tag, so a material can key one rung. A material that
 reshades one rung and not the others changes appearance as the player walks
 toward the portal, which is why `ident` -1 (all three) is the usual choice.
@@ -175,21 +175,21 @@ answer, and the answer must be designed before the caching arc.
 1. `OPENPETE_SCENE_TERRAIN_KEY` (14) is retired — the number is reserved and
    no feeder emits it (`openpete_native_render.h:529-530`).
 2. `PORTAL_GUARD` (9) has no portal producer. Its only emitter is the
-   terrain feeder (`terrain_native.c:6651`), behind `OPENPETE_PORTAL_GUARD`,
+   terrain feeder (`terrain.c:6651`), behind `OPENPETE_PORTAL_GUARD`,
    default off. Those tris are untagged despite the identical face being
    terrain-tagged: the emit falls after `set_tag(0)` at :6635.
 3. The moby feeder emits into HUD, a 2D-UI category, with re-derived 3D
-   billboards. It shares HUD with `ui_sprite_native.c`'s genuinely-2D tris;
+   billboards. It shares HUD with `ui_sprite.c`'s genuinely-2D tris;
    only the `carry` flag tells them apart.
 4. The dragon star lives in WORLD but behaves like HUD — additive, emitted
    at z = 0 on the near plane to mirror the PSX's on-top ordering.
 5. `ACTOR_FRONT` is selected by guest-pointer match against
-   `g_DragonCutscene` (`moby_native.c:1522-1534`), not by class.
+   `g_DragonCutscene` (`moby.c:1522-1534`), not by class.
 6. `HUD_PANEL` can be subtractive (blend 3), keyed off the ABR of the last
    tracked `DR_MODE` rather than the prim's own code
-   (`ui_sprite_native.c:333,344-346`).
+   (`ui_sprite.c:333,344-346`).
 7. The transition backdrop is re-derived, not replayed. It calls
-   `cyclorama_native_extract_faded` (`transition_native.c:107`) and
+   `cyclorama_native_extract_faded` (`transition.c:107`) and
    synthesizes a 3x3 edge-extend grid; the recorded polybuf interval is used
    only for liveness masking and diagnostics, never decoded into tris.
 

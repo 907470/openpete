@@ -1,15 +1,13 @@
-// games/spyro-1/features/flame_native.c — Phase 3b.1 of
-// notes/plans/openpete-native-renderer.md: the SPYRO FLAME renderer
+// games/spyro-1/renderer/flame.c — the SPYRO FLAME renderer
 // (func_80058D64 / r_flame.s) re-derived from gamestate in float + its
-// numerical A/B harness, and the first ADDITIVE-blend consumer (ABR mode 1).
+// numerical A/B harness, and an ADDITIVE-blend consumer (ABR mode 1).
 //
 // The flame is a self-contained ~490-line handwritten GTE routine: a
 // procedurally-generated billboard ribbon strip with sine-table flicker,
 // two-stage transform (flame origin -> camera space, then the flame-attach
-// matrix the Spyro renderer cached this frame), additively blended. See the
-// format-spike doc.
+// matrix the Spyro renderer cached this frame), additively blended.
 //
-// STATIC ASM FINDING (corrects the doc's UNCERTAIN "untextured G3"): the strip
+// STATIC ASM FINDING: the strip
 // cell is 0x34 bytes = 13 words = POLY_GT4 and the colour/code word is 0x3E
 // (poly+gouraud+QUAD+TEXTURED+semi-transparent+modulate). So the flame is a
 // TEXTURED semi-transparent gouraud quad ribbon, additively blended. This
@@ -25,10 +23,10 @@
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "openpete_log.h"  /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
-#include "render_paths.h"  /* --render-paths isolation */
-#include "spyro_records.h" /* per-call records of the player hooks */
-#include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
-#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
+#include "renderer/render_paths.h"  /* --render-paths isolation */
+#include "renderer/spyro_records.h" /* per-call records of the player hooks */
+#include "renderer/reextract.h"  /* sub-tick re-extract entry */
+#include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 
 #include <math.h>
 #include <stdint.h>
@@ -267,7 +265,7 @@ static void flame_load_matrix(CPUState* cpu, uint32_t base, int R[3][3]) {
 /* RTPS one local vertex through R + TR (shift 12) -> screen (float) + view-Z */
 static void flame_project(const int R[3][3], const double TR[3], double ofx, double ofy, const ngte_view* v,
                           double vx, double vy, double vz, float* sx, float* sy, float* sz) {
-    ngte_proj o;   /* shared GTE-faithful pipeline, ±1024 SXY bound ON (W2.3) */
+    ngte_proj o;   /* shared GTE-faithful pipeline, ±1024 SXY bound ON */
     ngte_project_gte(R, TR, vx, vy, vz, ofx, ofy, v, 1, &o);
     *sx = (float)o.sx; *sy = (float)o.sy; *sz = (float)o.m3;
 }
@@ -452,13 +450,13 @@ static void flame_build_strip(CPUState* cpu) {
         uint32_t uv1w = cpu->read_word(base + 0x14) + ((uint32_t)byte1 << 8);
         int tpx = ((int)((uv1w >> 16) & 0xF)) * 64, tpy = ((int)((uv1w >> 20) & 1)) * 256;
         int mode = (int)((uv1w >> 23) & 3), bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
-        /* ABR-FIXME (audit 2026-06-30): the flame-strip draw hardcodes blend=2 (ABR1
+        /* ABR-FIXME: the flame-strip draw hardcodes blend=2 (ABR1
          * additive); the strip tpage's ABR is data-driven (assumed additive, not
          * statically proven). If a flame ever ships a non-additive tpage this fires —
-         * derive blend from the captured ABR instead of hardcoding. FIX flame_native.c:654 */
+         * derive blend from the captured ABR instead of hardcoding. FIX flame.c:654 */
         if (((uv1w >> 21) & 3) != 1)
             OPL_ERROR_F("native", "ABR-FIXME flame strip tpage ABR=%d (feeder hardcodes "
-                        "blend=2 additive) f=%u -- FIX flame_native.c:654",
+                        "blend=2 additive) f=%u -- FIX flame.c:654",
                         (int)((uv1w >> 21) & 3), openpete_frame);
         int clx = ((int)((uv0w >> 16) & 0x3F)) * 16, cly = (int)((uv0w >> 22) & 0x1FF);
         uint32_t s4 = 0xA00u, s5step = 0x0A0A0Au;
@@ -662,13 +660,13 @@ static int on_80058D64_flame_native(CPUState* cpu, uint32_t addr) {
 }
 
 /* Sub-tick re-extract (high-FPS spine): rebuild one flame record's ribbon
- * from gamestate — extract-only; the record loop in spyro_native_reextract.c
+ * from gamestate — extract-only; the record loop in reextract.c
  * calls this once per flame record with its g_SpyroFlame bytes staged.
  * Self-gated on m_IsFlameActive (the .s renderer is only called while
  * breathing fire, so feeding unconditionally would draw a stale ribbon). The
  * ribbon attaches to the staged pose and projects through the interpolated
  * g_Camera, so it stays coherent with the scene. */
-void flame_native_reextract(CPUState* cpu, int slot) {
+void flame_reextract(CPUState* cpu, int slot) {
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_enabled(RP_FLAME)) return;
     /* Belt-and-braces with the m_IsFlameActive self-gate below: only replay the
@@ -684,7 +682,7 @@ static const feature_dispatch_entry_t flame_dispatch[] = {
     { 0u, NULL },
 };
 
-const feature_module_t flame_native_module = {
+const feature_module_t flame_module = {
     .name           = "flame_native",
     .apply_options  = NULL,
     .dispatch_table = flame_dispatch,

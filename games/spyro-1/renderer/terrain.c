@@ -1,6 +1,4 @@
-// terrain_native.c — native world/terrain renderer (Phase 4).
-//
-// Format/contract map: the format notes.
+// games/spyro-1/renderer/terrain.c — native world/terrain renderer.
 //
 // The world renderer is func_800258F0 (-> func_800276A0 fallthrough), dispatched
 // per frame by func_8002B9CC (PrepareEnvironmentRendering). It is camera-relative
@@ -30,18 +28,18 @@
 #include "openpete_native_render.h"
 #include "openpete_psx.h"
 #include "openpete_subtick_view.h"  /* openpete_psx_to_host_ptr (sector colour host reads) */
-#include "render_paths.h"  /* --render-paths isolation */
-#include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
+#include "renderer/render_paths.h"  /* --render-paths isolation */
+#include "renderer/reextract.h"  /* sub-tick re-extract entry */
 #include "openpete_interp.h"         /* openpete_interp_present_now (scroll-anim alpha) */
 #include "openpete_interp_objs.h"    /* per-descriptor scroll snapshots */
-#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
+#include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "no_lod.h"  /* openpete_no_lod + openpete_fog_scale (--fog-scale) */
-#include "features/levelwarp_native.h" /* level-id -> verdicts-file spelling (fill-tag pick) */
+#include "features/levelwarp.h" /* level-id -> verdicts-file spelling (fill-tag pick) */
 #include "openpete_fillpick.h"       /* LP fill-tag inspector (P): session verdicts + pick */
 #include "rhi.h"                     /* rhi_terrain_vertex (the chunk packer) */
 #include "openpete_terrain_cache.h"  /* terrain sector-mesh GPU cache (retained terrain) */
 
-#include "portal_native.h" /* portal-guard gate + the sky-plane provider (OT-conformance clamp) */
+#include "renderer/portal.h" /* portal-guard gate + the sky-plane provider (OT-conformance clamp) */
 #include "texture_pack.h"           /* identity resolve for the record dumper */
 #include "openpete_mods.h"          /* untextured-band material resolve (S8c) */
 #include "openpete_native_vram.h"   /* VRAM model reads for the record dumper */
@@ -254,8 +252,8 @@ static void terrain_dump(CPUState* cpu) {
  * vertices). Set per frame in terrain_build. */
 static double s_ofx, s_ofy, s_H;
 
-/* Float RTPS mirror, TR=0: camera-space MAC = (M*V)>>12 = ngte_mac (shared,
- * W2.3). SX/SY = OFX/OFY + MAC1/2*H/MAC3 (proj_screen). The LP-world/16 vs
+/* Float RTPS mirror, TR=0: camera-space MAC = (M*V)>>12 = ngte_mac
+ * (shared). SX/SY = OFX/OFY + MAC1/2*H/MAC3 (proj_screen). The LP-world/16 vs
  * HP-world/4 scale cancels in the MAC1/MAC3 ratio, so V can be built in any
  * consistent unit (world/16). */
 
@@ -292,8 +290,8 @@ typedef struct {
     int16_t texid;                                 /* Tiledef/record id, -1 untex (S9) */
     int tier;                                      /* 1=LP, 0=HP (debug tiercolor) */
     uint8_t guard;                                 /* .s-deferred face (portal-guard dup) */
-    uint8_t nearband;                              /* .s near-band classified: no og key (P6b) */
-    uint8_t fill;                                  /* LP hole-fill backing (W2.6-c) -> WORLD_FILL */
+    uint8_t nearband;                              /* .s near-band classified: no og key */
+    uint8_t fill;                                  /* LP hole-fill backing -> WORLD_FILL */
     uint8_t fptag;                                 /* fill-tag inspector: 1 = listed FILL, 2 = preview candidate */
     int16_t sec, face;                             /* source identity (fardbg attribution) */
     uint8_t env;                                   /* env-anim tile member (provenance tag) */
@@ -301,11 +299,11 @@ typedef struct {
                                                     * vz of the 4 corners; portal conformance) */
     uint16_t otslots;                              /* .s OT-slot depth offset for the TEST depth:
                                                     * LP 0x40+8*((w1>>3)&0x1F), HP 4*((w3>>3)&0x7);
-                                                    * 1 slot = 128 world units (P4) */
+                                                    * 1 slot = 128 world units */
 } ttri;
 static int s_emit_noHP = 0;     /* tier of the sector currently being emitted */
 static int s_emit_guard = 0;    /* current face is .s-DEFERRED (near band) -> portal-guard dup */
-static int s_emit_fill = 0;     /* current pass is the LP hole-fill backing (W2.6-c) */
+static int s_emit_fill = 0;     /* current pass is the LP hole-fill backing */
 static int s_emit_fptag = 0;    /* current LP face's fill-tag class (inspector tint) */
 static int s_emit_sec = -1, s_emit_face = -1;  /* fardbg identity of the current face */
 static int s_emit_env = 0;      /* current face is in the env-anim rewrite set */
@@ -313,7 +311,7 @@ static float s_emit_otkey = 0.0f;  /* current face's .s OT key (portal conforman
 static uint16_t s_emit_otslots = 0;  /* current face's authored OT-slot offset */
 static uint8_t  s_emit_nearband = 0; /* current face is .s near-band (defer/HQ classified):
                                       * NEVER an OT face, so it neither emits nor contests
-                                      * the og key raster (P6b) — near geometry resolves by
+                                      * the og key raster — near geometry resolves by
                                       * TRUE depth, like the mask-bit-protected defer queues */
 /* Local terrain-triangle cap (before the scene feed). Under --no-lod every
  * foreground cell is forced through the 2x2 HQ subdivide, so terrain peaks at
@@ -359,7 +357,7 @@ static void terrain_dbg_init(void) {
      * front geometry: back-to-back wall pairs (a room interior vs the
      * cliff/waterfall outside it) interpenetrate within a few world units, so
      * emit-all let the far surface's back-face win depth and punch through
-     * (magic_crafters waterfall room, 2026-07-09). The .s NCLIP verdict — the
+     * (magic_crafters waterfall room). The .s NCLIP verdict — the
      * exact two-half quad rule, see the emit-site comment — is the canonical
      * visibility rule; the old "dropped ~half the faces" failure was the
      * single-triple mirror missing the second-half acceptance.
@@ -394,7 +392,7 @@ static void build_captured_colors(void) {
  * arrays [near0..][far0..]; `idx` is the pre-×4 byte offset from face word1.
  *
  * The .s decode (generated C block_80026DF0-80026E6C), PROVEN against the
- * title-vista captured prims (W2.3 fog A/B, 2026-07-03: implied-ir0 regression
+ * title-vista captured prims (fog A/B: implied-ir0 regression
  * over 546 matched fog-band verts fits residual 0, MAD 26):
  *   ir0 = fogRef - SZ,  SZ = 4·m3 (native V is world/16; the .s HP walk feeds
  *                                  world/4, so the .s SZ3 = 4× our m3);
@@ -406,7 +404,7 @@ static void build_captured_colors(void) {
  * The old claim "scale 1 validated, ×4 25-67%" is RETRACTED (it predates the
  * exact decode; the float+0.5 lerp at scale 1 pins f=1 across the fog band).
  *
- * SHIPPED DEFAULT since the fog arc (2026-07-05): the EXACT decode. The old
+ * SHIPPED DEFAULT: the EXACT decode. The old
  * "exact worsens the vista (9.0→13.0)" park was a two-error cancellation:
  * PSX terrain fog is TWO channels — the DPCS vertex blend here AND a
  * per-face CLUT-ROW ladder of pre-baked progressively-fogged palettes
@@ -423,7 +421,7 @@ static double s_fogscale = -1.0;    /* SZ = fogscale·m3; shipped default 1.0 (s
 static int s_fogdpcs = -1;          /* OPENPETE_TERRAIN_FOGDPCS: GTE-exact DPCS blend */
 static int s_lod_handoff = -1;      /* OPENPETE_TERRAIN_LOD_HANDOFF: HP->LP swap beyond fog saturation, default on */
 static int s_gapfill_en = -1;       /* OPENPETE_TERRAIN_GAPFILL (near-LP-gap fill, default on) */
-static int s_tier_faithful = -1;    /* OPENPETE_TERRAIN_LOD_FAITHFUL: .s sector binning + exact fog (W2.6-c) */
+static int s_tier_faithful = -1;    /* OPENPETE_TERRAIN_LOD_FAITHFUL: .s sector binning + exact fog */
 static int s_clutfog = -1;          /* OPENPETE_TERRAIN_CLUTFOG: .s per-face CLUT-row fog ladder (default ON) */
 int s_fogdbg = 0;                   /* OPENPETE_TERRAIN_FOGDBG: dump fog samples */
 extern int s_fogdbg;
@@ -1423,7 +1421,7 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
  * a guess — the failure mode is visible and local, unlike the threshold
  * classifier this replaces (six tuned constants + a per-level kill list,
  * v1-v12, each version patching a newly discovered misprediction). */
-#include "terrain_fill_tags.h"
+#include "renderer/terrain_fill_tags.h"
 
 static int tft_frozen(int level, int sec, int face) {
     int lo = 0, hi = (int)(sizeof(k_terrain_fill_tags)/sizeof(k_terrain_fill_tags[0])) - 1;
@@ -1755,7 +1753,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
      * pair evicted each other EVERY present — each miss is a full re-decode +
      * gapfill classification (ms-scale for big sectors: s148 alone burned
      * ~5ms/present; 17-19 misses/present at the hot heading = the
-     * direction-dependent perf cliff, 2026-07-10). The window makes thrash
+     * direction-dependent perf cliff). The window makes thrash
      * need TSC_WINDOW+1 hot sectors in one window; LRU (stamped per
      * terrain_build call) evicts a stale sector, never this present's
      * working set. Probes are five-word compares — window width is noise
@@ -1885,7 +1883,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
  * geometry moves at present rate, not 29.913 Hz. A handful of descriptors per
  * level, ≤256 words per sector — negligible next to the walk itself. Colours
  * already read live; texmats are covered by tsc_tile_gens/tsc_refresh_anim. */
-/* Sub-tick vert interp state (set around terrain_build by terrain_native_reextract;
+/* Sub-tick vert interp state (set around terrain_build by terrain_reextract;
  * zero on the canonical path so the 30 Hz render stays byte-exact int verts). */
 static int    s_vanim_sub;     /* this build is a sub-tick re-extract (never roll banks) */
 static int    s_vanim_on;      /* ...with a paired camera bracket (alpha valid) */
@@ -2257,7 +2255,7 @@ static void terrain_visdbg(CPUState* cpu, uint32_t sectorCnt, int group,
  *
  * WIDESCREEN: the .s verdict is too narrow — its 4:3 frustum cull dropped the
  * side sectors the wider frustum now reveals (the terrain sibling of the
- * cyclorama wide-AR gap, FIXED 2026-06-20). We re-derive the candidate set
+ * cyclorama wide-AR gap). We re-derive the candidate set
  * host-side from the SAME static, aspect/direction-INDEPENDENT occlusion data
  * the .s starts from: g_Camera.m_OcclusionGroup selects a baked PVS sublist in
  * g_Environment.m_OcclusionGroups (a conservative, direction-independent
@@ -3580,7 +3578,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                             "drawHP=%d drawLP=%d nLpF=%d nHpF=%d\n",
                     (int)i, flags, cbin, SC->radius, lodThr, fogRefBase,
                     drawHP, drawLP, nLpF, nHpF);
-        /* OPENPETE_TERRAIN_BINCHECK=<frame> — P3 gate: compare the native
+        /* OPENPETE_TERRAIN_BINCHECK=<frame> — gate: compare the native
          * sector-bin verdict against the .s's OWN HP list, decoded from the
          * render arena after this tick's func_800258F0 ran. The HP list
          * (arena+0x1C00, `ptr|bits` entries, NULL-terminated) SURVIVES the
@@ -3644,12 +3642,12 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
          *   both-tier or no-HP sector; and under --no-lod, the sparse-HP
          *   holes of HP-drawing sectors; per-face gate below). */
         int lpFarOnly = SV->lpFarOnly, lpGapOnly = SV->lpGapOnly;
-        /* LP HOLE-FILL backing (W2.6-c): an HP sector that does NOT already
+        /* LP HOLE-FILL backing: an HP sector that does NOT already
          * draw its LP re-emits it as WORLD_FILL — stencil-gated in core to the
          * pixels no world geometry covered, i.e. the LP↔HP T-junction seams
          * (the artisans distant-water gaps). Because of the stencil gate it can
-         * never poke through the HP (the failure of the 2026-06-26 draw-LP-
-         * everywhere attempt); it draws at TRUE LP depth, no tier bias.
+         * never poke through the HP (the failure of the draw-LP-everywhere
+         * attempt); it draws at TRUE LP depth, no tier bias.
          *
          * DISTANCE GATE — the .s LP-list binning condition (func_800258F0's
          * list pre-pass; 0x80025940 is an instruction inside it):
@@ -3672,8 +3670,8 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
          * integer scanline fill is INCLUSIVE where native's float raster +
          * centre-sampling drops sub-pixel rows, so the far water renders as
          * dashed slivers near screen edges under rotation (the carved-out
-         * distant-water horizon gaps, now also user-reported through the
-         * green cyclorama). The dilated re-emit grows coverage ~a pixel
+         * distant-water horizon gaps, also visible through the green
+         * cyclorama). The dilated re-emit grows coverage ~a pixel
          * outward but paints only stencil==0 holes — overdraw is impossible,
          * and the old coverage quantifier's "PSX horizon sits ~1.75px above
          * native's" top-edge deficit is recovered the same way (the sky never
@@ -3685,7 +3683,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
          * beyond the real fog band it painted each sector's ENTIRE fogged LP
          * silhouette; where the coarse LP overhangs the HP edge that landed on
          * sky as fog-coloured "LP terrain" fringes popping in with distance
-         * (found in testing 2026-07-09, haunted_towers top-down pose pair, yaw
+         * (haunted_towers top-down pose pair, yaw
          * -1046 pitch 992: z=61079 clean vs z=63909 fringed). LP-only /
          * force-LP sectors keep the fill in every mode — the far-water raster
          * slivers it exists for are pass-0 LP, not a tier handoff. */
@@ -3748,7 +3746,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
         int sd_vfront = 0, sd_nv = 0, sd_nf = 0;
 
       for (int pass = 0; pass < 3; pass++) {
-        int passFill = (pass == 2);               /* LP hole-fill backing (W2.6-c) */
+        int passFill = (pass == 2);               /* LP hole-fill backing */
         int passLP = (pass != 1);                 /* 0 = WORLD LP (behind HP), 1 = HP, 2 = fill LP */
         int fmDumpOnly = 0;                       /* facemap: project + dump, never emit */
         if (pass == 0 && !drawLP) {
@@ -3902,7 +3900,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * true distance — no-lod means mesh detail, not fog removal.
              * OPENPETE_TERRAIN_CLUTFOG=0 kills (A/B); force-tier debug modes
              * (OPENPETE_TERRAIN_TEXTBL != 0) keep the old static half.
-             * ABE carve-out RESOLVED (2026-07-06 waterfall arc): the old
+             * ABE carve-out RESOLVED: the old
              * "indirect animated-tiledef branch" reading of block_80027080
              * was wrong — the 0x3E there is the PRIM CODE byte (ABE GT4),
              * not a packet length, and the .s reads the SAME tiledef entry
@@ -3934,7 +3932,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                      * quantized key lands at/past saturation (straddling faces
                      * the handoff keeps — only all-corner-beyond faces drop)
                      * would compute Δ ≥ 16 and sample the NEIGHBOURING tile's
-                     * palette (found in testing round 2: foliage confetti on the
+                     * palette (foliage confetti on the
                      * title mountain — 37 faces at (832,0) row 848,144). */
                     int delta = t0k >> 8;
                     if (delta > 15) delta = 15;
@@ -4217,9 +4215,9 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                     }
                 }
             }
-            /* HOLE-FILL per-face far gate (W2.6-c): only FULLY-FOGGED faces
+            /* HOLE-FILL per-face far gate: only FULLY-FOGGED faces
              * (every corner at/past the exact fog saturation, ir0 = fogRef−4·m3
-             * ≤ 0 — the proven W2.3 decode scale, independent of the shipped
+             * ≤ 0 — the proven decode scale, independent of the shipped
              * s_fogscale). The T-junction seams the fill exists for are at the
              * fully-fogged horizon; a mid-band face admitted here painted a
              * dark 1-2px LP fringe along terrain-vs-sky silhouettes (native's
@@ -4252,8 +4250,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                  * the 1px straddling water rows (f2680/f2730 dashes). An
                  * unrestricted slack admitted mid-band LP BODIES whose coarse
                  * silhouette ghosts into stencil-0 sky above terrain tops and
-                 * depth-notches neighbouring geometry (user report 2026-07-03:
-                 * ghosting/spikes at terrain tops, gaps-2 f2770 rocks). */
+                 * depth-notches neighbouring geometry (ghosting/spikes at terrain tops, gaps-2 f2770 rocks). */
                 if (!fogged) {
                     static float s_thin = -1.0f;
                     if (s_thin < 0.0f) { const char* e2 = getenv("OPENPETE_TERRAIN_FILL_THINPX"); s_thin = (e2 && *e2) ? (float)atof(e2) : 16.0f; }
@@ -4606,7 +4603,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_fogscale = (e && *e) ? atof(e) : 1.0;
     }
     if (s_fogdpcs < 0) {
-        /* DEFAULT ON since the fog arc (2026-07-05): the exact decode is
+        /* DEFAULT ON: the exact decode is
          * proven per-corner at every band, and the old vista regression it
          * was blamed for was actually the MISSING CLUT-row fog (s_clutfog)
          * that the under-fogged lerp partially compensated. Ship both. */
@@ -4628,7 +4625,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * the boot-latched value froze the handoff at the boot mode's distance,
      * so toggling no-lod ON mid-level kept substituting the untextured LP
      * tier at stock fog range until the camera walked each sector out of
-     * the fully-fogged band (user report 2026-07-08: distant LP "snapping"
+     * the fully-fogged band (distant LP "snapping"
      * to HP on approach). OPENPETE_TERRAIN_FOGSCALE force-overrides (debug). */
     {
         static int s_fs_env = -1;
@@ -4642,13 +4639,13 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     }
     /* .s LP/HP fog-saturation handoff — HP faces are dropped once FULLY beyond
      * fog saturation (ir0 <= 0 at every corner) and LP substitutes (far-only).
-     * DEFAULT ON since the fog arc (2026-07-05): beyond saturation the .s
+     * DEFAULT ON: beyond saturation the .s
      * picture IS the LP tier (raw palette — identity-join-proven), and any HP
      * content native paints there is invented (the artisans far-water green
      * stripe once the CLUT ladder landed). The swap happens strictly inside
      * fully-fogged pixels, so there is no visible pop-in — which is why this
      * stays on under --no-lod too (no-lod removes MESH pop-in; fog saturation
-     * is the one place a tier swap is invisible by construction). The W2.3
+     * is the one place a tier swap is invisible by construction). The
      * "recovered only ~0.9/4.0" verdict predates exact verts + the ladder.
      * OPENPETE_TERRAIN_LOD_HANDOFF=0 restores HP-everywhere (A/B). */
     {
@@ -4807,7 +4804,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * the terrain feeder's µs to individual sectors (accounted at the top of
      * the NEXT iteration so every exit path of the huge loop body is covered)
      * and names the top offenders — built for the gnorc_cove freecam
-     * direction-dependent perf hunt (2026-07-10). Inert unless the env is set. */
+     * direction-dependent perf hunt. Inert unless the env is set. */
     static int tt_on = -1;
     if (tt_on < 0) { const char* e = getenv("OPENPETE_TERRAIN_TIMERS"); tt_on = (e && *e && *e != '0'); }
     static uint32_t tt_us[1024], tt_tris[1024];      /* window-accumulated per sector */
@@ -6435,11 +6432,11 @@ static void terrain_feed_native(CPUState* cpu) {
              * on the peace-keepers cliff line, gate tick 4888 round 2). */
             static float s_fill_up = -1.0f;   /* OPENPETE_TERRAIN_FILL_UP: upward growth px */
             if (s_fill_up < 0.0f) { const char* e = getenv("OPENPETE_TERRAIN_FILL_UP"); s_fill_up = (e && *e) ? (float)atof(e) : 0.7f; }
-            /* CONTINUOUS growth (2026-07-03, replaces the v2 floor()-quantize
+            /* CONTINUOUS growth (replaces the v2 floor()-quantize
              * as the DEFAULT): floor() snapped the fill verts to the pixel
              * grid EVERY PRESENT, so under the sub-tick spine the fill fringe
              * crawled/jittered against the smoothly-interpolated canonical
-             * terrain (user report: ghosting / spikes at terrain tops, all
+             * terrain (ghosting / spikes at terrain tops, all
              * levels — a temporal artifact, invisible in canonical stills).
              * Same coverage envelope without snapping: shift UP by the mean
              * truncation bias (~0.55px — native float sits +0.2..+1.0px below
@@ -6464,13 +6461,13 @@ static void terrain_feed_native(CPUState* cpu) {
              * actors feed FULL-scale view-Z. depth_from_viewz expects ONE shared
              * scale, so ×16 to match — else terrain's depth is ~16× too small
              * (always nearest) and draws on top of every actor.
-             * LP ×1.03 (W2.6-c resolution): with the stencil hole-fill carrying
+             * LP ×1.03: with the stencil hole-fill carrying
              * every INTER-sector LP backing role, this pull's one remaining
              * consumer is the 0x8000 force-LP set — a sector whose LP is the
              * PRIMARY surface backing a sparse HP detail overlay (stone-hill
              * sector 79: 3 HP vs 12 LP faces). That LP must OCCLUDE geometry
              * behind it, so it cannot ride the additive-only stencil fill; and
-             * it is NOT a coplanar tie-break, so the W2.5 constant hardware
+             * it is NOT a coplanar tie-break, so the constant hardware
              * bias is the wrong shape — the two meshes diverge in WORLD units,
              * which a distance-PROPORTIONAL pull models correctly. Retained,
              * scoped, no longer scene-magic. (Also applies to no-HP 0x4000
@@ -6482,7 +6479,7 @@ static void terrain_feed_native(CPUState* cpu) {
              * where Spyro's drop shadow belongs), and the moby-side one-slot
              * tie pull covers the pedestal cases without touching terrain.) */
             openpete_worldvz wz = openpete_worldvz_scaled((float)t->vz[k], 16.0f);
-            /* TRUE stored depth, BOTH tiers (P6b). The .s's authored OT-slot
+            /* TRUE stored depth, BOTH tiers. The .s's authored OT-slot
              * offsets (LP += ((w1>>3)&0x1F)*8 + 0x40 slots, HP +=
              * ((w3>>3)&0x7)*4, 128 world/slot) are ordering KEYS, not
              * geometry: they ride tri.koff into the per-pixel key-resolve
@@ -6504,7 +6501,7 @@ static void terrain_feed_native(CPUState* cpu) {
                           : s_flat       ? 0xFF20C040u
                           : (0xFF000000u | (t->rgb[k] & 0xFFFFFFu));
         }
-        /* og OT key channel (P6b/P6c): koff carries the face's ABSOLUTE og
+        /* og OT key channel: koff carries the face's ABSOLUTE og
          * OT key (+0.5 sentinel) — the .s insertion index in world units:
          * corner-mean view-Z + 128*(authored slot bias). Every opaque
          * non-fill face both EMITS its flat key into the key image and
@@ -6661,7 +6658,7 @@ static void terrain_feed_native(CPUState* cpu) {
         openpete_native_scene_set_fog_delta(0);   /* never leak past this feeder */
     }
     openpete_native_scene_set_presnap(0);   /* never leak past this feeder */
-    /* The former P6c TERRAIN_KEY aperture fan (the sky bucket's og key rastered
+    /* The former TERRAIN_KEY aperture fan (the sky bucket's og key rastered
      * into the key image, discarding og-covered opaque terrain per pixel) is
      * RETIRED with the plane-cover rule: opaque terrain behind the opening
      * draws at true depth and the preview repaints over it at plane − M. */
@@ -6948,8 +6945,7 @@ static unsigned terrain_verify_frame(void) {
  * falls through (returns 0) at native aspect (disp_w_factor==1), and is
  * registered before us, so our hook is reached at native/headless aspect. (In
  * widescreen mode widescreen runs the renderer + returns 1 first; the native
- * capture/feed runs at native aspect so that's fine — widescreen deletes at
- * Phase 6 anyway.) */
+ * capture/feed runs at native aspect so that's fine.) */
 /* Occlusion group from the last real render call — reused by the sub-tick
  * re-extract (which has no a0). -1 = walk-all (valid index or -1, as the .s). */
 static int32_t s_terrain_saved_occGroup = -1;
@@ -7045,7 +7041,7 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
  * spine's `alpha` (tsc_vert_anim_refresh) so they move every present instead
  * of stepping at 29.913 Hz. `interp_on` = camera bracketed (else snap to cur,
  * matching the rest of the scene on unpaired/camera-cut presents). */
-void terrain_native_reextract(CPUState* cpu, double alpha, int interp_on) {
+void terrain_reextract(CPUState* cpu, double alpha, int interp_on) {
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_enabled(RP_TERRAIN)) return;
     /* Reproduce terrain ONLY if the canonical frame drew it. During a level
@@ -7222,7 +7218,7 @@ static const feature_dispatch_entry_t terrain_dispatch[] = {
     { 0u, NULL },
 };
 
-const feature_module_t terrain_native_module = {
+const feature_module_t terrain_module = {
     .name           = "terrain_native",
     .apply_options  = NULL,
     .dispatch_table = terrain_dispatch,

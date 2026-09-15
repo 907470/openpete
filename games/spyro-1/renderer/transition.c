@@ -1,4 +1,4 @@
-// games/spyro-1/features/transition_native.c — native feeders for the level
+// games/spyro-1/renderer/transition.c — native feeders for the level
 // transition presentation layer: the balloonist / level-exit cross-fade backdrop
 // (func_8004F000) and the GS_ExitLevel grayscale freeze (func_8001C694).
 //
@@ -27,13 +27,13 @@
 // openpete_native_scene_set_freeze_backdrop (its FT4s go through the unhooked
 // world-OT add func_800168A0, so native never showed them); case 1 is the
 // cross-fade, fed by the func_8004F000 hook. The OPENPETE_TRANSITION_PROBE=1 red
-// probe is retained as a diagnostic. See notes/plans/openpete-native-renderer.md.
+// probe is retained as a diagnostic.
 
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"            /* CPUState */
 #include "openpete_native_render.h" /* native scene API */
-#include "render_paths.h"           /* render_paths_active */
-#include "spyro_native_reextract.h" /* transition_native_reextract decl */
+#include "renderer/render_paths.h"           /* render_paths_active */
+#include "renderer/reextract.h" /* transition_reextract decl */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -87,7 +87,7 @@ static int      s_cross_have_bg;
 static uint32_t s_cross_bg_flat;
 
 /* Staleness gate: the hook records its emitted polybuf interval as
- * RP_TRANSITION (W2.1 liveness unification); the sub-tick reextract gates on
+ * RP_TRANSITION (liveness unification); the sub-tick reextract gates on
  * render_path_canon_drawn(RP_TRANSITION), which drops the moment
  * func_8004F000 stops emitting. Replaces the old private s_cross_ran /
  * s_cross_canon_drawn latch + chained commit. */
@@ -376,7 +376,7 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
  * latched once per canonical present by the shared render_paths commit from the
  * hook's recorded polybuf interval — so the dome isn't painted over the next
  * level once the transition ends (the hook stops emitting → the mask bit drops). */
-void transition_native_reextract(CPUState* cpu) {
+void transition_reextract(CPUState* cpu) {
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_canon_drawn(RP_TRANSITION)) return;
     crossfade_extract(cpu);
@@ -401,7 +401,7 @@ static const feature_dispatch_entry_t transition_dispatch[] = {
     { 0u, NULL },
 };
 
-const feature_module_t transition_native_module = {
+const feature_module_t transition_module = {
     .name           = "transition_native",
     .apply_options  = transition_native_apply_options,
     .dispatch_table = transition_dispatch,

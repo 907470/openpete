@@ -24,8 +24,8 @@ extern "C" {
 }
 
 #include "mod_wad_overlay.h"
-#include "features/render_paths.h"
-#include "features/moby_rank.h"
+#include "renderer/render_paths.h"
+#include "renderer/moby_rank.h"
 #include "sfx_pack.h"
 #include "psx/libcd.h"
 

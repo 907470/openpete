@@ -121,7 +121,7 @@ add_test(NAME knob_registry_test COMMAND knob_registry_test)
 # a small array covers it without a controller replay.
 add_executable(audio_volume_test
     audio_volume_test.c
-    ${CMAKE_SOURCE_DIR}/games/spyro-1/features/audio_volume_native.c)
+    ${CMAKE_SOURCE_DIR}/games/spyro-1/features/audio_volume.c)
 target_include_directories(audio_volume_test PRIVATE
     ${CMAKE_SOURCE_DIR}/games/spyro-1
     ${CMAKE_SOURCE_DIR}/core/include
@@ -133,14 +133,14 @@ add_test(NAME audio_volume_test COMMAND audio_volume_test)
 # vibration_test — the measured motor response and the --vibration
 # preset's state machine. Two TUs, both deliberately SDL-free: rumble_curve.c
 # is the curve alone (the reference constants a later "it feels too strong"
-# tweak would otherwise drift silently), vibration_native.c is the guest-side
+# tweak would otherwise drift silently), vibration.c is the guest-side
 # preset over a fake CPUState. The rest of the vibration path needs a real pad
 # and is covered by the virtual-pad rumble oracle instead — see
 # scripts/check_rumble.sh.
 add_executable(vibration_test
     vibration_test.c
     ${CMAKE_SOURCE_DIR}/core/runtime/rumble_curve.c
-    ${CMAKE_SOURCE_DIR}/games/spyro-1/features/vibration_native.c)
+    ${CMAKE_SOURCE_DIR}/games/spyro-1/features/vibration.c)
 target_include_directories(vibration_test PRIVATE
     ${CMAKE_SOURCE_DIR}/games/spyro-1
     ${CMAKE_SOURCE_DIR}/core/include
@@ -231,16 +231,15 @@ set_target_properties(vstream_test PROPERTIES C_STANDARD 99)
 add_test(NAME vstream_test COMMAND vstream_test)
 
 # text_moby_id_test — the HUD text-glyph provenance table
-# (games/spyro-1/features/text_moby_id.c): keys are the emitter call, not
+# (games/spyro-1/renderer/text_moby_id.c): keys are the emitter call, not
 # the pool address; a generation survives its own draw's drain and is
 # cleared by a drain with no emit between it (a draw that allocates pool
 # mobys without the text emitters, e.g. the credits roll); the class guard.
 add_executable(text_moby_id_test
     text_moby_id_test.c
-    ${CMAKE_SOURCE_DIR}/games/spyro-1/features/text_moby_id.c)
+    ${CMAKE_SOURCE_DIR}/games/spyro-1/renderer/text_moby_id.c)
 target_include_directories(text_moby_id_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
-    ${CMAKE_SOURCE_DIR}/games/spyro-1/features
     ${CMAKE_SOURCE_DIR}/games/spyro-1
     ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
 set_target_properties(text_moby_id_test PROPERTIES C_STANDARD 99)

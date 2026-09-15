@@ -2,7 +2,7 @@
 // (core/mods/mod_registry.c) and the SFX definition service.
 //
 // Ground truth (cross-checked include/moby.h + asm/42CC4.s +
-// moby_native.c):
+// moby.c):
 //   - g_Models @ 0x80076378: flat 512×4B Model* table indexed DIRECTLY by
 //     Moby.m_Class (+0x36). Populated per level by the loader; a NULL row
 //     means the level never uses that class.

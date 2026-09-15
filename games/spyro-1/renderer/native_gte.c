@@ -1,12 +1,12 @@
-// games/spyro-1/features/native_gte.c — see native_gte.h. Bodies are the
-// byte-exact union of the per-feeder copies this module replaced (W2.3);
+// games/spyro-1/renderer/native_gte.c — see native_gte.h. Bodies are the
+// byte-exact union of the per-feeder copies this module replaced;
 // any change here moves EVERY feeder and must re-pass the bit-exact
 // visual gate.
 
-#include "native_gte.h"
+#include "renderer/native_gte.h"
 #include "spyro1_symbols.gen.h"   /* D_SIN_TABLE, G_CAMERA */
 #include "openpete_native_render.h"
-#include "spyro_native_reextract.h"  /* openpete_native_interp_pos */
+#include "renderer/reextract.h"  /* openpete_native_interp_pos */
 
 #include <stdio.h>
 #include <stdlib.h>

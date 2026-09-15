@@ -1,5 +1,5 @@
-#ifndef SPYRO_INTERP_REGIONS_H
-#define SPYRO_INTERP_REGIONS_H
+#ifndef SPYRO_RENDERER_INTERP_REGIONS_H
+#define SPYRO_RENDERER_INTERP_REGIONS_H
 
 #ifdef __cplusplus
 extern "C" {
@@ -7,7 +7,7 @@ extern "C" {
 
 /* Register Spyro's render-side interpolation region table with the
  * openpete_interp ring. Call once from main() before openpete_run(). */
-void spyro_interp_register(void);
+void game_interp_register(void);
 
 /* Stable interp-objs key for a moby address. The per-tick HUD moby pool
  * (g_HudMobys, bump-down allocated) is DOUBLE-BUFFERED with the polybuf
@@ -17,16 +17,16 @@ void spyro_interp_register(void);
  * is rebuilt in draw order every tick, so anything emitted earlier that
  * appears or disappears renames every entry behind it. So HUD-pool mobys
  * key by whatever the game itself keeps for them, most specific first —
- * emitter-call provenance for text glyphs (features/text_moby_id.h), the
+ * emitter-call provenance for text glyphs (renderer/text_moby_id.h), the
  * g_LevelTransGems source slot for level-exit tally gems, the CreditsLetter
  * record index (plus a reuse generation) for the credits roll, else the
  * ordinal among pool entries of the SAME class (immune to unrelated traffic, stable
  * across the halves). Everything outside the pool keys by address. Used by
  * BOTH the capture walk and the shaded-path consumers — they must agree. */
-uint32_t spyro_interp_moby_key(uint32_t m);
+uint32_t game_interp_moby_key(uint32_t m);
 
 #ifdef __cplusplus
 }
 #endif
 
-#endif /* SPYRO_INTERP_REGIONS_H */
+#endif /* SPYRO_RENDERER_INTERP_REGIONS_H */

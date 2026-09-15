@@ -1,5 +1,5 @@
 /* text_moby_id_test — the provenance table's generation lifecycle
- * (games/spyro-1/features/text_moby_id.c) against a fake CPU and RAM.
+ * (games/spyro-1/renderer/text_moby_id.c) against a fake CPU and RAM.
  *
  * The emitters are driven through the module's own dispatch table, exactly
  * as psx_override_dispatch would: an entry hook on func_80017FE4 /
@@ -17,7 +17,7 @@
 #include "openpete_subtick_view.h"
 #include "psx_runtime.h"
 
-#include "text_moby_id.h"
+#include "renderer/text_moby_id.h"
 
 extern const feature_module_t text_moby_id_module;
 

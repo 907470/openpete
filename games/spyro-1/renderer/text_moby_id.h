@@ -25,7 +25,7 @@
  * pointer, then lets the real function run) and computing the addresses the
  * emitter is about to bump-allocate.
  *
- * Consumed by spyro_interp_moby_key(); see spyro_interp_regions.c.
+ * Consumed by game_interp_moby_key(); see interp_regions.c.
  */
 #ifndef SPYRO_TEXT_MOBY_ID_H
 #define SPYRO_TEXT_MOBY_ID_H

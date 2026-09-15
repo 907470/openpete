@@ -19,7 +19,7 @@ extern "C" {
 /* --no-lod FEATURE flag: full detail at any distance. Set once at boot
  * from --no-lod, native renderer modes only. The native feeders read it
  * as a DISPLAY policy (moby zsf4/tier neutralization + far-record
- * builder in moby_native.c, terrain HQ classifier, portal always-dome,
+ * builder in moby.c, terrain HQ classifier, portal always-dome,
  * fog default). */
 extern int openpete_no_lod;
 
@@ -28,7 +28,7 @@ extern int openpete_no_lod;
  * off under extended LOD, 1.0 otherwise). 1.0 = the authentic PSX curve; N scales
  * every channel of the fog model together (DPCS vertex curve, CLUT-row
  * palette ladder, near-tile select, fog-saturation LP handoff — see
- * games/spyro-1/features/terrain_native.c). Always > 0 after boot. */
+ * games/spyro-1/renderer/terrain.c). Always > 0 after boot. */
 extern float openpete_fog_scale;
 
 /* Boot-time entry: resolve the fog scale and set openpete_no_lod for

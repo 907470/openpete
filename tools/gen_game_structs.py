@@ -36,7 +36,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import psyq_types as P  # noqa: E402
 
 # Hand-verified pins (include/moby.h cross-checked against asm/42CC4.s and
-# features/moby_native.c); asserted against the probed toml.
+# renderer/moby.c); asserted against the probed toml.
 SIZES = {
     "Vector3D": 12,
     "Vector3D8": 3,

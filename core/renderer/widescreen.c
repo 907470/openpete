@@ -2,7 +2,7 @@
 //
 // Verdict machinery for the particle / sparkle render->gameplay channels:
 // gte.cpp's RTPS stashes every projection here and
-// games/spyro-1/features/render_decouple.c reads it. Widescreen and FOV
+// games/spyro-1/renderer/render_decouple.c reads it. Widescreen and FOV
 // are native-renderer display policies (core/renderer/native_render.c) and
 // never touch the GTE.
 

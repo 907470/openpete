@@ -1,5 +1,5 @@
 # Freecam-spot regression corpus for the terrain LP fill-tag mechanism
-# (games/spyro-1/features/terrain_native.c tsc_tag_gapfill: the frozen,
+# (games/spyro-1/renderer/terrain.c tsc_tag_gapfill: the frozen,
 # measurement-derived fill-face table in terrain_fill_tags.h — regenerate
 # with scripts/gen-fill-tags.py from tests/freecam/fill-tags.verdicts).
 #

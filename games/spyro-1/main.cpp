@@ -78,7 +78,7 @@ extern "C" void game_state_regions_register(void);
 extern "C" {
 extern const openpete_sdk_symbol_t openpete_sdk_symbols[];
 extern const size_t                openpete_sdk_symbol_count;
-/* Draw-service text rasterizer (features/text_moby_native.c — that header
+/* Draw-service text rasterizer (renderer/text_moby.c — that header
  * has no C++ guards, so declare the one symbol we need directly). */
 int text_moby_native_mod_emit(const char* str, float x, float y,
                               float cap_h, unsigned rgb,
@@ -92,8 +92,8 @@ void spyro1_level_ops_register(void);
 extern "C" {
 extern void (*spyro1_progress_cb)(const char* stage, int done, int total);
 }
-#include "spyro_interp_regions.h"
-#include "spyro_native_reextract.h"
+#include "renderer/interp_regions.h"
+#include "renderer/reextract.h"
 
 #include <cstdio>
 
@@ -270,8 +270,8 @@ int main(int argc, char** argv) {
      * instead of the weak-symbol pattern used by openpete_state_regions
      * — MinGW's PE/COFF linker mis-resolves weak overrides in this
      * configuration. */
-    spyro_interp_register();
-    /* Same explicit-registration rationale as spyro_interp_register()
+    game_interp_register();
+    /* Same explicit-registration rationale as game_interp_register()
      * (see comment above): the state-region table moved off the
      * weak-symbol pattern too. */
     game_state_regions_register();
@@ -280,7 +280,7 @@ int main(int argc, char** argv) {
      * native renderer so intermediate presents rebuild the scene against an
      * interpolated camera. Inert unless --renderer vk + --render-fps
      * exceeds the sim rate. */
-    spyro_native_reextract_init();
+    game_reextract_init();
 
     return openpete_run(&opts);
 }

@@ -1,20 +1,19 @@
-// spyro_records.c — per-call records of the player render hooks: the
-// model-record store (P1), the shadow and flame records bound to it (P2,
-// P3) and the OPENPETE_SPYRO_RECDBG instrument (P0).
-// See spyro_records.h and notes/plans/openpete-native-multi-spyro-subtick.md.
+// games/spyro-1/renderer/spyro_records.c — per-call records of the player
+// render hooks: the model-record store, the shadow and flame records bound
+// to it and the OPENPETE_SPYRO_RECDBG instrument. See spyro_records.h.
 //
 // Determinism: the hooks read guest RAM into host copies on the game fiber;
 // the commit reads the interp ring; the present side hands the copies to the
 // re-extract, which stages them through the sub-tick view. Nothing here
 // writes guest RAM.
 
-#include "spyro_records.h"
+#include "renderer/spyro_records.h"
 #include "psx_runtime_internal.h"   /* CPUState */
 #include "openpete_psx.h"           /* openpete_psx_to_host_ptr */
 #include "openpete_interp.h"        /* ring: curr_tick_ns, curr_snapshot, reset generation, deterministic */
 #include "openpete_fiber.h"         /* openpete_frame, openpete_speculative */
 #include "openpete.h"               /* openpete_runahead_get */
-#include "spyro_native_reextract.h" /* canon epoch stamp / fresh */
+#include "renderer/reextract.h" /* canon epoch stamp / fresh */
 #include "spyro1_symbols.gen.h"     /* G_SPYRO, G_SPYROFLAME, D_SPYROSHADOW, G_SCRATCH */
 
 #include <math.h>
@@ -79,10 +78,10 @@ static uint32_t     s_store_epoch;    /* the canon epoch curr was confirmed at (
 static op_time_t    s_latched_ring_ns;
 static uint32_t     s_reset_gen_seen;
 
-/* ---- P0 instrument ---------------------------------------------------- */
+/* ---- OPENPETE_SPYRO_RECDBG instrument ----------------------------------- */
 
 static const struct { const char* name; uint32_t addr; uint32_t len; unsigned ring; } s_reg[SPYRO_REC_FEEDERS] = {
-    { "model",  G_SPYRO,       0x2A4u, 1u },   /* ring region indices: spyro_interp_regions.c */
+    { "model",  G_SPYRO,       0x2A4u, 1u },   /* ring region indices: interp_regions.c */
     { "shadow", D_SPYROSHADOW, 0x28u,  3u },
     { "flame",  G_SPYROFLAME,  0xD0u,  2u },
 };

@@ -1,49 +1,29 @@
-/* spyro_interp_regions.c — Spyro 1's render-side interpolation region
- * table. Captured per-tick into the openpete_interp ring so render
- * frames at >29.97 Hz can lerp transforms and re-emit DrawOTag.
+/* games/spyro-1/renderer/interp_regions.c — Spyro 1's render-side
+ * interpolation region table. Captured per tick into the openpete_interp
+ * ring so intermediate presents can lerp transforms: the DIRECT singleton
+ * regions below (camera, player, flame, shadow, game state) plus the
+ * per-object capture (spyro_interp_capture_objs: level mobys, HUD-pool
+ * mobys, sparkles, dragon stars) keyed by game_interp_moby_key.
  *
  * Registration model:
- *   This TU defines spyro_interp_register() which forwards the static
+ *   This TU defines game_interp_register() which forwards the static
  *   table to openpete_interp_register_regions(). main.cpp calls it
- *   once at startup before openpete_run(). We avoid the weak-symbol
- *   override pattern used by spyro_state_regions.c because MinGW's
- *   PE/COFF linker has been observed to mis-resolve it, leaving the
- *   weak NULL in place at runtime and crashing the recomp boot path.
- *   Explicit registration works identically across toolchains.
+ *   once at startup before openpete_run(). The weak-symbol override
+ *   pattern is avoided because MinGW's PE/COFF linker mis-resolves it,
+ *   leaving the weak NULL in place at runtime and crashing the recomp
+ *   boot path; explicit registration works identically across
+ *   toolchains.
  *
- * Scope (2026-05-14 architecture revision — see
- * notes/plans/openpete-renderer-foundation.md and
- * notes/plans/openpete-fps-unlock.md):
- *   - g_Camera ONLY. Captured for use by the renderer-foundation
- *     Phase 2g stretch (depth-aware async reprojection), which wants
- *     a single authoritative camera per tick rather than per-prim
- *     composite matrices.
- *   - g_Spyro / mobies / animation are NOT snapshotted here. Their
- *     lerp story lives in renderer-foundation Phases 0+1+2: the
- *     matcher reads per-vertex world-space + composite matrices
- *     directly from psxrecomp's gte_execute, pairs prims across
- *     frames by (texpage+clut+bbox+velocity), and decompose-lerp-
- *     recomposes the composite transform. That path doesn't read
- *     g_Spyro / g_LevelMobys from PSX RAM at all, so snapshotting
- *     them here is dead weight.
- *   - Particles are deferred indefinitely (no host-readable list;
- *     handled by the matcher if they're identifiable, otherwise they
- *     pop at 29.97 Hz).
- *
- * Address verification: 2026-05-14 nm of games/spyro-1/spyro-1/build/psx.elf:
- *   80076dd0 B g_Camera                   (next = 0x80076ee0 → 0x110 bytes)
- *
- * Lengths match games/spyro-1/manifest/gameplay_state_regions.toml so the same
- * boundaries the determinism gate trusts are the boundaries we
- * snapshot.
+ * Lengths match games/spyro-1/manifest/gameplay_state_regions.toml so the
+ * same boundaries the determinism gate trusts are the boundaries snapshotted.
  */
 
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
-#include "spyro_interp_regions.h"
-#include "spyro_native_reextract.h"   /* moby_native_canon_drawn_mobys */
-#include "features/text_moby_id.h"    /* text_moby_id_lookup */
+#include "renderer/interp_regions.h"
+#include "renderer/reextract.h"   /* moby_native_canon_drawn_mobys */
+#include "renderer/text_moby_id.h"    /* text_moby_id_lookup */
 
 #include <math.h>
 #include <stdint.h>
@@ -159,12 +139,12 @@ static void credits_track_generations(void) {
     }
 }
 
-/* See spyro_interp_regions.h. Tried in order of how much of the game's own
+/* See interp_regions.h. Tried in order of how much of the game's own
  * state backs the identity: the record index for credits letters,
  * emitter-call provenance for text glyphs, the fly-out source slot for tally
  * gems, then a class-relative pool ordinal for everything else in the HUD
  * pool, and finally the moby's own address. */
-uint32_t spyro_interp_moby_key(uint32_t m) {
+uint32_t game_interp_moby_key(uint32_t m) {
     /* Credits letters: (class, record index, generation) — see
      * credits_track_generations. */
     {
@@ -304,7 +284,7 @@ static uint32_t rd32(uint32_t addr) {
 /* Walk g_LevelMobys, snapshotting each live moby's stride-0x58 record into
  * the keyed prev/curr table (key = the moby's vaddr — slot-stable across
  * ticks). Read-only; mirrors the moby feeder's own walk
- * (moby_native.c::append_revealed_regular). */
+ * (moby.c::append_revealed_regular). */
 static void spyro_interp_capture_objs(void) {
     openpete_interp_objs_begin_tick();
     credits_track_generations();
@@ -378,9 +358,9 @@ static void spyro_interp_capture_objs(void) {
      * steps at the 29.97 Hz sim rate is the twinkle ANIMATION phase: m_Life
      * (pulse scale, decremented per tick by the .s renderer) and m_0x0E (spin,
      * +~3·dt per tick). Capture live slots so the native feeder (sparkle_build,
-     * particle_native.c) can lerp the PHASE sub-tick at float precision — user
-     * report 2026-07-14: gem sparkles animate at 29.97 Hz regardless of
-     * --render-fps. Render-side only: nothing is written back to the pool (the
+     * particle.c) can lerp the PHASE sub-tick at float precision; without
+     * it gem sparkles animate at the tick rate regardless of --render-fps.
+     * Render-side only: nothing is written back to the pool (the
      * reextract RAM-writeback still carves g_Sparkles out — its rand()-seeded
      * respawns must never be simulated host-side). A slot reused by a respawn
      * pairs with m_Life INCREASING, which the feeder detects and snaps on;
@@ -412,14 +392,14 @@ static void spyro_interp_capture_objs(void) {
     /* SHADED render list (G_SCRATCH+0x2400 — flat Moby*[256] the .s shaded
      * renderer walks): capture EVERY listed moby. Mostly a dedup-overwrite of
      * the g_LevelMobys walk above, but load-screen props (the level-transition
-     * tally gems/chest — user report 2026-07-04: they step at 30 Hz) live in
+     * tally gems/chest, which otherwise step at the tick rate) live in
      * the bump-allocated HUD pool OUTSIDE g_LevelMobys and would otherwise
      * never get prev/curr snapshots (no position OR rotation interp). */
     for (uint32_t i = 0; i < 256u; ++i) {
         uint32_t m = rd32(G_SCRATCH + 0x2400u + i * 4u);
         if (m < 0x80000000u) break;
         const void* host = openpete_psx_to_host_ptr(m);
-        if (host) openpete_interp_objs_capture(spyro_interp_moby_key(m), host,
+        if (host) openpete_interp_objs_capture(game_interp_moby_key(m), host,
                                                OPENPETE_INTERP_OBJ_BLOB_BYTES);
     }
 
@@ -436,7 +416,7 @@ static void spyro_interp_capture_objs(void) {
         for (int i = 0; i < drawn_n; ++i) {
             const uint8_t* host = (const uint8_t*)openpete_psx_to_host_ptr(drawn[i]);
             if (!host || host[MOBY_STATE_OFF] >= 0x80) continue;   /* dead / unmapped */
-            openpete_interp_objs_capture(spyro_interp_moby_key(drawn[i]), host,
+            openpete_interp_objs_capture(game_interp_moby_key(drawn[i]), host,
                                          OPENPETE_INTERP_OBJ_BLOB_BYTES);
         }
     }
@@ -446,8 +426,8 @@ static void spyro_interp_capture_objs(void) {
      * per tick — +0x04 world position, +0x10 per-effect rotation SHORTMATRIX,
      * +0x24 spoke size, +0x2B colour. The feeder (dragonstar_feed_native)
      * re-reads it on every sub-tick present, so without a snapshot the stars
-     * circle at 30 Hz regardless of --render-fps (user report 2026-07-04,
-     * particle-circling-stars.bk2 f1850). Capture the 0x2C-byte record when
+     * circle at the tick rate regardless of --render-fps
+     * (particle-circling-stars.bk2 f1850). Capture the 0x2C-byte record when
      * ACTIVE (+0x00 gate); inactive → unseen → evicted (a re-trigger snaps). */
     {
         const void* host = openpete_psx_to_host_ptr(D_DRAGONSTAR);
@@ -465,7 +445,7 @@ static void spyro_interp_capture_objs(void) {
      * whose countdown byte at +3 decrements every tick: including it would make
      * the blob differ every tick and defeat the table's distinct-roll dedupe,
      * collapsing a slow scroller's real advance interval to a single tick.
-     * terrain_native.c (tsc_scroll_refresh) reads the pair back and interpolates
+     * terrain.c (tsc_scroll_refresh) reads the pair back and interpolates
      * the accumulator at the slot's own alpha, so the scroll stays smooth even
      * when the camera is still (the freecam / standing-still case, where the
      * camera ring dedupes and the shared bracket alpha never engages). */
@@ -495,7 +475,7 @@ static void spyro_interp_capture_objs(void) {
 
 }
 
-void spyro_interp_register(void) {
+void game_interp_register(void) {
     openpete_interp_register_regions(
         s_spyro_interp_regions,
         sizeof(s_spyro_interp_regions) / sizeof(s_spyro_interp_regions[0]));

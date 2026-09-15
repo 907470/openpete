@@ -19,7 +19,7 @@
  * The alternative is a controller replay through the options menu.
  */
 
-#include "features/vibration_native.h"
+#include "features/vibration.h"
 #include "openpete_rumble.h"
 #include "psx_runtime.h"
 

@@ -1,6 +1,6 @@
 /* audio_volume_test — the --sfx / --music slider presets.
  *
- * The interesting half of features/audio_volume_native.c is a state machine
+ * The interesting half of features/audio_volume.c is a state machine
  * over guest RAM: when it stamps, when it re-stamps over the game's own
  * reseeds, and when it hands the channel back to the player. All of that is
  * reachable with a fake CPUState over a small RAM array, which is what this
@@ -8,7 +8,7 @@
  *
  * The module is compiled straight in with its host-side channels stubbed. */
 
-#include "features/audio_volume_native.h"
+#include "features/audio_volume.h"
 #include "psx_runtime.h"
 
 #include <stdio.h>

@@ -1,18 +1,17 @@
-// games/spyro-1/features/shadow_native.c — Phase 3b.2 of
-// notes/plans/openpete-native-renderer.md: the SHADOW renderers
+// games/spyro-1/renderer/shadow.c — the SHADOW renderers
 // (func_80059F8C moby shadows + func_80059A48 Spyro silhouette shadow /
 // r_shadows.s) re-derived from gamestate in float + their A/B harness. Both
 // are PSX semi-transparent ABR mode 2 (B-F, SUBTRACTIVE — the shadow grey
 // darkens the ground). The draw-mode word 0xE1000640 / tpage 0x805F both carry
-// ABR bits = 0b10 = mode 2 (the format-spike doc's "mode 0" guess was wrong,
-// caught by the A/B brightness inversion — see the format notes):
+// ABR bits = 0b10 = mode 2 (an A/B brightness inversion tells mode 0 from
+// mode 2):
 //   - moby shadows  = textured FT3 fan (GPU code 0x26) per drawn moby, faded
 //     with camera distance; the textured subtract pipeline (blend=3).
 //   - Spyro shadow  = untextured gouraud G3 fan (GPU code 0x32) projecting
-//     Spyro's silhouette onto the floor; the FIRST untextured-subtract consumer
-//     (blend=3). See the format-spike doc.
+//     Spyro's silhouette onto the floor; an untextured-subtract consumer
+//     (blend=3).
 //
-// STATIC ASM/recompiled-C FINDINGS (correct the format-spike doc):
+// STATIC ASM/recompiled-C FINDINGS:
 //   * g_MobyShadows.shadow_list (loop terminator) is at +0x08, NOT +0x10.
 //   * the moby shadow is 4 separate FT3 tris fanned from the ground anchor
 //     (not one quad); entry[1] of the 8-byte drawn-moby list record is the
@@ -29,13 +28,13 @@
 
 #include "feature_registry.h"
 #include "openpete_vstream.h"
-#include "spyro_native_reextract.h"  /* sub-tick re-extract entry */
-#include "spyro_records.h"           /* per-call records of the player hooks */
-#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
+#include "renderer/reextract.h"  /* sub-tick re-extract entry */
+#include "renderer/spyro_records.h"           /* per-call records of the player hooks */
+#include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "openpete_log.h"  /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
-#include "render_paths.h"  /* --render-paths isolation */
+#include "renderer/render_paths.h"  /* --render-paths isolation */
 
 #include <math.h>
 #include <stdint.h>
@@ -259,7 +258,7 @@ static void ground_tr(const int C[3][3], double vx, double vy, double vz, double
 typedef struct { float sx, sy, sz; } spt;
 static void sh_proj(const int R[3][3], const double TR[3], double ofx, double ofy, const ngte_view* v,
                     double vx, double vy, double vz, spt* o) {
-    ngte_proj r;   /* shared GTE-faithful pipeline, ±1024 SXY bound ON (W2.3) */
+    ngte_proj r;   /* shared GTE-faithful pipeline, ±1024 SXY bound ON */
     ngte_project_gte(R, TR, vx, vy, vz, ofx, ofy, v, 1, &r);
     o->sx = (float)r.sx; o->sy = (float)r.sy; o->sz = (float)r.m3;
 }
@@ -397,13 +396,13 @@ static void shadow_moby_build(CPUState* cpu) {
     int clut=(int)(uv0>>16), tpage=(int)(uv1>>16);
     int tpx=(tpage&0xF)*64, tpy=((tpage>>4)&1)*256;
     int mode=(tpage>>7)&3, bpp=(mode==0)?4:(mode==1)?8:16;
-    /* ABR-FIXME (audit 2026-06-30): the moby-shadow draw hardcodes blend=3 (ABR2
+    /* ABR-FIXME: the moby-shadow draw hardcodes blend=3 (ABR2
      * subtract); the shadow tpage's ABR is data-driven (observed mode 2 in tests).
      * If a level ever ships a non-mode-2 shadow tpage this fires — derive blend
-     * from the captured ABR instead of hardcoding. FIX shadow_native.c:488 */
+     * from the captured ABR instead of hardcoding. FIX shadow.c:488 */
     if (((tpage>>5)&3) != 2)
         OPL_ERROR_F("native", "ABR-FIXME moby shadow tpage ABR=%d (expected 2 "
-                    "subtract); feeder hardcodes blend=3 f=%u -- FIX shadow_native.c:488",
+                    "subtract); feeder hardcodes blend=3 f=%u -- FIX shadow.c:488",
                     (tpage>>5)&3, openpete_frame);
     int clx=(clut&0x3F)*16, cly=(clut>>6)&0x1FF;
     double ZERO[3] = {0,0,0};
@@ -481,7 +480,7 @@ static void shadow_moby_build(CPUState* cpu) {
  *      on. The .s drew it via a painter's OT (after the ground, so it always won);
  *      a true Z-buffer instead Z-fights a coplanar pair. Both multiplicative
  *      view-Z pulls are RETIRED to 1.0 (true depth): the moby tie-break is the
- *      W2.5 hardware polygon offset (OPENPETE_SHADOW_HW_BIAS, native_render.c),
+ *      hardware polygon offset (OPENPETE_SHADOW_HW_BIAS, native_render.c),
  *      and the Spyro fan's occlusion is the per-pixel DEPTH-AWARE DECAL
  *      (shadow_decal.frag; see shadow_bias_spyro below). The envs
  *      OPENPETE_SHADOW_BIAS_SPYRO / _MOBY remain for A/B only. Shadows are
@@ -503,11 +502,11 @@ static float shadow_depth(float viewz, float scale, float bias) {
  *    rejected (a wall), everything else keeps the fan (bumps/slopes drape).
  *    The fan feeds TRUE depth; its pipe is depth-test OFF.
  *  - MOBY shadows: small + distant — a textbook coplanar-decal tie-break,
- *    handled since W2.5 by the HARDWARE slope-scaled depth bias on the
+ *    handled by the HARDWARE slope-scaled depth bias on the
  *    subtractive pipelines (native_render.c shadow_hw_bias,
  *    OPENPETE_SHADOW_HW_BIAS). The old ×0.96 multiplicative view-Z pull was
- *    distance-PROPORTIONAL (2026-07-01 depth audit: the wrong dimension for a
- *    tie-break — a 10×-further shadow got a 10×-bigger world-space nudge). */
+ *    distance-PROPORTIONAL, the wrong dimension for a tie-break: a
+ *    10×-further shadow got a 10×-bigger world-space nudge. */
 static float shadow_bias_spyro(void) {
     static float b = -1.0f;
     if (b < 0.0f) { const char* e = getenv("OPENPETE_SHADOW_BIAS_SPYRO"); b = (e && *e) ? (float)atof(e) : 1.0f; }
@@ -856,7 +855,7 @@ static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
  * from the current gamestate — extract-only (no render_fn, no verdicts). The
  * shadows project under their owners onto the ground; they follow the owners'
  * interpolated poses and the interpolated camera. */
-void shadow_native_reextract(CPUState* cpu) {
+void shadow_reextract(CPUState* cpu) {
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_enabled(RP_SHADOW)) return;
     /* Skip when the canonical frame drew no shadows (e.g. a level transition) —
@@ -866,9 +865,9 @@ void shadow_native_reextract(CPUState* cpu) {
 }
 
 /* The Spyro drop-shadow of one shadow record: the record loop in
- * spyro_native_reextract.c calls this once per record with that record's
+ * reextract.c calls this once per record with that record's
  * g_Spyro fields and anchor staged. Same gates as the moby shadows above. */
-void shadow_spyro_native_reextract(CPUState* cpu, int slot) {
+void shadow_spyro_reextract(CPUState* cpu, int slot) {
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_enabled(RP_SHADOW)) return;
     if (!render_path_canon_drawn(RP_SHADOW)) return;
@@ -881,7 +880,7 @@ static const feature_dispatch_entry_t shadow_dispatch[] = {
     { 0u, NULL },
 };
 
-const feature_module_t shadow_native_module = {
+const feature_module_t shadow_module = {
     .name           = "shadow_native",
     .apply_options  = NULL,
     .dispatch_table = shadow_dispatch,

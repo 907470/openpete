@@ -1,13 +1,13 @@
-/* spyro_records.h — per-call records of the player render hooks.
+/* games/spyro-1/renderer/spyro_records.h — per-call records of the player
+ * render hooks.
  *
- * notes/plans/openpete-native-multi-spyro-subtick.md. The three player
- * feeders (model func_80023AC4, drop shadow func_80059A48, flame
+ * The three player feeders (model func_80023AC4, drop shadow func_80059A48, flame
  * func_80058D64) fire once per game call; a mod that draws extra dragons
  * calls them once per player with the player's state swapped into g_Spyro.
  * The sub-tick spine used to be a singleton over those calls (the last
  * call's bytes won); this TU is the record store that replaces it.
  *
- * Model records (P1): every canonical model-hook call appends a record — the
+ * Model records: every canonical model-hook call appends a record — the
  * g_Spyro bytes the extractor reads, the seg scratch row, the Fairy-Kiss
  * colour row, the SXY row and the polybuf range — to the epoch's list. The
  * canonical-epoch commit closes the list into a three-deep store
@@ -16,10 +16,10 @@
  * second pass by nearest position), and appends a pairing-only record when
  * no hook observed the ring's tick-end dragon. The intermediate re-extract
  * runs the Spyro feeder once per record, staging that record's bytes and
- * brackets (spyro_native_reextract.c). Modless the list holds the composer's
+ * brackets (reextract.c). Modless the list holds the composer's
  * one call and the k=0 iteration is the old singleton path exactly.
  *
- * Shadow records (P2): every canonical shadow-hook call appends the
+ * Shadow records: every canonical shadow-hook call appends the
  * D_SPYROSHADOW bytes the walk reads, bound to the model record of the same
  * epoch whose g_Spyro position equals the live one at the hook (the mod calls
  * model, shadow, flame per player with the same state swapped in); a shadow
@@ -28,13 +28,13 @@
  * its model record's pairing and clock; only its own anchor bytes are
  * bracketed, between it and the previous list's shadow of the paired model.
  *
- * Flame records (P3): the same shape for the flame hook — the g_SpyroFlame
+ * Flame records: the same shape for the flame hook — the g_SpyroFlame
  * bytes the ribbon walk reads (it reads no g_Spyro field), bound to the
  * model record at the live g_Spyro position, bracketed (origin, attach
  * matrix, strand counters) against the previous list's flame of the paired
  * model.
  *
- * Runahead (P7): the hooks fire on the speculative ticks too, and those
+ * Runahead: the hooks fire on the speculative ticks too, and those
  * fires build a LED list keyed by openpete_frame. At commit the led list
  * whose frame is the ring's capture tick supplies every record's lerp source
  * (position, rotation, clocks) and seg row, index for index, so N dragons
@@ -60,14 +60,14 @@ struct CPUState;
 
 enum { SPYRO_REC_MODEL = 0, SPYRO_REC_SHADOW = 1, SPYRO_REC_FLAME = 2, SPYRO_REC_FEEDERS = 3 };
 
-#define SPYRO_REC_MAX        16       /* per feeder per epoch (P0 measured 8) */
-#define SPYRO_REC_SPYRO_LEN  0x2A4u   /* g_Spyro region (spyro_interp_regions.c) */
+#define SPYRO_REC_MAX        16       /* per feeder per epoch (measured 8) */
+#define SPYRO_REC_SPYRO_LEN  0x2A4u   /* g_Spyro region (interp_regions.c) */
 #define SPYRO_REC_SEG_LEN    0x100u   /* seg scratch row G_SCRATCH+0x1900 */
 #define SPYRO_REC_FK_LEN     0x300u   /* Fairy-Kiss colour row G_SCRATCH+0x1D00 */
 #define SPYRO_REC_SXY_LEN    0x400u   /* projected SXY scratchpad 0x1F800000 */
-#define SPYRO_REC_SHADOW_LEN 0x28u    /* D_SPYROSHADOW region (spyro_interp_regions.c) */
-#define SPYRO_REC_FLAME_LEN  0xD0u    /* g_SpyroFlame region (spyro_interp_regions.c) */
-#define SPYRO_REC_PAIR_B     400.0    /* pairing bound B, units per tick (P0) */
+#define SPYRO_REC_SHADOW_LEN 0x28u    /* D_SPYROSHADOW region (interp_regions.c) */
+#define SPYRO_REC_FLAME_LEN  0xD0u    /* g_SpyroFlame region (interp_regions.c) */
+#define SPYRO_REC_PAIR_B     400.0    /* pairing bound B, units per tick */
 
 typedef struct {
     uint8_t  spyro[SPYRO_REC_SPYRO_LEN];  /* the hook's g_Spyro: the staged base */

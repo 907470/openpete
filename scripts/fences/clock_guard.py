@@ -58,9 +58,8 @@ MARKER = "clock-guard: wall"
 # The files that build the native scene for a display instant, plus the
 # interp core whose fallbacks define the clocks themselves.
 GUARDED = (
-    "games/spyro-1/spyro_native_reextract.c",
-    "games/spyro-1/features/*_native.c",
-    "games/spyro-1/features/freecam.c",
+    "games/spyro-1/renderer/*.c",
+    "games/spyro-1/features/*.c",
     "games/common/freecam_game.c",
     "core/renderer/native_render.c",
     "core/renderer/openpete_interp.c",

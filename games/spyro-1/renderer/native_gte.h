@@ -1,8 +1,7 @@
-// games/spyro-1/features/native_gte.h — W2.3: the ONE copy of the GTE
-// float-mirror math every native feeder used to re-static-define.
+// games/spyro-1/renderer/native_gte.h — the ONE copy of the GTE
+// float-mirror math shared by every native feeder.
 //
-// Two projection families exist on purpose (see the W2.3 survey in
-// notes/plans/openpete-native-renderer.md):
+// Two projection families exist on purpose:
 //
 //   * ngte_project_raw — unclamped float H/z (moby, cyclorama). More
 //     correct than the GTE for widescreen reveal; callers own their

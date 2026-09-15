@@ -15,9 +15,9 @@ Three sources, in descending order of authority:
 - **openpete's native walks**, which decode exactly the interiors the decomp
   leaves opaque, verified field-by-field against the handwritten renderer asm
   (`spyro-1/asm/renderers/r_environment.s`) and A/B-checked against the prims
-  the game itself emits: `games/spyro-1/features/terrain_native.c` (environment
-  sectors, faces, textures), `games/spyro-1/features/moby_native.c` (moby
-  instances), `games/spyro-1/features/cyclorama_native.c` (sky sectors). The
+  the game itself emits: `games/spyro-1/renderer/terrain.c` (environment
+  sectors, faces, textures), `games/spyro-1/renderer/moby.c` (moby
+  instances), `games/spyro-1/renderer/cyclorama.c` (sky sectors). The
   full renderer contract map is the format notes.
 - **SpyroEdit** (`../SpyroEdit/Source/SpyroScene.{h,cpp}`, `SpyroData.h`), an
   emulator-plugin editor primarily for Spyro 2/3 with partial Spyro 1 support.
@@ -279,7 +279,7 @@ and spawns Sparx.
 
 Each sector is 0x1C bytes of header followed by a packed data block. Verified
 against `r_environment.s` and decoded by
-`games/spyro-1/features/terrain_native.c` (`tsc_decode_verts`,
+`games/spyro-1/renderer/terrain.c` (`tsc_decode_verts`,
 `tsc_decode_faces`).
 
 | Off | Contents |
@@ -329,7 +329,7 @@ z =  v        & 0x3FF;
 
 Proven by the animation path's re-pack `(X << 21) | (Y << 10) | Z`. The offsets
 apply to the sector origin with **X added, Y and Z subtracted**
-(`terrain_native.c`, the `tgpu` bound helper and the debug decode both apply
+(`terrain.c`, the `tgpu` bound helper and the debug decode both apply
 `ox + x`, `oy - y`, `oz - z`).
 
 Two SpyroEdit claims are false here. There is no extra `>>1` on Z for Spyro 1:
@@ -384,7 +384,7 @@ typedef struct {
 } Tiledef;
 ```
 
-8 bytes. `decode_tiledef` (`terrain_native.c`) unpacks it as
+8 bytes. `decode_tiledef` (`terrain.c`) unpacks it as
 `tpx = (tpage & 0xF) * 64`, `tpy = ((tpage >> 4) & 1) * 256`,
 `bpp` from `(tpage >> 7) & 3` (0→4, 1→8, else 16),
 `clx = (clut & 0x3F) * 16`, `cly = (clut >> 6) & 0x1FF`, ABR = `(tpage >> 5) & 3`.
@@ -453,7 +453,7 @@ recovery path is the asm.
 ## 9. Object instances (`Moby`, 0x58 bytes)
 
 `spyro-1/include/moby.h` is authoritative. openpete's native moby walk reads
-these offsets directly (`games/spyro-1/features/moby_native.c`), which confirms
+these offsets directly (`games/spyro-1/renderer/moby.c`), which confirms
 them against live data.
 
 | Off | Field | Type | Note |

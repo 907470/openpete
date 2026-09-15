@@ -1,10 +1,10 @@
 #pragma once
-/* levelwarp_native.h — jump to any level from the dev overlay (M key).
+/* levelwarp.h — jump to any level from the dev overlay (M key).
  *
  * Owns the canonical Spyro 1 level table (shared with --skip-to-level), the
  * two dev-overlay rows ("Warp: level" dropdown + "Jump" button), and the
  * tick-side state machine that performs every guest write. See
- * levelwarp_native.c for the mechanism.
+ * levelwarp.c for the mechanism.
  *
  * Called from game_extras_impl.c (game_on_frame_pre + the savestate extra
  * blob). */

@@ -9,7 +9,7 @@
  *
  * The game-specific half (decoding Spyro sector data into
  * rhi_terrain_vertex chunks, deciding per-sector claims and flags) lives in
- * games/spyro-1/features/terrain_native.c.
+ * games/spyro-1/renderer/terrain.c.
  *
  * Ownership contract: a sector is rendered by the GPU path IFF its slot was
  * openpete_tercache_sector_set() this present with OPTC_SF_DRAWN — the CPU

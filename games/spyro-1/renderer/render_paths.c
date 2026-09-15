@@ -1,12 +1,12 @@
 /* render_paths.c — per-path render isolation registry. See render_paths.h. */
 
-#include "render_paths.h"
+#include "renderer/render_paths.h"
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"   /* CPUState, read_word — for the path brackets */
 #include "openpete.h"
 #include "openpete_knobs.h"          /* dev-overlay row bind */
 #include "openpete_native_render.h"  /* isolation toggle */
-#include "spyro_native_reextract.h"  /* canonical-render epoch commit */
+#include "renderer/reextract.h"  /* canonical-render epoch commit */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -261,8 +261,8 @@ bool render_path_addr_visible(uint32_t addr) {
  * effect (else zero overhead). */
 /* All per-path polybuf brackets are now retired here — each path's native
  * feature module records its own RP_* range: terrain (func_8002B9CC) →
- * terrain_native.c; shadow (func_80059F8C/func_80059A48) → shadow_native.c;
- * particles (func_800573C8/0x800580F4/0x800584C4) → particle_native.c;
+ * terrain.c; shadow (func_80059F8C/func_80059A48) → shadow.c;
+ * particles (func_800573C8/0x800580F4/0x800584C4) → particle.c;
  * cyclorama/spyro/moby/flame from their own modules. This module is now just
  * the --render-paths parser + the OT-walk filter (above). */
 

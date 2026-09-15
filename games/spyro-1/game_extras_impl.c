@@ -15,16 +15,16 @@
 #include "openpete_fiber.h"
 #include "psx_runtime_internal.h"
 #include "spyro_overlay_table.h"
-#include "features/text_moby_native.h"
-#include "features/audio_volume_native.h"
-#include "features/vibration_native.h"
-#include "features/cheats_native.h"
+#include "renderer/text_moby.h"
+#include "features/audio_volume.h"
+#include "features/vibration.h"
+#include "features/cheats.h"
 #include "features/credits_skip.h"
 #include "features/crash_demo_woah.h"
 #include "freecam_game.h"
 #include "write_census.h"
 #include "openpete_fillpick.h"
-#include "features/levelwarp_native.h"
+#include "features/levelwarp.h"
 #include "psyq_thunk_state.h"
 
 #include <ctype.h>
@@ -184,7 +184,7 @@ void game_set_skip_to_level(int level_id) {
 }
 
 /* The level id/name table lives with the dev-overlay warp feature
- * (features/levelwarp_native.c) so the dropdown and --skip-to-level
+ * (features/levelwarp.c) so the dropdown and --skip-to-level
  * resolve against exactly one list. */
 /* The credits are entered from a live level (features/credits_skip.c
  * replays the "CREDITS" pad code on the first playable tick), so a credits
@@ -219,7 +219,7 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
          * sizeof(Moby)=0x58, so the range is
          *   [0x80077FEC, 0x80077FEC + 12*0x58 = 0x8007840C).
          * Used by the native renderer's is_addr_ui/is_addr_static
-         * HUD classification (moby_native.c). */
+         * HUD classification (moby.c). */
         openpete_ui_moby_set_static_range(0x80077FECu,
                                           0x80077FECu + 12u * 0x58u);
     }
@@ -451,7 +451,7 @@ int game_is_gameplay_live(CPUState* cpu) {
  *       XA arm + filter): CdlSetmode flips the XA route and load code
  *       re-registers callbacks, so a rolled-back tick that ran transition
  *       code otherwise leaves them on the abandoned branch.
- *   v4: + dev-overlay level-warp FSM (features/levelwarp_native.c). The
+ *   v4: + dev-overlay level-warp FSM (features/levelwarp.c). The
  *       phase gates guest writes across several ticks, so a rewind past a
  *       half-applied warp has to restore it alongside the RAM it wrote.
  *   v5: the thunk latches are the shared layer's pack

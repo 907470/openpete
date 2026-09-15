@@ -2,7 +2,7 @@
  *
  * See openpete_interp.h for the API contract. This TU provides capture +
  * the dedupe predicate + the prev/curr query; the lerped re-emission bracket
- * is built game-side (games/spyro-1/spyro_native_reextract.c), not here.
+ * is built game-side (games/spyro-1/renderer/reextract.c), not here.
  *
  * Determinism notes (this TU is read-only against PSX RAM):
  *   - openpete_interp_capture() runs after ticked_this_iter; the game

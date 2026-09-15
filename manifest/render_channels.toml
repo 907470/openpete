@@ -121,7 +121,7 @@ description = """
 RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
-spyro_interp_moby_key, never by these). Was: per-moby append_call tags at the shaded loop (0x80022B08 moby_loop_tag: obj_id + ui_moby set_current) + cyclorama/Spyro obj_loop_tag sites feeding the cache obj_tag and the (deleted) eff_OFX UI classifier. The ui_moby ADDRESS-RANGE classifier survives (is_addr_ui/is_addr_static — native moby_native consumers). Sites revert to
+game_interp_moby_key, never by these). Was: per-moby append_call tags at the shaded loop (0x80022B08 moby_loop_tag: obj_id + ui_moby set_current) + cyclorama/Spyro obj_loop_tag sites feeding the cache obj_tag and the (deleted) eff_OFX UI classifier. The ui_moby ADDRESS-RANGE classifier survives (is_addr_ui/is_addr_static — native moby_native consumers). Sites revert to
 plain translation at regen; hooks deleted. Entry kept for the audit
 trail."""
 substitution_sites = []
@@ -135,7 +135,7 @@ description = """
 RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
-spyro_interp_moby_key, never by these). Was: render-queue iter-top append_calls (0x8001F800/0x80020F9C moby_render_entry_tag) stamping the per-moby obj_tag from the 56-byte queue entry. Sites revert to
+game_interp_moby_key, never by these). Was: render-queue iter-top append_calls (0x8001F800/0x80020F9C moby_render_entry_tag) stamping the per-moby obj_tag from the 56-byte queue entry. Sites revert to
 plain translation at regen; hooks deleted. Entry kept for the audit
 trail."""
 substitution_sites = []
@@ -149,7 +149,7 @@ description = """
 RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
-spyro_interp_moby_key, never by these). Was: 6 renderer-entry append_calls clearing the obj_id/world_geo stamps so untagged renderers did not inherit a stale tag. Sites revert to
+game_interp_moby_key, never by these). Was: 6 renderer-entry append_calls clearing the obj_id/world_geo stamps so untagged renderers did not inherit a stale tag. Sites revert to
 plain translation at regen; hooks deleted. Entry kept for the audit
 trail."""
 substitution_sites = []
@@ -195,7 +195,7 @@ description = """
 RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
-spyro_interp_moby_key, never by these). Was: terrain strip-head append_calls (dominant xor 0x80026238 + 7 lw loop heads + the cyclorama piece heads) stamping the per-strip WORLD batch identity. Sites revert to
+game_interp_moby_key, never by these). Was: terrain strip-head append_calls (dominant xor 0x80026238 + 7 lw loop heads + the cyclorama piece heads) stamping the per-strip WORLD batch identity. Sites revert to
 plain translation at regen; hooks deleted. Entry kept for the audit
 trail."""
 substitution_sites = []
@@ -209,7 +209,7 @@ description = """
 RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
-spyro_interp_moby_key, never by these). Was: the PHASE-D per-vertex source-address FIFO (20 push_vsrc/mark_refine sites across the stream/subdiv/LOD walk variants) giving each terrain vertex a camera-free cross-frame key. Sites revert to
+game_interp_moby_key, never by these). Was: the PHASE-D per-vertex source-address FIFO (20 push_vsrc/mark_refine sites across the stream/subdiv/LOD walk variants) giving each terrain vertex a camera-free cross-frame key. Sites revert to
 plain translation at regen; hooks deleted. Entry kept for the audit
 trail."""
 substitution_sites = []
@@ -223,7 +223,7 @@ description = """
 RETIRED 2026-07-06 (write-only identity-tag feeder — the render cache
 that consumed these tags was deleted with the screen-space matcher +
 PGXP, openpete 92646a6; native interpolation pairs by
-spyro_interp_moby_key, never by these). Was: the shadow-renderer sub-tag append_call disambiguating shadow prims from their owner moby in the cache identity space. Sites revert to
+game_interp_moby_key, never by these). Was: the shadow-renderer sub-tag append_call disambiguating shadow prims from their owner moby in the cache identity space. Sites revert to
 plain translation at regen; hooks deleted. Entry kept for the audit
 trail."""
 substitution_sites = []
@@ -238,7 +238,7 @@ RETIRED 2026-07-06 (PsyCross --aspect substitution stack deleted).
 Was: 2D full-bleed prim X-width (cutscene letterbox func_80018F30 +
 fade overlay func_800190D4) widened via psx_runtime_fullbleed_x_max
 to span the PsyCross-widened GL ortho. Native mode always kept these
-canonical (ui_sprite_native.c re-centres + widens the bars itself);
+canonical (ui_sprite.c re-centres + widens the bars itself);
 with PsyCross-mode --aspect retired the sites reverted to the
 hardcoded 512 and the knob was deleted. Entry kept for the audit
 trail."""
@@ -660,7 +660,7 @@ machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
 own detail selection from gamestate).
-Was: the 2 replace_call sites (moby_lp_face_load) swinging the LP-band face-list load from m_LpFaces (+0x1C) to m_Faces (+0x14). The native walk keys its faceblock on openpete_no_lod directly (moby_native.c moby_tier_faceblock). Sites reverted to the .s constants; knob + hook deleted.
+Was: the 2 replace_call sites (moby_lp_face_load) swinging the LP-band face-list load from m_LpFaces (+0x1C) to m_Faces (+0x14). The native walk keys its faceblock on openpete_no_lod directly (moby.c moby_tier_faceblock). Sites reverted to the .s constants; knob + hook deleted.
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
@@ -675,7 +675,7 @@ machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
 own detail selection from gamestate).
-Was: the 2 void-replace_call sites (no_lod_moby_zsf4_store) neutralizing the ZSF4 distance term at the cull-record tier store. The native walk applies the identical idempotent read-side neutralization (moby_native.c project_all_records). Sites reverted to the .s constants; knob + hook deleted.
+Was: the 2 void-replace_call sites (no_lod_moby_zsf4_store) neutralizing the ZSF4 distance term at the cull-record tier store. The native walk applies the identical idempotent read-side neutralization (moby.c project_all_records). Sites reverted to the .s constants; knob + hook deleted.
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
@@ -690,7 +690,7 @@ machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
 own detail selection from gamestate).
-Was: the 3 replace_call sites (no_lod_tier_bump) suppressing the HP-walk HQ->LQ descriptor +8 bump. The native terrain feeder owns tier selection (terrain_native.c HQ classifier). Sites reverted to the .s constants; knob + hook deleted.
+Was: the 3 replace_call sites (no_lod_tier_bump) suppressing the HP-walk HQ->LQ descriptor +8 bump. The native terrain feeder owns tier selection (terrain.c HQ classifier). Sites reverted to the .s constants; knob + hook deleted.
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []
@@ -735,7 +735,7 @@ machinery that made the ORIGINAL .s renderer draw full detail,
 reachable only via manual `--renderer psycross --no-lod` since 30ec733).
 --no-lod is a native-renderer display policy now (the native feeders
 own detail selection from gamestate).
-Was: the 3 replace_call sites (no_lod_moby_distance) saturating the packed m_Renderer low-7-bit m_Distance to 0x7F. The native walk saturates its own reveal threshold (moby_native.c, keyed on openpete_no_lod). Sites reverted to the .s constants; knob + hook deleted.
+Was: the 3 replace_call sites (no_lod_moby_distance) saturating the packed m_Renderer low-7-bit m_Distance to 0x7F. The native walk saturates its own reveal threshold (moby.c, keyed on openpete_no_lod). Sites reverted to the .s constants; knob + hook deleted.
 Entry kept for the audit trail."""
 substitution_sites = []
 state_regions    = []

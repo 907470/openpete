@@ -1,4 +1,4 @@
-// games/spyro-1/features/text_moby_native.c
+// games/spyro-1/renderer/text_moby.c
 //
 // Render text using Spyro 1's OWN 3D HUD "text mobys" — the gold extruded glyph
 // models the game draws for the gem/life counters (digits, classes 260-269),
@@ -18,7 +18,7 @@
 //       +0x0C -> face stream  (8 bytes/face; flat-shaded: w0 packs 4 vertex
 //                indices @ bits {21,14,7,0} & 0x1FC >> 2, tri iff i2==i3, else
 //                quad; w1's high 3 bytes are the face normal Nz/Nx/Ny).
-//     (Same decode as features/moby_native.c's shaded path.)
+//     (Same decode as renderer/moby.c's shaded path.)
 //   * Pointers in g_Models are PHYSICAL addresses (low 0x1F_xxxx) -> OR 0x80000000.
 //
 // IMPORTANT: the glyph models are NOT permanently resident. They load with the
@@ -44,7 +44,7 @@
 #include "openpete_overlay_anchor.h" /* per-line alignment inside an anchored block */
 #include "openpete_osd.h"          /* toast ring — the OSD builder below */
 #include "openpete_fiber.h"        /* speculative / replayed ticks skip the shimmer */
-#include "text_moby_native.h"
+#include "renderer/text_moby.h"
 
 #include <math.h>
 #include <stddef.h>
@@ -89,7 +89,7 @@ static const float TXT_L[3] = { -0.34f, 0.50f, 0.80f };   /* unit, front-dominan
 /* Glyph lighting direction is per-emission so the FPS counter keeps its ORIGINAL
  * fixed front light while the settings menu and the OSD use Spyro's ROTATING
  * specular light (the metallic shimmer). emit_glyph dots the face normal with
- * this unit vector, exactly like the game's shaded_lit_color (moby_native.c)
+ * this unit vector, exactly like the game's shaded_lit_color (moby.c)
  * does with s_shL. text_moby_native_emit installs the fixed model; the menu and
  * OSD builders install the rotating ellipse (specular_and_metal.c).
  *
@@ -546,7 +546,7 @@ void text_moby_native_shimmer_tick(void) {
 unsigned text_moby_native_shimmer_phase(void) { return s_shimmer_phase; }
 
 /* Install SpecularUpdate's rotating ellipse as this emission's light. Same
- * N·L shading as the world's shaded mobys (moby_native.c shaded_lit_color),
+ * N·L shading as the world's shaded mobys (moby.c shaded_lit_color),
  * so every glyph's highlight sweeps as the light turns. The clock advances
  * +3 per logic frame, like the game's SpecularUpdate(3). */
 static void install_specular_light(emit_ctx_t* cx, unsigned phase) {

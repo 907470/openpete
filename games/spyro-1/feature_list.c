@@ -1,29 +1,24 @@
 // games/spyro-1/feature_list.c — Spyro 1's registered feature modules.
-//
-// Phase 1 of the feature-module consolidation plan
-// (notes/plans/openpete-feature-modules.md): registry exists, no
-// features registered yet. Phase 2 moves Hor+ widescreen here as the
-// first migration.
 
 #include "feature_registry.h"
 
 #include <stddef.h>
 
 extern const feature_module_t render_paths_module;
-extern const feature_module_t cyclorama_native_module;
-extern const feature_module_t moby_native_module;
-extern const feature_module_t spyro_native_module;
-extern const feature_module_t flame_native_module;
-extern const feature_module_t shadow_native_module;
-extern const feature_module_t particle_native_module;
-extern const feature_module_t tracer_native_module;
-extern const feature_module_t terrain_native_module;
-extern const feature_module_t ui_sprite_native_module;
-extern const feature_module_t portal_native_module;
-extern const feature_module_t transition_native_module;
-extern const feature_module_t cheats_native_module;
+extern const feature_module_t cyclorama_module;
+extern const feature_module_t moby_module;
+extern const feature_module_t spyro_module;
+extern const feature_module_t flame_module;
+extern const feature_module_t shadow_module;
+extern const feature_module_t particle_module;
+extern const feature_module_t tracer_module;
+extern const feature_module_t terrain_module;
+extern const feature_module_t ui_sprite_module;
+extern const feature_module_t portal_module;
+extern const feature_module_t transition_module;
+extern const feature_module_t cheats_module;
 extern const feature_module_t credits_skip_module;
-extern const feature_module_t levelwarp_native_module;
+extern const feature_module_t levelwarp_module;
 extern const feature_module_t text_moby_id_module;
 extern const feature_module_t crash_demo_woah_module;
 extern const feature_module_t polybuf_guard_module;
@@ -33,57 +28,56 @@ const feature_module_t* const openpete_features[] = {
      * only; the per-path polybuf brackets live in the native feature modules and
      * the OT-walk filter in psyq_DrawOTag). */
     &render_paths_module,
-    /* Phase 2 native-renderer cyclorama spike + A/B verify harness.
+    /* Native-renderer cyclorama feeder + A/B verify harness.
      * Hooks 0x8004EBA8 only when OPENPETE_CYC_VERIFY is set; otherwise an
      * inert fall-through. */
-    &cyclorama_native_module,
-    /* Phase 3 native-renderer moby spike + A/B verify harness. Hooks the
+    &cyclorama_module,
+    /* Native-renderer moby feeder + A/B verify harness. Hooks the
      * REGULAR material renderer 0x8001F798 only when OPENPETE_MOBY_VERIFY or
      * a native renderer mode (--renderer vk) is set; inert otherwise. */
-    &moby_native_module,
-    /* Phase 3b.4 native-renderer Spyro spike + A/B verify harness. Hooks the
+    &moby_module,
+    /* Native-renderer Spyro feeder + A/B verify harness. Hooks the
      * player-avatar renderer 0x80023AC4 only when OPENPETE_SPYRO_VERIFY or
      * a native renderer mode (--renderer vk) is set; inert otherwise. */
-    &spyro_native_module,
-    /* Phase 3b.1 native-renderer flame spike + A/B harness + the first ADDITIVE
+    &spyro_module,
+    /* Native-renderer flame feeder + A/B harness, an ADDITIVE
      * (ABR mode 1) consumer. Hooks Spyro's flame renderer 0x80058D64 only when
      * OPENPETE_FLAME_VERIFY or a native renderer mode (--renderer vk) is
      * set; inert otherwise. Records the RP_FLAME polybuf range itself (so the
      * render_paths thin bracket for flame is retired — see render_paths.c). */
-    &flame_native_module,
-    /* Phase 3b.2 native-renderer SHADOWS: moby shadows (0x80059F8C, textured
+    &flame_module,
+    /* Native-renderer SHADOWS: moby shadows (0x80059F8C, textured
      * FT3 fan, ABR mode 0) + Spyro silhouette shadow (0x80059A48, untextured
-     * G3 fan, ABR mode 0 — the first untextured-alpha consumer). Hooks both
+     * G3 fan, ABR mode 0, an untextured-alpha consumer). Hooks both
      * only under OPENPETE_SHADOW_VERIFY or a native renderer mode; inert
      * otherwise. Records the RP_SHADOW polybuf range itself (so the
      * render_paths thin brackets for shadow are retired — see render_paths.c). */
-    &shadow_native_module,
-    /* Phase 3b.3 native-renderer PARTICLES: the particle family — particles
+    &shadow_module,
+    /* Native-renderer PARTICLES: the particle family — particles
      * (0x800573C8, 7 sprite classes), glows (0x800580F4, additive rings) and
      * sparkles (0x800584C4, twinkle quads). VERDICT-CRITICAL: the .s runs
      * headless (writes m_03 + Sparkle m_Life) and we only mirror geometry.
      * Hooks all three only under OPENPETE_PARTICLE_VERIFY or a native renderer
      * mode; inert otherwise. Records the RP_PARTICLES polybuf range itself (so
      * the render_paths thin bracket on func_800573C8 is retired). */
-    &particle_native_module,
-    /* Phase 3b.5 native-renderer TRACER/beam: the additive gouraud quad-strip
+    &particle_module,
+    /* Native-renderer TRACER/beam: the additive gouraud quad-strip
      * tracer (func_800189F0 -> func_800189F8), e.g. the dream-weavers fireball's
      * glowing streak. Capture-and-feed: runs the real renderer (verdict) then
      * feeds the additive strip it emitted into the native scene's additive
-     * layer. Was previously unhooked, so the whole beam was absent. */
-    &tracer_native_module,
-    /* Phase 4 native-renderer TERRAIN/world: hooks the env-render dispatch
+     * layer. */
+    &tracer_module,
+    /* Native-renderer TERRAIN/world: hooks the env-render dispatch
      * func_8002B9CC (-> func_800258F0 world renderer) only under
      * OPENPETE_TERRAIN_VERIFY or a native renderer mode; inert otherwise.
      * Records the RP_TERRAIN polybuf range itself (so the render_paths thin
-     * bracket on func_8002B9CC is retired — see render_paths.c). Capture+dump
-     * harness now; native gamestate walk + scene feed are the next increment. */
-    &terrain_native_module,
+     * bracket on func_8002B9CC is retired — see render_paths.c). */
+    &terrain_module,
     /* 2D-from-OT native UI: hooks func_800168DC (the 2D addPrim chokepoint) to
      * feed the title logo / "PRESS START" / HUD text sprites into the native
      * scene's HUD overlay layer. Inert unless a native renderer mode is
      * active. */
-    &ui_sprite_native_module,
+    &ui_sprite_module,
     /* Native PORTAL skybox previews: re-derives the destination-level dome
      * shown inside homeworld portal arches (driven by RenderPortals
      * func_80050BD0 -> func_8004FEA0/80050240/8004F4BC, into a per-portal clip
@@ -91,7 +85,7 @@ const feature_module_t* const openpete_features[] = {
      * so portal previews were missing. Capture/dump harness under
      * OPENPETE_PORTAL_DUMP now; float extraction + clip + feed are the next
      * increment. Inert unless a native renderer mode or the dump is set. */
-    &portal_native_module,
+    &portal_module,
     /* Native feeder for the level-transition / balloonist cross-fade backdrop
      * (func_8004F000): captures the screen-space gouraud mesh it emits into the
      * shared polybuf and feeds it as the backmost layer, so the soft gradient
@@ -99,11 +93,11 @@ const feature_module_t* const openpete_features[] = {
      * Also keeps a thin red probe for the still-unfed GS_ExitLevel grayscale
      * screen (func_8001C694), opt-in via OPENPETE_TRANSITION_PROBE=1. Chains a
      * present-commit (after portal's) for the sub-tick staleness latch. */
-    &transition_native_module,
+    &transition_module,
     /* --cheats: parse the selection at startup (apply_options only; the
      * effects are written from game_on_frame_pre once a level is live —
-     * see features/cheats_native.c). Inert without the flag. */
-    &cheats_native_module,
+     * see features/cheats.c). Inert without the flag. */
+    &cheats_module,
     /* --skip-to-cutscene credits / credits_100: replays the "CREDITS" pad code
      * (InitCreditsSequence in guest context, from a GamestateUpdate entry
      * hook) on the first live tick of the level the skip lands in. Inert
@@ -113,11 +107,11 @@ const feature_module_t* const openpete_features[] = {
      * rides the game's own exit-level -> load sequence to any level, plus
      * the shared level id/name table --skip-to-level resolves against.
      * Writes nothing until the button is clicked. */
-    &levelwarp_native_module,
+    &levelwarp_module,
     /* Records the emitter-call provenance of every HUD text glyph
      * (func_80017FE4 / func_800181AC entry hooks, read-only, always fall
      * through) so the sub-tick interpolator can tell one tick's letters from
-     * the next's. See features/text_moby_id.c. */
+     * the next's. See renderer/text_moby_id.c. */
     &text_moby_id_module,
     /* L1+Triangle on the title screen: the original boots the disc's Crash 3
      * demo via LoadExec, which openpete cannot host. Swallows CrashDemoLaunch

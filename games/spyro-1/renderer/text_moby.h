@@ -1,4 +1,4 @@
-// games/spyro-1/features/text_moby_native.h
+// games/spyro-1/renderer/text_moby.h
 //
 // Render arbitrary text using Spyro 1's own 3D HUD "text mobys" — the gold
 // extruded glyph models the game draws for the gem/life counters, "DEMO MODE",

@@ -1,4 +1,4 @@
-/* portal_native.c cross-feeder exports.
+/* portal.c cross-feeder exports.
  *
  * The portal-sky feeder and the terrain feeder cooperate on the PSX portal
  * OT semantics: the sky feeder draws the preview at per-pixel opening-plane
@@ -8,7 +8,7 @@
 #pragma once
 #include <stdint.h>
 #include "psx_runtime_internal.h"
-#include "native_gte.h"     /* ngte_view: the caller's projection view */
+#include "renderer/native_gte.h"     /* ngte_view: the caller's projection view */
 
 /* Portal-guard gate (terrain PORTAL_GUARD experiment): true while a portal
  * fed sky within the last couple of presents. */

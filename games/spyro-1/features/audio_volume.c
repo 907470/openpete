@@ -1,4 +1,4 @@
-// games/spyro-1/features/audio_volume_native.c — --sfx / --music: preset the
+// games/spyro-1/features/audio_volume.c — --sfx / --music: preset the
 // game's own in-game volume sliders, and give the music slider an effect.
 //
 // Spyro's options menu carries a SOUND EFFECTS and a MUSIC row, each 0 (OFF)
@@ -39,7 +39,7 @@
 // Addresses from manifest/globals.toml; g_Spu field offsets from
 // spyro-1/include/spu.h.
 
-#include "features/audio_volume_native.h"
+#include "features/audio_volume.h"
 
 #include "openpete.h"        /* openpete_get/set_{sfx,music}_volume */
 #include "music_override.h"  /* music_override_set_gain */

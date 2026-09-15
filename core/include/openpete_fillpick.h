@@ -2,7 +2,7 @@
 /* openpete_fillpick.h — host-side state for the LP fill-tag inspector (P key).
  *
  * The frozen fill-face list (tests/freecam/fill-tags.verdicts ->
- * games/spyro-1/features/terrain_fill_tags.h) decides which LP faces may
+ * games/spyro-1/renderer/terrain_fill_tags.h) decides which LP faces may
  * back-fill sightlines no authored HP covers. Auditing it needs three things
  * the sweep that produced it cannot give: point at a face and learn its
  * identity, learn whether authored HP actually covers that sightline, and flip
@@ -11,7 +11,7 @@
  * This is the GENERIC half — the on/off + preview toggles, the hit published
  * by the renderer, the session verdict overrides and their file. It carries no
  * game addresses and no knowledge of the tag table; the terrain feeder
- * (games/spyro-1/features/terrain_native.c) does the projection-space pick and
+ * (games/spyro-1/renderer/terrain.c) does the projection-space pick and
  * consults openpete_fillpick_lookup ahead of the frozen table.
  *
  * Debug tool — inert unless engaged. Display-only: it changes which LP faces

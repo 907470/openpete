@@ -76,7 +76,7 @@ game's geometry with them. `--help` names each game's own default.
 
 The native renderer extracts scenes from gameplay state and draws them in
 float through openpete's own RHI (`core/rhi/rhi_vulkan.c`), with the
-per-game feeders in `games/spyro-1/features/spyro_native.c`. It reads
+per-game feeders in `games/spyro-1/renderer/spyro.c`. It reads
 gameplay state, asset data, and the VRAM mirror; it never writes PSX-readable
 RAM. Presentation features that do reach the recompiled path — Hor+
 widescreen, extended LOD — are `feature_module_t` entries registered per game

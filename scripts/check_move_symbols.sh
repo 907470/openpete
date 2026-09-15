@@ -44,11 +44,11 @@ MODULE_DIR=$BUILD_DIR/games/$GAME/CMakeFiles/${TAG}_recomp_module.dir
 usage() { sed -n '3,30p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
 
 # A symbol whose name embeds __LINE__ (the OP_PROF_* per-site cache,
-# `op_prof_aid_<line>`) renames on every comment edit above it; the line is
-# dropped so only the site count is compared. The GCC local-symbol suffix
-# (`.<n>`) is dropped with it.
+# `op_prof_aid_<line>`, `op_prof_id_<line>`) renames on every comment edit
+# above it; the line is dropped so only the site count is compared. The GCC
+# local-symbol suffix (`.<n>`) is dropped with it.
 normalize() {
-    sed -E 's/ op_prof_aid_[0-9]+(\.[0-9]+)?$/ op_prof_aid_/'
+    sed -E 's/ (op_prof_a?id_)[0-9]+(\.[0-9]+)?$/ \1/'
 }
 
 symbols() {

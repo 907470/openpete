@@ -167,34 +167,41 @@ openpete_add_game(spyro-1
     SOURCES
         psyq_hooks.cpp
         mod_wad_overlay.c
-        features/render_paths.c
+
+        # The native renderer's game half: the feeders, the sub-tick
+        # re-extract orchestrator and the interp region table.
+        renderer/reextract.c
+        renderer/interp_regions.c
+        renderer/render_paths.c
+        renderer/render_decouple.c
+        renderer/native_gte.c
+        renderer/cyclorama.c
+        renderer/moby.c
+        renderer/moby_rank.c
+        renderer/spyro.c
+        renderer/spyro_records.c
+        renderer/flame.c
+        renderer/shadow.c
+        renderer/particle.c
+        renderer/tracer.c
+        renderer/terrain.c
+        renderer/ui_sprite.c
+        renderer/portal.c
+        renderer/text_moby.c
+        renderer/text_moby_id.c
+        renderer/transition.c
+
+        # Non-renderer feature modules.
         features/polybuf_guard.c
-        features/render_decouple.c
-        features/native_gte.c
-        features/cyclorama_native.c
-        features/moby_native.c
-        features/moby_rank.c
-        features/spyro_native.c
-        features/spyro_records.c
         features/mod_moby_ops.c
         features/mod_level_ops.c
-        features/flame_native.c
-        features/shadow_native.c
-        features/particle_native.c
-        features/tracer_native.c
-        features/terrain_native.c
-        features/ui_sprite_native.c
-        features/portal_native.c
-        features/text_moby_native.c
-        features/text_moby_id.c
-        features/transition_native.c
         features/freecam.c
-        features/audio_volume_native.c
-        features/vibration_native.c
-        features/cheats_native.c
+        features/audio_volume.c
+        features/vibration.c
+        features/cheats.c
         features/credits_skip.c
         features/crash_demo_woah.c
-        features/levelwarp_native.c
+        features/levelwarp.c
 
         # Native translations of spyro-1/src/*.c compiled via the AST
         # rewriter (tools/rewrite_tu.py). Each native TU is rewritten by
@@ -301,13 +308,7 @@ add_custom_command(
             ${CMAKE_SOURCE_DIR}/tools/gen_symbols_header.py
     COMMENT "Generating Spyro spyro1_symbols.gen.h (validated vs manifest)")
 target_sources(openpete-spyro1 PRIVATE
-    ${_spyro_symbols_header}
-    # Phase 2 of fps-unlock: render-side interpolation region table.
-    # Hardcoded (g_Spyro + g_Camera) for v1 scaffolding; will graduate
-    # to manifest-generated when mobies land in #59.
-    spyro_interp_regions.c
-    # Sub-tick re-feed orchestrator (native-renderer high-FPS spine, step 2).
-    spyro_native_reextract.c)
+    ${_spyro_symbols_header})
 
 # --- Mod SDK v0 (notes/plans/openpete-modding-framework.md P1) ---
 # Generate the name→vaddr symbol surface from manifest/symbols.toml:

@@ -1,4 +1,4 @@
-// games/spyro-1/features/vibration_native.c — --vibration: preset the game's
+// games/spyro-1/features/vibration.c — --vibration: preset the game's
 // own controller-vibration setting.
 //
 // Spyro's options menu (the sound/options submenu, D_800757C8 == 1) carries a
@@ -49,7 +49,7 @@
 //
 // Addresses from manifest/globals.toml.
 
-#include "features/vibration_native.h"
+#include "features/vibration.h"
 
 #include "openpete.h"        /* openpete_get/set_vibration */
 #include "psx_runtime_internal.h"     /* CPUState + its read/write callbacks */

@@ -1,4 +1,4 @@
-// tracer_native.c — native gamestate re-derivation of the additive "tracer/beam"
+// games/spyro-1/renderer/tracer.c — native gamestate re-derivation of the additive "tracer/beam"
 // renderer (func_800189F0 -> func_800189F8), e.g. the dream-weavers fireball's
 // glowing streak. Re-derived in FLOAT from the tracer-point gamestate (no
 // capture of the .s's already-projected int16 prims), so it has true per-vertex
@@ -38,9 +38,9 @@
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
-#include "render_paths.h"
-#include "spyro_native_reextract.h"   /* sub-tick re-extract entry */
-#include "native_gte.h"    /* shared GTE float-mirror math (W2.3) */
+#include "renderer/render_paths.h"
+#include "renderer/reextract.h"   /* sub-tick re-extract entry */
+#include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "spyro1_symbols.gen.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
@@ -207,7 +207,7 @@ static int on_800189F0_tracer(CPUState* cpu, uint32_t addr) {
 }
 
 /* Sub-tick re-extract: replay the snapshot against the interpolated camera. */
-void tracer_native_reextract(CPUState* cpu) {
+void tracer_reextract(CPUState* cpu) {
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_enabled(RP_TRACER)) return;
     /* Liveness gate (matches every other feeder): only replay if the most recent
@@ -224,7 +224,7 @@ static const feature_dispatch_entry_t tracer_dispatch[] = {
     { 0u, NULL },
 };
 
-const feature_module_t tracer_native_module = {
+const feature_module_t tracer_module = {
     .name           = "tracer_native",
     .apply_options  = NULL,
     .dispatch_table = tracer_dispatch,
