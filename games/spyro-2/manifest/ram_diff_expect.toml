@@ -95,8 +95,8 @@ owner  = "P16"
 [[expect]]
 class  = "load_timing"
 start  = 0x8006700C
-end    = 0x8006700D
-name   = "D_8006700C (title frame counter)"
+end    = 0x80067010
+name   = "D_8006700C (title frame counter word; byte 1 follows the title's step timing)"
 reason = "advances per title-loop frame during the pre-anchor reads"
 owner  = "openpete-per-game-oracle"
 
@@ -194,16 +194,24 @@ owner  = "openpete-spyro2-3-bringup"
 [[expect]]
 class  = "pad_model"
 start  = 0x80068370
-end    = 0x80068374
-name   = "D_80068370-D_80068373 (pad type, mode-set, actuator-set, DualShock flags, pad/func_8001271C)"
+end    = 0x80068376
+name   = "D_80068370-D_80068375 (pad type, mode-set, actuator-set, DualShock flags, pad/func_8001271C; D_80068374 the init flag, equal; D_80068375 set by pad/func_80012B58 on the DualShock path)"
 reason = "hardware's DualShock answers id 7 with two actuators; openpete's pad model answers a digital pad"
 owner  = "P16"
 
 [[expect]]
 class  = "pad_model"
+start  = 0x80068378
+end    = 0x8006838C
+name   = "D_80068378 (20 bytes: the analog sticks' centre and last values, 0x80 on hardware's DualShock, 0x7F from openpete's pad model)"
+reason = "the analog pad's poll answer; openpete's pad model answers a digital pad"
+owner  = "P16"
+
+[[expect]]
+class  = "pad_model"
 start  = 0x80068238
-end    = 0x8006823C
-name   = "D_80068238 (copy of D_80068370, spyroupdate/func_800313E4)"
+end    = 0x80068254
+name   = "D_80068238-D_80068253 (copy of D_80068370-D_80068375 and of the D_80068378 stick values, spyroupdate/func_800313E4)"
 reason = "copy of the pad flag bytes above"
 owner  = "P16"
 

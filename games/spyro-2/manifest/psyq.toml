@@ -118,6 +118,10 @@ name = "PadSetMainMode"
 addr = 0x80058718
 
 [[symbols]]
+name = "PadSetAct"
+addr = 0x80058760
+
+[[symbols]]
 name = "CdFlush"
 addr = 0x800587f0
 

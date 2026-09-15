@@ -1,6 +1,7 @@
 /* core/runtime/psxtrace_verify.c — consumer for the .psxtrace v2 oracle. */
 
 #include "openpete_psxtrace.h"
+#include "openpete_cdrom_mmio.h"
 #include "openpete_log.h"
 #include "openpete_psx.h"
 
@@ -181,6 +182,7 @@ int openpete_psxtrace_open(openpete_psxtrace_t* t, const char* path) {
     /* The sidecars beside the golden are the reference's schedule; under
      * it openpete's VBLs are the reference's, so the per-record delta
      * compare is exact unless the policy was set to log by hand. */
+    (void)openpete_cdrom_mmio_open(path);
     if (openpete_sched_open(path) && t->has_vbl_stamps) {
         const char* vp = getenv("OPENPETE_PSXTRACE_VBL_POLICY");
         if (!(vp && strcmp(vp, "log") == 0)) t->vbl_policy_exact = 1;
@@ -286,6 +288,20 @@ fail:
     free(t->ram_buf);
     t->ram_buf = NULL;
     return -1;
+}
+
+int openpete_psxtrace_skip_to(openpete_psxtrace_t* t, uint32_t rec) {
+    if (!t->fp || (t->flags & PSXTRACE_FLAG_HAS_RAM)) return -1;
+    const long rec_size = 5 * 4 + 8 + 8 * (long)t->region_count;
+    while (t->records_consumed < rec && t->records_consumed < t->frame_count) {
+        if (fseek(t->fp, rec_size, SEEK_CUR) != 0) return -1;
+        /* The delta compare resumes from the skipped-to record's stamp. */
+        if (t->stamps && t->records_consumed < t->stamp_count)
+            t->prev_trace_vbl = t->stamps[t->records_consumed];
+        t->records_consumed++;
+        t->records_skipped++;
+    }
+    return 0;
 }
 
 int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
@@ -431,6 +447,33 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
             OPL_ERROR_F("psxtrace", "record %u: schedule failed: %s", frame_no, why);
         }
     }
+    /* Inside a load window the loader's tick count is CPU time and the two
+     * sides' records do not correspond; the record is consumed and not
+     * compared, and the re-alignment at the window's end skips the rest. */
+    if (openpete_sched_in_load()) {
+        t->records_uncompared++;
+        t->prev_trace_vbl = pad2;
+        t->prev_op_vbl = (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
+        t->frames_compared++;
+        t->records_consumed++;
+        return 1;
+    }
+    /* OPENPETE_PSXTRACE_RAM_DUMP=FRAME:PATH writes openpete's RAM as it is
+     * hashed for that record, for a byte diff against the reference's
+     * dump at the same hit. */
+    {
+        static int s_rd_parsed = 0; static unsigned s_rd_frame = 0; static char s_rd_path[512];
+        if (!s_rd_parsed) {
+            s_rd_parsed = 1;
+            const char* e = getenv("OPENPETE_PSXTRACE_RAM_DUMP");
+            if (e && *e && sscanf(e, "%u:%511s", &s_rd_frame, s_rd_path) == 2) s_rd_parsed = 2;
+        }
+        if (s_rd_parsed == 2 && frame_no == s_rd_frame) {
+            FILE* fp = fopen(s_rd_path, "wb");
+            if (fp) { fwrite(openpete_psx_get_ram(), 1, OPENPETE_PSX_RAM_SIZE, fp); fclose(fp); }
+            OPL_INFO_F("psxtrace", "ram dump: frame=%u -> %s%s", frame_no, s_rd_path, fp ? "" : " (open failed)");
+        }
+    }
     /* Compute openpete's hashes for THIS frame. */
     uint64_t op_per[OPENPETE_PSXTRACE_MAX_REGIONS];
     uint64_t total_op = gameplay_hash_compute_ex(op_per);
@@ -445,12 +488,14 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
     int any_mism = 0;
     for (uint32_t r = 0; r < t->region_count; r++) {
         const int in_range = (r < (uint32_t)openpete_state_region_count);
-        /* gameplay_neutral: render-side region audited as gameplay-neutral.
-         * Treated as a transient with an INFINITE heal window — its
-         * divergence is counted for diagnostics but never trips
-         * hard_failed. Any real gameplay coupling surfaces in the tracked
-         * downstream regions (psyq_rand_seed, g_Spyro, …). */
-        const int neutral   = in_range ? openpete_state_regions[r].gameplay_neutral : 0;
+        /* gameplay_neutral: render-side region audited as gameplay-neutral;
+         * host_precision: the state of a host device model coarser than
+         * the hardware. Both are treated as a transient with an INFINITE
+         * heal window: the divergence is counted for diagnostics but never
+         * trips hard_failed. Any real gameplay coupling surfaces in the
+         * tracked downstream regions (psyq_rand_seed, g_Spyro, …). */
+        const int neutral   = in_range ? (openpete_state_regions[r].gameplay_neutral
+                                          || openpete_state_regions[r].host_precision) : 0;
         const int transient = neutral
                             || (in_range ? openpete_state_regions[r].cd_load_transient : 0);
 
@@ -573,13 +618,15 @@ void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
     for (uint32_t r = 0; r < t->region_count; r++) {
         if (t->transient_open_frame[r] < 0) continue;
         const int neutral = (r < (uint32_t)openpete_state_region_count)
-                          && openpete_state_regions[r].gameplay_neutral;
+                          && (openpete_state_regions[r].gameplay_neutral
+                              || openpete_state_regions[r].host_precision);
         if (neutral) {
-            /* A gameplay_neutral row has no heal window; an open burst at
-             * EOF is counted, never promoted. */
+            /* A gameplay_neutral or host_precision row has no heal window;
+             * an open burst at EOF is counted, never promoted. */
             OPL_INFO_F("psxtrace",
-                       "gameplay_neutral region=%u (%s) diverging at EOF "
+                       "%s region=%u (%s) diverging at EOF "
                        "(burst opened tick %lld)",
+                       openpete_state_regions[r].host_precision ? "host_precision" : "gameplay_neutral",
                        r, t->region_names[r],
                        (long long)t->transient_open_frame[r]);
             continue;
@@ -605,6 +652,7 @@ void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
         }
     }
     openpete_sched_summary();
+    openpete_cdrom_mmio_summary();
     if (t->hard_failed) {
         int32_t r = t->hard_fail_region;
         OPL_INFO_F("psxtrace",

@@ -79,7 +79,7 @@ DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
 TRACE="${OPENPETE_TRACE:-tests/golden/spyro-1/psxtrace-demo-20k.bin}"
 ARTIFACT="${OPENPETE_DIST_ARTIFACT:-}"
 [[ -f "$DISC" ]] || { echo "[dist-gate] disc missing: $DISC" >&2; exit 64; }
-[[ -f "$TRACE" ]] || { echo "[dist-gate] golden missing: $TRACE" >&2; exit 64; }
+[[ -f "$TRACE" ]] || { echo "[dist-gate] golden missing: $TRACE (scripts/check_psx_oracle.sh captures it)" >&2; exit 64; }
 if [[ -n "$ARTIFACT" ]]; then
     [[ -f "$ARTIFACT" ]] || { echo "[dist-gate] artifact missing: $ARTIFACT" >&2; exit 64; }
     case "$ARTIFACT" in *.AppImage) APPIMAGE=1 ;; esac

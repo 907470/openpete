@@ -142,6 +142,10 @@ name = "PadSetMainMode"
 addr = 0x8005df7c
 
 [[symbols]]
+name = "PadSetAct"
+addr = 0x8005dfc4
+
+[[symbols]]
 name = "CdFlush"
 addr = 0x8005e054
 

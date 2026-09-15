@@ -29,6 +29,18 @@
  *   [27]     defer_pending  1 while a data read's completion is deferred
  *   [28]     load_budget    VBLs the current level load has left to spend
  *   [29]     load_prev      in-load bit of the previous read (pack_ver 4)
+ *   [30]     pad_busy       vsyncs left in libpad's controller command sequence
+ *   [31..37] card_state[7] the BIOS card driver: its flag word (started,
+ *                           port flip, transfer in progress, per-port
+ *                           status, bu-layer and command kind bits) and
+ *                           each port's pending sector, buffer and device
+ *                           id (pack_ver 5)
+ *   [38]     pad_seq        length of that sequence (pack_ver 5)
+ *   [39..40] defer_rec/vbl  the reference's completion record and VBLANK
+ *                           of the deferred read under the schedule
+ *                           (pack_ver 5)
+ *   [41..42] defer_clock    that completion's clock value on the reference,
+ *                           low word first (pack_ver 5)
  */
 #ifndef OPENPETE_PSYQ_THUNK_STATE_H
 #define OPENPETE_PSYQ_THUNK_STATE_H
@@ -39,12 +51,13 @@
 extern "C" {
 #endif
 
-#define PSYQ_THUNK_STATE_PACK_VER 4u
-#define PSYQ_THUNK_STATE_WORDS    30u
+#define PSYQ_THUNK_STATE_PACK_VER 5u
+#define PSYQ_THUNK_STATE_WORDS    43u
 #define PSYQ_THUNK_STATE_BYTES    (PSYQ_THUNK_STATE_WORDS * 4u)
 #define PSYQ_THUNK_STATE_V1_BYTES 96u
 #define PSYQ_THUNK_STATE_V2_BYTES 100u
 #define PSYQ_THUNK_STATE_V3_BYTES 104u
+#define PSYQ_THUNK_STATE_V4_BYTES 120u
 
 /* The byte length of a pack whose first word is `ver`; 0 for a version this
  * layer does not know. */

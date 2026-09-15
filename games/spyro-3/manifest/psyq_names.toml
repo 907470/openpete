@@ -184,6 +184,11 @@ name = "PadSetMainMode"
 from = "reference::games/spyro-1/spyro-1/asm/psyq.s"
 
 [[names]]
+addr = 0x8005dfc4
+name = "PadSetAct"
+from = "reference::games/spyro-1/spyro-1/asm/psyq.s"
+
+[[names]]
 addr = 0x8005e054
 name = "CdFlush"
 from = "LIBCD.LIB::S_008"

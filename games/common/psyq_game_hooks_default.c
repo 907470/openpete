@@ -88,6 +88,14 @@ void psyq_game_cd_read_done(CPUState* cpu, uint32_t read_cb) {
 int      psyq_game_cd_read_in_load(CPUState* cpu) { (void)cpu; return 0; }
 uint32_t psyq_game_cd_read_delay_cap(void)        { return 0u; }
 #endif
+#ifndef PSYQ_GAME_PROVIDES_CD_RAW_PC_MIN
+uint32_t psyq_game_cd_raw_pc_min(void) { return 0xFFFFFFFFu; }
+uint32_t psyq_game_cd_done_witness_ra(void) { return 0u; }
+#endif
+#ifndef PSYQ_GAME_PROVIDES_LOAD_WINDOW
+uint32_t psyq_game_load_window_word(void)              { return 0u; }
+int      psyq_game_load_window_active(uint32_t value)  { (void)value; return 0; }
+#endif
 
 #ifndef PSYQ_GAME_PROVIDES_MUSIC_ROUTE
 void psyq_game_music_route(int sector, psyq_music_route_t* out) {

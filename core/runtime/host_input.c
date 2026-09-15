@@ -1322,9 +1322,9 @@ void openpete_host_input_parity_check(bool claimed)
      * is under test is the PLUMBING — that the value this iteration latched is
      * the one that reached the PSX pad buffer, and not a stale sample, a
      * mis-ordered latch, an override writer leaking past its claim, or the
-     * analog centre drifting (live no-controller centres at 127; the override
-     * channel defaults to 128, and routing live input through the channel must
-     * not quietly adopt 128). The decode itself needs no comparison: both
+     * analog centre drifting (the override channel and the live decode both
+     * centre at 128, a DualShock's rest value, and routing live input through
+     * the channel must keep it). The decode itself needs no comparison: both
      * paths call PsyX_Pad_DecodeP1, so they agree by construction. */
     if (!s_latched_snap[0].valid)
         return;                       /* nothing was consumed this iteration */
@@ -1353,11 +1353,8 @@ void openpete_host_input_parity_check(bool claimed)
     s_parity_frames++;
 
     /* "Engaged" must mean a button was actually pressed or a stick actually
-     * deflected. Idle is not a single value: the override channel centres at
-     * 128, while live decode with no controller connected centres at 127
-     * (PsyX_Pad_UpdateGameControllerInput's no-controller case), so treating
-     * "!= 128" as input would score every idle headless frame as engaged and
-     * hand back a confident PASS for a run that pressed nothing. */
+     * deflected: idle centres at 128 on every path, and a gamepad at rest
+     * reads within one of it, so a one-count wobble is not input. */
     bool axis_moved = false;
     for (int i = 0; i < 4; i++) {
         int d = (int)ref_axes[i] - 128;

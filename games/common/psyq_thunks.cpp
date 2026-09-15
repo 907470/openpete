@@ -32,6 +32,7 @@ extern "C" {
 #include "openpete_ticker.h"
 #include "openpete_psx.h"
 #include "openpete_memcard.h"
+#include "openpete_cdrom_mmio.h"
 #include "psyq_game_hooks.h"
 }
 
@@ -194,6 +195,11 @@ static void cd_mirror_byte(uint32_t off, uint8_t v) {
     openpete_psx_get_ram()[(base + off) & 0x1FFFFFu] = v;
 }
 static void cd_mirror_status(uint8_t st)  { cd_mirror_byte(0x0Cu, st); }
+/* The reference's response to the last position query (eight bytes:
+ * track, index, position, absolute position), when the golden's
+ * controller sidecar carries it. */
+static uint8_t s_getlocp_ref[16];
+static int     s_getlocp_ref_valid = 0;
 static void cd_mirror_mode(uint8_t mode)  { cd_mirror_byte(0x1Cu, mode); }
 static void cd_mirror_com(uint8_t com)    { cd_mirror_byte(0x1Du, com); }
 static void cd_mirror_pos(const u_char* loc) {
@@ -278,9 +284,12 @@ static void invoke_psx_callback(CPUState* cpu, uint32_t cb_addr,
     uint32_t s_a0 = cpu->a0, s_a1 = cpu->a1, s_a2 = cpu->a2, s_a3 = cpu->a3;
     uint32_t s_ra = cpu->ra, s_v0 = cpu->v0, s_v1 = cpu->v1;
     cpu->a0 = a0; cpu->a1 = a1; cpu->ra = 0xDEADBEEF;
+    static int s_cbdbg = -1; if (s_cbdbg < 0) s_cbdbg = getenv("OPENPETE_CB_DEBUG") ? 1 : 0;
+    if (s_cbdbg) OPL_INFO_F("thunks", "DBG callback 0x%08X enter pos=%u sp=0x%08X", cb_addr, openpete_sched_pos(), cpu->sp);
     if (!openpete_recomp_module_get()->dispatch(cpu, cb_addr)) {
         OPL_WARN_F("thunks", "callback 0x%08X has no compiled body", cb_addr);
     }
+    if (s_cbdbg) OPL_INFO_F("thunks", "DBG callback 0x%08X leave pos=%u sp=0x%08X", cb_addr, openpete_sched_pos(), cpu->sp);
     cpu->a0 = s_a0; cpu->a1 = s_a1; cpu->a2 = s_a2; cpu->a3 = s_a3;
     cpu->ra = s_ra; cpu->v0 = s_v0; cpu->v1 = s_v1;
 }
@@ -320,8 +329,17 @@ void psyq___main(CPUState* cpu) {
 /* Forward decls: defined later, called from inside psyq_VSync below. */
 static void psyq_libpad_mirror_canonical_slot2(CPUState* cpu);
 static void sched_charge_to(CPUState* cpu, uint32_t target, const char* what);
+extern "C" uint32_t openpete_psxtrace_anchor_hits;
+extern "C" uint32_t openpete_psxtrace_anchor_hit_target;
 static void psyq_vbl_body(CPUState* cpu, int wait);
 static void cd_defer_tick(CPUState* cpu, uint32_t vbls);
+static void cd_defer_before_call(CPUState* cpu);
+static void cd_defer_after_call(CPUState* cpu);
+static void pad_busy_tick(uint32_t vbls);
+static int pad_polls(uint32_t vbls);
+static void cd_events_tick(uint32_t vbls);
+static int s_cd_at_anchor = 0;           /* inside the anchor hook, before the record's hash */
+static uint32_t s_pad_buf0 = 0;          /* the first port's pad buffer (PadInitDirect) */
 
 void psyq_VSync(CPUState* cpu) {
     /* libetc semantics:
@@ -355,25 +373,38 @@ void psyq_VSync(CPUState* cpu) {
          * frame wait is `VSync(0); VSync(-1); while (cur - ref < 2)`, so
          * VSync(0) advances the counter and this call only observes it.
          * Under the reference's schedule the game sees the reference's
-         * counter: openpete's plus the offset the last waited row set. */
-        int32_t sc = openpete_sched_counter();
+         * answer to the same read, and the VBLs whose interrupts the
+         * reference had seen by then are charged first. */
+        uint32_t target = 0;
+        int32_t sc = openpete_sched_query(cpu->ra, &target);
+        if (sc >= 0 && target > openpete_sched_pos()) sched_charge_to(cpu, target, "VSync(-1)");
         cpu->v0 = (sc >= 0) ? (uint32_t)sc : (uint32_t)observed;
         return;
     }
     int wait = (mode == 0) ? 1 : mode;
-    uint32_t sched_target = 0; int32_t sched_counter = -1;
-    if (openpete_sched_active() && openpete_sched_next_vsync(mode, &sched_target, &sched_counter)) {
+    uint32_t sched_target = 0;
+    if (openpete_sched_active() && openpete_sched_next_vsync(mode, &sched_target)) {
+        cd_defer_before_call(cpu);
         /* Up to the reference's VBLANK at this wait's return; a wait the
          * reference returned from at once charges nothing. */
+        if (sched_target <= openpete_sched_pos()) {
+            static uint32_t s_nocharge = 0;
+            if ((++s_nocharge & 0x3FFu) == 1u)
+                OPL_INFO_F("thunks", "VSync(%d) charged nothing: pos=%u ra=0x%08X (#%u)", mode, openpete_sched_pos(), cpu->ra, s_nocharge);
+        }
         sched_charge_to(cpu, sched_target, "VSync");
-        openpete_sched_set_counter(sched_counter);
     } else {
         psyq_vbl_body(cpu, wait);
+        /* Past the schedule's rows (the trace's end) the position follows
+         * openpete's own count so the game-visible counter keeps moving. */
+        if (openpete_sched_active()) openpete_sched_advance_pos((uint32_t)wait);
     }
     {
+        /* A waited call's own value: the counter at its return. */
         int32_t sc = openpete_sched_counter();
         cpu->v0 = (sc >= 0) ? (uint32_t)sc : (uint32_t)SDL_GetAtomicInt(&openpete_vbl);
     }
+    if (openpete_sched_active()) cd_defer_after_call(cpu);
 }
 
 /* Under the schedule, every VBL openpete charges is one the reference
@@ -384,8 +415,12 @@ void psyq_VSync(CPUState* cpu) {
 static void sched_charge_to(CPUState* cpu, uint32_t target, const char* what) {
     uint32_t pos = openpete_sched_pos();
     if (target < pos) {
-        openpete_sched_fail("%s: openpete at reference VBLANK %u, target %u (ahead by %u)",
-                            what, pos, target, pos - target);
+        /* Before the first anchor hit the boot runs under openpete's own
+         * count and the first stamp reconciles it; after it, being ahead
+         * is a desync. */
+        if (openpete_psxtrace_anchor_hits >= openpete_psxtrace_anchor_hit_target && !openpete_sched_in_load())
+            openpete_sched_fail("%s: openpete at reference VBLANK %u, target %u (ahead by %u)",
+                                what, pos, target, pos - target);
         return;
     }
     while (pos < target) {
@@ -397,12 +432,36 @@ static void sched_charge_to(CPUState* cpu, uint32_t target, const char* what) {
 
 /* At every anchor hit the reference's stamp for the record bounds the
  * position: openpete past it is a schedule failure; behind it is a long
- * frame the next wait charges. */
+ * frame, VBLs whose interrupts landed inside the reference's tick work
+ * after the tick had read its counters. */
 extern "C" void psyq_sched_anchor(CPUState* cpu, uint32_t record) {
     uint32_t target;
-    (void)cpu;
-    (void)openpete_sched_anchor_target(record, &target);
+    (void)record;
+    /* The loader's window: leaving it re-aligns the record index with the
+     * reference's window end, charging the VBLs its loader spent beyond
+     * openpete's (callbacks included) before this hit's hash, and the
+     * verifier skips the reference records in between. */
+    uint32_t word = psyq_game_load_window_word();
+    if (word && openpete_sched_active()) {
+        uint32_t skip_to = 0;
+        uint32_t rec_now = openpete_psxtrace_current_record();
+        if (openpete_sched_anchor_window(rec_now, cpu->read_word(word), &skip_to)) {
+            if (openpete_psxtrace_skip_current_to(skip_to) == 0 &&
+                openpete_sched_anchor_target(skip_to, &target))
+                sched_charge_to(cpu, target, "load window end");
+            return;
+        }
+    }
+    /* A long frame (openpete behind the record's stamp) is counted here
+     * and charged by the next wait: the interrupt landed inside the tick's
+     * work after the tick had consumed its counters, so a body run before
+     * the hash would count it one tick early. */
+    (void)openpete_sched_anchor_target(openpete_psxtrace_current_record(), &target);
+    s_cd_at_anchor = 1;
+    cd_defer_tick(cpu, 0u);
+    s_cd_at_anchor = 0;
 }
+
 
 /* One waited VBL: the counter, the SPU envelope, the yield, the game's VSync
  * callback and the port pump, then the libpad mirror and any disc completion
@@ -420,6 +479,19 @@ static void psyq_vbl_body(CPUState* cpu, int wait) {
     PsyX_SPUAL_TickEnvelope(wait * 735);
     audio_dump_drain();
 
+    /* The kernel's card driver runs from the vblank interrupt before the
+     * game's VSync callback (its handler precedes libetc's in the kernel's
+     * chain): a command the callback issues is first served by the next
+     * vblank's step, and an event the step delivers is visible to the
+     * callback of the same vblank. */
+    for (int i = 0; i < wait; i++) openpete_psx_bios_vbl(cpu);
+
+    /* The port's pad buffer as the game left it: libpad's handler rewrites
+     * it only from a poll (0x42), and a vblank spent on a configuration
+     * command of a running sequence leaves it untouched. */
+    uint8_t pad_prev[8] = {0};
+    if (s_pad_buf0) for (uint32_t k = 0; k < 8u; k++) pad_prev[k] = cpu->read_byte(s_pad_buf0 + k);
+
     if (openpete_fast_boot_active) {
         /* Fast-boot: don't yield to the host, so the boot spins run at full
          * CPU speed and openpete_frame stays anchored at 0 until the first
@@ -429,6 +501,14 @@ static void psyq_vbl_body(CPUState* cpu, int wait) {
          * them, and would spin here forever. */
         if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
         psyq_pump_pad_card_intr(cpu);
+        /* libpad rewrites the pad buffers from every vblank interrupt, so a
+         * value the game stores into its buffer (its stick recentre on
+         * detecting an analog pad) lasts one VBL on hardware. The host loop's
+         * poll does that rewrite on the yield path; with no yield here the
+         * override channel's stamp (neutral until the host publishes a
+         * sample) is written directly. The live path is left alone: it reads
+         * SDL, which this thread does not own. */
+        if (g_PsyX_Pad_OverrideActive) PsyX_Pad_InternalPadUpdates();
     } else if (openpete_host_fiber) {
         openpete_yield_to_host();
         if (g_vsync_cb) invoke_psx_callback(cpu, g_vsync_cb, 0, 0);
@@ -448,15 +528,39 @@ static void psyq_vbl_body(CPUState* cpu, int wait) {
      * game's next read. */
     psyq_libpad_mirror_canonical_slot2(cpu);
 
+    /* libpad's command sequence advances one command per vsync the
+     * controller accepted one on. */
+    int polls = 0;
+    for (int i = 0; i < wait; i++)
+        if (openpete_sched_padcmd_at(openpete_sched_pos() + (uint32_t)i + 1u, NULL)) {
+            polls += pad_polls(1u);
+            pad_busy_tick(1u);
+        }
+    if (s_pad_buf0 && wait > 0 && polls == 0)
+        for (uint32_t k = 0; k < 8u; k++) cpu->write_byte(s_pad_buf0 + k, pad_prev[k]);
+    /* The CD-ROM controller's interrupts due at this VBL, for a game that
+     * drives the controller's registers itself. */
+    static int s_cd_raw_set = 0;
+    if (!s_cd_raw_set) { s_cd_raw_set = 1; openpete_cdrom_mmio_set_raw_pc_min(psyq_game_cd_raw_pc_min()); }
+    openpete_cdrom_mmio_vbl((uint32_t)wait);
+
     /* A disc read the drive would still be busy with: its completion is the
      * last thing this VBL delivers, after the frame's own callbacks. */
     cd_defer_tick(cpu, (uint32_t)wait);
+}
+
+/* The VBLs the reference's tick spent before this registration, charged
+ * before it so the callback does not run for them. */
+static void sched_charge_registration(CPUState* cpu) {
+    uint32_t target;
+    if (openpete_sched_registration(cpu->ra, &target)) sched_charge_to(cpu, target, "callback registration");
 }
 
 void psyq_VSyncCallback(CPUState* cpu) {
     /* Save the cb address; psyq_VSync invokes it once per call (Phase 1c
      * doesn't drive a real 60Hz timer — VSync()'s thunk fires it when the
      * compiled main loop yields). */
+    sched_charge_registration(cpu);
     OPL_INFO_F("thunks", "VSyncCallback registered: 0x%08X", cpu->a0);
     g_vsync_cb = cpu->a0;
     cpu->v0 = 0u;
@@ -521,12 +625,76 @@ static void psyq_dma_complete(CPUState* cpu, uint32_t ch) {
  *
  * All of it is guest-timed state and travels in the latch pack: a rolled-back
  * speculative tick must not leave a completion owed on an abandoned branch. */
-static uint32_t s_cd_defer_owed    = 0;  /* VBLs until the deferred read completes */
+static uint32_t s_cd_defer_owed    = 0;  /* VBLs until the deferred read completes (fixed load delay) */
 static uint32_t s_cd_defer_pending = 0;  /* 1 while a completion is deferred */
+static uint32_t s_cd_defer_rec = 0, s_cd_defer_vbl = 0; /* the reference's completion, when scheduled */
+static uint64_t s_cd_defer_clock = 0;    /* its clock value on the reference */
 static uint32_t s_cd_load_budget   = 0;  /* VBLs the current load has left to spend */
 static uint32_t s_cd_load_prev     = 0;  /* in_load of the previous read (edge) */
 
+/* libpad runs one controller command per vsync its handler runs on, so a
+ * request that needs a command sequence keeps the pad in PadStateExecCmd
+ * for the sequence's length and a second request meanwhile is refused.
+ * The lengths are the DualShock's, in handler vsyncs from the request to
+ * the first after which PadGetState reports PadStateStable again, read
+ * off the reference's port: actuator alignment 0x43 (enter
+ * configuration), 0x4D, 0x43 0x43 (leave), two polls; main-mode change
+ * 0x43, 0x44, 0x4D, 0x43 0x43, two polls. The handler writes the pad
+ * buffer at each vsync from the response to the previous vsync's
+ * command, and only a command the pad answered in its normal mode (a
+ * poll, or the 0x43 that enters configuration) carries pad data: the
+ * vsyncs after the commands sent in configuration mode (all but the
+ * first and the last two of a sequence) leave the buffer as it is. */
+#define PAD_ACTALIGN_VBLS 6u
+#define PAD_MAINMODE_VBLS 7u
+static uint32_t s_pad_busy_vbls = 0;     /* vsyncs left in the current command sequence */
+static uint32_t s_pad_seq_vbls  = 0;     /* the sequence's length */
+/* A request is refused while a sequence is pending or running. */
+static int pad_busy(void) { return s_pad_busy_vbls != 0u; }
+/* PadGetState reports the sequence only once the handler has sent its
+ * first command: until that vsync a pending request leaves the pad
+ * stable. */
+static int pad_exec(void) { return s_pad_busy_vbls != 0u && s_pad_busy_vbls != s_pad_seq_vbls; }
+static void pad_busy_tick(uint32_t vbls) { s_pad_busy_vbls = (s_pad_busy_vbls > vbls) ? s_pad_busy_vbls - vbls : 0u; }
+static void pad_seq_start(uint32_t vbls) { s_pad_busy_vbls = s_pad_seq_vbls = vbls; }
+/* How many of the next `vbls` handler vsyncs write the pad buffer. */
+static int pad_polls(uint32_t vbls) {
+    int n = 0;
+    for (uint32_t i = 0; i < vbls; i++) {
+        uint32_t rem = (s_pad_busy_vbls > i) ? s_pad_busy_vbls - i : 0u;
+        if (rem <= 2u || rem + 2u > s_pad_seq_vbls) n++;
+    }
+    return n;
+}
+
 extern "C" uint32_t openpete_psxtrace_anchor_hits;
+
+/* The reference's completion VBLANK of the last command issued through
+ * libcd (its last recorded interrupt), 0 when none is pending. A blocking
+ * CdControl, or the CdSync(0) after a CdControlF, spins in libcd until the
+ * drive's second response arrives; the VBLs of that spin pass there. */
+static uint32_t s_cd_pending_done = 0, s_cd_pending_rec = 0;
+/* Whether an event the reference recorded in record `rec` at VBLANK `vbl`
+ * has happened at openpete's position `vbls` VBLANKs ahead of the current
+ * one: everything of an earlier record has (its hash saw it), and within
+ * the event's own record it has once the position reaches its VBLANK. At
+ * the anchor the current record has already advanced to the one starting
+ * there, whose events all follow the hash. */
+static int cd_ref_seen(uint32_t rec, uint32_t vbl, uint32_t vbls) {
+    uint32_t cur = openpete_sched_current_record();
+    return cur > rec || (!s_cd_at_anchor && cur == rec && openpete_sched_pos() + vbls >= vbl);
+}
+/* The completion reached: libcd's status byte is the second response's. */
+static void cd_pending_complete(void) {
+    s_cd_pending_done = 0;
+    cd_mirror_status(openpete_cdrom_mmio_libcd_last_done_status());
+}
+static void cd_charge_pending(CPUState* cpu, const char* what) {
+    if (!s_cd_pending_done) return;
+    uint32_t done = s_cd_pending_done;
+    if (openpete_sched_active() && done > openpete_sched_pos()) sched_charge_to(cpu, done, what);
+    cd_pending_complete();
+}
 
 /* The tail of a data read: the completion the game waits on. */
 static void cd_read_complete(CPUState* cpu) {
@@ -548,11 +716,21 @@ static void cd_read_complete(CPUState* cpu) {
     }
     psyq_game_cd_read_done(cpu, g_cd_read_cb);
     /* libcd's ready callback issues CdlPause after the last sector; the
-     * command byte and the idle status are what the game reads afterwards. */
+     * command byte and the idle status are what the game reads afterwards.
+     * Under the golden's controller sidecar the pause's completion is the
+     * reference's: CdSync reports the read chain complete only from that
+     * VBLANK. */
     g_CD_com = CdlPause;
     s_cd_reading = 0u;
     cd_mirror_com(CdlPause);
-    cd_mirror_status(0x02u);
+    {
+        uint8_t ref_resp[16]; uint32_t ref_n = 0;
+        if (openpete_cdrom_mmio_libcd_response(CdlPause, ref_resp, &ref_n) && ref_n >= 1u) {
+            cd_mirror_status(ref_resp[0]);
+            s_cd_pending_done = openpete_cdrom_mmio_libcd_last_done_vbl();
+            s_cd_pending_rec  = openpete_cdrom_mmio_libcd_last_done_rec();
+        } else cd_mirror_status(0x02u);
+    }
 
     /* The transfer is complete; on hardware that is a channel-3 DMA interrupt,
      * and libcd's read path does its bookkeeping in that handler. */
@@ -578,12 +756,101 @@ static uint32_t cd_read_delay_for(CPUState* cpu, int sectors) {
     return d;
 }
 
+/* A guest spin polling a deferred read (no VSync between polls) spent the
+ * read's VBLs on the reference, interrupts included: one passes per call
+ * until the completion fires. */
+extern "C" void psyq_sched_spin_tick(CPUState* cpu) {
+    if (!openpete_sched_active() || !s_cd_defer_pending) return;
+    OPL_DEBUG_F("cd", "schedule: deferred read polled in a spin, 1 VBL passes (%u owed)", s_cd_defer_owed);
+    sched_charge_to(cpu, openpete_sched_pos() + 1u, "spin");
+}
+
 /* One VBL elapsed: a deferred completion owed nothing more fires now. */
-static void cd_defer_tick(CPUState* cpu, uint32_t vbls) {
-    if (!s_cd_defer_pending) return;
-    s_cd_defer_owed = (vbls >= s_cd_defer_owed) ? 0u : s_cd_defer_owed - vbls;
-    if (s_cd_defer_owed) return;
+/* The drive's first data response to a deferred read on the reference:
+ * libcd's status byte takes its value from that VBLANK until the read
+ * completes. */
+static uint32_t s_cd_data_vbl = 0, s_cd_data_rec = 0; static uint8_t s_cd_data_status = 0;
+
+/* A deferred read's sectors land one by one at the VBLANK the drive
+ * delivered each on the reference (its data-ready interrupts), visible
+ * from the frame after; until then the destination keeps its previous
+ * bytes. The drained bytes wait in a host copy, the previous bytes are
+ * put back, and each landing copies its sector in. Whatever has not
+ * landed by the completion lands with it. */
+#define CD_LAND_MAX 1024u
+static uint8_t* s_cd_land_buf = NULL; static uint32_t s_cd_land_cap = 0;
+static uint32_t s_cd_land_dst = 0, s_cd_land_sectors = 0, s_cd_land_next = 0;
+static uint32_t s_cd_land_vbl[CD_LAND_MAX], s_cd_land_rec[CD_LAND_MAX];
+static void cd_land_sector(uint32_t k) {
+    uint8_t* ram = openpete_psx_get_ram();
+    uint32_t phys = (s_cd_land_dst & 0x1FFFFFFFu) + k * 2048u;
+    if (phys + 2048u <= 0x200000u) memcpy(ram + phys, s_cd_land_buf + k * 2048u, 2048u);
+}
+static void cd_land_rest(void) {
+    while (s_cd_land_next < s_cd_land_sectors) cd_land_sector(s_cd_land_next++);
+    s_cd_land_sectors = 0;
+}
+static void cd_land_tick(uint32_t vbls) {
+    while (s_cd_land_next < s_cd_land_sectors && cd_ref_seen(s_cd_land_rec[s_cd_land_next], s_cd_land_vbl[s_cd_land_next], vbls))
+        cd_land_sector(s_cd_land_next++);
+}
+
+/* The drive interrupts of the reference that openpete's position has
+ * reached: sectors landed, the first data response's status byte, a
+ * pending command's completion. Run at every waited VBLANK and at the
+ * anchor, before the record's hash. */
+static void cd_events_tick(uint32_t vbls) {
+    cd_land_tick(vbls);
+    if (s_cd_data_vbl && cd_ref_seen(s_cd_data_rec, s_cd_data_vbl, vbls)) {
+        cd_mirror_status(s_cd_data_status);
+        s_cd_data_vbl = 0;
+    }
+    if (s_cd_pending_done && cd_ref_seen(s_cd_pending_rec, s_cd_pending_done, vbls)) cd_pending_complete();
+}
+
+/* A deferred completion whose record has passed, or whose clock value on
+ * the reference precedes the row the call being answered was answered
+ * from (openpete_sched_last_tick), landed before that call: delivered
+ * before the call's answer is used. The callback's place among the
+ * tick's own reads is not recorded; a following row of the record at the
+ * game's witness site (a poll it makes only after seeing the callback)
+ * places the callback before them, and it is delivered after the call. */
+static void cd_defer_tick(CPUState* cpu, uint32_t vbls);
+static void cd_defer_deliver(CPUState* cpu) {
+    s_cd_defer_vbl = s_cd_defer_rec = 0u; s_cd_defer_clock = 0u;
     s_cd_defer_pending = 0u;
+    cd_land_rest();
+    cd_read_complete(cpu);
+}
+static void cd_defer_before_call(CPUState* cpu) {
+    if (!s_cd_defer_pending || !s_cd_defer_vbl) return;
+    uint32_t cur = openpete_sched_current_record();
+    uint64_t at = openpete_sched_last_tick();
+    if (cur > s_cd_defer_rec || (cur == s_cd_defer_rec && at && s_cd_defer_clock && s_cd_defer_clock <= at))
+        cd_defer_deliver(cpu);
+}
+static void cd_defer_after_call(CPUState* cpu) {
+    if (!s_cd_defer_pending || !s_cd_defer_vbl || !s_cd_defer_clock) return;
+    if (openpete_sched_current_record() != s_cd_defer_rec) return;
+    uint32_t witness = psyq_game_cd_done_witness_ra(), ra; uint64_t tick;
+    if (witness && openpete_sched_cdsync_peek(&ra, &tick) && ra == witness && tick >= s_cd_defer_clock)
+        cd_defer_deliver(cpu);
+}
+
+static void cd_defer_tick(CPUState* cpu, uint32_t vbls) {
+    cd_events_tick(vbls);
+    if (!s_cd_defer_pending) return;
+    if (s_cd_defer_vbl) {
+        /* The completion callback ran at the reference's VBLANK inside its
+         * record; it is delivered when the position reaches it there. */
+        if (!cd_ref_seen(s_cd_defer_rec, s_cd_defer_vbl, vbls)) return;
+        s_cd_defer_vbl = s_cd_defer_rec = 0u; s_cd_defer_clock = 0u;
+    } else {
+        s_cd_defer_owed = (vbls >= s_cd_defer_owed) ? 0u : s_cd_defer_owed - vbls;
+        if (s_cd_defer_owed) return;
+    }
+    s_cd_defer_pending = 0u;
+    cd_land_rest();
     cd_read_complete(cpu);
 }
 
@@ -618,13 +885,23 @@ extern "C" void psyq_thunk_state_save(void* dst) {
     put_word(p, 27, s_cd_defer_pending);
     put_word(p, 28, s_cd_load_budget);
     put_word(p, 29, s_cd_load_prev);
+    put_word(p, 30, s_pad_busy_vbls);
+    uint32_t card[PSX_BIOS_CARD_STATE_WORDS];
+    openpete_psx_bios_card_state_get(card);
+    for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) put_word(p, 31u + i, card[i]);
+    put_word(p, 38, s_pad_seq_vbls);
+    put_word(p, 39, s_cd_defer_rec);
+    put_word(p, 40, s_cd_defer_vbl);
+    put_word(p, 41, (uint32_t)s_cd_defer_clock);
+    put_word(p, 42, (uint32_t)(s_cd_defer_clock >> 32));
 }
 
 extern "C" uint32_t psyq_thunk_state_bytes_for(uint32_t ver) {
     if (ver == 1u) return PSYQ_THUNK_STATE_V1_BYTES;
     if (ver == 2u) return PSYQ_THUNK_STATE_V2_BYTES;
     if (ver == 3u) return PSYQ_THUNK_STATE_V3_BYTES;
-    if (ver == 4u) return PSYQ_THUNK_STATE_BYTES;
+    if (ver == 4u) return PSYQ_THUNK_STATE_V4_BYTES;
+    if (ver == 5u) return PSYQ_THUNK_STATE_BYTES;
     return 0u;
 }
 
@@ -661,6 +938,16 @@ extern "C" int psyq_thunk_state_load(const void* src, uint32_t size) {
     s_cd_defer_pending = (ver >= 4u) ? get_word(p, 27) : 0u;
     s_cd_load_budget   = (ver >= 4u) ? get_word(p, 28) : 0u;
     s_cd_load_prev     = (ver >= 4u) ? get_word(p, 29) : 0u;
+    /* A pack without the pad and card countdowns predates them: idle. */
+    s_pad_busy_vbls    = (ver >= 5u) ? get_word(p, 30) : 0u;
+    s_pad_seq_vbls     = (ver >= 5u) ? get_word(p, 38) : 0u;
+    s_cd_defer_rec     = (ver >= 5u) ? get_word(p, 39) : 0u;
+    s_cd_defer_vbl     = (ver >= 5u) ? get_word(p, 40) : 0u;
+    s_cd_defer_clock   = (ver >= 5u) ? ((uint64_t)get_word(p, 42) << 32 | get_word(p, 41)) : 0u;
+    uint32_t card[PSX_BIOS_CARD_STATE_WORDS] = { 0u };
+    if (ver >= 5u)
+        for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) card[i] = get_word(p, 31u + i);
+    openpete_psx_bios_card_state_set(card);
     return 0;
 }
 
@@ -685,6 +972,17 @@ extern "C" void psyq_thunk_state_scramble(void) {
     s_cd_defer_pending = 0x7u;
     s_cd_load_budget   = 0xD5D50009u;
     s_cd_load_prev     = 0xBu;
+    s_pad_busy_vbls    = 0xD5D5000Du;
+    s_pad_seq_vbls     = 0xD5D5000Fu;
+    s_cd_defer_rec     = 0xD5D50011u;
+    s_cd_defer_vbl     = 0xD5D50013u;
+    s_cd_defer_clock   = 0xD5D50017D5D50015ull;
+    {
+        uint32_t card[PSX_BIOS_CARD_STATE_WORDS];
+        for (uint32_t i = 0; i < PSX_BIOS_CARD_STATE_WORDS; i++) card[i] = 0xE5E50001u + 2u * i;
+        card[0] = 0x7FFFFFFFu;
+        openpete_psx_bios_card_state_set(card);
+    }
     s_xa_filter_file = 0x1FF;
     s_xa_filter_chan = 0x2FF;
     for (uint32_t i = 0; i < PSYQ_INTR_SLOTS; i++)
@@ -729,6 +1027,7 @@ void psyq_InterruptCallback(CPUState* cpu) { cpu->v0 = 0u; }
 /* Installs a guest handler in the interrupt-callback table: a0 selects the
  * interrupt line, a1 is the handler, and the previous handler is returned. */
 void psyq_VSyncCallbacks(CPUState* cpu) {
+    sched_charge_registration(cpu);
     uint32_t slot = cpu->a0;
     if (slot >= PSYQ_INTR_SLOTS) {
         OPL_WARN_F("thunks", "interrupt callback for line %u out of range",
@@ -1603,6 +1902,7 @@ void psyq_PadInitDirect(CPUState* cpu) {
     uint32_t buf1 = cpu->a1;  /* &g_PadBufferSecondController */
     PadInitDirect((unsigned char*)PTR(buf0),
                   (unsigned char*)PTR(buf1));
+    s_pad_buf0 = buf0;
 
     /* The rest of what real PadInitDirect leaves in PSX RAM -- libpad's
      * pad-state dispatch table and its per-slot bookkeeping -- is PSYQ's own
@@ -1651,7 +1951,9 @@ void psyq_PadStopCom(CPUState* cpu) {
 }
 
 void psyq_PadGetState(CPUState* cpu) {
-    cpu->v0 = (uint32_t)PadGetState((int)cpu->a0);
+    int st = PadGetState((int)cpu->a0);
+    if (st == PadStateStable && pad_exec()) st = PadStateExecCmd;
+    cpu->v0 = (uint32_t)st;
 }
 
 void psyq_PadInfoMode(CPUState* cpu) {
@@ -1663,14 +1965,19 @@ void psyq_PadInfoAct(CPUState* cpu) {
 }
 
 void psyq_PadSetMainMode(CPUState* cpu) {
-    /* PsyCross: UNIMPLEMENTED. Treat as success so GamepadInitialize moves on. */
-    (void)cpu;
+    /* The pad is already in analog mode (PsyCross presents id 0x73); the
+     * request is accepted when no sequence is running and refused
+     * otherwise, as libpad does. */
+    if (pad_busy()) { cpu->v0 = 0u; return; }
+    pad_seq_start(PAD_MAINMODE_VBLS);
     cpu->v0 = 1u;
 }
 
 void psyq_PadSetActAlign(CPUState* cpu) {
+    if (pad_busy()) { cpu->v0 = 0u; return; }
     cpu->v0 = (uint32_t)PadSetActAlign((int)cpu->a0,
                                        (unsigned char*)PTR(cpu->a1));
+    if (cpu->v0) pad_seq_start(PAD_ACTALIGN_VBLS);
 }
 
 void psyq_PadSetAct(CPUState* cpu) {
@@ -1762,7 +2069,17 @@ static void cd_set_mode(uint8_t mode) {
 static int cd_command_host(u_char com, u_char* param) {
     g_CD_com = com;   /* CdLastCom() reports the command as issued */
     cd_mirror_com(com);
-    if (com != CdlGetlocP && com != CdlGetlocL) cd_mirror_status(cd_live_status());
+    if (com != CdlGetlocP && com != CdlGetlocL) {
+        /* The status byte the drive answered this command with on the
+         * reference (seek and error bits included), under the golden's
+         * controller sidecar; the model's own otherwise. */
+        uint8_t ref_resp[16]; uint32_t ref_n = 0;
+        if (openpete_cdrom_mmio_libcd_response(com, ref_resp, &ref_n) && ref_n >= 1u) {
+            cd_mirror_status(ref_resp[0]);
+            s_cd_pending_done = openpete_cdrom_mmio_libcd_last_done_vbl();
+            s_cd_pending_rec  = openpete_cdrom_mmio_libcd_last_done_rec();
+        } else cd_mirror_status(cd_live_status());
+    }
     /* libcd keeps the position a positional command carries: measured for
      * CdlSetloc and a CdlReadS with a parameter; the other three take the
      * same parameter. */
@@ -1844,6 +2161,7 @@ void psyq_CdControl(CPUState* cpu) {
     OPL_INFO_F("thunks", "CdControl com=0x%02X param=0x%08X result=0x%08X",
                (unsigned)com, cpu->a1, cpu->a2);
     cpu->v0 = (uint32_t)cdcontrol_host(com, param, result);
+    cd_charge_pending(cpu, "CdControl");
 }
 
 /* Hand-written native-side thunk (matches outbound_psyq_hand entry).
@@ -1860,9 +2178,11 @@ void psyq_CdControlB(CPUState* cpu) {
     u_char* param = (u_char*)PTR_OPT(cpu->a1);
     if (cd_command_host(com, param)) {
         cpu->v0 = 1u;
+        cd_charge_pending(cpu, "CdControlB");
         return;
     }
     cpu->v0 = (uint32_t)CdControlB(com, param, (u_char*)PTR_OPT(cpu->a2));
+    cd_charge_pending(cpu, "CdControlB");
 }
 
 /* `g_CD_com` is the "last command" int CdLastCom() returns. `readMode`
@@ -1885,6 +2205,10 @@ void psyq_CdControlF(CPUState* cpu) {
     if (com == CdlGetlocP) {
         g_CD_com = com;
         cd_mirror_com(com);
+        /* Under the golden's controller sidecar the drive's answer to this
+         * query is the reference's, read back by the CdSync that follows. */
+        uint32_t n = 0;
+        s_getlocp_ref_valid = openpete_cdrom_mmio_libcd_response(CdlGetlocP, s_getlocp_ref, &n) && n == 8u;
         cpu->v0 = 0u;  /* CdControlF returns int (0) for the GetlocP case */
         return;
     }
@@ -1918,6 +2242,36 @@ void psyq_CdRead(CPUState* cpu) {
      * mode byte reads mode | 0x20 after a read; PsyCross's CdRead only
      * enqueues, so the mirror is written here. */
     cd_set_mode((uint8_t)(mode | 0x20));
+    /* libcd's CdRead issues CdlSetmode and CdlReadN; the command byte and
+     * the drive's first response are what the game reads while the read
+     * is in flight, its first data response from the VBLANK it arrived
+     * on the reference. The data-ready interrupts that follow, one per
+     * sector, are the VBLANKs the sectors land at. */
+    uint32_t land_n = 0;
+    {
+        uint8_t ref_resp[16]; uint32_t ref_n = 0;
+        (void)openpete_cdrom_mmio_libcd_response(CdlSetmode, ref_resp, &ref_n);
+        g_CD_com = CdlReadN;
+        cd_mirror_com(CdlReadN);
+        s_cd_data_vbl = 0;
+        if (openpete_cdrom_mmio_libcd_response(CdlReadN, ref_resp, &ref_n) && ref_n >= 1u) {
+            cd_mirror_status(ref_resp[0]);
+            uint8_t irq, st; uint32_t rec, vbl;
+            if (openpete_cdrom_mmio_libcd_last_irq(1u, &rec, &vbl, &irq, &st)) { s_cd_data_rec = rec; s_cd_data_vbl = vbl; s_cd_data_status = st; }
+            for (uint32_t i = 1; land_n < CD_LAND_MAX && openpete_cdrom_mmio_libcd_last_irq(i, &rec, &vbl, &irq, &st); i++)
+                if (irq == 1u) { s_cd_land_rec[land_n] = rec; s_cd_land_vbl[land_n] = vbl; land_n++; }
+        }
+    }
+    /* The destination's bytes before the read, for the sector-paced landing. */
+    uint8_t* land_old = NULL;
+    if (land_n == (uint32_t)sectors && sectors > 0) {
+        uint32_t bytes = (uint32_t)sectors * 2048u;
+        if (s_cd_land_cap < bytes) { s_cd_land_buf = (uint8_t*)realloc(s_cd_land_buf, bytes); s_cd_land_cap = bytes; }
+        land_old = (uint8_t*)malloc(bytes);
+        uint32_t phys = (cpu->a1 & 0x1FFFFFFFu);
+        if (phys + bytes <= 0x200000u) memcpy(land_old, openpete_psx_get_ram() + phys, bytes);
+        else { free(land_old); land_old = NULL; }
+    }
     cpu->v0 = (uint32_t)CdRead(sectors, buf, mode);
     /* PsyCross's CdRead only enqueues; CdReadSync drains the queue into
      * the buffer. Spyro polls via CdSync (which doesn't drain), so we
@@ -1940,6 +2294,15 @@ void psyq_CdRead(CPUState* cpu) {
      * advances the tracked head position. */
     psyq_game_cd_apply_buf((uint8_t*)buf, sectors);
     uint8_t* ram = openpete_psx_get_ram();
+    if (land_old) {
+        uint32_t bytes = (uint32_t)sectors * 2048u, phys = cpu->a1 & 0x1FFFFFFFu;
+        memcpy(s_cd_land_buf, ram + phys, bytes);
+        memcpy(ram + phys, land_old, bytes);
+        free(land_old);
+        s_cd_land_dst = cpu->a1; s_cd_land_sectors = (uint32_t)sectors; s_cd_land_next = 0;
+    } else {
+        s_cd_land_sectors = 0;
+    }
 
     /* A completion still owed from the previous read fires before this
      * read's, in issue order: the game re-issued after its own timeout. */
@@ -1948,11 +2311,17 @@ void psyq_CdRead(CPUState* cpu) {
                    "completing the deferred read first", s_cd_defer_owed);
         s_cd_defer_pending = 0u;
         s_cd_defer_owed = 0u;
+        s_cd_defer_vbl = s_cd_defer_rec = 0u; s_cd_defer_clock = 0u;
         cd_read_complete(cpu);
     }
     uint32_t delay;
-    uint32_t sched_issue = 0, sched_done = 0; int sched_sync = 0;
-    if (openpete_sched_active() && openpete_sched_read(sectors, cpu->a1, &sched_issue, &sched_done, &sched_sync)) {
+    uint32_t sched_issue = 0, sched_done = 0, sched_done_rec = 0; int sched_sync = 0;
+    if (openpete_sched_active() && openpete_sched_read(sectors, cpu->a1, &sched_issue, &sched_done, &sched_done_rec, &sched_sync)) {
+        /* The VBLs the drive commands before the read spend pass in
+         * their own calls (cd_charge_pending); a read a time-sliced loader
+         * reaches earlier than the reference did is not charged to the
+         * reference's issue, since the loader's intermediate state is CPU
+         * time there and its rows are cd_load_transient. */
         if (sched_issue != openpete_sched_pos())
             OPL_INFO_F("cd", "schedule: read issued at reference VBLANK %u, openpete at %u",
                        sched_issue, openpete_sched_pos());
@@ -1965,21 +2334,32 @@ void psyq_CdRead(CPUState* cpu) {
             OPL_INFO_F("cd", "schedule: %d-sector read charged to reference VBLANK %u synchronously",
                        sectors, sched_done);
         } else {
-            delay = (sched_done > openpete_sched_pos()) ? sched_done - openpete_sched_pos() : 0u;
+            /* The completion callback ran at the reference's VBLANK inside
+             * its record: delivered when the position reaches it there. */
+            delay = cd_ref_seen(sched_done_rec, sched_done, 0u) ? 0u : 1u;
+            s_cd_defer_rec = sched_done_rec; s_cd_defer_vbl = sched_done;
+            s_cd_defer_clock = openpete_sched_read_done_tick();
         }
         (void)cd_read_delay_for(cpu, sectors);
     } else {
         delay = cd_read_delay_for(cpu, sectors);
     }
     if (delay) {
+        cd_land_tick(0u);
         s_cd_defer_pending = 1u;
-        s_cd_defer_owed = delay;
-        OPL_INFO_F("cd", "load delay: %d-sector read deferred %u VBL(s) "
-                   "(hit=%u vbl=%d)", sectors, delay, openpete_psxtrace_anchor_hits,
-                   SDL_GetAtomicInt(&openpete_vbl));
+        s_cd_defer_owed = s_cd_defer_vbl ? 0u : delay;
+        if (s_cd_defer_vbl)
+            OPL_INFO_F("cd", "schedule: %d-sector read completes at reference record %u, VBLANK %u (hit=%u vbl=%d)",
+                       sectors, s_cd_defer_rec, s_cd_defer_vbl, openpete_psxtrace_anchor_hits, SDL_GetAtomicInt(&openpete_vbl));
+        else
+            OPL_INFO_F("cd", "load delay: %d-sector read deferred %u VBL(s) "
+                       "(hit=%u vbl=%d)", sectors, delay, openpete_psxtrace_anchor_hits,
+                       SDL_GetAtomicInt(&openpete_vbl));
     } else {
+        s_cd_defer_vbl = s_cd_defer_rec = 0u; s_cd_defer_clock = 0u;
         OPL_INFO_F("cd", "read instant: %d sectors (hit=%u vbl=%d)", sectors,
                    openpete_psxtrace_anchor_hits, SDL_GetAtomicInt(&openpete_vbl));
+        cd_land_rest();
         cd_read_complete(cpu);
     }
 
@@ -2058,7 +2438,35 @@ void psyq_CdSync(CPUState* cpu) {
     PsyX_XA_Pump(0);
     music_override_pump();
 
+    if (mode == 0) cd_charge_pending(cpu, "CdSync");
     int rc = CdSync(mode, result);
+    /* A poll answers as the reference's poll at this call site did, from
+     * the golden's CdSync sidecar, the VBLs to that poll's VBLANK passing
+     * first (a game spinning on the drive spent them in the spin).
+     * Without rows for this record, a poll before the pending command's
+     * completion answers "in progress", as libcd did until the drive's
+     * second response arrived; a game that polls again with no VBL passed
+     * in between is spinning, and each such poll passes one VBL. */
+    int32_t ref_rc; uint32_t ref_vbl;
+    if (mode != 0 && openpete_sched_active() && openpete_sched_cdsync(mode, cpu->ra, &ref_rc, &ref_vbl)) {
+        cd_defer_before_call(cpu);
+        if (ref_vbl > openpete_sched_pos()) sched_charge_to(cpu, ref_vbl, "CdSync poll");
+        rc = (int)ref_rc;
+        /* The reference's poll saw the completion: the drive's second
+         * response had arrived (a poll answered complete before that
+         * response's VBLANK saw an earlier command's). */
+        if (rc == CdlComplete && s_cd_pending_done && cd_ref_seen(s_cd_pending_rec, s_cd_pending_done, 0u))
+            cd_pending_complete();
+        cd_defer_after_call(cpu);
+    } else if (mode != 0 && s_cd_pending_done && openpete_sched_active()) {
+        static uint32_t s_poll_pos = 0xFFFFFFFFu;
+        if (openpete_sched_pos() < s_cd_pending_done) {
+            if (openpete_sched_pos() == s_poll_pos) sched_charge_to(cpu, s_poll_pos + 1u, "CdSync poll");
+            s_poll_pos = openpete_sched_pos();
+            rc = (openpete_sched_pos() < s_cd_pending_done) ? CdlNoIntr : rc;
+        }
+        if (openpete_sched_pos() >= s_cd_pending_done) { cd_pending_complete(); s_poll_pos = 0xFFFFFFFFu; }
+    }
 
     /* Native-side spin guard for CDLoadSync's `while (CdSync(1, NULL) !=
      * CdlComplete)` polls. The host hang watchdog in core/runtime/dispatch.c
@@ -2112,7 +2520,12 @@ void psyq_CdSync(CPUState* cpu) {
      * on into the next XA file's stream on the same channel (which is
      * an unrelated level's theme) until the late loop finally fires.
      * 150/59.94 = 1001/400 per VBL — deterministic and snapshotted. */
-    if (g_cdXaStartLBA > 0 && g_CD_com == CdlGetlocP && mode == 1) {
+    if (g_CD_com == CdlGetlocP && mode == 1 && s_getlocp_ref_valid) {
+        /* The reference drive's answer to the last position query, under
+         * the golden's controller sidecar: the head's position as the drive
+         * reported it, seek and read timing included. */
+        memcpy(result, s_getlocp_ref, 8);
+    } else if (g_cdXaStartLBA > 0 && g_CD_com == CdlGetlocP && mode == 1) {
         int32_t vd = SDL_GetAtomicInt(&openpete_vbl) - g_cdXaStartVBL;
         if (vd < 0) vd = 0;
         int cur = g_cdXaStartLBA + (int)(((int64_t)vd * 1001) / 400);

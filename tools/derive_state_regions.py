@@ -17,7 +17,7 @@ its symbol count and its role-named (`g_`/lower-case) symbols as a comment;
 
 `--overlay START:LEN` adds the overlay image union as `cd_load_transient`
 rows cut at the `[[expect]]` ranges inside it. A named row's flags
-(`cd_load_transient`, `constant_ok`, `gameplay_neutral`, masks,
+(`cd_load_transient`, `constant_ok`, `gameplay_neutral`, `host_precision`, masks,
 descriptions) are added when the manifest is assembled.
 
 Prints TOML `[[region]]` rows to stdout; the manifest is assembled by hand

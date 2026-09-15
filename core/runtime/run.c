@@ -166,6 +166,15 @@ static openpete_psxtrace_t* s_psxtrace_active = NULL;
  * the worker exists and read-only thereafter. */
 static openpete_psxtrace_t* psxtrace = NULL;
 
+/* The record index the next advance() consumes, and a skip on the active
+ * trace (the load-window re-alignment), for the thunk layer's anchor hook. */
+uint32_t openpete_psxtrace_current_record(void) {
+    return s_psxtrace_active ? s_psxtrace_active->records_consumed : 0u;
+}
+int openpete_psxtrace_skip_current_to(uint32_t rec) {
+    return s_psxtrace_active ? openpete_psxtrace_skip_to(s_psxtrace_active, rec) : -1;
+}
+
 static void openpete_psxtrace_on_anchor(uint32_t addr) {
     (void)addr;
     if (!s_psxtrace_active) return;
@@ -5787,8 +5796,10 @@ static int run_host_loop(const openpete_options_t* opts) {
                            psxtrace->first_vbl_mismatch_trace,
                            psxtrace->first_vbl_mismatch_op);
             if (openpete_sched_active())
-                OPL_INFO_F("psxtrace", "  schedule: %u long frames charged at the next wait, final deficit %lld",
-                           psxtrace->vbl_long_frames, (long long)psxtrace->vbl_deficit);
+                OPL_INFO_F("psxtrace", "  schedule: %u long frames charged at the next wait, final deficit %lld; "
+                           "%u records inside load windows not compared, %u reference records skipped at window ends",
+                           psxtrace->vbl_long_frames, (long long)psxtrace->vbl_deficit,
+                           psxtrace->records_uncompared, psxtrace->records_skipped);
         }
         /* Promote any EOF-pending CD-load transient to a hard failure and
          * log the PASS/FAIL verdict + absorbed-transient tally. */

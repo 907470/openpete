@@ -92,6 +92,33 @@ after it with the counter value it returned; queries a game spins on are
 not logged. `-psxtrace-srand-pc HEX` writes `<trace>.srand`: every seed
 passed to `srand` with its record and VBLANK. Both are stamped with the
 record index (records written when the call was made).
+`-psxtrace-vsync-query-skip LO:HI` leaves out the queries returning into
+`[LO, HI)`: a library's own timeout polls (libcd's `CD_sync`..`CD_flush`
+spin on the counter thousands of times per record), which openpete's
+thunks never make; the trailer counts them as `query_skipped`.
+
+### Controller, drive and kernel recorders
+
+`-psxtrace-pad-cmds` writes `<trace>.padcmd`: every command byte the
+controllers accept, with record,
+VBLANK and port; libpad's command sequences (actuator alignment
+`43 4D 43 43`, main-mode change `43 44 4D 43 43`) and the vsyncs they
+span are read off it. `-psxtrace-cdsync-pc HEX` (libcd `CdSync`) writes
+`<trace>.cdsync`: every call with mode, return value, call site and clock,
+runs of equal calls as one row with a count. `-psxtrace-cd-irq` writes
+`<trace>.cdirq` (controller commands, interrupts with their record, and
+the game's own register reads above `-psxtrace-cd-read-pc-min`).
+`-psxtrace-sio0-word HEX` writes `<trace>.sio0`: the vblanks the kernel's
+SIO0 (controller and memory card) handler served, from a write breakpoint
+on its port-flip word (`0x80007264` on the SCPH-1001 kernel), run-length
+encoded; a vblank whose interrupt an earlier handler took, and the card
+driver's abort vblanks, are absent. `-psxtrace-watch-word HEX` rows
+(`psxtrace-watch 2`) end with the clock, so a store's place among the
+other recorded events of its record is readable.
+
+The clock in every recorder is DuckStation's global tick counter, which
+advances per CPU time slice: events inside one slice share a value, so an
+equal clock orders nothing and a lower one is earlier.
 
 ## The reference's schedule
 
@@ -116,6 +143,22 @@ interrupt fired on the reference:
 - `VSync(-1)` returns the reference's counter: the position minus the
   offset each waited row's following query re-derives.
 - `srand` receives the reference's seed in order.
+- An interrupt of the reference (a drive response, a data sector, a
+  read's completion) recorded in record R at VBLANK N happened between
+  anchor hits R and R+1, so it is delivered once the current record is
+  past R, or is R and the position has reached N; at the anchor hook of
+  hit H (the hash of record H-1) only records before H count. A data
+  read's sectors land one by one at their data-ready interrupts, the
+  destination keeping its previous bytes until then. A read's completion
+  callback also carries its clock: it is delivered before the first
+  waited VSync or CdSync row of its record whose clock is not lower, and,
+  when the game's witness site (`psyq_game_cd_done_witness_ra`, a poll
+  it makes only after seeing the callback) has a row in that record at or
+  after the callback's clock, right after the call preceding it.
+- `CdSync` polls answer as the reference's poll at the same site and mode
+  did, the VBLs to that poll's VBLANK passing first; the kernel's card
+  driver steps on the vblanks `.sio0` marks served and libpad's command
+  sequence on the vblanks `.padcmd` holds a command for.
 - A VBL the reference spent inside a tick's work (a long frame) is charged
   by the next wait, so openpete reaches that record one VBL behind and the
   next one ahead; the verifier's exact VBL policy admits a deficit that
@@ -132,8 +175,8 @@ script refuses a run whose consumption summary is missing or failed.
 Controls: a waited row's return VBLANK moved by 5 fails at that record
 (`vbl-delta`); a row deleted is absorbed (the stamps carry the record's
 total), so a missing row is not a detectable fault and the record count
-check is the engagement. Two captures are `cmp`-identical including the
-three sidecars.
+check is the engagement. Two captures are `cmp`-identical including every
+sidecar.
 
 What the schedule does not reproduce: the reference's time-sliced level
 loader (Spyro 1 decompresses until two VBLs have passed, so its
@@ -185,10 +228,26 @@ CXX=clang++-19`. Ubuntu 22.04 ships clang-14, so clang-19 comes from
 
 ## Capturing a golden
 
+A golden is not committed. It is a function of the disc, the pinned fork
+commit, the region manifest and the recipe, and two captures from the
+same inputs are byte-identical (trace and every sidecar), so a checkout
+generates its own: `tests/golden/*/psxtrace-*` is ignored by git, and the
+gate captures a missing golden before verifying against it. Each game's
+recipe is `games/<game>/oracle.conf` (sourced as shell: golden path,
+record count, disc, manifest, anchor, the recorder options, and the
+openpete flags the gate run adds):
+
 ```sh
-scripts/capture_psx_oracle_ds.sh \
-    --out tests/golden/spyro-1/psxtrace-demo-20k.bin --frames 20000
+scripts/capture_psx_oracle_ds.sh --game spyro-1
+scripts/capture_psx_oracle_ds.sh --game spyro-3
 ```
+
+Options on the command line override the recipe's. Spyro 3's recipe
+anchors at `Update`, records every sidecar, skips libcd's own `VSync(-1)`
+polls, and boots with `--no-card` because the title's card probe answers
+differ with a card present; every PC comes from its `psyq.toml`. Without
+`--game`, `--out`, `--disc` and `--manifest` (or `OPENPETE_DISC`,
+`OPENPETE_REGIONS_MANIFEST`) name the inputs directly.
 
 `--frames` is the number of records (anchor hits) to capture. DuckStation's
 own `-frames` counts presentation frames, so the script passes
@@ -203,21 +262,31 @@ capture with software GL (`LIBGL_ALWAYS_SOFTWARE=1`,
 carries the build hash, deletes a RAM-carrying trace under `tests/golden/`,
 and prints `tools.psxtrace_format info` on it.
 
-Re-blessing the shipped golden is only legal for an intentional
+Re-blessing a golden (deleting it so the gate recaptures it under a new
+fork pin, manifest or recipe) is only legal for an intentional
 gameplay-behaviour change, after reviewing the diff. A golden is
 never blind-overwritten to make a red gate go green.
 
 ## The gate
 
 ```sh
-scripts/check_psx_oracle.sh [trace-path] [-- <extra openpete flags>]
+scripts/check_psx_oracle.sh [--game SLUG] [trace-path] [-- <extra openpete flags>]
 ```
 
-Defaults: trace `tests/golden/spyro-1/psxtrace-demo-20k.bin`, binary
-`build/linux-release/games/spyro-1/openpete-spyro1`, disc `$OPENPETE_DISC`
-or `~/code/spyro/spyro-1/build/SCUS-94228.cue`. The shipped golden holds
-20000 records over the manifest's rows (Spyro 1: 54), covering four-plus
-level loads and gameplay, and replays in roughly two and a half minutes.
+```sh
+scripts/check_psx_oracle.sh --game spyro-3
+```
+
+`--game` (default `spyro-1`) sources `games/SLUG/oracle.conf` for the
+golden path, the disc (`OPENPETE_DISC` overrides), the binary
+(`build/linux-release/games/SLUG/openpete-<slug without the dash>`,
+`OPENPETE_BIN` overrides) and the flags the run adds before the caller's
+(Spyro 3: `--no-card`). A missing default golden is captured first, which
+takes about fifteen minutes for 20000 records; the script exits 64 when
+the fork binary is not built. An explicit trace path is never captured.
+Each golden holds 20000 records over the manifest's rows (Spyro 1: 54),
+covering four-plus level loads and gameplay, and replays in roughly two
+and a half minutes.
 
 The golden must hold `OPENPETE_ORACLE_RECORDS` records (default 20000)
 and a PASS requires the run to have consumed every one; a capture cut

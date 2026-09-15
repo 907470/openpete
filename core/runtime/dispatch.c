@@ -382,6 +382,13 @@ int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
         } else if (++s_hang_calls_since_tick > s_hang_threshold) {
             openpete_hang_dump_and_exit(addr);
         }
+        /* A spin that polls a deferred disc read without waiting on VSync
+         * spent VBLs on the reference; every so many entries without a
+         * VBL, the schedule passes one here (psyq_thunks.cpp). */
+        if ((s_hang_calls_since_tick & 2047u) == 2047u) {
+            extern void psyq_sched_spin_tick(CPUState* cpu) __attribute__((weak));
+            if (psyq_sched_spin_tick) psyq_sched_spin_tick(cpu);
+        }
         /* Only fill the ring for the first HANG_RING dispatches of each
          * frame. A tight loop produces 2-3 distinct addrs and trivially
          * overwrites useful state; capping per-frame writes preserves the

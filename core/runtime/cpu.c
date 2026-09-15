@@ -6,6 +6,8 @@
 // emulation here — IRQ/CD/GPU/SPU live in PsyCross (Phase 1c+).
 
 #include "openpete_psx.h"
+#include "openpete_cdrom_mmio.h"
+#include "openpete_memcard.h"
 #include "openpete_log.h"
 #include "psx_runtime_internal.h"
 
@@ -102,9 +104,20 @@ static uint8_t* mem_ptr(uint32_t addr) {
 
 /* --- Aligned reads/writes (caller is responsible for alignment) ---------- */
 
+/* Reads from the BIOS ROM window compose from the ROM identification model
+ * (psx_bios.c); every other unmapped address reads 0. */
+static uint32_t rom_read(uint32_t addr, unsigned n) {
+    uint32_t v = 0;
+    for (unsigned i = 0; i < n; i++) {
+        uint8_t b;
+        if (!openpete_psx_bios_rom_read8((addr + i) & 0x1FFFFFFFu, &b)) return 0;
+        v |= (uint32_t)b << (8 * i);
+    }
+    return v;
+}
 static uint32_t read_word(uint32_t addr) {
     uint8_t* p = mem_ptr(addr);
-    if (!p) return 0;
+    if (!p) return rom_read(addr, 4);
     uint32_t v;
     memcpy(&v, p, 4);
     return v;
@@ -116,7 +129,7 @@ static void write_word(uint32_t addr, uint32_t value) {
 }
 static uint16_t read_half(uint32_t addr) {
     uint8_t* p = mem_ptr(addr);
-    if (!p) return 0;
+    if (!p) return (uint16_t)rom_read(addr, 2);
     uint16_t v;
     memcpy(&v, p, 2);
     return v;
@@ -126,13 +139,21 @@ static void write_half(uint32_t addr, uint16_t value) {
     if (!p) return;
     memcpy(p, &value, 2);
 }
+/* Byte accesses to the CD-ROM controller's registers (0x1F801800..03) go
+ * to the host's controller model; every other unmapped address reads 0
+ * and drops writes. */
 static uint8_t read_byte(uint32_t addr) {
     uint8_t* p = mem_ptr(addr);
-    return p ? *p : 0u;
+    if (p) return *p;
+    uint8_t v;
+    if (((addr & 0x1FFFFFFFu) & ~3u) == 0x1F801800u && openpete_cdrom_mmio_read8(addr & 0x1FFFFFFFu, &v)) return v;
+    if (openpete_psx_bios_rom_read8(addr & 0x1FFFFFFFu, &v)) return v;
+    return 0u;
 }
 static void write_byte(uint32_t addr, uint8_t value) {
     uint8_t* p = mem_ptr(addr);
-    if (p) *p = value;
+    if (p) { *p = value; return; }
+    if (((addr & 0x1FFFFFFFu) & ~3u) == 0x1F801800u) (void)openpete_cdrom_mmio_write8(addr & 0x1FFFFFFFu, value);
 }
 
 /* --- Unaligned LWL/LWR/SWL/SWR --------------------------------------------

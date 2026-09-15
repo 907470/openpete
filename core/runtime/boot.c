@@ -7,6 +7,7 @@
 
 #include "openpete_psx.h"
 #include "openpete_log.h"
+#include "openpete_memcard.h"
 
 #include <stdint.h>
 #include <string.h>
@@ -65,6 +66,9 @@ int openpete_psx_boot(CPUState* cpu, const uint8_t* bytes, size_t len) {
                h.initial_pc, h.initial_gp, h.load_address, h.file_size,
                h.memfill_start, h.memfill_size,
                h.initial_sp_base, h.initial_sp_offset);
+
+    /* 0) The kernel's fixed words in low RAM, present under every EXE. */
+    openpete_psx_bios_seed_ram(openpete_psx_get_ram());
 
     /* 1) Copy .text + .data from the EXE body into g_ram at load_address. */
     openpete_psx_load(h.load_address, bytes + PSX_EXE_HEADER_SIZE, h.file_size);

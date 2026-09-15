@@ -7,35 +7,26 @@
 # Derivation (tools/derive_state_regions.py spyro-3): the main image's
 # .data/.sdata/.sbss/.bss extents from spyro-3/build/psx.map, minus the
 # psyq_internal extents and every [[expect]] range of ram_diff_expect.toml
-# (load_timing, vbl_count and pad_model classes, measured at the loop
-# anchor, hits 1 and 2, the pre-load hits aligned on both sides), the named rows carved out,
-# the rest coalesced: one row per extent, symbol names as comments. Then
-# the overlay image union (--overlay 0x800742D0:0x2D800: one row per piece
-# between the [[expect]] ranges inside it, each a CdRead destination), the
-# moby array, and the libcd mirror rows.
+# (none remain: the load-timing, VBL-count and pad-model classes measured
+# at the loop anchor's hit 1 converge under the reference's schedule and
+# openpete's DualShock pad model), the named rows carved out, the rest
+# coalesced: one row per extent, symbol names as comments. Then the
+# overlay image union (--overlay 0x800742D0:0x2D800: one row, every byte a
+# CdRead destination), the moby array, and the libcd mirror rows.
 #
 # Row fields beyond the generator's (start/length or the indirect_array
 # keys, mask_offsets/mask_per_element, cd_load_transient, gameplay_neutral,
 # constant_ok): `class` is gameplay | render_scratch | psyq_mirror. No row
-# is render_scratch yet: no OT or primitive buffer of this game has been
+# is render_scratch: no OT or primitive buffer of this game has been
 # located inside the main image (Spyro 2's DR_MODE packets and both games'
 # ordering tables sit in level RAM, outside these rows). A render-side
 # range found inside an extent when the golden lands is split out as a
 # named render_scratch row, never absorbed by a flag on the extent.
-#
-# Carve-outs (commented rows; the ranges are subtracted above):
-#   load_timing  D_8006C644, D_8006E484, D_8006C7CC, title overlay 0x80080EE0,
-#                0x80080F64-0x80080F69, 0x80080FC4-0x80080FE1 — counters the
-#                title's VSync loop advances while the reference spends
-#                0.4 VBL/sector on the 13 pre-anchor reads; removed
-#                once openpete charges the pre-anchor reads their VBLs
-#   pad_model    D_8007143C, D_800718DC, pad2 — the analog pad's poll
-#                answer (the pad-model carve-out of ram_diff_expect.toml)
 
 # The arguments tools/derive_state_regions.py derived the direct rows from;
 # `--check` re-derives and compares (ctest state_regions_derivation_spyro-3).
 [derivation]
-named   = ["psyq_rand_seed=0x80073F3C:4", "levelIndex=0x8006C58C:4"]
+named   = ["psyq_rand_seed=0x80073F3C:4", "levelIndex=0x8006C58C:4", "g_ActiveSounds=0x8006FCE4:0x420"]
 overlay = "0x800742D0:0x2D800"
 min_row = 4
 
@@ -74,102 +65,52 @@ start  = 0x8006C4F4
 length = 0x98
 class  = "gameplay"
 
-# .sbss extent 3: 21 symbols; named: dragonModelPtr, g_CurrentLevel, currentLevel, area, pauseMenuButtonPresses
+# .sbss extent 3: 167 symbols; named: dragonModelPtr, g_CurrentLevel, currentLevel, area, pauseMenuButtonPresses, g_PortalCount, deltaTime, soundTablePtr, g_SoundTablePtr, isDemoMode, g_SpuDefinitionsPtr, spuDataPtr, g_AllocatedMobyArrayPtr, allocatedMobysPtr, language, collectionAreaOffset
 [[region]]
 name   = "main_sbss_8006c590"
 start  = 0x8006C590
-length = 0x44
+length = 0x264
 class  = "gameplay"
 
-# .sbss extent 4: 27 symbols; named: g_PortalCount
-[[region]]
-name   = "main_sbss_8006c5dc"
-start  = 0x8006C5DC
-length = 0x68
-class  = "gameplay"
-
-# .sbss extent 5: 107 symbols; named: deltaTime, soundTablePtr, g_SoundTablePtr, isDemoMode, g_SpuDefinitionsPtr, spuDataPtr, g_AllocatedMobyArrayPtr, allocatedMobysPtr, language, collectionAreaOffset
-[[region]]
-name   = "main_sbss_8006c645"
-start  = 0x8006C645
-length = 0x187
-class  = "gameplay"
-
-# .sbss extent 6: 8 symbols
-[[region]]
-name   = "main_sbss_8006c7cd"
-start  = 0x8006C7CD
-length = 0x27
-class  = "gameplay"
-
-# .bss extent 7: 199 symbols; named: unsavedData, savedData, wadHeader, g_Camera, camera, game, g_Layout, streamingData
+# .bss extent 4: 356 symbols; named: unsavedData, savedData, wadHeader, g_Camera, camera, game, g_Layout, streamingData, g_Pad, pad, speedwayData, g_CheatFlags, pauseData, pauseData2
 [[region]]
 name   = "main_bss_8006c7f8"
 start  = 0x8006C7F8
-length = 0x1C8C
+length = 0x34EC
 class  = "gameplay"
 
-# .bss extent 8: 30 symbols; named: g_Pad, pad
+# The 24 voice slots of the game's sound allocator (stride 0x2C), carved
+# out of the .bss extent as a host_precision row. Each slot's state byte
+# (+0) is stepped by func_8003C184 from SpuGetAllKeysStatus; the step from
+# playing (2) to keyed off (5) waits for SPU_ON_ENV_OFF, the envelope's
+# arrival at zero, which the host SPU resolves at whole-VBL granularity and
+# hardware sample by sample, so on some ticks a slot frees one tick apart.
+# PlaySound's scan then takes a different free slot, and the slot's other
+# fields (the request's volume, pitch and owner) follow the choice until
+# the slots empty again. The rows around it (the mobys' sound handles,
+# g_Spyro, the rand seed) stay strict, so a slot choice reaching gameplay
+# fails the gate there.
 [[region]]
-name   = "main_bss_8006e485"
-start  = 0x8006E485
-length = 0x84
+name   = "g_ActiveSounds"
+start  = 0x8006FCE4
+length = 0x420
 class  = "gameplay"
+host_precision = true
+diverge_baseline = 7401
+description = "g_ActiveSounds[24] (ActiveSound, stride 0x2C): the sound allocator's voice slots, resolved from the host SPU's whole-VBL envelope"
 
-# .bss extent 9: 347 symbols; named: speedwayData, g_CheatFlags, pauseData, pauseData2, g_ActiveSounds, eggsCollectedArray, spyro, g_Spyro, g_CheatBuffer, demoPadState
+# .bss extent 5: 443 symbols; named: eggsCollectedArray, spyro, g_Spyro, g_CheatBuffer, demoPadState, progressFlags, g_CollisionData, g_Hud, pad2, levelWadHeader, loadingData
 [[region]]
-name   = "main_bss_8006e50e"
-start  = 0x8006E50E
-length = 0x2F2E
+name   = "main_bss_80070104"
+start  = 0x80070104
+length = 0x24E8
 class  = "gameplay"
 
-# .bss extent 10: 90 symbols; named: progressFlags
-[[region]]
-name   = "main_bss_80071440"
-start  = 0x80071440
-length = 0x49C
-class  = "gameplay"
-
-# .bss extent 11: 60 symbols; named: g_CollisionData, g_Hud
-[[region]]
-name   = "main_bss_800718e4"
-start  = 0x800718E4
-length = 0x734
-class  = "gameplay"
-
-# .bss extent 12: 76 symbols; named: levelWadHeader, loadingData
-[[region]]
-name   = "main_bss_80072019"
-start  = 0x80072019
-length = 0x5D3
-class  = "gameplay"
-
-# overlay image union 0x800742D0-0x800A1AD0, cut at 3 expect range(s) into 4 row(s); every piece is a CdRead destination
+# overlay image union 0x800742D0-0x800A1AD0, cut at 0 expect range(s) into 1 row(s); every piece is a CdRead destination
 [[region]]
 name   = "overlay_image_0"
 start  = 0x800742D0
-length = 0xCC10
-class  = "gameplay"
-cd_load_transient = true
-
-[[region]]
-name   = "overlay_image_1"
-start  = 0x80080EE1
-length = 0x83
-class  = "gameplay"
-cd_load_transient = true
-
-[[region]]
-name   = "overlay_image_2"
-start  = 0x80080F69
-length = 0x5B
-class  = "gameplay"
-cd_load_transient = true
-
-[[region]]
-name   = "overlay_image_3"
-start  = 0x80080FE1
-length = 0x20AEF
+length = 0x2D800
 class  = "gameplay"
 cd_load_transient = true
 
@@ -204,9 +145,9 @@ description = "libcd block 0x8006B568: CD status byte (CdStatus)"
 [[region]]
 name        = "libcd_CdLastPos"
 start       = 0x8006B580
-length      = 0x4
+length      = 0x3
 class       = "psyq_mirror"
-description = "libcd block 0x8006B568: last CdlSetloc position (CdLastPos)"
+description = "libcd block 0x8006B568: last CdlSetloc position (CdLastPos), minute/second/sector; the fourth byte libcd copies is the caller's track slot, which CdIntToPos leaves as the stack held it"
 
 [[region]]
 name        = "libcd_CdMode_CdLastCom"

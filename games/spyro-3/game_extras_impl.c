@@ -168,6 +168,25 @@ int psyq_game_cd_read_in_load(CPUState* cpu) {
 }
 uint32_t psyq_game_cd_read_delay_cap(void) { return 100u; }
 
+/* The loader's state word: states 2..7 are the window the checksum walk
+ * runs in, one sliced step per frame, and 8..12 the level reads and
+ * parses that follow, before the word returns to -1; the tick count of
+ * the whole span is CPU time on hardware. */
+uint32_t psyq_game_load_window_word(void) { return 0x8006C518u; }
+
+/* The title overlay's disc check drives the CD-ROM controller's registers
+ * itself (its command writer at 0x8007BB3C); every such site lies in the
+ * overlay region, and libcd's own command writes in the main image below
+ * it. */
+uint32_t psyq_game_cd_raw_pc_min(void) { return 0x800742D0u; }
+
+/* The loader's poll (func_800503F8) reads its read-in-flight flag
+ * (D_8006E480, cleared by the read callback func_80050504) and, with no
+ * read in flight, polls CdSync(1) from 0x800504E4: that poll's return
+ * address witnesses the callback having run before the flag read. */
+uint32_t psyq_game_cd_done_witness_ra(void) { return 0x800504E8u; }
+int      psyq_game_load_window_active(uint32_t value) { (void)value; return 0; }
+
 /* PSYQ's rand seed: the word `rand` (0x8005C644) loads, steps by
  * seed * 0x41C64E6D + 0x3039 and stores back, and `srand` (0x8005C674)
  * overwrites, at D_80073F3C in the library's .bss. */

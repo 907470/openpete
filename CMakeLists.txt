@@ -398,15 +398,15 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # attract-demo soak (4+ level loads + gameplay). The 3 CD-load pool
     # regions are tolerated only while a load transient heals; every other
     # region must match bit-exact (see check_psx_oracle.sh / the manifest's
-    # cd_load_transient flag). Skipped automatically if the baseline trace
-    # is missing (regenerate with scripts/capture_psx_oracle_ds.sh, see
-    # docs/duckstation-oracle.md). Phase 2 of
-    # openpete-determinism-enforcement.md + openpete-psx-oracle-ci.md.
+    # cd_load_transient flag). The golden is generated, not committed: the
+    # script captures it from the pinned DuckStation fork on the first run
+    # (about fifteen minutes, hence the timeout) and skips when the fork is
+    # not built (see docs/duckstation-oracle.md).
     add_test(NAME psx_oracle_match
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_psx_oracle.sh)
     set_tests_properties(psx_oracle_match PROPERTIES
         LABELS "slow;oracle"
-        TIMEOUT 600
+        TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1")

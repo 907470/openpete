@@ -60,6 +60,7 @@
 #include "openpete_discontinuity.h"
 #include "openpete_fiber.h"  /* openpete_vbl — saved/restored via hdr.vbl */
 #include "openpete_log.h"
+#include "openpete_memcard.h" /* openpete_psx_bios_seed_ram */
 #include "openpete_mods.h"   /* per-mod state participation + modset tag */
 #include "openpete_paths.h"
 #include "openpete_psx.h"
@@ -520,6 +521,10 @@ int openpete_state_load_file(const char* path, CPUState* cpu,
      * bindings from openpete_psx_runtime_init. */
     memcpy(cpu,                        cpu_buf,     CPU_REG_BYTES);
     memcpy(openpete_psx_get_ram(),     ram_buf,     OPENPETE_PSX_RAM_SIZE);
+    /* The kernel's fixed low-RAM words are constant over a run and absent
+     * from a state written before the boot seeded them; re-seeding is
+     * idempotent on a state that carries them. */
+    openpete_psx_bios_seed_ram(openpete_psx_get_ram());
     memcpy(openpete_psx_get_scratch(), scratch_buf, OPENPETE_PSX_SCRATCH_SIZE);
     (void)PsyX_VRAM_Restore(vram_buf, hdr.vram_bytes);
     (void)PsyX_SPUAL_RestoreMem(spumem_buf, hdr.spu_mem_bytes);

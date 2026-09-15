@@ -10,13 +10,20 @@
 # legitimately diverge for a load's duration (openpete lands a read
 # instantly; the reference lands it over the load's VBLs) and re-converge;
 # the verifier tolerates a divergence there that heals within the window.
-# Rows flagged gameplay_neutral are hashed and logged and never fail on a
-# divergence; their per-record divergence count is bounded by the row's
-# diverge_baseline. Any other row differing, or a transient that never
+# Rows flagged gameplay_neutral or host_precision are hashed and logged and
+# never fail on a divergence; their per-record divergence count is bounded
+# by the row's diverge_baseline. Any other row differing, or a transient that never
 # re-converges, is a hard failure.
 #
 # Usage:
-#   scripts/check_psx_oracle.sh [trace-path] [-- <extra openpete flags>]
+#   scripts/check_psx_oracle.sh [--game SLUG] [trace-path] [-- <extra openpete flags>]
+#
+# --game SLUG (default spyro-1) sources games/SLUG/oracle.conf: the golden's
+# path, the disc, the openpete binary and the flags the run needs. The
+# golden is derived from the disc and the pinned DuckStation fork and is
+# not committed: when it is missing the script captures it first
+# (scripts/capture_psx_oracle_ds.sh --game SLUG, ~15 min for 20k records)
+# and exits 64 when the fork binary is not built (scripts/setup_duckstation.sh).
 #
 # Anything after `--` is forwarded verbatim to the openpete binary, so the
 # same golden can be used to prove a feature with a game-side producer is
@@ -32,11 +39,11 @@
 # (Flags with values need the `--` separator so the value isn't mistaken
 #  for the trace path.)
 #
-# Defaults:
+# Defaults (from games/SLUG/oracle.conf):
 #   trace-path: tests/golden/spyro-1/psxtrace-demo-20k.bin (20k-tick
 #               attract-demo soak — 4+ level loads + gameplay)
 #   binary:     build/linux-release/games/spyro-1/openpete-spyro1
-#   disc:       env $OPENPETE_DISC or /home/$USER/code/spyro/spyro-1/build/SCUS-94228.cue
+#   disc:       env $OPENPETE_DISC or the recipe's
 #
 # Sibling artifacts (auto-detected — produced by pcsx-redux-trace.lua):
 #   <trace>.seed.ram   passed to openpete via --seed-ram (RAM at trace t0)
@@ -80,23 +87,45 @@ cd "$(dirname "$0")/.."
 # against the default golden without naming the trace.
 PASSTHRU=()
 TRACE=""
+GAME="spyro-1"
 _sep=0
+_game_next=0
 for _a in "$@"; do
-    if   (( _sep ));          then PASSTHRU+=("$_a")
-    elif [[ "$_a" == "--" ]]; then _sep=1
-    elif [[ -z "$TRACE" ]];   then TRACE="$_a"
-    else                           PASSTHRU+=("$_a")
+    if   (( _game_next ));      then GAME="$_a"; _game_next=0
+    elif (( _sep ));            then PASSTHRU+=("$_a")
+    elif [[ "$_a" == "--" ]];   then _sep=1
+    elif [[ "$_a" == "--game" ]]; then _game_next=1
+    elif [[ -z "$TRACE" ]];     then TRACE="$_a"
+    else                             PASSTHRU+=("$_a")
     fi
 done
-TRACE="${TRACE:-tests/golden/spyro-1/psxtrace-demo-20k.bin}"
-BIN="${OPENPETE_BIN:-build/linux-release/games/spyro-1/openpete-spyro1}"
-DISC="${OPENPETE_DISC:-/home/$USER/code/spyro/spyro-1/build/SCUS-94228.cue}"
+CONF="games/$GAME/oracle.conf"
+[[ -f "$CONF" ]] || { echo "[psx-oracle] no recipe: $CONF" >&2; exit 64; }
+GOLDEN=""; FRAMES=""; DISC=""; RUN_ARGS=()
+# shellcheck disable=SC1090
+source "$CONF"
+TRACE="${TRACE:-$GOLDEN}"
+BIN="${OPENPETE_BIN:-build/linux-release/games/$GAME/openpete-${GAME//-/}}"
+DISC="${OPENPETE_DISC:-$DISC}"
 
+# The golden is generated, not committed: a missing default golden is
+# captured from the pinned fork here, so a fresh checkout's first gate run
+# produces its own reference. An explicit trace path is never captured.
 if [[ ! -f "$TRACE" ]]; then
-    echo "[psx-oracle] trace not found: $TRACE" >&2
-    echo "[psx-oracle] regenerate with scripts/capture_psx_oracle_ds.sh "   >&2
-    echo "             --out $TRACE --frames 20000 (see docs/duckstation-oracle.md)" >&2
-    exit 64
+    if [[ "$TRACE" != "$GOLDEN" ]]; then
+        echo "[psx-oracle] trace not found: $TRACE" >&2
+        exit 64
+    fi
+    if [[ ! -x third_party/duckstation/build-regtest/bin/duckstation-regtest ]]; then
+        echo "[psx-oracle] golden $TRACE missing and the DuckStation fork is not built" >&2
+        echo "[psx-oracle] run scripts/setup_duckstation.sh, then rerun (the golden is captured on the first run)" >&2
+        exit 64
+    fi
+    echo "[psx-oracle] golden $TRACE missing: capturing it (scripts/capture_psx_oracle_ds.sh --game $GAME)"
+    scripts/capture_psx_oracle_ds.sh --game "$GAME" || {
+        echo "[psx-oracle] capture failed" >&2
+        exit 64
+    }
 fi
 if [[ ! -x "$BIN" ]]; then
     echo "[psx-oracle] binary missing: $BIN — run cmake --build --preset linux-release" >&2
@@ -131,7 +160,7 @@ fi
 # expected count, and the verdict below is a PASS only when the run consumed
 # every record. A truncated capture is self-consistent (the capture module
 # patches the header to the records written) and would otherwise pass.
-RECORDS="${OPENPETE_ORACLE_RECORDS:-20000}"
+RECORDS="${OPENPETE_ORACLE_RECORDS:-${FRAMES:-20000}}"
 TRACE_RECORDS="$(python3 -m tools.psxtrace_format info "$TRACE" | sed -n 's/^version=.* frames=\([0-9]*\) .*/\1/p')"
 if [[ "$TRACE_RECORDS" != "$RECORDS" ]]; then
     echo "[psx-oracle] golden $TRACE holds ${TRACE_RECORDS:-?} records, expected $RECORDS (OPENPETE_ORACLE_RECORDS)" >&2
@@ -167,10 +196,13 @@ BK2="${TRACE}.bk2"
     echo "[psx-oracle] bk2:      $BK2"
 # The reference's schedule: openpete consumes these beside the golden and
 # runs under the reference's VBL, read and seed timing (psxtrace_schedule.c).
-for _sc in vsync loads srand; do
+for _sc in vsync loads srand cdctl cdirq padcmd cdsync sio0 watch; do
     [[ -f "$TRACE.$_sc" ]] && echo "[psx-oracle] schedule: $TRACE.$_sc"
 done
 
+# The recipe's flags first: a caller's pass-through flag overrides them (the
+# options parser takes the last occurrence).
+PASSTHRU=("${RUN_ARGS[@]}" "${PASSTHRU[@]}")
 [[ ${#PASSTHRU[@]} -gt 0 ]] && \
     echo "[psx-oracle] openpete flags: ${PASSTHRU[*]}"
 

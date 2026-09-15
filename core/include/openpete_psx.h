@@ -130,13 +130,23 @@ typedef struct {
      * games/<game>/manifest/gameplay_state_regions.toml (`gameplay_neutral = true`);
      * the proof of neutrality must accompany it in the manifest. */
     uint8_t     gameplay_neutral;
+    /* The row is the state of a host device model that resolves at a
+     * coarser precision than the hardware (the SPU envelope, advanced per
+     * VBLANK where hardware advances it per sample), so on some ticks its
+     * bytes lead or lag the reference's by a tick. Its divergence is
+     * counted against diverge_baseline and never hard-fails the gate;
+     * every gameplay region that consumes the row's answers stays
+     * strict. Set per-region in the manifest (`host_precision = true`)
+     * with the mechanism named. */
+    uint8_t     host_precision;
     /* The row's bytes are expected not to change over an oracle run (a
      * value set once per level, a record table): the verifier lists every
      * region whose hash never changed between consecutive records, and the
      * gate fails a PASS that lists one without this flag. The manifest row
      * carries `constant_ok = true` and the reason. */
     uint8_t     constant_ok;
-    /* Ratchet for a tolerated row (cd_load_transient or gameplay_neutral):
+    /* Ratchet for a tolerated row (cd_load_transient, gameplay_neutral or
+     * host_precision):
      * the most records the row may diverge on over a full run. A run that
      * reaches the trace's end with a higher count fails; -1 = unbounded.
      * The manifest row carries `diverge_baseline = N` from the measured

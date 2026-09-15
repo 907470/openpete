@@ -15,6 +15,8 @@
 #ifndef OPENPETE_MEMCARD_H
 #define OPENPETE_MEMCARD_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -89,6 +91,23 @@ int  openpete_memcard_sync(int mode, int* out_cmds, int* out_rslt);
  * by file name; both views are the same image. chan is 0/1 or the raw port
  * encoding. Return 0 on success, -1 when the slot is empty or out of range. */
 int  openpete_memcard_present(int chan);
+/* The BIOS card gate's vblank step (core/runtime/psx_bios.c): a command
+ * to an empty port signals EvSpTIMOUT from here when its timeout ends. */
+struct CPUState;
+void openpete_psx_bios_vbl(struct CPUState* cpu);
+/* The card driver's state, for the savestate's thunk latch pack: a flag
+ * word and the two ports' pending command (sector, buffer, device id). */
+#define PSX_BIOS_CARD_STATE_WORDS 7u
+void openpete_psx_bios_card_state_get(uint32_t w[PSX_BIOS_CARD_STATE_WORDS]);
+void openpete_psx_bios_card_state_set(const uint32_t w[PSX_BIOS_CARD_STATE_WORDS]);
+/* A byte read from the BIOS ROM window (physical 0x1FC00000..0x1FC7FFFF):
+ * returns 1 with the byte of the ROM's identification block, 0 elsewhere;
+ * 0 when the address is outside the window. */
+int      openpete_psx_bios_rom_read8(uint32_t phys, uint8_t* out);
+/* Writes the kernel's fixed low-RAM words (exception and call vectors, the
+ * RAM size and boot flags) into a 2 MB RAM image, before the EXE loads. */
+void     openpete_psx_bios_seed_ram(uint8_t* ram);
+uint32_t openpete_psx_bios_rom_reads(void);
 int  openpete_memcard_read_frame (int chan, int frame, void* dst_host);
 int  openpete_memcard_write_frame(int chan, int frame, const void* src_host);
 

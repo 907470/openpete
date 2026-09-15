@@ -131,6 +131,29 @@ void psyq_game_cd_read_done(CPUState* cpu, uint32_t read_cb);
 int      psyq_game_cd_read_in_load(CPUState* cpu);
 uint32_t psyq_game_cd_read_delay_cap(void);
 
+/* The load window as the oracle sees it. load_window_word: the guest word
+ * whose value says whether the game's loader is running (0 = the game has
+ * no such word); load_window_active(value): 1 while that value means a
+ * load. The reference records every store to the word (the golden's
+ * .watch sibling) and openpete samples it at every anchor hit; a loader
+ * whose ticks are CPU time (a checksum walk sliced per frame) takes a
+ * different number of ticks on each side, so the verifier compares no
+ * record inside the window and re-aligns the record index at its end. */
+uint32_t psyq_game_load_window_word(void);
+int      psyq_game_load_window_active(uint32_t value);
+
+/* The lowest address of code that drives the CD-ROM controller's registers
+ * itself (an overlay's disc check); commands issued from below it are
+ * libcd's. 0xFFFFFFFF: the game has no such code. */
+uint32_t psyq_game_cd_raw_pc_min(void);
+
+/* The call site of a CdSync poll the game makes only after it has seen a
+ * data read's completion callback (the not-in-flight branch of its
+ * loader's poll). A row of the reference's at this site in the record a
+ * completion is deferred to places the callback before the game's flag
+ * read of that tick. 0: no such site. */
+uint32_t psyq_game_cd_done_witness_ra(void);
+
 /* Music route for a streaming read issued under an XA mode. The shared body
  * anchors the virtual head, calls this, and then starts a custom song by path,
  * a WAV override by track, or the XA decoder at the sector, in that order.
