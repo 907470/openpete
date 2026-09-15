@@ -786,7 +786,7 @@ if(NOT OPENPETE_SKIP_DECOMP)
     # The defsym list is generated from manifest/native.toml + the parsed
     # psx.map (manifest/globals.toml) by tools/gen_defsyms.py — see
     # scripts/regen-manifest.sh. g_ram is the public symbol exposed by
-    # core/runtime/cpu.c.
+    # core/psx/cpu.c.
     include(${SPYRO_GENERATED}/native_aliases.cmake)
     target_link_options(openpete-spyro1 PRIVATE ${SPYRO_NATIVE_DEFSYMS})
 endif()

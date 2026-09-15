@@ -1,9 +1,9 @@
-// core/runtime/cpu.c — PSX memory map + CPUState callback bindings.
+// core/psx/cpu.c — PSX memory map + CPUState callback bindings.
 //
 // Game-agnostic. Implements the small slice of the PSX bus that the
 // recompiled C touches: 2MB main RAM (KSEG0/KSEG1/KUSEG aliases),
 // 1KB scratchpad, and unaligned LWL/LWR/SWL/SWR helpers. No I/O
-// emulation here — IRQ/CD/GPU/SPU live in PsyCross (Phase 1c+).
+// emulation here — IRQ/CD/GPU/SPU live in PsyCross.
 
 #include "openpete_psx.h"
 #include "openpete_cdrom_mmio.h"
@@ -20,7 +20,7 @@
 
 /* g_ram is non-static so per-game decomp builds can use linker
  * `--defsym=<game-symbol>=g_ram+<offset>` to alias native C globals to
- * fixed PSX RAM addresses (plan §8 strategy A). Outside that link-time
+ * fixed PSX RAM addresses. Outside that link-time
  * trick, all access still flows through `openpete_psx_get_ram()`. */
 /* Page-aligned so the sub-tick RAM guard can mprotect it (see
  * openpete_subtick_view.h). Alignment is free here and preserves every
@@ -51,8 +51,8 @@ void* openpete_psx_to_host_ptr(uint32_t addr) {
  * inside g_ram (or scratch) back to its PSX KSEG0 vaddr. NULL → 0;
  * any host pointer outside the recognized regions also → 0 (callers
  * treat that as PSX NULL, which matches PSX-side semantics for "not a
- * valid game-RAM address"). Used by the Phase 3/4 source rewriter when
- * native code assigns a host pointer to a PSX-aliased storage slot. */
+ * valid game-RAM address"). Used by the source rewriter when native
+ * code assigns a host pointer to a PSX-aliased storage slot. */
 uint32_t openpete_host_to_psx(const void* host_ptr) {
     if (host_ptr == NULL) return 0u;
     const uint8_t* p = (const uint8_t*)host_ptr;
@@ -89,9 +89,8 @@ static uint8_t* mem_ptr(uint32_t addr) {
     if (phys >= 0x1F800000u && phys < 0x1F800000u + SCRATCH_SIZE) {
         return &g_scratch[phys - 0x1F800000u];
     }
-    /* Cold-path: registered presentation regions. See
-     * notes/plans/openpete-ram-virtualization.md. Hot recompiler-
-     * emitted accesses bypass this path and should be redirected via
+    /* Cold-path: registered presentation regions (psx_region.c). Hot
+     * recompiler-emitted accesses bypass this path and are redirected via
      * per-site psxrecomp instruction substitutions. */
     if (psx_runtime_region_count() != 0u) {
         void* host = NULL;

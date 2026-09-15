@@ -42,15 +42,15 @@ drops the rewritten TUs and routes every vaddr through the recompiler;
 
 ## Shared memory
 
-`core/runtime/cpu.c:26` defines `g_ram`, the 2 MiB main RAM array, plus a
+`core/psx/cpu.c:26` defines `g_ram`, the 2 MiB main RAM array, plus a
 1 KiB scratchpad. All three bodies of code address the same buffer:
 recompiled code through the `psx_runtime.h` load/store callbacks bound in
-`core/runtime/cpu.c`, rewritten decomp C through link-time
+`core/psx/cpu.c`, rewritten decomp C through link-time
 `--defsym=<symbol>=g_ram+<offset>` aliases generated from
 `manifest/globals.toml`, and host code through `openpete_psx_get_ram()`.
 `g_ram` is page-aligned so the sub-tick view can `mprotect` it.
 
-Dispatch glue lives in `core/runtime/dispatch.c`: `call_by_address` for
+Dispatch glue lives in `core/psx/dispatch.c`: `call_by_address` for
 jump-register targets, `psx_override_dispatch` for per-vaddr interception,
 and `psx_syscall`. Core holds no link-time reference to the recompiled code;
 the game registers a descriptor through `openpete_recomp_register()`, which
@@ -61,7 +61,7 @@ module.
 
 The game runs on one libco fiber created in `core/runtime/run.c:2480`; the
 host loop drives it and the game yields back through
-`openpete_yield_to_host()` (`core/runtime/fiber.c`). Additional fibers are
+`openpete_yield_to_host()` (`core/psx/fiber.c`). Additional fibers are
 added only if the game's IRQ semantics force it. Clocks are NTSC-exact: tick
 = 1125000/37609 Hz, VBL = 2250000/37609 Hz.
 

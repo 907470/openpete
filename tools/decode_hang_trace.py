@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Decode the hang watchdog's dispatch trace.
 
-The watchdog in core/runtime/dispatch.c writes hang-trace.bin when a vbl
+The watchdog in core/psx/dispatch.c writes hang-trace.bin when a vbl
 interval runs past OPENPETE_HANG_THRESHOLD dispatch entries. The file holds
 three rings of (addr, ra, sp):
 

@@ -228,7 +228,7 @@ static double disccache_get(const knob_desc_t *k) {
     (void)k;
     return openpete_disc_cache_active() ? 1 : 0;
 }
-/* The resolved level-load delay (core/runtime/fiber.c), declared here rather
+/* The resolved level-load delay (core/psx/fiber.c), declared here rather
  * than through openpete_fiber.h, whose SDL atomics the unit test does not
  * link. */
 extern int openpete_cd_load_delay;

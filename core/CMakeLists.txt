@@ -81,12 +81,22 @@ add_library(openpete_core STATIC
     # Driver lives in run.c. See openpete_rewind.h (savestate plan P4).
     runtime/rewind.c
 
-    # Phase 1b: slim PSX runtime
-    runtime/cpu.c
-    runtime/boot.c
-    runtime/dispatch.c
-    runtime/psx_bios.c
-    runtime/cdrom_mmio.c
+    # The PSX machine model: RAM and the CPUState bindings, the EXE boot
+    # sequence, dispatch glue and the hang watchdog, the BIOS model, the
+    # CD-ROM controller, the disc cache, the EXE loader, the RAM
+    # virtualization region table, the moby vertex-stream resolver and the
+    # cooperative scheduler globals.
+    psx/cpu.c
+    psx/boot.c
+    psx/dispatch.c
+    psx/psx_bios.c
+    psx/cdrom_mmio.c
+    psx/disc_cache.c
+    psx/exe_loader.cpp
+    psx/psx_region.c
+    psx/vstream.c
+    psx/fiber.c
+
     renderer/openpete_ui_moby.c
     runtime/openpete_menu.c
 
@@ -140,7 +150,6 @@ add_library(openpete_core STATIC
     # Unified pacing event log (--pace-log PATH) + the always-on pacing
     # census reported at the end of every run. See openpete_pace_log.h and
     # notes/plans/openpete-sim-tick-pacing-perfection.md.
-    runtime/disc_cache.c
     runtime/pace_log.c
     runtime/present_thread.c
     runtime/perf_stats.c
@@ -216,15 +225,6 @@ add_library(openpete_core STATIC
     host/memcard.c
 
     runtime/crash.c
-    runtime/exe_loader.cpp
-
-    # PSX RAM virtualization region table — backs cold-path memory
-    # resolvers. See notes/plans/openpete-ram-virtualization.md.
-    runtime/psx_region.c
-    runtime/vstream.c
-
-    # Phase 1d: cooperative scheduler globals (host/game fiber, frame counter).
-    runtime/fiber.c
 
     # Data-parallel extraction worker pool (--extract-threads). See
     # openpete_workpool.h for the threading contracts (C1-C5).
@@ -529,7 +529,7 @@ else()
     # requirement isn't met), define `pcsxr_gte_run` as a no-op so the
     # trace-logger path links. The trace logger is only invoked when the
     # logger is explicitly enabled, which it isn't on the runtime path.
-    target_sources(openpete_core PRIVATE runtime/pcsxr_gte_stub.c)
+    target_sources(openpete_core PRIVATE psx/pcsxr_gte_stub.c)
 endif()
 
 # Fail the build (cheap automated check) if anyone smuggles a Spyro

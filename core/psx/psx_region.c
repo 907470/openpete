@@ -1,5 +1,5 @@
-/* core/runtime/psx_region.c — PSX RAM virtualization (presentation-side
- * region table). See notes/plans/openpete-ram-virtualization.md.
+/* core/psx/psx_region.c — PSX RAM virtualization (presentation-side
+ * region table).
  *
  * Strategy: substitute-only at hot paths, region table at cold paths.
  * The hot recompiler-emitted `g_ram[addr & 0x1FFFFF]` accesses are NOT

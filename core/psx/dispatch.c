@@ -1,9 +1,9 @@
-// core/runtime/dispatch.c — psx_runtime.h glue not provided by generated C.
+// core/psx/dispatch.c — psx_runtime.h glue not provided by generated C.
 //
 // The recompiled C calls into a small surface declared in psx_runtime.h:
 // `call_by_address` (jump-register dispatch), `psx_override_dispatch`
-// (per-function intercept hook — Phase 1c+), and `psx_syscall`. We
-// supply them here on top of the generated dispatch table.
+// (the per-function intercept hook), and `psx_syscall`, supplied here on
+// top of the generated dispatch table.
 
 #include "openpete_fiber.h"
 #include "openpete_log.h"
@@ -55,21 +55,20 @@ const openpete_recomp_module* openpete_recomp_module_get(void) {
     return s_recomp_module;
 }
 
-/* Globals psxrecomp's gte.cpp expects. We don't run a frame loop in
- * Phase 1b, but the symbol must exist for link. */
+/* Global psxrecomp's gte.cpp expects; nothing here advances it, but the
+ * symbol must exist for link. */
 uint32_t g_ps1_frame = 0;
 
 /* The canonical-SX FIFO (openpete_canonical_sx{0,1,2}_q16) is defined in
  * core/renderer/widescreen.c; the recompiler-generated C reaches it via
  * the psx_runtime.h externs. */
 
-/* Phase 1d: when the recompiled main EXE calls into an overlay we haven't
- * translated yet, stub-and-continue rather than abort. The Phase 2 manifest
- * + per-overlay translation is the proper fix; for now we want the main loop
- * to keep spinning so we can hit "≥10 iterations" / "DrawOTag fires".
+/* A call to an address the recompiled image does not cover (an
+ * untranslated overlay function, a PSYQ symbol missing from the manifest)
+ * is stubbed and execution continues rather than aborting.
  *
  * Rate-limited per-address logging: each unique miss-addr is logged on first
- * hit and every Nth subsequent hit so the log stays useful.  */
+ * hit and every power-of-two subsequent hit so the log stays useful.  */
 #define MISS_TABLE_SIZE 64
 struct miss_entry { uint32_t addr; uint32_t hits; };
 static struct miss_entry s_miss[MISS_TABLE_SIZE];
@@ -119,14 +118,12 @@ void call_by_address(CPUState* cpu, uint32_t addr) {
         cpu->v0 = 0u;
         cpu->v1 = 0u;
     }
-    /* Phase 1d band-aid: when a stub call lands here from inside the main
-     * loop (e.g. Spyro's TitlescreenUpdate/TitlescreenDraw, which are
-     * overlay-resident and thus untranslated), the recompiled main never
+    /* A stubbed call inside the game's main loop (an overlay-resident
+     * update/draw pair, for example) means the recompiled main never
      * reaches a VSync(0). Force a cooperative yield so the host fiber can
-     * drive frame_limit/max-runtime checks. We use the no-tick variant so
-     * the frame counter still tracks real VSync(0) calls; otherwise stubbed
-     * loops would inflate it. Phase 2 (manifest + overlay translation)
-     * retires this entirely. */
+     * drive frame_limit/max-runtime checks. The no-tick variant keeps the
+     * frame counter tracking real VSync(0) calls; stubbed loops would
+     * otherwise inflate it. */
     openpete_yield_to_host_no_tick();
 }
 
@@ -361,7 +358,7 @@ static void openpete_hang_dump_and_exit(uint32_t trip_addr) {
 }
 
 /* Per-function intercept gate emitted at the top of every generated body.
- * Phase 1b: never intercepts. Phase 1c+ wires per-game quirks here. */
+ * The game supplies psx_override_dispatch_game for its per-game quirks. */
 __attribute__((weak)) int psx_override_dispatch_game(CPUState* cpu, uint32_t addr);
 int psx_override_dispatch(CPUState* cpu, uint32_t addr) {
     if (!s_hang_threshold_inited) {

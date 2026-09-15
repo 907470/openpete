@@ -1,5 +1,5 @@
 /* openpete_cdrom_mmio.h — the CD-ROM controller's registers for a game that
- * drives the controller itself (core/runtime/cdrom_mmio.c). */
+ * drives the controller itself (core/psx/cdrom_mmio.c). */
 #ifndef OPENPETE_CDROM_MMIO_H
 #define OPENPETE_CDROM_MMIO_H
 

@@ -83,7 +83,7 @@ add_test(NAME keymap_test COMMAND keymap_test)
 # console test binary. See notes/plans/openpete-ram-virtualization.md.
 add_executable(psx_region_test
     psx_region_test.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/psx_region.c)
+    ${CMAKE_SOURCE_DIR}/core/psx/psx_region.c)
 target_include_directories(psx_region_test PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
 set_target_properties(psx_region_test PROPERTIES C_STANDARD 99)
@@ -217,13 +217,13 @@ set_target_properties(openpete_osd_test PROPERTIES C_STANDARD 11)
 add_test(NAME openpete_osd_test COMMAND openpete_osd_test)
 
 # vstream_test — the moby vertex-stream resolver + handle table
-# (core/runtime/vstream.c): stock pass-through, handle indexing in both
+# (core/psx/vstream.c): stock pass-through, handle indexing in both
 # encodings, bind-once entries, and the bounded host alias through a
 # registered region reached via a top-bit-masked (KUSEG) pointer.
 add_executable(vstream_test
     vstream_test.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/vstream.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/psx_region.c)
+    ${CMAKE_SOURCE_DIR}/core/psx/vstream.c
+    ${CMAKE_SOURCE_DIR}/core/psx/psx_region.c)
 target_include_directories(vstream_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
     ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)

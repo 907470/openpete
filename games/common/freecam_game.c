@@ -6,7 +6,7 @@
 //   1. Freeze the camera-follow and player-update functions so nothing
 //      overwrites the camera each tick. psx_override_dispatch_game returning
 //      1 for a function entry makes the generated body early-return
-//      (core/runtime/dispatch.c); freecam_should_freeze() drives that.
+//      (core/psx/dispatch.c); freecam_should_freeze() drives that.
 //
 //   2. Hold the camera pose host-side and stamp it into the game's camera
 //      bytes at the follow function's own tick point, in its place. A writer

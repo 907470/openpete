@@ -1,4 +1,4 @@
-/* core/runtime/pcsxr_gte_stub.c — no-op `pcsxr_gte_run` for builds where
+/* core/psx/pcsxr_gte_stub.c — no-op `pcsxr_gte_run` for builds where
  * third_party/pcsx_redux_gte/ is disabled (the vendored runner needs
  * C++23, which MinGW-GCC 10 doesn't provide). The reference is only
  * called from the GTE trace logger; that path is gated on the logger

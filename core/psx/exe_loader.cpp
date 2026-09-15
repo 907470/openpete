@@ -1,8 +1,8 @@
-// core/runtime/exe_loader.cpp — fetch PSX EXE bytes from disc or path.
+// core/psx/exe_loader.cpp — fetch PSX EXE bytes from disc or path.
 //
-// Phase 1b uses two routes:
-//   1. --exe-path PATH       : read PSX EXE directly (preferred for Phase 1b
-//                              boot bring-up; matches the decomp's build/PSX.EXE).
+// Two routes:
+//   1. --exe-path PATH       : read PSX EXE directly (boot bring-up;
+//                              matches the decomp's build/PSX.EXE).
 //   2. --disc CUE-PATH       : read it out of a BIN/CUE via iso9660 lookup of
 //                              the per-game EXE filename.
 //

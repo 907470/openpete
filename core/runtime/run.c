@@ -754,7 +754,7 @@ static void gameplay_hash_log_emit(FILE* fp, unsigned frame, int vbl) {
     fputc('\n', fp);
 }
 
-/* Implemented in core/runtime/exe_loader.cpp. */
+/* Implemented in core/psx/exe_loader.cpp. */
 extern uint8_t* openpete_psx_load_exe_from_disc(const char* cue_path,
                                                 const char* exe_filename,
                                                 size_t* out_size);

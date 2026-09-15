@@ -1,9 +1,8 @@
-// core/runtime/boot.c — PSX EXE boot sequence.
+// core/psx/boot.c — PSX EXE boot sequence.
 //
-// See notes/plans/openpete-pc-port.md for the spec. Real hardware
-// runs a small CRT from BIOS that copies .text/.data from the disc-loaded
-// EXE into 2MB RAM, zeroes BSS, sets sp/gp/pc, then transfers control.
-// We do exactly the same here against g_ram.
+// Real hardware runs a small CRT from BIOS that copies .text/.data from
+// the disc-loaded EXE into 2MB RAM, zeroes BSS, sets sp/gp/pc, then
+// transfers control. This TU does the same against g_ram.
 
 #include "openpete_psx.h"
 #include "openpete_log.h"

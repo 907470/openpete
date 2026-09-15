@@ -1,4 +1,4 @@
-// core/runtime/vstream.c — see openpete_vstream.h.
+// core/psx/vstream.c — see openpete_vstream.h.
 
 #include "openpete_vstream.h"
 #include "openpete_log.h"

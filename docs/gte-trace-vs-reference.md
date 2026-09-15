@@ -23,7 +23,7 @@ preset, so this needs no setup beyond env vars. On `windows-mingw` the
 vendored engine is off: `third_party/pcsx_redux_gte` needs C++23 and
 MinGW-GCC 10 caps at C++20, so `CMakeLists.txt` defaults
 `OPENPETE_BUILD_PCSX_REDUX_GTE` OFF when cross-compiling and
-`core/runtime/pcsxr_gte_stub.c` supplies a `pcsxr_gte_run` that zeroes the
+`core/psx/pcsxr_gte_stub.c` supplies a `pcsxr_gte_run` that zeroes the
 post-state. Every `pcsx` row is then all-zero and the 3-way diff is
 meaningless; trace on Linux.
 

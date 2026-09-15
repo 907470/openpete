@@ -91,7 +91,7 @@ int  openpete_memcard_sync(int mode, int* out_cmds, int* out_rslt);
  * by file name; both views are the same image. chan is 0/1 or the raw port
  * encoding. Return 0 on success, -1 when the slot is empty or out of range. */
 int  openpete_memcard_present(int chan);
-/* The BIOS card gate's vblank step (core/runtime/psx_bios.c): a command
+/* The BIOS card gate's vblank step (core/psx/psx_bios.c): a command
  * to an empty port signals EvSpTIMOUT from here when its timeout ends. */
 struct CPUState;
 void openpete_psx_bios_vbl(struct CPUState* cpu);

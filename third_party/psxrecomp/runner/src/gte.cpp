@@ -22,7 +22,7 @@ extern "C" unsigned openpete_frame;
 
 extern "C" {
     extern unsigned openpete_frame; /* core/include/openpete_fiber.h */
-    extern uint32_t g_ps1_frame;    /* core/runtime/dispatch.c */
+    extern uint32_t g_ps1_frame;    /* core/psx/dispatch.c */
 }
 
 namespace PSXRecomp {

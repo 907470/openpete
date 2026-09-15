@@ -1,4 +1,4 @@
-/* vstream_test — the moby vertex-stream resolver (core/runtime/vstream.c).
+/* vstream_test — the moby vertex-stream resolver (core/psx/vstream.c).
  *
  * Pins the by-construction claims the stream-handle design rests on:
  *   - stock field values (>= the handle bound) pass through bit-identical,

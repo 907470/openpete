@@ -840,7 +840,7 @@ arena past it. Every reader decodes the field with one idiom —
 EXE only; the 35 level overlays have none). The `srl` of each pair is
 substituted with a resolver call: a field value >= 0x8000 passes through
 bit-identical (stock), a value below it is a HANDLE into an engine table
-of full 32-bit vaddrs (core/runtime/vstream.c). Stock words never
+of full 32-bit vaddrs (core/psx/vstream.c). Stock words never
 address below 0x10000 (the kernel area), which is what makes the range
 free — the full-20k oracle census (`[vstream] ... unresolved=0`) is the
 evidence. The operand is the shift's `rt` field (a shift is R-type with

@@ -143,7 +143,7 @@ The halt PC must be the entry of a recompiled game function. The
 recompiler emits `if (psx_override_dispatch(cpu, 0xADDR)) return;` at the
 top of every generated body
 (`third_party/psxrecomp/recompiler/src/code_generator.cpp:1973`), and
-`--halt-at-pc` is checked inside that call (`core/runtime/dispatch.c`,
+`--halt-at-pc` is checked inside that call (`core/psx/dispatch.c`,
 `psx_override_dispatch`).
 
 A PSYQ address has no generated body: it is a `case 0xADDR:
@@ -235,7 +235,7 @@ a `PsxStackPush` array. `ra` is mandatory and takes the dedicated
 
 - `scripts/pcsx-redux-ram-dump.lua` — capture script
 - `core/runtime/run.c` — `load_cpu_seed`, seed-ram block
-- `core/runtime/dispatch.c` — halt-at-pc hook in `psx_override_dispatch`
+- `core/psx/dispatch.c` — halt-at-pc hook in `psx_override_dispatch`
 - `core/runtime/options.c` — flag parsing
 - `core/include/openpete.h` — option fields
 - `games/spyro-1/psyq_thunks.cpp` — thunk bodies, `psyq_mirror_stack_frame`

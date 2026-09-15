@@ -1,4 +1,4 @@
-// core/runtime/fiber.c — cooperative scheduler globals (Phase 1d).
+// core/psx/fiber.c — cooperative scheduler globals.
 //
 // See core/include/openpete_fiber.h. The actual fiber spawn/loop lives in
 // run.c; this TU only owns the shared state so PSYQ thunks (in games/<g>/)

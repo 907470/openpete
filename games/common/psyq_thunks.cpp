@@ -2469,7 +2469,7 @@ void psyq_CdSync(CPUState* cpu) {
     }
 
     /* Native-side spin guard for CDLoadSync's `while (CdSync(1, NULL) !=
-     * CdlComplete)` polls. The host hang watchdog in core/runtime/dispatch.c
+     * CdlComplete)` polls. The host hang watchdog in core/psx/dispatch.c
      * only catches recomp dispatches; a fully-native spin via this host
      * thunk → host C goes undetected. Per-frame counter resets on frame
      * advance. Default off; set OPENPETE_PSYQ_CDSYNC_LIMIT to a positive
