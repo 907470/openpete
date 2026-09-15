@@ -1,4 +1,4 @@
-/* core/runtime/rumble_curve.c - actuator byte to motor intensity, and its --vibration scaling.
+/* core/input/rumble_curve.c - actuator byte to motor intensity, and its --vibration scaling.
  *
  * The large-motor cubic is taken from Pokopom
  * (https://github.com/KrossX/Pokopom, Pokopom/Input_XInput.cpp),
