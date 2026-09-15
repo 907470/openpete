@@ -16,14 +16,19 @@ byte goes to the first class that matches:
                   the differing-byte count, range count, a digest of the
                   differing offsets and the hit measured when the row was
                   written; any change in either direction fails the run (a
-                  drop tightens the baseline in the same change), and a run
-                  at another hit is refused.
+                  drop tightens the baseline in the same change); a run at
+                  another hit prints the measurement without the ratchet.
   bios_stack      [low, 0x200000): the BIOS's call frames under the guest's
                   initial stack pointer, which psx_bios.c never pushes.
   load_in_flight  computed, never listed: zero on the reference, non-zero on
-                  openpete, inside a CdRead destination openpete's log shows
-                  issued before the halt. Any such byte means the reference
-                  is mid-load at this anchor; the run does not PASS.
+                  openpete, inside a read's destination that is in flight
+                  at the hit: with --loads, the golden's sidecar rows whose
+                  issue record is before the hit and completion record at
+                  or after it (the reference's own timing, exact under the
+                  schedule); otherwise a CdRead destination openpete's log
+                  shows issued before the halt. Any such byte means the
+                  reference is mid-load at this anchor; the run does not
+                  PASS.
   <named>         [[expect]] rows: class, start, end, name, reason, owner.
   unexpected      everything else; any such range fails the run.
 
@@ -98,6 +103,27 @@ def cd_reads_before_halt(log_path):
     return reads
 
 
+def cd_reads_in_flight(loads_path, hit):
+    """Destinations (offset, length) of the golden's reads in flight at anchor
+    hit `hit` (1-based): issued with fewer than `hit` records written and
+    completed with at least that many (record r is hashed at hit r+1, so
+    `hit - 1` records precede the hit)."""
+    reads = []
+    if not loads_path:
+        return reads
+    with open(loads_path, errors="replace") as f:
+        for line in f:
+            if not line or line[0] in "#p":
+                continue
+            c = line.split()
+            if len(c) < 9 or c[8] == "-":
+                continue        # a reissued read: superseded before completing
+            issue_rec, sectors, dst, done_rec = int(c[1]), int(c[5]), int(c[6], 16), int(c[8])
+            if issue_rec < hit <= done_rec:
+                reads.append((dst & RAM_MASK, sectors * 2048))
+    return reads
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__,
                                  formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -108,6 +134,8 @@ def main():
                     help="anchor key for the psyq_internal ratchet: first, loop, or the 0xHEX spelling")
     ap.add_argument("--hit", type=int, default=1, help="openpete hit the dump was taken at")
     ap.add_argument("--op-log", help="openpete log of the halt run (CdRead destinations)")
+    ap.add_argument("--loads", help="the golden's .loads sidecar: reads in flight at --hit "
+                                    "come from the reference's own issue and completion records")
     ap.add_argument("--map", help="decomp psx.map for symbol names")
     ap.add_argument("--regions", help="gameplay_state_regions.toml: report unexpected "
                                       "ranges intersecting a direct region (calibration)")
@@ -136,7 +164,8 @@ def main():
     stack_low = expect.get("bios_stack", {}).get("low", RAM_SIZE) & RAM_MASK
     named = [(*span(r), r) for r in expect.get("expect", [])]
     baseline = expect.get("psyq_internal_baseline", {}).get(args.anchor)
-    reads = cd_reads_before_halt(args.op_log)
+    reads = cd_reads_in_flight(args.loads, args.hit) if args.loads \
+        else cd_reads_before_halt(args.op_log)
     syms = load_map(args.map)
 
     # Per-byte classification; ranges are formed inside a class afterwards,
@@ -182,7 +211,8 @@ def main():
     n_bytes = sum(c for _, _, c in ranges)
     n_span = sum(j - i for i, j, _ in ranges)
     print(f"[ram-diff] {len(ranges)} ranges, {n_bytes} differing bytes ({n_span} span), "
-          f"gap {args.gap}; CdReads before halt: {len(reads)}; anchor {args.anchor or '-'}")
+          f"gap {args.gap}; {'reads in flight (sidecar)' if args.loads else 'CdReads before halt'}: "
+          f"{len(reads)}; anchor {args.anchor or '-'}")
 
     def line(name, rs):
         by = sum(c for _, _, c in rs)
@@ -232,8 +262,10 @@ def main():
               f"{psyq_bytes} B / {psyq_ranges} ranges / {digest}, baseline {b_bytes} B / "
               f"{b_ranges} ranges / {b_digest or '-'} at hit {b_hit}")
         if b_hit != args.hit:
-            reasons.append(f"baseline for anchor {args.anchor} was measured at hit {b_hit}, "
-                           f"this run is hit {args.hit}")
+            # A diagnostic run at another hit: the ratchet is the baseline
+            # hit's gate and is neither applied nor re-recorded here.
+            print(f"[ram-diff]   psyq_internal ratchet not applied: baseline for anchor "
+                  f"{args.anchor} is at hit {b_hit}, this run is hit {args.hit}")
         elif psyq_bytes != b_bytes or psyq_ranges != b_ranges or (b_digest and b_digest != digest):
             reasons.append(f"psyq_internal moved from its baseline at anchor {args.anchor}: "
                            f"{psyq_bytes} B / {psyq_ranges} ranges / {digest} vs {b_bytes} B / "

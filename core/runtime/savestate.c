@@ -369,8 +369,21 @@ int openpete_state_save(unsigned slot, const CPUState* cpu, unsigned frame) {
     return openpete_state_save_file(path, cpu, frame);
 }
 
+/* Under the reference's schedule (a --psxtrace-verify run with sidecars)
+ * the thunk layer's position in the schedule's rows (VSync, read, seed,
+ * CdSync, controller and interrupt cursors, the reference VBLANK reached)
+ * is host state no state file carries; a load would replay from a RAM
+ * image the schedule has moved past and desync every row after it. */
+static int sched_refuses_load(const char* what) {
+    if (!openpete_sched_active()) return 0;
+    OPL_ERROR_F("savestate", "%s refused: the run is under the reference's "
+                "schedule, whose position no state carries", what);
+    return 1;
+}
+
 int openpete_state_load_file(const char* path, CPUState* cpu,
                              unsigned* out_frame) {
+    if (sched_refuses_load(path)) return -1;
     FILE* fp = fopen(path, "rb");
     if (!fp) {
         OPL_ERROR_F("savestate", "fopen %s for read failed: %s",
@@ -692,6 +705,7 @@ int openpete_state_mem_save(openpete_state_mem_t* m, const CPUState* cpu,
 int openpete_state_mem_load(const openpete_state_mem_t* m, CPUState* cpu,
                             unsigned* out_frame, int quiet) {
     if (!m || !m->valid) return -1;
+    if (sched_refuses_load("in-memory state load")) return -1;
     memcpy(cpu,                        m->cpu_buf,     CPU_REG_BYTES);
     memcpy(openpete_psx_get_ram(),     m->ram,         OPENPETE_PSX_RAM_SIZE);
     memcpy(openpete_psx_get_scratch(), m->scratch_buf, OPENPETE_PSX_SCRATCH_SIZE);

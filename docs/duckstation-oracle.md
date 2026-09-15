@@ -457,16 +457,24 @@ instant.
 [--ref-hit M] [--keep DIR]` compares the reference's 2 MB RAM with
 openpete's at a translated function's entry: the module runs with
 `-dump-ram-at-anchor` (and `-card1 none` when the game's expectation file
-says so), openpete with `--halt-at-pc`/`--halt-hit`, and
+says so), openpete with `--halt-at-pc`/`--halt-hit` under the game's
+golden (`--psxtrace-verify` with `--psxtrace-keep-going`, when the golden
+its `oracle.conf` names exists; `OPENPETE_RAM_DIFF_NO_SCHEDULE=1` runs
+unscheduled), so openpete's hit N is the reference's hit N at any hit,
+loads included, and
 `tools/ram_diff.py` sorts every differing range into a class from
 `games/<game>/manifest/ram_diff_expect.toml`, in this order: the exact
 words openpete's PSYQ mirrors write (`populated`; a difference here is a
 defective mirror and fails), the kernel area, the PSYQ library's own
 section extents from the decomp link map (`psyq_internal`, ratcheted per
 anchor against the counts recorded in the file), the BIOS's stack frames,
-data openpete landed synchronously that hardware still had in flight
-(computed from the CdRead lines in openpete's log; any such byte means the
-anchor sits inside a load and the run does not pass), and named ranges
+bytes of a read's destination that differ while the read is in flight
+(`load_in_flight`: the golden's `.loads` rows issued before the hit and
+completed at or after it, the reference's own timing; without a golden,
+the CdRead lines in openpete's log; any such byte means the anchor sits
+inside a load and the run does not pass, and under the schedule openpete
+lands sectors at the reference's interrupts, so the class is empty
+whenever the landing is exact), and named ranges
 with a reason and an owner. Anything else is unexpected and fails; the
 union of expected differing bytes is capped at 25% of RAM. The anchor must
 be a dispatch-table entry whose entry block is not a loop head, since the
@@ -475,7 +483,14 @@ Each game's file names a `first` anchor, the entry of the function issuing
 its first CdRead, where no read has been issued on either side; Spyro 1
 also names its `loop` anchor, GamestateDraw, where hit N is the same
 manifest state on both sides by the oracle and the whole-RAM residue is
-what the tool reports. A range leaves the expectation file only by a fix.
+what the tool reports. A range leaves the expectation file only by a fix. The `psyq_internal`
+ratchet applies at the hit its row was measured at; a run at another hit
+prints the measurement without it, so any hit is a diagnostic.
+
+A savestate load is refused while the run is under the schedule: the
+thunk layer's position in the schedule's rows is host state no state file
+carries, and a load would replay from a RAM image the schedule has moved
+past. No golden is verified through a savestate round-trip.
 
 ## CD-load transients
 

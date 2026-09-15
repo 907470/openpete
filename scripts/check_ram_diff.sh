@@ -7,7 +7,9 @@
 #                             [--hit N] [--ref-hit M] [--keep DIR]
 #
 # Runs the DuckStation regtest module on the game's disc with
-# -dump-ram-at-anchor and openpete with --halt-at-pc, then classifies every
+# -dump-ram-at-anchor and openpete with --halt-at-pc (under the golden's
+# schedule when the golden exists, so a post-load hit is aligned), then
+# classifies every
 # differing range with tools/ram_diff.py against
 # games/<game>/manifest/ram_diff_expect.toml. The anchor must be an entry in
 # the game's generated dispatch table, and its entry block must not be a
@@ -109,6 +111,28 @@ if re.search(rf"goto block_{pc:08x};|goto block_{pc:08X};", body):
 print(f"[ram-diff] anchor {name} @ 0x{pc:08X}: dispatch entry, not a loop head")
 PY
 
+# Under the reference's schedule: when the game's golden and its sidecars
+# exist (games/<game>/oracle.conf names the golden; check_psx_oracle.sh
+# captures it), openpete runs --psxtrace-verify on it so its VBLs, reads
+# and seeds follow the reference's and hit N is the reference's hit N;
+# --psxtrace-keep-going so a divergence before the hit does not end the run
+# (the diff is the diagnosis). The sidecar's reads then define the
+# load_in_flight class. OPENPETE_RAM_DIFF_NO_SCHEDULE=1 runs unscheduled.
+SCHED=()
+LOADS=()
+if [[ -f "$GDIR/oracle.conf" && -z "${OPENPETE_RAM_DIFF_NO_SCHEDULE:-}" ]]; then
+    # Only the golden path is wanted; the recipe's run flags stay the
+    # expect file's (openpete.args).
+    GOLDEN="$(bash -c 'source "$1"; printf %s "$GOLDEN"' _ "$GDIR/oracle.conf")"
+    if [[ -f "$ROOT/$GOLDEN" && -f "$ROOT/$GOLDEN.vsync" ]]; then
+        SCHED=(--psxtrace-verify "$ROOT/$GOLDEN" --psxtrace-keep-going)
+        [[ -f "$ROOT/$GOLDEN.loads" ]] && LOADS=(--loads "$ROOT/$GOLDEN.loads")
+        echo "[ram-diff] schedule: $GOLDEN (openpete's hit $HIT is the reference's)"
+    else
+        echo "[ram-diff] unscheduled: no golden at $GOLDEN (a post-load hit is unaligned)"
+    fi
+fi
+
 WORK="${KEEP:-${TMPDIR:-/tmp}/openpete-ram-diff.$$}"
 mkdir -p "$WORK"
 [[ -n "$KEEP" ]] || trap 'rm -rf "$WORK"' EXIT
@@ -150,7 +174,8 @@ set +e
 OPENPETE_VIBRATION=0 timeout 900 "$BIN" --headless --no-config --mods "" --mute 1 --vibration 0 \
     "${OP_CARD[@]}" --disc "$DISC" $RUN_ARGS \
     --halt-at-pc "$PC" --halt-hit "$HIT" --ram-dump-output "$OP" \
-    --frame-limit 20000 > "$OPLOG" 2>&1
+    "${SCHED[@]}" \
+    --frame-limit 200000 > "$OPLOG" 2>&1
 OP_RC=$?
 wait "$DS_PID"
 set -e
@@ -169,4 +194,4 @@ MAPARG=()
 # hex anchor needs its own baseline row too.
 python3 "$ROOT/tools/ram_diff.py" --ref "$REF" --op "$OP" --expect "$EXPECT" \
     --anchor "$ANCHOR" --hit "$HIT" \
-    --op-log "$OPLOG" "${MAPARG[@]}" "${REGIONS[@]}"
+    --op-log "$OPLOG" "${LOADS[@]}" "${MAPARG[@]}" "${REGIONS[@]}"

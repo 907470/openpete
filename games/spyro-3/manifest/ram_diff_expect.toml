@@ -42,7 +42,7 @@ first = { bytes = 203, ranges = 26, digest = "d5f0fa86381c802a", hit = 1 }
 # in-load read; from hit 5 on the reference has bytes in flight. The 9
 # unexpected ranges and the libcd mirror byte this anchor also shows are
 # outside the ratchet and are classified by the region-manifest work.
-loop  = { bytes = 1235, ranges = 89, digest = "85a520b2c94c4892", hit = 1 }
+loop  = { bytes = 1233, ranges = 89, digest = "855d4a41bc90d355", hit = 1 }
 
 [bios_stack]
 low = 0x801FFB50
