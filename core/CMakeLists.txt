@@ -7,8 +7,26 @@
 set(PSXRECOMP_RUNNER ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner)
 
 add_library(openpete_core STATIC
-    runtime/log.c
-    runtime/log_file.c
+    # Diagnostics: the log and its file mirror, the crash handler, the
+    # pacing event log (--pace-log PATH) with the always-on pacing census,
+    # the per-run perf summary, the CPU+GPU performance trace
+    # (--profile-out PATH), the per-function tracing hooks (fire only when
+    # a TU is built with -finstrument-functions, -DOPENPETE_FUNC_TRACE),
+    # the sub-tick spine identity audit (OPENPETE_IDENT_AUDIT: composes
+    # the canonical scene and the alpha-1 re-extract of the same tick and
+    # reports their pixel difference), the per-present frame-time recorder
+    # (--frame-time-log PATH), and the psxtrace schedule and verifier.
+    diag/log.c
+    diag/log_file.c
+    diag/crash.c
+    diag/pace_log.c
+    diag/perf_stats.c
+    diag/profile.c
+    diag/func_trace.c
+    diag/ident_audit.c
+    diag/openpete_frame_time_log.c
+    diag/psxtrace_schedule.c
+    diag/psxtrace_verify.c
 
     # Configuration: the command-line flag parser, openpete.toml (the
     # layered config file, resolved into an argv splice and a setenv pass;
@@ -53,8 +71,6 @@ add_library(openpete_core STATIC
     renderer/subtick_view.c
     renderer/screenshot.c
     runtime/run.c
-    runtime/psxtrace_verify.c
-    runtime/psxtrace_schedule.c
 
     # True-VFR gameplay video capture (--record). Links libav* in-process;
     # reads the present FBO so output is bars-free at internal resolution.
@@ -142,28 +158,8 @@ add_library(openpete_core STATIC
     # notes/plans/openpete-frame-pacing.md.
     runtime/openpete_time.c
 
-    # Binary per-present frame-time recorder for the pacing harness.
-    # Off by default; enabled by --frame-time-log PATH.
-    runtime/openpete_frame_time_log.c
-
-    # Unified pacing event log (--pace-log PATH) + the always-on pacing
-    # census reported at the end of every run. See openpete_pace_log.h and
-    # notes/plans/openpete-sim-tick-pacing-perfection.md.
-    runtime/pace_log.c
     runtime/present_thread.c
-    runtime/perf_stats.c
-
-    # Empirical CPU+GPU performance trace (per present / canonical tick).
-    # Off by default; enabled by --profile-out PATH. See openpete_profile.h.
-    runtime/profile.c
     renderer/native_terrain_cache.c
-
-    # Per-function tracing hooks (Tier B). Always compiled; the __cyg_profile
-    # hooks fire only when a TU is built with -finstrument-functions
-    # (-DOPENPETE_FUNC_TRACE, applied to the generated EXE). Inert otherwise
-    # (the generated symtab TU self-registers at startup; none present = inert).
-    # See openpete_func_trace.h.
-    runtime/func_trace.c
 
     # Render-side state interpolation snapshot ring (game-agnostic;
     # regions supplied by games/<game>/). Capture-only in v1; lerp +
@@ -198,12 +194,6 @@ add_library(openpete_core STATIC
     renderer/native_render.c
     renderer/native_vram.c
 
-    # Sub-tick spine identity audit (OPENPETE_IDENT_AUDIT). Composes the
-    # canonical scene and the alpha-1 re-extract of the same tick each
-    # canonical present and reports their pixel difference; a pure observer of
-    # the run it measures.
-    runtime/ident_audit.c
-
     # Per-feature modules. See notes/plans/openpete-feature-modules.md.
     renderer/no_lod.c
     renderer/widescreen.c
@@ -222,8 +212,6 @@ add_library(openpete_core STATIC
     # Host-backed PSX memory card (save/load).
     # See notes/plans/openpete-memcard-host-backed.md.
     host/memcard.c
-
-    runtime/crash.c
 
     # Data-parallel extraction worker pool (--extract-threads). See
     # openpete_workpool.h for the threading contracts (C1-C5).

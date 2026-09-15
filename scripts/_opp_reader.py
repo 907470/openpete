@@ -1,4 +1,4 @@
-"""Reader for the binary .opp performance trace (see core/runtime/profile.c).
+"""Reader for the binary .opp performance trace (see core/diag/profile.c).
 
 Stream layout: a 32-byte header, then a mix of variable-length NAME records and
 fixed 32-byte PRESENT/SPAN/GPUZ/COUNT records. Binning rule: every SPAN/COUNT

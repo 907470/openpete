@@ -345,7 +345,7 @@ void openpete_mods_time_report(unsigned ticks_elapsed);
 
 /* Crash attribution: non-NULL = an override chain frame is live on this
  * thread; returns the innermost mod id (addr_out = the overridden
- * vaddr). Consumed by core/runtime/crash.c so a crash report names the
+ * vaddr). Consumed by core/diag/crash.c so a crash report names the
  * offending mod (PoC rung 6). */
 const char* openpete_mods_crash_attribution(uint32_t* addr_out);
 

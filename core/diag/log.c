@@ -1,4 +1,4 @@
-// core/runtime/log.c — JSON & plain-text structured logger.
+// core/diag/log.c — JSON & plain-text structured logger.
 //
 // Output goes to stderr so stdout stays usable for stand-alone messages
 // (e.g. the smoke-test exit line). Per-subsystem level filters are parsed

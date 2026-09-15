@@ -1,4 +1,4 @@
-// core/runtime/log_file.c — mirror stderr into a rotating log file.
+// core/diag/log_file.c — mirror stderr into a rotating log file.
 //
 // A GUI launch has no terminal attached: a double-clicked AppImage, a
 // .desktop entry, a file manager's "Open with". Everything the runtime

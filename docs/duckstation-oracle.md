@@ -123,7 +123,7 @@ equal clock orders nothing and a lower one is earlier.
 ## The reference's schedule
 
 A golden verified with `.vsync`, `.loads` and `.srand` siblings beside it
-runs openpete under the reference's timing (`core/runtime/psxtrace_schedule.c`,
+runs openpete under the reference's timing (`core/diag/psxtrace_schedule.c`,
 consumed by the VSync, CdRead and srand thunks). The schedule tracks the
 reference VBLANK count openpete has reached (`pos`); each event charges
 `target - pos` VBLs as calls of the VBL body (counter, SPU envelope, yield,
@@ -508,7 +508,7 @@ end. The Spyro 1 manifest's head comment lists the rows; the
 openpete-per-game-oracle plan (P6) charges the reference's VBLs on
 openpete's side and removes the main-image flags.
 
-The verifier (`core/runtime/psxtrace_verify.c`) tracks each transient
+The verifier (`core/diag/psxtrace_verify.c`) tracks each transient
 region's divergence burst independently. A burst that re-converges is
 absorbed and logged. A burst still open after `heal_window` ticks, or still
 open when the trace is fully consumed (`openpete_psxtrace_finalize`), is a

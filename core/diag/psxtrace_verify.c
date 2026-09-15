@@ -1,4 +1,4 @@
-/* core/runtime/psxtrace_verify.c — consumer for the .psxtrace v2 oracle. */
+/* core/diag/psxtrace_verify.c — consumer for the .psxtrace v2 oracle. */
 
 #include "openpete_psxtrace.h"
 #include "openpete_cdrom_mmio.h"

@@ -1,10 +1,10 @@
-// core/runtime/crash.c — SIGSEGV/SIGABRT handler that dumps minimal state.
+// core/diag/crash.c — SIGSEGV/SIGABRT handler that dumps minimal state.
 //
-// Phase 1b: install once at startup; on crash, print where the fault
-// happened and the saved CPU's pc/ra/sp before re-raising the default
-// disposition so the OS can produce a core if configured.
+// Installed once at startup; on crash, prints where the fault happened
+// and the saved CPU's pc/ra/sp before re-raising the default disposition
+// so the OS can produce a core if configured.
 //
-// Phase 1f: SA_SIGINFO + ucontext_t — recompiled code runs on a libco
+// SA_SIGINFO + ucontext_t — recompiled code runs on a libco
 // fiber, so libc's `backtrace()` walks the wrong stack chain and returns
 // 2 frames (just the signal handler). The sigcontext gives us the real
 // host RIP, which `addr2line -e openpete-spyro1 <hex>` resolves to the

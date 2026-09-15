@@ -1,4 +1,4 @@
-/* core/runtime/psxtrace_schedule.c — the reference's timing, replayed.
+/* core/diag/psxtrace_schedule.c — the reference's timing, replayed.
  *
  * A golden captured with the DuckStation fork's recorders carries sidecars
  * beside the trace: `<trace>.vsync` (every libetc VSync call: a waited

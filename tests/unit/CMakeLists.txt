@@ -12,7 +12,7 @@
 add_executable(bk2_movie_test
     bk2_movie_test.c
     ${CMAKE_SOURCE_DIR}/core/runtime/bk2_movie.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/log.c
+    ${CMAKE_SOURCE_DIR}/core/diag/log.c
     ${CMAKE_SOURCE_DIR}/third_party/miniz/miniz.c)
 target_include_directories(bk2_movie_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include
@@ -71,7 +71,7 @@ add_test(NAME openpete_hook_test_openpete COMMAND openpete_hook_test_openpete)
 add_executable(keymap_test
     keymap_test.c
     ${CMAKE_SOURCE_DIR}/core/input/keymap.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/log.c)
+    ${CMAKE_SOURCE_DIR}/core/diag/log.c)
 target_include_directories(keymap_test PRIVATE
     ${CMAKE_SOURCE_DIR}/core/include)
 set_target_properties(keymap_test PROPERTIES C_STANDARD 11)
@@ -162,7 +162,7 @@ add_executable(config_resolve_test
     ${CMAKE_SOURCE_DIR}/core/config/config.c
     ${CMAKE_SOURCE_DIR}/core/config/config_schema.c
     ${CMAKE_SOURCE_DIR}/core/input/keymap.c
-    ${CMAKE_SOURCE_DIR}/core/runtime/log.c
+    ${CMAKE_SOURCE_DIR}/core/diag/log.c
     ${CMAKE_SOURCE_DIR}/core/config/paths.c
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c)
 target_include_directories(config_resolve_test PRIVATE

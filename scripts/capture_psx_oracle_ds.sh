@@ -66,7 +66,7 @@
 #                                  are hashed (default
 #                                  $OPENPETE_REGIONS_MANIFEST, else Spyro 1's)
 # A golden verified with its .vsync/.loads/.srand siblings beside it runs
-# openpete under the reference's timing (core/runtime/psxtrace_schedule.c).
+# openpete under the reference's timing (core/diag/psxtrace_schedule.c).
 set -euo pipefail
 cd "$(dirname "$0")/.."
 

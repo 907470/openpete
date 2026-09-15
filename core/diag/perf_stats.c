@@ -1,4 +1,4 @@
-/* core/runtime/perf_stats.c — see openpete_perf_stats.h for what this is for. */
+/* core/diag/perf_stats.c — see openpete_perf_stats.h for what this is for. */
 
 #include "openpete_perf_stats.h"
 
