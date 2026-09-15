@@ -52,34 +52,13 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
+#include "game_layout.h"          /* game_layout: the engine RAM addresses this walk reads */
 
 extern void     func_800258F0(CPUState* cpu);  /* the real world renderer */
 extern unsigned openpete_frame;
 
 /* ---- gamestate addresses (psx.map / recompiled C / r_environment.s) -------- */
 
-/* Environment field offsets (environment.h:60-73) */
-#define ENV_SECTORPTR   0x00u
-#define ENV_SECTORCNT   0x04u
-#define ENV_OCCGROUPS   0x08u
-#define ENV_OCCGROUPCNT 0x0Cu
-#define ENV_LQTEX       0x18u
-#define ENV_HQTEX       0x1Cu
-#define ENV_TEXCNT      0x20u
-#define ENV_LODDIST     0x24u
-#define ENV_CULLDIST    0x28u   /* LP far draw-distance (m_CullingDistance) —
-                                 * a distinct, larger field the .s LP walk
-                                 * far-culls against; reassigned elsewhere
-                                 * (titlescreen), so read per walk like LODDIST */
-#define ENV_CULLDIST    0x28u
-
-/* g_EnvironmentAnimations (environment.h) sits 0x48 bytes BEFORE g_Environment
- * (0x80078560; the generated env-anim func_8002A6FC indexes it as t9+0x10..).
- * Each list is {count, ptr-to-descriptor-pointer-array}. */
-#define G_ENVANIM           (G_ENVIRONMENT - 0x48u)
-#define ENVANIM_SCROLL_CNT  0x08u   /* m_ScrollingTextureCount / +4 ptr */
-#define ENVANIM_LPPOLY_CNT  0x10u   /* m_LowPolyAnimationCount / +4 ptr */
-#define ENVANIM_HPPOLY_CNT  0x20u   /* m_HighPolyAnimationCount / +4 ptr */
 
 /* Sub-tick UV-scroll offsets (see tsc_scroll_refresh). The scrolling-texture
  * animation writes WHOLE TEXELS into the tiledef V bytes once per canonical
@@ -176,17 +155,17 @@ static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
 static uint32_t rd(CPUState* cpu, uint32_t a) { return cpu->read_word(a); }
 
 static void terrain_dump(CPUState* cpu) {
-    uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
-    uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
-    uint32_t occCnt    = rd(cpu, G_ENVIRONMENT + ENV_OCCGROUPCNT);
-    uint32_t texCnt    = rd(cpu, G_ENVIRONMENT + ENV_TEXCNT);
-    uint32_t lqTex     = rd(cpu, G_ENVIRONMENT + ENV_LQTEX);
-    uint32_t hqTex     = rd(cpu, G_ENVIRONMENT + ENV_HQTEX);
-    int lodDist        = (int)rd(cpu, G_ENVIRONMENT + ENV_LODDIST);
-    int cullDist       = (int)rd(cpu, G_ENVIRONMENT + ENV_CULLDIST);
-    int camX = (int)rd(cpu, G_CAMERA + 0x28);
-    int camY = (int)rd(cpu, G_CAMERA + 0x2C);
-    int camZ = (int)rd(cpu, G_CAMERA + 0x30);
+    uint32_t sectorPtr = rd(cpu, game_layout.env.sector_ptr);
+    uint32_t sectorCnt = rd(cpu, game_layout.env.sector_count);
+    uint32_t occCnt    = rd(cpu, game_layout.env.occ_group_count);
+    uint32_t texCnt    = rd(cpu, game_layout.env.tex_count);
+    uint32_t lqTex     = rd(cpu, game_layout.env.lq_tex);
+    uint32_t hqTex     = rd(cpu, game_layout.env.hq_tex);
+    int lodDist        = (int)rd(cpu, game_layout.env.lod_dist);
+    int cullDist       = (int)rd(cpu, game_layout.env.cull_dist);
+    int camX = (int)rd(cpu, game_layout.cam.position);
+    int camY = (int)rd(cpu, game_layout.cam.position + 4u);
+    int camZ = (int)rd(cpu, game_layout.cam.position + 8u);
 
     fprintf(stderr,
         "[terrain] frame=%u  sectors=%u occGroups=%u texCnt=%u  LQtex=%08X HQtex=%08X\n"
@@ -203,7 +182,7 @@ static void terrain_dump(CPUState* cpu) {
      * header count-prefix + the 11/11/10 HP vertex format against live data. */
     int shown = 0;
     for (uint32_t i = 0; i < sectorCnt && shown < 3; i++) {
-        uint8_t vis = (uint8_t)(rd(cpu, (D_VISIBILITY + i) & ~3u) >> ((i & 3) * 8));
+        uint8_t vis = (uint8_t)(rd(cpu, (game_layout.visibility.base + i) & ~3u) >> ((i & 3) * 8));
         if (vis != 0xFF) continue;
         uint32_t s = rd(cpu, sectorPtr + i * 4);
         if (!s) continue;
@@ -1499,7 +1478,7 @@ static void fp_grid_report(int level, const char* level_name) {
 static void fp_publish(CPUState* cpu) {
     openpete_fillpick_hit h;
     memset(&h, 0, sizeof h);
-    h.level = (int)(int32_t)rd(cpu, 0x8007596C);   /* g_LevelId */
+    h.level = (int)(int32_t)rd(cpu, game_layout.level_id);
     size_t nlv = 0;
     const spyro1_level_t* lv = spyro1_level_table(&nlv);
     snprintf(h.level_name, sizeof h.level_name, "level%d", h.level);
@@ -1569,7 +1548,7 @@ static int lp_artfix_lookup(CPUState* cpu, int sec, int face, uint32_t* rgb) {
     if (!s_on) return 0;
     static int s_lvl = -1, s_lvl_frame = -1;
     if (s_lvl_frame != (int)openpete_frame) {   /* one RAM read per VBL */
-        s_lvl = (int)(int32_t)rd(cpu, 0x8007596C);   /* g_LevelId */
+        s_lvl = (int)(int32_t)rd(cpu, game_layout.level_id);
         s_lvl_frame = (int)openpete_frame;
     }
     for (size_t k = 0; k < sizeof(k_lp_artfix)/sizeof(k_lp_artfix[0]); k++)
@@ -1588,7 +1567,7 @@ static void tsc_field_census(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorC
     uint32_t ck = sectorPtr ^ (sectorCnt * 2654435761u) ^ 0x5CA1AB1Eu;
     if (ck == last_key) return;
     last_key = ck;
-    int level = (int)(int32_t)rd(cpu, 0x8007596C);   /* g_LevelId */
+    int level = (int)(int32_t)rd(cpu, game_layout.level_id);
     uint32_t n = sectorCnt > 1024 ? 1024 : sectorCnt;
     fprintf(stderr, "[fc-hdr] level=%d sectors=%u\n", level, n);
     for (uint32_t i = 0; i < n; i++) {
@@ -1647,7 +1626,7 @@ static void tsc_tag_gapfill(CPUState* cpu, tscache_t* C,
     uint32_t n = sectorCnt > 1024 ? 1024 : sectorCnt;
     for (uint32_t i = 0; i < n; i++)
         if (rd(cpu, sectorPtr + i * 4) == C->s) { secIdx = (int)i; break; }
-    int level = (int)(int32_t)rd(cpu, 0x8007596C);   /* g_LevelId */
+    int level = (int)(int32_t)rd(cpu, game_layout.level_id);
     /* The credits overlay (func_credits_8007AA50) loads its own scene builds
      * through LoadLevelData, indexed by g_CreditsSequence, and never writes
      * g_LevelId — it keeps the id of the level the credits were entered from.
@@ -1725,9 +1704,9 @@ static void tsc_retag_fill(CPUState* cpu, tscache_t* C,
 static int tsc_sector_polyanim(CPUState* cpu, uint32_t s,
                                uint32_t sectorPtr, uint32_t sectorCnt) {
     for (int list = 0; list < 2; list++) {
-        uint32_t off  = list ? ENVANIM_HPPOLY_CNT : ENVANIM_LPPOLY_CNT;
-        uint32_t cnt  = rd(cpu, G_ENVANIM + off);
-        uint32_t base = rd(cpu, G_ENVANIM + off + 4);
+        uint32_t off  = list ? game_layout.env_anim.hp_poly : game_layout.env_anim.lp_poly;
+        uint32_t cnt  = rd(cpu, off);
+        uint32_t base = rd(cpu, off + 4);
         if (!base || cnt == 0 || cnt > 1024) continue;
         for (uint32_t k = 0; k < cnt; k++) {
             uint32_t desc = rd(cpu, base + k * 4);
@@ -1917,9 +1896,9 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
     if (s_vdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_VANIMDBG"); s_vdbg = (e && *e && *e != '0'); }
     int dbg_desc = 0, dbg_cached = 0, dbg_prev = 0, dbg_filled = 0;
     for (int list = 0; list < 2; list++) {
-        uint32_t off  = list ? ENVANIM_HPPOLY_CNT : ENVANIM_LPPOLY_CNT;
-        uint32_t cnt  = rd(cpu, G_ENVANIM + off);
-        uint32_t base = rd(cpu, G_ENVANIM + off + 4);
+        uint32_t off  = list ? game_layout.env_anim.hp_poly : game_layout.env_anim.lp_poly;
+        uint32_t cnt  = rd(cpu, off);
+        uint32_t base = rd(cpu, off + 4);
         if (!base || cnt == 0 || cnt > 1024) continue;
         for (uint32_t k = 0; k < cnt; k++) {
             uint32_t desc = rd(cpu, base + k * 4);
@@ -2080,8 +2059,8 @@ static void tsc_scroll_refresh(CPUState* cpu) {
     memset(s_tscroll_tile, 0, sizeof(s_tscroll_tile));
     int dbg_desc = 0, dbg_paired = 0;
     {
-    uint32_t cnt  = rd(cpu, G_ENVANIM + ENVANIM_SCROLL_CNT);
-    uint32_t base = rd(cpu, G_ENVANIM + ENVANIM_SCROLL_CNT + 4);
+    uint32_t cnt  = rd(cpu, game_layout.env_anim.scroll);
+    uint32_t base = rd(cpu, game_layout.env_anim.scroll + 4);
     if (!base || cnt == 0 || cnt > 1024) goto scan;
     /* Fractional offsets exist only on sub-tick re-extract builds; the
      * canonical path renders the committed whole-texel decode, byte-exact.
@@ -2238,7 +2217,7 @@ static void terrain_visdbg(CPUState* cpu, uint32_t sectorCnt, int group,
     for (int j = 0; j < cn; j++) if (cand[j] < 1024) inset[cand[j]] = 1;
     int vis43 = 0, missing = 0;
     for (uint32_t i = 0; i < sectorCnt && i < 1024; i++) {
-        uint8_t vis = (uint8_t)(rd(cpu, (D_VISIBILITY + i) & ~3u) >> ((i & 3) * 8));
+        uint8_t vis = (uint8_t)(rd(cpu, (game_layout.visibility.base + i) & ~3u) >> ((i & 3) * 8));
         if (vis == 0xFF) { vis43++; if (!inset[i]) missing++; }
     }
     fprintf(stderr,
@@ -2288,7 +2267,7 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
     if (sectorCnt > 1024) sectorCnt = 1024;
     int ws = s_view.extended;   /* Hor+ or a wider FOV: the 4:3 verdict is too narrow */
     if (s_visdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_VISDBG"); s_visdbg = (e && *e && *e != '0'); }
-    {   /* OPENPETE_TERRAIN_ALLVIS=1: walk ALL sectors (bypass D_VISIBILITY /
+    {   /* OPENPETE_TERRAIN_ALLVIS=1: walk ALL sectors (bypass the visibility verdict /
          * occlusion groups) — A/B probe for view-dependent sector culling. */
         static int s_allvis = -1;
         if (s_allvis < 0) { const char* e = getenv("OPENPETE_TERRAIN_ALLVIS"); s_allvis = (e && *e && *e != '0'); }
@@ -2299,8 +2278,8 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
         }
     }
 
-    uint32_t occCnt    = rd(cpu, G_ENVIRONMENT + ENV_OCCGROUPCNT);
-    uint32_t occGroups = rd(cpu, G_ENVIRONMENT + ENV_OCCGROUPS);
+    uint32_t occCnt    = rd(cpu, game_layout.env.occ_group_count);
+    uint32_t occGroups = rd(cpu, game_layout.env.occ_groups);
     uint32_t list = (group >= 0 && (uint32_t)group < occCnt && occGroups)
                     ? rd(cpu, occGroups + (uint32_t)group * 4) : 0;
 
@@ -2322,7 +2301,7 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
     /* native 4:3 — the canonical .s verdict */
     int n = 0;
     for (uint32_t i = 0; i < sectorCnt; i++) {
-        uint8_t vis = (uint8_t)(rd(cpu, (D_VISIBILITY + i) & ~3u) >> ((i & 3) * 8));
+        uint8_t vis = (uint8_t)(rd(cpu, (game_layout.visibility.base + i) & ~3u) >> ((i & 3) * 8));
         if (vis == 0xFF) out[n++] = (uint16_t)i;
     }
     if (s_visdbg) {   /* validate the invariant without altering the 4:3 render set */
@@ -2431,9 +2410,9 @@ static void terrain_texrecords(CPUState* cpu) {
     const char* path = getenv("OPENPETE_TEXPACK_RECORDS");
     if (!path || !*path) { off = 1; return; }
     const char* dir = getenv("OPENPETE_TEXPACK_RECORDS_DIR");
-    uint32_t lqTable = rd(cpu, G_ENVIRONMENT + ENV_LQTEX);
-    uint32_t hqTable = rd(cpu, G_ENVIRONMENT + ENV_HQTEX);
-    uint32_t texCnt  = rd(cpu, G_ENVIRONMENT + ENV_TEXCNT);
+    uint32_t lqTable = rd(cpu, game_layout.env.lq_tex);
+    uint32_t hqTable = rd(cpu, game_layout.env.hq_tex);
+    uint32_t texCnt  = rd(cpu, game_layout.env.tex_count);
     if (!lqTable || !hqTable || !texCnt) return;   /* not loaded yet — retry next frame */
     uint32_t s = lqTable ^ (hqTable * 2654435761u) ^ (texCnt << 24);
     if (s == sig) return;                          /* this level already dumped */
@@ -2493,7 +2472,7 @@ static void terrain_animdbg(CPUState* cpu) {
     static int probeN = -2;
     if (probeN == -2) { const char* e = getenv("OPENPETE_TEXPACK_ANIMPROBE"); probeN = (e && *e) ? atoi(e) : -1; }
     if (probeN >= 0) {
-        uint32_t lt = rd(cpu, G_ENVIRONMENT + ENV_LQTEX), ht = rd(cpu, G_ENVIRONMENT + ENV_HQTEX);
+        uint32_t lt = rd(cpu, game_layout.env.lq_tex), ht = rd(cpu, game_layout.env.hq_tex);
         if (lt && ht) {
             fprintf(stderr, "[animprobe f=%u] lq %08x %08x | %08x %08x | hq",
                     openpete_frame, rd(cpu, lt + (uint32_t)probeN*16u), rd(cpu, lt + (uint32_t)probeN*16u + 4),
@@ -2505,11 +2484,11 @@ static void terrain_animdbg(CPUState* cpu) {
         }
     }
     if (!on) return;
-    uint32_t lqTable   = rd(cpu, G_ENVIRONMENT + ENV_LQTEX);
-    uint32_t hqTable   = rd(cpu, G_ENVIRONMENT + ENV_HQTEX);
-    uint32_t texCnt    = rd(cpu, G_ENVIRONMENT + ENV_TEXCNT);
-    uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
-    uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
+    uint32_t lqTable   = rd(cpu, game_layout.env.lq_tex);
+    uint32_t hqTable   = rd(cpu, game_layout.env.hq_tex);
+    uint32_t texCnt    = rd(cpu, game_layout.env.tex_count);
+    uint32_t sectorPtr = rd(cpu, game_layout.env.sector_ptr);
+    uint32_t sectorCnt = rd(cpu, game_layout.env.sector_count);
     if (texCnt > 128) texCnt = 128;
     if (sectorCnt > 512) sectorCnt = 512;
     static uint32_t lq[128], hq[128], s18[512], svh[512], sch[512];
@@ -3562,7 +3541,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
         /* Bounding-centre view-Z through the .s BINNING matrix (g_Camera+0x14 —
          * NOT the +0x00 projection matrix the vertex walk uses; the two differ
          * in scale). Input to the faithful tier lists and the fill's distance
-         * gate. lodThr = ENV_LODDIST>>4 (the same lodDist that drives fog:
+         * gate. lodThr = m_LodDistance>>4 (the same lodDist that drives fog:
          * ir0 = fogRef−4·m3 crosses 0 exactly at m3 = lodThr). */
         /* Sector-level verdicts come precomputed from the prepass
          * (sector_verdicts — ONE computation site shared with the
@@ -3613,7 +3592,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 }
                 int inHP = 0;
                 for (int k = 0; k < hp_n; k++) if (hp_list[k] == s) { inHP = 1; break; }
-                uint32_t vw = rd(cpu, 0x800771C8u + (i & ~3u));
+                uint32_t vw = rd(cpu, game_layout.visibility.base + (i & ~3u));
                 int vis = (int)((vw >> ((i & 3u) * 8)) & 0xFF) == 0xFF;
                 fprintf(stderr, "[bincheck] s=%u nativeHP=%d listHP=%d vis=%d flags=%04X "
                         "cbin=%.1f rad=%d%s\n",
@@ -3652,7 +3631,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
          * DISTANCE GATE — the .s LP-list binning condition (func_800258F0's
          * list pre-pass; 0x80025940 is an instruction inside it):
          * LP is fed only when lodThr < centerZ + radius + 0x100 (the sector's
-         * far edge crosses the LOD boundary; lodThr = ENV_LODDIST>>4, centerZ =
+         * far edge crosses the LOD boundary; lodThr = m_LodDistance>>4, centerZ =
          * the projected bounding-CENTRE view-Z, radius = w1 & 0x1FFF). A NEAR
          * sector's LP is never drawn by the PSX, and feeding it here broke the
          * portal apertures: the near arch-hill's coarse LP bulged into the
@@ -4697,7 +4676,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     if (s_facemap < 0) { const char* e = getenv("OPENPETE_TERRAIN_FACEMAP"); s_facemap = (e && *e) ? atoi(e) : 0; }
     s_facemap_active = s_facemap && !s_facemap_done && openpete_frame >= (unsigned)s_facemap;
     int M[3][3]; memcpy(M, s_view.cam_M, sizeof M);   /* m_ProjectionMatrix */
-    int Mbin[3][3]; ngte_read_matrix(cpu, G_CAMERA + 0x14, Mbin); /* .s sector-binning matrix (LP/HP LOD lists) */
+    int Mbin[3][3]; ngte_read_matrix(cpu, game_layout.cam.view_matrix, Mbin); /* .s sector-binning matrix (LP/HP LOD lists) */
     {   /* World->view scale bound for the rim broadphase's sphere radius: M is
          * not orthonormal (the Y row bakes a ~0.625 squash), so a world-space
          * radius is only valid in view space scaled by the largest row norm. */
@@ -4736,7 +4715,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * camera-driven — is TRULY continuous, not just stepped at the 1-world-unit
      * lerp32 grid. Falls back to the (floored) RAM at the 30 Hz lockstep. */
     double camx = s_view.cam[0] / 16.0, camy = s_view.cam[1] / 16.0, camz = s_view.cam[2] / 16.0;
-    int fogRefBase = (int32_t)rd(cpu, G_ENVIRONMENT + ENV_LODDIST) >> 2;  /* §10 */
+    int fogRefBase = (int32_t)rd(cpu, game_layout.env.lod_dist) >> 2;  /* §10 */
     /* Publish this walk's fog-ladder ramp for the CONTINUOUS pack-fog model
      * (HD-replaced draws only; see texture_pack_fog_ladder_set): the .s row
      * select is Δ = (key − fogRef + 4096) >> 8 with key ≈ face-mean
@@ -4756,7 +4735,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * sector of the next unmatched, so the accumulator stays empty there and
      * the fold below would pin the old level's mean over its whole LP tier
      * indefinitely. */
-    { int lvl = (int)(int32_t)rd(cpu, 0x8007596C);   /* g_LevelId */
+    { int lvl = (int)(int32_t)rd(cpu, game_layout.level_id);
       static int s_lpg_lvl = -1;
       if (lvl != s_lpg_lvl) {
           s_lpg_lvl = lvl;
@@ -4776,10 +4755,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_lpg_acc_n = 0;
     /* .s LP far cull threshold, slot units (r_environment.s:637-642: the walk
      * precomputes s2 = m_CullingDistance >> 7 once, before the sector loop). */
-    int cullRefS2 = (int32_t)rd(cpu, G_ENVIRONMENT + ENV_CULLDIST) >> 7;
-    uint32_t lqTable = rd(cpu, G_ENVIRONMENT + ENV_LQTEX);  /* HP-walk per-quad Tiledef (§8) */
-    uint32_t hqTable = rd(cpu, G_ENVIRONMENT + ENV_HQTEX);  /* near/detail Tiledef (bpp8 tiles) */
-    tsc_tile_gens(cpu, lqTable, rd(cpu, G_ENVIRONMENT + ENV_TEXCNT));  /* env-anim liveness */
+    int cullRefS2 = (int32_t)rd(cpu, game_layout.env.cull_dist) >> 7;
+    uint32_t lqTable = rd(cpu, game_layout.env.lq_tex);  /* HP-walk per-quad Tiledef (§8) */
+    uint32_t hqTable = rd(cpu, game_layout.env.hq_tex);  /* near/detail Tiledef (bpp8 tiles) */
+    tsc_tile_gens(cpu, lqTable, rd(cpu, game_layout.env.tex_count));  /* env-anim liveness */
     tsc_scroll_refresh(cpu);                                           /* env-anim UV scroll (sub-tick) */
     /* OPENPETE_TERRAIN_TEXTBL: 0=auto(near→HQ,far→LQ) 1=force LQ 2=force HQ (debug) */
     int texTblMode = 0; { const char* e=getenv("OPENPETE_TERRAIN_TEXTBL"); if(e&&*e) texTblMode=atoi(e); }
@@ -4792,8 +4771,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     else s_defer_n = 0;
 
     static lvert sv[256];
-    uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
-    uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
+    uint32_t sectorPtr = rd(cpu, game_layout.env.sector_ptr);
+    uint32_t sectorCnt = rd(cpu, game_layout.env.sector_count);
     tsc_vert_anim_refresh(cpu, sectorPtr, sectorCnt);  /* geometry env-anim liveness */
     /* Visible-sector index set: canonical 4:3 verdict (D_800771C8) at native
      * aspect; occlusion-group candidate set in widescreen (terrain_vislist). */
@@ -4837,11 +4816,11 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         if (s_camdbg)
             fprintf(stderr, "[cam f=%u] pos=(%d, %d, %d) yaw=%d pitch=%d sub=%d\n",
                     openpete_frame,
-                    (int32_t)rd(cpu, 0x80076DD0u + 0x28u),
-                    (int32_t)rd(cpu, 0x80076DD0u + 0x2Cu),
-                    (int32_t)rd(cpu, 0x80076DD0u + 0x30u),
-                    (int16_t)(rd(cpu, 0x80076DD0u + 0x50u) & 0xFFFFu),
-                    (int16_t)(rd(cpu, 0x80076DD0u + 0x4Cu) >> 16),
+                    (int32_t)rd(cpu, game_layout.cam.position),
+                    (int32_t)rd(cpu, game_layout.cam.position + 4u),
+                    (int32_t)rd(cpu, game_layout.cam.position + 8u),
+                    (int16_t)(rd(cpu, game_layout.cam.rotation + 4u) & 0xFFFFu),
+                    (int16_t)(rd(cpu, game_layout.cam.rotation) >> 16),
                     s_vanim_sub);
     }
     G.fogRefBase = fogRefBase; G.cullRefS2 = cullRefS2; G.texTblMode = texTblMode;
@@ -5476,7 +5455,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     if (s_fardbg_active) {
         fprintf(stderr, "[fardbg-hdr] frame=%u prims=%d sampled=%d fogRefBase=%d cullS2=%d cullRaw=0x%X\n",
                 openpete_frame, s_prim_total, s_gte_n, fogRefBase, cullRefS2,
-                (unsigned)rd(cpu, G_ENVIRONMENT + ENV_CULLDIST));
+                (unsigned)rd(cpu, game_layout.env.cull_dist));
         for (int c = 0; c < 256; c++)
             if (s_code_hist[c])
                 fprintf(stderr, "[fardbg-hist] code=%02X n=%d\n", c, s_code_hist[c]);
@@ -6285,7 +6264,7 @@ static void terrain_feed_native(CPUState* cpu) {
     }
     /* Level-scoped selector keys resolve at draw time, which has no cpu —
      * push the id from here, the feed that runs whenever a world renders. */
-    openpete_mods_set_level((int)cpu->read_word(G_LEVELID));
+    openpete_mods_set_level((int)cpu->read_word(game_layout.level_id));
     /* Untextured-band material (S8c): one resolve per feed — the whole
      * beyond-LOD gouraud band shares a single per-instance outcome. */
     const int untex_slot = openpete_mods_material_terrain_untex_slot(cpu);
@@ -6950,7 +6929,7 @@ static unsigned terrain_verify_frame(void) {
  * re-extract (which has no a0). -1 = walk-all (valid index or -1, as the .s). */
 static int32_t s_terrain_saved_occGroup = -1;
 
-static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
+static int on_world_draw_terrain(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = terrain_verify_enabled();
     int feed   = openpete_native_scene_enabled();
@@ -6982,14 +6961,14 @@ static int on_800258F0_terrain(CPUState* cpu, uint32_t addr) {
                            s_lodpoke = (e && *e) ? (int)strtol(e, NULL, 0) : -1; }
     uint32_t lodsave = 0;
     if (s_lodpoke >= 0) {
-        lodsave = cpu->read_word(G_ENVIRONMENT + ENV_LODDIST);
-        cpu->write_word(G_ENVIRONMENT + ENV_LODDIST, (uint32_t)s_lodpoke);
+        lodsave = cpu->read_word(game_layout.env.lod_dist);
+        cpu->write_word(game_layout.env.lod_dist, (uint32_t)s_lodpoke);
     }
     uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
     { OP_PROF_ACCUM_SCOPE("terrain.srend");
       func_800258F0(cpu); }                        /* run the real renderer (verdicts intact) */
     if (s_lodpoke >= 0)
-        cpu->write_word(G_ENVIRONMENT + ENV_LODDIST, lodsave);
+        cpu->write_word(game_layout.env.lod_dist, lodsave);
     uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
 
     render_path_record(RP_TERRAIN, startp, endp);
@@ -7110,8 +7089,8 @@ static void td_scan_verts(CPUState* cpu, uint32_t verts, int nv,
  * since this camera sits just above the geometry rather than far enough back
  * to frame all of it. */
 int terrain_native_sweep_pose(CPUState* cpu, int corner, int32_t v[5]) {
-    uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
-    uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
+    uint32_t sectorPtr = rd(cpu, game_layout.env.sector_ptr);
+    uint32_t sectorCnt = rd(cpu, game_layout.env.sector_count);
     if (!sectorPtr || !sectorCnt || sectorCnt > 1024) return 0;
 
     double mm[5] = { 1e18, -1e18, 1e18, -1e18, -1e18 };  /* minx,maxx,miny,maxy,maxz */
@@ -7156,8 +7135,8 @@ int terrain_native_sweep_pose(CPUState* cpu, int corner, int32_t v[5]) {
 }
 
 int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
-    uint32_t sectorPtr = rd(cpu, G_ENVIRONMENT + ENV_SECTORPTR);
-    uint32_t sectorCnt = rd(cpu, G_ENVIRONMENT + ENV_SECTORCNT);
+    uint32_t sectorPtr = rd(cpu, game_layout.env.sector_ptr);
+    uint32_t sectorCnt = rd(cpu, game_layout.env.sector_count);
     if (!sectorPtr || !sectorCnt || sectorCnt > 1024) return 0;
     /* The pose is written into g_Camera by freecam, so it is derived at the
      * canonical H: a display FOV must not reach that write. */
@@ -7195,7 +7174,7 @@ int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
     }
     double pz = acc.need * 1.02;
     /* Ceiling: past view-Z ~32767 (world/16) the .s's 16-bit frustum stage
-     * rejects every sector, D_VISIBILITY goes empty and the native walk —
+     * rejects every sector, the visibility verdict goes empty and the native walk —
      * whose 4:3 candidate set IS that verdict — draws nothing (stone_hill
      * proved it at 553651 world). Clamp under it; a level too wide to fit
      * from there gets cropped edges rather than a blank frame. */
@@ -7213,13 +7192,20 @@ int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
     return 1;
 }
 
-static const feature_dispatch_entry_t terrain_dispatch[] = {
-    { 0x800258F0u, on_800258F0_terrain },
+/* The hook address is the layout's world-draw site, bound at boot: a
+ * static initializer cannot read another TU's const. */
+static feature_dispatch_entry_t terrain_dispatch[] = {
+    { 0u, on_world_draw_terrain },
     { 0u, NULL },
 };
 
+static void terrain_apply_options(const openpete_options_t* opts) {
+    (void)opts;
+    terrain_dispatch[0].addr = game_layout.hooks.world_draw;
+}
+
 const feature_module_t terrain_module = {
     .name           = "terrain_native",
-    .apply_options  = NULL,
+    .apply_options  = terrain_apply_options,
     .dispatch_table = terrain_dispatch,
 };

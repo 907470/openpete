@@ -40,6 +40,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
+#include "game_layout.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
 extern void     func_8004F000(CPUState* cpu);   /* the real cross-fade renderer */
@@ -339,7 +340,7 @@ static int on_8001C694(CPUState* cpu, uint32_t addr) {
     if (feed && cpu->read_word(D_GS_EXIT_MODE) == 1) {    /* case 1: cyclorama fade-in */
         uint32_t tick = cpu->read_word(D_GS_EXIT_TICK);
         if (tick > 31) tick = 31;
-        uint32_t bg = cpu->read_word(G_CYCLORAMA_BG_COLOR);
+        uint32_t bg = cpu->read_word(game_layout.cyc.bg_colour);
         uint32_t r = (bg & 0xFFu) * tick / 32u;
         uint32_t g = ((bg >> 8) & 0xFFu) * tick / 32u;
         uint32_t b = ((bg >> 16) & 0xFFu) * tick / 32u;

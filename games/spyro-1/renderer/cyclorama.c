@@ -42,6 +42,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
+#include "game_layout.h"          /* game_layout: the engine RAM addresses this walk reads */
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
 extern void     func_8004EBA8(CPUState* cpu);  /* the real dome renderer */
@@ -117,8 +118,8 @@ static void cyc_push_tri(cyc_cv a, cyc_cv b, cyc_cv c, int gouraud,
 
 /* GTE DPCS in float: lerp a dome colour toward the far colour FC by IR0/4096.
  * The cross-fade dome renderer (func_8004F000) runs the real op (cmd 0x10,
- * sf=1) over the sector colour table with FC = D_BLEND_TARGET's components
- * SHL 4 and IR0 = D_FOG_FACTOR; since FC SHL 12 then lines up with the
+ * sf=1) over the sector colour table with FC = the fog far colour's components
+ * SHL 4 and IR0 = the fog factor; since FC SHL 12 then lines up with the
  * colour's SHL 16, the whole op reduces to this per-channel lerp. */
 static uint32_t cyc_fade(uint32_t rgb, uint32_t fc, int ir0) {
     uint32_t out = 0;
@@ -171,9 +172,9 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
      * cull/draw matrices come from the hook's a1/a2, not the view. */
     ngte_view vw; ngte_view_build(cpu, &vw);
 
-    uint32_t sectorCount = cpu->read_word(G_CYCLORAMA + 0x00);
-    uint32_t sectorsBase = cpu->read_word(G_CYCLORAMA + 0x04);
-    uint32_t occGroups   = cpu->read_word(G_CYCLORAMA + 0x0C);
+    uint32_t sectorCount = cpu->read_word(game_layout.cyc.sector_count);
+    uint32_t sectorsBase = cpu->read_word(game_layout.cyc.sectors);
+    uint32_t occGroups   = cpu->read_word(game_layout.cyc.occ_groups);
 
     /* Build the sector-pointer iteration set (mirrors func_8004EBA8 phase 0).
      * In widescreen the .s's per-view occlusion GROUP (occGroups[a0]) is a 4:3
@@ -401,10 +402,10 @@ static void hex_dump(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2,
             (int32_t)cpu->gte_ctrl[24] >> 16, (int32_t)cpu->gte_ctrl[25] >> 16,
             cpu->gte_ctrl[26] & 0xFFFF);
     fprintf(stderr, "  g_Cyclorama: count=%u sectors=%08X occCnt=%u occGrp=%08X bg=%08X\n",
-            cpu->read_word(G_CYCLORAMA), cpu->read_word(G_CYCLORAMA+4),
-            cpu->read_word(G_CYCLORAMA+8), cpu->read_word(G_CYCLORAMA+0xC),
-            cpu->read_word(G_CYCLORAMA+0x10));
-    uint32_t s0 = cpu->read_word(cpu->read_word(G_CYCLORAMA+4)); /* first sector ptr */
+            cpu->read_word(game_layout.cyc.sector_count), cpu->read_word(game_layout.cyc.sectors),
+            cpu->read_word(game_layout.cyc.occ_group_count), cpu->read_word(game_layout.cyc.occ_groups),
+            cpu->read_word(game_layout.cyc.bg_colour));
+    uint32_t s0 = cpu->read_word(cpu->read_word(game_layout.cyc.sectors)); /* first sector ptr */
     fprintf(stderr, "  sector0=%08X hdr: ", s0);
     for (int i = 0; i <= 0x14; i += 4) fprintf(stderr, "[%02X]=%08X ", i, cpu->read_word(s0+i));
     fprintf(stderr, "\n  sector0 verts: ");
@@ -458,7 +459,7 @@ static void push_scene(CPUState* cpu) {
      * `--render-paths spyro`) renders over the real scene background, matching
      * PsyCross (which always clears to it via the draw-env). Only the dome
      * TRIANGLES are gated on RP_CYCLORAMA. */
-    uint32_t bg = cpu->read_word(G_CYCLORAMA + 0x10) & 0xFFFFFF;
+    uint32_t bg = cpu->read_word(game_layout.cyc.bg_colour) & 0xFFFFFF;
     openpete_native_scene_set_bg(bg | 0xFF000000u);
     if (!render_path_enabled(RP_CYCLORAMA)) return;  /* bg only; dome not selected */
     /* Whole-dome identity: the feeder walks a flat tri list with no
@@ -509,7 +510,7 @@ static int      s_cyc_prev_valid = 0, s_cyc_curr_valid = 0;
 static int      s_cyc_prev_cam = 0,   s_cyc_curr_cam = 0;   /* source = g_Camera fields */
 static unsigned s_cyc_curr_frame = 0xFFFFFFFFu;             /* VBL of the curr capture */
 
-static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
+static int on_sky_draw_cyc(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = cyc_verify_enabled();
     int feed   = openpete_native_scene_enabled();   /* --renderer vk live */
@@ -535,7 +536,7 @@ static int on_8004EBA8_cyc_native(CPUState* cpu, uint32_t addr) {
     }
     ngte_read_matrix(cpu, a1, s_cyc_curr[0]);
     ngte_read_matrix(cpu, a2, s_cyc_curr[1]);
-    s_cyc_curr_cam   = (a1 == G_CAMERA + 0x14 && a2 == G_CAMERA);
+    s_cyc_curr_cam   = (a1 == game_layout.cam.view_matrix && a2 == game_layout.cam.proj_matrix);
     s_cyc_curr_valid = 1;
     uint32_t start = cpu->read_word(POLYBUF_CURSOR);
     { OP_PROF_ACCUM_SCOPE("cyclorama.srend");
@@ -622,7 +623,7 @@ void cyclorama_reextract(CPUState* cpu, double alpha, int interp_on) {
 /* ---- the cross-fade dome (func_8004F000) ----------------------------------
  * The level-exit / balloonist cross-fade renderer draws the SAME g_Cyclorama
  * dome as func_8004EBA8, with two differences: every sector colour is first
- * run through a GTE DPCS fade toward D_BLEND_TARGET by D_FOG_FACTOR, and the
+ * run through a GTE DPCS fade toward the fog far colour by the fog factor, and the
  * cull/draw matrices are g_Camera's own (view @+0x14, projection @+0x00)
  * rather than caller-supplied. Its visibility test is a per-vertex outcode
  * against the 4:3 box [0,512]x[0,256], AND-ed over each face, so the prims it
@@ -632,9 +633,9 @@ void cyclorama_reextract(CPUState* cpu, double alpha, int interp_on) {
  * trivial reject the main sky uses. Fills up to `max` triangles and returns
  * the count. */
 int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int max) {
-    cyc_extract(cpu, 0xFFFFFFFFu, G_CAMERA + 0x14, G_CAMERA,
-                cpu->read_word(D_BLEND_TARGET) & 0xFFFFFFu,
-                (int)cpu->read_word(D_FOG_FACTOR));
+    cyc_extract(cpu, 0xFFFFFFFFu, game_layout.cam.view_matrix, game_layout.cam.proj_matrix,
+                cpu->read_word(game_layout.fog.far_colour) & 0xFFFFFFu,
+                (int)cpu->read_word(game_layout.fog.factor));
     int n = s_native_n < max ? s_native_n : max;
     for (int i = 0; i < n; i++)
         for (int k = 0; k < 3; k++) {
@@ -666,20 +667,28 @@ int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int
  * its ColorLerp fade step there). The thunk latch stays as the fallback for
  * the brief boot window where g_CurDB doesn't point at g_DB[] yet. */
 void cyclorama_native_env_clear_commit(void) {
-    const uint32_t curdb = *(const uint32_t*)openpete_subtick_host_ptr(G_CUR_DB);
-    if (curdb != G_DB && curdb != G_DB + 0x84u) return;   /* not a valid DB* yet */
-    const uint8_t* env = (const uint8_t*)openpete_subtick_host_ptr(curdb);
-    /* PSYQ DRAWENV: isbg @+0x18, r0/g0/b0 @+0x19..0x1B (m_DrawEnv is DB +0x00) */
+    const uint32_t curdb = *(const uint32_t*)openpete_subtick_host_ptr(game_layout.db.cur_ptr);
+    if (curdb != game_layout.db.base && curdb != game_layout.db.base + game_layout.db.stride)
+        return;   /* not a valid DB* yet */
+    const uint8_t* env = (const uint8_t*)openpete_subtick_host_ptr(curdb + game_layout.db.drawenv);
+    /* PSYQ DRAWENV: isbg @+0x18, r0/g0/b0 @+0x19..0x1B */
     openpete_native_set_clear_color(env[0x18], env[0x19], env[0x1A], env[0x1B]);
 }
 
-static const feature_dispatch_entry_t cyc_dispatch[] = {
-    { 0x8004EBA8u, on_8004EBA8_cyc_native },
+/* The hook address is the layout's sky-draw site, bound at boot: a static
+ * initializer cannot read another TU's const. */
+static feature_dispatch_entry_t cyc_dispatch[] = {
+    { 0u, on_sky_draw_cyc },
     { 0u, NULL },
 };
 
+static void cyc_apply_options(const openpete_options_t* opts) {
+    (void)opts;
+    cyc_dispatch[0].addr = game_layout.hooks.sky_draw;
+}
+
 const feature_module_t cyclorama_module = {
     .name           = "cyclorama_native",
-    .apply_options  = NULL,
+    .apply_options  = cyc_apply_options,
     .dispatch_table = cyc_dispatch,
 };

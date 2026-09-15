@@ -278,15 +278,19 @@ offset = 0x44
 note = "g_Hud.m_Mobys[12] — static 3D HUD icons (stride 0x58)"
 
 [[symbol]]
-name = "G_CYCLORAMA_BG_COLOR"
-base = 0x80078A40            # g_Cyclorama
-offset = 0x10
-note = "g_Cyclorama.m_BackgroundColor"
-
-[[symbol]]
 name = "G_SKIP_LOWPOLY_WORLD"
 addr = 0x8007591C
 note = "g_SkipLowPolyWorld; r_moby.s parks it in ZSF3 (@8001F7F8/80020F94), >0 gates the LP-band far fade (.L8001FEA0)"
+
+[[symbol]]
+name = "D_POLYBUF_CURSOR"
+addr = 0x800757B0
+note = "D_800757B0 — the per-frame primitive allocator's cursor word"
+
+[[symbol]]
+name = "D_POLYBUF_END"
+addr = 0x800756FC
+note = "D_800756FC — the primitive allocator's end word; the HUD moby pool bumps down from it"
 
 # ---- function addresses (validated against symbols.toml, not globals.toml) ----
 [[symbol]]
@@ -300,3 +304,15 @@ name = "GS_EXIT_FN_HI"
 addr = 0x8001CA38
 kind = "function"
 note = "gamestate-exit fn (hi half)"
+
+[[symbol]]
+name = "F_WORLD_DRAW"
+addr = 0x800258F0
+kind = "function"
+note = "func_800258F0 — the world renderer; the terrain feeder's hook site"
+
+[[symbol]]
+name = "F_SKY_DRAW"
+addr = 0x8004EBA8
+kind = "function"
+note = "func_8004EBA8 — the dome renderer; the cyclorama feeder's hook site"

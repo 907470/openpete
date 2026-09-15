@@ -63,6 +63,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
+#include "game_layout.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
 extern void     func_8004FEA0(CPUState* cpu);  /* portal sky: close, full colour */
@@ -1905,7 +1906,7 @@ static void dump_leaf(CPUState* cpu, const char* which, uint32_t a0, uint32_t a1
     int rx0 = (int32_t)cpu->read_word(D_CLIPRECT + 0x8) >> 16, rx1 = (int32_t)cpu->read_word(D_CLIPRECT + 0xC) >> 16;
     uint32_t col = (a0 >= 0x80010000u && a0 < 0x80200000u) ? (cpu->read_word(a0) & 0xFFFFFF) : 0xFFFFFFFFu;
     double vz = portal_viewz(cpu, &s_view, a0, (rx0 + rx1) * 0.5, (ry0 + ry1) * 0.5);
-    uint32_t fog = cpu->read_word(D_BLEND_TARGET) & 0xFFFFFF, ir0 = cpu->read_word(D_FOG_FACTOR) & 0xFFFF;
+    uint32_t fog = cpu->read_word(game_layout.fog.far_colour) & 0xFFFFFF, ir0 = cpu->read_word(game_layout.fog.factor) & 0xFFFF;
     fprintf(stderr, "[portal-dump f=%u] %s a0=%08X colour=%06X clip x[%d,%d] y[%d,%d] "
                     "OTdepth=%d matchedViewZ=%.0f nativeZ=%.3f  prims=%u bytes  fogFC=%06X IR0=%u(t=%.3f)\n",
             openpete_frame, which, a0, col, rx0, rx1, ry0, ry1,
@@ -2056,8 +2057,8 @@ static int leaf_hook(CPUState* cpu, const char* which, void (*real)(CPUState*), 
         if (kind == PORTAL_BLENDED && !nolod_portal_dome_on()) {
             /* --no-lod: skip the medium-range cross-dissolve toward the flat
              * colour — the dome renders full-colour at any distance. */
-            fog   = cpu->read_word(D_BLEND_TARGET) & 0xFFFFFF;
-            fog_t = (double)(cpu->read_word(D_FOG_FACTOR) & 0xFFFF) / 4096.0;
+            fog   = cpu->read_word(game_layout.fog.far_colour) & 0xFFFFFF;
+            fog_t = (double)(cpu->read_word(game_layout.fog.factor) & 0xFFFF) / 4096.0;
             if (fog_t > 1.0) fog_t = 1.0;
         }
         /* Far/medium FLAT leaves: one quad = the whole preview; the close FEA0

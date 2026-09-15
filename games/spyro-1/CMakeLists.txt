@@ -184,6 +184,7 @@ openpete_add_game(spyro-1
         renderer/particle.c
         renderer/tracer.c
         renderer/terrain.c
+        renderer/layout.c
         renderer/ui_sprite.c
         renderer/portal.c
         renderer/text_moby.c
@@ -338,6 +339,8 @@ add_custom_command(
             ${CMAKE_SOURCE_DIR}/tools/gen_mod_sdk.py
     COMMENT "Generating mod SDK symbol table + natural wrappers (gen_mod_sdk.py)")
 target_sources(openpete-spyro1 PRIVATE ${_mod_sdk_gen}/sdk_symbols_table.c)
+# renderer/layout.c takes its member offsets from the typed structs header.
+target_include_directories(openpete-spyro1 PRIVATE ${_mod_sdk_gen})
 
 # Typed game structs for mods: every decomp typedef struct plus the PSYQ
 # types they embed, guest-pointer fields rewritten to uint32_t, pinned by

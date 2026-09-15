@@ -48,6 +48,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
+#include "game_layout.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
 extern void     func_8001F798(CPUState* cpu);  /* the real REGULAR moby renderer */
@@ -2139,7 +2140,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             if (R->zsf4 < -2048 && (int32_t)cpu->read_word(G_SKIP_LOWPOLY_WORLD) > 0) {
                 int v = -(R->zsf4 + 2048); if (v > 2047) v = 2047;
                 dpcs_ir0 = v << 1;
-                uint32_t fog = cpu->read_word(G_CYCLORAMA_BG_COLOR);
+                uint32_t fog = cpu->read_word(game_layout.cyc.bg_colour);
                 fogfc[0] = (int)((fog << 4) & 0xFF0u);   /* 12-bit expand, .s 8001FEF4-FF08 */
                 fogfc[1] = (int)((fog >> 4) & 0xFF0u);
                 fogfc[2] = (int)((fog >> 12) & 0xFF0u);

@@ -47,6 +47,7 @@ static int ra_rebase_on(void) {
 }
 /* shown-state buffers live below the region defines (CAM_BYTES) */
 #include "spyro1_symbols.gen.h"
+#include "game_layout.h"
 #include "renderer/spyro_records.h"   /* per-call records of the player hooks */
 
 extern unsigned openpete_frame;
@@ -2065,7 +2066,7 @@ static void game_reextract_body(void* cpu_v) {
      * resets s_scene without bumping the frame id, so the feeders' own
      * begin_frame() calls no-op (no history snapshot / no double-reset). */
     openpete_native_scene_begin();
-    uint32_t bg = cpu->read_word(G_CYCLORAMA + 0x10) & 0xFFFFFF;
+    uint32_t bg = cpu->read_word(game_layout.cyc.bg_colour) & 0xFFFFFF;
     openpete_native_scene_set_bg(bg | 0xFF000000u);   /* fallback bg if cyclorama is off */
 
     /* Re-extract each feeder in canonical scene order. Camera-direct feeders

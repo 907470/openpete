@@ -41,6 +41,7 @@
 #include "openpete_fiber.h"  /* openpete_frame (VBL counter) */
 #include "openpete_log.h"
 #include "psx_runtime_internal.h"   /* CPUState + its read callbacks */
+#include "game_layout.h"
 
 #include <stdint.h>
 #include <stdlib.h>
@@ -48,11 +49,7 @@
 
 #define ADDR_BUILD_ORDER_TABLE  0x80016784u
 
-#define ADDR_POLYBUF_CURSOR     0x800757B0u  /* D_800757B0 */
-#define ADDR_POLYBUF_END        0x800756FCu  /* D_800756FC */
 #define ADDR_G_WORLDOT          0x80075820u  /* g_WorldOT   */
-#define ADDR_G_LEVELID          0x8007596Cu
-#define ADDR_G_CAMERA           0x80076DD0u  /* position at +0x28 */
 
 /* One primitive is 0x34 bytes in the paths that overrun (POLY_GT4). Only used
  * to render byte counts in a unit that maps to what the scene is drawing. */
@@ -89,8 +86,8 @@ static int on_build_order_table(CPUState* cpu, uint32_t addr) {
     const int mode = guard_mode();
     if (mode == GUARD_OFF) return 0;
 
-    const uint32_t cursor = cpu->read_word(ADDR_POLYBUF_CURSOR);
-    const uint32_t end    = cpu->read_word(ADDR_POLYBUF_END);
+    const uint32_t cursor = cpu->read_word(game_layout.polybuf.cursor);
+    const uint32_t end    = cpu->read_word(game_layout.polybuf.end);
 
     /* Before the first level's buffers exist both reads are 0/garbage; a zero
      * end means "not set up yet", not "overflowed by 2GB". */
@@ -128,10 +125,10 @@ static int on_build_order_table(CPUState* cpu, uint32_t addr) {
         s_episodes++;
 
         const uint32_t ot  = cpu->read_word(ADDR_G_WORLDOT);
-        const uint32_t lvl = cpu->read_word(ADDR_G_LEVELID);
-        const int32_t  cx  = (int32_t)cpu->read_word(ADDR_G_CAMERA + 0x28);
-        const int32_t  cy  = (int32_t)cpu->read_word(ADDR_G_CAMERA + 0x2C);
-        const int32_t  cz  = (int32_t)cpu->read_word(ADDR_G_CAMERA + 0x30);
+        const uint32_t lvl = cpu->read_word(game_layout.level_id);
+        const int32_t  cx  = (int32_t)cpu->read_word(game_layout.cam.position);
+        const int32_t  cy  = (int32_t)cpu->read_word(game_layout.cam.position + 4u);
+        const int32_t  cz  = (int32_t)cpu->read_word(game_layout.cam.position + 8u);
 
         /* Whether the overrun is actively corrupting depends on how far the
          * cursor got, not merely that it passed the end: the OT is not always

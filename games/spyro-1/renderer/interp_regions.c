@@ -31,6 +31,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "spyro1_symbols.gen.h"
+#include "game_layout.h"
 
 /* DIRECT singleton regions — captured whole into the interp ring each tick.
  *   g_Camera (0x110): the smooth-follow camera (re-run feeder).
@@ -270,10 +271,6 @@ uint32_t game_interp_moby_key(uint32_t m) {
 
 extern unsigned openpete_frame;
 
-/* g_EnvironmentAnimations sits 0x48 bytes before g_Environment (environment.h);
- * +0x08/+0x0C is the {count, ptr-array} of scrolling-texture descriptors. */
-#define G_ENVANIM (G_ENVIRONMENT - 0x48u)
-
 static uint32_t rd32(uint32_t addr) {
     const void* p = openpete_psx_to_host_ptr(addr);
     uint32_t v = 0;
@@ -450,8 +447,8 @@ static void spyro_interp_capture_objs(void) {
      * when the camera is still (the freecam / standing-still case, where the
      * camera ring dedupes and the shared bracket alpha never engages). */
     {
-        uint32_t cnt  = rd32(G_ENVANIM + 0x08u);
-        uint32_t base = rd32(G_ENVANIM + 0x0Cu);
+        uint32_t cnt  = rd32(game_layout.env_anim.scroll);
+        uint32_t base = rd32(game_layout.env_anim.scroll + 4u);
         if (base && cnt && cnt <= 1024u) {
             for (uint32_t i = 0; i < cnt; ++i) {
                 uint32_t desc = rd32(base + i * 4u);
