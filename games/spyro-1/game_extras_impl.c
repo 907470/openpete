@@ -64,7 +64,7 @@ void game_on_overlay_init(CPUState* cpu) {
     /* TODO Phase 1b — runs once after WadInit. */
 }
 
-/* mod_level_ops.c — same private-decl pattern main.cpp uses. */
+/* mods/mod_level_ops.c — same private-decl pattern main.cpp uses. */
 void spyro1_mod_level_capture_stock_counts(CPUState* cpu);
 
 void game_on_boot(CPUState* cpu) {
@@ -444,7 +444,7 @@ int game_is_gameplay_live(CPUState* cpu) {
  * CdRead flips the dispatcher) that the rollback must undo. Bump the
  * version word when fields are added — core treats the blob as opaque,
  * so layout discipline lives HERE.
- *   v1: WAD-overlay disc cursor (mod_wad_overlay.c).
+ *   v1: WAD-overlay disc cursor (mods/mod_wad_overlay.c).
  *   v2: + active-overlay magic — restoring by saved id instead of the RAM
  *       marker word survives cutscene-style loads that clobber the marker.
  *   v3: + guest-mutated thunk latches (CD-ready / VSync callback vaddrs,

@@ -1,4 +1,4 @@
-// games/spyro-1/mod_wad_overlay.h — level-segment asset overlay (rung 9).
+// games/spyro-1/mods/mod_wad_overlay.h — level-segment asset overlay.
 // See mod_wad_overlay.c. Consumers: main.cpp (configure), psyq_thunks
 // (setloc tracking + apply at the CdRead chokepoint).
 

@@ -23,7 +23,7 @@ extern "C" {
 #include "openpete_ticker.h"
 }
 
-#include "mod_wad_overlay.h"
+#include "mods/mod_wad_overlay.h"
 #include "renderer/render_paths.h"
 #include "renderer/moby_rank.h"
 #include "sfx_pack.h"

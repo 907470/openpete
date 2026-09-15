@@ -1,4 +1,4 @@
-// games/spyro-1/mod_wad_overlay.c — the asset overlay's level-segment
+// games/spyro-1/mods/mod_wad_overlay.c — the asset overlay's level-segment
 // namespace.
 //
 // Spyro's loader pulls everything from WAD.WAD by sector range, so the
@@ -29,9 +29,9 @@
 // Legal posture note: mods may NOT ship derived game data. This
 // namespace exists for (a) locally-derived blobs (generated on the
 // user's machine from their own disc — the CI fixtures do exactly this)
-// and (b) future genuinely-novel content (P3 custom levels).
+// and (b) genuinely novel content (custom levels).
 
-#include "mod_wad_overlay.h"
+#include "mods/mod_wad_overlay.h"
 
 #include "game_extras.h"
 #include "openpete_log.h"

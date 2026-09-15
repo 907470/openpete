@@ -166,7 +166,6 @@ openpete_add_game(spyro-1
     MODULE_LINKAGE ${OPENPETE_RECOMP_LINKAGE}
     SOURCES
         psyq_hooks.cpp
-        mod_wad_overlay.c
 
         # The native renderer's game half: the feeders, the sub-tick
         # re-extract orchestrator and the interp region table.
@@ -193,8 +192,6 @@ openpete_add_game(spyro-1
 
         # Non-renderer feature modules.
         features/polybuf_guard.c
-        features/mod_moby_ops.c
-        features/mod_level_ops.c
         features/freecam.c
         features/audio_volume.c
         features/vibration.c
@@ -217,6 +214,12 @@ openpete_add_game(spyro-1
 
         sfx_census.cpp
         write_trace.cpp
+
+        # Mods: the WAD asset overlay and the moby-type and level-slot
+        # registry game ops.
+        mods/mod_wad_overlay.c
+        mods/mod_moby_ops.c
+        mods/mod_level_ops.c
 
         # First-run distribution: the WAD extraction, the disc library and
         # the splash window (the module build, dist/recomp_build.cpp, is a

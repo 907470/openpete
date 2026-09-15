@@ -1,8 +1,8 @@
-// mod_level_ops.c — Spyro 1 game ops for the mod level-slot registry
-// (core/mods/mod_registry.c; modding framework PoC rung 12).
+// games/spyro-1/mods/mod_level_ops.c — Spyro 1 game ops for the mod
+// level-slot registry (core/mods/mod_registry.c).
 //
-// Ground truth (recon 2026-07-11, loaders.c / overlay_pointers.c /
-// wad.h / initialization.c):
+// Ground truth (loaders.c / overlay_pointers.c / wad.h /
+// initialization.c):
 //   - g_LevelIndex = (id/10 - 1)*6 + id%10 (loaders.c:1396). Retail ids
 //     10..64 fill indices 0..34; ID 65 -> INDEX 35 is the one free
 //     in-bounds slot — every level-indexed table is sized >= 36
@@ -31,7 +31,7 @@
 #include "openpete_log.h"
 
 #include "psx_runtime_internal.h" /* CPUState */
-#include "mod_wad_overlay.h" /* spyro1_mod_wad_read_level_data */
+#include "mods/mod_wad_overlay.h" /* spyro1_mod_wad_read_level_data */
 #include "game_extras.h"     /* game_set_skip_to_level (title-screen route) */
 
 #include <stdio.h>

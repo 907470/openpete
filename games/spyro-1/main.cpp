@@ -12,7 +12,7 @@
 #include "game_extras.h"
 #include "openpete_mods.h"
 #include "recomp_attach.h"
-#include "mod_wad_overlay.h"
+#include "mods/mod_wad_overlay.h"
 
 #ifdef _WIN32
 #include <windows.h>
@@ -83,9 +83,9 @@ extern const size_t                openpete_sdk_symbol_count;
 int text_moby_native_mod_emit(const char* str, float x, float y,
                               float cap_h, unsigned rgb,
                               void* out_verts, int cap);
-/* Moby-type registry game ops (features/mod_moby_ops.c, rung 11). */
+/* Moby-type registry game ops (mods/mod_moby_ops.c). */
 void spyro1_moby_ops_register(void);
-/* Level-slot registry game ops (features/mod_level_ops.c, rung 12). */
+/* Level-slot registry game ops (mods/mod_level_ops.c). */
 void spyro1_level_ops_register(void);
 }
 #include "dist/splash.h"
