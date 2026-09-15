@@ -549,16 +549,31 @@ int openpete_psxtrace_advance(openpete_psxtrace_t* t) {
                 }
             }
         } else if (transient && t->transient_open_frame[r] >= 0) {
-            /* Transient region re-converged: the burst healed. */
+            /* The region re-converged: the burst ended. A neutral row's
+             * burst is tolerated by its class (bounded only by its
+             * diverge_baseline), a cd_load_transient row's by the heal
+             * window; the two are counted apart so the CD-load count
+             * measures the load tolerance alone. */
             int64_t start = t->transient_open_frame[r];
-            t->transient_healed_bursts++;
-            OPL_INFO_F("psxtrace",
-                       "CD-load transient absorbed: region=%u (%s) "
-                       "ticks %lld..%u (len=%lld, window=%u)",
-                       r, t->region_names[r],
-                       (long long)start, frame_no - 1u,
-                       (long long)((int64_t)frame_no - start),
-                       t->heal_window);
+            if (neutral) {
+                t->neutral_bursts++;
+                OPL_INFO_F("psxtrace",
+                           "%s burst: region=%u (%s) ticks %lld..%u (len=%lld)",
+                           openpete_state_regions[r].host_precision ? "host_precision"
+                                                                     : "gameplay_neutral",
+                           r, t->region_names[r],
+                           (long long)start, frame_no - 1u,
+                           (long long)((int64_t)frame_no - start));
+            } else {
+                t->transient_healed_bursts++;
+                OPL_INFO_F("psxtrace",
+                           "CD-load transient absorbed: region=%u (%s) "
+                           "ticks %lld..%u (len=%lld, window=%u)",
+                           r, t->region_names[r],
+                           (long long)start, frame_no - 1u,
+                           (long long)((int64_t)frame_no - start),
+                           t->heal_window);
+            }
             t->transient_open_frame[r] = -1;
         }
     }
@@ -664,10 +679,11 @@ void openpete_psxtrace_finalize(openpete_psxtrace_t* t) {
     }
     OPL_INFO_F("psxtrace",
                "verdict: %s (hard_failed=%d, CD-load transients absorbed=%llu, "
-               "heal_window=%u ticks)",
+               "heal_window=%u ticks, neutral bursts=%llu)",
                t->hard_failed ? "FAIL" : "PASS", t->hard_failed,
                (unsigned long long)t->transient_healed_bursts,
-               t->heal_window);
+               t->heal_window,
+               (unsigned long long)t->neutral_bursts);
 }
 
 void openpete_psxtrace_close(openpete_psxtrace_t* t) {

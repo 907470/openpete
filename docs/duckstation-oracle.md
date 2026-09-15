@@ -239,13 +239,17 @@ openpete flags the gate run adds):
 
 ```sh
 scripts/capture_psx_oracle_ds.sh --game spyro-1
+scripts/capture_psx_oracle_ds.sh --game spyro-2
 scripts/capture_psx_oracle_ds.sh --game spyro-3
 ```
 
-Options on the command line override the recipe's. Spyro 3's recipe
-anchors at `Update`, records every sidecar, skips libcd's own `VSync(-1)`
-polls, and boots with `--no-card` because the title's card probe answers
-differ with a card present; every PC comes from its `psyq.toml`. Without
+Options on the command line override the recipe's. Spyro 2 and 3 anchor
+at the first call of each main-loop iteration, record every sidecar
+(Spyro 2 without the raw-register floor: its own code never touches the
+controller's registers), skip libcd's own `VSync(-1)` polls, and boot
+with `--no-card` (Spyro 3's title card probe answers differ with a card
+present; openpete's Spyro 2 stalls at its first card wait); every PC comes
+from the game's `psyq.toml`. Without
 `--game`, `--out`, `--disc` and `--manifest` (or `OPENPETE_DISC`,
 `OPENPETE_REGIONS_MANIFEST`) name the inputs directly.
 
@@ -490,13 +494,21 @@ replacement table hashes every byte the previous one hashed. A residual
 inside a row becomes a `mask_offsets` entry with its owner in
 `mask_reason`, never a dropped row.
 
-Every tolerated row (`cd_load_transient` or `gameplay_neutral`) carries
-`diverge_baseline = N`, the records it diverged on over the golden it was
-measured against; a run that reaches the trace's end with a higher count
-fails (`hard fail: ratchet`). The generator refuses the field on a strict
-row. The summary names the first divergence in a row that is not
-`gameplay_neutral` (`first_non_neutral_div=`) and, on a FAIL, the row and
-reason (`non-transient`, `unhealed`, `unhealed-eof`, `ratchet`).
+Every tolerated row (`cd_load_transient`, `gameplay_neutral` or
+`host_precision`) carries `diverge_baseline = N`, the records it diverged
+on over the golden it was measured against; a run that reaches the
+trace's end with a higher count fails (`hard fail: ratchet`). The
+generator refuses the field on a strict row. `host_precision` marks a
+row holding the state of a host device model coarser than hardware (the
+SPU envelope at whole-VBL granularity: Spyro 2 `spu_voice_table`, Spyro 3
+`g_ActiveSounds`); it is tolerated like `gameplay_neutral` and is a named
+residual, not an audited neutral. The verdict line counts the two
+tolerance classes apart: `CD-load transients absorbed=` is the
+`cd_load_transient` bursts that healed inside the window, `neutral
+bursts=` the bursts on neutral and host-precision rows. The summary names
+the first divergence in a row that is neither (`first_non_neutral_div=`)
+and, on a FAIL, the row and reason (`non-transient`, `unhealed`,
+`unhealed-eof`, `ratchet`).
 
 Each manifest carries a `[derivation]` table (the `--named`, `--overlay`
 and `min_row` arguments its direct rows were derived with);

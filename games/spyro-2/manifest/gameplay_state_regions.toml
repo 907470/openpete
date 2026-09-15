@@ -180,7 +180,7 @@ name   = "spu_voice_table"
 start  = 0x80069A10
 length = 0x420
 class  = "gameplay"
-gameplay_neutral = true
+host_precision = true
 diverge_baseline = 946
 description = "SPU voice table D_80069A10..D_80069E30 (spu/func_80050720, func_80050B74, func_80050D38): per-voice envelope and allocation state from the host SPU"
 

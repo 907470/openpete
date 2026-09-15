@@ -96,7 +96,8 @@ typedef struct {
      * r began, or -1 if r is currently matching. Tolerance window in
      * ticks (default 600, env OPENPETE_PSXTRACE_HEAL_WINDOW). */
     int64_t  transient_open_frame[OPENPETE_PSXTRACE_MAX_REGIONS];
-    uint64_t transient_healed_bursts;    /* count of absorbed (healed) bursts */
+    uint64_t transient_healed_bursts;    /* cd_load_transient bursts that healed */
+    uint64_t neutral_bursts;             /* gameplay_neutral / host_precision bursts */
     uint32_t heal_window;
 
     /* Per-record VBL stamps (header flag bit 4: the trace's pad2 is the
