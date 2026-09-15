@@ -281,6 +281,34 @@ void spyro_native_set_anim_pair(const uint8_t* prev_seg, const uint8_t* curr_seg
 }
 void spyro_native_set_player_slot(int k) { s_player_slot = k < 0 ? 0 : k; }
 
+/* The front-layer flatten (sortDepth 127, the level-transition flight) pulls
+ * the model onto the near plane, capped so the nearest vertex lands ON the
+ * near floor. With N dragons per frame a per-CALL cap flattens each dragon
+ * to the floor independently and the z-test interleaves their bodies (the
+ * wingman behind the lead shows through him from the side view, whichever
+ * order the calls come in — the mod's BUGS.md X4). The cap is therefore
+ * shared across the calls of one frame: the running minimum over the frame's
+ * calls so far, and — for the first calls, before the nearest dragon has
+ * drawn — the previous frame's all-calls minimum when that frame had more
+ * than one call (the flight moves a few units a tick; a dragon nearer than
+ * the estimate still caps on its own minimum, so no vertex crosses the near
+ * plane). One call per frame (modless) is the call's own minimum, as before.
+ * Keyed by the canonical frame at the hooks and by the present at the
+ * record loop (spyro_native_set_flat_key). */
+static struct { uint32_t key; int calls; double min; } s_flat_cur = { 0, 0, 1e30 }, s_flat_prev = { 0, 0, 1e30 };
+void spyro_native_set_flat_key(uint32_t key) {
+    if (s_flat_cur.key == key) return;
+    s_flat_prev = s_flat_cur;
+    s_flat_cur.key = key; s_flat_cur.calls = 0; s_flat_cur.min = 1e30;
+}
+static double spyro_flat_min(double own_min) {
+    s_flat_cur.calls++;
+    if (own_min < s_flat_cur.min) s_flat_cur.min = own_min;
+    double m = s_flat_cur.min;
+    if (s_flat_prev.calls > 1 && s_flat_prev.min < m) m = s_flat_prev.min;
+    return m;
+}
+
 /* Sub-tick ROTATION interpolation: per-segment float byte-angles (body=0, head=1,
  * tail=2; axis k=0 Z / 1 X / 2 Y) the orchestrator interpolates from g_Spyro's
  * prev/curr euler snapshots, handed in so spyro_compose_euler renders the rotation
@@ -1180,6 +1208,10 @@ static void spyro_feed_walk_ex(CPUState* cpu, int reproject) {
                 for (int k = 0; k < 3; k++)
                     if (s_swtri[i].v[k].vz > 0.0f && (double)s_swtri[i].v[k].vz < minvz)
                         minvz = (double)s_swtri[i].v[k].vz;
+            /* Shared across the frame's dragons (see spyro_flat_min); this
+             * call's own minimum still bounds it. */
+            double fmin = spyro_flat_min(minvz);
+            if (fmin - sp_pull < 1.0) sp_pull = fmin > 1.0 ? fmin - 1.0 : 0.0;
             if (minvz - sp_pull < 1.0) sp_pull = minvz > 1.0 ? minvz - 1.0 : 0.0;
         } else if (s_on) {
             /* One-slot tie pull, the moby walks' twin: 127 world < one OT
@@ -1271,6 +1303,7 @@ static int on_80023AC4_spyro_native(CPUState* cpu, uint32_t addr) {
     int slot = 0;
     if (endp > startp) slot = spyro_records_model_append(cpu, startp, endp);
     spyro_native_set_player_slot(slot);
+    spyro_native_set_flat_key(openpete_frame << 1);   /* the frame's calls share the flatten cap */
 
     static int hookdbg = -1;
     if (hookdbg < 0) { const char* e = getenv("OPENPETE_CANON_CAPDBG"); hookdbg = (e && *e && *e != '0'); }

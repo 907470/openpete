@@ -1013,6 +1013,8 @@ static void spyro_records_loop(CPUState* cpu, int paired, int cam_cut, int cam_b
     /* On an unpaired present the ambient brackets did not run and staged
      * nothing: stage the spans here (the view is open for the whole present),
      * guest RAM only if the view refuses. */
+    static uint32_t s_present_serial = 0;
+    spyro_native_set_flat_key((++s_present_serial << 1) | 1u);   /* this present's records share the flatten cap */
     uint8_t* sb = sp ? sp : (uint8_t*)openpete_subtick_view_stage(G_SPYRO, SPYRO_REC_SPYRO_LEN);
     if (!sb) sb = (uint8_t*)openpete_psx_to_host_ptr(G_SPYRO);
     if (!sb) { spyro_records_present_end(); return; }

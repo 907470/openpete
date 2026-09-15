@@ -41,6 +41,9 @@ void spyro_native_set_anim_interp(double alpha, int on);
  * features/spyro_native.c. */
 void spyro_native_set_anim_pair(const uint8_t* prev_seg, const uint8_t* curr_seg);
 void spyro_native_set_player_slot(int k);
+/* The front-layer flatten cap is shared by the calls of one frame / present:
+ * a new key opens a new group (features/spyro_native.c). */
+void spyro_native_set_flat_key(uint32_t key);
 
 /* Sub-tick ROTATION interpolation for Spyro's body/head/tail. The orchestrator
  * interpolates g_Spyro's packed byte euler (+0xC/+0x10/+0x14) at FLOAT precision
