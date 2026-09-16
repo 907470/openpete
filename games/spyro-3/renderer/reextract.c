@@ -23,9 +23,12 @@
 #include "openpete_native_render.h"
 #include "openpete_subtick_view.h"
 #include "openpete_pace_log.h"
+#include "openpete_fiber.h"   /* openpete_frame */
 #include "psx_runtime_internal.h"
 #include "game_layout.h"
 #include <math.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 
@@ -309,6 +312,35 @@ static void player_records_replay(CPUState* cpu, int paired, double alpha) {
     player_records_present_end();
 }
 
+/* OPENPETE_RX_CENSUS=LO-HI (or a single frame): per sub-tick re-extract in that
+ * frame range, the triangles each producer added to the scene, in call order.
+ * A producer that returns early reads as zero, which is what separates a
+ * missing producer from an empty one. Diagnostic only. */
+static int rx_census_on(void) {
+    static int lo = -2, hi = -2;
+    if (lo == -2) {
+        const char* e = getenv("OPENPETE_RX_CENSUS");
+        lo = hi = -1;
+        if (e && *e) { lo = atoi(e); const char* d = strchr(e, '-'); hi = d ? atoi(d + 1) : lo; }
+    }
+    return lo >= 0 && (int)openpete_frame >= lo && (int)openpete_frame <= hi;
+}
+static uint32_t rx_scene_tris(void) {
+    uint32_t n[16], t = 0;
+    openpete_native_scene_tag_family_counts(n);
+    for (int f = 0; f < 16; f++) t += n[f];
+    return t;
+}
+#define RX_CENSUS_BEGIN() \
+    const int rx_cen = rx_census_on(); \
+    uint32_t rx_prev = 0; \
+    if (rx_cen) { rx_prev = rx_scene_tris(); fprintf(stderr, "[rx-census f=%u REEXTRACT]", openpete_frame); }
+#define RX_CENSUS_STEP(nm) \
+    if (rx_cen) { uint32_t rx_now = rx_scene_tris(); \
+        fprintf(stderr, " %s=%u", (nm), rx_now - rx_prev); rx_prev = rx_now; }
+#define RX_CENSUS_END(br, al) \
+    if (rx_cen) fprintf(stderr, " | bracketed=%d alpha=%.3f\n", (br), (al))
+
 static void game_reextract_body(CPUState* cpu) {
     (void)cpu;
     double qa = 0.0;
@@ -355,14 +387,22 @@ static void game_reextract_body(CPUState* cpu) {
         }
     }
     openpete_native_scene_begin();
+    RX_CENSUS_BEGIN();
     cyclorama_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* sky dome + background */
+    RX_CENSUS_STEP("cyclorama");
     terrain_reextract(cpu, bracketed ? alpha : 0.0, bracketed);
+    RX_CENSUS_STEP("terrain");
     portal3_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* homeworld portal previews */
+    RX_CENSUS_STEP("portal");
     if (stage_moby_records())
         moby_reextract(cpu);        /* the 3D actors, after the terrain they stand on */
+    RX_CENSUS_STEP("moby");
     if (stage_player_records())
         player_records_replay(cpu, bracketed, alpha);   /* every player call the tick drew */
+    RX_CENSUS_STEP("player");
     shadow_reextract(cpu);          /* drop-shadows under mobys */
+    RX_CENSUS_STEP("shadow");
+    RX_CENSUS_END(bracketed, alpha);
     s_fpos_active = 0;
 }
 

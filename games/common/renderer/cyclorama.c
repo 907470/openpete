@@ -613,6 +613,13 @@ static int on_sky_draw_cyc(CPUState* cpu, uint32_t addr) {
     s_in = 1;
 
     uint32_t a0 = cpu->a0, a1 = cpu->a1, a2 = cpu->a2;
+    /* Normalize before the capture: where the sky draw takes no matrix
+     * arguments its registers hold whatever the caller left in them, and the
+     * sub-tick replay's "a real frame was captured" guard would then test a
+     * garbage word: a tick whose stray $a1 happens to be zero reads as "no
+     * capture" and the dome is dropped from every present of that interval.
+     * The captured triple is the one the extraction uses, on every game. */
+    if (!game_layout.cyc.hook_args) a1 = a2 = game_layout.cam.proj_matrix;
     s_cyc_a0 = a0; s_cyc_a1 = a1; s_cyc_a2 = a2;   /* for sub-tick re-extract */
     if (openpete_frame != s_cyc_curr_frame) {
         /* New canonical tick: roll curr→prev. Consecutive = the previous
@@ -625,7 +632,6 @@ static int on_sky_draw_cyc(CPUState* cpu, uint32_t addr) {
         s_cyc_prev_valid = consecutive;
         s_cyc_curr_frame = openpete_frame;
     }
-    if (!game_layout.cyc.hook_args) a1 = a2 = game_layout.cam.proj_matrix;
     ngte_read_matrix(cpu, a1, s_cyc_curr[0]);
     ngte_read_matrix(cpu, a2, s_cyc_curr[1]);
     s_cyc_curr_cam   = !game_layout.cyc.hook_args ||

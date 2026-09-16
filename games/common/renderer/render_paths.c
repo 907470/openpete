@@ -220,8 +220,35 @@ static void render_paths_feed_audit(void) {
     }
 }
 
+/* OPENPETE_RP_CENSUS=LO-HI (or a single frame): per canonical present in that
+ * frame range, the canon-drawn path mask and the native scene's per-family
+ * triangle counts, so a producer that fed the canonical frame can be told from
+ * one that did not. Diagnostic only. */
+static void render_paths_census(void) {
+    static int lo = -2, hi = -2;
+    if (lo == -2) {
+        const char* e = getenv("OPENPETE_RP_CENSUS");
+        lo = hi = -1;
+        if (e && *e) { lo = atoi(e); const char* d = strchr(e, '-'); hi = d ? atoi(d + 1) : lo; }
+    }
+    if (lo < 0 || (int)openpete_frame < lo || (int)openpete_frame > hi) return;
+    uint32_t n[16];
+    openpete_native_scene_tag_family_counts(n);
+    fprintf(stderr, "[rp-census f=%u CANON] drawn:", openpete_frame);
+    for (int i = 0; i < RP_COUNT; i++)
+        if (s_canon_mask & (1u << (unsigned)i)) fprintf(stderr, " %s", k_names[i]);
+    fprintf(stderr, " | tris:");
+    for (int f = 1; f < 16; f++) {
+        if (!n[f]) continue;
+        const int p = family_first_path(k_tag_family_paths[f]);
+        fprintf(stderr, " %s=%u", p >= 0 ? k_names[p] : "untagged", n[f]);
+    }
+    fprintf(stderr, " scene=%u\n", openpete_native_scene_frame());
+}
+
 static void render_paths_commit(void) {
     render_paths_canon_snapshot();
+    render_paths_census();
     render_paths_feed_audit();
     render_paths_frame_reset();
     /* Same anchor drives the canonical-render epoch: captures taken during the
