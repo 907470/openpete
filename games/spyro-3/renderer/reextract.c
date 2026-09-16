@@ -15,6 +15,7 @@
 #include "renderer/shadow.h"
 #include "renderer/moby.h"
 #include "renderer/player.h"
+#include "renderer/player_game.h"   /* PLAYER_PARTS_MAX */
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "openpete_interp.h"
 #include "renderer/interp_regions_gen.h"
@@ -61,9 +62,18 @@ static void lerp_vec3(uint8_t* live, const uint8_t* prev, const uint8_t* curr, u
 static int    s_fpos_active;
 static double s_fpos[3];
 
+/* The same for the player's world position, installed per record by the replay
+ * loop below. The provider's part-0 transform asks for it by the state block's
+ * address, so one slot serves every record in turn. */
+static int    s_ppos_active;
+static double s_ppos[3];
+
 int openpete_native_interp_pos(unsigned int key, double out[3]) {
-    if (!s_fpos_active || key != game_layout.cam.base) return 0;
-    out[0] = s_fpos[0]; out[1] = s_fpos[1]; out[2] = s_fpos[2];
+    const double* src = NULL;
+    if (s_fpos_active && key == game_layout.cam.base)          src = s_fpos;
+    else if (s_ppos_active && key == game_layout.player.base)  src = s_ppos;
+    if (!src) return 0;
+    out[0] = src[0]; out[1] = src[1]; out[2] = src[2];
     return 1;
 }
 /* The canonical-render epoch (renderer/orchestrator.h): every canonical
@@ -231,14 +241,70 @@ static void player_records_replay(CPUState* cpu, int paired, double alpha) {
 
     static uint8_t ambient[PLAYER_REC_STATE_MAX];
     memcpy(ambient, sb, len);
+    const uint32_t pos_off = game_layout.player.pos_off;
     for (int k = 0; k < n; k++) {
         const player_model_rec_t* rec = player_records_curr(k);
         if (!rec) break;
-        if (!rec->drawn) continue;
+        if (!rec->drawn) { player_records_present_note(k, (const int32_t*)rec->spyro); continue; }
         memcpy(sb, rec->spyro, len);
+
+        /* Position and rotation between the two ticks this record pairs.
+         * Without it the avatar holds its tick pose while the camera glides,
+         * so every present above the tick rate shows the same 30 Hz step the
+         * camera bracket exists to remove. The record store pairs each call
+         * with its own previous one, so a mirrored copy brackets against the
+         * previous tick's mirrored copy rather than against the avatar.
+         *
+         * The position goes in twice: as bytes, for the provider reads that
+         * take the state block (the water plane, the mirrored copy's height),
+         * and as the un-rounded double the part-0 transform prefers, which is
+         * what keeps the avatar off the one-world-unit grid.
+         *
+         * Rotation is handed over as float byte-angles rather than written
+         * back into the packed euler, because the euler is 8 bits per axis:
+         * rounding the interpolated angle into it reproduces the 1.4-degree
+         * step it is meant to subdivide. The shortest arc is taken per axis,
+         * so a wrap through 0 does not spin the model the long way. */
+        const player_model_rec_t* prv = player_records_prev(k);
+        const int lerp = player_records_lerps(k) && prv != NULL;
+        int    rot_active[PLAYER_PARTS_MAX] = {0};
+        double rot_ang[PLAYER_PARTS_MAX][3] = {{0}};
+        s_ppos_active = 0;
+        if (lerp) {
+            const uint8_t* psp = prv->src;
+            const uint8_t* csp = rec->src;
+            lerp_vec3(sb, psp, csp, pos_off, rec_alpha);
+            const int32_t* pp = (const int32_t*)(psp + pos_off);
+            const int32_t* cp = (const int32_t*)(csp + pos_off);
+            for (int i = 0; i < 3; i++)
+                s_ppos[i] = (double)pp[i] + ((double)cp[i] - (double)pp[i]) * rec_alpha;
+            s_ppos_active = 1;
+            for (int s = 0; s < PLAYER_PARTS_MAX; s++) {
+                uint32_t off = game_layout.player.rot_off[s];
+                if (!off) continue;
+                uint32_t pr, cr;
+                memcpy(&pr, psp + off, 4); memcpy(&cr, csp + off, 4);
+                /* A zero word is the provider's "this part does not rotate
+                 * this call" sentinel; interpolating through it would swing
+                 * the part to the identity and back. */
+                if (s != 0 && (pr == 0 || cr == 0)) continue;
+                for (int a = 0; a < 3; a++) {
+                    int pbk = (int)((pr >> (a * 8)) & 0xFFu);
+                    int cbk = (int)((cr >> (a * 8)) & 0xFFu);
+                    int d = cbk - pbk;
+                    if (d > 128) d -= 256; else if (d < -128) d += 256;
+                    rot_ang[s][a] = (double)pbk + (double)d * rec_alpha;
+                }
+                rot_active[s] = 1;
+            }
+        }
+        player_native_set_rot_interp(lerp ? rot_active : NULL, &rot_ang[0][0]);
         player_native_set_player_slot(k);
         player_reextract_record(cpu, !rec->is_player);
+        player_records_present_note(k, (const int32_t*)sb);
     }
+    s_ppos_active = 0;
+    player_native_set_rot_interp(NULL, NULL);
     memcpy(sb, ambient, len);
     player_records_present_end();
 }
@@ -267,6 +333,15 @@ static void game_reextract_body(CPUState* cpu) {
             if (period <= 0.0 || period > 4.0 * (double)g_openpete_tick_period_ns)
                 period = (double)g_openpete_tick_period_ns;
             alpha = (double)(openpete_interp_present_now() - curr->tick_ns) / period;
+            /* The registered regions stopped changing longer ago than the
+             * pair's own cadence: prev->curr describes a motion that has
+             * ENDED, and the head is the state this frame shows. Wall-clock
+             * phase reaches the same answer by itself (now runs away from
+             * curr->tick_ns and the clamp below pins alpha at 1); a present
+             * phased onto curr->tick_ns does not, and would re-lerp the middle
+             * of that last motion at any distance behind the frame it is
+             * labelled with. */
+            if (openpete_interp_curr_is_stale()) alpha = 1.0;
             if (alpha < -0.35) alpha = -0.35; else if (alpha > 1.0) alpha = 1.0;
             lerp_matrix(cam, pcam, ccam, CAM_OFF_SKY,  alpha);
             lerp_matrix(cam, pcam, ccam, CAM_OFF_VIEW, alpha);

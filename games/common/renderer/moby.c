@@ -2014,6 +2014,34 @@ static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
 typedef struct { uint32_t addr, val; } fpsave_t;
 static long s_fp_hit, s_fp_miss;   /* tier-census counters */
 
+/* Stage the span the patched decode touches: the faceblock the decode reads
+ * and every word the list patches, which the .s writes at an offset into the
+ * HP faceblock. The list is walked read-only first, because the span must
+ * exist before the first write. Returns 0 when nothing could be staged, in
+ * which case the caller may not patch. */
+static int moby_frame_patch_stage(CPUState* cpu, uint32_t fb, uint32_t bytecount,
+                                  uint32_t header, uint32_t list) {
+    uint32_t lo = fb, hi = fb + 4u + bytecount;
+    uint32_t fbHP = cpu->read_word(header + ANIM_FACES_HP);
+    if (fbHP >= 0x80000000u && list >= 0x80000000u) {
+        uint32_t at = list;
+        int n = 0, entries = 0;
+        for (;;) {
+            uint32_t a0 = cpu->read_word(at); at += 4;
+            uint32_t dst = fbHP + (a0 & 0xFFFFu);
+            int cnt = (int)((a0 >> 24) & 0x7Fu);
+            if (n + cnt > FPATCH_MAX) break;         /* the apply rolls this back */
+            n += cnt; at += 4u * (uint32_t)cnt;
+            uint32_t end = dst + 4u * (uint32_t)cnt;
+            if (dst < lo) lo = dst;
+            if (end > hi) hi = end;
+            if ((int32_t)a0 <= 0 || ++entries > 128) break;
+        }
+    }
+    if (hi <= lo || hi - lo > 0x20000u) return 0;
+    return openpete_subtick_view_stage(lo, hi - lo) != NULL;
+}
+
 /* Apply the frame's patch list to PSX RAM, recording originals. Returns the
  * number of patched words, 0 = no list/invalid, -1 = list too large (rolled
  * back, caller must fall back to the unpatched decode). */
@@ -2059,6 +2087,15 @@ static const fcache_t* fpcache_get(CPUState* cpu, uint32_t fb, uint32_t header,
             && C->sig1 == s1 && C->sig2 == s2 && C->sig3 == s3) { s_fp_hit++; return C; }
     }
     s_fp_miss++;
+    /* The apply writes replacement words into the faceblock and restores them
+     * after the decode. On a sub-tick present that write may not reach guest
+     * memory, so the faceblock is staged first and the whole transient runs
+     * inside the view's copy. Staging refused leaves the unpatched decode,
+     * which draws the keyframe's base structure rather than publishing a
+     * display transient through gameplay RAM. */
+    if (openpete_subtick_view_active()
+        && !moby_frame_patch_stage(cpu, fb, bytecount, header, list))
+        return fcache_get(cpu, fb);
     static fpsave_t sv[FPATCH_MAX];
     int n = moby_frame_patch_apply(cpu, header, list, sv);
     if (n <= 0) return fcache_get(cpu, fb);         /* no/oversized list: unpatched decode */
@@ -5823,15 +5860,19 @@ void moby_reextract(CPUState* cpu) {
      * dedup'd record pass, then restore the REGULAR scratch. */
     int spec_walk = 0;
     if (spec_fresh) {
-        void* h = openpete_subtick_host_ptr(moby_game.scratch + SPEC_SCR_LO);
-        if (h) {
-            static uint8_t saved_reg[SPEC_SCR_MAX];
-            memcpy(saved_reg, h, SPEC_SCR_LEN);       /* current = REGULAR (from bracket) */
-            memcpy(h, s_canon_spec, SPEC_SCR_LEN);    /* specular queue + colour */
-            reextract_record_pass(cpu, "SP");
-            spec_walk = s_gout.n;
-            memcpy(h, saved_reg, SPEC_SCR_LEN);       /* restore REGULAR */
-        }
+        /* The window is wider than any one staged span (it covers both the
+         * colour scratch and the cull records), so it is swapped span by span
+         * through the view rather than through one host pointer: a memcpy from
+         * the window's first resolved address runs past that span's end into
+         * the next staged region, and off a sub-tick present it would reach
+         * gameplay memory. */
+        uint32_t spec_base = moby_game.scratch + SPEC_SCR_LO;
+        static uint8_t saved_reg[SPEC_SCR_MAX];
+        openpete_subtick_view_peek(spec_base, saved_reg, SPEC_SCR_LEN);  /* REGULAR (from bracket) */
+        openpete_subtick_view_poke(spec_base, s_canon_spec, SPEC_SCR_LEN); /* specular queue + colour */
+        reextract_record_pass(cpu, "SP");
+        spec_walk = s_gout.n;
+        openpete_subtick_view_poke(spec_base, saved_reg, SPEC_SCR_LEN);   /* restore REGULAR */
     }
     /* The second model kind: the queue its canonical pass captured, decoded
      * again under this present's camera. Its producer is the same tick's moby

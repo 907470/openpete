@@ -80,8 +80,25 @@ int  openpete_subtick_view_active(void);
 void* openpete_subtick_view_stage(uint32_t addr, uint32_t len);
 
 /* The feeder-facing resolver. Passthrough when the view is closed or the
- * address is unstaged. */
+ * address is unstaged.
+ *
+ * It resolves ONE address. A producer that writes a window wider than the
+ * span covering its first address must use openpete_subtick_view_poke()
+ * instead: the pointer returned here carries no length, so a memcpy past the
+ * covering span's end lands in whatever the arena staged next. */
 void* openpete_subtick_host_ptr(uint32_t addr);
+
+/* Publish `len` bytes of producer output at guest `addr` through the view.
+ * Bytes a staged span covers land in that copy; an uncovered run is staged
+ * first, and a run staging refuses is DROPPED (that range keeps canonical
+ * bytes for this present). Guest memory is never written. Returns the number
+ * of dropped bytes, 0 when the whole window was routed. */
+uint32_t openpete_subtick_view_poke(uint32_t addr, const void* src, uint32_t len);
+
+/* Read `len` bytes at guest `addr` as the view presents them: staged where a
+ * span covers, canonical elsewhere. The counterpart of poke for a producer
+ * that saves a window before overwriting it. */
+void openpete_subtick_view_peek(uint32_t addr, void* dst, uint32_t len);
 
 /* Diagnostics: spans staged and reads served from staging during the most
  * recent present. Both are zero when nothing engaged — a green that reports
@@ -100,6 +117,14 @@ void openpete_subtick_view_stats(uint32_t* out_spans, uint32_t* out_served,
  * gate never reached the sub-tick path, which makes any neutral result from it
  * vacuous rather than passing. */
 uint32_t openpete_subtick_view_opens(void);
+
+/* Writes absorbed by a staged span (so they never reached guest memory) and
+ * bytes a poke could not route. The first is the engagement counter for the
+ * write redirect: a zero means no producer wrote into staging this run, which
+ * makes "no producer writes guest RAM" a statement about a path that may not
+ * have executed. */
+uint32_t openpete_subtick_view_staged_writes(void);
+uint32_t openpete_subtick_view_poke_drops(void);
 
 /* Log every distinct guest address written while a view was open, for the run.
  * This is the census that says which producers still publish through gameplay

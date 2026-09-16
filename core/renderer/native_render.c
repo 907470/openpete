@@ -10412,8 +10412,10 @@ void openpete_native_render_shutdown(void)
         openpete_subtick_view_stats(&spans, &served, &writes);
         OPL_INFO_F("subtick-view",
                    "presents=%u staged_spans=%u served_reads=%u (last present); "
-                   "cpu_writes_while_open=%u",
-                   opens, spans, served, writes);
+                   "cpu_writes_while_open=%u writes_into_staging=%u poke_dropped=%u",
+                   opens, spans, served, writes,
+                   openpete_subtick_view_staged_writes(),
+                   openpete_subtick_view_poke_drops());
         openpete_subtick_view_report_writes();
     }
 

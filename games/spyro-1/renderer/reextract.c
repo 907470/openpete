@@ -1359,6 +1359,14 @@ static void game_reextract_body(void* cpu_v) {
          * lerp(prev,curr,α<0) is a tiny backward extrapolation of a known
          * velocity — continuous and visually correct; the cubic Hermite is NOT
          * safe below 0, so the pred1 gate below requires alpha >= 0. */
+        /* The registered regions stopped changing longer ago than the pair's
+         * own cadence: prev->curr describes a motion that has ENDED, and the
+         * head is the state this frame shows. Wall-clock phase reaches the same
+         * answer by itself (now runs away from curr->tick_ns and the clamp
+         * below pins alpha at 1); a present phased onto curr->tick_ns does not,
+         * and would re-lerp the middle of that last motion at any distance
+         * behind the frame it is labelled with. */
+        if (openpete_interp_curr_is_stale()) alpha = 1.0;
         if (alpha < -0.35) alpha = -0.35; else if (alpha > 1.0) alpha = 1.0;
         /* Publish the alpha this present will actually show. It is the
          * position in ANIMATION time, which is what decides whether a present

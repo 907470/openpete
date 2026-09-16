@@ -123,6 +123,19 @@ static uint32_t (*s_orig_lwr)(uint32_t, uint32_t);
  * the reads it names are silently canonical and must be dealt with. */
 static uint32_t s_stat_unaligned_reads;
 
+/* Writes that landed in a staged span instead of guest memory, for the run. A
+ * producer whose span is staged publishes into the copy, so the write never
+ * reaches gameplay memory; counting them separately keeps s_stat_writes
+ * meaning "writes that still reached guest RAM", and a run-wide total is what
+ * says the redirect executed at all. */
+static uint32_t s_stat_writes_staged;
+
+/* Bytes a poke could route neither to a staged span nor to a span it could
+ * stage. They are dropped rather than written to guest memory, so the present
+ * shows canonical bytes for that range -- visible as a stale region, never as
+ * a gameplay-state write. */
+static uint32_t s_stat_poke_dropped;
+
 /* stage() refusals. Every caller falls back to writing guest RAM when staging
  * is unavailable, which is correct but silent -- a producer that never manages
  * to stage would keep writing gameplay memory while every gate stayed green.
@@ -168,6 +181,11 @@ void openpete_subtick_view_report_writes(void)
                    "%u stage() refusal(s) -- that many producer writes went to "
                    "guest RAM instead of the view",
                    s_stat_stage_fail);
+    if (s_stat_poke_dropped)
+        OPL_WARN_F("subtick-view",
+                   "%u byte(s) of producer output could not be staged and were "
+                   "DROPPED -- that range shows canonical bytes this present",
+                   s_stat_poke_dropped);
     if (s_stat_unaligned_reads)
         OPL_WARN_F("subtick-view",
                    "%u unaligned load(s) hit a staged span and read CANONICAL "
@@ -210,6 +228,22 @@ static int sv_staged_bytes(uint32_t addr, uint32_t n, void* out)
     return 1;
 }
 
+/* Store `n` bytes at `addr` into staging when a span covers the whole range.
+ * Returns 1 when the store was absorbed, 0 when the caller must fall through
+ * to guest memory. A store straddling a span's end is refused whole, for the
+ * reason sv_staged_bytes refuses a straddling read. */
+static int sv_staged_store(uint32_t addr, uint32_t n, const void* src)
+{
+    if (!s_active) return 0;
+    int hit = sv_find(addr);
+    if (hit < 0) return 0;
+    const sv_span_t* sp = &s_span[hit];
+    if (sp->len - (addr - sp->addr) < n) return 0;
+    memcpy(s_arena + sp->off + (addr - sp->addr), src, n);
+    s_stat_writes_staged++;
+    return 1;
+}
+
 static uint32_t sv_read_word(uint32_t addr)
 {
     uint32_t v;
@@ -238,10 +272,12 @@ static uint8_t sv_read_byte(uint32_t addr)
  * would otherwise be invisible to the census and the remaining work would be
  * reported as smaller than it is. */
 static void sv_write_half(uint32_t addr, uint16_t v)
-{ s_stat_writes++; sv_wset_note(addr); s_orig_write_half(addr, v); }
+{ if (sv_staged_store(addr, 2, &v)) return;
+  s_stat_writes++; sv_wset_note(addr); s_orig_write_half(addr, v); }
 
 static void sv_write_byte(uint32_t addr, uint8_t v)
-{ s_stat_writes++; sv_wset_note(addr); s_orig_write_byte(addr, v); }
+{ if (sv_staged_store(addr, 1, &v)) return;
+  s_stat_writes++; sv_wset_note(addr); s_orig_write_byte(addr, v); }
 
 static void sv_swl(uint32_t addr, uint32_t v)
 { s_stat_writes++; sv_wset_note(addr); s_orig_swl(addr, v); }
@@ -259,6 +295,10 @@ static uint32_t sv_lwr(uint32_t addr, uint32_t rt)
 
 static void sv_write_word(uint32_t addr, uint32_t value)
 {
+    /* A staged span is the value this present publishes, so a write into one
+     * belongs in the copy. Guest memory is reached only by a write nothing
+     * staged, which is what the census and the RAM guard exist to report. */
+    if (sv_staged_store(addr, 4, &value)) return;
     s_stat_writes++;
     sv_wset_note(addr);
     /* OPENPETE_SUBTICK_WRITE_TRACE names the addresses, which is what turns
@@ -340,6 +380,9 @@ void openpete_subtick_view_stats(uint32_t* out_spans, uint32_t* out_served,
     if (out_served) *out_served = s_stat_served;
     if (out_writes) *out_writes = s_stat_writes;
 }
+
+uint32_t openpete_subtick_view_staged_writes(void) { return s_stat_writes_staged; }
+uint32_t openpete_subtick_view_poke_drops(void)    { return s_stat_poke_dropped; }
 
 static int sv_find(uint32_t addr)
 {
@@ -425,6 +468,84 @@ void* openpete_subtick_view_stage(uint32_t addr, uint32_t len)
 
     memcpy(s_arena + sp->off, live, len);
     return s_arena + sp->off;
+}
+
+/* Route `len` bytes of producer output at `addr` into the view. A range a
+ * span already covers lands in that copy; an uncovered run is staged first
+ * and, when staging refuses, dropped. Guest memory is never written.
+ *
+ * Producers that publish a window wider than one staged span cannot use a
+ * single host pointer: openpete_subtick_host_ptr() resolves the window's
+ * FIRST address, and a memcpy from there runs off the end of that span into
+ * whatever the arena holds next. This walks the window span by span instead. */
+uint32_t openpete_subtick_view_poke(uint32_t addr, const void* src, uint32_t len)
+{
+    const uint8_t* p = (const uint8_t*)src;
+    uint32_t dropped = 0;
+    /* Closed view: nothing is staged and guest memory is not this call's to
+     * write, so the whole window is reported dropped rather than landing
+     * anywhere. The span index still holds the last present's entries, so it
+     * must not be consulted either. */
+    if (!s_active) { s_stat_poke_dropped += len; return len; }
+    while (len) {
+        int hit = sv_find(addr);
+        if (hit >= 0) {
+            const sv_span_t* sp = &s_span[hit];
+            uint32_t avail = sp->len - (addr - sp->addr);
+            uint32_t n = avail < len ? avail : len;
+            memcpy(s_arena + sp->off + (addr - sp->addr), p, n);
+            s_stat_writes_staged++;
+            addr += n; p += n; len -= n;
+            continue;
+        }
+        /* Length of the uncovered run, probed a block at a time because a
+         * span boundary can only fall on a block the index knows about. */
+        uint32_t run = SV_BLOCK - (addr & (SV_BLOCK - 1u));
+        if (run > len) run = len;
+        while (run < len && sv_find(addr + run) < 0) {
+            uint32_t step = SV_BLOCK;
+            if (run + step > len) step = len - run;
+            run += step;
+        }
+        uint8_t* st = (uint8_t*)openpete_subtick_view_stage(addr, run);
+        if (st) memcpy(st, p, run);
+        else { dropped += run; s_stat_poke_dropped += run; }
+        addr += run; p += run; len -= run;
+    }
+    return dropped;
+}
+
+/* Read `len` bytes at `addr` as the view presents them: staged where a span
+ * covers, canonical elsewhere. The counterpart of poke, for a producer that
+ * saves a window before overwriting it. */
+void openpete_subtick_view_peek(uint32_t addr, void* dst, uint32_t len)
+{
+    uint8_t* p = (uint8_t*)dst;
+    while (len) {
+        uint32_t n = len;
+        int hit = s_active ? sv_find(addr) : -1;
+        const uint8_t* srcp = NULL;
+        if (hit >= 0) {
+            const sv_span_t* sp = &s_span[hit];
+            uint32_t avail = sp->len - (addr - sp->addr);
+            if (avail < n) n = avail;
+            srcp = s_arena + sp->off + (addr - sp->addr);
+            s_stat_served++;
+        } else {
+            uint32_t run = SV_BLOCK - (addr & (SV_BLOCK - 1u));
+            if (run > n) run = n;
+            while (run < n && sv_find(addr + run) < 0) {
+                uint32_t step = SV_BLOCK;
+                if (run + step > n) step = n - run;
+                run += step;
+            }
+            n = run;
+            srcp = (const uint8_t*)openpete_psx_to_host_ptr(addr);
+        }
+        if (srcp) memcpy(p, srcp, n);
+        else memset(p, 0, n);
+        addr += n; p += n; len -= n;
+    }
 }
 
 void* openpete_subtick_host_ptr(uint32_t addr)

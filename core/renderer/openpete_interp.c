@@ -44,6 +44,13 @@ static int      s_enabled     = 0;
 static uint64_t s_total_captures     = 0;
 static uint64_t s_total_dedupe_skips = 0;
 
+/* The newest tick capture has SEEN, stored whether or not the ring rolled.
+ * The ring itself holds only distinct states, so the head's `tick` is when the
+ * state last changed; the difference between the two is how long the present
+ * has been running past a state that stopped moving. */
+static uint32_t s_last_tick      = 0;
+static int      s_last_tick_seen = 0;
+
 /* Scratch for the capture-time dedupe compare (built before committing to a
  * ring slot, so an unchanged tick doesn't clobber the previous DISTINCT one). */
 static uint8_t s_cap_scratch[OPENPETE_INTERP_MAX_SNAPSHOT_BYTES];
@@ -126,6 +133,7 @@ void openpete_interp_reset(void) {
      * region_offsets) computed at init — only the SNAPSHOTS are stale. */
     for (int i = 0; i < 3; ++i) s_snap[i].valid = 0;
     s_head = 0;
+    s_last_tick_seen = 0;
     s_reset_gen++;
 }
 uint32_t openpete_interp_reset_generation(void) { return s_reset_gen; }
@@ -174,6 +182,8 @@ int openpete_interp_paired(void) {
 void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
     if (!s_initialized || !s_enabled) return;
     if (!s_regions || s_region_count == 0) return;
+    s_last_tick = tick;
+    s_last_tick_seen = 1;
 
     /* Build the candidate snapshot into scratch FIRST, so we can compare it to
      * the current head before deciding whether to advance the ring. */
@@ -267,6 +277,31 @@ void openpete_interp_recapture_committed(void) {
         if (host) memcpy(curr->data + curr->region_offsets[r], host,
                          s_regions[r].length);
     }
+}
+
+/* How far the present has run past the state the ring's head describes.
+ *
+ * A screen whose registered regions stop changing stops rolling the ring: the
+ * head stays pinned at the tick the state last changed, and the pair keeps
+ * describing the LAST MOTION rather than the state on screen. Under wall-clock
+ * stamps that is harmless, because the growing (now - curr) clamps alpha to 1
+ * and the present shows the head. Under a forced present target -- the
+ * intermediate screenshot leg phases onto curr->tick_ns + alpha*period -- the
+ * staleness is discarded and the present re-lerps the middle of a motion that
+ * ended, at any distance behind the frame it is labelled with.
+ *
+ * The pair's own cadence is the tolerance: the game's logic advances every
+ * other tick while capture fires every tick, so the head is legitimately one
+ * capture behind for as long as the gap between the two stored ticks. Past
+ * that, the state is static and the head IS what the frame shows. */
+int openpete_interp_curr_is_stale(void) {
+    if (!s_initialized || !s_enabled || !s_last_tick_seen) return 0;
+    const openpete_interp_snapshot_t* curr = &s_snap[s_head];
+    const openpete_interp_snapshot_t* prev = &s_snap[(s_head + 2) % 3];
+    if (!curr->valid) return 0;
+    if (s_last_tick <= curr->tick) return 0;
+    uint32_t gap = (prev->valid && prev->tick < curr->tick) ? curr->tick - prev->tick : 1u;
+    return (s_last_tick - curr->tick) > gap;
 }
 
 int openpete_interp_query(op_time_t now_ns,

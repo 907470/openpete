@@ -168,6 +168,15 @@ const openpete_interp_snapshot_t* openpete_interp_curr_snapshot(void);
  * spawn/load/pause (nothing to interpolate between). */
 int       openpete_interp_paired(void);
 
+/* 1 when the newest stored snapshot is older than the tick the present belongs
+ * to by more than the stored pair's own cadence -- the registered regions have
+ * stopped changing, so the pair describes a motion that has ended and the head
+ * is the state on screen. A consumer that phases a present onto the head's
+ * stamp (rather than onto wall time, which clamps alpha to 1 by itself) must
+ * take alpha = 1 here instead of the phase it computed, or it re-lerps the
+ * middle of the last motion at every such present. */
+int       openpete_interp_curr_is_stale(void);
+
 /* Returns the most recent two snapshots (prev = tick N-1, curr = tick N)
  * via out params. Returns 1 if both are valid AND their data buffers
  * differ (byte-identical → state is stuck → caller should re-present
