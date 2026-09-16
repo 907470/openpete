@@ -1,12 +1,12 @@
-// games/spyro-1/renderer/native_gte.c — see native_gte.h. Bodies are the
+// games/common/renderer/native_gte.c — see native_gte.h. Bodies are the
 // byte-exact union of the per-feeder copies this module replaced;
 // any change here moves EVERY feeder and must re-pass the bit-exact
 // visual gate.
 
 #include "renderer/native_gte.h"
-#include "spyro1_symbols.gen.h"   /* D_SIN_TABLE, G_CAMERA */
+#include "game_layout.h"           /* cam.base, sin_table */
 #include "openpete_native_render.h"
-#include "renderer/reextract.h"  /* openpete_native_interp_pos */
+#include "renderer/orchestrator.h" /* openpete_native_interp_pos */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -52,11 +52,12 @@ void ngte_mac(const int M[3][3], double vx, double vy, double vz,
 
 void ngte_view_build(CPUState* cpu, ngte_view* v) {
     ngte_census_arm();
-    ngte_read_matrix(cpu, G_CAMERA + 0x00, v->cam_M);
-    v->cam_ram[0] = (double)(int32_t)cpu->read_word(G_CAMERA + 0x28);
-    v->cam_ram[1] = (double)(int32_t)cpu->read_word(G_CAMERA + 0x2C);
-    v->cam_ram[2] = (double)(int32_t)cpu->read_word(G_CAMERA + 0x30);
-    v->cam_interp = openpete_native_interp_pos(G_CAMERA, v->cam) ? 1 : 0;
+    const uint32_t cam_base = game_layout.cam.base;
+    ngte_read_matrix(cpu, cam_base + 0x00, v->cam_M);
+    v->cam_ram[0] = (double)(int32_t)cpu->read_word(cam_base + 0x28);
+    v->cam_ram[1] = (double)(int32_t)cpu->read_word(cam_base + 0x2C);
+    v->cam_ram[2] = (double)(int32_t)cpu->read_word(cam_base + 0x30);
+    v->cam_interp = openpete_native_interp_pos(cam_base, v->cam) ? 1 : 0;
     if (!v->cam_interp) { v->cam[0] = v->cam_ram[0]; v->cam[1] = v->cam_ram[1]; v->cam[2] = v->cam_ram[2]; }
     v->ofx     = (double)(int32_t)cpu->gte_ctrl[24] / 65536.0;
     v->ofy     = (double)(int32_t)cpu->gte_ctrl[25] / 65536.0;
@@ -157,12 +158,14 @@ void ngte_mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]) {
 }
 
 void ngte_sincos_f(CPUState* cpu, double fb, double* s_out, double* c_out) {
+    const uint32_t tbl = game_layout.sin_table;
+    if (!tbl) { *s_out = 0.0; *c_out = 4096.0; return; }
     while (fb < 0.0) fb += 256.0;
     while (fb >= 256.0) fb -= 256.0;
     int b0 = (int)fb; double frac = fb - (double)b0;
     uint32_t i0 = (uint32_t)b0 << 1, i1 = (uint32_t)((b0 + 1) & 0xFF) << 1;
-    double s0 = (int16_t)cpu->read_half(D_SIN_TABLE + i0),        s1 = (int16_t)cpu->read_half(D_SIN_TABLE + i1);
-    double c0 = (int16_t)cpu->read_half(D_SIN_TABLE + 0x80u + i0), c1 = (int16_t)cpu->read_half(D_SIN_TABLE + 0x80u + i1);
+    double s0 = (int16_t)cpu->read_half(tbl + i0),        s1 = (int16_t)cpu->read_half(tbl + i1);
+    double c0 = (int16_t)cpu->read_half(tbl + 0x80u + i0), c1 = (int16_t)cpu->read_half(tbl + 0x80u + i1);
     *s_out = s0 + (s1 - s0) * frac;
     *c_out = c0 + (c1 - c0) * frac;
 }
@@ -177,10 +180,16 @@ void ngte_sincos_interp(CPUState* cpu, double fb, int* s_out, int* c_out) {
 }
 
 void ngte_euler_sincos(CPUState* cpu, uint32_t rot, ngte_euler_sc* e) {
+    const uint32_t tbl = game_layout.sin_table;
+    if (!tbl) {
+        e->sy = e->sx = e->sz = 0;
+        e->cy = e->cx = e->cz = 4096;
+        return;
+    }
     uint32_t iy = (rot >> 15) & 0x1FEu, ix = (rot & 0xFF00u) >> 7, iz = (rot & 0xFFu) << 1;
-    e->sy = (int16_t)cpu->read_half(D_SIN_TABLE + iy); e->cy = (int16_t)cpu->read_half(D_SIN_TABLE + 0x80u + iy);
-    e->sx = (int16_t)cpu->read_half(D_SIN_TABLE + ix); e->cx = (int16_t)cpu->read_half(D_SIN_TABLE + 0x80u + ix);
-    e->sz = (int16_t)cpu->read_half(D_SIN_TABLE + iz); e->cz = (int16_t)cpu->read_half(D_SIN_TABLE + 0x80u + iz);
+    e->sy = (int16_t)cpu->read_half(tbl + iy); e->cy = (int16_t)cpu->read_half(tbl + 0x80u + iy);
+    e->sx = (int16_t)cpu->read_half(tbl + ix); e->cx = (int16_t)cpu->read_half(tbl + 0x80u + ix);
+    e->sz = (int16_t)cpu->read_half(tbl + iz); e->cz = (int16_t)cpu->read_half(tbl + 0x80u + iz);
 }
 
 void ngte_compose_euler(const int start[3][3], const ngte_euler_sc* e, int out[3][3]) {

@@ -162,19 +162,17 @@ include(${CMAKE_SOURCE_DIR}/cmake/openpete_game.cmake)
 openpete_add_game(spyro-1
     MAIN           main.cpp
     FEATURE_LIST   feature_list.c
+    ORCHESTRATOR   renderer/reextract.c
     ICON_SOURCE    ${_spyro_icon_c}
     MODULE_LINKAGE ${OPENPETE_RECOMP_LINKAGE}
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro1_symbols.toml
     SOURCES
         psyq_hooks.cpp
 
-        # The native renderer's game half: the feeders, the sub-tick
-        # re-extract orchestrator and the interp region table.
-        renderer/reextract.c
+        # The native renderer's game half: the feeders and the interp region
+        # table. The sub-tick re-extract orchestrator is ORCHESTRATOR above.
         renderer/interp_regions.c
-        renderer/render_paths.c
         renderer/render_decouple.c
-        renderer/native_gte.c
         renderer/cyclorama.c
         renderer/moby.c
         renderer/moby_rank.c

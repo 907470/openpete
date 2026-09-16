@@ -20,6 +20,12 @@ extern "C" {
 #endif
 
 typedef struct game_layout {
+    /* The in-RAM sin/cos table: 256 entries per circle of s16 1.12 fixed
+     * point, cos at +0x80 bytes into the same table, so a byte angle indexes
+     * sin at (angle << 1) and cos at 0x80 + (angle << 1). 0 = unlocated, and
+     * every helper that reads the table returns sin 0 / cos 4096 instead. */
+    uint32_t sin_table;
+
     /* The environment header (Spyro 1 `Environment`). */
     struct {
         uint32_t base;

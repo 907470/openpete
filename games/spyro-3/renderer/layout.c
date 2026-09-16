@@ -8,6 +8,11 @@
 #include "spyro3_symbols.gen.h"
 
 const game_layout_t game_layout = {
+    .sin_table = G_SIN,     /* g_Sin (psx.map); cos = g_Cos 0x80065920 at +0x80.
+                             * asm/stdutil.s func_8004E9E4 (sin) and func_8004EA2C
+                             * (cos) `lh` from those two bases; func_8004F6C4 builds
+                             * the camera rotation matrix from them with 0x1000 as
+                             * the unit, so the entries are s16 1.12 */
     .env = {
         .base            = G_ENVIRONMENT,
         .sector_ptr      = G_ENVIRONMENT + 0x00u,   /* world draw: lw $s3, 0x0 */

@@ -6,7 +6,7 @@
 #include "openpete.h"
 #include "openpete_knobs.h"          /* dev-overlay row bind */
 #include "openpete_native_render.h"  /* isolation toggle */
-#include "renderer/reextract.h"  /* canonical-render epoch commit */
+#include "renderer/orchestrator.h"  /* canonical-render epoch commit */
 
 #include <stdio.h>
 #include <stdlib.h>

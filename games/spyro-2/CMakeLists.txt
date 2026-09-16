@@ -8,4 +8,8 @@ include(${CMAKE_SOURCE_DIR}/cmake/openpete_game.cmake)
 openpete_add_game(spyro-2
     SOURCES
         skip_to_level.c
-        features/freecam.c)
+        features/freecam.c
+
+        # No engine-layout addresses located yet: the shared renderer TUs link
+        # against the empty descriptor.
+        ${CMAKE_SOURCE_DIR}/games/common/renderer/layout_none.c)

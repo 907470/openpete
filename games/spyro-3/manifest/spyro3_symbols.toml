@@ -89,3 +89,8 @@ name = "F_CAMERA_MATRICES"
 addr = 0x8004F6C4
 kind = "function"
 note = "func_8004F6C4 — builds the sky and world matrices from the angles at G_CAMERA+0x44"
+
+[[symbol]]
+name = "G_SIN"
+addr = 0x800658A0
+note = "g_Sin (psx.map); 256 s16 1.12 entries per circle, cos = g_Cos 0x80065920 at +0x80. asm/stdutil.s func_8004E9E4 (sin) and func_8004EA2C (cos) index it by angle>>4 with a 4-bit lerp; func_8004F6C4 builds the camera rotation matrix from the pair"

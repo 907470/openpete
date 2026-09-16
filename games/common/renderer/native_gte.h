@@ -1,5 +1,5 @@
-// games/spyro-1/renderer/native_gte.h — the ONE copy of the GTE
-// float-mirror math shared by every native feeder.
+// games/common/renderer/native_gte.h — the ONE copy of the GTE
+// float-mirror math shared by every native feeder of every game.
 //
 // Two projection families exist on purpose:
 //
@@ -36,7 +36,7 @@
  * runs under (the staged g_Camera, which a held producer camera swaps) and
  * from the renderer's display policy. Built inside the producer-camera
  * bracket where one exists, so the bracket's integer-camera rule
- * (openpete_native_interp_pos returns 0 for G_CAMERA) reaches cam[].
+ * (openpete_native_interp_pos returns 0 for the camera) reaches cam[].
  *
  * H_canon is the GTE's H: every hardware-limit mirror (IR16 saturation,
  * divide cap, near-fixup regime, UNR overflow regime) reads it. H_eff =
@@ -147,8 +147,10 @@ int ngte_dpcs_ch(int c8, int fc12, int ir0);
  * a scaled model matrix times a rotation exceeds int32 before the shift. */
 void ngte_mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]);
 
-/* The game's in-RAM sin/cos table (D_SIN_TABLE): 256 entries per circle,
- * int16 Q12, cos at +0x80 bytes. A byte angle indexes it at byte<<1. */
+/* The game's in-RAM sin/cos table (game_layout.sin_table): 256 entries per
+ * circle, int16 Q12, cos at +0x80 bytes. A byte angle indexes it at byte<<1.
+ * A game whose table is unlocated (the field is 0) gets sin 0 / cos 4096 from
+ * every helper below instead of a read through address 0. */
 
 /* sin/cos at fractional byte-angle resolution: lerp adjacent table
  * entries. Exact at integer angles, smooth between, so a rotation renders

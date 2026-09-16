@@ -20,6 +20,10 @@
 
 #include <stdint.h>   /* uint32_t (canonical-render epoch API) */
 
+/* The interface the shared renderer TUs call into; Spyro 1 defines it here
+ * (reextract.c) and in cyclorama.c. */
+#include "renderer/orchestrator.h"
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -93,21 +97,6 @@ int moby_native_canon_drawn_mobys(const uint32_t** out);
  * keyframes). Defined in renderer/flame.c. */
 void flame_native_set_subframe(double frac);
 
-/* Sub-tick FRACTIONAL interpolated world-position resolver (the lerp32 1-unit
- * floor fix). On each sub-tick present the orchestrator brackets every
- * interpolated object (camera / Spyro / each moby) by writing the lerped
- * position to int32 RAM — which ROUNDS to the 1-world-unit grid. Feeders that
- * project against those positions read the rounded RAM and inherit a uniform
- * 1-unit positional floor (sub-pixel, but it caps near-geometry continuity).
- * This returns the SAME interpolation at DOUBLE precision (un-rounded) for the
- * given `key` (G_CAMERA, G_SPYRO, or a moby vaddr): feeders use it for their
- * camera/object-relative deltas instead of re-reading the floored RAM, so the
- * projection tracks the smooth sub-tick path. Returns 1 + fills out[3] when a
- * bracket is active for `key` this present; 0 otherwise (feeder falls back to
- * reading RAM, which equals the canonical curr at the 30 Hz lockstep). Defined
- * in reextract.c. */
-int openpete_native_interp_pos(unsigned int key, double out[3]);
-
 /* Sky dome + background: live g_Camera matrices when the canonical call used
  * them, else the stack-built (transition) matrix pair lerped prev→curr by
  * `alpha`; `interp_on` = camera bracketed (else snap to curr). */
@@ -123,13 +112,11 @@ typedef struct { float sx[3], sy[3]; unsigned int rgb[3]; } cyclorama_native_tri
  * Fills up to `max` triangles and returns the count. Defined in
  * cyclorama.c. */
 int cyclorama_native_extract_faded(struct CPUState* cpu, cyclorama_native_tri* out, int max);
-/* Present-time draw-env clear sync (called from render_paths_commit, once per
- * canonical present): re-reads the clear colour from g_CurDB->m_DrawEnv in PSX
- * RAM — the env DrawOTag will use for the scene being presented — instead of
- * the PutDrawEnv thunk latch, which trails the OT build by one VSync and
- * flashed the stale homeworld background for one present at the portal-entry
- * transition boundary. Defined in cyclorama.c. */
-void cyclorama_native_env_clear_commit(void);
+/* cyclorama_native_env_clear_commit (renderer/orchestrator.h) is defined in
+ * cyclorama.c: it re-reads the clear colour from g_CurDB->m_DrawEnv in PSX RAM
+ * rather than the PutDrawEnv thunk latch, which trails the OT build by one
+ * VSync and flashed the stale homeworld background for one present at the
+ * portal-entry transition boundary. */
 /* Portal previews: the dome rotation matrix is captured prev+curr per canonical
  * tick and lerped by the spine's sub-tick `alpha` (componentwise, like the camera
  * matrix); `interp_on` = camera bracketed (else snap to curr). */
@@ -184,13 +171,12 @@ void spyro_native_canon_capture_recs(void* cpu);
  * (openpete_frame is a 60 Hz VBL counter, 2 per 30 Hz game tick, so frame==
  * frame stamp checks never match at re-extract time.)
  *   _commit: latch the in-flight epoch as "fresh" + start the next (once per
- *            canonical present).
+ *            canonical present); declared in renderer/orchestrator.h.
  *   _stamp:  the value a producer hook must store at capture time.
  *   _fresh:  whether a stored stamp belongs to the last canonical present.
  * Per-producer freshness within RP_MOBY (three canonical producers share that
  * path bit — REGULAR, SPECULAR, SHADED/text — and a load/pause screen runs
  * ONLY the SHADED/text one): */
-void     spyro_native_canon_epoch_commit(void);
 uint32_t spyro_native_canon_epoch_stamp(void);
 int      spyro_native_canon_epoch_fresh(uint32_t stamp);
 int      spyro_native_canon_mobyreg_fresh(void);  /* colour 0x1100 + cull records (REGULAR hook) */

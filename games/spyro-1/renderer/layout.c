@@ -13,6 +13,7 @@
 #define G_ENVANIM (G_ENVIRONMENT - (uint32_t)sizeof(EnvironmentAnimations))
 
 const game_layout_t game_layout = {
+    .sin_table = D_SIN_TABLE,
     .env = {
         .base            = G_ENVIRONMENT,
         .sector_ptr      = G_ENVIRONMENT + offsetof(Environment, m_SectorPointer),

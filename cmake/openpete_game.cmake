@@ -3,6 +3,8 @@
 # openpete_add_game(<id>
 #     [MAIN <file>]                   # entry TU; default games/common/game_main.cpp
 #     [FEATURE_LIST <file>]           # default games/common/feature_list_none.c
+#     [ORCHESTRATOR <file>]           # sub-tick re-extract orchestrator; default
+#                                     # games/common/renderer/orchestrator_none.c
 #     [ICON_SOURCE <file>]            # default games/common/game_icon_none.c
 #     [MODULE_LINKAGE static|shared]  # default static
 #     [SYMBOLS_MANIFEST <file>]       # curated alias table -> gen/<tag>_symbols.gen.h
@@ -31,8 +33,10 @@
 #  - The executable: the entry TU, the generated identity TU
 #    (tools/gen_game_identity.py over recomp.conf), the shared PSYQ-to-
 #    PsyCross layer with the inert default for every hook the game does not
-#    name in psyq_game_provides.h, the freecam body, the write census, and
-#    the generated abort-on-call PSYQ stubs with their runtime.
+#    name in psyq_game_provides.h, the freecam body, the write census, the
+#    shared renderer TUs (the GTE float mirror and the render-path isolation
+#    registry) with the game's sub-tick orchestrator or the inert default,
+#    and the generated abort-on-call PSYQ stubs with their runtime.
 #
 # Shared linkage builds the module as <tag>-recomp.{so,dll} for dlopen at
 # boot; the exe-side attach TU, export surface and implib are the game's
@@ -41,7 +45,7 @@
 function(openpete_add_game GAME_ID)
     cmake_parse_arguments(G
         ""
-        "MAIN;FEATURE_LIST;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST"
+        "MAIN;FEATURE_LIST;ORCHESTRATOR;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST"
         "SOURCES;MODULE_SOURCES"
         ${ARGN})
     if(G_UNPARSED_ARGUMENTS)
@@ -67,6 +71,9 @@ function(openpete_add_game GAME_ID)
     endif()
     if(NOT G_FEATURE_LIST)
         set(G_FEATURE_LIST ${_common}/feature_list_none.c)
+    endif()
+    if(NOT G_ORCHESTRATOR)
+        set(G_ORCHESTRATOR ${_common}/renderer/orchestrator_none.c)
     endif()
     if(NOT G_ICON_SOURCE)
         set(G_ICON_SOURCE ${_common}/game_icon_none.c)
@@ -216,6 +223,7 @@ function(openpete_add_game GAME_ID)
         ${_common}/state_regions.c
         ${_regions_sources}
         ${G_FEATURE_LIST}
+        ${G_ORCHESTRATOR}
         ${G_ICON_SOURCE}
         ${G_SOURCES}
         ${_symbols_sources}
@@ -230,6 +238,11 @@ function(openpete_add_game GAME_ID)
         ${_common}/psyq/psyq_thunk_state.c
         ${_common}/write_census.c
         ${_common}/freecam_game.c
+
+        # Shared renderer TUs: the GTE float mirror every feeder projects
+        # through, and the --render-paths isolation registry.
+        ${_common}/renderer/native_gte.c
+        ${_common}/renderer/render_paths.c
 
         # PSYQ symbol stubs, abort-on-call. On ELF these are weak so any
         # thunk strongly defines them; on MinGW the macro becomes strong and
