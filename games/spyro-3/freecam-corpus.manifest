@@ -26,3 +26,6 @@ seashell_shore | pos=(70859, 80778, 15700) yaw=-1802 pitch=222
 sunrise_spring | pos=(93293, 45901, 25017) yaw=-1494 pitch=-24
 # egg thief draws without its colour
 midday_gardens | pos=(64750, 54918, 9705) yaw=380 pitch=207
+# with interpolation the world flickers at the tick cadence; the vases behind the
+# sign flicker with it (the other vase does not)
+spooky_swamp | pos=(61666, 72370, 9835) yaw=167 pitch=33
