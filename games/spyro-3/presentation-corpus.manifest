@@ -41,3 +41,7 @@ icy-peak-reflective-mirror|1900|150||1900,1950,2000
 # animated record replayed in the tick camera's view space is displaced from
 # the interpolated camera by half a tick of rotation.
 sunrise-spring-camera-swing|1500|100||1520,1540,1560
+
+# sheilas-alp-sheila-water-invisible: Sheila, the playable moby, turns invisible
+# in the water at VBL 4556; the pin holds that present on both legs.
+sheilas-alp-sheila-water-invisible|4400|100||4556
