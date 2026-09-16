@@ -9,7 +9,7 @@ spine reproduces the canonical dump of that frame pixel for pixel, so each
 from the SAME candidate directory. No golden image is involved.
 
 The target is zero. Until every producer reaches it, a per-tile baseline
-(tests/golden/spyro-1/presentation/ident-baseline.tsv: tile, differing pixels)
+(tests/golden/<game>/presentation/ident-baseline.tsv: tile, differing pixels)
 holds the current residual; a tile fails when it exceeds its baseline, and a
 tile without a baseline row fails on any difference. --bless rewrites the
 baseline from the candidate (review the diff before committing it: a raised
@@ -26,7 +26,11 @@ except ImportError:
     print("[presentation-ident] SKIP: python3-PIL missing", file=sys.stderr)
     sys.exit(64)
 
-DEFAULT_BASELINE = "tests/golden/spyro-1/presentation/ident-baseline.tsv"
+GAMES = ("spyro-1", "spyro-2", "spyro-3")
+
+
+def baseline_path(game):
+    return f"tests/golden/{game}/presentation/ident-baseline.tsv"
 
 
 def diff_count(a, b):
@@ -54,9 +58,14 @@ def read_baseline(path):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("candidate", help="directory holding both the canon and ident -vk PNGs")
-    ap.add_argument("--baseline", default=DEFAULT_BASELINE)
+    ap.add_argument("--game", default="spyro-1", choices=GAMES,
+                    help="game slug; selects the baseline file")
+    ap.add_argument("--baseline", default=None,
+                    help="baseline file (default: tests/golden/<game>/presentation/ident-baseline.tsv)")
     ap.add_argument("--bless", action="store_true", help="rewrite the baseline from this candidate")
     args = ap.parse_args()
+    if args.baseline is None:
+        args.baseline = baseline_path(args.game)
     if not os.path.isdir(args.candidate):
         print(f"[presentation-ident] SKIP: no candidate dir {args.candidate}")
         return 64
@@ -85,7 +94,7 @@ def main():
         else:
             print(f"ident    {name}")
     exact = sum(1 for n in counts.values() if n == 0)
-    print(f"[presentation-ident] {len(counts)} pairs, {exact} exact, "
+    print(f"[presentation-ident] {args.game}: {len(counts)} pairs, {exact} exact, "
           f"{len(counts) - exact} within baseline or exceeding, {fails} failing, "
           f"{total_px} differing pixels in total")
     if args.bless:

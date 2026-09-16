@@ -244,6 +244,10 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # --filter=<bk2-substr>. Skips (exit 64) if the binary / disc / Vulkan loader /
     # PIL are absent. Also runs the credits-roll interpolation leg
     # (scripts/check_credits_interp.sh) so it cannot be skipped separately.
+    # The gate takes --game SLUG and derives binary, disc, bk2 dir, manifests and
+    # golden from it; only spyro-1 has a corpus and a golden, so only spyro-1 is
+    # registered here. A second game gets its own test once its golden exists —
+    # until then its run refuses as VACUOUS (zero captured rows).
     # See notes/plans/openpete-presentation-golden.md.
     add_test(NAME presentation_golden
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_presentation_golden.sh

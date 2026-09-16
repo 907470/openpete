@@ -15,14 +15,18 @@
 # candidate differ ONLY by the change under test.
 #
 # Usage:
-#   scripts/presentation-corpus.sh <off|on> <outdir> [bk2-filter]
+#   scripts/presentation-corpus.sh <off|on> <outdir> [bk2-filter] [--game SLUG]
 #     off|on     OPENPETE_DEPTH_AFFINE for the run (default off = HEAD behavior)
 #     outdir     where the -vk PNGs are written (created)
 #     bk2-filter substring; only manifest rows whose name contains it are run
 #                (default: cliff-town-vista, the single-bk2 bring-up scope)
+#     --game     game slug (default spyro-1); selects binary, disc, bk2 dir
+#                and manifest through scripts/presentation-game.sh
 #
 # Exit: 0 = all captures produced, 1 = a capture is missing (hard failure),
-#       64 = SKIP (binary / disc / Vulkan loader / manifest missing).
+#       64 = SKIP (binary / disc / Vulkan loader missing),
+#       65 = no rows (no manifest, or the filter matched none) — the caller
+#            decides whether an empty corpus is a skip or a vacuous run.
 #
 # See notes/plans/openpete-presentation-golden.md.
 set -u
@@ -40,6 +44,8 @@ export OPENPETE_VIBRATION=0
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/corpus-jobs.sh
 source scripts/corpus-jobs.sh
+# shellcheck source=scripts/presentation-game.sh
+source scripts/presentation-game.sh
 
 AFFINE="${1:-off}"
 OUTDIR="${2:-}"
@@ -62,9 +68,11 @@ CAP_LODS="${OPENPETE_CAP_LODS:-original extended}"
 BUILD_DIR="build/linux-release"
 for a in "$@"; do case "$a" in --build-dir=*) BUILD_DIR="${a#--build-dir=}";; esac; done
 
-BIN="${OPENPETE_BIN:-$BUILD_DIR/games/spyro-1/openpete-spyro1}"
-DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
-MANIFEST="scripts/presentation-corpus.manifest"
+GAME="$(pg_parse_game "$@")" || exit 64
+PG_BUILD_DIR="$BUILD_DIR" pg_resolve "$GAME"
+BIN="$PG_BIN"
+DISC="$PG_DISC"
+MANIFEST="$PG_CORPUS_MANIFEST"
 
 if [[ -z "$OUTDIR" ]]; then echo "usage: $0 <off|on|default> <outdir> [bk2-filter]" >&2; exit 64; fi
 # The golden is captured at `default` (the compiled OPENPETE_DEPTH_AFFINE default,
@@ -78,7 +86,8 @@ case "$AFFINE" in
 
 if [[ ! -x "$BIN" ]]; then echo "[presentation-corpus] SKIP: no binary at $BIN"; exit 64; fi
 if [[ ! -f "$DISC" ]]; then echo "[presentation-corpus] SKIP: no disc at $DISC"; exit 64; fi
-if [[ ! -f "$MANIFEST" ]]; then echo "[presentation-corpus] SKIP: no manifest $MANIFEST"; exit 64; fi
+if [[ ! -f "$MANIFEST" ]]; then
+  echo "[presentation-corpus] $GAME: no manifest $MANIFEST — 0 rows"; exit 65; fi
 if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1'; then
   echo "[presentation-corpus] SKIP: no Vulkan loader (libvulkan.so.1)"; exit 64; fi
 
@@ -91,7 +100,7 @@ export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
 if [[ "$AFFINE_ENV" != "default" ]]; then export OPENPETE_DEPTH_AFFINE="$AFFINE_ENV"; else unset OPENPETE_DEPTH_AFFINE; fi
 
 mkdir -p "$OUTDIR"
-echo "[presentation-corpus] bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT filter='$FILTER' -> $OUTDIR"
+echo "[presentation-corpus] game=$GAME bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT filter='$FILTER' -> $OUTDIR"
 
 # The golden filename encodes the LOD mode: `original` (the authentic PSX band)
 # stays UNTAGGED so its golden is unchanged, `extended` (--no-lod, full detail at
@@ -123,8 +132,8 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze
   # --no-config: golden images are compared pixel-for-pixel, so the run has
   # to be independent of any openpete.toml on the machine capturing them.
   env "${leg_env[@]}" timeout 300 "$BIN" --headless --no-config --disc "$DISC" --renderer vk \
-    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" \
-    --bk2 "games/spyro-1/bk2/${name}.bk2" --screenshot-native-only \
+    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" "${PG_RUN_ARGS[@]}" \
+    --bk2 "$PG_BK2_DIR/${name}.bk2" --screenshot-native-only \
     "$flag" "$targets" --screenshot-output "$out" \
     --frame-limit "$flim" --max-runtime-seconds 280 >"$log" 2>&1
   local rc=$?
@@ -199,7 +208,7 @@ while IFS='|' read -r name start interval freeze pins; do
   interval="$(echo "$interval" | tr -d ' \t')"; interval="${interval:-100}"
   freeze="$(echo "$freeze" | tr -d ' \t')"   # 4th field non-empty => --screenshot-freeze-backdrop
   pins="$(echo "$pins" | tr -d ' \t')"       # 5th field: explicit frames, never subsampled
-  bk2="games/spyro-1/bk2/${name}.bk2"
+  bk2="$PG_BK2_DIR/${name}.bk2"
   if [[ ! -f "$bk2" ]]; then echo "  SKIP row: no bk2 $bk2"; continue; fi
   fc="$(bk2_frames "$bk2")"
   if ! [[ "$fc" =~ ^[0-9]+$ ]] || [[ "$fc" -le "$start" ]]; then
@@ -224,7 +233,8 @@ while IFS='|' read -r name start interval freeze pins; do
 done < "$MANIFEST"
 cj_wait || fail=1
 
-if [[ $ran -eq 0 ]]; then echo "[presentation-corpus] SKIP: no manifest rows matched '$FILTER'"; exit 64; fi
 if [[ $fail -ne 0 ]]; then echo "[presentation-corpus] FAIL: missing captures"; exit 1; fi
+if [[ $ran -eq 0 ]]; then
+  echo "[presentation-corpus] $GAME: no manifest rows matched '$FILTER' — 0 rows"; exit 65; fi
 echo "[presentation-corpus] OK: $(ls "$OUTDIR"/*-vk.png 2>/dev/null | wc -l) images across $ran bk2"
 exit 0

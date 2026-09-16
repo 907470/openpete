@@ -5,7 +5,11 @@ The presentation golden is a committed set of native -vk PNGs (canonical +
 deterministic alpha=0.5 intermediate) over the bk2 corpus. This gate diffs a
 freshly captured candidate directory against it:
 
-  - MISSING / EXTRA files are failures (the corpus shape must match).
+  - MISSING / EXTRA files are failures (the corpus shape must match). Under
+    --expect-subset a golden tile the candidate does not hold is counted and
+    not a failure, for a run scoped to part of the corpus by a capture filter;
+    an EXTRA tile still fails, since a captured tile with no golden is a shape
+    change however the run was scoped.
   - Any pixel difference is a divergence; the exit code is nonzero if ANY file
     diverges. For a presentation-NEUTRAL change that is a defect to fix; for an
     intended visual change it is the adjudication worklist (compare against the
@@ -13,6 +17,8 @@ freshly captured candidate directory against it:
 
 For each divergent pair a heat-diff PNG (8x-amplified abs difference) is written
 to --diff-out so the change is eyeballable at a glance.
+
+--game selects the golden directory (tests/golden/<game>/presentation).
 
 Exit: 0 = candidate byte-matches golden, 1 = divergence/missing/extra,
       64 = SKIP (PIL missing / golden or candidate dir absent).
@@ -27,7 +33,11 @@ except ModuleNotFoundError:
     print("[presentation-diff] SKIP: python3-PIL missing", file=sys.stderr)
     sys.exit(64)
 
-DEFAULT_GOLDEN = "tests/golden/spyro-1/presentation"
+GAMES = ("spyro-1", "spyro-2", "spyro-3")
+
+
+def golden_dir(game):
+    return f"tests/golden/{game}/presentation"
 
 
 def list_vk(d):
@@ -73,9 +83,17 @@ def diff_pair(golden, cand, diff_out):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("candidate", help="directory of freshly captured -vk PNGs")
-    ap.add_argument("--golden", default=DEFAULT_GOLDEN)
+    ap.add_argument("--game", default="spyro-1", choices=GAMES,
+                    help="game slug; selects the golden directory")
+    ap.add_argument("--golden", default=None,
+                    help="golden directory (default: tests/golden/<game>/presentation)")
     ap.add_argument("--diff-out", default=None, help="dir for heat-diff PNGs (default: <candidate>/diff)")
+    ap.add_argument("--expect-subset", action="store_true",
+                    help="the candidate covers part of the corpus: golden tiles it "
+                         "does not hold are counted, not failed")
     args = ap.parse_args()
+    if args.golden is None:
+        args.golden = golden_dir(args.game)
 
     if not os.path.isdir(args.candidate):
         print(f"[presentation-diff] SKIP: no candidate dir {args.candidate}")
@@ -94,8 +112,11 @@ def main():
 
     missing = sorted(gset - cset)
     extra = sorted(cset - gset)
-    for m in missing:
-        print(f"MISSING  {m}  (in golden, not captured)"); fails += 1
+    if args.expect_subset:
+        print(f"SUBSET   {len(missing)} golden tile(s) outside the captured scope, not compared")
+    else:
+        for m in missing:
+            print(f"MISSING  {m}  (in golden, not captured)"); fails += 1
     for e in extra:
         print(f"EXTRA    {e}  (captured, not in golden)"); fails += 1
 
@@ -103,6 +124,9 @@ def main():
     if not common and not (missing or extra):
         print("[presentation-diff] SKIP: golden and candidate are both empty")
         return 64
+    if not common:
+        print("[presentation-diff] FAIL: VACUOUS — no candidate tile has a golden twin")
+        return 1
 
     divergent = []
     for name in common:
@@ -116,8 +140,9 @@ def main():
         else:
             print(f"ok       {name}")
 
-    print(f"[presentation-diff] {len(common)} compared, {len(divergent)} divergent, "
-          f"{len(missing)} missing, {len(extra)} extra")
+    miss_label = "outside scope" if args.expect_subset else "missing"
+    print(f"[presentation-diff] {args.game}: {len(common)} compared, {len(divergent)} divergent, "
+          f"{len(missing)} {miss_label}, {len(extra)} extra")
     if divergent:
         print(f"[presentation-diff] heat diffs in {diff_out}/ — adjudicate reference-first, "
               f"then promote with scripts/presentation-corpus-promote.sh")

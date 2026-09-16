@@ -8,20 +8,25 @@
 # given, promotes only the named tiles (the adjudicated divergences).
 #
 # Usage:
-#   scripts/presentation-corpus-promote.sh <candidate_dir> [tile ...]
+#   scripts/presentation-corpus-promote.sh <candidate_dir> [tile ...] [--game SLUG]
 #   scripts/presentation-corpus-promote.sh <candidate_dir> --all
 #     tile    a golden basename (e.g. cliff-town-vista__canon__300-vk.png) OR a
 #             substring filter; only matching candidate tiles are promoted
 #     --all   promote every -vk PNG in candidate_dir (first-bless / full re-bless)
+#     --game  game slug (default spyro-1); selects the golden directory
 #
 # After running, review `git -C <openpete> diff --stat` and commit deliberately.
 #
 # See notes/plans/openpete-presentation-golden.md.
 set -u
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/presentation-game.sh
+source scripts/presentation-game.sh
 
+GAME="$(pg_parse_game "$@")" || exit 2
+pg_resolve "$GAME"
 CAND="${1:-}"
-GOLDEN="tests/golden/spyro-1/presentation"
+GOLDEN="$PG_GOLDEN"
 shift || true
 
 if [[ -z "$CAND" || ! -d "$CAND" ]]; then
@@ -29,8 +34,16 @@ if [[ -z "$CAND" || ! -d "$CAND" ]]; then
 
 mkdir -p "$GOLDEN"
 shopt -s nullglob
-all=0; filters=()
-for a in "$@"; do case "$a" in --all) all=1;; *) filters+=("$a");; esac; done
+# --game and its value are consumed above; everything else is a tile filter.
+all=0; filters=(); skip=0
+for a in "$@"; do
+  if   (( skip ));                then skip=0
+  elif [[ "$a" == "--all" ]];     then all=1
+  elif [[ "$a" == "--game" ]];    then skip=1
+  elif [[ "$a" == --game=* ]];    then :
+  else                                 filters+=("$a")
+  fi
+done
 
 promoted=0
 for f in "$CAND"/*-vk.png; do
@@ -54,4 +67,4 @@ if [[ $promoted -eq 0 ]]; then
   echo "[presentation-promote] nothing to promote (no matching / changed tiles)"; exit 0; fi
 
 git add "$GOLDEN" 2>/dev/null || true
-echo "[presentation-promote] promoted $promoted tile(s) into $GOLDEN — review 'git diff --cached --stat' and commit"
+echo "[presentation-promote] $GAME: promoted $promoted tile(s) into $GOLDEN — review 'git diff --cached --stat' and commit"

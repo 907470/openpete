@@ -33,13 +33,19 @@
 #
 # Runs as a leg of scripts/check_presentation_golden.sh (the ctest gate);
 # standalone for iteration. Exit 0 PASS, 1 FAIL, 64 SKIP (binary / disc /
-# python+PIL missing).
+# python+PIL missing, or the game has no credits corpus).
+#
+# Usage: scripts/check_credits_interp.sh [--game SLUG]
 set -u
 export OPENPETE_VIBRATION=0
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/presentation-game.sh
+source scripts/presentation-game.sh
 
-BIN="${OPENPETE_BIN:-build/linux-release/games/spyro-1/openpete-spyro1}"
-DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
+GAME="$(pg_parse_game "$@")" || exit 64
+pg_resolve "$GAME"
+BIN="$PG_BIN"
+DISC="$PG_DISC"
 [[ -x "$BIN" && -f "$DISC" ]] || { echo "credits-interp: SKIP (binary or disc missing)"; exit 64; }
 python3 -c 'import PIL, numpy' 2>/dev/null || { echo "credits-interp: SKIP (python3 PIL/numpy missing)"; exit 64; }
 
@@ -54,11 +60,20 @@ trap 'rm -rf "$WORK"' EXIT
 # generation in the key). The short roll: "Universal Interactive Studios:"
 # settled, an 11-letter name line flying in. The full roll, late: a
 # 13-letter line whose spawn reuses 8 same-class slots.
-CASES="credits:4208:0.28,0.40:0.42,0.58:4168:4230:11 credits_100:7488:0.26,0.40:0.46,0.56:7448:7660:13"
+# The cases are per game: each names a --skip-to-cutscene target, the frames
+# the roll is mid-flight at and the row bands its lines occupy, all measured
+# on that game's own credits sequence. A game with no measured credits target
+# has no cases and the leg reports SKIP.
+case "$GAME" in
+  spyro-1) CASES="credits:4208:0.28,0.40:0.42,0.58:4168:4230:11 credits_100:7488:0.26,0.40:0.46,0.56:7448:7660:13";;
+  *)       CASES="";;
+esac
+if [[ -z "$CASES" ]]; then
+    echo "credits-interp: SKIP ($GAME has no credits corpus)"; exit 64; fi
 
 run() {  # target leg out-flag out-name frame-list limit [env...]
     local target="$1" leg="$2" flag="$3" name="$4" frames="$5" lim="$6"; shift 6
-    env "$@" timeout 600 "$BIN" --headless --no-config --disc "$DISC" \
+    env "$@" timeout 600 "$BIN" --headless --no-config --disc "$DISC" "${PG_RUN_ARGS[@]}" \
         --renderer vk --mute 1 --aspect 4:3 --skip-to-cutscene "$target" --screenshot-native-only \
         --render-paths moby "$flag" "$frames" --screenshot-output "$WORK/${target}_${name}_{n}.png" \
         --frame-limit "$lim" >"$WORK/${target}_$leg.log" 2>&1
@@ -144,5 +159,5 @@ check("keys.stable", len(after) == 0, f"{len(after)} pool-key spawns in {SPAWN+1
 if fails: print(f"credits-interp: FAIL [{T}]", ", ".join(fails)); sys.exit(1)
 PY
 done
-[[ $rc -eq 0 ]] && echo "credits-interp: PASS"
+[[ $rc -eq 0 ]] && echo "credits-interp: PASS ($GAME)"
 exit $rc

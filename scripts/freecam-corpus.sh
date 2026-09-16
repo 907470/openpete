@@ -21,10 +21,12 @@
 # capture scripts into one dir and diffs the union.
 #
 # Usage:
-#   scripts/freecam-corpus.sh <off|on> <outdir> [level-filter]
+#   scripts/freecam-corpus.sh <off|on> <outdir> [level-filter] [--game SLUG]
 #     off|on        OPENPETE_DEPTH_AFFINE for the run (default off = HEAD behavior)
 #     outdir        where the -vk PNGs are written (created)
 #     level-filter  substring; only rows whose level contains it are run (default: all)
+#     --game        game slug (default spyro-1); selects binary, disc and
+#                   manifest through scripts/presentation-game.sh
 #
 # Exit: 0 = all captures produced (or no manifest = nothing to do),
 #       1 = a capture is missing (hard failure),
@@ -46,6 +48,8 @@ export OPENPETE_VIBRATION=0
 cd "$(dirname "$0")/.."
 # shellcheck source=scripts/corpus-jobs.sh
 source scripts/corpus-jobs.sh
+# shellcheck source=scripts/presentation-game.sh
+source scripts/presentation-game.sh
 
 AFFINE="${1:-off}"
 OUTDIR="${2:-}"
@@ -60,9 +64,11 @@ START_DEFAULT="${OPENPETE_FREECAM_START:-1900}"
 BUILD_DIR="build/linux-release"
 for a in "$@"; do case "$a" in --build-dir=*) BUILD_DIR="${a#--build-dir=}";; esac; done
 
-BIN="${OPENPETE_BIN:-$BUILD_DIR/games/spyro-1/openpete-spyro1}"
-DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
-MANIFEST="scripts/freecam-corpus.manifest"
+GAME="$(pg_parse_game "$@")" || exit 64
+PG_BUILD_DIR="$BUILD_DIR" pg_resolve "$GAME"
+BIN="$PG_BIN"
+DISC="$PG_DISC"
+MANIFEST="$PG_FREECAM_MANIFEST"
 
 if [[ -z "$OUTDIR" ]]; then echo "usage: $0 <off|on|default> <outdir> [level-filter]" >&2; exit 64; fi
 case "$AFFINE" in
@@ -75,7 +81,7 @@ if [[ ! -x "$BIN" ]]; then echo "[freecam-corpus] SKIP: no binary at $BIN"; exit
 if [[ ! -f "$DISC" ]]; then echo "[freecam-corpus] SKIP: no disc at $DISC"; exit 64; fi
 # An absent (or comment-only) manifest is not a failure — the freecam corpus is
 # additive and may not be populated yet. Nothing to capture = success.
-if [[ ! -f "$MANIFEST" ]]; then echo "[freecam-corpus] no manifest ($MANIFEST) — nothing to capture"; exit 0; fi
+if [[ ! -f "$MANIFEST" ]]; then echo "[freecam-corpus] $GAME: no manifest ($MANIFEST) — 0 rows"; exit 0; fi
 if ! ldconfig -p 2>/dev/null | grep -q 'libvulkan\.so\.1'; then
   echo "[freecam-corpus] SKIP: no Vulkan loader (libvulkan.so.1)"; exit 64; fi
 
@@ -85,7 +91,7 @@ export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
 if [[ "$AFFINE_ENV" != "default" ]]; then export OPENPETE_DEPTH_AFFINE="$AFFINE_ENV"; else unset OPENPETE_DEPTH_AFFINE; fi
 
 mkdir -p "$OUTDIR"
-echo "[freecam-corpus] bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT lods=[$CAP_LODS] filter='$FILTER' -> $OUTDIR"
+echo "[freecam-corpus] game=$GAME bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT lods=[$CAP_LODS] filter='$FILTER' -> $OUTDIR"
 
 lod_tag() { [[ "$1" == "extended" ]] && echo "lodext__" || echo ""; }
 
@@ -104,7 +110,8 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose
   local log; log="$(mktemp)"
   local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=1)
   env "${leg_env[@]}" timeout 300 "$BIN" --headless --disc "$DISC" --renderer vk \
-    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" --skip-to-level "$level" --freecam-pose "$pose" \
+    --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${PG_RUN_ARGS[@]}" \
+    --skip-to-level "$level" --freecam-pose "$pose" \
     --screenshot-native-only "$flag" "$target" --screenshot-output "$out" \
     --frame-limit "$flim" --max-runtime-seconds 280 >"$log" 2>&1
   local rc=$?
@@ -138,7 +145,7 @@ while IFS='|' read -r level pose start; do
 done < "$MANIFEST"
 cj_wait || fail=1
 
-if [[ $ran -eq 0 ]]; then echo "[freecam-corpus] no rows matched '$FILTER' — nothing to capture"; exit 0; fi
+if [[ $ran -eq 0 ]]; then echo "[freecam-corpus] $GAME: no rows matched '$FILTER' — 0 rows"; exit 0; fi
 if [[ $fail -ne 0 ]]; then echo "[freecam-corpus] FAIL: missing captures"; exit 1; fi
 echo "[freecam-corpus] OK: $(ls "$OUTDIR"/*-vk.png 2>/dev/null | wc -l) images in $OUTDIR across $ran pose(s)"
 exit 0
