@@ -331,15 +331,30 @@ static uint32_t rx_scene_tris(void) {
     for (int f = 0; f < 16; f++) t += n[f];
     return t;
 }
+/* The line is assembled in a buffer and written once at END: the producers
+ * this census brackets have stderr traces of their own, and a line built by
+ * one fprintf per step interleaves with them into an unreadable row. */
 #define RX_CENSUS_BEGIN() \
     const int rx_cen = rx_census_on(); \
     uint32_t rx_prev = 0; \
-    if (rx_cen) { rx_prev = rx_scene_tris(); fprintf(stderr, "[rx-census f=%u REEXTRACT]", openpete_frame); }
+    char rx_line[256]; int rx_len = 0; \
+    if (rx_cen) { rx_prev = rx_scene_tris(); \
+        rx_len = snprintf(rx_line, sizeof rx_line, "[rx-census f=%u REEXTRACT]", openpete_frame); \
+        if (rx_len < 0) rx_len = 0; }
 #define RX_CENSUS_STEP(nm) \
     if (rx_cen) { uint32_t rx_now = rx_scene_tris(); \
-        fprintf(stderr, " %s=%u", (nm), rx_now - rx_prev); rx_prev = rx_now; }
+        if (rx_len < (int)sizeof rx_line) { \
+            int rx_n = snprintf(rx_line + rx_len, sizeof rx_line - (size_t)rx_len, \
+                                " %s=%u", (nm), rx_now - rx_prev); \
+            if (rx_n > 0) rx_len += rx_n; } \
+        rx_prev = rx_now; }
 #define RX_CENSUS_END(br, al) \
-    if (rx_cen) fprintf(stderr, " | bracketed=%d alpha=%.3f\n", (br), (al))
+    if (rx_cen) { \
+        if (rx_len < (int)sizeof rx_line) \
+            snprintf(rx_line + rx_len, sizeof rx_line - (size_t)rx_len, \
+                     " | bracketed=%d alpha=%.3f", (br), (al)); \
+        rx_line[sizeof rx_line - 1] = '\0'; \
+        fprintf(stderr, "%s\n", rx_line); }
 
 static void game_reextract_body(CPUState* cpu) {
     (void)cpu;

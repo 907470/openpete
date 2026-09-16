@@ -163,9 +163,12 @@ op_time_t openpete_interp_curr_tick_ns(void);
  * hook against the ring's tick-end bytes of the same region. */
 const openpete_interp_snapshot_t* openpete_interp_curr_snapshot(void);
 
-/* 1 iff the ring holds two valid, byte-DISTINCT most-recent slots (prev != curr)
- * — i.e. a sub-tick interpolation bracket is available right now. 0 during
- * spawn/load/pause (nothing to interpolate between). */
+/* 1 iff the ring holds two valid most-recent slots — i.e. a sub-tick
+ * interpolation bracket is available right now. 0 until the ring has two
+ * (spawn, the first ticks after a reset). The endpoints may be byte-identical:
+ * a screen whose registered regions are held still (the debug freecam) pairs
+ * the held state with itself, and the bracket interpolates it as the
+ * identity. */
 int       openpete_interp_paired(void);
 
 /* 1 when the newest stored snapshot is older than the tick the present belongs
@@ -177,12 +180,11 @@ int       openpete_interp_paired(void);
  * middle of the last motion at every such present. */
 int       openpete_interp_curr_is_stale(void);
 
-/* Returns the most recent two snapshots (prev = tick N-1, curr = tick N)
- * via out params. Returns 1 if both are valid AND their data buffers
- * differ (byte-identical → state is stuck → caller should re-present
- * the last framebuffer instead of re-emitting). Returns 0 if either
- * snapshot isn't valid yet, or the two are byte-identical, or
- * `--render-fps` is at the sim rate.
+/* Returns the most recent two snapshots (prev = the earlier stored tick,
+ * curr = the newest) via out params. Returns 1 if both are valid and carry the
+ * same byte count, 0 otherwise. The endpoints may be byte-identical (a held
+ * screen), in which case the lerp across them is the identity; the ring, not
+ * the query, decides when such a pair is stored.
  *
  * `*out_alpha` is clamped to [0, 1] when returning 1; undefined otherwise. */
 int openpete_interp_query(op_time_t now_ns,
@@ -193,7 +195,7 @@ int openpete_interp_query(op_time_t now_ns,
 
 /* Like openpete_interp_query, but also returns prev2 = the distinct tick BEFORE
  * prev (two back from curr), for cubic/Hermite interpolation with a centered
- * start-tangent. `*out_prev2` is NULL until the ring holds three distinct ticks
+ * start-tangent. `*out_prev2` is NULL until the ring holds three ticks
  * or when the pairing fails — callers fall back to the linear prev→curr path.
  * Return value + alpha + prev/curr semantics are identical to openpete_interp_query. */
 int openpete_interp_query3(op_time_t now_ns,

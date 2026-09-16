@@ -639,17 +639,23 @@ static int s3_simple_decode(CPUState* cpu) {
         }
         s_simple_verts += nv;
 
-        /* OPENPETE_MOBY_POSTRACE_CLS: the submitted screen-space centroid of
-         * each simple-kind record, the counterpart of the animated kind's
-         * trace in the shared feeder. */
+        /* OPENPETE_MOBY_POSTRACE_CLS=<class>: the submitted screen-space
+         * centroid of each simple-kind record of that class, the counterpart
+         * of the animated kind's trace in the shared feeder. 0xFFFF traces
+         * every class; the two kinds read the variable the same way, so one
+         * setting follows a moby across the kind boundary. */
         {
             static int s_cls = -2;
             if (s_cls == -2) { const char* e = getenv("OPENPETE_MOBY_POSTRACE_CLS"); s_cls = e ? (int)strtol(e, NULL, 0) : -1; }
-            if (s_cls >= 0) {
+            /* The class read stays inside the enable: this loop runs per
+             * record per present. */
+            const uint16_t s_tcls = s_cls >= 0
+                ? (uint16_t)cpu->read_half(moby + game_layout.moby.class_off) : 0u;
+            if (s_cls >= 0 && (s_cls == 0xFFFF || s_tcls == (uint16_t)s_cls)) {
                 double cx = 0.0, cy = 0.0;
                 for (int i = 0; i < nv; i++) { cx += vscr[i][0]; cy += vscr[i][1]; }
-                fprintf(stderr, "[simple f=%u] m=%08x n=%d c=(%.2f,%.2f) p=(%d,%d,%d) rot=%08x\n",
-                        openpete_frame, moby, nv, cx / nv, cy / nv,
+                fprintf(stderr, "[simple f=%u] m=%08x cls=%03x n=%d c=(%.2f,%.2f) p=(%d,%d,%d) rot=%08x\n",
+                        openpete_frame, moby, s_tcls, nv, cx / nv, cy / nv,
                         (int)cpu->read_word(moby + game_layout.moby.pos_off),
                         (int)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
                         (int)cpu->read_word(moby + game_layout.moby.pos_off + 8u), rot);

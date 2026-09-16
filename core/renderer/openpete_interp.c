@@ -55,6 +55,18 @@ static int      s_last_tick_seen = 0;
  * ring slot, so an unchanged tick doesn't clobber the previous DISTINCT one). */
 static uint8_t s_cap_scratch[OPENPETE_INTERP_MAX_SNAPSHOT_BYTES];
 
+/* Ticks between the last two distinct captures, the cadence at which the
+ * game's logic actually advances state (2 for 30 Hz logic on a 60 Hz capture).
+ * It is the hold the dedupe tolerates: a candidate identical to the head is
+ * skipped while the head is younger than this, and committed once the state
+ * has held longer, which is when the state is static rather than mid-cadence.
+ * Capped so a long pause (a load) cannot stretch the hold without bound. */
+#define INTERP_MAX_DISTINCT_GAP 4u
+static uint32_t s_distinct_gap = 1;
+/* The head slot was committed as a duplicate of the slot before it, so the
+ * tick distance to it measures the static hold, not the logic's cadence. */
+static int      s_head_is_dup  = 0;
+
 void openpete_interp_register_regions(const openpete_interp_region_t* regions,
                                       size_t count) {
     s_regions = regions;
@@ -134,6 +146,8 @@ void openpete_interp_reset(void) {
     for (int i = 0; i < 3; ++i) s_snap[i].valid = 0;
     s_head = 0;
     s_last_tick_seen = 0;
+    s_distinct_gap = 1;
+    s_head_is_dup = 0;
     s_reset_gen++;
 }
 uint32_t openpete_interp_reset_generation(void) { return s_reset_gen; }
@@ -174,9 +188,7 @@ int openpete_interp_paired(void) {
     if (!s_initialized || !s_enabled) return 0;
     const openpete_interp_snapshot_t* curr = &s_snap[s_head];
     const openpete_interp_snapshot_t* prev = &s_snap[(s_head + 2) % 3];
-    if (!curr->valid || !prev->valid || curr->total_bytes != prev->total_bytes)
-        return 0;
-    return memcmp(curr->data, prev->data, curr->total_bytes) != 0;
+    return (curr->valid && prev->valid && curr->total_bytes == prev->total_bytes);
 }
 
 void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
@@ -210,9 +222,32 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
      * FIRST appeared — exactly the [prev,curr] bracket alpha spans. (A truly
      * static screen keeps the last two motion frames; the query's alpha clamps
      * to 1 → shows curr, i.e. frozen, which is correct.) */
-    if (curr->valid && total > 0 && memcmp(s_cap_scratch, curr->data, total) == 0) {
-        s_total_dedupe_skips++;
-        return;
+    const int identical = (curr->valid && total > 0 &&
+                           memcmp(s_cap_scratch, curr->data, total) == 0);
+    int dup_roll = 0;
+    if (identical) {
+        /* A state that has held longer than the logic's own cadence is static,
+         * not mid-cadence: commit the duplicate so the ring holds a pair whose
+         * endpoints are equal in content and distinct in tick. Interpolating
+         * that pair is the identity on the registered regions and leaves the
+         * bracket installed, so everything keyed on it — the world-animation
+         * feeders, the record replays — keeps running on a screen whose camera
+         * and player are held (the debug freecam holds both). Without it the
+         * ring keeps the last pair that carried motion, which at a freecam
+         * pose is the jump onto the pose: a cut, refused by every consumer,
+         * leaving the sub-tick present a copy of the canonical one. */
+        uint32_t held = (tick > curr->tick) ? tick - curr->tick : 0;
+        if (held <= s_distinct_gap) {
+            s_total_dedupe_skips++;
+            return;
+        }
+        dup_roll = 1;
+    } else if (curr->valid && !s_head_is_dup && tick > curr->tick) {
+        /* Measured between distinct states only: a hold's duplicate rolls sit
+         * one tick past the cadence, and feeding those back would ratchet the
+         * hold up by a tick per static episode. */
+        uint32_t g = tick - curr->tick;
+        s_distinct_gap = (g > INTERP_MAX_DISTINCT_GAP) ? INTERP_MAX_DISTINCT_GAP : g;
     }
 
     /* OPENPETE_CAP_ROLL_DBG: one line per ROLL — which frame, and the first
@@ -240,6 +275,7 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
     /* State advanced — commit to the next ring slot. snap[s_head] becomes the
      * "latest distinct tick"; the two prior slots hold prev and prev2. */
     s_head = (s_head + 1) % 3;
+    s_head_is_dup = dup_roll;
     openpete_interp_snapshot_t* slot = &s_snap[s_head];
     slot->tick    = tick;
     slot->tick_ns = tick_ns;
@@ -316,14 +352,12 @@ int openpete_interp_query(op_time_t now_ns,
     if (!curr->valid || !prev->valid) return 0;
     if (curr->total_bytes != prev->total_bytes) return 0;
 
-    /* Dedupe: byte-identical means the game didn't actually move
-     * (vbl busy-wait, paused, loading screen). Caller should
-     * PsyX_SwapWindowOnly() instead of re-emitting. */
-    if (memcmp(curr->data, prev->data, curr->total_bytes) == 0) {
-        s_total_dedupe_skips++;
-        return 0;
-    }
-
+    /* Byte-identical endpoints still pair. The ring only commits such a pair
+     * once the state has held past the logic's cadence (see capture), so the
+     * pair describes a static screen rather than a tick the logic skipped, and
+     * the lerp across it is the identity. The frozen-pair case the query used
+     * to reject here — a pair that carried motion which has since ended — is
+     * held by openpete_interp_curr_is_stale(), which forces alpha 1. */
     /* Compute alpha against the LATEST tick's timestamp. Render shows
      * state at `prev->tick_ns + alpha * sim_period`, so alpha in
      * [0, 1] maps to [prev, curr]. We measure relative to curr->tick_ns

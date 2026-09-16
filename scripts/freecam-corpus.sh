@@ -9,6 +9,7 @@
 # camera so the view holds still), and capture two legs on the native-only path:
 #   canonical    a pinned VBL frame                  -> <slug>__<lod>canon__<f>-vk.png
 #   intermediate deterministic alpha=0.5 at +50      -> <slug>__<lod>inter__<f>-vk.png
+#                (fails the row unless the engine reports the leg bracketed)
 #   identity     alpha=1 re-extract on the canon frame -> <slug>__<lod>ident__<f>-vk.png
 #                (not a golden tile; presentation-ident-check.py diffs it against canon)
 # at 16:9, at every LOD mode in CAP_LODS. The freecam freezes the camera but NOT
@@ -29,7 +30,8 @@
 #                   manifest through scripts/presentation-game.sh
 #
 # Exit: 0 = all captures produced (or no manifest = nothing to do),
-#       1 = a capture is missing (hard failure),
+#       1 = a capture is missing, or an intermediate leg was unbracketed
+#           (hard failure),
 #       64 = SKIP (binary / disc / Vulkan loader missing).
 #
 # See notes/plans/openpete-presentation-golden.md.
@@ -119,6 +121,20 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose
     echo "  MISSING ${slug}__${tag}${leg}__${target}-vk.png (rc=$rc)"
     echo "  --- last log lines ---"; tail -6 "$log" | sed 's/^/  /'
     rm -f "$log"; return 1
+  fi
+  # The intermediate leg is only evidence when the sub-tick re-extract actually
+  # installed an interpolation bracket. Unbracketed, the re-extract composes the
+  # canonical pose and writes it under the sub-tick filename, so the image is a
+  # copy of the canonical leg and every diff over it is vacuous. The engine's
+  # exit summary counts the legs it bracketed; an absent summary (a run killed
+  # before shutdown) proves nothing either, and is refused the same way.
+  if [[ "$leg" == inter ]]; then
+    local sum; sum="$(grep -o 'intermediate screenshot leg(s): [0-9]* bracketed, [0-9]* unbracketed' "$log" | tail -1)"
+    local unbr="${sum##*, }"; unbr="${unbr%% *}"
+    if [[ -z "$sum" || "$unbr" != 0 ]]; then
+      echo "  VACUOUS ${slug}__${tag}${leg}__${target}-vk.png: no bracketed sub-tick re-extract (${sum:-no exit summary})"
+      rm -f "$log"; return 1
+    fi
   fi
   rm -f "$log"; return 0
 }

@@ -5841,7 +5841,10 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * spawn or a topology-changing clip switch. */
         uint32_t fap = 0, fbp = 0, w0p = 0, hdrp = 0; double balpha = 0.0;
         moby_prev_keyframe(cpu, mobys[i], f.header, &fap, &fbp, &w0p, &hdrp, &balpha);
-        /* OPENPETE_MOBY_POSTRACE_CLS also traces the anim channel here. */
+        /* OPENPETE_MOBY_POSTRACE_CLS=<class> (0xFFFF = every class) also
+         * traces the anim channel here. This block sits in the sub-tick
+         * re-extract pass, so a run that presents only canonical ticks prints
+         * nothing however the variable is set. */
         {
             static long s_atcls = -2;
             if (s_atcls == -2) { const char* e = getenv("OPENPETE_MOBY_POSTRACE_CLS"); s_atcls = e ? strtol(e, NULL, 0) : -1; }

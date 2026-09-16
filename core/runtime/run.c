@@ -1250,6 +1250,12 @@ static struct {
  * s_eager.produced_inter so one exit line states how many presents in a run
  * were built from interpolated gamestate rather than from a tick. */
 static unsigned s_inline_rex = 0;
+/* Intermediate-screenshot legs taken, and how many of them the game's
+ * re-extract actually bracketed. A leg with no bracket rendered the canonical
+ * pose under a sub-tick filename, so a harness that reads only the file
+ * reports a pass on an image the sub-tick path never produced. */
+static unsigned s_inter_shots = 0;
+static unsigned s_inter_shots_bracketed = 0;
 
 static void eager_init(void)
 {
@@ -5055,6 +5061,11 @@ static int run_host_loop(const openpete_options_t* opts) {
                     openpete_interp_set_present_target(curr_ns + (op_time_t)((double)g_openpete_tick_period_ns * s_int_alpha));
                     ire(&g_game.cpu);                      /* s_scene @ sub-tick midpoint */
                     openpete_interp_set_present_target(0); /* restore op_now() fallback */
+                    /* The bracket verdict of the pass just run: the game-side
+                     * re-extract publishes it with the alpha it drew at. */
+                    const int bracketed = openpete_pace_last_alpha_paired();
+                    s_inter_shots++;
+                    s_inter_shots_bracketed += bracketed ? 1u : 0u;
                     char base[1024];
                     openpete_screenshot_format_path(opts->screenshot_output,
                                                     opts->screenshot_intermediate_frames[si],
@@ -5066,8 +5077,9 @@ static int run_host_loop(const openpete_options_t* opts) {
                     openpete_native_render_screenshot_all(base);
                     openpete_native_render_set_capture_nodelay(0);
                     OPL_INFO_F("screenshot",
-                               "wrote intermediate alpha=%.3f native -vk on frame %u (target=%d, paired=%d)",
-                               s_int_alpha, openpete_frame, opts->screenshot_intermediate_frames[si], paired);
+                               "wrote intermediate alpha=%.3f native -vk on frame %u (target=%d, paired=%d, bracketed=%d)",
+                               s_int_alpha, openpete_frame, opts->screenshot_intermediate_frames[si],
+                               paired, bracketed);
                 }
             }
 
@@ -5923,6 +5935,10 @@ static int run_host_loop(const openpete_options_t* opts) {
         OPL_INFO_F("sub-tick", "%u re-extract(s) presented: %u eager, %u inline",
                    s_eager.produced_inter + s_inline_rex,
                    s_eager.produced_inter, s_inline_rex);
+    if (s_inter_shots)
+        OPL_INFO_F("sub-tick", "%u intermediate screenshot leg(s): %u bracketed, %u unbracketed",
+                   s_inter_shots, s_inter_shots_bracketed,
+                   s_inter_shots - s_inter_shots_bracketed);
 
     {   uint64_t m; int64_t w, ln; size_t b;
         openpete_disc_cache_census(&m, &w, &b, &ln);
