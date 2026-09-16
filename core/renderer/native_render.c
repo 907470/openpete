@@ -9394,7 +9394,8 @@ static void record_cycle(uint64_t pts_us)
 
 /* ---- eager scene ring: operations (types above, by s_scene) ---- */
 static void render_frame_common(uint64_t record_pts_us, bool have_ref);
-static void pt_dump_maybe(int rendered, unsigned frame, uint32_t stamp, uint32_t freeze);
+static void pt_dump_maybe(int rendered, unsigned frame, uint32_t stamp, uint32_t freeze, int kind,
+                          int64_t target_ns, double alpha, int paired, int ntri);
 static int  s_last_frame_presented;
 static SDL_Mutex *ring_mx(void) {
     if (!s_ring_mx) s_ring_mx = SDL_CreateMutex();
@@ -9603,7 +9604,7 @@ void openpete_native_render_frame(uint64_t record_pts_us)
      * (gating it off for vk blanked the captured native-intermediate frames). */
     sync_vram_texture();
     bool have_ref = sync_reference_texture();
-    { const uint64_t b0 = rhi_frame_serial(s_nr.dev); render_frame_common(record_pts_us, have_ref); pt_dump_maybe(rhi_frame_serial(s_nr.dev) != b0, s_scene_frame, s_scene_frame, s_scene_freeze); }
+    { const uint64_t b0 = rhi_frame_serial(s_nr.dev); render_frame_common(record_pts_us, have_ref); pt_dump_maybe(rhi_frame_serial(s_nr.dev) != b0, s_scene_frame, s_scene_frame, s_scene_freeze, -1, 0, 0.0, 0, s_scene_n); }
 }
 
 /* Compose and present one ring slot. The present thread's entry: no VRAM or
@@ -9618,21 +9619,44 @@ void openpete_native_render_frame(uint64_t record_pts_us)
  * present (rhi_end_frame_to_stage) when >= 0. */
 static int s_stage_target = -1;
 
-/* OPENPETE_PT_DUMP=N (diagnostic): write the first render(s) of a scene
- * extracted at VBL >= N to OPENPETE_PT_DUMP_PATH (a printf template taking
- * the stamp), straight from the offscreen target, plus frozen_tex alongside
- * -- the actual output of either present path, which no screenshot flag
- * reaches. */
-static void pt_dump_maybe(int rendered, unsigned frame, uint32_t stamp, uint32_t freeze)
+/* OPENPETE_PT_DUMP=N (diagnostic): write the render(s) of scenes extracted at
+ * VBL >= N, straight from the offscreen target -- the actual output of either
+ * present path, at one geometry, which no screenshot flag reaches. Under eager
+ * production this runs on the present thread, inside the render it dumps, so
+ * the whole eager present stream is captured without disengaging eager.
+ *
+ * OPENPETE_PT_DUMP_COUNT=N: how many renders to write (default 1).
+ * OPENPETE_PT_DUMP_PATH: a directory, or a printf template taking the stamp.
+ *   Unset, no image is written and the run only traces the stream (the line
+ *   below), which costs nothing and leaves the present rate alone.
+ *   As a directory the name carries the sequence, the scene kind (canon /
+ *   inter / inline), the VBL and the stamp, so the present order is the
+ *   filename order.
+ * OPENPETE_PT_DUMP_FROZEN=1: also write frozen_tex alongside each dump.
+ * OPENPETE_PT_DUMP_MAXN=N: only scenes with at most N triangles. */
+static void pt_dump_maybe(int rendered, unsigned frame, uint32_t stamp, uint32_t freeze, int kind,
+                          int64_t target_ns, double alpha, int paired, int ntri)
 {
     static int s_dump_at = -2;
     if (s_dump_at == -2) { const char *e = getenv("OPENPETE_PT_DUMP"); s_dump_at = (e && *e) ? atoi(e) : -1; }
     static int s_dump_left = -1;
     if (s_dump_left < 0) { const char *e = getenv("OPENPETE_PT_DUMP_COUNT"); s_dump_left = (e && *e) ? atoi(e) : 1; }
+    static int s_dump_frozen = -1;
+    if (s_dump_frozen < 0) { const char *e = getenv("OPENPETE_PT_DUMP_FROZEN"); s_dump_frozen = (e && *e && *e != '0'); }
+    static unsigned s_dump_seq;
     if (s_dump_at >= 0 && rendered && (int)frame >= s_dump_at && s_dump_left > 0) {
         const char *tmpl = getenv("OPENPETE_PT_DUMP_PATH");
+        const char *kname = kind == OP_PACE_CANONICAL ? "canon"
+                          : kind == OP_PACE_INTERMEDIATE ? "inter" : "inline";
         char path[1024] = {0};
-        if (tmpl && *tmpl) snprintf(path, sizeof path, tmpl, (unsigned)stamp);
+        if (tmpl && *tmpl) {
+            if (strchr(tmpl, '%')) snprintf(path, sizeof path, tmpl, (unsigned)stamp);
+            else snprintf(path, sizeof path, "%s/p%05u-%s-f%u-s%08x.png",
+                          tmpl, s_dump_seq, kname, frame, (unsigned)stamp);
+        }
+        fprintf(stderr, "[pt-dump] seq=%u kind=%s stamp=%08x frame=%u freeze=%08x tri=%d target=%.3fms alpha=%.4f paired=%d%s%s\n",
+                s_dump_seq, kname, stamp, frame, freeze, ntri,
+                (double)target_ns / 1e6, alpha, paired, path[0] ? " -> " : "", path);
         if (path[0]) {
             size_t cap = (size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u;
             unsigned char *buf = cap ? malloc(cap) : NULL;
@@ -9640,22 +9664,22 @@ static void pt_dump_maybe(int rendered, unsigned frame, uint32_t stamp, uint32_t
             if (buf && rhi_read_offscreen(s_nr.dev, buf, cap, &w, &h)) {
                 for (size_t i = 0; i < (size_t)w * (size_t)h; i++) buf[i * 4 + 3] = 0xFF;
                 openpete_write_png_rgba(path, buf, w, h);
-                fprintf(stderr, "[pt-dump] scene stamp=%08x frame=%u freeze=%08x -> %s\n", stamp, frame, freeze, path);
             }
             free(buf);
-            if (s_nr.frozen_tex) {
+            if (s_dump_frozen && s_nr.frozen_tex) {
                 int fw = 0, fh = 0; rhi_texture_extent(s_nr.frozen_tex, &fw, &fh);
                 size_t fcap = (size_t)fw * (size_t)fh * 4u;
                 unsigned char *fb = fcap ? malloc(fcap) : NULL;
                 if (fb && rhi_read_render_target(s_nr.dev, s_nr.frozen_tex, fb, fcap, &fw, &fh)) {
                     for (size_t i = 0; i < (size_t)fw * (size_t)fh; i++) fb[i * 4 + 3] = 0xFF;
-                    char fpath[1024]; snprintf(fpath, sizeof fpath, "%s.frozen.png", path);
+                    char fpath[1100]; snprintf(fpath, sizeof fpath, "%s.frozen.png", path);
                     openpete_write_png_rgba(fpath, fb, fw, fh);
                     fprintf(stderr, "[pt-dump] frozen_tex %dx%d valid=%d -> %s\n", fw, fh, (int)s_nr.frozen_valid, fpath);
                 }
                 free(fb);
             }
         }
+        s_dump_seq++;
         if (--s_dump_left <= 0) s_dump_at = -1;
     }
 }
@@ -9679,7 +9703,8 @@ static int render_scene_impl(int slot, int stage, uint64_t record_pts_us)
       if (sync) rhi_wait_idle(s_nr.dev); }
     { static int maxn = -1;   /* OPENPETE_PT_DUMP_MAXN: only scenes with at most this many tris */
       if (maxn < 0) { const char *e = getenv("OPENPETE_PT_DUMP_MAXN"); maxn = (e && *e) ? atoi(e) : 1 << 30; }
-      if (sl->n <= maxn) pt_dump_maybe(after != before, sl->frame, sl->stamp, sl->freeze); }
+      if (sl->n <= maxn) pt_dump_maybe(after != before, sl->frame, sl->stamp, sl->freeze, sl->kind,
+                                      sl->target_ns, sl->alpha, sl->paired, sl->n); }
     s_stage_target = -1;
     rhi_set_present_blocking(s_nr.dev, false);
     openpete_mods_material_view_set(NULL);

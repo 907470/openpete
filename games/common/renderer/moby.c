@@ -5528,8 +5528,6 @@ static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, do
  * re-project each moby through the interpolated camera, walk + push. mat="REG"
  * snapshots s_reg_moby (no dedup); mat="SP" makes build_walk_tris dedup vs
  * s_reg_moby (so only specular-ONLY mobys feed). Returns the record count. */
-static double s_rec_tr[MAX_RECORDS][3];   /* per-record float TR (Tier-2 hold capture) */
-
 /* Re-base one replayed cull record from the camera the tick composed it
  * against onto the camera this present stages.
  *
@@ -5740,6 +5738,17 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                     replays[nreplay].dx = sx - h->sx;
                     replays[nreplay].dy = sy - h->sy;
                     replays[nreplay].vzs = tr[2] / h->trz;
+                    /* OPENPETE_HOLD_PROBE=1: one line per Tier-2 replay with the
+                     * capture and present view-Z references and the rescale they
+                     * produce. A static moby under a static camera must read
+                     * vzs = 1: any other constant is a unit mismatch between the
+                     * two references, which shifts the held moby's depth on every
+                     * intermediate present. */
+                    { static int s_hp = -1;
+                      if (s_hp < 0) { const char* e = getenv("OPENPETE_HOLD_PROBE"); s_hp = (e && *e && *e != '0'); }
+                      if (s_hp) fprintf(stderr, "[hold-probe f=%u] m=%08x trz_now=%.3f trz_cap=%.3f vzs=%.5f dx=%.3f dy=%.3f n=%d\n",
+                                        openpete_frame, mobys[i], tr[2], h->trz, tr[2] / h->trz,
+                                        sx - h->sx, sy - h->sy, h->n); }
                     nreplay++;
                     if (!is_spec && nreplay_moby < MAX_RECORDS) replay_moby[nreplay_moby++] = mobys[i];
                     continue;
@@ -5960,9 +5969,6 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         if (ver_check) occl_verify_end(mobys[i], s_proj + off, got);
         else occl_cache_update(cpu, mobys[i], s_proj + off, got, f.TR_frac, f.header);
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
-        s_rec_tr[s_nrecs][0] = f.TR_frac[0];   /* Tier-2 capture reference */
-        s_rec_tr[s_nrecs][1] = f.TR_frac[1];
-        s_rec_tr[s_nrecs][2] = f.TR_frac[2];
         /* Carry the live record's address: a game whose keyframe patch list
          * hangs off the record needs it to find one, and a zero here would send
          * the provider reading at address 0. Host-built records have none and
@@ -6011,8 +6017,19 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             if (e->moby != mob) continue;
             if ((e->x1 - e->x0) >= (float)hpx || (e->y1 - e->y0) >= (float)hpx) continue;
             if (hold_find(mob, is_spec)) continue;      /* already banked this epoch */
-            double sx, sy;
-            if (!hold_project_origin(cpu, s_rec_tr[r], &sx, &sy)) continue;
+            /* The capture reference comes from build_moby_record_tr, the same
+             * derivation the replay re-measures against, so the replay's view-Z
+             * rescale is the ratio of one quantity to itself and is exactly 1
+             * for a moby that has not moved. The record's own TR is not
+             * interchangeable with it: on a game whose cull stores view-space
+             * records, that TR carries the cull's unit scaling (a factor of 4
+             * on the quarter-world translation, times the per-moby size
+             * rescale), so a ratio taken across the two derivations pulls every
+             * held moby that many times nearer and punches it through whatever
+             * stands in front of it. */
+            double htr[3], sx, sy;
+            build_moby_record_tr(cpu, mob, htr);
+            if (!hold_project_origin(cpu, htr, &sx, &sy)) continue;
             int off = s_hold_tri_n, n = 0;
             uint16_t hcls = 0; uint8_t hfront = 0;
             for (int wi = 0; wi < s_gout.n && s_hold_tri_n < HOLD_TRI_MAX; wi++) {
@@ -6025,7 +6042,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             }
             hold_t* h = &s_hold[s_hold_n++];
             h->moby = mob; h->epoch = s_hold_epoch; h->off = off; h->n = n;
-            h->spec = is_spec; h->sx = sx; h->sy = sy; h->trz = s_rec_tr[r][2];
+            h->spec = is_spec; h->sx = sx; h->sy = sy; h->trz = htr[2];
             h->H = s_view.H_eff;
             h->cls = hcls; h->front = hfront;
         }
