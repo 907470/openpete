@@ -450,6 +450,12 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
             st.v[k].u  = (float)w->v[k].u; st.v[k].v = (float)w->v[k].v;
             st.v[k].rgba = w->v[k].rgb | 0xFF000000u;
         }
+        /* OPENPETE_SPYRO_UNTEX=1 draws the whole player feed untextured
+         * (gouraud only), separating vertex-path losses from fragment-path
+         * losses when bisecting a rendering defect. */
+        { static int s_ut = -1;
+          if (s_ut < 0) { const char* e = getenv("OPENPETE_SPYRO_UNTEX"); s_ut = (e && *e && *e != '0'); }
+          if (s_ut) w->textured = 0; }
         st.textured = w->textured; st.tpage_x = w->tpage_x; st.tpage_y = w->tpage_y;
         st.clut_x = w->clut_x; st.clut_y = w->clut_y; st.bpp = w->bpp; st.blend = w->blend;
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_PLAYER, 0);
