@@ -9,6 +9,8 @@
 #ifndef OPENPETE_COMMON_RENDERER_ORCHESTRATOR_H
 #define OPENPETE_COMMON_RENDERER_ORCHESTRATOR_H
 
+#include <stdint.h>
+
 #ifdef __cplusplus
 extern "C" {
 #endif
@@ -31,6 +33,40 @@ void spyro_native_canon_epoch_commit(void);
  * build by one VSync. Defined by the shared cyclorama feeder
  * (games/common/renderer/cyclorama.c) for every game. */
 void cyclorama_native_env_clear_commit(void);
+
+/* Canonical-render epoch. A feeder that snapshots transient render-pass
+ * scratch stamps the epoch at capture time and replays the capture on the
+ * sub-tick presents that follow the canonical present it was taken during.
+ *   _stamp:  the value a producer hook stores at capture time.
+ *   _fresh:  whether a stored stamp belongs to the last canonical present.
+ * Per-producer freshness for the three canonical moby producers, which share
+ * one render-path bit (a load or pause screen runs only the third). A game
+ * with no sub-tick spine reports never-fresh, so every replay is skipped. */
+uint32_t spyro_native_canon_epoch_stamp(void);
+int      spyro_native_canon_epoch_fresh(uint32_t stamp);
+int      spyro_native_canon_mobyreg_fresh(void);
+int      spyro_native_canon_shaded_fresh(void);
+
+/* Canonical-scratch capture, called from a canonical render hook while the
+ * transient render-pass scratch is still live.
+ *   _range: a sub-range of the render scratch block (offset, length).
+ *   _recs:  the whole cull-record region, captured before a later pass reuses
+ *           the overlapping bytes. */
+void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len);
+void spyro_native_canon_capture_recs(void* cpu);
+
+/* The camera a producer drew under. A feeder re-derives its geometry from the
+ * camera, which the sub-tick bracket interpolates between tick-end snapshots;
+ * a producer whose draw ran under matrices the tick did not end with must be
+ * re-derived from its own camera.
+ *   _capture_camera: at the producer hook, record the camera transform block.
+ *   _prod_camera_enter/_leave: around that producer's feeder in the
+ *   re-extract; enter installs the captured camera when it differs from the
+ *   tick-end camera (returns 1), leave restores. */
+enum { SPYRO_PROD_MOBYREG = 0, SPYRO_PROD_SPYRO = 1, SPYRO_PROD_SHADED = 2 };
+void spyro_native_canon_capture_camera(void* cpu, int producer);
+int  spyro_native_prod_camera_enter(int producer);
+void spyro_native_prod_camera_leave(void);
 
 /* Registration, called by main() before the run loop: the game's interp
  * region table into the interp ring (the game's interp_regions TU), and the

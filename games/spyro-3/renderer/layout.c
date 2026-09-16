@@ -126,6 +126,63 @@ const game_layout_t game_layout = {
         .ground_plane = 0u,               /* the player shadow is the player model drawn
                                            * mirrored, so no stored ground plane exists */
     },
+    .moby = {
+        /* Offsets read from asm/mobydraw.s, whose three routines Spyro 2
+         * duplicates instruction-for-instruction at other addresses. The
+         * record base is NOT an address: the cull computes the draw scratch
+         * as D_POLYBUF_END - 0x3000 and parks the animated record list at
+         * +0x2000 of it (mobydraw.s:26-44), so it has to be derived per pass
+         * rather than named here. */
+        .array_head   = G_MOBYARRAY,
+        .array_direct = 0,
+        .array_stride = 0x58u,          /* mobydraw.s:63 addi $ra, $ra, 0x58 */
+        .state_off    = 0x48u,          /* mobydraw.s:64-72 lb; >= 0 processes */
+        .state_term   = 0xFFu,          /* mobydraw.s:70 state == -1 ends the list */
+        .pos_off      = 0x0Cu,          /* mobydraw.s:81 the box cull's three words */
+        .angle_off    = 0x44u,          /* mobydraw.s:218 the three byte angles */
+        .class_off    = 0x36u,          /* mobydraw.s:47-48 lhu, model table index */
+        .anim_state_off = 0x3Cu,        /* mobydraw.s:116 {id, nextId, frame, nextFrame} */
+        .colour_off   = 0x54u,          /* mobydraw.s:217,229 copied into the record at +0x3C */
+        .size_off     = 0x4Fu,          /* mobydraw.s:453-467 high byte of the +0x4E halfword */
+        .drawn_off    = 0x4Du,          /* mobydraw.s:73 cleared, :224 written 1 or 2 */
+
+        .model_table     = G_MOBYMODELS,
+        .model_anims_off = 0x3Cu,       /* mobydraw.s:116-118 model + 0x3C + id*4 */
+        .model_data_off  = 0x38u,       /* mobydraw.s:897 */
+
+        .anim_ptr_block   = 0x0Cu,      /* mobydraw.s:975 vertices; faces :939 at +0x10 */
+        .anim_scale_off   = 0x03u,      /* 2 = identity on 32 of the 33 dump models */
+        .anim_shift_off   = 0x02u,      /* short-encode shift */
+        .anim_ccount_off  = 0x01u,      /* colour count, one byte where Spyro 1 has two */
+        .anim_vcount_hi   = 0x04u,      /* mobydraw.s:917-921 HP vertex count */
+        .anim_vcount_lo   = 0x05u,      /* mobydraw.s:917-920 selected by the record flag sign */
+        .anim_radius      = 0x07u,      /* mobydraw.s:124 lbu, << 4 for the sphere cull */
+        .anim_frames      = 0x24u,      /* mobydraw.s:170-174 8-byte frame records */
+        .anim_frame_stride = 8u,
+
+        .rec_base         = 0u,         /* derived from the polybuf end, see above */
+        .rec_stride       = 0x44u,      /* mobydraw.s:880-889 the animated record list */
+        .rec_header_off   = 0x04u,      /* mobydraw.s:531 AnimationHeader* (frame A) */
+        .rec_frame_a_off  = 0x0Cu,      /* mobydraw.s:535 frame A's record word 0 */
+        .rec_frame_b_off  = 0x10u,      /* mobydraw.s:490, read :989 frame B's word 0 */
+        .rec_tr_off       = 0x1Cu,      /* mobydraw.s:572-574 view-space translation */
+        .rec_matrix_off   = 0x28u,      /* mobydraw.s:355-359 the composed 3x3 */
+        .rec_tier_off     = 0x00u,      /* word 0 bits 16-31, sign picks HP/LP */
+        .rec_material_off = 0x3Cu,      /* mobydraw.s:229 the Moby+0x54 colour word */
+        .rec_moby_off     = 0x40u,      /* mobydraw.s:360 */
+        .blend_shift      = 4,          /* mobydraw.s:922-923,986 (w0 >> 4) & 0xFF0 */
+        .blend_mask       = 0xFF0u,
+
+        .world_ot   = 0u,               /* the OT bucket array is not located */
+        .ot_buckets = 0u,
+
+        .hook_cull          = F_MOBY_CULL,
+        .hook_draw_regular  = F_MOBY_DRAW_ANIM,
+        .hook_draw_specular = 0u,       /* no specular material: the draw issues no
+                                         * GTE lighting op at all */
+        .hook_draw_shaded   = 0u,
+        .hook_draw_simple   = F_MOBY_DRAW_STATIC,
+    },
     .hooks = {
         .world_draw = F_WORLD_DRAW,
         .sky_draw   = F_SKY_DRAW,

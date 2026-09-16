@@ -135,9 +135,9 @@ void shadow_dump_prims(const char* tag) {
  * so the base is latched at hook entry and reused by the sub-tick re-extract. */
 static uint32_t s_list_base;
 
-/* The list records themselves, copied at hook entry: a game that keeps the
- * list in the primitive buffer's tail overwrites it later in the tick, so a
- * sub-tick re-extract walks this copy, not RAM. */
+/* The list records, copied at hook entry: a game that keeps the list in the
+ * primitive buffer's tail overwrites it later in the tick, so that source
+ * walks this copy; a fixed-address list is re-read live at each walk. */
 #define SHADOW_LIST_MAX 1024
 static struct { uint32_t moby; uint32_t size; } s_list[SHADOW_LIST_MAX];
 static int s_list_n;
@@ -427,7 +427,18 @@ static void shadow_moby_build(CPUState* cpu) {
     const uint32_t off_gnd = game_layout.shadow.moby_ground;
     const int size_shl = game_layout.shadow.size_shl;
 
-    (void)list_end;
+    /* A list at a fixed scratch address stays the game's live list until
+     * the next draw, and a sub-tick present reads it as it stands then; a
+     * list in the primitive buffer's tail is overwritten later in the tick,
+     * so that source walks the copy taken at hook entry. */
+    if (game_layout.shadow.list_source != SHADOW_LIST_GTE_DATA) {
+        s_list_n = 0;
+        for (uint32_t e = s_list_base; e + 8 <= list_end && s_list_n < SHADOW_LIST_MAX; e += 8) {
+            s_list[s_list_n].moby = cpu->read_word(e + 0);
+            s_list[s_list_n].size = cpu->read_word(e + 4);
+            s_list_n++;
+        }
+    }
     for (int li = 0; li < s_list_n; li++) {
         uint32_t mob = s_list[li].moby;
         uint32_t radius = s_list[li].size << size_shl;

@@ -9,6 +9,8 @@
 #                                     # games/common/renderer/interp_regions_none.c
 #     [TERRAIN_GAME <file>]           # the terrain feeder's per-game data; default
 #                                     # games/common/renderer/terrain_game_none.c
+#     [MOBY_GAME <file>]              # the moby feeder's per-game decoders and data;
+#                                     # default games/common/renderer/moby_game_none.c
 #     [ICON_SOURCE <file>]            # default games/common/game_icon_none.c
 #     [MODULE_LINKAGE static|shared]  # default static
 #     [SYMBOLS_MANIFEST <file>]       # curated alias table -> gen/<tag>_symbols.gen.h
@@ -49,7 +51,7 @@
 function(openpete_add_game GAME_ID)
     cmake_parse_arguments(G
         ""
-        "MAIN;FEATURE_LIST;ORCHESTRATOR;INTERP_REGIONS;TERRAIN_GAME;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST"
+        "MAIN;FEATURE_LIST;ORCHESTRATOR;INTERP_REGIONS;TERRAIN_GAME;MOBY_GAME;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST"
         "SOURCES;MODULE_SOURCES"
         ${ARGN})
     if(G_UNPARSED_ARGUMENTS)
@@ -84,6 +86,9 @@ function(openpete_add_game GAME_ID)
     endif()
     if(NOT G_TERRAIN_GAME)
         set(G_TERRAIN_GAME ${_common}/renderer/terrain_game_none.c)
+    endif()
+    if(NOT G_MOBY_GAME)
+        set(G_MOBY_GAME ${_common}/renderer/moby_game_none.c)
     endif()
     if(NOT G_ICON_SOURCE)
         set(G_ICON_SOURCE ${_common}/game_icon_none.c)
@@ -236,6 +241,7 @@ function(openpete_add_game GAME_ID)
         ${G_ORCHESTRATOR}
         ${G_INTERP_REGIONS}
         ${G_TERRAIN_GAME}
+        ${G_MOBY_GAME}
         ${G_ICON_SOURCE}
         ${G_SOURCES}
         ${_symbols_sources}
@@ -252,14 +258,16 @@ function(openpete_add_game GAME_ID)
         ${_common}/freecam_game.c
 
         # Shared renderer TUs: the GTE float mirror every feeder projects
-        # through, the --render-paths isolation registry, and the terrain
-        # terrain, cyclorama and moby-shadow feeders (reached only through a
+        # through, the --render-paths isolation registry, and the terrain,
+        # cyclorama, moby and moby-shadow feeders (reached only through a
         # game's feature list).
         ${_common}/renderer/native_gte.c
         ${_common}/renderer/render_paths.c
         ${_common}/renderer/terrain.c
         ${_common}/renderer/cyclorama.c
         ${_common}/renderer/shadow.c
+        ${_common}/renderer/moby.c
+        ${_common}/renderer/moby_rank.c
 
         # PSYQ symbol stubs, abort-on-call. On ELF these are weak so any
         # thunk strongly defines them; on MinGW the macro becomes strong and

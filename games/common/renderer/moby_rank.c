@@ -9,6 +9,7 @@
  * more tick). */
 
 #include "renderer/moby_rank.h"
+#include "game_layout.h"   /* the ordering table this rank source walks */
 #include "openpete_psx.h"
 #include "openpete_subtick_view.h"   /* openpete_psx_to_host_ptr — fresh-chain walk */
 
@@ -158,11 +159,14 @@ void openpete_mobyrank_ot_end(void)
  * start node (+4) via next links to its end node (+0). If the linker beat
  * us here the buckets are zeroed and this yields nothing — the published
  * DrawOTag chain (which then carries this same pose) is the fallback. */
-#define MR_G_WORLDOT 0x80075820u   /* g_WorldOT: pointer to the bucket array */
-#define MR_OT_BUCKETS 0x800
+/* Where the bucket array lives and how many buckets it holds are
+ * game_layout.moby fields; 0 retires the source. */
+#define MR_G_WORLDOT  (game_layout.moby.world_ot)
+#define MR_OT_BUCKETS ((int)game_layout.moby.ot_buckets)
 
 static int mr_walk_buckets(mr_ot_t* W)
 {
+    if (!MR_G_WORLDOT) return -1;
     const uint32_t* pot = (const uint32_t*)openpete_subtick_host_ptr(MR_G_WORLDOT);
     if (!pot) return -1;
     uint32_t base = *pot;

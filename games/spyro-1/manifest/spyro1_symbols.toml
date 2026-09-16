@@ -327,3 +327,26 @@ name = "F_MOBY_SHADOWS"
 addr = 0x80059F8C
 kind = "function"
 note = "func_80059F8C (asm/renderers/r_shadows.s:364) — the moby drop-shadow renderer; the shared shadow feeder's hook site"
+
+[[symbol]]
+name = "F_MOBY_DRAW_REGULAR"
+addr = 0x8001F798
+kind = "function"
+note = "func_8001F798 (asm/renderers/r_moby.s) — the regular moby material draw; the shared moby feeder's first hook site"
+
+[[symbol]]
+name = "F_MOBY_DRAW_SPECULAR"
+addr = 0x80020F34
+kind = "function"
+note = "func_80020F34 — the specular moby material draw over the same cull-record queue"
+
+[[symbol]]
+name = "F_MOBY_DRAW_SHADED"
+addr = 0x80022A2C
+kind = "function"
+note = "func_80022A2C — the shaded draw: the second model kind, walked from its own flat Moby* list at g_SonyImage+0x2400"
+
+[[symbol]]
+name = "D_WORLDOT"
+addr = 0x80075820
+note = "g_WorldOT — the pointer to the ordering-table bucket array DrawOTag resolves; the same-moby paint-rank source walks it"

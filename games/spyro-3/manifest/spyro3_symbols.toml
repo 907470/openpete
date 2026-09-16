@@ -132,3 +132,31 @@ name = "F_PORTAL_LEAF"
 addr = 0x8001C8C8
 kind = "function"
 note = "func_8001C8C8 (cyclorama.s:378) — draws one pre-projected preview mesh (a0 > 0 the base record, a0 == 0 the record at +0x3C) clipped to D_PORTAL_BLOCK's pentagon edges with two DPCS fades"
+
+[[symbol]]
+name = "G_MOBYARRAY"
+addr = 0x8006C550
+note = "g_MobyArrayPtr: points at the first Moby of the stride-0x58 array (asm/mobydraw.s:29-30, advance :63); the array ends at the first element whose state byte +0x48 is -1 (:64-72). Same pointer the manifest's moby_array region hashes"
+
+[[symbol]]
+name = "G_MOBYMODELS"
+addr = 0x8006EE2C
+note = "the moby model table, indexed by the class halfword at Moby+0x36 (asm/mobydraw.s:47-48,109-114). A KSEG0 entry is an animated Model, a KUSEG entry the second (simple) model kind (:116); Sunrise Spring dump: 33 animated, 11 simple, 724 empty of 768 slots"
+
+[[symbol]]
+name = "F_MOBY_CULL"
+addr = 0x80030478
+kind = "function"
+note = "QueueToDrawMobys (include/mobydraw.h:4, asm/mobydraw.s:11): the cull pass that builds the stride-0x44 animated record list and the stride-0x10 static one in the draw scratch, and writes the drawn verdict back to Moby+0x4D (:73,224)"
+
+[[symbol]]
+name = "F_MOBY_DRAW_ANIM"
+addr = 0x80031124
+kind = "function"
+note = "DrawAnimatedMobys (asm/mobydraw.s:865): walks the stride-0x44 record list, decodes and RTPS-projects each model's vertices, applies the keyframe faceblock patches and emits G3/GT3/G4/GT4"
+
+[[symbol]]
+name = "F_MOBY_DRAW_STATIC"
+addr = 0x80033C5C
+kind = "function"
+note = "DrawStaticMobys (asm/mobydraw.s:3862): the second model kind, walked from its own stride-0x10 record list"

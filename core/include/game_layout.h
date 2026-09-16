@@ -212,6 +212,87 @@ typedef struct game_layout {
         uint32_t ground_plane;
     } shadow;
 
+    /* The moby (3D actor) draw. The games share the walk: a cull pass builds
+     * one render record per drawn moby in the render scratch, and one or more
+     * draw passes iterate those records, decode each model's vertex and face
+     * streams, project through the record's matrix and translation and emit.
+     * The fields below are where that data lives; the stream encodings and
+     * the record shape are the moby_game decoders
+     * (games/common/renderer/moby_game.h).
+     *
+     * `array_head` is the address of the pointer to the first Moby, or of the
+     * array itself when the game keeps one at a fixed address (`array_direct`
+     * says which). The array ends at the first element whose `state_off` byte
+     * equals `state_term`; an element whose state byte has bit 7 set is
+     * dormant. `blend_shift` recovers the keyframe blend weight from the
+     * record's flags word as (w0 >> blend_shift) & blend_mask, with 4096 as
+     * 1.0.
+     *
+     * `model_table` is indexed by the moby's class halfword; an entry points
+     * at a Model, whose animation-pointer array is at `model_anims_off` and
+     * whose shared data pointer at `model_data_off`. Inside one
+     * AnimationHeader, `anim_ptr_block` is the first of the six geometry
+     * pointers (vertices, HP faces, HP colours, LP faces, LP colours, far
+     * colours, four bytes apart), `anim_vcount_hi`/`_lo` the HP and LP vertex
+     * counts, `anim_radius` the bounding radius byte and `anim_frames` the
+     * start of the `anim_frame_stride`-byte keyframe records. */
+    struct {
+        uint32_t array_head;
+        int      array_direct;
+        uint32_t array_stride;
+        uint32_t state_off;
+        uint32_t state_term;
+        uint32_t pos_off;
+        uint32_t angle_off;
+        uint32_t class_off;
+        uint32_t anim_state_off;
+        uint32_t colour_off;        /* per-moby colour word; 0 where none */
+        uint32_t size_off;          /* per-moby screen-scale byte; 0 where none */
+        uint32_t drawn_off;         /* the drawn verdict the cull writes back */
+
+        uint32_t model_table;
+        uint32_t model_anims_off;
+        uint32_t model_data_off;
+
+        uint32_t anim_ptr_block;
+        uint32_t anim_scale_off;    /* per-model shrink factor (2 = identity) */
+        uint32_t anim_shift_off;    /* per-model short-delta shift */
+        uint32_t anim_ccount_off;   /* colour count, low byte */
+        uint32_t anim_vcount_hi;
+        uint32_t anim_vcount_lo;
+        uint32_t anim_radius;
+        uint32_t anim_frames;
+        uint32_t anim_frame_stride;
+
+        uint32_t rec_base;
+        uint32_t rec_stride;
+        uint32_t rec_header_off;
+        uint32_t rec_frame_a_off;
+        uint32_t rec_frame_b_off;
+        uint32_t rec_tr_off;        /* three words, x/y/z */
+        uint32_t rec_matrix_off;    /* 3x3 int16 */
+        uint32_t rec_tier_off;      /* the LOD verdict's word; high half */
+        uint32_t rec_material_off;  /* per-moby material word; 0 where none */
+        uint32_t rec_moby_off;
+        int      blend_shift;
+        uint32_t blend_mask;
+
+        /* The ordering table the same-moby paint rank is read from: the
+         * address of the pointer to the bucket array, and the bucket count.
+         * 0 retires the rank source. */
+        uint32_t world_ot;
+        uint32_t ot_buckets;
+
+        /* Hook sites: the cull pass and one entry per draw pass. A zero
+         * address registers no hook, so a game reaches only the passes it
+         * names. `draw_simple` is the second model kind's own pass. */
+        uint32_t hook_cull;
+        uint32_t hook_draw_regular;
+        uint32_t hook_draw_specular;
+        uint32_t hook_draw_shaded;
+        uint32_t hook_draw_simple;
+    } moby;
+
     /* Hook sites: the guest entry addresses the feeders dispatch on.
      * `visibility` is the function that fills the visibility verdict when
      * the game computes it outside the draw; 0 when the draw computes it. */

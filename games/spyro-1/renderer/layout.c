@@ -102,6 +102,60 @@ const game_layout_t game_layout = {
         .cull_layout = SHADOW_CULL_SPYRO1,
         .ground_plane = D_SPYROSHADOW + 0x18u,   /* SpyroShadow ground height */
     },
+    .moby = {
+        .array_head   = G_LEVELMOBYS,     /* points at the first Moby */
+        .array_direct = 0,
+        .array_stride = (uint32_t)sizeof(Moby),
+        .state_off    = offsetof(Moby, m_State),
+        .state_term   = 0xFFu,
+        .pos_off      = offsetof(Moby, m_Position),
+        .angle_off    = offsetof(Moby, m_Rotation),   /* m_DepthOffset rides +3 */
+        .class_off    = offsetof(Moby, m_Class),
+        .anim_state_off = offsetof(Moby, m_AnimationState),
+        .colour_off   = 0u,               /* no per-moby colour word */
+        .size_off     = offsetof(Moby, m_ScaleOverride),
+        .drawn_off    = offsetof(Moby, m_WasDrawn),
+
+        .model_table     = G_MODELS,
+        .model_anims_off = offsetof(Model, m_Animations),
+        .model_data_off  = offsetof(Model, m_Data),
+
+        .anim_ptr_block   = offsetof(AnimationHeader, m_AnimationVertices),
+        .anim_scale_off   = offsetof(AnimationHeader, m_Scale),
+        .anim_shift_off   = offsetof(AnimationHeader, m_ShortEncodeShift),
+        .anim_ccount_off  = offsetof(AnimationHeader, m_NumColors),
+        .anim_vcount_hi   = offsetof(AnimationHeader, m_VertCountHigh),
+        .anim_vcount_lo   = offsetof(AnimationHeader, m_VertCountLow),
+        .anim_radius      = offsetof(AnimationHeader, m_Radius),
+        .anim_frames      = offsetof(AnimationHeader, m_Frames),
+        .anim_frame_stride = (uint32_t)sizeof(AnimationFrame),
+
+        /* The cull builders (regular func_8001F158 and specular func_800208FC
+         * both) compute the queue base as g_SonyImage + 0x1600. */
+        .rec_base         = G_SCRATCH + 0x1600u,
+        .rec_stride       = 0x38u,
+        .rec_header_off   = 0x04u,
+        .rec_frame_a_off  = 0x08u,
+        .rec_frame_b_off  = 0x0Cu,
+        .rec_tr_off       = 0x10u,
+        .rec_matrix_off   = 0x1Cu,
+        .rec_tier_off     = 0x2Cu,   /* ZSF4 in the matrix word's high half */
+        .rec_material_off = 0x30u,   /* m_SpecularMetalColor, copied by the cull */
+        .rec_moby_off     = 0x34u,
+        .blend_shift      = 2,       /* IR0 = (w0 & 0xFF00) >> 2 */
+        .blend_mask       = 0x3FC0u,
+
+        .world_ot   = D_WORLDOT,
+        .ot_buckets = 0x800u,        /* r_moby.s links into 2048 buckets */
+
+        .hook_cull          = 0u,    /* the cull is not hooked: it writes
+                                      * m_WasDrawn, so the feeder reads its
+                                      * records after the draw instead */
+        .hook_draw_regular  = F_MOBY_DRAW_REGULAR,
+        .hook_draw_specular = F_MOBY_DRAW_SPECULAR,
+        .hook_draw_shaded   = F_MOBY_DRAW_SHADED,
+        .hook_draw_simple   = 0u,    /* the shaded draw is the second kind's pass */
+    },
     .hooks = {
         .world_draw = F_WORLD_DRAW,
         .sky_draw   = F_SKY_DRAW,

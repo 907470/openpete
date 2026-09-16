@@ -1,30 +1,37 @@
-// games/spyro-1/renderer/moby.c — the MOBY (3D actor) renderer
-// re-derived from gamestate in float + its autonomous numerical A/B harness.
+// games/common/renderer/moby.c — the MOBY (3D actor) renderer, shared across
+// games.
 //
-// Mobys are textured, animated, three materials
-// (regular/specular/shaded). This module is the game-specific *scene
-// extraction* half — it reads the per-moby render records the cull pass
-// (func_8001F158) built in the g_SonyImage scratch (D_8006FCF4+0x1600),
-// decodes each moby's packed vertices + per-face Tiledefs, float-projects
-// (mirroring runner/src/gte.cpp RTPS, now WITH a real TR translation —
-// unlike the sky dome), and produces screen-space triangles.
+// Mobys are the animated, textured actors: enemies, gems, props, HUD icons.
+// A game's cull pass writes one render record per drawn moby into the render
+// scratch; one or more draw passes then walk those records, decode each
+// model's packed vertex stream and per-face material stream, project through
+// the GTE and emit. This module is the scene-extraction half: it reads the
+// records, re-derives the same geometry in float (mirroring
+// runner/src/gte.cpp RTPS, with a real TR translation), and produces
+// screen-space triangles for the native scene.
 //
-// Verification (instruments over pixels): hook the material renderer
-// (func_8001F798 = REGULAR first; the conflict-free, most-common path),
-// capture the *actual* prims it emits to the polybuf as ground truth, run
-// the native float extraction on the same records, compare positions +
-// colours + UV + tpage/clut per vertex. Headless, numerical. Gated by
-// OPENPETE_MOBY_VERIFY.
+// Every engine address the walk reads comes from game_layout.moby (the moby
+// array and its field offsets, the model table, the AnimationHeader layout,
+// the record base/stride/fields, the draw hooks). The two stream encodings
+// and the record shape are moby_game decoder slots
+// (renderer/moby_game.h), as is the per-game data with no engine address
+// behind it (HUD and cutscene classification, the one-shot instance table)
+// and the addresses of scratch windows and material assets outside the
+// descriptor.
+//
+// Verification (instruments over pixels): hook a draw pass, capture the
+// actual prims it emits to the polybuf as ground truth, run the native float
+// extraction on the same records, compare positions + colours + UV +
+// tpage/clut per vertex. Headless, numerical. Gated by OPENPETE_MOBY_VERIFY.
 //
 // Determinism: never writes PSX RAM. When active it calls the real render
 // function exactly once (behaviour-identical to the normal dispatch
 // fall-through) and only READS the records + polybuf afterwards.
-//
-// Exact record/stream/prim byte offsets are confirmed EMPIRICALLY by the
-// one-shot hex dump below (falsify-before-ship).
 
 #include "feature_registry.h"
-#include "renderer/reextract.h"  /* sub-tick re-extract entry */
+#include "renderer/orchestrator.h"  /* the canonical-render epoch + producer-camera brackets */
+#include "renderer/moby.h"          /* this feeder's exported entries */
+#include "renderer/moby_game.h"     /* per-game decoders, classifications and addresses */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "openpete_psx.h"
 #include "openpete_vstream.h"       /* frame-word field -> stream address (handles) */
@@ -35,7 +42,6 @@
 #include "openpete_interp.h"        /* op_now() — sub-tick clock for rotation interp */
 #include "renderer/moby_rank.h"              /* same-moby painter rank source (OT-chain read) */
 #include "openpete_interp_objs.h"   /* per-object prev/curr snapshots (rotation interp) */
-#include "renderer/interp_regions.h"   /* game_interp_moby_key — HUD-pool slot-stable identity */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "openpete_ui_moby.h"  /* HUD/UI moby classifier (overlay-on-top tagging) */
 #include "openpete_mods.h"     /* per-instance material slot resolve (S8b) */
@@ -47,14 +53,26 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "spyro1_symbols.gen.h"
-#include "game_layout.h"
+#include "game_layout.h"          /* game_layout.moby: the engine addresses this walk reads */
+#include "openpete_recomp_module.h"  /* the game's own moby draws, run through the module dispatch */
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
-extern void     func_8001F798(CPUState* cpu);  /* the real REGULAR moby renderer */
-extern void     func_80020F34(CPUState* cpu);  /* the real SPECULAR moby renderer (same +0x1600 geometry) */
-extern void     func_80022A2C(CPUState* cpu);  /* the real SHADED moby renderer (+0x2400 Moby* list) */
 extern unsigned openpete_frame;
+
+/* Run one of the game's own moby draw passes through the recomp module. */
+/* Run one of the game's own moby draw passes through the recomp module. */
+static void moby_run_draw(CPUState* cpu, uint32_t addr) {
+    openpete_recomp_module_get()->dispatch(cpu, addr);
+}
+
+/* The head of the moby array: an address the game stores the first Moby's
+ * pointer at, or the array itself where the game keeps one at a fixed
+ * address. */
+static uint32_t moby_array_head(CPUState* cpu) {
+    if (!game_layout.moby.array_head) return 0u;
+    return game_layout.moby.array_direct ? game_layout.moby.array_head
+                                         : cpu->read_word(game_layout.moby.array_head);
+}
 
 static const char* s_cur_mat = "REG";   /* material tag for the current pass (REG/SPEC) */
 /* Clip-switch crossfade census (OPENPETE_MOBY_ANIMSW_DBG): how often a sub-tick moby
@@ -64,43 +82,40 @@ static long s_animsw_cross = 0, s_animsw_snap = 0;
 static long s_shmode[3]; /* shaded face-mode census: [0]=gouraud [1]=flat-basic [2]=flat-metal(bit1) */
 static int  s_sh_nohl = -1; /* OPENPETE_SHADED_NOHL=1 disables the gouraud spec boost (A/B) */
 
-/* Cull-record buffer base (stride 0x38). The .s cull builders compute it as
- * g_SonyImage + 0x1600 (REGULAR func_8001F158 and SPECULAR func_800208FC both;
- * the --no-lod queue relocation that once split them was deleted
- * with the producer stack — every mode uses the canonical slot now). */
-#define REC_BASE      (G_SCRATCH + 0x1600u)
-static uint32_t s_rec_base = G_SCRATCH + 0x1600u;   /* per-pass; set by moby_native_pass */
+/* The cull-record queue the game's cull pass built, and one record's size.
+ * Every material pass over the same model kind shares one queue. */
+#define REC_BASE      (game_layout.moby.rec_base)
+static uint32_t s_rec_base;   /* per-pass; set by moby_native_pass */
 
-#define REC_STRIDE    0x38u
-/* Capacity for one pass's records / projected vertices, shared by the canonical
- * .s-queue walk and the host reveal builder. Extended LOD with the distance
+#define REC_STRIDE    (game_layout.moby.rec_stride)
+/* The AnimationHeader's geometry pointers, four bytes apart from
+ * anim_ptr_block: HP faces, HP colours, LP faces, far colours (the walk
+ * reaches the vertex array only through the game's own stream decoder). */
+#define ANIM_FACES_HP (game_layout.moby.anim_ptr_block + 4u)
+#define ANIM_COL_HP   (game_layout.moby.anim_ptr_block + 8u)
+#define ANIM_FACES_LP (game_layout.moby.anim_ptr_block + 12u)
+#define ANIM_COL_FAR  (game_layout.moby.anim_ptr_block + 16u)
+/* Capacity for one pass's records / projected vertices, shared by the
+ * queue walk and the host reveal builder. Extended LOD with the distance
  * ceiling removed feeds a whole level's mobys from a single distant vantage, so
  * these are sized for that rather than for the ~50 a canonical 4:3 view queues;
  * overflow BREAKS the reveal walk mid-list (a silent tail-of-the-level drop) and
  * truncates the straddling record's mesh. */
 #define MAX_RECORDS   1024
-#define SHADED_BASE   (G_SCRATCH + 0x2400u)  /* shaded renderer: flat Moby* array (stride 4) */
+#define SHADED_BASE   (moby_game.shaded_list)  /* second model kind: flat Moby* array (stride 4) */
 
-/* Sub-tick SPEC-pass scratch snapshot: G_SCRATCH+0x1100..0x1900 (per-vertex fog
- * colour + the specular cull queue at +0x1600). The SPECULAR pass rebuilds the
- * +0x1600 queue with the specular set — including specular-ONLY mobys (the
- * rescue dragon) that REGULAR didn't draw — and overwrites the colour scratch,
- * so the REGULAR snapshot can't reproduce them. Capture it at the canonical SPEC
- * hook and replay it in the re-extract's SPEC pass. */
-/* Window = colour rows [0x1100,0x1600) + the FULL record region [0x1600,0x2400)
- * — same extent as the REGULAR capture_recs. The records are stride 0x38, so
- * record 14+ spills past +0x1900; the old 0x800 length stopped there and
- * silently truncated the replayed SPEC queue to 13 records. In Gnorc Cove's
- * opening the specular queue holds 15-19 (armored gnorcs + snails + barrels),
- * putting the ROLLING BARRELS at the tail — they vanished on every sub-tick
- * present (--render-fps), i.e. "invisible barrels" at high fps. Capture happens
- * at the canonical SPEC hook, BEFORE the later Spyro pass reuses [0x1900,0x1A00)
- * for its seg scratch (same liveness argument as capture_recs); the sub-tick
- * swap below save/restores the whole window, so the bracket's seg overlay for
- * the Spyro feeder is untouched. */
-#define SPEC_SCR_LO   0x1100u
-#define SPEC_SCR_LEN  0x1300u
-static uint8_t s_canon_spec[SPEC_SCR_LEN];
+/* Sub-tick second-material scratch snapshot. A game whose second material
+ * pass rebuilds the record queue with its own set — including mobys the first
+ * pass did not draw — and overwrites the per-vertex colour scratch leaves the
+ * first pass's snapshot unable to reproduce them. Capture the window
+ * moby_game names at that pass's canonical hook and replay it in the
+ * re-extract's second pass. The window must cover the FULL record region, not
+ * just its head: a short window silently truncates the replayed queue and the
+ * records past its end vanish from every sub-tick present. */
+#define SPEC_SCR_LO   (moby_game.spec_window_off)
+#define SPEC_SCR_LEN  (moby_game.spec_window_len)
+#define SPEC_SCR_MAX  0x2000u                  /* storage bound for the snapshot */
+static uint8_t s_canon_spec[SPEC_SCR_MAX];
 static uint32_t s_canon_spec_epoch = 0;   /* canonical-render epoch at capture (freshness gate) */
 static int     s_canon_spec_valid = 0;
 static void moby_native_capture_spec_scratch(CPUState* cpu) {
@@ -110,7 +125,8 @@ static void moby_native_capture_spec_scratch(CPUState* cpu) {
      * intermediate present, strobing specular mobys). */
     extern int openpete_speculative;
     if (openpete_speculative) return;
-    const void* h = openpete_subtick_host_ptr(G_SCRATCH + SPEC_SCR_LO);
+    if (!SPEC_SCR_LEN || SPEC_SCR_LEN > SPEC_SCR_MAX) return;
+    const void* h = openpete_subtick_host_ptr(moby_game.scratch + SPEC_SCR_LO);
     if (h) { memcpy(s_canon_spec, h, SPEC_SCR_LEN); s_canon_spec_valid = 1;
              s_canon_spec_epoch = spyro_native_canon_epoch_stamp(); }
 }
@@ -314,18 +330,19 @@ static void hex_dump(CPUState* cpu, uint32_t start, uint32_t end) {
     for (int r = 0; r < 4; r++) {
         uint32_t rec = REC_BASE + (uint32_t)r * REC_STRIDE;
         uint32_t w0 = cpu->read_word(rec);
-        uint32_t frame_p = cpu->read_word(rec + 0x04);
-        uint32_t faces_p = cpu->read_word(rec + 0x08);
-        uint32_t color_p = cpu->read_word(rec + 0x0C);
-        int32_t trx = (int32_t)cpu->read_word(rec + 0x10);
-        int32_t tr_y = (int32_t)cpu->read_word(rec + 0x14);
-        int32_t trz = (int32_t)cpu->read_word(rec + 0x18);
-        uint32_t mobyp = cpu->read_word(rec + 0x34);
+        moby_record_t R; int live = moby_game.read_record(cpu, rec, &R);
+        uint32_t frame_p = live ? R.header : 0u;
+        uint32_t faces_p = live ? R.frame_a : 0u;
+        uint32_t color_p = live ? R.frame_b : 0u;
+        int32_t trx  = live ? R.TR_raw[0] : 0;
+        int32_t tr_y = live ? R.TR_raw[1] : 0;
+        int32_t trz  = live ? R.TR_raw[2] : 0;
+        uint32_t mobyp = live ? R.moby : 0u;
         fprintf(stderr,
             "[rec %d @%08X] w0=%08X frame=%08X faces=%08X color=%08X TR=(%d,%d,%d) moby=%08X\n",
             r, rec, w0, frame_p, faces_p, color_p, trx, tr_y, trz, mobyp);
         if (w0 == 0 && frame_p == 0 && mobyp == 0) { fprintf(stderr, "  (terminator)\n"); break; }
-        int M[3][3]; ngte_read_matrix(cpu, rec + 0x1C, M);
+        int M[3][3]; memcpy(M, R.M, sizeof M);
         fprintf(stderr, "  R=[%d %d %d | %d %d %d | %d %d %d]\n",
                 M[0][0],M[0][1],M[0][2], M[1][0],M[1][1],M[1][2], M[2][0],M[2][1],M[2][2]);
         dump_words(cpu, "record", rec, 14);
@@ -351,55 +368,15 @@ static void hex_dump(CPUState* cpu, uint32_t start, uint32_t end) {
 }
 
 /* ---- per-moby native vertex decode + projection -------------------- */
-/* One moby vertex stream (frame A or B): packed 11/11/10 literals interleaved
- * with 5/5/5 short-deltas, the bit-0 flag of each word selecting the next. A
- * literal RESETS the accumulator; a short ADDS. */
-typedef struct {
-    uint32_t litp, shortp;
-    /* Bounded host alias of the stream's mapping: reads inside
-     * [base_va, base_va + len) go straight to host memory, anything else
-     * takes the guest access path. A stream parked past 2 MB therefore
-     * costs the region lookup once per stream, not once per vertex. */
-    const uint8_t* base; uint32_t base_va, len;
-    int VX, VY, VZ, flag, s5;
-} vstream;
-static inline uint32_t vs_read_word(CPUState* cpu, const vstream* s, uint32_t va) {
-    if (s->base && va >= s->base_va && va - s->base_va + 4u <= s->len) {
-        uint32_t w; memcpy(&w, s->base + (va - s->base_va), 4); return w;
-    }
-    return cpu->read_word(va);
-}
-static inline uint32_t vs_read_half(CPUState* cpu, const vstream* s, uint32_t va) {
-    if (s->base && va >= s->base_va && va - s->base_va + 2u <= s->len) {
-        uint16_t h; memcpy(&h, s->base + (va - s->base_va), 2); return h;
-    }
-    return cpu->read_half(va);
-}
-static void vstream_init(CPUState* cpu, vstream* s, uint32_t frame, int s5) {
-    uint32_t fw0 = cpu->read_word(frame), fw1 = cpu->read_word(frame + 4);
-    /* The frame word's 21-bit field is a byte address or a stream handle;
-     * the resolver decides (openpete_vstream.h). Stock values come back as
-     * the KUSEG byte address, which the game reads through KSEG0. */
-    uint32_t va = openpete_vstream_resolve(fw0 & 0x1FFFFFu, 0, &s->base, &s->len);
-    s->litp   = va | 0x80000000u;
-    s->base_va = s->litp;
-    s->shortp = s->litp + ((fw1 >> 24) & 0xFFu) * 4u;
-    s->VX = s->VY = s->VZ = s->flag = 0; s->s5 = s5;
+/* One moby vertex stream (frame A or B), decoded by the game's own codec
+ * behind the moby_game vertex slots: the walk owns the loop and the
+ * projection, the decoder owns what one step of the stream means. */
+typedef moby_vstream_t vstream;
+static void vstream_init(CPUState* cpu, vstream* s, uint32_t header, uint32_t frame, int s5) {
+    moby_game.vstream_init(cpu, s, header, frame, s5);
 }
 static void vstream_next(CPUState* cpu, vstream* s, int first) {
-    if (first || s->flag == 0) {
-        uint32_t w = vs_read_word(cpu, s, s->litp); s->litp += 4;
-        s->VZ = (int32_t)w >> 21;
-        s->VX = (int32_t)(w << 10) >> 21;
-        s->VY = (int32_t)(w << 20) >> 19;
-        s->flag = (int)(w & 1u);
-    } else {
-        int16_t d = (int16_t)vs_read_half(cpu, s, s->shortp); s->shortp += 2;
-        s->VZ += ((int32_t)d >> 11) << s->s5;                       /* sra11 */
-        s->VX -= ((int32_t)((uint32_t)(int32_t)d << 21) >> 27) << s->s5;
-        s->VY -= ((int32_t)((uint32_t)(int32_t)d << 26) >> 27) << s->s5;
-        s->flag = (int)((uint16_t)d & 1u);
-    }
+    moby_game.vstream_next(cpu, s, first);
 }
 
 /* Decode + float-project one record's vertices. Mirrors F798: the no-blend path
@@ -464,7 +441,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
      * moby tracks the smooth sub-tick camera instead of stepping in 4-world-unit
      * chunks (the same fix terrain got). Same scale as TR_raw, just fractional;
      * the .s-record path passes NULL and keeps the byte-exact integer TR. */
-    int m_scale = cpu->read_byte(header + 5) & 0xFF;
+    int m_scale = cpu->read_byte(header + game_layout.moby.anim_scale_off) & 0xFF;
     /* .s far-skip [.L8001F888 / spec twin @8002103C]: records with a non-zero
      * w0 low byte (the GPF-TR scale, m_ScaleOverride-derived) run IR0=(w0&0xFF),
      * IR3=(TR.z<<2)>>m_Scale through GPF sf=0 and SKIP the whole record when
@@ -528,7 +505,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
     }
     /* .s OT bias, REGULAR/SPECULAR walks: the render loop keys the OT as
      * (TR.z_raw>>5) − signext(w0 byte2) [@8001F810..F828; spec twin @80020FB0];
-     * the cull packs m_DepthOffset (top byte of the moby+0x44 word, +0x47) into
+     * the cull packs m_DepthOffset (the top byte of the moby angle word) into
      * record w0 bits 16-23 [@8001F464..F46C]. That bias is an OT ORDERING KEY
      * (slots, 128 world each), not geometry — per-pixel Z over TRUE depth
      * mirrors the per-face OT sort, so the authored slot pull never enters the
@@ -562,7 +539,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
     }
     double ofx = v->ofx, ofy = v->ofy;
 
-    int s5    = (cpu->read_byte(header + 6) & 0xFF) + 1;
+    int s5    = (cpu->read_byte(header + game_layout.moby.anim_shift_off) & 0xFF) + 1;
     /* .s tier-adjusted vertex COUNT [@8001F9D4..FA04 / spec twin @80021178]:
      * count = [hdr + 8 + (ZSF4>>31)] — hdr+9 is the LP vertex count — and
      * count == 0 SKIPS the record entirely (bnez → func_80020860 restore +
@@ -570,13 +547,15 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
      * the game draws NOTHING for them (the distant-gem leak: native read the
      * HP count unconditionally and kept drawing). --no-lod forces the HP
      * count with the same guard as the HP face select (moby_tier_faceblock). */
-    int count = cpu->read_byte(header + 8u + ((zsf4 < 0 && !openpete_no_lod) ? 1u : 0u)) & 0xFF;
+    int count = cpu->read_byte((zsf4 < 0 && !openpete_no_lod)
+                               ? header + game_layout.moby.anim_vcount_lo
+                               : header + game_layout.moby.anim_vcount_hi) & 0xFF;
     if (count == 0) return 0;
     if (count > cap) count = cap;
 
     /* Keyframe blend: IR0 = (w0 & 0xFF00) >> 2 (1.0=4096); frame B at frameB.
      * 0 (or B absent) => the no-blend path (frame A only). */
-    int blend = (int)((w0 & 0xFF00u) >> 2);
+    int blend = (int)((w0 >> game_layout.moby.blend_shift) & game_layout.moby.blend_mask);
     int do_blend = (blend > 0 && frameB >= 0x80000000u);
     double t = (double)blend / 4096.0;
 
@@ -584,16 +563,19 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
      * with the PREV clip's own ShortShift (s5_p) — equal to s5 within a clip, but
      * may differ across a count-matched clip switch (see the header doc). */
     int two = (frameA_p >= 0x80000000u);
-    int s5_p = (header_p >= 0x80000000u) ? ((cpu->read_byte(header_p + 6) & 0xFF) + 1) : s5;
-    int blend_p = (int)((w0_p & 0xFF00u) >> 2);
+    int s5_p = (header_p >= 0x80000000u)
+             ? ((cpu->read_byte(header_p + game_layout.moby.anim_shift_off) & 0xFF) + 1) : s5;
+    int blend_p = (int)((w0_p >> game_layout.moby.blend_shift) & game_layout.moby.blend_mask);
     int do_blend_p = two && (blend_p > 0 && frameB_p >= 0x80000000u);
     double tp = (double)blend_p / 4096.0;
 
     double rec_minfvz = 1e30;   /* nearest in-front vertex after the pulls (near-floor lift) */
     vstream A, B, Ap, Bp;
-    vstream_init(cpu, &A, frameA, s5);
-    if (do_blend) vstream_init(cpu, &B, frameB, s5);
-    if (two) { vstream_init(cpu, &Ap, frameA_p, s5_p); if (do_blend_p) vstream_init(cpu, &Bp, frameB_p, s5_p); }
+    uint32_t hdr_p = (header_p >= 0x80000000u) ? header_p : header;
+    vstream_init(cpu, &A, header, frameA, s5);
+    if (do_blend) vstream_init(cpu, &B, header, frameB, s5);
+    if (two) { vstream_init(cpu, &Ap, hdr_p, frameA_p, s5_p);
+               if (do_blend_p) vstream_init(cpu, &Bp, hdr_p, frameB_p, s5_p); }
     for (int i = 0; i < count; i++) {
         vstream_next(cpu, &A, i == 0);
         double vx = A.VX, vy = A.VY, vz = A.VZ;
@@ -675,32 +657,24 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
  * Same carve-out as the hook: only when the zero-distance tier is near-band
  * ((md<<8) >= 1024) — sub-near is effect-AUTHORED fade (ring puffs shrink
  * m_Renderer) and keeps the canonical value. */
-static int record_zsf4(CPUState* cpu, uint32_t rec) {
-    int zsf4 = (int)(int16_t)(cpu->read_word(rec + 0x2C) >> 16);
-    if (openpete_no_lod) {
-        uint32_t mob = cpu->read_word(rec + 0x34);
-        if (mob >= 0x80000000u) {
-            int md = (int)(cpu->read_byte(mob + 0x4B) & 0x3Fu);
-            if ((md << 8) >= 1024) zsf4 = md << 8;
-        }
+static int record_zsf4(CPUState* cpu, const moby_record_t* R) {
+    int zsf4 = R->tier;
+    if (openpete_no_lod && R->moby >= 0x80000000u) {
+        int md = (int)(cpu->read_byte(R->moby + moby_game.renderer_off) & 0x3Fu);
+        if ((md << 8) >= 1024) zsf4 = md << 8;
     }
     return zsf4;
 }
 
-/* Thin wrapper: read the six fields from a live .s cull record (+0x1600).
- * zsf4 = the record's (--no-lod-adjusted) tier verdict, computed by the
- * caller (record_zsf4) — feeds the tier-adjusted vertex-count read. */
-static int moby_project_record(CPUState* cpu, uint32_t rec, int zsf4, proj_xy* out, int cap) {
-    uint32_t header = cpu->read_word(rec + 0x04);
-    uint32_t frameA = cpu->read_word(rec + 0x08);
-    uint32_t frameB = cpu->read_word(rec + 0x0C);
-    uint32_t w0     = cpu->read_word(rec);
-    int TR_raw[3] = { (int32_t)cpu->read_word(rec + 0x10),
-                      (int32_t)cpu->read_word(rec + 0x14),
-                      (int32_t)cpu->read_word(rec + 0x18) };
-    int M[3][3]; ngte_read_matrix(cpu, rec + 0x1C, M);
-    const ngte_view* v = moby_record_view(cpu->read_word(rec + 0x34));   /* the record's moby (rec_meta.moby) */
-    return moby_decode_project(cpu, header, frameA, frameB, w0, 0, 0, 0, 0, 0.0, -1.0, TR_raw, NULL, M, zsf4, v, out, cap);
+/* Project one live cull record, whose fields the game's record reader already
+ * extracted. zsf4 = the record's (--no-lod-adjusted) tier verdict, computed by
+ * the caller (record_zsf4) — feeds the tier-adjusted vertex-count read. */
+static int moby_project_record(CPUState* cpu, const moby_record_t* R, int zsf4,
+                               proj_xy* out, int cap) {
+    const ngte_view* v = moby_record_view(R->moby);
+    return moby_decode_project(cpu, R->header, R->frame_a, R->frame_b, R->w0,
+                               0, 0, 0, 0, 0.0, -1.0, R->TR_raw, NULL, R->M,
+                               zsf4, v, out, cap);
 }
 
 #define MAX_PROJ 32768
@@ -854,7 +828,7 @@ static void canon_drawn_harvest(int nrec) {
  * keeps the far palette under --no-lod too. */
 static uint32_t moby_tier_faceblock(CPUState* cpu, uint32_t header, int zsf4) {
     if (header < 0x80000000u) return 0u;
-    uint32_t off = (zsf4 <= 0 && !openpete_no_lod) ? 0x1Cu : 0x14u;
+    uint32_t off = (zsf4 <= 0 && !openpete_no_lod) ? ANIM_FACES_LP : ANIM_FACES_HP;
     return cpu->read_word(header + off);
 }
 
@@ -899,6 +873,12 @@ static long s_walk_faces, s_walk_runs;
  * canonical extract logs queue membership, the reveal builder logs every
  * skip/admit verdict with the gate values. Built for the boundary-crossing
  * handoff hunt; env-gated, inert otherwise. */
+/* The key the sub-tick interp ring stores a moby's prev/curr snapshots
+ * under; the moby address itself where the game supplies no mapping. */
+static uint32_t moby_interp_key(uint32_t moby) {
+    return moby_game.interp_key ? moby_game.interp_key(moby) : moby;
+}
+
 static uint32_t moby_trace_target(void) {
     static uint32_t t = 0xFFFFFFFFu;
     if (t == 0xFFFFFFFFu) { const char* e = getenv("OPENPETE_MOBY_TRACE");
@@ -922,35 +902,36 @@ static int project_all_records_inner(CPUState* cpu) {
     int nrec = 0;
     for (int r = 0; r < MAX_RECORDS; r++) {
         uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
-        if (cpu->read_word(rec + 0x04) == 0 && cpu->read_word(rec + 0x34) == 0) break;
-        uint32_t w0 = cpu->read_word(rec);
-        int bl = (int)((w0 & 0xFF00u) >> 2);  /* INTPL blend 0..4096 */
+        moby_record_t R;
+        if (!moby_game.read_record(cpu, rec, &R)) break;   /* queue terminator */
+        uint32_t w0 = R.w0;
+        int bl = (int)((w0 >> game_layout.moby.blend_shift) & game_layout.moby.blend_mask);  /* INTPL blend 0..4096 */
         if (bl > s_max_blend) s_max_blend = bl;
         int off = s_proj_n;
         /* ZSF4 verdict BEFORE the projection — the decode's tier-adjusted
          * vertex-count read ([hdr+8+(ZSF4>>31)], 0 = record skipped) needs it.
          * Snapshotted into fade_snap below, so the sub-tick re-extract
          * inherits the (--no-lod-neutralized) tier too. */
-        int zsf4 = record_zsf4(cpu, rec);
-        int got = moby_project_record(cpu, rec, zsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
+        int zsf4 = record_zsf4(cpu, &R);
+        int got = moby_project_record(cpu, &R, zsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         for (int j = 0; j < got; j++) s_proj[s_proj_n + j].rec = nrec;  /* tag source record */
         if (nrec < MAX_RECORDS) {
-            uint32_t header = cpu->read_word(rec + 0x04);
+            uint32_t header = R.header;
             s_recs[nrec] = (rec_meta){ rec, off, got, header,
                 /* face stream per the record's tier (HP or LP, --no-lod-aware) */
                 moby_tier_faceblock(cpu, header, zsf4), w0,
-                /* env metal flag = high byte of m_SpecularMetalColor @rec+0x30 (specular
-                 * cull pass copies it; @80020CA0 / read @8002176C srl 24, bnez .L800226F8) */
-                (int)((cpu->read_word(rec + 0x30) >> 24) & 0xFFu),
-                /* full m_SpecularMetalColor: the highlight back-colour (.L80021DB4) +
+                /* env metal flag = high byte of the record's material word (the
+                 * cull pass copies it; read @8002176C srl 24, bnez .L800226F8) */
+                (int)((R.material >> 24) & 0xFFu),
+                /* the full material word: the highlight back-colour (.L80021DB4) +
                  * byte2 spec-intensity. Carries the per-moby tint (flamed chest -> red). */
-                cpu->read_word(rec + 0x30),
-                cpu->read_word(rec + 0x34),
+                R.material,
+                R.moby,
                 zsf4,
-                atan2f((float)(int32_t)cpu->read_word(rec + 0x18),
-                       (float)(int32_t)cpu->read_word(rec + 0x10)),
-                cpu->read_word(rec + 0x08), 0u, 0u, 0.f };
-            s_recs[nrec].heat = (uint8_t)moby_heat_scalar(cpu->read_word(s_recs[nrec].moby + 0x4Cu));
+                atan2f((float)R.TR_raw[2], (float)R.TR_raw[0]),
+                R.frame_a, 0u, 0u, 0.f };
+            s_recs[nrec].heat = (uint8_t)moby_heat_scalar(
+                cpu->read_word(s_recs[nrec].moby + moby_game.spec_colour_off));
             fade_snap_put(s_recs[nrec].moby, zsf4);
             if (moby_trace_target() && s_recs[nrec].moby == moby_trace_target())
                 fprintf(stderr, "[moby-trace f=%u] %08X IN-QUEUE rec=%08X zsf4=%d got=%d mat=%s\n",
@@ -959,17 +940,17 @@ static int project_all_records_inner(CPUState* cpu) {
             if (tier_dbg_on()) {
                 if (zsf4 >= 1024) s_tier_near++;
                 else if (zsf4 > 0) s_tier_fog++;
-                else if (zsf4 < -2048 && (int32_t)cpu->read_word(G_SKIP_LOWPOLY_WORLD) > 0) s_tier_farfade++;
+                else if (zsf4 < -2048 && (int32_t)cpu->read_word(moby_game.skip_lowpoly) > 0) s_tier_farfade++;
                 else s_tier_far++;
                 if ((w0 & 0xFFu) && got == 0) s_tier_gpfskip++;
                 if (!(w0 & 0xFFu) && got == 0 && zsf4 < 0) s_tier_lpskip++;
                 /* mirror check: recompute ZSF4 from gamestate the way the cull
                  * does (@8001F404) and compare with the stored verdict */
-                uint32_t mob = cpu->read_word(rec + 0x34);
+                uint32_t mob = R.moby;
                 if (mob >= 0x80000000u) {
-                    int md = (int)(cpu->read_byte(mob + 0x4B) & 0x3Fu);
+                    int md = (int)(cpu->read_byte(mob + moby_game.renderer_off) & 0x3Fu);
                     int ex = (int)(int16_t)(uint16_t)((((uint32_t)md << 8)
-                             - (uint32_t)cpu->read_word(rec + 0x18)) & 0xFFFFu);
+                             - (uint32_t)R.TR_raw[2]) & 0xFFFFu);
                     /* --no-lod: the zsf4-store hook neutralized the distance term
                      * for near-band-at-zero-distance records — mirror that */
                     if (openpete_no_lod && (md << 8) >= 1024) ex = md << 8;
@@ -1002,19 +983,19 @@ typedef struct { uint32_t header, frameA, frameB, w0, mscol; int metal; int TR_r
  * Returns 1 on success, 0 if the moby has no animated model (SimpleModel =>
  * shaded material, handled by the shaded path) or an invalid model/header. */
 static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f) {
-    uint32_t cls   = cpu->read_half(moby + 0x36);            /* m_Class */
-    uint32_t model = cpu->read_word(G_MODELS + cls * 4u);    /* g_Models[cls] */
+    uint32_t cls   = cpu->read_half(moby + game_layout.moby.class_off);            /* m_Class */
+    uint32_t model = cpu->read_word(game_layout.moby.model_table + cls * 4u);    /* g_Models[cls] */
     if (model < 0x80000000u) return 0;
-    if ((int32_t)cpu->read_word(model + 0x00) < 0) return 0; /* m_NumAnimations<0 => SimpleModel (shaded) */
-    uint32_t anim   = cpu->read_byte(moby + 0x3C) & 0xFFu;   /* m_Animation */
-    uint32_t header = cpu->read_word(model + 0x38u + anim * 4u);  /* AnimationHeader* (Model.m_Animations[]) */
+    if (!moby_game.model_is_animated(cpu, model)) return 0;  /* the second model kind */
+    uint32_t anim   = cpu->read_byte(moby + game_layout.moby.anim_state_off + 0u) & 0xFFu;   /* m_Animation */
+    uint32_t header = cpu->read_word(model + game_layout.moby.model_anims_off + anim * 4u);
     if (header < 0x80000000u) return 0;
-    uint32_t frm  = cpu->read_byte(moby + 0x3E) & 0xFFu;     /* m_Frame */
-    uint32_t nfrm = cpu->read_byte(moby + 0x3F) & 0xFFu;     /* m_NextFrame */
+    uint32_t frm  = cpu->read_byte(moby + game_layout.moby.anim_state_off + 2u) & 0xFFu;     /* m_Frame */
+    uint32_t nfrm = cpu->read_byte(moby + game_layout.moby.anim_state_off + 3u) & 0xFFu;     /* m_NextFrame */
     f->header = header;
-    f->frameA = header + 0x24u + frm  * 8u;                  /* &m_Frames[m_Frame]     (AnimationFrame, stride 8) */
-    f->frameB = header + 0x24u + nfrm * 8u;                  /* &m_Frames[m_NextFrame] */
-    uint32_t prog = cpu->read_byte(moby + 0x40) & 0xFFu;     /* m_FrameProgress -> blend bits 8-15 */
+    f->frameA = header + game_layout.moby.anim_frames + frm  * game_layout.moby.anim_frame_stride;
+    f->frameB = header + game_layout.moby.anim_frames + nfrm * game_layout.moby.anim_frame_stride;
+    uint32_t prog = cpu->read_byte(moby + game_layout.moby.anim_state_off + 4u) & 0xFFu;     /* m_FrameProgress -> blend bits 8-15 */
     f->w0    = (prog << 8) & 0xFF00u;
     /* Loop-seam guard. m_NextFrame == 0 is the animation's loop sentinel: the game
      * HOLDS a single keyframe there (its cull record carries frameB = NULL, blend
@@ -1027,18 +1008,18 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
     /* m_DepthOffset (top byte of the +0x44 word) -> w0 bits 16-23, like the .s
      * cull [@8001F464..F46C] — the render walk's OT near-pull reads it there.
      * Packed after the loop-seam collapse so the bias survives held keyframes. */
-    f->w0 |= (cpu->read_word(moby + 0x44) >> 24) << 16;
-    f->mscol = cpu->read_word(moby + 0x4Cu);                 /* m_SpecularMetalColor */
+    f->w0 |= (cpu->read_word(moby + game_layout.moby.angle_off + 0u) >> 24) << 16;
+    f->mscol = cpu->read_word(moby + moby_game.spec_colour_off);                 /* m_SpecularMetalColor */
     f->metal = (int)((f->mscol >> 24) & 0xFFu);
     /* M = ProjMatrix . Ry . Rx . Rz(m_Rotation) — the SAME euler compose the shaded
-     * path uses (verified bit-exact there); m_Rotation @ moby+0x44. */
+     * path uses (verified bit-exact there), from the moby angle bytes. */
     int PM[3][3]; memcpy(PM, s_view.cam_M, sizeof PM);
     shaded_compose_euler(cpu, PM, moby, f->M);
     /* TR = ProjMatrix . swizzled (cam-moby)>>2  (the cull's centre MVMVA: IR1=(cy-my)>>2,
      * IR2=(cz-mz)>>2, IR3=(mx-cx)>>2; MAC=(PM·IR)>>12). NOT scaled by m_Scale or <<1
      * here — moby_decode_project applies (<<2)>>m_Scale, matching the .s record store. */
     int32_t cx=(int32_t)s_view.cam_ram[0], cy=(int32_t)s_view.cam_ram[1], cz=(int32_t)s_view.cam_ram[2];
-    int32_t mx=(int32_t)cpu->read_word(moby+0x0C), my=(int32_t)cpu->read_word(moby+0x10), mz=(int32_t)cpu->read_word(moby+0x14);
+    int32_t mx=(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 0u), my=(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u), mz=(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 8u);
     int32_t Vy=(cy-my)>>2, Vz=(cz-mz)>>2, Vx=(mx-cx)>>2;
     /* 64-bit accumulate: the products reach 4096*|V|, so an int32 sum wraps once
      * a component passes ~175 K view units (~700 K world) and the wrapped view-Z
@@ -1080,7 +1061,7 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
             if (nowp - t0 >= 1000000u) { t0 = nowp; nn = 0; }
             if (nn < 12) { nn++;
                 fprintf(stderr, "[reg-interp-MISS f=%u] moby=%08x cls=%03x pos=(%d,%d,%d)\n",
-                        openpete_frame, moby, (unsigned)cpu->read_half(moby + 0x36u), mx, my, mz); }
+                        openpete_frame, moby, (unsigned)cpu->read_half(moby + game_layout.moby.class_off), mx, my, mz); }
         }
     }
     double dVy=(cfy-mfy)/4.0, dVz=(cfz-mfz)/4.0, dVx=(mfx-cfx)/4.0;
@@ -1097,9 +1078,9 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
 static void build_moby_record_tr(CPUState* cpu, uint32_t moby, double tr[3]) {
     const int (*PM)[3] = s_view.cam_M;
     double cfx=s_view.cam[0], cfy=s_view.cam[1], cfz=s_view.cam[2];
-    double mfx=(double)(int32_t)cpu->read_word(moby+0x0C),
-           mfy=(double)(int32_t)cpu->read_word(moby+0x10),
-           mfz=(double)(int32_t)cpu->read_word(moby+0x14);
+    double mfx=(double)(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 0u),
+           mfy=(double)(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
+           mfz=(double)(int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 8u);
     { double mf[3];
       if (openpete_native_interp_pos(moby,     mf)) { mfx=mf[0]; mfy=mf[1]; mfz=mf[2]; } }
     double dVy=(cfy-mfy)/4.0, dVz=(cfz-mfz)/4.0, dVx=(mfx-cfx)/4.0;
@@ -1122,24 +1103,25 @@ static void moby_build_validate(CPUState* cpu) {
     int n=0, okHdr=0, okA=0, okB=0, okBl=0, okM=0, okTR=0, noModel=0, worstM=0, worstTR=0;
     for (int r=0; r<s_nrecs; r++) {
         uint32_t rec = s_recs[r].addr; if (rec < 0x80000000u) continue;
-        uint32_t moby = cpu->read_word(rec + 0x34);
+        moby_record_t S; if (!moby_game.read_record(cpu, rec, &S)) continue;
+        uint32_t moby = S.moby;
         moby_fields f;
         if (!build_moby_record_fields(cpu, moby, &f)) { noModel++; continue; }
         n++;
-        if (f.header == cpu->read_word(rec+0x04)) okHdr++;
-        if (f.frameA == cpu->read_word(rec+0x08)) okA++;
-        if (f.frameB == cpu->read_word(rec+0x0C)) okB++;
-        if ((f.w0 & 0xFF00u) == (cpu->read_word(rec) & 0xFF00u)) okBl++;
-        int sM[3][3]; ngte_read_matrix(cpu, rec+0x1C, sM);
+        if (f.header == S.header)  okHdr++;
+        if (f.frameA == S.frame_a) okA++;
+        if (f.frameB == S.frame_b) okB++;
+        if ((f.w0 & 0xFF00u) == (S.w0 & 0xFF00u)) okBl++;
+        int sM[3][3]; memcpy(sM, S.M, sizeof sM);
         int dM=0; for(int i=0;i<3;i++)for(int j=0;j<3;j++){int d=f.M[i][j]-sM[i][j]; if(d<0)d=-d; if(d>dM)dM=d;}
         if (dM<=2) okM++; if (dM>worstM) worstM=dM;
-        int sTR[3]={(int32_t)cpu->read_word(rec+0x10),(int32_t)cpu->read_word(rec+0x14),(int32_t)cpu->read_word(rec+0x18)};
+        int sTR[3]={S.TR_raw[0],S.TR_raw[1],S.TR_raw[2]};
         int dT=0; for(int i=0;i<3;i++){int d=f.TR_raw[i]-sTR[i]; if(d<0)d=-d; if(d>dT)dT=d;}
         if (dT<=2) okTR++; if (dT>worstTR) worstTR=dT;
         if (r < 6) fprintf(stderr,
             "  [build r%d moby=%08X] hdr %08X/%08X A %08X/%08X B %08X/%08X bl %04X/%04X dM=%d dTR=%d\n",
-            r, moby, f.header, cpu->read_word(rec+0x04), f.frameA, cpu->read_word(rec+0x08),
-            f.frameB, cpu->read_word(rec+0x0C), (f.w0&0xFF00u), (cpu->read_word(rec)&0xFF00u), dM, dT);
+            r, moby, f.header, S.header, f.frameA, S.frame_a,
+            f.frameB, S.frame_b, (f.w0&0xFF00u), (S.w0&0xFF00u), dM, dT);
     }
     fprintf(stderr,
         "[moby-build f=%u] recs=%d built=%d noModel(shaded)=%d | hdr=%d frameA=%d frameB=%d blend=%d "
@@ -1183,18 +1165,7 @@ static int reveal_prev_has(uint32_t m) {
  * fool in the level. The table is keyed per level because class ids index the
  * level overlay's own g_Models, and the props layout is class-specific. */
 static int moby_run_once_hidden(CPUState* cpu, uint32_t m, unsigned cls) {
-    static const struct { uint16_t level, cls; uint32_t variant; } k_run_once[] = {
-        /* jacques: the fools that set the moving platforms' heights */
-        { 54u, 0x7Eu, 6u },
-    };
-    for (size_t i = 0; i < sizeof k_run_once / sizeof k_run_once[0]; i++) {
-        if (k_run_once[i].cls != cls) continue;
-        if (cpu->read_word(G_LEVELID) != k_run_once[i].level) continue;
-        uint32_t props = cpu->read_word(m + 0x00u);
-        if (props < 0x80000000u || props >= 0x80200000u) continue;
-        if (cpu->read_word(props + 0x04u) == k_run_once[i].variant) return 1;
-    }
-    return 0;
+    return moby_game.run_once_hidden ? moby_game.run_once_hidden(cpu, m, cls) : 0;
 }
 
 /* Append host-built records for mobys the canonical 4:3 cull skipped but that
@@ -1266,25 +1237,25 @@ static int append_revealed_regular_inner(CPUState* cpu) {
     static float revsx[MAX_RECORDS], revsy[MAX_RECORDS]; static int revnv[MAX_RECORDS];
     static uint32_t occl_rev[MAX_RECORDS]; int occl_rev_n = 0;   /* admitted but occlusion-culled */
     int revealed = 0;
-    uint32_t m = cpu->read_word(G_LEVELMOBYS);
+    uint32_t m = moby_array_head(cpu);
     int guard = 0;
     uint32_t trc_m = moby_trace_target();
     #define TRC(fmt, ...) do { if (m == trc_m) fprintf(stderr, \
         "[moby-trace f=%u] %08X " fmt "\n", openpete_frame, m, ##__VA_ARGS__); } while (0)
     while (m >= 0x80000000u && guard++ < 4096) {
-        uint8_t stt = cpu->read_byte(m + 0x48);
+        uint8_t stt = cpu->read_byte(m + game_layout.moby.state_off);
         if (stt == 0xFF) break;                        /* array sentinel */
-        if (stt >= 0x80) { TRC("skip=dead stt=%02X", stt); m += 0x58; continue; }      /* dead/inactive */
-        if (moby_run_once_hidden(cpu, m, (unsigned)cpu->read_half(m + 0x36))) {
+        if (stt >= 0x80) { TRC("skip=dead stt=%02X", stt); m += game_layout.moby.array_stride; continue; }      /* dead/inactive */
+        if (moby_run_once_hidden(cpu, m, (unsigned)cpu->read_half(m + game_layout.moby.class_off))) {
             TRC("skip=run-once (retires on its first update)");
-            m += 0x58; continue;
+            m += game_layout.moby.array_stride; continue;
         }
         /* dedup vs every REG-handled moby (s_reg_moby: the .s queue set, plus —
          * on the sub-tick re-extract — occl-culled and hold-replayed mobys, so
          * a held off-4:3 speck is never double-drawn by the reveal) */
         int dup = 0;
         for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == m) { dup = 1; break; }
-        if (dup) { TRC("skip=REG-dedup (queued/culled/replayed this pass)"); m += 0x58; continue; }
+        if (dup) { TRC("skip=REG-dedup (queued/culled/replayed this pass)"); m += game_layout.moby.array_stride; continue; }
         /* SPECULAR-queue mobys are fed by the SPEC pass (its cone cull is not
          * 4:3 — the native walk draws the whole queue), WITH the per-face
          * specular treatment the REG walk lacks. Revealing them here too drew
@@ -1314,20 +1285,20 @@ static int append_revealed_regular_inner(CPUState* cpu) {
             if (bok && f.TR_raw[2] > 0) dsx = ofx + (double)f.TR_raw[0] * H / (double)f.TR_raw[2];
             if (!bok || (dsx > -120.0 && dsx < 40.0))
                 fprintf(stderr, "[rdbg f=%u] m=%08X cls=%04X stt=%02X rad=%02X rz=%d sx=%.0f bok=%d\n",
-                        openpete_frame, m, (unsigned)cpu->read_half(m + 0x36), stt,
-                        (unsigned)cpu->read_byte(m + 0x50), bok ? f.TR_raw[2] : -1, dsx, bok);
+                        openpete_frame, m, (unsigned)cpu->read_half(m + game_layout.moby.class_off), stt,
+                        (unsigned)cpu->read_byte(m + moby_game.render_radius_off), bok ? f.TR_raw[2] : -1, dsx, bok);
         }
-        if (!bok) { TRC("skip=no-anim-model"); m += 0x58; continue; }  /* shaded/invalid */
+        if (!bok) { TRC("skip=no-anim-model"); m += game_layout.moby.array_stride; continue; }  /* shaded/invalid */
         double rx = (double)f.TR_raw[0], rz = (double)f.TR_raw[2];           /* origin in view space (world/4) */
         /* per-moby radius = AnimationHeader byte[7]<<4 (view units) — the .s
          * cone's X-bias + its behind-camera reject both use it (@8001F2A0) */
-        double rr = (double)((int)cpu->read_byte(f.header + 7) << 4);
-        if (rz + rr <= 0.0) { TRC("skip=behind-cam rz=%.0f rr=%.0f", rz, rr); m += 0x58; continue; }  /* behind camera (.s: MAC3 + r <= 0) */
+        double rr = (double)((int)cpu->read_byte(f.header + game_layout.moby.anim_radius) << 4);
+        if (rz + rr <= 0.0) { TRC("skip=behind-cam rz=%.0f rr=%.0f", rz, rr); m += game_layout.moby.array_stride; continue; }  /* behind camera (.s: MAC3 + r <= 0) */
         /* Distance admission = the .s cull's EXACT 3-axis box test (F158
          * @8001F1F8..F260; the earlier radial view-Z mirror was strictly
          * narrower and dropped far-off-axis mobys the .s draws — the
          * "culled outside 4:3" tree):
-         *   t4 = (byte[moby+0x50] << 8) + (m_WasDrawn&1 ? 0x200 : 0)
+         *   t4 = (m_RenderRadius << 8) + (m_WasDrawn & 1 ? 0x200 : 0)
          *   admit iff every axis: -t4 < (moby[i]-cam[i])>>2 < t4
          * FULL byte (bit7 included, exactly like the lhu path); dist==0
          * needs no special sentinel — its box is degenerate and never
@@ -1338,7 +1309,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * --no-lod: the retired game-side hook saturated the LOW 7 bits to
          * 0x7F when nonzero (bit7 + sentinel preserved) — mirror that on
          * the effective threshold. */
-        uint8_t rad_byte = cpu->read_byte(m + 0x50);
+        uint8_t rad_byte = cpu->read_byte(m + moby_game.render_radius_off);
         /* Hysteresis, split per consumer. The .s cull widens by 0x200 keyed
          * ONLY on the moby's live m_WasDrawn bit, so the canonical mirror
          * (t4c / admit_canon) must use exactly that — mixing in reveal_prev
@@ -1352,14 +1323,14 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * byte only on the reveal's OWN threshold t4e (host-revealed mobys
          * never get m_WasDrawn set; t4e is where the .s's pop-damping needs
          * a mirror — the widescreen edge / --no-lod ceiling). */
-        int hyst_canon = (cpu->read_byte(m + 0x51) & 1u) ? 0x200 : 0;
+        int hyst_canon = (cpu->read_byte(m + game_layout.moby.drawn_off) & 1u) ? 0x200 : 0;
         int hyst = (hyst_canon || reveal_prev_has(m)) ? 0x200 : 0;
-        int32_t cx = (int32_t)cpu->read_word(G_CAMERA + 0x28),
-                cy = (int32_t)cpu->read_word(G_CAMERA + 0x2C),
-                cz = (int32_t)cpu->read_word(G_CAMERA + 0x30);
-        int32_t d0 = ((int32_t)cpu->read_word(m + 0x0C) - cx) >> 2,
-                d1 = ((int32_t)cpu->read_word(m + 0x10) - cy) >> 2,
-                d2 = ((int32_t)cpu->read_word(m + 0x14) - cz) >> 2;
+        int32_t cx = (int32_t)cpu->read_word(game_layout.cam.position + 0u),
+                cy = (int32_t)cpu->read_word(game_layout.cam.position + 4u),
+                cz = (int32_t)cpu->read_word(game_layout.cam.position + 8u);
+        int32_t d0 = ((int32_t)cpu->read_word(m + game_layout.moby.pos_off + 0u) - cx) >> 2,
+                d1 = ((int32_t)cpu->read_word(m + game_layout.moby.pos_off + 4u) - cy) >> 2,
+                d2 = ((int32_t)cpu->read_word(m + game_layout.moby.pos_off + 8u) - cz) >> 2;
         int32_t t4c = ((int32_t)rad_byte << 8) + hyst_canon;         /* canonical threshold (.s mirror) */
         /* Effective threshold. Extended LOD means "draw it wherever it is", so
          * the ceiling is REMOVED rather than raised: saturating m_Distance to
@@ -1378,14 +1349,14 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * .s rejects get over-admitted */
         int admit_canon = REVEAL_BOX(t4c) && rz < (double)t4c;
         TRC("b51=%02X rad=%02X d=(%d,%d,%d) t4c=%d t4e=%d rz=%.0f admit_canon=%d prev=%d",
-            (unsigned)cpu->read_byte(m + 0x51), rad_byte, d0, d1, d2, t4c, t4e, rz,
+            (unsigned)cpu->read_byte(m + game_layout.moby.drawn_off), rad_byte, d0, d1, d2, t4c, t4e, rz,
             admit_canon, reveal_prev_has(m));
-        if (in_spec_snap && admit_canon) { TRC("skip=SPEC-dedup (in range)"); m += 0x58; continue; }
+        if (in_spec_snap && admit_canon) { TRC("skip=SPEC-dedup (in range)"); m += game_layout.moby.array_stride; continue; }
         if (!REVEAL_BOX(t4e) || rz >= (double)t4e) {
-            TRC("skip=out-of-range"); m += 0x58; continue;
+            TRC("skip=out-of-range"); m += game_layout.moby.array_stride; continue;
         } /* out of draw range (canonical or nl ceiling) */
         #undef REVEAL_BOX
-        if (rz <= 0.0) { TRC("skip=camera-plane"); m += 0x58; continue; }    /* camera-plane straddler: no stable projection */
+        if (rz <= 0.0) { TRC("skip=camera-plane"); m += game_layout.moby.array_stride; continue; }    /* camera-plane straddler: no stable projection */
         double sx = ofx + rx * H / rz;                                       /* projected centroid X (m_Scale cancels) */
         double sxc = ofx + rx * s_view.H_canon / rz;                         /* the same at the game's H: the .s queue's territory */
         /* Radius margin: the .s cone admits by CENTRE ± radius bias
@@ -1404,8 +1375,8 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * there and not in the queue was cull-rejected for a non-box reason —
          * leave it); central + beyond-canonical is the no-lod clause's NEW
          * coverage. */
-        if (central && admit_canon) { TRC("skip=ceded-to-canon sx=%.0f", sx); m += 0x58; continue; }
-        if (sx < (double)xlo - margin || sx > (double)xhi + margin) { TRC("skip=off-window sx=%.0f", sx); m += 0x58; continue; }  /* outside widened view (+radius) */
+        if (central && admit_canon) { TRC("skip=ceded-to-canon sx=%.0f", sx); m += game_layout.moby.array_stride; continue; }
+        if (sx < (double)xlo - margin || sx > (double)xhi + margin) { TRC("skip=off-window sx=%.0f", sx); m += game_layout.moby.array_stride; continue; }  /* outside widened view (+radius) */
         /* Occlusion cull, exactly as the queue pass tests its own records: a
          * moby behind nearer world-opaque depth costs a full decode + walk for
          * pixels the depth test erases. Placed after the admission tests above
@@ -1422,7 +1393,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
                 s_occl_seen++; s_occl_culled++;
                 if (occl_rev_n < MAX_RECORDS) occl_rev[occl_rev_n++] = m;
                 TRC("skip=occluded");
-                m += 0x58; continue;
+                m += game_layout.moby.array_stride; continue;
             }
         }
         s_occl_seen++;
@@ -1433,7 +1404,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * the OPENPETE_MOBY_TIER_DBG mirror check on the canonical records.
          * Computed BEFORE the decode: the tier-adjusted vertex-count read
          * ([hdr+8+(ZSF4>>31)], 0 = skip) hides far no-LP-mesh mobys (gems). */
-        int rmd   = (int)(cpu->read_byte(m + 0x4B) & 0x3Fu);
+        int rmd   = (int)(cpu->read_byte(m + moby_game.renderer_off) & 0x3Fu);
         int rzsf4 = (int)(int16_t)(uint16_t)((((uint32_t)rmd << 8)
                     - (uint32_t)f.TR_raw[2]) & 0xFFFFu);
         /* --no-lod parity with the game-side zsf4-store hook: neutralize the
@@ -1455,7 +1426,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
           got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0, 0.0, -1.0, f.TR_raw, f.TR_frac, f.M,
                                     rzsf4, moby_record_view(m), s_proj + s_proj_n, MAX_PROJ - s_proj_n);
           if (t0) s_us_rvdec += (long)(openpete_phase_now_us() - t0); }
-        if (got <= 0) { TRC("skip=decode-0 zsf4=%d", rzsf4); m += 0x58; continue; }
+        if (got <= 0) { TRC("skip=decode-0 zsf4=%d", rzsf4); m += game_layout.moby.array_stride; continue; }
         TRC("REVEALED got=%d zsf4=%d", got, rzsf4);
         if (ver_check) occl_verify_end(m, s_proj + off, got);
         else occl_cache_update(cpu, m, s_proj + off, got, f.TR_frac, f.header);
@@ -1478,7 +1449,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         }
         s_proj_n += got; s_nrecs++; revealed++;
         NGTE_CENSUS_HIT(reveal_admitted);
-        m += 0x58;
+        m += game_layout.moby.array_stride;
     }
     #undef TRC
     /* Publish this call's ADMITTED set (drawn + occlusion-culled) as the next
@@ -1536,13 +1507,13 @@ typedef struct {
  * word0: sign=fresh(<0)/strip(>=0), &0x1=quad-enable, &0x2=textured,
  * &0x4=sprite-FT4, &0x8=skip. */
 
-#define COLOR_SCRATCH (G_SCRATCH + 0x1100u)   /* per-vertex fogged RGB (.s DPCS output) */
+#define COLOR_SCRATCH (moby_game.colour_scratch)   /* per-vertex depth-cued RGB the draw wrote */
 
 static ntri_t s_wtri[MAX_NTRI];   /* cursor lives in s_gout.n (see mn_out) */
 static uint8_t s_wtri_mode[MAX_NTRI]; /* shaded only: 0=gouraud 1=flat-basic 2=flat-metal */
 static uint8_t s_wtri_ui[MAX_NTRI];   /* 1 = this tri's moby is a HUD/UI overlay (draw on top) */
 static uint8_t s_wtri_front[MAX_NTRI]; /* 1 = this tri's moby is a dragon-rescue CUTSCENE actor
-                                        * (matches a g_DragonCutscene pointer): route to
+                                        * (moby_game.cutscene_actor): route to
                                         * OPENPETE_SCENE_ACTOR_FRONT so draw_native_scene front-
                                         * passes ONLY the rescue actors (per-pixel depth punch),
                                         * leaving every other moby's terrain occlusion
@@ -1552,31 +1523,21 @@ static uint8_t s_wtri_front[MAX_NTRI]; /* 1 = this tri's moby is a dragon-rescue
  * it is walking, and without that separation workers stamp their triangles with
  * each other's moby identity, HUD routing and OT bias. */
 static _Thread_local int     s_cur_ui;      /* set per-record by the walks before emitting its tris */
-static _Thread_local int     s_cur_front;   /* per-record: 1 = a g_DragonCutscene actor (front-pass) */
+static _Thread_local int     s_cur_front;   /* per-record: 1 = a cutscene actor (front-pass) */
 
-/* The dragon-rescue cutscene actor set the game maintains (g_DragonCutscene,
- * struct @0x80077030): the rescued dragon + the cutscene Spyro/dragon mobys.
- * These are EXACTLY what func_8001CFDC draws during states 1..6, so matching a
- * moby pointer against them is the game's own selector — no class/heuristic.
- * Offsets: m_CutsceneSpyro @+0x88, m_CutsceneDragon @+0x8C, m_RescuedDragonMoby
- * @+0x90 (anchored off m_State @0x80077058 == base+0x28). */
-#define G_DRAGONCUTSCENE_CUTSPYRO   0x800770B8u
-#define G_DRAGONCUTSCENE_CUTDRAGON  0x800770BCu
-#define G_DRAGONCUTSCENE_RESCUED    0x800770C0u
+/* The cutscene actor set: the mobys a cutscene renderer of the game's own
+ * draws while it owns the draw. Matching a moby pointer against the game's own
+ * selector is exact — no class or heuristic — and a game with no such renderer
+ * supplies neither slot, so every moby is an ordinary actor. */
 static int moby_is_cutscene_actor(CPUState* cpu, uint32_t mob) {
-    if (mob < 0x80000000u) return 0;
-    return mob == cpu->read_word(G_DRAGONCUTSCENE_RESCUED) ||
-           mob == cpu->read_word(G_DRAGONCUTSCENE_CUTDRAGON) ||
-           mob == cpu->read_word(G_DRAGONCUTSCENE_CUTSPYRO);
+    if (mob < 0x80000000u || !moby_game.cutscene_actor) return 0;
+    return moby_game.cutscene_actor(cpu, mob);
 }
 
-/* The cutscene renderer (func_8001CFDC) owns the actor set above while
- * g_Gamestate is GS_Dragon and m_State is 1..6. State 0 is the ordinary full
- * draw; past state 6 the full level moby set is re-queued, so the actors are
- * no longer drawn by a producer of their own. */
+/* True while that renderer owns the draw: it renders its own actor set and no
+ * level geometry, so the host-side reveal must add nothing either. */
 static int moby_cutscene_owns_draw(CPUState* cpu) {
-    uint32_t st = cpu->read_word(0x80077058u);
-    return cpu->read_word(0x800757D8u) == 8u && st >= 1u && st <= 6u;
+    return moby_game.cutscene_owns_draw ? moby_game.cutscene_owns_draw(cpu) : 0;
 }
 
 /* Render-time-animated colour cache (the boundary-barrier shimmer). Identity of
@@ -1592,7 +1553,7 @@ static int moby_cutscene_owns_draw(CPUState* cpu) {
  * colour isn't interpolated between sim ticks, so holding the canonical colour
  * across the intermediates is correct. */
 static uint32_t s_wtri_moby[MAX_NTRI]; /* moby ptr that emitted this tri */
-static int8_t   s_wtri_dofs[MAX_NTRI]; /* authored OT bias (moby+0x47) of the emitter */
+static int8_t   s_wtri_dofs[MAX_NTRI]; /* authored OT bias of the emitting moby */
 static uint8_t  s_wtri_mangle[MAX_NTRI]; /* any vertex near-fixed-up (unr) or
                                           * coordinate-saturated (sat): the
                                           * SCREEN footprint is not the true
@@ -1601,7 +1562,7 @@ static uint32_t s_wtri_fkey[MAX_NTRI]; /* packed SXY vertex-index triple (face t
 static uint16_t s_wtri_cls[MAX_NTRI];  /* m_Class of the emitting moby (provenance tag) */
 static _Thread_local uint32_t s_cur_moby_key;   /* moby for the record currently being walked */
 static _Thread_local uint16_t s_cur_moby_cls;   /* m_Class of that moby (set beside the key) */
-static _Thread_local int8_t   s_cur_moby_dofs;  /* authored OT bias (moby+0x47, set beside the key) */
+static _Thread_local int8_t   s_cur_moby_dofs;  /* authored OT bias (set beside the key) */
 static _Thread_local float    s_cur_env_az;     /* current record's TR azimuth (env-UV bias) */
 static _Thread_local uint32_t s_emit_fkey;      /* packed index triple for the next emit_wtri */
 #define PACK_FKEY(a,b,c) (((uint32_t)(a)&0x3FFu) | (((uint32_t)(b)&0x3FFu)<<10) | (((uint32_t)(c)&0x3FFu)<<20))
@@ -1729,7 +1690,7 @@ static int moby_color_fade_ir0(CPUState* cpu, int zsf4, uint32_t header, uint32_
     *farbase = 0;
     if (header < 0x80000000u) return 0;
     if (zsf4 <= 0 || zsf4 >= 1024) return 0;
-    uint32_t fb = cpu->read_word(header + 0x20);
+    uint32_t fb = cpu->read_word(header + ANIM_COL_FAR);
     if (fb < 0x80000000u) return 0;
     *farbase = fb;
     return (1024 - zsf4) * 4;
@@ -1790,14 +1751,9 @@ static uint32_t moby_color_at_host(const uint8_t* cb, const uint8_t* fbp,
  * collision = evict + re-decode (never lies). Display-only: reads static
  * model RAM; the per-present half (NCLIP emit tree, colours, env, blend map)
  * is byte-identical to the previous inline parse. */
-typedef struct {
-    uint16_t i0, i1, i2, i3;      /* stream vertex indices (i3 raw; strips never consume it) */
-    uint16_t c0, c1, c2, c3;      /* colour byte-offsets (&0x7FC) */
-    uint8_t  fresh, bit0, textured, hl;   /* hl = strip w0&4 (spec highlight enable) */
-    uint8_t  blendbit, abr, bpp, pad0;    /* blendbit = w1&1 (GPU ABE) */
-    int16_t  tpx, tpy, clx, cly;
-    uint8_t  u[4], v[4];
-} wface_t;
+/* One decoded face: renderer/moby_game.h owns the layout, since the game's
+ * face decoder fills it. */
+typedef moby_wface_t wface_t;
 typedef struct {
     uint32_t fb, bytecount, sig1, sig2, sig3;
     int      nfaces;              /* emittable faces in f[] */
@@ -1836,77 +1792,21 @@ static const fcache_t* fcache_get(CPUState* cpu, uint32_t fb) {
 }
 
 /* Decode one faceblock into C (malloc'd face array; C's previous array freed).
- * Factored out of fcache_get so the render-time PATCHED decode (fpcache_get)
- * reuses the exact same parse. Returns 0 on malloc failure. */
+ * The stream parse itself is the game's (moby_game.decode_faces); this is the
+ * cache shell around it, factored out of fcache_get so the render-time PATCHED
+ * decode (fpcache_get) reuses the exact same parse. Returns 0 on failure. */
 static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                               uint32_t s1, uint32_t s2, uint32_t s3, fcache_t* C) {
-    uint32_t end = fb + 4u + bytecount;   /* end_hi (generous; alignment classified below) */
-    uint32_t fp  = fb + 4u;
-    int n = 0, raw = 0, sprites = 0, skips = 0, guard = 0;
-    while (fp + 8u <= end && guard++ < 8192) {
-        uint32_t w0 = cpu->read_word(fp);
-        raw++;
-        int fresh    = ((int32_t)w0) < 0;
-        int textured = (w0 & 0x2u) != 0;
-        int sprite   = fresh && (w0 & 0x4u);
-        int skip     = (w0 & 0x8u) != 0;
-        uint32_t adv = sprite ? 0x14u
-                     : fresh  ? (textured ? 0x18u : 0x0Cu)
-                     :          (textured ? 0x14u : 0x08u);   /* strip */
-        if (sprite) sprites++;
-        if (skip || sprite) { fp += adv; continue; }   /* sprite (billboard FT4, .L8002256C) TODO; advance to stay aligned */
-        if (n < 8192) {
-            wface_t* F = &s_fc_tmp[n];
-            F->i0 = (uint16_t)(((w0 >> 20) & 0x7FCu) >> 2);
-            F->i1 = (uint16_t)(((w0 >> 11) & 0x7FCu) >> 2);
-            F->i2 = (uint16_t)(((w0 >>  2) & 0x7FCu) >> 2);
-            uint32_t w1  = cpu->read_word(fp + 4u);
-            uint32_t v4w = cpu->read_word(fp + 8u);   /* 4th-vertex SXY idx low field, colour idx >>9 */
-            F->i3 = (uint16_t)((v4w & 0x7FCu) >> 2);
-            F->c0 = (uint16_t)((w1 >> 17) & 0x7FCu);
-            F->c1 = (uint16_t)((w1 >>  8) & 0x7FCu);
-            F->c2 = (uint16_t)((w1 <<  1) & 0x7FCu);
-            F->c3 = (uint16_t)((v4w >> 9) & 0x7FCu);
-            F->fresh = (uint8_t)(fresh ? 1 : 0); F->bit0 = (uint8_t)(w0 & 1u);
-            F->textured = (uint8_t)(textured ? 1 : 0);
-            F->hl = (uint8_t)((!fresh && (w0 & 0x4u)) ? 1 : 0);
-            F->blendbit = (uint8_t)(w1 & 1u); F->pad0 = 0;
-            F->tpx = F->tpy = F->clx = F->cly = 0; F->bpp = 16; F->abr = 0;
-            memset(F->u, 0, 4); memset(F->v, 0, 4);
-            if (textured) {
-                uint32_t td0 = cpu->read_word(fp + adv - 0xCu);
-                uint32_t td1 = cpu->read_word(fp + adv - 0x8u);
-                uint32_t td2 = cpu->read_word(fp + adv - 0x4u);
-                F->u[0]=(uint8_t)(td0&0xFFu); F->v[0]=(uint8_t)((td0>>8)&0xFFu);  unsigned cl=(td0>>16)&0xFFFFu;
-                F->u[1]=(uint8_t)(td1&0xFFu); F->v[1]=(uint8_t)((td1>>8)&0xFFu);  unsigned tp=(td1>>16)&0xFFFFu;
-                F->u[2]=(uint8_t)(td2&0xFFu); F->v[2]=(uint8_t)((td2>>8)&0xFFu);
-                F->u[3]=(uint8_t)((td2>>16)&0xFFu); F->v[3]=(uint8_t)((td2>>24)&0xFFu);   /* quad u3v3 */
-                int mode=(int)((tp>>7)&3u);
-                F->abr=(uint8_t)((tp>>5)&3u);   /* texpage semi-transparency mode (ABR 0-3) */
-                if (mode == 3) {
-                    /* PSX-RESERVED tpage mode = mod-texture material
-                     * (api->texture_register): the CLUT u16 carries the
-                     * registered id; native-only (og shows garbage). */
-                    F->bpp = 32;
-                    F->tpx = (int16_t)cl;   /* the mod texture id */
-                    F->tpy = 0; F->clx = 0; F->cly = 0;
-                } else {
-                    F->tpx=(int16_t)((tp&0xFu)*64); F->tpy=(int16_t)(((tp>>4)&1u)*256);
-                    F->bpp=(uint8_t)((mode==0)?4:(mode==1)?8:16);
-                    F->clx=(int16_t)((cl&0x3Fu)*16); F->cly=(int16_t)((cl>>6)&0x1FFu);
-                }
-            }
-            n++;
-        }
-        fp += adv;
-    }
+    moby_face_stats_t st = { 0, 0, 0, 2 };
+    int n = moby_game.decode_faces(cpu, fb, bytecount, s_fc_tmp, 8192, &st);
+    if (n < 0) return 0;
     wface_t* arr = (wface_t*)malloc(sizeof(wface_t) * (size_t)(n > 0 ? n : 1));
     if (!arr) return 0;
     memcpy(arr, s_fc_tmp, sizeof(wface_t) * (size_t)n);
     free(C->f);
     C->fb = fb; C->bytecount = bytecount; C->sig1 = s1; C->sig2 = s2; C->sig3 = s3;
-    C->nfaces = n; C->raw = raw; C->sprites = sprites; C->skips = skips;
-    C->align = (uint8_t)((fp == fb + bytecount) ? 0 : (fp == end) ? 1 : 2);
+    C->nfaces = n; C->raw = st.raw; C->sprites = st.sprites; C->skips = st.skips;
+    C->align = (uint8_t)st.align;
     C->f = arr;
     return 1;
 }
@@ -1944,7 +1844,7 @@ static int moby_frame_patch_apply(CPUState* cpu, uint32_t header, uint32_t frame
                                   fpsave_t* sv) {
     uint32_t off = (cpu->read_word(frameA + 4) & 0xFFFFu) << 2;
     if (!off) return 0;
-    uint32_t fbHP = cpu->read_word(header + 0x14);
+    uint32_t fbHP = cpu->read_word(header + ANIM_FACES_HP);
     if (fbHP < 0x80000000u) return 0;
     uint32_t at = frameA + off;
     int n = 0, entries = 0;
@@ -2017,9 +1917,9 @@ static const fcache_t* moby_faces_for_prev(CPUState* cpu, const rec_meta* R) {
     if (R->frameA_p < 0x80000000u) return NULL;
     uint32_t hp = (R->header_p >= 0x80000000u) ? R->header_p : R->header;
     if (hp != R->header) {
-        if (cpu->read_word(hp + 0x14) != cpu->read_word(R->header + 0x14) ||
-            cpu->read_word(hp + 0x18) != cpu->read_word(R->header + 0x18) ||
-            cpu->read_word(hp + 0x20) != cpu->read_word(R->header + 0x20)) return NULL;
+        if (cpu->read_word(hp + ANIM_FACES_HP) != cpu->read_word(R->header + ANIM_FACES_HP) ||
+            cpu->read_word(hp + ANIM_COL_HP)   != cpu->read_word(R->header + ANIM_COL_HP)   ||
+            cpu->read_word(hp + ANIM_COL_FAR)  != cpu->read_word(R->header + ANIM_COL_FAR)) return NULL;
     }
     return moby_faces_for(cpu, R->faceblock, hp, R->frameA_p, R->zsf4);
 }
@@ -2067,8 +1967,8 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             if (dup) continue;
         }
         s_cur_moby_key = mob;     /* face identity for this record's tris */
-        s_cur_moby_cls = mob ? (uint16_t)cpu->read_half(mob + 0x36) : 0; /* m_Class */
-        s_cur_moby_dofs = mob ? (int8_t)cpu->read_byte(mob + 0x47u) : 0; /* og OT bias */
+        s_cur_moby_cls = mob ? (uint16_t)cpu->read_half(mob + game_layout.moby.class_off) : 0; /* m_Class */
+        s_cur_moby_dofs = mob ? (int8_t)cpu->read_byte(mob + game_layout.moby.angle_off + 3u) : 0; /* og OT bias */
         /* Run-once mobys emit nothing. The record stays in s_recs (the .s cull
          * queued it, and s_reg_moby membership is what the reveal builder and
          * the occlusion/hold bookkeeping dedup against) — only its triangles
@@ -2089,8 +1989,8 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                     printed++;
                     fprintf(stderr, "[moby-class f=%u] cls=%u moby=%08x pos=(%d, %d, %d)\n",
                             openpete_frame, s_cur_moby_cls, mob,
-                            (int)cpu->read_word(mob + 0x0C), (int)cpu->read_word(mob + 0x10),
-                            (int)cpu->read_word(mob + 0x14));
+                            (int)cpu->read_word(mob + game_layout.moby.pos_off + 0u), (int)cpu->read_word(mob + game_layout.moby.pos_off + 4u),
+                            (int)cpu->read_word(mob + game_layout.moby.pos_off + 8u));
                 }
             }
         }
@@ -2117,7 +2017,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
               if (hi > lo && hi - lo >= 96.0f) s_cur_ui = 2;
           } }
         /* Front-pass eligibility: this moby is one of the dragon-rescue cutscene
-         * actors (g_DragonCutscene). Only for real actors (ui==0). */
+         * actors. Only for real actors (ui==0). */
         s_cur_front = s_cur_ui == 0 && moby_is_cutscene_actor(cpu, mob);
         uint32_t fb = R->faceblock;
         if (fb < 0x80000000u || R->proj_n <= 0) continue;
@@ -2136,8 +2036,8 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
         int fogfc[3]; const int* fcc = NULL;
         uint32_t cbase;
         if (R->zsf4 <= 0) {
-            cbase = (R->header >= 0x80000000u) ? cpu->read_word(R->header + 0x20) : 0u;
-            if (R->zsf4 < -2048 && (int32_t)cpu->read_word(G_SKIP_LOWPOLY_WORLD) > 0) {
+            cbase = (R->header >= 0x80000000u) ? cpu->read_word(R->header + ANIM_COL_FAR) : 0u;
+            if (R->zsf4 < -2048 && (int32_t)cpu->read_word(moby_game.skip_lowpoly) > 0) {
                 int v = -(R->zsf4 + 2048); if (v > 2047) v = 2047;
                 dpcs_ir0 = v << 1;
                 uint32_t fog = cpu->read_word(game_layout.cyc.bg_colour);
@@ -2147,7 +2047,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 fcc = fogfc;
             }
         } else {
-            cbase = (R->header >= 0x80000000u) ? cpu->read_word(R->header + 0x18) : 0u;
+            cbase = (R->header >= 0x80000000u) ? cpu->read_word(R->header + ANIM_COL_HP) : 0u;
             /* Fog-band / effect-moby depth-cue fade (fade-out instead of popping). */
             dpcs_ir0 = moby_color_fade_ir0(cpu, R->zsf4, R->header, &farbase);
         }
@@ -2160,10 +2060,10 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 uint32_t f0 = farbase ? cpu->read_word(farbase) : 0, f1 = farbase ? cpu->read_word(farbase + 4) : 0;
                 fprintf(stderr, "[fade f=%u] rec=%d moby=%08x cls=%03x zsf4=%d hdr=%08x cbase=%08x farbase=%08x ir0=%d "
                         "c0=%06X c1=%06X f0=%06X f1=%06X\n",
-                        openpete_frame, r, R->moby, R->moby >= 0x80000000u ? (cpu->read_half(R->moby + 0x36) & 0xFFFu) : 0xFFF,
+                        openpete_frame, r, R->moby, R->moby >= 0x80000000u ? (cpu->read_half(R->moby + game_layout.moby.class_off) & 0xFFFu) : 0xFFF,
                         R->zsf4, R->header, cbase, farbase, dpcs_ir0, c0 & 0xFFFFFFu, c1 & 0xFFFFFFu, f0 & 0xFFFFFFu, f1 & 0xFFFFFFu);
                 if (dpcs_ir0 > 0 && farbase) {   /* one fog-band record: full table triplets */
-                    int nc = (int)(cpu->read_half(R->header + 2) & 0xFFFFu); if (nc > 24) nc = 24;
+                    int nc = (int)(cpu->read_half(R->header + game_layout.moby.anim_ccount_off) & 0xFFFFu); if (nc > 24) nc = 24;
                     for (int k = 0; k < nc; k++) {
                         uint32_t nw = cpu->read_word(cbase + (uint32_t)k*4u) & 0xFFFFFFu;
                         uint32_t fw2 = cpu->read_word(farbase + (uint32_t)k*4u) & 0xFFFFFFu;
@@ -2351,7 +2251,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * reflect. (The earlier gate env-mapped EVERY textured face of a
              * metal moby -> sombrero went shiny-green with the wrong texture.) */
             proj_xy hlq[4];   /* hl decal copies (vz-nudged); see below */
-            if ((s_cur_mat[0]=='S' || R->spec_solo) && F->hl) {
+            if (moby_game.spec_light && (s_cur_mat[0]=='S' || R->spec_solo) && F->hl) {
               /* The .s draws these SPECIAL faces (env reflection / diffuse
                * highlight) COPLANAR over the moby's base faces and wins by OT
                * paint order within the moby. The native scene is depth-tested
@@ -2521,7 +2421,7 @@ static int walk_prologue(CPUState* cpu, int is_spec) {
             for (int k = 0; k < s_reg_moby_n; k++) if (s_reg_moby[k] == mob) { dup = 1; break; }
             if (dup) continue;
         }
-        if (mob && moby_run_once_hidden(cpu, mob, (unsigned)cpu->read_half(mob + 0x36))) continue;
+        if (mob && moby_run_once_hidden(cpu, mob, (unsigned)cpu->read_half(mob + game_layout.moby.class_off))) continue;
         if (R->faceblock < 0x80000000u || R->proj_n <= 0) continue;
         const fcache_t* FC = moby_faces_for_record(cpu, R);
         s_pre_FC[r] = FC;
@@ -2992,17 +2892,18 @@ static int   s_metalM[3][3];     /* D_800770C8+0x18, int16 1.0=4096 */
 static int   s_camHead;          /* g_Camera+0x50 (camera heading word) */
 /* s_specL[3]/s_specLlen forward-declared above build_walk_tris (highlight uses them) */
 static void specular_env_load(CPUState* cpu) {
-    ngte_read_matrix(cpu, D_SPEC_LIGHT + 0x18u, s_metalM);
-    s_camHead = (int)cpu->read_word(G_CAMERA + 0x50u);
-    s_specL[0] = (float)(int32_t)cpu->read_word(D_SPEC_LIGHT + 0xCu);
-    s_specL[1] = (float)(int32_t)cpu->read_word(D_SPEC_LIGHT + 0x10u);
-    s_specL[2] = (float)(int32_t)cpu->read_word(D_SPEC_LIGHT + 0x14u);
+    if (!moby_game.spec_light || !moby_game.metal_tiledef) return;   /* no specular material */
+    ngte_read_matrix(cpu, moby_game.spec_light + 0x18u, s_metalM);
+    s_camHead = (int)cpu->read_word(moby_game.cam_heading);
+    s_specL[0] = (float)(int32_t)cpu->read_word(moby_game.spec_light + 0xCu);
+    s_specL[1] = (float)(int32_t)cpu->read_word(moby_game.spec_light + 0x10u);
+    s_specL[2] = (float)(int32_t)cpu->read_word(moby_game.spec_light + 0x14u);
     s_specLlen = sqrtf(s_specL[0]*s_specL[0] + s_specL[1]*s_specL[1] + s_specL[2]*s_specL[2]);
     if (s_specLlen < 1.0f) s_specLlen = 1.0f;
     /* metal env texture page/CLUT: D_800756F0 word0 hi=clut, word1 hi=tpage
      * (empirically clut=0x1C20 tpage=0x80AC; == the captured env prims). */
-    unsigned cl = cpu->read_word(D_METAL_TILEDEF) >> 16;
-    unsigned tp = cpu->read_word(D_METAL_TILEDEF + 4u) >> 16;
+    unsigned cl = cpu->read_word(moby_game.metal_tiledef) >> 16;
+    unsigned tp = cpu->read_word(moby_game.metal_tiledef + 4u) >> 16;
     s_env_tpx = (int)(tp & 0xFu) * 64; s_env_tpy = (int)((tp >> 4) & 1u) * 256;
     int mode = (int)((tp >> 7) & 3u); s_env_bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
     s_env_clx = (int)(cl & 0x3Fu) * 16; s_env_cly = (int)((cl >> 6) & 0x1FFu);
@@ -3064,10 +2965,10 @@ static void specular_env_calibrate(CPUState* cpu) {
         "D756F0=%08X %08X clutmix\n",
         openpete_frame, s_metalM[0][0],s_metalM[0][1],s_metalM[0][2],
         s_metalM[1][0],s_metalM[1][1],s_metalM[1][2], s_metalM[2][0],s_metalM[2][1],s_metalM[2][2],
-        s_camHead, s_nrecs, cpu->read_word(0x800756F0u), cpu->read_word(0x800756F4u));
+        s_camHead, s_nrecs, cpu->read_word(moby_game.metal_tiledef), cpu->read_word(moby_game.metal_tiledef + 4u));
     for (int r = 0; r < s_nrecs; r++)
         fprintf(stderr, "  rec%d metal=%d mscol=%08X moby=%08X\n", r,
-            s_recs[r].metal, s_recs[r].mscol, cpu->read_word(s_recs[r].addr + 0x34));
+            s_recs[r].metal, s_recs[r].mscol, s_recs[r].moby);
     int dumped = 0, nv = 0; double sumu = 0, sumv = 0, sgnu = 0; int maxu = 0, maxv = 0;
     for (int wi = 0; wi < s_gout.n && dumped < 16; wi++) {
         ntri_t* w = &s_wtri[wi];
@@ -3112,9 +3013,9 @@ static void specular_env_calibrate(CPUState* cpu) {
  * view-space face-normal . specular-light vs the prim colour to find the float
  * model. Runs BEFORE recolor so w->v[].rgb is still the native base. */
 static void specular_hl_calibrate(CPUState* cpu) {
-    int lx=(int32_t)cpu->read_word(D_SPEC_LIGHT+0xCu);   /* m_specularLightDirectionMoby */
-    int ly=(int32_t)cpu->read_word(D_SPEC_LIGHT+0x10u);
-    int lz=(int32_t)cpu->read_word(D_SPEC_LIGHT+0x14u);
+    int lx=(int32_t)cpu->read_word(moby_game.spec_light+0xCu);   /* m_specularLightDirectionMoby */
+    int ly=(int32_t)cpu->read_word(moby_game.spec_light+0x10u);
+    int lz=(int32_t)cpu->read_word(moby_game.spec_light+0x14u);
     float Llen=sqrtf((float)(lx*lx+ly*ly+lz*lz)); if(Llen<1) Llen=1;
     build_prim_tris();
     fprintf(stderr, "[spec-hl f=%u] light=(%d,%d,%d)\n", openpete_frame, lx,ly,lz);
@@ -3245,7 +3146,7 @@ static void push_scene_moby(void) {
         t.blend    = s_wtri[i].blend;
         /* og OT key channel, moby twin of the terrain emit: the .s inserts
          * each moby face at its average-Z slot minus the authored
-         * m_DepthOffset (moby+0x47, the byte the cull packs into record
+         * m_DepthOffset (the angle word's top byte, which the cull packs into record
          * w0 bits 16-23 / the shaded walk's rot>>24) — an ordering KEY,
          * never stored depth. The face's ABSOLUTE key rasters into the
          * MOBY key image (set 1, split from the terrain keys), where the
@@ -3459,7 +3360,7 @@ static unsigned moby_verify_frame(void) {
  * face walk; only the per-face highlight COLOUR differs, which is display-side),
  * capture its prims, re-derive native float geometry, feed + A/B. Determinism-
  * safe: calls the real render exactly once, only reads gamestate afterward. */
-static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const char* mat) {
+static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat) {
     int verify = moby_verify_enabled();
     int feed   = openpete_native_scene_enabled();
     s_cur_mat = mat;
@@ -3467,10 +3368,10 @@ static void moby_native_pass(CPUState* cpu, void (*render_fn)(CPUState*), const 
     (void)mat;
     moby_view_build(cpu);
 
-    uint32_t start = cpu->read_word(POLYBUF_CURSOR);
+    uint32_t start = cpu->read_word(game_layout.polybuf.cursor);
     { OP_PROF_ACCUM_SCOPE("moby.srend");
-      render_fn(cpu); }                        /* run the real renderer */
-    uint32_t end = cpu->read_word(POLYBUF_CURSOR);
+      moby_run_draw(cpu, draw_addr); }         /* run the real renderer */
+    uint32_t end = cpu->read_word(game_layout.polybuf.cursor);
 
     render_path_record(RP_MOBY, start, end);  /* polybuf range for the OT filter */
 
@@ -3653,25 +3554,25 @@ static void moby_reveal_dbg(CPUState* cpu) {
     int camx = (int32_t)v.cam_ram[0];
     int camy = (int32_t)v.cam_ram[1];
     int camz = (int32_t)v.cam_ram[2];
-    int spx = (int32_t)cpu->read_word(G_SPYRO + 0x00);
-    int spy = (int32_t)cpu->read_word(G_SPYRO + 0x04);
+    int spx = (int32_t)cpu->read_word(moby_game.player_pos + 0x00);
+    int spy = (int32_t)cpu->read_word(moby_game.player_pos + 0x04);
 
-    uint32_t m = cpu->read_word(G_LEVELMOBYS);
+    uint32_t m = moby_array_head(cpu);
     int alive=0, drawn_s=0, in43=0, inwide=0, revealed=0, rev_live=0, rev_frozen=0;
     int guard = 0;
     while (m && guard++ < 4096) {
-        uint8_t st = cpu->read_byte(m + 0x48);
+        uint8_t st = cpu->read_byte(m + game_layout.moby.state_off);
         if (st == 0xFF) break;                       /* sentinel ends the array */
-        if (st >= 0x80) { m += 0x58; continue; }     /* dead/inactive */
+        if (st >= 0x80) { m += game_layout.moby.array_stride; continue; }     /* dead/inactive */
         alive++;
-        uint8_t wasDrawn = cpu->read_byte(m + 0x51);
-        uint8_t updDist  = cpu->read_byte(m + 0x52);
-        uint8_t rRad     = cpu->read_byte(m + 0x50);
+        uint8_t wasDrawn = cpu->read_byte(m + game_layout.moby.drawn_off);
+        uint8_t updDist  = cpu->read_byte(m + moby_game.update_dist_off);
+        uint8_t rRad     = cpu->read_byte(m + moby_game.render_radius_off);
         if (wasDrawn) drawn_s++;
 
-        int mx = (int32_t)cpu->read_word(m + 0x0C);
-        int my = (int32_t)cpu->read_word(m + 0x10);
-        int mz = (int32_t)cpu->read_word(m + 0x14);
+        int mx = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 0u);
+        int my = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 4u);
+        int mz = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 8u);
         /* camera-relative, .s moby swizzle V=(dy,dz,dx)>>2 through ProjMatrix */
         double dx = (double)((mx - camx) >> 2);
         double dy = (double)((camy - my) >> 2);
@@ -3679,8 +3580,8 @@ static void moby_reveal_dbg(CPUState* cpu) {
         double rx = (M[0][0]*dy + M[0][1]*dz + M[0][2]*dx) / 4096.0;
         double rz = (M[2][0]*dy + M[2][1]*dz + M[2][2]*dx) / 4096.0;
         double radius = (double)rRad * 256.0;        /* m_RenderRadius<<8 */
-        if (rz + 128.0 <= 0.0) { m += 0x58; continue; }   /* behind camera */
-        if (rz - radius >= 0.0) { m += 0x58; continue; }  /* beyond render distance */
+        if (rz + 128.0 <= 0.0) { m += game_layout.moby.array_stride; continue; }   /* behind camera */
+        if (rz - radius >= 0.0) { m += game_layout.moby.array_stride; continue; }  /* beyond render distance */
         double arx = rx < 0 ? -rx : rx;
         /* X-cone (r_moby.s 0x80022C04): cull if 4*(|rx|-102) - 3*S*(rz+77) >= 0;
          * S=1 → 4:3 (slope 0.75), S=F/s → the view's horizontal half-FOV
@@ -3702,7 +3603,7 @@ static void moby_reveal_dbg(CPUState* cpu) {
             }
             if (live) rev_live++; else rev_frozen++;
         }
-        m += 0x58;
+        m += game_layout.moby.array_stride;
     }
     fprintf(stderr,
         "[moby-reveal] frame=%u F=%.3f alive=%d drawn(.s m_WasDrawn)=%d  "
@@ -3710,28 +3611,28 @@ static void moby_reveal_dbg(CPUState* cpu) {
         openpete_frame, F, alive, drawn_s, in43, inwide, revealed, rev_live, rev_frozen);
 }
 
-static int on_8001F798_moby_native(CPUState* cpu, uint32_t addr) {
+static int on_draw_regular(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     fade_snap_clear();                             /* refresh per-moby ZSF4 fade snapshot this canonical frame */
-    moby_native_pass(cpu, func_8001F798, "REG");   /* regular material */
+    moby_native_pass(cpu, game_layout.moby.hook_draw_regular, "REG");
     moby_reveal_dbg(cpu);                          /* widescreen-reveal sizing (env-gated) */
     s_in = 0;
     return 1;
 }
-static int on_80020F34_moby_native(CPUState* cpu, uint32_t addr) {
+static int on_draw_specular(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
-    moby_native_pass(cpu, func_80020F34, "SPEC");  /* specular: same geometry, +0x1600 base */
+    moby_native_pass(cpu, game_layout.moby.hook_draw_specular, "SPEC");  /* same geometry, same record queue */
     s_in = 0;
     return 1;
 }
 
 /* ---- SHADED material (func_80022A2C) -- layout-confirming dump (3a.4.3) ----
  * Shaded is structurally different from regular/specular: it loops a flat
- * Moby* array @ G_SCRATCH+0x2400, decodes 3-signed-byte (×2) verts, and rebuilds
+ * Moby* array the descriptor names, decodes 3-signed-byte (×2) verts, and rebuilds
  * R per-moby = ProjMatrix · Rz·Ry·Rx(m_Rotation). Before implementing that,
  * dump the data layout to confirm the RE offsets empirically (falsify-first).
  * func_80022A2C writes m_WasDrawn (verdict) -- we call it exactly once, like
@@ -3753,16 +3654,16 @@ static void shaded_dump(CPUState* cpu, uint32_t start, uint32_t end) {
     for (int i = 0; i < 2; i++) {
         uint32_t m = cpu->read_word(SHADED_BASE + (uint32_t)i*4);
         if (m < 0x80000000u) break;
-        int32_t px = (int32_t)cpu->read_word(m + 0x0C);
-        int32_t py = (int32_t)cpu->read_word(m + 0x10);
-        int32_t pz = (int32_t)cpu->read_word(m + 0x14);
-        uint32_t cls = cpu->read_half(m + 0x36);
-        uint32_t rot = cpu->read_word(m + 0x44);
-        uint32_t rad = cpu->read_byte(m + 0x50);
-        uint32_t wasdrawn = cpu->read_byte(m + 0x51);
+        int32_t px = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 0u);
+        int32_t py = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 4u);
+        int32_t pz = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 8u);
+        uint32_t cls = cpu->read_half(m + game_layout.moby.class_off);
+        uint32_t rot = cpu->read_word(m + game_layout.moby.angle_off + 0u);
+        uint32_t rad = cpu->read_byte(m + moby_game.render_radius_off);
+        uint32_t wasdrawn = cpu->read_byte(m + game_layout.moby.drawn_off);
         fprintf(stderr, "  moby%d @%08X pos=(%d,%d,%d) class=%u rot=%08X radius=%u wasDrawn=%u\n",
                 i, m, px,py,pz, cls, rot, rad, wasdrawn);
-        uint32_t model = cpu->read_word(G_MODELS + cls*4);
+        uint32_t model = cpu->read_word(game_layout.moby.model_table + cls*4);
         fprintf(stderr, "   model[%u]=%08X:", cls, model);
         if (model >= 0x80000000u) for (int w = 0; w < 12; w++)
             fprintf(stderr, " %08X", cpu->read_word(model + (uint32_t)w*4));
@@ -3770,10 +3671,10 @@ static void shaded_dump(CPUState* cpu, uint32_t start, uint32_t end) {
     }
     /* camera ProjMatrix (+0x00..0x10) + position (+0x28..0x30) */
     fprintf(stderr, "  cam projM:");
-    for (int w = 0; w < 5; w++) fprintf(stderr, " %08X", cpu->read_word(G_CAMERA + (uint32_t)w*4));
+    for (int w = 0; w < 5; w++) fprintf(stderr, " %08X", cpu->read_word(game_layout.cam.base + (uint32_t)w*4));
     fprintf(stderr, "  pos=(%d,%d,%d)\n",
-            (int32_t)cpu->read_word(G_CAMERA + 0x28), (int32_t)cpu->read_word(G_CAMERA + 0x2C),
-            (int32_t)cpu->read_word(G_CAMERA + 0x30));
+            (int32_t)cpu->read_word(game_layout.cam.position + 0u), (int32_t)cpu->read_word(game_layout.cam.position + 4u),
+            (int32_t)cpu->read_word(game_layout.cam.position + 8u));
     /* captured shaded prims (codes 0x20/28/22/2A expected) */
     int hist[256]; memset(hist, 0, sizeof(hist));
     for (int g = 0; g < s_gte_n; g++) hist[s_gte[g].code]++;
@@ -3879,7 +3780,7 @@ static int moby_interp_pair_stale(op_time_t prev_ns, op_time_t curr_ns) {
  *   rot.x(+0x44) = ((s16)cos[ticks*2]>>7) + props->m_RotY(+0x11)
  *   rot.y(+0x45) = ((s16)sin[ticks*2]>>7) + props->m_RotZ(+0x12)
  *   props->m_RotationTicks(+0x13) += 2*g_DeltaTime      (800802F4..80080360;
- * cls 14 uses >>9, +0x46 untouched). LUT == D_SIN_TABLE (cos at +0x80) — the
+ * cls 14 uses >>9, +0x46 untouched). LUT == game_layout.sin_table (cos at +0x80) — the
  * same table sincos_interp blends. Life orb (cls 15) is an ACCUMULATED
  * heading (z+=8,y-=6/tick) — excluded: a wake would snap the whole offset. */
 static int moby_idle_on(void) {
@@ -3895,16 +3796,16 @@ static int moby_idle_on(void) {
  * list gets NO update at all — its whole state machine (including the gem
  * settle + wobble) is frozen in RAM. */
 static int gem_in_update_list(CPUState* cpu, uint32_t m) {
-    if (cpu->read_byte(m + 0x51) != 0) return 1;      /* m_WasDrawn grace auto-include */
-    int32_t ud = (int8_t)cpu->read_byte(m + 0x52);    /* SIGNED (0xFF = -1 = always) */
+    if (cpu->read_byte(m + game_layout.moby.drawn_off) != 0) return 1;      /* m_WasDrawn grace auto-include */
+    int32_t ud = (int8_t)cpu->read_byte(m + moby_game.update_dist_off);    /* SIGNED (0xFF = -1 = always) */
     if (ud == 0) return 0;                            /* never update */
     int32_t thr = ud << 10;
     if (thr < 0) return 1;                            /* ud >= 0x80: always update */
-    int32_t dx = (int32_t)cpu->read_word(m + 0x0C) - (int32_t)cpu->read_word(G_SPYRO + 0x0);
+    int32_t dx = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 0u) - (int32_t)cpu->read_word(moby_game.player_pos + 0x0);
     if (dx + thr <= 0 || dx - thr >= 0) return 0;
-    int32_t dy = (int32_t)cpu->read_word(m + 0x10) - (int32_t)cpu->read_word(G_SPYRO + 0x4);
+    int32_t dy = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 4u) - (int32_t)cpu->read_word(moby_game.player_pos + 0x4);
     if (dy + thr <= 0 || dy - thr >= 0) return 0;
-    int32_t dz = (int32_t)cpu->read_word(m + 0x14) - (int32_t)cpu->read_word(G_SPYRO + 0x8);
+    int32_t dz = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 8u) - (int32_t)cpu->read_word(moby_game.player_pos + 0x8);
     if (dz + thr <= 0 || dz - thr >= 0) return 0;
     int32_t hx = dx >> 3, hy = dy >> 3, ht = thr >> 3;
     return (ht * ht - hx * hx - hy * hy) > 0;
@@ -3920,16 +3821,16 @@ static int gem_in_update_list(CPUState* cpu, uint32_t m) {
  * since level load), so "outside the update list" alone must count as frozen
  * — the old substate==1-only mirror left those as statues. */
 static int gem_idle_frozen(CPUState* cpu, uint32_t m, uint32_t props) {
-    if (cpu->read_byte(m + 0x49) >= 3) return 0;      /* non-resting states: leave canonical */
+    if (cpu->read_byte(m + moby_game.substate_off) >= 3) return 0;      /* non-resting states: leave canonical */
     if (!gem_in_update_list(cpu, m)) return 1;        /* no update at all -> frozen */
-    if (cpu->read_byte(m + 0x51) != 0) return 0;      /* drawn last frame -> handler runs */
-    int32_t dx = (int32_t)cpu->read_word(G_SPYRO + 0x0) - (int32_t)cpu->read_word(m + 0x0C);
-    int32_t dy = (int32_t)cpu->read_word(G_SPYRO + 0x4) - (int32_t)cpu->read_word(m + 0x10);
+    if (cpu->read_byte(m + game_layout.moby.drawn_off) != 0) return 0;      /* drawn last frame -> handler runs */
+    int32_t dx = (int32_t)cpu->read_word(moby_game.player_pos + 0x0) - (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 0u);
+    int32_t dy = (int32_t)cpu->read_word(moby_game.player_pos + 0x4) - (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 4u);
     if (dx < 0) dx = -dx;
     if (dy < 0) dy = -dy;
     int32_t oct = (dx < dy) ? ((dx * 3) >> 3) + dy : dx + ((dy * 3) >> 3);
     if (oct < 0x2001) return 0;                       /* near Spyro -> handler runs */
-    if (cpu->read_byte(m + 0x49) != 1) return 0;      /* updating + not settled -> settle logic runs */
+    if (cpu->read_byte(m + moby_game.substate_off) != 1) return 0;      /* updating + not settled -> settle logic runs */
     if (cpu->read_byte(props + 0x0E) != 0) return 0;  /* updating + still spawning -> logic runs */
     return 1;
 }
@@ -3973,10 +3874,10 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
     /* Idle-anim override: a FROZEN collectable renders the pose its own math
      * would produce had it kept ticking. Billboards excluded (the tally/HUD
      * gems carry a different props layout than MobyCollectableProps). */
-    if (moby_idle_on() && !(cpu->read_byte(moby + 0x50) & 0x80)) {
-        uint32_t cls = cpu->read_half(moby + 0x36);
+    if (moby_idle_on() && !(cpu->read_byte(moby + moby_game.render_radius_off) & 0x80)) {
+        uint32_t cls = cpu->read_half(moby + game_layout.moby.class_off);
         if (cls == 14u || (cls >= 83u && cls <= 87u)) {
-            uint32_t props = cpu->read_word(moby + 0x00);
+            uint32_t props = cpu->read_word(moby + moby_game.props_off);
             if (props >= 0x80000000u) {
                 if (gem_idle_frozen(cpu, moby, props)) {
                     uint8_t t0 = 0;
@@ -3993,9 +3894,9 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
                      * wobbles around its placed pose instead of snapping to
                      * uninitialized props bytes (beast-makers). */
                     double div = (cls == 14u) ? 512.0 : 128.0;
-                    double fZ = (double)cpu->read_byte(moby + 0x44) + ((double)ci - (double)c0) / div;
-                    double fX = (double)cpu->read_byte(moby + 0x45) + ((double)si - (double)s0) / div;
-                    double fY = (double)cpu->read_byte(moby + 0x46);   /* untouched by the handler */
+                    double fZ = (double)cpu->read_byte(moby + game_layout.moby.angle_off + 0u) + ((double)ci - (double)c0) / div;
+                    double fX = (double)cpu->read_byte(moby + game_layout.moby.angle_off + 1u) + ((double)si - (double)s0) / div;
+                    double fY = (double)cpu->read_byte(moby + game_layout.moby.angle_off + 2u);   /* untouched by the handler */
                     ngte_sincos_interp(cpu, fY, &e.sy, &e.cy);
                     ngte_sincos_interp(cpu, fX, &e.sx, &e.cx);
                     ngte_sincos_interp(cpu, fZ, &e.sz, &e.cz);
@@ -4008,14 +3909,14 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
                     gem_idle_ent* e = gem_idle_slot(moby);
                     if (e->moby == moby) e->moby = 0;   /* drop: re-freeze re-seeds from RAM */
                     if (moby_trace_target() == moby) {
-                        int32_t dx = (int32_t)cpu->read_word(G_SPYRO + 0x0) - (int32_t)cpu->read_word(moby + 0x0C);
-                        int32_t dy = (int32_t)cpu->read_word(G_SPYRO + 0x4) - (int32_t)cpu->read_word(moby + 0x10);
+                        int32_t dx = (int32_t)cpu->read_word(moby_game.player_pos + 0x0) - (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 0u);
+                        int32_t dy = (int32_t)cpu->read_word(moby_game.player_pos + 0x4) - (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u);
                         if (dx < 0) dx = -dx;
                         if (dy < 0) dy = -dy;
                         fprintf(stderr, "[moby-idle f=%u] %08X live: wd=%u oct=%d sub=%u spawn=%u ticks=%u\n",
-                                openpete_frame, moby, cpu->read_byte(moby + 0x51),
+                                openpete_frame, moby, cpu->read_byte(moby + game_layout.moby.drawn_off),
                                 (dx < dy) ? ((dx * 3) >> 3) + dy : dx + ((dy * 3) >> 3),
-                                cpu->read_byte(moby + 0x49), cpu->read_byte(props + 0x0E),
+                                cpu->read_byte(moby + moby_game.substate_off), cpu->read_byte(props + 0x0E),
                                 (unsigned)cpu->read_byte(props + 0x13));
                     }
                     s_idle_live++;
@@ -4029,7 +3930,7 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
      * or interp off). The high byte (+0x47) is the OT-bias overlay flag, not a
      * rotation axis — untouched either way. */
     const openpete_interp_obj_t* o =
-        (!composed && s_rot_now) ? openpete_interp_objs_find(game_interp_moby_key(moby)) : NULL;
+        (!composed && s_rot_now) ? openpete_interp_objs_find(moby_interp_key(moby)) : NULL;
     /* Occupant guard: a g_LevelMobys slot reused by a DIFFERENT-class moby
      * within one tick would euler-lerp across two objects (the gem-vs-chest
      * class, HUD-pool side fixed by the class-folded key; level slots key by
@@ -4042,14 +3943,14 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
     if (o && o->have_prev && o->prev_ns != 0 && o->curr_ns > o->prev_ns) {
         double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
         if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
-        double fZ = lerp_byte_angle(o->prev[0x44], o->curr[0x44], t);
-        double fX = lerp_byte_angle(o->prev[0x45], o->curr[0x45], t);
-        double fY = lerp_byte_angle(o->prev[0x46], o->curr[0x46], t);
+        double fZ = lerp_byte_angle(o->prev[game_layout.moby.angle_off + 0u], o->curr[game_layout.moby.angle_off + 0u], t);
+        double fX = lerp_byte_angle(o->prev[game_layout.moby.angle_off + 1u], o->curr[game_layout.moby.angle_off + 1u], t);
+        double fY = lerp_byte_angle(o->prev[game_layout.moby.angle_off + 2u], o->curr[game_layout.moby.angle_off + 2u], t);
         ngte_sincos_interp(cpu, fY, &e.sy, &e.cy);
         ngte_sincos_interp(cpu, fX, &e.sx, &e.cx);
         ngte_sincos_interp(cpu, fZ, &e.sz, &e.cz);
     } else if (!composed) {
-        ngte_euler_sincos(cpu, cpu->read_word(moby + 0x44u), &e);
+        ngte_euler_sincos(cpu, cpu->read_word(moby + game_layout.moby.angle_off + 0u), &e);
     }
     ngte_compose_euler(start, &e, out);
 }
@@ -4069,24 +3970,24 @@ static void shaded_verify(CPUState* cpu) {
         uint32_t m = cpu->read_word(SHADED_BASE + (uint32_t)r*4u);
         if (m < 0x80000000u) break;
         nmoby++;
-        uint32_t cls = cpu->read_half(m + 0x36);
-        uint32_t model = cpu->read_word(G_MODELS + cls*4u); if (model<0x80000000u) model|=0x80000000u;
+        uint32_t cls = cpu->read_half(m + game_layout.moby.class_off);
+        uint32_t model = cpu->read_word(game_layout.moby.model_table + cls*4u); if (model<0x80000000u) model|=0x80000000u;
         uint32_t vbase = cpu->read_word(model + 0x4u);      if (vbase<0x80000000u) vbase|=0x80000000u;
         int count = cpu->read_byte(model + 0x0u) & 0xFF;
-        int32_t px=(int32_t)cpu->read_word(m+0xC), py=(int32_t)cpu->read_word(m+0x10), pz=(int32_t)cpu->read_word(m+0x14);
-        /* billboard/2D vs 3D path: flag = bit7 of the low byte at m+0x50 (asm
+        int32_t px=(int32_t)cpu->read_word(m+0xC), py=(int32_t)cpu->read_word(m + game_layout.moby.pos_off + 4u), pz=(int32_t)cpu->read_word(m + game_layout.moby.pos_off + 8u);
+        /* billboard/2D vs 3D path: flag = bit7 of m_RenderRadius (asm
          * `lhu a0,0x50; sll a0,24; bltz -> .L80022D1C`). */
-        int billboard = (cpu->read_byte(m + 0x50) & 0x80) != 0;
+        int billboard = (cpu->read_byte(m + moby_game.render_radius_off) & 0x80) != 0;
         int M[3][3]; double TR[3]; double mofx, mofy;
         if (billboard) {                              /* .L80022D1C */
             M[0][0]=4096;M[0][1]=0;M[0][2]=0; M[1][0]=0;M[1][1]=2560;M[1][2]=0; M[2][0]=0;M[2][1]=0;M[2][2]=4096;
             TR[0]=0; TR[1]=0; TR[2]=(double)(pz>>1);  /* OFX/OFY = pos.x/y; TRZ = pos.z>>1 */
             mofx=(double)px; mofy=(double)py;
         } else {                                      /* 3D: R = ProjMatrix . Ry(axis0), TR = PM.(pos-cam) */
-            uint32_t rot = cpu->read_word(m + 0x44u);
+            uint32_t rot = cpu->read_word(m + game_layout.moby.angle_off + 0u);
             uint32_t idx0 = (rot >> 15) & 0x1FEu;
-            int s0 = (int16_t)cpu->read_half(D_SIN_TABLE + idx0);
-            int c0 = (int16_t)cpu->read_half(D_SIN_TABLE + 0x80u + idx0);
+            int s0 = (int16_t)cpu->read_half(game_layout.sin_table + idx0);
+            int c0 = (int16_t)cpu->read_half(game_layout.sin_table + 0x80u + idx0);
             int Ry[3][3] = {{c0,0,s0},{0,4096,0},{-s0,0,c0}};
             for (int i=0;i<3;i++) for (int j=0;j<3;j++)
                 M[i][j] = (PM[i][0]*Ry[0][j] + PM[i][1]*Ry[1][j] + PM[i][2]*Ry[2][j]) >> 12;
@@ -4251,7 +4152,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
     double ofx=v->ofx, ofy=v->ofy;
     /* directional light dir (int16-truncated on ctc2 into the LCM), refreshed
      * each frame from D_800770C8+0/+4/+8 (block_80022AD0). */
-    s_shL[0]=(int16_t)cpu->read_word(D_SPEC_LIGHT+0); s_shL[1]=(int16_t)cpu->read_word(D_SPEC_LIGHT+4); s_shL[2]=(int16_t)cpu->read_word(D_SPEC_LIGHT+8);
+    s_shL[0]=(int16_t)cpu->read_word(moby_game.spec_light+0); s_shL[1]=(int16_t)cpu->read_word(moby_game.spec_light+4); s_shL[2]=(int16_t)cpu->read_word(moby_game.spec_light+8);
     int n=0; s_nshrecs = 0;
     for (int r=0; r<256; r++) {
         uint32_t m = cpu->read_word(SHADED_BASE + (uint32_t)r*4u);
@@ -4266,7 +4167,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
          * flame the cauldron). The list still contains them, so replicate the skip
          * here, else they render as ghost gems beside their spawner. (m_RenderRadius
          * & 0x80 is the billboard/HUD flag, handled below — nonzero, so it passes.) */
-        if (cpu->read_byte(m + 0x50) == 0) continue;
+        if (cpu->read_byte(m + moby_game.render_radius_off) == 0) continue;
         /* .s in-walk 3-axis distance-band cull (block_80022B40..80022B90) —
          * NON-BILLBOARD mobys only (the lhu@80022B20 halfword's bit7 <<24 sign
          * branches billboards past it). eff = (m_RenderRadius & 0x7F) << 8,
@@ -4285,22 +4186,22 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
          * reaches here (skipped above), so dropping the test cannot resurrect
          * a dormant gem; billboards already bypass it. */
         {
-            uint8_t r50 = cpu->read_byte(m + 0x50);
+            uint8_t r50 = cpu->read_byte(m + moby_game.render_radius_off);
             if (!(r50 & 0x80) && !openpete_no_lod) {
                 int eff = (int)(r50 & 0x7F);
                 int32_t a0 = ((int32_t)eff << 8)
-                           + ((cpu->read_byte(m + 0x51) & 1) ? 0x200 : 0);
+                           + ((cpu->read_byte(m + game_layout.moby.drawn_off) & 1) ? 0x200 : 0);
                 int32_t t;
-                t = ((int32_t)cpu->read_word(m + 0x0C) - cx) >> 2;
+                t = ((int32_t)cpu->read_word(m + game_layout.moby.pos_off + 0u) - cx) >> 2;
                 if (t + a0 <= 0 || t - a0 >= 0) { s_shband_cull++; continue; }
-                t = (cy - (int32_t)cpu->read_word(m + 0x10)) >> 2;
+                t = (cy - (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 4u)) >> 2;
                 if (t + a0 <= 0 || t - a0 >= 0) { s_shband_cull++; continue; }
-                t = (cz - (int32_t)cpu->read_word(m + 0x14)) >> 2;
+                t = (cz - (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 8u)) >> 2;
                 if (t + a0 <= 0 || t - a0 >= 0) { s_shband_cull++; continue; }
             }
         }
-        uint32_t cls = cpu->read_half(m + 0x36);
-        uint32_t mraw  = cpu->read_word(G_MODELS + cls*4u); /* RAW entry — bit31 is a colour-mode switch */
+        uint32_t cls = cpu->read_half(m + game_layout.moby.class_off);
+        uint32_t mraw  = cpu->read_word(game_layout.moby.model_table + cls*4u); /* RAW entry — bit31 is a colour-mode switch */
         uint32_t model = mraw;                              if (model<0x80000000u) model|=0x80000000u;
         uint32_t vraw  = cpu->read_word(model + 0x4u);
         uint32_t vbase = vraw;                              if (vbase<0x80000000u) vbase|=0x80000000u;
@@ -4325,9 +4226,9 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             ctab_len = (faces > ctab && faces - ctab < 0x2000u) ? (int)(faces - ctab) : 0x800;
         }
         int sv_off = n;
-        int32_t px=(int32_t)cpu->read_word(m+0xC), py=(int32_t)cpu->read_word(m+0x10), pz=(int32_t)cpu->read_word(m+0x14);
-        int billboard = (cpu->read_byte(m + 0x50) & 0x80) != 0;
-        uint32_t rot = cpu->read_word(m + 0x44u);   /* m_Rotation (3 euler bytes) */
+        int32_t px=(int32_t)cpu->read_word(m+0xC), py=(int32_t)cpu->read_word(m + game_layout.moby.pos_off + 4u), pz=(int32_t)cpu->read_word(m + game_layout.moby.pos_off + 8u);
+        int billboard = (cpu->read_byte(m + moby_game.render_radius_off) & 0x80) != 0;
+        uint32_t rot = cpu->read_word(m + game_layout.moby.angle_off + 0u);   /* m_Rotation (3 euler bytes) */
         /* OT-bias overlay flag: the .s billboard path (block_80022D90) computes the
          * OT index as (pz>>7) - ((int32_t)m_0x44 >> 24) clamped >= 0. A large bias
          * byte forces the index to 0 — the NEAR OT slot — so the moby draws OVER the
@@ -4362,7 +4263,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             { double mf[3];
               if (openpete_native_interp_pos(m, mf)) { bfx=mf[0]; bfy=mf[1]; bfz=mf[2]; }
               else if (s_rot_now) {
-                const openpete_interp_obj_t* o = openpete_interp_objs_find(game_interp_moby_key(m));
+                const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(m));
                 if (o && o->have_prev && o->prev_ns != 0 && o->curr_ns > o->prev_ns) {
                     uint16_t pcls2, ccls2;
                     memcpy(&pcls2, o->prev + 0x36u, 2); memcpy(&ccls2, o->curr + 0x36u, 2);
@@ -4396,7 +4297,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
                 if (s_bt0 == -2) { const char* e = getenv("OPENPETE_SHADED_POSTRACE"); s_bt0 = (e && *e) ? atoi(e) : -1; }
                 if (s_bt0 >= 0 && (int)openpete_frame >= s_bt0 && (int)openpete_frame < s_bt0 + 6)
                     fprintf(stderr, "[bb-pos f=%u] moby=%08x key=%08x cls=%03x bf=(%.2f,%.2f,%.2f) raw=(%d,%d,%d)\n",
-                            openpete_frame, m, game_interp_moby_key(m), cls, bfx, bfy, bfz, px, py, pz);
+                            openpete_frame, m, moby_interp_key(m), cls, bfx, bfy, bfz, px, py, pz);
             }
             /* Like the 3D path, TR[2] is HALF the true view-Z (the .s sets the GTE
              * depth to pz>>1, but orders the prim in the OT by pz>>7 — i.e. the FULL
@@ -4454,7 +4355,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             double t2=(PM[1][0]*Dy+PM[1][1]*Dz+PM[1][2]*Dx)/4096.0;
             double t3=(PM[2][0]*Dy+PM[2][1]*Dz+PM[2][2]*Dx)/4096.0;
             TR[0]=t1*2.0; TR[1]=t2*2.0; TR[2]=t3*2.0;
-            uint8_t p57=cpu->read_byte(m+0x57);
+            uint8_t p57=cpu->read_byte(m + game_layout.moby.size_off);
             /* Draw-scale (p57): apply to the FRACTIONAL TR directly — no int16 round.
              * (The earlier int16 truncation here re-quantized the just-fractional TR
              * back to a ~1-unit grid for draw-scaled shaded mobys, undoing the ÷4.0
@@ -4526,8 +4427,8 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
             for (int vi = sv_off; vi < n; vi++) out[vi].vz += lift;
         }
         if (s_nshrecs < 256) {
-            uint32_t scolor = cpu->read_word(m + 0x4Cu);   /* m_SpecularMetalColor */
-            uint32_t base = cpu->read_word(D_SHADE_COLTAB + (uint32_t)((int32_t)scolor >> 22));
+            uint32_t scolor = cpu->read_word(m + moby_game.spec_colour_off);   /* m_SpecularMetalColor */
+            uint32_t base = cpu->read_word(moby_game.shade_coltab + (uint32_t)((int32_t)scolor >> 22));
             shaded_rec* R = &s_shrecs[s_nshrecs++];
             R->sv_off=sv_off; R->vcount=n-sv_off; R->faces=faces; R->fcount=fcount; R->cls=(int)cls;
             R->model=model; R->base=base; R->moby=m; R->near_ot=near_ot;
@@ -4621,8 +4522,8 @@ static int build_shaded_walk_tris(CPUState* cpu) {
                         : model_3d ? "HUD3D" : "HUDflat");
         }
         s_cur_moby_key = R->moby; s_emit_fkey = 0u;   /* face identity (shaded tris carry no topology key) */
-        s_cur_moby_cls = R->moby ? (uint16_t)cpu->read_half(R->moby + 0x36) : 0;
-        s_cur_moby_dofs = R->moby ? (int8_t)cpu->read_byte(R->moby + 0x47u) : 0; /* og OT bias (rot>>24) */
+        s_cur_moby_cls = R->moby ? (uint16_t)cpu->read_half(R->moby + game_layout.moby.class_off) : 0;
+        s_cur_moby_dofs = R->moby ? (int8_t)cpu->read_byte(R->moby + game_layout.moby.angle_off + 3u) : 0; /* og OT bias (rot>>24) */
         s_cur_ui = openpete_ui_moby_is_addr_static(R->moby) ? 2
                  : (openpete_ui_moby_is_addr_ui(R->moby) || R->near_ot) ? (model_3d ? 2 : 1)
                  : 0;
@@ -4646,8 +4547,8 @@ static int build_shaded_walk_tris(CPUState* cpu) {
         /* METAL sub-mode base (word0 bit1): the gem/shiny tint comes from the
          * metal table D_8006E44C[scolor>>21] (8B: word0=base, word1=reflected),
          * NOT the flat gray table — see shaded_metal_color. Read once per moby. */
-        uint32_t mscolor = cpu->read_word(R->moby + 0x4Cu);
-        uint32_t mtab = D_METAL_COLTAB + (uint32_t)((int32_t)mscolor >> 21);
+        uint32_t mscolor = cpu->read_word(R->moby + moby_game.spec_colour_off);
+        uint32_t mtab = moby_game.metal_coltab + (uint32_t)((int32_t)mscolor >> 21);
         uint32_t metal_w0 = cpu->read_word(mtab) & 0xFFFFFFu;
         uint32_t metal_w1 = cpu->read_word(mtab + 4u) & 0xFFFFFFu;
         /* flat-basic ABE (func_80022A2C block_8002363C): a flat-shaded moby whose flat
@@ -4756,13 +4657,13 @@ static int build_shaded_walk_tris(CPUState* cpu) {
 }
 
 /* Ground-truth check for the gouraud per-vertex lighting: the .s writes its
- * per-vertex lit colours to scratchpad G_SCRATCH+0x2A00 (block_80023258), one
+ * per-vertex lit colours to the scratch window the descriptor names, one
  * word per vertex, for the LAST gouraud moby it processed (overwritten each
  * moby). Recompute pcol[] for each rec, find the one whose pcol matches the
  * scratchpad (that's the last gouraud moby), and dump element-wise — zero
  * tri-match / cross-moby confound. Call from the verify path. */
 static void shaded_pcol_scratch_check(CPUState* cpu) {
-    uint32_t SCR = G_SCRATCH + 0x2A00u;
+    uint32_t SCR = moby_game.shaded_colour;
     int brec=-1; double bscore=1e18;
     for (int r=0; r<s_nshrecs; r++) {            /* find the rec the scratchpad holds */
         shaded_rec* R=&s_shrecs[r]; if (R->vcount<3) continue;
@@ -4779,7 +4680,7 @@ static void shaded_pcol_scratch_check(CPUState* cpu) {
     }
     if (brec<0) return;
     shaded_rec* R=&s_shrecs[brec];
-    uint32_t rot=cpu->read_word(R->moby+0x44u);
+    uint32_t rot=cpu->read_word(R->moby + game_layout.moby.angle_off + 0u);
     int nn=R->vcount<64?R->vcount:64, exact=0; double err=0;
     for (int i=0;i<nn;i++){
         uint32_t p=R->model+0x10u+(uint32_t)i*3u;
@@ -4791,7 +4692,7 @@ static void shaded_pcol_scratch_check(CPUState* cpu) {
              + abs((int)((mine>>16)&0xFF)-(int)((s>>16)&0xFF));
     }
     int nyonly=0, nx=0, nz=0;   /* euler census across all shaded mobys this frame */
-    for (int r=0;r<s_nshrecs;r++){ uint32_t rr=cpu->read_word(s_shrecs[r].moby+0x44u);
+    for (int r=0;r<s_nshrecs;r++){ uint32_t rr=cpu->read_word(s_shrecs[r].moby + game_layout.moby.angle_off + 0u);
         int X=(rr&0xFF00u)>>7, Z=(rr&0xFFu)<<1; if(X)nx++; if(Z)nz++; if(!X&&!Z)nyonly++; }
     fprintf(stderr,"[shaded-pcol f=%u] rec=%d cls=0x%X vcount=%d euler{Y=%u X=%u Z=%u} R->RT exact=%d/%d meanChErr=%.2f nohl=%d | census{Yonly=%d Xrot=%d Zrot=%d of %d}\n",
         openpete_frame, brec, R->cls, R->vcount,
@@ -4799,42 +4700,36 @@ static void shaded_pcol_scratch_check(CPUState* cpu) {
         nyonly, nx, nz, s_nshrecs);
 }
 
-/* Dragon-rescue cutscene: actors draw in FRONT of terrain (depth-isolated
- * ACTOR pass in native_render.c). The .s gate is the game's own: GS_Dragon
- * (g_Gamestate@0x800757D8 == 8) selects func_8001CFDC, whose top-level branch
- * switches on g_DragonCutscene.m_State (@0x80077058, the struct is
- * @0x80077030): state 0 draws the NORMAL full moby queue (front pass must stay
- * off), states 1..6 draw ONLY the cutscene actors (rescued dragon / cutscene
- * Spyro+dragon / crystal fragments — draw.c:1806-2010), which the PSX's coarse
- * OT bucketing painted over terrain they interpenetrate (Delvin's spread wing
- * inside the town_square tower). State 7 is EXCLUDED: past tick 16 it re-queues
- * the full level moby set (func_800521C0) while fading back to gameplay —
- * front-passing every level moby there would be wrong. Called at both feed
- * sites (canonical + sub-tick re-extract), after begin_frame's reset.
- * OPENPETE_ACTOR_FRONT=0 disables (A/B kill-switch; the corpus guard flips it).
+/* Cutscene actors draw in FRONT of terrain (the depth-isolated ACTOR pass in
+ * native_render.c). The gate is the game's own, through moby_game: while its
+ * cutscene renderer owns the draw it renders only those actors, which the
+ * PSX's coarse OT bucketing painted over terrain they interpenetrate. A game
+ * with no such renderer answers 0 and the front pass never arms.
+ * OPENPETE_ACTOR_FRONT=0 disables it (A/B kill-switch; the corpus guard flips
+ * it). Called at both feed sites (canonical and sub-tick re-extract), after
+ * begin_frame's reset.
  *
- * Safe at ALL LOD levels: draw_native_scene front-passes ONLY the cutscene
- * actors (tagged OPENPETE_SCENE_ACTOR_FRONT by pointer match, above) and clears
- * depth only WITHIN THEIR SCREEN BBOX, so --lod extended's un-culled distant
- * level mobys (statues / chests / the level-end vortex + critters) keep their
- * true terrain occlusion (the whole-frame clear used to punch them through).
- * Repro that drove this: alban-rescue.bk2 @ f1756. */
+ * Safe at ALL LOD levels: draw_native_scene front-passes ONLY the tagged
+ * cutscene actors (OPENPETE_SCENE_ACTOR_FRONT, stamped by pointer match above)
+ * and clears depth only WITHIN THEIR SCREEN BBOX, so extended LOD's un-culled
+ * distant level mobys keep their true terrain occlusion (the whole-frame clear
+ * used to punch them through). */
 static void moby_native_set_actor_front(CPUState* cpu) {
     static int s_en = -1;
     if (s_en < 0) { const char* e = getenv("OPENPETE_ACTOR_FRONT"); s_en = (e && *e) ? (*e != '0') : 1; }
     openpete_native_scene_set_actor_front(s_en && moby_cutscene_owns_draw(cpu));
 }
 
-static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
+static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
     (void)addr;
     int verify = moby_verify_enabled();
     int feed   = openpete_native_scene_enabled();
     if (!verify && !feed && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
-    uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
+    uint32_t startp = cpu->read_word(game_layout.polybuf.cursor);
     { OP_PROF_ACCUM_SCOPE("moby.srend");
-      func_80022A2C(cpu); }                  /* run the real SHADED renderer (writes m_WasDrawn) */
-    uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
+      moby_run_draw(cpu, game_layout.moby.hook_draw_shaded); }   /* run the real draw (writes the drawn verdict) */
+    uint32_t endp = cpu->read_word(game_layout.polybuf.cursor);
 
     render_path_record(RP_MOBY, startp, endp);  /* polybuf range for the OT filter */
     moby_view_shd_build(cpu);
@@ -4852,15 +4747,12 @@ static int on_80022A2C_moby_native(CPUState* cpu, uint32_t addr) {
          * intermediates can re-derive the gems/props. */
         spyro_native_canon_capture_range(cpu, 0x2400u, 0x800u);
         spyro_native_canon_capture_camera(cpu, SPYRO_PROD_SHADED);
-        /* Flat HUD/text draws OVER the player by default; UNDER it only during the
-         * "THE ADVENTURE BEGINS" reveal where Spyro flies in front of the text being
-         * revealed — that runs under GS_TitleScreen (13) (the title state machine
-         * drives the homeworld-entrance flyby). NOT GS_LevelTransition (1) — the
-         * "ENTERING <level>" portal transition has no Spyro-reveal, so text stays on
-         * top there like every other state (gameplay 0, RESCUED/Dragon 8, …).
-         * (g_Gamestate@0x800757D8.) Set after push (begin_frame, which resets the
-         * flag, has run); the moby renderer runs every 3D frame. */
-        openpete_native_scene_set_hud_under_player(cpu->read_word(0x800757D8u) == 13u);
+        /* Flat HUD and text draw OVER the player by default; the game states
+         * where they draw under it are moby_game's to name. Set after push
+         * (begin_frame, which resets the flag, has run); the moby renderer
+         * runs every 3D frame. */
+        openpete_native_scene_set_hud_under_player(
+            moby_game.hud_under_player ? moby_game.hud_under_player(cpu) : 0);
         moby_native_set_actor_front(cpu);
     }
 
@@ -4904,7 +4796,7 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
                               uint32_t* fa_p, uint32_t* fb_p, uint32_t* w0_p,
                               uint32_t* hdr_p, double* alpha) {
     if (!s_rot_now) return 0;                                  /* interp off → snap */
-    const openpete_interp_obj_t* o = openpete_interp_objs_find(game_interp_moby_key(moby));
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
     /* Occupant guard: prev snapshot must be the SAME class as the live moby —
      * a reused level slot would crossfade another object's anim/frame state
@@ -4914,11 +4806,11 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
         memcpy(&pcls4, o->prev + 0x36, 2); memcpy(&ccls4, o->curr + 0x36, 2);
         if (pcls4 != ccls4) return 0;
     }
-    uint32_t cls   = cpu->read_half(moby + 0x36);
-    uint32_t model = cpu->read_word(G_MODELS + cls * 4u);
+    uint32_t cls   = cpu->read_half(moby + game_layout.moby.class_off);
+    uint32_t model = cpu->read_word(game_layout.moby.model_table + cls * 4u);
     if (model < 0x80000000u) return 0;
-    uint32_t anim_p   = o->prev[0x3C] & 0xFFu;                 /* m_Animation (prev) */
-    uint32_t header_p = cpu->read_word(model + 0x38u + anim_p * 4u);
+    uint32_t anim_p   = o->prev[game_layout.moby.anim_state_off + 0u] & 0xFFu;                 /* m_Animation (prev) */
+    uint32_t header_p = cpu->read_word(model + game_layout.moby.model_anims_off + anim_p * 4u);
     if (header_p < 0x80000000u) return 0;
     if (header_p != header_curr) {                            /* clip switch */
         /* Cutscene path-followers: SNAP the switch, as canonical does. Their
@@ -4926,19 +4818,20 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
          * two spatially-distant poses lurches the whole model for 1-2
          * presents at every clip switch (the title-flyby "seizure" cluster
          * at the anim 2→3 switch). */
-        extern int spyro_cutpath_is_actor(uint32_t m);
-        if (spyro_cutpath_is_actor(moby)) { s_animsw_snap++; return 0; }
+        if (moby_game.cutpath_actor && moby_game.cutpath_actor(moby)) {
+            s_animsw_snap++; return 0;
+        }
         /* crossfade only when the two clips share vertex topology (same count) */
-        int count_c = cpu->read_byte(header_curr + 8) & 0xFFu;
-        int count_p = cpu->read_byte(header_p   + 8) & 0xFFu;
+        int count_c = cpu->read_byte(header_curr + game_layout.moby.anim_vcount_hi) & 0xFFu;
+        int count_p = cpu->read_byte(header_p    + game_layout.moby.anim_vcount_hi) & 0xFFu;
         if (count_c != count_p) { s_animsw_snap++; return 0; } /* different mesh → snap */
         s_animsw_cross++;
     }
-    uint32_t frm  = o->prev[0x3E] & 0xFFu;                     /* m_Frame (prev)      */
-    uint32_t nfrm = o->prev[0x3F] & 0xFFu;                     /* m_NextFrame (prev)  */
-    uint32_t prog = o->prev[0x40] & 0xFFu;                     /* m_FrameProgress (prev) */
-    *fa_p = header_p + 0x24u + frm  * 8u;
-    *fb_p = header_p + 0x24u + nfrm * 8u;
+    uint32_t frm  = o->prev[game_layout.moby.anim_state_off + 2u] & 0xFFu;                     /* m_Frame (prev)      */
+    uint32_t nfrm = o->prev[game_layout.moby.anim_state_off + 3u] & 0xFFu;                     /* m_NextFrame (prev)  */
+    uint32_t prog = o->prev[game_layout.moby.anim_state_off + 4u] & 0xFFu;                     /* m_FrameProgress (prev) */
+    *fa_p = header_p + game_layout.moby.anim_frames + frm  * game_layout.moby.anim_frame_stride;
+    *fb_p = header_p + game_layout.moby.anim_frames + nfrm * game_layout.moby.anim_frame_stride;
     *w0_p = (prog << 8) & 0xFF00u;
     *hdr_p = header_p;                                         /* prev clip's header (its own s5) */
     if (nfrm == 0) { *fb_p = *fa_p; *w0_p = 0; }               /* loop-seam: hold a single keyframe */
@@ -5021,7 +4914,7 @@ static int occl_refresh_bounds(CPUState* cpu, uint32_t moby, const occl_rect_t* 
                                float* x0, float* y0, float* x1, float* y1, float* vz) {
     if (e->arad <= 0.0f || e->atrz <= 1.0f || e->vz_min <= 0.0f) return 0;
     if ((unsigned)(openpete_frame - e->tick) > OCCL_ANCHOR_MAX_VBL) return 0;
-    if ((uint16_t)cpu->read_half(moby + 0x36u) != e->acls) return 0;   /* slot recycled */
+    if ((uint16_t)cpu->read_half(moby + game_layout.moby.class_off) != e->acls) return 0;   /* slot recycled */
     double tr[3], sx, sy;
     build_moby_record_tr(cpu, moby, tr);
     if (!hold_project_origin(cpu, tr, &sx, &sy)) return 0;   /* too near to project: extract */
@@ -5196,8 +5089,8 @@ static void occl_cache_update(CPUState* cpu, uint32_t moby, const proj_xy* p, in
         if (hold_project_origin(cpu, tr, &asx, &asy)) {
             e->asx  = (float)asx; e->asy = (float)asy;
             e->atrz = (float)tr[2];
-            e->arad = (float)((int)cpu->read_byte(header + 7) << 4);
-            e->acls = (uint16_t)cpu->read_half(moby + 0x36u);
+            e->arad = (float)((int)cpu->read_byte(header + game_layout.moby.anim_radius) << 4);
+            e->acls = (uint16_t)cpu->read_half(moby + game_layout.moby.class_off);
         }
     }
 }
@@ -5285,12 +5178,12 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     static struct { const hold_t* h; double dx, dy, vzs; } replays[MAX_RECORDS];
     int nreplay = 0;
     static uint32_t replay_moby[MAX_RECORDS]; int nreplay_moby = 0;
-    s_rec_base = is_spec ? (G_SCRATCH + 0x1600u) : REC_BASE;   /* SPEC queue not relocated */
+    s_rec_base = REC_BASE;
     for (int r = 0; r < MAX_RECORDS; r++) {
         uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
-        if (cpu->read_word(rec + 0x04) == 0 && cpu->read_word(rec + 0x34) == 0) break;
-        uint32_t moby = cpu->read_word(rec + 0x34);
-        if (moby >= 0x80000000u && nm < MAX_RECORDS) { recs[nm] = rec; mobys[nm] = moby; nm++; }
+        moby_record_t R;
+        if (!moby_game.read_record(cpu, rec, &R)) break;   /* queue terminator */
+        if (R.moby >= 0x80000000u && nm < MAX_RECORDS) { recs[nm] = rec; mobys[nm] = R.moby; nm++; }
     }
     s_cur_mat = mat;
     s_proj_n = 0; s_nrecs = 0;
@@ -5316,10 +5209,10 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                     n++;
                     fprintf(stderr, "[moby-interp-%s f=%u] moby=%08x cls=%04x pos=(%d,%d,%d)\n",
                             io ? "noprev" : "MISS", openpete_frame, mobys[i],
-                            (unsigned)(cpu->read_word(mobys[i] + 0x34u) >> 16),
-                            (int)cpu->read_word(mobys[i] + 0x0Cu),
-                            (int)cpu->read_word(mobys[i] + 0x10u),
-                            (int)cpu->read_word(mobys[i] + 0x14u));
+                            (unsigned)(cpu->read_half(mobys[i] + game_layout.moby.class_off)),
+                            (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 0u),
+                            (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 4u),
+                            (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 8u));
                 }
             }
         }
@@ -5370,26 +5263,26 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * very moby at the tick). Same guards as moby_prev_keyframe. */
         if (s_rot_now) {
             const openpete_interp_obj_t* oc =
-                openpete_interp_objs_find(game_interp_moby_key(mobys[i]));
+                openpete_interp_objs_find(moby_interp_key(mobys[i]));
             uint16_t ccls5 = 0;
             if (oc) memcpy(&ccls5, oc->curr + 0x36, 2);
-            if (oc && ccls5 == (uint16_t)cpu->read_half(mobys[i] + 0x36)) {
+            if (oc && ccls5 == (uint16_t)cpu->read_half(mobys[i] + game_layout.moby.class_off)) {
                 uint32_t cls5   = ccls5;
-                uint32_t model5 = cpu->read_word(G_MODELS + cls5 * 4u);
-                uint32_t anim_c = oc->curr[0x3C] & 0xFFu;
+                uint32_t model5 = cpu->read_word(game_layout.moby.model_table + cls5 * 4u);
+                uint32_t anim_c = oc->curr[game_layout.moby.anim_state_off + 0u] & 0xFFu;
                 uint32_t hdr_c  = model5 >= 0x80000000u
-                                ? cpu->read_word(model5 + 0x38u + anim_c * 4u) : 0;
+                                ? cpu->read_word(model5 + game_layout.moby.model_anims_off + anim_c * 4u) : 0;
                 if (hdr_c >= 0x80000000u) {
-                    uint32_t frm_c  = oc->curr[0x3E] & 0xFFu;
-                    uint32_t nfrm_c = oc->curr[0x3F] & 0xFFu;
-                    uint32_t prog_c = oc->curr[0x40] & 0xFFu;
+                    uint32_t frm_c  = oc->curr[game_layout.moby.anim_state_off + 2u] & 0xFFu;
+                    uint32_t nfrm_c = oc->curr[game_layout.moby.anim_state_off + 3u] & 0xFFu;
+                    uint32_t prog_c = oc->curr[game_layout.moby.anim_state_off + 4u] & 0xFFu;
                     f.header = hdr_c;
                     f.frameA = hdr_c + 0x24u + frm_c  * 8u;
                     f.frameB = hdr_c + 0x24u + nfrm_c * 8u;
                     f.w0     = (prog_c << 8) & 0xFF00u;
                     if (nfrm_c == 0) { f.frameB = f.frameA; f.w0 = 0; }
                     /* keep the snapshot's m_DepthOffset in bits 16-23 (OT pull) */
-                    f.w0 |= (uint32_t)(oc->curr[0x47] & 0xFFu) << 16;
+                    f.w0 |= (uint32_t)(oc->curr[game_layout.moby.angle_off + 3u] & 0xFFu) << 16;
                 }
             }
         }
@@ -5400,10 +5293,11 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * moby the game popped out draws on intermediates only. */
         double gpf_frac = -1.0;
         {
-            uint32_t rw0 = cpu->read_word(recs[i]);
+            moby_record_t LR; int lrok = moby_game.read_record(cpu, recs[i], &LR);
+            uint32_t rw0 = lrok ? LR.w0 : 0u;
             if ((rw0 & 0xFFu) != 0u && f.header >= 0x80000000u) {
-                int msc  = (int)(cpu->read_byte(f.header + 5) & 0xFFu);
-                int ir3  = (int)(int16_t)(((int32_t)cpu->read_word(recs[i] + 0x18) << 2) >> msc);
+                int msc  = (int)(cpu->read_byte(f.header + game_layout.moby.anim_scale_off) & 0xFFu);
+                int ir3  = (int)(int16_t)((LR.TR_raw[2] << 2) >> msc);
                 if ((((int)(rw0 & 0xFFu) * ir3) >> 5) > 63000) continue;
                 /* thread the live GPF byte into the decode so the sub-tick pose
                  * projects at the same GPF-rescaled translation */
@@ -5420,9 +5314,9 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                  * spine never lerps across a discontinuity. */
                 if (s_rot_now) {
                     const openpete_interp_obj_t* og =
-                        openpete_interp_objs_find(game_interp_moby_key(mobys[i]));
+                        openpete_interp_objs_find(moby_interp_key(mobys[i]));
                     if (og && og->have_prev && og->prev_ns && og->curr_ns > og->prev_ns) {
-                        int gprev = (int)og->prev[0x57];
+                        int gprev = (int)og->prev[game_layout.moby.size_off];
                         int gnow  = (int)(rw0 & 0xFFu);
                         if (gprev > 0) {
                             double t = (double)(s_rot_now - og->curr_ns)
@@ -5440,18 +5334,17 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 }
             }
         }
-        /* Re-apply any render-time per-row scale the .s baked into the cull-record
-         * matrix (rec+0x1C) that build_moby_record_fields' euler rebuild can't see —
-         * notably the dragon-rescue disappear (g_DragonCutscene state 5,
-         * draw.c:1924-1938 scales the record's M rows by a shrink (D_8006F3C0[ticks])
-         * + squash (Cos)). The rebuild is a pure camera·euler rotation, so
+        /* Re-apply any render-time per-row scale the game baked into the
+         * cull-record matrix that build_moby_record_fields' euler rebuild
+         * cannot see — a cutscene disappear scales the record's M rows by a
+         * shrink and a squash. The rebuild is a pure camera·euler rotation, so
          * |rebuild row| == |UNSCALED record row|; the ratio |record row|/|rebuild row|
          * is exactly that render-time scale (camera-independent — both are rotations).
          * Without it, cutscene mobys that squash/shrink render full-size on every
          * sub-tick present (--render-fps), i.e. they "don't animate out". The deadband
          * leaves normal mobys (ratio≈1, only Q12 truncation noise) untouched. */
         {
-            int rM[3][3]; ngte_read_matrix(cpu, recs[i] + 0x1Cu, rM);
+            int rM[3][3]; ngte_read_matrix(cpu, recs[i] + game_layout.moby.rec_matrix_off, rM);
             for (int row = 0; row < 3; row++) {
                 double mr = sqrt((double)rM[row][0]*rM[row][0] + (double)rM[row][1]*rM[row][1] + (double)rM[row][2]*rM[row][2]);
                 double mb = sqrt((double)f.M[row][0]*f.M[row][0] + (double)f.M[row][1]*f.M[row][1] + (double)f.M[row][2]*f.M[row][2]);
@@ -5475,14 +5368,14 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         {
             static long s_atcls = -2;
             if (s_atcls == -2) { const char* e = getenv("OPENPETE_MOBY_POSTRACE_CLS"); s_atcls = e ? strtol(e, NULL, 0) : -1; }
-            uint16_t tcls2 = (uint16_t)cpu->read_half(mobys[i] + 0x36u);
+            uint16_t tcls2 = (uint16_t)cpu->read_half(mobys[i] + game_layout.moby.class_off);
             if (s_atcls >= 0 && (s_atcls == 0xFFFF || tcls2 == (uint16_t)s_atcls)) {
-                uint32_t mrot = cpu->read_word(mobys[i] + 0x44u);
+                uint32_t mrot = cpu->read_word(mobys[i] + game_layout.moby.angle_off + 0u);
                 fprintf(stderr, "[moby-anim f=%u] m=%08x cls=%03x prevkf=%d balpha=%.3f curr(frm=%u nfrm=%u prog=%u anim=%u) fa=%08x fb=%08x fap=%08x fbp=%08x w0=%04x w0p=%04x rot=%06x\n",
                         openpete_frame, mobys[i], tcls2,
                         fap != 0, balpha,
-                        cpu->read_byte(mobys[i]+0x3E), cpu->read_byte(mobys[i]+0x3F),
-                        cpu->read_byte(mobys[i]+0x40), cpu->read_byte(mobys[i]+0x3C),
+                        cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 2u), cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 3u),
+                        cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 4u), cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 0u),
                         f.frameA, f.frameB, fap, fbp, f.w0 & 0xFFFFu, w0p & 0xFFFFu,
                         mrot & 0xFFFFFFu);
             }
@@ -5506,13 +5399,13 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         {
             static long s_sccls = -2;
             if (s_sccls == -2) { const char* e = getenv("OPENPETE_MOBY_POSTRACE_CLS"); s_sccls = e ? strtol(e, NULL, 0) : -1; }
-            uint16_t sccls = (uint16_t)cpu->read_half(mobys[i] + 0x36u);
+            uint16_t sccls = (uint16_t)cpu->read_half(mobys[i] + game_layout.moby.class_off);
             if (s_sccls >= 0 && (s_sccls == 0xFFFF || sccls == (uint16_t)s_sccls)) {
                 extern int g_openpete_canon_lag_leg;
                 double mx = 0, my = 0, mz = 0;
                 for (int j = 0; j < got; j++) { mx += s_proj[s_proj_n+j].sx; my += s_proj[s_proj_n+j].sy; mz += s_proj[s_proj_n+j].vz; }
                 double cf[3]={0,0,0}, mf[3]={0,0,0};
-                int ch = openpete_native_interp_pos(G_CAMERA, cf);
+                int ch = openpete_native_interp_pos(game_layout.cam.base, cf);
                 int mh2 = openpete_native_interp_pos(mobys[i], mf);
                 fprintf(stderr, "[moby-screen f=%u] leg=%s now=%.3f m=%08x cls=%03x n=%d c=(%.2f,%.2f) vz=%.1f fpos=%d/%d cam=(%.1f,%.1f,%.1f) mob=(%.1f,%.1f,%.1f) TRf=(%.2f,%.2f,%.2f)\n",
                         openpete_frame, g_openpete_canon_lag_leg ? "CANON" : "inter",
@@ -5674,9 +5567,9 @@ void moby_reextract(CPUState* cpu) {
      * dedup'd record pass, then restore the REGULAR scratch. */
     int spec_walk = 0;
     if (spec_fresh) {
-        void* h = openpete_subtick_host_ptr(G_SCRATCH + SPEC_SCR_LO);
+        void* h = openpete_subtick_host_ptr(moby_game.scratch + SPEC_SCR_LO);
         if (h) {
-            static uint8_t saved_reg[SPEC_SCR_LEN];
+            static uint8_t saved_reg[SPEC_SCR_MAX];
             memcpy(saved_reg, h, SPEC_SCR_LEN);       /* current = REGULAR (from bracket) */
             memcpy(h, s_canon_spec, SPEC_SCR_LEN);    /* specular queue + colour */
             reextract_record_pass(cpu, "SP");
@@ -5695,7 +5588,8 @@ void moby_reextract(CPUState* cpu) {
         spyro_native_prod_camera_leave();
         push_scene_moby();
     }
-    openpete_native_scene_set_hud_under_player(cpu->read_word(0x800757D8u) == 13u);
+    openpete_native_scene_set_hud_under_player(
+        moby_game.hud_under_player ? moby_game.hud_under_player(cpu) : 0);
     moby_native_set_actor_front(cpu);
 
     /* Occlusion census: per-present culled count for the phase counters + an
@@ -5754,15 +5648,41 @@ void moby_reextract(CPUState* cpu) {
     }
 }
 
-static const feature_dispatch_entry_t moby_dispatch[] = {
-    { 0x8001F798u, on_8001F798_moby_native },
-    { 0x80020F34u, on_80020F34_moby_native },
-    { 0x80022A2Cu, on_80022A2C_moby_native },
-    { 0u, NULL },
-};
+/* One entry per draw pass the descriptor names, filled at apply_options. The
+ * registry stops at the first zero address, so the table is COMPACTED: a
+ * pass the layout leaves at 0 contributes no entry instead of truncating the
+ * ones after it. A game that names no pass registers nothing and never enters
+ * this feeder. */
+static feature_dispatch_entry_t moby_dispatch[4];
+
+static void moby_apply_options(const openpete_options_t* opts) {
+    (void)opts;
+    /* No decoder slots means the geometry would be read with another game's
+     * bit layout. Refuse every pass rather than emit wrong triangles, and say
+     * why once. */
+    int have = moby_game.vstream_init && moby_game.vstream_next &&
+               moby_game.decode_faces && moby_game.read_record;
+    if (!have && getenv("OPENPETE_MOBY_CENSUS"))
+        fprintf(stderr, "[moby-native] feeder inert: no moby_game decoder slots\n");
+    const struct { uint32_t addr; feature_dispatch_fn fn; } passes[] = {
+        { game_layout.moby.hook_draw_regular,  on_draw_regular  },
+        { game_layout.moby.hook_draw_specular, on_draw_specular },
+        { game_layout.moby.hook_draw_shaded,   on_draw_shaded   },
+    };
+    int n = 0;
+    if (have)
+        for (size_t i = 0; i < sizeof passes / sizeof passes[0]; i++)
+            if (passes[i].addr) {
+                moby_dispatch[n].addr = passes[i].addr;
+                moby_dispatch[n].fn   = passes[i].fn;
+                n++;
+            }
+    moby_dispatch[n].addr = 0u;
+    moby_dispatch[n].fn   = NULL;
+}
 
 const feature_module_t moby_module = {
     .name           = "moby_native",
-    .apply_options  = NULL,
+    .apply_options  = moby_apply_options,
     .dispatch_table = moby_dispatch,
 };
