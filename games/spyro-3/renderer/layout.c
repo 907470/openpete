@@ -1,11 +1,16 @@
 // games/spyro-3/renderer/layout.c — the Spyro 3 engine layout. Bases come
 // from the drift-checked symbol aliases (manifest/spyro3_symbols.toml, each
-// row carrying its evidence); every offset is a literal until the Spyro 3
-// typed structs header exists, and its comment names the asm site or dump
-// that confirmed it. A field with no located counterpart is 0.
+// row carrying its evidence). An offset is `offsetof` against the typed
+// structs header (openpete_game_structs.h, pinned to the probed MIPS layout
+// by manifest/struct_layout.toml) where the decomp names the member; every
+// other offset is a literal whose comment names the asm site or dump that
+// confirmed it. A field with no located counterpart is 0.
 
 #include "game_layout.h"
 #include "spyro3_symbols.gen.h"
+#include "openpete_game_structs.h"
+
+#include <stddef.h>
 
 const game_layout_t game_layout = {
     .sin_table = G_SIN,     /* g_Sin (psx.map); cos = g_Cos 0x80065920 at +0x80.
@@ -77,10 +82,10 @@ const game_layout_t game_layout = {
         .base        = G_CAMERA,
         .proj_matrix = G_CAMERA + 0x00u,            /* sky draw: ctc2 $0..$4 from +0x00..+0x10 */
         .view_matrix = G_CAMERA + 0x14u,            /* world draw: ctc2 $0..$4 from +0x14..+0x24 */
-        .position    = G_CAMERA + 0x28u,            /* world draw: lw $s7/$t8/$t9 from +0x28..+0x30 */
+        .position    = G_CAMERA + offsetof(Camera, nextCameraPosCartesian),   /* world draw: lw $s7/$t8/$t9 */
         .rotation    = G_CAMERA + 0x44u,            /* func_8004F6C4's a0; pitch +0x46, yaw +0x48 */
-        .xform_end   = G_CAMERA + 0x34u,            /* +0x34..+0x3C is the Draw-time position copy the
-                                                     * visibility computation reads */
+        .xform_end   = G_CAMERA + offsetof(Camera, currentCameraPosCartesian),   /* the Draw-time position
+                                                     * copy the visibility computation reads */
     },
     .level_id = G_LEVELID,
     .terrain = {
@@ -110,7 +115,7 @@ const game_layout_t game_layout = {
         .list_base   = 0u,
         .list_reg    = 2,
         .list_offset = 0x1400u,           /* mobyfunc.s:916 addi 0x1400 */
-        .moby_pos    = 0x0Cu,             /* mobyfunc.s:932-933 lw 0xC / lw 0x10 */
+        .moby_pos    = offsetof(Moby, position),   /* mobyfunc.s:932-933 lw 0xC / lw 0x10 */
         .moby_ground = 0x1Cu,             /* mobyfunc.s:930 lw 0x1C; packed by func_8005629C
                                            * (updatemobys.s:984-993) */
         .size_shl    = 1,                 /* mobyfunc.s:1058-1060 sll 1 before the corners */
