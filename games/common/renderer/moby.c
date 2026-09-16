@@ -740,7 +740,10 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b,
                  uint8_t heat;     /* m_SpecularMetalColor byte2 (moby+0x4E),
                                     * snapshotted at capture: the flame-heat
                                     * level (ApplyFlameHeat*) — consumed by the
-                                    * mod-texture face red-shift */ } rec_meta;
+                                    * mod-texture face red-shift */
+                 int M[3][3];      /* model-to-view rotation, Q12: the per-face
+                                    * special material rotates a face normal by
+                                    * it */ } rec_meta;
                  /* spec_solo (trailing, set after the positional literal) =
                  * reveal-built record whose moby is in NO .s queue this tick
                  * (beyond canonical range under --lod extended, or off-4:3).
@@ -945,8 +948,13 @@ static int project_all_records(CPUState* cpu) {
     s_us_proj += (long)(openpete_phase_now_us() - t0); s_us_calls++;
     return n;
 }
+/* Engagement census of the per-face special-material hook: one count per
+ * treatment the game's slot reported applying. */
+static long s_special_faces[3];
+
 static int project_all_records_inner(CPUState* cpu) {
     s_proj_n = 0; s_max_blend = 0; s_nrecs = 0;
+    s_special_faces[0] = s_special_faces[1] = s_special_faces[2] = 0;
     int nrec = 0;
     for (int r = 0; r < MAX_RECORDS; r++) {
         uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
@@ -978,6 +986,7 @@ static int project_all_records_inner(CPUState* cpu) {
                 zsf4,
                 atan2f((float)R.TR_raw[2], (float)R.TR_raw[0]),
                 R.frame_a, 0u, 0u, 0.f };
+            memcpy(s_recs[nrec].M, R.M, sizeof s_recs[nrec].M);
             s_recs[nrec].heat = moby_game.spec_colour_off
                 ? (uint8_t)moby_heat_scalar(
                       cpu->read_word(s_recs[nrec].moby + moby_game.spec_colour_off))
@@ -1493,6 +1502,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
             moby_tier_faceblock(cpu, f.header, rzsf4), f.w0,
             f.metal, f.mscol, m, rzsf4,
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA, 0u, 0u, 0.f };
+        memcpy(s_recs[s_nrecs].M, f.M, sizeof s_recs[s_nrecs].M);
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
         s_recs[s_nrecs].spec_solo = 1;   /* sole feeder: walk applies the SPEC face treatment */
         fade_snap_put(m, rzsf4);
@@ -1618,11 +1628,16 @@ static uint8_t  s_wtri_mangle[MAX_NTRI]; /* any vertex near-fixed-up (unr) or
                                           * projection — never a key emitter */
 static uint32_t s_wtri_fkey[MAX_NTRI]; /* packed SXY vertex-index triple (face topology id) */
 static uint16_t s_wtri_cls[MAX_NTRI];  /* m_Class of the emitting moby (provenance tag) */
+/* Which per-face special material produced this tri's colours, 0 = none: the
+ * colour A/B prices those faces against the prims separately, because they are
+ * the only ones whose colour the walk computes rather than reads. */
+static uint8_t  s_wtri_special[MAX_NTRI];
 static _Thread_local uint32_t s_cur_moby_key;   /* moby for the record currently being walked */
 static _Thread_local uint16_t s_cur_moby_cls;   /* m_Class of that moby (set beside the key) */
 static _Thread_local int8_t   s_cur_moby_dofs;  /* authored OT bias (set beside the key) */
 static _Thread_local float    s_cur_env_az;     /* current record's TR azimuth (env-UV bias) */
 static _Thread_local uint32_t s_emit_fkey;      /* packed index triple for the next emit_wtri */
+static _Thread_local uint8_t  s_emit_special;   /* special-material id for the next emit_wtri */
 #define PACK_FKEY(a,b,c) (((uint32_t)(a)&0x3FFu) | (((uint32_t)(b)&0x3FFu)<<10) | (((uint32_t)(c)&0x3FFu)<<20))
 
 /* signed 2*area of a screen-space triangle (NCLIP analog) -- backface/winding. */
@@ -1712,11 +1727,11 @@ static _Thread_local mn_walkdiag* t_diag = &s_wdiag[0];
 typedef struct {
     ntri_t*   tri;  uint32_t* fkey; uint32_t* moby; uint16_t* cls;
     uint8_t*  ui;   uint8_t*  front; uint8_t* mangle;
-    int8_t*   dofs;
+    int8_t*   dofs; uint8_t*  special;
     int n, cap;
 } mn_out;
 static mn_out s_gout = { s_wtri, s_wtri_fkey, s_wtri_moby, s_wtri_cls, s_wtri_ui,
-                         s_wtri_front, s_wtri_mangle, s_wtri_dofs,
+                         s_wtri_front, s_wtri_mangle, s_wtri_dofs, s_wtri_special,
                          0, MAX_NTRI };
 static _Thread_local mn_out* t_out = &s_gout;
 
@@ -1766,6 +1781,7 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     O->mangle[O->n] = (uint8_t)((a->unr || b->unr || c->unr ||
                                  a->sat || b->sat || c->sat) ? 1 : 0);
     O->fkey[O->n] = s_emit_fkey;
+    O->special[O->n] = s_emit_special;
     O->cls[O->n] = s_cur_moby_cls;            /* provenance tag (mod-shaders S6) */
     ntri_t* t = &O->tri[O->n++];
     t->v[0]=(ntri_vert){a->sx,a->sy,a->vz,ua,va,ca, a->ex,a->ey,a->ez, a->tvz};
@@ -1794,6 +1810,7 @@ void moby_simple_record(CPUState* cpu, uint32_t moby) {
                 : openpete_ui_moby_is_addr_ui(moby)     ? 1 : 0;
     s_cur_front = s_cur_ui == 0 && moby_is_cutscene_actor(cpu, moby);
     s_emit_fkey = 0u;
+    s_emit_special = 0u;
 }
 
 void moby_simple_project(const double p[3], float* sx, float* sy) {
@@ -1827,6 +1844,7 @@ void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
         q[k].ex = q[k].ey = q[k].ez = 0.0f;
     }
     s_emit_fkey = fkey;
+    s_emit_special = 0u;
     emit_wtri(&q[0], &q[1], &q[2], rgb[0], rgb[1], rgb[2],
               u[0], v[0], u[1], v[1], u[2], v[2],
               textured, tpage_x, tpage_y, clut_x, clut_y, bpp, blend);
@@ -2543,6 +2561,29 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 }
               }
             }
+            /* The game's own per-face special material, where it has one that
+             * the record selects rather than the face (the treatment reads the
+             * face's normal and the record's material word). Like the branch
+             * above it, the draw lays these faces coplanar over their base
+             * faces and wins by ordering-table position; under a true Z-buffer
+             * the decal needs the same pull toward the camera to win. */
+            s_emit_special = 0u;
+            if (moby_game.special_face && F->hl) {
+                uint32_t cc[4] = { c0, c1, c2, c3 };
+                int tex2 = textured;
+                int applied = moby_game.special_face(R->mscol, R->M, F, cc, &tex2);
+                if (applied) {
+                    s_special_faces[applied - 1]++;
+                    s_emit_special = (uint8_t)applied;
+                    c0 = cc[0]; c1 = cc[1]; c2 = cc[2]; c3 = cc[3];
+                    textured = tex2;
+                    hlq[0] = *p0; hlq[1] = *p1; hlq[2] = *p2;
+                    hlq[0].vz *= 0.998f; hlq[1].vz *= 0.998f; hlq[2].vz *= 0.998f;
+                    p0 = &hlq[0]; p1 = &hlq[1]; p2 = &hlq[2];
+                    if (p3) { hlq[3] = *p3; hlq[3].vz *= 0.998f; p3 = &hlq[3]; }
+                }
+            }
+
             /* Semi-transparency (ABE). The .s moby renderer (r_moby.s F798 emit
              * paths .L80020530 / .L8002066C) builds each GPU command word as
              *   code | RGB | ((w1 & 1) << 25)
@@ -2713,9 +2754,10 @@ static int walk_slabs_ready(int nw) {
         O->front  = (uint8_t*) malloc(MAX_NTRI);
         O->mangle = (uint8_t*) malloc(MAX_NTRI);
         O->dofs   = (int8_t*)  malloc(MAX_NTRI);
+        O->special= (uint8_t*) malloc(MAX_NTRI);
         O->cap = MAX_NTRI;
         if (!O->tri || !O->fkey || !O->moby || !O->cls || !O->ui || !O->front ||
-            !O->mangle || !O->dofs) return 0;
+            !O->mangle || !O->dofs || !O->special) return 0;
     }
     return 1;
 }
@@ -2763,6 +2805,7 @@ static void walk_parallel(CPUState* cpu, int is_spec) {
         memcpy(&s_wtri_front[s_gout.n],  &O->front[st],  (size_t)n);
         memcpy(&s_wtri_mangle[s_gout.n], &O->mangle[st], (size_t)n);
         memcpy(&s_wtri_dofs[s_gout.n],   &O->dofs[st],   (size_t)n);
+        memcpy(&s_wtri_special[s_gout.n],&O->special[st],(size_t)n);
         s_gout.n += n;
     }
     if (t_mrg) s_us_merge += (long)(openpete_phase_now_us() - t_mrg);
@@ -2860,6 +2903,11 @@ static void compare_walk_vs_prims(void) {
     double wcost_sum=0.0;   /* mean of the matched tris' worst-vertex distance */
     int mt_p=0,mt_n=0,mf_p=0,mf_n=0;  /* matched nclip split: textured/flat (winding rule) */
     int colmatch=0, coln=0, uvmatch=0, uvn=0; double wluma_sum=0, pluma_sum=0;
+    /* Per-channel colour error of the special-material faces alone, over the
+     * vertex pairs the geometric match made: their colour is computed by the
+     * feeder, not read from the model, so it is priced against the prim the
+     * draw emitted rather than scored pass/fail with the rest. */
+    long spc_n=0, spc_sum=0, spc_max=0;
     /* On-screen subset (centroid within the disp rect): the off-screen extras
      * the .s clip-rejects are scissored by panel 0 anyway, so the visually-
      * meaningful match is the on-screen one. */
@@ -2916,6 +2964,16 @@ static void compare_walk_vs_prims(void) {
                     }
                     if (bd <= 2.5*2.5 && bk >= 0) {
                         paired++;
+                        if (s_wtri_special[wi]) {
+                            uint32_t wv = w->v[kv].rgb & 0xFFFFFFu;
+                            uint32_t pv = s_ptri[bp].rgb[bk] & 0xFFFFFFu;
+                            for (int ch = 0; ch < 3; ch++) {
+                                long d = (long)((wv >> (ch*8)) & 0xFFu) - (long)((pv >> (ch*8)) & 0xFFu);
+                                if (d < 0) d = -d;
+                                spc_sum += d; spc_n++;
+                                if (d > spc_max) spc_max = d;
+                            }
+                        }
                         if ((w->v[kv].rgb & 0xFFFFFFu) != (s_ptri[bp].rgb[bk] & 0xFFFFFFu)) {
                             all_ok = 0;
                             wc = w->v[kv].rgb & 0xFFFFFFu;
@@ -2997,6 +3055,8 @@ static void compare_walk_vs_prims(void) {
         s_wdiag[0].align_lo, s_wdiag[0].align_hi, s_wdiag[0].desync,
         neg_m,pos_m,neg_u,pos_u, mt_n,mt_p,mf_n,mf_p, colmatch,coln, uvmatch,uvn, wdup,wn,
         prim_quad, prim_tri, s_wdiag[0].quad, coln?wluma_sum/coln:0.0, coln?pluma_sum/coln:0.0);
+    fprintf(stderr, "[moby-walk-special f=%u] pairedChannels=%ld meanErr=%.2f maxErr=%ld\n",
+            openpete_frame, spc_n, spc_n ? (double)spc_sum/(double)spc_n : 0.0, spc_max);
     #undef ONSCR
 }
 
@@ -3543,13 +3603,14 @@ static void compare_and_report(int nrec) {
         "[moby-verify f=%u] recs=%d blend=%d primVerts=%d divergent(satNN)=%d | clean-match(<=4px)=%d/%d(%.1f%%) "
         "mean=%.3fpx | texMatch=%d/%d(%.1f%%) flatMatch=%d/%d(%.1f%%) | "
         "NN-amb=%d(%.1f%%) maxTieJump=%.1fpx | worst gte(%.0f,%.0f) d=%.1f code=%02X | "
-        "prims=%d(tex=%d flat=%d)\n",
+        "prims=%d(tex=%d flat=%d) special_faces=%ld/%ld/%ld\n",
         openpete_frame, nrec, s_max_blend, gv_n, divergent_n, near_n, clean, clean?100.0*near_n/clean:0.0,
         near_n?sum/near_n:0.0,
         tex_m, tex_n, tex_n?100.0*tex_m/tex_n:0.0,
         flat_m, flat_n, flat_n?100.0*flat_m/flat_n:0.0,
         ambig, near_n?100.0*ambig/near_n:0.0, max_tiejump,
-        wgx,wgy, worst, worst_code, s_gte_n, n_tex, n_flat);
+        wgx,wgy, worst, worst_code, s_gte_n, n_tex, n_flat,
+        s_special_faces[0], s_special_faces[1], s_special_faces[2]);
     /* Per-record: native vert count + how many prim verts NN-matched to it.
      * A record with many native verts but ~0 matches is mis-projected (the
      * residual). w0 = the record flags word (LP/HP + per-axis sign). */
@@ -5847,6 +5908,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             f.w0, f.metal, f.mscol, mobys[i], zsf4,
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA,
             fap, hdrp, (float)balpha };
+        memcpy(s_recs[s_nrecs].M, f.M, sizeof s_recs[s_nrecs].M);
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
         s_proj_n += got; s_nrecs++;
     }

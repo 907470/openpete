@@ -170,7 +170,17 @@ int s3_decode_faces_stride(CPUState* cpu, uint32_t fb, uint32_t bytecount,
             F->bit0     = (uint8_t)(tri ? ((w1 >> 3) & 1u) : 0u);
             F->textured = (uint8_t)(textured ? 1 : 0);
             F->untested = (uint8_t)(sign ? 1 : 0);
-            F->hl = 0; F->blendbit = 0; F->abr = 0; F->bpp = 16;
+            /* Bits 4-5 of a triangle's flag field arm the special-material
+             * dispatch (mobydraw.s:1707,1710): bit 4 takes a second mechanism
+             * this decode does not carry, bit 5 alone takes the three
+             * treatments the record's material word selects between. The same
+             * word's bits 7-30 are then a signed face normal instead of the
+             * three colour indices (mobydraw.s:2552-2570). */
+            F->hl = (uint8_t)(tri ? ((w1 & 0x10u) ? 2u : (w1 & 0x20u) ? 1u : 0u) : 0u);
+            F->n1 = (int8_t)((w1 >> 15) & 0xFFu);
+            F->n2 = (int8_t)((w1 >>  7) & 0xFFu);
+            F->n3 = (int8_t)((w1 >> 23) & 0xFFu);
+            F->blendbit = 0; F->abr = 0; F->bpp = 16;
             /* Bits 0-2, signed: the depth key's per-face ordering bias
              * (mobydraw.s:1712-1713, spyrodraw.s:1000-1001). */
             F->otbias = (int8_t)(((int32_t)(w1 << 29)) >> 29);
@@ -206,6 +216,119 @@ int s3_decode_faces_stride(CPUState* cpu, uint32_t fb, uint32_t bytecount,
 int s3_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                     moby_wface_t* out, int cap, moby_face_stats_t* st) {
     return s3_decode_faces_stride(cpu, fb, bytecount, out, cap, st, 0u, 0);
+}
+
+/* ---- per-face special materials (mobydraw.s:1870-1875) ----------------
+ *
+ * A triangle whose flag bit 5 is set leaves the ordinary emit and takes one of
+ * three treatments, selected not by the face but by the record's material word
+ * at +0x3C: the draw stashes that word in GTE control 8 at entry
+ * (mobydraw.s:987), and where it is non-zero replaces it with its own bits
+ * 28-30 as a 0..3 mode and runs that mode's per-moby setup
+ * (mobydraw.s:1457-1460,1984-1998). Mode 3 and above disarm the treatment and
+ * draw the face normally; a zero material word leaves control 8 at zero, which
+ * is mode 0 with no setup.
+ *
+ * The material word packs three 8-bit colour channels at bits 0-7, 8-15 and
+ * 16-23, each widened to the GTE's 12-bit form, plus a scalar in bits 24-27.
+ *
+ *   mode 0 (mobydraw.s:2215-2262) — the channels are the far colour RFC/GFC/BFC
+ *     (mobydraw.s:2073-2076); each vertex depth-cues from BLACK toward it at
+ *     IR0 = (the vertex colour's three channels summed) << 3, so the face
+ *     grades by its own luminance.
+ *   mode 1 (mobydraw.s:2273-2301) — the same far colour, but one IR0 for the
+ *     whole moby, bits 24-27 << 8 (mobydraw.s:2079), and each vertex depth-cues
+ *     from its own colour. IR0 zero leaves the colours alone.
+ *   mode 2 (mobydraw.s:2551-2564) — the specular sheen. The channels are the
+ *     GTE background colour, bits 24-27 doubled is IR0 (mobydraw.s:2024-2045),
+ *     and the light matrix is three copies of one constant vector
+ *     (mobydraw.s:2048-2057). The face normal rotates into view by the model
+ *     matrix, scales by IR0 and projects onto that vector on top of the
+ *     background colour, giving one colour for the whole face.
+ *
+ * All three replace the face's vertex colours and nothing else: the face keeps
+ * the texture its own record carries. The special emit's command word starts at
+ * the untextured code (mobydraw.s:2562) and the shared emit the three treatments
+ * fall into adds the texture bit back from the face record, so a treatment that
+ * forced its face untextured would drop the texture the draw keeps.
+ *
+ * CARVE-OUT: flag bit 4 takes a different dispatcher (mobydraw.s:2113) that
+ * this decode does not carry; the walk leaves those faces on the ordinary
+ * path.
+ */
+
+/* The light matrix mode 2 loads, all three rows equal (mobydraw.s:2048-2057:
+ * control 16-20 = F666F4E0, F4E0F62B, F62BF666, F666F4E0, F62B). */
+static const int S3_SPEC_LIGHT[3] = { -2848, -2458, -2517 };
+
+static int s3_clamp_ir(long v) {
+    if (v >  32767) return  32767;
+    if (v < -32768) return -32768;
+    return (int)v;
+}
+
+static int s3_special_face(uint32_t mat, const int M[3][3],
+                           const moby_wface_t* F, uint32_t c[4], int* textured) {
+    (void)textured;   /* every treatment replaces colours only */
+    if (F->hl != 1) return 0;                      /* bit 4: the other dispatcher */
+    int mode = mat ? (int)((mat >> 28) & 7u) : 0;
+    if (mode > 2) return 0;                        /* the treatment is disarmed */
+
+    /* The three 12-bit channels the material word carries. */
+    int mc[3] = { (int)((mat <<  4) & 0xFF0u),
+                  (int)((mat >>  4) & 0xFF0u),
+                  (int)((mat >> 12) & 0xFF0u) };
+
+    if (mode == 0) {
+        for (int k = 0; k < 4; k++) {
+            int sum = (int)(c[k] & 0xFFu) + (int)((c[k] >> 8) & 0xFFu)
+                    + (int)((c[k] >> 16) & 0xFFu);
+            int ir0 = sum << 3;
+            uint32_t o = 0u;
+            for (int ch = 0; ch < 3; ch++)
+                o |= (uint32_t)ngte_dpcs_ch(0, mc[ch], ir0) << (ch * 8);
+            c[k] = o;
+        }
+        return 1;
+    }
+
+    if (mode == 1) {
+        int ir0 = (int)((mat >> 16) & 0xF00u);
+        if (!ir0) return 0;                        /* mobydraw.s:2288 */
+        for (int k = 0; k < 4; k++) {
+            uint32_t o = 0u;
+            for (int ch = 0; ch < 3; ch++)
+                o |= (uint32_t)ngte_dpcs_ch((int)((c[k] >> (ch * 8)) & 0xFFu),
+                                            mc[ch], ir0) << (ch * 8);
+            c[k] = o;
+        }
+        return 2;
+    }
+
+    /* mode 2. The normal through the model matrix, scaled by IR0, projected on
+     * the light vector over the background colour. Every stage truncates the
+     * way its GTE op does: MVMVA and CC shift by 12, GPF does not, and CC's
+     * second stage multiplies by a white 8-bit modulating colour. */
+    int ir0 = (int)((mat >> 23) & 0x1Eu);
+    int ir[3];
+    for (int i = 0; i < 3; i++) {
+        long m = (long)M[i][0] * F->n1 + (long)M[i][1] * F->n2
+               + (long)M[i][2] * F->n3;
+        ir[i] = s3_clamp_ir(m >> 12);
+    }
+    for (int i = 0; i < 3; i++) ir[i] = s3_clamp_ir((long)ir0 * ir[i]);
+    long dot = (long)S3_SPEC_LIGHT[0] * ir[0] + (long)S3_SPEC_LIGHT[1] * ir[1]
+             + (long)S3_SPEC_LIGHT[2] * ir[2];
+    uint32_t o = 0u;
+    for (int ch = 0; ch < 3; ch++) {
+        long mac = (((long)mc[ch] * 0x1000) + dot) >> 12;
+        if (mac < 0) mac = 0; else if (mac > 32767) mac = 32767;
+        long v = (((long)(255 << 4) * mac) >> 12) >> 4;
+        if (v < 0) v = 0; else if (v > 255) v = 255;
+        o |= (uint32_t)v << (ch * 8);
+    }
+    c[0] = c[1] = c[2] = c[3] = o;
+    return 3;
 }
 
 /* ---- cull record ---------------------------------------------------
@@ -301,7 +424,7 @@ static uint32_t s3_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t frame_
  * the flat-lit material, whose colour comes from a face normal rather than the
  * colour block (mobydraw.s:4440,4720). The three texture words are the same
  * {u0|v0<<8|clut<<16}, {u1|v1<<8|tpage<<16}, {u2|v2<<8|u3<<16|v3<<24} triple
- * the animated stream uses, with word 2's sign the semi-transparency enable
+ * the animated stream uses, with word 1's sign the semi-transparency enable
  * (mobydraw.s:4519-4520,4536).
  *
  * Colours are indexed per vertex out of the header's colour block. Inside the
@@ -331,7 +454,19 @@ static int      s_simple_qn;
  * the verify harness prints what this one actually read. */
 static long s_simple_recs, s_simple_verts, s_simple_faces, s_simple_tris;
 static long s_simple_flat, s_simple_screen, s_simple_culled;
+static long s_flat_zero_colour, s_flat_back_emitted, s_flat_back_dropped;
 extern unsigned openpete_frame;
+
+/* The four flat-material words the draw keeps in PSX scratchpad at
+ * 0x1F8003F0..0x1F8003FC (mobydraw.s:4360-4363, $gp = 0x1F800000). They are
+ * reloaded from the table only for a record whose Moby+0x54 is non-zero
+ * (mobydraw.s:4350-4352), so a record with a zero index draws with whatever
+ * the previous record — or the previous draw call — left there. Snapshotting
+ * the words before the game's own draw gives the decode the same entry state
+ * that draw started from, and a sub-tick replay the same state again, without
+ * ever writing the scratchpad. */
+#define S3_FLAT_SCRATCH 0x1F8003F0u
+static uint32_t s_flat_entry[4];
 
 static void s3_simple_capture(CPUState* cpu) {
     s_simple_qn = 0;
@@ -432,7 +567,8 @@ static int s3_simple_decode(CPUState* cpu) {
     static double vpos[S3_SIMPLE_VERTS][3];
     static float  vscr[S3_SIMPLE_VERTS][2];
     static uint32_t ctab[S3_SIMPLE_COLS];
-    uint32_t flat_w[4] = { 0u, 0u, 0u, 0u };
+    uint32_t flat_w[4];
+    memcpy(flat_w, s_flat_entry, sizeof flat_w);
 
     for (int r = 0; r < s_simple_qn; r++) {
         uint32_t moby = s_simple_q[r][0];
@@ -593,21 +729,33 @@ static int s3_simple_decode(CPUState* cpu) {
             if (flat) {
                 s_simple_flat++;
                 textured = 0;
+                /* A flat-lit face is two-sided: whichever way it faces it draws
+                 * whole, and only the ABE bit changes. The draw takes the
+                 * back-facing verdict from the sign of the NCLIP register it
+                 * carries into the emit (mobydraw.s:4747-4748, srl/sll 31/25 at
+                 * 0x80034930), which the four-way test above it sets: a triangle
+                 * keeps its own NCLIP and drops on zero (mobydraw.s:4714-4718);
+                 * a quad forces +1 when the second NCLIP is positive, forces -1
+                 * when the first is non-negative and the second negative, drops
+                 * when the first is non-negative and the second zero, and
+                 * otherwise keeps the first, which is negative
+                 * (mobydraw.s:4719-4746). Every surviving quad case therefore
+                 * reduces to: front exactly when the second NCLIP is positive. */
                 if (tri) {
+                    if (nA == 0.0) { fp += adv; continue; }
                     back = (nA < 0.0);
                     emit_a = 1;
-                } else if (nA >= 0.0) {
-                    /* mobydraw.s:4726-4745: the far side still draws, as the
-                     * whole quad, flagged back-facing. */
-                    if (nB > 0.0) emit_b = 1;
-                    else if (nB < 0.0) { emit_a = emit_b = 1; back = 1; }
                 } else {
-                    if (nB > 0.0) emit_a = emit_b = 1; else emit_a = 1;
+                    if (nA >= 0.0 && nB == 0.0) { fp += adv; continue; }
+                    back = !(nB > 0.0);
+                    emit_a = emit_b = 1;
                 }
                 /* The back side survives only within the near threshold the
                  * draw tests the translation Z against (mobydraw.s:4788-4797). */
-                if (back && !(TR[2] - ((f1 & 1u) ? 2048.0 : 0.0) < 0.0))
-                    emit_a = emit_b = 0;
+                if (back) {
+                    if (TR[2] - ((f1 & 1u) ? 2048.0 : 0.0) < 0.0) s_flat_back_emitted++;
+                    else { s_flat_back_dropped++; emit_a = emit_b = 0; }
+                }
                 /* and draws semi-transparent (mobydraw.s:4783-4784). */
                 blend = back ? 1 : 0;
             } else if (!tri) {
@@ -629,6 +777,7 @@ static int s3_simple_decode(CPUState* cpu) {
                 uint32_t c = s3_simple_flat_colour(R, f1,
                                 flat_w[(f1 & 1u) ? 0 : 2],
                                 flat_w[(f1 & 1u) ? 1 : 3], back);
+                if ((c & 0xFFFFFFu) == 0u) s_flat_zero_colour++;
                 col[0] = col[1] = col[2] = col[3] = c;
             } else {
                 int ci[4] = { (int)((f1 >> 24) & 0x7Fu), (int)((f1 >> 17) & 0x7Fu),
@@ -697,16 +846,21 @@ static int s3_simple_replay(CPUState* cpu) {
 static int s3_simple_pass(CPUState* cpu) {
     s_simple_recs = s_simple_verts = s_simple_faces = s_simple_tris = 0;
     s_simple_flat = s_simple_screen = s_simple_culled = 0;
+    s_flat_zero_colour = s_flat_back_emitted = s_flat_back_dropped = 0;
     s3_simple_capture(cpu);
+    for (int i = 0; i < 4; i++)
+        s_flat_entry[i] = cpu->read_word(S3_FLAT_SCRATCH + (uint32_t)i * 4u);
     openpete_recomp_module_get()->dispatch(cpu, F_MOBY_DRAW_STATIC);
     int n = s3_simple_decode(cpu);
     static int s_dbg = -1;
     if (s_dbg < 0) { const char* e = getenv("OPENPETE_MOBY_VERIFY"); s_dbg = (e && *e && *e != '0'); }
     if (s_dbg)
         fprintf(stderr, "[moby-simple f=%u] queued=%d drawn=%ld culled=%ld screenkind=%ld "
-                        "verts=%ld faces=%ld flat=%ld tris=%d\n",
+                        "verts=%ld faces=%ld flat=%ld tris=%d "
+                        "flat_zero_colour=%ld flat_back_emitted=%ld flat_back_dropped=%ld\n",
                 openpete_frame, s_simple_qn, s_simple_recs, s_simple_culled, s_simple_screen,
-                s_simple_verts, s_simple_faces, s_simple_flat, n);
+                s_simple_verts, s_simple_faces, s_simple_flat, n,
+                s_flat_zero_colour, s_flat_back_emitted, s_flat_back_dropped);
     return n;
 }
 
@@ -719,6 +873,7 @@ const moby_game_t moby_game = {
     .model_is_animated = s3_model_is_animated,
     .simple_pass       = s3_simple_pass,
     .simple_replay     = s3_simple_replay,
+    .special_face      = s3_special_face,
     /* The cull writes its verdict into a gameplay-readable Moby byte, so
      * nothing the host widens may reach it and the walk feeds the records the
      * cull queued, no more. */

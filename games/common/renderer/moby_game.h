@@ -71,7 +71,11 @@ static inline uint32_t moby_vs_read_half(CPUState* cpu, const moby_vstream_t* s,
  * `untested` is the face record's sign bit on its own: a draw that emits every
  * face textured still carries that bit, and reads it as the face's exemption
  * from the back-face test rather than as a texture flag. tpx/tpy/clx/cly/bpp and
- * u[]/v[] are the face's texture page, CLUT and texel corners. */
+ * u[]/v[] are the face's texture page, CLUT and texel corners.
+ *
+ * n1/n2/n3 is the signed face normal a special-material face carries in the
+ * same word the colour indices occupy, for the games whose special treatment
+ * reinterprets that word; 0 on every other face. */
 typedef struct moby_wface {
     uint16_t i0, i1, i2, i3;
     uint16_t c0, c1, c2, c3;
@@ -79,6 +83,7 @@ typedef struct moby_wface {
     uint8_t  untested;
     uint8_t  blendbit, abr, bpp;
     int8_t   otbias;
+    int8_t   n1, n2, n3;
     int16_t  tpx, tpy, clx, cly;
     uint8_t  u[4], v[4];
 } moby_wface_t;
@@ -153,6 +158,17 @@ typedef struct moby_game {
      * the animated records alone. */
     int  (*simple_pass)(CPUState* cpu);
     int  (*simple_replay)(CPUState* cpu);
+
+    /* ---- per-face special material -----------------------------------
+     * A face the stream marks with a special-material flag (moby_wface_t.hl)
+     * whose treatment the game selects from the record's material word, not
+     * from the face. The hook rewrites the face's four vertex colours in place
+     * and may clear `textured`; it returns 0 to leave the face alone, or
+     * 1 + the treatment index it applied, which the walk counts. `material` is
+     * the record's material word and `M` its model-to-view matrix. NULL where
+     * the game's special faces are handled by the walk's own branch. */
+    int  (*special_face)(uint32_t material, const int M[3][3],
+                         const struct moby_wface* F, uint32_t c[4], int* textured);
 
     /* 1 = the walk may rebuild cull records from gamestate for the mobys the
      * canonical cull never queued (the widescreen and extended-LOD reveal).
