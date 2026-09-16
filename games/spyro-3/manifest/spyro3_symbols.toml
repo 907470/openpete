@@ -1,0 +1,91 @@
+# Curated PSX symbol aliases for the Spyro 3 engine layout (renderer/layout.c).
+#
+# Hand-maintained: the readable ALIAS the layout uses, joined by address to
+# the authoritative manifest (globals.toml / symbols.toml) at build time.
+# tools/gen_symbols_header.py generates gen/spyro3_symbols.gen.h from this and
+# FAILS the build if any `addr` is not a symbol start in the manifest.
+#
+# The decomp names almost nothing here, so each row's note carries the
+# identification evidence: the asm site that reads or writes the address and
+# the RAM dump / write census that confirmed it (Sunrise Spring, level 10,
+# gameplay anchor at VBL 2500).
+
+[[symbol]]
+name = "G_ENVIRONMENT"
+addr = 0x8006D048
+note = "Unk_8006d048 (common.h); the world draw func_80022378 reads +0x00 sector list, +0x04 count, +0x30 visibility-computed flag, +0x34..+0x3C far colour (ctc2 $21..$23); func_8002D0D8 reads +0x08 world / +0x0C sky occlusion data and +0x10/+0x14 their enable words. Dump: list 0x8008DC84, 138 sectors, sorted pointers"
+
+[[symbol]]
+name = "G_CYCLORAMA"
+addr = 0x8006E334
+note = "sky header: +0x00 count (37), +0x04 sector pointer list, +0x08 background colour 0x00BBGGRR (equals the DRAWENV clear colour at DB+0x18 in the dump); read by the sky draw func_8001C368"
+
+[[symbol]]
+name = "G_CAMERA"
+addr = 0x8006DFF8
+note = "g_Camera; +0x00 sky matrix and +0x14 world matrix written per tick by func_8004F6C4, +0x28 position by the camera update, +0x34 the Draw-time position copy func_8002D0D8 reads, +0x44 rotation angles (pitch +0x46, yaw +0x48)"
+
+[[symbol]]
+name = "G_LEVELID"
+addr = 0x8006C5BC
+note = "currentLevel; the level number the loader loads (10..50); 10 in the dump"
+
+[[symbol]]
+name = "G_CUR_DB"
+addr = 0x8006C600
+note = "pointer to the draw buffer under construction; func_8001E640 flips it between G_DB and G_DB+0x74 at tick start"
+
+[[symbol]]
+name = "G_DB"
+addr = 0x8006FBFC
+note = "draw-buffer pair, stride 0x74: DRAWENV +0x00 (clip 512x216, clear colour +0x18), DISPENV +0x5C, polybuf base +0x70 (0x801A2508 / 0x801BE508)"
+
+[[symbol]]
+name = "D_POLYBUF_CURSOR"
+addr = 0x8006C664
+note = "primitive cursor: reset to the current DB's +0x70 by func_8001E640, advanced 0x1C per prim and stored at exit by both draws"
+
+[[symbol]]
+name = "D_POLYBUF_END"
+addr = 0x8006C668
+note = "primitive buffer end = base + D_POLYBUF_SIZE, written by func_8001E640; the sky draw guards against it minus 0x400"
+
+[[symbol]]
+name = "D_POLYBUF_SIZE"
+addr = 0x8006C7DC
+note = "primitive buffer size per half (0x1C000 in the dump)"
+
+[[symbol]]
+name = "D_OT_BASE"
+addr = 0x8006C634
+note = "ordering table base (0x801DA510), written at boot; both draws link prims into buckets off it"
+
+[[symbol]]
+name = "D_OT_TOP"
+addr = 0x8006C7D4
+note = "highest ordering-table bucket written: reset to D_OT_BASE + 0x1000 per tick, stored by both draws at exit"
+
+# ---- function addresses (validated against symbols.toml) ----
+[[symbol]]
+name = "F_WORLD_DRAW"
+addr = 0x80022378
+kind = "function"
+note = "func_80022378 — the world renderer (environment.s); the terrain hook site"
+
+[[symbol]]
+name = "F_SKY_DRAW"
+addr = 0x8001C368
+kind = "function"
+note = "func_8001C368 — the dome renderer (cyclorama.s); the cyclorama hook site"
+
+[[symbol]]
+name = "F_VISIBILITY"
+addr = 0x8002D0D8
+kind = "function"
+note = "func_8002D0D8(a0) — computes the sector visibility bytes in the scratchpad (a0=0 world at 0x1F800000, a0=1 sky at 0x1F8003C0) from the occlusion data and the camera's +0x34 position copy"
+
+[[symbol]]
+name = "F_CAMERA_MATRICES"
+addr = 0x8004F6C4
+kind = "function"
+note = "func_8004F6C4 — builds the sky and world matrices from the angles at G_CAMERA+0x44"

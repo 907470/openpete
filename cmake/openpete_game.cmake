@@ -5,6 +5,7 @@
 #     [FEATURE_LIST <file>]           # default games/common/feature_list_none.c
 #     [ICON_SOURCE <file>]            # default games/common/game_icon_none.c
 #     [MODULE_LINKAGE static|shared]  # default static
+#     [SYMBOLS_MANIFEST <file>]       # curated alias table -> gen/<tag>_symbols.gen.h
 #     [SOURCES <file>...]             # exe TUs beyond the skeleton
 #     [MODULE_SOURCES <file>...])     # module TUs beyond the generated code
 #
@@ -40,7 +41,7 @@
 function(openpete_add_game GAME_ID)
     cmake_parse_arguments(G
         ""
-        "MAIN;FEATURE_LIST;ICON_SOURCE;MODULE_LINKAGE"
+        "MAIN;FEATURE_LIST;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST"
         "SOURCES;MODULE_SOURCES"
         ${ARGN})
     if(G_UNPARSED_ARGUMENTS)
@@ -186,6 +187,28 @@ function(openpete_add_game GAME_ID)
                              PROPERTIES LABELS "fence;oracle")
     endif()
 
+    # Curated PSX symbol aliases: gen/<tag>_symbols.gen.h from the game's
+    # alias table, validated by address against globals.toml / symbols.toml
+    # (the build fails when an addr is not a manifest symbol start).
+    set(_symbols_sources "")
+    if(G_SYMBOLS_MANIFEST)
+        set(_symbols_header ${_gen_dir}/${_tag}_symbols.gen.h)
+        add_custom_command(
+            OUTPUT  ${_symbols_header}
+            COMMAND ${CMAKE_COMMAND} -E make_directory ${_gen_dir}
+            COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_symbols_header.py
+                    --symbols   ${G_SYMBOLS_MANIFEST}
+                    --globals   ${CMAKE_CURRENT_SOURCE_DIR}/manifest/globals.toml
+                    --functions ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
+                    --out       ${_symbols_header}
+            DEPENDS ${G_SYMBOLS_MANIFEST}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/manifest/globals.toml
+                    ${CMAKE_CURRENT_SOURCE_DIR}/manifest/symbols.toml
+                    ${CMAKE_SOURCE_DIR}/tools/gen_symbols_header.py
+            COMMENT "Generating ${_tag}_symbols.gen.h (validated vs manifest)")
+        set(_symbols_sources ${_symbols_header})
+    endif()
+
     add_executable(${_exe}
         ${G_MAIN}
         game_extras_impl.c
@@ -195,6 +218,7 @@ function(openpete_add_game GAME_ID)
         ${G_FEATURE_LIST}
         ${G_ICON_SOURCE}
         ${G_SOURCES}
+        ${_symbols_sources}
 
         # The shared PSYQ-to-PsyCross layer, plus the default for every
         # per-game hook this game does not name in psyq_game_provides.h.

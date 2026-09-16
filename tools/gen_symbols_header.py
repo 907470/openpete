@@ -1,13 +1,13 @@
 #!/usr/bin/env python3
-"""gen_symbols_header.py — emit spyro1_symbols.gen.h from the curated symbol
+"""gen_symbols_header.py — emit <tag>_symbols.gen.h from a game's curated symbol
 alias manifest, validated against the authoritative address manifest.
 
 Inputs:
-  --symbols   manifest/spyro1_symbols.toml   (curated ALIAS -> addr, hand-maintained)
+  --symbols   manifest/<tag>_symbols.toml    (curated ALIAS -> addr, hand-maintained)
   --globals   manifest/globals.toml          (authoritative, auto-gen from psx.map)
   --functions manifest/symbols.toml          (authoritative functions, from psx.map)
 Output:
-  --out       <gen>/spyro1_symbols.gen.h
+  --out       <gen>/<tag>_symbols.gen.h
 
 Each curated entry is one of:
   * direct global   { name, addr, note }              -> addr must be a globals.toml start
