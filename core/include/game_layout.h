@@ -96,10 +96,13 @@ typedef struct game_layout {
 
     uint32_t level_id;
 
-    /* Hook sites: the guest entry addresses the feeders dispatch on. */
+    /* Hook sites: the guest entry addresses the feeders dispatch on.
+     * `visibility` is the function that fills the visibility verdict when
+     * the game computes it outside the draw; 0 when the draw computes it. */
     struct {
         uint32_t world_draw;
         uint32_t sky_draw;
+        uint32_t visibility;
     } hooks;
 } game_layout_t;
 

@@ -62,5 +62,6 @@ const game_layout_t game_layout = {
     .hooks = {
         .world_draw = F_WORLD_DRAW,
         .sky_draw   = F_SKY_DRAW,
+        .visibility = F_VISIBILITY,   /* called by both draws before their walks */
     },
 };

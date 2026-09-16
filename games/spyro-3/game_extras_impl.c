@@ -14,6 +14,7 @@
 #include "freecam_game.h"
 #include "skip_to_level.h"
 #include "openpete_log.h"
+#include "feature_registry.h"   /* the registered feature modules' dispatch tables */
 #include "openpete_fiber.h"
 
 #include <stddef.h>
@@ -231,7 +232,7 @@ int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
     if (freecam_should_freeze(cpu, addr)) return 1;
     if (addr == 0x8002CA50u) checksum_verdict(cpu);
     if (write_census_active()) write_census_note_entry(addr);
-    return 0;
+    return feature_registry_dispatch(cpu, addr);
 }
 
 /* Disc layout is not mapped for this game yet. */
