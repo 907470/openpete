@@ -1,0 +1,12 @@
+# player-pose-corpus.manifest — (level, player pose) tuples for a Spyro 3
+# corpus captured under pad control with the follow camera, the counterpart
+# of freecam-corpus.manifest for scenes the freecam cannot reach (a placement
+# triggers the cutscene or the actor the row demonstrates).
+#   <level> | pos=(x, y, z)[,yaw] | [start]
+#   level  a --skip-to-level name
+#   pose   a --player-pose string, pasted verbatim
+#   start  optional pinned canonical frame
+# No script consumes this file yet; the capture leg that reads it is owed.
+# Each row carries a comment naming what it demonstrates.
+# Isabelle's dragon-egg rescue cutscene: placing the player here triggers it
+sunrise_spring | pos=(28179, 32803, 17766)
