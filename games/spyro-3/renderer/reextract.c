@@ -89,7 +89,31 @@ static uint32_t s_epoch_now = 1;   /* the stamp captures take (present in flight
 static uint32_t s_epoch_ok;        /* the stamp a capture must carry to be fresh */
 static uint32_t s_prod_epoch[3];
 
+
+/* OPENPETE_CAM_DBG=1: per canonical present and per sub-tick re-extract, the
+ * camera transform the pass will draw with: the world matrix at +0x14 as nine
+ * shorts and the position at +0x28 as three words. The canonical line reads
+ * live guest memory, the re-extract line reads the ring's two endpoints and the
+ * staged lerp, so a camera the two passes disagree on is a printed number.
+ * Diagnostic only. */
+static int cam_dbg_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_CAM_DBG"); v = (e && *e && *e != '0'); }
+    return v;
+}
+static void cam_dbg_line(const char* tag, const uint8_t* c) {
+    if (!c) { fprintf(stderr, "[cam-dbg f=%u %s] (null)\n", openpete_frame, tag); return; }
+    const int16_t* m = (const int16_t*)(c + CAM_OFF_VIEW);
+    const int16_t* sk = (const int16_t*)(c + CAM_OFF_SKY);
+    const int32_t* p = (const int32_t*)(c + CAM_OFF_POS);
+    fprintf(stderr, "[cam-dbg f=%u %s] pos=(%d,%d,%d) view=[%d %d %d %d %d %d %d %d %d] sky0=%d\n",
+            openpete_frame, tag, p[0], p[1], p[2],
+            m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], sk[0]);
+}
 void spyro_native_canon_epoch_commit(void) {
+    if (cam_dbg_on())
+        cam_dbg_line("CANON", (const uint8_t*)openpete_psx_to_host_ptr(game_layout.cam.base));
+
     s_epoch_ok = s_epoch_now;
     s_epoch_now++;
     player_records_epoch_commit();               /* close the hooks' record epoch */
@@ -417,6 +441,20 @@ static void game_reextract_body(CPUState* cpu) {
             tickcam = ccam;
             bracketed = 1;
             openpete_pace_note_alpha(alpha, 1);
+        }
+    }
+    if (cam_dbg_on()) {
+        fprintf(stderr, "[cam-dbg f=%u RX] paired=%d bracketed=%d alpha=%.4f\n",
+                openpete_frame, paired, bracketed, alpha);
+        cam_dbg_line("RX-live", (const uint8_t*)openpete_psx_to_host_ptr(game_layout.cam.base));
+        cam_dbg_line("RX-staged", cam);
+        if (paired && prev && curr) {
+            static int cdbg_region = -2;
+            if (cdbg_region == -2) cdbg_region = game_interp_row_index("camera");
+            if (cdbg_region >= 0) {
+                cam_dbg_line("RX-prev", prev->data + prev->region_offsets[cdbg_region]);
+                cam_dbg_line("RX-curr", curr->data + curr->region_offsets[cdbg_region]);
+            }
         }
     }
     openpete_native_scene_begin();
