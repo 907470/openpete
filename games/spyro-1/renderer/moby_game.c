@@ -94,7 +94,7 @@ static int s1_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
             F->fresh = (uint8_t)(fresh ? 1 : 0); F->bit0 = (uint8_t)(w0 & 1u);
             F->textured = (uint8_t)(textured ? 1 : 0);
             F->hl = (uint8_t)((!fresh && (w0 & 0x4u)) ? 1 : 0);
-            F->blendbit = (uint8_t)(w1 & 1u); F->pad0 = 0;
+            F->blendbit = (uint8_t)(w1 & 1u); F->otbias = 0;
             F->tpx = F->tpy = F->clx = F->cly = 0; F->bpp = 16; F->abr = 0;
             memset(F->u, 0, 4); memset(F->v, 0, 4);
             if (textured) {

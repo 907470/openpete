@@ -2,4 +2,7 @@
 # scripts/presentation-corpus.manifest: name|start|interval|freeze|pins).
 # The level loads by VBL ~841 under --skip-to-level and gameplay is live by
 # ~1200; 1500 leaves the fade settled.
-sunrise-spring-sunny-villa-portal-entry|1500
+# The pin holds VBL 1500 on the sub-tick leg as well as the canonical one: the
+# grid's intermediate samples land at +interval/2, so the pose the player walk
+# was measured against had no __inter__ tile of its own.
+sunrise-spring-sunny-villa-portal-entry|1500|100||1500

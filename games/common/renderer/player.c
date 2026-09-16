@@ -324,6 +324,25 @@ static double player_nclip(int i0, int i1, int i2) {
                           s_sproj[i2].sx, s_sproj[i2].sy);
 }
 
+/* The depth key the draw sums before its per-face admission: the four
+ * vertices of a quad, or — where the NCLIP tree left one triangle — that
+ * triangle's three with the middle vertex counted twice, so both shapes share
+ * one scale. SZ3 is the projected view-Z saturated to the GTE's 16-bit range,
+ * which is what the draw reads back per vertex. */
+static double player_depth_sum(const uint16_t idx[4], const int order[2][3], int nemit) {
+    double sz[4];
+    int n = (nemit >= 2) ? 4 : 3;
+    const int pos[4] = { nemit >= 2 ? 0 : order[0][0], nemit >= 2 ? 1 : order[0][1],
+                         nemit >= 2 ? 2 : order[0][2], 3 };
+    for (int k = 0; k < n; k++) {
+        int i = idx[pos[k]];
+        double z = (i < s_sproj_n) ? (double)s_sproj[i].vz : 0.0;
+        sz[k] = z < 0.0 ? 0.0 : (z > 65535.0 ? 65535.0 : z);
+    }
+    return (nemit >= 2) ? (sz[0] + sz[1] + sz[2] + sz[3])
+                        : (sz[0] + sz[1] + sz[1] + sz[2]);
+}
+
 static void emit_swtri(int i0,int i1,int i2, uint32_t c0,uint32_t c1,uint32_t c2,
                        int u0,int v0,int u1,int v1,int u2,int v2,
                        int tex,int tpx,int tpy,int clx,int cly,int bpp,int blend) {
@@ -369,10 +388,20 @@ int player_build_walk(CPUState* cpu) {
             double n1 = player_nclip(f->i0, f->i1, f->i2);
             double n2 = (f->i3 < s_sproj_n) ? player_nclip(f->i3, f->i1, f->i2) : -1.0;
             int order[2][3];
-            int nemit = moby_face_emit(f->fresh, f->bit0, 1 /* bit0 is unconditional */,
+            /* A game whose draw admits a flagged face untested takes the emit
+             * tree's unconditional arm, which keeps the face's whole topology
+             * without reading either NCLIP. */
+            int uncond = player_game.face_flag_skips_nclip && f->untested;
+            int fbit0 = uncond ? 1 : (player_game.face_winding_flag ? f->bit0 : 0);
+            int nemit = moby_face_emit(f->fresh, fbit0,
+                                       1 /* the flag exempts, it never re-tests */,
                                        n1, n2, f->i3 < s_sproj_n, order);
             const uint16_t idx[4] = { f->i0, f->i1, f->i2, f->i3 };
             const uint32_t col[4] = { c0, c1, c2, c3 };
+            if (nemit && player_game.face_depth_keep &&
+                !player_game.face_depth_keep(cpu, s_xf[0].present ? &s_xf[0] : NULL,
+                                             f, player_depth_sum(idx, order, nemit)))
+                continue;
             for (int e = 0; e < nemit; e++) {
                 const int a = order[e][0], b = order[e][1], c = order[e][2];
                 emit_swtri(idx[a], idx[b], idx[c], col[a], col[b], col[c],
@@ -477,7 +506,7 @@ static void player_feed_walk(CPUState* cpu) { player_feed_walk_ex(cpu, 1); }
  *
  * OPENPETE_PLAYER_VERIFY_BITSHIFT arms the negative control. */
 #define PV_MAX_PRIM 4096
-typedef struct { float x[3], y[3]; uint32_t rgb[3]; } pv_tri;
+typedef struct { float x[3], y[3]; uint32_t rgb[3]; uint8_t code; } pv_tri;
 static pv_tri s_pv[PV_MAX_PRIM]; static int s_pv_n;
 
 static void pv_capture(CPUState* cpu, uint32_t start, uint32_t end) {
@@ -511,6 +540,7 @@ static void pv_capture(CPUState* cpu, uint32_t start, uint32_t end) {
                 const int split[2][3] = { {0,1,2}, {1,3,2} };   /* the GPU quad split */
                 for (int sidx = 0; sidx < (quad ? 2 : 1) && s_pv_n < PV_MAX_PRIM; sidx++) {
                     pv_tri* t = &s_pv[s_pv_n++];
+                    t->code = code;
                     for (int k = 0; k < 3; k++) {
                         int j = split[sidx][k];
                         t->x[k] = x[j]; t->y[k] = y[j]; t->rgb[k] = rgb[j];
@@ -534,22 +564,19 @@ static int player_verify_on(void) {
 
 static void player_verify_report(CPUState* cpu, uint32_t startp, uint32_t endp) {
     pv_capture(cpu, startp, endp);
-    long walk_hit = 0, prim_hit = 0, col_hit = 0, col_tot = 0;
-    double errsum = 0.0; long errn = 0;
-    static uint8_t taken[PV_MAX_PRIM];
-    memset(taken, 0, sizeof taken);
+    /* One-to-one assignment, not nearest-neighbour: the avatar packs dozens of
+     * sub-pixel triangles into a few pixels at range, and a nearest-centroid
+     * match lets several walk triangles claim the same primitive while its
+     * neighbours go unclaimed, which reads as a recall loss that is the
+     * matcher's, not the walk's. Every pair within the 4-pixel per-vertex
+     * bound is scored, the pairs are taken cheapest first, and each triangle
+     * and each primitive is used once. */
+    typedef struct { float cost; int16_t w, p; uint8_t rot; } pv_pair;
+    static pv_pair pairs[PV_MAX_PRIM * 8];
+    int npair = 0;
     for (int i = 0; i < s_swtri_n; i++) {
         const swtri* w = &s_swtri[i];
-        double wcx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0;
-        double wcy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0;
-        int best = -1; double bestd = 1e30; int bestrot = 0;
         for (int j = 0; j < s_pv_n; j++) {
-            double pcx = (s_pv[j].x[0] + s_pv[j].x[1] + s_pv[j].x[2]) / 3.0;
-            double pcy = (s_pv[j].y[0] + s_pv[j].y[1] + s_pv[j].y[2]) / 3.0;
-            double d = (wcx-pcx)*(wcx-pcx) + (wcy-pcy)*(wcy-pcy);
-            if (d >= bestd) continue;
-            /* The walk and the draw may start a triangle at different corners,
-             * so score the three cyclic correspondences and keep the best. */
             double br = 1e30; int rot = 0;
             for (int r = 0; r < 3; r++) {
                 double mx = 0.0;
@@ -561,17 +588,42 @@ static void player_verify_report(CPUState* cpu, uint32_t startp, uint32_t endp) 
                 }
                 if (mx < br) { br = mx; rot = r; }
             }
-            if (br <= 4.0) { bestd = d; best = j; bestrot = rot; }
+            if (br <= 4.0 && npair < (int)(sizeof pairs / sizeof pairs[0])) {
+                pairs[npair].cost = (float)br; pairs[npair].w = (int16_t)i;
+                pairs[npair].p = (int16_t)j;   pairs[npair].rot = (uint8_t)rot;
+                npair++;
+            }
         }
-        if (best < 0) continue;
-        walk_hit++;
-        if (!taken[best]) { taken[best] = 1; prim_hit++; }
+    }
+    for (int a = 1; a < npair; a++) {          /* insertion sort: npair is small */
+        pv_pair t = pairs[a]; int b = a - 1;
+        while (b >= 0 && pairs[b].cost > t.cost) { pairs[b+1] = pairs[b]; b--; }
+        pairs[b+1] = t;
+    }
+    static uint8_t w_used[PV_MAX_PRIM * 8], p_used[PV_MAX_PRIM];
+    memset(w_used, 0, sizeof w_used); memset(p_used, 0, sizeof p_used);
+    long walk_hit = 0, prim_hit = 0, col_hit = 0, col_tot = 0, mat_hit = 0;
+    double errsum = 0.0; long errn = 0;
+    for (int a = 0; a < npair; a++) {
+        int i = pairs[a].w, j = pairs[a].p, rot = pairs[a].rot;
+        if (w_used[i] || p_used[j]) continue;
+        w_used[i] = p_used[j] = 1;
+        walk_hit++; prim_hit++;
+        const swtri* w = &s_swtri[i];
+        /* The material leg. A walk triangle can sit on its primitive to the
+         * pixel and carry its exact vertex colours and still be the wrong
+         * surface: the colour legs compare what modulates the texture, not
+         * whether there is one. GPU primitive codes 0x20-0x3F set bit 2 for a
+         * textured polygon, so the code the draw wrote is the draw's own
+         * verdict on the material, and a walk that drops the texture reads as
+         * a colour-perfect match without it. */
+        if ((int)(w->textured ? 1 : 0) == (int)((s_pv[j].code & 0x04u) ? 1 : 0)) mat_hit++;
         for (int k = 0; k < 3; k++) {
-            double dx = w->v[k].sx - s_pv[best].x[(k + bestrot) % 3];
-            double dy = w->v[k].sy - s_pv[best].y[(k + bestrot) % 3];
+            double dx = w->v[k].sx - s_pv[j].x[(k + rot) % 3];
+            double dy = w->v[k].sy - s_pv[j].y[(k + rot) % 3];
             errsum += sqrt(dx*dx + dy*dy); errn++;
             col_tot++;
-            if ((w->v[k].rgb & 0xFFFFFFu) == s_pv[best].rgb[(k + bestrot) % 3]) col_hit++;
+            if ((w->v[k].rgb & 0xFFFFFFu) == s_pv[j].rgb[(k + rot) % 3]) col_hit++;
         }
     }
     /* The per-index leg: where the draw leaves every projected vertex's own
@@ -594,12 +646,13 @@ static void player_verify_report(CPUState* cpu, uint32_t startp, uint32_t endp) 
         ix_tot ? ix_err/(double)ix_tot : 0.0);
     fprintf(stderr,
         "[player-verify f=%u] parts=%ld verts=%ld faces=%ld tris=%ld prims=%d  "
-        "precision=%.1f%% recall=%.1f%% mean=%.2fpx colour=%.1f%%%s\n",
+        "precision=%.1f%% recall=%.1f%% mean=%.2fpx colour=%.1f%% material=%.1f%%%s\n",
         openpete_frame, s_eng_parts, s_eng_verts, s_eng_faces, s_eng_tris, s_pv_n,
         s_swtri_n ? 100.0 * (double)walk_hit / s_swtri_n : 0.0,
         s_pv_n ? 100.0 * (double)prim_hit / s_pv_n : 0.0,
         errn ? errsum / (double)errn : 0.0,
         col_tot ? 100.0 * (double)col_hit / col_tot : 0.0,
+        walk_hit ? 100.0 * (double)mat_hit / (double)walk_hit : 0.0,
         s_probe_bitshift ? "  [NEGATIVE CONTROL: model X one bit over]" : "");
 }
 
@@ -631,7 +684,7 @@ static int on_player_draw(CPUState* cpu, uint32_t addr) {
     player_native_set_flat_key(openpete_frame << 1);
 
     int is_player = player_game.call_is_player ? player_game.call_is_player(cpu) : 1;
-    if (feed && player_game.feed_ready && is_player && endp > startp && render_path_enabled(RP_SPYRO)) {
+    if (feed && is_player && endp > startp && render_path_enabled(RP_SPYRO)) {
         player_feed_walk(cpu);
         /* Sub-tick spine: snapshot the part records (keyframe stream cursors
          * and vertex counts) and the projected SXY (the cull verdict), both
@@ -662,7 +715,7 @@ static int on_player_draw(CPUState* cpu, uint32_t addr) {
 /* ---- sub-tick re-extract ------------------------------------------------ */
 
 void player_reextract(CPUState* cpu) {
-    if (!openpete_native_scene_enabled() || !player_game.feed_ready) return;
+    if (!openpete_native_scene_enabled()) return;
     /* Only re-extract on sub-ticks if the canonical tick actually drew the
      * avatar. A cutscene that suppresses the gameplay avatar and shows it as a
      * moby instead would otherwise get a SECOND avatar painted over the

@@ -314,7 +314,7 @@ static int s1_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
  * instead of the model's static block. */
 static int s1_part_faces(CPUState* cpu, int part, player_faces_t* out) {
     (void)part;
-    uint32_t model = cpu->read_word(G_MODELS) | 0x80000000u;
+    uint32_t model = cpu->read_word(game_layout.moby.model_table) | 0x80000000u;
     uint32_t animIdx = cpu->read_byte(PL.base + PL.anim_off[0]);
     uint32_t animHdr = cpu->read_word(model + 0x38u + animIdx * 4u);
     if (animHdr < 0x80000000u) return 0;
@@ -337,8 +337,10 @@ const player_game_t player_game = {
     .decode_faces     = s1_decode_faces,
     /* The routine's own "ordering slot 0 — in front of everything" sentinel,
      * saturated during the level-transition flight (r_pete.s 80023F8C). */
-    .feed_ready       = 1,
     .sort_depth_front = 127,
+    /* The strip face's flag bit exempts it from the back-face test, so a
+     * flagged face draws at either winding. */
+    .face_winding_flag = 1,
     .call_is_player   = NULL,          /* every call is the avatar */
     .verify           = spyro_verify_run,
     .verify_enabled   = spyro_verify_enabled,

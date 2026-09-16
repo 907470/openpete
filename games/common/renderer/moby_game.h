@@ -66,13 +66,19 @@ static inline uint32_t moby_vs_read_half(CPUState* cpu, const moby_vstream_t* s,
  * `fresh` marks a face that carries its own three (or four) indices against a
  * strip face that advances one, `bit0` the winding flag the NCLIP test reads,
  * `hl` the per-face special-material flag, `blendbit` the GPU
- * semi-transparency enable and `abr` its blend mode. tpx/tpy/clx/cly/bpp and
+ * semi-transparency enable, `abr` its blend mode and `otbias` the signed
+ * per-face ordering-table bias a draw subtracts from the face's depth key.
+ * `untested` is the face record's sign bit on its own: a draw that emits every
+ * face textured still carries that bit, and reads it as the face's exemption
+ * from the back-face test rather than as a texture flag. tpx/tpy/clx/cly/bpp and
  * u[]/v[] are the face's texture page, CLUT and texel corners. */
 typedef struct moby_wface {
     uint16_t i0, i1, i2, i3;
     uint16_t c0, c1, c2, c3;
     uint8_t  fresh, bit0, textured, hl;
-    uint8_t  blendbit, abr, bpp, pad0;
+    uint8_t  untested;
+    uint8_t  blendbit, abr, bpp;
+    int8_t   otbias;
     int16_t  tpx, tpy, clx, cly;
     uint8_t  u[4], v[4];
 } moby_wface_t;

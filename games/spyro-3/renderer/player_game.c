@@ -33,11 +33,6 @@
 
 #define PL (game_layout.player)
 
-/* The 256-entry Animation pointer table, written at level load; the routine
- * dereferences the pointer once and indexes it by the animation word's low
- * byte (spyrodraw.s:33-34,37-40). */
-#define D_ANIM_TABLE 0x8006C558u
-
 /* g_Spyro fields only this draw reads. +0x2C non-zero is the mirrored-copy
  * pass: it suppresses the head matrix compose (spyrodraw.s:268,282,316-318)
  * and the routine runs a second time with it clear for the avatar itself.
@@ -59,7 +54,7 @@ static void s3_run_draw(CPUState* cpu) {
  * 0-7, animation B in bits 8-15, keyframe A in bits 16-23 and keyframe B in
  * bits 24-31 (spyrodraw.s:37,44,51-54,86-88,118-121). */
 static uint32_t s3_animation(CPUState* cpu, int part) {
-    uint32_t tab = cpu->read_word(D_ANIM_TABLE);
+    uint32_t tab = cpu->read_word(D_SPYRO_ANIMS);
     if (tab < 0x80000000u) return 0;
     uint32_t w = cpu->read_word(PL.base + PL.anim_off[part]);
     uint32_t a = cpu->read_word(tab + ((w << 2) & 0x3FCu));
@@ -161,7 +156,7 @@ static void s3_seam_joint(CPUState* cpu, const player_xform_t* parent,
     int32_t jA = s3_seam_word(cpu, anim, (w >> 16) & 0xFFu);
     int32_t jB = 0;
     if (dual) {
-        uint32_t tab = cpu->read_word(D_ANIM_TABLE);
+        uint32_t tab = cpu->read_word(D_SPYRO_ANIMS);
         uint32_t animB = (tab >= 0x80000000u)
                        ? cpu->read_word(tab + ((w >> 6) & 0x3FCu)) : 0u;
         if (animB >= 0x80000000u) jB = s3_seam_word(cpu, animB, (w >> 24) & 0xFFu);
@@ -193,14 +188,45 @@ static int s3_part_faces(CPUState* cpu, int part, player_faces_t* out) {
     return 1;
 }
 
-/* The face record is the animated moby's, with one difference: the player draw
- * advances a fixed 0x14 bytes whether or not word 1's sign marks the face
- * textured (spyrodraw.s:936-937,960-961), where the moby draw sizes the record
- * by that sign. Walking this stream with the variable stride desyncs it after
- * the first untextured face. */
+/* The vertex stream is the animated moby's, with one difference: the literal
+ * two-halfword form's Y field is 11 bits at bits 1-11 here
+ * (spyrodraw.s:498-499) where the moby draw reads 12 bits at bits 2-11
+ * (mobydraw.s:1076-1078), so a literal vertex decoded the moby way lands at
+ * twice its model Y and every delta vertex after it inherits that origin. */
+static void s3_player_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) {
+    s3_vstream_next_lit(cpu, s, first, 1);
+}
+
+/* The face record is the animated moby's, with two differences. The player
+ * draw advances a fixed 0x14 bytes whether or not word 1's sign is set
+ * (spyrodraw.s:936-937,960-961), where the moby draw sizes the record by that
+ * sign; walking this stream with the variable stride desyncs it after the
+ * first such face. And every face it keeps is emitted textured: the only
+ * primitive codes the routine writes are POLY_GT3 and POLY_GT4
+ * (spyrodraw.s:1064,1023 for the code, 1057,1018 for the 9- and 12-word
+ * headers), and the three texture words sit in every record because the stride
+ * is fixed. Word 1's sign is therefore the back-face exemption here, not a
+ * texture flag, so it is decoded into `untested` and every face is textured.
+ */
 static int s3_player_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                                   moby_wface_t* out, int cap, moby_face_stats_t* st) {
-    return s3_decode_faces_stride(cpu, fb, bytecount, out, cap, st, 0x14u);
+    return s3_decode_faces_stride(cpu, fb, bytecount, out, cap, st, 0x14u, 1);
+}
+
+/* The per-face depth admission (spyrodraw.s:997-1006 for a quad, 1096-1109 for
+ * a triangle): the summed vertex depths minus the face's own ordering bias
+ * must stay above a threshold measured from the model's view-space origin, or
+ * the draw drops the face before it emits anything. The threshold is
+ * 4 * (originZ - 0x800), floored at 1 (spyrodraw.s:254,863-871: the origin's
+ * MAC3 less 0x800, stashed in a GTE control register and shifted left two in
+ * the face loop's preamble). The bias is the face word's low three bits,
+ * signed, times 128 (spyrodraw.s:1001-1002). */
+static int s3_face_depth_keep(CPUState* cpu, const player_xform_t* root,
+                              const moby_wface_t* f, double depth_sum) {
+    (void)cpu;
+    double thr = root ? 4.0 * (root->TR[2] - 2048.0) : 0.0;
+    if (thr <= 0.0) thr = 1.0;
+    return (depth_sum - (double)f->otbias * 128.0 - thr) > 0.0;
 }
 
 /* The routine runs twice a tick: the mirrored copy first, with the gate word
@@ -216,14 +242,15 @@ const player_game_t player_game = {
     .part_count       = NULL,            /* the fixed two of game_layout.player */
     .part_xform       = s3_part_xform,
     .seam_joint       = s3_seam_joint,
-    .vstream_next     = s3_vstream_next, /* the animated moby codec */
+    .vstream_next     = s3_player_vstream_next,  /* the moby codec, player Y field */
     .part_vcount      = s3_part_vcount,
     .part_faces       = s3_part_faces,
     .decode_faces     = s3_player_decode_faces,
-    /* The walk is decoded and probed but not fed: the probe still reports a
-     * pose whose vertex decode diverges and a face-cull residual, so nothing
-     * is pushed to the scene yet. */
-    .feed_ready       = 0,
+    /* The draw branches on the face word's sign before it reads either NCLIP
+     * result, so a face carrying that bit is admitted untested
+     * (spyrodraw.s:921,1060). */
+    .face_flag_skips_nclip = 1,
+    .face_depth_keep  = s3_face_depth_keep,
     .sort_depth_front = 0,               /* no full-front sentinel: the byte at
                                           * +0x1E is only ever an ordering bias
                                           * (spyrodraw.s:250-255) */

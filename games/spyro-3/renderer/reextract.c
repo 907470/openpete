@@ -79,6 +79,7 @@ static uint32_t s_prod_epoch[3];
 void spyro_native_canon_epoch_commit(void) {
     s_epoch_ok = s_epoch_now;
     s_epoch_now++;
+    player_records_epoch_commit();               /* close the hooks' record epoch */
 }
 uint32_t spyro_native_canon_epoch_stamp(void) { return s_epoch_now; }
 int  spyro_native_canon_epoch_fresh(uint32_t stamp) { return stamp == s_epoch_ok; }
@@ -100,34 +101,55 @@ static uint32_t s_recs_len;
  * scratch, at a fixed offset the player hook names, and the passes after it
  * reuse those bytes before any sub-tick present runs. Captured and staged the
  * same way as the moby queue, so the player replay decodes the records the
- * tick drew instead of whatever overwrote them. One range is enough: nothing
- * else this game's feeders read is transient. */
-static uint8_t  s_range_copy[0x200];
-static uint32_t s_range_base;
-static uint32_t s_range_len;
-static uint32_t s_range_epoch;
+ * tick drew instead of whatever overwrote them.
+ *
+ * Two slots, not one: the hook captures the part records and the pre-blend
+ * colour table in the same tick, and a single slot would leave one of them
+ * unstaged. An unstaged span is not merely stale — the replay's two-pass
+ * decode writes each rendered pose into the block it reads, and outside the
+ * sub-tick view that host pointer is live PSX RAM, so the present would edit
+ * gameplay memory. Slots are keyed by the scratch offset the hook named. */
+#define S3_RANGE_SLOTS 2
+static struct {
+    uint8_t  copy[0x200];
+    uint32_t off, base, len, epoch;
+} s_range[S3_RANGE_SLOTS];
 
 void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
     CPUState* cpu = (CPUState*)cpu_v;
-    s_range_len = 0;
-    if (!len || len > sizeof s_range_copy || !game_layout.polybuf.end) return;
+    int slot = -1;
+    for (int i = 0; i < S3_RANGE_SLOTS; i++)
+        if (s_range[i].len && s_range[i].off == off) { slot = i; break; }
+    if (slot < 0)
+        for (int i = 0; i < S3_RANGE_SLOTS; i++) if (!s_range[i].len) { slot = i; break; }
+    if (slot < 0) return;
+    s_range[slot].len = 0;
+    if (!len || len > sizeof s_range[slot].copy || !game_layout.polybuf.end) return;
     uint32_t end = cpu->read_word(game_layout.polybuf.end);
     if (end < 0x80000000u) return;
     uint32_t base = end - game_layout.player.part_base_polybuf_off + off;
     const void* host = openpete_psx_to_host_ptr(base);
     if (!host) return;
-    memcpy(s_range_copy, host, len);
-    s_range_base = base;
-    s_range_len  = len;
-    s_range_epoch = s_epoch_now;
+    memcpy(s_range[slot].copy, host, len);
+    s_range[slot].off   = off;
+    s_range[slot].base  = base;
+    s_range[slot].len   = len;
+    s_range[slot].epoch = s_epoch_now;
 }
 
+/* Stage every captured range this present. Returns 0 unless all of them are
+ * fresh and staged, so a partial stage never reaches the replay. */
 static int stage_player_records(void) {
-    if (!s_range_len || s_range_epoch != s_epoch_ok) return 0;
-    void* stage = openpete_subtick_view_stage(s_range_base, s_range_len);
-    if (!stage) return 0;
-    memcpy(stage, s_range_copy, s_range_len);
-    return 1;
+    int staged = 0;
+    for (int i = 0; i < S3_RANGE_SLOTS; i++) {
+        if (!s_range[i].len) continue;
+        if (s_range[i].epoch != s_epoch_ok) return 0;
+        void* stage = openpete_subtick_view_stage(s_range[i].base, s_range[i].len);
+        if (!stage) return 0;
+        memcpy(stage, s_range[i].copy, s_range[i].len);
+        staged++;
+    }
+    return staged;
 }
 
 /* The player draw's projected-SXY block is not staged on this game: the player

@@ -95,17 +95,34 @@ typedef struct player_game {
                         moby_wface_t* out, int cap, moby_face_stats_t* st);
 
     /* ---- policy ------------------------------------------------------- */
+    /* 1 = the draw's strip-face test reads the face record's winding flag and
+     * admits a flagged face at either winding. 0 = it reads no such flag, and
+     * every untextured strip face is back-face culled on its NCLIP sign alone,
+     * a zero-area face included. */
+    int face_winding_flag;
+
+    /* 1 = the draw admits a face whose record carries the `untested` bit
+     * without the NCLIP test, emitting its full topology; only the faces
+     * without that bit are back-face culled. 0 = every face takes the test. */
+    int face_flag_skips_nclip;
+
+    /* The draw's per-face depth admission, run after the NCLIP tree and before
+     * the emit. `depth_sum` is the sum of the emitted topology's saturated
+     * projected depths in the draw's own summing order (four terms: the quad's
+     * four vertices, or a triangle's three with the middle one counted twice),
+     * `root` is part 0's transform, whose view-space origin the threshold is
+     * measured against, and `f` carries the face's own ordering bias. Return 0
+     * for a face the draw drops. NULL = the game admits every face the NCLIP
+     * tree kept. */
+    int (*face_depth_keep)(CPUState* cpu, const player_xform_t* root,
+                           const moby_wface_t* f, double depth_sum);
+
     /* The saturated sort-depth value that means "draw in front of everything"
      * rather than "pull toward the camera by this many ordering slots". The
      * walk flattens the whole model onto the near plane for exactly that
      * value; 0 = the game has no such sentinel and the walk only ever applies
      * the one-slot tie pull. */
     int sort_depth_front;
-
-    /* 1 = this game's walk is verified against its own draw and may feed the
-     * scene; 0 = the walk decodes and the probe measures it, but nothing is
-     * pushed, so a game under bring-up cannot change what ships. */
-    int feed_ready;
 
     /* ---- identity ----------------------------------------------------- */
     /* Which of several calls in one tick is the avatar the gameplay drives.

@@ -78,7 +78,7 @@ static void s3_vstream_init(CPUState* cpu, moby_vstream_t* s,
     s->s5 = s5;                            /* no per-model shift in this codec */
 }
 
-void s3_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) {
+void s3_vstream_next_lit(CPUState* cpu, moby_vstream_t* s, int first, int y_lit_halved) {
     (void)first;   /* the keyframe word already said which form opens */
     uint32_t sw = cpu->read_word(s->scratch_u[0]);
     s->scratch_u[0] += 4u;
@@ -95,7 +95,14 @@ void s3_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) {
         s->flag = (int)((uint32_t)h & 1u);
         if (h & 2) {
             int32_t h2 = (int16_t)cpu->read_half(s->shortp); s->shortp += 2u;
-            s->VY = (int32_t)(((uint32_t)h & 0xFFCu) << 20) >> 20;   /* bits 2-11 */
+            /* The literal Y field is where the two draws' codecs part. The
+             * moby draw clears the two form bits and sign-extends bits 2-11 as
+             * a 12-bit value (mobydraw.s:1076-1078); the player draw keeps
+             * them and arithmetic-shifts the sign-extended low 12 bits right
+             * by one, which is the 11-bit field at bits 1-11 with the form bit
+             * folded into its LSB (spyrodraw.s:498-499,659-660,682-683). */
+            s->VY = y_lit_halved ? ((int32_t)((uint32_t)h << 20) >> 21)
+                                 : ((int32_t)(((uint32_t)h & 0xFFCu) << 20) >> 20);
             s->VX = (int32_t)((uint32_t)((int32_t)((uint32_t)h2 << 26) >> 21)
                               | (((uint32_t)h & 0xF000u) >> 11));      /* bits 0-5 x32, bits 12-15 */
             s->VZ = h2 >> 5;
@@ -108,6 +115,10 @@ void s3_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) {
             s->VY -= (int32_t)(sw << 22) >> 21;
         }
     }
+}
+
+void s3_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) {
+    s3_vstream_next_lit(cpu, s, first, 0);
 }
 
 /* ---- face stream ---------------------------------------------------
@@ -132,7 +143,7 @@ void s3_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) {
  * "strip" face, whose keep rule is the same NCLIP sign test. */
 int s3_decode_faces_stride(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                            moby_wface_t* out, int cap, moby_face_stats_t* st,
-                           uint32_t fixed_stride) {
+                           uint32_t fixed_stride, int all_textured) {
     uint32_t end = fb + 4u + bytecount;
     uint32_t fp  = fb + 4u;
     int n = 0, raw = 0, guard = 0;
@@ -140,7 +151,8 @@ int s3_decode_faces_stride(CPUState* cpu, uint32_t fb, uint32_t bytecount,
         uint32_t w0 = cpu->read_word(fp);
         uint32_t w1 = cpu->read_word(fp + 4u);
         raw++;
-        int textured = ((int32_t)w1) < 0;
+        int sign = ((int32_t)w1) < 0;
+        int textured = all_textured ? 1 : sign;
         uint32_t adv = fixed_stride ? fixed_stride : (textured ? 0x14u : 0x08u);
         unsigned i0 = (w0 >> 24) & 0xFFu, i1 = (w0 >> 16) & 0xFFu;
         unsigned i2 = (w0 >>  8) & 0xFFu, i3 =  w0        & 0xFFu;
@@ -157,7 +169,11 @@ int s3_decode_faces_stride(CPUState* cpu, uint32_t fb, uint32_t bytecount,
             F->fresh    = (uint8_t)(tri ? 0 : 1);
             F->bit0     = (uint8_t)(tri ? ((w1 >> 3) & 1u) : 0u);
             F->textured = (uint8_t)(textured ? 1 : 0);
+            F->untested = (uint8_t)(sign ? 1 : 0);
             F->hl = 0; F->blendbit = 0; F->abr = 0; F->bpp = 16;
+            /* Bits 0-2, signed: the depth key's per-face ordering bias
+             * (mobydraw.s:1712-1713, spyrodraw.s:1000-1001). */
+            F->otbias = (int8_t)(((int32_t)(w1 << 29)) >> 29);
             if (textured) {
                 uint32_t td0 = cpu->read_word(fp + 0x08u);
                 uint32_t td1 = cpu->read_word(fp + 0x0Cu);
@@ -189,7 +205,7 @@ int s3_decode_faces_stride(CPUState* cpu, uint32_t fb, uint32_t bytecount,
 /* The moby draw's own stride: two words untextured, five textured. */
 int s3_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                     moby_wface_t* out, int cap, moby_face_stats_t* st) {
-    return s3_decode_faces_stride(cpu, fb, bytecount, out, cap, st, 0u);
+    return s3_decode_faces_stride(cpu, fb, bytecount, out, cap, st, 0u, 0);
 }
 
 /* ---- cull record ---------------------------------------------------
