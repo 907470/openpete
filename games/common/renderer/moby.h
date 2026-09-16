@@ -28,6 +28,18 @@ struct CPUState;
  * re-extract; reset (off) so the canonical inline render stays byte-exact. */
 void moby_native_set_rot_interp(int on);
 
+/* The camera the cull composed this tick's records against, for a game whose
+ * cull stores view-space records (moby_game.host_reveal == 0): the interp
+ * ring's curr snapshot, nine int16 matrix entries in GTE row order (1.0 =
+ * 4096) and the three camera position words. With it the sub-tick record
+ * replay re-bases each record onto the camera the present stages, so an
+ * animated moby follows the interpolated view like every other feeder instead
+ * of holding its tick pose in screen space. NULL/NULL clears it and the replay
+ * leaves every record exactly as the cull wrote it. Set around the feeder
+ * re-extract by the orchestrator; ignored by a game that rebuilds records
+ * host-side. */
+void moby_native_set_tick_camera(const int16_t mat[9], const int32_t pos[3]);
+
 /* Occlusion-cull pan allowance: the camera's rotation this tick expressed as
  * screen-pixel motion (rad/tick × ~px-per-radian, overestimated). The feeder
  * inflates cached screen rects by it per tick of cache age, so a pan cannot

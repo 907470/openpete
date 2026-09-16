@@ -353,6 +353,10 @@ static void game_reextract_body(CPUState* cpu) {
     uint8_t* cam = (uint8_t*)openpete_subtick_view_stage(game_layout.cam.base, cam_len);
     int bracketed = 0;
     double alpha = 0.0;
+    /* The tick side of the bracket, kept for the moby replay: the cull composed
+     * every animated record against this camera, so the replay needs it to turn
+     * those records onto the interpolated one. */
+    const uint8_t* tickcam = NULL;
     if (paired && cam && prev && curr) {
         /* The camera's ring region, resolved by name from the registered table
          * — a restated index selects the wrong region once a row is inserted. */
@@ -382,6 +386,7 @@ static void game_reextract_body(CPUState* cpu) {
             const int32_t* cp = (const int32_t*)(ccam + CAM_OFF_POS);
             for (int i = 0; i < 3; i++) s_fpos[i] = (double)pp[i] + ((double)cp[i] - (double)pp[i]) * alpha;
             s_fpos_active = 1;
+            tickcam = ccam;
             bracketed = 1;
             openpete_pace_note_alpha(alpha, 1);
         }
@@ -394,8 +399,16 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("terrain");
     portal3_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* homeworld portal previews */
     RX_CENSUS_STEP("portal");
-    if (stage_moby_records())
+    if (stage_moby_records()) {
+        /* The cull stores each animated record already composed against the
+         * tick's camera, in view space; hand the replay that camera so it can
+         * re-base onto the staged one. Cleared after the pass, so the canonical
+         * inline render replays the records untouched. */
+        moby_native_set_tick_camera(tickcam ? (const int16_t*)(tickcam + CAM_OFF_SKY) : NULL,
+                                    tickcam ? (const int32_t*)(tickcam + CAM_OFF_POS) : NULL);
         moby_reextract(cpu);        /* the 3D actors, after the terrain they stand on */
+        moby_native_set_tick_camera(NULL, NULL);
+    }
     RX_CENSUS_STEP("moby");
     if (stage_player_records())
         player_records_replay(cpu, bracketed, alpha);   /* every player call the tick drew */

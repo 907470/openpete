@@ -3933,6 +3933,36 @@ static void shaded_dump(CPUState* cpu, uint32_t start, uint32_t end) {
 static op_time_t s_rot_now = 0;
 void moby_native_set_rot_interp(int on) { s_rot_now = on ? openpete_interp_present_now() : 0; }
 
+/* The camera the replayed cull records were composed against (the interp
+ * ring's curr snapshot), installed per present by the orchestrator and cleared
+ * after it. Read only by the record-replay branch of reextract_record_pass. */
+static int     s_tickcam_have;
+static int     s_tickcam_M[3][3];
+static int32_t s_tickcam_pos[3];
+
+void moby_native_set_tick_camera(const int16_t mat[9], const int32_t pos[3]) {
+    if (!mat || !pos) { s_tickcam_have = 0; return; }
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++) s_tickcam_M[r][c] = mat[r * 3 + c];
+    for (int i = 0; i < 3; i++) s_tickcam_pos[i] = pos[i];
+    s_tickcam_have = 1;
+}
+
+/* Inverse of a 3x3 by cofactors, in double. Returns 0 on a singular matrix. */
+static int mat3_inverse(const int M[3][3], double out[3][3]) {
+    double a = M[0][0], b = M[0][1], c = M[0][2];
+    double d = M[1][0], e = M[1][1], f = M[1][2];
+    double g = M[2][0], h = M[2][1], i = M[2][2];
+    double c00 = e*i - f*h, c01 = f*g - d*i, c02 = d*h - e*g;
+    double det = a*c00 + b*c01 + c*c02;
+    if (!(det > 1e-9 || det < -1e-9)) return 0;
+    double id = 1.0 / det;
+    out[0][0] = c00*id;          out[0][1] = (c*h - b*i)*id; out[0][2] = (b*f - c*e)*id;
+    out[1][0] = c01*id;          out[1][1] = (a*i - c*g)*id; out[1][2] = (c*d - a*f)*id;
+    out[2][0] = c02*id;          out[2][1] = (b*g - a*h)*id; out[2][2] = (a*e - b*d)*id;
+    return 1;
+}
+
 /* Shortest-arc interpolated byte angle (256/circle) between two byte endpoints. */
 static double lerp_byte_angle(int prev_b, int curr_b, double t) {
     int d = curr_b - prev_b;
@@ -5433,6 +5463,94 @@ static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, do
  * s_reg_moby (so only specular-ONLY mobys feed). Returns the record count. */
 static double s_rec_tr[MAX_RECORDS][3];   /* per-record float TR (Tier-2 hold capture) */
 
+/* Re-base one replayed cull record from the camera the tick composed it
+ * against onto the camera this present stages.
+ *
+ * A cull that stores view-space records hands the replay a matrix M = Rt*Rm,
+ * the camera rotation times the moby's own (mobydraw.s:355-359), and a
+ * translation TR = S*(Rt*d)/4096, where d is the camera-relative moby position
+ * in quarter-world units in the GTE's axis order — ((camY-mobyY)/4,
+ * (camZ-mobyZ)/4, (mobyX-camX)/4), mobydraw.s:79-94, transformed and left in
+ * the GTE translation at mobydraw.s:125-130,189 — and S is the per-moby size
+ * rescale the cull folds in before it stores that translation
+ * (mobydraw.s:450,485,537,546-550,572). Replayed as stored, the record is
+ * fixed in screen space for the whole tick: every other feeder re-reads the
+ * staged camera, so the moby holds still while the world moves under it and
+ * steps a full tick at each boundary.
+ *
+ * With Rp, pp the staged camera and Rt, pt the tick one, and N = Rp*Rt^-1,
+ *
+ *     M'  = N*M
+ *     TR' = N*TR + S*(Rp*e)/4096
+ *
+ * where e is (pp - pt) in d's units and axis order. The inverse is explicit
+ * and in double: this matrix carries the projection's aspect and FOV scaling,
+ * so it is not orthonormal and its transpose is not its inverse. S is read
+ * back from the record's own inputs — the animation header's scale byte is the
+ * shift the cull applied, and the record's low byte its GPF factor only on a
+ * game whose cull left the translation unscaled — because only the
+ * camera-motion term needs it; the N*TR term carries S already.
+ *
+ * A present whose staged camera words equal the tick's (the canonical present,
+ * or alpha 1) returns with the record untouched, so that leg stays bit-exact.
+ * Host-side only: the staged camera is a sub-tick view copy and no guest word
+ * is written. */
+static void record_rebase_to_present(CPUState* cpu, moby_fields* f) {
+    if (!s_tickcam_have || f->header < 0x80000000u) return;
+
+    int Rp[3][3];
+    ngte_read_matrix(cpu, game_layout.cam.proj_matrix, Rp);
+    int32_t pp[3];
+    for (int i = 0; i < 3; i++)
+        pp[i] = (int32_t)cpu->read_word(game_layout.cam.position + (uint32_t)i * 4u);
+    if (memcmp(Rp, s_tickcam_M, sizeof Rp) == 0 &&
+        memcmp(pp, s_tickcam_pos, sizeof pp) == 0) return;
+
+    double Ti[3][3];
+    if (!mat3_inverse(s_tickcam_M, Ti)) return;
+
+    /* N = Rp * Rt^-1, both in 4096 units on the left and 1/4096 on the right,
+     * so N is the plain camera-to-camera change of basis. */
+    double N[3][3];
+    for (int r = 0; r < 3; r++)
+        for (int c = 0; c < 3; c++)
+            N[r][c] = ((double)Rp[r][0]*Ti[0][c] + (double)Rp[r][1]*Ti[1][c]
+                     + (double)Rp[r][2]*Ti[2][c]);
+
+    /* The camera-position delta in the record's units and axis order. */
+    double e[3] = {
+        ((double)pp[1] - (double)s_tickcam_pos[1]) / 4.0,
+        ((double)pp[2] - (double)s_tickcam_pos[2]) / 4.0,
+       -((double)pp[0] - (double)s_tickcam_pos[0]) / 4.0,
+    };
+    int msc = (int)(cpu->read_byte(f->header + game_layout.moby.anim_scale_off) & 0xFFu);
+    if (msc < 0) msc = 0; else if (msc > 30) msc = 30;
+    double S = 4.0 / (double)(1u << msc);
+    /* The draw-side GPF rescale, and so the record low byte that carries its
+     * factor, exists only where the cull stored the unscaled translation; a
+     * cull that stored the final one folded its own rescale in already and
+     * that byte means something else, which is how the decode reads it too. */
+    int gpf = game_layout.moby.rec_tr_final ? 0 : (int)(f->w0 & 0xFFu);
+    if (gpf) S *= (double)gpf / 32.0;
+
+    double TR[3], M[3][3];
+    for (int r = 0; r < 3; r++) {
+        double t = 0.0, d = 0.0;
+        for (int c = 0; c < 3; c++) {
+            t += N[r][c] * f->TR_frac[c];
+            d += (double)Rp[r][c] * e[c];
+            M[r][c] = N[r][0]*(double)f->M[0][c] + N[r][1]*(double)f->M[1][c]
+                    + N[r][2]*(double)f->M[2][c];
+        }
+        TR[r] = t + S * d / 4096.0;
+    }
+    for (int r = 0; r < 3; r++) {
+        f->TR_frac[r] = TR[r];
+        f->TR_raw[r]  = (int32_t)lround(TR[r]);
+        for (int c = 0; c < 3; c++) f->M[r][c] = (int)lround(M[r][c]);
+    }
+}
+
 static int reextract_record_pass(CPUState* cpu, const char* mat) {
     int is_spec = (mat && mat[0] == 'S' && mat[1] == 'P');
     s_walk_in_rex = 1;
@@ -5519,10 +5637,12 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         if (!moby_game.host_reveal) {
             /* No host record builder on this game: replay the record the cull
              * wrote, read exactly as the canonical pass read it. The pose is
-             * then the one the tick drew — identical to canonical at alpha 1 —
-             * but its matrix and translation are view-space from the canonical
-             * camera, so this record does not follow the interpolated one the
-             * other feeders re-extract under. */
+             * then the one the tick drew — identical to canonical at alpha 1.
+             * Its matrix and translation are view-space against the camera the
+             * tick composed them with, so record_rebase_to_present turns them
+             * onto the camera this present stages; without that the record
+             * would be the one thing in the scene that does not follow the
+             * interpolated view. */
             moby_record_t LR;
             if (!moby_game.read_record(cpu, recs[i], &LR)) continue;
             memset(&f, 0, sizeof f);
@@ -5536,6 +5656,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 f.TR_raw[k]  = LR.TR_raw[k];
                 f.TR_frac[k] = (double)LR.TR_raw[k];
             }
+            record_rebase_to_present(cpu, &f);
         } else {
         { int bok;
           uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
