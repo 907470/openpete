@@ -48,6 +48,27 @@ int moby_native_canon_drawn_mobys(const uint32_t** out);
  * the captured cull records and the interpolated camera. */
 void moby_reextract(struct CPUState* cpu);
 
+/* ---- second model kind ------------------------------------------------
+ * A game whose moby set includes a model kind its own draw pass owns
+ * (game_layout.moby.hook_draw_simple) decodes that kind inside
+ * moby_game.simple_pass and hands the result back through these two: one call
+ * per record to name the moby the following triangles belong to, then one per
+ * triangle with its three vertices already in VIEW SPACE and FULL WORLD
+ * UNITS. The projection, the GTE near-plane mirror, the per-face identity
+ * tagging and the scene push stay with the shared walk, so the second kind
+ * lands in the same scene category and the same depth space as the animated
+ * one. Valid only from inside simple_pass. */
+void moby_simple_record(struct CPUState* cpu, uint32_t moby);
+/* The screen position of one view-space point under the pass's view, so a
+ * provider can run its own winding test on the same coordinates the emit
+ * projects with. */
+void moby_simple_project(const double p[3], float* sx, float* sy);
+void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
+                     const int u[3], const int v[3],
+                     int textured, int tpage_x, int tpage_y,
+                     int clut_x, int clut_y, int bpp, int blend,
+                     uint32_t fkey);
+
 /* The cull-record queue the last canonical moby pass read: its guest base and
  * its length in bytes. A game whose queue lives in memory the rest of the tick
  * reuses stages these bytes for each sub-tick present, so the replay reads the

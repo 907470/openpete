@@ -19,10 +19,15 @@
  */
 
 #include "renderer/moby_game.h"
-#include "renderer/native_gte.h"       /* ngte_read_matrix */
+#include "renderer/moby.h"            /* the second kind's shared emit */
+#include "renderer/native_gte.h"       /* ngte_read_matrix, ngte_mac, ngte_mat_mul3, ngte_dpcs_ch */
 #include "game_layout.h"
+#include "spyro3_symbols.gen.h"        /* G_CAMERA, F_MOBY_DRAW_STATIC */
+#include "openpete_recomp_module.h"    /* the game's own static draw */
 
 #include <stddef.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* The 32-bit adjustment table the one-byte vertex form indexes
@@ -220,6 +225,431 @@ static uint32_t s3_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t frame_
     return cpu->read_word(rec + 0x14u);
 }
 
+
+/* ---- the second model kind (the static draw, mobydraw.s:3862) ----------
+ *
+ * The cull sorts each drawn moby by the sign of its model-table entry
+ * (mobydraw.s:116) and writes the KUSEG half into a second, stride-0x10 queue
+ * at draw scratch +0x1C00, bounded at 63 records by the cursor limit it keeps
+ * in GTE control 8 and 9 (mobydraw.s:44,46). One record is
+ *
+ *   +0x00  Moby*
+ *   +0x04  (camX - mobyX) >> 2 in the high half, (camY - mobyY) >> 2 in the low
+ *   +0x08  (camZ - mobyZ) >> 2 in the high half, the far-cull distance in the low
+ *   +0x0C  Model + (Moby+0x3C byte 0) * 4, whose +0x14 is the geometry header
+ *
+ * (mobydraw.s:617-630; the three offsets are the camera-relative quarter-world
+ * position the cull already computed, mobydraw.s:82,87,96). A record whose
+ * far-distance half has bit 15 set is the screen-space kind: the draw skips the
+ * transform and takes the record's own halves as the GTE screen offsets
+ * (mobydraw.s:4030-4049). CARVE-OUT: that kind is not fed.
+ *
+ * The draw transforms the record by the camera matrix at G_CAMERA+0x00 with
+ * the vector (+0x04 low, +0x08 high, +0x04 high) in IR1/IR2/IR3
+ * (mobydraw.s:3946-3952), then doubles the result into the GTE translation
+ * (mobydraw.s:4058-4060,4190-4192). The record holds quarter-world units, so
+ * the translation — and every model vertex added to it — is in world/2: full
+ * world units are twice the transformed value, which is what this pass hands
+ * the shared walk.
+ *
+ * The 16-byte geometry header is
+ *
+ *   +0x00  colour count in byte 0, high-poly vertex count in byte 1,
+ *          low-poly vertex count in byte 2
+ *   +0x04  four bounding-box bytes, each a multiple of 16 in the cull tests;
+ *          its sign selects the low-poly vertex count
+ *   +0x08  high-poly face-stream offset in the low half, high-poly colour-block
+ *          offset in the high half, both relative to the header
+ *   +0x0C  the same pair for the low-poly lists
+ *   +0x10  the vertex words, one per vertex
+ *
+ * (mobydraw.s:4196,4216-4219,4291-4297,4336-4346,4222). A vertex word packs
+ * X in bits 11-21 (11 bits), Y in bits 0-11 (12 bits) and Z in bits 21-31
+ * (11 bits), absolute, with no accumulator (mobydraw.s:4222-4229).
+ *
+ * The face stream opens with its own byte count (mobydraw.s:4368). A face is
+ * two words, five when word 1's sign marks it textured (mobydraw.s:4421-4431).
+ * Word 0 holds four 7-bit vertex indices at bits 21, 14, 7 and 0
+ * (mobydraw.s:4387-4390) and a signed ordering-table bias in its top nibble;
+ * the face is a triangle when the last two indices match (mobydraw.s:4397).
+ * Word 1 holds four 7-bit colour indices at bits 24, 17, 10 and 3
+ * (mobydraw.s:4446,4438,4444,4611-4613); its bottom two bits instead select
+ * the flat-lit material, whose colour comes from a face normal rather than the
+ * colour block (mobydraw.s:4440,4720). The three texture words are the same
+ * {u0|v0<<8|clut<<16}, {u1|v1<<8|tpage<<16}, {u2|v2<<8|u3<<16|v3<<24} triple
+ * the animated stream uses, with word 2's sign the semi-transparency enable
+ * (mobydraw.s:4519-4520,4536).
+ *
+ * Colours are indexed per vertex out of the header's colour block. Inside the
+ * fade band the draw depth-cues each entry of the high-poly block toward the
+ * matching entry of the low-poly block by IR0 = 4096 - tier
+ * (mobydraw.s:4285-4290,4314-4321) and biases the CLUT row by
+ * (4096 - tier) >> 9 (mobydraw.s:4303,4335,4542); past the band it reads the
+ * low-poly block directly. */
+
+#define D_SIMPLE_SKIP_LOWPOLY 0x8006C5DCu  /* the far-geometry suppression word the cull
+                                            * parks in GTE data 3 (mobydraw.s:34,36) */
+#define D_SIMPLE_FLAT_COLTAB  0x80066998u  /* four words per Moby+0x54 entry: the flat-lit
+                                            * material's base and lit colours (mobydraw.s:4353-4364) */
+
+#define S3_SIMPLE_RECS   63
+#define S3_SIMPLE_VERTS  256
+#define S3_SIMPLE_COLS   256
+#define S3_SIMPLE_FACES  4096
+
+/* The cull's own queue, copied at the hook. The queue lives in the tick's
+ * draw scratch, which the passes after this one build their own data in, so
+ * the bytes are taken while they are still the cull's. */
+static uint32_t s_simple_q[S3_SIMPLE_RECS][4];
+static int      s_simple_qn;
+
+/* Per-frame engagement counts: a pass that walked nothing proves nothing, so
+ * the verify harness prints what this one actually read. */
+static long s_simple_recs, s_simple_verts, s_simple_faces, s_simple_tris;
+static long s_simple_flat, s_simple_screen, s_simple_culled;
+extern unsigned openpete_frame;
+
+static void s3_simple_capture(CPUState* cpu) {
+    s_simple_qn = 0;
+    /* The cull left the draw scratch base in GTE data 2 (mobydraw.s:35,3893)
+     * and parked this queue 0x1C00 into it (mobydraw.s:44,3895). */
+    uint32_t q = cpu->gte_data[2] + 0x1C00u;
+    for (int i = 0; i < S3_SIMPLE_RECS; i++, q += 0x10u) {
+        uint32_t m = cpu->read_word(q);
+        if (m == 0u) break;                     /* the cull's terminator (mobydraw.s:584) */
+        s_simple_q[i][0] = m;
+        s_simple_q[i][1] = cpu->read_word(q + 4u);
+        s_simple_q[i][2] = cpu->read_word(q + 8u);
+        s_simple_q[i][3] = cpu->read_word(q + 12u);
+        s_simple_qn = i + 1;
+    }
+}
+
+/* R := R · Rot(axis, angle), the column pair the draw replaces through two
+ * MVMVAs per axis: Y keeps column 2, X keeps column 1, Z keeps column 3
+ * (mobydraw.s:4063-4110, 4111-4158, 4159-4189). */
+static void s3_simple_rotate(CPUState* cpu, int R[3][3], int axis, unsigned angle) {
+    if (angle == 0u) return;
+    uint32_t t = game_layout.sin_table + (angle << 1);
+    int sn = (int16_t)cpu->read_half(t);
+    int cs = (int16_t)cpu->read_half(t + 0x80u);   /* cos is 64 entries on (mobydraw.s:4066) */
+    int A[3][3] = { {4096,0,0}, {0,4096,0}, {0,0,4096} }, O[3][3];
+    if (axis == 1) { A[0][0]=cs; A[0][2]=-sn; A[2][0]=sn; A[2][2]=cs; }        /* Y */
+    else if (axis == 0) { A[1][1]=cs; A[1][2]=-sn; A[2][1]=sn; A[2][2]=cs; }   /* X */
+    else { A[0][0]=cs; A[0][1]=-sn; A[1][0]=sn; A[1][1]=cs; }                  /* Z */
+    ngte_mat_mul3(R, A, O);
+    memcpy(R, O, sizeof O);
+}
+
+/* The flat-lit face colour (mobydraw.s:4758-4813). Word 1's bits 7-30 are a
+ * face normal instead of four colour indices; the draw rotates it into view by
+ * the model matrix, projects it onto the light vector it loads into the GTE
+ * colour matrix at entry (all three rows of that matrix are the same vector,
+ * mobydraw.s:3874-3880, so the result is one dot product), and blends the two
+ * colours of the moby's entry in the flat-colour table by it: the second word
+ * scaled by the projection, the first added flat, plus a highlight that opens
+ * above 1472. The back side halves the flat word and quarters the projection
+ * (mobydraw.s:4790-4795). */
+static uint32_t s3_simple_flat_colour(const int R[3][3], uint32_t w1,
+                                      uint32_t cbase, uint32_t clit, int backface) {
+    int n1 = (int8_t)((w1 >> 15) & 0xFFu);
+    int n2 = (int8_t)((w1 >>  7) & 0xFFu);
+    int n3 = (int8_t)((w1 >> 23) & 0xFFu);
+    int ir[3];
+    for (int i = 0; i < 3; i++) {
+        long long m = (long long)R[i][0]*n1 + (long long)R[i][1]*n2 + (long long)R[i][2]*n3;
+        ir[i] = (int)(m >> 12);
+    }
+    int ir0 = (-1916*ir[0] + -3065*ir[1] + -3072*ir[2]) >> 8;
+    if (backface) { ir0 >>= 2; cbase >>= 1; }
+    int hi = ir0 > 1472 ? (ir0 - 1472) << 3 : 0;
+    int out = 0;
+    for (int ch = 0; ch < 3; ch++) {
+        int shift = ch * 8;
+        int base = (int)((cbase >> shift) & 0xFFu) << 4;
+        int lit  = (int)((clit  >> shift) & 0xFFu) << 4;
+        int v = base + ((ir0 * lit) >> 12) + hi;
+        if (v < 0) v = 0; else if (v > 4095) v = 4095;
+        out |= (v >> 4) << shift;
+    }
+    return (uint32_t)out;
+}
+
+static double s3_nclip(const float s[3][2], int a, int b, int c) {
+    return (double)(s[b][0]-s[a][0]) * (double)(s[c][1]-s[a][1])
+         - (double)(s[c][0]-s[a][0]) * (double)(s[b][1]-s[a][1]);
+}
+
+static int s3_simple_decode(CPUState* cpu) {
+    int Rcam[3][3];
+    ngte_read_matrix(cpu, G_CAMERA, Rcam);     /* mobydraw.s:3898-3908 */
+    int skip_lp = cpu->read_word(D_SIMPLE_SKIP_LOWPOLY) != 0u;  /* mobydraw.s:4336-4341 */
+    int emitted = 0;
+
+    static double vpos[S3_SIMPLE_VERTS][3];
+    static float  vscr[S3_SIMPLE_VERTS][2];
+    static uint32_t ctab[S3_SIMPLE_COLS];
+    uint32_t flat_w[4] = { 0u, 0u, 0u, 0u };
+
+    for (int r = 0; r < s_simple_qn; r++) {
+        uint32_t moby = s_simple_q[r][0];
+        uint32_t w1 = s_simple_q[r][1], w2 = s_simple_q[r][2], slot = s_simple_q[r][3];
+        unsigned fardist = w2 & 0xFFFFu;
+        if (fardist & 0x8000u) { s_simple_screen++; continue; }   /* screen-space kind */
+        s_simple_recs++;
+
+        /* view-space centre, world/2 after the doubling (mobydraw.s:3946-3952,4058-4060) */
+        double m1, m2, m3;
+        ngte_mac(Rcam, (double)(int16_t)(w1 & 0xFFFFu),
+                       (double)(int16_t)(w2 >> 16),
+                       (double)(int16_t)(w1 >> 16), &m1, &m2, &m3);
+        if (m3 - (double)fardist >= 0.0) { s_simple_culled++; continue; }  /* mobydraw.s:3958 */
+
+        uint32_t H = cpu->read_word(slot + 0x14u);
+        if (H < 0x80000000u) { s_simple_culled++; continue; }
+        uint32_t h0 = cpu->read_word(H);
+        uint32_t h1 = cpu->read_word(H + 4u);
+
+        /* The cull tests the draw repeats, on the header's four bounding-box
+         * bytes scaled by 16 (mobydraw.s:3963-3975,3976-3981,3993-4002). */
+        double bx3 = (double)((h1 >> 20) & 0xFF0u), bx2 = (double)((h1 >> 12) & 0xFF0u);
+        double bx1 = (double)((h1 >>  4) & 0xFF0u), bx0 = (double)((h1 <<  4) & 0xFF0u);
+        double ax = m1 < 0 ? -m1 : m1, ay = m2 < 0 ? -m2 : m2;
+        if (4.0*(ax - bx3) - 3.0*(m3 + bx2) >= 0.0) { s_simple_culled++; continue; }
+        if (m3 + bx1 <= 0.0) { s_simple_culled++; continue; }
+        if ((m3 + bx0) - 3.0*(ay - bx1) <= 0.0) { s_simple_culled++; continue; }
+
+        double TR[3] = { m1*2.0, m2*2.0, m3*2.0 };   /* the stored translation, world/2 */
+        int trz = (int)TR[2];
+
+        /* The ordering-table key the draw drops the record on
+         * (mobydraw.s:4193-4207): its far end is a cull, not paint order. */
+        uint32_t rot = cpu->read_word(moby + game_layout.moby.angle_off);
+        int key = (2*trz >> 7) - (int)(int8_t)(rot >> 24);
+        if (key < 0) key = 0;
+        if (key >= 272 && (key << 3) + 256 >= 3840) { s_simple_culled++; continue; }
+
+        /* The fade/LOD tier: the moby's size byte against twice the depth
+         * (mobydraw.s:4193-4196). Its sign picks the low-poly lists. */
+        int tier = ((int)cpu->read_byte(moby + 0x4Eu) << 10) - 2*trz;
+
+        int nv = (int)((tier >= 0 ? (h0 >> 8) : (h0 >> 16)) & 0xFFu);
+        if (nv < 3) continue;
+        if (nv > S3_SIMPLE_VERTS) nv = S3_SIMPLE_VERTS;
+
+        int R[3][3];
+        memcpy(R, Rcam, sizeof R);
+        s3_simple_rotate(cpu, R, 1, (rot >> 16) & 0xFFu);
+        s3_simple_rotate(cpu, R, 0, (rot >>  8) & 0xFFu);
+        s3_simple_rotate(cpu, R, 2,  rot        & 0xFFu);
+
+        moby_simple_record(cpu, moby);
+
+        for (int i = 0; i < nv; i++) {
+            uint32_t w = cpu->read_word(H + 0x10u + (uint32_t)i * 4u);
+            double vx = (double)((int32_t)(w << 10) >> 21);   /* bits 11-21 */
+            double vy = (double)((int32_t)(w << 20) >> 20);   /* bits 0-11 */
+            double vz = (double)((int32_t)w >> 21);           /* bits 21-31 */
+            double e1, e2, e3;
+            ngte_mac(R, vx, vy, vz, &e1, &e2, &e3);
+            /* world/2 in the game's space; the shared walk takes full world. */
+            vpos[i][0] = (e1 + TR[0]) * 2.0;
+            vpos[i][1] = (e2 + TR[1]) * 2.0;
+            vpos[i][2] = (e3 + TR[2]) * 2.0;
+            moby_simple_project(vpos[i], &vscr[i][0], &vscr[i][1]);
+        }
+        s_simple_verts += nv;
+
+        /* The face and colour lists, and the fade the near band applies
+         * (mobydraw.s:4285-4346). */
+        /* The vertex count switches on the tier's sign, the face and colour
+         * lists one step earlier: tier 0 takes the high-poly count and the
+         * low-poly lists (mobydraw.s:4215-4219,4285-4287). */
+        if (tier <= 0 && skip_lp) continue;
+        uint32_t pair = cpu->read_word(H + (tier > 0 ? 0x08u : 0x0Cu));
+        uint32_t faces = H + (pair & 0xFFFFu);
+        uint32_t cols  = H + (pair >> 16);
+        int ncol = (int)(h0 & 0xFFu);
+        if (ncol > S3_SIMPLE_COLS) ncol = S3_SIMPLE_COLS;
+        int clut_bias = 0;
+        uint32_t far_cols = H + cpu->read_half(H + 0x0Eu);
+        int fade = (tier > 0 && tier < 4096 && far_cols != cols);
+        int ir0 = fade ? 4096 - tier : 0;
+        if (fade) clut_bias = ir0 >> 9;
+        for (int i = 0; i < ncol; i++) {
+            uint32_t c = cpu->read_word(cols + (uint32_t)i * 4u);
+            if (fade) {
+                uint32_t f = cpu->read_word(far_cols + (uint32_t)i * 4u);
+                int rr = ngte_dpcs_ch((int)(c & 0xFFu),        (int)((f <<  4) & 0xFF0u), ir0);
+                int gg = ngte_dpcs_ch((int)((c >> 8) & 0xFFu), (int)((f >>  4) & 0xFF0u), ir0);
+                int bb = ngte_dpcs_ch((int)((c >> 16) & 0xFFu),(int)((f >> 12) & 0xFF0u), ir0);
+                c = (uint32_t)(rr | (gg << 8) | (bb << 16));
+            }
+            ctab[i] = c & 0xFFFFFFu;
+        }
+
+        /* The flat-colour entry is reloaded only for a record that names one;
+         * a record whose Moby+0x54 is zero draws with the last entry loaded
+         * (mobydraw.s:4351-4352,4353-4364). */
+        uint32_t mcol = cpu->read_word(moby + game_layout.moby.colour_off);
+        if (mcol) {
+            uint32_t e = D_SIMPLE_FLAT_COLTAB + (mcol << 4);
+            flat_w[0] = cpu->read_word(e);
+            flat_w[1] = cpu->read_word(e + 4u);
+            flat_w[2] = cpu->read_word(e + 8u);
+            flat_w[3] = cpu->read_word(e + 12u);
+        }
+
+        uint32_t bytecount = cpu->read_word(faces);
+        uint32_t fp = faces + 4u, end = fp + bytecount;
+        int guard = 0;
+        while (fp + 8u <= end && guard++ < S3_SIMPLE_FACES) {
+            uint32_t f0 = cpu->read_word(fp);
+            uint32_t f1 = cpu->read_word(fp + 4u);
+            int textured = ((int32_t)f1) < 0;
+            uint32_t adv = textured ? 0x14u : 0x08u;
+            int idx[4] = { (int)((f0 >> 21) & 0x7Fu), (int)((f0 >> 14) & 0x7Fu),
+                           (int)((f0 >>  7) & 0x7Fu), (int)( f0        & 0x7Fu) };
+            int tri = (idx[2] == idx[3]);
+            s_simple_faces++;
+            if (idx[0] >= nv || idx[1] >= nv || idx[2] >= nv || (!tri && idx[3] >= nv)) {
+                fp += adv; continue;
+            }
+            int u[4] = {0,0,0,0}, v[4] = {0,0,0,0};
+            int tpx = 0, tpy = 0, clx = 0, cly = 0, bpp = 16, blend = 0;
+            float sc[4][2];
+            for (int k = 0; k < 4; k++) {
+                sc[k][0] = vscr[idx[k]][0]; sc[k][1] = vscr[idx[k]][1];
+            }
+            double nA = s3_nclip(sc, 0, 1, 2);
+            double nB = tri ? 0.0 : s3_nclip(sc, 3, 1, 2);
+            int emit_a = 0, emit_b = 0, back = 0;
+            /* Word 1 bit 1 is the flat-lit material: the face is two-sided,
+             * draws untextured F3/F4 whatever its own texture words say, and
+             * takes its colour from a normal rather than the colour block
+             * (mobydraw.s:4720-4724,4756-4765,4849-4862). Bit 0 alone changes
+             * neither (mobydraw.s:4721,4666). */
+            int flat = (f1 & 2u) != 0;
+            if (flat) {
+                s_simple_flat++;
+                textured = 0;
+                if (tri) {
+                    back = (nA < 0.0);
+                    emit_a = 1;
+                } else if (nA >= 0.0) {
+                    /* mobydraw.s:4726-4745: the far side still draws, as the
+                     * whole quad, flagged back-facing. */
+                    if (nB > 0.0) emit_b = 1;
+                    else if (nB < 0.0) { emit_a = emit_b = 1; back = 1; }
+                } else {
+                    if (nB > 0.0) emit_a = emit_b = 1; else emit_a = 1;
+                }
+                /* The back side survives only within the near threshold the
+                 * draw tests the translation Z against (mobydraw.s:4788-4797). */
+                if (back && !(TR[2] - ((f1 & 1u) ? 2048.0 : 0.0) < 0.0))
+                    emit_a = emit_b = 0;
+                /* and draws semi-transparent (mobydraw.s:4783-4784). */
+                blend = back ? 1 : 0;
+            } else if (!tri) {
+                /* mobydraw.s:4444-4460,4529-4533: the quad's two halves keep on
+                 * opposite NCLIP signs, the Z vertex order giving them opposite
+                 * winding. */
+                if (nA >= 0.0) { if (nB > 0.0) emit_b = 1; }
+                else if (nB > 0.0) { emit_a = emit_b = 1; }
+                else emit_a = 1;
+            } else {
+                if (nA > 0.0) emit_a = 1;      /* mobydraw.s:4592-4600 */
+            }
+            if (!emit_a && !emit_b) { fp += adv; continue; }
+
+            uint32_t col[4];
+            if (flat) {
+                /* Bit 0 picks which of the entry's two colour pairs
+                 * (mobydraw.s:4772-4776). */
+                uint32_t c = s3_simple_flat_colour(R, f1,
+                                flat_w[(f1 & 1u) ? 0 : 2],
+                                flat_w[(f1 & 1u) ? 1 : 3], back);
+                col[0] = col[1] = col[2] = col[3] = c;
+            } else {
+                int ci[4] = { (int)((f1 >> 24) & 0x7Fu), (int)((f1 >> 17) & 0x7Fu),
+                              (int)((f1 >> 10) & 0x7Fu), (int)((f1 >>  3) & 0x7Fu) };
+                for (int k = 0; k < 4; k++)
+                    col[k] = ctab[ci[k] < ncol ? ci[k] : 0];
+            }
+
+            if (textured) {
+                uint32_t t0 = cpu->read_word(fp + 0x08u);
+                uint32_t t1 = cpu->read_word(fp + 0x0Cu);
+                uint32_t t2 = cpu->read_word(fp + 0x10u);
+                u[0]=(int)(t0 & 0xFFu); v[0]=(int)((t0 >> 8) & 0xFFu);
+                u[1]=(int)(t1 & 0xFFu); v[1]=(int)((t1 >> 8) & 0xFFu);
+                u[2]=(int)(t2 & 0xFFu); v[2]=(int)((t2 >> 8) & 0xFFu);
+                u[3]=(int)((t2 >> 16) & 0xFFu); v[3]=(int)((t2 >> 24) & 0xFFu);
+                unsigned cl = (t0 >> 16) & 0xFFFFu;
+                unsigned tp = (t1 >> 16) & 0x7FFFu;
+                int mode = (int)((tp >> 7) & 3u);
+                int abr  = (int)((tp >> 5) & 3u);
+                tpx = (int)((tp & 0xFu) * 64u);
+                tpy = (int)(((tp >> 4) & 1u) * 256u);
+                bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
+                clx = (int)((cl & 0x3Fu) * 16u);
+                cly = (int)(((cl >> 6) & 0x1FFu) + (unsigned)clut_bias);
+                if ((t1 >> 31) & 1u)
+                    blend = (abr == 0) ? 1 : (abr == 1) ? 2 : 3;
+            }
+
+            double p[3][3]; uint32_t rgb[3]; int uu[3], vv[3];
+            if (emit_a) {
+                const int o[3] = {0,1,2};
+                for (int k = 0; k < 3; k++) {
+                    memcpy(p[k], vpos[idx[o[k]]], sizeof p[k]);
+                    rgb[k] = col[o[k]]; uu[k] = u[o[k]]; vv[k] = v[o[k]];
+                }
+                moby_simple_tri(p, rgb, uu, vv, textured, tpx, tpy, clx, cly, bpp, blend,
+                                (uint32_t)(idx[0] | (idx[1] << 10) | (idx[2] << 20)));
+                emitted++; s_simple_tris++;
+            }
+            if (emit_b) {
+                const int o[3] = {1,3,2};
+                for (int k = 0; k < 3; k++) {
+                    memcpy(p[k], vpos[idx[o[k]]], sizeof p[k]);
+                    rgb[k] = col[o[k]]; uu[k] = u[o[k]]; vv[k] = v[o[k]];
+                }
+                moby_simple_tri(p, rgb, uu, vv, textured, tpx, tpy, clx, cly, bpp, blend,
+                                (uint32_t)(idx[1] | (idx[3] << 10) | (idx[2] << 20)));
+                emitted++; s_simple_tris++;
+            }
+            fp += adv;
+        }
+    }
+    return emitted;
+}
+
+/* A sub-tick present's replay: the captured queue decoded again under the
+ * present's camera, with no second call into the game's draw. */
+static int s3_simple_replay(CPUState* cpu) {
+    return s3_simple_decode(cpu);
+}
+
+/* The pass the walk's second-kind hook runs: capture the cull's queue, run the
+ * game's own draw (which writes the drawn verdict and the prims), then decode
+ * the captured queue natively. */
+static int s3_simple_pass(CPUState* cpu) {
+    s_simple_recs = s_simple_verts = s_simple_faces = s_simple_tris = 0;
+    s_simple_flat = s_simple_screen = s_simple_culled = 0;
+    s3_simple_capture(cpu);
+    openpete_recomp_module_get()->dispatch(cpu, F_MOBY_DRAW_STATIC);
+    int n = s3_simple_decode(cpu);
+    static int s_dbg = -1;
+    if (s_dbg < 0) { const char* e = getenv("OPENPETE_MOBY_VERIFY"); s_dbg = (e && *e && *e != '0'); }
+    if (s_dbg)
+        fprintf(stderr, "[moby-simple f=%u] queued=%d drawn=%ld culled=%ld screenkind=%ld "
+                        "verts=%ld faces=%ld flat=%ld tris=%d\n",
+                openpete_frame, s_simple_qn, s_simple_recs, s_simple_culled, s_simple_screen,
+                s_simple_verts, s_simple_faces, s_simple_flat, n);
+    return n;
+}
+
 const moby_game_t moby_game = {
     .vstream_init      = s3_vstream_init,
     .vstream_next      = s3_vstream_next,
@@ -227,7 +657,8 @@ const moby_game_t moby_game = {
     .read_record       = s3_read_record,
     .frame_patch_list  = s3_frame_patch_list,
     .model_is_animated = s3_model_is_animated,
-    .simple_pass       = NULL,
+    .simple_pass       = s3_simple_pass,
+    .simple_replay     = s3_simple_replay,
     /* The cull writes its verdict into a gameplay-readable Moby byte, so
      * nothing the host widens may reach it and the walk feeds the records the
      * cull queued, no more. */

@@ -9,9 +9,9 @@
  *
  * What it cannot share is the bit layout of the two streams the models are
  * encoded in and the shape of one cull record, so those three decoders are
- * function slots here, plus a fourth for a second model kind a game may carry
- * (a static geometry list drawn by its own pass) and a fifth for the object
- * identity the sub-tick interp ring keys on. The remaining slots are per-game
+ * function slots here, plus a pair for a second model kind a game may carry
+ * (a static geometry list drawn by its own pass, canonically and on a sub-tick
+ * replay) and one for the object identity the sub-tick interp ring keys on. The remaining slots are per-game
  * data with no engine address behind it — the HUD/cutscene classifications and
  * the one-shot instance table — and the addresses of scratch windows and
  * material assets a game keeps outside the descriptor. A NULL function slot or
@@ -137,10 +137,16 @@ typedef struct moby_game {
 
     /* ---- second geometry kind ---------------------------------------- */
     /* A game whose moby set includes a second model kind drawn by its own
-     * pass (a static geometry list) feeds it here; the walk calls this after
-     * the animated records and before the emit. NULL where the game has no
-     * such kind, and the walk feeds the animated records alone. */
+     * pass (a static geometry list) feeds it here, on that pass's own draw
+     * hook (game_layout.moby.hook_draw_simple). The pass owns the guest
+     * dispatch and the decode, and hands the walk view-space triangles
+     * through moby_simple_record / moby_simple_tri; it returns the triangle
+     * count. `simple_replay` re-runs the decode alone for a sub-tick present,
+     * from the queue the canonical call captured, so the second kind survives
+     * between ticks. NULL where the game has no such kind, and the walk feeds
+     * the animated records alone. */
     int  (*simple_pass)(CPUState* cpu);
+    int  (*simple_replay)(CPUState* cpu);
 
     /* 1 = the walk may rebuild cull records from gamestate for the mobys the
      * canonical cull never queued (the widescreen and extended-LOD reveal).

@@ -1713,6 +1713,63 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
     t_diag->emitted++;
 }
 
+/* ---- second model kind: the shared half of moby_game.simple_pass ---------
+ * The provider owns the second kind's record, header, vertex and face
+ * encodings and its model->view transform, because none of them is shared;
+ * everything downstream of a view-space triangle is. The provider names the
+ * record's moby once, then hands each triangle in view space, full world
+ * units, and these two apply the same per-record tagging, the same raw float
+ * projection, the same GTE near-plane mirror and the same emit the animated
+ * walk uses, so both kinds reach the scene in one category and one depth
+ * space. */
+static const int MOBY_IDENT_Q12[3][3] = { {4096,0,0}, {0,4096,0}, {0,0,4096} };
+
+void moby_simple_record(CPUState* cpu, uint32_t moby) {
+    s_cur_moby_key  = moby;
+    s_cur_moby_cls  = moby ? (uint16_t)cpu->read_half(moby + game_layout.moby.class_off) : 0;
+    s_cur_moby_dofs = moby ? (int8_t)cpu->read_byte(moby + game_layout.moby.angle_off + 3u) : 0;
+    s_cur_ui    = openpete_ui_moby_is_addr_static(moby) ? 2
+                : openpete_ui_moby_is_addr_ui(moby)     ? 1 : 0;
+    s_cur_front = s_cur_ui == 0 && moby_is_cutscene_actor(cpu, moby);
+    s_emit_fkey = 0u;
+}
+
+void moby_simple_project(const double p[3], float* sx, float* sy) {
+    const ngte_view* view = moby_record_view(s_cur_moby_key);
+    double x, y; int sat;
+    double vzz = project(MOBY_IDENT_Q12, NULL, p[0], p[1], p[2],
+                         view->ofx, view->ofy, view, &x, &y, &sat);
+    moby_gte_near_fixup(MOBY_IDENT_Q12, NULL, p[0], p[1], p[2],
+                        vzz, view->ofx, view->ofy, view, &x, &y);
+    *sx = (float)x; *sy = (float)y;
+}
+
+void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
+                     const int u[3], const int v[3],
+                     int textured, int tpage_x, int tpage_y,
+                     int clut_x, int clut_y, int bpp, int blend,
+                     uint32_t fkey) {
+    const ngte_view* view = moby_record_view(s_cur_moby_key);
+    proj_xy q[3];
+    for (int k = 0; k < 3; k++) {
+        double sx, sy; int sat;
+        /* The point is already in view space, so the rotate step is identity
+         * and the translation zero; only the divide is left to do. */
+        double vzz = project(MOBY_IDENT_Q12, NULL, p[k][0], p[k][1], p[k][2],
+                             view->ofx, view->ofy, view, &sx, &sy, &sat);
+        int unr = moby_gte_near_fixup(MOBY_IDENT_Q12, NULL, p[k][0], p[k][1], p[k][2],
+                                      vzz, view->ofx, view->ofy, view, &sx, &sy);
+        q[k].sx = (float)sx; q[k].sy = (float)sy;
+        q[k].vz = (float)vzz; q[k].tvz = (float)vzz;
+        q[k].sat = sat; q[k].unr = unr; q[k].rec = -1;
+        q[k].ex = q[k].ey = q[k].ez = 0.0f;
+    }
+    s_emit_fkey = fkey;
+    emit_wtri(&q[0], &q[1], &q[2], rgb[0], rgb[1], rgb[2],
+              u[0], v[0], u[1], v[1], u[2], v[2],
+              textured, tpage_x, tpage_y, clut_x, clut_y, bpp, blend);
+}
+
 /* specular env-reflection UV (#1) -- definitions below (near recolor); forward-
  * declared so the walk can derive metal-face UVs natively. s_env_* = the static
  * metal Tiledef (D_800756F0, level-load asset), decoded to VRAM px by _load. */
@@ -2701,6 +2758,7 @@ static void compare_walk_vs_prims(void) {
     int prim_quad=0, prim_tri=0;   /* how many GPU quads vs tris the .s actually emitted */
     for(int g=0;g<s_gte_n;g++){ if(s_gte[g].nv==4)prim_quad++; else if(s_gte[g].nv==3)prim_tri++; }
     int wmatch=0, neg_m=0, pos_m=0, neg_u=0, pos_u=0;
+    double wcost_sum=0.0;   /* mean of the matched tris' worst-vertex distance */
     int mt_p=0,mt_n=0,mf_p=0,mf_n=0;  /* matched nclip split: textured/flat (winding rule) */
     int colmatch=0, coln=0, uvmatch=0, uvn=0; double wluma_sum=0, pluma_sum=0;
     /* On-screen subset (centroid within the disp rect): the off-screen extras
@@ -2724,7 +2782,7 @@ static void compare_walk_vs_prims(void) {
         int won_this = ONSCR(wcx,wcy);
         if (won_this) won++;
         if (best<=4.0 && bp>=0){
-            wmatch++; pmatched[bp]=1;
+            wmatch++; pmatched[bp]=1; wcost_sum += best;
             if (won_this) wmatch_on++;
             if(ncl<0)neg_m++;else pos_m++;
             if(w->textured){ if(ncl<0)mt_n++;else mt_p++; } else { if(ncl<0)mf_n++;else mf_p++; }
@@ -2824,10 +2882,11 @@ static void compare_walk_vs_prims(void) {
     fprintf(stderr,
         "[moby-walk %s f=%u] recs=%d faces=%d walkTris=%d primTris=%d | "
         "ONSCREEN precision=%d/%d(%.1f%%) recall=%d/%d(%.1f%%) onscrUnmatched=%d | "
-        "precision=%d/%d(%.1f%%) recall=%d/%d(%.1f%%) | ",
+        "precision=%d/%d(%.1f%%) recall=%d/%d(%.1f%%) meanPx=%.2f | ",
         s_cur_mat, openpete_frame, s_nrecs, s_wdiag[0].faces, wn, pn,
         wmatch_on, won, won?100.0*wmatch_on/won:0.0, pcov_on, pon, pon?100.0*pcov_on/pon:0.0, won_un,
-        wmatch, wn, wn?100.0*wmatch/wn:0.0, pcov, pn, pn?100.0*pcov/pn:0.0);
+        wmatch, wn, wn?100.0*wmatch/wn:0.0, pcov, pn, pn?100.0*pcov/pn:0.0,
+        wmatch?wcost_sum/wmatch:0.0);
     fprintf(stderr,
         "[moby-walk2 f=%u] "
         "shapes{freshG=%d freshT=%d strip=%d sprite=%d skip=%d quad=%d oor=%d nearstraddle=%d} "
@@ -4835,6 +4894,49 @@ static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
     return 1;
 }
 
+/* The second model kind's draw pass. The provider owns the guest dispatch: its
+ * pass captures the cull's own record queue around the call, because that
+ * queue lives in the tick's draw scratch that later passes reuse. This frame
+ * supplies the pass view, the triangle buffer and the scene push, so the kind
+ * lands beside the animated one. Returning 0 leaves the game's draw to the
+ * ordinary dispatch. */
+static int on_draw_simple(CPUState* cpu, uint32_t addr) {
+    (void)addr;
+    if (!moby_game.simple_pass) return 0;
+    int verify = moby_verify_enabled();
+    int feed   = openpete_native_scene_enabled();
+    if (!verify && !feed && !render_paths_active()) return 0;
+    static int s_in = 0; if (s_in) return 0; s_in = 1;
+    s_cur_mat = "SIM";
+    moby_view_build(cpu);
+    s_gout.n = 0;
+    uint32_t start = cpu->read_word(game_layout.polybuf.cursor);
+    int ntri;
+    { OP_PROF_ACCUM_SCOPE("moby.srend");
+      ntri = moby_game.simple_pass(cpu); }
+    uint32_t end = cpu->read_word(game_layout.polybuf.cursor);
+    render_path_record(RP_MOBY, start, end);
+    if (feed) {
+        /* A tick whose second-kind pass emitted nothing to the polybuf leaves
+         * an empty interval; the path must still read canon-drawn or the
+         * sub-tick spine drops these triangles on every intermediate present. */
+        if (ntri > 0 && end <= start) render_path_mark_drawn(RP_MOBY);
+        push_scene_moby();
+    }
+    if (verify) {
+        static int s_reports = 0;
+        unsigned vf = moby_verify_frame();
+        if (s_gout.n > 0 && s_reports < 120 &&
+            openpete_frame >= vf && openpete_frame <= vf + 12u) {
+            capture_gte(cpu, start, end);     /* the pass's own prims: the bracket */
+            compare_walk_vs_prims();
+            s_reports++;
+        }
+    }
+    s_in = 0;
+    return 1;
+}
+
 /* Compute the PREV rendered keyframe pose for a moby — the second input to the
  * two-pass sub-tick SHAPE lerp in reextract_record_pass. Returns 1 (and fills
  * frameA_p/frameB_p/w0_p/hdr_p + alpha) when the moby has a lerpable prev snapshot;
@@ -5669,6 +5771,18 @@ void moby_reextract(CPUState* cpu) {
             memcpy(h, saved_reg, SPEC_SCR_LEN);       /* restore REGULAR */
         }
     }
+    /* The second model kind: the queue its canonical pass captured, decoded
+     * again under this present's camera. Its producer is the same tick's moby
+     * render, so it replays on the regular pass's freshness. */
+    int sim_walk = 0;
+    if (reg_fresh && moby_game.simple_replay) {
+        s_cur_mat = "SIM";
+        moby_view_build(cpu);
+        s_gout.n = 0;
+        moby_game.simple_replay(cpu);
+        sim_walk = s_gout.n;
+        push_scene_moby();
+    }
     spyro_native_prod_camera_leave();
 
     /* Shaded mobys (gems/props/HUD icons/text) — already re-derive from g_Camera. */
@@ -5724,9 +5838,9 @@ void moby_reextract(CPUState* cpu) {
     if (feeddbg) {
         static unsigned last = 0xFFFFFFFFu;
         if (openpete_frame != last) { last = openpete_frame;
-            fprintf(stderr, "[reextract-moby f=%u] fresh reg=%d spec=%d shd=%d | recs_in=%d reg_walk=%d spec_walk=%d shd_walk=%d\n",
+            fprintf(stderr, "[reextract-moby f=%u] fresh reg=%d spec=%d shd=%d | recs_in=%d reg_walk=%d spec_walk=%d sim_walk=%d shd_walk=%d\n",
                     openpete_frame, reg_fresh, spec_fresh, shd_fresh,
-                    nm, reg_walk, spec_walk, shd_fresh ? s_gout.n : 0); }
+                    nm, reg_walk, spec_walk, sim_walk, shd_fresh ? s_gout.n : 0); }
     }
     static int animswdbg = -1;
     if (animswdbg < 0) { const char* e = getenv("OPENPETE_MOBY_ANIMSW_DBG"); animswdbg = (e && *e && *e != '0'); }
@@ -5745,7 +5859,7 @@ void moby_reextract(CPUState* cpu) {
  * pass the layout leaves at 0 contributes no entry instead of truncating the
  * ones after it. A game that names no pass registers nothing and never enters
  * this feeder. */
-static feature_dispatch_entry_t moby_dispatch[4];
+static feature_dispatch_entry_t moby_dispatch[5];
 
 static void moby_apply_options(const openpete_options_t* opts) {
     (void)opts;
@@ -5760,15 +5874,17 @@ static void moby_apply_options(const openpete_options_t* opts) {
         { game_layout.moby.hook_draw_regular,  on_draw_regular  },
         { game_layout.moby.hook_draw_specular, on_draw_specular },
         { game_layout.moby.hook_draw_shaded,   on_draw_shaded   },
+        /* The second kind reads none of the animated stream decoders, so it
+         * registers on its own provider slot. */
+        { moby_game.simple_pass ? game_layout.moby.hook_draw_simple : 0u, on_draw_simple },
     };
     int n = 0;
-    if (have)
-        for (size_t i = 0; i < sizeof passes / sizeof passes[0]; i++)
-            if (passes[i].addr) {
-                moby_dispatch[n].addr = passes[i].addr;
-                moby_dispatch[n].fn   = passes[i].fn;
-                n++;
-            }
+    for (size_t i = 0; i < sizeof passes / sizeof passes[0]; i++)
+        if (passes[i].addr && (have || passes[i].fn == on_draw_simple)) {
+            moby_dispatch[n].addr = passes[i].addr;
+            moby_dispatch[n].fn   = passes[i].fn;
+            n++;
+        }
     moby_dispatch[n].addr = 0u;
     moby_dispatch[n].fn   = NULL;
 }
