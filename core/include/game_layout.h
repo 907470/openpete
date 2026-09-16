@@ -19,6 +19,8 @@
 extern "C" {
 #endif
 
+enum { TERRAIN_FACES_SPYRO1 = 0, TERRAIN_FACES_SPYRO3 = 1 };
+
 typedef struct game_layout {
     /* The in-RAM sin/cos table: 256 entries per circle of s16 1.12 fixed
      * point, cos at +0x80 bytes into the same table, so a byte angle indexes
@@ -101,6 +103,40 @@ typedef struct game_layout {
     } cam;
 
     uint32_t level_id;
+
+    /* The terrain decode switches. The 7-word sector header and the 11/11/10
+     * vertex packing are common; the games differ in the header's radius and
+     * flag bits, in the vertex Z offset scale, and in the tables the walk may
+     * consult. `radius_mask` and `flags_mask` split header word 1's low half;
+     * `flat_flag` is the bit (0 when the game has no flat rule) that marks a
+     * sector whose Z offsets are stored at `vz_flat_shr` bits less; every
+     * other sector's Z offset is `vz_shl` bits more than the 10 packed bits.
+     * `uv_ori_table` is the HQ tile UV-orientation offset table (0 =
+     * identity); `defer_q` are the two near-cell defer queues the draw fills
+     * (0 = none). */
+    struct {
+        uint32_t radius_mask;
+        uint32_t flags_mask;
+        uint32_t flat_flag;
+        int      vz_shl;
+        int      vz_flat_shr;
+        uint32_t uv_ori_table;
+        uint32_t defer_q[2];
+        /* The face record layout (TERRAIN_FACES_*): the games pack the HP
+         * texture index, flip, OT bias and triangle UV rotation, and the LP
+         * indices and colours, in different words and bit positions. */
+        int      face_layout;
+        /* Bytes per texture-table entry: the LQ far tile at +0 and the LQ near
+         * tile at +8 in both games; Spyro 3 keeps its four HQ sub-tiles inline
+         * after them (48 bytes) where Spyro 1 has a separate HQ table (16). */
+        uint32_t tex_stride;
+        /* Semi-transparency: Spyro 1 flags it per face; Spyro 3 in bit 15 of
+         * the tile's TPAGE halfword. */
+        int      abe_in_tpage;
+        /* The LP/HP LOD distance when the environment header has no field for
+         * it (env.lod_dist == 0): Spyro 3's draw bins with constants. */
+        uint32_t lod_dist_default;
+    } terrain;
 
     /* Hook sites: the guest entry addresses the feeders dispatch on.
      * `visibility` is the function that fills the visibility verdict when

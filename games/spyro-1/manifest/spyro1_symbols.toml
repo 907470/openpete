@@ -316,3 +316,8 @@ name = "F_SKY_DRAW"
 addr = 0x8004EBA8
 kind = "function"
 note = "func_8004EBA8 — the dome renderer; the cyclorama feeder's hook site"
+
+[[symbol]]
+name = "D_HQ_UV_ORI_TABLE"
+addr = 0x8006D058
+note = "D_8006D058 — the HQ tiledef UV-orientation offset table: 8-byte entries of per-corner (du | dv<<8) deltas indexed by tiledef word1 >> 25 (func_800276A0 block_80027EA8)"

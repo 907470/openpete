@@ -2,9 +2,16 @@
 #include "feature_registry.h"
 #include <stddef.h>
 
+extern const feature_module_t render_paths_module;
+extern const feature_module_t terrain_module;
 extern const feature_module_t terrain_probe_module;
 
 const feature_module_t* const openpete_features[] = {
+    /* --render-paths: the path-isolation selection (apply_options only). */
+    &render_paths_module,
+    /* The shared terrain feeder: hooks the world draw and the visibility
+     * function from game_layout; inert unless the native scene is enabled. */
+    &terrain_module,
     /* The calibrated terrain probe: inert unless OPENPETE_TERRAIN_PROBE is set. */
     &terrain_probe_module,
 };

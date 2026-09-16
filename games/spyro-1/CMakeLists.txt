@@ -163,6 +163,7 @@ openpete_add_game(spyro-1
     MAIN           main.cpp
     FEATURE_LIST   feature_list.c
     ORCHESTRATOR   renderer/reextract.c
+    TERRAIN_GAME   renderer/terrain_game.c
     ICON_SOURCE    ${_spyro_icon_c}
     MODULE_LINKAGE ${OPENPETE_RECOMP_LINKAGE}
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro1_symbols.toml
@@ -182,7 +183,6 @@ openpete_add_game(spyro-1
         renderer/shadow.c
         renderer/particle.c
         renderer/tracer.c
-        renderer/terrain.c
         renderer/layout.c
         renderer/ui_sprite.c
         renderer/portal.c

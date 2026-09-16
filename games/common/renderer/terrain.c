@@ -1,15 +1,30 @@
-// games/spyro-1/renderer/terrain.c — native world/terrain renderer.
+// games/common/renderer/terrain.c — native world/terrain renderer, shared
+// across games.
 //
-// The world renderer is func_800258F0 (-> func_800276A0 fallthrough), dispatched
-// per frame by func_8002B9CC (PrepareEnvironmentRendering). It is camera-relative
-// (GTE rotation = g_Camera+0x14, TR=0), projects each visible sector's 11/11/10
-// packed vertices via RTPS, frustum-culls sectors (writing the D_800771C8
-// visibility VERDICT), walks LP (8B) / HP (16B) face lists, and emits fogged
-// GT4/GT3 (+ flat G3) prims for the whole environment.
+// Every engine address the walk reads comes from game_layout (the sector
+// list, the visibility table, the texture tables, the camera, the polybuf);
+// the per-game decode differences (sector flag layout, the vertex Z packing
+// and the flat-sector rule, the HQ UV-orientation table, the near-cell defer
+// queues) are game_layout.terrain fields; the per-game data the walk consults
+// (portal sky planes, the frozen LP fill tags, level names, authored-data art
+// fixes) comes through terrain_game (renderer/terrain_game.h).
 //
-// This module hooks func_800258F0, runs the real renderer once (gameplay writes —
-// sector visibility — happen identically), brackets the polybuf to capture the
-// .s prims as the A/B oracle, then does the NATIVE walk: per visible sector it
+// In Spyro 1 the world renderer is func_800258F0 (-> func_800276A0
+// fallthrough), dispatched per frame by func_8002B9CC
+// (PrepareEnvironmentRendering). It is camera-relative (GTE rotation =
+// g_Camera+0x14, TR=0), projects each visible sector's 11/11/10 packed
+// vertices via RTPS, frustum-culls sectors (writing the D_800771C8 visibility
+// VERDICT), walks LP (8B) / HP (16B) face lists, and emits fogged GT4/GT3
+// (+ flat G3) prims for the whole environment. Spyro 3's func_80022378 has the
+// same sector header and vertex packing at twice the Z offset scale, keeps
+// its visibility table in the scratchpad for the duration of the draw (so the
+// walk reads a copy captured at the visibility function's return), and sorts
+// flat-flagged sectors into a list whose Z offset is unshifted.
+//
+// This module hooks the layout's world-draw site, runs the real renderer once
+// (gameplay writes — sector visibility — happen identically), brackets the
+// polybuf to capture the .s prims as the A/B oracle, then does the NATIVE
+// walk: per visible sector it
 // decodes 11/11/10 verts → float RTPS projection, walks HP (16B) / LP (8B) faces
 // into tris, and computes per-vertex RGB888 + DPCS depth-cue fog from the sector
 // colour arrays (terrain_color). The result is fed to the native scene
@@ -29,17 +44,18 @@
 #include "openpete_psx.h"
 #include "openpete_subtick_view.h"  /* openpete_psx_to_host_ptr (sector colour host reads) */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
-#include "renderer/reextract.h"  /* sub-tick re-extract entry */
+#include "renderer/orchestrator.h"  /* openpete_native_interp_pos */
+#include "renderer/terrain.h"        /* this feeder's exports */
 #include "openpete_interp.h"         /* openpete_interp_present_now (scroll-anim alpha) */
 #include "openpete_interp_objs.h"    /* per-descriptor scroll snapshots */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "no_lod.h"  /* openpete_no_lod + openpete_fog_scale (--fog-scale) */
-#include "features/levelwarp.h" /* level-id -> verdicts-file spelling (fill-tag pick) */
 #include "openpete_fillpick.h"       /* LP fill-tag inspector (P): session verdicts + pick */
 #include "rhi.h"                     /* rhi_terrain_vertex (the chunk packer) */
 #include "openpete_terrain_cache.h"  /* terrain sector-mesh GPU cache (retained terrain) */
 
-#include "renderer/portal.h" /* portal-guard gate + the sky-plane provider (OT-conformance clamp) */
+#include "renderer/terrain_game.h" /* per-game data: portal sky planes, fill tags, level names, art fixes */
+#include "openpete_recomp_module.h"  /* the game's own world draw, run through the module dispatch */
 #include "texture_pack.h"           /* identity resolve for the record dumper */
 #include "openpete_mods.h"          /* untextured-band material resolve (S8c) */
 #include "openpete_native_vram.h"   /* VRAM model reads for the record dumper */
@@ -51,7 +67,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "spyro1_symbols.gen.h"
 #include "game_layout.h"          /* game_layout: the engine RAM addresses this walk reads */
 
 extern void     func_800258F0(CPUState* cpu);  /* the real world renderer */
@@ -80,6 +95,44 @@ static int     s_tanim_en;            /* OPENPETE_TERRAIN_TANIM latch (re-extrac
  * schedule rebuilds legitimately miss those advances. */
 static uint8_t s_tscroll_tile[128];
 static int     s_tscroll_have;
+
+/* ---- per-game decode switches --------------------------------------------- */
+
+/* One packed 11/11/10 sector vertex to its origin-relative offsets. X and Y
+ * are the same in every game; the Z offset is scaled by the layout: Spyro 1
+ * uses the 10 bits as they are, Spyro 3 doubles them, and a Spyro 3 sector
+ * carrying the flat flag (header word 1 bit 12) stores Z at a quarter of the
+ * unshifted value (the draw sorts such a sector into a list whose vertex loop
+ * reads the Z offset unshifted, in quarter units). */
+static inline void tvert_unpack(uint32_t v, int flat, int* x, int* y, int* z) {
+    *x = (int)((v >> 21) & 0x7FF);
+    *y = (int)((v >> 10) & 0x7FF);
+    int vz = (int)(v & 0x3FF);
+    *z = flat ? (vz >> game_layout.terrain.vz_flat_shr) : (vz << game_layout.terrain.vz_shl);
+}
+/* The LP/HP LOD distance: the environment header's field, or the layout's
+ * constant on a game whose header has none. */
+static inline uint32_t tenv_lod_dist(CPUState* cpu) {
+    return game_layout.env.lod_dist ? cpu->read_word(game_layout.env.lod_dist) : game_layout.terrain.lod_dist_default;
+}
+/* Header word 1: radius, the LP/HP list flags and the flat flag. */
+static inline int thdr_radius(uint32_t w1) { return (int)(w1 & game_layout.terrain.radius_mask); }
+static inline int thdr_flags(uint32_t w1)  { return (int)(w1 & game_layout.terrain.flags_mask); }
+static inline int thdr_flat(uint32_t w1)   { return game_layout.terrain.flat_flag && (w1 & game_layout.terrain.flat_flag); }
+
+/* The visibility verdict. A game whose draw leaves the table in RAM is read
+ * there (0xFF = visible); a game whose draw computes it in the scratchpad and
+ * consumes it before returning (Spyro 3) has a visibility hook that copies the
+ * bytes at the visibility function's return, and the walk reads that copy
+ * (nonzero = visible) until the next draw. */
+#define TVIS_MAX 1024
+static uint8_t s_vis_cap[TVIS_MAX];
+static int     s_vis_cap_n = -1;      /* -1 = no capture this tick: read RAM */
+static int     s_vis_arm;             /* the draw is running: the next world visibility call is captured */
+static int tvis_visible(CPUState* cpu, uint32_t i) {
+    if (s_vis_cap_n >= 0) return i < (uint32_t)s_vis_cap_n && s_vis_cap[i] != 0;
+    return cpu->read_byte(game_layout.visibility.base + i) == 0xFF;
+}
 
 /* ---- captured prims (ground truth) --------------------------------------- */
 typedef struct {
@@ -161,7 +214,7 @@ static void terrain_dump(CPUState* cpu) {
     uint32_t texCnt    = rd(cpu, game_layout.env.tex_count);
     uint32_t lqTex     = rd(cpu, game_layout.env.lq_tex);
     uint32_t hqTex     = rd(cpu, game_layout.env.hq_tex);
-    int lodDist        = (int)rd(cpu, game_layout.env.lod_dist);
+    int lodDist        = (int)tenv_lod_dist(cpu);
     int cullDist       = (int)rd(cpu, game_layout.env.cull_dist);
     int camX = (int)rd(cpu, game_layout.cam.position);
     int camY = (int)rd(cpu, game_layout.cam.position + 4u);
@@ -182,8 +235,7 @@ static void terrain_dump(CPUState* cpu) {
      * header count-prefix + the 11/11/10 HP vertex format against live data. */
     int shown = 0;
     for (uint32_t i = 0; i < sectorCnt && shown < 3; i++) {
-        uint8_t vis = (uint8_t)(rd(cpu, (game_layout.visibility.base + i) & ~3u) >> ((i & 3) * 8));
-        if (vis != 0xFF) continue;
+        if (!tvis_visible(cpu, i)) continue;
         uint32_t s = rd(cpu, sectorPtr + i * 4);
         if (!s) continue;
         uint32_t w0 = rd(cpu, s + 0x00), w1 = rd(cpu, s + 0x04);
@@ -191,7 +243,7 @@ static void terrain_dump(CPUState* cpu) {
         uint32_t oz = rd(cpu, s + 0x0C);     /* originZ<<16 | flistId */
         uint32_t lpw = rd(cpu, s + 0x10), hpw = rd(cpu, s + 0x14);
         int centreX = (int)(w0 >> 16), centreY = (int)(w0 & 0xFFFF), centreZ = (int)(w1 >> 16);
-        int radius  = (int)(w1 & 0x1FFF), flags = (int)(w1 & 0xE000);
+        int radius  = thdr_radius(w1), flags = thdr_flags(w1), flat = thdr_flat(w1);
         int originX = (int)(og >> 16), originY = (int)(og & 0xFFFF), originZ = (int)(oz >> 16);
         int nLpV = lpw & 0xFF, nLpC = (lpw >> 8) & 0xFF, nLpF = (lpw >> 16) & 0xFF;
         int nHpV = hpw & 0xFF, nHpC = (hpw >> 8) & 0xFF, nHpF = (hpw >> 16) & 0xFF;
@@ -205,7 +257,7 @@ static void terrain_dump(CPUState* cpu) {
         uint32_t hpVerts = s + 0x1C + (uint32_t)(hpVertsOff * 4);
         for (int k = 0; k < 2 && k < nHpV; k++) {
             uint32_t v = rd(cpu, hpVerts + (uint32_t)k * 4);
-            int vx = (int)((v >> 21) & 0x7FF), vy = (int)((v >> 10) & 0x7FF), vz = (int)(v & 0x3FF);
+            int vx, vy, vz; tvert_unpack(v, flat, &vx, &vy, &vz);
             fprintf(stderr,
                 "            hpVert[%d]=%08X  off=(%d,%d,%d)  world/16=(%d,%d,%d)\n",
                 k, v, vx, vy, vz, originX + vx, originY - vy, originZ - vz);
@@ -646,6 +698,7 @@ static void decode_tiledef(CPUState* cpu, uint32_t e, int abe, tmat* m, float u[
     m->fog_delta = 0;              /* base row; the HP walk ladders it per face */
     /* blend: opaque unless ABE; then the tpage ABR mode (0..3) → scene blend
      * 1..4 ((B+F)/2, +, −, B+F/4). */
+    if (game_layout.terrain.abe_in_tpage && (tpage & 0x8000)) abe = 1;
     m->blend = abe ? (((tpage >> 5) & 3) + 1) : 0;
 }
 
@@ -653,7 +706,7 @@ static void terrain_texmat(CPUState* cpu, uint32_t table, int texByte, int hiDet
                            tmat* m, float u[4], float v[4]) {
     memset(m, 0, sizeof(*m)); m->bpp = 16; m->texid = -1;
     if (texByte == -1) { m->textured = 0; return; }      /* 0xFF: untextured */
-    uint32_t e = table + (uint32_t)(texByte & 0x7F) * 16u + (hiDetail ? 8u : 0u);  /* LOD half */
+    uint32_t e = table + (uint32_t)(texByte & 0x7F) * game_layout.terrain.tex_stride + (hiDetail ? 8u : 0u);  /* LOD half */
     decode_tiledef(cpu, e, (texByte < 0), m, u, v);      /* high bit = semi-transparent */
     m->texid = texByte & 0x7F;                           /* texture-selector key (S9) */
 }
@@ -894,7 +947,8 @@ static int tiledef_apply_ori(CPUState* cpu, uint32_t e, float u[4], float v[4]) 
     uint32_t ori = rd(cpu, e + 4) >> 25;
     if (!ori) return 0;
     uint32_t w0 = rd(cpu, e), w1 = rd(cpu, e + 4);
-    uint32_t te = 0x8006D058u + ori;     /* D_8006D058: per-orientation UV-offset table */
+    if (!game_layout.terrain.uv_ori_table) return 0;   /* no table located: identity */
+    uint32_t te = game_layout.terrain.uv_ori_table + ori;     /* per-orientation UV-offset table (Spyro 1 D_8006D058) */
     uint32_t ew0 = rd(cpu, te), ew1 = rd(cpu, te + 4);
     uint32_t tl = ((w0 & 0xFFFF) + (ew0 & 0xFFFF)) & 0xFFFF;  /* TL rel (u0,v0) */
     uint32_t tr = ((w1 & 0xFFFF) + (ew0 >> 16))    & 0xFFFF;  /* TR rel (u1,v1) */
@@ -1032,9 +1086,10 @@ static int defer_cmp(const void* a, const void* b) {
 static void terrain_read_defer(CPUState* cpu) {
     s_defer_n = 0;
     s_defer_hdr2 = s_defer_cell2 = s_defer_hdr1e = s_defer_cell1e = 0;
-    const uint32_t qbase[2] = { G_SCRATCH + 0x2000u, G_SCRATCH + 0x1E00u };
+    const uint32_t qbase[2] = { game_layout.terrain.defer_q[0], game_layout.terrain.defer_q[1] };
     for (int q = 0; q < 2; q++) {
         uint32_t p = qbase[q];
+        if (!p) continue;                    /* no queue located for this game */
         for (int guard = 0; guard < MAX_DEFER * 2; guard++) {
             uint32_t e = rd(cpu, p); p += 4;
             if (e == 0) break;
@@ -1185,7 +1240,7 @@ static void tsc_tile_gens(CPUState* cpu, uint32_t lqTable, uint32_t texCnt) {
     for (uint32_t t = 0; t < texCnt; t++) {
         uint32_t w[4]; int diff = rebase;
         for (int k = 0; k < 4; k++) {
-            w[k] = rd(cpu, lqTable + t * 16u + (uint32_t)k * 4u);
+            w[k] = rd(cpu, lqTable + t * game_layout.terrain.tex_stride + (uint32_t)k * 4u);
             diff |= (w[k] != s_lqsnap[t][k]);
         }
         if (diff) { memcpy(s_lqsnap[t], w, sizeof(w)); s_tgen[t]++; s_tgen_epoch++; }
@@ -1197,6 +1252,7 @@ typedef struct {
     uint32_t animEpoch;                      /* s_tgen_epoch at last texmat refresh */
     uint32_t lastUse;                        /* s_tsc_stamp at last hit — LRU eviction key */
     int nLpV, nLpF, nHpV, nHpF, flags;
+    int flat;                                /* header word 1 carries the layout's flat flag */
     int nLpC, nHpC;                          /* colour-array entry counts (GPU-cache liveness hash) */
     int nGapfill;                            /* LP faces classified HP-coverage-gap fillers */
     unsigned fillGen;                        /* openpete_fillpick_generation() at last tagging */
@@ -1327,12 +1383,11 @@ static void tsc_census(void) {   /* OPENPETE_TERRAIN_CACHE_DBG: ~1/sec hit/miss 
     }
 }
 
-static void tsc_decode_verts(CPUState* cpu, uint32_t verts, int nv, tsvert_t* out) {
+static void tsc_decode_verts(CPUState* cpu, uint32_t verts, int nv, int flat, tsvert_t* out) {
     for (int k = 0; k < nv; k++) {
         uint32_t v = rd(cpu, verts + (uint32_t)k * 4);
-        out[k].x = (int16_t)((v >> 21) & 0x7FF);
-        out[k].y = (int16_t)((v >> 10) & 0x7FF);
-        out[k].z = (int16_t)(v & 0x3FF);
+        int x, y, z; tvert_unpack(v, flat, &x, &y, &z);
+        out[k].x = (int16_t)x; out[k].y = (int16_t)y; out[k].z = (int16_t)z;
     }
 }
 
@@ -1344,18 +1399,32 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
         uint32_t w0 = rd(cpu, faces + (uint32_t)f * faceStride);
         uint32_t w1 = rd(cpu, faces + (uint32_t)f * faceStride + 4);
         memset(F, 0, sizeof(*F));
-        if (faceStride == 16) {                    /* HP: byte indices; word2 tex; word3 flags */
+        if (faceStride == 16) {                    /* HP: byte indices; the colour indices in word1 */
             F->i0 = (uint8_t)((w0 >> 24) & 0xFF); F->i1 = (uint8_t)((w0 >> 16) & 0xFF);
             F->i2 = (uint8_t)((w0 >> 8) & 0xFF);  F->i3 = (uint8_t)(w0 & 0xFF);
             uint32_t w2 = rd(cpu, faces + (uint32_t)f * faceStride + 8);
             uint32_t w3 = rd(cpu, faces + (uint32_t)f * faceStride + 12);
-            F->flip = (w3 & 0x2) != 0; F->fogbias = (w3 & 0x1) != 0; F->w3 = w3;
-            F->otbias = (uint8_t)((w3 >> 3) & 0x7);
+            F->w3 = w3;
             F->c0 = (uint16_t)((w1 >> 22) & 0x3FC); F->c1 = (uint16_t)((w1 >> 14) & 0x3FC);
             F->c2 = (uint16_t)((w1 >> 6) & 0x3FC);  F->c3 = (uint16_t)((w1 << 2) & 0x3FC);
-            F->hq_idx = (uint8_t)(w2 & 0x7F); F->abe = (w2 & 0x80) != 0;
-            F->trirot = (uint8_t)((w2 >> 8) & 3u);
-            int tb = (int)(int8_t)(w2 & 0xFF);
+            int tb;
+            if (game_layout.terrain.face_layout == TERRAIN_FACES_SPYRO3) {
+                /* Spyro 3: word2 is not read by the draw; word3 carries the
+                 * texture index (bits 0-6), the OT bias (7-9), flip (10) and
+                 * the GT3 UV rotation (12-13). Every HP face is textured;
+                 * semi-transparency comes from the tile's TPAGE. */
+                F->flip = (w3 & 0x400) != 0; F->fogbias = 0;
+                F->otbias = (uint8_t)((w3 >> 7) & 0x7);
+                F->hq_idx = 0; F->abe = 0;
+                F->trirot = (uint8_t)((w3 >> 12) & 3u);
+                tb = (int)(w3 & 0x7F);
+            } else {                               /* Spyro 1: word2 tex byte + HQ index; word3 flags */
+                F->flip = (w3 & 0x2) != 0; F->fogbias = (w3 & 0x1) != 0;
+                F->otbias = (uint8_t)((w3 >> 3) & 0x7);
+                F->hq_idx = (uint8_t)(w2 & 0x7F); F->abe = (w2 & 0x80) != 0;
+                F->trirot = (uint8_t)((w2 >> 8) & 3u);
+                tb = (int)(int8_t)(w2 & 0xFF);
+            }
             uint32_t tbl = (texTblMode == 2) ? hqTable : lqTable;
             F->tb = (int8_t)tb;
             F->tgen = (tb == -1) ? 0 : s_tgen[tb & 0x7F];
@@ -1364,7 +1433,22 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
              * .s distance rule (t0 = key−fogRef+4096; t0<=0 → the +8 half).
              * Animated tiles re-decode when their gen bumps (tsc_refresh_anim). */
             terrain_texmat(cpu, tbl, tb, 1, &F->matN, F->tuN, F->tvN);
-        } else {                                   /* LP: 6-bit indices; untextured */
+        } else if (game_layout.terrain.face_layout == TERRAIN_FACES_SPYRO3) {
+            /* Spyro 3 LP: 7-bit vertex indices at bits 30-24, 23-17, 16-10,
+             * 9-3 of word0 (bit 31 double-sided), 7-bit colour indices at
+             * 31-25, 24-18, 17-11, 10-4 of word1 with the OT bias in 3-0; no
+             * admission field and never semi-transparent. The colour fields
+             * are byte offsets into the colour list, as in Spyro 1. */
+            F->i0 = (uint8_t)((w0 >> 24) & 0x7F); F->i1 = (uint8_t)((w0 >> 17) & 0x7F);
+            F->i2 = (uint8_t)((w0 >> 10) & 0x7F); F->i3 = (uint8_t)((w0 >> 3) & 0x7F);
+            F->admit = 0;
+            F->dside = (w0 & 0x80000000u) != 0;
+            F->otbias = (uint8_t)(w1 & 0xF);
+            F->c0 = (uint16_t)(((w1 >> 25) & 0x7F) << 2); F->c1 = (uint16_t)(((w1 >> 18) & 0x7F) << 2);
+            F->c2 = (uint16_t)(((w1 >> 11) & 0x7F) << 2); F->c3 = (uint16_t)(((w1 >> 4) & 0x7F) << 2);
+            F->tb = -1;
+            F->mat.bpp = 16;                       /* untextured flat gouraud */
+        } else {                                   /* Spyro 1 LP: 6-bit indices; untextured */
             F->i0 = (uint8_t)(((w0 >> 23) & 0x1F8) >> 3); F->i1 = (uint8_t)(((w0 >> 17) & 0x1F8) >> 3);
             F->i2 = (uint8_t)(((w0 >> 11) & 0x1F8) >> 3); F->i3 = (uint8_t)(((w0 >> 5) & 0x1F8) >> 3);
             F->admit = (uint8_t)(w0 & 0x1F);       /* authored LP admission (crossover in 1024-world steps) */
@@ -1400,20 +1484,8 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
  * a guess — the failure mode is visible and local, unlike the threshold
  * classifier this replaces (six tuned constants + a per-level kill list,
  * v1-v12, each version patching a newly discovered misprediction). */
-#include "renderer/terrain_fill_tags.h"
-
-static int tft_frozen(int level, int sec, int face) {
-    int lo = 0, hi = (int)(sizeof(k_terrain_fill_tags)/sizeof(k_terrain_fill_tags[0])) - 1;
-    long q = ((long)level << 20) | ((long)sec << 8) | face;
-    while (lo <= hi) {
-        int mid = (lo + hi) >> 1;
-        const tft_entry_t* e = &k_terrain_fill_tags[mid];
-        long k = ((long)e->level << 20) | ((long)e->sec << 8) | e->face;
-        if (k == q) return 1;
-        if (k < q) lo = mid + 1; else hi = mid - 1;
-    }
-    return 0;
-}
+/* The frozen list itself is the game's (terrain_game.fill_tag): Spyro 1's is
+ * renderer/terrain_fill_tags.h. */
 
 /* The effective verdict: an in-game inspector session (P key) overrides the
  * frozen table for the faces it has re-judged, so a Y/N press re-renders the
@@ -1423,7 +1495,7 @@ static int tft_frozen(int level, int sec, int face) {
 static int tft_fill(int level, int sec, int face) {
     int ov = openpete_fillpick_lookup(level, sec, face);
     if (ov != OPENPETE_FILLPICK_NONE) return ov == OPENPETE_FILLPICK_FILL;
-    return tft_frozen(level, sec, face);
+    return terrain_game.fill_tag(level, sec, face);
 }
 
 /* Grid sweep report (OPENPETE_FILLPICK_GRID) — one shot per pose, tallying the
@@ -1479,14 +1551,7 @@ static void fp_publish(CPUState* cpu) {
     openpete_fillpick_hit h;
     memset(&h, 0, sizeof h);
     h.level = (int)(int32_t)rd(cpu, game_layout.level_id);
-    size_t nlv = 0;
-    const spyro1_level_t* lv = spyro1_level_table(&nlv);
-    snprintf(h.level_name, sizeof h.level_name, "level%d", h.level);
-    for (size_t k = 0; k < nlv; k++)
-        if (lv[k].id == h.level) {
-            snprintf(h.level_name, sizeof h.level_name, "%s", lv[k].name);
-            break;
-        }
+    terrain_game.level_name(h.level, h.level_name, sizeof h.level_name);
     const fp_point* X = &s_fp_pt[0];
     if (X->lp_sec >= 0) {
         h.valid = 1;
@@ -1528,19 +1593,9 @@ static void fp_publish(CPUState* cpu) {
 /* ---- authored-data art corrections (native display only) -----------------
  * Level-data authoring bugs corrected at the native colour fetch; emulated RAM
  * stays canonical, so the PSX/og legs keep the authentic data and gameplay
- * state is untouched. Keyed on exact (g_LevelId, sector, face).
- *
- * stone_hill s205 f4-f7: four quads of the water backdrop group carry the
- * editor-default vertex colour 7F7F7F (unpainted) while every sibling panel
- * is FF7F60 — the pre-fogged sky camouflage. On PSX the grey shows when
- * looking up from under the water; natively it also shows from above (the LP
- * either-half NCLIP acceptance draws the underside the .s culls). Recolour
- * to the sibling sky-blue. OPENPETE_TERRAIN_ARTFIX=0 restores authentic. */
-typedef struct { int level, sec, face; uint32_t rgb; } lp_artfix_t;
-static const lp_artfix_t k_lp_artfix[] = {
-    { 11, 205, 4, 0xFF7F60u }, { 11, 205, 5, 0xFF7F60u },
-    { 11, 205, 6, 0xFF7F60u }, { 11, 205, 7, 0xFF7F60u },
-};
+ * state is untouched. The table is the game's (terrain_game.lp_artfix), keyed
+ * on exact (level id, sector, face). OPENPETE_TERRAIN_ARTFIX=0 restores
+ * authentic. */
 static int lp_artfix_lookup(CPUState* cpu, int sec, int face, uint32_t* rgb) {
     static int s_on = -1;
     if (s_on < 0) { const char* e = getenv("OPENPETE_TERRAIN_ARTFIX");
@@ -1551,10 +1606,7 @@ static int lp_artfix_lookup(CPUState* cpu, int sec, int face, uint32_t* rgb) {
         s_lvl = (int)(int32_t)rd(cpu, game_layout.level_id);
         s_lvl_frame = (int)openpete_frame;
     }
-    for (size_t k = 0; k < sizeof(k_lp_artfix)/sizeof(k_lp_artfix[0]); k++)
-        if (k_lp_artfix[k].level == s_lvl && k_lp_artfix[k].sec == sec
-            && k_lp_artfix[k].face == face) { *rgb = k_lp_artfix[k].rgb; return 1; }
-    return 0;
+    return terrain_game.lp_artfix(s_lvl, sec, face, rgb);
 }
 
 /* OPENPETE_TERRAIN_FIELDCENSUS=1 — one-shot per level: walk the FULL sector
@@ -1577,7 +1629,7 @@ static void tsc_field_census(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorC
         int nHpV = (int)(g4 & 0xFF), nHpC = (int)((g4 >> 8) & 0xFF), nHpF = (int)((g4 >> 16) & 0xFF);
         uint32_t hpVerts = s + 0x1C + ((g4 >> 24) & 0xFF) * 4;
         fprintf(stderr, "[fc-sec] s=%u flags=%04X rad=%d nLpV=%d nLpF=%d nHpV=%d nHpF=%d\n",
-                i, (unsigned)(g0 & 0xE000), (int)(g0 & 0x1FFF), nLpV, nLpF, nHpV, nHpF);
+                i, (unsigned)thdr_flags(g0), thdr_radius(g0), nLpV, nLpF, nHpV, nHpF);
         for (int bank = 0; bank < 2; bank++) {
             uint32_t verts = bank ? hpVerts : s + 0x1C;
             int nv = bank ? nHpV : nLpV;
@@ -1585,8 +1637,8 @@ static void tsc_field_census(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorC
             fprintf(stderr, "[fc-%sv] s=%u", bank ? "hp" : "lp", i);
             for (int k = 0; k < nv && k < 256; k++) {
                 uint32_t v = rd(cpu, verts + (uint32_t)k * 4);
-                fprintf(stderr, " %d,%d,%d", (int)((v >> 21) & 0x7FF),
-                        (int)((v >> 10) & 0x7FF), (int)(v & 0x3FF));
+                int fx, fy, fz; tvert_unpack(v, thdr_flat(g0), &fx, &fy, &fz);
+                fprintf(stderr, " %d,%d,%d", fx, fy, fz);
             }
             fputc('\n', stderr);
         }
@@ -1705,6 +1757,7 @@ static int tsc_sector_polyanim(CPUState* cpu, uint32_t s,
                                uint32_t sectorPtr, uint32_t sectorCnt) {
     for (int list = 0; list < 2; list++) {
         uint32_t off  = list ? game_layout.env_anim.hp_poly : game_layout.env_anim.lp_poly;
+        if (!off) continue;                          /* no animation lists located */
         uint32_t cnt  = rd(cpu, off);
         uint32_t base = rd(cpu, off + 4);
         if (!base || cnt == 0 || cnt > 1024) continue;
@@ -1780,12 +1833,13 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         memset(C, 0, sizeof(*C));
         C->s = s; memcpy(C->sig, g, sizeof(g));
         C->lastUse = s_tsc_stamp;
-        C->flags = (int)(g[0] & 0xE000);
+        C->flags = thdr_flags(g[0]);
+        C->flat  = thdr_flat(g[0]);
         {   /* Bounding sphere (header w0/w1) — the .s LP/HP binning inputs. w0 is
              * not in the signature (it never changes independently of w1..w4). */
             uint32_t w0 = rd(cpu, s + 0x00);
             C->centreX = (int)(w0 >> 16); C->centreY = (int)(w0 & 0xFFFF);
-            C->centreZ = (int)(g[0] >> 16); C->radius = (int)(g[0] & 0x1FFF);
+            C->centreZ = (int)(g[0] >> 16); C->radius = thdr_radius(g[0]);
         }
         C->originX = (int)(g[1] >> 16); C->originY = (int)(g[1] & 0xFFFF);
         C->originZ = (int)(g[2] >> 16);
@@ -1808,12 +1862,12 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         C->nearBase  = hpVerts + (uint32_t)(g[4] & 0xFF) * 4;
         C->farBase   = C->nearBase + (uint32_t)nHpC * 4;
         if (C->nLpV > 0) { C->lpV = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)C->nLpV);
-                           if (C->lpV) tsc_decode_verts(cpu, lpVerts, C->nLpV, C->lpV); }
+                           if (C->lpV) tsc_decode_verts(cpu, lpVerts, C->nLpV, C->flat, C->lpV); }
         if (C->nLpF > 0) { C->lpF = (tsface_t*)malloc(sizeof(tsface_t) * (size_t)C->nLpF);
                            if (C->lpF) tsc_decode_faces(cpu, C->lpFaces, C->nLpF, 8,
                                                         lqTable, hqTable, texTblMode, hiDetail, C->lpF); }
         if (C->nHpV > 0) { C->hpV = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)C->nHpV);
-                           if (C->hpV) tsc_decode_verts(cpu, hpVerts, C->nHpV, C->hpV); }
+                           if (C->hpV) tsc_decode_verts(cpu, hpVerts, C->nHpV, C->flat, C->hpV); }
         if (C->nHpF > 0) { C->hpF = (tsface_t*)malloc(sizeof(tsface_t) * (size_t)C->nHpF);
                            if (C->hpF) tsc_decode_faces(cpu, C->hpFaces, C->nHpF, 16,
                                                         lqTable, hqTable, texTblMode, hiDetail, C->hpF); }
@@ -1897,6 +1951,7 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
     int dbg_desc = 0, dbg_cached = 0, dbg_prev = 0, dbg_filled = 0;
     for (int list = 0; list < 2; list++) {
         uint32_t off  = list ? game_layout.env_anim.hp_poly : game_layout.env_anim.lp_poly;
+        if (!off) continue;                          /* no animation lists located */
         uint32_t cnt  = rd(cpu, off);
         uint32_t base = rd(cpu, off + 4);
         if (!base || cnt == 0 || cnt > 1024) continue;
@@ -1929,13 +1984,13 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
                 if (nLp) {
                     if (!C->lpVprev) C->lpVprev = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)nLp);
                     if (C->lpVprev) memcpy(C->lpVprev, C->lpV, sizeof(tsvert_t) * (size_t)nLp);
-                    tsc_decode_verts(cpu, C->s + 0x1C, nLp, C->lpV);
+                    tsc_decode_verts(cpu, C->s + 0x1C, nLp, C->flat, C->lpV);
                 }
                 if (nHp) {
                     if (!C->hpVprev) C->hpVprev = (tsvert_t*)malloc(sizeof(tsvert_t) * (size_t)nHp);
                     if (C->hpVprev) memcpy(C->hpVprev, C->hpV, sizeof(tsvert_t) * (size_t)nHp);
                     tsc_decode_verts(cpu, C->s + 0x1C + ((C->sig[4] >> 24) & 0xFF) * 4,
-                                     nHp, C->hpV);
+                                     nHp, C->flat, C->hpV);
                 }
                 {   /* GPU-cache liveness: the re-decode is unconditional per tick,
                      * so hash the decoded verts and bump vertGen only when the
@@ -2059,6 +2114,7 @@ static void tsc_scroll_refresh(CPUState* cpu) {
     memset(s_tscroll_tile, 0, sizeof(s_tscroll_tile));
     int dbg_desc = 0, dbg_paired = 0;
     {
+    if (!game_layout.env_anim.scroll) goto scan;     /* no scroll list located */
     uint32_t cnt  = rd(cpu, game_layout.env_anim.scroll);
     uint32_t base = rd(cpu, game_layout.env_anim.scroll + 4);
     if (!base || cnt == 0 || cnt > 1024) goto scan;
@@ -2217,8 +2273,7 @@ static void terrain_visdbg(CPUState* cpu, uint32_t sectorCnt, int group,
     for (int j = 0; j < cn; j++) if (cand[j] < 1024) inset[cand[j]] = 1;
     int vis43 = 0, missing = 0;
     for (uint32_t i = 0; i < sectorCnt && i < 1024; i++) {
-        uint8_t vis = (uint8_t)(rd(cpu, (game_layout.visibility.base + i) & ~3u) >> ((i & 3) * 8));
-        if (vis == 0xFF) { vis43++; if (!inset[i]) missing++; }
+        if (tvis_visible(cpu, i)) { vis43++; if (!inset[i]) missing++; }
     }
     fprintf(stderr,
         "[terrain-vis] frame=%u group=%d occCnt=%u candidates=%d  vis4:3=%d "
@@ -2301,8 +2356,7 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
     /* native 4:3 — the canonical .s verdict */
     int n = 0;
     for (uint32_t i = 0; i < sectorCnt; i++) {
-        uint8_t vis = (uint8_t)(rd(cpu, (game_layout.visibility.base + i) & ~3u) >> ((i & 3) * 8));
-        if (vis == 0xFF) out[n++] = (uint16_t)i;
+        if (tvis_visible(cpu, i)) out[n++] = (uint16_t)i;
     }
     if (s_visdbg) {   /* validate the invariant without altering the 4:3 render set */
         static uint16_t cand[1024]; int cn = 0;
@@ -2496,7 +2550,7 @@ static void terrain_animdbg(CPUState* cpu) {
     char lqs[256] = "", hqs[256] = "", s18s[256] = "", svs[256] = "", scs[256] = "";
     for (uint32_t t = 0; t < texCnt; t++) {
         uint32_t h = 2166136261u;
-        for (int w = 0; w < 4; w++) h = (h ^ rd(cpu, lqTable + t * 16u + (uint32_t)w * 4u)) * 16777619u;
+        for (int w = 0; w < 4; w++) h = (h ^ rd(cpu, lqTable + t * game_layout.terrain.tex_stride + (uint32_t)w * 4u)) * 16777619u;
         if (have && h != lq[t] && strlen(lqs) < 240) snprintf(lqs + strlen(lqs), 12, " %u", t);
         lq[t] = h;
         h = 2166136261u;
@@ -3175,9 +3229,9 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                 uint32_t e = hqBase + (uint32_t)(q + 1) * 8u;   /* entries 1..4 (.s delay-slot bump) */
                 decode_tiledef(cpu, e, F->abe, &m, u, v);
                 uint32_t ori = rd(cpu, e + 4) >> 25;
-                if (ori) {   /* HQ UV orientation (D_8006D058 offset table) */
+                if (ori && game_layout.terrain.uv_ori_table) {   /* HQ UV orientation offset table (Spyro 1 D_8006D058) */
                     uint32_t w0 = rd(cpu, e), w1 = rd(cpu, e + 4);
-                    uint32_t te = 0x8006D058u + ori;
+                    uint32_t te = game_layout.terrain.uv_ori_table + ori;
                     uint32_t ew0 = rd(cpu, te), ew1 = rd(cpu, te + 4);
                     uint32_t tl = ((w0 & 0xFFFF) + (ew0 & 0xFFFF)) & 0xFFFF;
                     uint32_t tr = ((w1 & 0xFFFF) + (ew0 >> 16))    & 0xFFFF;
@@ -3592,8 +3646,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 }
                 int inHP = 0;
                 for (int k = 0; k < hp_n; k++) if (hp_list[k] == s) { inHP = 1; break; }
-                uint32_t vw = rd(cpu, game_layout.visibility.base + (i & ~3u));
-                int vis = (int)((vw >> ((i & 3u) * 8)) & 0xFF) == 0xFF;
+                int vis = tvis_visible(cpu, i);
                 fprintf(stderr, "[bincheck] s=%u nativeHP=%d listHP=%d vis=%d flags=%04X "
                         "cbin=%.1f rad=%d%s\n",
                         (unsigned)i, drawHP, inHP, vis, flags, cbin, SC->radius,
@@ -4550,7 +4603,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     /* The render decision uses face_is_near (gamestate); the deferred QUEUE is read
      * ONLY as a verify oracle / for the NEARQ debug path — never in the shipping
      * feed path (the plan forbids consuming .s per-frame output for rendering). */
-    int wantOracle = openpete_portal_sky_recent() ||   /* portal guard reads the queue */
+    int wantOracle = terrain_game.portal_sky_recent() ||   /* portal guard reads the queue */
                      s_caldbg || s_nearq > 0 ||
                      (getenv("OPENPETE_TERRAIN_VERIFY") && *getenv("OPENPETE_TERRAIN_VERIFY") != '0');
     terrain_dbg_init();
@@ -4715,7 +4768,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * camera-driven — is TRULY continuous, not just stepped at the 1-world-unit
      * lerp32 grid. Falls back to the (floored) RAM at the 30 Hz lockstep. */
     double camx = s_view.cam[0] / 16.0, camy = s_view.cam[1] / 16.0, camz = s_view.cam[2] / 16.0;
-    int fogRefBase = (int32_t)rd(cpu, game_layout.env.lod_dist) >> 2;  /* §10 */
+    int fogRefBase = (int32_t)tenv_lod_dist(cpu) >> 2;  /* §10 */
     /* Publish this walk's fog-ladder ramp for the CONTINUOUS pack-fog model
      * (HD-replaced draws only; see texture_pack_fog_ladder_set): the .s row
      * select is Δ = (key − fogRef + 4096) >> 8 with key ≈ face-mean
@@ -4863,8 +4916,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                && !s_fp_on
                && texTblMode == 0;
     s_tgpu_pplane_n = 0; s_tgpu_claim_all = 0; s_tgpu_rim_ok = 0;
-    if (tgpu_on && openpete_portal_sky_recent()) {
-        s_tgpu_pplane_n = openpete_portal_sky_planes(cpu, &s_view, s_tgpu_pplane, 6);
+    if (tgpu_on && terrain_game.portal_sky_recent()) {
+        s_tgpu_pplane_n = terrain_game.portal_sky_planes(cpu, &s_view, s_tgpu_pplane, 6);
         /* Recent portal but planes momentarily gone: claim everything (safe). */
         if (s_tgpu_pplane_n == 0) s_tgpu_claim_all = 1;
         else s_tgpu_rim_ok = tgpu_portal_frames(cpu);
@@ -6014,7 +6067,7 @@ static int transp_cover_on(void) {
 static void tgpu_cover_globals_fill(openpete_tercache_globals* g) {
     if (!s_tgpu_rim_ok || !transp_cover_on()) return;
     int n = s_pplane_n > 6 ? 6 : s_pplane_n;
-    g->cov_margin = (double)openpete_portal_plane_margin();
+    g->cov_margin = (double)terrain_game.portal_plane_margin();
     for (int pi = 0; pi < n; pi++) {
         const openpete_portal_skyplane* pp = &s_pplane[pi];
         g->cov_abc[pi][0] = pp->a;
@@ -6032,7 +6085,7 @@ static void tgpu_cover_globals_fill(openpete_tercache_globals* g) {
 }
 
 static int portal_sky_covers(const ttri* t) {
-    const double M = (double)openpete_portal_plane_margin();
+    const double M = (double)terrain_game.portal_plane_margin();
     for (int pi = 0; pi < s_pplane_n; pi++) {
         const openpete_portal_skyplane* pp = &s_pplane[pi];
         if (pp->pn < 3) continue;
@@ -6065,7 +6118,7 @@ static void terrain_feed_native(CPUState* cpu) {
     }
     /* Active portal-sky opening planes, derived against THIS present's camera
      * bracket (canonical or sub-tick interpolated) so plane and verts agree. */
-    s_pplane_n = s_pconform ? openpete_portal_sky_planes(cpu, &s_view, s_pplane, 6) : 0;
+    s_pplane_n = s_pconform ? terrain_game.portal_sky_planes(cpu, &s_view, s_pplane, 6) : 0;
     /* Republish the openings for the core-side plane-cover invariant sweep
      * (OPENPETE_PORTAL_COVER_CHECK) — core sees the complete scene but not
      * the game-side plane provider. */
@@ -6079,7 +6132,7 @@ static void terrain_feed_native(CPUState* cpu) {
             o->a = pp->a; o->b = pp->b; o->c = pp->c; o->pn = pp->pn;
             for (int k = 0; k < pp->pn; k++) { o->px[k] = pp->px[k]; o->py[k] = pp->py[k]; }
         }
-        openpete_native_set_cover_planes(cvp, cn, openpete_portal_plane_margin());
+        openpete_native_set_cover_planes(cvp, cn, terrain_game.portal_plane_margin());
     }
     rim_frames_derive(cpu);
     rim_sector_cands();
@@ -6631,7 +6684,7 @@ static void terrain_feed_native(CPUState* cpu) {
              * DrawOTag split order). */
             static int gen = -1;
             if (gen < 0) { const char* e = getenv("OPENPETE_PORTAL_GUARD"); gen = (e && *e && *e != '0'); }
-            if (gen && t->guard && tri.blend == 0 && openpete_portal_sky_recent())
+            if (gen && t->guard && tri.blend == 0 && terrain_game.portal_sky_recent())
                 openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_PORTAL_GUARD, 0);
         }
         openpete_native_scene_set_fog_delta(0);   /* never leak past this feeder */
@@ -6649,7 +6702,7 @@ static void terrain_feed_native(CPUState* cpu) {
             for (int i = 0; i < s_tri_n; i++) if (s_tri[i].guard) g++;
             lines++;
             fprintf(stderr, "[portal-guard] f=%u tris=%d guard=%d recent=%d defer_n=%d\n",
-                    openpete_frame, s_tri_n, g, openpete_portal_sky_recent(), s_defer_n);
+                    openpete_frame, s_tri_n, g, terrain_game.portal_sky_recent(), s_defer_n);
         }
     }
 }
@@ -6960,16 +7013,23 @@ static int on_world_draw_terrain(CPUState* cpu, uint32_t addr) {
     if (s_lodpoke == -2) { const char* e = getenv("OPENPETE_ENV_LODDIST");
                            s_lodpoke = (e && *e) ? (int)strtol(e, NULL, 0) : -1; }
     uint32_t lodsave = 0;
+    if (s_lodpoke >= 0 && !game_layout.env.lod_dist) s_lodpoke = -1;   /* no field to poke */
     if (s_lodpoke >= 0) {
         lodsave = cpu->read_word(game_layout.env.lod_dist);
         cpu->write_word(game_layout.env.lod_dist, (uint32_t)s_lodpoke);
     }
-    uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
+    uint32_t startp = cpu->read_word(game_layout.polybuf.cursor);
+    s_vis_cap_n = -1;
+    s_vis_arm = game_layout.hooks.visibility != 0u;   /* the visibility hook copies the table */
     { OP_PROF_ACCUM_SCOPE("terrain.srend");
-      func_800258F0(cpu); }                        /* run the real renderer (verdicts intact) */
+      /* The game's own world draw, by address through the module's dispatch
+       * table (the raw recompiled entry, not the override chain), so the
+       * verdicts it writes are intact. */
+      openpete_recomp_module_get()->dispatch(cpu, game_layout.hooks.world_draw); }
+    s_vis_arm = 0;
     if (s_lodpoke >= 0)
         cpu->write_word(game_layout.env.lod_dist, lodsave);
-    uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
+    uint32_t endp = cpu->read_word(game_layout.polybuf.cursor);
 
     render_path_record(RP_TERRAIN, startp, endp);
 
@@ -7057,14 +7117,15 @@ void terrain_reextract(CPUState* cpu, double alpha, int interp_on) {
  * ~2x too high: the header spheres bake vertical extent and padding into
  * the radius, so the lateral bound they give is far fatter than the mesh. */
 typedef struct { double px, py, H, need; } td_acc;
-static void td_scan_verts(CPUState* cpu, uint32_t verts, int nv,
+static void td_scan_verts(CPUState* cpu, uint32_t verts, int nv, int flat,
                           int ox, int oy, int oz,
                           double mm[5], td_acc* acc) {
     for (int k = 0; k < nv; k++) {
         uint32_t w = rd(cpu, verts + (uint32_t)k * 4);
-        double x = (double)ox + (double)((w >> 21) & 0x7FF);
-        double y = (double)oy - (double)((w >> 10) & 0x7FF);
-        double z = (double)oz - (double)(w & 0x3FF);
+        int vx, vy, vz; tvert_unpack(w, flat, &vx, &vy, &vz);
+        double x = (double)ox + (double)vx;
+        double y = (double)oy - (double)vy;
+        double z = (double)oz - (double)vz;
         if (mm) {
             if (x < mm[0]) mm[0] = x;
             if (x > mm[1]) mm[1] = x;
@@ -7100,11 +7161,12 @@ int terrain_native_sweep_pose(CPUState* cpu, int corner, int32_t v[5]) {
         if (!s) continue;
         uint32_t g1 = rd(cpu, s + 0x08), g2 = rd(cpu, s + 0x0C);
         uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
+        int flat = thdr_flat(rd(cpu, s + 0x04));
         int ox = (int)(g1 >> 16), oy = (int)(g1 & 0xFFFF), oz = (int)(g2 >> 16);
         int nLpV = (int)(g3 & 0xFF), nHpV = (int)(g4 & 0xFF);
         uint32_t hpOff = (g4 >> 24) & 0xFF;
-        td_scan_verts(cpu, s + 0x1C, nLpV, ox, oy, oz, mm, NULL);
-        td_scan_verts(cpu, s + 0x1C + hpOff * 4, nHpV, ox, oy, oz, mm, NULL);
+        td_scan_verts(cpu, s + 0x1C, nLpV, flat, ox, oy, oz, mm, NULL);
+        td_scan_verts(cpu, s + 0x1C + hpOff * 4, nHpV, flat, ox, oy, oz, mm, NULL);
         seen++;
     }
     if (!seen || mm[1] < mm[0]) return 0;
@@ -7151,11 +7213,12 @@ int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
         if (!s) continue;
         uint32_t g1 = rd(cpu, s + 0x08), g2 = rd(cpu, s + 0x0C);
         uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
+        int flat = thdr_flat(rd(cpu, s + 0x04));
         int ox = (int)(g1 >> 16), oy = (int)(g1 & 0xFFFF), oz = (int)(g2 >> 16);
         int nLpV = (int)(g3 & 0xFF), nHpV = (int)(g4 & 0xFF);
         uint32_t hpOff = (g4 >> 24) & 0xFF;
-        td_scan_verts(cpu, s + 0x1C, nLpV, ox, oy, oz, mm, NULL);
-        td_scan_verts(cpu, s + 0x1C + hpOff * 4, nHpV, ox, oy, oz, mm, NULL);
+        td_scan_verts(cpu, s + 0x1C, nLpV, flat, ox, oy, oz, mm, NULL);
+        td_scan_verts(cpu, s + 0x1C + hpOff * 4, nHpV, flat, ox, oy, oz, mm, NULL);
         seen++;
     }
     if (!seen || mm[1] < mm[0]) return 0;
@@ -7166,11 +7229,12 @@ int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
         if (!s) continue;
         uint32_t g1 = rd(cpu, s + 0x08), g2 = rd(cpu, s + 0x0C);
         uint32_t g3 = rd(cpu, s + 0x10), g4 = rd(cpu, s + 0x14);
+        int flat = thdr_flat(rd(cpu, s + 0x04));
         int ox = (int)(g1 >> 16), oy = (int)(g1 & 0xFFFF), oz = (int)(g2 >> 16);
         int nLpV = (int)(g3 & 0xFF), nHpV = (int)(g4 & 0xFF);
         uint32_t hpOff = (g4 >> 24) & 0xFF;
-        td_scan_verts(cpu, s + 0x1C, nLpV, ox, oy, oz, NULL, &acc);
-        td_scan_verts(cpu, s + 0x1C + hpOff * 4, nHpV, ox, oy, oz, NULL, &acc);
+        td_scan_verts(cpu, s + 0x1C, nLpV, flat, ox, oy, oz, NULL, &acc);
+        td_scan_verts(cpu, s + 0x1C + hpOff * 4, nHpV, flat, ox, oy, oz, NULL, &acc);
     }
     double pz = acc.need * 1.02;
     /* Ceiling: past view-Z ~32767 (world/16) the .s's 16-bit frustum stage
@@ -7194,14 +7258,33 @@ int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
 
 /* The hook address is the layout's world-draw site, bound at boot: a
  * static initializer cannot read another TU's const. */
+/* The visibility function's own entry, on a game whose draw computes the
+ * table in the scratchpad: the world call (a0 == 0) made from inside the draw
+ * runs the real function, then the table is copied before the draw's walk
+ * consumes it. */
+static int on_visibility_terrain(CPUState* cpu, uint32_t addr) {
+    if (!s_vis_arm || cpu->a0 != 0u) return 0;
+    static int s_in = 0; if (s_in) return 0; s_in = 1;
+    openpete_recomp_module_get()->dispatch(cpu, addr);
+    s_in = 0;
+    uint32_t n = cpu->read_word(game_layout.env.sector_count);
+    if (n > TVIS_MAX) n = TVIS_MAX;
+    for (uint32_t i = 0; i < n; i++) s_vis_cap[i] = cpu->read_byte(game_layout.visibility.base + i);
+    s_vis_cap_n = (int)n;
+    s_vis_arm = 0;
+    return 1;
+}
+
 static feature_dispatch_entry_t terrain_dispatch[] = {
     { 0u, on_world_draw_terrain },
+    { 0u, on_visibility_terrain },
     { 0u, NULL },
 };
 
 static void terrain_apply_options(const openpete_options_t* opts) {
     (void)opts;
     terrain_dispatch[0].addr = game_layout.hooks.world_draw;
+    terrain_dispatch[1].addr = game_layout.hooks.visibility;   /* 0 on a game whose table stays in RAM */
 }
 
 const feature_module_t terrain_module = {

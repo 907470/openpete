@@ -19,11 +19,16 @@ const game_layout_t game_layout = {
         .sector_count    = G_ENVIRONMENT + 0x04u,   /* world draw: lw $v0, 0x4; 138 in the dump */
         .occ_groups      = G_ENVIRONMENT + 0x08u,   /* func_8002D0D8(0): lw $t6, 0x8 */
         .occ_group_count = 0u,                      /* no count word; the occlusion data carries its own header */
-        .lq_tex          = 0u,                      /* candidates +0x1C, +0x20 (pointers), unconfirmed */
-        .hq_tex          = 0u,
-        .tex_count       = 0u,                      /* candidate +0x24 (94 in the dump), unconfirmed */
-        .lod_dist        = 0u,                      /* candidate +0x2C (0x2C000 in the dump), unconfirmed */
-        .cull_dist       = 0u,
+        .lq_tex          = G_ENVIRONMENT + 0x20u,   /* world draw: lw $s3, 0x20($at); one table of
+                                                     * 48-byte entries serves LQ and HQ tiles */
+        .hq_tex          = 0u,                      /* no separate HQ table: the four HQ sub-tiles sit
+                                                     * at +0x10 of the LQ entry; the near-subdivide
+                                                     * pass is not fed on this game yet */
+        .tex_count       = G_ENVIRONMENT + 0x24u,   /* 94 in the dump; max face texture index 93 */
+        .lod_dist        = 0u,                      /* no header field: the visibility pre-pass bins
+                                                     * LP/HP with constants (terrain.lod_dist_default) */
+        .cull_dist       = G_ENVIRONMENT + 0x2Cu,   /* 0x2C000; the LP far cull, (v >> 7) - 1 against
+                                                     * the LP OT key */
     },
     .env_anim = { .base = 0u, .scroll = 0u, .lp_poly = 0u, .hp_poly = 0u },  /* not located */
     .visibility = {
@@ -64,6 +69,22 @@ const game_layout_t game_layout = {
                                                      * visibility computation reads */
     },
     .level_id = G_LEVELID,
+    .terrain = {
+        .radius_mask  = 0xFFFu,                     /* world draw: andi $t2, $a0, 0xFFF */
+        .flags_mask   = 0xE000u,                    /* bit 14 skips the HP pass as in Spyro 1;
+                                                     * bits 13 and 15 unmeasured */
+        .flat_flag    = 0x1000u,                    /* environment.s 800225F0: andi 0x5000, bit 12
+                                                     * selects the flat HP list */
+        .vz_shl       = 1,                          /* Z4 = (v << 3) & 0x1FFC in quarter units */
+        .vz_flat_shr  = 2,                          /* flat list: Z4 = v & 0x3FF */
+        .uv_ori_table = 0u,                         /* none: GT3 UVs rotate by face word 3 bits 12-13 */
+        .defer_q      = { 0u, 0u },                 /* the near lists live in the scratchpad; not read */
+        .face_layout  = TERRAIN_FACES_SPYRO3,
+        .tex_stride   = 48u,
+        .abe_in_tpage = 1,
+        .lod_dist_default = 0x8000u,                /* Spyro 1's authored value; the Spyro 3 pre-pass
+                                                     * constants are not mirrored yet */
+    },
     .hooks = {
         .world_draw = F_WORLD_DRAW,
         .sky_draw   = F_SKY_DRAW,

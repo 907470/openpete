@@ -45,7 +45,7 @@
 function(openpete_add_game GAME_ID)
     cmake_parse_arguments(G
         ""
-        "MAIN;FEATURE_LIST;ORCHESTRATOR;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST"
+        "MAIN;FEATURE_LIST;ORCHESTRATOR;TERRAIN_GAME;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST"
         "SOURCES;MODULE_SOURCES"
         ${ARGN})
     if(G_UNPARSED_ARGUMENTS)
@@ -74,6 +74,9 @@ function(openpete_add_game GAME_ID)
     endif()
     if(NOT G_ORCHESTRATOR)
         set(G_ORCHESTRATOR ${_common}/renderer/orchestrator_none.c)
+    endif()
+    if(NOT G_TERRAIN_GAME)
+        set(G_TERRAIN_GAME ${_common}/renderer/terrain_game_none.c)
     endif()
     if(NOT G_ICON_SOURCE)
         set(G_ICON_SOURCE ${_common}/game_icon_none.c)
@@ -224,6 +227,7 @@ function(openpete_add_game GAME_ID)
         ${_regions_sources}
         ${G_FEATURE_LIST}
         ${G_ORCHESTRATOR}
+        ${G_TERRAIN_GAME}
         ${G_ICON_SOURCE}
         ${G_SOURCES}
         ${_symbols_sources}
@@ -240,9 +244,11 @@ function(openpete_add_game GAME_ID)
         ${_common}/freecam_game.c
 
         # Shared renderer TUs: the GTE float mirror every feeder projects
-        # through, and the --render-paths isolation registry.
+        # through, the --render-paths isolation registry, and the terrain
+        # feeder (reached only through a game's feature list).
         ${_common}/renderer/native_gte.c
         ${_common}/renderer/render_paths.c
+        ${_common}/renderer/terrain.c
 
         # PSYQ symbol stubs, abort-on-call. On ELF these are weak so any
         # thunk strongly defines them; on MinGW the macro becomes strong and

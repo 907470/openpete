@@ -23,6 +23,7 @@
 /* The interface the shared renderer TUs call into; Spyro 1 defines it here
  * (reextract.c) and in cyclorama.c. */
 #include "renderer/orchestrator.h"
+#include "renderer/terrain.h"        /* the shared terrain feeder's entries */
 
 #ifdef __cplusplus
 extern "C" {
@@ -124,14 +125,14 @@ void portal_reextract(struct CPUState* cpu, double alpha, int interp_on);
 /* Terrain: mostly camera-driven (the bracket moves it for free), but poly-anim
  * sectors (env vert INTPL — the Sunny-Flight wall) lerp their decoded vert banks
  * prev→cur by `alpha`; `interp_on` = camera bracketed (else snap to curr). */
-void terrain_reextract(struct CPUState* cpu, double alpha, int interp_on);
+/* terrain_reextract, terrain_native_topdown_pose, terrain_native_sweep_pose:
+ * renderer/terrain.h (the shared feeder). */
 /* Compute a whole-level top-down freecam pose from the live sector table:
  * camera at the level bounds' centre, looking straight down (pitch at the
  * freecam clamp), high enough that every sector's bounding sphere projects
  * inside the visible frame. Fills v = {x, y, z, yaw, pitch} in world units.
  * Returns 0 when no level is live (empty sector table). Used by
  * `--freecam-pose topdown` (the per-level perf harness). */
-int terrain_native_topdown_pose(struct CPUState* cpu, int32_t v[5]);
 /* Compute waypoint `corner` (0..3) of a low-altitude flight around the live
  * level: a rectangle inset inside the sector bounds, just above the highest
  * geometry, looking horizontally along the direction of travel. Where the
@@ -139,7 +140,6 @@ int terrain_native_topdown_pose(struct CPUState* cpu, int32_t v[5]);
  * progressively, which is what exercises sector-cache eviction and LOD
  * crossings. Fills v = {x, y, z, yaw, pitch} in world units; returns 0 when
  * no level is live. Used by `--freecam-path sweep0;sweep1;...`. */
-int terrain_native_sweep_pose(struct CPUState* cpu, int corner, int32_t v[5]);
 void moby_reextract(struct CPUState* cpu);
 void shadow_reextract(struct CPUState* cpu);
 void shadow_spyro_reextract(struct CPUState* cpu, int slot);
