@@ -234,6 +234,17 @@ typedef struct moby_game {
 
 extern const moby_game_t moby_game;
 
+/* Read one word of a cull record. Where the game's cull is hooked the walk
+ * holds a copy of the record list taken at that hook, and this resolves
+ * against the copy: the draw pass that follows the cull reuses the scratch the
+ * list sits in, so a record read back from memory afterwards may hold that
+ * draw's output instead of the cull's fields. Addresses outside the copy, and
+ * every game whose cull is not hooked, read guest memory. A record reader uses
+ * this in place of cpu->read_word, and moby_rec_matrix in place of
+ * ngte_read_matrix, for every field it takes out of a record. */
+uint32_t moby_rec_word(CPUState* cpu, uint32_t addr);
+void     moby_rec_matrix(CPUState* cpu, uint32_t addr, int M[3][3]);
+
 #ifdef __cplusplus
 }
 #endif

@@ -339,18 +339,18 @@ static int s3_special_face(uint32_t mat, const int M[3][3],
  * themselves with their own headers at +0x04 and +0x08 (mobydraw.s:888-889,
  * 911,988-989). */
 static int s3_read_record(CPUState* cpu, uint32_t rec, moby_record_t* R) {
-    const uint32_t w0 = cpu->read_word(rec);
+    const uint32_t w0 = moby_rec_word(cpu, rec);
     if (w0 == 0) return 0;
     R->w0       = w0;
-    R->header   = cpu->read_word(rec + game_layout.moby.rec_header_off);
-    R->header_b = cpu->read_word(rec + game_layout.moby.rec_header_b_off);
-    R->frame_a  = cpu->read_word(rec + game_layout.moby.rec_frame_a_off);
-    R->frame_b  = cpu->read_word(rec + game_layout.moby.rec_frame_b_off);
-    R->moby     = cpu->read_word(rec + game_layout.moby.rec_moby_off);
-    R->material = cpu->read_word(rec + game_layout.moby.rec_material_off);
+    R->header   = moby_rec_word(cpu, rec + game_layout.moby.rec_header_off);
+    R->header_b = moby_rec_word(cpu, rec + game_layout.moby.rec_header_b_off);
+    R->frame_a  = moby_rec_word(cpu, rec + game_layout.moby.rec_frame_a_off);
+    R->frame_b  = moby_rec_word(cpu, rec + game_layout.moby.rec_frame_b_off);
+    R->moby     = moby_rec_word(cpu, rec + game_layout.moby.rec_moby_off);
+    R->material = moby_rec_word(cpu, rec + game_layout.moby.rec_material_off);
     for (int i = 0; i < 3; i++)
-        R->TR_raw[i] = (int32_t)cpu->read_word(rec + game_layout.moby.rec_tr_off + (uint32_t)i * 4u);
-    ngte_read_matrix(cpu, rec + game_layout.moby.rec_matrix_off, R->M);
+        R->TR_raw[i] = (int32_t)moby_rec_word(cpu, rec + game_layout.moby.rec_tr_off + (uint32_t)i * 4u);
+    moby_rec_matrix(cpu, rec + game_layout.moby.rec_matrix_off, R->M);
     R->tier = (int)(int16_t)(w0 >> 16);
     return 1;
 }
@@ -369,7 +369,7 @@ static int s3_model_is_animated(CPUState* cpu, uint32_t model) {
  * (mobydraw.s:935). */
 static uint32_t s3_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t frame_a) {
     if ((int32_t)frame_a < 0) return 0u;
-    return cpu->read_word(rec + 0x14u);
+    return moby_rec_word(cpu, rec + 0x14u);
 }
 
 

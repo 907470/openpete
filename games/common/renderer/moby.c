@@ -104,6 +104,7 @@ static uint32_t s_rec_base_canon;
 uint32_t moby_canon_rec_base(void)  { return s_rec_base_canon; }
 uint32_t moby_canon_rec_bytes(void) { return game_layout.moby.rec_base_polybuf_off; }
 
+
 #define REC_STRIDE    (game_layout.moby.rec_stride)
 /* The AnimationHeader's geometry pointers, four bytes apart from
  * anim_ptr_block: HP faces, HP colours, LP faces, far colours (the walk
@@ -120,6 +121,66 @@ uint32_t moby_canon_rec_bytes(void) { return game_layout.moby.rec_base_polybuf_o
  * truncates the straddling record's mesh. */
 #define MAX_RECORDS   1024
 #define SHADED_BASE   (moby_game.shaded_list)  /* second model kind: flat Moby* array (stride 4) */
+
+/* ---- cull-record snapshot -------------------------------------------
+ * The record list lives in the tick's draw scratch, and the draw pass that
+ * follows the cull carves its own per-model vertex and faceblock-patch buffers
+ * out of that same scratch. A record the draw has reached therefore holds that
+ * draw's own output — packed screen XY and colour words — by the time this
+ * feeder reads the list back after running the draw: its header field is no
+ * longer a pointer, the walk stops or drops the record, and the moby is absent
+ * from the native scene while the game's own pass drew it.
+ *
+ * Taking the list at the cull hook, while the bytes are still the cull's,
+ * keeps every record readable. The copy holds the live records plus the
+ * terminator word the walk stops on, since that word is inside the clobbered
+ * range too. Reads outside the copy resolve against memory, so a game whose
+ * cull is not hooked reads exactly what it read before. */
+/* Sized for the walk's own record cap at the widest record the games use; a
+ * wider stride copies fewer records and the rest read memory. */
+#define REC_SNAP_RECS  MAX_RECORDS
+#define REC_SNAP_WORDS (REC_SNAP_RECS * 0x44u / 4u + 1u)
+static uint32_t s_rec_snap[REC_SNAP_WORDS];
+static uint32_t s_rec_snap_base;    /* guest address the copy starts at */
+static uint32_t s_rec_snap_words;   /* 0 = no copy; reads pass through */
+
+static void moby_rec_snapshot(CPUState* cpu) {
+    s_rec_snap_words = 0;
+    const uint32_t stride = game_layout.moby.rec_stride;
+    if (!stride || (stride & 3u)) return;
+    const uint32_t base = moby_rec_base(cpu);
+    if (base < 0x80000000u) return;
+    const uint32_t sw = stride / 4u;
+    uint32_t n = 0;
+    int ended = 0;
+    while (n < REC_SNAP_RECS && (n + 1u) * sw < REC_SNAP_WORDS) {
+        const uint32_t rec = base + n * stride;
+        if (cpu->read_word(rec) == 0u) { ended = 1; break; }   /* the cull's terminator */
+        for (uint32_t k = 0; k < sw; k++)
+            s_rec_snap[n * sw + k] = cpu->read_word(rec + k * 4u);
+        n++;
+    }
+    /* The terminator is copied only when the walk reached it. A copy that ran
+     * out of room ends on a live record, and the records past it keep reading
+     * memory: writing a zero there would stop the walk at the copy's end and
+     * drop the tail of the queue. */
+    if (ended) s_rec_snap[n * sw] = 0u;
+    s_rec_snap_base  = base;
+    s_rec_snap_words = n * sw + (ended ? 1u : 0u);
+}
+
+uint32_t moby_rec_word(CPUState* cpu, uint32_t addr) {
+    const uint32_t off = addr - s_rec_snap_base;
+    if (s_rec_snap_words && (addr & 3u) == 0u && off < s_rec_snap_words * 4u)
+        return s_rec_snap[off / 4u];
+    return cpu->read_word(addr);
+}
+
+void moby_rec_matrix(CPUState* cpu, uint32_t addr, int M[3][3]) {
+    ngte_unpack_matrix(moby_rec_word(cpu, addr),      moby_rec_word(cpu, addr + 4u),
+                       moby_rec_word(cpu, addr + 8u), moby_rec_word(cpu, addr + 12u),
+                       moby_rec_word(cpu, addr + 16u), M);
+}
 
 /* Sub-tick second-material scratch snapshot. A game whose second material
  * pass rebuilds the record queue with its own set — including mobys the first
@@ -346,7 +407,7 @@ static void hex_dump(CPUState* cpu, uint32_t start, uint32_t end) {
     /* Records: first 4, with interpreted fields + followed pointers. */
     for (int r = 0; r < 4; r++) {
         uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
-        uint32_t w0 = cpu->read_word(rec);
+        uint32_t w0 = moby_rec_word(cpu, rec);
         moby_record_t R; int live = moby_game.read_record(cpu, rec, &R);
         uint32_t frame_p = live ? R.header : 0u;
         uint32_t faces_p = live ? R.frame_a : 0u;
@@ -3891,6 +3952,18 @@ static void moby_reveal_dbg(CPUState* cpu) {
         openpete_frame, F, alive, drawn_s, in43, inwide, revealed, rev_live, rev_frozen);
 }
 
+/* The cull hook: run the game's cull, then take its record list before any
+ * draw pass reuses the scratch it sits in. The cull is called exactly once,
+ * as the fall-through would have called it, and nothing is written back. */
+static int on_cull(CPUState* cpu, uint32_t addr) {
+    if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
+    static int s_in = 0; if (s_in) return 0; s_in = 1;
+    moby_run_draw(cpu, addr);
+    moby_rec_snapshot(cpu);
+    s_in = 0;
+    return 1;
+}
+
 static int on_draw_regular(CPUState* cpu, uint32_t addr) {
     (void)addr;
     if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
@@ -5876,7 +5949,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * sub-tick present (--render-fps), i.e. they "don't animate out". The deadband
          * leaves normal mobys (ratio≈1, only Q12 truncation noise) untouched. */
         {
-            int rM[3][3]; ngte_read_matrix(cpu, recs[i] + game_layout.moby.rec_matrix_off, rM);
+            int rM[3][3]; moby_rec_matrix(cpu, recs[i] + game_layout.moby.rec_matrix_off, rM);
             for (int row = 0; row < 3; row++) {
                 double mr = sqrt((double)rM[row][0]*rM[row][0] + (double)rM[row][1]*rM[row][1] + (double)rM[row][2]*rM[row][2]);
                 double mb = sqrt((double)f.M[row][0]*f.M[row][0] + (double)f.M[row][1]*f.M[row][1] + (double)f.M[row][2]*f.M[row][2]);
@@ -6232,7 +6305,7 @@ void moby_reextract(CPUState* cpu) {
  * pass the layout leaves at 0 contributes no entry instead of truncating the
  * ones after it. A game that names no pass registers nothing and never enters
  * this feeder. */
-static feature_dispatch_entry_t moby_dispatch[5];
+static feature_dispatch_entry_t moby_dispatch[6];
 
 static void moby_apply_options(const openpete_options_t* opts) {
     (void)opts;
@@ -6244,6 +6317,8 @@ static void moby_apply_options(const openpete_options_t* opts) {
     if (!have && getenv("OPENPETE_MOBY_CENSUS"))
         fprintf(stderr, "[moby-native] feeder inert: no moby_game decoder slots\n");
     const struct { uint32_t addr; feature_dispatch_fn fn; } passes[] = {
+        /* The cull runs first and owns the record list every draw pass reads. */
+        { game_layout.moby.hook_cull,          on_cull          },
         { game_layout.moby.hook_draw_regular,  on_draw_regular  },
         { game_layout.moby.hook_draw_specular, on_draw_specular },
         { game_layout.moby.hook_draw_shaded,   on_draw_shaded   },
