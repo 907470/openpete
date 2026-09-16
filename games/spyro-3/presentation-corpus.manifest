@@ -34,3 +34,10 @@ sunrise-spring-surface-swim|1900|150||1900,2000,2200
 # it: 5011 to 7167 pixels of the frame move when the reflection is suppressed,
 # against 588 to 1421 on the grid samples after 2025.
 icy-peak-reflective-mirror|1900|150||1900,1950,2000
+
+# sunrise-spring-camera-swing holds R2 from VBL 1500 so the camera orbits the
+# player while two animated-kind mobys and the simple-kind gems, baskets and
+# chest stay in view. The pins hold sub-tick presents mid-swing, where an
+# animated record replayed in the tick camera's view space is displaced from
+# the interpolated camera by half a tick of rotation.
+sunrise-spring-camera-swing|1500|100||1520,1540,1560
