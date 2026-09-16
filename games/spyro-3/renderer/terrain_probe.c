@@ -61,6 +61,7 @@ static int probe_mode(void) {
 static int     s_capture_armed;
 static uint8_t s_vis[VIS_MAX];
 static int     s_vis_n;
+static uint8_t s_sec_flat[VIS_MAX];   /* header word 1 bit 12, per sector, this tick */
 
 static int on_visibility(CPUState* cpu, uint32_t addr) {
     (void)addr;
@@ -81,7 +82,10 @@ static int on_visibility(CPUState* cpu, uint32_t addr) {
 #define PV_MAX   65536
 #define GRID_W   256          /* cells of 8 px over [-1024, 1024) */
 #define GRID_N   (GRID_W * GRID_W)
-typedef struct { float sx, sy, z; uint8_t hp; uint8_t s1z; uint16_t sec; int next; } pvert_t;
+/* fl: 0 = a sector without the flat flag, 1 = a flat sector decoded with the
+ * plain Z packing, 2 = a flat sector decoded with the flat Z packing
+ * (Z = zPos>>14 + (v & 0x3FF), the packing the draw's flat sector lists use). */
+typedef struct { float sx, sy, z; uint8_t hp; uint8_t s1z; uint8_t fl; uint16_t sec; int next; } pvert_t;
 static pvert_t s_pv[PV_MAX];
 static int     s_pv_n;
 static int     s_grid[GRID_N];
@@ -92,15 +96,18 @@ static int  pv_cell(double sx, double sy) {
     if (cx < 0 || cy < 0 || cx >= GRID_W || cy >= GRID_W) return -1;
     return cy * GRID_W + cx;
 }
-static void pv_add(double sx, double sy, double z, int hp, int s1z, uint32_t sec) {
+static void pv_add(double sx, double sy, double z, int hp, int s1z, uint32_t sec, int fl) {
     if (s_pv_n >= PV_MAX) return;
     int c = pv_cell(sx, sy); if (c < 0) return;
     pvert_t* v = &s_pv[s_pv_n];
-    v->sx = (float)sx; v->sy = (float)sy; v->hp = (uint8_t)hp; v->s1z = (uint8_t)s1z; v->sec = (uint16_t)sec; v->z = (float)z;
+    v->sx = (float)sx; v->sy = (float)sy; v->hp = (uint8_t)hp; v->s1z = (uint8_t)s1z; v->fl = (uint8_t)fl; v->sec = (uint16_t)sec; v->z = (float)z;
     v->next = s_grid[c]; s_grid[c] = s_pv_n++;
 }
 /* Nearest projected vertex within tol; bits: 1 = an S3-packed vertex matched,
- * 2 = it was HP, 4 = it was LP, 8 = an S1-packed (control) vertex matched.
+ * 2 = it was HP, 4 = it was LP, 8 = an S1-packed (control) vertex matched,
+ * 16 = the match was a flat sector's vertex under the plain packing,
+ * 32 = a flat sector's vertex under the flat packing matched (bit 1 is never
+ * set by one of those, so the headline match rate is unchanged).
  * *near receives the nearest S3-packed vertex distance within the searched
  * cells (up to `reach` cells each way), or a large value. */
 static double s_near_x, s_near_y;   /* the nearest vertex of the last pv_match */
@@ -112,10 +119,11 @@ static int pv_match(double sx, double sy, double tol, int reach, double* near, i
         if (x < 0 || y < 0 || x >= GRID_W || y >= GRID_W) continue;
         for (int i = s_grid[y * GRID_W + x]; i >= 0; i = s_pv[i].next) {
             double ex = s_pv[i].sx - sx, ey = s_pv[i].sy - sy, d2 = ex * ex + ey * ey;
-            if (!s_pv[i].s1z && d2 < best) { best = d2; *near_sec = s_pv[i].sec; *near_z = s_pv[i].z; s_near_x = s_pv[i].sx; s_near_y = s_pv[i].sy; }
+            if (!s_pv[i].s1z && s_pv[i].fl != 2 && d2 < best) { best = d2; *near_sec = s_pv[i].sec; *near_z = s_pv[i].z; s_near_x = s_pv[i].sx; s_near_y = s_pv[i].sy; }
             if (d2 > tol * tol) continue;
             if (s_pv[i].s1z) r |= 8;
-            else r |= 1 | (s_pv[i].hp ? 2 : 4);
+            else if (s_pv[i].fl == 2) r |= 32;
+            else r |= 1 | (s_pv[i].hp ? 2 : 4) | (s_pv[i].fl ? 16 : 0);
         }
     }
     *near = sqrt(best);
@@ -132,7 +140,7 @@ static int pv_midpoint(double sx, double sy, double tol) {
         int x = cx + dx, y = cy + dy;
         if (x < 0 || y < 0 || x >= GRID_W || y >= GRID_W) continue;
         for (int i = s_grid[y * GRID_W + x]; i >= 0 && n < 512; i = s_pv[i].next)
-            if (!s_pv[i].s1z) cand[n++] = i;
+            if (!s_pv[i].s1z && s_pv[i].fl != 2) cand[n++] = i;
     }
     int r = 0;
     for (int a = 0; a < n; a++) for (int b = a + 1; b < n; b++) {
@@ -230,6 +238,15 @@ static struct {
     uint32_t sec_miss_count;              /* the sector count sec_miss[] belongs to */
     unsigned long sec_hp_v[VIS_MAX], sec_hp_hit[VIS_MAX], sec_lp_v[VIS_MAX], sec_lp_hit[VIS_MAX];   /* reverse: decoded vertices with an emitted vertex within tol */
     unsigned long rev_hp_v, rev_hp_hit, rev_lp_v, rev_lp_hit;
+    /* flat-sector breakdown: the draw sorts a sector with header word 1 bit 12
+     * into a list whose vertex loop reads Z as (v & 0x3FF) instead of
+     * ((v << 3) & 0x1FFC) (environment.s 80023C9C, 800254FC/800257C4). */
+    unsigned long fl_dec_hp, fl_dec_lp;        /* decoded vertices in flat sectors */
+    unsigned long fl_z_differs;                /* of those, the two packings disagree */
+    unsigned long fl_rev_hit, fl_rev_rule_hit; /* reverse coverage, plain vs flat packing */
+    unsigned long fl_rev_rule_v;
+    unsigned long near_flat_v, near_flat_matched;  /* emitted verts nearest a flat sector */
+    unsigned long m_flat_plain, m_flat_rule, m_flat_rule_only;
     int printed;
 } S;
 
@@ -257,6 +274,22 @@ static void probe_report(void) {
     fprintf(stderr, "\n[terrain-probe] reverse: decoded HP verts with an emitted vertex within tol %lu of %lu (%.1f%%), LP %lu of %lu (%.1f%%)\n",
         S.rev_hp_hit, S.rev_hp_v, S.rev_hp_v ? 100.0 * (double)S.rev_hp_hit / (double)S.rev_hp_v : 0.0,
         S.rev_lp_hit, S.rev_lp_v, S.rev_lp_v ? 100.0 * (double)S.rev_lp_hit / (double)S.rev_lp_v : 0.0);
+    if (S.flat_sectors == 0)
+        fprintf(stderr, "[terrain-probe] flat sectors: VACUOUS (no visible sector carried header word 1 bit 12)\n");
+    else if (S.fl_dec_hp + S.fl_dec_lp == 0)
+        fprintf(stderr, "[terrain-probe] flat sectors: VACUOUS (%lu flat sector-ticks decoded 0 vertices)\n", S.flat_sectors);
+    else
+        fprintf(stderr,
+            "[terrain-probe] flat sectors: %lu sector-ticks, decoded verts hp=%lu lp=%lu, packings disagree on %lu (%.1f%%) | "
+            "emitted verts nearest a flat sector %lu matched %lu (%.1f%%) | matched by a flat sector's plain-packed vertex %lu, "
+            "by its flat-packed vertex %lu (flat-packed only %lu) | reverse: plain %lu of %lu (%.1f%%), flat-packed %lu of %lu (%.1f%%)\n",
+            S.flat_sectors, S.fl_dec_hp, S.fl_dec_lp, S.fl_z_differs,
+            100.0 * (double)S.fl_z_differs / (double)(S.fl_dec_hp + S.fl_dec_lp),
+            S.near_flat_v, S.near_flat_matched,
+            S.near_flat_v ? 100.0 * (double)S.near_flat_matched / (double)S.near_flat_v : 0.0,
+            S.m_flat_plain, S.m_flat_rule, S.m_flat_rule_only,
+            S.fl_rev_hit, S.fl_dec_hp + S.fl_dec_lp, 100.0 * (double)S.fl_rev_hit / (double)(S.fl_dec_hp + S.fl_dec_lp),
+            S.fl_rev_rule_hit, S.fl_rev_rule_v, S.fl_rev_rule_v ? 100.0 * (double)S.fl_rev_rule_hit / (double)S.fl_rev_rule_v : 0.0);
     fprintf(stderr, "[terrain-probe] worst sectors by unmatched-nearest (sector count %u), with their reverse HP/LP coverage:", S.sec_miss_count);
     for (int n = 0; n < 8; n++) {
         unsigned long best = 0; int bi = -1;
@@ -299,6 +332,7 @@ static int on_world_draw(CPUState* cpu, uint32_t addr) {
 
     /* Decode and project every visible sector's LP and HP vertices. */
     pv_reset(); ev_reset();
+    memset(s_sec_flat, 0, sizeof s_sec_flat);
     unsigned long visible = 0, sumLpF = 0, sumHpF = 0;
     for (uint32_t i = 0; i < sectorCnt && i < (uint32_t)s_vis_n; i++) {
         if (!s_vis[i]) continue;
@@ -308,7 +342,9 @@ static int on_world_draw(CPUState* cpu, uint32_t addr) {
         uint32_t w1 = cpu->read_word(sec + 0x04u);
         uint32_t xy = cpu->read_word(sec + 0x08u), zp = cpu->read_word(sec + 0x0Cu);
         uint32_t w4 = cpu->read_word(sec + 0x10u), w5 = cpu->read_word(sec + 0x14u);
-        if ((w1 >> 12) & 1u) S.flat_sectors++;
+        int flat = (int)((w1 >> 12) & 1u);
+        if (flat) S.flat_sectors++;
+        s_sec_flat[i] = (uint8_t)flat;
         int32_t bx = (int32_t)(xy >> 14), by = (int32_t)((xy & 0xFFFFu) << 2), bz = (int32_t)(zp >> 14);
         uint32_t nLp = w4 & 0xFFu, nHp = w5 & 0xFFu, hpOff = w5 >> 24;
         sumLpF += (w4 >> 16) & 0xFFu; sumHpF += (w5 >> 16) & 0xFFu;
@@ -320,9 +356,15 @@ static int on_world_draw(CPUState* cpu, uint32_t addr) {
                 int32_t Y = by + (int32_t)((v >> 8) & 0x1FFCu);
                 int32_t Z = bz + (int32_t)((v << 3) & 0x1FFCu);
                 int32_t Z1 = bz + (int32_t)((v << 2) & 0xFFCu);   /* the Spyro 1 packing, control */
+                int32_t Zf = bz + (int32_t)(v & 0x3FFu);          /* the flat-sector packing */
                 double sx, sy, z;
-                if (view_project(&view, X, Y, Z, &sx, &sy, &z)) pv_add(sx, sy, z, hp, 0, i);
-                if (Z1 != Z && view_project(&view, X, Y, Z1, &sx, &sy, &z)) pv_add(sx, sy, z, hp, 1, i);
+                if (view_project(&view, X, Y, Z, &sx, &sy, &z)) pv_add(sx, sy, z, hp, 0, i, flat);
+                if (Z1 != Z && view_project(&view, X, Y, Z1, &sx, &sy, &z)) pv_add(sx, sy, z, hp, 1, i, 0);
+                if (flat) {
+                    if (hp) S.fl_dec_hp++; else S.fl_dec_lp++;
+                    if (Zf != Z) S.fl_z_differs++;
+                    if (view_project(&view, X, Y, Zf, &sx, &sy, &z)) pv_add(sx, sy, z, hp, 0, i, 2);
+                }
             }
         }
     }
@@ -355,6 +397,11 @@ static int on_world_draw(CPUState* cpu, uint32_t addr) {
                 int r = pv_match(sx, sy, s_tol, 8, &near, &near_sec, &near_z);
                 if (dump && !(r & 1)) fprintf(dump, "miss vbl=%u code=%02X k=%d sx=%.0f sy=%.0f near=%.1f sec=%d z=%.0f nx=%.1f ny=%.1f dx=%.1f dy=%.1f\n", openpete_frame, code, k, sx, sy, near, near_sec, near_z, s_near_x, s_near_y, sx - s_near_x, sy - s_near_y);
                 verts++; S.code_verts[code & 0x3F]++;
+                if (r & 16) S.m_flat_plain++;
+                if (r & 32) { S.m_flat_rule++; if (!(r & 1)) S.m_flat_rule_only++; }
+                if (near_sec >= 0 && near_sec < VIS_MAX && s_sec_flat[near_sec]) {
+                    S.near_flat_v++; if (r & 1) S.near_flat_matched++;
+                }
                 if (r & 1) { matched++; S.code_matched[code & 0x3F]++; if ((r & 6) == 6) S.both++; else if (r & 2) S.hp++; else S.lp++; }
                 else {
                     full = 0;
@@ -380,6 +427,8 @@ static int on_world_draw(CPUState* cpu, uint32_t addr) {
     for (int i = 0; i < s_pv_n; i++) {
         if (s_pv[i].s1z) continue;
         int hit = ev_near(s_pv[i].sx, s_pv[i].sy, s_tol);
+        if (s_pv[i].fl == 2) { S.fl_rev_rule_v++; if (hit) S.fl_rev_rule_hit++; continue; }
+        if (s_pv[i].fl == 1 && hit) S.fl_rev_hit++;
         unsigned sec = s_pv[i].sec;
         if (s_pv[i].hp) { S.rev_hp_v++; S.sec_hp_v[sec]++; if (hit) { S.rev_hp_hit++; S.sec_hp_hit[sec]++; } }
         else            { S.rev_lp_v++; S.sec_lp_v[sec]++; if (hit) { S.rev_lp_hit++; S.sec_lp_hit[sec]++; } }
