@@ -35,7 +35,34 @@ const game_layout_t game_layout = {
         .cull_dist       = G_ENVIRONMENT + 0x2Cu,   /* 0x2C000; the LP far cull, (v >> 7) - 1 against
                                                      * the LP OT key */
     },
-    .env_anim = { .base = 0u, .scroll = 0u, .lp_poly = 0u, .hp_poly = 0u },  /* not located */
+    /* The environment animations live in one inline-word block reached through
+     * the word at g_Environment+0x1C, not in Spyro 1's descriptor-pointer
+     * lists. The block header is +0x00 the byte offset of sub-list 2, +0x04
+     * the byte offset of sub-list 3, +0x08 sub-list 1's count, +0x0C a packed
+     * colour the walker loads into ctc2 $21..$23, +0x10 sub-list 1's entries.
+     * Three routines walk it, each entering with `lw $t5, 0x1C($at)`,
+     * $at = g_Environment:
+     *   func_80021FF4  blk+0x08              writes the sector colour array
+     *                                        (sector+28+(byte[20]+byte[23])*4)
+     *   func_80022158  blk+rd(blk+0x00)      writes the sector vertex bank
+     *                                        (sector+28+byte[23]*4)
+     *   func_80022260  blk+rd(blk+0x04)      writes the same vertex bank from
+     *                                        a sine table, two words per entry
+     * Only func_80021FF4 tests bit 31 of the entry (0x80022074, `bltz`); the
+     * other two walk every entry. All three gate on the liveness byte table,
+     * `lbu` at g_SonyImage+0x263C + (entry & 0xFF), bit 0. There is no
+     * scrolling-texture sub-list: none of the three touches a tiledef. */
+    .env_anim = {
+        .form       = ENV_ANIM_ARENA,
+        .base       = 0u,             /* no animations header: only the block */
+        .block_ptr  = G_ENVIRONMENT + 0x1Cu,
+        .live_table = 0x80072330u,    /* D_8006FCF4 + 0x263C */
+        .sub = {
+            { 0x08u, 0, 8u, 1, ENV_ANIM_KIND_COLOUR },
+            { 0x00u, 1, 4u, 0, ENV_ANIM_KIND_VERT },
+            { 0x04u, 1, 4u, 0, ENV_ANIM_KIND_VERT },
+        },
+    },
     .visibility = {
         .base = 0x1F800000u,   /* one byte per sector, written by func_8002D0D8(0), consumed and
                                 * cleared by the world draw; the range is general scratch outside

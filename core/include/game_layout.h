@@ -26,6 +26,37 @@ enum { CYC_FACES_SPYRO1 = 0, CYC_FACES_SPYRO3 = 1 };
 enum { SHADOW_LIST_ADDR = 0, SHADOW_LIST_GTE_DATA = 1 };
 enum { SHADOW_CULL_SPYRO1 = 0, SHADOW_CULL_SPYRO3 = 1 };
 
+/* How a game stores its environment animations.
+ * ENV_ANIM_LISTS: three independent {count, descriptor-pointer array} pairs
+ * (Spyro 1 `EnvironmentAnimations`), each descriptor a separate record whose
+ * u16 at +4 names the sector it animates.
+ * ENV_ANIM_ARENA: one block of inline words (Spyro 3, reached through the
+ * word at `block_ptr`), holding up to ENV_ANIM_SUBLISTS sub-lists. Each
+ * sub-list is a count word followed by one-word entries; an entry's low byte
+ * is the sector index and bits 16-31 a word offset into the block at which
+ * that sector's keyframe data sits. There are no per-animation descriptor
+ * records, so nothing in the block has a stable address to key a snapshot on.
+ */
+enum { ENV_ANIM_NONE = 0, ENV_ANIM_LISTS = 1, ENV_ANIM_ARENA = 2 };
+
+/* What a sub-list rewrites in the sector it names. The terrain decode cache
+ * re-reads colours live, so only KIND_VERT makes a cached sector's geometry
+ * stale and only KIND_VERT sectors need the prev/cur vertex banks. */
+enum { ENV_ANIM_KIND_VERT = 0, ENV_ANIM_KIND_COLOUR = 1 };
+
+#define ENV_ANIM_SUBLISTS 3
+
+/* One ENV_ANIM_ARENA sub-list. `entry_off` = 0 marks an unused row. */
+typedef struct env_anim_sublist {
+    uint16_t hdr_off;    /* byte offset into the block that locates the list */
+    uint8_t  indirect;   /* 1: the block word at hdr_off holds the list's own
+                          * byte offset from the block base; 0: the count word
+                          * is at hdr_off itself */
+    uint8_t  entry_off;  /* bytes from the count word to the first entry */
+    uint8_t  skip_top;   /* 1: the walker skips an entry with bit 31 set */
+    uint8_t  kind;       /* ENV_ANIM_KIND_* */
+} env_anim_sublist_t;
+
 typedef struct game_layout {
     /* The in-RAM sin/cos table: 256 entries per circle of s16 1.12 fixed
      * point, cos at +0x80 bytes into the same table, so a byte angle indexes
@@ -47,14 +78,29 @@ typedef struct game_layout {
         uint32_t cull_dist;         /* LP far draw distance */
     } env;
 
-    /* The environment animation lists (Spyro 1 `EnvironmentAnimations`).
-     * Each is {count, pointer to a descriptor-pointer array}; the field is
-     * the address of the count and the array pointer follows at +4. */
+    /* The environment animations. `form` picks which registry the shared
+     * geometry/colour iterator walks; ENV_ANIM_NONE means none is located and
+     * the iterator yields nothing. `scroll` is read on its own by the UV-scroll
+     * mirror, whose per-descriptor accumulator record exists only in the LISTS
+     * shape, so a game can carry a scroll list under either form. */
     struct {
+        uint32_t form;              /* ENV_ANIM_* */
         uint32_t base;
+
+        /* ENV_ANIM_LISTS. Each is {count, pointer to a descriptor-pointer
+         * array}; the field is the address of the count and the array pointer
+         * follows at +4. */
         uint32_t scroll;            /* scrolling-texture descriptors */
         uint32_t lp_poly;           /* LP geometry animations */
         uint32_t hp_poly;           /* HP geometry animations */
+
+        /* ENV_ANIM_ARENA. `block_ptr` is the address of the word holding the
+         * block base. `live_table` is a byte table indexed by an entry's low
+         * byte (the sector index); bit 0 set = that animation runs, and the
+         * game's walkers skip the entry when it is clear. */
+        uint32_t block_ptr;
+        uint32_t live_table;
+        env_anim_sublist_t sub[ENV_ANIM_SUBLISTS];
     } env_anim;
 
     /* The world visibility verdict: one byte per sector, 0xFF = drawn. */

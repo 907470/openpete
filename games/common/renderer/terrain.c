@@ -1759,21 +1759,118 @@ static void tsc_retag_fill(CPUState* cpu, tscache_t* C,
  * raised LP wall reads as "uncovered by HP" and gets admitted as a gap
  * filler), and native-only LP passes must never draw the stale bank. LP the
  * .s itself draws is safe: the walk re-packs LP verts before drawing them. */
+/* The env-anim registry iterator: one walk over every animated sector the
+ * game's own animation walkers would touch this tick, whatever form the game
+ * stores its registry in (game_layout.env_anim.form).
+ *
+ * ENV_ANIM_LISTS (Spyro 1): the LP and HP {count, descriptor-pointer array}
+ * pairs, each descriptor naming its sector in the u16 at +4.
+ * ENV_ANIM_ARENA (Spyro 3): the sub-lists of the block at env+0x1C, each a
+ * count word followed by one-word entries whose low byte is the sector index.
+ * An arena entry is live only while bit 0 of the liveness byte for that index
+ * is set, which is the same test the game's walkers make before rewriting the
+ * sector; skipping a dormant entry keeps the cached decode valid instead of
+ * re-decoding unchanged RAM every tick.
+ *
+ * The scrolling-texture list stays out: its consumer needs the per-descriptor
+ * accumulator record, which exists only in the LISTS form (tsc_scroll_refresh).
+ *
+ * A count ceiling of 1024 rejects a header read while the level data is being
+ * swapped, when the pointer can be anything. */
+#define ENV_ANIM_COUNT_MAX 1024u
+typedef struct {
+    CPUState* cpu;
+    uint32_t  sectorCnt;
+    uint32_t  blk;          /* ARENA: the block base, 0 when unresolved */
+    int       list;         /* next list / sub-list to open */
+    uint32_t  base;         /* first entry of the open list */
+    uint32_t  cnt, k;
+    int       kind;         /* ENV_ANIM_KIND_* of the open list */
+    int       skip_top;     /* ARENA: this list skips bit-31 entries */
+    uint32_t  seen;         /* entries examined, live or not (engagement) */
+} env_anim_iter_t;
+
+static void env_anim_iter_init(env_anim_iter_t* it, CPUState* cpu, uint32_t sectorCnt) {
+    memset(it, 0, sizeof(*it));
+    it->cpu = cpu;
+    it->sectorCnt = sectorCnt;
+    if (game_layout.env_anim.form == ENV_ANIM_ARENA && game_layout.env_anim.block_ptr)
+        it->blk = rd(cpu, game_layout.env_anim.block_ptr);
+}
+
+/* Open the next non-empty list; 0 when the registry is exhausted. */
+static int env_anim_iter_open(env_anim_iter_t* it) {
+    CPUState* cpu = it->cpu;
+    for (;;) {
+        if (game_layout.env_anim.form == ENV_ANIM_LISTS) {
+            if (it->list >= 2) return 0;
+            uint32_t off = it->list ? game_layout.env_anim.hp_poly
+                                    : game_layout.env_anim.lp_poly;
+            it->list++;
+            if (!off) continue;                      /* list not located */
+            uint32_t cnt  = rd(cpu, off);
+            uint32_t base = rd(cpu, off + 4);
+            if (!base || cnt == 0 || cnt > ENV_ANIM_COUNT_MAX) continue;
+            it->cnt = cnt; it->base = base; it->k = 0;
+            it->kind = ENV_ANIM_KIND_VERT;
+            it->skip_top = 0;
+            return 1;
+        }
+        if (game_layout.env_anim.form == ENV_ANIM_ARENA && it->blk >= 0x80000000u) {
+            if (it->list >= ENV_ANIM_SUBLISTS) return 0;
+            const env_anim_sublist_t* S = &game_layout.env_anim.sub[it->list];
+            it->list++;
+            if (!S->entry_off) continue;             /* unused row */
+            uint32_t hdr = it->blk + S->hdr_off;
+            uint32_t lst = S->indirect ? it->blk + rd(cpu, hdr) : hdr;
+            uint32_t cnt = rd(cpu, lst);
+            if (cnt == 0 || cnt > ENV_ANIM_COUNT_MAX) continue;
+            it->cnt = cnt; it->base = lst + S->entry_off; it->k = 0;
+            it->kind = S->kind;
+            it->skip_top = S->skip_top;
+            return 1;
+        }
+        return 0;
+    }
+}
+
+/* Yield the next animated sector index and what the animation rewrites. */
+static int env_anim_iter_next(env_anim_iter_t* it, uint32_t* sector, int* kind) {
+    CPUState* cpu = it->cpu;
+    for (;;) {
+        if (it->k >= it->cnt) {
+            if (!env_anim_iter_open(it)) return 0;
+            continue;
+        }
+        uint32_t w = rd(cpu, it->base + it->k * 4);
+        it->k++;
+        it->seen++;
+        uint32_t idx;
+        if (game_layout.env_anim.form == ENV_ANIM_LISTS) {
+            if (!w) continue;                        /* empty descriptor slot */
+            idx = cpu->read_half(w + 4);
+        } else {
+            if (it->skip_top && (int32_t)w < 0) continue;
+            idx = w & 0xFFu;
+            if (game_layout.env_anim.live_table
+                && !(cpu->read_byte(game_layout.env_anim.live_table + idx) & 1u))
+                continue;                            /* animation not running */
+        }
+        if (idx >= it->sectorCnt) continue;
+        *sector = idx;
+        *kind = it->kind;
+        return 1;
+    }
+}
+
 static int tsc_sector_polyanim(CPUState* cpu, uint32_t s,
                                uint32_t sectorPtr, uint32_t sectorCnt) {
-    for (int list = 0; list < 2; list++) {
-        uint32_t off  = list ? game_layout.env_anim.hp_poly : game_layout.env_anim.lp_poly;
-        if (!off) continue;                          /* no animation lists located */
-        uint32_t cnt  = rd(cpu, off);
-        uint32_t base = rd(cpu, off + 4);
-        if (!base || cnt == 0 || cnt > 1024) continue;
-        for (uint32_t k = 0; k < cnt; k++) {
-            uint32_t desc = rd(cpu, base + k * 4);
-            if (!desc) continue;
-            uint32_t idx = cpu->read_half(desc + 4);
-            if (idx >= sectorCnt) continue;
-            if (rd(cpu, sectorPtr + idx * 4) == s) return 1;
-        }
+    env_anim_iter_t it;
+    uint32_t idx; int kind;
+    env_anim_iter_init(&it, cpu, sectorCnt);
+    while (env_anim_iter_next(&it, &idx, &kind)) {
+        if (kind != ENV_ANIM_KIND_VERT) continue;    /* colours are read live */
+        if (rd(cpu, sectorPtr + idx * 4) == s) return 1;
     }
     return 0;
 }
@@ -1955,17 +2052,13 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
     static int s_vdbg = -1;
     if (s_vdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_VANIMDBG"); s_vdbg = (e && *e && *e != '0'); }
     int dbg_desc = 0, dbg_cached = 0, dbg_prev = 0, dbg_filled = 0;
-    for (int list = 0; list < 2; list++) {
-        uint32_t off  = list ? game_layout.env_anim.hp_poly : game_layout.env_anim.lp_poly;
-        if (!off) continue;                          /* no animation lists located */
-        uint32_t cnt  = rd(cpu, off);
-        uint32_t base = rd(cpu, off + 4);
-        if (!base || cnt == 0 || cnt > 1024) continue;
-        for (uint32_t k = 0; k < cnt; k++) {
-            uint32_t desc = rd(cpu, base + k * 4);
-            if (!desc) continue;
-            uint32_t idx = cpu->read_half(desc + 4);
-            if (idx >= sectorCnt) continue;
+    uint32_t dbg_seen = 0;
+    {
+        env_anim_iter_t it;
+        uint32_t idx; int kind;
+        env_anim_iter_init(&it, cpu, sectorCnt);
+        while (env_anim_iter_next(&it, &idx, &kind)) {
+            if (kind != ENV_ANIM_KIND_VERT) continue;   /* colours are read live */
             uint32_t s = rd(cpu, sectorPtr + idx * 4);
             if (!s) continue;
             dbg_desc++;
@@ -2053,10 +2146,11 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
                 }
             }
         }
+        dbg_seen = it.seen;
     }
-    if (s_vdbg && dbg_desc)
-        fprintf(stderr, "[vanim-scan f=%u sub=%d on=%d desc=%d cached=%d prev=%d filled=%d]\n",
-                openpete_frame, s_vanim_sub, s_vanim_on, dbg_desc, dbg_cached, dbg_prev, dbg_filled);
+    if (s_vdbg && dbg_seen)
+        fprintf(stderr, "[vanim-scan f=%u sub=%d on=%d entries=%u desc=%d cached=%d prev=%d filled=%d]\n",
+                openpete_frame, s_vanim_sub, s_vanim_on, dbg_seen, dbg_desc, dbg_cached, dbg_prev, dbg_filled);
 }
 
 /* Texture (UV-scroll) env-anim sub-tick interpolation — the artisans waterfall

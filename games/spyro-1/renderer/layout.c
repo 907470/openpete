@@ -27,6 +27,7 @@ const game_layout_t game_layout = {
         .cull_dist       = G_ENVIRONMENT + offsetof(Environment, m_CullingDistance),
     },
     .env_anim = {
+        .form    = ENV_ANIM_LISTS,
         .base    = G_ENVANIM,
         .scroll  = G_ENVANIM + offsetof(EnvironmentAnimations, m_ScrollingTextureCount),
         .lp_poly = G_ENVANIM + offsetof(EnvironmentAnimations, m_LowPolyAnimationCount),
