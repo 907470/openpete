@@ -30,6 +30,7 @@
 #include "openpete_recomp_module.h"
 
 #include <math.h>
+#include <stdlib.h>
 #include <string.h>
 
 #define PL (game_layout.player)
@@ -198,13 +199,28 @@ static int s3_part_xform(CPUState* cpu, const ngte_view* v, int part,
         for (int i = 0; i < 3; i++)
             out->TR[i] = (PM[i][0]*IR1 + PM[i][1]*IR2 + PM[i][2]*IR3) / 4096.0;
         s3_compose_euler(cpu, PM, cpu->read_word(PL.base + PL.rot_off[0]), out->M, 0);
+        /* The mirrored copy (spyrodraw.s:283-302): with the gate set the draw
+         * negates the composed matrix's second column in place — the high half
+         * of the record word at +0x10, the low half of +0x18 and the high half
+         * of +0x1C, which are m01, m11 and m21 — and writes the three GTE
+         * rotation registers those halves live in. The reflection is in the
+         * model's own second axis; the driver has already moved the avatar's
+         * world Z to twice its height below the surface. */
+        /* OPENPETE_PLAYER_VERIFY_NOMIRROR: the negative control of that
+         * reflection — the copy is drawn from the unreflected matrix, leaving
+         * every other mirrored-pass difference in place. */
+        static int s_neg = -1;
+        if (s_neg < 0) { const char* e = getenv("OPENPETE_PLAYER_VERIFY_NOMIRROR");
+                         s_neg = !(e && *e && *e != '0'); }
+        if (player_mirror_pass() && s_neg)
+            for (int i = 0; i < 3; i++) out->M[i][1] = -out->M[i][1];
         out->present = 1;
         return 1;
     }
     if (!parent) return 0;
     /* The head keeps the body's matrix unless it has a rotation of its own AND
      * this is not the mirrored pass (spyrodraw.s:316-318,326-330). */
-    uint32_t rot = cpu->read_word(PL.base + SPYRO_MIRROR_GATE)
+    uint32_t rot = player_mirror_pass()
                  ? 0u : cpu->read_word(PL.base + PL.rot_off[1]);
     if (rot) s3_compose_euler(cpu, parent->M, rot, out->M, part);
     else     memcpy(out->M, parent->M, sizeof out->M);
@@ -386,6 +402,13 @@ static int s3_call_is_player(CPUState* cpu) {
     return cpu->read_word(PL.base + SPYRO_MIRROR_GATE) == 0u;
 }
 
+/* The same gate read the other way: the call the pass driver makes with the
+ * height above the reflective surface still in the state word
+ * (drawutil.s/func_8001EC5C:39-90 sets it, draws, zeroes it, draws again). */
+static int s3_call_is_mirror(CPUState* cpu) {
+    return cpu->read_word(PL.base + SPYRO_MIRROR_GATE) != 0u;
+}
+
 const player_game_t player_game = {
     .run_draw         = s3_run_draw,
     .part_count       = NULL,            /* the fixed two of game_layout.player */
@@ -407,6 +430,7 @@ const player_game_t player_game = {
                                           * +0x1E is only ever an ordering bias
                                           * (spyrodraw.s:250-255) */
     .call_is_player   = s3_call_is_player,
+    .call_is_mirror   = s3_call_is_mirror,
     .verify           = NULL,
     .verify_enabled   = NULL,
 };

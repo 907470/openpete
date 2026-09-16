@@ -191,6 +191,16 @@ typedef struct player_game {
      * nothing. NULL = every call is the avatar. */
     int (*call_is_player)(CPUState* cpu);
 
+    /* 1 when this call is the MIRRORED copy: the draw reflects the avatar in
+     * a reflective surface by negating one column of the composed skeleton
+     * matrix, which reverses the handedness, and negating both NCLIP results
+     * so the same faces survive the back-face test. The walk latches the
+     * answer for the call and the provider's own transform reads it back
+     * through player_mirror_pass(), so a sub-tick replay is not classified by
+     * gamestate the driver restored after the tick. NULL = the game draws no
+     * such copy. */
+    int (*call_is_mirror)(CPUState* cpu);
+
     /* ---- carve-outs ---------------------------------------------------- */
     /* A game-side numerical harness, run inside the hook after the guest draw
      * with the call's polybuf range. NULL where the game has none. */

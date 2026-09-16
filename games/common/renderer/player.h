@@ -94,6 +94,13 @@ void player_native_set_flat_key(uint32_t key);
  * stays byte-exact. */
 void player_native_set_rot_interp(const int* active, const double* ang);
 
+/* The mirrored-copy latch: set from player_game.call_is_mirror at each hook
+ * call and cleared for the sub-tick replay, which reproduces the avatar the
+ * gameplay drives. A provider's transform reads it to apply the draw's own
+ * reflection. */
+void player_native_set_mirror(int on);
+int  player_mirror_pass(void);
+
 /* The interpolated angles for part p, read by a provider's euler composer:
  * returns 0 when the canonical byte-exact table lookup is the one to use. */
 int player_rot_interp(int part, double out[3]);
@@ -101,6 +108,10 @@ int player_rot_interp(int part, double out[3]);
 /* Sub-tick re-extract: reproduce the avatar from the current gamestate and the
  * interpolated camera the orchestrator wrote. Extract-only. */
 void player_reextract(struct CPUState* cpu);
+/* The same, for one record of the store: `mirror` is that record's own answer
+ * to player_game.call_is_mirror, taken from the bytes the caller staged rather
+ * than from live RAM, which the driver has already restored. */
+void player_reextract_record(struct CPUState* cpu, int mirror);
 
 /* ---- record store, canonical side (game fiber) ------------------------ */
 

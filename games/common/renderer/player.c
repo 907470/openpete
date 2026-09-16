@@ -183,6 +183,10 @@ void player_native_set_rot_interp(const int* active, const double* ang) {
 }
 /* Read by a provider's euler composer: the interpolated angles for part p, or
  * 0 when the canonical byte-exact table lookup is the one to use. */
+static int s_mirror_pass;
+void player_native_set_mirror(int on) { s_mirror_pass = on ? 1 : 0; }
+int  player_mirror_pass(void) { return s_mirror_pass; }
+
 int player_rot_interp(int part, double out[3]) {
     if (part < 0 || part >= PLAYER_PARTS_MAX || !s_rot_active[part]) return 0;
     for (int k = 0; k < 3; k++) out[k] = s_rot_ang[part][k];
@@ -560,6 +564,10 @@ int player_build_walk(CPUState* cpu) {
             int blend = f->blendbit ? moby_abr_blend(f->abr) : 0;
             double n1 = player_nclip(f->i0, f->i1, f->i2);
             double n2 = (f->i3 < s_sproj_n) ? player_nclip(f->i3, f->i1, f->i2) : -1.0;
+            /* The mirrored copy reflects the skeleton matrix, which reverses
+             * every face's screen winding; the draw negates both NCLIP
+             * results so the same faces survive the back-face test. */
+            if (s_mirror_pass) { n1 = -n1; if (f->i3 < s_sproj_n) n2 = -n2; }
             int order[2][3];
             /* A game whose draw admits a flagged face untested takes the emit
              * tree's unconditional arm, which keeps the face's whole topology
@@ -653,6 +661,12 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
             /* One-slot tie pull: 127 world is under one ordering slot, so it
              * can only flip pairs the original called a tie. */
             tie_pull = 127.0;
+            /* The mirrored copy carries its own ordering bias in the same
+             * byte, negative: the draw keys it at (originZ >> 7) - sortDepth,
+             * so the copy sorts that many slots BEHIND the avatar. Applied to
+             * the depth key only, like the front-layer pull above: the
+             * reflection's geometry is already below the surface. */
+            if (s_mirror_pass && sd < 0) sp_pull = 128.0 * (double)sd;
         }
     }
     openpete_native_scene_begin_frame(openpete_frame);
@@ -750,6 +764,15 @@ static void pv_capture(CPUState* cpu, uint32_t start, uint32_t end) {
         }
         p += stride;
     }
+}
+
+/* OPENPETE_PLAYER_VERIFY_MIRROR: bracket the MIRRORED copy's polybuf window
+ * instead of the avatar's, so the legs below measure the reflection. */
+static int player_verify_mirror(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_PLAYER_VERIFY_MIRROR");
+                 v = (e && *e && *e != '0'); }
+    return v;
 }
 
 static int player_verify_on(void) {
@@ -942,7 +965,11 @@ static int on_player_draw(CPUState* cpu, uint32_t addr) {
     player_native_set_flat_key(openpete_frame << 1);
 
     int is_player = player_game.call_is_player ? player_game.call_is_player(cpu) : 1;
-    if (feed && is_player && endp > startp && render_path_enabled(RP_SPYRO)) {
+    /* The mirrored copy is a call of its own with its own record and tag slot:
+     * latch it for the walk before anything reads the pose. */
+    player_native_set_mirror(player_game.call_is_mirror
+                             ? player_game.call_is_mirror(cpu) : 0);
+    if (feed && (is_player || s_mirror_pass) && endp > startp && render_path_enabled(RP_SPYRO)) {
         player_feed_walk(cpu);
         /* Sub-tick spine: snapshot the part-record block and the projected SXY
          * (the cull verdict), both live now, so the intermediates can
@@ -950,20 +977,24 @@ static int on_player_draw(CPUState* cpu, uint32_t addr) {
          * gamestate the block is still staged: a provider reads the words
          * around the records out of the same span (a per-part origin the
          * draw's later passes keep). */
+        if (is_player)
         spyro_native_canon_capture_range(cpu, PL.part_off, PL.part_block_len);
         /* The pre-blend colour table the draw builds above when the state's
          * colour filter selects it. It lives inside the record region the
          * sub-tick restore takes at an EARLIER hook, so that restore leaves it
          * stale and the avatar's colours strobe above the tick rate. Capture
          * it fresh here and overlay it for this feeder. */
-        if (PL.colour_scratch_len)
+        if (is_player && PL.colour_scratch_len)
             spyro_native_canon_capture_range(cpu, PL.colour_scratch_off, PL.colour_scratch_len);
-        spyro_native_canon_capture_sxy(cpu);
-        spyro_native_canon_capture_camera(cpu, SPYRO_PROD_SPYRO);
+        if (is_player) {
+            spyro_native_canon_capture_sxy(cpu);
+            spyro_native_canon_capture_camera(cpu, SPYRO_PROD_SPYRO);
+        }
     }
 
     if (verify && player_game.verify) player_game.verify(cpu, startp, endp);
-    if (player_verify_on() && is_player && endp > startp) {
+    if (player_verify_on() && (player_verify_mirror() ? s_mirror_pass : is_player)
+        && endp > startp) {
         player_project_all(cpu);
         player_build_walk(cpu);
         player_verify_report(cpu, startp, endp);
@@ -975,8 +1006,13 @@ static int on_player_draw(CPUState* cpu, uint32_t addr) {
 
 /* ---- sub-tick re-extract ------------------------------------------------ */
 
-void player_reextract(CPUState* cpu) {
+void player_reextract_record(CPUState* cpu, int mirror) {
     if (!openpete_native_scene_enabled()) return;
+    /* Which call of the tick this replay reproduces. The driver restores the
+     * state word that told the two apart before the tick ends, so live RAM
+     * cannot answer it here: the caller reads it off the record whose bytes
+     * it staged. */
+    player_native_set_mirror(mirror);
     /* Only re-extract on sub-ticks if the canonical tick actually drew the
      * avatar. A cutscene that suppresses the gameplay avatar and shows it as a
      * moby instead would otherwise get a SECOND avatar painted over the
@@ -1040,6 +1076,10 @@ void player_reextract(CPUState* cpu) {
     }
     if (!two_pass) player_feed_walk(cpu);
 }
+
+/* One call, the avatar, from live gamestate: the shape an orchestrator with no
+ * per-record loop replays. */
+void player_reextract(CPUState* cpu) { player_reextract_record(cpu, 0); }
 
 /* ======================================================================== *
  *  The per-call record store                                                *

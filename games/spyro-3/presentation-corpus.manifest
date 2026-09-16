@@ -14,3 +14,17 @@ sunrise-spring-sunny-villa-portal-entry|1500|100||1500
 # (SWIM_SURFACE), so the split's classification, its depth cue and its cut have
 # no other row in the corpus.
 sunrise-spring-surface-swim|1900|150||1900,2000,2200
+
+# icy-peak-reflective-mirror arms the player draw's mirrored copy.
+# g_Spyro+0x2C is the avatar's height above a material-class-4 surface; of the
+# 37 levels only Icy Peak, Midday Gardens, Frozen Altars and Bugbot Factory
+# carry a class-4 material at all, and the word is zero on every frame of the
+# other four bk2s and of the whole 20k attract demo. Icy Peak spawns beside
+# such a surface: idle to VBL 1300, then Up + Circle (charge) with a 60-frame
+# Right every 400 to hold the rink, and the word is non-zero from VBL 1858 to
+# this movie's end, so the reflection's matrix negation, its inverted
+# back-face test and its ordering bias have no other row in the corpus. The
+# pins are the frames where the copy is least occluded by the surface above
+# it: 5011 to 7167 pixels of the frame move when the reflection is suppressed,
+# against 588 to 1421 on the grid samples after 2025.
+icy-peak-reflective-mirror|1900|150||1900,1950,2000

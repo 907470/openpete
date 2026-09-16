@@ -202,6 +202,47 @@ static int camera_cut(const uint8_t* p, const uint8_t* c) {
     return frob < 4096.0 * 4096.0;   /* row-dot sum under one unit: more than 90 degrees */
 }
 
+/* Replay every player call the canonical tick recorded, not just the avatar.
+ *
+ * The pass driver draws the avatar twice on a tick over a reflective surface:
+ * a mirrored copy first, with the height above the surface in the state word,
+ * the world Z moved to twice that height below it and its own ordering bias
+ * in the sort byte, then the avatar with those three fields restored
+ * (asm/nonmatchings/drawutil/func_8001EC5C.s:39-90). Live gamestate at present
+ * time therefore describes neither call: the driver put it back. The record
+ * store holds each call's own state block, so the loop stages that block into
+ * the sub-tick view and runs the walk once per record, with the mirrored
+ * verdict taken from the record rather than re-read. Reproducing the copy from
+ * the capture is what makes it draw on an intermediate present; without it the
+ * reflection appears only on canonical ticks and vanishes at any present rate
+ * above the tick rate.
+ *
+ * Host-only: the staged span is a view copy, restored to the ambient bytes at
+ * the end, and no guest word is written. */
+static void player_records_replay(CPUState* cpu, int paired, double alpha) {
+    const uint32_t len = game_layout.player.rec_len;
+    double rec_alpha = 0.0;
+    int n = player_records_present_begin(paired, 0, alpha, &rec_alpha);
+    if (n <= 0 || !len || len > PLAYER_REC_STATE_MAX) {
+        player_records_present_end(); return;
+    }
+    uint8_t* sb = (uint8_t*)openpete_subtick_view_stage(game_layout.player.base, len);
+    if (!sb) { player_records_present_end(); return; }
+
+    static uint8_t ambient[PLAYER_REC_STATE_MAX];
+    memcpy(ambient, sb, len);
+    for (int k = 0; k < n; k++) {
+        const player_model_rec_t* rec = player_records_curr(k);
+        if (!rec) break;
+        if (!rec->drawn) continue;
+        memcpy(sb, rec->spyro, len);
+        player_native_set_player_slot(k);
+        player_reextract_record(cpu, !rec->is_player);
+    }
+    memcpy(sb, ambient, len);
+    player_records_present_end();
+}
+
 static void game_reextract_body(CPUState* cpu) {
     (void)cpu;
     double qa = 0.0;
@@ -245,7 +286,7 @@ static void game_reextract_body(CPUState* cpu) {
     if (stage_moby_records())
         moby_reextract(cpu);        /* the 3D actors, after the terrain they stand on */
     if (stage_player_records())
-        player_reextract(cpu);      /* the avatar, from the part records the tick drew */
+        player_records_replay(cpu, bracketed, alpha);   /* every player call the tick drew */
     shadow_reextract(cpu);          /* drop-shadows under mobys */
     s_fpos_active = 0;
 }
