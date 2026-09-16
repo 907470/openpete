@@ -1070,6 +1070,10 @@ int      openpete_native_scene_ring_pending(void);
 int      openpete_native_scene_ring_busy(void);
 void     openpete_native_scene_slot_info(int slot, int64_t *target_ns, double *alpha, int *paired, int *kind);
 void     openpete_native_scene_ring_report(void);
+/* Per-present accounting: what each composed frame showed (native scene,
+ * VRAM framebuffer fallback, PsyCross reference, bare clear) and which
+ * scene kind it came from. Printed at exit. */
+void     openpete_native_present_census_report(void);
 float    openpete_native_display_refresh_hz(void);   /* current swapchain's display, 0 = unknown */
 int      openpete_native_display_vsync(void);        /* FIFO present mode in effect */
 int      openpete_native_scene_ring_free(void);

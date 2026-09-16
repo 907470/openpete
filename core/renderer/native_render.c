@@ -8621,6 +8621,119 @@ static void scene_postfx_split(void)
     rhi_begin_offscreen_load(s_nr.dev);          /* resume for HUD, scene preserved */
 }
 
+/* ---- per-present accounting -----------------------------------------------
+ * Every present that reaches the display is classified twice: by the SCENE it
+ * composed (the canonical tick scene, a sub-tick intermediate, or the inline
+ * path's live accumulator) and by what the compose actually put on screen
+ * (the native scene, the PSX VRAM framebuffer that the empty-scene fallback
+ * re-displays, the PsyCross reference frame, or a bare clear). A whole-scene
+ * flicker is a present stream alternating between two of those; the counters
+ * name which pair, and the flip counts say how often the stream crossed.
+ * The composed target extent is recorded per scene kind, so a present framed
+ * differently from its neighbours (a stale window size, a different full
+ * extent) appears as a second extent under one kind. Composes that began no
+ * frame, and frames that composed but never presented, are counted too, so
+ * every call into the present path is accounted.
+ *
+ * Always counted (a handful of increments per present) and reported at exit;
+ * OPENPETE_PRESENT_TRACE=1 adds one stderr line per present. */
+enum { PC_SCENE = 0, PC_VRAM, PC_REF, PC_CLEAR, PC_OUTCOMES };
+enum { PC_CANON = 0, PC_INTER, PC_INLINE, PC_KINDS };
+static const char *const s_pc_outcome_name[PC_OUTCOMES] = { "scene", "vram-fb", "psycross-ref", "clear" };
+static const char *const s_pc_kind_name[PC_KINDS] = { "canonical", "intermediate", "inline" };
+static struct {
+    unsigned n[PC_KINDS][PC_OUTCOMES];
+    int      ext_w[PC_KINDS], ext_h[PC_KINDS];   /* first extent seen for this kind */
+    unsigned ext_alt[PC_KINDS];                  /* presents at a DIFFERENT extent */
+    unsigned full_extent[PC_KINDS];
+    /* Scene content per kind: the tri count composed, and the retained
+     * terrain the cache had for that scene's stamp. A whole-scene flicker
+     * whose presents all show "scene" is content that comes and goes
+     * between kinds — a terrain build the cache no longer holds for an
+     * intermediate's stamp leaves the world missing for that present. */
+    long long sum_n[PC_KINDS], sum_tc[PC_KINDS];
+    int      min_n[PC_KINDS], max_n[PC_KINDS], min_tc[PC_KINDS], max_tc[PC_KINDS];
+    unsigned no_tc[PC_KINDS];      /* composed with no retained terrain at all */
+    unsigned seen[PC_KINDS];       /* frames tallied for this kind (seeds the ranges) */
+    unsigned outcome_flips, kind_flips;
+    int      last_outcome, last_kind;
+    unsigned begin_refused;        /* render_frame_common could not begin a frame */
+    unsigned total;
+} s_pc = { .last_outcome = -1, .last_kind = -1 };
+/* What the compose put on screen, set by compose_variant, read once the
+ * present is known to have gone out. -1 = no compose ran. */
+static int s_pc_cur = -1;
+
+static int pc_trace_on(void)
+{
+    static int on = -1;
+    if (on < 0) { const char *e = getenv("OPENPETE_PRESENT_TRACE"); on = (e && *e && *e != '0'); }
+    return on;
+}
+
+/* Tally one trip through render_frame_common, at the point the composed
+ * frame is submitted. A frame the present thread renders into a stage image
+ * is counted here, when it is composed; the swapchain can still decline its
+ * later submit, which the present thread's own census counts. */
+static void pc_note(void)
+{
+    const int outcome = s_pc_cur;
+    s_pc_cur = -1;
+    if (outcome < 0) return;
+    const int kind = !s_ps_slot ? PC_INLINE
+                   : s_ps_slot->kind == OP_PACE_CANONICAL ? PC_CANON : PC_INTER;
+    s_pc.total++;
+    s_pc.n[kind][outcome]++;
+    if (s_render_full_extent) s_pc.full_extent[kind]++;
+    const int ntri = s_ps_slot ? s_ps_slot->n : s_scene_n;
+    int tc_drawn = 0, tc_hp = 0, tc_lp = 0, tc_nv = 0, tc_gen[8];
+    openpete_tercache_frame_stats(&tc_drawn, &tc_hp, &tc_lp, &tc_nv, tc_gen);
+    if (!s_pc.seen[kind]++) { s_pc.min_n[kind] = s_pc.max_n[kind] = ntri;
+                             s_pc.min_tc[kind] = s_pc.max_tc[kind] = tc_drawn; }
+    else {
+        if (ntri < s_pc.min_n[kind]) s_pc.min_n[kind] = ntri;
+        if (ntri > s_pc.max_n[kind]) s_pc.max_n[kind] = ntri;
+        if (tc_drawn < s_pc.min_tc[kind]) s_pc.min_tc[kind] = tc_drawn;
+        if (tc_drawn > s_pc.max_tc[kind]) s_pc.max_tc[kind] = tc_drawn;
+    }
+    s_pc.sum_n[kind] += ntri; s_pc.sum_tc[kind] += tc_drawn;
+    if (!tc_drawn) s_pc.no_tc[kind]++;
+    if (!s_pc.ext_w[kind]) { s_pc.ext_w[kind] = s_nr.win_w; s_pc.ext_h[kind] = s_nr.win_h; }
+    else if (s_pc.ext_w[kind] != s_nr.win_w || s_pc.ext_h[kind] != s_nr.win_h) s_pc.ext_alt[kind]++;
+    if (s_pc.last_outcome >= 0 && s_pc.last_outcome != outcome) s_pc.outcome_flips++;
+    if (s_pc.last_kind >= 0 && s_pc.last_kind != kind) s_pc.kind_flips++;
+    s_pc.last_outcome = outcome; s_pc.last_kind = kind;
+    if (pc_trace_on())
+        fprintf(stderr, "[present] #%u kind=%s shows=%s frame=%u stamp=%08x n=%d tc=%d alpha=%.4f paired=%d %dx%d fe=%d\n",
+                s_pc.total, s_pc_kind_name[kind], s_pc_outcome_name[outcome],
+                s_ps_slot ? s_ps_slot->frame : s_scene_frame, scene_present_stamp(), ntri, tc_drawn,
+                s_ps_slot ? s_ps_slot->alpha : 0.0, s_ps_slot ? s_ps_slot->paired : 0,
+                s_nr.win_w, s_nr.win_h, s_render_full_extent);
+}
+
+void openpete_native_present_census_report(void)
+{
+    if (!s_pc.total && !s_pc.begin_refused) return;
+    for (int k = 0; k < PC_KINDS; k++) {
+        unsigned tot = 0;
+        for (int o = 0; o < PC_OUTCOMES; o++) tot += s_pc.n[k][o];
+        if (!tot) continue;
+        OPL_INFO_F("present-census",
+                   "%s: %u frame(s): %u scene, %u vram-fb, %u psycross-ref, %u clear; "
+                   "%dx%d (%u at another extent), %u at full extent; "
+                   "tris %d..%d (mean %lld), retained sectors %d..%d (mean %lld), %u with none",
+                   s_pc_kind_name[k], tot, s_pc.n[k][PC_SCENE], s_pc.n[k][PC_VRAM],
+                   s_pc.n[k][PC_REF], s_pc.n[k][PC_CLEAR],
+                   s_pc.ext_w[k], s_pc.ext_h[k], s_pc.ext_alt[k], s_pc.full_extent[k],
+                   s_pc.min_n[k], s_pc.max_n[k], s_pc.sum_n[k] / tot,
+                   s_pc.min_tc[k], s_pc.max_tc[k], s_pc.sum_tc[k] / tot, s_pc.no_tc[k]);
+    }
+    OPL_INFO_F("present-census",
+               "%u composed frame(s) total, %u showed something other than their predecessor, "
+               "%u changed scene kind; %u frame(s) never began",
+               s_pc.total, s_pc.outcome_flips, s_pc.kind_flips, s_pc.begin_refused);
+}
+
 static void compose_variant(void)
 {
     /* PsyCross display mode: there is no native scene to walk. The picture is
@@ -8652,6 +8765,7 @@ static void compose_variant(void)
         if (s_overlay_live && !native_postfx_point_active(0))
             openpete_devui_render(s_nr.dev);
         rhi_end_offscreen(s_nr.dev);
+        s_pc_cur = s_nr.ref_tex && s_nr.layout_ref_w > 0 ? PC_REF : PC_CLEAR;
         return;
     }
 
@@ -8721,6 +8835,7 @@ static void compose_variant(void)
         rhi_begin_render_target(s_nr.dev, s_nr.ss_rtt, 0.0f, 0.0f, 0.0f, 1.0f);
         rhi_gpu_zone_end(s_nr.dev);
         bool drew = draw_native_scene(false);   /* scene at ss_factor× (scissor auto-scaled) */
+        s_pc_cur = drew ? PC_SCENE : PC_VRAM;
         rhi_end_render_target(s_nr.dev, s_nr.ss_rtt);
         rhi_gpu_zone_end(s_nr.dev);
 
@@ -8780,6 +8895,7 @@ static void compose_variant(void)
      * screens / transitions / pre-scene bootstrap). */
     native_terrain_key_pass(0, s_nr.win_w, s_nr.win_h);
     rhi_begin_offscreen(s_nr.dev, 0.0f, 0.0f, 0.0f, 1.0f);
+    s_pc_cur = PC_CLEAR;                 /* no layout yet: the clear is the picture */
     if (s_nr.layout_ref_w > 0) { /* layout built (needs a known ref size) */
         /* tpage = the CURRENT front-buffer origin (flips per frame via the double
          * buffer) + the top overscan band so the sampled rows are the visible clip. */
@@ -8792,6 +8908,7 @@ static void compose_variant(void)
         rhi_gpu_zone_begin(s_nr.dev, "sc.scene");
         bool scene_drew = draw_native_scene(false);
         rhi_gpu_zone_end(s_nr.dev);
+        s_pc_cur = scene_drew ? PC_SCENE : PC_VRAM;
         if (!scene_drew) {
             const psx_material nd_mat = { tx, ty, 0, 0, 16 };
             bind_scene_pipe(s_nr.vram_pipe);
@@ -9874,8 +9991,10 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
     int bf_ok;
     { OP_PROF_ACCUM_SCOPE("gpu.beginframe");   /* fence wait + swapchain acquire */
       bf_ok = s_stage_target >= 0 ? rhi_begin_frame_staged(s_nr.dev) : rhi_begin_frame(s_nr.dev); }
-    if (!bf_ok)
+    if (!bf_ok) {
+        s_pc.begin_refused++;
         return; /* swapchain recreating or window minimized — skip this present */
+    }
     openpete_native_scene_retire(rhi_frame_serial(s_nr.dev));
     /* The mod registry is read for the rest of the frame's recording. Taken
      * AFTER begin_frame and released BEFORE end_frame: those two are where a
@@ -9982,6 +10101,7 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
       if (s_stage_target >= 0) rhi_end_frame_to_stage(s_nr.dev, s_stage_target);
       else                     rhi_end_frame(s_nr.dev); }
     s_last_frame_presented = 1;
+    pc_note();
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_GPU_SYNC, pt_t1 - pt_t0);
                  openpete_phase_set_count(OPPC_DRAWS, (int)rhi_draw_calls(s_nr.dev));
                  phase_present_done(); }

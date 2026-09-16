@@ -5930,6 +5930,7 @@ static int run_host_loop(const openpete_options_t* opts) {
      * device. */
     openpete_present_thread_stop();
     openpete_present_thread_report();
+    openpete_native_present_census_report();
     eager_report();
     if (s_eager.produced_inter || s_inline_rex)
         OPL_INFO_F("sub-tick", "%u re-extract(s) presented: %u eager, %u inline",
