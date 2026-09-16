@@ -16,6 +16,7 @@
 #include "renderer/moby.h"
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "openpete_interp.h"
+#include "renderer/interp_regions_gen.h"
 #include "openpete_interp_objs.h"      /* g_openpete_tick_period_ns */
 #include "openpete_native_render.h"
 #include "openpete_subtick_view.h"
@@ -155,9 +156,13 @@ static void game_reextract_body(CPUState* cpu) {
     int bracketed = 0;
     double alpha = 0.0;
     if (paired && cam && prev && curr) {
-        const uint8_t* pcam = prev->data + prev->region_offsets[0];
-        const uint8_t* ccam = curr->data + curr->region_offsets[0];
-        if (!camera_cut(pcam, ccam)) {
+        /* The camera's ring region, resolved by name from the registered table
+         * — a restated index selects the wrong region once a row is inserted. */
+        static int cam_region = -2;
+        if (cam_region == -2) cam_region = game_interp_row_index("camera");
+        const uint8_t* pcam = cam_region < 0 ? NULL : prev->data + prev->region_offsets[cam_region];
+        const uint8_t* ccam = cam_region < 0 ? NULL : curr->data + curr->region_offsets[cam_region];
+        if (pcam && ccam && !camera_cut(pcam, ccam)) {
             double period = (double)(curr->tick_ns - prev->tick_ns);
             if (period <= 0.0 || period > 4.0 * (double)g_openpete_tick_period_ns)
                 period = (double)g_openpete_tick_period_ns;

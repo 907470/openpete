@@ -11,6 +11,7 @@
 #include "psx_runtime_internal.h"   /* CPUState */
 #include "openpete_psx.h"           /* openpete_psx_to_host_ptr */
 #include "openpete_interp.h"        /* ring: curr_tick_ns, curr_snapshot, reset generation, deterministic */
+#include "renderer/interp_regions_gen.h"  /* game_interp_row_index */
 #include "openpete_fiber.h"         /* openpete_frame, openpete_speculative */
 #include "openpete.h"               /* openpete_runahead_get */
 #include "renderer/reextract.h" /* canon epoch stamp / fresh */
@@ -80,11 +81,23 @@ static uint32_t     s_reset_gen_seen;
 
 /* ---- OPENPETE_SPYRO_RECDBG instrument ----------------------------------- */
 
-static const struct { const char* name; uint32_t addr; uint32_t len; unsigned ring; } s_reg[SPYRO_REC_FEEDERS] = {
-    { "model",  G_SPYRO,       0x2A4u, 1u },   /* ring region indices: interp_regions.c */
-    { "shadow", D_SPYROSHADOW, 0x28u,  3u },
-    { "flame",  G_SPYROFLAME,  0xD0u,  2u },
+/* Each feeder's guest record, plus the name of the interp-ring region that
+ * captures it. The ring INDEX is resolved by name at first use
+ * (interp_regions_gen.h): a restated index selects the wrong region's bytes as
+ * soon as a row is inserted into the table. */
+static const struct { const char* name; uint32_t addr; uint32_t len; const char* region; } s_reg[SPYRO_REC_FEEDERS] = {
+    { "model",  G_SPYRO,       0x2A4u, "g_Spyro" },
+    { "shadow", D_SPYROSHADOW, 0x28u,  "g_SpyroShadow" },
+    { "flame",  G_SPYROFLAME,  0xD0u,  "g_SpyroFlame" },
 };
+
+/* The ring region index of feeder f, resolved once. -1 when the game did not
+ * register the region; a caller then has no ring bytes to compare against. */
+static int reg_region(int f) {
+    static int cache[SPYRO_REC_FEEDERS] = { -2, -2, -2 };
+    if (cache[f] == -2) cache[f] = game_interp_row_index(s_reg[f].region);
+    return cache[f];
+}
 #define REC_OBS_MAX   16
 #define REC_BYTES_MAX 0x2A4u
 
@@ -328,8 +341,8 @@ void spyro_records_epoch_commit(void) {
      * position — the dragon was not drawn this tick (hidden, blink) or the
      * epoch had no call at all. Appended last, never rendered; shadow and
      * flame records bind to it and the next drawn record pairs with it. */
-    if (curr) {
-        const uint8_t* ring = curr->data + curr->region_offsets[s_reg[SPYRO_REC_MODEL].ring];
+    if (curr && reg_region(SPYRO_REC_MODEL) >= 0) {
+        const uint8_t* ring = curr->data + curr->region_offsets[reg_region(SPYRO_REC_MODEL)];
         int seen = 0;
         for (int k = 0; k < epoch.n; k++)
             if (memcmp(epoch.r[k].spyro, ring, 12) == 0) { seen = 1; break; }
@@ -389,15 +402,15 @@ void spyro_records_epoch_commit(void) {
             int has_sh = 0, has_fl = 0;
             for (int j = 0; j < epoch.nsh; j++) if (epoch.sh[j].model == rk) { has_sh = 1; break; }
             for (int j = 0; j < epoch.nfl; j++) if (epoch.fl[j].model == rk) { has_fl = 1; break; }
-            if (!has_sh && epoch.nsh < SPYRO_REC_MAX) {
+            if (!has_sh && epoch.nsh < SPYRO_REC_MAX && reg_region(SPYRO_REC_SHADOW) >= 0) {
                 spyro_shadow_rec_t* d = &epoch.sh[epoch.nsh++];
-                const uint8_t* rb = curr->data + curr->region_offsets[s_reg[SPYRO_REC_SHADOW].ring];
+                const uint8_t* rb = curr->data + curr->region_offsets[reg_region(SPYRO_REC_SHADOW)];
                 memcpy(d->sh, rb, SPYRO_REC_SHADOW_LEN); memcpy(d->src, rb, SPYRO_REC_SHADOW_LEN);
                 d->model = (int8_t)rk; d->drawn = 0;
             }
-            if (!has_fl && epoch.nfl < SPYRO_REC_MAX) {
+            if (!has_fl && epoch.nfl < SPYRO_REC_MAX && reg_region(SPYRO_REC_FLAME) >= 0) {
                 spyro_flame_rec_t* d = &epoch.fl[epoch.nfl++];
-                const uint8_t* rb = curr->data + curr->region_offsets[s_reg[SPYRO_REC_FLAME].ring];
+                const uint8_t* rb = curr->data + curr->region_offsets[reg_region(SPYRO_REC_FLAME)];
                 memcpy(d->fl, rb, SPYRO_REC_FLAME_LEN); memcpy(d->src, rb, SPYRO_REC_FLAME_LEN);
                 d->model = (int8_t)rk; d->drawn = 0;
             }
@@ -437,7 +450,9 @@ void spyro_records_epoch_commit(void) {
         double model_delta = 0.0;
         for (int f = 0; f < SPYRO_REC_FEEDERS; f++) {
             if (!curr || !s_obs[f].last_ok) continue;
-            const uint8_t* ring = curr->data + curr->region_offsets[s_reg[f].ring];
+            const int fr = reg_region(f);
+            if (fr < 0) continue;
+            const uint8_t* ring = curr->data + curr->region_offsets[fr];
             mm[f] = memcmp(s_obs[f].last, ring, s_reg[f].len) != 0;
             if (mm[f]) s_mismatch[f]++;
             if (f == SPYRO_REC_MODEL && mm[f]) {

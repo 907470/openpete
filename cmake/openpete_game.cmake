@@ -268,6 +268,7 @@ function(openpete_add_game GAME_ID)
         ${_common}/renderer/shadow.c
         ${_common}/renderer/moby.c
         ${_common}/renderer/moby_rank.c
+        ${_common}/renderer/interp_regions_gen.c
 
         # PSYQ symbol stubs, abort-on-call. On ELF these are weak so any
         # thunk strongly defines them; on MinGW the macro becomes strong and

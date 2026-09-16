@@ -160,3 +160,13 @@ name = "F_MOBY_DRAW_STATIC"
 addr = 0x80033C5C
 kind = "function"
 note = "DrawStaticMobys (asm/mobydraw.s:3862): the second model kind, walked from its own stride-0x10 record list"
+
+[[symbol]]
+name = "G_SPYRO"
+addr = 0x80070328
+note = "g_Spyro (globals.toml names the address g_Spyro / spyro; struct Spyro, 0x2E8 bytes, manifest/struct_layout.toml): position +0x00, bodyRotation +0x0C, headRotation +0x10, bodyAnimation +0x14, headAnimation +0x18, OT bias +0x1E, mirror fields +0x28/+0x2C, pass gate +0x288. The player draw spyrodraw.s reads it for the two part records; features/freecam.c and game_extras_impl.c already read the position words at this address"
+
+[[symbol]]
+name = "G_GAMESTATE"
+addr = 0x8006E344
+note = "game.state (globals.toml names the address game; asm/data/game.bss.s), the first word of the Game struct: 0 gameplay, 3 fade-in, 7 loading glide; asm/update.s branches the tick regime on it, skip_to_level.c and game_extras_impl.c read it at this address"

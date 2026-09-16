@@ -4,6 +4,7 @@
 #include "renderer/reextract.h"
 #include "openpete_camlock.h"       /* render camera lock (G) — bracket override */
 #include "openpete_interp.h"
+#include "renderer/interp_regions_gen.h"
 #include "openpete_pace_log.h"        /* snapshot ring query + op_now/OP_NS_PER_SEC */
 #include "openpete_interp_objs.h"   /* per-object (moby) prev/curr table */
 #include "openpete_native_render.h" /* register callback + scene API */
@@ -57,7 +58,21 @@ extern unsigned openpete_frame;
 #define MOBY_STRIDE   0x58u
 #define MOBY_STATE    0x48u
 #define MOBY_POS      0x0Cu         /* Vector3D x,y,z (int32) */
-#define SPYRO_REGION  1u            /* index in s_spyro_interp_regions (after g_Camera) */
+/* Ring region indices, resolved by name from the registered table
+ * (interp_regions_gen.h) — a restated index selects the wrong region's bytes as
+ * soon as a row is inserted. Each accessor caches its lookup; -1 would mean the
+ * game registered no such region, which Spyro 1's table always does. */
+static int region_of(const char* name, int* cache) {
+    if (*cache == -2) *cache = game_interp_row_index(name);
+    return *cache;
+}
+#define REGION_ACCESSOR(fn, nm) \
+    static int fn(void) { static int c = -2; return region_of(nm, &c); }
+REGION_ACCESSOR(CAM_REGION,    "g_Camera")
+REGION_ACCESSOR(SPYRO_REGION,  "g_Spyro")
+REGION_ACCESSOR(FLAME_REGION,  "g_SpyroFlame")
+REGION_ACCESSOR(SHADOW_REGION, "g_SpyroShadow")
+REGION_ACCESSOR(GS_REGION,     "g_GameState")
 #define SPYRO_SAVE    0x28u         /* g_Spyro bytes bracketed: pos(0x00) + per-seg anim(..0x26) */
 
 /* Runahead rebase shown-state stores (see ra_rebase_on above). */
@@ -65,15 +80,12 @@ static uint8_t  s_shown_cam[CAM_BYTES];
 static int      s_shown_cam_ok = 0;
 static uint8_t  s_shown_sp[12];          /* Spyro m_Position as last shown */
 static int      s_shown_sp_ok = 0;
-#define FLAME_REGION  2u            /* index in s_spyro_interp_regions (after g_Spyro) */
 #define FLAME_SAVE    0xD0u         /* flame bytes bracketed (covers pos + attach @ 0xB8..0xCC) */
 #define FLAME_POS_OFF 0x00u         /* m_Position (origin, Vector3D int32) */
 #define FLAME_CNT_OFF 0x20u         /* per-strand keyframe counter [8] (u8, += g_DeltaTime/tick) */
 #define FLAME_ATT_OFF 0xB8u         /* flame-attach SHORTMATRIX (9 int16 + pad) */
-#define SHADOW_REGION 3u            /* index in s_spyro_interp_regions (after g_SpyroFlame) */
 #define SHADOW_SAVE   SPYRO_REC_SHADOW_LEN /* the whole D_SPYROSHADOW region: the shadow record loop restages it */
 #define SHADOW_POS_OFF 0x10u        /* m_Position (ground anchor, Vector3D int32) */
-#define GS_REGION     4u            /* index in s_spyro_interp_regions (after g_SpyroShadow): g_GameState */
 
 /* Per-moby RAM bracket save slots — restored after re-extract so the next sim
  * tick reads canonical RAM. Sized generously for any level's live moby count. */
@@ -1218,8 +1230,8 @@ static void game_reextract_body(void* cpu_v) {
 
     int cam_cut = 0, gs_edge = 0;
     if (paired && cam && prev && curr) {
-        const int32_t* pp = (const int32_t*)(prev->data + prev->region_offsets[0] + CAM_OFF_POS);
-        const int32_t* cp = (const int32_t*)(curr->data + curr->region_offsets[0] + CAM_OFF_POS);
+        const int32_t* pp = (const int32_t*)(prev->data + prev->region_offsets[CAM_REGION()] + CAM_OFF_POS);
+        const int32_t* cp = (const int32_t*)(curr->data + curr->region_offsets[CAM_REGION()] + CAM_OFF_POS);
         double dx = (double)cp[0] - pp[0], dy = (double)cp[1] - pp[1], dz = (double)cp[2] - pp[2];
         if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) cam_cut = 1;
         /* ROTATION cut: a stationary cut (camera spins to a new shot without moving
@@ -1234,8 +1246,8 @@ static void game_reextract_body(void* cpu_v) {
          * (it's 2700°/s); a normal fast pan stays far above the threshold (a 46° turn
          * gives frob≈2.4·4096^2), so this only fires on genuine cuts/reversals. */
         if (!cam_cut) {
-            const int16_t* pm = (const int16_t*)(prev->data + prev->region_offsets[0] + CAM_OFF_PROJ);
-            const int16_t* cm = (const int16_t*)(curr->data + curr->region_offsets[0] + CAM_OFF_PROJ);
+            const int16_t* pm = (const int16_t*)(prev->data + prev->region_offsets[CAM_REGION()] + CAM_OFF_PROJ);
+            const int16_t* cm = (const int16_t*)(curr->data + curr->region_offsets[CAM_REGION()] + CAM_OFF_PROJ);
             double frob = 0; for (int i = 0; i < 9; i++) frob += (double)pm[i] * cm[i];
             if (frob < 4096.0 * 4096.0) cam_cut = 1;   /* angle > 90° per tick */
         }
@@ -1248,8 +1260,8 @@ static void game_reextract_body(void* cpu_v) {
          * The regimes are not one motion, so the pair is a cut by definition. */
         {
             uint32_t pgs, cgs;
-            memcpy(&pgs, prev->data + prev->region_offsets[GS_REGION], 4);
-            memcpy(&cgs, curr->data + curr->region_offsets[GS_REGION], 4);
+            memcpy(&pgs, prev->data + prev->region_offsets[GS_REGION()], 4);
+            memcpy(&cgs, curr->data + curr->region_offsets[GS_REGION()], 4);
             if (pgs != cgs) { cam_cut = 1; gs_edge = 1; }
         }
         /* OPENPETE_CAMCUT_DBG: rate-limited census of the guard's inputs. A cut
@@ -1295,7 +1307,7 @@ static void game_reextract_body(void* cpu_v) {
          * camera matrix is rows-orthogonal but NOT orthonormal (the Y row
          * bakes a ~0.625 aspect scale), so acos((trace-1)/2) reads ~0.8 rad for IDENTICAL
          * matrices and would inflate every rect off the grid. */
-        const int16_t* pm = (const int16_t*)(prev->data + prev->region_offsets[0] + CAM_OFF_PROJ);
+        const int16_t* pm = (const int16_t*)(prev->data + prev->region_offsets[CAM_REGION()] + CAM_OFF_PROJ);
         const int16_t* cm = (const int16_t*)(cam + CAM_OFF_PROJ);
         double worst = 1.0;
         for (int rw = 0; rw < 3; rw++) {
@@ -1358,14 +1370,14 @@ static void game_reextract_body(void* cpu_v) {
          * stay linear for now. Same 1-tick latency either way. */
         const uint8_t* pcam2 = NULL;
         if (prev2 && hermite_enabled() && alpha >= 0.0) {
-            pcam2 = prev2->data + prev2->region_offsets[0];
+            pcam2 = prev2->data + prev2->region_offsets[CAM_REGION()];
             const int32_t* p2p = (const int32_t*)(pcam2 + CAM_OFF_POS);
-            const int32_t* pp  = (const int32_t*)(prev->data + prev->region_offsets[0] + CAM_OFF_POS);
+            const int32_t* pp  = (const int32_t*)(prev->data + prev->region_offsets[CAM_REGION()] + CAM_OFF_POS);
             double dx = (double)pp[0]-p2p[0], dy = (double)pp[1]-p2p[1], dz = (double)pp[2]-p2p[2];
             use_herm = (dx*dx + dy*dy + dz*dz <= 5000.0 * 5000.0);
             if (use_herm) {   /* rotation cut on prev2→prev (same test as the curr guard) */
                 const int16_t* p2m = (const int16_t*)(pcam2 + CAM_OFF_PROJ);
-                const int16_t* pm  = (const int16_t*)(prev->data + prev->region_offsets[0] + CAM_OFF_PROJ);
+                const int16_t* pm  = (const int16_t*)(prev->data + prev->region_offsets[CAM_REGION()] + CAM_OFF_PROJ);
                 double frob = 0; for (int i = 0; i < 9; i++) frob += (double)p2m[i] * pm[i];
                 if (frob < 4096.0 * 4096.0) use_herm = 0;
             }
@@ -1385,8 +1397,8 @@ static void game_reextract_body(void* cpu_v) {
          * branch-free, so no input-edge rebase — it would only kink a
          * timeline that cannot mispredict. The rebase arm survives solely
          * for the OPENPETE_RA_CAM_COMMIT=0 (led-camera) A/B config. */
-        const uint8_t* pcam = prev->data + prev->region_offsets[0];
-        const uint8_t* ccam = curr->data + curr->region_offsets[0];
+        const uint8_t* pcam = prev->data + prev->region_offsets[CAM_REGION()];
+        const uint8_t* ccam = curr->data + curr->region_offsets[CAM_REGION()];
         int ra_rebased = 0;
         if (openpete_ra_input_edge && ra_rebase_on() && s_shown_cam_ok &&
             !openpete_interp_ra_commit_active()) {
@@ -1443,8 +1455,8 @@ static void game_reextract_body(void* cpu_v) {
         sp_staged = (sp != NULL);
         if (!sp) sp = (uint8_t*)openpete_psx_to_host_ptr(G_SPYRO);
         if (sp) {
-            const uint8_t* psp = prev->data + prev->region_offsets[SPYRO_REGION];
-            const uint8_t* csp = curr->data + curr->region_offsets[SPYRO_REGION];
+            const uint8_t* psp = prev->data + prev->region_offsets[SPYRO_REGION()];
+            const uint8_t* csp = curr->data + curr->region_offsets[SPYRO_REGION()];
             static uint8_t s_psp_rb[SPYRO_SAVE];
             if (openpete_ra_input_edge && ra_rebase_on() && s_shown_sp_ok &&
                 !openpete_interp_ra_commit_active()) {
@@ -1469,7 +1481,7 @@ static void game_reextract_body(void* cpu_v) {
             int sp_herm = 0;
             const uint8_t* psp2 = NULL;
             if (use_herm && prev2) {
-                psp2 = prev2->data + prev2->region_offsets[SPYRO_REGION];
+                psp2 = prev2->data + prev2->region_offsets[SPYRO_REGION()];
                 const int32_t* p2 = (const int32_t*)psp2;
                 const int32_t* pp = (const int32_t*)psp;
                 double dx=(double)pp[0]-p2[0], dy=(double)pp[1]-p2[1], dz=(double)pp[2]-p2[2];
@@ -1553,8 +1565,8 @@ static void game_reextract_body(void* cpu_v) {
         fl_staged = (fl != NULL);
         if (!fl) fl = (uint8_t*)openpete_psx_to_host_ptr(G_SPYROFLAME);
         if (fl) {
-            const uint8_t* pfl = prev->data + prev->region_offsets[FLAME_REGION];
-            const uint8_t* cfl = curr->data + curr->region_offsets[FLAME_REGION];
+            const uint8_t* pfl = prev->data + prev->region_offsets[FLAME_REGION()];
+            const uint8_t* cfl = curr->data + curr->region_offsets[FLAME_REGION()];
             if (!fl_staged) memcpy(fl_saved, fl, FLAME_SAVE);  /* legacy path only */
             /* The ambient stage: the flame record loop restages each record's
              * bytes over it (flame_bracket per record) and restores it. */
@@ -1573,8 +1585,8 @@ static void game_reextract_body(void* cpu_v) {
         sh_staged = (sh != NULL);
         if (!sh) sh = (uint8_t*)openpete_psx_to_host_ptr(D_SPYROSHADOW);
         if (sh) {
-            const uint8_t* psh = prev->data + prev->region_offsets[SHADOW_REGION];
-            const uint8_t* csh = curr->data + curr->region_offsets[SHADOW_REGION];
+            const uint8_t* psh = prev->data + prev->region_offsets[SHADOW_REGION()];
+            const uint8_t* csh = curr->data + curr->region_offsets[SHADOW_REGION()];
             const int32_t* pp = (const int32_t*)(psh + SHADOW_POS_OFF);
             const int32_t* cp = (const int32_t*)(csh + SHADOW_POS_OFF);
             double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
@@ -2091,7 +2103,7 @@ static void game_reextract_body(void* cpu_v) {
     scratch_bracket_seg_restore(cpu);
     if (pt_on) pt_t0 = openpete_phase_now_us();
     spyro_records_loop(cpu, paired, cam_cut, cam_bracketed, alpha, use_herm,
-                       sp, sp_staged, prev ? prev->data + prev->region_offsets[SPYRO_REGION] : NULL,
+                       sp, sp_staged, prev ? prev->data + prev->region_offsets[SPYRO_REGION()] : NULL,
                        sh);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SPYRO, pt_t1 - pt_t0); }
     particle_reextract(cpu);       /* particles / glows / sparkles (Sparx) */

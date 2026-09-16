@@ -6,12 +6,13 @@
  * mobys, sparkles, dragon stars) keyed by game_interp_moby_key.
  *
  * Registration model:
- *   This TU defines game_interp_register() which forwards the static
- *   table to openpete_interp_register_regions(). main.cpp calls it
- *   once at startup before openpete_run(). The weak-symbol override
- *   pattern is avoided because MinGW's PE/COFF linker mis-resolves it,
- *   leaving the weak NULL in place at runtime and crashing the recomp
- *   boot path; explicit registration works identically across
+ *   This TU defines game_interp_register(), which hands the descriptor rows
+ *   below to the shared generator (renderer/interp_regions_gen.h); the
+ *   generator assigns each row its ring region index and registers the built
+ *   table. main.cpp calls it once at startup before openpete_run(). The
+ *   weak-symbol override pattern is avoided because MinGW's PE/COFF linker
+ *   mis-resolves it, leaving the weak NULL in place at runtime and crashing
+ *   the recomp boot path; explicit registration works identically across
  *   toolchains.
  *
  * Lengths match games/spyro-1/manifest/gameplay_state_regions.toml so the
@@ -20,6 +21,7 @@
 
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
+#include "renderer/interp_regions_gen.h"
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "renderer/interp_regions.h"
 #include "renderer/reextract.h"   /* moby_native_canon_drawn_mobys */
@@ -34,21 +36,13 @@
 #include "game_layout.h"
 
 /* DIRECT singleton regions — captured whole into the interp ring each tick.
- *   g_Camera (0x110): the smooth-follow camera (re-run feeder).
+ * The camera row is added at registration (its span is a literal, not the
+ * cam.base..xform_end descriptor span the generator's other users compute);
+ * these are the plain-global rows.
  *   g_Spyro  (0x2A4): the player avatar — position/rotation/anim for the
  *                     lerp + animation-clock feeders. Singleton, so it lives
  *                     here rather than in the per-object (indirect) table. */
-static const openpete_interp_region_t s_spyro_interp_regions[] = {
-    /* ra_commit=1: the camera PRESENTS from the committed timeline under
-     * runahead (driver recaptures this region post-rollback). The follow-
-     * camera is where misprediction is catastrophic — it's the view
-     * transform, so an R2 release un-showed N ticks of mispredicted pan
-     * across every pixel (the release snap) — and where the extra N ticks
-     * of latency are invisible (it trails by design). Spyro/mobys/
-     * particles stay led, keeping the input-lag win where it's felt. The
-     * game's own g_Camera state is untouched — this only picks which
-     * timeline the presentation lerps. */
-    { "g_Camera", 0x80076DD0, 0x110, 1 },
+static const game_interp_row_t s_spyro_interp_rows[] = {
     { "g_Spyro",  0x80078A58, 0x2A4 },
     /* g_SpyroFlame (0xD0 captured): the flame-breath struct. The ribbon is
      * rigidly attached to Spyro's mouth/head via m_Position (+0x00) and the
@@ -473,12 +467,26 @@ static void spyro_interp_capture_objs(void) {
 }
 
 void game_interp_register(void) {
-    openpete_interp_register_regions(
-        s_spyro_interp_regions,
-        sizeof(s_spyro_interp_regions) / sizeof(s_spyro_interp_regions[0]));
+    /* The camera first, so it is region 0 as every other game's table has it.
+     * Its capture spans the projection matrix through the follow state
+     * (0x110 bytes), past the cam.xform_end descriptor boundary the draw-time
+     * transform ends at, so the span is stated here rather than computed.
+     * ra_commit=1: the camera PRESENTS from the committed timeline under
+     * runahead (the driver recaptures this region post-rollback). The follow-
+     * camera is where misprediction is catastrophic — it's the view transform,
+     * so an R2 release un-showed N ticks of mispredicted pan across every pixel
+     * (the release snap) — and where the extra N ticks of latency are invisible
+     * (it trails by design). Spyro/mobys/particles stay led, keeping the
+     * input-lag win where it's felt. The game's own g_Camera state is untouched
+     * — this only picks which timeline the presentation lerps. */
+    game_interp_rows_add_one("g_Camera", game_layout.cam.base, 0x110u, 1);
+    game_interp_rows_add(s_spyro_interp_rows,
+                         (unsigned)(sizeof(s_spyro_interp_rows) /
+                                    sizeof(s_spyro_interp_rows[0])));
+    game_interp_rows_commit();
     /* One whole Moby record per object, so every consumer reads its fields at
      * their natural offsets, and the store's default capacity. */
-    openpete_interp_register_obj_capture(spyro_interp_capture_objs,
-                                         game_layout.moby.array_stride,
-                                         OPENPETE_INTERP_OBJ_SLOTS);
+    game_interp_rows_obj_capture(spyro_interp_capture_objs,
+                                 game_layout.moby.array_stride,
+                                 OPENPETE_INTERP_OBJ_SLOTS);
 }
