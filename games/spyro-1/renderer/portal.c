@@ -54,7 +54,8 @@
 #include "openpete_native_render.h"
 #include "renderer/render_paths.h"
 #include "renderer/reextract.h"   /* portal_reextract export */
-#include "renderer/portal.h" /* cross-feeder exports (terrain OT-conformance clamp) */
+#include "renderer/portal.h"         /* cross-feeder exports (terrain OT-conformance clamp) */
+#include "renderer/portal_plane.h"   /* openpete_portal_plane_margin (shared) */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 
 #include <math.h>
@@ -704,25 +705,6 @@ static int sky_otpush_enabled(void) {
 }
 static double sky_ot_push_for(double ot_vz) {
     return (ot_vz >= 128.0 * 320.0 && sky_otpush_enabled()) ? 128.0 * 64.0 : 0.0;
-}
-/* Plane-cover near margin M (world units): the preview covers everything at
- * or behind plane − M inside the opening footprint. Sized by corpus
- * sweeps: with the og +64-slot push retired the plane ALONE covers every
- * measured behind/at-plane intruder (doorway moby, extended terrain band —
- * identical cover counts at M 0..256); the margin only widens cover into the
- * near band, where the eaec jamb slit keeps opening toward og's width up to
- * ~256. The ceiling is portal-name text mobys hovering ~192-256 in FRONT of
- * the plane (wild-flight/exit letters lose chunks at 256) and inner-frame
- * erosion from ~512. 128 sits below the text band with the jamb mostly
- * recovered. */
-float openpete_portal_plane_margin(void) {
-    static float m = -1.0f;
-    if (m < 0.0f) {
-        const char* e = getenv("OPENPETE_PORTAL_PLANE_MARGIN");
-        m = (e && *e) ? (float)atof(e) : 128.0f;
-        if (m < 0.0f) m = 0.0f;
-    }
-    return m;
 }
 static float portal_cyclorama_depth(double vz) {
     /* Plane-cover rule: the aperture mask and preview colours TEST at

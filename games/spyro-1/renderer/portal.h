@@ -10,6 +10,7 @@
 #include "psx_runtime_internal.h"
 #include "renderer/native_gte.h"     /* ngte_view: the caller's projection view */
 #include "renderer/terrain_game.h"   /* openpete_portal_skyplane */
+#include "renderer/portal_plane.h"    /* openpete_portal_plane_margin */
 
 /* Portal-guard gate (terrain PORTAL_GUARD experiment): true while a portal
  * fed sky within the last couple of presents. */
@@ -25,8 +26,4 @@ int openpete_portal_sky_recent(void);
  * Returns the count (0 when no portal sky is active). */
 int openpete_portal_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max);
 
-/* Plane-cover near margin M in world units (OPENPETE_PORTAL_PLANE_MARGIN,
- * default 256): inside an opening's footprint the preview covers everything
- * at or behind plane − M. Shared by the portal depth construction, the
- * terrain feeder's transparent-cover drop, and the cover-check instrument. */
-float openpete_portal_plane_margin(void);
+

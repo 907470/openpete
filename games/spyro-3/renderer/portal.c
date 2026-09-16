@@ -1,4 +1,4 @@
-// games/spyro-3/renderer/portal.c — the homeworld portal previews.
+// games/spyro-3/renderer/portal.c : the homeworld portal previews.
 //
 // The game's portal pass (F_PORTAL_PASS) gates each portal record, projects
 // its five pentagon vertices with the sky matrix, writes the clip rect, the
@@ -76,6 +76,7 @@ typedef struct {
 static p3_tick s_curr, s_prev;
 static int s_in_pass = 0;
 static int s_leaf_calls = 0;      /* engagement: leaf hooks seen this tick */
+static unsigned s_sky_fed_frame = 0;  /* the last present a preview actually emitted */
 static uint32_t s_pass_start = 0;
 
 static int p3_dbg(void) {
@@ -301,6 +302,118 @@ static void p3_feed(CPUState* cpu, const p3_tick* T) {
     s_emitted = 0;
     s_cen_faces = s_cen_idx = s_cen_oc = s_cen_edge = s_cen_tris = 0;
     for (int i = 0; i < T->n; i++) p3_extract_one(cpu, &T->p[i], &vw, sky_ir0, env_far, mask_done);
+    if (s_emitted) s_sky_fed_frame = openpete_frame;
+}
+
+/* ---- opening planes for the shared terrain feeder ----------------------
+ *
+ * The terrain feeder drops a transparent face whose centroid falls inside an
+ * opening and whose mean view-Z is at or behind the opening plane minus the
+ * cover margin: blended terrain draws AFTER the portal sequence, so without
+ * the drop it paints over a preview that has already covered it.
+ *
+ * Unlike Spyro 1's arch previews : a dome rendered per pixel at the depth of
+ * a 3-D opening polygon : a Spyro 3 preview is a pre-projected 2-D picture
+ * pasted at one constant depth (the pass's depth >> 7, restored by
+ * p3_extract_one as `depth7 << 7` full-world view-Z). So the plane is
+ * constant in screen space: inv-vz = 1 / (depth7 << 7), a = b = 0. The sky's
+ * render depth carries no OT slot push, so push_vz is 0.
+ *
+ * The footprint is where the preview's colours actually land: the clip rect
+ * intersected with the pass's pentagon half-planes, in the same recentred
+ * screen space p3_emit_tri draws into. The mask rect alone is too wide : it
+ * is the stencil aperture, and the colour tris are pentagon-clipped inside
+ * it, so a face outside the pentagon is not covered by anything.
+ *
+ * The planes come from the tick's capture, not from a live re-derivation:
+ * the pass rewrites D_PORTAL_BLOCK per portal and it means nothing outside
+ * the pass, so the rect and edges exist only as captured. The terrain feed
+ * runs before the portal pass within a present, so a canonical present reads
+ * the previous tick's rect : one tick of lag while a portal moves on screen,
+ * zero while the camera holds. */
+static double p3_plane_depth_world(const p3_preview* p) {
+    double d = (double)(p->depth7 << 7);
+    return d > 1.0 ? d : 1.0;
+}
+
+/* The preview's painted footprint as a screen polygon: the clip rect clipped
+ * by each pentagon edge's inside half-plane (the same cross >= 0 rule the
+ * colour extraction clips with). Returns the vertex count, 0 if it collapses. */
+static int p3_opening_poly(const p3_preview* p, p3_v* out, int maxn) {
+    p3_v poly[32], tmp[32];
+    poly[0].x = (float)p->xmin; poly[0].y = (float)p->ymin; poly[0].rgb = 0;
+    poly[1].x = (float)p->xmax; poly[1].y = (float)p->ymin; poly[1].rgb = 0;
+    poly[2].x = (float)p->xmax; poly[2].y = (float)p->ymax; poly[2].rgb = 0;
+    poly[3].x = (float)p->xmin; poly[3].y = (float)p->ymax; poly[3].rgb = 0;
+    int n = 4;
+    for (int e = 0; e < p->nedge; e++) {
+        const float ax = p->ex[e][0], ay = p->ey[e][0], bx = p->ex[e][1], by = p->ey[e][1];
+        int outside = 0;
+        for (int k = 0; k < n; k++)
+            if (p3_cross(ax, ay, bx, by, poly[k].x, poly[k].y) < 0.0f) outside++;
+        if (outside == 0) continue;
+        if (outside == n) return 0;
+        n = p3_clip_edge(poly, n, tmp, ax, ay, bx, by);
+        memcpy(poly, tmp, sizeof(p3_v) * (size_t)n);
+        if (n < 3) return 0;
+    }
+    if (n > maxn) return 0;
+    memcpy(out, poly, sizeof(p3_v) * (size_t)n);
+    return n;
+}
+
+int portal3_sky_recent(void) {
+    return s_sky_fed_frame != 0u && (openpete_frame - s_sky_fed_frame) <= 2u;
+}
+
+int portal3_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) {
+    (void)cpu;
+    if (!s_curr.valid || s_curr.n == 0 || max <= 0) return 0;
+    if (openpete_frame - s_curr.frame > 3u) return 0;
+    const float offx = (float)(v->ofx - 256.0), offy = (float)(v->ofy - 120.0);
+    int n = 0;
+    for (int i = 0; i < s_curr.n && n < max; i++) {
+        const p3_preview* p = &s_curr.p[i];
+        if (p->arg != 1) continue;            /* one entry per portal, on its base record */
+        if (p->nedge < 3) continue;           /* no pentagon: no bounded opening */
+        p3_v poly[16];
+        const int pn = p3_opening_poly(p, poly, 16);
+        if (pn < 3) continue;
+        openpete_portal_skyplane* o = &out[n];
+        memset(o, 0, sizeof *o);
+        const double dz = p3_plane_depth_world(p);
+        o->portal  = p->mesh;                 /* the preview mesh: this portal's identity */
+        o->a = 0.0; o->b = 0.0; o->c = 1.0 / dz;
+        o->back_vz = dz;
+        o->ot_vz   = dz;
+        o->push_vz = 0.0;
+        o->pn = pn;
+        float x0 = poly[0].x + offx, x1 = x0, y0 = poly[0].y + offy, y1 = y0;
+        for (int k = 0; k < pn; k++) {
+            o->px[k] = poly[k].x + offx;
+            o->py[k] = poly[k].y + offy;
+            if (o->px[k] < x0) x0 = o->px[k];
+            if (o->px[k] > x1) x1 = o->px[k];
+            if (o->py[k] < y0) y0 = o->py[k];
+            if (o->py[k] > y1) y1 = o->py[k];
+        }
+        o->x0 = x0; o->x1 = x1; o->y0 = y0; o->y1 = y1;
+        /* No view-space outline: the preview is a flat picture at one depth,
+         * so the opening has no measurable orientation in the world and the
+         * rim classifier, which reasons in the opening plane, has nothing to
+         * reason about. vn = 0 leaves its frames invalid. */
+        o->vn = 0;
+        if (p3_dbg() && openpete_frame >= p3_dbg_from()) {
+            static unsigned s_lines = 0;
+            if (s_lines < 24) {
+                s_lines++;
+                fprintf(stderr, "[portal3-plane f=%u] mesh=%08X vz=%.0f pn=%d bbox=(%.0f,%.0f)-(%.0f,%.0f)\n",
+                        openpete_frame, o->portal, dz, pn, o->x0, o->y0, o->x1, o->y1);
+            }
+        }
+        n++;
+    }
+    return n;
 }
 
 /* ---- hooks ------------------------------------------------------------ */

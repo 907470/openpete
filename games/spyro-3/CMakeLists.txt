@@ -2,8 +2,9 @@
 #
 # The targets come from cmake/openpete_game.cmake; this game adds its
 # --skip-to-level driver, its freecam descriptor, its engine layout, the
-# terrain probe, and the sub-tick orchestrator and interp region table the
-# shared terrain feeder presents through.
+# terrain probe, the terrain feeder's per-game data, and the sub-tick
+# orchestrator and interp region table the shared terrain feeder presents
+# through.
 # Every PSX vaddr routes through the recompiler: no native-decomp TUs, no
 # mod SDK.
 
@@ -13,6 +14,7 @@ openpete_add_game(spyro-3
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro3_symbols.toml
     ORCHESTRATOR     renderer/reextract.c
     INTERP_REGIONS   renderer/interp_regions.c
+    TERRAIN_GAME     renderer/terrain_game.c
     MOBY_GAME        renderer/moby_game.c
     PLAYER_GAME      renderer/player_game.c
     SOURCES

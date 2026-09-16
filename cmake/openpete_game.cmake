@@ -269,6 +269,7 @@ function(openpete_add_game GAME_ID)
         # game's feature list).
         ${_common}/renderer/native_gte.c
         ${_common}/renderer/render_paths.c
+        ${_common}/renderer/portal_plane.c
         ${_common}/renderer/terrain.c
         ${_common}/renderer/cyclorama.c
         ${_common}/renderer/shadow.c
