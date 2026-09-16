@@ -410,6 +410,25 @@ static int s3_simple_decode(CPUState* cpu) {
     int skip_lp = cpu->read_word(D_SIMPLE_SKIP_LOWPOLY) != 0u;  /* mobydraw.s:4336-4341 */
     int emitted = 0;
 
+    /* The camera position the cull subtracted is baked into every record's
+     * delta (mobydraw.s:53 the camera position, :81,87,94 the three
+     * subtractions, :621-627 the store), so replaying a record under a staged
+     * camera re-rotates it but keeps the tick's translation.
+     * Re-base the delta by the camera-position change. The cull stores
+     * (moby - cam) >> 2 on the first component and (cam - moby) >> 2 on the
+     * other two, so a camera that moved by e shifts the stored halves by
+     * -e/4, +e/4 and +e/4. Held in double and added before the transform, so a
+     * staged position equal to the tick's is a no-op bit for bit. */
+    double dcam[3] = { 0.0, 0.0, 0.0 };
+    int32_t tickpos[3];
+    if (moby_native_tick_camera_pos(tickpos)) {
+        static const double sign[3] = { -0.25, 0.25, 0.25 };
+        for (int i = 0; i < 3; i++) {
+            int32_t staged = (int32_t)cpu->read_word(game_layout.cam.position + 4u * (uint32_t)i);
+            dcam[i] = ((double)staged - (double)tickpos[i]) * sign[i];
+        }
+    }
+
     static double vpos[S3_SIMPLE_VERTS][3];
     static float  vscr[S3_SIMPLE_VERTS][2];
     static uint32_t ctab[S3_SIMPLE_COLS];
@@ -424,9 +443,9 @@ static int s3_simple_decode(CPUState* cpu) {
 
         /* view-space centre, world/2 after the doubling (mobydraw.s:3946-3952,4058-4060) */
         double m1, m2, m3;
-        ngte_mac(Rcam, (double)(int16_t)(w1 & 0xFFFFu),
-                       (double)(int16_t)(w2 >> 16),
-                       (double)(int16_t)(w1 >> 16), &m1, &m2, &m3);
+        ngte_mac(Rcam, (double)(int16_t)(w1 & 0xFFFFu) + dcam[1],
+                       (double)(int16_t)(w2 >> 16)    + dcam[2],
+                       (double)(int16_t)(w1 >> 16)    + dcam[0], &m1, &m2, &m3);
         if (m3 - (double)fardist >= 0.0) { s_simple_culled++; continue; }  /* mobydraw.s:3958 */
 
         uint32_t H = cpu->read_word(slot + 0x14u);
@@ -483,6 +502,23 @@ static int s3_simple_decode(CPUState* cpu) {
             moby_simple_project(vpos[i], &vscr[i][0], &vscr[i][1]);
         }
         s_simple_verts += nv;
+
+        /* OPENPETE_MOBY_POSTRACE_CLS: the submitted screen-space centroid of
+         * each simple-kind record, the counterpart of the animated kind's
+         * trace in the shared feeder. */
+        {
+            static int s_cls = -2;
+            if (s_cls == -2) { const char* e = getenv("OPENPETE_MOBY_POSTRACE_CLS"); s_cls = e ? (int)strtol(e, NULL, 0) : -1; }
+            if (s_cls >= 0) {
+                double cx = 0.0, cy = 0.0;
+                for (int i = 0; i < nv; i++) { cx += vscr[i][0]; cy += vscr[i][1]; }
+                fprintf(stderr, "[simple f=%u] m=%08x n=%d c=(%.2f,%.2f) p=(%d,%d,%d) rot=%08x\n",
+                        openpete_frame, moby, nv, cx / nv, cy / nv,
+                        (int)cpu->read_word(moby + game_layout.moby.pos_off),
+                        (int)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
+                        (int)cpu->read_word(moby + game_layout.moby.pos_off + 8u), rot);
+            }
+        }
 
         /* The face and colour lists, and the fade the near band applies
          * (mobydraw.s:4285-4346). */

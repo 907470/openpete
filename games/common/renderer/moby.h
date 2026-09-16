@@ -40,6 +40,13 @@ void moby_native_set_rot_interp(int on);
  * host-side. */
 void moby_native_set_tick_camera(const int16_t mat[9], const int32_t pos[3]);
 
+/* The installed tick camera position, for a cull whose records bake the camera
+ * position into a stored per-record delta: the delta is re-based onto the
+ * staged camera by the difference between the staged position and this one.
+ * Returns 0 and leaves out[] untouched when no tick camera is installed, which
+ * is every canonical inline render. */
+int moby_native_tick_camera_pos(int32_t out[3]);
+
 /* Occlusion-cull pan allowance: the camera's rotation this tick expressed as
  * screen-pixel motion (rad/tick × ~px-per-radian, overestimated). The feeder
  * inflates cached screen rects by it per tick of cache age, so a pan cannot
