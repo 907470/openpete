@@ -6172,8 +6172,12 @@ static bool draw_native_scene(bool full_extent)
      * framebuffer (load screens, transitions, and other direct-present frames).
      * But in ISOLATION (--render-paths) the VRAM is the UNFILTERED frame — falling
      * back to it would show every path and defeat the isolation. So in isolation
-     * present just the background (= PsyCross's filtered clear) instead. */
-    if (scene_n <= 0 && (!s_isolation || bg == 0))
+     * present just the background (= PsyCross's filtered clear) instead.
+     * A retained-terrain frame with content is scene content too: a game
+     * whose only feeder is the terrain, with every sector on the GPU cache,
+     * has no CPU triangles at all. */
+    const bool cache_content = openpete_tercache_frame_open() && openpete_tercache_frame_content();
+    if (scene_n <= 0 && !cache_content && (!s_isolation || bg == 0))
         return false;
 
     s_render_full_extent = full_extent ? 1 : 0;
