@@ -5545,12 +5545,17 @@ static double s_rec_tr[MAX_RECORDS][3];   /* per-record float TR (Tier-2 hold ca
  * staged camera, so the moby holds still while the world moves under it and
  * steps a full tick at each boundary.
  *
+ * The record also carries the moby's own world position at the tick, so a moby
+ * that moves through the world steps once per tick even after the camera term
+ * below turns it onto the staged camera.
+ *
  * With Rp, pp the staged camera and Rt, pt the tick one, and N = Rp*Rt^-1,
  *
  *     M'  = N*M
  *     TR' = N*TR + S*(Rp*e)/4096
  *
- * where e is (pp - pt) in d's units and axis order. The inverse is explicit
+ * where e is (pp - pt) minus the moby's own displacement over the same
+ * interval, both in d's units and axis order. The inverse is explicit
  * and in double: this matrix carries the projection's aspect and FOV scaling,
  * so it is not orthonormal and its transpose is not its inverse. S is read
  * back from the record's own inputs — the animation header's scale byte is the
@@ -5562,7 +5567,42 @@ static double s_rec_tr[MAX_RECORDS][3];   /* per-record float TR (Tier-2 hold ca
  * or alpha 1) returns with the record untouched, so that leg stays bit-exact.
  * Host-side only: the staged camera is a sub-tick view copy and no guest word
  * is written. */
-static void record_rebase_to_present(CPUState* cpu, moby_fields* f) {
+/* The moby's own world-position offset between the pose the record encodes and
+ * the pose this present displays, in world units.
+ *
+ * The cull composed the record from the moby's position at the tick, which is
+ * the snapshot table's curr; the present displays lerp(prev, curr, t), so the
+ * offset is (prev - curr)*(1 - t). t is the present's phase past the curr
+ * stamp over the roll interval, capped at one tick, so a pair whose two
+ * distinct states are further apart sweeps the whole delta over the tick and
+ * still lands exactly on curr at t = 1. Returns 0 (and leaves out[] untouched)
+ * when the object has no usable pair, when its slot changed class between the
+ * two states, or when the pair is stale — a multi-tick gap is a
+ * discontinuity, not motion, and snapping keeps the record's own pose.
+ * Returns 1 with a zero out[] for a moby that is static in the world, which is
+ * what keeps such a record bit-identical. */
+static int record_moby_world_offset(uint32_t moby, double out[3]) {
+    out[0] = out[1] = out[2] = 0.0;
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
+    uint16_t pcls, ccls;
+    memcpy(&pcls, o->prev + game_layout.moby.class_off, 2);
+    memcpy(&ccls, o->curr + game_layout.moby.class_off, 2);
+    if (pcls != ccls) return 0;
+    if (moby_interp_pair_stale(o->prev_ns, o->curr_ns)) return 0;
+    double period = (double)(o->curr_ns - o->prev_ns);
+    if (period > (double)MOBY_TICK_PERIOD_NS) period = (double)MOBY_TICK_PERIOD_NS;
+    double t = (double)(openpete_interp_present_now() - o->curr_ns) / period;
+    if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+    int32_t pv[3], cv[3];
+    memcpy(pv, o->prev + game_layout.moby.pos_off, 12);
+    memcpy(cv, o->curr + game_layout.moby.pos_off, 12);
+    for (int i = 0; i < 3; i++)
+        out[i] = ((double)pv[i] - (double)cv[i]) * (1.0 - t);
+    return 1;
+}
+
+static void record_rebase_to_present(CPUState* cpu, moby_fields* f, uint32_t moby) {
     if (!s_tickcam_have || f->header < 0x80000000u) return;
 
     int Rp[3][3];
@@ -5570,8 +5610,11 @@ static void record_rebase_to_present(CPUState* cpu, moby_fields* f) {
     int32_t pp[3];
     for (int i = 0; i < 3; i++)
         pp[i] = (int32_t)cpu->read_word(game_layout.cam.position + (uint32_t)i * 4u);
+    double mw[3];
+    record_moby_world_offset(moby, mw);
     if (memcmp(Rp, s_tickcam_M, sizeof Rp) == 0 &&
-        memcmp(pp, s_tickcam_pos, sizeof pp) == 0) return;
+        memcmp(pp, s_tickcam_pos, sizeof pp) == 0 &&
+        mw[0] == 0.0 && mw[1] == 0.0 && mw[2] == 0.0) return;
 
     double Ti[3][3];
     if (!mat3_inverse(s_tickcam_M, Ti)) return;
@@ -5584,11 +5627,15 @@ static void record_rebase_to_present(CPUState* cpu, moby_fields* f) {
             N[r][c] = ((double)Rp[r][0]*Ti[0][c] + (double)Rp[r][1]*Ti[1][c]
                      + (double)Rp[r][2]*Ti[2][c]);
 
-    /* The camera-position delta in the record's units and axis order. */
+    /* The camera-position delta in the record's units and axis order, plus the
+     * moby's own displacement over the same interval in the same units. d is
+     * (cam - moby) on the first two components and (moby - cam) on the third
+     * (mobydraw.s:79-94), so the moby's motion enters with the opposite sign
+     * per component and the two displacements share one transform. */
     double e[3] = {
-        ((double)pp[1] - (double)s_tickcam_pos[1]) / 4.0,
-        ((double)pp[2] - (double)s_tickcam_pos[2]) / 4.0,
-       -((double)pp[0] - (double)s_tickcam_pos[0]) / 4.0,
+        ((double)pp[1] - (double)s_tickcam_pos[1]) / 4.0 - mw[1] / 4.0,
+        ((double)pp[2] - (double)s_tickcam_pos[2]) / 4.0 - mw[2] / 4.0,
+       -((double)pp[0] - (double)s_tickcam_pos[0]) / 4.0 + mw[0] / 4.0,
     };
     int msc = (int)(cpu->read_byte(f->header + game_layout.moby.anim_scale_off) & 0xFFu);
     if (msc < 0) msc = 0; else if (msc > 30) msc = 30;
@@ -5723,7 +5770,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 f.TR_raw[k]  = LR.TR_raw[k];
                 f.TR_frac[k] = (double)LR.TR_raw[k];
             }
-            record_rebase_to_present(cpu, &f);
+            record_rebase_to_present(cpu, &f, mobys[i]);
         } else {
         { int bok;
           uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
@@ -5887,6 +5934,20 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 double cf[3]={0,0,0}, mf[3]={0,0,0};
                 int ch = openpete_native_interp_pos(game_layout.cam.base, cf);
                 int mh2 = openpete_native_interp_pos(mobys[i], mf);
+                /* The moby's world position at the tick and the own-motion
+                 * offset the replay path applied to it this present: a record
+                 * whose wpos changes tick to tick is the class the offset
+                 * exists for, and dmob is how much of that tick step this
+                 * present's phase carries. */
+                double dmob[3]; record_moby_world_offset(mobys[i], dmob);
+                fprintf(stderr, "[moby-world f=%u] m=%08x rot=%08X kf=(%08x,%08x,%02x) wpos=(%d,%d,%d) dmob=(%.2f,%.2f,%.2f)\n",
+                        openpete_frame, mobys[i],
+                        cpu->read_word(mobys[i] + game_layout.moby.angle_off + 0u),
+                        f.frameA, f.frameB, (unsigned)((f.w0 >> 8) & 0xFFu),
+                        (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 0u),
+                        (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 4u),
+                        (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 8u),
+                        dmob[0], dmob[1], dmob[2]);
                 fprintf(stderr, "[moby-screen f=%u] leg=%s now=%.3f m=%08x cls=%03x n=%d c=(%.2f,%.2f) vz=%.1f fpos=%d/%d cam=(%.1f,%.1f,%.1f) mob=(%.1f,%.1f,%.1f) TRf=(%.2f,%.2f,%.2f)\n",
                         openpete_frame, g_openpete_canon_lag_leg ? "CANON" : "inter",
                         (double)op_now() / 1e6, /* clock-guard: wall */ /* prints both */

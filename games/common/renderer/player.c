@@ -696,6 +696,33 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
         st.clut_x = w->clut_x; st.clut_y = w->clut_y; st.bpp = w->bpp; st.blend = w->blend;
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_PLAYER, 0);
     }
+    /* OPENPETE_PLAYER_POSTRACE: the submitted screen-space centroid and
+     * bounding box of one player record, per present. The centroid follows the
+     * record's position and rotation brackets; the box additionally follows the
+     * pose, so a centroid that glides across the sub-tick phases while the box
+     * steps separates a translation defect from a keyframe-blend one. */
+    {
+        static int s_pt = -1;
+        if (s_pt < 0) { const char* e = getenv("OPENPETE_PLAYER_POSTRACE"); s_pt = (e && *e && *e != '0'); }
+        if (s_pt && s_swtri_n > 0) {
+            extern int g_openpete_canon_lag_leg;
+            double cx = 0.0, cy = 0.0;
+            double x0 = 1e30, y0 = 1e30, x1 = -1e30, y1 = -1e30;
+            int nv = 0;
+            for (int i = 0; i < s_swtri_n; i++)
+                for (int k = 0; k < 3; k++) {
+                    double sx = s_swtri[i].v[k].sx, sy = s_swtri[i].v[k].sy;
+                    cx += sx; cy += sy; nv++;
+                    if (sx < x0) x0 = sx; if (sx > x1) x1 = sx;
+                    if (sy < y0) y0 = sy; if (sy > y1) y1 = sy;
+                }
+            fprintf(stderr, "[player-screen f=%u] leg=%s slot=%d ntri=%d nv=%d "
+                            "c=(%.3f,%.3f) bb=(%.3f,%.3f,%.3f,%.3f) mirror=%d\n",
+                    openpete_frame, g_openpete_canon_lag_leg ? "CANON" : "inter",
+                    s_player_slot, s_swtri_n, nv, cx / nv, cy / nv, x0, y0, x1, y1,
+                    s_mirror_pass);
+        }
+    }
     openpete_native_scene_set_tag(0);
 }
 

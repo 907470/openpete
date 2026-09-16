@@ -302,12 +302,25 @@ static void player_records_replay(CPUState* cpu, int paired, double alpha) {
             }
         }
         player_native_set_rot_interp(lerp ? rot_active : NULL, &rot_ang[0][0]);
+        /* The keyframe pose, on the same bracket as the position and rotation
+         * above. The part records are composed from gamestate, and the record
+         * store holds each call's composed block, so the walk decodes the two
+         * poses the two ticks really rendered and lerps the projected
+         * vertices. Without it the skeleton translates and turns smoothly
+         * while its vertices hold the tick's keyframe blend, so the outline
+         * steps at the tick rate under a smooth centroid. An unbracketed
+         * present or an unpaired record leaves it off, which draws the tick's
+         * own pose. */
+        player_native_set_anim_interp(rec_alpha, lerp && paired);
+        player_native_set_anim_pair((lerp && prv->drawn) ? prv->seg : NULL, rec->seg);
         player_native_set_player_slot(k);
         player_reextract_record(cpu, !rec->is_player);
         player_records_present_note(k, (const int32_t*)sb);
     }
     s_ppos_active = 0;
     player_native_set_rot_interp(NULL, NULL);
+    player_native_set_anim_pair(NULL, NULL);
+    player_native_set_anim_interp(0.0, 0);
     memcpy(sb, ambient, len);
     player_records_present_end();
 }
