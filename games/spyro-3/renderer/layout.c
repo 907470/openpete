@@ -100,6 +100,27 @@ const game_layout_t game_layout = {
         .lod_dist_default = 0x8000u,                /* Spyro 1's authored value; the Spyro 3 pre-pass
                                                      * constants are not mirrored yet */
     },
+    .shadow = {
+        .desc        = G_MOBYSHADOWS,     /* mobyfunc.s:921-923: +0x00/+0x04 the sprite UV
+                                           * words, +0x08 the drawn-moby list terminator */
+        .hook        = F_MOBY_SHADOWS,
+        .list_source = SHADOW_LIST_GTE_DATA, /* mobyfunc.s:914-916: mfc2 from data reg 2,
+                                              * the base the moby draw mobydraw.s:36 left
+                                              * there (polybuf end - 0x3000) */
+        .list_base   = 0u,
+        .list_reg    = 2,
+        .list_offset = 0x1400u,           /* mobyfunc.s:916 addi 0x1400 */
+        .moby_pos    = 0x0Cu,             /* mobyfunc.s:932-933 lw 0xC / lw 0x10 */
+        .moby_ground = 0x1Cu,             /* mobyfunc.s:930 lw 0x1C; packed by func_8005629C
+                                           * (updatemobys.s:984-993) */
+        .size_shl    = 1,                 /* mobyfunc.s:1058-1060 sll 1 before the corners */
+        .uv1_bottom_right = 1,            /* mobyfunc.s:922 addi -0x1F00 on the second UV word */
+        .matrix_fold_a = 0,               /* mobyfunc.s:987-1004 writes R12 from the first
+                                           * MVMVA and folds no angle index into R11 */
+        .cull_layout = SHADOW_CULL_SPYRO3, /* mobyfunc.s:1105-1127: four-corner extent tests */
+        .ground_plane = 0u,               /* the player shadow is the player model drawn
+                                           * mirrored, so no stored ground plane exists */
+    },
     .hooks = {
         .world_draw = F_WORLD_DRAW,
         .sky_draw   = F_SKY_DRAW,

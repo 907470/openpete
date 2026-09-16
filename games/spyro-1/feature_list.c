@@ -10,6 +10,7 @@ extern const feature_module_t moby_module;
 extern const feature_module_t spyro_module;
 extern const feature_module_t flame_module;
 extern const feature_module_t shadow_module;
+extern const feature_module_t shadow_spyro_module;
 extern const feature_module_t particle_module;
 extern const feature_module_t tracer_module;
 extern const feature_module_t terrain_module;
@@ -53,6 +54,7 @@ const feature_module_t* const openpete_features[] = {
      * otherwise. Records the RP_SHADOW polybuf range itself (so the
      * render_paths thin brackets for shadow are retired — see render_paths.c). */
     &shadow_module,
+    &shadow_spyro_module,
     /* Native-renderer PARTICLES: the particle family — particles
      * (0x800573C8, 7 sprite classes), glows (0x800580F4, additive rings) and
      * sparkles (0x800584C4, twinkle quads). VERDICT-CRITICAL: the .s runs

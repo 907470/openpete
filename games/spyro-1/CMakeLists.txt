@@ -179,7 +179,7 @@ openpete_add_game(spyro-1
         renderer/spyro.c
         renderer/spyro_records.c
         renderer/flame.c
-        renderer/shadow.c
+        renderer/shadow_spyro.c
         renderer/particle.c
         renderer/tracer.c
         renderer/layout.c

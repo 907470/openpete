@@ -321,3 +321,9 @@ note = "func_8004EBA8 — the dome renderer; the cyclorama feeder's hook site"
 name = "D_HQ_UV_ORI_TABLE"
 addr = 0x8006D058
 note = "D_8006D058 — the HQ tiledef UV-orientation offset table: 8-byte entries of per-corner (du | dv<<8) deltas indexed by tiledef word1 >> 25 (func_800276A0 block_80027EA8)"
+
+[[symbol]]
+name = "F_MOBY_SHADOWS"
+addr = 0x80059F8C
+kind = "function"
+note = "func_80059F8C (asm/renderers/r_shadows.s:364) — the moby drop-shadow renderer; the shared shadow feeder's hook site"

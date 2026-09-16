@@ -17,4 +17,35 @@ openpete_add_game(spyro-3
         skip_to_level.c
         features/freecam.c
         renderer/layout.c
+        renderer/portal.c
         renderer/terrain_probe.c)
+
+# Typed game structs: every decomp typedef struct plus the PSYQ types they
+# embed, guest-pointer fields rewritten to uint32_t, pinned by
+# _Static_asserts read from manifest/struct_layout.toml (the MIPS layout
+# probed by GAME=spyro-3 scripts/regen-struct-layout.sh; committed, so no
+# build needs the MIPS compiler). The generator refuses a toml probed from
+# other headers than the checkout's. renderer/game_structs_check.c
+# compiles the header so every pin is checked on every build.
+set(_spyro3_structs_gen ${CMAKE_CURRENT_BINARY_DIR}/game_structs_gen)
+file(GLOB _spyro3_decomp_headers CONFIGURE_DEPENDS
+     ${CMAKE_CURRENT_SOURCE_DIR}/spyro-3/include/*.h
+     ${CMAKE_CURRENT_SOURCE_DIR}/spyro-3/include/*/*.h)
+add_custom_command(
+    OUTPUT  ${_spyro3_structs_gen}/openpete_game_structs.h
+    COMMAND python3 ${CMAKE_SOURCE_DIR}/tools/gen_game_structs.py
+            --game spyro-3
+            --include ${CMAKE_CURRENT_SOURCE_DIR}/spyro-3/include
+            --layout ${CMAKE_CURRENT_SOURCE_DIR}/manifest/struct_layout.toml
+            --out ${_spyro3_structs_gen}/openpete_game_structs.h
+    DEPENDS ${_spyro3_decomp_headers}
+            ${CMAKE_CURRENT_SOURCE_DIR}/manifest/struct_layout.toml
+            ${CMAKE_SOURCE_DIR}/tools/gen_game_structs.py
+            ${CMAKE_SOURCE_DIR}/tools/game_struct_config.py
+            ${CMAKE_SOURCE_DIR}/tools/psyq_types.py
+            ${CMAKE_SOURCE_DIR}/tools/probe_struct_layout.py
+    COMMENT "Generating typed game structs for Spyro 3 (gen_game_structs.py)")
+target_sources(${OPENPETE_GAME_EXE} PRIVATE
+    renderer/game_structs_check.c
+    ${_spyro3_structs_gen}/openpete_game_structs.h)
+target_include_directories(${OPENPETE_GAME_EXE} PRIVATE ${_spyro3_structs_gen})

@@ -1,28 +1,37 @@
 #!/usr/bin/env python3
 """probe_struct_layout.py — MIPS-ABI layout of every decomp game struct.
 
-Compiles one probe TU that includes every decomp include/*.h under
-mipsel-linux-gnu-gcc with the decomp's own flags, using stub PSYQ headers
-generated from tools/psyq_types.py, and reads sizeof / offsetof of every
-struct and member path back out of the assembler output. Writes
-games/spyro-1/manifest/struct_layout.toml, which gen_game_structs.py
-turns into _Static_assert pins in the SDK header, so the host compile of
-a mod proves the transformed layout equals the guest layout.
+Compiles one probe TU that includes every header of a game's decomp
+include/ under mipsel-linux-gnu-gcc with the decomp's own flags, using
+stub PSYQ headers generated from tools/psyq_types.py, and reads sizeof /
+offsetof of every struct and member path back out of the assembler
+output. Writes games/<game>/manifest/struct_layout.toml, which
+gen_game_structs.py turns into _Static_assert pins in the typed structs
+header, so a host compile against that header proves the transformed
+layout equals the guest layout.
+
+One probe serves every game; what differs between decompilations (header
+globs, PSYQ stub set, unknown-member naming convention, layout pins) is
+tools/game_struct_config.py, keyed by --game.
 
 Only this step needs the MIPS compiler; the toml is committed and every
-other build reads it. The toml carries a hash of include/*.h plus the
+other build reads it. The toml carries a hash of the headers plus the
 stubs and flags; the generator refuses a checkout whose hash differs.
 
 Engagement checks (refused on failure, so a wrong stub cannot pass):
-  - every `unk_0xNNN` member's offset equals NNN (SpyroPhysics members
-    are named relative to Spyro.m_Physics at 0xC8);
-  - sizeof(DB) == 0x84 and offsetof(DRAWENV, r0) == 0x19, the g_DB store
-    offsets in asm/nonmatchings/overlays/credits/func_credits_8007BFD0.s;
+  - every member the game names after its own offset re-derives that
+    offset, under the config's naming convention (a struct listed as
+    using the same spelling for a sequence number instead must have a
+    member that proves it, or the run refuses);
+  - each member whose trailing comment starts with `0xNN` sits at that
+    offset, and members commented with an absolute address keep their
+    address spacing (config `comment_offsets`);
+  - the config's pins, each read from the game's own asm or source;
   - every struct-typed `extern` global with a `.space` in asm/data/*.s
     occupies count * sizeof plus 0 or 4 bytes of alignment slack, or is a
     split symbol smaller than its struct (recorded as such).
 
-Usage: probe_struct_layout.py --decomp <spyro-1 checkout> --out <toml>
+Usage: probe_struct_layout.py --game <slug> --decomp <checkout> --out <toml>
 """
 import argparse
 import hashlib
@@ -34,6 +43,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import gen_game_structs as G          # noqa: E402
+import game_struct_config as C        # noqa: E402
 import psyq_types as P                # noqa: E402
 
 CC = "mipsel-linux-gnu-gcc"
@@ -42,28 +52,20 @@ FLAGS = ["-S", "-march=mips1", "-mabi=32", "-msoft-float", "-ffreestanding"]
 # bss flags; every probe value is stored +1 so it always has a `.word`.
 BIAS = 1
 
-SPYRO_PHYSICS_BASE = 0xC8   # Spyro.m_Physics; its unk_ names are Spyro-relative
-
-# .bss reservations larger than the header's struct by more than alignment,
-# each with the reason; anything else outside {0, 4} refuses the run.
-KNOWN_SLACK = {
-    # PadBuffer is 0x20 in gamepad.h (u_char padding[24]); the .bss reserves
-    # 0x28, annotated "0x24 + 0x4 padding": PSYQ's pad buffer is 34 bytes,
-    # so the header's padding is 4 short. Reported upstream; the game only
-    # touches the first 8 bytes.
-    "g_PadBuffer": 8,
-    "g_PadBufferSecondController": 8,
-}
+# A member's own source line carries its offset (`0xNN`) or its absolute
+# address (eight hex digits) as the first word of a trailing comment.
+COMMENT_OFFSET_RE = re.compile(r"^\s*(?:0x(?P<off>[0-9a-fA-F]+)"
+                               r"|(?P<addr>[0-9a-fA-F]{8}))\b")
 
 
-def write_stubs(d: Path):
+def write_stubs(d: Path, stubs, empty):
     (d / "sys").mkdir(parents=True, exist_ok=True)
     (d / "sys" / "types.h").write_text(P.SYS_TYPES_H)
-    for name, text in P.PSYQ_TYPES:
+    for name, text in P.psyq_types(stubs):
         guard = name.upper().replace(".", "_")
         (d / name).write_text(f"#ifndef {guard}\n#define {guard}\n"
                               f"#include <sys/types.h>\n{text}#endif\n")
-    for name in P.EMPTY_STUBS:
+    for name in empty:
         (d / name).write_text("")
 
 
@@ -72,8 +74,9 @@ def sym(path: str) -> str:
     return re.sub(r"[^\w]+", "_", path.replace(".", "__")).strip("_")
 
 
-def probe_tu(include_dir: Path, structs, extra_names):
-    lines = [f'#include "{h.name}"' for h in sorted(include_dir.glob("*.h"))]
+def probe_tu(include_dir: Path, structs, extra_names, globs):
+    lines = [f'#include "{h.relative_to(include_dir).as_posix()}"'
+             for h in G.headers(include_dir, globs)]
     keep = []
     for _, name, body in structs:
         lines.append(f"unsigned long sz_{name} = sizeof({name}) + {BIAS};")
@@ -128,7 +131,34 @@ def read_asm(path: Path):
     return vals, images
 
 
-def bss_globals(decomp: Path, sizes: dict):
+def comment_annotations(body: str):
+    """{member name: ("off"|"addr", value)} from each single-declarator
+    source line whose trailing comment starts with the member's offset or
+    its absolute address. The decomp writes these by hand next to the
+    member, so they are independent of the layout the compiler produces."""
+    out = {}
+    for line in body.splitlines():
+        code, _, comment = line.partition("//")
+        if not comment or ";" not in code:
+            continue
+        decl = code.split(";")[0].strip()
+        fm = G.FUNC_PTR_DECL_RE.match(decl)
+        if fm:
+            names = [fm.group(1)]
+        else:
+            names = [n for n, _ in re.findall(
+                r"(\w+)\s*((?:\[[^\]]*\]\s*)*)(?:,|$)", decl)]
+        if len(names) != 1:
+            continue
+        m = COMMENT_OFFSET_RE.match(comment)
+        if not m:
+            continue
+        out[names[0]] = (("off", int(m.group("off"), 16)) if m.group("off")
+                         else ("addr", int(m.group("addr"), 16)))
+    return out
+
+
+def bss_globals(decomp: Path, sizes: dict, globs):
     """(name, type, count, space) for every `extern T name[N];` whose T is
     a probed struct and whose symbol carries a `.space` in asm/data."""
     space = {}
@@ -141,7 +171,7 @@ def bss_globals(decomp: Path, sizes: dict):
                 if m2:
                     space[m.group(1)] = int(m2.group(1), 0)
     out = []
-    for h in sorted((decomp / "include").glob("*.h")):
+    for h in G.headers(decomp / "include", globs):
         for m in re.finditer(r"^extern\s+(\w+)\s+(\w+)((?:\[[^\]]*\])*)\s*;",
                              h.read_text(), re.M):
             t, name, subs = m.groups()
@@ -156,21 +186,28 @@ def bss_globals(decomp: Path, sizes: dict):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--game", default="spyro-1",
+                    help="game slug, keying tools/game_struct_config.py")
     ap.add_argument("--decomp", type=Path, required=True)
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
     inc = args.decomp / "include"
+    cfg = C.config(args.game)
+    header_globs = tuple(cfg["header_globs"])
+    stub_set = cfg["psyq_stubs"]
 
-    structs = G.enumerate_structs(inc)
+    structs = G.enumerate_structs(inc, header_globs)
     psyq = [(n, G.member_paths(re.search(
-        rf"typedef struct {n} \{{(.*?)\}} {n};", P.psyq_text(), re.S).group(1)))
-            for n in P.psyq_names()]
+        rf"typedef struct {n} \{{(.*?)\}} {n};",
+        P.psyq_text(stub_set), re.S).group(1)))
+            for n in P.psyq_names(stub_set)]
 
     with tempfile.TemporaryDirectory() as td:
         td = Path(td)
         stubs = td / "stubs"
-        write_stubs(stubs)
-        (td / "probe.c").write_text(probe_tu(inc, structs, psyq))
+        write_stubs(stubs, stub_set, cfg["empty_stubs"])
+        (td / "probe.c").write_text(
+            probe_tu(inc, structs, psyq, header_globs))
         r = subprocess.run([CC, *FLAGS, f"-I{inc}", f"-I{stubs}",
                             "-o", str(td / "probe.s"), str(td / "probe.c")],
                            capture_output=True, text=True)
@@ -194,42 +231,85 @@ def main():
             bits[(name, path)] = (set_bits[0], width)
     sizes.update({n: vals[f"sz_{n}"] for n, _ in psyq})
 
-    # unk_0xNNN names encode offsets.
-    n_unk = 0
+    # Members the game names after their own offset.
+    unk_re = re.compile(cfg["unk_offset_re"])
+    skip = cfg["unk_offset_skip"]
+    n_unk, skip_used = 0, set()
     for _, name, body in structs:
         for path in G.member_paths(body):
-            m = re.fullmatch(r"(?:.*\.)?unk_0x([0-9a-fA-F]+)", path)
+            m = unk_re.fullmatch(path)
             if not m:
                 continue
-            n_unk += 1
             want = int(m.group(1), 16)
             got = vals[f"off_{name}__{sym(path)}"]
             if "." in path:
                 # a member of a nested block is named relative to the block
                 parent = re.sub(r"\[0\]", "", path.rsplit(".", 1)[0])
                 got -= vals[f"off_{name}__{sym(parent)}"]
-            if name == "SpyroPhysics":
-                got += SPYRO_PHYSICS_BASE
+            got += cfg["unk_offset_bases"].get(name, 0)
+            if name in skip:
+                if got != want:
+                    skip_used.add(name)
+                continue
+            n_unk += 1
             if got != want:
                 errors.append(f"{name}.{path}: probed {got:#x}, name says {want:#x}")
+    for name in sorted(set(skip) - skip_used):
+        errors.append(f"{name} is listed as naming unknowns by sequence "
+                      f"({skip[name]}), but every such member sits at the "
+                      f"offset its name gives; drop the entry")
 
-    # g_DB store offsets.
-    if sizes["DB"] != 0x84:
-        errors.append(f"sizeof(DB) = {sizes['DB']:#x}, asm stores say 0x84")
-    if vals["off_DRAWENV__r0"] != P.DRAWENV_R0_OFFSET:
-        errors.append(f"offsetof(DRAWENV, r0) = {vals['off_DRAWENV__r0']:#x}, "
-                      f"asm stores say {P.DRAWENV_R0_OFFSET:#x}")
-    if sizes["DRAWENV"] != P.DRAWENV_SIZE or sizes["DISPENV"] != P.DISPENV_SIZE:
-        errors.append("DRAWENV/DISPENV sizes differ from psyq_game_hooks.h")
+    # Members the game annotates with their offset or their address.
+    n_comment = 0
+    if cfg["comment_offsets"]:
+        for _, name, body in structs:
+            ann = comment_annotations(body)
+            addrs = []
+            for member, (kind, value) in ann.items():
+                key = f"off_{name}__{sym(member)}"
+                if key not in vals:
+                    continue
+                if kind == "off":
+                    n_comment += 1
+                    if vals[key] != value:
+                        errors.append(f"{name}.{member}: probed "
+                                      f"{vals[key]:#x}, comment says {value:#x}")
+                else:
+                    addrs.append((member, value, vals[key]))
+            # An addressed member spacing must match its offset spacing;
+            # the struct's own base address is not in the header.
+            if len(addrs) > 1:
+                base = addrs[0]
+                for member, addr, off in addrs[1:]:
+                    n_comment += 1
+                    if addr - base[1] != off - base[2]:
+                        errors.append(
+                            f"{name}.{member}: at {off:#x}, {off - base[2]:#x} "
+                            f"past {base[0]}, but its address is "
+                            f"{addr - base[1]:#x} past {base[1]:#x}")
+
+    # Layout facts read from the game's own asm or source.
+    for pin in cfg["pins"]:
+        st = pin["struct"]
+        if "size" in pin and sizes.get(st) != pin["size"]:
+            errors.append(f"sizeof({st}) = {sizes.get(st)}, {pin['why']} "
+                          f"says {pin['size']:#x}")
+        if "field" in pin:
+            got = vals.get(f"off_{st}__{sym(pin['field'])}")
+            if got != pin["offset"]:
+                errors.append(f"offsetof({st}, {pin['field']}) = {got}, "
+                              f"{pin['why']} says {pin['offset']:#x}")
 
     # .bss globals: count * sizeof + slack in {0, 4}, or a split symbol.
+    known_slack = cfg["known_slack"]
     globs = []
-    for name, t, count, space in bss_globals(args.decomp, sizes):
+    for name, t, count, space in (bss_globals(args.decomp, sizes, header_globs)
+                                  if cfg["bss_globals"] else []):
         expect = count * sizes[t]
         slack = space - expect
         if space < expect:
             globs.append((name, t, count, space, "split"))
-        elif slack in (0, 4) or KNOWN_SLACK.get(name) == slack:
+        elif slack in (0, 4) or known_slack.get(name) == slack:
             globs.append((name, t, count, space, slack))
         else:
             errors.append(f"{name}: .space {space:#x} vs {count} x "
@@ -239,11 +319,11 @@ def main():
         sys.exit("[probe] engagement failed:\n  " + "\n  ".join(errors))
 
     h = hashlib.sha256()
-    for f in sorted(inc.glob("*.h")):
-        h.update(f.name.encode())
+    for f in G.headers(inc, header_globs):
+        h.update(f.relative_to(inc).as_posix().encode())
         h.update(f.read_bytes())
     h.update(P.SYS_TYPES_H.encode())
-    h.update(P.psyq_text().encode())
+    h.update(P.psyq_text(stub_set).encode())
     h.update(" ".join(FLAGS).encode())
 
     out = ["# Auto-generated by tools/probe_struct_layout.py — do not edit.",
@@ -282,8 +362,9 @@ def main():
     n_pins = sum(1 + len(G.member_paths(b)) for _, _, b in structs) + \
         sum(1 + len(p) for _, p in psyq)
     print(f"[probe] {len(structs)} structs + {len(psyq)} PSYQ types, "
-          f"{n_pins} pins, {len(bits)} bitfields, {n_unk} unk_0x checks, "
-          f"{len(globs)} .bss globals "
+          f"{n_pins} pins, {len(bits)} bitfields, {n_unk} named-offset "
+          f"checks, {n_comment} commented-offset checks, "
+          f"{len(cfg['pins'])} asm pins, {len(globs)} .bss globals "
           f"({sum(1 for g in globs if g[4] == 'split')} split) -> {args.out}")
 
 

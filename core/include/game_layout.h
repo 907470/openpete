@@ -21,6 +21,10 @@ extern "C" {
 
 enum { TERRAIN_FACES_SPYRO1 = 0, TERRAIN_FACES_SPYRO3 = 1 };
 enum { CYC_FACES_SPYRO1 = 0, CYC_FACES_SPYRO3 = 1 };
+/* Where the moby-shadow draw finds the base of the drawn-moby list, and which
+ * screen-extent rejection it applies before emitting a fan. */
+enum { SHADOW_LIST_ADDR = 0, SHADOW_LIST_GTE_DATA = 1 };
+enum { SHADOW_CULL_SPYRO1 = 0, SHADOW_CULL_SPYRO3 = 1 };
 
 typedef struct game_layout {
     /* The in-RAM sin/cos table: 256 entries per circle of s16 1.12 fixed
@@ -164,6 +168,49 @@ typedef struct game_layout {
          * it (env.lod_dist == 0): Spyro 3's draw bins with constants. */
         uint32_t lod_dist_default;
     } terrain;
+
+    /* The moby drop-shadow draw. Both games run the same walk: a list of
+     * 8-byte {Moby*, size} records the moby draw appended, a three-word
+     * descriptor whose +0x00 and +0x04 are the shadow sprite's two UV words
+     * (clut in the high half of the first, tpage in the high half of the
+     * second) and whose +0x08 is the list's end pointer, and per moby a
+     * ground anchor projected from the moby position and a packed ground
+     * word, four corners of a diamond tilted to the ground normal, and four
+     * textured semi-transparent FT3s fanned from the anchor.
+     *
+     * `list_source` says where the list starts: SHADOW_LIST_ADDR reads
+     * `list_base`; SHADOW_LIST_GTE_DATA reads GTE data register `list_reg`
+     * (the moby draw leaves the base there as a cross-function live value)
+     * and adds `list_offset`. The register is captured before the draw runs,
+     * since the draw itself overwrites the GTE data registers.
+     *
+     * `moby_pos` is the Vector3D the anchor's horizontal components come
+     * from (x at +0, y at +4); `moby_ground` is the word the gameplay update
+     * packs the ground height (bits 0..15, quarter scale), the two 6-bit
+     * ground-normal angles (bits 16..21 and 22..27) and the shadow-enabled
+     * bit into. `size_shl` shifts the record's size word before it becomes
+     * the diamond's half-extents. `uv1_bottom_right` = 1 when +0x04 holds
+     * the sprite's bottom-right corner and the emitter subtracts 0x1F00 to
+     * make the top-right. `matrix_fold_a` = 1 reproduces the first rotation
+     * block's handwritten form that drops the R12 term and adds the second
+     * angle index times 8 into R11 instead. `ground_plane` is the address of
+     * the signed world height of the player's own ground plane, which the
+     * depth-aware decal shader rejects walls against (0 = no such plane). */
+    struct {
+        uint32_t desc;
+        uint32_t hook;
+        int      list_source;       /* SHADOW_LIST_* */
+        uint32_t list_base;
+        int      list_reg;          /* GTE data register index */
+        uint32_t list_offset;
+        uint32_t moby_pos;
+        uint32_t moby_ground;
+        int      size_shl;
+        int      uv1_bottom_right;
+        int      matrix_fold_a;
+        int      cull_layout;       /* SHADOW_CULL_* */
+        uint32_t ground_plane;
+    } shadow;
 
     /* Hook sites: the guest entry addresses the feeders dispatch on.
      * `visibility` is the function that fills the visibility verdict when

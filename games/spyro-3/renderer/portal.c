@@ -1,0 +1,432 @@
+// games/spyro-3/renderer/portal.c — the homeworld portal previews.
+//
+// The game's portal pass (F_PORTAL_PASS) gates each portal record, projects
+// its five pentagon vertices with the sky matrix, writes the clip rect, the
+// visible pentagon edges, the depth and the fade terms into D_PORTAL_BLOCK,
+// and calls the preview leaf (F_PORTAL_LEAF) for the background quad and, when
+// the portal is nearer than 0x5000 units, for the baked picture of the
+// destination level. Both meshes are pre-projected 2-D triangle lists in
+// level RAM: a 0x18-byte header {vertex count, vertex offset, colour count,
+// colour offset, face count, face offset}, vertices as (y << 16 | x) << 5
+// with the low five bits draw-owned scratch, colours 0x00BBGGRR, faces of two
+// words (vertex indices in 12/10/10 bits; word 1 bit 31 flat with the colour
+// index in bits 29-20, else three colour byte offsets). The leaf drops a face
+// whose three vertices share a rect outcode or lie outside one pentagon edge,
+// clips the rest to the edges, fades the colours toward the block's far
+// colour by its IR0 and then toward the environment far colour by the sky
+// fog word, and links the prims at OT index 3 + depth.
+//
+// This feeder hooks the leaf: it copies the block and the argument before
+// the real leaf runs (the block is rewritten per portal), and after the pass
+// re-derives every preview in float: the same outcode and half-plane
+// rejects, a Sutherland-Hodgman clip to the pentagon, the two colour fades,
+// and a depth at the portal's own distance. The rect footprint goes out as
+// the portal's stencil mask and the picture as portal-cyclorama triangles,
+// so terrain in front of the portal plane occludes the picture per pixel.
+// The picture is authored in the 4:3 frame; under a wider frame it and the
+// pentagon shift together by the frame's centre offset. Sub-tick presents
+// replay the captured previews with the rect and edges lerped between the
+// previous and the current tick when the portal set matches.
+//
+// Never writes PSX RAM: the real pass and leaf run unchanged, and the feeder
+// only reads afterwards.
+
+#include "feature_registry.h"
+#include "psx_runtime_internal.h"
+#include "openpete_psx.h"
+#include "openpete_native_render.h"
+#include "openpete_recomp_module.h"
+#include "openpete_fiber.h"           /* openpete_frame */
+#include "renderer/render_paths.h"
+#include "renderer/native_gte.h"
+#include "renderer/portal.h"
+#include "game_layout.h"
+#include "spyro3_symbols.gen.h"
+
+#include <math.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#define P3_MAX_PORTALS 16
+#define P3_MAX_EDGES   8
+#define P3_MAX_VERTS   1024
+#define P3_MAX_COLS    256
+
+typedef struct {
+    uint32_t mesh;                 /* the preview mesh header vaddr */
+    int      arg;                  /* 1 = background record, 0 = the +0x3C picture */
+    int      ymin, ymax, xmin, xmax;
+    int      depth7;               /* portal depth >> 7 */
+    uint32_t far_rgb;              /* packed 8-bit far colour */
+    int      ir0;                  /* portal fade factor */
+    int      nedge;
+    float    ex[P3_MAX_EDGES][2], ey[P3_MAX_EDGES][2];
+    int      slot;                 /* portal index within the pass */
+} p3_preview;
+
+typedef struct {
+    p3_preview p[P3_MAX_PORTALS * 2];
+    int n;
+    unsigned frame;
+    int valid;
+} p3_tick;
+
+static p3_tick s_curr, s_prev;
+static int s_in_pass = 0;
+static int s_leaf_calls = 0;      /* engagement: leaf hooks seen this tick */
+static uint32_t s_pass_start = 0;
+
+static int p3_dbg(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_PORTAL3_DBG"); v = (e && *e && *e != '0'); }
+    return v;
+}
+/* OPENPETE_PORTAL3_DBG_FROM: the first VBL the census reports from. */
+static unsigned p3_dbg_from(void) {
+    static unsigned v = 0; static int init = 0;
+    if (!init) { const char* e = getenv("OPENPETE_PORTAL3_DBG_FROM"); v = e ? (unsigned)strtoul(e, NULL, 0) : 0u; init = 1; }
+    return v;
+}
+static int s_cen_faces, s_cen_idx, s_cen_oc, s_cen_edge, s_cen_tris;
+
+/* GTE DPCS in float: c + (fc - c) * ir0 / 4096 per channel. */
+static uint32_t p3_fade(uint32_t rgb, uint32_t fc, int ir0) {
+    uint32_t out = 0;
+    for (int k = 0; k < 3; k++) {
+        int c = (int)((rgb >> (k * 8)) & 0xFF), f = (int)((fc >> (k * 8)) & 0xFF);
+        int v = (int)(c + (f - c) * (double)ir0 / 4096.0 + 0.5);
+        if (v < 0) v = 0; else if (v > 255) v = 255;
+        out |= (uint32_t)v << (k * 8);
+    }
+    return out;
+}
+
+/* The environment far colour as packed 8-bit: three words at GTE scale. */
+static uint32_t p3_env_far(CPUState* cpu) {
+    uint32_t a = game_layout.fog.far_colour;
+    if (!a) return 0;
+    uint32_t r = (cpu->read_word(a) >> 4) & 0xFF, g = (cpu->read_word(a + 4) >> 4) & 0xFF,
+             b = (cpu->read_word(a + 8) >> 4) & 0xFF;
+    return r | (g << 8) | (b << 16);
+}
+
+/* ---- capture: the block, before the leaf overwrites nothing and after the
+ * pass rewrote it for this portal ---------------------------------------- */
+static void p3_capture(CPUState* cpu, int arg) {
+    if (s_curr.n >= P3_MAX_PORTALS * 2) return;
+    p3_preview* p = &s_curr.p[s_curr.n];
+    memset(p, 0, sizeof *p);
+    uint32_t B = D_PORTAL_BLOCK;
+    p->ymin = (int32_t)cpu->read_word(B + 0x00);
+    p->ymax = (int32_t)cpu->read_word(B + 0x04);
+    p->xmin = (int32_t)cpu->read_word(B + 0x08);
+    p->xmax = (int32_t)cpu->read_word(B + 0x0C);
+    p->mesh = cpu->read_word(B + 0x10);
+    p->arg  = arg;
+    if (arg == 0) p->mesh += 0x3C;
+    p->depth7 = (int32_t)cpu->read_word(B + 0x14);
+    uint32_t r = (cpu->read_half(B + 0x18) >> 4) & 0xFF, g = (cpu->read_half(B + 0x1A) >> 4) & 0xFF,
+             b = (cpu->read_half(B + 0x1C) >> 4) & 0xFF;
+    p->far_rgb = r | (g << 8) | (b << 16);
+    p->ir0 = (int16_t)cpu->read_half(B + 0x1E);
+    int ne = (int32_t)cpu->read_word(B + 0x20);
+    if (ne < 0) ne = 0; if (ne > P3_MAX_EDGES) ne = P3_MAX_EDGES;
+    p->nedge = ne;
+    for (int i = 0; i < ne; i++) {
+        uint32_t a = cpu->read_word(B + 0x24 + i * 8), b2 = cpu->read_word(B + 0x28 + i * 8);
+        p->ex[i][0] = (float)(int16_t)(a & 0xFFFF);  p->ey[i][0] = (float)(int16_t)(a >> 16);
+        p->ex[i][1] = (float)(int16_t)(b2 & 0xFFFF); p->ey[i][1] = (float)(int16_t)(b2 >> 16);
+    }
+    /* Portal slot: the leaf pair (1 then 0) belongs to one portal. */
+    p->slot = (s_curr.n == 0) ? 0 : (s_curr.p[s_curr.n - 1].arg == 1 && arg == 0
+                                     ? s_curr.p[s_curr.n - 1].slot
+                                     : s_curr.p[s_curr.n - 1].slot + 1);
+    s_curr.n++;
+}
+
+/* ---- extraction ------------------------------------------------------ */
+typedef struct { float x, y; uint32_t rgb; } p3_v;
+
+static float p3_cross(float ax, float ay, float bx, float by, float vx, float vy) {
+    return (bx - ax) * (vy - ay) - (by - ay) * (vx - ax);
+}
+
+/* Clip polygon `in` (n verts) against the half-plane cross >= 0 of edge e. */
+static int p3_clip_edge(const p3_v* in, int n, p3_v* out, float ax, float ay, float bx, float by) {
+    int m = 0;
+    for (int i = 0; i < n; i++) {
+        const p3_v *cur = &in[i], *nxt = &in[(i + 1) % n];
+        float dc = p3_cross(ax, ay, bx, by, cur->x, cur->y);
+        float dn = p3_cross(ax, ay, bx, by, nxt->x, nxt->y);
+        int ci = dc >= 0.0f, ni = dn >= 0.0f;
+        if (ci) out[m++] = *cur;
+        if (ci != ni) {
+            float t = dc / (dc - dn);
+            p3_v v;
+            v.x = cur->x + (nxt->x - cur->x) * t;
+            v.y = cur->y + (nxt->y - cur->y) * t;
+            uint32_t c = 0;
+            for (int k = 0; k < 3; k++) {
+                float c0 = (float)((cur->rgb >> (k * 8)) & 0xFF), c1 = (float)((nxt->rgb >> (k * 8)) & 0xFF);
+                int cv = (int)(c0 + (c1 - c0) * t + 0.5f);
+                if (cv < 0) cv = 0; else if (cv > 255) cv = 255;
+                c |= (uint32_t)cv << (k * 8);
+            }
+            v.rgb = c;
+            out[m++] = v;
+        }
+        if (m >= 30) break;
+    }
+    return m;
+}
+
+static int s_emitted = 0;
+
+static void p3_emit_tri(const p3_v* a, const p3_v* b, const p3_v* c, float offx, float offy,
+                        float depth_world, int category, uint32_t tag, int group) {
+    openpete_scene_tri t = {0};
+    const p3_v* v[3] = { a, b, c };
+    openpete_worldvz wz = openpete_worldvz_scaled(depth_world, 1.0f);
+    float z = openpete_native_depth_from_viewz(wz);
+    for (int k = 0; k < 3; k++) {
+        t.v[k].sx = v[k]->x + offx; t.v[k].sy = v[k]->y + offy;
+        t.v[k].z = z; t.v[k].pvz = wz.vz;
+        t.v[k].u = 0.0f; t.v[k].v = 0.0f;
+        t.v[k].rgba = (v[k]->rgb & 0xFFFFFFu) | 0xFF000000u;
+    }
+    t.textured = 0; t.blend = 0;
+    (void)tag;
+    openpete_native_scene_add_tri_grouped(&t, category, 0, group);
+    if (p3_dbg() && category == OPENPETE_SCENE_PORTAL_CYCLORAMA) {
+        static unsigned s_dumps = 0;
+        if (s_dumps < 12 && openpete_frame >= p3_dbg_from()) {
+            s_dumps++;
+            fprintf(stderr, "[portal3-native f=%u] rgb=%06X/%06X/%06X xy=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) off=(%.0f,%.0f)\n",
+                    openpete_frame, a->rgb & 0xFFFFFF, b->rgb & 0xFFFFFF, c->rgb & 0xFFFFFF,
+                    a->x, a->y, b->x, b->y, c->x, c->y, offx, offy);
+        }
+    }
+    s_emitted++;
+}
+
+static void p3_extract_one(CPUState* cpu, const p3_preview* p, const ngte_view* vw,
+                           int sky_ir0, uint32_t env_far, int mask_done[P3_MAX_PORTALS]) {
+    static float vx[P3_MAX_VERTS], vy[P3_MAX_VERTS];
+    static uint8_t oc[P3_MAX_VERTS];
+    static uint32_t col[P3_MAX_COLS];
+    uint32_t M = p->mesh;
+    if (M < 0x80000000u || M >= 0x80200000u) return;
+    uint32_t vc = cpu->read_word(M + 0x00), vo = cpu->read_word(M + 0x04);
+    uint32_t cc = cpu->read_word(M + 0x08), co = cpu->read_word(M + 0x0C);
+    uint32_t fc = cpu->read_word(M + 0x10), fo = cpu->read_word(M + 0x14);
+    if (vc > P3_MAX_VERTS || cc > P3_MAX_COLS || fc > 4096) return;
+    const float offx = (float)(vw->ofx - 256.0), offy = (float)(vw->ofy - 120.0);
+    const float depth_world = (float)(p->depth7 << 7);
+    const int group = 1 + p->slot;
+
+    for (uint32_t i = 0; i < vc; i++) {
+        /* (y << 16 | x) << 5, the low five bits draw-owned scratch: x is
+         * the signed 16 bits above them, y the signed 11 bits above x (a
+         * picture reaches a few dozen rows above and below the frame). */
+        uint32_t w = cpu->read_word(M + vo + i * 4);
+        int x = (int16_t)((w >> 5) & 0xFFFF);
+        int y = (int)((int32_t)w >> 21);
+        vx[i] = (float)x; vy[i] = (float)y;
+        uint8_t o = 0;
+        if (y <= p->ymin) o |= 1; if (y >= p->ymax) o |= 2;
+        if (x <= p->xmin) o |= 4; if (x >= p->xmax) o |= 8;
+        oc[i] = o;
+    }
+    for (uint32_t j = 0; j < cc; j++) {
+        uint32_t c = cpu->read_word(M + co + j * 4) & 0xFFFFFF;
+        if (p->ir0) c = p3_fade(c, p->far_rgb, p->ir0);
+        if (sky_ir0) c = p3_fade(c, env_far, sky_ir0);
+        col[j] = c;
+    }
+    /* The portal's stencil footprint: the rect at the portal depth, once per
+     * portal (the background record comes first). */
+    if (p->slot < P3_MAX_PORTALS && !mask_done[p->slot]) {
+        mask_done[p->slot] = 1;
+        const float mask_depth = depth_world;
+        p3_v r0 = { (float)p->xmin, (float)p->ymin, 0 }, r1 = { (float)p->xmax, (float)p->ymin, 0 };
+        p3_v r2 = { (float)p->xmax, (float)p->ymax, 0 }, r3 = { (float)p->xmin, (float)p->ymax, 0 };
+        p3_emit_tri(&r0, &r1, &r2, offx, offy, mask_depth, OPENPETE_SCENE_PORTAL_MASK, 0, group);
+        p3_emit_tri(&r0, &r2, &r3, offx, offy, mask_depth, OPENPETE_SCENE_PORTAL_MASK, 0, group);
+    }
+    const uint32_t tag = OPENPETE_TAG_PORTAL(p->arg ? OPENPETE_TAG_PORTAL_FLAT : OPENPETE_TAG_PORTAL_DOME, p->slot);
+    openpete_native_scene_set_tag(tag);
+    const float pic_depth = depth_world;
+    for (uint32_t f = 0; f < fc; f++) {
+        uint32_t w0 = cpu->read_word(M + fo + f * 8), w1 = cpu->read_word(M + fo + f * 8 + 4);
+        uint32_t i0 = (w0 >> 20) & 0xFFF, i1 = (w0 >> 10) & 0x3FF, i2 = w0 & 0x3FF;
+        s_cen_faces++;
+        if (i0 >= vc || i1 >= vc || i2 >= vc) { s_cen_idx++; continue; }
+        if (oc[i0] & oc[i1] & oc[i2]) { s_cen_oc++; continue; }   /* off the same rect side */
+        uint32_t k0, k1, k2;
+        if (w1 & 0x80000000u) { k0 = k1 = k2 = (w1 >> 20) & 0x3FF; }
+        else { k0 = ((w1 >> 18) & 0xFFC) >> 2; k1 = ((w1 >> 8) & 0xFFC) >> 2; k2 = ((w1 << 2) & 0xFFC) >> 2; }
+        p3_v poly[32], tmp[32];
+        poly[0].x = vx[i0]; poly[0].y = vy[i0]; poly[0].rgb = k0 < cc ? col[k0] : 0;
+        poly[1].x = vx[i1]; poly[1].y = vy[i1]; poly[1].rgb = k1 < cc ? col[k1] : 0;
+        poly[2].x = vx[i2]; poly[2].y = vy[i2]; poly[2].rgb = k2 < cc ? col[k2] : 0;
+        int n = 3, drop = 0;
+        for (int e = 0; e < p->nedge && !drop; e++) {
+            float ax = p->ex[e][0], ay = p->ey[e][0], bx = p->ex[e][1], by = p->ey[e][1];
+            int outside = 0;
+            for (int k = 0; k < n; k++)
+                if (p3_cross(ax, ay, bx, by, poly[k].x, poly[k].y) < 0.0f) outside++;
+            if (outside == 0) continue;
+            if (outside == n) { drop = 1; break; }
+            n = p3_clip_edge(poly, n, tmp, ax, ay, bx, by);
+            memcpy(poly, tmp, sizeof(p3_v) * (size_t)n);
+            if (n < 3) { drop = 1; break; }
+        }
+        if (drop) { s_cen_edge++; continue; }
+        s_cen_tris += n - 2;
+        for (int k = 1; k + 1 < n; k++)
+            p3_emit_tri(&poly[0], &poly[k], &poly[k + 1], offx, offy, pic_depth,
+                        OPENPETE_SCENE_PORTAL_CYCLORAMA, tag, group);
+    }
+    openpete_native_scene_set_tag(0);
+}
+
+static void p3_feed(CPUState* cpu, const p3_tick* T) {
+    if (!openpete_native_scene_enabled() || !render_path_enabled(RP_PORTAL)) return;
+    ngte_view vw; ngte_view_build(cpu, &vw);
+    int sky_ir0 = game_layout.fog.factor ? (int)cpu->read_word(game_layout.fog.factor) : 0;
+    uint32_t env_far = p3_env_far(cpu);
+    int mask_done[P3_MAX_PORTALS]; memset(mask_done, 0, sizeof mask_done);
+    s_emitted = 0;
+    s_cen_faces = s_cen_idx = s_cen_oc = s_cen_edge = s_cen_tris = 0;
+    for (int i = 0; i < T->n; i++) p3_extract_one(cpu, &T->p[i], &vw, sky_ir0, env_far, mask_done);
+}
+
+/* ---- hooks ------------------------------------------------------------ */
+static int on_portal_leaf(CPUState* cpu, uint32_t addr) {
+    int feed = openpete_native_scene_enabled();
+    if (!feed && !p3_dbg()) return 0;
+    if (!s_in_pass) return 0;
+    static int s_in = 0;              /* the dispatch below re-enters this hook */
+    if (s_in) return 0;
+    s_in = 1;
+    int arg = (int32_t)cpu->a0;
+    p3_capture(cpu, arg);
+    s_leaf_calls++;
+    uint32_t start = cpu->read_word(game_layout.polybuf.cursor);
+    openpete_recomp_module_get()->dispatch(cpu, addr);
+    uint32_t end = cpu->read_word(game_layout.polybuf.cursor);
+    if (p3_dbg()) {
+        /* The leaf's prims, for the census: F3 0x14 bytes, G3 0x1C, the size
+         * byte of the link word naming the type. */
+        static unsigned s_dumps = 0;
+        if (s_dumps < 6 && openpete_frame >= p3_dbg_from()) {
+            s_dumps++;
+            fprintf(stderr, "[portal3-prims f=%u arg=%d] bytes=%u:", openpete_frame, arg, end - start);
+            uint32_t q = start; int n = 0;
+            while (q + 0x14 <= end && n < 6) {
+                uint32_t w0 = cpu->read_word(q), code = w0 >> 24;
+                if (code == 0x04) {
+                    fprintf(stderr, " F3 rgb=%06X xy=(%d,%d)(%d,%d)(%d,%d)", cpu->read_word(q + 4) & 0xFFFFFF,
+                            (int16_t)(cpu->read_word(q + 8) & 0xFFFF), (int16_t)(cpu->read_word(q + 8) >> 16),
+                            (int16_t)(cpu->read_word(q + 12) & 0xFFFF), (int16_t)(cpu->read_word(q + 12) >> 16),
+                            (int16_t)(cpu->read_word(q + 16) & 0xFFFF), (int16_t)(cpu->read_word(q + 16) >> 16));
+                    q += 0x14;
+                } else if (code == 0x06) {
+                    fprintf(stderr, " G3 rgb=%06X/%06X/%06X xy=(%d,%d)(%d,%d)(%d,%d)",
+                            cpu->read_word(q + 4) & 0xFFFFFF, cpu->read_word(q + 12) & 0xFFFFFF, cpu->read_word(q + 20) & 0xFFFFFF,
+                            (int16_t)(cpu->read_word(q + 8) & 0xFFFF), (int16_t)(cpu->read_word(q + 8) >> 16),
+                            (int16_t)(cpu->read_word(q + 16) & 0xFFFF), (int16_t)(cpu->read_word(q + 16) >> 16),
+                            (int16_t)(cpu->read_word(q + 24) & 0xFFFF), (int16_t)(cpu->read_word(q + 24) >> 16));
+                    q += 0x1C;
+                } else { fprintf(stderr, " ?%02X", code); q += 4; }
+                n++;
+            }
+            fprintf(stderr, "\n");
+        }
+    }
+    s_in = 0;
+    return 1;
+}
+
+static int on_portal_pass(CPUState* cpu, uint32_t addr) {
+    int feed = openpete_native_scene_enabled();
+    if (!feed && !render_paths_active() && !p3_dbg()) return 0;
+    static int s_in = 0;
+    if (s_in) return 0;
+    s_in = 1;
+    if (openpete_frame != s_curr.frame) {
+        s_prev = s_curr;
+        s_prev.valid = s_curr.valid && (openpete_frame - s_curr.frame <= 3u);
+        s_curr.n = 0; s_curr.frame = openpete_frame; s_curr.valid = 1;
+    }
+    s_leaf_calls = 0;
+    s_in_pass = 1;
+    s_pass_start = cpu->read_word(game_layout.polybuf.cursor);
+    openpete_recomp_module_get()->dispatch(cpu, addr);
+    uint32_t end = cpu->read_word(game_layout.polybuf.cursor);
+    s_in_pass = 0;
+    render_path_record(RP_PORTAL, s_pass_start, end);
+    if (feed) p3_feed(cpu, &s_curr);
+    if (p3_dbg()) {
+        static unsigned s_reports = 0;
+        if (s_reports < 64 && s_curr.n && openpete_frame >= p3_dbg_from()) {
+            s_reports++;
+            fprintf(stderr, "[portal3 f=%u] leaf-calls=%d captured=%d prim-bytes=%u emitted=%d faces=%d idx-drop=%d oc-drop=%d edge-drop=%d tris=%d",
+                    openpete_frame, s_leaf_calls, s_curr.n, end - s_pass_start, s_emitted,
+                    s_cen_faces, s_cen_idx, s_cen_oc, s_cen_edge, s_cen_tris);
+            for (int i = 0; i < s_curr.n; i++) {
+                const p3_preview* p = &s_curr.p[i];
+                fprintf(stderr, " | slot%d arg%d mesh=%08X rect=[%d,%d]x[%d,%d] d7=%d ir0=%d edges=%d",
+                        p->slot, p->arg, p->mesh, p->xmin, p->xmax, p->ymin, p->ymax, p->depth7, p->ir0, p->nedge);
+            }
+            fprintf(stderr, "\n");
+        }
+    }
+    s_in = 0;
+    return 1;
+}
+
+/* Sub-tick re-extract: replay the tick's previews; lerp the rect and edges
+ * from the previous tick when the same portal set drew with the same edge
+ * counts, else hold the current tick's. */
+void portal3_reextract(CPUState* cpu, double alpha, int interp_on) {
+    if (!openpete_native_scene_enabled()) return;
+    if (!render_path_canon_drawn(RP_PORTAL)) return;
+    if (!s_curr.valid || s_curr.n == 0) return;
+    p3_tick T = s_curr;
+    /* At alpha 1 the present is the current tick's own view: replay the
+     * capture unchanged, so the identity present reproduces the canonical one
+     * bit for bit (a lerp evaluated at 1 rounds differently). */
+    int can_lerp = interp_on && alpha < 0.999 && s_prev.valid && s_prev.n == s_curr.n;
+    for (int i = 0; can_lerp && i < T.n; i++)
+        if (s_prev.p[i].mesh != s_curr.p[i].mesh || s_prev.p[i].nedge != s_curr.p[i].nedge) can_lerp = 0;
+    if (can_lerp) {
+        float a = (float)alpha;
+        for (int i = 0; i < T.n; i++) {
+            const p3_preview *P = &s_prev.p[i], *C = &s_curr.p[i]; p3_preview* O = &T.p[i];
+            O->xmin = (int)lroundf(P->xmin + (C->xmin - P->xmin) * a);
+            O->xmax = (int)lroundf(P->xmax + (C->xmax - P->xmax) * a);
+            O->ymin = (int)lroundf(P->ymin + (C->ymin - P->ymin) * a);
+            O->ymax = (int)lroundf(P->ymax + (C->ymax - P->ymax) * a);
+            for (int e = 0; e < C->nedge; e++)
+                for (int k = 0; k < 2; k++) {
+                    O->ex[e][k] = P->ex[e][k] + (C->ex[e][k] - P->ex[e][k]) * a;
+                    O->ey[e][k] = P->ey[e][k] + (C->ey[e][k] - P->ey[e][k]) * a;
+                }
+        }
+    }
+    p3_feed(cpu, &T);
+}
+
+static const feature_dispatch_entry_t portal3_dispatch[] = {
+    { F_PORTAL_PASS, on_portal_pass },
+    { F_PORTAL_LEAF, on_portal_leaf },
+    { 0u, NULL },
+};
+
+const feature_module_t portal_module = {
+    .name           = "portal_native",
+    .dispatch_table = portal3_dispatch,
+};

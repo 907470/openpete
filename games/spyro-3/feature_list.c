@@ -5,6 +5,8 @@
 extern const feature_module_t render_paths_module;
 extern const feature_module_t terrain_module;
 extern const feature_module_t cyclorama_module;
+extern const feature_module_t portal_module;
+extern const feature_module_t shadow_module;
 extern const feature_module_t terrain_probe_module;
 
 const feature_module_t* const openpete_features[] = {
@@ -16,6 +18,13 @@ const feature_module_t* const openpete_features[] = {
     /* The shared cyclorama feeder: hooks the sky draw from game_layout;
      * inert unless the native scene is enabled or OPENPETE_CYC_VERIFY is set. */
     &cyclorama_module,
+    /* The portal preview feeder: hooks the portal pass and its leaf; inert
+     * unless the native scene is enabled or OPENPETE_PORTAL3_DBG is set. */
+    &portal_module,
+    /* The shared moby drop-shadow feeder: hooks the shadow draw from
+     * game_layout; inert unless the native scene is enabled or
+     * OPENPETE_SHADOW_VERIFY is set. */
+    &shadow_module,
     /* The calibrated terrain probe: inert unless OPENPETE_TERRAIN_PROBE is set. */
     &terrain_probe_module,
 };

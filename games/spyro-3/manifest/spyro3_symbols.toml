@@ -94,3 +94,41 @@ note = "func_8004F6C4 — builds the sky and world matrices from the angles at G
 name = "G_SIN"
 addr = 0x800658A0
 note = "g_Sin (psx.map); 256 s16 1.12 entries per circle, cos = g_Cos 0x80065920 at +0x80. asm/stdutil.s func_8004E9E4 (sin) and func_8004EA2C (cos) index it by angle>>4 with a 4-bit lerp; func_8004F6C4 builds the camera rotation matrix from the pair"
+
+[[symbol]]
+name = "G_MOBYSHADOWS"
+addr = 0x8006E388
+note = "moby drop-shadow descriptor {uv0+clut, uv1+tpage, list end}: func_8002DDA8 loads +0x00/+0x04 as the shadow sprite's two UV words and +0x08 as the drawn-moby list terminator (asm/mobyfunc.s:921-923); the level loader func_8002B810 writes the two UV words from the level asset table (asm/nonmatchings/loaders/func_8002B810.s:270-275); the moby draw stores the list cursor back to +0x08 (asm/mobydraw.s:579-582). Dump: uv0=0x2FE76000, uv1=0x80587F1F (tpage 0x8058, ABR 2 subtract, 4bpp), end=0x801BC940"
+
+[[symbol]]
+name = "F_MOBY_SHADOWS"
+addr = 0x8002DDA8
+kind = "function"
+note = "func_8002DDA8 DrawMobyShadows (asm/mobyfunc.s:887-1229; named in include/mobyfunc.h) — the moby drop-shadow renderer, called fourth by fDrawSpyroAndMobys func_8001EC5C; the shared shadow feeder's hook site"
+
+[[symbol]]
+name = "D_PORTALS"
+addr = 0x8006C530
+note = "pointer to the level's portal record array (0x44 bytes per record: five world-space pentagon vertices +0x00, preview mesh pointer +0x3C, enable/draw radius +0x40, back-side flag +0x41, level id +0x42, opening counter +0x43); set at level load by func_loading_800795BC"
+
+[[symbol]]
+name = "D_PORTALCOUNT"
+addr = 0x8006C5E0
+note = "portal record count; the portal pass loops over it (asm/nonmatchings/drawutil/func_8001EDEC.s)"
+
+[[symbol]]
+name = "D_PORTAL_BLOCK"
+addr = 0x8006ED88
+note = "the portal pass's parameter block for the preview leaf: +0x00 y-min, +0x04 y-max, +0x08 x-min, +0x0C x-max, +0x10 preview mesh pointer, +0x14 depth >> 7, +0x18/+0x1A/+0x1C far colour halfwords at GTE scale, +0x1E IR0, +0x20 edge count, +0x24 8-byte edge entries of packed screen points; written by func_8001EDEC per portal, read only by func_8001C8C8"
+
+[[symbol]]
+name = "F_PORTAL_PASS"
+addr = 0x8001EDEC
+kind = "function"
+note = "func_8001EDEC (fDrawSkyboxPortals) — per portal: gates, projects the pentagon with the sky matrix, fills D_PORTAL_BLOCK, calls F_PORTAL_LEAF with 1 then 0"
+
+[[symbol]]
+name = "F_PORTAL_LEAF"
+addr = 0x8001C8C8
+kind = "function"
+note = "func_8001C8C8 (cyclorama.s:378) — draws one pre-projected preview mesh (a0 > 0 the base record, a0 == 0 the record at +0x3C) clipped to D_PORTAL_BLOCK's pentagon edges with two DPCS fades"

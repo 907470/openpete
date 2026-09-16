@@ -11,6 +11,8 @@
 #include "renderer/orchestrator.h"
 #include "renderer/terrain.h"
 #include "renderer/cyclorama.h"
+#include "renderer/portal.h"
+#include "renderer/shadow.h"
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"      /* g_openpete_tick_period_ns */
 #include "openpete_native_render.h"
@@ -112,6 +114,8 @@ static void game_reextract_body(CPUState* cpu) {
     openpete_native_scene_begin();
     cyclorama_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* sky dome + background */
     terrain_reextract(cpu, bracketed ? alpha : 0.0, bracketed);
+    portal3_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* homeworld portal previews */
+    shadow_reextract(cpu);          /* drop-shadows under mobys */
     s_fpos_active = 0;
 }
 

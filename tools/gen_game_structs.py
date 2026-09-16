@@ -21,10 +21,12 @@ compile of a mod proves the rewritten layout equals the guest layout.
 The toml carries a hash of the headers it was probed from; a checkout
 whose hash differs is refused with the regen command, as is any
 mismatch between the structs and pins emitted here and those in the
-toml. The Moby offsets below, cross-checked against the port's native
-extractors, are asserted against the toml as a second instrument.
+toml. The game's layout pins (tools/game_struct_config.py), each read
+from its own asm or source, are asserted against the toml as a second
+instrument. Everything that differs between decompilations — header
+globs, PSYQ stub set, pins — comes from that config, keyed by --game.
 
-Usage: gen_game_structs.py --include <decomp include dir>
+Usage: gen_game_structs.py --game <slug> --include <decomp include dir>
                            --layout <struct_layout.toml> --out <header>
 """
 import argparse
@@ -34,33 +36,14 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import psyq_types as P  # noqa: E402
-
-# Hand-verified pins (include/moby.h cross-checked against asm/42CC4.s and
-# renderer/moby.c); asserted against the probed toml.
-SIZES = {
-    "Vector3D": 12,
-    "Vector3D8": 3,
-    "SHORTMATRIX": 20,
-    "AnimationState": 7,
-    "Moby": 0x58,
-}
-OFFSETS = [
-    ("Moby", "m_Props", 0x00),
-    ("Moby", "m_Position", 0x0C),
-    ("Moby", "m_DamageFlags", 0x18),
-    ("Moby", "m_RotationMatrix", 0x20),
-    ("Moby", "m_CollisionRegion", 0x34),
-    ("Moby", "m_Class", 0x36),
-    ("Moby", "m_AnimationState", 0x3C),
-    ("Moby", "m_Rotation", 0x44),
-    ("Moby", "m_State", 0x48),
-    ("Moby", "m_SectorIndex", 0x4A),
-    ("Moby", "m_RenderRadius", 0x50),
-    ("Moby", "m_WasDrawn", 0x51),
-    ("Moby", "m_UpdateDistance", 0x52),
-]
+import game_struct_config as C  # noqa: E402
 
 TYPEDEF_START_RE = re.compile(r"typedef\s+struct(?:\s+\w+)?\s*\{")
+
+# `T (*name)(params);` and `T (**name[N])(params);`: the member is the
+# name inside the parentheses, and the parameter list names no member.
+FUNC_PTR_DECL_RE = re.compile(
+    r"^[^()]*\(\s*\**\s*(\w+)\s*((?:\[[^\]]*\]\s*)*)\)\s*\(.*\)\s*$", re.S)
 
 WIDTH_MAP = [
     (re.compile(r"\bu_char\b"), "uint8_t"),
@@ -76,16 +59,33 @@ WIDTH_MAP = [
 PTR_FIELD_RE = re.compile(
     r"^(\s*)((?:struct\s+\w+|\w+)\s*\*+)\s*(\w+)((?:\s*\[[^\]]*\])*)\s*;(.*)$")
 
+# `enum E name;`: the enumerations live in the decomp's headers, and MIPS
+# gives an enum member int width, so the host view is a plain int32_t.
+ENUM_FIELD_RE = re.compile(
+    r"^(\s*)enum\s+(\w+)\s+(\w+)((?:\s*\[[^\]]*\])*)\s*;(.*)$")
+
 
 def strip_comments(text: str) -> str:
     return re.sub(r"//[^\n]*|/\*.*?\*/", "", text, flags=re.S)
 
 
-def enumerate_structs(include_dir: Path):
-    """Every top-level `typedef struct [tag] { ... } Name;` in include/*.h,
-    as (header basename, Name, raw body) in file order."""
+def headers(include_dir: Path, globs=("*.h",)):
+    """The decomp headers a game's probe covers, in a stable order."""
+    seen, out = set(), []
+    for g in globs:
+        for h in sorted(include_dir.glob(g)):
+            if h not in seen:
+                seen.add(h)
+                out.append(h)
+    return out
+
+
+def enumerate_structs(include_dir: Path, globs=("*.h",)):
+    """Every top-level `typedef struct [tag] { ... } Name;` in the game's
+    headers, as (header path relative to include/, Name, raw body) in file
+    order."""
     out = []
-    for h in sorted(include_dir.glob("*.h")):
+    for h in headers(include_dir, globs):
         text = h.read_text(encoding="utf-8")
         for m in TYPEDEF_START_RE.finditer(text):
             depth, i = 1, m.end()
@@ -95,7 +95,8 @@ def enumerate_structs(include_dir: Path):
                 i += 1
             tail = re.match(r"\s*(\w+)\s*;", text[i:])
             if tail:
-                out.append((h.name, tail.group(1), text[m.end():i - 1]))
+                out.append((h.relative_to(include_dir).as_posix(),
+                            tail.group(1), text[m.end():i - 1]))
     return out
 
 
@@ -127,6 +128,10 @@ def walk_members(body: str, prefix: str = ""):
         decl = decl.lstrip("\0").strip()
         if not decl:
             continue
+        fm = FUNC_PTR_DECL_RE.match(decl)
+        if fm:
+            out.append((f"{prefix}{fm.group(1)}", None))
+            continue
         bm = re.search(r"(\w+)\s*:\s*(\d+)$", decl)
         if bm:
             out.append((f"{prefix}{bm.group(1)}", int(bm.group(2))))
@@ -154,9 +159,30 @@ def bitfield_paths(body: str, prefix: str = ""):
     return [(p, w) for p, w in walk_members(body, prefix) if w is not None]
 
 
+# `T (*name)(params);` on one source line, with an optional trailing
+# comment: the whole declarator becomes one guest pointer.
+FUNC_PTR_LINE_RE = re.compile(
+    r"^(\s*)([^();]*\(\s*\**\s*)(\w+)((?:\s*\[[^\]]*\])*)(\s*\)\s*\([^;]*\))\s*;(.*)$")
+
+
 def transform_body(body: str) -> str:
     out = []
     for line in body.splitlines():
+        fm = FUNC_PTR_LINE_RE.match(line)
+        if fm:
+            indent, head, fname, subs, tail, rest = fm.groups()
+            sig = re.sub(r"\s+", " ", (head + "*" + subs + tail).strip())
+            line = (f"{indent}uint32_t {fname}{subs.strip()}; "
+                    f"/**< Guest pointer: `{sig}`. */{rest}")
+            out.append(line)
+            continue
+        em = ENUM_FIELD_RE.match(line)
+        if em:
+            indent, ename, fname, subs, rest = em.groups()
+            line = (f"{indent}int32_t {fname}{subs.strip()}; "
+                    f"/**< Guest enum: `enum {ename}`. */{rest}")
+            out.append(line)
+            continue
         pm = PTR_FIELD_RE.match(line)
         if pm:
             indent, ptype, fname, subs, rest = pm.groups()
@@ -217,15 +243,17 @@ def read_layout(path: Path):
     return (sha.group(1) if sha else None), structs
 
 
-def headers_hash(include_dir: Path) -> str:
+def headers_hash(include_dir: Path, globs=("*.h",), stubs=None) -> str:
+    """The identity of everything the probe compiled: the game's headers,
+    the PSYQ stubs it saw, and the compiler flags."""
     import hashlib
     import probe_struct_layout as PR
     h = hashlib.sha256()
-    for f in sorted(include_dir.glob("*.h")):
-        h.update(f.name.encode())
+    for f in headers(include_dir, globs):
+        h.update(f.relative_to(include_dir).as_posix().encode())
         h.update(f.read_bytes())
     h.update(P.SYS_TYPES_H.encode())
-    h.update(P.psyq_text().encode())
+    h.update(P.psyq_text(stubs).encode())
     h.update(" ".join(PR.FLAGS).encode())
     return h.hexdigest()
 
@@ -259,14 +287,14 @@ def topo_sort(structs, known: set):
     return order
 
 
-def bound_macros(include_dir: Path, bodies):
+def bound_macros(include_dir: Path, bodies, globs=("*.h",)):
     """`#define NAME value` lines for every macro an array bound names."""
     used = set()
     for b in bodies:
         for sub in re.findall(r"\[([^\]]*)\]", strip_comments(b)):
             used.update(re.findall(r"\b[A-Z_][A-Z0-9_]+\b", sub))
     defs = {}
-    for h in sorted(include_dir.glob("*.h")):
+    for h in headers(include_dir, globs):
         for m in re.finditer(r"^#define (\w+)\s+(.+?)\s*(?:/[*/].*)?$",
                              h.read_text(encoding="utf-8"), re.M):
             defs[m.group(1)] = m.group(2)
@@ -293,6 +321,8 @@ def bound_macros(include_dir: Path, bodies):
 
 def main():
     ap = argparse.ArgumentParser()
+    ap.add_argument("--game", default="spyro-1",
+                    help="game slug, keying tools/game_struct_config.py")
     ap.add_argument("--include", type=Path, required=True)
     ap.add_argument("--layout", type=Path, required=True,
                     help="manifest/struct_layout.toml from "
@@ -300,22 +330,26 @@ def main():
     ap.add_argument("--out", type=Path, required=True)
     args = ap.parse_args()
 
+    cfg = C.config(args.game)
+    globs = tuple(cfg["header_globs"])
+    stubs = cfg["psyq_stubs"]
+
     sha, layout = read_layout(args.layout)
-    want = headers_hash(args.include)
+    want = headers_hash(args.include, globs, stubs)
     if sha != want:
         raise SystemExit(
             f"[game-structs] ERROR: {args.layout} was probed from different "
             f"headers (toml {str(sha)[:12]}, checkout {want[:12]}); run "
-            f"scripts/regen-struct-layout.sh (needs mipsel-linux-gnu-gcc) "
-            f"and commit the result")
+            f"GAME={args.game} bash scripts/regen-struct-layout.sh "
+            f"(needs mipsel-linux-gnu-gcc) and commit the result")
 
-    structs = enumerate_structs(args.include)
-    psyq_names = P.psyq_names()
+    structs = enumerate_structs(args.include, globs)
+    psyq_names = P.psyq_names(stubs)
     order = topo_sort(structs, set(psyq_names))
     bodies = {n: b for _, n, b in structs}
 
     blocks = []
-    for _, text in P.PSYQ_TYPES:
+    for _, text in P.psyq_types(stubs):
         blocks.append(transform_body(text) + "\n")
     for name in order:
         body = transform_body(bodies[name])
@@ -335,7 +369,7 @@ def main():
         size, fields = layout[name]
         paths = member_paths(bodies[name]) if name in bodies else \
             member_paths(re.search(rf"typedef struct {name} \{{(.*?)\}} {name};",
-                                   P.psyq_text(), re.S).group(1))
+                                   P.psyq_text(stubs), re.S).group(1))
         if paths != [f for f, _ in fields]:
             raise SystemExit(f"[game-structs] ERROR: {name} member paths differ "
                              f"from the toml; regenerate struct_layout.toml")
@@ -345,16 +379,22 @@ def main():
             asserts.append(f'_Static_assert(offsetof({name}, {f}) == {off:#x}, '
                            f'"{name}.{f} offset drifted");')
 
-    # The hand table is a second instrument on the probe.
-    for t, sz in SIZES.items():
-        if layout[t][0] != sz:
-            raise SystemExit(f"[game-structs] ERROR: probed sizeof({t}) "
-                             f"{layout[t][0]:#x} != hand table {sz:#x}")
-    for t, f, off in OFFSETS:
-        got = dict(layout[t][1])[f]
-        if got != off:
-            raise SystemExit(f"[game-structs] ERROR: probed {t}.{f} {got:#x} "
-                             f"!= hand table {off:#x}")
+    # The game's own layout facts are a second instrument on the probe.
+    for pin in cfg["pins"]:
+        st = pin["struct"]
+        if st not in layout:
+            raise SystemExit(f"[game-structs] ERROR: pin names {st}, which "
+                             f"the toml does not carry")
+        if "size" in pin and layout[st][0] != pin["size"]:
+            raise SystemExit(f"[game-structs] ERROR: probed sizeof({st}) "
+                             f"{layout[st][0]:#x} != {pin['size']:#x} from "
+                             f"{pin['why']}")
+        if "field" in pin:
+            got = dict(layout[st][1]).get(pin["field"])
+            if got != pin["offset"]:
+                raise SystemExit(f"[game-structs] ERROR: probed {st}."
+                                 f"{pin['field']} {got} != {pin['offset']:#x} "
+                                 f"from {pin['why']}")
 
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(
@@ -375,7 +415,7 @@ def main():
         "#define OPENPETE_GAME_STRUCTS_H\n\n"
         "#include <stddef.h>\n"
         "#include <stdint.h>\n\n"
-        + "\n".join(bound_macros(args.include, bodies.values())) + "\n\n"
+        + "\n".join(bound_macros(args.include, bodies.values(), globs)) + "\n\n"
         + "\n".join(blocks) + "\n"
         + "\n".join(asserts) + "\n\n"
         "#endif /* OPENPETE_GAME_STRUCTS_H */\n",

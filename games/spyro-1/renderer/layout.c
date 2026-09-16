@@ -86,6 +86,22 @@ const game_layout_t game_layout = {
         .tile_word1_br = 0,
         .lod_dist_default = 0u,
     },
+    .shadow = {
+        .desc        = G_MOBYSHADOWS,     /* {Tiledef shadow; int* shadow_list @+0x08} */
+        .hook        = F_MOBY_SHADOWS,
+        .list_source = SHADOW_LIST_ADDR,
+        .list_base   = G_SCRATCH + 0x2800u, /* r_shadows.s:389 addi 0x2800 off the scratch base */
+        .list_reg    = 0,
+        .list_offset = 0u,
+        .moby_pos    = 0x0Cu,             /* Vector3D m_Position */
+        .moby_ground = 0x1Cu,             /* int m_ShadowDistance + the two normal angles */
+        .size_shl    = 0,                 /* r_shadows.s:389+ feeds the record word unshifted */
+        .uv1_bottom_right = 0,            /* +0x04 is already the top-right corner */
+        .matrix_fold_a = 1,               /* r_shadows.s:8005A150-8005A158: R12 dropped,
+                                           * idxA << 3 added into R11 */
+        .cull_layout = SHADOW_CULL_SPYRO1,
+        .ground_plane = D_SPYROSHADOW + 0x18u,   /* SpyroShadow ground height */
+    },
     .hooks = {
         .world_draw = F_WORLD_DRAW,
         .sky_draw   = F_SKY_DRAW,

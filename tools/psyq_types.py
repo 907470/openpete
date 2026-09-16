@@ -119,11 +119,17 @@ DISPENV_SIZE = 0x14
 DRAWENV_R0_OFFSET = 0x19   # the credits overlay stores r0 at g_DB + 0x19
 
 
-def psyq_names():
+def psyq_types(stubs=None):
+    """(stub header name, C text) for the stub set a game includes, in
+    emission order; every stub when `stubs` is None."""
+    return [(n, t) for n, t in PSYQ_TYPES if stubs is None or n in stubs]
+
+
+def psyq_names(stubs=None):
     import re
-    return [m for _, text in PSYQ_TYPES
+    return [m for _, text in psyq_types(stubs)
             for m in re.findall(r"^\} (\w+);", text, re.M)]
 
 
-def psyq_text():
-    return "\n".join(text for _, text in PSYQ_TYPES)
+def psyq_text(stubs=None):
+    return "\n".join(text for _, text in psyq_types(stubs))
