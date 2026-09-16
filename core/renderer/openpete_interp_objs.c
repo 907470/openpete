@@ -35,19 +35,91 @@ op_time_t g_openpete_tick_period_ns = (op_time_t)33430222;  /* 37609/1125000 s *
 #include <stdlib.h>
 #include <string.h>
 
-#define SLOTS  OPENPETE_INTERP_OBJ_SLOTS
-#define BLOB   OPENPETE_INTERP_OBJ_BLOB_BYTES
+/* The two sizes the game registers, and the table they size. Each slot owns
+ * three consecutive blobs in one flat allocation and the entry's three
+ * pointers address them, so a slot's bytes never move and a rehash copies
+ * them explicitly. The survivor buffer end_tick compacts through owns a
+ * second flat allocation for the same reason. */
+static uint32_t SLOTS = OPENPETE_INTERP_OBJ_SLOTS;
+static uint32_t BLOB  = OPENPETE_INTERP_OBJ_BLOB_BYTES;
 
-static openpete_interp_obj_t s_tab[SLOTS];
-static int                   s_count;        /* live entries currently in the table */
+static openpete_interp_obj_t* s_tab;
+static uint8_t*               s_tab_blob;
+static openpete_interp_obj_t* s_surv;
+static uint8_t*               s_surv_blob;
+static int                    s_count;   /* live entries currently in the table */
 
 /* Per-tick stats (finalised in end_tick). */
 static int s_stat_tracked, s_stat_paired, s_stat_spawned, s_stat_despawned;
 
 static openpete_interp_obj_capture_fn s_capture_cb = NULL;
 
-void openpete_interp_register_obj_capture(openpete_interp_obj_capture_fn fn) {
+static void bind_blobs(openpete_interp_obj_t* tab, uint8_t* blob) {
+    for (uint32_t i = 0; i < SLOTS; ++i) {
+        uint8_t* b = blob + (size_t)i * 3u * BLOB;
+        tab[i].prev  = b;
+        tab[i].curr  = b + BLOB;
+        tab[i].prev2 = b + 2u * BLOB;
+    }
+}
+
+/* Clear every entry without dropping the blob bindings. */
+static void table_clear(openpete_interp_obj_t* tab) {
+    for (uint32_t i = 0; i < SLOTS; ++i) {
+        uint8_t *p = tab[i].prev, *c = tab[i].curr, *p2 = tab[i].prev2;
+        memset(&tab[i], 0, sizeof tab[i]);
+        tab[i].prev = p; tab[i].curr = c; tab[i].prev2 = p2;
+    }
+}
+
+/* Copy one entry into another slot, blob bytes included: the destination keeps
+ * its own storage, so the two entries never alias. */
+static void entry_move(openpete_interp_obj_t* dst, const openpete_interp_obj_t* src) {
+    uint8_t *p = dst->prev, *c = dst->curr, *p2 = dst->prev2;
+    *dst = *src;
+    dst->prev = p; dst->curr = c; dst->prev2 = p2;
+    memcpy(p,  src->prev,  BLOB);
+    memcpy(c,  src->curr,  BLOB);
+    memcpy(p2, src->prev2, BLOB);
+}
+
+static int objs_alloc(void) {
+    if (s_tab) return 1;
+    size_t blobs = (size_t)SLOTS * 3u * BLOB;
+    s_tab       = (openpete_interp_obj_t*)calloc(SLOTS, sizeof *s_tab);
+    s_tab_blob  = (uint8_t*)calloc(blobs, 1);
+    s_surv      = (openpete_interp_obj_t*)calloc(SLOTS, sizeof *s_surv);
+    s_surv_blob = (uint8_t*)calloc(blobs, 1);
+    if (!s_tab || !s_tab_blob || !s_surv || !s_surv_blob) {
+        free(s_tab); free(s_tab_blob); free(s_surv); free(s_surv_blob);
+        s_tab = s_surv = NULL; s_tab_blob = s_surv_blob = NULL;
+        return 0;
+    }
+    bind_blobs(s_tab,  s_tab_blob);
+    bind_blobs(s_surv, s_surv_blob);
+    s_count = 0;
+    return 1;
+}
+
+static uint32_t round_pow2(uint32_t v) {
+    uint32_t p = 1u;
+    while (p < v && p < 0x40000000u) p <<= 1;
+    return p;
+}
+
+uint32_t openpete_interp_objs_blob_bytes(void) { return BLOB; }
+uint32_t openpete_interp_objs_slots(void)      { return SLOTS; }
+
+void openpete_interp_register_obj_capture(openpete_interp_obj_capture_fn fn,
+                                          uint32_t blob_bytes, uint32_t slots) {
     s_capture_cb = fn;
+    uint32_t nb = blob_bytes ? blob_bytes : OPENPETE_INTERP_OBJ_BLOB_BYTES;
+    uint32_t ns = round_pow2(slots ? slots : OPENPETE_INTERP_OBJ_SLOTS);
+    if (s_tab && nb == BLOB && ns == SLOTS) return;
+    free(s_tab); free(s_tab_blob); free(s_surv); free(s_surv_blob);
+    s_tab = s_surv = NULL; s_tab_blob = s_surv_blob = NULL;
+    BLOB = nb; SLOTS = ns;
+    objs_alloc();
 }
 
 /* Multiplicative (Knuth) hash → slot index. key is never 0 for a live
@@ -60,6 +132,7 @@ static inline uint32_t slot_of(uint32_t key) {
  * Returns the index; *found = 1 if the slot already holds `key`. */
 static uint32_t probe(uint32_t key, int* found) {
     uint32_t i = slot_of(key);
+    if (!s_tab) { *found = 0; return SLOTS; }
     for (uint32_t n = 0; n < SLOTS; ++n) {
         if (s_tab[i].key == 0)   { *found = 0; return i; }   /* empty: insertion point */
         if (s_tab[i].key == key) { *found = 1; return i; }
@@ -70,6 +143,7 @@ static uint32_t probe(uint32_t key, int* found) {
 }
 
 void openpete_interp_objs_begin_tick(void) {
+    if (!objs_alloc()) return;
     for (uint32_t i = 0; i < SLOTS; ++i)
         if (s_tab[i].key) s_tab[i].seen = 0;
     s_stat_spawned = 0;
@@ -78,6 +152,7 @@ void openpete_interp_objs_begin_tick(void) {
 extern unsigned openpete_frame;
 void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) {
     if (key == 0 || !data) return;
+    if (!objs_alloc()) return;
     if (len > BLOB) len = BLOB;
 
     int found;
@@ -94,7 +169,7 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
          * interpolating prev→curr → the object leads the world (ghosting with
          * camera movement). Keeping both rings on the same distinct-tick
          * boundaries makes the shared alpha consistent. */
-        if (s_tab[i].blob_len == (uint8_t)len &&
+        if (s_tab[i].blob_len == (uint16_t)len &&
             memcmp(s_tab[i].curr, data, len) == 0) {
             s_tab[i].seen = 1;
             return;                       /* unchanged — keep prev/curr + their timestamps */
@@ -135,33 +210,33 @@ void openpete_interp_objs_capture(uint32_t key, const void* data, uint32_t len) 
         }
     }
     memcpy(s_tab[i].curr, data, len);
-    s_tab[i].blob_len = (uint8_t)len;
+    s_tab[i].blob_len = (uint16_t)len;
     s_tab[i].seen     = 1;
 }
 
 void openpete_interp_objs_end_tick(void) {
     /* Evict unseen (despawned) entries, then rehash-compact the survivors so
      * linear-probe chains stay intact for next tick's lookups. */
-    static openpete_interp_obj_t s_survivors[SLOTS];
+    if (!s_tab) return;
     int nsurv = 0, paired = 0, despawned = 0;
 
     for (uint32_t i = 0; i < SLOTS; ++i) {
         if (!s_tab[i].key) continue;
         if (s_tab[i].seen) {
-            s_survivors[nsurv++] = s_tab[i];
+            entry_move(&s_surv[nsurv++], &s_tab[i]);
             if (s_tab[i].have_prev) paired++;
         } else {
             despawned++;
         }
     }
 
-    memset(s_tab, 0, sizeof(s_tab));
+    table_clear(s_tab);
     s_count = 0;
     for (int k = 0; k < nsurv; ++k) {
         int found;
-        uint32_t i = probe(s_survivors[k].key, &found);
+        uint32_t i = probe(s_surv[k].key, &found);
         if (i >= SLOTS) continue;   /* defensive: never full during rehash (nsurv <= SLOTS) */
-        s_tab[i] = s_survivors[k];
+        entry_move(&s_tab[i], &s_surv[k]);
         s_count++;
     }
 
@@ -171,13 +246,13 @@ void openpete_interp_objs_end_tick(void) {
 }
 
 void openpete_interp_objs_reset(void) {
-    memset(s_tab, 0, sizeof(s_tab));
+    if (s_tab) table_clear(s_tab);
     s_count = 0;
     s_stat_tracked = s_stat_paired = s_stat_spawned = s_stat_despawned = 0;
 }
 
 const openpete_interp_obj_t* openpete_interp_objs_find(uint32_t key) {
-    if (key == 0) return NULL;
+    if (key == 0 || !s_tab) return NULL;
     int found;
     uint32_t i = probe(key, &found);
     return found ? &s_tab[i] : NULL;

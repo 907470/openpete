@@ -48,6 +48,14 @@ int moby_native_canon_drawn_mobys(const uint32_t** out);
  * the captured cull records and the interpolated camera. */
 void moby_reextract(struct CPUState* cpu);
 
+/* The cull-record queue the last canonical moby pass read: its guest base and
+ * its length in bytes. A game whose queue lives in memory the rest of the tick
+ * reuses stages these bytes for each sub-tick present, so the replay reads the
+ * queue the tick drew rather than whatever overwrote it. 0 = no queue read yet,
+ * or the game keeps its queue at a fixed address that nothing else touches. */
+uint32_t moby_canon_rec_base(void);
+uint32_t moby_canon_rec_bytes(void);
+
 #ifdef __cplusplus
 }
 #endif

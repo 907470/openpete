@@ -13,6 +13,8 @@
 #include "renderer/cyclorama.h"
 #include "renderer/portal.h"
 #include "renderer/shadow.h"
+#include "renderer/moby.h"
+#include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"      /* g_openpete_tick_period_ns */
 #include "openpete_native_render.h"
@@ -62,21 +64,66 @@ int openpete_native_interp_pos(unsigned int key, double out[3]) {
     out[0] = s_fpos[0]; out[1] = s_fpos[1]; out[2] = s_fpos[2];
     return 1;
 }
-void spyro_native_canon_epoch_commit(void) {}
+/* The canonical-render epoch (renderer/orchestrator.h): every canonical
+ * present closes one, and a producer that ran inside the one just closed is
+ * fresh, so a sub-tick pass replays only what the canonical present drew. A
+ * pause or load screen that runs no moby draw leaves that producer stale and
+ * its replay is skipped, instead of painting the last gameplay tick's set over
+ * a frozen backdrop. */
+static uint32_t s_epoch_now = 1;   /* the stamp captures take (present in flight) */
+static uint32_t s_epoch_ok;        /* the stamp a capture must carry to be fresh */
+static uint32_t s_prod_epoch[3];
 
-/* The canonical-render epoch and the producer-camera bracket
- * (renderer/orchestrator.h). This game snapshots no transient render-pass
- * scratch, so every producer reports never-fresh and every feeder skips its
- * replay; the camera bracket is the interpolated one for every producer. */
-uint32_t spyro_native_canon_epoch_stamp(void) { return 0u; }
-int  spyro_native_canon_epoch_fresh(uint32_t stamp) { (void)stamp; return 0; }
-int  spyro_native_canon_mobyreg_fresh(void) { return 0; }
-int  spyro_native_canon_shaded_fresh(void) { return 0; }
+void spyro_native_canon_epoch_commit(void) {
+    s_epoch_ok = s_epoch_now;
+    s_epoch_now++;
+}
+uint32_t spyro_native_canon_epoch_stamp(void) { return s_epoch_now; }
+int  spyro_native_canon_epoch_fresh(uint32_t stamp) { return stamp == s_epoch_ok; }
+int  spyro_native_canon_mobyreg_fresh(void) { return s_prod_epoch[SPYRO_PROD_MOBYREG] == s_epoch_ok; }
+int  spyro_native_canon_shaded_fresh(void) { return 0; }   /* no second material pass */
+/* The moby cull records live in the draw scratch this tick carved out of the
+ * polybuf, and the draw passes that follow the moby draw reuse that memory
+ * before any sub-tick present runs — measured: the queue's leading records read
+ * back as unrelated words one VBL later. So the queue is copied at the moby
+ * hook and staged back over its own address for the duration of each
+ * intermediate present, which is what makes the replay read the records the
+ * tick actually drew. Nothing else this game's feeders read is transient, so
+ * capture_range has nothing to do. */
+static uint8_t  s_recs_copy[0x1000];
+static uint32_t s_recs_base;
+static uint32_t s_recs_len;
+
 void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len) {
     (void)cpu; (void)off; (void)len;
 }
-void spyro_native_canon_capture_recs(void* cpu) { (void)cpu; }
-void spyro_native_canon_capture_camera(void* cpu, int producer) { (void)cpu; (void)producer; }
+void spyro_native_canon_capture_recs(void* cpu) {
+    (void)cpu;
+    s_recs_len = 0;
+    uint32_t base = moby_canon_rec_base();
+    uint32_t len  = moby_canon_rec_bytes();
+    if (!base || !len || len > sizeof s_recs_copy) return;
+    const void* host = openpete_psx_to_host_ptr(base);
+    if (!host) return;
+    memcpy(s_recs_copy, host, len);
+    s_recs_base = base;
+    s_recs_len  = len;
+}
+
+/* Stage the captured queue for this present. Returns 0 when there is none, so
+ * the caller skips the replay rather than reading whatever now lives there. */
+static int stage_moby_records(void) {
+    if (!s_recs_len) return 0;
+    void* stage = openpete_subtick_view_stage(s_recs_base, s_recs_len);
+    if (!stage) return 0;
+    memcpy(stage, s_recs_copy, s_recs_len);
+    return 1;
+}
+void spyro_native_canon_capture_camera(void* cpu, int producer) {
+    (void)cpu;
+    if ((unsigned)producer < sizeof s_prod_epoch / sizeof s_prod_epoch[0])
+        s_prod_epoch[producer] = s_epoch_now;
+}
 int  spyro_native_prod_camera_enter(int producer) { (void)producer; return 0; }
 void spyro_native_prod_camera_leave(void) {}
 
@@ -131,6 +178,8 @@ static void game_reextract_body(CPUState* cpu) {
     cyclorama_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* sky dome + background */
     terrain_reextract(cpu, bracketed ? alpha : 0.0, bracketed);
     portal3_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* homeworld portal previews */
+    if (stage_moby_records())
+        moby_reextract(cpu);        /* the 3D actors, after the terrain they stand on */
     shadow_reextract(cpu);          /* drop-shadows under mobys */
     s_fpos_active = 0;
 }

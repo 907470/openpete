@@ -4,16 +4,50 @@
  *
  * Region 0 is the camera's draw-time transform [cam.base, cam.xform_end): the
  * sky matrix at +0x00, the world matrix at +0x14 and the position at +0x28,
- * all rewritten once per tick before the draws read them. The per-object
- * capture is empty until the moby walk runs on this game. */
+ * all rewritten once per tick before the draws read them.
+ *
+ * The per-object capture walks the moby array and snapshots one whole record
+ * per live moby, keyed by its address: the array is fixed and terminated by a
+ * live sentinel, so a moby's address IS its slot and stays the same identity
+ * across ticks. The sub-tick moby walk pairs its records against these. */
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"
+#include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "renderer/orchestrator.h"
 #include "game_layout.h"
+#include <stdint.h>
+#include <string.h>
 
 static openpete_interp_region_t s_regions[1];
 
-static void capture_objs_none(void) {}
+static void capture_objs(void) {
+    openpete_interp_objs_begin_tick();
+    const uint32_t head = game_layout.moby.array_head;
+    uint32_t arr = 0;
+    if (head) {
+        if (game_layout.moby.array_direct) arr = head;
+        else {
+            const uint8_t* h = (const uint8_t*)openpete_psx_to_host_ptr(head);
+            if (h) memcpy(&arr, h, 4);
+        }
+    }
+    if (arr >= 0x80000000u) {
+        const uint32_t stride = game_layout.moby.array_stride;
+        const uint32_t blob   = openpete_interp_objs_blob_bytes();
+        uint32_t m = arr;
+        /* Bound the walk below the store capacity so a full array can never
+         * overflow it; the sentinel stops it after the live prefix anyway. */
+        for (uint32_t guard = 0; guard < openpete_interp_objs_slots() - 512u; ++guard) {
+            const void* host = openpete_psx_to_host_ptr(m);
+            if (!host) break;
+            uint8_t st = ((const uint8_t*)host)[game_layout.moby.state_off];
+            if (st == (uint8_t)game_layout.moby.state_term) break;   /* end of the array */
+            if (st < 0x80) openpete_interp_objs_capture(m, host, blob);  /* the rest are dormant */
+            m += stride;
+        }
+    }
+    openpete_interp_objs_end_tick();
+}
 
 void game_interp_register(void) {
     /* ra_commit = 1: the camera presents from the committed timeline under
@@ -23,5 +57,9 @@ void game_interp_register(void) {
     s_regions[0].length   = game_layout.cam.xform_end - game_layout.cam.base;
     s_regions[0].ra_commit = 1;
     openpete_interp_register_regions(s_regions, 1);
-    openpete_interp_register_obj_capture(capture_objs_none);
+    /* One whole Moby record per object, so every consumer reads its fields at
+     * their natural offsets, and the store's default capacity. */
+    openpete_interp_register_obj_capture(capture_objs,
+                                         game_layout.moby.array_stride,
+                                         OPENPETE_INTERP_OBJ_SLOTS);
 }

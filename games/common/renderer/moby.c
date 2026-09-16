@@ -83,9 +83,26 @@ static long s_shmode[3]; /* shaded face-mode census: [0]=gouraud [1]=flat-basic 
 static int  s_sh_nohl = -1; /* OPENPETE_SHADED_NOHL=1 disables the gouraud spec boost (A/B) */
 
 /* The cull-record queue the game's cull pass built, and one record's size.
- * Every material pass over the same model kind shares one queue. */
-#define REC_BASE      (game_layout.moby.rec_base)
+ * Every material pass over the same model kind shares one queue. The base is a
+ * fixed address, or the tick's own draw-scratch block below the polybuf end —
+ * which moves with the draw buffer, so it is read per pass and never cached
+ * across a tick. */
+static uint32_t moby_rec_base(CPUState* cpu) {
+    if (game_layout.moby.rec_base) return game_layout.moby.rec_base;
+    return cpu->read_word(game_layout.polybuf.end) - game_layout.moby.rec_base_polybuf_off;
+}
 static uint32_t s_rec_base;   /* per-pass; set by moby_native_pass */
+/* The base the last canonical pass read. A derived base rides the draw buffer
+ * that tick allocated, and the allocator hands the next tick the other one, so
+ * a sub-tick replay must use the base captured at the hook rather than
+ * recompute it from a polybuf end that has since moved. */
+static uint32_t s_rec_base_canon;
+/* The record queue the last canonical pass read, for an orchestrator that has
+ * to stage those bytes for a sub-tick present: a queue carved out of the
+ * polybuf runs from its base to the polybuf end, and the draw passes that
+ * follow the moby draw reuse that memory before the present happens. */
+uint32_t moby_canon_rec_base(void)  { return s_rec_base_canon; }
+uint32_t moby_canon_rec_bytes(void) { return game_layout.moby.rec_base_polybuf_off; }
 
 #define REC_STRIDE    (game_layout.moby.rec_stride)
 /* The AnimationHeader's geometry pointers, four bytes apart from
@@ -328,7 +345,7 @@ static void hex_dump(CPUState* cpu, uint32_t start, uint32_t end) {
 
     /* Records: first 4, with interpreted fields + followed pointers. */
     for (int r = 0; r < 4; r++) {
-        uint32_t rec = REC_BASE + (uint32_t)r * REC_STRIDE;
+        uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
         uint32_t w0 = cpu->read_word(rec);
         moby_record_t R; int live = moby_game.read_record(cpu, rec, &R);
         uint32_t frame_p = live ? R.header : 0u;
@@ -372,6 +389,14 @@ static void hex_dump(CPUState* cpu, uint32_t start, uint32_t end) {
  * behind the moby_game vertex slots: the walk owns the loop and the
  * projection, the decoder owns what one step of the stream means. */
 typedef moby_vstream_t vstream;
+/* Does this record carry the pose (header, frame)? A keyframe reference is a
+ * pointer into the model's frame array, or — where the cull copies the
+ * keyframe's leading stream word into the record instead — that word, which
+ * may hold any value, so the pose exists exactly when its header does. */
+static inline int moby_pose_live(uint32_t header, uint32_t frame) {
+    return game_layout.moby.rec_frame_is_word ? (header >= 0x80000000u)
+                                              : (frame  >= 0x80000000u);
+}
 static void vstream_init(CPUState* cpu, vstream* s, uint32_t header, uint32_t frame, int s5) {
     moby_game.vstream_init(cpu, s, header, frame, s5);
 }
@@ -421,7 +446,8 @@ typedef struct { float sx, sy, vz; int sat; int unr; int rec;
  * streams use header's; the lerp of two real same-topology model-space poses is always
  * on-model. m_Scale only feeds TR (shared, curr) so a mismatch is irrelevant to the
  * shape lerp. */
-static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
+static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
+                               uint32_t frameA,
                                uint32_t frameB, uint32_t w0,
                                uint32_t frameA_p, uint32_t frameB_p, uint32_t w0_p,
                                uint32_t header_p, double blend_alpha, double gpf_frac,
@@ -429,7 +455,8 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
                                const double TR_frac[3],
                                const int M[3][3], int zsf4, const ngte_view* v,
                                proj_xy* out, int cap) {
-    if (header < 0x80000000u || frameA < 0x80000000u) return 0;
+    if (header < 0x80000000u || !moby_pose_live(header, frameA)) return 0;
+    if (headerB < 0x80000000u) headerB = header;
     /* C2_TR (projection translation) = (TR_stored << 2) >> m_Scale  [F798
      * @8001F858/8001F8C8]. m_Scale is the per-model shrink factor (AnimationHeader
      * +0x05): 2 = identity (the common case), 1 = ×2 size, 3 = /2, etc. Without
@@ -441,7 +468,12 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
      * moby tracks the smooth sub-tick camera instead of stepping in 4-world-unit
      * chunks (the same fix terrain got). Same scale as TR_raw, just fractional;
      * the .s-record path passes NULL and keeps the byte-exact integer TR. */
-    int m_scale = cpu->read_byte(header + game_layout.moby.anim_scale_off) & 0xFF;
+    /* The draw-side translation rescale, and the far skip that rides it, exist
+     * only on a game whose cull stores the unscaled translation; where the cull
+     * stored the final one the record's translation goes to the GTE as it is. */
+    const int tr_final = game_layout.moby.rec_tr_final;
+    int m_scale = tr_final ? game_layout.moby.tr_depth_shift
+                           : (cpu->read_byte(header + game_layout.moby.anim_scale_off) & 0xFF);
     /* .s far-skip [.L8001F888 / spec twin @8002103C]: records with a non-zero
      * w0 low byte (the GPF-TR scale, m_ScaleOverride-derived) run IR0=(w0&0xFF),
      * IR3=(TR.z<<2)>>m_Scale through GPF sf=0 and SKIP the whole record when
@@ -451,7 +483,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
      * that. w0&0xFF==0 records (the common case) never take this test. Host-
      * built w0 (reveal/sub-tick rebuild) has no low byte; the sub-tick pass
      * re-applies this check from the live record's w0 (reextract_record_pass). */
-    int gpf = (int)(w0 & 0xFFu);
+    int gpf = tr_final ? 0 : (int)(w0 & 0xFFu);
     if (gpf) {
         int ir3 = (int)(int16_t)((TR_raw[2] << 2) >> m_scale);
         int mac3 = gpf * ir3;
@@ -459,7 +491,8 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
     }
     double TR[3];
     if (TR_frac) {
-        double sc = 4.0 / (double)(1 << (m_scale < 0 ? 0 : (m_scale > 30 ? 30 : m_scale)));
+        double sc = tr_final ? 1.0
+                  : 4.0 / (double)(1 << (m_scale < 0 ? 0 : (m_scale > 30 ? 30 : m_scale)));
         TR[0] = TR_frac[0] * sc;   /* == (TR_frac << 2) >> m_scale, fractional */
         TR[1] = TR_frac[1] * sc;
         TR[2] = TR_frac[2] * sc;
@@ -485,6 +518,10 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
         TR[0] = (double)((gpf * (int)(int16_t)((TR_raw[0] << 2) >> m_scale)) >> 5);
         TR[1] = (double)((gpf * (int)(int16_t)((TR_raw[1] << 2) >> m_scale)) >> 5);
         TR[2] = (double)((gpf * (int)(int16_t)((TR_raw[2] << 2) >> m_scale)) >> 5);
+    } else if (tr_final) {
+        TR[0] = (double)TR_raw[0];
+        TR[1] = (double)TR_raw[1];
+        TR[2] = (double)TR_raw[2];
     } else {
         TR[0] = (double)((TR_raw[0] << 2) >> m_scale);
         TR[1] = (double)((TR_raw[1] << 2) >> m_scale);
@@ -547,33 +584,42 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
      * the game draws NOTHING for them (the distant-gem leak: native read the
      * HP count unconditionally and kept drawing). --no-lod forces the HP
      * count with the same guard as the HP face select (moby_tier_faceblock). */
-    int count = cpu->read_byte((zsf4 < 0 && !openpete_no_lod)
-                               ? header + game_layout.moby.anim_vcount_lo
-                               : header + game_layout.moby.anim_vcount_hi) & 0xFF;
+    /* OPENPETE_MOBY_VERIFY_NEGCTL=1 reads the OTHER tier's vertex count, so the
+     * stream is decoded to the wrong length and every vertex past the first
+     * divergence lands somewhere else: the negative control that proves a
+     * verify PASS is measuring the decode rather than a match that any count
+     * would produce. */
+    static int s_negctl = -1;
+    if (s_negctl < 0) { const char* e = getenv("OPENPETE_MOBY_VERIFY_NEGCTL");
+                        s_negctl = (e && *e && *e != '0') ? 1 : 0; }
+    int lo_tier = (zsf4 < 0 && !openpete_no_lod);
+    if (s_negctl) lo_tier = !lo_tier;
+    int count = cpu->read_byte(lo_tier ? header + game_layout.moby.anim_vcount_lo
+                                       : header + game_layout.moby.anim_vcount_hi) & 0xFF;
     if (count == 0) return 0;
     if (count > cap) count = cap;
 
     /* Keyframe blend: IR0 = (w0 & 0xFF00) >> 2 (1.0=4096); frame B at frameB.
      * 0 (or B absent) => the no-blend path (frame A only). */
     int blend = (int)((w0 >> game_layout.moby.blend_shift) & game_layout.moby.blend_mask);
-    int do_blend = (blend > 0 && frameB >= 0x80000000u);
+    int do_blend = (blend > 0 && moby_pose_live(headerB, frameB));
     double t = (double)blend / 4096.0;
 
     /* Optional prev pose (two-pass sub-tick shape lerp). The prev streams decode
      * with the PREV clip's own ShortShift (s5_p) — equal to s5 within a clip, but
      * may differ across a count-matched clip switch (see the header doc). */
-    int two = (frameA_p >= 0x80000000u);
+    int two = moby_pose_live(header_p, frameA_p);
     int s5_p = (header_p >= 0x80000000u)
              ? ((cpu->read_byte(header_p + game_layout.moby.anim_shift_off) & 0xFF) + 1) : s5;
     int blend_p = (int)((w0_p >> game_layout.moby.blend_shift) & game_layout.moby.blend_mask);
-    int do_blend_p = two && (blend_p > 0 && frameB_p >= 0x80000000u);
+    int do_blend_p = two && (blend_p > 0 && moby_pose_live(header_p, frameB_p));
     double tp = (double)blend_p / 4096.0;
 
     double rec_minfvz = 1e30;   /* nearest in-front vertex after the pulls (near-floor lift) */
     vstream A, B, Ap, Bp;
     uint32_t hdr_p = (header_p >= 0x80000000u) ? header_p : header;
     vstream_init(cpu, &A, header, frameA, s5);
-    if (do_blend) vstream_init(cpu, &B, header, frameB, s5);
+    if (do_blend) vstream_init(cpu, &B, headerB, frameB, s5);
     if (two) { vstream_init(cpu, &Ap, hdr_p, frameA_p, s5_p);
                if (do_blend_p) vstream_init(cpu, &Bp, hdr_p, frameB_p, s5_p); }
     for (int i = 0; i < count; i++) {
@@ -659,7 +705,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t frameA,
  * m_Renderer) and keeps the canonical value. */
 static int record_zsf4(CPUState* cpu, const moby_record_t* R) {
     int zsf4 = R->tier;
-    if (openpete_no_lod && R->moby >= 0x80000000u) {
+    if (openpete_no_lod && moby_game.renderer_off && R->moby >= 0x80000000u) {
         int md = (int)(cpu->read_byte(R->moby + moby_game.renderer_off) & 0x3Fu);
         if ((md << 8) >= 1024) zsf4 = md << 8;
     }
@@ -672,7 +718,7 @@ static int record_zsf4(CPUState* cpu, const moby_record_t* R) {
 static int moby_project_record(CPUState* cpu, const moby_record_t* R, int zsf4,
                                proj_xy* out, int cap) {
     const ngte_view* v = moby_record_view(R->moby);
-    return moby_decode_project(cpu, R->header, R->frame_a, R->frame_b, R->w0,
+    return moby_decode_project(cpu, R->header, R->header_b, R->frame_a, R->frame_b, R->w0,
                                0, 0, 0, 0, 0.0, -1.0, R->TR_raw, NULL, R->M,
                                zsf4, v, out, cap);
 }
@@ -683,7 +729,7 @@ static proj_xy s_proj[MAX_PROJ]; static int s_proj_n;
 /* Per-record metadata for the independent face-stream walk (3a.2b): where this
  * record's vertices live in s_proj[] (filled in stream order, so a face's stream
  * vertex index k maps to s_proj[proj_off + k]) + the face-stream base. */
-typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, faceblock, w0;
+typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b, faceblock, w0;
                  int metal; uint32_t mscol; uint32_t moby; int zsf4;
                  float env_az;
                  uint32_t frameA;
@@ -917,7 +963,7 @@ static int project_all_records_inner(CPUState* cpu) {
         for (int j = 0; j < got; j++) s_proj[s_proj_n + j].rec = nrec;  /* tag source record */
         if (nrec < MAX_RECORDS) {
             uint32_t header = R.header;
-            s_recs[nrec] = (rec_meta){ rec, off, got, header,
+            s_recs[nrec] = (rec_meta){ rec, off, got, header, R.header_b,
                 /* face stream per the record's tier (HP or LP, --no-lod-aware) */
                 moby_tier_faceblock(cpu, header, zsf4), w0,
                 /* env metal flag = high byte of the record's material word (the
@@ -930,8 +976,10 @@ static int project_all_records_inner(CPUState* cpu) {
                 zsf4,
                 atan2f((float)R.TR_raw[2], (float)R.TR_raw[0]),
                 R.frame_a, 0u, 0u, 0.f };
-            s_recs[nrec].heat = (uint8_t)moby_heat_scalar(
-                cpu->read_word(s_recs[nrec].moby + moby_game.spec_colour_off));
+            s_recs[nrec].heat = moby_game.spec_colour_off
+                ? (uint8_t)moby_heat_scalar(
+                      cpu->read_word(s_recs[nrec].moby + moby_game.spec_colour_off))
+                : 0u;
             fade_snap_put(s_recs[nrec].moby, zsf4);
             if (moby_trace_target() && s_recs[nrec].moby == moby_trace_target())
                 fprintf(stderr, "[moby-trace f=%u] %08X IN-QUEUE rec=%08X zsf4=%d got=%d mat=%s\n",
@@ -940,14 +988,15 @@ static int project_all_records_inner(CPUState* cpu) {
             if (tier_dbg_on()) {
                 if (zsf4 >= 1024) s_tier_near++;
                 else if (zsf4 > 0) s_tier_fog++;
-                else if (zsf4 < -2048 && (int32_t)cpu->read_word(moby_game.skip_lowpoly) > 0) s_tier_farfade++;
+                else if (zsf4 < -2048 && moby_game.skip_lowpoly &&
+                         (int32_t)cpu->read_word(moby_game.skip_lowpoly) > 0) s_tier_farfade++;
                 else s_tier_far++;
                 if ((w0 & 0xFFu) && got == 0) s_tier_gpfskip++;
                 if (!(w0 & 0xFFu) && got == 0 && zsf4 < 0) s_tier_lpskip++;
                 /* mirror check: recompute ZSF4 from gamestate the way the cull
                  * does (@8001F404) and compare with the stored verdict */
                 uint32_t mob = R.moby;
-                if (mob >= 0x80000000u) {
+                if (mob >= 0x80000000u && moby_game.renderer_off) {
                     int md = (int)(cpu->read_byte(mob + moby_game.renderer_off) & 0x3Fu);
                     int ex = (int)(int16_t)(uint16_t)((((uint32_t)md << 8)
                              - (uint32_t)R.TR_raw[2]) & 0xFFFFu);
@@ -977,7 +1026,7 @@ static int project_all_records_inner(CPUState* cpu) {
  * a host-built record for a moby the .s already culled in must match the .s record
  * field-for-field (M/TR within GTE truncation, header/frameA/frameB/blend exact).
  * Only after that A/B passes is the builder trusted on the revealed (off-4:3) set. */
-typedef struct { uint32_t header, frameA, frameB, w0, mscol; int metal; int TR_raw[3]; double TR_frac[3]; int M[3][3]; } moby_fields;
+typedef struct { uint32_t header, header_b, frameA, frameB, w0, mscol; int metal; int TR_raw[3]; double TR_frac[3]; int M[3][3]; } moby_fields;
 
 /* Build the REGULAR (animated) render-record fields for one moby from gamestate.
  * Returns 1 on success, 0 if the moby has no animated model (SimpleModel =>
@@ -993,6 +1042,7 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
     uint32_t frm  = cpu->read_byte(moby + game_layout.moby.anim_state_off + 2u) & 0xFFu;     /* m_Frame */
     uint32_t nfrm = cpu->read_byte(moby + game_layout.moby.anim_state_off + 3u) & 0xFFu;     /* m_NextFrame */
     f->header = header;
+    f->header_b = header;
     f->frameA = header + game_layout.moby.anim_frames + frm  * game_layout.moby.anim_frame_stride;
     f->frameB = header + game_layout.moby.anim_frames + nfrm * game_layout.moby.anim_frame_stride;
     uint32_t prog = cpu->read_byte(moby + game_layout.moby.anim_state_off + 4u) & 0xFFu;     /* m_FrameProgress -> blend bits 8-15 */
@@ -1195,6 +1245,12 @@ static int append_revealed_regular(CPUState* cpu) {
     return n;
 }
 static int append_revealed_regular_inner(CPUState* cpu) {
+    /* The reveal rebuilds cull records in the game's own encoding, so it runs
+     * only where the game's provider supplies that builder. Without it the walk
+     * feeds exactly the records the cull queued — which is also what a game
+     * whose cull writes a gameplay-readable verdict needs, since nothing the
+     * host widens may reach that cull. */
+    if (!moby_game.host_reveal) return 0;
     /* Two reveal modes, composable — each mirrors a retired game-side
      * producer widening, so admission is deliberately liveness-BLIND
      * (the .s cull never tested liveness; the canonical PSX draws
@@ -1423,7 +1479,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         }
         int got;
         { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
-          got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0, 0.0, -1.0, f.TR_raw, f.TR_frac, f.M,
+          got = moby_decode_project(cpu, f.header, f.header, f.frameA, f.frameB, f.w0, 0, 0, 0, 0, 0.0, -1.0, f.TR_raw, f.TR_frac, f.M,
                                     rzsf4, moby_record_view(m), s_proj + s_proj_n, MAX_PROJ - s_proj_n);
           if (t0) s_us_rvdec += (long)(openpete_phase_now_us() - t0); }
         if (got <= 0) { TRC("skip=decode-0 zsf4=%d", rzsf4); m += game_layout.moby.array_stride; continue; }
@@ -1431,7 +1487,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         if (ver_check) occl_verify_end(m, s_proj + off, got);
         else occl_cache_update(cpu, m, s_proj + off, got, f.TR_frac, f.header);
         for (int j = 0; j < got; j++) s_proj[off + j].rec = s_nrecs;
-        s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
+        s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header, f.header_b,
             moby_tier_faceblock(cpu, f.header, rzsf4), f.w0,
             f.metal, f.mscol, m, rzsf4,
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA, 0u, 0u, 0.f };
@@ -1840,13 +1896,12 @@ static long s_fp_hit, s_fp_miss;   /* tier-census counters */
 /* Apply the frame's patch list to PSX RAM, recording originals. Returns the
  * number of patched words, 0 = no list/invalid, -1 = list too large (rolled
  * back, caller must fall back to the unpatched decode). */
-static int moby_frame_patch_apply(CPUState* cpu, uint32_t header, uint32_t frameA,
+static int moby_frame_patch_apply(CPUState* cpu, uint32_t header, uint32_t list,
                                   fpsave_t* sv) {
-    uint32_t off = (cpu->read_word(frameA + 4) & 0xFFFFu) << 2;
-    if (!off) return 0;
+    if (list < 0x80000000u) return 0;
     uint32_t fbHP = cpu->read_word(header + ANIM_FACES_HP);
     if (fbHP < 0x80000000u) return 0;
-    uint32_t at = frameA + off;
+    uint32_t at = list;
     int n = 0, entries = 0;
     for (;;) {
         uint32_t a0 = cpu->read_word(at); at += 4;
@@ -1872,7 +1927,7 @@ static uint32_t  s_fpc_frame[FP_SLOTS];
 static int       s_fpc_next;
 
 static const fcache_t* fpcache_get(CPUState* cpu, uint32_t fb, uint32_t header,
-                                   uint32_t frameA) {
+                                   uint32_t frameA, uint32_t list) {
     uint32_t bytecount = cpu->read_word(fb);
     if (bytecount == 0 || bytecount > 0x10000u) return NULL;    /* desync, as fcache_get */
     /* key sigs are the UNPATCHED words (lookup always happens pre-patch) */
@@ -1884,7 +1939,7 @@ static const fcache_t* fpcache_get(CPUState* cpu, uint32_t fb, uint32_t header,
     }
     s_fp_miss++;
     static fpsave_t sv[FPATCH_MAX];
-    int n = moby_frame_patch_apply(cpu, header, frameA, sv);
+    int n = moby_frame_patch_apply(cpu, header, list, sv);
     if (n <= 0) return fcache_get(cpu, fb);         /* no/oversized list: unpatched decode */
     int slot = s_fpc_next; s_fpc_next = (s_fpc_next + 1) & (FP_SLOTS - 1);
     fcache_t* C = &s_fpc[slot];
@@ -1898,15 +1953,17 @@ static const fcache_t* fpcache_get(CPUState* cpu, uint32_t fb, uint32_t header,
 /* Face decode for one (faceblock, header, keyframe) triple: the patched
  * decode when the keyframe carries a patch list under the .s gate (ZSF4 > 0
  * — the LP tier never patches), else the plain Tier-1 cache. */
-static const fcache_t* moby_faces_for(CPUState* cpu, uint32_t fb, uint32_t header,
-                                      uint32_t frameA, int zsf4) {
-    if (zsf4 > 0 && frameA >= 0x80000000u && header >= 0x80000000u
-        && (cpu->read_word(frameA + 4u) & 0xFFFFu) != 0u)
-        return fpcache_get(cpu, fb, header, frameA);
+static const fcache_t* moby_faces_for(CPUState* cpu, uint32_t rec, uint32_t fb,
+                                      uint32_t header, uint32_t frameA, int zsf4) {
+    if (zsf4 > 0 && header >= 0x80000000u && moby_pose_live(header, frameA)
+        && moby_game.frame_patch_list) {
+        uint32_t list = moby_game.frame_patch_list(cpu, rec, frameA);
+        if (list >= 0x80000000u) return fpcache_get(cpu, fb, header, frameA, list);
+    }
     return fcache_get(cpu, fb);
 }
 static const fcache_t* moby_faces_for_record(CPUState* cpu, const rec_meta* R) {
-    return moby_faces_for(cpu, R->faceblock, R->header, R->frameA, R->zsf4);
+    return moby_faces_for(cpu, R->addr, R->faceblock, R->header, R->frameA, R->zsf4);
 }
 /* PREV-keyframe faces for the sub-tick COLOUR crossfade (the faces the game
  * drew last tick, with last tick's patches). NULL = snap. Face-for-face
@@ -1914,14 +1971,14 @@ static const fcache_t* moby_faces_for_record(CPUState* cpu, const rec_meta* R) {
  * (true within a clip and across the blast's clip switch; anything else
  * snaps). */
 static const fcache_t* moby_faces_for_prev(CPUState* cpu, const rec_meta* R) {
-    if (R->frameA_p < 0x80000000u) return NULL;
+    if (!moby_pose_live(R->header_p, R->frameA_p)) return NULL;
     uint32_t hp = (R->header_p >= 0x80000000u) ? R->header_p : R->header;
     if (hp != R->header) {
         if (cpu->read_word(hp + ANIM_FACES_HP) != cpu->read_word(R->header + ANIM_FACES_HP) ||
             cpu->read_word(hp + ANIM_COL_HP)   != cpu->read_word(R->header + ANIM_COL_HP)   ||
             cpu->read_word(hp + ANIM_COL_FAR)  != cpu->read_word(R->header + ANIM_COL_FAR)) return NULL;
     }
-    return moby_faces_for(cpu, R->faceblock, hp, R->frameA_p, R->zsf4);
+    return moby_faces_for(cpu, R->addr, R->faceblock, hp, R->frameA_p, R->zsf4);
 }
 /* Per-channel colour lerp (values are 0x00BBGGRR walk colours). */
 static inline uint32_t moby_clerp(uint32_t a, uint32_t b, float t) {
@@ -2037,7 +2094,8 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
         uint32_t cbase;
         if (R->zsf4 <= 0) {
             cbase = (R->header >= 0x80000000u) ? cpu->read_word(R->header + ANIM_COL_FAR) : 0u;
-            if (R->zsf4 < -2048 && (int32_t)cpu->read_word(moby_game.skip_lowpoly) > 0) {
+            if (R->zsf4 < -2048 && moby_game.skip_lowpoly &&
+                (int32_t)cpu->read_word(moby_game.skip_lowpoly) > 0) {
                 int v = -(R->zsf4 + 2048); if (v > 2047) v = 2047;
                 dpcs_ir0 = v << 1;
                 uint32_t fog = cpu->read_word(game_layout.cyc.bg_colour);
@@ -3364,7 +3422,8 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
     int verify = moby_verify_enabled();
     int feed   = openpete_native_scene_enabled();
     s_cur_mat = mat;
-    s_rec_base = REC_BASE;
+    s_rec_base = moby_rec_base(cpu);
+    s_rec_base_canon = s_rec_base;
     (void)mat;
     moby_view_build(cpu);
 
@@ -4796,6 +4855,10 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
                               uint32_t* fa_p, uint32_t* fb_p, uint32_t* w0_p,
                               uint32_t* hdr_p, double* alpha) {
     if (!s_rot_now) return 0;                                  /* interp off → snap */
+    /* The prev pose is a record rebuilt from gamestate, so it exists only where
+     * the game's provider supplies that rebuild; elsewhere the sub-tick pass
+     * replays the record the cull wrote and holds the pose. */
+    if (!moby_game.host_reveal) return 0;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
     /* Occupant guard: prev snapshot must be the SAME class as the live moby —
@@ -5178,7 +5241,8 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
     static struct { const hold_t* h; double dx, dy, vzs; } replays[MAX_RECORDS];
     int nreplay = 0;
     static uint32_t replay_moby[MAX_RECORDS]; int nreplay_moby = 0;
-    s_rec_base = REC_BASE;
+    s_rec_base = game_layout.moby.rec_base ? game_layout.moby.rec_base : s_rec_base_canon;
+    if (!s_rec_base) { s_walk_in_rex = 0; return 0; }
     for (int r = 0; r < MAX_RECORDS; r++) {
         uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
         moby_record_t R;
@@ -5248,6 +5312,28 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             }
         }
         moby_fields f;
+        double gpf_frac = -1.0;
+        if (!moby_game.host_reveal) {
+            /* No host record builder on this game: replay the record the cull
+             * wrote, read exactly as the canonical pass read it. The pose is
+             * then the one the tick drew — identical to canonical at alpha 1 —
+             * but its matrix and translation are view-space from the canonical
+             * camera, so this record does not follow the interpolated one the
+             * other feeders re-extract under. */
+            moby_record_t LR;
+            if (!moby_game.read_record(cpu, recs[i], &LR)) continue;
+            memset(&f, 0, sizeof f);
+            f.header  = LR.header;  f.header_b = LR.header_b;
+            f.frameA  = LR.frame_a; f.frameB   = LR.frame_b;
+            f.w0      = LR.w0;
+            f.mscol   = LR.material;
+            f.metal   = (int)((LR.material >> 24) & 0xFFu);
+            memcpy(f.M, LR.M, sizeof f.M);
+            for (int k = 0; k < 3; k++) {
+                f.TR_raw[k]  = LR.TR_raw[k];
+                f.TR_frac[k] = (double)LR.TR_raw[k];
+            }
+        } else {
         { int bok;
           uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
           bok = build_moby_record_fields(cpu, mobys[i], &f);
@@ -5291,7 +5377,6 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * sub-ticks. Re-apply the canonical verdict from the LIVE record's w0 +
          * TR.z (frozen per tick — no sub-tick boundary flicker), else a GPF-far
          * moby the game popped out draws on intermediates only. */
-        double gpf_frac = -1.0;
         {
             moby_record_t LR; int lrok = moby_game.read_record(cpu, recs[i], &LR);
             uint32_t rw0 = lrok ? LR.w0 : 0u;
@@ -5355,6 +5440,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 }
             }
         }
+        }
         if (s_nrecs >= MAX_RECORDS || s_proj_n >= MAX_PROJ) break;
         int off = s_proj_n;
         /* Two-pass shape lerp: f is the curr REAL pose (no synthesized blend — the
@@ -5388,7 +5474,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         int zsf4 = fade_snap_get(mobys[i], 1024);
         int got;
         { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
-          got = moby_decode_project(cpu, f.header, f.frameA, f.frameB, f.w0,
+          got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0,
                                     fap, fbp, w0p, hdrp, balpha, gpf_frac,
                                     f.TR_raw, f.TR_frac, f.M, zsf4, moby_record_view(mobys[i]),
                                     s_proj + s_proj_n, MAX_PROJ - s_proj_n);
@@ -5422,7 +5508,11 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         s_rec_tr[s_nrecs][0] = f.TR_frac[0];   /* Tier-2 capture reference */
         s_rec_tr[s_nrecs][1] = f.TR_frac[1];
         s_rec_tr[s_nrecs][2] = f.TR_frac[2];
-        s_recs[s_nrecs] = (rec_meta){ 0u, off, got, f.header,
+        /* Carry the live record's address: a game whose keyframe patch list
+         * hangs off the record needs it to find one, and a zero here would send
+         * the provider reading at address 0. Host-built records have none and
+         * the reveal path passes 0 for that reason. */
+        s_recs[s_nrecs] = (rec_meta){ recs[i], off, got, f.header, f.header_b,
             moby_tier_faceblock(cpu, f.header, zsf4),
             f.w0, f.metal, f.mscol, mobys[i], zsf4,
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA,

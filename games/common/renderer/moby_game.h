@@ -91,6 +91,8 @@ typedef struct moby_face_stats {
  * per-moby material word a game may carry there, 0 where it has none. */
 typedef struct moby_record {
     uint32_t header;        /* AnimationHeader* */
+    uint32_t header_b;      /* keyframe B's own AnimationHeader* (== header where
+                             * the game blends within one animation) */
     uint32_t frame_a;       /* keyframe A */
     uint32_t frame_b;       /* keyframe B (0 = no blend) */
     uint32_t w0;            /* the record's flags word */
@@ -120,6 +122,14 @@ typedef struct moby_game {
      * record (the walk then stops or skips it). */
     int  (*read_record)(CPUState* cpu, uint32_t rec, moby_record_t* out);
 
+    /* The faceblock patch list this record's keyframe carries, or 0 when it
+     * carries none. Entries are ((count << 24) | byte offset into the model's
+     * high-poly faceblock) followed by `count` replacement words, ending with
+     * the entry whose header word is not positive; the walk applies them in
+     * place around the decode and restores the originals inside the same hook
+     * call. NULL where the game has no patch mechanism. */
+    uint32_t (*frame_patch_list)(CPUState* cpu, uint32_t rec, uint32_t frame_a);
+
     /* Which of the two model kinds a model-table entry is. The walk decodes
      * an animated model itself; a game that flags the second kind by the
      * entry's own sign, by a count field or any other rule answers here. */
@@ -131,6 +141,13 @@ typedef struct moby_game {
      * the animated records and before the emit. NULL where the game has no
      * such kind, and the walk feeds the animated records alone. */
     int  (*simple_pass)(CPUState* cpu);
+
+    /* 1 = the walk may rebuild cull records from gamestate for the mobys the
+     * canonical cull never queued (the widescreen and extended-LOD reveal).
+     * The rebuild writes the record fields in this game's own encoding, so a
+     * game whose encoding it does not implement leaves it 0 and feeds only
+     * what the cull queued. */
+    int  host_reveal;
 
     /* ---- identity ----------------------------------------------------- */
     /* The key the sub-tick interp ring stores a moby's prev/curr snapshots

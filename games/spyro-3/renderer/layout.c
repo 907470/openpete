@@ -173,6 +173,16 @@ const game_layout_t game_layout = {
         .blend_shift      = 4,          /* mobydraw.s:922-923,986 (w0 >> 4) & 0xFF0 */
         .blend_mask       = 0xFF0u,
 
+        .rec_base_polybuf_off = 0x1000u,  /* scratch = polybuf end - 0x3000, queue at
+                                           * +0x2000 of it (mobydraw.s:26-44) */
+        .rec_tr_final     = 1,          /* the cull GPF-rescales the translation by the
+                                         * size byte and drops the records that pushes
+                                         * past 63000 (mobydraw.s:546-551,572-574); the
+                                         * draw loads it as stored (mobydraw.s:898-900) */
+        .tr_depth_shift   = 2,          /* the translation is in quarter world units */
+        .rec_frame_is_word = 1,         /* mobydraw.s:532-535 the keyframe's own word */
+        .rec_header_b_off = 0x08u,      /* mobydraw.s:988 keyframe B's AnimationHeader* */
+
         .world_ot   = 0u,               /* the OT bucket array is not located */
         .ot_buckets = 0u,
 

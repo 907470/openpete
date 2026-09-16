@@ -46,11 +46,13 @@
 extern "C" {
 #endif
 
-/* Hash-table capacity (open addressing, power of two) and per-object blob
- * size. 4096 slots comfortably covers Spyro 1's few-hundred live mobys with
- * load factor < 0.5; 88 bytes captures a full stride-0x58 Moby record so a
- * consumer reads fields at their natural Moby offsets (pos @ +0x0C, anim @
- * +0x3C, rot @ +0x44) with no remapping. */
+/* Defaults for the two sizes the game sets at registration: the hash-table
+ * capacity (open addressing, power of two) and the per-object blob size. The
+ * blob must hold one whole object record, so a consumer reads fields at their
+ * natural offsets (the moby position, animation state and rotation) with no
+ * remapping — which makes it a per-game size, since it is that game's record
+ * stride. The capacity covers a few hundred live objects at load factor < 0.5.
+ * A game that registers no sizes gets these. */
 #define OPENPETE_INTERP_OBJ_SLOTS       4096u
 #define OPENPETE_INTERP_OBJ_BLOB_BYTES  88u
 
@@ -58,14 +60,17 @@ typedef struct {
     uint32_t key;        /* object identity (0 = empty slot) */
     uint8_t  have_prev;  /* 1 iff prev[] holds the previous tick's blob */
     uint8_t  seen;       /* 1 iff captured this tick (despawn eviction) */
-    uint8_t  blob_len;   /* valid bytes in prev/curr/prev2[] (<= BLOB_BYTES) */
     uint8_t  have_prev2; /* 1 iff prev2[] holds the DISTINCT tick before prev
                           * (two back from curr) — enables cubic/pred1 interp
                           * with a centered start-tangent, else fall back to
                           * the linear prev→curr lerp. */
-    uint8_t  prev[OPENPETE_INTERP_OBJ_BLOB_BYTES];
-    uint8_t  curr[OPENPETE_INTERP_OBJ_BLOB_BYTES];
-    uint8_t  prev2[OPENPETE_INTERP_OBJ_BLOB_BYTES];
+    uint16_t blob_len;   /* valid bytes in prev/curr/prev2 (<= the registered size) */
+    /* The three blobs, each the registered blob size, carved out of the
+     * table's own allocation: the entry never owns storage, so its slot owns
+     * the bytes and a rehash copies them rather than aliasing them. */
+    uint8_t* prev;
+    uint8_t* curr;
+    uint8_t* prev2;
     /* Wall-clock (op_now) when curr/prev were last ROLLED — i.e. when each
      * DISTINCT state was captured (unchanged ticks dedupe and do NOT update
      * these). A consumer interpolates with alpha = (now - curr_ns)/period,
@@ -85,7 +90,16 @@ typedef struct {
  * itself — core does not auto-bracket, so a game with several object pools
  * can capture them all inside one begin/end pair. NULL disables it. */
 typedef void (*openpete_interp_obj_capture_fn)(void);
-void openpete_interp_register_obj_capture(openpete_interp_obj_capture_fn fn);
+/* `blob_bytes` is one object record of this game (its array stride) and
+ * `slots` the table capacity, rounded up to a power of two. The table is
+ * allocated here, so the sizes are the game's rather than the build's; 0 for
+ * either keeps the default above. Registering again with different sizes
+ * reallocates and drops every tracked object. */
+void openpete_interp_register_obj_capture(openpete_interp_obj_capture_fn fn,
+                                          uint32_t blob_bytes, uint32_t slots);
+/* The sizes in force, for a capture walk that bounds itself by them. */
+uint32_t openpete_interp_objs_blob_bytes(void);
+uint32_t openpete_interp_objs_slots(void);
 
 /* Invoked by core (run.c) once per sim tick. No-op when capture is disabled
  * or no callback is registered. */

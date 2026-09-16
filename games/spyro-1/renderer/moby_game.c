@@ -140,6 +140,7 @@ static int s1_read_record(CPUState* cpu, uint32_t rec, moby_record_t* R) {
     const uint32_t moby = cpu->read_word(rec + game_layout.moby.rec_moby_off);
     if (hdr == 0 && moby == 0) return 0;
     R->header   = hdr;
+    R->header_b = hdr;   /* one header serves both keyframes on this game */
     R->frame_a  = cpu->read_word(rec + game_layout.moby.rec_frame_a_off);
     R->frame_b  = cpu->read_word(rec + game_layout.moby.rec_frame_b_off);
     R->w0       = cpu->read_word(rec);
@@ -239,6 +240,14 @@ static int s1_run_once_hidden(CPUState* cpu, uint32_t m, unsigned cls) {
     return 0;
 }
 
+/* The keyframe's faceblock patch list: the keyframe's second word carries the
+ * list's byte offset from the keyframe, scaled by four; zero means none. */
+static uint32_t s1_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t frame_a) {
+    (void)rec;
+    uint32_t off = (cpu->read_word(frame_a + 4u) & 0xFFFFu) << 2;
+    return off ? frame_a + off : 0u;
+}
+
 const moby_game_t moby_game = {
     .vstream_init      = s1_vstream_init,
     .vstream_next      = s1_vstream_next,
@@ -246,6 +255,13 @@ const moby_game_t moby_game = {
     .read_record       = s1_read_record,
     .model_is_animated = s1_model_is_animated,
     .simple_pass       = NULL,   /* the second model kind has its own draw hook */
+    /* The keyframe patch list lives inside the keyframe: its low halfword,
+     * scaled by four, is the list's byte offset from the keyframe itself. */
+    .frame_patch_list  = s1_frame_patch_list,
+    /* The record fields rebuild from gamestate here, which is what lets the
+     * walk feed mobys the 4:3 cull skipped and lets a sub-tick present
+     * re-derive each record against the interpolated camera. */
+    .host_reveal       = 1,
     .interp_key        = game_interp_moby_key,
 
     .cutscene_actor     = s1_cutscene_actor,

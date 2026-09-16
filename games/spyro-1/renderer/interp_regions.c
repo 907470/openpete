@@ -295,13 +295,13 @@ static void spyro_interp_capture_objs(void) {
          * mobys, not HUD/particles, the ones dropped in the (impossible for Spyro 1)
          * overflow case. The array sentinel below stops the walk after a few
          * hundred live mobys anyway. */
-        for (int guard = 0; guard < (int)OPENPETE_INTERP_OBJ_SLOTS - 512; ++guard) {
+        for (int guard = 0; guard < (int)openpete_interp_objs_slots() - 512; ++guard) {
             const void* host = openpete_psx_to_host_ptr(m);
             if (!host) break;
             uint8_t st = ((const uint8_t*)host)[MOBY_STATE_OFF];
             if (st == 0xFF) break;                       /* array sentinel */
             if (st < 0x80) {                             /* alive */
-                openpete_interp_objs_capture(m, host, OPENPETE_INTERP_OBJ_BLOB_BYTES);
+                openpete_interp_objs_capture(m, host, openpete_interp_objs_blob_bytes());
                 /* OPENPETE_CAPTRACE_CLS: per-TICK canonical position of mobys of
                  * this class (staircase-vs-smooth forensics, capture side). */
                 static long s_ctc = -2;
@@ -326,7 +326,7 @@ static void spyro_interp_capture_objs(void) {
     for (uint32_t i = 0; i < G_HUD_COUNT; ++i) {
         uint32_t m = G_HUD_ICONS + i * MOBY_STRIDE;
         const void* host = openpete_psx_to_host_ptr(m);
-        if (host) openpete_interp_objs_capture(m, host, OPENPETE_INTERP_OBJ_BLOB_BYTES);
+        if (host) openpete_interp_objs_capture(m, host, openpete_interp_objs_blob_bytes());
     }
 
     /* g_Particles pool (smoke / triangles / line particles around the flame and
@@ -397,7 +397,7 @@ static void spyro_interp_capture_objs(void) {
         if (m < 0x80000000u) break;
         const void* host = openpete_psx_to_host_ptr(m);
         if (host) openpete_interp_objs_capture(game_interp_moby_key(m), host,
-                                               OPENPETE_INTERP_OBJ_BLOB_BYTES);
+                                               openpete_interp_objs_blob_bytes());
     }
 
     /* REGULAR/SPECULAR render set (the mobys the canonical cull records point at):
@@ -414,7 +414,7 @@ static void spyro_interp_capture_objs(void) {
             const uint8_t* host = (const uint8_t*)openpete_psx_to_host_ptr(drawn[i]);
             if (!host || host[MOBY_STATE_OFF] >= 0x80) continue;   /* dead / unmapped */
             openpete_interp_objs_capture(game_interp_moby_key(drawn[i]), host,
-                                         OPENPETE_INTERP_OBJ_BLOB_BYTES);
+                                         openpete_interp_objs_blob_bytes());
         }
     }
 
@@ -476,5 +476,9 @@ void game_interp_register(void) {
     openpete_interp_register_regions(
         s_spyro_interp_regions,
         sizeof(s_spyro_interp_regions) / sizeof(s_spyro_interp_regions[0]));
-    openpete_interp_register_obj_capture(spyro_interp_capture_objs);
+    /* One whole Moby record per object, so every consumer reads its fields at
+     * their natural offsets, and the store's default capacity. */
+    openpete_interp_register_obj_capture(spyro_interp_capture_objs,
+                                         game_layout.moby.array_stride,
+                                         OPENPETE_INTERP_OBJ_SLOTS);
 }

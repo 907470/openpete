@@ -13,6 +13,7 @@ openpete_add_game(spyro-3
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro3_symbols.toml
     ORCHESTRATOR     renderer/reextract.c
     INTERP_REGIONS   renderer/interp_regions.c
+    MOBY_GAME        renderer/moby_game.c
     SOURCES
         skip_to_level.c
         features/freecam.c

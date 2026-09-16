@@ -277,6 +277,29 @@ typedef struct game_layout {
         int      blend_shift;
         uint32_t blend_mask;
 
+        /* A game that carves the draw scratch out of the polybuf every tick
+         * has no fixed record address: with `rec_base` 0 the queue starts at
+         * `*polybuf.end - rec_base_polybuf_off`, recomputed per pass, and the
+         * block that holds it moves with the draw buffer the tick allocated. */
+        uint32_t rec_base_polybuf_off;
+        /* 1 = the record's translation is already the one the draw loads into
+         * the GTE: the cull applied the per-model scale and the per-moby size
+         * rescale (and dropped the records the rescale pushed past the far
+         * limit), so the walk applies neither. `tr_depth_shift` is then how far
+         * left a view-Z in that translation's units shifts to reach full world
+         * units. 0 = the draw rescales per record, the walk's model-scale path.
+         */
+        int      rec_tr_final;
+        int      tr_depth_shift;
+        /* 1 = the cull copies each keyframe's leading stream word into the
+         * record rather than a pointer into the model's frame array, so a pose
+         * exists exactly when its AnimationHeader pointer does. */
+        int      rec_frame_is_word;
+        /* The second keyframe's own AnimationHeader*, for a game whose two
+         * blended keyframes may come from different animations; 0 where both
+         * share the record's first header. */
+        uint32_t rec_header_b_off;
+
         /* The ordering table the same-moby paint rank is read from: the
          * address of the pointer to the bucket array, and the bucket count.
          * 0 retires the rank source. */
