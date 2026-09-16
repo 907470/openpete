@@ -47,3 +47,7 @@ sunrise-spring-camera-swing|1500|100||1520,1540,1560
 # holds a sub-tick present while she moves through the world under a moving
 # camera: her own motion must interpolate as her camera-relative motion does.
 sheilas-alp-sheila-water-invisible|4400|100||4520,4556
+
+# icy-peak-ice-crystal-destruction: an ice crystal shot at VBL ~1670 shatters on the
+# PSX and its model stays on screen natively; the pins bracket the shatter.
+icy-peak-ice-crystal-destruction|1500|100||1660,1674,1690
