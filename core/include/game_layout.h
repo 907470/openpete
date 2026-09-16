@@ -283,14 +283,12 @@ typedef struct game_layout {
          * block that holds it moves with the draw buffer the tick allocated. */
         uint32_t rec_base_polybuf_off;
         /* 1 = the record's translation is already the one the draw loads into
-         * the GTE: the cull applied the per-model scale and the per-moby size
-         * rescale (and dropped the records the rescale pushed past the far
-         * limit), so the walk applies neither. `tr_depth_shift` is then how far
-         * left a view-Z in that translation's units shifts to reach full world
-         * units. 0 = the draw rescales per record, the walk's model-scale path.
-         */
+         * the GTE: the cull applied the per-model scale (the byte at
+         * `anim_scale_off`, which still names the translation's unit) and the
+         * per-moby size rescale, and dropped the records the rescale pushed
+         * past the far limit, so the walk applies neither. 0 = the draw
+         * rescales per record, the walk's model-scale path. */
         int      rec_tr_final;
-        int      tr_depth_shift;
         /* 1 = the cull copies each keyframe's leading stream word into the
          * record rather than a pointer into the model's frame array, so a pose
          * exists exactly when its AnimationHeader pointer does. */

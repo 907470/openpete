@@ -151,7 +151,11 @@ const game_layout_t game_layout = {
         .model_data_off  = 0x38u,       /* mobydraw.s:897 */
 
         .anim_ptr_block   = 0x0Cu,      /* mobydraw.s:975 vertices; faces :939 at +0x10 */
-        .anim_scale_off   = 0x03u,      /* 2 = identity on 32 of the 33 dump models */
+        .anim_scale_off   = 0x02u,      /* mobydraw.s:510,537-539 the cull shifts the
+                                         * quarter-world centre left 2 then right by this
+                                         * byte before storing it as the translation, so
+                                         * the model's unit is world >> byte (0 on most
+                                         * Sunrise Spring models: full world units) */
         .anim_shift_off   = 0x02u,      /* short-encode shift */
         .anim_ccount_off  = 0x01u,      /* colour count, one byte where Spyro 1 has two */
         .anim_vcount_hi   = 0x04u,      /* mobydraw.s:917-921 HP vertex count */
@@ -179,7 +183,6 @@ const game_layout_t game_layout = {
                                          * size byte and drops the records that pushes
                                          * past 63000 (mobydraw.s:546-551,572-574); the
                                          * draw loads it as stored (mobydraw.s:898-900) */
-        .tr_depth_shift   = 2,          /* the translation is in quarter world units */
         .rec_frame_is_word = 1,         /* mobydraw.s:532-535 the keyframe's own word */
         .rec_header_b_off = 0x08u,      /* mobydraw.s:988 keyframe B's AnimationHeader* */
 

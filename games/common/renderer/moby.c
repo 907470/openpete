@@ -470,10 +470,12 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
      * the .s-record path passes NULL and keeps the byte-exact integer TR. */
     /* The draw-side translation rescale, and the far skip that rides it, exist
      * only on a game whose cull stores the unscaled translation; where the cull
-     * stored the final one the record's translation goes to the GTE as it is. */
+     * stored the final one the record's translation goes to the GTE as it is.
+     * Either way the header's scale byte is the shift the translation took
+     * from world/4 (here or in the cull), so it is also how far the projected
+     * view-Z shifts back to full world below. */
     const int tr_final = game_layout.moby.rec_tr_final;
-    int m_scale = tr_final ? game_layout.moby.tr_depth_shift
-                           : (cpu->read_byte(header + game_layout.moby.anim_scale_off) & 0xFF);
+    int m_scale = cpu->read_byte(header + game_layout.moby.anim_scale_off) & 0xFF;
     /* .s far-skip [.L8001F888 / spec twin @8002103C]: records with a non-zero
      * w0 low byte (the GPF-TR scale, m_ScaleOverride-derived) run IR0=(w0&0xFF),
      * IR3=(TR.z<<2)>>m_Scale through GPF sf=0 and SKIP the whole record when
