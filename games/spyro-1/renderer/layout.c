@@ -42,10 +42,16 @@ const game_layout_t game_layout = {
         .occ_group_count = G_CYCLORAMA + offsetof(Cyclorama, m_OcclusionGroupsCount),
         .occ_groups      = G_CYCLORAMA + offsetof(Cyclorama, m_OcclusionGroups),
         .bg_colour       = G_CYCLORAMA + offsetof(Cyclorama, m_BackgroundColor),
+        .vertex_base     = 0x18u,
+        .face_layout     = CYC_FACES_SPYRO1,
+        .visibility      = 0u,           /* the occlusion group list the draw's a0 names */
+        .hook_args       = 1,            /* (group, cull matrix, draw matrix) */
+        .fade_in_draw    = 0,            /* the cross-fade renderer fades, the sky draw does not */
     },
     .fog = {
         .factor     = D_FOG_FACTOR,
         .far_colour = D_BLEND_TARGET,
+        .far_colour_words = 0,
     },
     .db = {
         .cur_ptr = G_CUR_DB,

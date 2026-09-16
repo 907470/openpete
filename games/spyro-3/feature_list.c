@@ -4,6 +4,7 @@
 
 extern const feature_module_t render_paths_module;
 extern const feature_module_t terrain_module;
+extern const feature_module_t cyclorama_module;
 extern const feature_module_t terrain_probe_module;
 
 const feature_module_t* const openpete_features[] = {
@@ -12,6 +13,9 @@ const feature_module_t* const openpete_features[] = {
     /* The shared terrain feeder: hooks the world draw and the visibility
      * function from game_layout; inert unless the native scene is enabled. */
     &terrain_module,
+    /* The shared cyclorama feeder: hooks the sky draw from game_layout;
+     * inert unless the native scene is enabled or OPENPETE_CYC_VERIFY is set. */
+    &cyclorama_module,
     /* The calibrated terrain probe: inert unless OPENPETE_TERRAIN_PROBE is set. */
     &terrain_probe_module,
 };

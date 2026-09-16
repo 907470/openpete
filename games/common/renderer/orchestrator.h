@@ -28,7 +28,8 @@ void spyro_native_canon_epoch_commit(void);
 /* Present-time draw-env clear sync, called from the same anchor: re-read the
  * clear colour the environment's DrawOTag will use for the scene being
  * presented from PSX RAM, instead of a PutDrawEnv latch that trails the OT
- * build by one VSync. */
+ * build by one VSync. Defined by the shared cyclorama feeder
+ * (games/common/renderer/cyclorama.c) for every game. */
 void cyclorama_native_env_clear_commit(void);
 
 /* Registration, called by main() before the run loop: the game's interp

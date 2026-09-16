@@ -12,12 +12,9 @@
 #include <stdlib.h>   /* atoi (sweepN) */
 #include <string.h>
 
-/* g_Camera @ 0x80076DD0 (camera.h). Fields we touch:
- *   m_Position @ +0x28 : Vector3D int32 x, y, z   (world; Z is up)
- *   m_Rotation @ +0x4C : int16 roll, pitch, yaw   (yaw/heading @ +0x50)
- * These are exactly the practice ROM's _cameraPosition (0x80076DF8 = C+0x28)
- * and _cameraAngle (0x80076E1C = C+0x4C). */
-#define G_CAMERA     0x80076DD0u
+/* The camera pose (g_Camera m_Position @ +0x28, m_Rotation @ +0x4C: int16
+ * roll, pitch, yaw) is read through game_layout.cam (renderer/layout.c);
+ * these are the practice ROM's _cameraPosition and _cameraAngle. */
 
 /* g_Spyro @ 0x80078A58 (spyro.h). Fields the teleport writes; both offsets are
  * confirmed against the original code, which forms them as g_Spyro + literal
@@ -83,11 +80,6 @@ static int spyro1_resolve_named_pose(CPUState* cpu, const char* name, int32_t v[
 }
 
 const freecam_game_desc freecam_desc = {
-    .cam_pos_x = G_CAMERA + 0x28u,
-    .cam_pos_y = G_CAMERA + 0x2Cu,
-    .cam_pos_z = G_CAMERA + 0x30u,
-    .cam_yaw   = G_CAMERA + 0x50u,
-    .cam_pitch = G_CAMERA + 0x4Eu,
     .angle_bits = 16,
     .yaw_offset = 0, .yaw_sign = 1, .pitch_sign = 1,
     /* ~87° up/down so the camera can't flip (practice ROM value). */

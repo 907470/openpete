@@ -43,11 +43,25 @@ const game_layout_t game_layout = {
         .occ_group_count = 0u,
         .occ_groups      = G_ENVIRONMENT + 0x0Cu,   /* func_8002D0D8(1): the sky occlusion data */
         .bg_colour       = G_CYCLORAMA + 0x08u,     /* 0x0044BA52 in the dump = the DRAWENV clear colour */
+        .vertex_base     = 0x14u,                   /* sky draw: addi $t4, $gp, 0x14 (cyclorama.s:87) */
+        .face_layout     = CYC_FACES_SPYRO3,        /* vertex count = byte 0 of +0x0C, colour count =
+                                                     * byte 1; +0x10 = face-word list length << 16 |
+                                                     * index-halfword list length; strips */
+        .visibility      = 0x1F8003C0u,             /* one byte per sky sector, func_8002D0D8(1):
+                                                     * 0xFF drawn, 0 skipped (cyclorama.s:63-67) */
+        .hook_args       = 0,                       /* the sky draw loads the camera +0x00 matrix
+                                                     * for both the cull and the projection,
+                                                     * translation zero (cyclorama.s:30-43) */
+        .fade_in_draw    = 1,                       /* DPCS over the colour table when the factor
+                                                     * word is nonzero (cyclorama.s:161-187) */
     },
     .fog = {
-        .factor     = 0u,                           /* IR0 source not located */
+        .factor     = G_CAMERA + 0x40u,             /* the sky draw's IR0 (cyclorama.s:35,177); the world
+                                                     * draw computes its own IR0 per entry from a table
+                                                     * (environment.s:1298-1303) */
         .far_colour = G_ENVIRONMENT + 0x34u,        /* three words R, G, B loaded into ctc2 $21..$23 by the
-                                                     * world draw, not a packed 0x00BBGGRR word */
+                                                     * world and sky draws, not a packed 0x00BBGGRR word */
+        .far_colour_words = 1,
     },
     .db = {
         .cur_ptr = G_CUR_DB,

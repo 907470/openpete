@@ -10,6 +10,7 @@
  * (no canonical-render epoch or clear-colour sync exists on this game yet). */
 #include "renderer/orchestrator.h"
 #include "renderer/terrain.h"
+#include "renderer/cyclorama.h"
 #include "openpete_interp.h"
 #include "openpete_interp_objs.h"      /* g_openpete_tick_period_ns */
 #include "openpete_native_render.h"
@@ -60,7 +61,6 @@ int openpete_native_interp_pos(unsigned int key, double out[3]) {
     return 1;
 }
 void spyro_native_canon_epoch_commit(void) {}
-void cyclorama_native_env_clear_commit(void) {}
 
 /* A cut: the camera moved more than 5000 units or turned more than 90
  * degrees in one tick (a level entry, a teleport), where lerping the chord
@@ -110,6 +110,7 @@ static void game_reextract_body(CPUState* cpu) {
         }
     }
     openpete_native_scene_begin();
+    cyclorama_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* sky dome + background */
     terrain_reextract(cpu, bracketed ? alpha : 0.0, bracketed);
     s_fpos_active = 0;
 }

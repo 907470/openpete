@@ -10,6 +10,5 @@ openpete_add_game(spyro-2
         skip_to_level.c
         features/freecam.c
 
-        # No engine-layout addresses located yet: the shared renderer TUs link
-        # against the empty descriptor.
-        ${CMAKE_SOURCE_DIR}/games/common/renderer/layout_none.c)
+        # The engine layout: the camera pose only, every other field 0.
+        renderer/layout.c)

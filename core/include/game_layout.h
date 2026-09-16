@@ -20,6 +20,7 @@ extern "C" {
 #endif
 
 enum { TERRAIN_FACES_SPYRO1 = 0, TERRAIN_FACES_SPYRO3 = 1 };
+enum { CYC_FACES_SPYRO1 = 0, CYC_FACES_SPYRO3 = 1 };
 
 typedef struct game_layout {
     /* The in-RAM sin/cos table: 256 entries per circle of s16 1.12 fixed
@@ -57,7 +58,20 @@ typedef struct game_layout {
         uint32_t base;
     } visibility;
 
-    /* The cyclorama header (Spyro 1 `Cyclorama`). */
+    /* The cyclorama header (Spyro 1 `Cyclorama`) and the sky decode switches.
+     * Both games share the sector header through +0x0F (cull point, radius,
+     * centre), the vertex word packing and the colour table after the
+     * vertices; they differ in where the vertex array starts, how the vertex
+     * and colour counts are encoded, and the face encoding (CYC_FACES_*:
+     * Spyro 1 lists two words per triangle, Spyro 3 walks triangle strips
+     * from two parallel lists). `visibility` is a per-sector byte array the
+     * game's own visibility pass fills before the sky draw (nonzero = drawn),
+     * 0 when the draw selects sectors through the occlusion group list its
+     * first argument names. `hook_args` = 1 when the sky draw takes (group,
+     * cull matrix, draw matrix) as its arguments; 0 when it reads the
+     * camera's projection matrix for both. `fade_in_draw` = 1 when the sky
+     * draw itself depth-cues the colours toward `fog.far_colour` by
+     * `fog.factor` whenever the factor is nonzero. */
     struct {
         uint32_t base;
         uint32_t sector_count;
@@ -65,13 +79,22 @@ typedef struct game_layout {
         uint32_t occ_group_count;
         uint32_t occ_groups;
         uint32_t bg_colour;         /* 0x00BBGGRR */
+        uint32_t vertex_base;       /* byte offset of the vertex array in a sector */
+        int      face_layout;       /* CYC_FACES_* */
+        uint32_t visibility;
+        int      hook_args;
+        int      fade_in_draw;
     } cyc;
 
     /* The GTE depth cue the world and sky draws run: IR0 (0x1000 = 1.0)
-     * and the far colour FC (0x00BBGGRR). */
+     * and the far colour FC, stored as one packed 0x00BBGGRR word
+     * (`far_colour_words` 0) or as three words R, G, B at 16 times the
+     * 8-bit scale, the form the GTE's RFC/GFC/BFC registers take
+     * (`far_colour_words` 1). */
     struct {
         uint32_t factor;
         uint32_t far_colour;
+        int      far_colour_words;
     } fog;
 
     /* The draw-buffer pair (Spyro 1 `DB`): the pointer to the buffer under

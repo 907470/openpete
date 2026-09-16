@@ -1,5 +1,7 @@
-// games/spyro-1/renderer/cyclorama.c — the cyclorama/sky renderer
-// re-derived from gamestate + its autonomous numerical A/B harness.
+// games/common/renderer/cyclorama.c — the cyclorama/sky renderer
+// re-derived from gamestate + its autonomous numerical A/B harness. Every
+// engine address comes from game_layout; the game's own sky draw runs
+// through the recomp module dispatch at game_layout.hooks.sky_draw.
 //
 // The native renderer re-derives the sky dome from gamestate (g_Cyclorama
 // + the camera matrices) in float, instead of replaying the PSX renderer's
@@ -8,8 +10,8 @@
 // them (mirroring the GTE math in runner/src/gte.cpp), and produces a list
 // of screen-space triangles. core/ consumes that list (display only).
 //
-// Verification (instruments over pixels): hook func_8004EBA8 (the dome
-// renderer, 0x8004EBA8), capture the *actual* POLY_F3/G3 prims it emits to
+// Verification (instruments over pixels): hook the dome renderer (Spyro 1
+// func_8004EBA8), capture the *actual* POLY_F3/G3 prims it emits to
 // the polybuf as ground truth, run the native float extraction on the same
 // inputs, and compare screen positions (expect sub-pixel — float is more
 // precise than the GTE's 16.16) + colours (expect exact — gouraud colours
@@ -33,7 +35,9 @@
 #include "openpete_subtick_view.h"  /* openpete_psx_to_host_ptr (present-time DRAWENV read) */
 #include "openpete_native_render.h"  /* native scene push + enabled gate */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
-#include "renderer/reextract.h"  /* sub-tick re-extract entry */
+#include "renderer/cyclorama.h"  /* this feeder's exports */
+#include "renderer/orchestrator.h"  /* cyclorama_native_env_clear_commit */
+#include "openpete_recomp_module.h"  /* the game's own sky draw, run through the module dispatch */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 
 #include <math.h>
@@ -41,7 +45,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "spyro1_symbols.gen.h"
 #include "game_layout.h"          /* game_layout: the engine RAM addresses this walk reads */
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
@@ -160,9 +163,39 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
 static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2,
                         uint32_t fade_rgb, int fade_ir0) {
     int Mcull[3][3], Mdraw[3][3];
+    if (!game_layout.cyc.hook_args) {
+        /* The draw loads the camera's projection matrix for both the cull
+         * and the projection; its registers carry no matrix arguments. */
+        a1 = a2 = game_layout.cam.proj_matrix;
+    }
     ngte_read_matrix(cpu, a1, Mcull);
     ngte_read_matrix(cpu, a2, Mdraw);
     cyc_extract_m(cpu, a0, Mcull, Mdraw, fade_rgb, fade_ir0);
+}
+
+/* The fog far colour as packed 0x00BBGGRR: one word, or three R, G, B words
+ * at the GTE's RFC/GFC/BFC scale (16 times the 8-bit value). */
+static uint32_t cyc_far_colour(CPUState* cpu) {
+    uint32_t a = game_layout.fog.far_colour;
+    if (!a) return 0;
+    if (!game_layout.fog.far_colour_words) return cpu->read_word(a) & 0xFFFFFFu;
+    uint32_t r = (cpu->read_word(a) >> 4) & 0xFF, g = (cpu->read_word(a + 4) >> 4) & 0xFF,
+             b = (cpu->read_word(a + 8) >> 4) & 0xFF;
+    return r | (g << 8) | (b << 16);
+}
+
+/* The sky visibility bytes (game_layout.cyc.visibility), copied from the
+ * scratchpad right after the canonical draw: the game reuses that scratch
+ * range later in the tick, so a sub-tick re-extract reads the copy. */
+static uint8_t s_cyc_vis[1024];
+static uint32_t s_cyc_vis_n = 0;
+static void cyc_capture_visibility(CPUState* cpu) {
+    s_cyc_vis_n = 0;
+    if (!game_layout.cyc.visibility) return;
+    uint32_t n = cpu->read_word(game_layout.cyc.sector_count);
+    if (n > sizeof s_cyc_vis) n = sizeof s_cyc_vis;
+    for (uint32_t i = 0; i < n; i++) s_cyc_vis[i] = cpu->read_byte(game_layout.cyc.visibility + i);
+    s_cyc_vis_n = n;
 }
 static void cyc_extract_m(CPUState* cpu, uint32_t a0,
                           const int Mcull[3][3], const int Mdraw[3][3],
@@ -184,8 +217,16 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
      * it to the visible frustum). Display-only. */
     int ws = vw.extended;   /* Hor+ or a wider FOV */
     uint32_t sectors[1024]; uint32_t nSectors = 0;
-    if ((int32_t)a0 < 0 || ws) {
-        if (sectorCount > 1024) sectorCount = 1024;
+    if (sectorCount > 1024) sectorCount = 1024;
+    if (game_layout.cyc.visibility) {
+        /* The game's visibility pass wrote one byte per sector before the
+         * draw (nonzero = drawn), keyed on the camera position against the
+         * sky occlusion data: the same 4:3 selection as the group list, so
+         * widescreen walks every sector here too. */
+        for (uint32_t i = 0; i < sectorCount; i++)
+            if (ws || (i < s_cyc_vis_n && s_cyc_vis[i]))
+                sectors[nSectors++] = cpu->read_word(sectorsBase + i * 4);
+    } else if ((int32_t)a0 < 0 || ws) {
         for (uint32_t i = 0; i < sectorCount; i++)
             sectors[nSectors++] = cpu->read_word(sectorsBase + i * 4);
     } else if (occGroups) {
@@ -201,6 +242,14 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
 
     static double   pm1[4096], pm2[4096], pz[4096];   /* camera-space MAC per vertex */
     static uint32_t col[4096];
+
+    /* A sky draw that depth-cues its own colours: the factor word, when
+     * nonzero, is IR0 against the fog far colour for every colour entry. */
+    if (!fade_ir0 && game_layout.cyc.fade_in_draw && game_layout.fog.factor) {
+        int ir0 = (int)cpu->read_word(game_layout.fog.factor);
+        if (ir0) { fade_ir0 = ir0; fade_rgb = cyc_far_colour(cpu); }
+    }
+    const int s3 = game_layout.cyc.face_layout == CYC_FACES_SPYRO3;
 
     for (uint32_t si = 0; si < nSectors; si++) {
         uint32_t S = sectors[si];
@@ -225,14 +274,18 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
         uint32_t hF = cpu->read_word(S + 0x10);
         int centerX = (int16_t)(h8 & 0xFFFF), centerY = (int16_t)(h8 >> 16);
         int centerZ = (int16_t)(hC >> 16);
-        uint32_t vertexCount = hC & 0xFFFF;
-        uint32_t faceCount   = hF & 0x1FFF;
-        uint32_t faceOffByte = hF >> 14;
+        /* Spyro 1: +0x0C low half = vertex count, +0x10 = face count (bits
+         * 0-12) and colour-table byte length (>> 14). Spyro 3: +0x0C byte 0 =
+         * vertex count, byte 1 = colour count; +0x10 high half = face-word
+         * list byte length, low half = index-halfword list byte length. */
+        uint32_t vertexCount = s3 ? (hC & 0xFF) : (hC & 0xFFFF);
+        uint32_t colorCount  = s3 ? ((hC >> 8) & 0xFF) : (hF >> 14) / 4;
+        uint32_t faceCount   = s3 ? 0 : (hF & 0x1FFF);
 
         if (vertexCount > 4096) vertexCount = 4096;
-        uint32_t vertBase  = S + 0x18;
+        uint32_t vertBase  = S + game_layout.cyc.vertex_base;
         uint32_t colorBase = vertBase + vertexCount * 4;       /* s4 */
-        uint32_t faceBase  = colorBase + faceOffByte;
+        uint32_t faceBase  = colorBase + (s3 ? colorCount * 4 : (hF >> 14));
 
         /* phase-2a: unpack + compute the camera-space MAC for every vertex (the
          * near-plane clip interpolates in camera space, then projects). */
@@ -245,11 +298,50 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
             pm2[i] = (Mdraw[1][0]*(double)vx + Mdraw[1][1]*(double)vy + Mdraw[1][2]*(double)vz) / 4096.0;
             pz[i]  = (Mdraw[2][0]*(double)vx + Mdraw[2][1]*(double)vy + Mdraw[2][2]*(double)vz) / 4096.0;
         }
-        uint32_t colorCount = faceOffByte / 4;
         if (colorCount > 4096) colorCount = 4096;
         for (uint32_t j = 0; j < colorCount; j++) {
             uint32_t c = cpu->read_word(colorBase + j * 4) & 0xFFFFFF;
             col[j] = fade_ir0 ? cyc_fade(c, fade_rgb, fade_ir0) : c;
+        }
+
+        if (s3) {
+            /* phase-2b, strips: one face word per strip (bits 31-24 the
+             * third vertex, 23-17 / 16-10 / 9-3 the three colour indices,
+             * 2-0 the number of continuation triangles) and a parallel
+             * halfword list whose first entry holds the first two vertices
+             * ((H >> 8) & 0xFF, H & 0xFF) and whose continuation entries each
+             * add one vertex (H & 0xFF) with one colour ((H >> 8) & 0x7F);
+             * bit 15 of a continuation shifts the window by one, clear keeps
+             * the middle vertex and replaces the first. */
+            uint32_t hw = faceBase + (hF >> 16), hwEnd = hw + (hF & 0xFFFF);
+            uint32_t fw = faceBase;
+            int guard = 0;
+            while (hw + 2 <= hwEnd && guard++ < 8192) {
+                uint32_t W = cpu->read_word(fw); fw += 4;
+                uint32_t H = cpu->read_half(hw); hw += 2;
+                uint32_t v0 = (H >> 8) & 0xFF, v1 = H & 0xFF, v2 = (W >> 24) & 0xFF;
+                uint32_t k0 = (W >> 17) & 0x7F, k1 = (W >> 10) & 0x7F, k2 = (W >> 3) & 0x7F;
+                uint32_t more = W & 7;
+                for (;;) {
+                    if (v0 < vertexCount && v1 < vertexCount && v2 < vertexCount) {
+                        int gouraud = !(k0 == k1 && k0 == k2);
+                        uint32_t cc0 = (k0 < colorCount) ? col[k0] : 0;
+                        uint32_t cc1 = gouraud ? ((k1 < colorCount) ? col[k1] : 0) : cc0;
+                        uint32_t cc2 = gouraud ? ((k2 < colorCount) ? col[k2] : 0) : cc0;
+                        cyc_cv A = { pm1[v0], pm2[v0], pz[v0], cc0 };
+                        cyc_cv B = { pm1[v1], pm2[v1], pz[v1], cc1 };
+                        cyc_cv C = { pm1[v2], pm2[v2], pz[v2], cc2 };
+                        cyc_clip_emit(A, B, C, gouraud, &vw);
+                    }
+                    if (!more || hw + 2 > hwEnd) break;
+                    more--;
+                    uint32_t H2 = cpu->read_half(hw); hw += 2;
+                    if (H2 & 0x8000) { v0 = v1; v1 = v2; k0 = k1; k1 = k2; }
+                    else             { v0 = v2; k0 = k2; }
+                    v2 = H2 & 0xFF; k2 = (H2 >> 8) & 0x7F;
+                }
+            }
+            continue;
         }
 
         /* phase-2b: faces. word0 = vertex indices, word1 = colour indices.
@@ -409,9 +501,9 @@ static void hex_dump(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2,
     fprintf(stderr, "  sector0=%08X hdr: ", s0);
     for (int i = 0; i <= 0x14; i += 4) fprintf(stderr, "[%02X]=%08X ", i, cpu->read_word(s0+i));
     fprintf(stderr, "\n  sector0 verts: ");
-    for (int i = 0; i < 4; i++) fprintf(stderr, "%08X ", cpu->read_word(s0+0x18+i*4));
+    for (int i = 0; i < 4; i++) fprintf(stderr, "%08X ", cpu->read_word(s0+game_layout.cyc.vertex_base+i*4));
     uint32_t vc = cpu->read_word(s0+0xC) & 0xFFFF;
-    uint32_t cb = s0+0x18+vc*4;
+    uint32_t cb = s0+game_layout.cyc.vertex_base+vc*4;
     fprintf(stderr, "\n  sector0 colours@%08X: ", cb);
     for (int i = 0; i < 4; i++) fprintf(stderr, "%08X ", cpu->read_word(cb+i*4));
     uint32_t foff = cpu->read_word(s0+0x10) >> 14;
@@ -511,7 +603,6 @@ static int      s_cyc_prev_cam = 0,   s_cyc_curr_cam = 0;   /* source = g_Camera
 static unsigned s_cyc_curr_frame = 0xFFFFFFFFu;             /* VBL of the curr capture */
 
 static int on_sky_draw_cyc(CPUState* cpu, uint32_t addr) {
-    (void)addr;
     int verify = cyc_verify_enabled();
     int feed   = openpete_native_scene_enabled();   /* --renderer vk live */
     /* --render-paths also needs the bracket so the OT filter knows this path's
@@ -534,16 +625,19 @@ static int on_sky_draw_cyc(CPUState* cpu, uint32_t addr) {
         s_cyc_prev_valid = consecutive;
         s_cyc_curr_frame = openpete_frame;
     }
+    if (!game_layout.cyc.hook_args) a1 = a2 = game_layout.cam.proj_matrix;
     ngte_read_matrix(cpu, a1, s_cyc_curr[0]);
     ngte_read_matrix(cpu, a2, s_cyc_curr[1]);
-    s_cyc_curr_cam   = (a1 == game_layout.cam.view_matrix && a2 == game_layout.cam.proj_matrix);
+    s_cyc_curr_cam   = !game_layout.cyc.hook_args ||
+                       (a1 == game_layout.cam.view_matrix && a2 == game_layout.cam.proj_matrix);
     s_cyc_curr_valid = 1;
-    uint32_t start = cpu->read_word(POLYBUF_CURSOR);
+    uint32_t start = cpu->read_word(game_layout.polybuf.cursor);
     { OP_PROF_ACCUM_SCOPE("cyclorama.srend");
-      func_8004EBA8(cpu); }                  /* run the real renderer */
-    uint32_t end = cpu->read_word(POLYBUF_CURSOR);
+      openpete_recomp_module_get()->dispatch(cpu, addr); }   /* run the real renderer */
+    uint32_t end = cpu->read_word(game_layout.polybuf.cursor);
 
     render_path_record(RP_CYCLORAMA, start, end);  /* polybuf range for the OT filter */
+    cyc_capture_visibility(cpu);
 
     cyc_extract(cpu, a0, a1, a2, 0, 0);     /* native scene from gamestate */
     if (feed)
@@ -667,6 +761,7 @@ int cyclorama_native_extract_faded(CPUState* cpu, cyclorama_native_tri* out, int
  * its ColorLerp fade step there). The thunk latch stays as the fallback for
  * the brief boot window where g_CurDB doesn't point at g_DB[] yet. */
 void cyclorama_native_env_clear_commit(void) {
+    if (!game_layout.db.cur_ptr) return;   /* no draw-buffer pair located */
     const uint32_t curdb = *(const uint32_t*)openpete_subtick_host_ptr(game_layout.db.cur_ptr);
     if (curdb != game_layout.db.base && curdb != game_layout.db.base + game_layout.db.stride)
         return;   /* not a valid DB* yet */

@@ -174,7 +174,6 @@ openpete_add_game(spyro-1
         # The native renderer's game half: the feeders and the interp region
         # table. The sub-tick re-extract orchestrator is ORCHESTRATOR above.
         renderer/render_decouple.c
-        renderer/cyclorama.c
         renderer/moby.c
         renderer/moby_rank.c
         renderer/spyro.c

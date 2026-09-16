@@ -29,6 +29,7 @@
 // intentional, opt-in gameplay-state divergence for inspecting a level.
 
 #include "freecam_game.h"
+#include "game_layout.h"        /* game_layout.cam: the pose bytes */
 #include "game_extras.h"        /* game_is_gameplay_live */
 #include "openpete_freecam.h"
 #include "openpete_fiber.h"     /* openpete_speculative / openpete_replaying */
@@ -78,11 +79,11 @@ static struct {
 } s_pose;
 
 static void pose_seed(CPUState* cpu) {
-    s_pose.x     = (int32_t)cpu->read_word(D->cam_pos_x);
-    s_pose.y     = (int32_t)cpu->read_word(D->cam_pos_y);
-    s_pose.z     = (int32_t)cpu->read_word(D->cam_pos_z);
-    s_pose.yaw   = angle_read(cpu, D->cam_yaw);
-    s_pose.pitch = angle_read(cpu, D->cam_pitch);
+    s_pose.x     = (int32_t)cpu->read_word(game_layout.cam.position + 0u);
+    s_pose.y     = (int32_t)cpu->read_word(game_layout.cam.position + 4u);
+    s_pose.z     = (int32_t)cpu->read_word(game_layout.cam.position + 8u);
+    s_pose.yaw   = angle_read(cpu, game_layout.cam.rotation + 4u);
+    s_pose.pitch = angle_read(cpu, game_layout.cam.rotation + 2u);
     s_pose.seeded   = 1;
     s_pose.gen_seen = openpete_freecam_engage_generation();
 }
@@ -95,11 +96,11 @@ static void pose_seed_if_needed(CPUState* cpu) {
 static void pose_stamp(CPUState* cpu) {
     s_pose.yaw   = angle_wrap(s_pose.yaw);
     s_pose.pitch = angle_wrap(s_pose.pitch);
-    cpu->write_word(D->cam_pos_x, (uint32_t)s_pose.x);
-    cpu->write_word(D->cam_pos_y, (uint32_t)s_pose.y);
-    cpu->write_word(D->cam_pos_z, (uint32_t)s_pose.z);
-    cpu->write_half(D->cam_yaw,   angle_stored(s_pose.yaw));
-    cpu->write_half(D->cam_pitch, angle_stored(s_pose.pitch));
+    cpu->write_word(game_layout.cam.position + 0u, (uint32_t)s_pose.x);
+    cpu->write_word(game_layout.cam.position + 4u, (uint32_t)s_pose.y);
+    cpu->write_word(game_layout.cam.position + 8u, (uint32_t)s_pose.z);
+    cpu->write_half(game_layout.cam.rotation + 4u, angle_stored(s_pose.yaw));
+    cpu->write_half(game_layout.cam.rotation + 2u, angle_stored(s_pose.pitch));
 }
 
 static int level_live(CPUState* cpu) {

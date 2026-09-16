@@ -24,6 +24,7 @@
  * (reextract.c) and in cyclorama.c. */
 #include "renderer/orchestrator.h"
 #include "renderer/terrain.h"        /* the shared terrain feeder's entries */
+#include "renderer/cyclorama.h"      /* cyclorama_reextract, cyclorama_native_extract_faded */
 
 #ifdef __cplusplus
 extern "C" {
@@ -98,26 +99,6 @@ int moby_native_canon_drawn_mobys(const uint32_t** out);
  * keyframes). Defined in renderer/flame.c. */
 void flame_native_set_subframe(double frac);
 
-/* Sky dome + background: live g_Camera matrices when the canonical call used
- * them, else the stack-built (transition) matrix pair lerped prev→curr by
- * `alpha`; `interp_on` = camera bracketed (else snap to curr). */
-void cyclorama_reextract(struct CPUState* cpu, double alpha, int interp_on);
-/* One extracted cyclorama dome triangle: screen space (float), per-vertex PSX
- * 0xBBGGRR colour. */
-typedef struct { float sx[3], sy[3]; unsigned int rgb[3]; } cyclorama_native_tri;
-/* Re-derive the DPCS-faded dome that the cross-fade renderer func_8004F000
- * draws (level exit + balloonist), from g_Cyclorama and g_Camera's matrices.
- * That renderer culls faces against the 4:3 outcode box, so its prims stop at
- * the 4:3 edges; this extraction uses the ACTIVE (Hor+ widened) bounds, so the
- * revealed sides of a wide frame get real dome instead of background clear.
- * Fills up to `max` triangles and returns the count. Defined in
- * cyclorama.c. */
-int cyclorama_native_extract_faded(struct CPUState* cpu, cyclorama_native_tri* out, int max);
-/* cyclorama_native_env_clear_commit (renderer/orchestrator.h) is defined in
- * cyclorama.c: it re-reads the clear colour from g_CurDB->m_DrawEnv in PSX RAM
- * rather than the PutDrawEnv thunk latch, which trails the OT build by one
- * VSync and flashed the stale homeworld background for one present at the
- * portal-entry transition boundary. */
 /* Portal previews: the dome rotation matrix is captured prev+curr per canonical
  * tick and lerped by the spine's sub-tick `alpha` (componentwise, like the camera
  * matrix); `interp_on` = camera bracketed (else snap to curr). */

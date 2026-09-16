@@ -253,10 +253,11 @@ function(openpete_add_game GAME_ID)
 
         # Shared renderer TUs: the GTE float mirror every feeder projects
         # through, the --render-paths isolation registry, and the terrain
-        # feeder (reached only through a game's feature list).
+        # and cyclorama feeders (reached only through a game's feature list).
         ${_common}/renderer/native_gte.c
         ${_common}/renderer/render_paths.c
         ${_common}/renderer/terrain.c
+        ${_common}/renderer/cyclorama.c
 
         # PSYQ symbol stubs, abort-on-call. On ELF these are weak so any
         # thunk strongly defines them; on MinGW the macro becomes strong and

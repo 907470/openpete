@@ -8,21 +8,15 @@
 #include <stddef.h>
 #include <stdint.h>
 
-/* g_Camera @ 0x8006DFF8 (camera.h). Fields we touch:
- *   nextCameraPosCartesian @ +0x28 : int32 x, y, z (world; Z is up); Draw
- *                                     copies it to +0x34 each tick and the
- *                                     draw utilities read it
- *   +0x46 : pitch, +0x48 : yaw       : 12-bit angles (0..0xFFF); the
- *                                     rotation builder (func_8004F6C4, from
- *                                     Draw with a0 = +0x44) masks each with
- *                                     0xFFF, and the follow's own writer
- *                                     (func_80012B34) sets +0x44 = 0, +0x46
- *                                     from the polar elevation and +0x48
- *                                     from the azimuth + 0x800. Raising
- *                                     +0x46 looks down, raising +0x48 turns
- *                                     left, and yaw 0x400 looks along +Y:
- *                                     the Spyro 1 convention with no offset. */
-#define G_CAMERA     0x8006DFF8u
+/* The camera pose is read through game_layout.cam (renderer/layout.c):
+ * g_Camera @ 0x8006DFF8, nextCameraPosCartesian @ +0x28 (int32 x, y, z, Z up;
+ * Draw copies it to +0x34 each tick and the draw utilities read it) and the
+ * rotation record @ +0x44 (roll, pitch +0x46, yaw +0x48: 12-bit angles). The
+ * rotation builder (func_8004F6C4, from Draw with a0 = +0x44) masks each with
+ * 0xFFF; the follow's own writer (func_80012B34) sets +0x44 = 0, +0x46 from
+ * the polar elevation and +0x48 from the azimuth + 0x800. Raising +0x46 looks
+ * down, raising +0x48 turns left, and yaw 0x400 looks along +Y: the Spyro 1
+ * convention with no offset. */
 
 /* g_Spyro @ 0x80070328 (spyro.h): position at +0x00, three int32. No
  * previous-position field is identified (+0x124 is a copy made inside the
@@ -36,11 +30,6 @@ static const int s_move_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 25, 100, 300, 50
 static const int s_turn_speed[OPENPETE_FREECAM_SPEED_STEPS] = { 10,  25,  35,  50,  75 };
 
 const freecam_game_desc freecam_desc = {
-    .cam_pos_x = G_CAMERA + 0x28u,
-    .cam_pos_y = G_CAMERA + 0x2Cu,
-    .cam_pos_z = G_CAMERA + 0x30u,
-    .cam_yaw   = G_CAMERA + 0x48u,
-    .cam_pitch = G_CAMERA + 0x46u,
     .angle_bits = 12,
     .yaw_offset = 0, .yaw_sign = 1, .pitch_sign = 1,
     /* The rotation builder composes rotX(pitch)·rotY(yaw)·rotZ(roll); at

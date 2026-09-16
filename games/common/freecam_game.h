@@ -18,11 +18,9 @@
 typedef struct CPUState CPUState;
 
 typedef struct freecam_game_desc {
-    /* Camera bytes the game's view-matrix setup reads after the follow logic
-     * has run: three int32 world coordinates (Z up) and two Euler angles in
-     * 1/4096-turn units. */
-    uint32_t cam_pos_x, cam_pos_y, cam_pos_z;
-    uint32_t cam_yaw, cam_pitch;
+    /* The camera pose bytes come from game_layout.cam: the position (three
+     * int32, Z up) and the rotation record (roll, pitch, yaw halfwords, so
+     * pitch at +2 and yaw at +4). */
     /* Bits of a stored angle: 16 (int16) or 12 (0..0xFFF). A seed read
      * sign-extends from bit angle_bits-1; a stamp masks to angle_bits. */
     int angle_bits;
