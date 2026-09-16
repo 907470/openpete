@@ -21,3 +21,6 @@ cloud_spires | pos=(61927, 44074, 8510) yaw=1029 pitch=10
 molten_crater | pos=(60294, 100033, 12024) yaw=791 pitch=212
 # terrain depth ordering
 seashell_shore | pos=(70859, 80778, 15700) yaw=-1802 pitch=222
+# inside the terrain the native and guest renders differ; reporter suspects
+# the back-face rule
+sunrise_spring | pos=(93293, 45901, 25017) yaw=-1494 pitch=-24
