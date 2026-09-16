@@ -454,6 +454,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
         ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-1/openpete-spyro1;OPENPETE_ORACLE_WINDOWED=1;OPENPETE_FRAME_LIMIT=6000")
 
+    # The Spyro 3 windowed row. Same contract as the row above on the Spyro 3
+    # golden: --render-fps 60 is above the 29.913 Hz tick rate, so every
+    # non-drawing VBL plans a sub-tick present and the run's re-extract count
+    # is nonzero; the row fails if it is zero. The frame limit reaches VBL
+    # 4000, past the demo's first level load (the bulk reads at VBLs
+    # 2903-3475 in the golden's load schedule), so the sub-tick leg is
+    # verified across a load transient and not only in steady gameplay.
+    add_test(NAME psx_oracle_windowed_spyro-3
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_psx_oracle.sh
+                     --game spyro-3 -- --render-fps 60)
+    set_tests_properties(psx_oracle_windowed_spyro-3 PROPERTIES
+        LABELS "slow;oracle"
+        TIMEOUT 1800
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}
+        ENVIRONMENT "OPENPETE_BIN=${CMAKE_BINARY_DIR}/games/spyro-3/openpete-spyro3;OPENPETE_ORACLE_WINDOWED=1;OPENPETE_FRAME_LIMIT=4000")
+
     # Matrix determinism gate — broaden coverage from one (aspect,
     # scenario) cell to a sweep across aspects × fovs × scenarios.
     # Divergence in an open channel is expected; in a gated or verified

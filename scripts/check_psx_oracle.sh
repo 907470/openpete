@@ -54,10 +54,13 @@
 # Env knobs:
 #   OPENPETE_BIN, OPENPETE_DISC
 #   OPENPETE_ORACLE_WINDOWED=1 windowed row: native renderer in a real window
-#                         under llvmpipe, eager present thread; FAIL unless
-#                         the present thread presented (needs a display and
-#                         the lvp ICD, else SKIP); pair with OPENPETE_FRAME_LIMIT
-#                         since the run paces to the display
+#                         under llvmpipe, eager present thread; FAIL unless the
+#                         present thread presented AND at least one sub-tick
+#                         re-extract was presented (needs a display and the lvp
+#                         ICD, else SKIP); pair with OPENPETE_FRAME_LIMIT since
+#                         the run paces to the display, and with
+#                         `-- --render-fps N` above the tick rate so
+#                         intermediate presents are planned at all
 #   OPENPETE_FRAME_LIMIT (default 200000 — safety belt; psxtrace-eof exits
 #                         first; a smaller value makes a smoke run that
 #                         cannot PASS as a full run)
@@ -294,6 +297,18 @@ if [[ "$WINDOWED" != "0" && "$rc" == "0" ]]; then
         rc=2
     else
         echo "[psx-oracle] windowed: $PRESENTED scene(s) presented by the present thread"
+    fi
+    # The windowed row exists for the sub-tick leg: a run whose presents were
+    # all canonical exercised the tick path at a display cadence and nothing
+    # else. The exit line counts the presents built from interpolated
+    # gamestate (eager production plus the host loop's inline path); it is
+    # printed only when at least one ran, so an absent line is zero.
+    REX=$(sed -n 's/.*sub-tick: \([0-9]*\) re-extract(s) presented.*/\1/p' "$LOG" | tail -1)
+    if [[ "${REX:-0}" == "0" ]]; then
+        echo "[psx-oracle] windowed: no sub-tick re-extract presented; the run verified the canonical path only; VACUOUS" >&2
+        rc=2
+    else
+        echo "[psx-oracle] windowed: $REX sub-tick re-extract(s) presented"
     fi
 fi
 

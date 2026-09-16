@@ -1241,8 +1241,15 @@ static struct {
     op_time_t last_target;            /* the previous span's final display instant */
     int       world_live;             /* canonical presents are flowing (see the inline gate) */
     unsigned  spans, produced, skipped_late, cut, refused, level_up, level_down;
+    unsigned  produced_inter;         /* of `produced`, the sub-tick re-extracts */
     int       span_cut;               /* this span ended with targets unproduced */
 } s_eager = { .level = 1 };
+
+/* Sub-tick re-extracts driven by the host loop's inline intermediate present,
+ * the path taken whenever eager production is not active. Counted beside
+ * s_eager.produced_inter so one exit line states how many presents in a run
+ * were built from interpolated gamestate rather than from a tick. */
+static unsigned s_inline_rex = 0;
 
 static void eager_init(void)
 {
@@ -1466,7 +1473,11 @@ static void eager_produce_one(op_time_t t, int canonical)
     int paired = 0;
     const double alpha = openpete_pace_extract_alpha(&paired);
     const int slot = openpete_native_scene_publish(t, kind, alpha, paired);
-    if (slot >= 0) { openpete_present_thread_kick(); s_eager.produced++; }
+    if (slot >= 0) {
+        openpete_present_thread_kick();
+        s_eager.produced++;
+        if (!canonical) s_eager.produced_inter++;
+    }
     else s_eager.refused++;
     if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
     if (op_prof_on())
@@ -5306,6 +5317,7 @@ static int run_host_loop(const openpete_options_t* opts) {
                 vp_set_present_target();      /* even display-slot time for this present */
                 const op_time_t ex0 = op_now();
                 native_re(&g_game.cpu);       /* rebuild s_scene @ interpolated gamestate */
+                s_inline_rex++;
                 openpete_native_scene_sig_report(0);
                 pace_extract_ns = op_now() - ex0;
                 if (pt0) openpete_phase_add(OPPT_REX_TOTAL, openpete_phase_now_us() - pt0);
@@ -5907,6 +5919,10 @@ static int run_host_loop(const openpete_options_t* opts) {
     openpete_present_thread_stop();
     openpete_present_thread_report();
     eager_report();
+    if (s_eager.produced_inter || s_inline_rex)
+        OPL_INFO_F("sub-tick", "%u re-extract(s) presented: %u eager, %u inline",
+                   s_eager.produced_inter + s_inline_rex,
+                   s_eager.produced_inter, s_inline_rex);
 
     {   uint64_t m; int64_t w, ln; size_t b;
         openpete_disc_cache_census(&m, &w, &b, &ln);
