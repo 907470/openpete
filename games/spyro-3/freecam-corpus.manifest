@@ -29,3 +29,6 @@ midday_gardens | pos=(64750, 54918, 9705) yaw=380 pitch=207
 # with interpolation the world flickers at the tick cadence; the vases behind the
 # sign flicker with it (the other vase does not)
 spooky_swamp | pos=(61666, 72370, 9835) yaw=167 pitch=33
+# --lod extended: mobys take the extended model rule but keep the stock distance
+# cull, so distant mobys vanish (the lodext tiles carry the defect)
+sunrise_spring | pos=(59755, 4990, 36743) yaw=1480 pitch=354
