@@ -49,6 +49,57 @@ typedef struct player_faces {
     uint32_t colours;  /* the packed-RGB colour block the face indices reach into */
 } player_faces_t;
 
+/* One part's transform record: the words the walk reads out of the block the
+ * draw builds in its render scratch — the flags word (blend weight, the two
+ * streams' form bits, the vertex count) and the two keyframes' cursor triples.
+ *
+ * A draw that leaves that block intact for the whole call needs no slot and
+ * the walk reads the block back. A draw that consumes the block and then
+ * reuses the same bytes as scratch later in the same call leaves nothing to
+ * read after it returns; that game answers `part_record` and composes the same
+ * words from gamestate. */
+typedef struct player_record {
+    uint32_t flags;
+    uint32_t stream_a[3];
+    uint32_t stream_b[3];
+} player_record_t;
+
+/* The water-plane split: the draw rewrites every projected vertex's staged
+ * word with a signed distance to a world plane and classifies each face by the
+ * signs of its own vertices' distances. A face wholly on the negative side is
+ * either dropped or shaded half-way toward the environment's far colour; a
+ * face that straddles is cut at the plane and its two halves take the two
+ * policies. `active` 0 leaves the walk byte-identical to the unsplit pass.
+ *
+ * The distance is affine in the decoded model vertex, so the walk needs only
+ * the row, the plane's own constant and the part's folded origin term:
+ *   dist = plane - floor((row[0]*VX + row[1]*VY + row[2]*VZ) / 4096 + tr[part])
+ * The floor is the GTE's: the draw reads the distance out of MAC2 of an
+ * sf = 1 MVMVA whose translation is already `tr`, and classifies and cuts on
+ * that truncated value, so the walk truncates too or it classifies a vertex
+ * within one unit of the plane onto the other side.
+ * `fc` is the far colour as the three GTE control words the draw loads into
+ * RFC/GFC/BFC (sixteen times the 0..255 channel) and `ir0` the IR0 the
+ * negative half's depth cue runs at: the shade is the GTE's own DPCS chain at
+ * sf = 1, truncating at both shifts. `key_bias` is added to the negative
+ * half's depth-admission sum and `thr_bias` to every face's, mirroring the two
+ * ordering biases the draw carries in one GTE control register each. */
+typedef struct player_plane {
+    int    active;
+    int    drop_below;     /* the negative half is dropped, never shaded */
+    double row[3];
+    double plane;
+    double tr[PLAYER_PARTS_MAX];
+    int32_t fc[3];
+    int32_t ir0;
+    double key_bias;
+    double thr_bias;
+    /* Where the draw left its own per-vertex distance word, one per projected
+     * vertex in stream order; 0 when the game stages none. The probe reads it
+     * as ground truth, the walk never does. */
+    uint32_t dist_block;
+} player_plane_t;
+
 typedef struct player_game {
     /* ---- the guest draw ---------------------------------------------- */
     /* Run the game's own player draw. The walk brackets the polybuf cursor
@@ -60,6 +111,11 @@ typedef struct player_game {
      * game_layout.player.part_count instead, so a game with a fixed skeleton
      * needs no slot. */
     int (*part_count)(CPUState* cpu);
+
+    /* Part `part`'s transform record, composed from gamestate instead of read
+     * back from the block the draw built. Returns 0 for a part this pose does
+     * not carry, which ends the block. NULL = the walk reads the block. */
+    int (*part_record)(CPUState* cpu, int part, player_record_t* out);
 
     /* Part `part`'s model->view transform, derived from gamestate rather than
      * read back from the record the draw built. `parent` is part 0's transform
@@ -123,6 +179,10 @@ typedef struct player_game {
      * value; 0 = the game has no such sentinel and the walk only ever applies
      * the one-slot tie pull. */
     int sort_depth_front;
+
+    /* Fill `pl` with this tick's water-plane split, or leave it inactive.
+     * NULL = the game's draw has no such pass. */
+    void (*plane_begin)(CPUState* cpu, player_plane_t* pl);
 
     /* ---- identity ----------------------------------------------------- */
     /* Which of several calls in one tick is the avatar the gameplay drives.

@@ -168,6 +168,11 @@ kind = "function"
 note = "DrawSpyro (asm/spyrodraw.s:12): the player avatar's own draw, run twice a tick — the mirrored copy with g_Spyro+0x2C set, then the avatar with it clear; the shared player feeder's hook site"
 
 [[symbol]]
+name = "D_SPYRO_BLEND"
+addr = 0x80066530
+note = "the 256-byte table the player draw looks the keyframe blend byte up in (g_Spyro+0x1C for the body, +0x1D for the head) before shifting the result left four into the part record's IR0 field (asm/spyrodraw.s:43-45,66,109-112,134)"
+
+[[symbol]]
 name = "D_SPYRO_ANIMS"
 addr = 0x8006C558
 note = "pointer to the 256-entry Animation table the player draw indexes by the animation word's low byte (asm/spyrodraw.s:33-34,37-40); written at level load"

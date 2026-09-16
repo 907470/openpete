@@ -58,6 +58,54 @@ uint32_t player_part_block_base(CPUState* cpu) {
     return end - PL.part_base_polybuf_off + PL.part_off;
 }
 
+/* ---- the part records the walk reads -----------------------------------
+ * The block the draw leaves in its render scratch is the default source. A
+ * draw that consumes the block and then reuses those bytes as scratch inside
+ * the same call answers `part_record` instead, and the walk composes the same
+ * words from gamestate into this host copy: the block the hook could read back
+ * would be whatever the later pass wrote there. The copy carries the game's
+ * own block layout, so the record store, the prev/curr pair and the walk all
+ * keep reading one shape. */
+static uint8_t s_blk[PLAYER_REC_PART_MAX];
+static int     s_blk_pinned;   /* the replay supplied the bytes; do not re-derive */
+
+static void blk_put(uint8_t* d, uint32_t v) {
+    d[0]=(uint8_t)v; d[1]=(uint8_t)(v>>8); d[2]=(uint8_t)(v>>16); d[3]=(uint8_t)(v>>24);
+}
+static uint32_t blk_get(const uint8_t* d) {
+    return (uint32_t)d[0] | ((uint32_t)d[1]<<8) | ((uint32_t)d[2]<<16) | ((uint32_t)d[3]<<24);
+}
+
+static int player_parts(CPUState* cpu);
+
+/* Compose the whole block from gamestate. A part the provider refuses ends the
+ * block, which the zero flags word already spells. */
+static void player_block_derive(CPUState* cpu, uint8_t* dst) {
+    memset(dst, 0, PL.part_block_len);
+    if (!player_game.part_record || PL.part_block_len > PLAYER_REC_PART_MAX) return;
+    const int n = player_parts(cpu);
+    for (int p = 0; p < n; p++) {
+        uint32_t rel = (uint32_t)p * PL.part_stride;
+        if (rel + PL.part_stride > PL.part_block_len) break;
+        player_record_t r; memset(&r, 0, sizeof r);
+        if (!player_game.part_record(cpu, p, &r)) break;
+        blk_put(dst + rel + PL.part_flags_off, r.flags);
+        for (int k = 0; k < 3; k++) {
+            blk_put(dst + rel + PL.part_stream_a_off + (uint32_t)k*4u, r.stream_a[k]);
+            blk_put(dst + rel + PL.part_stream_b_off + (uint32_t)k*4u, r.stream_b[k]);
+        }
+    }
+}
+
+/* One word of part `part`'s record: out of the derived copy where the game
+ * derives, out of PSX RAM where it does not. */
+static uint32_t player_rec_word(CPUState* cpu, uint32_t block, int part, uint32_t off) {
+    uint32_t rel = (uint32_t)part * PL.part_stride + off;
+    if (player_game.part_record)
+        return (rel + 4u <= PL.part_block_len) ? blk_get(s_blk + rel) : 0u;
+    return cpu->read_word(block + rel);
+}
+
 static uint32_t player_colour_scratch(CPUState* cpu) {
     if (!PL.colour_scratch_len) return 0;
     if (PL.part_base) return PL.part_base + PL.colour_scratch_off;
@@ -141,6 +189,54 @@ int player_rot_interp(int part, double out[3]) {
     return 1;
 }
 
+/* ---- the water-plane split ---------------------------------------------
+ * The draw rewrites every projected vertex's staged word with a signed
+ * distance to a world plane and classifies each face by the signs of its own
+ * vertices' distances (the OR admits a face wholly on the positive side, the
+ * AND separates a wholly-negative face from a straddling one). The negative
+ * half is dropped, or depth-cued toward the environment's far colour by the
+ * plane's own IR0; a straddling face is cut at the plane and the two halves
+ * take the two policies. The provider answers the plane; `active` 0 leaves
+ * every number below untouched. */
+static player_plane_t s_plane;
+
+static double plane_dist(int part, double VX, double VY, double VZ) {
+    if (part < 0 || part >= PLAYER_PARTS_MAX) return 0.0;
+    return s_plane.plane
+         - floor((s_plane.row[0]*VX + s_plane.row[1]*VY + s_plane.row[2]*VZ) / 4096.0
+                 + s_plane.tr[part]);
+}
+
+/* The negative half's colour: the draw runs one DPCS per vertex colour with
+ * the far colour in RFC/GFC/BFC, cueing the channel toward it by IR0. The
+ * chain is reproduced integer for integer because both of its shifts truncate,
+ * and a rounded blend lands a unit above the hardware on about half the
+ * channels:
+ *   IR  = SAR12((FC << 12) - (c << 16))   = FC - (c << 4)
+ *   MAC = SAR12(IR * IR0 + (c << 16))
+ *   out = MAC >> 4                        (the RGB2 pack), clamped to a byte */
+static uint32_t plane_shade(uint32_t rgb) {
+    uint32_t out = 0;
+    for (int i = 0; i < 3; i++) {
+        int32_t c  = (int32_t)((rgb >> (8*i)) & 0xFFu);
+        int32_t ir = s_plane.fc[i] - (c << 4);
+        int32_t v  = ((ir * s_plane.ir0 + (c << 16)) >> 12) >> 4;
+        if (v < 0) v = 0; else if (v > 255) v = 255;
+        out |= (uint32_t)v << (8*i);
+    }
+    return out;
+}
+
+/* OPENPETE_PLAYER_VERIFY_NOPLANE: the negative control of the split. It
+ * refuses the provider's plane, so every face takes the unsplit path; on a
+ * pose the draw actually splits, the probe's plane and colour legs collapse. */
+static int player_plane_disabled(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_PLAYER_VERIFY_NOPLANE");
+                 v = (e && *e && *e != '0'); }
+    return v;
+}
+
 /* ---- projection --------------------------------------------------------
  * Float RTPS mirror WITH translation, reproducing the GTE's near-plane
  * behaviour in float. For a vertex close to the camera the hardware caps the
@@ -167,7 +263,7 @@ static double project(const int M[3][3], const double TR[3], double vx, double v
  * probe that still passes with it armed is measuring nothing. */
 static int s_probe_bitshift;
 
-typedef struct { float sx, sy, vz; int sat, seg; } spxy;
+typedef struct { float sx, sy, vz; int sat, seg; double pd; } spxy;
 #define MAX_SPROJ 2048
 static spxy s_sproj[MAX_SPROJ]; static int s_sproj_n;
 static spxy s_sproj_prev[MAX_SPROJ];   /* prev-pose projection for the two-pass shape lerp */
@@ -185,22 +281,22 @@ void player_proj_vert(int i, float* sx, float* sy, float* vz, int* sat, int* par
  * append to s_sproj. The cursors and the opening stream form come out of the
  * part record at the descriptor's offsets; only the per-vertex step is
  * per-game (player_game.vstream_next). */
-static int player_project_part(CPUState* cpu, uint32_t entry, const int M[3][3], const double TR[3],
+static int player_project_part(CPUState* cpu, uint32_t block, const int M[3][3], const double TR[3],
                                double ofx, double ofy, const ngte_view* v, int part, int count) {
-    uint32_t fd = cpu->read_word(entry + PL.part_flags_off);
+    uint32_t fd = player_rec_word(cpu, block, part, PL.part_flags_off);
     uint32_t blend_raw = fd & PL.blend_mask;
     int dual = (blend_raw != 0);
     double blend = (double)blend_raw / 4096.0;
 
     moby_vstream_t A, B;
     memset(&A, 0, sizeof A); memset(&B, 0, sizeof B);
-    A.scratch_u[0] = cpu->read_word(entry + PL.part_stream_a_off);
-    A.litp         = cpu->read_word(entry + PL.part_stream_a_off + 4u);
-    A.shortp       = cpu->read_word(entry + PL.part_stream_a_off + 8u);
+    A.scratch_u[0] = player_rec_word(cpu, block, part, PL.part_stream_a_off);
+    A.litp         = player_rec_word(cpu, block, part, PL.part_stream_a_off + 4u);
+    A.shortp       = player_rec_word(cpu, block, part, PL.part_stream_a_off + 8u);
     A.flag         = (int)((fd >> PL.part_stream_flag_bit[0]) & 1u);
-    B.scratch_u[0] = cpu->read_word(entry + PL.part_stream_b_off);
-    B.litp         = cpu->read_word(entry + PL.part_stream_b_off + 4u);
-    B.shortp       = cpu->read_word(entry + PL.part_stream_b_off + 8u);
+    B.scratch_u[0] = player_rec_word(cpu, block, part, PL.part_stream_b_off);
+    B.litp         = player_rec_word(cpu, block, part, PL.part_stream_b_off + 4u);
+    B.shortp       = player_rec_word(cpu, block, part, PL.part_stream_b_off + 8u);
     B.flag         = (int)((fd >> PL.part_stream_flag_bit[1]) & 1u);
 
     int emitted = 0;
@@ -219,6 +315,7 @@ static int player_project_part(CPUState* cpu, uint32_t entry, const int M[3][3],
         s_sproj[s_sproj_n].sx = (float)sx; s_sproj[s_sproj_n].sy = (float)sy;
         s_sproj[s_sproj_n].vz = (float)vz; s_sproj[s_sproj_n].sat = sat;
         s_sproj[s_sproj_n].seg = part;
+        s_sproj[s_sproj_n].pd  = s_plane.active ? plane_dist(part, VX, VY, VZ) : 0.0;
         s_sproj_n++; emitted++;
     }
     return emitted;
@@ -236,7 +333,7 @@ const player_xform_t* player_part_xform(int p) {
     return (p >= 0 && p < PLAYER_PARTS_MAX && s_xf[p].present) ? &s_xf[p] : NULL;
 }
 
-static void player_derive_xforms(CPUState* cpu, const ngte_view* v) {
+static void player_derive_xforms(CPUState* cpu, const ngte_view* v, uint32_t fd0) {
     memset(s_xf, 0, sizeof s_xf);
     const int n = player_parts(cpu);
     if (n <= 0 || !player_game.part_xform) return;
@@ -245,8 +342,6 @@ static void player_derive_xforms(CPUState* cpu, const ngte_view* v) {
      * progress byte: the sub-tick re-extract writes a fine interpolated weight
      * into the root record, and a coarse per-part byte would step the seam
      * while the vertices around it stay smooth. */
-    uint32_t block = player_part_block_base(cpu);
-    uint32_t fd0 = block ? cpu->read_word(block + PL.part_flags_off) : 0u;
     int ir0 = (int)(fd0 & PL.blend_mask);
     int dual = (ir0 != 0);
     for (int p = 1; p < n; p++) {
@@ -260,27 +355,33 @@ static void player_derive_xforms(CPUState* cpu, const ngte_view* v) {
 /* Per-tick engagement counts: a pass that decoded nothing proves nothing, so
  * the probe prints what this walk actually read. */
 static long s_eng_parts, s_eng_verts, s_eng_faces, s_eng_tris;
+/* Faces this walk classified, by plane class: above, below-shaded,
+ * below-dropped, straddling. A split that engaged nothing is not a pass. */
+static long s_plane_faces[4];
 
 int player_project_all(CPUState* cpu) {
     s_sproj_n = 0;
     s_eng_parts = 0; s_eng_verts = 0;
+    memset(&s_plane, 0, sizeof s_plane);
     if (!player_game.vstream_next) return 0;
+    if (player_game.plane_begin && !player_plane_disabled())
+        player_game.plane_begin(cpu, &s_plane);
     uint32_t block = player_part_block_base(cpu);
-    if (!block) return 0;
+    if (!block && !player_game.part_record) return 0;
+    if (player_game.part_record && !s_blk_pinned) player_block_derive(cpu, s_blk);
     ngte_view view; ngte_view_build(cpu, &view);
     const ngte_view* v = &view;
-    player_derive_xforms(cpu, v);
+    player_derive_xforms(cpu, v, player_rec_word(cpu, block, 0, PL.part_flags_off));
     const int nparts = player_parts(cpu);
     int cursor = 0;                 /* the running value a cumulative count advances */
     int nseg = 0;
     for (int p = 0; p < nparts; p++) {
-        uint32_t entry = block + (uint32_t)p * PL.part_stride;
-        uint32_t fd = cpu->read_word(entry + PL.part_flags_off);
+        uint32_t fd = player_rec_word(cpu, block, p, PL.part_flags_off);
         if (fd == 0) break;                          /* the block's terminator */
         int count = player_game.part_vcount ? player_game.part_vcount(fd, &cursor) : 0;
         if (count <= 0) continue;
         if (!s_xf[p].present) continue;
-        s_eng_verts += player_project_part(cpu, entry, s_xf[p].M, s_xf[p].TR,
+        s_eng_verts += player_project_part(cpu, block, s_xf[p].M, s_xf[p].TR,
                                           v->ofx, v->ofy, v, p, count);
         s_eng_parts++;
         nseg++;
@@ -343,22 +444,94 @@ static double player_depth_sum(const uint16_t idx[4], const int order[2][3], int
                         : (sz[0] + sz[1] + sz[1] + sz[2]);
 }
 
+/* The material one triangle carries, so the plane split can pass it along
+ * without restating seven arguments per emit. */
+typedef struct { int tex, tpx, tpy, clx, cly, bpp, blend; } swmat;
+
+/* One vertex on the way to the scene: a projected stream vertex, or a point
+ * the plane cut produced, which has no stream index of its own. */
+typedef struct { double sx, sy, vz, u, v, pd; uint32_t rgb; int idx; } pclv;
+
+static void emit_raw(const pclv v[3], const swmat* m) {
+    if (s_swtri_n >= MAX_SWTRI) return;
+    swtri* t = &s_swtri[s_swtri_n++];
+    for (int k = 0; k < 3; k++)
+        t->v[k] = (swv){ (float)v[k].sx, (float)v[k].sy, (float)v[k].vz,
+                         (int)v[k].u, (int)v[k].v, v[k].rgb, v[k].idx };
+    t->textured=m->tex; t->tpage_x=m->tpx; t->tpage_y=m->tpy;
+    t->clut_x=m->clx; t->clut_y=m->cly; t->bpp=m->bpp; t->blend=m->blend;
+}
+
+/* Cut one triangle at the plane and emit each half under its own policy: the
+ * positive half stock, the negative half shaded toward the far colour, or
+ * dropped. With the split off, or with every vertex on one side, this is one
+ * emit of the triangle it was handed. The cut interpolates screen position,
+ * UV and colour, which is what the draw's three INTPL passes interpolate, and
+ * view depth besides, which the draw does not carry per vertex. */
+static void plane_emit(const pclv in[3], const swmat* m) {
+    if (!s_plane.active) { emit_raw(in, m); return; }
+    pclv pos[4], neg[4]; int np = 0, nn = 0;
+    for (int k = 0; k < 3; k++) {
+        const pclv* A = &in[k];
+        const pclv* B = &in[(k + 1) % 3];
+        int a_up = A->pd >= 0.0, b_up = B->pd >= 0.0;
+        if (a_up) { if (np < 4) pos[np++] = *A; } else { if (nn < 4) neg[nn++] = *A; }
+        if (a_up == b_up) continue;
+        double den = A->pd - B->pd;
+        double t = den != 0.0 ? A->pd / den : 0.0;
+        if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+        pclv M;
+        M.sx = A->sx + t*(B->sx - A->sx);
+        M.sy = A->sy + t*(B->sy - A->sy);
+        M.vz = A->vz + t*(B->vz - A->vz);
+        M.u  = A->u  + t*(B->u  - A->u);
+        M.v  = A->v  + t*(B->v  - A->v);
+        M.pd = 0.0; M.idx = A->idx; M.rgb = 0;
+        for (int c = 0; c < 3; c++) {
+            double ca = (double)((A->rgb >> (8*c)) & 0xFFu);
+            double cb = (double)((B->rgb >> (8*c)) & 0xFFu);
+            int cv = (int)(ca + t*(cb - ca) + 0.5);
+            if (cv < 0) cv = 0; else if (cv > 255) cv = 255;
+            M.rgb |= (uint32_t)cv << (8*c);
+        }
+        if (np < 4) pos[np++] = M;
+        if (nn < 4) neg[nn++] = M;
+    }
+    for (int k = 2; k < np; k++) {
+        pclv f[3] = { pos[0], pos[k-1], pos[k] };
+        emit_raw(f, m);
+    }
+    if (s_plane.drop_below) return;
+    for (int k = 0; k < nn; k++) neg[k].rgb = plane_shade(neg[k].rgb);
+    for (int k = 2; k < nn; k++) {
+        pclv f[3] = { neg[0], neg[k-1], neg[k] };
+        emit_raw(f, m);
+    }
+}
+
 static void emit_swtri(int i0,int i1,int i2, uint32_t c0,uint32_t c1,uint32_t c2,
                        int u0,int v0,int u1,int v1,int u2,int v2,
                        int tex,int tpx,int tpy,int clx,int cly,int bpp,int blend) {
     if (s_swtri_n >= MAX_SWTRI) return;
     if (i0 >= s_sproj_n || i1 >= s_sproj_n || i2 >= s_sproj_n) return;
-    swtri* t = &s_swtri[s_swtri_n++];
-    t->v[0]=(swv){s_sproj[i0].sx,s_sproj[i0].sy,s_sproj[i0].vz,u0,v0,c0,i0};
-    t->v[1]=(swv){s_sproj[i1].sx,s_sproj[i1].sy,s_sproj[i1].vz,u1,v1,c1,i1};
-    t->v[2]=(swv){s_sproj[i2].sx,s_sproj[i2].sy,s_sproj[i2].vz,u2,v2,c2,i2};
-    t->textured=tex; t->tpage_x=tpx; t->tpage_y=tpy; t->clut_x=clx; t->clut_y=cly;
-    t->bpp=bpp; t->blend=blend;
+    const int ii[3] = { i0, i1, i2 };
+    const uint32_t cc[3] = { c0, c1, c2 };
+    const int uu[3] = { u0, u1, u2 }, vv[3] = { v0, v1, v2 };
+    pclv t[3];
+    for (int k = 0; k < 3; k++) {
+        int i = ii[k];
+        t[k].sx = s_sproj[i].sx; t[k].sy = s_sproj[i].sy; t[k].vz = s_sproj[i].vz;
+        t[k].u = uu[k]; t[k].v = vv[k]; t[k].rgb = cc[k];
+        t[k].pd = s_sproj[i].pd; t[k].idx = i;
+    }
+    const swmat m = { tex, tpx, tpy, clx, cly, bpp, blend };
+    plane_emit(t, &m);
 }
 
 int player_build_walk(CPUState* cpu) {
     s_swtri_n = 0;
     s_eng_faces = 0;
+    memset(s_plane_faces, 0, sizeof s_plane_faces);
     if (s_sproj_n <= 0 || !player_game.part_faces || !player_game.decode_faces) return 0;
     const int nparts = player_parts(cpu);
     /* A game whose whole skeleton shares one stitched mesh answers the same
@@ -398,9 +571,29 @@ int player_build_walk(CPUState* cpu) {
                                        n1, n2, f->i3 < s_sproj_n, order);
             const uint16_t idx[4] = { f->i0, f->i1, f->i2, f->i3 };
             const uint32_t col[4] = { c0, c1, c2, c3 };
+            /* The plane classification runs BEFORE the depth admission, as the
+             * draw's does: a face wholly on the negative side is dropped
+             * outright where the policy drops, and otherwise carries the
+             * negative half's ordering bias into the admission sum. The
+             * threshold bias applies to every face, split or not. */
+            double key_adj = -s_plane.thr_bias;
+            if (s_plane.active && nemit) {
+                int nvf = (f->i3 < s_sproj_n) ? 4 : 3;
+                int neg = 0;
+                for (int k = 0; k < nvf; k++) {
+                    int vi = idx[k];
+                    if (vi < s_sproj_n && s_sproj[vi].pd < 0.0) neg++;
+                }
+                if (neg == nvf) {
+                    if (s_plane.drop_below) { s_plane_faces[2]++; continue; }
+                    s_plane_faces[1]++;
+                    key_adj += s_plane.key_bias;
+                } else if (neg) s_plane_faces[3]++;
+                else s_plane_faces[0]++;
+            }
             if (nemit && player_game.face_depth_keep &&
                 !player_game.face_depth_keep(cpu, s_xf[0].present ? &s_xf[0] : NULL,
-                                             f, player_depth_sum(idx, order, nemit)))
+                                             f, player_depth_sum(idx, order, nemit) + key_adj))
                 continue;
             for (int e = 0; e < nemit; e++) {
                 const int a = order[e][0], b = order[e][1], c = order[e][2];
@@ -506,7 +699,7 @@ static void player_feed_walk(CPUState* cpu) { player_feed_walk_ex(cpu, 1); }
  *
  * OPENPETE_PLAYER_VERIFY_BITSHIFT arms the negative control. */
 #define PV_MAX_PRIM 4096
-typedef struct { float x[3], y[3]; uint32_t rgb[3]; uint8_t code; } pv_tri;
+typedef struct { float x[3], y[3]; uint32_t rgb[3]; int u[3], v[3]; uint8_t code; } pv_tri;
 static pv_tri s_pv[PV_MAX_PRIM]; static int s_pv_n;
 
 static void pv_capture(CPUState* cpu, uint32_t start, uint32_t end) {
@@ -525,7 +718,7 @@ static void pv_capture(CPUState* cpu, uint32_t start, uint32_t end) {
             uint32_t raw[20];
             int nraw = (int)(stride / 4); if (nraw > 20) nraw = 20;
             for (int i = 0; i < nraw; i++) raw[i] = cpu->read_word(p + (uint32_t)i*4);
-            float x[4], y[4]; uint32_t rgb[4];
+            float x[4], y[4]; uint32_t rgb[4]; int uu[4], vv[4];
             uint32_t rgb0 = raw[1] & 0xFFFFFFu;
             int c = 2, ok = 1;
             for (int k = 0; k < nv; k++) {
@@ -534,7 +727,13 @@ static void pv_capture(CPUState* cpu, uint32_t start, uint32_t end) {
                 uint32_t xy = raw[c++];
                 x[k] = (float)(int16_t)(xy & 0xFFFF);
                 y[k] = (float)(int16_t)(xy >> 16);
-                if (tex) { if (c >= nraw) { ok = 0; break; } c++; }
+                uu[k] = vv[k] = -1;
+                if (tex) {
+                    if (c >= nraw) { ok = 0; break; }
+                    uu[k] = (int)(raw[c] & 0xFFu);
+                    vv[k] = (int)((raw[c] >> 8) & 0xFFu);
+                    c++;
+                }
             }
             if (ok) {
                 const int split[2][3] = { {0,1,2}, {1,3,2} };   /* the GPU quad split */
@@ -544,6 +743,7 @@ static void pv_capture(CPUState* cpu, uint32_t start, uint32_t end) {
                     for (int k = 0; k < 3; k++) {
                         int j = split[sidx][k];
                         t->x[k] = x[j]; t->y[k] = y[j]; t->rgb[k] = rgb[j];
+                        t->u[k] = uu[j]; t->v[k] = vv[j];
                     }
                 }
             }
@@ -603,6 +803,7 @@ static void player_verify_report(CPUState* cpu, uint32_t startp, uint32_t endp) 
     static uint8_t w_used[PV_MAX_PRIM * 8], p_used[PV_MAX_PRIM];
     memset(w_used, 0, sizeof w_used); memset(p_used, 0, sizeof p_used);
     long walk_hit = 0, prim_hit = 0, col_hit = 0, col_tot = 0, mat_hit = 0;
+    long uv_hit = 0, uv_tot = 0; double uv_err = 0.0;
     double errsum = 0.0; long errn = 0;
     for (int a = 0; a < npair; a++) {
         int i = pairs[a].w, j = pairs[a].p, rot = pairs[a].rot;
@@ -624,6 +825,17 @@ static void player_verify_report(CPUState* cpu, uint32_t startp, uint32_t endp) 
             errsum += sqrt(dx*dx + dy*dy); errn++;
             col_tot++;
             if ((w->v[k].rgb & 0xFFFFFFu) == s_pv[j].rgb[(k + rot) % 3]) col_hit++;
+            /* The UV leg. A matched, colour-exact, textured triangle still
+             * samples the wrong texels when the walk's UV decode is off, and
+             * neither the colour nor the material leg can see it: the texture
+             * coordinates are compared exactly, over the matched pairs whose
+             * primitive carries a pair at all. */
+            int gu = s_pv[j].u[(k + rot) % 3], gv = s_pv[j].v[(k + rot) % 3];
+            if (gu >= 0) {
+                uv_tot++;
+                if (w->v[k].u == gu && w->v[k].v == gv) uv_hit++;
+                else uv_err += fabs((double)(w->v[k].u - gu)) + fabs((double)(w->v[k].v - gv));
+            }
         }
     }
     /* The per-index leg: where the draw leaves every projected vertex's own
@@ -640,19 +852,65 @@ static void player_verify_report(CPUState* cpu, uint32_t startp, uint32_t endp) 
             ix_tot++; ix_err += d; if (d <= 4.0) ix_hit++;
         }
     }
+    /* The plane leg: where the split is armed the draw leaves its own signed
+     * distance for every projected vertex, index for index with this walk, so
+     * the comparison has no matching ambiguity and separates a wrong plane
+     * from a wrong classification. */
+    if (s_plane.active || player_plane_disabled()) {
+        long pd_tot = 0, pd_sign = 0, pd_near = 0; double pd_err = 0.0;
+        long pd_pt[PLAYER_PARTS_MAX] = {0}, pd_ps[PLAYER_PARTS_MAX] = {0};
+        double pd_pe[PLAYER_PARTS_MAX] = {0};
+        char pbuf[128]; int pn = 0;
+        uint32_t db = s_plane.dist_block;
+        if (db >= 0x80000000u) {
+            for (int j = 0; j < s_sproj_n; j++) {
+                int32_t g = (int32_t)cpu->read_word(db + (uint32_t)j * 4u);
+                double d = s_sproj[j].pd;
+                double e = fabs(d - (double)g);
+                pd_tot++; pd_err += e;
+                if (e <= 1.0) pd_near++;
+                if ((g < 0) == (d < 0.0)) pd_sign++;
+                int sg = s_sproj[j].seg;
+                if (sg >= 0 && sg < PLAYER_PARTS_MAX) {
+                    pd_pt[sg]++; pd_pe[sg] += e;
+                    if ((g < 0) == (d < 0.0)) pd_ps[sg]++;
+                }
+            }
+            /* Per part as well as overall: one part's record can be intact
+             * while another's is not, and a whole-model average hides which. */
+            for (int q = 0; q < PLAYER_PARTS_MAX && pn < (int)sizeof pbuf - 32; q++)
+                if (pd_pt[q]) pn += snprintf(pbuf + pn, sizeof pbuf - (size_t)pn,
+                                             " p%d=%.1f%%/%.1f(n=%ld)", q,
+                                             100.0*(double)pd_ps[q]/pd_pt[q],
+                                             pd_pe[q]/(double)pd_pt[q], pd_pt[q]);
+        }
+        pbuf[pn] = 0;
+        fprintf(stderr,
+            "[player-plane f=%u] active=%d drop=%d verts=%ld sign=%.1f%% <=1=%.1f%% "
+            "mean=%.1f  faces above=%ld below=%ld dropped=%ld split=%ld%s%s\n",
+            openpete_frame, s_plane.active, s_plane.drop_below, pd_tot,
+            pd_tot ? 100.0*(double)pd_sign/pd_tot : 0.0,
+            pd_tot ? 100.0*(double)pd_near/pd_tot : 0.0,
+            pd_tot ? pd_err/(double)pd_tot : 0.0,
+            s_plane_faces[0], s_plane_faces[1], s_plane_faces[2], s_plane_faces[3],
+            pbuf, player_plane_disabled() ? "  [NEGATIVE CONTROL: plane refused]" : "");
+    }
     fprintf(stderr,
         "[player-index f=%u] n=%ld <=4px=%.1f%% mean=%.2fpx\n",
         openpete_frame, ix_tot, ix_tot ? 100.0*(double)ix_hit/ix_tot : 0.0,
         ix_tot ? ix_err/(double)ix_tot : 0.0);
     fprintf(stderr,
         "[player-verify f=%u] parts=%ld verts=%ld faces=%ld tris=%ld prims=%d  "
-        "precision=%.1f%% recall=%.1f%% mean=%.2fpx colour=%.1f%% material=%.1f%%%s\n",
+        "precision=%.1f%% recall=%.1f%% mean=%.2fpx colour=%.1f%% material=%.1f%% "
+        "uv=%.1f%%(n=%ld,err=%.2f)%s\n",
         openpete_frame, s_eng_parts, s_eng_verts, s_eng_faces, s_eng_tris, s_pv_n,
         s_swtri_n ? 100.0 * (double)walk_hit / s_swtri_n : 0.0,
         s_pv_n ? 100.0 * (double)prim_hit / s_pv_n : 0.0,
         errn ? errsum / (double)errn : 0.0,
         col_tot ? 100.0 * (double)col_hit / col_tot : 0.0,
         walk_hit ? 100.0 * (double)mat_hit / (double)walk_hit : 0.0,
+        uv_tot ? 100.0 * (double)uv_hit / (double)uv_tot : 0.0, uv_tot,
+        uv_tot ? uv_err / (double)uv_tot : 0.0,
         s_probe_bitshift ? "  [NEGATIVE CONTROL: model X one bit over]" : "");
 }
 
@@ -686,9 +944,12 @@ static int on_player_draw(CPUState* cpu, uint32_t addr) {
     int is_player = player_game.call_is_player ? player_game.call_is_player(cpu) : 1;
     if (feed && is_player && endp > startp && render_path_enabled(RP_SPYRO)) {
         player_feed_walk(cpu);
-        /* Sub-tick spine: snapshot the part records (keyframe stream cursors
-         * and vertex counts) and the projected SXY (the cull verdict), both
-         * live now, so the intermediates can re-derive the avatar. */
+        /* Sub-tick spine: snapshot the part-record block and the projected SXY
+         * (the cull verdict), both live now, so the intermediates can
+         * re-derive the avatar. Where the records themselves are derived from
+         * gamestate the block is still staged: a provider reads the words
+         * around the records out of the same span (a per-part origin the
+         * draw's later passes keep). */
         spyro_native_canon_capture_range(cpu, PL.part_off, PL.part_block_len);
         /* The pre-blend colour table the draw builds above when the state's
          * colour filter selects it. It lives inside the record region the
@@ -730,7 +991,30 @@ void player_reextract(CPUState* cpu) {
     int two_pass = 0;
     const uint32_t block_len = PL.part_block_len;
     if (s_anim_on && s_seg_valid >= 2 && block_len && block_len <= PLAYER_REC_PART_MAX) {
-        uint32_t block = player_part_block_base(cpu);
+        /* A derived record needs no guest memory at all: the two rendered
+         * poses are swapped through the walk's own copy, so the replay writes
+         * nothing a present could leak into gameplay state. */
+        if (player_game.part_record) {
+            s_blk_pinned = 1;
+            memcpy(s_blk, s_seg_prev, block_len);       /* pass 1: PREV pose */
+            player_project_all(cpu);
+            int pn = s_sproj_n;
+            memcpy(s_sproj_prev, s_sproj, (size_t)pn * sizeof(s_sproj[0]));
+            memcpy(s_blk, s_seg_curr, block_len);       /* pass 2: CURR pose */
+            player_project_all(cpu);
+            if (s_sproj_n == pn) {
+                double a = s_anim_alpha;
+                for (int i = 0; i < pn; i++) {
+                    s_sproj[i].sx = (float)(s_sproj_prev[i].sx + (s_sproj[i].sx - s_sproj_prev[i].sx) * a);
+                    s_sproj[i].sy = (float)(s_sproj_prev[i].sy + (s_sproj[i].sy - s_sproj_prev[i].sy) * a);
+                    s_sproj[i].vz = (float)(s_sproj_prev[i].vz + (s_sproj[i].vz - s_sproj_prev[i].vz) * a);
+                }
+            }
+            s_blk_pinned = 0;
+            player_feed_walk_ex(cpu, 0);
+            two_pass = 1;
+        }
+        uint32_t block = two_pass ? 0u : player_part_block_base(cpu);
         void* h = block ? openpete_subtick_host_ptr(block) : NULL;
         if (h) {
             uint8_t live[PLAYER_REC_PART_MAX];
@@ -894,6 +1178,7 @@ int player_records_model_append(CPUState* cpu, uint32_t rp_start, uint32_t rp_en
     uint32_t block = player_part_block_base(cpu);
     uint32_t colb  = player_colour_scratch(cpu);
     const uint8_t* seg = block ? (const uint8_t*)openpete_psx_to_host_ptr(block) : NULL;
+    if (player_game.part_record) seg = s_blk;   /* set below, from gamestate */
     const uint8_t* fk  = colb  ? (const uint8_t*)openpete_psx_to_host_ptr(colb)  : NULL;
     const uint8_t* sxy = PL.sxy_base ? (const uint8_t*)openpete_psx_to_host_ptr(PL.sxy_base) : NULL;
     if (!sp || !seg) return -1;
@@ -901,7 +1186,8 @@ int player_records_model_append(CPUState* cpu, uint32_t rp_start, uint32_t rp_en
     memset(r, 0, sizeof *r);
     memcpy(r->spyro, sp,  PL.rec_len);
     memcpy(r->src,   sp,  PL.rec_len);
-    memcpy(r->seg,   seg, PL.part_block_len);
+    if (player_game.part_record) player_block_derive(cpu, r->seg);
+    else memcpy(r->seg, seg, PL.part_block_len);
     if (fk)  memcpy(r->fk,  fk,  PL.colour_scratch_len);
     if (sxy) memcpy(r->sxy, sxy, PL.sxy_len);
     r->rp_start = rp_start; r->rp_end = rp_end;

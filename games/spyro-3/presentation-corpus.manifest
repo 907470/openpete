@@ -6,3 +6,11 @@
 # grid's intermediate samples land at +interval/2, so the pose the player walk
 # was measured against had no __inter__ tile of its own.
 sunrise-spring-sunny-villa-portal-entry|1500|100||1500
+
+# sunrise-spring-surface-swim arms the player draw's water-plane split.
+# g_Spyro+0x28 is zero on every frame of the other three bk2s and of the whole
+# 20k attract demo (six levels); it is non-zero from VBL 1889 to this movie's
+# end, with animationState 0x2B (SWIM_MOVE_SURFACE) and movementState 0x0A
+# (SWIM_SURFACE), so the split's classification, its depth cue and its cut have
+# no other row in the corpus.
+sunrise-spring-surface-swim|1900|150||1900,2000,2200

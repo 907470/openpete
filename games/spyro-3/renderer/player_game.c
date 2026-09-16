@@ -29,6 +29,7 @@
 #include "spyro3_symbols.gen.h"
 #include "openpete_recomp_module.h"
 
+#include <math.h>
 #include <string.h>
 
 #define PL (game_layout.player)
@@ -59,6 +60,91 @@ static uint32_t s3_animation(CPUState* cpu, int part) {
     uint32_t w = cpu->read_word(PL.base + PL.anim_off[part]);
     uint32_t a = cpu->read_word(tab + ((w << 2) & 0x3FCu));
     return (a >= 0x80000000u) ? a : 0u;
+}
+
+/* ---- the part records --------------------------------------------------
+ * The draw composes a 0x3C-byte record per part at draw scratch + 0x1400 from
+ * gamestate and the Animation table (spyrodraw.s:41-107 for the body,
+ * 109-175 for the head), consumes it before the face loop, and then reuses
+ * part 0's first twelve words as the straddle clip's own save area
+ * (spyrodraw.s:1210-1248 writes them for a face the water plane cuts,
+ * 1250-1264 reads them back). After the call returns, the body's record is
+ * whatever the last cut face left there, so the walk composes the words
+ * itself rather than reading the block back.
+ *
+ * Per part: the animation word (g_Spyro+0x14 body, +0x18 head) selects the
+ * keyframe A Animation in bits 0-7 and keyframe B's in bits 8-15, with the
+ * keyframe indices in bits 16-23 and 24-31. A keyframe record is 0x14 bytes
+ * and the first one starts 0x14 into its Animation, so the fields load at
+ * +0x14 and +0x18 of `entry + index * 0x14`. Keyframe word 0's low half is
+ * the shared stream offset and one bit of its high half the stream's form
+ * (bit 16 for the body, bit 17 for the head); word 1 packs the per-part
+ * cursor offsets, the body reading bits 10-19 and the head bits 0-9 and
+ * 20-31. The blend byte (+0x1C body, +0x1D head) indexes D_SPYRO_BLEND, and
+ * the looked-up weight shifted left four is the record's IR0; zero there
+ * leaves the record single-keyframe. The head's static cursor starts one word
+ * per body vertex along, from the body Animation's own count byte. */
+#define SPYRO_BLEND_OFF   0x1Cu   /* the head's is the next byte */
+
+typedef struct { uint32_t entry, base, w0, w1; } s3_kf_t;
+
+/* Animation `sel` of the table, at keyframe `idx`. */
+static int s3_kf_read(CPUState* cpu, uint32_t tab, uint32_t sel, uint32_t idx, s3_kf_t* k) {
+    uint32_t e = cpu->read_word(tab + sel);
+    if (e < 0x80000000u) return 0;
+    uint32_t r = e + idx * 0x14u;
+    k->entry = e;
+    k->base  = cpu->read_word(e + 0x10u);
+    k->w0    = cpu->read_word(r + 0x14u);
+    k->w1    = cpu->read_word(r + 0x18u);
+    return 1;
+}
+
+static int s3_part_record(CPUState* cpu, int part, player_record_t* out) {
+    if (part < 0 || part > 1) return 0;
+    uint32_t tab = cpu->read_word(D_SPYRO_ANIMS);
+    if (tab < 0x80000000u) return 0;
+    uint32_t w  = cpu->read_word(PL.base + PL.anim_off[part]);
+    uint32_t wt = cpu->read_byte(D_SPYRO_BLEND
+                                + cpu->read_byte(PL.base + SPYRO_BLEND_OFF + (uint32_t)part));
+    s3_kf_t A;
+    if (!s3_kf_read(cpu, tab, (w << 2) & 0x3FCu, (w >> 16) & 0xFFu, &A)) return 0;
+
+    /* The head's streams start one word per body vertex in, from the body
+     * Animation's own count byte (spyrodraw.s:57,140-141,169). */
+    uint32_t head_skip = 0u;
+    if (part == 1) {
+        uint32_t wb = cpu->read_word(PL.base + PL.anim_off[0]);
+        uint32_t eb = cpu->read_word(tab + ((wb << 2) & 0x3FCu));
+        if (eb >= 0x80000000u) head_skip = (uint32_t)cpu->read_byte(eb + 0x02u) << 2;
+    }
+
+    uint32_t count = cpu->read_byte(A.entry + (part == 0 ? 0x02u : 0x03u));
+    out->flags = (wt << 4) | (count << 16)
+               | (part == 0 ? (0x80000000u | ((A.w0 >> 4) & 0x1000u))
+                            : ((A.w0 >> 5) & 0x1000u));
+
+    for (int kfr = 0; kfr < 2; kfr++) {
+        const s3_kf_t* K = &A;
+        s3_kf_t B;
+        if (kfr) {
+            if (!wt) break;
+            if (!s3_kf_read(cpu, tab, (w >> 6) & 0x3FCu, (w >> 24) & 0xFFu, &B)) break;
+            out->flags |= (part == 0 ? ((B.w0 >> 3) & 0x2000u) : ((B.w0 >> 4) & 0x2000u));
+            K = &B;
+        }
+        uint32_t lo = K->w0 & 0xFFFFu;
+        uint32_t* d = kfr ? out->stream_b : out->stream_a;
+        d[0] = cpu->read_word(K->entry + 0x04u) + head_skip;
+        if (part == 0) {
+            d[1] = ((K->w1 >> 10) & 0x3FFu) + lo + K->base;
+            d[2] = lo + K->base;
+        } else {
+            d[1] = (K->w1 >> 20) + lo + K->base;
+            d[2] = lo + (K->w1 & 0x3FFu) + K->base;
+        }
+    }
+    return 1;
 }
 
 /* Bits 16-23 of the flags word are the CUMULATIVE projected-vertex end, four
@@ -229,6 +315,69 @@ static int s3_face_depth_keep(CPUState* cpu, const player_xform_t* root,
     return (depth_sum - (double)f->otbias * 128.0 - thr) > 0.0;
 }
 
+/* The water-plane split (spyrodraw.s:776-841 the setup, 847-857 the per-vertex
+ * distance pass, 1085-1092 the wholly-above test and 1151-1155 the
+ * wholly-below one, 1157-1191 the below policy, 1192 on the cut).
+ *
+ * g_Spyro+0x28 is the split's offset below the avatar's own Z, written by each
+ * level's animation overlay while the animation is a surface swim; zero every
+ * other tick, and the whole pass is then inert. The plane sits at
+ * position.z - |+0x28| (spyrodraw.s:776-782: the offset is subtracted at
+ * either sign). Each vertex's distance is that constant less the second row of
+ * the matrix at g_Spyro+0x30 applied to the decoded model vertex in the
+ * routine's (Y, Z, X) register order (spyrodraw.s:847-854). The part's own
+ * world origin — the three words at draw scratch + 0x1478 + 16*part, negated
+ * in the first two components — goes through the same row as the GTE
+ * translation of that pass (spyrodraw.s:817-840), so it truncates on its own
+ * before the vertex term is added to it.
+ *
+ * +0x28 > 0 drops every wholly-below face outright; below zero the face is
+ * kept and each of its vertex colours is DPCS'd at IR0 = 0x800 toward the
+ * environment's far colour at G_ENVIRONMENT+0x34 (spyrodraw.s:794-801,
+ * 1157-1189). The same branch loads L33 with +0x300 or -0x300 by the sign of
+ * G_CAMERA+0x30 plus the offset, and the negative case also carries -0x1800
+ * into the face-admission threshold (spyrodraw.s:783-791,866-873): L33 << 3 is
+ * added to a below face's depth sum (spyrodraw.s:1186-1191). */
+#define SPYRO_PLANE_OFF   0x28u
+#define SPYRO_PLANE_MAT   0x30u
+#define PART_ORIGIN_OFF   0x78u   /* from the part block base, stride 16 */
+#define PLANE_DIST_OFF    0x1000u /* the distance array, from the scratch base */
+
+static void s3_plane_begin(CPUState* cpu, player_plane_t* pl) {
+    int32_t off = (int32_t)cpu->read_word(PL.base + SPYRO_PLANE_OFF);
+    if (off == 0) return;
+    uint32_t block = player_part_block_base(cpu);
+    if (block < 0x80000000u) return;
+
+    int M[3][3];
+    ngte_read_matrix(cpu, PL.base + SPYRO_PLANE_MAT, M);
+    for (int i = 0; i < 3; i++) pl->row[i] = (double)M[1][i];
+
+    pl->plane = (double)(int32_t)cpu->read_word(PL.base + PL.pos_off + 8u)
+              - (double)(off < 0 ? -off : off);
+    for (int p = 0; p < PLAYER_PARTS_MAX; p++) {
+        uint32_t rec = block + PART_ORIGIN_OFF + (uint32_t)p * 16u;
+        double o0 = -(double)(int32_t)cpu->read_word(rec + 4u);
+        double o1 = -(double)(int32_t)cpu->read_word(rec + 8u);
+        double o2 =  (double)(int32_t)cpu->read_word(rec + 0u);
+        pl->tr[p] = floor((pl->row[0]*o0 + pl->row[1]*o1 + pl->row[2]*o2) / 4096.0);
+    }
+
+    for (int i = 0; i < 3; i++)
+        pl->fc[i] = (int32_t)cpu->read_word(game_layout.fog.far_colour + (uint32_t)i*4u);
+    pl->ir0 = 0x800;                     /* spyrodraw.s:1158-1159 */
+
+    pl->drop_below = off > 0;
+    if (!pl->drop_below) {
+        int32_t camz = (int32_t)cpu->read_word(G_CAMERA + 0x30u);
+        int l33 = ((camz + off) > 0) ? 0x300 : -0x300;
+        pl->key_bias = (double)(l33 * 8);
+        pl->thr_bias = (l33 < 0) ? -6144.0 : 0.0;
+    }
+    pl->dist_block = block - PL.part_off + PLANE_DIST_OFF;
+    pl->active = 1;
+}
+
 /* The routine runs twice a tick: the mirrored copy first, with the gate word
  * set, then the avatar the gameplay drives with it clear (spyrodraw.s:268,
  * 282). Only the second call is fed; the first still gets a record, so the
@@ -240,6 +389,8 @@ static int s3_call_is_player(CPUState* cpu) {
 const player_game_t player_game = {
     .run_draw         = s3_run_draw,
     .part_count       = NULL,            /* the fixed two of game_layout.player */
+    .part_record      = s3_part_record,  /* the draw's own block does not survive
+                                          * the call (spyrodraw.s:1210-1248) */
     .part_xform       = s3_part_xform,
     .seam_joint       = s3_seam_joint,
     .vstream_next     = s3_player_vstream_next,  /* the moby codec, player Y field */
@@ -251,6 +402,7 @@ const player_game_t player_game = {
      * (spyrodraw.s:921,1060). */
     .face_flag_skips_nclip = 1,
     .face_depth_keep  = s3_face_depth_keep,
+    .plane_begin      = s3_plane_begin,
     .sort_depth_front = 0,               /* no full-front sentinel: the byte at
                                           * +0x1E is only ever an ordering bias
                                           * (spyrodraw.s:250-255) */
