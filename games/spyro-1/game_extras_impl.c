@@ -224,8 +224,12 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
                                           0x80077FECu + 12u * 0x58u);
     }
 
-    /* Optional scripted engage of the debug free camera (OPENPETE_FREECAM=1),
-     * once gameplay is live. Interactive F / stick-click use is independent. */
+    /* Scripted player placement (--player-pose) on the first placeable tick,
+     * then the optional scripted engage of the debug free camera
+     * (OPENPETE_FREECAM=1) once gameplay is live; placement first so one run
+     * can view the placed player. Interactive F / stick-click use is
+     * independent. */
+    freecam_player_pose_maybe_apply(cpu);
     freecam_maybe_autoengage(cpu);
 
     /* The fill-tag inspector engages on the same "level is live" gate — a

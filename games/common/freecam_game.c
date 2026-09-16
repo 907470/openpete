@@ -476,26 +476,28 @@ static void freecam_drive(CPUState* cpu) {
     if (D->draw_all) D->draw_all(cpu);
 }
 
-/* Move the player to wherever the free camera is floating. Camera and player
- * share one world space, so the position copies straight across.
+/* Place the player at a world position, optionally facing `yaw` (4096 per
+ * turn), optionally re-seating the follow camera behind him.
  *
  * The previous position is written to match: the physics derives this tick's
- * movement from it, so leaving it at the pre-teleport spot would present the
- * whole jump as one tick of travel — a sweep across the level that collides
- * with whatever lies between the two points.
+ * movement from it, so leaving it at the old spot would present the whole
+ * jump as one tick of travel — a sweep across the level that collides with
+ * whatever lies between the two points.
+ *
+ * The facing is written as the pair the game keeps: the 12-bit physics angle
+ * and the 8-bit copy the player update re-derives from it every tick. The
+ * byte alone lasts one tick; the angle alone leaves one tick rendering the
+ * old facing.
  *
  * Momentum is cancelled through the game's own routine (reset_momentum)
- * rather than by zeroing fields here: whatever the player carried when the
- * camera was engaged belongs to the place he left, not the one he lands in.
- * Everything else — state, animation, health, facing — is deliberately
- * untouched: the player carries on falling / gliding / standing as he was,
- * from the new spot. The player update resumes next tick, once the camera is
- * disengaged, and re-derives the floor and wall queries from the new
+ * rather than by zeroing fields here: whatever the player carried belongs to
+ * the place he left, not the one he lands in. Everything else — state,
+ * animation, health — is deliberately untouched: the player carries on
+ * falling / gliding / standing as he was, from the new spot, and the next
+ * player update re-derives the floor and wall queries from the new
  * position. */
-static void freecam_teleport_player_to_camera(CPUState* cpu) {
-    pose_seed_if_needed(cpu);
-    const int32_t x = s_pose.x, y = s_pose.y, z = s_pose.z;
-
+static void freecam_teleport_player(CPUState* cpu, int32_t x, int32_t y, int32_t z,
+                                    int32_t yaw, int have_yaw, int seat_camera) {
     cpu->write_word(D->player_pos + 0, (uint32_t)x);
     cpu->write_word(D->player_pos + 4, (uint32_t)y);
     cpu->write_word(D->player_pos + 8, (uint32_t)z);
@@ -506,10 +508,79 @@ static void freecam_teleport_player_to_camera(CPUState* cpu) {
         cpu->write_word(D->player_prev_pos + 8, (uint32_t)z);
     }
 
+    if (have_yaw) {
+        if (D->player_facing) {
+            const uint32_t a = (uint32_t)yaw & 0xFFFu;
+            cpu->write_word(D->player_facing, a);
+            if (D->player_facing_byte) cpu->write_byte(D->player_facing_byte, (uint8_t)(a >> 4));
+        } else {
+            OPL_WARN_F("freecam", "facing ignored: this game has no facing field located");
+        }
+    }
+
     if (D->reset_momentum) D->reset_momentum(cpu);
     else OPL_INFO_F("freecam", "teleport keeps momentum: this game has no reset routine");
 
-    OPL_INFO_F("freecam", "teleported player to (%d, %d, %d)", x, y, z);
+    if (seat_camera) {
+        if (D->place_camera) D->place_camera(cpu);
+        else OPL_INFO_F("freecam", "camera left to converge: this game has no placement camera routine");
+    }
+}
+
+/* Move the player to wherever the free camera is floating. Camera and player
+ * share one world space, so the position copies straight across. The facing
+ * is kept, and the camera is handed back where it floats: the follow
+ * converges from the view the user was inspecting. */
+static void freecam_teleport_player_to_camera(CPUState* cpu) {
+    pose_seed_if_needed(cpu);
+    freecam_teleport_player(cpu, s_pose.x, s_pose.y, s_pose.z, 0, 0, 0);
+    OPL_INFO_F("freecam", "teleported player to (%d, %d, %d)", s_pose.x, s_pose.y, s_pose.z);
+}
+
+static int player_placeable(CPUState* cpu) {
+    return D->player_placeable ? D->player_placeable(cpu) : level_live(cpu);
+}
+
+/* 1 while a scripted placement is still waiting for its tick. The freecam's
+ * scripted engage waits on it: the freecam engages at level_live, before the
+ * fly-in ends, and freezes the player update and the follow, so a placement
+ * gated on the ordinary follow would never fire under it. */
+static int s_player_pose_pending = -1;   /* -1: env not read yet */
+
+static int player_pose_pending(void) {
+    if (s_player_pose_pending < 0) {
+        const char* pose = getenv("OPENPETE_PLAYER_POSE");
+        s_player_pose_pending = (pose && *pose) ? 1 : 0;
+    }
+    return s_player_pose_pending;
+}
+
+void freecam_player_pose_maybe_apply(CPUState* cpu) {
+    if (!player_pose_pending()) return;
+    if (!player_placeable(cpu)) return;
+    s_player_pose_pending = 0;
+    const char* pose = getenv("OPENPETE_PLAYER_POSE");
+    int32_t v[5] = {0, 0, 0, 0, 0};
+    const int n = freecam_parse_ints(pose, v, 5);
+    if (n < 3 || n > 4) {
+        OPL_WARN_F("freecam", "OPENPETE_PLAYER_POSE needs x,y,z or x,y,z,yaw (got %d numbers); not applied", n);
+        return;
+    }
+    freecam_teleport_player(cpu, v[0], v[1], v[2], v[3], n == 4, 1);
+    if (n == 4) OPL_INFO_F("freecam", "player placed at (%d, %d, %d) yaw=%d", v[0], v[1], v[2], v[3] & 0xFFF);
+    else        OPL_INFO_F("freecam", "player placed at (%d, %d, %d)", v[0], v[1], v[2]);
+}
+
+int game_get_player_pose(CPUState* cpu, int32_t* out_x, int32_t* out_y, int32_t* out_z,
+                         int32_t* out_yaw, int32_t* out_level) {
+    if (!level_live(cpu)) return -1;
+    if (!player_placeable(cpu)) return -2;
+    *out_x = (int32_t)cpu->read_word(D->player_pos + 0);
+    *out_y = (int32_t)cpu->read_word(D->player_pos + 4);
+    *out_z = (int32_t)cpu->read_word(D->player_pos + 8);
+    *out_yaw   = D->player_facing ? (int32_t)(cpu->read_word(D->player_facing) & 0xFFFu) : -1;
+    *out_level = D->level_id ? (int32_t)cpu->read_word(D->level_id) : -1;
+    return 0;
 }
 
 /* Optional scripted / headless engage. Set OPENPETE_FREECAM=1 to engage the
@@ -522,6 +593,7 @@ static void freecam_teleport_player_to_camera(CPUState* cpu) {
 void freecam_maybe_autoengage(CPUState* cpu) {
     static int s_done = 0;
     if (s_done) return;
+    if (player_pose_pending()) return;   /* the placement fires first */
     const char* pose = getenv("OPENPETE_FREECAM_POSE");
     const char* path = getenv("OPENPETE_FREECAM_PATH");
     const char* eng  = getenv("OPENPETE_FREECAM");

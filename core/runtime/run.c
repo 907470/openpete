@@ -6054,6 +6054,23 @@ static int run_host_loop(const openpete_options_t* opts) {
     fprintf(stdout,
             "openpete-exit: reason=%s frames=%u ms=%u code=%d\n",
             exit_reason, openpete_frame, elapsed, exit_code);
+    /* The player's end state, in --player-pose's own grammar, so the next
+     * run starts where this one stopped: `--skip-to-level <level>
+     * --player-pose "pos=(x, y, z) yaw=N"`. Printed only while the pose is
+     * placeable (a title, demo, load or fly-in exit names the reason). */
+    {
+        int32_t px, py, pz, pyaw, plevel;
+        const int rc = game_get_player_pose(&g_game.cpu, &px, &py, &pz, &pyaw, &plevel);
+        if (rc == 0) {
+            if (pyaw >= 0) fprintf(stdout, "openpete-pose: level=%d pos=(%d, %d, %d) yaw=%d\n",
+                                   plevel, px, py, pz, pyaw);
+            else           fprintf(stdout, "openpete-pose: level=%d pos=(%d, %d, %d) yaw=-\n",
+                                   plevel, px, py, pz);
+        } else {
+            fprintf(stdout, "openpete-pose: none reason=%s\n",
+                    rc == -1 ? "not-live" : "not-placeable");
+        }
+    }
     return exit_code;
 }
 #endif /* OPENPETE_HAS_PSYCROSS */

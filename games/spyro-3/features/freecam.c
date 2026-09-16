@@ -3,7 +3,9 @@
 // (games/common/freecam_game.c); this file holds the addresses.
 
 #include "freecam_game.h"
+#include "game_extras.h"            /* game_is_gameplay_live */
 #include "openpete_freecam.h"         /* OPENPETE_FREECAM_SPEED_STEPS */
+#include "psx_runtime_internal.h"     /* CPUState + its read callbacks */
 
 #include <stddef.h>
 #include <stdint.h>
@@ -23,6 +25,14 @@
  * movement routine func_80041C20, after the move), so a teleport writes the
  * position alone, and no momentum-reset routine is identified. */
 #define G_SPYRO      0x80070328u
+#define ADDR_DEMO_MODE  0x8006C658u  /* isDemoMode (skip_to_level.c): 1 while the attract demo drives the pad */
+#define ADDR_LEVEL_ID   0x8006C5BCu  /* currentLevel (skip_to_level.c) */
+
+/* Placeable while gameplay is live and the pad drives the player. No
+ * fly-in camera state is identified for this game. */
+static int player_placeable(CPUState* cpu) {
+    return game_is_gameplay_live(cpu) && cpu->read_word(ADDR_DEMO_MODE) == 0u;
+}
 
 /* Spyro 1's tables: Spyro 3 uses the same world scale (a level spans about
  * 0x20000 units). */
@@ -49,7 +59,11 @@ const freecam_game_desc freecam_desc = {
     .extra_freeze  = NULL,
     .player_pos      = G_SPYRO + 0x00u,
     .player_prev_pos = 0u,
+    .player_facing = 0u, .player_facing_byte = 0u,   /* facing field not located */
+    .level_id      = ADDR_LEVEL_ID,
     .level_live         = NULL,   /* game_is_gameplay_live */
+    .player_placeable   = player_placeable,
+    .place_camera       = NULL,   /* placement camera routine not located */
     .draw_all           = NULL,   /* no camera-region PVS identified */
     .reset_momentum     = NULL,
     .resolve_named_pose = NULL,

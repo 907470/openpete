@@ -43,10 +43,27 @@ typedef struct freecam_game_desc {
     /* Player position and previous position (three int32 each) written by
      * the teleport; player_prev_pos 0 = none. */
     uint32_t player_pos, player_prev_pos;
+    /* Player facing: `player_facing` is the 12-bit angle the physics turns
+     * from (4096 per turn, 0 = +X); `player_facing_byte` the 8-bit copy
+     * the game re-derives from it each tick (facing >> 4). 0 = the game
+     * has none located; --player-pose then places without a facing. */
+    uint32_t player_facing, player_facing_byte;
+    /* Current level id word, printed by the exit pose line; 0 = none. */
+    uint32_t level_id;
     /* Hooks; each may be NULL. NULL level_live means game_is_gameplay_live. */
     int  (*level_live)(CPUState* cpu);
     void (*draw_all)(CPUState* cpu);        /* force every sector in view */
     void (*reset_momentum)(CPUState* cpu);  /* after a teleport */
+    /* 1 while the player can be placed and the pose read back: gameplay
+     * live, the player under pad control (no attract demo), the camera in
+     * its ordinary follow (no fly-in or exit sequence). NULL means
+     * level_live. */
+    int  (*player_placeable)(CPUState* cpu);
+    /* The game's own camera setup for a player placed without a fly-in:
+     * re-targets the follow at the player, facing the player's facing, and
+     * snaps the camera to its preset offset. NULL = leave the follow to
+     * converge on its own. */
+    void (*place_camera)(CPUState* cpu);
     /* Named poses ("topdown", "sweepN"): fills v = {x, y, z, yaw, pitch}
      * in stored units, returns 0 when the name is unknown or no level is
      * live. */
@@ -69,3 +86,10 @@ int freecam_should_freeze(CPUState* cpu, uint32_t addr);
  * OPENPETE_FREECAM_PATH) once the level is live. Call once per tick from
  * game_on_frame_pre. */
 void freecam_maybe_autoengage(CPUState* cpu);
+
+/* Scripted player placement (OPENPETE_PLAYER_POSE / --player-pose,
+ * "x,y,z[,yaw]"): fires once, on the first tick `player_placeable` holds.
+ * Call once per tick from game_on_frame_pre, before
+ * freecam_maybe_autoengage so a freecam view of the placed player needs no
+ * second run. */
+void freecam_player_pose_maybe_apply(CPUState* cpu);

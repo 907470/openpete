@@ -631,6 +631,11 @@ static void print_help(const char* display_name, const char* argv0,
         "                             live (same format as the freecam log: \"pos=(x, y, z) yaw=N\n"
         "                             pitch=N\"). CLI twin of OPENPETE_FREECAM_POSE — env vars don't\n"
         "                             cross the WSL->Windows interop boundary.\n"
+        "  --player-pose STR          place the player once gameplay is live and under pad control:\n"
+        "                             \"x,y,z[,yaw]\" or the exit pose line (\"pos=(x, y, z) yaw=N\",\n"
+        "                             yaw 4096 per turn); the follow camera is re-seated behind him.\n"
+        "                             CLI twin of OPENPETE_PLAYER_POSE. Every run prints its end\n"
+        "                             state as openpete-pose: after openpete-exit:.\n"
         "  --freecam-path SPEC        engage the free camera and fly it along a looping waypoint\n"
         "                             path: \"[ticks=N;] WP(;WP)+\" where WP is \"topdown\" or\n"
         "                             \"x,y,z[,yaw,pitch]\". Interpolates over N ticks per segment\n"
@@ -757,6 +762,9 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
     /* Set when --bk2-record is present, even with no path argument (the
      * default path is resolved after the parse loop). */
     bool bk2_record_requested = false;
+    /* Set by --player-pose: the CLI spelling rides the .args sidecar, the
+     * env spelling does not. */
+    bool player_pose_flag = false;
 
     /* Per-bk2 sidecar: <path>.bk2.args next to the movie can supply
      * scenario-specific defaults (e.g. --skip-to-level 10 for an
@@ -1241,6 +1249,15 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             setenv("OPENPETE_FREECAM_POSE", v, 1);
 #endif
             i++;
+        } else if (strcmp(a, "--player-pose") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+#ifdef _WIN32
+            _putenv_s("OPENPETE_PLAYER_POSE", v);
+#else
+            setenv("OPENPETE_PLAYER_POSE", v, 1);
+#endif
+            player_pose_flag = true;
+            i++;
         } else if (strcmp(a, "--debug-triangle") == 0) {
             opts->debug_triangle = true;
         } else if (strcmp(a, "--skip-to-level") == 0) {
@@ -1558,6 +1575,15 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
         }
         opts->bk2_record_args = build_bk2_record_args(orig_argc, orig_argv);
         /* NULL (OOM) just means no sidecar — the recording itself still works. */
+        /* The sidecar carries argv, not the environment: a placement given
+         * only as OPENPETE_PLAYER_POSE would be missing from the replay, which
+         * then runs the movie's input from the spawn instead. */
+        const char* pp = getenv("OPENPETE_PLAYER_POSE");
+        if (pp && *pp && !player_pose_flag) {
+            fprintf(stderr, "openpete: --bk2-record: OPENPETE_PLAYER_POSE is set but a bk2 "
+                            "replays only the command line; pass --player-pose \"%s\" instead\n", pp);
+            return OPENPETE_EXIT_SETUP_ERROR;
+        }
     }
 
     /* OPENPETE_VIBRATION: the env spelling of --vibration, applied only when

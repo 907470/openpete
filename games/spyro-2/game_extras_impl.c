@@ -53,8 +53,11 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     /* --skip-to-level: drives the title's demo-timeout transition toward the
      * target and holds the demo flag clear. Inert without the flag. */
     spyro2_skip_on_tick(cpu, frame_counter);
-    /* Scripted engage of the debug free camera (OPENPETE_FREECAM=1 /
-     * OPENPETE_FREECAM_POSE / OPENPETE_FREECAM_PATH) once gameplay is live. */
+    /* Scripted player placement (--player-pose) on the first placeable
+     * tick, then scripted engage of the debug free camera (OPENPETE_FREECAM=1
+     * / OPENPETE_FREECAM_POSE / OPENPETE_FREECAM_PATH) once gameplay is live;
+     * placement first so one run can view the placed player. */
+    freecam_player_pose_maybe_apply(cpu);
     freecam_maybe_autoengage(cpu);
     /* Write census: every fiber resume in a tick happens inside the draw's
      * VSync waits, after the view matrix has been built, so a store seen from

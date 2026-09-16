@@ -471,6 +471,12 @@ openpete-spyro1 --disc <game>.cue --mods-dir mods --mods my-mod \
   `pos=(x, y, z) yaw=N pitch=N`; feed it back as the flag. `--freecam-path
   "[ticks=N;] x,y,z[,yaw,pitch];..."` flies a loop. `--window WxH`,
   `--aspect 16:9`, `--render-fps N` shape the capture.
+- **Place Spyro**: `--player-pose "x,y,z[,yaw]"` (yaw = facing, 4096 per
+  turn) places him once gameplay is live under pad control, clears momentum
+  and re-seats the follow camera behind him. Every run prints its end state
+  after `openpete-exit:` as `openpete-pose: level=<id> pos=(x, y, z) yaw=N`
+  (or `none reason=...`); paste it back with `--skip-to-level <id>`. Fires
+  before `--freecam-pose` in the same run; rides the bk2 `.args` sidecar.
 - **Reproducible input**: `--bk2 movie.bk2` replays a BizHawk movie
   (`--bk2-stop-on-end`); `--bk2-record [PATH]` records live play plus an
   `.args` sidecar. Same movie + same flags = same gameplay bytes unless the

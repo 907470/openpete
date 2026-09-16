@@ -107,6 +107,7 @@ present.
 | `--screenshot-output PATH`       | Path template. `{n}` expands to the VBL.                                                                                                                                                |
 | `--screenshot-native-only`       | Write the native `-vk` image only.                                                                                                                                                      |
 | `--freecam-pose STR`             | Engage the free camera at a fixed pose once the level is live.                                                                                                                          |
+| `--player-pose STR`              | Place Spyro at `x,y,z[,yaw]` once gameplay is live and under pad control; every run prints its end state as `openpete-pose:` in this grammar.                                            |
 | `--bk2 PATH`                     | Replay a recorded input movie.                                                                                                                                                          |
 | `--bk2-record [PATH]`            | Record live pad input to a movie.                                                                                                                                                       |
 | `--bk2-stop-on-end`              | Exit after the last recorded VBL instead of holding the last input.                                                                                                                     |
@@ -223,6 +224,51 @@ That prints the freecam pose, which is what `--freecam-pose` takes:
       --frame-limit 1760 `
       --mute 1
     ```
+
+### Player placement
+
+Applies to a test at a spot in a level that needs Spyro there, not just the
+camera: a collision, a fall-through, a moby interaction.
+
+Every run ends with its player pose on stdout, after the `openpete-exit:`
+line, in the grammar `--player-pose` takes:
+
+```
+openpete-exit: reason=frame-limit frames=2400 ms=8698 code=0
+openpete-pose: level=11 pos=(134640, 121826, 21007) yaw=2048
+```
+
+`yaw` is Spyro's facing, 4096 per turn (0 = +X). A run that ends outside
+gameplay (title, attract demo, load, fly-in) prints `openpete-pose: none
+reason=...` instead. Paste the line back with the level:
+
+=== "Linux"
+
+    ```
+    openpete-spyro1 --headless \
+      --mods your_mod \
+      --skip-to-level 11 \
+      --player-pose "pos=(134640, 121826, 21007) yaw=2048" \
+      --frame-limit 2400
+    ```
+
+=== "Windows"
+
+    ```
+    openpete-spyro1.exe --headless `
+      --mods your_mod `
+      --skip-to-level 11 `
+      --player-pose "pos=(134640, 121826, 21007) yaw=2048" `
+      --frame-limit 2400
+    ```
+
+The placement fires on the first tick Spyro is under pad control with the
+follow camera in its ordinary mode (after the level fly-in); momentum is
+cleared and the camera is re-seated behind him, facing his facing. With
+`--freecam-pose` in the same run the placement fires first, then the free
+camera engages. A `--bk2-record` run carries the flag in its `.args` sidecar,
+so the movie replays from the placement; the `OPENPETE_PLAYER_POSE` spelling
+is refused under record because the sidecar carries only the command line.
 
 ### Recorded input replay
 

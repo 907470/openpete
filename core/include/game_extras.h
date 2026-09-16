@@ -110,6 +110,16 @@ int game_is_gameplay_live(CPUState* cpu);
  * when --position-log is on. */
 int game_get_player_position(int32_t* out_x, int32_t* out_y, int32_t* out_z);
 
+/* --- Player pose (the exit pose line, --player-pose's paste-back) ---
+ * Returns 0 and writes the position, the facing (4096 per turn; -1 when the
+ * game has none located) and the level id (-1 when none located) while the
+ * player is placeable: gameplay live, under pad control, camera in its
+ * ordinary follow. -1: no level live. -2: live but not placeable (attract
+ * demo, fly-in or exit sequence). Shared body in games/common/freecam_game.c
+ * over the game's freecam descriptor. */
+int game_get_player_pose(CPUState* cpu, int32_t* out_x, int32_t* out_y, int32_t* out_z,
+                         int32_t* out_yaw, int32_t* out_level);
+
 /* --- CLI overrides forwarded by core ---
  * Called once before the run loop starts. Per-game impl decides where /
  * when to apply the value (typically from game_on_frame, since the

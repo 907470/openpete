@@ -16,14 +16,23 @@
  * roll, pitch, yaw) is read through game_layout.cam (renderer/layout.c);
  * these are the practice ROM's _cameraPosition and _cameraAngle. */
 
-/* g_Spyro @ 0x80078A58 (spyro.h). Fields the teleport writes; both offsets are
+/* g_Spyro @ 0x80078A58 (spyro.h). Fields the teleport writes; the offsets are
  * confirmed against the original code, which forms them as g_Spyro + literal
  * (m_Position at 0x8003DF70, m_previousPosition at 0x8003DF7C).
- *   m_Position         @ +0x00 : Vector3D int32 x, y, z   (camera's world space)
- *   m_previousPosition @ +0x8C : where the physics thinks he was last tick */
+ *   m_Position         @ +0x00  : Vector3D int32 x, y, z   (camera's world space)
+ *   m_bodyRotation.z   @ +0x0E  : u_char facing, rewritten from m_RotZ >> 4 each tick
+ *   m_previousPosition @ +0x8C  : where the physics thinks he was last tick
+ *   m_SpeedAngle.m_RotZ @ +0x11C: the 12-bit facing the physics turns from */
 #define G_SPYRO      0x80078A58u
 
 #define ADDR_LEVEL_LOAD_STATE     0x80075864u  /* g_LoadStage: < 0 while a level is live */
+#define ADDR_GAMESTATE            0x800757D8u  /* g_Gamestate: 0 = GS_Playing */
+#define ADDR_DEMO_MODE            0x80075714u  /* g_DemoMode: nonzero while the attract demo drives the pad */
+#define ADDR_LEVEL_ID             0x8007596Cu  /* g_LevelId */
+#define G_CAMERA                  0x80076DD0u  /* g_Camera (camera.h): m_State +0x58, unk_0xC0 +0xC0,
+                                                  m_Focus +0xD0, m_FocusRotation +0xD4, m_SphericalPreset +0xD8 */
+#define ADDR_CAM_PRESET_PLACED    0x80078668u  /* D_80078668: the loader's spawn preset (SphericalCoordsOffset, 0x18) */
+#define ADDR_CAM_PRESET_DEFAULT   0x8006C934u  /* D_8006C934: its source values */
 #define ADDR_OCCLUSION_GROUP      0x80076E24u  /* g_Camera.m_OcclusionGroup (+0x54) */
 #define ADDR_CAMERA_UNK_POS_VEC_X 0x80076EBCu  /* _cameraUnknownPositionVectorX */
 
@@ -71,6 +80,37 @@ static void spyro1_draw_all(CPUState* cpu) {
 extern void func_8003DFA4(CPUState* cpu);
 static void spyro1_reset_momentum(CPUState* cpu) { func_8003DFA4(cpu); }
 
+/* The player can be placed while a level is live in GS_Playing with the pad
+ * driving him (g_DemoMode 0) and the camera in its ordinary follow
+ * (g_Camera.m_State 0). g_Gamestate stays GS_Playing through the level
+ * fly-in; m_State separates it (0x80000010/11 until the follow takes over),
+ * and a placement inside the fly-in would be flown away from. */
+static int spyro1_player_placeable(CPUState* cpu) {
+    return spyro1_level_live(cpu) &&
+           cpu->read_word(ADDR_GAMESTATE) == 0u &&
+           cpu->read_word(ADDR_DEMO_MODE) == 0u &&
+           cpu->read_word(G_CAMERA + 0x58u) == 0u;
+}
+
+/* The loader's own camera setup for a spawn without a fly-in (loaders.c,
+ * LoadLevelScene): preset D_80078668 = D_8006C934 at radius 1536, focus on
+ * the player, ordinary follow state, focus rotation = the player's facing,
+ * then func_80034358 applies the preset and snaps m_Position to the offset
+ * from the focus. Without it the follow converges from wherever the camera
+ * stood, a sweep of a hundred-plus ticks across the level. */
+extern void func_80034358(CPUState* cpu);
+static void spyro1_place_camera(CPUState* cpu) {
+    for (uint32_t o = 0; o < 0x18u; o += 4u)
+        cpu->write_word(ADDR_CAM_PRESET_PLACED + o, cpu->read_word(ADDR_CAM_PRESET_DEFAULT + o));
+    cpu->write_word(G_CAMERA + 0xD0u, G_SPYRO);              /* m_Focus = &g_Spyro.m_Position */
+    cpu->write_word(G_CAMERA + 0x58u, 0u);                   /* m_State */
+    cpu->write_word(G_CAMERA + 0xC0u, 0u);                   /* unk_0xC0 (state source) */
+    cpu->write_word(ADDR_CAM_PRESET_PLACED + 8u, 1536u);     /* m_Coords.radius */
+    cpu->write_word(G_CAMERA + 0xD8u, ADDR_CAM_PRESET_PLACED); /* m_SphericalPreset */
+    cpu->write_word(G_CAMERA + 0xD4u, cpu->read_word(G_SPYRO + 0x11Cu)); /* m_FocusRotation */
+    func_80034358(cpu);
+}
+
 /* "topdown": the whole-level overhead pose; "sweepN": corner N of a
  * low-altitude circuit. Both resolve against the live sector table. */
 static int spyro1_resolve_named_pose(CPUState* cpu, const char* name, int32_t v[5]) {
@@ -93,9 +133,16 @@ const freecam_game_desc freecam_desc = {
     .extra_freeze  = NULL,
     .player_pos      = G_SPYRO + 0x00u,
     .player_prev_pos = G_SPYRO + 0x8Cu,
+    /* m_Physics.m_SpeedAngle.m_RotZ (+0xC8 +0x50 +0x4) and the byte
+     * m_bodyRotation.z (+0x0C +2) the player update derives from it. */
+    .player_facing      = G_SPYRO + 0x11Cu,
+    .player_facing_byte = G_SPYRO + 0x0Eu,
+    .level_id           = ADDR_LEVEL_ID,
     .level_live         = spyro1_level_live,
     .draw_all           = spyro1_draw_all,
     .reset_momentum     = spyro1_reset_momentum,
+    .player_placeable   = spyro1_player_placeable,
+    .place_camera       = spyro1_place_camera,
     .resolve_named_pose = spyro1_resolve_named_pose,
     .move_speed = s_move_speed,
     .turn_speed = s_turn_speed,

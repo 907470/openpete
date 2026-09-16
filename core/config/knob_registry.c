@@ -863,6 +863,21 @@ static const knob_desc_t g_builtin[] = {
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       freecam_get, freecam_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
+    /* Both pose flags set their env spelling from the parser, so the env
+     * getter shows either spelling. One-shot at boot. */
+    { "freecam_pose", "Free camera pose", "Gameplay", "--freecam-pose", "OPENPETE_FREECAM_POSE",
+      "Engage the debug free camera at this pose once the level is live "
+      "(\"pos=(x, y, z) yaw=N pitch=N\"). Intentionally divergent debug tool.",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, env_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "player_pose", "Player pose", "Gameplay", "--player-pose", "OPENPETE_PLAYER_POSE",
+      "Place the player at this position and facing once gameplay is live "
+      "and under pad control (\"x,y,z[,yaw]\"). Intentionally divergent "
+      "gameplay state.",
+      KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      NULL, NULL, env_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
     { "camlock", "Camera lock (render)", "Gameplay", NULL, "OPENPETE_CAMLOCK",
       "Lock/fly the presented view while the sim keeps running (G key). "
       "Render-only: gameplay state is untouched, so cutscenes play on "
