@@ -22,6 +22,7 @@ void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len) {
     (void)cpu; (void)off; (void)len;
 }
 void spyro_native_canon_capture_recs(void* cpu) { (void)cpu; }
+void spyro_native_canon_capture_sxy(void* cpu) { (void)cpu; }
 void spyro_native_canon_capture_camera(void* cpu, int producer) { (void)cpu; (void)producer; }
 int  spyro_native_prod_camera_enter(int producer) { (void)producer; return 0; }
 void spyro_native_prod_camera_leave(void) {}

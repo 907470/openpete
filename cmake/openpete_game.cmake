@@ -11,6 +11,8 @@
 #                                     # games/common/renderer/terrain_game_none.c
 #     [MOBY_GAME <file>]              # the moby feeder's per-game decoders and data;
 #                                     # default games/common/renderer/moby_game_none.c
+#     [PLAYER_GAME <file>]            # the player feeder's per-game decoders and data;
+#                                     # default games/common/renderer/player_game_none.c
 #     [ICON_SOURCE <file>]            # default games/common/game_icon_none.c
 #     [MODULE_LINKAGE static|shared]  # default static
 #     [SYMBOLS_MANIFEST <file>]       # curated alias table -> gen/<tag>_symbols.gen.h
@@ -51,7 +53,7 @@
 function(openpete_add_game GAME_ID)
     cmake_parse_arguments(G
         ""
-        "MAIN;FEATURE_LIST;ORCHESTRATOR;INTERP_REGIONS;TERRAIN_GAME;MOBY_GAME;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST"
+        "MAIN;FEATURE_LIST;ORCHESTRATOR;INTERP_REGIONS;TERRAIN_GAME;MOBY_GAME;PLAYER_GAME;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST"
         "SOURCES;MODULE_SOURCES"
         ${ARGN})
     if(G_UNPARSED_ARGUMENTS)
@@ -89,6 +91,9 @@ function(openpete_add_game GAME_ID)
     endif()
     if(NOT G_MOBY_GAME)
         set(G_MOBY_GAME ${_common}/renderer/moby_game_none.c)
+    endif()
+    if(NOT G_PLAYER_GAME)
+        set(G_PLAYER_GAME ${_common}/renderer/player_game_none.c)
     endif()
     if(NOT G_ICON_SOURCE)
         set(G_ICON_SOURCE ${_common}/game_icon_none.c)
@@ -242,6 +247,7 @@ function(openpete_add_game GAME_ID)
         ${G_INTERP_REGIONS}
         ${G_TERRAIN_GAME}
         ${G_MOBY_GAME}
+        ${G_PLAYER_GAME}
         ${G_ICON_SOURCE}
         ${G_SOURCES}
         ${_symbols_sources}
@@ -268,6 +274,7 @@ function(openpete_add_game GAME_ID)
         ${_common}/renderer/shadow.c
         ${_common}/renderer/moby.c
         ${_common}/renderer/moby_rank.c
+        ${_common}/renderer/player.c
         ${_common}/renderer/interp_regions_gen.c
 
         # PSYQ symbol stubs, abort-on-call. On ELF these are weak so any

@@ -196,6 +196,56 @@ const game_layout_t game_layout = {
         .hook_draw_shaded   = 0u,
         .hook_draw_simple   = F_MOBY_DRAW_STATIC,
     },
+    .player = {
+        .base    = G_SPYRO,
+        .rec_len = (uint32_t)sizeof(Spyro),     /* 0x2E8; the interp ring's g_Spyro row */
+        .pos_off = offsetof(Spyro, position),
+        .rot_off = { 0x0Cu, 0x10u },            /* bodyRotation, headRotation
+                                                 * (spyrodraw.s:269,327) */
+        .anim_off = { 0x14u, 0x18u },           /* bodyAnimation, headAnimation
+                                                 * (spyrodraw.s:15,118) */
+        .sort_depth_off    = 0x1Eu,             /* spyrodraw.s:250 lb 0x1E: the ordering bias */
+        .colour_filter_off = 0x20u,             /* byte 3 selects the pre-blend colour table
+                                                 * (spyrodraw.s:740-743) */
+        .emit_mode_off     = 0u,                /* one emit path */
+        .hook_draw = F_PLAYER_DRAW,
+
+        /* The routine carves its scratch out of the polybuf every tick, as the
+         * moby draw does: base = *polybuf.end - 0x3000, the two 0x3C-byte part
+         * records at +0x1400 and a zero flags word after them
+         * (spyrodraw.s:18-20,115,175,201). */
+        .part_base   = 0u,
+        .part_base_polybuf_off = 0x3000u,
+        .part_off    = 0x1400u,
+        .part_stride = 0x3Cu,
+        .part_count  = 2,
+        .part_block_len = 0xC0u,                /* the two records and the terminator */
+
+        .part_flags_off    = 0x00u,             /* spyrodraw.s:114 */
+        .part_matrix_off   = 0x10u,             /* spyrodraw.s:270 func_8004EA90's destination */
+        .part_tr_off       = 0x04u,             /* spyrodraw.s:265-267 */
+        .part_stream_a_off = 0x24u,             /* static / adjust / block cursors
+                                                 * (spyrodraw.s:98-100,394-396) */
+        .part_stream_b_off = 0x30u,             /* spyrodraw.s:108-110,404-406 */
+        .part_stream_flag_bit = { 12, 13 },     /* spyrodraw.s:401,410 */
+        .part_matrix_sign  = 0x80000000u,       /* spyrodraw.s:375 bgez skips the reload */
+        .blend_mask        = 0x0FFFu,           /* the blend byte << 4, 1.12 (spyrodraw.s:400) */
+
+        .colour_scratch_off = 0x1800u,          /* spyrodraw.s:748 */
+        .colour_scratch_len = 0x200u,           /* 7-bit colour indices, four bytes each */
+        .sxy_base = 0x1F800000u,                /* the draw writes every projected vertex's
+                                                 * int16 screen position here as it goes
+                                                 * (spyrodraw.s:361,443-448); the walk does not
+                                                 * read it, the probe compares against it */
+        .sxy_len  = 0x400u,
+
+        .flame_base  = 0u,                      /* no located flame struct */
+        .flame_len   = 0u,
+        .shadow_base = 0u,                      /* the drop shadow derives from g_Spyro */
+        .shadow_len  = 0u,
+
+        .pair_bound = 400.0,
+    },
     .hooks = {
         .world_draw = F_WORLD_DRAW,
         .sky_draw   = F_SKY_DRAW,

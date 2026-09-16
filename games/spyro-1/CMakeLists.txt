@@ -166,6 +166,7 @@ openpete_add_game(spyro-1
     INTERP_REGIONS renderer/interp_regions.c
     TERRAIN_GAME   renderer/terrain_game.c
     MOBY_GAME      renderer/moby_game.c
+    PLAYER_GAME    renderer/player_game.c
     ICON_SOURCE    ${_spyro_icon_c}
     MODULE_LINKAGE ${OPENPETE_RECOMP_LINKAGE}
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro1_symbols.toml
@@ -176,7 +177,6 @@ openpete_add_game(spyro-1
         # table. The sub-tick re-extract orchestrator is ORCHESTRATOR above.
         renderer/render_decouple.c
         renderer/spyro.c
-        renderer/spyro_records.c
         renderer/flame.c
         renderer/shadow_spyro.c
         renderer/particle.c

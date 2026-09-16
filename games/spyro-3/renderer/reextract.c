@@ -14,6 +14,7 @@
 #include "renderer/portal.h"
 #include "renderer/shadow.h"
 #include "renderer/moby.h"
+#include "renderer/player.h"
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "openpete_interp.h"
 #include "renderer/interp_regions_gen.h"
@@ -95,8 +96,44 @@ static uint8_t  s_recs_copy[0x1000];
 static uint32_t s_recs_base;
 static uint32_t s_recs_len;
 
-void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len) {
-    (void)cpu; (void)off; (void)len;
+/* The player draw's part-transform records live in the same per-tick draw
+ * scratch, at a fixed offset the player hook names, and the passes after it
+ * reuse those bytes before any sub-tick present runs. Captured and staged the
+ * same way as the moby queue, so the player replay decodes the records the
+ * tick drew instead of whatever overwrote them. One range is enough: nothing
+ * else this game's feeders read is transient. */
+static uint8_t  s_range_copy[0x200];
+static uint32_t s_range_base;
+static uint32_t s_range_len;
+static uint32_t s_range_epoch;
+
+void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
+    CPUState* cpu = (CPUState*)cpu_v;
+    s_range_len = 0;
+    if (!len || len > sizeof s_range_copy || !game_layout.polybuf.end) return;
+    uint32_t end = cpu->read_word(game_layout.polybuf.end);
+    if (end < 0x80000000u) return;
+    uint32_t base = end - game_layout.player.part_base_polybuf_off + off;
+    const void* host = openpete_psx_to_host_ptr(base);
+    if (!host) return;
+    memcpy(s_range_copy, host, len);
+    s_range_base = base;
+    s_range_len  = len;
+    s_range_epoch = s_epoch_now;
+}
+
+static int stage_player_records(void) {
+    if (!s_range_len || s_range_epoch != s_epoch_ok) return 0;
+    void* stage = openpete_subtick_view_stage(s_range_base, s_range_len);
+    if (!stage) return 0;
+    memcpy(stage, s_range_copy, s_range_len);
+    return 1;
+}
+
+/* The player draw's projected-SXY block is not staged on this game: the player
+ * walk decodes the captured part records instead of reading the block back. */
+void spyro_native_canon_capture_sxy(void* cpu) {
+    (void)cpu;
 }
 void spyro_native_canon_capture_recs(void* cpu) {
     (void)cpu;
@@ -185,6 +222,8 @@ static void game_reextract_body(CPUState* cpu) {
     portal3_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* homeworld portal previews */
     if (stage_moby_records())
         moby_reextract(cpu);        /* the 3D actors, after the terrain they stand on */
+    if (stage_player_records())
+        player_reextract(cpu);      /* the avatar, from the part records the tick drew */
     shadow_reextract(cpu);          /* drop-shadows under mobys */
     s_fpos_active = 0;
 }

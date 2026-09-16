@@ -156,6 +156,47 @@ const game_layout_t game_layout = {
         .hook_draw_shaded   = F_MOBY_DRAW_SHADED,
         .hook_draw_simple   = 0u,    /* the shaded draw is the second kind's pass */
     },
+    .player = {
+        .base    = G_SPYRO,
+        .rec_len = 0x2A4u,               /* the span the interp ring captures */
+        .pos_off = 0x00u,                /* Vector3D m_Position */
+        .rot_off = { 0x0Cu, 0x10u, 0x14u },   /* body / head / tail packed byte euler */
+        .anim_off = { 0x18u, 0x1Au, 0x1Cu },  /* per-part animation index byte */
+        .sort_depth_off    = 0x27u,      /* r_pete.s 80023F8C lbu 0x27: the ordering-table bias */
+        .colour_filter_off = 0x28u,      /* byte 3 non-zero selects the pre-blend colour table */
+        .emit_mode_off     = 0x30u,      /* non-zero selects the interpolated emit path */
+        .hook_draw = F_PLAYER_DRAW,
+
+        /* The setup pass builds one 0x44-byte record per part at
+         * g_SonyImage + 0x1900 (r_pete.s 80023B?? addi 0x1900). */
+        .part_base   = G_SCRATCH,
+        .part_base_polybuf_off = 0u,
+        .part_off    = 0x1900u,
+        .part_stride = 0x44u,
+        .part_count  = 3,
+        .part_block_len = 0x100u,
+
+        .part_flags_off    = 0x00u,
+        .part_matrix_off   = 0x10u,      /* SHORTMATRIX R11R12..R33 */
+        .part_tr_off       = 0x04u,
+        .part_stream_a_off = 0x24u,      /* correction / 1-byte / 2-byte cursors */
+        .part_stream_b_off = 0x34u,
+        .part_stream_flag_bit = { 12, 13 },
+        .part_matrix_sign  = 0x80000000u,/* the record carries its own matrix */
+        .blend_mask        = 0x0FFFu,    /* the keyframe blend weight, 1.12 */
+
+        .colour_scratch_off = 0x1D00u,   /* the pre-blend colour table, read to +0x1EEC */
+        .colour_scratch_len = 0x300u,
+        .sxy_base = 0x1F800000u,         /* the PSX scratchpad: every projected vertex's SXY */
+        .sxy_len  = 0x400u,
+
+        .flame_base  = G_SPYROFLAME,
+        .flame_len   = 0xD0u,
+        .shadow_base = D_SPYROSHADOW,
+        .shadow_len  = 0x28u,
+
+        .pair_bound = 400.0,             /* world units one record may move in a tick */
+    },
     .hooks = {
         .world_draw = F_WORLD_DRAW,
         .sky_draw   = F_SKY_DRAW,

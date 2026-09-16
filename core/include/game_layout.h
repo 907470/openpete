@@ -314,6 +314,80 @@ typedef struct game_layout {
         uint32_t hook_draw_simple;
     } moby;
 
+    /* The player avatar's own draw. The avatar is not a moby: a dedicated
+     * routine renders it from a dedicated state block, as a skeleton of parts
+     * whose per-part transform records the draw builds in the tick's render
+     * scratch. The walk is games/common/renderer/player.c and the encodings
+     * are the player_game slots (games/common/renderer/player_game.h).
+     *
+     * `base` is the state block; `rec_len` is how much of it one per-call
+     * record copies, which is also the span the interp ring captures.
+     * `pos_off` is the world position; `rot_off[p]` part p's packed byte
+     * euler and `anim_off[p]` its animation selector, both 0 for a part the
+     * game does not carry.
+     *
+     * `part_base`/`part_off`/`part_stride`/`part_count` locate the transform
+     * records. With `part_base` 0 the block starts at `*polybuf.end -
+     * part_base_polybuf_off`, recomputed per pass, because the game carves
+     * its render scratch out of the polybuf every tick. `part_block_len` is
+     * how many bytes of the block a record copies.
+     *
+     * Inside one part record, `part_flags_off` is the flags word, whose
+     * `blend_mask` bits are the keyframe blend weight in 1.12 and whose
+     * `part_matrix_sign` bit (0 = none) marks a part that carries its own
+     * matrix rather than inheriting the previous part's. `part_matrix_off` is
+     * the packed 3x3, `part_tr_off` the three translation words, and
+     * `part_stream_a_off`/`_b_off` the two keyframes' cursor triples: the
+     * per-vertex static/correction stream, the byte stream and the halfword
+     * stream, four bytes apart. `part_stream_flag_bit[2]` say which flags bit
+     * opens each keyframe's stream form.
+     *
+     * `colour_scratch_off`/`_len` is the pre-blend colour table the draw
+     * builds in the same scratch when `colour_filter_off` selects it;
+     * `sxy_base`/`sxy_len` is where the draw leaves every projected vertex's
+     * int16 screen position, which the walk reads as the game's own cull
+     * verdict and the record store snapshots.
+     *
+     * `flame_*` and `shadow_*` are the auxiliary player feeders whose state
+     * the record store brackets alongside the model record, 0 where the game
+     * has none. `pair_bound` is how far one record's position may move in a
+     * tick and still pair with the previous tick's, in world units. */
+    struct {
+        uint32_t base;
+        uint32_t rec_len;
+        uint32_t pos_off;
+        uint32_t rot_off[4];
+        uint32_t anim_off[4];
+        uint32_t sort_depth_off;
+        uint32_t colour_filter_off;
+        uint32_t emit_mode_off;
+        uint32_t hook_draw;
+
+        uint32_t part_base;
+        uint32_t part_base_polybuf_off;
+        uint32_t part_off;
+        uint32_t part_stride;
+        int      part_count;
+        uint32_t part_block_len;
+
+        uint32_t part_flags_off;
+        uint32_t part_matrix_off;
+        uint32_t part_tr_off;
+        uint32_t part_stream_a_off;
+        uint32_t part_stream_b_off;
+        int      part_stream_flag_bit[2];
+        uint32_t part_matrix_sign;
+        uint32_t blend_mask;
+
+        uint32_t colour_scratch_off, colour_scratch_len;
+        uint32_t sxy_base, sxy_len;
+
+        uint32_t flame_base, flame_len;
+        uint32_t shadow_base, shadow_len;
+
+        double   pair_bound;
+    } player;
+
     /* Hook sites: the guest entry addresses the feeders dispatch on.
      * `visibility` is the function that fills the visibility verdict when
      * the game computes it outside the draw; 0 when the draw computes it. */

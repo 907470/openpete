@@ -38,18 +38,18 @@ struct CPUState;
  * the (interpolated) g_Camera the orchestrator has written, without calling
  * the game render function or touching gameplay-readable RAM. */
 /* Set the sub-tick alpha + whether keyframe-blend interpolation is active
- * (camera bracketed). Call before spyro_player_reextract so Spyro's
+ * (camera bracketed). Call before player_reextract so Spyro's
  * animation blends sub-tick instead of stepping at the canonical tick rate. */
-void spyro_native_set_anim_interp(double alpha, int on);
+void player_native_set_anim_interp(double alpha, int on);
 /* Per record: the seg-row pair the two-pass shape lerp blends (prev = the
  * paired previous record's row, NULL when unpaired → no blend; curr = this
  * record's row) and the record index (the PLAYER tag slot). Defined in
  * renderer/spyro.c. */
-void spyro_native_set_anim_pair(const uint8_t* prev_seg, const uint8_t* curr_seg);
-void spyro_native_set_player_slot(int k);
+void player_native_set_anim_pair(const uint8_t* prev_seg, const uint8_t* curr_seg);
+void player_native_set_player_slot(int k);
 /* The front-layer flatten cap is shared by the calls of one frame / present:
  * a new key opens a new group (renderer/spyro.c). */
-void spyro_native_set_flat_key(uint32_t key);
+void player_native_set_flat_key(uint32_t key);
 
 /* Sub-tick ROTATION interpolation for Spyro's body/head/tail. The orchestrator
  * interpolates g_Spyro's packed byte euler (+0xC/+0x10/+0x14) at FLOAT precision
@@ -60,7 +60,7 @@ void spyro_native_set_flat_key(uint32_t key);
  * (head/tail off when sticky / mid-transition → byte-exact path); `ang` is a
  * row-major 3×3 of float byte-angles [seg][Z,X,Y]. active=NULL resets (off), so
  * the canonical inline render stays byte-exact. Defined in renderer/spyro.c. */
-void spyro_native_set_rot_interp(const int* active, const double* ang);
+void player_native_set_rot_interp(const int* active, const double* ang);
 
 /* Flame sub-keyframe slide (0..1): the fractional part of the per-strand flame
  * counter advance for this sub-tick present. The flame feeder lerps each ribbon
@@ -94,7 +94,7 @@ void portal_reextract(struct CPUState* cpu, double alpha, int interp_on);
  * no level is live. Used by `--freecam-path sweep0;sweep1;...`. */
 void shadow_reextract(struct CPUState* cpu);
 void shadow_spyro_reextract(struct CPUState* cpu, int slot);
-void spyro_player_reextract(struct CPUState* cpu);
+void player_reextract(struct CPUState* cpu);
 void particle_reextract(struct CPUState* cpu);
 void flame_reextract(struct CPUState* cpu, int slot);
 void tracer_reextract(struct CPUState* cpu);

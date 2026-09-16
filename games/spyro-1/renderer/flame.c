@@ -24,7 +24,7 @@
 #include "openpete_native_render.h"
 #include "openpete_log.h"  /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
-#include "renderer/spyro_records.h" /* per-call records of the player hooks */
+#include "renderer/player.h" /* per-call records of the player hooks */
 #include "renderer/reextract.h"  /* sub-tick re-extract entry */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 
@@ -641,7 +641,7 @@ static int on_80058D64_flame_native(CPUState* cpu, uint32_t addr) {
 
     render_path_record(RP_FLAME, startp, endp);   /* polybuf range for the OT filter */
     int slot = 0;
-    if (endp > startp) slot = spyro_records_flame_append(cpu);   /* the flame record, bound to its model record */
+    if (endp > startp) slot = player_records_flame_append(cpu);   /* the flame record, bound to its model record */
 
     if ((feed || verify) && endp > startp) capture_prims(cpu, startp, endp);
 

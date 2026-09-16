@@ -14,6 +14,7 @@ openpete_add_game(spyro-3
     ORCHESTRATOR     renderer/reextract.c
     INTERP_REGIONS   renderer/interp_regions.c
     MOBY_GAME        renderer/moby_game.c
+    PLAYER_GAME      renderer/player_game.c
     SOURCES
         skip_to_level.c
         features/freecam.c

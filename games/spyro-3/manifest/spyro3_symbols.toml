@@ -162,6 +162,17 @@ kind = "function"
 note = "DrawStaticMobys (asm/mobydraw.s:3862): the second model kind, walked from its own stride-0x10 record list"
 
 [[symbol]]
+name = "F_PLAYER_DRAW"
+addr = 0x8003CDA0
+kind = "function"
+note = "DrawSpyro (asm/spyrodraw.s:12): the player avatar's own draw, run twice a tick — the mirrored copy with g_Spyro+0x2C set, then the avatar with it clear; the shared player feeder's hook site"
+
+[[symbol]]
+name = "D_SPYRO_ANIMS"
+addr = 0x8006C558
+note = "pointer to the 256-entry Animation table the player draw indexes by the animation word's low byte (asm/spyrodraw.s:33-34,37-40); written at level load"
+
+[[symbol]]
 name = "G_SPYRO"
 addr = 0x80070328
 note = "g_Spyro (globals.toml names the address g_Spyro / spyro; struct Spyro, 0x2E8 bytes, manifest/struct_layout.toml): position +0x00, bodyRotation +0x0C, headRotation +0x10, bodyAnimation +0x14, headAnimation +0x18, OT bias +0x1E, mirror fields +0x28/+0x2C, pass gate +0x288. The player draw spyrodraw.s reads it for the two part records; features/freecam.c and game_extras_impl.c already read the position words at this address"

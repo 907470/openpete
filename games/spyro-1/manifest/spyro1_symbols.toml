@@ -329,6 +329,12 @@ kind = "function"
 note = "func_80059F8C (asm/renderers/r_shadows.s:364) — the moby drop-shadow renderer; the shared shadow feeder's hook site"
 
 [[symbol]]
+name = "F_PLAYER_DRAW"
+addr = 0x80023AC4
+kind = "function"
+note = "func_80023AC4 (asm/renderers/r_pete.s) — the player-avatar draw; the shared player feeder's hook site"
+
+[[symbol]]
 name = "F_MOBY_DRAW_REGULAR"
 addr = 0x8001F798
 kind = "function"

@@ -10,6 +10,7 @@
 #define OPENPETE_COMMON_RENDERER_MOBY_H
 
 #include <stdint.h>
+#include "renderer/moby_game.h"   /* moby_wface_t: the shared face record */
 
 #ifdef __cplusplus
 extern "C" {
@@ -68,6 +69,39 @@ void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
                      int textured, int tpage_x, int tpage_y,
                      int clut_x, int clut_y, int bpp, int blend,
                      uint32_t fkey);
+
+/* ---- decode pieces shared with the player feeder -----------------------
+ * The avatar draw and the moby draw are different routines, but they encode a
+ * face the same way and run the same emit tree, so these four live here once.
+ *
+ * moby_tri_nclip is the signed 2*area of a screen-space triangle, the NCLIP
+ * analog, on float coordinates rather than the GTE's floored int16.
+ *
+ * moby_abr_blend maps a texture page's semi-transparency mode to the
+ * renderer's blend id. ABR 3 (back + front/4) has no native pipe and takes the
+ * additive one.
+ *
+ * moby_tiledef_decode fills one face record's texture fields from the three
+ * texture words {u0|v0<<8|clut<<16}, {u1|v1<<8|tpage<<16},
+ * {u2|v2<<8|u3<<16|v3<<24}. A tpage colour-depth field of 3 is reserved on the
+ * hardware and marks a replaced texture instead: the record takes depth 32 and
+ * carries the texture id where the page x would go.
+ *
+ * moby_face_emit is the dual-NCLIP tree. A FRESH (quad-capable) face runs
+ * NCLIP1 on (v0,v1,v2) and NCLIP2 on (v3,v1,v2) and emits, by the sign pair,
+ * the triangle (v3,v1,v2), nothing, the quad (v0,v1,v2)+(v1,v3,v2), or the
+ * triangle (v0,v1,v2); a STRIP face is one triangle kept on NCLIP1's sign. The
+ * face's own bit0 changes both rules, and the two draws differ in how: with
+ * `bit0_unconditional` the bit skips the test outright (a pre-marked quad, a
+ * strip of either winding), and without it the bit negates the two NCLIP signs
+ * before the same tests, which differs from the first only on a zero-area
+ * face. Returns the triangle count and fills order[e] with the three
+ * face-vertex slots (0..3) of triangle e. */
+double moby_tri_nclip(float ax, float ay, float bx, float by, float cx, float cy);
+int    moby_abr_blend(int abr);
+void   moby_tiledef_decode(uint32_t td0, uint32_t td1, uint32_t td2, moby_wface_t* F);
+int    moby_face_emit(int fresh, int bit0, int bit0_unconditional,
+                      double ncl1, double ncl2, int have_v3, int order[2][3]);
 
 /* The cull-record queue the last canonical moby pass read: its guest base and
  * its length in bytes. A game whose queue lives in memory the rest of the tick

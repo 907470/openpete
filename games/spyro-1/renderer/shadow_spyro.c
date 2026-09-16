@@ -19,7 +19,7 @@
 #include "feature_registry.h"
 #include "openpete_vstream.h"
 #include "renderer/reextract.h"  /* sub-tick re-extract entry */
-#include "renderer/spyro_records.h"           /* per-call records of the player hooks */
+#include "renderer/player.h"           /* per-call records of the player hooks */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "renderer/shadow.h"        /* shared prim capture, projection, decal params */
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
@@ -326,7 +326,7 @@ static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
 
     render_path_record(RP_SHADOW, startp, endp);
     int slot = 0;
-    if (endp > startp) slot = spyro_records_shadow_append(cpu);   /* the shadow record, bound to its model record */
+    if (endp > startp) slot = player_records_shadow_append(cpu);   /* the shadow record, bound to its model record */
 
     if ((feed || verify) && endp > startp) shadow_capture_prims(cpu, startp, endp);
 

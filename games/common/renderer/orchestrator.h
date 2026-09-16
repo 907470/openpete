@@ -54,6 +54,9 @@ int      spyro_native_canon_shaded_fresh(void);
  *           the overlapping bytes. */
 void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len);
 void spyro_native_canon_capture_recs(void* cpu);
+/*   _sxy:   the block the player draw left every projected vertex's int16
+ *           screen position in, which is also the walk's cull verdict. */
+void spyro_native_canon_capture_sxy(void* cpu);
 
 /* The camera a producer drew under. A feeder re-derives its geometry from the
  * camera, which the sub-tick bracket interpolates between tick-end snapshots;

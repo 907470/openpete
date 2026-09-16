@@ -19,6 +19,7 @@
  */
 
 #include "renderer/moby_game.h"
+#include "renderer/moby_game_s3.h"   /* the two decoders the player feeder shares */
 #include "renderer/moby.h"            /* the second kind's shared emit */
 #include "renderer/native_gte.h"       /* ngte_read_matrix, ngte_mac, ngte_mat_mul3, ngte_dpcs_ch */
 #include "game_layout.h"
@@ -77,7 +78,7 @@ static void s3_vstream_init(CPUState* cpu, moby_vstream_t* s,
     s->s5 = s5;                            /* no per-model shift in this codec */
 }
 
-static void s3_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) {
+void s3_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) {
     (void)first;   /* the keyframe word already said which form opens */
     uint32_t sw = cpu->read_word(s->scratch_u[0]);
     s->scratch_u[0] += 4u;
@@ -129,8 +130,9 @@ static void s3_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) {
  * "fresh" face with the winding flag clear, whose dual-NCLIP emit tree is the
  * same four-way one this draw runs (mobydraw.s:1564-1573); a triangle is a
  * "strip" face, whose keep rule is the same NCLIP sign test. */
-static int s3_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
-                           moby_wface_t* out, int cap, moby_face_stats_t* st) {
+int s3_decode_faces_stride(CPUState* cpu, uint32_t fb, uint32_t bytecount,
+                           moby_wface_t* out, int cap, moby_face_stats_t* st,
+                           uint32_t fixed_stride) {
     uint32_t end = fb + 4u + bytecount;
     uint32_t fp  = fb + 4u;
     int n = 0, raw = 0, guard = 0;
@@ -139,7 +141,7 @@ static int s3_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
         uint32_t w1 = cpu->read_word(fp + 4u);
         raw++;
         int textured = ((int32_t)w1) < 0;
-        uint32_t adv = textured ? 0x14u : 0x08u;
+        uint32_t adv = fixed_stride ? fixed_stride : (textured ? 0x14u : 0x08u);
         unsigned i0 = (w0 >> 24) & 0xFFu, i1 = (w0 >> 16) & 0xFFu;
         unsigned i2 = (w0 >>  8) & 0xFFu, i3 =  w0        & 0xFFu;
         int tri = (i2 == i3);
@@ -182,6 +184,12 @@ static int s3_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
     st->raw = raw; st->sprites = 0; st->skips = 0;
     st->align = (fp == fb + 4u + bytecount) ? 0 : (fp == end) ? 1 : 2;
     return n;
+}
+
+/* The moby draw's own stride: two words untextured, five textured. */
+int s3_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
+                    moby_wface_t* out, int cap, moby_face_stats_t* st) {
+    return s3_decode_faces_stride(cpu, fb, bytecount, out, cap, st, 0u);
 }
 
 /* ---- cull record ---------------------------------------------------

@@ -7,7 +7,7 @@
 extern const feature_module_t render_paths_module;
 extern const feature_module_t cyclorama_module;
 extern const feature_module_t moby_module;
-extern const feature_module_t spyro_module;
+extern const feature_module_t player_module;
 extern const feature_module_t flame_module;
 extern const feature_module_t shadow_module;
 extern const feature_module_t shadow_spyro_module;
@@ -40,7 +40,7 @@ const feature_module_t* const openpete_features[] = {
     /* Native-renderer Spyro feeder + A/B verify harness. Hooks the
      * player-avatar renderer 0x80023AC4 only when OPENPETE_SPYRO_VERIFY or
      * a native renderer mode (--renderer vk) is set; inert otherwise. */
-    &spyro_module,
+    &player_module,
     /* Native-renderer flame feeder + A/B harness, an ADDITIVE
      * (ABR mode 1) consumer. Hooks Spyro's flame renderer 0x80058D64 only when
      * OPENPETE_FLAME_VERIFY or a native renderer mode (--renderer vk) is

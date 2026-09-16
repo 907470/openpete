@@ -1630,6 +1630,68 @@ static double tri_nclip(float ax,float ay,float bx,float by,float cx,float cy) {
     return (double)(bx-ax)*(cy-ay) - (double)(cx-ax)*(by-ay);
 }
 
+/* The four decode pieces the player feeder shares with this walk; see
+ * renderer/moby.h for what each one is. */
+double moby_tri_nclip(float ax, float ay, float bx, float by, float cx, float cy) {
+    return tri_nclip(ax, ay, bx, by, cx, cy);
+}
+
+int moby_abr_blend(int abr) {
+    return (abr == 0) ? 1 : (abr == 1) ? 2 : (abr == 2) ? 3 : 2;
+}
+
+void moby_tiledef_decode(uint32_t td0, uint32_t td1, uint32_t td2, moby_wface_t* F) {
+    F->u[0] = (uint8_t)(td0 & 0xFFu); F->v[0] = (uint8_t)((td0 >> 8) & 0xFFu);
+    F->u[1] = (uint8_t)(td1 & 0xFFu); F->v[1] = (uint8_t)((td1 >> 8) & 0xFFu);
+    F->u[2] = (uint8_t)(td2 & 0xFFu); F->v[2] = (uint8_t)((td2 >> 8) & 0xFFu);
+    F->u[3] = (uint8_t)((td2 >> 16) & 0xFFu); F->v[3] = (uint8_t)((td2 >> 24) & 0xFFu);
+    unsigned cl = (td0 >> 16) & 0xFFFFu;
+    unsigned tp = (td1 >> 16) & 0xFFFFu;
+    int mode = (int)((tp >> 7) & 3u);
+    F->abr = (uint8_t)((tp >> 5) & 3u);
+    if (mode == 3) {
+        /* The hardware reserves this colour depth, so the emitter uses it to
+         * name a replaced texture: the id rides in the CLUT half. */
+        F->bpp = 32;
+        F->tpx = (int16_t)cl; F->tpy = 0; F->clx = 0; F->cly = 0;
+    } else {
+        F->tpx = (int16_t)((tp & 0xFu) * 64);
+        F->tpy = (int16_t)(((tp >> 4) & 1u) * 256);
+        F->bpp = (uint8_t)((mode == 0) ? 4 : (mode == 1) ? 8 : 16);
+        F->clx = (int16_t)((cl & 0x3Fu) * 16);
+        F->cly = (int16_t)((cl >> 6) & 0x1FFu);
+    }
+}
+
+int moby_face_emit(int fresh, int bit0, int bit0_unconditional,
+                   double ncl1, double ncl2, int have_v3, int order[2][3]) {
+    if (!fresh) {
+        int keep = bit0 ? (bit0_unconditional ? 1 : (ncl1 != 0.0)) : (ncl1 > 0.0);
+        if (!keep) return 0;
+        order[0][0] = 0; order[0][1] = 1; order[0][2] = 2;
+        return 1;
+    }
+    if (bit0 && bit0_unconditional) {          /* pre-marked quad: no test at all */
+        if (!have_v3) { order[0][0]=0; order[0][1]=1; order[0][2]=2; return 1; }
+        order[0][0]=0; order[0][1]=1; order[0][2]=2;
+        order[1][0]=1; order[1][1]=3; order[1][2]=2;
+        return 2;
+    }
+    double t6a = (bit0 && ncl1 > 0.0) ? -ncl1 : ncl1;
+    double t6b = (bit0 && ncl2 < 0.0) ? -ncl2 : ncl2;
+    if (t6a >= 0.0) {
+        if (t6b > 0.0 && have_v3) { order[0][0]=3; order[0][1]=1; order[0][2]=2; return 1; }
+        return 0;
+    }
+    if (t6b > 0.0 && have_v3) {
+        order[0][0]=0; order[0][1]=1; order[0][2]=2;
+        order[1][0]=1; order[1][1]=3; order[1][2]=2;
+        return 2;
+    }
+    order[0][0]=0; order[0][1]=1; order[0][2]=2;
+    return 1;
+}
+
 #define MN_MAX_WORKERS 8
 #define MN_FANOUT_MIN_FACES 400   /* see walk_prologue: dispatch break-even */
 /* Walk diagnostics (printed by compare_walk_vs_prims), one per worker. Aligned

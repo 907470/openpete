@@ -8,6 +8,7 @@ extern const feature_module_t cyclorama_module;
 extern const feature_module_t portal_module;
 extern const feature_module_t shadow_module;
 extern const feature_module_t moby_module;
+extern const feature_module_t player_module;
 extern const feature_module_t terrain_probe_module;
 
 const feature_module_t* const openpete_features[] = {
@@ -30,6 +31,9 @@ const feature_module_t* const openpete_features[] = {
      * names, then refuses them because this game supplies no moby_game
      * decoder slots yet — OPENPETE_MOBY_CENSUS prints the reason. */
     &moby_module,
+    /* The shared player-avatar feeder: hooks the player draw game_layout.player
+     * names; inert unless the native scene is enabled. */
+    &player_module,
     /* The calibrated terrain probe: inert unless OPENPETE_TERRAIN_PROBE is set. */
     &terrain_probe_module,
 };
