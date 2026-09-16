@@ -1,0 +1,23 @@
+# freecam-corpus.manifest — (level, pose) tuples for the Spyro 3 debug-freecam
+# golden. Same row form as scripts/freecam-corpus.manifest:
+#   <level> | pos=(x, y, z) yaw=Y pitch=P | [start]
+# Each row is a reported defect; the class it belongs to is named on
+# the row's comment and the plan ticks it when the fix lands.
+# animated terrain holds its tick pose on intermediate presents
+sunrise_spring | pos=(45559, 29220, 16378) yaw=1474 pitch=379
+# animated terrain draws through the portal preview
+sunrise_spring | pos=(26088, 46942, 20298) yaw=1150 pitch=-84
+# butterfly bottles (simple kind) draw opaque
+sunrise_spring | pos=(49988, 33610, 17123) yaw=1083 pitch=213
+# metal vases (simple kind) draw through a wall
+sunrise_spring | pos=(102255, 56733, 22972) yaw=-1891 pitch=6
+# terrain depth ordering
+sunny_villa | pos=(79168, 34297, 14796) yaw=867 pitch=197
+# sub-level portal depth
+cloud_spires | pos=(26935, 50493, 13187) yaw=-1351 pitch=84
+# moby without its specular pass
+cloud_spires | pos=(61927, 44074, 8510) yaw=1029 pitch=10
+# locked chest without its specular pass
+molten_crater | pos=(60294, 100033, 12024) yaw=791 pitch=212
+# terrain depth ordering
+seashell_shore | pos=(70859, 80778, 15700) yaw=-1802 pitch=222
