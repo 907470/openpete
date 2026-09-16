@@ -24,3 +24,5 @@ seashell_shore | pos=(70859, 80778, 15700) yaw=-1802 pitch=222
 # inside the terrain the native and guest renders differ; reporter suspects
 # the back-face rule
 sunrise_spring | pos=(93293, 45901, 25017) yaw=-1494 pitch=-24
+# egg thief draws without its colour
+midday_gardens | pos=(64750, 54918, 9705) yaw=380 pitch=207
