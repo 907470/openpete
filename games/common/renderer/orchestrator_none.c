@@ -13,3 +13,5 @@ void spyro_native_canon_epoch_commit(void) {
 
 void cyclorama_native_env_clear_commit(void) {
 }
+void game_reextract_init(void) {
+}

@@ -163,6 +163,7 @@ openpete_add_game(spyro-1
     MAIN           main.cpp
     FEATURE_LIST   feature_list.c
     ORCHESTRATOR   renderer/reextract.c
+    INTERP_REGIONS renderer/interp_regions.c
     TERRAIN_GAME   renderer/terrain_game.c
     ICON_SOURCE    ${_spyro_icon_c}
     MODULE_LINKAGE ${OPENPETE_RECOMP_LINKAGE}
@@ -172,7 +173,6 @@ openpete_add_game(spyro-1
 
         # The native renderer's game half: the feeders and the interp region
         # table. The sub-tick re-extract orchestrator is ORCHESTRATOR above.
-        renderer/interp_regions.c
         renderer/render_decouple.c
         renderer/cyclorama.c
         renderer/moby.c

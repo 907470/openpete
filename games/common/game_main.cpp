@@ -15,6 +15,7 @@
 #include "openpete_psx.h"
 #include "psyq/psyq_game_hooks.h"
 #include "openpete_recomp_module.h"
+#include "renderer/orchestrator.h"   /* game_interp_register, game_reextract_init */
 
 #include <cstdio>
 
@@ -55,6 +56,12 @@ int main(int argc, char** argv) {
     /* The gameplay-state region table the oracle hashes (games/common/
      * state_regions.c); explicit, before openpete_run(). */
     game_state_regions_register();
+
+    /* The interp ring's region table and the sub-tick re-extract entry, both
+     * before openpete_run() so openpete_interp_init() sees the regions; inert
+     * on a game whose TUs are the none defaults. */
+    game_interp_register();
+    game_reextract_init();
 
     /* Root counter 2 as the game's boot reads it (the RNG seed source). */
     openpete_psx_set_root_counter2(psyq_game_root_counter2());

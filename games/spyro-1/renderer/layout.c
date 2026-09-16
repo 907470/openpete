@@ -77,6 +77,7 @@ const game_layout_t game_layout = {
         .face_layout  = TERRAIN_FACES_SPYRO1,
         .tex_stride   = 16u,
         .abe_in_tpage = 0,
+        .tile_word1_br = 0,
         .lod_dist_default = 0u,
     },
     .hooks = {

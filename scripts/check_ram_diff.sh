@@ -4,7 +4,10 @@
 #
 # Usage:
 #   scripts/check_ram_diff.sh <spyro-1|spyro-2|spyro-3> [--anchor first|loop|HEX]
-#                             [--hit N] [--ref-hit M] [--keep DIR]
+#                             [--hit N] [--ref-hit M] [--keep DIR] [-- <openpete flags>]
+#
+# Everything after `--` is passed to the openpete run only (a presentation
+# flag under census, e.g. `-- --renderer vk`); the reference run is stock.
 #
 # Runs the DuckStation regtest module on the game's disc with
 # -dump-ram-at-anchor and openpete with --halt-at-pc (under the golden's
@@ -26,7 +29,7 @@ ROOT="$(pwd)"
 
 GAME="${1:-}"; shift || true
 [[ -n "$GAME" ]] || { sed -n 's/^# //p' "$0" | head -16; exit 64; }
-ANCHOR=first; HIT=1; REF_HIT=""; KEEP=""
+ANCHOR=first; HIT=1; REF_HIT=""; KEEP=""; EXTRA_ARGS=()
 while [[ $# -gt 0 ]]; do
     case "$1" in
         --anchor) ANCHOR="$2"; shift 2 ;;
@@ -37,6 +40,7 @@ while [[ $# -gt 0 ]]; do
                     echo "[ram-diff] --keep under tests/golden/ refused: RAM dumps never enter the repo" >&2; exit 64 ;;
                 esac
                 shift 2 ;;
+        --) shift; EXTRA_ARGS=("$@"); break ;;
         *) echo "[ram-diff] unknown arg: $1" >&2; exit 64 ;;
     esac
 done
@@ -174,7 +178,7 @@ set +e
 OPENPETE_VIBRATION=0 timeout 900 "$BIN" --headless --no-config --mods "" --mute 1 --vibration 0 \
     "${OP_CARD[@]}" --disc "$DISC" $RUN_ARGS \
     --halt-at-pc "$PC" --halt-hit "$HIT" --ram-dump-output "$OP" \
-    "${SCHED[@]}" \
+    "${SCHED[@]}" "${EXTRA_ARGS[@]}" \
     --frame-limit 200000 > "$OPLOG" 2>&1
 OP_RC=$?
 wait "$DS_PID"

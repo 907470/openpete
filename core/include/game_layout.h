@@ -133,6 +133,10 @@ typedef struct game_layout {
         /* Semi-transparency: Spyro 1 flags it per face; Spyro 3 in bit 15 of
          * the tile's TPAGE halfword. */
         int      abe_in_tpage;
+        /* The tile's second word holds (u1, v1): the top-right corner in
+         * Spyro 1, the bottom-right corner in Spyro 3 (its emitter subtracts
+         * 0x1F00 to make the top-right). */
+        int      tile_word1_br;
         /* The LP/HP LOD distance when the environment header has no field for
          * it (env.lod_dist == 0): Spyro 3's draw bins with constants. */
         uint32_t lod_dist_default;

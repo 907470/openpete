@@ -110,6 +110,11 @@ static inline void tvert_unpack(uint32_t v, int flat, int* x, int* y, int* z) {
     int vz = (int)(v & 0x3FF);
     *z = flat ? (vz >> game_layout.terrain.vz_flat_shr) : (vz << game_layout.terrain.vz_shl);
 }
+/* An environment-header field the layout may leave unlocated (0): read it, or
+ * 0. Reading vaddr 0 would return a kernel word and pass as a pointer. */
+static inline uint32_t tenv_rd(CPUState* cpu, uint32_t field) {
+    return field ? cpu->read_word(field) : 0u;
+}
 /* The LP/HP LOD distance: the environment header's field, or the layout's
  * constant on a game whose header has none. */
 static inline uint32_t tenv_lod_dist(CPUState* cpu) {
@@ -208,14 +213,14 @@ static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
 static uint32_t rd(CPUState* cpu, uint32_t a) { return cpu->read_word(a); }
 
 static void terrain_dump(CPUState* cpu) {
-    uint32_t sectorPtr = rd(cpu, game_layout.env.sector_ptr);
-    uint32_t sectorCnt = rd(cpu, game_layout.env.sector_count);
-    uint32_t occCnt    = rd(cpu, game_layout.env.occ_group_count);
-    uint32_t texCnt    = rd(cpu, game_layout.env.tex_count);
-    uint32_t lqTex     = rd(cpu, game_layout.env.lq_tex);
-    uint32_t hqTex     = rd(cpu, game_layout.env.hq_tex);
+    uint32_t sectorPtr = tenv_rd(cpu, game_layout.env.sector_ptr);
+    uint32_t sectorCnt = tenv_rd(cpu, game_layout.env.sector_count);
+    uint32_t occCnt    = game_layout.env.occ_group_count ? tenv_rd(cpu, game_layout.env.occ_group_count) : 0;
+    uint32_t texCnt    = tenv_rd(cpu, game_layout.env.tex_count);
+    uint32_t lqTex     = tenv_rd(cpu, game_layout.env.lq_tex);
+    uint32_t hqTex     = tenv_rd(cpu, game_layout.env.hq_tex);
     int lodDist        = (int)tenv_lod_dist(cpu);
-    int cullDist       = (int)rd(cpu, game_layout.env.cull_dist);
+    int cullDist       = (int)tenv_rd(cpu, game_layout.env.cull_dist);
     int camX = (int)rd(cpu, game_layout.cam.position);
     int camY = (int)rd(cpu, game_layout.cam.position + 4u);
     int camZ = (int)rd(cpu, game_layout.cam.position + 8u);
@@ -686,6 +691,7 @@ static void decode_tiledef(CPUState* cpu, uint32_t e, int abe, tmat* m, float u[
     uint32_t w0 = rd(cpu, e + 0), w1 = rd(cpu, e + 4);
     int u0 = (int)(w0 & 0xFF), v0 = (int)((w0 >> 8) & 0xFF), clut = (int)((w0 >> 16) & 0xFFFF);
     int u1 = (int)(w1 & 0xFF), v1 = (int)((w1 >> 8) & 0xFF), tpage = (int)((w1 >> 16) & 0xFFFF);
+    if (game_layout.terrain.tile_word1_br) v1 = (v1 - 0x1F) & 0xFF;   /* word1 is the BR corner */
     u[0]=(float)u0;               v[0]=(float)v0;                  /* TL */
     u[1]=(float)u1;               v[1]=(float)v1;                  /* TR */
     u[2]=(float)u0;               v[2]=(float)((v0 + 0x1F) & 0xFF);/* BL */
@@ -2333,8 +2339,12 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
         }
     }
 
-    uint32_t occCnt    = rd(cpu, game_layout.env.occ_group_count);
-    uint32_t occGroups = rd(cpu, game_layout.env.occ_groups);
+    /* The occlusion-group candidate list (Spyro 1: a table of 0xFF-terminated
+     * sector index lists, one per group, selected by the draw's argument). A
+     * game whose layout names no group count keeps its occlusion data in
+     * another shape, and the wide candidate set is then every sector. */
+    uint32_t occCnt    = game_layout.env.occ_group_count ? tenv_rd(cpu, game_layout.env.occ_group_count) : 0;
+    uint32_t occGroups = occCnt ? tenv_rd(cpu, game_layout.env.occ_groups) : 0;
     uint32_t list = (group >= 0 && (uint32_t)group < occCnt && occGroups)
                     ? rd(cpu, occGroups + (uint32_t)group * 4) : 0;
 
@@ -2464,9 +2474,9 @@ static void terrain_texrecords(CPUState* cpu) {
     const char* path = getenv("OPENPETE_TEXPACK_RECORDS");
     if (!path || !*path) { off = 1; return; }
     const char* dir = getenv("OPENPETE_TEXPACK_RECORDS_DIR");
-    uint32_t lqTable = rd(cpu, game_layout.env.lq_tex);
-    uint32_t hqTable = rd(cpu, game_layout.env.hq_tex);
-    uint32_t texCnt  = rd(cpu, game_layout.env.tex_count);
+    uint32_t lqTable = tenv_rd(cpu, game_layout.env.lq_tex);
+    uint32_t hqTable = tenv_rd(cpu, game_layout.env.hq_tex);
+    uint32_t texCnt  = tenv_rd(cpu, game_layout.env.tex_count);
     if (!lqTable || !hqTable || !texCnt) return;   /* not loaded yet — retry next frame */
     uint32_t s = lqTable ^ (hqTable * 2654435761u) ^ (texCnt << 24);
     if (s == sig) return;                          /* this level already dumped */
@@ -2526,7 +2536,7 @@ static void terrain_animdbg(CPUState* cpu) {
     static int probeN = -2;
     if (probeN == -2) { const char* e = getenv("OPENPETE_TEXPACK_ANIMPROBE"); probeN = (e && *e) ? atoi(e) : -1; }
     if (probeN >= 0) {
-        uint32_t lt = rd(cpu, game_layout.env.lq_tex), ht = rd(cpu, game_layout.env.hq_tex);
+        uint32_t lt = tenv_rd(cpu, game_layout.env.lq_tex), ht = tenv_rd(cpu, game_layout.env.hq_tex);
         if (lt && ht) {
             fprintf(stderr, "[animprobe f=%u] lq %08x %08x | %08x %08x | hq",
                     openpete_frame, rd(cpu, lt + (uint32_t)probeN*16u), rd(cpu, lt + (uint32_t)probeN*16u + 4),
@@ -2538,11 +2548,11 @@ static void terrain_animdbg(CPUState* cpu) {
         }
     }
     if (!on) return;
-    uint32_t lqTable   = rd(cpu, game_layout.env.lq_tex);
-    uint32_t hqTable   = rd(cpu, game_layout.env.hq_tex);
-    uint32_t texCnt    = rd(cpu, game_layout.env.tex_count);
-    uint32_t sectorPtr = rd(cpu, game_layout.env.sector_ptr);
-    uint32_t sectorCnt = rd(cpu, game_layout.env.sector_count);
+    uint32_t lqTable   = tenv_rd(cpu, game_layout.env.lq_tex);
+    uint32_t hqTable   = tenv_rd(cpu, game_layout.env.hq_tex);
+    uint32_t texCnt    = tenv_rd(cpu, game_layout.env.tex_count);
+    uint32_t sectorPtr = tenv_rd(cpu, game_layout.env.sector_ptr);
+    uint32_t sectorCnt = tenv_rd(cpu, game_layout.env.sector_count);
     if (texCnt > 128) texCnt = 128;
     if (sectorCnt > 512) sectorCnt = 512;
     static uint32_t lq[128], hq[128], s18[512], svh[512], sch[512];
@@ -4808,10 +4818,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_lpg_acc_n = 0;
     /* .s LP far cull threshold, slot units (r_environment.s:637-642: the walk
      * precomputes s2 = m_CullingDistance >> 7 once, before the sector loop). */
-    int cullRefS2 = (int32_t)rd(cpu, game_layout.env.cull_dist) >> 7;
-    uint32_t lqTable = rd(cpu, game_layout.env.lq_tex);  /* HP-walk per-quad Tiledef (§8) */
-    uint32_t hqTable = rd(cpu, game_layout.env.hq_tex);  /* near/detail Tiledef (bpp8 tiles) */
-    tsc_tile_gens(cpu, lqTable, rd(cpu, game_layout.env.tex_count));  /* env-anim liveness */
+    int cullRefS2 = (int32_t)tenv_rd(cpu, game_layout.env.cull_dist) >> 7;
+    uint32_t lqTable = tenv_rd(cpu, game_layout.env.lq_tex);  /* HP-walk per-quad Tiledef (§8) */
+    uint32_t hqTable = tenv_rd(cpu, game_layout.env.hq_tex);  /* near/detail Tiledef (bpp8 tiles) */
+    tsc_tile_gens(cpu, lqTable, tenv_rd(cpu, game_layout.env.tex_count));  /* env-anim liveness */
     tsc_scroll_refresh(cpu);                                           /* env-anim UV scroll (sub-tick) */
     /* OPENPETE_TERRAIN_TEXTBL: 0=auto(near→HQ,far→LQ) 1=force LQ 2=force HQ (debug) */
     int texTblMode = 0; { const char* e=getenv("OPENPETE_TERRAIN_TEXTBL"); if(e&&*e) texTblMode=atoi(e); }
@@ -4824,8 +4834,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     else s_defer_n = 0;
 
     static lvert sv[256];
-    uint32_t sectorPtr = rd(cpu, game_layout.env.sector_ptr);
-    uint32_t sectorCnt = rd(cpu, game_layout.env.sector_count);
+    uint32_t sectorPtr = tenv_rd(cpu, game_layout.env.sector_ptr);
+    uint32_t sectorCnt = tenv_rd(cpu, game_layout.env.sector_count);
     tsc_vert_anim_refresh(cpu, sectorPtr, sectorCnt);  /* geometry env-anim liveness */
     /* Visible-sector index set: canonical 4:3 verdict (D_800771C8) at native
      * aspect; occlusion-group candidate set in widescreen (terrain_vislist). */
@@ -5508,7 +5518,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     if (s_fardbg_active) {
         fprintf(stderr, "[fardbg-hdr] frame=%u prims=%d sampled=%d fogRefBase=%d cullS2=%d cullRaw=0x%X\n",
                 openpete_frame, s_prim_total, s_gte_n, fogRefBase, cullRefS2,
-                (unsigned)rd(cpu, game_layout.env.cull_dist));
+                (unsigned)tenv_rd(cpu, game_layout.env.cull_dist));
         for (int c = 0; c < 256; c++)
             if (s_code_hist[c])
                 fprintf(stderr, "[fardbg-hist] code=%02X n=%d\n", c, s_code_hist[c]);
@@ -7150,8 +7160,8 @@ static void td_scan_verts(CPUState* cpu, uint32_t verts, int nv, int flat,
  * since this camera sits just above the geometry rather than far enough back
  * to frame all of it. */
 int terrain_native_sweep_pose(CPUState* cpu, int corner, int32_t v[5]) {
-    uint32_t sectorPtr = rd(cpu, game_layout.env.sector_ptr);
-    uint32_t sectorCnt = rd(cpu, game_layout.env.sector_count);
+    uint32_t sectorPtr = tenv_rd(cpu, game_layout.env.sector_ptr);
+    uint32_t sectorCnt = tenv_rd(cpu, game_layout.env.sector_count);
     if (!sectorPtr || !sectorCnt || sectorCnt > 1024) return 0;
 
     double mm[5] = { 1e18, -1e18, 1e18, -1e18, -1e18 };  /* minx,maxx,miny,maxy,maxz */
@@ -7197,8 +7207,8 @@ int terrain_native_sweep_pose(CPUState* cpu, int corner, int32_t v[5]) {
 }
 
 int terrain_native_topdown_pose(CPUState* cpu, int32_t v[5]) {
-    uint32_t sectorPtr = rd(cpu, game_layout.env.sector_ptr);
-    uint32_t sectorCnt = rd(cpu, game_layout.env.sector_count);
+    uint32_t sectorPtr = tenv_rd(cpu, game_layout.env.sector_ptr);
+    uint32_t sectorCnt = tenv_rd(cpu, game_layout.env.sector_count);
     if (!sectorPtr || !sectorCnt || sectorCnt > 1024) return 0;
     /* The pose is written into g_Camera by freecam, so it is derived at the
      * canonical H: a display FOV must not reach that write. */

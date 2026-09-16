@@ -245,9 +245,8 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # PIL are absent. Also runs the credits-roll interpolation leg
     # (scripts/check_credits_interp.sh) so it cannot be skipped separately.
     # The gate takes --game SLUG and derives binary, disc, bk2 dir, manifests and
-    # golden from it; only spyro-1 has a corpus and a golden, so only spyro-1 is
-    # registered here. A second game gets its own test once its golden exists —
-    # until then its run refuses as VACUOUS (zero captured rows).
+    # golden from it; a game is registered once it has a corpus and a golden
+    # (a run without them refuses as VACUOUS at zero captured rows).
     # See notes/plans/openpete-presentation-golden.md.
     add_test(NAME presentation_golden
              COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_presentation_golden.sh
@@ -257,6 +256,16 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         # The whole corpus replays ~53 bk2 movies + the freecam poses (~35 min);
         # generous headroom so a loaded host doesn't spuriously time out.
         TIMEOUT 3600
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    # Spyro 3: one bk2 row (games/spyro-3/presentation-corpus.manifest), the
+    # native terrain feeder's rows; the same gate, scoped by --game.
+    add_test(NAME presentation_golden_spyro3
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_presentation_golden.sh
+                     --game spyro-3 --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(presentation_golden_spyro3 PROPERTIES
+        LABELS "slow;presentation"
+        TIMEOUT 1800
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 

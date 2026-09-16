@@ -5,6 +5,10 @@
 #     [FEATURE_LIST <file>]           # default games/common/feature_list_none.c
 #     [ORCHESTRATOR <file>]           # sub-tick re-extract orchestrator; default
 #                                     # games/common/renderer/orchestrator_none.c
+#     [INTERP_REGIONS <file>]         # interp ring region table; default
+#                                     # games/common/renderer/interp_regions_none.c
+#     [TERRAIN_GAME <file>]           # the terrain feeder's per-game data; default
+#                                     # games/common/renderer/terrain_game_none.c
 #     [ICON_SOURCE <file>]            # default games/common/game_icon_none.c
 #     [MODULE_LINKAGE static|shared]  # default static
 #     [SYMBOLS_MANIFEST <file>]       # curated alias table -> gen/<tag>_symbols.gen.h
@@ -45,7 +49,7 @@
 function(openpete_add_game GAME_ID)
     cmake_parse_arguments(G
         ""
-        "MAIN;FEATURE_LIST;ORCHESTRATOR;TERRAIN_GAME;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST"
+        "MAIN;FEATURE_LIST;ORCHESTRATOR;INTERP_REGIONS;TERRAIN_GAME;ICON_SOURCE;MODULE_LINKAGE;SYMBOLS_MANIFEST"
         "SOURCES;MODULE_SOURCES"
         ${ARGN})
     if(G_UNPARSED_ARGUMENTS)
@@ -74,6 +78,9 @@ function(openpete_add_game GAME_ID)
     endif()
     if(NOT G_ORCHESTRATOR)
         set(G_ORCHESTRATOR ${_common}/renderer/orchestrator_none.c)
+    endif()
+    if(NOT G_INTERP_REGIONS)
+        set(G_INTERP_REGIONS ${_common}/renderer/interp_regions_none.c)
     endif()
     if(NOT G_TERRAIN_GAME)
         set(G_TERRAIN_GAME ${_common}/renderer/terrain_game_none.c)
@@ -227,6 +234,7 @@ function(openpete_add_game GAME_ID)
         ${_regions_sources}
         ${G_FEATURE_LIST}
         ${G_ORCHESTRATOR}
+        ${G_INTERP_REGIONS}
         ${G_TERRAIN_GAME}
         ${G_ICON_SOURCE}
         ${G_SOURCES}

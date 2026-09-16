@@ -82,6 +82,7 @@ const game_layout_t game_layout = {
         .face_layout  = TERRAIN_FACES_SPYRO3,
         .tex_stride   = 48u,
         .abe_in_tpage = 1,
+        .tile_word1_br = 1,                         /* GT4 emit: uv1 = word1 - 0x1F00, uv3 = word1 */
         .lod_dist_default = 0x8000u,                /* Spyro 1's authored value; the Spyro 3 pre-pass
                                                      * constants are not mirrored yet */
     },

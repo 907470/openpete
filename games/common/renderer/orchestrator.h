@@ -31,6 +31,13 @@ void spyro_native_canon_epoch_commit(void);
  * build by one VSync. */
 void cyclorama_native_env_clear_commit(void);
 
+/* Registration, called by main() before the run loop: the game's interp
+ * region table into the interp ring (the game's interp_regions TU), and the
+ * orchestrator's re-extract entry with the native renderer. Explicit calls
+ * rather than weak symbols: the PE/COFF linker mis-resolves weak overrides. */
+void game_interp_register(void);
+void game_reextract_init(void);
+
 #ifdef __cplusplus
 }
 #endif
