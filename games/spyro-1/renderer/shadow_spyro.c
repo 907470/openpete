@@ -25,6 +25,7 @@
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "renderer/render_paths.h"  /* --render-paths isolation */
+#include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
 
 #include <math.h>
 #include <stdint.h>
@@ -312,19 +313,19 @@ static void shadow_spyro_compare(CPUState* cpu) {
             openpete_frame, s_sptri_n, g3, n, nv?sum/nv:0, worst, over2, n, cbad);
 }
 
+static void shadow_spyro_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; func_80059A48(cpu); }
+
+static hook_bracket_state s_shadow_spyro_hb;
+static const hook_bracket_desc k_shadow_spyro_bracket = {
+    .path = RP_SHADOW, .prof_tag = "shadow.srend",
+    .run = shadow_spyro_run_draw, .verify_enabled = shadow_verify_enabled,
+    .st = &s_shadow_spyro_hb,
+};
+
 static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
-    (void)addr;
-    int verify = shadow_verify_enabled();
-    int feed   = openpete_native_scene_enabled();
-    if (!verify && !feed && !render_paths_active()) return 0;
-    static int s_in = 0; if (s_in) return 0; s_in = 1;
-
-    uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
-    { OP_PROF_ACCUM_SCOPE("shadow.srend");
-      func_80059A48(cpu); }
-    uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
-
-    render_path_record(RP_SHADOW, startp, endp);
+    uint32_t startp, endp; int feed, verify;
+    if (!hook_bracket_run(cpu, addr, &k_shadow_spyro_bracket, &startp, &endp, &feed, &verify))
+        return 0;
     int slot = 0;
     if (endp > startp) slot = player_records_shadow_append(cpu);   /* the shadow record, bound to its model record */
 
@@ -339,17 +340,14 @@ static int on_80059A48_shadow_spyro(CPUState* cpu, uint32_t addr) {
         if (!s_dumped) { shadow_spyro_dump(cpu); s_dumped = 1; }
         if (s_reports < 60) { shadow_spyro_compare(cpu); s_reports++; }
     }
-    s_in = 0;
-    return 1;
+    return hook_bracket_end(&k_shadow_spyro_bracket);
 }
 
 /* The Spyro drop-shadow of one shadow record: the record loop in
  * reextract.c calls this once per record with that record's
  * g_Spyro fields and anchor staged. Same gates as the moby shadows. */
 void shadow_spyro_reextract(CPUState* cpu, int slot) {
-    if (!openpete_native_scene_enabled()) return;
-    if (!render_path_enabled(RP_SHADOW)) return;
-    if (!render_path_canon_drawn(RP_SHADOW)) return;
+    if (!hook_reextract_ready(RP_SHADOW)) return;
     shadow_spyro_feed_native(cpu, slot);
 }
 

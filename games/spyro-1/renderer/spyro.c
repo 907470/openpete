@@ -109,16 +109,6 @@ static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     }
 }
 
-/* ---- one-shot dump ------------------------------------------------------ */
-static void dump_words(CPUState* cpu, const char* label, uint32_t base, int nwords) {
-    fprintf(stderr, "  %s @%08X:\n   ", label, base);
-    for (int i = 0; i < nwords; i++) {
-        fprintf(stderr, "%08X ", cpu->read_word(base + (uint32_t)i*4));
-        if ((i & 7) == 7 && i != nwords - 1) fprintf(stderr, "\n   ");
-    }
-    fprintf(stderr, "\n");
-}
-
 static const char* k_part_name[3] = { "body", "head", "tail" };
 
 static void spyro_dump(CPUState* cpu, uint32_t startp, uint32_t endp) {
@@ -127,7 +117,7 @@ static void spyro_dump(CPUState* cpu, uint32_t startp, uint32_t endp) {
             (int32_t)cpu->gte_ctrl[24] >> 16, (int32_t)cpu->gte_ctrl[25] >> 16,
             cpu->gte_ctrl[26] & 0xFFFF);
 
-    dump_words(cpu, "g_Spyro[0x00..0x50]", PL.base, 0x14);
+    ngte_dump_words(cpu, "g_Spyro[0x00..0x50]", PL.base, 0x14);
     fprintf(stderr,
         "  anim:  body=%02X head=%02X tail=%02X  sortDepth=%02X\n"
         "  colorFilter@0x28=%08X  emitMode@0x30=%08X\n",
@@ -140,7 +130,7 @@ static void spyro_dump(CPUState* cpu, uint32_t startp, uint32_t endp) {
 
     uint32_t model = cpu->read_word(G_MODELS) | 0x80000000u;
     fprintf(stderr, "  SPYRO_MODEL=%08X  numAnims=%u\n", model, cpu->read_word(model) & 0xFFFF);
-    dump_words(cpu, "model[0x00..0x40]", model, 0x10);
+    ngte_dump_words(cpu, "model[0x00..0x40]", model, 0x10);
 
     uint32_t block = player_part_block_base(cpu);
     for (int s = 0; s < PL.part_count; s++) {
@@ -149,7 +139,7 @@ static void spyro_dump(CPUState* cpu, uint32_t startp, uint32_t endp) {
         fprintf(stderr, "  --- part %d (%s): animIdx=%u animHdr=%08X\n",
                 s, k_part_name[s], animIdx, animHdr);
         if (animHdr < 0x80000000u || animHdr >= 0x80800000u) { fprintf(stderr, "    (bad hdr ptr)\n"); continue; }
-        dump_words(cpu, "animHdr[0x00..0x28]", animHdr, 0x0A);
+        ngte_dump_words(cpu, "animHdr[0x00..0x28]", animHdr, 0x0A);
         fprintf(stderr, "    m_AnimationVertices=%08X faces=%08X colors=%08X\n",
                 cpu->read_word(animHdr + 0x10), cpu->read_word(animHdr + 0x14),
                 cpu->read_word(animHdr + 0x18));

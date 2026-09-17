@@ -35,6 +35,7 @@
 #include "openpete_subtick_view.h"  /* openpete_psx_to_host_ptr (present-time DRAWENV read) */
 #include "openpete_native_render.h"  /* native scene push + enabled gate */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
+#include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
 #include "renderer/cyclorama.h"  /* this feeder's exports */
 #include "renderer/orchestrator.h"  /* cyclorama_native_env_clear_commit */
 #include "openpete_recomp_module.h"  /* the game's own sky draw, run through the module dispatch */
@@ -575,16 +576,10 @@ static int      s_cyc_prev_valid = 0, s_cyc_curr_valid = 0;
 static int      s_cyc_prev_cam = 0,   s_cyc_curr_cam = 0;   /* source = g_Camera fields */
 static unsigned s_cyc_curr_frame = 0xFFFFFFFFu;             /* VBL of the curr capture */
 
-static int on_sky_draw_cyc(CPUState* cpu, uint32_t addr) {
-    int verify = cyc_verify_enabled();
-    int feed   = openpete_native_scene_enabled();   /* --renderer vk live */
-    /* --render-paths also needs the bracket so the OT filter knows this path's
-     * polybuf range, even when not feeding/verifying. */
-    if (!verify && !feed && !render_paths_active()) return 0;  /* zero overhead */
-    static int s_in = 0;
-    if (s_in) return 0;
-    s_in = 1;
-
+/* Snapshot the draw's matrix arguments and roll the prev/curr matrix pair,
+ * both before the draw clobbers the argument registers. */
+static void cyc_pre(CPUState* cpu, int feed, int verify) {
+    (void)feed; (void)verify;
     uint32_t a0 = cpu->a0, a1 = cpu->a1, a2 = cpu->a2;
     /* Normalize before the capture: where the sky draw takes no matrix
      * arguments its registers hold whatever the caller left in them, and the
@@ -610,12 +605,22 @@ static int on_sky_draw_cyc(CPUState* cpu, uint32_t addr) {
     s_cyc_curr_cam   = !game_layout.cyc.hook_args ||
                        (a1 == game_layout.cam.view_matrix && a2 == game_layout.cam.proj_matrix);
     s_cyc_curr_valid = 1;
-    uint32_t start = cpu->read_word(game_layout.polybuf.cursor);
-    { OP_PROF_ACCUM_SCOPE("cyclorama.srend");
-      openpete_recomp_module_get()->dispatch(cpu, addr); }   /* run the real renderer */
-    uint32_t end = cpu->read_word(game_layout.polybuf.cursor);
+}
 
-    render_path_record(RP_CYCLORAMA, start, end);  /* polybuf range for the OT filter */
+static hook_bracket_state s_cyc_hb;
+static const hook_bracket_desc k_cyc_bracket = {
+    .path = RP_CYCLORAMA, .prof_tag = "cyclorama.srend",
+    .verify_enabled = cyc_verify_enabled, .pre = cyc_pre,
+    .st = &s_cyc_hb,
+};
+
+static int on_sky_draw_cyc(CPUState* cpu, uint32_t addr) {
+    uint32_t start, end; int feed, verify;
+    if (!hook_bracket_run(cpu, addr, &k_cyc_bracket, &start, &end, &feed, &verify))
+        return 0;
+    /* cyc_pre stashed the argument triple; the registers are clobbered now. */
+    const uint32_t a0 = s_cyc_a0, a1 = s_cyc_a1, a2 = s_cyc_a2;
+
     cyc_capture_visibility(cpu);
 
     cyc_extract(cpu, a0, a1, a2, 0, 0);     /* native scene from gamestate */
@@ -634,8 +639,7 @@ static int on_sky_draw_cyc(CPUState* cpu, uint32_t addr) {
             s_reports++;
         }
     }
-    s_in = 0;
-    return 1;                               /* took over (body already ran) */
+    return hook_bracket_end(&k_cyc_bracket);  /* took over (body already ran) */
 }
 
 /* Sub-tick re-extract (high-FPS spine): rebuild the sky dome + background —

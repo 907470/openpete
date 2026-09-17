@@ -43,6 +43,7 @@
 #include "renderer/moby_rank.h"              /* same-moby painter rank source (OT-chain read) */
 #include "openpete_interp_objs.h"   /* per-object prev/curr snapshots (rotation interp) */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
+#include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
 #include "openpete_ui_moby.h"  /* HUD/UI moby classifier (overlay-on-top tagging) */
 #include "openpete_mods.h"     /* per-instance material slot resolve (S8b) */
 #include "openpete_workpool.h" /* data-parallel face walk (--extract-threads) */
@@ -388,16 +389,6 @@ static void report_code_hist(void) {
             openpete_frame, hb, up ? ub : " none");
 }
 
-/* ---- one-shot hex dump (falsify-before-ship) ------------------------ */
-static void dump_words(CPUState* cpu, const char* label, uint32_t base, int nwords) {
-    fprintf(stderr, "  %s @%08X:\n   ", label, base);
-    for (int i = 0; i < nwords; i++) {
-        fprintf(stderr, "%08X ", cpu->read_word(base + (uint32_t)i*4));
-        if ((i & 7) == 7) fprintf(stderr, "\n   ");
-    }
-    fprintf(stderr, "\n");
-}
-
 static void hex_dump(CPUState* cpu, uint32_t start, uint32_t end) {
     fprintf(stderr, "[moby-dump f=%u] F798 prims [%08X,%08X) %u bytes  OFX=%d OFY=%d H=%u\n",
             openpete_frame, start, end, end - start,
@@ -423,10 +414,10 @@ static void hex_dump(CPUState* cpu, uint32_t start, uint32_t end) {
         int M[3][3]; memcpy(M, R.M, sizeof M);
         fprintf(stderr, "  R=[%d %d %d | %d %d %d | %d %d %d]\n",
                 M[0][0],M[0][1],M[0][2], M[1][0],M[1][1],M[1][2], M[2][0],M[2][1],M[2][2]);
-        dump_words(cpu, "record", rec, 14);
-        if (frame_p >= 0x80000000u && frame_p < 0x80800000u) dump_words(cpu, "->frame", frame_p, 12);
-        if (faces_p >= 0x80000000u && faces_p < 0x80800000u) dump_words(cpu, "->faces", faces_p, 12);
-        if (color_p >= 0x80000000u && color_p < 0x80800000u) dump_words(cpu, "->color", color_p, 8);
+        ngte_dump_words(cpu, "record", rec, 14);
+        if (frame_p >= 0x80000000u && frame_p < 0x80800000u) ngte_dump_words(cpu, "->frame", frame_p, 12);
+        if (faces_p >= 0x80000000u && faces_p < 0x80800000u) ngte_dump_words(cpu, "->faces", faces_p, 12);
+        if (color_p >= 0x80000000u && color_p < 0x80800000u) ngte_dump_words(cpu, "->color", color_p, 8);
     }
 
     /* Prims: first 10 raw, with code/len. */
@@ -1785,7 +1776,7 @@ double moby_tri_nclip(float ax, float ay, float bx, float by, float cx, float cy
 }
 
 int moby_abr_blend(int abr) {
-    return (abr == 0) ? 1 : (abr == 1) ? 2 : (abr == 2) ? 3 : 4;
+    return ngte_abr_blend(abr, NGTE_ABR_EXACT);
 }
 
 void moby_tiledef_decode(uint32_t td0, uint32_t td1, uint32_t td2, moby_wface_t* F) {
@@ -1795,20 +1786,17 @@ void moby_tiledef_decode(uint32_t td0, uint32_t td1, uint32_t td2, moby_wface_t*
     F->u[3] = (uint8_t)((td2 >> 16) & 0xFFu); F->v[3] = (uint8_t)((td2 >> 24) & 0xFFu);
     unsigned cl = (td0 >> 16) & 0xFFFFu;
     unsigned tp = (td1 >> 16) & 0xFFFFu;
-    int mode = (int)((tp >> 7) & 3u);
-    F->abr = (uint8_t)((tp >> 5) & 3u);
-    if (mode == 3) {
-        /* The hardware reserves this colour depth, so the emitter uses it to
-         * name a replaced texture: the id rides in the CLUT half. */
-        F->bpp = 32;
-        F->tpx = (int16_t)cl; F->tpy = 0; F->clx = 0; F->cly = 0;
-    } else {
-        F->tpx = (int16_t)((tp & 0xFu) * 64);
-        F->tpy = (int16_t)(((tp >> 4) & 1u) * 256);
-        F->bpp = (uint8_t)((mode == 0) ? 4 : (mode == 1) ? 8 : 16);
-        F->clx = (int16_t)((cl & 0x3Fu) * 16);
-        F->cly = (int16_t)((cl >> 6) & 0x1FFu);
-    }
+    ngte_tpage t;
+    ngte_decode_tpage(tp, cl, NGTE_TP_REPLACED_ID, &t);
+    /* NGTE_TP_REPLACED_ID: the hardware reserves colour depth 3, so the emitter
+     * spends it on naming a replaced texture whose id rides in the CLUT half
+     * and reaches the walk as tpx with bpp 32. */
+    F->abr = (uint8_t)t.abr;
+    F->tpx = (int16_t)t.tpx;
+    F->tpy = (int16_t)t.tpy;
+    F->bpp = (uint8_t)t.bpp;
+    F->clx = (int16_t)t.clx;
+    F->cly = (int16_t)t.cly;
 }
 
 int moby_face_emit(int fresh, int bit0, int bit0_unconditional,
@@ -3400,11 +3388,12 @@ static void recolor_walk_from_prims(void) {
          * The shiny metal is an env-mapped texture; the per-face reflection picks the
          * tpage/UVs, which the static-Tiledef walk can't reproduce. */
         if (P->tex) {
-            int tp = P->tpage, cl = P->clut;
+            ngte_tpage t;
+            ngte_decode_tpage((unsigned)P->tpage, (unsigned)P->clut, 0u, &t);
             w->textured = 1;
-            w->tpage_x = (tp & 0xF) * 64; w->tpage_y = ((tp >> 4) & 1) * 256;
-            int mode = (tp >> 7) & 3; w->bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
-            w->clut_x = (cl & 0x3F) * 16; w->clut_y = (cl >> 6) & 0x1FF;
+            w->tpage_x = t.tpx; w->tpage_y = t.tpy;
+            w->bpp = t.bpp;
+            w->clut_x = t.clx; w->clut_y = t.cly;
         }
     }
 }
@@ -3434,9 +3423,11 @@ static void specular_env_load(CPUState* cpu) {
      * (empirically clut=0x1C20 tpage=0x80AC; == the captured env prims). */
     unsigned cl = cpu->read_word(moby_game.metal_tiledef) >> 16;
     unsigned tp = cpu->read_word(moby_game.metal_tiledef + 4u) >> 16;
-    s_env_tpx = (int)(tp & 0xFu) * 64; s_env_tpy = (int)((tp >> 4) & 1u) * 256;
-    int mode = (int)((tp >> 7) & 3u); s_env_bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
-    s_env_clx = (int)(cl & 0x3Fu) * 16; s_env_cly = (int)((cl >> 6) & 0x1FFu);
+    ngte_tpage t;
+    ngte_decode_tpage(tp, cl, 0u, &t);
+    s_env_tpx = t.tpx; s_env_tpy = t.tpy;
+    s_env_bpp = t.bpp;
+    s_env_clx = t.clx; s_env_cly = t.cly;
 }
 /* refl = metalMatrix . vec  (vec = the rotated vertex offset ex/ey/ez). */
 static void specular_env_refl(float ex, float ey, float ez, float r[3]) {
@@ -5300,18 +5291,23 @@ static void moby_native_set_actor_front(CPUState* cpu) {
     openpete_native_scene_set_actor_front(s_en && moby_cutscene_owns_draw(cpu));
 }
 
-static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
+/* The shaded pass's own entry, not the hooked address. */
+static void moby_run_draw_shaded(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    int verify = moby_verify_enabled();
-    int feed   = openpete_native_scene_enabled();
-    if (!verify && !feed && !render_paths_active()) return 0;
-    static int s_in = 0; if (s_in) return 0; s_in = 1;
-    uint32_t startp = cpu->read_word(game_layout.polybuf.cursor);
-    { OP_PROF_ACCUM_SCOPE("moby.srend");
-      moby_run_draw(cpu, game_layout.moby.hook_draw_shaded); }   /* run the real draw (writes the drawn verdict) */
-    uint32_t endp = cpu->read_word(game_layout.polybuf.cursor);
+    moby_run_draw(cpu, game_layout.moby.hook_draw_shaded);
+}
 
-    render_path_record(RP_MOBY, startp, endp);  /* polybuf range for the OT filter */
+static hook_bracket_state s_shaded_hb;
+static const hook_bracket_desc k_shaded_bracket = {
+    .path = RP_MOBY, .prof_tag = "moby.srend",
+    .run = moby_run_draw_shaded, .verify_enabled = moby_verify_enabled,
+    .st = &s_shaded_hb,
+};
+
+static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
+    uint32_t startp, endp; int feed, verify;
+    if (!hook_bracket_run(cpu, addr, &k_shaded_bracket, &startp, &endp, &feed, &verify))
+        return 0;
     moby_view_shd_build(cpu);
 
     if (feed) {                                 /* feed shaded mobys to the scene — fully native */
@@ -5350,8 +5346,7 @@ static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
             s_sreports++;
         }
     }
-    s_in = 0;
-    return 1;
+    return hook_bracket_end(&k_shaded_bracket);
 }
 
 /* The second model kind's draw pass. The provider owns the guest dispatch: its
@@ -5360,22 +5355,33 @@ static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
  * supplies the pass view, the triangle buffer and the scene push, so the kind
  * lands beside the animated one. Returning 0 leaves the game's draw to the
  * ordinary dispatch. */
-static int on_draw_simple(CPUState* cpu, uint32_t addr) {
+/* The provider owns the guest dispatch; its triangle count decides the
+ * mark-drawn below. */
+static int s_simple_ntri;
+static void moby_run_draw_simple(CPUState* cpu, uint32_t addr) {
     (void)addr;
-    if (!moby_game.simple_pass) return 0;
-    int verify = moby_verify_enabled();
-    int feed   = openpete_native_scene_enabled();
-    if (!verify && !feed && !render_paths_active()) return 0;
-    static int s_in = 0; if (s_in) return 0; s_in = 1;
+    s_simple_ntri = moby_game.simple_pass(cpu);
+}
+static void moby_simple_pre(CPUState* cpu, int feed, int verify) {
+    (void)feed; (void)verify;
     s_cur_mat = "SIM";
     moby_view_build(cpu);
     s_gout.n = 0;
-    uint32_t start = cpu->read_word(game_layout.polybuf.cursor);
-    int ntri;
-    { OP_PROF_ACCUM_SCOPE("moby.srend");
-      ntri = moby_game.simple_pass(cpu); }
-    uint32_t end = cpu->read_word(game_layout.polybuf.cursor);
-    render_path_record(RP_MOBY, start, end);
+}
+
+static hook_bracket_state s_simple_hb;
+static const hook_bracket_desc k_simple_bracket = {
+    .path = RP_MOBY, .prof_tag = "moby.srend",
+    .run = moby_run_draw_simple, .verify_enabled = moby_verify_enabled,
+    .pre = moby_simple_pre, .st = &s_simple_hb,
+};
+
+static int on_draw_simple(CPUState* cpu, uint32_t addr) {
+    if (!moby_game.simple_pass) return 0;
+    uint32_t start, end; int feed, verify;
+    if (!hook_bracket_run(cpu, addr, &k_simple_bracket, &start, &end, &feed, &verify))
+        return 0;
+    const int ntri = s_simple_ntri;
     if (feed) {
         /* A tick whose second-kind pass emitted nothing to the polybuf leaves
          * an empty interval; the path must still read canon-drawn or the
@@ -5393,8 +5399,7 @@ static int on_draw_simple(CPUState* cpu, uint32_t addr) {
             s_reports++;
         }
     }
-    s_in = 0;
-    return 1;
+    return hook_bracket_end(&k_simple_bracket);
 }
 
 /* Compute the PREV rendered keyframe pose for a moby — the second input to the

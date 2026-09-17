@@ -30,6 +30,7 @@
 #include "renderer/interp_regions_gen.h"
 #include "renderer/native_gte.h"
 #include "renderer/render_paths.h"
+#include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
 #include "renderer/moby.h"           /* the shared NCLIP, emit tree and tiledef decode */
 #include "renderer/player.h"
 #include "renderer/player_game.h"
@@ -965,24 +966,25 @@ static void player_verify_report(CPUState* cpu, uint32_t startp, uint32_t endp) 
 
 /* ---- the hook ----------------------------------------------------------- */
 
+static void player_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; player_game.run_draw(cpu); }
+static int  player_verify_enabled(void) {
+    return player_game.verify_enabled ? player_game.verify_enabled() : 0;
+}
+
+static hook_bracket_state s_player_hb;
+static const hook_bracket_desc k_player_bracket = {
+    .path = RP_SPYRO, .prof_tag = "player.draw",
+    .run = player_run_draw, .verify_enabled = player_verify_enabled,
+    .extra_gate = player_verify_on,       /* the second verify mode, own report path */
+    .st = &s_player_hb,
+};
+
 static int on_player_draw(CPUState* cpu, uint32_t addr) {
-    (void)addr;
     if (!player_game.run_draw) return 0;
-    int verify = player_game.verify_enabled ? player_game.verify_enabled() : 0;
-    int feed   = openpete_native_scene_enabled();
-    /* --render-paths needs the bracket so the ordering-table filter knows this
-     * path's polybuf range even when not feeding or verifying. A stock run
-     * keeps the inert one-branch fall-through. */
-    if (!verify && !feed && !player_verify_on() && !render_paths_active())
+    uint32_t startp, endp; int feed, verify;
+    if (!hook_bracket_run(cpu, addr, &k_player_bracket, &startp, &endp, &feed, &verify))
         return 0;
-    static int s_in = 0; if (s_in) return 0; s_in = 1;
 
-    uint32_t startp = cpu->read_word(game_layout.polybuf.cursor);
-    { OP_PROF_ACCUM_SCOPE("player.draw");
-      player_game.run_draw(cpu); }
-    uint32_t endp = cpu->read_word(game_layout.polybuf.cursor);
-
-    render_path_record(RP_SPYRO, startp, endp);
     /* One record per call: the state bytes and scratch rows this call rendered
      * from. Its index is the tag slot of the triangles the walk emits. */
     int slot = 0;
@@ -1026,8 +1028,7 @@ static int on_player_draw(CPUState* cpu, uint32_t addr) {
         player_verify_report(cpu, startp, endp);
     }
 
-    s_in = 0;
-    return 1;
+    return hook_bracket_end(&k_player_bracket);
 }
 
 /* ---- sub-tick re-extract ------------------------------------------------ */

@@ -24,6 +24,7 @@
 #include "openpete_native_render.h"
 #include "openpete_log.h"  /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
+#include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
 #include "renderer/player.h" /* per-call records of the player hooks */
 #include "renderer/reextract.h"  /* sub-tick re-extract entry */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
@@ -336,10 +337,7 @@ static fcap s_fcap[MAX_FCAP]; static int s_fcap_n;
  * The GTE NCLIPs the *int16* SXY, so round to int before the sign test — else
  * near-degenerate caps cull differently from the .s (off-by-one cap count). */
 static double cap_nclip(const fpt* a, const fpt* b, const fpt* c) {
-    double ax = lrintf(a->sx), ay = lrintf(a->sy);
-    double bx = lrintf(b->sx), by = lrintf(b->sy);
-    double cx = lrintf(c->sx), cy = lrintf(c->sy);
-    return ax*(by - cy) + bx*(cy - ay) + cx*(ay - by);
+    return ngte_nclip(a->sx, a->sy, b->sx, b->sy, c->sx, c->sy, NGTE_NCLIP_SXY_GRID);
 }
 static void emit_cap(const fpt* a, const fpt* b, const fpt* c,
                      uint32_t ca, uint32_t cb, uint32_t cc) {
@@ -625,21 +623,19 @@ static unsigned flame_verify_frame(void) {
     return f;
 }
 
+static void flame_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; func_80058D64(cpu); }
+
+static hook_bracket_state s_flame_hb;
+static const hook_bracket_desc k_flame_bracket = {
+    .path = RP_FLAME, .prof_tag = "flame.srend",
+    .run = flame_run_draw, .verify_enabled = flame_verify_enabled,
+    .st = &s_flame_hb,
+};
+
 static int on_80058D64_flame_native(CPUState* cpu, uint32_t addr) {
-    (void)addr;
-    int verify = flame_verify_enabled();
-    int feed   = openpete_native_scene_enabled();
-    /* --render-paths also needs the bracket so the OT filter knows this path's
-     * polybuf range, even when not feeding/verifying. */
-    if (!verify && !feed && !render_paths_active()) return 0;  /* inert: normal dispatch runs it */
-    static int s_in = 0; if (s_in) return 0; s_in = 1;
-
-    uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
-    { OP_PROF_ACCUM_SCOPE("flame.srend");
-      func_80058D64(cpu); }                      /* run the real renderer */
-    uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
-
-    render_path_record(RP_FLAME, startp, endp);   /* polybuf range for the OT filter */
+    uint32_t startp, endp; int feed, verify;
+    if (!hook_bracket_run(cpu, addr, &k_flame_bracket, &startp, &endp, &feed, &verify))
+        return 0;
     int slot = 0;
     if (endp > startp) slot = player_records_flame_append(cpu);   /* the flame record, bound to its model record */
 
@@ -655,8 +651,7 @@ static int on_80058D64_flame_native(CPUState* cpu, uint32_t addr) {
         if (s_reports < 200) { flame_report(cpu); flame_strip_compare(cpu); s_reports++; }
     }
 
-    s_in = 0;
-    return 1;
+    return hook_bracket_end(&k_flame_bracket);
 }
 
 /* Sub-tick re-extract (high-FPS spine): rebuild one flame record's ribbon

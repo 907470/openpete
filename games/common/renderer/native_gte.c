@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <math.h>
 
 ngte_census_t ngte_census;
 int ngte_census_on;
@@ -220,4 +221,56 @@ void ngte_compose_euler(const int start[3][3], const ngte_euler_sc* e, int out[3
     ngte_mat_mul3(start, Ry, t1);
     ngte_mat_mul3(t1, Rx, t2);
     ngte_mat_mul3(t2, Rz, out);
+}
+
+/* ---- texture page / CLUT bitfields -------------------------------------- */
+
+void ngte_decode_tpage(unsigned tp, unsigned clut, unsigned flags, ngte_tpage* out) {
+    out->mode = (int)((tp >> 7) & 3u);
+    out->abr  = (int)((tp >> 5) & 3u);
+    if ((flags & NGTE_TP_REPLACED_ID) && out->mode == 3) {
+        out->bpp = 32;
+        out->replaced_id = (int)(int16_t)(uint16_t)clut;
+        out->tpx = out->replaced_id;
+        out->tpy = 0;
+        out->clx = 0;
+        out->cly = 0;
+        return;
+    }
+    out->replaced_id = -1;
+    out->tpx = (int)(tp & 0xFu) * 64;
+    out->tpy = (int)((tp >> 4) & 1u) * 256;
+    out->bpp = (out->mode == 0) ? 4 : (out->mode == 1) ? 8 : 16;
+    out->clx = (int)(clut & 0x3Fu) * 16;
+    out->cly = (int)((clut >> 6) & 0x1FFu);
+}
+
+int ngte_abr_blend(int abr, ngte_abr_policy policy) {
+    switch (abr & 3) {
+        case 0:  return 1;                                        /* (B+F)/2 */
+        case 1:  return 2;                                        /* B+F     */
+        case 2:  return 3;                                        /* B-F     */
+        default: return (policy == NGTE_ABR_QUARTER_AS_ADD) ? 2 : 4;  /* B+F/4 */
+    }
+}
+
+/* ---- screen-space backface test ----------------------------------------- */
+
+double ngte_nclip(double ax, double ay, double bx, double by,
+                  double cx, double cy, ngte_nclip_mode mode) {
+    if (mode == NGTE_NCLIP_SXY_GRID) {
+        ax = lrint(ax); ay = lrint(ay);
+        bx = lrint(bx); by = lrint(by);
+        cx = lrint(cx); cy = lrint(cy);
+    }
+    return ax * (by - cy) + bx * (cy - ay) + cx * (ay - by);
+}
+
+void ngte_dump_words(CPUState* cpu, const char* label, uint32_t base, int nwords) {
+    fprintf(stderr, "  %s @%08X:\n   ", label, base);
+    for (int i = 0; i < nwords; i++) {
+        fprintf(stderr, "%08X ", cpu->read_word(base + (uint32_t)i * 4));
+        if ((i & 7) == 7 && i != nwords - 1) fprintf(stderr, "\n   ");
+    }
+    fprintf(stderr, "\n");
 }

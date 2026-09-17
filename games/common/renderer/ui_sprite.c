@@ -25,6 +25,7 @@
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
 #include "renderer/render_paths.h"
+#include "renderer/native_gte.h"      /* the shared texture-page decode */
 #include "renderer/ui_game.h"
 #include "openpete_recomp_module.h"   /* the game's own routine, through the module dispatch */
 #include "texture_pack.h"
@@ -99,9 +100,10 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
     for (int k=0;k<4;k++){ sx[k]=(int16_t)(xyw[k]&0xFFFF); sy[k]=(int16_t)(xyw[k]>>16);
                            u[k]=(int)(uvw[k]&0xFF); v[k]=(int)((uvw[k]>>8)&0xFF); }
     unsigned clut = (uvw[0]>>16)&0xFFFF, tp = (uvw[1]>>16)&0xFFFF;
-    int tpx=(int)(tp&0xFu)*64, tpy=(int)((tp>>4)&1u)*256;
-    int mode=(int)((tp>>7)&3u), bpp=(mode==0)?4:(mode==1)?8:16;
-    int clx=(int)(clut&0x3Fu)*16, cly=(int)((clut>>6)&0x1FFu);
+    ngte_tpage tpd;
+    ngte_decode_tpage(tp, clut, 0u, &tpd);
+    int tpx=tpd.tpx, tpy=tpd.tpy, bpp=tpd.bpp;
+    int clx=tpd.clx, cly=tpd.cly;
     uint32_t rgba = (w1 & 0xFFFFFFu) | 0xFF000000u;
     int abe = (int)((w1>>24)&0x2u);   /* code bit1 = semi-transparent (ABR mode 0) */
 
@@ -264,9 +266,10 @@ void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage) {
     uint32_t rgba = (code & 1) ? 0xFF808080u                 /* raw texture: no modulation */
                                : ((w1 & 0xFFFFFFu) | 0xFF000000u);
     int abe = code & 2;
-    int tpx = (int)(tpage & 0xFu) * 64, tpy = (int)((tpage >> 4) & 1u) * 256;
-    int mode = (int)((tpage >> 7) & 3u), bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
-    int clx = (int)(clut & 0x3Fu) * 16, cly = (int)((clut >> 6) & 0x1FFu);
+    ngte_tpage tpd;
+    ngte_decode_tpage((unsigned)tpage, (unsigned)clut, 0u, &tpd);
+    int tpx = tpd.tpx, tpy = tpd.tpy, bpp = tpd.bpp;
+    int clx = tpd.clx, cly = tpd.cly;
 
     float sx[4] = { (float)x0, (float)(x0 + w), (float)x0, (float)(x0 + w) };
     float sy[4] = { (float)y0, (float)y0, (float)(y0 + h), (float)(y0 + h) };

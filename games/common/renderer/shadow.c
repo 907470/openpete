@@ -33,6 +33,7 @@
 #include "openpete_native_render.h"
 #include "openpete_recomp_module.h" /* the game's own shadow draw, through the module dispatch */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
+#include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
 #include "renderer/orchestrator.h"  /* openpete_native_interp_pos */
 
 #include <math.h>
@@ -228,10 +229,7 @@ void shadow_project(const int R[3][3], const double TR[3], double ofx, double of
  * angles, culling the whole moby drop-shadow so it pops/vanishes — same bug fixed in
  * moby_native (tri_nclip). Precise float here; the Z-buffer/decal handles the rest. */
 static double sh_nclip(const shadow_pt* a, const shadow_pt* b, const shadow_pt* c) {
-    double ax = a->sx, ay = a->sy;
-    double bx = b->sx, by = b->sy;
-    double cx = c->sx, cy = c->sy;
-    return ax*(by - cy) + bx*(cy - ay) + cx*(ay - by);
+    return ngte_nclip(a->sx, a->sy, b->sx, b->sy, c->sx, c->sy, NGTE_NCLIP_FLOAT);
 }
 
 /* assemble the oriented-quad matrix R' from the two packed orientation indices.
@@ -414,15 +412,14 @@ static void shadow_moby_build(CPUState* cpu) {
     int u1=(int)(uv1&0xFF), v1t=(int)((uv1>>8)&0xFF);
     int u2=u0, v2t=(int)(((uv0>>8)&0xFF)+0x1F);
     int clut=(int)(uv0>>16), tpage=(int)(uv1>>16);
-    int tpx=(tpage&0xF)*64, tpy=((tpage>>4)&1)*256;
-    int mode=(tpage>>7)&3, bpp=(mode==0)?4:(mode==1)?8:16;
+    ngte_tpage tp;
+    ngte_decode_tpage((unsigned)tpage, (unsigned)clut, 0u, &tp);
+    int tpx=tp.tpx, tpy=tp.tpy;
+    int bpp=tp.bpp;
     /* The shadow sprite's semi-transparency rate is level data in the tpage's
-     * ABR field, not a constant: mode 0 (B+F)/2 -> alpha, mode 1 (B+F) ->
-     * additive, mode 2 (B-F) -> subtractive (the shadow grey darkens the
-     * ground). Mode 3 (B+F/4) has no native pipeline and draws additive. */
-    int abr = (tpage>>5)&3;
-    int blend = (abr==0) ? 1 : (abr==1) ? 2 : (abr==2) ? 3 : 2;
-    int clx=(clut&0x3F)*16, cly=(clut>>6)&0x1FF;
+     * ABR field, not a constant. Rate 3 (B+F/4) has no native pipeline. */
+    int blend = ngte_abr_blend(tp.abr, NGTE_ABR_QUARTER_AS_ADD);
+    int clx=tp.clx, cly=tp.cly;
     double ZERO[3] = {0,0,0};
     const uint32_t off_pos = game_layout.shadow.moby_pos;
     const uint32_t off_gnd = game_layout.shadow.moby_ground;
@@ -655,20 +652,23 @@ unsigned shadow_verify_frame(void) {
     return f;
 }
 
+/* Latch the list base before the draw overwrites the GTE registers. */
+static void shadow_pre(CPUState* cpu, int feed, int verify) {
+    (void)feed; (void)verify;
+    shadow_latch_list_base(cpu);
+}
+
+static hook_bracket_state s_shadow_hb;
+static const hook_bracket_desc k_shadow_bracket = {
+    .path = RP_SHADOW, .prof_tag = "shadow.srend",
+    .verify_enabled = shadow_verify_enabled, .pre = shadow_pre,
+    .st = &s_shadow_hb,
+};
+
 static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
-    int verify = shadow_verify_enabled();
-    int feed   = openpete_native_scene_enabled();
-    if (!verify && !feed && !render_paths_active()) return 0;  /* inert: normal dispatch */
-    static int s_in = 0; if (s_in) return 0; s_in = 1;
-
-    shadow_latch_list_base(cpu);          /* before the draw overwrites the GTE registers */
-
-    uint32_t startp = cpu->read_word(game_layout.polybuf.cursor);
-    { OP_PROF_ACCUM_SCOPE("shadow.srend");
-      openpete_recomp_module_get()->dispatch(cpu, addr); }   /* run the real renderer */
-    uint32_t endp = cpu->read_word(game_layout.polybuf.cursor);
-
-    render_path_record(RP_SHADOW, startp, endp);
+    uint32_t startp, endp; int feed, verify;
+    if (!hook_bracket_run(cpu, addr, &k_shadow_bracket, &startp, &endp, &feed, &verify))
+        return 0;
 
     if ((feed || verify) && endp > startp) shadow_capture_prims(cpu, startp, endp);
 
@@ -681,8 +681,7 @@ static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
         if (!s_dumped) { shadow_moby_dump(cpu); s_dumped = 1; }
         if (s_reports < 60) { shadow_moby_compare(cpu); s_reports++; }
     }
-    s_in = 0;
-    return 1;
+    return hook_bracket_end(&k_shadow_bracket);
 }
 
 /* Sub-tick re-extract (high-FPS spine): reproduce the moby drop-shadows
@@ -690,11 +689,7 @@ static int on_moby_shadows(CPUState* cpu, uint32_t addr) {
  * shadows project under their owners onto the ground; they follow the owners'
  * interpolated poses and the interpolated camera. */
 void shadow_reextract(CPUState* cpu) {
-    if (!openpete_native_scene_enabled()) return;
-    if (!render_path_enabled(RP_SHADOW)) return;
-    /* Skip when the canonical frame drew no shadows (e.g. a level transition) —
-     * else the spine replays stale shadows over the cyclorama. */
-    if (!render_path_canon_drawn(RP_SHADOW)) return;
+    if (!hook_reextract_ready(RP_SHADOW)) return;
     shadow_moby_feed_native(cpu);
 }
 

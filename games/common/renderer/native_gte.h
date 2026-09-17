@@ -193,4 +193,59 @@ void ngte_euler_sincos(CPUState* cpu, uint32_t rot, ngte_euler_sc* e);
  * (func_80022A2C block_80022DBC..80022F34). */
 void ngte_compose_euler(const int start[3][3], const ngte_euler_sc* e, int out[3][3]);
 
+/* ---- texture page / CLUT bitfields --------------------------------------
+ * One decode of the GPU's two texture words, shared by every feeder that
+ * samples VRAM. `tp` is the texture-page bitfield (bits 0-3 page X in
+ * 64-texel columns, bit 4 page Y in 256-line halves, bits 5-6 the
+ * semi-transparency rate ABR, bits 7-8 the colour depth); `clut` is the
+ * CLUT bitfield (bits 0-5 X in 16-entry columns, bits 6-14 Y in lines).
+ * Callers own their ABE/STP predicate: this reports the raw ABR and leaves
+ * the blend decision to ngte_abr_blend. */
+typedef struct {
+    int tpx, tpy;      /* texture page origin, VRAM texels / lines */
+    int clx, cly;      /* CLUT origin, VRAM texels / lines */
+    int bpp;           /* 4, 8 or 16; 32 for the replaced-texture escape */
+    int abr;           /* raw semi-transparency rate, 0..3 */
+    int mode;          /* raw colour-depth field, 0..3 */
+    int replaced_id;   /* replaced-texture id, or -1 when there is none */
+} ngte_tpage;
+
+/* Colour depth 3 is reserved by the hardware, so an emitter can spend it on
+ * naming a replaced texture whose id rides in the CLUT half. With this flag
+ * mode 3 yields bpp 32, tpx = the signed id, replaced_id = the same id and a
+ * zeroed CLUT. Without it mode 3 decodes as an ordinary 16bpp page, which is
+ * what a feeder that never sees the escape expects. */
+#define NGTE_TP_REPLACED_ID 0x1u
+
+void ngte_decode_tpage(unsigned tp, unsigned clut, unsigned flags, ngte_tpage* out);
+
+/* ABR to the renderer's blend code: 1 = (B+F)/2, 2 = B+F, 3 = B-F,
+ * 4 = B+F/4. NGTE_ABR_EXACT is the hardware's own table. A feeder with no
+ * B+F/4 pipeline passes NGTE_ABR_QUARTER_AS_ADD, which draws rate 3
+ * additive. Blend code 0 (opaque) is the caller's, from its own ABE bit. */
+typedef enum {
+    NGTE_ABR_EXACT = 0,
+    NGTE_ABR_QUARTER_AS_ADD = 1
+} ngte_abr_policy;
+
+int ngte_abr_blend(int abr, ngte_abr_policy policy);
+
+/* ---- screen-space backface test ----------------------------------------
+ * Signed 2*area of a screen triangle: the sign of the GTE's NCLIP MAC0,
+ * which the game tests to drop a face. NGTE_NCLIP_SXY_GRID rounds each
+ * coordinate to the GTE's int16 SXY grid first, so the verdict matches the
+ * .s face for face; NGTE_NCLIP_FLOAT keeps float precision, which stops a
+ * near-zero-area fan flipping sign at grazing angles and popping. */
+typedef enum {
+    NGTE_NCLIP_FLOAT = 0,
+    NGTE_NCLIP_SXY_GRID = 1
+} ngte_nclip_mode;
+
+double ngte_nclip(double ax, double ay, double bx, double by,
+                  double cx, double cy, ngte_nclip_mode mode);
+
+/* Hex dump of `nwords` guest words from `base`, eight per line, under
+ * `label`. Verify-mode diagnostic; writes to stderr. */
+void ngte_dump_words(CPUState* cpu, const char* label, uint32_t base, int nwords);
+
 #endif /* OPENPETE_NATIVE_GTE_H */

@@ -697,16 +697,17 @@ static void decode_tiledef(CPUState* cpu, uint32_t e, int abe, tmat* m, float u[
     u[1]=(float)u1;               v[1]=(float)v1;                  /* TR */
     u[2]=(float)u0;               v[2]=(float)((v0 + 0x1F) & 0xFF);/* BL */
     u[3]=(float)((u0+0x1F)&0xFF); v[3]=(float)((v0 + 0x1F) & 0xFF);/* BR */
+    ngte_tpage tp;
+    ngte_decode_tpage((unsigned)tpage, (unsigned)clut, 0u, &tp);
     m->textured = 1;
-    m->tpx = (tpage & 0xF) * 64; m->tpy = ((tpage >> 4) & 1) * 256;
-    int mode = (tpage >> 7) & 3; m->bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
-    m->clx = (clut & 0x3F) * 16; m->cly = (clut >> 6) & 0x1FF;
+    m->tpx = tp.tpx; m->tpy = tp.tpy;
+    m->bpp = tp.bpp;
+    m->clx = tp.clx; m->cly = tp.cly;
     m->clut_raw = clut;
     m->fog_delta = 0;              /* base row; the HP walk ladders it per face */
-    /* blend: opaque unless ABE; then the tpage ABR mode (0..3) → scene blend
-     * 1..4 ((B+F)/2, +, −, B+F/4). */
+    /* blend: opaque unless ABE; then the tpage ABR mode. */
     if (game_layout.terrain.abe_in_tpage && (tpage & 0x8000)) abe = 1;
-    m->blend = abe ? (((tpage >> 5) & 3) + 1) : 0;
+    m->blend = abe ? ngte_abr_blend(tp.abr, NGTE_ABR_EXACT) : 0;
 }
 
 static void terrain_texmat(CPUState* cpu, uint32_t table, int texByte, int hiDetail,

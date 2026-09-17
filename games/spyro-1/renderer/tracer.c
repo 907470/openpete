@@ -39,6 +39,7 @@
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
 #include "renderer/render_paths.h"
+#include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
 #include "renderer/reextract.h"   /* sub-tick re-extract entry */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 #include "spyro1_symbols.gen.h"
@@ -182,40 +183,36 @@ static void tracer_build_and_feed(CPUState* cpu) {
 
 /* Dispatch hook: snapshot the tracer gamestate (before the .s drains it), run
  * the real renderer (verdict), then re-derive + feed natively. */
+static void tracer_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; func_800189F0(cpu); }
+/* Snapshot the tracer gamestate before the real renderer drains it. */
+static void tracer_pre(CPUState* cpu, int feed, int verify) {
+    (void)verify;
+    if (feed) tracer_snapshot(cpu);
+}
+
+/* The recorded polybuf range drives the OT-filter isolation AND the canon-drawn
+ * liveness gate the sub-tick re-extract reads. It is empty when no tracer drew
+ * (render_path_record drops empty ranges), so a frame with no tracer reads as
+ * "not drawn" and the spine will not replay a stale beam. */
+static hook_bracket_state s_tracer_hb;
+static const hook_bracket_desc k_tracer_bracket = {
+    .path = RP_TRACER, .prof_tag = "tracer.srend",
+    .run = tracer_run_draw, .pre = tracer_pre,
+    .st = &s_tracer_hb,
+};
+
 static int on_800189F0_tracer(CPUState* cpu, uint32_t addr) {
-    (void)addr;
-    int feed = openpete_native_scene_enabled();
-    if (!feed && !render_paths_active()) return 0;        /* inert: normal dispatch */
-
-    static int s_in = 0;
-    if (s_in) return 0;                                   /* re-entrancy guard */
-    s_in = 1;
-
-    if (feed) tracer_snapshot(cpu);                        /* capture before the drain */
-    uint32_t pb0 = cpu->read_word(POLYBUF_CURSOR);
-    { OP_PROF_ACCUM_SCOPE("tracer.srend");
-      func_800189F0(cpu); }                               /* real renderer (verdict) */
-    /* Record the tracer's emitted polybuf range as RP_TRACER: drives the OT-filter
-     * isolation AND the canon-drawn liveness gate the sub-tick re-extract reads.
-     * Empty when no tracer drew (render_path_record drops empty ranges), so a frame
-     * with no tracer reads as "not drawn" and the spine won't replay a stale beam. */
-    render_path_record(RP_TRACER, pb0, cpu->read_word(POLYBUF_CURSOR));
+    uint32_t pb0, pb1; int feed, verify;
+    if (!hook_bracket_run(cpu, addr, &k_tracer_bracket, &pb0, &pb1, &feed, &verify))
+        return 0;
     if (feed && s_nsets > 0 && render_path_enabled(RP_TRACER))
         tracer_build_and_feed(cpu);
-    s_in = 0;
-    return 1;
+    return hook_bracket_end(&k_tracer_bracket);
 }
 
 /* Sub-tick re-extract: replay the snapshot against the interpolated camera. */
 void tracer_reextract(CPUState* cpu) {
-    if (!openpete_native_scene_enabled()) return;
-    if (!render_path_enabled(RP_TRACER)) return;
-    /* Liveness gate (matches every other feeder): only replay if the most recent
-     * canonical frame actually drew a tracer. Without this, when the canonical
-     * tracer render pauses (sim stall, level transition) while the high-FPS spine
-     * keeps presenting, the intermediate presents replayed the last beam as a ghost
-     * over a scene whose mobys/particles had already stopped rendering. */
-    if (!render_path_canon_drawn(RP_TRACER)) return;
+    if (!hook_reextract_ready(RP_TRACER)) return;
     tracer_build_and_feed(cpu);
 }
 

@@ -32,6 +32,7 @@
 #include "openpete_interp.h"       /* openpete_interp_present_now (sparkle phase) */
 #include "openpete_interp_objs.h"  /* per-slot prev/curr snapshots (sparkle phase) */
 #include "renderer/render_paths.h"  /* --render-paths isolation */
+#include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
 
 #include <math.h>
 #include <stdint.h>
@@ -499,12 +500,14 @@ static void decode_material(CPUState* cpu, uint32_t pp, int mclass, fquad* q) {
     int u0 = (int)(w4 & 0xFF), v0 = (int)((w4 >> 8) & 0xFF), clut = (int)((w4 >> 16) & 0xFFFF);
     int u3 = (int)(w8 & 0xFF), v3 = (int)((w8 >> 8) & 0xFF), tpage = (int)((w8 >> 16) & 0xFFFF);
     q->u[0]=u0; q->v[0]=v0; q->u[1]=u3; q->v[1]=v0; q->u[2]=u0; q->v[2]=v3; q->u[3]=u3; q->v[3]=v3;
-    q->tpx = (tpage & 0xF) * 64; q->tpy = ((tpage >> 4) & 1) * 256;
-    int mode = (tpage >> 7) & 3; q->bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
-    q->clx = (clut & 0x3F) * 16; q->cly = (clut >> 6) & 0x1FF;
+    ngte_tpage tp;
+    ngte_decode_tpage((unsigned)tpage, (unsigned)clut, 0u, &tp);
+    q->tpx = tp.tpx; q->tpy = tp.tpy;
+    q->bpp = tp.bpp;
+    q->clx = tp.clx; q->cly = tp.cly;
     q->textured = 1;
-    int abr = (tpage >> 5) & 3;                    /* data-driven blend (ABR + STP) */
-    q->blend = stp ? (abr == 0 ? 1 : abr == 1 ? 2 : abr == 2 ? 3 : 2) : 0;
+    /* data-driven blend (ABR + STP); rate 3 has no native pipeline */
+    q->blend = stp ? ngte_abr_blend(tp.abr, NGTE_ABR_QUARTER_AS_ADD) : 0;
 }
 
 /* SZ window 128..8192 (clamped SZ3) + depth-cue LOD cull (SZ3>>5 < texsub>>8). */
@@ -1844,20 +1847,28 @@ static void particle_path_census_note(CPUState* cpu, char tag, uint32_t bytes) {
 /* Shared hook body: run the real renderer once, capture its prims, record the
  * renderer's polybuf range on its own path, (dump in verify mode). `tag`
  * selects the dump label + which gamestate pools to print. */
+/* The three particle renderers share one latch: they are separate guest
+ * entries, so the descriptor is built per call around the caller's own draw. */
+static hook_bracket_state s_particle_hb;
+static void (*s_particle_realfn)(CPUState*);
+static void particle_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; s_particle_realfn(cpu); }
+/* The pool the .s walks (g_Particles is a pointer), read before the draw. */
+static void particle_pre(CPUState* cpu, int feed, int verify) {
+    (void)feed; (void)verify;
+    s_part_pool = cpu->read_word(G_PARTICLES);
+}
+
 static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const char* tag,
                                 render_path_t path, int dump_pools_too) {
-    int verify = verify_enabled();
-    int feed   = openpete_native_scene_enabled();
-    if (!verify && !feed && !render_paths_active()) return 0;  /* inert: normal dispatch */
-    static int s_in = 0; if (s_in) return 0; s_in = 1;
+    const hook_bracket_desc desc = {
+        .path = path, .prof_tag = "particle.srend",
+        .run = particle_run_draw, .verify_enabled = verify_enabled,
+        .pre = particle_pre, .st = &s_particle_hb,
+    };
+    s_particle_realfn = realfn;
+    uint32_t startp, endp; int feed, verify;
+    if (!hook_bracket_run(cpu, 0u, &desc, &startp, &endp, &feed, &verify)) return 0;
 
-    uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
-    s_part_pool = cpu->read_word(G_PARTICLES);     /* the pool the .s walks (g_Particles is a ptr) */
-    { OP_PROF_ACCUM_SCOPE("particle.srend");
-      realfn(cpu); }                               /* run the real renderer (verdict bytes) */
-    uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
-
-    render_path_record(path, startp, endp);
     particle_path_census_note(cpu, tag[0], endp - startp);
 
     if (verify) {
@@ -1903,8 +1914,7 @@ static int on_particle_renderer(CPUState* cpu, void (*realfn)(CPUState*), const 
         }
     }
 
-    s_in = 0;
-    return 1;
+    return hook_bracket_end(&desc);
 }
 
 static int on_800573C8_particles(CPUState* cpu, uint32_t addr) { (void)addr; return on_particle_renderer(cpu, func_800573C8, "particles", RP_PARTICLES, 1); }
@@ -1920,18 +1930,19 @@ static int on_800584C4_sparkles(CPUState* cpu, uint32_t addr)  { (void)addr; ret
  * path whenever the native feed emitted — on a frame where only the star
  * draws, nothing else would, and the star would flash on canonical presents
  * and vanish on the intermediates. */
-static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
-    (void)addr;
-    int verify = verify_enabled();
-    int feed   = openpete_native_scene_enabled();
-    if (!verify && !feed) return 0;                /* inert: normal dispatch */
-    static int s_in = 0; if (s_in) return 0; s_in = 1;
+static void dragonstar_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; func_80058864(cpu); }
 
-    uint32_t startp = cpu->read_word(POLYBUF_CURSOR);
-    { OP_PROF_ACCUM_SCOPE("particle.srend");
-      func_80058864(cpu); }                        /* run the real renderer */
-    uint32_t endp = cpu->read_word(POLYBUF_CURSOR);
-    render_path_record(RP_PARTICLES, startp, endp);
+static hook_bracket_state s_dragonstar_hb;
+static const hook_bracket_desc k_dragonstar_bracket = {
+    .path = RP_PARTICLES, .prof_tag = "particle.srend",
+    .run = dragonstar_run_draw, .verify_enabled = verify_enabled,
+    .st = &s_dragonstar_hb, .flags = HB_NO_RENDER_PATHS,
+};
+
+static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
+    uint32_t startp, endp; int feed, verify;
+    if (!hook_bracket_run(cpu, addr, &k_dragonstar_bracket, &startp, &endp, &feed, &verify))
+        return 0;
     particle_path_census_note(cpu, '*', endp - startp);
 
     if ((feed || verify) && endp > startp) { s_prim_n = 0; capture_prims(cpu, startp, endp); }
@@ -1946,8 +1957,7 @@ static int on_80058864_dragonstar(CPUState* cpu, uint32_t addr) {
         static int s_reports = 0;
         if (s_reports < 2000) { dragonstar_compare(cpu); s_reports++; }
     }
-    s_in = 0;
-    return 1;
+    return hook_bracket_end(&k_dragonstar_bracket);
 }
 
 /* Sub-tick re-extract (high-FPS spine): reproduce particles, glows and

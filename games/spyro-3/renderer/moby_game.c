@@ -196,13 +196,14 @@ int s3_decode_faces_stride(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                 unsigned cl = (td0 >> 16) & 0xFFFFu;
                 unsigned tp = (td1 >> 16) & 0x7FFFu;
                 F->blendbit = (uint8_t)((td1 >> 31) & 1u);
-                int mode = (int)((tp >> 7) & 3u);
-                F->abr = (uint8_t)((tp >> 5) & 3u);
-                F->tpx = (int16_t)((tp & 0xFu) * 64);
-                F->tpy = (int16_t)(((tp >> 4) & 1u) * 256);
-                F->bpp = (uint8_t)((mode == 0) ? 4 : (mode == 1) ? 8 : 16);
-                F->clx = (int16_t)((cl & 0x3Fu) * 16);
-                F->cly = (int16_t)((cl >> 6) & 0x1FFu);
+                ngte_tpage t;
+                ngte_decode_tpage(tp, cl, 0u, &t);
+                F->abr = (uint8_t)t.abr;
+                F->tpx = (int16_t)t.tpx;
+                F->tpy = (int16_t)t.tpy;
+                F->bpp = (uint8_t)t.bpp;
+                F->clx = (int16_t)t.clx;
+                F->cly = (int16_t)t.cly;
             }
             n++;
         }
@@ -460,13 +461,14 @@ static int s3_special_face(CPUState* cpu, uint32_t mat, const int M[3][3],
                    ? cpu->read_word(game_layout.moby.special_tiledef) : 0u;
         if (g) {
             unsigned tp = g & 0xFFFFu, cl = (g >> 16) & 0xFFFFu;
-            int m = (int)((tp >> 7) & 3u);
-            tex->tpx = (int16_t)((tp & 0xFu) * 64);
-            tex->tpy = (int16_t)(((tp >> 4) & 1u) * 256);
-            tex->bpp = (uint8_t)((m == 0) ? 4 : (m == 1) ? 8 : 16);
-            tex->abr = (uint8_t)((tp >> 5) & 3u);
-            tex->clx = (int16_t)((cl & 0x3Fu) * 16);
-            tex->cly = (int16_t)((cl >> 6) & 0x1FFu);
+            ngte_tpage t;
+            ngte_decode_tpage(tp, cl, 0u, &t);
+            tex->tpx = (int16_t)t.tpx;
+            tex->tpy = (int16_t)t.tpy;
+            tex->bpp = (uint8_t)t.bpp;
+            tex->abr = (uint8_t)t.abr;
+            tex->clx = (int16_t)t.clx;
+            tex->cly = (int16_t)t.cly;
             tex->set = 1u;
         }
         /* The coordinates the emit generates per corner in place of the face's
@@ -1033,15 +1035,15 @@ static int s3_simple_decode(CPUState* cpu) {
                 u[3]=(int)((t2 >> 16) & 0xFFu); v[3]=(int)((t2 >> 24) & 0xFFu);
                 unsigned cl = (t0 >> 16) & 0xFFFFu;
                 unsigned tp = (t1 >> 16) & 0x7FFFu;
-                int mode = (int)((tp >> 7) & 3u);
-                int abr  = (int)((tp >> 5) & 3u);
-                tpx = (int)((tp & 0xFu) * 64u);
-                tpy = (int)(((tp >> 4) & 1u) * 256u);
-                bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
-                clx = (int)((cl & 0x3Fu) * 16u);
-                cly = (int)(((cl >> 6) & 0x1FFu) + (unsigned)clut_bias);
+                ngte_tpage t;
+                ngte_decode_tpage(tp, cl, 0u, &t);
+                tpx = t.tpx;
+                tpy = t.tpy;
+                bpp = t.bpp;
+                clx = t.clx;
+                cly = t.cly + clut_bias;
                 if ((t1 >> 31) & 1u)
-                    blend = moby_abr_blend(abr);
+                    blend = moby_abr_blend(t.abr);
             }
 
             double p[3][3]; uint32_t rgb[3]; int uu[3], vv[3];
