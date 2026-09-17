@@ -119,6 +119,9 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze
   # freeze frames dump dark (frozen_tex is a live-window-only snapshot). Off
   # elsewhere — it renders an extra frame per present.
   local freeze_arg=(); [[ -n "$freeze" ]] && freeze_arg=(--screenshot-freeze-backdrop)
+  # A row with no movie file is the plain boot: the title screen and the attract
+  # demo, which need no input. Everything else about the row is the same.
+  local bk2_arg=(); [[ -f "$PG_BK2_DIR/${name}.bk2" ]] && bk2_arg=(--bk2 "$PG_BK2_DIR/${name}.bk2")
   # The identity leg is the intermediate re-extract phased onto the newest tick's
   # stamp (alpha 1), which must reproduce the canonical dump of the same frame.
   local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=1)
@@ -133,7 +136,7 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze
   # to be independent of any openpete.toml on the machine capturing them.
   env "${leg_env[@]}" timeout 300 "$BIN" --headless --no-config --disc "$DISC" --renderer vk \
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" "${PG_RUN_ARGS[@]}" \
-    --bk2 "$PG_BK2_DIR/${name}.bk2" --screenshot-native-only \
+    "${bk2_arg[@]}" --screenshot-native-only \
     "$flag" "$targets" --screenshot-output "$out" \
     --frame-limit "$flim" --max-runtime-seconds 280 >"$log" 2>&1
   local rc=$?
@@ -209,8 +212,15 @@ while IFS='|' read -r name start interval freeze pins; do
   freeze="$(echo "$freeze" | tr -d ' \t')"   # 4th field non-empty => --screenshot-freeze-backdrop
   pins="$(echo "$pins" | tr -d ' \t')"       # 5th field: explicit frames, never subsampled
   bk2="$PG_BK2_DIR/${name}.bk2"
-  if [[ ! -f "$bk2" ]]; then echo "  SKIP row: no bk2 $bk2"; continue; fi
-  fc="$(bk2_frames "$bk2")"
+  if [[ -f "$bk2" ]]; then
+    fc="$(bk2_frames "$bk2")"
+  else
+    # No movie: the plain boot (title screen, attract demo). The row's length is
+    # its last pin, so a movie-less row must pin every frame it wants.
+    if [[ -z "$pins" ]]; then echo "  SKIP row $name: no bk2 and no pins"; continue; fi
+    fc="$(tr ',' '\n' <<<"$pins" | sort -n | tail -1)"
+    echo "  [$name] no bk2: plain boot, length from the last pin ($fc)"
+  fi
   if ! [[ "$fc" =~ ^[0-9]+$ ]] || [[ "$fc" -le "$start" ]]; then
     echo "  SKIP row $name: bad/short bk2 length ($fc) vs start ($start)"; continue; fi
   grid="$(compute_grid "$start" "$fc" "$interval" "$MAX_SAMPLES" "$pins")"

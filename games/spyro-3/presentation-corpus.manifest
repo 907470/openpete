@@ -51,3 +51,7 @@ sheilas-alp-sheila-water-invisible|4400|100||4520,4556
 # icy-peak-ice-crystal-destruction: an ice crystal shot at VBL ~1670 shatters on the
 # PSX and its model stays on screen natively; the pins bracket the shatter.
 icy-peak-ice-crystal-destruction|1500|100||1660,1674,1690
+# title-demo: the plain boot with no movie; the title screen's rhynoc animates
+# under a fixed camera. 510 pins the frame the jitter was reported at, on the
+# canonical and the sub-tick leg alike.
+title-demo|500|20||510
