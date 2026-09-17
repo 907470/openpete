@@ -1616,6 +1616,16 @@ int player_records_lerps(int k) {
     const player_model_rec_t* c = player_records_curr(k);
     return c && s_pres_lerp && c->pair >= 0;
 }
+/* Was model record k drawn by a hook call this tick, rather than created for
+ * pairing alone? Reads the list still being built — the one bind_model binds
+ * into — so an auxiliary feeder hooking later in the same tick can take the
+ * avatar's own verdict, which is the verdict the replay loop applies when it
+ * decides whether to reproduce that record. */
+int player_records_model_drawn(int k) {
+    const rec_list_t* L = openpete_speculative ? &s_led : &s_list;
+    return (k >= 0 && k < L->n && L->r[k].drawn) ? 1 : 0;
+}
+
 int player_records_shadow_count(void) { return s_pres_n ? s_store[0].list.nsh : 0; }
 const player_shadow_rec_t* player_records_shadow_curr(int j) {
     return (s_pres_n && j >= 0 && j < s_store[0].list.nsh) ? &s_store[0].list.sh[j] : NULL;

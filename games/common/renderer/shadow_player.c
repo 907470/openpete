@@ -89,6 +89,10 @@ static void plsh_matrix(CPUState* cpu, const int C[3][3], uint32_t rot, int R[3]
 typedef struct { float sx[3], sy[3], sz[3]; uint32_t rgb[3]; } plshtri;
 static plshtri s_tri[PLSH_RING_N];
 static int     s_tri_n;
+/* The most recent hook's record-bind verdict, reported by the A/B line: < 0
+ * means the tick drew no player model for the fan to belong to. */
+static int     s_last_bound = -1;
+static int     s_last_drawn;
 
 /* SZ3: the GTE's view-Z saturated to 16 bits unsigned, the value the ordering
  * key below is computed from. */
@@ -336,9 +340,9 @@ static void shadow_player_compare(CPUState* cpu) {
     }
     fprintf(stderr, "[shadow-player f=%u] native=%d G3=%d cmp=%d mean|dSXY|=%.2f worst=%.1fpx "
                     "over2px=%d/%d rgbMismatch=%d nbox=x[%.0f,%.0f]y[%.0f,%.0f] "
-                    "gbox=x[%.0f,%.0f]y[%.0f,%.0f] depth=[%.5f,%.5f] 2A=%.0f\n",
+                    "gbox=x[%.0f,%.0f]y[%.0f,%.0f] depth=[%.5f,%.5f] 2A=%.0f bound=%d drawn=%d\n",
             openpete_frame, s_tri_n, g3, n, nv ? sum / nv : 0, worst, over2, n, cbad,
-            nx0, nx1, ny0, ny1, gx0, gx1, gy0, gy1, dz0, dz1, area);
+            nx0, nx1, ny0, ny1, gx0, gx1, gy0, gy1, dz0, dz1, area, s_last_bound, s_last_drawn);
 }
 
 /* ---- hook ----------------------------------------------------------------- */
@@ -354,15 +358,21 @@ static int on_player_shadow(CPUState* cpu, uint32_t addr) {
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
         return 0;
 
-    int slot = 0;
-    if (endp > startp) {
-        int m = player_records_shadow_append(cpu);   /* bound to its model record */
-        if (m >= 0) slot = m;
-    }
+    /* The fan belongs to the avatar, and the record store binds it to the model
+     * record the same tick's player draw appended. A tick whose player draw did
+     * not run leaves nothing to bind to while the shadow routine still emits its
+     * sixteen triangles: feeding those paints a shadow under an avatar that is
+     * not drawn, and the sub-tick re-extract, which walks the records, cannot
+     * reproduce it. Take the record's verdict rather than a distance test, so
+     * the two paths draw the same set. */
+    int slot = 0, bound = -1, drawn = 0;
+    if (endp > startp) bound = player_records_shadow_append(cpu);
+    if (bound >= 0) { slot = bound; drawn = player_records_model_drawn(bound); }
+    s_last_bound = bound; s_last_drawn = drawn;
 
     if (feed || verify) shadow_capture_prims(cpu, startp, endp);
 
-    if (feed && endp > startp && render_path_enabled(RP_SHADOW))
+    if (feed && drawn && endp > startp && render_path_enabled(RP_SHADOW))
         shadow_player_feed_native(cpu, slot);
 
     if (verify && openpete_frame >= shadow_verify_frame()) {

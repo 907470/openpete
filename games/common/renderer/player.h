@@ -132,6 +132,11 @@ const player_model_rec_t* player_records_curr(int k);
 const player_model_rec_t* player_records_prev(int k);
 const player_model_rec_t* player_records_prev2(int k);
 int  player_records_lerps(int k);
+/* Whether the model record an auxiliary feeder just bound to was drawn by a
+ * hook call this tick, as opposed to created for pairing alone. An auxiliary
+ * feeder whose geometry belongs to the avatar takes this verdict so it feeds
+ * exactly what the sub-tick replay will reproduce. */
+int  player_records_model_drawn(int k);
 int  player_records_shadow_count(void);
 const player_shadow_rec_t* player_records_shadow_curr(int j);
 const player_shadow_rec_t* player_records_shadow_prev(int j);
