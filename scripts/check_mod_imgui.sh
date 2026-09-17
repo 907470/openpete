@@ -39,9 +39,18 @@
 # unattended. Clicking one steers the overlay it is measuring, so leave the
 # windows alone while it runs.
 #
-# Usage: scripts/check_mod_imgui.sh [--out=DIR] [--frames=N] [--keep]
+# Usage: scripts/check_mod_imgui.sh [--game SLUG] [--out=DIR] [--frames=N]
+#                                   [--keep]
 # Exit:  0 all six legs pass | 1 a leg failed | 64 skipped (missing
 #        binary / disc / display / Vulkan loader)
+#
+# The fixture mod is Spyro 1's, so --game names the game whose binary and
+# disc are used and refuses every other slug rather than loading a mod the
+# other game's loader would reject.
+#
+# Every leg opens a window, so the runs do not go through pg_capture, whose
+# launcher is headless; they take their binary and disc from the same
+# resolver and set --vibration 0 themselves.
 
 set -uo pipefail
 
@@ -53,6 +62,10 @@ set -uo pipefail
 export OPENPETE_VIBRATION=0
 
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
+
+GAME="$(pg_parse_game "$@")" || exit 64
 
 OUT_DIR="/tmp/openpete-mod-imgui"
 FRAMES=900
@@ -62,13 +75,16 @@ for arg in "$@"; do
         --out=*)    OUT_DIR="${arg#--out=}" ;;
         --frames=*) FRAMES="${arg#--frames=}" ;;
         --keep)     KEEP=1 ;;
+        --game|--game=*) ;;   # consumed by pg_parse_game above
+        spyro-*)         ;;   # the two-word --game SLUG spelling
         --help|-h)  sed -n '2,45p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown arg: $arg" >&2; exit 64 ;;
     esac
 done
 
-BIN="${OPENPETE_BIN:-build/linux-release/games/spyro-1/openpete-spyro1}"
-DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
+pg_resolve "$GAME"
+BIN="$PG_BIN"
+DISC="$PG_DISC"
 FIXTURE="mods/imgui-panel"
 COMPOSITE_MOD="mods/crt-beans"
 
@@ -82,6 +98,8 @@ WIN_W=640
 WIN_H=480
 HOVER_XY="124,438"
 
+[[ "$PG_GAME" == "spyro-1" ]] || {
+    echo "SKIP: the imgui-panel fixture is spyro-1's, not $PG_GAME's" >&2; exit 64; }
 [[ -x "$BIN"  ]] || { echo "SKIP: missing binary $BIN (build the preset first)" >&2; exit 64; }
 [[ -f "$DISC" ]] || { echo "SKIP: missing disc $DISC" >&2; exit 64; }
 [[ -d "$FIXTURE" ]] || { echo "SKIP: missing fixture $FIXTURE" >&2; exit 64; }
@@ -134,6 +152,7 @@ run_leg() {
     local -a envs=()
     [[ -n "${LEG_INJECT:-}" ]] && envs+=(OPENPETE_DEVUI_INJECT_MOUSE="$LEG_INJECT")
     env "${envs[@]}" "$BIN" --disc "$DISC" --disc-cache 0 \
+           "${PG_RUN_ARGS[@]}" \
            --renderer vk --window "${WIN_W}x${WIN_H}" \
            --devui-open "${LEG_OPEN:-1}" \
            --mods-dir "$OUT_DIR/mods" --mods "${LEG_MODS:-imgui-panel}" \

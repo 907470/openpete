@@ -13,8 +13,13 @@
 #   - decomp promotion: legacy raw alias resolves + warns (churn test)
 # plus the tools/modtest.py run over every [test]-block rung.
 #
-# Usage: scripts/check_mods.sh   (repo root; ~10 min — ctest mod_poc_ladder)
+# Usage: scripts/check_mods.sh [--game SLUG]
+#        (repo root; ~10 min — ctest mod_poc_ladder)
 # Env:   OPENPETE_BIN / OPENPETE_DISC — forwarded to runs + oracle.
+#
+# Every fixture, level name and golden below is Spyro 1's, so --game names
+# the game whose binary and disc are used and refuses every other slug
+# rather than running Spyro 1's fixtures against another game's disc.
 
 set -u
 
@@ -29,13 +34,21 @@ export OPENPETE_VIBRATION=0
 
 
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
+
+GAME="$(pg_parse_game "$@")" || exit 64
+pg_resolve "$GAME"
+[ "$PG_GAME" = "spyro-1" ] || {
+    echo "[modtest] SKIP: the mod fixtures, level names and oracle golden" \
+         "are spyro-1's, not $PG_GAME's"; exit 64; }
 
 MODS_SRC="$PWD/mods"
 WORK="$(mktemp -d /tmp/openpete-modtest.XXXXXX)"
 trap 'rm -rf "$WORK"' EXIT
 
-BIN="${OPENPETE_BIN:-build/linux-release/games/spyro-1/openpete-spyro1}"
-DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
+BIN="$PG_BIN"
+DISC="$PG_DISC"
 SMOKE_FRAMES="${OPENPETE_MODTEST_FRAMES:-8000}"
 
 # Fixture manifests pin the CURRENT api version (derived from the SDK
@@ -62,14 +75,24 @@ fixture() { # fixture <dir> <mod>...
     done
 }
 
+# One headless run through pg_capture, which deletes the log and every named
+# output before the run and asserts them after, so no leg can read the
+# previous leg's capture.
+#
+# RUN_OUTS (comma-separated) names the files a leg consumes; RUN_TIMEOUT
+# overrides the wall-clock ceiling for a leg that loads a level.
 run_game() { # run_game <mods_dir> <frames> [extra flags...] -> stdout+stderr
     # NB: --frame-limit is the engine flag; OPENPETE_FRAME_LIMIT is a
     # check_psx_oracle.sh convention, NOT read by the engine itself.
     local dir="$1" frames="$2"
     shift 2
-    timeout 300 "$BIN" --headless --disc "$DISC" --disc-cache 0 \
- --frame-limit "$frames" --mods-dir "$dir" \
-        "$@" 2>&1
+    local log; log="$(mktemp "$WORK/run.XXXXXX.log")"
+    local PG_CAPTURE_TIMEOUT="${RUN_TIMEOUT:-300}"
+    pg_capture "$log" "${RUN_OUTS:-}" -- \
+        --frame-limit "$frames" --mods-dir "$dir" "$@"
+    local rc=$?
+    cat "$log"
+    return $rc
 }
 
 # ── 1+2. chain-duo matrix (order A,B then B,A) — also observer-neutral ──
@@ -363,10 +386,9 @@ fi
 # ── 8. asset overlay: texture namespace scan + overlay-duel (rungs 7+10) ─
 say "asset overlay: mod texture joins the pack (rung 7 scan)"
 fixture "$WORK/tex" hd-single-texture
-out="$(timeout 300 "$BIN" --headless --disc "$DISC" --disc-cache 0 \
-        --frame-limit 300 --mods-dir "$WORK/tex" \
+out="$(run_game "$WORK/tex" 300 \
         --screenshot-on-frame 200 \
-        --screenshot-output "$WORK/tex-{n}.png" 2>&1)"
+        --screenshot-output "$WORK/tex-{n}.png")"
 if printf '%s\n' "$out" | grep -q "\[texpack\] + mod hd-single-texture: 1 entry"; then
     ok "mod texture scanned into the replacement pack"
 else
@@ -378,10 +400,10 @@ say "asset overlay: symbolic name binds to content, not to the VRAM rect (rung 7
 # The title UI atlas and every level's texture page upload to the same
 # 512x256 block at VRAM (512,256). The annotation must bind title_ui to
 # the atlas content so a level page landing on the rect stays unnamed.
-out="$(OPENPETE_TEXPACK_DUMP_REGISTRY=1 timeout 600 "$BIN" --headless --disc "$DISC" --disc-cache 0 \
-        --skip-to-level artisans --frame-limit 3000 --mods-dir "$WORK/tex" \
+out="$(OPENPETE_TEXPACK_DUMP_REGISTRY=1 RUN_TIMEOUT=600 \
+        run_game "$WORK/tex" 3000 --skip-to-level artisans \
         --screenshot-on-frame 2900 \
-        --screenshot-output "$WORK/tex7d-{n}.png" 2>&1)"
+        --screenshot-output "$WORK/tex7d-{n}.png")"
 bound="$(printf '%s\n' "$out" | sed -n 's/.*annotate title_ui: bound to thash=\([0-9a-f]*\).*/\1/p' | head -1)"
 if [ -n "$bound" ]; then
     ok "title_ui annotation bound to content $bound"
@@ -421,10 +443,9 @@ mkdir -p "$WORK/duel"
 ln -sfn "$WORK/duelsrc/duel-a" "$WORK/duel/duel-a"
 ln -sfn "$WORK/duelsrc/duel-b" "$WORK/duel/duel-b"
 run_duel() { # run_duel -> stdout+stderr (short native-init headless run)
-    timeout 300 "$BIN" --headless --disc "$DISC" --disc-cache 0 \
-        --frame-limit 300 --mods-dir "$WORK/duel" \
+    run_game "$WORK/duel" 300 \
         --screenshot-on-frame 200 \
-        --screenshot-output "$WORK/duel-{n}.png" 2>&1
+        --screenshot-output "$WORK/duel-{n}.png"
 }
 printf 'duel-a\nduel-b\n' > "$WORK/duel/enabled.txt"
 out="$(run_duel)"
@@ -517,8 +538,8 @@ fi
 # in 6000 VBLs of the attract demo — with a 2 s buzz, ~12x the stock
 # length. OPENPETE_SFX_END_LOG names every key-on and every ON/RESET
 # transition the guest reads; the two logs must match line for line, and
-# the pack census must show the replacement actually served (a
-# green that did not engage is vacuous). Re-pointing the voice's addr/
+# the pack census must show the replacement actually served (a green
+# that did not engage is vacuous). Re-pointing the voice's addr/
 # pitch instead — the route this replaced — moved the end and shifted
 # the voice allocator's later choices from that tick on.
 say "sfx_replace: end-tick neutrality — replaced voices end on the stock tick"
@@ -580,9 +601,7 @@ if python3 tools/extract_wad_entry.py --disc "$DISC" --level 10 \
     mkdir -p "$WORK/wadrc"
     ln -sfn "$WORK/wadsrc/wad-recolor" "$WORK/wadrc/wad-recolor"
     printf 'wad-recolor\n' > "$WORK/wadrc/enabled.txt"
-    out="$(timeout 300 "$BIN" --headless --disc "$DISC" --disc-cache 0 \
- --skip-to-level 10 --frame-limit 2600 \
-            --mods-dir "$WORK/wadrc" 2>&1)"
+    out="$(run_game "$WORK/wadrc" 2600 --skip-to-level 10)"
     if printf '%s\n' "$out" | grep -q "wad overlay: level 10 data served from wad-recolor"; then
         ok "recoloured blob served"
     else
@@ -794,8 +813,13 @@ say "save safety: modset tag / warn / adopt on the memcard sidecar"
 CARDS="$WORK/cards"; mkdir -p "$CARDS"
 fixture "$WORK/ss-gems" double-gems
 fixture "$WORK/ss-observer" hello-anchor
-mc_run() { OPENPETE_CARD_DIR="$CARDS" timeout 120 "$BIN" --headless \
-    --disc "$DISC" --disc-cache 0 --frame-limit 300 "$@" 2>&1; }
+mc_run() { # mc_run [extra flags...] -> stdout+stderr
+    local log; log="$(mktemp "$WORK/mc.XXXXXX.log")"
+    local -a PG_CAPTURE_ENV=(OPENPETE_CARD_DIR="$CARDS")
+    local PG_CAPTURE_TIMEOUT=120
+    pg_capture "$log" "" -- --frame-limit 300 "$@"
+    cat "$log"
+}
 out="$(mc_run)"
 if [ ! -e "$CARDS/card1.mcr.modset" ] && \
    ! printf '%s\n' "$out" | grep -q "memcard.*modset"; then
@@ -1180,12 +1204,12 @@ if python3 -c "import PIL" 2>/dev/null; then
     mkdir -p "$WORK/declnone"; : > "$WORK/declnone/enabled.txt"
     for leg in none decl; do
         d="$WORK/decl"; [ "$leg" = none ] && d="$WORK/declnone"
-        timeout 300 "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 \
- --renderer vk --mute 1 \
+        RUN_OUTS="$WORK/decl-$leg-1800-vk.png" \
+        run_game "$d" 1802 --renderer vk --mute 1 \
             --bk2 games/spyro-1/bk2/flame.bk2 --screenshot-native-only \
-            --mods-dir "$d" --screenshot-on-frame 1800 \
+            --screenshot-on-frame 1800 \
             --screenshot-output "$WORK/decl-$leg-{n}.png" \
-            --frame-limit 1802 --max-runtime-seconds 280 \
+            --max-runtime-seconds 280 \
             > "$WORK/decl-$leg.log" 2>&1 || true
     done
     if [ -s "$WORK/decl-none-1800-vk.png" ] && [ -s "$WORK/decl-decl-1800-vk.png" ]; then

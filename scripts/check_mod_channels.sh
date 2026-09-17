@@ -18,24 +18,24 @@
 # version of that comparison passes straight through the slot bug, which
 # is documented at the rung itself.
 #
-# Usage: scripts/check_mod_channels.sh
+# Usage: scripts/check_mod_channels.sh [--game SLUG]
 # Exit: 0 pass, 1 failures, 64 skip (no binary / disc / vulkan / PIL).
+#
+# The gallery mod, the bk2 corpus and every pinned frame below are Spyro 1's,
+# so --game names the game whose binary and disc are used and refuses every
+# other slug rather than replaying Spyro 1 frame pins against another game.
 set -uo pipefail
 
-# Unattended launcher: silence controller vibration for every run this script
-# starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
-# up in no log, so it would never surface on its own. Set here rather than at
-# each invocation because this script builds its argument list in more than one
-# place, and a flag appended to the wrong one is a silent miss.
-# (scripts/fences/rumble_guard.py enforces this.)
-export OPENPETE_VIBRATION=0
-
-
 cd "$(dirname "$0")/.."
+# Every run this script starts goes through pg_capture, which silences
+# controller vibration for it.
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
 
-BIN=build/linux-release/games/spyro-1/openpete-spyro1
-DISC=games/spyro-1/spyro-1/build/SCUS-94228.cue
+GAME="$(pg_parse_game "$@")" || exit 64
+pg_resolve "$GAME"
+BIN="$PG_BIN"
+DISC="$PG_DISC"
 WORK="${TMPDIR:-/tmp}/openpete-modchan.$$"
 fail=0
 
@@ -43,6 +43,9 @@ say() { printf '\n[modchan] %s\n' "$*"; }
 ok()  { printf '[modchan]   PASS: %s\n' "$*"; }
 bad() { printf '[modchan]   FAIL: %s\n' "$*"; fail=1; }
 
+[ "$PG_GAME" = "spyro-1" ] || {
+    echo "[modchan] SKIP: the gallery mod, the bk2 corpus and the frame pins" \
+         "are spyro-1's, not $PG_GAME's"; exit 64; }
 [ -x "$BIN" ] || { echo "[modchan] SKIP: no binary at $BIN"; exit 64; }
 [ -f "$DISC" ] || { echo "[modchan] SKIP: no disc at $DISC"; exit 64; }
 python3 -c "import PIL" 2>/dev/null || { echo "[modchan] SKIP: PIL unavailable"; exit 64; }
@@ -59,23 +62,26 @@ trap 'rm -rf "$WORK"' EXIT
 run_rows() {  # run_rows <tag> <bk2> <frame> <rows> <extra-toml>
     local tag=$1 bk2=$2 frame=$3 rows=$4 extra=$5
     local md="$WORK/mods-$tag" out="$WORK/$tag-$frame-vk.png"
-    rm -rf "$md"; rm -f "$out"     # never measure a stale capture
+    rm -rf "$md"                   # never stage over a previous rung's mod
     mkdir -p "$md"
     cp -r mods/channel-gallery "$md/"
     rm -rf "$md/channel-gallery/.build"
     printf 'gallery.rows = "%s"\ngallery.strength = %s\n%s\n' \
         "$rows" "${STRENGTH:-1.0}" "$extra" \
         > "$md/channel-gallery/config.toml"
-    OPENPETE_TERRAIN_CACHE_FORCE="${CACHE:-0}" \
-    OPENPETE_TERRAIN_GPU_CENSUS="${CACHE:-0}" \
-    timeout 600 "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 \
- --renderer vk --mute 1 --aspect 16:9 \
-        --bk2 "games/spyro-1/bk2/$bk2.bk2" --screenshot-native-only \
+    # pg_capture deletes the log and the capture before the run and asserts
+    # the capture after, so no rung can diff the previous rung's image.
+    local -a PG_CAPTURE_ENV=(
+        OPENPETE_TERRAIN_CACHE_FORCE="${CACHE:-0}"
+        OPENPETE_TERRAIN_GPU_CENSUS="${CACHE:-0}")
+    local PG_CAPTURE_TIMEOUT=600
+    pg_capture "$WORK/$tag.log" "$out" -- \
+        --renderer vk --mute 1 --aspect 16:9 \
+        --bk2 "$PG_BK2_DIR/$bk2.bk2" --screenshot-native-only \
         --mods-dir "$md" --screenshot-on-frame "$frame" \
         --screenshot-output "$WORK/$tag-{n}.png" \
         --frame-limit $((frame + 2)) --max-runtime-seconds 580 \
-        ${EXTRA_ARGS:-} \
-        > "$WORK/$tag.log" 2>&1
+        ${EXTRA_ARGS:-}
     [ -s "$out" ]                  # caller checks; a missing capture is a hard error
 }
 
@@ -303,17 +309,19 @@ fi
 # the declarative 1586.
 say "many-distinct-outcome refine == declarative all-mobys"
 tintmd="$WORK/mods-tint"
-rm -rf "$tintmd"; rm -f "$WORK/tint-1800-vk.png"
+rm -rf "$tintmd"
 mkdir -p "$tintmd"
 cp -r mods/moby-instance-tint "$tintmd/"
 rm -rf "$tintmd/moby-instance-tint/.build"
-OPENPETE_MATERIAL_STATS=1 timeout 300 "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 \
- --renderer vk --mute 1 --aspect 16:9 \
-    --bk2 games/spyro-1/bk2/flame.bk2 --screenshot-native-only \
+PG_CAPTURE_ENV=(OPENPETE_MATERIAL_STATS=1)
+PG_CAPTURE_TIMEOUT=300
+pg_capture "$WORK/tint.log" "$WORK/tint-1800-vk.png" -- \
+    --renderer vk --mute 1 --aspect 16:9 \
+    --bk2 "$PG_BK2_DIR/flame.bk2" --screenshot-native-only \
     --mods-dir "$tintmd" --screenshot-on-frame 1800 \
     --screenshot-output "$WORK/tint-{n}.png" \
-    --frame-limit 1802 --max-runtime-seconds 280 \
-    > "$WORK/tint.log" 2>&1
+    --frame-limit 1802 --max-runtime-seconds 280
+unset PG_CAPTURE_ENV PG_CAPTURE_TIMEOUT
 if [ -s "$WORK/tint-1800-vk.png" ]; then
     # Its baseline is the no-mods frame: this mod has no gallery rows.
     if ! run_rows nomods flame 1800 "" ""; then

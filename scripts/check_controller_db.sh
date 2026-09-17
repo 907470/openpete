@@ -20,6 +20,11 @@
 # anything about latched bits. Fixing that gap belongs to the virtual-pad
 # instrument, not to the mapping chain.
 #
+# Usage: scripts/check_controller_db.sh [--game SLUG]
+#
+# Every assertion is about SDL's mapping table, which no game owns, so the
+# check runs against whichever game --game names (default spyro-1).
+#
 # Exit 0 PASS, 1 FAIL, 64 SKIP (no binary or no disc).
 #
 # HOME and XDG_CONFIG_HOME are redirected into the scratch tree: the whole
@@ -27,9 +32,15 @@
 # ~/.config would both pollute it and read whatever was already there.
 set -uo pipefail
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
 
-EXE="${OPENPETE_EXE:-build/linux-release/games/spyro-1/openpete-spyro1}"
-DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
+GAME="$(pg_parse_game "$@")" || exit 64
+pg_resolve "$GAME"
+# OPENPETE_EXE predates the resolver and still names the binary.
+EXE="${OPENPETE_EXE:-$PG_BIN}"
+PG_BIN="$EXE"
+DISC="$PG_DISC"
 FRAMES="${OPENPETE_FRAME_LIMIT:-500}"
 OUT="${TMPDIR:-/tmp}/openpete_controllerdb"
 
@@ -43,11 +54,12 @@ USERDB="$OUT/home/.config/openpete/gamecontrollerdb.txt"
 
 run() {   # run <tag> [env assignments...]
     local tag="$1"; shift
-    rm -f "$OUT/$tag.log"
-    ( env HOME="$OUT/home" XDG_CONFIG_HOME="$OUT/home/.config" \
-          OPENPETE_INPUT_VGAMEPAD=1 OPENPETE_VIBRATION=0 "$@" \
-          "$EXE" --headless --mute 1 --frame-limit "$FRAMES" \
-          --disc "$DISC" --disc-cache 0 ) > "$OUT/$tag.log" 2>&1
+    # pg_capture deletes the log before the run, so a leg can never resolve
+    # its mapping out of the previous leg's log and silences
+    # vibration for the run.
+    local -a PG_CAPTURE_ENV=(HOME="$OUT/home" XDG_CONFIG_HOME="$OUT/home/.config"
+                             OPENPETE_INPUT_VGAMEPAD=1 "$@")
+    pg_capture "$OUT/$tag.log" "" -- --mute 1 --frame-limit "$FRAMES"
     [[ -s "$OUT/$tag.log" ]] || { echo "[controllerdb] $tag produced no log" >&2; return 1; }
 }
 
