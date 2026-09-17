@@ -26,8 +26,12 @@
 # duration. See the plan's "headless VFR caveat".
 #
 # Usage:
-#   scripts/check_record.sh [--build-dir=build/linux-release] [--frames=300]
-#                           [--out=/tmp/openpete-record-test]
+#   scripts/check_record.sh [--game SLUG] [--build-dir=build/linux-release]
+#                           [--frames=300] [--out=/tmp/openpete-record-test]
+#
+# Every assertion is structural (codec, dimensions, PTS shape), so the run
+# works on any game the resolver knows; --game selects which one (default
+# spyro-1).
 #
 # Exit codes:
 #   0  — all assertions passed
@@ -36,17 +40,11 @@
 
 set -uo pipefail
 
-# Unattended launcher: silence controller vibration for every run this script
-# starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
-# up in no log, so it would never surface on its own. Set here rather than at
-# each invocation because this script builds its argument list in more than one
-# place, and a flag appended to the wrong one is a silent miss.
-# (scripts/fences/rumble_guard.py enforces this.)
-export OPENPETE_VIBRATION=0
-
-
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
+
+GAME="$(pg_parse_game "$@")" || exit 64
 
 BUILD_DIR="build/linux-release"
 FRAMES=300
@@ -54,16 +52,20 @@ OUT_DIR="/tmp/openpete-record-test"
 
 for arg in "$@"; do
     case "$arg" in
-        --build-dir=*) BUILD_DIR="${arg#*=}" ;;
-        --frames=*)    FRAMES="${arg#*=}" ;;
-        --out=*)       OUT_DIR="${arg#*=}" ;;
-        --help|-h)     sed -n '1,27p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --build-dir=*)   BUILD_DIR="${arg#*=}" ;;
+        --frames=*)      FRAMES="${arg#*=}" ;;
+        --out=*)         OUT_DIR="${arg#*=}" ;;
+        --game|--game=*) ;;   # consumed by pg_parse_game above
+        spyro-*)         ;;   # the two-word --game SLUG spelling
+        --help|-h)       sed -n '1,34p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *) echo "unknown arg: $arg" >&2; exit 1 ;;
     esac
 done
 
-BIN="$BUILD_DIR/games/spyro-1/openpete-spyro1"
-DISC="games/spyro-1/spyro-1/build/SCUS-94228.cue"
+PG_BUILD_DIR="$BUILD_DIR"
+pg_resolve "$GAME"
+BIN="$PG_BIN"
+DISC="$PG_DISC"
 
 [[ -x "$BIN"  ]] || { echo "SKIP: missing binary: $BIN" >&2; exit 64; }
 [[ -f "$DISC" ]] || { echo "SKIP: missing disc: $DISC" >&2; exit 64; }
@@ -78,16 +80,17 @@ probe() { ffprobe -v error "$@"; }
 
 # ---- Run 1: plain 4:3, full property check -------------------------------
 OUT1="$OUT_DIR/plain.mkv"
-rm -f "$OUT1"
 LOG1="$OUT_DIR/plain.log"
-"$BIN" --headless --disc "$DISC" --disc-cache 0 \
-       --frame-limit "$FRAMES" --mute off --record "$OUT1" >"$LOG1" 2>&1
+pg_capture "$LOG1" "$OUT1" -- \
+       --frame-limit "$FRAMES" --mute off --record "$OUT1"
 
 # A build configured without libav accepts --record and warns that it is
 # ignoring it. Every later assertion would then be about a file that was
 # never written — and Run 3 would never even end, because its stopping
 # condition is a count of RECORDED frames that stays at zero. Treat it as
-# the missing prerequisite it is, alongside the binary and ffprobe.
+# the missing prerequisite it is, alongside the binary and ffprobe. Checked
+# before the missing output is reported, since that absence is this skip's
+# symptom, not a failed assertion.
 if grep -q "this build has no video encoder" "$LOG1"; then
     echo "SKIP: $BIN was built without a video encoder (libav* not linked)" >&2
     exit 64
@@ -171,13 +174,12 @@ fi
 # dimensions may be the raw window dimensions (a naive window dump would
 # record 640x480 / 900x600 and its aspect would follow the window).
 OUT2A="$OUT_DIR/wide-a.mkv"; OUT2B="$OUT_DIR/wide-b.mkv"
-rm -f "$OUT2A" "$OUT2B"
-"$BIN" --headless --disc "$DISC" --disc-cache 0 \
+pg_capture "$OUT_DIR/wide-a.log" "$OUT2A" -- \
        --frame-limit 120 --aspect 21:9 --window 640x480 \
-       --record "$OUT2A" >"$OUT_DIR/wide-a.log" 2>&1
-"$BIN" --headless --disc "$DISC" --disc-cache 0 \
+       --record "$OUT2A"
+pg_capture "$OUT_DIR/wide-b.log" "$OUT2B" -- \
        --frame-limit 120 --aspect 21:9 --window 900x600 \
-       --record "$OUT2B" >"$OUT_DIR/wide-b.log" 2>&1
+       --record "$OUT2B"
 
 if [[ -s "$OUT2A" && -s "$OUT2B" ]]; then
     read -r WA HA < <(probe -select_streams v:0 -show_entries stream=width,height -of csv=p=0 "$OUT2A" | tr ',' ' ')
@@ -203,10 +205,9 @@ fi
 OUT3="$OUT_DIR/cfr.mp4"
 LOG3="$OUT_DIR/cfr.log"
 CFR_FRAMES=90
-rm -f "$OUT3"
-"$BIN" --headless --disc "$DISC" --disc-cache 0 --mute 1 \
+pg_capture "$LOG3" "$OUT3" -- --mute 1 \
        --record-cfr 29.913 --record-frames "$CFR_FRAMES" \
-       --record "$OUT3" >"$LOG3" 2>&1
+       --record "$OUT3"
 
 if [[ -s "$OUT3" ]]; then
     rate="$(probe -select_streams v:0 -show_entries stream=r_frame_rate -of csv=p=0 "$OUT3")"

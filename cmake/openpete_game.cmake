@@ -29,7 +29,9 @@
 # (the build-tree gen/ directory), for the sources a game adds on top.
 #
 # A game supplies games/<id>/recomp.conf, game_extras_impl.c and
-# psyq_game_provides.h; everything else is shared:
+# psyq_game_provides.h; everything else is shared, including the game_extras
+# entries whose body reduces to a game_layout field
+# (games/common/game_extras_default.c, always linked):
 #
 #  - The module: the recompiled main EXE plus every overlay translated by
 #    scripts/regen-recomp.sh. Each overlay is recompiled with a unique
@@ -241,6 +243,7 @@ function(openpete_add_game GAME_ID)
         game_extras_impl.c
         ${_identity_c}
         ${_common}/state_regions.c
+        ${_common}/game_extras_default.c
         ${_regions_sources}
         ${G_FEATURE_LIST}
         ${G_ORCHESTRATOR}

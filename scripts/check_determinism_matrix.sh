@@ -21,13 +21,15 @@
 #
 # Usage:
 #   scripts/check_determinism_matrix.sh
+#     [--game SLUG]                  (default spyro-1; the bk2 corpus and the
+#                                     disc follow it)
 #     [--build-dir=build/linux-release]
 #     [--frames=N]                   (default 2000; per-cell frame cap)
 #     [--aspects=4:3,16:9,21:9]      (comma list; baseline 4:3)
 #     [--fovs=default,90]            ("default" = no --fov flag)
 #     [--scenarios=title,stone-hill-entry,inventory]
 #                                    ("title" = no --bk2; otherwise a stem
-#                                     under games/spyro-1/bk2/)
+#                                     under the game's bk2 directory)
 #     [--out=/tmp/determinism-matrix]
 #     [--full]                       (4:3,16:9,21:9,32:9 × default,50,90,120
 #                                     × all *.bk2 scenarios + title)
@@ -48,16 +50,11 @@
 
 set -uo pipefail
 
-# Unattended launcher: silence controller vibration for every run this script
-# starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
-# up in no log, so it would never surface on its own. Set here rather than at
-# each invocation because this script builds its argument list in more than one
-# place, and a flag appended to the wrong one is a silent miss.
-# (scripts/fences/rumble_guard.py enforces this.)
-export OPENPETE_VIBRATION=0
-
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
+
+GAME="$(pg_parse_game "$@")" || exit 2
 
 BUILD_DIR="build/linux-release"
 FRAMES=2000
@@ -83,10 +80,15 @@ for arg in "$@"; do
         --soak)        SOAK=1 ;;
         --exclude=*)   EXCLUDE_CSV="${arg#--exclude=}" ;;
         --keep-logs)   KEEP_LOGS=1 ;;
-        --help|-h)     sed -n '1,55p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+        --game|--game=*) ;;   # consumed by pg_parse_game above
+        spyro-*)       ;;     # the two-word --game SLUG spelling
+        --help|-h)     sed -n '1,49p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
         *)             echo "unknown arg: $arg" >&2; exit 2 ;;
     esac
 done
+
+PG_BUILD_DIR="$BUILD_DIR"
+pg_resolve "$GAME"
 
 # Build a list of bk2 stems on disk, minus the EXCLUDE_CSV list, plus
 # leading "title" (no --bk2). Used by --full and --soak.
@@ -95,7 +97,7 @@ list_bk2_scenarios() {
     local exclude_pat
     exclude_pat=$(echo "$exclude_csv" | tr ',' '|')
     local stems
-    stems=$(ls games/spyro-1/bk2/*.bk2 2>/dev/null \
+    stems=$(ls "$PG_BK2_DIR"/*.bk2 2>/dev/null \
             | xargs -n1 basename \
             | sed 's/\.bk2$//' \
             | { if [[ -n "$exclude_pat" ]]; then grep -Ev "^($exclude_pat)$"; else cat; fi; } \
@@ -123,8 +125,8 @@ if [[ $SOAK -eq 1 ]]; then
     BK2_STOP_ON_END=1
 fi
 
-BIN="$BUILD_DIR/games/spyro-1/openpete-spyro1"
-DISC="games/spyro-1/spyro-1/build/SCUS-94228.cue"
+BIN="$PG_BIN"
+DISC="$PG_DISC"
 
 [[ -x "$BIN"  ]] || { echo "missing binary: $BIN (run cmake --build --preset linux-release)" >&2; exit 2; }
 [[ -f "$DISC" ]] || { echo "missing disc: $DISC" >&2; exit 2; }
@@ -147,19 +149,21 @@ run_cell() {
     local tag; tag=$(cell_tag "$scenario" "$aspect" "$fov")
     local hash="$OUT_DIR/h-$tag.csv"
     local log="$OUT_DIR/log-$tag.txt"
-    local args=(--headless --disc "$DISC" --disc-cache 0
-                --frame-limit "$FRAMES"
+    local args=(--frame-limit "$FRAMES"
                 --gameplay-hash-log "$hash"
                 --max-runtime-seconds 300)
     [[ "$aspect" != "4:3" ]] && args+=(--aspect "$aspect")
     [[ "$fov"    != "default" ]] && args+=(--fov "$fov")
     if [[ "$scenario" != "title" ]]; then
-        local bk2="games/spyro-1/bk2/$scenario.bk2"
+        local bk2="$PG_BK2_DIR/$scenario.bk2"
         [[ -f "$bk2" ]] || { echo "missing bk2: $bk2" >&2; return 2; }
         args+=(--bk2 "$bk2")
         [[ $BK2_STOP_ON_END -eq 1 ]] && args+=(--bk2-stop-on-end)
     fi
-    "$BIN" "${args[@]}" > "$log" 2>&1
+    # pg_capture deletes the hash log before the run and asserts it after, so
+    # a cell that failed to start cannot be compared against its predecessor's
+    # file. The size test additionally rejects an empty one.
+    pg_capture "$log" "$hash" -- "${args[@]}"
     local rc=$?
     [[ -s "$hash" ]] || { echo "    cell $tag: openpete rc=$rc, no hash log produced" >&2; return 1; }
     return 0

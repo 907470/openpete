@@ -11,14 +11,27 @@
 # an egg write one index too far lands in the memory-card header, and that
 # is the one failure mode of this feature that is not merely cosmetic.
 #
-# Exit 0 PASS, 1 FAIL, 64 SKIP (binary or disc missing).
+# Usage: scripts/check_custom_level_counts_ab.sh [--game SLUG]
+#
+# The table extents, the donor level and the mod fixtures are Spyro 1's, so
+# --game exists to name the game whose binary and disc are used and refuses
+# every other slug rather than diffing the wrong addresses.
+#
+# Exit 0 PASS, 1 FAIL, 64 SKIP (binary, disc, or count tables missing).
 set -uo pipefail
 
-ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-EXE="$ROOT/build/linux-release/games/spyro-1/openpete-spyro1"
-DISC="$ROOT/games/spyro-1/spyro-1/build/SCUS-94228.cue"
+cd "$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
+
+GAME="$(pg_parse_game "$@")" || exit 64
+pg_resolve "$GAME"
+EXE="$PG_BIN"
+DISC="$PG_DISC"
 WORK="${TMPDIR:-/tmp}/openpete-counts-ab.$$"
 
+[ "$PG_GAME" = "spyro-1" ] || {
+    echo "SKIP: $PG_GAME has no custom-level count tables located"; exit 64; }
 [ -x "$EXE" ]  || { echo "SKIP: no $EXE"; exit 64; }
 [ -f "$DISC" ] || { echo "SKIP: no $DISC"; exit 64; }
 
@@ -37,7 +50,7 @@ make_mod() {
       echo "id      = \"$id\""
       echo "name    = \"$name\""
       echo 'version = "1.0.0"'
-      echo 'game    = "spyro-1"'
+      echo "game    = \"$PG_GAME\""
       echo 'api     = 1'
       echo
       echo '[[level]]'
@@ -55,13 +68,15 @@ make_mod() {
 # run <mods-dir> <dump-out> <log-out> <dump-frame> <frame-limit> [warp]
 run() {
     local mods="$1" dump="$2" log="$3" at="$4" limit="$5" warp="${6:-}"
-    rm -f "$dump" "$log"
-    local -a env=()
-    [ -n "$warp" ] && env=(env "OPENPETE_CUSTOM_WARP=$warp")
-    "${env[@]}" timeout 300 "$EXE" --headless --disc "$DISC" --disc-cache 0 \
-        --mods-dir "$mods" --vibration 0 \
+    local -a PG_CAPTURE_ENV=()
+    [ -n "$warp" ] && PG_CAPTURE_ENV=("OPENPETE_CUSTOM_WARP=$warp")
+    local PG_CAPTURE_TIMEOUT=300
+    # pg_capture deletes the dump and the log first and asserts the dump after,
+    # so a leg can never compare the previous leg's dump.
+    pg_capture "$log" "$dump" -- \
+        --mods-dir "$mods" \
         --ram-dump-on-frame "$at" --ram-dump-output "$dump" \
-        --frame-limit "$limit" > "$log" 2>&1
+        --frame-limit "$limit"
     [ -s "$dump" ] || { echo "  (no RAM dump produced; see $log)"; return 1; }
     return 0
 }

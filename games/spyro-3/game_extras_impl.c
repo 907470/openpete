@@ -51,18 +51,8 @@ void game_on_overlay_init(CPUState* cpu) { (void)cpu; }
 
 
 void game_apply_runtime_quirks(CPUState* cpu) { (void)cpu; }
-/* The write census installs over the store hooks before any guest
- * instruction runs; inert without OPENPETE_WRITE_CENSUS. */
-void game_on_boot(CPUState* cpu) {
-    /* The atlas and the cutscene overlays are staged into a scratch buffer and
-     * copied into the overlay region, so the disc read that fetched them never
-     * named them; the dispatcher re-derives the resident one from the id word
-     * instead. */
-    spyro_overlay_set_resync(psyq_overlay_resync_from_ram);
-    /* The write census installs over the store hooks before any guest
-     * instruction runs; inert without OPENPETE_WRITE_CENSUS. */
-    write_census_install(cpu);
-}
+/* game_on_boot and game_on_state_loaded are the shared bodies in
+ * games/common/game_extras_overlay_resync.c. */
 
 /* --- Per-tick hooks --- */
 void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
@@ -86,13 +76,6 @@ void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
 void game_on_hash_emit(uint32_t frame) { (void)frame; }
 
 /* --- Savestate --- */
-/* Re-point the dispatcher after a restore: the overlay resident in the
- * restored RAM decides which dispatcher is valid, and the id is the first word
- * of the overlay region. */
-void game_on_state_loaded(CPUState* cpu) {
-    psyq_overlay_resync_from_ram();
-    (void)cpu;
-}
 
 /* The extra savestate payload is the shared thunk layer's latch pack
  * (games/common/psyq/psyq_thunk_state.c). */
@@ -101,21 +84,6 @@ void game_on_state_loaded(CPUState* cpu) {
  * loading, fade-in and the exit transition report "not live", which keeps the
  * in-memory snapshot users (rewind keyframes, runahead) out of them. */
 int game_is_gameplay_live(CPUState* cpu) { return spyro3_skip_gameplay_live(cpu); }
-
-/* g_Spyro (0x80070328) holds the position in its first three words. */
-int game_get_player_position(int32_t* out_x, int32_t* out_y, int32_t* out_z) {
-    uint8_t* ram = openpete_psx_get_ram();
-    if (!ram) return -1;
-    const uint32_t base = 0x80070328u - 0x80000000u;
-    int32_t x, y, z;
-    memcpy(&x, ram + base + 0, 4);
-    memcpy(&y, ram + base + 4, 4);
-    memcpy(&z, ram + base + 8, 4);
-    *out_x = x;
-    *out_y = y;
-    *out_z = z;
-    return 0;
-}
 
 /* --- CLI --- */
 void game_set_skip_to_level(int level_id) { spyro3_skip_set(level_id); }

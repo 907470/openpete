@@ -10,5 +10,8 @@ openpete_add_game(spyro-2
         skip_to_level.c
         features/freecam.c
 
+        # The overlay-id boot and restore hooks, shared with Spyro 3.
+        ${CMAKE_SOURCE_DIR}/games/common/game_extras_overlay_resync.c
+
         # The engine layout: the camera pose only, every other field 0.
         renderer/layout.c)

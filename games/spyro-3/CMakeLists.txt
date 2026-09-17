@@ -20,6 +20,10 @@ openpete_add_game(spyro-3
     SOURCES
         skip_to_level.c
         features/freecam.c
+
+        # The overlay-id boot and restore hooks, shared with Spyro 2.
+        ${CMAKE_SOURCE_DIR}/games/common/game_extras_overlay_resync.c
+
         renderer/layout.c
         renderer/portal.c
         renderer/terrain_probe.c
