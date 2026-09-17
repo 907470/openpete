@@ -748,9 +748,9 @@ unsigned openpete_native_scene_frame(void);
  * `frame` here. Runs on the thread doing the rotation. */
 void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame));
 
-/* The GAME's 2D emission order for the tris added next. The 2D layer is
+/* The ordering-table traversal rank of the tris added next. The 2D layer is
  * screen-space with the depth test off, so compose order is painter order, and
- * its two emitters reach the scene at different points of the frame — one at a
+ * its two emitters reach the scene at different points of the frame, one at a
  * primitive's link, one when a glyph chain is built, one of them from a
  * deferred release. Both stamp the number the game emitted at, and the compose
  * orders by it. Sticky, cleared at each frame boundary; a feeder that never

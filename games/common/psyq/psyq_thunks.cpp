@@ -1468,7 +1468,7 @@ void psyq_DrawOTag(CPUState* cpu) {
         s_last_frame = openpete_frame;
     }
 
-    /* The ordering table this walk starts from. The 2D feeder needs the SAME
+    /* The ordering table this walk starts from. The 2D feeder needs the same
      * traversal to rank its primitives, and it runs a tick before the walk of
      * the table it is feeding, so the two most recent bases are kept: the
      * tables alternate, and the one not used by the newest walk is the one the

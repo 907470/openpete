@@ -91,7 +91,7 @@ static void bbox_report(void) {
 /* ---- 2D prim decode + feed ----------------------------------------------- */
 /* Every 2D primitive is fed from the deferred flush (see the dispatch
  * section), which runs at the OT walk, where openpete_frame may already be the
- * next VBL. Beginning THAT frame would push the finished scene into the
+ * next VBL. Beginning that frame would push the finished scene into the
  * history ring a VBL early and start a new scene holding only this primitive,
  * and the lagged headless compose then reads the wrong slot (the canonical
  * dump jumps a tick). Append to the live scene instead: the primitive belongs
@@ -310,11 +310,11 @@ static void feed_sprt_now(CPUState* cpu, uint32_t prim, unsigned tpage) {
 /* Unclaimed 2D primitives, by GP0 command byte. The chain below claims a
  * closed list of encodings; anything else is linked for the reference and
  * never fed, so it is missing from the native frame. This histogram names the
- * codes the game actually links that the chain does not decode — the
+ * codes the game actually links that the chain does not decode, the
  * engagement counter for adding a decoder (nonzero before, zero after).
  * Counted always (one increment); printed per tick under
  * OPENPETE_UISPRITE_CENSUS, the tick's line emitted at the first insert of
- * the NEXT tick, so a line holds a whole tick's unclaimed prims. */
+ * the next tick, so a line holds a whole tick's unclaimed prims. */
 static unsigned s_unclaimed[256];        /* since boot */
 static unsigned s_unclaimed_tick[256];   /* current tick */
 static unsigned s_unclaimed_frame = 0xFFFFFFFFu;
@@ -350,7 +350,7 @@ static void unclaimed_note(CPUState* cpu, uint32_t prim) {
  * time every one of them is still the flat page). The words ARE final when the
  * ordering table holding them is handed to the GPU.
  *
- * So the chokepoint CLAIMS each primitive (records its address and kind) and
+ * So the chokepoint claims each primitive (records its address and kind) and
  * the whole batch is fed at the OT walk, in link order. The primitives linked
  * between two DrawOTag calls are exactly one ordering table's worth, and the
  * second call is the one that draws them, so `ui_sprite_ot_draw_begin` is both
@@ -374,11 +374,11 @@ static int      s_ot_ranked;          /* 2D tris the table walk ranked at the la
                                        * walk reached none of this frame's 2D) */
 static unsigned s_claim_late;         /* batches released at the frame close rather than at the
                                        * ordering-table walk (engagement counter for that hook) */
-/* 2D emissions of a frame that arrive AFTER that frame's canonical capture has
+/* 2D emissions of a frame that arrive after that frame's canonical capture has
  * released its batch. The capture is the release point on the assumption that
  * it is the frame's last 2D emission; these counters test that, per emitter.
- * Only emissions stamped with the SAME frame as the batch the capture released
- * count — an emission carrying a later frame belongs to the next frame and is
+ * Only emissions stamped with the same frame as the batch the capture released
+ * count, an emission carrying a later frame belongs to the next frame and is
  * not evidence of anything. Printed once per capture under
  * OPENPETE_UISPRITE_TRACE, zeros included: a zero line is the evidence that
  * nothing of that frame follows its capture. */
@@ -398,7 +398,7 @@ static unsigned s_claim_at_capture;   /* batches released at their own frame's c
  * has handed the ordering table holding it to the GPU. The walk is where the
  * words are beyond doubt final, so the released batch is re-read there and
  * compared with what was fed: `s_verify_stale` counts primitives whose words
- * changed after the release (must be 0 — a nonzero count means a store lands
+ * changed after the release (must be 0, a nonzero count means a store lands
  * after the capture and the release point is too early), against
  * `s_verify_n` primitives checked. */
 static ui_claim_t s_verify[UI_CLAIM_MAX];
@@ -408,7 +408,7 @@ static unsigned s_mutated;            /* primitives whose words changed between 
                                        * and the flush: the deferral's engagement counter
                                        * (0 means no caller ever rewrites a linked prim
                                        * and the deferral is buying nothing) */
-static CPUState* s_cpu = NULL;        /* the game CPU (stable) — for the OT-walk flush */
+static CPUState* s_cpu = NULL;        /* the game CPU (stable), for the OT-walk flush */
 static int      s_in_fade = 0;        /* set across the fade emitter's real-function call so
                                        * the chokepoint hook can tell the fade's 0x2A F4 from
                                        * a dark panel's (both go through the chokepoint) */
@@ -421,10 +421,10 @@ static int      s_last_abr = 0;       /* semi-transparency rate (ABR) of the mos
 /* Fold the words a feeder reads into one value, so the release can tell a
  * rewritten primitive from an untouched one without keeping every word. Words
  * 1..9 cover the longest encoding claimed here (POLY_FT4: the code+colour word
- * and the four xy/uv pairs). Word 0 is EXCLUDED: its low 24 bits are the
+ * and the four xy/uv pairs). Word 0 is excluded: its low 24 bits are the
  * ordering table's link pointer, rewritten whenever another primitive is
  * linked in front of this one, which is not a change to what is drawn. Its top
- * byte, the tag length, is folded in — that is the byte the decode chain
+ * byte, the tag length, is folded in, that is the byte the decode chain
  * reads. */
 static uint32_t claim_sum(CPUState* cpu, uint32_t prim) {
     uint32_t h = 2166136261u;
@@ -507,8 +507,8 @@ static int is_line_g2(CPUState* cpu, uint32_t prim) {
  *
  * The GPU draws a 2D primitive when the table walk reaches it, and the walk is
  * a flat singly-linked list: each tag's low 24 bits point at the next
- * primitive, 0x00FFFFFF ends it. AddPrim links a primitive at the HEAD of its
- * entry, so within an entry the last-linked primitive is drawn FIRST — the
+ * primitive, 0x00FFFFFF ends it. AddPrim links a primitive at the head of its
+ * entry, so within an entry the last-linked primitive is drawn first, the
  * order a primitive is emitted in is not the order it is drawn in, and no
  * counter kept at emission can stand in for the walk. Reproduce the walk itself
  * (the game's own list, not a proxy for it).
@@ -545,8 +545,8 @@ static int known_has(const uint32_t* known, int kn, uint32_t a) {
     return 0;
 }
 
-/* Rank over the UNION of every recent chain that holds any of this frame's 2D,
- * taken in DrawOTag ISSUE order (oldest ring entry first), because the game may
+/* Rank over the union of every recent chain that holds any of this frame's 2D,
+ * taken in DrawOTag issue order (oldest ring entry first), because the game may
  * split its 2D across more than one table and a single "best" chain then leaves
  * the others' primitives unranked. An address seen in an earlier chain keeps
  * that rank. */
@@ -616,9 +616,9 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
     case QK_FT4:    feed_ft4(cpu, prim, w1); break;
     case QK_FREEZE:
         /* Pause / inventory / flight-results green overlay: drive the native
-         * freeze backdrop from our own last world frame and DROP this FT4 (it
-         * samples the emulated VRAM scratch). Tint = the FT4's setRGB0 (B,G,R
-         * packed in w1) — r=lo byte, g=mid, b=hi. */
+         * freeze backdrop from our own last world frame and drop this FT4 (it
+         * samples the emulated vram scratch). Tint = the FT4's setRGB0 (B,G,R
+         * packed in w1), r=lo byte, g=mid, b=hi. */
         scene_begin_for_feed();
         openpete_native_scene_set_freeze_backdrop((int)(w1 & 0xFFu),
                               (int)((w1 >> 8) & 0xFFu),
@@ -631,10 +631,10 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
     case QK_F4_PANEL: {
         /* The box links its own DR_MODE immediately before the quad, so the
          * ABR tracked at this point of the batch is the blend the GPU is in
-         * when the quad draws. ABR 2 (B-F) DARKENS the framebuffer by the
+         * when the quad draws. ABR 2 (B-F) darkens the framebuffer by the
          * quad's colour and is rendered subtractive (blend 3); ABR 0
          * ((B+F)/2) is a halving and is rendered at alpha 0x80. Modes 1
-         * (B+F) and 3 (B+F/4) fall back to alpha — add an additive HUD pipe
+         * (B+F) and 3 (B+F/4) fall back to alpha, add an additive HUD pipe
          * when a consumer appears. */
         int sub = (s_last_abr == 2);
         feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL,
@@ -646,7 +646,7 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
 }
 
 /* Release `n` of the claimed batch, keeping the rest for a later release. The
- * canonical capture keeps the batch's LAST primitive back: the game links a
+ * canonical capture keeps the batch's last primitive back: the game links a
  * primitive and fills it afterwards, so at the capture every primitive but the
  * one linked last is complete, and the last one still holds the previous
  * content of its polybuf slot. It is released at the frame close, which is
@@ -655,9 +655,9 @@ static void release_batch(unsigned n) {
     CPUState* cpu = s_cpu;
     if (n > s_claim_n) n = s_claim_n;
     if (!cpu || !n || !openpete_native_scene_enabled()) { s_claim_n -= n; return; }
-    /* Which primitives are released is decided in CLAIM order: the capture keeps
-     * the last-LINKED one back, because that is the one the game has not filled
-     * yet. What order they are COMPOSED in is decided after the feed, by the
+    /* Which primitives are released is decided in claim order: the capture keeps
+     * the last-linked one back, because that is the one the game has not filled
+     * yet. What order they are composed in is decided after the feed, by the
      * table walk below, over every 2D tri of the frame at once. */
     static int s_tr = -1;
     ENV_FLAG_LATCH(s_tr, "OPENPETE_UISPRITE_TRACE");
@@ -676,7 +676,7 @@ static void release_batch(unsigned n) {
     }
     openpete_native_scene_set_prim(0u);
     /* One walk of the table, then rank every 2D tri of the frame by the address
-     * it came from — the batch just fed and the glyphs fed at emission alike. */
+     * it came from, the batch just fed and the glyphs fed at emission alike. */
     s_walk_hits = 0;
     { static uint32_t known[UI_CLAIM_MAX * 2];
       int kn = openpete_native_scene_collect_2d_prims(known, (int)(sizeof known / sizeof known[0]));
@@ -714,7 +714,7 @@ void ui_sprite_ot_draw_begin(void) { release_batch(s_claim_n); }
  * is the last moment the batch can reach the scene it belongs to. On a screen
  * whose other feeders all run after the walk this never fires with a batch
  * pending (the walk released it first); on one where a feeder of the next frame
- * runs before the walk — a menu's HUD mobys — it is the release point, and the
+ * runs before the walk, a menu's HUD mobys, it is the release point, and the
  * primitives' words are final by then. */
 static void on_scene_frame_close(unsigned frame) {
     if (s_claim_n && frame == s_claim_frame) { s_claim_late++; ui_sprite_ot_draw_begin(); }
@@ -724,15 +724,15 @@ static void on_scene_frame_close(unsigned frame) {
  * frame's stores into the primitives has run (the game fills a primitive right
  * after linking it, and a write census over the batch's polybuf range shows no
  * store landing in a later frame), and the image has not been composed yet. So
- * this is where the batch is both final and still in its own frame — the
+ * this is where the batch is both final and still in its own frame, the
  * release point. The frame close and the ordering-table walk stay as later
  * releases for a frame that composes no image. */
 static void on_overlay_precapture(void) {
     post_capture_report();
     const unsigned built = s_claim_frame;
-    /* The WHOLE batch goes at the capture. Holding the last-linked primitive
+    /* The whole batch goes at the capture. Holding the last-linked primitive
      * back to the frame close reads its words a frame later, which for 2D that
-     * ANIMATES (the cutscene letterbox sliding in) is the next tick's position:
+     * animates (the cutscene letterbox sliding in) is the next tick's position:
      * measured, that put the bar 2 PSX rows out on every frame of the slide. */
     if (s_claim_n) { s_claim_at_capture++; release_batch(s_claim_n); }
     s_cap_frame = s_claim_n ? built : 0xFFFFFFFFu;
@@ -780,7 +780,7 @@ static void claim_aux(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
          * table opens it, so the batch has a scene of its own build frame to be
          * appended to at the walk. On a screen with no 3D feeder (a menu, the
          * atlas) nothing else would open it, and the batch would land in the
-         * walk's newer scene — one drawn tick after the world it belongs to. */
+         * walk's newer scene, one drawn tick after the world it belongs to. */
         openpete_native_scene_begin_frame(openpete_frame);
     }
     if (s_claim_n >= UI_CLAIM_MAX) { s_claim_lost++; return; }
@@ -834,7 +834,7 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
     if (openpete_frame != s_unclaimed_frame) { unclaimed_flush_tick(); s_unclaimed_frame = openpete_frame; }
 
     if (feed) {
-        /* Claimed here, fed at the OT walk — the primitive's words are not
+        /* Claimed here, fed at the OT walk, the primitive's words are not
          * final yet (see the dispatch header). */
         if (is_freeze_backdrop(cpu, prim)) claim(cpu, prim, QK_FREEZE);
         else if (is_ft4(cpu, prim))        claim(cpu, prim, QK_FT4);

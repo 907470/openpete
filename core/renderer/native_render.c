@@ -266,12 +266,12 @@ typedef struct {
                      * The ordering-table walk ranks a tri by finding this
                      * address in the chain, so every 2D emitter can keep feeding
                      * where it does and still be ordered by the traversal. */
-    uint32_t seq;   /* the GAME's 2D emission order for this frame (sticky
+    uint32_t seq;   /* the ordering-table traversal rank for this frame (sticky
                      * set_seq value; 0 for everything that is not 2D). The 2D
                      * layer is screen-space with the depth test off, so the
                      * order tris are composed in IS the painter order, and the
                      * two 2D emitters reach the scene at different points of
-                     * the frame — one at the primitive's link, one when a glyph
+                     * the frame, one at the primitive's link, one when a glyph
                      * chain is built, one of them deferred to a later release.
                      * Composing by this number reproduces the order the game
                      * emitted them in, whenever each was fed. */
@@ -366,7 +366,7 @@ void openpete_native_scene_register_overlay_precapture(void (*fn)(void)) {
 /* Provenance-tag state (S6). s_tag_split_ext is armed by the material-
  * selector registry (S8); the env flags are the dev instruments. */
 static uint32_t s_cur_tag;        /* sticky, stamped by add_tri */
-/* The GAME's 2D emission order for the tris added next (see scene_tri_t::seq).
+/* The ordering-table traversal rank of the tris added next (see scene_tri_t::seq).
  * Sticky, cleared at each frame boundary; a feeder that never sets it leaves 0. */
 static uint32_t s_cur_seq;
 static uint32_t s_cur_prim;       /* sticky, stamped by add_tri (see scene_tri_t::prim) */
@@ -1259,21 +1259,26 @@ static int seq_sort_on(void) {
  * (tens of tris) and already nearly sorted, so this is linear in practice. */
 static void seq_sort_carry(scene_tri_t* tri, uint32_t* epoch, int n) {
     if (!seq_sort_on()) return;
-    /* Only NUMBERED tris are ordered, and only among their own slots: a tri
-     * stamped 0 came from a feeder that takes no emission number, and moving it
-     * would reorder a layer this knows nothing about. */
-    int idx[OVERLAY_CARRY_MAX]; int m = 0;
-    for (int t = 0; t < n && m < OVERLAY_CARRY_MAX; t++) if (tri[t].seq) idx[m++] = t;
-    if (m < 2) return;
-    static scene_tri_t tmp[OVERLAY_CARRY_MAX]; static uint32_t tmpe[OVERLAY_CARRY_MAX];
-    for (int i = 0; i < m; i++) { tmp[i] = tri[idx[i]]; tmpe[i] = epoch[idx[i]]; }
-    for (int i = 1; i < m; i++) {                      /* stable insertion sort */
-        scene_tri_t t = tmp[i]; uint32_t e = tmpe[i];
-        int j = i - 1;
-        while (j >= 0 && tmp[j].seq > t.seq) { tmp[j + 1] = tmp[j]; tmpe[j + 1] = tmpe[j]; j--; }
-        tmp[j + 1] = t; tmpe[j + 1] = e;
+    /* Order each contiguous run of numbered tris within itself, exactly as the
+     * scene is ordered. The carry keeps the feed's own sequence of runs, and
+     * apply_overlay re-applies the block in that sequence, so a run's members
+     * stay between the same neighbours on the sub-tick leg as on the canonical
+     * one, and a blended sprite composes against the same background in both.
+     * Gathering every numbered tri and permuting it across the whole carry
+     * would let one cross the unnumbered tris separating two runs. */
+    int i = 0;
+    while (i < n) {
+        if (!tri[i].seq) { i++; continue; }
+        int j = i;
+        while (j < n && tri[j].seq) j++;              /* [i, j) is one run */
+        for (int a = i + 1; a < j; a++) {             /* stable insertion sort */
+            scene_tri_t t = tri[a]; uint32_t e = epoch[a];
+            int b = a - 1;
+            while (b >= i && tri[b].seq > t.seq) { tri[b + 1] = tri[b]; epoch[b + 1] = epoch[b]; b--; }
+            tri[b + 1] = t; epoch[b + 1] = e;
+        }
+        i = j;
     }
-    for (int i = 0; i < m; i++) { tri[idx[i]] = tmp[i]; epoch[idx[i]] = tmpe[i]; }
 }
 
 /* Reorder the scene's 2D tris among themselves by emission sequence, leaving
@@ -1282,9 +1287,9 @@ static void seq_sort_carry(scene_tri_t* tri, uint32_t* epoch, int n) {
  * of them was fed from a deferred release. */
 static void seq_sort_scene_2d(scene_tri_t* sc, int n) {
     if (!seq_sort_on()) return;
-    /* Order each CONTIGUOUS run of numbered tris within itself. Gathering every
+    /* Order each contiguous run of numbered tris within itself. Gathering every
      * numbered tri and permuting it across the whole scene would let a 2D tri
-     * move past unnumbered geometry lying between two runs — and a BLENDED
+     * move past unnumbered geometry lying between two runs, and a blended
      * sprite that crosses the geometry behind it composes against a different
      * background, which is a visible change nothing asked for. A run is what
      * one feed produced consecutively, so ordering inside it is exactly the
@@ -1508,10 +1513,10 @@ void openpete_native_scene_apply_overlay(double alpha) {
              *       (frames are discrete); only the position lerps. A glyph swap
              *       at the same slot keeps shape+position, where the position
              *       lerp is a no-op — harmless. */
-            /* UV identity only means anything for a TEXTURED primitive: an
+            /* UV identity only means anything for a textured primitive: an
              * untextured quad carries u=v=0, so comparing UVs matches any two
              * of them and pairs, say, the top letterbox bar with the bottom
-             * one — the position lerp then sweeps a full-width black bar across
+             * one, the position lerp then sweeps a full-width black bar across
              * the middle of the frame. An untextured quad is identified by
              * shape and bounded move alone. */
             int same_tex = tri.textured && p->textured &&
