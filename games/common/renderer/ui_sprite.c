@@ -28,6 +28,7 @@
 #include "renderer/ui_game.h"
 #include "openpete_recomp_module.h"   /* the game's own routine, through the module dispatch */
 #include "texture_pack.h"
+#include "openpete_fb_snapshot.h"
 #include "game_layout.h"          /* the draw-buffer pair the retained freeze reads */
 #include "openpete_subtick_view.h"   /* PSX RAM through the sub-tick-consistent view */
 
@@ -103,6 +104,19 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
     uint32_t rgba = (w1 & 0xFFFFFFu) | 0xFF000000u;
     int abe = (int)((w1>>24)&0x2u);   /* code bit1 = semi-transparent (ABR mode 0) */
 
+    /* A quad sampling a framebuffer window (a MoveImage'd copy of a draw
+     * buffer) reads texels the native render never writes. Redirect it to the
+     * snapshot of the native frame taken when the copy was made; the texel box
+     * becomes a pixel box in that image. No snapshot -> the stock VRAM path. */
+    float snap_su = 1.0f, snap_sv = 1.0f, snap_ox = 0.0f, snap_oy = 0.0f;
+    int u_lo = u[0], u_hi = u[0], v_lo = v[0], v_hi = v[0];
+    for (int k = 1; k < 4; k++) {
+        if (u[k] < u_lo) u_lo = u[k]; if (u[k] > u_hi) u_hi = u[k];
+        if (v[k] < v_lo) v_lo = v[k]; if (v[k] > v_hi) v_hi = v[k];
+    }
+    const int snap = openpete_fb_snapshot_find(tpx, tpy, bpp, u_lo, v_lo, u_hi, v_hi,
+                                               &snap_su, &snap_sv, &snap_ox, &snap_oy);
+
     /* The capture-boundary flush runs at the canonical present, where
      * openpete_frame may already be the next VBL: beginning THAT frame would
      * push the finished scene into the history ring a VBL early and start a
@@ -119,6 +133,14 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
             tri.v[j].z=0.0f; tri.v[j].u=(float)u[c]; tri.v[j].v=(float)v[c]; tri.v[j].rgba=rgba; }
         tri.textured=1; tri.tpage_x=tpx; tri.tpage_y=tpy; tri.clut_x=clx; tri.clut_y=cly;
         tri.bpp=bpp; tri.blend = abe ? 1 : 0;
+        if (snap >= 0) {
+            tri.tpage_x = snap; tri.tpage_y = 0; tri.clut_x = 0; tri.clut_y = 0;
+            tri.bpp = OPENPETE_FB_SNAPSHOT_BPP;
+            for (int j=0;j<3;j++) {
+                tri.v[j].u = snap_ox + tri.v[j].u * snap_su;
+                tri.v[j].v = snap_oy + tri.v[j].v * snap_sv;
+            }
+        }
         openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_HUD, 1);
     }
     bbox_note(UICLS_FT4, (float)sx[0], (float)sy[0], (float)sx[3], (float)sy[3]);

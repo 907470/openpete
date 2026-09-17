@@ -25,6 +25,7 @@
 #include "openpete_knobs.h"   /* env-epoch for cached live knobs */
 #include "openpete_devui.h"
 #include "openpete_mods.h"   /* openpete_mods_texture_get (mod-texture runs) */
+#include "openpete_fb_snapshot.h"   /* framebuffer-window snapshot runs */
 
 #include "openpete_log.h"
 #include "openpete_time.h"   /* op_now — overlay's own sub-tick alpha (camera-independent) */
@@ -5692,6 +5693,35 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                 }
             }
         }
+        if (s0->bpp == OPENPETE_FB_SNAPSHOT_BPP) {
+            /* Framebuffer-window run (openpete_fb_snapshot_on_move): tpage_x
+             * carries the snapshot slot and the UVs are pixel coords in its
+             * image, so the rect is the whole image. Without the HD pipe the
+             * run falls back to the stock pipeline it was batched under. */
+            int sw = 0, sh = 0;
+            const unsigned char* px = openpete_fb_snapshot_pixels(s0->tpage_x, &sw, &sh);
+            if (px && hd_pipe) {
+                const uint64_t key = openpete_fb_snapshot_key(s0->tpage_x);
+                rhi_texture* tex = hd_cache_lookup(key);
+                if (!tex) {
+                    hd_pending_add(key, px, sw, sh, 0, 0);
+                } else {
+                    const hd_pc pc = { 0.f, 0.f, (float)sw, (float)sh,
+                                       { 1.f, 1.f, 1.f, 0.f }, { 0.f, 0.f, 0.f, 0.f } };
+                    bind_scene_pipe(hd_pipe);
+                    rhi_bind_vram(s_nr.dev, tex);
+                    rhi_push_constants(s_nr.dev, &pc, sizeof pc);
+                    rhi_draw(s_nr.dev, (uint32_t)(run * 3), (uint32_t)(first_vert + i * 3));
+                    bind_scene_pipe(self);
+                    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+                }
+            } else {
+                rhi_push_constants(s_nr.dev, &m, sizeof m);
+                rhi_draw(s_nr.dev, (uint32_t)(run * 3), (uint32_t)(first_vert + i * 3));
+            }
+            i += run;
+            continue;
+        }
         if (s0->bpp == 32) {
             /* mod-texture run (openpete_mods_texture_register): tpage_x
              * carries the registered id; bind the RGBA texture through
@@ -10465,6 +10495,66 @@ int openpete_native_render_capture_rgba(unsigned char **out, int *w, int *h)
     s_scene_shot_lag = 0;
     if (r != 0 && *out) { free(*out); *out = NULL; }
     return r || !*out;
+}
+
+/* Map a PSX framebuffer screen point into a pixel of a full-extent capture
+ * `capw` by `caph` wide, through the renderer's own screen mapping so the crop
+ * cannot drift from where the scene itself lands. `wf` is the capture's widen. */
+static void fbsnap_px(float sx, float sy, int capw, int caph, float wf,
+                      float *px, float *py)
+{
+    const int   prev_fe = s_render_full_extent;
+    const float prev_wf = s_render_freeze_wf;
+    s_render_full_extent = 1; s_render_freeze_wf = wf;
+    float cx, cy; scene_to_clip(sx, sy, &cx, &cy);
+    s_render_full_extent = prev_fe; s_render_freeze_wf = prev_wf;
+    *px = (cx + 1.0f) * 0.5f * (float)capw;
+    *py = (1.0f - cy) * 0.5f * (float)caph;
+}
+
+/* Give every pending framebuffer window the native frame's own pixels: compose
+ * this present's frame in memory (the same compose the -vk dump and the live
+ * present produce), crop it to each window's source rect and hand the crop to
+ * the store. A compose that fails leaves the windows pending, so the next
+ * present retries and the quads keep drawing the previous snapshot meanwhile. */
+void openpete_native_render_snapshot_fb_window(void)
+{
+    if (!s_nr.enabled) return;
+    if (!openpete_fb_snapshot_pending()) return;
+    unsigned char *cap = NULL; int cw = 0, ch = 0;
+    if (openpete_native_render_capture_rgba(&cap, &cw, &ch) != 0) return;
+    /* The widen the compose actually used, not the one it was asked for. */
+    const float wf = (s_nr.ref_w > 0) ? (float)cw / (float)s_nr.ref_w : 1.0f;
+    int idx, sx, sy, w, h;
+    while (openpete_fb_snapshot_take_pending(&idx, &sx, &sy, &w, &h)) {
+        float fx0, fy0, fx1, fy1;
+        fbsnap_px((float)sx, (float)sy, cw, ch, wf, &fx0, &fy0);
+        fbsnap_px((float)(sx + w), (float)(sy + h), cw, ch, wf, &fx1, &fy1);
+        int x0 = (int)(fx0 + 0.5f), y0 = (int)(fy0 + 0.5f);
+        int x1 = (int)(fx1 + 0.5f), y1 = (int)(fy1 + 0.5f);
+        if (x1 < x0) { int t = x0; x0 = x1; x1 = t; }
+        if (y1 < y0) { int t = y0; y0 = y1; y1 = t; }
+        if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
+        if (x1 > cw) x1 = cw; if (y1 > ch) y1 = ch;
+        const int pw = x1 - x0, ph = y1 - y0;
+        if (pw <= 0 || ph <= 0) continue;
+        unsigned char *px = (unsigned char *)malloc((size_t)pw * (size_t)ph * 4u);
+        if (!px) continue;
+        for (int row = 0; row < ph; row++)
+            memcpy(px + (size_t)row * pw * 4u,
+                   cap + ((size_t)(y0 + row) * cw + x0) * 4u, (size_t)pw * 4u);
+        openpete_fb_snapshot_store(idx, px, pw, ph);
+    }
+    free(cap);
+    { static int s_census = -1;
+      if (s_census < 0) { const char *e = getenv("OPENPETE_FBSNAP_CENSUS"); s_census = (e && *e && *e != '0'); }
+      if (s_census) {
+          extern unsigned openpete_frame;
+          unsigned taken = 0, resolved = 0, quads = 0;
+          openpete_fb_snapshot_counts(&taken, &resolved, &quads);
+          fprintf(stderr, "[fbsnap] f=%u taken=%u resolved=%u quads=%u cap=%dx%d wf=%.4f\n",
+                  openpete_frame, taken, resolved, quads, cw, ch, (double)wf);
+      } }
 }
 
 /* Blocking off_image readback → PNG. Shared by the A/B present capture and the

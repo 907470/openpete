@@ -5,6 +5,7 @@
 
 #include "openpete_native_vram.h"
 #include "texture_pack.h"   /* texture-replacement registry: fed from this op seam */
+#include "openpete_fb_snapshot.h" /* framebuffer-window copies: recorded from this op seam */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -122,6 +123,11 @@ void openpete_vram_move(int src_x, int src_y, int w, int h, int dst_x, int dst_y
     }
     op_log(dst_x, dst_y, w, h);
     texture_pack_on_move(src_x, src_y, w, h, dst_x, dst_y);
+    /* A copy out of a display buffer onto a scratch page is a framebuffer
+     * window: the screen re-displays it as a textured quad, and the emulated
+     * framebuffer this copy reads carries no pixels on a native render. Record
+     * the rect so a present can put the native frame's own pixels behind it. */
+    openpete_fb_snapshot_on_move(src_x, src_y, w, h, dst_x, dst_y);
     if (tp_census_on())
         fprintf(stderr, "[texpack] f=%u move %d,%d -> %d,%d %dx%d\n",
                 openpete_frame, src_x, src_y, dst_x, dst_y, w, h);

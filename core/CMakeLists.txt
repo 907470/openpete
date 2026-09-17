@@ -186,6 +186,7 @@ add_library(openpete_core STATIC
     # never writes PSX RAM.
     renderer/native_render.c
     renderer/native_vram.c
+    renderer/native_fb_snapshot.c
 
     # Per-feature modules. See notes/plans/openpete-feature-modules.md.
     renderer/no_lod.c

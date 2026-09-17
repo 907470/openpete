@@ -1278,6 +1278,13 @@ void openpete_native_render_set_capture_nodelay(int on);
  * cap_wf is the capture's widescreen factor (openpete_native_widescreen_factor). */
 void openpete_native_render_snapshot_frozen(float cap_wf);
 
+/* Compose this present's frame in memory and give every pending framebuffer
+ * window (see openpete_fb_snapshot.h) the crop of it that the game's MoveImage
+ * copied, so the quad re-displaying that copy draws the native frame instead of
+ * an emulated framebuffer the native render never writes. Runs on the host loop
+ * with the display in hand, after the present. */
+void openpete_native_render_snapshot_fb_window(void);
+
 /* Tear down the device + window. Safe to call unconditionally. */
 void openpete_native_render_shutdown(void);
 

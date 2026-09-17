@@ -34,6 +34,7 @@
 #include "openpete_rewind.h"
 #include "openpete_record.h"
 #include "openpete_native_render.h"
+#include "openpete_fb_snapshot.h"
 #include "openpete_ident_audit.h"
 #include "openpete_menu.h"
 #include "openpete_devui.h"
@@ -4947,6 +4948,19 @@ static int run_host_loop(const openpete_options_t* opts) {
             if (opts->screenshot_freeze_backdrop && openpete_native_scene_enabled()
                 && (opts->screenshot_frame_count > 0 || opts->screenshot_intermediate_count > 0))
                 openpete_native_render_snapshot_frozen(openpete_native_widescreen_factor());
+
+            /* Framebuffer-window snapshot: the game copied a rect of its draw
+             * buffer to a VRAM scratch page and re-displays it as a textured
+             * quad, whose texels the native render never writes. Compose this
+             * present's frame and hand the window its crop. Same call windowed
+             * and headless; the device belongs to the present thread while
+             * eager is engaged, so take it back for the compose and return it. */
+            if (openpete_native_scene_enabled() && openpete_fb_snapshot_pending()) {
+                const int pt_was = openpete_present_thread_active();
+                if (pt_was) openpete_present_thread_set_active(0);
+                openpete_native_render_snapshot_fb_window();
+                if (pt_was) openpete_present_thread_set_active(1);
+            }
 
             /* Native screenshot: on the same --screenshot-on-frame targets,
              * dump "<out>-vk.png" so the native view sits beside the PsyCross
