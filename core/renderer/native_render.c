@@ -316,6 +316,11 @@ static unsigned ps_frame(void);
 static void     ps_apply_geometry(void);
 static uint32_t     s_eager_stamp;             /* build stamp for the scene being extracted */
 static uint32_t     s_scene_id_next = 1;
+/* Bumped by every scene wipe (the frame-keyed reset and the sub-tick
+ * scene_begin alike), so a tri recorded at feed time can be told from a tri
+ * fed into a scene that has since been replaced. The 2D-overlay carry uses it
+ * to know which of its entries the live scene still holds. */
+static uint32_t     s_scene_epoch = 1;
 static struct { unsigned published, refused_full, superseded, presented; } s_ring_census;
 
 
@@ -331,6 +336,8 @@ static struct { unsigned published, refused_full, superseded, presented; } s_rin
 #define OVERLAY_CARRY_MAX 1024
 static scene_tri_t s_overlay_accum[OVERLAY_CARRY_MAX];
 static int                s_overlay_accum_n;
+/* The scene epoch each accumulated tri was fed into (see s_scene_epoch). */
+static uint32_t           s_overlay_accum_epoch[OVERLAY_CARRY_MAX];
 static int                s_overlay_accum_dropped;
 static void (*s_overlay_precapture)(void);
 
@@ -662,7 +669,7 @@ void openpete_native_scene_sig_report(int canonical)
 }
 
 static void fov_latch(void);
-void openpete_native_scene_begin(void) { fov_latch(); s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
+void openpete_native_scene_begin(void) { fov_latch(); s_scene_epoch++; s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; openpete_mods_material_frame_reset(); /* S8b: per-present interned slots */ }
 
 /* Frame-keyed reset: the first feeder of each game frame clears; later feeders
  * (in any order) append, so the cyclorama + world + mobys compose into one
@@ -721,6 +728,7 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             s_scene_hist_head = slot;
             if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
         }
+        s_scene_epoch++;
         s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_scene_frame = frame;
         /* Per-instance material slots are per-feed-cycle: reset here (the
          * canonical present's reset) as well as in scene_begin (the sub-tick
@@ -949,9 +957,10 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
          * (a re-applied carry tri routed through a feeder) never re-accumulates. */
         if ((category == OPENPETE_SCENE_OVERLAY || category == OPENPETE_SCENE_HUD_PANEL ||
              carry == 1) && carry != 2) {
-            if (s_overlay_accum_n < OVERLAY_CARRY_MAX)
+            if (s_overlay_accum_n < OVERLAY_CARRY_MAX) {
+                s_overlay_accum_epoch[s_overlay_accum_n] = s_scene_epoch;
                 s_overlay_accum[s_overlay_accum_n++] = s_scene[s_scene_n];
-            else
+            } else
                 s_overlay_accum_dropped++;
         }
         s_scene_n++;
@@ -1051,6 +1060,7 @@ void openpete_native_scene_set_actor_front(int front) { s_scene_actor_front = fr
  * (OVERLAY_CARRY_MAX + the feed-time accumulation buffer live up by s_scene.) */
 static scene_tri_t s_overlay_carry[OVERLAY_CARRY_MAX];      /* curr (latest canonical capture) */
 static int                s_overlay_carry_n;
+static uint32_t           s_overlay_carry_epoch[OVERLAY_CARRY_MAX];
 static uint32_t           s_overlay_carry_freeze;
 /* The previous canonical tick's freeze word, so the freeze fade (bits 30:24)
  * interpolates sub-tick like the fade word: the exit-level freeze darkens one
@@ -1164,11 +1174,59 @@ void openpete_native_scene_capture_overlay(void) {
     /* Commit the feed-time accumulation as this tick's carry set. Only the GAME
      * RENDER's fresh emission ever accumulates: OVERLAY/HUD_PANEL by category,
      * 2D-UI sprites/lines by carry==1, and apply_overlay's re-applied (carry==2)
-     * copies bypass add_tri entirely — so no dedup pass is needed here, and a
+     * copies bypass add_tri entirely — so the accumulation never doubles, and a
      * sub-tick scene wipe between the feed and this capture can't lose a sprite. */
     memcpy(s_overlay_carry, s_overlay_accum, (size_t)s_overlay_accum_n * sizeof(s_overlay_accum[0]));
+    memcpy(s_overlay_carry_epoch, s_overlay_accum_epoch,
+           (size_t)s_overlay_accum_n * sizeof(s_overlay_accum_epoch[0]));
     s_overlay_carry_n = s_overlay_accum_n;
     s_overlay_accum_n = 0;
+    /* Compose the carry into the scene this present is about to draw, when part
+     * of it was fed into a scene that has since been replaced. A game whose 2D
+     * layer emits on alternate VBLs (Spyro 3's menu panel and its glyphs) puts
+     * that emission in one scene and rebuilds the scene before the canonical
+     * present, so the canonical scene holds no 2D at all while the carry holds
+     * the whole set; only the sub-tick re-extract's apply_overlay put it back,
+     * leaving the canonical present and the sub-tick presents showing different
+     * 2D layers. Drop the live scene's own carry-eligible tris and append the
+     * carry in feed order, which is the set and the order apply_overlay
+     * composes, so the two legs agree.
+     *
+     * A game that emits its 2D into the scene being presented (Spyro 1) has
+     * every carry entry stamped with the live epoch, `stale` stays 0, and the
+     * block is skipped: the scene keeps its own tris, in their own order,
+     * untouched. Skipped too when the scene already holds re-applied carry
+     * (carry == 2) — apply_overlay has composed this set into it already. */
+    {
+        int stale = 0;
+        for (int t = 0; t < s_overlay_carry_n; t++)
+            if (s_overlay_carry_epoch[t] != s_scene_epoch) { stale = 1; break; }
+        int reapplied = 0;
+        for (int t = 0; t < s_scene_n && !reapplied; t++)
+            if (s_scene[t].carry == 2) reapplied = 1;
+        if (stale && !reapplied) {
+            int w = 0;
+            for (int t = 0; t < s_scene_n; t++) {
+                const scene_tri_t *q = &s_scene[t];
+                int eligible = (q->category == OPENPETE_SCENE_OVERLAY ||
+                                q->category == OPENPETE_SCENE_HUD_PANEL ||
+                                q->carry == 1) && q->carry != 2;
+                if (!eligible) { if (w != t) s_scene[w] = s_scene[t]; w++; }
+            }
+            s_scene_n = w;
+            for (int t = 0; t < s_overlay_carry_n && s_scene_n < MAX_SCENE_TRIS; t++) {
+                scene_tri_t tri = s_overlay_carry[t];
+                tri.carry = 2;                   /* composed copy: never re-accumulates */
+                s_scene[s_scene_n++] = tri;
+            }
+            static int s_c2ddbg = -1;
+            if (s_c2ddbg < 0) { const char* e = getenv("OPENPETE_ALPHA_MAP_DBG");
+                                s_c2ddbg = (e && *e && *e != '0'); }
+            if (s_c2ddbg)
+                fprintf(stderr, "[canon-2d f=%u] composed=%d scene_n=%d\n",
+                        s_scene_frame, s_overlay_carry_n, s_scene_n);
+        }
+    }
     /* Mirror the scene-cap warn-once: a busy title/menu that overruns the carry
      * buffer silently loses 2D-UI sprites sub-tick with no signal — warn so the
      * cap can be raised rather than leaving a view-dependent dropout in the wild. */
