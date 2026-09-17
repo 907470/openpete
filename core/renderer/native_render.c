@@ -1282,18 +1282,26 @@ static void seq_sort_carry(scene_tri_t* tri, uint32_t* epoch, int n) {
  * of them was fed from a deferred release. */
 static void seq_sort_scene_2d(scene_tri_t* sc, int n) {
     if (!seq_sort_on()) return;
-    static int idx[MAX_SCENE_TRIS]; int m = 0;
-    for (int t = 0; t < n; t++) if (sc[t].seq) idx[m++] = t;   /* numbered tris only */
-    if (m < 2) return;
-    static scene_tri_t tmp[MAX_SCENE_TRIS];
-    for (int i = 0; i < m; i++) tmp[i] = sc[idx[i]];
-    for (int i = 1; i < m; i++) {                      /* stable insertion sort */
-        scene_tri_t t = tmp[i];
-        int j = i - 1;
-        while (j >= 0 && tmp[j].seq > t.seq) { tmp[j + 1] = tmp[j]; j--; }
-        tmp[j + 1] = t;
+    /* Order each CONTIGUOUS run of numbered tris within itself. Gathering every
+     * numbered tri and permuting it across the whole scene would let a 2D tri
+     * move past unnumbered geometry lying between two runs — and a BLENDED
+     * sprite that crosses the geometry behind it composes against a different
+     * background, which is a visible change nothing asked for. A run is what
+     * one feed produced consecutively, so ordering inside it is exactly the
+     * painter order the ordering table asks for and nothing else moves. */
+    int i = 0;
+    while (i < n) {
+        if (!sc[i].seq) { i++; continue; }
+        int j = i;
+        while (j < n && sc[j].seq) j++;               /* [i, j) is one run */
+        for (int a = i + 1; a < j; a++) {             /* stable insertion sort */
+            scene_tri_t t = sc[a];
+            int b = a - 1;
+            while (b >= i && sc[b].seq > t.seq) { sc[b + 1] = sc[b]; b--; }
+            sc[b + 1] = t;
+        }
+        i = j;
     }
-    for (int i = 0; i < m; i++) sc[idx[i]] = tmp[i];
 }
 
 int scene_2d_count_fwd(const scene_tri_t* sc, int n) {
