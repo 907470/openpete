@@ -24,6 +24,7 @@
 #
 # Usage:
 #   scripts/check_aspect_screenshot.sh
+#     [--game SLUG]                (default: spyro-1)
 #     [--build-dir=build/linux-release]
 #     [--frame=N]                  (default: 100)
 #     [--aspects=4:3,16:9,21:9]
@@ -39,17 +40,11 @@
 
 set -uo pipefail
 
-# Unattended launcher: silence controller vibration for every run this script
-# starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
-# up in no log, so it would never surface on its own. Set here rather than at
-# each invocation because this script builds its argument list in more than one
-# place, and a flag appended to the wrong one is a silent miss.
-# (scripts/fences/rumble_guard.py enforces this.)
-export OPENPETE_VIBRATION=0
-
-
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
+
+GAME="$(pg_parse_game "$@")" || exit 64
 
 BUILD_DIR="build/linux-release"
 FRAME=850
@@ -87,6 +82,8 @@ MAX_DIVERGENT_FALLBACK=20000
 for arg in "$@"; do
     case "$arg" in
         --build-dir=*) BUILD_DIR="${arg#--build-dir=}" ;;
+        --game|--game=*) ;;   # consumed by pg_parse_game above
+        spyro-*)         ;;   # the two-word --game SLUG spelling
         --frame=*)     FRAME="${arg#--frame=}" ;;
         --aspects=*)   ASPECTS_CSV="${arg#--aspects=}" ;;
         --baseline=*)  BASELINE="${arg#--baseline=}" ;;
@@ -107,8 +104,10 @@ for arg in "$@"; do
     esac
 done
 
-BIN="$BUILD_DIR/games/spyro-1/openpete-spyro1"
-DISC="games/spyro-1/spyro-1/build/SCUS-94228.cue"
+PG_BUILD_DIR="$BUILD_DIR"
+pg_resolve "$GAME"
+BIN="$PG_BIN"
+DISC="$PG_DISC"
 
 [[ -x "$BIN"  ]] || { echo "missing binary: $BIN (run cmake --build --preset linux-release)" >&2; exit 2; }
 [[ -f "$DISC" ]] || { echo "missing disc: $DISC" >&2; exit 2; }
@@ -149,18 +148,17 @@ run_one() {
     # --screenshot-native-only writes just the native render, "-vk" suffix.
     local shot_file="${out_png%.png}-vk.png"
     local log="$OUT_DIR/log-$label.txt"
-    rm -f "$out_png" "$shot_file"
-    local args=(--headless --disc "$DISC" --disc-cache 0
-                --frame-limit "$((FRAME + 5))"
+    rm -f "$out_png"
+    local args=(--frame-limit "$((FRAME + 5))"
                 --window "${win_w}x720"
                 --screenshot-on-frame "$FRAME"
                 --screenshot-native-only
                 --screenshot-output "$out_png"
                 --max-runtime-seconds 600)
     [[ -n "$aspect_arg" ]] && args+=(--aspect "$aspect_arg")
-    "$BIN" "${args[@]}" > "$log" 2>&1
+    pg_capture "$log" "$shot_file" -- "${args[@]}"
     local rc=$?
-    [[ $rc -eq 0 && -f "$shot_file" ]] || {
+    [[ $rc -eq 0 ]] || {
         echo "FAIL: $label run exited $rc (see $log)" >&2; return 1; }
     echo "$shot_file"
 }

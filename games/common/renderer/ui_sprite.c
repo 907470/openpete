@@ -38,6 +38,7 @@
 #include <string.h>
 #include <math.h>
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
+#include "renderer/env_knob.h"
 
 extern unsigned openpete_frame;
 
@@ -406,7 +407,7 @@ static void flush_pending(CPUState* cpu) {
         if (cpu->read_word(s_pending + (uint32_t)k * 4u) != s_pending_words[k]) { mutated = 1; break; }
     if (mutated) s_mutated++;
     { static int s_tr = -1;
-      if (s_tr < 0) { const char* e = getenv("OPENPETE_UISPRITE_TRACE"); s_tr = (e && *e && *e != '0'); }
+      ENV_FLAG_LATCH(s_tr, "OPENPETE_UISPRITE_TRACE");
       if (s_tr) fprintf(stderr, "[uifeed f=%u] pending from f=%u %s%s uv0=%u,%u (mutated=%u fed=%u)\n",
                         openpete_frame, s_pending_frame, fresh ? "FEED" : "DROP-stale",
                         mutated ? " POST-LINK-EDIT" : "",
@@ -493,7 +494,7 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
      * their link and their flush, the measurement the feed-previous deferral
      * exists for. */
     { static int cen = -1;
-      if (cen < 0) { const char* e = getenv("OPENPETE_UISPRITE_CENSUS"); cen = (e && *e && *e != '0'); }
+      ENV_FLAG_LATCH(cen, "OPENPETE_UISPRITE_CENSUS");
       static unsigned last = 0xFFFFFFFFu;
       if (cen && openpete_frame / 100u != last) { last = openpete_frame / 100u;
           fprintf(stderr, "[census f=%u UI-SPRITE] fed=%u sprt=%u mutated=%u abr=%d"

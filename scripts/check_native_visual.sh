@@ -17,6 +17,7 @@
 #
 # Usage:
 #   scripts/check_native_visual.sh
+#     [--game SLUG]                 (default spyro-1; golden dir follows it)
 #     [--build-dir=build/linux-release]
 #     [--bless]                     (re)generate the goldens from the current build
 #     [--out=/tmp/native-visual]
@@ -31,21 +32,15 @@
 
 set -uo pipefail
 
-# Unattended launcher: silence controller vibration for every run this script
-# starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
-# up in no log, so it would never surface on its own. Set here rather than at
-# each invocation because this script builds its argument list in more than one
-# place, and a flag appended to the wrong one is a silent miss.
-# (scripts/fences/rumble_guard.py enforces this.)
-export OPENPETE_VIBRATION=0
-
-
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
+
+GAME="$(pg_parse_game "$@")" || exit 64
 
 BUILD_DIR="build/linux-release"
 OUT_DIR="/tmp/native-visual"
-GOLDEN_DIR="tests/golden/spyro-1/native-vk"
+GOLDEN_DIR=""
 BLESS=0
 DIFF_THRESHOLD=16
 MAX_DIVERGENT=400
@@ -74,6 +69,8 @@ for arg in "$@"; do
         --ticks=*)          TICKS="${arg#--ticks=}" ;;
         --frame-limit=*)    FRAME_LIMIT="${arg#--frame-limit=}" ;;
         --bless)            BLESS=1 ;;
+        --game|--game=*)    ;;   # consumed by pg_parse_game above
+        spyro-*)            ;;   # the two-word --game SLUG spelling
         --diff-threshold=*) DIFF_THRESHOLD="${arg#--diff-threshold=}" ;;
         --max-divergent=*)  MAX_DIVERGENT="${arg#--max-divergent=}" ;;
         --help|-h)          sed -n '1,32p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
@@ -81,8 +78,11 @@ for arg in "$@"; do
     esac
 done
 
-BIN="$BUILD_DIR/games/spyro-1/openpete-spyro1"
-DISC="games/spyro-1/spyro-1/build/SCUS-94228.cue"
+PG_BUILD_DIR="$BUILD_DIR"
+pg_resolve "$GAME"
+BIN="$PG_BIN"
+DISC="$PG_DISC"
+[[ -n "$GOLDEN_DIR" ]] || GOLDEN_DIR="tests/golden/$PG_GAME/native-vk"
 
 # --- skip (64) when prerequisites are absent -------------------------------
 [[ -x "$BIN"  ]] || { echo "SKIP: missing binary $BIN (build the preset first)" >&2; exit 64; }
@@ -109,13 +109,14 @@ mkdir -p "$OUT_DIR"
 # --- capture: one headless run emits every -vk frame -----------------------
 LOG="$OUT_DIR/capture.log"
 echo "[native-visual] capturing -vk ticks {$TICKS} headless (device: software vk)"
-"$BIN" --headless --disc "$DISC" --disc-cache 0 \
+# The screenshot names carry the tick, so the outputs are asserted per tick in
+# the compare loop below rather than by name here.
+pg_capture "$LOG" "" -- \
        --renderer vk \
        --screenshot-on-tick "$TICKS" \
        --screenshot-output "$OUT_DIR/demo-{n}.png" \
        --frame-limit "$FRAME_LIMIT" \
-       --max-runtime-seconds 600 \
-       > "$LOG" 2>&1
+       --max-runtime-seconds 600
 rc=$?
 if [[ $rc -ne 0 ]]; then
     echo "SKIP: capture run exited $rc (see $LOG)" >&2
@@ -181,11 +182,10 @@ if [[ $fail -ne 0 && ${#FAILED[@]} -gt 0 ]]; then
     for off in -1 1; do
         shifted=""
         for f in "${FAILED[@]}"; do shifted+="${shifted:+,}$((f + off))"; done
-        "$BIN" --headless --disc "$DISC" --disc-cache 0 \
+        pg_capture "$OUT_DIR/phase${off}.log" "" -- \
                --renderer vk --screenshot-on-tick "$shifted" \
                --screenshot-output "$OUT_DIR/phase${off}-{n}.png" \
-               --frame-limit "$FRAME_LIMIT" --max-runtime-seconds 600 \
-               > "$OUT_DIR/phase${off}.log" 2>&1 || continue
+               --frame-limit "$FRAME_LIMIT" --max-runtime-seconds 600 || continue
         declare -i matched=0
         for f in "${FAILED[@]}"; do
             cand="$OUT_DIR/phase${off}-$((f + off))-vk.png"

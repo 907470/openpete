@@ -262,6 +262,7 @@ function(openpete_add_game GAME_ID)
         ${_common}/psyq/psyq_thunk_state.c
         ${_common}/write_census.c
         ${_common}/freecam_game.c
+        ${_common}/named_target.c
 
         # Shared renderer TUs: the GTE float mirror every feeder projects
         # through, the --render-paths isolation registry, and the terrain,

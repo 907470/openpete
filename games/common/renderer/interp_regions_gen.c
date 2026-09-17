@@ -7,6 +7,7 @@
 #include "openpete_interp_objs.h"
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "game_layout.h"
+#include "renderer/env_knob.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -43,10 +44,7 @@ static openpete_interp_obj_capture_fn s_game_obj_capture;
 
 static int census_on(void) {
     static int on = -1;
-    if (on < 0) {
-        const char* e = getenv("OPENPETE_INTERP_REGION_CENSUS");
-        on = (e && *e && *e != '0');
-    }
+    ENV_FLAG_LATCH(on, "OPENPETE_INTERP_REGION_CENSUS");
     return on;
 }
 
@@ -215,7 +213,7 @@ static void capture_objs_common(void) {
      * A spawned/despawned pair that never settles is a key that is not stable
      * across ticks, which shows on screen as objects snapping at the tick rate. */
     static int dbg = -1;
-    if (dbg < 0) { const char* e = getenv("OPENPETE_INTERP_OBJDBG"); dbg = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(dbg, "OPENPETE_INTERP_OBJDBG");
     if (dbg && (openpete_frame % 120u) == 0) {
         int tracked, paired, spawned, despawned;
         openpete_interp_objs_stats(&tracked, &paired, &spawned, &despawned);

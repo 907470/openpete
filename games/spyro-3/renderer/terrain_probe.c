@@ -6,8 +6,9 @@
 // draw's own vertex arithmetic, projects them as the draw's RTPS does, and
 // reports the fraction of emitted polygon vertices that land on a projected
 // sector vertex within a tolerance. The visibility table lives in the
-// scratchpad only between func_8002D0D8 returning and the draw's walk, so
-// it is captured by a hook on that function while the world draw runs.
+// scratchpad only between the visibility function returning and the draw's
+// walk, so the shared terrain feeder's hook on that function copies it; this
+// probe arms that capture around the draw and reads the copy back.
 //
 // Read-only: no store into PSX RAM. Inert unless OPENPETE_TERRAIN_PROBE is
 // set (1 = summary at exit, 2 = one line per tick as well);
@@ -29,6 +30,7 @@
 // the two formats.
 
 #include "feature_registry.h"
+#include "renderer/terrain.h"   /* the shared feeder's visibility capture */
 #include "game_layout.h"
 #include "psx_runtime_internal.h"
 #include "openpete_fiber.h"      /* openpete_frame */
@@ -40,7 +42,6 @@
 #include <string.h>
 
 extern void func_80022378(CPUState* cpu);   /* the world draw */
-extern void func_8002D0D8(CPUState* cpu);   /* the visibility computation */
 
 /* ---- knobs -------------------------------------------------------------- */
 static int    s_mode = -1;      /* 0 off, 1 summary, 2 per tick */
@@ -57,26 +58,13 @@ static int probe_mode(void) {
 }
 
 /* ---- the visibility capture ---------------------------------------------- */
+/* The table is captured by the shared terrain feeder's visibility hook
+ * (renderer/terrain.c): this probe arms it around the world draw and reads the
+ * copy back, so there is one hook on that function and one array. */
 #define VIS_MAX 1024
-static int     s_capture_armed;
-static uint8_t s_vis[VIS_MAX];
-static int     s_vis_n;
+static const uint8_t* s_vis;
+static int            s_vis_n;
 static uint8_t s_sec_flat[VIS_MAX];   /* header word 1 bit 12, per sector, this tick */
-
-static int on_visibility(CPUState* cpu, uint32_t addr) {
-    (void)addr;
-    if (!s_capture_armed || cpu->a0 != 0u) return 0;   /* only the world call inside the draw */
-    static int s_in = 0; if (s_in) return 0; s_in = 1;
-    func_8002D0D8(cpu);
-    s_in = 0;
-    uint32_t n = cpu->read_word(game_layout.env.sector_count);
-    if (n > VIS_MAX) n = VIS_MAX;
-    for (uint32_t i = 0; i < n; i++)
-        s_vis[i] = cpu->read_byte(game_layout.visibility.base + i);
-    s_vis_n = (int)n;
-    s_capture_armed = 0;
-    return 1;
-}
 
 /* ---- projected sector vertices, hashed on a screen grid ------------------ */
 #define PV_MAX   65536
@@ -312,11 +300,14 @@ static int on_world_draw(CPUState* cpu, uint32_t addr) {
     static int s_atexit = 0; if (!s_atexit) { atexit(probe_report); s_atexit = 1; }
 
     view_t view; view_read(cpu, &view);
-    s_vis_n = 0; s_capture_armed = 1;
+    s_vis = NULL; s_vis_n = 0;
+    terrain_visibility_capture_arm();
     uint32_t startp = cpu->read_word(game_layout.polybuf.cursor);
     func_80022378(cpu);
     uint32_t endp = cpu->read_word(game_layout.polybuf.cursor);
-    s_capture_armed = 0;
+    s_vis_n = terrain_visibility_capture(&s_vis);
+    if (s_vis_n < 0) { s_vis = NULL; s_vis_n = 0; }
+    if (s_vis_n > VIS_MAX) s_vis_n = VIS_MAX;
 
     uint32_t sectorPtr = cpu->read_word(game_layout.env.sector_ptr);
     uint32_t sectorCnt = cpu->read_word(game_layout.env.sector_count);
@@ -451,14 +442,12 @@ static int on_world_draw(CPUState* cpu, uint32_t addr) {
  * cannot read another TU's const. */
 static feature_dispatch_entry_t probe_dispatch[] = {
     { 0u, on_world_draw },
-    { 0u, on_visibility },
     { 0u, NULL },
 };
 
 static void probe_apply_options(const openpete_options_t* opts) {
     (void)opts;
     probe_dispatch[0].addr = game_layout.hooks.world_draw;
-    probe_dispatch[1].addr = game_layout.hooks.visibility;
 }
 
 const feature_module_t terrain_probe_module = {

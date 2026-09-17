@@ -13,6 +13,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "openpete_fiber.h"   /* openpete_frame — for the ivdump env probe */
+#include "renderer/env_knob.h"
 
 static const char* const k_names[RP_COUNT] = {
     "cyclorama", "spyro", "moby", "terrain", "shadow", "flame", "particles", "tracer",
@@ -118,10 +119,7 @@ void render_path_record(render_path_t p, uint32_t start, uint32_t end) {
      * on that openpete_frame with its path name (OT-prim producer attribution). */
     {
         static int s_ivdump = -2;
-        if (s_ivdump == -2) {
-            const char* e = getenv("OPENPETE_RENDER_PATH_IVDUMP");
-            s_ivdump = (e && *e) ? atoi(e) : -1;
-        }
+        ENV_INT_LATCH(s_ivdump, "OPENPETE_RENDER_PATH_IVDUMP", -1);
         if (s_ivdump >= 0 && (int)openpete_frame == s_ivdump)
             fprintf(stderr, "[render-paths] ivdump f=%u path=%s [0x%08X,0x%08X)\n",
                     openpete_frame, k_names[p], start, end);
@@ -204,7 +202,7 @@ static void render_paths_feed_audit(void) {
     s_last_scene = sf;
     if (!s_feed_audit_registered) { s_feed_audit_registered = 1; atexit(render_paths_feed_audit_census); }
     static int s_assert = -1;
-    if (s_assert < 0) { const char* e = getenv("OPENPETE_RENDER_PATH_FEED_ASSERT"); s_assert = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(s_assert, "OPENPETE_RENDER_PATH_FEED_ASSERT");
     uint32_t n[16];
     openpete_native_scene_tag_family_counts(n);
     for (int f = 1; f < 16; f++) {
@@ -226,13 +224,8 @@ static void render_paths_feed_audit(void) {
  * triangle counts, so a producer that fed the canonical frame can be told from
  * one that did not. Diagnostic only. */
 static void render_paths_census(void) {
-    static int lo = -2, hi = -2;
-    if (lo == -2) {
-        const char* e = getenv("OPENPETE_RP_CENSUS");
-        lo = hi = -1;
-        if (e && *e) { lo = atoi(e); const char* d = strchr(e, '-'); hi = d ? atoi(d + 1) : lo; }
-    }
-    if (lo < 0 || (int)openpete_frame < lo || (int)openpete_frame > hi) return;
+    static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
+    if (!env_frame_range_active(&s_range, "OPENPETE_RP_CENSUS", openpete_frame)) return;
     uint32_t n[16];
     openpete_native_scene_tag_family_counts(n);
     fprintf(stderr, "[rp-census f=%u CANON] drawn:", openpete_frame);

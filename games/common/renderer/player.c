@@ -39,6 +39,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "renderer/env_knob.h"
 
 extern unsigned openpete_frame;
 extern op_time_t g_openpete_tick_stamp;      /* per-VBL stamp (PLL) */
@@ -236,8 +237,7 @@ static uint32_t plane_shade(uint32_t rgb) {
  * pose the draw actually splits, the probe's plane and colour legs collapse. */
 static int player_plane_disabled(void) {
     static int v = -1;
-    if (v < 0) { const char* e = getenv("OPENPETE_PLAYER_VERIFY_NOPLANE");
-                 v = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(v, "OPENPETE_PLAYER_VERIFY_NOPLANE");
     return v;
 }
 
@@ -690,7 +690,7 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
          * (gouraud only), separating vertex-path losses from fragment-path
          * losses when bisecting a rendering defect. */
         { static int s_ut = -1;
-          if (s_ut < 0) { const char* e = getenv("OPENPETE_SPYRO_UNTEX"); s_ut = (e && *e && *e != '0'); }
+          ENV_FLAG_LATCH(s_ut, "OPENPETE_SPYRO_UNTEX");
           if (s_ut) w->textured = 0; }
         st.textured = w->textured; st.tpage_x = w->tpage_x; st.tpage_y = w->tpage_y;
         st.clut_x = w->clut_x; st.clut_y = w->clut_y; st.bpp = w->bpp; st.blend = w->blend;
@@ -703,7 +703,7 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
      * steps separates a translation defect from a keyframe-blend one. */
     {
         static int s_pt = -1;
-        if (s_pt < 0) { const char* e = getenv("OPENPETE_PLAYER_POSTRACE"); s_pt = (e && *e && *e != '0'); }
+        ENV_FLAG_LATCH(s_pt, "OPENPETE_PLAYER_POSTRACE");
         if (s_pt && s_swtri_n > 0) {
             extern int g_openpete_canon_lag_leg;
             double cx = 0.0, cy = 0.0;
@@ -797,8 +797,7 @@ static void pv_capture(CPUState* cpu, uint32_t start, uint32_t end) {
  * instead of the avatar's, so the legs below measure the reflection. */
 static int player_verify_mirror(void) {
     static int v = -1;
-    if (v < 0) { const char* e = getenv("OPENPETE_PLAYER_VERIFY_MIRROR");
-                 v = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(v, "OPENPETE_PLAYER_VERIFY_MIRROR");
     return v;
 }
 
@@ -1211,7 +1210,7 @@ static double   s_maxB_single = 0.0, s_maxB_multi = 0.0, s_minsep = -1.0, s_max_
 
 int player_records_dbg(void) {
     static int on = -1;
-    if (on < 0) { const char* e = getenv("OPENPETE_PLAYER_RECDBG"); on = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(on, "OPENPETE_PLAYER_RECDBG");
     return on;
 }
 

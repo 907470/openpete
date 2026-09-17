@@ -17,6 +17,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include "renderer/env_knob.h"
 
 /* ---- gate ---------------------------------------------------------------- */
 
@@ -492,7 +493,7 @@ void openpete_mobyrank_match(void)
     if (seq) s_consumed_seq = seq;
 
     { static int s_dbg = -1;
-      if (s_dbg < 0) { const char* e = getenv("OPENPETE_MOBY_RANK_DBG"); s_dbg = (e && *e && *e != '0'); }
+      ENV_FLAG_LATCH(s_dbg, "OPENPETE_MOBY_RANK_DBG");
       if (s_dbg && s_snap_frame != s_last_stats_frame) {
           s_last_stats_frame = s_snap_frame;
           fprintf(stderr, "[moby-rank] %s f=%u prims=%d snap=%d shift=(%.2f,%.2f) "

@@ -40,6 +40,7 @@
 
 #include "skip_to_level.h"
 #include "openpete_fiber.h"
+#include "named_target.h"
 
 #include <ctype.h>
 #include <stdio.h>
@@ -94,49 +95,12 @@ const spyro3_level_t* spyro3_level_table(size_t* out_count) {
     return k_levels;
 }
 
-static int level_known(int number) {
-    size_t i;
-    for (i = 0; i < LEVEL_COUNT; i++)
-        if (k_levels[i].number == number) return 1;
-    return 0;
-}
-
-static void print_valid_names(void) {
-    size_t i;
-    fprintf(stderr, "valid level names:\n");
-    for (i = 0; i < LEVEL_COUNT; i++)
-        fprintf(stderr, "  %-18s (%d)\n", k_levels[i].name, k_levels[i].number);
-}
-
+/* A numeric argument is accepted only when the table holds it: an unknown
+ * number would index the level table past its end. */
 int spyro3_level_resolve(const char* arg) {
-    size_t i, n;
-    char   norm[32];
-
-    /* No value: the list is the answer (`--skip-to-level` alone). */
-    if (!arg || !arg[0]) { print_valid_names(); return -1; }
-
-    /* All-digits: a level number, accepted only if the table has it. */
-    for (i = 0; arg[i] && isdigit((unsigned char)arg[i]); i++) {}
-    if (!arg[i]) {
-        int number = atoi(arg);
-        if (level_known(number)) return number;
-        print_valid_names();
-        return -1;
-    }
-
-    /* Normalise: lowercase, '-' -> '_', apostrophes dropped. */
-    for (i = 0, n = 0; arg[i] && n < sizeof(norm) - 1; i++) {
-        char c = (char)tolower((unsigned char)arg[i]);
-        if (c == '\'') continue;
-        norm[n++] = (c == '-') ? '_' : c;
-    }
-    norm[n] = '\0';
-
-    for (i = 0; i < LEVEL_COUNT; i++)
-        if (strcmp(norm, k_levels[i].name) == 0) return k_levels[i].number;
-
-    print_valid_names();
-    return -1;
+    const named_target_table_t levels =
+        NAMED_TARGET_TABLE(k_levels, spyro3_level_t, name, number);
+    return named_target_resolve(arg, "level", &levels, NULL, NAMED_TARGET_DROP_APOSTROPHE);
 }
 
 /* ---- state ----------------------------------------------------------- */

@@ -26,6 +26,7 @@
 #include "features/credits_skip.h"
 
 #include "feature_registry.h"
+#include "named_target.h"
 #include "openpete_fiber.h" /* openpete_speculative */
 #include "openpete_log.h"
 #include "psx_runtime_internal.h" /* CPUState + its read/write callbacks */
@@ -50,45 +51,17 @@
 
 void call_by_address(CPUState* cpu, uint32_t addr); /* psx_runtime.h */
 
-static const struct { const char* name; int id; } k_cutscenes[] = {
+typedef struct { const char* name; int id; } cutscene_t;
+static const cutscene_t k_cutscenes[] = {
     { "credits",      SPYRO1_CUTSCENE_CREDITS },
     { "credits_100",  SPYRO1_CUTSCENE_CREDITS_FULL },
     { "full_credits", SPYRO1_CUTSCENE_CREDITS_FULL },
 };
-#define CUTSCENE_COUNT (sizeof(k_cutscenes) / sizeof(k_cutscenes[0]))
-
-static void print_valid_names(void) {
-    size_t i;
-    fprintf(stderr, "valid cutscene names:\n");
-    for (i = 0; i < CUTSCENE_COUNT; i++)
-        fprintf(stderr, "  %-18s (%d)\n", k_cutscenes[i].name, k_cutscenes[i].id);
-}
 
 int spyro1_cutscene_resolve(const char* arg) {
-    size_t i, n;
-    char   norm[32];
-
-    if (!arg || !arg[0]) { print_valid_names(); return -1; }
-
-    for (i = 0; arg[i] && isdigit((unsigned char)arg[i]); i++) {}
-    if (!arg[i]) {
-        int id = atoi(arg);
-        for (i = 0; i < CUTSCENE_COUNT; i++)
-            if (k_cutscenes[i].id == id) return id;
-        print_valid_names();
-        return -1;
-    }
-
-    for (n = 0; arg[n] && n < sizeof(norm) - 1; n++) {
-        char c = (char)tolower((unsigned char)arg[n]);
-        norm[n] = (c == '-') ? '_' : c;
-    }
-    norm[n] = '\0';
-    for (i = 0; i < CUTSCENE_COUNT; i++)
-        if (strcmp(norm, k_cutscenes[i].name) == 0) return k_cutscenes[i].id;
-
-    print_valid_names();
-    return -1;
+    const named_target_table_t cutscenes =
+        NAMED_TARGET_TABLE(k_cutscenes, cutscene_t, name, id);
+    return named_target_resolve(arg, "cutscene", &cutscenes, NULL, 0u);
 }
 
 static int s_armed = 0;

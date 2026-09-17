@@ -68,6 +68,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include "game_layout.h"          /* game_layout: the engine RAM addresses this walk reads */
+#include "renderer/env_knob.h"
 
 extern void     func_800258F0(CPUState* cpu);  /* the real world renderer */
 extern unsigned openpete_frame;
@@ -1409,7 +1410,7 @@ static uint32_t lp_grade_apply(const tscache_t* C, uint32_t rgb) {
 static long s_tocc_culled;   /* sectors occlusion-culled this window (census) */
 static void tsc_census(void) {   /* OPENPETE_TERRAIN_CACHE_DBG: ~1/sec hit/miss */
     static int on = -1, n;
-    if (on < 0) { const char* e = getenv("OPENPETE_TERRAIN_CACHE_DBG"); on = (e && *e && *e != '0') ? 1 : 0; }
+    ENV_FLAG_LATCH(on, "OPENPETE_TERRAIN_CACHE_DBG");
     if (on && ++n >= 120) {
         fprintf(stderr, "[ter-cache] hit=%ld miss=%ld\n", s_tsc_hit, s_tsc_miss);
         s_tsc_hit = s_tsc_miss = 0; n = 0;
@@ -1960,8 +1961,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
      * terrain_build call) evicts a stale sector, never this present's
      * working set. Probes are five-word compares — window width is noise
      * next to one re-decode. */
-    if (s_vh_on < 0) { const char* e = getenv("OPENPETE_TERRAIN_VHASH_CENSUS");
-                       s_vh_on = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(s_vh_on, "OPENPETE_TERRAIN_VHASH_CENSUS");
     uint32_t vh = 0;
     tscache_t* reuse = NULL;   /* stale decode to re-fill in place */
     tscache_t* C = NULL;
@@ -2145,7 +2145,7 @@ static void tsc_vanim_lerp(const tsvert_t* p, const tsvert_t* c, int n,
 static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t sectorCnt) {
     if (!sectorPtr) return;
     static int s_vdbg = -1;
-    if (s_vdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_VANIMDBG"); s_vdbg = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(s_vdbg, "OPENPETE_TERRAIN_VANIMDBG");
     int dbg_desc = 0, dbg_cached = 0, dbg_prev = 0, dbg_filled = 0;
     uint32_t dbg_seen = 0;
     {
@@ -2308,7 +2308,7 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
 #define TSCROLL_ALPHA_MIN (-0.35)
 static void tsc_scroll_refresh(CPUState* cpu) {
     static int s_tdbg = -1;
-    if (s_tdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_TANIMDBG"); s_tdbg = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(s_tdbg, "OPENPETE_TERRAIN_TANIMDBG");
     s_tanim_have = 0;
     memset(s_tanim_act, 0, sizeof(s_tanim_act));
     s_tscroll_have = 0;
@@ -2565,22 +2565,19 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
                            const tvis_sphere* S) {
     if (sectorCnt > 1024) sectorCnt = 1024;
     int ws = s_view.extended;   /* Hor+ or a wider FOV: the 4:3 verdict is too narrow */
-    if (s_visdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_VISDBG"); s_visdbg = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(s_visdbg, "OPENPETE_TERRAIN_VISDBG");
     {   /* OPENPETE_TERRAIN_BINCHECK=<frame>: engagement window, the two
          * presents from that frame. Every candidate-set mode reports the
          * sector count it admitted on those presents. */
         static int s_binchk = -2;
-        if (s_binchk == -2) {
-            const char* e = getenv("OPENPETE_TERRAIN_BINCHECK");
-            s_binchk = (e && *e) ? atoi(e) : 0;
-        }
+        ENV_INT_LATCH(s_binchk, "OPENPETE_TERRAIN_BINCHECK", 0);
         s_vis_engage = (s_binchk && openpete_frame >= (unsigned)s_binchk
                         && openpete_frame < (unsigned)s_binchk + 2u);
     }
     {   /* OPENPETE_TERRAIN_ALLVIS=1: walk ALL sectors (bypass the visibility verdict /
          * occlusion groups) — A/B probe for view-dependent sector culling. */
         static int s_allvis = -1;
-        if (s_allvis < 0) { const char* e = getenv("OPENPETE_TERRAIN_ALLVIS"); s_allvis = (e && *e && *e != '0'); }
+        ENV_FLAG_LATCH(s_allvis, "OPENPETE_TERRAIN_ALLVIS");
         if (s_allvis) {
             int n = 0;
             for (uint32_t i = 0; i < sectorCnt && n < 1024; i++) out[n++] = (uint16_t)i;
@@ -2846,13 +2843,13 @@ static void terrain_texrecords(CPUState* cpu) {
 
 static void terrain_animdbg(CPUState* cpu) {
     static int on = -1;
-    if (on < 0) { const char* e = getenv("OPENPETE_TERRAIN_ANIMDBG"); on = (e && *e && *e != '0') ? 1 : 0; }
+    ENV_FLAG_LATCH(on, "OPENPETE_TERRAIN_ANIMDBG");
     /* OPENPETE_TEXPACK_ANIMPROBE=<N>: raw Tiledef words of record N each
      * present — shows HOW env anim (func_8002A6FC) rewrites an animated tile
      * (UV scroll vs CLUT swap), which decides the shape of its replacement
      * file (a box covering the full swept range). */
     static int probeN = -2;
-    if (probeN == -2) { const char* e = getenv("OPENPETE_TEXPACK_ANIMPROBE"); probeN = (e && *e) ? atoi(e) : -1; }
+    ENV_INT_LATCH(probeN, "OPENPETE_TEXPACK_ANIMPROBE", -1);
     if (probeN >= 0) {
         uint32_t lt = tenv_rd(cpu, game_layout.env.lq_tex), ht = tenv_rd(cpu, game_layout.env.hq_tex);
         if (lt && ht) {
@@ -3753,7 +3750,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         if (h != T->colHash) { dirty = 1; T->colHash = h; }
     }
     static int s_tcdbg = -1;
-    if (s_tcdbg < 0) { const char* e = getenv("OPENPETE_TC_DBG"); s_tcdbg = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(s_tcdbg, "OPENPETE_TC_DBG");
     if (dirty) {
         if (s_tcdbg)
             fprintf(stderr, "[tcf] rebuild slot=%d sec=%u gen=%u->%u stamp=%08x var=%d->%d s=%u->%u vert=%u->%u tex=%u->%u col=%d freed=%u/%u\n",
@@ -3780,7 +3777,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
 
 static void tgpu_census(void) {   /* OPENPETE_TERRAIN_GPU_DBG: ~1/s */
     static int on = -1, n;
-    if (on < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_DBG"); on = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(on, "OPENPETE_TERRAIN_GPU_DBG");
     if (!on || ++n < 120) return;
     n = 0;
     openpete_tercache_stats_t st;
@@ -3985,10 +3982,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
          * frustum-visible sector. */
         {
             static int s_binchk = -2;
-            if (s_binchk == -2) {
-                const char* e = getenv("OPENPETE_TERRAIN_BINCHECK");
-                s_binchk = (e && *e) ? atoi(e) : 0;
-            }
+            ENV_INT_LATCH(s_binchk, "OPENPETE_TERRAIN_BINCHECK", 0);
             if (s_binchk && openpete_frame >= (unsigned)s_binchk
                 && openpete_frame < (unsigned)s_binchk + 2u && !openpete_no_lod) {
                 extern uint32_t psx_runtime_g_sony_image_base;
@@ -4726,7 +4720,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             {   /* OPENPETE_TERRAIN_NEARDBG: census of STRADDLING foreground quads
                  * (a corner behind the camera) by route — near/HQ vs LQ fall-through. */
                 static int s_ndbg = -1; static long s_nd_near, s_nd_excl, s_nd_lq; static int s_nd_n;
-                if (s_ndbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_NEARDBG"); s_ndbg = (e && *e && *e != '0'); }
+                ENV_FLAG_LATCH(s_ndbg, "OPENPETE_TERRAIN_NEARDBG");
                 int vis_straddle = straddle && (sv[i0].m3 > 0.0 || sv[i1].m3 > 0.0 ||
                                                 sv[i2].m3 > 0.0 || sv[i3].m3 > 0.0);
                 if (s_ndbg && faceStride == 16 && quad && vis_straddle) {
@@ -4912,7 +4906,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
         {   /* OPENPETE_TERRAIN_BINDBG: calibrate the binning-centre projection
              * against the sector's ACTUAL projected vertex-Z range (one frame). */
             static int s_bindbg = -1; static unsigned s_bin_f; static int s_bin_lines;
-            if (s_bindbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_BINDBG"); s_bindbg = (e && *e && *e != '0'); }
+            ENV_FLAG_LATCH(s_bindbg, "OPENPETE_TERRAIN_BINDBG");
             (void)s_bin_f;
             if (s_bindbg && nvis >= 20 && s_bin_lines < 200) {
                 s_bin_lines++;
@@ -4952,7 +4946,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     tsc_vhash_census_flush();
     {   /* OPENPETE_TERRAIN_OCCL_DBG: occlusion-cull census (~1/120 walks) */
         static int on = -1, n; static long prev_tris;
-        if (on < 0) { const char* e = getenv("OPENPETE_TERRAIN_OCCL_DBG"); on = (e && *e && *e != '0'); }
+        ENV_FLAG_LATCH(on, "OPENPETE_TERRAIN_OCCL_DBG");
         if (on && ++n >= 120) {
             fprintf(stderr, "[ter-occl f=%u] sectors-culled=%ld/window last-tris=%ld\n",
                     openpete_frame, s_tocc_culled, prev_tris);
@@ -4963,7 +4957,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
     s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
     s_near_q_agree = s_near_c_only = 0;
-    if (s_sectordump < 0) { const char* e = getenv("OPENPETE_TERRAIN_SECTORDUMP"); s_sectordump = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(s_sectordump, "OPENPETE_TERRAIN_SECTORDUMP");
     s_sd_n = 0;
     /* Fire the sector dump once, on the target frame (OPENPETE_TERRAIN_VERIFY_FRAME). */
     { static int s_sd_fired = 0; static unsigned s_sd_frame = 0xFFFFFFFFu;
@@ -4971,7 +4965,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                                        s_sd_frame = e ? (unsigned)strtoul(e, NULL, 0) : 0; }
       s_sd_active = (s_sectordump > 0 && !s_sd_fired && openpete_frame >= s_sd_frame);
       if (s_sd_active) s_sd_fired = 1; }
-    if (s_caldbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_CALDBG"); s_caldbg = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(s_caldbg, "OPENPETE_TERRAIN_CALDBG");
     if (s_nearq == -2) { const char* e = getenv("OPENPETE_TERRAIN_NEARQ"); s_nearq = (e && *e && *e != '0') ? 1 : -1; }
     s_cal_qn = 0; s_cal_qsum_max = 0; s_cal_qmin_max = 0; s_cal_nqsum_min = 1e18;
     /* The render decision uses face_is_near (gamestate); the deferred QUEUE is read
@@ -5230,7 +5224,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * and names the top offenders — built for the gnorc_cove freecam
      * direction-dependent perf hunt. Inert unless the env is set. */
     static int tt_on = -1;
-    if (tt_on < 0) { const char* e = getenv("OPENPETE_TERRAIN_TIMERS"); tt_on = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(tt_on, "OPENPETE_TERRAIN_TIMERS");
     static uint32_t tt_us[1024], tt_tris[1024];      /* window-accumulated per sector */
     static uint64_t tt_win_us, tt_report_t;
     static uint32_t tt_presents, tt_nvis_sum, tt_nvis_max, tt_pres_max_us;
@@ -5256,8 +5250,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     {   /* OPENPETE_TERRAIN_CAMDBG=1 (temp): per-build game-camera pose in
          * --freecam-pose form, for replanting a movie frame's view. */
         static int s_camdbg = -1;
-        if (s_camdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_CAMDBG");
-                            s_camdbg = (e && *e && *e != '0'); }
+        ENV_FLAG_LATCH(s_camdbg, "OPENPETE_TERRAIN_CAMDBG");
         if (s_camdbg)
             fprintf(stderr, "[cam f=%u] pos=(%d, %d, %d) yaw=%d pitch=%d sub=%d\n",
                     openpete_frame,
@@ -5366,8 +5359,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * harvested by scripts/terrain-claim-census.py. Temp instrument;
      * unregistered; GPU_-prefixed so it is safe with the cache engaged. */
     static int s_cen = -1;
-    if (s_cen < 0) { const char* e = getenv("OPENPETE_TERRAIN_GPU_CENSUS");
-                     s_cen = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(s_cen, "OPENPETE_TERRAIN_GPU_CENSUS");
     long cen0[13];
     /* Any active walk instrument forces serial: their censuses/dumps are
      * whole-walk statics with serial semantics (per-sector timing, ordered
@@ -6542,7 +6534,7 @@ static void terrain_feed_native(CPUState* cpu) {
         }
     }
     { static int s_cap = -1, s_peak = 0;
-      if (s_cap < 0) { const char* e = getenv("OPENPETE_SCENE_CAPDBG"); s_cap = (e && *e && *e != '0'); }
+      ENV_FLAG_LATCH(s_cap, "OPENPETE_SCENE_CAPDBG");
       if (s_cap && s_tri_n > s_peak) { s_peak = s_tri_n;
           fprintf(stderr, "[terraincap] NEW PEAK terrain_tris=%d / MAX_TTRIS=%d\n", s_tri_n, MAX_TTRIS); } }
     /* OPENPETE_PORTAL_FIT_DBG=<frame>: one-shot dump of each active opening and
@@ -7055,8 +7047,7 @@ static void terrain_feed_native(CPUState* cpu) {
          * --render-paths terrain, which excludes the previews that would
          * otherwise z-fight the very faces under test. */
         {   static int s_show = -1;
-            if (s_show < 0) { const char* e = getenv("OPENPETE_PORTAL_RIM_SHOW");
-                              s_show = (e && *e && *e != '0'); }
+            ENV_FLAG_LATCH(s_show, "OPENPETE_PORTAL_RIM_SHOW");
             if (s_show) {
                 const int cls = portal_rim_classify(cpu, t);
                 if (cls >= 0) {
@@ -7092,7 +7083,7 @@ static void terrain_feed_native(CPUState* cpu) {
              * (open question: PsyCross FBO stencil attachment + drain-vs-
              * DrawOTag split order). */
             static int gen = -1;
-            if (gen < 0) { const char* e = getenv("OPENPETE_PORTAL_GUARD"); gen = (e && *e && *e != '0'); }
+            ENV_FLAG_LATCH(gen, "OPENPETE_PORTAL_GUARD");
             if (gen && t->guard && tri.blend == 0 && terrain_game.portal_sky_recent())
                 openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_PORTAL_GUARD, 0);
         }
@@ -7105,7 +7096,7 @@ static void terrain_feed_native(CPUState* cpu) {
      * draws at true depth and the preview repaints over it at plane − M. */
     {   /* guard census (debug, stderr-throttled) */
         static int cen = -1; static int lines;
-        if (cen < 0) { const char* e = getenv("OPENPETE_PORTAL_GUARD_DBG"); cen = (e && *e && *e != '0'); }
+        ENV_FLAG_LATCH(cen, "OPENPETE_PORTAL_GUARD_DBG");
         if (cen && lines < 40 && openpete_frame >= 2980) {
             int g = 0;
             for (int i = 0; i < s_tri_n; i++) if (s_tri[i].guard) g++;
@@ -7371,7 +7362,7 @@ static void terrain_compare(void) {
 /* ---- gating --------------------------------------------------------------- */
 static int terrain_verify_enabled(void) {
     static int v = -1;
-    if (v < 0) { const char* e = getenv("OPENPETE_TERRAIN_VERIFY"); v = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(v, "OPENPETE_TERRAIN_VERIFY");
     return v;
 }
 static unsigned terrain_verify_frame(void) {
@@ -7428,8 +7419,7 @@ static int on_world_draw_terrain(CPUState* cpu, uint32_t addr) {
         cpu->write_word(game_layout.env.lod_dist, (uint32_t)s_lodpoke);
     }
     uint32_t startp = cpu->read_word(game_layout.polybuf.cursor);
-    s_vis_cap_n = -1;
-    s_vis_arm = game_layout.hooks.visibility != 0u;   /* the visibility hook copies the table */
+    terrain_visibility_capture_arm();
     { OP_PROF_ACCUM_SCOPE("terrain.srend");
       /* The game's own world draw, by address through the module's dispatch
        * table (the raw recompiled entry, not the override chain), so the
@@ -7682,6 +7672,16 @@ static int on_visibility_terrain(CPUState* cpu, uint32_t addr) {
     s_vis_cap_n = (int)n;
     s_vis_arm = 0;
     return 1;
+}
+
+void terrain_visibility_capture_arm(void) {
+    s_vis_cap_n = -1;
+    s_vis_arm   = game_layout.hooks.visibility != 0u;
+}
+
+int terrain_visibility_capture(const uint8_t** out) {
+    if (out) *out = s_vis_cap;
+    return s_vis_cap_n;
 }
 
 static feature_dispatch_entry_t terrain_dispatch[] = {

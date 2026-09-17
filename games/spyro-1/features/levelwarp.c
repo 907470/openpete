@@ -57,6 +57,7 @@
 #include "features/levelwarp.h"
 
 #include "feature_registry.h"
+#include "named_target.h"
 #include "game_extras.h"    /* game_set_skip_to_level (title-screen route) */
 #include "openpete_fiber.h" /* openpete_speculative */
 #include "openpete_freecam.h"
@@ -148,11 +149,11 @@ static const spyro1_level_t k_levels[] = {
 
 /* Alternate spellings accepted on the command line. Kept out of k_levels so
  * the dropdown lists each level once. */
-static const struct { const char* name; int id; } k_level_aliases[] = {
+typedef struct { const char* name; int id; } level_alias_t;
+static const level_alias_t k_level_aliases[] = {
     { "gnastys_world",    60 },
     { "twilight_harbour", 62 },
 };
-#define LEVEL_ALIAS_COUNT (sizeof(k_level_aliases) / sizeof(k_level_aliases[0]))
 
 /* Display names in table order — the dropdown's enum_values. Built once at
  * apply-options time; the registry copies the row but NOT the strings it
@@ -164,37 +165,15 @@ const spyro1_level_t* spyro1_level_table(size_t* out_count) {
     return k_levels;
 }
 
-static void print_valid_names(void) {
-    size_t i;
-    fprintf(stderr, "valid level names:\n");
-    for (i = 0; i < LEVEL_COUNT; i++)
-        fprintf(stderr, "  %-18s (%d)\n", k_levels[i].name, k_levels[i].id);
-}
-
+/* A numeric argument passes through unchecked: this game's warp takes the id
+ * the caller names rather than indexing the table with it. */
 int spyro1_level_resolve(const char* arg) {
-    size_t i, n;
-    char   norm[32];
-
-    /* No value: the list is the answer (`--skip-to-level` alone). */
-    if (!arg || !arg[0]) { print_valid_names(); return -1; }
-
-    /* All-digits → numeric level id, passed through verbatim. */
-    for (i = 0; arg[i] && isdigit((unsigned char)arg[i]); i++) {}
-    if (!arg[i]) return atoi(arg);
-
-    /* Normalise: lowercase, '-' → '_'. */
-    for (n = 0; arg[n] && n < sizeof(norm) - 1; n++) {
-        char c = (char)tolower((unsigned char)arg[n]);
-        norm[n] = (c == '-') ? '_' : c;
-    }
-    norm[n] = '\0';
-
-    for (i = 0; i < LEVEL_COUNT; i++)
-        if (strcmp(norm, k_levels[i].name) == 0) return k_levels[i].id;
-    for (i = 0; i < LEVEL_ALIAS_COUNT; i++)
-        if (strcmp(norm, k_level_aliases[i].name) == 0) return k_level_aliases[i].id;
-    print_valid_names();
-    return -1;
+    const named_target_table_t levels =
+        NAMED_TARGET_TABLE(k_levels, spyro1_level_t, name, id);
+    const named_target_table_t aliases =
+        NAMED_TARGET_TABLE(k_level_aliases, level_alias_t, name, id);
+    return named_target_resolve(arg, "level", &levels, &aliases,
+                                NAMED_TARGET_NUMERIC_ANY);
 }
 
 static int level_index_for_id(int id) {

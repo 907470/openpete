@@ -21,6 +21,7 @@
 #include "renderer/interp_lerp.h"    /* lerp16/32, lerp_matrix, lerp_vec3 */
 #include "renderer/interp_regions_gen.h"
 #include "renderer/reextract_view.h"
+#include "renderer/env_knob.h"
 #include "openpete_interp_objs.h"      /* g_openpete_tick_period_ns */
 #include "openpete_native_render.h"
 #include "openpete_subtick_view.h"
@@ -332,13 +333,8 @@ static void player_records_replay(CPUState* cpu, int paired, double alpha) {
  * A producer that returns early reads as zero, which is what separates a
  * missing producer from an empty one. Diagnostic only. */
 static int rx_census_on(void) {
-    static int lo = -2, hi = -2;
-    if (lo == -2) {
-        const char* e = getenv("OPENPETE_RX_CENSUS");
-        lo = hi = -1;
-        if (e && *e) { lo = atoi(e); const char* d = strchr(e, '-'); hi = d ? atoi(d + 1) : lo; }
-    }
-    return lo >= 0 && (int)openpete_frame >= lo && (int)openpete_frame <= hi;
+    static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
+    return env_frame_range_active(&s_range, "OPENPETE_RX_CENSUS", openpete_frame);
 }
 static uint32_t rx_scene_tris(void) {
     uint32_t n[16], t = 0;

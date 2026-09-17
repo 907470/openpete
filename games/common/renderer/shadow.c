@@ -42,6 +42,7 @@
 #include <string.h>
 #include "game_layout.h"
 #include "openpete_profile.h"       /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
+#include "renderer/env_knob.h"
 
 extern unsigned openpete_frame;
 
@@ -645,7 +646,7 @@ static void shadow_moby_compare(CPUState* cpu) {
 /* ---- gating --------------------------------------------------------------- */
 int shadow_verify_enabled(void) {
     static int v = -1;
-    if (v < 0) { const char* e = getenv("OPENPETE_SHADOW_VERIFY"); v = (e && *e && *e != '0'); }
+    ENV_FLAG_LATCH(v, "OPENPETE_SHADOW_VERIFY");
     return v;
 }
 unsigned shadow_verify_frame(void) {

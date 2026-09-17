@@ -32,22 +32,31 @@
 # players setting it writes never touches the named copy. Refuses (exit 64)
 # without it.
 #
-# Usage: scripts/check_spyro_records.sh [--filter=SUBSTR] [--build-dir=DIR] [--keep]
+# Usage: scripts/check_spyro_records.sh [--game SLUG] [--filter=SUBSTR]
+#                                       [--build-dir=DIR] [--keep]
 # Exit: 0 PASS, 1 FAIL, 64 SKIP/VACUOUS (prereqs missing or the corpus
 # cannot engage the asserts).
 set -u
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
+
+GAME="$(pg_parse_game "$@")" || exit 64
 
 FILTER=""; BUILD_DIR="build/linux-release"; KEEP=0
 for a in "$@"; do case "$a" in
   --filter=*) FILTER="${a#--filter=}";;
   --build-dir=*) BUILD_DIR="${a#--build-dir=}";;
   --keep) KEEP=1;;
-  *) echo "usage: $0 [--filter=SUBSTR] [--build-dir=DIR] [--keep]" >&2; exit 64;;
+  --game|--game=*) ;;   # consumed by pg_parse_game above
+  spyro-*) ;;           # the two-word --game SLUG spelling
+  *) echo "usage: $0 [--game SLUG] [--filter=SUBSTR] [--build-dir=DIR] [--keep]" >&2; exit 64;;
 esac; done
 
-BIN="${OPENPETE_BIN:-$BUILD_DIR/games/spyro-1/openpete-spyro1}"
-DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
+PG_BUILD_DIR="$BUILD_DIR"
+pg_resolve "$GAME"
+BIN="$PG_BIN"
+DISC="$PG_DISC"
 CORPUS="scripts/spyro-records-corpus.txt"
 COOP="${SPYRO_COOP_DIR:-}"
 
@@ -76,18 +85,20 @@ run_leg() {
     "$players" > "$OUT/mods/spyro-coop/data/settings.txt"
   local -a srcargs capargs
   if [[ $src == level:* ]]; then srcargs=(--skip-to-level "${src#level:}")
-  else srcargs=(--bk2 "games/spyro-1/bk2/$src.bk2"); fi
+  else srcargs=(--bk2 "$PG_BK2_DIR/$src.bk2"); fi
   if [[ $leg == canon ]]; then capargs=(--screenshot-on-frame "$frame" --screenshot-native-only)
   else capargs=(--screenshot-intermediate-on-frame "$frame"); fi
   # --render-fps above the sim rate arms the DIRECT ring (openpete_interp.h);
   # without it the hook-vs-ring column is vacuous (the summary's no_ring
   # counts those epochs and the harness refuses them).
-  OPENPETE_VIBRATION=0 OPENPETE_SPYRO_RECDBG=1 OPENPETE_BRACKET_CHECK=1 \
-  timeout 600 "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk --mute 1 --render-fps 60 \
+  local -a PG_CAPTURE_ENV=(OPENPETE_SPYRO_RECDBG=1 OPENPETE_BRACKET_CHECK=1)
+  local PG_CAPTURE_TIMEOUT=600 PG_CAPTURE_STDOUT=/dev/null
+  # The screenshot names carry the frame number, so no output is asserted by
+  # name here; the asserts are the RECDBG lines the log must carry.
+  pg_capture "$log" "" -- --renderer vk --mute 1 --render-fps 60 \
     --mods-dir "$OUT/mods" --mods spyro-coop "${srcargs[@]}" "${capargs[@]}" \
     --screenshot-output "$OUT/shots/$name-$leg-{n}.png" \
-    --frame-limit "$((frame + 1))" --max-runtime-seconds 560 ${extra:+$extra} \
-    >/dev/null 2>"$log"
+    --frame-limit "$((frame + 1))" --max-runtime-seconds 560 ${extra:+$extra}
   echo $?
 }
 
