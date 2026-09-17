@@ -21,6 +21,11 @@ extern "C" {
 
 enum { TERRAIN_FACES_SPYRO1 = 0, TERRAIN_FACES_SPYRO3 = 1 };
 enum { CYC_FACES_SPYRO1 = 0, CYC_FACES_SPYRO3 = 1 };
+/* The bounding-sphere rejection the world draw runs before it bins a sector
+ * into the LP/HP lists. TERRAIN_SECTOR_CULL_NONE: the draw bins every sector
+ * the pre-pass offered. TERRAIN_SECTOR_CULL_SPHERE: the sphere-frustum test at
+ * environment.s:800224E0-80022548. */
+enum { TERRAIN_SECTOR_CULL_NONE = 0, TERRAIN_SECTOR_CULL_SPHERE = 1 };
 /* Where the moby-shadow draw finds the base of the drawn-moby list, and which
  * screen-extent rejection it applies before emitting a fan. */
 enum { SHADOW_LIST_ADDR = 0, SHADOW_LIST_GTE_DATA = 1 };
@@ -213,6 +218,35 @@ typedef struct game_layout {
         /* The LP/HP LOD distance when the environment header has no field for
          * it (env.lod_dist == 0): Spyro 3's draw bins with constants. */
         uint32_t lod_dist_default;
+        /* The world draw's own per-sector list binning. `no_lp_flag`,
+         * `no_hp_flag` and `force_lp_flag` are header flag bits: no LP list, no
+         * HP list, and LP drawn even where the sector has HP. `sector_cull`
+         * names the bounding-sphere rejection run before the binning.
+         *   `hp_far` 0 means the draw bins by flags alone and the tier is
+         * distance-independent. Otherwise, with vz the bounding centre's view-Z
+         * through the binning matrix and r the header radius, both in world/16
+         * units: the LP list takes the sector while
+         * vz + r > lp_near - (flags & lp_near_shift_flag ? lp_near_shift : 0),
+         * and the HP list while vz - r < hp_far, tightened to hp_far_tight when
+         * any `tight_flags` bit is set. */
+        uint32_t no_lp_flag, no_hp_flag, force_lp_flag;
+        uint32_t lp_near_shift_flag;
+        int      lp_near_shift;
+        int      hp_far, lp_near, hp_far_tight;
+        uint32_t tight_flags;
+        int      sector_cull;
+        /* The HP defer classifier: which faces the draw routes to its near/HQ
+         * queues instead of the main OT, so they carry no OT key and no
+         * authored OT bias. Both games sum the four corner SZ3s and compare the
+         * sum against `near_band` and each corner against `near_corner`.
+         * `near_flag_excl` is a face word-3 bit that excludes the face from the
+         * queues outright and `near_flag_tier2` one that refuses the
+         * no-near-corner half of the band; a game whose classifier reads no
+         * face flags leaves both 0 and defers on depth alone. */
+        int      near_band;
+        int      near_corner;
+        uint32_t near_flag_excl;
+        uint32_t near_flag_tier2;
     } terrain;
 
     /* The moby drop-shadow draw. Both games run the same walk: a list of

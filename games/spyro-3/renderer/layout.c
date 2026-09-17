@@ -117,8 +117,7 @@ const game_layout_t game_layout = {
     .level_id = G_LEVELID,
     .terrain = {
         .radius_mask  = 0xFFFu,                     /* world draw: andi $t2, $a0, 0xFFF */
-        .flags_mask   = 0xE000u,                    /* bit 14 skips the HP pass as in Spyro 1;
-                                                     * bits 13 and 15 unmeasured */
+        .flags_mask   = 0xF000u,                    /* world draw: andi $t1, $a0, 0xF000 */
         .flat_flag    = 0x1000u,                    /* environment.s 800225F0: andi 0x5000, bit 12
                                                      * selects the flat HP list */
         .vz_shl       = 1,                          /* Z4 = (v << 3) & 0x1FFC in quarter units */
@@ -129,8 +128,25 @@ const game_layout_t game_layout = {
         .tex_stride   = 48u,
         .abe_in_tpage = 1,
         .tile_word1_br = 1,                         /* GT4 emit: uv1 = word1 - 0x1F00, uv3 = word1 */
-        .lod_dist_default = 0x8000u,                /* Spyro 1's authored value; the Spyro 3 pre-pass
-                                                     * constants are not mirrored yet */
+        .lod_dist_default = 0x8000u,                /* Spyro 1's authored value; the Spyro 3 draw bins
+                                                     * with the constants below, not with this */
+        /* environment.s 800225A0-80022640, sector loop .L80022460-.L8002264C. */
+        .no_lp_flag    = 0x2000u,                   /* 800225A0: andi 0x2000 skips the LP block */
+        .no_hp_flag    = 0x4000u,                   /* 80022604: andi 0x4000 emits no HP entry */
+        .force_lp_flag = 0u,                        /* the LP list is distance-gated only */
+        .lp_near_shift_flag = 0x8000u,              /* 800225AC: andi 0x8000 */
+        .lp_near_shift = 0x600,                     /* 800225B8: addi 0x600 */
+        .hp_far        = 0x7C0,                     /* 800225E8: addi -0x7C0, bgez skips HP */
+        .lp_near       = 0x760,                     /* 800225B4: addi -0x760, blez skips LP */
+        .hp_far_tight  = 0x600,                     /* 800225F8/800225FC: addi -0x100 then -0x500 */
+        .tight_flags   = 0x5000u,                   /* 800225F0: andi 0x5000 */
+        .sector_cull   = TERRAIN_SECTOR_CULL_SPHERE,
+        /* environment.s 80023348-80023374: the corner-SZ sum against 0x2000 and
+         * each corner against 0x140, no face-word bits in the test. */
+        .near_band       = 0x2000,
+        .near_corner     = 0x140,
+        .near_flag_excl  = 0u,
+        .near_flag_tier2 = 0u,
     },
     .shadow = {
         .desc        = G_MOBYSHADOWS,     /* mobyfunc.s:921-923: +0x00/+0x04 the sprite UV

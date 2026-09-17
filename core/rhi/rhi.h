@@ -370,7 +370,10 @@ typedef struct rhi_terrain_vertex {   /* tagged: forward-declared by the
     uint32_t face_flags;        /* sector_slot(9) | tier(1)<<9 | fogbias<<10 |
                                  * gapfill<<11 | dside<<12 (LP w0&0x80 /
                                  * HP w3&0x4) | flip<<13 | quad<<14 |
-                                 * w3_40<<15 | w3_80<<16 | hq_eligible<<17 |
+                                 * near_tier2<<15 | near_excl<<16 (the defer
+                                 * classifier's two face-word bits, both 0 on a
+                                 * game that classifies on depth alone) |
+                                 * hq_eligible<<17 |
                                  * floor<<18 (LP up-facing) |
                                  * admit(5)<<19 (LP authored admission) |
                                  * otbias(5)<<24 (authored OT-slot bias)     */

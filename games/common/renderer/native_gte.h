@@ -108,6 +108,14 @@ void ngte_read_matrix(CPUState* cpu, uint32_t p, int M[3][3]);
 void ngte_mac(const int M[3][3], double vx, double vy, double vz,
               double* m1, double* m2, double* m3);
 
+/* IR1/2/3 as the hardware hands them back with lm = 0: MAC saturated to signed
+ * 16 bits. A walk that mirrors a draw reading IR after MVMVA needs the
+ * saturation, since the unsaturated MAC differs wherever the sector is far
+ * enough for the product to overflow. */
+static inline double ngte_ir_clamp(double mac) {
+    return mac < -32768.0 ? -32768.0 : (mac > 32767.0 ? 32767.0 : mac);
+}
+
 /* Raw-float projection family. TR may be NULL (treated as zero). ofx/ofy
  * are per-call (the shaded walk's billboards project about their own
  * anchor); H comes from the view.

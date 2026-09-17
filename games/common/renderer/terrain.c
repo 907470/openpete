@@ -1127,7 +1127,11 @@ static int is_deferred(uint32_t faceRecPtr) {
  *
  * A face is deferred to the near subdivide pass when its 4 corner depths mark it
  * foreground:
- *   depthSum < 0x2000 && !(word3 & 0x80) && (minCorner < 0x140 || !(word3 & 0x40))
+ *   depthSum < near_band && !(word3 & near_flag_excl)
+ *     && (minCorner < near_corner || !(word3 & near_flag_tier2))
+ * with the four terms from the game's terrain descriptor (Spyro 1 as written
+ * above; a game whose classifier reads no face word-3 bits leaves the two flag
+ * terms 0 and defers on depth alone).
  * Depths are the GTE SZ3 (world/4). Our m3 is world/16, so SZ3 = HQSCALE·m3
  * (HQSCALE=4: HP renders world/4, we project world/16). The .s's leading
  * "m_LodDistance - depthSum <= 0 → skip" gate never fires for a near face
@@ -1135,6 +1139,19 @@ static int is_deferred(uint32_t faceRecPtr) {
  * makes this --no-lod-robust (no m_LodDistance dependency). depthSum > 0 stands in
  * for the tier-4 depthSum != 0 guard and drops behind-camera faces. */
 static double s_hqscale = -1.0;   /* SZ3 = s_hqscale * m3 (env OPENPETE_TERRAIN_HQSCALE) */
+/* The two face word-3 bits the defer classifier reads, by the role the game's
+ * descriptor gives them rather than by a bit position: the hard exclusion from
+ * the near/HQ queues, and the refusal of the no-near-corner half of the
+ * foreground band. A game whose classifier reads no face word leaves both
+ * fields 0, and every consumer below then behaves as the depth-only form. */
+static inline int tface_near_excl(uint32_t w3) {
+    uint32_t b = game_layout.terrain.near_flag_excl;
+    return b && (w3 & b);
+}
+static inline int tface_near_tier2(uint32_t w3) {
+    uint32_t b = game_layout.terrain.near_flag_tier2;
+    return b && (w3 & b);
+}
 /* The CANONICAL .s foreground classification (no --no-lod pin): true iff the
  * canonical walk would route this face to the near/HQ defer queues — i.e. it
  * never receives a main-OT index. Consumers that model og's OT (the authored
@@ -1155,19 +1172,20 @@ static int face_is_near_canonical(double z0, double z1, double z2, double z3, ui
     double sz2 = z2 > 0.0 ? z2*s : 0.0, sz3 = z3 > 0.0 ? z3*s : 0.0;
     double sum = sz0 + sz1 + sz2 + sz3;
     if (sum <= 0.0) return 0;                          /* FULLY behind camera */
-    if (word3 & 0x80) return 0;                        /* face hard-excluded from HQ subdivide */
-    if (sum >= 8192.0) return 0;                       /* not foreground (0x2000) */
+    if (tface_near_excl(word3)) return 0;              /* face hard-excluded from HQ subdivide */
+    if (sum >= (double)game_layout.terrain.near_band) return 0;   /* not foreground */
     double mn = sz0; if (sz1<mn) mn=sz1; if (sz2<mn) mn=sz2; if (sz3<mn) mn=sz3;
-    if (mn < 320.0) return 1;                          /* a corner SZ3 < 0x140 → tier 4 */
-    return !(word3 & 0x40);                            /* else tier 2 unless flag 0x40 */
+    if (mn < (double)game_layout.terrain.near_corner) return 1;   /* a corner below the tier-4 bound */
+    return !tface_near_tier2(word3);                   /* else tier 2 unless the flag refuses it */
 }
 static int face_is_near(double z0, double z1, double z2, double z3, uint32_t word3) {
     /* --no-lod: pin the bpp8 HQ near-subdivide ON for every eligible face,
      * regardless of distance, so the coarse bpp4 LQ far tier is never shown. The
      * canonical game switches LQ→HQ only inside the 0x2000 foreground band;
      * under --no-lod we drop all the distance-derived gates and keep only the
-     * two that aren't distance: the behind-camera guard and the word3 & 0x80
-     * hard-exclusion (those faces never carry a valid HQ Tiledef). Quads only —
+     * two that aren't distance: the behind-camera guard and the descriptor's
+     * near_flag_excl hard-exclusion (those faces never carry a valid HQ
+     * Tiledef). Quads only —
      * near TRIANGLES still fall to the GT3 LQ emit (the existing
      * detail-descriptor carve-out, see the near-dispatch site). Display-only;
      * reads no gameplay state. */
@@ -1179,7 +1197,7 @@ static int face_is_near(double z0, double z1, double z2, double z3, uint32_t wor
         double sz0 = z0 > 0.0 ? z0*s : 0.0, sz1 = z1 > 0.0 ? z1*s : 0.0;
         double sz2 = z2 > 0.0 ? z2*s : 0.0, sz3 = z3 > 0.0 ? z3*s : 0.0;
         if (sz0 + sz1 + sz2 + sz3 <= 0.0) return 0;    /* FULLY behind camera */
-        return !(word3 & 0x80);
+        return !tface_near_excl(word3);
     }
     return face_is_near_canonical(z0, z1, z2, z3, word3);
 }
@@ -2324,7 +2342,7 @@ static void tsc_refresh_anim(CPUState* cpu, tscache_t* C,
          * (which can differ from tb). The near path decodes the record live
          * per emit, so nothing re-decodes here — but the GPU bake reads it
          * at build time and must go stale (texGen) when it advances. */
-        if (F->quad && !(F->w3 & 0x80)) {
+        if (F->quad && !tface_near_excl(F->w3)) {
             uint32_t gh = s_tgen[F->hq_idx & 0x7F];
             if (F->tgenHq != gh) { F->tgenHq = gh; changed = 1; }
         }
@@ -3202,7 +3220,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         const tsface_t* F = &SC->hpF[f];
         if (F->i0 >= SC->nHpV || F->i1 >= SC->nHpV || F->i2 >= SC->nHpV || F->i3 >= SC->nHpV)
             continue;
-        int hq_elig = F->quad && hqTable != 0 && !(F->w3 & 0x80);
+        int hq_elig = F->quad && hqTable != 0 && !tface_near_excl(F->w3);
         tgpu_face_t T;
         memset(&T, 0, sizeof(T));
         T.c[0] = tgpu_p4_of(&SC->hpV[F->i0]); T.c[1] = tgpu_p4_of(&SC->hpV[F->i1]);
@@ -3212,8 +3230,8 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                      | ((F->w3 & 0x4)  ? (1u << 12) : 0u)   /* dside */
                      | (F->flip ? (1u << 13) : 0u)
                      | (F->quad ? (1u << 14) : 0u)
-                     | ((F->w3 & 0x40) ? (1u << 15) : 0u)
-                     | ((F->w3 & 0x80) ? (1u << 16) : 0u)
+                     | (tface_near_tier2(F->w3) ? (1u << 15) : 0u)
+                     | (tface_near_excl(F->w3)  ? (1u << 16) : 0u)
                      | (hq_elig ? (1u << 17) : 0u)
                      | (((uint32_t)F->otbias & 0x1Fu) << 24);
         /* Material bucket, keyed exactly as the walk's provenance tag is:
@@ -3617,27 +3635,65 @@ static uint8_t    s_tgpu_own[1024];      /* GPU owns this sector this walk */
  * decision sites in walk_sector — this is the same math, computed once per
  * sector in the prepass. */
 static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V) {
+    const int noLP  = (int)game_layout.terrain.no_lp_flag;
+    const int noHPf = (int)game_layout.terrain.no_hp_flag;
+    const int forceLP = (int)game_layout.terrain.force_lp_flag;
     int flags = SC->flags;
     int nLpF = SC->nLpF, nHpF = SC->nHpF;
-    double cbin;
-    { double c1m, c2m;
-      ngte_mac(G->Mbin, G->camy - SC->centreY, G->camz - SC->centreZ,
-               SC->centreX - G->camx, &c1m, &c2m, &cbin); }
+    double cbin, c1m, c2m;
+    ngte_mac(G->Mbin, G->camy - SC->centreY, G->camz - SC->centreZ,
+             SC->centreX - G->camx, &c1m, &c2m, &cbin);
     int lodThr = G->fogRefBase >> 2;
-    int drawHP = !(flags & 0x4000) && nHpF > 0;
-    int drawLP = !(flags & 0x2000) && nLpF > 0 && ((flags & 0x8000) || !drawHP);
-    if (G->tier_faithful) {
-        drawHP = drawHP && ((double)lodThr > cbin - SC->radius);
-        drawLP = !(flags & 0x2000) && nLpF > 0 &&
-                 ((flags & 0x8000) || (double)lodThr < cbin + SC->radius + 0x100);
+    int drawHP, drawLP;
+    int culled = 0;
+    if (game_layout.terrain.sector_cull == TERRAIN_SECTOR_CULL_SPHERE) {
+        /* Bounding-sphere frustum rejection, environment.s:800224E0-80022548.
+         * The three comparisons are behind the near plane, and outside the
+         * horizontal and vertical half-angles, the second and third widened by
+         * a radius-proportional slack the draw builds by shifts. The GTE
+         * saturates IR1..IR3 to 16 bits before the draw reads them back. */
+        double vx = ngte_ir_clamp(c1m), vy = ngte_ir_clamp(c2m);
+        double vz = ngte_ir_clamp(cbin);
+        int r = SC->radius;
+        double t3 = (r >> 1) + (r >> 2) + (r >> 5), t4 = (r >> 1) + (r >> 4) + (r >> 5);
+        double t5 = r - (r >> 3), t6 = (r >> 1) - (r >> 4);
+        culled = (vz + r <= 0)
+              || (4.0 * (fabs(vx) - t3) >= 3.0 * (vz + t4))
+              || (32.0 * (fabs(vy) - t5) >= 17.0 * (vz + t6));
     }
+    if (game_layout.terrain.hp_far && !openpete_no_lod) {
+        /* The draw's own list binning, environment.s:800225A0-80022640. A
+         * sector can land in both lists where the two distance bands overlap.
+         * vz is the bounding centre's view-Z through the binning matrix. */
+        double vz = ngte_ir_clamp(cbin);
+        int r = SC->radius;
+        int shift = (flags & (int)game_layout.terrain.lp_near_shift_flag)
+                    ? game_layout.terrain.lp_near_shift : 0;
+        int hpFar = (flags & (int)game_layout.terrain.tight_flags)
+                    ? game_layout.terrain.hp_far_tight : game_layout.terrain.hp_far;
+        drawLP = !(flags & noLP) && nLpF > 0
+                 && (vz + r - game_layout.terrain.lp_near + shift > 0);
+        drawHP = !(flags & noHPf) && nHpF > 0 && (vz - r < hpFar);
+    } else {
+        drawHP = !(flags & noHPf) && nHpF > 0;
+        drawLP = !(flags & noLP) && nLpF > 0 && ((flags & forceLP) || !drawHP);
+        if (G->tier_faithful) {
+            drawHP = drawHP && ((double)lodThr > cbin - SC->radius);
+            drawLP = !(flags & noLP) && nLpF > 0 &&
+                     ((flags & forceLP) || (double)lodThr < cbin + SC->radius + 0x100);
+        }
+    }
+    if (culled) { drawHP = 0; drawLP = 0; }
     int secInLOD = ((double)lodThr * (4.0 / s_fogscale) > cbin - SC->radius);
     int lpFarOnly = 0, lpGapOnly = 0;
-    if (!drawLP && !(flags & 0x2000) && nLpF > 0) {
+    /* The LP substitutions are the LOD ladder of a game whose draw does not bin
+     * by distance; where the draw owns list membership its verdict stands. */
+    if (!game_layout.terrain.hp_far && !culled
+        && !drawLP && !(flags & noLP) && nLpF > 0) {   /* flags-only games */
         if (G->lod_handoff && !G->tier_faithful && drawHP) { drawLP = 1; lpFarOnly = 1; }
         else if (s_gapfill_en && SC->nGapfill > 0) { drawLP = 1; lpGapOnly = 1; }
     }
-    int fillLP = G->holefill && !(flags & 0x2000) && nLpF > 0
+    int fillLP = G->holefill && !culled && !(flags & noLP) && nLpF > 0
                  && ((double)lodThr < cbin + SC->radius + 0x100)
                  && !(openpete_no_lod && drawHP);
     V->cbin = cbin;
@@ -4465,12 +4521,12 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 if (s_ndbg && faceStride == 16 && quad && vis_straddle) {
                     static long s_nd_q, s_nd_qtot;   /* .s-queue oracle agreement (needs VERIFY) */
                     if (near) s_nd_near++;
-                    else if (hqW3 & 0x80) s_nd_excl++;   /* hard-excluded from HQ (no Tiledef) */
+                    else if (tface_near_excl(hqW3)) s_nd_excl++;   /* hard-excluded from HQ (no Tiledef) */
                     else s_nd_lq++;
                     if (s_defer_n > 0) { s_nd_qtot++;
                         if (is_deferred(faces + (uint32_t)f * 16u)) s_nd_q++; }
                     if (++s_nd_n >= 200) {
-                        fprintf(stderr, "[neardbg] visible straddling quads: near=%ld excl80=%ld lq=%ld  queue: %ld/%ld deferred\n",
+                        fprintf(stderr, "[neardbg] visible straddling quads: near=%ld excl=%ld lq=%ld  queue: %ld/%ld deferred\n",
                                 s_nd_near, s_nd_excl, s_nd_lq, s_nd_q, s_nd_qtot);
                         s_nd_n = 0;
                     }
