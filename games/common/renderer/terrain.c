@@ -341,6 +341,7 @@ static uint8_t  s_emit_nearband = 0; /* current face is .s near-band (defer/HQ c
 static ttri s_tri[MAX_TTRIS]; static int s_tri_n;
 
 static int s_dbg_faces, s_dbg_oob, s_dbg_nclip, s_dbg_behind, s_dbg_spike;  /* diagnostics */
+static int s_dbg_spike_tris;   /* triangles the near/HQ subdivide emitted this walk */
 static int s_fardbg = -1, s_fardbg_done = 0, s_fardbg_active = 0;  /* OPENPETE_TERRAIN_FARDBG */
 static int s_fardbg_budget = -1;   /* OPENPETE_TERRAIN_FARDBG_N: walks still to dump */
 static int s_fardbg_lean = -1;     /* OPENPETE_TERRAIN_FARDBG_LEAN: skip the per-prim/per-tri lines */
@@ -744,6 +745,7 @@ typedef struct {
     float emit_otkey; uint16_t emit_otslots; uint8_t emit_nearband;
     /* census (summed into the s_dbg_* / s_tex_* globals after the walk) */
     int dbg_faces, dbg_oob, dbg_nclip, dbg_behind, dbg_spike, dbg_clipped;
+    int dbg_spike_tris;                  /* triangles emitted by the near/HQ subdivide */
     int tex_faces, tex_tris;
     int near_q_agree, near_c_only;
     int walk_sectors;
@@ -1181,8 +1183,19 @@ static int face_is_near(double z0, double z1, double z2, double z3, uint32_t wor
      * Tiledef). Quads only —
      * near TRIANGLES still fall to the GT3 LQ emit (the existing
      * detail-descriptor carve-out, see the near-dispatch site). Display-only;
-     * reads no gameplay state. */
-    if (openpete_no_lod) {
+     * reads no gameplay state.
+     *
+     * Only for games whose draw does not bin the HP list by distance
+     * (terrain.hp_far == 0), the same property the LP far-only substitution is
+     * gated on. Where the draw owns the HP band, --no-lod already promotes the
+     * far sectors into HP-only, so dropping the distance gates here routes
+     * every front-or-straddling HP quad through the 2x2 subdivide at every
+     * distance. That face set is not stable between presents (a corner
+     * crossing the camera plane moves a face in or out) and each change swings
+     * 6 triangles, so the scene's triangle count oscillates by hundreds per
+     * present. Those games keep the canonical classification, whose distance
+     * band makes membership change only as the camera travels. */
+    if (openpete_no_lod && !game_layout.terrain.hp_far) {
         if (s_hqscale < 0.0) {
             const char* e = getenv("OPENPETE_TERRAIN_HQSCALE"); s_hqscale = (e && *e) ? atof(e) : 4.0;
         }
@@ -4757,9 +4770,11 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 cvert TR = { sv[i1].m1, sv[i1].m2, sv[i1].m3, r1, 0, 0 };
                 cvert BL = { sv[i3].m1, sv[i3].m2, sv[i3].m3, r3, 0, 0 };
                 cvert BR = { sv[i2].m1, sv[i2].m2, sv[i2].m3, r2, 0, 0 };
+                int spikeTri0 = W->tri_n;
                 terrain_near_emit(W, cpu,
                                   hqTable + (uint32_t)F->hq_idx * game_layout.terrain.hq_stride,
                                   F->hq_idx, abe, TL, TR, BL, BR);
+                W->dbg_spike_tris += W->tri_n - spikeTri0;
                 W->dbg_spike++;   /* near/HQ cells subdivided */
                 FARDBG_DROP("nearhq");  /* emitted subdivided — the face-set
                                          * join can't corner-match the parent */
@@ -4970,6 +4985,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     s_fardbg_occl0 = s_tocc_culled;
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
     s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
+    s_dbg_spike_tris = 0;
     s_near_q_agree = s_near_c_only = 0;
     ENV_FLAG_LATCH(s_sectordump, "OPENPETE_TERRAIN_SECTORDUMP");
     s_sd_n = 0;
@@ -5431,6 +5447,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         W->tri_n = 0;
         W->dbg_faces = W->dbg_oob = W->dbg_nclip = W->dbg_behind = 0;
         W->dbg_spike = W->dbg_clipped = 0;
+        W->dbg_spike_tris = 0;
         W->tex_faces = W->tex_tris = 0;
         W->near_q_agree = W->near_c_only = 0;
         W->walk_sectors = 0;
@@ -5758,9 +5775,19 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         s_dbg_faces += W->dbg_faces; s_dbg_oob += W->dbg_oob;
         s_dbg_nclip += W->dbg_nclip; s_dbg_behind += W->dbg_behind;
         s_dbg_spike += W->dbg_spike; s_dbg_clipped += W->dbg_clipped;
+        s_dbg_spike_tris += W->dbg_spike_tris;
         s_tex_faces += W->tex_faces; s_tex_tris += W->tex_tris;
         s_near_q_agree += W->near_q_agree; s_near_c_only += W->near_c_only;
         s_walk_sectors += W->walk_sectors;
+    }
+    {   /* OPENPETE_TERRAIN_NEARCEN=1: one line per terrain walk carrying the
+         * near/HQ routing counts and the walk's triangle total. Headless runs
+         * one walk per tick, so the line is that tick's per-present count. */
+        static int s_ncen = -1;
+        if (s_ncen < 0) { const char* e = getenv("OPENPETE_TERRAIN_NEARCEN"); s_ncen = (e && *e && *e != '0'); }
+        if (s_ncen)
+            fprintf(stderr, "[nearcen] frame=%u nearFaces=%d subTris=%d terrainTris=%d sectors=%d\n",
+                    openpete_frame, s_dbg_spike, s_dbg_spike_tris, s_tri_n, s_walk_sectors);
     }
     if (tgpu_on) {
         openpete_tercache_frame_commit();
