@@ -1,0 +1,77 @@
+/* ui_game.h — the per-game half of the shared 2D UI feeder.
+ *
+ * The decode in renderer/ui_sprite.c owns everything the games share: the
+ * primitive classification, the FT4/F4/LINE_G2/SPRT word layouts, the
+ * DR_MODE ABR tracking, the deferred feed-previous, the widescreen widening
+ * of a full-width bar and the fade drive. Those layouts are the psyq packet
+ * shapes, identical in both games.
+ *
+ * What differs is where the game keeps the layer: the address of the routine
+ * every 2D primitive is linked through, the address of the full-screen fade
+ * emitter, the signature of the freeze-frame backdrop quad, the VRAM block a
+ * texture pack may replace by name, and the addresses of a text chain that
+ * links itself and so never reaches the chokepoint. A zero address makes the
+ * feeder register no hook for that path; a game with no 2D feeder links
+ * games/common/renderer/layout_none.c. */
+#ifndef OPENPETE_COMMON_RENDERER_UI_GAME_H
+#define OPENPETE_COMMON_RENDERER_UI_GAME_H
+
+#include <stdint.h>
+#include "psx_runtime_internal.h"   /* CPUState */
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+typedef struct ui_game {
+    /* The 2D ordering-table insert (a0 = the primitive being linked). Every
+     * 2D emitter calls it and no 3D draw does — the 3D passes inline the
+     * link — so it is the 2D-vs-3D discriminator. */
+    uint32_t ot_insert;
+
+    /* The full-screen fade emitter, called as (abr_mode, r, g, b): one
+     * DR_MODE carrying the ABR alone, then a full-screen semi-transparent
+     * POLY_F4. The feeder drives the native fade from the arguments. */
+    uint32_t fade_emitter;
+
+    /* The freeze-frame backdrop quad's signature: its setRGB0 tint as the
+     * primitive packs it (0x00BBGGRR) and the VRAM position of the grayscale
+     * CLUT it samples through. A quad matching both is reproduced from the
+     * native renderer's own last world frame instead of being fed, so the
+     * frozen frame shows the native render rather than the emulated VRAM
+     * scratch. `freeze_tint` 0 = the game has no such quad. */
+    uint32_t freeze_tint;
+    int      freeze_clut_x, freeze_clut_y;
+
+    /* The UI texture block, named once at the first 2D primitive so a
+     * texture pack can replace the whole block by file name. `atlas_w` 0 =
+     * the game names no block. */
+    int         atlas_x, atlas_y, atlas_w, atlas_h;
+    const char* atlas_name;
+
+    /* Text emitters that build and link their own primitive chain, bypassing
+     * `ot_insert`. Each is hooked separately and its chain read out of the
+     * primitive buffer it just filled. 0 = unused slot. */
+    uint32_t text_emitter[2];
+} ui_game_t;
+
+extern const ui_game_t ui_game;
+
+/* Feed one 0x14-byte SPRT (a screen-space textured sprite: colour|code at
+ * +0x04, x0/y0 at +0x08/+0x0A, u/v at +0x0C/+0x0D, CLUT at +0x0E, and
+ * (height << 16) | width at +0x10) into the native HUD layer. `tpage` is the
+ * GPU texture-page word in effect, which the SPRT packet does not carry — it
+ * comes from the DR_MODE that heads the chain. */
+void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage);
+
+/* Primitives fed by ui_sprite_feed_sprt since boot: the engagement counter a
+ * harness reads to tell "no text drew" from "text drew identically". */
+unsigned ui_sprite_sprt_count(void);
+/* Primitives fed through the chokepoint since boot, by class. */
+unsigned ui_sprite_prim_count(void);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif /* OPENPETE_COMMON_RENDERER_UI_GAME_H */

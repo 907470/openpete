@@ -4,6 +4,7 @@
 // (core/include/game_layout.h).
 
 #include "game_layout.h"
+#include "renderer/ui_game.h"
 
 /* The camera struct @ 0x80067E84 has Spyro 3's layout: position at +0x28
  * (D_80067EAC, three int32, Z up), then the three 12-bit angle shorts at
@@ -19,3 +20,7 @@ const game_layout_t game_layout = {
         .rotation = G_CAMERA + 0x44u,
     },
 };
+
+/* No 2D UI feeder: the ordering-table chokepoint and the fade emitter are not
+ * located, so games/common/renderer/ui_sprite.c registers no hook. */
+const ui_game_t ui_game = { 0 };

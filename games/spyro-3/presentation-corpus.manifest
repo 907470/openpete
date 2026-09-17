@@ -55,3 +55,14 @@ icy-peak-ice-crystal-destruction|1500|100||1660,1674,1690
 # under a fixed camera. 510 pins the frame the jitter was reported at, on the
 # canonical and the sub-tick leg alike.
 title-demo|500|20||510
+
+# open-options and open-atlas are the corpus rows for the 2D UI layer: they are
+# the only movies whose frames carry its classes inside the visible band. At
+# the pins open-options draws the options panel (3 semi-transparent POLY_F4,
+# PSX box x 192..320 y 76..172), its 30 SPRT glyphs (x 208..308 y 80..152) and
+# 5 HUD-class POLY_FT4 (x 128..384 y 65..193); open-atlas draws the whole atlas
+# screen as 290 POLY_FT4 covering x 1..512 y 12..228. The in-game HUD sprites
+# sit at y -28..2 — retracted above the visible band — on every frame of every
+# other movie in this corpus, so no row shows the HUD extended yet.
+open-options|900|100||1200,1300
+open-atlas|900|100||1200,1300

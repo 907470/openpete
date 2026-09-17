@@ -186,3 +186,27 @@ note = "g_Spyro (globals.toml names the address g_Spyro / spyro; struct Spyro, 0
 name = "G_GAMESTATE"
 addr = 0x8006E344
 note = "game.state (globals.toml names the address game; asm/data/game.bss.s), the first word of the Game struct: 0 gameplay, 3 fade-in, 7 loading glide; asm/update.s branches the tick regime on it, skip_to_level.c and game_extras_impl.c read it at this address"
+
+[[symbol]]
+name = "F_UI_OT_INSERT"
+addr = 0x8004E758
+kind = "function"
+note = "func_8004E758 (asm/stdutil.s:84-100) — links a0 into the 2D ordering table at D_8006C638, instruction-for-instruction Spyro 1's func_800168DC with a different head global; called by drawutil, hud and updatepause and by no 3D translation unit, so it is the 2D feeder's chokepoint hook site"
+
+[[symbol]]
+name = "F_UI_FADE"
+addr = 0x800200A0
+kind = "function"
+note = "func_800200A0(abrMode, r, g, b) (asm/nonmatchings/drawutil/func_800200A0.s:4-55) — the full-screen fade emitter: func_8005C564(prim, 1, 0, abrMode << 5, 0) then a 0x2A POLY_F4 spanning x 0..0x200, y 0x0C..0xE4, each linked through func_8004E758; src/draw.c:121 drives it from D_8006C598"
+
+[[symbol]]
+name = "F_TEXT_SPRT"
+addr = 0x8002E748
+kind = "function"
+note = "func_8002E748(str, x, y, colourIndex, clipRange) (asm/mobyfunc.s:1532-1686) — handwritten glyph emitter: one 0xC-byte DR_MODE word 0xE1000618 then one 0x14-byte SPRT per glyph, chained tag-to-tag and linked into D_8006C638 inline without calling func_8004E758"
+
+[[symbol]]
+name = "F_TEXT_SPRT_PER_GLYPH"
+addr = 0x8002E970
+kind = "function"
+note = "func_8002E970 (asm/mobyfunc.s:1687-1845) — the per-glyph-DR_MODE variant of func_8002E748: it rewrites the 0x618 tpage halfword inside every packet and advances 10 or 8 px by the clipRange flag"

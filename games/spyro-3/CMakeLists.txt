@@ -22,7 +22,8 @@ openpete_add_game(spyro-3
         features/freecam.c
         renderer/layout.c
         renderer/portal.c
-        renderer/terrain_probe.c)
+        renderer/terrain_probe.c
+        renderer/text_sprt.c)
 
 # Typed game structs: every decomp typedef struct plus the PSYQ types they
 # embed, guest-pointer fields rewritten to uint32_t, pinned by

@@ -3,6 +3,7 @@
 // typed header, whose _Static_asserts pin them to the probed MIPS layout.
 
 #include "game_layout.h"
+#include "renderer/ui_game.h"
 #include "spyro1_symbols.gen.h"
 #include "openpete_game_structs.h"
 
@@ -221,4 +222,26 @@ const game_layout_t game_layout = {
         .world_draw = F_WORLD_DRAW,
         .sky_draw   = F_SKY_DRAW,
     },
+};
+
+/* The 2D UI layer (games/common/renderer/ui_sprite.c). */
+const ui_game_t ui_game = {
+    .ot_insert    = F_UI_OT_INSERT,
+    .fade_emitter = F_UI_FADE,
+
+    /* The pause / inventory / flight-results freeze quad: setRGB0(0x4C, 0x80,
+     * 0x40) packed B,G,R, sampling the grayscale CLUT the desaturation writes
+     * to VRAM (512, 224). */
+    .freeze_tint   = 0x40804Cu,
+    .freeze_clut_x = 512,
+    .freeze_clut_y = 224,
+
+    /* The title-screen UI upload: logo, "PRESS START" and the banner glyphs,
+     * one 512x256 block at VRAM (512, 256). */
+    .atlas_x = 512, .atlas_y = 256, .atlas_w = 512, .atlas_h = 256,
+    .atlas_name = "title_ui",
+
+    /* Text is drawn as text-moby models (renderer/text_moby.c), not as an SPRT
+     * chain, so there is no self-linking emitter to hook. */
+    .text_emitter = { 0u, 0u },
 };

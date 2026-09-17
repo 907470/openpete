@@ -276,6 +276,7 @@ function(openpete_add_game GAME_ID)
         ${_common}/renderer/moby.c
         ${_common}/renderer/moby_rank.c
         ${_common}/renderer/player.c
+        ${_common}/renderer/ui_sprite.c
         ${_common}/renderer/interp_regions_gen.c
         ${_common}/renderer/reextract_view.c
 

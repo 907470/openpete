@@ -182,7 +182,6 @@ openpete_add_game(spyro-1
         renderer/particle.c
         renderer/tracer.c
         renderer/layout.c
-        renderer/ui_sprite.c
         renderer/portal.c
         renderer/text_moby.c
         renderer/text_moby_id.c

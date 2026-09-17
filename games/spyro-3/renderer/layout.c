@@ -7,6 +7,7 @@
 // confirmed it. A field with no located counterpart is 0.
 
 #include "game_layout.h"
+#include "renderer/ui_game.h"
 #include "spyro3_symbols.gen.h"
 #include "openpete_game_structs.h"
 
@@ -336,4 +337,30 @@ const game_layout_t game_layout = {
         .sky_draw   = F_SKY_DRAW,
         .visibility = F_VISIBILITY,   /* called by both draws before their walks */
     },
+};
+
+/* The 2D UI layer (games/common/renderer/ui_sprite.c). The sprite, box, fade
+ * and letterbox primitives carry the same psyq word order as Spyro 1's and
+ * reach the same kind of chokepoint; the text chain does not and is fed by
+ * renderer/text_sprt.c instead. */
+const ui_game_t ui_game = {
+    .ot_insert    = F_UI_OT_INSERT,
+    .fade_emitter = F_UI_FADE,
+
+    /* No freeze-frame backdrop quad is located on this game: the pause screen
+     * is not reproduced from the native renderer's last world frame yet. */
+    .freeze_tint   = 0u,
+    .freeze_clut_x = 0,
+    .freeze_clut_y = 0,
+
+    /* The UI texture block: tpage word 0x618 in the text chain's DR_MODE is
+     * page (512, 256) at 4bpp, the same block the HUD and dialog sprites
+     * sample. */
+    .atlas_x = 512, .atlas_y = 256, .atlas_w = 512, .atlas_h = 256,
+    .atlas_name = "ui_atlas",
+
+    /* Both glyph emitters build a tag-to-tag SPRT chain in the primitive
+     * buffer and link it into the 2D ordering table themselves, so neither
+     * reaches the chokepoint. */
+    .text_emitter = { F_TEXT_SPRT, F_TEXT_SPRT_PER_GLYPH },
 };
