@@ -1023,6 +1023,12 @@ static const knob_desc_t g_builtin[] = {
         "Moby occlusion culling on/off (default 1; re-resolved per VBL)."),
     ENVROW_LATCHED("MOBY_OCCL_SLACK", "Debug", "1500",
         "Occlusion-grid depth slack before a rect counts hidden (default 1500)."),
+    ENVROW_LATCHED("OCCL_CAM_MOVE", "Debug", "24",
+        "Occlusion-grid camera bound: world units the querying camera may differ "
+        "from the grid's before the depth verdict is refused (default 24)."),
+    ENVROW_LATCHED("OCCL_CAM_TURN", "Debug", "0.35",
+        "Occlusion-grid camera bound: degrees the querying camera may be rotated "
+        "from the grid's before the depth verdict is refused (default 0.35)."),
     ENVROW_LATCHED("MOBY_RANK", "Debug", "0",
         "Same-moby painter select: og OT-chain paint ranks override per-pixel "
         "depth between one moby's own faces (default 0 = true depth only)."),
@@ -1308,6 +1314,9 @@ static const knob_desc_t g_builtin[] = {
         "Print new peaks of scene-tri demand vs caps."),
     ENVROW_LATCHED("TERRAIN_CACHE_DBG", "Debug diagnostics", "0",
         "~1/s sector-cache hit/miss census."),
+    ENVROW_LATCHED("OCCL_CAMDBG", "Debug diagnostics", "0",
+        "Trace the occlusion grid's camera: one line per grid queue and retrieval, "
+        "and one per query the camera bound admits (distance and matrix trace)."),
     ENVROW_LATCHED("TERRAIN_OCCL_DBG", "Debug diagnostics", "0",
         "Sector occlusion-cull census."),
     ENVROW_LATCHED("TERRAIN_TIMERS", "Debug diagnostics", "0",

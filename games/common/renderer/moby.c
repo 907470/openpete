@@ -5619,9 +5619,10 @@ static int occl_record_culled(CPUState* cpu, uint32_t moby) {
     float inf = 8.0f + aged * (s_occl_pan_px * (float)s_view.s + own);
     float vzs = 600.0f;
     if (e->mot_vz * 1.5f > vzs) vzs = e->mot_vz * 1.5f;
+    openpete_occl_camera qcam; ngte_occl_camera(&s_view, &qcam);
     int culled = openpete_native_occl_query(rx0 - inf, ry0 - inf,
                                             rx1 + inf, ry1 + inf,
-                                            rvz - vzs * aged);
+                                            rvz - vzs * aged, &qcam);
     return culled;
 }
 
@@ -5658,7 +5659,9 @@ static int occl_query_at(float x0, float y0, float x1, float y1, float vzmin,
     float inf = 8.0f + (s_occl_pan_px * (float)s_view.s + own);
     float vzs = 600.0f;
     if (mot_vz * 1.5f > vzs) vzs = mot_vz * 1.5f;
-    return openpete_native_occl_query(x0 - inf, y0 - inf, x1 + inf, y1 + inf, vzmin - vzs);
+    openpete_occl_camera qcam; ngte_occl_camera(&s_view, &qcam);
+    return openpete_native_occl_query(x0 - inf, y0 - inf, x1 + inf, y1 + inf,
+                                      vzmin - vzs, &qcam);
 }
 static occl_rect_t s_ver_snap;   /* the entry the cull judged, for the report */
 static int occl_verify_begin(uint32_t moby) {
@@ -6472,10 +6475,12 @@ void moby_reextract(CPUState* cpu) {
                 openpete_native_occl_qstats(q);
                 fprintf(stderr, "[moby-occl f=%u] culled %ld / %ld records (%.0f%%) | "
                         "pre: ui=%ld nocache=%ld stalecache=%ld refreshed=%ld | "
-                        "query: nogrid=%ld susp=%ld stale=%ld near=%ld edge=%ld vis=%ld cull=%ld offscr=%ld\n",
+                        "query: nogrid=%ld susp=%ld stale=%ld near=%ld edge=%ld vis=%ld cull=%ld "
+                        "offscr=%ld moved=%ld\n",
                         openpete_frame, dc, dsn, dsn > 0 ? 100.0 * (double)dc / (double)dsn : 0.0,
                         s_occl_f[0]-pf[0], s_occl_f[1]-pf[1], s_occl_f[2]-pf[2], s_occl_f[3]-pf[3],
-                        q[0]-pq[0], q[1]-pq[1], q[2]-pq[2], q[3]-pq[3], q[4]-pq[4], q[5]-pq[5], q[6]-pq[6], q[7]-pq[7]);
+                        q[0]-pq[0], q[1]-pq[1], q[2]-pq[2], q[3]-pq[3], q[4]-pq[4], q[5]-pq[5],
+                        q[6]-pq[6], q[7]-pq[7], q[8]-pq[8]);
                 if (occl_verify_on())
                     fprintf(stderr, "[moby-occl-verify f=%u] would_cull=%ld wrong=%ld (%.3f%%)\n",
                             openpete_frame, s_ver_would, s_ver_wrong,

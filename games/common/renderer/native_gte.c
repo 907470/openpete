@@ -52,6 +52,19 @@ void ngte_mac(const int M[3][3], double vx, double vy, double vz,
     *m3 = (M[2][0]*vx + M[2][1]*vy + M[2][2]*vz) / 4096.0;
 }
 
+void ngte_occl_camera(const ngte_view* v, struct openpete_occl_camera* c) {
+    for (int i = 0; i < 3; i++) c->pos[i] = (float)v->cam[i];
+    for (int r = 0; r < 3; r++) {
+        double a = v->cam_M[r][0], b = v->cam_M[r][1], d = v->cam_M[r][2];
+        double n = sqrt(a*a + b*b + d*d);
+        if (n < 1e-6) n = 1.0;
+        c->M[r*3 + 0] = (float)(a / n);
+        c->M[r*3 + 1] = (float)(b / n);
+        c->M[r*3 + 2] = (float)(d / n);
+    }
+    c->valid = 1;
+}
+
 void ngte_view_build(CPUState* cpu, ngte_view* v) {
     ngte_census_arm();
     const uint32_t cam_base = game_layout.cam.base;

@@ -1405,6 +1405,7 @@ static long s_tocc_culled;   /* sectors occlusion-culled this window (census) */
  * reuses it, so the admitted set is a property of the tick. A sector the
  * canonical walk did not reach is not latched and is kept (conservative:
  * the cull is a perf skip and may only ever remove provably hidden work). */
+static openpete_occl_camera s_occl_cam;  /* this walk's camera, for the occluder grid */
 static uint8_t  s_tocc_latch[1024];      /* 1 = the tick's canonical walk culled it */
 static uint32_t s_tocc_latch_stamp[1024];
 static uint32_t s_tocc_tick;             /* serial of the last canonical walk */
@@ -4944,6 +4945,12 @@ static void walk_sector_job(int item, int worker, void* arg) {
 
 static void terrain_build(CPUState* cpu, int32_t occGroup) {
     ngte_view_build(cpu, &s_view);
+    /* Publish this walk's camera for the occluder grid: the depth pre-pass of
+     * the scene this walk feeds is what the grid reduces, so the grid must be
+     * tagged with this camera and queries evaluated under a camera that has
+     * moved away from it must not take its verdict. */
+    ngte_occl_camera(&s_view, &s_occl_cam);
+    openpete_native_occl_set_camera(&s_occl_cam);
     s_vanim_pres++;                /* new build → prior lerp/roll bank stamps go stale */
     terrain_texrecords(cpu);
     terrain_animdbg(cpu);
@@ -5476,7 +5483,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * sector only when EVERY grid cell over its (inflated) bbox is nearer
          * than the sector's NEAREST point — partial occlusion keeps it, so no
          * pop-in. openpete_native_occl_query returns 0 (keep) whenever the grid
-         * is absent/stale/too-near, so this is a pure conservative skip.
+         * is absent/stale/too-near, or was rendered from a camera outside the
+         * bound of this walk's, so this is a pure conservative skip.
          * Display-only: the canonical PSX render that writes gameplay channels
          * is a separate pass, untouched (and the native feed is inert headless,
          * so the oracle/determinism gates are unaffected). Bit-identical off vs
@@ -5520,7 +5528,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 float rpx = (float)((double)SC->radius * inv * 1.5 + 8.0);  /* generous bbox */
                 float vz_near = (float)((oc3 - (double)SC->radius) * 16.0);  /* world/16 → full-world */
                 culled = openpete_native_occl_query(sx - rpx, sy - rpx,
-                                                    sx + rpx, sy + rpx, vz_near);
+                                                    sx + rpx, sy + rpx, vz_near,
+                                                    &s_occl_cam);
             }
             if (!s_vanim_sub && i < 1024u) {
                 s_tocc_latch[i] = (uint8_t)culled;

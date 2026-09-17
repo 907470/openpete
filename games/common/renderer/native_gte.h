@@ -62,6 +62,14 @@ typedef struct {
 
 void ngte_view_build(CPUState* cpu, ngte_view* v);
 
+/* The view's camera in the form the occlusion grid compares: position in
+ * full-world units and the camera matrix with each row scaled to unit length.
+ * The game's matrix is Q12 and not exactly orthonormal, so the rows are
+ * normalized here; the grid's bound is then a plain nine-element dot product
+ * against the grid camera's matrix. */
+struct openpete_occl_camera;
+void ngte_occl_camera(const ngte_view* v, struct openpete_occl_camera* c);
+
 /* Engagement census of the --fov policy (OPENPETE_FOV_CENSUS=1 arms it and
  * prints at exit). Every GTE hardware-limit mirror keys on H_canon; each
  * site also evaluates the same test at H_eff and both verdicts are counted,

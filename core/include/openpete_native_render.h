@@ -1157,16 +1157,39 @@ openpete_native_commit_fn openpete_native_get_commit(void);
  * (OPENPETE_MOBY_OCCL_SLACK), edge/age refusal. OPENPETE_MOBY_OCCLUSION=0
  * disables. openpete_native_occl_suspend(n) disables culling for the next n
  * presents — the feeder calls it on camera cuts/teleports, where a
- * few-presents-old grid is wrong everywhere. */
-int  openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near);
+ * few-presents-old grid is wrong everywhere.
+ *
+ * Camera bound: the grid is the reduction of the depth pre-pass of the scene
+ * one present composed, so it encodes the world as seen from THAT scene's
+ * camera. A query evaluated under a different camera reads cell depths at the
+ * wrong screen positions; the error is lateral parallax, which the depth slack
+ * does not cover, and it removes visible geometry for the one tick the mismatch
+ * lasts. Both feeders therefore pass the camera their own walk projects with,
+ * and the depth verdict is only taken while that camera is within
+ * OPENPETE_OCCL_CAM_MOVE world units and OPENPETE_OCCL_CAM_TURN degrees of the
+ * grid's. Outside the bound the query returns 0 (keep): the cull only ever
+ * removes work, never a draw. openpete_native_occl_set_camera publishes the
+ * producing walk's camera; it is snapshotted per scene, so a present's grid is
+ * tagged with the camera whose geometry it reduced. */
+typedef struct openpete_occl_camera {
+    float pos[3];   /* camera position, full-world units */
+    float M[9];     /* the game's camera matrix, rows unit-normalized, row-major */
+    int   valid;
+} openpete_occl_camera;
+void openpete_native_occl_set_camera(const openpete_occl_camera *c);
+int  openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near,
+                                const openpete_occl_camera *cam);
 void openpete_native_occl_suspend(int presents);
 /* Query-outcome census (cumulative counters; diagnostics). OFFSCREEN = culled
  * because the rect lies fully outside the visible extent (native frustum cull
  * — the game's cull cone is wider than the screen, so it queues off-screen
- * mobys that contribute zero pixels); CULLED = culled by the depth grid. */
+ * mobys that contribute zero pixels); CULLED = culled by the depth grid;
+ * MOVED = kept because the caller's camera is outside the grid camera's
+ * move/turn bound. */
 enum { OPENPETE_OCCL_Q_NOGRID = 0, OPENPETE_OCCL_Q_SUSPENDED, OPENPETE_OCCL_Q_STALE,
        OPENPETE_OCCL_Q_TOONEAR, OPENPETE_OCCL_Q_EDGE, OPENPETE_OCCL_Q_VISIBLE,
-       OPENPETE_OCCL_Q_CULLED, OPENPETE_OCCL_Q_OFFSCREEN, OPENPETE_OCCL_Q_COUNT };
+       OPENPETE_OCCL_Q_CULLED, OPENPETE_OCCL_Q_OFFSCREEN, OPENPETE_OCCL_Q_MOVED,
+       OPENPETE_OCCL_Q_COUNT };
 void openpete_native_occl_qstats(long out[OPENPETE_OCCL_Q_COUNT]);
 /* Diagnostics: the farthest grid view-Z seen in the last CULLED rect scan
  * (how decisively the depth verdict held). Valid right after a query→1. */

@@ -299,6 +299,7 @@ typedef struct {
     int       geom[8];
     openpete_hud_vert *ovl; int ovl_cap, ovl_n;
     openpete_shadow_decal_params shadow;
+    openpete_occl_camera occl_cam;           /* camera this scene was projected from */
     uint32_t  pctx_tick; float pctx_alpha; int pctx_canonical;
     openpete_mods_material_view_t matview;   /* interned material slots at publish */
     /* scheduling */
@@ -314,6 +315,7 @@ static SDL_Mutex   *s_ring_mx;
 static const scene_slot_t *s_ps_slot;          /* compose source: NULL = live */
 static uint32_t ps_drawenv_clear(void);
 static const openpete_shadow_decal_params *ps_shadow(void);
+static const openpete_occl_camera *ps_occl_cam(void);
 static unsigned ps_frame(void);
 static void     ps_apply_geometry(void);
 static uint32_t     s_eager_stamp;             /* build stamp for the scene being extracted */
@@ -4354,7 +4356,45 @@ static float occl_slack(void)
     return s;
 }
 
-typedef struct { float uax, ubx, vay, vby; unsigned stamp; } occl_meta_t;
+static float occl_cam_move(void)
+{
+    static float m = -1.0f;
+    if (m < 0.0f) { const char* e = getenv("OPENPETE_OCCL_CAM_MOVE"); m = (e && *e) ? (float)atof(e) : 24.0f; }
+    return m;
+}
+/* The rotation bound as a matrix trace: for two rotations trace(Rq·Rg^T) =
+ * 1 + 2cos(theta), so the test is one dot product over the nine elements
+ * against this threshold, with no trigonometry per query. */
+static float occl_cam_turn_trace(void)
+{
+    static float t = -1e30f;
+    if (t < -1e29f) {
+        const char* e = getenv("OPENPETE_OCCL_CAM_TURN");
+        double deg = (e && *e) ? atof(e) : 0.35;
+        t = (float)(1.0 + 2.0 * cos(deg * 3.14159265358979323846 / 180.0));
+    }
+    return t;
+}
+
+static int occl_camdbg(void)
+{
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_OCCL_CAMDBG"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/* The camera the walk currently feeding the scene projects with. Published by
+ * the terrain feeder every extract (sub-tick re-extracts included) and
+ * snapshotted per scene, so the grid built from a present's depth pre-pass
+ * carries the camera that pre-pass was rasterized under. */
+static openpete_occl_camera s_occl_cam_live;
+void openpete_native_occl_set_camera(const openpete_occl_camera *c)
+{
+    if (c) s_occl_cam_live = *c; else s_occl_cam_live.valid = 0;
+}
+
+typedef struct { float uax, ubx, vay, vby; unsigned stamp;
+                 openpete_occl_camera cam; } occl_meta_t;
 #define OCCL_FIFO_N 16
 static float       s_occl_vz[OCCL_GW * OCCL_GH]; /* decoded farthest view-Z per cell */
 static int         s_occl_have = 0;
@@ -4364,6 +4404,7 @@ static int         s_occl_suspend = 0;           /* presents left of cut suspens
 static occl_meta_t s_occl_fifo[OCCL_FIFO_N];     /* affine+stamp queued with each copy */
 static unsigned    s_occl_fifo_head = 0, s_occl_fifo_tail = 0;
 static float       s_occl_uax, s_occl_ubx, s_occl_vay, s_occl_vby;
+static openpete_occl_camera s_occl_cam_grid;     /* camera the held grid was rendered from */
 
 static void native_occl_downsample(void)
 {
@@ -4401,7 +4442,13 @@ static void native_occl_downsample(void)
         s_occl_uax = m->uax; s_occl_ubx = m->ubx;
         s_occl_vay = m->vay; s_occl_vby = m->vby;
         s_occl_stamp = m->stamp;
+        s_occl_cam_grid = m->cam;
         s_occl_have = 1;
+        if (occl_camdbg())
+            fprintf(stderr, "[occl-grid] sframe=%u present=%u stamp=%u age=%u valid=%d "
+                    "gcam=(%.0f,%.0f,%.0f)\n", s_scene_frame, s_occl_presents, m->stamp,
+                    s_occl_presents - m->stamp, s_occl_cam_grid.valid,
+                    s_occl_cam_grid.pos[0], s_occl_cam_grid.pos[1], s_occl_cam_grid.pos[2]);
     } else if (got) {
         s_occl_fifo_tail = s_occl_fifo_head;   /* desync (shouldn't happen) — resync empty */
     }
@@ -4409,13 +4456,35 @@ static void native_occl_downsample(void)
     occl_meta_t* mm = &s_occl_fifo[s_occl_fifo_head % OCCL_FIFO_N];
     mm->uax = s_od_uax; mm->ubx = s_od_ubx; mm->vay = s_od_vay; mm->vby = s_od_vby;
     mm->stamp = s_occl_presents;
+    mm->cam = *ps_occl_cam();
+    if (occl_camdbg())
+        fprintf(stderr, "[occl-queue] sframe=%u present=%u slot=%d valid=%d "
+                "qcam=(%.0f,%.0f,%.0f)\n", s_scene_frame, s_occl_presents, s_ps_slot ? 1 : 0,
+                mm->cam.valid, mm->cam.pos[0], mm->cam.pos[1], mm->cam.pos[2]);
     s_occl_fifo_head++;
 }
 
 static long s_occl_qstat[OPENPETE_OCCL_Q_COUNT];   /* query-outcome census */
 static float s_occl_last_scan_max;                 /* diagnostics (last CULLED scan) */
 
-int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near)
+/* Is the querying camera close enough to the grid's that the grid's cell
+ * depths still describe what this camera sees? Translation bound first (the
+ * parallax term), then the relative rotation. Either side lacking a camera is
+ * a mismatch, so an unpublished camera keeps everything. */
+static int occl_cam_in_bound(const openpete_occl_camera *q)
+{
+    const openpete_occl_camera *g = &s_occl_cam_grid;
+    if (!q || !q->valid || !g->valid) return 0;
+    float dx = q->pos[0] - g->pos[0], dy = q->pos[1] - g->pos[1], dz = q->pos[2] - g->pos[2];
+    float mv = occl_cam_move();
+    if (dx*dx + dy*dy + dz*dz > mv*mv) return 0;
+    float tr = 0.0f;
+    for (int k = 0; k < 9; k++) tr += q->M[k] * g->M[k];
+    return tr >= occl_cam_turn_trace();
+}
+
+int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float vz_near,
+                               const openpete_occl_camera *cam)
 {
     if (!s_occl_have) { s_occl_qstat[OPENPETE_OCCL_Q_NOGRID]++; return 0; }
     if (s_occl_suspend > 0) { s_occl_qstat[OPENPETE_OCCL_Q_SUSPENDED]++; return 0; }
@@ -4433,6 +4502,22 @@ int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float
     if (vz_near > 256.0f && (u1 < 0.0f || u0 > 1.0f || v1 < 0.0f || v0 > 1.0f)) {
         s_occl_qstat[OPENPETE_OCCL_Q_OFFSCREEN]++;
         return 1;
+    }
+    /* Past the frustum reject, which is a test on the caller's own rect and
+     * needs no depth: every verdict below reads the grid's cells, so it is
+     * only valid while the two cameras agree. */
+    if (!occl_cam_in_bound(cam)) { s_occl_qstat[OPENPETE_OCCL_Q_MOVED]++; return 0; }
+    if (occl_camdbg() && cam) {
+        float dx = cam->pos[0] - s_occl_cam_grid.pos[0];
+        float dy = cam->pos[1] - s_occl_cam_grid.pos[1];
+        float dz = cam->pos[2] - s_occl_cam_grid.pos[2];
+        float tr = 0.0f; for (int k = 0; k < 9; k++) tr += cam->M[k] * s_occl_cam_grid.M[k];
+        fprintf(stderr, "[occl-inbound] sframe=%u age=%u d=%.1f tr=%.5f "
+                "gcam=(%.0f,%.0f,%.0f) qcam=(%.0f,%.0f,%.0f)\n",
+                s_scene_frame, s_occl_presents - s_occl_stamp,
+                sqrtf(dx*dx + dy*dy + dz*dz), tr,
+                s_occl_cam_grid.pos[0], s_occl_cam_grid.pos[1], s_occl_cam_grid.pos[2],
+                cam->pos[0], cam->pos[1], cam->pos[2]);
     }
     float need = vz_near - occl_slack();
     if (need <= 1.0f) { s_occl_qstat[OPENPETE_OCCL_Q_TOONEAR]++; return 0; }
@@ -9744,6 +9829,7 @@ static void ps_apply_geometry(void) {
 }
 static uint32_t ps_drawenv_clear(void)  { return s_ps_slot ? s_ps_slot->drawenv_clear : s_drawenv_clear; }
 static const openpete_shadow_decal_params *ps_shadow(void) { return s_ps_slot ? &s_ps_slot->shadow : &s_shadow_decal; }
+static const openpete_occl_camera *ps_occl_cam(void) { return s_ps_slot ? &s_ps_slot->occl_cam : &s_occl_cam_live; }
 static unsigned ps_frame(void)          { return s_ps_slot ? s_ps_slot->frame : s_scene_frame; }
 
 /* Stamp the terrain builder tags its build with: the scene id while an eager
@@ -9805,6 +9891,7 @@ int openpete_native_scene_publish(int64_t target_ns, int kind, double alpha, int
     sl->ovl_n = sl->ovl_cap >= s_mod_overlay_n ? s_mod_overlay_n : 0;
     if (sl->ovl_n > 0) memcpy(sl->ovl, s_mod_overlay_verts, (size_t)sl->ovl_n * sizeof(openpete_hud_vert));
     sl->shadow = s_shadow_decal;
+    sl->occl_cam = s_occl_cam_live;
     openpete_mods_present_ctx(&sl->pctx_tick, &sl->pctx_alpha, &sl->pctx_canonical);
     openpete_mods_material_view_capture(&sl->matview);
     sl->scene_id = s_scene_id_next++;
