@@ -947,6 +947,21 @@ void openpete_native_scene_set_fade(int mode, int r, int g, int b);
  * Pass 0 for the static pause / inventory / flight-results backdrop. */
 void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade);
 
+/* Freeze-backdrop production mode, set once from the game descriptor.
+ *
+ * 0 (default): the game emits a full-screen quad that re-displays the frozen
+ * frame through a grayscale CLUT with a flat tint, and the backdrop reproduces
+ * that desaturation and tint. Two such emitters can hand over with a one-tick
+ * gap between them, which the per-tick freeze carry bridges.
+ *
+ * 1: the game produces the frozen frame by writing DRAWENV.isbg = 0 and drawing
+ * no world, so the framebuffer simply keeps the last rendered frame. The
+ * backdrop then draws the snapshot unaltered — no desaturation, no tint — and
+ * the carry bridges no gap, because the arming signal is a latched draw-
+ * environment word that the game clears in one write rather than a primitive it
+ * stops emitting. */
+void openpete_native_scene_set_freeze_retained(int retained);
+
 /* Flat 2D HUD/text draw order vs the player for this frame. Default (0) draws the
  * flat HUD/text OVER the player (Spyro behind the HUD/text) — the normal case. Pass
  * 1 ONLY during the GS_LevelTransition flyby ("THE ADVENTURE BEGINS"/"ENTERING

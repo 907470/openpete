@@ -1,6 +1,7 @@
 /* render_paths.c — per-path render isolation registry. See render_paths.h. */
 
 #include "renderer/render_paths.h"
+#include "renderer/ui_game.h"      /* retained freeze backdrop commit */
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"   /* CPUState, read_word — for the path brackets */
 #include "openpete.h"
@@ -260,6 +261,10 @@ static void render_paths_commit(void) {
      * thunk latch trails the OT build by one VSync and flashed the stale
      * homeworld clear at the portal-entry transition boundary. */
     cyclorama_native_env_clear_commit();
+    /* Same DRAWENV, same instant: isbg decides whether that clear happens at
+     * all, and a suppressed clear is how some games hold the last rendered
+     * frame behind a menu screen. */
+    ui_freeze_retain_commit();
 }
 
 bool render_path_addr_visible(uint32_t addr) {

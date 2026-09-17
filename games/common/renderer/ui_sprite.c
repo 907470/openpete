@@ -28,6 +28,8 @@
 #include "renderer/ui_game.h"
 #include "openpete_recomp_module.h"   /* the game's own routine, through the module dispatch */
 #include "texture_pack.h"
+#include "game_layout.h"          /* the draw-buffer pair the retained freeze reads */
+#include "openpete_subtick_view.h"   /* PSX RAM through the sub-tick-consistent view */
 
 #include <stdint.h>
 #include <stdio.h>
@@ -523,8 +525,45 @@ static feature_dispatch_entry_t ui_sprite_dispatch[] = {
     { 0u, NULL },
 };
 
+/* Retained-framebuffer freeze backdrop (see ui_game_t::freeze_retained).
+ *
+ * The menu screens that keep the last rendered frame write DRAWENV.isbg = 0 on
+ * both draw buffers and draw no world; every other screen leaves isbg at 1 and
+ * clears to its own background colour. Reading the byte reproduces the game's
+ * own discriminator rather than guessing from what the scene holds: the same
+ * DRAWENV the clear-colour commit reads decides whether the frame is cleared at
+ * all, so the two are read at the same point of the present.
+ *
+ * Nothing here writes PSX RAM: the backdrop is display state only. */
+static unsigned s_freeze_retain_n = 0;
+
+unsigned ui_freeze_retain_count(void) { return s_freeze_retain_n; }
+
+void ui_freeze_retain_commit(void) {
+    if (!ui_game.freeze_retained) return;
+    if (!game_layout.db.cur_ptr) return;
+    const uint32_t curdb = *(const uint32_t*)openpete_subtick_host_ptr(game_layout.db.cur_ptr);
+    if (curdb != game_layout.db.base && curdb != game_layout.db.base + game_layout.db.stride)
+        return;   /* not a valid DB* yet */
+    const uint8_t* env = (const uint8_t*)openpete_subtick_host_ptr(curdb + game_layout.db.drawenv);
+    if (env[0x18]) return;            /* PSYQ DRAWENV isbg @+0x18; 1 = the frame is cleared */
+    /* The tint is unused in retained mode (blit.frag passes the snapshot
+     * through) but the packed word's active bit lives in the same field, so a
+     * full-scale colour is what the encoder expects. */
+    openpete_native_scene_set_freeze_backdrop(0xFF, 0xFF, 0xFF, 0);
+    s_freeze_retain_n++;
+}
+
+static void ui_freeze_retain_census(void) {
+    fprintf(stderr, "ui-freeze: retained-backdrop presents=%u\n", s_freeze_retain_n);
+}
+
 static void ui_sprite_apply_options(const openpete_options_t* opts) {
     (void)opts;
+    if (ui_game.freeze_retained) {
+        openpete_native_scene_set_freeze_retained(1);
+        atexit(ui_freeze_retain_census);
+    }
     /* A zero addr terminates the table, so the named addresses are packed to
      * the front: a game that names only one still reaches it. */
     int n = 0;

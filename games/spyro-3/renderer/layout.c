@@ -363,6 +363,13 @@ const ui_game_t ui_game = {
     .freeze_tint   = 0u,
     .freeze_clut_x = 0,
     .freeze_clut_y = 0,
+    /* The state-4 draw func_8001DD1C keeps the last rendered frame behind the
+     * save prompt, the atlas sub-screens and the sub-screen that follows them by
+     * writing DRAWENV.isbg = 0 on both draw buffers (draw/func_8001DD1C.s:278-281,
+     * :331-334, :393-396) and drawing no world; nothing writes the byte back to 1
+     * until a screen that clears runs (:98-105). The ordinary six-entry pause
+     * menu leaves isbg at 1 and clears to the level background colour. */
+    .freeze_retained = 1,
 
     /* The UI texture block: tpage word 0x618 in the text chain's DR_MODE is
      * page (512, 256) at 4bpp, the same block the HUD and dialog sprites

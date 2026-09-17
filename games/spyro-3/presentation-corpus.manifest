@@ -64,5 +64,10 @@ title-demo|500|20||510
 # screen as 290 POLY_FT4 covering x 1..512 y 12..228. The in-game HUD sprites
 # sit at y -28..2 — retracted above the visible band — on every frame of every
 # other movie in this corpus, so no row shows the HUD extended yet.
-open-options|900|100||1200,1300
+# open-options is freeze-marked: from VBL 1165 the save prompt suppresses the
+# framebuffer clear and the game draws no world, so the frozen world frame is
+# the backdrop of 1200 and 1300. The backdrop is drawn from the capture-time
+# snapshot, which only a freeze-marked row maintains. open-atlas leaves its
+# pins on a cleared frame and needs no snapshot.
+open-options|900|100|freeze|1200,1300
 open-atlas|900|100||1200,1300

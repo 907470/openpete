@@ -43,6 +43,14 @@ typedef struct ui_game {
     uint32_t freeze_tint;
     int      freeze_clut_x, freeze_clut_y;
 
+    /* Set when the game produces its frozen backdrop by suppressing the
+     * framebuffer clear instead of emitting a quad: the menu screens write
+     * DRAWENV.isbg = 0 on both draw buffers and draw no world, so the
+     * framebuffer keeps the last rendered frame. The native then drives the
+     * freeze backdrop from the draw buffer's own isbg byte and draws its last
+     * world frame unaltered. 0 = the game has no such screen. */
+    int freeze_retained;
+
     /* The UI texture block, named once at the first 2D primitive so a
      * texture pack can replace the whole block by file name. `atlas_w` 0 =
      * the game names no block. */
@@ -67,6 +75,16 @@ void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage);
 /* Primitives fed by ui_sprite_feed_sprt since boot: the engagement counter a
  * harness reads to tell "no text drew" from "text drew identically". */
 unsigned ui_sprite_sprt_count(void);
+
+/* Arm the native freeze backdrop for a `freeze_retained` game, from the isbg
+ * byte of the draw buffer whose ordering table is about to be presented. Called
+ * once per canonical present, next to the clear-colour commit that reads the
+ * same DRAWENV. */
+void ui_freeze_retain_commit(void);
+/* Presents this run on which ui_freeze_retain_commit armed the backdrop: the
+ * engagement counter a capture reads to tell "retention was off" from
+ * "retention was on and changed nothing". */
+unsigned ui_freeze_retain_count(void);
 /* Primitives fed through the chokepoint since boot, by class. */
 unsigned ui_sprite_prim_count(void);
 

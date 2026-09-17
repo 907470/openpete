@@ -1013,6 +1013,12 @@ static int      s_game_fade_seen = 0;
  * freeze never cleared when the menu closed → the world stayed hidden on unpause. */
 static uint32_t s_game_freeze = 0;
 static int      s_game_freeze_seen = 0;
+/* Freeze-backdrop production mode (see openpete_native_scene_set_freeze_retained):
+ * 0 = the game emits a grayscale+tinted quad, 1 = the game suppresses the
+ * framebuffer clear and the snapshot is drawn unaltered. */
+static int      s_freeze_retained = 0;
+
+void openpete_native_scene_set_freeze_retained(int retained) { s_freeze_retained = retained ? 1 : 0; }
 
 void openpete_native_scene_set_fade(int mode, int r, int g, int b) {
     uint32_t v;
@@ -1115,7 +1121,13 @@ void openpete_native_scene_commit_fade(void) {
      * dropping but the scene has no world, hold the previous freeze. A genuine unpause
      * rebuilds terrain (WORLD) that same tick, so scene_has_world is true and the
      * freeze drops correctly — the world reappears with no lag. */
-    if (new_freeze == 0 && prev_freeze != 0 && !scene_has_world(s_scene, s_scene_n)) {
+    /* Only the emitted-quad mode has such a gap. Under retention the arming
+     * signal is the latched DRAWENV.isbg word: the tick it reads 1 again the
+     * game has cleared the framebuffer and draws its own content, so holding
+     * the previous freeze would blank that content for as long as the screen
+     * stays world-less. */
+    if (!s_freeze_retained &&
+        new_freeze == 0 && prev_freeze != 0 && !scene_has_world(s_scene, s_scene_n)) {
         new_freeze = prev_freeze;
         /* The canonical present of this degenerate tick may show the RAW game-fiber
          * scene (the sub-tick re-extract that re-applies the carry is skipped on a
@@ -1628,6 +1640,7 @@ static struct {
     int           frozen_w, frozen_h;
     bool          frozen_valid;       /* a world frame has been captured */
     rhi_pipeline *freeze_overlay_pipe;/* samples frozen_tex, luma + tint (set 0) */
+    rhi_pipeline *freeze_plain_pipe;  /* samples frozen_tex unaltered (set 0) */
     rhi_buffer   *fs_quad_vb;         /* full-target (-1..1) quad, UV 0..1 (RT copies) */
     rhi_buffer   *overlay_vb;         /* FPS overlay glyph quads (NDC), rebuilt per present */
     rhi_buffer   *mod_ovl_vb;         /* mod draw-service overlay (rects + text glyphs, NDC), rebuilt per present */
@@ -2335,6 +2348,15 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_NONE, .depth_test = false,
         .uses_vram = true, .push_const_size = 0,
     };
+    /* Retained-framebuffer freeze backdrop: the same full-panel quad over the same
+     * snapshot, drawn through blit.frag so the frozen frame reaches the screen
+     * unaltered (the game applied no CLUT and no tint — it simply did not clear). */
+    rhi_pipeline_desc freeze_plain_desc = {
+        .vert_spv = "psx_sample.vert.spv",
+        .frag_spv = "blit.frag.spv",
+        .blend = RHI_BLEND_NONE, .depth_test = false,
+        .uses_vram = true, .push_const_size = 0,
+    };
     /* SSAA resolve pipeline (--ssaa N): samples the supersampled scene RT (set 0)
      * and box-averages the N×N block in linear light into the 1× offscreen
      * (resolve.frag). No depth, no blend; the ssaa factor rides a push constant. */
@@ -2395,6 +2417,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *hd_scene_blend_pipe = rhi_create_pipeline(dev, &hd_scene_blend_desc);
     rhi_pipeline *hd_scene_add_pipe   = rhi_create_pipeline(dev, &hd_scene_add_desc);
     rhi_pipeline *freeze_overlay_pipe = rhi_create_pipeline(dev, &freeze_overlay_desc);
+    rhi_pipeline *freeze_plain_pipe = rhi_create_pipeline(dev, &freeze_plain_desc);
     rhi_pipeline *resolve_pipe = rhi_create_pipeline(dev, &resolve_desc);
     /* Per-present-rewritten buffers (scene/prepass/overlay) are frame-in-flight
      * RINGS (W2.2): their every-present rhi_update_buffer used to race the
@@ -2495,7 +2518,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * from PsyCross's mirror per dirty rect at present time. */
     uint16_t     *mirror    = openpete_vram_data();
     if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_sub_ztest_pipe || !gouraud_sub_fade_pipe || !prepass_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipe || !gouraud_hud_blend_pipe || !gouraud_hud_sub_pipe || !scene_tex_hud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
-        !freeze_overlay_pipe || !resolve_pipe || !fs_quad_vb || !overlay_vb || !prepass_vb) {
+        !freeze_overlay_pipe || !freeze_plain_pipe || !resolve_pipe || !fs_quad_vb || !overlay_vb || !prepass_vb) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
         if (prepass_vb)    rhi_destroy_buffer(dev, prepass_vb);
         if (prepass_pipe)  rhi_destroy_pipeline(dev, prepass_pipe);
@@ -2505,6 +2528,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (gouraud_hud_sub_pipe) rhi_destroy_pipeline(dev, gouraud_hud_sub_pipe);
         if (gouraud_hud_blend_pipe) rhi_destroy_pipeline(dev, gouraud_hud_blend_pipe);
         if (freeze_overlay_pipe) rhi_destroy_pipeline(dev, freeze_overlay_pipe);
+        if (freeze_plain_pipe) rhi_destroy_pipeline(dev, freeze_plain_pipe);
         if (overlay_vb)    rhi_destroy_buffer(dev, overlay_vb);
         if (mod_ovl_vb)    rhi_destroy_buffer(dev, mod_ovl_vb);
         if (ovl_quad_vb)   rhi_destroy_buffer(dev, ovl_quad_vb);
@@ -2602,6 +2626,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.panels_vb    = panels_vb;
     s_nr.scene_vb     = scene_vb;
     s_nr.freeze_overlay_pipe = freeze_overlay_pipe;
+    s_nr.freeze_plain_pipe = freeze_plain_pipe;
     s_nr.resolve_pipe = resolve_pipe;
     s_nr.fs_quad_vb   = fs_quad_vb;
     s_nr.overlay_vb   = overlay_vb;
@@ -6834,7 +6859,9 @@ static bool draw_native_scene(bool full_extent)
     int freeze_first = -1;
     int frozen_ok = 0;
     (void)active_frozen_tex(&frozen_ok);
-    if ((scene_freeze & (1u << 31)) && frozen_ok && s_nr.freeze_overlay_pipe
+    rhi_pipeline *freeze_pipe = s_freeze_retained ? s_nr.freeze_plain_pipe
+                                                 : s_nr.freeze_overlay_pipe;
+    if ((scene_freeze & (1u << 31)) && frozen_ok && freeze_pipe
         && n + 6 <= SCENE_VB_VERTS) {
         uint32_t trgb = scene_freeze & 0xFFFFFFu;     /* rgb in R<<16|G<<8|B */
         uint32_t tr8 = (trgb >> 16) & 0xFFu, tg8 = (trgb >> 8) & 0xFFu, tb8 = trgb & 0xFFu;
@@ -6844,6 +6871,9 @@ static bool draw_native_scene(bool full_extent)
         uint32_t fade7 = (scene_freeze >> 24) & 0x7Fu;
         uint32_t ta8 = (fade7 * 255u + 63u) / 127u;    /* 0..127 -> 0..255 (rounded) */
         uint32_t trgba = tr8 | (tg8 << 8) | (tb8 << 16) | (ta8 << 24);  /* byte order R,G,B,A */
+        /* blit.frag multiplies the sample by the vertex colour, so retention
+         * passes white: the frozen frame reaches the screen unaltered. */
+        if (s_freeze_retained) trgba = 0xFFFFFFFFu;
         /* Fill the render rect (cover_rect = the --aspect display rect, fit into the
          * window). frozen_tex is captured at the MATCHING aspect — 4:3 in the default
          * /A-B path, or the Hor+ widescreen view in vk-widescreen (see compose_variant)
@@ -6951,7 +6981,7 @@ static bool draw_native_scene(bool full_extent)
     if (freeze_first >= 0) {
         rhi_texture *frz = active_frozen_tex(NULL);
         if (frz) {
-            bind_scene_pipe(s_nr.freeze_overlay_pipe);
+            bind_scene_pipe(freeze_pipe);
             rhi_bind_vram(s_nr.dev, frz);
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
             rhi_draw(s_nr.dev, 6, (uint32_t)freeze_first);
