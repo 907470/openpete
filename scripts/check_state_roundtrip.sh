@@ -11,26 +11,26 @@
 #                                 frames must self-match pass 1 AND match
 #                                 the clean run
 #
-# Usage: scripts/check_state_roundtrip.sh [movie.bk2 ...]
+# Usage: scripts/check_state_roundtrip.sh [--game SLUG] [movie.bk2 ...]
 #   (default: a representative corpus subset, incl. a level transition)
 # Exit 0 = all gates PASS. Runs from the repo root.
 
 set -u
 
-# Unattended launcher: silence controller vibration for every run this script
-# starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
-# up in no log, so it would never surface on its own. Set here rather than at
-# each invocation because this script builds its argument list in more than one
-# place, and a flag appended to the wrong one is a silent miss.
-# (scripts/fences/rumble_guard.py enforces this.)
-export OPENPETE_VIBRATION=0
-
-
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
 
-BIN=${OPENPETE_BIN:-build/linux-release/games/spyro-1/openpete-spyro1}
-DISC=${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}
+GAME="$(pg_parse_game "$@")" || exit 64
+pg_resolve "$GAME" || exit 64
+BIN="$PG_BIN"
+DISC="$PG_DISC"
+
+# The corpus movies, the level ids the portal leg greps for and the hold frame
+# are Spyro 1's, so --game names the game whose binary and disc are used and
+# every other slug is refused rather than replayed against movies recorded for
+# a different game.
+[ "$PG_GAME" = "spyro-1" ] || { echo "SKIP: $PG_GAME has no savestate corpus"; exit 64; }
 
 # Exit 64 = SKIP (the CTest SKIP_RETURN_CODE), so a checkout without a built
 # binary or without the disc reports "not run" rather than a failure.
@@ -41,7 +41,17 @@ OUT="${TMPDIR:-/tmp}/openpete-state-roundtrip.$$"
 mkdir -p "$OUT"
 trap 'rm -rf "$OUT"' EXIT
 
-MOVIES=("$@")
+# --game and its slug are consumed above; what remains is the movie list.
+MOVIES=()
+skip_next=0
+for a in "$@"; do
+    if [ "$skip_next" = 1 ]; then skip_next=0; continue; fi
+    case "$a" in
+        --game)   skip_next=1 ;;
+        --game=*) ;;
+        *) MOVIES+=("$a") ;;
+    esac
+done
 if [ ${#MOVIES[@]} -eq 0 ]; then
     MOVIES=(
         games/spyro-1/bk2/artisans-lp-waterfall.bk2
@@ -55,12 +65,15 @@ for m in "${MOVIES[@]}"; do
     if [ ! -f "$m" ]; then echo "SKIP: no movie at $m"; exit 64; fi
 done
 
+# pg_capture deletes the hash log and the run log first and asserts the hash
+# log after, so a leg can never compare the previous leg's csv.
 run() { # $1 movie  $2 csv  $3 extra-args...
     local movie="$1" csv="$2"; shift 2
-    timeout 600 "$BIN" --headless --disc "$DISC" --disc-cache 0 \
+    local PG_CAPTURE_TIMEOUT=600
+    pg_capture "$csv.log" "$csv" -- \
         --bk2 "$movie" --bk2-stop-on-end --frame-limit 6000 \
         --unlock-frames 0-6000 \
-        --gameplay-hash-log "$csv" "$@" >"$csv.log" 2>&1
+        --gameplay-hash-log "$csv" "$@"
 }
 
 fail=0
@@ -148,10 +161,10 @@ fi
 #   - level exit (crossing lands between ticks, no adoption): committed
 #     timeline MUST stay byte-identical to clean.
 echo "== runahead-transitions (town-square portal, exit-level)"
-timeout 600 "$BIN" --headless --disc "$DISC" --disc-cache 0 \
+PG_CAPTURE_TIMEOUT=600 pg_capture "$OUT/tsq-ra.log" "$OUT/tsq-ra.csv" -- \
     --bk2 games/spyro-1/bk2/town-square-portal-entry.bk2 --frame-limit 12000 \
     --unlock-frames 0-12000 --runahead 2 \
-    --gameplay-hash-log "$OUT/tsq-ra.csv" >"$OUT/tsq-ra.log" 2>&1 \
+    --gameplay-hash-log "$OUT/tsq-ra.csv" \
     || { echo "  portal runahead run FAILED"; fail=1; }
 if grep -q "level_10 -> level_13" "$OUT/tsq-ra.log"; then
     echo "  portal entry under runahead(2): level loaded PASS"

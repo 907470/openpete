@@ -3,39 +3,45 @@
 # decomp build outputs regen consumes (distribution D2.3 gate; plan
 # openpete-distribution-local-recomp).
 #
-# Runs `openpete-spyro1 --extract-recomp-inputs` against the reference
-# disc, then byte-compares: PSX.EXE vs the decomp's build/PSX.EXE, and
+# Runs the resolved game binary with --extract-recomp-inputs against the
+# reference disc, then byte-compares: PSX.EXE vs the decomp's build/PSX.EXE, and
 # every carved overlay vs build/wad/<wad_file> (mapping from
 # manifest/recomp/SCUS-94228/manifest.toml). The whole first-boot
 # pipeline silently assumes this equivalence — this makes it explicit.
+# Usage: scripts/check_carve_equivalence.sh [--game SLUG]
+#
 # Exit 0 = every byte matches; 2 = mismatch; 64 = prerequisites missing.
 set -euo pipefail
 
-# Unattended launcher: silence controller vibration for every run this script
-# starts. Vibration ships on by default, which is right for a player and wrong
-# for a machine-driven run — nobody is holding the pad, and the buzzing shows
-# up in no log, so it would never surface on its own. Set here rather than at
-# each invocation because this script builds its argument list in more than one
-# place, and a flag appended to the wrong one is a silent miss.
-# (scripts/fences/rumble_guard.py enforces this.)
-export OPENPETE_VIBRATION=0
-
-
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
 
-BIN="${OPENPETE_BIN:-build/linux-release/games/spyro-1/openpete-spyro1}"
-DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
-MAN=games/spyro-1/manifest/recomp/SCUS-94228
-DECOMP=games/spyro-1/spyro-1/build
+GAME="$(pg_parse_game "$@")" || exit 64
+pg_resolve "$GAME" || exit 64
+BIN="$PG_BIN"
+DISC="$PG_DISC"
+MAN="games/$PG_GAME/manifest/recomp/SCUS-94228"
+DECOMP="games/$PG_GAME/$PG_GAME/build"
 TMP=$(mktemp -d "${TMPDIR:-/tmp}/openpete-carve.XXXXXX")
 trap 'rm -rf "$TMP"' EXIT
 
+# The manifest directory is named after Spyro 1's EXE id and the reference
+# outputs are its decomp build tree, so --game names the game whose binary and
+# disc are carved and every other slug is refused rather than compared against
+# the wrong reference.
+[[ "$PG_GAME" == "spyro-1" ]] ||
+    { echo "[carve] SKIP: $PG_GAME has no recomp manifest" >&2; exit 64; }
 [[ -x "$BIN" ]] || { echo "[carve] binary missing: $BIN" >&2; exit 64; }
 [[ -f "$DISC" ]] || { echo "[carve] disc missing: $DISC" >&2; exit 64; }
 [[ -f "$MAN/manifest.toml" ]] || { echo "[carve] manifest missing" >&2; exit 64; }
 
-"$BIN" --extract-recomp-inputs "$TMP" --disc "$DISC" --disc-cache 0 >/dev/null 2>&1 \
-    || { echo "[carve] extraction failed" >&2; exit 2; }
+# pg_capture deletes the log and the carved PSX.EXE first and asserts the
+# latter after, so a failed extraction can never be compared as a pass
+#.
+pg_capture "$TMP/extract.log" "$TMP/PSX.EXE" -- \
+    --extract-recomp-inputs "$TMP" \
+    || { echo "[carve] extraction failed" >&2; tail -5 "$TMP/extract.log" >&2; exit 2; }
 
 fail=0
 check() {  # check <label> <carved> <reference>

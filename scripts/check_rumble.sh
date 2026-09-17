@@ -46,7 +46,7 @@
 # legacy leg". That is enough to separate a working actuator path from a broken
 # one, which is the only question this gate is entitled to answer.
 #
-# Usage: scripts/check_rumble.sh [bk2-name]
+# Usage: scripts/check_rumble.sh [--game SLUG] [bk2-name]
 # Exit:  0 pass, 1 fail, 64 skip (no binary / no disc).
 
 set -euo pipefail
@@ -60,15 +60,35 @@ set -euo pipefail
 
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$ROOT"
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
 
-BIN="${OPENPETE_BIN:-build/linux-release/games/spyro-1/openpete-spyro1}"
-DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
+GAME="$(pg_parse_game "$@")" || exit 64
+pg_resolve "$GAME" || exit 64
+BIN="$PG_BIN"
+DISC="$PG_DISC"
+
+# The movie and the rumble events it drives are Spyro 1's, so --game names the
+# game whose binary and disc are used and every other slug is refused rather
+# than replayed against a movie recorded for a different game.
+[[ "$PG_GAME" == "spyro-1" ]] ||
+    { echo "[rumble] SKIP: $PG_GAME has no rumble movie"; exit 64; }
 
 # gnasty_gnorc_attack drives the NORMAL rumble ({1, 120}: both motors) four
 # separate times, which is the effect most of the game uses. Movies that only
 # trigger the custom amount exercise one motor.
-MOVIE="${1:-gnasty_gnorc_attack}"
-BK2="games/spyro-1/bk2/${MOVIE}.bk2"
+# --game and its slug are consumed above; what remains is the movie name.
+MOVIE=gnasty_gnorc_attack
+skip_next=0
+for a in "$@"; do
+    if [[ "$skip_next" == 1 ]]; then skip_next=0; continue; fi
+    case "$a" in
+        --game)   skip_next=1 ;;
+        --game=*) ;;
+        *) MOVIE="$a" ;;
+    esac
+done
+BK2="$PG_BK2_DIR/${MOVIE}.bk2"
 
 # A frame limit is mandatory, not a speed optimization: the game does not stop
 # when a movie's input runs out, it keeps playing with a neutral pad. Left
@@ -88,6 +108,9 @@ rm -rf "$OUT"; mkdir -p "$OUT"
 # A bk2 is not optional. The virtual pad drives a frame-indexed button sweep of
 # its own, which without a movie to displace it would steer Spyro and make the
 # run mean nothing.
+# The legs do not go through pg_capture: that helper silences vibration for
+# every run it starts, and vibration arriving at the motors is the one thing
+# this gate measures.
 run_leg() {   # $1 = leg name, $2... = extra env assignments
     local leg="$1"; shift
     local log="$OUT/$leg.log"

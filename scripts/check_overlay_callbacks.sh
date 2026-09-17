@@ -35,6 +35,8 @@
 # overrides the 2400 VBLs per row; OPENPETE_CALLBACK_JOBS the parallelism.
 set -euo pipefail
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
 
 GAMES=("$@")
 [[ ${#GAMES[@]} -eq 0 ]] && GAMES=(spyro-1 spyro-2 spyro-3)
@@ -44,18 +46,17 @@ JOBS="${OPENPETE_CALLBACK_JOBS:-8}"
 BUILD="${OPENPETE_BUILD_DIR:-build/linux-release}"
 OUT="${OPENPETE_CALLBACK_OUT:-$BUILD/overlay-callbacks}"
 
-disc_for() {
-    case "$1" in
-        spyro-1) echo "${OPENPETE_DISC_SPYRO1:-games/spyro-1/spyro-1/build/SCUS-94228.cue}" ;;
-        spyro-2) echo "${OPENPETE_DISC_SPYRO2:-games/spyro-2/spyro-2/build/SCUS-94425.cue}" ;;
-        spyro-3) echo "${OPENPETE_DISC_SPYRO3:-games/spyro-3/spyro-3/build/SCUS-94467.cue}" ;;
-    esac
-}
-
 status=0
 for game in "${GAMES[@]}"; do
-    exe="$BUILD/games/$game/openpete-${game/-/}"
-    disc="$(disc_for "$game")"
+    # The slug is validated against the resolver's list, and the binary name
+    # and disc path come from it, so this gate cannot drift from the one
+    # authority for either (games/<slug>/oracle.conf). The resolver's
+    # single-binary overrides are blanked for the same reason the loop exists:
+    # one row per game, each with its own binary and its own disc.
+    game="$(pg_parse_game --game "$game")" || exit 64
+    OPENPETE_BIN= OPENPETE_DISC= PG_BUILD_DIR="$BUILD" pg_resolve "$game" || exit 64
+    exe="$PG_BIN"
+    disc="$PG_DISC"
     if [[ ! -x "$exe" || ! -f "$disc" ]]; then
         echo "[overlay-callbacks] $game: SKIP (missing $exe or $disc)"
         status=64

@@ -24,7 +24,8 @@
 #      someone's machine, not a measurement detail. It SKIPS rather than passes
 #      wherever it cannot run.
 #
-# Usage: scripts/check_pacing.sh [--windows] [--seconds N] [--p99-us N] [--tier-b]
+# Usage: scripts/check_pacing.sh [--game SLUG] [--windows] [--seconds N]
+#        [--p99-us N] [--tier-b]
 #
 # Exit: 0 pass, 2 a real regression, 3 vacuous (nothing engaged), 64 skip.
 set -uo pipefail
@@ -32,6 +33,8 @@ set -uo pipefail
 
 
 cd "$(dirname "$0")/.."
+# shellcheck source=scripts/lib/game.sh
+source scripts/lib/game.sh
 . scripts/lib/wslenv.sh
 # Refuse before spending 6 minutes on legs whose knobs would not arrive: this
 # gate has already once run its entire Windows path unpaced and uninjected,
@@ -50,6 +53,9 @@ TIER_B=0
 # attract demo. Provisional until a slower machine has been measured.
 LATE_PER_1000=15
 
+# Read before the loop consumes the argument list.
+GAME="$(pg_parse_game "$@")" || exit 64
+
 while [ $# -gt 0 ]; do
   case "$1" in
     --windows)  PLATFORM=windows; shift ;;
@@ -58,16 +64,26 @@ while [ $# -gt 0 ]; do
     --inject-us) INJECT_US="$2"; shift 2 ;;
     --tier-b)   TIER_B=1; shift ;;
     --late-per-1000) LATE_PER_1000="$2"; shift 2 ;;
+    --game)     shift 2 ;;   # consumed by pg_parse_game above
+    --game=*)   shift ;;
     *) echo "unknown argument: $1" >&2; exit 64 ;;
   esac
 done
 
+pg_resolve "$GAME" || exit 64
+EXE="$PG_BIN"
+DISC="$PG_DISC"
 if [ "$PLATFORM" = windows ]; then
-  EXE=build/windows-mingw/games/spyro-1/openpete-spyro1.exe
-else
-  EXE=build/linux-release/games/spyro-1/openpete-spyro1
+  # The resolver names the linux-release binary; the Windows leg needs the
+  # cross-built exe of the same game, which is the same target name under the
+  # mingw build tree.
+  EXE="build/windows-mingw/games/$PG_GAME/$(pg_bin_name "$PG_GAME").exe"
 fi
-DISC=games/spyro-1/spyro-1/build/SCUS-94228.cue
+
+# The in-level leg names a Spyro 1 level and the pacing bounds were measured on
+# it, so --game names the game whose binary and disc are used and every other
+# slug is refused rather than measured against bounds that are not its own.
+[ "$PG_GAME" = spyro-1 ] || { echo "[pacing] SKIP: $PG_GAME has no pacing bounds"; exit 64; }
 [ -x "$EXE" ] || { echo "[pacing] SKIP: no binary at $EXE"; exit 64; }
 [ -f "$DISC" ] || { echo "[pacing] SKIP: no disc at $DISC"; exit 64; }
 
