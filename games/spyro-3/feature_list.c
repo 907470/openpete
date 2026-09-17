@@ -8,6 +8,7 @@ extern const feature_module_t cyclorama_module;
 extern const feature_module_t portal_module;
 extern const feature_module_t shadow_module;
 extern const feature_module_t shadow_player_module;
+extern const feature_module_t particles_module;
 extern const feature_module_t moby_module;
 extern const feature_module_t player_module;
 extern const feature_module_t ui_sprite_module;
@@ -31,6 +32,10 @@ const feature_module_t* const openpete_features[] = {
      * OPENPETE_SHADOW_VERIFY is set. */
     &shadow_module,
     &shadow_player_module,
+    /* The particle feeder: hooks the particle renderer game_layout.particles
+       names and feeds the primitives it appended, which link into the 3D
+       ordering table and so never reach the 2D chokepoint. */
+    &particles_module,
     /* The shared moby feeder: registers the draw hooks game_layout.moby
      * names, then refuses them because this game supplies no moby_game
      * decoder slots yet — OPENPETE_MOBY_CENSUS prints the reason. */

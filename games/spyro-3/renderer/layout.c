@@ -247,6 +247,25 @@ const game_layout_t game_layout = {
             .avatar_blend = 0x1Cu,            /* mobyfunc.s:699 lbu 0x1C */
         },
     },
+    .particles = {
+        .hook       = F_PARTICLES_DRAW,
+        .array_ptr  = D_PARTS_ARRAY,      /* partsdraw.s:57-59 loads the pool base
+                                           * through this word into its walk register */
+        .rec_stride = 0x20u,              /* partsdraw.s:104-105 addi 0x20 after reading
+                                           * the next record's selector at 0x20 */
+        .sel_off    = 0x00u,              /* partsdraw.s:67 lh 0x0: bltz skips, and the
+                                           * arithmetic shift by 8 tested at :76-87
+                                           * dispatches the class */
+        .pos_off    = 0x04u,              /* partsdraw.s:709-712 and :219-226 read 0x4
+                                           * (X low, Y high) and 0x8 (Z low) and subtract
+                                           * the camera position shifted right by 2 */
+        .drawn_off  = 0x03u,              /* partsdraw.s:223 sb zero at record start,
+                                           * :358/:415/:528/:693/:745 sb 1 at the append */
+        .fixed_layer_class = 5u,          /* partsdraw.s:76-87 dispatches classes 0-4 and
+                                           * falls through for 5 and up; the fallthrough
+                                           * links at D_OT_BASE - 8 (:202) instead of a
+                                           * depth bucket */
+    },
     .moby = {
         /* Offsets read from asm/mobydraw.s, whose three routines Spyro 2
          * duplicates instruction-for-instruction at other addresses. The

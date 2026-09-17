@@ -13,6 +13,7 @@
 #include "renderer/cyclorama.h"
 #include "renderer/portal.h"
 #include "renderer/shadow.h"
+#include "renderer/particles.h"
 #include "renderer/moby.h"
 #include "renderer/player.h"
 #include "renderer/player_game.h"   /* PLAYER_PARTS_MAX */
@@ -508,6 +509,8 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("player");
     shadow_reextract(cpu);          /* drop-shadows under mobys */
     RX_CENSUS_STEP("shadow");
+    particles_reextract(cpu);       /* the particle primitives the tick captured */
+    RX_CENSUS_STEP("particles");
     /* The HUD, dialog boxes, text and screen fades are produced by the 2D-UI
      * feeder during the game's own render and cannot be re-derived here, so the
      * canonical present banks them and every re-extract re-applies that carry on

@@ -232,3 +232,14 @@ name = "F_LOADING_SPRT"
 addr = 0x80059358
 kind = "function"
 note = "func_80059358(brightness, otIndex) (src/warp.c:558-579) — the loading-screen image emitter: four DR_MODE (tpage 264 + 2*i, the 128-px-wide pages of the 512x216 picture LoadImage'd to VRAM (512,0)) each followed by a 0x14-byte SPRT of code 100 at x = i*128, y 12, 128x216, rgb set to the fade level, chained in the primitive buffer and linked through func_8004E71C rather than func_8004E758"
+
+[[symbol]]
+name = "F_PARTICLES_DRAW"
+addr = 0x8003AA38
+kind = "function"
+note = "the particle renderer (asm/partsdraw.s:11-799, handwritten: it spills s0-s7/gp/sp/fp/ra to D_80071540 and uses those registers as its own), the last call of fDrawWorld func_8001E460; loads the camera matrix from G_CAMERA+0x00 with TR 0, walks the 0x20-byte pool at D_PARTS_ARRAY and appends one primitive per drawn record, stopping when the polybuf cursor comes within 0x400 bytes of D_POLYBUF_END. Six classes: 0 a 4-word LINE_F2 dot, 1 a 5-word LINE_G2 streak, 2/3/4 and 5-and-up 10-word POLY_FT4 billboards. Classes 0-4 link at their own depth bucket ((SZ3 >> 5) * 8 from D_OT_BASE) and stamp record byte +3; class 5 and up link at the fixed entry D_OT_BASE - 8 and stamp nothing"
+
+[[symbol]]
+name = "D_PARTS_ARRAY"
+addr = 0x8006C554
+note = "partsArrayPtr (src/loaders.c:13); the word holding the base of the particle pool the renderer walks, 0x20 bytes per record: +0x00 the signed selector halfword (bits 8-11 the class, high byte 0xFF ends the pool, otherwise negative = inactive slot), +0x03 the drawn stamp, +0x04 X in the low half and Y in the high half, +0x08 Z in the low half, all in quarter world units, +0x0C the primitive colour word"

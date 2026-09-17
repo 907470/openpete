@@ -367,6 +367,37 @@ typedef struct game_layout {
         } player;
     } shadow;
 
+    /* The particle renderer. One routine walks a pool of fixed-stride records
+     * and appends one primitive per drawn particle to the polybuf, linking
+     * each into the 3D ordering table itself, so the primitives never reach
+     * the 2D chokepoint even though their classes (textured quads, gouraud
+     * lines) are ones the 2D feeder would take. `hook` = 0 on a game whose
+     * particles are fed by their own re-derivation instead.
+     *
+     * `array_ptr` is the word holding the pool base; a record is `rec_stride`
+     * bytes. `sel_off` is a signed halfword: bits 8-11 select the class the
+     * routine dispatches on, a negative value whose arithmetic shift by 8 is
+     * -1 ends the pool, and any other negative value is an inactive slot the
+     * routine steps over. `pos_off` is the first of two words packing the
+     * record's camera-relative position in quarter world units, X in the low
+     * half and Y in the high half of the first word and Z in the low half of
+     * the second. `drawn_off` is the byte the routine clears when it starts a
+     * record and sets when it has appended that record's primitive, so after
+     * the draw the set bytes name, in pool order, exactly the records that
+     * emitted. `fixed_layer_class` is the class index at and above which the
+     * routine links its primitive at a fixed front ordering-table entry
+     * instead of at the record's own depth, and whose records pack their
+     * position differently; those primitives draw over the world. */
+    struct {
+        uint32_t hook;
+        uint32_t array_ptr;
+        uint32_t rec_stride;
+        uint32_t sel_off;
+        uint32_t pos_off;
+        uint32_t drawn_off;
+        uint32_t fixed_layer_class;
+    } particles;
+
     /* The moby (3D actor) draw. The games share the walk: a cull pass builds
      * one render record per drawn moby in the render scratch, and one or more
      * draw passes iterate those records, decode each model's vertex and face
