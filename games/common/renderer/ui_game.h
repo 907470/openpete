@@ -90,6 +90,31 @@ unsigned ui_freeze_retain_count(void);
 /* Primitives fed through the chokepoint since boot, by class. */
 unsigned ui_sprite_prim_count(void);
 
+/* Feed the 2D primitives claimed at the chokepoint into the native scene.
+ * Called at the start of the ordering-table walk: a 2D primitive's words are
+ * not final when it is linked (a sprite mirrors its own U coords right after
+ * the insert returns; the atlas page turn skews a whole page of already-linked
+ * quads a tick later), and they are final once the table is handed to the GPU.
+ * The primitives linked between two walks are exactly one table's worth, so
+ * this is also where the batch is complete. Inert when no game registers the
+ * chokepoint. */
+void ui_sprite_ot_draw_begin(void);
+
+/* Re-read the batch already released for the ordering table being walked and
+ * count the primitives whose words changed since: the release happens inside
+ * the frame that built them, and the walk is where the words are beyond doubt
+ * final, so a nonzero count means the release point is too early. */
+void ui_sprite_ot_verify(void);
+
+/* One of the two most recent ordering-table bases handed to DrawOTag (0 =
+ * newest). The 2D feeder walks these to rank its primitives by the traversal
+ * the GPU will perform, rather than by the order it happened to be fed in. */
+uint32_t psyq_ot_recent_base(int i);
+
+/* 2D primitives the chokepoint's decode chain claims no encoding for, since
+ * boot: the engagement counter for adding a decoder. */
+unsigned ui_sprite_unclaimed_count(void);
+
 #ifdef __cplusplus
 }
 #endif

@@ -34,6 +34,21 @@ extern "C" {
 #include "openpete_memcard.h"
 #include "openpete_cdrom_mmio.h"
 #include "psyq/psyq_game_hooks.h"
+#include "renderer/ui_game.h"   /* the 2D chokepoint's deferred feed */
+
+/* The two most recent ordering-table bases handed to DrawOTag (see the note at
+ * the walk). Newest first; a repeat of the newest is ignored so the pair always
+ * names the two alternating tables. */
+#define PSYQ_OT_BASE_RING 8
+static uint32_t s_ot_base[PSYQ_OT_BASE_RING];
+static void ot_base_note(uint32_t a) {
+    if (a == s_ot_base[0]) return;
+    for (int i = PSYQ_OT_BASE_RING - 1; i > 0; i--) s_ot_base[i] = s_ot_base[i - 1];
+    s_ot_base[0] = a;
+}
+extern "C" uint32_t psyq_ot_recent_base(int i) {
+    return (i >= 0 && i < PSYQ_OT_BASE_RING) ? s_ot_base[i] : 0u;
+}
 }
 
 #include <cstdio>
@@ -1375,6 +1390,10 @@ void psyq_DrawOTag(CPUState* cpu) {
      * position = og paint order) as the FALLBACK rank table — the feeder's
      * primary source walks the g_WorldOT buckets directly, pose-exact. */
     psyq_game_ot_begin();
+    /* The 2D chokepoint: verify the batch already released for this table, and
+     * release one still pending (see ui_sprite_ot_draw_begin). */
+    ui_sprite_ot_verify();
+    ui_sprite_ot_draw_begin();
 
     /* OPENPETE_OT_DUMP_FRAMES=A-B → for openpete_frame in [A,B], dump every
      * DrawOTag call's slot list to OPENPETE_OT_DUMP_PATH (default
@@ -1449,7 +1468,14 @@ void psyq_DrawOTag(CPUState* cpu) {
         s_last_frame = openpete_frame;
     }
 
+    /* The ordering table this walk starts from. The 2D feeder needs the SAME
+     * traversal to rank its primitives, and it runs a tick before the walk of
+     * the table it is feeding, so the two most recent bases are kept: the
+     * tables alternate, and the one not used by the newest walk is the one the
+     * pending batch was linked into. The feeder picks between them by walking
+     * each and taking whichever chain actually holds its primitives. */
     uint32_t addr = cpu->a0;
+    ot_base_note(addr);
     /* Root-cause probe (OPENPETE_OT_GARBAGE_TRACE=1, inert otherwise): the OT
      * walk can derail into non-OT memory on dense frames (Dream Weavers moving
      * forward), where a stray tag whose code byte is 0x_1 is misparsed as

@@ -261,6 +261,20 @@ typedef struct {
                      * the material key ONLY when tag_split_on() (else inert) */
     int fog_delta;  /* sticky set_fog_delta value — the CLUT-ladder row this
                      * tri's palette was shifted to (0 = unfogged base row) */
+    uint32_t prim;  /* PSX address of the primitive this tri was decoded from
+                     * (sticky set_prim value; 0 for everything that is not 2D).
+                     * The ordering-table walk ranks a tri by finding this
+                     * address in the chain, so every 2D emitter can keep feeding
+                     * where it does and still be ordered by the traversal. */
+    uint32_t seq;   /* the GAME's 2D emission order for this frame (sticky
+                     * set_seq value; 0 for everything that is not 2D). The 2D
+                     * layer is screen-space with the depth test off, so the
+                     * order tris are composed in IS the painter order, and the
+                     * two 2D emitters reach the scene at different points of
+                     * the frame — one at the primitive's link, one when a glyph
+                     * chain is built, one of them deferred to a later release.
+                     * Composing by this number reproduces the order the game
+                     * emitted them in, whenever each was fed. */
 } scene_tri_t;
 /* C99 compile-time prefix check: if a field is added to openpete_scene_tri
  * without mirroring it here (or vice versa), this array gets a negative size. */
@@ -352,6 +366,10 @@ void openpete_native_scene_register_overlay_precapture(void (*fn)(void)) {
 /* Provenance-tag state (S6). s_tag_split_ext is armed by the material-
  * selector registry (S8); the env flags are the dev instruments. */
 static uint32_t s_cur_tag;        /* sticky, stamped by add_tri */
+/* The GAME's 2D emission order for the tris added next (see scene_tri_t::seq).
+ * Sticky, cleared at each frame boundary; a feeder that never sets it leaves 0. */
+static uint32_t s_cur_seq;
+static uint32_t s_cur_prim;       /* sticky, stamped by add_tri (see scene_tri_t::prim) */
 /* Accepted tris per provenance-tag family (tag bits 31:28) in the scene
  * being accumulated. Reset with the scene. Read at the canonical commit by
  * the render-path feed audit: a family that fed geometry belongs to a path
@@ -682,11 +700,16 @@ void openpete_native_scene_begin(void) { fov_latch(); s_scene_epoch++; s_scene_n
  * to s_scene_disp before the clear, so the present can draw the 1-frame-delayed
  * copy that matches the reference panel. */
 static unsigned s_scene_frame = 0xFFFFFFFFu;
+static void (*s_scene_frame_close_cb)(unsigned frame);  /* see the frame-close section */
 static void alpha_census(const scene_tri_t* scene, int scene_n);  /* 3c instrument, defined below */
 static bool scene_has_world(const scene_tri_t* scene, int n);     /* defined below */
 static int s_scene_dropped;       /* tris refused this frame (cap hit) — capdbg */
 void openpete_native_scene_begin_frame(unsigned frame) {
     if (frame != s_scene_frame) {
+        if (s_scene_frame != 0xFFFFFFFFu && s_scene_frame_close_cb) {
+            static int in = 0;   /* the callback feeds, which re-enters begin_frame */
+            if (!in) { in = 1; s_scene_frame_close_cb(s_scene_frame); in = 0; }
+        }
         fov_latch();
         if (s_scene_frame != 0xFFFFFFFFu) {  /* a completed frame is sitting in s_scene */
             /* Permanent safety net: if the scene cap is ever exceeded, terrain/
@@ -733,6 +756,8 @@ void openpete_native_scene_begin_frame(unsigned frame) {
             if (s_scene_hist_count < SCENE_HIST) s_scene_hist_count++;
         }
         s_scene_epoch++;
+        s_cur_seq = 0;
+        s_cur_prim = 0;
         s_scene_n = 0; memset(s_scene_fam_n, 0, sizeof s_scene_fam_n); s_scene_bg = 0; s_scene_fade = 0; s_scene_freeze = 0; s_scene_hud_under = 0; s_scene_actor_front = 0; s_scene_frame = frame;
         /* Per-instance material slots are per-feed-cycle: reset here (the
          * canonical present's reset) as well as in scene_begin (the sub-tick
@@ -793,6 +818,24 @@ void openpete_native_scene_restore(void) {
  * scene: calling begin_frame with a newer frame would snapshot-and-wipe a
  * held scene during load stalls. */
 unsigned openpete_native_scene_frame(void) { return s_scene_frame; }
+
+/* ---- frame-close notification -------------------------------------------
+ * A feeder whose data is not final when its primitives are produced defers
+ * them and releases the batch later. The 2D UI layer is the one such feeder: a
+ * primitive's words are not final until the ordering table holding it is handed
+ * to the GPU, a tick after the frame that built it. The batch belongs to the
+ * scene its build frame opened, beside the 3D of the same ordering table, so it
+ * has to be released while that scene is still the accumulating one.
+ *
+ * This fires immediately before a frame's accumulation is snapshotted and the
+ * next frame started, which is the last moment an append still reaches it. A
+ * deferred feeder releases whatever it holds for `frame` here; the ordering
+ * table's own walk releases the rest. Runs on the thread doing the rotation,
+ * the thread that owns the accumulating scene, so it adds no synchronisation
+ * point. */
+void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame)) {
+    s_scene_frame_close_cb = fn;
+}
 
 /* Stamp of the scene scene_present_buf() would return under the CURRENT
  * selection (delay/shot-lag included) — what the retained-terrain freshness
@@ -895,6 +938,8 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].tag = s_cur_tag;      /* sticky provenance (set_tag) */
         s_scene_fam_n[s_cur_tag >> 28]++;
         s_scene[s_scene_n].fog_delta = s_cur_fog_delta;  /* sticky (set_fog_delta) */
+        s_scene[s_scene_n].seq = s_cur_seq;              /* sticky (set_seq) */
+        s_scene[s_scene_n].prim = s_cur_prim;            /* sticky (set_prim) */
         if (s_cur_tag && tag_tint_on()) {
             /* Coverage instrument: hash the tag to a stable tint and modulate
              * the vertex colours — "which source produced this pixel".
@@ -1051,6 +1096,36 @@ void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade) {
     s_game_freeze = s_scene_freeze; s_game_freeze_seen = 1;  /* the game set it this tick */
 }
 
+void openpete_native_scene_set_seq(uint32_t seq) { s_cur_seq = seq; }
+void openpete_native_scene_set_prim(uint32_t prim) { s_cur_prim = prim; }
+
+/* Stamp every 2D tri of this frame with its ordering-table traversal rank,
+ * looked up from the primitive address each was decoded from. Covers the live
+ * scene and the feed-time carry accumulation, which is what the next capture
+ * commits, so a tri fed at emission and one fed from a deferred batch are
+ * ranked by the same walk. A tri the walk never reached keeps rank 0 and, under
+ * the stable sort, its feed position. */
+/* The primitive addresses this frame's 2D was decoded from, so the feeder can
+ * tell which of the frame's several ordering-table walks is the 2D one. Writes
+ * at most `max`, returns how many. */
+int openpete_native_scene_collect_2d_prims(uint32_t* out, int max) {
+    int n = 0;
+    if (!out || max <= 0) return 0;
+    for (int t = 0; t < s_scene_n && n < max; t++)
+        if (s_scene[t].prim) out[n++] = s_scene[t].prim;
+    for (int t = 0; t < s_overlay_accum_n && n < max; t++)
+        if (s_overlay_accum[t].prim) out[n++] = s_overlay_accum[t].prim;
+    return n;
+}
+
+void openpete_native_scene_rank_2d(uint32_t (*rank_of)(uint32_t prim)) {
+    if (!rank_of) return;
+    for (int t = 0; t < s_scene_n; t++)
+        if (s_scene[t].prim) s_scene[t].seq = rank_of(s_scene[t].prim);
+    for (int t = 0; t < s_overlay_accum_n; t++)
+        if (s_overlay_accum[t].prim) s_overlay_accum[t].seq = rank_of(s_overlay_accum[t].prim);
+}
+
 void openpete_native_scene_set_hud_under_player(int under) { s_scene_hud_under = under ? 1 : 0; }
 
 void openpete_native_scene_set_actor_front(int front) { s_scene_actor_front = front ? 1 : 0; }
@@ -1171,6 +1246,64 @@ static uint32_t fade_lerp(uint32_t a, uint32_t b, double t) {
     return (b & 0xFF000000u) | ((uint32_t)r<<16) | ((uint32_t)g<<8) | (uint32_t)bl;
 }
 
+/* OPENPETE_SEQ_SORT=0 disables the emission ordering at runtime, so the A/B
+ * that attributes a divergence to it comes from ONE binary. */
+static int seq_sort_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_SEQ_SORT"); v = !(e && *e && *e == '0'); }
+    return v;
+}
+
+/* Order a 2D set by the game's emission sequence (scene_tri_t::seq), stable so
+ * equal numbers keep feed order. Insertion sort: the sets are one screen of 2D
+ * (tens of tris) and already nearly sorted, so this is linear in practice. */
+static void seq_sort_carry(scene_tri_t* tri, uint32_t* epoch, int n) {
+    if (!seq_sort_on()) return;
+    /* Only NUMBERED tris are ordered, and only among their own slots: a tri
+     * stamped 0 came from a feeder that takes no emission number, and moving it
+     * would reorder a layer this knows nothing about. */
+    int idx[OVERLAY_CARRY_MAX]; int m = 0;
+    for (int t = 0; t < n && m < OVERLAY_CARRY_MAX; t++) if (tri[t].seq) idx[m++] = t;
+    if (m < 2) return;
+    static scene_tri_t tmp[OVERLAY_CARRY_MAX]; static uint32_t tmpe[OVERLAY_CARRY_MAX];
+    for (int i = 0; i < m; i++) { tmp[i] = tri[idx[i]]; tmpe[i] = epoch[idx[i]]; }
+    for (int i = 1; i < m; i++) {                      /* stable insertion sort */
+        scene_tri_t t = tmp[i]; uint32_t e = tmpe[i];
+        int j = i - 1;
+        while (j >= 0 && tmp[j].seq > t.seq) { tmp[j + 1] = tmp[j]; tmpe[j + 1] = tmpe[j]; j--; }
+        tmp[j + 1] = t; tmpe[j + 1] = e;
+    }
+    for (int i = 0; i < m; i++) { tri[idx[i]] = tmp[i]; epoch[idx[i]] = tmpe[i]; }
+}
+
+/* Reorder the scene's 2D tris among themselves by emission sequence, leaving
+ * every other tri where it is: the 2D layer draws in array order, so this puts
+ * the two 2D emitters back into the order the game emitted them even when one
+ * of them was fed from a deferred release. */
+static void seq_sort_scene_2d(scene_tri_t* sc, int n) {
+    if (!seq_sort_on()) return;
+    static int idx[MAX_SCENE_TRIS]; int m = 0;
+    for (int t = 0; t < n; t++) if (sc[t].seq) idx[m++] = t;   /* numbered tris only */
+    if (m < 2) return;
+    static scene_tri_t tmp[MAX_SCENE_TRIS];
+    for (int i = 0; i < m; i++) tmp[i] = sc[idx[i]];
+    for (int i = 1; i < m; i++) {                      /* stable insertion sort */
+        scene_tri_t t = tmp[i];
+        int j = i - 1;
+        while (j >= 0 && tmp[j].seq > t.seq) { tmp[j + 1] = tmp[j]; j--; }
+        tmp[j + 1] = t;
+    }
+    for (int i = 0; i < m; i++) sc[idx[i]] = tmp[i];
+}
+
+int scene_2d_count_fwd(const scene_tri_t* sc, int n) {
+    int c = 0;
+    for (int t = 0; t < n; t++)
+        if (sc[t].category == OPENPETE_SCENE_HUD || sc[t].category == OPENPETE_SCENE_HUD_PANEL ||
+            sc[t].category == OPENPETE_SCENE_OVERLAY || sc[t].carry) c++;
+    return c;
+}
+
 void openpete_native_scene_capture_overlay(void) {
     /* Let the 2D-UI feeder flush its deferred ("feed-previous") prim into this
      * tick's accumulation first — by the canonical present every post-link prim
@@ -1200,6 +1333,9 @@ void openpete_native_scene_capture_overlay(void) {
            (size_t)s_overlay_accum_n * sizeof(s_overlay_accum_epoch[0]));
     s_overlay_carry_n = s_overlay_accum_n;
     s_overlay_accum_n = 0;
+    /* The two 2D emitters reach the accumulation at different points of the
+     * frame, so feed order is not the game's emission order; restore it. */
+    seq_sort_carry(s_overlay_carry, s_overlay_carry_epoch, s_overlay_carry_n);
     /* Compose the carry into the scene this present is about to draw, when part
      * of it was fed into a scene that has since been replaced. A game whose 2D
      * layer emits on alternate VBLs (Spyro 3's menu panel and its glyphs) puts
@@ -1217,12 +1353,32 @@ void openpete_native_scene_capture_overlay(void) {
      * untouched. Skipped too when the scene already holds re-applied carry
      * (carry == 2) — apply_overlay has composed this set into it already. */
     {
-        int stale = 0;
+        int stale = 0, mismatch = 0;
         for (int t = 0; t < s_overlay_carry_n; t++)
-            if (s_overlay_carry_epoch[t] != s_scene_epoch) { stale = 1; break; }
+            if (s_overlay_carry_epoch[t] != s_scene_epoch) { stale = 1; mismatch++; }
         int reapplied = 0;
         for (int t = 0; t < s_scene_n && !reapplied; t++)
             if (s_scene[t].carry == 2) reapplied = 1;
+        /* OPENPETE_CARRY_EPOCH_PROBE=1: one line per canonical capture, zeros
+         * included, naming how many carry entries carry an epoch other than the
+         * scene's and whether that swapped the scene's carry-eligible tris for
+         * the carry set. A feeder that emits at a different point of the frame
+         * than the rest of the 2D changes those numbers. */
+        { static int pz = -1;
+          if (pz < 0) { const char* e = getenv("OPENPETE_CARRY_EPOCH_PROBE");
+                        pz = (e && *e && *e != '0'); }
+          if (pz) {
+            int elig = 0;
+            for (int t = 0; t < s_scene_n; t++) {
+                const scene_tri_t *q = &s_scene[t];
+                if ((q->category == OPENPETE_SCENE_OVERLAY ||
+                     q->category == OPENPETE_SCENE_HUD_PANEL ||
+                     q->carry == 1) && q->carry != 2) elig++;
+            }
+            fprintf(stderr, "[carry f=%u] epoch=%u carry_n=%d mismatch=%d stale=%d"
+                            " reapplied=%d scene_n=%d eligible=%d swap=%d\n",
+                    s_scene_frame, s_scene_epoch, s_overlay_carry_n, mismatch, stale,
+                    reapplied, s_scene_n, elig, (stale && !reapplied) ? 1 : 0); } }
         if (stale && !reapplied) {
             int w = 0;
             for (int t = 0; t < s_scene_n; t++) {
@@ -1246,6 +1402,12 @@ void openpete_native_scene_capture_overlay(void) {
                         s_scene_frame, s_overlay_carry_n, s_scene_n);
         }
     }
+    seq_sort_scene_2d(s_scene, s_scene_n);   /* both paths end in emission order */
+    { extern int scene_2d_count_fwd(const scene_tri_t* sc, int n);
+      static int pz = -1;
+      if (pz < 0) { const char* e = getenv("OPENPETE_FREEZE_LEG_PROBE"); pz = (e && *e && *e != '0'); }
+      if (pz) fprintf(stderr, "[canonscene f=%u] epoch=%u scene_n=%d twod=%d\n",
+                      s_scene_frame, s_scene_epoch, s_scene_n, scene_2d_count_fwd(s_scene, s_scene_n)); }
     /* Mirror the scene-cap warn-once: a busy title/menu that overruns the carry
      * buffer silently loses 2D-UI sprites sub-tick with no signal — warn so the
      * cap can be raised rather than leaving a view-dependent dropout in the wild. */
@@ -1363,6 +1525,28 @@ void openpete_native_scene_apply_overlay(double alpha) {
         tri.carry = 2;                             /* mark re-applied so the next capture skips it */
         s_scene[s_scene_n++] = tri;
     }
+    { static int pf = -2;
+      if (pf == -2) { const char* e = getenv("OPENPETE_APPLY_PROBE"); pf = (e && *e) ? atoi(e) : -1; }
+      if (pf >= 0 && (int)s_scene_frame >= pf - 4 && (int)s_scene_frame <= pf + 4) {
+        unsigned lo = 0xFFFFFFFFu, hi = 0; int cat[16] = {0}, nz = 0;
+        float x0 = 1e9f, y0 = 1e9f, x1 = -1e9f, y1 = -1e9f;
+        for (int t = 0; t < s_overlay_carry_n; t++) {
+            const scene_tri_t* q = &s_overlay_carry[t];
+            if (q->seq) { if (q->seq < lo) lo = q->seq; if (q->seq > hi) hi = q->seq; } else nz++;
+            if (q->category >= 0 && q->category < 16) cat[q->category]++;
+            for (int k = 0; k < 3; k++) {
+                if (q->v[k].sx < x0) x0 = q->v[k].sx; if (q->v[k].sx > x1) x1 = q->v[k].sx;
+                if (q->v[k].sy < y0) y0 = q->v[k].sy; if (q->v[k].sy > y1) y1 = q->v[k].sy; } }
+        fprintf(stderr, "[apply f=%u sort=%d] n=%d pairable=%d seq=%u..%u zero=%d"
+                        " bbox=[%.0f,%.0f]x[%.0f,%.0f] cats:", s_scene_frame, seq_sort_on(),
+                s_overlay_carry_n, pairable, lo, hi, nz, x0, x1, y0, y1);
+        for (int c = 0; c < 16; c++) if (cat[c]) fprintf(stderr, " %d=%d", c, cat[c]);
+        fprintf(stderr, "\n");
+        if ((int)s_scene_frame == pf) for (int t = 0; t < s_overlay_carry_n; t++) {
+            const scene_tri_t* q = &s_overlay_carry[t];
+            fprintf(stderr, "[applytri %d] seq=%u cat=%d bl=%d tex=%d v=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) rgba=%08X\n",
+                    t, q->seq, q->category, q->blend, q->textured,
+                    q->v[0].sx, q->v[0].sy, q->v[1].sx, q->v[1].sy, q->v[2].sx, q->v[2].sy, q->v[0].rgba); } } }
     s_scene_freeze = freeze_lerp(s_overlay_prev_freeze, s_overlay_carry_freeze, oalpha);
     s_scene_fade   = fade_lerp(s_fade_prev, s_fade_curr, oalpha);
 }
@@ -10442,6 +10626,17 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
  * the world groups are empty) and on empty scenes, so once the game pauses,
  * shot_frozen holds the last world frame. cap_wf matches the capture's widen so
  * the backdrop lines up 1:1 with the widescreen dump. */
+/* 2D tris in a scene buffer: the categories the 2D layer feeds into. Used by
+ * the freeze-leg probe to compare what a composite holds against the canonical
+ * scene it should match. */
+static int scene_2d_count(const scene_tri_t* sc, int n) { return scene_2d_count_fwd(sc, n); }
+int scene_2d_count_fwd(const scene_tri_t* sc, int n);
+static int freeze_leg_probe(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_FREEZE_LEG_PROBE"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
 void openpete_native_render_snapshot_frozen(float cap_wf)
 {
     if (!s_nr.enabled) return;
@@ -10450,7 +10645,12 @@ void openpete_native_render_snapshot_frozen(float cap_wf)
     /* Only WORLD frames: a freeze frame has no world geometry, and snapshotting it
      * would overwrite the good backdrop with an empty one. */
     int scene_n; uint32_t sbg, sfade, sfreeze;
-    (void)scene_present_buf(&scene_n, &sbg, &sfade, &sfreeze, NULL, NULL);
+    const scene_tri_t* sbuf = scene_present_buf(&scene_n, &sbg, &sfade, &sfreeze, NULL, NULL);
+    if (freeze_leg_probe())
+        fprintf(stderr, "[freezeleg f=%u] copies_stamp=%u scene_n=%d twod=%d freeze=%d skip=%d\n",
+                s_scene_frame, scene_present_stamp(), scene_n, scene_2d_count(sbuf, scene_n),
+                (sfreeze & (1u << 31)) ? 1 : 0,
+                (scene_n <= 0 || (sfreeze & (1u << 31))) ? 1 : 0);
     if (scene_n <= 0 || (sfreeze & (1u << 31))) return;
     /* Retained terrain must land in the frozen backdrop too. */
     openpete_tercache_frame_select(scene_present_stamp());
@@ -10596,6 +10796,23 @@ int openpete_native_render_screenshot_all(const char *base)
      * mirrors the canonical lag). */
     openpete_tercache_frame_select(scene_present_stamp());
     if (scene_pos_sig_on()) scene_pos_sig_report(1);   /* the scene this dump composes */
+    { static int pz = -1;
+      if (pz < 0) { const char* e = getenv("OPENPETE_FREEZE_LEG_PROBE"); pz = (e && *e && *e != '0'); }
+      if (pz) { int n; uint32_t bg, fd, fz;
+        const scene_tri_t* b = scene_present_buf(&n, &bg, &fd, &fz, NULL, NULL);
+        fprintf(stderr, "[dumpscene f=%u] lag=%d composes_stamp=%u scene_n=%d twod=%d\n",
+                s_scene_frame, s_scene_shot_lag, scene_present_stamp(), n,
+                scene_2d_count_fwd(b, n));
+        for (int t = 0; t < n; t++) {
+            const scene_tri_t* q = &b[t];
+            if (!(q->category == OPENPETE_SCENE_HUD || q->category == OPENPETE_SCENE_HUD_PANEL ||
+                  q->category == OPENPETE_SCENE_OVERLAY || q->carry)) continue;
+            fprintf(stderr, "[2dtri] seq=%u cat=%d bl=%d tex=%d bpp=%d v=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) rgba=%08X\n",
+                    q->seq, q->category, q->blend, q->textured, q->bpp,
+                    q->v[0].sx, q->v[0].sy, q->v[1].sx, q->v[1].sy, q->v[2].sx, q->v[2].sy,
+                    q->v[0].rgba);
+        }
+      } }
     int r = native_render_screenshot_all_impl(base, NULL, NULL, NULL);
     s_scene_shot_compose = 0;
     s_scene_shot_lag = 0;

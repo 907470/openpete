@@ -740,6 +740,36 @@ void openpete_native_scene_begin_frame(unsigned frame);
  * begin_frame with a NEWER frame wipes a held scene (load stalls hold the
  * last composed frame on purpose). */
 unsigned openpete_native_scene_frame(void);
+
+/* Register the frame-close notification: it fires immediately before a frame's
+ * accumulation is snapshotted and the next frame started, which is the last
+ * moment an append still reaches that scene. A feeder whose data is not final
+ * when its primitives are produced releases whatever it still holds for
+ * `frame` here. Runs on the thread doing the rotation. */
+void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame));
+
+/* The GAME's 2D emission order for the tris added next. The 2D layer is
+ * screen-space with the depth test off, so compose order is painter order, and
+ * its two emitters reach the scene at different points of the frame — one at a
+ * primitive's link, one when a glyph chain is built, one of them from a
+ * deferred release. Both stamp the number the game emitted at, and the compose
+ * orders by it. Sticky, cleared at each frame boundary; a feeder that never
+ * sets it leaves 0. */
+void openpete_native_scene_set_seq(uint32_t seq);
+
+/* PSX address of the primitive the tris added next were decoded from. Sticky,
+ * cleared at each frame boundary. */
+void openpete_native_scene_set_prim(uint32_t prim);
+
+/* Stamp every 2D tri of this frame (live scene and carry accumulation) with its
+ * ordering-table traversal rank, looked up by the primitive address each was
+ * decoded from. Lets every 2D emitter keep feeding where it does and still be
+ * composed in the order the GPU draws. */
+void openpete_native_scene_rank_2d(uint32_t (*rank_of)(uint32_t prim));
+
+/* The primitive addresses this frame's 2D was decoded from, so a feeder can
+ * tell which of the frame's ordering-table walks is the 2D one. */
+int openpete_native_scene_collect_2d_prims(uint32_t* out, int max);
 /* Append one screen-space triangle to the current native scene. `category`
  * (OPENPETE_SCENE_WORLD/_ACTOR/_HUD/…) and `carry` are passed EXPLICITLY per
  * call — there is NO ambient/global scene category (the old set_category /
