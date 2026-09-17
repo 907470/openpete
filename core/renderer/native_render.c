@@ -10559,8 +10559,11 @@ void openpete_native_render_snapshot_fb_window(void)
 
 /* Blocking off_image readback → PNG. Shared by the A/B present capture and the
  * live -vk screenshot; `what` labels the log line. Returns 0 on success. */
-static int shot_write_offscreen(const char *path, const char *what)
+static int shot_write_offscreen_ext(const char *path, const char *what,
+                                    int *out_w, int *out_h)
 {
+    if (out_w) *out_w = 0;
+    if (out_h) *out_h = 0;
     size_t cap = (size_t)s_nr.win_w * (size_t)s_nr.win_h * 4u;
     if (cap == 0) return 1;
     unsigned char *buf = malloc(cap);
@@ -10576,9 +10579,17 @@ static int shot_write_offscreen(const char *path, const char *what)
         rc = openpete_write_png_rgba(path, buf, w, h);
     }
     free(buf);
-    if (rc == 0)
+    if (rc == 0) {
+        if (out_w) *out_w = w;
+        if (out_h) *out_h = h;
         OPL_INFO_F("native", "%s screenshot %dx%d -> %s", what, w, h, path);
+    }
     return rc;
+}
+
+static int shot_write_offscreen(const char *path, const char *what)
+{
+    return shot_write_offscreen_ext(path, what, NULL, NULL);
 }
 
 static int native_render_screenshot_all_impl(const char *base, unsigned char **cap_out,
@@ -10772,11 +10783,19 @@ static int native_render_screenshot_all_impl(const char *base, unsigned char **c
     return rc;
 }
 
-int openpete_native_render_screenshot(const char *path, const char *what)
+int openpete_native_render_screenshot_ext(const char *path, const char *what,
+                                          int *out_w, int *out_h)
 {
+    if (out_w) *out_w = 0;
+    if (out_h) *out_h = 0;
     ps_apply_geometry();
     if (!s_nr.enabled || !path) return 1;
-    return shot_write_offscreen(path, what ? what : "offscreen");
+    return shot_write_offscreen_ext(path, what ? what : "offscreen", out_w, out_h);
+}
+
+int openpete_native_render_screenshot(const char *path, const char *what)
+{
+    return openpete_native_render_screenshot_ext(path, what, NULL, NULL);
 }
 
 /* --record shutdown drain: the async ring still holds the last few presents

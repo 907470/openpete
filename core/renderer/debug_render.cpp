@@ -55,7 +55,10 @@ extern "C" void openpete_debug_triangle_init(void) {
  * required: glReadPixels returns rows bottom-up (GL origin is bottom-left),
  * SDL_CreateSurfaceFrom treats row 0 as the surface top, and SDL_SaveBMP
  * re-flips during BMP encoding — without it the image lands upside-down. */
-extern "C" void openpete_psyx_take_screenshot(const char* path) {
+extern "C" void openpete_psyx_take_screenshot_ext(const char* path,
+                                                 int* out_w, int* out_h) {
+    if (out_w) *out_w = 0;
+    if (out_h) *out_h = 0;
     /* PsyCross in null-GPU library mode has no GL context — every gl* pointer
      * is unloaded and GR_PresentCroppedToWindow/glReadPixels would segfault.
      * The -og reference screenshot simply doesn't exist in that mode. */
@@ -139,6 +142,12 @@ extern "C" void openpete_psyx_take_screenshot(const char* path) {
         }
     }
     std::free(pixels);
+    if (out_w) *out_w = w;
+    if (out_h) *out_h = h;
+}
+
+extern "C" void openpete_psyx_take_screenshot(const char* path) {
+    openpete_psyx_take_screenshot_ext(path, nullptr, nullptr);
 }
 
 /* Raw RGBA8 (top-down) -> PNG. Used by the native renderer's A/B screenshot

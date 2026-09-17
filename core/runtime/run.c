@@ -829,6 +829,40 @@ extern int PsyX_SPUAL_SetMute(int on_off);
 extern void openpete_debug_triangle_init(void);
 extern void openpete_debug_triangle_emit(void);
 extern void openpete_psyx_take_screenshot(const char* path);  /* BMP via SDL_SaveBMP */
+extern void openpete_psyx_take_screenshot_ext(const char* path,
+                                              int* out_w, int* out_h);
+
+/* --screenshot-presents-start/count bookkeeping: log one line per captured
+ * present naming its kind and pixel extent, and warn once if the sequence is
+ * not written at a single extent. Images at two extents cannot be differenced
+ * against each other, so a mixed-extent sequence invalidates every comparison
+ * drawn from it; the warning names both extents so the run is discarded rather
+ * than measured. */
+static int s_presents_shot_w = 0, s_presents_shot_h = 0;
+static int s_presents_mixed_warned = 0;
+static int s_presents_native_kind = 0;   /* native-offscreen intermediate captures */
+static int s_presents_written = 0;       /* captures written, all kinds */
+static void openpete_presents_note_shot(const char *path, const char *kind,
+                                        int present_index, unsigned frame,
+                                        int w, int h)
+{
+    OPL_INFO_F("screenshot",
+               "wrote %s on frame %u (present=%d, kind=%s, extent=%dx%d)",
+               path, frame, present_index, kind, w, h);
+    s_presents_written++;
+    if (w <= 0 || h <= 0) return;
+    if (s_presents_shot_w == 0) {
+        s_presents_shot_w = w; s_presents_shot_h = h;
+    } else if ((w != s_presents_shot_w || h != s_presents_shot_h)
+               && !s_presents_mixed_warned) {
+        s_presents_mixed_warned = 1;
+        OPL_WARN_F("screenshot",
+                   "present sequence mixes extents: %dx%d and %dx%d; "
+                   "presents from this run are not comparable",
+                   s_presents_shot_w, s_presents_shot_h, w, h);
+    }
+}
+
 
 /* Top-left FPS overlay (core/ui/fps_overlay.cpp). */
 extern void openpete_fps_overlay_emit(void);
@@ -4735,19 +4769,33 @@ static int run_host_loop(const openpete_options_t* opts) {
                     }
                 }
             }
-            if (opts->screenshot_presents_start >= 0
+            /* Canonical leg of --screenshot-presents-start/count. The
+             * intermediate leg further down reads the native offscreen at the
+             * window extent, so reading PsyCross's present FBO here would write
+             * the sequence through two renderers at two extents (the guest 4:3
+             * crop against the Hor+-widened native frame) and no adjacent pair
+             * would be comparable. With a native scene the capture is therefore
+             * deferred to after openpete_native_render_frame below, where the
+             * offscreen holds this canonical present through the same compose
+             * the intermediate leg reads. The PsyCross read stays the capture
+             * only when there is no native scene, where it is the only image. */
+            bool capture_canon_present =
+                    opts->screenshot_presents_start >= 0
                     && (int)openpete_frame >= opts->screenshot_presents_start
-                    && s_presents_captured < opts->screenshot_presents_count) {
+                    && s_presents_captured < opts->screenshot_presents_count;
+            if (capture_canon_present && !openpete_native_scene_enabled()) {
                 char path[1024];
+                int sw = 0, sh = 0;
                 openpete_screenshot_format_path(opts->screenshot_output,
                                                 (int)openpete_frame,
                                                 s_presents_captured,
                                                 path, sizeof(path));
-                openpete_psyx_take_screenshot(path);
-                OPL_INFO_F("screenshot",
-                           "wrote %s on frame %u (present=%d, canonical)",
-                           path, openpete_frame, s_presents_captured);
+                openpete_psyx_take_screenshot_ext(path, &sw, &sh);
+                openpete_presents_note_shot(path, "psycross-canonical",
+                                            s_presents_captured,
+                                            openpete_frame, sw, sh);
                 s_presents_captured++;
+                capture_canon_present = false;
             }
             /* --record: capture this presented game frame before EndScene
              * stamps the FPS overlay. PTS is the wall-clock capture instant
@@ -4935,6 +4983,30 @@ static int run_host_loop(const openpete_options_t* opts) {
                 if (audit_arm) g_openpete_guest_running = 1;
                 openpete_native_render_frame((uint64_t)(op_now() / 1000));
                 if (audit_arm) g_openpete_guest_running = 0;
+            }
+
+            /* Deferred canonical leg of --screenshot-presents-start/count (see
+             * the gate above): the native offscreen now holds this canonical
+             * present, so the sequence's canonical and intermediate images come
+             * from one renderer, one compose and one extent. The device belongs
+             * to the present thread while eager is engaged; take it back for the
+             * readback and return it, as the offscreen reads below do. */
+            if (capture_canon_present && openpete_native_scene_enabled()) {
+                char path[1024];
+                int sw = 0, sh = 0;
+                openpete_screenshot_format_path(opts->screenshot_output,
+                                                (int)openpete_frame,
+                                                s_presents_captured,
+                                                path, sizeof(path));
+                const int pt_was = openpete_present_thread_active();
+                if (pt_was) openpete_present_thread_set_active(0);
+                openpete_native_render_screenshot_ext(path, "native-canonical",
+                                                      &sw, &sh);
+                if (pt_was) openpete_present_thread_set_active(1);
+                openpete_presents_note_shot(path, "native-canonical",
+                                            s_presents_captured,
+                                            openpete_frame, sw, sh);
+                s_presents_captured++;
             }
 
             /* Maintain the capture freeze backdrop: render this present's world
@@ -5409,10 +5481,13 @@ static int run_host_loop(const openpete_options_t* opts) {
                 openpete_screenshot_format_path(opts->screenshot_output,
                                                 (int)openpete_frame,
                                                 s_presents_captured, path, sizeof(path));
-                openpete_native_render_screenshot(path, "native-intermediate");
-                OPL_INFO_F("screenshot",
-                           "wrote %s on frame %u (present=%d, native-intermediate)",
-                           path, openpete_frame, s_presents_captured);
+                int sw = 0, sh = 0;
+                openpete_native_render_screenshot_ext(path, "native-intermediate",
+                                                      &sw, &sh);
+                s_presents_native_kind++;
+                openpete_presents_note_shot(path, "native-intermediate",
+                                            s_presents_captured,
+                                            openpete_frame, sw, sh);
                 s_presents_captured++;
             }
         }
@@ -5761,6 +5836,19 @@ static int run_host_loop(const openpete_options_t* opts) {
      * still produces a playable file. */
     openpete_native_render_record_flush();
     openpete_record_shutdown();
+    /* --screenshot-presents-start/count engagement. A sequence holding no
+     * native-intermediate present exercised only the canonical leg, so it
+     * supports no claim about the sub-tick path and the extent agreement it
+     * reports is vacuous. Reported unconditionally when the flag was set,
+     * because that fact is invisible in the images. */
+    if (opts->screenshot_presents_start >= 0)
+        OPL_INFO_F("screenshot",
+                   "present sequence: %d captured, %d native-intermediate, "
+                   "extent %dx%d%s",
+                   s_presents_written,
+                   s_presents_native_kind, s_presents_shot_w, s_presents_shot_h,
+                   s_presents_mixed_warned ? " (MIXED EXTENTS)"
+                   : s_presents_native_kind ? "" : " (VACUOUS: no intermediate)");
     if (position_log_fp) {
         fclose(position_log_fp);
         position_log_fp = NULL;

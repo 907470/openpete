@@ -1228,6 +1228,13 @@ void openpete_native_scene_commit_fade(void);
  * Returns 0 on success, nonzero if disabled or on failure. */
 int openpete_native_render_screenshot(const char *path, const char *what);
 
+/* As above, additionally reporting the written image's extent in `out_w`/
+ * `out_h` (both set to 0 when nothing was written). Either pointer may be
+ * NULL. Lets a caller that captures a sequence of presents state each
+ * present's extent and detect a sequence whose images are not comparable. */
+int openpete_native_render_screenshot_ext(const char *path, const char *what,
+                                          int *out_w, int *out_h);
+
 /* --record shutdown drain: flush the async readback ring's still-queued tail
  * frames to the encoder (in PTS order) before openpete_record_shutdown()
  * finalizes the file. Call once, after the run loop, while the native device is
