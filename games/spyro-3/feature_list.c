@@ -9,6 +9,8 @@ extern const feature_module_t portal_module;
 extern const feature_module_t shadow_module;
 extern const feature_module_t shadow_player_module;
 extern const feature_module_t particles_module;
+extern const feature_module_t tracers_module;
+extern const feature_module_t glow_module;
 extern const feature_module_t moby_module;
 extern const feature_module_t player_module;
 extern const feature_module_t ui_sprite_module;
@@ -36,6 +38,13 @@ const feature_module_t* const openpete_features[] = {
        names and feeds the primitives it appended, which link into the 3D
        ordering table and so never reach the 2D chokepoint. */
     &particles_module,
+    /* The tracer feeder: hooks the point-ring ribbon and the indexed mesh,
+       both of which link their own primitives into the 3D ordering table. */
+    &tracers_module,
+    /* The glow-ring feeder: hooks the world draw's call to the glow renderer,
+       which chains each ring's draw-mode packet and triangles into one
+       ordering-table entry of its own. */
+    &glow_module,
     /* The shared moby feeder: registers the draw hooks game_layout.moby
      * names, then refuses them because this game supplies no moby_game
      * decoder slots yet — OPENPETE_MOBY_CENSUS prints the reason. */

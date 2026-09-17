@@ -26,6 +26,8 @@ openpete_add_game(spyro-3
 
         renderer/layout.c
         renderer/portal.c
+        renderer/tracers.c
+        renderer/glow.c
         renderer/terrain_probe.c
         renderer/text_sprt.c)
 

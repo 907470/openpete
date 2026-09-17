@@ -243,3 +243,31 @@ note = "the particle renderer (asm/partsdraw.s:11-799, handwritten: it spills s0
 name = "D_PARTS_ARRAY"
 addr = 0x8006C554
 note = "partsArrayPtr (src/loaders.c:13); the word holding the base of the particle pool the renderer walks, 0x20 bytes per record: +0x00 the signed selector halfword (bits 8-11 the class, high byte 0xFF ends the pool, otherwise negative = inactive slot), +0x03 the drawn stamp, +0x04 X in the low half and Y in the high half, +0x08 Z in the low half, all in quarter world units, +0x0C the primitive colour word"
+
+[[symbol]]
+name = "F_GLOW_DRAW"
+addr = 0x8002ECA8
+kind = "function"
+note = "func_8002ECA8 (asm/mobyfunc.s:1920-2166), the glow-ring renderer: called by fDrawWorld func_8001E460 under mask bit 0x10 (asm/nonmatchings/draw/func_8001E460.s:28) and a second time by the pause screen func_80058408 (:43). Walks the 16-slot pool at D_GLOW_POOL and, per live record, emits one bundled draw-mode packet 0xE1000620 followed by up to sixteen POLY_G3 semi-transparent fanned from the record's projected centre, all chained into one bucket off D_OT_BASE"
+
+[[symbol]]
+name = "D_GLOW_POOL"
+addr = 0x8006E1F4
+note = "the glow-ring pool the renderer walks, 16 records of 0x14 bytes: +0x00 world X, +0x04 Y, +0x08 Z, +0x0C the primitive colour word, +0x10 packed {shape index, size, rotation phase, signed ordering-table bias}; a zero shape byte is a free slot and func_8002EC50 allocates the first one it finds (asm/mobyfunc.s:1894-1918)"
+
+[[symbol]]
+name = "F_TRACER_RIBBON"
+addr = 0x8002FB68
+kind = "function"
+note = "func_8002FB68 (asm/mobyfunc.s:2940-3181), the point-ring tracer ribbon: called by fDrawWorld func_8001E460 under mask bit 0x10 (asm/nonmatchings/draw/func_8001E460.s:32). Walks the 0x20-slot array at D_TRACER_RING, projects each live record's ring points into the scratchpad and appends one 13-word POLY_GT4 per consecutive pair, linked into a bucket off D_OT_BASE"
+
+[[symbol]]
+name = "F_TRACER_MESH"
+addr = 0x8002FEE0
+kind = "function"
+note = "func_8002FEE0 (asm/mobyfunc.s:3182-3418), the indexed tracer mesh: called eight times per tick by fDrawWorld func_8001E460 over the 0x14-byte descriptors at D_80070260 (asm/nonmatchings/draw/func_8001E460.s:45). Projects the descriptor's vertex list into the scratchpad as {screen XY, MAC3 and outcode} pairs and appends one 13-word POLY_GT4 per index entry; it also stores the highest ordering-table bucket it touched to D_OT_TOP, so its body must run exactly once"
+
+[[symbol]]
+name = "D_TRACER_RING"
+addr = 0x80070610
+note = "D_80070610, the tracer ribbon array (games/spyro-3/spyro-3/include/tracers.h types it as Tracer[0x20]): 0x6C bytes per record, +0x00 the live pointer, +0x04 a 16-entry circular buffer of packed unsigned XYZ halves, +0x64 packed {head index, point count, signed half-width byte}, +0x68 the colour-plus-command word the DPCS fade starts from"
