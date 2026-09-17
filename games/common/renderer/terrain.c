@@ -2535,22 +2535,48 @@ static int tsec_sphere_cull(double c1m, double c2m, double cbin, int r,
         || (32.0 * (fabs(vy) - t5) >= 17.0 * wy * (vz + t6));
 }
 
-/* Wide-aspect wedge fill inputs: the sector table, the draw's sector-binning
- * matrix and camera, and the half-width scales of the displayed frame (wx
- * carries the Hor+ factor, both carry the --fov scale). */
+/* Sector bounding-sphere frustum inputs: the sector table, the draw's
+ * sector-binning matrix and camera, and the half-width scales of the displayed
+ * frame (wx carries the Hor+ factor, both carry the --fov scale). NULL where
+ * the game layout names no sector-header sphere (radius_mask == 0). */
 typedef struct {
     uint32_t sectorPtr;
     int      M[3][3];
     double   camx, camy, camz;
     double   wx, wy;
-} tvis_wedge;
+} tvis_sphere;
+
+/* 1 when sector i's header bounding sphere passes the frustum test at the
+ * displayed half-widths. Header word 0 is centreX<<16 | centreY, word 1 is
+ * centreZ<<16 | flags | radius. */
+static int tvis_sphere_in(CPUState* cpu, const tvis_sphere* S, uint32_t i) {
+    uint32_t sp = rd(cpu, S->sectorPtr + i * 4);
+    if (!sp) return 0;
+    uint32_t w0 = rd(cpu, sp + 0x00), w1 = rd(cpu, sp + 0x04);
+    double cx = (double)(int)(w0 >> 16), cy = (double)(int)(w0 & 0xFFFFu),
+           cz = (double)(int)(w1 >> 16);
+    double c1m, c2m, cbin;
+    ngte_mac(S->M, S->camy - cy, S->camz - cz, cx - S->camx, &c1m, &c2m, &cbin);
+    return !tsec_sphere_cull(c1m, c2m, cbin, thdr_radius(w1), S->wx, S->wy);
+}
 
 static int s_vis_engage;   /* the BINCHECK window is open on this walk */
 static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int32_t group,
-                           const tvis_wedge* W) {
+                           const tvis_sphere* S) {
     if (sectorCnt > 1024) sectorCnt = 1024;
     int ws = s_view.extended;   /* Hor+ or a wider FOV: the 4:3 verdict is too narrow */
     if (s_visdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_VISDBG"); s_visdbg = (e && *e && *e != '0'); }
+    {   /* OPENPETE_TERRAIN_BINCHECK=<frame>: engagement window, the two
+         * presents from that frame. Every candidate-set mode reports the
+         * sector count it admitted on those presents. */
+        static int s_binchk = -2;
+        if (s_binchk == -2) {
+            const char* e = getenv("OPENPETE_TERRAIN_BINCHECK");
+            s_binchk = (e && *e) ? atoi(e) : 0;
+        }
+        s_vis_engage = (s_binchk && openpete_frame >= (unsigned)s_binchk
+                        && openpete_frame < (unsigned)s_binchk + 2u);
+    }
     {   /* OPENPETE_TERRAIN_ALLVIS=1: walk ALL sectors (bypass the visibility verdict /
          * occlusion groups) — A/B probe for view-dependent sector culling. */
         static int s_allvis = -1;
@@ -2558,8 +2584,38 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
         if (s_allvis) {
             int n = 0;
             for (uint32_t i = 0; i < sectorCnt && n < 1024; i++) out[n++] = (uint16_t)i;
+            if (s_vis_engage) {
+                fprintf(stderr, "[terrain-vis] frame=%u mode=allvis admitted=%d of %u\n",
+                        openpete_frame, n, sectorCnt);
+                s_vis_engage = 0;
+            }
             return n;
         }
+    }
+
+    /* --terrain-visibility frustum (default): the candidate set is every
+     * sector whose bounding sphere passes the frustum test at the displayed
+     * half-widths, independent of the game's visibility verdict and its
+     * occlusion groups, so geometry the game hides — sectors behind the walls
+     * of the room the camera sits in, sectors lying only in the side wedges of
+     * a frame wider than 4:3 — is drawn and the depth buffer decides what is
+     * seen. A deliberate departure from the original presentation. The
+     * verdict is not read in this mode; the admitted set is culled downstream
+     * exactly as any other sector (per-sector tier verdicts, the retained GPU
+     * cache, the native occlusion pre-pass). `--terrain-visibility game` is
+     * the faithful path. */
+    if (S && openpete_native_get_terrain_visibility() == OPENPETE_TERRAIN_VIS_FRUSTUM) {
+        int n = 0;
+        for (uint32_t i = 0; i < sectorCnt && n < 1024; i++) {
+            if (tvis_sphere_in(cpu, S, i)) out[n++] = (uint16_t)i;
+        }
+        if (s_vis_engage) {
+            fprintf(stderr, "[terrain-vis] frame=%u mode=frustum admitted=%d of %u wx=%.4f wy=%.4f\n",
+                    openpete_frame, n, sectorCnt, S->wx, S->wy);
+            s_vis_engage = 0;
+        }
+        if (s_visdbg) terrain_visdbg(cpu, sectorCnt, group, 0, out, n, n, ws);
+        return n;
     }
 
     /* The occlusion-group candidate list (Spyro 1: a table of 0xFF-terminated
@@ -2577,13 +2633,7 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
      * OPENPETE_TERRAIN_BINCHECK: the sectors the verdict drops out of the wide
      * candidate set on this walk. */
     if (ws && game_layout.env.vis_aspect_independent) {
-        static int s_binchk = -2;
-        if (s_binchk == -2) {
-            const char* e = getenv("OPENPETE_TERRAIN_BINCHECK");
-            s_binchk = (e && *e) ? atoi(e) : 0;
-        }
-        if (s_binchk && openpete_frame >= (unsigned)s_binchk
-            && openpete_frame < (unsigned)s_binchk + 2u) {
+        if (s_vis_engage) {
             int cand = 0, dropped = 0;
             if (list) {
                 for (uint32_t k = 0; k < 2048; k++) {
@@ -2599,7 +2649,6 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
                     if (!tvis_visible(cpu, i)) dropped++;
                 }
             }
-            s_vis_engage = 1;
             fprintf(stderr, "[vis-aspect-indep] frame=%u group=%d wideCandidates=%d "
                             "dropped=%d kept=%d\n",
                     openpete_frame, group, cand, dropped, cand - dropped);
@@ -2618,6 +2667,11 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
         } else {
             for (uint32_t i = 0; i < sectorCnt && n < 1024; i++) out[n++] = (uint16_t)i;
         }
+        if (s_vis_engage) {
+            fprintf(stderr, "[terrain-vis] frame=%u mode=game(occ-group) admitted=%d of %u\n",
+                    openpete_frame, n, sectorCnt);
+            s_vis_engage = 0;
+        }
         if (s_visdbg) terrain_visdbg(cpu, sectorCnt, group, occCnt, out, n, n, ws);
         return n;
     }
@@ -2627,39 +2681,9 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
     for (uint32_t i = 0; i < sectorCnt; i++) {
         if (tvis_visible(cpu, i)) out[n++] = (uint16_t)i;
     }
-    int core = n, wedge = 0, straddle = 0;
-    uint16_t wlist[64]; int wn = 0;   /* census: the wedge-admitted indices */
-    /* Wide-aspect wedge fill. The verdict is the game's candidate set for the
-     * 4:3 frame, so a sector lying only in a side wedge of a wider frame can
-     * be marked hidden and the wedge then draws the backdrop. Admit, on top of
-     * the verdict, every sector the draw's own sphere-frustum test rejects at
-     * the 4:3 half-width and admits at the displayed half-width. A sphere the
-     * 4:3 test admits is left to the verdict, so the 4:3 core of the frame is
-     * unchanged; a sphere the 4:3 test rejects encloses no geometry inside the
-     * 4:3 frame, so an admitted sector can only draw in the wedges. */
-    if (W) {
-        for (uint32_t i = 0; i < sectorCnt && n < 1024; i++) {
-            if (tvis_visible(cpu, i)) continue;
-            uint32_t sp = rd(cpu, W->sectorPtr + i * 4);
-            if (!sp) continue;
-            uint32_t w0 = rd(cpu, sp + 0x00), w1 = rd(cpu, sp + 0x04);
-            double cx = (double)(int)(w0 >> 16), cy = (double)(int)(w0 & 0xFFFFu),
-                   cz = (double)(int)(w1 >> 16);
-            double c1m, c2m, cbin;
-            ngte_mac(W->M, W->camy - cy, W->camz - cz, cx - W->camx, &c1m, &c2m, &cbin);
-            int r = thdr_radius(w1);
-            if (!tsec_sphere_cull(c1m, c2m, cbin, r, 1.0, 1.0)) { straddle++; continue; }
-            if (tsec_sphere_cull(c1m, c2m, cbin, r, W->wx, W->wy)) continue;
-            out[n++] = (uint16_t)i;
-            wedge++;
-            if (s_vis_engage && wn < 64) wlist[wn++] = (uint16_t)i;
-        }
-    }
     if (s_vis_engage) {
-        fprintf(stderr, "[vis-aspect-indep] frame=%u core=%d wedge=%d straddle=%d wx=%.4f",
-                openpete_frame, core, wedge, straddle, W ? W->wx : 1.0);
-        for (int k = 0; k < wn; k++) fprintf(stderr, " %u", wlist[k]);
-        fprintf(stderr, "\n");
+        fprintf(stderr, "[terrain-vis] frame=%u mode=game admitted=%d of %u\n",
+                openpete_frame, n, sectorCnt);
         s_vis_engage = 0;
     }
     if (s_visdbg) {   /* validate the invariant without altering the 4:3 render set */
@@ -5180,22 +5204,25 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     /* Visible-sector index set: canonical 4:3 verdict (D_800771C8) at native
      * aspect; occlusion-group candidate set in widescreen (terrain_vislist). */
     static uint16_t visidx[1024];
-    /* Wide-aspect wedge fill: armed only for a game whose visibility verdict
-     * carries no aspect term (env.vis_aspect_independent), where the verdict
-     * is the 4:3 candidate set and the wedges outside it are unpopulated. */
-    tvis_wedge wedge, *wedgep = NULL;
+    /* Sector bounding-sphere frustum inputs, at the half-widths of the
+     * displayed frame: 1.0 is the 4:3 frame the draw itself tests, wider under
+     * Hor+ or a --fov above the stock angle. Built for every game whose layout
+     * names the sector-header sphere (radius_mask); the frustum candidate set
+     * and the draw's own sphere cull read the same widths. */
+    tvis_sphere sph, *sphp = NULL;
     double cull_wx = 1.0, cull_wy = 1.0;
-    if (s_view.extended && game_layout.env.vis_aspect_independent
-        && game_layout.terrain.sector_cull == TERRAIN_SECTOR_CULL_SPHERE) {
+    if (s_view.extended) {
         cull_wx = (double)s_view.F / s_view.s;   /* Hor+ widens X only; --fov both */
         cull_wy = 1.0 / s_view.s;
-        wedge.sectorPtr = sectorPtr;
-        memcpy(wedge.M, Mbin, sizeof(wedge.M));
-        wedge.camx = camx; wedge.camy = camy; wedge.camz = camz;
-        wedge.wx = cull_wx; wedge.wy = cull_wy;
-        wedgep = &wedge;
     }
-    int nvis = terrain_vislist(cpu, sectorCnt, visidx, occGroup, wedgep);
+    if (game_layout.terrain.radius_mask) {
+        sph.sectorPtr = sectorPtr;
+        memcpy(sph.M, Mbin, sizeof(sph.M));
+        sph.camx = camx; sph.camy = camy; sph.camz = camz;
+        sph.wx = cull_wx; sph.wy = cull_wy;
+        sphp = &sph;
+    }
+    int nvis = terrain_vislist(cpu, sectorCnt, visidx, occGroup, sphp);
     s_tsc_stamp++;   /* LRU epoch: everything touched this walk outlives strangers */
     /* OPENPETE_TERRAIN_TIMERS=1: per-SECTOR walk-cost census (~1/s). Attributes
      * the terrain feeder's µs to individual sectors (accounted at the top of

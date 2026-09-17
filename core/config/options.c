@@ -436,6 +436,12 @@ static void print_help(const char* display_name, const char* argv0,
         "  --lod MODE                 sector level-of-detail: original (default = authentic PSX LOD band) |\n"
         "                             extended (draw every visible sector at high-poly, out to the cull\n"
         "                             distance and beyond). Native renderer only. (--no-lod = extended.)\n"
+        "  --terrain-visibility MODE  terrain candidate set: frustum (default) = every sector whose\n"
+        "                             bounding sphere is inside the displayed frame, hidden or not, so\n"
+        "                             the geometry the original hides (inside-geometry views, the side\n"
+        "                             wedges wider than 4:3) draws and the depth buffer decides what is\n"
+        "                             seen - a departure from the original presentation | game = the\n"
+        "                             game's own visibility verdict (faithful). Native renderer only.\n"
         "  --terrain-cache 0|1        retained-terrain GPU cache: static sectors render from persistent\n"
         "                             GPU meshes with the per-face verdicts mirrored in the vertex\n"
         "                             stage (default 1; display-only; needs a hardware GPU with fp64,\n"
@@ -745,6 +751,13 @@ void openpete_options_init(openpete_options_t* opts) {
     { const char* e = getenv("OPENPETE_LOAD_DELAY");
       opts->load_delay = (e && *e) ? atoi(e) : -1; }
     opts->lod                 = OPENPETE_LOD_ORIGINAL;  /* authentic PSX LOD band; --lod extended (a.k.a. --no-lod) for full detail at any distance */
+    /* --terrain-visibility: every sector inside the displayed frustum, hidden
+     * or not (the departure), unless the env spelling names the faithful
+     * path. A later --terrain-visibility on the command line wins. */
+    { const char* e = getenv("OPENPETE_TERRAIN_VISIBILITY");
+      opts->terrain_visibility = (e && *e && strcmp(e, "game") == 0)
+                                 ? OPENPETE_TERRAIN_VIS_GAME
+                                 : OPENPETE_TERRAIN_VIS_FRUSTUM; }
 }
 
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
@@ -1032,6 +1045,17 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 opts->lod = OPENPETE_LOD_EXTENDED;
             } else {
                 fprintf(stderr, "openpete: --lod expects original|extended, got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            i++;
+        } else if (strcmp(a, "--terrain-visibility") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            if (strcmp(v, "game") == 0) {
+                opts->terrain_visibility = OPENPETE_TERRAIN_VIS_GAME;
+            } else if (strcmp(v, "frustum") == 0) {
+                opts->terrain_visibility = OPENPETE_TERRAIN_VIS_FRUSTUM;
+            } else {
+                fprintf(stderr, "openpete: --terrain-visibility expects game|frustum, got: %s\n", v);
                 return OPENPETE_EXIT_SETUP_ERROR;
             }
             i++;

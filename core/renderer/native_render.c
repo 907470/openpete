@@ -829,6 +829,9 @@ static int s_cur_presnap = 0;
  * hardware rasterizer produced. */
 static int s_raster_mult = 0;
 static int s_dither = 0;       /* --dither: PS1 15-bit colour + 4x4 hardware dither (engine SCENE pass) */
+/* --terrain-visibility: the terrain feeder's candidate-set policy
+ * (openpete_terrain_visibility_t), seeded at init and moved by the setter. */
+static int s_terrain_vis = OPENPETE_TERRAIN_VIS_FRUSTUM;
 /* --texture-mapping (0 = perspective, 1 = affine): the live mode plus the
  * queued one. The mode is a vertex spec constant baked into every scene
  * pipeline, so a change cannot apply mid-frame like the knobs above — the
@@ -1962,6 +1965,10 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_raster_mult = (opts->raster_quantize >= 0) ? opts->raster_quantize
                  : (s_vertex_snap ? 1 : 0);
     s_dither = opts->dither ? 1 : 0;   /* PS1 15-bit colour + hardware dither */
+    /* --terrain-visibility: the terrain feeder's candidate set (frustum =
+     * every sector inside the displayed frame, hidden or not). */
+    s_terrain_vis = (opts->terrain_visibility == OPENPETE_TERRAIN_VIS_GAME)
+                    ? OPENPETE_TERRAIN_VIS_GAME : OPENPETE_TERRAIN_VIS_FRUSTUM;
 
     /* Scene depth encoding (OPENPETE_DEPTH_AFFINE): drives the scene shaders'
      * vertex spec-constant 0. Must be set BEFORE the scene pipelines are built
@@ -7791,6 +7798,19 @@ void openpete_native_set_dither(int on) {
 }
 
 int openpete_native_get_dither(void) { return s_dither; }
+
+/* --terrain-visibility live toggle: the terrain feeder reads the mode at the
+ * top of every sector walk, so the flag alone is the whole switch. */
+void openpete_native_set_terrain_visibility(int mode) {
+    s_terrain_vis = (mode == OPENPETE_TERRAIN_VIS_GAME) ? OPENPETE_TERRAIN_VIS_GAME
+                                                        : OPENPETE_TERRAIN_VIS_FRUSTUM;
+    OPL_INFO_F("native", "terrain-visibility -> %s",
+               s_terrain_vis == OPENPETE_TERRAIN_VIS_GAME
+               ? "game (the game's visibility verdict)"
+               : "frustum (every sector inside the displayed frame)");
+}
+
+int openpete_native_get_terrain_visibility(void) { return s_terrain_vis; }
 
 /* --texture-mapping live toggle: the mode is a vertex spec constant baked
  * into every scene pipeline, so the setter only QUEUES the change; it takes

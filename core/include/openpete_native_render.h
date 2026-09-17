@@ -234,6 +234,15 @@ int  openpete_native_get_texture_mapping(void);
 void openpete_native_set_notex(int on);
 int  openpete_native_get_notex(void);
 
+/* Terrain candidate-set policy (openpete_terrain_visibility_t): GAME = the
+ * game's own visibility verdict, FRUSTUM = every sector whose bounding sphere
+ * is inside the displayed frame. Seeded from --terrain-visibility at init; the
+ * terrain feeder reads it per walk, so the setter takes effect on the next
+ * present. Display-only: the feeder reads the game's visibility flags and
+ * never writes them. */
+void openpete_native_set_terrain_visibility(int mode);
+int  openpete_native_get_terrain_visibility(void);
+
 /* One vertex of game-supplied FPS-overlay geometry, in a resolution-independent
  * overlay space: x/y are in units of WINDOW HEIGHT (origin = top-left, +y down,
  * so x and y share one scale → digits stay square at any aspect); z is a depth

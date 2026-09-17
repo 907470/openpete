@@ -269,6 +269,17 @@ static int dither_set(knob_desc_t *k, double v) {
 }
 
 static const char *const k_lod_names[] = { "original", "extended" };
+static const char *const k_tervis_names[] = { "game", "frustum" };
+static double tervis_get(const knob_desc_t *k) {
+    (void)k;
+    return openpete_native_get_terrain_visibility() == OPENPETE_TERRAIN_VIS_FRUSTUM ? 1.0 : 0.0;
+}
+static int tervis_set(knob_desc_t *k, double v) {
+    (void)k;
+    openpete_native_set_terrain_visibility(v != 0.0 ? OPENPETE_TERRAIN_VIS_FRUSTUM
+                                                    : OPENPETE_TERRAIN_VIS_GAME);
+    return 0;
+}
 static double lod_get(const knob_desc_t *k) { (void)k; return openpete_no_lod ? 1.0 : 0.0; }
 static int lod_set(knob_desc_t *k, double v) {
     (void)k;
@@ -654,6 +665,20 @@ static const knob_desc_t g_builtin[] = {
       "switch. Boot-latched; display-only.",
       KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       tercache_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "terrain_visibility", "Terrain visibility", "Display", "--terrain-visibility",
+      "OPENPETE_TERRAIN_VISIBILITY",
+      "Which terrain sectors are candidates to draw. frustum (default) takes "
+      "every sector whose bounding sphere is inside the displayed frame, "
+      "hidden or not, so the geometry the original hides - the world outside "
+      "the room the camera sits in, the side wedges of a frame wider than "
+      "4:3 - draws and the depth buffer decides what is seen; a departure "
+      "from the original presentation. game takes the game's own visibility "
+      "verdict (faithful). Either way the frustum test, the per-sector tier "
+      "verdicts, the retained GPU cache and the occlusion pre-pass still cull. "
+      "Display-only.",
+      KNOB_ENUM, KNOB_LIVE, ENUM_ROW(k_tervis_names), 0, 0,
+      tervis_get, tervis_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     ENVROW_LATCHED("TERRAIN_HDFOLD", "Display", "1",
       "HD texture-replacement fold (default on): with a texture pack active, "
@@ -1464,6 +1489,8 @@ void knob_registry_init(const struct openpete_options *opts) {
             k->stored_num = (opts->texture_mapping == OPENPETE_TEXTURE_MAPPING_AFFINE);
         } else if (!strcmp(k->id, "lod")) {
             k->stored_num = (opts->lod != OPENPETE_LOD_ORIGINAL);
+        } else if (!strcmp(k->id, "terrain_visibility")) {
+            k->stored_num = (opts->terrain_visibility != OPENPETE_TERRAIN_VIS_GAME);
         } else if (!strcmp(k->id, "fog")) {
             k->stored_num = openpete_fog_enabled() ? 1 : 0;
         } else if (!strcmp(k->id, "fog_scale")) {

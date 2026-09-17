@@ -105,6 +105,23 @@ typedef enum {
     OPENPETE_LOD_EXTENDED,      /* full detail at any distance (was --no-lod) */
 } openpete_lod_mode_t;
 
+/* Terrain candidate-set policy (`--terrain-visibility game|frustum`). GAME is
+ * the faithful path: the sector set the game's own visibility pass and
+ * occlusion groups produce, which hides everything outside the room the camera
+ * sits in and everything outside the 4:3 frame. FRUSTUM (default) admits every
+ * sector whose bounding sphere passes the frustum test at the displayed
+ * half-widths, hidden or not, and lets the depth buffer decide what is seen: a
+ * deliberate departure from the original presentation that fills the side
+ * wedges of a frame wider than 4:3 and draws the geometry the original hides
+ * from an inside-geometry view. The admitted set is still culled by the
+ * frustum test, the per-sector tier verdicts, the retained GPU cache and the
+ * native occlusion pre-pass. Display-only: the visibility flags are read, never
+ * written. Native renderer only. */
+typedef enum {
+    OPENPETE_TERRAIN_VIS_GAME = 0,  /* the game's visibility verdict */
+    OPENPETE_TERRAIN_VIS_FRUSTUM,   /* default: every sector inside the frustum */
+} openpete_terrain_visibility_t;
+
 /* All command-line options live here. Per-game main.cpp may override
  * `display_name` before passing to `openpete_run`. The struct tag exists so
  * headers can forward-declare it without pulling this whole file in. */
@@ -184,6 +201,11 @@ typedef struct openpete_options {
      * `--no-lod` is a deprecated alias for `--lod extended`.
      * See notes/plans/openpete-disable-lods.md. */
     openpete_lod_mode_t lod;
+
+    /* --terrain-visibility game|frustum: the terrain candidate set (see
+     * openpete_terrain_visibility_t above). Default FRUSTUM. Set from
+     * OPENPETE_TERRAIN_VISIBILITY when no flag is given. */
+    openpete_terrain_visibility_t terrain_visibility;
 
     /* Fog-distance multiplier (`--fog-scale N`). Scales every channel of the
      * terrain fog model together (DPCS vertex curve, CLUT-row palette ladder,
