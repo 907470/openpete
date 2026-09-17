@@ -25,6 +25,11 @@ const game_layout_t game_layout = {
         .tex_count       = G_ENVIRONMENT + offsetof(Environment, m_TextureCount),
         .lod_dist        = G_ENVIRONMENT + offsetof(Environment, m_LodDistance),
         .cull_dist       = G_ENVIRONMENT + offsetof(Environment, m_CullingDistance),
+        .vis_aspect_independent = 0u,               /* the verdict byte is stored inside the draw's
+                                                     * sector loop after the MVMVA sphere-frustum cull
+                                                     * (r_environment.s:151-185), so it carries the 4:3
+                                                     * frustum; the aspect-independent superset is the
+                                                     * occlusion-group sublist. */
     },
     .env_anim = {
         .form    = ENV_ANIM_LISTS,

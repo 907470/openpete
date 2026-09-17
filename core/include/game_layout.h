@@ -81,6 +81,13 @@ typedef struct game_layout {
         uint32_t tex_count;
         uint32_t lod_dist;          /* LP/HP LOD boundary */
         uint32_t cull_dist;         /* LP far draw distance */
+
+        /* 1: the game's per-sector visibility verdict carries no aspect,
+         * frustum or view-direction term, so it is already the candidate set
+         * at any aspect and the widescreen widening is skipped. 0: the verdict
+         * is computed inside the draw's own frustum cull, and widescreen falls
+         * back to the occlusion-group sublist. */
+        uint32_t vis_aspect_independent;
     } env;
 
     /* The environment animations. `form` picks which registry the shared

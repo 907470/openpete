@@ -2474,6 +2474,41 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
     uint32_t list = (group >= 0 && (uint32_t)group < occCnt && occGroups)
                     ? rd(cpu, occGroups + (uint32_t)group * 4) : 0;
 
+    /* A game whose verdict carries no aspect term is already the wide
+     * candidate set (env.vis_aspect_independent): widening it would re-admit
+     * the sectors the game's own visibility pass hides. Engagement, under
+     * OPENPETE_TERRAIN_BINCHECK: the sectors the verdict drops out of the wide
+     * candidate set on this walk. */
+    if (ws && game_layout.env.vis_aspect_independent) {
+        static int s_binchk = -2;
+        if (s_binchk == -2) {
+            const char* e = getenv("OPENPETE_TERRAIN_BINCHECK");
+            s_binchk = (e && *e) ? atoi(e) : 0;
+        }
+        if (s_binchk && openpete_frame >= (unsigned)s_binchk
+            && openpete_frame < (unsigned)s_binchk + 2u) {
+            int cand = 0, dropped = 0;
+            if (list) {
+                for (uint32_t k = 0; k < 2048; k++) {
+                    uint8_t idx = cpu->read_byte(list + k);
+                    if (idx == 0xFF) break;
+                    if (idx >= sectorCnt) continue;
+                    cand++;
+                    if (!tvis_visible(cpu, idx)) dropped++;
+                }
+            } else {
+                for (uint32_t i = 0; i < sectorCnt; i++) {
+                    cand++;
+                    if (!tvis_visible(cpu, i)) dropped++;
+                }
+            }
+            fprintf(stderr, "[vis-aspect-indep] frame=%u group=%d wideCandidates=%d "
+                            "dropped=%d kept=%d\n",
+                    openpete_frame, group, cand, dropped, cand - dropped);
+        }
+        ws = 0;
+    }
+
     if (ws) {
         int n = 0;
         if (list) {

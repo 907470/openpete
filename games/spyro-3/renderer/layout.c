@@ -34,6 +34,15 @@ const game_layout_t game_layout = {
                                                      * LP/HP with constants (terrain.lod_dist_default) */
         .cull_dist       = G_ENVIRONMENT + 0x2Cu,   /* 0x2C000; the LP far cull, (v >> 7) - 1 against
                                                      * the LP OT key */
+        .vis_aspect_independent = 1u,               /* the verdict comes from the pre-pass
+                                                     * func_8002D0D8 (mobyfunc.s:11-150), a PVS lookup
+                                                     * keyed on the camera position alone: it reads
+                                                     * g_Camera+0x34/0x38/0x3C shifted right by 11 and
+                                                     * walks the byte-packed octree at
+                                                     * g_Environment+0x08, with no matrix, frustum,
+                                                     * aspect or FOV term. The draw's own sphere cull
+                                                     * (environment.s:800225A0-80022640) never writes
+                                                     * this byte. */
     },
     /* The environment animations live in one inline-word block reached through
      * the word at g_Environment+0x1C, not in Spyro 1's descriptor-pointer
