@@ -248,4 +248,53 @@ double ngte_nclip(double ax, double ay, double bx, double by,
  * `label`. Verify-mode diagnostic; writes to stderr. */
 void ngte_dump_words(CPUState* cpu, const char* label, uint32_t base, int nwords);
 
+/* ---- ordering-table polybuf walk ----------------------------------------
+ * A polybuf is a run of primitives laid out back to front. Each primitive
+ * opens with its ordering-table tag: the tag's high byte is the primitive's
+ * length in words, so the next primitive starts ((w0 >> 24) + 1) * 4 bytes
+ * on, and the low 24 bits are the OT link. Word 1's high byte is the GPU
+ * command code; codes 0x20..0x3F are polygons, with bit 4 gouraud, bit 3
+ * quad, bit 2 textured and bit 1 semi-transparent, and the vertex words
+ * follow in that order. A code outside that range (tiles, lines, draw-mode
+ * mini-packets) decodes to nv = 0 and carries only its raw words.
+ *
+ * ngte_walk_prims is the one walk. Every bound a feeder disagrees on rides
+ * in the policy; the decoded primitive goes to the feeder's sink, which
+ * stores it in the feeder's own array, so no feeder's stored form changes.
+ */
+#define NGTE_PRIM_RAW_MAX 20
+
+typedef struct {
+    uint8_t  code;          /* GPU prim code byte (word[1] >> 24) */
+    uint8_t  taglen;        /* OT tag length (word[0] >> 24) */
+    int      nv;            /* 3 or 4 for a polygon, 0 otherwise */
+    float    x[4], y[4];
+    uint32_t rgb[4];
+    int      u[4], v[4];
+    int      clut, tpage;
+    int      textured, gouraud, quad, stp;
+    uint32_t raw[NGTE_PRIM_RAW_MAX];  /* words past nraw read zero */
+    int      nraw;          /* raw words carried, capped by raw_words_max */
+} ngte_prim;
+
+/* Stores one primitive. Returns nonzero when it was stored: a sink whose
+ * array is full returns 0, and the walk then leaves it out of the counts it
+ * keeps per stored primitive. */
+typedef int (*ngte_prim_sink)(void* ctx, const ngte_prim* prim);
+
+typedef struct {
+    uint32_t  tag_len_max;   /* a longer tag ends the walk as corrupt */
+    int       raw_words_max; /* raw words the sink receives, 0 for none */
+    int       guard;         /* primitives walked before the walk gives up */
+    int       polygons_only; /* 1 = the sink sees polygons only */
+    uint32_t* code_hist;     /* [256] by code byte, or NULL */
+    uint32_t* tag_hist;      /* [256] by tag length, or NULL */
+    uint32_t* total;         /* primitive counter, or NULL */
+    int       count_all;     /* 1 = count every primitive walked, 0 = only
+                              * the ones the sink stored */
+} ngte_walk_policy;
+
+void ngte_walk_prims(CPUState* cpu, uint32_t start, uint32_t end,
+                     const ngte_walk_policy* pol, ngte_prim_sink sink, void* ctx);
+
 #endif /* OPENPETE_NATIVE_GTE_H */

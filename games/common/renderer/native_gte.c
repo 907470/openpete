@@ -10,6 +10,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <math.h>
 
 ngte_census_t ngte_census;
@@ -273,4 +274,63 @@ void ngte_dump_words(CPUState* cpu, const char* label, uint32_t base, int nwords
         if ((i & 7) == 7 && i != nwords - 1) fprintf(stderr, "\n   ");
     }
     fprintf(stderr, "\n");
+}
+
+/* ---- ordering-table polybuf walk ---------------------------------------- */
+
+void ngte_walk_prims(CPUState* cpu, uint32_t start, uint32_t end,
+                     const ngte_walk_policy* pol, ngte_prim_sink sink, void* ctx) {
+    ngte_prim t;
+    uint32_t p = start;
+    int guard = 0;
+    while (p < end && guard++ < pol->guard) {
+        uint32_t w0 = cpu->read_word(p);
+        uint32_t taglen = (w0 >> 24) & 0xFF;
+        if (taglen == 0 || taglen > pol->tag_len_max) break;  /* not a tag, or corrupt */
+        uint32_t stride = (taglen + 1) * 4;
+        uint8_t code = (uint8_t)(cpu->read_word(p + 4) >> 24);
+        int polygon = (code & 0xE0) == 0x20;
+        if (pol->count_all) {
+            if (pol->code_hist) pol->code_hist[code]++;
+            if (pol->tag_hist)  pol->tag_hist[taglen]++;
+            if (pol->total)     (*pol->total)++;
+        }
+        if (!pol->polygons_only || polygon) {
+            int words = (int)(stride / 4);
+            if (words > NGTE_PRIM_RAW_MAX) words = NGTE_PRIM_RAW_MAX;
+            memset(&t, 0, sizeof(t));
+            t.code = code;
+            t.taglen = (uint8_t)taglen;
+            for (int i = 0; i < words; i++) t.raw[i] = cpu->read_word(p + (uint32_t)i * 4);
+            t.nraw = (pol->raw_words_max < words) ? pol->raw_words_max : words;
+            if (polygon) {
+                t.gouraud  = (code & 0x10) != 0;
+                t.quad     = (code & 0x08) != 0;
+                t.textured = (code & 0x04) != 0;
+                t.stp      = (code & 0x02) != 0;
+                t.nv = t.quad ? 4 : 3;
+                uint32_t rgb0 = t.raw[1] & 0xFFFFFF;
+                int c = 2;
+                for (int k = 0; k < t.nv; k++) {
+                    t.rgb[k] = (t.gouraud && k > 0) ? (t.raw[c++] & 0xFFFFFF) : rgb0;
+                    uint32_t xy = t.raw[c++];
+                    t.x[k] = (float)(int16_t)(xy & 0xFFFF);
+                    t.y[k] = (float)(int16_t)(xy >> 16);
+                    if (t.textured) {
+                        uint32_t uv = t.raw[c++];
+                        t.u[k] = (int)(uv & 0xFF);
+                        t.v[k] = (int)((uv >> 8) & 0xFF);
+                        if (k == 0)      t.clut  = (int)(uv >> 16);
+                        else if (k == 1) t.tpage = (int)(uv >> 16);
+                    }
+                }
+            }
+            if (sink(ctx, &t) && !pol->count_all) {
+                if (pol->code_hist) pol->code_hist[code]++;
+                if (pol->tag_hist)  pol->tag_hist[taglen]++;
+                if (pol->total)     (*pol->total)++;
+            }
+        }
+        p += stride;
+    }
 }

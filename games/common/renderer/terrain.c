@@ -156,57 +156,40 @@ typedef struct {
  * histogram counts every prim. */
 #define MAX_PRIMS 8192
 static prim_t s_gte[MAX_PRIMS]; static int s_gte_n;
-static int    s_code_hist[256];
-static int    s_prim_total;
+static uint32_t s_code_hist[256];
+static uint32_t s_prim_total;
 
-/* Walk the polybuf [start,end) by OT tag length (stride=((w0>>24)+1)*4); decode
- * each prim by its code byte (word[1]>>24) with the general PSX polygon decode
- * (bit4 gouraud / bit3 quad / bit2 textured). Same scheme moby/Spyro/flame use. */
+/* Store one walked polygon into the bounded capture sample. */
+static int terrain_prim_sink(void* ctx, const ngte_prim* s) {
+    (void)ctx;
+    if (s_gte_n >= MAX_PRIMS) return 0;
+    prim_t* t = &s_gte[s_gte_n];
+    memset(t, 0, sizeof(*t));
+    t->code = s->code; t->len = s->taglen; t->nv = s->nv;
+    for (int k = 0; k < 4; k++) {
+        t->x[k] = s->x[k]; t->y[k] = s->y[k]; t->rgb[k] = s->rgb[k];
+        t->u[k] = s->u[k]; t->v[k] = s->v[k];
+    }
+    t->clut = s->clut; t->tpage = s->tpage;
+    t->textured = s->textured; t->gouraud = s->gouraud; t->quad = s->quad;
+    s_gte_n++;
+    return 1;
+}
+
+/* Walk the polybuf [start, end). The whole world passes through here, so the
+ * guard is eight times the sample bound and the histogram and the total count
+ * every primitive walked, not only the sampled ones. */
 static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     OP_PROF_ACCUM_SCOPE("terrain.capture");
     s_gte_n = 0;
     s_prim_total = 0;
     memset(s_code_hist, 0, sizeof(s_code_hist));
-    uint32_t p = start;
-    int guard = 0;
-    while (p < end && guard++ < (MAX_PRIMS * 8)) {
-        uint32_t w0  = cpu->read_word(p);
-        uint32_t len = (w0 >> 24) & 0xFF;
-        if (len == 0 || len > 24) break;          /* not a tag / corrupt — stop */
-        uint32_t stride = (len + 1) * 4;
-        uint8_t  code = (uint8_t)(cpu->read_word(p + 4) >> 24);
-        s_code_hist[code]++;
-        s_prim_total++;
-        if (s_gte_n < MAX_PRIMS && (code & 0xE0) == 0x20) {
-            uint32_t raw[20];
-            int nraw = (int)(stride / 4); if (nraw > 20) nraw = 20;
-            for (int i = 0; i < nraw; i++) raw[i] = cpu->read_word(p + (uint32_t)i * 4);
-            prim_t* t = &s_gte[s_gte_n];
-            memset(t, 0, sizeof(*t));
-            t->code = code; t->len = (uint8_t)len;
-            int gouraud = (code & 0x10) != 0;
-            int quad    = (code & 0x08) != 0;
-            int tex     = (code & 0x04) != 0;
-            t->gouraud = gouraud; t->textured = tex; t->quad = quad;
-            t->nv = quad ? 4 : 3;
-            uint32_t rgb0 = raw[1] & 0xFFFFFF;
-            int c = 2;
-            for (int k = 0; k < t->nv; k++) {
-                t->rgb[k] = (gouraud && k > 0) ? (raw[c++] & 0xFFFFFF) : rgb0;
-                uint32_t xy = raw[c++];
-                t->x[k] = (float)(int16_t)(xy & 0xFFFF);
-                t->y[k] = (float)(int16_t)(xy >> 16);
-                if (tex) {
-                    uint32_t uv = raw[c++];
-                    t->u[k] = (int)(uv & 0xFF); t->v[k] = (int)((uv >> 8) & 0xFF);
-                    if (k == 0)      t->clut  = (int)(uv >> 16);
-                    else if (k == 1) t->tpage = (int)(uv >> 16);
-                }
-            }
-            s_gte_n++;
-        }
-        p += stride;
-    }
+    const ngte_walk_policy pol = {
+        .tag_len_max = 24, .raw_words_max = 0, .guard = MAX_PRIMS * 8,
+        .polygons_only = 1, .code_hist = s_code_hist, .tag_hist = NULL,
+        .total = &s_prim_total, .count_all = 1,
+    };
+    ngte_walk_prims(cpu, start, end, &pol, terrain_prim_sink, NULL);
 }
 
 /* ---- live gamestate decode (validates the format map vs real data) -------- */
@@ -229,12 +212,12 @@ static void terrain_dump(CPUState* cpu) {
     fprintf(stderr,
         "[terrain] frame=%u  sectors=%u occGroups=%u texCnt=%u  LQtex=%08X HQtex=%08X\n"
         "          lodDist=%X cullDist=%X  cam=(%d,%d,%d) cam/16=(%d,%d,%d)\n"
-        "          prims: total=%d decoded=%d  codes:",
+        "          prims: total=%u decoded=%d  codes:",
         openpete_frame, sectorCnt, occCnt, texCnt, lqTex, hqTex,
         lodDist, cullDist, camX, camY, camZ, camX >> 4, camY >> 4, camZ >> 4,
         s_prim_total, s_gte_n);
     for (int i = 0; i < 256; i++)
-        if (s_code_hist[i]) fprintf(stderr, " %02X:%d", i, s_code_hist[i]);
+        if (s_code_hist[i]) fprintf(stderr, " %02X:%u", i, s_code_hist[i]);
     fprintf(stderr, "\n");
 
     /* Decode the first few VISIBLE sectors (D_800771C8[i]==0xFF) to confirm the
@@ -5940,7 +5923,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * (untextured gouraud), 0x34/0x3C = HP (textured gouraud). */
     if (s_fardbg_active) {
         fprintf(stderr, "[fardbg-hdr] frame=%u walk=%d sub=%d alpha=%.4f occl=%ld gridage=%d "
-                        "prims=%d sampled=%d fogRefBase=%d cullS2=%d cullRaw=0x%X\n",
+                        "prims=%u sampled=%d fogRefBase=%d cullS2=%d cullRaw=0x%X\n",
                 openpete_frame, s_fardbg_walk, s_vanim_sub,
                 (s_vanim_sub && s_vanim_on) ? s_vanim_alpha : 1.0,
                 s_tocc_culled - s_fardbg_occl0, openpete_native_occl_grid_age(),
@@ -5948,7 +5931,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                 (unsigned)tenv_rd(cpu, game_layout.env.cull_dist));
         for (int c = 0; c < 256; c++)
             if (s_code_hist[c])
-                fprintf(stderr, "[fardbg-hist] code=%02X n=%d\n", c, s_code_hist[c]);
+                fprintf(stderr, "[fardbg-hist] code=%02X n=%u\n", c, s_code_hist[c]);
         for (int p = 0; p < s_gte_n && !s_fardbg_lean; p++) {
             prim_t* g = &s_gte[p];
             fprintf(stderr, "[fardbg-prim] code=%02X n=%d", g->code, g->nv);

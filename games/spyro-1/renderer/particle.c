@@ -76,57 +76,43 @@ static prim_t s_prim[MAX_PRIMS]; static int s_prim_n;
  * calls, so reading it AFTER the .s runs gets the wrong (other) buffer. The
  * hook stashes the pointer the .s actually walked at hook-entry. */
 static uint32_t s_part_pool;
-static int s_code_hist[256];     /* keyed on the GPU code byte (word[+4]>>24) */
-static int s_tag_hist[256];      /* keyed on the OT tag length (word[+0]>>24) */
+static uint32_t s_code_hist[256];  /* keyed on the GPU code byte (word[+4]>>24) */
+static uint32_t s_tag_hist[256];   /* keyed on the OT tag length (word[+0]>>24) */
 
 static int s16(int v) { return (int)(int16_t)(uint32_t)v; }
 
-/* Walk a polybuf [start,end) by OT tag length (stride=((w0>>24)+1)*4); decode
- * polygon prims (code high byte of word[+4]) with the standard PSX layout. */
+/* Store one walked primitive. Tiles, lines and the sparkle quads are not
+ * polygons: they arrive with nv = 0 and only their raw words, which the dump
+ * prints and the feed decodes against the layout the dump confirmed. */
+static int particle_prim_sink(void* ctx, const ngte_prim* s) {
+    (void)ctx;
+    if (s_prim_n >= MAX_PRIMS) return 0;
+    prim_t* t = &s_prim[s_prim_n];
+    memset(t, 0, sizeof(*t));
+    t->code = s->code; t->taglen = s->taglen; t->nv = s->nv;
+    for (int k = 0; k < 4; k++) {
+        t->x[k] = s->x[k]; t->y[k] = s->y[k]; t->rgb[k] = s->rgb[k];
+        t->u[k] = s->u[k]; t->v[k] = s->v[k];
+    }
+    t->clut = s->clut; t->tpage = s->tpage;
+    t->textured = s->textured; t->gouraud = s->gouraud;
+    t->quad = s->quad; t->stp = s->stp;
+    memcpy(t->raw, s->raw, sizeof(t->raw));
+    t->nraw = s->nraw;
+    s_prim_n++;
+    return 1;
+}
+
+/* Walk the polybuf [start, end) into s_prim. Particle tags are at most 12
+ * words and the dump prints at most 16 raw words per primitive. */
 static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     OP_PROF_ACCUM_SCOPE("particle.capture");
-    uint32_t p = start;
-    int guard = 0;
-    while (p < end && guard++ < MAX_PRIMS) {
-        uint32_t w0 = cpu->read_word(p);
-        uint32_t taglen = (w0 >> 24) & 0xFF;
-        if (taglen == 0 || taglen > 12) break;        /* not a tag / corrupt — stop */
-        uint32_t stride = (taglen + 1) * 4;
-        uint8_t code = (uint8_t)(cpu->read_word(p + 4) >> 24);
-        if (s_prim_n < MAX_PRIMS) {
-            prim_t* t = &s_prim[s_prim_n];
-            memset(t, 0, sizeof(*t));
-            t->code = code; t->taglen = (uint8_t)taglen;
-            t->nraw = (int)(stride / 4); if (t->nraw > 16) t->nraw = 16;
-            for (int i = 0; i < t->nraw; i++) t->raw[i] = cpu->read_word(p + (uint32_t)i*4);
-            if ((code & 0xE0) == 0x20) {              /* a GPU polygon */
-                int gouraud = (code & 0x10) != 0;
-                int quad    = (code & 0x08) != 0;
-                int tex     = (code & 0x04) != 0;
-                int stp     = (code & 0x02) != 0;
-                t->gouraud = gouraud; t->textured = tex; t->quad = quad; t->stp = stp;
-                t->nv = quad ? 4 : 3;
-                uint32_t rgb0 = t->raw[1] & 0xFFFFFF;
-                int c = 2;
-                for (int k = 0; k < t->nv; k++) {
-                    t->rgb[k] = (gouraud && k > 0) ? (t->raw[c++] & 0xFFFFFF) : rgb0;
-                    uint32_t xy = t->raw[c++];
-                    t->x[k] = (float)(int16_t)(xy & 0xFFFF);
-                    t->y[k] = (float)(int16_t)(xy >> 16);
-                    if (tex) {
-                        uint32_t uv = t->raw[c++];
-                        t->u[k] = (int)(uv & 0xFF); t->v[k] = (int)((uv >> 8) & 0xFF);
-                        if (k == 0)      t->clut  = (int)(uv >> 16);
-                        else if (k == 1) t->tpage = (int)(uv >> 16);
-                    }
-                }
-            }
-            s_code_hist[code & 0xFF]++;
-            s_tag_hist[taglen & 0xFF]++;
-            s_prim_n++;
-        }
-        p += stride;
-    }
+    const ngte_walk_policy pol = {
+        .tag_len_max = 12, .raw_words_max = 16, .guard = MAX_PRIMS,
+        .polygons_only = 0, .code_hist = s_code_hist, .tag_hist = s_tag_hist,
+        .total = NULL, .count_all = 0,
+    };
+    ngte_walk_prims(cpu, start, end, &pol, particle_prim_sink, NULL);
 }
 
 /* ---- one-shot dump (gamestate pools + raw polybuf + decoded prims) -------- */
@@ -187,9 +173,9 @@ static void dump_prims(CPUState* cpu, const char* tag, uint32_t start, uint32_t 
         fprintf(stderr, "\n");
     }
     fprintf(stderr, "  code histogram (word[+4]>>24):");
-    for (int c = 0; c < 256; c++) if (s_code_hist[c]) fprintf(stderr, " %02X:%d", c, s_code_hist[c]);
+    for (int c = 0; c < 256; c++) if (s_code_hist[c]) fprintf(stderr, " %02X:%u", c, s_code_hist[c]);
     fprintf(stderr, "\n  tag-len histogram (word[+0]>>24):");
-    for (int c = 0; c < 256; c++) if (s_tag_hist[c]) fprintf(stderr, " %d:%d", c, s_tag_hist[c]);
+    for (int c = 0; c < 256; c++) if (s_tag_hist[c]) fprintf(stderr, " %d:%u", c, s_tag_hist[c]);
     fprintf(stderr, "\n");
     int n = s_prim_n < 8 ? s_prim_n : 8;
     for (int i = 0; i < n; i++) {

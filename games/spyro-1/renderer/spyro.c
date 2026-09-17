@@ -59,54 +59,37 @@ typedef struct {
 
 #define MAX_PRIMS 8192
 static prim_t s_gte[MAX_PRIMS]; static int s_gte_n;
-static int s_code_hist[256];
+static uint32_t s_code_hist[256];
 
-/* Walk the polybuf by ordering-table tag length (stride = ((w0 >> 24) + 1) *
- * 4) and decode each primitive by its code byte with the general PSX polygon
- * decode (bit 4 gouraud, bit 3 quad, bit 2 textured). */
+/* Store one walked primitive into the capture buffer. */
+static int spyro_prim_sink(void* ctx, const ngte_prim* s) {
+    (void)ctx;
+    if (s_gte_n >= MAX_PRIMS) return 0;
+    prim_t* t = &s_gte[s_gte_n];
+    memset(t, 0, sizeof(*t));
+    t->code = s->code; t->len = s->taglen; t->nv = s->nv;
+    for (int k = 0; k < 4; k++) {
+        t->x[k] = s->x[k]; t->y[k] = s->y[k]; t->rgb[k] = s->rgb[k];
+        t->u[k] = s->u[k]; t->v[k] = s->v[k];
+    }
+    t->clut = s->clut; t->tpage = s->tpage;
+    t->textured = s->textured; t->gouraud = s->gouraud; t->quad = s->quad;
+    memcpy(t->raw, s->raw, sizeof(t->raw));
+    t->nraw = s->nraw;
+    s_gte_n++;
+    return 1;
+}
+
+/* Walk the polybuf [start, end) into s_gte. */
 static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     OP_PROF_ACCUM_SCOPE("spyro.capture");
     s_gte_n = 0;
-    uint32_t p = start;
-    int guard = 0;
-    while (p < end && guard++ < MAX_PRIMS) {
-        uint32_t w0 = cpu->read_word(p);
-        uint32_t len = (w0 >> 24) & 0xFF;
-        if (len == 0 || len > 24) break;          /* not a tag, or corrupt */
-        uint32_t stride = (len + 1) * 4;
-        uint8_t code = (uint8_t)(cpu->read_word(p + 4) >> 24);
-        if (s_gte_n < MAX_PRIMS) {
-            prim_t* t = &s_gte[s_gte_n];
-            memset(t, 0, sizeof(*t));
-            t->code = code; t->len = (uint8_t)len;
-            t->nraw = (int)(stride / 4); if (t->nraw > 20) t->nraw = 20;
-            for (int i = 0; i < t->nraw; i++) t->raw[i] = cpu->read_word(p + (uint32_t)i*4);
-            if ((code & 0xE0) == 0x20) {
-                int gouraud = (code & 0x10) != 0;
-                int quad    = (code & 0x08) != 0;
-                int tex     = (code & 0x04) != 0;
-                t->gouraud = gouraud; t->textured = tex; t->quad = quad;
-                t->nv = quad ? 4 : 3;
-                uint32_t rgb0 = t->raw[1] & 0xFFFFFF;
-                int c = 2;
-                for (int k = 0; k < t->nv; k++) {
-                    t->rgb[k] = (gouraud && k > 0) ? (t->raw[c++] & 0xFFFFFF) : rgb0;
-                    uint32_t xy = t->raw[c++];
-                    t->x[k] = (float)(int16_t)(xy & 0xFFFF);
-                    t->y[k] = (float)(int16_t)(xy >> 16);
-                    if (tex) {
-                        uint32_t uv = t->raw[c++];
-                        t->u[k] = (int)(uv & 0xFF); t->v[k] = (int)((uv >> 8) & 0xFF);
-                        if (k == 0)      t->clut  = (int)(uv >> 16);
-                        else if (k == 1) t->tpage = (int)(uv >> 16);
-                    }
-                }
-            }
-            s_code_hist[code & 0xFF]++;
-            s_gte_n++;
-        }
-        p += stride;
-    }
+    const ngte_walk_policy pol = {
+        .tag_len_max = 24, .raw_words_max = 20, .guard = MAX_PRIMS,
+        .polygons_only = 0, .code_hist = s_code_hist, .tag_hist = NULL,
+        .total = NULL, .count_all = 0,
+    };
+    ngte_walk_prims(cpu, start, end, &pol, spyro_prim_sink, NULL);
 }
 
 static const char* k_part_name[3] = { "body", "head", "tail" };
@@ -152,7 +135,7 @@ static void spyro_dump(CPUState* cpu, uint32_t startp, uint32_t endp) {
 
     char hb[300]; int hp = 0; hb[0] = 0;
     for (int c = 0; c < 256; c++) if (s_code_hist[c] && hp < (int)sizeof(hb)-16)
-        hp += snprintf(hb+hp, sizeof(hb)-hp, " %02X=%d", c, s_code_hist[c]);
+        hp += snprintf(hb+hp, sizeof(hb)-hp, " %02X=%u", c, s_code_hist[c]);
     fprintf(stderr, "  prim codes:%s  (total=%d)\n", hb, s_gte_n);
     fprintf(stderr, "[spyro-dump] end\n\n");
 }

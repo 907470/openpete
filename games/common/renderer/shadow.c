@@ -56,65 +56,48 @@ int shadow_rd_s16(CPUState* cpu, uint32_t addr) {
 /* ---- captured prims (ground truth) --------------------------------------- */
 #define MAX_PRIMS 4096
 static shadow_prim s_gte[MAX_PRIMS]; static int s_gte_n;
-static int s_code_hist[256];
+static uint32_t s_code_hist[256];
 
 int                shadow_prim_count(void) { return s_gte_n; }
 const shadow_prim* shadow_prim_at(int i)   { return (i >= 0 && i < s_gte_n) ? &s_gte[i] : NULL; }
 
-/* Walk the polybuf [start,end) by OT tag length (stride=((w0>>24)+1)*4); decode
- * each prim by its code byte (word[1]>>24) with the general PSX polygon decode
- * (bit4 gouraud / bit3 quad / bit2 textured). Same scheme moby/Spyro/flame use.
- * A draw-mode mini-packet (tag len 2, code byte 0) decodes to nv=0 and is
- * skipped by consumers. */
+/* Store one walked primitive into the capture buffer. */
+static int shadow_prim_sink(void* ctx, const ngte_prim* s) {
+    (void)ctx;
+    if (s_gte_n >= MAX_PRIMS) return 0;
+    shadow_prim* t = &s_gte[s_gte_n];
+    memset(t, 0, sizeof(*t));
+    t->code = s->code; t->len = s->taglen; t->nv = s->nv;
+    for (int k = 0; k < 4; k++) {
+        t->x[k] = s->x[k]; t->y[k] = s->y[k]; t->rgb[k] = s->rgb[k];
+        t->u[k] = s->u[k]; t->v[k] = s->v[k];
+    }
+    t->clut = s->clut; t->tpage = s->tpage;
+    t->textured = s->textured; t->gouraud = s->gouraud; t->quad = s->quad;
+    memcpy(t->raw, s->raw, sizeof(t->raw));
+    t->nraw = s->nraw;
+    s_gte_n++;
+    return 1;
+}
+
+/* Walk the polybuf [start, end) into s_gte. A draw-mode mini-packet (tag len
+ * 2, code byte 0) is not a polygon: it stores with nv = 0 and consumers skip
+ * it. */
 void shadow_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
     OP_PROF_ACCUM_SCOPE("shadow.capture");
     s_gte_n = 0;
     memset(s_code_hist, 0, sizeof(s_code_hist));
-    uint32_t p = start;
-    int guard = 0;
-    while (p < end && guard++ < MAX_PRIMS) {
-        uint32_t w0 = cpu->read_word(p);
-        uint32_t len = (w0 >> 24) & 0xFF;
-        if (len == 0 || len > 24) break;          /* not a tag / corrupt — stop */
-        uint32_t stride = (len + 1) * 4;
-        uint8_t code = (uint8_t)(cpu->read_word(p + 4) >> 24);
-        if (s_gte_n < MAX_PRIMS) {
-            shadow_prim* t = &s_gte[s_gte_n];
-            memset(t, 0, sizeof(*t));
-            t->code = code; t->len = (uint8_t)len;
-            t->nraw = (int)(stride / 4); if (t->nraw > 20) t->nraw = 20;
-            for (int i = 0; i < t->nraw; i++) t->raw[i] = cpu->read_word(p + (uint32_t)i*4);
-            if ((code & 0xE0) == 0x20) {
-                int gouraud = (code & 0x10) != 0;
-                int quad    = (code & 0x08) != 0;
-                int tex     = (code & 0x04) != 0;
-                t->gouraud = gouraud; t->textured = tex; t->quad = quad;
-                t->nv = quad ? 4 : 3;
-                uint32_t rgb0 = t->raw[1] & 0xFFFFFF;
-                int c = 2;
-                for (int k = 0; k < t->nv; k++) {
-                    t->rgb[k] = (gouraud && k > 0) ? (t->raw[c++] & 0xFFFFFF) : rgb0;
-                    uint32_t xy = t->raw[c++];
-                    t->x[k] = (float)(int16_t)(xy & 0xFFFF);
-                    t->y[k] = (float)(int16_t)(xy >> 16);
-                    if (tex) {
-                        uint32_t uv = t->raw[c++];
-                        t->u[k] = (int)(uv & 0xFF); t->v[k] = (int)((uv >> 8) & 0xFF);
-                        if (k == 0)      t->clut  = (int)(uv >> 16);
-                        else if (k == 1) t->tpage = (int)(uv >> 16);
-                    }
-                }
-            }
-            s_code_hist[code & 0xFF]++;
-            s_gte_n++;
-        }
-        p += stride;
-    }
+    const ngte_walk_policy pol = {
+        .tag_len_max = 24, .raw_words_max = 20, .guard = MAX_PRIMS,
+        .polygons_only = 0, .code_hist = s_code_hist, .tag_hist = NULL,
+        .total = NULL, .count_all = 0,
+    };
+    ngte_walk_prims(cpu, start, end, &pol, shadow_prim_sink, NULL);
 }
 
 void shadow_dump_prims(const char* tag) {
     fprintf(stderr, "  [%s] prim code histogram:", tag);
-    for (int c = 0; c < 256; c++) if (s_code_hist[c]) fprintf(stderr, " %02X:%d", c, s_code_hist[c]);
+    for (int c = 0; c < 256; c++) if (s_code_hist[c]) fprintf(stderr, " %02X:%u", c, s_code_hist[c]);
     fprintf(stderr, "  (total=%d)\n", s_gte_n);
     int n = s_gte_n < 6 ? s_gte_n : 6;
     for (int p = 0; p < n; p++) {
