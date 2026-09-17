@@ -119,7 +119,7 @@ FRAME_LIMIT=$(( TICK * 2 + 700 ))
 capture_level() {
   local lvl="$1" log="$OUT/$1.log"
   env "${WSLENV_ARGS[@]}" \
-  "$BIN" --headless --disc "$DISC" --skip-to-level "$lvl" \
+  "$BIN" --headless --disc "$DISC" --disc-cache 0 --skip-to-level "$lvl" \
          --no-card --mute 1 --vibration 0 \
          --screenshot-on-tick "$TICK" \
          --screenshot-output "$OUT/$lvl-{n}.png" \

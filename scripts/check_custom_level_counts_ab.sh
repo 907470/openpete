@@ -58,7 +58,7 @@ run() {
     rm -f "$dump" "$log"
     local -a env=()
     [ -n "$warp" ] && env=(env "OPENPETE_CUSTOM_WARP=$warp")
-    "${env[@]}" timeout 300 "$EXE" --headless --disc "$DISC" \
+    "${env[@]}" timeout 300 "$EXE" --headless --disc "$DISC" --disc-cache 0 \
         --mods-dir "$mods" --vibration 0 \
         --ram-dump-on-frame "$at" --ram-dump-output "$dump" \
         --frame-limit "$limit" > "$log" 2>&1

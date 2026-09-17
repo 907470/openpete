@@ -67,7 +67,7 @@ run_game() { # run_game <mods_dir> <frames> [extra flags...] -> stdout+stderr
     # check_psx_oracle.sh convention, NOT read by the engine itself.
     local dir="$1" frames="$2"
     shift 2
-    timeout 300 "$BIN" --headless --disc "$DISC" \
+    timeout 300 "$BIN" --headless --disc "$DISC" --disc-cache 0 \
  --frame-limit "$frames" --mods-dir "$dir" \
         "$@" 2>&1
 }
@@ -363,7 +363,7 @@ fi
 # ── 8. asset overlay: texture namespace scan + overlay-duel (rungs 7+10) ─
 say "asset overlay: mod texture joins the pack (rung 7 scan)"
 fixture "$WORK/tex" hd-single-texture
-out="$(timeout 300 "$BIN" --headless --disc "$DISC" \
+out="$(timeout 300 "$BIN" --headless --disc "$DISC" --disc-cache 0 \
         --frame-limit 300 --mods-dir "$WORK/tex" \
         --screenshot-on-frame 200 \
         --screenshot-output "$WORK/tex-{n}.png" 2>&1)"
@@ -378,7 +378,7 @@ say "asset overlay: symbolic name binds to content, not to the VRAM rect (rung 7
 # The title UI atlas and every level's texture page upload to the same
 # 512x256 block at VRAM (512,256). The annotation must bind title_ui to
 # the atlas content so a level page landing on the rect stays unnamed.
-out="$(OPENPETE_TEXPACK_DUMP_REGISTRY=1 timeout 600 "$BIN" --headless --disc "$DISC" \
+out="$(OPENPETE_TEXPACK_DUMP_REGISTRY=1 timeout 600 "$BIN" --headless --disc "$DISC" --disc-cache 0 \
         --skip-to-level artisans --frame-limit 3000 --mods-dir "$WORK/tex" \
         --screenshot-on-frame 2900 \
         --screenshot-output "$WORK/tex7d-{n}.png" 2>&1)"
@@ -421,7 +421,7 @@ mkdir -p "$WORK/duel"
 ln -sfn "$WORK/duelsrc/duel-a" "$WORK/duel/duel-a"
 ln -sfn "$WORK/duelsrc/duel-b" "$WORK/duel/duel-b"
 run_duel() { # run_duel -> stdout+stderr (short native-init headless run)
-    timeout 300 "$BIN" --headless --disc "$DISC" \
+    timeout 300 "$BIN" --headless --disc "$DISC" --disc-cache 0 \
         --frame-limit 300 --mods-dir "$WORK/duel" \
         --screenshot-on-frame 200 \
         --screenshot-output "$WORK/duel-{n}.png" 2>&1
@@ -490,7 +490,7 @@ else
 fi
 
 say "sfx pack round-trip: a fresh census loaded unmodified verifies bit-identical"
-if timeout 300 "$BIN" --disc "$DISC" --dump-sfx-pack "$WORK/sfxdump" > "$WORK/sfxdump.log" 2>&1 &&
+if timeout 300 "$BIN" --disc "$DISC" --disc-cache 0 --dump-sfx-pack "$WORK/sfxdump" > "$WORK/sfxdump.log" 2>&1 &&
    grep -q "no_end=0 failed=0" "$WORK/sfxdump.log"; then
     ok "census: $(grep -o 'entries=[0-9]* sources=[0-9]* dumped=[0-9]*' "$WORK/sfxdump.log")"
     mkdir -p "$WORK/nomods"; : > "$WORK/nomods/enabled.txt"
@@ -580,7 +580,7 @@ if python3 tools/extract_wad_entry.py --disc "$DISC" --level 10 \
     mkdir -p "$WORK/wadrc"
     ln -sfn "$WORK/wadsrc/wad-recolor" "$WORK/wadrc/wad-recolor"
     printf 'wad-recolor\n' > "$WORK/wadrc/enabled.txt"
-    out="$(timeout 300 "$BIN" --headless --disc "$DISC" \
+    out="$(timeout 300 "$BIN" --headless --disc "$DISC" --disc-cache 0 \
  --skip-to-level 10 --frame-limit 2600 \
             --mods-dir "$WORK/wadrc" 2>&1)"
     if printf '%s\n' "$out" | grep -q "wad overlay: level 10 data served from wad-recolor"; then
@@ -795,7 +795,7 @@ CARDS="$WORK/cards"; mkdir -p "$CARDS"
 fixture "$WORK/ss-gems" double-gems
 fixture "$WORK/ss-observer" hello-anchor
 mc_run() { OPENPETE_CARD_DIR="$CARDS" timeout 120 "$BIN" --headless \
-    --disc "$DISC" --frame-limit 300 "$@" 2>&1; }
+    --disc "$DISC" --disc-cache 0 --frame-limit 300 "$@" 2>&1; }
 out="$(mc_run)"
 if [ ! -e "$CARDS/card1.mcr.modset" ] && \
    ! printf '%s\n' "$out" | grep -q "memcard.*modset"; then
@@ -1077,7 +1077,7 @@ fi
 say "mod shaders: SCENE point processes the scene under the HUD"
 if command -v ffmpeg >/dev/null 2>&1 && python3 -c "import PIL" 2>/dev/null; then
     fixture "$WORK/sepia" scene-sepia
-    timeout 300 "$BIN" --disc "$DISC" \
+    timeout 300 "$BIN" --disc "$DISC" --disc-cache 0 \
         --skip-to-level 10 --frame-limit 2600 --mods-dir "$WORK/sepia" \
         --record "$WORK/sepia/probe.mkv" > "$WORK/sepia.log" 2>&1 || true
     if [ -s "$WORK/sepia/probe.mkv" ] &&
@@ -1180,7 +1180,7 @@ if python3 -c "import PIL" 2>/dev/null; then
     mkdir -p "$WORK/declnone"; : > "$WORK/declnone/enabled.txt"
     for leg in none decl; do
         d="$WORK/decl"; [ "$leg" = none ] && d="$WORK/declnone"
-        timeout 300 "$BIN" --headless --no-config --disc "$DISC" \
+        timeout 300 "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 \
  --renderer vk --mute 1 \
             --bk2 games/spyro-1/bk2/flame.bk2 --screenshot-native-only \
             --mods-dir "$d" --screenshot-on-frame 1800 \

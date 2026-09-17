@@ -73,7 +73,7 @@ if [[ -z "$CASES" ]]; then
 
 run() {  # target leg out-flag out-name frame-list limit [env...]
     local target="$1" leg="$2" flag="$3" name="$4" frames="$5" lim="$6"; shift 6
-    env "$@" timeout 600 "$BIN" --headless --no-config --disc "$DISC" "${PG_RUN_ARGS[@]}" \
+    env "$@" timeout 600 "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 "${PG_RUN_ARGS[@]}" \
         --renderer vk --mute 1 --aspect 4:3 --skip-to-cutscene "$target" --screenshot-native-only \
         --render-paths moby "$flag" "$frames" --screenshot-output "$WORK/${target}_${name}_{n}.png" \
         --frame-limit "$lim" >"$WORK/${target}_$leg.log" 2>&1

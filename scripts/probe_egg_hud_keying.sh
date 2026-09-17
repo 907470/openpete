@@ -30,7 +30,7 @@ trap 'rm -rf "$WORK"' EXIT
 mkdir -p "$WORK/mods"; ln -sfn "$PWD/mods/egg-hud-3d" "$WORK/mods/egg-hud-3d"
 echo egg-hud-3d > "$WORK/mods/enabled.txt"
 rm -f "$WORK/run.log"
-OPENPETE_INTERP_OBJS_KEYLOG=1 timeout 600 "$BIN" --disc "$DISC" \
+OPENPETE_INTERP_OBJS_KEYLOG=1 timeout 600 "$BIN" --disc "$DISC" --disc-cache 0 \
  --window 640x480 --fullscreen 0 --render-fps 60 \
     --bk2 games/spyro-1/bk2/egg-inventory.bk2 --skip-to-level stone_hill \
     --frame-limit 4200 --mods-dir "$WORK/mods" >"$WORK/run.log" 2>&1

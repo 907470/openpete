@@ -22,7 +22,7 @@ for lvl in $LEVELS; do
   (
     fr=2101; [ "$lvl" = icy_flight ] && fr=4001   # flight-level load oddity
     cd $REPO && OPENPETE_TERRAIN_FIELDCENSUS=1 \
-    $BIN --headless --disc $DISC --renderer vk \
+    $BIN --headless --disc $DISC --disc-cache 0 --renderer vk \
       --mute 1 --aspect 4:3 --skip-to-level $lvl --lod original \
       --render-paths terrain --screenshot-native-only \
       --screenshot-on-frame $fr --screenshot-output $S/$lvl-{n}.png \

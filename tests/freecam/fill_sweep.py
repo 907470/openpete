@@ -90,7 +90,7 @@ def run_leg(binary, disc, level, pose, leg, outdir, frame=FRAME):
     elif leg == "BLANKO":
         rend, paths, lod = "psycross", "none", "original"
     tag = leg
-    args = [binary, "--headless", "--disc", disc,
+    args = [binary, "--headless", "--disc", disc, "--disc-cache", "0",
             "--renderer", rend, "--mute", "1", "--aspect", "4:3",
             "--skip-to-level", level, "--lod", lod,
             "--render-paths", paths,

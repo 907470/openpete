@@ -92,7 +92,7 @@ run_leg() {   # $1 = leg name, $2... = extra env assignments
     local leg="$1"; shift
     local log="$OUT/$leg.log"
     ( env OPENPETE_INPUT_VGAMEPAD=1 OPENPETE_RUMBLE_LOG=1 "$@" \
-        "$BIN" --headless --disc "$DISC" --bk2 "$BK2" \
+        "$BIN" --headless --disc "$DISC" --disc-cache 0 --bk2 "$BK2" \
         --frame-limit "$FRAMES" ) > "$log" 2>&1 || true
     [[ -s "$log" ]] || { echo "[rumble] FAIL: $leg produced no output"; exit 1; }
     echo "$log"

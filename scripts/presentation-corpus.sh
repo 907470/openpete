@@ -134,7 +134,7 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze
   # silent (a fanned-out corpus otherwise plays dozens of instances).
   # --no-config: golden images are compared pixel-for-pixel, so the run has
   # to be independent of any openpete.toml on the machine capturing them.
-  env "${leg_env[@]}" timeout 300 "$BIN" --headless --no-config --disc "$DISC" --renderer vk \
+  env "${leg_env[@]}" timeout 300 "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk \
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${freeze_arg[@]}" "${PG_RUN_ARGS[@]}" \
     "${bk2_arg[@]}" --screenshot-native-only \
     "$flag" "$targets" --screenshot-output "$out" \

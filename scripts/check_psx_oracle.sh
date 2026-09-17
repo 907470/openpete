@@ -268,7 +268,7 @@ done
 "$BIN" "${MODE[@]}" \
     --no-config \
     "${MODS_OFF[@]}" \
-    --disc "$DISC" \
+    --disc "$DISC" --disc-cache 0 \
     --mute 1 \
     --psxtrace-verify "$TRACE" \
     --frame-limit "$LIMIT" \

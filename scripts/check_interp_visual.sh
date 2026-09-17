@@ -66,7 +66,7 @@ fi
 for fps in 0 60 480; do
     echo "[interp-visual] --render-fps $fps"
     timeout 90s "$BIN" \
-        --disc games/spyro-1/spyro-1/build/SCUS-94228.cue \
+        --disc games/spyro-1/spyro-1/build/SCUS-94228.cue --disc-cache 0 \
         --render-fps "$fps" \
         --frame-limit "$FRAME_LIMIT" \
         --screenshot-presents-start "$START" \

@@ -57,7 +57,7 @@ done
 
 run() { # $1 movie  $2 csv  $3 extra-args...
     local movie="$1" csv="$2"; shift 2
-    timeout 600 "$BIN" --headless --disc "$DISC" \
+    timeout 600 "$BIN" --headless --disc "$DISC" --disc-cache 0 \
         --bk2 "$movie" --bk2-stop-on-end --frame-limit 6000 \
         --unlock-frames 0-6000 \
         --gameplay-hash-log "$csv" "$@" >"$csv.log" 2>&1
@@ -148,7 +148,7 @@ fi
 #   - level exit (crossing lands between ticks, no adoption): committed
 #     timeline MUST stay byte-identical to clean.
 echo "== runahead-transitions (town-square portal, exit-level)"
-timeout 600 "$BIN" --headless --disc "$DISC" \
+timeout 600 "$BIN" --headless --disc "$DISC" --disc-cache 0 \
     --bk2 games/spyro-1/bk2/town-square-portal-entry.bk2 --frame-limit 12000 \
     --unlock-frames 0-12000 --runahead 2 \
     --gameplay-hash-log "$OUT/tsq-ra.csv" >"$OUT/tsq-ra.log" 2>&1 \

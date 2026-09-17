@@ -68,7 +68,7 @@ run_rows() {  # run_rows <tag> <bk2> <frame> <rows> <extra-toml>
         > "$md/channel-gallery/config.toml"
     OPENPETE_TERRAIN_CACHE_FORCE="${CACHE:-0}" \
     OPENPETE_TERRAIN_GPU_CENSUS="${CACHE:-0}" \
-    timeout 600 "$BIN" --headless --no-config --disc "$DISC" \
+    timeout 600 "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 \
  --renderer vk --mute 1 --aspect 16:9 \
         --bk2 "games/spyro-1/bk2/$bk2.bk2" --screenshot-native-only \
         --mods-dir "$md" --screenshot-on-frame "$frame" \
@@ -307,7 +307,7 @@ rm -rf "$tintmd"; rm -f "$WORK/tint-1800-vk.png"
 mkdir -p "$tintmd"
 cp -r mods/moby-instance-tint "$tintmd/"
 rm -rf "$tintmd/moby-instance-tint/.build"
-OPENPETE_MATERIAL_STATS=1 timeout 300 "$BIN" --headless --no-config --disc "$DISC" \
+OPENPETE_MATERIAL_STATS=1 timeout 300 "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 \
  --renderer vk --mute 1 --aspect 16:9 \
     --bk2 games/spyro-1/bk2/flame.bk2 --screenshot-native-only \
     --mods-dir "$tintmd" --screenshot-on-frame 1800 \

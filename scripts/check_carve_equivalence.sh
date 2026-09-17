@@ -34,7 +34,7 @@ trap 'rm -rf "$TMP"' EXIT
 [[ -f "$DISC" ]] || { echo "[carve] disc missing: $DISC" >&2; exit 64; }
 [[ -f "$MAN/manifest.toml" ]] || { echo "[carve] manifest missing" >&2; exit 64; }
 
-"$BIN" --extract-recomp-inputs "$TMP" --disc "$DISC" >/dev/null 2>&1 \
+"$BIN" --extract-recomp-inputs "$TMP" --disc "$DISC" --disc-cache 0 >/dev/null 2>&1 \
     || { echo "[carve] extraction failed" >&2; exit 2; }
 
 fail=0

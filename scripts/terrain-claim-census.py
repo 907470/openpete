@@ -114,7 +114,7 @@ def run_row(kind, slug, args, target_frame, lod, outdir, mods_dir=""):
     # the run is flat-out sim with no census lines at all.
     shots = os.path.join(outdir, "shots")
     os.makedirs(shots, exist_ok=True)
-    cmd = [BIN, "--headless", "--no-config", "--disc", DISC,
+    cmd = [BIN, "--headless", "--no-config", "--disc", DISC, "--disc-cache", "0",
  "--renderer", "vk", "--mute", "1",
            "--aspect", "16:9", "--lod", lod, "--terrain-cache", "1",
            "--screenshot-native-only",

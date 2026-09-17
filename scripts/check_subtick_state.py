@@ -134,7 +134,7 @@ def sample_grid(frames, n=MAX_SAMPLES, head=0):
 def run_leg(bk2, hashlog, frames, armed, shotdir, verbose, head=0):
     env_extra = {}
     cmd = [
-        str(EXE), "--headless", "--no-config", "--disc", str(DISC),
+        str(EXE), "--headless", "--no-config", "--disc", str(DISC), "--disc-cache", "0",
  "--renderer", "vk", "--mute", "1",
         "--bk2", str(BK2DIR / f"{bk2}.bk2"),
         "--gameplay-hash-log", str(hashlog),

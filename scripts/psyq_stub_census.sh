@@ -79,7 +79,7 @@ run_level() {
   OPENPETE_PSYQ_STUB_CONTINUE=1 "$BIN" \
       --headless --no-card --mute 1 \
       --skip-to-level "$level" --frame-limit "$FRAMES" \
-      --disc "$DISC" > "$log" 2>&1
+      --disc "$DISC" --disc-cache 0 > "$log" 2>&1
   local rc=$?
   if (( rc != 0 )); then echo "[psyq-census] $level: exit $rc (see $log)" >&2; return 1; fi
   if ! grep -q 'loader took level' "$log"; then

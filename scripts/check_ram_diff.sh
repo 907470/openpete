@@ -176,7 +176,7 @@ DS_PID=$!
 
 set +e
 OPENPETE_VIBRATION=0 timeout 900 "$BIN" --headless --no-config --mods "" --mute 1 --vibration 0 \
-    "${OP_CARD[@]}" --disc "$DISC" $RUN_ARGS \
+    "${OP_CARD[@]}" --disc "$DISC" --disc-cache 0 $RUN_ARGS \
     --halt-at-pc "$PC" --halt-hit "$HIT" --ram-dump-output "$OP" \
     "${SCHED[@]}" "${EXTRA_ARGS[@]}" \
     --frame-limit 200000 > "$OPLOG" 2>&1

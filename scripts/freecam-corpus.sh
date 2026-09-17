@@ -111,7 +111,7 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose
   local out="$OUTDIR/${slug}__${tag}${leg}__{n}.png"
   local log; log="$(mktemp)"
   local -a leg_env=(); [[ "$leg" == ident ]] && leg_env=(OPENPETE_INTERMEDIATE_ALPHA=1)
-  env "${leg_env[@]}" timeout 300 "$BIN" --headless --disc "$DISC" --renderer vk \
+  env "${leg_env[@]}" timeout 300 "$BIN" --headless --disc "$DISC" --disc-cache 0 --renderer vk \
     --mute 1 --aspect "$CAP_ASPECT" --lod "$lod" "${PG_RUN_ARGS[@]}" \
     --skip-to-level "$level" --freecam-pose "$pose" \
     --screenshot-native-only "$flag" "$target" --screenshot-output "$out" \

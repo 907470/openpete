@@ -47,7 +47,7 @@ run() {   # run <tag> [env assignments...]
     ( env HOME="$OUT/home" XDG_CONFIG_HOME="$OUT/home/.config" \
           OPENPETE_INPUT_VGAMEPAD=1 OPENPETE_VIBRATION=0 "$@" \
           "$EXE" --headless --mute 1 --frame-limit "$FRAMES" \
-          --disc "$DISC" ) > "$OUT/$tag.log" 2>&1
+          --disc "$DISC" --disc-cache 0 ) > "$OUT/$tag.log" 2>&1
     [[ -s "$OUT/$tag.log" ]] || { echo "[controllerdb] $tag produced no log" >&2; return 1; }
 }
 

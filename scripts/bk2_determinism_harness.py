@@ -57,7 +57,7 @@ def run_once(label, unlock_spec, out_dir):
     log = out_dir / f"{label}.log"
     cmd = [
         str(EXE),
-        "--disc", str(DISC),
+        "--disc", str(DISC), "--disc-cache", "0",
         "--bk2", str(BK2),
         "--bk2-stop-on-end",
         "--position-log", str(pos),

@@ -133,7 +133,7 @@ run_leg() {
     local extra=()
     local -a envs=()
     [[ -n "${LEG_INJECT:-}" ]] && envs+=(OPENPETE_DEVUI_INJECT_MOUSE="$LEG_INJECT")
-    env "${envs[@]}" "$BIN" --disc "$DISC" \
+    env "${envs[@]}" "$BIN" --disc "$DISC" --disc-cache 0 \
            --renderer vk --window "${WIN_W}x${WIN_H}" \
            --devui-open "${LEG_OPEN:-1}" \
            --mods-dir "$OUT_DIR/mods" --mods "${LEG_MODS:-imgui-panel}" \

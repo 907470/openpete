@@ -83,7 +83,7 @@ run_leg() {
   # without it the hook-vs-ring column is vacuous (the summary's no_ring
   # counts those epochs and the harness refuses them).
   OPENPETE_VIBRATION=0 OPENPETE_SPYRO_RECDBG=1 OPENPETE_BRACKET_CHECK=1 \
-  timeout 600 "$BIN" --headless --no-config --disc "$DISC" --renderer vk --mute 1 --render-fps 60 \
+  timeout 600 "$BIN" --headless --no-config --disc "$DISC" --disc-cache 0 --renderer vk --mute 1 --render-fps 60 \
     --mods-dir "$OUT/mods" --mods spyro-coop "${srcargs[@]}" "${capargs[@]}" \
     --screenshot-output "$OUT/shots/$name-$leg-{n}.png" \
     --frame-limit "$((frame + 1))" --max-runtime-seconds 560 ${extra:+$extra} \
