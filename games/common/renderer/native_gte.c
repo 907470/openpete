@@ -291,6 +291,36 @@ void ngte_dump_words(CPUState* cpu, const char* label, uint32_t base, int nwords
 
 /* ---- ordering-table polybuf walk ---------------------------------------- */
 
+/* Payload word count of a GPU polygon packet, tag word excluded: the colour
+ * word that carries the code, one screen-XY word per vertex, one extra colour
+ * word per vertex past the first when gouraud, and one UV word per vertex when
+ * textured. Zero for a code that is not a polygon. */
+static uint32_t ngte_prim_payload_words(uint8_t code) {
+    if ((code & 0xE0) != 0x20) return 0;
+    uint32_t nv = (code & 0x08) ? 4u : 3u;
+    uint32_t w = 1u + nv;
+    if (code & 0x10) w += nv - 1u;
+    if (code & 0x04) w += nv;
+    return w;
+}
+
+ngte_cvert ngte_clip_lerp(ngte_cvert a, ngte_cvert b, double zc) {
+    double t = (zc - a.m3) / (b.m3 - a.m3);
+    if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+    ngte_cvert r;
+    r.osx = r.osy = 0.0f; r.oflag = 0;
+    r.m1 = a.m1 + t * (b.m1 - a.m1);
+    r.m2 = a.m2 + t * (b.m2 - a.m2);
+    r.m3 = zc;
+    r.u  = a.u + (float)t * (b.u - a.u);
+    r.v  = a.v + (float)t * (b.v - a.v);
+    int ar=a.rgb&0xFF, ag=(a.rgb>>8)&0xFF, ab=(a.rgb>>16)&0xFF;
+    int br=b.rgb&0xFF, bg=(b.rgb>>8)&0xFF, bb=(b.rgb>>16)&0xFF;
+    int rr=(int)(ar+t*(br-ar)+0.5), rg=(int)(ag+t*(bg-ag)+0.5), rb=(int)(ab+t*(bb-ab)+0.5);
+    r.rgb = (uint32_t)rr | ((uint32_t)rg<<8) | ((uint32_t)rb<<16);
+    return r;
+}
+
 void ngte_walk_prims(CPUState* cpu, uint32_t start, uint32_t end,
                      const ngte_walk_policy* pol, ngte_prim_sink sink, void* ctx) {
     ngte_prim t;
@@ -299,10 +329,22 @@ void ngte_walk_prims(CPUState* cpu, uint32_t start, uint32_t end,
     while (p < end && guard++ < pol->guard) {
         uint32_t w0 = cpu->read_word(p);
         uint32_t taglen = (w0 >> 24) & 0xFF;
-        if (taglen == 0 || taglen > pol->tag_len_max) break;  /* not a tag, or corrupt */
-        uint32_t stride = (taglen + 1) * 4;
+        if (taglen > pol->tag_len_max) break;              /* corrupt */
         uint8_t code = (uint8_t)(cpu->read_word(p + 4) >> 24);
         int polygon = (code & 0xE0) == 0x20;
+        uint32_t stride = (taglen + 1) * 4;
+        if (taglen == 0) {
+            /* A packet whose tag length byte is zero. The ordering table's
+             * hardware traversal follows the tag's link and never draws it,
+             * but the producer still wrote the packet into the buffer, and
+             * the packets after it are reached only by stepping over it. Its
+             * length comes from the primitive code instead of the tag, which
+             * puts the walk back in step; a code with no derivable length is
+             * not a packet and ends the walk. */
+            uint32_t pw = polygon ? ngte_prim_payload_words(code) : 0;
+            if (!pw) break;
+            stride = (pw + 1) * 4;
+        }
         if (pol->count_all) {
             if (pol->code_hist) pol->code_hist[code]++;
             if (pol->tag_hist)  pol->tag_hist[taglen]++;

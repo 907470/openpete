@@ -305,4 +305,31 @@ typedef struct {
 void ngte_walk_prims(CPUState* cpu, uint32_t start, uint32_t end,
                      const ngte_walk_policy* pol, ngte_prim_sink sink, void* ctx);
 
+/* ---- near-plane clip corner --------------------------------------------- */
+/*
+ * A corner in camera space, the form a Sutherland-Hodgman cut against a
+ * constant-view-Z plane interpolates: position (m1, m2, m3), colour, UV.
+ *
+ * osx/osy/oflag carry an optional SCREEN-space override that a producer's
+ * push step uses instead of projecting m1/m2/m3. A producer that projects
+ * every corner leaves oflag zero. The terrain's near/HQ subdivide sets it on
+ * its boundary midpoints under the integer vertex snap: a midpoint projected
+ * from camera space lands sub-pixel off the parent's projected edge
+ * (perspective), and the snap amplifies that into a visible T-junction crack
+ * against the unsubdivided neighbour sharing that edge. The override places
+ * the midpoint at the exact screen midpoint of the snapped parent corners
+ * (integer or exact-.5, which the renderer's snap preserves), collinear with
+ * the neighbour's snapped edge.
+ */
+typedef struct { double m1, m2, m3; uint32_t rgb; float u, v;
+                 float osx, osy; uint8_t oflag; } ngte_cvert;
+
+/* The point where the edge a->b crosses the plane m3 == zc. Position and UV
+ * interpolate linearly in camera space; each colour channel rounds to nearest.
+ * The parameter is clamped to [0,1], so an edge that does not cross returns
+ * whichever endpoint the caller's inside test already picked. The result
+ * projects normally: a crossing point is not one of the parent corners, so it
+ * carries no screen override. */
+ngte_cvert ngte_clip_lerp(ngte_cvert a, ngte_cvert b, double zc);
+
 #endif /* OPENPETE_NATIVE_GTE_H */

@@ -714,20 +714,6 @@ static uint32_t s_cvrgb[MAX_TTRIS * 3]; static int s_cv_n;
 static int s_tex_faces, s_tex_tris;               /* diagnostics: textured-face count */
 static int s_dbg_clipped;                          /* faces that hit the near plane */
 
-/* A clip-space corner: camera-space pos (m1,m2,m3) + colour + UV. Near-plane
- * clipping (§near-plane) interpolates all of these along an edge. */
-/* osx/osy/oflag: optional SCREEN-space override consumed by push_tri instead
- * of proj_screen. The near/HQ subdivide sets it on its boundary midpoints
- * under the integer vertex snap: a midpoint projected from camera space lands
- * sub-pixel OFF the parent's projected edge (perspective), and the snap
- * amplifies that into a visible T-junction crack against the unsubdivided
- * neighbour sharing that edge. The override places the midpoint at the EXACT
- * screen midpoint of the SNAPPED parent corners (integer or exact-.5 — the
- * renderer's snap preserves exact halves), which is collinear with the
- * neighbour's snapped edge: watertight by construction. */
-typedef struct { double m1, m2, m3; uint32_t rgb; float u, v;
-                 float osx, osy; uint8_t oflag; } cvert;
-
 /* ---- parallel sector walk (--extract-threads) ------------------------------
  * The face walk fans out over visible sectors on the extraction worker pool.
  * Each worker owns a tn_wctx: its output triangle buffer, the per-sector
@@ -762,28 +748,11 @@ static double s_nearz = -1.0;
 /* near/HQ subdivide pass enable (Route 2; OPENPETE_TERRAIN_NEARHQ, default ON). */
 static int s_nearhq = -1;
 
-static cvert cv_lerp(cvert a, cvert b, double zc) {  /* crossing point at m3 == zc */
-    double t = (zc - a.m3) / (b.m3 - a.m3);
-    if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
-    cvert r;
-    r.osx = r.osy = 0.0f; r.oflag = 0;
-    r.m1 = a.m1 + t * (b.m1 - a.m1);
-    r.m2 = a.m2 + t * (b.m2 - a.m2);
-    r.m3 = zc;
-    r.u  = a.u + (float)t * (b.u - a.u);
-    r.v  = a.v + (float)t * (b.v - a.v);
-    int ar=a.rgb&0xFF, ag=(a.rgb>>8)&0xFF, ab=(a.rgb>>16)&0xFF;
-    int br=b.rgb&0xFF, bg=(b.rgb>>8)&0xFF, bb=(b.rgb>>16)&0xFF;
-    int rr=(int)(ar+t*(br-ar)+0.5), rg=(int)(ag+t*(bg-ag)+0.5), rb=(int)(ab+t*(bb-ab)+0.5);
-    r.rgb = (uint32_t)rr | ((uint32_t)rg<<8) | ((uint32_t)rb<<16);
-    return r;
-}
-
 /* Push one (already near-clipped) camera-space triangle: project to screen + the
  * scene-feed ttri (+ the colour-A/B verts). */
-static void push_tri(tn_wctx* W, cvert a, cvert b, cvert c, const tmat* m) {
+static void push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const tmat* m) {
     if (W->tri_n >= W->tri_cap) return;
-    cvert cc[3] = { a, b, c };
+    ngte_cvert cc[3] = { a, b, c };
     ttri* t = &W->tri[W->tri_n++];
     int fsnap = openpete_native_vertex_snap_active();
     for (int k = 0; k < 3; k++) {
@@ -844,16 +813,16 @@ static void push_tri(tn_wctx* W, cvert a, cvert b, cvert c, const tmat* m) {
  * terminates fast; faces that end fully behind the raised plane were entirely
  * inside the invisible band). Faces that never clip are pushed on round 0 —
  * identical to the old single-plane behaviour. */
-static void clip_push_tri(tn_wctx* W, cvert a, cvert b, cvert c, const tmat* m) {
-    cvert in[3] = { a, b, c };
+static void clip_push_tri(tn_wctx* W, ngte_cvert a, ngte_cvert b, ngte_cvert c, const tmat* m) {
+    ngte_cvert in[3] = { a, b, c };
     double zc = s_nearz;
     for (int round = 0; ; round++) {
-        cvert out[4]; int nout = 0; int clipped = 0;
+        ngte_cvert out[4]; int nout = 0; int clipped = 0;
         for (int i = 0; i < 3; i++) {
-            cvert cur = in[i], nxt = in[(i + 1) % 3];
+            ngte_cvert cur = in[i], nxt = in[(i + 1) % 3];
             int curIn = cur.m3 >= zc, nxtIn = nxt.m3 >= zc;
             if (curIn) out[nout++] = cur;
-            if (curIn != nxtIn && nout < 4) { out[nout++] = cv_lerp(cur, nxt, zc); clipped = 1; }
+            if (curIn != nxtIn && nout < 4) { out[nout++] = ngte_clip_lerp(cur, nxt, zc); clipped = 1; }
         }
         if (nout < 3) { W->dbg_behind++; return; } /* fully behind the near plane */
         if (clipped && round < 16) {
@@ -878,17 +847,17 @@ static void clip_push_tri(tn_wctx* W, cvert a, cvert b, cvert c, const tmat* m) 
  * behind-drop + spike cull: near/straddling faces are clipped & rendered. */
 static void emit_tri(tn_wctx* W, const lvert* sv, int a, int b, int c,
                      lcorner ka, lcorner kb, lcorner kc, const tmat* m) {
-    cvert A = { sv[a].m1, sv[a].m2, sv[a].m3, ka.rgb, ka.u, ka.v };
-    cvert B = { sv[b].m1, sv[b].m2, sv[b].m3, kb.rgb, kb.u, kb.v };
-    cvert C = { sv[c].m1, sv[c].m2, sv[c].m3, kc.rgb, kc.u, kc.v };
+    ngte_cvert A = { sv[a].m1, sv[a].m2, sv[a].m3, ka.rgb, ka.u, ka.v };
+    ngte_cvert B = { sv[b].m1, sv[b].m2, sv[b].m3, kb.rgb, kb.u, kb.v };
+    ngte_cvert C = { sv[c].m1, sv[c].m2, sv[c].m3, kc.rgb, kc.u, kc.v };
     clip_push_tri(W, A, B, C, m);
 }
 
 /* Camera-space midpoint of two cverts: position averaged, colour per-channel
  * averaged (UVs filled later by the caller). Mirrors the .s near-pass's
  * `(a+b)>>1` grid build (§near-HQ). */
-static cvert cv_mid(cvert a, cvert b) {
-    cvert r;
+static ngte_cvert cv_mid(ngte_cvert a, ngte_cvert b) {
+    ngte_cvert r;
     r.osx = r.osy = 0.0f; r.oflag = 0;
     r.m1 = (a.m1 + b.m1) * 0.5; r.m2 = (a.m2 + b.m2) * 0.5; r.m3 = (a.m3 + b.m3) * 0.5;
     r.u = 0; r.v = 0;
@@ -901,7 +870,7 @@ static cvert cv_mid(cvert a, cvert b) {
 /* Emit a textured camera-space quad (corners TL,TR,BL,BR) with near-clipping.
  * UVs come from a decoded Tiledef (u/v in [TL,TR,BL,BR]); GPU diagonal TR-BL
  * (triangulation (TL,TR,BL)+(TR,BL,BR)) — same as the main loop. */
-static void emit_quad_cv(tn_wctx* W, cvert tl, cvert tr, cvert bl, cvert br,
+static void emit_quad_cv(tn_wctx* W, ngte_cvert tl, ngte_cvert tr, ngte_cvert bl, ngte_cvert br,
                          const tmat* m, const float u[4], const float v[4]) {
     tl.u=u[0]; tl.v=v[0]; tr.u=u[1]; tr.v=v[1]; bl.u=u[2]; bl.v=v[2]; br.u=u[3]; br.v=v[3];
     /* Portal OT-conformance key: near-subdivided (deferred) faces are drained
@@ -959,13 +928,13 @@ static int tiledef_apply_ori(CPUState* cpu, uint32_t e, float u[4], float v[4]) 
 }
 
 static void terrain_near_emit(tn_wctx* W, CPUState* cpu, uint32_t hqBase, int texid, int abe,
-                              cvert TL, cvert TR, cvert BL, cvert BR) {
-    cvert mT = cv_mid(TL, TR), mB = cv_mid(BL, BR);
-    cvert mL = cv_mid(TL, BL), mR = cv_mid(TR, BR);
-    cvert C  = cv_mid(mT, mB);                 /* centre = mean of 4 corners */
+                              ngte_cvert TL, ngte_cvert TR, ngte_cvert BL, ngte_cvert BR) {
+    ngte_cvert mT = cv_mid(TL, TR), mB = cv_mid(BL, BR);
+    ngte_cvert mL = cv_mid(TL, BL), mR = cv_mid(TR, BR);
+    ngte_cvert C  = cv_mid(mT, mB);                 /* centre = mean of 4 corners */
     /* Integer vertex snap: pin each boundary midpoint to the SNAPPED parent
      * edge so the sub-quads stay watertight against the neighbour sharing
-     * that edge (see cvert.oflag) — but at the PERSPECTIVE-CORRECT position
+     * that edge (see ngte_cvert.oflag) — but at the PERSPECTIVE-CORRECT position
      * along the edge (the true camera-space midpoint's projection, dropped
      * onto the snapped segment), NOT the screen midpoint: the quadrant HQ
      * tiles are attached to these vertices, and a screen-parametric midpoint
@@ -980,11 +949,11 @@ static void terrain_near_emit(tn_wctx* W, CPUState* cpu, uint32_t hqBase, int te
      * families' copies of the same midpoint — one on-segment, one floored
      * fresh in push_tri — and drew a hairline across the near ground at the
      * subdivide-ring distance.) An unsafe edge gets no override: a clipping
-     * child rebuilds its crossings (cv_lerp zeroes oflag) and the segment
+     * child rebuilds its crossings (ngte_clip_lerp zeroes oflag) and the segment
      * projection would lie. */
     if (openpete_native_vertex_snap_active()) {
-        cvert* P[4] = { &TL, &TR, &BL, &BR };
-        cvert* M[4] = { &mT, &mB, &mL, &mR };
+        ngte_cvert* P[4] = { &TL, &TR, &BL, &BR };
+        ngte_cvert* M[4] = { &mT, &mB, &mL, &mR };
         const int E[4][2] = { {0,1}, {2,3}, {0,2}, {1,3} };  /* corner pairs */
         int safe[4];
         float px[4], py[4];
@@ -1013,7 +982,7 @@ static void terrain_near_emit(tn_wctx* W, CPUState* cpu, uint32_t hqBase, int te
             C.osx = floorf(cx2); C.osy = floorf(cy2); C.oflag = 1;
         }
     }
-    cvert q[4][4] = {                          /* {TL,TR,BL,BR} per sub-quad */
+    ngte_cvert q[4][4] = {                          /* {TL,TR,BL,BR} per sub-quad */
         { TL, mT, mL, C  },                    /* SQ0: top-left quadrant   → entry 0 */
         { mT, TR, C,  mR },                    /* SQ1: top-right quadrant  → entry 1 */
         { mL, C,  BL, mB },                    /* SQ2: bottom-left quadrant→ entry 2 */
@@ -4766,10 +4735,10 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                     r2 = rd(cpu, nearBase + (uint32_t)c2) & 0xFFFFFFu;
                     r3 = rd(cpu, nearBase + (uint32_t)c3) & 0xFFFFFFu;
                 }
-                cvert TL = { sv[i0].m1, sv[i0].m2, sv[i0].m3, r0, 0, 0 };
-                cvert TR = { sv[i1].m1, sv[i1].m2, sv[i1].m3, r1, 0, 0 };
-                cvert BL = { sv[i3].m1, sv[i3].m2, sv[i3].m3, r3, 0, 0 };
-                cvert BR = { sv[i2].m1, sv[i2].m2, sv[i2].m3, r2, 0, 0 };
+                ngte_cvert TL = { sv[i0].m1, sv[i0].m2, sv[i0].m3, r0, 0, 0 };
+                ngte_cvert TR = { sv[i1].m1, sv[i1].m2, sv[i1].m3, r1, 0, 0 };
+                ngte_cvert BL = { sv[i3].m1, sv[i3].m2, sv[i3].m3, r3, 0, 0 };
+                ngte_cvert BR = { sv[i2].m1, sv[i2].m2, sv[i2].m3, r2, 0, 0 };
                 int spikeTri0 = W->tri_n;
                 terrain_near_emit(W, cpu,
                                   hqTable + (uint32_t)F->hq_idx * game_layout.terrain.hq_stride,
@@ -4868,7 +4837,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * uniform translation is permutation-invariant), both LOD halves
              * (the game writes the same scroll byte into the V slots of both
              * halves of the tiledef entry, whatever its stride, so tv and tvN
-             * share one offset), and near-plane clipping (cv_lerp interpolates
+             * share one offset), and near-plane clipping (ngte_clip_lerp interpolates
              * UV linearly). */
             float tvScroll[4];
             if (s_tanim_have && faceStride == 16 && F->tb != -1 && s_tanim_act[F->tb & 0x7F]) {

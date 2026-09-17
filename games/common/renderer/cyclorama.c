@@ -75,36 +75,24 @@ static double project(const int M[3][3], int vx, int vy, int vz,
                             ofx_px, ofy_px, v, out_sx, out_sy, out_sat);
 }
 
-/* ---- near-plane clip (mirrors terrain.c::clip_push_tri) -------
- * The sky dome is a FULL 360° surround (all sectors live in RAM); at wide
- * aspect ratio the side/wrap geometry that the canonical 4:3 path near-plane
- * REJECTED (whole-tri drop when any vertex is behind the camera) is now on
- * screen, so it must be CLIPPED to the near plane instead — the in-front part
- * renders, the behind part is cut. Camera-space (m1,m2,m3); m3 = view-Z. */
+/* ---- near-plane clip ----------------------------------------------------
+ * The sky dome is a full 360 degree surround (all sectors live in RAM); at
+ * wide aspect ratio the side/wrap geometry that the canonical 4:3 path's
+ * near plane rejected (whole-tri drop when any vertex is behind the camera)
+ * is on screen, so it is clipped to the near plane instead: the in-front
+ * part renders, the behind part is cut. Camera-space (m1,m2,m3); m3 = view-Z.
+ * The cut itself is ngte_clip_lerp, the same edge crossing the terrain uses;
+ * the dome carries no UVs and its plane is fixed, so its corners leave
+ * u/v/oflag zero and it passes CYC_NEARZ as the plane. */
 #define CYC_NEARZ 1.0
-typedef struct { double m1, m2, m3; uint32_t rgb; } cyc_cv;
 
-static cyc_cv cyc_lerp(cyc_cv a, cyc_cv b) {       /* crossing at m3 == CYC_NEARZ */
-    double t = (CYC_NEARZ - a.m3) / (b.m3 - a.m3);
-    if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
-    cyc_cv r;
-    r.m1 = a.m1 + t * (b.m1 - a.m1);
-    r.m2 = a.m2 + t * (b.m2 - a.m2);
-    r.m3 = CYC_NEARZ;
-    int ar=a.rgb&0xFF, ag=(a.rgb>>8)&0xFF, ab=(a.rgb>>16)&0xFF;
-    int br=b.rgb&0xFF, bg=(b.rgb>>8)&0xFF, bb=(b.rgb>>16)&0xFF;
-    int rr=(int)(ar+t*(br-ar)+0.5), rg=(int)(ag+t*(bg-ag)+0.5), rb=(int)(ab+t*(bb-ab)+0.5);
-    r.rgb = (uint32_t)rr | ((uint32_t)rg<<8) | ((uint32_t)rb<<16);
-    return r;
-}
-
-/* Project an in-front cyc_cv to screen and push to s_native, applying the
+/* Project an in-front corner to screen and push to s_native, applying the
  * widescreen-aware horizontal trivial reject (vertical stays 4:3). */
-static void cyc_push_tri(cyc_cv a, cyc_cv b, cyc_cv c, int gouraud,
+static void cyc_push_tri(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud,
                          const ngte_view* vw) {
     const float xlo = vw->xlo, xhi = vw->xhi;
     const double ofx = vw->ofx, ofy = vw->ofy, H = vw->H_eff;
-    cyc_cv v[3] = { a, b, c }; float sx[3], sy[3];
+    ngte_cvert v[3] = { a, b, c }; float sx[3], sy[3];
     for (int k = 0; k < 3; k++) {
         double z = v[k].m3 != 0.0 ? v[k].m3 : 1.0;
         sx[k] = (float)(ofx + v[k].m1 * H / z);
@@ -123,14 +111,14 @@ static void cyc_push_tri(cyc_cv a, cyc_cv b, cyc_cv c, int gouraud,
 /* Sutherland-Hodgman clip a gouraud tri to m3 >= CYC_NEARZ, then push the
  * resulting polygon (fan). 0 clipped -> 1 tri; 1 -> quad (2 tris); 2 -> 1 tri;
  * fully behind -> dropped. */
-static void cyc_clip_emit(cyc_cv a, cyc_cv b, cyc_cv c, int gouraud,
+static void cyc_clip_emit(ngte_cvert a, ngte_cvert b, ngte_cvert c, int gouraud,
                           const ngte_view* vw) {
-    cyc_cv in[3] = { a, b, c }, out[4]; int nout = 0;
+    ngte_cvert in[3] = { a, b, c }, out[4]; int nout = 0;
     for (int i = 0; i < 3; i++) {
-        cyc_cv cur = in[i], nxt = in[(i + 1) % 3];
+        ngte_cvert cur = in[i], nxt = in[(i + 1) % 3];
         int ci = cur.m3 >= CYC_NEARZ, ni = nxt.m3 >= CYC_NEARZ;
         if (ci) out[nout++] = cur;
-        if (ci != ni && nout < 4) out[nout++] = cyc_lerp(cur, nxt);
+        if (ci != ni && nout < 4) out[nout++] = ngte_clip_lerp(cur, nxt, CYC_NEARZ);
     }
     if (nout < 3) return;
     cyc_push_tri(out[0], out[1], out[2], gouraud, vw);
@@ -302,9 +290,9 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
                         uint32_t cc0 = (k0 < colorCount) ? col[k0] : 0;
                         uint32_t cc1 = gouraud ? ((k1 < colorCount) ? col[k1] : 0) : cc0;
                         uint32_t cc2 = gouraud ? ((k2 < colorCount) ? col[k2] : 0) : cc0;
-                        cyc_cv A = { pm1[v0], pm2[v0], pz[v0], cc0 };
-                        cyc_cv B = { pm1[v1], pm2[v1], pz[v1], cc1 };
-                        cyc_cv C = { pm1[v2], pm2[v2], pz[v2], cc2 };
+                        ngte_cvert A = { pm1[v0], pm2[v0], pz[v0], cc0 };
+                        ngte_cvert B = { pm1[v1], pm2[v1], pz[v1], cc1 };
+                        ngte_cvert C = { pm1[v2], pm2[v2], pz[v2], cc2 };
                         cyc_clip_emit(A, B, C, gouraud, &vw);
                     }
                     if (!more || hw + 2 > hwEnd) break;
@@ -335,9 +323,9 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
              * straddles the camera renders its in-front part at wide aspect — the
              * old whole-tri reject dropped it (tuned for 4:3 ±37°). cyc_push_tri
              * applies the widescreen-aware horizontal trivial reject + scissor. */
-            cyc_cv A = { pm1[i0], pm2[i0], pz[i0], cc0 };
-            cyc_cv B = { pm1[i1], pm2[i1], pz[i1], cc1 };
-            cyc_cv C = { pm1[i2], pm2[i2], pz[i2], cc2 };
+            ngte_cvert A = { pm1[i0], pm2[i0], pz[i0], cc0 };
+            ngte_cvert B = { pm1[i1], pm2[i1], pz[i1], cc1 };
+            ngte_cvert C = { pm1[i2], pm2[i2], pz[i2], cc2 };
             cyc_clip_emit(A, B, C, gouraud, &vw);
         }
     }
