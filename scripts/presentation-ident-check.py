@@ -13,7 +13,8 @@ The target is zero. Until every producer reaches it, a per-tile baseline
 holds the current residual; a tile fails when it exceeds its baseline, and a
 tile without a baseline row fails on any difference. --bless rewrites the
 baseline from the candidate (review the diff before committing it: a raised
-count is a spine regression, not a re-bless).
+count is a spine regression, not a re-bless). The rewrite merges: the
+candidate's pairs replace their rows, rows the candidate does not hold stay.
 
 Exit: 0 = every pair within baseline, 1 = a pair exceeds it / an ident tile has
 no canon twin / no pair at all (a capture that produced no identity pair is
@@ -98,12 +99,19 @@ def main():
           f"{len(counts) - exact} within baseline or exceeding, {fails} failing, "
           f"{total_px} differing pixels in total")
     if args.bless:
+        # Merge: the candidate's pairs replace their rows and every other row
+        # stays. A candidate captured with a row filter holds a few pairs, and
+        # a whole-file rewrite from it would drop the rest of the corpus's
+        # baseline.
+        merged = dict(base)
+        merged.update(counts)
         os.makedirs(os.path.dirname(args.baseline), exist_ok=True)
         with open(args.baseline, "w") as f:
             f.write("# tile\tdiffering pixels vs the canon tile of the same frame (target 0)\n")
-            for name in sorted(counts):
-                f.write(f"{name}\t{counts[name]}\n")
-        print(f"[presentation-ident] baseline written: {args.baseline}")
+            for name in sorted(merged):
+                f.write(f"{name}\t{merged[name]}\n")
+        print(f"[presentation-ident] baseline written: {args.baseline} "
+              f"({len(counts)} rows from this candidate, {len(merged) - len(counts)} kept)")
         return 0
     return 1 if fails else 0
 
