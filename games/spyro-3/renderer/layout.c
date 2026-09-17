@@ -50,11 +50,32 @@ const game_layout_t game_layout = {
      *                                        a sine table, two words per entry
      * Only func_80021FF4 tests bit 31 of the entry (0x80022074, `bltz`); the
      * other two walk every entry. All three gate on the liveness byte table,
-     * `lbu` at g_SonyImage+0x263C + (entry & 0xFF), bit 0. There is no
-     * scrolling-texture sub-list: none of the three touches a tiledef. */
+     * `lbu` at g_SonyImage+0x263C + (entry & 0xFF), bit 0. None of the three
+     * touches a tiledef.
+     *
+     * The scrolling-texture animations live in a second registry at
+     * 0x8006E350, walked by func_80020E74 (called from func_80055294
+     * immediately before those three). It is three {count, pointer to a
+     * descriptor-pointer array} pairs at +0x00/+0x04, +0x08/+0x0C and
+     * +0x10/+0x14, the same record shape as Spyro 1's EnvironmentAnimations,
+     * so `scroll` names the second pair and the shared UV-scroll mirror reads
+     * it under the ARENA form. A scroll descriptor holds a u16 tile index at
+     * +4 and a u16 accumulator at +6; on a keyframe advance
+     * (0x80021034-0x800210B8) the walker adds the keyframe's signed int8
+     * delta, masks the accumulator to 7 bits and commits whole texels into the
+     * 48-byte tiledef entry at (g_Environment+0x20 table) + index*48 —
+     * acc>>2 and acc>>2+31 into the V bytes of both LQ halves (+1/+5, +9/+13),
+     * acc>>1 and that +31 into the first two HQ sub-tiles (+17/+21, +25/+29),
+     * and ((acc>>1)+32)&0x3F with its +31 into the last two (+33/+37,
+     * +41/+45). The first pair (+0x00/+0x04) memcpys whole 48-byte entries
+     * between tiles, which is a discrete swap the tile-generation counter
+     * already snaps. */
     .env_anim = {
         .form       = ENV_ANIM_ARENA,
-        .base       = 0u,             /* no animations header: only the block */
+        /* The scroll registry's base; no symbol names it, and the geometry
+         * registry above is a different structure with no header of its own. */
+        .base       = 0x8006E350u,
+        .scroll     = 0x8006E350u + 0x08u,
         .block_ptr  = G_ENVIRONMENT + 0x1Cu,
         .live_table = 0x80072330u,    /* D_8006FCF4 + 0x263C */
         .sub = {

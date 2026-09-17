@@ -1045,9 +1045,11 @@ static void terrain_near_emit(tn_wctx* W, CPUState* cpu, uint32_t hqBase, int te
          * moves V into U (its per-corner deltas only carry within the u/v byte
          * pair), so scrolling here is identical to scrolling the base entry —
          * a rotated tile scrolls along its rotated axis, exactly as the game's
-         * whole-texel writes do. Sub-quads 0-1 read HQ entries 1-2 and 2-3 read
-         * entries 3-4; the two groups sit half a window apart in the scroll
-         * ring, so they carry separately-wrapped offsets. */
+         * whole-texel writes do. Sub-quads 0-1 read the first HQ group and 2-3
+         * the second; the two groups sit half a window apart in the scroll
+         * ring, so they carry separately-wrapped offsets. (Only Spyro 1 feeds
+         * this path: Spyro 3 locates no HQ table, so its near quads fall to the
+         * LQ emit, which carries the scroll offset of the same tile.) */
         if (s_tanim_have && texid >= 0 && texid < 128 && s_tanim_act[texid]) {
             float dv = s_tanim_dvhq[texid][i >> 1];
             for (int k = 0; k < 4; k++) v[k] += dv;
@@ -1242,11 +1244,13 @@ typedef struct {
 } tsface_t;
 
 /* Env texture animation liveness (the artisans waterfall fix): the game's
- * env-anim (func_8002A6FC) animates textures by rewriting the LQ tiledef
- * TABLE ENTRIES in place each keyframe advance — loop 1 copies whole 16-byte
- * entries from an animation bank (texture-descriptor swap), loop 2 rewrites
- * the V bytes of BOTH halves (+1/+5/+9/+13, UV scroll — waterfalls/water),
- * and both also rewrite the sibling 168-byte HQ record. The .s HP walk reads
+ * env-anim (Spyro 1 func_8002A6FC, Spyro 3 func_80020E74) animates textures by
+ * rewriting the LQ tiledef TABLE ENTRIES in place each keyframe advance — loop
+ * 1 copies whole entries from an animation bank (texture-descriptor swap),
+ * loop 2 rewrites the V bytes of BOTH halves (+1/+5/+9/+13, UV scroll —
+ * waterfalls/water), and both also rewrite the HQ sub-tiles (Spyro 1's sibling
+ * 168-byte record, Spyro 3's four tiledefs inline at +0x10).
+ * The 16-byte window hashed below is exactly the two LQ halves in both games. The .s HP walk reads
  * the entry live per face per frame (block_8002709C), so PSX animates; the
  * sector cache snapshot froze it (near/HQ subdivide reads the HQ record live,
  * which is why close-up terrain still animated). Mirror = one generation
@@ -2176,15 +2180,20 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
 }
 
 /* Texture (UV-scroll) env-anim sub-tick interpolation — the artisans waterfall
- * judder. func_8002A6FC's scrolling-texture list (g_EnvironmentAnimations
- * +0x08/+0x0C) keeps a scroller's ENTIRE animation state in a 7-bit accumulator
- * at desc+6: on a keyframe advance it adds the keyframe's signed int8 delta,
- * wraps to 0..127, and writes the accumulator into the tiledef V bytes as whole
- * texels — scroll>>2 into the LQ entry (+1/+5/+9/+13, i.e. v0/v1 of BOTH LOD
- * halves) and scroll>>1 into the 21-entry HQ record, whose sub-tile groups sit
- * at fixed +0x10/+0x20/+0x30 row offsets (mod 64). Those writes land once per
- * canonical tick, so tsc_tile_gens sees no change in between and the cached
- * texmats hold still while everything around them interpolates.
+ * judder. The scrolling-texture list (`game_layout.env_anim.scroll`: Spyro 1's
+ * g_EnvironmentAnimations +0x08/+0x0C walked by func_8002A6FC, Spyro 3's
+ * 0x8006E350 +0x08/+0x0C walked by func_80020E74) keeps a scroller's ENTIRE
+ * animation state in a 7-bit accumulator at desc+6: on a keyframe advance it
+ * adds the keyframe's signed int8 delta, wraps to 0..127, and writes the
+ * accumulator into the tiledef V bytes as whole texels — scroll>>2 into the LQ
+ * entry (+1/+5/+9/+13, i.e. v0/v1 of BOTH LOD halves) and scroll>>1 into the HQ
+ * sub-tiles, whose two groups sit half a scroll window apart (mod 64). Both
+ * games write the same two quantities into the same V-byte roles; only where
+ * the HQ sub-tiles live differs (Spyro 1's separate 21-entry record, Spyro 3's
+ * four inline tiledefs at +0x10 of the 48-byte entry), so the offsets computed
+ * here are geometry-independent and the emit sites place them. Those writes
+ * land once per canonical tick, so tsc_tile_gens sees no change in between and
+ * the cached texmats hold still while everything around them interpolates.
  *
  * Mirror the game's own registry (as tsc_vert_anim_refresh does for verts)
  * rather than diffing texture RAM. The prev/cur accumulator pair comes from the
@@ -2207,9 +2216,10 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
  * across its real advance interval rather than jumping once and holding.
  *
  * NOT handled here, deliberately: the tile-SWAP list (+0x00/+0x04) memcpys whole
- * 16-byte entries / 168-byte records between texture descriptors. That is a
- * discrete frame flip (supercharge ramps, portals), not a continuous scroll —
- * snapping it is faithful, and tsc_tile_gens/tsc_refresh_anim already do. */
+ * tiledef entries (and, in Spyro 1, the sibling HQ record) between texture
+ * descriptors. That is a discrete frame flip (supercharge ramps, portals), not
+ * a continuous scroll — snapping it is faithful, and tsc_tile_gens /
+ * tsc_refresh_anim already do. */
 /* A keyframe-table reset (loop restart, level event) moves the accumulator
  * arbitrarily; a real scroll steps by one keyframe's int8 delta — a few units.
  * 32 of the 128 accumulator units splits the two by an order of magnitude each
@@ -4649,9 +4659,10 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * the tile's fractional offset. One block covers GT4, GT3 (the
              * rotation below only permutes which corner feeds which slot, so a
              * uniform translation is permutation-invariant), both LOD halves
-             * (the game writes the same scroll byte into all four V slots of the
-             * 16-byte entry, so tv and tvN share one offset), and near-plane
-             * clipping (cv_lerp interpolates UV linearly). */
+             * (the game writes the same scroll byte into the V slots of both
+             * halves of the tiledef entry, whatever its stride, so tv and tvN
+             * share one offset), and near-plane clipping (cv_lerp interpolates
+             * UV linearly). */
             float tvScroll[4];
             if (s_tanim_have && faceStride == 16 && F->tb != -1 && s_tanim_act[F->tb & 0x7F]) {
                 float dv = s_tanim_dvlq[F->tb & 0x7F];

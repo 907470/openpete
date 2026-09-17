@@ -41,6 +41,13 @@ static const game_interp_row_t s_rows[] = {
     { "g_GameState", G_GAMESTATE, 4u, 1 },
 };
 
+static uint32_t rd32(uint32_t addr) {
+    const void* p = openpete_psx_to_host_ptr(addr);
+    uint32_t v = 0;
+    if (p) memcpy(&v, p, 4);
+    return v;
+}
+
 static void capture_objs(void) {
     openpete_interp_objs_begin_tick();
     const uint32_t head = game_layout.moby.array_head;
@@ -67,6 +74,33 @@ static void capture_objs(void) {
             m += stride;
         }
     }
+
+    /* Scrolling-texture env-anim descriptors (flowing water and waterfalls).
+     * func_80020E74 keeps each scroller's whole animation state in a 7-bit
+     * accumulator at desc+6 and commits it to the tiledef V bytes as whole
+     * texels on a keyframe advance, so a scrolled texture steps at the sim
+     * rate while the world around it interpolates. Capture just the (tile,
+     * accumulator) pair at desc+4, not the descriptor head,
+     * whose countdown byte at +3 decrements every tick: including it would
+     * make the blob differ every tick and defeat the table's distinct-roll
+     * dedupe, collapsing a slow scroller's real advance interval to a single
+     * tick. terrain.c (tsc_scroll_refresh) reads the pair back and
+     * interpolates the accumulator at the slot's own alpha, so the scroll
+     * stays smooth even when the camera is still, where the camera ring
+     * dedupes and the shared bracket alpha never engages. */
+    if (game_layout.env_anim.scroll) {
+        uint32_t cnt  = rd32(game_layout.env_anim.scroll);
+        uint32_t base = rd32(game_layout.env_anim.scroll + 4u);
+        if (base && cnt && cnt <= 1024u) {
+            for (uint32_t i = 0; i < cnt; ++i) {
+                uint32_t desc = rd32(base + i * 4u);
+                if (!desc) continue;
+                const void* host = openpete_psx_to_host_ptr(desc + 4u);
+                if (host) openpete_interp_objs_capture(desc, host, 4u);
+            }
+        }
+    }
+
     openpete_interp_objs_end_tick();
 }
 

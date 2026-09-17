@@ -92,9 +92,10 @@ typedef struct game_layout {
         uint32_t form;              /* ENV_ANIM_* */
         uint32_t base;
 
-        /* ENV_ANIM_LISTS. Each is {count, pointer to a descriptor-pointer
-         * array}; the field is the address of the count and the array pointer
-         * follows at +4. */
+        /* Each is {count, pointer to a descriptor-pointer array}; the field
+         * is the address of the count and the array pointer follows at +4.
+         * `lp_poly` and `hp_poly` are the ENV_ANIM_LISTS geometry registry;
+         * `scroll` carries the same shape under either form. */
         uint32_t scroll;            /* scrolling-texture descriptors */
         uint32_t lp_poly;           /* LP geometry animations */
         uint32_t hp_poly;           /* HP geometry animations */
