@@ -1308,6 +1308,7 @@ typedef struct {
     float* lpVf; float* hpVf;
     uint32_t vrollPres, vfracPres;
     int polyanim;   /* named by an env poly-anim descriptor (vert banks animate) */
+    uint32_t vhash; /* LP+HP packed vertex words: catches an in-place rewrite */
     /* Pack-aware LP grade (tsc_lp_grade): face-weighted mean stock->pack
      * affine of this sector's HP textures. 0 = uncomputed, 1 = fit,
      * 2 = no signal (untextured/unmatched sector — level mean applies). */
@@ -1901,6 +1902,41 @@ static int tsc_sector_polyanim(CPUState* cpu, uint32_t s,
     return 0;
 }
 
+/* Hash of the sector's packed LP and HP vertex words. The decode cache's
+ * signature is the header (words +0x04..+0x14), which carries the counts, the
+ * flags and the bounding sphere but not the geometry: a gameplay event that
+ * collapses a prop by rewriting its vertex block in place leaves every
+ * signature word untouched, so every later lookup hits the pre-event decode.
+ * Sectors named by an env poly-anim descriptor are excluded by the caller —
+ * their vertices are rewritten every tick by design, and the registry path
+ * re-decodes them into prev/cur banks that a full miss would drop. 0 is
+ * reserved for "not computed". */
+static uint32_t tsc_vhash(CPUState* cpu, uint32_t s, const uint32_t g[5]) {
+    uint32_t nLpV = g[3] & 0xFFu, nHpV = g[4] & 0xFFu;
+    uint32_t hpVerts = s + 0x1Cu + ((g[4] >> 24) & 0xFFu) * 4u;
+    uint32_t h = 2166136261u;
+    for (uint32_t k = 0; k < nLpV; k++) h = (h ^ rd(cpu, s + 0x1Cu + k * 4u)) * 16777619u;
+    for (uint32_t k = 0; k < nHpV; k++) h = (h ^ rd(cpu, hpVerts + k * 4u)) * 16777619u;
+    return h ? h : 1u;
+}
+
+/* OPENPETE_TERRAIN_VHASH_CENSUS=1: per canonical build, how many sectors were
+ * hashed and which of them moved. Engagement for the vertex-rewrite miss:
+ * hashed > 0 proves the compare ran, and a moved sector names the build that
+ * re-decodes it. */
+static int      s_vh_on = -1;
+static unsigned s_vh_frame;
+static int      s_vh_hashed, s_vh_moved, s_vh_listn;
+static uint16_t s_vh_list[32];
+static void tsc_vhash_census_flush(void) {
+    if (s_vh_on <= 0 || !s_vh_hashed) return;
+    fprintf(stderr, "[vhash] frame=%u hashed=%d moved=%d",
+            s_vh_frame, s_vh_hashed, s_vh_moved);
+    for (int k = 0; k < s_vh_listn; k++) fprintf(stderr, " %u", s_vh_list[k]);
+    fprintf(stderr, "\n");
+    s_vh_hashed = s_vh_moved = s_vh_listn = 0;
+}
+
 static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
                                 uint32_t lqTable, uint32_t hqTable,
                                 int texTblMode, int hiDetail,
@@ -1919,11 +1955,37 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
      * terrain_build call) evicts a stale sector, never this present's
      * working set. Probes are five-word compares — window width is noise
      * next to one re-decode. */
+    if (s_vh_on < 0) { const char* e = getenv("OPENPETE_TERRAIN_VHASH_CENSUS");
+                       s_vh_on = (e && *e && *e != '0'); }
+    uint32_t vh = 0;
+    tscache_t* reuse = NULL;   /* stale decode to re-fill in place */
     tscache_t* C = NULL;
     for (uint32_t k = 0; k < TSC_WINDOW; k++) {
         tscache_t* W = &s_tsc[(h + k) & (TSC_SLOTS - 1)];
         if (W->s == s && W->sig[0]==g[0] && W->sig[1]==g[1] && W->sig[2]==g[2]
             && W->sig[3]==g[3] && W->sig[4]==g[4]) {
+            if (!W->polyanim) {
+                if (!vh) vh = tsc_vhash(cpu, s, g);
+                if (s_vh_on) {
+                    if (openpete_frame != s_vh_frame) {
+                        tsc_vhash_census_flush(); s_vh_frame = openpete_frame;
+                    }
+                    s_vh_hashed++;
+                }
+                if (W->vhash != vh) {      /* vertices rewritten in place: re-decode
+                                            * into this same slot, so the stale
+                                            * decode cannot be probed again */
+                    reuse = W;
+                    if (s_vh_on) {
+                        s_vh_moved++;
+                        for (uint32_t q = 0; q < sectorCnt && s_vh_listn < 32; q++)
+                            if (rd(cpu, sectorPtr + q * 4) == s) {
+                                s_vh_list[s_vh_listn++] = (uint16_t)q; break;
+                            }
+                    }
+                    break;
+                }
+            }
             s_tsc_hit++; W->lastUse = s_tsc_stamp;
             if (W->fillGen != openpete_fillpick_generation())
                 tsc_retag_fill(cpu, W, sectorPtr, sectorCnt);
@@ -1933,7 +1995,8 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
     {
         s_tsc_miss++;
         tscache_t* hot = NULL;                       /* fallback: LRU among GPU-owned */
-        for (uint32_t k = 0; k < TSC_WINDOW; k++) {  /* empty slot first, else LRU */
+        C = reuse;
+        for (uint32_t k = 0; !reuse && k < TSC_WINDOW; k++) {  /* empty slot first, else LRU */
             uint32_t idx = (h + k) & (TSC_SLOTS - 1);
             /* OPTC_SLOT_DEAD's 9-bit id is the dead-stamp face_flags
              * sentinel (chunks baked with it are culled as dead), so the
@@ -1961,6 +2024,7 @@ static const tscache_t* tsc_get(CPUState* cpu, uint32_t s,
         free(C->lpVprev); free(C->hpVprev); free(C->lpVf); free(C->hpVf);
         memset(C, 0, sizeof(*C));
         C->s = s; memcpy(C->sig, g, sizeof(g));
+        C->vhash = vh ? vh : tsc_vhash(cpu, s, g);
         C->lastUse = s_tsc_stamp;
         C->flags = thdr_flags(g[0]);
         C->flat  = thdr_flat(g[0]);
@@ -2450,7 +2514,35 @@ static void terrain_visdbg(CPUState* cpu, uint32_t sectorCnt, int group,
  * derived from it share one H. */
 static ngte_view s_view;
 
-static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int32_t group) {
+/* Bounding-sphere frustum rejection, environment.s:800224E0-80022548. The
+ * three comparisons are behind the near plane, and outside the horizontal and
+ * vertical half-angles, the second and third widened by a radius-proportional
+ * slack the draw builds by shifts. The GTE saturates IR1..IR3 to 16 bits
+ * before the draw reads them back. wx/wy scale the two half-widths: 1.0 is the
+ * 4:3 frame the draw itself tests, above 1.0 the displayed frame. */
+static int tsec_sphere_cull(double c1m, double c2m, double cbin, int r,
+                            double wx, double wy) {
+    double vx = ngte_ir_clamp(c1m), vy = ngte_ir_clamp(c2m), vz = ngte_ir_clamp(cbin);
+    double t3 = (r >> 1) + (r >> 2) + (r >> 5), t4 = (r >> 1) + (r >> 4) + (r >> 5);
+    double t5 = r - (r >> 3), t6 = (r >> 1) - (r >> 4);
+    return (vz + r <= 0)
+        || (4.0 * (fabs(vx) - t3) >= 3.0 * wx * (vz + t4))
+        || (32.0 * (fabs(vy) - t5) >= 17.0 * wy * (vz + t6));
+}
+
+/* Wide-aspect wedge fill inputs: the sector table, the draw's sector-binning
+ * matrix and camera, and the half-width scales of the displayed frame (wx
+ * carries the Hor+ factor, both carry the --fov scale). */
+typedef struct {
+    uint32_t sectorPtr;
+    int      M[3][3];
+    double   camx, camy, camz;
+    double   wx, wy;
+} tvis_wedge;
+
+static int s_vis_engage;   /* the BINCHECK window is open on this walk */
+static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int32_t group,
+                           const tvis_wedge* W) {
     if (sectorCnt > 1024) sectorCnt = 1024;
     int ws = s_view.extended;   /* Hor+ or a wider FOV: the 4:3 verdict is too narrow */
     if (s_visdbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_VISDBG"); s_visdbg = (e && *e && *e != '0'); }
@@ -2502,6 +2594,7 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
                     if (!tvis_visible(cpu, i)) dropped++;
                 }
             }
+            s_vis_engage = 1;
             fprintf(stderr, "[vis-aspect-indep] frame=%u group=%d wideCandidates=%d "
                             "dropped=%d kept=%d\n",
                     openpete_frame, group, cand, dropped, cand - dropped);
@@ -2528,6 +2621,41 @@ static int terrain_vislist(CPUState* cpu, uint32_t sectorCnt, uint16_t* out, int
     int n = 0;
     for (uint32_t i = 0; i < sectorCnt; i++) {
         if (tvis_visible(cpu, i)) out[n++] = (uint16_t)i;
+    }
+    int core = n, wedge = 0, straddle = 0;
+    uint16_t wlist[64]; int wn = 0;   /* census: the wedge-admitted indices */
+    /* Wide-aspect wedge fill. The verdict is the game's candidate set for the
+     * 4:3 frame, so a sector lying only in a side wedge of a wider frame can
+     * be marked hidden and the wedge then draws the backdrop. Admit, on top of
+     * the verdict, every sector the draw's own sphere-frustum test rejects at
+     * the 4:3 half-width and admits at the displayed half-width. A sphere the
+     * 4:3 test admits is left to the verdict, so the 4:3 core of the frame is
+     * unchanged; a sphere the 4:3 test rejects encloses no geometry inside the
+     * 4:3 frame, so an admitted sector can only draw in the wedges. */
+    if (W) {
+        for (uint32_t i = 0; i < sectorCnt && n < 1024; i++) {
+            if (tvis_visible(cpu, i)) continue;
+            uint32_t sp = rd(cpu, W->sectorPtr + i * 4);
+            if (!sp) continue;
+            uint32_t w0 = rd(cpu, sp + 0x00), w1 = rd(cpu, sp + 0x04);
+            double cx = (double)(int)(w0 >> 16), cy = (double)(int)(w0 & 0xFFFFu),
+                   cz = (double)(int)(w1 >> 16);
+            double c1m, c2m, cbin;
+            ngte_mac(W->M, W->camy - cy, W->camz - cz, cx - W->camx, &c1m, &c2m, &cbin);
+            int r = thdr_radius(w1);
+            if (!tsec_sphere_cull(c1m, c2m, cbin, r, 1.0, 1.0)) { straddle++; continue; }
+            if (tsec_sphere_cull(c1m, c2m, cbin, r, W->wx, W->wy)) continue;
+            out[n++] = (uint16_t)i;
+            wedge++;
+            if (s_vis_engage && wn < 64) wlist[wn++] = (uint16_t)i;
+        }
+    }
+    if (s_vis_engage) {
+        fprintf(stderr, "[vis-aspect-indep] frame=%u core=%d wedge=%d straddle=%d wx=%.4f",
+                openpete_frame, core, wedge, straddle, W ? W->wx : 1.0);
+        for (int k = 0; k < wn; k++) fprintf(stderr, " %u", wlist[k]);
+        fprintf(stderr, "\n");
+        s_vis_engage = 0;
     }
     if (s_visdbg) {   /* validate the invariant without altering the 4:3 render set */
         static uint16_t cand[1024]; int cn = 0;
@@ -3655,6 +3783,7 @@ typedef struct {
     int M[3][3], Mbin[3][3];
     double camx, camy, camz;
     int fogRefBase, cullRefS2, texTblMode;
+    double cull_wx, cull_wy;            /* sphere-cull half-width scales (1.0 = 4:3) */
     int tier_faithful, lod_handoff;
     uint32_t hqTable;
     const uint16_t* visidx; int nvis;
@@ -3696,19 +3825,11 @@ static void sector_verdicts(const tscache_t* SC, const tn_wcfg* G, tn_secverd* V
     int drawHP, drawLP;
     int culled = 0;
     if (game_layout.terrain.sector_cull == TERRAIN_SECTOR_CULL_SPHERE) {
-        /* Bounding-sphere frustum rejection, environment.s:800224E0-80022548.
-         * The three comparisons are behind the near plane, and outside the
-         * horizontal and vertical half-angles, the second and third widened by
-         * a radius-proportional slack the draw builds by shifts. The GTE
-         * saturates IR1..IR3 to 16 bits before the draw reads them back. */
-        double vx = ngte_ir_clamp(c1m), vy = ngte_ir_clamp(c2m);
-        double vz = ngte_ir_clamp(cbin);
-        int r = SC->radius;
-        double t3 = (r >> 1) + (r >> 2) + (r >> 5), t4 = (r >> 1) + (r >> 4) + (r >> 5);
-        double t5 = r - (r >> 3), t6 = (r >> 1) - (r >> 4);
-        culled = (vz + r <= 0)
-              || (4.0 * (fabs(vx) - t3) >= 3.0 * (vz + t4))
-              || (32.0 * (fabs(vy) - t5) >= 17.0 * (vz + t6));
+        /* The sphere test runs at the displayed half-widths: at the canonical
+         * frame cull_wx/cull_wy are 1.0 and this is the draw's own verdict,
+         * and where the wedge fill is active the side wedges keep the sectors
+         * the 4:3 half-width would reject. */
+        culled = tsec_sphere_cull(c1m, c2m, cbin, SC->radius, G->cull_wx, G->cull_wy);
     }
     if (game_layout.terrain.hp_far && !openpete_no_lod) {
         /* The draw's own list binning, environment.s:800225A0-80022640. A
@@ -4787,6 +4908,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     terrain_texrecords(cpu);
     terrain_animdbg(cpu);
     tsc_census();
+    tsc_vhash_census_flush();
     {   /* OPENPETE_TERRAIN_OCCL_DBG: occlusion-cull census (~1/120 walks) */
         static int on = -1, n; static long prev_tris;
         if (on < 0) { const char* e = getenv("OPENPETE_TERRAIN_OCCL_DBG"); on = (e && *e && *e != '0'); }
@@ -5041,7 +5163,22 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     /* Visible-sector index set: canonical 4:3 verdict (D_800771C8) at native
      * aspect; occlusion-group candidate set in widescreen (terrain_vislist). */
     static uint16_t visidx[1024];
-    int nvis = terrain_vislist(cpu, sectorCnt, visidx, occGroup);
+    /* Wide-aspect wedge fill: armed only for a game whose visibility verdict
+     * carries no aspect term (env.vis_aspect_independent), where the verdict
+     * is the 4:3 candidate set and the wedges outside it are unpopulated. */
+    tvis_wedge wedge, *wedgep = NULL;
+    double cull_wx = 1.0, cull_wy = 1.0;
+    if (s_view.extended && game_layout.env.vis_aspect_independent
+        && game_layout.terrain.sector_cull == TERRAIN_SECTOR_CULL_SPHERE) {
+        cull_wx = (double)s_view.F / s_view.s;   /* Hor+ widens X only; --fov both */
+        cull_wy = 1.0 / s_view.s;
+        wedge.sectorPtr = sectorPtr;
+        memcpy(wedge.M, Mbin, sizeof(wedge.M));
+        wedge.camx = camx; wedge.camy = camy; wedge.camz = camz;
+        wedge.wx = cull_wx; wedge.wy = cull_wy;
+        wedgep = &wedge;
+    }
+    int nvis = terrain_vislist(cpu, sectorCnt, visidx, occGroup, wedgep);
     s_tsc_stamp++;   /* LRU epoch: everything touched this walk outlives strangers */
     /* OPENPETE_TERRAIN_TIMERS=1: per-SECTOR walk-cost census (~1/s). Attributes
      * the terrain feeder's µs to individual sectors (accounted at the top of
@@ -5088,6 +5225,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     s_vanim_sub);
     }
     G.fogRefBase = fogRefBase; G.cullRefS2 = cullRefS2; G.texTblMode = texTblMode;
+    G.cull_wx = cull_wx; G.cull_wy = cull_wy;
     G.tier_faithful = tier_faithful; G.lod_handoff = lod_handoff;
     G.hqTable = hqTable;
     G.visidx = visidx; G.nvis = nvis;
