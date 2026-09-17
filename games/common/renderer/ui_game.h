@@ -57,10 +57,12 @@ typedef struct ui_game {
     int         atlas_x, atlas_y, atlas_w, atlas_h;
     const char* atlas_name;
 
-    /* Text emitters that build and link their own primitive chain, bypassing
-     * `ot_insert`. Each is hooked separately and its chain read out of the
-     * primitive buffer it just filled. 0 = unused slot. */
-    uint32_t text_emitter[2];
+    /* Emitters that build a DR_MODE + SPRT chain in the primitive buffer and
+     * link it themselves, bypassing `ot_insert`: the glyph emitters and the
+     * loading-screen image, which draws the uploaded picture as four
+     * quarter-width sprites. Each is hooked separately and its chain read out
+     * of the primitive buffer it just filled. 0 = unused slot. */
+    uint32_t sprt_chain_emitter[3];
 } ui_game_t;
 
 extern const ui_game_t ui_game;

@@ -255,5 +255,5 @@ const ui_game_t ui_game = {
 
     /* Text is drawn as text-moby models (renderer/text_moby.c), not as an SPRT
      * chain, so there is no self-linking emitter to hook. */
-    .text_emitter = { 0u, 0u },
+    .sprt_chain_emitter = { 0u, 0u, 0u },
 };

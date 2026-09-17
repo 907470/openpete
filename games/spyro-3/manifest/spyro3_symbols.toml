@@ -210,3 +210,9 @@ name = "F_TEXT_SPRT_PER_GLYPH"
 addr = 0x8002E970
 kind = "function"
 note = "func_8002E970 (asm/mobyfunc.s:1687-1845) — the per-glyph-DR_MODE variant of func_8002E748: it rewrites the 0x618 tpage halfword inside every packet and advances 10 or 8 px by the clipRange flag"
+
+[[symbol]]
+name = "F_LOADING_SPRT"
+addr = 0x80059358
+kind = "function"
+note = "func_80059358(brightness, otIndex) (src/warp.c:558-579) — the loading-screen image emitter: four DR_MODE (tpage 264 + 2*i, the 128-px-wide pages of the 512x216 picture LoadImage'd to VRAM (512,0)) each followed by a 0x14-byte SPRT of code 100 at x = i*128, y 12, 128x216, rgb set to the fade level, chained in the primitive buffer and linked through func_8004E71C rather than func_8004E758"

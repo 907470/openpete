@@ -405,5 +405,9 @@ const ui_game_t ui_game = {
     /* Both glyph emitters build a tag-to-tag SPRT chain in the primitive
      * buffer and link it into the 2D ordering table themselves, so neither
      * reaches the chokepoint. */
-    .text_emitter = { F_TEXT_SPRT, F_TEXT_SPRT_PER_GLYPH },
+    /* The loading-screen picture is the third chain of this shape: the image is
+     * LoadImage'd to VRAM (512,0) once and re-drawn every frame as four
+     * 128x216 SPRTs whose rgb carries the fade level, so the walk that reads a
+     * glyph chain out of the primitive buffer reads it unchanged. */
+    .sprt_chain_emitter = { F_TEXT_SPRT, F_TEXT_SPRT_PER_GLYPH, F_LOADING_SPRT },
 };

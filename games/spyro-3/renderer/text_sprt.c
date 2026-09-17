@@ -96,15 +96,16 @@ static int on_text_emitter(CPUState* cpu, uint32_t addr) {
 static feature_dispatch_entry_t text_sprt_dispatch[] = {
     { 0u, on_text_emitter },
     { 0u, on_text_emitter },
+    { 0u, on_text_emitter },
     { 0u, NULL },
 };
 
 static void text_sprt_apply_options(const openpete_options_t* opts) {
     (void)opts;
     int n = 0;
-    for (int i = 0; i < 2; i++)
-        if (ui_game.text_emitter[i]) {
-            text_sprt_dispatch[n].addr = ui_game.text_emitter[i];
+    for (int i = 0; i < 3; i++)
+        if (ui_game.sprt_chain_emitter[i]) {
+            text_sprt_dispatch[n].addr = ui_game.sprt_chain_emitter[i];
             text_sprt_dispatch[n].fn   = on_text_emitter;
             n++;
         }
