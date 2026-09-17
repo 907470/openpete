@@ -57,22 +57,29 @@ EXTRA_FLAGS=${OPENPETE_INTERP_VISUAL_EXTRA:-}
 mkdir -p "$OUT"
 rm -f "$OUT"/fps*.png
 
-BIN=build/linux-release/games/spyro-1/openpete-spyro1
+# OPENPETE_INTERP_VISUAL_BIN selects the binary: the Windows exe
+# (build/windows-mingw/games/spyro-1/openpete-spyro1.exe) runs the same check
+# on the real GPU. A Windows child reads no Linux environment, so the
+# vibration knob crosses through WSLENV (scripts/lib/wslenv.sh); the exe
+# writes CRLF, stripped before the grep.
+BIN=${OPENPETE_INTERP_VISUAL_BIN:-build/linux-release/games/spyro-1/openpete-spyro1}
 if [[ ! -x "$BIN" ]]; then
     echo "openpete binary missing at $BIN — run cmake --build --preset linux-release" >&2
     exit 1
 fi
+. scripts/lib/wslenv.sh
+wslenv_forward OPENPETE_VIBRATION=0
 
 for fps in 0 60 480; do
     echo "[interp-visual] --render-fps $fps"
-    timeout 90s "$BIN" \
+    timeout 90s env "${WSLENV_ARGS[@]}" "$BIN" \
         --disc games/spyro-1/spyro-1/build/SCUS-94228.cue --disc-cache 0 \
         --render-fps "$fps" \
         --frame-limit "$FRAME_LIMIT" \
         --screenshot-presents-start "$START" \
         --screenshot-presents-count "$COUNT" \
         --screenshot-output "$OUT/fps${fps}_p{p}_f{n}.png" \
-        --mute on 2>&1 | grep "screenshot:" | head -"$COUNT" | sed 's/^/  /'
+        --mute on 2>&1 | tr -d '\r' | grep "screenshot:" | head -"$COUNT" | sed 's/^/  /'
 done
 
 python3 - "$OUT" <<'PYEOF'
