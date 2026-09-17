@@ -119,22 +119,6 @@ static void cyc_push_tri(cyc_cv a, cyc_cv b, cyc_cv c, int gouraud,
     }
 }
 
-/* GTE DPCS in float: lerp a dome colour toward the far colour FC by IR0/4096.
- * The cross-fade dome renderer (func_8004F000) runs the real op (cmd 0x10,
- * sf=1) over the sector colour table with FC = the fog far colour's components
- * SHL 4 and IR0 = the fog factor; since FC SHL 12 then lines up with the
- * colour's SHL 16, the whole op reduces to this per-channel lerp. */
-static uint32_t cyc_fade(uint32_t rgb, uint32_t fc, int ir0) {
-    uint32_t out = 0;
-    for (int k = 0; k < 3; k++) {
-        int c = (int)((rgb >> (k * 8)) & 0xFF), f = (int)((fc >> (k * 8)) & 0xFF);
-        int v = (int)(c + (f - c) * (double)ir0 / 4096.0 + 0.5);   /* float, like the rest of the path */
-        if (v < 0) v = 0; else if (v > 255) v = 255;
-        out |= (uint32_t)v << (k * 8);
-    }
-    return out;
-}
-
 /* Sutherland-Hodgman clip a gouraud tri to m3 >= CYC_NEARZ, then push the
  * resulting polygon (fan). 0 clipped -> 1 tri; 1 -> quad (2 tris); 2 -> 1 tri;
  * fully behind -> dropped. */
@@ -171,17 +155,6 @@ static void cyc_extract(CPUState* cpu, uint32_t a0, uint32_t a1, uint32_t a2,
     ngte_read_matrix(cpu, a1, Mcull);
     ngte_read_matrix(cpu, a2, Mdraw);
     cyc_extract_m(cpu, a0, Mcull, Mdraw, fade_rgb, fade_ir0);
-}
-
-/* The fog far colour as packed 0x00BBGGRR: one word, or three R, G, B words
- * at the GTE's RFC/GFC/BFC scale (16 times the 8-bit value). */
-static uint32_t cyc_far_colour(CPUState* cpu) {
-    uint32_t a = game_layout.fog.far_colour;
-    if (!a) return 0;
-    if (!game_layout.fog.far_colour_words) return cpu->read_word(a) & 0xFFFFFFu;
-    uint32_t r = (cpu->read_word(a) >> 4) & 0xFF, g = (cpu->read_word(a + 4) >> 4) & 0xFF,
-             b = (cpu->read_word(a + 8) >> 4) & 0xFF;
-    return r | (g << 8) | (b << 16);
 }
 
 /* The sky visibility bytes (game_layout.cyc.visibility), copied from the
@@ -247,7 +220,7 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
      * nonzero, is IR0 against the fog far colour for every colour entry. */
     if (!fade_ir0 && game_layout.cyc.fade_in_draw && game_layout.fog.factor) {
         int ir0 = (int)cpu->read_word(game_layout.fog.factor);
-        if (ir0) { fade_ir0 = ir0; fade_rgb = cyc_far_colour(cpu); }
+        if (ir0) { fade_ir0 = ir0; fade_rgb = ngte_fog_far_colour(cpu); }
     }
     const int s3 = game_layout.cyc.face_layout == CYC_FACES_SPYRO3;
 
@@ -301,7 +274,7 @@ static void cyc_extract_m(CPUState* cpu, uint32_t a0,
         if (colorCount > 4096) colorCount = 4096;
         for (uint32_t j = 0; j < colorCount; j++) {
             uint32_t c = cpu->read_word(colorBase + j * 4) & 0xFFFFFF;
-            col[j] = fade_ir0 ? cyc_fade(c, fade_rgb, fade_ir0) : c;
+            col[j] = fade_ir0 ? ngte_depth_cue(c, fade_rgb, fade_ir0) : c;
         }
 
         if (s3) {

@@ -150,6 +150,22 @@ void ngte_project_gte(const int M[3][3], const double TR[3],
  * fc12 = 12-bit-expanded far colour, ir0 = 1.3.12 blend factor. */
 int ngte_dpcs_ch(int c8, int fc12, int ir0);
 
+/* GTE DPCS in float: lerp every 8-bit channel of rgb toward the matching
+ * channel of fc by ir0/4096, rounded and clamped to 0..255. Both are packed
+ * 0x00BBGGRR. The sky and portal-preview draws run the real op (cmd 0x10,
+ * sf=1) over a colour table with FC = the fog far colour's components SHL 4
+ * and IR0 = the fog factor; FC SHL 12 then lines up with the colour's SHL 16,
+ * so the op reduces to this per-channel lerp. The float form is what the rest
+ * of the native path carries; ngte_dpcs_ch is the bit-exact integer mirror
+ * for the walks that must match the GTE to the unit. */
+uint32_t ngte_depth_cue(uint32_t rgb, uint32_t fc, int ir0);
+
+/* The fog far colour (game_layout.fog.far_colour) as packed 0x00BBGGRR: one
+ * word holding the three 8-bit components, or, when fog.far_colour_words is
+ * set, three words R, G, B at the GTE's RFC/GFC/BFC scale (16 times the
+ * 8-bit value). 0 when the game leaves the address unset. */
+uint32_t ngte_fog_far_colour(CPUState* cpu);
+
 /* O = (A · B) >> 12 on Q12 3x3 matrices, the column-rotate the game does
  * via MVMVA. Accumulates in 64 bits: the GTE's MAC is 44 bits wide, and
  * a scaled model matrix times a rotation exceeds int32 before the shift. */

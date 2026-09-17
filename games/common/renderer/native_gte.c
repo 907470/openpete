@@ -151,6 +151,26 @@ int ngte_dpcs_ch(int c8, int fc12, int ir0) {
     return (int)out;
 }
 
+uint32_t ngte_depth_cue(uint32_t rgb, uint32_t fc, int ir0) {
+    uint32_t out = 0;
+    for (int k = 0; k < 3; k++) {
+        int c = (int)((rgb >> (k * 8)) & 0xFF), f = (int)((fc >> (k * 8)) & 0xFF);
+        int v = (int)(c + (f - c) * (double)ir0 / 4096.0 + 0.5);   /* float, like the rest of the path */
+        if (v < 0) v = 0; else if (v > 255) v = 255;
+        out |= (uint32_t)v << (k * 8);
+    }
+    return out;
+}
+
+uint32_t ngte_fog_far_colour(CPUState* cpu) {
+    uint32_t a = game_layout.fog.far_colour;
+    if (!a) return 0;
+    if (!game_layout.fog.far_colour_words) return cpu->read_word(a) & 0xFFFFFFu;
+    uint32_t r = (cpu->read_word(a) >> 4) & 0xFF, g = (cpu->read_word(a + 4) >> 4) & 0xFF,
+             b = (cpu->read_word(a + 8) >> 4) & 0xFF;
+    return r | (g << 8) | (b << 16);
+}
+
 void ngte_mat_mul3(const int A[3][3], const int B[3][3], int O[3][3]) {
     for (int i = 0; i < 3; i++) for (int j = 0; j < 3; j++)
         O[i][j] = (int)(((int64_t)A[i][0]*B[0][j] + (int64_t)A[i][1]*B[1][j] +

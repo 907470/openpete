@@ -92,27 +92,6 @@ static unsigned p3_dbg_from(void) {
 }
 static int s_cen_faces, s_cen_idx, s_cen_oc, s_cen_edge, s_cen_tris;
 
-/* GTE DPCS in float: c + (fc - c) * ir0 / 4096 per channel. */
-static uint32_t p3_fade(uint32_t rgb, uint32_t fc, int ir0) {
-    uint32_t out = 0;
-    for (int k = 0; k < 3; k++) {
-        int c = (int)((rgb >> (k * 8)) & 0xFF), f = (int)((fc >> (k * 8)) & 0xFF);
-        int v = (int)(c + (f - c) * (double)ir0 / 4096.0 + 0.5);
-        if (v < 0) v = 0; else if (v > 255) v = 255;
-        out |= (uint32_t)v << (k * 8);
-    }
-    return out;
-}
-
-/* The environment far colour as packed 8-bit: three words at GTE scale. */
-static uint32_t p3_env_far(CPUState* cpu) {
-    uint32_t a = game_layout.fog.far_colour;
-    if (!a) return 0;
-    uint32_t r = (cpu->read_word(a) >> 4) & 0xFF, g = (cpu->read_word(a + 4) >> 4) & 0xFF,
-             b = (cpu->read_word(a + 8) >> 4) & 0xFF;
-    return r | (g << 8) | (b << 16);
-}
-
 /* ---- capture: the block, before the leaf overwrites nothing and after the
  * pass rewrote it for this portal ---------------------------------------- */
 static void p3_capture(CPUState* cpu, int arg) {
@@ -242,8 +221,8 @@ static void p3_extract_one(CPUState* cpu, const p3_preview* p, const ngte_view* 
     }
     for (uint32_t j = 0; j < cc; j++) {
         uint32_t c = cpu->read_word(M + co + j * 4) & 0xFFFFFF;
-        if (p->ir0) c = p3_fade(c, p->far_rgb, p->ir0);
-        if (sky_ir0) c = p3_fade(c, env_far, sky_ir0);
+        if (p->ir0) c = ngte_depth_cue(c, p->far_rgb, p->ir0);
+        if (sky_ir0) c = ngte_depth_cue(c, env_far, sky_ir0);
         col[j] = c;
     }
     /* The portal's stencil footprint: the rect at the portal depth, once per
@@ -297,7 +276,7 @@ static void p3_feed(CPUState* cpu, const p3_tick* T) {
     if (!openpete_native_scene_enabled() || !render_path_enabled(RP_PORTAL)) return;
     ngte_view vw; ngte_view_build(cpu, &vw);
     int sky_ir0 = game_layout.fog.factor ? (int)cpu->read_word(game_layout.fog.factor) : 0;
-    uint32_t env_far = p3_env_far(cpu);
+    uint32_t env_far = ngte_fog_far_colour(cpu);
     int mask_done[P3_MAX_PORTALS]; memset(mask_done, 0, sizeof mask_done);
     s_emitted = 0;
     s_cen_faces = s_cen_idx = s_cen_oc = s_cen_edge = s_cen_tris = 0;
