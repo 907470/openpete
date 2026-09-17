@@ -361,6 +361,23 @@ typedef struct game_layout {
         uint32_t rec_matrix_off;    /* 3x3 int16 */
         uint32_t rec_tier_off;      /* the LOD verdict's word; high half */
         uint32_t rec_material_off;  /* per-moby material word; 0 where none */
+        /* The address of the one texture word a special-material treatment
+         * substitutes for the face's own: low half the texture page, high half
+         * the CLUT, in the GPU's own packing. 0 where the game has no such
+         * treatment. */
+        uint32_t special_tiledef;
+        /* The three lookup tables the substituting treatment's coordinate
+         * generation reads: a 16-bit square-root table indexed by the
+         * normalized squared length, an 8-bit arctangent table indexed by the
+         * minor/major ratio, and an 8-bit table mapping the elevation to the
+         * disc radius. 0 where the game has no such treatment. */
+        uint32_t env_sqrt_table;
+        uint32_t env_atan_table;
+        uint32_t env_radius_table;
+        /* The global word whose top bits the coordinate generation adds to
+         * every azimuth, the per-moby half of that bias coming from the
+         * record. 0 where the game has no such treatment. */
+        uint32_t env_bias_word;
         uint32_t rec_moby_off;
         int      blend_shift;
         uint32_t blend_mask;

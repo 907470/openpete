@@ -88,6 +88,19 @@ typedef struct moby_wface {
     uint8_t  u[4], v[4];
 } moby_wface_t;
 
+/* A texture page and CLUT one face draws from instead of its own, in the same
+ * decoded form as the face's fields. `set` 0 leaves the face's texture alone;
+ * a treatment that sets it also names the colour depth and blend mode of the
+ * substitute page. */
+typedef struct moby_face_tex {
+    int16_t tpx, tpy, clx, cly;
+    uint8_t bpp, abr, set;
+    /* Texture coordinates the treatment generates for the face's four corners,
+     * in place of the ones the face record carries. `uv_set` 0 keeps the
+     * face's own. */
+    uint8_t u[4], v[4], uv_set;
+} moby_face_tex_t;
+
 /* What a face-stream decode reports about the stream as a whole: the total
  * records it walked, how many it skipped without emitting, and whether the
  * cursor ended on the bytecount (0), on the generous end bound (1), or
@@ -162,13 +175,20 @@ typedef struct moby_game {
     /* ---- per-face special material -----------------------------------
      * A face the stream marks with a special-material flag (moby_wface_t.hl)
      * whose treatment the game selects from the record's material word, not
-     * from the face. The hook rewrites the face's four vertex colours in place
-     * and may clear `textured`; it returns 0 to leave the face alone, or
-     * 1 + the treatment index it applied, which the walk counts. `material` is
-     * the record's material word and `M` its model-to-view matrix. NULL where
-     * the game's special faces are handled by the walk's own branch. */
-    int  (*special_face)(uint32_t material, const int M[3][3],
-                         const struct moby_wface* F, uint32_t c[4], int* textured);
+     * from the face. The hook rewrites the face's four vertex colours in place,
+     * may clear `textured`, and may fill `tex` to draw the face from a
+     * substitute texture page and CLUT; it returns 0 to leave the face alone,
+     * or 1 + the treatment index it applied, which the walk counts. `material`
+     * is the record's material word, `M` its model-to-view matrix, `moby` the
+     * Moby the record was built from, `rec` the cull record's own address (0
+     * for a record the walk built itself, which carries no guest record), and
+     * `ev` the four corners' model-to-view rotated positions, which a
+     * coordinate-generating treatment reads. NULL
+     * where the game's special faces are handled by the walk's own branch. */
+    int  (*special_face)(CPUState* cpu, uint32_t material, const int M[3][3],
+                         uint32_t moby, uint32_t rec, const struct moby_wface* F,
+                         uint32_t c[4], const float ev[4][3], int* textured,
+                         moby_face_tex_t* tex);
 
     /* 1 = the walk may rebuild cull records from gamestate for the mobys the
      * canonical cull never queued (the widescreen and extended-LOD reveal).

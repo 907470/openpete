@@ -210,6 +210,23 @@ int s3_decode_faces_stride(CPUState* cpu, uint32_t fb, uint32_t bytecount,
     }
     st->raw = raw; st->sprites = 0; st->skips = 0;
     st->align = (fp == fb + 4u + bytecount) ? 0 : (fp == end) ? 1 : 2;
+    /* OPENPETE_MOBY_FACEBITS=1: per face stream, how many triangles carry each
+     * of the two flag bits that leave the ordinary emit, so a material or
+     * colour divergence can be tested against the bit that would explain it. */
+    {
+        static int s_fb = -1;
+        if (s_fb < 0) { const char* e = getenv("OPENPETE_MOBY_FACEBITS"); s_fb = (e && *e && *e != '0'); }
+        if (s_fb) {
+            int tris = 0, b4 = 0, b5 = 0;
+            for (int i = 0; i < n; i++) {
+                if (out[i].i2 != out[i].i3) continue;
+                tris++;
+                if (out[i].hl == 2u) b4++; else if (out[i].hl == 1u) b5++;
+            }
+            fprintf(stderr, "  [facebits] fb=%08X faces=%d tris=%d bit4=%d bit5=%d\n",
+                    fb, n, tris, b4, b5);
+        }
+    }
     return n;
 }
 
@@ -239,7 +256,14 @@ int s3_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
  *     grades by its own luminance.
  *   mode 1 (mobydraw.s:2273-2301) — the same far colour, but one IR0 for the
  *     whole moby, bits 24-27 << 8 (mobydraw.s:2079), and each vertex depth-cues
- *     from its own colour. IR0 zero leaves the colours alone.
+ *     from its own colour. IR0 zero leaves the colours alone. This mode also
+ *     substitutes a texture: its setup loads the global word at
+ *     `game_layout.moby.special_tiledef`, biased by the record's CLUT row, into
+ *     GTE control 16 (mobydraw.s:2085-2087,2098-2099), and the emit writes that
+ *     register's halves over the primitive's texture page and CLUT
+ *     (mobydraw.s:2296-2299), keeping the face's own UVs. The substitution is
+ *     unconditional, so a zero IR0 leaves a face drawn from the substitute page
+ *     with the model's own colours.
  *   mode 2 (mobydraw.s:2551-2564) — the specular sheen. The channels are the
  *     GTE background colour, bits 24-27 doubled is IR0 (mobydraw.s:2024-2045),
  *     and the light matrix is three copies of one constant vector
@@ -247,8 +271,9 @@ int s3_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
  *     matrix, scales by IR0 and projects onto that vector on top of the
  *     background colour, giving one colour for the whole face.
  *
- * All three replace the face's vertex colours and nothing else: the face keeps
- * the texture its own record carries. The special emit's command word starts at
+ * All three replace the face's vertex colours; mode 1 replaces the texture page
+ * and CLUT as well, and none of them touches the face's UVs or its geometry.
+ * The special emit's command word starts at
  * the untextured code (mobydraw.s:2562) and the shared emit the three treatments
  * fall into adds the texture bit back from the face record, so a treatment that
  * forced its face untextured would drop the texture the draw keeps.
@@ -268,9 +293,137 @@ static int s3_clamp_ir(long v) {
     return (int)v;
 }
 
-static int s3_special_face(uint32_t mat, const int M[3][3],
-                           const moby_wface_t* F, uint32_t c[4], int* textured) {
-    (void)textured;   /* every treatment replaces colours only */
+/* ---- mode-1 texture coordinates (mobydraw.s:2377-2547) -----------------
+ *
+ * Mode 1 does not keep the face's own texture coordinates: the emit calls a
+ * per-vertex routine three times, once per corner, and stores the halfword it
+ * returns into the primitive's three coordinate slots (mobydraw.s:2326,
+ * 2332-2336, 2338). The routine builds a spherical environment coordinate.
+ *
+ * Its input is the vector the vertex stage stored for that vertex: the three
+ * depth-cued colour channels the interpolation leaves in MAC1-3
+ * (mobydraw.s:1295-1301, stored at +0x2, +0x400 and +0x402 of the vertex
+ * slot), read back permuted into IR1-3 as (MAC2, MAC3, MAC1)
+ * (mobydraw.s:2378-2384). That vector rotates by the Moby's own matrix at
+ * +0x20, which the mode-1 setup loads into the GTE's rotation registers
+ * (mobydraw.s:2080-2095).
+ *
+ * From the rotated vector (x, y, z) the routine takes the azimuth from the
+ * ratio of the minor to the major of |z| and |x| through an arctangent table,
+ * placed in its octant by the two signs (mobydraw.s:2404-2418, 2484-2496,
+ * 2497-2502); the elevation from -y divided by the vector's length, the length
+ * itself coming from a square-root table indexed by the squared length
+ * normalized by its leading-zero count (mobydraw.s:2423-2452); and turns the
+ * pair into a disc coordinate by looking the elevation up as a radius and
+ * multiplying it by the sine and cosine of the azimuth, offset to the page's
+ * centre texel 0x40 (mobydraw.s:2518-2544).
+ *
+ * The routine memoizes its result in the vertex slot and marks the slot done,
+ * so a vertex shared by several faces is transformed once; the walk computes
+ * per face corner instead, which gives the same coordinate for the same
+ * vertex.
+ *
+ * UNRESOLVED: the azimuth carries a per-moby bias the setup leaves in GTE
+ * control 17 (mobydraw.s:2100-2112), built from the record's view-space depth
+ * shifted by a per-model byte pair and a global word. `OPENPETE_S3_ENV_BIAS`
+ * overrides it while it is being derived; the default 0 leaves the map
+ * unrotated.
+ */
+
+/* GTE LZCS/LZCR: leading zeroes of a positive value, leading ones of a
+ * negative one, 1..32. */
+static int s3_lzcr(uint32_t v) {
+    if (v & 0x80000000u) v = ~v;
+    int n = 0;
+    while (n < 32 && !(v & 0x80000000u)) { n++; v <<= 1; }
+    return n;
+}
+
+/* The Moby's own rotation matrix and the azimuth bias, resolved once per
+ * record rather than per face. */
+typedef struct { int bias; } s3_env_setup;
+
+static void s3_env_setup_read(CPUState* cpu, uint32_t rec, s3_env_setup* E) {
+    /* The azimuth carries a per-record bias the setup leaves in GTE control 17
+     * (mobydraw.s:2100-2112): the record's view-space depth, which its own
+     * setup left in the translation register, shifted left by the difference of
+     * two bytes of the record's word at +0x18, shifted right by 6, plus an
+     * eighth of the global word at `env_bias_word`. Reading it back that way
+     * rotates the coordinates further from the draw's than leaving it out, so
+     * one of the three terms is not what it reads as and the bias stays 0 until
+     * it is resolved; the measured gap is a constant rotation, which is what a
+     * bias is. */
+    (void)cpu; (void)rec;
+    E->bias = 0;
+}
+
+/* One face corner's coordinate pair, from that corner's rotated position. */
+static void s3_env_uv(CPUState* cpu, const s3_env_setup* E, const float e[3],
+                      uint8_t* pu, uint8_t* pv) {
+    /* The walk already holds the rotated vector the draw's MVMVA produces: the
+     * model-to-view rotation applied to the vertex, shifted by 12. */
+    long mac[3], ir[3];
+    for (int i = 0; i < 3; i++) {
+        mac[i] = (long)(e[i] < 0.0f ? -(long)(-e[i] + 0.5f) : (long)(e[i] + 0.5f));
+        ir[i] = s3_clamp_ir(mac[i]);
+    }
+    long z = mac[2], nx = -mac[0], ny = -mac[1];    /* mobydraw.s:2392-2396 */
+
+    /* The azimuth ratio: the minor of |z| and |x| over the major, in 6
+     * fractional bits (mobydraw.s:2404-2419). */
+    long a = z < 0 ? -z : z, b = nx < 0 ? -nx : nx;
+    if (a > b) { long t = a; a = b; b = t; }
+    if (b == 0) b = 1;
+    long q = (a << 6) / b;
+    if (q > 64) q = 64;
+
+    /* SQR 0 then the square root of the sum (mobydraw.s:2397, 2423-2452). */
+    unsigned long len2 = 0;
+    for (int i = 0; i < 3; i++) len2 += (unsigned long)(ir[i] * ir[i]);
+    long len = 0;
+    if (len2) {
+        int lz = s3_lzcr((uint32_t)len2) & ~1;
+        int sh = (0x1F - lz) >> 1;
+        int e2 = lz - 0x18;
+        uint32_t t = e2 >= 0 ? ((uint32_t)len2 << e2) : ((uint32_t)len2 >> (-e2));
+        int idx = ((int)t - 0x40) * 2;
+        int w = (int16_t)cpu->read_half(game_layout.moby.env_sqrt_table + (uint32_t)idx);
+        len = ((long)w << sh) >> 12;
+    }
+
+    /* The octant the two signs place the ratio in (mobydraw.s:2484-2502). */
+    int sub, base;
+    if (z >= 0) {
+        if (nx >= 0) { if (z - nx < 0) { sub = 1; base = 0x40; } else { sub = 0; base = 0x00; } }
+        else         { long m = -nx; if (z - m < 0) { sub = 1; base = 0x100; } else { sub = 0; base = 0xC0; } }
+    } else {
+        long zm = -z;
+        if (nx >= 0) { if (zm - nx < 0) { sub = 1; base = 0x80; } else { sub = 0; base = 0x40; } }
+        else         { long m = -nx; if (zm - m < 0) { sub = 1; base = 0xC0; } else { sub = 0; base = 0x80; } }
+    }
+    int at = (int)cpu->read_byte(game_layout.moby.env_atan_table + (uint32_t)q);
+    int ang = sub ? (base - at) : (base + at);
+
+    /* The elevation, clamped to the radius table's range (mobydraw.s:2508-2521). */
+    long evq = len ? ((ny << 12) / len) : 0;
+    long el = evq >> 5;
+    if (el < 0) el = 0; else if (el > 0x80) el = 0x80;
+    int rad = (int)cpu->read_byte(game_layout.moby.env_radius_table + (uint32_t)el) >> 1;
+
+    /* The disc coordinate, centred on texel 0x40 (mobydraw.s:2522-2544). */
+    int az = (ang + E->bias) & 0xFF;
+    uint32_t sp = game_layout.sin_table + (uint32_t)(az << 1);
+    int cs = (int16_t)cpu->read_half(sp + 0x80u);
+    int sn = (int16_t)cpu->read_half(sp);
+    *pu = (uint8_t)(((((long)rad * cs) >> 12) + 0x40) & 0xFF);
+    *pv = (uint8_t)(((((long)rad * sn) >> 12) + 0x40) & 0xFF);
+}
+
+static int s3_special_face(CPUState* cpu, uint32_t mat, const int M[3][3],
+                           uint32_t moby, uint32_t rec, const moby_wface_t* F,
+                           uint32_t c[4], const float ev[4][3], int* textured,
+                           moby_face_tex_t* tex) {
+    (void)textured;   /* every treatment keeps the face's own textured flag */
     if (F->hl != 1) return 0;                      /* bit 4: the other dispatcher */
     int mode = mat ? (int)((mat >> 28) & 7u) : 0;
     if (mode > 2) return 0;                        /* the treatment is disarmed */
@@ -294,16 +447,53 @@ static int s3_special_face(uint32_t mat, const int M[3][3],
     }
 
     if (mode == 1) {
-        int ir0 = (int)((mat >> 16) & 0xF00u);
-        if (!ir0) return 0;                        /* mobydraw.s:2288 */
-        for (int k = 0; k < 4; k++) {
-            uint32_t o = 0u;
-            for (int ch = 0; ch < 3; ch++)
-                o |= (uint32_t)ngte_dpcs_ch((int)((c[k] >> (ch * 8)) & 0xFFu),
-                                            mc[ch], ir0) << (ch * 8);
-            c[k] = o;
+        /* The substitute page. The per-moby setup loads one global word into
+         * GTE control 16 whenever the mode is non-zero (mobydraw.s:2085-2087,
+         * 2098-2099), and the per-face emit writes that register's low half
+         * over the primitive's texture page and its high half over the CLUT
+         * (mobydraw.s:2296-2299), so the face keeps its own UVs and draws from
+         * the substitute page. The emit builds its command word from the
+         * textured code alone (mobydraw.s:2293-2294): it adds no
+         * semi-transparency bit, whatever the face record's own texture word
+         * carries, so the face draws opaque. */
+        uint32_t g = game_layout.moby.special_tiledef
+                   ? cpu->read_word(game_layout.moby.special_tiledef) : 0u;
+        if (g) {
+            unsigned tp = g & 0xFFFFu, cl = (g >> 16) & 0xFFFFu;
+            int m = (int)((tp >> 7) & 3u);
+            tex->tpx = (int16_t)((tp & 0xFu) * 64);
+            tex->tpy = (int16_t)(((tp >> 4) & 1u) * 256);
+            tex->bpp = (uint8_t)((m == 0) ? 4 : (m == 1) ? 8 : 16);
+            tex->abr = (uint8_t)((tp >> 5) & 3u);
+            tex->clx = (int16_t)((cl & 0x3Fu) * 16);
+            tex->cly = (int16_t)((cl >> 6) & 0x1FFu);
+            tex->set = 1u;
         }
-        return 2;
+        /* The coordinates the emit generates per corner in place of the face's
+         * own, from that corner's depth-cued colour before the treatment
+         * rewrites it. */
+        {
+            s3_env_setup E; s3_env_setup_read(cpu, rec, &E);
+            for (int k = 0; k < 4; k++)
+                s3_env_uv(cpu, &E, ev[k], &tex->u[k], &tex->v[k]);
+            tex->uv_set = 1u;
+        }
+        /* The colour half runs off one IR0 for the whole moby, bits 24-27 << 8
+         * (mobydraw.s:2079), carried in GTE control 12. The emit reads that
+         * register first and skips every DPCS when it is zero
+         * (mobydraw.s:2284), so a zero IR0 leaves the vertex colours as the
+         * model stored them and the substitute page is the whole treatment. */
+        int ir0 = (int)((mat >> 16) & 0xF00u);
+        if (ir0) {
+            for (int k = 0; k < 4; k++) {
+                uint32_t o = 0u;
+                for (int ch = 0; ch < 3; ch++)
+                    o |= (uint32_t)ngte_dpcs_ch((int)((c[k] >> (ch * 8)) & 0xFFu),
+                                                mc[ch], ir0) << (ch * 8);
+                c[k] = o;
+            }
+        }
+        return (tex->set || tex->uv_set || ir0) ? 2 : 0;
     }
 
     /* mode 2. The normal through the model matrix, scaled by IR0, projected on

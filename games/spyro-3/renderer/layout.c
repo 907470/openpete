@@ -246,6 +246,18 @@ const game_layout_t game_layout = {
         .rec_matrix_off   = 0x28u,      /* mobydraw.s:355-359 the composed 3x3 */
         .rec_tier_off     = 0x00u,      /* word 0 bits 16-31, sign picks HP/LP */
         .rec_material_off = 0x3Cu,      /* mobydraw.s:229 the Moby+0x54 colour word */
+        .special_tiledef  = 0x8006C4F4u, /* mobydraw.s:2085-2087,2098-2099: the material
+                                          * mode-1 setup loads this word, biased by the
+                                          * record's CLUT row, into GTE control 16, and
+                                          * the per-face emit writes its halves over the
+                                          * primitive's texture page and CLUT. The address
+                                          * is the middle of an unnamed data block, so it
+                                          * is written as the literal the lui/addiu pair
+                                          * forms. */
+        .env_sqrt_table   = 0x80069F40u, /* mobydraw.s:2448-2450 */
+        .env_atan_table   = 0x800664ECu, /* mobydraw.s:2497-2499 */
+        .env_radius_table = 0x80066468u, /* mobydraw.s:2518-2522 */
+        .env_bias_word    = 0x8006E040u, /* mobydraw.s:2100-2102 (D_8006DFF8 + 0x48) */
         .rec_moby_off     = 0x40u,      /* mobydraw.s:360 */
         .blend_shift      = 4,          /* mobydraw.s:922-923,986 (w0 >> 4) & 0xFF0 */
         .blend_mask       = 0xFF0u,

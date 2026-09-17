@@ -1012,10 +1012,15 @@ static int project_all_records(CPUState* cpu) {
 /* Engagement census of the per-face special-material hook: one count per
  * treatment the game's slot reported applying. */
 static long s_special_faces[3];
+/* Faces the walk emitted carrying the flag that selects the draw's second
+ * dispatcher, which the walk does not model: the engagement count of the tag
+ * a material compare reads. */
+static long s_bit4_faces;
 
 static int project_all_records_inner(CPUState* cpu) {
     s_proj_n = 0; s_max_blend = 0; s_nrecs = 0;
     s_special_faces[0] = s_special_faces[1] = s_special_faces[2] = 0;
+    s_bit4_faces = 0;
     int nrec = 0;
     for (int r = 0; r < MAX_RECORDS; r++) {
         uint32_t rec = s_rec_base + (uint32_t)r * REC_STRIDE;
@@ -2598,7 +2603,8 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * (the ram's white blowout at the LP boundary, verified +6 rows at
              * ir0=3512 vs the captured .s prims). Per-record and view-dependent,
              * so applied here at emit — never baked into the Tier-1 face cache. */
-            if (dpcs_ir0 > 0 && !fcc) cly += (dpcs_ir0 >> 9);
+            int cly_fog = (dpcs_ir0 > 0 && !fcc) ? (dpcs_ir0 >> 9) : 0;
+            cly += cly_fog;
             int u[4]={F->u[0],F->u[1],F->u[2],F->u[3]}, v[4]={F->v[0],F->v[1],F->v[2],F->v[3]};
             /* #1 SPECULAR per-face shading. STRIP faces (!fresh) with word0&0x4
              * get the special per-face treatment (highlight-enable @80021B64;
@@ -2695,11 +2701,36 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * above it, the draw lays these faces coplanar over their base
              * faces and wins by ordering-table position; under a true Z-buffer
              * the decal needs the same pull toward the camera to win. */
-            s_emit_special = 0u;
+            /* 4 tags a face whose flag selects the draw's second dispatcher,
+             * which this walk does not carry: the face keeps the ordinary
+             * emit, and the tag lets a material or colour compare separate
+             * those faces from the ones the walk computes. */
+            s_emit_special = (uint8_t)(F->hl == 2u ? 4u : 0u);
+            s_bit4_faces += (F->hl == 2u);
+            int special_tex = 0;
             if (moby_game.special_face && F->hl) {
                 uint32_t cc[4] = { c0, c1, c2, c3 };
                 int tex2 = textured;
-                int applied = moby_game.special_face(R->mscol, R->M, F, cc, &tex2);
+                moby_face_tex_t stex; memset(&stex, 0, sizeof stex);
+                const proj_xy* pv4[4] = { p0, p1, p2, p3 ? p3 : p2 };
+                float ev[4][3];
+                for (int q = 0; q < 4; q++) {
+                    ev[q][0] = pv4[q]->ex; ev[q][1] = pv4[q]->ey; ev[q][2] = pv4[q]->ez;
+                }
+                int applied = moby_game.special_face(cpu, R->mscol, R->M, R->moby,
+                                                     R->addr, F, cc, ev, &tex2, &stex);
+                if (applied && stex.set) {
+                    /* The treatment's substitute page and CLUT, in place of the
+                     * face's own. The draw biases the substitute's CLUT row by
+                     * the same per-record fog step it adds to an ordinary face's
+                     * texture word, so the substitute takes it too. */
+                    tpx = stex.tpx; tpy = stex.tpy;
+                    clx = stex.clx; cly = stex.cly + cly_fog;
+                    bpp = stex.bpp; abr = stex.abr;
+                    special_tex = 1;
+                    if (stex.uv_set)
+                        for (int q = 0; q < 4; q++) { u[q] = stex.u[q]; v[q] = stex.v[q]; }
+                }
                 if (applied) {
                     s_special_faces[applied - 1]++;
                     s_emit_special = (uint8_t)applied;
@@ -2722,7 +2753,23 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * no texpage of their own so they take the GPU's default ABR 0 (50%).
              * Mapping mirrors particle_native: 0=ABR0(B/2+F/2), 1=ABR1(add),
              * 2=ABR2(subtract), 3=ABR3(B+F/4 -> additive). */
-            int blend = F->blendbit ? moby_abr_blend(abr) : 0;
+            int blend = (F->blendbit && !special_tex) ? moby_abr_blend(abr) : 0;
+
+            /* OPENPETE_MOBY_FACEDUMP=<moby address, hex>: every face of that
+             * record as the walk emits it — topology, the two flag bits that
+             * leave the ordinary emit, and the material words. Pairs with the
+             * captured prims by the same index triple the emit keys on. */
+            {
+                static long s_fd = -1;
+                if (s_fd < 0) { const char* e = getenv("OPENPETE_MOBY_FACEDUMP");
+                    s_fd = e ? strtol(e, NULL, 16) : 0; }
+                if (s_fd && (uint32_t)s_fd == s_cur_moby_key)
+                    fprintf(stderr, "  [fdump f=%u] m=%08X mat=%08X i=%u,%u,%u,%u fresh=%d hl=%d "
+                            "tex=%d tp=(%d,%d) clut=(%d,%d) bpp=%d abr=%d abe=%d\n",
+                            openpete_frame, s_cur_moby_key, R->mscol, i0, i1, i2, i3,
+                            (int)F->fresh, (int)F->hl, textured, tpx, tpy, clx, cly,
+                            bpp, (int)abr, (int)F->blendbit);
+            }
 
             if (emit_a) {
                 s_emit_fkey = PACK_FKEY(i0,i1,i2);
@@ -3023,7 +3070,8 @@ static void compare_walk_vs_prims(void) {
                 fprintf(stderr, "  [pbox f=%u] code=%02X tex=%d clut=%04X tpage=%04X", openpete_frame,
                         s_gte[pi].code, s_gte[pi].textured, s_gte[pi].clut & 0xFFFFu, s_gte[pi].tpage & 0xFFFFu);
                 for (int k = 0; k < s_gte[pi].nv; k++)
-                    fprintf(stderr, " (%.0f,%.0f)%06X", s_gte[pi].x[k], s_gte[pi].y[k], s_gte[pi].rgb[k] & 0xFFFFFFu);
+                    fprintf(stderr, " (%.0f,%.0f)%06X[%d,%d]", s_gte[pi].x[k], s_gte[pi].y[k],
+                            s_gte[pi].rgb[k] & 0xFFFFFFu, s_gte[pi].u[k], s_gte[pi].v[k]);
                 fprintf(stderr, "\n");
             }
         }
@@ -3052,8 +3100,9 @@ static void compare_walk_vs_prims(void) {
                         w->tpage_x, w->tpage_y, w->clut_x, w->clut_y, w->bpp, w->blend,
                         (unsigned)s_wtri_special[wi]);
                 for (int k = 0; k < 3; k++)
-                    fprintf(stderr, " (%.0f,%.0f)%06X[%d,%d]", w->v[k].sx, w->v[k].sy,
-                            w->v[k].rgb & 0xFFFFFFu, w->v[k].u, w->v[k].v);
+                    fprintf(stderr, " (%.0f,%.0f)%06X[%d,%d]{%.1f,%.1f,%.1f}",
+                            w->v[k].sx, w->v[k].sy, w->v[k].rgb & 0xFFFFFFu,
+                            w->v[k].u, w->v[k].v, w->v[k].ex, w->v[k].ey, w->v[k].ez);
                 fprintf(stderr, "\n");
             }
         }
@@ -3161,7 +3210,7 @@ static void compare_walk_vs_prims(void) {
                     }
                     if (bd <= 2.5*2.5 && bk >= 0) {
                         paired++;
-                        if (s_wtri_special[wi]) {
+                        if (s_wtri_special[wi] && s_wtri_special[wi] < 4u) {
                             uint32_t wv = w->v[kv].rgb & 0xFFFFFFu;
                             uint32_t pv = s_ptri[bp].rgb[bk] & 0xFFFFFFu;
                             for (int ch = 0; ch < 3; ch++) {
@@ -3800,14 +3849,14 @@ static void compare_and_report(int nrec) {
         "[moby-verify f=%u] recs=%d blend=%d primVerts=%d divergent(satNN)=%d | clean-match(<=4px)=%d/%d(%.1f%%) "
         "mean=%.3fpx | texMatch=%d/%d(%.1f%%) flatMatch=%d/%d(%.1f%%) | "
         "NN-amb=%d(%.1f%%) maxTieJump=%.1fpx | worst gte(%.0f,%.0f) d=%.1f code=%02X | "
-        "prims=%d(tex=%d flat=%d) special_faces=%ld/%ld/%ld\n",
+        "prims=%d(tex=%d flat=%d) special_faces=%ld/%ld/%ld bit4_faces=%ld\n",
         openpete_frame, nrec, s_max_blend, gv_n, divergent_n, near_n, clean, clean?100.0*near_n/clean:0.0,
         near_n?sum/near_n:0.0,
         tex_m, tex_n, tex_n?100.0*tex_m/tex_n:0.0,
         flat_m, flat_n, flat_n?100.0*flat_m/flat_n:0.0,
         ambig, near_n?100.0*ambig/near_n:0.0, max_tiejump,
         wgx,wgy, worst, worst_code, s_gte_n, n_tex, n_flat,
-        s_special_faces[0], s_special_faces[1], s_special_faces[2]);
+        s_special_faces[0], s_special_faces[1], s_special_faces[2], s_bit4_faces);
     /* Per-record: native vert count + how many prim verts NN-matched to it.
      * A record with many native verts but ~0 matches is mis-projected (the
      * residual). w0 = the record flags word (LP/HP + per-axis sign). */
