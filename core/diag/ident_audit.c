@@ -72,16 +72,15 @@ void openpete_ident_audit_present(void *cpu, unsigned vbl, unsigned tick,
     unsigned char *canon = NULL; int cw = 0, ch = 0;
     if (openpete_native_render_capture_rgba(&canon, &cw, &ch) != 0) return;
 
-    /* (2) The sub-tick re-extract phased onto the newest tick's own stamp
-     * (alpha 1) — the same call the --screenshot-intermediate-on-frame block
-     * makes, at the alpha that makes it an identity. The scene bracket puts the
+    /* (2) The sub-tick re-extract phased onto the identity instant — the same
+     * call the --screenshot-intermediate-on-frame block makes at alpha 1, the
+     * alpha that makes it an identity. The scene bracket puts the
      * canonical scene back afterwards: the re-extract rebuilds s_scene in
      * place, and the next frame's begin_frame would otherwise push the rebuilt
      * scene into the frame-history ring in place of the canonical one. */
     unsigned char *ident = NULL; int iw = 0, ih = 0;
     int saved = openpete_native_scene_save();
-    op_time_t curr_ns = openpete_interp_curr_tick_ns();
-    openpete_interp_set_present_target(curr_ns + g_openpete_tick_period_ns);
+    openpete_interp_set_present_target(openpete_interp_identity_present_ns());
     ire(cpu);
     openpete_interp_set_present_target(0);
     /* The re-extract's scene is the CURRENT one and was never pushed to

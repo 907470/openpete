@@ -258,6 +258,19 @@ const openpete_interp_obj_t* openpete_interp_objs_find(uint32_t key) {
     return found ? &s_tab[i] : NULL;
 }
 
+op_time_t openpete_interp_identity_present_ns(void) {
+    op_time_t base = openpete_interp_curr_tick_ns() + g_openpete_tick_period_ns;
+    if (!s_tab) return base;
+    for (uint32_t i = 0; i < SLOTS; ++i) {
+        const openpete_interp_obj_t* e = &s_tab[i];
+        if (!e->key || !e->have_prev) continue;
+        if (e->prev_ns == 0 || e->curr_ns <= e->prev_ns) continue;
+        op_time_t h = e->curr_ns + (e->curr_ns - e->prev_ns);
+        if (h > base) base = h;
+    }
+    return base;
+}
+
 void openpete_interp_objs_stats(int* tracked, int* paired,
                                 int* spawned, int* despawned) {
     if (tracked)   *tracked   = s_stat_tracked;

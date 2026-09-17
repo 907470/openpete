@@ -5049,16 +5049,26 @@ static int run_host_loop(const openpete_options_t* opts) {
                     op_time_t curr_ns = openpete_interp_curr_tick_ns();
                     /* OPENPETE_INTERMEDIATE_ALPHA=<0..1> (harness): the sub-tick
                      * phase of the capture as a fraction of the tick period. 0
-                     * and 1 sit on the tick stamps themselves, so the re-extract
-                     * can be diffed against the canonical dump of the same tick
-                     * as an identity check on the spine. Default 0.5. */
+                     * sits on the ring's curr stamp and 1 on the identity
+                     * instant, so the re-extract can be diffed against the
+                     * canonical dump of the same tick as an identity check on
+                     * the spine. Default 0.5. */
                     static double s_int_alpha = -1.0;
                     if (s_int_alpha < 0.0) {
                         const char* e = getenv("OPENPETE_INTERMEDIATE_ALPHA");
                         s_int_alpha = (e && *e) ? atof(e) : 0.5;
                         if (s_int_alpha < 0.0) s_int_alpha = 0.0; else if (s_int_alpha > 1.0) s_int_alpha = 1.0;
                     }
-                    openpete_interp_set_present_target(curr_ns + (op_time_t)((double)g_openpete_tick_period_ns * s_int_alpha));
+                    /* alpha 1 is the identity leg: every consumer must land on
+                     * its own curr state, and a consumer whose distinct-state
+                     * gap exceeds one tick period is still mid-blend one
+                     * nominal period past the ring's curr stamp. The identity
+                     * instant saturates the slowest live gap; every faster
+                     * consumer clamps its own phase at 1. */
+                    openpete_interp_set_present_target(
+                        s_int_alpha >= 1.0
+                            ? openpete_interp_identity_present_ns()
+                            : curr_ns + (op_time_t)((double)g_openpete_tick_period_ns * s_int_alpha));
                     ire(&g_game.cpu);                      /* s_scene @ sub-tick midpoint */
                     openpete_interp_set_present_target(0); /* restore op_now() fallback */
                     /* The bracket verdict of the pass just run: the game-side

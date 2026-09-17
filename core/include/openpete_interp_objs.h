@@ -131,6 +131,22 @@ void openpete_interp_objs_reset(void);
  * pointer is valid until the next end_tick(). */
 const openpete_interp_obj_t* openpete_interp_objs_find(uint32_t key);
 
+/* The present-clock instant at which every per-object consumer has reached its
+ * curr state — the clock the identity capture legs phase onto.
+ *
+ * A per-object consumer's sub-tick phase is
+ * (present_now - o->curr_ns) / (o->curr_ns - o->prev_ns), clamped at 1, and the
+ * store pins prev to the last distinct state. An object whose state advances
+ * slower than the tick therefore carries a denominator of two or three tick
+ * periods, and one nominal period past the ring's curr stamp leaves it at
+ * t = 1/2 or 2/3 — mid-blend, not at the pose the canonical dump draws. This
+ * returns the largest o->curr_ns + (o->curr_ns - o->prev_ns) over the tracked
+ * objects, floored at one nominal period past the ring's curr stamp, so the
+ * slowest live gap saturates and every faster consumer clamps at 1.
+ * Reads no wall clock: the value is built from the stamps the store already
+ * holds. */
+op_time_t openpete_interp_identity_present_ns(void);
+
 /* Diagnostics (counts from the most recently completed capture tick). */
 void openpete_interp_objs_stats(int* tracked, int* paired,
                                 int* spawned, int* despawned);
