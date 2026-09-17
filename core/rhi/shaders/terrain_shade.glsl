@@ -49,6 +49,11 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 
 /* gl_FragCoord.z encoding, matching the vertex stage's selection. */
 layout(constant_id = 0) const bool DEPTH_AFFINE = false;
+/* Fragment spec-constant 4 (`SLOT_CONTEST`): the key contest compares
+ * 128-world ordering-table slot indices and resolves an equal slot to the
+ * terrain. Set per game from game_layout.terrain.slot_ot_contest. */
+layout(constant_id = 4) const bool SLOT_CONTEST = false;
+
 
 uint ter_vram_at(int x, int y) { return texelFetch(u_vram, ivec2(x, y), 0).r; }
 
@@ -107,7 +112,7 @@ bool ter_key_loses()
         OP_KEY_NONE,
         op_key_from_stored(texelFetch(u_mobykey, ivec2(gl_FragCoord.xy), 0).r),
         op_vz_from_depth(gl_FragCoord.z, DEPTH_AFFINE), vKoff,
-        false, true);
+        false, true, SLOT_CONTEST);
 }
 
 /* The stock colour for this fragment. a == 0 marks a texel the PSX treats

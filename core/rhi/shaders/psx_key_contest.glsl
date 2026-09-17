@@ -8,9 +8,10 @@
  *
  * The original renderer decides which surface exists at a pixel by an
  * ordering-table key, not by depth. A face's key is its view-Z plus the
- * authored OT slot offsets (LP +0x40+8*bias, HP +4*bias, 128 world per
- * slot); stored depth is true view-Z. The key rasters decide occupancy
- * and true geometry decides everything against the surface that wins.
+ * authored OT slot offsets the game's own insert applies (the per-game
+ * terms live in game_layout.terrain; 128 world per slot); stored depth is
+ * true view-Z. The key rasters decide occupancy and true geometry decides
+ * everything against the surface that wins.
  *
  * Inputs: terrain keys, moby keys, curated embedded-prop true depth, and
  * the moby rank raster for the same-moby painter select. A caller with no
@@ -21,6 +22,9 @@
 
 /* A key that never wins a contest. */
 #define OP_KEY_NONE 1e30
+
+/* World view-Z per ordering-table bucket. */
+#define OP_KEY_SLOT 128.0
 
 /* Window depth -> view-Z for the vertex stage's encoding. affine:
  * z = 1 - 1/vz (screen-affine, exact under interpolation); otherwise the
@@ -77,11 +81,23 @@ bool op_rank_loses(vec4 e, vec2 rank, float own_vz)
  * wins the pixel. This carries dofs-0 pedestals at mid range, where the
  * original floated them on the ground's own push. */
 bool op_key_loses(float tkey, float akey, float mkey, float own,
-                  float koff, bool actor, bool truescope)
+                  float koff, bool actor, bool truescope, bool slot_contest)
 {
     if (koff > 0.0) {
         float band = (koff - 0.5) - 64.0;      /* strict, by half an OT slot */
-        if (tkey < band) return true;
+        if (slot_contest) {
+            /* One ordering table, OP_KEY_SLOT world per bucket. Both classes
+             * carry their absolute key, so quantizing each to its bucket
+             * reproduces the table's own granularity: a difference smaller
+             * than a bucket is no difference at all. The moby pass is
+             * submitted before the terrain pass, so a terrain face in the
+             * same bucket is appended after an actor face and paints over
+             * it — the actor loses a tie, the terrain keeps one (a terrain
+             * fragment must never lose to its own key). */
+            float own_slot = floor((koff - 0.5) / OP_KEY_SLOT);
+            float t_slot   = floor(tkey / OP_KEY_SLOT);
+            if (actor ? (t_slot <= own_slot) : (t_slot < own_slot)) return true;
+        } else if (tkey < band) return true;
         if ((actor || !truescope) && akey < band &&
             (!truescope || akey < own - 64.0)) return true;
         return truescope && !actor && mkey < own + 1024.0;

@@ -4189,6 +4189,14 @@ void rhi_set_notex(int on) { s_fs_notex = on ? VK_TRUE : VK_FALSE; }
 static VkBool32 s_fs_moby_truescope = VK_TRUE;
 void rhi_set_moby_truescope(int on) { s_fs_moby_truescope = on ? VK_TRUE : VK_FALSE; }
 
+/* Fragment-stage specialization constant 4 (`SLOT_CONTEST`): the key
+ * contest compares 128-world ordering-table slot indices instead of world
+ * distances and resolves an equal slot to the terrain. A per-game constant
+ * (game_layout.terrain.slot_ot_contest), set before the pipelines are built
+ * and never toggled after. */
+static VkBool32 s_fs_slot_contest = VK_FALSE;
+void rhi_set_slot_contest(int on) { s_fs_slot_contest = on ? VK_TRUE : VK_FALSE; }
+
 /* Compile a pipeline's Vulkan objects from its stored sources (desc + shader
  * names/words) without touching the rhi_pipeline's live handles: the create
  * path assigns the result to a fresh pipeline, the rebuild path swaps it into
@@ -4210,16 +4218,17 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     }
     VkPipelineLayout layout = VK_NULL_HANDLE;
 
-    VkSpecializationMapEntry vsSpecMap[4] = {
+    VkSpecializationMapEntry vsSpecMap[5] = {
         { .constantID = 0, .offset = 0,                    .size = sizeof(VkBool32) },
         { .constantID = 1, .offset = sizeof(VkBool32),     .size = sizeof(VkBool32) },
         { .constantID = 2, .offset = 2 * sizeof(VkBool32), .size = sizeof(VkBool32) },
         { .constantID = 3, .offset = 3 * sizeof(VkBool32), .size = sizeof(VkBool32) },
+        { .constantID = 4, .offset = 4 * sizeof(VkBool32), .size = sizeof(VkBool32) },
     };
-    VkBool32 vsSpecData[4] = { s_vs_depth_affine, s_vs_affine_uv, s_fs_notex,
-                               s_fs_moby_truescope };
+    VkBool32 vsSpecData[5] = { s_vs_depth_affine, s_vs_affine_uv, s_fs_notex,
+                               s_fs_moby_truescope, s_fs_slot_contest };
     VkSpecializationInfo vsSpec = {
-        .mapEntryCount = 4, .pMapEntries = vsSpecMap,
+        .mapEntryCount = 5, .pMapEntries = vsSpecMap,
         .dataSize = sizeof(vsSpecData), .pData = vsSpecData,
     };
     VkPipelineShaderStageCreateInfo stages[2] = {

@@ -109,6 +109,15 @@ const game_layout_t game_layout = {
         .near_corner     = 0x140,
         .near_flag_excl  = 0x80u,
         .near_flag_tier2 = 0x40u,
+        .lp_base_slots   = 0x40,  /* unmeasured against this game's own ordering
+                                   * table; r_environment.s:1436-1448 computes
+                                   * (SZ sum >> 7) + 4*bias with no base term at
+                                   * one insert site, so the base wants its own
+                                   * table census before it moves */
+        .lp_bias_slots   = 8,
+        .hp_bias_slots   = 4,
+        .nearband_ot_keys = 0,    /* the near/HQ queue carries no ordering key */
+        .slot_ot_contest  = 0,
     },
     .shadow = {
         .desc        = G_MOBYSHADOWS,     /* {Tiledef shadow; int* shadow_list @+0x08} */

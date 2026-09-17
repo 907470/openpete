@@ -267,6 +267,27 @@ typedef struct game_layout {
         int      near_corner;
         uint32_t near_flag_excl;
         uint32_t near_flag_tier2;
+        /* The authored ordering-table terms the ordinary insert adds to a
+         * face's bucket index, in 128-world slots: `lp_base_slots` the
+         * constant base the LP insert adds before the authored bias, and
+         * `lp_bias_slots`/`hp_bias_slots` the multipliers on the face's
+         * bias word. Ported onto the face's key as world units. */
+        int      lp_base_slots;
+        int      lp_bias_slots, hp_bias_slots;
+        /* 1 = the near/HQ-classified faces key through that same ordinary
+         * insert, so each publishes a positive ordering key like every
+         * other terrain face. 0 = the near/HQ queue carries no ordering
+         * key, and those faces contest per-pixel against their own view-Z
+         * without publishing one. */
+        int      nearband_ot_keys;
+        /* 1 = the moby-versus-terrain key contest compares 128-world slot
+         * indices rather than world distances, and resolves an equal slot
+         * to the terrain: the draw submits both classes through one
+         * ordering table with the moby pass first, so a terrain face in
+         * the same bucket is appended after the moby face and paints over
+         * it. An actor face in a farther-or-equal slot than the terrain
+         * key owning the pixel loses the pixel. */
+        int      slot_ot_contest;
     } terrain;
 
     /* The moby drop-shadow draw. Both games run the same walk: a list of

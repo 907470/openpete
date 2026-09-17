@@ -189,6 +189,31 @@ const game_layout_t game_layout = {
         .near_corner     = 0x140,
         .near_flag_excl  = 0u,
         .near_flag_tier2 = 0u,
+        .lp_base_slots   = 0x40,  /* the ordinary insert at
+                                   * environment.s:4216-4242,4667-4681,4783-4790
+                                   * is (SZ sum >> 7) + bias slots with no base
+                                   * term, and the faces this feed reports with
+                                   * 64 slots sit about 63 slots off the guest
+                                   * table's own line. The term is kept because
+                                   * it compensates another unmeasured term of
+                                   * the same insert: zeroing it alone moves the
+                                   * LP-versus-HP contest away from the original
+                                   * frame across the corpus. The base and the
+                                   * bias multiplier move together or not at
+                                   * all. */
+        .lp_bias_slots   = 8,
+        .hp_bias_slots   = 4,
+        .nearband_ot_keys = 1,    /* environment.s:4216-4242: the faces the
+                                   * near/HQ classifier selects key through the
+                                   * ordinary insert; the 0x30-based drain at
+                                   * environment.s:7104,7138-7145 takes none of
+                                   * them */
+        .slot_ot_contest  = 1,    /* draw/Draw.s:403 submits the whole scene
+                                   * through one table and one DrawOTag;
+                                   * stdutil.s:84-99 makes a later insert into a
+                                   * bucket paint later, and
+                                   * draw/func_8001E460.s:14,22 runs the moby
+                                   * pass before the terrain pass */
     },
     .shadow = {
         .desc        = G_MOBYSHADOWS,     /* mobyfunc.s:921-923: +0x00/+0x04 the sprite UV

@@ -34,6 +34,7 @@
 #include "openpete_interp_objs.h" /* tick stamp + period for the overlay sub-tick alpha */
 #include "openpete_record.h" /* native --record capture seam */
 #include "rhi.h"
+#include "game_layout.h"  /* game_layout.terrain: the per-game ordering-table key policy */
 #include "screenshot.h"  /* openpete_write_png_rgba */
 
 #include <SDL3/SDL.h>
@@ -1975,6 +1976,14 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
       OPL_INFO_F("native", "depth: %s",
                  affine ? "screen-affine z_ndc=1-1/vz (default)"
                         : "legacy z=vz/(vz+4096) (OPENPETE_DEPTH_AFFINE=0)"); }
+    /* Key-contest granularity (SLOT_CONTEST, fragment spec-constant 4): a
+     * game whose draw submits mobys and terrain through ONE ordering table
+     * has both classes' keys on one 128-world scale, so the contest compares
+     * bucket indices and gives an equal bucket to the terrain (the moby pass
+     * is submitted first, so the terrain face is appended after it). A game
+     * whose two classes do not share a table keeps the world-distance rule.
+     * Per-game data, baked here before the pipelines below are built. */
+    rhi_set_slot_contest(game_layout.terrain.slot_ot_contest);
     /* (--texture-mapping was resolved near the top of this function — before
      * the dev overlay snapshotted knob boot values — so every pipeline below
      * bakes the right AFFINE_UV constant.) */

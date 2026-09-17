@@ -34,6 +34,11 @@ layout(constant_id = 0) const bool DEPTH_AFFINE = false;
 /* Scope moby og-key yields by the fragment's own TRUE view-Z (see the
  * contest block). Default true; false restores og's compound painter. */
 layout(constant_id = 3) const bool MOBY_TRUESCOPE = true;
+/* Fragment spec-constant 4 (`SLOT_CONTEST`): the key contest compares
+ * 128-world ordering-table slot indices and resolves an equal slot to the
+ * terrain. Set per game from game_layout.terrain.slot_ot_contest. */
+layout(constant_id = 4) const bool SLOT_CONTEST = false;
+
 
 void main()
 {
@@ -64,7 +69,13 @@ void main()
                                  : 4096.0 * gl_FragCoord.z / max(1.0 - gl_FragCoord.z, 1e-9);
         bool actor = vRank.x < -0.5;   /* unranked moby faces mark rank -1 */
         if (vKoff > 0.0) {
-            if (tkey < (vKoff - 0.5) - 64.0) discard;
+            if (SLOT_CONTEST) {
+                /* Slot-quantized arm, psx_key_contest.glsl's rule: an actor
+                 * face loses a tie to the terrain, a terrain face keeps one. */
+                float own_slot = floor((vKoff - 0.5) / 128.0);
+                float t_slot   = floor(tkey / 128.0);
+                if (actor ? (t_slot <= own_slot) : (t_slot < own_slot)) discard;
+            } else if (tkey < (vKoff - 0.5) - 64.0) discard;
             if ((actor || !MOBY_TRUESCOPE) &&
                 akey < (vKoff - 0.5) - 64.0 &&
                 (!MOBY_TRUESCOPE || akey < own - 64.0)) discard;

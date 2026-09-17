@@ -610,6 +610,7 @@ void          rhi_set_notex(int on);
  * view-Z. Applied to pipelines created after this call; live toggle via
  * rhi_rebuild_pipelines. Default 1; 0 restores og's compound painter. */
 void          rhi_set_moby_truescope(int on);
+void          rhi_set_slot_contest(int on);
 
 /* Re-bake EVERY live pipeline on the device from its stored desc + shader
  * sources, capturing the current spec-constant values (rhi_set_depth_affine /

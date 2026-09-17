@@ -4210,14 +4210,18 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              * split tri's own 3-vert mean can land on the other side of the
              * sky's bucket (the fix4 left-edge blue triangle). */
             W->emit_otkey = (float)((sv[i0].m3 + sv[i1].m3 + sv[i2].m3 + sv[i3].m3) * 4.0);
-            /* Authored OT-slot depth offset: the .s adds bias*8 + 0x40 slots
-             * to every LP face's OT index and bias*4 to HP's; ported as
-             * world units on the TEST depth at the emit (1 slot = 128). Set
-             * ambient here so the near/HQ subdivide and clip paths inherit
-             * the PARENT face's offset, like otkey. */
+            /* Authored OT-slot depth offset: the .s adds a per-game base
+             * plus a multiple of the face's authored bias to its OT index;
+             * ported as world units on the test depth at the emit (1 slot =
+             * 128). The terms are game_layout.terrain data because the two
+             * games' inserts do not agree on the base. Set ambient here so
+             * the near/HQ subdivide and clip paths inherit the PARENT
+             * face's offset, like otkey. */
             W->emit_nearband = 0;
-            W->emit_otslots = passLP ? (uint16_t)(0x40u + 8u * F->otbias)
-                                    : (uint16_t)(4u * F->otbias);
+            W->emit_otslots = passLP
+                ? (uint16_t)((unsigned)game_layout.terrain.lp_base_slots
+                             + (unsigned)game_layout.terrain.lp_bias_slots * F->otbias)
+                : (uint16_t)((unsigned)game_layout.terrain.hp_bias_slots * F->otbias);
             /* EXCEPT any face in the .s's FOREGROUND band (corner-depth sum
              * < 0x2000).
              *
@@ -4252,7 +4256,12 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             if (face_is_near_canonical(sv[i0].m3, sv[i1].m3, sv[i2].m3,
                                        (quad ? sv[i3].m3 : sv[i2].m3),
                                        passLP ? 0u : hqW3))
-                { W->emit_otslots = 0; W->emit_nearband = 1; }
+                { W->emit_nearband = 1;
+                  /* A game whose near/HQ faces key through the ordinary
+                   * insert keeps that insert's authored bias; one whose
+                   * near/HQ queue has no OT index has nothing to bias. */
+                  if (!game_layout.terrain.nearband_ot_keys)
+                      W->emit_otslots = 0; }
             /* .s HP-walk texture-fog select (generated C block_80027040-809C,
              * tri twin 0x80027460): per-face key from the corner SZs (SZ=4·m3;
              * the same key feeds the OT bucket), t0 = key − fogRef + 4096.
@@ -6899,19 +6908,28 @@ static void terrain_feed_native(CPUState* cpu) {
          * covers the LP<->HP partition, intra-tier authored order, AND the
          * portal sky contest (the sky fans below emit bucket+64).
          *
-         * NEAR-BAND faces are CONTEST-ONLY (NEGATIVE koff = |key|, no
-         * slot offsets — the subdivide queue inserts at raw slots): the
-         * OT dump proves near cells ride the SAME painter as everything
-         * else (dark_hollow: the beast face at slot 671 of 694 paints
-         * OVER the wall quads at slots 254-399, and the og framebuffer
-         * shows the beast), so an authored-biased moby key must be able
-         * to win near ground/walls per-pixel (the embedded pedestal-disc
-         * rim, and og's own moby-over-near-wall cases). They still never
-         * EMIT: a huge under-camera face's flat-key raster would discard
-         * everything behind it, and true depth already wins the
-         * viewer-side surface's own pixels. (Adjudication trap: dying
-         * mobys death-flash per VBL — judge these cases on SURFACE
-         * identity, never colour.)
+         * Near-band faces take one of two shapes, chosen by
+         * game_layout.terrain.nearband_ot_keys — which .s insert reaches
+         * them.
+         *
+         * nearband_ot_keys = 1: the classified faces key through the
+         * ordinary insert like every other face, so each publishes a
+         * positive key on the one shared scale and emits it. That is what
+         * puts a near ground face and a moby face in the same 128-world
+         * slot, which the slot contest then resolves to the terrain.
+         *
+         * nearband_ot_keys = 0: the faces reach a queue with no OT index,
+         * so they are contest-only (negative koff = |key|, no slot offsets).
+         * The OT dump proves near cells ride the same painter as everything
+         * else (dark_hollow: the beast face at slot 671 of 694 paints over
+         * the wall quads at slots 254-399, and the og framebuffer shows the
+         * beast), so an authored-biased moby key must be able to win near
+         * ground/walls per-pixel (the embedded pedestal-disc rim, and og's
+         * own moby-over-near-wall cases). They never emit: a huge
+         * under-camera face's flat-key raster would discard everything
+         * behind it, and true depth already wins the viewer-side surface's
+         * own pixels. (Adjudication trap: dying mobys death-flash per VBL —
+         * judge these cases on surface identity, never colour.)
          *
          * FILL twins stay 0 — stencil-gated to uncovered pixels, they must
          * never self-discard. Transparent terrain CONTESTS but never EMITS
@@ -6929,8 +6947,15 @@ static void terrain_feed_native(CPUState* cpu) {
                 s_nbc = (e && *e) ? (*e != '0') : 1; }
             double mean = (t->otkey > 0.0f) ? (double)t->otkey
                         : (t->vz[0] + t->vz[1] + t->vz[2]) * 16.0 / 3.0;
-            tri.koff = t->nearband ? ((s_nbc && !tri.blend) ? (float)-(mean + 0.5) : 0.0f)
-                                   : (float)(mean + 128.0 * (double)t->otslots + 0.5);
+            double key = mean + 128.0 * (double)t->otslots + 0.5;
+            if (!t->nearband)
+                tri.koff = (float)key;
+            else if (!s_nbc || tri.blend)
+                tri.koff = 0.0f;
+            else if (game_layout.terrain.nearband_ot_keys)
+                tri.koff = (float)key;              /* keys through the ordinary insert */
+            else
+                tri.koff = (float)-(mean + 0.5);    /* contest-only, never emitted */
         }
         int tid = (tex && t->texid >= 0 && t->texid < 128) ? t->texid : -1;
         if (tid >= 0 && tex_slot[tid] < 0) {

@@ -27,6 +27,11 @@ layout(constant_id = 0) const bool DEPTH_AFFINE = false;
 /* Scope moby og-key yields by the fragment's own TRUE view-Z (see the
  * contest block). Default true; false restores og's compound painter. */
 layout(constant_id = 3) const bool MOBY_TRUESCOPE = true;
+/* Fragment spec-constant 4 (`SLOT_CONTEST`): the key contest compares
+ * 128-world ordering-table slot indices and resolves an equal slot to the
+ * terrain. Set per game from game_layout.terrain.slot_ot_contest. */
+layout(constant_id = 4) const bool SLOT_CONTEST = false;
+
 
 void main()
 {
@@ -43,7 +48,7 @@ void main()
                 op_key_from_stored(texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r),
                 own, vKoff,
                 vRank.x < -0.5,     /* unranked moby faces mark rank -1 */
-                MOBY_TRUESCOPE))
+                MOBY_TRUESCOPE, SLOT_CONTEST))
             discard;
     }
     outColor = vColor / vQ;
