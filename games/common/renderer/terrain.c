@@ -1030,13 +1030,14 @@ static void terrain_near_emit(tn_wctx* W, CPUState* cpu, uint32_t hqBase, int te
     };
     for (int i = 0; i < 4; i++) {
         tmat mat; float u[4], v[4]; memset(&mat, 0, sizeof(mat)); mat.bpp = 16;
-        /* sub-quad i uses HQ Tiledef entry (i+1), NOT i: the .s simple-emit loop
-         * (func_800276A0 .L80027D88) does `t6 += 8` in the branch DELAY SLOT before
-         * the first Tiledef read, so descriptor[0]=TL → offset 8, …, descriptor[3]
-         * =BR → offset 32 (entries 1..4; entry 0 is the detail-path base, unused by
-         * the 2×2). Reading entries 0..3 shifted every sub-tile by one → "4 textures
-         * in 1 with a wrong offset" (delay-slot trap, cf. read-recompiled-not-asm). */
-        uint32_t e = hqBase + (uint32_t)(i + 1) * 8u;
+        /* Sub-quad i reads the 8-byte tile half at terrain.hq_sub0 + i*8 of the
+         * face's HQ record. Both games' emit loops bump the record pointer by 8
+         * in a branch delay slot before the first Tiledef read, so the first
+         * quadrant is already one half in: Spyro 1's 168-byte record starts the
+         * quadrants at +8 (entry 0 is the detail-path base, unused by the 2x2),
+         * Spyro 3's inline block at +0x10. Reading from offset 0 shifts every
+         * sub-tile by one quadrant. */
+        uint32_t e = hqBase + game_layout.terrain.hq_sub0 + (uint32_t)i * 8u;
         decode_tiledef(cpu, e, abe, &mat, u, v);
         mat.texid = texid;                /* HQ quadrants share the record's id */
         tiledef_apply_ori(cpu, e, u, v);  /* rotated/flipped HQ tiles (word1>>25) */
@@ -1047,9 +1048,10 @@ static void terrain_near_emit(tn_wctx* W, CPUState* cpu, uint32_t hqBase, int te
          * a rotated tile scrolls along its rotated axis, exactly as the game's
          * whole-texel writes do. Sub-quads 0-1 read the first HQ group and 2-3
          * the second; the two groups sit half a window apart in the scroll
-         * ring, so they carry separately-wrapped offsets. (Only Spyro 1 feeds
-         * this path: Spyro 3 locates no HQ table, so its near quads fall to the
-         * LQ emit, which carries the scroll offset of the same tile.) */
+         * ring, so they carry separately-wrapped offsets. Spyro 3's scroll walker
+         * writes the same two groups into its inline sub-tiles (acc>>1 into the
+         * first pair, ((acc>>1)+32)&0x3F into the second), so the same pair of
+         * offsets applies. */
         if (s_tanim_have && texid >= 0 && texid < 128 && s_tanim_act[texid]) {
             float dv = s_tanim_dvhq[texid][i >> 1];
             for (int k = 0; k < 4; k++) v[k] += dv;
@@ -1443,11 +1445,14 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
                 /* Spyro 3: word2 is not read by the draw; word3 carries the
                  * texture index (bits 0-6), the OT bias (7-9), flip (10) and
                  * the GT3 UV rotation (12-13). Every HP face is textured;
-                 * semi-transparency comes from the tile's TPAGE. */
+                 * semi-transparency comes from the tile's TPAGE. The near/HQ
+                 * sub-tiles live inside that same table entry, so the HQ index
+                 * is the texture index (environment.s 80025904 re-derives it
+                 * from word3 for the subdivide). */
                 F->flip = (w3 & 0x400) != 0; F->fogbias = 0;
                 F->otbias = (uint8_t)((w3 >> 7) & 0x7);
                 F->dside = (w3 & 0x800) != 0;
-                F->hq_idx = 0; F->abe = 0;
+                F->hq_idx = (uint8_t)(w3 & 0x7F); F->abe = 0;
                 F->trirot = (uint8_t)((w3 >> 12) & 3u);
                 tb = (int)(w3 & 0x7F);
             } else {                               /* Spyro 1: word2 tex byte + HQ index; word3 flags */
@@ -2831,8 +2836,9 @@ static void terrain_animdbg(CPUState* cpu) {
                     openpete_frame, rd(cpu, lt + (uint32_t)probeN*16u), rd(cpu, lt + (uint32_t)probeN*16u + 4),
                     rd(cpu, lt + (uint32_t)probeN*16u + 8), rd(cpu, lt + (uint32_t)probeN*16u + 12));
             for (int i = 0; i < 5; i++)
-                fprintf(stderr, " %08x %08x", rd(cpu, ht + (uint32_t)probeN*168u + (uint32_t)i*8u),
-                        rd(cpu, ht + (uint32_t)probeN*168u + (uint32_t)i*8u + 4));
+                fprintf(stderr, " %08x %08x",
+                        rd(cpu, ht + (uint32_t)probeN*game_layout.terrain.hq_stride + (uint32_t)i*8u),
+                        rd(cpu, ht + (uint32_t)probeN*game_layout.terrain.hq_stride + (uint32_t)i*8u + 4));
             fprintf(stderr, "\n");
         }
     }
@@ -2853,7 +2859,8 @@ static void terrain_animdbg(CPUState* cpu) {
         if (have && h != lq[t] && strlen(lqs) < 240) snprintf(lqs + strlen(lqs), 12, " %u", t);
         lq[t] = h;
         h = 2166136261u;
-        for (int w = 0; w < 42; w++) h = (h ^ rd(cpu, hqTable + t * 168u + (uint32_t)w * 4u)) * 16777619u;
+        for (uint32_t w = 0; w < game_layout.terrain.hq_stride / 4u; w++)
+            h = (h ^ rd(cpu, hqTable + t * game_layout.terrain.hq_stride + w * 4u)) * 16777619u;
         if (have && h != hq[t] && strlen(hqs) < 240) snprintf(hqs + strlen(hqs), 12, " %u", t);
         hq[t] = h;
     }
@@ -3487,7 +3494,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         /* HQ 2x2 subdivide variant (terrain_near_emit mirror): corners
          * TL=i0, TR=i1, BL=i3, BR=i2 with RAW near colours; midpoint
          * positions exact ((a+b)>>1 on even x4 sums), midpoint colours via
-         * the walk's (a+b)>>1; sub-quad q uses HQ Tiledef entry (q+1) with
+         * the walk's (a+b)>>1; sub-quad q uses the HQ tile half at hq_sub0+q*8 with
          * the D_8006D058 UV-orientation adjust; triangulation
          * (TL,TR,BL)+(TR,BL,BR). Camera-space node values are rebuilt in
          * the vertex stage from the parent corners + the role bits. */
@@ -3521,11 +3528,11 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
                 { mL, Cc, BL, mB },
                 { Cc, mR, mB, BR },
             };
-            uint32_t hqBase = hqTable + (uint32_t)F->hq_idx * 168u;
+            uint32_t hqBase = hqTable + (uint32_t)F->hq_idx * game_layout.terrain.hq_stride;
             for (int q = 0; q < 4; q++) {
                 tmat m; float u[4], v[4];
                 memset(&m, 0, sizeof(m)); m.bpp = 16;
-                uint32_t e = hqBase + (uint32_t)(q + 1) * 8u;   /* entries 1..4 (.s delay-slot bump) */
+                uint32_t e = hqBase + game_layout.terrain.hq_sub0 + (uint32_t)q * 8u;
                 decode_tiledef(cpu, e, F->abe, &m, u, v);
                 uint32_t ori = rd(cpu, e + 4) >> 25;
                 if (ori && game_layout.terrain.uv_ori_table) {   /* HQ UV orientation offset table (Spyro 1 D_8006D058) */
@@ -4722,7 +4729,8 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 cvert TR = { sv[i1].m1, sv[i1].m2, sv[i1].m3, r1, 0, 0 };
                 cvert BL = { sv[i3].m1, sv[i3].m2, sv[i3].m3, r3, 0, 0 };
                 cvert BR = { sv[i2].m1, sv[i2].m2, sv[i2].m3, r2, 0, 0 };
-                terrain_near_emit(W, cpu, hqTable + (uint32_t)F->hq_idx * 168u,
+                terrain_near_emit(W, cpu,
+                                  hqTable + (uint32_t)F->hq_idx * game_layout.terrain.hq_stride,
                                   F->hq_idx, abe, TL, TR, BL, BR);
                 W->dbg_spike++;   /* near/HQ cells subdivided */
                 FARDBG_DROP("nearhq");  /* emitted subdivided — the face-set

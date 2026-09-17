@@ -216,6 +216,18 @@ typedef struct game_layout {
          * tile at +8 in both games; Spyro 3 keeps its four HQ sub-tiles inline
          * after them (48 bytes) where Spyro 1 has a separate HQ table (16). */
         uint32_t tex_stride;
+        /* The near/HQ 2x2 subdivide's tile source. The record holding a face's
+         * four HQ sub-tiles is `hq_tex` + (HQ index) * `hq_stride`, and sub-quad
+         * q (quadrant order TL, TR, BL, BR) reads the 8-byte tile half at
+         * `hq_sub0` + q*8 inside it. Spyro 1: a separate 168-byte record whose
+         * entry 0 is the detail-path base, so the quadrants are entries 1..4
+         * (offset 8). Spyro 3: the sub-tiles sit inline in the same 48-byte
+         * texture-table entry as the LQ halves, at +0x10
+         * (environment.s .L80024C08 bumps the entry pointer by 8 in the loop's
+         * delay slot, then reads +0x8/+0xC of it; the quadrant order is the
+         * vertex-base table D_80065C28 over the 3x3 grid). */
+        uint32_t hq_stride;
+        uint32_t hq_sub0;
         /* Semi-transparency: Spyro 1 flags it per face; Spyro 3 in bit 15 of
          * the tile's TPAGE halfword. */
         int      abe_in_tpage;

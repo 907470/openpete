@@ -89,6 +89,9 @@ const game_layout_t game_layout = {
         .defer_q      = { G_SCRATCH + 0x2000u, G_SCRATCH + 0x1E00u },
         .face_layout  = TERRAIN_FACES_SPYRO1,
         .tex_stride   = 16u,
+        .hq_stride    = 168u,                       /* the sibling HQ record */
+        .hq_sub0      = 8u,                         /* entry 0 is the detail-path base;
+                                                     * the 2x2 quadrants are entries 1..4 */
         .abe_in_tpage = 0,
         .tile_word1_br = 0,
         .lod_dist_default = 0u,

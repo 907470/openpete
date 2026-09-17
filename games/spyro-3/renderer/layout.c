@@ -27,9 +27,10 @@ const game_layout_t game_layout = {
         .occ_group_count = 0u,                      /* no count word; the occlusion data carries its own header */
         .lq_tex          = G_ENVIRONMENT + 0x20u,   /* world draw: lw $s3, 0x20($at); one table of
                                                      * 48-byte entries serves LQ and HQ tiles */
-        .hq_tex          = 0u,                      /* no separate HQ table: the four HQ sub-tiles sit
-                                                     * at +0x10 of the LQ entry; the near-subdivide
-                                                     * pass is not fed on this game yet */
+        .hq_tex          = G_ENVIRONMENT + 0x20u,   /* no separate HQ table: the four HQ sub-tiles sit
+                                                     * inline at +0x10 of the same 48-byte entry, so
+                                                     * the near subdivide reads the LQ table with
+                                                     * terrain.hq_stride / terrain.hq_sub0 */
         .tex_count       = G_ENVIRONMENT + 0x24u,   /* 94 in the dump; max face texture index 93 */
         .lod_dist        = 0u,                      /* no header field: the visibility pre-pass bins
                                                      * LP/HP with constants (terrain.lod_dist_default) */
@@ -157,6 +158,16 @@ const game_layout_t game_layout = {
         .defer_q      = { 0u, 0u },                 /* the near lists live in the scratchpad; not read */
         .face_layout  = TERRAIN_FACES_SPYRO3,
         .tex_stride   = 48u,
+        .hq_stride    = 48u,                        /* environment.s 80025904-80025914: the HQ index
+                                                     * (face word3 & 0x7F) times 48 into the same
+                                                     * texture table */
+        .hq_sub0      = 0x10u,                      /* environment.s .L80024C08: the entry pointer is
+                                                     * bumped 8 in the loop's delay slot and the
+                                                     * sub-quad tile read at +0x8/+0xC of it, so the
+                                                     * four quadrant halves are +0x10, +0x18, +0x20,
+                                                     * +0x28; quadrant order TL, TR, BL, BR from the
+                                                     * vertex-base table D_80065C28 over the 3x3
+                                                     * subdivide grid */
         .abe_in_tpage = 1,
         .tile_word1_br = 1,                         /* GT4 emit: uv1 = word1 - 0x1F00, uv3 = word1 */
         .lod_dist_default = 0x8000u,                /* Spyro 1's authored value; the Spyro 3 draw bins
