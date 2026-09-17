@@ -1500,7 +1500,14 @@ void openpete_native_scene_apply_overlay(double alpha) {
              *       (frames are discrete); only the position lerps. A glyph swap
              *       at the same slot keeps shape+position, where the position
              *       lerp is a no-op — harmless. */
-            int same_tex = p->v[0].u == tri.v[0].u && p->v[0].v == tri.v[0].v;
+            /* UV identity only means anything for a TEXTURED primitive: an
+             * untextured quad carries u=v=0, so comparing UVs matches any two
+             * of them and pairs, say, the top letterbox bar with the bottom
+             * one — the position lerp then sweeps a full-width black bar across
+             * the middle of the frame. An untextured quad is identified by
+             * shape and bounded move alone. */
+            int same_tex = tri.textured && p->textured &&
+                           p->v[0].u == tri.v[0].u && p->v[0].v == tri.v[0].v;
             int same_shape_near = 1;
             for (int k = 1; k < 3 && same_shape_near; k++) {
                 float dex = (tri.v[k].sx - tri.v[0].sx) - (p->v[k].sx - p->v[0].sx);
