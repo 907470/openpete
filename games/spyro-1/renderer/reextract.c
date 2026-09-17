@@ -1,8 +1,8 @@
-/* games/spyro-1/renderer/reextract.c — Spyro 1's sub-tick re-feed orchestrator.
+/* games/spyro-1/renderer/reextract.c , Spyro 1's sub-tick re-feed orchestrator.
  * See reextract.h for the contract. */
 
 #include "renderer/reextract.h"
-#include "openpete_camlock.h"       /* render camera lock (G) — bracket override */
+#include "openpete_camlock.h"       /* render camera lock (G) , bracket override */
 #include "openpete_interp.h"
 #include "renderer/interp_regions_gen.h"
 #include "openpete_pace_log.h"        /* snapshot ring query + op_now/OP_NS_PER_SEC */
@@ -20,11 +20,11 @@
 #include <stdlib.h>
 #include <string.h>
 
-extern int openpete_speculative;   /* openpete_fiber.h — runahead lookahead */
+extern int openpete_speculative;   /* openpete_fiber.h , runahead lookahead */
 extern int openpete_ra_input_edge; /* runahead: led branch changed this tick */
 
 /* Runahead correction rebase (default ON; OPENPETE_RA_REBASE=0 disables):
- * on an input-edge tick the led pair jumps prediction branches — lerping
+ * on an input-edge tick the led pair jumps prediction branches , lerping
  * table-prev (old branch) → table-curr (new branch) yanks the object
  * backward. Rebasing prev at the LAST SHOWN bytes glides from where the
  * eye already is to the corrected branch over one tick; backward motion
@@ -33,7 +33,7 @@ extern int openpete_ra_input_edge; /* runahead: led branch changed this tick */
  * LED-CAMERA A/B CONFIG ONLY (OPENPETE_RA_CAM_COMMIT=0) in BOTH arms:
  * with the default committed-timeline camera the camera pair never
  * crosses a branch (a rebase would only kink it), and the Spyro arm is
- * actively harmful under analog input — the stick differs almost every
+ * actively harmful under analog input , the stick differs almost every
  * tick, so the edge fires continuously and the standing re-anchor
  * bunches motion into the late presents and steps backward at negative
  * alpha (visible jitter in motion). Spyro's cross-branch error at N=1-2
@@ -63,7 +63,7 @@ extern unsigned openpete_frame;
 #define MOBY_STATE    0x48u
 #define MOBY_POS      0x0Cu         /* Vector3D x,y,z (int32) */
 /* Ring region indices, resolved by name from the registered table
- * (interp_regions_gen.h) — a restated index selects the wrong region's bytes as
+ * (interp_regions_gen.h) , a restated index selects the wrong region's bytes as
  * soon as a row is inserted. Each accessor caches its lookup; -1 would mean the
  * game registered no such region, which Spyro 1's table always does. */
 static int region_of(const char* name, int* cache) {
@@ -92,7 +92,7 @@ static int      s_shown_sp_ok = 0;
                                      * the shadow record loop restages it */
 #define SHADOW_POS_OFF 0x10u        /* m_Position (ground anchor, Vector3D int32) */
 
-/* Per-moby RAM bracket save slots — restored after re-extract so the next sim
+/* Per-moby RAM bracket save slots , restored after re-extract so the next sim
  * tick reads canonical RAM. Sized generously for any level's live moby count. */
 #define MOBY_SAVE_MAX 1024
 /* `staged` records that this moby's sub-tick writes went to the view's copy
@@ -123,7 +123,7 @@ typedef struct { uint32_t addr, w1, w2; uint8_t staged; } part_save_t;  /* +0x04
 #define CAM_OFF_VIEW  0x14u
 #define CAM_OFF_POS   0x28u
 
-/* Nominal sim-tick period (29.97 Hz) — passed to the ring query for the
+/* Nominal sim-tick period (29.97 Hz) , passed to the ring query for the
  * prev/curr pairing + dedupe verdict; the alpha is recomputed below from the
  * snapshots' measured timestamps, with the denominator capped at one tick
  * (interp_period_ns) so a stale prev after a static stretch can't stretch a
@@ -136,21 +136,28 @@ typedef struct { uint32_t addr, w1, w2; uint8_t staged; } part_save_t;  /* +0x04
  * the camera) sits byte-static for K ticks and then RESUMES: the ring only
  * "rolls" on a change, so prev_ns stays pinned K ticks back. Dividing by that
  * gap makes the resume crawl at 1/K speed for one interval, then pop the
- * remaining (1-1/K) at the next roll — a hitchy resume on camera un-parks, an
+ * remaining (1-1/K) at the next roll , a hitchy resume on camera un-parks, an
  * enemy beginning to charge, a wait-then-move platform (invisible to the
  * oracle, which is determinism-only). Interp only ever spans one tick (1-tick
  * lag, no extrapolation), so cap it: a steady object (gap == 1 tick) is
  * unchanged; a resume sweeps the full delta over one tick. */
 static double interp_period_ns(op_time_t prev_ns, op_time_t curr_ns) {
     op_time_t p = curr_ns - prev_ns;
-    /* OPENPETE_INTERP_PERIOD_UNCAP=1: diagnostic only — restore the pre-cap
+    /* Non-positive span: the pair still brackets one tick, so price it at the
+     * nominal one. Under deterministic capture the stamps are grid points
+     * counting distinct states, and a held state's duplicate rolls advance
+     * past the grid point the next distinct state lands on , that one pair
+     * measures a span at or below zero, and dividing by it turns the sub-tick
+     * phase into a backward extrapolation of a forward motion. */
+    if (p <= 0) return (double)g_openpete_tick_period_ns;
+    /* OPENPETE_INTERP_PERIOD_UNCAP=1: diagnostic only , restore the pre-cap
      * behaviour (sweep across the full distinct-roll interval) to attribute
      * cadence regressions on slow-rolling objects. */
     static int s_uncap = -1;
     if (s_uncap < 0) { const char* e = getenv("OPENPETE_INTERP_PERIOD_UNCAP"); s_uncap = (e && *e && *e != '0'); }
     if (s_uncap) return (double)p;
     /* Cap at one WALL-time tick (g_openpete_tick_period_ns, --tick-scale
-     * aware) — the hardcoded NTSC constant made every sweep run
+     * aware) , the hardcoded NTSC constant made every sweep run
      * 1/tick_scale× too fast under slow-motion and pin at the clamp. */
     return (double)(p > g_openpete_tick_period_ns ? g_openpete_tick_period_ns : p);
 }
@@ -166,7 +173,7 @@ static int32_t lerp32(int32_t a, int32_t b, double t) {
 
 /* Lerp a 3x3 int16 rotation matrix (9 contiguous shorts; the 10th short is
  * pad and is left as curr). Endpoint matrices one tick apart differ by a
- * tiny rotation, so componentwise lerp (no renormalise) is sub-pixel — the
+ * tiny rotation, so componentwise lerp (no renormalise) is sub-pixel , the
  * Q12-matrix-space interp the plan calls for at one-tick deltas. */
 static void lerp_matrix(uint8_t* live, const uint8_t* prev, const uint8_t* curr,
                         uint32_t off, double t) {
@@ -195,8 +202,8 @@ static int hermite_enabled(void) {
  * The sub-tick present below writes lerped values INTO gameplay-readable PSX RAM
  * (the g_Camera / g_Spyro / flame / shadow spans, plus moby & particle pool
  * slots) and restores the canonical bytes before the game fiber resumes. That
- * restore discipline is exercised ONLY on sub-tick presents — which the headless
- * oracle never runs — so a missed or mis-guarded restore would silently perturb
+ * restore discipline is exercised ONLY on sub-tick presents , which the headless
+ * oracle never runs , so a missed or mis-guarded restore would silently perturb
  * gameplay state and surface only as an oracle drift days later. With
  * OPENPETE_BRACKET_CHECK set, hash the fixed DIRECT regions before any write and
  * re-check them after all restores; a mismatch means this present leaked into
@@ -219,7 +226,7 @@ static uint64_t bc_hash(uint32_t psx_addr, uint32_t len) {
 /* ---- pred1: predicted-tangent cubic Hermite ----------------------------------
  * The linear lerp above is C0: velocity is constant within each 30 Hz bracket
  * and JUMPS at every tick boundary (= the 2nd difference of the sampled path).
- * That per-boundary velocity discontinuity is the perceived judder — measured
+ * That per-boundary velocity discontinuity is the perceived judder , measured
  * at ~5.5% of camera speed median, tail >100% on sharp turns, and it survives
  * any display rate (it's a 30 Hz artifact). pred1 interpolates [prev,curr] as a
  * cubic Hermite with a CENTERED start-tangent m0 = 0.5*(curr-prev2) and a
@@ -235,9 +242,9 @@ static double hermite1(double prev2, double prev, double curr, double t) {
              + (-2.0*t3 + 3.0*t2)      * curr
              + (t3 - t2)               * m1;
     /* MONOTONE clamp: never leave the [prev,curr] segment box.
-     * At a velocity discontinuity (a path-polyline corner — e.g. the
+     * At a velocity discontinuity (a path-polyline corner , e.g. the
      * titlescreen flyby where one axis stops moving), the centered tangent
-     * makes the cubic OVERSHOOT the endpoint and come back — a dip-and-return
+     * makes the cubic OVERSHOOT the endpoint and come back , a dip-and-return
      * hitch at every knot (flyby mobys read as jittery; traced as
      * repeating -36/+36 reversals in the fed position). Clamping is exact for
      * constant-velocity segments (cubic == lerp there), keeps the smooth
@@ -285,7 +292,7 @@ static struct { uint32_t key; double p[3]; } s_fpos[FPOS_MAX];
 static int s_fpos_n = 0;
 /* The table is built + consumed entirely within a single sub-tick re-extract
  * present. The feeders are SHARED with the canonical 30 Hz render path, which
- * never refreshes the table — so the resolver MUST report "no entry" there (else
+ * never refreshes the table , so the resolver MUST report "no entry" there (else
  * the canonical render reads stale fractional positions frozen at the last
  * sub-tick present: terrain/Spyro freeze while moby keyframe animation, a
  * separate channel, keeps going). s_fpos_active is 1 only during the re-extract
@@ -300,7 +307,7 @@ static void fpos_set(uint32_t key, const int32_t* prev, const int32_t* curr, dou
         s_fpos[s_fpos_n].p[i] = (double)prev[i] + ((double)curr[i] - (double)prev[i]) * t;
     s_fpos_n++;
 }
-/* pred1 (Hermite) variant of fpos_set — must match herm_vec3's math so the
+/* pred1 (Hermite) variant of fpos_set , must match herm_vec3's math so the
  * un-rounded fractional position feeders read agrees with the RAM we wrote. */
 static void fpos_set_h(uint32_t key, const int32_t* prev2, const int32_t* prev,
                        const int32_t* curr, double t) {
@@ -348,16 +355,16 @@ int openpete_native_interp_pos(unsigned int key, double out[3]) {
  * present's camera bracket is overwritten with a host-flown pose instead of the
  * interpolated prev/curr pair. The write happens INSIDE the existing bracket
  * (saved before, restored after, covered by the bracket-integrity check), so
- * gameplay RAM is byte-identical lock-on vs lock-off — cutscenes and flybys
+ * gameplay RAM is byte-identical lock-on vs lock-off , cutscenes and flybys
  * keep simulating underneath while the view holds still. This is what the
  * gameplay freecam (F) cannot do: its drive runs inside the CameraFollowSpyro
  * intercept, which cutscene cameras never call, and it freezes UpdateSpyro.
  *
  * Matrices are rebuilt with CameraUpdateMatrices' exact construction (camera.c
  * 0x800338B8): view = X(pitch)·Y(yaw) with roll 0 in Q12, proj = view with the
- * Y row scaled 320/512 (the framebuffer-vs-display aspect bake — the reason
+ * Y row scaled 320/512 (the framebuffer-vs-display aspect bake , the reason
  * this matrix is rows-orthogonal but NOT orthonormal). Host lround trig vs the
- * game's table is at most 1 LSB apart — irrelevant for a debug view. The
+ * game's table is at most 1 LSB apart , irrelevant for a debug view. The
  * initial pose is NUMERICALLY fitted to the live view matrix rather than read
  * from m_Rotation, because cutscene camera writers may leave the euler fields
  * stale; until the user actually flies, the latched bytes are held VERBATIM so
@@ -402,7 +409,7 @@ static void cl_build_matrices(double yaw, double pitch, int16_t view[9], int16_t
 
 /* Invert cl_build_matrices numerically: grid-fit (yaw, pitch) to a live view
  * matrix (coarse→fine). Returns the summed squared element error of the best
- * fit — small (≲ a few hundred, quantisation only) when the live matrix came
+ * fit , small (≲ a few hundred, quantisation only) when the live matrix came
  * from the game's own euler construction; large when it didn't (rolled or
  * exotically-built cutscene matrix), in which case the fitted pose is only
  * the nearest roll-free approximation (the verbatim hold covers the static
@@ -445,7 +452,7 @@ static void cl_fpos_override(uint32_t key, double x, double y, double z) {
     s_fpos_n++;
 }
 
-/* Per-present lock application — the camera bytes at `cam` are already
+/* Per-present lock application , the camera bytes at `cam` are already
  * bracketed (saved) by the caller. */
 static void cl_apply(uint8_t* cam) {
     /* First apply after an engage without a scripted pose: latch. */
@@ -530,7 +537,7 @@ static int cut_rd32(uint32_t va, uint32_t* out) {
  * while g_CutsceneLayout is live.) Used by the moby feeder to SNAP clip
  * switches for these actors: their flight clips carry large BAKED whole-body
  * translation, and a crossfade averages two spatially-distant poses on a
- * phase that can't match the path timing — a 1-2 present whole-body lurch at
+ * phase that can't match the path timing , a 1-2 present whole-body lurch at
  * every clip switch. Canonical does a hard switch; mirror it. */
 int spyro_cutpath_is_actor(uint32_t m) {
     uint32_t cs, base, cnt;
@@ -555,11 +562,11 @@ int spyro_cutpath_is_actor(uint32_t m) {
  *   - Spyro's projected int16 SXY (the NCLIP cull verdict) (PSX scratchpad)
  * This scratch only lives DURING the canonical render (the .s rebuilds/consumes
  * it each pass); by the time a sub-tick intermediate runs it is gone, so the
- * feeders read zeros and emit NOTHING — the mobys/Spyro vanish on every
+ * feeders read zeros and emit NOTHING , the mobys/Spyro vanish on every
  * intermediate and reappear on canonical frames (the flicker).
  *
  * Fix: capture each region at the canonical hook that produces it (proven live
- * there — the canonical feeder reads it at the same point), then on each
+ * there , the canonical feeder reads it at the same point), then on each
  * intermediate restore it (save-live → write-canon → run the READ-ONLY feeders
  * → restore-live, all on the host fiber). Reusing tick-N's cull verdict for the
  * sub-ticks between N and N+1 is correct: the visible set doesn't change within
@@ -572,19 +579,19 @@ int spyro_cutpath_is_actor(uint32_t m) {
  * generically. (The Fairy-Kiss 0x1D00 fix, previously three hand-edits, is
  * now literally the "fk" row.)
  *
- * producer — which canonical hook (re)fills the region; freshness is per
+ * producer , which canonical hook (re)fills the region; freshness is per
  *   producer (see the epoch comment below).
- * phase — SPHASE_ENTER rows restore at bracket entry (before the moby +
+ * phase , SPHASE_ENTER rows restore at bracket entry (before the moby +
  *   shadow feeders). SPHASE_SEG_OVERLAY rows OVERLAP the regular-records row
  *   in PSX space and are overlaid only AFTER those feeders consumed the
- *   records (scratch_bracket_seg_restore) — reproducing the .s's temporal
+ *   records (scratch_bracket_seg_restore) , reproducing the .s's temporal
  *   reuse of [0x1900,..): the moby pass fills cull records there, then the
  *   Spyro pass overwrites them with its seg scratch / Fairy-Kiss table once
  *   the records are consumed. (A single-shot restore used to clobber records
- *   >=14 at 0x1910+ — Sparx and distant chests vanished on sub-ticks.)
+ *   >=14 at 0x1910+ , Sparx and distant chests vanished on sub-ticks.)
  *
  * Row storage is PER ROW (canon+live), so PSX-space overlap never aliases in
- * the backing store — overlap is purely a restore-ORDER concern, which the
+ * the backing store , overlap is purely a restore-ORDER concern, which the
  * phase column encodes. Live saves are all taken before any restore (one
  * coherent pre-state), so overlapping rows' saved bytes agree and leave()
  * may restore in any order. */
@@ -619,21 +626,21 @@ static scratch_region_t s_scratch_rows[] = {
     /* per-vertex fog-lit colour scratch [0x1100,0x1600) */
     { "colour", G_SCRATCH + 0x1100u, 0x500u, SPROD_MOBYREG, SPHASE_ENTER,
       s_colour_buf[0], s_colour_buf[1], 0, 0, 0 },
-    /* full REGULAR cull records [0x1600,0x2400) (<=64 @ 0x38) — captured at
+    /* full REGULAR cull records [0x1600,0x2400) (<=64 @ 0x38) , captured at
      * the MOBY hook while live, BEFORE the Spyro pass reuses 0x1900 */
     { "recs",   G_SCRATCH + 0x1600u, 0xE00u, SPROD_MOBYREG, SPHASE_ENTER,
       s_recs_buf[0], s_recs_buf[1], 0, 0, 0 },
     /* shaded Moby* list + lit scratch [0x2400,0x2C00) */
     { "shaded", G_SCRATCH + 0x2400u, 0x800u, SPROD_SHADED, SPHASE_ENTER,
       s_shaded_buf[0], s_shaded_buf[1], 0, 0, 0 },
-    /* Spyro's projected int16 SXY (the NCLIP cull verdict) — full 1 KB
+    /* Spyro's projected int16 SXY (the NCLIP cull verdict) , full 1 KB
      * hardware scratchpad */
     { "sxy",    SXY_BASE,            0x400u, SPROD_SPYRO,  SPHASE_ENTER,
       s_sxy_buf[0], s_sxy_buf[1], 0, 0, 0 },
-    /* Spyro per-segment scratch [0x1900,0x1A00) — overlaps recs */
+    /* Spyro per-segment scratch [0x1900,0x1A00) , overlaps recs */
     { "seg",    G_SCRATCH + 0x1900u, 0x100u, SPROD_SPYRO,  SPHASE_SEG_OVERLAY,
       s_seg_buf[0], s_seg_buf[1], 0, 0, 0 },
-    /* Fairy-Kiss pre-blend colour table [0x1D00,0x2000) — overlaps recs;
+    /* Fairy-Kiss pre-blend colour table [0x1D00,0x2000) , overlaps recs;
      * written by the Spyro pass AFTER the moby records, like the seg scratch.
      * When Fairy-Kiss is inactive it's harmless (build_spyro_walk reads
      * m_Colors, not 0x1D00). */
@@ -650,7 +657,7 @@ static int s_any_captured = 0;
  * bracket is dead and the feeders silently read live scratch
  * + the unstamped SPEC snapshot (stale during pause/portal-load screens → the
  * "moby soup"). The epoch is instead bumped ONCE per canonical present, from
- * render_paths_commit — the same host-present-loop anchor that latches the
+ * render_paths_commit , the same host-present-loop anchor that latches the
  * canon-drawn mask, guaranteed to run after the canonical render and before any
  * sub-tick re-extract. A capture is fresh iff its producer ran during the LAST
  * canonical present. No canonical present (CdRead stall) → no bump → the last
@@ -660,7 +667,7 @@ static int s_any_captured = 0;
  * Freshness is PER PRODUCER: three canonical producers share the RP_MOBY path
  * bit (REGULAR func_8001F798, SPECULAR func_80020F34, SHADED/HUD/text
  * func_80022A2C), and a pause/portal-load screen runs ONLY the SHADED/text one
- * — a single shared stamp would let the text renderer revalidate the whole
+ * , a single shared stamp would let the text renderer revalidate the whole
  * moby replay. */
 static uint32_t s_canon_epoch_now = 1;   /* stamp captures take (present in flight) */
 static uint32_t s_canon_epoch_ok  = 0;   /* required stamp for a capture to be fresh */
@@ -739,7 +746,7 @@ static scratch_region_t* scratch_row_by_base(uint32_t psx_addr) {
 static void scratch_row_capture(scratch_region_t* r) {
     /* Runahead lookahead: producer hooks fire during SPECULATIVE ticks
      * too, but those fires must not stamp epochs or overwrite the canon
-     * buffers — the stamp would be the NEXT (uncommitted) epoch, so on
+     * buffers , the stamp would be the NEXT (uncommitted) epoch, so on
      * update-VBL presents nothing was "fresh" and the whole moby replay
      * dropped (measured: SCENE act tris strobing ~1050/0 per present
      * under --runahead). The REAL tick's fire is the canonical capture. */
@@ -760,7 +767,7 @@ static void scratch_row_capture(scratch_region_t* r) {
 }
 
 /* Capture a G_SCRATCH sub-range at its producer hook. `off`/`len` must name a
- * registry row (base match); an unmapped offset is a loud no-op — a new
+ * registry row (base match); an unmapped offset is a loud no-op , a new
  * capture site must come with a registry row, or its region never restores. */
 void spyro_native_canon_capture_range(void* cpu_v, unsigned off, unsigned len) {
     (void)cpu_v;
@@ -783,7 +790,7 @@ void spyro_native_canon_capture_sxy(void* cpu_v) {
     scratch_row_capture(scratch_row_by_base(SXY_BASE));
 }
 
-/* Capture the FULL regular cull-record region [0x1600,0x2400) at the MOBY hook —
+/* Capture the FULL regular cull-record region [0x1600,0x2400) at the MOBY hook ,
  * while the records are still live, BEFORE the later Spyro pass reuses 0x1900
  * for its seg scratch (whose own row is captured later at the Spyro hook). */
 void spyro_native_canon_capture_recs(void* cpu_v) {
@@ -794,7 +801,7 @@ void spyro_native_canon_capture_recs(void* cpu_v) {
 /* On an intermediate: save the live scratch, overwrite with the captured canon,
  * so the read-only feeders that follow see valid tick-N render-pass inputs.
  *
- * The seg scratch [0x1900,0x1A00) is NOT restored here — it overlaps the regular
+ * The seg scratch [0x1900,0x1A00) is NOT restored here , it overlaps the regular
  * records (records 14+ start at 0x1910) which the .s reuses temporally. We give
  * the moby feeder the FULL records first; scratch_bracket_seg_restore then
  * overlays the seg scratch for the Spyro feeder (called between them). */
@@ -814,7 +821,7 @@ static void scratch_bracket_enter(CPUState* cpu) {
                     spyro_native_canon_shaded_fresh()); }
     }
     if (!s_any_captured) return;
-    /* Save TRUE live for ALL rows first, before any restore — one coherent
+    /* Save TRUE live for ALL rows first, before any restore , one coherent
      * pre-state, so an overlapping row never saves another row's canon bytes,
      * and leave() restores everything back whether or not a canon restore
      * fired (a stale-skipped region is a saved-then-restored no-op). */
@@ -839,7 +846,7 @@ static void scratch_bracket_enter(CPUState* cpu) {
     s_bracket_open = 1;
     /* Restore canon per PRODUCER freshness: a producer that didn't run during
      * the last canonical present keeps whatever the live scratch holds (its
-     * feeder pass is skipped too — moby_reextract checks the same
+     * feeder pass is skipped too , moby_reextract checks the same
      * predicates), instead of replaying a stale capture. SEG_OVERLAY rows
      * wait for scratch_bracket_seg_restore (they overlap the records the
      * moby + shadow feeders are about to consume). */
@@ -854,8 +861,8 @@ static void scratch_bracket_enter(CPUState* cpu) {
 }
 
 /* After the moby + shadow feeders have consumed the regular records, overlay
- * the SEG_OVERLAY rows over the (now-consumed) records at 0x1900+ — the same
- * temporal reuse the .s does — so the Spyro body feeder sees its seg scratch
+ * the SEG_OVERLAY rows over the (now-consumed) records at 0x1900+ , the same
+ * temporal reuse the .s does , so the Spyro body feeder sees its seg scratch
  * and the Fairy-Kiss pre-blend colour table (else it reads the stale records
  * bytes and Spyro's colours flicker at >30fps during a Fairy-Kiss). */
 static void scratch_bracket_seg_restore(CPUState* cpu) {
@@ -902,9 +909,9 @@ static void scratch_bracket_leave(CPUState* cpu) {
  * ring's (0 mismatches measured), so k=0 is the singleton bracket exactly.
  *
  * Shadow records: after a record's body, every shadow record bound to
- * it restages its own D_SPYROSHADOW bytes over the ambient shadow bracket —
+ * it restages its own D_SPYROSHADOW bytes over the ambient shadow bracket ,
  * the anchor lerped against the previous list's shadow of the paired model,
- * teleport-guarded like the singleton — and runs the Spyro shadow feeder
+ * teleport-guarded like the singleton , and runs the Spyro shadow feeder
  * under the record's staged g_Spyro (heading, silhouette selectors, the
  * lerped +0x24 clock). A pairing-only model record (hidden player, shadow
  * drawn) stages its bytes for its shadows and skips the body.
@@ -937,8 +944,8 @@ static int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl, do
      * record per step); write the FLOOR of the interpolated counter as
      * the window and hand the fractional part to the flame feeder as a
      * SUB-KEYFRAME slide (record[p]→record[p+8] lerp) so the ribbon
-     * animates below the keyframe grid — as smooth as Spyro's anim
-     * lerp, not stepping one record at a time. SNAP on a large jump —
+     * animates below the keyframe grid , as smooth as Spyro's anim
+     * lerp, not stepping one record at a time. SNAP on a large jump ,
      * the flame periodically reseeds (the counter wraps 30→0), and
      * lerping across that collapses the ribbon through zero. |Δ|≤8
      * separates the continuous advance/retract (g_DeltaTime 2..4) from
@@ -954,7 +961,7 @@ static int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl, do
             int v = (int)ffloor; if (v < 0) v = 0;
             fl[FLAME_CNT_OFF + st] = (uint8_t)v;
             if (*subframe == 0.0 && d > 0) *subframe = fadv - ffloor;
-        }   /* else keep curr (wrap/reseed — already in fl) */
+        }   /* else keep curr (wrap/reseed , already in fl) */
     }
     return 1;
 }
@@ -988,9 +995,9 @@ static void player_records_shadows(CPUState* cpu, int k, uint8_t* shb) {
 
 /* Flame records: at the flame feeder's place in the scene order (after the
  * particles), every flame record restages its own g_SpyroFlame bytes over
- * the ambient flame bracket — origin, attach matrix and strand counters
+ * the ambient flame bracket , origin, attach matrix and strand counters
  * bracketed against the previous list's flame of the paired model, with its
- * own sub-keyframe slide — and runs the flame feeder under its model
+ * own sub-keyframe slide , and runs the flame feeder under its model
  * record's slot. The walk reads no g_Spyro field, so the model bytes need no
  * restaging here. */
 static void player_records_flames(CPUState* cpu, int paired, int cam_cut, double alpha, uint8_t* fl) {
@@ -1147,7 +1154,7 @@ static void player_records_loop(CPUState* cpu, int paired, int cam_cut, int cam_
 
 
 /* The sub-tick present body. Always entered through the wrapper below, which
- * owns the view's begin/end pairing — this function has many exit paths and
+ * owns the view's begin/end pairing , this function has many exit paths and
  * an unpaired view would leave staged bytes visible to the next tick. */
 static void game_reextract_body(void* cpu_v) {
     CPUState* cpu = (CPUState*)cpu_v;
@@ -1169,12 +1176,12 @@ static void game_reextract_body(void* cpu_v) {
 
     /* Pair prev/curr camera snapshots (region 0 = g_Camera). Returns 0 when
      * the world is stuck (byte-identical: paused / loading / vbl busy-wait)
-     * or no pairing yet (spawn) — then we present the live (curr) scene with
+     * or no pairing yet (spawn) , then we present the live (curr) scene with
      * no camera bracket. */
     double qa = 0.0;
     const openpete_interp_snapshot_t *prev2 = NULL, *prev = NULL, *curr = NULL;
-    /* The query's own alpha (qa) is unused — the bracket alpha is derived
-     * below from the present clock — but pass that clock here too, so the
+    /* The query's own alpha (qa) is unused , the bracket alpha is derived
+     * below from the present clock , but pass that clock here too, so the
      * re-extract reads one clock throughout. */
     int paired = openpete_interp_query3(openpete_interp_present_now(), TICK_PERIOD_NS, &qa, &prev2, &prev, &curr);
     /* Unpaired means there is no bracket to interpolate within (spawn, a
@@ -1221,10 +1228,10 @@ static void game_reextract_body(void* cpu_v) {
     /* Discontinuity guard: if the camera jumped this tick (level transition,
      * cutscene cut, teleport) interpolating across it produces a visible swoop.
      * Detect via the camera position delta (threshold calibrated at 5000
-     * units/tick: continuous ≤1218, cuts ≥140k — game_extras_impl.c) and snap
+     * units/tick: continuous ≤1218, cuts ≥140k , game_extras_impl.c) and snap
      * (present the live curr scene, no bracket) instead. */
     /* How old the forward endpoint is, in ticks of present time. Normally under
-     * one — the ring captures every tick — but the sim can stop producing new
+     * one , the ring captures every tick , but the sim can stop producing new
      * states while presents continue: a paused update, a load, the debug freecam
      * (which freezes UpdateSpyro). The pair is then arbitrarily old and still
      * the only one there is. */
@@ -1240,14 +1247,14 @@ static void game_reextract_body(void* cpu_v) {
         double dx = (double)cp[0] - pp[0], dy = (double)cp[1] - pp[1], dz = (double)cp[2] - pp[2];
         if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) cam_cut = 1;
         /* ROTATION cut: a stationary cut (camera spins to a new shot without moving
-         * far — e.g. the dragon-rescue close-up, which flips the camera ~180° while
+         * far , e.g. the dragon-rescue close-up, which flips the camera ~180° while
          * position barely changes) slips past the position threshold above. Linearly
          * lerping a large rotation matrix drives it through a near-singular midpoint
          * (determinant collapses) → severe scene warping on the intermediate presents.
          * Detect via the rotation angle between prev/curr camera matrices (orthonormal
          * Q12): cos(angle) = (trace(Rp^T·Rc) - 1)/2, and trace(Rp^T·Rc) is just the
          * Frobenius inner product of the two 3x3s / 4096^2. Snap when the camera turned
-         * more than 90°/tick (cos<0 ⇒ frob<4096^2) — no smooth camera move does that
+         * more than 90°/tick (cos<0 ⇒ frob<4096^2) , no smooth camera move does that
          * (it's 2700°/s); a normal fast pan stays far above the threshold (a 46° turn
          * gives frob≈2.4·4096^2), so this only fires on genuine cuts/reversals. */
         if (!cam_cut) {
@@ -1258,8 +1265,8 @@ static void game_reextract_body(void* cpu_v) {
         }
         /* GAME-STATE edge: the two ticks came from different simulation regimes
          * (gameplay -> level transition, transition -> load, cutscene in/out).
-         * The camera re-targets on such an edge — entering a portal swings it
-         * ~20° and ~500 units in one tick, under both thresholds above — and a
+         * The camera re-targets on such an edge , entering a portal swings it
+         * ~20° and ~500 units in one tick, under both thresholds above , and a
          * lerp presents the chord of that swing: Spyro lands ~10 px off the
          * canonical line for the one present whose pair straddles the edge.
          * The regimes are not one motion, so the pair is a cut by definition. */
@@ -1293,11 +1300,11 @@ static void game_reextract_body(void* cpu_v) {
      * few-presents-old occlusion grid is wrong everywhere across a cut) and
      * feed the measured per-tick pan speed (in screen px) so the feeder's
      * cached rects inflate with real camera motion. Unpaired presents (spawn /
-     * world-stuck) get a short suspension — the camera may have moved
+     * world-stuck) get a short suspension , the camera may have moved
      * arbitrarily relative to the grid capture. */
     /* A cut the ring is still replaying long after the fact is not a reason to
      * suspend. Identical captures are deduped, so once the sim stops producing
-     * new states the ring serves the last two DISTINCT ones on every present —
+     * new states the ring serves the last two DISTINCT ones on every present ,
      * and if the camera jumped just before it stopped, that pair straddles the
      * jump forever. Interpolation must still refuse it (the pair is a real
      * discontinuity), but the grid has been rebuilt from the shown camera on
@@ -1308,7 +1315,7 @@ static void game_reextract_body(void* cpu_v) {
     int use_herm = 0;   /* pred1 gate (set inside the bracket block; the record loop reads it) */
     if (paired && cam && prev && curr && !cam_cut) {
         /* Per-tick rotation = the max angle any ROW direction moved, from the
-         * per-row NORMALIZED dot products. NOT the trace formula — the Spyro
+         * per-row NORMALIZED dot products. NOT the trace formula , the Spyro
          * camera matrix is rows-orthogonal but NOT orthonormal (the Y row
          * bakes a ~0.625 aspect scale), so acos((trace-1)/2) reads ~0.8 rad for IDENTICAL
          * matrices and would inflate every rect off the grid. */
@@ -1354,10 +1361,10 @@ static void game_reextract_body(void* cpu_v) {
         /* Allow slightly NEGATIVE alpha instead of clamping at 0: the canonical
          * present fires a few ms before its tick's grid stamp (present latency
          * jitter vs the PLL-smoothed capture stamps), and clamping snapped shown
-         * time forward ~0.5 VBL at EVERY roll — ~24% of all motion delivered as
+         * time forward ~0.5 VBL at EVERY roll , ~24% of all motion delivered as
          * 30 Hz jumps (the flyby judder; measured via OPENPETE_ALPHA_MAP_DBG).
          * lerp(prev,curr,α<0) is a tiny backward extrapolation of a known
-         * velocity — continuous and visually correct; the cubic Hermite is NOT
+         * velocity , continuous and visually correct; the cubic Hermite is NOT
          * safe below 0, so the pred1 gate below requires alpha >= 0. */
         /* The registered regions stopped changing longer ago than the pair's
          * own cadence: prev->curr describes a motion that has ENDED, and the
@@ -1370,14 +1377,14 @@ static void game_reextract_body(void* cpu_v) {
         if (alpha < -0.35) alpha = -0.35; else if (alpha > 1.0) alpha = 1.0;
         /* Publish the alpha this present will actually show. It is the
          * position in ANIMATION time, which is what decides whether a present
-         * carried new motion or repeated the previous frame — two presents at
+         * carried new motion or repeated the previous frame , two presents at
          * one alpha are the same image however far apart they were submitted,
          * and no submit timestamp can tell those apart. Taken after the clamp
          * so it reports what was drawn, not what was requested. */
         openpete_pace_note_alpha(alpha, 1);
 
         /* pred1 gate: use the cubic Hermite (centered start-tangent) only when a
-         * valid prev2 exists AND the prev2→prev step is itself continuous — a cut
+         * valid prev2 exists AND the prev2→prev step is itself continuous , a cut
          * on that earlier step would make the centered tangent overshoot. The
          * DIRECT-ring feeders (camera + Spyro) share this gate; mobys/anim clocks
          * stay linear for now. Same 1-tick latency either way. */
@@ -1400,14 +1407,14 @@ static void game_reextract_body(void* cpu_v) {
          * FORWARD ENDPOINT = the RING's curr, not live RAM: identical when
          * runahead is off (curr was captured from this very RAM at the
          * tick), but under runahead live RAM is the restored REAL tick
-         * while ring-curr is the LED tick — using live RAM collapsed the
+         * while ring-curr is the LED tick , using live RAM collapsed the
          * pair to one tick (prev==curr) and the camera stepped at 30 Hz
          * (the "whole world jittery" report; every other feeder was led
          * via the objs table, only the DIRECT regions snapped back).
          *
          * Under runahead the camera region is COMMITTED-timeline
          * (ra_commit recapture, interp_regions.c): the pair is
-         * branch-free, so no input-edge rebase — it would only kink a
+         * branch-free, so no input-edge rebase , it would only kink a
          * timeline that cannot mispredict. The rebase arm survives solely
          * for the OPENPETE_RA_CAM_COMMIT=0 (led-camera) A/B config. */
         const uint8_t* pcam = prev->data + prev->region_offsets[CAM_REGION()];
@@ -1416,7 +1423,7 @@ static void game_reextract_body(void* cpu_v) {
         if (openpete_ra_input_edge && ra_rebase_on() && s_shown_cam_ok &&
             !openpete_interp_ra_commit_active()) {
             pcam = s_shown_cam;      /* glide from the shown state (see above) */
-            use_herm = 0;            /* linear only — no tangent across branches */
+            use_herm = 0;            /* linear only , no tangent across branches */
             ra_rebased = 1;
         }
         if (!cam_staged) memcpy(cam_saved, cam, CAM_BYTES);  /* legacy path only */
@@ -1432,7 +1439,7 @@ static void game_reextract_body(void* cpu_v) {
             lerp_matrix(cam, pcam, ccam, CAM_OFF_PROJ, alpha);
             lerp_matrix(cam, pcam, ccam, CAM_OFF_VIEW, alpha);
             lerp_vec3  (cam, pcam, ccam, CAM_OFF_POS,  alpha);
-            /* Fractional camera position (un-rounded) for the floor fix — same lerp,
+            /* Fractional camera position (un-rounded) for the floor fix , same lerp,
              * double precision. */
             fpos_set(G_CAMERA,
                      (const int32_t*)(pcam + CAM_OFF_POS),
@@ -1445,7 +1452,7 @@ static void game_reextract_body(void* cpu_v) {
 
         /* Per-present trace (OPENPETE_LAG_TRACE): the interpolated camera pos
          * presented THIS frame. Across the present sequence it must progress
-         * monotonically — a sawtooth (jump forward then back) is the canonical-
+         * monotonically , a sawtooth (jump forward then back) is the canonical-
          * vs-intermediate strobe (ghosting). */
         static int lt = -1;
         if (lt < 0) { const char* e = getenv("OPENPETE_LAG_TRACE"); lt = (e && *e && *e != '0'); }
@@ -1478,7 +1485,7 @@ static void game_reextract_body(void* cpu_v) {
                  * CONFIG ONLY: under analog input the stick differs almost
                  * every tick, so the edge fires continuously and a
                  * standing rebase re-anchors the lerp at the shown pos
-                 * every tick — motion bunches into the late presents and
+                 * every tick , motion bunches into the late presents and
                  * the negative-alpha presents extrapolate BACKWARD from
                  * the shown point (visible jitter). The plain table pair
                  * absorbs the few-unit branch error invisibly, like the
@@ -1511,7 +1518,7 @@ static void game_reextract_body(void* cpu_v) {
             }
             /* Per-segment (body/head/tail) animation clock: lerp each
              * m_FrameProgress (0x24/0x25/0x26) when its keyframe pair
-             * (frameA 0x1E/0x20/0x22, frameB 0x1F/0x21/0x23) is unchanged —
+             * (frameA 0x1E/0x20/0x22, frameB 0x1F/0x21/0x23) is unchanged ,
              * else snap (no blend across a knot or a transition reseed). */
             static const int frA[3] = {0x1E,0x20,0x22}, frB[3] = {0x1F,0x21,0x23},
                              prog[3] = {0x24,0x25,0x26};
@@ -1525,11 +1532,11 @@ static void game_reextract_body(void* cpu_v) {
             }
             /* Body/head/tail rotation (packed 3×8-bit euler @ +0xC/+0x10/+0x14):
              * computed at FLOAT precision and handed to the Spyro euler composer
-             * (player_native_set_rot_interp) — NOT written back to the byte euler,
+             * (player_native_set_rot_interp) , NOT written back to the byte euler,
              * which would re-quantize to the 256/circle (1.4°/step) grid the same
              * way the moby path did. Body (s=0) always interpolates; head/tail carry
              * a 0-sentinel ("use body") so interpolate only when both endpoints are
-             * real — else leave that segment on the byte-exact path (snap). */
+             * real , else leave that segment on the byte-exact path (snap). */
             for (int s = 0; s < 3; s++) {
                 uint32_t off = 0x0Cu + (uint32_t)s * 4u;
                 uint32_t pr, cr; memcpy(&pr, psp + off, 4); memcpy(&cr, csp + off, 4);
@@ -1559,17 +1566,17 @@ static void game_reextract_body(void* cpu_v) {
          * rigidly attached to Spyro's mouth/head: m_Position (origin) + the
          * flame-attach matrix both advance at the 30 Hz tick, so without this the
          * flame snaps to its tick-N pose while the (interpolated) Spyro it should
-         * sit on moves smoothly — the 30 Hz look. Lerp both at the same alpha as
+         * sit on moves smoothly , the 30 Hz look. Lerp both at the same alpha as
          * Spyro so the flame tracks him.
          *
          * The ribbon ANIMATION (not just the pose) is the plan's RE-RUN recipe:
          * the strip is `flameMatrix·keyframe[counter]` over a STATIC keyframe
-         * template (D_FLAME_GEOM — proven byte-constant across ticks), indexed by
+         * template (D_FLAME_GEOM , proven byte-constant across ticks), indexed by
          * the per-strand counter FL_CNT which advances by g_DeltaTime (2..4) each
          * tick. Re-running flame_build_strip with a sub-tick-advanced counter walks
          * the template at the present rate → genuinely high-FPS flame animation
          * (NOT a lerp of two shapes). An intermediate counter is a legitimate game
-         * state — it occurs naturally at g_DeltaTime=1 — and flame_build_strip is
+         * state , it occurs naturally at g_DeltaTime=1 , and flame_build_strip is
          * fully data-driven by it, so the intermediate ribbon is faithful.
          *
          * Teleport-guard the flame's first active tick (prev pose stale from
@@ -1592,7 +1599,7 @@ static void game_reextract_body(void* cpu_v) {
          * the spine doesn't otherwise touch, so without this the shadow steps at
          * 30 Hz under the (interpolated) Spyro. Lerp it at the same alpha as Spyro
          * so the shadow tracks him; teleport-guard a jump (level transition / warp
-         * / a frame Spyro lifts off → re-grounds). (Moby shadows need no bracket —
+         * / a frame Spyro lifts off → re-grounds). (Moby shadows need no bracket ,
          * they re-derive from each moby's already-interpolated m_Position.) */
         sh = (uint8_t*)openpete_subtick_view_stage(D_SPYROSHADOW, SHADOW_SAVE);
         sh_staged = (sh != NULL);
@@ -1612,15 +1619,15 @@ static void game_reextract_body(void* cpu_v) {
 
     }
 
-    /* Per-moby interpolation (indirect table, keyed by Moby vaddr) — runs
+    /* Per-moby interpolation (indirect table, keyed by Moby vaddr) , runs
      * UNCONDITIONALLY with a PER-OBJECT alpha, NOT gated on the camera bracket.
      * The DIRECT ring dedupes the WHOLE camera+Spyro snapshot, so when BOTH are
-     * byte-static — the player idling in a homeworld while the dragons keep their
-     * idle animation running — the ring reports paired=0 and the old camera-gated
+     * byte-static , the player idling in a homeworld while the dragons keep their
+     * idle animation running , the ring reports paired=0 and the old camera-gated
      * moby block was skipped entirely, freezing every moby's animation/movement at
      * 30 Hz (the bug: Artisans cutscene dragons step while the camera is still).
      * Each moby instead sweeps across ITS OWN distinct-state interval
-     * (o->prev_ns..o->curr_ns) — identical to the camera alpha when both advance
+     * (o->prev_ns..o->curr_ns) , identical to the camera alpha when both advance
      * every tick (both stamped from op_now() one VBL apart, so spatial coherence
      * with a moving camera is preserved), and keeps animating when the camera is
      * static. Same per-object-cadence pattern as the HUD icons below. */
@@ -1629,7 +1636,7 @@ static void game_reextract_body(void* cpu_v) {
         uint8_t* base_p = (uint8_t*)openpete_psx_to_host_ptr(G_LEVELMOBYS);
         uint32_t arr = 0; if (base_p) memcpy(&arr, base_p, 4);
         /* First pass of the walk: the mobys the canonical render drew from OUTSIDE
-         * g_LevelMobys (the balloonist's relocated balloon — see
+         * g_LevelMobys (the balloonist's relocated balloon , see
          * moby_native_canon_drawn_mobys). Entries inside the array's extent were
          * already handled by phase 0 and are skipped. */
         const uint32_t* drawn = NULL;
@@ -1660,14 +1667,14 @@ static void game_reextract_body(void* cpu_v) {
                         /* IDENTITY guard (slot reuse). The interp-objs table is keyed
                          * by the moby SLOT ADDRESS, so a slot a DIFFERENT moby respawns
                          * into within one tick still reads have_prev=1 and would lerp
-                         * between two unrelated objects — position AND the two-pass
+                         * between two unrelated objects , position AND the two-pass
                          * keyframe shape (garbage when the models differ). The teleport
                          * guard below only catches FAR reuses; a near respawn (same
                          * region) slips through it. m_Class @ +0x36 (i16) is the stable
                          * type and the model is derived from it (G_MODELS[class]), so a
                          * class change is a different model → snap (present curr, no
                          * bracket). Mirrors the particle class/sel guard. (Same-class
-                         * instance reuse — same model, near, a brief pose blend — is a
+                         * instance reuse , same model, near, a brief pose blend , is a
                          * benign residual; catching it needs a per-instance id the moby
                          * record doesn't carry.) */
                         uint16_t pcls, ccls;
@@ -1677,7 +1684,7 @@ static void game_reextract_body(void* cpu_v) {
 
                         /* Per-object alpha from the moby's OWN distinct-roll
                          * timestamps, over a denominator capped at one tick
-                         * (interp_period_ns — a stale prev after a static stretch
+                         * (interp_period_ns , a stale prev after a static stretch
                          * must not stretch the resume); clamps to curr once it
                          * settles. */
                         op_time_t period_ns = o->curr_ns - o->prev_ns;
@@ -1690,7 +1697,7 @@ static void game_reextract_body(void* cpu_v) {
                             memcpy(pp, o->prev + MOBY_POS, 12);
                             memcpy(cp, o->curr + MOBY_POS, 12);
                             /* per-moby teleport guard: a respawn / warp jumps far in
-                             * one tick — lerping streaks it across the screen. Snap
+                             * one tick , lerping streaks it across the screen. Snap
                              * (leave at curr, don't bracket) when the jump is large. */
                             double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
                             if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) goto next_moby;
@@ -1705,7 +1712,7 @@ static void game_reextract_body(void* cpu_v) {
                             moby_save_n++;
                             /* pred1: use the cubic Hermite (centered start-tangent)
                              * when this moby has a valid prev2 whose prev2->prev step
-                             * is itself continuous — else the linear prev->curr lerp.
+                             * is itself continuous , else the linear prev->curr lerp.
                              * Same per-object alpha + 1-tick latency either way. */
                             int m_herm = 0; int32_t p2[3]; int have_p2 = 0;
                             if (o->have_prev2) {
@@ -1716,7 +1723,7 @@ static void game_reextract_body(void* cpu_v) {
                                 /* Cutscene path actors: LINEAR position lerp only.
                                  * Their pose (two-pass shape lerp, linear in
                                  * balpha) carries baked whole-body motion authored
-                                 * to complement the quantized path — the two
+                                 * to complement the quantized path , the two
                                  * channels cancel per present ONLY when they
                                  * sweep with the SAME alpha shape; hermite easing
                                  * on position alone breaks the cancellation by up
@@ -1729,7 +1736,7 @@ static void game_reextract_body(void* cpu_v) {
                                 memcpy(mh + MOBY_POS + k * 4, &lv, 4);
                             }
                             /* Fractional moby position (un-rounded) for the floor
-                             * fix — keyed by the moby vaddr, at this moby's own
+                             * fix , keyed by the moby vaddr, at this moby's own
                              * per-object alpha. The body / shaded / shadow feeders
                              * look it up so the moby's own motion is continuous too
                              * (not just the camera component). */
@@ -1756,7 +1763,7 @@ static void game_reextract_body(void* cpu_v) {
                             /* Animation: NOT synthesized into RAM here anymore. The
                              * old approach wrote an interpolated m_FrameProgress (and,
                              * across a knot, an extended "continuous-phase" blend) into
-                             * mh[0x3E/0x3F/0x40], which the moby decode then sampled —
+                             * mh[0x3E/0x3F/0x40], which the moby decode then sampled ,
                              * decoding a keyframe pair at a blend the game never
                              * rendered, stretching fast-animating mobys off-model (the
                              * same bug the Spyro player path hit). The moby decode now
@@ -1770,7 +1777,7 @@ static void game_reextract_body(void* cpu_v) {
                             /* Rotation (m_Rotation @ +0x44, Vector3D8) is NOT lerped
                              * into RAM here: a byte write would re-quantize to the
                              * 1.4°/step grid (256/circle) and the sub-tick interp
-                             * couldn't subdivide below it — the residual stair-step on
+                             * couldn't subdivide below it , the residual stair-step on
                              * slow rotators (gems/dragons). Instead the moby euler
                              * composer (shaded_compose_euler) reads this moby's
                              * prev/curr snapshots and renders the rotation at FLOAT
@@ -1786,7 +1793,7 @@ static void game_reextract_body(void* cpu_v) {
     }
 
     /* Static 3D HUD icons (g_Hud.m_Mobys[12]) live OUTSIDE g_LevelMobys (so the
-     * moby loop above misses them) and animate while the camera is dead still —
+     * moby loop above misses them) and animate while the camera is dead still ,
      * the inventory. So this runs UNCONDITIONALLY (not gated on the camera being
      * paired) with a PER-OBJECT alpha (the camera's alpha clamps to 1 when static,
      * which would step them). Two transitions to smooth: the m_Rotation (+0x44)
@@ -1817,7 +1824,7 @@ static void game_reextract_body(void* cpu_v) {
             }
             moby_save_n++;
             /* Position (m_Position +0x0C): when the HUD appears the icons slide
-             * down (Y, ~3-5 units/tick) into place — lerp that so the slide is as
+             * down (Y, ~3-5 units/tick) into place , lerp that so the slide is as
              * smooth as the spin. Teleport-guard the one-tick appearance jump (the
              * initial placement is ~2880 units in Z/X) so it snaps into place
              * instead of streaking from a possibly-garbage spawn position. The
@@ -1833,7 +1840,7 @@ static void game_reextract_body(void* cpu_v) {
                         memcpy(mh + MOBY_POS + k * 4, &lv, 4);
                     }
             }
-            /* Rotation (m_Rotation +0x44): NOT lerped here — the HUD icons route
+            /* Rotation (m_Rotation +0x44): NOT lerped here , the HUD icons route
              * through the moby euler composer (shaded_compose_euler), which now
              * renders rotation at float precision from their prev/curr interp-objs
              * snapshots (moby_native_set_rot_interp). A byte write here would
@@ -1848,13 +1855,13 @@ static void game_reextract_body(void* cpu_v) {
      * spawn into inactive slots → have_prev=0 → snap (no streak from a stale slot),
      * despawns are evicted. Pure LERP of two observed states → never calls the
      * particle update's rand() (which would break gameplay 1:1), so it's safe for
-     * the rand-spawned cinders too. NOT the g_Sparkles pool (rand m_Life — no RAM
+     * the rand-spawned cinders too. NOT the g_Sparkles pool (rand m_Life , no RAM
      * writeback; its twinkle PHASE interps render-side in sparkle_build instead)
      * or glows (they ride their owner moby). Teleport-guard a slot reused by a
      * new particle mid-flight. */
     {
         op_time_t now = openpete_interp_present_now();
-        /* OPENPETE_PART_INTERP_DBG: per-second census of pool-interp verdicts —
+        /* OPENPETE_PART_INTERP_DBG: per-second census of pool-interp verdicts ,
          * lerped vs each snap reason, MOVING particles (prev->curr delta > 2
          * world/4) counted separately. A moving particle that keeps snapping is
          * a 30 Hz stepper (the circling-stars class). */
@@ -1883,15 +1890,15 @@ static void game_reextract_body(void* cpu_v) {
                 memcpy(&cw1, o->curr + PART_POS_OFF, 4); memcpy(&cw2, o->curr + 0x08u, 4);
                 int pX = (int16_t)(pw1 & 0xFFFF), pY = (int16_t)(pw1 >> 16), pZ = (int16_t)(pw2 & 0xFFFF);
                 int cX = (int16_t)(cw1 & 0xFFFF), cY = (int16_t)(cw1 >> 16), cZ = (int16_t)(cw2 & 0xFFFF);
-                /* Positions are world/4 (int16) — the identity + teleport guards
+                /* Positions are world/4 (int16) , the identity + teleport guards
                  * below are in world/4 too. History of the ceiling: 8000 (32000
                  * full-world, streaked visibly) → 1250 (matched the moby guards,
                  * still far above screen scale) → 300 (particle-physics scale;
                  * see the ceiling comment below). */
                 double dX = cX - pX, dY = cY - pY, dZ = cZ - pZ;
                 /* IDENTITY guard (slot reuse). The interp-objs table is keyed by slot
-                 * ADDRESS, so a slot a NEW particle respawns into within one tick — a
-                 * shatter/burst churning the pool faster than slots free — still reads
+                 * ADDRESS, so a slot a NEW particle respawns into within one tick , a
+                 * shatter/burst churning the pool faster than slots free , still reads
                  * have_prev=1 and gets lerped between TWO DIFFERENT particles: a long
                  * line streaks from the old position to the new one. The distance guard
                  * below only catches FAR reuses; a burst clustered near its emitter
@@ -1899,8 +1906,8 @@ static void game_reextract_body(void* cpu_v) {
                  * m_Class (byte0) + sel/type (byte1) is the stable type, and m_Life
                  * (byte2) is an age counter that INCREMENTS every tick for a CONTINUING
                  * particle (measured across the run: outside spawn bursts 100% of
-                 * have_prev particles have life strictly increasing; reuse — type change,
-                 * life reset, or life held — appears only inside bursts). So lerp only a
+                 * have_prev particles have life strictly increasing; reuse , type change,
+                 * life reset, or life held , appears only inside bursts). So lerp only a
                  * genuinely continuing particle; otherwise snap (present curr, no streak). */
                 {
                     int moving = (dX*dX + dY*dY + dZ*dZ > 4.0);
@@ -1909,11 +1916,11 @@ static void game_reextract_body(void* cpu_v) {
                     uint8_t plife = (uint8_t)(ph2 >> 16), clife = (uint8_t)(ch2 >> 16);
                     /* Life DECREASED → reset → slot reuse: snap. Life EQUAL is
                      * ambiguous: burst reuse (rare same-life coincidence) vs a
-                     * PERSISTENT particle whose life byte stalls — the circling
+                     * PERSISTENT particle whose life byte stalls , the circling
                      * damage stars: 245-300 moving particles/s snapped here
                      * during the effect, stepping the orbit at the tick rate.
                      * Lerp stalled-life particles only within a
-                     * TIGHT radius (300 world/4 per tick — orbiting stars move
+                     * TIGHT radius (300 world/4 per tick , orbiting stars move
                      * ~50-100; burst reuses jump farther or reset life). */
                     if (clife < plife) { s_pi[3]++; if (moving) s_pi[7]++; continue; }
                     s_pi[0]++; if (moving) s_pi[5]++;
@@ -1921,7 +1928,7 @@ static void game_reextract_body(void* cpu_v) {
                 /* Teleport/reuse ceiling at particle-physics scale (was 1250
                  * == 5000 full-world, stalled-life class already at 300):
                  * under runahead the pair can span two prediction BRANCHES,
-                 * whose pool churn differs — slot reuse across branches can
+                 * whose pool churn differs , slot reuse across branches can
                  * pass the class + life-increase tests (no same-timeline
                  * ordering to reset the life byte) and lerp as a screen-
                  * crossing streak. 300 world/4 per tick == 1200 full-world
@@ -1964,14 +1971,14 @@ static void game_reextract_body(void* cpu_v) {
         }
     }
 
-    /* Dragon-star record (D_DRAGONSTAR — the circling damage stars): a single
+    /* Dragon-star record (D_DRAGONSTAR , the circling damage stars): a single
      * gamestate record (pos +0x04, per-effect rotation SHORTMATRIX +0x10, spoke
      * size +0x24, colour byte +0x2B) that func_8002F3E4 animates once per tick;
      * the feeder re-reads it every present, so un-bracketed the stars circle at
      * the tick rate regardless of --render-fps (particle-circling-stars.bk2
-     * f1850). Lerp prev→curr at the record's own distinct-roll alpha — position
+     * f1850). Lerp prev→curr at the record's own distinct-roll alpha , position
      * (int32), matrix (componentwise int16, then the two USED column vectors
-     * — [r][0]/[r][2], the spoke basis — renormalized to Q12 so the chord lerp
+     * , [r][0]/[r][2], the spoke basis , renormalized to Q12 so the chord lerp
      * can't shrink the ring), size and colour. Guards: active in BOTH snapshots
      * (re-trigger → snap), teleport (>5000 world units), rotation >90°/tick
      * (column-0 cosine < 0 → snap; lerp would arc the wrong way). Bracketed:
@@ -2035,7 +2042,7 @@ static void game_reextract_body(void* cpu_v) {
      * checked), so the lock is render-only. The occlusion grid is keyed to the
      * TRUE camera's screen rects, so culling stays suspended while locked. */
     /* Scripted engage-at-frame (headless A/Bs): latch whatever view is live
-     * at VBL N — engaging at boot would latch a mid-load camera. */
+     * at VBL N , engaging at boot would latch a mid-load camera. */
     {
         static long s_cl_frame = -2;
         if (s_cl_frame == -2) {
@@ -2061,7 +2068,7 @@ static void game_reextract_body(void* cpu_v) {
 
     /* Restore tick-N's transient .s render-pass scratch (cull records, colour,
      * shaded list, Spyro seg + SXY) so the read-only body feeders below find
-     * valid inputs — without it they emit nothing and mobys/Spyro flicker. */
+     * valid inputs , without it they emit nothing and mobys/Spyro flicker. */
     scratch_bracket_enter(cpu);
 
     /* Sub-tick keyframe-blend for Spyro: pass the alpha + whether interpolation
@@ -2110,8 +2117,8 @@ static void game_reextract_body(void* cpu_v) {
     shadow_reextract(cpu);         /* drop-shadows under mobys (Spyro's: the record loop below) */
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SHADOW, pt_t1 - pt_t0); }
     /* The moby + shadow feeders have now consumed the FULL regular cull records;
-     * overlay the Spyro seg scratch over the (consumed) records 14+ at 0x1900 —
-     * the .s's own temporal reuse — so the Spyro body feeder sees its seg scratch
+     * overlay the Spyro seg scratch over the (consumed) records 14+ at 0x1900 ,
+     * the .s's own temporal reuse , so the Spyro body feeder sees its seg scratch
      * without record 14+ mobys (Sparx, distant chests) being clobbered earlier. */
     scratch_bracket_seg_restore(cpu);
     if (pt_on) pt_t0 = openpete_phase_now_us();
@@ -2133,11 +2140,11 @@ static void game_reextract_body(void* cpu_v) {
     openpete_native_scene_apply_overlay(alpha);
 
     /* Restore the transient render-pass scratch (disjoint from the position
-     * bracket regions below — order irrelevant). */
+     * bracket regions below , order irrelevant). */
     scratch_bracket_leave(cpu);
 
     /* Restore canonical RAM before the game fiber resumes (the present below
-     * reads only s_scene). Order is irrelevant — the regions are disjoint. */
+     * reads only s_scene). Order is irrelevant , the regions are disjoint. */
     for (int i = 0; i < moby_save_n; i++) {
         if (s_moby_save[i].staged) continue;   /* never written; nothing to undo */
         uint8_t* mh = (uint8_t*)openpete_psx_to_host_ptr(s_moby_save[i].addr);
@@ -2155,13 +2162,13 @@ static void game_reextract_body(void* cpu_v) {
     if (sp_bracketed && !sp_staged)  memcpy(sp, sp_saved, SPYRO_SAVE);
     if (cam_bracketed && !cam_staged) memcpy(cam, cam_saved, CAM_BYTES);
 
-    /* Bracket-integrity: every lerp write above must be undone — verify the
+    /* Bracket-integrity: every lerp write above must be undone , verify the
      * present left gameplay RAM byte-identical to how it found it. A mismatch is
      * a restore bug (the class the headless oracle can't see); log it same-frame.
      * The moby/particle pool checks guard their restore loops against future
      * regressions (a slot dropped from the loop, a stray post-restore write). */
     /* Load-window census (OPENPETE_LOAD_CENSUS=1): one line per re-extract with
-     * the inputs that decide what the intermediates rebuild — the canon-drawn
+     * the inputs that decide what the intermediates rebuild , the canon-drawn
      * mask (which paths the last canonical render actually painted), the
      * camera-ring pairing, and the cut flag. Correlate with the MOBY-RE and
      * SCENE lines to attribute "mobys visible during a level transition". */
@@ -2227,7 +2234,7 @@ static void game_reextract_body(void* cpu_v) {
  * by writing gameplay-readable memory and restoring it afterwards; the view is
  * the destination those writes are migrating to, and while it is open it
  * serves staged bytes to every read the feeders make. Opening it here is
- * behaviour-neutral until a producer stages something — an empty view resolves
+ * behaviour-neutral until a producer stages something , an empty view resolves
  * every address to real memory. */
 static void game_reextract(void* cpu_v) {
     CPUState* cpu = (CPUState*)cpu_v;

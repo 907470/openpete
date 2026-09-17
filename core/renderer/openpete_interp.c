@@ -59,10 +59,20 @@ static uint8_t s_cap_scratch[OPENPETE_INTERP_MAX_SNAPSHOT_BYTES];
  * game's logic actually advances state (2 for 30 Hz logic on a 60 Hz capture).
  * It is the hold the dedupe tolerates: a candidate identical to the head is
  * skipped while the head is younger than this, and committed once the state
- * has held longer, which is when the state is static rather than mid-cadence.
+ * has held this long, which is when the state is static rather than
+ * mid-cadence.
  * Capped so a long pause (a load) cannot stretch the hold without bound. */
 #define INTERP_MAX_DISTINCT_GAP 4u
-static uint32_t s_distinct_gap = 1;
+/* Floor on the hold, in captures. Capture runs once per VBL and the game's
+ * logic advances once per sim tick (two VBLs), so the shortest hold that can
+ * distinguish a static state from the gap between two logic steps is two
+ * captures. A measured gap of one comes from a stretch that advanced per VBL
+ * (a load, a fade) and outlives it; honouring it commits a duplicate at the
+ * mid-cadence capture of ordinary 30 Hz motion, which replaces the motion pair
+ * with an identity pair and, and since the distinct commits are then one VBL
+ * apart it pins the measurement at one for the rest of the run. */
+#define INTERP_MIN_DISTINCT_GAP 2u
+static uint32_t s_distinct_gap = INTERP_MIN_DISTINCT_GAP;
 /* The head slot was committed as a duplicate of the slot before it, so the
  * tick distance to it measures the static hold, not the logic's cadence. */
 static int      s_head_is_dup  = 0;
@@ -146,7 +156,7 @@ void openpete_interp_reset(void) {
     for (int i = 0; i < 3; ++i) s_snap[i].valid = 0;
     s_head = 0;
     s_last_tick_seen = 0;
-    s_distinct_gap = 1;
+    s_distinct_gap = INTERP_MIN_DISTINCT_GAP;
     s_head_is_dup = 0;
     s_reset_gen++;
 }
@@ -226,8 +236,8 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
                            memcmp(s_cap_scratch, curr->data, total) == 0);
     int dup_roll = 0;
     if (identical) {
-        /* A state that has held longer than the logic's own cadence is static,
-         * not mid-cadence: commit the duplicate so the ring holds a pair whose
+        /* A state that has held for the logic's own cadence is static, not
+         * mid-cadence: commit the duplicate so the ring holds a pair whose
          * endpoints are equal in content and distinct in tick. Interpolating
          * that pair is the identity on the registered regions and leaves the
          * bracket installed, so everything keyed on it — the world-animation
@@ -235,17 +245,25 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
          * and player are held (the debug freecam holds both). Without it the
          * ring keeps the last pair that carried motion, which at a freecam
          * pose is the jump onto the pose: a cut, refused by every consumer,
-         * leaving the sub-tick present a copy of the canonical one. */
+         * leaving the sub-tick present a copy of the canonical one.
+         *
+         * The commit lands AT the cadence, not past it: a duplicate committed
+         * one tick late lands every gap+1 ticks, so the ring's stamps advance
+         * on a (gap+1)-tick grid while presents keep running per tick, and
+         * every alpha-driven animation cycles against a period that is not the
+         * tick's — the whole-scene judder at a held camera. */
         uint32_t held = (tick > curr->tick) ? tick - curr->tick : 0;
-        if (held <= s_distinct_gap) {
+        const uint32_t cadence = (s_distinct_gap < INTERP_MIN_DISTINCT_GAP)
+                               ? INTERP_MIN_DISTINCT_GAP : s_distinct_gap;
+        if (held < cadence) {
             s_total_dedupe_skips++;
             return;
         }
         dup_roll = 1;
     } else if (curr->valid && !s_head_is_dup && tick > curr->tick) {
-        /* Measured between distinct states only: a hold's duplicate rolls sit
-         * one tick past the cadence, and feeding those back would ratchet the
-         * hold up by a tick per static episode. */
+        /* Measured between distinct states only: a duplicate roll's own gap is
+         * the cadence it was committed at, and feeding those back would let a
+         * measurement error in one static episode persist through the next. */
         uint32_t g = tick - curr->tick;
         s_distinct_gap = (g > INTERP_MAX_DISTINCT_GAP) ? INTERP_MAX_DISTINCT_GAP : g;
     }
@@ -267,10 +285,17 @@ void openpete_interp_capture(uint32_t tick, op_time_t tick_ns) {
     }
 
     /* Deterministic capture: override the wall-clock stamp with a fixed grid
-     * point (0, P, 2P, …) advanced only on an actual store, so consecutive
-     * distinct ticks are exactly `period` apart (see the header note). */
+     * point (0, P, 2P, …), so consecutive distinct ticks are exactly `period`
+     * apart (see the header note). The grid counts DISTINCT states only: a
+     * duplicate roll re-stamps the state it copies, consuming no grid point,
+     * so a tick's absolute stamp depends on the states that preceded it and
+     * not on how long any of them was held. Advancing the grid on duplicates
+     * shifts every later tick by one period per hold, and anything keyed on
+     * the absolute stamp (the animated-texture phase the present clock is
+     * derived from) moves with it. */
     if (s_det_mode && s_det_period > 0)
-        tick_ns = (op_time_t)(s_det_index++) * s_det_period;
+        tick_ns = dup_roll ? curr->tick_ns + s_det_period
+                           : (op_time_t)(s_det_index++) * s_det_period;
 
     /* State advanced — commit to the next ring slot. snap[s_head] becomes the
      * "latest distinct tick"; the two prior slots hold prev and prev2. */
