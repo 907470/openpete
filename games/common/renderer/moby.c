@@ -2849,7 +2849,13 @@ static int walk_prologue(CPUState* cpu, int is_spec) {
         s_pre_FC[r] = FC;
         if (!FC) continue;
         faces += FC->nfaces;
-        if (R->frameA_p >= 0x80000000u && R->zsf4 > 0 && R->header >= 0x80000000u) {
+        /* Address arithmetic on the prev keyframe: only where the record names
+         * a keyframe by pointer. Where it names it by stream word
+         * (rec_frame_is_word) the patch list hangs off the record, not off the
+         * keyframe, and the prev record is gone by now, so the colour
+         * crossfade has no prev patch list to read and the faces snap. */
+        if (!game_layout.moby.rec_frame_is_word &&
+            R->frameA_p >= 0x80000000u && R->zsf4 > 0 && R->header >= 0x80000000u) {
             int curr_p = (R->frameA >= 0x80000000u) && (cpu->read_word(R->frameA + 4u) & 0xFFFFu) != 0u;
             int prev_p = (cpu->read_word(R->frameA_p + 4u) & 0xFFFFu) != 0u;
             if (curr_p || prev_p) {
@@ -5413,10 +5419,14 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
                               uint32_t* fa_p, uint32_t* fb_p, uint32_t* w0_p,
                               uint32_t* hdr_p, double* alpha) {
     if (!s_rot_now) return 0;                                  /* interp off → snap */
-    /* The prev pose is a record rebuilt from gamestate, so it exists only where
-     * the game's provider supplies that rebuild; elsewhere the sub-tick pass
+    /* The prev pose is the decoder's second stream input, so it has to be
+     * expressible in the form this game's record uses for a keyframe: a
+     * pointer into the model's frame array where the game's provider rebuilds
+     * records from gamestate, or the keyframe's leading stream word where the
+     * cull copies that word into the record (rec_frame_is_word). A game with
+     * neither form has no way to name the prev keyframe, so the sub-tick pass
      * replays the record the cull wrote and holds the pose. */
-    if (!moby_game.host_reveal) return 0;
+    if (!moby_game.host_reveal && !game_layout.moby.rec_frame_is_word) return 0;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
     /* Occupant guard: prev snapshot must be the SAME class as the live moby —
@@ -5451,9 +5461,18 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
     uint32_t frm  = o->prev[game_layout.moby.anim_state_off + 2u] & 0xFFu;                     /* m_Frame (prev)      */
     uint32_t nfrm = o->prev[game_layout.moby.anim_state_off + 3u] & 0xFFu;                     /* m_NextFrame (prev)  */
     uint32_t prog = o->prev[game_layout.moby.anim_state_off + 4u] & 0xFFu;                     /* m_FrameProgress (prev) */
-    *fa_p = header_p + game_layout.moby.anim_frames + frm  * game_layout.moby.anim_frame_stride;
-    *fb_p = header_p + game_layout.moby.anim_frames + nfrm * game_layout.moby.anim_frame_stride;
-    *w0_p = (prog << 8) & 0xFF00u;
+    uint32_t fa_rec = header_p + game_layout.moby.anim_frames + frm  * game_layout.moby.anim_frame_stride;
+    uint32_t fb_rec = header_p + game_layout.moby.anim_frames + nfrm * game_layout.moby.anim_frame_stride;
+    /* Same keyframe, named the way the record names it. Where the record holds
+     * the keyframe's leading stream word, the cull derives that word from the
+     * frame index exactly as here -- frame index * 8 off the animation header's
+     * +0x24 frame array -- and loads the word before storing it
+     * (mobydraw.s:463-467 the derivation and the load, :532-535 the store), so
+     * the prev pose is emitted as the word's value, not its address. */
+    *fa_p = game_layout.moby.rec_frame_is_word ? cpu->read_word(fa_rec) : fa_rec;
+    *fb_p = game_layout.moby.rec_frame_is_word ? cpu->read_word(fb_rec) : fb_rec;
+    uint32_t blend_byte = moby_game.anim_blend_byte ? moby_game.anim_blend_byte(cpu, prog) : prog;
+    *w0_p = (blend_byte << 8) & 0xFF00u;
     *hdr_p = header_p;                                         /* prev clip's header (its own s5) */
     if (nfrm == 0) { *fb_p = *fa_p; *w0_p = 0; }               /* loop-seam: hold a single keyframe */
     double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
@@ -6154,7 +6173,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * when the two animations share vertex topology; snaps to curr (fap=0) on
          * spawn or a topology-changing clip switch. */
         uint32_t fap = 0, fbp = 0, w0p = 0, hdrp = 0; double balpha = 0.0;
-        moby_prev_keyframe(cpu, mobys[i], f.header, &fap, &fbp, &w0p, &hdrp, &balpha);
+        int prevkf = moby_prev_keyframe(cpu, mobys[i], f.header, &fap, &fbp, &w0p, &hdrp, &balpha);
         /* OPENPETE_MOBY_POSTRACE_CLS=<class> (0xFFFF = every class) also
          * traces the anim channel here. This block sits in the sub-tick
          * re-extract pass, so a run that presents only canonical ticks prints
@@ -6167,7 +6186,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 uint32_t mrot = cpu->read_word(mobys[i] + game_layout.moby.angle_off + 0u);
                 fprintf(stderr, "[moby-anim f=%u] m=%08x cls=%03x prevkf=%d balpha=%.3f curr(frm=%u nfrm=%u prog=%u anim=%u) fa=%08x fb=%08x fap=%08x fbp=%08x w0=%04x w0p=%04x rot=%06x\n",
                         openpete_frame, mobys[i], tcls2,
-                        fap != 0, balpha,
+                        prevkf, balpha,
                         cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 2u), cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 3u),
                         cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 4u), cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 0u),
                         f.frameA, f.frameB, fap, fbp, f.w0 & 0xFFFFu, w0p & 0xFFFFu,

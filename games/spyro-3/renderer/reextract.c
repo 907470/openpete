@@ -450,7 +450,15 @@ static void game_reextract_body(CPUState* cpu) {
          * inline render replays the records untouched. */
         moby_native_set_tick_camera(tickcam ? (const int16_t*)(tickcam + CAM_OFF_SKY) : NULL,
                                     tickcam ? (const int32_t*)(tickcam + CAM_OFF_POS) : NULL);
+        /* Arm the per-object sub-tick clock for this feeder pass: it is the
+         * timebase the keyframe crossfade reads, so without it every replayed
+         * record holds the tick's mesh while its translation sweeps, and a clip
+         * whose keyframes carry baked whole-body translation moves against
+         * itself for the whole interior of the tick. Reset after the pass so the
+         * canonical inline render stays byte-exact. */
+        moby_native_set_rot_interp(1);
         moby_reextract(cpu);        /* the 3D actors, after the terrain they stand on */
+        moby_native_set_rot_interp(0);
         moby_native_set_tick_camera(NULL, NULL);
     }
     RX_CENSUS_STEP("moby");
@@ -459,6 +467,13 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("player");
     shadow_reextract(cpu);          /* drop-shadows under mobys */
     RX_CENSUS_STEP("shadow");
+    /* The HUD, dialog boxes, text and screen fades are produced by the 2D-UI
+     * feeder during the game's own render and cannot be re-derived here, so the
+     * canonical present banks them and every re-extract re-applies that carry on
+     * top of the re-derived 3D scene (fade interpolated by the alpha, held
+     * panels re-emitted as captured). Without it a sub-tick present draws the
+     * world with no 2D layer at all. */
+    openpete_native_scene_apply_overlay(bracketed ? alpha : 0.0);
     RX_CENSUS_END(bracketed, alpha);
     s_fpos_active = 0;
 }

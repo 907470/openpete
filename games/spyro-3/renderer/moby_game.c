@@ -563,6 +563,17 @@ static uint32_t s3_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t frame_
     return moby_rec_word(cpu, rec + 0x14u);
 }
 
+/* Moby+0x40 is an animation-state index, not the keyframe blend numerator: the
+ * cull reads the byte, indexes this table with it and stores the table entry as
+ * the record's blend byte, taking the no-blend path (frame A alone, no frame B
+ * header or keyframe) when the entry is zero (mobydraw.s:454,458-461,466,487).
+ * The draw then scales that byte by 16 into the GTE's IR0
+ * (mobydraw.s:922-923). */
+#define D_ANIM_BLEND_TABLE 0x80066530u
+static uint32_t s3_anim_blend_byte(CPUState* cpu, uint32_t state4) {
+    return cpu->read_byte(D_ANIM_BLEND_TABLE + (state4 & 0xFFu)) & 0xFFu;
+}
+
 
 /* ---- the second model kind (the static draw, mobydraw.s:3862) ----------
  *
@@ -1153,6 +1164,7 @@ const moby_game_t moby_game = {
     .decode_faces      = s3_decode_faces,
     .read_record       = s3_read_record,
     .frame_patch_list  = s3_frame_patch_list,
+    .anim_blend_byte   = s3_anim_blend_byte,
     .model_is_animated = s3_model_is_animated,
     .simple_pass       = s3_simple_pass,
     .simple_replay     = s3_simple_replay,

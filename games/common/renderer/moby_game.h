@@ -154,6 +154,14 @@ typedef struct moby_game {
      * call. NULL where the game has no patch mechanism. */
     uint32_t (*frame_patch_list)(CPUState* cpu, uint32_t rec, uint32_t frame_a);
 
+    /* The record's keyframe-blend byte (record word 0 bits 8-15, the numerator
+     * the draw scales by 16) for a given value of the moby's animation-state
+     * byte at anim_state_off + 4. A game whose cull stores that byte straight
+     * through leaves this NULL; a game whose cull maps it through a table
+     * answers with the mapped byte, so a pose rebuilt from a gamestate
+     * snapshot blends exactly as the cull's own record does. */
+    uint32_t (*anim_blend_byte)(CPUState* cpu, uint32_t anim_state_byte4);
+
     /* Which of the two model kinds a model-table entry is. The walk decodes
      * an animated model itself; a game that flags the second kind by the
      * entry's own sign, by a count field or any other rule answers here. */
