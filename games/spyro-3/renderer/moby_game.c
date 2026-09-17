@@ -840,7 +840,7 @@ static int s3_simple_decode(CPUState* cpu) {
                 clx = (int)((cl & 0x3Fu) * 16u);
                 cly = (int)(((cl >> 6) & 0x1FFu) + (unsigned)clut_bias);
                 if ((t1 >> 31) & 1u)
-                    blend = (abr == 0) ? 1 : (abr == 1) ? 2 : 3;
+                    blend = moby_abr_blend(abr);
             }
 
             double p[3][3]; uint32_t rgb[3]; int uu[3], vv[3];

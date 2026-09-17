@@ -114,8 +114,8 @@ int moby_reveal_candidates(struct CPUState* cpu);
  * analog, on float coordinates rather than the GTE's floored int16.
  *
  * moby_abr_blend maps a texture page's semi-transparency mode to the
- * renderer's blend id. ABR 3 (back + front/4) has no native pipe and takes the
- * additive one.
+ * renderer's blend id: ABR 0 average, 1 additive, 2 subtractive, 3
+ * quarter-additive.
  *
  * moby_tiledef_decode fills one face record's texture fields from the three
  * texture words {u0|v0<<8|clut<<16}, {u1|v1<<8|tpage<<16},

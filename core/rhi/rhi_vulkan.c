@@ -4379,6 +4379,14 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
         cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
         cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
         cba.alphaBlendOp = VK_BLEND_OP_REVERSE_SUBTRACT;
+    } else if (desc->blend == RHI_BLEND_ADD_QUARTER) {
+        /* PSX ABR mode 3: dst = B + F/4. The quarter rides the pipeline's
+         * static blend constant, so no shader or vertex scaling is involved
+         * and the source keeps its own clamp. */
+        cba.srcColorBlendFactor = VK_BLEND_FACTOR_CONSTANT_COLOR;
+        cba.dstColorBlendFactor = VK_BLEND_FACTOR_ONE;
+        cba.srcAlphaBlendFactor = VK_BLEND_FACTOR_CONSTANT_ALPHA;
+        cba.dstAlphaBlendFactor = VK_BLEND_FACTOR_ONE;
     } else {
         cba.srcColorBlendFactor = VK_BLEND_FACTOR_ONE;
         cba.dstColorBlendFactor = VK_BLEND_FACTOR_ZERO;
@@ -4386,6 +4394,7 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     VkPipelineColorBlendStateCreateInfo cb = {
         .sType = VK_STRUCTURE_TYPE_PIPELINE_COLOR_BLEND_STATE_CREATE_INFO,
         .attachmentCount = 1, .pAttachments = &cba,
+        .blendConstants = { 0.25f, 0.25f, 0.25f, 0.25f },
     };
     /* Depth: the offscreen target always carries a depth attachment (3a.3);
      * a pipeline opts into testing/writing it via desc->depth_test. The 2D

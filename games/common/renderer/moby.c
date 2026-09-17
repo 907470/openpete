@@ -1780,7 +1780,7 @@ double moby_tri_nclip(float ax, float ay, float bx, float by, float cx, float cy
 }
 
 int moby_abr_blend(int abr) {
-    return (abr == 0) ? 1 : (abr == 1) ? 2 : (abr == 2) ? 3 : 2;
+    return (abr == 0) ? 1 : (abr == 1) ? 2 : (abr == 2) ? 3 : 4;
 }
 
 void moby_tiledef_decode(uint32_t td0, uint32_t td1, uint32_t td2, moby_wface_t* F) {
@@ -2722,17 +2722,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * no texpage of their own so they take the GPU's default ABR 0 (50%).
              * Mapping mirrors particle_native: 0=ABR0(B/2+F/2), 1=ABR1(add),
              * 2=ABR2(subtract), 3=ABR3(B+F/4 -> additive). */
-            int blend = 0;
-            if (F->blendbit)
-                blend = (abr == 0) ? 1 : (abr == 1) ? 2 : (abr == 2) ? 3 : 2;
-            /* ABR-FIXME: ABR3 = B+F/4 has no native pipe, so we
-             * fall back to full additive (B+F) — those faces render too bright. Spam
-             * if it ever actually occurs (the 35-level terrain census found zero ABR3;
-             * mobys unverified) so we can come back and add a quarter-add pipe. */
-            if (F->blendbit && abr == 3)
-                OPL_ERROR_F("native", "ABR-FIXME regular moby ABR3 (B+F/4) face -> "
-                            "drawn full-additive (no quarter-add pipe) f=%u -- FIX moby.c:1074",
-                            openpete_frame);
+            int blend = F->blendbit ? moby_abr_blend(abr) : 0;
 
             if (emit_a) {
                 s_emit_fkey = PACK_FKEY(i0,i1,i2);
@@ -2998,16 +2988,31 @@ static double tri_match_cost(const ntri_t* w, const ptri* p) {
     }
     return bestmax;
 }
+/* Box-dump latch, one shot per producer pass. A single latch fired on the
+ * first pass of the first frame and silenced every later pass, so a dump
+ * keyed to a box only ever described the animated walk; the material name
+ * (s_cur_mat) identifies the pass, and each name is dumped once. Returns
+ * non-zero when the current pass has already dumped. */
+#define BOX_PASS_MAX 4
+static const char* s_pb_mats[BOX_PASS_MAX]; static int s_pb_nmat;
+static const char* s_wb_mats[BOX_PASS_MAX]; static int s_wb_nmat;
+static int box_pass_latched(const char** seen, int* n) {
+    for (int i = 0; i < *n; i++) if (seen[i] == s_cur_mat) return 1;
+    if (*n < BOX_PASS_MAX) seen[(*n)++] = s_cur_mat;
+    return 0;
+}
+
 static void compare_walk_vs_prims(void) {
     build_prim_tris();
     static int s_cmp_dumped = 0; int s_cmp_dump = !s_cmp_dumped; s_cmp_dumped = 1;
     { /* OPENPETE_MOBY_PRIMBOX="x0,y0,x1,y1": dump every captured .s prim with a
        * vertex in the PSX-screen box (per-vertex xy+rgb) — the position-matched
        * ground truth for the [fface] walk dump. One frame only. */
-        static int s_pb = -1; static int px0,py0,px1,py1; static int s_pb_done = 0;
+        static int s_pb = -1; static int px0,py0,px1,py1;
         if (s_pb < 0) { const char* e = getenv("OPENPETE_MOBY_PRIMBOX");
             s_pb = 0;
             if (e && sscanf(e, "%d,%d,%d,%d", &px0,&py0,&px1,&py1) == 4) s_pb = 1; }
+        int s_pb_done = box_pass_latched(s_pb_mats, &s_pb_nmat);
         if (s_pb == 1 && !s_pb_done) {
             for (int pi = 0; pi < s_gte_n; pi++) {
                 int in = 0;
@@ -3021,7 +3026,36 @@ static void compare_walk_vs_prims(void) {
                     fprintf(stderr, " (%.0f,%.0f)%06X", s_gte[pi].x[k], s_gte[pi].y[k], s_gte[pi].rgb[k] & 0xFFFFFFu);
                 fprintf(stderr, "\n");
             }
-            s_pb_done = 1;
+        }
+    }
+    { /* OPENPETE_MOBY_WALKBOX="x0,y0,x1,y1": the native counterpart of
+       * [pbox] — every walk triangle with a vertex in the same PSX-screen box,
+       * with the material words the feeder emitted. Diffing a [wbox] line
+       * against the [pbox] line at the same position names which word (colour,
+       * texture page, CLUT, blend) the two sides disagree on. Latched per
+       * pass, like [pbox]. */
+        static int s_wb = -1; static int wx0,wy0,wx1,wy1;
+        if (s_wb < 0) { const char* e = getenv("OPENPETE_MOBY_WALKBOX");
+            s_wb = 0;
+            if (e && sscanf(e, "%d,%d,%d,%d", &wx0,&wy0,&wx1,&wy1) == 4) s_wb = 1; }
+        int wb_done = box_pass_latched(s_wb_mats, &s_wb_nmat);
+        if (s_wb == 1 && !wb_done) {
+            for (int wi = 0; wi < s_gout.n; wi++) {
+                const ntri_t* w = &s_wtri[wi];
+                int in = 0;
+                for (int k = 0; k < 3; k++)
+                    if (w->v[k].sx >= wx0 && w->v[k].sx <= wx1 &&
+                        w->v[k].sy >= wy0 && w->v[k].sy <= wy1) in = 1;
+                if (!in) continue;
+                fprintf(stderr, "  [wbox f=%u] m=%08X k=%08X tex=%d tp=(%d,%d) clut=(%d,%d) bpp=%d blend=%d spec=%u",
+                        openpete_frame, s_wtri_moby[wi], s_wtri_fkey[wi], w->textured,
+                        w->tpage_x, w->tpage_y, w->clut_x, w->clut_y, w->bpp, w->blend,
+                        (unsigned)s_wtri_special[wi]);
+                for (int k = 0; k < 3; k++)
+                    fprintf(stderr, " (%.0f,%.0f)%06X[%d,%d]", w->v[k].sx, w->v[k].sy,
+                            w->v[k].rgb & 0xFFFFFFu, w->v[k].u, w->v[k].v);
+                fprintf(stderr, "\n");
+            }
         }
     }
     int wn=s_gout.n, pn=s_ptri_n;
@@ -3042,6 +3076,39 @@ static void compare_walk_vs_prims(void) {
     int won=0, wmatch_on=0, won_un=0;   /* on-screen walk tris / matched / unmatched-onscreen */
     #define ONSCR(cx,cy) ((cx)>=0.0&&(cx)<=512.0&&(cy)>=0.0&&(cy)<=240.0)
     char pmatched[MAX_PTRI]; if(pn>MAX_PTRI)pn=MAX_PTRI; memset(pmatched,0,pn);
+    /* ONE-TO-ONE assignment, walk tri <-> prim tri. Taking each walk tri's own
+     * nearest prim lets several walk tris claim one prim, which on a cluster of
+     * sub-pixel triangles pairs faces that are not counterparts and then scores
+     * their colours against each other. Rank every admissible pair by cost and
+     * assign in that order, each side used once. */
+    static int s_assign[MAX_NTRI];
+    {
+        typedef struct { float c; int w, p; } pair_t;
+        static pair_t* pool; static int poolcap;
+        int need = wn * 8; if (need < 1024) need = 1024;
+        if (need > poolcap) { pool = (pair_t*)realloc(pool, sizeof(pair_t)*(size_t)need); poolcap = need; }
+        int np = 0;
+        for (int wi=0; wi<wn; wi++) {
+            s_assign[wi] = -1;
+            const ntri_t* w=&s_wtri[wi];
+            double wcx=(w->v[0].sx+w->v[1].sx+w->v[2].sx)/3.0, wcy=(w->v[0].sy+w->v[1].sy+w->v[2].sy)/3.0;
+            for (int pi=0; pi<pn && np<poolcap; pi++) {
+                double pcx=(s_ptri[pi].x[0]+s_ptri[pi].x[1]+s_ptri[pi].x[2])/3.0;
+                double pcy=(s_ptri[pi].y[0]+s_ptri[pi].y[1]+s_ptri[pi].y[2])/3.0;
+                if (fabs(pcx-wcx)>32.0||fabs(pcy-wcy)>32.0) continue;
+                double c=tri_match_cost(w,&s_ptri[pi]);
+                if (c<=4.0) { pool[np].c=(float)c; pool[np].w=wi; pool[np].p=pi; np++; }
+            }
+        }
+        /* insertion-free ordering: the pool is small, sort by cost */
+        for (int i=1;i<np;i++){ pair_t t=pool[i]; int j=i-1;
+            while (j>=0 && pool[j].c>t.c) { pool[j+1]=pool[j]; j--; } pool[j+1]=t; }
+        char ptaken[MAX_PTRI]; memset(ptaken,0,pn);
+        for (int i=0;i<np;i++)
+            if (s_assign[pool[i].w] < 0 && !ptaken[pool[i].p]) {
+                s_assign[pool[i].w] = pool[i].p; ptaken[pool[i].p] = 1;
+            }
+    }
     for (int wi=0;wi<wn;wi++){
         ntri_t* w=&s_wtri[wi];
         double wcx=(w->v[0].sx+w->v[1].sx+w->v[2].sx)/3.0, wcy=(w->v[0].sy+w->v[1].sy+w->v[2].sy)/3.0;
@@ -3056,7 +3123,9 @@ static void compare_walk_vs_prims(void) {
         double ncl=tri_nclip(w->v[0].sx,w->v[0].sy,w->v[1].sx,w->v[1].sy,w->v[2].sx,w->v[2].sy);
         int won_this = ONSCR(wcx,wcy);
         if (won_this) won++;
-        if (best<=4.0 && bp>=0){
+        int ap = s_assign[wi];
+        if (ap >= 0) { bp = ap; best = tri_match_cost(w, &s_ptri[ap]); }
+        if (ap >= 0){
             wmatch++; pmatched[bp]=1; wcost_sum += best;
             if (won_this) wmatch_on++;
             if(ncl<0)neg_m++;else pos_m++;

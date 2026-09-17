@@ -1459,6 +1459,8 @@ static struct {
     rhi_pipeline *scene_tex_pipe;     /* 3a.3: opaque textured scene tris (VRAM sampler) */
     rhi_pipeline *scene_tex_blend_pipe; /* 3a.3: semi-transparent (ABE) textured tris (alpha, ABR mode 0) */
     rhi_pipeline *scene_tex_add_pipe; /* 3b.1: additive (ABR mode 1, B+F) textured tris — flame */
+    rhi_pipeline *scene_tex_qadd_pipe; /* quarter-additive (ABR mode 3, B+F/4) textured tris — glass */
+    rhi_pipeline *gouraud_qadd_pipe;  /* quarter-additive UNTEXTURED gouraud (ABR mode 3) */
     rhi_pipeline *scene_tex_sub_pipe; /* 3b.2: subtractive (ABR mode 2, B-F) textured tris — moby shadows (plain depth test + bias; the fallback when the depth pre-pass is unavailable) */
     rhi_pipeline *scene_tex_sub_decal_pipe; /* moby shadows as a DEPTH-AWARE decal: shadow_decal_tex.frag samples opaque_depth (set 0) + VRAM (set 1); depth-test OFF, the shader owns wall/steep/platform occlusion. NULL → fall back to scene_tex_sub_pipe */
     rhi_pipeline *gouraud_hud_pipe;   /* HUD overlay: UNTEXTURED gouraud, depth-test OFF (on top) */
@@ -2117,6 +2119,16 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         .blend = RHI_BLEND_ADD, .depth_test = true, .depth_write_off = true,
         .uses_vram = true, .uses_vram3 = true, .uses_vram4 = true, .uses_vram5 = true, .push_const_size = sizeof(psx_material),
     };
+    /* Quarter-additive (ABR mode 3, dst = B + F/4) pipelines: the faint-overlay
+     * class — glass, the butterfly-bottle panes. The modulated source is scaled
+     * by the pipeline's blend constant, so the layer tints what is behind it
+     * instead of blowing it out (full additive) or blacking it out (the
+     * reverse-subtract an ABR-2 pipe would apply). depth_write_off with the
+     * other transparent classes. */
+    rhi_pipeline_desc scene_tex_qadd_desc = scene_tex_add_desc;
+    scene_tex_qadd_desc.blend = RHI_BLEND_ADD_QUARTER;
+    rhi_pipeline_desc gouraud_qadd_desc = gouraud_add_desc;
+    gouraud_qadd_desc.blend = RHI_BLEND_ADD_QUARTER;
     /* Subtractive (ABR mode 2, dst = B - F) textured pipeline (3b.2): moby
      * shadows (func_80059F8C), a textured FT3 fan whose tpage selects ABR=2.
      * RHI_BLEND_SUBTRACT reverse-subtracts the modulated shadow sprite from the
@@ -2308,6 +2320,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *scene_tex_pipe = rhi_create_pipeline(dev, &scene_tex_desc);
     rhi_pipeline *scene_tex_blend_pipe = rhi_create_pipeline(dev, &scene_tex_blend_desc);
     rhi_pipeline *scene_tex_add_pipe = rhi_create_pipeline(dev, &scene_tex_add_desc);
+    rhi_pipeline *scene_tex_qadd_pipe = rhi_create_pipeline(dev, &scene_tex_qadd_desc);
+    rhi_pipeline *gouraud_qadd_pipe = rhi_create_pipeline(dev, &gouraud_qadd_desc);
     rhi_pipeline *scene_tex_sub_pipe = rhi_create_pipeline(dev, &scene_tex_sub_desc);
     rhi_pipeline *scene_tex_sub_decal_pipe = rhi_create_pipeline(dev, &scene_tex_sub_decal_desc); /* optional: NULL → fall back to scene_tex_sub_pipe */
     rhi_pipeline *gouraud_hud_pipe = rhi_create_pipeline(dev, &gouraud_hud_desc);
@@ -2454,6 +2468,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (scene_tex_sub_decal_pipe) rhi_destroy_pipeline(dev, scene_tex_sub_decal_pipe);
         if (scene_tex_sub_pipe) rhi_destroy_pipeline(dev, scene_tex_sub_pipe);
         if (scene_tex_add_pipe) rhi_destroy_pipeline(dev, scene_tex_add_pipe);
+        if (scene_tex_qadd_pipe) rhi_destroy_pipeline(dev, scene_tex_qadd_pipe);
+        if (gouraud_qadd_pipe) rhi_destroy_pipeline(dev, gouraud_qadd_pipe);
         if (scene_tex_blend_pipe) rhi_destroy_pipeline(dev, scene_tex_blend_pipe);
         if (scene_tex_pipe) rhi_destroy_pipeline(dev, scene_tex_pipe);
         if (gouraud_noz_pipe) rhi_destroy_pipeline(dev, gouraud_noz_pipe);
@@ -2501,6 +2517,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.scene_tex_pipe = scene_tex_pipe;
     s_nr.scene_tex_blend_pipe = scene_tex_blend_pipe;
     s_nr.scene_tex_add_pipe = scene_tex_add_pipe;
+    s_nr.scene_tex_qadd_pipe = scene_tex_qadd_pipe;
+    s_nr.gouraud_qadd_pipe = gouraud_qadd_pipe;
     s_nr.scene_tex_sub_pipe = scene_tex_sub_pipe;
     s_nr.scene_tex_sub_decal_pipe = scene_tex_sub_decal_pipe; /* may be NULL → plain sub pipe */
     s_nr.gouraud_hud_pipe = gouraud_hud_pipe;
@@ -3485,7 +3503,7 @@ static void native_depth_prepass(void)
         m += 6;
     }
     for (int t = 0; t < scene_n && m + 3 <= SCENE_VB_VERTS; t++) {
-        int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
+        int b = scene[t].blend; if (b < 0 || b > 4) b = 0;
         if (b != 0) continue;                                    /* opaque only */
         /* World occluders only — plus the WORLD_FILL LP backing: at the fogged
          * waterline much of the painted terrain IS the hole-fill layer, and the
@@ -3543,7 +3561,7 @@ static void native_depth_prepass(void)
         if (pr && *pr && ps_shadow()->valid && printed < 40 &&
             openpete_frame >= fmin) {
             for (int t = 0; t < scene_n && printed < 40; t++) {
-                int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
+                int b = scene[t].blend; if (b < 0 || b > 4) b = 0;
                 if (b != 0 || scene[t].category != OPENPETE_SCENE_WORLD) continue;
                 float x0 = scene[t].v[0].sx, x1 = scene[t].v[1].sx, x2 = scene[t].v[2].sx;
                 float y0 = scene[t].v[0].sy, y1 = scene[t].v[1].sy, y2 = scene[t].v[2].sy;
@@ -4177,6 +4195,7 @@ static void bind_scene_pipe(rhi_pipeline* p)
         p == s_nr.hd_cutout_pipe || p == s_nr.hd_cutout_mark_pipe ||
         p == s_nr.gouraud_blend_pipe || p == s_nr.gouraud_add_pipe ||
         p == s_nr.scene_tex_blend_pipe || p == s_nr.scene_tex_add_pipe ||
+        p == s_nr.gouraud_qadd_pipe || p == s_nr.scene_tex_qadd_pipe ||
         p == s_nr.gouraud_punch_pipe || p == s_nr.scene_tex_punch_pipe ||
         p == s_nr.hd_cutout_punch_pipe) {
         rhi_bind_depth_sampler(s_nr.dev, s_nr.actor_key_depth, 1);
@@ -4884,7 +4903,7 @@ static int ut_emit_deferred(int gi, const scene_tri_t* scene, rhi_vertex* buf,
  * replace. Keep them paired: anything that draws ut_count[gi] owes
  * draw_ut_mat_spans(gi) under the same condition. */
 static int ut_mat_spans_ok(int gi, int gb, int gc) {
-    if (gi == 1) return 0;
+    if (gi == 1 || gb == 4) return 0;
     if (gi == UT_BUCKET_SKY) return 1;
     return gb != 0 || gc == OPENPETE_SCENE_WORLD ||
            gc == OPENPETE_SCENE_ACTOR || gc == OPENPETE_SCENE_PLAYER;
@@ -4903,10 +4922,14 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
      * the group composites, so the pipeline it builds inherits this group's
      * blend. Anything else would let a mod silently reorder or re-composite
      * geometry the painter order depends on. */
-    static const rhi_blend_mode k_blend[4] = {
-        RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT
+    static const rhi_blend_mode k_blend[5] = {
+        RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT,
+        RHI_BLEND_ADD_QUARTER
     };
-    if (blend_class < 0 || blend_class > 3) blend_class = 0;
+    if (blend_class < 0 || blend_class > 4) blend_class = 0;
+    /* The material ABI caches one pipeline per blend slot and has no slot for
+     * the quarter-add class, so a group drawn that way keeps the stock pipe. */
+    if (blend_class == 4) return;
     int bound = 0;
     for (int si = 0; si < s_utmat_n; si++) {
         if (s_utmat[si].gi != gi || s_utmat[si].count <= 0) continue;
@@ -5383,10 +5406,12 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                           const scene_tri_t* scene, rhi_pipeline* self,
                           rhi_pipeline* hd_pipe, int allow_override,
                           int blend_class) {
-    static const rhi_blend_mode k_ov_blend[4] = {
-        RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT
+    static const rhi_blend_mode k_ov_blend[5] = {
+        RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT,
+        RHI_BLEND_ADD_QUARTER
     };
-    if (blend_class < 0 || blend_class > 3) blend_class = 0;
+    if (blend_class < 0 || blend_class > 4) blend_class = 0;
+    if (blend_class == 4) allow_override = 0;   /* no material slot for quarter-add */
     const int hd_defer_ok = hd_pipe == s_nr.hd_cutout_pipe ||
                             hd_pipe == s_nr.hd_cutout_mark_pipe;
     const int ov_mark = (allow_override == 2);
@@ -6217,28 +6242,34 @@ static bool draw_native_scene(bool full_extent)
      * text) draws OVER mobys (e.g. the rescued dragon Nestor) yet UNDER the player
      * Spyro (who flies in front of the intro text) — exactly the PSX OT order
      * (text at the near slot, over other mobys; the player rendered on top). */
-    struct scene_group { int blend, gcat; rhi_pipeline *utex, *tex; };
+    /* utb/txb name the untextured and textured bucket a group packs into.
+     * They are the group index for the six original groups; the quarter-add
+     * group takes the free slots above the HUD and overlay buckets, so those
+     * keep their numbers. */
+    struct scene_group { int blend, gcat, utb, txb; rhi_pipeline *utex, *tex; };
     /* W2.6-c: the WORLD-opaque group draws through the stencil-MARK variants
      * (identical raster + stencil=1 coverage write) so the FILL layer below can
      * paint only uncovered pixels. Falls back to the plain pipes (and no fill)
      * if the mark/fill pipes didn't come up. */
     const int holefill_on = s_nr.gouraud_mark_pipe && s_nr.scene_tex_mark_pipe
                             && s_nr.gouraud_fill_pipe;
-    const struct scene_group groups[6] = {
-        { 0, OPENPETE_SCENE_WORLD,
+    const struct scene_group groups[7] = {
+        { 0, OPENPETE_SCENE_WORLD, 0, 0,
               holefill_on ? s_nr.gouraud_mark_pipe   : s_nr.gouraud_pipe,
               holefill_on ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe    },
-        { 3, -1,                    s_nr.gouraud_sub_pipe,   s_nr.scene_tex_sub_pipe   },
+        { 3, -1, 1, 1,              s_nr.gouraud_sub_pipe,   s_nr.scene_tex_sub_pipe   },
         /* ACTOR opaques also MARK coverage (like WORLD): authored HP ground
          * holes under static decor (pedestal discs) must read as covered so
          * the LP hole-fill — drawn after this group — never paints over the
          * moby that hides them. */
-        { 0, OPENPETE_SCENE_ACTOR,
+        { 0, OPENPETE_SCENE_ACTOR, 2, 2,
               holefill_on ? s_nr.gouraud_mark_pipe   : s_nr.gouraud_pipe,
               holefill_on ? s_nr.scene_tex_mark_pipe : s_nr.scene_tex_pipe    },
-        { 0, OPENPETE_SCENE_PLAYER, s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
-        { 1, -1,                    s_nr.gouraud_blend_pipe, s_nr.scene_tex_blend_pipe },
-        { 2, -1,                    s_nr.gouraud_add_pipe,   s_nr.scene_tex_add_pipe   },
+        { 0, OPENPETE_SCENE_PLAYER, 3, 3, s_nr.gouraud_pipe,       s_nr.scene_tex_pipe       },
+        { 1, -1, 4, 4,              s_nr.gouraud_blend_pipe, s_nr.scene_tex_blend_pipe },
+        { 2, -1, 5, 5,              s_nr.gouraud_add_pipe,   s_nr.scene_tex_add_pipe   },
+        /* 6 QUARTER-ADD (blend 4) ABR3 glass, after the additive group. */
+        { 4, -1, 15, 10,            s_nr.gouraud_qadd_pipe,  s_nr.scene_tex_qadd_pipe  },
     };
     /* ut group 6 = HUD untextured overlay (after ACTOR); 7 = OVERLAY (dead last,
      * letterbox / HUD-OT 2D flat quads, over everything); 8 = HUD_PANEL (alpha,
@@ -6247,7 +6278,7 @@ static bool draw_native_scene(bool full_extent)
      * 11 = SKY (cyclorama dome — WORLD-like, drawn FIRST with the PLAIN pipe so
      * it never stencil-marks; see OPENPETE_SCENE_SKY); 12 = WORLD_FILL (terrain
      * LP hole-fill, stencil TEST_ZERO, right after the WORLD group). */
-    int ut_first[15], ut_count[15];
+    int ut_first[16], ut_count[16];
     /* CPU attribution (--profile-out): the compose phase splits into
      * build_ut (untextured bucketing incl. portal-run collection),
      * build_tex (textured bucketing + material sort), vb_tex (textured
@@ -6259,8 +6290,9 @@ static bool draw_native_scene(bool full_extent)
 
     NR_PROF_BEGIN("cmp.build_ut");
     s_utmat_n = 0; s_utmemo_n = 0;
-    for (int gi = 0; gi < 6; gi++) {
-        ut_first[gi] = n;
+    for (int gi = 0; gi < 7; gi++) {
+        const int utb = groups[gi].utb;
+        ut_first[utb] = n;
         int gb = groups[gi].blend, gc = groups[gi].gcat;
         /* Defer only what this bucket will actually draw — see
          * ut_mat_spans_ok — and only while the span table can still record
@@ -6274,7 +6306,7 @@ static bool draw_native_scene(bool full_extent)
             if (scene[t].category == OPENPETE_SCENE_HUD ||
                 scene[t].category == OPENPETE_SCENE_HUD3D ||
                 scene[t].category == OPENPETE_SCENE_HUD_PANEL) continue;  /* -> HUD passes */
-            int b = scene[t].blend; if (b < 0 || b > 3) b = 0;   /* untextured class */
+            int b = scene[t].blend; if (b < 0 || b > 4) b = 0;   /* untextured class */
             if (b != gb) continue;
             if (gb == 0 && gc >= 0 && scene[t].category != gc) continue;
             /* SUBTRACT group = the drop-shadow DECALS only (SHADOW category).
@@ -6314,7 +6346,7 @@ static bool draw_native_scene(bool full_extent)
             }
             n += 3;
         }
-        ut_count[gi] = n - ut_first[gi];           /* the PLAIN (stock-drawn) span */
+        ut_count[utb] = n - ut_first[utb];         /* the PLAIN (stock-drawn) span */
         /* Deferred tris: grouped by resolve-relevant tag into contiguous
          * spans after the plain span (ut_emit_deferred). */
         n = ut_emit_deferred(gi, scene, buf, n, dn);
@@ -6538,7 +6570,7 @@ static bool draw_native_scene(bool full_extent)
     for (int t = 0; t < scene_n; t++) {
         if (scene[t].textured || scene[t].category != OPENPETE_SCENE_ACTOR_FRONT ||
             n + 3 > SCENE_VB_VERTS) continue;
-        int b = scene[t].blend; if (b < 0 || b > 3) b = 0;
+        int b = scene[t].blend; if (b < 0 || b > 4) b = 0;
         if (b != 0) continue;   /* transparent rescue-actor faces route by blend (ALPHA/ADD) */
         for (int k = 0; k < 3; k++) {
             float cx, cy;
@@ -6629,8 +6661,8 @@ static bool draw_native_scene(bool full_extent)
     NR_PROF_END();   /* cmp.build_ut */
     NR_PROF_BEGIN("cmp.build_tex");
     int tx_start = n;
-    int txg_first[10], txg_count[10], txtri = 0;
-    for (int b = 0; b < 10; b++) {
+    int txg_first[11], txg_count[11], txtri = 0;
+    for (int b = 0; b < 11; b++) {
         txg_first[b] = tx_start + txtri * 3;
         int run_start = txtri;
         for (int t = 0; t < scene_n; t++) {
@@ -6643,7 +6675,7 @@ static bool draw_native_scene(bool full_extent)
                 /* ACTOR_FRONT (opaque): the rescue actors' textured faces — same
                  * class as the ACTOR textured group (b==2), split for the front
                  * pass. */
-                int bl = scene[t].blend; if (bl < 0 || bl > 3) bl = 0;
+                int bl = scene[t].blend; if (bl < 0 || bl > 4) bl = 0;
                 belongs = cat == OPENPETE_SCENE_ACTOR_FRONT && bl == 0;
             }
             else if (b == 7) belongs = (cat == OPENPETE_SCENE_PORTAL_GUARD);
@@ -6653,13 +6685,20 @@ static bool draw_native_scene(bool full_extent)
                  * ABR 2) and any ABR-2 terrain/moby faces. Drawn in the
                  * SUBTRACT slot with the plain z-test subtract pipe; the
                  * decal path (bucket 1) is shadows only. */
-                int bl = scene[t].blend; if (bl < 0 || bl > 3) bl = 0;
+                int bl = scene[t].blend; if (bl < 0 || bl > 4) bl = 0;
                 belongs = bl == 3 && cat != OPENPETE_SCENE_SHADOW &&
                           cat != OPENPETE_SCENE_HUD && cat != OPENPETE_SCENE_HUD3D &&
                           cat != OPENPETE_SCENE_PORTAL_GUARD;
             }
+            else if (b == 10) {
+                /* QUARTER-ADD (textured): ABR mode 3, the group's own bucket. */
+                int bl = scene[t].blend; if (bl < 0 || bl > 4) bl = 0;
+                belongs = bl == 4 && cat != OPENPETE_SCENE_HUD &&
+                          cat != OPENPETE_SCENE_HUD3D &&
+                          cat != OPENPETE_SCENE_PORTAL_GUARD;
+            }
             else {
-                int bl = scene[t].blend; if (bl < 0 || bl > 3) bl = 0;
+                int bl = scene[t].blend; if (bl < 0 || bl > 4) bl = 0;
                 belongs = cat != OPENPETE_SCENE_HUD && cat != OPENPETE_SCENE_HUD3D &&
                           cat != OPENPETE_SCENE_PORTAL_GUARD &&
                           bl == groups[b].blend &&
@@ -6863,11 +6902,12 @@ static bool draw_native_scene(bool full_extent)
 
     /* GPU attribution (OPENPETE_GPU_TIMERS=1): one nested zone per layered
      * group below, so the [gpu-pass]/trace "compose" cost splits by layer. */
-    static const char* const k_scene_zone[6] =
-        { "sc.world", "sc.shadow", "sc.actor", "sc.player", "sc.alpha", "sc.add" };
+    static const char* const k_scene_zone[7] =
+        { "sc.world", "sc.shadow", "sc.actor", "sc.player", "sc.alpha", "sc.add",
+          "sc.qadd" };
 
-    /* Draw the 6 layered groups in order (WORLD-opaque, SUBTRACT shadows,
-     * ACTOR-opaque, PLAYER-opaque, ALPHA, ADDITIVE). For each: the batched
+    /* Draw the 7 layered groups in order (WORLD-opaque, SUBTRACT shadows,
+     * ACTOR-opaque, PLAYER-opaque, ALPHA, ADDITIVE, QUARTER-ADD). For each: the batched
      * untextured range, then its textured tris as material-coalesced runs
      * (draw_tex_runs over the pre-bucketed/sorted block — one draw per material
      * run, not per triangle). Opaque groups write depth; the transparent groups
@@ -6880,7 +6920,7 @@ static bool draw_native_scene(bool full_extent)
      * slot, over other mobys like the rescued dragon), but writes no depth, so the
      * player Spyro drawn next still covers it (Spyro flies in front of the intro
      * text). Matches the PSX moby OT: near-slot UI over other mobys, player on top. */
-    for (int gi = 0; gi < 6; gi++) {
+    for (int gi = 0; gi < 7; gi++) {
         /* Freeze backdrop active (pause / inventory / flight-results): the world is
          * frozen INTO the backdrop (drawn above), and the canonical game render emits
          * no world/actor/player/shadow/transparent geometry while a menu is up — only
@@ -6892,6 +6932,7 @@ static bool draw_native_scene(bool full_extent)
         if (freeze_first >= 0) continue;
         rhi_gpu_zone_begin(s_nr.dev, k_scene_zone[gi]);
         const struct scene_group *g = &groups[gi];
+        const int utb = g->utb, txb = g->txb;
         /* Dragon-rescue cutscene (actor_front): just BEFORE the PLAYER group,
          * depth-isolate the cutscene actors and draw them there so they win
          * over terrain they interpenetrate (Delvin's wing inside the tower).
@@ -6952,7 +6993,7 @@ static bool draw_native_scene(bool full_extent)
          * that has the same state static (every non-decal pipeline here), so
          * the bias must be set AFTER each depth_bias pipeline bind, before its
          * draws — never rely on a value set earlier in the pass. */
-        if (g->utex && ut_count[gi] > 0) {
+        if (g->utex && ut_count[utb] > 0) {
             if (gi == 1) {
                 /* Untextured SUBTRACT = the Spyro silhouette shadow. Preferred
                  * path: the DEPTH-AWARE decal (shadow_decal.frag samples the
@@ -7001,12 +7042,12 @@ static bool draw_native_scene(bool full_extent)
                 bind_scene_pipe(g->utex);
             }
             rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-            rhi_draw(s_nr.dev, (uint32_t)ut_count[gi], (uint32_t)ut_first[gi]);
+            rhi_draw(s_nr.dev, (uint32_t)ut_count[utb], (uint32_t)ut_first[utb]);
         }
         if (s_utmat_n && g->utex && ut_mat_spans_ok(gi, g->blend, g->gcat))
             draw_ut_mat_spans(gi, g->utex, holefill_on && (gi == 0 || gi == 2),
                               g->blend);
-        if (txg_count[gi] > 0 && s_nr.vram_tex && g->tex) {
+        if (txg_count[txb] > 0 && s_nr.vram_tex && g->tex) {
             /* MOBY SHADOWS (gi==1) prefer the DEPTH-AWARE textured decal when the
              * shared WORLD-opaque depth pre-pass is available this present — the
              * same fix Spyro's silhouette shadow got (shadow_decal_tex.frag owns
@@ -7140,7 +7181,7 @@ static bool draw_native_scene(bool full_extent)
                  * support, so neither path takes it. */
                 int mat_ok = (gi == 1) ? 0
                            : (g->tex == s_nr.scene_tex_mark_pipe ? 2 : 1);
-                draw_tex_runs(txg_first[gi], txg_count[gi], tx_start, scene, g->tex, hd,
+                draw_tex_runs(txg_first[txb], txg_count[txb], tx_start, scene, g->tex, hd,
                               mat_ok, g->blend);
             }
         }

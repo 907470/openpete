@@ -415,7 +415,11 @@ typedef struct rhi_terrain_nearctx {
 
 /* RHI_BLEND_SUBTRACT = PSX ABR mode 2 (dst = B - F): reverse-subtract, src ONE,
  * dst ONE — used by shadows (subtractive darkening). */
-typedef enum { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT } rhi_blend_mode;
+/* RHI_BLEND_ADD_QUARTER = PSX ABR mode 3 (dst = B + F/4): add with the source
+ * scaled by a constant quarter — glass and other faint overlays, which full
+ * additive blows out and reverse-subtract turns black. */
+typedef enum { RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT,
+               RHI_BLEND_ADD_QUARTER } rhi_blend_mode;
 
 /* Stencil role of a pipeline (W2.6 — the aperture-mask investment; the depth
  * attachment is a combined depth+stencil format, stencil cleared to 0 at every
