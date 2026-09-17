@@ -1226,7 +1226,9 @@ typedef struct {
     uint8_t  fillcand;                             /* LP only: gapfill set by the inspector preview, not the list */
     uint8_t  floorf;                               /* LP only: up-facing floor by winding (n_z < 0, |n_z| > 0.8) */
     uint8_t  admit;                                /* LP only: authored admission field w0 & 0x1F */
-    uint8_t  dside;                                /* LP only: w0 & 0x80 — double-sided, emits past both NCLIP halves */
+    uint8_t  dside;                                /* double-sided, emits past both NCLIP halves:
+                                                    * LP w0 & 0x80 (Spyro 1) / w0 bit 31 (Spyro 3),
+                                                    * HP w3 & 0x4 (Spyro 1) / w3 & 0x800 (Spyro 3) */
     uint8_t  otbias;                               /* authored OT-bias field: LP (w1>>3)&0x1F,
                                                     * HP (w3>>3)&0x7 (slot units before x8/x4) */
     int8_t   tb;                                   /* HP texByte (int8 of w2; -1 = untextured) */
@@ -1439,12 +1441,14 @@ static void tsc_decode_faces(CPUState* cpu, uint32_t faces, int nf, int faceStri
                  * semi-transparency comes from the tile's TPAGE. */
                 F->flip = (w3 & 0x400) != 0; F->fogbias = 0;
                 F->otbias = (uint8_t)((w3 >> 7) & 0x7);
+                F->dside = (w3 & 0x800) != 0;
                 F->hq_idx = 0; F->abe = 0;
                 F->trirot = (uint8_t)((w3 >> 12) & 3u);
                 tb = (int)(w3 & 0x7F);
             } else {                               /* Spyro 1: word2 tex byte + HQ index; word3 flags */
                 F->flip = (w3 & 0x2) != 0; F->fogbias = (w3 & 0x1) != 0;
                 F->otbias = (uint8_t)((w3 >> 3) & 0x7);
+                F->dside = (w3 & 0x4) != 0;
                 F->hq_idx = (uint8_t)(w2 & 0x7F); F->abe = (w2 & 0x80) != 0;
                 F->trirot = (uint8_t)((w2 >> 8) & 3u);
                 tb = (int)(int8_t)(w2 & 0xFF);
@@ -3227,7 +3231,7 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
         T.c[2] = tgpu_p4_of(&SC->hpV[F->i2]); T.c[3] = tgpu_p4_of(&SC->hpV[F->i3]);
         T.face_flags = base_ff
                      | (F->fogbias ? (1u << 10) : 0u)
-                     | ((F->w3 & 0x4)  ? (1u << 12) : 0u)   /* dside */
+                     | (F->dside       ? (1u << 12) : 0u)   /* dside */
                      | (F->flip ? (1u << 13) : 0u)
                      | (F->quad ? (1u << 14) : 0u)
                      | (tface_near_tier2(F->w3) ? (1u << 15) : 0u)
@@ -4165,8 +4169,10 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
              *    (i0, i1, i2) for a tri. Accept when the flip-adjusted MAC0
              *    (word3 & 0x2 negates) is >= 0.
              *  - HALF 2 (quads only, when half 1 flunks): SXY0 is re-loaded
-             *    with corner i2 → NCLIP over (i2, i1, i3). word3 & 0x4 jumps
-             *    straight to the emit path (a draw-anyway/two-sided bit);
+             *    with corner i2 → NCLIP over (i2, i1, i3). The word3
+             *    double-sided bit jumps straight to the emit path
+             *    (Spyro 1 w3 & 0x4; Spyro 3 w3 & 0x800, environment.s
+             *    :2516 and :2873 — 0x4 there is a texture-index bit);
              *    otherwise FLIP selects the accepted sign — set → accept
              *    n2 >= 0 (block_80026CC0), clear → accept n2 <= 0
              *    (block_80026CA8; the triple's orientation is inverted vs
@@ -4231,8 +4237,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                     double nx2 = NSAT(sv[i2].sx), ny2 = NSAT(sv[i2].sy);
                     double nx3 = NSAT(sv[i3].sx), ny3 = NSAT(sv[i3].sy);
                     double nclip2 = (nx1 - nx2) * (ny3 - ny2) - (nx3 - nx2) * (ny1 - ny2);
-                    int dside = (F->w3 & 0x4) != 0;
-                    front2 = dside || (flip ? (nclip2 >= 0.0) : (nclip2 <= 0.0));
+                    front2 = F->dside || (flip ? (nclip2 >= 0.0) : (nclip2 <= 0.0));
                 }
             }
             /* Far-band identity dump: full per-face record for the offline
