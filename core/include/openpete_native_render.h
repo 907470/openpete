@@ -1171,6 +1171,9 @@ void openpete_native_occl_qstats(long out[OPENPETE_OCCL_Q_COUNT]);
 /* Diagnostics: the farthest grid view-Z seen in the last CULLED rect scan
  * (how decisively the depth verdict held). Valid right after a query→1. */
 float openpete_native_occl_last_scan_max(void);
+/* Diagnostics: presents elapsed since the live grid was captured, or -1 when
+ * no grid is held. The query refuses a grid older than 8 presents. */
+int  openpete_native_occl_grid_age(void);
 
 /* ---- per-present phase timers (OPENPETE_PHASE_TIMERS=1) ---------------------
  *

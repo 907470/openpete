@@ -4461,6 +4461,9 @@ int openpete_native_occl_query(float sx0, float sy0, float sx1, float sy1, float
 
 float openpete_native_occl_last_scan_max(void) { return s_occl_last_scan_max; }
 
+int openpete_native_occl_grid_age(void)
+{ return s_occl_have ? (int)(s_occl_presents - s_occl_stamp) : -1; }
+
 void openpete_native_occl_qstats(long out[OPENPETE_OCCL_Q_COUNT])
 {
     for (int i = 0; i < OPENPETE_OCCL_Q_COUNT; i++) out[i] = s_occl_qstat[i];

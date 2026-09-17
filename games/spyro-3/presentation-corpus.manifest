@@ -40,7 +40,13 @@ icy-peak-reflective-mirror|1900|150||1900,1950,2000
 # chest stay in view. The pins hold sub-tick presents mid-swing, where an
 # animated record replayed in the tick camera's view space is displaced from
 # the interpolated camera by half a tick of rotation.
-sunrise-spring-camera-swing|1500|100||1520,1540,1560
+# 1760 and 2000 pin the swing's distant-band poses, where the far world is HP
+# geometry under --lod extended and the sub-tick re-extract has the most to
+# lose. They cover the pose, not the sector-occlusion class itself: the
+# occluder depth grid is a GPU readback and headless holds none, so a headless
+# tile cannot see a cull verdict change. That class is measured windowed, per
+# walk.
+sunrise-spring-camera-swing|1500|100||1520,1540,1560,1760,2000
 
 # sheilas-alp-sheila-water-invisible: Sheila, the playable moby, turns invisible
 # in the water at VBL 4556; that pin holds the present on both legs. The 4520 pin

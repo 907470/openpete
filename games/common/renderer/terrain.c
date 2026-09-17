@@ -359,6 +359,10 @@ static ttri s_tri[MAX_TTRIS]; static int s_tri_n;
 
 static int s_dbg_faces, s_dbg_oob, s_dbg_nclip, s_dbg_behind, s_dbg_spike;  /* diagnostics */
 static int s_fardbg = -1, s_fardbg_done = 0, s_fardbg_active = 0;  /* OPENPETE_TERRAIN_FARDBG */
+static int s_fardbg_budget = -1;   /* OPENPETE_TERRAIN_FARDBG_N: walks still to dump */
+static int s_fardbg_lean = -1;     /* OPENPETE_TERRAIN_FARDBG_LEAN: skip the per-prim/per-tri lines */
+static int s_fardbg_walk = 0;      /* serial of the walk being dumped, 0-based */
+static long s_fardbg_occl0 = 0;    /* s_tocc_culled at the dumped walk's start */
 static int s_facemap = -1, s_facemap_done = 0, s_facemap_active = 0;  /* OPENPETE_TERRAIN_FACEMAP */
 
 /* OPENPETE_TERRAIN_SECTORDUMP: per-sector coverage record for the LP↔HP gap probe */
@@ -1409,6 +1413,18 @@ static uint32_t lp_grade_apply(const tscache_t* C, uint32_t rgb) {
     return out;
 }
 static long s_tocc_culled;   /* sectors occlusion-culled this window (census) */
+/* Occlusion-cull verdict latch. The occluder depth grid advances once per
+ * present, while the canonical walk runs once per tick: querying it again on
+ * each sub-tick re-extract lets a sector's cull verdict flip between the
+ * presents of one tick, so terrain that the tick's canonical walk emits
+ * disappears for the rest of the tick and returns at the next one. The
+ * canonical walk's verdict is latched here and every re-extract of that tick
+ * reuses it, so the admitted set is a property of the tick. A sector the
+ * canonical walk did not reach is not latched and is kept (conservative:
+ * the cull is a perf skip and may only ever remove provably hidden work). */
+static uint8_t  s_tocc_latch[1024];      /* 1 = the tick's canonical walk culled it */
+static uint32_t s_tocc_latch_stamp[1024];
+static uint32_t s_tocc_tick;             /* serial of the last canonical walk */
 static void tsc_census(void) {   /* OPENPETE_TERRAIN_CACHE_DBG: ~1/sec hit/miss */
     static int on = -1, n;
     ENV_FLAG_LATCH(on, "OPENPETE_TERRAIN_CACHE_DBG");
@@ -4925,6 +4941,11 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
             r->m3min = sd_m3min; r->m3max = sd_m3max;
             r->bx0 = sd_bx0; r->by0 = sd_by0; r->bx1 = sd_bx1; r->by1 = sd_by1;
         }
+        if (s_fardbg_active)
+            fprintf(stderr, "[fardbg-secend] s=%d tris=%d nv=%d nf=%d vfront=%d "
+                            "drawHP=%d drawLP=%d\n",
+                    (int)i, W->tri_n - sd_triBefore, sd_nv, sd_nf, sd_vfront,
+                    drawHP, drawLP);
 }
 
 static void walk_sector_job(int item, int worker, void* arg) {
@@ -4955,6 +4976,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         }
         prev_tris = s_tri_n;
     }
+    if (!s_vanim_sub) s_tocc_tick++;
+    s_fardbg_occl0 = s_tocc_culled;
     s_tv_n = 0; s_tri_n = 0; s_cv_n = 0; s_walk_sectors = 0;
     s_dbg_faces = s_dbg_oob = s_dbg_nclip = s_dbg_behind = s_dbg_spike = s_dbg_clipped = 0;
     s_near_q_agree = s_near_c_only = 0;
@@ -5086,6 +5109,14 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
     if (s_fardbg < 0) { const char* e = getenv("OPENPETE_TERRAIN_FARDBG"); s_fardbg = (e && *e) ? atoi(e) : 0; }
     /* value > 1 = fire at that openpete_frame (feed mode, pairs with a
      * --screenshot-on-frame of the same number); 1 = first build (verify mode) */
+    if (s_fardbg_budget < 0) { const char* e = getenv("OPENPETE_TERRAIN_FARDBG_N");
+                              s_fardbg_budget = (e && *e) ? atoi(e) : 1;
+                              if (s_fardbg_budget < 1) s_fardbg_budget = 1; }
+    if (s_fardbg_lean < 0) { const char* e = getenv("OPENPETE_TERRAIN_FARDBG_LEAN");
+                             s_fardbg_lean = (e && *e && *e != '0') ? 1 : 0; }
+    /* The dump spans the next OPENPETE_TERRAIN_FARDBG_N consecutive walks from
+     * the trigger frame, so an intermediate re-extract (which runs after the
+     * tick's canonical walk) is reachable; N=1 is the single-walk form. */
     s_fardbg_active = s_fardbg && !s_fardbg_done
                       && (s_fardbg == 1 || openpete_frame >= (unsigned)s_fardbg);
     /* OPENPETE_TERRAIN_FACEMAP=<frame>: one-shot per-LP-face screen-footprint
@@ -5489,16 +5520,32 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
             s_secv_stamp[i] = s_vanim_pres;
         }
         if (s_tocc) {
-            if (oc3 > (double)SC->radius + 1.0) {   /* wholly in front of camera */
+            int culled = 0;
+            if (s_vanim_sub) {
+                /* Re-extract: reuse this tick's canonical verdict, never the
+                 * grid, which has advanced by whole presents since. The
+                 * front-of-camera test is re-applied so a sector the
+                 * interpolated camera has moved onto keeps its geometry
+                 * whatever the canonical walk decided. */
+                culled = (i < 1024u && s_tocc_latch_stamp[i] == s_tocc_tick
+                          && oc3 > (double)SC->radius + 1.0)
+                         ? s_tocc_latch[i] : 0;
+            } else if (oc3 > (double)SC->radius + 1.0) {   /* wholly in front of camera */
                 double inv = s_H / oc3;
                 float sx  = (float)(s_ofx + oc1 * inv);
                 float sy  = (float)(s_ofy + oc2 * inv);
                 float rpx = (float)((double)SC->radius * inv * 1.5 + 8.0);  /* generous bbox */
                 float vz_near = (float)((oc3 - (double)SC->radius) * 16.0);  /* world/16 → full-world */
-                if (openpete_native_occl_query(sx - rpx, sy - rpx, sx + rpx, sy + rpx, vz_near)) {
-                    s_tocc_culled++;
-                    continue;   /* fully behind nearer terrain — skip extraction */
-                }
+                culled = openpete_native_occl_query(sx - rpx, sy - rpx,
+                                                    sx + rpx, sy + rpx, vz_near);
+            }
+            if (!s_vanim_sub && i < 1024u) {
+                s_tocc_latch[i] = (uint8_t)culled;
+                s_tocc_latch_stamp[i] = s_tocc_tick;
+            }
+            if (culled) {
+                s_tocc_culled++;
+                continue;   /* fully behind nearer terrain — skip extraction */
             }
         }
 
@@ -5892,13 +5939,17 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
      * histogram. Tier attribution is the prim code itself: 0x30/0x38 = LP
      * (untextured gouraud), 0x34/0x3C = HP (textured gouraud). */
     if (s_fardbg_active) {
-        fprintf(stderr, "[fardbg-hdr] frame=%u prims=%d sampled=%d fogRefBase=%d cullS2=%d cullRaw=0x%X\n",
-                openpete_frame, s_prim_total, s_gte_n, fogRefBase, cullRefS2,
+        fprintf(stderr, "[fardbg-hdr] frame=%u walk=%d sub=%d alpha=%.4f occl=%ld gridage=%d "
+                        "prims=%d sampled=%d fogRefBase=%d cullS2=%d cullRaw=0x%X\n",
+                openpete_frame, s_fardbg_walk, s_vanim_sub,
+                (s_vanim_sub && s_vanim_on) ? s_vanim_alpha : 1.0,
+                s_tocc_culled - s_fardbg_occl0, openpete_native_occl_grid_age(),
+                s_prim_total, s_gte_n, fogRefBase, cullRefS2,
                 (unsigned)tenv_rd(cpu, game_layout.env.cull_dist));
         for (int c = 0; c < 256; c++)
             if (s_code_hist[c])
                 fprintf(stderr, "[fardbg-hist] code=%02X n=%d\n", c, s_code_hist[c]);
-        for (int p = 0; p < s_gte_n; p++) {
+        for (int p = 0; p < s_gte_n && !s_fardbg_lean; p++) {
             prim_t* g = &s_gte[p];
             fprintf(stderr, "[fardbg-prim] code=%02X n=%d", g->code, g->nv);
             for (int k = 0; k < g->nv; k++)
@@ -5908,7 +5959,7 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         /* The post-clip triangle list = exactly what native rasterizes (the
          * offline face-cover replica got the quad ring order wrong; this is
          * ground truth for native-winner attribution). */
-        for (int t2 = 0; t2 < s_tri_n; t2++) {
+        for (int t2 = 0; t2 < s_tri_n && !s_fardbg_lean; t2++) {
             ttri* T = &s_tri[t2];
             fprintf(stderr, "[fardbg-tri] s=%d f=%d tier=%d fill=%d tex=%d "
                     "v0=%.2f,%.2f,%.1f,%06X v1=%.2f,%.2f,%.1f,%06X v2=%.2f,%.2f,%.1f,%06X\n",
@@ -5917,7 +5968,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     T->sx[1], T->sy[1], T->vz[1], T->rgb[1],
                     T->sx[2], T->sy[2], T->vz[2], T->rgb[2]);
         }
-        s_fardbg_done = 1;
+        s_fardbg_walk++;
+        if (s_fardbg_walk >= s_fardbg_budget) s_fardbg_done = 1;
         s_fardbg_active = 0;
     }
     if (s_facemap_active) {
