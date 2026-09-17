@@ -87,3 +87,7 @@ open-atlas|900|100|freeze|1200,1300
 # 1320/1328/1344/1352 (forward 2), 1500/1510 (reverse 1) and 1524/1532
 # (reverse 2), each a turning tick where the sheet covers the most screen.
 open-atlas-turn-pages|1240|100|freeze|1244,1252,1268,1276,1320,1328,1344,1352,1500,1510,1524,1532
+
+# title-demo-tracers: the attract demo's tracer ribbons, the only geometry the
+# ribbon producer (func_8002FB68) emits anywhere in the corpus (VBL 4487-4535).
+title-demo-tracers|4480|20||4501
