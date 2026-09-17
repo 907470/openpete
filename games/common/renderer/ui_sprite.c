@@ -43,6 +43,7 @@
 
 extern unsigned openpete_frame;
 
+
 static unsigned s_cap_frame = 0xFFFFFFFFu;  /* build frame whose batch the last capture released */
 static unsigned s_post_claim, s_post_sprt, s_post_fade;
 
@@ -358,7 +359,7 @@ static void unclaimed_note(CPUState* cpu, uint32_t prim) {
  * walk order. The chokepoint is the clean 2D-vs-3D discriminator (the 3D
  * renderers inline the insert). */
 enum { QK_FT4 = 0, QK_FREEZE, QK_DR_MODE, QK_F4_BAR, QK_F4_PANEL, QK_LINE_G2, QK_SPRT };
-typedef struct { uint32_t addr; uint32_t sum; uint32_t seq; uint32_t aux; uint8_t kind; } ui_claim_t;
+typedef struct { uint32_t addr; uint32_t sum; uint32_t seq; uint32_t aux; uint32_t xy_link; uint32_t xy_rel; uint8_t kind; } ui_claim_t;
 
 /* One drawn tick's 2D. Spyro 3's atlas links ~370 quads per tick, the widest
  * screen in either game; the cap is well clear of that and an overflow is
@@ -607,6 +608,43 @@ static uint32_t ot_rank_of(uint32_t prim) {
 
 /* Feed the claimed batch: the ordering table about to be walked. Every word is
  * final here, and the entries are in link order, which is the OT walk order. */
+/* Decode one claimed primitive into the scene. */
+static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
+    (void)aux;
+    const uint32_t w1 = cpu->read_word(prim + 4);
+    switch (kind) {
+    case QK_FT4:    feed_ft4(cpu, prim, w1); break;
+    case QK_FREEZE:
+        /* Pause / inventory / flight-results green overlay: drive the native
+         * freeze backdrop from our own last world frame and DROP this FT4 (it
+         * samples the emulated VRAM scratch). Tint = the FT4's setRGB0 (B,G,R
+         * packed in w1) — r=lo byte, g=mid, b=hi. */
+        scene_begin_for_feed();
+        openpete_native_scene_set_freeze_backdrop((int)(w1 & 0xFFu),
+                              (int)((w1 >> 8) & 0xFFu),
+                              (int)((w1 >> 16) & 0xFFu),
+                              0);   /* static: no fade-to-black */
+        s_fed_prims++;
+        break;
+    case QK_DR_MODE: s_last_abr = (int)((w1 >> 5) & 3u); break;   /* the GPU draw-mode's ABR */
+    case QK_F4_BAR:  feed_f4(cpu, prim, w1, OPENPETE_SCENE_OVERLAY, 0xFFu, 0, 1); break;
+    case QK_F4_PANEL: {
+        /* The box links its own DR_MODE immediately before the quad, so the
+         * ABR tracked at this point of the batch is the blend the GPU is in
+         * when the quad draws. ABR 2 (B-F) DARKENS the framebuffer by the
+         * quad's colour and is rendered subtractive (blend 3); ABR 0
+         * ((B+F)/2) is a halving and is rendered at alpha 0x80. Modes 1
+         * (B+F) and 3 (B+F/4) fall back to alpha — add an additive HUD pipe
+         * when a consumer appears. */
+        int sub = (s_last_abr == 2);
+        feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL,
+            sub ? 0xFFu : 0x80u, sub ? 3 : 1, 0);
+        break; }
+    case QK_LINE_G2: feed_line_g2(cpu, prim, w1); break;
+    default: break;
+    }
+}
+
 /* Release `n` of the claimed batch, keeping the rest for a later release. The
  * canonical capture keeps the batch's LAST primitive back: the game links a
  * primitive and fills it afterwards, so at the capture every primitive but the
@@ -630,39 +668,11 @@ static void release_batch(unsigned n) {
         if (sum != s_claim[i].sum) s_mutated++;
         { unsigned vi = s_verify_pending + i;
           if (vi < UI_CLAIM_MAX) { s_verify[vi].addr = prim; s_verify[vi].sum = sum;
-                                   s_verify[vi].kind = s_claim[i].kind; } }
+                                   s_verify[vi].kind = s_claim[i].kind;
+                                   s_verify[vi].xy_link = s_claim[i].xy_link;
+                                   s_verify[vi].xy_rel  = cpu->read_word(prim + 0x08u); } }
         const uint32_t w1 = cpu->read_word(prim + 4);
-        switch (s_claim[i].kind) {
-        case QK_FT4:    feed_ft4(cpu, prim, w1); break;
-        case QK_FREEZE:
-            /* Pause / inventory / flight-results green overlay: drive the native
-             * freeze backdrop from our own last world frame and DROP this FT4 (it
-             * samples the emulated VRAM scratch). Tint = the FT4's setRGB0 (B,G,R
-             * packed in w1) — r=lo byte, g=mid, b=hi. */
-            scene_begin_for_feed();
-            openpete_native_scene_set_freeze_backdrop((int)(w1 & 0xFFu),
-                                                      (int)((w1 >> 8) & 0xFFu),
-                                                      (int)((w1 >> 16) & 0xFFu),
-                                                      0);   /* static: no fade-to-black */
-            s_fed_prims++;
-            break;
-        case QK_DR_MODE: s_last_abr = (int)((w1 >> 5) & 3u); break;   /* the GPU draw-mode's ABR */
-        case QK_F4_BAR:  feed_f4(cpu, prim, w1, OPENPETE_SCENE_OVERLAY, 0xFFu, 0, 1); break;
-        case QK_F4_PANEL: {
-            /* The box links its own DR_MODE immediately before the quad, so the
-             * ABR tracked at this point of the batch is the blend the GPU is in
-             * when the quad draws. ABR 2 (B-F) DARKENS the framebuffer by the
-             * quad's colour and is rendered subtractive (blend 3); ABR 0
-             * ((B+F)/2) is a halving and is rendered at alpha 0x80. Modes 1
-             * (B+F) and 3 (B+F/4) fall back to alpha — add an additive HUD pipe
-             * when a consumer appears. */
-            int sub = (s_last_abr == 2);
-            feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL,
-                    sub ? 0xFFu : 0x80u, sub ? 3 : 1, 0);
-            break; }
-        case QK_LINE_G2: feed_line_g2(cpu, prim, w1); break;
-        default: break;
-        }
+        feed_one_claim(cpu, prim, s_claim[i].kind, s_claim[i].aux);
     }
     openpete_native_scene_set_prim(0u);
     /* One walk of the table, then rank every 2D tri of the frame by the address
@@ -720,7 +730,11 @@ static void on_scene_frame_close(unsigned frame) {
 static void on_overlay_precapture(void) {
     post_capture_report();
     const unsigned built = s_claim_frame;
-    if (s_claim_n > 1) { s_claim_at_capture++; release_batch(s_claim_n - 1); }
+    /* The WHOLE batch goes at the capture. Holding the last-linked primitive
+     * back to the frame close reads its words a frame later, which for 2D that
+     * ANIMATES (the cutscene letterbox sliding in) is the next tick's position:
+     * measured, that put the bar 2 PSX rows out on every frame of the slide. */
+    if (s_claim_n) { s_claim_at_capture++; release_batch(s_claim_n); }
     s_cap_frame = s_claim_n ? built : 0xFFFFFFFFu;
 }
 
@@ -734,6 +748,15 @@ void ui_sprite_ot_verify(void) {
     if (!cpu || !n) return;
     static int s_tr = -1;
     ENV_FLAG_LATCH(s_tr, "OPENPETE_UISPRITE_TRACE");
+    { static int pf = -2; ENV_INT_LATCH(pf, "OPENPETE_XY3_PROBE", -1);
+      if (pf >= 0 && (long)openpete_frame >= (long)pf - 3 && (long)openpete_frame <= (long)pf + 3)
+        for (unsigned i = 0; i < n; i++) {
+            uint32_t w = cpu->read_word(s_verify[i].addr + 0x08u);
+            fprintf(stderr, "[xy3 f=%u] prim=%08X kind=%u link_y=%d cap_y=%d walk_y=%d\n",
+                    openpete_frame, s_verify[i].addr, s_verify[i].kind,
+                    (int)(int16_t)(s_verify[i].xy_link >> 16),
+                    (int)(int16_t)(s_verify[i].xy_rel  >> 16),
+                    (int)(int16_t)(w >> 16)); } }
     for (unsigned i = 0; i < n; i++) {
         s_verify_n++;
         if (claim_sum(cpu, s_verify[i].addr) != s_verify[i].sum) { s_verify_stale++;
@@ -741,6 +764,8 @@ void ui_sprite_ot_verify(void) {
                               openpete_frame, i, n, s_verify[i].kind, s_verify[i].addr); }
     }
 }
+
+static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux);
 
 static void claim_aux(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
     if (openpete_frame == s_cap_frame) s_post_claim++;
@@ -763,6 +788,7 @@ static void claim_aux(CPUState* cpu, uint32_t prim, int kind, uint32_t aux) {
     s_claim[s_claim_n].sum  = claim_sum(cpu, prim);
     s_claim[s_claim_n].seq  = 0;                /* the traversal walk ranks it at the release */
     s_claim[s_claim_n].aux  = aux;
+    s_claim[s_claim_n].xy_link = cpu->read_word(prim + 0x08u);   /* xy0 as the game linked it */
     s_claim[s_claim_n].kind = (uint8_t)kind;
     s_claim_n++;
 }

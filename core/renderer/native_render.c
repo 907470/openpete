@@ -10017,6 +10017,7 @@ static void ps_apply_geometry(void) {
     const int *g = s_ps_slot ? s_ps_slot->geom : s_geom_in;
     s_nr.disp_x = g[0]; s_nr.disp_y = g[1]; s_nr.disp_w = g[2]; s_nr.disp_h = g[3];
     s_nr.clip_x = g[4]; s_nr.clip_y = g[5]; s_nr.clip_w = g[6]; s_nr.clip_h = g[7];
+
 }
 static uint32_t ps_drawenv_clear(void)  { return s_ps_slot ? s_ps_slot->drawenv_clear : s_drawenv_clear; }
 static const openpete_shadow_decal_params *ps_shadow(void) { return s_ps_slot ? &s_ps_slot->shadow : &s_shadow_decal; }
