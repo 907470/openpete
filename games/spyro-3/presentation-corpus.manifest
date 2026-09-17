@@ -79,3 +79,11 @@ title-demo|500|20||510
 # with the flag and without it.
 open-options|900|100|freeze|1200,1300
 open-atlas|900|100|freeze|1200,1300
+
+# open-atlas-turn-pages holds the atlas page-turn animation: the turning
+# sheet is a skewed per-vertex-shaded quad (POLY_GT4) covering up to half the
+# screen for 8 to 17 drawn ticks per turn, the only POLY_GT4 in the corpus.
+# The pins bracket four turns: 1244/1252/1268/1276 (forward 1),
+# 1320/1328/1344/1352 (forward 2), 1500/1510 (reverse 1) and 1524/1532
+# (reverse 2), each a turning tick where the sheet covers the most screen.
+open-atlas-turn-pages|1240|100|freeze|1244,1252,1268,1276,1320,1328,1344,1352,1500,1510,1524,1532
