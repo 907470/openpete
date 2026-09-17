@@ -331,6 +331,40 @@ typedef struct game_layout {
         int      matrix_fold_a;
         int      cull_layout;       /* SHADOW_CULL_* */
         uint32_t ground_plane;
+
+        /* The player's own ground shadow, where the game draws it as a leg of
+         * this feeder. `hook` = 0 on a game whose player shadow is a separate
+         * renderer with its own feeder (Spyro 1's silhouette fan).
+         *
+         * The leg emits one gouraud triangle per ring point, fanned from a
+         * ground anchor and flat in the shadow's own plane. The silhouette
+         * radii are the eight bytes at the head of the avatar's current
+         * animation frame, interpolated towards a second frame's eight by the
+         * weight `blend_table` maps the avatar's blend byte to, then doubled
+         * to sixteen by inserting each neighbouring pair's midpoint; radius k
+         * scales the packed s16 XZ direction pair at `ring_dirs` + k*4.
+         *
+         * `state` is the shadow state block: +0x00 a flag that scales every
+         * radius by three quarters, +0x04 the world position the anchor
+         * projects from, +0x10 a packed triple of byte angles (Y in bits
+         * 16-23, X in 8-15, Z in 0-7) rotating the camera matrix into the
+         * shadow's plane, whose top byte suppresses the shadow entirely, and
+         * +0x14 the bias subtracted from each triangle's ordering key.
+         *
+         * `anim_table` is the animation pointer table the avatar's animation
+         * word indexes: its low byte and bits 8-15 select the two animations,
+         * bits 16-23 and 24-31 the frame within each. `avatar_anim` and
+         * `avatar_blend` are the offsets of that word and of the blend byte in
+         * the player state block at game_layout.player.base. */
+        struct {
+            uint32_t hook;
+            uint32_t state;
+            uint32_t anim_table;
+            uint32_t blend_table;
+            uint32_t ring_dirs;
+            uint32_t avatar_anim;
+            uint32_t avatar_blend;
+        } player;
     } shadow;
 
     /* The moby (3D actor) draw. The games share the walk: a cull pass builds

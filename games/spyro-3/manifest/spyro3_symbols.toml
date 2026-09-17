@@ -101,6 +101,22 @@ addr = 0x8006E388
 note = "moby drop-shadow descriptor {uv0+clut, uv1+tpage, list end}: func_8002DDA8 loads +0x00/+0x04 as the shadow sprite's two UV words and +0x08 as the drawn-moby list terminator (asm/mobyfunc.s:921-923); the level loader func_8002B810 writes the two UV words from the level asset table (asm/nonmatchings/loaders/func_8002B810.s:270-275); the moby draw stores the list cursor back to +0x08 (asm/mobydraw.s:579-582). Dump: uv0=0x2FE76000, uv1=0x80587F1F (tpage 0x8058, ABR 2 subtract, 4bpp), end=0x801BC940"
 
 [[symbol]]
+name = "D_PLAYERSHADOW"
+addr = 0x8006FBA8
+note = "the player's ground-shadow state block, read by the player-shadow draw func_8002D9BC (asm/mobyfunc.s:622-884): +0x00 a flag scaling every silhouette radius by 3/4, +0x04/+0x08/+0x0C the shadow's world position, +0x10 a packed byte-angle triple (Y bits 16-23, X bits 8-15, Z bits 0-7) whose top byte at +0x13 suppresses the draw, +0x14 the ordering-key bias"
+
+[[symbol]]
+name = "D_SHADOW_RING"
+addr = 0x80068C0C
+note = "16 packed s16 XZ direction pairs, one per player-shadow ring point; func_8002D9BC multiplies each by its ring radius and shifts right 10 to form the local corner (asm/mobyfunc.s:775-790)"
+
+[[symbol]]
+name = "F_PLAYER_SHADOW"
+addr = 0x8002D9BC
+kind = "function"
+note = "the player's ground-shadow renderer (asm/mobyfunc.s:622-884), called once after the two player draws by fDrawSpyroAndMobys (asm/nonmatchings/drawutil/func_8001EC5C.s:79); emits 16 POLY_G3 semi-transparent, each bundled with its own DR_MODE 0xE1000640 (ABR 2, subtractive)"
+
+[[symbol]]
 name = "F_MOBY_SHADOWS"
 addr = 0x8002DDA8
 kind = "function"

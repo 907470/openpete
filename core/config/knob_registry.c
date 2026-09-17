@@ -1028,6 +1028,8 @@ static const knob_desc_t g_builtin[] = {
         "depth between one moby's own faces (default 0 = true depth only)."),
     ENVROW_LATCHED("MOBY_SHADOW_DECAL", "Debug", "1",
         "Depth-aware moby-shadow decal vs legacy subtract pipe (default 1)."),
+    ENVROW_LATCHED("SHADOW_PLAYER", "Debug", "1",
+        "Player ground-shadow leg feed enable (default 1); the guest draw runs either way."),
     ENVROW_LATCHED("SHADOW_BAND", "Debug", "256",
         "Fallback view-Z band for shadow decal mode 0 (default 256)."),
     ENVROW_LATCHED("SHADOW_HW_BIAS", "Debug", "-64,-2,-0.002",

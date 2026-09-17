@@ -76,6 +76,11 @@ unsigned shadow_verify_frame(void);
  * gamestate. Extract-only. */
 void   shadow_reextract(CPUState* cpu);
 
+/* The same for the player's ground shadow (renderer/shadow_player.c, the leg
+ * game_layout.shadow.player describes). `slot` is the model record the fan
+ * renders under; the caller stages that record's shadow state first. */
+void   shadow_player_reextract(CPUState* cpu, int slot);
+
 #ifdef __cplusplus
 }
 #endif

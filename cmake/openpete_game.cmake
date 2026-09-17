@@ -278,6 +278,7 @@ function(openpete_add_game GAME_ID)
         ${_common}/renderer/terrain.c
         ${_common}/renderer/cyclorama.c
         ${_common}/renderer/shadow.c
+        ${_common}/renderer/shadow_player.c
         ${_common}/renderer/moby.c
         ${_common}/renderer/moby_rank.c
         ${_common}/renderer/player.c

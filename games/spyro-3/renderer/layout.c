@@ -233,8 +233,19 @@ const game_layout_t game_layout = {
         .matrix_fold_a = 0,               /* mobyfunc.s:987-1004 writes R12 from the first
                                            * MVMVA and folds no angle index into R11 */
         .cull_layout = SHADOW_CULL_SPYRO3, /* mobyfunc.s:1105-1127: four-corner extent tests */
-        .ground_plane = 0u,               /* the player shadow is the player model drawn
-                                           * mirrored, so no stored ground plane exists */
+        .ground_plane = D_PLAYERSHADOW + 0x0Cu,  /* the player shadow's world height,
+                                           * mobyfunc.s:630 lw 0xC */
+        .player = {
+            .hook         = F_PLAYER_SHADOW,
+            .state        = D_PLAYERSHADOW,
+            .anim_table   = D_SPYRO_ANIMS,    /* mobyfunc.s:706-708 lw through the
+                                               * table pointer, as spyrodraw.s:33 */
+            .blend_table  = D_SPYRO_BLEND,    /* mobyfunc.s:699-704 lbu g_Spyro+0x1C
+                                               * into the table, result << 4 = IR0 */
+            .ring_dirs    = D_SHADOW_RING,    /* mobyfunc.s:775-790 */
+            .avatar_anim  = 0x14u,            /* mobyfunc.s:705 lw 0x14: bodyAnimation */
+            .avatar_blend = 0x1Cu,            /* mobyfunc.s:699 lbu 0x1C */
+        },
     },
     .moby = {
         /* Offsets read from asm/mobydraw.s, whose three routines Spyro 2
@@ -363,8 +374,11 @@ const game_layout_t game_layout = {
 
         .flame_base  = 0u,                      /* no located flame struct */
         .flame_len   = 0u,
-        .shadow_base = 0u,                      /* the drop shadow derives from g_Spyro */
-        .shadow_len  = 0u,
+        .shadow_base = D_PLAYERSHADOW,          /* the ground shadow's own state block:
+                                                 * position and rotation the player
+                                                 * update writes, not fields of g_Spyro */
+        .shadow_len  = 0x18u,                   /* mobyfunc.s:625-715 reads +0x00 through
+                                                 * +0x17 (flag, position, angles, bias) */
 
         .pair_bound = 400.0,
     },

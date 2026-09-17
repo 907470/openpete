@@ -38,6 +38,9 @@
 #define CAM_OFF_SKY   0x00u
 #define CAM_OFF_VIEW  0x14u
 #define CAM_OFF_POS   0x28u
+/* The world position inside the player-shadow state block
+ * (game_layout.shadow.player, asm/mobyfunc.s:630-632). */
+#define SHADOW_POS_OFF 0x04u
 
 /* The un-rounded interpolated camera position of this present, for the
  * projection's floor fix; valid only while a bracket is installed. */
@@ -235,6 +238,35 @@ static int camera_cut(const uint8_t* p, const uint8_t* c) {
  *
  * Host-only: the staged span is a view copy, restored to the ambient bytes at
  * the end, and no guest word is written. */
+/* The player's ground shadow, at its own place in the record order: the shadow
+ * feeder reads one state block, the record store holds the block each call
+ * drew with, so the loop stages that block over the ambient bytes and runs the
+ * fan once per record. The anchor is bracketed against the previous tick's,
+ * teleport-guarded like the camera, so the shadow slides with the avatar
+ * between ticks instead of stepping with it.
+ *
+ * Host-only: the staged span is a view copy and no guest word is written. */
+static void player_record_shadow(CPUState* cpu, int k, uint8_t* shb, double rec_alpha) {
+    if (!shb) return;
+    const uint32_t len = game_layout.player.shadow_len;
+    int nsh = player_records_shadow_count();
+    for (int j = 0; j < nsh; j++) {
+        const player_shadow_rec_t* d = player_records_shadow_curr(j);
+        if (!d || d->model != k || !d->drawn) continue;
+        const player_shadow_rec_t* pd = player_records_shadow_prev(j);
+        memcpy(shb, d->sh, len);
+        if (player_records_lerps(k) && pd) {
+            const int32_t* pp = (const int32_t*)(pd->src + SHADOW_POS_OFF);
+            const int32_t* cp = (const int32_t*)(d->src + SHADOW_POS_OFF);
+            double dx = (double)cp[0] - pp[0], dy = (double)cp[1] - pp[1], dz = (double)cp[2] - pp[2];
+            if (dx*dx + dy*dy + dz*dz <= 5000.0 * 5000.0)
+                lerp_vec3(shb, pd->src, d->src, SHADOW_POS_OFF, rec_alpha);
+        }
+        shadow_player_reextract(cpu, k);
+        player_records_shadow_note(j, (const int32_t*)(shb + SHADOW_POS_OFF));
+    }
+}
+
 static void player_records_replay(CPUState* cpu, int paired, double alpha) {
     const uint32_t len = game_layout.player.rec_len;
     double rec_alpha = 0.0;
@@ -247,6 +279,17 @@ static void player_records_replay(CPUState* cpu, int paired, double alpha) {
 
     static uint8_t ambient[PLAYER_REC_STATE_MAX];
     memcpy(ambient, sb, len);
+
+    /* The shadow feeder's own state block, staged beside the player's for the
+     * same reason: one block serves every record in turn. */
+    const uint32_t shlen = game_layout.player.shadow_len;
+    uint8_t* shb = NULL;
+    static uint8_t sh_ambient[PLAYER_REC_AUX_MAX];
+    if (game_layout.player.shadow_base && shlen && shlen <= PLAYER_REC_AUX_MAX &&
+        player_records_shadow_count() > 0) {
+        shb = (uint8_t*)openpete_subtick_view_stage(game_layout.player.shadow_base, shlen);
+        if (shb) memcpy(sh_ambient, shb, shlen);
+    }
     const uint32_t pos_off = game_layout.player.pos_off;
     for (int k = 0; k < n; k++) {
         const player_model_rec_t* rec = player_records_curr(k);
@@ -318,8 +361,10 @@ static void player_records_replay(CPUState* cpu, int paired, double alpha) {
         player_native_set_anim_pair((lerp && prv->drawn) ? prv->seg : NULL, rec->seg);
         player_native_set_player_slot(k);
         player_reextract_record(cpu, !rec->is_player);
+        player_record_shadow(cpu, k, shb, rec_alpha);
         player_records_present_note(k, (const int32_t*)sb);
     }
+    if (shb) memcpy(shb, sh_ambient, shlen);
     s_ppos_active = 0;
     player_native_set_rot_interp(NULL, NULL);
     player_native_set_anim_pair(NULL, NULL);

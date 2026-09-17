@@ -134,6 +134,9 @@ const game_layout_t game_layout = {
                                            * idxA << 3 added into R11 */
         .cull_layout = SHADOW_CULL_SPYRO1,
         .ground_plane = D_SPYROSHADOW + 0x18u,   /* SpyroShadow ground height */
+        .player = { .hook = 0u },         /* the player silhouette is its own
+                                           * renderer, func_80059A48, fed by
+                                           * renderer/shadow_spyro.c */
     },
     .moby = {
         .array_head   = G_LEVELMOBYS,     /* points at the first Moby */

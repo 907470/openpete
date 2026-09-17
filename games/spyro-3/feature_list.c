@@ -7,6 +7,7 @@ extern const feature_module_t terrain_module;
 extern const feature_module_t cyclorama_module;
 extern const feature_module_t portal_module;
 extern const feature_module_t shadow_module;
+extern const feature_module_t shadow_player_module;
 extern const feature_module_t moby_module;
 extern const feature_module_t player_module;
 extern const feature_module_t ui_sprite_module;
@@ -29,6 +30,7 @@ const feature_module_t* const openpete_features[] = {
      * game_layout; inert unless the native scene is enabled or
      * OPENPETE_SHADOW_VERIFY is set. */
     &shadow_module,
+    &shadow_player_module,
     /* The shared moby feeder: registers the draw hooks game_layout.moby
      * names, then refuses them because this game supplies no moby_game
      * decoder slots yet — OPENPETE_MOBY_CENSUS prints the reason. */
