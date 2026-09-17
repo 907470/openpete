@@ -9601,19 +9601,47 @@ static struct { const char *name; double ema; } s_gpuz[GPUZ_MAX];
 static int      s_gpuz_n = 0;
 static uint64_t s_gpuz_last = 0;
 
+/* Interned trace id per zone name, cached by name POINTER (the zone brackets
+ * pass string literals) with strcmp as the collision fallback. op_prof_intern
+ * walks the whole name table with strcmp under the writer mutex, and this runs
+ * once per zone per frame on the rendering thread; the cache makes the steady
+ * state a pointer compare. Entry contents are stored before the count is
+ * raised, so a reader that sees the new count sees a complete entry. */
+static struct { const char *name; int id; } s_gpuz_pid[GPUZ_MAX];
+static int s_gpuz_pid_n = 0;
+
+static int gpuz_prof_id(const char *name)
+{
+    const int n = s_gpuz_pid_n;
+    for (int i = 0; i < n; i++) {
+        if (!s_gpuz_pid[i].name) continue;
+        if (s_gpuz_pid[i].name == name || strcmp(s_gpuz_pid[i].name, name) == 0)
+            return s_gpuz_pid[i].id;
+    }
+    int id = op_prof_intern(name);
+    if (n < GPUZ_MAX) {
+        s_gpuz_pid[n].name = name;
+        s_gpuz_pid[n].id   = id;
+        s_gpuz_pid_n = n + 1;
+    }
+    return id;
+}
+
 static void gpu_zone_report(void)
 {
     if (!rhi_gpu_timers_on(s_nr.dev)) return;
     rhi_gpu_zone_result res[RHI_GPU_ZONES_MAX];
     int n = rhi_gpu_zone_results(s_nr.dev, res, RHI_GPU_ZONES_MAX);
 
-    /* Forward the harvested (frame-lagged) zones to the perf trace, bound to the
-     * present that submitted them via the token stored at that frame's begin. */
+    /* Forward the harvested (frame-lagged) zones to the perf trace, keyed by the
+     * RHI frame serial stored at that frame's begin. The serial identifies a
+     * frame that actually rendered, which a present index does not: under eager
+     * production scenes are published and superseded without ever rendering. */
     if (op_prof_on() && n > 0) {
-        uint32_t pidx = (uint32_t)rhi_gpu_results_token(s_nr.dev);
+        uint64_t serial = rhi_gpu_results_token(s_nr.dev);
         for (int i = 0; i < n; i++) {
-            int zid = op_prof_intern(res[i].name);
-            op_prof_gpu_zone(zid, res[i].depth, pidx,
+            int zid = gpuz_prof_id(res[i].name);
+            op_prof_gpu_zone(zid, res[i].depth, serial,
                              (uint32_t)(res[i].start_us + 0.5),
                              (uint32_t)(res[i].us + 0.5));
         }
@@ -10193,9 +10221,10 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
      * composes (freeze/lag included), so retained content follows the same
      * timeline and stale states never repaint. */
     openpete_tercache_frame_select(scene_present_stamp());
-    /* Tag this frame's GPU work with the present it will become, so the
-     * frame-lagged harvest (next few presents) can bind zones back to it. */
-    if (op_prof_on()) rhi_gpu_frame_token(s_nr.dev, (uint64_t)op_prof_next_present_index());
+    /* Tag this frame's GPU work with its RHI frame serial, so the frame-lagged
+     * harvest (next few frames) binds each zone set back to the frame that
+     * submitted it. */
+    if (op_prof_on()) rhi_gpu_frame_token(s_nr.dev, rhi_frame_serial(s_nr.dev));
     gpu_zone_report();  /* fold in the zone results begin_frame just harvested */
     /* Pending VRAM/reference uploads ride THIS frame's command buffer (W2.2)
      * — must precede the first render pass (the depth pre-pass below). */
@@ -10295,6 +10324,10 @@ static void render_frame_common(uint64_t record_pts_us, bool have_ref)
                  phase_present_done(); }
     if (s_ptrace) { fprintf(stderr, "E\n"); fflush(stderr); }
 
+    /* Marker for the rendering thread: under eager production it never closes a
+     * present, so this is where its accumulator buckets become one span per
+     * rendered frame and its record chunk reaches the stream. */
+    if (op_prof_on()) op_prof_thread_flush();
 }
 
 /* Insert a suffix before the extension: ("shot-42.png","-vk") -> "shot-42-vk.png". */

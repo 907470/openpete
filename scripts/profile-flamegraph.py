@@ -18,17 +18,20 @@ import os
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from _opp_reader import read_opp, partition_transients, KIND_NAME  # noqa: E402
+from _opp_reader import (read_opp, partition_transients, OppTraceError,  # noqa: E402
+                         KIND_NAME)
 
 
 def build_tree_for_present(spans):
-    """spans: list of (depth, name, t0, dur, aux). Reconstruct nesting by time
-    containment (ignore the unreliable stored depth). Return list of root nodes,
-    each {name, t0, dur, children:[...]}."""
+    """spans: list of (depth, name, t0, dur, aux, tid) FROM ONE THREAD.
+    Reconstruct nesting by time containment (ignore the unreliable stored
+    depth). Return list of root nodes, each {name, t0, dur, children:[...]}.
+    Callers split by tid first: two threads' spans overlap in wall time and
+    containment would read the overlap as nesting."""
     ev = sorted(spans, key=lambda s: (s[2], -(s[3])))  # by t0, longer first
     roots = []
     stack = []  # open ancestors
-    for (_d, name, t0, dur, _a) in ev:
+    for (_d, name, t0, dur, _a, _tid) in ev:
         node = {"name": name, "t0": t0, "dur": dur, "children": []}
         while stack and stack[-1]["t0"] + stack[-1]["dur"] <= t0:
             stack.pop()
@@ -50,10 +53,11 @@ def fold_into(acc, node, prefix):
         fold_into(acc, c, path)
 
 
-def gpu_tree_for_present(gpuz):
-    """gpuz: list of (depth, name, t0_rel, dur). Use stored depth for nesting."""
+def gpu_tree_for_frame(gpuz):
+    """gpuz: list of (depth, name, t0_rel, dur, tid) for ONE rendered frame.
+    Use stored depth for nesting."""
     roots, stack = [], []
-    for (depth, name, t0, dur) in sorted(gpuz, key=lambda z: (z[2], -(z[3]))):
+    for (depth, name, t0, dur, _tid) in sorted(gpuz, key=lambda z: (z[2], -(z[3]))):
         node = {"name": name, "t0": t0, "dur": dur, "children": []}
         while len(stack) > depth:
             stack.pop()
@@ -157,7 +161,12 @@ def main():
     ap.add_argument("--title", default=None)
     args = ap.parse_args()
 
-    names, presents, funcs = read_opp(args.trace)
+    try:
+        tr = read_opp(args.trace)
+    except OppTraceError as e:
+        sys.stderr.write("profile-flamegraph: %s\n" % e)
+        return 2
+    presents, funcs = tr.presents, tr.funcs
     presents = [p for p in presents if p.canon_tick >= args.skip_ticks]
     presents, transients = partition_transients(presents, args.transient_ms * 1000)
     if transients:
@@ -171,15 +180,23 @@ def main():
         for fn in funcs:
             if fn["self_us"] > 0:
                 acc[("sim_tick (game logic)", fn["name"])] = fn["self_us"]
+    elif args.which == "gpu":
+        # GPU zones group per rendered frame (RHI frame serial), not per
+        # present: under eager production a present index is not a frame.
+        for zones in tr.gpu_frames.values():
+            for node in gpu_tree_for_frame(zones):
+                fold_into(acc, node, ("frame",))
     else:
+        # One tree per (present, producer thread): containment across threads
+        # would read concurrent spans as nesting.
         for p in presents:
             kind = KIND_NAME.get(p.kind, "?")
-            if args.which == "cpu":
-                for node in build_tree_for_present(p.spans):
-                    fold_into(acc, node, (kind,))
-            else:
-                for node in gpu_tree_for_present(p.gpuz):
-                    fold_into(acc, node, (kind,))
+            by_tid = {}
+            for sp in p.spans:
+                by_tid.setdefault(sp[5], []).append(sp)
+            for tid, sub in sorted(by_tid.items()):
+                for node in build_tree_for_present(sub):
+                    fold_into(acc, node, (kind, "tid %d" % tid))
     root = folded_to_tree(acc)
 
     total_ms = root["value"] / 1000.0
@@ -188,9 +205,13 @@ def main():
     if args.which == "func":
         sub = ("%.0f ms total game-logic self-time across the run; width = per-"
                "function self-time (recompiled EXE, -finstrument-functions)" % total_ms)
+    elif args.which == "gpu":
+        sub = ("%d rendered frame(s), %.0f ms total GPU time (self-time by zone, "
+               "grouped by RHI frame serial)" % (len(tr.gpu_frames), total_ms))
     else:
-        sub = ("%d presents, %.0f ms total %s time (self-time by scope; root "
-               "split canonical/intermediate)" % (len(presents), total_ms, args.which.upper()))
+        sub = ("%d presents, %.0f ms total CPU time (self-time by scope; root "
+               "split canonical/intermediate, then producer thread)"
+               % (len(presents), total_ms))
     svg = render_svg(root, title, sub)
     with open(args.out, "w") as f:
         f.write(svg)

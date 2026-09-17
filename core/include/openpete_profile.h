@@ -1,7 +1,8 @@
 /* openpete_profile.h — empirical CPU+GPU performance trace (--profile-out PATH)
  *
- * A per-present performance trace that attributes CPU scope time and GPU zone
- * time to each present, keyed by (present_index, canon_tick, kind). Records are
+ * A performance trace that attributes CPU scope time to presents, keyed by
+ * (present_index, canon_tick, kind), and GPU zone time to rendered frames,
+ * keyed by the RHI frame serial. Records are
  * streamed to a compact binary `.opp` file; post-run Python converters turn it
  * into a Chrome/Perfetto trace (human flame charts) and a compact text
  * summary (scripts/profile-to-trace.py, scripts/profile-summary.py).
@@ -14,8 +15,9 @@
  * OP_PROF_ACCUM_SCOPE() when the region is entered many times per tick.
  *
  * Everything is inert (one predictable branch) unless --profile-out is set.
- * Diagnostic-only; never touches gameplay state. Main-thread only (host+game
- * fibers share the thread); calls from other threads are dropped.
+ * Diagnostic-only; never touches gameplay state. Every entry point is callable
+ * from any thread: span stacks and accumulator buckets are per-thread, records
+ * carry the raising thread's index, and each thread buffers its own records.
  */
 #ifndef OPENPETE_PROFILE_H
 #define OPENPETE_PROFILE_H
@@ -41,7 +43,9 @@ int  op_prof_on(void);
 uint64_t op_prof_now_us(void);
 
 /* Intern a scope/zone/counter name → small integer id (stable for the run).
- * Repeated calls with the same string return the same id. Main-thread only. */
+ * Repeated calls with the same string return the same id. Thread-safe; the
+ * lookup is a strcmp walk under the writer mutex, so callers on a hot path
+ * cache the id at the call site. */
 int  op_prof_intern(const char* name);
 
 /* CPU scope stack. begin pushes, end pops and emits a completed SPAN with the
@@ -74,20 +78,24 @@ void op_prof_count(int name_id, uint64_t value);
  * "hook.terrain_native") is a subset, and the consumer subtracts. */
 void op_prof_accum(int name_id, uint64_t us);
 
-/* The index op_prof_present() will assign to the present currently being built
- * (i.e. the next present). GPU work submitted now is tagged with this so the
- * frame-lagged harvest can bind its zones to the right present. */
-uint32_t op_prof_next_present_index(void);
-
-/* Close the current present: assigns every span/count/zone emitted since the
- * previous present to this one. canon_tick is openpete_canon_tick; kind is
- * OP_PROF_CANONICAL or OP_PROF_INTERMEDIATE. Returns this present's index. */
+/* Close the current present. Spans raised on the closing thread since its
+ * previous marker bind to this present by stream order; spans from other
+ * threads bind by interval containment in the consumer. canon_tick is
+ * openpete_canon_tick; kind is OP_PROF_CANONICAL or OP_PROF_INTERMEDIATE.
+ * Returns this present's index. */
 uint32_t op_prof_present(uint32_t canon_tick, int kind);
 
-/* GPU zone result harvested for a given present_index (from rhi_gpu_zone_*).
- * t0_rel_us is relative to the present's first GPU timestamp. Wired in M2. */
-void op_prof_gpu_zone(int name_id, int depth, uint32_t present_index,
+/* GPU zone result harvested for one rendered frame (from rhi_gpu_zone_*),
+ * keyed by the RHI frame serial that submitted it. t0_rel_us is relative to
+ * that frame's first GPU timestamp. Consumers group zones by frame_serial. */
+void op_prof_gpu_zone(int name_id, int depth, uint64_t frame_serial,
                       uint32_t t0_rel_us, uint32_t dur_us);
+
+/* Marker for a producer that never closes a present: emits this thread's
+ * pending accumulator buckets and writes its chunk to the stream. Called at
+ * the end of each rendered frame, so the render thread's accum scopes land one
+ * span per frame instead of one span per run. */
+void op_prof_thread_flush(void);
 
 /* Per-function aggregate record (Tier B, from func_trace.c). Emitted once per
  * traced function at shutdown: total calls, self µs (excl. children), total µs

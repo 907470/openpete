@@ -1,33 +1,77 @@
 """Reader for the binary .opp performance trace (see core/diag/profile.c).
 
 Stream layout: a 32-byte header, then a mix of variable-length NAME records and
-fixed 32-byte PRESENT/SPAN/GPUZ/COUNT records. Binning rule: every SPAN/COUNT
-record belongs to the next PRESENT in stream order; GPUZ records carry their own
-present_index (GPU results are harvested a few presents late).
+fixed 32-byte PRESENT/SPAN/GPUZ/COUNT/FUNC records. Every fixed record carries
+a `tid` (the producer thread's index) at byte 28, and spans carry an absolute
+microsecond t0, so the file's global order carries no meaning: producers buffer
+their own records and the chunks interleave arbitrarily.
+
+Binning:
+  * SPAN/COUNT raised on a present-closing thread bin by that thread's stream
+    order, to the next PRESENT in it.
+  * SPAN/COUNT raised on any other thread bin by interval containment: the
+    first present whose marker time is at or after the span's t0.
+  * GPUZ records are keyed by the RHI frame serial of the frame that submitted
+    them, and group per rendered frame, not per present. A GPUZ raised on a
+    present-closing thread also binds to that present (the inline render path),
+    so an eager-off trace keeps its per-present GPU view.
+
+A trace this reader cannot bin is refused (OppTraceError), never read as a
+partial one.
 """
 import struct
 
+FORMAT_VERSION = 2
+
 REC_NAME, REC_PRESENT, REC_SPAN, REC_GPUZ, REC_COUNT, REC_FUNC = 1, 2, 3, 4, 5, 6
+REC_TID_OFF = 28
 
 KIND_CANONICAL, KIND_INTERMEDIATE = 0, 1
 KIND_NAME = {KIND_CANONICAL: "canonical", KIND_INTERMEDIATE: "intermediate"}
 
 
-class Present:
-    __slots__ = ("index", "canon_tick", "kind", "t_now_us", "spans", "counts", "gpuz")
+class OppTraceError(Exception):
+    """The trace cannot be read or binned. Callers print and exit nonzero."""
 
-    def __init__(self, index, canon_tick, kind, t_now_us):
+
+class Present:
+    __slots__ = ("index", "canon_tick", "kind", "t_now_us", "tid",
+                 "spans", "counts", "gpuz")
+
+    def __init__(self, index, canon_tick, kind, t_now_us, tid):
         self.index = index
         self.canon_tick = canon_tick
         self.kind = kind
         self.t_now_us = t_now_us
-        self.spans = []    # list of (depth, name, t0_us, dur_us, aux)
+        self.tid = tid
+        self.spans = []    # list of (depth, name, t0_us, dur_us, aux, tid)
         self.counts = {}   # name -> value (last wins)
         self.gpuz = []     # list of (depth, name, t0_rel_us, dur_us)
+
 
     @property
     def kind_name(self):
         return KIND_NAME.get(self.kind, "?")
+
+    def spans_for_tid(self, tid):
+        return [s for s in self.spans if s[5] == tid]
+
+
+class Trace:
+    """names: {id: str}. presents: [Present]. funcs: [dict].
+    gpu_frames: {frame_serial: [(depth, name, t0_rel_us, dur_us, tid)]} — one
+    entry per frame that actually rendered. threads: sorted tid list."""
+    __slots__ = ("names", "presents", "funcs", "gpu_frames", "threads",
+                 "present_tids", "version")
+
+    def __init__(self):
+        self.names = {}
+        self.presents = []
+        self.funcs = []
+        self.gpu_frames = {}
+        self.threads = []
+        self.present_tids = set()
+        self.version = FORMAT_VERSION
 
 
 def present_busy_us(present):
@@ -36,7 +80,7 @@ def present_busy_us(present):
     spans = present.spans
     if not spans:
         return 0
-    iv = sorted((t0, t0 + dur) for (_d, _n, t0, dur, _a) in spans)
+    iv = sorted((t0, t0 + dur) for (_d, _n, t0, dur, _a, _t) in spans)
     total = 0
     cur_s, cur_e = iv[0]
     for s, e in iv[1:]:
@@ -61,81 +105,196 @@ def partition_transients(presents, threshold_us):
     return steady, trans
 
 
+def _bin_by_containment(presents, t0_us):
+    """First present whose marker time is at or after t0_us. A record raised
+    after the last marker belongs to the last present (the tail flush)."""
+    lo, hi = 0, len(presents)
+    while lo < hi:
+        mid = (lo + hi) // 2
+        if presents[mid].t_now_us < t0_us:
+            lo = mid + 1
+        else:
+            hi = mid
+    return presents[lo] if lo < len(presents) else presents[-1]
+
+
 def read_opp(path):
-    """Return (names: dict[int,str], presents: list[Present], funcs: list[dict]).
-    Records after the last PRESENT (an incomplete trailing present) are dropped;
-    FUNC records are end-of-run per-function aggregates (Tier B)."""
+    """Parse a v2 .opp trace into a Trace. Raises OppTraceError on a bad magic,
+    a version this reader does not implement, a corrupt tail, or any record it
+    cannot bin."""
     with open(path, "rb") as f:
         data = f.read()
-    if data[:4] != b"OPPR":
-        raise ValueError("not an .opp trace (bad magic)")
+    if len(data) < 32 or data[:4] != b"OPPR":
+        raise OppTraceError("%s: not an .opp trace (bad magic)" % path)
     version = struct.unpack_from("<I", data, 4)[0]
+    if version != FORMAT_VERSION:
+        raise OppTraceError(
+            "%s: .opp format version %d, this reader implements version %d. "
+            "Re-capture with the current build (the record layout changed: "
+            "per-thread ids and GPU zones keyed by RHI frame serial)."
+            % (path, version, FORMAT_VERSION))
+
     off, n = 32, len(data)
+    tr = Trace()
+    names = tr.names
+    # Per-thread record streams, in each thread's own order.
+    streams = {}    # tid -> list of ("span"|"count"|"gpuz"|"present", payload)
+    threads = set()
+    truncated = False
 
-    names = {}
-    presents = []
-    funcs = []
-    by_index = {}
-    pend_spans, pend_counts = [], []
-    all_gpuz = []  # (present_index, depth, name_id, t0_rel_us, dur_us)
+    def push(tid, item):
+        threads.add(tid)
+        streams.setdefault(tid, []).append(item)
 
-    def nm(i):
-        return names.get(i, "#%d" % i)
-
-    while off + 1 <= n:
+    while off < n:
         t = data[off]
         if t == REC_NAME:
             if off + 5 > n:
+                truncated = True
                 break
             nid, ln = struct.unpack_from("<HH", data, off + 1)
-            s = data[off + 5:off + 5 + ln].decode("utf-8", "replace")
-            names[nid] = s
+            if off + 5 + ln > n:
+                truncated = True
+                break
+            names[nid] = data[off + 5:off + 5 + ln].decode("utf-8", "replace")
             off += 5 + ln
-        elif t == REC_SPAN:
+            continue
+        if off + 32 > n:
+            truncated = True
+            break
+        tid = data[off + REC_TID_OFF]
+        if t == REC_SPAN:
             depth = data[off + 1]
             nid = struct.unpack_from("<H", data, off + 2)[0]
             t0 = struct.unpack_from("<Q", data, off + 8)[0]
             dur, aux = struct.unpack_from("<II", data, off + 16)
-            pend_spans.append((depth, nid, t0, dur, aux))
-            off += 32
+            push(tid, ("span", (depth, nid, t0, dur, aux, tid)))
         elif t == REC_COUNT:
             nid = struct.unpack_from("<H", data, off + 2)[0]
             val = struct.unpack_from("<Q", data, off + 8)[0]
-            pend_counts.append((nid, val))
-            off += 32
+            push(tid, ("count", (nid, val)))
+        elif t == REC_GPUZ:
+            depth = data[off + 1]
+            nid = struct.unpack_from("<H", data, off + 2)[0]
+            t0rel, dur = struct.unpack_from("<II", data, off + 8)
+            serial = struct.unpack_from("<Q", data, off + 16)[0]
+            push(tid, ("gpuz", (serial, depth, nid, t0rel, dur, tid)))
         elif t == REC_FUNC:
             nid = struct.unpack_from("<H", data, off + 2)[0]
             addr = struct.unpack_from("<I", data, off + 4)[0]
             self_us, total_us = struct.unpack_from("<QQ", data, off + 8)
             calls = struct.unpack_from("<I", data, off + 24)[0]
-            funcs.append({"name": nm(nid), "addr": addr, "calls": calls,
-                          "self_us": self_us, "total_us": total_us})
-            off += 32
-        elif t == REC_GPUZ:
-            depth = data[off + 1]
-            nid = struct.unpack_from("<H", data, off + 2)[0]
-            pidx, t0rel, dur = struct.unpack_from("<III", data, off + 4)
-            all_gpuz.append((pidx, depth, nid, t0rel, dur))
-            off += 32
+            tr.funcs.append({"name": nid, "addr": addr, "calls": calls,
+                             "self_us": self_us, "total_us": total_us,
+                             "tid": tid})
+            threads.add(tid)
         elif t == REC_PRESENT:
             kind = data[off + 1]
-            idx, canon, _spancount = struct.unpack_from("<III", data, off + 4)
+            idx, canon, _thread_spans = struct.unpack_from("<III", data, off + 4)
             t_now = struct.unpack_from("<Q", data, off + 16)[0]
-            p = Present(idx, canon, kind, t_now)
-            for (depth, nid, t0, dur, aux) in pend_spans:
-                p.spans.append((depth, nm(nid), t0, dur, aux))
-            for (nid, val) in pend_counts:
-                p.counts[nm(nid)] = val
-            presents.append(p)
-            by_index[idx] = p
-            pend_spans, pend_counts = [], []
-            off += 32
+            p = Present(idx, canon, kind, t_now, tid)
+            tr.presents.append(p)
+            tr.present_tids.add(tid)
+            push(tid, ("present", p))
         else:
-            break  # corrupt / truncated tail
+            truncated = True
+            break
+        off += 32
 
-    for (pidx, depth, nid, t0rel, dur) in all_gpuz:
-        p = by_index.get(pidx)
-        if p is not None:
-            p.gpuz.append((depth, nm(nid), t0rel, dur))
+    if truncated:
+        raise OppTraceError(
+            "%s: corrupt or truncated at byte %d of %d; refusing to report a "
+            "partial trace." % (path, off, n))
+    if not tr.presents:
+        raise OppTraceError(
+            "%s: no PRESENT records; nothing to bin spans into." % path)
 
-    return names, presents, funcs
+    def nm(i):
+        if i not in names:
+            raise OppTraceError(
+                "%s: record cites name id %d, which the trace never interned."
+                % (path, i))
+        return names[i]
+
+    for fn in tr.funcs:
+        fn["name"] = nm(fn["name"])
+
+    tr.presents.sort(key=lambda p: p.t_now_us)
+    tr.threads = sorted(threads)
+
+    # Present-closing threads: stream order. Other threads: containment.
+    unbinned = 0
+    for tid in tr.threads:
+        items = streams.get(tid, [])
+        if tid in tr.present_tids:
+            pend_spans, pend_counts, pend_gpuz = [], [], []
+            for kind, payload in items:
+                if kind == "span":
+                    pend_spans.append(payload)
+                elif kind == "count":
+                    pend_counts.append(payload)
+                elif kind == "gpuz":
+                    pend_gpuz.append(payload)
+                else:
+                    p = payload
+                    for (d, nid, t0, dur, aux, sid) in pend_spans:
+                        p.spans.append((d, nm(nid), t0, dur, aux, sid))
+                    for (nid, val) in pend_counts:
+                        p.counts[nm(nid)] = val
+                    for (_s, d, nid, t0r, dur, _t) in pend_gpuz:
+                        p.gpuz.append((d, nm(nid), t0r, dur))
+                    pend_spans, pend_counts, pend_gpuz = [], [], []
+            # Tail after the last marker: the close-time flush. Bind to the last
+            # present rather than drop it.
+            last = tr.presents[-1]
+            for (d, nid, t0, dur, aux, sid) in pend_spans:
+                last.spans.append((d, nm(nid), t0, dur, aux, sid))
+            for (nid, val) in pend_counts:
+                last.counts[nm(nid)] = val
+            for (_s, d, nid, t0r, dur, _t) in pend_gpuz:
+                last.gpuz.append((d, nm(nid), t0r, dur))
+        else:
+            for kind, payload in items:
+                if kind == "span":
+                    (d, nid, t0, dur, aux, sid) = payload
+                    p = _bin_by_containment(tr.presents, t0)
+                    if p is None:
+                        unbinned += 1
+                        continue
+                    p.spans.append((d, nm(nid), t0, dur, aux, sid))
+                elif kind == "count":
+                    unbinned += 0   # counts without a timestamp: see below
+                elif kind == "gpuz":
+                    pass            # keyed by frame serial only
+
+    # COUNT records from a non-present thread carry no timestamp, so they bin by
+    # their position between that thread's own spans. Walk the stream once more
+    # and attribute each to the present the surrounding spans landed in.
+    for tid in tr.threads:
+        if tid in tr.present_tids:
+            continue
+        cur = None
+        for kind, payload in streams.get(tid, []):
+            if kind == "span":
+                cur = _bin_by_containment(tr.presents, payload[2])
+            elif kind == "count":
+                (nid, val) = payload
+                if cur is None:
+                    unbinned += 1
+                    continue
+                cur.counts[nm(nid)] = val
+
+    # GPU zones: one group per rendered frame, from every thread.
+    for tid in tr.threads:
+        for kind, payload in streams.get(tid, []):
+            if kind != "gpuz":
+                continue
+            (serial, d, nid, t0r, dur, ztid) = payload
+            tr.gpu_frames.setdefault(serial, []).append((d, nm(nid), t0r, dur, ztid))
+
+    if unbinned:
+        raise OppTraceError(
+            "%s: %d record(s) could not be binned to any present; refusing to "
+            "report a partial trace." % (path, unbinned))
+
+    return tr

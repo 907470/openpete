@@ -5990,7 +5990,6 @@ static int run_host_loop(const openpete_options_t* opts) {
     openpete_ticker_stop();
     openpete_frame_time_log_close(&frame_time_log);
     op_functrace_dump_aggregate();   /* emit per-function aggregate into the trace */
-    op_prof_close();
     if (openpete_interp_enabled()) {
         OPL_INFO_F("interp",
                    "captured=%llu, dedupe-skipped=%llu",
@@ -6042,6 +6041,10 @@ static int run_host_loop(const openpete_options_t* opts) {
      * device. */
     openpete_present_thread_stop();
     openpete_present_thread_report();
+    /* After the present thread is joined: it raises trace records while it
+     * renders, and closing the stream under a live producer would flush its
+     * chunk while it is still appending to it. */
+    op_prof_close();
     openpete_native_present_census_report();
     eager_report();
     if (s_eager.produced_inter || s_inline_rex)

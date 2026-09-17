@@ -26,7 +26,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from _opp_reader import (read_opp, present_busy_us, partition_transients,  # noqa: E402
-                         KIND_CANONICAL, KIND_INTERMEDIATE)
+                         OppTraceError, KIND_CANONICAL, KIND_INTERMEDIATE)
 
 
 def pct(sorted_vals, q):
@@ -49,7 +49,8 @@ def interval_union_us(spans):
 
 
 def summarize(path, skip_ticks=0, label=None, transient_ms=40):
-    names, presents, funcs = read_opp(path)
+    tr = read_opp(path)
+    presents, funcs = tr.presents, tr.funcs
     presents = [p for p in presents if p.canon_tick >= skip_ticks]
     presents, transients = partition_transients(presents, transient_ms * 1000)
 
@@ -62,8 +63,10 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
         "transients_total_ms": round(sum(present_busy_us(p) for p in transients) / 1000.0, 1),
         "transient_ms_threshold": transient_ms,
         "kinds": {},
+        "threads": tr.threads,
         "cpu_scopes": [],
         "gpu_zones": [],
+        "gpu_frames": {},
         "census": [],
         "fps": {},
         "funcs": [],
@@ -119,7 +122,7 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
         totals = {}  # (kind,name) -> total us
         for p in presents:
             d = pick(p)
-            for name, us in d.items():
+            for (name, _tid), us in d.items():
                 rows.setdefault((p.kind, name), []).append(us)
                 totals[(p.kind, name)] = totals.get((p.kind, name), 0) + us
         result = []
@@ -146,18 +149,64 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
 
     def cpu_pick(p):
         d = {}
-        for (_depth, name, _t0, dur, _aux) in p.spans:
-            d[name] = d.get(name, 0) + dur
-        return d
-
-    def gpu_pick(p):
-        d = {}
-        for (_depth, name, _t0rel, dur) in p.gpuz:
-            d[name] = d.get(name, 0) + dur
+        for (_depth, name, _t0, dur, _aux, tid) in p.spans:
+            key = (name, tid)
+            d[key] = d.get(key, 0) + dur
         return d
 
     out["cpu_scopes"] = agg(cpu_pick)
-    out["gpu_zones"] = agg(gpu_pick)
+
+    # ---- per-thread scope counts -------------------------------------------
+    # One row per (scope, thread): a scope that moves between the sim worker and
+    # the present thread when a default flips shows here as two rows.
+    per_thread = {}
+    for p in presents:
+        for (_d, name, _t0, dur, _a, tid) in p.spans:
+            e = per_thread.setdefault((tid, name), [0, 0])
+            e[0] += 1
+            e[1] += dur
+    out["thread_scopes"] = [
+        {"tid": tid, "scope": name, "n": n, "sum_ms": round(us / 1000.0, 1)}
+        for (tid, name), (n, us) in sorted(per_thread.items(),
+                                           key=lambda kv: (kv[0][0], -kv[1][1]))]
+
+    # ---- GPU zones, grouped by RHI frame serial ----------------------------
+    # A GPU zone belongs to the frame that submitted it, not to a present: under
+    # eager production scenes are published and superseded without rendering, so
+    # a present index is not a frame. Zone stats are therefore per rendered
+    # frame, independent of the present binning above.
+    frames = tr.gpu_frames
+    zrows, ztot = {}, {}
+    zones_per_frame = []
+    for serial, zones in frames.items():
+        zones_per_frame.append(len(zones))
+        per = {}
+        for (_d, name, _t0r, dur, _tid) in zones:
+            per[name] = per.get(name, 0) + dur
+        for name, us in per.items():
+            zrows.setdefault(name, []).append(us)
+            ztot[name] = ztot.get(name, 0) + us
+    zrows_out = []
+    frame_total_us = sum(ztot.values())
+    for name, vals in zrows.items():
+        sv = sorted(vals)
+        zrows_out.append({
+            "scope": name, "kind": "frame",
+            "p50_us": pct(sv, 0.50), "p99_us": pct(sv, 0.99), "max_us": max(sv),
+            "sum_ms": round(ztot[name] / 1000.0, 1), "n": len(vals),
+            "share_pct": round(100.0 * ztot[name] / frame_total_us, 1)
+                         if frame_total_us else 0.0,
+        })
+    zrows_out.sort(key=lambda r: -r["sum_ms"])
+    out["gpu_zones"] = zrows_out
+    zpf = sorted(zones_per_frame)
+    out["gpu_frames"] = {
+        "frames": len(frames),
+        "zones_total": sum(zones_per_frame),
+        "zones_per_frame_p50": pct(zpf, 0.50),
+        "zones_per_frame_max": max(zpf) if zpf else 0,
+        "zones_per_frame_min": min(zpf) if zpf else 0,
+    }
 
     # ---- sim-tick split (fiber hooks) ---------------------------------------
     # Canonical presents only: the hooks run on the game fiber, which only the
@@ -166,7 +215,7 @@ def summarize(path, skip_ticks=0, label=None, transient_ms=40):
     canon = [p for p in presents if p.kind == KIND_CANONICAL]
     tot = {}
     for p in canon:
-        for (_d, name, _t0, dur, _a) in p.spans:
+        for (_d, name, _t0, dur, _a, _tid) in p.spans:
             tot[name] = tot.get(name, 0) + dur
     nc = len(canon) or 1
 
@@ -228,7 +277,7 @@ def render_text(s):
     L = []
     ncanon = s["kinds"].get("canonical", {}).get("presents", 0)
     ninter = s["kinds"].get("intermediate", {}).get("presents", 0)
-    hdr = "# openpete-profile v1  trace=%s" % s["trace"]
+    hdr = "# openpete-profile v2  trace=%s" % s["trace"]
     if s["label"]:
         hdr += "  label=%s" % s["label"]
     L.append(hdr)
@@ -246,6 +295,16 @@ def render_text(s):
     f = s.get("fps", {})
     L.append("# fps avg %s  1%%low %s  frame_p99_us %s"
              % (f.get("avg", "?"), f.get("1pct_low", "?"), f.get("frame_p99_us", "?")))
+    L.append("# producer threads: %s" % ", ".join(str(t) for t in s.get("threads", [])))
+    gf = s.get("gpu_frames", {})
+    if gf.get("frames"):
+        L.append("# gpu frames=%d  zones=%d  zones/frame min/p50/max %d/%d/%d"
+                 % (gf["frames"], gf["zones_total"], gf["zones_per_frame_min"],
+                    gf["zones_per_frame_p50"], gf["zones_per_frame_max"]))
+    else:
+        L.append("# gpu frames=0 — no GPU zone records in this trace "
+                 "(OPENPETE_GPU_TIMERS unset, or a headless run, which has no "
+                 "render thread and no timer pool)")
 
     def table(title, rows):
         if not rows:
@@ -273,7 +332,16 @@ def render_text(s):
         L.append("%-22s%10.1f" % ("= sim_tick", ss["sim_tick_us_per_tick"]))
 
     table("cpu.scope", s["cpu_scopes"])
-    table("gpu.zone", s["gpu_zones"])
+    if s["gpu_zones"]:
+        table("gpu.zone", s["gpu_zones"])
+    else:
+        L.append("[gpu.zone]            none recorded")
+    ts = s.get("thread_scopes") or []
+    if ts:
+        L.append("[thread.scope]        tid          n        sum_ms")
+        for r in ts:
+            L.append("%-22s%-10d%-10d%.1f" % (r["scope"][:22], r["tid"], r["n"],
+                                              r["sum_ms"]))
     if s["census"]:
         L.append("[census]              avg          p99          max")
         for c in s["census"]:
@@ -299,8 +367,12 @@ def main():
     ap.add_argument("--json", default=None, help="also write JSON summary here")
     args = ap.parse_args()
 
-    s = summarize(args.trace, skip_ticks=args.skip_ticks, label=args.label,
-                  transient_ms=args.transient_ms)
+    try:
+        s = summarize(args.trace, skip_ticks=args.skip_ticks, label=args.label,
+                      transient_ms=args.transient_ms)
+    except OppTraceError as e:
+        sys.stderr.write("profile-summary: %s\n" % e)
+        return 2
     print(render_text(s))
     if args.json:
         with open(args.json, "w") as f:
