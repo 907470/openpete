@@ -2,8 +2,10 @@
  * interpolation region table. Captured per tick into the openpete_interp
  * ring so intermediate presents can lerp transforms: the DIRECT singleton
  * regions below (camera, player, flame, shadow, game state) plus the
- * per-object capture (spyro_interp_capture_objs: level mobys, HUD-pool
- * mobys, sparkles, dragon stars) keyed by game_interp_moby_key.
+ * per-object capture: the shared moby-array walk over g_LevelMobys, then
+ * spyro_interp_extra_pools (HUD-pool mobys, particles, sparkles, glows, the
+ * two render lists and the dragon-star record) keyed by
+ * game_interp_moby_key.
  *
  * Registration model:
  *   This TU defines game_interp_register(), which hands the descriptor rows
@@ -272,46 +274,15 @@ static uint32_t rd32(uint32_t addr) {
     return v;
 }
 
-/* Walk g_LevelMobys, snapshotting each live moby's stride-0x58 record into
- * the keyed prev/curr table (key = the moby's vaddr — slot-stable across
- * ticks). Read-only; mirrors the moby feeder's own walk
- * (moby.c::append_revealed_regular). */
-static void spyro_interp_capture_objs(void) {
-    openpete_interp_objs_begin_tick();
+/* The captured state outside g_LevelMobys: the HUD-icon and particle pools,
+ * the sparkle, glow and dragon-star records, and the two render lists whose
+ * entries the array walk cannot reach. Runs after the shared moby-array walk
+ * (game_interp_capture_moby_array), inside the same begin/end tick pair.
+ *
+ * The credits generation pass comes first because every game_interp_moby_key
+ * call below depends on it; the array walk keys by address and does not. */
+static void spyro_interp_extra_pools(void) {
     credits_track_generations();
-
-    uint32_t arr = rd32(G_LEVELMOBYS);
-    if (arr >= 0x80000000u) {
-        uint32_t m = arr;
-        /* Bound the walk below the store capacity (OPENPETE_INTERP_OBJ_SLOTS) so
-         * the HUD (12) + particle captures that follow this pass always fit — the
-         * store now also drops gracefully when full, but reserving here keeps
-         * mobys, not HUD/particles, the ones dropped in the (impossible for Spyro 1)
-         * overflow case. The array sentinel below stops the walk after a few
-         * hundred live mobys anyway. */
-        for (int guard = 0; guard < (int)openpete_interp_objs_slots() - 512; ++guard) {
-            const void* host = openpete_psx_to_host_ptr(m);
-            if (!host) break;
-            uint8_t st = ((const uint8_t*)host)[MOBY_STATE_OFF];
-            if (st == 0xFF) break;                       /* array sentinel */
-            if (st < 0x80) {                             /* alive */
-                openpete_interp_objs_capture(m, host, openpete_interp_objs_blob_bytes());
-                /* OPENPETE_CAPTRACE_CLS: per-TICK canonical position of mobys of
-                 * this class (staircase-vs-smooth forensics, capture side). */
-                static long s_ctc = -2;
-                if (s_ctc == -2) { const char* e = getenv("OPENPETE_CAPTRACE_CLS"); s_ctc = e ? strtol(e, NULL, 0) : -1; }
-                if (s_ctc >= 0) {
-                    uint16_t c2; memcpy(&c2, (const uint8_t*)host + 0x36, 2);
-                    if (s_ctc == 0xFFFF || c2 == (uint16_t)s_ctc) {
-                        int32_t pos[3]; memcpy(pos, (const uint8_t*)host + 0x0C, 12);
-                        fprintf(stderr, "[cap-tick f=%u] m=%08x cls=%03x pos=(%d,%d,%d)\n",
-                                openpete_frame, m, c2, pos[0], pos[1], pos[2]);
-                    }
-                }
-            }
-            m += MOBY_STRIDE;
-        }
-    }
 
     /* Static 3D HUD icons (g_Hud.m_Mobys[12]) — stride-0x58 Mobys OUTSIDE
      * g_LevelMobys. They spin (m_Rotation @ +0x44); capture them so the sub-tick
@@ -427,66 +398,16 @@ static void spyro_interp_capture_objs(void) {
             openpete_interp_objs_capture(D_DRAGONSTAR, host, 0x2Cu);
     }
 
-    /* Scrolling-texture env-anim descriptors (m_ScrollingTextures — waterfalls
-     * and flowing water). func_8002A6FC keeps each scroller's ENTIRE animation
-     * state in a 7-bit accumulator at desc+6 and commits it to the tiledef V
-     * bytes as WHOLE TEXELS on a keyframe advance, so a scrolled texture steps
-     * at the sim rate while the world around it interpolates. Capture just the
-     * (tile, accumulator) pair at desc+4 — deliberately NOT the descriptor head,
-     * whose countdown byte at +3 decrements every tick: including it would make
-     * the blob differ every tick and defeat the table's distinct-roll dedupe,
-     * collapsing a slow scroller's real advance interval to a single tick.
-     * terrain.c (tsc_scroll_refresh) reads the pair back and interpolates
-     * the accumulator at the slot's own alpha, so the scroll stays smooth even
-     * when the camera is still (the freecam / standing-still case, where the
-     * camera ring dedupes and the shared bracket alpha never engages). */
-    {
-        uint32_t cnt  = rd32(game_layout.env_anim.scroll);
-        uint32_t base = rd32(game_layout.env_anim.scroll + 4u);
-        if (base && cnt && cnt <= 1024u) {
-            for (uint32_t i = 0; i < cnt; ++i) {
-                uint32_t desc = rd32(base + i * 4u);
-                if (!desc) continue;
-                const void* host = openpete_psx_to_host_ptr(desc + 4u);
-                if (host) openpete_interp_objs_capture(desc, host, 4u);
-            }
-        }
-    }
-
-    openpete_interp_objs_end_tick();
-
-    static int dbg = -1;
-    if (dbg < 0) { const char* e = getenv("OPENPETE_INTERP_OBJDBG"); dbg = (e && *e && *e != '0'); }
-    if (dbg && (openpete_frame % 120u) == 0) {
-        int tracked, paired, spawned, despawned;
-        openpete_interp_objs_stats(&tracked, &paired, &spawned, &despawned);
-        fprintf(stderr, "[interp-objs f=%u] tracked=%d paired=%d spawned=%d despawned=%d\n",
-                openpete_frame, tracked, paired, spawned, despawned);
-    }
-
 }
 
 void game_interp_register(void) {
-    /* The camera first, so it is region 0 as every other game's table has it.
-     * Its capture spans the projection matrix through the follow state
-     * (0x110 bytes), past the cam.xform_end descriptor boundary the draw-time
-     * transform ends at, so the span is stated here rather than computed.
-     * ra_commit=1: the camera PRESENTS from the committed timeline under
-     * runahead (the driver recaptures this region post-rollback). The follow-
-     * camera is where misprediction is catastrophic — it's the view transform,
-     * so an R2 release un-showed N ticks of mispredicted pan across every pixel
-     * (the release snap) — and where the extra N ticks of latency are invisible
-     * (it trails by design). Spyro/mobys/particles stay led, keeping the
-     * input-lag win where it's felt. The game's own g_Camera state is untouched
-     * — this only picks which timeline the presentation lerps. */
-    game_interp_rows_add_one("g_Camera", game_layout.cam.base, 0x110u, 1);
-    game_interp_rows_add(s_spyro_interp_rows,
-                         (unsigned)(sizeof(s_spyro_interp_rows) /
-                                    sizeof(s_spyro_interp_rows[0])));
-    game_interp_rows_commit();
-    /* One whole Moby record per object, so every consumer reads its fields at
-     * their natural offsets, and the store's default capacity. */
-    game_interp_rows_obj_capture(spyro_interp_capture_objs,
-                                 game_layout.moby.array_stride,
-                                 OPENPETE_INTERP_OBJ_SLOTS);
+    /* The camera's capture spans the projection matrix through the follow
+     * state (0x110 bytes), past the cam.xform_end descriptor boundary the
+     * draw-time transform ends at, so the span is stated here rather than
+     * computed. The pools outside g_LevelMobys are captured after the shared
+     * moby-array walk. */
+    game_interp_register_common(s_spyro_interp_rows,
+                                (unsigned)(sizeof(s_spyro_interp_rows) /
+                                           sizeof(s_spyro_interp_rows[0])),
+                                0x110u, spyro_interp_extra_pools);
 }

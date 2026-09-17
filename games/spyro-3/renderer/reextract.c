@@ -18,7 +18,9 @@
 #include "renderer/player_game.h"   /* PLAYER_PARTS_MAX */
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "openpete_interp.h"
+#include "renderer/interp_lerp.h"    /* lerp16/32, lerp_matrix, lerp_vec3 */
 #include "renderer/interp_regions_gen.h"
+#include "renderer/reextract_view.h"
 #include "openpete_interp_objs.h"      /* g_openpete_tick_period_ns */
 #include "openpete_native_render.h"
 #include "openpete_subtick_view.h"
@@ -35,30 +37,6 @@
 #define CAM_OFF_SKY   0x00u
 #define CAM_OFF_VIEW  0x14u
 #define CAM_OFF_POS   0x28u
-
-static int16_t lerp16(int16_t a, int16_t b, double t) {
-    double v = (double)a + ((double)b - (double)a) * t;
-    return (int16_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
-}
-static int32_t lerp32(int32_t a, int32_t b, double t) {
-    double v = (double)a + ((double)b - (double)a) * t;
-    return (int32_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
-}
-/* A 3x3 int16 rotation matrix (9 shorts; the 10th is pad and stays curr).
- * One tick apart the endpoints differ by a tiny rotation, so a componentwise
- * lerp is sub-pixel. */
-static void lerp_matrix(uint8_t* live, const uint8_t* prev, const uint8_t* curr, uint32_t off, double t) {
-    const int16_t* pp = (const int16_t*)(prev + off);
-    const int16_t* pc = (const int16_t*)(curr + off);
-    int16_t*       pl = (int16_t*)(live + off);
-    for (int i = 0; i < 9; ++i) pl[i] = lerp16(pp[i], pc[i], t);
-}
-static void lerp_vec3(uint8_t* live, const uint8_t* prev, const uint8_t* curr, uint32_t off, double t) {
-    const int32_t* pp = (const int32_t*)(prev + off);
-    const int32_t* pc = (const int32_t*)(curr + off);
-    int32_t*       pl = (int32_t*)(live + off);
-    for (int i = 0; i < 3; ++i) pl[i] = lerp32(pp[i], pc[i], t);
-}
 
 /* The un-rounded interpolated camera position of this present, for the
  * projection's floor fix; valid only while a bracket is installed. */
@@ -413,7 +391,7 @@ static void game_reextract_body(CPUState* cpu) {
         /* The camera's ring region, resolved by name from the registered table
          * — a restated index selects the wrong region once a row is inserted. */
         static int cam_region = -2;
-        if (cam_region == -2) cam_region = game_interp_row_index("camera");
+        if (cam_region == -2) cam_region = game_interp_row_index(GAME_INTERP_CAM_ROW);
         const uint8_t* pcam = cam_region < 0 ? NULL : prev->data + prev->region_offsets[cam_region];
         const uint8_t* ccam = cam_region < 0 ? NULL : curr->data + curr->region_offsets[cam_region];
         if (pcam && ccam && !camera_cut(pcam, ccam)) {
@@ -450,7 +428,7 @@ static void game_reextract_body(CPUState* cpu) {
         cam_dbg_line("RX-staged", cam);
         if (paired && prev && curr) {
             static int cdbg_region = -2;
-            if (cdbg_region == -2) cdbg_region = game_interp_row_index("camera");
+            if (cdbg_region == -2) cdbg_region = game_interp_row_index(GAME_INTERP_CAM_ROW);
             if (cdbg_region >= 0) {
                 cam_dbg_line("RX-prev", prev->data + prev->region_offsets[cdbg_region]);
                 cam_dbg_line("RX-curr", curr->data + curr->region_offsets[cdbg_region]);
@@ -485,13 +463,10 @@ static void game_reextract_body(CPUState* cpu) {
     s_fpos_active = 0;
 }
 
-static void game_reextract(void* cpu_v) {
-    CPUState* cpu = (CPUState*)cpu_v;
-    openpete_subtick_view_begin(cpu);
-    game_reextract_body(cpu);
-    openpete_subtick_view_end(cpu);
+static void game_reextract_body_v(void* cpu_v) {
+    game_reextract_body((CPUState*)cpu_v);
 }
 
 void game_reextract_init(void) {
-    openpete_native_register_reextract(game_reextract);
+    game_reextract_view_install(game_reextract_body_v);
 }

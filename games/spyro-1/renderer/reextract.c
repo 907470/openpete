@@ -4,7 +4,9 @@
 #include "renderer/reextract.h"
 #include "openpete_camlock.h"       /* render camera lock (G) — bracket override */
 #include "openpete_interp.h"
+#include "renderer/interp_lerp.h"    /* lerp16/32, lerp_matrix, lerp_vec3 */
 #include "renderer/interp_regions_gen.h"
+#include "renderer/reextract_view.h"
 #include "openpete_pace_log.h"        /* snapshot ring query + op_now/OP_NS_PER_SEC */
 #include "openpete_interp_objs.h"   /* per-object (moby) prev/curr table */
 #include "openpete_native_render.h" /* register callback + scene API */
@@ -160,34 +162,6 @@ static double interp_period_ns(op_time_t prev_ns, op_time_t curr_ns) {
      * aware) — the hardcoded NTSC constant made every sweep run
      * 1/tick_scale× too fast under slow-motion and pin at the clamp. */
     return (double)(p > g_openpete_tick_period_ns ? g_openpete_tick_period_ns : p);
-}
-
-static int16_t lerp16(int16_t a, int16_t b, double t) {
-    double v = (double)a + ((double)b - (double)a) * t;
-    return (int16_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
-}
-static int32_t lerp32(int32_t a, int32_t b, double t) {
-    double v = (double)a + ((double)b - (double)a) * t;
-    return (int32_t)(v >= 0.0 ? v + 0.5 : v - 0.5);
-}
-
-/* Lerp a 3x3 int16 rotation matrix (9 contiguous shorts; the 10th short is
- * pad and is left as curr). Endpoint matrices one tick apart differ by a
- * tiny rotation, so componentwise lerp (no renormalise) is sub-pixel — the
- * Q12-matrix-space interp the plan calls for at one-tick deltas. */
-static void lerp_matrix(uint8_t* live, const uint8_t* prev, const uint8_t* curr,
-                        uint32_t off, double t) {
-    const int16_t* pp = (const int16_t*)(prev + off);
-    const int16_t* pc = (const int16_t*)(curr + off);
-    int16_t*       pl = (int16_t*)(live + off);
-    for (int i = 0; i < 9; ++i) pl[i] = lerp16(pp[i], pc[i], t);
-}
-static void lerp_vec3(uint8_t* live, const uint8_t* prev, const uint8_t* curr,
-                      uint32_t off, double t) {
-    const int32_t* pp = (const int32_t*)(prev + off);
-    const int32_t* pc = (const int32_t*)(curr + off);
-    int32_t*       pl = (int32_t*)(live + off);
-    for (int i = 0; i < 3; ++i) pl[i] = lerp32(pp[i], pc[i], t);
 }
 
 /* pred1 (predicted-tangent Hermite) on by default; OPENPETE_INTERP_LINEAR=1
@@ -2230,19 +2204,6 @@ static void game_reextract_body(void* cpu_v) {
     }
 }
 
-/* Sub-tick presents show interpolated state. Producers below still publish it
- * by writing gameplay-readable memory and restoring it afterwards; the view is
- * the destination those writes are migrating to, and while it is open it
- * serves staged bytes to every read the feeders make. Opening it here is
- * behaviour-neutral until a producer stages something — an empty view resolves
- * every address to real memory. */
-static void game_reextract(void* cpu_v) {
-    CPUState* cpu = (CPUState*)cpu_v;
-    openpete_subtick_view_begin(cpu);
-    game_reextract_body(cpu_v);
-    openpete_subtick_view_end(cpu);
-}
-
 void game_reextract_init(void) {
-    openpete_native_register_reextract(game_reextract);
+    game_reextract_view_install(game_reextract_body);
 }

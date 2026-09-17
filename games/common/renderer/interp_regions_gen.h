@@ -44,6 +44,28 @@ void game_interp_rows_commit(void);
  * register it. */
 int game_interp_row_index(const char* name);
 
+/* The camera's ring row. Every game registers its draw-time camera transform
+ * under this one name, and every consumer resolves the ring index by it. */
+#define GAME_INTERP_CAM_ROW "g_Camera"
+
+/* Snapshot one whole record per live moby of the game's moby array
+ * (game_layout.moby: array_head/array_direct, array_stride, state_off,
+ * state_term) into the keyed prev/curr table, keyed by the record's PSX
+ * address — the array is fixed and terminated by a sentinel element, so a
+ * moby's address is its slot and stays its identity across ticks. Read-only
+ * against guest RAM. Call between openpete_interp_objs_begin_tick() and
+ * openpete_interp_objs_end_tick(); game_interp_register_common() does. */
+void game_interp_capture_moby_array(void);
+
+/* Register a game's interp table and per-object capture in the shared shape:
+ * the camera row (GAME_INTERP_CAM_ROW, `cam_length` bytes from
+ * game_layout.cam.base, presented from the committed timeline under runahead)
+ * first so it is region 0, then `rows`, then commit. The installed per-tick
+ * capture runs the moby-array walk, then `extra_pools` (a game's pools outside
+ * that array; NULL when it has none), then the env-anim scroll descriptors. */
+void game_interp_register_common(const game_interp_row_t* rows, unsigned count,
+                                 uint32_t cam_length, void (*extra_pools)(void));
+
 /* Register the game's per-object capture callback. Routed through this layer
  * so the region census (OPENPETE_INTERP_REGION_CENSUS) gets the per-tick hook
  * it samples on: the ring's own capture runs immediately before this callback. */

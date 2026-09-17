@@ -4,7 +4,9 @@
 #include "renderer/interp_regions_gen.h"
 
 #include "openpete_interp.h"
+#include "openpete_interp_objs.h"
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
+#include "game_layout.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -125,6 +127,121 @@ void game_interp_rows_obj_capture(openpete_interp_obj_capture_fn fn,
     s_game_obj_capture = fn;
     openpete_interp_register_obj_capture(census_on() ? census_obj_capture : fn,
                                          blob_bytes, slots);
+}
+
+extern unsigned openpete_frame;
+
+static uint32_t rd32(uint32_t addr) {
+    const void* p = openpete_psx_to_host_ptr(addr);
+    uint32_t v = 0;
+    if (p) memcpy(&v, p, 4);
+    return v;
+}
+
+void game_interp_capture_moby_array(void) {
+    const uint32_t head = game_layout.moby.array_head;
+    if (!head) return;
+    uint32_t arr = game_layout.moby.array_direct ? head : rd32(head);
+    if (arr < 0x80000000u) return;
+
+    const uint32_t stride = game_layout.moby.array_stride;
+    const uint32_t blob   = openpete_interp_objs_blob_bytes();
+    /* OPENPETE_CAPTRACE_CLS=<class|0xFFFF>: the per-TICK canonical position of
+     * every moby of that class, the capture side of the staircase-vs-smooth
+     * comparison against the sub-tick trace. */
+    static long s_ctc = -2;
+    if (s_ctc == -2) { const char* e = getenv("OPENPETE_CAPTRACE_CLS"); s_ctc = e ? strtol(e, NULL, 0) : -1; }
+
+    /* Bound the walk below the store capacity, leaving room for the pools
+     * captured after it so a full array can never crowd them out; the array's
+     * sentinel stops the walk after the live prefix anyway. */
+    const long bound = (long)openpete_interp_objs_slots() - 512;
+    uint32_t m = arr;
+    for (long guard = 0; guard < bound; ++guard) {
+        const void* host = openpete_psx_to_host_ptr(m);
+        if (!host) break;
+        uint8_t st = ((const uint8_t*)host)[game_layout.moby.state_off];
+        if (st == (uint8_t)game_layout.moby.state_term) break;   /* end of the array */
+        if (st < 0x80) {                                         /* the rest are dormant */
+            openpete_interp_objs_capture(m, host, blob);
+            if (s_ctc >= 0) {
+                uint16_t c2; memcpy(&c2, (const uint8_t*)host + game_layout.moby.class_off, 2);
+                if (s_ctc == 0xFFFF || c2 == (uint16_t)s_ctc) {
+                    int32_t pos[3]; memcpy(pos, (const uint8_t*)host + game_layout.moby.pos_off, 12);
+                    fprintf(stderr, "[cap-tick f=%u] m=%08x cls=%03x pos=(%d,%d,%d)\n",
+                            openpete_frame, m, c2, pos[0], pos[1], pos[2]);
+                }
+            }
+        }
+        m += stride;
+    }
+}
+
+/* Scrolling-texture env-anim descriptors (flowing water and waterfalls). The
+ * update keeps each scroller's whole animation state in a 7-bit accumulator at
+ * desc+6 and commits it to the tiledef V bytes as whole texels on a keyframe
+ * advance, so a scrolled texture steps at the sim rate while the world around
+ * it interpolates. Capture just the (tile, accumulator) pair at desc+4, not the
+ * descriptor head, whose countdown byte at +3 decrements every tick: including
+ * it would make the blob differ every tick and defeat the table's distinct-roll
+ * dedupe, collapsing a slow scroller's real advance interval to a single tick.
+ * terrain.c (tsc_scroll_refresh) reads the pair back and interpolates the
+ * accumulator at the slot's own alpha, so the scroll stays smooth even when the
+ * camera is still, where the camera ring dedupes and the shared bracket alpha
+ * never engages. */
+static void capture_env_anim_scroll(void) {
+    if (!game_layout.env_anim.scroll) return;
+    uint32_t cnt  = rd32(game_layout.env_anim.scroll);
+    uint32_t base = rd32(game_layout.env_anim.scroll + 4u);
+    if (!base || !cnt || cnt > 1024u) return;
+    for (uint32_t i = 0; i < cnt; ++i) {
+        uint32_t desc = rd32(base + i * 4u);
+        if (!desc) continue;
+        const void* host = openpete_psx_to_host_ptr(desc + 4u);
+        if (host) openpete_interp_objs_capture(desc, host, 4u);
+    }
+}
+
+static void (*s_extra_pools)(void);
+
+static void capture_objs_common(void) {
+    openpete_interp_objs_begin_tick();
+    game_interp_capture_moby_array();
+    if (s_extra_pools) s_extra_pools();
+    capture_env_anim_scroll();
+    openpete_interp_objs_end_tick();
+
+    /* OPENPETE_INTERP_OBJDBG=1: the keyed table's population every 120 ticks.
+     * A spawned/despawned pair that never settles is a key that is not stable
+     * across ticks, which shows on screen as objects snapping at the tick rate. */
+    static int dbg = -1;
+    if (dbg < 0) { const char* e = getenv("OPENPETE_INTERP_OBJDBG"); dbg = (e && *e && *e != '0'); }
+    if (dbg && (openpete_frame % 120u) == 0) {
+        int tracked, paired, spawned, despawned;
+        openpete_interp_objs_stats(&tracked, &paired, &spawned, &despawned);
+        fprintf(stderr, "[interp-objs f=%u] tracked=%d paired=%d spawned=%d despawned=%d\n",
+                openpete_frame, tracked, paired, spawned, despawned);
+    }
+}
+
+void game_interp_register_common(const game_interp_row_t* rows, unsigned count,
+                                 uint32_t cam_length, void (*extra_pools)(void)) {
+    /* ra_commit = 1 on the camera: it presents from the committed timeline under
+     * runahead, so a misprediction never shows as a pan that un-shows. The
+     * follow camera is where misprediction is catastrophic (it is the view
+     * transform) and where the extra ticks of latency are invisible (it trails
+     * by design); the player and the mobys stay led, keeping the input-lag win
+     * where it is felt. This picks which timeline the presentation lerps; the
+     * game's own camera state is untouched. */
+    game_interp_rows_add_one(GAME_INTERP_CAM_ROW, game_layout.cam.base, cam_length, 1);
+    game_interp_rows_add(rows, count);
+    game_interp_rows_commit();
+    s_extra_pools = extra_pools;
+    /* One whole Moby record per object, so every consumer reads its fields at
+     * their natural offsets, and the store's default capacity. */
+    game_interp_rows_obj_capture(capture_objs_common,
+                                 game_layout.moby.array_stride,
+                                 OPENPETE_INTERP_OBJ_SLOTS);
 }
 
 void game_interp_rows_commit(void) {
