@@ -256,6 +256,17 @@ addr = 0x8006E1F4
 note = "the glow-ring pool the renderer walks, 16 records of 0x14 bytes: +0x00 world X, +0x04 Y, +0x08 Z, +0x0C the primitive colour word, +0x10 packed {shape index, size, rotation phase, signed ordering-table bias}; a zero shape byte is a free slot and func_8002EC50 allocates the first one it finds (asm/mobyfunc.s:1894-1918)"
 
 [[symbol]]
+name = "F_GLINT_DRAW"
+addr = 0x8002F098
+kind = "function"
+note = "func_8002F098 (asm/mobyfunc.s:2195-2507), the gem-glint renderer: called by fDrawWorld func_8001E460 under mask bit 0x10 (asm/nonmatchings/draw/func_8001E460.s:30), its only caller. Walks the 16-slot pool at D_GLINT_POOL and, per live record, emits either one bundled draw-mode packet 0xE1000620 followed by eight POLY_G4 semi-transparent quads of a four-point star (half-world view depth under 0x2000) or two opaque LINE_F2 of a plain cross (at or above it), chained into a bucket off D_OT_BASE"
+
+[[symbol]]
+name = "D_GLINT_POOL"
+addr = 0x8006DEF8
+note = "the gem-glint pool the renderer walks, 16 records of 0x10 bytes: +0x00 world X, +0x04 Y, +0x08 Z, +0x0C packed {remaining lifetime, size, spin phase, colour-table row}; a zero lifetime byte is a free slot and func_8002F040 allocates one, called from all 37 level-moby overlays. The colour table is D_80066B64 (asm/data/game.data.s:3098), six rows of three words {pale centre, spike tip, near-black waist}, every word carrying 0x3A in its top byte"
+
+[[symbol]]
 name = "F_TRACER_RIBBON"
 addr = 0x8002FB68
 kind = "function"

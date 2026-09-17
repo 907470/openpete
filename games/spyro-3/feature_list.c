@@ -11,6 +11,7 @@ extern const feature_module_t shadow_player_module;
 extern const feature_module_t particles_module;
 extern const feature_module_t tracers_module;
 extern const feature_module_t glow_module;
+extern const feature_module_t glint_module;
 extern const feature_module_t moby_module;
 extern const feature_module_t player_module;
 extern const feature_module_t ui_sprite_module;
@@ -45,6 +46,10 @@ const feature_module_t* const openpete_features[] = {
        which chains each ring's draw-mode packet and triangles into one
        ordering-table entry of its own. */
     &glow_module,
+    /* The gem-glint feeder: hooks the world draw's call to the glint renderer,
+       which chains each star's draw-mode packet and quads, or each far cross's
+       lines, into an ordering-table entry of its own. */
+    &glint_module,
     /* The shared moby feeder: registers the draw hooks game_layout.moby
      * names, then refuses them because this game supplies no moby_game
      * decoder slots yet — OPENPETE_MOBY_CENSUS prints the reason. */
