@@ -23,6 +23,7 @@
 #include "renderer/moby.h"            /* the second kind's shared emit */
 #include "renderer/native_gte.h"       /* ngte_read_matrix, ngte_mac, ngte_mat_mul3, ngte_dpcs_ch */
 #include "game_layout.h"
+#include "no_lod.h"                    /* openpete_no_lod — the extended-LOD clause */
 #include "spyro3_symbols.gen.h"        /* G_CAMERA, F_MOBY_DRAW_STATIC */
 #include "openpete_recomp_module.h"    /* the game's own static draw */
 
@@ -440,6 +441,12 @@ static uint32_t s3_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t frame_
                                             * material's base and lit colours (mobydraw.s:4353-4364) */
 
 #define S3_SIMPLE_RECS   63
+/* The 63 above is the cursor limit the cull keeps in GTE control 8 and 9
+ * (mobydraw.s:44,46), so it bounds what the capture can read. The host queue
+ * is sized for the reveal instead, which has no such cursor: a camera high
+ * enough over a level admits most of its moby table, and a queue that fills
+ * drops the tail of the level silently. */
+#define S3_SIMPLE_QCAP   1024
 #define S3_SIMPLE_VERTS  256
 #define S3_SIMPLE_COLS   256
 #define S3_SIMPLE_FACES  4096
@@ -447,8 +454,16 @@ static uint32_t s3_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t frame_
 /* The cull's own queue, copied at the hook. The queue lives in the tick's
  * draw scratch, which the passes after this one build their own data in, so
  * the bytes are taken while they are still the cull's. */
-static uint32_t s_simple_q[S3_SIMPLE_RECS][4];
+static uint32_t s_simple_q[S3_SIMPLE_QCAP][4];
 static int      s_simple_qn;
+/* The same record's camera deltas and far-cull distance at full width. The
+ * cull packs the three deltas as int16 halves and the distance as a halfword,
+ * which cannot express a centre or a range past ~131000 world units; the
+ * capture fills these by sign-extending its own halves, so a canonical record
+ * decodes exactly as it did, while a host-built reveal record carries the
+ * numbers untruncated and a far distance of -1 for "no range limit". */
+static int32_t  s_simple_d[S3_SIMPLE_QCAP][3];
+static int32_t  s_simple_far[S3_SIMPLE_QCAP];
 
 /* Per-frame engagement counts: a pass that walked nothing proves nothing, so
  * the verify harness prints what this one actually read. */
@@ -480,6 +495,10 @@ static void s3_simple_capture(CPUState* cpu) {
         s_simple_q[i][1] = cpu->read_word(q + 4u);
         s_simple_q[i][2] = cpu->read_word(q + 8u);
         s_simple_q[i][3] = cpu->read_word(q + 12u);
+        s_simple_d[i][0] = (int16_t)(s_simple_q[i][1] & 0xFFFFu);
+        s_simple_d[i][1] = (int16_t)(s_simple_q[i][2] >> 16);
+        s_simple_d[i][2] = (int16_t)(s_simple_q[i][1] >> 16);
+        s_simple_far[i]  = (int32_t)(s_simple_q[i][2] & 0xFFFFu);
         s_simple_qn = i + 1;
     }
 }
@@ -579,10 +598,15 @@ static int s3_simple_decode(CPUState* cpu) {
 
         /* view-space centre, world/2 after the doubling (mobydraw.s:3946-3952,4058-4060) */
         double m1, m2, m3;
-        ngte_mac(Rcam, (double)(int16_t)(w1 & 0xFFFFu) + dcam[1],
-                       (double)(int16_t)(w2 >> 16)    + dcam[2],
-                       (double)(int16_t)(w1 >> 16)    + dcam[0], &m1, &m2, &m3);
-        if (m3 - (double)fardist >= 0.0) { s_simple_culled++; continue; }  /* mobydraw.s:3958 */
+        ngte_mac(Rcam, (double)s_simple_d[r][0] + dcam[1],
+                       (double)s_simple_d[r][1] + dcam[2],
+                       (double)s_simple_d[r][2] + dcam[0], &m1, &m2, &m3);
+        /* The record's own draw range (mobydraw.s:3958). Extended LOD removes
+         * the range rather than widening it: the threshold is a per-moby byte
+         * scaled by 256, so any raised value is still a ceiling a high camera
+         * clears, while terrain carries no distance term at all. */
+        if (!openpete_no_lod && s_simple_far[r] >= 0 &&
+            m3 - (double)s_simple_far[r] >= 0.0) { s_simple_culled++; continue; }
 
         uint32_t H = cpu->read_word(slot + 0x14u);
         if (H < 0x80000000u) { s_simple_culled++; continue; }
@@ -606,7 +630,13 @@ static int s3_simple_decode(CPUState* cpu) {
         uint32_t rot = cpu->read_word(moby + game_layout.moby.angle_off);
         int key = (2*trz >> 7) - (int)(int8_t)(rot >> 24);
         if (key < 0) key = 0;
-        if (key >= 272 && (key << 3) + 256 >= 3840) { s_simple_culled++; continue; }
+        /* The far end of that key is where the record runs out of ordering
+         * table, which is a range limit and not paint order, so extended LOD
+         * lifts it with the other one; the native path sorts by depth and
+         * needs no bucket. */
+        if (!openpete_no_lod && key >= 272 && (key << 3) + 256 >= 3840) {
+            s_simple_culled++; continue;
+        }
 
         /* The fade/LOD tier: the moby's size byte against twice the depth
          * (mobydraw.s:4193-4196). Its sign picks the low-poly lists. */
@@ -846,6 +876,58 @@ static int s3_simple_replay(CPUState* cpu) {
     return s3_simple_decode(cpu);
 }
 
+/* ---- extended-LOD reveal ------------------------------------------------
+ * The distance box the cull tests every moby against (mobydraw.s:75-100): the
+ * signed low byte of the halfword at Moby+0x4C scaled by 256, widened by the
+ * verdict bits that halfword's high byte carries. A byte that is zero or
+ * negative leaves a degenerate box and the cull skips the moby, which is the
+ * unpopulated-slot sentinel. */
+static int s3_cull_box_threshold(CPUState* cpu, uint32_t moby, unsigned drawn_bits) {
+    const int rad = (int)(int8_t)cpu->read_byte(moby + 0x4Cu);
+    if (rad <= 0) return 0;
+    return (rad << 8) + (int)((drawn_bits & 3u) << 8);
+}
+
+/* Build the second kind's queue record for one moby the box rejected, the way
+ * the cull composes it (mobydraw.s:604-630): the Moby, the three quarter-world
+ * camera deltas — (moby - cam) >> 2 on the first component and (cam - moby)
+ * >> 2 on the other two (mobydraw.s:81,87,94) — and the model's animation slot
+ * at Model + (Moby+0x3C byte 0) * 4. A model-table entry that is KSEG0 is the
+ * animated kind and belongs to the other queue (mobydraw.s:116).
+ *
+ * The deltas also go into the full-width fields, since a revealed moby sits
+ * past what the packed halves can hold, and the far-cull distance is -1: a
+ * host-built record carries no range limit, which is what extended LOD means.
+ * Nothing here writes guest memory — the queue is the host copy taken at the
+ * cull hook, and the moby's own verdict byte stays the cull's. */
+static int s3_reveal_record(CPUState* cpu, uint32_t moby) {
+    if (s_simple_qn >= S3_SIMPLE_QCAP) return 0;
+    const uint32_t cls   = cpu->read_half(moby + game_layout.moby.class_off);
+    const uint32_t model = cpu->read_word(game_layout.moby.model_table + cls * 4u);
+    if (model == 0u || (int32_t)model < 0) return 0;   /* absent, or the animated kind */
+    const uint32_t anim = cpu->read_word(moby + game_layout.moby.anim_state_off);
+    const int32_t cx = (int32_t)cpu->read_word(game_layout.cam.position + 0u),
+                  cy = (int32_t)cpu->read_word(game_layout.cam.position + 4u),
+                  cz = (int32_t)cpu->read_word(game_layout.cam.position + 8u);
+    const int32_t mx = (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 0u),
+                  my = (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
+                  mz = (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 8u);
+    const int32_t dx = (mx - cx) >> 2, dy = (cy - my) >> 2, dz = (cz - mz) >> 2;
+    const int i = s_simple_qn;
+    s_simple_q[i][0] = moby;
+    s_simple_q[i][1] = ((uint32_t)dx << 16) | ((uint32_t)dy & 0xFFFFu);
+    /* The low half stays clear of bit 15, which marks the screen-space kind
+     * the draw reads its own halves as (mobydraw.s:4030-4049). */
+    s_simple_q[i][2] = ((uint32_t)dz << 16);
+    s_simple_q[i][3] = model + (anim & 0xFFu) * 4u;
+    s_simple_d[i][0] = dy;
+    s_simple_d[i][1] = dz;
+    s_simple_d[i][2] = dx;
+    s_simple_far[i]  = -1;
+    s_simple_qn = i + 1;
+    return 1;
+}
+
 /* The pass the walk's second-kind hook runs: capture the cull's queue, run the
  * game's own draw (which writes the drawn verdict and the prims), then decode
  * the captured queue natively. */
@@ -854,6 +936,11 @@ static int s3_simple_pass(CPUState* cpu) {
     s_simple_flat = s_simple_screen = s_simple_culled = 0;
     s_flat_zero_colour = s_flat_back_emitted = s_flat_back_dropped = 0;
     s3_simple_capture(cpu);
+    /* Extended LOD: the cull's distance box is what keeps a distant moby out
+     * of the queue, so the records it rejected are rebuilt here and decoded
+     * with the rest. The queue this appends to is the host copy above; the
+     * game's own draw below still reads its own, unchanged. */
+    int revealed = moby_reveal_candidates(cpu);
     for (int i = 0; i < 4; i++)
         s_flat_entry[i] = cpu->read_word(S3_FLAT_SCRATCH + (uint32_t)i * 4u);
     openpete_recomp_module_get()->dispatch(cpu, F_MOBY_DRAW_STATIC);
@@ -862,10 +949,10 @@ static int s3_simple_pass(CPUState* cpu) {
     if (s_dbg < 0) { const char* e = getenv("OPENPETE_MOBY_VERIFY"); s_dbg = (e && *e && *e != '0'); }
     if (s_dbg)
         fprintf(stderr, "[moby-simple f=%u] queued=%d drawn=%ld culled=%ld screenkind=%ld "
-                        "verts=%ld faces=%ld flat=%ld tris=%d "
+                        "verts=%ld faces=%ld flat=%ld tris=%d revealed=%d "
                         "flat_zero_colour=%ld flat_back_emitted=%ld flat_back_dropped=%ld\n",
                 openpete_frame, s_simple_qn, s_simple_recs, s_simple_culled, s_simple_screen,
-                s_simple_verts, s_simple_faces, s_simple_flat, n,
+                s_simple_verts, s_simple_faces, s_simple_flat, n, revealed,
                 s_flat_zero_colour, s_flat_back_emitted, s_flat_back_dropped);
     return n;
 }
@@ -879,6 +966,12 @@ const moby_game_t moby_game = {
     .model_is_animated = s3_model_is_animated,
     .simple_pass       = s3_simple_pass,
     .simple_replay     = s3_simple_replay,
+    /* The cull writes its verdict into a gameplay-readable Moby byte, so the
+     * shared field reveal stays off (host_reveal below); these two let the
+     * shared candidate walk offer the mobys the cull's distance box rejected
+     * to this game's own queue builder instead. */
+    .cull_box_threshold = s3_cull_box_threshold,
+    .reveal_record      = s3_reveal_record,
     .special_face      = s3_special_face,
     /* The cull writes its verdict into a gameplay-readable Moby byte, so
      * nothing the host widens may reach it and the walk feeds the records the

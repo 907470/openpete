@@ -177,6 +177,24 @@ typedef struct moby_game {
      * what the cull queued. */
     int  host_reveal;
 
+    /* The canonical cull's own distance-box threshold for one moby, with
+     * `drawn_bits` standing in for the moby's drawn-verdict byte so the caller
+     * can substitute the reveal's own hysteresis for it. 0 or negative = the
+     * box is degenerate and admits nothing, the dormant-slot sentinel.
+     * Together with `reveal_record` this is what a game supplies instead of
+     * `host_reveal` when its record encoding is its own: the shared candidate
+     * walk moby_reveal_candidates() applies the cull's admission and the view
+     * window, and the game appends the record. NULL leaves the walk feeding
+     * exactly what the cull queued. */
+    int  (*cull_box_threshold)(CPUState* cpu, uint32_t moby, unsigned drawn_bits);
+    /* Append one record for a moby the cull's distance box rejected, built
+     * from that moby's gamestate in the game's own encoding, to whatever queue
+     * the game's pass decodes. Returns 1 when a record was appended, 0 when
+     * the moby carries no record of that pass's kind or the queue is full.
+     * Reads gamestate; writes no guest memory, so the cull's own verdict byte
+     * and the canonical queue are untouched. */
+    int  (*reveal_record)(CPUState* cpu, uint32_t moby);
+
     /* ---- identity ----------------------------------------------------- */
     /* The key the sub-tick interp ring stores a moby's prev/curr snapshots
      * under. Slot-stable across pool churn where the game reuses records. */

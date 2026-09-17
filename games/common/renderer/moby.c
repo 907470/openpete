@@ -1603,6 +1603,73 @@ static int append_revealed_regular_inner(CPUState* cpu) {
     return revealed + occl_rev_n;
 }
 
+/* ---- extended-LOD reveal for a game with its own record encoding ---------
+ * The reveal above composes record fields and hands them to the decode, which
+ * works only where the fields carry this project's Spyro 1 shapes: a keyframe
+ * reference that is a pointer, a translation the draw still has to rescale, a
+ * draw radius in the byte moby_game.render_radius_off names. A game whose cull
+ * writes another encoding supplies two slots instead — the cull's own box
+ * threshold and a record builder for its own queue — and this walk drives
+ * them, so the admission is written once.
+ *
+ * The lateral cull is deliberately not repeated here: the game's own decode
+ * runs the cull's cone tests on every record it reads, so a revealed record
+ * that falls outside the view is dropped by the game's own predicate rather
+ * than by a second approximation of it that could drop a wide model whose
+ * centroid sits off the edge.
+ *
+ * Nothing here writes guest memory: the moby's drawn-verdict byte, which
+ * gameplay reads on the next tick, stays the canonical cull's. */
+static int moby_verify_enabled(void);
+int moby_reveal_candidates(CPUState* cpu) {
+    long seen = 0, canon = 0, occl = 0;
+    if (!openpete_no_lod) return 0;          /* the extended-LOD clause only */
+    if (!moby_game.cull_box_threshold || !moby_game.reveal_record) return 0;
+    const uint32_t stride = game_layout.moby.array_stride;
+    int PM[3][3]; memcpy(PM, s_view.cam_M, sizeof PM);
+    const int32_t cx = (int32_t)s_view.cam_ram[0],
+                  cy = (int32_t)s_view.cam_ram[1],
+                  cz = (int32_t)s_view.cam_ram[2];
+    int added = 0, guard = 0;
+    uint32_t m = moby_array_head(cpu);
+    while (m >= 0x80000000u && guard++ < 4096) {
+        const uint8_t stt = cpu->read_byte(m + game_layout.moby.state_off);
+        if (stt == 0xFFu) break;                            /* array sentinel */
+        if (stt >= 0x80u) { m += stride; continue; }        /* dead / inactive */
+        if (moby_run_once_hidden(cpu, m,
+                (unsigned)cpu->read_half(m + game_layout.moby.class_off))) {
+            m += stride; continue;
+        }
+        seen++;
+        /* The cull's own threshold, read with the moby's live verdict byte:
+         * inside the box is the cull's territory, and a moby there that is not
+         * in the queue was rejected for a reason the box does not express. */
+        const int t = moby_game.cull_box_threshold(cpu, m,
+                          cpu->read_byte(m + game_layout.moby.drawn_off));
+        if (t <= 0) { m += stride; continue; }   /* degenerate box: dormant slot */
+        const int32_t px = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 0u),
+                      py = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 4u),
+                      pz = (int32_t)cpu->read_word(m + game_layout.moby.pos_off + 8u);
+        const int32_t d0 = (px - cx) >> 2, d1 = (py - cy) >> 2, d2 = (pz - cz) >> 2;
+        /* View-space centre through the cull's own axis order: IR1 = the Y
+         * delta, IR2 the Z, IR3 the X, MAC = (M . IR) >> 12. */
+        const int32_t Vy = -d1, Vz = -d2, Vx = d0;
+        int64_t rz = ((int64_t)PM[2][0]*Vy + (int64_t)PM[2][1]*Vz
+                    + (int64_t)PM[2][2]*Vx) >> 12;
+        const int inbox = (d0 > -t && d0 < t && d1 > -t && d1 < t &&
+                           d2 > -t && d2 < t && rz < (int64_t)t);
+        if (inbox) { canon++; m += stride; continue; }
+        if (rz <= 0) { m += stride; continue; }   /* behind the camera plane */
+        if (occl_record_culled(cpu, m)) { occl++; m += stride; continue; }
+        if (moby_game.reveal_record(cpu, m)) added++;
+        m += stride;
+    }
+    if (moby_verify_enabled())
+        fprintf(stderr, "[moby-reveal f=%u] live=%ld canon=%ld occluded=%ld added=%d\n",
+                openpete_frame, seen, canon, occl, added);
+    return added;
+}
+
 /* ---- native scene triangle (fed to panel 0) ------------------------------
  * Filled by the 3a.2b independent face-stream walk (below). The 3a.2a
  * nearest-neighbour prim scaffold it replaced was removed when the walk was

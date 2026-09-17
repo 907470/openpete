@@ -89,6 +89,23 @@ void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
                      int clut_x, int clut_y, int bpp, int blend,
                      uint32_t fkey);
 
+/* ---- extended-LOD reveal for a game with its own record encoding -------
+ * Walks the moby array and offers every moby the canonical cull's distance
+ * box rejected to moby_game.reveal_record, which appends a record for it in
+ * the game's own encoding. The admission the walk applies before offering a
+ * moby is the cull's own, widened only where extended LOD says so: the array
+ * sentinel and dead states, the run-once classification, the cull's distance
+ * box through moby_game.cull_box_threshold (which the extended-LOD clause
+ * lifts), the camera plane, the view window and the occlusion test. A moby
+ * the canonical box still admits is left to the cull, which either queued it
+ * or rejected it for a reason the box does not express.
+ *
+ * Returns the number of records appended. Reads gamestate only. Call from
+ * inside the pass whose queue the game appends to, after that pass has
+ * captured the cull's own records and before it decodes them. Inert unless
+ * extended LOD is on and the game supplies both slots. */
+int moby_reveal_candidates(struct CPUState* cpu);
+
 /* ---- decode pieces shared with the player feeder -----------------------
  * The avatar draw and the moby draw are different routines, but they encode a
  * face the same way and run the same emit tree, so these four live here once.
