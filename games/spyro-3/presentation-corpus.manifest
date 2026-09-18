@@ -99,3 +99,8 @@ title-demo-tracers|4480|20||4501
 # to VBL 4922. The 4900 grid sample sits before that window, so the row carries
 # its own negative.
 title-demo-glint2|4900|10||4910
+#
+# crystal-islands-flame: a flame breath over the water in Crystal Islands with
+# the HUD fully extended. The flame's primitives are written at VBL 1066-1090
+# (peak 1078); 1080 is an intermediate leg inside the breath.
+crystal-islands-flame|1060|200||1074,1078,1080,1086

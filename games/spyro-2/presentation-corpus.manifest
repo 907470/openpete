@@ -25,3 +25,8 @@ autumn-plains-skelos-badlands-portal-entry|1150|200||1150,1250,1350,1550,1700
 # under the ice. 921, 1121 and 1161 are intermediate legs whose tick pair spans a
 # body keyframe advance; 1123 is the leg after one.
 colossus-ice-skating|900|200||921,1121,1123,1161
+#
+# shady-oasis-flame: two flame breaths in Shady Oasis. The flame's primitives
+# are written at VBL 842-858 (peak 846) and 960-976 (peak 964); 848 is an
+# intermediate leg inside the first breath.
+shady-oasis-flame|840|200||846,848,850,964
