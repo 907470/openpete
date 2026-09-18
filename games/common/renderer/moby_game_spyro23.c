@@ -1118,7 +1118,19 @@ static int s23_simple_decode(CPUState* cpu) {
 /* A sub-tick present's replay: the captured queue decoded again under the
  * present's camera, with no second call into the game's draw. */
 static int s23_simple_replay(CPUState* cpu) {
-    return s23_simple_decode(cpu);
+    s_simple_recs = s_simple_verts = s_simple_faces = s_simple_tris = 0;
+    s_simple_flat = s_simple_screen = s_simple_culled = 0;
+    s_simple_lp = s_simple_fade = 0;
+    int n = s23_simple_decode(cpu);
+    /* The replay's own census: the queue it read and what that queue decoded
+     * to. The pass census covers the canonical tick alone, so without this a
+     * replay of a queue no canonical pass built this tick reads as silence. */
+    if (moby_verify_vbl())
+        fprintf(stderr, "[moby-simple-replay vbl=%u] queued=%d drawn=%ld culled=%ld "
+                        "verts=%ld faces=%ld tris=%d lp=%ld fade=%ld\n",
+                openpete_frame, s_simple_qn, s_simple_recs, s_simple_culled,
+                s_simple_verts, s_simple_faces, n, s_simple_lp, s_simple_fade);
+    return n;
 }
 
 /* ---- extended-LOD reveal ------------------------------------------------

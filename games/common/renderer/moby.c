@@ -5469,9 +5469,22 @@ static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
 /* The provider owns the guest dispatch; its triangle count decides the
  * mark-drawn below. */
 static int s_simple_ntri;
+/* The canonical epoch the second-kind queue was captured in. The queue is a
+ * host copy the pass overwrites only when the game's second-kind draw runs;
+ * on a tick where that draw does not run (a menu or map state owns the frame)
+ * it still holds the last gameplay tick's records, which project to nothing
+ * the canonical present drew. The sub-tick replay decodes that copy, so it
+ * runs only while this stamp is the committed epoch. */
+static uint32_t s_canon_simple_epoch = 0;
+static int      s_canon_simple_valid = 0;
 static void moby_run_draw_simple(CPUState* cpu, uint32_t addr) {
     (void)addr;
     s_simple_ntri = moby_game.simple_pass(cpu);
+    extern int openpete_speculative;
+    if (!openpete_speculative) {
+        s_canon_simple_valid = 1;
+        s_canon_simple_epoch = spyro_native_canon_epoch_stamp();
+    }
 }
 static void moby_simple_pre(CPUState* cpu, int feed, int verify) {
     (void)feed; (void)verify;
@@ -6539,10 +6552,13 @@ void moby_reextract(CPUState* cpu) {
         openpete_subtick_view_poke(spec_base, saved_reg, SPEC_SCR_LEN);   /* restore REGULAR */
     }
     /* The second model kind: the queue its canonical pass captured, decoded
-     * again under this present's camera. Its producer is the same tick's moby
-     * render, so it replays on the regular pass's freshness. */
+     * again under this present's camera. Its producer is its own draw hook,
+     * which a menu or map state leaves unrun while the regular pass keeps
+     * running, so the replay takes that pass's own epoch stamp rather than the
+     * regular pass's freshness. */
+    int sim_fresh = s_canon_simple_valid && spyro_native_canon_epoch_fresh(s_canon_simple_epoch);
     int sim_walk = 0;
-    if (reg_fresh && moby_game.simple_replay) {
+    if (sim_fresh && moby_game.simple_replay) {
         s_cur_mat = "SIM";
         moby_view_build(cpu);
         s_gout.n = 0;
