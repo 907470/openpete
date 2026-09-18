@@ -363,7 +363,7 @@ static void capture_gte(CPUState* cpu, uint32_t start, uint32_t end) {
                 static uint8_t s_uncoded_warned[256];
                 if (!s_uncoded_warned[code & 0xFF]) {
                     s_uncoded_warned[code & 0xFF] = 1;
-                    fprintf(stderr, "native: WARNING undecoded moby prim code 0x%02X (f=%u) — polys "
+                    fprintf(stderr, "native: WARNING undecoded moby prim code 0x%02X (vbl=%u) — polys "
                             "dropped from the native feed; add a decoder or explicitly cull\n",
                             code & 0xFF, openpete_frame);
                 }
@@ -385,12 +385,12 @@ static void report_code_hist(void) {
     char ub[200]; int up = 0; ub[0] = 0;
     for (int c = 0; c < 256; c++) if (s_uncoded_hist[c] && up < (int)sizeof(ub) - 16)
         up += snprintf(ub + up, sizeof(ub) - up, " %02X=%d", c, s_uncoded_hist[c]);
-    fprintf(stderr, "[moby-codes f=%u] cumulative F798 codes:%s | UNDECODED(dropped):%s\n",
+    fprintf(stderr, "[moby-codes vbl=%u] cumulative F798 codes:%s | UNDECODED(dropped):%s\n",
             openpete_frame, hb, up ? ub : " none");
 }
 
 static void hex_dump(CPUState* cpu, uint32_t start, uint32_t end) {
-    fprintf(stderr, "[moby-dump f=%u] F798 prims [%08X,%08X) %u bytes  OFX=%d OFY=%d H=%u\n",
+    fprintf(stderr, "[moby-dump vbl=%u] F798 prims [%08X,%08X) %u bytes  OFX=%d OFY=%d H=%u\n",
             openpete_frame, start, end, end - start,
             (int32_t)cpu->gte_ctrl[24] >> 16, (int32_t)cpu->gte_ctrl[25] >> 16,
             cpu->gte_ctrl[26] & 0xFFFF);
@@ -614,7 +614,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
           s_dd = 0; if (e && sscanf(e, "%d,%d", &df0, &df1) == 2) s_dd = 1; }
       if (s_dd == 1 && (int)openpete_frame >= df0 && (int)openpete_frame <= df1) {
           double cf = TR_frac ? TR_frac[2] * 4.0 : (double)TR_raw[2] * 4.0;
-          fprintf(stderr, "[mb-pull f=%u] hdr=%08X w0=%08X dofs=%d centre=%.0f\n",
+          fprintf(stderr, "[mb-pull vbl=%u] hdr=%08X w0=%08X dofs=%d centre=%.0f\n",
                   openpete_frame, header, w0, (int)(((int32_t)(w0 << 8)) >> 24), cf);
       } }
     /* Tie-pull gate: applied only when the record centre is in front of the
@@ -1008,6 +1008,86 @@ static long s_special_faces[3];
  * a material compare reads. */
 static long s_bit4_faces;
 
+/* OPENPETE_MOBY_SPECIAL_CENSUS=1: run-cumulative counts of the faces carrying
+ * either dispatcher flag, the material mode each bit-5 face selected, the
+ * first moby address and VBL seen in each mode, and the total faces walked.
+ * The counters above are cleared per draw pass, so they answer "at this
+ * instant"; these accumulate over the run and answer "does this level draw
+ * such a face at all", which is what locating a row for a treatment needs.
+ * The total makes a zero line evidence rather than silence: a run that walked
+ * no face proves nothing about the flag. */
+static long     s_cen_mode[8];      /* bit-5 faces by material mode 0..7 */
+static uint32_t s_cen_mode_moby[8];
+static unsigned s_cen_mode_vbl[8];
+/* Screen box of the bit-5 faces emitted since the last report: the crop a
+ * pixel comparison against the reference has to look inside, since these faces
+ * cover a few percent of one moby and a whole-frame error is noise to them. */
+static float    s_cen_bx0, s_cen_by0, s_cen_bx1, s_cen_by1;
+static int      s_cen_box_n;
+static long     s_cen_bit5, s_cen_bit4, s_cen_faces, s_cen_mat0;
+static uint32_t s_cen_bit4_moby;
+static unsigned s_cen_bit4_vbl, s_cen_at;
+/* Distinct material words seen on a bit-5 face: the treatment reads all three
+ * of the word's colour channels and its per-moby IR0 field, so which words
+ * occur decides whether the two coded forms of mode 0 can differ at all. */
+#define CEN_MATS 12
+static uint32_t s_cen_mat[CEN_MATS];
+static long     s_cen_mat_n[CEN_MATS];
+static int special_census_on(void) {
+    static int s = -1;
+    if (s < 0) { const char* e = getenv("OPENPETE_MOBY_SPECIAL_CENSUS"); s = (e && *e && *e != '0'); }
+    return s;
+}
+static void special_census_report(void) {
+    fprintf(stderr, "[moby-special vbl=%u] faces=%ld bit5=%ld(mat0=%ld) bit4=%ld(m=%08X vbl=%u) modes",
+            openpete_frame, s_cen_faces, s_cen_bit5, s_cen_mat0, s_cen_bit4,
+            s_cen_bit4_moby, s_cen_bit4_vbl);
+    for (int m = 0; m < 8; m++)
+        if (s_cen_mode[m])
+            fprintf(stderr, " %d:%ld(m=%08X vbl=%u)", m, s_cen_mode[m],
+                    s_cen_mode_moby[m], s_cen_mode_vbl[m]);
+    fprintf(stderr, " | mats");
+    for (int i = 0; i < CEN_MATS && s_cen_mat_n[i]; i++)
+        fprintf(stderr, " %08X:%ld", s_cen_mat[i], s_cen_mat_n[i]);
+    if (s_cen_box_n)
+        fprintf(stderr, " | box=(%.0f,%.0f)-(%.0f,%.0f) n=%d",
+                s_cen_bx0, s_cen_by0, s_cen_bx1, s_cen_by1, s_cen_box_n);
+    fprintf(stderr, "\n");
+    s_cen_box_n = 0;
+}
+static void special_census_face(const moby_wface_t* F, uint32_t mscol, uint32_t key,
+                                const proj_xy* p0, const proj_xy* p1, const proj_xy* p2) {
+    if (!special_census_on()) return;
+    s_cen_faces++;
+    if (F->hl == 1u) {
+        const proj_xy* pv[3] = { p0, p1, p2 };
+        for (int i = 0; i < 3; i++) {
+            if (!pv[i] || pv[i]->sat) continue;
+            if (!s_cen_box_n) { s_cen_bx0 = s_cen_bx1 = pv[i]->sx; s_cen_by0 = s_cen_by1 = pv[i]->sy; }
+            if (pv[i]->sx < s_cen_bx0) s_cen_bx0 = pv[i]->sx;
+            if (pv[i]->sx > s_cen_bx1) s_cen_bx1 = pv[i]->sx;
+            if (pv[i]->sy < s_cen_by0) s_cen_by0 = pv[i]->sy;
+            if (pv[i]->sy > s_cen_by1) s_cen_by1 = pv[i]->sy;
+            s_cen_box_n++;
+        }
+    }
+    if (F->hl == 2u) {
+        s_cen_bit4++;
+        if (!s_cen_bit4_moby) { s_cen_bit4_moby = key; s_cen_bit4_vbl = openpete_frame; }
+    } else if (F->hl == 1u) {
+        int cm = mscol ? (int)((mscol >> 28) & 7u) : 0;
+        s_cen_bit5++;
+        s_cen_mat0 += (mscol == 0u);
+        s_cen_mode[cm]++;
+        if (!s_cen_mode_moby[cm]) { s_cen_mode_moby[cm] = key; s_cen_mode_vbl[cm] = openpete_frame; }
+        for (int i = 0; i < CEN_MATS; i++) {
+            if (s_cen_mat_n[i] && s_cen_mat[i] != mscol) continue;
+            s_cen_mat[i] = mscol; s_cen_mat_n[i]++; break;
+        }
+    }
+    if (openpete_frame >= s_cen_at + 200u) { s_cen_at = openpete_frame; special_census_report(); }
+}
+
 static int project_all_records_inner(CPUState* cpu) {
     s_proj_n = 0; s_max_blend = 0; s_nrecs = 0;
     s_special_faces[0] = s_special_faces[1] = s_special_faces[2] = 0;
@@ -1050,7 +1130,7 @@ static int project_all_records_inner(CPUState* cpu) {
                 : 0u;
             fade_snap_put(s_recs[nrec].moby, zsf4);
             if (moby_trace_target() && s_recs[nrec].moby == moby_trace_target())
-                fprintf(stderr, "[moby-trace f=%u] %08X IN-QUEUE rec=%08X zsf4=%d got=%d mat=%s\n",
+                fprintf(stderr, "[moby-trace vbl=%u] %08X IN-QUEUE rec=%08X zsf4=%d got=%d mat=%s\n",
                         openpete_frame, s_recs[nrec].moby, rec, zsf4, got,
                         s_cur_mat ? s_cur_mat : "?");
             if (tier_dbg_on()) {
@@ -1178,7 +1258,7 @@ static int build_moby_record_fields(CPUState* cpu, uint32_t moby, moby_fields* f
             uint64_t nowp = openpete_phase_now_us();
             if (nowp - t0 >= 1000000u) { t0 = nowp; nn = 0; }
             if (nn < 12) { nn++;
-                fprintf(stderr, "[reg-interp-MISS f=%u] moby=%08x cls=%03x pos=(%d,%d,%d)\n",
+                fprintf(stderr, "[reg-interp-MISS vbl=%u] moby=%08x cls=%03x pos=(%d,%d,%d)\n",
                         openpete_frame, moby, (unsigned)cpu->read_half(moby + game_layout.moby.class_off), mx, my, mz); }
         }
     }
@@ -1242,7 +1322,7 @@ static void moby_build_validate(CPUState* cpu) {
             f.frameB, S.frame_b, (f.w0&0xFF00u), (S.w0&0xFF00u), dM, dT);
     }
     fprintf(stderr,
-        "[moby-build f=%u] recs=%d built=%d noModel(shaded)=%d | hdr=%d frameA=%d frameB=%d blend=%d "
+        "[moby-build vbl=%u] recs=%d built=%d noModel(shaded)=%d | hdr=%d frameA=%d frameB=%d blend=%d "
         "M(<=2)=%d TR(<=2)=%d worst{M=%d TR=%d}  (== built means builder reproduces the .s cull)\n",
         openpete_frame, s_nrecs, n, noModel, okHdr, okA, okB, okBl, okM, okTR, worstM, worstTR);
 }
@@ -1365,7 +1445,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
     int guard = 0;
     uint32_t trc_m = moby_trace_target();
     #define TRC(fmt, ...) do { if (m == trc_m) fprintf(stderr, \
-        "[moby-trace f=%u] %08X " fmt "\n", openpete_frame, m, ##__VA_ARGS__); } while (0)
+        "[moby-trace vbl=%u] %08X " fmt "\n", openpete_frame, m, ##__VA_ARGS__); } while (0)
     while (m >= 0x80000000u && guard++ < 4096) {
         uint8_t stt = cpu->read_byte(m + game_layout.moby.state_off);
         if (stt == 0xFF) break;                        /* array sentinel */
@@ -1408,7 +1488,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
             double dsx = 9999.0;
             if (bok && f.TR_raw[2] > 0) dsx = ofx + (double)f.TR_raw[0] * H / (double)f.TR_raw[2];
             if (!bok || (dsx > -120.0 && dsx < 40.0))
-                fprintf(stderr, "[rdbg f=%u] m=%08X cls=%04X stt=%02X rad=%02X rz=%d sx=%.0f bok=%d\n",
+                fprintf(stderr, "[rdbg vbl=%u] m=%08X cls=%04X stt=%02X rad=%02X rz=%d sx=%.0f bok=%d\n",
                         openpete_frame, m, (unsigned)cpu->read_half(m + game_layout.moby.class_off), stt,
                         (unsigned)cpu->read_byte(m + moby_game.render_radius_off), bok ? f.TR_raw[2] : -1, dsx, bok);
         }
@@ -1661,7 +1741,7 @@ int moby_reveal_candidates(CPUState* cpu) {
         m += stride;
     }
     if (moby_verify_enabled())
-        fprintf(stderr, "[moby-reveal f=%u] live=%ld canon=%ld occluded=%ld added=%d\n",
+        fprintf(stderr, "[moby-reveal vbl=%u] live=%ld canon=%ld occluded=%ld added=%d\n",
                 openpete_frame, seen, canon, occl, added);
     return added;
 }
@@ -2341,7 +2421,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 if (openpete_frame != last_f) { last_f = openpete_frame; printed = 0; }
                 if (printed < 128) {
                     printed++;
-                    fprintf(stderr, "[moby-class f=%u] cls=%u moby=%08x pos=(%d, %d, %d)\n",
+                    fprintf(stderr, "[moby-class vbl=%u] cls=%u moby=%08x pos=(%d, %d, %d)\n",
                             openpete_frame, s_cur_moby_cls, mob,
                             (int)cpu->read_word(mob + game_layout.moby.pos_off + 0u), (int)cpu->read_word(mob + game_layout.moby.pos_off + 4u),
                             (int)cpu->read_word(mob + game_layout.moby.pos_off + 8u));
@@ -2413,7 +2493,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
             if (s_fd0 >= 0 && (int)openpete_frame >= s_fd0 && (int)openpete_frame < s_fd0 + 4) {
                 uint32_t c0 = cpu->read_word(cbase), c1 = cpu->read_word(cbase + 4);
                 uint32_t f0 = farbase ? cpu->read_word(farbase) : 0, f1 = farbase ? cpu->read_word(farbase + 4) : 0;
-                fprintf(stderr, "[fade f=%u] rec=%d moby=%08x cls=%03x zsf4=%d hdr=%08x cbase=%08x farbase=%08x ir0=%d "
+                fprintf(stderr, "[fade vbl=%u] rec=%d moby=%08x cls=%03x zsf4=%d hdr=%08x cbase=%08x farbase=%08x ir0=%d "
                         "c0=%06X c1=%06X f0=%06X f1=%06X\n",
                         openpete_frame, r, R->moby, R->moby >= 0x80000000u ? (cpu->read_half(R->moby + game_layout.moby.class_off) & 0xFFFu) : 0xFFF,
                         R->zsf4, R->header, cbase, farbase, dpcs_ir0, c0 & 0xFFFFFFu, c1 & 0xFFFFFFu, f0 & 0xFFFFFFu, f1 & 0xFFFFFFu);
@@ -2549,7 +2629,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 { static int s_cd = -1;
                   if (s_cd < 0) { const char* e = getenv("OPENPETE_MOBY_CLERP_DBG"); s_cd = (e && *e && *e != '0'); }
                   if (s_cd && fi == 0)
-                      fprintf(stderr, "[clerp] f=%u m=%08X a=%.3f p=%06X c=%06X out=%06X\n",
+                      fprintf(stderr, "[clerp] vbl=%u m=%08X a=%.3f p=%06X c=%06X out=%06X\n",
                               openpete_frame, R->moby, (double)clr_a,
                               p0 & 0xFFFFFFu, c0curr & 0xFFFFFFu, c0 & 0xFFFFFFu); }
             }
@@ -2695,6 +2775,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
              * those faces from the ones the walk computes. */
             s_emit_special = (uint8_t)(F->hl == 2u ? 4u : 0u);
             s_bit4_faces += (F->hl == 2u);
+            special_census_face(F, R->mscol, s_cur_moby_key, p0, p1, p2);
             int special_tex = 0;
             if (moby_game.special_face && F->hl) {
                 uint32_t cc[4] = { c0, c1, c2, c3 };
@@ -2752,7 +2833,7 @@ static void walk_records(CPUState* cpu, int is_spec, int r0, int r1) {
                 if (s_fd < 0) { const char* e = getenv("OPENPETE_MOBY_FACEDUMP");
                     s_fd = e ? strtol(e, NULL, 16) : 0; }
                 if (s_fd && (uint32_t)s_fd == s_cur_moby_key)
-                    fprintf(stderr, "  [fdump f=%u] m=%08X mat=%08X i=%u,%u,%u,%u fresh=%d hl=%d "
+                    fprintf(stderr, "  [fdump vbl=%u] m=%08X mat=%08X i=%u,%u,%u,%u fresh=%d hl=%d "
                             "tex=%d tp=(%d,%d) clut=(%d,%d) bpp=%d abr=%d abe=%d\n",
                             openpete_frame, s_cur_moby_key, R->mscol, i0, i1, i2, i3,
                             (int)F->fresh, (int)F->hl, textured, tpx, tpy, clx, cly,
@@ -3061,7 +3142,7 @@ static void compare_walk_vs_prims(void) {
                     if (s_gte[pi].x[k] >= px0 && s_gte[pi].x[k] <= px1 &&
                         s_gte[pi].y[k] >= py0 && s_gte[pi].y[k] <= py1) in = 1;
                 if (!in) continue;
-                fprintf(stderr, "  [pbox f=%u] code=%02X tex=%d clut=%04X tpage=%04X", openpete_frame,
+                fprintf(stderr, "  [pbox vbl=%u] code=%02X tex=%d clut=%04X tpage=%04X", openpete_frame,
                         s_gte[pi].code, s_gte[pi].textured, s_gte[pi].clut & 0xFFFFu, s_gte[pi].tpage & 0xFFFFu);
                 for (int k = 0; k < s_gte[pi].nv; k++)
                     fprintf(stderr, " (%.0f,%.0f)%06X[%d,%d]", s_gte[pi].x[k], s_gte[pi].y[k],
@@ -3089,7 +3170,7 @@ static void compare_walk_vs_prims(void) {
                     if (w->v[k].sx >= wx0 && w->v[k].sx <= wx1 &&
                         w->v[k].sy >= wy0 && w->v[k].sy <= wy1) in = 1;
                 if (!in) continue;
-                fprintf(stderr, "  [wbox f=%u] m=%08X k=%08X tex=%d tp=(%d,%d) clut=(%d,%d) bpp=%d blend=%d spec=%u",
+                fprintf(stderr, "  [wbox vbl=%u] m=%08X k=%08X tex=%d tp=(%d,%d) clut=(%d,%d) bpp=%d blend=%d spec=%u",
                         openpete_frame, s_wtri_moby[wi], s_wtri_fkey[wi], w->textured,
                         w->tpage_x, w->tpage_y, w->clut_x, w->clut_y, w->bpp, w->blend,
                         (unsigned)s_wtri_special[wi]);
@@ -3228,7 +3309,7 @@ static void compare_walk_vs_prims(void) {
                     static int ncd=0; static int cap=-1;
                     if (cap < 0) { const char* e = getenv("OPENPETE_MOBY_COLMISS_DBG"); cap = (e && *e) ? atoi(e) : 16; }
                     if (ncd++ < cap) fprintf(stderr,
-                        "  [col-miss f=%u] m=%08X k=%08X w(%.0f,%.0f) tex=%d walk=%06X prim=%06X\n",
+                        "  [col-miss vbl=%u] m=%08X k=%08X w(%.0f,%.0f) tex=%d walk=%06X prim=%06X\n",
                         openpete_frame, s_wtri_moby[wi], s_wtri_fkey[wi],
                         w->v[0].sx, w->v[0].sy, w->textured, wc, pc);
                 }
@@ -3277,7 +3358,7 @@ static void compare_walk_vs_prims(void) {
         if(cost<=1.0){ wdup++; break; }
     }
     fprintf(stderr,
-        "[moby-walk %s f=%u] recs=%d faces=%d walkTris=%d primTris=%d | "
+        "[moby-walk %s vbl=%u] recs=%d faces=%d walkTris=%d primTris=%d | "
         "ONSCREEN precision=%d/%d(%.1f%%) recall=%d/%d(%.1f%%) onscrUnmatched=%d | "
         "precision=%d/%d(%.1f%%) recall=%d/%d(%.1f%%) meanPx=%.2f | ",
         s_cur_mat, openpete_frame, s_nrecs, s_wdiag[0].faces, wn, pn,
@@ -3285,17 +3366,19 @@ static void compare_walk_vs_prims(void) {
         wmatch, wn, wn?100.0*wmatch/wn:0.0, pcov, pn, pn?100.0*pcov/pn:0.0,
         wmatch?wcost_sum/wmatch:0.0);
     fprintf(stderr,
-        "[moby-walk2 f=%u] "
+        "[moby-walk2 vbl=%u] "
         "shapes{freshG=%d freshT=%d strip=%d sprite=%d skip=%d quad=%d oor=%d nearstraddle=%d} "
         "align{lo=%d hi=%d desync=%d} | nclip matched{-=%d +=%d} unmatched{-=%d +=%d} "
-        "matchedTex{-=%d +=%d} matchedFlat{-=%d +=%d} | col=%d/%d uv=%d/%d wdup=%d/%d primQ=%d primT=%d walkQ=%d luma=w%.0f/p%.0f\n",
+        "matchedTex{-=%d +=%d} matchedFlat{-=%d +=%d} | col=%d/%d uv=%d/%d wdup=%d/%d primQ=%d primT=%d walkQ=%d luma=w%.0f/p%.0f "
+        "| special_faces=%ld/%ld/%ld bit4_faces=%ld\n",
         openpete_frame,
         s_wdiag[0].fresh_g, s_wdiag[0].fresh_t, s_wdiag[0].strip, s_wdiag[0].sprite,
         s_wdiag[0].skip, s_wdiag[0].quad, s_wdiag[0].oor, s_wdiag[0].nearstraddle,
         s_wdiag[0].align_lo, s_wdiag[0].align_hi, s_wdiag[0].desync,
         neg_m,pos_m,neg_u,pos_u, mt_n,mt_p,mf_n,mf_p, colmatch,coln, uvmatch,uvn, wdup,wn,
-        prim_quad, prim_tri, s_wdiag[0].quad, coln?wluma_sum/coln:0.0, coln?pluma_sum/coln:0.0);
-    fprintf(stderr, "[moby-walk-special f=%u] pairedChannels=%ld meanErr=%.2f maxErr=%ld\n",
+        prim_quad, prim_tri, s_wdiag[0].quad, coln?wluma_sum/coln:0.0, coln?pluma_sum/coln:0.0,
+        s_special_faces[0], s_special_faces[1], s_special_faces[2], s_bit4_faces);
+    fprintf(stderr, "[moby-walk-special vbl=%u] pairedChannels=%ld meanErr=%.2f maxErr=%ld\n",
             openpete_frame, spc_n, spc_n ? (double)spc_sum/(double)spc_n : 0.0, spc_max);
     #undef ONSCR
 }
@@ -3341,7 +3424,7 @@ static void shaded_color_ab(void) {
     }
     int N=n[0]+n[1]+n[2], E=exact[0]+exact[1]+exact[2]; double CE=cherr[0]+cherr[1]+cherr[2];
     #define PMODE(i) n[i], n[i]?100.0*exact[i]/n[i]:0.0, n[i]?cherr[i]/(3.0*n[i]):0.0
-    fprintf(stderr,"[shaded-color f=%u] verts=%d exact=%d(%.1f%%) meanChErr=%.2f | "
+    fprintf(stderr,"[shaded-color vbl=%u] verts=%d exact=%d(%.1f%%) meanChErr=%.2f | "
         "gouraud[v=%d %.0f%% e%.1f] flatBasic[v=%d %.0f%% e%.1f] flatMetal[v=%d %.0f%% e%.1f] nohl=%d\n",
         openpete_frame, N, E, N?100.0*E/N:0.0, N?CE/(3.0*N):0.0,
         PMODE(0), PMODE(1), PMODE(2), s_sh_nohl);
@@ -3482,7 +3565,7 @@ static void specular_env_uv(float ex, float ey, float ez, int* pu, int* pv) {
 static void specular_env_calibrate(CPUState* cpu) {
     specular_env_load(cpu);
     build_prim_tris();
-    fprintf(stderr, "[spec-env f=%u] metalM=[%d %d %d|%d %d %d|%d %d %d] camHead=%d nrecs=%d "
+    fprintf(stderr, "[spec-env vbl=%u] metalM=[%d %d %d|%d %d %d|%d %d %d] camHead=%d nrecs=%d "
         "D756F0=%08X %08X clutmix\n",
         openpete_frame, s_metalM[0][0],s_metalM[0][1],s_metalM[0][2],
         s_metalM[1][0],s_metalM[1][1],s_metalM[1][2], s_metalM[2][0],s_metalM[2][1],s_metalM[2][2],
@@ -3522,7 +3605,7 @@ static void specular_env_calibrate(CPUState* cpu) {
         }
         dumped++;
     }
-    fprintf(stderr, "[spec-env f=%u] camHead=%d dumped %d faces, %d verts: meanErr u=%.1f v=%.1f "
+    fprintf(stderr, "[spec-env vbl=%u] camHead=%d dumped %d faces, %d verts: meanErr u=%.1f v=%.1f "
         "signedU=%.2f maxErr u=%d v=%d\n",
         openpete_frame, s_camHead, dumped, nv, nv?sumu/nv:0, nv?sumv/nv:0, nv?sgnu/nv:0, maxu, maxv);
 }
@@ -3539,7 +3622,7 @@ static void specular_hl_calibrate(CPUState* cpu) {
     int lz=(int32_t)cpu->read_word(moby_game.spec_light+0x14u);
     float Llen=sqrtf((float)(lx*lx+ly*ly+lz*lz)); if(Llen<1) Llen=1;
     build_prim_tris();
-    fprintf(stderr, "[spec-hl f=%u] light=(%d,%d,%d)\n", openpete_frame, lx,ly,lz);
+    fprintf(stderr, "[spec-hl vbl=%u] light=(%d,%d,%d)\n", openpete_frame, lx,ly,lz);
     int dumped=0;
     for (int wi=0; wi<s_gout.n && dumped<24; wi++) {
         ntri_t* w=&s_wtri[wi];
@@ -3596,7 +3679,7 @@ static void push_scene_moby(void) {
               float cx = (w->v[0].sx + w->v[1].sx + w->v[2].sx) / 3.0f;
               float cy = (w->v[0].sy + w->v[1].sy + w->v[2].sy) / 3.0f;
               if (cx < tx0 || cx > tx1 || cy < ty0 || cy > ty1) continue;
-              fprintf(stderr, "[mtri] f=%u m=%08X k=%08X tex=%d tp=%d,%d cl=%d,%d bl=%d fr=%d ui=%d dofs=%d mg=%d rk=%d",
+              fprintf(stderr, "[mtri] vbl=%u m=%08X k=%08X tex=%d tp=%d,%d cl=%d,%d bl=%d fr=%d ui=%d dofs=%d mg=%d rk=%d",
                       openpete_frame, s_wtri_moby[i], s_wtri_fkey[i], w->textured,
                       w->tpage_x, w->tpage_y, w->clut_x, w->clut_y, w->blend,
                       s_wtri_front[i], s_wtri_ui[i], s_wtri_dofs[i], s_wtri_mangle[i],
@@ -3772,7 +3855,7 @@ static void push_scene_moby(void) {
  * SXY; a close match proves the decode + RTPS+TR projection reproduce the GTE.
  * Requires project_all_records() already called (s_proj filled). */
 static void compare_and_report(int nrec) {
-    if (!s_proj_n) { fprintf(stderr, "[moby-verify f=%u] no records\n", openpete_frame); return; }
+    if (!s_proj_n) { fprintf(stderr, "[moby-verify vbl=%u] no records\n", openpete_frame); return; }
 
     int gv_n = 0, near_n = 0, floor_ok = 0, ambig = 0, divergent_n = 0;
     int tex_n = 0, tex_m = 0, flat_n = 0, flat_m = 0;  /* CLEAN (non-divergent) match split */
@@ -3839,26 +3922,25 @@ static void compare_and_report(int nrec) {
         }
         if (best > 4.0) sp_unmatched++;   /* >2px (squared 4) -> a native vert no prim has */
     }
-    fprintf(stderr, "[moby-rev f=%u] onscreen native verts with NO prim within 2px: %d/%d "
+    fprintf(stderr, "[moby-rev vbl=%u] onscreen native verts with NO prim within 2px: %d/%d "
             "(>0 => decode emits wrong verts; ~0 => misses are slot/topology)\n",
             openpete_frame, sp_unmatched, sp_checked);
     fprintf(stderr,
-        "[moby-verify f=%u] recs=%d blend=%d primVerts=%d divergent(satNN)=%d | clean-match(<=4px)=%d/%d(%.1f%%) "
+        "[moby-verify vbl=%u] recs=%d blend=%d primVerts=%d divergent(satNN)=%d | clean-match(<=4px)=%d/%d(%.1f%%) "
         "mean=%.3fpx | texMatch=%d/%d(%.1f%%) flatMatch=%d/%d(%.1f%%) | "
         "NN-amb=%d(%.1f%%) maxTieJump=%.1fpx | worst gte(%.0f,%.0f) d=%.1f code=%02X | "
-        "prims=%d(tex=%d flat=%d) special_faces=%ld/%ld/%ld bit4_faces=%ld\n",
+        "prims=%d(tex=%d flat=%d)\n",
         openpete_frame, nrec, s_max_blend, gv_n, divergent_n, near_n, clean, clean?100.0*near_n/clean:0.0,
         near_n?sum/near_n:0.0,
         tex_m, tex_n, tex_n?100.0*tex_m/tex_n:0.0,
         flat_m, flat_n, flat_n?100.0*flat_m/flat_n:0.0,
         ambig, near_n?100.0*ambig/near_n:0.0, max_tiejump,
-        wgx,wgy, worst, worst_code, s_gte_n, n_tex, n_flat,
-        s_special_faces[0], s_special_faces[1], s_special_faces[2], s_bit4_faces);
+        wgx,wgy, worst, worst_code, s_gte_n, n_tex, n_flat);
     /* Per-record: native vert count + how many prim verts NN-matched to it.
      * A record with many native verts but ~0 matches is mis-projected (the
      * residual). w0 = the record flags word (LP/HP + per-axis sign). */
     if (nrec <= 8) {
-        fprintf(stderr, "[moby-recs f=%u]", openpete_frame);
+        fprintf(stderr, "[moby-recs vbl=%u]", openpete_frame);
         for (int r = 0; r < nrec && r < 16; r++)
             fprintf(stderr, " rec%d{nat=%d hit=%d}", r, rnat[r], rmatch[r]);
         fprintf(stderr, "\n");
@@ -3866,15 +3948,42 @@ static void compare_and_report(int nrec) {
 }
 
 /* ---- dispatch hook -------------------------------------------------- */
+/* The probe's reporting window, in VBLs: `openpete_frame`, the VSync-yield
+ * counter `--screenshot-on-frame` also keys on, which is the clock every
+ * `vbl=` label in this file prints. OPENPETE_MOBY_VERIFY carries the window
+ * as `<lo>` or `<lo>-<hi>`, so the VBLs asked for are the VBLs reported. The
+ * values `0` and `1` keep their boolean meaning — `1` selects the default
+ * window plus an every-200-VBL sample, so one boot reports on each level the
+ * run loads — and OPENPETE_MOBY_VERIFY_FRAME moves that default window's
+ * start. */
+static unsigned s_verify_lo = 2000u, s_verify_hi = 2012u;
+static int      s_verify_sparse = 1;
 static int moby_verify_enabled(void) {
     static int s = -1;
-    if (s < 0) { const char* v = getenv("OPENPETE_MOBY_VERIFY"); s = (v && v[0] && v[0] != '0') ? 1 : 0; }
+    if (s >= 0) return s;
+    const char* v = getenv("OPENPETE_MOBY_VERIFY");
+    if (!(v && v[0] && v[0] != '0')) { s = 0; return s; }
+    s = 1;
+    char* end = NULL;
+    unsigned long lo = strtoul(v, &end, 10);
+    if (end != v && !(lo == 1ul && *end == '\0')) {
+        s_verify_lo = (unsigned)lo;
+        s_verify_hi = (*end == '-') ? (unsigned)strtoul(end + 1, NULL, 10) : s_verify_lo;
+        if (s_verify_hi < s_verify_lo) s_verify_hi = s_verify_lo;
+        s_verify_sparse = 0;
+    } else {
+        const char* f = getenv("OPENPETE_MOBY_VERIFY_FRAME");
+        s_verify_lo = f ? (unsigned)strtoul(f, NULL, 10) : 2000u;
+        s_verify_hi = s_verify_lo + 12u;
+        s_verify_sparse = 1;
+    }
     return s;
 }
-static unsigned moby_verify_frame(void) {
-    static unsigned f = 0; static int init = 0;
-    if (!init) { const char* v = getenv("OPENPETE_MOBY_VERIFY_FRAME"); f = v ? (unsigned)atoi(v) : 2000u; init = 1; }
-    return f;
+/* This VBL is inside the probe's window. */
+int moby_verify_vbl(void) {
+    if (!moby_verify_enabled()) return 0;
+    if (openpete_frame >= s_verify_lo && openpete_frame <= s_verify_hi) return 1;
+    return s_verify_sparse && openpete_frame > s_verify_hi && openpete_frame % 200u == 0;
 }
 
 /* Shared moby pass: run the real renderer (REGULAR or SPECULAR -- both loop the
@@ -3901,8 +4010,8 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
     /* Verify aid: the pass's polybuf window — pairs with the full-OT dump
      * (OPENPETE_OT_DUMP_FRAMES prim addresses) to attribute un-fed prims to
      * their producer by allocation range. */
-    if (verify && openpete_frame >= moby_verify_frame() && openpete_frame < moby_verify_frame() + 4)
-        fprintf(stderr, "[moby-window %s f=%u] polybuf [%08X,%08X) %u bytes\n",
+    if (moby_verify_vbl())
+        fprintf(stderr, "[moby-window %s vbl=%u] polybuf [%08X,%08X) %u bytes\n",
                 mat ? mat : "?", openpete_frame, start, end, end - start);
 
     { OP_PROF_ACCUM_SCOPE("moby.capture");
@@ -3913,7 +4022,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
     if (tier_dbg_on() && !(mat && mat[0]=='S' && mat[1]=='P')) {   /* ~1/sec, REG+SPEC records pooled */
         static int s_tier_cnt = 0;
         if (++s_tier_cnt >= 30) {
-            fprintf(stderr, "[moby-tier f=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld lpskip=%ld shband=%ld | "
+            fprintf(stderr, "[moby-tier vbl=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld lpskip=%ld shband=%ld | "
                     "zsf4-mirror ok=%ld bad=%ld | "
                     "proj=%ldus walk=%ldus rexwalk=%ldus dec=%ldus fld=%ldus rvdec=%ldus rvfld=%ldus rv=%ldus fan=%ldus mrg=%ldus faces=%ld/%ld calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld par=%ld/%ld\n",
                     openpete_frame, s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade,
@@ -4028,10 +4137,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
 
     if (verify) {
         static int s_dumped = 0, s_reports = 0;
-        unsigned vf = moby_verify_frame();
-        int target = (s_gte_n > 0 && s_reports < 120 &&
-                      ((openpete_frame >= vf && openpete_frame <= vf + 12u) ||   /* dense window at target frame */
-                       (openpete_frame >= vf && openpete_frame % 200u == 0)));   /* + sparse across levels */
+        int target = (s_gte_n > 0 && s_reports < 120 && moby_verify_vbl());
         if (target && !s_dumped) { hex_dump(cpu, start, end); s_dumped = 1; }
         if (target) {
             compare_and_report(nrec);
@@ -4173,7 +4279,7 @@ static int on_draw_specular(CPUState* cpu, uint32_t addr) {
  * func_80022A2C writes m_WasDrawn (verdict) -- we call it exactly once, like
  * the other hooks, so determinism is unchanged. */
 static void shaded_dump(CPUState* cpu, uint32_t start, uint32_t end) {
-    fprintf(stderr, "[shaded-dump f=%u] prims [%08X,%08X) %u bytes\n",
+    fprintf(stderr, "[shaded-dump vbl=%u] prims [%08X,%08X) %u bytes\n",
             openpete_frame, start, end, end - start);
     /* +0x2400 Moby* list */
     fprintf(stderr, "  list@%08X:", SHADED_BASE);
@@ -4473,7 +4579,7 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
                     ngte_sincos_interp(cpu, fZ, &e.sz, &e.cz);
                     composed = 1; s_idle_active++;
                     if (moby_trace_target() == moby)
-                        fprintf(stderr, "[moby-idle f=%u] %08X ph=%.1f base=%u eul=(%.1f,%.1f,%.1f)\n",
+                        fprintf(stderr, "[moby-idle vbl=%u] %08X ph=%.1f base=%u eul=(%.1f,%.1f,%.1f)\n",
                                 openpete_frame, moby, ph,
                                 (unsigned)cpu->read_byte(props + 0x13), fZ, fX, fY);
                 } else {
@@ -4484,7 +4590,7 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
                         int32_t dy = (int32_t)cpu->read_word(moby_game.player_pos + 0x4) - (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u);
                         if (dx < 0) dx = -dx;
                         if (dy < 0) dy = -dy;
-                        fprintf(stderr, "[moby-idle f=%u] %08X live: wd=%u oct=%d sub=%u spawn=%u ticks=%u\n",
+                        fprintf(stderr, "[moby-idle vbl=%u] %08X live: wd=%u oct=%d sub=%u spawn=%u ticks=%u\n",
                                 openpete_frame, moby, cpu->read_byte(moby + game_layout.moby.drawn_off),
                                 (dx < dy) ? ((dx * 3) >> 3) + dy : dx + ((dy * 3) >> 3),
                                 cpu->read_byte(moby + moby_game.substate_off), cpu->read_byte(props + 0x0E),
@@ -4590,7 +4696,7 @@ static void shaded_verify(CPUState* cpu) {
     }
     if(pcn){pcx/=pcn;pcy/=pcn;}
     int clean=gv-div;
-    fprintf(stderr,"[shaded-verify f=%u] mobys=%d nativeVerts=%d | "
+    fprintf(stderr,"[shaded-verify vbl=%u] mobys=%d nativeVerts=%d | "
             "myCentroid=(%.0f,%.0f) primCentroid=(%.0f,%.0f) offset=(%.0f,%.0f) | "
             "primVerts=%d match<=4px=%d/%d(%.1f%%) mean=%.2fpx\n",
             openpete_frame, nmoby, n, mycx,mycy, pcx,pcy, mycx-pcx, mycy-pcy,
@@ -4867,7 +4973,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
                 static int s_bt0 = -2;
                 if (s_bt0 == -2) { const char* e = getenv("OPENPETE_SHADED_POSTRACE"); s_bt0 = (e && *e) ? atoi(e) : -1; }
                 if (s_bt0 >= 0 && (int)openpete_frame >= s_bt0 && (int)openpete_frame < s_bt0 + 6)
-                    fprintf(stderr, "[bb-pos f=%u] moby=%08x key=%08x cls=%03x bf=(%.2f,%.2f,%.2f) raw=(%d,%d,%d)\n",
+                    fprintf(stderr, "[bb-pos vbl=%u] moby=%08x key=%08x cls=%03x bf=(%.2f,%.2f,%.2f) raw=(%d,%d,%d)\n",
                             openpete_frame, m, moby_interp_key(m), cls, bfx, bfy, bfz, px, py, pz);
             }
             /* Like the 3D path, TR[2] is HALF the true view-Z (the .s sets the GTE
@@ -4906,7 +5012,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
                     uint64_t nowp = openpete_phase_now_us();
                     if (nowp - t0 >= 1000000u) { t0 = nowp; nn2 = 0; }
                     if (nn2 < 12) { nn2++;
-                        fprintf(stderr, "[shaded-interp-MISS f=%u] moby=%08x cls=%03x pos=(%d,%d,%d)\n",
+                        fprintf(stderr, "[shaded-interp-MISS vbl=%u] moby=%08x cls=%03x pos=(%d,%d,%d)\n",
                                 openpete_frame, m, cls, px, py, pz); }
                 }
             }
@@ -4918,7 +5024,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
                 if (s_ptr0 == -2) { const char* e = getenv("OPENPETE_SHADED_POSTRACE"); s_ptr0 = (e && *e) ? atoi(e) : -1; }
                 if (s_ptr0 >= 0 &&
                     (int)openpete_frame >= s_ptr0 && (int)openpete_frame < s_ptr0 + 6)
-                    fprintf(stderr, "[gem-pos f=%u] moby=%08x hit=%d fp=(%.2f,%.2f,%.2f) raw=(%d,%d,%d)\n",
+                    fprintf(stderr, "[gem-pos vbl=%u] moby=%08x hit=%d fp=(%.2f,%.2f,%.2f) raw=(%d,%d,%d)\n",
                             openpete_frame, m, fpos_hit, mfx, mfy, mfz, px, py, pz);
             }
             double Dx=(mfx-cfx)/4.0, Dy=(cfy-mfy)/4.0, Dz=(cfz-mfz)/4.0;
@@ -5017,7 +5123,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
         static unsigned next_idle;
         if (openpete_frame >= next_idle) {
             next_idle = openpete_frame + 60u;
-            fprintf(stderr, "[moby-idle f=%u] active=%ld seeded=%ld live=%ld\n",
+            fprintf(stderr, "[moby-idle vbl=%u] active=%ld seeded=%ld live=%ld\n",
                     openpete_frame, s_idle_active, s_idle_seeded, s_idle_live);
             s_idle_active = 0; s_idle_seeded = 0; s_idle_live = 0;
         }
@@ -5083,7 +5189,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
             static int s_hd0 = -2;
             if (s_hd0 == -2) { const char* e = getenv("OPENPETE_SHADED_HUDDBG"); s_hd0 = (e && *e) ? atoi(e) : -1; }
             if (s_hd0 >= 0 && (int)openpete_frame >= s_hd0 && (int)openpete_frame < s_hd0 + 4)
-                fprintf(stderr, "[hud-route f=%u] moby=%08x cls=%03x near_ot=%d static=%d ui=%d "
+                fprintf(stderr, "[hud-route vbl=%u] moby=%08x cls=%03x near_ot=%d static=%d ui=%d "
                         "vzspread=%d pvzspread=%.1f -> %s\n",
                         openpete_frame, R->moby, R->cls, R->near_ot,
                         openpete_ui_moby_is_addr_static(R->moby), openpete_ui_moby_is_addr_ui(R->moby),
@@ -5199,7 +5305,7 @@ static int build_shaded_walk_tris(CPUState* cpu) {
                     (int)openpete_frame >= s_fd_f0 && (int)openpete_frame < s_fd_f0 + 2) {
                     long i0i = (long)((int)p1->sx - (int)p0->sx) * ((int)p2->sy - (int)p0->sy)
                              - (long)((int)p2->sx - (int)p0->sx) * ((int)p1->sy - (int)p0->sy);
-                    fprintf(stderr, "[shface f=%u] moby=%08x cls=%03x face=%d idx=%d,%d,%d,%d "
+                    fprintf(stderr, "[shface vbl=%u] moby=%08x cls=%03x face=%d idx=%d,%d,%d,%d "
                             "p0=(%.2f,%.2f) p1=(%.2f,%.2f) p2=(%.2f,%.2f)%s ncl1=%.3f ncl2=%.3f int1=%ld emit=%d\n",
                             openpete_frame, R->moby, s_cur_moby_cls, f, i0, i1, i2, i3,
                             (double)p0->sx, (double)p0->sy, (double)p1->sx, (double)p1->sy,
@@ -5265,7 +5371,7 @@ static void shaded_pcol_scratch_check(CPUState* cpu) {
     int nyonly=0, nx=0, nz=0;   /* euler census across all shaded mobys this frame */
     for (int r=0;r<s_nshrecs;r++){ uint32_t rr=cpu->read_word(s_shrecs[r].moby + game_layout.moby.angle_off + 0u);
         int X=(rr&0xFF00u)>>7, Z=(rr&0xFFu)<<1; if(X)nx++; if(Z)nz++; if(!X&&!Z)nyonly++; }
-    fprintf(stderr,"[shaded-pcol f=%u] rec=%d cls=0x%X vcount=%d euler{Y=%u X=%u Z=%u} R->RT exact=%d/%d meanChErr=%.2f nohl=%d | census{Yonly=%d Xrot=%d Zrot=%d of %d}\n",
+    fprintf(stderr,"[shaded-pcol vbl=%u] rec=%d cls=0x%X vcount=%d euler{Y=%u X=%u Z=%u} R->RT exact=%d/%d meanChErr=%.2f nohl=%d | census{Yonly=%d Xrot=%d Zrot=%d of %d}\n",
         openpete_frame, brec, R->cls, R->vcount,
         (rot>>15)&0x1FEu, (rot&0xFF00u)>>7, (rot&0xFFu)<<1, exact, nn, err/(3.0*nn), s_sh_nohl,
         nyonly, nx, nz, s_nshrecs);
@@ -5334,7 +5440,7 @@ static int on_draw_shaded(CPUState* cpu, uint32_t addr) {
 
     if (verify) {
         static int s_dumped = 0, s_sreports = 0;
-        if (openpete_frame >= moby_verify_frame() && endp > startp && s_sreports < 12) {
+        if (moby_verify_vbl() && endp > startp && s_sreports < 12) {
             s_cur_mat = "SHD";
             capture_gte(cpu, startp, endp);
             if (!s_dumped) { shaded_dump(cpu, startp, endp); s_dumped = 1; }
@@ -5391,9 +5497,7 @@ static int on_draw_simple(CPUState* cpu, uint32_t addr) {
     }
     if (verify) {
         static int s_reports = 0;
-        unsigned vf = moby_verify_frame();
-        if (s_gout.n > 0 && s_reports < 120 &&
-            openpete_frame >= vf && openpete_frame <= vf + 12u) {
+        if (s_gout.n > 0 && s_reports < 120 && moby_verify_vbl()) {
             capture_gte(cpu, start, end);     /* the pass's own prims: the bracket */
             compare_walk_vs_prims();
             s_reports++;
@@ -5681,7 +5785,7 @@ static void occl_verify_end(uint32_t moby, const proj_xy* p, int n) {
     float xlo = s_view.xlo, xhi = s_view.xhi;
     int zeropx = (x1 < xlo || x0 > xhi || y1 < 0.0f || y0 > 224.0f);
     if (!zeropx) s_ver_wrong++;
-    fprintf(stderr, "[occl-VERIFY-%s f=%u] moby=%08x cached rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f age=%u "
+    fprintf(stderr, "[occl-VERIFY-%s vbl=%u] moby=%08x cached rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f age=%u "
                     "fresh rect=(%.0f,%.0f)-(%.0f,%.0f) vz=%.0f mot=%.1f scan_max=%.0f\n",
             zeropx ? "zeropx" : "WRONG", openpete_frame, moby,
             s_ver_snap.x0, s_ver_snap.y0, s_ver_snap.x1, s_ver_snap.y1, s_ver_snap.vz_min,
@@ -5989,7 +6093,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                 const openpete_interp_obj_t* io = openpete_interp_objs_find(mobys[i]);
                 if ((!io || !io->have_prev) && n < 16) {
                     n++;
-                    fprintf(stderr, "[moby-interp-%s f=%u] moby=%08x cls=%04x pos=(%d,%d,%d)\n",
+                    fprintf(stderr, "[moby-interp-%s vbl=%u] moby=%08x cls=%04x pos=(%d,%d,%d)\n",
                             io ? "noprev" : "MISS", openpete_frame, mobys[i],
                             (unsigned)(cpu->read_half(mobys[i] + game_layout.moby.class_off)),
                             (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 0u),
@@ -6031,7 +6135,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                      * intermediate present. */
                     { static int s_hp = -1;
                       if (s_hp < 0) { const char* e = getenv("OPENPETE_HOLD_PROBE"); s_hp = (e && *e && *e != '0'); }
-                      if (s_hp) fprintf(stderr, "[hold-probe f=%u] m=%08x trz_now=%.3f trz_cap=%.3f vzs=%.5f dx=%.3f dy=%.3f n=%d\n",
+                      if (s_hp) fprintf(stderr, "[hold-probe vbl=%u] m=%08x trz_now=%.3f trz_cap=%.3f vzs=%.5f dx=%.3f dy=%.3f n=%d\n",
                                         openpete_frame, mobys[i], tr[2], h->trz, tr[2] / h->trz,
                                         sx - h->sx, sy - h->sy, h->n); }
                     nreplay++;
@@ -6145,7 +6249,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                          * the ramp must be monotone across presents within a tick */
                         { static int s_gd = -1;
                           if (s_gd < 0) { const char* e = getenv("OPENPETE_MOBY_GPF_DBG"); s_gd = (e && *e && *e != '0'); }
-                          if (s_gd) fprintf(stderr, "[gpf] f=%u m=%08x prev=%d now=%d frac=%.3f\n",
+                          if (s_gd) fprintf(stderr, "[gpf] vbl=%u m=%08x prev=%d now=%d frac=%.3f\n",
                                             openpete_frame, mobys[i], gprev, gnow, gpf_frac); }
                     }
                 }
@@ -6192,7 +6296,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             uint16_t tcls2 = (uint16_t)cpu->read_half(mobys[i] + game_layout.moby.class_off);
             if (s_atcls >= 0 && (s_atcls == 0xFFFF || tcls2 == (uint16_t)s_atcls)) {
                 uint32_t mrot = cpu->read_word(mobys[i] + game_layout.moby.angle_off + 0u);
-                fprintf(stderr, "[moby-anim f=%u] m=%08x cls=%03x prevkf=%d balpha=%.3f curr(frm=%u nfrm=%u prog=%u anim=%u) fa=%08x fb=%08x fap=%08x fbp=%08x w0=%04x w0p=%04x rot=%06x\n",
+                fprintf(stderr, "[moby-anim vbl=%u] m=%08x cls=%03x prevkf=%d balpha=%.3f curr(frm=%u nfrm=%u prog=%u anim=%u) fa=%08x fb=%08x fap=%08x fbp=%08x w0=%04x w0p=%04x rot=%06x\n",
                         openpete_frame, mobys[i], tcls2,
                         prevkf, balpha,
                         cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 2u), cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 3u),
@@ -6234,7 +6338,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                  * exists for, and dmob is how much of that tick step this
                  * present's phase carries. */
                 double dmob[3]; record_moby_world_offset(mobys[i], dmob);
-                fprintf(stderr, "[moby-world f=%u] m=%08x rot=%08X kf=(%08x,%08x,%02x) wpos=(%d,%d,%d) dmob=(%.2f,%.2f,%.2f)\n",
+                fprintf(stderr, "[moby-world vbl=%u] m=%08x rot=%08X kf=(%08x,%08x,%02x) wpos=(%d,%d,%d) dmob=(%.2f,%.2f,%.2f)\n",
                         openpete_frame, mobys[i],
                         cpu->read_word(mobys[i] + game_layout.moby.angle_off + 0u),
                         f.frameA, f.frameB, (unsigned)((f.w0 >> 8) & 0xFFu),
@@ -6242,7 +6346,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                         (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 4u),
                         (int)cpu->read_word(mobys[i] + game_layout.moby.pos_off + 8u),
                         dmob[0], dmob[1], dmob[2]);
-                fprintf(stderr, "[moby-screen f=%u] leg=%s now=%.3f m=%08x cls=%03x n=%d c=(%.2f,%.2f) vz=%.1f fpos=%d/%d cam=(%.1f,%.1f,%.1f) mob=(%.1f,%.1f,%.1f) TRf=(%.2f,%.2f,%.2f)\n",
+                fprintf(stderr, "[moby-screen vbl=%u] leg=%s now=%.3f m=%08x cls=%03x n=%d c=(%.2f,%.2f) vz=%.1f fpos=%d/%d cam=(%.1f,%.1f,%.1f) mob=(%.1f,%.1f,%.1f) TRf=(%.2f,%.2f,%.2f)\n",
                         openpete_frame, g_openpete_canon_lag_leg ? "CANON" : "inter",
                         (double)op_now() / 1e6, /* clock-guard: wall */ /* prints both */
                         mobys[i], sccls, got,
@@ -6379,7 +6483,7 @@ void moby_reextract(CPUState* cpu) {
      * of replaying the previous level's mobys from stale cull records. */
     if (!render_path_canon_drawn(RP_MOBY)) {
         if (moby_census_on())
-            fprintf(stderr, "[census f=%u MOBY-RE] SKIP (not canon-drawn)\n", openpete_frame);
+            fprintf(stderr, "[census vbl=%u MOBY-RE] SKIP (not canon-drawn)\n", openpete_frame);
         return;
     }
 
@@ -6473,7 +6577,7 @@ void moby_reextract(CPUState* cpu) {
                 static long pq[OPENPETE_OCCL_Q_COUNT], pf[4];
                 long q[OPENPETE_OCCL_Q_COUNT];
                 openpete_native_occl_qstats(q);
-                fprintf(stderr, "[moby-occl f=%u] culled %ld / %ld records (%.0f%%) | "
+                fprintf(stderr, "[moby-occl vbl=%u] culled %ld / %ld records (%.0f%%) | "
                         "pre: ui=%ld nocache=%ld stalecache=%ld refreshed=%ld | "
                         "query: nogrid=%ld susp=%ld stale=%ld near=%ld edge=%ld vis=%ld cull=%ld "
                         "offscr=%ld moved=%ld\n",
@@ -6482,7 +6586,7 @@ void moby_reextract(CPUState* cpu) {
                         q[0]-pq[0], q[1]-pq[1], q[2]-pq[2], q[3]-pq[3], q[4]-pq[4], q[5]-pq[5],
                         q[6]-pq[6], q[7]-pq[7], q[8]-pq[8]);
                 if (occl_verify_on())
-                    fprintf(stderr, "[moby-occl-verify f=%u] would_cull=%ld wrong=%ld (%.3f%%)\n",
+                    fprintf(stderr, "[moby-occl-verify vbl=%u] would_cull=%ld wrong=%ld (%.3f%%)\n",
                             openpete_frame, s_ver_would, s_ver_wrong,
                             s_ver_would > 0 ? 100.0 * (double)s_ver_wrong / (double)s_ver_would : 0.0);
                 for (int k = 0; k < OPENPETE_OCCL_Q_COUNT; k++) pq[k] = q[k];
@@ -6498,7 +6602,7 @@ void moby_reextract(CPUState* cpu) {
     if (feeddbg) {
         static unsigned last = 0xFFFFFFFFu;
         if (openpete_frame != last) { last = openpete_frame;
-            fprintf(stderr, "[reextract-moby f=%u] fresh reg=%d spec=%d shd=%d | recs_in=%d reg_walk=%d spec_walk=%d sim_walk=%d shd_walk=%d\n",
+            fprintf(stderr, "[reextract-moby vbl=%u] fresh reg=%d spec=%d shd=%d | recs_in=%d reg_walk=%d spec_walk=%d sim_walk=%d shd_walk=%d\n",
                     openpete_frame, reg_fresh, spec_fresh, shd_fresh,
                     nm, reg_walk, spec_walk, sim_walk, shd_fresh ? s_gout.n : 0); }
     }
@@ -6508,7 +6612,7 @@ void moby_reextract(CPUState* cpu) {
         static long last_cross = -1, last_snap = -1;
         if (s_animsw_cross != last_cross || s_animsw_snap != last_snap) {
             last_cross = s_animsw_cross; last_snap = s_animsw_snap;
-            fprintf(stderr, "[moby-animsw f=%u] clip-switch crossfaded=%ld snapped(count-mismatch)=%ld\n",
+            fprintf(stderr, "[moby-animsw vbl=%u] clip-switch crossfaded=%ld snapped(count-mismatch)=%ld\n",
                     openpete_frame, s_animsw_cross, s_animsw_snap);
         }
     }

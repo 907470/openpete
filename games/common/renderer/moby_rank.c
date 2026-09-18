@@ -496,7 +496,7 @@ void openpete_mobyrank_match(void)
       ENV_FLAG_LATCH(s_dbg, "OPENPETE_MOBY_RANK_DBG");
       if (s_dbg && s_snap_frame != s_last_stats_frame) {
           s_last_stats_frame = s_snap_frame;
-          fprintf(stderr, "[moby-rank] %s f=%u prims=%d snap=%d shift=(%.2f,%.2f) "
+          fprintf(stderr, "[moby-rank] %s vbl=%u prims=%d snap=%d shift=(%.2f,%.2f) "
                           "matched=%d ambig=%d\n",
                   seq ? "table" : "FRESH", T->frame, tn, s_snap_n,
                   (double)gdx, (double)gdy, matched, ambig);

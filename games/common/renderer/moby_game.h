@@ -291,6 +291,11 @@ extern const moby_game_t moby_game;
 uint32_t moby_rec_word(CPUState* cpu, uint32_t addr);
 void     moby_rec_matrix(CPUState* cpu, uint32_t addr, int M[3][3]);
 
+/* The current VBL (`openpete_frame`) lies inside the OPENPETE_MOBY_VERIFY
+ * reporting window. Every probe line a game's moby provider prints under that
+ * variable gates on this, so the VBLs the window names are the VBLs reported. */
+int moby_verify_vbl(void);
+
 #ifdef __cplusplus
 }
 #endif

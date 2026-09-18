@@ -422,6 +422,17 @@ static void s23_env_uv(CPUState* cpu, const s23_env_setup* E, const float e[3],
     *pv = (uint8_t)(((((long)rad * sn) >> 12) + 0x40) & 0xFF);
 }
 
+/* OPENPETE_MOBY_MODE0_IR0_SUM=0|1 overrides the per-game switch for one run,
+ * so the two coded forms of the mode-0 treatment can be priced against the
+ * guest's own primitive colours on the same pose. Unset, the game's own switch
+ * decides. */
+static int s23_mode0_ir0_sum(void) {
+    static int s = -2;
+    if (s == -2) { const char* e = getenv("OPENPETE_MOBY_MODE0_IR0_SUM");
+                   s = (e && *e) ? (*e != '0') : -1; }
+    return s >= 0 ? s : moby_game_s23.mode0_ir0_from_colour_sum;
+}
+
 static int s23_special_face(CPUState* cpu, uint32_t mat, const int M[3][3],
                            uint32_t moby, uint32_t rec, const moby_wface_t* F,
                            uint32_t c[4], const float ev[4][3], int* textured,
@@ -449,7 +460,7 @@ static int s23_special_face(CPUState* cpu, uint32_t mat, const int M[3][3],
         const int per_moby_ir0 = (int)((mat >> 16) & 0xF00u);
         for (int k = 0; k < 4; k++) {
             int src[3], ir0;
-            if (moby_game_s23.mode0_ir0_from_colour_sum) {
+            if (s23_mode0_ir0_sum()) {
                 int sum = (int)(c[k] & 0xFFu) + (int)((c[k] >> 8) & 0xFFu)
                         + (int)((c[k] >> 16) & 0xFFu);
                 ir0 = sum << 3;
@@ -903,7 +914,7 @@ static int s23_simple_decode(CPUState* cpu) {
             if (s_cls >= 0 && (s_cls == 0xFFFF || s_tcls == (uint16_t)s_cls)) {
                 double cx = 0.0, cy = 0.0;
                 for (int i = 0; i < nv; i++) { cx += vscr[i][0]; cy += vscr[i][1]; }
-                fprintf(stderr, "[simple f=%u] m=%08x cls=%03x n=%d c=(%.2f,%.2f) p=(%d,%d,%d) rot=%08x\n",
+                fprintf(stderr, "[simple vbl=%u] m=%08x cls=%03x n=%d c=(%.2f,%.2f) p=(%d,%d,%d) rot=%08x\n",
                         openpete_frame, moby, s_tcls, nv, cx / nv, cy / nv,
                         (int)cpu->read_word(moby + game_layout.moby.pos_off),
                         (int)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
@@ -1164,10 +1175,8 @@ static int s23_simple_pass(CPUState* cpu) {
         s_flat_entry[i] = cpu->read_word(S23_FLAT_SCRATCH + (uint32_t)i * 4u);
     openpete_recomp_module_get()->dispatch(cpu, game_layout.moby.hook_draw_simple);
     int n = s23_simple_decode(cpu);
-    static int s_dbg = -1;
-    if (s_dbg < 0) { const char* e = getenv("OPENPETE_MOBY_VERIFY"); s_dbg = (e && *e && *e != '0'); }
-    if (s_dbg)
-        fprintf(stderr, "[moby-simple f=%u] queued=%d drawn=%ld culled=%ld screenkind=%ld "
+    if (moby_verify_vbl())
+        fprintf(stderr, "[moby-simple vbl=%u] queued=%d drawn=%ld culled=%ld screenkind=%ld "
                         "verts=%ld faces=%ld flat=%ld tris=%d revealed=%d "
                         "flat_zero_colour=%ld flat_back_emitted=%ld flat_back_dropped=%ld\n",
                 openpete_frame, s_simple_qn, s_simple_recs, s_simple_culled, s_simple_screen,
