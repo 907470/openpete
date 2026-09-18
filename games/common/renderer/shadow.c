@@ -322,9 +322,13 @@ static moshtri s_mosh[MAX_MOSH]; static int s_mosh_n;
 
 /* The GTE packs a projected point as (SY << 16) | (SX & 0xFFFF); the screen
  * extent rejections below are integer tests on that packed word, so the float
- * corners are rounded back to it first. */
+ * corners are packed back to it first. Each component is MAC0 >> 16, an
+ * arithmetic shift, which rounds toward negative infinity, so the float is
+ * floored and not rounded to nearest: a corner whose true X lies in (-1, 0)
+ * packs as -1 with its sign bit set, and that sign bit is what the
+ * left-of-column-0 rejection reads. */
 static int32_t packed_sxy(const shadow_pt* p) {
-    int xi = (int)lrintf(p->sx), yi = (int)lrintf(p->sy);
+    int xi = (int)floorf(p->sx), yi = (int)floorf(p->sy);
     return (int32_t)(((uint32_t)yi << 16) | ((uint32_t)xi & 0xFFFFu));
 }
 
