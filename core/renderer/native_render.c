@@ -41,6 +41,9 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
+#ifdef _WIN32
+#include <windows.h>  /* SetWindowPos/HWND_BOTTOM: the background window's restack */
+#endif
 
 #include <math.h>    /* fminf/fmaxf/floorf (prepass recon + occlusion grid) */
 #include <stdbool.h>
@@ -1641,6 +1644,70 @@ static void nr_resolve_window_size(const openpete_options_t *opts,
     *out_h = (win_h > 0) ? win_h : NR_DEFAULT_H;
 }
 
+/* --background: whether the window was created for an unattended run that
+ * must not take focus. Latched at window creation and read afterwards only to
+ * decide whether the state lines below are printed. */
+static int s_background_requested;
+
+/* Creation flags of the game window. --background adds SDL_WINDOW_NOT_FOCUSABLE
+ * and turns off activate-on-show and activate-on-raise, so the window maps at
+ * its normal size and stays out of the focus chain. The hints are read by
+ * SDL_CreateWindow, so they are set here rather than at option-parse time. */
+static SDL_WindowFlags nr_window_flags(const openpete_options_t *opts)
+{
+    SDL_WindowFlags f = SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE;
+    if (opts->background > 0) {
+        SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
+        SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_RAISED, "0");
+        f |= SDL_WINDOW_NOT_FOCUSABLE;
+    }
+    return f;
+}
+
+/* Push the window to the bottom of the stacking order without activating,
+ * moving or resizing it. Only Win32 has a portable-through-SDL equivalent;
+ * x11 and wayland leave the stacking order to the window manager, which the
+ * not-focusable flag and the activate hints already steer. Called once, on
+ * the thread that owns the window. */
+static void nr_window_send_to_back(SDL_Window *win)
+{
+#ifdef _WIN32
+    HWND hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(win),
+                                             SDL_PROP_WINDOW_WIN32_HWND_POINTER,
+                                             NULL);
+    if (hwnd)
+        SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
+                     SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
+#else
+    (void)win;
+#endif
+}
+
+/* Window state as the window manager reports it, for a harness to assert on.
+ * Printed at bring-up and again at exit, since a window manager may focus or
+ * restack a window on its own after it maps. */
+static void nr_log_window_state(SDL_Window *win, const char *when)
+{
+    if (!win) return;
+    if (!s_background_requested) {
+        /* OPENPETE_WINDOW_STATE=1 prints the same lines for a window created
+         * without --background, which is what a comparison of the two needs. */
+        const char *v = getenv("OPENPETE_WINDOW_STATE");
+        if (!v || !*v || *v == '0') return;
+    }
+    const SDL_WindowFlags f = SDL_GetWindowFlags(win);
+    int pw = 0, ph = 0;
+    SDL_GetWindowSizeInPixels(win, &pw, &ph);
+    OPL_INFO_F("native", "window state (%s): background=%d input_focus=%d "
+               "focusable=%d hidden=%d minimized=%d pixels=%dx%d driver=%s",
+               when, s_background_requested,
+               (f & SDL_WINDOW_INPUT_FOCUS) ? 1 : 0,
+               (f & SDL_WINDOW_NOT_FOCUSABLE) ? 0 : 1,
+               (f & SDL_WINDOW_HIDDEN) ? 1 : 0,
+               (f & SDL_WINDOW_MINIMIZED) ? 1 : 0, pw, ph,
+               SDL_GetCurrentVideoDriver());
+}
+
 /* A window created by the host before bring-up, adopted the same way the
  * first-run splash's window is. See openpete_native_precreate_window. */
 static SDL_Window* s_precreated_win;
@@ -1659,8 +1726,7 @@ void openpete_native_precreate_window(const openpete_options_t *opts,
 
     const char *title = (opts->display_name && opts->display_name[0])
                         ? opts->display_name : "openpete";
-    s_precreated_win = SDL_CreateWindow(title, w, h,
-                                        SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+    s_precreated_win = SDL_CreateWindow(title, w, h, nr_window_flags(opts));
     if (!s_precreated_win) {
         /* Not fatal: bring-up falls back to creating its own window. */
         OPL_WARN_F("native", "precreate SDL_CreateWindow failed: %s", SDL_GetError());
@@ -2109,8 +2175,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
                 SDL_SetWindowSize(win, w, h);
             OPL_INFO_F("native", "adopted %s window (%dx%d)", adopt_src, w, h);
         } else {
-            win = SDL_CreateWindow(title, w, h,
-                                   SDL_WINDOW_VULKAN | SDL_WINDOW_RESIZABLE);
+            win = SDL_CreateWindow(title, w, h, nr_window_flags(opts));
             if (!win) {
                 OPL_ERROR_F("native", "SDL_CreateWindow(VULKAN) failed: %s", SDL_GetError());
                 return 1;
@@ -2141,11 +2206,24 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
          * state openpete_native_toggle_fullscreen switches into, so Alt+Enter /
          * the O-menu DISPLAY row toggle straight back to the windowed size
          * above. Before rhi_create so the swapchain sizes to the monitor. */
-        if (opts->fullscreen) {
+        s_background_requested = opts->background > 0;
+        if (opts->fullscreen && s_background_requested) {
+            /* A fullscreen window covers the screen, which is the one thing
+             * the background window must not do, so the background wins. */
+            OPL_WARN_F("native", "%s", "--background with --fullscreen 1: "
+                       "--background wins, staying windowed");
+        } else if (opts->fullscreen) {
             SDL_SetWindowFullscreenMode(win, NULL);  /* borderless desktop */
             SDL_SetWindowFullscreen(win, true);
             OPL_INFO_F("native", "%s", "--fullscreen: borderless desktop at launch");
         }
+        if (s_background_requested) {
+            /* An adopted window was created before the flag was read, so the
+             * not-focusable state is applied here as well as at creation. */
+            SDL_SetWindowFocusable(win, false);
+            nr_window_send_to_back(win);
+        }
+        nr_log_window_state(win, "bring-up");
 
         dev = rhi_create(win, "openpete-native", opts->vsync);
         if (!dev) {
@@ -9219,6 +9297,7 @@ static void pc_note(void)
 
 void openpete_native_present_census_report(void)
 {
+    nr_log_window_state(s_nr.window, "exit");
     if (!s_pc.total && !s_pc.begin_refused) return;
     for (int k = 0; k < PC_KINDS; k++) {
         unsigned tot = 0;

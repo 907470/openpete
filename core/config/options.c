@@ -414,6 +414,13 @@ static void print_help(const char* display_name, const char* argv0,
         "  --fullscreen 0|1           launch in borderless-desktop fullscreen (default 0 = windowed;\n"
         "                             on|off also accepted). Alt+Enter / double-click / the O-menu\n"
         "                             DISPLAY row toggle it live. Display-only.\n"
+        "  --background [0|1]         open the window at its normal size and visible, but do not take\n"
+        "                             focus, do not activate on show, and sit behind the other windows\n"
+        "                             where the platform allows it. Presents, pacing and screenshots are\n"
+        "                             unchanged; the window just takes no keyboard. Wins over\n"
+        "                             --fullscreen. For an unattended windowed run alongside\n"
+        "                             --input-lock (default 0 = off; ignored with --headless).\n"
+        "                             Display-only.\n"
         "  --perf-stats LEVEL         on-screen performance stats: off | fps (default) | detailed.\n"
         "                             detailed adds the VBL rate, slips, late ticks per 1000 and the\n"
         "                             shed / interpolation share. 0|1|2 also accepted. Display-only.\n"
@@ -702,6 +709,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->vibration           = -1;    /* -1 = unset; the game's own setting stands */
     opts->mouse               = -1;    /* -1 = unset; the mouse channel is on */
     opts->input_lock          = -1;    /* -1 = unset; host input is taken */
+    opts->background          = -1;    /* -1 = unset; the window activates normally */
     opts->mouse_sensitivity   = -1.0f; /* -1 = unset (1.0) */
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
     opts->perf_stats          = OPENPETE_PERF_FPS;  /* the counter, no pacing readout; --perf-stats / O-menu SHOW FPS row */
@@ -1572,6 +1580,14 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
                 if      (strcmp(n, "1") == 0 || strcmp(n, "on")  == 0) { opts->input_lock = 1; i++; }
                 else if (strcmp(n, "0") == 0 || strcmp(n, "off") == 0) { opts->input_lock = 0; i++; }
             }
+        } else if (strcmp(a, "--background") == 0) {
+            /* Optional value, as --input-lock. */
+            opts->background = 1;
+            if (i + 1 < argc) {
+                const char* n = argv[i + 1];
+                if      (strcmp(n, "1") == 0 || strcmp(n, "on")  == 0) { opts->background = 1; i++; }
+                else if (strcmp(n, "0") == 0 || strcmp(n, "off") == 0) { opts->background = 0; i++; }
+            }
         } else if (strcmp(a, "--mouse-sensitivity") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             char* end = NULL;
@@ -1687,6 +1703,19 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->input_lock = 0;
             else {
                 fprintf(stderr, "openpete: OPENPETE_INPUT_LOCK expects 0|1 (on|off also "
+                        "accepted), got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+        }
+    }
+    /* OPENPETE_BACKGROUND: the env spelling of --background (CLI beats env). */
+    if (opts->background < 0) {
+        const char* v = getenv("OPENPETE_BACKGROUND");
+        if (v && *v) {
+            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->background = 1;
+            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->background = 0;
+            else {
+                fprintf(stderr, "openpete: OPENPETE_BACKGROUND expects 0|1 (on|off also "
                         "accepted), got: %s\n", v);
                 return OPENPETE_EXIT_SETUP_ERROR;
             }

@@ -633,6 +633,13 @@ typedef struct openpete_options {
      * gamepads); --bk2 replay and injected events still drive the run and
      * closing the window still exits. -1 = unset (off). Host-side only. */
     int input_lock;
+    /* --background: create the window at its normal size and visible, but
+     * without activating it, without focusable input, and pushed behind the
+     * other windows where the platform supports it. Presents, pacing and the
+     * screenshot readback path are unchanged; the window simply never takes
+     * over the screen or the keyboard. Wins over --fullscreen. -1 = unset
+     * (off). Ignored with --headless. Host-side only. */
+    int background;
 
     /* Content for the "<bk2_record_path>.args" sidecar written next to a
      * --bk2-record capture. Holds the launch flags passed *directly* on

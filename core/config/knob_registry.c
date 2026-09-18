@@ -744,6 +744,16 @@ static const knob_desc_t g_builtin[] = {
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, window_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
+    { "background", "Background window", "Display", "--background", "OPENPETE_BACKGROUND",
+      "Open the window visible and at its normal size but unfocused, not "
+      "activated on show, and behind the other windows where the platform "
+      "allows it; the window takes no keyboard. Presents, pacing and "
+      "screenshots are unchanged. Wins over Fullscreen. Read once while the "
+      "window is created, so the row shows the boot value; raising or "
+      "focusing the window afterwards does not change it.",
+      KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
     /* -------- Pacing -------- */
     { "render_fps", "Render FPS", "Pacing", "--render-fps", NULL,
       "Target present rate (0 = legacy match-sim pacer). Above ~30 arms "
@@ -1247,6 +1257,11 @@ static const knob_desc_t g_builtin[] = {
     ENVROW_LATCHED("MOUSE_PROBE", "Debug", "0",
         "Log the mouse channel on change and every consumer gesture with its "
         "outcome. Read once at boot."),
+    ENVROW_LATCHED("WINDOW_STATE", "Debug", "0",
+        "Log the window's flags and input focus at bring-up and at exit for a "
+        "window created without --background, which prints them anyway. The "
+        "comparison of the two is what proves the flag changed the state. "
+        "Read once per line."),
 
     { "fillpick", "Fill-tag inspector", "Debug", NULL, "OPENPETE_FILLPICK",
       "Pick the terrain face under the crosshair and re-judge its LP fill "
@@ -1582,6 +1597,8 @@ void knob_registry_init(const struct openpete_options *opts) {
             k->stored_num = opts->mouse != 0 ? 1 : 0;
         } else if (!strcmp(k->id, "input_lock")) {
             k->stored_num = opts->input_lock > 0 ? 1 : 0;
+        } else if (!strcmp(k->id, "background")) {
+            k->stored_num = opts->background > 0 ? 1 : 0;
         } else if (!strcmp(k->id, "mouse_sensitivity")) {
             k->stored_num = opts->mouse_sensitivity >= 0.0f ? opts->mouse_sensitivity : 1.0;
         } else if (!strcmp(k->id, "record_cfr")) {
