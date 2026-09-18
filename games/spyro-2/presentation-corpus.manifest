@@ -14,3 +14,9 @@
 # geometry and texture data. The grid samples between them hold the
 # title-screen world.
 attract-demo|3400|3000||3400,6500,10200,14000,17400
+#
+# autumn-plains-skelos-badlands-portal-entry: a portal entry from the home
+# world, the in-gameplay level change. 1150 is the portal transition, 1250 and
+# 1350 the flight with the treasure tally, 1550 the flight with the level name,
+# 1700 the arrival cutscene in the entered level.
+autumn-plains-skelos-badlands-portal-entry|1150|200||1150,1250,1350,1550,1700
