@@ -9446,7 +9446,7 @@ static void compose_variant(void)
          * clear/cyclorama colour instead of the frozen world. Skipped when the
          * chrome split already took it. */
         if (!froze) capture_freeze_from_offscreen(world_frame);
-        return false;
+        return;
     }
 
     /* vk / ab (and the diff fallback on an empty scene): draw the scene DIRECTLY
