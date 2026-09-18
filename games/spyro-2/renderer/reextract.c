@@ -512,8 +512,8 @@ static void game_reextract_body(CPUState* cpu) {
      * game's own render and cannot be re-derived here, so the canonical present
      * banks them and every re-extract re-applies that carry on top of the
      * re-derived 3D scene (fade interpolated by the alpha, held panels
-     * re-emitted as captured). Nothing banks a panel until this game reaches
-     * the 2D-UI feeder, and an empty carry re-applies nothing. */
+     * re-emitted as captured). Without it a sub-tick present draws the world
+     * with no 2D layer at all. */
     openpete_native_scene_apply_overlay(bracketed ? alpha : 0.0);
     RX_CENSUS_END(bracketed, alpha);
     s_fpos_active = 0;

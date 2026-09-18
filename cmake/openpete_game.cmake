@@ -284,6 +284,9 @@ function(openpete_add_game GAME_ID)
         ${_common}/renderer/moby_rank.c
         ${_common}/renderer/player.c
         ${_common}/renderer/ui_sprite.c
+        # The SPRT text feeder: registered only by a game whose ui_game names a
+        # self-linking chain emitter, inert in the others.
+        ${_common}/renderer/text_sprt.c
         ${_common}/renderer/interp_regions_gen.c
         ${_common}/renderer/reextract_view.c
 

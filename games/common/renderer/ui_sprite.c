@@ -265,8 +265,7 @@ static void feed_line_g2(CPUState* cpu, uint32_t p, uint32_t w1) {
  * [4]=(h<<16)|w. Code bit 1 = semi-transparent; bit 0 = raw texture (the
  * modulation colour is ignored and the texel passes through), which the
  * renderer reproduces by feeding white. */
-/* Decode one SPRT into the scene. Called from the batch release, never at
- * emission: a glyph is ranked by the same table walk as everything else. */
+/* Decode one SPRT into the scene. */
 static void feed_sprt_now(CPUState* cpu, uint32_t prim, unsigned tpage) {
     uint32_t w1 = cpu->read_word(prim + 0x04);
     uint32_t xy = cpu->read_word(prim + 0x08);
@@ -282,6 +281,15 @@ static void feed_sprt_now(CPUState* cpu, uint32_t prim, unsigned tpage) {
     uint32_t rgba = (code & 1) ? 0xFF808080u                 /* raw texture: no modulation */
                                : ((w1 & 0xFFFFFFu) | 0xFF000000u);
     int abe = code & 2;
+    /* The GPU blends a semi-transparent primitive at the draw mode's ABR rate,
+     * which for an SPRT lives in the DR_MODE that set the page, not in the
+     * packet. ABR 2 (B-F) subtracts the source from the framebuffer — a sprite
+     * that darkens what it covers — and goes to the HUD-panel layer, which
+     * blends by the mode it is given; the plain HUD layer composes every
+     * semi-transparent tri the same way whatever `blend` says, so an ABR-2
+     * sprite fed there paints bright where the GPU darkens. The other rates
+     * are alpha and stay on the HUD layer. */
+    int sub = abe && ((tpage >> 5) & 3u) == 2u;
     ngte_tpage tpd;
     ngte_decode_tpage((unsigned)tpage, (unsigned)clut, 0u, &tpd);
     int tpx = tpd.tpx, tpy = tpd.tpy, bpp = tpd.bpp;
@@ -292,7 +300,9 @@ static void feed_sprt_now(CPUState* cpu, uint32_t prim, unsigned tpage) {
     float su[4] = { (float)u0, (float)(u0 + w), (float)u0, (float)(u0 + w) };
     float sv[4] = { (float)v0, (float)v0, (float)(v0 + h), (float)(v0 + h) };
 
-    openpete_native_scene_begin_frame(openpete_frame);   /* fed at build time, not from the batch */
+    scene_begin_for_feed();   /* the live scene: this runs both at emission (the
+                               * self-linking glyph chains) and from a released
+                               * batch (a HUD sprite linked through the chokepoint) */
     static const int idx[2][3] = { {0,1,2}, {1,3,2} };
     for (int t = 0; t < 2; t++) {
         openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));
@@ -300,8 +310,9 @@ static void feed_sprt_now(CPUState* cpu, uint32_t prim, unsigned tpage) {
             tri.v[j].sx = sx[c]; tri.v[j].sy = sy[c]; tri.v[j].z = 0.0f;
             tri.v[j].u = su[c]; tri.v[j].v = sv[c]; tri.v[j].rgba = rgba; }
         tri.textured = 1; tri.tpage_x = tpx; tri.tpage_y = tpy;
-        tri.clut_x = clx; tri.clut_y = cly; tri.bpp = bpp; tri.blend = abe ? 1 : 0;
-        openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_HUD, 1);
+        tri.clut_x = clx; tri.clut_y = cly; tri.bpp = bpp;
+        tri.blend = sub ? 3 : (abe ? 1 : 0);
+        openpete_native_scene_add_tri(&tri, sub ? OPENPETE_SCENE_HUD_PANEL : OPENPETE_SCENE_HUD, 1);
     }
     bbox_note(UICLS_SPRT, sx[0], sy[0], sx[3], sy[3]);
     s_fed_prims++; s_fed_sprts++;
@@ -417,6 +428,10 @@ static int      s_last_abr = 0;       /* semi-transparency rate (ABR) of the mos
                                        * next semi-transparent F4 (the game links a box's
                                        * DR_MODE immediately before its 0x2A F4). PSX ABR:
                                        * 0 (B+F)/2, 1 B+F, 2 B-F, 3 B+F/4. */
+static unsigned s_last_tpage = 0u;    /* the whole draw-mode word of that same DR_MODE. An
+                                       * SPRT carries no texture page, so the page the GPU
+                                       * samples it through is the one the last draw mode
+                                       * set. */
 
 /* Fold the words a feeder reads into one value, so the release can tell a
  * rewritten primitive from an untouched one without keeping every word. Words
@@ -490,6 +505,17 @@ static int is_freeze_backdrop(CPUState* cpu, uint32_t prim) {
     uint32_t clut = (cpu->read_word(prim + 0x0C) >> 16) & 0xFFFFu;
     int clx = (int)(clut & 0x3Fu) * 16, cly = (int)((clut >> 6) & 0x1FFu);
     return clx == ui_game.freeze_clut_x && cly == ui_game.freeze_clut_y;
+}
+
+/* SPRT (screen-space textured sprite, codes 0x64..0x67) — a HUD icon or digit
+ * linked one primitive at a time through the chokepoint, as opposed to the
+ * glyph chains that link themselves and are fed by text_sprt.c. The packet
+ * carries no texture page: the page comes from the last DR_MODE linked. */
+static int is_sprt(CPUState* cpu, uint32_t prim) {
+    if (prim < 0x80000000u) return 0;
+    uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
+    return ((uint8_t)(w1 >> 24) & 0xFCu) == 0x64u   /* SPRT, any abe/raw combination */
+        && (uint8_t)(w0 >> 24) >= 4;                /* tag length >= 4 (full SPRT) */
 }
 
 /* LINE_G2 (gouraud 2-point line, code 0x50) — UI separator lines and the
@@ -626,7 +652,8 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
                               0);   /* static: no fade-to-black */
         s_fed_prims++;
         break;
-    case QK_DR_MODE: s_last_abr = (int)((w1 >> 5) & 3u); break;   /* the GPU draw-mode's ABR */
+    case QK_DR_MODE:                                             /* the GPU draw mode */
+        s_last_abr = (int)((w1 >> 5) & 3u); s_last_tpage = w1 & 0x7FFu; break;
     case QK_F4_BAR:  feed_f4(cpu, prim, w1, OPENPETE_SCENE_OVERLAY, 0xFFu, 0, 1); break;
     case QK_F4_PANEL: {
         /* The box links its own DR_MODE immediately before the quad, so the
@@ -640,6 +667,7 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
         feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL,
             sub ? 0xFFu : 0x80u, sub ? 3 : 1, 0);
         break; }
+    case QK_SPRT:    feed_sprt_now(cpu, prim, s_last_tpage); break;
     case QK_LINE_G2: feed_line_g2(cpu, prim, w1); break;
     default: break;
     }
@@ -842,6 +870,7 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
         else if (is_f4_opaque(cpu, prim))  claim(cpu, prim, QK_F4_BAR);    /* letterbox bars */
         else if (is_f4_semitrans(cpu, prim) && !s_in_fade)
                                            claim(cpu, prim, QK_F4_PANEL);  /* HUD shaded box / menu panel */
+        else if (is_sprt(cpu, prim))       claim(cpu, prim, QK_SPRT);      /* HUD icons and digits */
         else if (is_line_g2(cpu, prim))    claim(cpu, prim, QK_LINE_G2);   /* UI separator lines */
         else if (!s_in_fade) unclaimed_note(cpu, prim);   /* no decoder for this encoding: linked, not fed
                                                           * (a prim linked inside the fade emitter is the

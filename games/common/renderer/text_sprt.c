@@ -1,7 +1,7 @@
-// games/spyro-3/renderer/text_sprt.c — native renderer feed for the SPRT text
+// games/common/renderer/text_sprt.c — native renderer feed for the SPRT text
 // chain.
 //
-// Most of this game's 2D layer reaches the shared feeder through the
+// Most of a game's 2D layer reaches the shared feeder through the
 // ordering-table chokepoint (ui_game.ot_insert). The glyph emitters do not:
 // each builds its own tag-to-tag chain of one DR_MODE plus one 0x14-byte SPRT
 // per glyph in the primitive buffer, then links the whole chain into the 2D

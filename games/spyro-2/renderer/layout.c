@@ -431,6 +431,42 @@ const game_layout_t game_layout = {
     },
 };
 
-/* No 2D UI feeder: the ordering-table chokepoint and the fade emitter are not
- * located, so games/common/renderer/ui_sprite.c registers no hook. */
-const ui_game_t ui_game = { 0 };
+/* The 2D UI layer (games/common/renderer/ui_sprite.c). The sprite, box, fade
+ * and letterbox primitives carry the same psyq word order as the other game's
+ * and reach the same kind of chokepoint; the text chain does not and is fed by
+ * games/common/renderer/text_sprt.c instead. */
+const ui_game_t ui_game = {
+    .ot_insert    = F_UI_OT_INSERT,
+    .fade_emitter = F_UI_FADE,
+
+    /* No freeze-frame backdrop quad is located on this game: the frozen frame
+     * comes from the retained framebuffer below instead. */
+    .freeze_tint   = 0u,
+    .freeze_clut_x = 0,
+    .freeze_clut_y = 0,
+    /* The state draw func_800145AC keeps the last rendered frame behind the
+     * screens that do not clear by writing DRAWENV.isbg = 0 on both draw
+     * buffers (draw/func_800145AC.s:85-88, :325-329) and drawing no world;
+     * nothing writes the byte back to 1 until a screen that clears runs
+     * (:137-142, :350-355). The isbg bytes are G_DB + 0x18 and
+     * G_DB + 0x74 + 0x18, which drawutil/func_8004D810.s:38-41,97-100 clears
+     * and restores around the blocking fade for the same reason. */
+    .freeze_retained = 1,
+
+    /* The UI texture block: tpage word 0x618 in the text chain's DR_MODE
+     * (mobyfunc.s:1570) is page (512, 256) at 4bpp, the same block the HUD and
+     * dialog sprites sample. */
+    .atlas_x = 512, .atlas_y = 256, .atlas_w = 512, .atlas_h = 256,
+    .atlas_name = "ui_atlas",
+
+    /* Both glyph emitters build a tag-to-tag SPRT chain in the primitive
+     * buffer and link it into the 2D ordering table themselves, so neither
+     * reaches the chokepoint. */
+    /* The loading-screen picture is a third chain of this shape —
+     * func_titlescreen_and_loading_800732D8 draws it as four 128x216 SPRTs at
+     * tpage 0x108 + 2*i — but it lives in the titlescreen_and_loading overlay,
+     * and every one of this game's thirty level overlays spans that vaddr, so
+     * the vaddr-keyed dispatch table cannot name it. The slot stays empty and
+     * the loading picture is fed by no hook. */
+    .sprt_chain_emitter = { F_TEXT_SPRT, F_TEXT_SPRT_PER_GLYPH, 0u },
+};

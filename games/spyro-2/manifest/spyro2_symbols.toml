@@ -169,3 +169,27 @@ note = "the particle renderer (partsdraw.s:13-796, handwritten: it spills s0-s7/
 name = "D_PARTS_ARRAY"
 addr = 0x80066F18
 note = "the word holding the base of the particle pool the renderer walks (partsdraw.s:57-59), 0x20 bytes per record: +0x00 the signed selector halfword (bits 8-11 the class, arithmetic shift by 8 equal to -1 ends the pool, otherwise negative = inactive slot), +0x03 the drawn stamp (partsdraw.s:225 cleared, :360 set), +0x04 X in the low half and Y in the high half, +0x08 Z in the low half (partsdraw.s:91-92), all in quarter world units"
+
+[[symbol]]
+name = "F_UI_OT_INSERT"
+addr = 0x8001B390
+kind = "function"
+note = "func_8001B390 (stdutil.s:87-103) — links a0 into the 2D ordering table whose head word is D_80067000, instruction-for-instruction the other game's func_8004E758 with a different head global; called by drawutil, hud, draw and the level overlays and by no 3D translation unit, so it is the 2D feeder's chokepoint hook site"
+
+[[symbol]]
+name = "F_UI_FADE"
+addr = 0x8004D748
+kind = "function"
+note = "func_8004D748(abrMode, r, g, b) (drawutil/func_8004D748.s:7-56) — the full-screen fade emitter: func_8005A01C(prim, 1, 0, abrMode << 5, 0) then a 0x2A POLY_F4 spanning x 0..0x200, y 0x0C..0xE4 with rgb at +0x10..+0x12, each linked through func_8001B390 and the polybuf cursor D_80067030 advanced 0x24. draw/func_800155A0.s:82,91 drives it from D_80066F68 at ABR 2 and D_80067150 at ABR 1; drawutil/func_8004D810.s:73 is the blocking 16-step variant"
+
+[[symbol]]
+name = "F_TEXT_SPRT"
+addr = 0x8004A374
+kind = "function"
+note = "func_8004A374 (mobyfunc.s:1538-1690) — handwritten glyph emitter: one 0xC-byte DR_MODE carrying tpage 0x618 (mobyfunc.s:1570) then one 0x14-byte SPRT per glyph with clut 0x4922 (mobyfunc.s:1654), chained tag-to-tag and linked into D_80067000 inline without calling func_8001B390"
+
+[[symbol]]
+name = "F_TEXT_SPRT_PER_GLYPH"
+addr = 0x8004A59C
+kind = "function"
+note = "func_8004A59C (mobyfunc.s:1692-1851) — the per-glyph-DR_MODE variant of func_8004A374, rewriting the tpage halfword inside every packet"
