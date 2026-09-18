@@ -142,6 +142,7 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 #define GF_NOLOD     32
 #define GF_CULLLP    64
 #define GF_KEYON     128
+#define GF_HQPIN     256
 
 struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
@@ -674,10 +675,12 @@ void main()
     bool near = false;
     if (!lp && !fillPass && (gf & GF_NEARHQ) != 0 && quad && (front || straddle)
         && (ff & FF_HQELIG) != 0u) {
-        if ((gf & GF_NOLOD) != 0) {
-            /* --no-lod: HQ pinned ON for every eligible face; only the
-             * behind-camera guard and the w3&0x80 exclusion remain (the
-             * latter is folded into FF_HQELIG at pack time). */
+        if ((gf & GF_HQPIN) != 0) {
+            /* --no-lod, flags-only games (hp_far == 0): HQ pinned ON for
+             * every eligible face; only the behind-camera guard and the
+             * w3&0x80 exclusion remain (the latter is folded into FF_HQELIG
+             * at pack time). Games whose draw bins HP by distance keep the
+             * canonical band in every mode, like the walk's face_is_near. */
             double sz = max(m0.z, 0.0lf) + max(m1.z, 0.0lf) + max(m2.z, 0.0lf) + max(m3c.z, 0.0lf);
             near = sz > 0.0lf;
         } else {

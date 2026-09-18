@@ -114,6 +114,10 @@ enum {
 #define OPTC_GF_NOLOD      32u
 #define OPTC_GF_CULLLP     64u    /* LP per-half NCLIP cull (s_cull bit 1)    */
 #define OPTC_GF_KEYON      128u   /* og OT-key emit/contest active this walk  */
+#define OPTC_GF_HQPIN      256u   /* extended LOD pins the HQ subdivide on every
+                                   * eligible HP quad: the walk's face_is_near
+                                   * extended branch, taken only where the draw
+                                   * does not bin HP by distance (hp_far == 0) */
 
 /* face_flags bit layout lives with rhi_terrain_vertex in rhi.h. */
 #define OPTC_SLOT_DEAD     511u

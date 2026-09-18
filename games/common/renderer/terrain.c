@@ -5347,6 +5347,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                    | (lod_handoff     ? OPTC_GF_HANDOFF : 0u)
                    | (s_gapfill_en    ? OPTC_GF_GAPFILL : 0u)
                    | (openpete_no_lod ? OPTC_GF_NOLOD   : 0u)
+                   /* face_is_near's extended branch: the HQ pin applies only
+                    * where the draw does not bin HP by distance. */
+                   | ((openpete_no_lod && !game_layout.terrain.hp_far)
+                                      ? OPTC_GF_HQPIN   : 0u)
                    | ((s_otbias_on && openpete_native_key_resolve_on())
                                       ? OPTC_GF_KEYON   : 0u);
         {   /* OPENPETE_TERRAIN_GPU_TINT=1: retained draws tint by sector id
