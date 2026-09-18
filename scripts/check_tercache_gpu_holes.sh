@@ -157,7 +157,10 @@ DISC_ARG="$(hostpath "$DISC_ABS")"
 
 # One leg. Its log and its PNG are deleted before the run and asserted after
 # it, so a stale file from an earlier build can never be read as this run's
-# result. stdin is closed: the row loop reads the manifest on its own
+# result. The capture is a readback of the presented frame, chrome included,
+# so the on-screen stats block and the notifications are switched off: the
+# FPS digits differ between the two legs and between runs, and text over the
+# clear reads as a hole in one leg and as the reverse case in the other. stdin is closed: the row loop reads the manifest on its own
 # stdin, and a child that inherits it consumes the rows that have not run yet.
 run_leg() {  # tag level pose start extra-args...
     local tag="$1" level="$2" pose="$3" start="$4"; shift 4
@@ -173,7 +176,7 @@ run_leg() {  # tag level pose start extra-args...
                        OPENPETE_LOAD_CENSUS=1
         timeout "$LEG_TIMEOUT" env "${WSLENV_ARGS[@]}" "$EXE" \
             --disc "$DISC_ARG" --no-config --no-card --mute 1 \
-            --vibration 0 --mouse 0 \
+            --vibration 0 --mouse 0 --perf-stats off --osd off \
             --renderer vk --lod extended --window "${WIDTH}x${HEIGHT}" --vsync 0 \
             --skip-to-level "$level" --freecam-pose "$pose" \
             --screenshot-native-only --screenshot-on-frame "$start" \
