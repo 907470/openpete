@@ -14,6 +14,7 @@
 
 #include "../../third_party/psxrecomp/runner/include/iso_reader.h"
 
+#include <cctype>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -23,35 +24,127 @@
 #include <string>
 #include <vector>
 
+namespace {
+
+/* Case-insensitive extension test against a lowercase literal. */
+bool ext_is(const std::filesystem::path& p, const char* lower) {
+    std::string e = p.extension().string();
+    for (char& c : e) c = (char)std::tolower((unsigned char)c);
+    return e == lower;
+}
+
+bool file_exists(const std::filesystem::path& p) {
+    std::error_code ec;
+    return std::filesystem::is_regular_file(p, ec);
+}
+
+/* The path the cue's first FILE "..." line names, resolved against the
+ * cue's own directory when relative. Empty when the cue has no such line. */
+std::filesystem::path cue_named_bin(const std::filesystem::path& cue) {
+    std::ifstream f(cue);
+    if (!f.is_open()) return {};
+    std::string line;
+    while (std::getline(f, line)) {
+        if (line.find("FILE") == std::string::npos) continue;
+        size_t q0 = line.find('"');
+        if (q0 == std::string::npos) continue;
+        size_t q1 = line.find('"', q0 + 1);
+        if (q1 == std::string::npos) continue;
+        std::filesystem::path named(line.substr(q0 + 1, q1 - q0 - 1));
+        if (named.is_relative()) return cue.parent_path() / named;
+        return named;
+    }
+    return {};
+}
+
+/* The single .bin beside the cue. Ambiguous (more than one) resolves to
+ * nothing, since guessing between images would boot the wrong disc. */
+std::filesystem::path lone_sibling_bin(const std::filesystem::path& cue) {
+    std::error_code ec;
+    std::filesystem::path found;
+    for (std::filesystem::directory_iterator it(cue.parent_path(), ec), end;
+         !ec && it != end; it.increment(ec)) {
+        const std::filesystem::path& p = it->path();
+        if (!ext_is(p, ".bin")) continue;
+        if (!found.empty()) return {};
+        found = p;
+    }
+    return found;
+}
+
+void append_tried(std::string& tried, const std::filesystem::path& p) {
+    if (p.empty()) return;
+    if (!tried.empty()) tried += ", ";
+    tried += p.string();
+}
+
+} // namespace
+
+extern "C" int openpete_psx_resolve_disc_bin(const char* disc_path,
+                                             char* out, size_t out_cap,
+                                             char* tried, size_t tried_cap) {
+    if (tried && tried_cap) tried[0] = '\0';
+    if (!disc_path || !out || out_cap == 0) return -1;
+    out[0] = '\0';
+
+    std::string cands;
+    std::filesystem::path resolved;
+    try {
+        std::filesystem::path given(disc_path);
+        if (ext_is(given, ".cue")) {
+            if (!file_exists(given)) {
+                append_tried(cands, given);
+            } else {
+                const std::filesystem::path order[] = {
+                    cue_named_bin(given),
+                    std::filesystem::path(given).replace_extension(".bin"),
+                    lone_sibling_bin(given),
+                };
+                for (const auto& c : order) {
+                    if (c.empty()) continue;
+                    append_tried(cands, c);
+                    if (file_exists(c)) { resolved = c; break; }
+                }
+            }
+        } else if (ext_is(given, ".bin") || ext_is(given, ".img") ||
+                   ext_is(given, ".iso")) {
+            append_tried(cands, given);
+            if (file_exists(given)) resolved = given;
+        } else {
+            append_tried(cands, given);
+        }
+    } catch (const std::exception&) {
+        resolved.clear();
+    }
+
+    if (tried && tried_cap)
+        std::snprintf(tried, tried_cap, "%s", cands.c_str());
+    if (resolved.empty()) return -1;
+
+    std::string r = resolved.string();
+    if (r.size() + 1 > out_cap) return -1;
+    std::snprintf(out, out_cap, "%s", r.c_str());
+    return 0;
+}
+
 extern "C" uint8_t* openpete_psx_load_file_from_disc(const char* cue_path,
                                                     const char* filename,
                                                     size_t* out_size) {
     if (!cue_path || !filename) return nullptr;
 
+    char bin[4096], tried[4096];
+    if (openpete_psx_resolve_disc_bin(cue_path, bin, sizeof bin,
+                                      tried, sizeof tried) != 0) {
+        OPL_ERROR_F("disc", "no disc image at --disc %s (tried: %s)",
+                    cue_path, tried[0] ? tried : "(nothing)");
+        return nullptr;
+    }
+
     PS1::ISOReader reader;
-    if (!reader.Open(cue_path)) {
-        /* iso_reader's CUE parser uses the FILE "..." line literally, which
-         * sometimes mismatches the on-disc bin name. Fall back: try a sibling
-         * .bin in the same directory. */
-        std::filesystem::path cue(cue_path);
-        std::filesystem::path dir = cue.parent_path();
-        bool retried = false;
-        for (auto& e : std::filesystem::directory_iterator(dir)) {
-            auto p = e.path();
-            if (p.extension() == ".bin" || p.extension() == ".BIN") {
-                if (reader.Open(p.string())) {
-                    OPL_INFO_F("disc",
-                               "fell back to direct BIN: %s (cue's FILE line did not match)",
-                               p.string().c_str());
-                    retried = true;
-                    break;
-                }
-            }
-        }
-        if (!retried) {
-            OPL_ERROR_F("disc", "ISOReader::Open failed for %s", cue_path);
-            return nullptr;
-        }
+    if (!reader.Open(bin)) {
+        OPL_ERROR_F("disc", "ISOReader::Open failed for %s (--disc %s)",
+                    bin, cue_path);
+        return nullptr;
     }
 
     PS1::ISOFileEntry entry{};
@@ -91,18 +184,13 @@ extern "C" int openpete_psx_read_disc_serial(const char* image_path,
     if (!image_path || !out || out_cap < 12) return -1;
     out[0] = '\0';
 
+    char bin[4096];
+    if (openpete_psx_resolve_disc_bin(image_path, bin, sizeof bin,
+                                      nullptr, 0) != 0)
+        return -1;
+
     PS1::ISOReader reader;
-    if (!reader.Open(image_path)) {
-        std::filesystem::path given(image_path);
-        std::error_code ec;
-        bool opened = false;
-        for (auto& e : std::filesystem::directory_iterator(given.parent_path(), ec)) {
-            auto p = e.path();
-            if ((p.extension() == ".bin" || p.extension() == ".BIN") &&
-                reader.Open(p.string())) { opened = true; break; }
-        }
-        if (!opened) return -1;
-    }
+    if (!reader.Open(bin)) return -1;
 
     PS1::ISOFileEntry entry{};
     if (!reader.FindFile("SYSTEM.CNF", entry) || entry.size == 0 ||

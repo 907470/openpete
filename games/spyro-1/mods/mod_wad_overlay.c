@@ -110,47 +110,16 @@ void spyro1_mod_wad_configure(const char* disc_path) {
     s_state = 1;
 }
 
-/* cue -> first BINARY file, resolved relative to the cue's directory.
- * A .bin/.img/.iso path is used as-is. When the cue's FILE entry names a
- * bin that isn't on disk (renamed bin, stale cue), fall back to the
- * sibling same-basename .bin — the same tolerance the runtime's own
- * disc loader applies, so a disc that boots also serves WAD reads. */
+/* cue or bin -> the sector image on disk, through the runtime's own disc
+ * resolver, so a disc that boots also serves WAD reads. */
 static int resolve_bin(char* out, size_t cap) {
-    const char* dot = strrchr(s_disc_path, '.');
-    if (dot && (op_strcasecmp(dot, ".cue") == 0)) {
-        FILE* f = fopen(s_disc_path, "r");
-        if (!f) return -1;
-        char line[512], name[400] = "";
-        while (fgets(line, sizeof line, f)) {
-            char* q0 = strchr(line, '"');
-            if (!q0 || !strstr(line, "FILE")) continue;
-            char* q1 = strchr(q0 + 1, '"');
-            if (!q1) continue;
-            snprintf(name, sizeof name, "%.*s", (int)(q1 - q0 - 1), q0 + 1);
-            break;
-        }
-        fclose(f);
-        if (name[0]) {
-            const char* slash = strrchr(s_disc_path, '/');
-            if (slash && name[0] != '/')
-                snprintf(out, cap, "%.*s%s", (int)(slash - s_disc_path + 1),
-                         s_disc_path, name);
-            else
-                snprintf(out, cap, "%s", name);
-            FILE* b = fopen(out, "rb");
-            if (b) { fclose(b); return 0; }
-        }
-        char sib[1200];
-        size_t n = strlen(s_disc_path);
-        if (n >= 4 && n + 1 <= sizeof sib) {
-            memcpy(sib, s_disc_path, n + 1);
-            memcpy(sib + n - 4, ".bin", 4);
-            FILE* b = fopen(sib, "rb");
-            if (b) { fclose(b); snprintf(out, cap, "%s", sib); return 0; }
-        }
-        return name[0] ? 0 : -1;   /* neither exists: report the cue-named path */
+    char tried[1200];
+    if (openpete_psx_resolve_disc_bin(s_disc_path, out, cap,
+                                      tried, sizeof tried) != 0) {
+        OPL_WARN_F("wadmod", "no disc image at %s (tried: %s)",
+                   s_disc_path, tried[0] ? tried : "(nothing)");
+        return -1;
     }
-    snprintf(out, cap, "%s", s_disc_path);
     return 0;
 }
 

@@ -1040,20 +1040,25 @@ static void stamp_psx_pad_bindings(void) {
 }
 #endif
 
-/* Given a .cue path, build the sibling .bin path. Caller frees.
- * Returns NULL on alloc failure or unrecognised extension. */
-static char* derive_bin_path(const char* cue_path) {
-    if (!cue_path) return NULL;
-    size_t n = strlen(cue_path);
-    if (n < 4) return NULL;
-    char* p = (char*)malloc(n + 1);
-    if (!p) return NULL;
-    memcpy(p, cue_path, n + 1);
-    /* Replace ".cue"/".CUE" suffix with ".bin"/".BIN". */
-    if (strcmp(p + n - 4, ".cue") == 0)      memcpy(p + n - 4, ".bin", 4);
-    else if (strcmp(p + n - 4, ".CUE") == 0) memcpy(p + n - 4, ".BIN", 4);
-    else { free(p); return NULL; }
-    return p;
+/* Point PsyCross's CDFS at the sector image behind --disc, so CdRead has
+ * real data. The path may be the cue or the bin itself; the resolver
+ * covers both and reports every candidate it tried. Returns 0 on success,
+ * an OPENPETE_EXIT_* code when the image cannot be resolved. */
+static int attach_disc_image(const openpete_options_t* opts) {
+    char bin[4096], tried[4096];
+    if (openpete_psx_resolve_disc_bin(opts->disc_path, bin, sizeof bin,
+                                      tried, sizeof tried) != 0) {
+        OPL_ERROR_F("boot",
+                    "--disc %s names no readable disc image (tried: %s). "
+                    "Pass the .cue, or the .bin itself.",
+                    opts->disc_path, tried[0] ? tried : "(nothing)");
+        return OPENPETE_EXIT_SETUP_ERROR;
+    }
+    if (opts->disc_cache && openpete_disc_cache_attach(bin))
+        return OPENPETE_EXIT_OK;
+    OPL_INFO_F("boot", "PsyX_CDFS_Init: %s", bin);
+    PsyX_CDFS_Init(bin, /*track=*/0, /*sectorSize=*/0);
+    return OPENPETE_EXIT_OK;
 }
 
 /* Phase 1b: try to load a PSX EXE; return 0 on success, non-zero on
@@ -1121,21 +1126,12 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
      * them with the resolved [keys.pad] bindings. */
     stamp_psx_pad_bindings();
 
-    /* Wire PsyCross's CDFS to the disc .bin so CdRead has real data.
-     * --disc PATH.cue derives the sibling .bin; otherwise we skip and
-     * CdRead returns failure (acceptable for the leaf smoke test). */
+    /* Wire PsyCross's CDFS to the disc image so CdRead has real data.
+     * Without --disc CdRead returns failure, which the leaf smoke test
+     * tolerates. */
     if (opts->disc_path) {
-        char* bin = derive_bin_path(opts->disc_path);
-        if (bin) {
-            if (!(opts->disc_cache && openpete_disc_cache_attach(bin))) {
-                OPL_INFO_F("boot", "PsyX_CDFS_Init: %s", bin);
-                PsyX_CDFS_Init(bin, /*track=*/0, /*sectorSize=*/0);
-            }
-            free(bin);
-        } else {
-            OPL_WARN_F("boot", "could not derive .bin path from --disc=%s",
-                       opts->disc_path);
-        }
+        int disc_rc = attach_disc_image(opts);
+        if (disc_rc != OPENPETE_EXIT_OK) return disc_rc;
     } else {
         OPL_WARN_F("boot", "no --disc; CdRead will return no data");
     }
@@ -2346,17 +2342,8 @@ static int run_host_init(const openpete_options_t* opts) {
 #endif
 
     if (opts->disc_path) {
-        char* bin = derive_bin_path(opts->disc_path);
-        if (bin) {
-            if (!(opts->disc_cache && openpete_disc_cache_attach(bin))) {
-                OPL_INFO_F("boot", "PsyX_CDFS_Init: %s", bin);
-                PsyX_CDFS_Init(bin, /*track=*/0, /*sectorSize=*/0);
-            }
-            free(bin);
-        } else {
-            OPL_WARN_F("boot", "could not derive .bin path from --disc=%s",
-                       opts->disc_path);
-        }
+        int disc_rc = attach_disc_image(opts);
+        if (disc_rc != OPENPETE_EXIT_OK) return disc_rc;
     }
 
     /* The header's entry is the crt0, which sets sp, fp and gp, stores the
