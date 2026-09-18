@@ -1046,6 +1046,8 @@ static const knob_desc_t g_builtin[] = {
         "Gem-glint feed: 0 off, 1 near stars (default), 2 also the far crosses "
         "whose ordering-table bucket loses to the world on the PSX; the guest "
         "draw runs at every setting."),
+    ENVROW_LATCHED("GLINT2", "Debug", "1",
+        "Jittered-beam feed enable (default 1); the guest draw runs either way."),
     ENVROW_LATCHED("SHADOW_BAND", "Debug", "256",
         "Fallback view-Z band for shadow decal mode 0 (default 256)."),
     ENVROW_LATCHED("SHADOW_HW_BIAS", "Debug", "-64,-2,-0.002",

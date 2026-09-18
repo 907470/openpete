@@ -267,6 +267,17 @@ addr = 0x8006DEF8
 note = "the gem-glint pool the renderer walks, 16 records of 0x10 bytes: +0x00 world X, +0x04 Y, +0x08 Z, +0x0C packed {remaining lifetime, size, spin phase, colour-table row}; a zero lifetime byte is a free slot and func_8002F040 allocates one, called from all 37 level-moby overlays. The colour table is D_80066B64 (asm/data/game.data.s:3098), six rows of three words {pale centre, spike tip, near-black waist}, every word carrying 0x3A in its top byte"
 
 [[symbol]]
+name = "F_GLINT2_DRAW"
+addr = 0x8002F5B4
+kind = "function"
+note = "func_8002F5B4 (asm/mobyfunc.s:2547-2937), the jittered-beam renderer: called by fDrawWorld func_8001E460 (asm/nonmatchings/draw/func_8001E460.s:32), its only caller. Walks the 8-slot pool at D_GLINT2_POOL and, per live record, interpolates count+1 camera-relative points from the head world position to the tail one, displaces each interior point by the signed 8-bit fields of its own stored random halfword, widens every point into a pair perpendicular to the local path direction, RTPSes the pairs into the scratchpad at 0x1F800100 and appends one or two 8-word POLY_FT3 semi-transparent per segment, each linked into a bucket off D_OT_BASE keyed on its four corners mean SZ3. The whole record is dropped when the four screen outcodes of every corner share a bit or when the middle point SZ3 reaches 0x5000; between 0x4000 and 0x5000 a DPCS fades the record colour toward black"
+
+[[symbol]]
+name = "D_GLINT2_POOL"
+addr = 0x80072430
+note = "the jittered-beam pool the renderer walks, 8 records of 0x30 bytes: +0x00 head world XYZ, +0x0C tail world XYZ, +0x18 the primitive colour word whose top byte the spawner sets to 0x26 (POLY_FT3 semi-transparent), +0x1C packed {segment count, jitter shift, re-randomize flag halfword}, +0x20 one random halfword per interior point. A zero count byte is a free slot and func_8002F540 allocates the first one it finds, seeding the halfwords from rand (asm/mobyfunc.s:2511-2543)"
+
+[[symbol]]
 name = "F_TRACER_RIBBON"
 addr = 0x8002FB68
 kind = "function"
