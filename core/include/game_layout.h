@@ -238,6 +238,14 @@ typedef struct game_layout {
         /* The LP/HP LOD distance when the environment header has no field for
          * it (env.lod_dist == 0): Spyro 3's draw bins with constants. */
         uint32_t lod_dist_default;
+        /* The HP walk's CLUT-fog ladder row and near-tile select. 0 = the
+         * row is (key - fogRef + 4096) >> 8 with key the four-corner SZ sum
+         * >> 7 << 5, and the near tile half is taken at key - fogRef + 4096
+         * <= 0. 1 = per corner ir0 = fogRef - SZ clamped to [0, 0xFFF], the
+         * row is 15 - (max ir0 >> 8), and the near half is taken at row 0:
+         * the nearest corner alone selects, and the row is the ceiling of
+         * (SZ - (fogRef - 0xF00)) / 256 instead of the floor. */
+        int      ladder_nearest_corner;
         /* The world draw's own per-sector list binning. `no_lp_flag`,
          * `no_hp_flag` and `force_lp_flag` are header flag bits: no LP list, no
          * HP list, and LP drawn even where the sector has HP. `sector_cull`

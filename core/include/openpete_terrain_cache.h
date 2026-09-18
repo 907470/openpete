@@ -118,6 +118,10 @@ enum {
                                    * eligible HP quad: the walk's face_is_near
                                    * extended branch, taken only where the draw
                                    * does not bin HP by distance (hp_far == 0) */
+#define OPTC_GF_LADNEAR    512u   /* game_layout.terrain.ladder_nearest_corner:
+                                   * the CLUT-fog row and near-tile select key
+                                   * on the nearest corner (row = 15 - (max
+                                   * ir0 >> 8)), not the four-corner mean */
 
 /* face_flags bit layout lives with rhi_terrain_vertex in rhi.h. */
 #define OPTC_SLOT_DEAD     511u

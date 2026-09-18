@@ -4302,6 +4302,23 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                           + (int)(sv[i2].m3 * s_fogscale) + (int)(sv[i3].m3 * s_fogscale);
                 int key = (szsum >> 7) << 5;
                 int t0k = key - fogRef + 4096;
+                if (game_layout.terrain.ladder_nearest_corner) {
+                    /* Spyro 2/3 (environment.s 80024C94-80024E2C): each
+                     * corner's depth-cue IR0 = fogRef - SZ is clamped to
+                     * [0, 0xFFF] as it is blended, the largest survives, and
+                     * the row is 15 - (IR0 >> 8); row 0 takes the near tile
+                     * half. Expressed on the mean-key form: t0k <= 0 is the
+                     * near half and t0k >> 8 the row, so t0k here is
+                     * 256 * row. */
+                    int irmax = 0;
+                    const int cq[4] = { i0, i1, i2, i3 };
+                    for (int q2 = 0; q2 < 4; q2++) {
+                        int ir0 = fogRef - (int)(sv[cq[q2]].m3 * s_fogscale);
+                        if (ir0 < 0) ir0 = 0; else if (ir0 > 0xFFF) ir0 = 0xFFF;
+                        if (ir0 > irmax) irmax = ir0;
+                    }
+                    t0k = (15 - (irmax >> 8)) << 8;
+                }
                 if (t0k <= 0) {
                     if (F->matN.textured) { matSel = F->matN; mat = &matSel; tu = F->tuN; tv = F->tvN; dbg_half = 1; }
                 } else {
@@ -5351,6 +5368,8 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
                     * where the draw does not bin HP by distance. */
                    | ((openpete_no_lod && !game_layout.terrain.hp_far)
                                       ? OPTC_GF_HQPIN   : 0u)
+                   | (game_layout.terrain.ladder_nearest_corner
+                                      ? OPTC_GF_LADNEAR : 0u)
                    | ((s_otbias_on && openpete_native_key_resolve_on())
                                       ? OPTC_GF_KEYON   : 0u);
         {   /* OPENPETE_TERRAIN_GPU_TINT=1: retained draws tint by sector id

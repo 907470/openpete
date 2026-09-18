@@ -177,7 +177,25 @@ const game_layout_t game_layout = {
         .abe_in_tpage = 1,
         .tile_word1_br = 1,                         /* GT4 emit: uv1 = word1 - 0x1F00, uv3 = word1
                                                      * (environment.s:2680,2669-2671) */
-        .lod_dist_default = 0x8000u,                /* unused: the draw bins with the constants below */
+        .lod_dist_default = 0x7C00u,                /* no header field. The feeder derives its fog
+                                                     * reference as this value >> 2 = 0x1F00, the
+                                                     * constant the HP walk loads before every
+                                                     * depth-cue blend (environment.s:2688: addi $t5,
+                                                     * $zero, 0x1F00; 2693-2696: IR0 = 0x1F00 - SZ3,
+                                                     * raw near colour at IR0 >= 0x1000, raw far
+                                                     * colour at IR0 <= 0), and the ladder envelope
+                                                     * as this value >> 4 = 0x7C0 = hp_far, the
+                                                     * distance at which the same walk stops listing
+                                                     * HP sectors. The draw bins with the constants
+                                                     * below. */
+        .ladder_nearest_corner = 1,                 /* the HP walk blends each corner with IR0 =
+                                                     * 0x1F00 - SZ3 (environment.s:2693-2698), 0 at
+                                                     * IR0 <= 0 (2811) and 0xFFF at IR0 >= 0x1000
+                                                     * (2816, 2831, 2846), and keeps the largest
+                                                     * (2745-2747, 2772-2774, 2791-2793); the CLUT
+                                                     * row is 15 - (IR0 >> 8), added to the tile word
+                                                     * as row << 22 (2796-2798, 2875-2876), and row 0
+                                                     * selects the +8 tile half (2799-2801) */
         /* The per-sector list binning, environment.s:1686-1720. */
         .no_lp_flag    = 0x2000u,                   /* 1687: andi 0x2000 skips the LP block */
         .no_hp_flag    = 0x4000u,                   /* 1716: andi 0x4000 emits no HP entry */

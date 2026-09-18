@@ -143,6 +143,7 @@ layout(std140, set = 5, binding = 0) uniform TerrainGlobals {
 #define GF_CULLLP    64
 #define GF_KEYON     128
 #define GF_HQPIN     256
+#define GF_LADNEAR   512
 
 struct TerrainSector {
     vec4 o;        /* xyz: sector origin (world/16), w: uintBitsToFloat(flags) */
@@ -771,6 +772,16 @@ void main()
                   + int(m2.z * fogscale) + int(m3c.z * fogscale);
         int key = (szsum >> 7) << 5;
         int t0k = key - fogRef + 4096;
+        if ((gf & GF_LADNEAR) != 0) {
+            /* nearest-corner rule (the walk's ladder_nearest_corner branch):
+             * row = 15 - (max clamped IR0 >> 8), t0k = 256 * row */
+            int irmax = 0;
+            irmax = max(irmax, clamp(fogRef - int(m0.z * fogscale), 0, 0xFFF));
+            irmax = max(irmax, clamp(fogRef - int(m1.z * fogscale), 0, 0xFFF));
+            irmax = max(irmax, clamp(fogRef - int(m2.z * fogscale), 0, 0xFFF));
+            irmax = max(irmax, clamp(fogRef - int(m3c.z * fogscale), 0, 0xFFF));
+            t0k = (15 - (irmax >> 8)) << 8;
+        }
         dbg_t0k = t0k;
         if (t0k <= 0) {
             if ((inMat.z & (1u << 23)) != 0u) {   /* near half textured */
