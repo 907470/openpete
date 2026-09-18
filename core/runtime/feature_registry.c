@@ -32,6 +32,15 @@ static int hook_prof_id(size_t i, const char* name) {
     return s_hook_id[i];
 }
 
+/* Resident-overlay probe (feature_registry.h). Registered by a game whose
+ * overlays share one vaddr; NULL for a game with no overlays, which keeps
+ * every qualified entry inert. */
+static uint32_t (*s_overlay_probe)(void);
+
+void feature_registry_set_overlay_probe(uint32_t (*fn)(void)) {
+    s_overlay_probe = fn;
+}
+
 void feature_registry_apply_options(const openpete_options_t* opts) {
     for (size_t i = 0; i < openpete_feature_count; i++) {
         const feature_module_t* m = openpete_features[i];
@@ -47,6 +56,16 @@ int feature_registry_dispatch(CPUState* cpu, uint32_t addr) {
              e->addr != 0u; e++) {
             if (e->addr == addr) {
                 int rc;
+                /* An overlay-qualified entry dispatches only while its own
+                 * overlay is resident: the same address is a different
+                 * function in every other overlay, and the recompiled body
+                 * that reached this gate is that other function's. Skipping
+                 * leaves the recompiled body to run, which is what that
+                 * function's callers expect. The probe reads guest RAM, so it
+                 * runs only here, after the address has already matched. */
+                if (e->overlay &&
+                    (!s_overlay_probe || s_overlay_probe() != e->overlay))
+                    continue;
                 if (op_prof_on()) {
                     uint64_t t0 = op_prof_now_us();
                     rc = e->fn(cpu, addr);

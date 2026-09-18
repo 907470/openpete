@@ -443,4 +443,7 @@ const ui_game_t ui_game = {
      * 128x216 SPRTs whose rgb carries the fade level, so the walk that reads a
      * glyph chain out of the primitive buffer reads it unchanged. */
     .sprt_chain_emitter = { F_TEXT_SPRT, F_TEXT_SPRT_PER_GLYPH, F_LOADING_SPRT },
+    /* All three emitters are base-binary functions, resident whatever overlay
+     * is loaded, so none is overlay-qualified. */
+    .sprt_chain_overlay = { 0u, 0u, 0u },
 };

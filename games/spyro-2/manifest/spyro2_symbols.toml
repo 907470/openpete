@@ -195,6 +195,12 @@ kind = "function"
 note = "func_8004A59C (mobyfunc.s:1692-1851) — the per-glyph-DR_MODE variant of func_8004A374, rewriting the tpage halfword inside every packet"
 
 [[symbol]]
+name = "F_LOADING_SPRT"
+addr = 0x800732D8
+kind = "function"
+note = "func_titlescreen_and_loading_800732D8(otIndex) (overlays/titlescreen_and_loading/leveldata/func_titlescreen_and_loading_800732D8.s:6-62) — the loading-screen image emitter: four iterations, each one 0xC-byte DR_MODE built by func_8005A01C with tpage 0x108 + 2*i (the 128-px-wide pages of the picture in VRAM) then a 0x14-byte SPRT of code word 0x64808080 at x = i << 7, y 0xC, u/v 0, 0x80 x 0xD8, both linked through func_8001B354 rather than the chokepoint func_8001B390, with the polybuf cursor D_80067030 advanced 0x20 per iteration. Lives in the titlescreen_and_loading overlay (id 34), whose vaddr every level overlay shares, so its hook is overlay-qualified"
+
+[[symbol]]
 name = "D_PORTALS"
 addr = 0x80066F00
 note = "pointer to the level's portal record array, 0x44 bytes per record: five world-space pentagon vertices +0x00, preview mesh pointer +0x3C, enable/draw radius +0x40, back-side flag +0x41. The pass loads the pointer and indexes it by its byte cursor (drawutil/func_8004C66C.s:27-33), gates on +0x40 (:33), reads the back-side flag at +0x41 (:141) and the mesh pointer at +0x3C (:371-375), and advances the cursor by 0x44 (:716). It never reads +0x42 or +0x43"

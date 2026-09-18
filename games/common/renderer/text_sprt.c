@@ -92,12 +92,15 @@ static int on_text_emitter(CPUState* cpu, uint32_t addr) {
 }
 
 /* The hook addresses are the descriptor's, bound at boot: a static
- * initializer cannot read another TU's const. */
+ * initializer cannot read another TU's const. Each entry carries the overlay
+ * its emitter lives in beside the address, so an emitter inside the overlay
+ * window is dispatched only while that overlay is resident and the unrelated
+ * function sharing its address in the other overlays runs untouched. */
 static feature_dispatch_entry_t text_sprt_dispatch[] = {
-    { 0u, on_text_emitter },
-    { 0u, on_text_emitter },
-    { 0u, on_text_emitter },
-    { 0u, NULL },
+    { 0u, on_text_emitter, 0u },
+    { 0u, on_text_emitter, 0u },
+    { 0u, on_text_emitter, 0u },
+    { 0u, NULL, 0u },
 };
 
 static void text_sprt_apply_options(const openpete_options_t* opts) {
@@ -105,12 +108,14 @@ static void text_sprt_apply_options(const openpete_options_t* opts) {
     int n = 0;
     for (int i = 0; i < 3; i++)
         if (ui_game.sprt_chain_emitter[i]) {
-            text_sprt_dispatch[n].addr = ui_game.sprt_chain_emitter[i];
-            text_sprt_dispatch[n].fn   = on_text_emitter;
+            text_sprt_dispatch[n].addr    = ui_game.sprt_chain_emitter[i];
+            text_sprt_dispatch[n].fn      = on_text_emitter;
+            text_sprt_dispatch[n].overlay = ui_game.sprt_chain_overlay[i];
             n++;
         }
-    text_sprt_dispatch[n].addr = 0u;
-    text_sprt_dispatch[n].fn   = NULL;
+    text_sprt_dispatch[n].addr    = 0u;
+    text_sprt_dispatch[n].fn      = NULL;
+    text_sprt_dispatch[n].overlay = 0u;
 }
 
 const feature_module_t text_sprt_module = {

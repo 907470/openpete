@@ -36,6 +36,12 @@ typedef void (*feature_apply_options_fn)(const openpete_options_t* opts);
 typedef struct {
     uint32_t            addr;        /* PSX vaddr; 0 terminates the table */
     feature_dispatch_fn fn;
+    /* Overlay-id qualifier. Every overlay of a game loads at one vaddr, so a
+     * function address inside that window names a different function in each
+     * overlay. An entry with a nonzero id dispatches only while that overlay
+     * is the resident one; 0 (the value every base-binary entry gets from a
+     * two-field initializer) dispatches unconditionally. */
+    uint32_t            overlay;
 } feature_dispatch_entry_t;
 
 /* Forward declarations dropped above — `openpete_options_t` comes
@@ -55,6 +61,13 @@ extern const feature_module_t* const openpete_features[];
 extern const size_t                  openpete_feature_count;
 
 void feature_registry_apply_options(const openpete_options_t* opts);
+
+/* Register the resident-overlay probe consulted for entries carrying a
+ * nonzero `overlay`. The overlay id is a per-game concept, so the registry
+ * reaches it through this pointer instead of naming the game's table. The
+ * probe is called only after an address match, never on the dispatch hot
+ * path. Unregistered, every qualified entry stays inert. */
+void feature_registry_set_overlay_probe(uint32_t (*fn)(void));
 
 /* Walks each registered feature's dispatch_table for a matching addr.
  * Returns 1 if a feature handled the call (caller should skip the

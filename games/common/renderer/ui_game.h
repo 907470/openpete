@@ -63,6 +63,12 @@ typedef struct ui_game {
      * quarter-width sprites. Each is hooked separately and its chain read out
      * of the primitive buffer it just filled. 0 = unused slot. */
     uint32_t sprt_chain_emitter[3];
+
+    /* The overlay each emitter above lives in, 0 for one in the base binary.
+     * An emitter inside the overlay window shares its address with a different
+     * function in every other overlay of the game, so its hook carries the id
+     * and fires only while that overlay is resident. */
+    uint32_t sprt_chain_overlay[3];
 } ui_game_t;
 
 extern const ui_game_t ui_game;

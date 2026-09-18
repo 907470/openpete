@@ -15,6 +15,11 @@
 #include "renderer/ui_game.h"
 #include "spyro2_symbols.gen.h"
 
+/* The id word the titlescreen_and_loading overlay carries at the head of the
+ * overlay region, the value the dispatcher matches it by (generated/
+ * spyro_overlay_table.c). */
+#define OVL_TITLESCREEN_AND_LOADING 34u
+
 const game_layout_t game_layout = {
     .sin_table = G_SIN,      /* 256 s16 1.12 entries; func_8001B61C interpolates
                               * it from a 12-bit angle (stdutil.s:308-318) and
@@ -480,11 +485,12 @@ const ui_game_t ui_game = {
     /* Both glyph emitters build a tag-to-tag SPRT chain in the primitive
      * buffer and link it into the 2D ordering table themselves, so neither
      * reaches the chokepoint. */
-    /* The loading-screen picture is a third chain of this shape —
-     * func_titlescreen_and_loading_800732D8 draws it as four 128x216 SPRTs at
-     * tpage 0x108 + 2*i — but it lives in the titlescreen_and_loading overlay,
-     * and every one of this game's thirty level overlays spans that vaddr, so
-     * the vaddr-keyed dispatch table cannot name it. The slot stays empty and
-     * the loading picture is fed by no hook. */
-    .sprt_chain_emitter = { F_TEXT_SPRT, F_TEXT_SPRT_PER_GLYPH, 0u },
+    /* The loading-screen picture is a third chain of this shape: four
+     * DR_MODE at tpage 0x108 + 2*i, each followed by a 0x14-byte SPRT of
+     * 0x80 x 0xD8 at x = i << 7, y 12. It lives in the
+     * titlescreen_and_loading overlay, whose vaddr every one of this game's
+     * thirty level overlays also occupies, so its slot carries that overlay's
+     * id and the hook fires only while those bytes are the resident ones. */
+    .sprt_chain_emitter = { F_TEXT_SPRT, F_TEXT_SPRT_PER_GLYPH, F_LOADING_SPRT },
+    .sprt_chain_overlay = { 0u, 0u, OVL_TITLESCREEN_AND_LOADING },
 };
