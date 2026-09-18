@@ -86,3 +86,40 @@ pg_resolve() {
   fi
   return 0
 }
+
+# ---- failed-leg logs -------------------------------------------------------
+#
+# A capture leg's log is the only record of why it failed, and a crash writes
+# its evidence to that log: the crash handler prints the fault address, the
+# host RIP, the guest pc/ra and the FIRST backtrace frames (the faulting
+# function) before the last frames (the dispatcher, which is the same for
+# every guest-side fault). Keeping five tail lines therefore keeps the part
+# that identifies nothing, and deleting the log loses a crash that does not
+# reproduce. These two helpers keep the whole log beside the tiles the leg was
+# supposed to write, and quote the identifying lines into the corpus log.
+
+# Delete the crash logs of a previous run so a leg that passes this time
+# cannot leave one behind to be read as this run's failure. args: outdir
+pg_clear_crash_logs() {
+  [[ -d "$1" ]] || return 0
+  find "$1" -maxdepth 1 -type f -name '*.crash.log' -delete
+}
+
+# args: logfile outdir leg-name rc
+pg_keep_crash_log() {
+  local log="$1" outdir="$2" name="$3" rc="$4"
+  local kept="$outdir/${name}.crash.log"
+  cp -f "$log" "$kept"
+  echo "  rc=$rc, full leg log kept: $kept"
+  if grep -q '=== openpete crash:' "$log"; then
+    echo "  --- crash handler ---"
+    sed -n '/=== openpete crash:/,$p' "$log" \
+      | grep -E '^=== openpete crash:|^  fault addr=|^  host RIP=|^  guest (pc|ra) =|^  MOD ATTRIBUTION:|^  host backtrace|^    #[0-2] ' \
+      | sed 's/^/  /'
+  else
+    # No crash banner: a timeout, a refused launch or a clean exit that wrote
+    # no tile. The tail is what says which.
+    echo "  --- last log lines ---"
+    tail -5 "$log" | sed 's/^/  /'
+  fi
+}

@@ -93,6 +93,7 @@ export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
 if [[ "$AFFINE_ENV" != "default" ]]; then export OPENPETE_DEPTH_AFFINE="$AFFINE_ENV"; else unset OPENPETE_DEPTH_AFFINE; fi
 
 mkdir -p "$OUTDIR"
+pg_clear_crash_logs "$OUTDIR"
 echo "[freecam-corpus] game=$GAME bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT lods=[$CAP_LODS] filter='$FILTER' -> $OUTDIR"
 
 lod_tag() { [[ "$1" == "extended" ]] && echo "lodext__" || echo ""; }
@@ -119,7 +120,7 @@ run_leg() {  # slug frame_limit leg flag target lodmode level pose
   local rc=$?
   if [[ ! -f "$OUTDIR/${slug}__${tag}${leg}__${target}-vk.png" ]]; then
     echo "  MISSING ${slug}__${tag}${leg}__${target}-vk.png (rc=$rc)"
-    echo "  --- last log lines ---"; tail -6 "$log" | sed 's/^/  /'
+    pg_keep_crash_log "$log" "$OUTDIR" "${slug}__${tag}${leg}" "$rc"
     rm -f "$log"; return 1
   fi
   # The intermediate leg is only evidence when the sub-tick re-extract actually

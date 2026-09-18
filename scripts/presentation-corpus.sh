@@ -100,6 +100,7 @@ export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
 if [[ "$AFFINE_ENV" != "default" ]]; then export OPENPETE_DEPTH_AFFINE="$AFFINE_ENV"; else unset OPENPETE_DEPTH_AFFINE; fi
 
 mkdir -p "$OUTDIR"
+pg_clear_crash_logs "$OUTDIR"
 echo "[presentation-corpus] game=$GAME bin=$BIN affine=$AFFINE_ENV aspect=$CAP_ASPECT filter='$FILTER' -> $OUTDIR"
 
 # The golden filename encodes the LOD mode: `original` (the authentic PSX band)
@@ -148,7 +149,9 @@ run_one() {  # name frame_limit leg flag targets lodmode freeze
     if [[ ! -f "$OUTDIR/${name}__${tag}${leg}__${t}-vk.png" ]]; then
       echo "  MISSING ${name}__${tag}${leg}__${t}-vk.png (rc=$rc)"; miss=1; fi
   done
-  if [[ $miss -ne 0 ]]; then echo "  --- last log lines ---"; tail -5 "$log" | sed 's/^/  /'; fi
+  if [[ $rc -ne 0 || $miss -ne 0 ]]; then
+    pg_keep_crash_log "$log" "$OUTDIR" "${name}__${tag}${leg}" "$rc"
+  fi
   rm -f "$log"
   return $miss
 }

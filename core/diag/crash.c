@@ -20,6 +20,17 @@
 #include <stdlib.h>
 #include <string.h>
 
+/* Name a guest address against the registered function table: the pc and the
+ * return address are the two that say where the game was. A game that
+ * registers no table, or an address the table does not cover, prints the raw
+ * value. */
+static void crash_print_guest_addr(const char* label, uint32_t addr) {
+    uint32_t off = 0u;
+    const char* fn = openpete_mods_symbol_for_addr(addr, &off);
+    if (fn) fprintf(stderr, "  %s = %s+0x%X\n", label, fn, off);
+    else    fprintf(stderr, "  %s = 0x%08X (no symbol)\n", label, addr);
+}
+
 /* The whole sigaction-based handler is POSIX-only. On MinGW/Windows
  * we fall back to a stub installer (Windows uses SetUnhandledExceptionFilter
  * via different machinery; until that's wired up, crashes just take the
@@ -28,6 +39,7 @@
 
 #if defined(__GLIBC__) || defined(__APPLE__)
 #  include <execinfo.h>
+#  include <dlfcn.h>
 #  define OPENPETE_HAS_BACKTRACE 1
 #endif
 
@@ -88,6 +100,8 @@ static void on_signal(int sig, siginfo_t* info, void* ucontext) {
                 "  v0=0x%08X v1=0x%08X a0=0x%08X a1=0x%08X\n",
                 g_diag_cpu->pc, g_diag_cpu->ra, g_diag_cpu->sp, g_diag_cpu->gp,
                 g_diag_cpu->v0, g_diag_cpu->v1, g_diag_cpu->a0, g_diag_cpu->a1);
+        crash_print_guest_addr("guest pc", g_diag_cpu->pc);
+        crash_print_guest_addr("guest ra", g_diag_cpu->ra);
     } else {
         fprintf(stderr, "  (no CPUState registered)\n");
     }
@@ -110,7 +124,34 @@ static void on_signal(int sig, siginfo_t* info, void* ucontext) {
         void* frames[32];
         int n = backtrace(frames, 32);
         fprintf(stderr, "  host backtrace (%d frames):\n", n);
-        backtrace_symbols_fd(frames, n, fileno(stderr));
+        /* dladdr resolves each return address against the dynamic symbol
+         * table and names the module it came from. A static function has no
+         * dynamic symbol, so that frame prints the module and the
+         * file-relative offset only; that offset is what
+         * `addr2line -e <module>` takes, and unlike the absolute address it
+         * is independent of where the loader placed the module. */
+        for (int i = 0; i < n; i++) {
+            Dl_info di;
+            unsigned long long abs_pc =
+                (unsigned long long)(uintptr_t)frames[i];
+            if (dladdr(frames[i], &di) && di.dli_fbase) {
+                unsigned long long fo =
+                    (unsigned long long)((uintptr_t)frames[i]
+                                         - (uintptr_t)di.dli_fbase);
+                const char* mod = di.dli_fname ? di.dli_fname : "?";
+                if (di.dli_sname && di.dli_saddr)
+                    fprintf(stderr, "    #%-2d 0x%llx %s+0x%llx (%s+0x%llx)\n",
+                            i, abs_pc, di.dli_sname,
+                            (unsigned long long)((uintptr_t)frames[i]
+                                                 - (uintptr_t)di.dli_saddr),
+                            mod, fo);
+                else
+                    fprintf(stderr, "    #%-2d 0x%llx (%s+0x%llx)\n",
+                            i, abs_pc, mod, fo);
+            } else {
+                fprintf(stderr, "    #%-2d 0x%llx (unresolved)\n", i, abs_pc);
+            }
+        }
     }
 #endif
     fflush(stderr);
@@ -198,6 +239,8 @@ static LONG WINAPI on_seh(EXCEPTION_POINTERS* ep) {
                 "  v0=0x%08X v1=0x%08X a0=0x%08X a1=0x%08X\n",
                 g_diag_cpu->pc, g_diag_cpu->ra, g_diag_cpu->sp, g_diag_cpu->gp,
                 g_diag_cpu->v0, g_diag_cpu->v1, g_diag_cpu->a0, g_diag_cpu->a1);
+        crash_print_guest_addr("guest pc", g_diag_cpu->pc);
+        crash_print_guest_addr("guest ra", g_diag_cpu->ra);
     } else {
         fprintf(stderr, "  (no CPUState registered)\n");
     }

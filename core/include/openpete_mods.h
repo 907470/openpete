@@ -65,6 +65,14 @@ typedef struct {
 void openpete_mods_set_symbol_table(const openpete_sdk_symbol_t* table,
                                     size_t count);
 
+/* Name the guest function containing `addr`: the registered symbol with the
+ * largest address <= addr, provided the distance is under a function-sized
+ * bound (the table carries no sizes, so a farther match would name an
+ * unrelated function). Returns NULL when no table is registered or nothing
+ * is near enough; on a hit, *off_out is addr minus the symbol address.
+ * Read-only over a static table, so a crash handler may call it. */
+const char* openpete_mods_symbol_for_addr(uint32_t addr, uint32_t* off_out);
+
 /* Discover, build, load, and initialize mods. Called once at boot after
  * options parsing (core/runtime/run.c). Resolution order for the mods
  * directory: opts->mods_dir → env OPENPETE_MODS_DIR → <exe>/mods.

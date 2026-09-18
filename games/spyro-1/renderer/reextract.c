@@ -52,6 +52,7 @@ static int ra_rebase_on(void) {
 #include "spyro1_symbols.gen.h"
 #include "game_layout.h"
 #include "renderer/player.h"   /* per-call records of the player hooks */
+#include "renderer/player_game.h"   /* PLAYER_PARTS_MAX */
 
 /* The engine layout of the player feeder: every span the record loop stages
  * and every scratch block it overlays. */
@@ -1039,8 +1040,12 @@ static void player_records_loop(CPUState* cpu, int paired, int cam_cut, int cam_
 
         memcpy(sb, rec->spyro, PLAYER_L.rec_len);
         fpos_drop(G_SPYRO);
-        int    rot_active[3] = {0,0,0};
-        double rot_ang[3][3] = {{0}};
+        /* player_native_set_rot_interp reads PLAYER_PARTS_MAX gates and
+         * angle triples regardless of how many the loop below fills, so both
+         * arrays carry that many entries. The trailing ones stay zeroed, and
+         * a zero gate leaves that part on the byte-exact path. */
+        int    rot_active[PLAYER_PARTS_MAX] = {0};
+        double rot_ang[PLAYER_PARTS_MAX][3] = {{0}};
         if (lerp) {
             const uint8_t* psp = prv->src;
             const uint8_t* csp = rec->src;
@@ -1186,8 +1191,12 @@ static void game_reextract_body(void* cpu_v) {
     int      cam_bracketed = 0;
     uint8_t* sp = NULL; uint8_t sp_saved[SPYRO_SAVE]; int sp_bracketed = 0;
     int sp_staged = 0;   /* sp points at the view's staged copy, not guest RAM */
-    int      sp_rot_active[3] = {0,0,0};   /* per-segment (body/head/tail) float-rot gate */
-    double   sp_rot_ang[3][3] = {{0}};     /* [seg][Z,X,Y] sub-tick float byte-angles */
+    /* player_native_set_rot_interp reads PLAYER_PARTS_MAX gates and angle
+     * triples unconditionally, so both arrays carry that many entries even
+     * though this game fills only the three segments below; the trailing
+     * entries stay zeroed and their parts stay inactive. */
+    int      sp_rot_active[PLAYER_PARTS_MAX] = {0};   /* per-segment (body/head/tail) float-rot gate */
+    double   sp_rot_ang[PLAYER_PARTS_MAX][3] = {{0}}; /* [seg][Z,X,Y] sub-tick float byte-angles */
     uint8_t* fl = NULL; uint8_t fl_saved[FLAME_SAVE]; int fl_bracketed = 0;
     int fl_staged = 0;
     double   fl_subframe = 0.0;  /* fractional counter advance → flame sub-keyframe slide */

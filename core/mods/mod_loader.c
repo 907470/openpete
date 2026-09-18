@@ -389,6 +389,28 @@ void openpete_mods_set_symbol_table(const openpete_sdk_symbol_t* table,
     s_symbol_count = count;
 }
 
+/* Nearest preceding function symbol, for naming a guest pc in a crash or
+ * watchdog dump. The table is sorted by name, so the scan is linear; a
+ * non-legacy row wins a tie because the legacy rows are raw-name aliases of
+ * the same address. The bound is one generous function span: without sizes,
+ * a farther match names a function the address is not in. */
+#define SYM_ADDR_SPAN_MAX 0x10000u
+
+const char* openpete_mods_symbol_for_addr(uint32_t addr, uint32_t* off_out) {
+    const openpete_sdk_symbol_t* best = NULL;
+    if (!addr || !s_symbols) return NULL;
+    for (size_t i = 0; i < s_symbol_count; i++) {
+        const openpete_sdk_symbol_t* c = &s_symbols[i];
+        if (c->addr > addr) continue;
+        if (!best || c->addr > best->addr ||
+            (c->addr == best->addr && !c->legacy && best->legacy))
+            best = c;
+    }
+    if (!best || addr - best->addr >= SYM_ADDR_SPAN_MAX) return NULL;
+    if (off_out) *off_out = addr - best->addr;
+    return best->name;
+}
+
 /* ---- mod-facing API impl ------------------------------------------- */
 
 static const openpete_sdk_symbol_t* sym_find(const char* name) {
