@@ -842,7 +842,7 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
             else if (!strcmp(v, "off") || !strcmp(v, "0")) opts->osd = 0;
             else {
                 fprintf(stderr, "openpete: --osd expects on|off, got: %s\n", v);
-                return false;
+                return OPENPETE_EXIT_SETUP_ERROR;
             }
         } else if (strcmp(a, "--osd-position") == 0) {
             const char *v = (i + 1 < argc) ? argv[++i] : "";
@@ -851,7 +851,7 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
                 fprintf(stderr, "openpete: --osd-position expects one of "
                         "top-left|top-center|top-right|bottom-left|bottom-center|"
                         "bottom-right, got: %s\n", v);
-                return false;
+                return OPENPETE_EXIT_SETUP_ERROR;
             }
             opts->osd_position = an;
         } else if (strcmp(a, "--osd-timeout") == 0) {
@@ -864,7 +864,7 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
                 fprintf(stderr, "openpete: --osd-timeout expects seconds in "
                         "(0, %.0f], got: %s\n",
                         (double)OPENPETE_OSD_TIMEOUT_MAX_MS / 1000.0, v);
-                return false;
+                return OPENPETE_EXIT_SETUP_ERROR;
             }
             opts->osd_timeout_ms = (uint32_t)(secs * 1000.0 + 0.5);
         } else if (strcmp(a, "--perf-position") == 0) {
@@ -874,7 +874,7 @@ static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
                 fprintf(stderr, "openpete: --perf-position expects one of "
                         "top-left|top-center|top-right|bottom-left|bottom-center|"
                         "bottom-right, got: %s\n", v);
-                return false;
+                return OPENPETE_EXIT_SETUP_ERROR;
             }
             opts->perf_position = an;
         } else if (strcmp(a, "--perf-stats") == 0) {
