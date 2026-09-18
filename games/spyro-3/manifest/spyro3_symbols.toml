@@ -293,3 +293,29 @@ note = "func_8002FEE0 (asm/mobyfunc.s:3182-3418), the indexed tracer mesh: calle
 name = "D_TRACER_RING"
 addr = 0x80070610
 note = "D_80070610, the tracer ribbon array (games/spyro-3/spyro-3/include/tracers.h types it as Tracer[0x20]): 0x6C bytes per record, +0x00 the live pointer, +0x04 a 16-entry circular buffer of packed unsigned XYZ halves, +0x64 packed {head index, point count, signed half-width byte}, +0x68 the colour-plus-command word the DPCS fade starts from"
+
+[[symbol]]
+name = "F_FLAME_DRAW"
+addr = 0x8002D2C4
+kind = "function"
+note = "func_8002D2C4 (asm/mobyfunc.s:153) — the fire-breath ribbon emitter, the other game's func_80058D64 over all 446 instructions but for constants and addresses. Two call sites in func_8001EC5C, the second only when the game word is 6 (asm/nonmatchings/drawutil/func_8001EC5C.s:81-102); the flame feeder's hook site"
+
+[[symbol]]
+name = "D_FLAME_STATE"
+addr = 0x8007179C
+note = "the flame state block, 0xC4 bytes: ribbon origin +0x00, the strip's two texture words +0x10 and +0x14, per-strand keyframe counter +0x20 and length +0x28, active flag +0x98, attach SHORTMATRIX +0xB0 (five words, ending the block). The emitter loads the base at asm/mobyfunc.s:174 and the matrix at :212"
+
+[[symbol]]
+name = "D_FLAME_CONN"
+addr = 0x80069490
+note = "flame strip connectivity, one word per keyframe counter value: bits 24-31 the spine offset in 8-byte records, bits 8-15 the colour/UV ramp start, bits 16-23 the cross-section count. Strands 4-7 read the same table +0x78 (asm/mobyfunc.s:231,247)"
+
+[[symbol]]
+name = "D_FLAME_GEOM"
+addr = 0x800695F8
+note = "flame cross-section spine, 8-byte records of packed {X, Z, index, sine phase}. Strand s < 4 starts at +0xB0*s, strand s >= 4 at +0x2C0 + 0xE0*(s-4) (asm/mobyfunc.s:239,244,246,253). Byte-identical to the other game's table"
+
+[[symbol]]
+name = "D_FLAME_CAP_COLOURS"
+addr = 0x80069C38
+note = "the first-cell cap colour sets, two runs of four words. The emitter reads the set at +0x00 unless G_LEVELID holds 0x1F, when it reads the set at +0x10 (asm/mobyfunc.s:331,334-341)"

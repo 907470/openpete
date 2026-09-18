@@ -1,18 +1,20 @@
-// games/spyro-1/renderer/flame.c — the SPYRO FLAME renderer
-// (func_80058D64 / r_flame.s) re-derived from gamestate in float + its
-// numerical A/B harness, and an ADDITIVE-blend consumer (ABR mode 1).
+// games/common/renderer/flame.c — the player's fire-breath ribbon, re-derived
+// from gamestate in float, and its numerical A/B harness. An ADDITIVE-blend
+// consumer (ABR mode 1).
 //
-// The flame is a self-contained ~490-line handwritten GTE routine: a
-// procedurally-generated billboard ribbon strip with sine-table flicker,
-// two-stage transform (flame origin -> camera space, then the flame-attach
-// matrix the Spyro renderer cached this frame), additively blended.
+// The emitter is a self-contained handwritten GTE routine (Spyro 1
+// func_80058D64 / r_flame.s, Spyro 2 func_80048F04, Spyro 3 func_8002D2C4;
+// the same 450 instructions but for constants and symbols): a procedurally
+// generated billboard ribbon strip with sine-table flicker, two-stage
+// transform (flame origin -> camera space, then the flame-attach matrix the
+// player renderer cached this tick), additively blended.
 //
-// STATIC ASM FINDING: the strip
-// cell is 0x34 bytes = 13 words = POLY_GT4 and the colour/code word is 0x3E
-// (poly+gouraud+QUAD+TEXTURED+semi-transparent+modulate). So the flame is a
-// TEXTURED semi-transparent gouraud quad ribbon, additively blended. This
-// harness captures live prims to confirm the exact field layout before the
-// native math commits.
+// The strip cell is 0x34 bytes = 13 words = POLY_GT4 and the colour/code word
+// is 0x3E (poly+gouraud+QUAD+TEXTURED+semi-transparent+modulate), so the strip
+// is a textured semi-transparent gouraud quad ribbon; the first cell's caps
+// are untextured gouraud triangles (code 0x30). Every per-game address,
+// stride, amplitude and bias comes from game_layout.flame; the walk below is
+// one body.
 //
 // Determinism: never writes PSX RAM. Calls the real renderer exactly once
 // (behaviour-identical to normal dispatch) and only READS state afterwards.
@@ -23,10 +25,15 @@
 #include "psx_runtime_internal.h"   /* full CPUState (gte_ctrl, read_word, a0..) */
 #include "openpete_native_render.h"
 #include "openpete_log.h"  /* OPL_ERROR_F — ABR/blend FIXME runtime alarms */
+#include "game_layout.h"
 #include "renderer/render_paths.h"  /* --render-paths isolation */
 #include "renderer/hook_bracket.h"  /* the shared feeder hook bracket */
 #include "renderer/player.h" /* per-call records of the player hooks */
-#include "renderer/reextract.h"  /* sub-tick re-extract entry */
+#include "renderer/flame.h"
+#include "openpete_subtick_view.h"  /* the host-only staged view of the flame span */
+#include "openpete_psx.h"           /* the PSX-to-host pointer fallback */
+#include "renderer/interp_lerp.h"   /* lerp_vec3 / lerp_matrix for the bracket */
+#include "renderer/env_knob.h"      /* env_frame_range_t — the census window */
 #include "renderer/native_gte.h"    /* shared GTE float-mirror math */
 
 #include <math.h>
@@ -34,33 +41,38 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include "spyro1_symbols.gen.h"
 #include "openpete_profile.h"   /* OP_PROF_ACCUM_SCOPE — fiber-hook cost split */
 
-extern void     func_80058D64(CPUState* cpu);  /* the real FLAME renderer */
 extern unsigned openpete_frame;
 
 /* Sub-keyframe slide (0..1): the fractional part of the per-strand counter the
  * spine is advancing this present. The counter selects the ribbon's window into
  * the STATIC cross-section spine (one 8-byte record per counter step); this frac
  * slides each cross-section between record[p] and record[p+8] so the ribbon
- * animates BELOW the keyframe grid (matching Spyro's keyframe-lerp smoothness)
- * instead of stepping one record at a time. Set by the spine orchestrator before
- * each sub-tick re-extract; 0 on the canonical render (exact keyframes). */
+ * animates BELOW the keyframe grid (matching the avatar's keyframe-lerp
+ * smoothness) instead of stepping one record at a time. Set by the spine
+ * orchestrator before each sub-tick re-extract; 0 on the canonical render
+ * (exact keyframes). */
 static double s_flame_subframe = 0.0;
 void flame_native_set_subframe(double frac) {
     s_flame_subframe = (frac < 0.0) ? 0.0 : (frac > 1.0 ? 1.0 : frac);
 }
 
-/* ---- gamestate addresses (psx.map) --------------------------------------- */
+/* ---- the per-game descriptor ---------------------------------------------- */
+#define FL       (game_layout.flame)
+#define FL_STATE (game_layout.player.flame_base)
 
-/* flame struct offsets (from the format notes) */
+/* Offsets every game shares in the flame state block. */
 #define FL_POS        0x00u         /* Vector3D m_Position (origin)            */
 #define FL_ACTIVE     0x98u         /* m_IsFlameActive                         */
-#define FL_SUPER      0x9Cu         /* super-flame flag (s2)                   */
-#define FL_ATTACH     0xB8u         /* flame-attach SHORTMATRIX (5 words)      */
 #define FL_CNT        0x20u         /* per-strand vertex count [i] (lb)        */
 #define FL_LEN        0x28u         /* per-strand length [i] (lb)              */
+
+/* The wider second form: 0 on a game whose descriptor names no super word. */
+static int flame_super(CPUState* cpu) {
+    if (!FL.super_off) return 0;
+    return (int)cpu->read_word(FL_STATE + FL.super_off) != 0;
+}
 
 /* ---- captured prims (ground truth) --------------------------------------- */
 typedef struct {
@@ -113,49 +125,50 @@ static void capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
 
 /* ---- one-shot input + prim dump ------------------------------------------ */
 static void flame_dump(CPUState* cpu, uint32_t start, uint32_t end) {
-    uint32_t fb = G_SPYROFLAME;
+    uint32_t fb = FL_STATE;
     fprintf(stderr, "\n=== [flame-dump f=%u] polybuf [%08X,%08X) %u bytes ===\n",
             openpete_frame, start, end, end - start);
     fprintf(stderr, "  m_Position = (%d, %d, %d)\n",
             (int)cpu->read_word(fb+FL_POS), (int)cpu->read_word(fb+FL_POS+4),
             (int)cpu->read_word(fb+FL_POS+8));
-    fprintf(stderr, "  m_IsFlameActive=%d  super(+0x9C)=%d\n",
-            (int)cpu->read_word(fb+FL_ACTIVE), (int)cpu->read_word(fb+FL_SUPER));
+    fprintf(stderr, "  m_IsFlameActive=%d  super=%d\n",
+            (int)cpu->read_word(fb+FL_ACTIVE), flame_super(cpu));
     fprintf(stderr, "  per-strand cnt[0..7] =");
     for (int i = 0; i < 8; i++) fprintf(stderr, " %d", (int8_t)cpu->read_byte(fb+FL_CNT+(uint32_t)i));
     fprintf(stderr, "\n  per-strand len[0..7] =");
     for (int i = 0; i < 8; i++) fprintf(stderr, " %d", (int8_t)cpu->read_byte(fb+FL_LEN+(uint32_t)i));
-    fprintf(stderr, "\n  attach matrix (+0xB8, 5 words -> 9 int16):");
-    for (int i = 0; i < 5; i++) fprintf(stderr, " %08X", cpu->read_word(fb+FL_ATTACH+(uint32_t)i*4));
+    fprintf(stderr, "\n  attach matrix (+%02X, 5 words -> 9 int16):", FL.attach_off);
+    for (int i = 0; i < 5; i++) fprintf(stderr, " %08X", cpu->read_word(fb+FL.attach_off+(uint32_t)i*4));
     fprintf(stderr, "\n  camera projMat (+0x00, 5 words):");
-    for (int i = 0; i < 5; i++) fprintf(stderr, " %08X", cpu->read_word(G_CAMERA+(uint32_t)i*4));
-    fprintf(stderr, "\n  camera pos (+0x28) = (%d, %d, %d)\n",
-            (int)cpu->read_word(G_CAMERA+0x28), (int)cpu->read_word(G_CAMERA+0x2C),
-            (int)cpu->read_word(G_CAMERA+0x30));
+    for (int i = 0; i < 5; i++) fprintf(stderr, " %08X", cpu->read_word(game_layout.cam.base+(uint32_t)i*4));
+    fprintf(stderr, "\n  camera pos (%08X) = (%d, %d, %d)\n", game_layout.cam.position,
+            (int)cpu->read_word(game_layout.cam.position),
+            (int)cpu->read_word(game_layout.cam.position + 4),
+            (int)cpu->read_word(game_layout.cam.position + 8));
 
-    fprintf(stderr, "  rodata D_8006DAA8 geom[0..3] (16B records):\n");
+    fprintf(stderr, "  geom[0..3] (16B records):\n");
     for (int r = 0; r < 4; r++)
         fprintf(stderr, "    +%02X: %08X %08X %08X %08X\n", r*16,
-                cpu->read_word(D_FLAME_GEOM+(uint32_t)r*16+0), cpu->read_word(D_FLAME_GEOM+(uint32_t)r*16+4),
-                cpu->read_word(D_FLAME_GEOM+(uint32_t)r*16+8), cpu->read_word(D_FLAME_GEOM+(uint32_t)r*16+12));
-    fprintf(stderr, "  rodata D_8006E1A8 uv-table[0..7]:");
-    for (int i = 0; i < 8; i++) fprintf(stderr, " %08X", cpu->read_word(D_FLAME_UV+(uint32_t)i*4));
-    fprintf(stderr, "\n  rodata D_8006D94C conn[0..7]:");
-    for (int i = 0; i < 8; i++) fprintf(stderr, " %08X", cpu->read_word(D_FLAME_CONN+(uint32_t)i*4));
+                cpu->read_word(FL.geom+(uint32_t)r*16+0), cpu->read_word(FL.geom+(uint32_t)r*16+4),
+                cpu->read_word(FL.geom+(uint32_t)r*16+8), cpu->read_word(FL.geom+(uint32_t)r*16+12));
+    fprintf(stderr, "  cap colours[0..7]:");
+    for (int i = 0; i < 8; i++) fprintf(stderr, " %08X", cpu->read_word(FL.cap_colours+(uint32_t)i*4));
+    fprintf(stderr, "\n  conn[0..7]:");
+    for (int i = 0; i < 8; i++) fprintf(stderr, " %08X", cpu->read_word(FL.conn+(uint32_t)i*4));
     fprintf(stderr, "\n  flame struct +0x08..0x1C (strip colour/UV base):");
     for (int o = 0x08; o <= 0x1C; o += 4) fprintf(stderr, " +%02X=%08X", o, cpu->read_word(fb+(uint32_t)o));
     fprintf(stderr, "\n");
 
-    /* per active-strand geometry block (s6 = D_8006DAA8 + 0xC0*strand for
-     * strand<4, else +0x100*(strand-4)+0x300). Dump the first 16 8-byte verts. */
+    /* per active-strand geometry block. Dump the first 16 8-byte verts. */
     for (int strand = 0; strand < 8; strand++) {
         int cnt = (int8_t)cpu->read_byte(fb+FL_CNT+(uint32_t)strand);
         if (cnt <= 0) continue;
         int len = (int8_t)cpu->read_byte(fb+FL_LEN+(uint32_t)strand);
-        uint32_t conn = cpu->read_word(D_FLAME_CONN+(uint32_t)(cnt-1)*4);
-        uint32_t off = (strand < 4) ? (uint32_t)0xC0*(uint32_t)strand
-                                    : (uint32_t)0x100*(uint32_t)(strand-4)+0x300;
-        uint32_t s6 = D_FLAME_GEOM + off;
+        uint32_t conn = cpu->read_word(FL.conn + (uint32_t)(cnt-1)*4
+                                       + (strand >= 4 ? FL.conn_hi_off : 0u));
+        uint32_t off = (strand < 4) ? FL.geom_stride_lo*(uint32_t)strand
+                                    : FL.geom_stride_hi*(uint32_t)(strand-4) + FL.geom_hi_base;
+        uint32_t s6 = FL.geom + off;
         uint32_t s7off = ((conn >> 24) << 3) & 0x7F8u;
         fprintf(stderr, "  strand %d: cnt=%d len=%d conn=%08X off=%X s6=%08X s7=s6+%X verts(8B Z/X/Y):\n",
                 strand, cnt, len, conn, off, s6, s7off);
@@ -190,30 +203,30 @@ static void flame_dump(CPUState* cpu, uint32_t start, uint32_t end) {
 
 /* compact per-frame line for the first N active-flame frames */
 static void flame_report(CPUState* cpu) {
-    uint32_t fb = G_SPYROFLAME;
+    uint32_t fb = FL_STATE;
     int textured = 0, quad = 0, tri = 0;
     for (int p = 0; p < s_gte_n; p++) {
         if (s_gte[p].textured) textured++;
         if (s_gte[p].nv == 4) quad++; else if (s_gte[p].nv == 3) tri++;
     }
     fprintf(stderr, "[flame f=%u] prims=%d (quad=%d tri=%d tex=%d) super=%d pos=(%d,%d,%d)\n",
-            openpete_frame, s_gte_n, quad, tri, textured, (int)cpu->read_word(fb+FL_SUPER),
+            openpete_frame, s_gte_n, quad, tri, textured, flame_super(cpu),
             (int)cpu->read_word(fb+FL_POS), (int)cpu->read_word(fb+FL_POS+4), (int)cpu->read_word(fb+FL_POS+8));
 }
 
 /* ---- flame origin -> camera space (the two-stage transform, step 1) -------
  * r_flame.s lines 37–70: the flame origin's camera-space position is a swizzled
  * MVMVA (sf=1, mx=0=RT, vv=3=IR, tv=3=none) of (flame - cam) through the camera
- * rotation matrix g_Camera+0x00..0x10. The IR vector is swizzled exactly as
- * Spyro's TR_body: IR1=cam.y-flame.y, IR2=cam.z-flame.z, IR3=flame.x-cam.x (each
- * truncated to int16 by mtc2). TR[i] = (R · IR) >> 12. The result becomes the
- * GTE TR for every flame vertex (R is then replaced by the attach matrix). */
+ * rotation matrix. The IR vector is swizzled exactly as the avatar's TR_body:
+ * IR1=cam.y-flame.y, IR2=cam.z-flame.z, IR3=flame.x-cam.x (each truncated to
+ * int16 by mtc2). TR[i] = (R · IR) >> 12. The result becomes the GTE TR for
+ * every flame vertex (R is then replaced by the attach matrix). */
 static int s16(int v) { return (int)(int16_t)(uint32_t)v; }
 
 static void flame_origin_tr(CPUState* cpu, const ngte_view* v, double tr[3]) {
-    int fx = (int)cpu->read_word(G_SPYROFLAME + FL_POS + 0);
-    int fy = (int)cpu->read_word(G_SPYROFLAME + FL_POS + 4);
-    int fz = (int)cpu->read_word(G_SPYROFLAME + FL_POS + 8);
+    int fx = (int)cpu->read_word(FL_STATE + FL_POS + 0);
+    int fy = (int)cpu->read_word(FL_STATE + FL_POS + 4);
+    int fz = (int)cpu->read_word(FL_STATE + FL_POS + 8);
     int cx = (int)v->cam_ram[0];   /* integer camera, as the .s loads it */
     int cy = (int)v->cam_ram[1];
     int cz = (int)v->cam_ram[2];
@@ -290,8 +303,8 @@ static void flame_cross_section(CPUState* cpu, uint32_t p, int amp,
                                 double ofx, double ofy, const ngte_view* v, fpt* e0, fpt* e1) {
     int Xraw, Z, idx, sIdx;
     flame_read_cross(cpu, p, &Xraw, &Z, &idx, &sIdx);
-    int cosv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)sIdx + 0x80);
-    int sinv = rd_s16(cpu, D_SIN_TABLE + (uint32_t)sIdx);
+    int cosv = rd_s16(cpu, game_layout.sin_table + (uint32_t)sIdx + 0x80);
+    int sinv = rd_s16(cpu, game_layout.sin_table + (uint32_t)sIdx);
     int co = (amp * cosv) >> 11;
     int si = (amp * sinv) >> 11;
     /* VXY0 = (co - Xraw, si - idx); VXY1 = (-co - Xraw, -si - idx); both at Z */
@@ -316,6 +329,10 @@ typedef struct { float sx[3], sy[3], sz[3]; uint32_t rgb[3]; } fcap;
 #define MAX_FCAP 1024
 static fcap s_fcap[MAX_FCAP]; static int s_fcap_n;
 
+/* strands whose counter was live on the last walk — the census's engagement
+ * count, separating "no flame this present" from "a flame that emitted none". */
+static int s_strands_live;
+
 /* signed 2*area (== GTE NCLIP MAC0 sign); the .s emits a cap iff MAC0 > 0.
  * The GTE NCLIPs the *int16* SXY, so round to int before the sign test — else
  * near-degenerate caps cull differently from the .s (off-by-one cap count). */
@@ -334,7 +351,7 @@ static void emit_cap(const fpt* a, const fpt* b, const fpt* c,
 
 /* first cell (.s block_80058F2C..8005920C): the flame-base caps. RTPS the spine
  * centre at s7 (no flicker) -> t5; RTPT 3 flicker verts from the vert at s7-16
- * -> e0/e1/e2; 4 NCLIP-gated G3 emits combine them with the D_8006E1A8 colours.
+ * -> e0/e1/e2; 4 NCLIP-gated G3 emits combine them with the cap colours.
  * Returns 1 if the strand is near-culled (SZ3>>7 - 2 < 0 -> .s skips the whole
  * strand: no caps AND no strip). */
 static int flame_first_cell(CPUState* cpu, uint32_t s7, int super,
@@ -351,9 +368,9 @@ static int flame_first_cell(CPUState* cpu, uint32_t s7, int super,
     uint32_t w0 = cpu->read_word(s7 - 16), w1 = cpu->read_word(s7 - 12);
     int Xraw2 = s16(w0 >> 16), Z2 = s16(w0 & 0xFFFF), idx2 = s16(w1 & 0xFFFF);
     int sIdx2 = (int)((w1 >> 15) & 0x1FEu);
-    int amp = super ? 0x40 : 0x2C;
-    int co = (amp * rd_s16(cpu, D_SIN_TABLE + (uint32_t)sIdx2 + 0x80)) >> 11;
-    int si = (amp * rd_s16(cpu, D_SIN_TABLE + (uint32_t)sIdx2)) >> 11;
+    int amp = super ? FL.cap_amp_super : FL.cap_amp;
+    int co = (amp * rd_s16(cpu, game_layout.sin_table + (uint32_t)sIdx2 + 0x80)) >> 11;
+    int si = (amp * rd_s16(cpu, game_layout.sin_table + (uint32_t)sIdx2)) >> 11;
     int t0 = -co, t1 = si;
     if (super) { t0 >>= 1; t1 >>= 1; }
     fpt e0, e1, e2;
@@ -364,7 +381,7 @@ static int flame_first_cell(CPUState* cpu, uint32_t s7, int super,
     flame_project(R, TR, ofx, ofy, v, (double)(-co - Xraw2), (double)(-si - idx2), (double)Z2,
                   &e2.sx, &e2.sy, &e2.sz);                       /* VXY2 */
 
-    uint32_t cb = D_FLAME_UV + (super ? 16u : 0u);
+    uint32_t cb = FL.cap_colours + (FL.cap_colour_off ? FL.cap_colour_off(cpu) : 0u);
     uint32_t c0 = cpu->read_word(cb), c1 = cpu->read_word(cb + 4);
     uint32_t c2 = cpu->read_word(cb + 8), c3 = cpu->read_word(cb + 12);
     emit_cap(&t5, &e1, &e0, c0, c2, c1);             /* A: (t5,t7,t6) */
@@ -377,12 +394,13 @@ static int flame_first_cell(CPUState* cpu, uint32_t s7, int super,
 static void flame_build_strip(CPUState* cpu) {
     s_fquad_n = 0;
     s_fcap_n = 0;
-    uint32_t fb = G_SPYROFLAME;
-    int super = (int)cpu->read_word(fb + FL_SUPER) != 0;
+    s_strands_live = 0;
+    uint32_t fb = FL_STATE;
+    int super = flame_super(cpu);
     int R[3][3]; double TR[3];
     ngte_view view; ngte_view_build(cpu, &view);   /* one projection view per walk */
     const ngte_view* v = &view;
-    flame_load_matrix(cpu, fb + FL_ATTACH, R);
+    flame_load_matrix(cpu, fb + FL.attach_off, R);
     flame_origin_tr(cpu, v, TR);
     double ofx = v->ofx, ofy = v->ofy;
 
@@ -394,14 +412,17 @@ static void flame_build_strip(CPUState* cpu) {
     for (int strand = 7; strand >= 0; strand--) {   /* .s processes t9 = 7..0 */
         int cnt = (int8_t)cpu->read_byte(fb + FL_CNT + (uint32_t)strand);
         if (cnt <= 0) continue;
+        s_strands_live++;
         int len = (int8_t)cpu->read_byte(fb + FL_LEN + (uint32_t)strand);
-        uint32_t connPtr = D_FLAME_CONN + (uint32_t)(cnt - 1) * 4;
+        uint32_t connPtr = FL.conn + (uint32_t)(cnt - 1) * 4;
         uint32_t stride;
-        if (strand >= 4) { connPtr += 0x80; stride = 0x100; } else { stride = 0xC0; }
+        if (strand >= 4) { connPtr += FL.conn_hi_off; stride = FL.geom_stride_hi; }
+        else             { stride = FL.geom_stride_lo; }
         uint32_t conn = cpu->read_word(connPtr);
-        uint32_t geomOff = (strand < 4) ? stride * (uint32_t)strand
-                                        : 0x100u * (uint32_t)(strand - 4) + 0x300u;
-        uint32_t s6 = D_FLAME_GEOM + geomOff;
+        uint32_t geomOff = (strand < 4)
+            ? FL.geom_stride_lo * (uint32_t)strand
+            : FL.geom_stride_hi * (uint32_t)(strand - 4) + FL.geom_hi_base;
+        uint32_t s6 = FL.geom + geomOff;
         uint32_t s7 = s6 + (((conn >> 24) << 3) & 0x7F8u);
         uint32_t s5b = s6 + (uint32_t)len * 8u;
         uint32_t v1b = s6 + stride;
@@ -428,16 +449,17 @@ static void flame_build_strip(CPUState* cpu) {
         uint32_t color = ((uint32_t)grey) | ((uint32_t)grey << 8) | ((uint32_t)grey << 16);
         uint32_t base = super ? fb + 8 : fb;
         uint32_t uv0w = cpu->read_word(base + 0x10) + ((uint32_t)byte1 << 8);
-        uint32_t uv1w = cpu->read_word(base + 0x14) + ((uint32_t)byte1 << 8);
+        uint32_t uv1w = cpu->read_word(base + 0x14) + (uint32_t)FL.uv1_bias
+                        + ((uint32_t)byte1 << 8);
         int tpx = ((int)((uv1w >> 16) & 0xF)) * 64, tpy = ((int)((uv1w >> 20) & 1)) * 256;
         int mode = (int)((uv1w >> 23) & 3), bpp = (mode == 0) ? 4 : (mode == 1) ? 8 : 16;
         /* ABR-FIXME: the flame-strip draw hardcodes blend=2 (ABR1
          * additive); the strip tpage's ABR is data-driven (assumed additive, not
          * statically proven). If a flame ever ships a non-additive tpage this fires —
-         * derive blend from the captured ABR instead of hardcoding. FIX flame.c:654 */
+         * derive blend from the captured ABR instead of hardcoding. */
         if (((uv1w >> 21) & 3) != 1)
             OPL_ERROR_F("native", "ABR-FIXME flame strip tpage ABR=%d (feeder hardcodes "
-                        "blend=2 additive) f=%u -- FIX flame.c:654",
+                        "blend=2 additive) f=%u",
                         (int)((uv1w >> 21) & 3), openpete_frame);
         int clx = ((int)((uv0w >> 16) & 0x3F)) * 16, cly = (int)((uv0w >> 22) & 0x1FF);
         uint32_t s4 = 0xA00u, s5step = 0x0A0A0Au;
@@ -448,13 +470,15 @@ static void flame_build_strip(CPUState* cpu) {
          * previous cross-section's packed SXY0 each step (at=0 only on the first
          * step, line 361). So gp==0 (amp forced to 8) holds only for the FIRST
          * cross-section when the caps-bounds failed; after one step gp is the
-         * SXY sum (non-zero) and amp reverts to 0x2C. Reproduce the accumulator
-         * exactly or the retract phase (gp=0 strands) renders too narrow. */
+         * SXY sum (non-zero) and amp reverts to the strip amplitude. Reproduce
+         * the accumulator exactly or the retract phase (gp=0 strands) renders
+         * too narrow. */
         int32_t gp_acc = gp;
         int32_t prev_sxy0 = 0;          /* `at` on loop entry (.s line 361) */
         for (;;) {
             gp_acc += prev_sxy0;        /* add gp, gp, at */
-            int amp = (byte2 <= 0 || gp_acc == 0) ? 8 : (super ? 0x40 : 0x2C);
+            int amp = (byte2 <= 0 || gp_acc == 0) ? 8
+                                                  : (super ? FL.strip_amp_super : FL.strip_amp);
             fpt c0, c1;
             flame_cross_section(cpu, s7, amp, R, TR, ofx, ofy, v, &c0, &c1);
             s7 -= 0x10;
@@ -547,14 +571,32 @@ static void flame_strip_compare(CPUState* cpu) {
             openpete_frame, s_fcap_n, g3, cn, cnv ? csum/cnv : 0, cworst, cover4, cn);
 }
 
+/* OPENPETE_FLAME_CENSUS=LO-HI (or a single frame): one line per feed in that
+ * frame range holding the walk's engagement counts — strands whose counter was
+ * live, ribbon quads, caps that survived NCLIP, and the triangles handed to the
+ * scene. A present with no flame reads as a line of zeros, which is what
+ * separates a producer that did not run from one that emitted nothing. */
+static int flame_census_on(void) {
+    static env_frame_range_t s_range = ENV_FRAME_RANGE_INIT;
+    return env_frame_range_active(&s_range, "OPENPETE_FLAME_CENSUS", openpete_frame);
+}
+static void flame_census_line(const char* src, int slot, int tris) {
+    fprintf(stderr, "[flame-census f=%u %s slot=%d] strands=%d quads=%d caps=%d tris=%d\n",
+            openpete_frame, src, slot, s_strands_live, s_fquad_n, s_fcap_n, tris);
+}
+
 /* ---- native walk feed (float geometry from gamestate) ---------------------
  * Feed the native ribbon (strip quads, textured additive) + base caps (G3
  * untextured opaque) re-derived from gamestate — no .s prim dependency, so it
  * runs at the sub-tick gamestate the host re-renders. Per-vertex view-Z gives
  * the ribbon correct depth along its length. */
-static void flame_feed_native(CPUState* cpu, int slot) {
+static void flame_feed_native(CPUState* cpu, int slot, const char* src) {
     flame_build_strip(cpu);                  /* fills s_fquad (strip) + s_fcap (caps) */
-    if (s_fquad_n <= 0 && s_fcap_n <= 0) return;
+    const int cen = flame_census_on();
+    if (s_fquad_n <= 0 && s_fcap_n <= 0) {
+        if (cen) flame_census_line(src, slot, 0);
+        return;
+    }
     openpete_native_scene_begin_frame(openpete_frame);
     const uint32_t tslot = (uint32_t)(slot < 0 ? 0 : slot);   /* the model record it renders under */
 
@@ -592,6 +634,7 @@ static void flame_feed_native(CPUState* cpu, int slot) {
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
     }
     openpete_native_scene_set_tag(0);
+    if (cen) flame_census_line(src, slot, s_fquad_n * 2 + s_fcap_n);
 }
 
 /* ---- gating --------------------------------------------------------------- */
@@ -606,16 +649,15 @@ static unsigned flame_verify_frame(void) {
     return f;
 }
 
-static void flame_run_draw(CPUState* cpu, uint32_t addr) { (void)addr; func_80058D64(cpu); }
-
 static hook_bracket_state s_flame_hb;
 static const hook_bracket_desc k_flame_bracket = {
     .path = RP_FLAME, .prof_tag = "flame.srend",
-    .run = flame_run_draw, .verify_enabled = flame_verify_enabled,
+    .run = NULL,                      /* the guest entry: the module dispatch runs it */
+    .verify_enabled = flame_verify_enabled,
     .st = &s_flame_hb,
 };
 
-static int on_80058D64_flame_native(CPUState* cpu, uint32_t addr) {
+static int on_flame_draw(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_flame_bracket, &startp, &endp, &feed, &verify))
         return 0;
@@ -625,7 +667,7 @@ static int on_80058D64_flame_native(CPUState* cpu, uint32_t addr) {
     if ((feed || verify) && endp > startp) capture_prims(cpu, startp, endp);
 
     if (feed && endp > startp && render_path_enabled(RP_FLAME)) {
-        flame_feed_native(cpu, slot);             /* native gamestate walk */
+        flame_feed_native(cpu, slot, "hook");     /* native gamestate walk */
     }
 
     if (verify && endp > startp && openpete_frame >= flame_verify_frame()) {
@@ -638,30 +680,122 @@ static int on_80058D64_flame_native(CPUState* cpu, uint32_t addr) {
 }
 
 /* Sub-tick re-extract (high-FPS spine): rebuild one flame record's ribbon
- * from gamestate — extract-only; the record loop in reextract.c
- * calls this once per flame record with its g_SpyroFlame bytes staged.
- * Self-gated on m_IsFlameActive (the .s renderer is only called while
- * breathing fire, so feeding unconditionally would draw a stale ribbon). The
- * ribbon attaches to the staged pose and projects through the interpolated
- * g_Camera, so it stays coherent with the scene. */
+ * from gamestate — extract-only; the record loop below calls this once per
+ * flame record with its flame-state bytes staged. Self-gated on
+ * m_IsFlameActive (the .s renderer is only called while breathing fire, so
+ * feeding unconditionally would draw a stale ribbon). The ribbon attaches to
+ * the staged pose and projects through the interpolated camera, so it stays
+ * coherent with the scene. */
 void flame_reextract(CPUState* cpu, int slot) {
+    if (!FL_STATE) return;
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_enabled(RP_FLAME)) return;
     /* Belt-and-braces with the m_IsFlameActive self-gate below: only replay the
      * flame if the canonical frame drew it (skips stale ribbons during a level
      * transition where the active flag could lag the suppressed render). */
     if (!render_path_canon_drawn(RP_FLAME)) return;
-    if (cpu->read_word(G_SPYROFLAME + FL_ACTIVE) == 0) return;   /* not breathing fire */
-    flame_feed_native(cpu, slot);
+    if (cpu->read_word(FL_STATE + FL_ACTIVE) == 0) return;   /* not breathing fire */
+    flame_feed_native(cpu, slot, "rx");
 }
 
-static const feature_dispatch_entry_t flame_dispatch[] = {
-    { 0x80058D64u, on_80058D64_flame_native },
+/* ---- the sub-tick bracket over one prev/curr pair of flame-state bytes ----
+ * Into `fl` (already holding curr): origin + attach matrix lerped, the
+ * per-strand keyframe counters advanced fractionally with the shared
+ * sub-keyframe slide returned in *subframe. Teleport-guarded on the origin
+ * (the flame's first active tick: prev pose stale from before activation).
+ * Returns 1 when it bracketed, 0 when it snapped (fl untouched). Used by the
+ * ambient bracket and by every flame record. */
+int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl,
+                  double alpha, double* subframe) {
+    const int32_t* pp = (const int32_t*)(pfl + FL_POS);
+    const int32_t* cp = (const int32_t*)(cfl + FL_POS);
+    double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
+    if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) return 0;
+    lerp_vec3  (fl, pfl, cfl, FL_POS, alpha);
+    lerp_matrix(fl, pfl, cfl, FL.attach_off, alpha);
+    /* Per-strand keyframe counter: advance fractionally so the ribbon
+     * extends/scrolls at the present rate. The counter selects the
+     * ribbon's window into the static cross-section spine (one 8-byte
+     * record per step); write the FLOOR of the interpolated counter as
+     * the window and hand the fractional part to the flame feeder as a
+     * SUB-KEYFRAME slide (record[p]→record[p+8] lerp) so the ribbon
+     * animates below the keyframe grid — as smooth as the avatar's anim
+     * lerp, not stepping one record at a time. SNAP on a large jump —
+     * the flame periodically reseeds (the counter wraps 30→0), and
+     * lerping across that collapses the ribbon through zero. |Δ|≤8
+     * separates the continuous advance/retract (g_DeltaTime 2..4) from
+     * the wrap (~30). The advance is the same for every (non-snapped)
+     * strand (all += g_DeltaTime from an integer prev), so the frac is
+     * shared; take it from the first advancing strand. */
+    for (int st = 0; st < 8; st++) {
+        int pcnt = pfl[FL_CNT + st], ccnt = cfl[FL_CNT + st];
+        int d = ccnt - pcnt;
+        if (d > -8 && d < 8) {
+            double fadv = (double)pcnt + (double)d * alpha;
+            double ffloor = floor(fadv);
+            int v = (int)ffloor; if (v < 0) v = 0;
+            fl[FL_CNT + st] = (uint8_t)v;
+            if (*subframe == 0.0 && d > 0) *subframe = fadv - ffloor;
+        }   /* else keep curr (wrap/reseed — already in fl) */
+    }
+    return 1;
+}
+
+/* Flame records: at the flame feeder's place in the scene order (after the
+ * particles), every flame record restages its own flame-state bytes over the
+ * ambient flame bracket — origin, attach matrix and strand counters bracketed
+ * against the previous list's flame of the paired model, with its own
+ * sub-keyframe slide — and runs the flame feeder under its model record's
+ * slot. The walk reads no avatar field, so the model bytes need no restaging
+ * here.
+ *
+ * `fl` is the caller's ambient staged copy of the flame state, or NULL when
+ * the caller keeps none and this loop stages the span itself. Host-only: the
+ * staged span is a view copy, restored to the ambient bytes at the end. */
+void flame_records_present(CPUState* cpu, int paired, int cam_cut, double alpha, uint8_t* fl) {
+    const uint32_t len = game_layout.player.flame_len;
+    if (!FL_STATE || !len || len > PLAYER_REC_AUX_MAX) return;
+    double rec_alpha = 0.0;
+    int n = player_records_present_begin(paired, cam_cut, alpha, &rec_alpha);
+    int nfl = n > 0 ? player_records_flame_count() : 0;
+    if (nfl <= 0) { player_records_present_end(); return; }
+    uint8_t* flb = fl ? fl : (uint8_t*)openpete_subtick_view_stage(FL_STATE, len);
+    if (!flb) flb = (uint8_t*)openpete_psx_to_host_ptr(FL_STATE);
+    if (!flb) { player_records_present_end(); return; }
+    static uint8_t ambient[PLAYER_REC_AUX_MAX];
+    memcpy(ambient, flb, len);
+    for (int j = 0; j < nfl; j++) {
+        const player_flame_rec_t* d = player_records_flame_curr(j);
+        if (!d) break;
+        if (!d->drawn) continue;
+        const player_flame_rec_t* pd = player_records_flame_prev(j);
+        memcpy(flb, d->fl, len);
+        double sub = 0.0;
+        if (player_records_lerps(d->model) && pd) flame_bracket(flb, pd->src, d->src, rec_alpha, &sub);
+        flame_native_set_subframe(sub);
+        flame_reextract(cpu, d->model);   /* self-gated on the staged m_IsFlameActive */
+        player_records_flame_note(j, (const int32_t*)(flb + FL_POS));
+    }
+    memcpy(flb, ambient, len);
+    player_records_present_end();
+    flame_native_set_subframe(0.0);   /* the canonical inline render uses exact keyframes */
+}
+
+/* The hook address is the layout's flame draw site, bound at boot: a static
+ * initializer cannot read another TU's const. A game with no located emitter
+ * leaves it 0 and the registry dispatches nothing. */
+static feature_dispatch_entry_t flame_dispatch[] = {
+    { 0u, on_flame_draw },
     { 0u, NULL },
 };
 
+static void flame_apply_options(const openpete_options_t* opts) {
+    (void)opts;
+    flame_dispatch[0].addr = game_layout.flame.hook;
+}
+
 const feature_module_t flame_module = {
     .name           = "flame_native",
-    .apply_options  = NULL,
+    .apply_options  = flame_apply_options,
     .dispatch_table = flame_dispatch,
 };

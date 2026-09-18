@@ -29,9 +29,16 @@
  * and head rotations +0x0C/+0x10 and the two animation words +0x14/+0x18 are
  * what the player draw reads per tick. The length is the descriptor's, so the
  * captured span and the record store's per-call copy are the same bytes. */
+/* g_SpyroFlame: the fire-breath state block. Its origin and attach matrix both
+ * advance once per tick, so without the pair the ribbon holds its tick pose
+ * under an avatar that moves between ticks; the per-strand keyframe counters in
+ * the same span are what the sub-tick slide advances. The length is the
+ * descriptor's, so the captured span and the record store's per-call copy are
+ * the same bytes. */
 void game_interp_register(void) {
     const game_interp_row_t rows[] = {
         { "g_Spyro", game_layout.player.base, game_layout.player.rec_len, 0 },
+        { "g_SpyroFlame", game_layout.player.flame_base, game_layout.player.flame_len, 0 },
     };
     /* The camera's span is the draw-time transform [cam.base, cam.xform_end),
      * computed from the layout descriptor rather than stated. */

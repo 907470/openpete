@@ -62,14 +62,6 @@ void player_native_set_flat_key(uint32_t key);
  * the canonical inline render stays byte-exact. Defined in renderer/spyro.c. */
 void player_native_set_rot_interp(const int* active, const double* ang);
 
-/* Flame sub-keyframe slide (0..1): the fractional part of the per-strand flame
- * counter advance for this sub-tick present. The flame feeder lerps each ribbon
- * cross-section between adjacent static spine records by this, so the ribbon
- * animates below the keyframe grid. Set by the orchestrator before
- * flame_reextract; reset to 0 after (the canonical render uses exact
- * keyframes). Defined in renderer/flame.c. */
-void flame_native_set_subframe(double frac);
-
 /* Portal previews: the dome rotation matrix is captured prev+curr per canonical
  * tick and lerped by the spine's sub-tick `alpha` (componentwise, like the camera
  * matrix); `interp_on` = camera bracketed (else snap to curr). */
@@ -96,7 +88,6 @@ void shadow_reextract(struct CPUState* cpu);
 void shadow_spyro_reextract(struct CPUState* cpu, int slot);
 void player_reextract(struct CPUState* cpu);
 void particle_reextract(struct CPUState* cpu);
-void flame_reextract(struct CPUState* cpu, int slot);
 void tracer_reextract(struct CPUState* cpu);
 /* Level-transition / balloonist cross-fade backdrop: replays the captured
  * screen-space gouraud mesh (gated on whether func_8004F000 ran this canonical

@@ -15,6 +15,7 @@
 #include "psx_runtime_internal.h"            /* CPUState (read_word) */
 #include "renderer/render_paths.h"  /* canon-drawn mask (load-window census) */
 #include "renderer/interp_regions.h"   /* game_interp_moby_key */
+#include "renderer/flame.h"          /* the shared fire-breath producer + its bracket */
 
 #include <math.h>
 #include <stdint.h>
@@ -88,9 +89,6 @@ static int      s_shown_cam_ok = 0;
 static uint8_t  s_shown_sp[12];          /* Spyro m_Position as last shown */
 static int      s_shown_sp_ok = 0;
 #define FLAME_SAVE    0xD0u         /* flame bytes bracketed (covers pos + attach @ 0xB8..0xCC) */
-#define FLAME_POS_OFF 0x00u         /* m_Position (origin, Vector3D int32) */
-#define FLAME_CNT_OFF 0x20u         /* per-strand keyframe counter [8] (u8, += g_DeltaTime/tick) */
-#define FLAME_ATT_OFF 0xB8u         /* flame-attach SHORTMATRIX (9 int16 + pad) */
 #define SHADOW_SAVE   0x28u         /* the whole D_SPYROSHADOW region (game_layout.player.shadow_len):
                                      * the shadow record loop restages it */
 #define SHADOW_POS_OFF 0x10u        /* m_Position (ground anchor, Vector3D int32) */
@@ -899,48 +897,6 @@ static void scratch_bracket_leave(CPUState* cpu) {
  * prev takes the shown position the same way the singleton did). */
 static double s_rec_alpha = 0.0;   /* the store's alpha this present (player_records_present_begin) */
 
-/* The flame bracket over one prev/curr pair of g_SpyroFlame bytes, into
- * `fl` (already holding curr): origin + attach matrix lerped, the per-strand
- * keyframe counters advanced fractionally with the shared sub-keyframe slide
- * returned in *subframe. Teleport-guarded on the origin (the flame's first
- * active tick: prev pose stale from before activation). Returns 1 when it
- * bracketed, 0 when it snapped (fl untouched). Used by the ambient bracket
- * (c) and by every flame record. */
-static int flame_bracket(uint8_t* fl, const uint8_t* pfl, const uint8_t* cfl, double alpha, double* subframe) {
-    const int32_t* pp = (const int32_t*)(pfl + FLAME_POS_OFF);
-    const int32_t* cp = (const int32_t*)(cfl + FLAME_POS_OFF);
-    double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
-    if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) return 0;
-    lerp_vec3  (fl, pfl, cfl, FLAME_POS_OFF, alpha);
-    lerp_matrix(fl, pfl, cfl, FLAME_ATT_OFF, alpha);
-    /* Per-strand keyframe counter: advance fractionally so the ribbon
-     * extends/scrolls at the present rate. The counter selects the
-     * ribbon's window into the static cross-section spine (one 8-byte
-     * record per step); write the FLOOR of the interpolated counter as
-     * the window and hand the fractional part to the flame feeder as a
-     * SUB-KEYFRAME slide (record[p]→record[p+8] lerp) so the ribbon
-     * animates below the keyframe grid — as smooth as Spyro's anim
-     * lerp, not stepping one record at a time. SNAP on a large jump —
-     * the flame periodically reseeds (the counter wraps 30→0), and
-     * lerping across that collapses the ribbon through zero. |Δ|≤8
-     * separates the continuous advance/retract (g_DeltaTime 2..4) from
-     * the wrap (~30). The advance is the same for every (non-snapped)
-     * strand (all += g_DeltaTime from an integer prev), so the frac is
-     * shared; take it from the first advancing strand. */
-    for (int st = 0; st < 8; st++) {
-        int pcnt = pfl[FLAME_CNT_OFF + st], ccnt = cfl[FLAME_CNT_OFF + st];
-        int d = ccnt - pcnt;
-        if (d > -8 && d < 8) {
-            double fadv = (double)pcnt + (double)d * alpha;
-            double ffloor = floor(fadv);
-            int v = (int)ffloor; if (v < 0) v = 0;
-            fl[FLAME_CNT_OFF + st] = (uint8_t)v;
-            if (*subframe == 0.0 && d > 0) *subframe = fadv - ffloor;
-        }   /* else keep curr (wrap/reseed — already in fl) */
-    }
-    return 1;
-}
-
 static void spyro_record_overlay(uint32_t addr, const uint8_t* bytes, uint32_t len) {
     uint8_t* h = (uint8_t*)openpete_subtick_view_stage(addr, len);
     if (!h) h = (uint8_t*)openpete_psx_to_host_ptr(addr);   /* scratch_bracket_leave restores the rows */
@@ -966,39 +922,6 @@ static void player_records_shadows(CPUState* cpu, int k, uint8_t* shb) {
         shadow_spyro_reextract(cpu, k);
         player_records_shadow_note(j, (const int32_t*)(shb + SHADOW_POS_OFF));
     }
-}
-
-/* Flame records: at the flame feeder's place in the scene order (after the
- * particles), every flame record restages its own g_SpyroFlame bytes over
- * the ambient flame bracket — origin, attach matrix and strand counters
- * bracketed against the previous list's flame of the paired model, with its
- * own sub-keyframe slide — and runs the flame feeder under its model
- * record's slot. The walk reads no g_Spyro field, so the model bytes need no
- * restaging here. */
-static void player_records_flames(CPUState* cpu, int paired, int cam_cut, double alpha, uint8_t* fl) {
-    double rec_alpha = 0.0;
-    int n = player_records_present_begin(paired, cam_cut, alpha, &rec_alpha);
-    int nfl = n > 0 ? player_records_flame_count() : 0;
-    if (nfl <= 0) { player_records_present_end(); return; }
-    uint8_t* flb = fl ? fl : (uint8_t*)openpete_subtick_view_stage(G_SPYROFLAME, PLAYER_L.flame_len);
-    if (!flb) flb = (uint8_t*)openpete_psx_to_host_ptr(G_SPYROFLAME);
-    if (!flb) { player_records_present_end(); return; }
-    static uint8_t ambient[PLAYER_REC_AUX_MAX];
-    memcpy(ambient, flb, PLAYER_L.flame_len);
-    for (int j = 0; j < nfl; j++) {
-        const player_flame_rec_t* d = player_records_flame_curr(j);
-        if (!d) break;
-        if (!d->drawn) continue;
-        const player_flame_rec_t* pd = player_records_flame_prev(j);
-        memcpy(flb, d->fl, PLAYER_L.flame_len);
-        double sub = 0.0;
-        if (player_records_lerps(d->model) && pd) flame_bracket(flb, pd->src, d->src, rec_alpha, &sub);
-        flame_native_set_subframe(sub);
-        flame_reextract(cpu, d->model);   /* self-gated on the staged m_IsFlameActive */
-        player_records_flame_note(j, (const int32_t*)(flb + FLAME_POS_OFF));
-    }
-    memcpy(flb, ambient, PLAYER_L.flame_len);
-    player_records_present_end();
 }
 
 static void player_records_loop(CPUState* cpu, int paired, int cam_cut, int cam_bracketed,
@@ -2067,7 +1990,7 @@ static void game_reextract_body(void* cpu_v) {
      * integer part is already written to FL_CNT). The flame feeder lerps each
      * cross-section between adjacent spine records by this, so the ribbon animates
      * below the keyframe grid. 0 when not bracketed (exact keyframes). Set per
-     * flame record by player_records_flames below; the ambient value is the
+     * flame record by flame_records_present below; the ambient value is the
      * ring pair's, unused by any other feeder. */
     (void)fl_subframe;
     /* Moby rotation: render at float precision (table-interpolated sin/cos over the
@@ -2110,9 +2033,8 @@ static void game_reextract_body(void* cpu_v) {
                        sh);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SPYRO, pt_t1 - pt_t0); }
     particle_reextract(cpu);       /* particles / glows / sparkles (Sparx) */
-    player_records_flames(cpu, paired, cam_cut, alpha, fl);   /* fire breath, one ribbon per flame record */
+    flame_records_present(cpu, paired, cam_cut, alpha, fl);   /* fire breath, one ribbon per flame record */
     tracer_reextract(cpu);          /* additive tracer/beam (replay snapshot, interp camera) */
-    flame_native_set_subframe(0.0);       /* reset: the canonical inline render uses exact keyframes */
     moby_native_set_rot_interp(0);        /* reset: canonical inline render uses byte-exact rotation */
     player_native_set_rot_interp(NULL, NULL); /* reset: canonical inline render uses byte-exact rotation */
     player_native_set_anim_pair(NULL, NULL);  /* reset: the canonical hook owns the seg rows */

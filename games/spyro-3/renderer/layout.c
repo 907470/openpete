@@ -10,8 +10,15 @@
 #include "renderer/ui_game.h"
 #include "spyro3_symbols.gen.h"
 #include "openpete_game_structs.h"
+#include "psx_runtime_internal.h"
 
 #include <stddef.h>
+
+/* The flame's first-cell cap colours: the second four-word set in the one
+ * level whose id the emitter tests for (asm/mobyfunc.s:334-341). */
+static uint32_t flame_cap_colour_off(CPUState* cpu) {
+    return cpu->read_word(G_LEVELID) == 0x1Fu ? 0x10u : 0u;
+}
 
 const game_layout_t game_layout = {
     .sin_table = G_SIN,     /* g_Sin (psx.map); cos = g_Cos 0x80065920 at +0x80.
@@ -394,8 +401,8 @@ const game_layout_t game_layout = {
                                                  * read it, the probe compares against it */
         .sxy_len  = 0x400u,
 
-        .flame_base  = 0u,                      /* no located flame struct */
-        .flame_len   = 0u,
+        .flame_base  = D_FLAME_STATE,
+        .flame_len   = 0xC4u,                   /* through the attach matrix's fifth word */
         .shadow_base = D_PLAYERSHADOW,          /* the ground shadow's own state block:
                                                  * position and rotation the player
                                                  * update writes, not fields of g_Spyro */
@@ -403,6 +410,22 @@ const game_layout_t game_layout = {
                                                  * +0x17 (flag, position, angles, bias) */
 
         .pair_bound = 400.0,
+    },
+    .flame = {
+        .hook       = F_FLAME_DRAW,
+        .attach_off = 0xB0u,             /* asm/mobyfunc.s:212-216 loads five words */
+        .super_off  = 0u,                /* no wide second form */
+        .geom           = D_FLAME_GEOM,
+        .geom_stride_lo = 0xB0u,         /* asm/mobyfunc.s:239 */
+        .geom_stride_hi = 0xE0u,         /* asm/mobyfunc.s:244 */
+        .geom_hi_base   = 0x2C0u,        /* asm/mobyfunc.s:246 */
+        .conn           = D_FLAME_CONN,
+        .conn_hi_off    = 0x78u,         /* asm/mobyfunc.s:247 */
+        .cap_colours    = D_FLAME_CAP_COLOURS,
+        .cap_amp        = 0x28u, .cap_amp_super   = 0x28u,  /* asm/mobyfunc.s:289 */
+        .strip_amp      = 0x2Fu, .strip_amp_super = 0x2Fu,  /* asm/mobyfunc.s:523 */
+        .uv1_bias       = -0x7F00,       /* asm/mobyfunc.s:489, before the per-step ramp */
+        .cap_colour_off = flame_cap_colour_off,
     },
     .hooks = {
         .world_draw = F_WORLD_DRAW,

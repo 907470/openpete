@@ -21,6 +21,7 @@
 #include "renderer/portal_spyro23.h" /* portal_s23_reextract */
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "openpete_interp.h"
+#include "renderer/flame.h"          /* the shared fire-breath producer */
 #include "renderer/interp_lerp.h"    /* lerp16/32, lerp_matrix, lerp_vec3 */
 #include "renderer/interp_regions_gen.h"
 #include "renderer/reextract_view.h"
@@ -511,6 +512,8 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("shadow");
     particles_reextract(cpu);       /* the particle primitives the tick captured */
     RX_CENSUS_STEP("particles");
+    flame_records_present(cpu, bracketed, 0, bracketed ? alpha : 0.0, NULL);
+    RX_CENSUS_STEP("flame");
     /* The HUD, dialog boxes, text and screen fades are produced during the
      * game's own render and cannot be re-derived here, so the canonical present
      * banks them and every re-extract re-applies that carry on top of the

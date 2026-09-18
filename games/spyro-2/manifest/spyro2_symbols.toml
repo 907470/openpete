@@ -226,3 +226,29 @@ name = "F_PORTAL_LEAF"
 addr = 0x800296D0
 kind = "function"
 note = "func_800296D0 (cyclorama.s:382) — draws one pre-projected preview mesh (a0 > 0 the base record, a0 == 0 the record at +0x3C) clipped to D_PORTAL_BLOCK's pentagon edges with two DPCS fades. Word-for-word the other game's func_8001C8C8 over all 525 instructions but for 49 addresses"
+
+[[symbol]]
+name = "F_FLAME_DRAW"
+addr = 0x80048F04
+kind = "function"
+note = "func_80048F04 (mobyfunc.s:157) — the fire-breath ribbon emitter, the other game's func_80058D64 over all 441 instructions but for constants and addresses. One call site, gated on the flame state's +0x98 byte (drawutil/func_8004C534.s:72-77); the flame feeder's hook site"
+
+[[symbol]]
+name = "D_FLAME_STATE"
+addr = 0x8006AA1C
+note = "the flame state block, 0xC4 bytes: ribbon origin +0x00, the strip's two texture words +0x10 and +0x14, per-strand keyframe counter +0x20 and length +0x28, active flag +0x98, attach SHORTMATRIX +0xB0 (five words, ending the block). The emitter loads the base at mobyfunc.s:178 and the matrix at :216"
+
+[[symbol]]
+name = "D_FLAME_CONN"
+addr = 0x80062968
+note = "flame strip connectivity, one word per keyframe counter value: bits 24-31 the spine offset in 8-byte records, bits 8-15 the colour/UV ramp start, bits 16-23 the cross-section count. Strands 4-7 read the same table +0x78 (mobyfunc.s:235,251)"
+
+[[symbol]]
+name = "D_FLAME_GEOM"
+addr = 0x80062AD0
+note = "flame cross-section spine, 8-byte records of packed {X, Z, index, sine phase}. Strand s < 4 starts at +0xB0*s, strand s >= 4 at +0x2C0 + 0xE0*(s-4) (mobyfunc.s:243,248,250,257)"
+
+[[symbol]]
+name = "D_FLAME_CAP_COLOURS"
+addr = 0x80063110
+note = "the first-cell cap colour set, four words read in order at +0x00..+0x0C (mobyfunc.s:335). The second set at +0x10 has no selector in this game"

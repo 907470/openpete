@@ -19,6 +19,9 @@
 extern "C" {
 #endif
 
+/* A descriptor slot the game fills with a function reading guest RAM. */
+struct CPUState;
+
 enum { TERRAIN_FACES_SPYRO1 = 0, TERRAIN_FACES_SPYRO3 = 1 };
 enum { CYC_FACES_SPYRO1 = 0, CYC_FACES_SPYRO3 = 1 };
 /* The bounding-sphere rejection the world draw runs before it bins a sector
@@ -602,6 +605,47 @@ typedef struct game_layout {
 
         double   pair_bound;
     } player;
+
+    /* The player's fire-breath ribbon. One handwritten GTE routine walks
+     * eight strands of a static cross-section spine table and appends a
+     * textured additive POLY_GT4 strip per strand, plus four untextured
+     * gouraud triangles capping the strand's first cell. `hook` = 0 on a
+     * game with no located emitter, and the producer registers no dispatch.
+     *
+     * The strand state lives in the block at game_layout.player.flame_base:
+     * the ribbon origin at +0x00, the strip's two texture words at +0x10 and
+     * +0x14, the per-strand keyframe counter at +0x20 and the strand length
+     * at +0x28, the active flag at +0x98, and the attach SHORTMATRIX at
+     * `attach_off`. `super_off` is the word selecting the wider second form,
+     * 0 on a game with no such form, which also removes the halved cap
+     * flicker vector and the second texture-word pair 8 bytes on that the
+     * wide form reads.
+     *
+     * Strand s reads its spine at `geom` + `geom_stride_lo` * s for s < 4 and
+     * at `geom` + `geom_hi_base` + `geom_stride_hi` * (s - 4) above that, and
+     * its connectivity word at `conn` + 4 * (counter - 1), plus `conn_hi_off`
+     * for s >= 4. `cap_colours` is the first of two four-word cap colour
+     * sets; `cap_colour_off` returns the byte offset of the set this tick, 0
+     * or 0x10, and NULL means always the first set. `cap_amp` and `strip_amp`
+     * scale the sine-table flicker vector of the cap ring and of each strip
+     * cross-section, `*_super` the same under a set `super_off`. `uv1_bias`
+     * is added to the second texture word before the per-step ramp. */
+    struct {
+        uint32_t hook;
+        uint32_t attach_off;
+        uint32_t super_off;
+        uint32_t geom;
+        uint32_t geom_stride_lo;
+        uint32_t geom_stride_hi;
+        uint32_t geom_hi_base;
+        uint32_t conn;
+        uint32_t conn_hi_off;
+        uint32_t cap_colours;
+        int      cap_amp, cap_amp_super;
+        int      strip_amp, strip_amp_super;
+        int32_t  uv1_bias;
+        uint32_t (*cap_colour_off)(struct CPUState* cpu);
+    } flame;
 
     /* Hook sites: the guest entry addresses the feeders dispatch on.
      * `visibility` is the function that fills the visibility verdict when

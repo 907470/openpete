@@ -37,10 +37,24 @@ static const game_interp_row_t s_rows[] = {
 };
 
 void game_interp_register(void) {
+    /* g_SpyroFlame: the fire-breath state block, whose base and length come
+     * from the layout descriptor rather than a symbol, so the row is built
+     * here instead of in the static table. Its origin and attach matrix both
+     * advance once per tick, so without the pair the ribbon holds its tick
+     * pose under an avatar that moves between ticks; the per-strand keyframe
+     * counters in the same span are what the sub-tick slide advances. */
+    enum { NROWS = (unsigned)(sizeof(s_rows) / sizeof(s_rows[0])) + 1u };
+    game_interp_row_t rows[NROWS];
+    for (unsigned i = 0; i + 1u < (unsigned)NROWS; i++) rows[i] = s_rows[i];
+    rows[NROWS - 1].name = "g_SpyroFlame";
+    rows[NROWS - 1].addr = game_layout.player.flame_base;
+    rows[NROWS - 1].length = game_layout.player.flame_len;
+    rows[NROWS - 1].ra_commit = 0;
+
     /* The camera's span is the draw-time transform [cam.base, cam.xform_end),
      * computed from the layout descriptor rather than stated. Spyro 3 has no
      * pools outside the moby array, so the shared walk is the whole capture. */
-    game_interp_register_common(s_rows, (unsigned)(sizeof(s_rows) / sizeof(s_rows[0])),
+    game_interp_register_common(rows, (unsigned)NROWS,
                                 game_layout.cam.xform_end - game_layout.cam.base,
                                 NULL);
 }

@@ -15,6 +15,7 @@ extern const feature_module_t glint_module;
 extern const feature_module_t glint2_module;
 extern const feature_module_t moby_module;
 extern const feature_module_t player_module;
+extern const feature_module_t flame_module;
 extern const feature_module_t ui_sprite_module;
 extern const feature_module_t text_sprt_module;
 extern const feature_module_t terrain_probe_module;
@@ -40,6 +41,11 @@ const feature_module_t* const openpete_features[] = {
        names and feeds the primitives it appended, which link into the 3D
        ordering table and so never reach the 2D chokepoint. */
     &particles_module,
+    /* The shared fire-breath feeder: hooks the flame emitter
+     * game_layout.flame names and re-derives its additive ribbon from the
+     * flame state block; inert unless the native scene is enabled or
+     * OPENPETE_FLAME_VERIFY is set. */
+    &flame_module,
     /* The tracer feeder: hooks the point-ring ribbon and the indexed mesh,
        both of which link their own primitives into the 3D ordering table. */
     &tracers_module,

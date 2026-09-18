@@ -177,7 +177,6 @@ openpete_add_game(spyro-1
         # table. The sub-tick re-extract orchestrator is ORCHESTRATOR above.
         renderer/render_decouple.c
         renderer/spyro.c
-        renderer/flame.c
         renderer/shadow_spyro.c
         renderer/particle.c
         renderer/tracer.c

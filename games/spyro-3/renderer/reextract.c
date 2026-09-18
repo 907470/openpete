@@ -23,6 +23,7 @@
 #include "renderer/player_game.h"   /* PLAYER_PARTS_MAX */
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "openpete_interp.h"
+#include "renderer/flame.h"          /* the shared fire-breath producer */
 #include "renderer/interp_lerp.h"    /* lerp16/32, lerp_matrix, lerp_vec3 */
 #include "renderer/interp_regions_gen.h"
 #include "renderer/reextract_view.h"
@@ -515,6 +516,8 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("shadow");
     particles_reextract(cpu);       /* the particle primitives the tick captured */
     RX_CENSUS_STEP("particles");
+    flame_records_present(cpu, bracketed, 0, bracketed ? alpha : 0.0, NULL);
+    RX_CENSUS_STEP("flame");
     tracers_reextract(cpu);         /* the tracer primitives the tick captured */
     RX_CENSUS_STEP("tracers");
     glow_reextract(cpu);            /* the glow fans the tick captured */

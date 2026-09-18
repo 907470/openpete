@@ -15,6 +15,8 @@
 #include "renderer/ui_game.h"
 #include "spyro2_symbols.gen.h"
 
+#include <stddef.h>
+
 /* The id word the titlescreen_and_loading overlay carries at the head of the
  * overlay region, the value the dispatcher matches it by (generated/
  * spyro_overlay_table.c). */
@@ -440,8 +442,8 @@ const game_layout_t game_layout = {
                                                  * against it */
         .sxy_len  = 0x400u,
 
-        .flame_base  = 0u,                      /* no located flame struct */
-        .flame_len   = 0u,
+        .flame_base  = D_FLAME_STATE,
+        .flame_len   = 0xC4u,                   /* through the attach matrix's fifth word */
         .shadow_base = D_PLAYERSHADOW,          /* the ground shadow's own state block, read
                                                  * only by the player-shadow draw; inert until
                                                  * that feeder registers on this game */
@@ -449,6 +451,22 @@ const game_layout_t game_layout = {
                                                  * +0x17 (flag, position, angles, bias) */
 
         .pair_bound = 400.0,
+    },
+    .flame = {
+        .hook       = F_FLAME_DRAW,
+        .attach_off = 0xB0u,             /* mobyfunc.s:216-220 loads five words */
+        .super_off  = 0u,                /* no wide second form */
+        .geom           = D_FLAME_GEOM,
+        .geom_stride_lo = 0xB0u,         /* mobyfunc.s:243 */
+        .geom_stride_hi = 0xE0u,         /* mobyfunc.s:248 */
+        .geom_hi_base   = 0x2C0u,        /* mobyfunc.s:250 */
+        .conn           = D_FLAME_CONN,
+        .conn_hi_off    = 0x78u,         /* mobyfunc.s:251 */
+        .cap_colours    = D_FLAME_CAP_COLOURS,
+        .cap_amp        = 0x28u, .cap_amp_super   = 0x28u,  /* mobyfunc.s:293 */
+        .strip_amp      = 0x2Fu, .strip_amp_super = 0x2Fu,  /* mobyfunc.s:521 */
+        .uv1_bias       = -0x7F00,       /* mobyfunc.s:487, before the per-step ramp */
+        .cap_colour_off = NULL,          /* always the first colour set */
     },
     .hooks = {
         .world_draw = F_WORLD_DRAW,

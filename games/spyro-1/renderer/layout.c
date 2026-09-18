@@ -6,8 +6,15 @@
 #include "renderer/ui_game.h"
 #include "spyro1_symbols.gen.h"
 #include "openpete_game_structs.h"
+#include "psx_runtime_internal.h"
 
 #include <stddef.h>
+
+/* The flame's first-cell cap colours: the second four-word set while the wide
+ * form is set (r_flame.s:80059040-80059048). */
+static uint32_t flame_cap_colour_off(CPUState* cpu) {
+    return cpu->read_word(G_SPYROFLAME + 0x9Cu) ? 0x10u : 0u;
+}
 
 /* g_EnvironmentAnimations precedes g_Environment (environment.h); the
  * generated env-anim walker func_8002A6FC indexes it as t9+0x10.. */
@@ -232,6 +239,22 @@ const game_layout_t game_layout = {
         .shadow_len  = 0x28u,
 
         .pair_bound = 400.0,             /* world units one record may move in a tick */
+    },
+    .flame = {
+        .hook       = F_FLAME_DRAW,
+        .attach_off = 0xB8u,             /* r_flame.s:80058E4C-80058E5C loads five words */
+        .super_off  = 0x9Cu,             /* r_flame.s:80058E74 */
+        .geom           = D_FLAME_GEOM,
+        .geom_stride_lo = 0xC0u,         /* r_flame.s:80058EB8 */
+        .geom_stride_hi = 0x100u,        /* r_flame.s:80058EC8 */
+        .geom_hi_base   = 0x300u,        /* r_flame.s:80058ED0 */
+        .conn           = D_FLAME_CONN,
+        .conn_hi_off    = 0x80u,         /* r_flame.s:80058ED4 */
+        .cap_colours    = D_FLAME_UV,
+        .cap_amp        = 0x2Cu, .cap_amp_super   = 0x40u,  /* r_flame.s:80058F7C-80058F80 */
+        .strip_amp      = 0x2Cu, .strip_amp_super = 0x40u,  /* r_flame.s:80059300-80059304 */
+        .uv1_bias       = 0,             /* the strip's second texture word is read as stored */
+        .cap_colour_off = flame_cap_colour_off,
     },
     .hooks = {
         .world_draw = F_WORLD_DRAW,
