@@ -41,9 +41,7 @@
 
 #include <SDL3/SDL.h>
 #include <SDL3/SDL_vulkan.h>
-#ifdef _WIN32
-#include <windows.h>  /* SetWindowPos/HWND_BOTTOM: the background window's restack */
-#endif
+#include "openpete_window_restack.h"
 
 #include <math.h>    /* fminf/fmaxf/floorf (prepass recon + occlusion grid) */
 #include <stdbool.h>
@@ -1664,24 +1662,6 @@ static SDL_WindowFlags nr_window_flags(const openpete_options_t *opts)
     return f;
 }
 
-/* Push the window to the bottom of the stacking order without activating,
- * moving or resizing it. Only Win32 has a portable-through-SDL equivalent;
- * x11 and wayland leave the stacking order to the window manager, which the
- * not-focusable flag and the activate hints already steer. Called once, on
- * the thread that owns the window. */
-static void nr_window_send_to_back(SDL_Window *win)
-{
-#ifdef _WIN32
-    HWND hwnd = (HWND)SDL_GetPointerProperty(SDL_GetWindowProperties(win),
-                                             SDL_PROP_WINDOW_WIN32_HWND_POINTER,
-                                             NULL);
-    if (hwnd)
-        SetWindowPos(hwnd, HWND_BOTTOM, 0, 0, 0, 0,
-                     SWP_NOACTIVATE | SWP_NOMOVE | SWP_NOSIZE);
-#else
-    (void)win;
-#endif
-}
 
 /* Window state as the window manager reports it, for a harness to assert on.
  * Printed at bring-up and again at exit, since a window manager may focus or
@@ -2221,7 +2201,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
             /* An adopted window was created before the flag was read, so the
              * not-focusable state is applied here as well as at creation. */
             SDL_SetWindowFocusable(win, false);
-            nr_window_send_to_back(win);
+            openpete_window_send_to_back(win);
         }
         nr_log_window_state(win, "bring-up");
 
