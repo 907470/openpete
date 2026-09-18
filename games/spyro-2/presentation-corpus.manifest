@@ -46,4 +46,8 @@ open-guidebook|960|200||980,998
 # semi-transparent text box and the speaker's name box are both open; the
 # large box's four corners are the stepped corner pieces. 700 is the title
 # fly-in before the level, where the game's logo slides in at the top.
-glimmer-pogo-dialogue|900|200||700,1000
+# 897, 901 and 903 straddle Pogo's blend from anim 0 into anim 3 (the id
+# changes at 903); 987 and 989 straddle two NPCs' blend from anim 0 into
+# anim 1: the intermediate legs show whether the sub-tick pose is continuous
+# across a tick while the game blends toward the next animation.
+glimmer-pogo-dialogue|900|200||700,897,901,903,987,989,1000
