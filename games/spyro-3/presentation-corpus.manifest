@@ -5,13 +5,15 @@
 # The pin holds VBL 1500 on the sub-tick leg as well as the canonical one: the
 # grid's intermediate samples land at +interval/2, so the pose the player walk
 # was measured against had no __inter__ tile of its own.
+# 2560 pins the camera inside the portal (VBLs 2544-2589), where the
+# destination's preview picture fills the screen.
 # 2700 pins the level transition past the grid's last sample: the movie's
 # inputs end at 2589 and the run continues, so the sub-tick leg there is
 # the transition gamestate, where the re-extract draws the cyclorama and the
 # player and every other producer returns empty. The grid's own 2650
 # intermediate sample covers the transition's start; 2700 covers it 50 VBLs
 # further in, where the canonical frame no longer moves between ticks.
-sunrise-spring-sunny-villa-portal-entry|1500|100||1500,2700
+sunrise-spring-sunny-villa-portal-entry|1500|100||1500,2560,2700
 
 # sunrise-spring-surface-swim arms the player draw's water-plane split.
 # g_Spyro+0x28 is zero on every frame of the other three bk2s and of the whole
