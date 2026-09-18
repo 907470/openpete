@@ -11,6 +11,7 @@ openpete_add_game(spyro-2
     ORCHESTRATOR     renderer/reextract.c
     INTERP_REGIONS   renderer/interp_regions.c
     MOBY_GAME        ${CMAKE_SOURCE_DIR}/games/common/renderer/moby_game_spyro23.c
+    PLAYER_GAME      ${CMAKE_SOURCE_DIR}/games/common/renderer/player_game_spyro23.c
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro2_symbols.toml
     SOURCES
         skip_to_level.c
@@ -25,4 +26,7 @@ openpete_add_game(spyro-2
         renderer/layout.c
 
         # The per-game addresses the shared moby decoders read.
-        renderer/moby_game.c)
+        renderer/moby_game.c
+
+        # The per-game tables the shared player provider reads.
+        renderer/player_game.c)

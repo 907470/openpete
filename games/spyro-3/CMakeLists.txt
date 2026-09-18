@@ -16,7 +16,7 @@ openpete_add_game(spyro-3
     INTERP_REGIONS   renderer/interp_regions.c
     TERRAIN_GAME     renderer/terrain_game.c
     MOBY_GAME        ${CMAKE_SOURCE_DIR}/games/common/renderer/moby_game_spyro23.c
-    PLAYER_GAME      renderer/player_game.c
+    PLAYER_GAME      ${CMAKE_SOURCE_DIR}/games/common/renderer/player_game_spyro23.c
     SOURCES
         skip_to_level.c
         features/freecam.c
@@ -27,6 +27,8 @@ openpete_add_game(spyro-3
         renderer/layout.c
         # The per-game addresses the shared moby decoders read.
         renderer/moby_game.c
+        # The per-game tables the shared player provider reads.
+        renderer/player_game.c
         renderer/portal.c
         renderer/tracers.c
         renderer/glow.c

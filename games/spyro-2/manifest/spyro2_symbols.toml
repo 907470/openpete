@@ -115,3 +115,24 @@ name = "F_MOBY_DRAW_STATIC"
 addr = 0x80046FD8
 kind = "function"
 note = "func_80046FD8, the second model kind's draw: walks the stride-0x10 static queue at draw scratch +0x1C00 (mobydraw.s:3843)"
+
+[[symbol]]
+name = "F_PLAYER_DRAW"
+addr = 0x80041DBC
+kind = "function"
+note = "the player avatar's own draw (spyrodraw.s:13, the whole translation unit at 0x1A9C bytes), run twice a tick: the mirrored copy with g_Spyro+0x2C set, then the avatar with it clear. It saves $s0..$s6 into the spill block D_8006A9EC and restores them before returning (spyrodraw.s:14-22). The shared player feeder's hook site"
+
+[[symbol]]
+name = "D_SPYRO_ANIMS"
+addr = 0x80066F24
+note = "pointer to the 256-entry Animation table the player draw indexes by the animation word's low byte (spyrodraw.s:35-37, entries at :56-60); the player-shadow draw reads the avatar's animation through the same pointer (mobyfunc.s:688). Written at level load"
+
+[[symbol]]
+name = "D_SPYRO_BLEND"
+addr = 0x80062868
+note = "the 256-byte table the player draw looks the keyframe blend byte up in (g_Spyro+0x1C for the body, +0x1D for the head) before shifting the result left four into the part record's IR0 field (spyrodraw.s:41-46,111-114,136). The moby cull maps Moby+0x40 through the same table (mobydraw.s:460-462)"
+
+[[symbol]]
+name = "D_PLAYERSHADOW"
+addr = 0x800698D0
+note = "the player's ground-shadow state block, read by the player-shadow draw func_800495E8 (mobyfunc.s:623-885): +0x00 a flag scaling every silhouette radius by 3/4, +0x04/+0x08/+0x0C the shadow's world position, +0x10 a packed byte-angle triple whose top byte at +0x13 suppresses the draw, +0x14 the ordering-key bias"

@@ -9,7 +9,8 @@
 // texture tables, the environment animations, the visibility verdict, the fog
 // terms, the draw buffers, the primitive allocator, the camera, the level id
 // the world-draw, sky-draw and visibility hooks, the cyclorama header and the
-// moby group. The shadow, particle, portal and player-draw groups are still 0.
+// moby and player groups. The shadow, particle and portal groups are
+// still 0.
 
 #include "game_layout.h"
 #include "renderer/ui_game.h"
@@ -293,13 +294,69 @@ const game_layout_t game_layout = {
         .hook_draw_shaded   = 0u,
         .hook_draw_simple   = F_MOBY_DRAW_STATIC,
     },
-    /* The player state block opens with the world position, three int32. Only
-     * `base` and `pos_off` are located: the player feeder needs the part
-     * records and the draw hook as well, so it still refuses to run, and the
-     * position probe (game_get_player_position) reads these two alone. */
+    /* The avatar's own draw, func_80041DBC. Its translation unit holds that one
+     * handwritten routine and nothing else, and it is instruction-identical to
+     * the other game's: the whole 1703-instruction listing aligns one for one,
+     * with the only disassembly difference a `lhu $a0, 0($a0)` the two listings
+     * render differently from the same word 0x00008494 (spyrodraw.s:1198). Every
+     * offset below is therefore read at a Spyro 2 site with the same meaning. */
     .player = {
         .base    = G_SPYRO,
-        .pos_off = 0x00u,
+        /* The struct's own length, read off the routine that clears it:
+         * memset(g_Spyro, 0, 0x2C4) (spyroupdate/func_80030A6C.s:48-49 forms the
+         * address into $s3, :62 passes the length). It is also the span the
+         * interp ring captures. */
+        .rec_len = 0x2C4u,
+        .pos_off = 0x00u,                       /* spyrodraw.s:209-211, three words */
+        .rot_off = { 0x0Cu, 0x10u },            /* body and head packed byte eulers
+                                                 * (spyrodraw.s:271,329) */
+        .anim_off = { 0x14u, 0x18u },           /* body and head animation words
+                                                 * (spyrodraw.s:44,112) */
+        .sort_depth_off    = 0x1Eu,             /* spyrodraw.s:252 lb 0x1E: the ordering bias */
+        .colour_filter_off = 0x20u,             /* byte 3 selects the pre-blend colour table
+                                                 * (spyrodraw.s:742-745) */
+        .emit_mode_off     = 0u,                /* one emit path */
+        .hook_draw = F_PLAYER_DRAW,
+
+        /* The routine carves its scratch out of the polybuf every tick, as the
+         * moby cull does: base = *polybuf.end - 0x3000, the two 0x3C-byte part
+         * records at +0x1400 and a zero flags word after them
+         * (spyrodraw.s:38,40,109,177,203). */
+        .part_base   = 0u,
+        .part_base_polybuf_off = 0x3000u,
+        .part_off    = 0x1400u,
+        .part_stride = 0x3Cu,
+        .part_count  = 2,
+        .part_block_len = 0xC0u,                /* the two records and the terminator */
+
+        .part_flags_off    = 0x00u,             /* spyrodraw.s:108,176 */
+        .part_matrix_off   = 0x10u,             /* spyrodraw.s:272, func_8001B6C8's destination */
+        .part_tr_off       = 0x04u,             /* spyrodraw.s:267-269 */
+        .part_stream_a_off = 0x24u,             /* static / adjust / block cursors
+                                                 * (spyrodraw.s:76-78,144-147) */
+        .part_stream_b_off = 0x30u,             /* spyrodraw.s:104-106,172-174 */
+        .part_stream_flag_bit = { 12, 13 },     /* spyrodraw.s:403,412 */
+        .part_matrix_sign  = 0x80000000u,       /* spyrodraw.s:377 bgez skips the reload */
+        .blend_mask        = 0x0FFFu,           /* the blend byte << 4, 1.12 (spyrodraw.s:402) */
+
+        .colour_scratch_off = 0x1800u,          /* spyrodraw.s:750 */
+        .colour_scratch_len = 0x200u,           /* 7-bit colour indices, four bytes each */
+        .sxy_base = 0x1F800000u,                /* the draw writes every projected vertex's
+                                                 * int16 screen position here as it goes
+                                                 * (spyrodraw.s:363,390-393,445-450); the walk
+                                                 * does not read it, the probe compares
+                                                 * against it */
+        .sxy_len  = 0x400u,
+
+        .flame_base  = 0u,                      /* no located flame struct */
+        .flame_len   = 0u,
+        .shadow_base = D_PLAYERSHADOW,          /* the ground shadow's own state block, read
+                                                 * only by the player-shadow draw; inert until
+                                                 * that feeder registers on this game */
+        .shadow_len  = 0x18u,                   /* mobyfunc.s:625-717 reads +0x00 through
+                                                 * +0x17 (flag, position, angles, bias) */
+
+        .pair_bound = 400.0,
     },
     .hooks = {
         .world_draw = F_WORLD_DRAW,

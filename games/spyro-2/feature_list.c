@@ -6,6 +6,7 @@ extern const feature_module_t render_paths_module;
 extern const feature_module_t terrain_module;
 extern const feature_module_t cyclorama_module;
 extern const feature_module_t moby_module;
+extern const feature_module_t player_module;
 
 const feature_module_t* const openpete_features[] = {
     /* --render-paths: the path-isolation selection (apply_options only). */
@@ -20,5 +21,10 @@ const feature_module_t* const openpete_features[] = {
      * game_layout.moby names and decodes their records through the
      * moby_game_s23 provider; inert unless the native scene is enabled. */
     &moby_module,
+    /* The shared player-avatar feeder: hooks the player draw game_layout.player
+     * names and decodes its skeleton through the player_game_s23 provider;
+     * inert unless the native scene is enabled or OPENPETE_PLAYER_VERIFY is
+     * set. */
+    &player_module,
 };
 const size_t openpete_feature_count = sizeof(openpete_features) / sizeof(openpete_features[0]);
