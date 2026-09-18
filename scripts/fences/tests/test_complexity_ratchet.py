@@ -201,6 +201,7 @@ class GitGuardTest(unittest.TestCase):
         "git -c core.hookspath=githooks commit -m x",
         "git config core.hooksPath githooks", "git config core.hooksPath",
         "git config --get core.hooksPath", "git commit -F /tmp/msg",
+        "git commit -q -m x 2>&1", "git commit -m x > /tmp/out 2>/dev/null",
         "git commit --author 'A <a@b>' -m x", "git commit -m x --date now",
         "git commit --include foo.c -m x", "git commit -i foo.c -m x",
         "git add a && git commit -m \"it's fine\" && git show --stat HEAD",
