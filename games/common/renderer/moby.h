@@ -67,6 +67,13 @@ int moby_native_canon_drawn_mobys(const uint32_t** out);
 /* Sub-tick re-extract entry: rebuild this present's moby contribution from
  * the captured cull records and the interpolated camera. */
 void moby_reextract(struct CPUState* cpu);
+/* Whether the second model kind has a queue this present may replay: the game
+ * provides the kind, the canonical present ran its draw, and that draw's epoch
+ * is the committed one. The queue is a host copy rather than a staged view of
+ * the tick's draw scratch, so it replays independently of the animated queue's
+ * staging: a state whose tick ran one of the two draws replays that one, and a
+ * state that ran neither still replays nothing. */
+int moby_native_simple_fresh(void);
 
 /* ---- second model kind ------------------------------------------------
  * A game whose moby set includes a model kind its own draw pass owns
@@ -79,6 +86,12 @@ void moby_reextract(struct CPUState* cpu);
  * lands in the same scene category and the same depth space as the animated
  * one. Valid only from inside simple_pass. */
 void moby_simple_record(struct CPUState* cpu, uint32_t moby);
+/* A record whose model the game places in screen space rather than in the
+ * world: the projection origin, in PSX pixels, that the following triangles of
+ * this record project through, in place of the view's own. The record is
+ * tagged HUD3D by the call. Called after moby_simple_record, which clears it,
+ * so a world-placed record projects exactly as it did. */
+void moby_simple_screen_origin(double ofx, double ofy);
 /* The screen position of one view-space point under the pass's view, so a
  * provider can run its own winding test on the same coordinates the emit
  * projects with. */

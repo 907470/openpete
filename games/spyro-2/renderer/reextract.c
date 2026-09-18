@@ -82,6 +82,11 @@ static uint32_t s_epoch_ok;        /* the stamp a capture must carry to be fresh
  * draw (a pause or a load screen) leaves the queue stale instead of replaying
  * the last level's records. */
 static uint32_t s_mobyreg_epoch;
+/* Whether that queue is staged over its own address for the present in flight.
+ * The regular record pass decodes through the staged view, so this, and not the
+ * epoch alone, is the pass's freshness: a present that could not stage the
+ * queue must not walk it. */
+static int      s_recs_staged;
 
 /* OPENPETE_CAM_DBG=1: per canonical present and per sub-tick re-extract, the
  * camera transform the pass will draw with: the world matrix at +0x14 as nine
@@ -113,7 +118,7 @@ void spyro_native_canon_epoch_commit(void) {
 }
 uint32_t spyro_native_canon_epoch_stamp(void) { return s_epoch_now; }
 int  spyro_native_canon_epoch_fresh(uint32_t stamp) { return stamp == s_epoch_ok; }
-int  spyro_native_canon_mobyreg_fresh(void) { return s_mobyreg_epoch == s_epoch_ok; }
+int  spyro_native_canon_mobyreg_fresh(void) { return s_recs_staged; }
 int  spyro_native_canon_shaded_fresh(void) { return 0; }    /* no second material pass */
 
 /* The moby cull records live in the draw scratch this tick carved out of the
@@ -197,10 +202,12 @@ void spyro_native_canon_capture_recs(void* cpu) {
 /* Stage the captured queue for this present. Returns 0 when there is none, so
  * the caller skips the replay rather than decoding whatever now lives there. */
 static int stage_moby_records(void) {
+    s_recs_staged = 0;
     if (!s_recs_len || s_mobyreg_epoch != s_epoch_ok) return 0;
     void* stage = openpete_subtick_view_stage(s_recs_base, s_recs_len);
     if (!stage) return 0;
     memcpy(stage, s_recs_copy, s_recs_len);
+    s_recs_staged = 1;
     return 1;
 }
 
@@ -488,7 +495,12 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("terrain");
     portal_s23_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* homeworld portal previews */
     RX_CENSUS_STEP("portal");
-    if (stage_moby_records()) {
+    /* The two model kinds are queued and replayed apart: the animated queue is
+     * a staged view of the tick's draw scratch, the second kind's queue a host
+     * copy. A state whose tick ran one draw and not the other replays the one
+     * it ran, and the passes inside skip on their own producer's freshness. */
+    const int moby_staged = stage_moby_records();
+    if (moby_staged || moby_native_simple_fresh()) {
         /* The cull stores each animated record already composed against the
          * tick's camera, in view space; hand the replay that camera so it can
          * re-base onto the staged one. Cleared after the pass, so the canonical

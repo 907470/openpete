@@ -2008,6 +2008,21 @@ static void emit_wtri(proj_xy* a, proj_xy* b, proj_xy* c,
  * space. */
 static const int MOBY_IDENT_Q12[3][3] = { {4096,0,0}, {0,4096,0}, {0,0,4096} };
 
+/* The projection origin of the record being decoded, and the view it projects
+ * through. A record whose model is placed in screen space names its own origin
+ * in PSX pixels; every other record takes the origin of its own view, which is
+ * what these two read before this existed. */
+static int    s_cur_screen;
+static double s_cur_screen_ofx, s_cur_screen_ofy;
+
+static const ngte_view* moby_simple_view(double* ofx, double* ofy) {
+    const ngte_view* view = s_cur_screen ? &s_view_canon
+                                         : moby_record_view(s_cur_moby_key);
+    *ofx = s_cur_screen ? s_cur_screen_ofx : view->ofx;
+    *ofy = s_cur_screen ? s_cur_screen_ofy : view->ofy;
+    return view;
+}
+
 void moby_simple_record(CPUState* cpu, uint32_t moby) {
     s_cur_moby_key  = moby;
     s_cur_moby_cls  = moby ? (uint16_t)cpu->read_half(moby + game_layout.moby.class_off) : 0;
@@ -2015,17 +2030,31 @@ void moby_simple_record(CPUState* cpu, uint32_t moby) {
     s_cur_ui    = openpete_ui_moby_is_addr_static(moby) ? 2
                 : openpete_ui_moby_is_addr_ui(moby)     ? 1 : 0;
     s_cur_front = s_cur_ui == 0 && moby_is_cutscene_actor(cpu, moby);
+    s_cur_screen = 0;
     s_emit_fkey = 0u;
     s_emit_special = 0u;
 }
 
+void moby_simple_screen_origin(double ofx, double ofy) {
+    s_cur_screen = 1;
+    s_cur_screen_ofx = ofx;
+    s_cur_screen_ofy = ofy;
+    /* The record is a screen-anchored 3D model, the class the HUD3D category
+     * carries: its own faces Z-sort against each other and the whole record
+     * paints over the world. The canonical view keeps the game's projection
+     * distance, so the origin the record names is the pixel it means. */
+    s_cur_ui = 2;
+    s_cur_front = 0;
+}
+
 void moby_simple_project(const double p[3], float* sx, float* sy) {
-    const ngte_view* view = moby_record_view(s_cur_moby_key);
+    double ofx, ofy;
+    const ngte_view* view = moby_simple_view(&ofx, &ofy);
     double x, y; int sat;
     double vzz = project(MOBY_IDENT_Q12, NULL, p[0], p[1], p[2],
-                         view->ofx, view->ofy, view, &x, &y, &sat);
+                         ofx, ofy, view, &x, &y, &sat);
     moby_gte_near_fixup(MOBY_IDENT_Q12, NULL, p[0], p[1], p[2],
-                        vzz, view->ofx, view->ofy, view, &x, &y);
+                        vzz, ofx, ofy, view, &x, &y);
     *sx = (float)x; *sy = (float)y;
 }
 
@@ -2034,16 +2063,17 @@ void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
                      int textured, int tpage_x, int tpage_y,
                      int clut_x, int clut_y, int bpp, int blend,
                      uint32_t fkey) {
-    const ngte_view* view = moby_record_view(s_cur_moby_key);
+    double ofx, ofy;
+    const ngte_view* view = moby_simple_view(&ofx, &ofy);
     proj_xy q[3];
     for (int k = 0; k < 3; k++) {
         double sx, sy; int sat;
         /* The point is already in view space, so the rotate step is identity
          * and the translation zero; only the divide is left to do. */
         double vzz = project(MOBY_IDENT_Q12, NULL, p[k][0], p[k][1], p[k][2],
-                             view->ofx, view->ofy, view, &sx, &sy, &sat);
+                             ofx, ofy, view, &sx, &sy, &sat);
         int unr = moby_gte_near_fixup(MOBY_IDENT_Q12, NULL, p[k][0], p[k][1], p[k][2],
-                                      vzz, view->ofx, view->ofy, view, &sx, &sy);
+                                      vzz, ofx, ofy, view, &sx, &sy);
         q[k].sx = (float)sx; q[k].sy = (float)sy;
         q[k].vz = (float)vzz; q[k].tvz = (float)vzz;
         q[k].sat = sat; q[k].unr = unr; q[k].rec = -1;
@@ -5477,6 +5507,10 @@ static int s_simple_ntri;
  * runs only while this stamp is the committed epoch. */
 static uint32_t s_canon_simple_epoch = 0;
 static int      s_canon_simple_valid = 0;
+int moby_native_simple_fresh(void) {
+    return moby_game.simple_replay && s_canon_simple_valid &&
+           spyro_native_canon_epoch_fresh(s_canon_simple_epoch);
+}
 static void moby_run_draw_simple(CPUState* cpu, uint32_t addr) {
     (void)addr;
     s_simple_ntri = moby_game.simple_pass(cpu);
@@ -6556,9 +6590,9 @@ void moby_reextract(CPUState* cpu) {
      * which a menu or map state leaves unrun while the regular pass keeps
      * running, so the replay takes that pass's own epoch stamp rather than the
      * regular pass's freshness. */
-    int sim_fresh = s_canon_simple_valid && spyro_native_canon_epoch_fresh(s_canon_simple_epoch);
+    int sim_fresh = moby_native_simple_fresh();
     int sim_walk = 0;
-    if (sim_fresh && moby_game.simple_replay) {
+    if (sim_fresh) {
         s_cur_mat = "SIM";
         moby_view_build(cpu);
         s_gout.n = 0;

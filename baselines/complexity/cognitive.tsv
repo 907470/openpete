@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: d5663c4a59f69aabc256a1b9d442b5c51b5d7e8a
+# head: dc5458b1633fc0a2251c09b149a728c87b27be13
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -143,7 +143,7 @@ games/common/renderer/moby.c	hex_dump	35	0
 games/common/renderer/moby.c	moby_build_validate	51	0	
 games/common/renderer/moby.c	moby_decode_project	89	0	
 games/common/renderer/moby.c	moby_native_pass	46	0	
-games/common/renderer/moby.c	moby_reextract	50	0	
+games/common/renderer/moby.c	moby_reextract	48	0	
 games/common/renderer/moby.c	moby_reveal_dbg	44	0	
 games/common/renderer/moby.c	project_all_records_inner	60	0	
 games/common/renderer/moby.c	project_all_shaded	190	0	
@@ -159,7 +159,7 @@ games/common/renderer/moby.c	walk_prologue	54	0
 games/common/renderer/moby.c	walk_records	427	0	
 games/common/renderer/moby_game_spyro23.c	s23_decode_faces_stride	56	0	
 games/common/renderer/moby_game_spyro23.c	s23_env_uv	40	0	
-games/common/renderer/moby_game_spyro23.c	s23_simple_decode	196	0	
+games/common/renderer/moby_game_spyro23.c	s23_simple_decode	187	0	
 games/common/renderer/moby_game_spyro23.c	s23_special_face	45	0	
 games/common/renderer/moby_rank.c	mr_walk_buckets	30	0	
 games/common/renderer/moby_rank.c	openpete_mobyrank_match	230	0	
@@ -258,10 +258,10 @@ games/spyro-1/renderer/transition.c	on_8004F000_crossfade	65	0
 games/spyro-1/sfx_census.cpp	dump_banks	28	0	
 games/spyro-1/sfx_census.cpp	spyro1_dump_sfx_pack	47	0	
 games/spyro-1/sfx_census.cpp	walk_entry	29	0	
-games/spyro-2/renderer/reextract.c	game_reextract_body	47	0	
+games/spyro-2/renderer/reextract.c	game_reextract_body	48	0	
 games/spyro-2/renderer/reextract.c	player_records_replay	48	0	
 games/spyro-3/renderer/glint.c	glint_pair_depths	41	0	
-games/spyro-3/renderer/reextract.c	game_reextract_body	47	0	
+games/spyro-3/renderer/reextract.c	game_reextract_body	48	0	
 games/spyro-3/renderer/reextract.c	player_records_replay	48	0	
 games/spyro-3/renderer/terrain_probe.c	on_world_draw	216	0	
 games/spyro-3/renderer/terrain_probe.c	probe_report	32	0	

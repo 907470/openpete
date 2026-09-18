@@ -622,8 +622,8 @@ static uint32_t s23_anim_blend_byte(CPUState* cpu, uint32_t state4) {
  * (mobydraw.s:617-630; the three offsets are the camera-relative quarter-world
  * position the cull already computed, mobydraw.s:82,87,96). A record whose
  * far-distance half has bit 15 set is the screen-space kind: the draw skips the
- * transform and takes the record's own halves as the GTE screen offsets
- * (mobydraw.s:4030-4049). CARVE-OUT: that kind is not fed.
+ * camera transform and takes the record's own halves as the GTE screen offsets
+ * (mobydraw.s:3915,4010-4022), which s23_simple_place mirrors.
  *
  * The draw transforms the record by the camera matrix at the descriptor's cam.base+0x00 with
  * the vector (+0x04 low, +0x08 high, +0x04 high) in IR1/IR2/IR3
@@ -697,6 +697,9 @@ static int32_t  s_simple_far[S23_SIMPLE_QCAP];
  * the verify harness prints what this one actually read. */
 static long s_simple_recs, s_simple_verts, s_simple_faces, s_simple_tris;
 static long s_simple_flat, s_simple_screen, s_simple_culled;
+/* Screen-space records queued, and the subset of them the placement admitted:
+ * the kind's own engagement count, since every other counter mixes the kinds. */
+static long s_simple_screen_drawn;
 /* Records decoded on the low-poly lists (tier <= 0), and records whose colour
  * block took the depth cue (IR0 > 0). */
 static long s_simple_lp, s_simple_fade;
@@ -789,6 +792,82 @@ static double s23_nclip(const float s[3][2], int a, int b, int c) {
          - (double)(s[c][0]-s[a][0]) * (double)(s[b][1]-s[a][1]);
 }
 
+/* Where one queue record puts its model: the translation the vertex walk adds,
+ * the matrix the moby's own rotations compose onto, the geometry header, and —
+ * for the screen-space kind — the projection origin the record names. The two
+ * kinds part at one branch on the record (mobydraw.s:3915) and rejoin at the
+ * shared vertex and face walk (mobydraw.s:4036), so everything between them is
+ * here and nothing else in the decode differs. Returns 0 when the record draws
+ * nothing. */
+typedef struct {
+    double   TR[3];     /* the GTE translation, world/2 (mobydraw.s:4039-4041) */
+    int      R[3][3];   /* the matrix installed before the per-moby rotations */
+    uint32_t header;    /* the 16-byte geometry header at slot+0x14 */
+    int      screen;    /* the screen-space kind */
+    double   ofx, ofy;  /* its projection origin, PSX px */
+} s23_place;
+
+static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
+                            const double dcam[3], s23_place* pl) {
+    const uint32_t slot = s_simple_q[r][3];
+    /* The far-cull distance's bit 15 sorts the record (mobydraw.s:3914-3915). */
+    pl->screen = (s_simple_q[r][2] & 0x8000u) != 0;
+    pl->ofx = pl->ofy = 0.0;
+    memcpy(pl->R, Rcam, sizeof pl->R);
+    double m1 = 0.0, m2 = 0.0, m3 = 0.0;
+
+    if (pl->screen) {
+        /* The screen-space kind (mobydraw.s:4010-4022). The record's depth is
+         * the high half of +0x08 and a non-positive one drops the record
+         * (mobydraw.s:4011). The two halves of +0x04 go into the GTE screen
+         * offsets, high into OFX and low into OFY, each scaled by 65536 into
+         * that register's 16.16 pixels (mobydraw.s:4016-4019). The view X and
+         * Y translation are zero (mobydraw.s:4020-4021) and the Z translation
+         * is the depth over four (mobydraw.s:4022), all three doubled at the
+         * rejoin (mobydraw.s:4039-4041). No camera rotation, no range test and
+         * no bounding-box test: the matrix is the constant the branch installs,
+         * the identity with its Y row at 0xA00 (mobydraw.s:4024-4028,
+         * 4031-4035). */
+        const int dz = s_simple_d[r][1];
+        if (dz <= 0) return 0;
+        pl->ofx = (double)s_simple_d[r][2];
+        pl->ofy = (double)s_simple_d[r][0];
+        pl->TR[0] = pl->TR[1] = 0.0;
+        pl->TR[2] = (double)((dz >> 2) * 2);
+        memset(pl->R, 0, sizeof pl->R);
+        pl->R[0][0] = 0x1000; pl->R[1][1] = 0x0A00; pl->R[2][2] = 0x1000;
+    } else {
+        /* view-space centre, world/2 after the doubling (mobydraw.s:3946-3952,4058-4060) */
+        ngte_mac(Rcam, (double)s_simple_d[r][0] + dcam[1],
+                       (double)s_simple_d[r][1] + dcam[2],
+                       (double)s_simple_d[r][2] + dcam[0], &m1, &m2, &m3);
+        /* The record's own draw range (mobydraw.s:3958). Extended LOD removes
+         * the range rather than widening it: the threshold is a per-moby byte
+         * scaled by 256, so any raised value is still a ceiling a high camera
+         * clears, while terrain carries no distance term at all. */
+        if (!openpete_no_lod && s_simple_far[r] >= 0 &&
+            m3 - (double)s_simple_far[r] >= 0.0) return 0;
+        pl->TR[0] = m1*2.0; pl->TR[1] = m2*2.0; pl->TR[2] = m3*2.0;
+    }
+
+    /* A header outside RAM is not a pointer, and the vertex and face walks read
+     * through it. */
+    pl->header = cpu->read_word(slot + 0x14u);
+    if (pl->header < 0x80000000u) return 0;
+    if (pl->screen) return 1;
+
+    /* The cull tests the draw repeats, on the header's four bounding-box
+     * bytes scaled by 16 (mobydraw.s:3963-3975,3976-3981,3993-4002). */
+    const uint32_t h1 = cpu->read_word(pl->header + 4u);
+    double bx3 = (double)((h1 >> 20) & 0xFF0u), bx2 = (double)((h1 >> 12) & 0xFF0u);
+    double bx1 = (double)((h1 >>  4) & 0xFF0u), bx0 = (double)((h1 <<  4) & 0xFF0u);
+    double ax = m1 < 0 ? -m1 : m1, ay = m2 < 0 ? -m2 : m2;
+    if (4.0*(ax - bx3) - 3.0*(m3 + bx2) >= 0.0) return 0;
+    if (m3 + bx1 <= 0.0) return 0;
+    if ((m3 + bx0) - 3.0*(ay - bx1) <= 0.0) return 0;
+    return 1;
+}
+
 static int s23_simple_decode(CPUState* cpu) {
     int Rcam[3][3];
     ngte_read_matrix(cpu, game_layout.cam.base, Rcam);   /* mobydraw.s:3898-3908 */
@@ -824,38 +903,17 @@ static int s23_simple_decode(CPUState* cpu) {
 
     for (int r = 0; r < s_simple_qn; r++) {
         uint32_t moby = s_simple_q[r][0];
-        uint32_t w1 = s_simple_q[r][1], w2 = s_simple_q[r][2], slot = s_simple_q[r][3];
-        unsigned fardist = w2 & 0xFFFFu;
-        if (fardist & 0x8000u) { s_simple_screen++; continue; }   /* screen-space kind */
+        s23_place pl;
+        const int placed = s23_simple_place(cpu, r, Rcam, dcam, &pl);
+        if (pl.screen) s_simple_screen++;
         s_simple_recs++;
+        if (!placed) { s_simple_culled++; continue; }
+        if (pl.screen) s_simple_screen_drawn++;
 
-        /* view-space centre, world/2 after the doubling (mobydraw.s:3946-3952,4058-4060) */
-        double m1, m2, m3;
-        ngte_mac(Rcam, (double)s_simple_d[r][0] + dcam[1],
-                       (double)s_simple_d[r][1] + dcam[2],
-                       (double)s_simple_d[r][2] + dcam[0], &m1, &m2, &m3);
-        /* The record's own draw range (mobydraw.s:3958). Extended LOD removes
-         * the range rather than widening it: the threshold is a per-moby byte
-         * scaled by 256, so any raised value is still a ceiling a high camera
-         * clears, while terrain carries no distance term at all. */
-        if (!openpete_no_lod && s_simple_far[r] >= 0 &&
-            m3 - (double)s_simple_far[r] >= 0.0) { s_simple_culled++; continue; }
-
-        uint32_t H = cpu->read_word(slot + 0x14u);
-        if (H < 0x80000000u) { s_simple_culled++; continue; }
+        const uint32_t H = pl.header;
         uint32_t h0 = cpu->read_word(H);
-        uint32_t h1 = cpu->read_word(H + 4u);
 
-        /* The cull tests the draw repeats, on the header's four bounding-box
-         * bytes scaled by 16 (mobydraw.s:3963-3975,3976-3981,3993-4002). */
-        double bx3 = (double)((h1 >> 20) & 0xFF0u), bx2 = (double)((h1 >> 12) & 0xFF0u);
-        double bx1 = (double)((h1 >>  4) & 0xFF0u), bx0 = (double)((h1 <<  4) & 0xFF0u);
-        double ax = m1 < 0 ? -m1 : m1, ay = m2 < 0 ? -m2 : m2;
-        if (4.0*(ax - bx3) - 3.0*(m3 + bx2) >= 0.0) { s_simple_culled++; continue; }
-        if (m3 + bx1 <= 0.0) { s_simple_culled++; continue; }
-        if ((m3 + bx0) - 3.0*(ay - bx1) <= 0.0) { s_simple_culled++; continue; }
-
-        double TR[3] = { m1*2.0, m2*2.0, m3*2.0 };   /* the stored translation, world/2 */
+        const double* TR = pl.TR;           /* the stored translation, world/2 */
         int trz = (int)TR[2];
 
         /* The ordering-table key the draw drops the record on
@@ -890,12 +948,13 @@ static int s23_simple_decode(CPUState* cpu) {
         if (nv > S23_SIMPLE_VERTS) nv = S23_SIMPLE_VERTS;
 
         int R[3][3];
-        memcpy(R, Rcam, sizeof R);
+        memcpy(R, pl.R, sizeof R);
         s23_simple_rotate(cpu, R, 1, (rot >> 16) & 0xFFu);
         s23_simple_rotate(cpu, R, 0, (rot >>  8) & 0xFFu);
         s23_simple_rotate(cpu, R, 2,  rot        & 0xFFu);
 
         moby_simple_record(cpu, moby);
+        if (pl.screen) moby_simple_screen_origin(pl.ofx, pl.ofy);
 
         for (int i = 0; i < nv; i++) {
             uint32_t w = cpu->read_word(H + 0x10u + (uint32_t)i * 4u);
@@ -1119,7 +1178,7 @@ static int s23_simple_decode(CPUState* cpu) {
  * present's camera, with no second call into the game's draw. */
 static int s23_simple_replay(CPUState* cpu) {
     s_simple_recs = s_simple_verts = s_simple_faces = s_simple_tris = 0;
-    s_simple_flat = s_simple_screen = s_simple_culled = 0;
+    s_simple_flat = s_simple_screen = s_simple_culled = s_simple_screen_drawn = 0;
     s_simple_lp = s_simple_fade = 0;
     int n = s23_simple_decode(cpu);
     /* The replay's own census: the queue it read and what that queue decoded
@@ -1127,8 +1186,10 @@ static int s23_simple_replay(CPUState* cpu) {
      * replay of a queue no canonical pass built this tick reads as silence. */
     if (moby_verify_vbl())
         fprintf(stderr, "[moby-simple-replay vbl=%u] queued=%d drawn=%ld culled=%ld "
+                        "screenkind=%ld screendrawn=%ld "
                         "verts=%ld faces=%ld tris=%d lp=%ld fade=%ld\n",
                 openpete_frame, s_simple_qn, s_simple_recs, s_simple_culled,
+                s_simple_screen, s_simple_screen_drawn,
                 s_simple_verts, s_simple_faces, n, s_simple_lp, s_simple_fade);
     return n;
 }
@@ -1193,7 +1254,7 @@ static int s23_reveal_record(CPUState* cpu, uint32_t moby) {
  * the captured queue natively. */
 static int s23_simple_pass(CPUState* cpu) {
     s_simple_recs = s_simple_verts = s_simple_faces = s_simple_tris = 0;
-    s_simple_flat = s_simple_screen = s_simple_culled = 0;
+    s_simple_flat = s_simple_screen = s_simple_culled = s_simple_screen_drawn = 0;
     s_simple_lp = s_simple_fade = 0;
     s_flat_zero_colour = s_flat_back_emitted = s_flat_back_dropped = 0;
     s23_simple_capture(cpu);
@@ -1208,9 +1269,11 @@ static int s23_simple_pass(CPUState* cpu) {
     int n = s23_simple_decode(cpu);
     if (moby_verify_vbl())
         fprintf(stderr, "[moby-simple vbl=%u] queued=%d drawn=%ld culled=%ld screenkind=%ld "
+                        "screendrawn=%ld "
                         "verts=%ld faces=%ld flat=%ld tris=%d revealed=%d lp=%ld fade=%ld "
                         "flat_zero_colour=%ld flat_back_emitted=%ld flat_back_dropped=%ld\n",
                 openpete_frame, s_simple_qn, s_simple_recs, s_simple_culled, s_simple_screen,
+                s_simple_screen_drawn,
                 s_simple_verts, s_simple_faces, s_simple_flat, n, revealed,
                 s_simple_lp, s_simple_fade,
                 s_flat_zero_colour, s_flat_back_emitted, s_flat_back_dropped);
