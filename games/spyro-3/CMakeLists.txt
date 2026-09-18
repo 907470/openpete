@@ -34,10 +34,6 @@ openpete_add_game(spyro-3
         # readout, drawn with the home worlds' portal-name font.
         ${CMAKE_SOURCE_DIR}/games/common/renderer/text_moby.c
         renderer/portal_game.c
-        renderer/tracers.c
-        renderer/glow.c
-        renderer/glint.c
-        renderer/glint2.c
         renderer/terrain_probe.c)
 
 # Typed game structs: every decomp typedef struct plus the PSYQ types they

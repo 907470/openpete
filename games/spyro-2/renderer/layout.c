@@ -468,6 +468,60 @@ const game_layout_t game_layout = {
         .uv1_bias       = -0x7F00,       /* mobyfunc.s:487, before the per-step ramp */
         .cap_colour_off = NULL,          /* always the first colour set */
     },
+    .glow = {
+        .hook       = F_GLOW_DRAW,
+        .ra_guard   = 0u,                /* one call site in the image */
+        .pool       = D_GLOW_POOL,
+        .slots      = 16u,               /* mobyfunc.s:1947, base +0x140 */
+        .stride     = 0x14u,
+        .pos_off    = 0x00u,             /* mobyfunc.s:1985 */
+        .packed_off = 0x10u,             /* mobyfunc.s:1973 */
+        .box        = 0x7800,            /* mobyfunc.s:1997-2008 */
+        .near_z     = 0x80,              /* mobyfunc.s:2019 */
+        .far_z      = 0x7800,            /* mobyfunc.s:2021 */
+        .pyr_x      = 0x400,             /* mobyfunc.s:2035 */
+        .pyr_y      = 0x300,             /* mobyfunc.s:2045 */
+        .front_bias = -1,                /* no front-entry branch: mobyfunc.s:2050-2053
+                                          * clamps the bucket at zero instead */
+    },
+    .glint = {
+        .hook       = F_GLINT_DRAW,
+        .pool       = D_GLINT_POOL,
+        .slots      = 16u,               /* mobyfunc.s:2207, base +0x100 */
+        .stride     = 0x10u,
+        .pos_off    = 0x00u,             /* mobyfunc.s:2246-2248 */
+        .packed_off = 0x0Cu,             /* mobyfunc.s:2230 */
+        .box        = 0x7800,            /* mobyfunc.s:2262-2273, half-world */
+        .near_z     = 0x80,              /* mobyfunc.s:2290 */
+        .far_z      = 0x7800,            /* mobyfunc.s:2292 */
+        .pyr_x      = 0x100,             /* mobyfunc.s:2306 */
+        .pyr_y      = 0xC0,              /* mobyfunc.s:2316 */
+        .near_vz    = 0x2000,            /* mobyfunc.s:2344, the branch depth */
+    },
+    .glint2 = {
+        .hook       = F_GLINT2_DRAW,
+        .pool       = D_GLINT2_POOL,
+        .slots      = 8u,                /* mobyfunc.s:2564, base +0x180 */
+        .stride     = 0x30u,
+        .head_off   = 0x00u,             /* mobyfunc.s:2604 */
+        .packed_off = 0x1Cu,             /* mobyfunc.s:2589 */
+        .box        = 0x5400,            /* mobyfunc.s:2608-2620 */
+        .far_sz     = 0x5000,            /* mobyfunc.s:2819 */
+        .spad       = 0x1F800100u,       /* mobyfunc.s:2741 */
+    },
+    .tracers = {
+        .ribbon_hook = F_TRACER_RIBBON,
+        .mesh_hook   = F_TRACER_MESH,
+        .ring        = D_TRACER_RING,
+        .slots       = 0x20u,            /* mobyfunc.s:2939, base +0x600 */
+        .stride      = 0x30u,            /* mobyfunc.s:2940 */
+        .points_off  = 0x04u,            /* mobyfunc.s:2947 */
+        .packed_off  = 0x28u,            /* mobyfunc.s:2945 */
+        .ring_n      = 6,                /* +0x04 through +0x28, 6 bytes per point */
+        .box         = 0x6000,           /* mobyfunc.s:2979-2989 */
+        .far_sz      = 0x4000,           /* mobyfunc.s:3061 */
+        .spad        = 0x1F800000u,      /* mobyfunc.s:3255 */
+    },
     .hooks = {
         .world_draw = F_WORLD_DRAW,
         .sky_draw   = F_SKY_DRAW,

@@ -427,6 +427,63 @@ const game_layout_t game_layout = {
         .uv1_bias       = -0x7F00,       /* asm/mobyfunc.s:489, before the per-step ramp */
         .cap_colour_off = flame_cap_colour_off,
     },
+    .glow = {
+        .hook       = F_GLOW_DRAW,
+        /* The world draw's call returns here (asm/nonmatchings/draw/
+         * func_8001E460.s:28, the delay slot after the jal). The pause screen
+         * calls the same routine from func_80058408 (:43); that instance draws
+         * over a frozen frame and is not this feeder's. */
+        .ra_guard   = 0x8001E4BCu,
+        .pool       = D_GLOW_POOL,
+        .slots      = 16u,               /* asm/mobyfunc.s:1933, base +0x140 */
+        .stride     = 0x14u,
+        .pos_off    = 0x00u,             /* asm/mobyfunc.s:1989 */
+        .packed_off = 0x10u,             /* asm/mobyfunc.s:1959 */
+        .box        = 0x7800,            /* asm/mobyfunc.s:2001-2012 */
+        .near_z     = 0x80,              /* asm/mobyfunc.s:2023 */
+        .far_z      = 0x7800,            /* asm/mobyfunc.s:2025 */
+        .pyr_x      = 0x400,             /* asm/mobyfunc.s:2039 */
+        .pyr_y      = 0x300,             /* asm/mobyfunc.s:2049 */
+        .front_bias = 0x7F,              /* asm/mobyfunc.s:2056-2059 */
+    },
+    .glint = {
+        .hook       = F_GLINT_DRAW,
+        .pool       = D_GLINT_POOL,
+        .slots      = 16u,               /* asm/mobyfunc.s:2210, base +0x100 */
+        .stride     = 0x10u,
+        .pos_off    = 0x00u,             /* asm/mobyfunc.s:2249-2251 */
+        .packed_off = 0x0Cu,             /* asm/mobyfunc.s:2233 */
+        .box        = 0x7800,            /* asm/mobyfunc.s:2265-2276, half-world */
+        .near_z     = 0x80,              /* asm/mobyfunc.s:2293 */
+        .far_z      = 0x7800,            /* asm/mobyfunc.s:2295 */
+        .pyr_x      = 0x100,             /* asm/mobyfunc.s:2309 */
+        .pyr_y      = 0xC0,              /* asm/mobyfunc.s:2319 */
+        .near_vz    = 0x2000,            /* asm/mobyfunc.s:2347, the branch depth */
+    },
+    .glint2 = {
+        .hook       = F_GLINT2_DRAW,
+        .pool       = D_GLINT2_POOL,
+        .slots      = 8u,                /* asm/mobyfunc.s:2563, base +0x180 */
+        .stride     = 0x30u,
+        .head_off   = 0x00u,             /* asm/mobyfunc.s:2608 */
+        .packed_off = 0x1Cu,             /* asm/mobyfunc.s:2588 */
+        .box        = 0x5400,            /* asm/mobyfunc.s:2612-2627 */
+        .far_sz     = 0x5000,            /* asm/mobyfunc.s:2825 */
+        .spad       = 0x1F800100u,       /* asm/mobyfunc.s:2747 */
+    },
+    .tracers = {
+        .ribbon_hook = F_TRACER_RIBBON,
+        .mesh_hook   = F_TRACER_MESH,
+        .ring        = D_TRACER_RING,
+        .slots       = 0x20u,            /* asm/mobyfunc.s:2943, base +0xD80 */
+        .stride      = 0x6Cu,            /* asm/mobyfunc.s:2944 */
+        .points_off  = 0x04u,            /* asm/mobyfunc.s:2951 */
+        .packed_off  = 0x64u,            /* asm/mobyfunc.s:2949 */
+        .ring_n      = 16,               /* +0x04 through +0x64, 6 bytes per point */
+        .box         = 0x6000,           /* asm/mobyfunc.s:2985-2993 */
+        .far_sz      = 0x4000,           /* asm/mobyfunc.s:3065 */
+        .spad        = 0x1F800000u,      /* asm/mobyfunc.s:3257 */
+    },
     .hooks = {
         .world_draw = F_WORLD_DRAW,
         .sky_draw   = F_SKY_DRAW,

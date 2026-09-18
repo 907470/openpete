@@ -1,4 +1,4 @@
-/* tracers.h : the Spyro 3 tracer feeder's export. */
+/* tracers.h : the tracer feeder's export. */
 #pragma once
 #include "psx_runtime_internal.h"
 

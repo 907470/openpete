@@ -22,6 +22,10 @@
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "openpete_interp.h"
 #include "renderer/flame.h"          /* the shared fire-breath producer */
+#include "renderer/tracers.h"
+#include "renderer/glow.h"
+#include "renderer/glint.h"
+#include "renderer/glint2.h"
 #include "renderer/interp_lerp.h"    /* lerp16/32, lerp_matrix, lerp_vec3 */
 #include "renderer/interp_regions_gen.h"
 #include "renderer/reextract_view.h"
@@ -526,6 +530,14 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("particles");
     flame_records_present(cpu, bracketed, 0, bracketed ? alpha : 0.0, NULL);
     RX_CENSUS_STEP("flame");
+    tracers_reextract(cpu);         /* the tracer primitives the tick captured */
+    RX_CENSUS_STEP("tracers");
+    glow_reextract(cpu);            /* the glow fans the tick captured */
+    RX_CENSUS_STEP("glow");
+    glint_reextract(cpu);           /* the gem-glint stars the tick captured */
+    RX_CENSUS_STEP("glint");
+    glint2_reextract(cpu);          /* the jittered beams the tick captured */
+    RX_CENSUS_STEP("glint2");
     /* The HUD, dialog boxes, text and screen fades are produced during the
      * game's own render and cannot be re-derived here, so the canonical present
      * banks them and every re-extract re-applies that carry on top of the

@@ -1,8 +1,11 @@
-// games/spyro-3/renderer/glow.c — the glow-ring feeder: a handwritten routine
-// (asm/mobyfunc.s:1920-2166) that draws one screen-facing polygon per live
-// record of a 16-slot pool and links each fan into the 3D ordering table
-// itself, so none of its primitives reaches the 2D chokepoint the sprite
-// feeder hooks.
+// games/common/renderer/glow.c — the glow-ring feeder: a handwritten routine
+// (Spyro 2 func_8004A8D4 / mobyfunc.s:1936-2146, Spyro 3 func_8002ECA8 /
+// mobyfunc.s:1920-2166; the same 208 instructions but for constants and
+// symbols) that draws one screen-facing polygon per live record of a pool and
+// links each fan into the 3D ordering table itself, so none of its primitives
+// reaches the 2D chokepoint the sprite feeder hooks. Every per-game address,
+// count, stride and bound comes from game_layout.glow; the walk below is one
+// body.
 //
 // STATIC ASM FINDINGS:
 //   * the pool is 16 records of 0x14 bytes: world XYZ at +0x00, the primitive
@@ -56,7 +59,6 @@
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
 #include "game_layout.h"
-#include "spyro3_symbols.gen.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -66,18 +68,8 @@
 
 extern unsigned openpete_frame;
 
-#define GLOW_SLOTS      16u
-#define GLOW_STRIDE     0x14u
-#define GLOW_POS        0x00u   /* :1946-1948 three world words */
-#define GLOW_PACKED     0x10u   /* :1930 lw 0x10: shape, size, phase, bias */
+#define GW              (game_layout.glow)
 #define GLOW_SHAPE_MASK 0xFFu
-#define GLOW_BIAS_FRONT 0x7F    /* :2000 the bias that links at the front entry */
-
-/* The world draw's own call site returns here (asm/nonmatchings/draw/
- * func_8001E460.s:28, the delay slot after the jal). The pause screen calls the
- * same routine from func_80058408 (:43); that instance draws over a frozen
- * frame and is not this feeder's. */
-#define GLOW_WORLD_DRAW_RA 0x8001E4BCu
 
 #define GLOW_MAX_PRIMS  512
 #define GLOW_DRMODE     0xE1u   /* GP0 draw-mode packet, one per accepted record */
@@ -133,33 +125,34 @@ static int glow_predict(CPUState* cpu, const ngte_view* v, glow_rec* out, int ca
      * openpete_native_depth_from_viewz already maps to the smallest depth. */
     const float front = openpete_native_depth_from_viewz(openpete_worldvz_full(1.0f));
 
-    for (uint32_t s = 0; s < GLOW_SLOTS; s++) {
-        const uint32_t rec = D_GLOW_POOL + s * GLOW_STRIDE;
-        const uint32_t packed = cpu->read_word(rec + GLOW_PACKED);
+    const double box = (double)GW.box;
+    for (uint32_t s = 0; s < GW.slots; s++) {
+        const uint32_t rec = GW.pool + s * GW.stride;
+        const uint32_t packed = cpu->read_word(rec + GW.packed_off);
         if ((packed & GLOW_SHAPE_MASK) == 0u) continue;       /* :1932 free slot */
         const int bias = (int)(int8_t)(uint8_t)((packed >> 24) & 0xFFu);
 
-        const double px = (double)(int32_t)cpu->read_word(rec + GLOW_POS + 0u);
-        const double py = (double)(int32_t)cpu->read_word(rec + GLOW_POS + 4u);
-        const double pz = (double)(int32_t)cpu->read_word(rec + GLOW_POS + 8u);
+        const double px = (double)(int32_t)cpu->read_word(rec + GW.pos_off + 0u);
+        const double py = (double)(int32_t)cpu->read_word(rec + GW.pos_off + 4u);
+        const double pz = (double)(int32_t)cpu->read_word(rec + GW.pos_off + 8u);
         const double vx = px - cx;            /* the routine's IR3 */
         const double vy = cy - py;            /* IR1 */
         const double vz = cz - pz;            /* IR2 */
         /* :1970-1988 drops the record when it leaves the camera-relative box. */
-        if (vx <= -0x7800 || vx >= 0x7800 || vy <= -0x7800 || vy >= 0x7800 ||
-            vz <= -0x7800 || vz >= 0x7800) continue;
+        if (vx <= -box || vx >= box || vy <= -box || vy >= box ||
+            vz <= -box || vz >= box) continue;
 
         double m1, m2, m3;
         ngte_mac(v->cam_M, vy, vz, vx, &m1, &m2, &m3);
         /* :1994-2000 the screen-extent and depth window the routine culls on. */
-        if (m3 < 128.0) continue;
-        if (m3 >= 0x7800) continue;
-        if (4.0 * fabs(m1) - 3.0 * m3 - 1024.0 >= 0.0) continue;
-        if (3.0 * fabs(m2) - m3 - 768.0 >= 0.0) continue;
+        if (m3 < (double)GW.near_z) continue;
+        if (m3 >= (double)GW.far_z) continue;
+        if (4.0 * fabs(m1) - 3.0 * m3 - (double)GW.pyr_x >= 0.0) continue;
+        if (3.0 * fabs(m2) - m3 - (double)GW.pyr_y >= 0.0) continue;
 
         if (n < cap) {
             const int d = (int)((uint32_t)(int32_t)m3 >> 7) - bias;
-            out[n].depth = (d < 0 && bias == GLOW_BIAS_FRONT)
+            out[n].depth = (d < 0 && GW.front_bias >= 0 && bias == GW.front_bias)
                 ? front
                 : openpete_native_depth_from_viewz(openpete_worldvz_full((float)m3));
         }
@@ -259,7 +252,9 @@ static const hook_bracket_desc k_bracket = {
 };
 
 static int on_glow_draw(CPUState* cpu, uint32_t addr) {
-    if (cpu->ra != GLOW_WORLD_DRAW_RA) return 0;   /* the pause screen's call */
+    /* A game whose image holds a second call site over a frozen frame names
+     * the world draw's return address; every other caller is refused. */
+    if (GW.ra_guard && cpu->ra != GW.ra_guard) return 0;
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
         return 0;
@@ -287,13 +282,21 @@ void glow_reextract(CPUState* cpu) {
     glow_feed_native();
 }
 
-static const feature_dispatch_entry_t glow_dispatch[] = {
-    { F_GLOW_DRAW, on_glow_draw },
+/* The hook address is the layout's glow draw site, bound at boot: a static
+ * initializer cannot read another TU's const. A game with no located routine
+ * leaves it 0 and the registry dispatches nothing. */
+static feature_dispatch_entry_t glow_dispatch[] = {
+    { 0u, on_glow_draw },
     { 0u, NULL },
 };
 
+static void glow_apply_options(const openpete_options_t* opts) {
+    (void)opts;
+    glow_dispatch[0].addr = game_layout.glow.hook;
+}
+
 const feature_module_t glow_module = {
     .name           = "glow_native",
-    .apply_options  = NULL,
+    .apply_options  = glow_apply_options,
     .dispatch_table = glow_dispatch,
 };

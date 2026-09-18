@@ -1,4 +1,4 @@
-/* glow.h : the Spyro 3 glow-ring feeder's export. */
+/* glow.h : the glow-ring feeder's export. */
 #pragma once
 #include "psx_runtime_internal.h"
 

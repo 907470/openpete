@@ -1,8 +1,12 @@
-// games/spyro-3/renderer/glint2.c, the jittered-beam feeder: a handwritten
-// routine (asm/mobyfunc.s:2548-2936) that draws one ragged textured ribbon per
-// live record of an 8-slot pool, linking every triangle into the 3D ordering
-// table itself, so none of its primitives reaches the 2D chokepoint the sprite
-// feeder hooks.
+// games/common/renderer/glint2.c, the jittered-beam feeder: a handwritten
+// routine (Spyro 2 func_8004B194 / mobyfunc.s:2548-2905, Spyro 3 func_8002F5B4
+// / mobyfunc.s:2548-2936) that draws one ragged textured ribbon per live record
+// of a pool, linking every triangle into the 3D ordering table itself, so none
+// of its primitives reaches the 2D chokepoint the sprite feeder hooks. Spyro
+// 3's routine carries seven instructions Spyro 2's lacks, a game-state test
+// that suppresses the per-present re-randomize; everything this feeder reads is
+// in the 358 instructions the two share. Every per-game address, count, stride
+// and bound comes from game_layout.glint2; the walk below is one body.
 //
 // Read from the routine (asm/mobyfunc.s):
 //   * the pool is 8 records of 0x30 bytes: the head world XYZ at +0x00, the
@@ -81,7 +85,6 @@
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
 #include "game_layout.h"
-#include "spyro3_symbols.gen.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -91,13 +94,7 @@
 
 extern unsigned openpete_frame;
 
-#define G2_SLOTS     8u
-#define G2_STRIDE    0x30u
-#define G2_HEAD      0x00u   /* :2608 three world words, the ribbon's head */
-#define G2_TAIL      0x0Cu   /* :2629 three world words, the ribbon's tail */
-#define G2_PACKED    0x1Cu   /* :2588 segment count, jitter shift, rerand flag */
-#define G2_BOX       0x5400  /* :2612 the head offset's per-component bound */
-#define G2_FAR_SZ    0x5000  /* :2824 the middle point's SZ3 reject */
+#define G2 (game_layout.glint2)
 
 #define G2_MAX_PRIMS 512
 #define G2_MAX_SEG   128
@@ -155,18 +152,19 @@ static void g2_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
 static int g2_projected_record(CPUState* cpu, const ngte_view* v) {
     int reached = 0, n_reached = 0;
     s_live = 0;
-    for (uint32_t s = 0; s < G2_SLOTS; s++) {
-        const uint32_t rec = D_GLINT2_POOL + s * G2_STRIDE;
-        const int n = (int)(cpu->read_word(rec + G2_PACKED) & 0xFFu);
+    const double box = (double)G2.box;
+    for (uint32_t s = 0; s < G2.slots; s++) {
+        const uint32_t rec = G2.pool + s * G2.stride;
+        const int n = (int)(cpu->read_word(rec + G2.packed_off) & 0xFFu);
         if (n == 0) continue;                          /* :2590 free slot */
         s_live++;
         if (n < 1 || n > G2_MAX_SEG) return 0;
         /* :2608-2628 the head's camera-relative offset against the box, in the
          * integer staged camera the routine itself subtracts. */
-        const double hx = (double)(int32_t)cpu->read_word(rec + G2_HEAD + 0u) - v->cam_ram[0];
-        const double hy = v->cam_ram[1] - (double)(int32_t)cpu->read_word(rec + G2_HEAD + 4u);
-        const double hz = v->cam_ram[2] - (double)(int32_t)cpu->read_word(rec + G2_HEAD + 8u);
-        if (fabs(hx) >= G2_BOX || fabs(hy) >= G2_BOX || fabs(hz) >= G2_BOX) continue;
+        const double hx = (double)(int32_t)cpu->read_word(rec + G2.head_off + 0u) - v->cam_ram[0];
+        const double hy = v->cam_ram[1] - (double)(int32_t)cpu->read_word(rec + G2.head_off + 4u);
+        const double hz = v->cam_ram[2] - (double)(int32_t)cpu->read_word(rec + G2.head_off + 8u);
+        if (fabs(hx) >= box || fabs(hy) >= box || fabs(hz) >= box) continue;
         reached++;
         n_reached = n;
     }
@@ -192,7 +190,7 @@ static int g2_projected_record(CPUState* cpu, const ngte_view* v) {
  *
  * Returns the triangle count, or -1 when the record was dropped whole. */
 static int g2_replay(CPUState* cpu, int n) {
-    const uint32_t base = 0x1F800100u;      /* :2771 the widened entry table */
+    const uint32_t base = G2.spad;          /* :2771 the widened entry table */
     s_pred_n = 0;
 
     /* :2804-2806 the record is dropped when every projected entry shares an
@@ -204,7 +202,7 @@ static int g2_replay(CPUState* cpu, int n) {
      * reject; the routine addresses it as the halfword at offset 6 of the
      * table's midpoint. */
     const int mid_sz = (int)(int16_t)(uint16_t)(cpu->read_word(base + (uint32_t)n * 8u + 4u) >> 16);
-    if (mid_sz - G2_FAR_SZ >= 0) return -1;
+    if (mid_sz - G2.far_sz >= 0) return -1;
 
     for (int j = 1; j <= n; j++) {
         uint32_t xy[4], w1[4];
@@ -349,8 +347,8 @@ static const hook_bracket_desc k_bracket = {
     .path = RP_TRACER, .prof_tag = "glint2.srend", .st = &s_hb,
 };
 
-/* The world draw's call (asm/nonmatchings/draw/func_8001E460.s:32) is the only
- * one in the image, so the hook takes every entry. */
+/* The world draw's call is the only one in either image, so the hook takes
+ * every entry (Spyro 2 draw/func_800155A0.s:34, Spyro 3 draw/func_8001E460.s:32). */
 static int on_glint2_draw(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
@@ -381,13 +379,21 @@ void glint2_reextract(CPUState* cpu) {
     g2_feed_set(s_tick, s_tick_n);
 }
 
-static const feature_dispatch_entry_t glint2_dispatch[] = {
-    { F_GLINT2_DRAW, on_glint2_draw },
+/* The hook address is the layout's jittered-beam draw site, bound at boot: a
+ * static initializer cannot read another TU's const. A game with no located
+ * routine leaves it 0 and the registry dispatches nothing. */
+static feature_dispatch_entry_t glint2_dispatch[] = {
+    { 0u, on_glint2_draw },
     { 0u, NULL },
 };
 
+static void glint2_apply_options(const openpete_options_t* opts) {
+    (void)opts;
+    glint2_dispatch[0].addr = game_layout.glint2.hook;
+}
+
 const feature_module_t glint2_module = {
     .name           = "glint2_native",
-    .apply_options  = NULL,
+    .apply_options  = glint2_apply_options,
     .dispatch_table = glint2_dispatch,
 };

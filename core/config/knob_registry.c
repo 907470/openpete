@@ -1044,6 +1044,11 @@ static const knob_desc_t g_builtin[] = {
       "and the event pump, so dragging or resizing the window cannot stall "
       "the game. On by default; set 0 to put the loop back on the main "
       "thread. Windowed native-vk only. Latched at startup."),
+    ENVROW_LATCHED("GLINT", "Debug", "2",
+      "What the gem-glint feeder emits: 0 nothing, 1 the near four-point "
+      "stars alone, 2 the near stars and the far crosses. The guest draw "
+      "runs at every setting, so 0 and 1 price the feed's painted pixels "
+      "against 2 from one binary. Latched at first use."),
     ENVROW_LATCHED("GPU_TIMERS", "Debug", "0",
         "Per-pass GPU timestamp zones (query pools created at device init)."),
     ENVROW_LIVE("PHASE_TIMERS", "Debug", "0",

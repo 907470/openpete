@@ -252,3 +252,59 @@ note = "flame cross-section spine, 8-byte records of packed {X, Z, index, sine p
 name = "D_FLAME_CAP_COLOURS"
 addr = 0x80063110
 note = "the first-cell cap colour set, four words read in order at +0x00..+0x0C (mobyfunc.s:335). The second set at +0x10 has no selector in this game"
+
+# The glow/glint/tracer effect family: five handwritten renderers the draw
+# driver func_800155A0 calls in sequence between the world draw and the sky
+# draw, each linking its own primitives into the 3D ordering table. Each is the
+# other game's routine over the same instructions but for constants and
+# addresses (see each row).
+
+[[symbol]]
+name = "F_GLOW_DRAW"
+addr = 0x8004A8D4
+kind = "function"
+note = "func_8004A8D4 (mobyfunc.s:1936-2146), the glow-ring renderer: one call site, in the draw driver func_800155A0 under mask bit 0x10 (draw/func_800155A0.s:30). Walks the 16-slot pool at D_GLOW_POOL and, per live record, emits one bundled draw-mode packet 0xE1000620 followed by up to sixteen POLY_G3 semi-transparent fanned from the record's projected centre, all chained into one bucket off D_OT_BASE. The other game's func_8002ECA8 over 208 of its 211 instructions; this image lacks that one's game-state pre-check and its front-entry branch for records whose ordering-table bias byte is 0x7F (mobyfunc.s:2050-2053 clamps the bucket at zero instead)"
+
+[[symbol]]
+name = "D_GLOW_POOL"
+addr = 0x80068078
+note = "the glow-ring pool the renderer walks, 16 records of 0x14 bytes ending at +0x140 (mobyfunc.s:1945-1947): +0x00 world X, +0x04 Y, +0x08 Z, +0x0C the primitive colour word, +0x10 packed {shape index, size, rotation phase, signed ordering-table bias}; a zero shape byte is a free slot (mobyfunc.s:1968). The shape table is D_8006430C, 64-byte entries indexed by the shape byte (mobyfunc.s:2012-2015)"
+
+[[symbol]]
+name = "F_GLINT_DRAW"
+addr = 0x8004AC78
+kind = "function"
+note = "func_8004AC78 (mobyfunc.s:2192-2489), the gem-glint renderer: one call site, in the draw driver func_800155A0 under mask bit 0x10 (draw/func_800155A0.s:32), the write census's ra 0x800155FC. Walks the 16-slot pool at D_GLINT_POOL and, per live record, emits either one bundled draw-mode packet 0xE1000620 followed by eight POLY_G4 semi-transparent quads of a four-point star (half-world view depth under 0x2000, mobyfunc.s:2344) or two opaque LINE_F2 of a plain cross (at or above it), chained into a bucket off D_OT_BASE. The other game's func_8002F098 over 297 of its 298 instructions, the odd one a scratchpad slot"
+
+[[symbol]]
+name = "D_GLINT_POOL"
+addr = 0x80067D00
+note = "the gem-glint pool the renderer walks, 16 records of 0x10 bytes ending at +0x100 (mobyfunc.s:2205-2207): +0x00 world X, +0x04 Y, +0x08 Z, +0x0C packed {remaining lifetime, size, spin phase, colour-table row}; the renderer subtracts the tick's elapsed count from the lifetime byte and stores it back, so a zero byte is a free or expired slot (mobyfunc.s:2230-2238). The colour table is D_8006460C, rows of three words {pale centre, spike tip, near-black waist}, every word carrying 0x3A in its top byte"
+
+[[symbol]]
+name = "F_GLINT2_DRAW"
+addr = 0x8004B194
+kind = "function"
+note = "func_8004B194 (mobyfunc.s:2548-2905), the jittered-beam renderer: one call site, in the draw driver func_800155A0 (draw/func_800155A0.s:34). Walks the 8-slot pool at D_GLINT2_POOL and, per live record, interpolates count+1 camera-relative points from the head world position to the tail one, displaces each interior point by the signed 8-bit fields of its own stored random halfword, widens every point into a pair perpendicular to the local path direction, RTPSes the pairs into the scratchpad at 0x1F800100 and appends one or two 8-word POLY_FT3 semi-transparent per segment, each linked into a bucket off D_OT_BASE keyed on its four corners mean SZ3. The whole record is dropped when the head offset leaves the +/-0x5400 box (mobyfunc.s:2608-2620) or when the middle point SZ3 reaches 0x5000 (mobyfunc.s:2819). The other game's func_8002F5B4 over the 358 instructions the two share; that one adds a game-state test suppressing the per-present re-randomize"
+
+[[symbol]]
+name = "D_GLINT2_POOL"
+addr = 0x8006B400
+note = "the jittered-beam pool the renderer walks, 8 records of 0x30 bytes ending at +0x180 (mobyfunc.s:2562-2564): +0x00 head world XYZ, +0x0C tail world XYZ, +0x18 the primitive colour word, +0x1C packed {segment count, jitter shift, re-randomize flag halfword} (mobyfunc.s:2589), +0x20 one random halfword per interior point. A zero count byte is a free slot"
+
+[[symbol]]
+name = "F_TRACER_RIBBON"
+addr = 0x8004B72C
+kind = "function"
+note = "func_8004B72C (mobyfunc.s:2936-3157), the point-ring tracer ribbon: one call site, in the draw driver func_800155A0 under mask bit 0x10 (draw/func_800155A0.s:36). Walks the 0x20-slot array at D_TRACER_RING, projects each live record's ring points into the scratchpad at 0x1F800000 and appends one 13-word POLY_GT4 per consecutive pair, linked into a bucket off D_OT_BASE. A record is dropped whole when any point leaves the +/-0x6000 box (mobyfunc.s:2979-2989) or when its first point's SZ3 reaches 0x4000 (mobyfunc.s:3061). The other game's func_8002FB68 over 217 of its 222 instructions; the five that differ are this image's smaller record (0x30 bytes against 0x6C, packed word +0x28 against +0x64)"
+
+[[symbol]]
+name = "D_TRACER_RING"
+addr = 0x8006A2B4
+note = "the tracer ribbon array the renderer walks, 0x20 records of 0x30 bytes ending at +0x600 (mobyfunc.s:2938-2940): +0x00 the live pointer, zero = free slot, +0x04 a 6-entry circular buffer of packed unsigned XYZ halves (6 bytes each, mobyfunc.s:2947), +0x28 packed {head index, point count, signed half-width byte} (mobyfunc.s:2945), +0x2C the colour-plus-command word the DPCS fade starts from (mobyfunc.s:3056)"
+
+[[symbol]]
+name = "F_TRACER_MESH"
+addr = 0x8004BAA4
+kind = "function"
+note = "func_8004BAA4 (mobyfunc.s:3180-3402), the indexed tracer mesh: called up to eight times per tick by the draw driver func_800155A0 over the 0x14-byte descriptors at D_80069F30, skipping a descriptor whose first word is zero (draw/func_800155A0.s:37-49). Projects the descriptor's vertex list into the scratchpad at 0x1F800000 as {screen XY, MAC3 and outcode} pairs and appends one 13-word POLY_GT4 per index entry; it also stores the highest ordering-table bucket it touched, so its body must run exactly once. The other game's func_8002FEE0 over the same arithmetic under a different load-delay schedule"

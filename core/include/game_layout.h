@@ -647,6 +647,108 @@ typedef struct game_layout {
         uint32_t (*cap_colour_off)(struct CPUState* cpu);
     } flame;
 
+    /* The glow ring: one screen-facing fan per live record of a pool the
+     * world draw's glow routine walks. `hook` = 0 on a game with no located
+     * routine, and the producer registers no dispatch. `ra_guard` is the
+     * return address of the world draw's own call, 0 when the image holds
+     * only one call site; a non-zero value refuses every other caller, which
+     * is how a second site over a frozen frame is kept out.
+     *
+     * The pool is `slots` records of `stride` bytes: world XYZ at `pos_off`
+     * and a packed word at `packed_off` holding the shape index in byte 0 and
+     * a signed ordering-table bias in byte 3. A record is dropped when its
+     * camera-relative offset leaves the +/-`box` cube, when its rotated depth
+     * falls under `near_z` or reaches `far_z`, or when it leaves the view
+     * pyramid 4|X| - 3Z < `pyr_x` or 3|Y| - Z < `pyr_y`. `front_bias` is the
+     * bias value whose records the routine links at the fixed front entry
+     * instead of their own bucket; negative on a game whose routine has no
+     * such branch and clamps to bucket 0 instead. */
+    struct {
+        uint32_t hook;
+        uint32_t ra_guard;
+        uint32_t pool;
+        uint32_t slots;
+        uint32_t stride;
+        uint32_t pos_off;
+        uint32_t packed_off;
+        int32_t  box;
+        int32_t  near_z, far_z;
+        int32_t  pyr_x, pyr_y;
+        int      front_bias;
+    } glow;
+
+    /* The gem glint: one screen-facing four-point star, or a plain cross
+     * beyond `near_vz`, per live record of a second pool. `hook` = 0 on a
+     * game with no located routine.
+     *
+     * The pool is `slots` records of `stride` bytes: world XYZ at `pos_off`
+     * and a packed word at `packed_off` holding the remaining lifetime in
+     * byte 0. The routine halves the camera-relative offset before rotating,
+     * so `box`, `near_z`, `far_z`, `near_vz` and the pyramid bounds `pyr_x`
+     * and `pyr_y` are all in half-world units. */
+    struct {
+        uint32_t hook;
+        uint32_t pool;
+        uint32_t slots;
+        uint32_t stride;
+        uint32_t pos_off;
+        uint32_t packed_off;
+        int32_t  box;
+        int32_t  near_z, far_z;
+        int32_t  pyr_x, pyr_y;
+        int32_t  near_vz;
+    } glint;
+
+    /* The jittered beam: one ragged textured ribbon per live record of a
+     * third pool. `hook` = 0 on a game with no located routine.
+     *
+     * The pool is `slots` records of `stride` bytes: the head world XYZ at
+     * `head_off`, the tail twelve bytes on and a packed word at `packed_off`
+     * holding the segment count in byte 0. A record is dropped when the
+     * head's camera-relative offset leaves the +/-`box` cube, and the whole
+     * record again when its middle point's SZ3 reaches `far_sz`. The routine
+     * projects its widened point chain into the scratchpad at `spad`, two
+     * 8-byte entries per chain point. */
+    struct {
+        uint32_t hook;
+        uint32_t pool;
+        uint32_t slots;
+        uint32_t stride;
+        uint32_t head_off;
+        uint32_t packed_off;
+        int32_t  box;
+        int32_t  far_sz;
+        uint32_t spad;
+    } glint2;
+
+    /* The two tracer producers: a point-ring ribbon over an array of records
+     * and an indexed mesh over a descriptor the caller passes in a0. Either
+     * `hook` is 0 on a game with no located routine.
+     *
+     * The ribbon array is `slots` records of `stride` bytes: a live pointer
+     * at +0x00, a circular buffer of `ring_n` packed unsigned XYZ halves at
+     * `points_off` (6 bytes per point) and a packed word at `packed_off`
+     * holding the head index in byte 0 and the point count in byte 1. A
+     * record is dropped whole when any of its points leaves the +/-`box`
+     * cube, when every point shares a screen outcode bit, or when its first
+     * point's SZ3 reaches `far_sz`.
+     *
+     * Both routines project into the scratchpad table at `spad`, 8 bytes per
+     * vertex: the packed screen XY word and the MAC3-plus-outcode word. */
+    struct {
+        uint32_t ribbon_hook;
+        uint32_t mesh_hook;
+        uint32_t ring;
+        uint32_t slots;
+        uint32_t stride;
+        uint32_t points_off;
+        uint32_t packed_off;
+        int      ring_n;
+        int32_t  box;
+        int32_t  far_sz;
+        uint32_t spad;
+    } tracers;
+
     /* Hook sites: the guest entry addresses the feeders dispatch on.
      * `visibility` is the function that fills the visibility verdict when
      * the game computes it outside the draw; 0 when the draw computes it. */

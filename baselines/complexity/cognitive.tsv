@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: efe1561571e37ef75fca244e4e70a0d3451c684e
+# head: dc78570d88cc954a8be5bea0360918abcce41aba
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -133,6 +133,7 @@ games/common/renderer/cyclorama.c	cyclorama_reextract	57	0
 games/common/renderer/flame.c	flame_build_strip	59	0	
 games/common/renderer/flame.c	flame_dump	26	0	
 games/common/renderer/flame.c	flame_strip_compare	52	0	
+games/common/renderer/glint.c	glint_pair_depths	41	0	
 games/common/renderer/moby.c	append_revealed_regular_inner	127	0	
 games/common/renderer/moby.c	build_shaded_walk_tris	165	0	
 games/common/renderer/moby.c	capture_gte	49	0	
@@ -206,6 +207,7 @@ games/common/renderer/terrain.c	walk_sector	722	0
 games/common/renderer/text_moby.c	emit_glyph	26	0	
 games/common/renderer/text_moby.c	font_file_load	39	0	
 games/common/renderer/text_moby.c	text_moby_native_cache	49	0	
+games/common/renderer/tracers.c	rib_predict	30	0	
 games/common/renderer/ui_sprite.c	build_ot_rank_map	43	0	
 games/spyro-1/dist/disc_library.cpp	spyro1_config_disc_identity	44	0	
 games/spyro-1/dist/disc_library.cpp	spyro1_library_resolve	53	0	
@@ -260,13 +262,11 @@ games/spyro-1/sfx_census.cpp	spyro1_dump_sfx_pack	47	0
 games/spyro-1/sfx_census.cpp	walk_entry	29	0	
 games/spyro-2/renderer/reextract.c	game_reextract_body	48	0	
 games/spyro-2/renderer/reextract.c	player_records_replay	48	0	
-games/spyro-3/renderer/glint.c	glint_pair_depths	41	0	
 games/spyro-3/renderer/reextract.c	game_reextract_body	48	0	
 games/spyro-3/renderer/reextract.c	player_records_replay	48	0	
 games/spyro-3/renderer/terrain_probe.c	on_world_draw	216	0	
 games/spyro-3/renderer/terrain_probe.c	probe_report	32	0	
 games/spyro-3/renderer/terrain_probe.c	pv_match	35	0	
 games/spyro-3/renderer/terrain_probe.c	pv_midpoint	42	0	
-games/spyro-3/renderer/tracers.c	rib_predict	30	0	
 tests/bench/record_encode_bench.c	main	57	0	
 tests/unit/knob_registry_test.c	main	61	0	

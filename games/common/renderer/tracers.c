@@ -1,7 +1,13 @@
-// games/spyro-3/renderer/tracers.c — the tracer ribbon feeders: two handwritten
+// games/common/renderer/tracers.c — the tracer ribbon feeders: two handwritten
 // routines that build textured gouraud quad strips and link them into the 3D
 // ordering table themselves, so none of their primitives reaches the 2D
-// chokepoint the sprite feeder hooks.
+// chokepoint the sprite feeder hooks. Both are the same routine in each game
+// (ribbon: Spyro 2 func_8004B72C / mobyfunc.s:2936-3157, Spyro 3 func_8002FB68
+// / mobyfunc.s:2940-3181, 217 of 222 instructions; mesh: Spyro 2 func_8004BAA4
+// / mobyfunc.s:3180-3402, Spyro 3 func_8002FEE0 / mobyfunc.s:3182-3418, the
+// same arithmetic under a different load-delay schedule). Every per-game
+// address, count, stride and bound comes from game_layout.tracers; the walks
+// below are one body.
 //
 // Two producers, one capture:
 //
@@ -63,7 +69,6 @@
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
 #include "game_layout.h"
-#include "spyro3_symbols.gen.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -73,22 +78,19 @@
 
 extern unsigned openpete_frame;
 
-/* Record shape of the point-ring ribbon (asm/mobyfunc.s:2940-2947, 3096-3100). */
-#define RIB_SLOTS        0x20u
-#define RIB_STRIDE       0x6Cu
-#define RIB_LIVE         0x00u   /* :2940 lw 0x0; zero = free slot */
-#define RIB_POINTS       0x04u   /* :2947 the ring, 16 packed XYZ halves of 6 bytes */
-#define RIB_RING_N       16
-#define RIB_PACKED       0x64u   /* :2941 lw 0x64: head, count, width byte */
+#define TR (game_layout.tracers)
+
+/* Record shape of the point-ring ribbon (asm/mobyfunc.s:2940-2947, 3096-3100
+ * in the Spyro 3 image): the live pointer at +0x00, zero = free slot. */
+#define RIB_LIVE         0x00u
 #define RIB_POINT_MAX    256
 
 /* Descriptor shape of the indexed mesh (asm/mobyfunc.s:3225-3246). */
 #define MSH_INDICES      0x08u
 #define MSH_SHIFT        0x10u
 
-/* The scratchpad table both routines project into, 8 bytes per vertex: the
- * screen XY word and the MAC3-plus-outcode word (:3196-3200, :3218-3221). */
-#define SPAD_BASE        0x1F800000u
+/* The scratchpad table both routines project into holds 8 bytes per vertex:
+ * the screen XY word and the MAC3-plus-outcode word (:3196-3200, :3218-3221). */
 #define SPAD_MAX_VERTS   128
 
 #define TR_MAX_PRIMS     512    /* primitives one call may contribute */
@@ -181,20 +183,20 @@ static int rib_predict(CPUState* cpu, const ngte_view* v, float* out, int cap) {
     const uint32_t cz = cpu->read_word(game_layout.cam.position + 8u) >> 1;
 
     static rib_pt pt[RIB_POINT_MAX];
-    for (uint32_t s = 0; s < RIB_SLOTS; s++) {
-        const uint32_t rec = D_TRACER_RING + s * RIB_STRIDE;
+    for (uint32_t s = 0; s < TR.slots; s++) {
+        const uint32_t rec = TR.ring + s * TR.stride;
         if (cpu->read_word(rec + RIB_LIVE) == 0) continue;
         s_live++;
-        const uint32_t packed = cpu->read_word(rec + RIB_PACKED);
+        const uint32_t packed = cpu->read_word(rec + TR.packed_off);
         const int head  = (int)(packed & 0xFFu);
         const int count = (int)((packed >> 8) & 0xFFu);
-        if (count < 2 || count > RIB_RING_N || head >= count) continue;
+        if (count < 2 || count > TR.ring_n || head >= count) continue;
 
         int rejected = 0;
         int32_t and_oc = -1;
         for (int k = 0; k < count && !rejected; k++) {
             const int idx = ((head - k) % count + count) % count;
-            const uint32_t p = rec + RIB_POINTS + (uint32_t)idx * 6u;
+            const uint32_t p = rec + TR.points_off + (uint32_t)idx * 6u;
             const int32_t px = (int32_t)((uint32_t)cpu->read_half(p + 0u) << 1);
             const int32_t py = (int32_t)((uint32_t)cpu->read_half(p + 2u) << 1);
             const int32_t pz = (int32_t)((uint32_t)cpu->read_half(p + 4u) << 1);
@@ -202,8 +204,8 @@ static int rib_predict(CPUState* cpu, const ngte_view* v, float* out, int cap) {
             const int32_t vy = (int32_t)cy - py;   /* IR1 */
             const int32_t vz = (int32_t)cz - pz;   /* IR2 */
             /* :2408-2437 drops the whole record when any point leaves the box. */
-            if (vx <= -0x6000 || vx >= 0x6000 || vy <= -0x6000 || vy >= 0x6000 ||
-                vz <= -0x6000 || vz >= 0x6000) { rejected = 1; break; }
+            if (vx <= -TR.box || vx >= TR.box || vy <= -TR.box || vy >= TR.box ||
+                vz <= -TR.box || vz >= TR.box) { rejected = 1; break; }
             ngte_proj o;
             ngte_project_gte(v->cam_M, NULL, (double)vy, (double)vz, (double)vx,
                              v->ofx, v->ofy, v, 0, &o);
@@ -214,7 +216,7 @@ static int rib_predict(CPUState* cpu, const ngte_view* v, float* out, int cap) {
         }
         if (rejected) { s_boxed++; continue; }
         if ((and_oc & 0xF) > 0) continue;            /* :2496 every point off one edge */
-        if (pt[0].sz3 - 0x4000 >= 0) continue;       /* :2540 the whole record too far */
+        if (pt[0].sz3 - TR.far_sz >= 0) continue;    /* :2540 the whole record too far */
 
         for (int k = 0; k + 1 < count; k++) {
             if ((pt[k].oc & pt[k + 1].oc & 0xF) > 0) continue;        /* :2652 */
@@ -267,7 +269,7 @@ static void msh_pair_depths(CPUState* cpu, uint32_t desc) {
         int32_t and_oc = -1, zsum = 0;
         for (int k = 0; k < 4; k++) {
             if (off[k] >= SPAD_MAX_VERTS * 8u) return;   /* outside the table */
-            const int32_t w1 = (int32_t)cpu->read_word(SPAD_BASE + off[k] + 4u);
+            const int32_t w1 = (int32_t)cpu->read_word(TR.spad + off[k] + 4u);
             and_oc &= w1;
             zsum += w1 >> 16;                            /* :3241 sra 16 */
         }
@@ -432,14 +434,23 @@ void tracers_reextract(CPUState* cpu) {
     tr_feed_native(s_tick, s_tick_n);
 }
 
-static const feature_dispatch_entry_t tracers_dispatch[] = {
-    { F_TRACER_RIBBON, on_ribbon },
-    { F_TRACER_MESH,   on_mesh },
+/* The hook addresses are the layout's two tracer draw sites, bound at boot: a
+ * static initializer cannot read another TU's const. A game with no located
+ * routine leaves either 0 and the registry dispatches nothing for it. */
+static feature_dispatch_entry_t tracers_dispatch[] = {
+    { 0u, on_ribbon },
+    { 0u, on_mesh },
     { 0u, NULL },
 };
 
+static void tracers_apply_options(const openpete_options_t* opts) {
+    (void)opts;
+    tracers_dispatch[0].addr = game_layout.tracers.ribbon_hook;
+    tracers_dispatch[1].addr = game_layout.tracers.mesh_hook;
+}
+
 const feature_module_t tracers_module = {
     .name           = "tracers_native",
-    .apply_options  = NULL,
+    .apply_options  = tracers_apply_options,
     .dispatch_table = tracers_dispatch,
 };

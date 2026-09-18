@@ -280,6 +280,12 @@ function(openpete_add_game GAME_ID)
         ${_common}/renderer/shadow.c
         ${_common}/renderer/shadow_player.c
         ${_common}/renderer/flame.c
+        # The glow/glint/tracer effect family: five self-linking producers,
+        # registered only by a game whose game_layout names their routines.
+        ${_common}/renderer/glow.c
+        ${_common}/renderer/glint.c
+        ${_common}/renderer/glint2.c
+        ${_common}/renderer/tracers.c
         ${_common}/renderer/particles.c
         ${_common}/renderer/moby.c
         ${_common}/renderer/moby_rank.c

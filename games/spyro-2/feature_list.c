@@ -12,6 +12,10 @@ extern const feature_module_t moby_module;
 extern const feature_module_t portal_module;
 extern const feature_module_t player_module;
 extern const feature_module_t flame_module;
+extern const feature_module_t tracers_module;
+extern const feature_module_t glow_module;
+extern const feature_module_t glint_module;
+extern const feature_module_t glint2_module;
 extern const feature_module_t ui_sprite_module;
 extern const feature_module_t text_sprt_module;
 
@@ -40,6 +44,21 @@ const feature_module_t* const openpete_features[] = {
      * flame state block; inert unless the native scene is enabled or
      * OPENPETE_FLAME_VERIFY is set. */
     &flame_module,
+    /* The tracer feeder: hooks the point-ring ribbon and the indexed mesh,
+       both of which link their own primitives into the 3D ordering table. */
+    &tracers_module,
+    /* The glow-ring feeder: hooks the draw driver's call to the glow renderer,
+       which chains each ring's draw-mode packet and triangles into one
+       ordering-table entry of its own. */
+    &glow_module,
+    /* The gem-glint feeder: hooks the draw driver's call to the glint renderer,
+       which chains each star's draw-mode packet and quads, or each far cross's
+       lines, into an ordering-table entry of its own. */
+    &glint_module,
+    /* The jittered-beam feeder: hooks the draw driver's call to the ribbon
+       renderer, which links each segment's triangles into an ordering-table
+       bucket keyed on that segment's own corners. */
+    &glint2_module,
     /* The shared moby feeder: registers the cull and the two draw passes
      * game_layout.moby names and decodes their records through the
      * moby_game_s23 provider; inert unless the native scene is enabled. */

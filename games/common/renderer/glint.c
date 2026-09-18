@@ -1,8 +1,11 @@
-// games/spyro-3/renderer/glint.c — the gem-glint feeder: a handwritten routine
-// (asm/mobyfunc.s:2195-2507) that draws one screen-facing four-point star per
-// live record of a 16-slot pool and links each star into the 3D ordering table
-// itself, so none of its primitives reaches the 2D chokepoint the sprite feeder
-// hooks.
+// games/common/renderer/glint.c — the gem-glint feeder: a handwritten routine
+// (Spyro 2 func_8004AC78 / mobyfunc.s:2192-2489, Spyro 3 func_8002F098 /
+// mobyfunc.s:2195-2507; the same 297 instructions but for constants and
+// symbols) that draws one screen-facing four-point star per live record of a
+// pool and links each star into the 3D ordering table itself, so none of its
+// primitives reaches the 2D chokepoint the sprite feeder hooks. Every per-game
+// address, count, stride and bound comes from game_layout.glint; the walk
+// below is one body.
 //
 // Read from the routine (asm/mobyfunc.s):
 //   * the pool is 16 records of 0x10 bytes: world XYZ at +0x00, +0x04, +0x08
@@ -74,7 +77,6 @@
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
 #include "game_layout.h"
-#include "spyro3_symbols.gen.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -84,11 +86,7 @@
 
 extern unsigned openpete_frame;
 
-#define GLINT_SLOTS    16u
-#define GLINT_STRIDE   0x10u
-#define GLINT_POS      0x00u    /* :2252-2254 three world words */
-#define GLINT_PACKED   0x0Cu    /* :2231 lw 0xC: lifetime, size, spin, colour row */
-#define GLINT_NEAR_VZ  0x2000   /* :2347 the half-world depth the branch switches at */
+#define GT (game_layout.glint)
 
 #define GLINT_MAX_PRIMS 256
 #define GLINT_DRMODE    0xE1u   /* GP0 draw-mode packet, one per accepted near record */
@@ -146,30 +144,31 @@ static int glint_predict(CPUState* cpu, const ngte_view* v, glint_rec* out, int 
     int n = 0;
     const double cx = v->cam[0], cy = v->cam[1], cz = v->cam[2];
 
-    for (uint32_t s = 0; s < GLINT_SLOTS; s++) {
-        const uint32_t rec = D_GLINT_POOL + s * GLINT_STRIDE;
-        const uint32_t packed = cpu->read_word(rec + GLINT_PACKED);
+    const double box = (double)GT.box;
+    for (uint32_t s = 0; s < GT.slots; s++) {
+        const uint32_t rec = GT.pool + s * GT.stride;
+        const uint32_t packed = cpu->read_word(rec + GT.packed_off);
         if ((packed & 0xFFu) == 0u) continue;          /* :2236-2240 expired or free */
 
-        const double px = (double)(int32_t)cpu->read_word(rec + GLINT_POS + 0u);
-        const double py = (double)(int32_t)cpu->read_word(rec + GLINT_POS + 4u);
-        const double pz = (double)(int32_t)cpu->read_word(rec + GLINT_POS + 8u);
+        const double px = (double)(int32_t)cpu->read_word(rec + GT.pos_off + 0u);
+        const double py = (double)(int32_t)cpu->read_word(rec + GT.pos_off + 4u);
+        const double pz = (double)(int32_t)cpu->read_word(rec + GT.pos_off + 8u);
         /* :2252-2258 the camera-relative offset, halved with an arithmetic
          * shift, which floors rather than truncating toward zero. */
         const double vx = floor((px - cx) / 2.0);      /* the routine's IR3 */
         const double vy = floor((cy - py) / 2.0);      /* IR1 */
         const double vz = floor((cz - pz) / 2.0);      /* IR2 */
-        if (vx >= 0x7800 || vx <= -0x7800 || vy >= 0x7800 || vy <= -0x7800 ||
-            vz >= 0x7800 || vz <= -0x7800) continue;   /* :2266-2276 */
+        if (vx >= box || vx <= -box || vy >= box || vy <= -box ||
+            vz >= box || vz <= -box) continue;         /* :2266-2276 */
 
         double m1, m2, m3;
         ngte_mac(v->cam_M, vy, vz, vx, &m1, &m2, &m3);
-        if (m3 < 128.0 || m3 >= 0x7800) continue;      /* :2294-2296 */
-        if (4.0 * fabs(m1) - 3.0 * m3 - 256.0 >= 0.0) continue;   /* :2310 */
-        if (3.0 * fabs(m2) - m3 - 192.0 >= 0.0) continue;         /* :2320 */
+        if (m3 < (double)GT.near_z || m3 >= (double)GT.far_z) continue;   /* :2294-2296 */
+        if (4.0 * fabs(m1) - 3.0 * m3 - (double)GT.pyr_x >= 0.0) continue;   /* :2310 */
+        if (3.0 * fabs(m2) - m3 - (double)GT.pyr_y >= 0.0) continue;         /* :2320 */
 
         if (n < cap) {
-            out[n].near_mode = (m3 < (double)GLINT_NEAR_VZ);
+            out[n].near_mode = (m3 < (double)GT.near_vz);
             out[n].depth = openpete_native_depth_from_viewz(
                 openpete_worldvz_scaled((float)m3, 2.0f));
         }
@@ -242,18 +241,20 @@ static void glint_pair_depths(CPUState* cpu, const ngte_view* v) {
 }
 
 /* OPENPETE_GLINT selects what this feeder emits: 0 nothing, 1 the near stars
- * (the default), 2 the near stars and the far crosses. The guest draw runs at
- * every setting, so the A/B prices the painted pixels from one binary.
+ * alone, 2 the near stars and the far crosses (the default). The guest draw
+ * runs at every setting, so the A/B prices the painted pixels from one binary.
  *
- * The far cross is captured and censused at every setting but fed only at 2:
- * its ordering-table bucket loses to the world's on the PSX, where the
- * reference paints terrain over it, while a true depth test puts it in front,
- * so feeding it by default would draw geometry the reference does not show. */
+ * The far cross is fed at its own projected depth, with no ordering-table pull
+ * applied: the routine keys it on the same view-Z the depth comes from, so the
+ * depth test reproduces the ordering the routine asked for. Where world
+ * geometry stands between the camera and the gem, the cross is covered — in
+ * the ordering table and under the depth test alike — and where nothing does,
+ * it draws. */
 static int glint_feed_mode(void) {
     static int v = -1;
     if (v < 0) {
         const char* e = getenv("OPENPETE_GLINT");
-        v = (e && *e) ? atoi(e) : 1;
+        v = (e && *e) ? atoi(e) : 2;
         if (v < 0) v = 0;
     }
     return v;
@@ -414,8 +415,8 @@ static const hook_bracket_desc k_bracket = {
     .path = RP_SPARKLE, .prof_tag = "glint.srend", .st = &s_hb,
 };
 
-/* The world draw's call (asm/nonmatchings/draw/func_8001E460.s:30) is the only
- * one in the image, so the hook takes every entry. */
+/* The world draw's call is the only one in either image, so the hook takes
+ * every entry (Spyro 2 draw/func_800155A0.s:32, Spyro 3 draw/func_8001E460.s:30). */
 static int on_glint_draw(CPUState* cpu, uint32_t addr) {
     uint32_t startp, endp; int feed, verify;
     if (!hook_bracket_run(cpu, addr, &k_bracket, &startp, &endp, &feed, &verify))
@@ -444,13 +445,21 @@ void glint_reextract(CPUState* cpu) {
     glint_feed_native();
 }
 
-static const feature_dispatch_entry_t glint_dispatch[] = {
-    { F_GLINT_DRAW, on_glint_draw },
+/* The hook address is the layout's glint draw site, bound at boot: a static
+ * initializer cannot read another TU's const. A game with no located routine
+ * leaves it 0 and the registry dispatches nothing. */
+static feature_dispatch_entry_t glint_dispatch[] = {
+    { 0u, on_glint_draw },
     { 0u, NULL },
 };
 
+static void glint_apply_options(const openpete_options_t* opts) {
+    (void)opts;
+    glint_dispatch[0].addr = game_layout.glint.hook;
+}
+
 const feature_module_t glint_module = {
     .name           = "glint_native",
-    .apply_options  = NULL,
+    .apply_options  = glint_apply_options,
     .dispatch_table = glint_dispatch,
 };
