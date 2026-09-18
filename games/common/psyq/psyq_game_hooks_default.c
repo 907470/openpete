@@ -108,15 +108,8 @@ void psyq_game_music_route(int sector, psyq_music_route_t* out) {
 }
 #endif
 
-#ifndef PSYQ_GAME_PROVIDES_RENDER_PATHS_ACTIVE
-int  psyq_game_render_paths_active(void) { return 0; }
-#endif
-#ifndef PSYQ_GAME_PROVIDES_RENDER_PATH_ADDR_VISIBLE
-int  psyq_game_render_path_addr_visible(uint32_t addr) {
-    (void)addr;
-    return 1;   /* no filter declared: everything is visible */
-}
-#endif
+/* psyq_game_render_paths_active and psyq_game_render_path_addr_visible have no
+ * default here: renderer/render_paths.c defines them for every game. */
 #ifndef PSYQ_GAME_PROVIDES_OT_BEGIN
 void psyq_game_ot_begin(void) {}
 #endif

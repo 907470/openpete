@@ -8,6 +8,7 @@
 #include "openpete_knobs.h"          /* dev-overlay row bind */
 #include "openpete_native_render.h"  /* isolation toggle */
 #include "renderer/orchestrator.h"  /* canonical-render epoch commit */
+#include "psyq/psyq_game_hooks.h"   /* the OT walk's view of this filter */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -273,6 +274,15 @@ bool render_path_addr_visible(uint32_t addr) {
             return render_path_enabled(s_iv_prev[i].path);
     }
     return false;   /* untracked geometry: dropped while a selection is active */
+}
+
+/* The OT walk's view of the filter (psyq_game_hooks.h). Defined here rather
+ * than per game: the registry above is linked into every game target, so the
+ * walk's filter is armed wherever --render-paths can be parsed. */
+int psyq_game_render_paths_active(void) { return render_paths_active(); }
+
+int psyq_game_render_path_addr_visible(uint32_t addr) {
+    return render_path_addr_visible(addr);
 }
 
 /* ---- polybuf brackets for paths WITHOUT a native feature module ----------

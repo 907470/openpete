@@ -24,7 +24,6 @@ extern "C" {
 }
 
 #include "mods/mod_wad_overlay.h"
-#include "renderer/render_paths.h"
 #include "renderer/moby_rank.h"
 #include "sfx_pack.h"
 #include "psx/libcd.h"
@@ -343,10 +342,6 @@ extern "C" void psyq_game_cd_read_done(CPUState* cpu, uint32_t read_cb) {
     }
 }
 
-extern "C" int  psyq_game_render_paths_active(void) { return render_paths_active(); }
-extern "C" int  psyq_game_render_path_addr_visible(uint32_t addr) {
-    return render_path_addr_visible(addr);
-}
 extern "C" void psyq_game_ot_begin(void) { openpete_mobyrank_ot_begin(openpete_frame); }
 extern "C" void psyq_game_ot_prim_full(unsigned code_byte, const void* payload,
                             unsigned payload_bytes) {
