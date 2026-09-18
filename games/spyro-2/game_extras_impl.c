@@ -1,4 +1,4 @@
-// games/spyro-2/game_extras_impl.c — Spyro 2: Ripto's Rage!'s per-game contract.
+// games/spyro-2/game_extras_impl.c, Spyro 2: Ripto's Rage!'s per-game contract.
 //
 // Identity and the address-only PSYQ hooks are generated from recomp.conf
 // (game_identity.c). Bring-up state: the overlay hooks, --skip-to-level and
@@ -12,6 +12,7 @@
 #include "skip_to_level.h"
 #include "write_census.h"
 #include "freecam_game.h"
+#include "feature_registry.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -57,11 +58,13 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
 
 /* Debug free camera (F): while engaged and gameplay is live, drive the
  * camera in place of the camera update and suppress it and the player update.
- * Inactive: one bool test. */
+ * Inactive: one bool test. Anything the freecam does not claim goes to the
+ * registered feature modules (feature_list.c), which is how the shared
+ * presentation feeders reach their hook addresses. */
 int psx_override_dispatch_game(CPUState* cpu, uint32_t addr) {
     if (freecam_should_freeze(cpu, addr)) return 1;
     if (write_census_active()) write_census_note_entry(addr);
-    return 0;
+    return feature_registry_dispatch(cpu, addr);
 }
 void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
     (void)cpu; (void)frame_counter;
