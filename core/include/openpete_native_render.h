@@ -250,14 +250,13 @@ int  openpete_native_get_terrain_visibility(void);
  * byte order R,G,B,A. */
 typedef struct { float x, y, z; uint32_t rgba; } openpete_hud_vert;
 
-/* Hand the native renderer overlay geometry built from Spyro's own 3D HUD text
- * mobys (the gold extruded glyph models, g_Models[260..269] digits / 426..451
- * letters / punctuation). `verts` is a triangle list (3 verts per tri), built
- * each game frame by the game-side emitter (text_moby_native). The renderer
- * copies them and draws them (depth-tested, on top) on the live vk present in
- * place of the 5x7 bitmap FPS font. nverts==0 → fall back to the bitmap font
- * (e.g. before the glyph models have loaded). Currently the FPS counter; reusable
- * for other text overlays. Display-only; never touches gameplay state. */
+/* Hand the native renderer overlay geometry built from the game's own 3D
+ * glyph models (game_layout.font). `verts` is a triangle list (3 verts per
+ * tri), built each tick by the game-side emitter (text_moby_native). The
+ * renderer copies them and draws them (depth-tested, on top) on the live vk
+ * present. nverts==0 draws no readout: there is no other font (e.g. before
+ * the glyph models have loaded). The performance readout's channel.
+ * Display-only; never touches gameplay state. */
 void openpete_native_set_overlay_glyphs(const openpete_hud_vert *verts, int nverts);
 
 /* The overlay block's REGION rect in overlay space (window-height units), set

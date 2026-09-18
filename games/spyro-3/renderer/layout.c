@@ -406,6 +406,45 @@ const game_layout_t game_layout = {
         .sky_draw   = F_SKY_DRAW,
         .visibility = F_VISIBILITY,   /* called by both draws before their walks */
     },
+
+    /* The portal-name font: class 265 of the block-per-glyph model kind,
+     * resident only in the home worlds, whose moby routines spawn one moby
+     * per character with the glyph in the animation id byte: letters
+     * 2 + (c - 'A'), digits 28 + (c - '0'), 38 for everything else below
+     * 'A' (overlays/level_20/moby/func_level_20_80081BBC.s:358-381). Block
+     * 38 is an apostrophe, which the routine spawns 0x40 world units higher
+     * (:388-391), 32 of the model's half-world units; there is no period or
+     * colon. Blocks 0 and 1 are
+     * not glyphs. The block pointers are the ones the static draw
+     * dereferences at Model + 0x14 + id * 4 (mobydraw.s:3946).
+     *
+     * Letters span y -50..50. Every face is flat-lit against entry 2 of the
+     * flat colour table at 0x80066998 (Moby+0x54 = 2): base word 0x00004040, lit
+     * word 0x0000A0A0, red in the low byte: base (64,64,0), lit (160,160,0). The
+     * draw's light is (-1916,-3065,-3072) against a view-space normal of
+     * length 127, shifted right 8 (mobydraw.s:4758-4813): at unit N.L = t
+     * the projection is 2353 * t, the lit colour scales by it over 4096
+     * (160 * 2353 / 4096 = 92) and the highlight (projection - 1472) << 3 in
+     * 12-bit colour opens at t = 1472 / 2353 with slope 2353 * 8 / 16. The
+     * fixed light is that vector in the host form, z negated toward the
+     * reader. */
+    .font = {
+        .form            = GAME_FONT_ONE_CLASS,
+        .model_table     = G_MOBYMODELS,
+        .font_class      = 265,
+        .block_table_off = 0x14u,
+        .digit_base      = 28,
+        .letter_base     = 2,
+        .punct           = { {'\'', 38, -32} },
+        .synth_period    = 1,
+        .synth_depth_char = '\'',
+        .colon_recenter = -39.5f, .colon_spread = 29.0f, .colon_scale = 0.72f,
+        .model_h         = 100.0f,
+        .light_add       = { 92.0f, 92.0f, 0.0f },
+        .hi_threshold    = 0.6256f, .hi_gain = 1176.5f,
+        .fixed_light     = { -0.404f, -0.646f, 0.648f },
+        .fixed_tint      = 0x404000u,
+    },
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). The sprite, box, fade

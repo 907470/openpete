@@ -452,6 +452,11 @@ const game_layout_t game_layout = {
         .sky_draw   = F_SKY_DRAW,
         .visibility = F_VISIBILITY,   /* called by both draws before their walks */
     },
+
+    /* No glyph models located: the class, the block indices and the levels
+     * that hold the font are unknown, so the text producer publishes no
+     * glyphs. */
+    .font = { .form = GAME_FONT_NONE },
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). The sprite, box, fade

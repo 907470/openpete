@@ -30,6 +30,9 @@ openpete_add_game(spyro-3
         # The per-game tables the shared player provider reads.
         renderer/player_game.c
         ${CMAKE_SOURCE_DIR}/games/common/renderer/portal_spyro23.c
+        # The 3D glyph text producer: settings menu, OSD toasts, performance
+        # readout, drawn with the home worlds' portal-name font.
+        ${CMAKE_SOURCE_DIR}/games/common/renderer/text_moby.c
         renderer/portal_game.c
         renderer/tracers.c
         renderer/glow.c

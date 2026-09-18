@@ -183,7 +183,8 @@ openpete_add_game(spyro-1
         renderer/tracer.c
         renderer/layout.c
         renderer/portal.c
-        renderer/text_moby.c
+        # The 3D glyph text producer, shared with Spyro 3.
+        ${CMAKE_SOURCE_DIR}/games/common/renderer/text_moby.c
         renderer/text_moby_id.c
         renderer/transition.c
 

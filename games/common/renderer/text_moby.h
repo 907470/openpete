@@ -1,16 +1,16 @@
-// games/spyro-1/renderer/text_moby.h
+// games/common/renderer/text_moby.h
 //
-// Render arbitrary text using Spyro 1's own 3D HUD "text mobys" — the gold
-// extruded glyph models the game draws for the gem/life counters, "DEMO MODE",
-// dragon names, "THE ADVENTURE BEGINS", the pause & inventory menus, etc. See
-// the .c for the model format.
+// Render arbitrary text using the game's own extruded 3D glyph models (Spyro
+// 1's gem and life counters, "DEMO MODE", dragon names and pause menu; Spyro
+// 3's home-world portal names). game_layout.font says where the models are
+// and how they are packed; see the .c for both formats.
 //
-// The glyph models are NOT permanently resident — they load with the HUD font
-// asset (~frame 300, title/attract) but get EVICTED during e.g. the level-intro
-// cutscene. So we SNAPSHOT their decoded geometry once, the first time they are
-// available (text_moby_native_cache), and render purely from that cache forever
-// after — immune to later unloading. Until the snapshot is taken, ready() is
-// false and the caller renders nothing (there is no bitmap fallback).
+// The glyph models are not permanently resident, so their decoded geometry is
+// snapshotted once, the first time they are available
+// (text_moby_native_cache), and every draw works from the snapshot. A game
+// whose font is a per-level asset also keeps the snapshot in a cache file
+// (OPENPETE_FONT_CACHE), loaded at boot by later sessions. Until a snapshot
+// exists, ready() is false and the caller renders nothing.
 //
 // Pure presentation — reads glyph-model geometry from RAM, writes no
 // gameplay-readable state.
@@ -22,9 +22,10 @@
 
 struct CPUState;
 
-/* Snapshot the glyph-model geometry from RAM the first time the HUD font asset
- * is resident; a cheap no-op once cached. Call every frame (the cache survives
- * the models being unloaded later). Reads model RAM only. */
+/* Snapshot the glyph-model geometry the first time it is available: from the
+ * cache file where the game keeps one, else from RAM once the font asset is
+ * resident. A cheap no-op once cached; call every tick (the cache survives the
+ * models being unloaded later). Reads model RAM only. */
 void text_moby_native_cache(struct CPUState* cpu);
 
 /* True once the glyph cache is populated (the font has been seen at least once). */
@@ -37,8 +38,9 @@ int text_moby_native_ready(void);
  * height). `base_rgb` is the 0xRRGGBB BASE/tint colour (the unlit back-colour);
  * a white directional light is ADDED per face on top, matching how the game
  * shades these mobys (dark base -> brighter toward the light). Supports
- * 0-9, A-Z (case-insensitive), common punctuation, and ':' faked from two
- * period dots; a space (or any glyph not in the cache) just advances. Works
+ * 0-9, A-Z (case-insensitive), the punctuation the game's font has, and ':'
+ * faked from two period dots; a space (or any glyph not in the cache) just
+ * advances. Works
  * entirely from the cache — returns 0 (nothing emitted) until ready(). */
 int text_moby_native_emit(const char* str,
                           float origin_x, float origin_y, float cap_h,

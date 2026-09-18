@@ -607,7 +607,68 @@ typedef struct game_layout {
         uint32_t sky_draw;
         uint32_t visibility;
     } hooks;
+
+    /* The game's extruded 3D glyph models, the font the host text producer
+     * (games/common/renderer/text_moby.c) draws the settings menu, the OSD
+     * toasts and the performance readout with. `form` 0 means the game has
+     * none and the producer publishes no glyphs.
+     *
+     * Form GAME_FONT_CLASS_PER_GLYPH: every glyph is its own moby class; the
+     * glyph index is the class, `model_table[index]` points at a model whose
+     * first word is negative, byte 0 the vertex count, byte 1 the face
+     * count, +0x04 a stream of 3-byte packed vertices and +0x0C a stream of
+     * 8-byte faces (four 7-bit vertex indices in word 0 bits 23/16/9/2, the
+     * face normal in word 1's three high bytes as z, x, y). Model +Z faces
+     * the reader.
+     *
+     * Form GAME_FONT_ONE_CLASS: one class (`font_class`) carries every glyph
+     * as one geometry block per index; the model-table entry is a KUSEG
+     * address of a model whose first word is the block count and whose
+     * block pointers start at `block_table_off`. A block holds the vertex
+     * count in header byte 1, one-word vertices at +0x10 (y in bits 0-11, x
+     * in 11-21, z in 21-31), the offset of the byte-counted face list in
+     * the low half of +0x08, and 8-byte flat-lit faces (four 7-bit indices
+     * in word 0 bits 21/14/7/0, the normal in word 1 bits 15/7/23 as x, y,
+     * z). Model -Z faces the reader. The model is resident only in the
+     * levels that draw it, so the producer keeps the decoded glyphs in a
+     * host cache file.
+     *
+     * A character maps to `digit_base` + (c - '0'), `letter_base` +
+     * (c - 'A'), or the index `punct` pairs it with (the list ends at a
+     * zero character), drawn `dy` model units below where the model puts
+     * it. `synth_period` builds the period the font lacks as
+     * an extruded square as deep as the glyph of `synth_depth_char`. A colon
+     * is two periods, each scaled by `colon_scale`, moved by
+     * `colon_recenter` and then apart by +-`colon_spread` (model units).
+     *
+     * `model_h` is the model-unit height a caller's cap height maps to.
+     * A face's colour is the caller's base colour plus, per channel,
+     * `light_add` * t + max(0, t - `hi_threshold`) * `hi_gain`, t the unit
+     * N.L. `fixed_light` is the unit light of the performance readout (x
+     * right, y down, z toward the reader) and `fixed_tint` its 0xRRGGBB
+     * base colour. */
+    struct {
+        int      form;
+        uint32_t model_table;
+        int      font_class;
+        uint32_t block_table_off;
+        int      digit_base;
+        int      letter_base;
+        struct { char ch; int index; int dy; } punct[8];
+        int      synth_period;
+        char     synth_depth_char;
+        float    colon_recenter, colon_spread, colon_scale;
+        float    model_h;
+        float    light_add[3];
+        float    hi_threshold, hi_gain;
+        float    fixed_light[3];
+        unsigned fixed_tint;
+    } font;
 } game_layout_t;
+
+#define GAME_FONT_NONE            0
+#define GAME_FONT_CLASS_PER_GLYPH 1
+#define GAME_FONT_ONE_CLASS       2
 
 extern const game_layout_t game_layout;
 

@@ -1,0 +1,11 @@
+# The 3D glyph text gate's rows (scripts/check_text_font.sh; fields and cache
+# modes are documented there). The font model (class 265) is resident only in
+# the home worlds.
+#
+# name            | level          | cache                    | expect
+cold-non-home     | cloud_spires   | cold                     | none
+home-world        | sunrise_spring | fresh                    | ram
+warm-non-home     | cloud_spires   | warm:home-world          | file
+reject-checksum   | cloud_spires   | bad-checksum:home-world  | none
+reject-disc       | cloud_spires   | bad-disc:home-world      | none
+reject-version    | cloud_spires   | bad-version:home-world   | none

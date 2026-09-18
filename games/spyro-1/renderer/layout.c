@@ -237,6 +237,28 @@ const game_layout_t game_layout = {
         .world_draw = F_WORLD_DRAW,
         .sky_draw   = F_SKY_DRAW,
     },
+
+    /* The HUD font: one moby class per glyph, digits 260-269, letters
+     * 426-451, punctuation scattered; there is no colon model. Glyphs span
+     * y -76..76. The game lights them with a dark back-colour plus a white
+     * directional term added on top: measured on the Artisans HUD, back
+     * colour (96,96,0) on unlit edges up to (214,214,118) at full facing, so
+     * the add is 118 on every channel and there is no highlight term. The
+     * period model sits at y 24..77, which the colon recentres. */
+    .font = {
+        .form        = GAME_FONT_CLASS_PER_GLYPH,
+        .model_table = G_MODELS,
+        .digit_base  = 260,
+        .letter_base = 426,
+        .punct       = { {'%', 272}, {'/', 277}, {'?', 278}, {'+', 317},
+                         {'^', 321}, {'.', 327}, {'\'', 76} },
+        .colon_recenter = -50.0f, .colon_spread = 44.0f, .colon_scale = 0.72f,
+        .model_h     = 152.0f,
+        .light_add   = { 118.0f, 118.0f, 118.0f },
+        .hi_threshold = 2.0f, .hi_gain = 0.0f,      /* t <= 1: never opens */
+        .fixed_light = { -0.34f, 0.50f, 0.80f },    /* unit, front-dominant */
+        .fixed_tint  = 0x606000u,
+    },
 };
 
 /* The 2D UI layer (games/common/renderer/ui_sprite.c). */

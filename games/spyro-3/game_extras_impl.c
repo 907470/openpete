@@ -16,6 +16,7 @@
 #include "openpete_log.h"
 #include "feature_registry.h"   /* the registered feature modules' dispatch tables */
 #include "openpete_fiber.h"
+#include "renderer/text_moby.h"
 
 #include <stddef.h>
 #include <stdio.h>
@@ -69,6 +70,15 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
      * waits, after the view matrix has been built, so a store seen from here
      * until the next phase entry precedes it for that tick. */
     if (write_census_active()) write_census_set_phase(0);
+
+    /* The host text layers, drawn with the game's own 3D glyph models: the
+     * shimmer's clock first, so the settings menu and the OSD toasts are lit
+     * by the same instant of it, then the performance readout, the menu and
+     * the toasts. Each reads model geometry and writes renderer state only. */
+    text_moby_native_shimmer_tick();
+    text_moby_native_perf_overlay(cpu);
+    text_moby_native_menu(cpu);
+    text_moby_native_osd(cpu);
 }
 void game_on_frame(CPUState* cpu, uint32_t frame_counter) {
     (void)cpu; (void)frame_counter;

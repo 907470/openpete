@@ -2302,6 +2302,15 @@ static int run_host_init(const openpete_options_t* opts) {
                                 "%s", demo[i]);
         }
     }
+    /* OPENPETE_MENU_DEMO=1 opens the settings menu at startup, the menu's
+     * counterpart of the toast seed above: an unattended run has no key to
+     * open it with. The open menu holds the game pad released, so the run
+     * needs no pad input of its own (--skip-to-level, not a movie).
+     * Diagnostic only. */
+    {
+        const char *e = getenv("OPENPETE_MENU_DEMO");
+        if (e && *e && *e != '0' && !openpete_menu_is_open()) openpete_menu_toggle();
+    }
     openpete_native_set_fps_in_record(opts->record_fps_overlay);  /* --record-fps-overlay */
 
     /* Decide whether PsyCross still rasterizes the OT (see the global's comment).
