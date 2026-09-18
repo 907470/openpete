@@ -1,0 +1,72 @@
+[
+ {
+  "name": "rise",
+  "tus": [
+   "rise.c"
+  ],
+  "rows": {
+   "rise.c:rise": 30
+  },
+  "scores": {
+   "rise.c:rise": 40
+  },
+  "verdict": "REFUSED",
+  "bin": "RISE"
+ },
+ {
+  "name": "unfunded-new",
+  "tus": [
+   "fresh.c"
+  ],
+  "rows": {},
+  "scores": {
+   "fresh.c:fresh": 40
+  },
+  "verdict": "REFUSED",
+  "bin": "RISE"
+ },
+ {
+  "name": "marked",
+  "tus": [
+   "marked.c"
+  ],
+  "rows": {},
+  "scores": {
+   "marked.c:tabled": 40
+  },
+  "verdict": "PASS",
+  "bin": "MARKED"
+ },
+ {
+  "name": "balance",
+  "tus": [
+   "balance.c"
+  ],
+  "rows": {
+   "balance.c:retired": 60
+  },
+  "scores": {
+   "balance.c:retired": 3,
+   "balance.c:funded": 40
+  },
+  "verdict": "PASS",
+  "bin": "RETIRED"
+ },
+ {
+  "name": "unwired",
+  "tus": [
+   "wired.c"
+  ],
+  "present": [
+   "unwired.c"
+  ],
+  "rows": {
+   "unwired.c:orphan": 40
+  },
+  "scores": {
+   "wired.c:small": 1
+  },
+  "verdict": "REFUSED",
+  "bin": "UNWIRED"
+ }
+]

@@ -124,6 +124,18 @@ check_psyq_headers() {
     fi
 }
 
+# The tracked pre-commit hook (the cognitive-complexity ratchet) runs only
+# when this clone's core.hooksPath names githooks/; the setting is local
+# config and a fresh clone carries none. The build refuses an unarmed clone.
+echo
+echo "==> git hooks"
+if git -C "$OPENPETE_ROOT" rev-parse --git-dir >/dev/null 2>&1; then
+    git -C "$OPENPETE_ROOT" config core.hooksPath githooks
+    green "  ok: core.hooksPath = githooks"
+else
+    yellow "  not a git checkout; hooks not armed"
+fi
+
 check_decomp spyro-1 "make"
 # `make` alone builds a single object and exits 0 — the Makefile's default goal
 # is one .o, not the game. The target that builds everything is `all`.

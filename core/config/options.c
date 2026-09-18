@@ -780,6 +780,7 @@ void openpete_options_init(openpete_options_t* opts) {
                                  : OPENPETE_TERRAIN_VIS_FRUSTUM; }
 }
 
+// complexity-ratchet: flat else-if chain with one arm per flag; a new flag adds an arm, not structure
 int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
     /* Snapshot the command line as typed, before the sidecar / config
      * splices below rewrite argv. --bk2-record captures this (and not the

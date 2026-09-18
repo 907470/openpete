@@ -211,6 +211,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         TIMEOUT 600
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Cognitive-complexity ratchet, the ctest spelling of the per-build
+    # check (core/CMakeLists.txt, openpete_complexity_ratchet). Exit 64 =
+    # no compile database.
+    add_test(NAME complexity_ratchet
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/complexity_ratchet.py
+                     check --ctest
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(complexity_ratchet PROPERTIES
+        LABELS "fence"
+        SKIP_RETURN_CODE 64)
+    # The fence's own tests: the decision function per rule, the staging guard
+    # rules that protect the hook, and the hook end to end in a scratch repo.
+    add_test(NAME complexity_ratchet_selftest
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/fences/tests/test_complexity_ratchet.py)
+    set_tests_properties(complexity_ratchet_selftest PROPERTIES LABELS "fence")
+
     # Native renderer visual-regression gate (W1.2). Renders the native `-vk`
     # frame HEADLESS through a software rasterizer (surfaceless Vulkan, plan
     # W1.1 — no GPU / no display) at a curated set of attract-demo scenes and

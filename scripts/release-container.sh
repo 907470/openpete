@@ -64,7 +64,9 @@ elif [[ " ${pkg_args[*]} " != *" --with-mod-sdk "* ]]; then
     pkg_args+=(--with-mod-sdk)
 fi
 
-"$ENGINE" run --rm -v "$PWD:/src" "${uidmap[@]}" "$IMAGE" bash -euo pipefail -c '
+# The container builds and never commits: the complexity fence's hook-arming
+# check (scripts/fences/complexity_ratchet.py check --armed) does not apply.
+"$ENGINE" run --rm -v "$PWD:/src" -e OPENPETE_NO_COMMITS=1 "${uidmap[@]}" "$IMAGE" bash -euo pipefail -c '
     cmake -S third_party/psxrecomp/recompiler -B third_party/psxrecomp/build \
           -G Ninja -DCMAKE_BUILD_TYPE=Release
     cmake --build third_party/psxrecomp/build -j

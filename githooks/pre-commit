@@ -1,0 +1,5 @@
+#!/bin/sh
+# Tracked pre-commit hook. Active when core.hooksPath names this directory:
+#   git config core.hooksPath githooks
+# The build's `complexity_ratchet.py check --armed` refuses an unarmed clone.
+exec python3 "$(git rev-parse --show-toplevel)/scripts/fences/complexity_ratchet.py" hook

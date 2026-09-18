@@ -600,4 +600,26 @@ if(NOT CMAKE_HOST_WIN32)
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/keymap_flags.py ${CMAKE_SOURCE_DIR}
         COMMENT "launcher fences: silence the pad, make env knobs cross into WSL, keymap flags match consumers"
         VERBATIM)
+
+    # Cognitive-complexity ratchet. The fence acts in a git pre-commit hook,
+    # and core.hooksPath is local config a fresh clone does not carry, so
+    # `check --armed` fails the build until the clone is armed (or declares
+    # OPENPETE_NO_COMMITS=1). `check` re-scores the corpus against HEAD's
+    # baseline (about 2 s) and catches a rise that reached HEAD without the
+    # hook (merge, revert, --no-verify). It runs under linux-release only:
+    # that preset's compile database is the one the baseline was scored
+    # from, the MinGW database carries another compiler's flags, and the
+    # release container has no clang-tidy.
+    get_filename_component(_openpete_bindir_name "${CMAKE_BINARY_DIR}" NAME)
+    set(_openpete_complexity_check "")
+    if(_openpete_bindir_name STREQUAL "linux-release")
+        set(_openpete_complexity_check
+            COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/complexity_ratchet.py check)
+    endif()
+    add_custom_target(openpete_complexity_ratchet ALL
+        COMMAND ${CMAKE_COMMAND} -E echo "Checking the complexity ratchet..."
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/complexity_ratchet.py check --armed
+        ${_openpete_complexity_check}
+        COMMENT "complexity fence: the pre-commit hook is armed, and no function's excess rose"
+        VERBATIM)
 endif()
