@@ -269,6 +269,22 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Terrain triangle-swing census under --lod extended. Replays a
+    # camera-swing bk2 headless and reads the terrain triangle count of every
+    # canonical walk over a fixed VBL window; fails on any adjacent-walk jump
+    # of 1000 triangles or more, the signature of a near/HQ subdivide whose
+    # face membership is not stable between neighbouring walks. Engagement
+    # floor: at least 300 walks in the window. Spyro 3 is the game whose draw
+    # bins the HP list by distance; the check skips for the others.
+    add_test(NAME nearhq_swing_spyro3
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_nearhq_swing.sh
+                     --game spyro-3 --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(nearhq_swing_spyro3 PROPERTIES
+        LABELS "presentation;terrain"
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Multi-Spyro sub-tick records (notes/plans/openpete-native-multi-spyro-subtick.md):
     # the spyro-coop mod draws N dragons through the game's own player
     # renderers; each corpus case asserts the OPENPETE_SPYRO_RECDBG hook-call
