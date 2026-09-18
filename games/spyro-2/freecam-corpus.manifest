@@ -1,0 +1,29 @@
+# freecam-corpus.manifest, (level, pose) tuples for the Spyro 2 debug-freecam
+# golden. Same row form as scripts/freecam-corpus.manifest:
+#   <level> | pos=(x, y, z) yaw=Y pitch=P | [start]
+#
+# Coverage rows, one per two levels of the game's 29: the terrain feeder reads
+# each level's own sector, face and texture data, so a level that no row
+# reaches is a decode surface the golden cannot see. Each pose is the level's
+# player spawn position, which --skip-to-level reaches without inputs and
+# which is inside the playable world by construction; yaw and pitch are 0
+# because the spawn heading is not located on this game (game_get_player_pose
+# returns no yaw). Every row was checked to feed terrain at the capture frame,
+# from 1061 triangles (metropolis) to 7477 (hurricos), so none is vacuous.
+# A row placed by a reported defect carries that defect on its comment and
+# replaces the coverage row for its level.
+summer_forest | pos=(130171, 17940, 37738) yaw=0 pitch=0
+idol_springs | pos=(115005, 95683, 13671) yaw=0 pitch=0
+hurricos | pos=(21555, 35666, 14695) yaw=0 pitch=0
+sunny_beach | pos=(69816, 16712, 25446) yaw=0 pitch=0
+crushs_dungeon | pos=(26675, 30065, 10600) yaw=0 pitch=0
+skelos_badlands | pos=(56402, 54784, 25959) yaw=0 pitch=0
+breeze_harbor | pos=(85811, 82237, 10600) yaw=0 pitch=0
+metro_speedway | pos=(106576, 94874, 10621) yaw=0 pitch=0
+shady_oasis | pos=(47104, 27812, 4596) yaw=0 pitch=0
+fracture_hills | pos=(124539, 70072, 34008) yaw=0 pitch=0
+gulps_overlook | pos=(36864, 49152, 18280) yaw=0 pitch=0
+mystic_marsh | pos=(110592, 36536, 8534) yaw=0 pitch=0
+canyon_speedway | pos=(40798, 88200, 16743) yaw=0 pitch=0
+metropolis | pos=(113777, 60754, 40295) yaw=0 pitch=0
+riptos_arena | pos=(44042, 69827, 7991) yaw=0 pitch=0

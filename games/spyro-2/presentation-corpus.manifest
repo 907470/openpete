@@ -1,0 +1,16 @@
+# Presentation-golden corpus manifest for Spyro 2 (fields as in
+# scripts/presentation-corpus.manifest: name|start|interval|freeze|pins).
+#
+# attract-demo has no bk2: the row is the plain boot, the title screen and the
+# attract demo, which need no input. A movie-less row takes its length from its
+# last pin, so every frame it wants is pinned.
+#
+# The pins are the demo's level-loaded stretches, read off the native terrain
+# feed's per-present triangle count over a 19010-VBL boot. The count holds at
+# 1985 between segments (the title-screen world) and departs from it while a
+# demo level is resident: 2731-3149, 3153-3785, 5877-7201, 9293-11111,
+# 13203-14743 and 16835-17985. Each pin sits inside one of those stretches,
+# clear of its load transient, so the row covers five distinct levels of world
+# geometry and texture data. The grid samples between them hold the
+# title-screen world.
+attract-demo|3400|3000||3400,6500,10200,14000,17400
