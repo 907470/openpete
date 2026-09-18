@@ -417,7 +417,7 @@ static void print_help(const char* display_name, const char* argv0,
         "  --background [0|1]         open the window at its normal size and visible, but do not take\n"
         "                             focus, do not activate on show, and sit behind the other windows\n"
         "                             where the platform allows it. Presents, pacing and screenshots are\n"
-        "                             unchanged; the window just takes no keyboard. Wins over\n"
+        "                             unchanged; clicking the window or its taskbar button focuses it. Wins over\n"
         "                             --fullscreen. For an unattended windowed run alongside\n"
         "                             --input-lock (default 0 = off; ignored with --headless).\n"
         "                             Display-only.\n"

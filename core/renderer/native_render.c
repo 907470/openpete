@@ -1647,9 +1647,11 @@ static void nr_resolve_window_size(const openpete_options_t *opts,
  * decide whether the state lines below are printed. */
 static int s_background_requested;
 
-/* Creation flags of the game window. --background adds SDL_WINDOW_NOT_FOCUSABLE
- * and turns off activate-on-show and activate-on-raise, so the window maps at
- * its normal size and stays out of the focus chain. The hints are read by
+/* Creation flags of the game window. --background turns off activate-on-show
+ * and activate-on-raise, so the window maps at its normal size without taking
+ * focus. It stays focusable: a not-focusable window is WS_EX_NOACTIVATE on
+ * Win32, which also removes its taskbar button, and below every other window
+ * it could then be neither found nor closed. The hints are read by
  * SDL_CreateWindow, so they are set here rather than at option-parse time. */
 static SDL_WindowFlags nr_window_flags(const openpete_options_t *opts)
 {
@@ -1657,7 +1659,6 @@ static SDL_WindowFlags nr_window_flags(const openpete_options_t *opts)
     if (opts->background > 0) {
         SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_SHOWN, "0");
         SDL_SetHint(SDL_HINT_WINDOW_ACTIVATE_WHEN_RAISED, "0");
-        f |= SDL_WINDOW_NOT_FOCUSABLE;
     }
     return f;
 }
@@ -2197,12 +2198,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
             SDL_SetWindowFullscreen(win, true);
             OPL_INFO_F("native", "%s", "--fullscreen: borderless desktop at launch");
         }
-        if (s_background_requested) {
-            /* An adopted window was created before the flag was read, so the
-             * not-focusable state is applied here as well as at creation. */
-            SDL_SetWindowFocusable(win, false);
+        if (s_background_requested)
             openpete_window_send_to_back(win);
-        }
         nr_log_window_state(win, "bring-up");
 
         dev = rhi_create(win, "openpete-native", opts->vsync);

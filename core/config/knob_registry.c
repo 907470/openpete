@@ -747,7 +747,7 @@ static const knob_desc_t g_builtin[] = {
     { "background", "Background window", "Display", "--background", "OPENPETE_BACKGROUND",
       "Open the window visible and at its normal size but unfocused, not "
       "activated on show, and behind the other windows where the platform "
-      "allows it; the window takes no keyboard. Presents, pacing and "
+      "allows it; clicking it or its taskbar button focuses it. Presents, pacing and "
       "screenshots are unchanged. Wins over Fullscreen. Read once while the "
       "window is created, so the row shows the boot value; raising or "
       "focusing the window afterwards does not change it.",
