@@ -193,3 +193,30 @@ name = "F_TEXT_SPRT_PER_GLYPH"
 addr = 0x8004A59C
 kind = "function"
 note = "func_8004A59C (mobyfunc.s:1692-1851) — the per-glyph-DR_MODE variant of func_8004A374, rewriting the tpage halfword inside every packet"
+
+[[symbol]]
+name = "D_PORTALS"
+addr = 0x80066F00
+note = "pointer to the level's portal record array, 0x44 bytes per record: five world-space pentagon vertices +0x00, preview mesh pointer +0x3C, enable/draw radius +0x40, back-side flag +0x41. The pass loads the pointer and indexes it by its byte cursor (drawutil/func_8004C66C.s:27-33), gates on +0x40 (:33), reads the back-side flag at +0x41 (:141) and the mesh pointer at +0x3C (:371-375), and advances the cursor by 0x44 (:716). It never reads +0x42 or +0x43"
+
+[[symbol]]
+name = "D_PORTALCOUNT"
+addr = 0x80066FA8
+note = "portal record count; the pass loops over it (drawutil/func_8004C66C.s:7-8,719-725)"
+
+[[symbol]]
+name = "D_PORTAL_BLOCK"
+addr = 0x80068BF0
+note = "the portal pass's parameter block for the preview leaf: +0x00 y-min, +0x04 y-max, +0x08 x-min, +0x0C x-max, +0x10 preview mesh pointer, +0x14 depth >> 7, +0x18/+0x1A/+0x1C far colour halfwords at GTE scale, +0x1E IR0, +0x20 edge count, +0x24 8-byte edge entries of packed screen points. Written per portal by func_8004C66C: the clip rect at :363-369 after its 0..512 and 12..228 clamps (:338-352), the mesh pointer at :375, the depth at :92, the far colours at :389-398, the IR0 at :686-698 and the edge count at :448; read only by func_800296D0"
+
+[[symbol]]
+name = "F_PORTAL_PASS"
+addr = 0x8004C66C
+kind = "function"
+note = "func_8004C66C (drawutil/func_8004C66C.s) — per portal: gates, projects the pentagon with the sky matrix, fills D_PORTAL_BLOCK, calls F_PORTAL_LEAF (:701) with a descending argument, 0 on the last call (:704-711). The same routine as the other game's func_8001EDEC minus its opening animation on the record's +0x43 counter"
+
+[[symbol]]
+name = "F_PORTAL_LEAF"
+addr = 0x800296D0
+kind = "function"
+note = "func_800296D0 (cyclorama.s:382) — draws one pre-projected preview mesh (a0 > 0 the base record, a0 == 0 the record at +0x3C) clipped to D_PORTAL_BLOCK's pentagon edges with two DPCS fades. Word-for-word the other game's func_8001C8C8 over all 525 instructions but for 49 addresses"

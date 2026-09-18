@@ -29,7 +29,8 @@ openpete_add_game(spyro-3
         renderer/moby_game.c
         # The per-game tables the shared player provider reads.
         renderer/player_game.c
-        renderer/portal.c
+        ${CMAKE_SOURCE_DIR}/games/common/renderer/portal_spyro23.c
+        renderer/portal_game.c
         renderer/tracers.c
         renderer/glow.c
         renderer/glint.c

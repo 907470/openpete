@@ -10,6 +10,7 @@ openpete_add_game(spyro-2
     FEATURE_LIST     feature_list.c
     ORCHESTRATOR     renderer/reextract.c
     INTERP_REGIONS   renderer/interp_regions.c
+    TERRAIN_GAME     renderer/terrain_game.c
     MOBY_GAME        ${CMAKE_SOURCE_DIR}/games/common/renderer/moby_game_spyro23.c
     PLAYER_GAME      ${CMAKE_SOURCE_DIR}/games/common/renderer/player_game_spyro23.c
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro2_symbols.toml
@@ -29,4 +30,8 @@ openpete_add_game(spyro-2
         renderer/moby_game.c
 
         # The per-game tables the shared player provider reads.
-        renderer/player_game.c)
+        renderer/player_game.c
+
+        # The shared portal preview feeder and the three addresses it reaches.
+        ${CMAKE_SOURCE_DIR}/games/common/renderer/portal_spyro23.c
+        renderer/portal_game.c)

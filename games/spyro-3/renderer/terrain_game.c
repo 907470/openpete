@@ -2,7 +2,7 @@
  * terrain feeder: the portal feeder's opening planes and the level names.
  * See renderer/terrain_game.h. */
 #include "renderer/terrain_game.h"
-#include "renderer/portal.h"         /* the opening-plane provider */
+#include "renderer/portal_spyro23.h"  /* the opening-plane provider */
 #include "renderer/portal_plane.h"   /* the shared plane-cover margin */
 #include "skip_to_level.h"           /* level id -> name */
 #include <stdio.h>
@@ -27,8 +27,8 @@ static int s3_lp_artfix(int level, int sec, int face, uint32_t* rgb) {
 }
 
 const terrain_game_t terrain_game = {
-    .portal_sky_recent   = portal3_sky_recent,
-    .portal_sky_planes   = portal3_sky_planes,
+    .portal_sky_recent   = portal_s23_sky_recent,
+    .portal_sky_planes   = portal_s23_sky_planes,
     .portal_plane_margin = openpete_portal_plane_margin,
     .fill_tag            = s3_fill_tag,
     .level_name          = s3_level_name,

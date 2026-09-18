@@ -9,6 +9,7 @@ extern const feature_module_t shadow_module;
 extern const feature_module_t shadow_player_module;
 extern const feature_module_t particles_module;
 extern const feature_module_t moby_module;
+extern const feature_module_t portal_module;
 extern const feature_module_t player_module;
 extern const feature_module_t ui_sprite_module;
 extern const feature_module_t text_sprt_module;
@@ -37,6 +38,9 @@ const feature_module_t* const openpete_features[] = {
      * game_layout.moby names and decodes their records through the
      * moby_game_s23 provider; inert unless the native scene is enabled. */
     &moby_module,
+    /* The shared portal preview feeder: hooks the portal pass and its leaf
+       from renderer/portal_game.c; inert unless the native scene is enabled. */
+    &portal_module,
     /* The shared player-avatar feeder: hooks the player draw game_layout.player
      * names and decodes its skeleton through the player_game_s23 provider;
      * inert unless the native scene is enabled or OPENPETE_PLAYER_VERIFY is

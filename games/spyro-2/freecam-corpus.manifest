@@ -31,3 +31,10 @@ metropolis | pos=(115904, 59478, 40916) yaw=1696 pitch=160
 riptos_arena | pos=(44103, 72307, 8612) yaw=-1040 pitch=160
 # retained terrain face at a bucket-boundary key loses the contest to itself (hardware only; the windowed cache-off/on harness separates the builds)
 glimmer | pos=(55630, 29629, 25462) yaw=974 pitch=243
+# The two poses that frame a homeworld portal preview: the game's own follow
+# camera at the tick the portal pass first previews two portals, so each row
+# carries the portal feeder as well as the terrain and player ones. Summer
+# Forest's coverage row above frames none, and no other row in this file
+# reaches a portal pass that draws.
+autumn_plains | pos=(90130, 56523, 28297) yaw=1024 pitch=160
+winter_tundra | pos=(51217, 30497, 40037) yaw=752 pitch=160

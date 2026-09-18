@@ -18,6 +18,7 @@
 #include "renderer/shadow.h"        /* shadow_reextract, shadow_player_reextract */
 #include "renderer/particles.h"
 #include "renderer/player_game.h"   /* PLAYER_PARTS_MAX */
+#include "renderer/portal_spyro23.h" /* portal_s23_reextract */
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "openpete_interp.h"
 #include "renderer/interp_lerp.h"    /* lerp16/32, lerp_matrix, lerp_vec3 */
@@ -484,6 +485,8 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("cyclorama");
     terrain_reextract(cpu, bracketed ? alpha : 0.0, bracketed);
     RX_CENSUS_STEP("terrain");
+    portal_s23_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* homeworld portal previews */
+    RX_CENSUS_STEP("portal");
     if (stage_moby_records()) {
         /* The cull stores each animated record already composed against the
          * tick's camera, in view space; hand the replay that camera so it can

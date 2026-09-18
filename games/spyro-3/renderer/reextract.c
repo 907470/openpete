@@ -11,7 +11,7 @@
 #include "renderer/orchestrator.h"
 #include "renderer/terrain.h"
 #include "renderer/cyclorama.h"
-#include "renderer/portal.h"
+#include "renderer/portal_spyro23.h"
 #include "renderer/shadow.h"
 #include "renderer/particles.h"
 #include "tracers.h"
@@ -487,7 +487,7 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("cyclorama");
     terrain_reextract(cpu, bracketed ? alpha : 0.0, bracketed);
     RX_CENSUS_STEP("terrain");
-    portal3_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* homeworld portal previews */
+    portal_s23_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* homeworld portal previews */
     RX_CENSUS_STEP("portal");
     if (stage_moby_records()) {
         /* The cull stores each animated record already composed against the

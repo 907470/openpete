@@ -1,9 +1,12 @@
-// games/spyro-3/renderer/portal.c : the homeworld portal previews.
+// games/common/renderer/portal_spyro23.c : the homeworld portal previews of
+// the two games whose portal pass and preview leaf are the same routines at
+// different addresses. Each game's renderer/portal_game.c supplies the three
+// addresses; the contract and the asm evidence are renderer/portal_spyro23.h.
 //
-// The game's portal pass (F_PORTAL_PASS) gates each portal record, projects
+// The game's portal pass gates each portal record, projects
 // its five pentagon vertices with the sky matrix, writes the clip rect, the
-// visible pentagon edges, the depth and the fade terms into D_PORTAL_BLOCK,
-// and calls the preview leaf (F_PORTAL_LEAF) for the background quad and, when
+// visible pentagon edges, the depth and the fade terms into the parameter
+// block, and calls the preview leaf for the background quad and, when
 // the portal is nearer than 0x5000 units, for the baked picture of the
 // destination level. Both meshes are pre-projected 2-D triangle lists in
 // level RAM: a 0x18-byte header {vertex count, vertex offset, colour count,
@@ -32,6 +35,7 @@
 // only reads afterwards.
 
 #include "feature_registry.h"
+#include "openpete.h"          /* openpete_options_t */
 #include "psx_runtime_internal.h"
 #include "openpete_psx.h"
 #include "openpete_native_render.h"
@@ -39,9 +43,8 @@
 #include "openpete_fiber.h"           /* openpete_frame */
 #include "renderer/render_paths.h"
 #include "renderer/native_gte.h"
-#include "renderer/portal.h"
+#include "renderer/portal_spyro23.h"
 #include "game_layout.h"
-#include "spyro3_symbols.gen.h"
 
 #include <math.h>
 #include <stdint.h>
@@ -98,7 +101,7 @@ static void p3_capture(CPUState* cpu, int arg) {
     if (s_curr.n >= P3_MAX_PORTALS * 2) return;
     p3_preview* p = &s_curr.p[s_curr.n];
     memset(p, 0, sizeof *p);
-    uint32_t B = D_PORTAL_BLOCK;
+    uint32_t B = portal_game_s23.block;
     p->ymin = (int32_t)cpu->read_word(B + 0x00);
     p->ymax = (int32_t)cpu->read_word(B + 0x04);
     p->xmin = (int32_t)cpu->read_word(B + 0x08);
@@ -305,7 +308,7 @@ static void p3_feed(CPUState* cpu, const p3_tick* T) {
  * it, so a face outside the pentagon is not covered by anything.
  *
  * The planes come from the tick's capture, not from a live re-derivation:
- * the pass rewrites D_PORTAL_BLOCK per portal and it means nothing outside
+ * the pass rewrites the parameter block per portal and it means nothing outside
  * the pass, so the rect and edges exist only as captured. The terrain feed
  * runs before the portal pass within a present, so a canonical present reads
  * the previous tick's rect : one tick of lag while a portal moves on screen,
@@ -341,11 +344,11 @@ static int p3_opening_poly(const p3_preview* p, p3_v* out, int maxn) {
     return n;
 }
 
-int portal3_sky_recent(void) {
+int portal_s23_sky_recent(void) {
     return s_sky_fed_frame != 0u && (openpete_frame - s_sky_fed_frame) <= 2u;
 }
 
-int portal3_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) {
+int portal_s23_sky_planes(CPUState* cpu, const ngte_view* v, openpete_portal_skyplane* out, int max) {
     (void)cpu;
     if (!s_curr.valid || s_curr.n == 0 || max <= 0) return 0;
     if (openpete_frame - s_curr.frame > 3u) return 0;
@@ -462,8 +465,12 @@ static int on_portal_pass(CPUState* cpu, uint32_t addr) {
     render_path_record(RP_PORTAL, s_pass_start, end);
     if (feed) p3_feed(cpu, &s_curr);
     if (p3_dbg()) {
-        static unsigned s_reports = 0;
-        if (s_reports < 64 && s_curr.n && openpete_frame >= p3_dbg_from()) {
+        static unsigned s_reports = 0, s_passes = 0;
+        s_passes++;
+        /* The first passes report even with nothing captured: a pass that runs
+         * and captures nothing is the reading that separates "no portal in
+         * view" from "the hook never fired". */
+        if (s_reports < 64 && (s_curr.n || s_passes <= 4) && openpete_frame >= p3_dbg_from()) {
             s_reports++;
             fprintf(stderr, "[portal3 f=%u] leaf-calls=%d captured=%d prim-bytes=%u emitted=%d faces=%d idx-drop=%d oc-drop=%d edge-drop=%d tris=%d",
                     openpete_frame, s_leaf_calls, s_curr.n, end - s_pass_start, s_emitted,
@@ -483,7 +490,7 @@ static int on_portal_pass(CPUState* cpu, uint32_t addr) {
 /* Sub-tick re-extract: replay the tick's previews; lerp the rect and edges
  * from the previous tick when the same portal set drew with the same edge
  * counts, else hold the current tick's. */
-void portal3_reextract(CPUState* cpu, double alpha, int interp_on) {
+void portal_s23_reextract(CPUState* cpu, double alpha, int interp_on) {
     if (!openpete_native_scene_enabled()) return;
     if (!render_path_canon_drawn(RP_PORTAL)) return;
     if (!s_curr.valid || s_curr.n == 0) return;
@@ -512,13 +519,26 @@ void portal3_reextract(CPUState* cpu, double alpha, int interp_on) {
     p3_feed(cpu, &T);
 }
 
-static const feature_dispatch_entry_t portal3_dispatch[] = {
-    { F_PORTAL_PASS, on_portal_pass },
-    { F_PORTAL_LEAF, on_portal_leaf },
-    { 0u, NULL },
-};
+/* The two hook addresses come from the game's own table, so the table is
+ * filled at boot rather than written out here. A game that names neither
+ * registers nothing and never enters this feeder. */
+static feature_dispatch_entry_t portal_dispatch[3];
+
+static void portal_apply_options(const openpete_options_t* opts) {
+    (void)opts;
+    const struct { uint32_t addr; feature_dispatch_fn fn; } hooks[] = {
+        { portal_game_s23.pass, on_portal_pass },
+        { portal_game_s23.leaf, on_portal_leaf },
+    };
+    int n = 0;
+    for (size_t i = 0; i < sizeof hooks / sizeof hooks[0]; i++)
+        if (hooks[i].addr) { portal_dispatch[n].addr = hooks[i].addr; portal_dispatch[n].fn = hooks[i].fn; n++; }
+    portal_dispatch[n].addr = 0u;
+    portal_dispatch[n].fn   = NULL;
+}
 
 const feature_module_t portal_module = {
     .name           = "portal_native",
-    .dispatch_table = portal3_dispatch,
+    .apply_options  = portal_apply_options,
+    .dispatch_table = portal_dispatch,
 };
