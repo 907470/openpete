@@ -760,7 +760,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
 static int record_zsf4(CPUState* cpu, const moby_record_t* R) {
     int zsf4 = R->tier;
     if (openpete_no_lod && moby_game.renderer_off && R->moby >= 0x80000000u) {
-        int md = (int)(cpu->read_byte(R->moby + moby_game.renderer_off) & 0x3Fu);
+        int md = (int)(cpu->read_byte(R->moby + moby_game.renderer_off) & moby_game.renderer_mask);
         if ((md << 8) >= 1024) zsf4 = md << 8;
     }
     return zsf4;
@@ -1142,10 +1142,15 @@ static int project_all_records_inner(CPUState* cpu) {
                 if ((w0 & 0xFFu) && got == 0) s_tier_gpfskip++;
                 if (!(w0 & 0xFFu) && got == 0 && zsf4 < 0) s_tier_lpskip++;
                 /* mirror check: recompute ZSF4 from gamestate the way the cull
-                 * does (@8001F404) and compare with the stored verdict */
+                 * does (@8001F404) and compare with the stored verdict. The
+                 * cull subtracts the translation Z it holds before its
+                 * rescale; a record that stores the rescaled translation
+                 * (rec_tr_final) no longer carries that value, so the check
+                 * has no input there. */
                 uint32_t mob = R.moby;
-                if (mob >= 0x80000000u && moby_game.renderer_off) {
-                    int md = (int)(cpu->read_byte(mob + moby_game.renderer_off) & 0x3Fu);
+                if (mob >= 0x80000000u && moby_game.renderer_off &&
+                    !game_layout.moby.rec_tr_final) {
+                    int md = (int)(cpu->read_byte(mob + moby_game.renderer_off) & moby_game.renderer_mask);
                     int ex = (int)(int16_t)(uint16_t)((((uint32_t)md << 8)
                              - (uint32_t)R.TR_raw[2]) & 0xFFFFu);
                     /* --no-lod: the zsf4-store hook neutralized the distance term
@@ -1608,7 +1613,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
          * the OPENPETE_MOBY_TIER_DBG mirror check on the canonical records.
          * Computed BEFORE the decode: the tier-adjusted vertex-count read
          * ([hdr+8+(ZSF4>>31)], 0 = skip) hides far no-LP-mesh mobys (gems). */
-        int rmd   = (int)(cpu->read_byte(m + moby_game.renderer_off) & 0x3Fu);
+        int rmd   = (int)(cpu->read_byte(m + moby_game.renderer_off) & moby_game.renderer_mask);
         int rzsf4 = (int)(int16_t)(uint16_t)((((uint32_t)rmd << 8)
                     - (uint32_t)f.TR_raw[2]) & 0xFFFFu);
         /* --no-lod parity with the game-side zsf4-store hook: neutralize the

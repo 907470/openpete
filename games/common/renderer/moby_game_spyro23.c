@@ -697,6 +697,9 @@ static int32_t  s_simple_far[S23_SIMPLE_QCAP];
  * the verify harness prints what this one actually read. */
 static long s_simple_recs, s_simple_verts, s_simple_faces, s_simple_tris;
 static long s_simple_flat, s_simple_screen, s_simple_culled;
+/* Records decoded on the low-poly lists (tier <= 0), and records whose colour
+ * block took the depth cue (IR0 > 0). */
+static long s_simple_lp, s_simple_fade;
 static long s_flat_zero_colour, s_flat_back_emitted, s_flat_back_dropped;
 extern unsigned openpete_frame;
 
@@ -870,7 +873,17 @@ static int s23_simple_decode(CPUState* cpu) {
 
         /* The fade/LOD tier: the moby's size byte against twice the depth
          * (mobydraw.s:4193-4196). Its sign picks the low-poly lists. */
-        int tier = ((int)cpu->read_byte(moby + 0x4Eu) << 10) - 2*trz;
+        const int size_term = (int)(cpu->read_byte(moby + moby_game.renderer_off)
+                                    & moby_game.renderer_mask) << 10;
+        int tier = size_term - 2*trz;
+        /* Extended LOD removes the depth term, the rule the animated kind's
+         * tier takes: every test below then reads the value the draw computes
+         * at depth 0, so the vertex count, the list pair, the fade and the
+         * CLUT bias all take the draw's own near branch (tier >= 4096 at
+         * mobydraw.s:4285-4289). A size term below that band keeps the depth
+         * term: such a record fades at depth 0 as well, which is the moby's
+         * own authoring and not a range limit. */
+        if (openpete_no_lod && size_term >= 4096) tier = size_term;
 
         int nv = (int)((tier >= 0 ? (h0 >> 8) : (h0 >> 16)) & 0xFFu);
         if (nv < 3) continue;
@@ -928,6 +941,7 @@ static int s23_simple_decode(CPUState* cpu) {
          * lists one step earlier: tier 0 takes the high-poly count and the
          * low-poly lists (mobydraw.s:4215-4219,4285-4287). */
         if (tier <= 0 && skip_lp) continue;
+        if (tier <= 0) s_simple_lp++;
         uint32_t pair = cpu->read_word(H + (tier > 0 ? 0x08u : 0x0Cu));
         uint32_t faces = H + (pair & 0xFFFFu);
         uint32_t cols  = H + (pair >> 16);
@@ -938,6 +952,7 @@ static int s23_simple_decode(CPUState* cpu) {
         int fade = (tier > 0 && tier < 4096 && far_cols != cols);
         int ir0 = fade ? 4096 - tier : 0;
         if (fade) clut_bias = ir0 >> 9;
+        if (ir0 > 0) s_simple_fade++;
         for (int i = 0; i < ncol; i++) {
             uint32_t c = cpu->read_word(cols + (uint32_t)i * 4u);
             if (fade) {
@@ -1135,6 +1150,9 @@ static int s23_reveal_record(CPUState* cpu, uint32_t moby) {
     const uint32_t cls   = cpu->read_half(moby + game_layout.moby.class_off);
     const uint32_t model = cpu->read_word(game_layout.moby.model_table + cls * 4u);
     if (model == 0u || (int32_t)model < 0) return 0;   /* absent, or the animated kind */
+    /* The cull admits on more than the box, so a moby outside the box can
+     * already hold a captured record; a second one would draw it twice. */
+    for (int k = 0; k < s_simple_qn; k++) if (s_simple_q[k][0] == moby) return 0;
     const uint32_t anim = cpu->read_word(moby + game_layout.moby.anim_state_off);
     const int32_t cx = (int32_t)cpu->read_word(game_layout.cam.position + 0u),
                   cy = (int32_t)cpu->read_word(game_layout.cam.position + 4u),
@@ -1164,6 +1182,7 @@ static int s23_reveal_record(CPUState* cpu, uint32_t moby) {
 static int s23_simple_pass(CPUState* cpu) {
     s_simple_recs = s_simple_verts = s_simple_faces = s_simple_tris = 0;
     s_simple_flat = s_simple_screen = s_simple_culled = 0;
+    s_simple_lp = s_simple_fade = 0;
     s_flat_zero_colour = s_flat_back_emitted = s_flat_back_dropped = 0;
     s23_simple_capture(cpu);
     /* Extended LOD: the cull's distance box is what keeps a distant moby out
@@ -1177,10 +1196,11 @@ static int s23_simple_pass(CPUState* cpu) {
     int n = s23_simple_decode(cpu);
     if (moby_verify_vbl())
         fprintf(stderr, "[moby-simple vbl=%u] queued=%d drawn=%ld culled=%ld screenkind=%ld "
-                        "verts=%ld faces=%ld flat=%ld tris=%d revealed=%d "
+                        "verts=%ld faces=%ld flat=%ld tris=%d revealed=%d lp=%ld fade=%ld "
                         "flat_zero_colour=%ld flat_back_emitted=%ld flat_back_dropped=%ld\n",
                 openpete_frame, s_simple_qn, s_simple_recs, s_simple_culled, s_simple_screen,
                 s_simple_verts, s_simple_faces, s_simple_flat, n, revealed,
+                s_simple_lp, s_simple_fade,
                 s_flat_zero_colour, s_flat_back_emitted, s_flat_back_dropped);
     return n;
 }
@@ -1206,6 +1226,10 @@ const moby_game_t moby_game = {
      * nothing the host widens may reach it and the walk feeds the records the
      * cull queued, no more. */
     .host_reveal       = 0,
+    /* The LOD/fade byte both model kinds' tiers read, whole
+     * (mobydraw.s:453-457 animated, 4193-4196 simple). */
+    .renderer_off      = 0x4Eu,
+    .renderer_mask     = 0xFFu,
     /* The moby array is fixed with a live sentinel, so a record's Moby address
      * is its slot and is stable across ticks: the walk's default identity. */
     .interp_key        = NULL,

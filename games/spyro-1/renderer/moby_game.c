@@ -284,6 +284,7 @@ const moby_game_t moby_game = {
 
     .props_off         = offsetof(Moby, m_Props),
     .renderer_off      = offsetof(Moby, m_Renderer),   /* low 6 bits = the LOD band */
+    .renderer_mask     = 0x3Fu,
     .spec_colour_off   = offsetof(Moby, m_SpecularMetalColor),
     .render_radius_off = offsetof(Moby, m_RenderRadius),
     .update_dist_off   = offsetof(Moby, m_UpdateDistance),

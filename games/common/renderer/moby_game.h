@@ -271,6 +271,8 @@ typedef struct moby_game {
      * substate byte. */
     uint32_t props_off, renderer_off, spec_colour_off,
              render_radius_off, update_dist_off, substate_off;
+    /* The bits of the LOD/fade byte the cull shifts into the tier. */
+    uint32_t renderer_mask;
     /* The camera's fine heading word, which the env reflection folds into its
      * azimuth so the reflection stays world-anchored under a pan. */
     uint32_t cam_heading;
