@@ -1230,6 +1230,16 @@ static const knob_desc_t g_builtin[] = {
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       fillpick_prev_get, fillpick_prev_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
+    ENVROW_LATCHED("GLITCH_MARK_N", "Debug", "600",
+        "Depth of the glitch-mark rings, in presents and in terrain walks "
+        "(600 is about 1.25 s of presents at 480 Hz). Read once at boot, "
+        "when the rings are allocated."),
+    ENVROW_LATCHED("GLITCH_MARK_AT", "Debug", "",
+        "Raise the glitch mark automatically instead of on the glitch_mark "
+        "binding: \"<n>\" or \"p<n>\" at present serial n, \"w<n>\" at "
+        "terrain-walk ordinal n (the only spelling a headless run reaches, "
+        "since headless composes no presents), \"<n>ms\" n milliseconds "
+        "after boot. One shot. Read once at boot."),
     ENVROW_LATCHED("MOBY_OTBIAS", "Debug", "1",
         "Mirror the .s OT depth pull for moby + Spyro (two latches)."),
     ENVROW_LIVE("MOBY_TRUESCOPE", "Debug", "1",

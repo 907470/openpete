@@ -39,6 +39,7 @@
 #include "openpete_menu.h"
 #include "openpete_devui.h"
 #include "openpete_camlock.h"
+#include "openpete_glitch_mark.h"
 #include "openpete_freecam.h"
 #include "openpete_fillpick.h"
 #include "openpete_keymap.h"  /* [keys] — every host hotkey below */
@@ -3899,6 +3900,12 @@ static int run_host_loop(const openpete_options_t* opts) {
                     openpete_fillpick_undo();
             }
 
+            /* The glitch mark. The edge only raises a flag; the file is
+             * written below, on this loop, because it blocks on IO and the
+             * ring's other writer is whichever thread owns the display. */
+            if (openpete_key_pressed(OPK_GLITCH_MARK))
+                openpete_glitch_mark_request("key");
+
             /* Debug free camera. While engaged: the fly keys / left stick
              * move, the look keys / right stick aim, rise+descend raise and
              * lower, the speed keys / triggers step the speed, and teleport
@@ -5080,6 +5087,13 @@ static int run_host_loop(const openpete_options_t* opts) {
              * variants above need. Native display only — PsyCross is the
              * reference rasterizer, not a display this port ships. The capture
              * logs the file it wrote, so nothing is reported twice here. */
+            {   /* A pending glitch mark, from the key or from
+                 * OPENPETE_GLITCH_MARK_AT. Reads both rings and writes the
+                 * file; no display state is touched. */
+                char gpath[1200];
+                openpete_glitch_mark_service(gpath, sizeof gpath);
+            }
+
             if (s_screenshot_request || openpete_host_mouse_take_screenshot_request()) {
                 s_screenshot_request = 0;
                 char path[1024];
@@ -6412,6 +6426,9 @@ int openpete_run(const openpete_options_t* opts) {
      * sink first makes it close LAST, so the exit lines still land in it. */
     openpete_log_file_open(opts->log_file);
     atexit(log_frame_on_exit);
+    /* The glitch-mark rings, allocated before any other thread exists so the
+     * two note paths never have to test for initialization. */
+    openpete_glitch_mark_init();
     OPL_INFO_F("boot", "starting %s (frame_limit=%d max_seconds=%d headless=%d)",
                opts->display_name, opts->frame_limit, opts->max_runtime_seconds,
                (int)opts->headless);

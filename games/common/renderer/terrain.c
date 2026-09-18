@@ -40,6 +40,7 @@
 
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"   /* full CPUState (read_word, gte_ctrl, ...) */
+#include "openpete_glitch_mark.h"
 #include "openpete_native_render.h"
 #include "openpete_psx.h"
 #include "openpete_subtick_view.h"  /* openpete_psx_to_host_ptr (sector colour host reads) */
@@ -5757,6 +5758,21 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
         if (s_ncen)
             fprintf(stderr, "[nearcen] frame=%u nearFaces=%d subTris=%d terrainTris=%d sectors=%d\n",
                     openpete_frame, s_dbg_spike, s_dbg_spike_tris, s_tri_n, s_walk_sectors);
+    }
+    {   /* The glitch-mark walk ring: the same counters, kept for the last N
+         * walks so a walk that produced the wrong geometry can be read back
+         * after the fact. s_fardbg_occl0 holds s_tocc_culled as it stood at
+         * this walk's entry, so the difference is this walk's own culls. */
+        openpete_glitch_walk_t gw;
+        gw.ord = 0;
+        gw.tick = openpete_frame;
+        gw.sectors = s_walk_sectors;
+        gw.tris = s_tri_n;
+        gw.near_faces = s_dbg_spike;
+        gw.near_tris = s_dbg_spike_tris;
+        gw.occl_culled = (int32_t)(s_tocc_culled - s_fardbg_occl0);
+        gw.sub = s_vanim_sub;
+        openpete_glitch_mark_note_walk(&gw);
     }
     if (tgpu_on) {
         openpete_tercache_frame_commit();

@@ -127,6 +127,7 @@ add_library(openpete_core STATIC
     ui/fps_overlay.cpp
 
     renderer/fillpick.c
+    renderer/glitch_mark.c
     runtime/feature_registry.c
 
     # Modding framework: per-address override chains riding the

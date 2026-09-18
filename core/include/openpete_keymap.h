@@ -232,7 +232,9 @@ typedef enum {
   X(FILLPICK_NONE,   "fillpick_none",    KM_DIGITAL, KM_CTX_FILLPICK, KM_DEV,  \
         "B",              "fill-tag inspector: clear the verdict")             \
   X(FILLPICK_UNDO,   "fillpick_undo",    KM_DIGITAL, KM_CTX_FILLPICK, KM_DEV,  \
-        "U",              "fill-tag inspector: undo")
+        "U",              "fill-tag inspector: undo")                                            \
+  X(GLITCH_MARK,     "glitch_mark",      KM_DIGITAL, KM_CTX_ALWAYS,   KM_DEV,  \
+        "F9",             "write the last N presents and terrain walks to a file")
 
 /* The PSX pad. Defaults reproduce PsyCross's PsyX_Sys_InitialiseInput
  * exactly, so remapping is opt-in and a stock config plays identically.
