@@ -78,6 +78,15 @@ UNSCORED = (
     "games/spyro-1/recomp_attach_shared.c",     # OPENPETE_RECOMP_LINKAGE=shared
     "core/psx/pcsxr_gte_stub.c",                # MinGW only
     "tests/recomp/gte_sideeffects/harness.c",   # built by check_recomp_gte.sh
+    "core/mods/sdk/openpete_mod_abi.c",         # shipped SDK source, built with mods
+    # openpete_add_game() defaults that every linux-release game overrides
+    "games/common/feature_list_none.c",
+    "games/common/renderer/interp_regions_none.c",
+    "games/common/renderer/layout_none.c",
+    "games/common/renderer/moby_game_none.c",
+    "games/common/renderer/orchestrator_none.c",
+    "games/common/renderer/player_game_none.c",
+    "games/common/renderer/terrain_game_none.c",
 )
 
 OWN_ROOT = os.path.normpath(os.path.join(
@@ -568,9 +577,26 @@ def score_corpus(tool, root, entries, moved):
     return corpus, bins
 
 
-def check_unscored(root, entries):
+def check_unscored(root, entries, complete=False):
+    """The UNSCORED list against the tree. complete (check, tighten,
+    baseline): a tracked in-scope source with no entry and no UNSCORED line
+    is refused too; the hook skips that half, since the new path of a staged
+    move has no entry until the source list follows it."""
     if os.path.realpath(root) != os.path.realpath(OWN_ROOT):
         return
+    if complete:
+        missing = sorted(
+            f for f in git(root, "ls-files", "--",
+                           *[r.rstrip("/") for r in SCOPE_ROOTS]).stdout.split("\n")
+            if f and in_scope(f) and not is_header(f) and f not in entries
+            and f not in UNSCORED and os.path.isfile(os.path.join(root, f)))
+        if missing:
+            raise Refusal(
+                "tracked sources with no compile-database entry and no UNSCORED "
+                "line: %s. Wire each into CMake and re-run `%s`, or add it to "
+                "UNSCORED in scripts/fences/complexity_ratchet.py with the "
+                "reason no linux-release target compiles it."
+                % (", ".join(missing), CONFIGURE))
     tracked = set(git(root, "ls-files", "--", *UNSCORED).stdout.split("\n"))
     for p in UNSCORED:
         if p not in tracked or p in entries:
@@ -578,8 +604,8 @@ def check_unscored(root, entries):
                           "scripts/fences/complexity_ratchet.py." % (
                               p, "in the compile database" if p in entries
                               else "not tracked"))
-    say("complexity-ratchet: UNSCORED (no linux-release entry): "
-        + ", ".join(UNSCORED))
+    say("complexity-ratchet: UNSCORED (no linux-release entry): %d sources"
+        % len(UNSCORED))
 
 
 def present_scope_files(root):
@@ -950,7 +976,7 @@ def corpus_inputs(root, ctest=False):
     tool = find_tool()
     verify_config(tool)
     controls = run_controls(tool)
-    check_unscored(root, entries)
+    check_unscored(root, entries, complete=True)
     corpus, cbins = score_corpus(tool, root, entries, set())
     present = present_scope_files(root)
     dirty = dirty_paths(root)
