@@ -41,3 +41,9 @@ open-pause-menu|900|200||900,918
 # right-hand column (entry names, placeholder dashes, per-cent signs) is
 # quad-form glyph text; the digits are sprite text.
 open-guidebook|960|200||980,998
+#
+# glimmer-pogo-dialogue: the first dialogue in Glimmer. At 1000 the large
+# semi-transparent text box and the speaker's name box are both open; the
+# large box's four corners are the stepped corner pieces. 700 is the title
+# fly-in before the level, where the game's logo slides in at the top.
+glimmer-pogo-dialogue|900|200||700,1000
