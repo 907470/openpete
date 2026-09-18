@@ -5,13 +5,14 @@
  * terrain feeders against it. The staged bytes are what every feeder read resolves to for the
  * duration of the present; guest RAM is never written.
  *
- * Provides the renderer/orchestrator.h entries. The canonical-scratch captures
- * and the per-producer camera bracket report "nothing captured", which is what
- * the moby, player and shadow feeders this game does not yet reach would fill;
- * their call sites stay where Spyro 3 has them so a later feeder lands
- * without moving the surrounding code. */
+ * Provides the renderer/orchestrator.h entries. The per-producer camera
+ * bracket and the player part-record capture report "nothing captured", which
+ * is what the player and shadow feeders this game does not yet reach would
+ * fill; their call sites stay where the other game has them so a later feeder
+ * lands without moving the surrounding code. */
 #include "renderer/orchestrator.h"
 #include "renderer/cyclorama.h"
+#include "renderer/moby.h"
 #include "renderer/terrain.h"
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "openpete_interp.h"
@@ -29,6 +30,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 /* Offsets inside the camera transform block, all confirmed against the layout
  * descriptor's read sites: the sky matrix the cyclorama draw loads with ctc2
@@ -58,6 +60,10 @@ int openpete_native_interp_pos(unsigned int key, double out[3]) {
  * correct epoch from its first tick. */
 static uint32_t s_epoch_now = 1;   /* the stamp captures take (present in flight) */
 static uint32_t s_epoch_ok;        /* the stamp a capture must carry to be fresh */
+/* The stamp the moby cull's record capture took, so a tick that ran no moby
+ * draw (a pause or a load screen) leaves the queue stale instead of replaying
+ * the last level's records. */
+static uint32_t s_mobyreg_epoch;
 
 /* OPENPETE_CAM_DBG=1: per canonical present and per sub-tick re-extract, the
  * camera transform the pass will draw with: the world matrix at +0x14 as nine
@@ -88,17 +94,49 @@ void spyro_native_canon_epoch_commit(void) {
 }
 uint32_t spyro_native_canon_epoch_stamp(void) { return s_epoch_now; }
 int  spyro_native_canon_epoch_fresh(uint32_t stamp) { return stamp == s_epoch_ok; }
-int  spyro_native_canon_mobyreg_fresh(void) { return 0; }   /* no moby feeder */
+int  spyro_native_canon_mobyreg_fresh(void) { return s_mobyreg_epoch == s_epoch_ok; }
 int  spyro_native_canon_shaded_fresh(void) { return 0; }    /* no second material pass */
 
-/* The canonical-scratch captures: nothing this game's terrain feeder reads is
- * transient render-pass scratch, so there is nothing to copy out and stage
- * back. The moby queue and the player part records are what fill these on a
- * game whose feeders decode them. */
+/* The moby cull records live in the draw scratch this tick carved out of the
+ * primitive buffer, and the draw passes that follow the moby draw reuse that
+ * memory before any sub-tick present runs. So the queue is copied at the moby
+ * hook and staged back over its own address for the duration of each
+ * intermediate present, which is what makes the replay read the records the
+ * tick actually drew rather than whatever overwrote them. */
+static uint8_t  s_recs_copy[0x1000];
+static uint32_t s_recs_base;
+static uint32_t s_recs_len;
+
+/* The player part records are the other transient block a feeder stages; this
+ * game reaches no player feeder, so there is nothing to copy out. */
 void spyro_native_canon_capture_range(void* cpu, unsigned off, unsigned len) {
     (void)cpu; (void)off; (void)len;
 }
-void spyro_native_canon_capture_recs(void* cpu) { (void)cpu; }
+void spyro_native_canon_capture_recs(void* cpu) {
+    (void)cpu;
+    s_recs_len = 0;
+    uint32_t base = moby_canon_rec_base();
+    uint32_t len  = moby_canon_rec_bytes();
+    if (!base || !len || len > sizeof s_recs_copy) return;
+    const void* host = openpete_psx_to_host_ptr(base);
+    if (!host) return;
+    memcpy(s_recs_copy, host, len);
+    s_recs_base = base;
+    s_recs_len  = len;
+    s_mobyreg_epoch = s_epoch_now;
+}
+
+/* Stage the captured queue for this present. Returns 0 when there is none, so
+ * the caller skips the replay rather than decoding whatever now lives there. */
+static int stage_moby_records(void) {
+    if (!s_recs_len || s_mobyreg_epoch != s_epoch_ok) return 0;
+    void* stage = openpete_subtick_view_stage(s_recs_base, s_recs_len);
+    if (!stage) return 0;
+    memcpy(stage, s_recs_copy, s_recs_len);
+    return 1;
+}
+
+/* The player draw's projected-SXY block: no player feeder on this game. */
 void spyro_native_canon_capture_sxy(void* cpu)  { (void)cpu; }
 void spyro_native_canon_capture_camera(void* cpu, int producer) { (void)cpu; (void)producer; }
 int  spyro_native_prod_camera_enter(int producer) { (void)producer; return 0; }
@@ -169,6 +207,10 @@ static void game_reextract_body(CPUState* cpu) {
     uint8_t* cam = (uint8_t*)openpete_subtick_view_stage(game_layout.cam.base, cam_len);
     int bracketed = 0;
     double alpha = 0.0;
+    /* The tick side of the bracket, kept for the moby replay: the cull composed
+     * every animated record against this camera, so the replay needs it to turn
+     * those records onto the interpolated one. */
+    const uint8_t* tickcam = NULL;
     if (paired && cam && prev && curr) {
         /* The camera's ring region, resolved by name from the registered table:
          * a restated index selects the wrong region once a row is inserted. */
@@ -198,6 +240,7 @@ static void game_reextract_body(CPUState* cpu) {
             const int32_t* cp = (const int32_t*)(ccam + CAM_OFF_POS);
             for (int i = 0; i < 3; i++) s_fpos[i] = (double)pp[i] + ((double)cp[i] - (double)pp[i]) * alpha;
             s_fpos_active = 1;
+            tickcam = ccam;
             bracketed = 1;
             openpete_pace_note_alpha(alpha, 1);
         }
@@ -222,6 +265,23 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("cyclorama");
     terrain_reextract(cpu, bracketed ? alpha : 0.0, bracketed);
     RX_CENSUS_STEP("terrain");
+    if (stage_moby_records()) {
+        /* The cull stores each animated record already composed against the
+         * tick's camera, in view space; hand the replay that camera so it can
+         * re-base onto the staged one. Cleared after the pass, so the canonical
+         * inline render replays the records untouched. */
+        moby_native_set_tick_camera(tickcam ? (const int16_t*)(tickcam + CAM_OFF_SKY) : NULL,
+                                    tickcam ? (const int32_t*)(tickcam + CAM_OFF_POS) : NULL);
+        /* Arm the per-object sub-tick clock for this feeder pass: it is the
+         * timebase the keyframe crossfade reads, so without it every replayed
+         * record holds the tick's mesh while its translation sweeps. Reset
+         * after the pass so the canonical inline render stays byte-exact. */
+        moby_native_set_rot_interp(1);
+        moby_reextract(cpu);        /* the 3D actors, after the terrain they stand on */
+        moby_native_set_rot_interp(0);
+        moby_native_set_tick_camera(NULL, NULL);
+    }
+    RX_CENSUS_STEP("moby");
     /* The HUD, dialog boxes, text and screen fades are produced during the
      * game's own render and cannot be re-derived here, so the canonical present
      * banks them and every re-extract re-applies that carry on top of the

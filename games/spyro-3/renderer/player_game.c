@@ -11,7 +11,7 @@
  * builds at draw scratch + 0x1400, 0x3C bytes apart, followed by a zero flags
  * word that terminates the block (spyrodraw.s:20,115,175,201). The vertex and
  * face encodings are the animated moby's, so those two slots point straight at
- * renderer/moby_game.c (renderer/moby_game_s3.h).
+ * renderer/moby_game.c (renderer/moby_game_spyro23.h).
  *
  * The one unit that is neither moby unit: the translation is the raw
  * camera-relative world delta rotated by the camera matrix at G_CAMERA+0x00
@@ -22,7 +22,7 @@
 
 #include "renderer/player_game.h"
 #include "renderer/player.h"
-#include "renderer/moby_game_s3.h"
+#include "renderer/moby_game_spyro23.h"
 #include "renderer/native_gte.h"
 #include "renderer/orchestrator.h"   /* openpete_native_interp_pos */
 #include "game_layout.h"
@@ -296,7 +296,7 @@ static int s3_part_faces(CPUState* cpu, int part, player_faces_t* out) {
  * (mobydraw.s:1076-1078), so a literal vertex decoded the moby way lands at
  * twice its model Y and every delta vertex after it inherits that origin. */
 static void s3_player_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) {
-    s3_vstream_next_lit(cpu, s, first, 1);
+    s23_vstream_next_lit(cpu, s, first, 1);
 }
 
 /* The face record is the animated moby's, with two differences. The player
@@ -312,7 +312,7 @@ static void s3_player_vstream_next(CPUState* cpu, moby_vstream_t* s, int first) 
  */
 static int s3_player_decode_faces(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                                   moby_wface_t* out, int cap, moby_face_stats_t* st) {
-    return s3_decode_faces_stride(cpu, fb, bytecount, out, cap, st, 0x14u, 1);
+    return s23_decode_faces_stride(cpu, fb, bytecount, out, cap, st, 0x14u, 1);
 }
 
 /* The per-face depth admission (spyrodraw.s:997-1006 for a quad, 1096-1109 for

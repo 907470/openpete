@@ -10,6 +10,7 @@ openpete_add_game(spyro-2
     FEATURE_LIST     feature_list.c
     ORCHESTRATOR     renderer/reextract.c
     INTERP_REGIONS   renderer/interp_regions.c
+    MOBY_GAME        ${CMAKE_SOURCE_DIR}/games/common/renderer/moby_game_spyro23.c
     SYMBOLS_MANIFEST ${CMAKE_CURRENT_SOURCE_DIR}/manifest/spyro2_symbols.toml
     SOURCES
         skip_to_level.c
@@ -21,4 +22,7 @@ openpete_add_game(spyro-2
         # The engine layout: the terrain and texture groups, the environment
         # header and animations, the visibility verdict, the fog terms, the
         # draw buffers, the primitive allocator and the camera.
-        renderer/layout.c)
+        renderer/layout.c
+
+        # The per-game addresses the shared moby decoders read.
+        renderer/moby_game.c)

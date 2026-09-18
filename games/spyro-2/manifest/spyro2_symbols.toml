@@ -69,6 +69,16 @@ name = "D_ENV_ANIM_LIVE"
 addr = 0x8006B300
 note = "liveness byte table indexed by an animation entry's low byte; the three arena walkers gate on it (environment.s:1240-1241,1272-1274)"
 
+[[symbol]]
+name = "G_MOBYARRAY"
+addr = 0x80066F14
+note = "pointer to the first Moby; the cull func_80043858 loads it and walks 0x58-byte records, ending at the record whose state byte at +0x48 is -1 (mobydraw.s:31-33,63-70)"
+
+[[symbol]]
+name = "G_MOBYMODELS"
+addr = 0x80068C94
+note = "the level model table, indexed by the Moby class halfword at +0x36 times 4; the entry's sign selects the model kind, a positive (KUSEG) entry going to the static queue (mobydraw.s:49-50,113-119)"
+
 # ---- function addresses (validated against symbols.toml) ----
 [[symbol]]
 name = "F_WORLD_DRAW"
@@ -87,3 +97,21 @@ name = "F_VISIBILITY"
 addr = 0x80048D18
 kind = "function"
 note = "func_80048D18, the per-sector visibility pre-pass (mobyfunc.s:13); called with a0 = 0 by the world draw (environment.s:1565-1566) and a0 = 1 by the sky draw (cyclorama.s:28-29)"
+
+[[symbol]]
+name = "F_MOBY_CULL"
+addr = 0x80043858
+kind = "function"
+note = "func_80043858, the moby cull: carves the draw scratch at D_POLYBUF_END - 0x3000, builds the animated record queue at +0x2000 of it and the static queue at +0x1C00, and writes each moby's drawn verdict byte at +0x4D (mobydraw.s:13,26-46,73,224)"
+
+[[symbol]]
+name = "F_MOBY_DRAW_ANIM"
+addr = 0x80044504
+kind = "function"
+note = "func_80044504, the animated moby draw: walks the 0x44-byte record queue, decodes each model's vertex and face streams and emits (mobydraw.s:869). One routine here where the other game's disassembly splits the same code into a function plus three data labels"
+
+[[symbol]]
+name = "F_MOBY_DRAW_STATIC"
+addr = 0x80046FD8
+kind = "function"
+note = "func_80046FD8, the second model kind's draw: walks the stride-0x10 static queue at draw scratch +0x1C00 (mobydraw.s:3843)"

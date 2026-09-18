@@ -8,8 +8,8 @@
 // Filled: the environment header, the terrain decode and binning switches, the
 // texture tables, the environment animations, the visibility verdict, the fog
 // terms, the draw buffers, the primitive allocator, the camera, the level id
-// the world-draw, sky-draw and visibility hooks and the cyclorama header. The
-// moby, shadow, particle, portal and player-draw groups are still 0.
+// the world-draw, sky-draw and visibility hooks, the cyclorama header and the
+// moby group. The shadow, particle, portal and player-draw groups are still 0.
 
 #include "game_layout.h"
 #include "renderer/ui_game.h"
@@ -212,6 +212,86 @@ const game_layout_t game_layout = {
                                    * table, and a later insert into a bucket
                                    * paints later, with the moby pass run before
                                    * the terrain pass */
+    },
+    /* The moby (3D actor) draw. Three handwritten routines: the cull
+     * func_80043858 carves the tick's draw scratch out of the primitive buffer
+     * at D_POLYBUF_END - 0x3000, builds the animated record queue at +0x2000 of
+     * it and the second model kind's stride-0x10 queue at +0x1C00, and writes
+     * each moby's drawn verdict (mobydraw.s:26-46); the animated draw
+     * func_80044504 and the static draw func_80046FD8 walk those two queues.
+     * Every offset below is a literal read off the Spyro 2 disassembly, not
+     * carried from the other game that runs the same three routines. */
+    .moby = {
+        .array_head   = G_MOBYARRAY,
+        .array_direct = 0,                 /* the head is a pointer: lw through it (mobydraw.s:32-33) */
+        .array_stride = 0x58u,             /* mobydraw.s:65 addi $ra, $ra, 0x58 */
+        .state_off    = 0x48u,             /* mobydraw.s:66 lb; >= 0 processes */
+        .state_term   = 0xFFu,             /* mobydraw.s:69-70 state == -1 ends the list */
+        .pos_off      = 0x0Cu,             /* mobydraw.s:81-83 the box cull's three words */
+        .angle_off    = 0x44u,             /* mobydraw.s:220 the three byte angles */
+        .class_off    = 0x36u,             /* mobydraw.s:111 lhu, model table index */
+        .anim_state_off = 0x3Cu,           /* mobydraw.s:112 {id, nextId, frame, nextFrame} */
+        .colour_off   = 0x54u,             /* mobydraw.s:219, copied into the record at +0x3C */
+        .size_off     = 0x4Fu,             /* mobydraw.s:455 high byte of the +0x4E halfword */
+        .drawn_off    = 0x4Du,             /* mobydraw.s:75 cleared, written 1 or 2 later */
+
+        .model_table     = G_MOBYMODELS,
+        .model_anims_off = 0x3Cu,          /* mobydraw.s:113-120 model + 0x3C + id*4 */
+        .model_data_off  = 0x38u,
+
+        .anim_ptr_block   = 0x0Cu,         /* the six geometry pointers, four bytes apart */
+        .anim_scale_off   = 0x02u,         /* the cull shifts the quarter-world centre left 2
+                                            * then right by this byte before storing it as the
+                                            * translation, so the model's unit is world >> byte */
+        .anim_shift_off   = 0x02u,
+        .anim_ccount_off  = 0x01u,
+        .anim_vcount_hi   = 0x04u,         /* HP vertex count */
+        .anim_vcount_lo   = 0x05u,         /* LP count, selected by the record flag sign */
+        .anim_radius      = 0x07u,         /* mobydraw.s:126 lbu, << 4 for the sphere cull */
+        .anim_frames      = 0x24u,         /* 8-byte keyframe records */
+        .anim_frame_stride = 8u,
+
+        .rec_base         = 0u,            /* derived from the polybuf end, see below */
+        .rec_stride       = 0x44u,         /* mobydraw.s:578,887,891 */
+        .rec_header_off   = 0x04u,         /* AnimationHeader* (keyframe A) */
+        .rec_frame_a_off  = 0x0Cu,         /* mobydraw.s:893 keyframe A's own stream word */
+        .rec_frame_b_off  = 0x10u,         /* keyframe B's stream word */
+        .rec_tr_off       = 0x1Cu,         /* mobydraw.s:574-576 view-space translation */
+        .rec_matrix_off   = 0x28u,         /* mobydraw.s:356-360 the composed 3x3 */
+        .rec_tier_off     = 0x00u,         /* word 0 bits 16-31, sign picks HP/LP */
+        .rec_material_off = 0x3Cu,         /* the Moby+0x54 colour word */
+        .special_tiledef  = 0x80066ED8u,   /* mobydraw.s:2085-2086: the special material's
+                                            * mode-1 setup loads this word, biased by the
+                                            * record's CLUT row, into GTE control 16, and the
+                                            * per-face emit writes its halves over the
+                                            * primitive's texture page and CLUT. The address is
+                                            * the middle of an unnamed data block, so it is
+                                            * written as the literal the lui/addiu pair forms. */
+        .env_sqrt_table   = 0x80066478u,   /* mobydraw.s:2417-2418 */
+        .env_atan_table   = 0x80062630u,   /* mobydraw.s:2477-2478 */
+        .env_radius_table = 0x800625ACu,   /* mobydraw.s:2496-2497 */
+        .env_bias_word    = 0x80067ECCu,   /* mobydraw.s:2106-2108 (G_CAMERA + 0x48) */
+        .rec_moby_off     = 0x40u,         /* mobydraw.s:361 */
+        .blend_shift      = 4,             /* (w0 >> 4) & 0xFF0 */
+        .blend_mask       = 0xFF0u,
+
+        .rec_base_polybuf_off = 0x1000u,   /* scratch = polybuf end - 0x3000, the animated queue
+                                            * at +0x2000 of it (mobydraw.s:36-40) */
+        .rec_tr_final     = 1,             /* the cull GPF-rescales the translation by the size
+                                            * byte and drops the records that pushes past the far
+                                            * limit; the draw loads it as stored */
+        .rec_frame_is_word = 1,            /* the record holds each keyframe's own stream word */
+        .rec_header_b_off = 0x08u,         /* keyframe B's own AnimationHeader* */
+
+        .world_ot   = 0u,                  /* the OT bucket array is not located */
+        .ot_buckets = 0u,
+
+        .hook_cull          = F_MOBY_CULL,
+        .hook_draw_regular  = F_MOBY_DRAW_ANIM,
+        .hook_draw_specular = 0u,          /* no specular material: the draw issues no GTE
+                                            * lighting op at all */
+        .hook_draw_shaded   = 0u,
+        .hook_draw_simple   = F_MOBY_DRAW_STATIC,
     },
     /* The player state block opens with the world position, three int32. Only
      * `base` and `pos_off` are located: the player feeder needs the part

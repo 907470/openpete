@@ -5,6 +5,7 @@
 extern const feature_module_t render_paths_module;
 extern const feature_module_t terrain_module;
 extern const feature_module_t cyclorama_module;
+extern const feature_module_t moby_module;
 
 const feature_module_t* const openpete_features[] = {
     /* --render-paths: the path-isolation selection (apply_options only). */
@@ -15,5 +16,9 @@ const feature_module_t* const openpete_features[] = {
     /* The shared cyclorama feeder: hooks the sky draw from game_layout;
      * inert unless the native scene is enabled or OPENPETE_CYC_VERIFY is set. */
     &cyclorama_module,
+    /* The shared moby feeder: registers the cull and the two draw passes
+     * game_layout.moby names and decodes their records through the
+     * moby_game_s23 provider; inert unless the native scene is enabled. */
+    &moby_module,
 };
 const size_t openpete_feature_count = sizeof(openpete_features) / sizeof(openpete_features[0]);
