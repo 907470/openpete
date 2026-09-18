@@ -4433,6 +4433,36 @@ static double lerp_byte_angle(int prev_b, int curr_b, double t) {
     return (double)prev_b + (double)d * t;
 }
 
+/* The moby's three euler bytes at this present's phase, as GTE sin/cos pairs:
+ * each axis shortest-arc interpolated between the object's prev and curr
+ * snapshots and sampled out of the in-RAM table by linear interpolation, so a
+ * rotation that steps one byte per tick sweeps instead. Z is +0, X is +1 and Y
+ * is +2 of the angle word; its high byte is an overlay flag and no axis.
+ *
+ * Returns 0 and leaves *e untouched when the caller must fall back to the
+ * byte-exact table lookup: rotation interp off (every canonical render), no
+ * pair, a pair with no distinct prev, or a slot whose two states hold different
+ * classes — a reused slot would lerp across two objects. */
+int moby_record_euler_at_present(CPUState* cpu, uint32_t moby, ngte_euler_sc* e) {
+    if (!s_rot_now) return 0;
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
+    uint16_t pcls, ccls;
+    memcpy(&pcls, o->prev + game_layout.moby.class_off, 2);
+    memcpy(&ccls, o->curr + game_layout.moby.class_off, 2);
+    if (pcls != ccls) return 0;
+    double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
+    if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+    const uint32_t ao = game_layout.moby.angle_off;
+    double fZ = lerp_byte_angle(o->prev[ao + 0u], o->curr[ao + 0u], t);
+    double fX = lerp_byte_angle(o->prev[ao + 1u], o->curr[ao + 1u], t);
+    double fY = lerp_byte_angle(o->prev[ao + 2u], o->curr[ao + 2u], t);
+    ngte_sincos_interp(cpu, fY, &e->sy, &e->cy);
+    ngte_sincos_interp(cpu, fX, &e->sx, &e->cx);
+    ngte_sincos_interp(cpu, fZ, &e->sz, &e->cz);
+    return 1;
+}
+
 /* One game-logic tick in WALL time (nominally NTSC 37609/1125000 s = 33.4302 ms;
  * run.c rescales the global by 1/tick_scale so --tick-scale slow-motion keeps
  * every gap-vs-tick comparison honest). The interp denominator cap; same
@@ -4636,34 +4666,11 @@ static void shaded_compose_euler(CPUState* cpu, const int start[3][3], uint32_t 
             }
         }
     }
-    /* When rotation interp is active and this moby has a paired prev/curr snapshot,
-     * render its rotation at float precision (Z=+0x44, X=+0x45, Y=+0x46 euler bytes);
-     * else fall back to the canonical byte-exact table lookup (spawn with no prev,
-     * or interp off). The high byte (+0x47) is the OT-bias overlay flag, not a
-     * rotation axis — untouched either way. */
-    const openpete_interp_obj_t* o =
-        (!composed && s_rot_now) ? openpete_interp_objs_find(moby_interp_key(moby)) : NULL;
-    /* Occupant guard: a g_LevelMobys slot reused by a DIFFERENT-class moby
-     * within one tick would euler-lerp across two objects (the gem-vs-chest
-     * class, HUD-pool side fixed by the class-folded key; level slots key by
-     * raw address so guard here). */
-    if (o && o->have_prev) {
-        uint16_t pcls3, ccls3;
-        memcpy(&pcls3, o->prev + 0x36, 2); memcpy(&ccls3, o->curr + 0x36, 2);
-        if (pcls3 != ccls3) o = NULL;
-    }
-    if (o && o->have_prev && o->prev_ns != 0 && o->curr_ns > o->prev_ns) {
-        double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
-        if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
-        double fZ = lerp_byte_angle(o->prev[game_layout.moby.angle_off + 0u], o->curr[game_layout.moby.angle_off + 0u], t);
-        double fX = lerp_byte_angle(o->prev[game_layout.moby.angle_off + 1u], o->curr[game_layout.moby.angle_off + 1u], t);
-        double fY = lerp_byte_angle(o->prev[game_layout.moby.angle_off + 2u], o->curr[game_layout.moby.angle_off + 2u], t);
-        ngte_sincos_interp(cpu, fY, &e.sy, &e.cy);
-        ngte_sincos_interp(cpu, fX, &e.sx, &e.cx);
-        ngte_sincos_interp(cpu, fZ, &e.sz, &e.cz);
-    } else if (!composed) {
+    /* A host-composed euler above owns the whole rotation; otherwise take the
+     * present's interpolated angles, and the canonical byte-exact table lookup
+     * when there is no usable pair. */
+    if (!composed && !moby_record_euler_at_present(cpu, moby, &e))
         ngte_euler_sincos(cpu, cpu->read_word(moby + game_layout.moby.angle_off + 0u), &e);
-    }
     ngte_compose_euler(start, &e, out);
 }
 
@@ -6020,7 +6027,7 @@ static int hold_project_origin(CPUState* cpu, const double tr[3], double* sx, do
  * discontinuity, not motion, and snapping keeps the record's own pose.
  * Returns 1 with a zero out[] for a moby that is static in the world, which is
  * what keeps such a record bit-identical. */
-static int record_moby_world_offset(uint32_t moby, double out[3]) {
+int moby_record_world_offset(uint32_t moby, double out[3]) {
     out[0] = out[1] = out[2] = 0.0;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
     if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
@@ -6050,7 +6057,7 @@ static void record_rebase_to_present(CPUState* cpu, moby_fields* f, uint32_t mob
     for (int i = 0; i < 3; i++)
         pp[i] = (int32_t)cpu->read_word(game_layout.cam.position + (uint32_t)i * 4u);
     double mw[3];
-    record_moby_world_offset(moby, mw);
+    moby_record_world_offset(moby, mw);
     if (memcmp(Rp, s_tickcam_M, sizeof Rp) == 0 &&
         memcmp(pp, s_tickcam_pos, sizeof pp) == 0 &&
         mw[0] == 0.0 && mw[1] == 0.0 && mw[2] == 0.0) return;
@@ -6389,7 +6396,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
                  * whose wpos changes tick to tick is the class the offset
                  * exists for, and dmob is how much of that tick step this
                  * present's phase carries. */
-                double dmob[3]; record_moby_world_offset(mobys[i], dmob);
+                double dmob[3]; moby_record_world_offset(mobys[i], dmob);
                 fprintf(stderr, "[moby-world vbl=%u] m=%08x rot=%08X kf=(%08x,%08x,%02x) wpos=(%d,%d,%d) dmob=(%.2f,%.2f,%.2f)\n",
                         openpete_frame, mobys[i],
                         cpu->read_word(mobys[i] + game_layout.moby.angle_off + 0u),

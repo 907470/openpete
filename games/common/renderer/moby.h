@@ -11,6 +11,7 @@
 
 #include <stdint.h>
 #include "renderer/moby_game.h"   /* moby_wface_t: the shared face record */
+#include "renderer/native_gte.h"  /* ngte_euler_sc: the composed rotation's sin/cos */
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,6 +47,29 @@ void moby_native_set_tick_camera(const int16_t mat[9], const int32_t pos[3]);
  * Returns 0 and leaves out[] untouched when no tick camera is installed, which
  * is every canonical inline render. */
 int moby_native_tick_camera_pos(int32_t out[3]);
+
+/* ---- the present's own-motion terms, shared by both model kinds ---------
+ * A cull record encodes the pose the moby held at the tick; the present shows
+ * the moby part-way to it. These two carry the object's own movement over that
+ * fraction, so a record placed from the tick's values steps and one that adds
+ * them sweeps. Both read the per-object prev/curr snapshot pair and both return
+ * the identity when there is none, so a record without a pair, a slot that
+ * changed class between the two states and every canonical render stay exactly
+ * as the cull wrote them.
+ *
+ * moby_record_world_offset fills out[] with the moby's world-position offset in
+ * world units, (prev - curr) * (1 - t) at the present's phase t. Its axis order
+ * is the moby's own position words; a caller in another convention maps the
+ * components itself. Returns 0 with out[] zeroed when there is no usable pair,
+ * including a stale one, where a multi-tick gap is a discontinuity rather than
+ * motion. Returns 1 with a zero out[] for a moby static in the world.
+ *
+ * moby_record_euler_at_present fills *e with the moby's three euler axes at the
+ * present's phase. Returns 0 and leaves *e untouched when the caller must use
+ * the byte-exact table lookup instead. */
+int moby_record_world_offset(uint32_t moby, double out[3]);
+int moby_record_euler_at_present(struct CPUState* cpu, uint32_t moby,
+                                 ngte_euler_sc* e);
 
 /* Occlusion-cull pan allowance: the camera's rotation this tick expressed as
  * screen-pixel motion (rad/tick × ~px-per-radian, overestimated). The feeder

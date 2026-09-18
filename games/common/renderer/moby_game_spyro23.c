@@ -623,7 +623,10 @@ static uint32_t s23_anim_blend_byte(CPUState* cpu, uint32_t state4) {
  * position the cull already computed, mobydraw.s:82,87,96). A record whose
  * far-distance half has bit 15 set is the screen-space kind: the draw skips the
  * camera transform and takes the record's own halves as the GTE screen offsets
- * (mobydraw.s:3915,4010-4022), which s23_simple_place mirrors.
+ * (mobydraw.s:3915,4010-4022), which s23_simple_place mirrors. A second builder
+ * writes that kind's record, out of the moby's own three position words rather
+ * than any camera-relative quantity (mobydraw.s:604-628), so its halves are the
+ * low 16 bits of Moby+0x0C, +0x10 and +0x14 and its far half is 0xFFFF.
  *
  * The draw transforms the record by the camera matrix at the descriptor's cam.base+0x00 with
  * the vector (+0x04 low, +0x08 high, +0x04 high) in IR1/IR2/IR3
@@ -737,22 +740,6 @@ static void s23_simple_capture(CPUState* cpu) {
     }
 }
 
-/* R := R · Rot(axis, angle), the column pair the draw replaces through two
- * MVMVAs per axis: Y keeps column 2, X keeps column 1, Z keeps column 3
- * (mobydraw.s:4063-4110, 4111-4158, 4159-4189). */
-static void s23_simple_rotate(CPUState* cpu, int R[3][3], int axis, unsigned angle) {
-    if (angle == 0u) return;
-    uint32_t t = game_layout.sin_table + (angle << 1);
-    int sn = (int16_t)cpu->read_half(t);
-    int cs = (int16_t)cpu->read_half(t + 0x80u);   /* cos is 64 entries on (mobydraw.s:4066) */
-    int A[3][3] = { {4096,0,0}, {0,4096,0}, {0,0,4096} }, O[3][3];
-    if (axis == 1) { A[0][0]=cs; A[0][2]=-sn; A[2][0]=sn; A[2][2]=cs; }        /* Y */
-    else if (axis == 0) { A[1][1]=cs; A[1][2]=-sn; A[2][1]=sn; A[2][2]=cs; }   /* X */
-    else { A[0][0]=cs; A[0][1]=-sn; A[1][0]=sn; A[1][1]=cs; }                  /* Z */
-    ngte_mat_mul3(R, A, O);
-    memcpy(R, O, sizeof O);
-}
-
 /* The flat-lit face colour (mobydraw.s:4758-4813). Word 1's bits 7-30 are a
  * face normal instead of four colour indices; the draw rotates it into view by
  * the model matrix, projects it onto the light vector it loads into the GTE
@@ -792,6 +779,97 @@ static double s23_nclip(const float s[3][2], int a, int b, int c) {
          - (double)(s[c][0]-s[a][0]) * (double)(s[b][1]-s[a][1]);
 }
 
+/* What one face contributes: which of the two triangle halves survive the
+ * winding tests, whether the face draws textured, its blend mode, and the
+ * colour each of its four vertex slots takes. */
+typedef struct {
+    int      emit_a, emit_b;   /* the halves (v0,v1,v2) and (v1,v3,v2) */
+    int      textured;
+    int      blend;
+    uint32_t col[4];
+} s23_shade;
+
+/* The flat-lit material's face treatment: two-sided, untextured F3/F4 whatever
+ * the face's own texture words say, and one colour off a face normal instead of
+ * four out of the colour block (mobydraw.s:4720-4724,4756-4765,4849-4862).
+ *
+ * It is two-sided in the sense that whichever way it faces it draws whole, and
+ * only the ABE bit changes. The draw takes the back-facing verdict from the sign
+ * of the NCLIP register it carries into the emit (mobydraw.s:4747-4748, srl/sll
+ * 31/25 at 0x80034930), which the four-way test above it sets: a triangle keeps
+ * its own NCLIP and drops on zero (mobydraw.s:4714-4718); a quad forces +1 when
+ * the second NCLIP is positive, forces -1 when the first is non-negative and the
+ * second negative, drops when the first is non-negative and the second zero, and
+ * otherwise keeps the first, which is negative (mobydraw.s:4719-4746). Every
+ * surviving quad case therefore reduces to: front exactly when the second NCLIP
+ * is positive. Returns 0 when the face emits nothing. */
+static int s23_simple_flat_face(const int R[3][3], uint32_t f1, int tri,
+                                double nA, double nB, double trz,
+                                const uint32_t flat_w[4], s23_shade* sh) {
+    s_simple_flat++;
+    sh->textured = 0;
+    int back;
+    if (tri) {
+        if (nA == 0.0) return 0;
+        back = (nA < 0.0);
+        sh->emit_a = 1;
+    } else {
+        if (nA >= 0.0 && nB == 0.0) return 0;
+        back = !(nB > 0.0);
+        sh->emit_a = sh->emit_b = 1;
+    }
+    /* The back side survives only within the near threshold the draw tests the
+     * translation Z against (mobydraw.s:4788-4797), and draws semi-transparent
+     * (mobydraw.s:4783-4784). */
+    if (back) {
+        if (trz - ((f1 & 1u) ? 2048.0 : 0.0) >= 0.0) { s_flat_back_dropped++; return 0; }
+        s_flat_back_emitted++;
+        sh->blend = 1;
+    }
+    /* Bit 0 picks which of the entry's two colour pairs (mobydraw.s:4772-4776). */
+    uint32_t c = s23_simple_flat_colour(R, f1, flat_w[(f1 & 1u) ? 0 : 2],
+                                        flat_w[(f1 & 1u) ? 1 : 3], back);
+    if ((c & 0xFFFFFFu) == 0u) s_flat_zero_colour++;
+    sh->col[0] = sh->col[1] = sh->col[2] = sh->col[3] = c;
+    return 1;
+}
+
+/* The face's material, its winding verdict and its colours, the step between the
+ * vertex walk and the emit. Word 1 bit 1 selects the flat-lit material above;
+ * bit 0 alone selects neither (mobydraw.s:4721,4666). Returns 0 when the face
+ * emits nothing.
+ *
+ * R rotates the flat material's normal, trz is the record's translation depth
+ * the back side is tested against, flat_w the four material words in force, and
+ * ctab the record's ncol decoded colours. nA is the NCLIP of (v0,v1,v2) and nB,
+ * on a quad, that of (v3,v1,v2). */
+static int s23_simple_shade_face(const int R[3][3], uint32_t f1, int tri,
+                                 double nA, double nB, double trz,
+                                 const uint32_t flat_w[4],
+                                 const uint32_t* ctab, int ncol,
+                                 s23_shade* sh) {
+    sh->emit_a = sh->emit_b = 0;
+    sh->textured = ((int32_t)f1) < 0;
+    sh->blend = 0;
+    if (f1 & 2u) return s23_simple_flat_face(R, f1, tri, nA, nB, trz, flat_w, sh);
+
+    if (!tri) {
+        /* mobydraw.s:4444-4460,4529-4533: the quad's two halves keep on opposite
+         * NCLIP signs, the Z vertex order giving them opposite winding. */
+        if (nA >= 0.0) { if (nB > 0.0) sh->emit_b = 1; }
+        else if (nB > 0.0) { sh->emit_a = sh->emit_b = 1; }
+        else sh->emit_a = 1;
+    } else if (nA > 0.0) {
+        sh->emit_a = 1;                          /* mobydraw.s:4592-4600 */
+    }
+    if (!sh->emit_a && !sh->emit_b) return 0;
+    int ci[4] = { (int)((f1 >> 24) & 0x7Fu), (int)((f1 >> 17) & 0x7Fu),
+                  (int)((f1 >> 10) & 0x7Fu), (int)((f1 >>  3) & 0x7Fu) };
+    for (int k = 0; k < 4; k++)
+        sh->col[k] = ctab[ci[k] < ncol ? ci[k] : 0];
+    return 1;
+}
+
 /* Where one queue record puts its model: the translation the vertex walk adds,
  * the matrix the moby's own rotations compose onto, the geometry header, and —
  * for the screen-space kind — the projection origin the record names. The two
@@ -808,7 +886,8 @@ typedef struct {
 } s23_place;
 
 static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
-                            const double dcam[3], s23_place* pl) {
+                            const double dcam[3], const double dmob[3],
+                            s23_place* pl) {
     const uint32_t slot = s_simple_q[r][3];
     /* The far-cull distance's bit 15 sorts the record (mobydraw.s:3914-3915). */
     pl->screen = (s_simple_q[r][2] & 0x8000u) != 0;
@@ -828,19 +907,29 @@ static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
          * no bounding-box test: the matrix is the constant the branch installs,
          * the identity with its Y row at 0xA00 (mobydraw.s:4024-4028,
          * 4031-4035). */
-        const int dz = s_simple_d[r][1];
-        if (dz <= 0) return 0;
-        pl->ofx = (double)s_simple_d[r][2];
-        pl->ofy = (double)s_simple_d[r][0];
+        /* The cull builds this record's three halves straight out of the moby's
+         * own position words at +0x0C, +0x10 and +0x14 (mobydraw.s:606-608 the
+         * loads, :621-626 the halves of +0x04, :627-628 the depth half), so the
+         * moby's own displacement enters each of them directly: X into OFX, Y
+         * into OFY and Z into the depth, in the same units and with no sign
+         * change. */
+        const double dz = (double)s_simple_d[r][1] + dmob[2];
+        if (dz <= 0.0) return 0;
+        pl->ofx = (double)s_simple_d[r][2] + dmob[0];
+        pl->ofy = (double)s_simple_d[r][0] + dmob[1];
         pl->TR[0] = pl->TR[1] = 0.0;
-        pl->TR[2] = (double)((dz >> 2) * 2);
+        pl->TR[2] = (double)(((int)dz >> 2) * 2);
         memset(pl->R, 0, sizeof pl->R);
         pl->R[0][0] = 0x1000; pl->R[1][1] = 0x0A00; pl->R[2][2] = 0x1000;
     } else {
-        /* view-space centre, world/2 after the doubling (mobydraw.s:3946-3952,4058-4060) */
-        ngte_mac(Rcam, (double)s_simple_d[r][0] + dcam[1],
-                       (double)s_simple_d[r][1] + dcam[2],
-                       (double)s_simple_d[r][2] + dcam[0], &m1, &m2, &m3);
+        /* view-space centre, world/2 after the doubling (mobydraw.s:3946-3952,4058-4060).
+         * The record's deltas are (cam - moby) >> 2 on the first two components
+         * and (moby - cam) >> 2 on the third (mobydraw.s:81,87,94), so the
+         * moby's own displacement enters in quarter-world units with the
+         * opposite sign per component, beside the camera's. */
+        ngte_mac(Rcam, (double)s_simple_d[r][0] + dcam[1] - dmob[1] * 0.25,
+                       (double)s_simple_d[r][1] + dcam[2] - dmob[2] * 0.25,
+                       (double)s_simple_d[r][2] + dcam[0] + dmob[0] * 0.25, &m1, &m2, &m3);
         /* The record's own draw range (mobydraw.s:3958). Extended LOD removes
          * the range rather than widening it: the threshold is a per-moby byte
          * scaled by 256, so any raised value is still a ceiling a high camera
@@ -884,10 +973,16 @@ static int s23_simple_decode(CPUState* cpu) {
      * (moby - cam) >> 2 on the first component and (cam - moby) >> 2 on the
      * other two, so a camera that moved by e shifts the stored halves by
      * -e/4, +e/4 and +e/4. Held in double and added before the transform, so a
-     * staged position equal to the tick's is a no-op bit for bit. */
+     * staged position equal to the tick's is a no-op bit for bit.
+     *
+     * A tick camera is installed only for a sub-tick present, so its absence is
+     * what keeps every canonical decode — the inline pass and the canonical lag
+     * leg alike — bit for bit what the cull wrote: no camera delta, no
+     * per-record own motion and the tick's own rotation word. */
     double dcam[3] = { 0.0, 0.0, 0.0 };
     int32_t tickpos[3];
-    if (moby_native_tick_camera_pos(tickpos)) {
+    const int bracketed = moby_native_tick_camera_pos(tickpos);
+    if (bracketed) {
         static const double sign[3] = { -0.25, 0.25, 0.25 };
         for (int i = 0; i < 3; i++) {
             int32_t staged = (int32_t)cpu->read_word(game_layout.cam.position + 4u * (uint32_t)i);
@@ -903,8 +998,14 @@ static int s23_simple_decode(CPUState* cpu) {
 
     for (int r = 0; r < s_simple_qn; r++) {
         uint32_t moby = s_simple_q[r][0];
+        /* The moby's own world displacement over the fraction of the tick this
+         * present shows. The cull composed the record at the tick's position,
+         * which both kinds encode directly, so without this term the record
+         * holds that position for the whole tick and steps at the tick rate. */
+        double dmob[3] = { 0.0, 0.0, 0.0 };
+        if (bracketed) moby_record_world_offset(moby, dmob);
         s23_place pl;
-        const int placed = s23_simple_place(cpu, r, Rcam, dcam, &pl);
+        const int placed = s23_simple_place(cpu, r, Rcam, dcam, dmob, &pl);
         if (pl.screen) s_simple_screen++;
         s_simple_recs++;
         if (!placed) { s_simple_culled++; continue; }
@@ -947,11 +1048,18 @@ static int s23_simple_decode(CPUState* cpu) {
         if (nv < 3) continue;
         if (nv > S23_SIMPLE_VERTS) nv = S23_SIMPLE_VERTS;
 
+        /* The moby's three rotations, composed onto the placement matrix in the
+         * draw's order: Y, then X, then Z (mobydraw.s:4063-4110, 4111-4158,
+         * 4159-4189, one column pair replaced per axis through two MVMVAs).
+         * Within a sub-tick present the angles come from the object's own pair,
+         * so a moby turning a byte per tick sweeps instead of stepping; the
+         * canonical pass takes the tick's word, where the composition is the
+         * table lookup the draw itself does. */
         int R[3][3];
-        memcpy(R, pl.R, sizeof R);
-        s23_simple_rotate(cpu, R, 1, (rot >> 16) & 0xFFu);
-        s23_simple_rotate(cpu, R, 0, (rot >>  8) & 0xFFu);
-        s23_simple_rotate(cpu, R, 2,  rot        & 0xFFu);
+        ngte_euler_sc esc;
+        if (!bracketed || !moby_record_euler_at_present(cpu, moby, &esc))
+            ngte_euler_sincos(cpu, rot, &esc);
+        ngte_compose_euler(pl.R, &esc, R);
 
         moby_simple_record(cpu, moby);
         if (pl.screen) moby_simple_screen_origin(pl.ofx, pl.ofy);
@@ -985,12 +1093,27 @@ static int s23_simple_decode(CPUState* cpu) {
                 ? (uint16_t)cpu->read_half(moby + game_layout.moby.class_off) : 0u;
             if (s_cls >= 0 && (s_cls == 0xFFFF || s_tcls == (uint16_t)s_cls)) {
                 double cx = 0.0, cy = 0.0;
-                for (int i = 0; i < nv; i++) { cx += vscr[i][0]; cy += vscr[i][1]; }
-                fprintf(stderr, "[simple vbl=%u] m=%08x cls=%03x n=%d c=(%.2f,%.2f) p=(%d,%d,%d) rot=%08x\n",
+                float lo[2] = { vscr[0][0], vscr[0][1] }, hi[2] = { lo[0], lo[1] };
+                for (int i = 0; i < nv; i++) {
+                    cx += vscr[i][0]; cy += vscr[i][1];
+                    for (int k = 0; k < 2; k++) {
+                        if (vscr[i][k] < lo[k]) lo[k] = vscr[i][k];
+                        if (vscr[i][k] > hi[k]) hi[k] = vscr[i][k];
+                    }
+                }
+                /* The centroid alone is blind to the rotation: a record turning
+                 * about its own centre moves no centroid. The projected extent
+                 * and the composed matrix's first row carry the rotation. */
+                fprintf(stderr, "[simple vbl=%u] m=%08x cls=%03x n=%d c=(%.2f,%.2f) "
+                                "ext=(%.2f,%.2f) r0=(%d,%d,%d) p=(%d,%d,%d) rot=%08x "
+                                "dmob=(%.2f,%.2f,%.2f)\n",
                         openpete_frame, moby, s_tcls, nv, cx / nv, cy / nv,
+                        (double)(hi[0] - lo[0]), (double)(hi[1] - lo[1]),
+                        R[0][0], R[0][1], R[0][2],
                         (int)cpu->read_word(moby + game_layout.moby.pos_off),
                         (int)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
-                        (int)cpu->read_word(moby + game_layout.moby.pos_off + 8u), rot);
+                        (int)cpu->read_word(moby + game_layout.moby.pos_off + 8u), rot,
+                        dmob[0], dmob[1], dmob[2]);
             }
         }
 
@@ -1042,8 +1165,9 @@ static int s23_simple_decode(CPUState* cpu) {
         while (fp + 8u <= end && guard++ < S23_SIMPLE_FACES) {
             uint32_t f0 = cpu->read_word(fp);
             uint32_t f1 = cpu->read_word(fp + 4u);
-            int textured = ((int32_t)f1) < 0;
-            uint32_t adv = textured ? 0x14u : 0x08u;
+            /* The stride is the face's own texture bit; the flat-lit material
+             * draws untextured but still carries the three words. */
+            uint32_t adv = ((int32_t)f1) < 0 ? 0x14u : 0x08u;
             int idx[4] = { (int)((f0 >> 21) & 0x7Fu), (int)((f0 >> 14) & 0x7Fu),
                            (int)((f0 >>  7) & 0x7Fu), (int)( f0        & 0x7Fu) };
             int tri = (idx[2] == idx[3]);
@@ -1052,81 +1176,22 @@ static int s23_simple_decode(CPUState* cpu) {
                 fp += adv; continue;
             }
             int u[4] = {0,0,0,0}, v[4] = {0,0,0,0};
-            int tpx = 0, tpy = 0, clx = 0, cly = 0, bpp = 16, blend = 0;
+            int tpx = 0, tpy = 0, clx = 0, cly = 0, bpp = 16;
             float sc[4][2];
             for (int k = 0; k < 4; k++) {
                 sc[k][0] = vscr[idx[k]][0]; sc[k][1] = vscr[idx[k]][1];
             }
-            double nA = s23_nclip(sc, 0, 1, 2);
-            double nB = tri ? 0.0 : s23_nclip(sc, 3, 1, 2);
-            int emit_a = 0, emit_b = 0, back = 0;
-            /* Word 1 bit 1 is the flat-lit material: the face is two-sided,
-             * draws untextured F3/F4 whatever its own texture words say, and
-             * takes its colour from a normal rather than the colour block
-             * (mobydraw.s:4720-4724,4756-4765,4849-4862). Bit 0 alone changes
-             * neither (mobydraw.s:4721,4666). */
-            int flat = (f1 & 2u) != 0;
-            if (flat) {
-                s_simple_flat++;
-                textured = 0;
-                /* A flat-lit face is two-sided: whichever way it faces it draws
-                 * whole, and only the ABE bit changes. The draw takes the
-                 * back-facing verdict from the sign of the NCLIP register it
-                 * carries into the emit (mobydraw.s:4747-4748, srl/sll 31/25 at
-                 * 0x80034930), which the four-way test above it sets: a triangle
-                 * keeps its own NCLIP and drops on zero (mobydraw.s:4714-4718);
-                 * a quad forces +1 when the second NCLIP is positive, forces -1
-                 * when the first is non-negative and the second negative, drops
-                 * when the first is non-negative and the second zero, and
-                 * otherwise keeps the first, which is negative
-                 * (mobydraw.s:4719-4746). Every surviving quad case therefore
-                 * reduces to: front exactly when the second NCLIP is positive. */
-                if (tri) {
-                    if (nA == 0.0) { fp += adv; continue; }
-                    back = (nA < 0.0);
-                    emit_a = 1;
-                } else {
-                    if (nA >= 0.0 && nB == 0.0) { fp += adv; continue; }
-                    back = !(nB > 0.0);
-                    emit_a = emit_b = 1;
-                }
-                /* The back side survives only within the near threshold the
-                 * draw tests the translation Z against (mobydraw.s:4788-4797). */
-                if (back) {
-                    if (TR[2] - ((f1 & 1u) ? 2048.0 : 0.0) < 0.0) s_flat_back_emitted++;
-                    else { s_flat_back_dropped++; emit_a = emit_b = 0; }
-                }
-                /* and draws semi-transparent (mobydraw.s:4783-4784). */
-                blend = back ? 1 : 0;
-            } else if (!tri) {
-                /* mobydraw.s:4444-4460,4529-4533: the quad's two halves keep on
-                 * opposite NCLIP signs, the Z vertex order giving them opposite
-                 * winding. */
-                if (nA >= 0.0) { if (nB > 0.0) emit_b = 1; }
-                else if (nB > 0.0) { emit_a = emit_b = 1; }
-                else emit_a = 1;
-            } else {
-                if (nA > 0.0) emit_a = 1;      /* mobydraw.s:4592-4600 */
+            s23_shade sh;
+            if (!s23_simple_shade_face(R, f1, tri,
+                                       s23_nclip(sc, 0, 1, 2),
+                                       tri ? 0.0 : s23_nclip(sc, 3, 1, 2),
+                                       TR[2], flat_w, ctab, ncol, &sh)) {
+                fp += adv; continue;
             }
-            if (!emit_a && !emit_b) { fp += adv; continue; }
+            const uint32_t* col = sh.col;
+            int blend = sh.blend;
 
-            uint32_t col[4];
-            if (flat) {
-                /* Bit 0 picks which of the entry's two colour pairs
-                 * (mobydraw.s:4772-4776). */
-                uint32_t c = s23_simple_flat_colour(R, f1,
-                                flat_w[(f1 & 1u) ? 0 : 2],
-                                flat_w[(f1 & 1u) ? 1 : 3], back);
-                if ((c & 0xFFFFFFu) == 0u) s_flat_zero_colour++;
-                col[0] = col[1] = col[2] = col[3] = c;
-            } else {
-                int ci[4] = { (int)((f1 >> 24) & 0x7Fu), (int)((f1 >> 17) & 0x7Fu),
-                              (int)((f1 >> 10) & 0x7Fu), (int)((f1 >>  3) & 0x7Fu) };
-                for (int k = 0; k < 4; k++)
-                    col[k] = ctab[ci[k] < ncol ? ci[k] : 0];
-            }
-
-            if (textured) {
+            if (sh.textured) {
                 uint32_t t0 = cpu->read_word(fp + 0x08u);
                 uint32_t t1 = cpu->read_word(fp + 0x0Cu);
                 uint32_t t2 = cpu->read_word(fp + 0x10u);
@@ -1148,23 +1213,23 @@ static int s23_simple_decode(CPUState* cpu) {
             }
 
             double p[3][3]; uint32_t rgb[3]; int uu[3], vv[3];
-            if (emit_a) {
+            if (sh.emit_a) {
                 const int o[3] = {0,1,2};
                 for (int k = 0; k < 3; k++) {
                     memcpy(p[k], vpos[idx[o[k]]], sizeof p[k]);
                     rgb[k] = col[o[k]]; uu[k] = u[o[k]]; vv[k] = v[o[k]];
                 }
-                moby_simple_tri(p, rgb, uu, vv, textured, tpx, tpy, clx, cly, bpp, blend,
+                moby_simple_tri(p, rgb, uu, vv, sh.textured, tpx, tpy, clx, cly, bpp, blend,
                                 (uint32_t)(idx[0] | (idx[1] << 10) | (idx[2] << 20)));
                 emitted++; s_simple_tris++;
             }
-            if (emit_b) {
+            if (sh.emit_b) {
                 const int o[3] = {1,3,2};
                 for (int k = 0; k < 3; k++) {
                     memcpy(p[k], vpos[idx[o[k]]], sizeof p[k]);
                     rgb[k] = col[o[k]]; uu[k] = u[o[k]]; vv[k] = v[o[k]];
                 }
-                moby_simple_tri(p, rgb, uu, vv, textured, tpx, tpy, clx, cly, bpp, blend,
+                moby_simple_tri(p, rgb, uu, vv, sh.textured, tpx, tpy, clx, cly, bpp, blend,
                                 (uint32_t)(idx[1] | (idx[3] << 10) | (idx[2] << 20)));
                 emitted++; s_simple_tris++;
             }
