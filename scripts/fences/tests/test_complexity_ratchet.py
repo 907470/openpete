@@ -311,6 +311,17 @@ class EndToEndTest(unittest.TestCase):
         self.assertNotIn(cr.TSV, self.git(
             "show", "--name-only", "--format=", "HEAD").stdout)
 
+    def test_marker_passes_a_rise_and_sets_the_marked_column(self):
+        self.write("core/tail.c", nest("tail", 8, 4, marker="fixture table"))
+        self.git("add", "core/tail.c")
+        self.commit("marker only")
+        text = self.git("show", "HEAD:" + cr.TSV).stdout
+        self.assertEqual(cr.marked_keys(text), {"core/tail.c:tail"})
+        self.write("core/tail.c", nest("tail", 8, 9, marker="fixture table"))
+        self.git("add", "core/tail.c")
+        self.commit("marked rise")
+        self.assertEqual(self.rows()["core/tail.c:tail"], (45, ""))
+
     def test_unstaged_hunk_refused(self):
         self.write("core/body.c", nest("small", 3))
         self.git("add", "core/body.c")

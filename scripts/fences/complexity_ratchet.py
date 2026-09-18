@@ -268,6 +268,12 @@ def parse_tsv(text):
     return head, rows
 
 
+def marked_keys(text):
+    return {c[0] + ":" + c[1] for c in
+            (line.split("\t") for line in text.splitlines())
+            if len(c) >= 5 and c[3] == "1"}
+
+
 def render_tsv(rows, markers, written_by, head_sha):
     out = ["# cognitive-complexity ratchet baseline (scripts/fences/complexity_ratchet.py)",
            "# tool: clang-tidy %d" % TOOL_MAJOR,
@@ -908,7 +914,8 @@ def mode_hook(root):
             say("complexity-ratchet: ACCEPTED  %s  %s -> %d  (%s)" % (
                 key, row if row is not None else "no row", score, accept))
 
-    if new_rows == before:
+    if new_rows == before and marked_keys(source_text) == {
+            k for k in new_rows if k in markers}:
         text = source_text
     else:
         text = render_tsv(new_rows, markers, "hook", head_sha(root))
@@ -1034,10 +1041,15 @@ def mode_tighten(root, argv):
                quiet=("MARKED",))
     for key in unknown:
         say("complexity-ratchet: --accept %s names no refused rise; ignored." % key)
-    with open(os.path.join(root, TSV), "w") as fh:
-        fh.write(render_tsv(new_rows, markers, "tighten", head_sha(root)))
-    say("complexity-ratchet: wrote %s (%d rows). Stage and commit it." % (
-        TSV, len(new_rows)))
+    if new_rows == before and marked_keys(htext) == {
+            k for k in new_rows if k in markers}:
+        say("complexity-ratchet: %s is current (%d rows); nothing written."
+            % (TSV, len(new_rows)))
+    else:
+        with open(os.path.join(root, TSV), "w") as fh:
+            fh.write(render_tsv(new_rows, markers, "tighten", head_sha(root)))
+        say("complexity-ratchet: wrote %s (%d rows). Stage and commit it." % (
+            TSV, len(new_rows)))
     if verdict == "REFUSED":
         print_refusal(root, corpus, bins, {})
         say("Refused rises keep their rows. Accept one with "
