@@ -194,6 +194,13 @@ class GitGuardTest(unittest.TestCase):
         "git commit --only -m x", "git commit -om x",
         "git commit --pathspec-from-file=p -m x",
         "git commit --amend foo.c", "chmod -x githooks/pre-commit",
+        # Quoting that does not parse: flags before the message still count,
+        # and the long spellings count anywhere.
+        "echo \"unbalanced && git commit --no-verify -m x",
+        "echo \"unbalanced && git commit -a -m x",
+        "echo \"unbalanced && git commit -o -m x",
+        "echo \"unbalanced && git commit -m x --no-verify",
+        "python3 - <<'EOF'\nx = \"it's\"\nEOF\ngit commit -n -m x",
     ]
     PASSES = [
         "git commit -m 'x'", "git commit -q -m x", "git commit --amend -m x",
@@ -205,6 +212,9 @@ class GitGuardTest(unittest.TestCase):
         "git commit --author 'A <a@b>' -m x", "git commit -m x --date now",
         "git commit --include foo.c -m x", "git commit -i foo.c -m x",
         "git add a && git commit -m \"it's fine\" && git show --stat HEAD",
+        "python3 - <<'EOF'\ns = \"it's\"\nEOF\ngit add a && git commit -q -m "
+        "\"the -og leg\n\nbody -o\" 2>&1 | tail -1",
+        "echo \"unbalanced && git commit -q -m the -og leg",
         "cd openpete && git commit -q -m \"$(cat <<'EOF'\nsubject with "
         "\"quotes\" and -n\n\nbody --no-verify\nEOF\n)\"",
     ]
