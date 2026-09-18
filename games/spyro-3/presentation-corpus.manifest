@@ -33,7 +33,7 @@ sunrise-spring-surface-swim|1900|150||1900,2000,2200
 # pins are the frames where the copy is least occluded by the surface above
 # it: 5011 to 7167 pixels of the frame move when the reflection is suppressed,
 # against 588 to 1421 on the grid samples after 2025.
-icy-peak-reflective-mirror|1900|150||1900,1950,2000
+icy-peak-reflective-mirror|1900|150||1900,1921,1950,1961,2000,2001
 
 # sunrise-spring-camera-swing holds R2 from VBL 1500 so the camera orbits the
 # player while two animated-kind mobys and the simple-kind gems, baskets and

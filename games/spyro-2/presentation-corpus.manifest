@@ -20,3 +20,8 @@ attract-demo|3400|3000||3400,6500,10200,14000,17400
 # 1350 the flight with the treasure tally, 1550 the flight with the level name,
 # 1700 the arrival cutscene in the entered level.
 autumn-plains-skelos-badlands-portal-entry|1150|200||1150,1250,1350,1550,1700
+#
+# colossus-ice-skating: the player on the Colossus rink with the mirrored copy
+# under the ice. 921, 1121 and 1161 are intermediate legs whose tick pair spans a
+# body keyframe advance; 1123 is the leg after one.
+colossus-ice-skating|900|200||921,1121,1123,1161
