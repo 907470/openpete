@@ -108,6 +108,11 @@ void openpete_host_mouse_handle_event(const union SDL_Event* ev);
  * host init and from the knob registry afterwards; read on the pump thread. */
 void openpete_host_mouse_set_enabled(int on);
 int  openpete_host_mouse_enabled(void);
+/* Whether real mouse input is taken at all: the switch is on and the input
+ * lock (openpete_input_lock.h) is off. Every site that gates on the switch
+ * reads this, so the lock implies the switch's off behaviour without
+ * changing the value the switch reports. */
+int  openpete_host_mouse_accepting(void);
 
 /* Once per pump iteration, before the events are polled: advances the
  * iteration counter and pushes this iteration's injected events. */

@@ -79,6 +79,7 @@ for fps in 0 60 480; do
         --screenshot-presents-start "$START" \
         --screenshot-presents-count "$COUNT" \
         --screenshot-output "$OUT/fps${fps}_p{p}_f{n}.png" \
+        --input-lock \
         --mute on 2>&1 | tr -d '\r' | grep "screenshot:" | head -"$COUNT" | sed 's/^/  /'
 done
 

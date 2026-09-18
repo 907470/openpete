@@ -78,6 +78,10 @@ def run_movie(exe, movie_path, opp_path, args, log_path):
         "--frame-limit", str(args.frame_limit),
         "--max-runtime-seconds", str(args.max_runtime_seconds),
         "--profile-out", opp,
+        # Windowed and unattended: host keyboard, mouse and pads are ignored.
+        # The flag, not the env spelling, so it also reaches a Windows exe.
+        # (scripts/fences/input_lock_guard.py)
+        "--input-lock",
     ]
     # Through child_env so the knob survives a Windows launch from WSL: set
     # directly it would be dropped by interop and the run would quietly have

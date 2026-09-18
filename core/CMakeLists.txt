@@ -59,6 +59,9 @@ add_library(openpete_core STATIC
     # arbitration, capture requests and the injection seam. See
     # openpete_host_mouse.h.
     input/host_mouse.c
+    # The host input lock: discards physical-device events at the pump and
+    # blanks the polled snapshot. See openpete_input_lock.h.
+    input/input_lock.c
     # Controller vibration. rumble_curve.c is the measured actuator
     # curve, kept SDL-free so the unit test can link it alone; host_rumble.c is
     # the registration / per-tick sample / per-pump apply seam.
@@ -587,6 +590,9 @@ if(NOT CMAKE_HOST_WIN32)
         COMMAND ${CMAKE_COMMAND} -E echo "Checking launcher hygiene..."
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/rumble_guard.py ${CMAKE_SOURCE_DIR}
         COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/wslenv_guard.py ${CMAKE_SOURCE_DIR}
+        # An unattended launcher that can open a window locks host input, so a
+        # key, pointer or pad at the desk cannot steer or end the run.
+        COMMAND python3 ${CMAKE_SOURCE_DIR}/scripts/fences/input_lock_guard.py ${CMAKE_SOURCE_DIR}
         # The keymap's KM_LEVEL / KM_DELTA flags against their consumer sites:
         # the parser enforces them for mouse sources and the unit test cannot
         # see the consumers.

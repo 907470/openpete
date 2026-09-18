@@ -404,6 +404,21 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # --input-lock gate. Replays one key-and-pointer injection script three
+    # ways on the headless build: filed with the physical devices under the
+    # lock (nothing may change), filed with them without the lock (the
+    # negative control: free camera, menu, motion totals and the quit binding
+    # all respond), and marked as injected under the lock (still flows).
+    # Exit 2 when the negative control did not engage.
+    add_test(NAME input_lock
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_input_lock.sh
+                     --build-dir=${CMAKE_BINARY_DIR})
+    set_tests_properties(input_lock PROPERTIES
+        LABELS "slow;input"
+        TIMEOUT 900
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Performance benchmark pipeline smoke — replays a few bk2 movies through
     # the profiler (--profile-out) and asserts the trace/summary/rollup pipeline
     # runs and parses. NOT a perf-threshold gate (CI hardware varies); the

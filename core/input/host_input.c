@@ -1,5 +1,6 @@
 #include "openpete_host_input.h"
 #include "openpete_host_mouse.h"
+#include "openpete_input_lock.h"
 #include "openpete_input_log.h"
 #include "openpete_keymap.h"
 #include "openpete_log.h"
@@ -495,6 +496,28 @@ typedef struct {
 static host_sdl_state_t s_sdl_state[2];
 static SDL_AtomicInt    s_sdl_state_cur;   /* index of the readable buffer */
 
+/* Keys the injection script holds down. Pump thread only: the script steps
+ * and the snapshot publishes on the same thread. `marked` keys come from the
+ * script as such and reach the snapshot whatever the input lock says; `raw`
+ * keys stand in for a physical keyboard and are merged into SDL's array
+ * before the lock blanks it. */
+static bool s_inj_keys_marked[SDL_SCANCODE_COUNT];
+static bool s_inj_keys_raw[SDL_SCANCODE_COUNT];
+
+void openpete_host_input_inject_key(int scancode, int down, int raw)
+{
+    if (scancode <= 0 || scancode >= SDL_SCANCODE_COUNT) return;
+    (raw ? s_inj_keys_raw : s_inj_keys_marked)[scancode] = down != 0;
+}
+
+/* Under the input lock a slot keeps only an SDL virtual gamepad, which a
+ * harness attaches; a physical pad reads as absent. */
+static SDL_Gamepad* lock_filter_gamepad(SDL_Gamepad* gp)
+{
+    if (!gp || !openpete_input_lock_active()) return gp;
+    return SDL_IsJoystickVirtual(SDL_GetGamepadID(gp)) ? gp : NULL;
+}
+
 /* ---- controller mapping database ------------------------------------- */
 
 /* A pad SDL has no mapping for is not a gamepad as far as SDL_IsGamepad is
@@ -833,10 +856,20 @@ void openpete_host_input_publish_sdl(void)
     } else {
         memset(d->keys, 0, sizeof(d->keys));
     }
-
+    for (int k = 0; k < SDL_SCANCODE_COUNT; k++)
+        if (s_inj_keys_raw[k]) d->keys[k] = true;
     d->mods = (unsigned)SDL_GetModState();
+    /* The input lock blanks everything a physical keyboard contributed; the
+     * marked injected keys are merged after it and survive. */
+    if (openpete_input_lock_active()) {
+        memset(d->keys, 0, sizeof(d->keys));
+        d->mods = 0;
+    }
+    for (int k = 0; k < SDL_SCANCODE_COUNT; k++)
+        if (s_inj_keys_marked[k]) d->keys[k] = true;
+
     openpete_host_mouse_producer_read(&d->mouse);
-    if (openpete_host_input_legacy() && openpete_host_mouse_enabled()) {
+    if (openpete_host_input_legacy() && openpete_host_mouse_accepting()) {
         /* PsyCross pumps on this path and openpete_handle_event never runs,
          * so the event-derived state above is empty: read SDL's own position
          * and mask instead. Presses, deltas and the wheel stay at zero. The
@@ -851,7 +884,7 @@ void openpete_host_input_publish_sdl(void)
     host_slot_gamepads(slot_gp);
     for (int sl = 0; sl < OPENPETE_PAD_SLOTS; sl++) {
         host_pad_state_t* ps = &d->pads[sl];
-        SDL_Gamepad* gp = slot_gp[sl];
+        SDL_Gamepad* gp = lock_filter_gamepad(slot_gp[sl]);
         ps->have_pad = (gp != NULL);
         if (gp) {
             for (int b = 0; b < SDL_GAMEPAD_BUTTON_COUNT; b++)
@@ -1125,6 +1158,13 @@ void openpete_host_input_sample(bool alt_held)
 
     if (synth_on())
         synth_pad(openpete_frame, &bits, axes);
+    else if (openpete_input_lock_active())
+        /* PsyX_Pad_DecodeP1 reads SDL's keyboard array and the player-1
+         * gamepad directly, so the lock cannot filter inside it. Decode the
+         * player-1 pad alone, and only when it is a virtual one; with none
+         * this yields the neutral pad. */
+        PsyX_Pad_DecodeGamepad(lock_filter_gamepad((SDL_Gamepad*)PsyX_Pad_GetGamepad(0)),
+                               &bits, axes);
     else if (!alt_held)
         PsyX_Pad_DecodeP1(&bits, axes);
 
@@ -1153,6 +1193,7 @@ void openpete_host_input_sample(bool alt_held)
         host_slot_gamepads(slot_gp);
         for (int sl = 1; sl < OPENPETE_PAD_SLOTS; sl++) {
             openpete_pad_snapshot_t* d = &extra[sl - 1];
+            slot_gp[sl] = lock_filter_gamepad(slot_gp[sl]);
             if (!slot_gp[sl]) continue;              /* leaves valid = false */
             unsigned short sb = PAD_NEUTRAL_BITS;
             unsigned char  sa[4] = { 128, 128, 128, 128 };

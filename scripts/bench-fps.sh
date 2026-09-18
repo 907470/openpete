@@ -58,9 +58,12 @@ echo "bench-fps: exe=$EXE  fps=$FPS  frames=$FRAMES  log=$LOG"
 # Windows .exe, and an exported knob does not cross that boundary without
 # WSLENV — an argument cannot be dropped that way.
 # (scripts/fences/rumble_guard.py enforces that this is here.)
+# --input-lock: the bench window ignores the host keyboard, mouse and pads, so
+# input at the desk cannot open a menu or end the run mid-measurement. A flag
+# for the same reason. (scripts/fences/input_lock_guard.py)
 "$EXE" --disc "$DISC_ARG" --renderer vk \
        --render-fps "$FPS" --frame-limit "$FRAMES" --vsync 0 \
-       --max-runtime-seconds 1200 --vibration 0 \
+       --max-runtime-seconds 1200 --vibration 0 --input-lock \
        --frame-time-log "$LOG_ARG" "${EXTRA[@]}"
 
 echo "=== measure-pacing: $LOG ==="

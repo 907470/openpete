@@ -62,6 +62,9 @@ def run_once(label, unlock_spec, out_dir):
         "--bk2-stop-on-end",
         "--position-log", str(pos),
         "--max-runtime-seconds", "180",
+        # The run opens a window: host keyboard, mouse and pads are ignored so
+        # the replay is the only input. (scripts/fences/input_lock_guard.py)
+        "--input-lock",
     ]
     if unlock_spec:
         cmd.extend(["--unlock-frames", unlock_spec])

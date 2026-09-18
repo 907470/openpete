@@ -60,6 +60,7 @@ static const cfg_knob_t g_schema[] = {
     { "vibration",        "--vibration",        "OPENPETE_VIBRATION",    CFG_INT,    NULL,       NULL,       NULL,       0 },
     { "mouse_sensitivity","--mouse-sensitivity", NULL,                   CFG_FLOAT,  NULL,       NULL,       NULL,       0 },
     { "mouse",            "--mouse",            "OPENPETE_MOUSE",        CFG_BOOL,   NULL,       NULL,       NULL,       0 },
+    { "input_lock",       "--input-lock",       "OPENPETE_INPUT_LOCK",   CFG_BOOL,   NULL,       NULL,       NULL,       0 },
 
     /* -------- Paths -------- */
     { "disc",             "--disc",             NULL,                    CFG_STRING, NULL,       NULL,       NULL,       0 },

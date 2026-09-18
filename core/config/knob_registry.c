@@ -812,6 +812,15 @@ static const knob_desc_t g_builtin[] = {
       KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
       mouse_get, mouse_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
+    { "input_lock", "Input lock", "Input", "--input-lock", "OPENPETE_INPUT_LOCK",
+      "Ignore every host input device: the keyboard (game keys and every "
+      "hotkey, this overlay's included), the mouse (as Mouse off) and "
+      "gamepads. A bk2 replay and the scripted injection stream still drive "
+      "the run, and closing the window still exits. Display-only: switched on "
+      "from here it would take away the input needed to switch it off.",
+      KNOB_BOOL, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
+      get_stored, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
     { "mouse_sensitivity", "Mouse sensitivity", "Input", "--mouse-sensitivity", NULL,
       "Mouse look scale for the free camera and the camlock: angle units per "
       "count = 0.5 * this, so 1.0 is one full turn per 8192 counts. Read at "
@@ -1231,7 +1240,8 @@ static const knob_desc_t g_builtin[] = {
 
     ENVROW_LATCHED("MOUSE_INJECT", "Debug", "",
         "Path of a mouse-event script (\"<pump-iteration> move x y | down b | "
-        "up b | click2 b | rel dx dy | wheel n | menu 0|1 | capture 0|1 | shot\") "
+        "up b | click2 b | rel dx dy | wheel n | menu 0|1 | capture 0|1 | shot | "
+        "keydown k | keyup k\") "
         "pushed through the event pump as SDL events, so an unattended run "
         "drives every mouse consumer. Read once at boot."),
     ENVROW_LATCHED("MOUSE_PROBE", "Debug", "0",
@@ -1570,6 +1580,8 @@ void knob_registry_init(const struct openpete_options *opts) {
             k->stored_num = opts->vibration;
         } else if (!strcmp(k->id, "mouse")) {
             k->stored_num = opts->mouse != 0 ? 1 : 0;
+        } else if (!strcmp(k->id, "input_lock")) {
+            k->stored_num = opts->input_lock > 0 ? 1 : 0;
         } else if (!strcmp(k->id, "mouse_sensitivity")) {
             k->stored_num = opts->mouse_sensitivity >= 0.0f ? opts->mouse_sensitivity : 1.0;
         } else if (!strcmp(k->id, "record_cfr")) {

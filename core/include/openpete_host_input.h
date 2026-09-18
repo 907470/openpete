@@ -86,6 +86,12 @@ void openpete_host_input_latch(bool claimed);
  * consumer-side and never touches SDL. */
 void openpete_host_input_publish_sdl(void);
 
+/* Injection-script key state (pump thread). Sets or clears one scancode's
+ * held state in every snapshot published from now on. `raw` files the key
+ * with the physical keyboard, which the input lock blanks; otherwise it is a
+ * marked injected key and the lock leaves it. */
+void openpete_host_input_inject_key(int scancode, int down, int raw);
+
 int      openpete_host_input_key_down(int scancode);
 int      openpete_host_input_pad_button(int button);
 int      openpete_host_input_pad_axis(int axis);

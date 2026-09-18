@@ -1311,6 +1311,12 @@ void openpete_devui_render(struct rhi_device *dev)
         openpete_mouse_state_t st;
         openpete_host_input_mouse(&st);
         io.AddMousePosEvent(st.px, st.py);
+    } else if (!openpete_host_mouse_accepting()) {
+        /* The backend's NewFrame polls the global pointer position when no
+         * window of ours is hovered, which bypasses the event stream the
+         * mouse switch and the input lock filter. Report the pointer as
+         * absent so nothing under it hovers or activates. */
+        io.AddMousePosEvent(-FLT_MAX, -FLT_MAX);
     }
     ImGui::NewFrame();
     if (s_open) draw_panel();

@@ -4,6 +4,8 @@
 
 #include "openpete_devui.h"
 #include "openpete_fillpick.h"
+#include "openpete_host_input.h"
+#include "openpete_input_lock.h"
 #include "openpete_keymap.h"
 #include "openpete_log.h"
 #include "openpete_menu.h"
@@ -56,7 +58,7 @@ static _Atomic int s_enabled = 1;
  * the top of the range for its own synthetic sources (touch, pen), so a value
  * below those reserved ids and far above any allocated one belongs to nothing
  * else. */
-#define INJECT_MOUSE_ID ((SDL_MouseID)0xFFFF0001u)
+#define INJECT_MOUSE_ID ((SDL_MouseID)OPENPETE_INJECT_DEVICE_ID)
 
 /* OPENPETE_MOUSE_INJECT_RAW=1 pushes the injected events unmarked, so the
  * switch sees them as coming from a physical device. It is the negative
@@ -73,7 +75,7 @@ static SDL_MouseID inj_mouse_id(void)
 
 typedef enum {
     INJ_MOVE, INJ_DOWN, INJ_UP, INJ_CLICK2, INJ_REL, INJ_WHEEL, INJ_MENU, INJ_CAPTURE,
-    INJ_SHOT
+    INJ_SHOT, INJ_KEYDOWN, INJ_KEYUP
 } inj_verb_t;
 
 typedef struct {
@@ -81,7 +83,7 @@ typedef struct {
     int        is_ms;
     inj_verb_t verb;
     float      a, b;
-    int        button;   /* SDL_BUTTON_* for DOWN/UP/CLICK2 */
+    int        button;   /* SDL_BUTTON_* for DOWN/UP/CLICK2; SDL_Scancode for KEYDOWN/KEYUP */
 } inj_line_t;
 
 static inj_line_t* s_inj;
@@ -150,6 +152,11 @@ static void inj_load(const char* path)
             L.verb = INJ_CAPTURE; L.a = (float)atoi(arg1);
         } else if (!strcmp(verb, "shot")) {
             L.verb = INJ_SHOT;
+        } else if ((!strcmp(verb, "keydown") || !strcmp(verb, "keyup")) && n >= 3) {
+            /* The key is an SDL scancode name ("F", "O", "Escape"). */
+            L.verb = !strcmp(verb, "keydown") ? INJ_KEYDOWN : INJ_KEYUP;
+            L.button = (int)SDL_GetScancodeFromName(arg1);
+            ok = L.button != (int)SDL_SCANCODE_UNKNOWN;
         } else {
             ok = 0;
         }
@@ -165,6 +172,28 @@ static void inj_load(const char* path)
     }
     fclose(f);
     OPL_INFO_F("mouse", "OPENPETE_MOUSE_INJECT: %d lines from %s", s_inj_n, path);
+}
+
+static SDL_Window* mouse_window(void);
+
+/* A key line does two things, matching the two ways a real key reaches the
+ * process: it pushes the key event (the Escape and quit-key handling and the
+ * dev overlay read events) and it sets the key's held state in the polled
+ * snapshot (every binding reads that). A pushed event never updates SDL's own
+ * keyboard array, so the held state is carried by the host input module. */
+static void inj_push_key(int scancode, int down)
+{
+    openpete_host_input_inject_key(scancode, down, s_inj_raw);
+    SDL_Event ev;
+    memset(&ev, 0, sizeof ev);
+    ev.type = down ? SDL_EVENT_KEY_DOWN : SDL_EVENT_KEY_UP;
+    ev.key.timestamp = SDL_GetTicksNS();
+    ev.key.windowID = mouse_window() ? SDL_GetWindowID(mouse_window()) : 0;
+    ev.key.which = (SDL_KeyboardID)inj_mouse_id();
+    ev.key.scancode = (SDL_Scancode)scancode;
+    ev.key.key = SDL_GetKeyFromScancode((SDL_Scancode)scancode, SDL_KMOD_NONE, false);
+    ev.key.down = down ? true : false;
+    SDL_PushEvent(&ev);
 }
 
 static SDL_Window* mouse_window(void)
@@ -251,6 +280,8 @@ static void inj_step(unsigned iter)
         case INJ_SHOT:
             atomic_store_explicit(&s_shot_req, 1, memory_order_release);
             break;
+        case INJ_KEYDOWN: inj_push_key(L->button, 1); break;
+        case INJ_KEYUP:   inj_push_key(L->button, 0); break;
         }
         if (s_probe)
             OPL_INFO_F("mouse", "inject iter=%u ms=%u line=%d verb=%d", iter, ms,
@@ -293,6 +324,11 @@ int openpete_host_mouse_enabled(void)
     return atomic_load_explicit(&s_enabled, memory_order_relaxed);
 }
 
+int openpete_host_mouse_accepting(void)
+{
+    return openpete_host_mouse_enabled() && !openpete_input_lock_active();
+}
+
 int openpete_host_mouse_initialised(void) { return s_inited; }
 int openpete_host_mouse_inject_active(void) { return s_inj_n > 0; }
 
@@ -326,7 +362,7 @@ void openpete_host_mouse_handle_event(const union SDL_Event* evu)
     /* The switch drops pointer events from real devices. Window enter, leave,
      * focus and resize events carry no pointer data and stay, so the window
      * size the consumers read is current whichever way the switch is set. */
-    if (!openpete_host_mouse_enabled()) {
+    if (!openpete_host_mouse_accepting()) {
         switch (ev->type) {
         case SDL_EVENT_MOUSE_MOTION:
             if (ev->motion.which != INJECT_MOUSE_ID) return;
@@ -504,7 +540,7 @@ void openpete_host_mouse_apply_capture(void)
     /* The fill-tag inspector is excluded outright: under relative mode imgui
      * still receives the clamped pointer, and a WantCaptureMouse flip as it
      * drifts over the panel would release and re-capture in a loop. */
-    int want = openpete_host_mouse_enabled()
+    int want = openpete_host_mouse_accepting()
             && openpete_host_mouse_capture_requested()
             && !openpete_menu_is_open()
             && !devui_owner()
@@ -524,7 +560,7 @@ void openpete_host_mouse_apply_capture(void)
                    (unsigned long long)atomic_load_explicit(&s_capture_req,
                                                             memory_order_relaxed),
                    openpete_menu_is_open(), devui_owner(),
-                   openpete_fillpick_active(), openpete_host_mouse_enabled());
+                   openpete_fillpick_active(), openpete_host_mouse_accepting());
 }
 
 /* ---- menu request ------------------------------------------------------ */

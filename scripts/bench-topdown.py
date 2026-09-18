@@ -101,6 +101,10 @@ def run_level(exe, level, args, out_dir):
         "--profile-out", tr(opp),
         "--frame-limit", str(args.frame_limit),
         "--max-runtime-seconds", str(args.max_runtime_seconds),
+        # Windowed and unattended: host keyboard, mouse and pads are ignored.
+        # The flag, not the env spelling, so it also reaches a Windows exe.
+        # (scripts/fences/input_lock_guard.py)
+        "--input-lock",
     ]
     if args.screenshot:
         cmd += ["--screenshot-on-frame", str(args.screenshot_frame),

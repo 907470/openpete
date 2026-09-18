@@ -629,6 +629,10 @@ typedef struct openpete_options {
      * ordinary desktop cursor; the scripted injection stream is unaffected.
      * -1 = unset (on). Host-side only: nothing here reaches guest RAM. */
     int mouse;
+    /* --input-lock: ignore every physical host input device (keyboard, mouse,
+     * gamepads); --bk2 replay and injected events still drive the run and
+     * closing the window still exits. -1 = unset (off). Host-side only. */
+    int input_lock;
 
     /* Content for the "<bk2_record_path>.args" sidecar written next to a
      * --bk2-record capture. Holds the launch flags passed *directly* on

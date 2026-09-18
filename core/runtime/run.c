@@ -10,6 +10,7 @@
 #include "openpete_log.h"
 #include "openpete_host_input.h"
 #include "openpete_host_mouse.h"
+#include "openpete_input_lock.h"
 #include "openpete_rumble.h"
 #include "openpete_psx.h"
 #include "openpete_discontinuity.h"
@@ -409,6 +410,10 @@ static void openpete_pump_events(void) {
  * Now that openpete owns the only pump, consuming an event is just declining
  * to forward it, and everything runs in one place in a defined order. */
 static bool openpete_handle_event(SDL_Event* ev) {
+    /* The input lock discards an event from a physical input device before
+     * any consumer below sees it. Quit and window events are not input and
+     * fall through, so closing the window still exits. */
+    if (openpete_input_lock_drops_event(ev)) return false;
     /* The mouse channel derives position, mask and the running totals from
      * the event stream (openpete_host_mouse.h); every consumer reads those. */
     openpete_host_mouse_handle_event(ev);
@@ -1960,6 +1965,11 @@ static int run_host_init(const openpete_options_t* opts) {
     /* --mouse: the host mouse channel switch, seeded before the knob registry
      * stamps its boot values from the live getters. -1 (unset) is on. */
     openpete_host_mouse_set_enabled(opts->mouse != 0);
+    /* --input-lock: seeded here for the same reason. -1 (unset) is off. */
+    openpete_input_lock_set(opts->input_lock > 0);
+    if (opts->input_lock > 0)
+        OPL_INFO_F("input", "input lock on: keyboard, mouse and gamepad "
+                   "devices are ignored");
     {
         /* OPENPETE_RUMBLE_LEGACY=1 leaves the hook uninstalled, so PadSetAct
          * keeps PsyCross's historical one-shot behaviour. That is the "before"
@@ -6200,6 +6210,21 @@ static int run_host_loop(const openpete_options_t* opts) {
     fprintf(stdout,
             "openpete-exit: reason=%s frames=%u ms=%u code=%d\n",
             exit_reason, openpete_frame, elapsed, exit_code);
+    /* Host-input end state, printed when the lock or the injection script is
+     * in play: what the lock discarded and what the host-side consumers a
+     * stray key or pointer reaches ended up as. */
+    if (openpete_input_lock_active() || openpete_host_mouse_inject_active()) {
+        fprintf(stdout,
+                "openpete-input: lock=%d dropped=%llu menu_open=%d freecam=%d "
+                "freecam_engages=%u devui_open=%d mouse_motion=(%lld, %lld)\n",
+                openpete_input_lock_active(), openpete_input_lock_dropped(),
+                openpete_menu_is_open() ? 1 : 0,
+                openpete_freecam_active() ? 1 : 0,
+                openpete_freecam_engage_generation(),
+                openpete_devui_is_open() ? 1 : 0,
+                (long long)openpete_host_mouse_motion_total(0),
+                (long long)openpete_host_mouse_motion_total(1));
+    }
     /* The player's end state, in --player-pose's own grammar, so the next
      * run starts where this one stopped: `--skip-to-level <level>
      * --player-pose "pos=(x, y, z) yaw=N"`. Printed only while the pose is
