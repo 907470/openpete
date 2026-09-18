@@ -164,10 +164,17 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
     s_fed_prims++;
 }
 
+/* The PSX 4:3 frame the 2D layer is authored in: x runs 0..512 whatever the
+ * window is, and the widescreen widen mirrors about its centre column. */
+#define UI_FRAME_W 512
+
 /* Feed one screen-space untextured POLY_F4 (flat quad) into a native HUD-OT layer.
- * Two consumers:
- *   - the cutscene letterbox: two full-width OPAQUE bars (code 0x28) ->
+ * Three consumers:
+ *   - the cutscene letterbox: two frame-width OPAQUE bars (code 0x28) ->
  *     OPENPETE_SCENE_OVERLAY (dead last, over everything), alpha 0xFF;
+ *   - a menu box's backing: a narrower OPAQUE quad (code 0x28) ->
+ *     OPENPETE_SCENE_HUD_PANEL at alpha 0xFF, under the box's own tiles,
+ *     frame and text;
  *   - a dark panel (pause/inventory panel, HUD shaded box, dialog-box slab):
  *     a SEMI-TRANSPARENT quad (code 0x2A) -> OPENPETE_SCENE_HUD_PANEL (under
  *     the text, over the world/backdrop), blended by the tracked ABR.
@@ -198,10 +205,10 @@ static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32
         float F = openpete_native_widescreen_factor();
         if (F > 1.0f) for (int k=0;k<4;k++) {
             const float kBleed = 4.0f;   /* PSX px of edge bleed (scissor-clipped) */
-            float w = ((float)sx[k] - 256.0f) * F;
+            float w = ((float)sx[k] - (float)(UI_FRAME_W / 2)) * F;
             if (w < 0.0f)      w -= kBleed;
             else if (w > 0.0f) w += kBleed;
-            sx[k] = 256 + (int)w;
+            sx[k] = UI_FRAME_W / 2 + (int)w;
         }
     }
     uint32_t rgba = (w1 & 0xFFFFFFu) | (alpha << 24);
@@ -632,6 +639,19 @@ static uint32_t ot_rank_of(uint32_t prim) {
     return 0u;   /* not in the chain: keeps its feed position under the stable sort */
 }
 
+/* Does an opaque POLY_F4 span the whole frame width? The four XY words at
+ * +0x08..+0x14 hold x in the low signed halfword. A letterbox bar is authored
+ * across the full 0..512 frame; a menu box's backing covers part of it. */
+static int f4_spans_frame_width(CPUState* cpu, uint32_t prim) {
+    int lo = 0x7FFF, hi = -0x8000;
+    for (uint32_t k = 0; k < 4u; k++) {
+        int x = (int16_t)(cpu->read_word(prim + 0x08u + k * 4u) & 0xFFFFu);
+        if (x < lo) lo = x;
+        if (x > hi) hi = x;
+    }
+    return hi - lo >= UI_FRAME_W;
+}
+
 /* Feed the claimed batch: the ordering table about to be walked. Every word is
  * final here, and the entries are in link order, which is the OT walk order. */
 /* Decode one claimed primitive into the scene. */
@@ -654,7 +674,20 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
         break;
     case QK_DR_MODE:                                             /* the GPU draw mode */
         s_last_abr = (int)((w1 >> 5) & 3u); s_last_tpage = w1 & 0x7FFu; break;
-    case QK_F4_BAR:  feed_f4(cpu, prim, w1, OPENPETE_SCENE_OVERLAY, 0xFFu, 0, 1); break;
+    case QK_F4_BAR: {
+        /* A frame-width opaque quad is a cutscene letterbox bar: it draws over
+         * everything and takes the widescreen widen. A narrower one backs a
+         * menu box, which the game links FIRST so the box's tiles, frame and
+         * text draw on top of it. The box's neighbours are textured tris on
+         * the HUD layer, and the HUD draw paints its whole untextured range
+         * after its whole textured one, so an untextured quad fed there covers
+         * them whatever the ordering table says. The panel layer is drawn
+         * before both and is where a 2D box's backing belongs; at alpha 0xFF
+         * the alpha pipe reproduces the opaque quad exactly. */
+        const int full = f4_spans_frame_width(cpu, prim);
+        if (full) { feed_f4(cpu, prim, w1, OPENPETE_SCENE_OVERLAY, 0xFFu, 0, 1); break; }
+        feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL, 0xFFu, 1, 0);
+        break; }
     case QK_F4_PANEL: {
         /* The box links its own DR_MODE immediately before the quad, so the
          * ABR tracked at this point of the batch is the blend the GPU is in
