@@ -30,3 +30,14 @@ colossus-ice-skating|900|200||921,1121,1123,1161
 # are written at VBL 842-858 (peak 846) and 960-976 (peak 964); 848 is an
 # intermediate leg inside the first breath.
 shady-oasis-flame|840|200||846,848,850,964
+#
+# open-pause-menu: the pause menu open over Summer Forest, 900 and 918. The
+# menu box is an opaque flat quad under ten tiled panels, a frame and six
+# rows of sprite text; the guidebook page beside it carries quad-form glyphs
+# (the level banner, the two gem-row slashes).
+open-pause-menu|900|200||900,918
+#
+# open-guidebook: the guidebook open on its contents page, 980 and 998. The
+# right-hand column (entry names, placeholder dashes, per-cent signs) is
+# quad-form glyph text; the digits are sprite text.
+open-guidebook|960|200||980,998
