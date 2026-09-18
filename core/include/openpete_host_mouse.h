@@ -31,7 +31,14 @@
  *
  * Capture (SDL relative mode) is a per-owner request bit; the pump thread
  * computes `want` from the bits and the ownership state and applies it
- * edge-triggered on the window-owning thread. */
+ * edge-triggered on the window-owning thread.
+ *
+ * The switch (openpete_host_mouse_set_enabled, --mouse / OPENPETE_MOUSE) is
+ * the channel's off position: with it off the handler drops every real mouse
+ * event before it reaches the state or the totals, and capture resolves to
+ * off, so the pointer stays a free desktop cursor over the window. Injected
+ * events (below) are exempt, since a scripted capture drives them
+ * deliberately. */
 
 #include <stdint.h>
 
@@ -83,8 +90,8 @@ typedef struct {
 
 /* ---- producer (pump thread) ------------------------------------------ */
 
-/* Parses OPENPETE_MOUSE_INJECT / OPENPETE_MOUSE_PROBE and marks the channel
- * initialised. `fallback_window` is the window capture applies to when the
+/* Parses OPENPETE_MOUSE_INJECT / OPENPETE_MOUSE_INJECT_RAW /
+ * OPENPETE_MOUSE_PROBE and marks the channel initialised. `fallback_window` is the window capture applies to when the
  * native renderer has none (headless keeps a hidden SDL window). */
 void openpete_host_mouse_init(struct SDL_Window* fallback_window);
 int  openpete_host_mouse_initialised(void);
@@ -95,6 +102,12 @@ int  openpete_host_mouse_inject_active(void);
 
 /* Every dequeued SDL event passes through here before any other handler. */
 void openpete_host_mouse_handle_event(const union SDL_Event* ev);
+
+/* The mouse switch. Off drops real mouse motion, button and wheel events and
+ * refuses capture; the injected stream is unaffected. Set from the options at
+ * host init and from the knob registry afterwards; read on the pump thread. */
+void openpete_host_mouse_set_enabled(int on);
+int  openpete_host_mouse_enabled(void);
 
 /* Once per pump iteration, before the events are polled: advances the
  * iteration counter and pushes this iteration's injected events. */

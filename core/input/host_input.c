@@ -836,10 +836,12 @@ void openpete_host_input_publish_sdl(void)
 
     d->mods = (unsigned)SDL_GetModState();
     openpete_host_mouse_producer_read(&d->mouse);
-    if (openpete_host_input_legacy()) {
+    if (openpete_host_input_legacy() && openpete_host_mouse_enabled()) {
         /* PsyCross pumps on this path and openpete_handle_event never runs,
          * so the event-derived state above is empty: read SDL's own position
-         * and mask instead. Presses, deltas and the wheel stay at zero. */
+         * and mask instead. Presses, deltas and the wheel stay at zero. The
+         * mouse switch gates this read too, since it is the one place the
+         * pointer reaches a consumer without passing the event handler. */
         float mx = 0.0f, my = 0.0f;
         d->mouse.buttons = (unsigned)SDL_GetMouseState(&mx, &my);
         d->mouse.px = mx; d->mouse.py = my;

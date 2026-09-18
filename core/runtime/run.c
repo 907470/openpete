@@ -1960,6 +1960,10 @@ static int run_host_init(const openpete_options_t* opts) {
      * behaviour, which is the "before" side of the vibration A/B. */
     openpete_set_vibration(opts->vibration);
     openpete_rumble_set_headless(opts->headless ? 1 : 0);
+
+    /* --mouse: the host mouse channel switch, seeded before the knob registry
+     * stamps its boot values from the live getters. -1 (unset) is on. */
+    openpete_host_mouse_set_enabled(opts->mouse != 0);
     {
         /* OPENPETE_RUMBLE_LEGACY=1 leaves the hook uninstalled, so PadSetAct
          * keeps PsyCross's historical one-shot behaviour. That is the "before"

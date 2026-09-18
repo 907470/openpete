@@ -24,6 +24,7 @@
 #include "openpete_camlock.h"
 #include "openpete_fillpick.h"
 #include "openpete_freecam.h"
+#include "openpete_host_mouse.h"
 #include "openpete_record.h"
 #include "openpete_rewind.h"
 #include "no_lod.h"
@@ -372,6 +373,8 @@ static int mousesens_set(knob_desc_t *k, double v) {
     k->stored_num = v;
     return 0;
 }
+static double mouse_get(const knob_desc_t *k) { (void)k; return openpete_host_mouse_enabled() ? 1.0 : 0.0; }
+static int mouse_set(knob_desc_t *k, double v) { (void)k; openpete_host_mouse_set_enabled(v != 0.0); return 0; }
 static double vibration_get(const knob_desc_t *k) { (void)k; return (double)openpete_get_vibration(); }
 static int vibration_set(knob_desc_t *k, double v) { (void)k; openpete_set_vibration((int)v); return 0; }
 
@@ -799,6 +802,15 @@ static const knob_desc_t g_builtin[] = {
       "options menu; the motors are always silent headless or unfocused.",
       KNOB_INT, KNOB_LIVE, NULL, 0, -1, 10,
       vibration_get, vibration_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
+
+    { "mouse", "Mouse", "Input", "--mouse", "OPENPETE_MOUSE",
+      "The host mouse channel. Off drops every mouse motion, button and wheel "
+      "event from a real device before any consumer sees it and refuses "
+      "pointer capture, so the pointer over the window stays an ordinary "
+      "desktop cursor and mouse look, the settings menu and the dev overlay "
+      "receive nothing. The scripted injection stream is unaffected.",
+      KNOB_BOOL, KNOB_LIVE, NULL, 0, 0, 0,
+      mouse_get, mouse_set, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "mouse_sensitivity", "Mouse sensitivity", "Input", "--mouse-sensitivity", NULL,
       "Mouse look scale for the free camera and the camlock: angle units per "
@@ -1546,6 +1558,8 @@ void knob_registry_init(const struct openpete_options *opts) {
             k->stored_num = opts->music_volume;
         } else if (!strcmp(k->id, "vibration")) {
             k->stored_num = opts->vibration;
+        } else if (!strcmp(k->id, "mouse")) {
+            k->stored_num = opts->mouse != 0 ? 1 : 0;
         } else if (!strcmp(k->id, "mouse_sensitivity")) {
             k->stored_num = opts->mouse_sensitivity >= 0.0f ? opts->mouse_sensitivity : 1.0;
         } else if (!strcmp(k->id, "record_cfr")) {

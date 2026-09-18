@@ -506,6 +506,10 @@ static void print_help(const char* display_name, const char* argv0,
         "                             0 silences the motors without changing that setting.\n"
         "                             10 is the full measured response. Always silent when\n"
         "                             headless or when the window is not focused.\n"
+        "  --mouse 0|1                host mouse channel: 0 ignores every mouse movement, button and\n"
+        "                             wheel event and leaves the pointer a free desktop cursor over the\n"
+        "                             window; mouse look, the settings menu pointer and the dev overlay\n"
+        "                             all go quiet (default 1 = on; on|off also accepted)\n"
         "  --mouse-sensitivity S      mouse look scale for the free camera and camlock (default 1.0;\n"
         "                             0.5 = one full turn per 8192 counts). Mouse look binds through\n"
         "                             [keys.host] look_axis_x = \"pad:rightx,mouse:x\" and\n"
@@ -690,6 +694,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->sfx_volume          = -1;    /* -1 = unset; the game's own slider stands */
     opts->music_volume        = -1;
     opts->vibration           = -1;    /* -1 = unset; the game's own setting stands */
+    opts->mouse               = -1;    /* -1 = unset; the mouse channel is on */
     opts->mouse_sensitivity   = -1.0f; /* -1 = unset (1.0) */
     opts->ssaa                = 1;     /* native vk supersampling: 1 = no-op */
     opts->perf_stats          = OPENPETE_PERF_FPS;  /* the counter, no pacing readout; --perf-stats / O-menu SHOW FPS row */
@@ -1542,6 +1547,15 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             if (parse_volume_arg(a, v, &opts->vibration) != 0)
                 return OPENPETE_EXIT_SETUP_ERROR;
             i++;
+        } else if (strcmp(a, "--mouse") == 0) {
+            if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
+            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->mouse = 1;
+            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->mouse = 0;
+            else {
+                fprintf(stderr, "openpete: --mouse expects 0|1 (on|off also accepted), got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
+            i++;
         } else if (strcmp(a, "--mouse-sensitivity") == 0) {
             if (needs_value(a, argc, argv, i, &v) != 0) return OPENPETE_EXIT_SETUP_ERROR;
             char* end = NULL;
@@ -1627,6 +1641,24 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             if (parse_volume_arg("OPENPETE_VIBRATION", v, &level) != 0)
                 return OPENPETE_EXIT_SETUP_ERROR;
             opts->vibration = level;
+        }
+    }
+
+    /* OPENPETE_MOUSE: the env spelling of --mouse, applied only when the flag
+     * was not given (CLI beats env). Same reason as the vibration pair above:
+     * a harness that launches the game from several sites sets it once at the
+     * top of the script, and a missed argument would otherwise let a stray
+     * pointer movement over the window steer the free camera mid-capture. */
+    if (opts->mouse < 0) {
+        const char* v = getenv("OPENPETE_MOUSE");
+        if (v && *v) {
+            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->mouse = 1;
+            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->mouse = 0;
+            else {
+                fprintf(stderr, "openpete: OPENPETE_MOUSE expects 0|1 (on|off also "
+                        "accepted), got: %s\n", v);
+                return OPENPETE_EXIT_SETUP_ERROR;
+            }
         }
     }
 

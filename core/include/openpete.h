@@ -624,6 +624,11 @@ typedef struct openpete_options {
      * (angle units per count = OPENPETE_FREECAM_MOUSE_K * this); < 0 = unset
      * (1.0). */
     float mouse_sensitivity;
+    /* --mouse 0|1: the host mouse channel switch. 0 drops every real mouse
+     * event and refuses pointer capture, so the pointer over the window is an
+     * ordinary desktop cursor; the scripted injection stream is unaffected.
+     * -1 = unset (on). Host-side only: nothing here reaches guest RAM. */
+    int mouse;
 
     /* Content for the "<bk2_record_path>.args" sidecar written next to a
      * --bk2-record capture. Holds the launch flags passed *directly* on
