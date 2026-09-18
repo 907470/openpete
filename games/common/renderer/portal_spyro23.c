@@ -277,12 +277,22 @@ static void p3_extract_one(CPUState* cpu, const p3_preview* p, const ngte_view* 
 
 static void p3_feed(CPUState* cpu, const p3_tick* T) {
     if (!openpete_native_scene_enabled() || !render_path_enabled(RP_PORTAL)) return;
+    s_emitted = 0;
+    s_cen_faces = s_cen_idx = s_cen_oc = s_cen_edge = s_cen_tris = 0;
+    /* A pass that captured no preview emits nothing, so it must not open the
+     * frame's scene: opening snapshots and clears whatever the frame holds. */
+    if (T->n == 0) return;
+    /* In a game state that draws neither sky nor terrain this pass is the
+     * frame's first native feeder, so it opens the frame's scene itself.
+     * Without that, the previews append to the previous frame's already
+     * presented scene and the next feeder's frame-keyed clear discards them.
+     * The call is keyed on the frame: a scene an earlier feeder opened is
+     * left as it is and the previews append to it. */
+    openpete_native_scene_begin_frame(openpete_frame);
     ngte_view vw; ngte_view_build(cpu, &vw);
     int sky_ir0 = game_layout.fog.factor ? (int)cpu->read_word(game_layout.fog.factor) : 0;
     uint32_t env_far = ngte_fog_far_colour(cpu);
     int mask_done[P3_MAX_PORTALS]; memset(mask_done, 0, sizeof mask_done);
-    s_emitted = 0;
-    s_cen_faces = s_cen_idx = s_cen_oc = s_cen_edge = s_cen_tris = 0;
     for (int i = 0; i < T->n; i++) p3_extract_one(cpu, &T->p[i], &vw, sky_ir0, env_far, mask_done);
     if (s_emitted) s_sky_fed_frame = openpete_frame;
 }
