@@ -344,6 +344,23 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # Retained-terrain GPU cache vs CPU terrain walk, whole-frame A/B over a
+    # bk2 camera swing, windowed on the machine's own GPU. Four legs of one
+    # build (cache on and off, under --lod extended and --lod original) at
+    # --render-fps 0; the extended pair may differ by no more than the
+    # original pair plus a margin at every sampled VBL, the original pair
+    # being the in-run control. Refuses a verdict unless the cache-on legs
+    # report retained sectors and the cache-off legs report none. Skips (exit
+    # 64) without a display, a windows-mingw exe, a disc, the bk2 or PIL.
+    add_test(NAME tercache_cache_ab_spyro3
+             COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_tercache_cache_ab.sh
+                     --game spyro-3)
+    set_tests_properties(tercache_cache_ab_spyro3 PROPERTIES
+        LABELS "slow;presentation;terrain;windowed"
+        TIMEOUT 3600
+        SKIP_RETURN_CODE 64
+        WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+
     # Multi-Spyro sub-tick records (notes/plans/openpete-native-multi-spyro-subtick.md):
     # the spyro-coop mod draws N dragons through the game's own player
     # renderers; each corpus case asserts the OPENPETE_SPYRO_RECDBG hook-call

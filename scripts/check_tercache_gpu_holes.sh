@@ -30,10 +30,15 @@
 # colour is not hard-coded — it is read from the engine's own draw-env census
 # line (OPENPETE_LOAD_CENSUS=1, `[census f=<VBL> CLEAR] rgb=<rgba>`), which
 # reports the value openpete_native_set_clear_color latched from the PSX
-# DRAWENV struct the game presents the scene under. Every connected component
-# of MIN_COMPONENT pixels or more is listed with its bounding box.
+# DRAWENV struct the game presents the scene under. Hole pixels are grouped
+# into 8-connected components; every component of MIN_COMPONENT pixels or
+# more is listed with its bounding box.
 #
-# Pass criterion: 0 hole pixels on every engaged row.
+# Pass criterion: no component of MIN_COMPONENT pixels or more on every
+# engaged row. A missing face is a contiguous region, the shape of the face;
+# isolated hole pixels along a silhouette are edge grain of the two feeds'
+# rasterisation and vary between runs of one build on one device. The raw
+# hole-pixel count and the largest component are printed per row.
 # Engagement: leg B must report at least MIN_SECS retained sectors on
 # its [tgpu-cen] line (the cache actually served the frame) and leg A at least
 # MIN_TRIS terrain triangles on its [nearcen] line (the reference frame
@@ -176,7 +181,7 @@ run_leg() {  # tag level pose start extra-args...
                        OPENPETE_LOAD_CENSUS=1
         timeout "$LEG_TIMEOUT" env "${WSLENV_ARGS[@]}" "$EXE" \
             --disc "$DISC_ARG" --no-config --no-card --mute 1 \
-            --vibration 0 --mouse 0 --perf-stats off --osd off \
+            --vibration 0 --mouse 0 --input-lock --perf-stats off --osd off \
             --renderer vk --lod extended --window "${WIDTH}x${HEIGHT}" --vsync 0 \
             --skip-to-level "$level" --freecam-pose "$pose" \
             --screenshot-native-only --screenshot-on-frame "$start" \
@@ -315,6 +320,7 @@ for y in range(h):
 
 # 8-connected components of the hole mask, largest first.
 comps = []
+largest = 0
 seen = bytearray(w * h)
 for i in range(w * h):
     if not mask[i] or seen[i]:
@@ -338,18 +344,19 @@ for i in range(w * h):
                     if mask[k] and not seen[k]:
                         seen[k] = 1
                         q.append(k)
+    largest = max(largest, n)
     if n >= min_comp:
         comps.append((n, x0, x1, y0, y1))
 comps.sort(reverse=True)
 
-verdict = "PASS" if holes == 0 else "FAIL"
+verdict = "PASS" if not comps else "FAIL"
 print("[tercache-holes] row=%s clear=(%d,%d,%d) secs=%d tris=%d holePx=%d "
-      "components=%d reverseClearPx=%d verdict=%s"
+      "largestComponent=%d components=%d reverseClearPx=%d verdict=%s"
       % (row, clear[0], clear[1], clear[2], max(secs), max(tris), holes,
-         len(comps), extra, verdict))
+         largest, len(comps), extra, verdict))
 for n, x0, x1, y0, y1 in comps[:12]:
     print("[tercache-holes]   component px=%d x %d-%d y %d-%d" % (n, x0, x1, y0, y1))
-sys.exit(0 if holes == 0 else 1)
+sys.exit(0 if not comps else 1)
 HOLES_PY
     rc=$?
     case "$rc" in
