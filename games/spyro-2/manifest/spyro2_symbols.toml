@@ -15,6 +15,11 @@ addr = 0x800673D4
 note = "environment header: the world draw func_80023BB4 reads +0x00 sector list and +0x04 count (environment.s:1593-1594), stores the visibility return at +0x30 (environment.s:1569), reads the 48-byte texture table pointer at +0x20 (environment.s:2212), the LP far cull at +0x2C shifted right 7 minus 1 (environment.s:6924-6935) and the three far-colour words at +0x34/+0x38/+0x3C into ctc2 $21..$23 (environment.s:2479-2481); func_80048D18 reads the enable word at +0x10 and the world occlusion data at +0x08 (mobyfunc.s:16,29); the animation walkers read the block pointer at +0x1C (environment.s:1239)"
 
 [[symbol]]
+name = "G_CYCLORAMA"
+addr = 0x800681B8
+note = "sky header: +0x00 sector count and +0x04 sector pointer list, read by the sky draw func_80029170 (cyclorama.s:46-49); +0x08 the background colour 0x00BBGGRR, which the moby depth cue splits into three 0xFF0 fields for ctc2 $21..$23 (mobydraw.s:2597-2599). The word at +0x00 is written by the level loader func_8001C5EC (loaders/func_8001C5EC.s:27-28)"
+
+[[symbol]]
 name = "G_CAMERA"
 addr = 0x80067E84
 note = "camera: +0x00 the sky rotation matrix and +0x40 the depth-cue IR0 the sky draw loads (cyclorama.s:32-39), +0x14 the world rotation matrix the world draw loads into ctc2 $0..$4 (environment.s:1572-1576), +0x28 the position the world draw shifts right 4 for the sector cull (environment.s:1585-1587) and right 2 for the GTE translation (environment.s:2215-2220), +0x44 the rotation angles"
@@ -70,6 +75,12 @@ name = "F_WORLD_DRAW"
 addr = 0x80023BB4
 kind = "function"
 note = "func_80023BB4, the world renderer (environment.s:1544); the terrain hook site"
+
+[[symbol]]
+name = "F_SKY_DRAW"
+addr = 0x80029170
+kind = "function"
+note = "func_80029170, the cyclorama renderer (cyclorama.s:13); the sky hook site"
 
 [[symbol]]
 name = "F_VISIBILITY"

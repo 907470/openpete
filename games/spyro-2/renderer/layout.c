@@ -8,8 +8,8 @@
 // Filled: the environment header, the terrain decode and binning switches, the
 // texture tables, the environment animations, the visibility verdict, the fog
 // terms, the draw buffers, the primitive allocator, the camera, the level id
-// and the world-draw and visibility hooks. The sky, moby, shadow, particle,
-// portal and player-draw groups are still 0.
+// the world-draw, sky-draw and visibility hooks and the cyclorama header. The
+// moby, shadow, particle, portal and player-draw groups are still 0.
 
 #include "game_layout.h"
 #include "renderer/ui_game.h"
@@ -91,6 +91,33 @@ const game_layout_t game_layout = {
                                 * cleared by the world draw's sector loop
                                 * (environment.s:1603-1610); the range is general scratch outside
                                 * that window */
+    },
+    .cyc = {
+        .base            = G_CYCLORAMA,
+        .sector_count    = G_CYCLORAMA + 0x00u,     /* sky draw: lw $ra, 0x0 (cyclorama.s:48); the walk
+                                                     * ends when the visibility cursor reaches
+                                                     * 0x1F8003C0 + count (cyclorama.s:52,66) */
+        .sectors         = G_CYCLORAMA + 0x04u,     /* sky draw: lw $sp, 0x4 (cyclorama.s:49) */
+        .occ_group_count = 0u,
+        .occ_groups      = G_ENVIRONMENT + 0x0Cu,   /* func_80048D18(1): the argument shifts the header
+                                                     * cursor by 4 before lw $t6, 0x8 (mobyfunc.s:19,24) */
+        .bg_colour       = G_CYCLORAMA + 0x08u,     /* 0x00BBGGRR; the moby depth cue splits the same word
+                                                     * into three 0xFF0 far-colour fields (mobydraw.s:2597-2604) */
+        .vertex_base     = 0x14u,                   /* sky draw: addi $t4, $gp, 0x14 (cyclorama.s:89) */
+        .face_layout     = CYC_FACES_SPYRO3,        /* vertex count = byte 0 of +0x0C (andi 0xFF,
+                                                     * cyclorama.s:91), colour count = byte 1 (srl 6,
+                                                     * andi 0x3FC, cyclorama.s:157-158); +0x10 = face-word
+                                                     * list length << 16 | index-halfword list length
+                                                     * (cyclorama.s:156,161,164); strips */
+        .visibility      = 0x1F8003C0u,             /* one byte per sky sector, func_80048D18(1): 0xFF drawn,
+                                                     * 0 skipped, 0x40 bytes zeroed first
+                                                     * (cyclorama.s:50-51; mobyfunc.s:19,23-24,63,77) */
+        .hook_args       = 0,                       /* the sky draw loads the camera +0x00 matrix for both
+                                                     * the cull and the projection and zeroes the
+                                                     * translation registers (cyclorama.s:30-45) */
+        .fade_in_draw    = 1,                       /* DPCS over the colour table when the camera +0x40 word
+                                                     * is nonzero, with the environment header's three
+                                                     * far-colour words as FC (cyclorama.s:37,171,181-188) */
     },
     .fog = {
         .factor     = G_CAMERA + 0x40u,             /* the sky draw's IR0, loaded beside the
@@ -196,6 +223,7 @@ const game_layout_t game_layout = {
     },
     .hooks = {
         .world_draw = F_WORLD_DRAW,
+        .sky_draw   = F_SKY_DRAW,
         .visibility = F_VISIBILITY,   /* called by both draws before their walks */
     },
 };

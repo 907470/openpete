@@ -1,8 +1,8 @@
 /* games/spyro-2/renderer/reextract.c — Spyro 2's sub-tick re-extract
  * orchestrator: on every present between two canonical ticks it installs the
  * camera transform interpolated between the interp ring's prev and curr
- * snapshots (region 0) into the sub-tick view, and re-runs the terrain feeder
- * against it. The staged bytes are what every feeder read resolves to for the
+ * snapshots (region 0) into the sub-tick view, and re-runs the sky and
+ * terrain feeders against it. The staged bytes are what every feeder read resolves to for the
  * duration of the present; guest RAM is never written.
  *
  * Provides the renderer/orchestrator.h entries. The canonical-scratch captures
@@ -11,6 +11,7 @@
  * their call sites stay where Spyro 3 has them so a later feeder lands
  * without moving the surrounding code. */
 #include "renderer/orchestrator.h"
+#include "renderer/cyclorama.h"
 #include "renderer/terrain.h"
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "openpete_interp.h"
@@ -217,6 +218,8 @@ static void game_reextract_body(CPUState* cpu) {
     }
     openpete_native_scene_begin();
     RX_CENSUS_BEGIN();
+    cyclorama_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* sky dome + background */
+    RX_CENSUS_STEP("cyclorama");
     terrain_reextract(cpu, bracketed ? alpha : 0.0, bracketed);
     RX_CENSUS_STEP("terrain");
     /* The HUD, dialog boxes, text and screen fades are produced during the
