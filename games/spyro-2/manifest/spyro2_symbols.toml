@@ -192,7 +192,7 @@ note = "func_8004A374 (mobyfunc.s:1538-1690) — handwritten glyph emitter: one 
 name = "F_TEXT_SPRT_PER_GLYPH"
 addr = 0x8004A59C
 kind = "function"
-note = "func_8004A59C (mobyfunc.s:1692-1851) — the per-glyph-DR_MODE variant of func_8004A374, rewriting the tpage halfword inside every packet"
+note = "func_8004A59C (mobyfunc.s:1692-1851) — the quad-form variant of func_8004A374: one 0x28-byte POLY_FT4 per glyph, command byte 0x2C at packet offset 7 (mobyfunc.s:1822-1823), tpage 0x618 in the packet's own tpage halfword at +0x16 (mobyfunc.s:1722) and clut 0x4922/0x4962 at +0xE (mobyfunc.s:1821), chained tag-to-tag and linked into D_80067000 inline; it carries no DR_MODE"
 
 [[symbol]]
 name = "F_LOADING_SPRT"

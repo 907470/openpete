@@ -3,9 +3,13 @@
 //
 // Most of a game's 2D layer reaches the shared feeder through the
 // ordering-table chokepoint (ui_game.ot_insert). The glyph emitters do not:
-// each builds its own tag-to-tag chain of one DR_MODE plus one 0x14-byte SPRT
-// per glyph in the primitive buffer, then links the whole chain into the 2D
-// ordering table with an inlined insert, so the chokepoint never sees a glyph.
+// each builds its own tag-to-tag chain of glyph packets in the primitive
+// buffer, then links the whole chain into the 2D ordering table with an
+// inlined insert, so the chokepoint never sees a glyph. Two packet forms are
+// emitted: one 0xC-byte DR_MODE followed by one 0x14-byte SPRT per glyph, and
+// one 0x28-byte POLY_FT4 per glyph carrying its own texture page and CLUT
+// (Spyro 2 `func_8004A59C`, mobyfunc.s 8004A778; Spyro 3 `func_8002E970`,
+// mobyfunc.s 8002EB4C, both storing the 0x2C command byte at packet offset 7).
 //
 // Reproducing the glyph walk would mean re-implementing the emitters' escape
 // handling, per-colour line heights and clip range. Instead this module runs
@@ -59,6 +63,9 @@ static void feed_chain(CPUState* cpu, uint32_t start, uint32_t end) {
             have_tpage = 1;
         } else if ((code & 0xFCu) == 0x64u && have_tpage) {   /* SPRT 0x64..0x67 */
             ui_sprite_feed_sprt(cpu, p, tpage);
+            s_glyphs++;
+        } else if ((code & 0xFCu) == 0x2Cu) {   /* POLY_FT4 0x2C..0x2F, len 9 -> 0x28 bytes */
+            ui_sprite_feed_ft4(cpu, p);         /* the packet carries its own tpage */
             s_glyphs++;
         }
         p += size;

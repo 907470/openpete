@@ -225,7 +225,7 @@ note = "func_8002E748(str, x, y, colourIndex, clipRange) (asm/mobyfunc.s:1532-16
 name = "F_TEXT_SPRT_PER_GLYPH"
 addr = 0x8002E970
 kind = "function"
-note = "func_8002E970 (asm/mobyfunc.s:1687-1845) — the per-glyph-DR_MODE variant of func_8002E748: it rewrites the 0x618 tpage halfword inside every packet and advances 10 or 8 px by the clipRange flag"
+note = "func_8002E970 (asm/mobyfunc.s:1687-1845) — the quad-form variant of func_8002E748: one 0x28-byte POLY_FT4 per glyph, command byte 0x2C at packet offset 7 (asm/mobyfunc.s:1814-1815) and tpage 0x618 in the packet's own tpage halfword at +0x16 (asm/mobyfunc.s:1714); it carries no DR_MODE and advances 10 or 8 px by the clipRange flag"
 
 [[symbol]]
 name = "F_LOADING_SPRT"

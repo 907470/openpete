@@ -80,6 +80,12 @@ extern const ui_game_t ui_game;
  * comes from the DR_MODE that heads the chain. */
 void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage);
 
+/* Feed one 0x28-byte POLY_FT4 (a screen-space textured quad: colour|code at
+ * +0x04, then four xy/uv word pairs) into the native HUD layer. Unlike an
+ * SPRT the packet carries its own texture page and CLUT, so no draw mode is
+ * passed. */
+void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim);
+
 /* Primitives fed by ui_sprite_feed_sprt since boot: the engagement counter a
  * harness reads to tell "no text drew" from "text drew identically". */
 unsigned ui_sprite_sprt_count(void);

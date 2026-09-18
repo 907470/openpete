@@ -835,6 +835,18 @@ void ui_sprite_feed_sprt(CPUState* cpu, uint32_t prim, unsigned tpage) {
     openpete_native_scene_set_prim(0u);
 }
 
+/* The quad form of the same chains: a glyph emitted as one POLY_FT4 instead of
+ * a DR_MODE plus an SPRT. Fed through the same decode the chokepoint's FT4
+ * takes, so there is one FT4 decoder. */
+void ui_sprite_feed_ft4(CPUState* cpu, uint32_t prim) {
+    if (openpete_frame == s_cap_frame) s_post_sprt++;
+    if (!openpete_native_scene_enabled()) return;
+    if (!s_cpu) s_cpu = cpu;
+    openpete_native_scene_set_prim(prim);   /* ranked by the release's table walk */
+    feed_ft4(cpu, prim, cpu->read_word(prim + 4));
+    openpete_native_scene_set_prim(0u);
+}
+
 static int on_ot_insert(CPUState* cpu, uint32_t addr) {
     int feed = openpete_native_scene_enabled();
     if (!feed) return 0;                        /* inert: normal dispatch runs it */
