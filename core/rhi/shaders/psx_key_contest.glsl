@@ -44,6 +44,24 @@ float op_key_from_stored(float stored)
                              : OP_KEY_NONE;
 }
 
+/* The bucket a stored terrain key falls in. The key rasters hold
+ * z = kv/(kv+4096) in a 32-bit float depth image, and the rasteriser's
+ * perspective divide and plane interpolation land that value within a few
+ * ulps of the encoding the writer computed (one ulp low measured on NVIDIA
+ * against a shader-side encode of the same key). Decoding a value one ulp
+ * low moves the key by (kv+4096)^2/4096 * 2^-24 world (0.02 at 33792),
+ * which crosses a bucket boundary whenever the true key sits on one; a
+ * terrain fragment then loses the pixel to its own key and the pixel
+ * shows whatever lies behind. The stored key is floored into its bucket
+ * with two ulps of that resolution added, so a value inside the encoding's
+ * error below a boundary reads as the boundary's bucket. OP_KEY_NONE
+ * overflows to +inf and stays a bucket nothing sits below. */
+float op_key_bucket(float tkey)
+{
+    float res = (tkey + 4096.0) * (tkey + 4096.0) * (2.0 / 16777216.0 / 4096.0);
+    return floor((tkey + res) / OP_KEY_SLOT);
+}
+
 /* Same-moby painter select, scoped to near ties. The original renderer
  * paints a moby's faces in walk order, so a fragment loses its pixel when
  * a later-ranked face of the same moby covers it, regardless of depth.
@@ -95,7 +113,7 @@ bool op_key_loses(float tkey, float akey, float mkey, float own,
              * it — the actor loses a tie, the terrain keeps one (a terrain
              * fragment must never lose to its own key). */
             float own_slot = floor((koff - 0.5) / OP_KEY_SLOT);
-            float t_slot   = floor(tkey / OP_KEY_SLOT);
+            float t_slot   = op_key_bucket(tkey);
             if (actor ? (t_slot <= own_slot) : (t_slot < own_slot)) return true;
         } else if (tkey < band) return true;
         if ((actor || !truescope) && akey < band &&
