@@ -1,0 +1,12 @@
+# player-subtick-corpus.manifest — rows of scripts/check_player_subtick.sh.
+#   <bk2> | <lo>-<hi>[,<lo>-<hi>...]
+#   bk2    a movie under games/spyro-2/bk2
+#   span   a range of intermediate-present VBLs, two apart; every VBL of it
+#          but the first is a leg, compared with the capture two VBLs earlier
+# Ice skating: the body advances one keyframe per four ticks with long head
+# travel; the advances fall on legs 921, 929, 1121, 1129 and 1161. The
+# reflective ice draws the mirrored copy, measured as its own series.
+colossus-ice-skating.bk2 | 913-931,1113-1131,1153-1167
+# Walking and a portal entry: a keyframe advance nearly every tick at short
+# head travel.
+autumn-plains-skelos-badlands-portal-entry.bk2 | 951-1077

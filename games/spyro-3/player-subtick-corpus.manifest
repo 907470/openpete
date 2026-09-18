@@ -1,0 +1,10 @@
+# player-subtick-corpus.manifest — rows of scripts/check_player_subtick.sh.
+#   <bk2> | <lo>-<hi>[,<lo>-<hi>...]
+#   bk2    a movie under games/spyro-3/bk2
+#   span   a range of intermediate-present VBLs, two apart; every VBL of it
+#          but the first is a leg, compared with the capture two VBLs earlier
+# Walking on the reflective ice: keyframe advances on legs 1905 + 8k, avatar
+# and mirrored copy.
+icy-peak-reflective-mirror.bk2 | 1901-2019
+# Portal entry: walking, then the entry glide.
+sunrise-spring-sunny-villa-portal-entry.bk2 | 1541-1599

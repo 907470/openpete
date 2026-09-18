@@ -105,6 +105,11 @@ int  player_mirror_pass(void);
  * returns 0 when the canonical byte-exact table lookup is the one to use. */
 int player_rot_interp(int part, double out[3]);
 
+/* Seam word k (0 = keyframe A, 1 = keyframe B) of the part block the walk is
+ * reading, for a provider whose part_record fills player_record_t.seam. 0 when
+ * the game composes no block or declares no part_seam_off. */
+uint32_t player_rec_seam_word(int k);
+
 /* Sub-tick re-extract: reproduce the avatar from the current gamestate and the
  * interpolated camera the orchestrator wrote. Extract-only. */
 void player_reextract(struct CPUState* cpu);

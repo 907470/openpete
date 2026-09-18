@@ -96,6 +96,10 @@ static void player_block_derive(CPUState* cpu, uint8_t* dst) {
             blk_put(dst + rel + PL.part_stream_a_off + (uint32_t)k*4u, r.stream_a[k]);
             blk_put(dst + rel + PL.part_stream_b_off + (uint32_t)k*4u, r.stream_b[k]);
         }
+        if (p == 0 && PL.part_seam_off && PL.part_seam_off + 8u <= PL.part_block_len) {
+            blk_put(dst + PL.part_seam_off,      r.seam[0]);
+            blk_put(dst + PL.part_seam_off + 4u, r.seam[1]);
+        }
     }
 }
 
@@ -106,6 +110,15 @@ static uint32_t player_rec_word(CPUState* cpu, uint32_t block, int part, uint32_
     if (player_game.part_record)
         return (rel + 4u <= PL.part_block_len) ? blk_get(s_blk + rel) : 0u;
     return cpu->read_word(block + rel);
+}
+
+/* Seam word `k` (0 = keyframe A, 1 = keyframe B) of the block the walk is
+ * reading. The two-pass shape lerp swaps the whole block per pass, so each
+ * pass places the child part from the keyframe pair of its own pose. */
+uint32_t player_rec_seam_word(int k) {
+    if (!player_game.part_record || !PL.part_seam_off || k < 0 || k > 1) return 0u;
+    uint32_t off = PL.part_seam_off + (uint32_t)k * 4u;
+    return (off + 4u <= PL.part_block_len) ? blk_get(s_blk + off) : 0u;
 }
 
 static uint32_t player_colour_scratch(CPUState* cpu) {

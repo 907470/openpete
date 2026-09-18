@@ -379,6 +379,9 @@ const game_layout_t game_layout = {
         .part_stream_a_off = 0x24u,             /* static / adjust / block cursors
                                                  * (spyrodraw.s:98-100,394-396) */
         .part_stream_b_off = 0x30u,             /* spyrodraw.s:108-110,404-406 */
+        .part_seam_off     = 0x7Cu,             /* host block only: the body's two
+                                                 * seam words, after the zero flags
+                                                 * word at 0x78 (spyrodraw.s:66,92) */
         .part_stream_flag_bit = { 12, 13 },     /* spyrodraw.s:401,410 */
         .part_matrix_sign  = 0x80000000u,       /* spyrodraw.s:375 bgez skips the reload */
         .blend_mask        = 0x0FFFu,           /* the blend byte << 4, 1.12 (spyrodraw.s:400) */

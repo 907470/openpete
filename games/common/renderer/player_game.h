@@ -57,11 +57,18 @@ typedef struct player_faces {
  * the walk reads the block back. A draw that consumes the block and then
  * reuses the same bytes as scratch later in the same call leaves nothing to
  * read after it returns; that game answers `part_record` and composes the same
- * words from gamestate. */
+ * words from gamestate.
+ *
+ * `seam` is the pair of keyframe words a child part's origin is blended from,
+ * keyframe A's then keyframe B's, for a game whose draw keeps them in
+ * registers instead of in the block. The walk stores the root part's pair at
+ * game_layout.player.part_seam_off, so a stored block carries the seam of the
+ * pose it was composed for. */
 typedef struct player_record {
     uint32_t flags;
     uint32_t stream_a[3];
     uint32_t stream_b[3];
+    uint32_t seam[2];
 } player_record_t;
 
 /* The water-plane split: the draw rewrites every projected vertex's staged

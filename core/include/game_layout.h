@@ -551,7 +551,10 @@ typedef struct game_layout {
      * `part_stream_a_off`/`_b_off` the two keyframes' cursor triples: the
      * per-vertex static/correction stream, the byte stream and the halfword
      * stream, four bytes apart. `part_stream_flag_bit[2]` say which flags bit
-     * opens each keyframe's stream form.
+     * opens each keyframe's stream form. `part_seam_off` (0 = none) is where
+     * a host-composed block keeps the root part's two seam words, from the
+     * block base: past the terminating flags word and inside
+     * `part_block_len`, bytes the guest's own block never defines.
      *
      * `colour_scratch_off`/`_len` is the pre-blend colour table the draw
      * builds in the same scratch when `colour_filter_off` selects it;
@@ -586,6 +589,7 @@ typedef struct game_layout {
         uint32_t part_tr_off;
         uint32_t part_stream_a_off;
         uint32_t part_stream_b_off;
+        uint32_t part_seam_off;
         int      part_stream_flag_bit[2];
         uint32_t part_matrix_sign;
         uint32_t blend_mask;

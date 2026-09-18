@@ -301,6 +301,26 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Player sub-tick continuity. Per row of
+    # games/<slug>/player-subtick-corpus.manifest, two headless replays of one
+    # bk2 with the intermediate presents pinned at alpha 0 and at alpha 1, and
+    # the player model's screen centroid and bounding box read per present:
+    # the alpha-0 present of one tick interval must equal the alpha-1 present
+    # of the interval before it to 0.01 px, and the alpha-1 present must equal
+    # the tick present exactly. A part placed from the wrong tick's data fails
+    # the first and passes the second. Fails a leg whose present is not
+    # bracketed, so a row cannot pass on tick presents alone.
+    foreach(_subtick_game spyro-1 spyro-2 spyro-3)
+        add_test(NAME player_subtick_${_subtick_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_player_subtick.sh
+                         --game ${_subtick_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(player_subtick_${_subtick_game} PROPERTIES
+            LABELS "presentation;player"
+            TIMEOUT 900
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Retained-terrain GPU cache hole census, windowed on the machine's own
     # GPU. Per freecam-corpus row, two legs of one build on one device
     # differing only in --terrain-cache, and a count of the pixels the cached

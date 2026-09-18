@@ -89,10 +89,16 @@ static uint32_t s23_animation(CPUState* cpu, int part) {
  * 20-31. The blend byte (+0x1C body, +0x1D head) indexes the blend table, and
  * the looked-up weight shifted left four is the record's IR0; zero there
  * leaves the record single-keyframe. The head's static cursor starts one word
- * per body vertex along, from the body Animation's own count byte. */
+ * per body vertex along, from the body Animation's own count byte.
+ *
+ * The body's keyframe word 2 (+0x1C) is the seam word: the draw holds keyframe
+ * A's in $s6 and keyframe B's in $s7 (spyrodraw.s:68,94) until it blends the
+ * head's origin from them (spyrodraw.s:176-199). The record carries both, so
+ * the head origin of a stored block belongs to the same keyframe pair as the
+ * block's cursors and weight. */
 #define SPYRO_BLEND_OFF   0x1Cu   /* the head's is the next byte */
 
-typedef struct { uint32_t entry, base, w0, w1; } s23_kf_t;
+typedef struct { uint32_t entry, base, w0, w1, seam; } s23_kf_t;
 
 /* Animation `sel` of the table, at keyframe `idx`. */
 static int s23_kf_read(CPUState* cpu, uint32_t tab, uint32_t sel, uint32_t idx, s23_kf_t* k) {
@@ -103,6 +109,7 @@ static int s23_kf_read(CPUState* cpu, uint32_t tab, uint32_t sel, uint32_t idx, 
     k->base  = cpu->read_word(e + 0x10u);
     k->w0    = cpu->read_word(r + 0x14u);
     k->w1    = cpu->read_word(r + 0x18u);
+    k->seam  = cpu->read_word(r + 0x1Cu);
     return 1;
 }
 
@@ -141,6 +148,7 @@ static int s23_part_record(CPUState* cpu, int part, player_record_t* out) {
         }
         uint32_t lo = K->w0 & 0xFFFFu;
         uint32_t* d = kfr ? out->stream_b : out->stream_a;
+        if (part == 0) out->seam[kfr] = K->seam;
         d[0] = cpu->read_word(K->entry + 0x04u) + head_skip;
         if (part == 0) {
             d[1] = ((K->w1 >> 10) & 0x3FFu) + lo + K->base;
@@ -237,13 +245,10 @@ static int s23_part_xform(CPUState* cpu, const ngte_view* v, int part,
  * word at +0x08 carries the head's offset with a vertex delta's field layout
  * (Z = >>21, X = <<11>>21, Y = <<22>>21), INTPL'd between the two keyframes by
  * the body record's own blend weight and then transformed through the body's
- * matrix and translation. The keyframe records are 0x14 bytes and start 0x14
- * into the Animation (spyrodraw.s:51-54: the index is multiplied by 16 and a
- * quarter of that added, so 20 bytes, and every field load is +0x14 on). */
-static int32_t s23_seam_word(CPUState* cpu, uint32_t anim, unsigned frame) {
-    if (!anim) return 0;
-    return (int32_t)cpu->read_word(anim + (uint32_t)frame * 0x14u + 0x1Cu);
-}
+ * matrix and translation. The two words come from the part block the walk is
+ * reading, where s23_part_record put them, never from the live animation word:
+ * the shape lerp walks the previous tick's block and the current one in turn,
+ * and each pass must hang the head off its own keyframe pair. */
 static inline int s23_sat16(int v) { return v < -32768 ? -32768 : (v > 32767 ? 32767 : v); }
 static int s23_seam_field(int32_t jw, int32_t jwB, int lsh, int ir0, int dual) {
     int a = (int)((int32_t)((uint32_t)jw << lsh) >> 21);
@@ -255,19 +260,11 @@ static int s23_seam_field(int32_t jw, int32_t jwB, int lsh, int ir0, int dual) {
 
 static void s23_seam_joint(CPUState* cpu, const player_xform_t* parent,
                           int part, int ir0, int dual, double out[3]) {
-    (void)part;
+    (void)cpu; (void)part;
     out[0] = out[1] = out[2] = 0.0;
     if (!parent) return;
-    uint32_t anim = s23_animation(cpu, 0);
-    uint32_t w = cpu->read_word(PL.base + PL.anim_off[0]);
-    int32_t jA = s23_seam_word(cpu, anim, (w >> 16) & 0xFFu);
-    int32_t jB = 0;
-    if (dual) {
-        uint32_t tab = cpu->read_word(PG.anim_table);
-        uint32_t animB = (tab >= 0x80000000u)
-                       ? cpu->read_word(tab + ((w >> 6) & 0x3FCu)) : 0u;
-        if (animB >= 0x80000000u) jB = s23_seam_word(cpu, animB, (w >> 24) & 0xFFu);
-    }
+    int32_t jA = (int32_t)player_rec_seam_word(0);
+    int32_t jB = dual ? (int32_t)player_rec_seam_word(1) : 0;
     int VZ =  s23_seam_field(jA, jB, 0,  ir0, dual);
     int VX = -s23_seam_field(jA, jB, 11, ir0, dual);
     int VY = -s23_seam_field(jA, jB, 22, ir0, dual);

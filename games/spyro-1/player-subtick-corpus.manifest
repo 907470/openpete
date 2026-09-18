@@ -1,0 +1,7 @@
+# player-subtick-corpus.manifest — rows of scripts/check_player_subtick.sh.
+#   <bk2> | <lo>-<hi>[,<lo>-<hi>...]
+#   bk2    a movie under games/spyro-1/bk2
+#   span   a range of intermediate-present VBLs, two apart; every VBL of it
+#          but the first is a leg, compared with the capture two VBLs earlier
+# Running across the Artisans bridge: a keyframe advance nearly every tick.
+artisans-bridge.bk2 | 1702-1800
