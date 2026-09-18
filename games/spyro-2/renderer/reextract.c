@@ -15,7 +15,8 @@
 #include "renderer/moby.h"
 #include "renderer/terrain.h"
 #include "renderer/player.h"
-#include "renderer/shadow.h"        /* shadow_player_reextract */
+#include "renderer/shadow.h"        /* shadow_reextract, shadow_player_reextract */
+#include "renderer/particles.h"
 #include "renderer/player_game.h"   /* PLAYER_PARTS_MAX */
 #include "openpete_psx.h"          /* openpete_psx_to_host_ptr */
 #include "openpete_interp.h"
@@ -503,6 +504,10 @@ static void game_reextract_body(CPUState* cpu) {
     if (stage_player_records())
         player_records_replay(cpu, bracketed, alpha);   /* every player call the tick drew */
     RX_CENSUS_STEP("player");
+    shadow_reextract(cpu);          /* drop-shadows under mobys */
+    RX_CENSUS_STEP("shadow");
+    particles_reextract(cpu);       /* the particle primitives the tick captured */
+    RX_CENSUS_STEP("particles");
     /* The HUD, dialog boxes, text and screen fades are produced during the
      * game's own render and cannot be re-derived here, so the canonical present
      * banks them and every re-extract re-applies that carry on top of the

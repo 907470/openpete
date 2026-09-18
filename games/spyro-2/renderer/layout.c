@@ -9,8 +9,7 @@
 // texture tables, the environment animations, the visibility verdict, the fog
 // terms, the draw buffers, the primitive allocator, the camera, the level id
 // the world-draw, sky-draw and visibility hooks, the cyclorama header and the
-// moby and player groups. The shadow, particle and portal groups are
-// still 0.
+// moby, shadow, particle and player groups. The portal group is still 0.
 
 #include "game_layout.h"
 #include "renderer/ui_game.h"
@@ -213,6 +212,73 @@ const game_layout_t game_layout = {
                                    * table, and a later insert into a bucket
                                    * paints later, with the moby pass run before
                                    * the terrain pass */
+    },
+    /* The moby drop-shadow draw, func_800499D4, and the player's own ground
+     * shadow, func_800495E8. Both are handwritten and both align one for one
+     * onto the other game's routines at other addresses: 330 instructions for
+     * the drop-shadow walk and 251 for the player fan, with every immediate
+     * identical and only the global addresses differing. Every switch below is
+     * therefore read at a Spyro 2 site with the same meaning. */
+    .shadow = {
+        .desc        = G_MOBYSHADOWS,     /* mobyfunc.s:919-923: +0x00/+0x04 the sprite UV
+                                           * words, +0x08 the drawn-moby list terminator */
+        .hook        = F_MOBY_SHADOWS,
+        .list_source = SHADOW_LIST_GTE_DATA, /* mobyfunc.s:916 mfc2 from data reg 2, the base
+                                              * the moby cull mobydraw.s:36 left there
+                                              * (polybuf end - 0x3000) */
+        .list_base   = 0u,
+        .list_reg    = 2,
+        .list_offset = 0x1400u,           /* mobyfunc.s:918 addi 0x1400 */
+        .moby_pos    = 0x0Cu,             /* mobyfunc.s:944-945 lw 0x10 / lw 0xC */
+        .moby_ground = 0x1Cu,             /* mobyfunc.s:943 lw 0x1C: the packed ground height,
+                                           * the two 6-bit ground-normal angles and the
+                                           * shadow-enabled bit */
+        .size_shl    = 1,                 /* mobyfunc.s:1062 sll 1 before the corners */
+        .uv1_bottom_right = 1,            /* mobyfunc.s:924 addi -0x1F00 on the second UV word */
+        .matrix_fold_a = 0,               /* mobyfunc.s:989-1006 writes R12 from the first
+                                           * MVMVA and folds no angle index into R11 */
+        .cull_layout = SHADOW_CULL_SPYRO3, /* mobyfunc.s:1107-1129: four-corner extent tests */
+        .ground_plane = D_PLAYERSHADOW + 0x0Cu,  /* the player shadow's world height,
+                                           * mobyfunc.s:631 lw 0xC */
+        .player = {
+            .hook         = F_PLAYER_SHADOW,
+            .state        = D_PLAYERSHADOW,
+            .anim_table   = D_SPYRO_ANIMS,    /* mobyfunc.s:687-688 lw 0x14 then the table
+                                               * pointer, as spyrodraw.s:44 */
+            .blend_table  = D_SPYRO_BLEND,    /* mobyfunc.s:682-686 lbu g_Spyro+0x1C into the
+                                               * table, result << 4 = IR0 */
+            .ring_dirs    = D_SHADOW_RING,    /* mobyfunc.s:774-775, 790 */
+            .avatar_anim  = 0x14u,            /* mobyfunc.s:687 lw 0x14 */
+            .avatar_blend = 0x1Cu,            /* mobyfunc.s:682 lbu 0x1C */
+        },
+    },
+    /* The particle renderer, func_80048128. It aligns onto the other game's
+     * func_8003AA38 except at two sites, four instructions in all, and both
+     * sites are ordering-key clamps inside the routine, which this engine runs
+     * unchanged. At partsdraw.s:582 a key that has gone negative skips the
+     * record entirely, where the other game clamps it to bucket 0 and still
+     * draws; at partsdraw.s:751-752 the class-5 key is formed with no clamp at
+     * all. A record the routine skips leaves its drawn stamp clear, so the pool
+     * walk below follows the routine's own verdict either way and no descriptor
+     * field expresses the pair. */
+    .particles = {
+        .hook       = F_PARTICLES_DRAW,
+        .array_ptr  = D_PARTS_ARRAY,      /* partsdraw.s:57-59 loads the pool base through
+                                           * this word into its walk register */
+        .rec_stride = 0x20u,              /* partsdraw.s:104-105 addi 0x20 after reading the
+                                           * next record's selector at 0x20 */
+        .sel_off    = 0x00u,              /* partsdraw.s:66 lh 0x0: bltz ends the walk, and
+                                           * the arithmetic shift by 8 tested at :79-89
+                                           * dispatches the class */
+        .pos_off    = 0x04u,              /* partsdraw.s:91-92 and :709-710 read 0x4 (X low,
+                                           * Y high) and 0x8 (Z low) and subtract the camera
+                                           * position shifted right by 2 */
+        .drawn_off  = 0x03u,              /* partsdraw.s:225 sb zero at record start,
+                                           * :360/:417/:530/:693/:745 sb 1 at the append */
+        .fixed_layer_class = 5u,          /* partsdraw.s:81-89 dispatches classes 0-4 and falls
+                                           * through for 5 and up; the fallthrough links at the
+                                           * fixed front entry, polybuf scratch - 8
+                                           * (partsdraw.s:204-206), instead of a depth bucket */
     },
     /* The moby (3D actor) draw. Three handwritten routines: the cull
      * func_80043858 carves the tick's draw scratch out of the primitive buffer

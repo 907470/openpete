@@ -136,3 +136,36 @@ note = "the 256-byte table the player draw looks the keyframe blend byte up in (
 name = "D_PLAYERSHADOW"
 addr = 0x800698D0
 note = "the player's ground-shadow state block, read by the player-shadow draw func_800495E8 (mobyfunc.s:623-885): +0x00 a flag scaling every silhouette radius by 3/4, +0x04/+0x08/+0x0C the shadow's world position, +0x10 a packed byte-angle triple whose top byte at +0x13 suppresses the draw, +0x14 the ordering-key bias"
+
+[[symbol]]
+name = "D_SHADOW_RING"
+addr = 0x800632CC
+note = "16 packed s16 XZ direction pairs, one per player-shadow ring point; the player-shadow draw func_800495E8 loads the base (mobyfunc.s:774-775), reads a pair per point and shifts the product right 10 to form the local corner (mobyfunc.s:790)"
+
+[[symbol]]
+name = "F_PLAYER_SHADOW"
+addr = 0x800495E8
+kind = "function"
+note = "the player's ground-shadow renderer (mobyfunc.s:622-888), called once after the two player draws by func_8004C534 (drawutil/func_8004C534.s:70); its 251 instructions align one for one onto the other game's func_8002D9BC, differing only in the six global addresses it loads"
+
+[[symbol]]
+name = "F_MOBY_SHADOWS"
+addr = 0x800499D4
+kind = "function"
+note = "the moby drop-shadow renderer (mobyfunc.s:889-1235), called by func_8004C534 (drawutil/func_8004C534.s:23); its 330 instructions align one for one onto the other game's func_8002DDA8, differing only in the global addresses it loads"
+
+[[symbol]]
+name = "G_MOBYSHADOWS"
+addr = 0x8006820C
+note = "moby drop-shadow descriptor {uv0+clut, uv1+tpage, list end}: func_800499D4 loads +0x00/+0x04 as the shadow sprite's two UV words and +0x08 as the drawn-moby list terminator (mobyfunc.s:919-923), then subtracts 0x1F00 from the second to make the top-right corner (mobyfunc.s:924)"
+
+[[symbol]]
+name = "F_PARTICLES_DRAW"
+addr = 0x80048128
+kind = "function"
+note = "the particle renderer (partsdraw.s:13-796, handwritten: it spills s0-s7/gp/sp/fp/ra and uses those registers as its own), called by the world-draw driver func_800155A0 (draw/func_800155A0.s:73). Walks the 0x20-byte pool at D_PARTS_ARRAY and appends one primitive per drawn record, stopping when the polybuf cursor comes within 0x400 bytes of D_POLYBUF_END (partsdraw.s:65). Classes 0-4 dispatch at partsdraw.s:81-89 and link at their own depth bucket; class 5 and up fall through and link at the fixed front entry"
+
+[[symbol]]
+name = "D_PARTS_ARRAY"
+addr = 0x80066F18
+note = "the word holding the base of the particle pool the renderer walks (partsdraw.s:57-59), 0x20 bytes per record: +0x00 the signed selector halfword (bits 8-11 the class, arithmetic shift by 8 equal to -1 ends the pool, otherwise negative = inactive slot), +0x03 the drawn stamp (partsdraw.s:225 cleared, :360 set), +0x04 X in the low half and Y in the high half, +0x08 Z in the low half (partsdraw.s:91-92), all in quarter world units"
