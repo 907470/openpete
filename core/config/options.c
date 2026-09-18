@@ -780,59 +780,22 @@ void openpete_options_init(openpete_options_t* opts) {
                                  : OPENPETE_TERRAIN_VIS_FRUSTUM; }
 }
 
-// complexity-ratchet: flat else-if chain with one arm per flag; a new flag adds an arm, not structure
-int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
-    /* Snapshot the command line as typed, before the sidecar / config
-     * splices below rewrite argv. --bk2-record captures this (and not the
-     * machine's own config defaults) into its .args sidecar. */
-    int    orig_argc = argc;
-    char** orig_argv = argv;
-
-    /* Process handoff re-execs with the ORIGINAL argv (the fresh
-     * process re-splices env/opts/sidecar files itself). */
-    opts->handoff_argc = orig_argc;
-    opts->handoff_argv = orig_argv;
-
-    /* Set when --bk2-record is present, even with no path argument (the
-     * default path is resolved after the parse loop). */
-    bool bk2_record_requested = false;
-    /* Set by --player-pose: the CLI spelling rides the .args sidecar, the
+/* Facts the flag chain learns that are not options: the post-parse phases
+ * consume them. */
+typedef struct {
+    /* --bk2-record was given, with or without a path argument (the default
+     * path is resolved after the chain). */
+    bool bk2_record_requested;
+    /* --player-pose was typed: the CLI spelling rides the .args sidecar, the
      * env spelling does not. */
-    bool player_pose_flag = false;
+    bool player_pose_flag;
+} parse_notes_t;
 
-    /* Per-bk2 sidecar: <path>.bk2.args next to the movie can supply
-     * scenario-specific defaults (e.g. --skip-to-level 10 for an
-     * Artisans-only movie). Spliced before user argv so explicit CLI
-     * flags still override. See games/spyro-1/bk2/README.md. */
-    int sidecar_argc = 0;
-    char** sidecar_argv = NULL;
-    int sidecar_rc = expand_bk2_sidecar(argc, argv, &sidecar_argc, &sidecar_argv);
-    if (sidecar_rc < 0) return OPENPETE_EXIT_SETUP_ERROR;
-    if (sidecar_rc == 1) { argc = sidecar_argc; argv = sidecar_argv; }
-
-    /* openpete.toml. Resolves every configured layer, applies the winning
-     * [env] entries to the environment — which must happen before ANY
-     * getenv consumer, since features lazy-cache their env reads on first
-     * use — and hands back the winning flags to splice.
-     *
-     * Spliced after the bk2 splice and so left of it, giving the argv
-     * order [config][sidecar][typed]: left is parsed first and the last
-     * write wins, which is the file < sidecar < CLI half of the chain.
-     * The other half (which of two config layers wins, and args-vs-env)
-     * was already decided inside the resolver — see openpete_config.h. */
-    /* Give the keymap its SDL-backed name lookups before the config runs:
-     * openpete_config_apply seeds the registry defaults, and parsing them
-     * needs the lookup live. Pure string tables in SDL, so this is safe
-     * long before SDL_Init. */
-    openpete_keymap_install_sdl();
-
-    int cfg_argc = 0;
-    char** cfg_argv = NULL;
-    int cfg_rc = openpete_config_apply(argc, argv, orig_argc, &cfg_argc, &cfg_argv);
-    if (cfg_rc < 0) return OPENPETE_EXIT_SETUP_ERROR;
-    if (cfg_rc == 1) { argc = cfg_argc; argv = cfg_argv; }
-
-
+/* The flag chain: one arm per flag, left to right over the spliced argv, the
+ * last write winning. */
+// complexity-ratchet: one chain of sibling arms over argv, one per flag; a new flag adds an arm and no other structure
+static int parse_flag_chain(openpete_options_t* opts, int argc, char** argv,
+                            parse_notes_t* notes) {
     for (int i = 1; i < argc; i++) {
         const char* a = argv[i];
         const char* v = NULL;
@@ -1301,7 +1264,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
 #else
             setenv("OPENPETE_PLAYER_POSE", v, 1);
 #endif
-            player_pose_flag = true;
+            notes->player_pose_flag = true;
             i++;
         } else if (strcmp(a, "--debug-triangle") == 0) {
             opts->debug_triangle = true;
@@ -1349,7 +1312,7 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             /* Optional PATH: consume the next token only when it isn't
              * another flag. With no path, the default
              * "<exe_dir>/bk2/<timestamp>.bk2" is resolved after the loop. */
-            bk2_record_requested = true;
+            notes->bk2_record_requested = true;
             if (i + 1 < argc && argv[i + 1][0] != '-') {
                 opts->bk2_record_path = argv[i + 1]; i++;
             }
@@ -1623,40 +1586,59 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             return OPENPETE_EXIT_SETUP_ERROR;
         }
     }
+    return OPENPETE_EXIT_OK;
+}
 
-    /* The EXE-source requirement is deferred to
-     * openpete_options_require_exe_source(): the game may resolve a
-     * disc AFTER parse via the content-addressed library (--ingest, or
-     * a no-argument boot of an installed entry). Without --run-recomp the
-     * runtime dispatches the EXE header's entry, the crt0, once the header
-     * has been read. */
-
-    /* --bk2-record post-processing (after validation, so we don't mkdir on
-     * a bad invocation): fill in the default path when none was given, and
-     * capture the launch args into the .args sidecar. */
-    if (bk2_record_requested) {
-        if (!opts->bk2_record_path || !*opts->bk2_record_path) {
-            char* def = resolve_default_bk2_record_path();
-            if (!def) {
-                fprintf(stderr, "openpete: --bk2-record: out of memory resolving default path\n");
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-            opts->bk2_record_path = def;  /* leaked for program lifetime */
-            fprintf(stderr, "openpete: --bk2-record: recording to %s\n", def);
-        }
-        opts->bk2_record_args = build_bk2_record_args(orig_argc, orig_argv);
-        /* NULL (OOM) just means no sidecar — the recording itself still works. */
-        /* The sidecar carries argv, not the environment: a placement given
-         * only as OPENPETE_PLAYER_POSE would be missing from the replay, which
-         * then runs the movie's input from the spawn instead. */
-        const char* pp = getenv("OPENPETE_PLAYER_POSE");
-        if (pp && *pp && !player_pose_flag) {
-            fprintf(stderr, "openpete: --bk2-record: OPENPETE_PLAYER_POSE is set but a bk2 "
-                            "replays only the command line; pass --player-pose \"%s\" instead\n", pp);
+/* --bk2-record post-processing (after validation, so we don't mkdir on
+ * a bad invocation): fill in the default path when none was given, and
+ * capture the launch args into the .args sidecar. */
+static int finish_bk2_record(openpete_options_t* opts, int orig_argc,
+                             char** orig_argv, const parse_notes_t* notes) {
+    if (!notes->bk2_record_requested) return OPENPETE_EXIT_OK;
+    if (!opts->bk2_record_path || !*opts->bk2_record_path) {
+        char* def = resolve_default_bk2_record_path();
+        if (!def) {
+            fprintf(stderr, "openpete: --bk2-record: out of memory resolving default path\n");
             return OPENPETE_EXIT_SETUP_ERROR;
         }
+        opts->bk2_record_path = def;  /* leaked for program lifetime */
+        fprintf(stderr, "openpete: --bk2-record: recording to %s\n", def);
     }
+    opts->bk2_record_args = build_bk2_record_args(orig_argc, orig_argv);
+    /* NULL (OOM) just means no sidecar — the recording itself still works. */
+    /* The sidecar carries argv, not the environment: a placement given
+     * only as OPENPETE_PLAYER_POSE would be missing from the replay, which
+     * then runs the movie's input from the spawn instead. */
+    const char* pp = getenv("OPENPETE_PLAYER_POSE");
+    if (pp && *pp && !notes->player_pose_flag) {
+        fprintf(stderr, "openpete: --bk2-record: OPENPETE_PLAYER_POSE is set but a bk2 "
+                        "replays only the command line; pass --player-pose \"%s\" instead\n", pp);
+        return OPENPETE_EXIT_SETUP_ERROR;
+    }
+    return OPENPETE_EXIT_OK;
+}
 
+/* The env spelling of an on/off flag, applied only when the flag was not
+ * given (*slot < 0): CLI beats env. A harness that launches the game from
+ * several sites sets the variable once at the top of the script; an argument
+ * missed at one site is a silent miss. */
+static int env_onoff_fallback(const char* name, int* slot) {
+    if (*slot >= 0) return OPENPETE_EXIT_OK;
+    const char* v = getenv(name);
+    if (!v || !*v) return OPENPETE_EXIT_OK;
+    if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) *slot = 1;
+    else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) *slot = 0;
+    else {
+        fprintf(stderr, "openpete: %s expects 0|1 (on|off also accepted), got: %s\n",
+                name, v);
+        return OPENPETE_EXIT_SETUP_ERROR;
+    }
+    return OPENPETE_EXIT_OK;
+}
+
+/* Env spellings of dual-spelling flags, after the chain so a typed flag has
+ * already claimed its slot. */
+static int apply_env_spellings(openpete_options_t* opts) {
     /* OPENPETE_VIBRATION: the env spelling of --vibration, applied only when
      * the flag was not given (CLI beats env, the project-wide rule).
      *
@@ -1676,52 +1658,13 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             opts->vibration = level;
         }
     }
+    /* OPENPETE_MOUSE matters to captures: a stray pointer movement over the
+     * window would otherwise steer the free camera mid-run. */
+    if (env_onoff_fallback("OPENPETE_MOUSE", &opts->mouse) != 0
+        || env_onoff_fallback("OPENPETE_INPUT_LOCK", &opts->input_lock) != 0
+        || env_onoff_fallback("OPENPETE_BACKGROUND", &opts->background) != 0)
+        return OPENPETE_EXIT_SETUP_ERROR;
 
-    /* OPENPETE_MOUSE: the env spelling of --mouse, applied only when the flag
-     * was not given (CLI beats env). Same reason as the vibration pair above:
-     * a harness that launches the game from several sites sets it once at the
-     * top of the script, and a missed argument would otherwise let a stray
-     * pointer movement over the window steer the free camera mid-capture. */
-    if (opts->mouse < 0) {
-        const char* v = getenv("OPENPETE_MOUSE");
-        if (v && *v) {
-            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->mouse = 1;
-            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->mouse = 0;
-            else {
-                fprintf(stderr, "openpete: OPENPETE_MOUSE expects 0|1 (on|off also "
-                        "accepted), got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-        }
-    }
-
-    /* OPENPETE_INPUT_LOCK: the env spelling of --input-lock, applied only
-     * when the flag was not given (CLI beats env). */
-    if (opts->input_lock < 0) {
-        const char* v = getenv("OPENPETE_INPUT_LOCK");
-        if (v && *v) {
-            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->input_lock = 1;
-            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->input_lock = 0;
-            else {
-                fprintf(stderr, "openpete: OPENPETE_INPUT_LOCK expects 0|1 (on|off also "
-                        "accepted), got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-        }
-    }
-    /* OPENPETE_BACKGROUND: the env spelling of --background (CLI beats env). */
-    if (opts->background < 0) {
-        const char* v = getenv("OPENPETE_BACKGROUND");
-        if (v && *v) {
-            if      (strcmp(v, "1") == 0 || strcmp(v, "on")  == 0) opts->background = 1;
-            else if (strcmp(v, "0") == 0 || strcmp(v, "off") == 0) opts->background = 0;
-            else {
-                fprintf(stderr, "openpete: OPENPETE_BACKGROUND expects 0|1 (on|off also "
-                        "accepted), got: %s\n", v);
-                return OPENPETE_EXIT_SETUP_ERROR;
-            }
-        }
-    }
     /* The legacy input path hands the event pump and the pad decode to
      * PsyCross, where the lock has no filter. */
     if (opts->input_lock > 0) {
@@ -1732,8 +1675,68 @@ int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
             return OPENPETE_EXIT_SETUP_ERROR;
         }
     }
-
     return OPENPETE_EXIT_OK;
+}
+
+int openpete_options_parse(openpete_options_t* opts, int argc, char** argv) {
+    /* Snapshot the command line as typed, before the sidecar / config
+     * splices below rewrite argv. --bk2-record captures this (and not the
+     * machine's own config defaults) into its .args sidecar. */
+    int    orig_argc = argc;
+    char** orig_argv = argv;
+
+    /* Process handoff re-execs with the ORIGINAL argv (the fresh
+     * process re-splices env/opts/sidecar files itself). */
+    opts->handoff_argc = orig_argc;
+    opts->handoff_argv = orig_argv;
+
+    /* Per-bk2 sidecar: <path>.bk2.args next to the movie can supply
+     * scenario-specific defaults (e.g. --skip-to-level 10 for an
+     * Artisans-only movie). Spliced before user argv so explicit CLI
+     * flags still override. See games/spyro-1/bk2/README.md. */
+    int sidecar_argc = 0;
+    char** sidecar_argv = NULL;
+    int sidecar_rc = expand_bk2_sidecar(argc, argv, &sidecar_argc, &sidecar_argv);
+    if (sidecar_rc < 0) return OPENPETE_EXIT_SETUP_ERROR;
+    if (sidecar_rc == 1) { argc = sidecar_argc; argv = sidecar_argv; }
+
+    /* openpete.toml. Resolves every configured layer, applies the winning
+     * [env] entries to the environment — which must happen before ANY
+     * getenv consumer, since features lazy-cache their env reads on first
+     * use — and hands back the winning flags to splice.
+     *
+     * Spliced after the bk2 splice and so left of it, giving the argv
+     * order [config][sidecar][typed]: left is parsed first and the last
+     * write wins, which is the file < sidecar < CLI half of the chain.
+     * The other half (which of two config layers wins, and args-vs-env)
+     * was already decided inside the resolver — see openpete_config.h. */
+    /* Give the keymap its SDL-backed name lookups before the config runs:
+     * openpete_config_apply seeds the registry defaults, and parsing them
+     * needs the lookup live. Pure string tables in SDL, so this is safe
+     * long before SDL_Init. */
+    openpete_keymap_install_sdl();
+
+    int cfg_argc = 0;
+    char** cfg_argv = NULL;
+    int cfg_rc = openpete_config_apply(argc, argv, orig_argc, &cfg_argc, &cfg_argv);
+    if (cfg_rc < 0) return OPENPETE_EXIT_SETUP_ERROR;
+    if (cfg_rc == 1) { argc = cfg_argc; argv = cfg_argv; }
+
+    parse_notes_t notes = { false, false };
+    int rc = parse_flag_chain(opts, argc, argv, &notes);
+    if (rc != OPENPETE_EXIT_OK) return rc;
+
+    /* The EXE-source requirement is deferred to
+     * openpete_options_require_exe_source(): the game may resolve a
+     * disc AFTER parse via the content-addressed library (--ingest, or
+     * a no-argument boot of an installed entry). Without --run-recomp the
+     * runtime dispatches the EXE header's entry, the crt0, once the header
+     * has been read. */
+
+    /* After validation, so a bad invocation creates no directory. */
+    rc = finish_bk2_record(opts, orig_argc, orig_argv, &notes);
+    if (rc != OPENPETE_EXIT_OK) return rc;
+    return apply_env_spellings(opts);
 }
 
 int openpete_options_require_exe_source(const openpete_options_t* opts) {

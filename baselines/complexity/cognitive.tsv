@@ -1,8 +1,8 @@
 # cognitive-complexity ratchet baseline (scripts/fences/complexity_ratchet.py)
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
-# written-by: tighten
-# head: c05d46fbcddace440a7d360e671938aa6ce174fc
+# written-by: hook
+# head: d5663c4a59f69aabc256a1b9d442b5c51b5d7e8a
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -11,7 +11,7 @@ core/config/config.c	materialize	32	0
 core/config/config.c	openpete_config_apply	80	0	
 core/config/config.c	openpete_config_report	45	0	
 core/config/knob_registry.c	knob_registry_init	134	0	
-core/config/options.c	openpete_options_parse	837	1	
+core/config/options.c	parse_flag_chain	779	1	
 core/config/options.c	tokenize_sidecar_args	43	0	
 core/diag/ident_audit.c	openpete_ident_audit_present	32	0	
 core/diag/log.c	parse_spec	30	0	
