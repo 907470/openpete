@@ -12,9 +12,14 @@
 # the free camera freezes the player where it engages, and on the flight
 # levels (metro_speedway, canyon_speedway) the follow camera has travelled
 # thousands of units by the capture frame.
-# A row placed by a reported defect carries that defect on its comment and
-# replaces the coverage row for its level.
+# A row placed by a reported defect carries that defect on its comment. It
+# replaces the coverage row for its level only when it frames at least the
+# feeders the coverage row does; otherwise both rows stay.
 summer_forest | pos=(130413, 15471, 38359) yaw=1088 pitch=160
+# Sub-tick row: one moby of the second model kind (class 0x71) that moves 35
+# units and turns 11.25 degrees per tick, with no animated moby in view, so
+# the intermediate leg carries the second kind's own motion and nothing else.
+summer_forest | pos=(52127, 49180, 45249) yaw=-946 pitch=303
 idol_springs | pos=(115428, 98127, 14292) yaw=-1135 pitch=160
 # The row that carries the moby special-material treatments: its mobys draw
 # faces under both the bit-5 dispatcher's mode 0 and its mode 2, so a change
