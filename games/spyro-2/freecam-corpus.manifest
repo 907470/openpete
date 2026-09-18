@@ -27,3 +27,5 @@ mystic_marsh | pos=(110592, 36536, 8534) yaw=0 pitch=0
 canyon_speedway | pos=(40798, 88200, 16743) yaw=0 pitch=0
 metropolis | pos=(113777, 60754, 40295) yaw=0 pitch=0
 riptos_arena | pos=(44042, 69827, 7991) yaw=0 pitch=0
+# retained terrain face at a bucket-boundary key loses the contest to itself (hardware only; the windowed cache-off/on harness separates the builds)
+glimmer | pos=(55630, 29629, 25462) yaw=974 pitch=243
