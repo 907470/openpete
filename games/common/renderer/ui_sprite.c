@@ -88,6 +88,50 @@ static void bbox_report(void) {
                 s_bbox[c].x0, s_bbox[c].x1, s_bbox[c].y0, s_bbox[c].y1);
 }
 
+/* Semi-transparent 2D primitives fed, by class and PSX ABR mode (0 (B+F)/2,
+ * 1 B+F, 2 B-F, 3 B+F/4): the engagement counter of the blend classes the 2D
+ * layers draw (a zero count on a screen that links semi-transparent 2D is a
+ * feed that never reached them). Counted always; printed under
+ * OPENPETE_UISPRITE_CENSUS once per tick that fed any, the line emitted at
+ * the first semi-transparent feed of a later tick. */
+enum { SEMI_SPRT = 0, SEMI_FT4, SEMI_F4, SEMI_N };
+static const char* const kSemiName[SEMI_N] = { "sprt", "ft4", "f4" };
+static unsigned s_semi[SEMI_N][4];        /* since boot */
+static unsigned s_semi_tick[SEMI_N][4];   /* the tick s_semi_frame */
+static unsigned s_semi_frame = 0xFFFFFFFFu;
+static void semi_flush_tick(void) {
+    static int cen = -1;
+    ENV_FLAG_LATCH(cen, "OPENPETE_UISPRITE_CENSUS");
+    if (cen && s_semi_frame != 0xFFFFFFFFu) {
+        char line[160]; int o = 0;
+        for (int c = 0; c < SEMI_N; c++)
+            o += snprintf(line + o, sizeof(line) - (size_t)o, " %s=%u/%u/%u/%u", kSemiName[c],
+                          s_semi_tick[c][0], s_semi_tick[c][1], s_semi_tick[c][2], s_semi_tick[c][3]);
+        fprintf(stderr, "[census f=%u UI-SEMI]%s\n", s_semi_frame, line);
+    }
+    memset(s_semi_tick, 0, sizeof(s_semi_tick));
+}
+static void semi_note(int cls, unsigned abr) {
+    if (openpete_frame != s_semi_frame) { semi_flush_tick(); s_semi_frame = openpete_frame; }
+    s_semi[cls][abr & 3u]++; s_semi_tick[cls][abr & 3u]++;
+}
+
+/* The native blend of a 2D primitive: the scene blend class
+ * (openpete_scene_tri.blend) and the vertex alpha. An opaque primitive is
+ * class 0. A semi-transparent one blends at the ABR of its draw mode: ABR 0
+ * (B+F)/2 is the alpha class at vertex alpha 0x80, which halves an untextured
+ * quad; ABR 1 B+F, 2 B-F and 3 B+F/4 are the additive, reverse-subtract and
+ * quarter-additive classes, which read no alpha. A textured primitive takes
+ * the class alone: its fragment alpha is the texel's STP bit (0.5 set, 1.0
+ * clear, so an STP-clear texel of a semi-transparent primitive draws opaque,
+ * as on the GPU), and the vertex alpha is not read. */
+typedef struct { int blend; uint32_t alpha; } ui_blend_t;
+static ui_blend_t ui_blend(int semi, unsigned abr) {
+    static const ui_blend_t kAbr[4] = { { 1, 0x80u }, { 2, 0xFFu }, { 3, 0xFFu }, { 4, 0xFFu } };
+    if (!semi) return (ui_blend_t){ 0, 0xFFu };
+    return kAbr[abr & 3u];
+}
+
 /* ---- 2D prim decode + feed ----------------------------------------------- */
 /* Every 2D primitive is fed from the deferred flush (see the dispatch
  * section), which runs at the OT walk, where openpete_frame may already be the
@@ -126,7 +170,8 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
     int tpx=tpd.tpx, tpy=tpd.tpy, bpp=tpd.bpp;
     int clx=tpd.clx, cly=tpd.cly;
     uint32_t rgba = (w1 & 0xFFFFFFu) | 0xFF000000u;
-    int abe = (int)((w1>>24)&0x2u);   /* code bit1 = semi-transparent (ABR mode 0) */
+    int abe = (int)((w1>>24)&0x2u);   /* code bit1 = semi-transparent, at the page's ABR */
+    const int blend = ui_blend(abe, (tp >> 5) & 3u).blend;
 
     /* A quad sampling a framebuffer window (a MoveImage'd copy of a draw
      * buffer) reads texels the native render never writes. Redirect it to the
@@ -149,7 +194,7 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
             tri.v[j].sx=(float)sx[c]; tri.v[j].sy=(float)sy[c];
             tri.v[j].z=0.0f; tri.v[j].u=(float)u[c]; tri.v[j].v=(float)v[c]; tri.v[j].rgba=rgba; }
         tri.textured=1; tri.tpage_x=tpx; tri.tpage_y=tpy; tri.clut_x=clx; tri.clut_y=cly;
-        tri.bpp=bpp; tri.blend = abe ? 1 : 0;
+        tri.bpp=bpp; tri.blend = blend;
         if (snap >= 0) {
             tri.tpage_x = snap; tri.tpage_y = 0; tri.clut_x = 0; tri.clut_y = 0;
             tri.bpp = OPENPETE_FB_SNAPSHOT_BPP;
@@ -160,6 +205,7 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
         }
         openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_HUD, 1);
     }
+    if (abe) semi_note(SEMI_FT4, (tp >> 5) & 3u);
     bbox_note(UICLS_FT4, (float)sx[0], (float)sy[0], (float)sx[3], (float)sy[3]);
     s_fed_prims++;
 }
@@ -290,13 +336,8 @@ static void feed_sprt_now(CPUState* cpu, uint32_t prim, unsigned tpage) {
     int abe = code & 2;
     /* The GPU blends a semi-transparent primitive at the draw mode's ABR rate,
      * which for an SPRT lives in the DR_MODE that set the page, not in the
-     * packet. ABR 2 (B-F) subtracts the source from the framebuffer — a sprite
-     * that darkens what it covers — and goes to the HUD-panel layer, which
-     * blends by the mode it is given; the plain HUD layer composes every
-     * semi-transparent tri the same way whatever `blend` says, so an ABR-2
-     * sprite fed there paints bright where the GPU darkens. The other rates
-     * are alpha and stay on the HUD layer. */
-    int sub = abe && ((tpage >> 5) & 3u) == 2u;
+     * packet. */
+    const int blend = ui_blend(abe, (tpage >> 5) & 3u).blend;
     ngte_tpage tpd;
     ngte_decode_tpage((unsigned)tpage, (unsigned)clut, 0u, &tpd);
     int tpx = tpd.tpx, tpy = tpd.tpy, bpp = tpd.bpp;
@@ -318,9 +359,10 @@ static void feed_sprt_now(CPUState* cpu, uint32_t prim, unsigned tpage) {
             tri.v[j].u = su[c]; tri.v[j].v = sv[c]; tri.v[j].rgba = rgba; }
         tri.textured = 1; tri.tpage_x = tpx; tri.tpage_y = tpy;
         tri.clut_x = clx; tri.clut_y = cly; tri.bpp = bpp;
-        tri.blend = sub ? 3 : (abe ? 1 : 0);
-        openpete_native_scene_add_tri(&tri, sub ? OPENPETE_SCENE_HUD_PANEL : OPENPETE_SCENE_HUD, 1);
+        tri.blend = blend;
+        openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_HUD, 1);
     }
+    if (abe) semi_note(SEMI_SPRT, (tpage >> 5) & 3u);
     bbox_note(UICLS_SPRT, sx[0], sy[0], sx[3], sy[3]);
     s_fed_prims++; s_fed_sprts++;
 }
@@ -691,14 +733,10 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
     case QK_F4_PANEL: {
         /* The box links its own DR_MODE immediately before the quad, so the
          * ABR tracked at this point of the batch is the blend the GPU is in
-         * when the quad draws. ABR 2 (B-F) darkens the framebuffer by the
-         * quad's colour and is rendered subtractive (blend 3); ABR 0
-         * ((B+F)/2) is a halving and is rendered at alpha 0x80. Modes 1
-         * (B+F) and 3 (B+F/4) fall back to alpha, add an additive HUD pipe
-         * when a consumer appears. */
-        int sub = (s_last_abr == 2);
-        feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL,
-            sub ? 0xFFu : 0x80u, sub ? 3 : 1, 0);
+         * when the quad draws. */
+        semi_note(SEMI_F4, (unsigned)s_last_abr);
+        const ui_blend_t b = ui_blend(1, (unsigned)s_last_abr);
+        feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL, b.alpha, b.blend, 0);
         break; }
     case QK_SPRT:    feed_sprt_now(cpu, prim, s_last_tpage); break;
     case QK_LINE_G2: feed_line_g2(cpu, prim, w1); break;

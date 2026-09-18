@@ -83,6 +83,20 @@ typedef struct {
     int32_t bpp;
 } psx_material;
 
+/* A scene triangle's blend class (openpete_scene_tri.blend) as the RHI blend
+ * that reproduces it: 0 opaque, then PSX ABR 0 (B+F)/2, ABR 1 B+F, ABR 2 B-F,
+ * ABR 3 B+F/4. The alpha class halves through the fragment alpha: the vertex
+ * alpha (0x80) on an untextured triangle, the texel's STP bit on a textured
+ * one (psx_scene.frag emits alpha 0.5 for an STP texel and 1.0 otherwise, so
+ * an STP-clear texel of a semi-transparent primitive stays opaque, as on the
+ * GPU). */
+enum { NR_BLEND_OPAQUE = 0, NR_BLEND_AVG, NR_BLEND_ADD, NR_BLEND_SUB, NR_BLEND_QADD,
+       NR_BLEND_CLASSES };
+static const rhi_blend_mode k_blend_class_rhi[NR_BLEND_CLASSES] = {
+    RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT,
+    RHI_BLEND_ADD_QUARTER
+};
+
 /* shadow_decal.frag push constant (must match the GLSL block field-for-field) —
  * the depth-aware shadow decal's per-pixel world-Y wall rejection. The PSX
  * screen coord rides the vertex u,v as a noperspective varying, and the
@@ -1793,10 +1807,8 @@ static struct {
     rhi_pipeline *gouraud_qadd_pipe;  /* quarter-additive UNTEXTURED gouraud (ABR mode 3) */
     rhi_pipeline *scene_tex_sub_pipe; /* 3b.2: subtractive (ABR mode 2, B-F) textured tris — moby shadows (plain depth test + bias; the fallback when the depth pre-pass is unavailable) */
     rhi_pipeline *scene_tex_sub_decal_pipe; /* moby shadows as a DEPTH-AWARE decal: shadow_decal_tex.frag samples opaque_depth (set 0) + VRAM (set 1); depth-test OFF, the shader owns wall/steep/platform occlusion. NULL → fall back to scene_tex_sub_pipe */
-    rhi_pipeline *gouraud_hud_pipe;   /* HUD overlay: UNTEXTURED gouraud, depth-test OFF (on top) */
-    rhi_pipeline *gouraud_hud_blend_pipe; /* HUD panel: UNTEXTURED alpha gouraud, depth-test OFF (menu dark panel under text) */
-    rhi_pipeline *gouraud_hud_sub_pipe; /* HUD panel: UNTEXTURED subtractive gouraud, depth-test OFF (the ABR mode-2 shaded text box, B-F) */
-    rhi_pipeline *scene_tex_hud_pipe; /* HUD overlay: textured (VRAM sampler), depth-test OFF (on top) */
+    rhi_pipeline *gouraud_hud_pipes[NR_BLEND_CLASSES]; /* HUD overlay and panels: UNTEXTURED gouraud, depth-test OFF (on top), one pipe per blend class */
+    rhi_pipeline *scene_tex_hud_pipes[NR_BLEND_CLASSES]; /* HUD overlay: textured (VRAM sampler), depth-test OFF (on top), one pipe per blend class */
     rhi_pipeline *hd_tex_pipe;        /* HD replacement, HUD overlay: RGBA sampler, alpha blend, depth OFF */
     rhi_pipeline *hd_cutout_pipe;     /* HD replacement, opaque scene: depth-tested, alpha-cutout */
     rhi_pipeline *hd_cutout_mark_pipe;/* cutout twin with stencil MARK (WORLD group when hole-fill is on) */
@@ -2042,6 +2054,30 @@ static void fit_cell(float cx, float cy, float chx, float chy,
     if (sy < s) s = sy;
     *out_hx = ((float)content_w * s) / (float)win_w;
     *out_hy = ((float)content_h * s) / (float)win_h;
+}
+
+/* Destroy every member of a blend family and clear its slots. */
+static void blend_family_destroy(rhi_device* dev, rhi_pipeline* fam[NR_BLEND_CLASSES]) {
+    for (int b = 0; b < NR_BLEND_CLASSES; b++) {
+        if (fam[b]) rhi_destroy_pipeline(dev, fam[b]);
+        fam[b] = NULL;
+    }
+}
+
+/* Create `base` once per blend class, member b with k_blend_class_rhi[b] and
+ * every other field of `base`. All or none: a missing member would draw its
+ * class through another member's blend, so on any failure the whole family is
+ * destroyed and left NULL. */
+static void blend_family_create(rhi_device* dev, const rhi_pipeline_desc* base,
+                                rhi_pipeline* fam[NR_BLEND_CLASSES]) {
+    rhi_pipeline_desc d = *base;
+    int ok = 1;
+    for (int b = 0; b < NR_BLEND_CLASSES; b++) {
+        d.blend = k_blend_class_rhi[b];
+        fam[b] = rhi_create_pipeline(dev, &d);
+        ok = ok && fam[b];
+    }
+    if (!ok) blend_family_destroy(dev, fam);
 }
 
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h)
@@ -2511,38 +2547,30 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * drawn LAST, ignoring the depth buffer so they sit on top of all world/actor
      * geometry regardless of their world-space view-Z (the PSX draws HUD in a
      * separate near-OT pass). Painter's order = submission order. One untextured
-     * (gouraud) + one textured (VRAM sampler), mirroring the opaque pair. */
+     * (gouraud) + one textured (VRAM sampler), mirroring the opaque pair.
+     *
+     * The untextured HUD pipe is a blend family (blend_family_create sets
+     * .blend per member). Entry 0 draws the glyphs and the letterbox bars.
+     * The semi-transparent 2D panels (0x2A POLY_F4) draw through the member of
+     * the ABR their DR_MODE selects: ABR 0 (B+F)/2 is the alpha member at
+     * vertex alpha 0x80 (quad.frag emits the full vertex rgba); ABR 2 (B-F) is
+     * the reverse-subtract member, which darkens the framebuffer by the box
+     * colour (the in-game shaded box behind HUD text, func_8001860C, and the
+     * pause/inventory panel, func_8001A40C, both emit their F4 under
+     * SetDrawMode(getTPage(0, 2, ..))); ABR 1 and 3 are the additive and
+     * quarter-additive members. The subtract member also draws the menu and
+     * toast panels. */
     rhi_pipeline_desc gouraud_hud_desc = {
         .vert_spv = "quad.vert.spv",
         .frag_spv = "quad.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = false,
         .uses_vram = false, .push_const_size = 0,
     };
-    /* HUD panel pipeline: untextured alpha gouraud, depth-test OFF — the dim
-     * semi-transparent dark panel behind the pause/inventory menu text (a 0x2A F4,
-     * ABR mode 0 = (B+F)/2). Like gouraud_hud_pipe but alpha-blended; the vertex
-     * alpha (128) gives (B+F)/2. Drawn at the start of the HUD layer so the text
-     * reads on top. quad.frag emits the full vertex rgba incl. alpha. */
-    rhi_pipeline_desc gouraud_hud_blend_desc = {
-        .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad.frag.spv",
-        .blend = RHI_BLEND_ALPHA, .depth_test = false,
-        .uses_vram = false, .push_const_size = 0,
-    };
-    /* HUD panel SUBTRACTIVE pipeline: untextured subtractive gouraud, depth-test OFF.
-     * The in-game "shaded box" behind HUD text (func_8001860C) and the pause/inventory
-     * menu panel (func_8001A40C) both emit their 0x2A POLY_F4 under
-     * SetDrawMode(getTPage(0, 2, ..)) = ABR mode 2 (B-F), which DARKENS the framebuffer
-     * by the box colour. (B+F)/2 alpha would instead wash it toward grey (a too-bright
-     * box) — the bug this fixes. RHI_BLEND_SUBTRACT reverse-subtracts the vertex colour
-     * (alpha ignored), exactly the PSX. The box's real ABR is read per-prim from its
-     * DR_MODE in ui_sprite_native, so the HUD-panel draw picks alpha vs subtractive. */
-    rhi_pipeline_desc gouraud_hud_sub_desc = {
-        .vert_spv = "quad.vert.spv",
-        .frag_spv = "quad.frag.spv",
-        .blend = RHI_BLEND_SUBTRACT, .depth_test = false,
-        .uses_vram = false, .push_const_size = 0,
-    };
+    /* Textured HUD layer: the screen-space 2D sprites and quads. A 2D
+     * primitive carries its own semi-transparency bit and the ABR of its
+     * texture page, so the layer is a family, one pipe per blend class
+     * (blend_family_create sets .blend per member; entry 0 is the opaque
+     * pipe). */
     rhi_pipeline_desc scene_tex_hud_desc = {
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "psx_scene.frag.spv",
@@ -2684,10 +2712,10 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *gouraud_qadd_pipe = rhi_create_pipeline(dev, &gouraud_qadd_desc);
     rhi_pipeline *scene_tex_sub_pipe = rhi_create_pipeline(dev, &scene_tex_sub_desc);
     rhi_pipeline *scene_tex_sub_decal_pipe = rhi_create_pipeline(dev, &scene_tex_sub_decal_desc); /* optional: NULL → fall back to scene_tex_sub_pipe */
-    rhi_pipeline *gouraud_hud_pipe = rhi_create_pipeline(dev, &gouraud_hud_desc);
-    rhi_pipeline *gouraud_hud_blend_pipe = rhi_create_pipeline(dev, &gouraud_hud_blend_desc);
-    rhi_pipeline *gouraud_hud_sub_pipe = rhi_create_pipeline(dev, &gouraud_hud_sub_desc);
-    rhi_pipeline *scene_tex_hud_pipe = rhi_create_pipeline(dev, &scene_tex_hud_desc);
+    rhi_pipeline *gouraud_hud_pipes[NR_BLEND_CLASSES];
+    blend_family_create(dev, &gouraud_hud_desc, gouraud_hud_pipes);
+    rhi_pipeline *scene_tex_hud_pipes[NR_BLEND_CLASSES];
+    blend_family_create(dev, &scene_tex_hud_desc, scene_tex_hud_pipes);
     rhi_pipeline *hd_tex_pipe = rhi_create_pipeline(dev, &hd_tex_desc);   /* HD pipes: allowed to fail (NULL = feature off) */
     rhi_pipeline *hd_cutout_pipe = rhi_create_pipeline(dev, &hd_cutout_desc);
     rhi_pipeline *hd_cutout_mark_pipe = rhi_create_pipeline(dev, &hd_cutout_mark_desc);
@@ -2797,7 +2825,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * native_vram.c) — written by the native ops at op time and shadow-synced
      * from PsyCross's mirror per dirty rect at present time. */
     uint16_t     *mirror    = openpete_vram_data();
-    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_sub_ztest_pipe || !gouraud_sub_fade_pipe || !prepass_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipe || !gouraud_hud_blend_pipe || !gouraud_hud_sub_pipe || !scene_tex_hud_pipe || !panels_vb || !scene_vb || !vram_tex || !mirror ||
+    if (!blit_pipe || !vram_pipe || !gouraud_pipe || !gouraud_blend_pipe || !gouraud_sub_pipe || !gouraud_sub_ztest_pipe || !gouraud_sub_fade_pipe || !prepass_pipe || !gouraud_add_pipe || !scene_tex_pipe || !scene_tex_blend_pipe || !scene_tex_add_pipe || !scene_tex_sub_pipe || !gouraud_hud_pipes[0] || !scene_tex_hud_pipes[0] || !panels_vb || !scene_vb || !vram_tex || !mirror ||
         !freeze_overlay_pipe || !freeze_plain_pipe || !resolve_pipe || !fs_quad_vb || !overlay_vb || !prepass_vb) {
         OPL_ERROR_F("native", "RHI setup failed; continuing without native renderer");
         if (prepass_vb)    rhi_destroy_buffer(dev, prepass_vb);
@@ -2805,8 +2833,6 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (gouraud_sub_fade_pipe) rhi_destroy_pipeline(dev, gouraud_sub_fade_pipe);
         if (gouraud_sub_ztest_pipe) rhi_destroy_pipeline(dev, gouraud_sub_ztest_pipe);
         if (resolve_pipe) rhi_destroy_pipeline(dev, resolve_pipe);
-        if (gouraud_hud_sub_pipe) rhi_destroy_pipeline(dev, gouraud_hud_sub_pipe);
-        if (gouraud_hud_blend_pipe) rhi_destroy_pipeline(dev, gouraud_hud_blend_pipe);
         if (freeze_overlay_pipe) rhi_destroy_pipeline(dev, freeze_overlay_pipe);
         if (freeze_plain_pipe) rhi_destroy_pipeline(dev, freeze_plain_pipe);
         if (overlay_vb)    rhi_destroy_buffer(dev, overlay_vb);
@@ -2817,7 +2843,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (vram_tex)      rhi_destroy_texture(dev, vram_tex);
         if (scene_vb)      rhi_destroy_buffer(dev, scene_vb);
         if (panels_vb)     rhi_destroy_buffer(dev, panels_vb);
-        if (scene_tex_hud_pipe) rhi_destroy_pipeline(dev, scene_tex_hud_pipe);
+        blend_family_destroy(dev, scene_tex_hud_pipes);
         if (hd_tex_pipe) rhi_destroy_pipeline(dev, hd_tex_pipe);
         if (hd_cutout_pipe) rhi_destroy_pipeline(dev, hd_cutout_pipe);
         if (hd_cutout_mark_pipe) rhi_destroy_pipeline(dev, hd_cutout_mark_pipe);
@@ -2826,7 +2852,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (hd_cutout_punch_pipe) rhi_destroy_pipeline(dev, hd_cutout_punch_pipe);
         if (hd_scene_blend_pipe) rhi_destroy_pipeline(dev, hd_scene_blend_pipe);
         if (hd_scene_add_pipe) rhi_destroy_pipeline(dev, hd_scene_add_pipe);
-        if (gouraud_hud_pipe)   rhi_destroy_pipeline(dev, gouraud_hud_pipe);
+        blend_family_destroy(dev, gouraud_hud_pipes);
         if (scene_tex_sub_decal_pipe) rhi_destroy_pipeline(dev, scene_tex_sub_decal_pipe);
         if (scene_tex_sub_pipe) rhi_destroy_pipeline(dev, scene_tex_sub_pipe);
         if (scene_tex_add_pipe) rhi_destroy_pipeline(dev, scene_tex_add_pipe);
@@ -2883,10 +2909,8 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     s_nr.gouraud_qadd_pipe = gouraud_qadd_pipe;
     s_nr.scene_tex_sub_pipe = scene_tex_sub_pipe;
     s_nr.scene_tex_sub_decal_pipe = scene_tex_sub_decal_pipe; /* may be NULL → plain sub pipe */
-    s_nr.gouraud_hud_pipe = gouraud_hud_pipe;
-    s_nr.gouraud_hud_blend_pipe = gouraud_hud_blend_pipe;
-    s_nr.gouraud_hud_sub_pipe = gouraud_hud_sub_pipe;
-    s_nr.scene_tex_hud_pipe = scene_tex_hud_pipe;
+    memcpy(s_nr.gouraud_hud_pipes, gouraud_hud_pipes, sizeof gouraud_hud_pipes);
+    memcpy(s_nr.scene_tex_hud_pipes, scene_tex_hud_pipes, sizeof scene_tex_hud_pipes);
     s_nr.hd_tex_pipe  = hd_tex_pipe;
     s_nr.hd_cutout_pipe = hd_cutout_pipe;
     s_nr.hd_cutout_mark_pipe = hd_cutout_mark_pipe;
@@ -5371,10 +5395,6 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
      * the group composites, so the pipeline it builds inherits this group's
      * blend. Anything else would let a mod silently reorder or re-composite
      * geometry the painter order depends on. */
-    static const rhi_blend_mode k_blend[5] = {
-        RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT,
-        RHI_BLEND_ADD_QUARTER
-    };
     if (blend_class < 0 || blend_class > 4) blend_class = 0;
     /* The material ABI caches one pipeline per blend slot and has no slot for
      * the quarter-add class, so a group drawn that way keeps the stock pipe. */
@@ -5392,7 +5412,7 @@ static void draw_ut_mat_spans(int gi, rhi_pipeline* stock, int want_mark,
                 rhi_pipeline_desc md = {
                     .vert_spv = "psx_scene.vert.spv",
                     .frag_spv = "psx_scene.frag.spv",
-                    .blend = k_blend[blend_class],
+                    .blend = k_blend_class_rhi[blend_class],
                     /* Blended groups are painter-ordered and depth-write off;
                      * inherit that too rather than punching the depth buffer. */
                     .depth_write_off = blend_class != 0,
@@ -5840,7 +5860,229 @@ static void hdfold_flush_locked(void)
         s_hdf_epoch++;                /* drained: fold-claimed sectors retry */
 }
 
-/* allow_override: 0 = stock only; 1 = material overrides via the plain
+/* One draw run of a textured bucket: `ntri` consecutive entries of s_txscene
+ * from `tri0`, whose vertices start at `vert0` in the scene vertex buffer, all
+ * sharing the material `m`. */
+typedef struct {
+    const scene_tri_t* scene;
+    int          tri0, ntri;
+    uint32_t     vert0;
+    psx_material m;
+} tex_run;
+
+static const scene_tri_t* tex_run_tri(const tex_run* r, int t) {
+    return &r->scene[s_txscene[r->tri0 + t]];
+}
+
+/* Does `s1` continue the run `s0` heads? The same material; the same
+ * provenance tag while the tag split key is armed (lockstep with
+ * tex_mat_cmp's tag term, or coalescing would undo the split the sort made);
+ * the same blend class when the bucket draws each class through its own pipe
+ * (`split_blend`), so a run never straddles two blend equations. */
+static int tex_run_continues(const scene_tri_t* s0, const scene_tri_t* s1, int split_blend) {
+    if (s1->tpage_x != s0->tpage_x || s1->tpage_y != s0->tpage_y ||
+        s1->clut_x != s0->clut_x || s1->clut_y != s0->clut_y || s1->bpp != s0->bpp) return 0;
+    if (tag_split_on() && s1->tag != s0->tag) return 0;
+    return !split_blend || s1->blend == s0->blend;
+}
+
+/* The pipe a run of blend class `blend` draws through: its own entry of a
+ * per-class table, entry 0 for a one-entry table (a bucket whose triangles
+ * share one class) and for a class outside the table. */
+static rhi_pipeline* tex_run_pipe(rhi_pipeline* const* pipes, int npipes, int blend) {
+    return (blend > 0 && blend < npipes) ? pipes[blend] : pipes[0];
+}
+
+/* Length of the texture-pack sub-run that starts at triangle `t` of the run,
+ * whose head `st` resolved to `matched` / `repl`: the consecutive triangles
+ * with the same disposition (all unreplaced, or all the same pack file). A
+ * replaced sub-run carries ONE fog transform in its push constants, and the
+ * canonical CLUT maps triangles at different fog distances to the SAME pack
+ * file, so those never coalesce or the whole sub-run would draw at the head's
+ * fog depth. Every triangle examined runs tp_tri_match (and its census, dump
+ * and resolve-log side effects), the break triangle included. */
+static int tp_subrun_len(const tex_run* r, int t, int want_replace, int matched,
+                         const texture_pack_repl* repl, const scene_tri_t* st) {
+    int g = 1;
+    while (t + g < r->ntri) {
+        const scene_tri_t* sn = tex_run_tri(r, t + g);
+        texture_pack_id nid;
+        texture_pack_repl nrepl;
+        int ncly; float nu0, nv0;
+        int nmatched = tp_tri_match(sn, &r->m, want_replace, &nid, &nrepl,
+                                    &ncly, &nu0, &nv0);
+        if (nmatched != matched) break;
+        if (matched && (nrepl.pixels != repl->pixels || sn->fog_delta != st->fog_delta)) break;
+        g++;
+    }
+    return g;
+}
+
+/* OPENPETE_TEXSEL_DBG2=<tid>: draw-side resolve forensics for one terrain
+ * texture id. */
+static void texsel_draw_forensics(const scene_tri_t* s0, int allow_override, int run) {
+    static int s_ts2 = -2;
+    if (s_ts2 == -2) { const char* e2 = getenv("OPENPETE_TEXSEL_DBG2");
+                       s_ts2 = e2 ? atoi(e2) : -1; }
+    extern unsigned int openpete_frame;
+    if (s_ts2 >= 0 && (s0->tag >> 28) == 2u &&
+        !(s0->tag & 0x02000000u) &&
+        (int)((s0->tag >> 9) & 0x7Fu) == s_ts2 &&
+        openpete_frame > 2000u) {
+        openpete_mod_material_gpu_t mgd;
+        static int pr = 0;
+        if (pr++ < 24)
+            fprintf(stderr, "[texsel-draw f=%u] tag=%08X allow=%d split=%d "
+                    "resolve=%d run=%d\n", openpete_frame, s0->tag,
+                    allow_override, tag_split_on(),
+                    openpete_mods_material_resolve(s0->tag, &mgd), run);
+    }
+}
+
+/* The mod material's pipeline for one (material, blend class) pair, built on
+ * first use and cached in the material's slot. The MARK twin is opaque-only
+ * (hole-fill coverage), so a blended run never wants it. NULL when the build
+ * failed; the failure is cached and not retried. */
+static rhi_pipeline* material_run_pipe(const openpete_mod_material_gpu_t* mg,
+                                       int ov_mark, int blend_class) {
+    void** ov_slot = ov_mark ? mg->pipeline_mark_slot
+                             : mg->pipeline_slot[blend_class];
+    if (*ov_slot == NULL) {
+        rhi_pipeline_desc md = {
+            .vert_spv = "psx_scene.vert.spv",
+            .frag_spv = "psx_scene.frag.spv",
+            .blend = k_blend_class_rhi[blend_class],
+            .depth_test = true,
+            /* Blended groups z-test against opaque but never occlude each
+             * other. No .depth_bias: binding a bias pipeline invalidates the
+             * dynamic bias state, so an override would have to re-set a value
+             * it doesn't have — and the one override-eligible subtract group
+             * (SUBTRACT-WORLD) draws at zero bias anyway. The biased group,
+             * moby shadows, takes no overrides. */
+            .depth_write_off = blend_class != 0,
+            .stencil = ov_mark ? RHI_STENCIL_MARK : RHI_STENCIL_NONE,
+            .material_pipeline = true,
+            .push_const_size = sizeof(psx_material_hd),
+        };
+        rhi_pipeline* p = rhi_create_pipeline_spv(
+            s_nr.dev, &md, mg->vert_spv, mg->vert_words,
+            mg->frag_spv, mg->frag_words);
+        *ov_slot = p ? (void*)p : PFX_PIPE_FAILED;
+        if (!p)
+            fprintf(stderr, "[native] material: pipeline build "
+                            "FAILED for %s\n", mg->owner);
+    }
+    return *ov_slot == PFX_PIPE_FAILED ? NULL : (rhi_pipeline*)*ov_slot;
+}
+
+/* Draw a material-overridden run with its texture-pack replacements
+ * (op_pack_shade): the run is walked per triangle through the same registry
+ * resolve and match as the stock path, and triangles matching different pack
+ * files (or none) need different set-1 bindings and file rects, so they draw
+ * as separate sub-runs. `mh` holds the run's material; `pack_bound` is the
+ * texture bound at set 1 on entry. */
+static void draw_material_pack_walk(const tex_run* r, psx_material_hd* mh,
+                                    rhi_texture* pack_bound) {
+    int t = 0;
+    while (t < r->ntri) {
+        const scene_tri_t* st = tex_run_tri(r, t);
+        texture_pack_id id; texture_pack_repl repl;
+        int cly; float bu0, bv0;
+        int matched = tp_tri_match(st, &r->m, 1, &id, &repl, &cly, &bu0, &bv0);
+        int g = tp_subrun_len(r, t, 1, matched, &repl, st);
+        rhi_texture* want = s_nr.mat_pack_dummy;
+        mh->hd = 0;
+        if (matched) {
+            uint64_t key = (uint64_t)(uintptr_t)repl.pixels;
+            rhi_texture* tex = hd_cache_lookup(key);
+            if (!tex) {
+                hd_pending_add(key, repl.pixels, repl.w, repl.h,
+                               repl.box_w, repl.box_h);   /* next present */
+            } else {
+                want = tex;
+                mh->hd = 1;
+                /* File box in page-texel coords: the tri box (bu0
+                 * page-relative <-> id.box upload-relative) anchors the
+                 * conversion. */
+                mh->hd_u0 = bu0 - (float)(id.box_x - repl.box_x);
+                mh->hd_v0 = bv0 - (float)(id.box_y - repl.box_y);
+                mh->hd_uw = (float)repl.box_w;
+                mh->hd_vh = (float)repl.box_h;
+                /* Mod-material pipes carry only the flat per-rung affine
+                 * (their fragment contract has no perspective-W varying for
+                 * the continuous ramp); they still get the per-texture
+                 * retarget. */
+                hd_pc fpc;
+                tp_pack_fog(&r->m, cly, st->fog_delta, &id, &repl,
+                            mh->hd_u0, mh->hd_v0, &fpc);
+                memcpy(mh->fog_a, fpc.a, sizeof fpc.a);
+                memcpy(mh->fog_b, fpc.b, sizeof fpc.b);
+            }
+        }
+        if (want && want != pack_bound) {
+            rhi_bind_texture_set(s_nr.dev, want, 1);
+            pack_bound = want;
+        }
+        rhi_push_constants(s_nr.dev, mh, sizeof *mh);
+        rhi_draw(s_nr.dev, (uint32_t)(g * 3), r->vert0 + (uint32_t)(t * 3));
+        t += g;
+    }
+}
+
+/* Mod material override (S8a): when the run's provenance tag resolves to a
+ * registered selector, draw the WHOLE run with the mod pipeline in the same
+ * bucket, pass and depth (scheduling is engine-owned; runs are tag-pure
+ * because the split key is armed whenever a selector lives), then rebind
+ * `restore`, the pipe the caller's stock draws continue on. Stock-stage
+ * fallbacks: psx_scene.vert/.frag, forked from sdk/shaders/. Returns 0, the
+ * run left to the stock path, when no selector matches or the material's
+ * pipeline failed to build. */
+static int draw_run_material(const tex_run* r, int ov_mark, int blend_class,
+                             int want_replace, rhi_pipeline* restore) {
+    const scene_tri_t* s0 = tex_run_tri(r, 0);
+    if (!tag_split_on() || !s0->tag) return 0;
+    openpete_mod_material_gpu_t mg;
+    if (openpete_mods_material_resolve(s0->tag, &mg) < 0) return 0;
+    rhi_pipeline* pipe = material_run_pipe(&mg, ov_mark, blend_class);
+    if (!pipe) return 0;
+    bind_scene_pipe(pipe);
+    rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
+    rhi_texture* pack_bound = s_nr.mat_pack_dummy;
+    if (pack_bound)
+        rhi_bind_texture_set(s_nr.dev, pack_bound, 1);
+    bind_material_keys();
+    /* engine block 0 + the per-instance slot's mod block (S8b, block 1+slot;
+     * slot 0 = declarative binds the engine block as the mod block too). */
+    if (s_mat_ubo)
+        rhi_ubo_bind(s_nr.dev, s_mat_ubo, 0,
+                     mg.uniform_slot > 0 ? 1 + mg.uniform_slot : 0);
+    psx_material_hd mh;
+    memset(&mh, 0, sizeof mh);
+    mh.tpage_x = r->m.tpage_x; mh.tpage_y = r->m.tpage_y;
+    mh.clut_x = r->m.clut_x; mh.clut_y = r->m.clut_y;
+    mh.bpp = r->m.bpp;
+    /* Not for bpp-32 runs: mod-registered textures have no registry
+     * identity. */
+    if (want_replace && s0->bpp != 32) {
+        draw_material_pack_walk(r, &mh, pack_bound);
+    } else {
+        rhi_push_constants(s_nr.dev, &mh, sizeof mh);
+        rhi_draw(s_nr.dev, (uint32_t)(r->ntri * 3), r->vert0);
+    }
+    bind_scene_pipe(restore);   /* HD-path restore discipline */
+    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+    return 1;
+}
+
+/* Draw one textured bucket, coalescing adjacent same-material triangles into
+ * runs. `pipes` is the bucket's pipe table indexed by blend class (see
+ * tex_run_pipe); the caller binds pipes[0] before the call. A bucket whose
+ * triangles share one class passes a one-entry table and every run draws
+ * through it. A multi-entry table (the 2D HUD layer, where each primitive
+ * carries its own ABR) breaks runs on the blend class and switches pipe per
+ * run in submission order, so painter order inside the bucket is kept.
+ *
+ * allow_override: 0 = stock only; 1 = material overrides via the plain
  * pipeline; 2 = via the stencil-MARK twin (the caller's group marks its
  * opaque coverage for hole-fill, so overridden runs must mark too — else
  * the LP fill paints over them).
@@ -5852,13 +6094,9 @@ static void hdfold_flush_locked(void)
  * pipeline for a contiguous run in place and draws it in the same slot, so
  * submission order survives. */
 static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
-                          const scene_tri_t* scene, rhi_pipeline* self,
-                          rhi_pipeline* hd_pipe, int allow_override,
+                          const scene_tri_t* scene, rhi_pipeline* const* pipes,
+                          int npipes, rhi_pipeline* hd_pipe, int allow_override,
                           int blend_class) {
-    static const rhi_blend_mode k_ov_blend[5] = {
-        RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT,
-        RHI_BLEND_ADD_QUARTER
-    };
     if (blend_class < 0 || blend_class > 4) blend_class = 0;
     if (blend_class == 4) allow_override = 0;   /* no material slot for quarter-add */
     const int hd_defer_ok = hd_pipe == s_nr.hd_cutout_pipe ||
@@ -5866,181 +6104,27 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
     const int ov_mark = (allow_override == 2);
     tp_flags_init();
     const int want_replace = hd_pipe && texture_pack_replacements_active();
+    const int split_blend = npipes > 1;
+    rhi_pipeline* self = pipes[0];              /* bound by the caller */
     int base = (first_vert - tx_start) / 3, ntri = vert_count / 3, i = 0;
     while (i < ntri) {
         const scene_tri_t* s0 = &scene[s_txscene[base + i]];
-        const psx_material m = { s0->tpage_x, s0->tpage_y, s0->clut_x, s0->clut_y, s0->bpp };
         int run = 1;
-        while (i + run < ntri) {
-            const scene_tri_t* s1 = &scene[s_txscene[base + i + run]];
-            if (s1->tpage_x != s0->tpage_x || s1->tpage_y != s0->tpage_y ||
-                s1->clut_x != s0->clut_x || s1->clut_y != s0->clut_y || s1->bpp != s0->bpp) break;
-            /* Lockstep with tex_mat_cmp's tag term (S6): a tag the sort
-             * separated must also break the run here or coalescing undoes
-             * the split. */
-            if (tag_split_on() && s1->tag != s0->tag) break;
+        while (i + run < ntri &&
+               tex_run_continues(s0, &scene[s_txscene[base + i + run]], split_blend))
             run++;
+        const tex_run r = { scene, base + i, run, (uint32_t)(first_vert + i * 3),
+                            { s0->tpage_x, s0->tpage_y, s0->clut_x, s0->clut_y, s0->bpp } };
+        rhi_pipeline* const pipe = tex_run_pipe(pipes, npipes, s0->blend);
+        if (pipe != self) {
+            bind_scene_pipe(pipe);
+            rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+            self = pipe;
         }
-        /* Mod material override (S8a): the run's provenance tag resolves
-         * to a registered selector — draw the WHOLE run with the mod
-         * pipeline (same bucket/pass/depth: scheduling is engine-owned;
-         * runs are tag-pure because the split key is armed whenever a
-         * selector lives). Only in plain opaque groups (allow_override):
-         * stencil-marking WORLD (holefill) and blend groups keep stock.
-         * Stock-stage fallbacks: psx_scene.vert/.frag — fork them from
-         * sdk/shaders/. */
-        {   /* OPENPETE_TEXSEL_DBG2=<tid>: draw-side resolve forensics for one
-             * terrain texture id. */
-            static int s_ts2 = -2;
-            if (s_ts2 == -2) { const char* e2 = getenv("OPENPETE_TEXSEL_DBG2");
-                               s_ts2 = e2 ? atoi(e2) : -1; }
-            extern unsigned int openpete_frame;
-            if (s_ts2 >= 0 && (s0->tag >> 28) == 2u &&
-                !(s0->tag & 0x02000000u) &&
-                (int)((s0->tag >> 9) & 0x7Fu) == s_ts2 &&
-                openpete_frame > 2000u) {
-                openpete_mod_material_gpu_t mgd;
-                static int pr = 0;
-                if (pr++ < 24)
-                    fprintf(stderr, "[texsel-draw f=%u] tag=%08X allow=%d split=%d "
-                            "resolve=%d run=%d\n", openpete_frame, s0->tag,
-                            allow_override, tag_split_on(),
-                            openpete_mods_material_resolve(s0->tag, &mgd), run);
-            }
-        }
-        if (allow_override && tag_split_on() && s0->tag) {
-            openpete_mod_material_gpu_t mg;
-            if (openpete_mods_material_resolve(s0->tag, &mg) >= 0) {
-                /* One pipeline per (material, blend class): the MARK twin is
-                 * opaque-only (hole-fill coverage), so a blended run never
-                 * wants it. */
-                void** ov_slot = ov_mark ? mg.pipeline_mark_slot
-                                         : mg.pipeline_slot[blend_class];
-                if (*ov_slot == NULL) {
-                    rhi_pipeline_desc md = {
-                        .vert_spv = "psx_scene.vert.spv",
-                        .frag_spv = "psx_scene.frag.spv",
-                        .blend = k_ov_blend[blend_class],
-                        .depth_test = true,
-                        /* Blended groups z-test against opaque but never
-                         * occlude each other. No .depth_bias: binding a bias
-                         * pipeline invalidates the dynamic bias state, so an
-                         * override would have to re-set a value it doesn't
-                         * have — and the one override-eligible subtract group
-                         * (SUBTRACT-WORLD) draws at zero bias anyway. The
-                         * biased group, moby shadows, takes no overrides. */
-                        .depth_write_off = blend_class != 0,
-                        .stencil = ov_mark ? RHI_STENCIL_MARK
-                                           : RHI_STENCIL_NONE,
-                        .material_pipeline = true,
-                        .push_const_size = sizeof(psx_material_hd),
-                    };
-                    rhi_pipeline* p = rhi_create_pipeline_spv(
-                        s_nr.dev, &md, mg.vert_spv, mg.vert_words,
-                        mg.frag_spv, mg.frag_words);
-                    *ov_slot = p ? (void*)p : PFX_PIPE_FAILED;
-                    if (!p)
-                        fprintf(stderr, "[native] material: pipeline build "
-                                        "FAILED for %s\n", mg.owner);
-                }
-                if (*ov_slot != PFX_PIPE_FAILED) {
-                    bind_scene_pipe((rhi_pipeline*)*ov_slot);
-                    rhi_bind_texture_set(s_nr.dev, s_nr.vram_tex, 0);
-                    rhi_texture* pack_bound = s_nr.mat_pack_dummy;
-                    if (pack_bound)
-                        rhi_bind_texture_set(s_nr.dev, pack_bound, 1);
-                    bind_material_keys();
-                    /* engine block 0 + the per-instance slot's mod block
-                     * (S8b, block 1+slot; slot 0 = declarative binds the
-                     * engine block as the mod block too — harmless). */
-                    if (s_mat_ubo)
-                        rhi_ubo_bind(s_nr.dev, s_mat_ubo, 0,
-                                     mg.uniform_slot > 0 ? 1 + mg.uniform_slot : 0);
-                    psx_material_hd mh;
-                    memset(&mh, 0, sizeof mh);
-                    mh.tpage_x = m.tpage_x; mh.tpage_y = m.tpage_y;
-                    mh.clut_x = m.clut_x; mh.clut_y = m.clut_y;
-                    mh.bpp = m.bpp;
-                    /* Pack replacements for overridden runs (op_pack_shade):
-                     * walk the run per tri through the same registry
-                     * resolve/match as the SD path — tris matching different
-                     * pack files (or none) need different set-1 bindings and
-                     * file rects, so they draw as separate sub-runs. Not for
-                     * bpp-32 runs (mod-registered textures have no registry
-                     * identity). */
-                    const int mat_walk = want_replace && s0->bpp != 32;
-                    if (!mat_walk) {
-                        rhi_push_constants(s_nr.dev, &mh, sizeof mh);
-                        rhi_draw(s_nr.dev, (uint32_t)(run * 3),
-                                 (uint32_t)(first_vert + i * 3));
-                    } else {
-                        int t = 0;
-                        while (t < run) {
-                            const scene_tri_t* st = &scene[s_txscene[base + i + t]];
-                            texture_pack_id id; texture_pack_repl repl;
-                            int cly; float bu0, bv0;
-                            int matched = tp_tri_match(st, &m, 1, &id, &repl,
-                                                       &cly, &bu0, &bv0);
-                            int g = 1;
-                            while (t + g < run) {
-                                const scene_tri_t* sn = &scene[s_txscene[base + i + t + g]];
-                                texture_pack_id nid; texture_pack_repl nrepl;
-                                int ncly; float nu0, nv0;
-                                int nmatched = tp_tri_match(sn, &m, 1, &nid, &nrepl,
-                                                            &ncly, &nu0, &nv0);
-                                if (nmatched != matched) break;
-                                if (matched && nrepl.pixels != repl.pixels) break;
-                                /* One fog transform per sub-run (see the SD
-                                 * walk's identical break). */
-                                if (matched && sn->fog_delta != st->fog_delta) break;
-                                g++;
-                            }
-                            rhi_texture* want = s_nr.mat_pack_dummy;
-                            mh.hd = 0;
-                            if (matched) {
-                                uint64_t key = (uint64_t)(uintptr_t)repl.pixels;
-                                rhi_texture* tex = hd_cache_lookup(key);
-                                if (!tex) {
-                                    hd_pending_add(key, repl.pixels, repl.w, repl.h,
-                                                   repl.box_w, repl.box_h);   /* next present */
-                                } else {
-                                    want = tex;
-                                    mh.hd = 1;
-                                    /* File box in page-texel coords: the tri box
-                                     * (bu0 page-relative <-> id.box upload-
-                                     * relative) anchors the conversion. */
-                                    mh.hd_u0 = bu0 - (float)(id.box_x - repl.box_x);
-                                    mh.hd_v0 = bv0 - (float)(id.box_y - repl.box_y);
-                                    mh.hd_uw = (float)repl.box_w;
-                                    mh.hd_vh = (float)repl.box_h;
-                                    /* Mod-material pipes carry only the flat
-                                     * per-rung affine (their fragment contract
-                                     * has no perspective-W varying for the
-                                     * continuous ramp) — they still get the
-                                     * per-texture retarget. */
-                                    hd_pc fpc;
-                                    tp_pack_fog(&m, cly, st->fog_delta, &id, &repl,
-                                                mh.hd_u0, mh.hd_v0, &fpc);
-                                    memcpy(mh.fog_a, fpc.a, sizeof fpc.a);
-                                    memcpy(mh.fog_b, fpc.b, sizeof fpc.b);
-                                }
-                            }
-                            if (want && want != pack_bound) {
-                                rhi_bind_texture_set(s_nr.dev, want, 1);
-                                pack_bound = want;
-                            }
-                            rhi_push_constants(s_nr.dev, &mh, sizeof mh);
-                            rhi_draw(s_nr.dev, (uint32_t)(g * 3),
-                                     (uint32_t)(first_vert + (i + t) * 3));
-                            t += g;
-                        }
-                    }
-                    bind_scene_pipe(self);   /* HD-path restore discipline */
-                    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-                    i += run;
-                    continue;
-                }
-            }
+        texsel_draw_forensics(s0, allow_override, run);
+        if (allow_override && draw_run_material(&r, ov_mark, blend_class, want_replace, self)) {
+            i += run;
+            continue;
         }
         if (s0->bpp == OPENPETE_FB_SNAPSHOT_BPP) {
             /* Framebuffer-window run (openpete_fb_snapshot_on_move): tpage_x
@@ -6060,13 +6144,13 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                     bind_scene_pipe(hd_pipe);
                     rhi_bind_vram(s_nr.dev, tex);
                     rhi_push_constants(s_nr.dev, &pc, sizeof pc);
-                    rhi_draw(s_nr.dev, (uint32_t)(run * 3), (uint32_t)(first_vert + i * 3));
+                    rhi_draw(s_nr.dev, (uint32_t)(run * 3), r.vert0);
                     bind_scene_pipe(self);
                     rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 }
             } else {
-                rhi_push_constants(s_nr.dev, &m, sizeof m);
-                rhi_draw(s_nr.dev, (uint32_t)(run * 3), (uint32_t)(first_vert + i * 3));
+                rhi_push_constants(s_nr.dev, &r.m, sizeof r.m);
+                rhi_draw(s_nr.dev, (uint32_t)(run * 3), r.vert0);
             }
             i += run;
             continue;
@@ -6093,7 +6177,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                     bind_scene_pipe(hd_pipe);
                     rhi_bind_vram(s_nr.dev, tex);
                     rhi_push_constants(s_nr.dev, &pc, sizeof pc);
-                    rhi_draw(s_nr.dev, (uint32_t)(run * 3), (uint32_t)(first_vert + i * 3));
+                    rhi_draw(s_nr.dev, (uint32_t)(run * 3), r.vert0);
                     bind_scene_pipe(self);
                     rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 }
@@ -6107,8 +6191,8 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
          * tris matching the same pack file coalesce into HD sub-runs, the
          * rest draw SD in material-coalesced groups as before. */
         if (!(s_tp_resolve_log || s_tp_dump_on || s_tp_census_on || want_replace)) {
-            rhi_push_constants(s_nr.dev, &m, sizeof m);
-            rhi_draw(s_nr.dev, (uint32_t)(run * 3), (uint32_t)(first_vert + i * 3));
+            rhi_push_constants(s_nr.dev, &r.m, sizeof r.m);
+            rhi_draw(s_nr.dev, (uint32_t)(run * 3), r.vert0);
             i += run;
             continue;
         }
@@ -6116,32 +6200,13 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
         int m_pushed = 0;                       /* material push valid for SD draws */
         while (t < run) {
             /* This tri's texel box -> identity -> pack match. */
-            const scene_tri_t* st = &scene[s_txscene[base + i + t]];
+            const scene_tri_t* st = tex_run_tri(&r, t);
             texture_pack_id id;
             texture_pack_repl repl;
             int cly; float u0, v0;
-            int matched = tp_tri_match(st, &m, want_replace, &id, &repl,
+            int matched = tp_tri_match(st, &r.m, want_replace, &id, &repl,
                                        &cly, &u0, &v0);
-            /* Grow the sub-run: consecutive tris with the same disposition
-             * (same pack file, or both unreplaced). */
-            int g = 1;
-            while (t + g < run) {
-                const scene_tri_t* sn = &scene[s_txscene[base + i + t + g]];
-                texture_pack_id nid;
-                texture_pack_repl nrepl;
-                int ncly; float nu0, nv0;
-                int nmatched = tp_tri_match(sn, &m, want_replace, &nid, &nrepl,
-                                            &ncly, &nu0, &nv0);
-                if (nmatched != matched) break;
-                if (matched && nrepl.pixels != repl.pixels) break;
-                /* A replaced run carries ONE fog transform in its push
-                 * constants, and canonicalising the CLUT means tris at
-                 * different fog distances now resolve to the SAME pack file —
-                 * so they must not coalesce, or the whole run would draw at
-                 * the leading tri's fog depth. */
-                if (matched && sn->fog_delta != st->fog_delta) break;
-                g++;
-            }
+            int g = tp_subrun_len(&r, t, want_replace, matched, &repl, st);
             /* OPENPETE_TEXPACK_STATS=1: sub-run disposition counters. */
             static int s_stats = -1;
             static long sc_hd = 0, sc_pend = 0, sc_sd = 0, sc_n = 0;
@@ -6170,16 +6235,16 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
                         (float)repl.box_w, (float)repl.box_h,
                         { 0 }, { 0 }, { 0 }, { 0 }, { 0 },
                     };
-                    tp_pack_fog(&m, cly, st->fog_delta, &id, &repl,
+                    tp_pack_fog(&r.m, cly, st->fog_delta, &id, &repl,
                                 pc.u0, pc.v0, &pc);
                     if (hd_defer_ok) {
                         hd_defer_push(tex, &pc, (uint32_t)(g * 3),
-                                      (uint32_t)(first_vert + (i + t) * 3));
+                                      r.vert0 + (uint32_t)(t * 3));
                     } else {
                         bind_scene_pipe(hd_pipe);
                         rhi_bind_vram(s_nr.dev, tex);
                         rhi_push_constants(s_nr.dev, &pc, sizeof pc);
-                        rhi_draw(s_nr.dev, (uint32_t)(g * 3), (uint32_t)(first_vert + (i + t) * 3));
+                        rhi_draw(s_nr.dev, (uint32_t)(g * 3), r.vert0 + (uint32_t)(t * 3));
                         bind_scene_pipe(self);
                         rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                         m_pushed = 0;           /* push constants were overwritten */
@@ -6190,10 +6255,10 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
             }
             if (s_stats && !matched && want_replace) sc_sd++;
             if (!m_pushed) {
-                rhi_push_constants(s_nr.dev, &m, sizeof m);
+                rhi_push_constants(s_nr.dev, &r.m, sizeof r.m);
                 m_pushed = 1;
             }
-            rhi_draw(s_nr.dev, (uint32_t)(g * 3), (uint32_t)(first_vert + (i + t) * 3));
+            rhi_draw(s_nr.dev, (uint32_t)(g * 3), r.vert0 + (uint32_t)(t * 3));
             t += g;
         }
         i += run;
@@ -6206,30 +6271,32 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
                                 int hud_tex_first, int hud_tex_count)
 {
     if (ut_count[8] > 0) {                                          /* HUD_PANEL (semi-transparent 2D box) */
-        /* Each HUD-panel box carries its real PSX ABR mode in its blend field (read
-         * from the box's DR_MODE in ui_sprite_native): mode 2 (B-F) -> subtractive
-         * (blend 3), mode 0 ((B+F)/2) -> alpha (blend 1). Draw each box with the pipe
-         * matching its blend. The slot-8 VB range is in scene[] submission order, so
+        /* Each HUD-panel box carries the blend class of its PSX ABR mode (read
+         * from the box's DR_MODE in ui_sprite_native) and draws through that
+         * member of the untextured HUD family; a class outside the family
+         * draws alpha. The slot-8 VB range is in scene[] submission order, so
          * walking scene[] for HUD_PANEL tris tracks the vertex offset in lockstep. */
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         int voff = ut_first[8], vend = ut_first[8] + ut_count[8];
         for (int t = 0; t < scene_n && voff + 3 <= vend; t++) {
             if (scene[t].textured || scene[t].category != OPENPETE_SCENE_HUD_PANEL) continue;
-            rhi_pipeline *pipe = (scene[t].blend == 3) ? s_nr.gouraud_hud_sub_pipe
-                                                       : s_nr.gouraud_hud_blend_pipe;
+            const int b = scene[t].blend;
+            rhi_pipeline *pipe = s_nr.gouraud_hud_pipes[(b > 0 && b < NR_BLEND_CLASSES) ? b : NR_BLEND_AVG];
             if (pipe) { bind_scene_pipe(pipe); rhi_draw(s_nr.dev, 3, (uint32_t)voff); }
             voff += 3;
         }
     }
-    if (hud_tex_count > 0 && s_nr.vram_tex && s_nr.scene_tex_hud_pipe) {  /* textured HUD (2D backdrops) */
-        bind_scene_pipe(s_nr.scene_tex_hud_pipe);
+    if (hud_tex_count > 0 && s_nr.vram_tex && s_nr.scene_tex_hud_pipes[0]) {  /* textured HUD (2D) */
+        /* Bucket 6 in submission (ordering-table) order, each run through the
+         * pipe of its own blend class; HD = alpha, depth-off. */
+        bind_scene_pipe(s_nr.scene_tex_hud_pipes[0]);
         rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-        draw_tex_runs(hud_tex_first, hud_tex_count, tx_start, scene, s_nr.scene_tex_hud_pipe,
-                      s_nr.hd_tex_pipe, 0, 0);  /* bucket 6, submission order + run-coalesce; HD = alpha, depth-off */
+        draw_tex_runs(hud_tex_first, hud_tex_count, tx_start, scene, s_nr.scene_tex_hud_pipes,
+                      NR_BLEND_CLASSES, s_nr.hd_tex_pipe, 0, 0);
     }
     {   /* OPENPETE_HUD6_ZPIPE=1 (A/B): draw the glyph bucket through the opaque
-         * depth-tested pipe after a depth clear — isolates gouraud_hud_pipe state. */
+         * depth-tested pipe after a depth clear — isolates the HUD pipe state. */
         static int s_zp = -1;
         if (s_zp < 0) { const char* e = getenv("OPENPETE_HUD6_ZPIPE"); s_zp = (e && *e && *e != '0'); }
         if (s_zp && s_nr.gouraud_pipe && ut_count[6] > 0) {
@@ -6240,14 +6307,14 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
             return;
         }
     }
-    if (s_nr.gouraud_hud_pipe && ut_count[6] > 0) {                 /* untextured HUD text/glyphs */
+    if (s_nr.gouraud_hud_pipes[0] && ut_count[6] > 0) {                 /* untextured HUD text/glyphs */
         /* The slot-6 VB range is depth-sorted back-to-front at build time (see
          * the bucket-6 build in render_scene) so rotating near-OT mobys — the
          * inventory letters/icons — self-occlude correctly despite the
          * depth-off pipe. (The textured HUD range above stays submission-order:
          * its content is constant-z 2D sprites; extend the sort there if a
          * rotating TEXTURED near-OT moby ever appears.) */
-        bind_scene_pipe(s_nr.gouraud_hud_pipe);
+        bind_scene_pipe(s_nr.gouraud_hud_pipes[0]);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         rhi_draw(s_nr.dev, (uint32_t)ut_count[6], (uint32_t)ut_first[6]);
     }
@@ -7460,7 +7527,7 @@ static bool draw_native_scene(bool full_extent)
                      * is depth only, and a mod pipe would bring its own (and
                      * possibly different) discard rule to the coverage. */
                     draw_tex_runs(txg_first[9], txg_count[9], tx_start, scene,
-                                  tpipe, hpipe, pass, 0);
+                                  &tpipe, 1, hpipe, pass, 0);
                 }
             }
         }
@@ -7664,7 +7731,7 @@ static bool draw_native_scene(bool full_extent)
                  * support, so neither path takes it. */
                 int mat_ok = (gi == 1) ? 0
                            : (g->tex == s_nr.scene_tex_mark_pipe ? 2 : 1);
-                draw_tex_runs(txg_first[txb], txg_count[txb], tx_start, scene, g->tex, hd,
+                draw_tex_runs(txg_first[txb], txg_count[txb], tx_start, scene, &g->tex, 1, hd,
                               mat_ok, g->blend);
             }
         }
@@ -7694,7 +7761,7 @@ static bool draw_native_scene(bool full_extent)
                 rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
                 draw_tex_runs(txg_first[9], txg_count[9], tx_start, scene,
-                              atex, acut, holefill_on ? 2 : 1, 0);
+                              &atex, 1, acut, holefill_on ? 2 : 1, 0);
             }
         }
         /* Terrain sector-mesh GPU cache: the retained WORLD terrain (unclaimed
@@ -7781,7 +7848,7 @@ static bool draw_native_scene(bool full_extent)
                  * caller's dynamic depth-bias state, which an HD rebind
                  * would invalidate. */
                 draw_tex_runs(txg_first[8], txg_count[8], tx_start, scene,
-                              s_nr.scene_tex_sub_pipe, NULL, 1, 3);
+                              &s_nr.scene_tex_sub_pipe, 1, NULL, 1, 3);
             }
             /* Terrain-cache ABR-2 terrain faces: same SUBTRACT-WORLD slot. */
             if (openpete_tercache_frame_open()) {
@@ -7922,7 +7989,7 @@ static bool draw_native_scene(bool full_extent)
                 bind_scene_pipe(s_nr.scene_tex_pipe);
                 rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
                 rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                draw_tex_runs(txg_first[7], txg_count[7], tx_start, scene, s_nr.scene_tex_pipe,
+                draw_tex_runs(txg_first[7], txg_count[7], tx_start, scene, &s_nr.scene_tex_pipe, 1,
                               s_nr.hd_cutout_pipe, 0, 0);
             }
         }
@@ -7967,10 +8034,10 @@ static bool draw_native_scene(bool full_extent)
 
     /* OVERLAY layer (HUD-OT 2D flat quads — the cutscene letterbox bars): drawn
      * after every scene group, over everything incl. the player, depth-test off
-     * (gouraud_hud_pipe). Before the fade, matching the PSX HUD-OT order (the fade
+     * (the opaque untextured HUD pipe). Before the fade, matching the PSX HUD-OT order (the fade
      * F4 is linked after the border, so it draws on top of the bars). */
-    if (s_nr.gouraud_hud_pipe && ut_count[7] > 0) {
-        bind_scene_pipe(s_nr.gouraud_hud_pipe);
+    if (s_nr.gouraud_hud_pipes[0] && ut_count[7] > 0) {
+        bind_scene_pipe(s_nr.gouraud_hud_pipes[0]);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         rhi_draw(s_nr.dev, (uint32_t)ut_count[7], (uint32_t)ut_first[7]);
     }
@@ -8815,8 +8882,8 @@ static void draw_menu_overlay(void) {
     rhi_update_buffer(s_nr.menu_vb, buf, (size_t)n * sizeof(rhi_vertex));
     rhi_reset_scissor(s_nr.dev);
 
-    if (sub_n > 0 && s_nr.gouraud_hud_sub_pipe) {
-        bind_scene_pipe(s_nr.gouraud_hud_sub_pipe);
+    if (sub_n > 0 && s_nr.gouraud_hud_pipes[NR_BLEND_SUB]) {
+        bind_scene_pipe(s_nr.gouraud_hud_pipes[NR_BLEND_SUB]);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.menu_vb);
         rhi_draw(s_nr.dev, (uint32_t)sub_n, (uint32_t)sub0);
     }
@@ -9057,10 +9124,10 @@ static void draw_osd_overlay(void) {
     if (drawn <= 0) return;
     s_osd_composited += (unsigned)drawn;   /* engagement counter (a green must prove it engaged) */
 
-    if (pn > 0 && s_nr.gouraud_hud_sub_pipe) {
+    if (pn > 0 && s_nr.gouraud_hud_pipes[NR_BLEND_SUB]) {
         rhi_update_buffer(s_nr.osd_panel_vb, panels, (size_t)pn * sizeof(rhi_vertex));
         rhi_reset_scissor(s_nr.dev);
-        bind_scene_pipe(s_nr.gouraud_hud_sub_pipe);
+        bind_scene_pipe(s_nr.gouraud_hud_pipes[NR_BLEND_SUB]);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.osd_panel_vb);
         rhi_draw(s_nr.dev, (uint32_t)pn, 0);
     }
@@ -11343,7 +11410,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.panels_vb)    rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
     if (s_nr.freeze_overlay_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.freeze_overlay_pipe);
     if (s_nr.resolve_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.resolve_pipe);
-    if (s_nr.scene_tex_hud_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_hud_pipe);
+    blend_family_destroy(s_nr.dev, s_nr.scene_tex_hud_pipes);
     if (s_nr.hd_tex_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_tex_pipe);
     if (s_nr.hd_cutout_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_cutout_pipe);
     if (s_nr.hd_cutout_mark_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_cutout_mark_pipe);
@@ -11355,9 +11422,7 @@ void openpete_native_render_shutdown(void)
     hd_cache_shutdown();
     if (s_nr.mat_pack_dummy) { rhi_destroy_texture(s_nr.dev, s_nr.mat_pack_dummy); s_nr.mat_pack_dummy = NULL; }
     texture_pack_shutdown();
-    if (s_nr.gouraud_hud_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_sub_pipe);
-    if (s_nr.gouraud_hud_blend_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_blend_pipe);
-    if (s_nr.gouraud_hud_pipe)   rhi_destroy_pipeline(s_nr.dev, s_nr.gouraud_hud_pipe);
+    blend_family_destroy(s_nr.dev, s_nr.gouraud_hud_pipes);
     if (s_nr.scene_tex_sub_decal_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_sub_decal_pipe);
     if (s_nr.scene_tex_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_sub_pipe);
     if (s_nr.scene_tex_add_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_add_pipe);

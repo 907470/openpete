@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: dc78570d88cc954a8be5bea0360918abcce41aba
+# head: 15d647c2a28e7dbd2d93fe6ea8a317c03908e526
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -66,7 +66,7 @@ core/renderer/native_render.c	alpha_census	53	0
 core/renderer/native_render.c	compose_variant	52	0	
 core/renderer/native_render.c	draw_native_scene	752	0	
 core/renderer/native_render.c	draw_osd_overlay	52	0	
-core/renderer/native_render.c	draw_tex_runs	248	0	
+core/renderer/native_render.c	draw_tex_runs	99	0	
 core/renderer/native_render.c	draw_ut_mat_spans	48	0	
 core/renderer/native_render.c	gpu_zone_report	27	0	
 core/renderer/native_render.c	hd_flush_pending	31	0	
@@ -76,8 +76,8 @@ core/renderer/native_render.c	native_render_screenshot_all_impl	52	0
 core/renderer/native_render.c	native_terrain_key_pass	66	0	
 core/renderer/native_render.c	openpete_native_hdfold_intern	32	0	
 core/renderer/native_render.c	openpete_native_occl_query	27	0	
-core/renderer/native_render.c	openpete_native_render_init	172	0	
-core/renderer/native_render.c	openpete_native_render_shutdown	83	0	
+core/renderer/native_render.c	openpete_native_render_init	164	0	
+core/renderer/native_render.c	openpete_native_render_shutdown	79	0	
 core/renderer/native_render.c	openpete_native_render_snapshot_fb_window	27	0	
 core/renderer/native_render.c	openpete_native_render_snapshot_frozen	28	0	
 core/renderer/native_render.c	openpete_native_scene_add_tri_grouped	51	0	
