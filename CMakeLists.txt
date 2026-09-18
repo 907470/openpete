@@ -285,6 +285,29 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
         SKIP_RETURN_CODE 64
         WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
 
+    # Retained-terrain GPU cache hole census, windowed on the machine's own
+    # GPU. Per freecam-corpus row, two legs of one build on one device
+    # differing only in --terrain-cache, and a count of the pixels the cached
+    # leg renders as the framebuffer clear where the CPU walk feed renders
+    # terrain. The class is an exact-bit tie in the fragment key contest, so it
+    # is device-dependent: a software rasteriser cannot produce it and the
+    # headless presentation golden, which runs llvmpipe with the cache off,
+    # cannot separate a build carrying it from a build that does not. Skips
+    # (exit 64) without a display, a windows-mingw exe, a disc or PIL.
+    foreach(tcgh_game spyro-1 spyro-2 spyro-3)
+        string(REPLACE "-" "" tcgh_slug ${tcgh_game})
+        add_test(NAME tercache_gpu_holes_${tcgh_slug}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_tercache_gpu_holes.sh
+                         --game ${tcgh_game})
+        set_tests_properties(tercache_gpu_holes_${tcgh_slug} PROPERTIES
+            LABELS "slow;presentation;terrain;windowed"
+            # Two windowed legs per corpus row, each booting to a pinned
+            # post-load VBL; the Spyro 1 corpus is the long one.
+            TIMEOUT 21600
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Multi-Spyro sub-tick records (notes/plans/openpete-native-multi-spyro-subtick.md):
     # the spyro-coop mod draws N dragons through the game's own player
     # renderers; each corpus case asserts the OPENPETE_SPYRO_RECDBG hook-call
