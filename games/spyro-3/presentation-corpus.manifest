@@ -56,7 +56,9 @@ sunrise-spring-camera-swing|1500|100||1520,1540,1560,1760,2000
 # in the water at VBL 4556; that pin holds the present on both legs. The 4520 pin
 # holds a sub-tick present while she moves through the world under a moving
 # camera: her own motion must interpolate as her camera-relative motion does.
-sheilas-alp-sheila-water-invisible|4400|100||1500,4520,4556
+# 4494, 4498, 4508, 4512 and 4528 hold sub-tick presents while Sheila and the
+# NPCs beside her blend into their next animations.
+sheilas-alp-sheila-water-invisible|4400|100||1500,4494,4498,4508,4512,4520,4528,4556
 
 # icy-peak-ice-crystal-destruction: an ice crystal shot at VBL ~1670 shatters on the
 # PSX and its model stays on screen natively; the pins bracket the shatter.
