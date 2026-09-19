@@ -152,6 +152,45 @@ static int      s_rec_snap_ended;
 static int      s_rec_snap_appended;
 static void moby_rec_append_reset(void);
 
+/* The mobys whose records this tick's reveal appended. The walk reads the
+ * appended records out of the same copy the cull filled, so a triangle's origin
+ * is not readable from the record it came from; the scene needs it to tell the
+ * game's own geometry from what the reveal added. Bounded by the copy's record
+ * count, and a reveal that overruns the array marks nothing, which
+ * leaves the pre-reveal verdict. */
+#define REC_APPEND_MOBYS 512
+static uint32_t s_rec_append_moby[REC_APPEND_MOBYS];
+static int      s_rec_append_moby_n;
+
+/* Retired whenever the set is rebuilt, so a memo taken against one tick's set
+ * cannot answer for the next. */
+static unsigned s_rec_append_gen;
+
+static void moby_rec_append_note(uint32_t moby) {
+    if (s_rec_append_moby_n < REC_APPEND_MOBYS)
+        s_rec_append_moby[s_rec_append_moby_n++] = moby;
+}
+
+static int moby_rec_appended_moby(uint32_t moby) {
+    for (int i = 0; i < s_rec_append_moby_n; i++)
+        if (s_rec_append_moby[i] == moby) return 1;
+    return 0;
+}
+
+/* The set membership of one moby, memoized on the pointer and the set's
+ * generation: the walk emits a moby's faces contiguously, so a per-triangle
+ * call costs one scan per moby. */
+static int moby_walk_tri_host_added(uint32_t moby) {
+    static uint32_t last_moby;
+    static unsigned last_gen;
+    static int      last_hit;
+    if (moby == last_moby && s_rec_append_gen == last_gen) return last_hit;
+    last_moby = moby;
+    last_gen  = s_rec_append_gen;
+    last_hit  = moby_rec_appended_moby(moby);
+    return last_hit;
+}
+
 static void moby_rec_snapshot(CPUState* cpu) {
     s_rec_snap_words = 0;
     const uint32_t stride = game_layout.moby.rec_stride;
@@ -182,6 +221,8 @@ static void moby_rec_snapshot(CPUState* cpu) {
 /* Drop every appended record, leaving the copy exactly as the cull hook took
  * it. The appends belong to one tick's reveal and are rebuilt on the next. */
 static void moby_rec_append_reset(void) {
+    s_rec_append_moby_n = 0;
+    s_rec_append_gen++;
     if (!s_rec_snap_words) return;
     const uint32_t sw = game_layout.moby.rec_stride / 4u;
     s_rec_snap_words = s_rec_snap_queued * sw + (s_rec_snap_ended ? 1u : 0u);
@@ -1890,7 +1931,7 @@ int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
         if (rz <= 0) { m += stride; continue; }   /* behind the camera plane */
         if (occl_record_culled(cpu, m)) { occl++; m += stride; continue; }
         moby_reveal_reason_t why = MOBY_REVEAL_OK;
-        if (moby_game.reveal_record(cpu, m, kind, &why)) added++;
+        if (moby_game.reveal_record(cpu, m, kind, &why)) { added++; moby_rec_append_note(m); }
         else declined[why]++;
         m += stride;
     }
@@ -4085,9 +4126,15 @@ static void push_scene_moby(void) {
         }
         openpete_native_scene_set_tag(
             OPENPETE_TAG_MOBY_SLOT(s_wtri_cls[i], matslot));
+        /* Origin: a record the extended-LOD reveal appended is host-added
+         * geometry, and the scene's content and world-frame verdicts are the
+         * game's own to make. Memoized on the moby ptr like the material slot
+         * above — the walk emits a moby's faces contiguously. */
+        openpete_native_scene_set_host_added(moby_walk_tri_host_added(s_wtri_moby[i]));
         openpete_native_scene_add_tri(&t, cat, 0);
     }
     openpete_native_scene_set_tag(0);   /* leave the tagged emit loop clean */
+    openpete_native_scene_set_host_added(0);
 }
 
 /* ---- projection A/B: native decode+project vs the emitted prim verts --

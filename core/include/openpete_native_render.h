@@ -876,6 +876,14 @@ void openpete_native_scene_add_tri(const openpete_scene_tri *tri, int category, 
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
                                            int carry, int group);
 
+/* Sticky per-tri origin stamped by add_tri until changed (same ambient-state
+ * pattern as set_tag; set 0 when leaving the emit loop). 1 marks a triangle the
+ * host added beyond what the game's own render produced — the extended-LOD moby
+ * reveal. The verdicts "this frame has content" and "this frame is a gameplay
+ * world frame" are read off the game's geometry alone, so host-added geometry
+ * never turns a frame the game drew nothing on into a rendered scene. */
+void openpete_native_scene_set_host_added(int on);
+
 /* ── Provenance tag (mod-shaders S6) ─────────────────────────────────
  * Sticky per-tri provenance stamped by add_tri until changed (same
  * ambient-state pattern as the terrain feeder's s_emit_* context; set

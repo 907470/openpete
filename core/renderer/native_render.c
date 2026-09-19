@@ -332,6 +332,9 @@ typedef struct {
                      * chain is built, one of them deferred to a later release.
                      * Composing by this number reproduces the order the game
                      * emitted them in, whenever each was fed. */
+    int host_added; /* 1 = geometry the host added beyond the game's own render
+                     * (sticky set_host_added value). The scene's content and
+                     * world-frame verdicts skip these tris. */
 } scene_tri_t;
 /* C99 compile-time prefix check: if a field is added to openpete_scene_tri
  * without mirroring it here (or vice versa), this array gets a negative size. */
@@ -444,6 +447,9 @@ static int      s_tag_split_env = -1;   /* OPENPETE_TAG_SPLIT: force key join */
 static int      s_tag_split_ext = 0;    /* armed by registered selectors (S8) */
 
 void openpete_native_scene_set_tag(uint32_t tag) { s_cur_tag = tag; }
+/* Sticky host-added origin (see openpete_native_scene_set_host_added). */
+static int s_cur_host_added;
+void openpete_native_scene_set_host_added(int on) { s_cur_host_added = on ? 1 : 0; }
 void openpete_native_scene_tag_family_counts(uint32_t out[16]) {
     memcpy(out, s_scene_fam_n, sizeof s_scene_fam_n);
 }
@@ -1023,6 +1029,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].seq = s_cur_seq;              /* sticky (set_seq) */
         s_scene[s_scene_n].prim = s_cur_prim;            /* sticky (set_prim) */
         s_scene[s_scene_n].stp_sel = s_cur_stp_sel;      /* sticky (set_stp_select) */
+        s_scene[s_scene_n].host_added = s_cur_host_added; /* sticky (set_host_added) */
         if (s_cur_tag && tag_tint_on()) {
             /* Coverage instrument: hash the tag to a stable tint and modulate
              * the vertex colours — "which source produced this pixel".
@@ -1703,6 +1710,7 @@ static const scene_tri_t* scene_present_buf(int* out_n, uint32_t* out_bg,
  * those and the transition frame is rejected, preserving the last full world. */
 static bool scene_has_world(const scene_tri_t* scene, int n) {
     for (int t = 0; t < n; t++) {
+        if (scene[t].host_added) continue;   /* the game's own geometry decides */
         int c = scene[t].category;
         /* SKY counts as world: the cyclorama was WORLD before the W2.6-c split
          * and a dome-only frame qualified as a gameplay frame — preserve that. */
@@ -1710,6 +1718,19 @@ static bool scene_has_world(const scene_tri_t* scene, int n) {
             c == OPENPETE_SCENE_ACTOR_FRONT || c == OPENPETE_SCENE_SKY)
             return true;
     }
+    return false;
+}
+
+/* True if the presented scene holds a triangle the game's own render produced.
+ * The frame's content verdict: an empty scene composes the PSX VRAM framebuffer
+ * instead, which is what a frame the game drew nothing on must show. Host-added
+ * geometry is excluded, so a moby the extended-LOD reveal appended cannot turn
+ * such a frame into a rendered scene — on the menu screens that suppress the
+ * framebuffer clear, doing so replaces the game's own output with the retained
+ * backdrop of an earlier frame. */
+static bool scene_has_game_tris(const scene_tri_t* scene, int n) {
+    for (int t = 0; t < n; t++)
+        if (!scene[t].host_added) return true;
     return false;
 }
 
@@ -7028,9 +7049,12 @@ static bool draw_native_scene(bool full_extent)
      * present just the background (= PsyCross's filtered clear) instead.
      * A retained-terrain frame with content is scene content too: a game
      * whose only feeder is the terrain, with every sector on the GPU cache,
-     * has no CPU triangles at all. */
+     * has no CPU triangles at all.
+     * Only the game's own triangles count: host-added geometry on a frame the
+     * game drew nothing on would take the render branch and put the retained
+     * framebuffer backdrop where the game left the frame untouched. */
     const bool cache_content = openpete_tercache_frame_open() && openpete_tercache_frame_content();
-    if (scene_n <= 0 && !cache_content && (!s_isolation || bg == 0))
+    if (!scene_has_game_tris(scene, scene_n) && !cache_content && (!s_isolation || bg == 0))
         return false;
 
     s_render_full_extent = full_extent ? 1 : 0;
@@ -9685,7 +9709,7 @@ static void compose_variant(void)
     int sn; uint32_t sbg, sfade, sfreeze;
     const scene_tri_t* scene = scene_present_buf(&sn, &sbg, &sfade, &sfreeze, NULL, NULL);
     uint32_t bg = sbg;   /* gamestate clear (== the PSX draw-env clear) */
-    bool want_scene = (sn > 0) || (s_isolation && bg != 0);
+    bool want_scene = scene_has_game_tris(scene, sn) || (s_isolation && bg != 0);
 
     /* native_rtt is the OFF-DISPLAY reference-resolution render that the
      * freeze-backdrop snapshot copies. The LIVE panel does NOT blit from it — it
