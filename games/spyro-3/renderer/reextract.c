@@ -26,6 +26,7 @@
 #include "renderer/flame.h"          /* the shared fire-breath producer */
 #include "renderer/interp_lerp.h"    /* lerp16/32, lerp_matrix, lerp_vec3 */
 #include "renderer/interp_regions_gen.h"
+#include "renderer/cut_guard.h"      /* the shared camera-cut guard and its census */
 #include "renderer/reextract_view.h"
 #include "renderer/env_knob.h"
 #include "openpete_interp_objs.h"      /* g_openpete_tick_period_ns */
@@ -98,10 +99,24 @@ static void cam_dbg_line(const char* tag, const uint8_t* c) {
             openpete_frame, tag, p[0], p[1], p[2],
             m[0], m[1], m[2], m[3], m[4], m[5], m[6], m[7], m[8], sk[0]);
 }
+/* Where this game's camera fields sit, for the shared cut guard: the sky matrix
+ * decides the rotation test and the world position the jump test. The regime
+ * row resolves to -1 (this game locates no game-state word), so the guard marks
+ * no regime edge here. */
+static const cut_cam_desc_t* cut_desc(void) {
+    static cut_cam_desc_t d = { -2, -2, CAM_OFF_POS, CAM_OFF_SKY };
+    if (d.cam_region == -2) {
+        d.cam_region = game_interp_row_index(GAME_INTERP_CAM_ROW);
+        d.gs_region  = game_interp_row_index(GAME_INTERP_GS_ROW);
+    }
+    return &d;
+}
+
 void spyro_native_canon_epoch_commit(void) {
     if (cam_dbg_on())
         cam_dbg_line("CANON", (const uint8_t*)openpete_psx_to_host_ptr(game_layout.cam.base));
 
+    if (cut_census_on()) cut_locate_camera(cut_desc());
     s_epoch_ok = s_epoch_now;
     s_epoch_now++;
     player_records_epoch_commit();               /* close the hooks' record epoch */
@@ -221,21 +236,6 @@ void spyro_native_canon_capture_camera(void* cpu, int producer) {
 }
 int  spyro_native_prod_camera_enter(int producer) { (void)producer; return 0; }
 void spyro_native_prod_camera_leave(void) {}
-
-/* A cut: the camera moved more than 5000 units or turned more than 90
- * degrees in one tick (a level entry, a teleport), where lerping the chord
- * sweeps the view through geometry it never showed. */
-static int camera_cut(const uint8_t* p, const uint8_t* c) {
-    const int32_t* pp = (const int32_t*)(p + CAM_OFF_POS);
-    const int32_t* cp = (const int32_t*)(c + CAM_OFF_POS);
-    double dx = (double)cp[0] - pp[0], dy = (double)cp[1] - pp[1], dz = (double)cp[2] - pp[2];
-    if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) return 1;
-    const int16_t* pm = (const int16_t*)(p + CAM_OFF_SKY);
-    const int16_t* cm = (const int16_t*)(c + CAM_OFF_SKY);
-    double frob = 0.0;
-    for (int k = 0; k < 9; k++) frob += (double)pm[k] * (double)cm[k];
-    return frob < 4096.0 * 4096.0;   /* row-dot sum under one unit: more than 90 degrees */
-}
 
 /* Replay every player call the canonical tick recorded, not just the avatar.
  *
@@ -439,43 +439,27 @@ static void game_reextract_body(CPUState* cpu) {
     const uint32_t cam_len = game_layout.cam.xform_end - game_layout.cam.base;
     uint8_t* cam = (uint8_t*)openpete_subtick_view_stage(game_layout.cam.base, cam_len);
     int bracketed = 0;
+    int cam_cut = 0;
     double alpha = 0.0;
     /* The tick side of the bracket, kept for the moby replay: the cull composed
      * every animated record against this camera, so the replay needs it to turn
      * those records onto the interpolated one. */
     const uint8_t* tickcam = NULL;
+    /* One cut rule: a pair that is not one motion still shows tick N-1 while
+     * its interval is open, so the bracket runs with alpha pinned to 0 (the
+     * lerp at 0 is prev byte for byte) and the cut lands on the alpha-1
+     * present, where every other channel reaches its canonical N value. The
+     * shared guard owns the predicate, the hold verdict and the census. */
     if (paired && cam && prev && curr) {
-        /* The camera's ring region, resolved by name from the registered table
-         * — a restated index selects the wrong region once a row is inserted. */
-        static int cam_region = -2;
-        if (cam_region == -2) cam_region = game_interp_row_index(GAME_INTERP_CAM_ROW);
-        const uint8_t* pcam = cam_region < 0 ? NULL : prev->data + prev->region_offsets[cam_region];
-        const uint8_t* ccam = cam_region < 0 ? NULL : curr->data + curr->region_offsets[cam_region];
-        if (pcam && ccam && !camera_cut(pcam, ccam)) {
-            double period = (double)(curr->tick_ns - prev->tick_ns);
-            if (period <= 0.0 || period > 4.0 * (double)g_openpete_tick_period_ns)
-                period = (double)g_openpete_tick_period_ns;
-            alpha = (double)(openpete_interp_present_now() - curr->tick_ns) / period;
-            /* The registered regions stopped changing longer ago than the
-             * pair's own cadence: prev->curr describes a motion that has
-             * ENDED, and the head is the state this frame shows. Wall-clock
-             * phase reaches the same answer by itself (now runs away from
-             * curr->tick_ns and the clamp below pins alpha at 1); a present
-             * phased onto curr->tick_ns does not, and would re-lerp the middle
-             * of that last motion at any distance behind the frame it is
-             * labelled with. */
-            if (openpete_interp_curr_is_stale()) alpha = 1.0;
-            if (alpha < -0.35) alpha = -0.35; else if (alpha > 1.0) alpha = 1.0;
-            lerp_matrix(cam, pcam, ccam, CAM_OFF_SKY,  alpha);
-            lerp_matrix(cam, pcam, ccam, CAM_OFF_VIEW, alpha);
-            lerp_vec3  (cam, pcam, ccam, CAM_OFF_POS,  alpha);
-            const int32_t* pp = (const int32_t*)(pcam + CAM_OFF_POS);
-            const int32_t* cp = (const int32_t*)(ccam + CAM_OFF_POS);
-            for (int i = 0; i < 3; i++) s_fpos[i] = (double)pp[i] + ((double)cp[i] - (double)pp[i]) * alpha;
+        cam_bracket_t br;
+        cam_bracket_run(cam, prev, curr, cut_desc(), CAM_OFF_VIEW, &br);
+        cam_cut    = br.cut;
+        bracketed  = br.bracketed;
+        alpha      = br.alpha;
+        tickcam    = br.tickcam;
+        if (br.bracketed) {
+            for (int i = 0; i < 3; i++) s_fpos[i] = br.fpos[i];
             s_fpos_active = 1;
-            tickcam = ccam;
-            bracketed = 1;
-            openpete_pace_note_alpha(alpha, 1);
         }
     }
     if (cam_dbg_on()) {
@@ -492,6 +476,9 @@ static void game_reextract_body(CPUState* cpu) {
             }
         }
     }
+    if (cam)
+        cut_census_camera((const int32_t*)(cam + CAM_OFF_POS),
+                          (const int16_t*)(cam + CAM_OFF_SKY), alpha, cam_cut);
     openpete_native_scene_begin();
     RX_CENSUS_BEGIN();
     cyclorama_reextract(cpu, bracketed ? alpha : 0.0, bracketed);   /* sky dome + background */
