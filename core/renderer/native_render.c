@@ -145,9 +145,14 @@ typedef struct {
  * — the TEXTURED moby drop-shadow decal: the camera reconstruction params of the
  * Spyro decal (shadow_decal_pc, minus its single ground_up — the moby plane is
  * per-pixel from gl_FragCoord.z) plus the per-draw PSX material (all moby shadows
- * share one shadow-sprite tpage, so one material serves the whole batch). The PSX
- * screen coord rides vertex location 3 (sx,sy). 25 floats + 5 ints = 120 B, under
- * the 128-byte guaranteed maxPushConstantsSize. */
+ * share one shadow-sprite tpage, so one material serves the whole batch). The
+ * fragment recovers its own PSX screen coord from gl_FragCoord through the
+ * fax..fby inverse affine of this pass, as the Spyro decal does. The five PSX
+ * material fields are packed into two words (VRAM x 10 bits, y 9 bits, bpp code
+ * 2 bits) so the block is 29 floats + 2 ints = 124 B, under the 128-byte
+ * guaranteed maxPushConstantsSize. The layout is the mod decal contract
+ * (core/include/openpete_psx_decal.glsl); a change to it recompiles every mod
+ * material built from source, the interface hash covering the header. */
 typedef struct {
     float col0x, col0y, col0z;     /* camera rows 4096^2 * C^-1 (world reconstruct) */
     float col1x, col1y, col1z;
@@ -162,10 +167,22 @@ typedef struct {
     float plat_slack;              /* raised-occluder-in-front: view-Z slack */
     float uax, ubx, vay, vby;      /* PSX screen -> pre-pass uv affine */
     float pvw, pvh;                /* pre-pass raster extent (texels) */
-    int32_t tpage_x, tpage_y;      /* PSX material (shadow sprite): texture page */
-    int32_t clut_x, clut_y;        /* CLUT origin (paletted) */
-    int32_t bpp;                   /* 4 / 8 / 16 */
+    float fax, fbx, fay, fby;      /* gl_FragCoord -> PSX screen affine, this pass */
+    int32_t tpage;                 /* shadow-sprite texture page, x | y << 10 */
+    int32_t clut;                  /* CLUT origin x | y << 10, bpp code << 20 */
 } shadow_decal_tex_pc;
+
+/* The packed material words the decal contract declares: VRAM coordinates are
+ * 10 bits of x and 9 of y, and bpp 4/8/16 is the code 0/1/2 (4 << code). */
+static int32_t decal_pack_tpage(int x, int y)
+{
+    return (int32_t)((x & 0x3FF) | ((y & 0x1FF) << 10));
+}
+static int32_t decal_pack_clut(int x, int y, int bpp)
+{
+    int code = bpp >= 16 ? 2 : (bpp >= 8 ? 1 : 0);
+    return (int32_t)((x & 0x3FF) | ((y & 0x1FF) << 10) | (code << 20));
+}
 
 /* Push constants for the HD texture-replacement pipes: the replaced texel box,
  * plus the per-channel fog transform applied to the sampled replacement
@@ -7536,17 +7553,13 @@ static bool draw_native_scene(bool full_extent)
             o->x = cx; o->y = cy; o->z = st->v[k].z; o->w = st->v[k].pvz;
             o->u = st->v[k].u; o->v = st->v[k].v;
             o->rgba = st->v[k].rgba; o->koff = st->koff;
-            /* Location 3 is per-class: the textured SHADOW decal parks its PSX
-             * screen coord there (shadow_decal_tex.vert's depth-pre-pass
-             * lookup; scene_to_clip's INPUT is the PSX screen coord). Every
-             * other textured tri carries the moby paint (rank, ordinal) pair —
-             * psx_scene.vert forwards it to the same-moby painter select, and
-             * unranked tris (rank 0) keep the select off. */
-            if (st->category == OPENPETE_SCENE_SHADOW) {
-                o->sx = st->v[k].sx; o->sy = st->v[k].sy;
-            } else {
-                o->sx = st->rank; o->sy = (float)st->mordinal;
-            }
+            /* Location 3 carries the moby paint (rank, ordinal) pair for every
+             * textured tri — psx_scene.vert forwards it to the same-moby
+             * painter select, and unranked tris (rank 0) keep the select off.
+             * The textured shadow decal parked its PSX screen coord here while
+             * its fragment stage read that coord as a varying; the decal now
+             * recovers the coord from gl_FragCoord and reads no attribute. */
+            o->sx = st->rank; o->sy = (float)st->mordinal;
         }
     }
     n = tx_start + txtri * 3;
@@ -7909,9 +7922,11 @@ static bool draw_native_scene(bool full_extent)
                 pc.uax = s_od_uax; pc.ubx = s_od_ubx;
                 pc.vay = s_od_vay; pc.vby = s_od_vby;
                 pc.pvw = s_od_vw;  pc.pvh = s_od_vh;
-                pc.tpage_x = m0->tpage_x; pc.tpage_y = m0->tpage_y;
-                pc.clut_x = m0->clut_x;   pc.clut_y = m0->clut_y;
-                pc.bpp = m0->bpp;
+                scene_fc_affine dfc; scene_fragcoord_affine(&dfc);
+                pc.fax = dfc.fax; pc.fbx = dfc.fbx;
+                pc.fay = dfc.fay; pc.fby = dfc.fby;
+                pc.tpage = decal_pack_tpage(m0->tpage_x, m0->tpage_y);
+                pc.clut  = decal_pack_clut(m0->clut_x, m0->clut_y, m0->bpp);
                 /* Mod material on the DECAL PROFILE. The stock fragment
                  * stage here owns per-pixel occlusion, so a plain material
                  * would delete it (shadows would paint through walls) —

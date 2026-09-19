@@ -42,14 +42,23 @@ layout(push_constant) uniform PC {
     float plat_slack;            /* raised-occluder-in-front: view-Z slack */
     float uax, ubx, vay, vby;    /* PSX screen -> pre-pass uv affine (u=uax*SX+ubx) */
     float pvw, pvh;              /* pre-pass raster extent within the depth image */
-    int   tpage_x, tpage_y;      /* PSX texture page origin (VRAM 16bpp-pixel units) */
-    int   clut_x,  clut_y;       /* CLUT origin (paletted only) */
-    int   bpp;                   /* 4, 8, or 16 */
+    float fax, fbx, fay, fby;    /* gl_FragCoord -> PSX screen affine, this pass */
+    int   tpage;                 /* texture page origin, x | y << 10 */
+    int   clut;                  /* CLUT origin x | y << 10, bpp code << 20 */
 } pc;
+
+/* 29 floats + 2 ints = 124 B, inside the 128-byte guaranteed
+ * maxPushConstantsSize. VRAM x is 10 bits (0..1023), y 9 (0..511) and the bpp
+ * code 2, so the five PSX material fields ride two words (the layout the mod
+ * decal contract openpete_psx_decal.glsl declares). */
+int tpage_x() { return  pc.tpage        & 0x3FF; }
+int tpage_y() { return (pc.tpage >> 10) & 0x1FF; }
+int clut_x()  { return  pc.clut         & 0x3FF; }
+int clut_y()  { return (pc.clut  >> 10) & 0x1FF; }
+int bpp_of()  { return 4 << ((pc.clut >> 20) & 3); }   /* 0/1/2 -> 4/8/16 */
 
 layout(location = 0) in vec2 vUV;
 layout(location = 1) in vec4 vColor;
-layout(location = 2) noperspective in vec2 vScreenPSX;
 
 layout(location = 0) out vec4 outColor;
 
@@ -66,16 +75,18 @@ vec4  decode555(uint p)
 }
 uint sample_word(int u, int v)
 {
-    if (pc.bpp == 16) {
-        return vram_at(pc.tpage_x + u, pc.tpage_y + v);
-    } else if (pc.bpp == 8) {
-        uint word = vram_at(pc.tpage_x + (u >> 1), pc.tpage_y + v);
+    int tx = tpage_x(), ty = tpage_y();
+    int bpp = bpp_of();
+    if (bpp == 16) {
+        return vram_at(tx + u, ty + v);
+    } else if (bpp == 8) {
+        uint word = vram_at(tx + (u >> 1), ty + v);
         uint idx  = (word >> (8 * (u & 1))) & 0xFFu;
-        return vram_at(pc.clut_x + int(idx), pc.clut_y);
+        return vram_at(clut_x() + int(idx), clut_y());
     } else { /* 4bpp */
-        uint word = vram_at(pc.tpage_x + (u >> 2), pc.tpage_y + v);
+        uint word = vram_at(tx + (u >> 2), ty + v);
         uint nib  = (word >> (4 * (u & 3))) & 0xFu;
-        return vram_at(pc.clut_x + int(nib), pc.clut_y);
+        return vram_at(clut_x() + int(nib), clut_y());
     }
 }
 
@@ -122,16 +133,20 @@ void main()
     vec4 c = decode555(sample_word(int(vUV.x), int(vUV.y)));
     if (c.a == 0.0) discard;
 
-    /* Depth-aware occlusion — mirror shadow_decal.frag. */
-    vec2  uv = vec2(pc.uax * vScreenPSX.x + pc.ubx, pc.vay * vScreenPSX.y + pc.vby);
+    /* Depth-aware occlusion — mirror shadow_decal.frag. This fragment's own PSX
+     * screen position comes from its window coordinate through the pass's
+     * inverse affine (scene_fragcoord_affine), exact per fragment. */
+    vec2  sOwn = vec2(pc.fax * gl_FragCoord.x + pc.fbx,
+                      pc.fay * gl_FragCoord.y + pc.fby);
+    vec2  uv = vec2(pc.uax * sOwn.x + pc.ubx, pc.vay * sOwn.y + pc.vby);
     ivec2 hi = ivec2(int(pc.pvw) - 1, int(pc.pvh) - 1);
     ivec2 tx = min(ivec2(clamp(uv, vec2(0.0), vec2(1.0)) * vec2(pc.pvw, pc.pvh)), hi);
     float viewZ   = viewz_from_prepass_depth(texelFetch(uOpaqueDepth, tx, 0).r); /* terrain */
     float fanViewZ = viewz_from_scene_depth(gl_FragCoord.z);                     /* the fan */
 
     /* Terrain height above the shadow's own ground plane (the fan sits on it). */
-    float worldUpTerrain = worldup_at(vScreenPSX, viewZ);
-    float worldUpGround  = worldup_at(vScreenPSX, fanViewZ);
+    float worldUpTerrain = worldup_at(sOwn, viewZ);
+    float worldUpGround  = worldup_at(sOwn, fanViewZ);
     float height = worldUpTerrain - worldUpGround;
 
     /* terrain surface normal from neighbouring pre-pass texels (world-position
@@ -143,6 +158,26 @@ void main()
     float nlen = length(N);
     float nup  = (nlen > 1e-6) ? abs(N.z) / nlen : 1.0;   /* vertical = P.z = -V1 */
 
+    if (pc.mode > 7.5) {                       /* lookup census (machine-read only) */
+        /* Does the sampled pre-pass texel cover this fragment's own screen
+         * position? The texel centre is within half a texel of it whenever the
+         * lookup coordinate is the fragment's own, so >= 1 texel of error means
+         * the decal read a neighbouring surface's depth and normal. g and b
+         * mark every decal fragment, r only a fragment whose lookup missed;
+         * mode 9 is the same marker with r forced off, so the missed fragments
+         * are the r difference between the two legs and the decal fragments the
+         * difference between the mode-9 leg and a stock capture. The pipe blends
+         * subtractive, so each marker is read as a capture difference. b stays
+         * clear here and is set by the untextured decal's marker
+         * (shadow_decal.frag), so one capture pair separates the moby decal's
+         * fragments from the player decal's. */
+        vec2 err = (screen_of_texel(tx) - sOwn) *
+                   vec2(pc.uax * pc.pvw, pc.vay * pc.pvh);
+        float miss = (pc.mode < 8.5 &&
+                      any(greaterThanEqual(abs(err), vec2(1.0)))) ? 0.4 : 0.0;
+        outColor = vec4(miss, 0.4, 0.0, 1.0);
+        return;
+    }
     if (pc.mode > 0.5) {
         /* Raised occluder IN FRONT (curb / platform): terrain meaningfully nearer
          * than the fan AND meaningfully above the shadow plane -> the PSX painter

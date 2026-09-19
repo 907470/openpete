@@ -4261,9 +4261,9 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     /* The vertex STRUCT keeps all fields (stable buffer layout), but a pipeline
      * only needs to declare the attributes its shaders consume — an attribute
      * declared here yet not read by a shader merely warns "not consumed", so one
-     * superset attribute list serves every pipeline. Location 3 (sx,sy, the PSX
-     * screen coord) is read only by the textured shadow decal (shadow_decal_tex);
-     * every other shader ignores it. Location 4 is the perspective W (true
+     * superset attribute list serves every pipeline. Location 3 (the moby paint
+     * rank/ordinal pair) is read by the scene vertex stages' same-moby painter
+     * select; every other shader ignores it. Location 4 is the perspective W (true
      * view-Z), read by the scene vertex stages. Location 5 is the terrain
      * og-key slot offset (rhi_vertex.koff), read by the scene vertex stages
      * and the terrain key pass. */
