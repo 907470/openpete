@@ -6,6 +6,10 @@
 // dropdown + Jump button to the overlay's Gameplay section that works
 // mid-session, so switching levels for an A/B is not a relaunch.
 //
+// The dropdown, the Jump button and the click queue are the shared overlay
+// half (games/common/features/levelwarp_ui.c); this file supplies the level
+// table, the route probe and the two guest-write phases below.
+//
 // TWO ROUTES, picked from the live gamestate:
 //
 // 1. IN A LEVEL — ride the game's own "exit level" sequence, then retarget
@@ -57,18 +61,12 @@
 #include "features/levelwarp.h"
 
 #include "feature_registry.h"
+#include "features/levelwarp_ui.h"  /* the shared dropdown, button and queue */
 #include "named_target.h"
-#include "game_extras.h"    /* game_set_skip_to_level (title-screen route) */
-#include "openpete_fiber.h" /* openpete_speculative */
-#include "openpete_freecam.h"
-#include "openpete_knobs.h" /* dev-overlay rows (M key) */
 #include "openpete_log.h"
 #include "psx_runtime_internal.h"    /* CPUState + its read/write callbacks */
 
-#include <ctype.h>
 #include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
 
 #define ADDR_G_GAMESTATE         0x800757D8u
 #define ADDR_G_DEMOMODE          0x80075714u /* DEMO_MODE_NONE = 0 */
@@ -176,13 +174,6 @@ int spyro1_level_resolve(const char* arg) {
                                 NAMED_TARGET_NUMERIC_ANY);
 }
 
-static int level_index_for_id(int id) {
-    size_t i;
-    for (i = 0; i < LEVEL_COUNT; i++)
-        if (k_levels[i].id == id) return (int)i;
-    return -1;
-}
-
 /* ---- state ----------------------------------------------------------- */
 
 typedef enum {
@@ -205,23 +196,6 @@ static uint32_t s_phase  = WARP_IDLE;
 static uint32_t s_target = 0;
 static uint32_t s_ticks  = 0;
 
-/* Host-side UI state — deliberately NOT in the savestate blob. A click is
- * the user's intent right now; restoring an older pending flag over it (the
- * quiet rewind/runahead path reloads the blob every tick) would either eat
- * a fresh click or resurrect a stale one.
- *   s_sel        — dropdown index into k_levels
- *   s_sel_touched— the user has picked something, so stop auto-following
- *                  the current level
- *   s_pending    — a click waiting for the next non-speculative tick
- *   s_route      — cached "what would Jump do right now", for the gate+status */
-static int s_sel         = 0;
-static int s_sel_touched = 0;
-static int s_pending     = 0;
-static int s_pending_id  = 0;
-
-typedef enum { ROUTE_NONE = 0, ROUTE_LEVEL, ROUTE_TITLE } warp_route_t;
-static int s_route = ROUTE_NONE;
-
 void spyro1_levelwarp_state_save(uint32_t* phase, uint32_t* target,
                                  uint32_t* ticks) {
     *phase  = s_phase;
@@ -236,139 +210,62 @@ void spyro1_levelwarp_state_load(uint32_t phase, uint32_t target,
     s_ticks  = ticks;
 }
 
-/* ---- dev-overlay rows ------------------------------------------------- */
+/* ---- the shared overlay half ------------------------------------------ */
 
-static double sel_get(const knob_desc_t* k) { (void)k; return (double)s_sel; }
+static int warp_level_id(int index) { return k_levels[index].id; }
 
-static int sel_set(knob_desc_t* k, double v) {
-    int idx = (int)v;
-    (void)k;
-    if (idx < 0 || idx >= (int)LEVEL_COUNT) return -1;
-    s_sel         = idx;
-    s_sel_touched = 1;
+static int warp_in_flight(void) { return s_phase != WARP_IDLE; }
+
+static int warp_in_flight_status(char* buf, size_t cap) {
+    if (s_phase == WARP_ARMED)   { snprintf(buf, cap, "exiting level..."); return 1; }
+    if (s_phase == WARP_LOADING) { snprintf(buf, cap, "loading...");       return 1; }
     return 0;
 }
 
-/* Button gate: a route has to apply, and no warp may already be queued or in
- * flight. "Busy" is checked HERE rather than folded into s_route, because
- * s_route is also what the tick consults when it drains the queue — a route
- * that reads ROUTE_NONE just because a click is pending would make every
- * click discard itself. */
-static int warp_busy(void) { return s_pending || s_phase != WARP_IDLE; }
-
-static double go_ready(const knob_desc_t* k) {
-    (void)k;
-    return (s_route != ROUTE_NONE && !warp_busy()) ? 1.0 : 0.0;
+/* Which route a click would take from this gamestate. Derived from guest
+ * state ONLY — whether a warp is already queued or running is a separate
+ * question, asked at the button. Pause and inventory count as "in a level"
+ * for the same reason the cheats module accepts them: they are gameplay with
+ * the sim paused, and the exit sequence takes over the gamestate anyway. The
+ * attract demo runs GS_Playing with a level loaded, so it needs excluding
+ * explicitly. */
+static int warp_route(CPUState* cpu) {
+    uint32_t gs = cpu->read_word(ADDR_G_GAMESTATE);
+    if (gs == GS_TITLESCREEN) return LEVELWARP_ROUTE_TITLE;
+    if ((gs == GS_PLAYING || gs == GS_PAUSEMENU || gs == GS_INVENTORYMENU) &&
+        cpu->read_word(ADDR_G_LEVELID) != 0u &&
+        cpu->read_word(ADDR_G_DEMOMODE) == 0u)
+        return LEVELWARP_ROUTE_LEVEL;
+    return LEVELWARP_ROUTE_NONE;
 }
 
-static int go_fire(knob_desc_t* k, double v) {
-    (void)k;
-    (void)v;
-    if (s_route == ROUTE_NONE || warp_busy()) return -1;
-    s_pending_id = k_levels[s_sel].id;   /* snapshot: the combo may move */
-    s_pending    = 1;
-    return 0;
+static int warp_current_level(CPUState* cpu) {
+    return (int)cpu->read_word(ADDR_G_LEVELID);
 }
 
-static void go_status(const knob_desc_t* k, char* buf, size_t cap) {
-    (void)k;
-    if (s_pending)                     snprintf(buf, cap, "queued");
-    else if (s_phase == WARP_ARMED)    snprintf(buf, cap, "exiting level...");
-    else if (s_phase == WARP_LOADING)  snprintf(buf, cap, "loading...");
-    else if (s_route == ROUTE_TITLE)   snprintf(buf, cap, "from title (resets progress)");
-    else if (s_route == ROUTE_LEVEL)   snprintf(buf, cap, "%s", "");
-    else if (openpete_freecam_active())snprintf(buf, cap, "freecam active");
-    else                               snprintf(buf, cap, "not in a level");
-}
+static void warp_arm(CPUState* cpu, int target_id);
 
-static void register_rows(void) {
-    knob_desc_t row;
-    size_t i;
-
-    for (i = 0; i < LEVEL_COUNT; i++) s_level_display[i] = k_levels[i].display;
-
-    memset(&row, 0, sizeof row);
-    row.id          = "warp_level";
-    row.label       = "Warp: level";
-    row.section     = "Gameplay";
-    row.help        = "Destination for the Jump button below. Follows the "
-                      "level you are in until you pick something.";
-    row.type        = KNOB_ENUM;
-    row.mut         = KNOB_LIVE;
-    row.enum_values = s_level_display;
-    row.enum_count  = (int)LEVEL_COUNT;
-    row.get_num     = sel_get;
-    row.set_num     = sel_set;
-    (void)openpete_knob_add(&row);
-
-    memset(&row, 0, sizeof row);
-    row.id           = "warp_go";
-    row.label        = "Warp: jump to level";
-    row.section      = "Gameplay";
-    row.help         = "Load the selected level. In a level this rides the "
-                       "game's own exit-level sequence, keeping your gems and "
-                       "progress. At the title screen it starts a fresh "
-                       "session in that level, which resets progress and "
-                       "lives (same as --skip-to-level). Intentionally "
-                       "divergent gameplay state.";
-    row.type         = KNOB_ACTION;
-    row.mut          = KNOB_LIVE;
-    row.get_num      = go_ready;
-    row.set_num      = go_fire;
-    row.get_str      = go_status;
-    row.action_label = "Jump";
-    (void)openpete_knob_add(&row);
-}
-
-/* Harness trigger: OPENPETE_LEVELWARP_TEST=<frame>:<level> queues the same
- * request the Jump button does, at the given openpete_frame. The warp is a
- * multi-tick ride through the game's own state machine, so being able to
- * fire it from a script is what makes it testable without a human at the
- * overlay. Deliberately not a registry row (harness var, not a config knob):
- *   OPENPETE_LEVELWARP_TEST=2200:tree_tops openpete-spyro1 --skip-to-level artisans
- */
-static int s_test_frame = -1;
-static int s_test_id    = 0;
-
-extern unsigned openpete_frame;
-
-static void test_trigger_init(void) {
-    const char* spec = getenv("OPENPETE_LEVELWARP_TEST");
-    const char* colon;
-    char        lvl[32];
-    size_t      n;
-
-    if (!spec || !spec[0]) return;
-    colon = strchr(spec, ':');
-    if (!colon) return;
-    for (n = 0; colon[1 + n] && n < sizeof(lvl) - 1; n++) lvl[n] = colon[1 + n];
-    lvl[n] = '\0';
-
-    s_test_id = spyro1_level_resolve(lvl);
-    if (s_test_id < 0) { s_test_id = 0; return; }
-    s_test_frame = atoi(spec);
-    OPL_INFO_F("levelwarp", "harness: warp to level %d at frame %d",
-               s_test_id, s_test_frame);
-}
-
-static void test_trigger_tick(void) {
-    if (s_test_frame < 0 || (int)openpete_frame < s_test_frame) return;
-    s_test_frame = -1;
-    s_pending_id = s_test_id;
-    s_pending    = 1;
-}
+static const levelwarp_ui_desc_t k_ui = {
+    .log_tag           = "levelwarp",
+    .display           = s_level_display,
+    .count             = (int)LEVEL_COUNT,
+    .level_id          = warp_level_id,
+    .resolve           = spyro1_level_resolve,
+    .route             = warp_route,
+    .current_level     = warp_current_level,
+    .start_level_route = warp_arm,
+    .in_flight         = warp_in_flight,
+    .in_flight_status  = warp_in_flight_status,
+};
 
 static void levelwarp_apply_options(const openpete_options_t* opts) {
+    size_t i;
     (void)opts;
-    s_phase       = WARP_IDLE;
-    s_target      = 0;
-    s_ticks       = 0;
-    s_sel         = 0;
-    s_sel_touched = 0;
-    s_pending     = 0;
-    s_route       = ROUTE_NONE;
-    register_rows();
-    test_trigger_init();
+    s_phase  = WARP_IDLE;
+    s_target = 0;
+    s_ticks  = 0;
+    for (i = 0; i < LEVEL_COUNT; i++) s_level_display[i] = k_levels[i].display;
+    levelwarp_ui_register(&k_ui);
 }
 
 /* ---- the warp itself -------------------------------------------------- */
@@ -429,68 +326,16 @@ static void warp_abort(const char* why) {
 void spyro1_levelwarp_on_tick(CPUState* cpu) {
     uint32_t gs;
 
-    /* Runahead: a speculative tick's guest writes are rolled back, so
-     * consuming the click here would drop the warp on the floor. Let the
-     * committed tick do it. (The FSM phase itself IS snapshotted, so the
-     * rollback of an in-flight warp stays consistent.) */
-    if (openpete_speculative) return;
-
-    /* Queue the harness request BEFORE anything else reads s_pending, so it
-     * lands in the same place a UI click does: set between ticks, drained on
-     * the NEXT one. Firing it mid-tick instead would let the harness take a
-     * path the button never takes, which is exactly how the drain bug below
-     * shipped past a green headless run. */
-    test_trigger_tick();
-
-    gs = cpu->read_word(ADDR_G_GAMESTATE);
-
-    /* Which route a click would take from this gamestate. Derived from guest
-     * state ONLY — whether a warp is already queued or running is a separate
-     * question, asked by warp_busy() at the button. Pause and inventory count
-     * as "in a level" for the same reason the cheats module accepts them:
-     * they are gameplay with the sim paused, and the exit sequence takes over
-     * the gamestate anyway. The attract demo runs GS_Playing with a level
-     * loaded, so it needs excluding explicitly. Freecam is refused because the
-     * camera is detached from Spyro and the fly-in would be meaningless. */
-    if (gs == GS_TITLESCREEN) {
-        s_route = ROUTE_TITLE;
-    } else if ((gs == GS_PLAYING || gs == GS_PAUSEMENU || gs == GS_INVENTORYMENU) &&
-               cpu->read_word(ADDR_G_LEVELID) != 0u &&
-               cpu->read_word(ADDR_G_DEMOMODE) == 0u &&
-               !openpete_freecam_active()) {
-        s_route = ROUTE_LEVEL;
-    } else {
-        s_route = ROUTE_NONE;
-    }
-
-    /* Keep the dropdown on the level the player is actually in until they
-     * pick one themselves. */
-    if (!s_sel_touched && s_phase == WARP_IDLE) {
-        int idx = level_index_for_id((int)cpu->read_word(ADDR_G_LEVELID));
-        if (idx >= 0) s_sel = idx;
-    }
-
-    if (s_pending && s_phase != WARP_IDLE) return;   /* drain when idle */
-
-    if (s_pending) {
-        int target = s_pending_id;
-        s_pending  = 0;
-        if (s_route == ROUTE_TITLE) {
-            /* The --skip-to-level machinery owns this one: it induces the
-             * demo-timeout transition at the next Press-Start window, which
-             * also gets us the progress/lives reset a fresh session needs. */
-            game_set_skip_to_level(target);
-            OPL_INFO_F("levelwarp", "queued title-screen boot into level %d",
-                       target);
-        } else if (s_route == ROUTE_LEVEL) {
-            warp_arm(cpu, target);
-        } else {
-            OPL_INFO_F("levelwarp", "%s", "ignored (no route from this state)");
-        }
-        return;
-    }
+    /* The shared half refreshes the route, follows the dropdown and drains a
+     * queued click into warp_arm below or into the title route. It reports
+     * back whether this tick may advance the sequence. (The FSM phase itself
+     * IS snapshotted, so the rollback of an in-flight warp stays
+     * consistent.) */
+    if (levelwarp_ui_tick(cpu)) return;
 
     if (s_phase == WARP_IDLE) return;
+
+    gs = cpu->read_word(ADDR_G_GAMESTATE);
 
     if (++s_ticks > WARP_STUCK_CALLS) { warp_abort("stuck"); return; }
 

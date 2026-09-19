@@ -3,6 +3,7 @@
 #include <stddef.h>
 
 extern const feature_module_t render_paths_module;
+extern const feature_module_t levelwarp_module;
 extern const feature_module_t terrain_module;
 extern const feature_module_t cyclorama_module;
 extern const feature_module_t shadow_module;
@@ -20,6 +21,9 @@ extern const feature_module_t ui_sprite_module;
 extern const feature_module_t text_sprt_module;
 
 const feature_module_t* const openpete_features[] = {
+    /* The dev-overlay level warp (M): registers its two rows at
+     * apply-options time and writes nothing until one is clicked. */
+    &levelwarp_module,
     /* --render-paths: the path-isolation selection (apply_options only). */
     &render_paths_module,
     /* The shared terrain feeder: hooks the world draw and the visibility

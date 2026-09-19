@@ -49,23 +49,37 @@
 #define S2_LOADER_RESIDENT   0xFFFFFFFFu
 
 /* Level numbers are the game's own (g_NextLevelNum); names are the overlay
- * filenames' lower_snake_case. */
+ * filenames' lower_snake_case and displays the levels' own titles. */
 static const spyro2_level_t k_levels[] = {
-    { "summer_forest",   10 }, { "glimmer",         11 },
-    { "idol_springs",    12 }, { "colossus",        13 },
-    { "hurricos",        21 }, { "aquaria_towers",  22 },
-    { "sunny_beach",     23 }, { "ocean_speedway",  25 },
-    { "crushs_dungeon",  26 }, { "autumn_plains",   30 },
-    { "skelos_badlands", 31 }, { "crystal_glacier", 32 },
-    { "breeze_harbor",   33 }, { "zephyr",          34 },
-    { "metro_speedway",  35 }, { "scorch",          41 },
-    { "shady_oasis",     42 }, { "magma_cone",      43 },
-    { "fracture_hills",  44 }, { "icy_speedway",    45 },
-    { "gulps_overlook",  46 }, { "winter_tundra",   50 },
-    { "mystic_marsh",    51 }, { "cloud_temples",   52 },
-    { "canyon_speedway", 55 }, { "robotica_farms",  61 },
-    { "metropolis",      62 }, { "dragon_shores",   65 },
-    { "riptos_arena",    66 },
+    { "summer_forest",   "Summer Forest",   10 },
+    { "glimmer",         "Glimmer",         11 },
+    { "idol_springs",    "Idol Springs",    12 },
+    { "colossus",        "Colossus",        13 },
+    { "hurricos",        "Hurricos",        21 },
+    { "aquaria_towers",  "Aquaria Towers",  22 },
+    { "sunny_beach",     "Sunny Beach",     23 },
+    { "ocean_speedway",  "Ocean Speedway",  25 },
+    { "crushs_dungeon",  "Crush's Dungeon", 26 },
+    { "autumn_plains",   "Autumn Plains",   30 },
+    { "skelos_badlands", "Skelos Badlands", 31 },
+    { "crystal_glacier", "Crystal Glacier", 32 },
+    { "breeze_harbor",   "Breeze Harbor",   33 },
+    { "zephyr",          "Zephyr",          34 },
+    { "metro_speedway",  "Metro Speedway",  35 },
+    { "scorch",          "Scorch",          41 },
+    { "shady_oasis",     "Shady Oasis",     42 },
+    { "magma_cone",      "Magma Cone",      43 },
+    { "fracture_hills",  "Fracture Hills",  44 },
+    { "icy_speedway",    "Icy Speedway",    45 },
+    { "gulps_overlook",  "Gulp's Overlook", 46 },
+    { "winter_tundra",   "Winter Tundra",   50 },
+    { "mystic_marsh",    "Mystic Marsh",    51 },
+    { "cloud_temples",   "Cloud Temples",   52 },
+    { "canyon_speedway", "Canyon Speedway", 55 },
+    { "robotica_farms",  "Robotica Farms",  61 },
+    { "metropolis",      "Metropolis",      62 },
+    { "dragon_shores",   "Dragon Shores",   65 },
+    { "riptos_arena",    "Ripto's Arena",   66 },
 };
 #define LEVEL_COUNT (sizeof(k_levels) / sizeof(k_levels[0]))
 

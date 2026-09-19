@@ -7,7 +7,13 @@
 #include <stddef.h>
 #include <stdint.h>
 
-typedef struct { const char* name; int number; } spyro2_level_t;
+/* One selectable level. `name` is the --skip-to-level spelling, `display`
+ * the dev-overlay dropdown label. Table order is level-number order. */
+typedef struct {
+    const char* name;
+    const char* display;
+    int         number;
+} spyro2_level_t;
 
 /* The 29 levels, in level-number order. */
 const spyro2_level_t* spyro2_level_table(size_t* out_count);

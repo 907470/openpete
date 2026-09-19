@@ -13,6 +13,7 @@
 #include "write_census.h"
 #include "freecam_game.h"
 #include "skip_to_level.h"
+#include "features/levelwarp.h"
 #include "openpete_log.h"
 #include "feature_registry.h"   /* the registered feature modules' dispatch tables */
 #include "openpete_fiber.h"
@@ -60,6 +61,9 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     /* --skip-to-level: drives the title's demo-timeout transition toward the
      * target and holds isDemoMode clear. Inert without the flag. */
     spyro3_skip_on_tick(cpu, frame_counter);
+    /* Dev-overlay level warp (M): drains a queued Jump into the game's
+     * own level transition. Inert until one is clicked. */
+    spyro3_levelwarp_on_tick(cpu);
     /* Scripted player placement (--player-pose) on the first placeable
      * tick, then scripted engage of the debug free camera (OPENPETE_FREECAM=1
      * / OPENPETE_FREECAM_POSE / OPENPETE_FREECAM_PATH) once gameplay is live;

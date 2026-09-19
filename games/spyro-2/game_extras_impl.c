@@ -10,6 +10,7 @@
 #include "spyro_overlay_table.h"
 #include "psyq/psyq_game_hooks.h"
 #include "skip_to_level.h"
+#include "features/levelwarp.h"
 #include "write_census.h"
 #include "freecam_game.h"
 #include "feature_registry.h"
@@ -44,6 +45,9 @@ void game_on_frame_pre(CPUState* cpu, uint32_t frame_counter) {
     /* --skip-to-level: drives the title's demo-timeout transition toward the
      * target and holds the demo flag clear. Inert without the flag. */
     spyro2_skip_on_tick(cpu, frame_counter);
+    /* Dev-overlay level warp (M): drains a queued Jump into the game's
+     * own level transition. Inert until one is clicked. */
+    spyro2_levelwarp_on_tick(cpu);
     /* Scripted player placement (--player-pose) on the first placeable
      * tick, then scripted engage of the debug free camera (OPENPETE_FREECAM=1
      * / OPENPETE_FREECAM_POSE / OPENPETE_FREECAM_PATH) once gameplay is live;

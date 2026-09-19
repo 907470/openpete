@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: a44c92cf91866eae218e662fe97f74f0db230b1b
+# head: 8d1b6784e74670909c17f5bdf3652c6cad222946
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -212,7 +212,6 @@ games/spyro-1/dist/splash.c	spyro1_splash_select	86	0
 games/spyro-1/dist/splash.c	spyro1_splash_wait_for_disc	29	0	
 games/spyro-1/features/cheats.c	parse_spec	26	0	
 games/spyro-1/features/crash_demo_woah.c	adpcm_to_pcm	27	0	
-games/spyro-1/features/levelwarp.c	spyro1_levelwarp_on_tick	28	0	
 games/spyro-1/game_extras_impl.c	game_on_frame_pre	39	0	
 games/spyro-1/game_extras_impl.c	psx_override_dispatch_game	41	0	
 games/spyro-1/main.cpp	main	33	0	

@@ -21,6 +21,10 @@ openpete_add_game(spyro-3
         skip_to_level.c
         features/freecam.c
 
+        # The dev-overlay level warp (M) and its shared overlay half.
+        features/levelwarp.c
+        ${CMAKE_SOURCE_DIR}/games/common/features/levelwarp_ui.c
+
         # The overlay-id boot and restore hooks, shared with Spyro 2.
         ${CMAKE_SOURCE_DIR}/games/common/game_extras_overlay_resync.c
 

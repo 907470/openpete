@@ -196,6 +196,7 @@ openpete_add_game(spyro-1
         features/credits_skip.c
         features/crash_demo_woah.c
         features/levelwarp.c
+        ${CMAKE_SOURCE_DIR}/games/common/features/levelwarp_ui.c
 
         # Native translations of spyro-1/src/*.c compiled via the AST
         # rewriter (tools/rewrite_tu.py). Each native TU is rewritten by
