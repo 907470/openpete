@@ -374,6 +374,35 @@ static void uvedge_note(const openpete_scene_tri* orig, const openpete_scene_tri
     s_uvedge_bad += (unsigned)uvedge_tri_differs(orig, fed);
 }
 
+/* A quad sampling a framebuffer window (a MoveImage'd copy of a draw buffer)
+ * reads texels the native render never writes. Redirect both triangles to the
+ * snapshot of the native frame that stood for the copied buffer's content; the
+ * texel box becomes a pixel box in that image. Returns 0, the quad unchanged,
+ * when no stored snapshot holds its texel box: the stock VRAM path. */
+static int quad_to_fb_snapshot(openpete_scene_tri quad[2]) {
+    float su = 1.0f, sv = 1.0f, ox = 0.0f, oy = 0.0f;
+    float lo_u = quad[0].v[0].u, hi_u = lo_u, lo_v = quad[0].v[0].v, hi_v = lo_v;
+    for (int t = 0; t < 2; t++)
+        for (int j = 0; j < 3; j++) {
+            lo_u = fminf(lo_u, quad[t].v[j].u); hi_u = fmaxf(hi_u, quad[t].v[j].u);
+            lo_v = fminf(lo_v, quad[t].v[j].v); hi_v = fmaxf(hi_v, quad[t].v[j].v);
+        }
+    const int snap = openpete_fb_snapshot_find(quad[0].tpage_x, quad[0].tpage_y, quad[0].bpp,
+                                               (int)lo_u, (int)lo_v, (int)hi_u, (int)hi_v,
+                                               &su, &sv, &ox, &oy);
+    if (snap < 0) return 0;
+    for (int t = 0; t < 2; t++) {
+        openpete_scene_tri* tri = &quad[t];
+        tri->tpage_x = snap; tri->tpage_y = 0; tri->clut_x = 0; tri->clut_y = 0;
+        tri->bpp = OPENPETE_FB_SNAPSHOT_BPP;
+        for (int j = 0; j < 3; j++) {
+            tri->v[j].u = ox + tri->v[j].u * su;
+            tri->v[j].v = oy + tri->v[j].v * sv;
+        }
+    }
+    return 1;
+}
+
 /* Add a textured 2D quad's two triangles to the HUD layer, each sampling the
  * texel the GPU samples on every pixel (tex_tri_psx_texel_centre). A quad of an ABR
  * 1-3 class that samples VRAM is fed as a pair: its STP-clear texels through
@@ -382,11 +411,12 @@ static void uvedge_note(const openpete_scene_tri* orig, const openpete_scene_tri
  * only. Both halves precede the next primitive's triangles, so the painter
  * order of overlapping primitives holds. Every other quad (opaque, ABR 0, a
  * framebuffer-snapshot window, whose image carries no STP bit) is fed once.
- * A snapshot window's UVs are pixel coordinates in the native image and are
- * fed unchanged. Returns 1 for a split quad. */
+ * A quad sampling a framebuffer window is first redirected to its snapshot,
+ * whatever primitive it came from; its UVs are then pixel coordinates in the
+ * native image and are fed unchanged. Returns 1 for a split quad. */
 static int feed_hud_tex_quad(const openpete_scene_tri in[2]) {
-    const int vram = in[0].bpp != OPENPETE_FB_SNAPSHOT_BPP;
     openpete_scene_tri quad[2] = { in[0], in[1] };
+    const int vram = !quad_to_fb_snapshot(quad);
     for (int t = 0; vram && t < 2; t++) {
         tex_tri_psx_texel_centre(&quad[t]);
         uvedge_note(&in[t], &quad[t]);
@@ -448,19 +478,6 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
     int abe = (int)((w1>>24)&0x2u);   /* code bit1 = semi-transparent, at the page's ABR */
     const int blend = ui_blend(abe, (tp >> 5) & 3u).blend;
 
-    /* A quad sampling a framebuffer window (a MoveImage'd copy of a draw
-     * buffer) reads texels the native render never writes. Redirect it to the
-     * snapshot of the native frame taken when the copy was made; the texel box
-     * becomes a pixel box in that image. No snapshot -> the stock VRAM path. */
-    float snap_su = 1.0f, snap_sv = 1.0f, snap_ox = 0.0f, snap_oy = 0.0f;
-    int u_lo = u[0], u_hi = u[0], v_lo = v[0], v_hi = v[0];
-    for (int k = 1; k < 4; k++) {
-        if (u[k] < u_lo) u_lo = u[k]; if (u[k] > u_hi) u_hi = u[k];
-        if (v[k] < v_lo) v_lo = v[k]; if (v[k] > v_hi) v_hi = v[k];
-    }
-    const int snap = openpete_fb_snapshot_find(tpx, tpy, bpp, u_lo, v_lo, u_hi, v_hi,
-                                               &snap_su, &snap_sv, &snap_ox, &snap_oy);
-
     scene_begin_for_feed();
     static const int idx[2][3] = { {0,1,2}, {1,3,2} };   /* TL,TR,BL,BR -> 2 tris */
     openpete_scene_tri quad[2]; memset(quad, 0, sizeof(quad));
@@ -471,14 +488,6 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
             tri->v[j].z=0.0f; tri->v[j].u=(float)u[c]; tri->v[j].v=(float)v[c]; tri->v[j].rgba=rgba; }
         tri->textured=1; tri->tpage_x=tpx; tri->tpage_y=tpy; tri->clut_x=clx; tri->clut_y=cly;
         tri->bpp=bpp; tri->blend = blend;
-        if (snap >= 0) {
-            tri->tpage_x = snap; tri->tpage_y = 0; tri->clut_x = 0; tri->clut_y = 0;
-            tri->bpp = OPENPETE_FB_SNAPSHOT_BPP;
-            for (int j=0;j<3;j++) {
-                tri->v[j].u = snap_ox + tri->v[j].u * snap_su;
-                tri->v[j].v = snap_oy + tri->v[j].v * snap_sv;
-            }
-        }
     }
     const int split = feed_hud_tex_quad(quad);
     if (abe) semi_note(SEMI_FT4, (tp >> 5) & 3u, split);

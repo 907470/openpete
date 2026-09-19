@@ -597,7 +597,24 @@ static int s_scene_shot_lag = 0;
 static int s_scene_shot_nodelay = 0;
 void openpete_native_render_set_capture_nodelay(int on) { s_scene_shot_nodelay = on ? 1 : 0; }
 
+/* The completed frame a framebuffer-window resolve must compose, 0 when no
+ * resolve is in flight (see fbsnap_capture_crop). */
+static unsigned s_fbsnap_want_frame;
+
+/* The openpete_frame stamp of the scene at a given delay depth. */
+static unsigned scene_frame_at_depth(int d);
+static int scene_hist_depth_max(void);
+
 static int scene_delay_depth(void) {
+    /* A framebuffer window holds what the game drew on the frame it copied, and
+     * the present that resolves it runs a frame later: reach back through the
+     * completed-scene ring to that frame. Wins over every other selection,
+     * since the window's content is fixed by the copy, not by the present. */
+    if (s_fbsnap_want_frame) {
+        for (int d = 0; d <= scene_hist_depth_max(); d++)
+            if (scene_frame_at_depth(d) == s_fbsnap_want_frame) return d;
+        return 0;
+    }
     if (s_scene_delay < -1) {
         const char* e = getenv("OPENPETE_NATIVE_SCENE_DELAY");
         /* Explicit env = a forced depth (wins in every mode, incl. the
@@ -943,6 +960,14 @@ unsigned openpete_native_scene_frame(void) { return s_scene_frame; }
 void openpete_native_scene_register_frame_close(void (*fn)(unsigned frame)) {
     s_scene_frame_close_cb = fn;
 }
+
+static unsigned scene_frame_at_depth(int d) {
+    if (d <= 0) return s_scene_frame;
+    if (d > s_scene_hist_count || s_scene_hist_head < 0) return 0xFFFFFFFFu;
+    return s_scene_hist_frame[(s_scene_hist_head - (d - 1) + SCENE_HIST * 4) % SCENE_HIST];
+}
+
+static int scene_hist_depth_max(void) { return s_scene_hist_count; }
 
 /* Stamp of the scene scene_present_buf() would return under the CURRENT
  * selection (delay/shot-lag included) — what the retained-terrain freshness
@@ -11654,48 +11679,76 @@ static void fbsnap_px(float sx, float sy, int capw, int caph, float wf,
     *py = (1.0f - cy) * 0.5f * (float)caph;
 }
 
-/* Give every pending framebuffer window the native frame's own pixels: compose
- * this present's frame in memory (the same compose the -vk dump and the live
- * present produce), crop it to each window's source rect and hand the crop to
- * the store. A compose that fails leaves the windows pending, so the next
- * present retries and the quads keep drawing the previous snapshot meanwhile. */
+/* Crop a full-extent capture `cap` (`cw` by `ch`, composed at widen `wf`) to a
+ * framebuffer screen rect, through the renderer's own screen mapping. Returns a
+ * fresh buffer and its size, or NULL when the rect maps to nothing. */
+static unsigned char *fbsnap_crop(const unsigned char *cap, int cw, int ch, float wf,
+                                  int sx, int sy, int w, int h, int *out_w, int *out_h)
+{
+    float fx0, fy0, fx1, fy1;
+    fbsnap_px((float)sx, (float)sy, cw, ch, wf, &fx0, &fy0);
+    fbsnap_px((float)(sx + w), (float)(sy + h), cw, ch, wf, &fx1, &fy1);
+    int x0 = (int)(fx0 + 0.5f), y0 = (int)(fy0 + 0.5f);
+    int x1 = (int)(fx1 + 0.5f), y1 = (int)(fy1 + 0.5f);
+    if (x1 < x0) { int t = x0; x0 = x1; x1 = t; }
+    if (y1 < y0) { int t = y0; y0 = y1; y1 = t; }
+    if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
+    if (x1 > cw) x1 = cw; if (y1 > ch) y1 = ch;
+    const int pw = x1 - x0, ph = y1 - y0;
+    if (pw <= 0 || ph <= 0) return NULL;
+    unsigned char *px = (unsigned char *)malloc((size_t)pw * (size_t)ph * 4u);
+    if (!px) return NULL;
+    for (int row = 0; row < ph; row++)
+        memcpy(px + (size_t)row * pw * 4u,
+               cap + ((size_t)(y0 + row) * cw + x0) * 4u, (size_t)pw * 4u);
+    *out_w = pw; *out_h = ph;
+    return px;
+}
+
+/* Compose `frame`'s scene in memory (the same compose the -vk dump and the live
+ * present produce) and crop it to a framebuffer screen rect. Returns NULL when
+ * the compose fails, which leaves the caller's slot unresolved so the quads keep
+ * drawing the previous snapshot meanwhile. */
+static unsigned char *fbsnap_capture_crop(unsigned frame, int sx, int sy, int w, int h,
+                                          int *out_w, int *out_h)
+{
+    unsigned char *cap = NULL; int cw = 0, ch = 0;
+    s_fbsnap_want_frame = frame;
+    const int r = openpete_native_render_capture_rgba(&cap, &cw, &ch);
+    s_fbsnap_want_frame = 0;
+    if (r != 0) return NULL;
+    /* The widen the compose actually used, not the one it was asked for. */
+    const float wf = (s_nr.ref_w > 0) ? (float)cw / (float)s_nr.ref_w : 1.0f;
+    unsigned char *px = fbsnap_crop(cap, cw, ch, wf, sx, sy, w, h, out_w, out_h);
+    free(cap);
+    return px;
+}
+
+/* Give every pending framebuffer window and draw area the native frame's own
+ * pixels, each composed from the scene of the frame its copy was taken on. */
 void openpete_native_render_snapshot_fb_window(void)
 {
     if (!s_nr.enabled) return;
     if (!openpete_fb_snapshot_pending()) return;
-    unsigned char *cap = NULL; int cw = 0, ch = 0;
-    if (openpete_native_render_capture_rgba(&cap, &cw, &ch) != 0) return;
-    /* The widen the compose actually used, not the one it was asked for. */
-    const float wf = (s_nr.ref_w > 0) ? (float)cw / (float)s_nr.ref_w : 1.0f;
-    int idx, sx, sy, w, h;
-    while (openpete_fb_snapshot_take_pending(&idx, &sx, &sy, &w, &h)) {
-        float fx0, fy0, fx1, fy1;
-        fbsnap_px((float)sx, (float)sy, cw, ch, wf, &fx0, &fy0);
-        fbsnap_px((float)(sx + w), (float)(sy + h), cw, ch, wf, &fx1, &fy1);
-        int x0 = (int)(fx0 + 0.5f), y0 = (int)(fy0 + 0.5f);
-        int x1 = (int)(fx1 + 0.5f), y1 = (int)(fy1 + 0.5f);
-        if (x1 < x0) { int t = x0; x0 = x1; x1 = t; }
-        if (y1 < y0) { int t = y0; y0 = y1; y1 = t; }
-        if (x0 < 0) x0 = 0; if (y0 < 0) y0 = 0;
-        if (x1 > cw) x1 = cw; if (y1 > ch) y1 = ch;
-        const int pw = x1 - x0, ph = y1 - y0;
-        if (pw <= 0 || ph <= 0) continue;
-        unsigned char *px = (unsigned char *)malloc((size_t)pw * (size_t)ph * 4u);
-        if (!px) continue;
-        for (int row = 0; row < ph; row++)
-            memcpy(px + (size_t)row * pw * 4u,
-                   cap + ((size_t)(y0 + row) * cw + x0) * 4u, (size_t)pw * 4u);
-        openpete_fb_snapshot_store(idx, px, pw, ph);
+    int idx, sx, sy, w, h, cw = 0, ch = 0; unsigned frame = 0;
+    while (openpete_fb_snapshot_take_pending(&idx, &sx, &sy, &w, &h, &frame)) {
+        int pw = 0, ph = 0;
+        unsigned char *px = fbsnap_capture_crop(frame, sx, sy, w, h, &pw, &ph);
+        if (px) openpete_fb_snapshot_store(idx, px, pw, ph);
     }
-    free(cap);
+    while (openpete_fb_snapshot_take_pending_area(&idx, &sx, &sy, &w, &h, &frame)) {
+        int pw = 0, ph = 0;
+        unsigned char *px = fbsnap_capture_crop(frame, sx, sy, w, h, &pw, &ph);
+        if (px) openpete_fb_snapshot_store_area(idx, px, pw, ph);
+    }
     { static int s_census = -1;
       if (s_census < 0) { const char *e = getenv("OPENPETE_FBSNAP_CENSUS"); s_census = (e && *e && *e != '0'); }
       if (s_census) {
           extern unsigned openpete_frame;
           unsigned taken = 0, resolved = 0, quads = 0;
           openpete_fb_snapshot_counts(&taken, &resolved, &quads);
-          fprintf(stderr, "[fbsnap] f=%u taken=%u resolved=%u quads=%u cap=%dx%d wf=%.4f\n",
-                  openpete_frame, taken, resolved, quads, cw, ch, (double)wf);
+          fprintf(stderr, "[fbsnap] f=%u taken=%u resolved=%u quads=%u\n",
+                  openpete_frame, taken, resolved, quads);
       } }
 }
 

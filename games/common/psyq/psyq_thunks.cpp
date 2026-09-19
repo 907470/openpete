@@ -1218,6 +1218,9 @@ void psyq_MoveImage(CPUState* cpu) {
  * pulling the core header into this thunk file. No-ops when disabled. */
 extern "C" void openpete_native_set_display_rect(int x, int y, int w, int h);
 extern "C" void openpete_native_set_draw_clip(int x, int y, int w, int h);
+extern "C" void openpete_fb_snapshot_note_draw_env(int clip_x, int clip_y,
+                                                   int clip_w, int clip_h,
+                                                   int ofs_x, int ofs_y, int isbg);
 extern "C" void openpete_native_set_clear_color(int isbg, int r, int g, int b);
 
 void psyq_PutDispEnv(CPUState* cpu) {
@@ -1272,6 +1275,10 @@ void psyq_PutDrawEnv(CPUState* cpu) {
         memcpy(PTR(psyq_game_libgpu_env_addr() + 0x10u), env, 0x5Cu);
     PutDrawEnv(env);
     openpete_native_set_draw_clip(env->clip.x, env->clip.y, env->clip.w, env->clip.h);
+    /* The draw area a framebuffer-window copy maps its source through: the clip
+     * rect names the buffer, the drawing offset maps its texels to screen. */
+    openpete_fb_snapshot_note_draw_env(env->clip.x, env->clip.y, env->clip.w, env->clip.h,
+                                       env->ofs[0], env->ofs[1], env->isbg);
     /* The actually-cleared framebuffer background = the gamestate draw-env clear
      * colour (r0,g0,b0) when auto-clear (isbg) is on. This is the faithful bg for
      * the native renderer in EVERY state — unlike g_Cyclorama.m_BackgroundColor,
