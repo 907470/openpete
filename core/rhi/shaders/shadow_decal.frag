@@ -34,13 +34,21 @@
  *
  * The pre-pass depth is SHARED across every consumer pass (native_rtt / SSAA /
  * offscreen panel / screenshots): it is rasterized ONCE per present in the
- * FULL-EXTENT PSX screen mapping, and looked up here by the PSX screen coord
- * (vScreenPSX, carried per-vertex in u,v and interpolated SCREEN-LINEAR /
- * noperspective) through the SAME affine the pre-pass rasterized with (uax..vby
- * push constants). No gl_FragCoord use at all, so full-extent (screenshot),
- * panel (live window), and SSAA paths run identical math by construction. The
- * normal uses EXPLICIT neighbour texels (not dFdx/dFdy), so it is identical in
- * every pass and immune to same-texel quad derivatives at high render res.
+ * full-extent PSX screen mapping, and looked up here through the same affine it
+ * rasterized with (uax..vby push constants).
+ *
+ * The lookup's input is the fragment's OWN PSX screen position, recovered from
+ * gl_FragCoord through this pass's inverse affine (fax..fby, from
+ * scene_fragcoord_affine). Carrying that position as an interpolated vertex
+ * attribute instead read the wrong texel wherever the rasterizer's
+ * interpolation of the attribute disagreed with the fragment's own position —
+ * on a triangle clipped to a thin sliver, by 1-2 PSX pixels — and the decal
+ * then took a neighbouring surface's normal, so the steep test discarded a
+ * 2-3 px band along the clipped edge and left a pale line across the shadow.
+ * Both affines are exact and the viewport is the whole pass, so full-extent
+ * (screenshot), panel (live window) and SSAA paths agree. The normal uses
+ * EXPLICIT neighbour texels (not dFdx/dFdy), so it is identical in every pass
+ * and immune to same-texel quad derivatives at high render res.
  *
  * NB (viz mode 2): the pipe blends SUBTRACTIVE, so on screen the viz colours
  * are subtracted from the framebuffer — read them with a diff tool, not eyes. */
@@ -63,11 +71,11 @@ layout(push_constant) uniform PC {
     float plat_slack;            /* view-Z slack for "meaningfully in front" */
     float uax, ubx, vay, vby;    /* PSX screen -> pre-pass uv affine (u=uax*SX+ubx) */
     float pvw, pvh;              /* pre-pass raster extent within the depth image */
+    float fax, fbx, fay, fby;    /* gl_FragCoord -> PSX screen affine, this pass */
 } pc;
 
 layout(location = 0) in vec4 vColor;  /* x ratio (divide by vQ) */
 layout(location = 1) in vec2 vUV;
-layout(location = 2) noperspective in vec2 vScreenPSX;  /* PSX screen coord (SX,SY) */
 layout(location = 3) in float vQ;     /* perspective ratio (see quad.vert) */
 
 layout(location = 0) out vec4 outColor;
@@ -103,8 +111,12 @@ vec3 world_of_texel(ivec2 t)
 
 void main()
 {
-    vec2 uv = vec2(pc.uax * vScreenPSX.x + pc.ubx,
-                   pc.vay * vScreenPSX.y + pc.vby);
+    /* This fragment's own PSX screen position, from its window coordinate
+     * through the pass's inverse affine (exact; see scene_fragcoord_affine). */
+    vec2 sOwn = vec2(pc.fax * gl_FragCoord.x + pc.fbx,
+                     pc.fay * gl_FragCoord.y + pc.fby);
+    vec2 uv = vec2(pc.uax * sOwn.x + pc.ubx,
+                   pc.vay * sOwn.y + pc.vby);
     ivec2 hi = ivec2(int(pc.pvw) - 1, int(pc.pvh) - 1);
     ivec2 tx = min(ivec2(clamp(uv, vec2(0.0), vec2(1.0)) * vec2(pc.pvw, pc.pvh)), hi);
     float dT = texelFetch(uOpaqueDepth, tx, 0).r;
@@ -116,8 +128,8 @@ void main()
      * (swizzle V=(-dy,-dz,dx) => slot 1 = -dz). The original decal used V0
      * (world y — HORIZONTAL), a proximity test that rejected walls
      * incidentally and left the wall-base notch. */
-    float SX   = vScreenPSX.x;
-    float SY   = vScreenPSX.y;
+    float SX   = sOwn.x;
+    float SY   = sOwn.y;
     float MAC1 = (SX - pc.ofx) * viewZ / pc.h;
     float MAC2 = (SY - pc.ofy) * viewZ / pc.h;
     float MAC3 = viewZ;
@@ -135,6 +147,24 @@ void main()
      * (P = (V2, -V0, -V1), vertical = -V1). Degenerate -> "flat" (keep). */
     float nup = (nlen > 1e-6) ? abs(N.z) / nlen : 1.0;
 
+    if (pc.mode > 7.5) {                       /* lookup census (machine-read only) */
+        /* Does the sampled pre-pass texel cover this fragment's own screen
+         * position? The texel centre is within half a texel of it whenever the
+         * lookup coordinate is the fragment's own, so >= 1 texel of error means
+         * the decal read a neighbouring surface's depth and normal. g and
+         * b mark every decal fragment, r only a fragment whose lookup missed;
+         * mode 9 is the same marker with r forced off. Fragments that missed =
+         * the r difference between the two legs; decal fragments = the
+         * difference between the mode-9 leg and a stock capture. The pipe
+         * blends subtractive, so each marker is read as a capture difference,
+         * and neither count needs a per-game feature knob. */
+        vec2 err = (screen_of_texel(tx) - sOwn) *
+                   vec2(pc.uax * pc.pvw, pc.vay * pc.pvh);
+        float miss = (pc.mode < 8.5 &&
+                      any(greaterThanEqual(abs(err), vec2(1.0)))) ? 0.4 : 0.0;
+        outColor = vec4(miss, 0.4, 0.4, 1.0);
+        return;
+    }
     if (pc.mode > 6.5) {                       /* RAW VIZ: vz + both neighbour dvz */
         float vzy = viewz_from_prepass_depth(texelFetch(uOpaqueDepth, min(tx + ivec2(0, 1), hi), 0).r);
         float vzx = viewz_from_prepass_depth(texelFetch(uOpaqueDepth, min(tx + ivec2(1, 0), hi), 0).r);
@@ -155,7 +185,7 @@ void main()
         return;
     }
     if (pc.mode > 3.5) {                       /* ROUNDTRIP VIZ: screen_of_texel error */
-        vec2 rt = screen_of_texel(tx) - vScreenPSX;   /* expect |.| < ~1 PSX px */
+        vec2 rt = screen_of_texel(tx) - sOwn;   /* expect |.| < ~1 PSX px */
         outColor = vec4(0.4 * clamp(abs(rt.x) / 4.0, 0.0, 1.0),
                         0.4 * clamp(abs(rt.y) / 4.0, 0.0, 1.0),
                         0.0, 1.0);

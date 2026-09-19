@@ -21,11 +21,6 @@ layout(location = 4) in float inW;
 
 layout(location = 0) out vec4 vColor;
 layout(location = 1) out vec2 vUV;
-/* PSX screen coord (inUV, for the shadow decal) interpolated SCREEN-LINEAR, so
- * shadow_decal.frag recovers each fragment's exact PSX screen position with no
- * mode-specific gl_FragCoord->screen affine. noperspective: screen position is
- * affine in screen space, not perspective-correct. Other frags ignore it. */
-layout(location = 2) noperspective out vec2 vScreenPSX;
 /* Interpolation ratio (vzo/inW) — see psx_scene.vert: position W must equal
  * the depth's own view-Z (clip-invariance), so perspective-in-inW colour is
  * recovered by dividing by this in the fragment stage. */
@@ -47,8 +42,7 @@ layout(constant_id = 0) const bool DEPTH_AFFINE = false;
  * makes the gouraud colour interpolate SCREEN-LINEARLY like the PSX GPU
  * (no perspective divide). Same screen position; the window depth zc/W is
  * the value the perspective path's divide produces, so depth behaviour is
- * identical. vScreenPSX is already noperspective — unaffected either way.
- * Must match psx_scene.vert so both scene pipes stay consistent. */
+ * identical. Must match psx_scene.vert so both scene pipes stay consistent. */
 layout(constant_id = 1) const bool AFFINE_UV = false;
 
 void main()
@@ -68,7 +62,6 @@ void main()
                             : vec4(inPos.xy * vzo, zc, vzo);
     vColor = inColor * q;
     vUV = inUV * q;
-    vScreenPSX = inUV;
     vQ = q;
     vKoff = inKoff;
     vRank = inRank;

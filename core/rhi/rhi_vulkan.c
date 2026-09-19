@@ -3392,6 +3392,12 @@ void rhi_swapchain_extent(const rhi_device *dev, int *w, int *h)
     if (h) *h = dev ? (int)dev->sc_extent.height : 0;
 }
 
+void rhi_pass_extent(const rhi_device *dev, int *w, int *h)
+{
+    if (w) *w = dev ? (int)dev->cur_extent.width  : 0;
+    if (h) *h = dev ? (int)dev->cur_extent.height : 0;
+}
+
 void rhi_begin_render_target(rhi_device *dev, rhi_texture *rt,
                              float r, float g, float b, float a)
 {

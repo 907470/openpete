@@ -116,12 +116,12 @@ static const unsigned k_stp_sel_classes[OPENPETE_STP_SELS] = {
 #define NR_HUD_TEX_PIPES (OPENPETE_STP_SELS * NR_BLEND_CLASSES)
 
 /* shadow_decal.frag push constant (must match the GLSL block field-for-field) —
- * the depth-aware shadow decal's per-pixel world-Y wall rejection. The PSX
- * screen coord rides the vertex u,v as a noperspective varying, and the
- * pre-pass depth lookup goes through the uax..vby affine (the SAME full-extent
- * mapping the shared pre-pass rasterized with) — no gl_FragCoord->screen math
- * anywhere, so full-extent, panel, and SSAA paths are identical by
- * construction. */
+ * the depth-aware shadow decal's per-pixel world-Y wall rejection. The fragment
+ * recovers its own PSX screen coord from gl_FragCoord through the fax..fby
+ * inverse affine of this pass (scene_fragcoord_affine), then looks the shared
+ * pre-pass depth up through the uax..vby affine (the full-extent mapping the
+ * pre-pass rasterized with). Both affines are exact, so full-extent, panel and
+ * SSAA passes agree, and every fragment samples the texel that covers it. */
 typedef struct {
     float col0x, col0y, col0z;     /* camera matrix columns (Q12 int16 as float) */
     float col1x, col1y, col1z;
@@ -137,6 +137,7 @@ typedef struct {
     float plat_slack;              /* raised-occluder-in-front: view-Z slack */
     float uax, ubx, vay, vby;      /* PSX screen -> pre-pass uv affine */
     float pvw, pvh;                /* pre-pass raster extent (texels) */
+    float fax, fbx, fay, fby;      /* gl_FragCoord -> PSX screen affine, this pass */
 } shadow_decal_pc;
 
 
@@ -3738,6 +3739,36 @@ static void scene_to_clip(float sx, float sy, float *cx, float *cy)
         *cx = (s_nr.p0_cx - s_nr.p0_hx) + nx * (2.0f * s_nr.p0_hx);
         *cy = (0.0f + s_nr.p0_hy)       - ny * (2.0f * s_nr.p0_hy);
     }
+}
+
+/* The current pass's inverse of scene_to_clip, composed with its viewport:
+ * a fragment at gl_FragCoord (x,y) sits at PSX screen (fax*x + fbx,
+ * fay*y + fby). scene_to_clip is affine in (sx,sy), and every pass begin sets
+ * an origin-0, Y-flipped viewport of the whole render area, so the window
+ * transform is x = W*(cx+1)/2, y = H*(1-cy)/2 and the composition inverts
+ * exactly under any aspect, widescreen factor or SSAA factor. The mapping is
+ * Probed, not re-derived, so full-extent and panel passes cannot drift apart.
+ *
+ * This is how the shadow decals recover the screen coord their pre-pass lookup
+ * needs. Carrying it as an interpolated vertex attribute instead put the
+ * lookup on a neighbouring texel wherever the rasterizer's interpolation of
+ * that attribute disagreed with the fragment's own position (clipped slivers),
+ * and the decal then read a neighbour's surface normal. */
+typedef struct { float fax, fbx, fay, fby; } scene_fc_affine;
+static void scene_fragcoord_affine(scene_fc_affine *o)
+{
+    float cx0, cy0, cx1, cy1;
+    scene_to_clip(0.0f, 0.0f, &cx0, &cy0);
+    scene_to_clip(1.0f, 1.0f, &cx1, &cy1);
+    int vw = 0, vh = 0;
+    rhi_pass_extent(s_nr.dev, &vw, &vh);
+    float ax = cx1 - cx0, ay = cy1 - cy0;   /* clip units per PSX screen pixel */
+    float w  = vw > 0 ? (float)vw : 1.0f;
+    float h  = vh > 0 ? (float)vh : 1.0f;
+    if (ax == 0.0f) ax = 1.0f;
+    if (ay == 0.0f) ay = 1.0f;
+    o->fax =  2.0f / (w * ax); o->fbx = (-1.0f - cx0) / ax;
+    o->fay = -2.0f / (h * ay); o->fby = ( 1.0f - cy0) / ay;
 }
 
 /* The CURRENT scene_to_clip mapping's RAW inputs for the terrain-cache
@@ -7816,6 +7847,9 @@ static bool draw_native_scene(bool full_extent)
                     pc.uax = s_od_uax; pc.ubx = s_od_ubx;
                     pc.vay = s_od_vay; pc.vby = s_od_vby;
                     pc.pvw = s_od_vw; pc.pvh = s_od_vh;
+                    scene_fc_affine fc; scene_fragcoord_affine(&fc);
+                    pc.fax = fc.fax; pc.fbx = fc.fbx;
+                    pc.fay = fc.fay; pc.fby = fc.fby;
                     rhi_push_constants(s_nr.dev, &pc, sizeof pc);
                 } else {
                     bind_scene_pipe(s_nr.gouraud_sub_ztest_pipe);

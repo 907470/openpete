@@ -795,6 +795,12 @@ void rhi_set_viewport(rhi_device *dev, int w, int h);
  * pass — rhi_begin_offscreen — renders at). Used to size a shared depth
  * pre-pass to cover the largest scene target. */
 void rhi_swapchain_extent(const rhi_device *dev, int *w, int *h);
+/* The render area of the current pass, recorded at every pass begin (offscreen
+ * = the swapchain extent, render target = the target's own extent). Every pass
+ * begin also sets an origin-0 viewport of exactly this size, so a fragment
+ * shader's gl_FragCoord maps to clip space through it alone. Zero outside a
+ * pass. */
+void rhi_pass_extent(const rhi_device *dev, int *w, int *h);
 
 /* Clear the depth attachment to far WITHIN the current pass (offscreen or render
  * target). Used to depth-isolate a late on-top overlay (3D HUD icons) so it
