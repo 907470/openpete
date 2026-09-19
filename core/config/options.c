@@ -701,7 +701,7 @@ void openpete_options_init(openpete_options_t* opts) {
     opts->runahead            = 0;
     opts->log_format          = OPENPETE_LOG_PLAIN;
     opts->log_file            = NULL;  /* unset: env, else <state>/logs/openpete.log */
-    opts->renderer            = OPENPETE_RENDERER_VK;  /* the native Vulkan renderer both rasterizes and displays; --renderer psycross keeps the GL reference as the rasterizer and displays its frame in the same native window. Inert under --headless, where native stays off and PsyCross rasterizes for the oracle. A game without native renderer walks overrides both this and default_renderer before parsing. */
+    opts->renderer            = OPENPETE_RENDERER_VK;  /* the native Vulkan renderer both rasterizes and displays; --renderer psycross keeps the GL reference as the rasterizer and displays its frame in the same native window. Inert under --headless, where native stays off and PsyCross rasterizes for the oracle. openpete_options_set_default_renderer, called before parsing, changes both this and default_renderer for a game that starts elsewhere. */
     opts->default_renderer    = OPENPETE_RENDERER_VK;
     opts->mute                = false; /* audio on by default; --mute 1 to silence */
     opts->sfx_volume          = -1;    /* -1 = unset; the game's own slider stands */
