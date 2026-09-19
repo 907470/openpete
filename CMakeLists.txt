@@ -374,25 +374,6 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             SKIP_RETURN_CODE 64
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
-
-    # 2D-UI carry identity across sub-tick presents. Per row of
-    # games/<slug>/carry-subtick-corpus.manifest, three headless replays of one
-    # bk2 with the intermediate presents pinned at alpha 0.25, 0.5 and 0.75,
-    # and every interpolated carry triangle checked for a crossed pair: one
-    # whose partner is another entry's predecessor, so the interpolation sweeps
-    # the element between two different sprites for the length of a tick. Fails
-    # as vacuous when the row interpolates fewer triangles than its floor.
-    foreach(_subtick_game spyro-1 spyro-2 spyro-3)
-        add_test(NAME carry_subtick_${_subtick_game}
-                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_carry_subtick.sh
-                         --game ${_subtick_game} --build-dir=${CMAKE_BINARY_DIR})
-        set_tests_properties(carry_subtick_${_subtick_game} PROPERTIES
-            LABELS "presentation;carry"
-            TIMEOUT 1800
-            SKIP_RETURN_CODE 64
-            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
-    endforeach()
-
     # Retained-terrain GPU cache hole census, windowed on the machine's own
     # GPU. Per freecam-corpus row, two legs of one build on one device
     # differing only in --terrain-cache, and a count of the pixels the cached

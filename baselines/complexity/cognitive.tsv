@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: be2659a3d152989d570976956731388b1b97b226
+# head: abaf9425253fdf1107911b16a8187b669de5a1ae
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -80,7 +80,7 @@ core/renderer/native_render.c	openpete_native_render_init	164	0
 core/renderer/native_render.c	openpete_native_render_snapshot_fb_window	27	0	
 core/renderer/native_render.c	openpete_native_render_snapshot_frozen	28	0	
 core/renderer/native_render.c	openpete_native_scene_add_tri_grouped	42	0	
-core/renderer/native_render.c	openpete_native_scene_apply_overlay	87	0	
+core/renderer/native_render.c	openpete_native_scene_apply_overlay	98	0	revert of 00d07514: the keyed 2D carry pairing regressed four corpus tiles; the pairing and the helper split it funded return together with the corrected pairing
 core/renderer/native_render.c	openpete_native_scene_begin_frame	59	0	
 core/renderer/native_render.c	openpete_native_scene_capture_overlay	49	0	
 core/renderer/native_render.c	pc_note	38	0	
