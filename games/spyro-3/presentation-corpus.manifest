@@ -65,8 +65,10 @@ sheilas-alp-sheila-water-invisible|4400|100||1500,4494,4498,4508,4512,4520,4528,
 icy-peak-ice-crystal-destruction|1500|100||1660,1674,1690
 # title-demo: the plain boot with no movie; the title screen's rhynoc animates
 # under a fixed camera. 510 pins the frame the jitter was reported at, on the
-# canonical and the sub-tick leg alike.
-title-demo|500|20||510
+# canonical and the sub-tick leg alike. 2210 pins the present where particles
+# streak on the intermediate leg: a primitive lerped from a previous-tick
+# record that is not its own.
+title-demo|500|20||510,2210
 
 # open-options and open-atlas are the corpus rows for the 2D UI layer: they are
 # the only movies whose frames carry its classes inside the visible band. At
