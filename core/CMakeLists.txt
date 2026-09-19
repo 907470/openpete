@@ -147,6 +147,7 @@ add_library(openpete_core STATIC
     mods/mod_sfx.c
     mods/mod_texture.c
     mods/mod_config.c
+    mods/mod_glsl.c
     mods/mod_shader.c
     ${CMAKE_SOURCE_DIR}/third_party/tomlc99/toml.c
 

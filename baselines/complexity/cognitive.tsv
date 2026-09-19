@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 15d647c2a28e7dbd2d93fe6ea8a317c03908e526
+# head: ec0c8c6396a9e3ee95a93ffc147baeb000079f62
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -50,7 +50,7 @@ core/mods/mod_loader.c	parse_manifest	254	0
 core/mods/mod_registry.c	custom_tick	51	0	
 core/mods/mod_registry.c	openpete_mods_custom_register	34	0	
 core/mods/mod_shader.c	openpete_mods_material_resolve	71	0	
-core/mods/mod_shader.c	openpete_mods_shader_register_locked	32	0	
+core/mods/mod_shader.c	openpete_mods_shader_register_locked	29	0	
 core/mods/mod_shader.c	terrain_winner	42	0	
 core/psx/cdrom_mmio.c	openpete_cdrom_mmio_open	49	0	
 core/psx/dispatch.c	psx_override_dispatch	43	0	

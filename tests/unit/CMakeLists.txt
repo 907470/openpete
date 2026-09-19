@@ -244,3 +244,31 @@ target_include_directories(text_moby_id_test PRIVATE
     ${CMAKE_SOURCE_DIR}/third_party/psxrecomp/runner/include)
 set_target_properties(text_moby_id_test PROPERTIES C_STANDARD 99)
 add_test(NAME text_moby_id_test COMMAND text_moby_id_test)
+
+# mod_shader_compile_test — compiles every shipped mod shader (mods/*/**.vert
+# and .frag) against the SDK staged next to openpete-spyro1, through the
+# compile-on-boot front end (core/mods/mod_glsl.c) — same glslang settings,
+# include path and profiles — and fails on any error or when no material
+# fragment was compiled. The shaders are otherwise compiled only when a mod
+# loads at boot, so an SDK header change can break every material mod with
+# no build or test noticing.
+if(OPENPETE_BUILD_GLSLANG AND TARGET openpete-spyro1)
+    add_executable(mod_shader_compile_test
+        mod_shader_compile_test.c
+        ${CMAKE_SOURCE_DIR}/core/mods/mod_glsl.c
+        ${CMAKE_SOURCE_DIR}/core/diag/log.c)
+    target_include_directories(mod_shader_compile_test PRIVATE
+        ${CMAKE_SOURCE_DIR}/core/include
+        ${CMAKE_SOURCE_DIR}/core/mods
+        ${CMAKE_SOURCE_DIR}/third_party
+        ${CMAKE_BINARY_DIR}/third_party/glslang/include)
+    target_link_libraries(mod_shader_compile_test PRIVATE
+        glslang glslang-default-resource-limits)
+    set_target_properties(mod_shader_compile_test PROPERTIES C_STANDARD 99)
+    # The staged SDK is the directory compile-on-boot resolves includes in.
+    add_dependencies(mod_shader_compile_test spyro1_sdk_stage)
+    add_test(NAME mod_shader_compile
+             COMMAND mod_shader_compile_test ${CMAKE_SOURCE_DIR}/mods
+                     $<TARGET_FILE_DIR:openpete-spyro1>/sdk)
+    set_tests_properties(mod_shader_compile PROPERTIES LABELS "mods")
+endif()

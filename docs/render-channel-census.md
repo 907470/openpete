@@ -196,7 +196,7 @@ answer, and the answer must be designed before the caching arc.
 ## Slot and tag capacity
 
 Per-present material slots are interned into one global table,
-`MOD_MATERIAL_SLOTS = 128` (`core/mods/mod_shader.c:921`), index 0 reserved
+`MOD_MATERIAL_SLOTS = 128` (`core/mods/mod_shader.c:749`), index 0 reserved
 for "defer to declarative resolve". That software constant, not the tag, is
 the binding capacity: the 12-bit slot field of the shared layout holds 4094
 outcomes and terrain's 9-bit field 510.
@@ -204,10 +204,10 @@ outcomes and terrain's 9-bit field 510.
 Slot ids are minted from one counter but stamped into fields of differing
 width, so the table can never outgrow the narrowest field. Terrain's is the
 narrowest at 9 bits and its decode masks `(tag >> 16) & 0x1FF`
-(`mod_shader.c:1562`), so an id of 512 would come back as 0 — the wrong
+(`mod_shader.c:1390`), so an id of 512 would come back as 0 — the wrong
 material, with no crash and no log — and 0x1FF is already the
 declined-to-stock sentinel `OPENPETE_MATERIAL_TERRAIN_STOCK`
 (`core/include/openpete_mods.h:648`), leaving 510 as the last usable id.
-A compile-time assertion at `mod_shader.c:947-948` refuses a
+A compile-time assertion at `mod_shader.c:775-776` refuses a
 `MOD_MATERIAL_SLOTS` above that bound; raising it means widening the terrain
 field first.

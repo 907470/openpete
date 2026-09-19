@@ -1,9 +1,8 @@
 /* mod_shader.c — the mod GLSL compile service (shader tier S1).
  *
- * Mods ship GLSL source; the ENGINE compiles it to SPIR-V at load with
- * in-process glslang — the same compiler and dialect (vulkan1.0) that
- * builds the engine's own shaders — so no shader toolchain ships in any
- * dist. Compiles are content-hash cached under <mod>/.build/shaders/
+ * Mods ship GLSL source; the ENGINE compiles it to SPIR-V at load through
+ * mod_glsl.c (in-process glslang, the dialect of the engine's own
+ * shaders). Compiles are content-hash cached under <mod>/.build/shaders/
  * with the same stamp mechanics as the C compile-on-boot cache
  * (mod_loader.c mod_compute_key): stamp removed on failure, object kept.
  * A prebuilt "<path>.spv" beside a MISSING source loads instead
@@ -25,10 +24,9 @@
 #include "openpete_log.h"
 #include "openpete_native_render.h"   /* set_tag_split arming (S8) */
 #include "../host/sha256.h"
+#include "mod_glsl.h"
 
 #ifndef OPENPETE_NO_GLSLANG
-#include <glslang/Include/glslang_c_interface.h>
-#include <glslang/Public/resource_limits_c.h>
 #include <glslang/build_info.h>
 #endif
 
@@ -83,8 +81,7 @@ void openpete_mods_registry_read_unlock(void) {
 #endif
 
 #define MOD_SHADER_MAX      256
-#define MOD_SHADER_SRC_MAX  (1u << 20)   /* 1 MiB source cap */
-#define MOD_SHADER_PATH_MAX 512
+#define MOD_SHADER_PATH_MAX OPENPETE_MOD_GLSL_PATH_MAX
 
 typedef struct {
     const char* owner;       /* mod id (loader-owned string) */
@@ -106,22 +103,6 @@ static int s_shader_count;
 
 /* ------------------------------------------------------------------ */
 /* small file helpers                                                  */
-
-static char* read_whole_file(const char* path, size_t* len_out) {
-    FILE* f = fopen(path, "rb");
-    if (!f) return NULL;
-    fseek(f, 0, SEEK_END);
-    long n = ftell(f);
-    fseek(f, 0, SEEK_SET);
-    if (n < 0 || (size_t)n > MOD_SHADER_SRC_MAX) { fclose(f); return NULL; }
-    char* buf = (char*)malloc((size_t)n + 1);
-    if (!buf) { fclose(f); return NULL; }
-    size_t got = fread(buf, 1, (size_t)n, f);
-    fclose(f);
-    buf[got] = '\0';
-    if (len_out) *len_out = got;
-    return buf;
-}
 
 static int write_whole_file(const char* path, const void* data, size_t len) {
     FILE* f = fopen(path, "wb");
@@ -170,73 +151,8 @@ static void flatten_path(const char* path, char* out, size_t cap) {
     out[i] = '\0';
 }
 
-/* Stage values mirror glslang_stage_t so handles stay meaningful when
- * the engine is built without glslang (OPENPETE_NO_GLSLANG: prebuilt
- * .spv still loads; source compiles refuse). */
-#define MOD_SHADER_STAGE_VERT 0   /* == GLSLANG_STAGE_VERTEX   */
-#define MOD_SHADER_STAGE_FRAG 4   /* == GLSLANG_STAGE_FRAGMENT */
-
-static int stage_from_path(const char* path) {
-    size_t n = strlen(path);
-    if (n >= 5 && strcmp(path + n - 5, ".vert") == 0) return MOD_SHADER_STAGE_VERT;
-    if (n >= 5 && strcmp(path + n - 5, ".frag") == 0) return MOD_SHADER_STAGE_FRAG;
-    return -1;
-}
-
-/* ------------------------------------------------------------------ */
-/* include resolution: "openpete_shader_api.glsl" -> the staged SDK
- * copy; everything else resolves relative to the including shader's
- * own directory. */
-
-typedef struct {
-    char shader_dir[MOD_SHADER_PATH_MAX];  /* dir of the registered shader */
-    char sdk_shader_dir[MOD_SHADER_PATH_MAX];
-} include_ctx_t;
-
-#ifndef OPENPETE_NO_GLSLANG
-static glsl_include_result_t* include_load(const char* dir, const char* name) {
-    char p[MOD_SHADER_PATH_MAX * 2];
-    snprintf(p, sizeof p, "%s/%s", dir, name);
-    size_t len = 0;
-    char* data = read_whole_file(p, &len);
-    if (!data) return NULL;
-    glsl_include_result_t* r = (glsl_include_result_t*)calloc(1, sizeof *r);
-    if (!r) { free(data); return NULL; }
-    r->header_name = strdup(name);
-    r->header_data = data;
-    r->header_length = len;
-    return r;
-}
-
-static glsl_include_result_t* include_resolve(void* ctx_v, const char* name,
-                                              const char* includer_name,
-                                              size_t depth) {
-    include_ctx_t* ctx = (include_ctx_t*)ctx_v;
-    (void)includer_name;
-    if (depth > 8) return NULL;                       /* cycle guard */
-    glsl_include_result_t* r = include_load(ctx->sdk_shader_dir, name);
-    if (!r) r = include_load(ctx->shader_dir, name);
-    return r;
-}
-
-static glsl_include_result_t* include_system(void* ctx, const char* name,
-                                             const char* inc, size_t depth) {
-    return include_resolve(ctx, name, inc, depth);
-}
-static glsl_include_result_t* include_local(void* ctx, const char* name,
-                                            const char* inc, size_t depth) {
-    return include_resolve(ctx, name, inc, depth);
-}
-static int include_free(void* ctx, glsl_include_result_t* r) {
-    (void)ctx;
-    if (r) {
-        free((void*)r->header_name);
-        free((void*)r->header_data);
-        free(r);
-    }
-    return 0;
-}
-#endif /* !OPENPETE_NO_GLSLANG */
+#define MOD_SHADER_STAGE_VERT OPENPETE_MOD_GLSL_STAGE_VERT
+#define MOD_SHADER_STAGE_FRAG OPENPETE_MOD_GLSL_STAGE_FRAG
 
 /* ------------------------------------------------------------------ */
 /* build key: api version + glslang version + interface header bytes +
@@ -252,7 +168,7 @@ static void key_update_str(openpete_sha256_ctx* hc, const char* s) {
 
 static int key_update_file(openpete_sha256_ctx* hc, const char* path) {
     size_t len = 0;
-    char* data = read_whole_file(path, &len);
+    char* data = openpete_mod_glsl_read_file(path, &len);
     if (!data) return -1;
     openpete_sha256_update(hc, data, len);
     free(data);
@@ -338,91 +254,6 @@ static int shader_compute_key(const char* mod_dir, const char* rel_path,
 /* ------------------------------------------------------------------ */
 /* compile                                                             */
 
-static void write_log(const char* log_path, const char* phase,
-                      const char* a, const char* b) {
-    FILE* f = fopen(log_path, "wb");
-    if (!f) return;
-    fprintf(f, "[%s]\n%s\n%s\n", phase, a ? a : "", b ? b : "");
-    fclose(f);
-}
-
-/* GLSL source -> malloc'd SPIR-V words. Returns word count, 0 on error
- * (details in log_path). */
-#ifdef OPENPETE_NO_GLSLANG
-static size_t compile_glsl(const char* src, int stage,
-                           const include_ctx_t* inc_ctx, const char* preamble,
-                           const char* log_path, uint32_t** out_words) {
-    (void)src; (void)stage; (void)inc_ctx; (void)preamble; (void)out_words;
-    write_log(log_path, "compile",
-              "engine built without glslang (OPENPETE_BUILD_GLSLANG=OFF); "
-              "ship a prebuilt .spv + .spv.ihash sidecar instead", NULL);
-    return 0;
-}
-#else
-static size_t compile_glsl(const char* src, int stage,
-                           const include_ctx_t* inc_ctx, const char* preamble,
-                           const char* log_path, uint32_t** out_words) {
-    static int s_glslang_up = 0;
-    if (!s_glslang_up) {
-        glslang_initialize_process();  /* process-lifetime; never finalized */
-        s_glslang_up = 1;
-    }
-
-    glslang_input_t input;
-    memset(&input, 0, sizeof input);
-    input.language = GLSLANG_SOURCE_GLSL;
-    input.stage = (glslang_stage_t)stage;
-    input.client = GLSLANG_CLIENT_VULKAN;
-    /* vulkan1.0 — matches the engine's own `glslangValidator -V` builds */
-    input.client_version = GLSLANG_TARGET_VULKAN_1_0;
-    input.target_language = GLSLANG_TARGET_SPV;
-    input.target_language_version = GLSLANG_TARGET_SPV_1_0;
-    input.code = src;
-    input.default_version = 450;
-    input.default_profile = GLSLANG_NO_PROFILE;
-    input.messages = GLSLANG_MSG_DEFAULT_BIT;
-    input.resource = glslang_default_resource();
-    input.callbacks.include_system = include_system;
-    input.callbacks.include_local = include_local;
-    input.callbacks.free_include_result = include_free;
-    input.callbacks_ctx = (void*)inc_ctx;
-
-    glslang_shader_t* sh = glslang_shader_create(&input);
-    if (!sh) return 0;
-    /* Injected after #version, so a profile define reaches the contract
-     * include without the mod's source knowing which profile it is in. */
-    if (preamble) glslang_shader_set_preamble(sh, preamble);
-    if (!glslang_shader_preprocess(sh, &input) ||
-        !glslang_shader_parse(sh, &input)) {
-        write_log(log_path, "parse", glslang_shader_get_info_log(sh),
-                  glslang_shader_get_info_debug_log(sh));
-        glslang_shader_delete(sh);
-        return 0;
-    }
-    glslang_program_t* prog = glslang_program_create();
-    glslang_program_add_shader(prog, sh);
-    if (!glslang_program_link(prog, GLSLANG_MSG_SPV_RULES_BIT |
-                                    GLSLANG_MSG_VULKAN_RULES_BIT)) {
-        write_log(log_path, "link", glslang_program_get_info_log(prog),
-                  glslang_program_get_info_debug_log(prog));
-        glslang_program_delete(prog);
-        glslang_shader_delete(sh);
-        return 0;
-    }
-    glslang_program_SPIRV_generate(prog, (glslang_stage_t)stage);
-    size_t words = glslang_program_SPIRV_get_size(prog);
-    uint32_t* buf = words ? (uint32_t*)malloc(words * sizeof(uint32_t)) : NULL;
-    if (buf) glslang_program_SPIRV_get(prog, buf);
-    const char* spv_msg = glslang_program_SPIRV_get_messages(prog);
-    if (spv_msg && *spv_msg)
-        OPL_INFO_F("mods", "shader: glslang: %s", spv_msg);
-    glslang_program_delete(prog);
-    glslang_shader_delete(sh);
-    if (!buf) return 0;
-    *out_words = buf;
-    return words;
-}
-#endif /* OPENPETE_NO_GLSLANG */
 
 /* One profile of one shader source: reuse the cached SPIR-V when the build
  * key still matches, else compile and cache it. `suffix` names the variant's
@@ -431,7 +262,7 @@ static size_t compile_glsl(const char* src, int stage,
  * Returns word count, 0 on failure — and on failure removes only the STAMP,
  * so a previously good .spv survives to be re-validated next boot. */
 static size_t compile_profile(const char* src, int stage,
-                              const include_ctx_t* ctx, const char* key,
+                              const openpete_mod_glsl_include_t* ctx, const char* key,
                               const char* build_dir, const char* flat,
                               const char* suffix, const char* preamble,
                               const char* log_path, const char* id,
@@ -450,14 +281,15 @@ static size_t compile_profile(const char* src, int stage,
     }
     if (strcmp(stamped, key) == 0) {
         size_t len = 0;
-        char* cached = read_whole_file(spv_path, &len);
+        char* cached = openpete_mod_glsl_read_file(spv_path, &len);
         if (cached && len >= 4 && (len & 3u) == 0) {
             *out_words = (uint32_t*)cached;
             return len / 4;
         }
         free(cached);
     }
-    size_t n = compile_glsl(src, stage, ctx, preamble, log_path, out_words);
+    size_t n = openpete_mod_glsl_compile(src, stage, ctx, preamble, log_path,
+                                         out_words);
     if (n == 0) {
         remove(stamp_path);          /* stamp only; a cached .spv survives */
         return 0;
@@ -484,7 +316,7 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
     }
     if (strstr(path, "..")) return -1;    /* stay inside the mod dir */
     if (strlen(path) >= MOD_SHADER_PATH_MAX) return -1;
-    int stage = stage_from_path(path);
+    int stage = openpete_mod_glsl_stage_from_path(path);
     if (stage < 0) {
         OPL_ERROR_F("mods", "%s: shader %s: unknown stage (want .vert/.frag)",
                     id, path);
@@ -515,16 +347,12 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
     size_t n_ter_words = 0;
 
     size_t src_len = 0;
-    char* src = read_whole_file(src_path, &src_len);
+    char* src = openpete_mod_glsl_read_file(src_path, &src_len);
     if (src) {
         char key[65];
         if (shader_compute_key(mod_dir, path, key) != 0) { free(src); return -1; }
-        include_ctx_t ctx;
-        snprintf(ctx.shader_dir, sizeof ctx.shader_dir, "%s/%s", mod_dir, path);
-        char* slash = strrchr(ctx.shader_dir, '/');
-        if (slash) *slash = '\0';
-        snprintf(ctx.sdk_shader_dir, sizeof ctx.sdk_shader_dir,
-                 "%s/shaders", openpete_mods_sdk_dir());
+        openpete_mod_glsl_include_t ctx;
+        openpete_mod_glsl_include_init(&ctx, src_path, openpete_mods_sdk_dir());
 
         n_words = compile_profile(src, stage, &ctx, key, build_dir, flat,
                                   "", NULL, log_path, id, path, &words);
@@ -539,10 +367,10 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
          * per-face varyings instead of a per-draw push block. The source is
          * the same source: only the profile define differs. Anything else
          * (postfx, decal, mesh vertex stages) has one profile. */
-        if (stage == MOD_SHADER_STAGE_FRAG &&
-            strstr(src, "openpete_psx_material.glsl")) {
+        if (openpete_mod_glsl_has_terrain_profile(src, stage)) {
             n_ter_words = compile_profile(src, stage, &ctx, key, build_dir, flat,
-                                          ".terrain", "#define OP_PROFILE_TERRAIN 1\n",
+                                          ".terrain",
+                                          OPENPETE_MOD_GLSL_TERRAIN_PREAMBLE,
                                           log_path, id, path, &ter_words);
             if (n_ter_words == 0)
                 OPL_ERROR_F("mods", "%s: shader %s: terrain profile FAILED "
@@ -558,7 +386,7 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
         snprintf(pre_path, sizeof pre_path, "%s.spv", src_path);
         snprintf(side_path, sizeof side_path, "%s.spv.ihash", src_path);
         size_t side_len = 0;
-        char* side = read_whole_file(side_path, &side_len);
+        char* side = openpete_mod_glsl_read_file(side_path, &side_len);
         if (!side) {
             OPL_ERROR_F("mods", "%s: shader %s: no source and no %s.spv.ihash "
                         "sidecar — refusing the prebuilt (unverifiable "
@@ -579,7 +407,7 @@ static int openpete_mods_shader_register_locked(openpete_mod_t* self, const char
         }
         free(side);
         size_t len = 0;
-        char* pre = read_whole_file(pre_path, &len);
+        char* pre = openpete_mod_glsl_read_file(pre_path, &len);
         if (!pre || len < 4 || (len & 3u) != 0) {
             OPL_ERROR_F("mods", "%s: shader %s: missing/malformed %s.spv",
                         id, path, path);

@@ -165,9 +165,12 @@ layout(set = 4, binding = 0) uniform sampler2D op_key_moby;
 layout(set = 5, binding = 0) uniform sampler2D op_key_actor;
 layout(set = 6, binding = 0) uniform sampler2D op_moby_rank;
 
-/* Engine-selected depth encoding and key scope; see psx_key_contest.glsl. */
+/* Engine-selected depth encoding, key scope and per-game contest rule
+ * (ordering-table slot contest, on for Spyro 3); see psx_key_contest.glsl.
+ * The engine sets all three per pipeline, as on its own scene stages. */
 layout(constant_id = 0) const bool OP_DEPTH_AFFINE = false;
 layout(constant_id = 3) const bool OP_MOBY_TRUESCOPE = true;
+layout(constant_id = 4) const bool OP_SLOT_CONTEST = false;
 
 layout(push_constant) uniform op_psx_material {
     int tpage_x, tpage_y;   /* texture page origin (VRAM 16-bit-pixel units) */
@@ -296,7 +299,7 @@ void main()
                 op_key_from_stored(texelFetch(op_key_moby,    ivec2(gl_FragCoord.xy), 0).r),
                 own, vKoff,
                 vRank.x < -0.5,     /* unranked moby faces carry rank -1 */
-                OP_MOBY_TRUESCOPE))
+                OP_MOBY_TRUESCOPE, OP_SLOT_CONTEST))
             discard;
     }
     vec4 c = op_material(op_pack_shade());
