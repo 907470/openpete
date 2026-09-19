@@ -2343,12 +2343,52 @@ typedef struct {
     int      nfaces;              /* emittable faces in f[] */
     int      raw, sprites, skips; /* walkdiag bookkeeping (raw = total stream faces) */
     uint8_t  align;               /* 0 = align_lo, 1 = align_hi, 2 = desync */
+    uint32_t gen;                 /* resolve generation that last handed this entry out */
     wface_t* f;
 } fcache_t;
 #define FC_SLOTS 512
 static fcache_t s_fcache[FC_SLOTS];
 static long s_fc_hit, s_fc_miss;      /* tier-census counters */
 static wface_t s_fc_tmp[8192];        /* decode scratch (guard cap matches the old walk) */
+
+/* ---- resolve generation -------------------------------------------------
+ * The record prologue hands out an fcache_t* per record and the walk reads
+ * them all afterwards, so an entry a record already holds may not be evicted
+ * before that walk ends. Each resolve pass takes a generation; every entry it
+ * returns is stamped with it, and an entry stamped with the current generation
+ * is not a victim. When both ways of a hash pair are stamped, the decode goes to
+ * a private overflow entry instead — outside the cache, so it evicts nothing
+ * and is dropped when the next pass reuses the slot. Without this a third
+ * faceblock on one hash pair silently rewrites an entry an earlier record
+ * points at, and that record then walks another model's faces and colours. */
+#define FC_OVF_SLOTS 64
+static fcache_t s_fc_ovf[FC_OVF_SLOTS];
+static int      s_fc_ovf_n;                  /* overflow entries taken this pass */
+static uint32_t s_fc_gen = 1;                /* current resolve generation */
+static long     s_fc_ovf_used, s_fc_ovf_full;  /* engagement census */
+
+/* Opening a pass retires the previous one: every entry still carries the older
+ * generation, so none of them is held any more. */
+static void fcache_pass_begin(void) { s_fc_gen++; s_fc_ovf_n = 0; }
+static int  fcache_pinned(const fcache_t* C) { return C->gen == s_fc_gen; }
+/* The next free overflow entry, or NULL when the pass has exhausted them. */
+static fcache_t* fcache_ovf_take(void) {
+    if (s_fc_ovf_n >= FC_OVF_SLOTS) { s_fc_ovf_full++; return NULL; }
+    s_fc_ovf_used++;
+    return &s_fc_ovf[s_fc_ovf_n++];
+}
+
+/* Where a missing faceblock may be decoded, given the two ways of its hash
+ * pair: an empty way, then a way no open resolve pass holds, then a private
+ * overflow entry. NULL = nothing free (overflow exhausted): the caller drops
+ * the decode rather than rewriting an entry a record already points at. */
+static fcache_t* fcache_victim(fcache_t* C, fcache_t* C2) {
+    if (!C->f)  return C;
+    if (!C2->f) return C2;
+    if (!fcache_pinned(C))  return C;
+    if (!fcache_pinned(C2)) return C2;
+    return fcache_ovf_take();
+}
 
 static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
                               uint32_t s1, uint32_t s2, uint32_t s3, fcache_t* C);
@@ -2362,17 +2402,15 @@ static const fcache_t* fcache_get(CPUState* cpu, uint32_t fb) {
     uint32_t h = (((fb >> 2) * 2654435761u) >> 14) & (FC_SLOTS - 1);
     fcache_t* C = &s_fcache[h];
     if (C->f && C->fb == fb && C->bytecount == bytecount
-        && C->sig1 == s1 && C->sig2 == s2 && C->sig3 == s3) { s_fc_hit++; return C; }
+        && C->sig1 == s1 && C->sig2 == s2 && C->sig3 == s3) { s_fc_hit++; C->gen = s_fc_gen; return C; }
     fcache_t* C2 = &s_fcache[h ^ 1u];
     if (C2->f && C2->fb == fb && C2->bytecount == bytecount
-        && C2->sig1 == s1 && C2->sig2 == s2 && C2->sig3 == s3) { s_fc_hit++; return C2; }
+        && C2->sig1 == s1 && C2->sig2 == s2 && C2->sig3 == s3) { s_fc_hit++; C2->gen = s_fc_gen; return C2; }
     s_fc_miss++;
-    if (C->f) {                                     /* way-0 holds another block */
-        if (!C2->f) C = C2;                         /* fill the empty way */
-        else if (s_fc_miss & 1) C = C2;             /* both busy: alternate eviction */
-    }
-    if (!fcache_decode_into(cpu, fb, bytecount, s1, s2, s3, C)) return NULL;
-    return C;
+    fcache_t* V = fcache_victim(C, C2);
+    if (!V) return NULL;
+    if (!fcache_decode_into(cpu, fb, bytecount, s1, s2, s3, V)) return NULL;
+    return V;
 }
 
 /* Decode one faceblock into C (malloc'd face array; C's previous array freed).
@@ -2391,6 +2429,7 @@ static int fcache_decode_into(CPUState* cpu, uint32_t fb, uint32_t bytecount,
     C->fb = fb; C->bytecount = bytecount; C->sig1 = s1; C->sig2 = s2; C->sig3 = s3;
     C->nfaces = n; C->raw = st.raw; C->sprites = st.sprites; C->skips = st.skips;
     C->align = (uint8_t)st.align;
+    C->gen = s_fc_gen;            /* the pass that decoded it holds it */
     C->f = arr;
     return 1;
 }
@@ -2491,7 +2530,7 @@ static const fcache_t* fpcache_get(CPUState* cpu, uint32_t fb, uint32_t header,
     for (int i = 0; i < FP_SLOTS; i++) {
         fcache_t* C = &s_fpc[i];
         if (C->f && C->fb == fb && s_fpc_frame[i] == frameA && C->bytecount == bytecount
-            && C->sig1 == s1 && C->sig2 == s2 && C->sig3 == s3) { s_fp_hit++; return C; }
+            && C->sig1 == s1 && C->sig2 == s2 && C->sig3 == s3) { s_fp_hit++; C->gen = s_fc_gen; return C; }
     }
     s_fp_miss++;
     /* The apply writes replacement words into the faceblock and restores them
@@ -2506,12 +2545,20 @@ static const fcache_t* fpcache_get(CPUState* cpu, uint32_t fb, uint32_t header,
     static fpsave_t sv[FPATCH_MAX];
     int n = moby_frame_patch_apply(cpu, header, list, sv);
     if (n <= 0) return fcache_get(cpu, fb);         /* no/oversized list: unpatched decode */
-    int slot = s_fpc_next; s_fpc_next = (s_fpc_next + 1) & (FP_SLOTS - 1);
-    fcache_t* C = &s_fpc[slot];
-    int ok = fcache_decode_into(cpu, fb, bytecount, s1, s2, s3, C);
+    /* Round-robin past every slot an open resolve pass still holds, so a walk
+     * with many patched keyframes cannot clobber a pointer it handed out; all
+     * of them held sends the decode to a private overflow entry. */
+    int slot = -1;
+    for (int i = 0; i < FP_SLOTS; i++) {
+        int c = (s_fpc_next + i) & (FP_SLOTS - 1);
+        if (!fcache_pinned(&s_fpc[c])) { slot = c; break; }
+    }
+    fcache_t* C = (slot >= 0) ? &s_fpc[slot] : fcache_ovf_take();
+    if (slot >= 0) s_fpc_next = (slot + 1) & (FP_SLOTS - 1);
+    int ok = C && fcache_decode_into(cpu, fb, bytecount, s1, s2, s3, C);
     for (int k = 0; k < n; k++) cpu->write_word(sv[k].addr, sv[k].val);   /* forward restore (.s order) */
     if (!ok) return NULL;
-    s_fpc_frame[slot] = frameA;
+    if (slot >= 0) s_fpc_frame[slot] = frameA;
     return C;
 }
 
@@ -3090,6 +3137,10 @@ static int walk_dbg_env(void) {
 static int walk_prologue(CPUState* cpu, int is_spec) {
     long fc_miss0 = s_fc_miss, fp_miss0 = s_fp_miss;
     long faces = 0;
+    /* Every pointer resolved below is read by the walk after this returns, so
+     * the whole loop is one resolve pass and nothing it hands out is evicted
+     * inside it. */
+    fcache_pass_begin();
     for (int r = 0; r < s_nrecs; r++) {
         rec_meta* R = &s_recs[r];
         s_pre_FC[r] = NULL; s_pre_FCp[r] = NULL; s_pre_clra[r] = 0.f;
@@ -4214,7 +4265,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
         if (++s_tier_cnt >= 30) {
             fprintf(stderr, "[moby-tier vbl=%u] near=%ld fog=%ld far=%ld farfade=%ld gpfskip=%ld lpskip=%ld shband=%ld | "
                     "zsf4-mirror ok=%ld bad=%ld | "
-                    "proj=%ldus walk=%ldus rexwalk=%ldus dec=%ldus fld=%ldus rvdec=%ldus rvfld=%ldus rv=%ldus fan=%ldus mrg=%ldus faces=%ld/%ld calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld par=%ld/%ld\n",
+                    "proj=%ldus walk=%ldus rexwalk=%ldus dec=%ldus fld=%ldus rvdec=%ldus rvfld=%ldus rv=%ldus fan=%ldus mrg=%ldus faces=%ld/%ld calls=%ld fc=%ld/%ld fp=%ld/%ld clerp=%ld hold=%ld par=%ld/%ld fcovf=%ld/%ld\n",
                     openpete_frame, s_tier_near, s_tier_fog, s_tier_far, s_tier_farfade,
                     s_tier_gpfskip, s_tier_lpskip, s_shband_cull, s_tier_mirror_ok, s_tier_mirror_bad,
                     s_us_proj, s_us_walk, s_us_walk_rex, s_us_dec, s_us_fields,
@@ -4222,7 +4273,8 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
                     s_us_fanout, s_us_merge, s_walk_faces, s_walk_runs,
                     s_us_calls, s_fc_hit, s_fc_miss,
                     s_fp_hit, s_fp_miss, s_clerp_recs, s_hold_replayed,
-                    s_walk_par, s_walk_par + s_walk_serial);
+                    s_walk_par, s_walk_par + s_walk_serial,
+                    s_fc_ovf_used, s_fc_ovf_full);
             s_tier_near = s_tier_fog = s_tier_far = s_tier_farfade = s_tier_gpfskip = s_tier_lpskip = s_shband_cull = 0;
             s_tier_mirror_ok = s_tier_mirror_bad = 0; s_tier_cnt = 0;
             s_us_proj = s_us_walk = s_us_walk_rex = s_us_calls = 0;
@@ -4230,6 +4282,7 @@ static void moby_native_pass(CPUState* cpu, uint32_t draw_addr, const char* mat)
             s_us_fanout = s_us_merge = 0;
             s_walk_faces = s_walk_runs = 0;
             s_fc_hit = s_fc_miss = 0; s_hold_replayed = 0; s_clerp_recs = 0;
+            s_fc_ovf_used = s_fc_ovf_full = 0;
             s_walk_par = s_walk_serial = 0;
         }
     }
