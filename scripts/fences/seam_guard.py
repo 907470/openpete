@@ -80,8 +80,12 @@ EXEMPT = re.compile(r"seam-guard:\s*display-owner")
 # "notes" holds local tooling, including git worktrees: whole
 # copies of this repo whose paths do not match the allow-lists below, so every
 # owner file in one reads as a violation. Only the working tree is scanned.
-SKIP_DIRS = {".git", "notes", "build", "__pycache__", "third_party", "dist",
-             "mods-attic", "node_modules", "tests", "generated"}
+# ".tools" holds downloaded toolchains (clang headers, pcsx-redux): two thirds
+# of the C bytes under the root, none of them openpete source. A game's nested
+# decomp checkout (games/<game>/<game>/) is PSX code with no RHI access.
+SKIP_DIRS = {".git", "notes", ".tools", "build", "__pycache__", "third_party",
+             "dist", "mods-attic", "node_modules", "tests", "generated"}
+GAMES_DIR = "games"
 SUFFIXES = (".c", ".cpp", ".h", ".hpp")
 
 
@@ -95,6 +99,9 @@ def scan(root):
     bad = []
     for dirpath, dirnames, filenames in os.walk(root):
         dirnames[:] = [d for d in dirnames if d not in SKIP_DIRS]
+        parent, game = os.path.split(dirpath)
+        if os.path.basename(parent) == GAMES_DIR and game in dirnames:
+            dirnames.remove(game)  # the nested decomp checkout
         for name in filenames:
             if not name.endswith(SUFFIXES):
                 continue
