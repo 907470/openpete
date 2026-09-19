@@ -1382,6 +1382,7 @@ static int on_fade_emitter(CPUState* cpu, uint32_t addr) {
  * neither address registers no hook and the module is inert. */
 static feature_dispatch_entry_t ui_sprite_dispatch[] = {
     { 0u, on_ot_insert },
+    { 0u, on_ot_insert },
     { 0u, on_fade_emitter },
     { 0u, NULL },
 };
@@ -1430,6 +1431,10 @@ static void ui_sprite_apply_options(const openpete_options_t* opts) {
     int n = 0;
     if (ui_game.ot_insert) {
         ui_sprite_dispatch[n].addr = ui_game.ot_insert;
+        ui_sprite_dispatch[n].fn   = on_ot_insert; n++;
+    }
+    if (ui_game.ot_insert_slot) {   /* same body: a1 carries only the depth slot */
+        ui_sprite_dispatch[n].addr = ui_game.ot_insert_slot;
         ui_sprite_dispatch[n].fn   = on_ot_insert; n++;
     }
     if (ui_game.fade_emitter) {

@@ -547,6 +547,10 @@ const game_layout_t game_layout = {
  * games/common/renderer/text_sprt.c instead. */
 const ui_game_t ui_game = {
     .ot_insert    = F_UI_OT_INSERT,
+    /* The title and credits screens order their 2D by depth slot and link
+     * every primitive through the slotted insert instead, so it is a second
+     * chokepoint carrying the logo, "press start" and the credits text. */
+    .ot_insert_slot = F_UI_OT_INSERT_SLOT,
     .fade_emitter = F_UI_FADE,
 
     /* No freeze-frame backdrop quad is located on this game: the frozen frame

@@ -29,6 +29,17 @@ typedef struct ui_game {
      * link — so it is the 2D-vs-3D discriminator. */
     uint32_t ot_insert;
 
+    /* A second 2D ordering-table insert that takes the depth slot in a1 and
+     * splices a0 into that slot of its own table base, rather than at a fixed
+     * head word. The primitive pointer is in a0 exactly as above, so the same
+     * hook body serves both; the slot only decides where in the table the
+     * primitive lands, and the feeder takes its draw order from the DrawOTag
+     * walk rather than from the insert. The screen emitters that build their
+     * own depth order call this one and never the head insert, so a game that
+     * names only `ot_insert` loses their 2D entirely. 0 = the game has one
+     * insert. */
+    uint32_t ot_insert_slot;
+
     /* The full-screen fade emitter, called as (abr_mode, r, g, b): one
      * DR_MODE carrying the ABR alone, then a full-screen semi-transparent
      * POLY_F4. The feeder drives the native fade from the arguments. */

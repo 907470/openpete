@@ -177,6 +177,12 @@ kind = "function"
 note = "func_8001B390 (stdutil.s:87-103) — links a0 into the 2D ordering table whose head word is D_80067000, instruction-for-instruction the other game's func_8004E758 with a different head global; called by drawutil, hud, draw and the level overlays and by no 3D translation unit, so it is the 2D feeder's chokepoint hook site"
 
 [[symbol]]
+name = "F_UI_OT_INSERT_SLOT"
+addr = 0x8001B354
+kind = "function"
+note = "func_8001B354(prim, slot) (stdutil.s:66-82, handwritten) — the slotted form of func_8001B390: it loads the table base from the word at D_80066FFC, adds slot << 3, and runs the same three-store tag splice on that entry instead of on a fixed head word. Eight call sites in five files, all screen emitters in the titlescreen_and_loading and credits overlays and no 3D translation unit, so it is a second chokepoint of the same shape; the title screen's func_titlescreen_and_loading_80079878 links its DR_MODE and its SPRT through it"
+
+[[symbol]]
 name = "F_UI_FADE"
 addr = 0x8004D748
 kind = "function"
