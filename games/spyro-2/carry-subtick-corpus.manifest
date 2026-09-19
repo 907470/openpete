@@ -1,0 +1,8 @@
+# carry-subtick-corpus.manifest — rows for scripts/check_carry_subtick.sh.
+#
+# <bk2> | <lo>-<hi> | lerps=<floor on the interpolated carry triangles>
+#
+# glimmer: the same dialogue-box construction in a game whose semi-transparent
+# 2D population does not change composition tick to tick — the negative the
+# Spyro 3 row is read against.
+glimmer-pogo-dialogue.bk2 | 995-1015 | lerps=300

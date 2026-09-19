@@ -1533,6 +1533,201 @@ void openpete_native_scene_capture_overlay(void) {
      * world stayed hidden on unpause). See s_game_freeze_seen. */
 }
 
+/* --- pairing the 2D carry across two canonical captures --------------------
+ * The sub-tick position lerp must slide one element from where it stood last
+ * tick to where it stands this tick, so each entry of the current capture has
+ * to be matched with the entry of the previous capture that is the same
+ * element. Matching by array index under equal counts is not that: a primitive
+ * appearing anywhere in the list shifts every later entry, and a shifted pair
+ * of two identical sprites (a dialogue box's top and bottom corner quads are
+ * the same 12x8 quad 58 px apart) passes a shape test and lerps one corner
+ * onto the other for the length of the tick.
+ *
+ * Identity is the address of the primitive the tri was decoded from. The game
+ * double-buffers its primitive buffer, so one element's address alternates
+ * between two banks of one layout; the address relative to the lowest primitive
+ * address of its own capture is the same in both banks. A tri fed with no
+ * primitive address (the fade overlay, the letterbox bars) is keyed by its
+ * ordinal among the other address-less tris, which is where the element sits in
+ * a set that does not change composition.
+ */
+#define CARRY_KEY_SLOTS 2048            /* power of two > OVERLAY_CARRY_MAX */
+#define CARRY_KEY_NONE  0xFFFFFFFFu
+
+typedef struct {
+    uint32_t key[OVERLAY_CARRY_MAX];    /* per prev entry */
+    int32_t  next[OVERLAY_CARRY_MAX];   /* chain within a bucket, -1 end */
+    int32_t  head[CARRY_KEY_SLOTS];
+    int32_t  taken[OVERLAY_CARRY_MAX];  /* 1 once an entry is claimed */
+} carry_key_map_t;
+
+static uint32_t carry_min_prim(const scene_tri_t* tri, int n) {
+    uint32_t lo = 0;
+    for (int t = 0; t < n; t++)
+        if (tri[t].prim && (!lo || tri[t].prim < lo)) lo = tri[t].prim;
+    return lo;
+}
+
+/* The bank-invariant key of entry `t`. `zero_ord` counts the address-less tris
+ * seen so far and is advanced when this one is address-less; those keys are
+ * tagged out of the primitive-offset range. */
+static uint32_t carry_key_of(const scene_tri_t* tri, uint32_t lo, int* zero_ord) {
+    if (!tri->prim) return 0x80000000u | (uint32_t)(*zero_ord)++;
+    return tri->prim - lo;
+}
+
+static void carry_map_build(carry_key_map_t* m, const scene_tri_t* prev, int prev_n) {
+    for (int i = 0; i < CARRY_KEY_SLOTS; i++) m->head[i] = -1;
+    uint32_t lo = carry_min_prim(prev, prev_n);
+    int zero_ord = 0;
+    /* Chain each bucket in reverse so the walk hands out entries in feed order,
+     * which is how two tris sharing one primitive (the halves of a quad) are
+     * told apart. */
+    for (int t = prev_n - 1; t >= 0; t--) m->taken[t] = 0;
+    for (int t = 0; t < prev_n; t++) m->key[t] = carry_key_of(&prev[t], lo, &zero_ord);
+    for (int t = prev_n - 1; t >= 0; t--) {
+        uint32_t b = m->key[t] & (CARRY_KEY_SLOTS - 1);
+        m->next[t] = m->head[b];
+        m->head[b] = t;
+    }
+}
+
+/* The previous-capture index that continues `key`, or -1 when the previous
+ * capture holds no unclaimed entry with it (a sprite emitted this tick). */
+static int carry_map_take(carry_key_map_t* m, uint32_t key) {
+    for (int t = m->head[key & (CARRY_KEY_SLOTS - 1)]; t >= 0; t = m->next[t])
+        if (!m->taken[t] && m->key[t] == key) { m->taken[t] = 1; return t; }
+    return -1;
+}
+
+/* Whether a matched pair's position may be interpolated. The key says the two
+ * are the same element; this says the element is recognisably the same shape,
+ * so a relayout (a panel rebuilt at a different size, a primitive slot reused
+ * for something else within one tick) snaps to the current position instead of
+ * sweeping. Either identity suffices:
+ *   (a) same texture region (first vertex's UV) — a rigid or scaling element
+ *       with a constant texture (the title-logo slide);
+ *   (b) same shape (edge vectors within a rasterisation epsilon) under a
+ *       bounded per-tick move — an animated sprite advances its UV/CLUT every
+ *       tick while translating rigidly (the collected-egg pickup slides
+ *       down-and-out while its wobble frames cycle), so UV identity alone left
+ *       its slide stepping at the tick rate. The texture frame still snaps to
+ *       the current one (frames are discrete); only the position lerps.
+ * UV identity means nothing for an untextured primitive, which carries
+ * u=v=0: shape and bounded move alone identify it. */
+static int carry_pair_lerps(const scene_tri_t* p, const scene_tri_t* tri) {
+    if (p->category != tri->category || p->textured != tri->textured) return 0;
+    /* Bounded move: same guard value as the billboard interp (64 px/tick ≈ 4×
+     * the fastest observed 2D slide). A relayout snaps instead of sweeping,
+     * including one that reuses a primitive slot for a different element of
+     * the same layer between two ticks — the slot's address makes the two one
+     * element, and only the move bound tells them apart. */
+    float dx0 = tri->v[0].sx - p->v[0].sx, dy0 = tri->v[0].sy - p->v[0].sy;
+    if (dx0 > 64.0f || dx0 < -64.0f || dy0 > 64.0f || dy0 < -64.0f) return 0;
+    if (tri->textured && p->v[0].u == tri->v[0].u && p->v[0].v == tri->v[0].v) return 1;
+    for (int k = 1; k < 3; k++) {
+        float dex = (tri->v[k].sx - tri->v[0].sx) - (p->v[k].sx - p->v[0].sx);
+        float dey = (tri->v[k].sy - tri->v[0].sy) - (p->v[k].sy - p->v[0].sy);
+        if (dex > 0.5f || dex < -0.5f || dey > 0.5f || dey < -0.5f) return 0;
+    }
+    return 1;
+}
+
+/* OPENPETE_CARRY_CENSUS=1: per-present audit of the 2D carry's position lerp.
+ * The pairing slides one sprite from where it was last tick to where it is this
+ * tick, so a lerped tri's applied position must sit on that segment: within a
+ * rasterisation tolerance of one bracket, or between two brackets that are
+ * themselves close. A tri whose applied position is more than 2 px from both
+ * bracket captures was interpolated between two different sprites; a pair whose
+ * first-vertex UV region differs is the same fault read at the pairing instead
+ * of at the result. One line per present, zero counts included, so a present
+ * that carried no 2D reads as no engagement rather than as clean. */
+typedef struct {
+    int      lerped;        /* carried tris whose position the pairing moved */
+    int      far_both;      /* of those, > 2 px from both brackets */
+    int      uv_mismatch;   /* pairs whose first-vertex UV region differs */
+    int      crossed;       /* pairs whose partner is another entry's predecessor */
+    float    worst;         /* largest min(d_prev, d_curr) seen */
+    int      worst_far, worst_uvmm, worst_cross, worst_cat;
+    uint32_t worst_seq;
+    float    worst_p[2], worst_c[2], worst_a[2];
+} carry_census_t;
+
+static int carry_census_on(void) {
+    static int v = -1;
+    if (v < 0) { const char* e = getenv("OPENPETE_CARRY_CENSUS"); v = (e && *e && *e != '0'); }
+    return v;
+}
+
+/* Largest per-vertex distance between two tris' screen positions. */
+static float tri_pos_dist(const scene_tri_t* a, const scene_tri_t* b) {
+    float w = 0.0f;
+    for (int k = 0; k < 3; k++) {
+        float dx = a->v[k].sx - b->v[k].sx, dy = a->v[k].sy - b->v[k].sy;
+        float d = sqrtf(dx * dx + dy * dy);
+        if (d > w) w = d;
+    }
+    return w;
+}
+
+/* The pair (prev[i], curr[i]) crosses two identities when some other entry of
+ * the previous capture already sits exactly where curr[i] is: that entry is
+ * curr[i]'s real predecessor, so the lerp drags curr[i] along a segment between
+ * two different sprites instead of holding it still. A genuine slide has no
+ * such twin — the sprite's new position was occupied by nothing last tick.
+ * This separates a mispairing from a fast but correct 2D slide, which the
+ * distance test alone cannot. */
+static int carry_pair_crossed(const scene_tri_t* prev, int prev_n,
+                              const scene_tri_t* curr, int self) {
+    for (int j = 0; j < prev_n; j++) {
+        if (j == self) continue;
+        if (prev[j].category != curr->category || prev[j].textured != curr->textured) continue;
+        if (tri_pos_dist(&prev[j], curr) <= 0.5f) return 1;
+    }
+    return 0;
+}
+
+static void carry_census_note(carry_census_t* cz, const scene_tri_t* prev,
+                              const scene_tri_t* curr, const scene_tri_t* app,
+                              int crossed) {
+    float dp = tri_pos_dist(app, prev), dc = tri_pos_dist(app, curr);
+    float m = dp < dc ? dp : dc;
+    int far_both = (dp > 2.0f && dc > 2.0f);
+    int uvmm = (prev->textured && curr->textured &&
+                (prev->v[0].u != curr->v[0].u || prev->v[0].v != curr->v[0].v));
+    cz->lerped++;
+    if (far_both) cz->far_both++;
+    if (uvmm) cz->uv_mismatch++;
+    if (crossed) cz->crossed++;
+    if (m > cz->worst) {
+        cz->worst = m; cz->worst_far = far_both; cz->worst_uvmm = uvmm;
+        cz->worst_cross = crossed;
+        cz->worst_cat = curr->category; cz->worst_seq = curr->seq;
+        cz->worst_p[0] = prev->v[0].sx; cz->worst_p[1] = prev->v[0].sy;
+        cz->worst_c[0] = curr->v[0].sx; cz->worst_c[1] = curr->v[0].sy;
+        cz->worst_a[0] = app->v[0].sx;  cz->worst_a[1] = app->v[0].sy;
+    }
+}
+
+static void carry_census_flush(const carry_census_t* cz, int carried, int paired,
+                               double oalpha) {
+    static uint32_t s_frame = 0xFFFFFFFFu;
+    static int s_ix = 0;
+    if (s_scene_frame != s_frame) { s_frame = s_scene_frame; s_ix = 0; }
+    fprintf(stderr, "[carrycensus vbl=%u present=%d alpha=%.3f] carried=%d paired=%d"
+                    " lerped=%d far_both=%d uv_mismatch=%d crossed=%d",
+            s_scene_frame, s_ix++, oalpha, carried, paired,
+            cz->lerped, cz->far_both, cz->uv_mismatch, cz->crossed);
+    if (cz->lerped == 0) { fprintf(stderr, " NO-ENGAGEMENT\n"); return; }
+    fprintf(stderr, " worst=%.2f cat=%d seq=%u %s%s%sprev=(%.1f,%.1f)"
+                    " curr=(%.1f,%.1f) applied=(%.1f,%.1f)\n",
+            cz->worst, cz->worst_cat, cz->worst_seq,
+            cz->worst_far ? "FAR-BOTH " : "", cz->worst_uvmm ? "UV-MISMATCH " : "",
+            cz->worst_cross ? "CROSSED " : "",
+            cz->worst_p[0], cz->worst_p[1], cz->worst_c[0], cz->worst_c[1],
+            cz->worst_a[0], cz->worst_a[1]);
+}
+
 void openpete_native_scene_apply_overlay(double alpha) {
     /* The passed `alpha` is the camera-bracket alpha — 0 when the camera ring
      * dedupes (static camera). Animated 2D-UI (the logo drop-in) moves while the
@@ -1586,58 +1781,33 @@ void openpete_native_scene_apply_overlay(double alpha) {
                     (double)s_overlay_curr_ns / 1e6, (double)s_overlay_prev_ns / 1e6, alpha, oalpha, s_overlay_carry_n);
         }
     }
-    /* Pair curr with prev by index only when the two captures are structurally the
-     * same (equal count) — a count change (a blink toggling, a glyph added) makes
-     * index pairing meaningless, so snap to curr that present. */
-    int pairable = (s_overlay_prev_n == s_overlay_carry_n);
+    static carry_key_map_t s_map;
+    carry_map_build(&s_map, s_overlay_prev, s_overlay_prev_n);
+    uint32_t lo_curr = carry_min_prim(s_overlay_carry, s_overlay_carry_n);
+    int zero_ord = 0, paired = 0;
+    carry_census_t cz = {0};
+    int census = carry_census_on();
     for (int t = 0; t < s_overlay_carry_n && s_scene_n < MAX_SCENE_TRIS; t++) {
         scene_tri_t tri = s_overlay_carry[t];   /* curr; category already stamped */
-        if (pairable) {
-            const scene_tri_t *p = &s_overlay_prev[t];
-            /* Same sprite? Two identities, either suffices:
-             *   (a) same texture region (first vertex's UV) — a rigid or scaling
-             *       element with a constant texture (the title-logo slide);
-             *   (b) same SHAPE (edge vectors within a rasterisation epsilon) with
-             *       a bounded per-tick move — an ANIMATED sprite advances its
-             *       UV/CLUT every tick while translating rigidly (the
-             *       collected-egg pickup slides down-and-out while its wobble
-             *       frames cycle), so UV identity alone left its slide stepping
-             *       at the tick rate. The texture frame still snaps to curr
-             *       (frames are discrete); only the position lerps. A glyph swap
-             *       at the same slot keeps shape+position, where the position
-             *       lerp is a no-op — harmless. */
-            /* UV identity only means anything for a textured primitive: an
-             * untextured quad carries u=v=0, so comparing UVs matches any two
-             * of them and pairs, say, the top letterbox bar with the bottom
-             * one, the position lerp then sweeps a full-width black bar across
-             * the middle of the frame. An untextured quad is identified by
-             * shape and bounded move alone. */
-            int same_tex = tri.textured && p->textured &&
-                           p->v[0].u == tri.v[0].u && p->v[0].v == tri.v[0].v;
-            int same_shape_near = 1;
-            for (int k = 1; k < 3 && same_shape_near; k++) {
-                float dex = (tri.v[k].sx - tri.v[0].sx) - (p->v[k].sx - p->v[0].sx);
-                float dey = (tri.v[k].sy - tri.v[0].sy) - (p->v[k].sy - p->v[0].sy);
-                if (dex > 0.5f || dex < -0.5f || dey > 0.5f || dey < -0.5f)
-                    same_shape_near = 0;
-            }
-            {   /* bounded move: same guard value as the billboard interp (64 px/tick
-                 * ≈ 4× the fastest observed 2D slide) — a relayout jump snaps. */
-                float dx0 = tri.v[0].sx - p->v[0].sx, dy0 = tri.v[0].sy - p->v[0].sy;
-                if (dx0 > 64.0f || dx0 < -64.0f || dy0 > 64.0f || dy0 < -64.0f)
-                    same_shape_near = 0;
-            }
-            if (p->category == tri.category && p->textured == tri.textured &&
-                (same_tex || same_shape_near)) {
+        int pi = carry_map_take(&s_map, carry_key_of(&s_overlay_carry[t], lo_curr, &zero_ord));
+        if (pi >= 0) {
+            const scene_tri_t *p = &s_overlay_prev[pi];
+            paired++;
+            if (carry_pair_lerps(p, &tri)) {
                 for (int k = 0; k < 3; k++) {
                     tri.v[k].sx = (float)(p->v[k].sx + (tri.v[k].sx - p->v[k].sx) * oalpha);
                     tri.v[k].sy = (float)(p->v[k].sy + (tri.v[k].sy - p->v[k].sy) * oalpha);
                 }
+                if (census)
+                    carry_census_note(&cz, p, &s_overlay_carry[t], &tri,
+                                      carry_pair_crossed(s_overlay_prev, s_overlay_prev_n,
+                                                         &s_overlay_carry[t], pi));
             }
         }
         tri.carry = 2;                             /* mark re-applied so the next capture skips it */
         s_scene[s_scene_n++] = tri;
     }
+    if (census) carry_census_flush(&cz, s_overlay_carry_n, paired, oalpha);
     { static int pf = -2;
       if (pf == -2) { const char* e = getenv("OPENPETE_APPLY_PROBE"); pf = (e && *e) ? atoi(e) : -1; }
       if (pf >= 0 && (int)s_scene_frame >= pf - 4 && (int)s_scene_frame <= pf + 4) {
@@ -1650,15 +1820,15 @@ void openpete_native_scene_apply_overlay(double alpha) {
             for (int k = 0; k < 3; k++) {
                 if (q->v[k].sx < x0) x0 = q->v[k].sx; if (q->v[k].sx > x1) x1 = q->v[k].sx;
                 if (q->v[k].sy < y0) y0 = q->v[k].sy; if (q->v[k].sy > y1) y1 = q->v[k].sy; } }
-        fprintf(stderr, "[apply f=%u sort=%d] n=%d pairable=%d seq=%u..%u zero=%d"
+        fprintf(stderr, "[apply f=%u sort=%d] n=%d paired=%d seq=%u..%u zero=%d"
                         " bbox=[%.0f,%.0f]x[%.0f,%.0f] cats:", s_scene_frame, seq_sort_on(),
-                s_overlay_carry_n, pairable, lo, hi, nz, x0, x1, y0, y1);
+                s_overlay_carry_n, paired, lo, hi, nz, x0, x1, y0, y1);
         for (int c = 0; c < 16; c++) if (cat[c]) fprintf(stderr, " %d=%d", c, cat[c]);
         fprintf(stderr, "\n");
         if ((int)s_scene_frame == pf) for (int t = 0; t < s_overlay_carry_n; t++) {
             const scene_tri_t* q = &s_overlay_carry[t];
-            fprintf(stderr, "[applytri %d] seq=%u cat=%d bl=%d tex=%d v=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) rgba=%08X\n",
-                    t, q->seq, q->category, q->blend, q->textured,
+            fprintf(stderr, "[applytri %d] seq=%u prim=%08X cat=%d bl=%d tex=%d v=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) rgba=%08X\n",
+                    t, q->seq, q->prim, q->category, q->blend, q->textured,
                     q->v[0].sx, q->v[0].sy, q->v[1].sx, q->v[1].sy, q->v[2].sx, q->v[2].sy, q->v[0].rgba); } } }
     s_scene_freeze = freeze_lerp(s_overlay_prev_freeze, s_overlay_carry_freeze, oalpha);
     s_scene_fade   = fade_lerp(s_fade_prev, s_fade_curr, oalpha);
