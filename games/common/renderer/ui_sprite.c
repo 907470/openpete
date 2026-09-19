@@ -45,6 +45,7 @@ extern unsigned openpete_frame;
 
 
 static unsigned s_cap_frame = 0xFFFFFFFFu;  /* build frame whose batch the last capture released */
+static int s_last_abr;                      /* the tracked draw-mode ABR (defined with the dispatch state) */
 static unsigned s_post_claim, s_post_sprt, s_post_fade;
 
 /* Primitives fed, by class: the engagement counters a harness reads to tell
@@ -57,8 +58,8 @@ unsigned ui_sprite_sprt_count(void) { return s_fed_sprts; }
 /* OPENPETE_UISPRITE_BBOX=<VBL>: at that VBL, the screen bounding box and count
  * of every 2D class fed, so a capture comparison can be confined to the box an
  * element actually occupies instead of a guessed rectangle. */
-enum { UICLS_FT4 = 0, UICLS_BAR, UICLS_PANEL, UICLS_LINE, UICLS_SPRT, UICLS_FADE, UICLS_N };
-static const char* const kUiClsName[UICLS_N] = { "ft4", "bar", "panel", "line", "sprt", "fade" };
+enum { UICLS_FT4 = 0, UICLS_BAR, UICLS_PANEL, UICLS_LINE, UICLS_SPRT, UICLS_FADE, UICLS_POLYG, UICLS_N };
+static const char* const kUiClsName[UICLS_N] = { "ft4", "bar", "panel", "line", "sprt", "fade", "polyg" };
 static struct { float x0, y0, x1, y1; unsigned n; } s_bbox[UICLS_N];
 static unsigned s_cls_n[UICLS_N];        /* fed per class since boot (always counted) */
 static long bbox_vbl(void) {
@@ -95,8 +96,8 @@ static void bbox_report(void) {
  * STP-clear / STP-set pair (feed_hud_tex_quad). Counted always; printed under
  * OPENPETE_UISPRITE_CENSUS once per tick that fed any, the line emitted at
  * the first semi-transparent feed of a later tick. */
-enum { SEMI_SPRT = 0, SEMI_FT4, SEMI_F4, SEMI_N };
-static const char* const kSemiName[SEMI_N] = { "sprt", "ft4", "f4" };
+enum { SEMI_SPRT = 0, SEMI_FT4, SEMI_F4, SEMI_G, SEMI_LINE, SEMI_N };
+static const char* const kSemiName[SEMI_N] = { "sprt", "ft4", "f4", "g", "line" };
 static unsigned s_semi[SEMI_N][4];        /* since boot */
 static unsigned s_semi_tick[SEMI_N][4];   /* the tick s_semi_frame */
 static unsigned s_semi_frame = 0xFFFFFFFFu;
@@ -105,7 +106,7 @@ static void semi_flush_tick(void) {
     static int cen = -1;
     ENV_FLAG_LATCH(cen, "OPENPETE_UISPRITE_CENSUS");
     if (cen && s_semi_frame != 0xFFFFFFFFu) {
-        char line[160]; int o = 0;
+        char line[256]; int o = 0;
         for (int c = 0; c < SEMI_N; c++)
             o += snprintf(line + o, sizeof(line) - (size_t)o, " %s=%u/%u/%u/%u", kSemiName[c],
                           s_semi_tick[c][0], s_semi_tick[c][1], s_semi_tick[c][2], s_semi_tick[c][3]);
@@ -137,17 +138,261 @@ static ui_blend_t ui_blend(int semi, unsigned abr) {
     return kAbr[abr & 3u];
 }
 
-/* Add a textured 2D quad's two triangles to the HUD layer. A quad of an ABR
+/* games/common/renderer/psx_uv.h - the texel the PSX GPU reads at each pixel
+ * of a textured triangle, as a plane over screen position. */
+
+/* The fields are the implementation's to choose; callers use
+ * psx_uv_plane_setup and psx_uv_plane_at only. */
+typedef struct psx_uv_plane {
+    double u_org, v_org;   /* u and v at screen position (0, 0) */
+    double dudx, dudy;     /* u per pixel in x and in y */
+    double dvdx, dvdy;     /* v per pixel in x and in y */
+} psx_uv_plane;
+
+/** @brief Builds the plane of texel coordinates the PSX GPU reads across a textured triangle.
+ *
+ * The plane is affine in screen position. At every pixel (x, y) the GPU
+ * draws for the triangle, floor(psx_uv_plane_at(p, x, y, 0)) mod 256 and
+ * floor(psx_uv_plane_at(p, x, y, 1)) mod 256 are the u and v the GPU reads
+ * (before the texture window). For a sprite (x, y, w, h, u, v) the same
+ * holds at every pixel of the sprite on each of the two triangles it is fed
+ * as: (x, y, u, v), (x + w, y, u + w, v), (x, y + h, u, v + h) and
+ * (x + w, y, u + w, v), (x + w, y + h, u + w, v + h), (x, y + h, u, v + h).
+ * The expected output is the measured table tests/unit/data/gpu-uv/uv.texels
+ * (gpu_uv_table_test).
+ * @param iv The triangle's integer vertices in the GP0 command's order, each {x, y, u, v}.
+ * @param p Receives the plane.
+ * @return 1 on success; 0 when the triangle's screen area is zero and the
+ *         GPU draws nothing. */
+static int psx_uv_plane_setup(const int iv[3][4], psx_uv_plane* p);
+
+/** @brief Evaluates the plane at a screen position, in texels, unwrapped.
+ *
+ * @param p The plane from psx_uv_plane_setup.
+ * @param x The screen x: pixel (x, y) is the integer position, fractions interpolate.
+ * @param y The screen y.
+ * @param which_v Nonzero for v, zero for u.
+ * @return The plane's value. */
+static double psx_uv_plane_at(const psx_uv_plane* p, double x, double y, int which_v);
+
+/* games/common/renderer/psx_uv.c - the texel the PSX GPU reads at each pixel
+ * of a textured triangle.
+ *
+ * Measured rule (tests/unit/data/gpu-uv/uv.texels: census triangles of the
+ * three games, sprites, plain, mirrored, scaled and skewed quads, random
+ * triangles and their reorderings):
+ *
+ * - Each of u and v has two gradients, per pixel in x and in y, in fixed
+ *   point with 12 fraction bits: the exact gradient of the plane through
+ *   the three vertices, scaled by 4096 and truncated toward zero.
+ * - The plane starts at one vertex, the base: the vertex with the smallest
+ *   x. When two vertices share the smallest x, the base is the one that
+ *   follows the other in the command's cyclic vertex order (v0 -> v1 ->
+ *   v2 -> v0). This tie is the only way vertex order changes the texels.
+ * - At pixel (x, y) the value is base.u * 4096 + 2048 + Gx * (x - base.x) +
+ *   Gy * (y - base.y), and the texel is that value shifted right by 12
+ *   (floor), mod 256. The 2048 rounds the base texel to the nearest.
+ *
+ * The hardware documentation states only that the GPU interpolates texture
+ * coordinates linearly in screen space; the precision, the base vertex and
+ * the rounding are taken from the table.
+ *
+ * The plane is stored as doubles holding integers divided by 4096. For
+ * integer x and y, and for every value an on-screen triangle produces, each
+ * product and sum in psx_uv_plane_at is exact in double precision, so the
+ * floor of the result equals the integer computation regardless of the
+ * floating-point rounding mode. */
+
+#define PSX_UV_FRAC_BITS 12
+#define PSX_UV_ONE (1LL << PSX_UV_FRAC_BITS)
+
+/** @brief Returns the index of the vertex the texel plane starts from.
+ *
+ * The vertex with the smallest x; of two sharing it, the one that follows
+ * the other in cyclic vertex order.
+ * @param iv The triangle's vertices, each {x, y, u, v}.
+ * @return 0, 1 or 2. */
+static int psx_uv_base_vertex(const int iv[3][4])
+{
+    int b = 0;
+    for (int i = 1; i < 3; i++)
+        if (iv[i][0] < iv[b][0]) b = i;
+    for (int i = 0; i < 3; i++)
+        if (i != b && iv[i][0] == iv[b][0] && i == (b + 1) % 3) return i;
+    return b;
+}
+
+static int psx_uv_plane_setup(const int iv[3][4], psx_uv_plane* p)
+{
+    const long long ex1 = iv[1][0] - iv[0][0], ey1 = iv[1][1] - iv[0][1];
+    const long long ex2 = iv[2][0] - iv[0][0], ey2 = iv[2][1] - iv[0][1];
+    const long long area = ex1 * ey2 - ex2 * ey1;   /* twice the signed area */
+    p->u_org = p->v_org = p->dudx = p->dudy = p->dvdx = p->dvdy = 0.0;
+    if (area == 0) return 0;
+    const int b = psx_uv_base_vertex(iv);
+    long long g[2][2];   /* [u or v][x or y], 12 fraction bits */
+    for (int w = 0; w < 2; w++) {
+        const long long d1 = iv[1][2 + w] - iv[0][2 + w], d2 = iv[2][2 + w] - iv[0][2 + w];
+        /* C division truncates toward zero, as the measured gradients do. */
+        g[w][0] = (d1 * ey2 - d2 * ey1) * PSX_UV_ONE / area;
+        g[w][1] = (ex1 * d2 - ex2 * d1) * PSX_UV_ONE / area;
+    }
+    const long long bx = iv[b][0], by = iv[b][1];
+    const long long u0 = iv[b][2] * PSX_UV_ONE + PSX_UV_ONE / 2 - g[0][0] * bx - g[0][1] * by;
+    const long long v0 = iv[b][3] * PSX_UV_ONE + PSX_UV_ONE / 2 - g[1][0] * bx - g[1][1] * by;
+    const double one = (double)PSX_UV_ONE;
+    p->u_org = (double)u0 / one;
+    p->v_org = (double)v0 / one;
+    p->dudx = (double)g[0][0] / one;
+    p->dudy = (double)g[0][1] / one;
+    p->dvdx = (double)g[1][0] / one;
+    p->dvdy = (double)g[1][1] / one;
+    return 1;
+}
+
+static double psx_uv_plane_at(const psx_uv_plane* p, double x, double y, int which_v)
+{
+    return which_v ? p->v_org + p->dvdx * x + p->dvdy * y
+                   : p->u_org + p->dudx * x + p->dudy * y;
+}
+
+
+
+/* A fed 2D triangle's vertices are the primitive's integer words. */
+static void tri_int_verts(const openpete_scene_tri* t, int iv[3][4]) {
+    for (int k = 0; k < 3; k++) {
+        iv[k][0] = (int)lrintf(t->v[k].sx); iv[k][1] = (int)lrintf(t->v[k].sy);
+        iv[k][2] = (int)lrintf(t->v[k].u);  iv[k][3] = (int)lrintf(t->v[k].v);
+    }
+}
+
+/* psx_uv_plane_at's values at integer pixels are multiples of 2^-12 texel;
+ * a fed value 2^-13 above the plane keeps the fragment stage's truncation on
+ * the GPU's texel under the float error of the interpolation. */
+#define UI_TEXEL_GUARD (1.0 / 8192.0)
+
+static void tex_tri_psx_texel_centre(openpete_scene_tri* t) {
+    int iv[3][4]; psx_uv_plane s;
+    tri_int_verts(t, iv);
+    if (!psx_uv_plane_setup((const int (*)[4])iv, &s)) return;
+    for (int j = 0; j < 3; j++) {
+        const double x = (double)t->v[j].sx - 0.5, y = (double)t->v[j].sy - 0.5;
+        t->v[j].u = (float)(psx_uv_plane_at(&s, x, y, 0) + UI_TEXEL_GUARD);
+        t->v[j].v = (float)(psx_uv_plane_at(&s, x, y, 1) + UI_TEXEL_GUARD);
+    }
+}
+
+/* uvedge census (OPENPETE_UISPRITE_CENSUS): textured 2D triangles fed whose
+ * native texel on the first or last covered pixel of any row differs from the
+ * GPU's, the GPU's read off psx_uv_plane_setup's stepper, the native's by
+ * truncating the fed triangle's interpolated u, v at the pixel centre as the
+ * fragment stage does. Printed once per tick, at the first textured feed of a
+ * later tick. */
+static unsigned s_uvedge_frame = 0xFFFFFFFFu, s_uvedge_tris, s_uvedge_bad;
+
+typedef struct { double dudx, dudy, dvdx, dvdy; } tri_uv_grad_t;
+
+/* The affine u and v gradients of a fed triangle in PSX pixel units. */
+static int tri_uv_grad(const openpete_scene_tri* t, tri_uv_grad_t* g) {
+    const openpete_scene_vert *a = &t->v[0], *b = &t->v[1], *c = &t->v[2];
+    const double ex1 = (double)b->sx - a->sx, ey1 = (double)b->sy - a->sy;
+    const double ex2 = (double)c->sx - a->sx, ey2 = (double)c->sy - a->sy;
+    const double det = ex1 * ey2 - ex2 * ey1;
+    if (fabs(det) < 1e-9) return 0;
+    const double du1 = (double)b->u - a->u, du2 = (double)c->u - a->u;
+    const double dv1 = (double)b->v - a->v, dv2 = (double)c->v - a->v;
+    g->dudx = (du1 * ey2 - du2 * ey1) / det;  g->dudy = (ex1 * du2 - ex2 * du1) / det;
+    g->dvdx = (dv1 * ey2 - dv2 * ey1) / det;  g->dvdy = (ex1 * dv2 - ex2 * dv1) / det;
+    return 1;
+}
+
+/** @brief Returns the texel coordinate the GPU reads at an integer pixel of a triangle's texel plane.
+ *
+ * @param p The plane from psx_uv_plane_setup.
+ * @param x The pixel column.
+ * @param y The pixel row.
+ * @param which_v Nonzero for v, zero for u.
+ * @return floor of the plane's value, wrapped to 0..255. */
+static int psx_texel(const psx_uv_plane* p, int x, int y, int which_v) {
+    return (int)floor(psx_uv_plane_at(p, (double)x, (double)y, which_v)) & 0xFF;
+}
+
+static int native_texel(const openpete_scene_tri* t, const tri_uv_grad_t* g, int x, int y, int which_v) {
+    const double px = x + 0.5 - t->v[0].sx, py = y + 0.5 - t->v[0].sy;
+    const double a = which_v ? t->v[0].v + g->dvdx * px + g->dvdy * py
+                             : t->v[0].u + g->dudx * px + g->dudy * py;
+    return (int)a;
+}
+
+/* Is the centre of pixel (x, y) inside the triangle (edges inclusive)? */
+static int tri_covers(const openpete_scene_tri* t, int x, int y) {
+    const double px = x + 0.5, py = y + 0.5;
+    int pos = 0, neg = 0;
+    for (int i = 0; i < 3; i++) {
+        const openpete_scene_vert *a = &t->v[i], *b = &t->v[(i + 1) % 3];
+        const double e = ((double)b->sx - a->sx) * (py - a->sy) - ((double)b->sy - a->sy) * (px - a->sx);
+        pos |= e > 0; neg |= e < 0;
+    }
+    return !(pos && neg);
+}
+
+static int uvedge_pixel_differs(const openpete_scene_tri* fed, const tri_uv_grad_t* g,
+                                const psx_uv_plane* s, int x, int y) {
+    return native_texel(fed, g, x, y, 0) != psx_texel(s, x, y, 0)
+        || native_texel(fed, g, x, y, 1) != psx_texel(s, x, y, 1);
+}
+
+/* 1 when the first or last covered pixel of any row reads another texel. */
+static int uvedge_tri_differs(const openpete_scene_tri* orig, const openpete_scene_tri* fed) {
+    int iv[3][4]; psx_uv_plane s; tri_uv_grad_t g;
+    tri_int_verts(orig, iv);
+    if (!psx_uv_plane_setup((const int (*)[4])iv, &s) || !tri_uv_grad(fed, &g)) return 0;
+    const int x0 = (int)fminf(fminf(orig->v[0].sx, orig->v[1].sx), orig->v[2].sx);
+    const int x1 = (int)fmaxf(fmaxf(orig->v[0].sx, orig->v[1].sx), orig->v[2].sx);
+    const int y0 = (int)fminf(fminf(orig->v[0].sy, orig->v[1].sy), orig->v[2].sy);
+    const int y1 = (int)fmaxf(fmaxf(orig->v[0].sy, orig->v[1].sy), orig->v[2].sy);
+    for (int y = y0; y < y1; y++) {
+        int lo = x1, hi = x0 - 1;
+        for (int x = x0; x < x1; x++)
+            if (tri_covers(orig, x, y)) { if (x < lo) lo = x; hi = x; }
+        if (hi >= lo && (uvedge_pixel_differs(fed, &g, &s, lo, y) || uvedge_pixel_differs(fed, &g, &s, hi, y)))
+            return 1;
+    }
+    return 0;
+}
+
+static void uvedge_note(const openpete_scene_tri* orig, const openpete_scene_tri* fed) {
+    static int cen = -1;
+    ENV_FLAG_LATCH(cen, "OPENPETE_UISPRITE_CENSUS");
+    if (!cen) return;
+    if (openpete_frame != s_uvedge_frame) {
+        if (s_uvedge_frame != 0xFFFFFFFFu)
+            fprintf(stderr, "[census f=%u UI-UVEDGE] tris=%u edge=%u\n", s_uvedge_frame, s_uvedge_tris, s_uvedge_bad);
+        s_uvedge_frame = openpete_frame; s_uvedge_tris = s_uvedge_bad = 0;
+    }
+    s_uvedge_tris++;
+    s_uvedge_bad += (unsigned)uvedge_tri_differs(orig, fed);
+}
+
+/* Add a textured 2D quad's two triangles to the HUD layer, each sampling the
+ * texel the GPU samples on every pixel (tex_tri_psx_texel_centre). A quad of an ABR
  * 1-3 class that samples VRAM is fed as a pair: its STP-clear texels through
  * the opaque class, then its STP-set texels through its own class, since those
  * blend equations read no alpha and the GPU applies them to STP-set texels
  * only. Both halves precede the next primitive's triangles, so the painter
  * order of overlapping primitives holds. Every other quad (opaque, ABR 0, a
  * framebuffer-snapshot window, whose image carries no STP bit) is fed once.
- * Returns 1 for a split quad. */
-static int feed_hud_tex_quad(const openpete_scene_tri quad[2]) {
+ * A snapshot window's UVs are pixel coordinates in the native image and are
+ * fed unchanged. Returns 1 for a split quad. */
+static int feed_hud_tex_quad(const openpete_scene_tri in[2]) {
+    const int vram = in[0].bpp != OPENPETE_FB_SNAPSHOT_BPP;
+    openpete_scene_tri quad[2] = { in[0], in[1] };
+    for (int t = 0; vram && t < 2; t++) {
+        tex_tri_psx_texel_centre(&quad[t]);
+        uvedge_note(&in[t], &quad[t]);
+    }
     /* ui_blend's classes 2-4 are ABR 1-3. */
-    const int split = quad[0].blend > 1 && quad[0].bpp != OPENPETE_FB_SNAPSHOT_BPP;
+    const int split = quad[0].blend > 1 && vram;
     if (split) {
         openpete_scene_tri clear[2] = { quad[0], quad[1] };
         clear[0].blend = clear[1].blend = 0;
@@ -305,39 +550,100 @@ static void feed_f4(CPUState* cpu, uint32_t p, uint32_t w1, int category, uint32
     s_fed_prims++;
 }
 
-/* Feed one screen-space gouraud line (LINE_G2, code 0x50) into the native HUD
- * layer as a thin gouraud quad (the scene is triangles-only, like the particle/
- * sparkle line feeds). The consumers are the UI separator lines (the
- * horizontal rules on a results screen, gem-UI dividers) and the dialog name
- * underline, each with a per-endpoint shimmer colour. Layout: word[1]=code|rgb0,
- * [2]=xy0, [3]=pad|rgb1, [4]=xy1. XY: x=lo16,y=hi16 signed. */
-static void feed_line_g2(CPUState* cpu, uint32_t p, uint32_t w1) {
-    uint32_t xy0 = cpu->read_word(p + 0x08);
-    uint32_t c1  = cpu->read_word(p + 0x0C);
-    uint32_t xy1 = cpu->read_word(p + 0x10);
-    double x0 = (double)(int16_t)(xy0 & 0xFFFF), y0 = (double)(int16_t)(xy0 >> 16);
-    double x1 = (double)(int16_t)(xy1 & 0xFFFF), y1 = (double)(int16_t)(xy1 >> 16);
-    uint32_t rgba0 = (w1 & 0xFFFFFFu) | 0xFF000000u;   /* endpoint-0 colour */
-    uint32_t rgba1 = (c1 & 0xFFFFFFu) | 0xFF000000u;   /* endpoint-1 colour */
-    /* perpendicular half-width (~0.6 PSX px each side -> a ~1px-thin line). */
-    double dx = x1 - x0, dy = y1 - y0;
-    double len = sqrt(dx*dx + dy*dy); if (len < 1e-3) len = 1.0;
-    double px = -dy / len * 0.6, py = dx / len * 0.6;
+/* The layer, blend class and vertex alpha of an untextured 2D primitive. An
+ * opaque one draws on the HUD layer at class 0. A semi-transparent one (code
+ * bit 1) blends at the ABR of the draw mode linked before it, on the panel
+ * layer, as a dark panel's F4 does. */
+typedef struct { int category; int blend; uint32_t alpha; } ui_untex_t;
+static ui_untex_t ui_untex_layer(uint32_t w1, int semi_cls) {
+    if (!((w1 >> 24) & 0x2u)) return (ui_untex_t){ OPENPETE_SCENE_HUD, 0, 0xFFu };
+    semi_note(semi_cls, (unsigned)s_last_abr, 0);
+    const ui_blend_t b = ui_blend(1, (unsigned)s_last_abr);
+    return (ui_untex_t){ OPENPETE_SCENE_HUD_PANEL, b.blend, b.alpha };
+}
+
+static float psx_x(uint32_t xy) { return (float)(int16_t)(xy & 0xFFFFu); }
+static float psx_y(uint32_t xy) { return (float)(int16_t)(xy >> 16); }
+
+/* Feed one screen-space line into a native HUD layer as a gouraud quad (the
+ * scene is triangles-only, like the particle/sparkle line feeds). The GPU
+ * draws a line one pixel per step of its major axis from the first endpoint's
+ * pixel through the second's, both included. The quad covers that footprint:
+ * the centre line between the two endpoint pixels' centres, extended half a
+ * pixel past each end along the major axis and half a pixel to each side
+ * along the minor axis, so a horizontal or vertical line covers exactly its
+ * pixels. Colour follows the endpoint. */
+static void feed_line_quad(uint32_t xy0, uint32_t xy1, uint32_t rgba0, uint32_t rgba1, ui_untex_t lay) {
+    const float x0 = psx_x(xy0) + 0.5f, y0 = psx_y(xy0) + 0.5f;
+    const float x1 = psx_x(xy1) + 0.5f, y1 = psx_y(xy1) + 0.5f;
+    const float dx = x1 - x0, dy = y1 - y0;
+    const int xmajor = fabsf(dx) >= fabsf(dy);
+    const float major = fmaxf(fabsf(xmajor ? dx : dy), 1.0f);
+    const float ex = 0.5f * (xmajor ? (dx < 0.0f ? -1.0f : 1.0f) : dx / major);   /* half-pixel end extension */
+    const float ey = 0.5f * (xmajor ? dy / major : (dy < 0.0f ? -1.0f : 1.0f));
+    const float sx = xmajor ? 0.0f : 0.5f, sy = xmajor ? 0.5f : 0.0f;         /* half-pixel side offset */
 
     scene_begin_for_feed();
-    /* corners: a=+perp, b=-perp; colour follows the endpoint (gouraud). */
-    float cx[4] = {(float)(x0+px),(float)(x1+px),(float)(x0-px),(float)(x1-px)};
-    float cy[4] = {(float)(y0+py),(float)(y1+py),(float)(y0-py),(float)(y1-py)};
-    uint32_t cc[4] = { rgba0, rgba1, rgba0, rgba1 };
+    /* corners: TL,TR,BL,BR = start-side, end-side, start+side, end+side. */
+    const float cx[4] = { x0 - ex - sx, x1 + ex - sx, x0 - ex + sx, x1 + ex + sx };
+    const float cy[4] = { y0 - ey - sy, y1 + ey - sy, y0 - ey + sy, y1 + ey + sy };
+    const uint32_t cc[4] = { rgba0, rgba1, rgba0, rgba1 };
     static const int idx[2][3] = { {0,1,2}, {1,3,2} };
     for (int t=0;t<2;t++) {
         openpete_scene_tri tri; memset(&tri,0,sizeof(tri));
         for (int j=0;j<3;j++){ int c=idx[t][j];
             tri.v[j].sx=cx[c]; tri.v[j].sy=cy[c]; tri.v[j].z=0.0f; tri.v[j].rgba=cc[c]; }
-        tri.textured=0; tri.blend=0;
-        openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_HUD, 1);
+        tri.textured=0; tri.blend=lay.blend;
+        openpete_native_scene_add_tri(&tri, lay.category, 1);
     }
-    bbox_note(UICLS_LINE, (float)x0, (float)y0, (float)x1, (float)y1);
+    bbox_note(UICLS_LINE, psx_x(xy0), psx_y(xy0), psx_x(xy1), psx_y(xy1));
+    s_fed_prims++;
+}
+
+/* LINE_G2 (code 0x50): the UI separator lines (the horizontal rules on a
+ * results screen, gem-UI dividers) and the dialog name underline, each with a
+ * per-endpoint shimmer colour. Layout: word[1]=code|rgb0, [2]=xy0,
+ * [3]=pad|rgb1, [4]=xy1. XY: x=lo16,y=hi16 signed. */
+static void feed_line_g2(CPUState* cpu, uint32_t p, uint32_t w1) {
+    const uint32_t c1 = cpu->read_word(p + 0x0C);
+    feed_line_quad(cpu->read_word(p + 0x08), cpu->read_word(p + 0x10),
+                   (w1 & 0xFFFFFFu) | 0xFF000000u, (c1 & 0xFFFFFFu) | 0xFF000000u,
+                   (ui_untex_t){ OPENPETE_SCENE_HUD, 0, 0xFFu });
+}
+
+/* LINE_F2 (codes 0x40 opaque, 0x42 semi-transparent): one colour for both
+ * endpoints, the border of Spyro 3's boss and opponent health bars. Layout:
+ * word[1]=code|rgb, [2]=xy0, [3]=xy1. */
+static void feed_line_f2(CPUState* cpu, uint32_t p, uint32_t w1) {
+    const ui_untex_t lay = ui_untex_layer(w1, SEMI_LINE);
+    const uint32_t rgba = (w1 & 0xFFFFFFu) | (lay.alpha << 24);
+    feed_line_quad(cpu->read_word(p + 0x08), cpu->read_word(p + 0x0C), rgba, rgba, lay);
+}
+
+/* POLY_G3 (0x30 / 0x32) and POLY_G4 (0x38 / 0x3A): an untextured gouraud
+ * triangle or quad, the fill of Spyro 3's health bars (green to red by
+ * health). Layout: vertex k at word 1 + 2k, rgb in the low 24 bits (word 1's
+ * top byte is the code) and xy in the next word. A quad's corners are
+ * TL,TR,BL,BR, split (0,1,2) (1,3,2) as the GPU splits it. */
+static void feed_poly_g(CPUState* cpu, uint32_t p, uint32_t w1) {
+    const ui_untex_t lay = ui_untex_layer(w1, SEMI_G);
+    const int nv = (w1 >> 24) & 0x08u ? 4 : 3;
+    openpete_scene_vert vx[4]; memset(vx, 0, sizeof(vx));
+    for (int k = 0; k < nv; k++) {
+        const uint32_t c  = k ? cpu->read_word(p + 0x04u + (uint32_t)k * 8u) : w1;
+        const uint32_t xy = cpu->read_word(p + 0x08u + (uint32_t)k * 8u);
+        vx[k].sx = psx_x(xy); vx[k].sy = psx_y(xy);
+        vx[k].rgba = (c & 0xFFFFFFu) | (lay.alpha << 24);
+    }
+    scene_begin_for_feed();
+    static const int idx[2][3] = { {0,1,2}, {1,3,2} };
+    for (int t = 0; t < nv - 2; t++) {
+        openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));
+        for (int j = 0; j < 3; j++) tri.v[j] = vx[idx[t][j]];
+        tri.textured = 0; tri.blend = lay.blend;
+        openpete_native_scene_add_tri(&tri, lay.category, 1);
+    }
+    bbox_note(UICLS_POLYG, vx[0].sx, vx[0].sy, vx[nv - 1].sx, vx[nv - 1].sy);
     s_fed_prims++;
 }
 
@@ -450,7 +756,7 @@ static void unclaimed_note(CPUState* cpu, uint32_t prim) {
  * complete. Feeding in link order keeps the native layering equal to the OT
  * walk order. The chokepoint is the clean 2D-vs-3D discriminator (the 3D
  * renderers inline the insert). */
-enum { QK_FT4 = 0, QK_FREEZE, QK_DR_MODE, QK_F4_BAR, QK_F4_PANEL, QK_LINE_G2, QK_SPRT };
+enum { QK_FT4 = 0, QK_FREEZE, QK_DR_MODE, QK_F4_BAR, QK_F4_PANEL, QK_LINE_G2, QK_SPRT, QK_POLY_G, QK_LINE_F2 };
 typedef struct { uint32_t addr; uint32_t sum; uint32_t seq; uint32_t aux; uint32_t xy_link; uint32_t xy_rel; uint8_t kind; } ui_claim_t;
 
 /* One drawn tick's 2D. Spyro 3's atlas links ~370 quads per tick, the widest
@@ -607,6 +913,25 @@ static int is_line_g2(CPUState* cpu, uint32_t prim) {
     uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
     return (uint8_t)(w1 >> 24) == 0x50            /* LINE_G2 */
         && (uint8_t)(w0 >> 24) >= 4;              /* tag length >= 4 (full LINE_G2) */
+}
+
+/* POLY_G3 / POLY_G4 (codes 0x30-0x33 and 0x38-0x3B; bit 3 selects the quad,
+ * bit 1 semi-transparency, bit 2 texturing, which is excluded) — the gouraud
+ * fill of a health bar. */
+static int is_poly_g(CPUState* cpu, uint32_t prim) {
+    if (prim < 0x80000000u) return 0;
+    uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
+    const unsigned code = (uint8_t)(w1 >> 24);
+    return (code & 0xF4u) == 0x30u
+        && (uint8_t)(w0 >> 24) >= ((code & 0x08u) ? 8 : 6);   /* full G4 / G3 tag */
+}
+
+/* LINE_F2 (flat 2-point line, codes 0x40 / 0x42) — a health bar's border. */
+static int is_line_f2(CPUState* cpu, uint32_t prim) {
+    if (prim < 0x80000000u) return 0;
+    uint32_t w0 = cpu->read_word(prim), w1 = cpu->read_word(prim + 4);
+    return ((uint8_t)(w1 >> 24) & 0xFEu) == 0x40u
+        && (uint8_t)(w0 >> 24) >= 3;              /* tag length >= 3 (full LINE_F2) */
 }
 
 
@@ -772,6 +1097,8 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
         break; }
     case QK_SPRT:    feed_sprt_now(cpu, prim, s_last_tpage); break;
     case QK_LINE_G2: feed_line_g2(cpu, prim, w1); break;
+    case QK_POLY_G:  feed_poly_g(cpu, prim, w1); break;
+    case QK_LINE_F2: feed_line_f2(cpu, prim, w1); break;
     default: break;
     }
 }
@@ -987,6 +1314,8 @@ static int on_ot_insert(CPUState* cpu, uint32_t addr) {
                                            claim(cpu, prim, QK_F4_PANEL);  /* HUD shaded box / menu panel */
         else if (is_sprt(cpu, prim))       claim(cpu, prim, QK_SPRT);      /* HUD icons and digits */
         else if (is_line_g2(cpu, prim))    claim(cpu, prim, QK_LINE_G2);   /* UI separator lines */
+        else if (is_poly_g(cpu, prim))     claim(cpu, prim, QK_POLY_G);    /* gouraud health-bar fills */
+        else if (is_line_f2(cpu, prim))    claim(cpu, prim, QK_LINE_F2);   /* health-bar borders */
         else if (!s_in_fade) unclaimed_note(cpu, prim);   /* no decoder for this encoding: linked, not fed
                                                           * (a prim linked inside the fade emitter is the
                                                           * fade's own F4, drawn from its arguments) */
