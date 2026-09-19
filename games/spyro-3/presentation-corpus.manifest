@@ -120,3 +120,11 @@ crystal-islands-flame|1060|200||1074,1078,1080,1086
 # draws the boss health bar at the bottom right, a green-to-red gradient
 # beside the boss icon; the pins 4140 and 4158 hold it on both legs.
 spikes-arena|4100|100||4140,4158
+
+# title-demo-camcut: the attract demo's third segment ends at VBL 5852 with the
+# camera stepping 76110 world units in one tick, and every record the tick drew
+# carries a previous tick of its own. The intermediate leg there shows the
+# previous tick for the whole interval; the canonical leg is unaffected. Its own
+# row rather than a pin on title-demo, whose 20-VBL grid would otherwise fan out
+# over the 3600 VBLs between them.
+title-demo-camcut|5800|100||5852

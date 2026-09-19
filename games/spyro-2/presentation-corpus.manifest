@@ -13,7 +13,11 @@
 # clear of its load transient, so the row covers five distinct levels of world
 # geometry and texture data. The grid samples between them hold the
 # title-screen world.
-attract-demo|3400|3000||3400,6500,10200,14000,17400
+# 3785 is a camera cut: the demo's second segment ends with the camera stepping
+# 98094 world units in one tick, with every drawn record carrying a previous
+# tick of its own. The intermediate leg there shows the previous tick for the
+# whole interval; the canonical leg is unaffected.
+attract-demo|3400|3000||3400,3785,6500,10200,14000,17400
 #
 # autumn-plains-skelos-badlands-portal-entry: a portal entry from the home
 # world, the in-gameplay level change. 1150 is the portal transition, 1250 and
