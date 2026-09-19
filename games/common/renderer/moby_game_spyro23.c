@@ -1292,15 +1292,27 @@ static int64_t s23_sat(int64_t v, int64_t lo, int64_t hi) {
 
 /* The animated record's translation: the quarter-world view-space centre
  * shifted left 2 and right by the model's scale byte, then rescaled by the
- * moby's size byte through a GPF whose product the GTE clamps to an int16
- * before a shift of 5 (mobydraw.s:510,537-539,546-551,572-574). The cull drops
- * a record whose result passes 63000 (mobydraw.s:546-551); that is a range
- * limit, which is what extended LOD lifts, so it is not applied here. */
+ * moby's size byte through a GPF and a shift of 5
+ * (mobydraw.s:510,537-539,546-551,572-574). The size byte scales the moby on
+ * screen by moving it in depth, 32 being unity.
+ *
+ * The GTE holds both the GPF's input and its product in int16 registers.
+ * Inside the cull's own distance box neither bound is reachable: the box caps
+ * the centre at the render-radius byte scaled by 256, so the shift left 2
+ * lands inside an int16 and the size byte is a fraction near unity. Past the
+ * box — which is the whole of what this builder composes for — the input bound
+ * alone collapses all three axes to the same 1023 and stands the moby on the
+ * near plane at the size of the screen. Carrying the rescale at full width is
+ * the treatment the centre's own MVMVA already takes, and is identical to the
+ * GTE everywhere the GTE's own range holds.
+ *
+ * The cull drops a record whose result passes 63000 (mobydraw.s:546-551); that
+ * is a range limit, which is what extended LOD lifts, so it is not applied. */
 static void s23_anim_translation(const moby_anim_fields_t* f, int scale, int size,
                                  int32_t tr[3]) {
     for (int i = 0; i < 3; i++) {
         int64_t v = ((int64_t)f->centre[i] << 2) >> (int)s23_sat(scale, 0, 31);
-        if (size) v = s23_sat(s23_sat(v, -32768, 32767) * size, -32768, 32767) >> 5;
+        if (size) v = (v * size) >> 5;
         tr[i] = (int32_t)s23_sat(v, INT32_MIN, INT32_MAX);
     }
 }
