@@ -666,6 +666,152 @@ static uint8_t* s_body_cam = NULL;              /* the camera bytes the feeders 
 static uint8_t  s_prod_cam_saved[CAM_XFORM_BYTES];
 static int      s_prod_cam_active = 0;
 
+static int cut_census_on(void) {
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_CUT_CENSUS"); s_on = (e && *e && *e != '0'); }
+    return s_on;
+}
+
+static void cut_census_camera(const uint8_t* cam, double alpha, int cam_cut) {
+    if (!cut_census_on() || !cam) return;
+    const int32_t* p = (const int32_t*)(cam + CAM_OFF_POS);
+    const int16_t* m = (const int16_t*)(cam + CAM_OFF_PROJ);
+    fprintf(stderr, "[cut-census vbl=%u] shown=camera a=%.3f cut=%d pos=(%d,%d,%d) "
+                    "row0=(%d,%d,%d)\n",
+            openpete_frame, alpha, cam_cut, p[0], p[1], p[2], m[0], m[1], m[2]);
+}
+
+/* ---- sub-tick discontinuity guards -----------------------------------------
+ *
+ * A guard fires when the two ticks of the pair are not one motion: the camera
+ * jumped or spun or crossed a game-state edge, a moby slot was reused by a
+ * different class, a moby warped. The interval between the two ticks shows
+ * tick N-1 and reaches tick N at alpha 1, so a guard holds N-1 for every
+ * present below alpha 1 and lets N show at alpha 1 — the discontinuity lands
+ * on the present where every interpolated channel reaches its canonical N
+ * value. A guard with no previous state to hold (no staging arena, no prev
+ * snapshot) snaps to N instead and the census counts the reason. */
+enum { CUT_CAM = 0, CUT_CLASS = 1, CUT_TELEPORT = 2, CUT_KINDS = 3 };
+
+/* OPENPETE_CUT_CENSUS=1: one line per guard decision, plus a periodic tally
+ * whose zero is the engagement counter. */
+static long s_cut_hold[CUT_KINDS], s_cut_snap[CUT_KINDS];
+
+static void cut_census_note(int kind, uint32_t addr, int held, const char* why,
+                            const int32_t* prev_pos, const int32_t* shown_pos) {
+    static const char* const names[CUT_KINDS] = { "camcut", "class", "teleport" };
+    if (held) s_cut_hold[kind]++; else s_cut_snap[kind]++;
+    if (!cut_census_on()) return;
+    static const int32_t zero[3] = { 0, 0, 0 };
+    const int32_t* pp = prev_pos ? prev_pos : zero;
+    const int32_t* sp = shown_pos ? shown_pos : zero;
+    double dx = (double)sp[0]-pp[0], dy = (double)sp[1]-pp[1], dz = (double)sp[2]-pp[2];
+    fprintf(stderr, "[cut-census vbl=%u] kind=%s obj=%08x verdict=%s why=%s "
+                    "prev=(%d,%d,%d) shown=(%d,%d,%d) D=%.3f "
+                    "holds=%ld/%ld/%ld snaps=%ld/%ld/%ld\n",
+            openpete_frame, names[kind], addr, held ? "hold" : "snap", why,
+            pp[0], pp[1], pp[2], sp[0], sp[1], sp[2], sqrt(dx*dx + dy*dy + dz*dz),
+            s_cut_hold[0], s_cut_hold[1], s_cut_hold[2],
+            s_cut_snap[0], s_cut_snap[1], s_cut_snap[2]);
+}
+
+/* A hold shows the previous tick's state, so the pair must BE two consecutive
+ * ticks. An object whose prev snapshot is older than one tick has no tick N-1
+ * to show: a level load leaves pre-load records in the table (stale prev, fresh
+ * curr, a class that indexes the reloaded model table), and a slot that resumes
+ * after a static stretch names a state the interval does not span. Those snap,
+ * as they did before the hold existed. */
+static int cut_pair_is_tick(const openpete_interp_obj_t* o) {
+    if (!o || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
+    return (double)(o->curr_ns - o->prev_ns) <= 1.5 * (double)TICK_PERIOD_NS;
+}
+
+/* Hold this moby's previous tick for the rest of the interval: stage the whole
+ * previous record, so position, class, model and animation state all read N-1
+ * through the view, and pin the fractional position table to it. Returns 1 when
+ * the hold is in force; 0 leaves the canonical tick-N record (the snap). Guest
+ * memory is never written — a present the staging arena refuses snaps. */
+static int moby_cut_hold(uint32_t m, const uint8_t* mh,
+                         const openpete_interp_obj_t* o, op_time_t now, int kind) {
+    const int32_t* pp = (const int32_t*)(o->prev + MOBY_POS);
+    const int32_t* cp = (const int32_t*)(mh + MOBY_POS);
+    if (!cut_pair_is_tick(o)) { cut_census_note(kind, m, 0, "stale", pp, cp); return 0; }
+    if ((double)(now - o->curr_ns) / interp_period_ns(o->prev_ns, o->curr_ns) >= 1.0) {
+        cut_census_note(kind, m, 0, "alpha1", pp, cp);
+        return 0;
+    }
+    uint8_t* st = (uint8_t*)openpete_subtick_view_stage(m, MOBY_STRIDE);
+    if (!st) { cut_census_note(kind, m, 0, "unstaged", pp, cp); return 0; }
+    uint32_t len = o->blob_len < MOBY_STRIDE ? o->blob_len : MOBY_STRIDE;
+    memcpy(st, o->prev, len);
+    fpos_set(m, pp, pp, 0.0);
+    cut_census_note(kind, m, 1, "hold", pp, pp);
+    return 1;
+}
+
+/* The guards run on intermediate presents, which a headless run produces only
+ * where a capture asks for one. These locators evaluate the same predicates
+ * against the same ring pair and object snapshots once per canonical pass, so
+ * one replay names the ticks at which each guard fires and a sub-tick capture
+ * at those ticks measures what the guard shows. Locator lines carry `locate=`;
+ * they report nothing about what was presented. */
+static void cut_locate_camera(void) {
+    double qa = 0.0;
+    const openpete_interp_snapshot_t *p2 = NULL, *pv = NULL, *cu = NULL;
+    if (!openpete_interp_query3(openpete_interp_present_now(), TICK_PERIOD_NS,
+                                &qa, &p2, &pv, &cu) || !pv || !cu) return;
+    const int32_t* pp = (const int32_t*)(pv->data + pv->region_offsets[CAM_REGION()] + CAM_OFF_POS);
+    const int32_t* cp = (const int32_t*)(cu->data + cu->region_offsets[CAM_REGION()] + CAM_OFF_POS);
+    double dx = (double)cp[0] - pp[0], dy = (double)cp[1] - pp[1], dz = (double)cp[2] - pp[2];
+    const double d2 = dx*dx + dy*dy + dz*dz;
+    const int16_t* pm = (const int16_t*)(pv->data + pv->region_offsets[CAM_REGION()] + CAM_OFF_PROJ);
+    const int16_t* cm = (const int16_t*)(cu->data + cu->region_offsets[CAM_REGION()] + CAM_OFF_PROJ);
+    double frob = 0; for (int i = 0; i < 9; i++) frob += (double)pm[i] * cm[i];
+    uint32_t pgs, cgs;
+    memcpy(&pgs, pv->data + pv->region_offsets[GS_REGION()], 4);
+    memcpy(&cgs, cu->data + cu->region_offsets[GS_REGION()], 4);
+    const char* why = NULL;
+    if (d2 > 5000.0 * 5000.0) why = "pos";
+    else if (frob < 4096.0 * 4096.0) why = "rot";
+    else if (pgs != cgs) why = "gs-edge";
+    if (!why) return;
+    fprintf(stderr, "[cut-census vbl=%u] locate=camcut why=%s |d|=%.0f frob=%.2f "
+                    "gs=%u->%u ptick=%u ctick=%u\n",
+            openpete_frame, why, sqrt(d2), frob / (4096.0 * 4096.0), pgs, cgs,
+            pv->tick, cu->tick);
+}
+
+static void cut_locate_mobys(void) {
+    uint8_t* base_p = (uint8_t*)openpete_psx_to_host_ptr(G_LEVELMOBYS);
+    uint32_t m = 0; if (base_p) memcpy(&m, base_p, 4);
+    if (m < 0x80000000u) return;
+    for (int guard = 0; guard < 4096; guard++, m += MOBY_STRIDE) {
+        uint8_t* mh = (uint8_t*)openpete_psx_to_host_ptr(m);
+        if (!mh || mh[MOBY_STATE] == 0xFF) break;
+        if (mh[MOBY_STATE] >= 0x80) continue;
+        const openpete_interp_obj_t* o = openpete_interp_objs_find(m);
+        if (!o || !o->have_prev) continue;
+        uint16_t pcls, ccls;
+        memcpy(&pcls, o->prev + 0x36u, 2);
+        memcpy(&ccls, o->curr + 0x36u, 2);
+        int32_t pp[3], cp[3];
+        memcpy(pp, o->prev + MOBY_POS, 12);
+        memcpy(cp, o->curr + MOBY_POS, 12);
+        double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
+        const double d2 = dx*dx + dy*dy + dz*dz;
+        const char* kind = (pcls != ccls) ? "class" : (d2 > 5000.0 * 5000.0 ? "teleport" : NULL);
+        if (!kind) continue;
+        /* Pair age in ticks: the guard only has a previous state to hold while
+         * this object's own interval is still open (age below 1); an object
+         * whose curr stopped rolling shows curr whatever the guard decides. */
+        double age = (o->prev_ns != 0 && o->curr_ns > o->prev_ns)
+                   ? (double)(openpete_interp_present_now() - o->curr_ns)
+                     / interp_period_ns(o->prev_ns, o->curr_ns) : 99.0;
+        fprintf(stderr, "[cut-census vbl=%u] locate=%s obj=%08x cls=%03x->%03x |d|=%.0f age=%.2f\n",
+                openpete_frame, kind, m, (unsigned)pcls, (unsigned)ccls, sqrt(d2), age);
+    }
+}
+
 void spyro_native_canon_capture_camera(void* cpu_v, int producer) {
     (void)cpu_v;
     if (openpete_speculative) return;           /* same rule as scratch_row_capture */
@@ -693,6 +839,7 @@ void spyro_native_prod_camera_leave(void) {
 }
 
 void spyro_native_canon_epoch_commit(void) {
+    if (cut_census_on()) { cut_locate_camera(); cut_locate_mobys(); }
     const uint8_t* h = (const uint8_t*)openpete_psx_to_host_ptr(G_CAMERA);
     for (int p = 0; p < SPROD_COUNT; ++p)
         s_prod_cam_hold[p] = h && s_prod_cam_epoch[p] == s_canon_epoch_now &&
@@ -1055,6 +1202,86 @@ static void player_records_loop(CPUState* cpu, int paired, int cam_cut, int cam_
 }
 
 
+/* A cut: the two ticks are not one camera motion. Position, rotation and the
+ * simulation regime each decide it; `out_gs_edge` reports the regime edge,
+ * which the callers distinguish in their census. */
+static int camera_cut(const openpete_interp_snapshot_t* prev,
+                      const openpete_interp_snapshot_t* curr,
+                      double pair_age, int* out_gs_edge) {
+    int cut = 0;
+    *out_gs_edge = 0;
+    const int32_t* pp = (const int32_t*)(prev->data + prev->region_offsets[CAM_REGION()] + CAM_OFF_POS);
+    const int32_t* cp = (const int32_t*)(curr->data + curr->region_offsets[CAM_REGION()] + CAM_OFF_POS);
+    double dx = (double)cp[0] - pp[0], dy = (double)cp[1] - pp[1], dz = (double)cp[2] - pp[2];
+    if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) cut = 1;
+    /* Rotation cut: a stationary cut (camera spins to a new shot without moving
+     * far — e.g. the dragon-rescue close-up, which flips the camera ~180° while
+     * position barely changes) slips past the position threshold above. Linearly
+     * lerping a large rotation matrix drives it through a near-singular midpoint
+     * (determinant collapses) → severe scene warping on the intermediate presents.
+     * Detect via the rotation angle between prev/curr camera matrices (orthonormal
+     * Q12): cos(angle) = (trace(Rp^T·Rc) - 1)/2, and trace(Rp^T·Rc) is just the
+     * Frobenius inner product of the two 3x3s / 4096^2. Snap when the camera turned
+     * more than 90°/tick (cos<0 ⇒ frob<4096^2) — no smooth camera move does that
+     * (it's 2700°/s); a normal fast pan stays far above the threshold (a 46° turn
+     * gives frob≈2.4·4096^2), so this only fires on genuine cuts/reversals. */
+    if (!cut) {
+        const int16_t* pm = (const int16_t*)(prev->data + prev->region_offsets[CAM_REGION()] + CAM_OFF_PROJ);
+        const int16_t* cm = (const int16_t*)(curr->data + curr->region_offsets[CAM_REGION()] + CAM_OFF_PROJ);
+        double frob = 0; for (int i = 0; i < 9; i++) frob += (double)pm[i] * cm[i];
+        if (frob < 4096.0 * 4096.0) cut = 1;   /* angle > 90° per tick */
+    }
+    /* Game-state edge: the two ticks came from different simulation regimes
+     * (gameplay -> level transition, transition -> load, cutscene in/out).
+     * The camera re-targets on such an edge — entering a portal swings it
+     * ~20° and ~500 units in one tick, under both thresholds above — and a
+     * lerp presents the chord of that swing: Spyro lands ~10 px off the
+     * canonical line for the one present whose pair straddles the edge.
+     * The regimes are not one motion, so the pair is a cut by definition. */
+    {
+        uint32_t pgs, cgs;
+        memcpy(&pgs, prev->data + prev->region_offsets[GS_REGION()], 4);
+        memcpy(&cgs, curr->data + curr->region_offsets[GS_REGION()], 4);
+        if (pgs != cgs) { cut = 1; *out_gs_edge = 1; }
+    }
+    /* OPENPETE_CAMCUT_DBG: rate-limited census of the guard's inputs. A cut
+     * costs both the sub-tick camera bracket and the occlusion cull, so a
+     * view that reads as cut every present needs its span and delta named. */
+    {
+        static int s_ccd = -1;
+        if (s_ccd < 0) { const char* e = getenv("OPENPETE_CAMCUT_DBG"); s_ccd = (e && *e && *e != '0'); }
+        if (s_ccd) {
+            static uint64_t t0 = 0; static int n = 0;
+            uint64_t now = openpete_phase_now_us();
+            if (now - t0 >= 1000000u) { t0 = now; n = 0; }
+            if (n < 4) { n++;
+                fprintf(stderr, "[camcut f=%u] cut=%d gs_edge=%d age=%.1f d=(%.0f,%.0f,%.0f) |d|=%.0f lim=%.0f "
+                        "prev=(%d,%d,%d) curr=(%d,%d,%d) ptick=%u ctick=%u\n",
+                        openpete_frame, cut, *out_gs_edge, pair_age, dx, dy, dz,
+                        sqrt(dx*dx+dy*dy+dz*dz), 5000.0,
+                        pp[0], pp[1], pp[2], cp[0], cp[1], cp[2], prev->tick, curr->tick); }
+        }
+    }
+    return cut;
+}
+
+/* The interval this cut ends still has a tick N-1 to show while its alpha is
+ * below 1: the bracket runs at alpha 0 and the cut lands on the alpha-1
+ * present, where every interpolated channel reaches its canonical N value. A
+ * pair whose forward endpoint stopped advancing has no open interval and shows
+ * the head. */
+static int camera_cut_hold(const openpete_interp_snapshot_t* prev,
+                           const openpete_interp_snapshot_t* curr, int gs_edge) {
+    if (!prev || !curr) return 0;
+    double period = interp_period_ns(prev->tick_ns, curr->tick_ns);
+    double a = (period > 0.0)
+             ? (double)(openpete_interp_present_now() - curr->tick_ns) / period : 1.0;
+    if (openpete_interp_curr_is_stale()) a = 1.0;
+    const int hold = (a < 1.0);
+    cut_census_note(CUT_CAM, gs_edge ? 1u : 0u, hold, hold ? "hold" : "stale", NULL, NULL);
+    return hold;
+}
+
 /* The sub-tick present body. Always entered through the wrapper below, which
  * owns the view's begin/end pairing — this function has many exit paths and
  * an unpaired view would leave staged bytes visible to the next tick. */
@@ -1146,62 +1373,9 @@ static void game_reextract_body(void* cpu_v) {
                                   - (int64_t)curr->tick_ns) / (double)TICK_PERIOD_NS;
     const int pair_stale = (pair_age > 4.0);
 
-    int cam_cut = 0, gs_edge = 0;
-    if (paired && cam && prev && curr) {
-        const int32_t* pp = (const int32_t*)(prev->data + prev->region_offsets[CAM_REGION()] + CAM_OFF_POS);
-        const int32_t* cp = (const int32_t*)(curr->data + curr->region_offsets[CAM_REGION()] + CAM_OFF_POS);
-        double dx = (double)cp[0] - pp[0], dy = (double)cp[1] - pp[1], dz = (double)cp[2] - pp[2];
-        if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) cam_cut = 1;
-        /* ROTATION cut: a stationary cut (camera spins to a new shot without moving
-         * far — e.g. the dragon-rescue close-up, which flips the camera ~180° while
-         * position barely changes) slips past the position threshold above. Linearly
-         * lerping a large rotation matrix drives it through a near-singular midpoint
-         * (determinant collapses) → severe scene warping on the intermediate presents.
-         * Detect via the rotation angle between prev/curr camera matrices (orthonormal
-         * Q12): cos(angle) = (trace(Rp^T·Rc) - 1)/2, and trace(Rp^T·Rc) is just the
-         * Frobenius inner product of the two 3x3s / 4096^2. Snap when the camera turned
-         * more than 90°/tick (cos<0 ⇒ frob<4096^2) — no smooth camera move does that
-         * (it's 2700°/s); a normal fast pan stays far above the threshold (a 46° turn
-         * gives frob≈2.4·4096^2), so this only fires on genuine cuts/reversals. */
-        if (!cam_cut) {
-            const int16_t* pm = (const int16_t*)(prev->data + prev->region_offsets[CAM_REGION()] + CAM_OFF_PROJ);
-            const int16_t* cm = (const int16_t*)(curr->data + curr->region_offsets[CAM_REGION()] + CAM_OFF_PROJ);
-            double frob = 0; for (int i = 0; i < 9; i++) frob += (double)pm[i] * cm[i];
-            if (frob < 4096.0 * 4096.0) cam_cut = 1;   /* angle > 90° per tick */
-        }
-        /* GAME-STATE edge: the two ticks came from different simulation regimes
-         * (gameplay -> level transition, transition -> load, cutscene in/out).
-         * The camera re-targets on such an edge — entering a portal swings it
-         * ~20° and ~500 units in one tick, under both thresholds above — and a
-         * lerp presents the chord of that swing: Spyro lands ~10 px off the
-         * canonical line for the one present whose pair straddles the edge.
-         * The regimes are not one motion, so the pair is a cut by definition. */
-        {
-            uint32_t pgs, cgs;
-            memcpy(&pgs, prev->data + prev->region_offsets[GS_REGION()], 4);
-            memcpy(&cgs, curr->data + curr->region_offsets[GS_REGION()], 4);
-            if (pgs != cgs) { cam_cut = 1; gs_edge = 1; }
-        }
-        /* OPENPETE_CAMCUT_DBG: rate-limited census of the guard's inputs. A cut
-         * costs both the sub-tick camera bracket and the occlusion cull, so a
-         * view that reads as cut every present needs its span and delta named. */
-        {
-            static int s_ccd = -1;
-            if (s_ccd < 0) { const char* e = getenv("OPENPETE_CAMCUT_DBG"); s_ccd = (e && *e && *e != '0'); }
-            if (s_ccd) {
-                static uint64_t t0 = 0; static int n = 0;
-                uint64_t now = openpete_phase_now_us();
-                if (now - t0 >= 1000000u) { t0 = now; n = 0; }
-                if (n < 4) { n++;
-                    fprintf(stderr, "[camcut f=%u] cut=%d gs_edge=%d age=%.1f d=(%.0f,%.0f,%.0f) |d|=%.0f lim=%.0f "
-                            "prev=(%d,%d,%d) curr=(%d,%d,%d) ptick=%u ctick=%u\n",
-                            openpete_frame, cam_cut, gs_edge, pair_age, dx, dy, dz,
-                            sqrt(dx*dx+dy*dy+dz*dz), 5000.0,
-                            pp[0], pp[1], pp[2], cp[0], cp[1], cp[2], prev->tick, curr->tick); }
-            }
-        }
-    }
-
+    int gs_edge = 0;
+    const int cam_cut = (paired && cam && prev && curr)
+                      ? camera_cut(prev, curr, pair_age, &gs_edge) : 0;
     /* Moby occlusion-cull steering: suspend culling around camera cuts (the
      * few-presents-old occlusion grid is wrong everywhere across a cut) and
      * feed the measured per-tick pan speed (in screen px) so the feeder's
@@ -1244,7 +1418,16 @@ static void game_reextract_body(void* cpu_v) {
         openpete_native_occl_suspend(2);
     }
 
-    if (paired && cam && prev && curr && !cam_cut) {
+    /* One cut rule. The interval shows tick N-1 at the instant tick N completes
+     * and reaches N at alpha 1, so a cut is shown at alpha 1 like every other
+     * channel's step, not from alpha 0: the bracket runs with alpha pinned to 0
+     * (the lerp at 0 is prev byte-for-byte) and the cut lands on the alpha-1
+     * present. A pair the ring is still replaying long after the fact
+     * (pair_stale) has no open interval to hold and shows the head. */
+    const int cam_hold = cam_cut && !pair_stale &&
+                         camera_cut_hold(prev, curr, gs_edge);
+
+    if (paired && cam && prev && curr && (!cam_cut || cam_hold)) {
         /* 1-tick-lag alpha: at the instant tick N completed (now≈curr.tick_ns)
          * show prev (N-1); advance to curr (N) over the next sim period. The
          * forward endpoint is the KNOWN canonical N → no extrapolation. */
@@ -1281,6 +1464,10 @@ static void game_reextract_body(void* cpu_v) {
          * behind the frame it is labelled with. */
         if (openpete_interp_curr_is_stale()) alpha = 1.0;
         if (alpha < -0.35) alpha = -0.35; else if (alpha > 1.0) alpha = 1.0;
+        /* Held cut: every channel in this bracket shows prev for the whole
+         * interval. A negative alpha would extrapolate backwards through the
+         * cut, which is the motion that does not exist. */
+        if (cam_hold) alpha = 0.0;
         /* Publish the alpha this present will actually show. It is the
          * position in ANIMATION time, which is what decides whether a present
          * carried new motion or repeated the previous frame — two presents at
@@ -1586,7 +1773,10 @@ static void game_reextract_body(void* cpu_v) {
                         uint16_t pcls, ccls;
                         memcpy(&pcls, o->prev + 0x36u, 2);
                         memcpy(&ccls, o->curr + 0x36u, 2);
-                        if (pcls != ccls) goto next_moby;
+                        if (pcls != ccls) {
+                            moby_cut_hold(m, mh, o, now, CUT_CLASS);
+                            goto next_moby;
+                        }
 
                         /* Per-object alpha from the moby's OWN distinct-roll
                          * timestamps, over a denominator capped at one tick
@@ -1606,7 +1796,10 @@ static void game_reextract_body(void* cpu_v) {
                              * one tick — lerping streaks it across the screen. Snap
                              * (leave at curr, don't bracket) when the jump is large. */
                             double dx = (double)cp[0]-pp[0], dy = (double)cp[1]-pp[1], dz = (double)cp[2]-pp[2];
-                            if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) goto next_moby;
+                            if (dx*dx + dy*dy + dz*dz > 5000.0 * 5000.0) {
+                                moby_cut_hold(m, mh, o, now, CUT_TELEPORT);
+                                goto next_moby;
+                            }
                             s_moby_save[moby_save_n].addr = m;
                             memcpy(s_moby_save[moby_save_n].bytes, mh, MOBY_STRIDE);
                             {   /* publish this record's lerp through the view */
@@ -2028,12 +2221,12 @@ static void game_reextract_body(void* cpu_v) {
      * without record 14+ mobys (Sparx, distant chests) being clobbered earlier. */
     scratch_bracket_seg_restore(cpu);
     if (pt_on) pt_t0 = openpete_phase_now_us();
-    player_records_loop(cpu, paired, cam_cut, cam_bracketed, alpha, use_herm,
+    player_records_loop(cpu, paired, cam_cut && !cam_hold, cam_bracketed, alpha, use_herm,
                        sp, sp_staged, prev ? prev->data + prev->region_offsets[SPYRO_REGION()] : NULL,
                        sh);
     if (pt_on) { pt_t1 = openpete_phase_now_us(); openpete_phase_add(OPPT_REX_SPYRO, pt_t1 - pt_t0); }
     particle_reextract(cpu);       /* particles / glows / sparkles (Sparx) */
-    flame_records_present(cpu, paired, cam_cut, alpha, fl);   /* fire breath, one ribbon per flame record */
+    flame_records_present(cpu, paired, cam_cut && !cam_hold, alpha, fl);   /* fire breath, one ribbon per flame record */
     tracer_reextract(cpu);          /* additive tracer/beam (replay snapshot, interp camera) */
     moby_native_set_rot_interp(0);        /* reset: canonical inline render uses byte-exact rotation */
     player_native_set_rot_interp(NULL, NULL); /* reset: canonical inline render uses byte-exact rotation */
@@ -2043,6 +2236,12 @@ static void game_reextract_body(void* cpu_v) {
     /* Re-apply the 2D-UI overlay (letterbox + menu panel held; fade interpolated
      * by the spine alpha) on top of the re-derived 3D scene. */
     openpete_native_scene_apply_overlay(alpha);
+
+    /* The camera this present shows, whatever the guard decided: the bracket
+     * writes it, a guard that snaps leaves the canonical tick-N bytes. One line
+     * per intermediate present, so a sweep over alpha reads the camera step
+     * against the point where the previous interval ended. */
+    cut_census_camera(cam, alpha, cam_cut);
 
     /* Restore the transient render-pass scratch (disjoint from the position
      * bracket regions below — order irrelevant). */
