@@ -42,6 +42,10 @@ metropolis | pos=(115904, 59478, 40916) yaw=1696 pitch=160
 riptos_arena | pos=(44103, 72307, 8612) yaw=-1040 pitch=160
 # retained terrain face at a bucket-boundary key loses the contest to itself (hardware only; the windowed cache-off/on harness separates the builds)
 glimmer | pos=(55630, 29629, 25462) yaw=974 pitch=243
+# --lod extended: animated-kind mobys (eggs, enemies) outside the cull's
+# distance box are not revealed; the simple kind is (the lodext tiles carry
+# the defect)
+glimmer | pos=(83331, 23551, 43211) yaw=1636 pitch=448
 # The two poses that frame a homeworld portal preview: the game's own follow
 # camera at the tick the portal pass first previews two portals, so each row
 # carries the portal feeder as well as the terrain and player ones. Summer
