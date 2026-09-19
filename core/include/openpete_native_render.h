@@ -667,6 +667,27 @@ static inline openpete_worldvz openpete_worldvz_bias_capped(openpete_worldvz z, 
 static inline openpete_worldvz openpete_worldvz_pull(openpete_worldvz z, float world_units) {
     z.vz -= world_units; return z;
 }
+/* One slot of the 3D ordering table in full-world view-Z: the moby, glow and
+ * effect routines all key on MAC3 >> 7. */
+#define OPENPETE_OT_SLOT_VZ 128
+/* The moby feeders' one-slot tie pull, in full-world view-Z units: every moby
+ * vertex is fed this much nearer than its true depth, so a moby wins the
+ * surface it sits on, as the ordering table resolves same-slot moby-versus-
+ * terrain ties. Less than one slot, so it flips only pairs the table calls a
+ * tie. */
+#define OPENPETE_MOBY_TIE_PULL_VZ 127.0
+/* An ordering-table key as a full-world view-Z on the moby feeders' depth
+ * scale. The moby path keys each face at its average-depth slot minus the
+ * owning moby's authored depth offset, and feeds the face at its true depth
+ * less the tie pull, so the faces of slot s land in [128*s - 127, 128*s + 1).
+ * A primitive linked at key k over a moby whose offset is d sorts against that
+ * moby's faces as the table does when fed at 128*(k + d) - 127: in front of
+ * every face of slot k + d and beyond, behind every nearer one. `owner_slot` is
+ * k + d. The quantization is the key's own. */
+static inline openpete_worldvz openpete_worldvz_owner_slot(int owner_slot) {
+    return openpete_worldvz_full((float)((double)owner_slot * OPENPETE_OT_SLOT_VZ
+                                         - OPENPETE_MOBY_TIE_PULL_VZ));
+}
 static inline float openpete_native_depth_from_viewz(openpete_worldvz z) {
     float vz = z.vz;
     if (vz < 1.0f) vz = 1.0f;              /* near guard (behind-camera is culled) */

@@ -662,7 +662,11 @@ typedef struct game_layout {
      * pyramid 4|X| - 3Z < `pyr_x` or 3|Y| - Z < `pyr_y`. `front_bias` is the
      * bias value whose records the routine links at the fixed front entry
      * instead of their own bucket; negative on a game whose routine has no
-     * such branch and clamps to bucket 0 instead. */
+     * such branch and clamps to bucket 0 instead. `owner_offset` is the
+     * authored depth offset of the moby a glow sits on, in ordering-table
+     * slots: the record names no owner, so the producer cannot read it, and
+     * the fan's native depth needs it to sort against that moby's faces as
+     * the table does. */
     struct {
         uint32_t hook;
         uint32_t ra_guard;
@@ -675,6 +679,7 @@ typedef struct game_layout {
         int32_t  near_z, far_z;
         int32_t  pyr_x, pyr_y;
         int      front_bias;
+        int      owner_offset;
     } glow;
 
     /* The gem glint: one screen-facing four-point star, or a plain cross

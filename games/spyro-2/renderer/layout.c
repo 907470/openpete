@@ -483,6 +483,13 @@ const game_layout_t game_layout = {
         .pyr_y      = 0x300,             /* mobyfunc.s:2045 */
         .front_bias = -1,                /* no front-entry branch: mobyfunc.s:2050-2053
                                           * clamps the bucket at zero instead */
+        /* The depth-offset byte (+0x47, the top byte of the angle word the
+         * moby cull subtracts from its slot) of the moby each glow sits on:
+         * 4 on Sparx, the moby nearest every glow record that sits on one.
+         * The allocator links the record back to nothing (it stores the
+         * shape, size, a random phase and the bias 4), so the value is layout
+         * data. */
+        .owner_offset = 4,
     },
     .glint = {
         .hook       = F_GLINT_DRAW,

@@ -28,9 +28,9 @@
 //
 // The geometry is the guest's own int16 output, read back out of the polybuf,
 // not a second projection. What the primitives do not carry is depth — the PSX
-// orders them by ordering-table bucket — so each fan's view-Z comes from
-// projecting its own pool record, paired to the fan through the routine's own
-// bookkeeping: each accepted record emits exactly one draw-mode packet, so the
+// orders them by ordering-table bucket — so each fan's depth comes from the key
+// its own pool record links at (glow_record_depth), paired to the fan through
+// the routine's own bookkeeping: each accepted record emits exactly one draw-mode packet, so the
 // draw-mode packets delimit the fans in pool order, and the record walk here
 // mirrors the routine's own rejects to say which records were accepted. The
 // pairing is used only when the two counts agree; otherwise every fan of the
@@ -116,14 +116,36 @@ static void glow_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
 /* One accepted record's view-Z and its blend-independent verdict. */
 typedef struct { float depth; } glow_rec;
 
+/* The fan's native depth from the ordering-table key the routine links it at,
+ * (MAC3 >> 7) - bias (Spyro 2 mobyfunc.s:2048-2049, Spyro 3 :2052-2053). A
+ * negative key links at bucket 0 (Spyro 2 :2050-2052); on a game with the
+ * front-entry branch, a record whose bias byte is front_bias links one entry
+ * before bucket 0 instead (Spyro 3 :2054-2059), which is drawn after the whole
+ * table and so takes the nearest depth. The key plus the owning moby's depth
+ * offset converts to view-Z on the moby feeders' scale, so the fan sorts against
+ * that moby's faces as the table sorts them: over every face of its own slot and
+ * beyond, under every nearer one. With the allocator's bias of 4 and an owner
+ * offset of 4 the two pulls cancel and the fan sits at the front edge of its
+ * own view-Z slot. Against a surface whose native depth carries no authored
+ * pull (terrain), the table puts the fan bias slots nearer than this depth
+ * does. The fan is additive on a pipeline that writes no depth
+ * (native_render.c gouraud_add_desc), so this depth decides only which opaque
+ * pixels it adds onto; it occludes nothing. */
+static float glow_record_depth(double m3, int bias) {
+    int key = (int)((uint32_t)(int32_t)m3 >> 7) - bias;
+    if (key < 0) {
+        if (GW.front_bias >= 0 && bias == GW.front_bias)
+            return openpete_native_depth_from_viewz(openpete_worldvz_full(1.0f));
+        key = 0;
+    }
+    return openpete_native_depth_from_viewz(openpete_worldvz_owner_slot(key + GW.owner_offset));
+}
+
 /* Re-walk the pool and mirror the routine's rejects, appending one depth per
  * record it would have drawn. Returns the count. */
 static int glow_predict(CPUState* cpu, const ngte_view* v, glow_rec* out, int cap) {
     int n = 0;
     const double cx = v->cam[0], cy = v->cam[1], cz = v->cam[2];
-    /* The fixed front entry is nearer than bucket 0, which the near guard in
-     * openpete_native_depth_from_viewz already maps to the smallest depth. */
-    const float front = openpete_native_depth_from_viewz(openpete_worldvz_full(1.0f));
 
     const double box = (double)GW.box;
     for (uint32_t s = 0; s < GW.slots; s++) {
@@ -150,12 +172,7 @@ static int glow_predict(CPUState* cpu, const ngte_view* v, glow_rec* out, int ca
         if (4.0 * fabs(m1) - 3.0 * m3 - (double)GW.pyr_x >= 0.0) continue;
         if (3.0 * fabs(m2) - m3 - (double)GW.pyr_y >= 0.0) continue;
 
-        if (n < cap) {
-            const int d = (int)((uint32_t)(int32_t)m3 >> 7) - bias;
-            out[n].depth = (d < 0 && GW.front_bias >= 0 && bias == GW.front_bias)
-                ? front
-                : openpete_native_depth_from_viewz(openpete_worldvz_full((float)m3));
-        }
+        if (n < cap) out[n].depth = glow_record_depth(m3, bias);
         n++;
     }
     return n;

@@ -778,7 +778,7 @@ static int moby_decode_project(CPUState* cpu, uint32_t header, uint32_t headerB,
          * band is deferred behind the OT entirely), so a moby's surface wins
          * ground it touches. 127 world units < one OT slot: it can flip only
          * pairs og calls a tie. */
-        if (ot_centre > 0.0) fvz -= 127.0;
+        if (ot_centre > 0.0) fvz -= OPENPETE_MOBY_TIE_PULL_VZ;
         if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
         out[i].vz = (float)fvz; out[i].sat = sat; out[i].unr = unr;
         /* Perspective W = the view-Z the SCREEN PROJECTION divided by, so it
@@ -5174,7 +5174,7 @@ static int project_all_shaded(CPUState* cpu, proj_xy* out, int cap) {
              * the faithful mirror; only the sub-slot tie pull shifts depth. */
             /* One-slot tie pull — see the regular walk's twin above. The
              * pedestal discs (dofs 0) rely on it for the ground they touch. */
-            if (ot_centre > 0.0) fvz -= 127.0;
+            if (ot_centre > 0.0) fvz -= OPENPETE_MOBY_TIE_PULL_VZ;
             if (vzz > 0.0 && fvz < rec_minfvz) rec_minfvz = fvz;
             out[n].sx=(float)sx; out[n].sy=(float)sy; out[n].vz=(float)fvz; out[n].sat=sat; out[n].unr=unr;
             out[n].tvz=(float)(vzz*vz_scale);            /* pre-bias: the perspective W */
