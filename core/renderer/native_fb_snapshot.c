@@ -7,8 +7,19 @@
 #include <string.h>
 #include <math.h>
 
-/* The VBL counter the scene ring stamps each completed frame with. */
+/* The scene a copy's pixels come from is the one the tick's primitives were fed
+ * into, which the scene ring stamps with its own frame. That stamp lags the VBL
+ * counter across the tick's tail: the ordering-table walk keeps feeding the
+ * open scene while openpete_frame has already moved on, so a copy taken after
+ * the walk belongs to the open scene, not to the VBL it happens on. */
 extern unsigned openpete_frame;
+extern unsigned openpete_native_scene_frame(void);
+
+static unsigned fb_copy_frame(void)
+{
+    const unsigned live = openpete_native_scene_frame();
+    return (live != 0xFFFFFFFFu) ? live : openpete_frame;
+}
 
 /* One slot per live window. A screen holds at most one; the spare slots cover a
  * screen that keeps two copies (a before/after pair) without evicting either. */
@@ -187,7 +198,7 @@ static void fb_move_area_to_area(fb_area_t *from, fb_area_t *to,
          * drawing into it. One capture stands for both. */
         to->pending = 1;
         from->pending = 1;
-        to->frame = from->frame = openpete_frame;
+        to->frame = from->frame = fb_copy_frame();
         return;
     }
     to->pw = from->pw; to->ph = from->ph;
@@ -223,7 +234,7 @@ int openpete_fb_snapshot_on_move(int src_x, int src_y, int w, int h,
 
     fb_snap_t *s = fb_window_slot(dst_x, dst_y, w, h);
     s->src_x = ssx; s->src_y = ssy;
-    s->frame = openpete_frame;
+    s->frame = fb_copy_frame();
     s_taken++;
     const fb_area_t *cur = (s_area_cur >= 0) ? &s_area[s_area_cur] : NULL;
     if (from && from->px && from != cur) {
@@ -318,6 +329,13 @@ void openpete_fb_snapshot_store(int idx, unsigned char *px, int pw, int ph)
     s->px = px; s->pw = pw; s->ph = ph;
     s->key = s_key_next++;
     s_resolved++;
+    if (fbsnap_census()) {
+        double m = 0.0, sd = 0.0;
+        fb_image_stats(px, pw, ph, &m, &sd);
+        fprintf(stderr, "[fbsnap] window slot %d rect=%d,%d %dx%d image=%dx%d "
+                        "luma=%.1f spread=%.1f\n",
+                idx, s->src_x, s->src_y, s->w, s->h, pw, ph, m, sd);
+    }
 }
 
 /* A quad's texel box, offset by `du`,`dv` from a stored rect's origin, stays
