@@ -1567,6 +1567,15 @@ void openpete_native_scene_capture_overlay(void) {
  * those standing where nothing of their layer stood — are matched by content
  * key, which is where a genuine 2D slide lives.
  *
+ * A content key only names an element when it names one element. A key holding
+ * two or more entries on either side is an identity the capture cannot tell
+ * apart: whichever of them the rule picks is a guess, and picking the nearest
+ * is the guess that looks right while a page of text re-flows and wrong once a
+ * word moves past its neighbour — a letter then pairs with the same letter in
+ * the next word and slides across it. Every entry of such a key therefore
+ * snaps. The content pass pairs only a key with exactly one entry in each
+ * capture, inside the move bound.
+ *
  * The content key of a tri fed with no primitive address (the fade overlay,
  * the letterbox bars) is its ordinal among the other address-less tris: that
  * set does not change composition, and its members are untextured full-width
@@ -1574,18 +1583,15 @@ void openpete_native_scene_capture_overlay(void) {
  *
  * Two carve-outs, both visible in the census as a snap rather than a sweep:
  * an element whose texture frame advances every tick while it translates (an
- * animated pickup sprite) changes content key each tick and snaps; and a run
- * of identical tiles sliding by exactly one tile period pairs each tile with
- * the neighbour standing where it lands, so the run reads as static.
+ * animated pickup sprite) changes content key each tick and snaps; and a set
+ * of identical sprites that all move keeps its screen positions rather than
+ * sliding, since no member of it is distinguishable from its siblings.
  */
 #define CARRY_KEY_SLOTS 2048            /* power of two > OVERLAY_CARRY_MAX */
 #define CARRY_MOVE_MAX  64.0f           /* per-tick move bound, px (billboard interp's) */
-/* Candidate pairs considered per present. Content keys partition both captures,
- * so the count is the sum over keys of |prev key| x |curr key| within the move
- * bound — a few hundred for the 2D populations measured (most keys hold one
- * entry each side). Beyond the cap the remaining current entries take no
- * partner and snap, which is the safe direction. */
-#define CARRY_CAND_MAX  8192
+/* Open-address table for the per-key multiplicities; power of two, loaded at
+ * most half by one capture. */
+#define CARRY_COUNT_SLOTS 4096
 
 typedef struct {
     uint32_t key[OVERLAY_CARRY_MAX];    /* per prev entry */
@@ -1596,8 +1602,6 @@ typedef struct {
     int32_t  pnext[OVERLAY_CARRY_MAX];
     int32_t  phead[CARRY_KEY_SLOTS];
 } carry_key_map_t;
-
-typedef struct { int32_t ci, pi; float d; } carry_cand_t;
 
 static uint32_t carry_hash(uint32_t h, uint32_t w) { h ^= w; return h * 16777619u; }
 
@@ -1673,15 +1677,21 @@ static float tri_pos_dist(const scene_tri_t* a, const scene_tri_t* b) {
     return w;
 }
 
-/* Ascending distance; the index tie-break makes the assignment independent of
- * qsort's ordering of equal elements, so two runs of one capture pair alike. */
-static int carry_cand_cmp(const void* a, const void* b) {
-    const carry_cand_t* x = (const carry_cand_t*)a;
-    const carry_cand_t* y = (const carry_cand_t*)b;
-    if (x->d < y->d) return -1;
-    if (x->d > y->d) return 1;
-    if (x->ci != y->ci) return x->ci < y->ci ? -1 : 1;
-    return x->pi < y->pi ? -1 : (x->pi > y->pi);
+/* `out[i]` = how many of the `n` entries carry entry i's content key. */
+static void carry_key_counts(const uint32_t* key, int n, uint16_t* out) {
+    static uint32_t slot_key[CARRY_COUNT_SLOTS];
+    static uint16_t slot_n[CARRY_COUNT_SLOTS];
+    static int8_t   slot_used[CARRY_COUNT_SLOTS];
+    static int32_t  slot_of[OVERLAY_CARRY_MAX];
+    memset(slot_used, 0, sizeof(slot_used));
+    for (int i = 0; i < n; i++) {
+        uint32_t s = key[i] & (CARRY_COUNT_SLOTS - 1);
+        while (slot_used[s] && slot_key[s] != key[i]) s = (s + 1) & (CARRY_COUNT_SLOTS - 1);
+        if (!slot_used[s]) { slot_used[s] = 1; slot_key[s] = key[i]; slot_n[s] = 0; }
+        slot_n[s]++;
+        slot_of[i] = (int32_t)s;
+    }
+    for (int i = 0; i < n; i++) out[i] = slot_n[slot_of[i]];
 }
 
 /* The match one present's two passes build. `match[t]` is the previous-capture
@@ -1737,28 +1747,23 @@ static int carry_pair_occupancy(const carry_key_map_t* m, const scene_tri_t* pre
 /* Content pass over the entries the occupancy pass left standing on an empty
  * slot: every candidate pair of one content key inside the move bound, assigned
  * greedily by ascending distance. This is where a genuine 2D slide is matched. */
-static int carry_pair_content(const carry_key_map_t* m, const scene_tri_t* prev,
+static int carry_pair_content(const carry_key_map_t* m,
+                              const scene_tri_t* prev, int prev_n,
                               const scene_tri_t* curr, int curr_n,
                               carry_match_t* mt) {
-    static carry_cand_t cand[CARRY_CAND_MAX];
-    int nc = 0;
-    for (int t = 0; t < curr_n && nc < CARRY_CAND_MAX; t++) {
-        if (mt->match[t] >= 0 || mt->occupied[t]) continue;
-        for (int j = m->head[mt->ckey[t] & (CARRY_KEY_SLOTS - 1)];
-             j >= 0 && nc < CARRY_CAND_MAX; j = m->next[j]) {
-            if (mt->prev_taken[j] || m->key[j] != mt->ckey[t]) continue;
-            float d = tri_pos_dist(&prev[j], &curr[t]);
-            if (d > CARRY_MOVE_MAX) continue;
-            cand[nc].ci = t; cand[nc].pi = j; cand[nc].d = d; nc++;
-        }
-    }
-    qsort(cand, (size_t)nc, sizeof(cand[0]), carry_cand_cmp);
+    static uint16_t pcount[OVERLAY_CARRY_MAX], ccount[OVERLAY_CARRY_MAX];
+    carry_key_counts(m->key, prev_n, pcount);
+    carry_key_counts(mt->ckey, curr_n, ccount);
     int paired = 0;
-    for (int i = 0; i < nc; i++) {
-        if (mt->match[cand[i].ci] >= 0 || mt->prev_taken[cand[i].pi]) continue;
-        mt->match[cand[i].ci] = cand[i].pi;
-        mt->prev_taken[cand[i].pi] = 1;
-        paired++;
+    for (int t = 0; t < curr_n; t++) {
+        if (mt->match[t] >= 0 || mt->occupied[t] || ccount[t] != 1) continue;
+        for (int j = m->head[mt->ckey[t] & (CARRY_KEY_SLOTS - 1)]; j >= 0; j = m->next[j]) {
+            if (m->key[j] != mt->ckey[t] || pcount[j] != 1) continue;
+            if (mt->prev_taken[j]) break;   /* the one holder of the key is claimed */
+            if (tri_pos_dist(&prev[j], &curr[t]) > CARRY_MOVE_MAX) break;
+            mt->match[t] = j; mt->prev_taken[j] = 1; paired++;
+            break;
+        }
     }
     return paired;
 }
@@ -1770,7 +1775,7 @@ static int carry_pair_all(const carry_key_map_t* m,
                           carry_match_t* mt) {
     for (int j = 0; j < prev_n; j++) mt->prev_taken[j] = 0;
     int paired = carry_pair_occupancy(m, prev, curr, curr_n, mt);
-    return paired + carry_pair_content(m, prev, curr, curr_n, mt);
+    return paired + carry_pair_content(m, prev, prev_n, curr, curr_n, mt);
 }
 
 /* OPENPETE_CARRY_CENSUS=1: per-present audit of the 2D carry's position lerp.
