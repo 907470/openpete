@@ -244,9 +244,16 @@ static uint32_t s1_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t model,
     return off ? frame_a + off : 0u;
 }
 
+/* AnimationHeader m_NumFrames: the keyframe array at m_Frames holds this many
+ * 8-byte records. */
+static int s1_anim_frame_count(CPUState* cpu, uint32_t header) {
+    return (int)(int16_t)(uint16_t)cpu->read_half(header + offsetof(AnimationHeader, m_NumFrames));
+}
+
 const moby_game_t moby_game = {
     .vstream_init      = s1_vstream_init,
     .vstream_next      = s1_vstream_next,
+    .anim_frame_count  = s1_anim_frame_count,
     .decode_faces      = s1_decode_faces,
     .read_record       = s1_read_record,
     .model_is_animated = s1_model_is_animated,

@@ -158,6 +158,13 @@ typedef struct moby_game {
     /* Advance to the next vertex; `first` opens the stream (the first item is
      * always a literal). Leaves the vertex in s->VX/VY/VZ. */
     void (*vstream_next)(CPUState* cpu, moby_vstream_t* s, int first);
+    /* How many keyframes `header`'s keyframe array holds, so a consumer that
+     * needs the whole animation rather than the pose being drawn can open
+     * every stream (moby_keyframe_ref indexes them). NULL where the game's
+     * header layout does not name the count; a consumer then has no
+     * whole-model measurement and falls back to the header's own
+     * bounding-radius byte. */
+    int  (*anim_frame_count)(CPUState* cpu, uint32_t header);
     /* Decode a whole faceblock into out[0..cap) and fill `st`. `bytecount` is
      * the block's leading length word, already read and range-checked.
      * Returns the emittable face count. */

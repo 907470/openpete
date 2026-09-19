@@ -592,6 +592,88 @@ static void vstream_next(CPUState* cpu, vstream* s, int first) {
     moby_game.vstream_next(cpu, s, first);
 }
 
+/* ---- per-model vertex extent ---------------------------------------------
+ * The largest distance from the model origin to any vertex of any keyframe of
+ * one AnimationHeader, in the units the decode's rotated vertex offset
+ * ((M.v)/4096, added straight to the projection translation) carries.
+ *
+ * The header's own bounding-radius byte is the cull's sphere, authored for the
+ * game's cone test and quantized to 16 units; a model whose mesh reaches
+ * further than that sphere still draws every one of its vertices. Where a
+ * screen-space bound must hold for the whole mesh — the widescreen reveal's
+ * lateral gate, which decides whether a moby centred outside the window still
+ * paints inside it — the mesh's own extent is the bound and the byte is not.
+ *
+ * The keyframe streams are static model data, so the extent is decoded once
+ * per header and cached. The key carries a content signature (the header's
+ * count word and its geometry pointer block) beside the address, so a level
+ * load that puts a different model at the same address re-decodes rather than
+ * answering from the old mesh. Returns -1 when the model cannot be measured:
+ * the game's header layout does not name its keyframe count, the count or
+ * vertex count is empty, or no keyframe is live. */
+#define MEXT_SLOTS 256
+typedef struct { uint32_t header, sig1, sig2; float ext; } mext_t;
+static mext_t s_mext[MEXT_SLOTS];
+static long s_mext_hit, s_mext_miss;      /* engagement census */
+
+static double model_extent_compute(CPUState* cpu, uint32_t header) {
+    int nf = moby_game.anim_frame_count(cpu, header);
+    if (nf < 1) return -1.0;
+    if (nf > 256) nf = 256;                /* guard: a desynced header reads as a huge count */
+    int s5    = (cpu->read_byte(header + game_layout.moby.anim_shift_off) & 0xFF) + 1;
+    int count = cpu->read_byte(header + game_layout.moby.anim_vcount_hi) & 0xFF;
+    if (count == 0) return -1.0;
+    double best = 0.0;                     /* squared, rooted once at the end */
+    for (int fi = 0; fi < nf; fi++) {
+        uint32_t fr = moby_keyframe_ref(cpu, header, (uint32_t)fi);
+        if (!moby_pose_live(header, fr)) continue;
+        vstream A;
+        vstream_init(cpu, &A, header, fr, s5);
+        for (int i = 0; i < count; i++) {
+            vstream_next(cpu, &A, i == 0);
+            double r2 = (double)A.VX * A.VX + (double)A.VY * A.VY + (double)A.VZ * A.VZ;
+            if (r2 > best) best = r2;
+        }
+    }
+    return best > 0.0 ? sqrt(best) : -1.0;
+}
+
+static double model_extent(CPUState* cpu, uint32_t header) {
+    if (!moby_game.anim_frame_count || header < 0x80000000u) return -1.0;
+    uint32_t sig1 = cpu->read_word(header);
+    uint32_t sig2 = cpu->read_word(header + game_layout.moby.anim_ptr_block);
+    mext_t* E = &s_mext[(header >> 4) & (MEXT_SLOTS - 1)];
+    if (E->header == header && E->sig1 == sig1 && E->sig2 == sig2) { s_mext_hit++; return (double)E->ext; }
+    s_mext_miss++;
+    double e = model_extent_compute(cpu, header);
+    E->header = header; E->sig1 = sig1; E->sig2 = sig2; E->ext = (float)e;
+    return e;
+}
+
+/* How far, in the units the cull's stored translation carries, a moby's body
+ * may reach either side of its projected centre.
+ *
+ * The .s cone's own bias is the header's bounding-radius byte
+ * (4(|x| - 25r/32) < 3(z + 19r/32)): a sphere authored for the game's 4:3 cull
+ * and quantized to 16 units, which a model whose mesh reaches further than it
+ * still draws whole. Where the admission is the widened window rather than the
+ * game's, that quantized sphere is not the bound — the model's real vertex
+ * extent is — so the reveal takes the larger of the two, keeping its admission
+ * a superset of the cone's for a model whose authored sphere exceeds its mesh.
+ *
+ * model_extent is in the decode's rotated-vertex units; the centre projects
+ * from the stored translation, which the header's m_Scale shifts
+ * (TR = (stored << 2) >> m_Scale), so the extent takes that shift back. */
+static double reveal_lateral_extent(CPUState* cpu, uint32_t header, double rr) {
+    double lat = 25.0 * rr / 32.0;
+    double ext = model_extent(cpu, header);
+    if (ext <= 0.0) return lat;
+    int ms = cpu->read_byte(header + game_layout.moby.anim_scale_off) & 0xFF;
+    if (ms > 30) ms = 30;
+    double ext_stored = ext * (double)(1u << ms) / 4.0;
+    return ext_stored > lat ? ext_stored : lat;
+}
+
 /* Decode + float-project one record's vertices. Mirrors F798: the no-blend path
  * (block 8001FCC8) when the keyframe blend factor is 0, else the INTPL blend
  * path (block 8001FA44) -- decode BOTH frame A and frame B streams and lerp each
@@ -1709,12 +1791,7 @@ static int append_revealed_regular_inner(CPUState* cpu) {
         if (rz <= 0.0) { TRC("skip=camera-plane"); m += game_layout.moby.array_stride; continue; }    /* camera-plane straddler: no stable projection */
         double sx = ofx + rx * H / rz;                                       /* projected centroid X (m_Scale cancels) */
         double sxc = ofx + rx * s_view.H_canon / rz;                         /* the same at the game's H: the .s queue's territory */
-        /* Radius margin: the .s cone admits by CENTRE ± radius bias
-         * (4(|x| - 25r/32) < 3(z + 19r/32)), so a wide prop whose centroid
-         * sits past the window edge but whose body pokes in is still drawn
-         * (the edge tree, cls 0xDF, centroid sx=-104 at
-         * xlo=-85). Mirror it as a projected-radius margin on the bounds. */
-        double margin = (25.0 * rr / 32.0) * H / rz;
+        double margin = reveal_lateral_extent(cpu, f.header, rr) * H / rz;
         /* central is tested at the CANONICAL projection: the .s cone is wider
          * than the 4:3 screen by the radius bias, so no canonically-central
          * moby is cone-rejected; a moby central only in a wider view can be
