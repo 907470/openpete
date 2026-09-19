@@ -48,6 +48,17 @@ void moby_native_set_tick_camera(const int16_t mat[9], const int32_t pos[3]);
  * is every canonical inline render. */
 int moby_native_tick_camera_pos(int32_t out[3]);
 
+/* The horizontal widening of the pass view against the game's own 4:3 frame:
+ * Hor+ multiplies the frame's half-width by F, and a --fov scale s divides
+ * the projection H by s, which widens it by the same ratio. 1.0 at 4:3 with
+ * the game's FOV, so a test scaled by it is bit-identical there.
+ *
+ * A decode that repeats one of the draw's lateral cone tests scales that
+ * test's slope by this, since the draw's slope is the 4:3 half-angle and the
+ * frame on screen is wider. The vertical arm takes no factor: Hor+ keeps the
+ * vertical FOV. Valid from the pass view's build at the pass entry. */
+double moby_native_view_widen(void);
+
 /* ---- the present's own-motion terms, shared by both model kinds ---------
  * A cull record encodes the pose the moby held at the tick; the present shows
  * the moby part-way to it. These two carry the object's own movement over that

@@ -4680,6 +4680,10 @@ int moby_native_tick_camera_pos(int32_t out[3]) {
     return 1;
 }
 
+double moby_native_view_widen(void) {
+    return (double)s_view.F / s_view.s;
+}
+
 /* Inverse of a 3x3 by cofactors, in double. Returns 0 on a singular matrix. */
 static int mat3_inverse(const int M[3][3], double out[3][3]) {
     double a = M[0][0], b = M[0][1], c = M[0][2];

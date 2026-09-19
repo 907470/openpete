@@ -961,7 +961,12 @@ static int s23_simple_place(CPUState* cpu, int r, const int Rcam[3][3],
     double bx3 = (double)((h1 >> 20) & 0xFF0u), bx2 = (double)((h1 >> 12) & 0xFF0u);
     double bx1 = (double)((h1 >>  4) & 0xFF0u), bx0 = (double)((h1 <<  4) & 0xFF0u);
     double ax = m1 < 0 ? -m1 : m1, ay = m2 < 0 ? -m2 : m2;
-    if (4.0*(ax - bx3) - 3.0*(m3 + bx2) >= 0.0) return 0;
+    /* The lateral arm's 3:4 slope is the draw's 4:3 half-angle
+     * (mobydraw.s:3976-3981), so the frame's own horizontal widening scales
+     * it: at 4:3 with the game's FOV the factor is 1.0 and the test is the
+     * draw's, bit for bit. The vertical arm below keeps the game's slope,
+     * since Hor+ leaves the vertical FOV alone. */
+    if (4.0*(ax - bx3) - 3.0*moby_native_view_widen()*(m3 + bx2) >= 0.0) return 0;
     if (m3 + bx1 <= 0.0) return 0;
     if ((m3 + bx0) - 3.0*(ay - bx1) <= 0.0) return 0;
     return 1;
