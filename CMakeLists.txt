@@ -357,6 +357,24 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # Vulkan validation errors on the boot-to-level path. One headless run per
+    # game under --renderer vk with VK_LAYER_KHRONOS_validation loaded, from
+    # boot through --skip-to-level to a native screenshot, asserting zero
+    # `Validation Error` lines. API misuse the driver tolerates changes no
+    # pixel and no gameplay byte, so neither the presentation golden nor the
+    # oracle can see it. Skips when the binary or the disc is missing; fails as
+    # vacuous when the layer did not load or the render path drew nothing.
+    foreach(_vkval_game spyro-1 spyro-2 spyro-3)
+        add_test(NAME vk_validation_${_vkval_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_vk_validation.sh
+                         --game ${_vkval_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(vk_validation_${_vkval_game} PROPERTIES
+            LABELS "presentation;validation"
+            TIMEOUT 900
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # 2D-UI carry identity across sub-tick presents. Per row of
     # games/<slug>/carry-subtick-corpus.manifest, three headless replays of one
     # bk2 with the intermediate presents pinned at alpha 0.25, 0.5 and 0.75,
