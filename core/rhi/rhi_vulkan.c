@@ -4218,17 +4218,21 @@ static int pipeline_compile(rhi_device *dev, rhi_pipeline *p,
     }
     VkPipelineLayout layout = VK_NULL_HANDLE;
 
-    VkSpecializationMapEntry vsSpecMap[5] = {
+    VkSpecializationMapEntry vsSpecMap[6] = {
         { .constantID = 0, .offset = 0,                    .size = sizeof(VkBool32) },
         { .constantID = 1, .offset = sizeof(VkBool32),     .size = sizeof(VkBool32) },
         { .constantID = 2, .offset = 2 * sizeof(VkBool32), .size = sizeof(VkBool32) },
         { .constantID = 3, .offset = 3 * sizeof(VkBool32), .size = sizeof(VkBool32) },
         { .constantID = 4, .offset = 4 * sizeof(VkBool32), .size = sizeof(VkBool32) },
+        { .constantID = 5, .offset = 5 * sizeof(VkBool32), .size = sizeof(VkBool32) },
     };
-    VkBool32 vsSpecData[5] = { s_vs_depth_affine, s_vs_affine_uv, s_fs_notex,
-                               s_fs_moby_truescope, s_fs_slot_contest };
+    /* Constant 5 (`STP_SELECT`) is per pipeline, from its desc: the texel STP
+     * selection of psx_scene.frag (rhi_pipeline_desc.texel_stp_select). */
+    VkBool32 vsSpecData[6] = { s_vs_depth_affine, s_vs_affine_uv, s_fs_notex,
+                               s_fs_moby_truescope, s_fs_slot_contest,
+                               (VkBool32)desc->texel_stp_select };
     VkSpecializationInfo vsSpec = {
-        .mapEntryCount = 5, .pMapEntries = vsSpecMap,
+        .mapEntryCount = 6, .pMapEntries = vsSpecMap,
         .dataSize = sizeof(vsSpecData), .pData = vsSpecData,
     };
     VkPipelineShaderStageCreateInfo stages[2] = {

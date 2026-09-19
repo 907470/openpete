@@ -16,6 +16,7 @@
 
 #include "openpete_glitch_mark.h"
 #include "openpete_native_render.h"
+#include "openpete_native_stp.h"   /* texel STP selection of a 2D split primitive */
 #include "openpete_present_thread.h"
 #include "openpete_pace_log.h"
 #include "openpete_perf_stats.h"
@@ -88,14 +89,32 @@ typedef struct {
  * ABR 3 B+F/4. The alpha class halves through the fragment alpha: the vertex
  * alpha (0x80) on an untextured triangle, the texel's STP bit on a textured
  * one (psx_scene.frag emits alpha 0.5 for an STP texel and 1.0 otherwise, so
- * an STP-clear texel of a semi-transparent primitive stays opaque, as on the
- * GPU). */
+ * an STP-clear texel of an ABR 0 primitive stays opaque, as on the GPU). The
+ * ABR 1-3 classes read no alpha and blend every texel they are handed; a
+ * textured 2D primitive of those modes is split by texel STP (the
+ * OPENPETE_STP_* selection, k_stp_sel_classes) so only its STP-set texels
+ * reach them. */
 enum { NR_BLEND_OPAQUE = 0, NR_BLEND_AVG, NR_BLEND_ADD, NR_BLEND_SUB, NR_BLEND_QADD,
        NR_BLEND_CLASSES };
 static const rhi_blend_mode k_blend_class_rhi[NR_BLEND_CLASSES] = {
     RHI_BLEND_NONE, RHI_BLEND_ALPHA, RHI_BLEND_ADD, RHI_BLEND_SUBTRACT,
     RHI_BLEND_ADD_QUARTER
 };
+/* The blend classes a family builds per texel STP selection (bit b = class b).
+ * Row 0 builds every class and keeps every texel. An ABR 1-3 textured 2D primitive draws its
+ * STP-clear texels through the opaque STP-clear member and its STP-set texels
+ * through the STP-set member of its class; ABR 0 needs no split, its alpha
+ * member reads STP through the texel alpha. A family with one selection row
+ * builds row 0 alone. */
+static const unsigned k_stp_sel_classes[OPENPETE_STP_SELS] = {
+    (1u << NR_BLEND_CLASSES) - 1u,
+    1u << NR_BLEND_OPAQUE,
+    (1u << NR_BLEND_ADD) | (1u << NR_BLEND_SUB) | (1u << NR_BLEND_QADD),
+};
+/* The textured HUD family: one row of NR_BLEND_CLASSES members per selection,
+ * indexed stp_sel * NR_BLEND_CLASSES + blend; members a row does not build are
+ * NULL. */
+#define NR_HUD_TEX_PIPES (OPENPETE_STP_SELS * NR_BLEND_CLASSES)
 
 /* shadow_decal.frag push constant (must match the GLSL block field-for-field) —
  * the depth-aware shadow decal's per-pixel world-Y wall rejection. The PSX
@@ -282,6 +301,10 @@ typedef struct {
                      * The ordering-table walk ranks a tri by finding this
                      * address in the chain, so every 2D emitter can keep feeding
                      * where it does and still be ordered by the traversal. */
+    int stp_sel;    /* texel STP selection (sticky set_stp_select value,
+                     * OPENPETE_STP_*): which texels a textured tri draws.
+                     * Non-zero only on the two halves of a split ABR 1-3 2D
+                     * primitive. */
     uint32_t seq;   /* the ordering-table traversal rank for this frame (sticky
                      * set_seq value; 0 for everything that is not 2D). The 2D
                      * layer is screen-space with the depth test off, so the
@@ -387,6 +410,7 @@ static uint32_t s_cur_tag;        /* sticky, stamped by add_tri */
  * Sticky, cleared at each frame boundary; a feeder that never sets it leaves 0. */
 static uint32_t s_cur_seq;
 static uint32_t s_cur_prim;       /* sticky, stamped by add_tri (see scene_tri_t::prim) */
+static int s_cur_stp_sel;         /* sticky, stamped by add_tri (see scene_tri_t::stp_sel) */
 /* Accepted tris per provenance-tag family (tag bits 31:28) in the scene
  * being accumulated. Reset with the scene. Read at the canonical commit by
  * the render-path feed audit: a family that fed geometry belongs to a path
@@ -957,6 +981,7 @@ void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int ca
         s_scene[s_scene_n].fog_delta = s_cur_fog_delta;  /* sticky (set_fog_delta) */
         s_scene[s_scene_n].seq = s_cur_seq;              /* sticky (set_seq) */
         s_scene[s_scene_n].prim = s_cur_prim;            /* sticky (set_prim) */
+        s_scene[s_scene_n].stp_sel = s_cur_stp_sel;      /* sticky (set_stp_select) */
         if (s_cur_tag && tag_tint_on()) {
             /* Coverage instrument: hash the tag to a stable tint and modulate
              * the vertex colours — "which source produced this pixel".
@@ -1115,6 +1140,9 @@ void openpete_native_scene_set_freeze_backdrop(int r, int g, int b, int fade) {
 
 void openpete_native_scene_set_seq(uint32_t seq) { s_cur_seq = seq; }
 void openpete_native_scene_set_prim(uint32_t prim) { s_cur_prim = prim; }
+void openpete_native_scene_set_stp_select(int sel) {
+    s_cur_stp_sel = (sel > 0 && sel < OPENPETE_STP_SELS) ? sel : OPENPETE_STP_ALL;
+}
 
 /* Stamp every 2D tri of this frame with its ordering-table traversal rank,
  * looked up from the primitive address each was decoded from. Covers the live
@@ -1808,7 +1836,7 @@ static struct {
     rhi_pipeline *scene_tex_sub_pipe; /* 3b.2: subtractive (ABR mode 2, B-F) textured tris — moby shadows (plain depth test + bias; the fallback when the depth pre-pass is unavailable) */
     rhi_pipeline *scene_tex_sub_decal_pipe; /* moby shadows as a DEPTH-AWARE decal: shadow_decal_tex.frag samples opaque_depth (set 0) + VRAM (set 1); depth-test OFF, the shader owns wall/steep/platform occlusion. NULL → fall back to scene_tex_sub_pipe */
     rhi_pipeline *gouraud_hud_pipes[NR_BLEND_CLASSES]; /* HUD overlay and panels: UNTEXTURED gouraud, depth-test OFF (on top), one pipe per blend class */
-    rhi_pipeline *scene_tex_hud_pipes[NR_BLEND_CLASSES]; /* HUD overlay: textured (VRAM sampler), depth-test OFF (on top), one pipe per blend class */
+    rhi_pipeline *scene_tex_hud_pipes[NR_HUD_TEX_PIPES]; /* HUD overlay: textured (VRAM sampler), depth-test OFF (on top), one pipe per texel STP selection and blend class */
     rhi_pipeline *hd_tex_pipe;        /* HD replacement, HUD overlay: RGBA sampler, alpha blend, depth OFF */
     rhi_pipeline *hd_cutout_pipe;     /* HD replacement, opaque scene: depth-tested, alpha-cutout */
     rhi_pipeline *hd_cutout_mark_pipe;/* cutout twin with stencil MARK (WORLD group when hole-fill is on) */
@@ -2056,28 +2084,35 @@ static void fit_cell(float cx, float cy, float chx, float chy,
     *out_hy = ((float)content_h * s) / (float)win_h;
 }
 
-/* Destroy every member of a blend family and clear its slots. */
-static void blend_family_destroy(rhi_device* dev, rhi_pipeline* fam[NR_BLEND_CLASSES]) {
-    for (int b = 0; b < NR_BLEND_CLASSES; b++) {
-        if (fam[b]) rhi_destroy_pipeline(dev, fam[b]);
-        fam[b] = NULL;
+/* Destroy every member of a blend family of `nsel` selection rows and clear
+ * its slots. */
+static void blend_family_destroy(rhi_device* dev, rhi_pipeline** fam, int nsel) {
+    for (int k = 0; k < nsel * NR_BLEND_CLASSES; k++) {
+        if (fam[k]) rhi_destroy_pipeline(dev, fam[k]);
+        fam[k] = NULL;
     }
 }
 
-/* Create `base` once per blend class, member b with k_blend_class_rhi[b] and
- * every other field of `base`. All or none: a missing member would draw its
- * class through another member's blend, so on any failure the whole family is
- * destroyed and left NULL. */
+/* Create `base` once per member of the first `nsel` texel STP selection rows:
+ * member sel * NR_BLEND_CLASSES + b, for each class b that k_stp_sel_classes
+ * lists for the row, with k_blend_class_rhi[b], texel_stp_select sel, and every
+ * other field of `base`; unlisted members are NULL. All or none: a missing
+ * member would draw its class through another member's blend, so on any
+ * failure the whole family is destroyed and left NULL. */
 static void blend_family_create(rhi_device* dev, const rhi_pipeline_desc* base,
-                                rhi_pipeline* fam[NR_BLEND_CLASSES]) {
+                                rhi_pipeline** fam, int nsel) {
     rhi_pipeline_desc d = *base;
     int ok = 1;
-    for (int b = 0; b < NR_BLEND_CLASSES; b++) {
+    for (int k = 0; k < nsel * NR_BLEND_CLASSES; k++) {
+        const int sel = k / NR_BLEND_CLASSES, b = k % NR_BLEND_CLASSES;
+        fam[k] = NULL;
+        if (!((k_stp_sel_classes[sel] >> b) & 1u)) continue;
         d.blend = k_blend_class_rhi[b];
-        fam[b] = rhi_create_pipeline(dev, &d);
-        ok = ok && fam[b];
+        d.texel_stp_select = sel;
+        fam[k] = rhi_create_pipeline(dev, &d);
+        ok = ok && fam[k];
     }
-    if (!ok) blend_family_destroy(dev, fam);
+    if (!ok) blend_family_destroy(dev, fam, nsel);
 }
 
 int openpete_native_render_init(const openpete_options_t *opts, int win_w, int win_h)
@@ -2568,9 +2603,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     };
     /* Textured HUD layer: the screen-space 2D sprites and quads. A 2D
      * primitive carries its own semi-transparency bit and the ABR of its
-     * texture page, so the layer is a family, one pipe per blend class
-     * (blend_family_create sets .blend per member; entry 0 is the opaque
-     * pipe). */
+     * texture page, so the layer is a family, one pipe per texel STP
+     * selection and blend class (blend_family_create sets .blend and
+     * .texel_stp_select per member; entry 0 is the opaque pipe). */
     rhi_pipeline_desc scene_tex_hud_desc = {
         .vert_spv = "psx_scene.vert.spv",
         .frag_spv = "psx_scene.frag.spv",
@@ -2713,9 +2748,9 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
     rhi_pipeline *scene_tex_sub_pipe = rhi_create_pipeline(dev, &scene_tex_sub_desc);
     rhi_pipeline *scene_tex_sub_decal_pipe = rhi_create_pipeline(dev, &scene_tex_sub_decal_desc); /* optional: NULL → fall back to scene_tex_sub_pipe */
     rhi_pipeline *gouraud_hud_pipes[NR_BLEND_CLASSES];
-    blend_family_create(dev, &gouraud_hud_desc, gouraud_hud_pipes);
-    rhi_pipeline *scene_tex_hud_pipes[NR_BLEND_CLASSES];
-    blend_family_create(dev, &scene_tex_hud_desc, scene_tex_hud_pipes);
+    blend_family_create(dev, &gouraud_hud_desc, gouraud_hud_pipes, 1);
+    rhi_pipeline *scene_tex_hud_pipes[NR_HUD_TEX_PIPES];
+    blend_family_create(dev, &scene_tex_hud_desc, scene_tex_hud_pipes, OPENPETE_STP_SELS);
     rhi_pipeline *hd_tex_pipe = rhi_create_pipeline(dev, &hd_tex_desc);   /* HD pipes: allowed to fail (NULL = feature off) */
     rhi_pipeline *hd_cutout_pipe = rhi_create_pipeline(dev, &hd_cutout_desc);
     rhi_pipeline *hd_cutout_mark_pipe = rhi_create_pipeline(dev, &hd_cutout_mark_desc);
@@ -2843,7 +2878,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (vram_tex)      rhi_destroy_texture(dev, vram_tex);
         if (scene_vb)      rhi_destroy_buffer(dev, scene_vb);
         if (panels_vb)     rhi_destroy_buffer(dev, panels_vb);
-        blend_family_destroy(dev, scene_tex_hud_pipes);
+        blend_family_destroy(dev, scene_tex_hud_pipes, OPENPETE_STP_SELS);
         if (hd_tex_pipe) rhi_destroy_pipeline(dev, hd_tex_pipe);
         if (hd_cutout_pipe) rhi_destroy_pipeline(dev, hd_cutout_pipe);
         if (hd_cutout_mark_pipe) rhi_destroy_pipeline(dev, hd_cutout_mark_pipe);
@@ -2852,7 +2887,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
         if (hd_cutout_punch_pipe) rhi_destroy_pipeline(dev, hd_cutout_punch_pipe);
         if (hd_scene_blend_pipe) rhi_destroy_pipeline(dev, hd_scene_blend_pipe);
         if (hd_scene_add_pipe) rhi_destroy_pipeline(dev, hd_scene_add_pipe);
-        blend_family_destroy(dev, gouraud_hud_pipes);
+        blend_family_destroy(dev, gouraud_hud_pipes, 1);
         if (scene_tex_sub_decal_pipe) rhi_destroy_pipeline(dev, scene_tex_sub_decal_pipe);
         if (scene_tex_sub_pipe) rhi_destroy_pipeline(dev, scene_tex_sub_pipe);
         if (scene_tex_add_pipe) rhi_destroy_pipeline(dev, scene_tex_add_pipe);
@@ -5877,20 +5912,24 @@ static const scene_tri_t* tex_run_tri(const tex_run* r, int t) {
 /* Does `s1` continue the run `s0` heads? The same material; the same
  * provenance tag while the tag split key is armed (lockstep with
  * tex_mat_cmp's tag term, or coalescing would undo the split the sort made);
- * the same blend class when the bucket draws each class through its own pipe
- * (`split_blend`), so a run never straddles two blend equations. */
+ * the same blend class and texel STP selection when the bucket draws each
+ * through its own pipe (`split_blend`), so a run never straddles two blend
+ * equations or two texel selections. */
 static int tex_run_continues(const scene_tri_t* s0, const scene_tri_t* s1, int split_blend) {
     if (s1->tpage_x != s0->tpage_x || s1->tpage_y != s0->tpage_y ||
         s1->clut_x != s0->clut_x || s1->clut_y != s0->clut_y || s1->bpp != s0->bpp) return 0;
     if (tag_split_on() && s1->tag != s0->tag) return 0;
-    return !split_blend || s1->blend == s0->blend;
+    return !split_blend || (s1->blend == s0->blend && s1->stp_sel == s0->stp_sel);
 }
 
-/* The pipe a run of blend class `blend` draws through: its own entry of a
- * per-class table, entry 0 for a one-entry table (a bucket whose triangles
- * share one class) and for a class outside the table. */
-static rhi_pipeline* tex_run_pipe(rhi_pipeline* const* pipes, int npipes, int blend) {
-    return (blend > 0 && blend < npipes) ? pipes[blend] : pipes[0];
+/* The pipe a run headed by `s` draws through: entry stp_sel * NR_BLEND_CLASSES
+ * + blend of a per-selection, per-class table (the textured HUD family); entry
+ * 0 for a one-entry table (a bucket whose triangles share one class), for a
+ * class outside the table, and for a member the table does not build. */
+static rhi_pipeline* tex_run_pipe(rhi_pipeline* const* pipes, int npipes, const scene_tri_t* s) {
+    const int k = s->stp_sel * NR_BLEND_CLASSES + s->blend;
+    return (s->blend > 0 || s->stp_sel > 0) && s->blend < NR_BLEND_CLASSES &&
+           k < npipes && pipes[k] ? pipes[k] : pipes[0];
 }
 
 /* Length of the texture-pack sub-run that starts at triangle `t` of the run,
@@ -6115,7 +6154,7 @@ static void draw_tex_runs(int first_vert, int vert_count, int tx_start,
             run++;
         const tex_run r = { scene, base + i, run, (uint32_t)(first_vert + i * 3),
                             { s0->tpage_x, s0->tpage_y, s0->clut_x, s0->clut_y, s0->bpp } };
-        rhi_pipeline* const pipe = tex_run_pipe(pipes, npipes, s0->blend);
+        rhi_pipeline* const pipe = tex_run_pipe(pipes, npipes, s0);
         if (pipe != self) {
             bind_scene_pipe(pipe);
             rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
@@ -6293,7 +6332,7 @@ static void draw_hud_flat_layer(const scene_tri_t* scene, int scene_n,
         rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
         rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
         draw_tex_runs(hud_tex_first, hud_tex_count, tx_start, scene, s_nr.scene_tex_hud_pipes,
-                      NR_BLEND_CLASSES, s_nr.hd_tex_pipe, 0, 0);
+                      NR_HUD_TEX_PIPES, s_nr.hd_tex_pipe, 0, 0);
     }
     {   /* OPENPETE_HUD6_ZPIPE=1 (A/B): draw the glyph bucket through the opaque
          * depth-tested pipe after a depth clear — isolates the HUD pipe state. */
@@ -11410,7 +11449,7 @@ void openpete_native_render_shutdown(void)
     if (s_nr.panels_vb)    rhi_destroy_buffer(s_nr.dev, s_nr.panels_vb);
     if (s_nr.freeze_overlay_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.freeze_overlay_pipe);
     if (s_nr.resolve_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.resolve_pipe);
-    blend_family_destroy(s_nr.dev, s_nr.scene_tex_hud_pipes);
+    blend_family_destroy(s_nr.dev, s_nr.scene_tex_hud_pipes, OPENPETE_STP_SELS);
     if (s_nr.hd_tex_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_tex_pipe);
     if (s_nr.hd_cutout_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_cutout_pipe);
     if (s_nr.hd_cutout_mark_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.hd_cutout_mark_pipe);
@@ -11422,7 +11461,7 @@ void openpete_native_render_shutdown(void)
     hd_cache_shutdown();
     if (s_nr.mat_pack_dummy) { rhi_destroy_texture(s_nr.dev, s_nr.mat_pack_dummy); s_nr.mat_pack_dummy = NULL; }
     texture_pack_shutdown();
-    blend_family_destroy(s_nr.dev, s_nr.gouraud_hud_pipes);
+    blend_family_destroy(s_nr.dev, s_nr.gouraud_hud_pipes, 1);
     if (s_nr.scene_tex_sub_decal_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_sub_decal_pipe);
     if (s_nr.scene_tex_sub_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_sub_pipe);
     if (s_nr.scene_tex_add_pipe) rhi_destroy_pipeline(s_nr.dev, s_nr.scene_tex_add_pipe);

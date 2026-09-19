@@ -32,6 +32,13 @@ layout(location = 0) out vec4 outColor;
  * texel alpha/discard keep real silhouettes. */
 layout(constant_id = 2) const bool NOTEX = false;
 
+/* Texel STP selection (rhi_pipeline_desc.texel_stp_select): 0 keeps every
+ * texel, 1 only texels with bit 15 clear, 2 only texels with bit 15 set. A
+ * semi-transparent primitive of ABR 1-3 draws as a pair of pipes, its
+ * STP-clear texels opaque (1) and its STP-set texels through the ABR's blend
+ * (2), since those blend equations read no alpha to tell the two apart. */
+layout(constant_id = 5) const int STP_SELECT = 0;
+
 uint vram_at(int x, int y) { return texelFetch(u_vram, ivec2(x, y), 0).r; }
 
 float expand5(uint v) { return float((v << 3) | (v >> 2)) / 255.0; }
@@ -64,8 +71,11 @@ void main()
 {
     vec2 uv = vUV / vQ;
     vec4 col = vColor / vQ;
-    vec4 c = decode555(sample_word(int(uv.x), int(uv.y)));
+    uint word = sample_word(int(uv.x), int(uv.y));
+    vec4 c = decode555(word);
     if (c.a == 0.0) discard;
+    if (STP_SELECT == 1 && (word & 0x8000u) != 0u) discard;
+    if (STP_SELECT == 2 && (word & 0x8000u) == 0u) discard;
     if (NOTEX) c.rgb = vec3(128.0 / 255.0);
     /* PSX texture modulation: texel * vertexColour / 128 (clamped). */
     vec3 rgb = clamp(c.rgb * col.rgb * (255.0 / 128.0), 0.0, 1.0);

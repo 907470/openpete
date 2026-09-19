@@ -24,6 +24,7 @@
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
+#include "openpete_native_stp.h"      /* texel STP split of ABR 1-3 textured primitives */
 #include "renderer/render_paths.h"
 #include "renderer/native_gte.h"      /* the shared texture-page decode */
 #include "renderer/ui_game.h"
@@ -91,7 +92,8 @@ static void bbox_report(void) {
 /* Semi-transparent 2D primitives fed, by class and PSX ABR mode (0 (B+F)/2,
  * 1 B+F, 2 B-F, 3 B+F/4): the engagement counter of the blend classes the 2D
  * layers draw (a zero count on a screen that links semi-transparent 2D is a
- * feed that never reached them). Counted always; printed under
+ * feed that never reached them). `split` counts the textured ones fed as an
+ * STP-clear / STP-set pair (feed_hud_tex_quad). Counted always; printed under
  * OPENPETE_UISPRITE_CENSUS once per tick that fed any, the line emitted at
  * the first semi-transparent feed of a later tick. */
 enum { SEMI_SPRT = 0, SEMI_FT4, SEMI_F4, SEMI_N };
@@ -99,6 +101,7 @@ static const char* const kSemiName[SEMI_N] = { "sprt", "ft4", "f4" };
 static unsigned s_semi[SEMI_N][4];        /* since boot */
 static unsigned s_semi_tick[SEMI_N][4];   /* the tick s_semi_frame */
 static unsigned s_semi_frame = 0xFFFFFFFFu;
+static unsigned s_split_tick;             /* split primitives in the tick s_semi_frame */
 static void semi_flush_tick(void) {
     static int cen = -1;
     ENV_FLAG_LATCH(cen, "OPENPETE_UISPRITE_CENSUS");
@@ -107,13 +110,15 @@ static void semi_flush_tick(void) {
         for (int c = 0; c < SEMI_N; c++)
             o += snprintf(line + o, sizeof(line) - (size_t)o, " %s=%u/%u/%u/%u", kSemiName[c],
                           s_semi_tick[c][0], s_semi_tick[c][1], s_semi_tick[c][2], s_semi_tick[c][3]);
-        fprintf(stderr, "[census f=%u UI-SEMI]%s\n", s_semi_frame, line);
+        fprintf(stderr, "[census f=%u UI-SEMI]%s split=%u\n", s_semi_frame, line, s_split_tick);
     }
     memset(s_semi_tick, 0, sizeof(s_semi_tick));
+    s_split_tick = 0;
 }
-static void semi_note(int cls, unsigned abr) {
+static void semi_note(int cls, unsigned abr, int split) {
     if (openpete_frame != s_semi_frame) { semi_flush_tick(); s_semi_frame = openpete_frame; }
     s_semi[cls][abr & 3u]++; s_semi_tick[cls][abr & 3u]++;
+    s_split_tick += split ? 1u : 0u;
 }
 
 /* The native blend of a 2D primitive: the scene blend class
@@ -122,14 +127,40 @@ static void semi_note(int cls, unsigned abr) {
  * (B+F)/2 is the alpha class at vertex alpha 0x80, which halves an untextured
  * quad; ABR 1 B+F, 2 B-F and 3 B+F/4 are the additive, reverse-subtract and
  * quarter-additive classes, which read no alpha. A textured primitive takes
- * the class alone: its fragment alpha is the texel's STP bit (0.5 set, 1.0
- * clear, so an STP-clear texel of a semi-transparent primitive draws opaque,
- * as on the GPU), and the vertex alpha is not read. */
+ * the class alone and the vertex alpha is not read. The GPU blends only its
+ * texels with STP set and draws the STP-clear ones opaque: at ABR 0 the
+ * fragment alpha carries that (0.5 for an STP texel, 1.0 otherwise); at ABR
+ * 1-3 the primitive is split by texel STP (feed_hud_tex_quad). */
 typedef struct { int blend; uint32_t alpha; } ui_blend_t;
 static ui_blend_t ui_blend(int semi, unsigned abr) {
     static const ui_blend_t kAbr[4] = { { 1, 0x80u }, { 2, 0xFFu }, { 3, 0xFFu }, { 4, 0xFFu } };
     if (!semi) return (ui_blend_t){ 0, 0xFFu };
     return kAbr[abr & 3u];
+}
+
+/* Add a textured 2D quad's two triangles to the HUD layer. A quad of an ABR
+ * 1-3 class that samples VRAM is fed as a pair: its STP-clear texels through
+ * the opaque class, then its STP-set texels through its own class, since those
+ * blend equations read no alpha and the GPU applies them to STP-set texels
+ * only. Both halves precede the next primitive's triangles, so the painter
+ * order of overlapping primitives holds. Every other quad (opaque, ABR 0, a
+ * framebuffer-snapshot window, whose image carries no STP bit) is fed once.
+ * Returns 1 for a split quad. */
+static int feed_hud_tex_quad(const openpete_scene_tri quad[2]) {
+    /* ui_blend's classes 2-4 are ABR 1-3. */
+    const int split = quad[0].blend > 1 && quad[0].bpp != OPENPETE_FB_SNAPSHOT_BPP;
+    if (split) {
+        openpete_scene_tri clear[2] = { quad[0], quad[1] };
+        clear[0].blend = clear[1].blend = 0;
+        openpete_native_scene_set_stp_select(OPENPETE_STP_CLEAR_ONLY);
+        openpete_native_scene_add_tri(&clear[0], OPENPETE_SCENE_HUD, 1);
+        openpete_native_scene_add_tri(&clear[1], OPENPETE_SCENE_HUD, 1);
+        openpete_native_scene_set_stp_select(OPENPETE_STP_SET_ONLY);
+    }
+    openpete_native_scene_add_tri(&quad[0], OPENPETE_SCENE_HUD, 1);
+    openpete_native_scene_add_tri(&quad[1], OPENPETE_SCENE_HUD, 1);
+    openpete_native_scene_set_stp_select(OPENPETE_STP_ALL);
+    return split;
 }
 
 /* ---- 2D prim decode + feed ----------------------------------------------- */
@@ -188,24 +219,25 @@ static void feed_ft4(CPUState* cpu, uint32_t p, uint32_t w1) {
 
     scene_begin_for_feed();
     static const int idx[2][3] = { {0,1,2}, {1,3,2} };   /* TL,TR,BL,BR -> 2 tris */
+    openpete_scene_tri quad[2]; memset(quad, 0, sizeof(quad));
     for (int t=0;t<2;t++) {
-        openpete_scene_tri tri; memset(&tri,0,sizeof(tri));
+        openpete_scene_tri* tri = &quad[t];
         for (int j=0;j<3;j++){ int c=idx[t][j];
-            tri.v[j].sx=(float)sx[c]; tri.v[j].sy=(float)sy[c];
-            tri.v[j].z=0.0f; tri.v[j].u=(float)u[c]; tri.v[j].v=(float)v[c]; tri.v[j].rgba=rgba; }
-        tri.textured=1; tri.tpage_x=tpx; tri.tpage_y=tpy; tri.clut_x=clx; tri.clut_y=cly;
-        tri.bpp=bpp; tri.blend = blend;
+            tri->v[j].sx=(float)sx[c]; tri->v[j].sy=(float)sy[c];
+            tri->v[j].z=0.0f; tri->v[j].u=(float)u[c]; tri->v[j].v=(float)v[c]; tri->v[j].rgba=rgba; }
+        tri->textured=1; tri->tpage_x=tpx; tri->tpage_y=tpy; tri->clut_x=clx; tri->clut_y=cly;
+        tri->bpp=bpp; tri->blend = blend;
         if (snap >= 0) {
-            tri.tpage_x = snap; tri.tpage_y = 0; tri.clut_x = 0; tri.clut_y = 0;
-            tri.bpp = OPENPETE_FB_SNAPSHOT_BPP;
+            tri->tpage_x = snap; tri->tpage_y = 0; tri->clut_x = 0; tri->clut_y = 0;
+            tri->bpp = OPENPETE_FB_SNAPSHOT_BPP;
             for (int j=0;j<3;j++) {
-                tri.v[j].u = snap_ox + tri.v[j].u * snap_su;
-                tri.v[j].v = snap_oy + tri.v[j].v * snap_sv;
+                tri->v[j].u = snap_ox + tri->v[j].u * snap_su;
+                tri->v[j].v = snap_oy + tri->v[j].v * snap_sv;
             }
         }
-        openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_HUD, 1);
     }
-    if (abe) semi_note(SEMI_FT4, (tp >> 5) & 3u);
+    const int split = feed_hud_tex_quad(quad);
+    if (abe) semi_note(SEMI_FT4, (tp >> 5) & 3u, split);
     bbox_note(UICLS_FT4, (float)sx[0], (float)sy[0], (float)sx[3], (float)sy[3]);
     s_fed_prims++;
 }
@@ -352,17 +384,18 @@ static void feed_sprt_now(CPUState* cpu, uint32_t prim, unsigned tpage) {
                                * self-linking glyph chains) and from a released
                                * batch (a HUD sprite linked through the chokepoint) */
     static const int idx[2][3] = { {0,1,2}, {1,3,2} };
+    openpete_scene_tri quad[2]; memset(quad, 0, sizeof(quad));
     for (int t = 0; t < 2; t++) {
-        openpete_scene_tri tri; memset(&tri, 0, sizeof(tri));
+        openpete_scene_tri* tri = &quad[t];
         for (int j = 0; j < 3; j++) { int c = idx[t][j];
-            tri.v[j].sx = sx[c]; tri.v[j].sy = sy[c]; tri.v[j].z = 0.0f;
-            tri.v[j].u = su[c]; tri.v[j].v = sv[c]; tri.v[j].rgba = rgba; }
-        tri.textured = 1; tri.tpage_x = tpx; tri.tpage_y = tpy;
-        tri.clut_x = clx; tri.clut_y = cly; tri.bpp = bpp;
-        tri.blend = blend;
-        openpete_native_scene_add_tri(&tri, OPENPETE_SCENE_HUD, 1);
+            tri->v[j].sx = sx[c]; tri->v[j].sy = sy[c]; tri->v[j].z = 0.0f;
+            tri->v[j].u = su[c]; tri->v[j].v = sv[c]; tri->v[j].rgba = rgba; }
+        tri->textured = 1; tri->tpage_x = tpx; tri->tpage_y = tpy;
+        tri->clut_x = clx; tri->clut_y = cly; tri->bpp = bpp;
+        tri->blend = blend;
     }
-    if (abe) semi_note(SEMI_SPRT, (tpage >> 5) & 3u);
+    const int split = feed_hud_tex_quad(quad);
+    if (abe) semi_note(SEMI_SPRT, (tpage >> 5) & 3u, split);
     bbox_note(UICLS_SPRT, sx[0], sy[0], sx[3], sy[3]);
     s_fed_prims++; s_fed_sprts++;
 }
@@ -734,7 +767,7 @@ static void feed_one_claim(CPUState* cpu, uint32_t prim, int kind, uint32_t aux)
         /* The box links its own DR_MODE immediately before the quad, so the
          * ABR tracked at this point of the batch is the blend the GPU is in
          * when the quad draws. */
-        semi_note(SEMI_F4, (unsigned)s_last_abr);
+        semi_note(SEMI_F4, (unsigned)s_last_abr, 0);
         const ui_blend_t b = ui_blend(1, (unsigned)s_last_abr);
         feed_f4(cpu, prim, w1, OPENPETE_SCENE_HUD_PANEL, b.alpha, b.blend, 0);
         break; }

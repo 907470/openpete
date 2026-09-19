@@ -465,6 +465,11 @@ typedef struct {
     rhi_stencil_mode stencil;   /* NONE (default) / MARK / TEST — see enum docs */
     bool           color_write_off; /* rasterize without writing colour (an
                                  * invisible stencil-mask pass)               */
+    int            texel_stp_select; /* fragment spec constant 5 (STP_SELECT,
+                                 * psx_scene.frag): 0 every texel, 1 texels
+                                 * with bit 15 clear only, 2 texels with bit
+                                 * 15 set only (OPENPETE_STP_*). Shaders that
+                                 * do not declare it ignore it.               */
     bool           uses_vram;   /* layout includes a sampler at set 0          */
     bool           uses_vram2;  /* second sampler at set 1 (e.g. the diff pass:
                                  * set 0 = native render, set 1 = reference)   */
