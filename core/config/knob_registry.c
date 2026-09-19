@@ -1379,7 +1379,8 @@ static const knob_desc_t g_builtin[] = {
     ENVROW_LATCHED("MOBY_TRIDBG", "Debug diagnostics", "",
         "Log moby walk tris in a screen box x0,y0,x1,y1,fA,fB."),
     ENVROW_LATCHED("SCENE_BOXDBG", "Debug diagnostics", "",
-        "Log scene tris with centroid in a PSX-screen box over a frame window."),
+        "Log composed scene tris overlapping a PSX-screen box x0,y0,x1,y1 at VBLs fA..fB, "
+        "with a per-present tested/covering count; retained terrain cache off while set."),
     ENVROW_LATCHED("SCENE_CAPDBG", "Debug diagnostics", "0",
         "Print new peaks of scene-tri demand vs caps."),
     ENVROW_LATCHED("TERRAIN_CACHE_DBG", "Debug diagnostics", "0",

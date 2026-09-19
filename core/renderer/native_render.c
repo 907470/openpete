@@ -471,6 +471,48 @@ static int tag_split_dev(void) {
     return s_tag_split_env > 0 || s_tag_tint > 0;
 }
 
+/* OPENPETE_SCENE_BOXDBG="x0,y0,x1,y1,fA,fB": the box instrument. Per composed
+ * present whose scene was extracted at a VBL in [fA,fB], it tests every
+ * triangle of the composed list against the box (PSX display coordinates,
+ * the scene's sx/sy space) and logs each triangle whose area overlaps it,
+ * then one engagement line (tested, covering) even when nothing covers.
+ * Parsed once; the armed or rejected spec is logged so a malformed value
+ * cannot pass for an empty box. */
+typedef struct { int armed; float x0, y0, x1, y1; unsigned fa, fb;
+                 unsigned presents, tested, covering; } scene_box_cfg_t;
+static scene_box_cfg_t s_box;
+static const scene_box_cfg_t *scene_box_cfg(void) {
+    static int parsed = 0;
+    if (parsed) return &s_box;
+    parsed = 1;
+    const char *e = getenv("OPENPETE_SCENE_BOXDBG");
+    if (!e || !*e) return &s_box;
+    s_box.armed = sscanf(e, "%f,%f,%f,%f,%u,%u", &s_box.x0, &s_box.y0, &s_box.x1,
+                         &s_box.y1, &s_box.fa, &s_box.fb) == 6;
+    if (s_box.armed)
+        fprintf(stderr, "[sbox] armed box=[%.1f,%.1f]-[%.1f,%.1f] vbl=%u..%u "
+                "(retained terrain cache off while armed)\n", (double)s_box.x0,
+                (double)s_box.y0, (double)s_box.x1, (double)s_box.y1, s_box.fa, s_box.fb);
+    else
+        fprintf(stderr, "[sbox] REJECTED spec '%s' (want x0,y0,x1,y1,fA,fB)\n", e);
+    return &s_box;
+}
+/* The retained terrain cache draws sectors that never enter the scene list,
+ * so an armed box instrument routes all terrain through the CPU walk (the
+ * cache mirrors that walk bit-exactly) where it can be tested. */
+static int scene_box_armed(void) { return scene_box_cfg()->armed; }
+/* A run that never composes prints INACTIVE with the reason. */
+static void scene_box_note_inactive(const char *why) {
+    if (scene_box_armed())
+        fprintf(stderr, "[sbox] INACTIVE: %s; tested=0 covering=0\n", why);
+}
+static void scene_box_summary(void) {
+    if (scene_box_armed())
+        fprintf(stderr, "[sbox] total presents_in_window=%u tested=%u covering=%u%s\n",
+                s_box.presents, s_box.tested, s_box.covering,
+                s_box.presents ? "" : " (VACUOUS: no present composed in the window)");
+}
+
 /* Mod custom-pipeline drain (S7) — defined with the postfx executor
  * below; called from compose_variant (mod 3D under mod HUD). */
 /* Postfx executor + SCENE-point split (S3/S5) — defined below the
@@ -948,25 +990,6 @@ static int category_snaps_vertices(int category) {
 void openpete_native_scene_add_tri_grouped(const openpete_scene_tri *tri, int category,
                                            int carry, int group) {
     if (!tri) return;
-    /* OPENPETE_SCENE_BOXDBG="x0,y0,x1,y1,fA,fB": temporary forensics — log every
-     * scene tri (any feeder) whose centroid falls in the PSX-screen box for
-     * frames [fA,fB], with layer/texture identity. Display-only. */
-    { static int s_bd = -1; static int bx0,by0,bx1,by1,bfa,bfb;
-      if (s_bd < 0) { const char* e = getenv("OPENPETE_SCENE_BOXDBG");
-          s_bd = 0;
-          if (e && sscanf(e, "%d,%d,%d,%d,%d,%d", &bx0,&by0,&bx1,&by1,&bfa,&bfb) == 6) s_bd = 1; }
-      if (s_bd == 1 && (int)s_scene_frame >= bfa && (int)s_scene_frame <= bfb) {
-          float cx = (tri->v[0].sx + tri->v[1].sx + tri->v[2].sx) / 3.0f;
-          float cy = (tri->v[0].sy + tri->v[1].sy + tri->v[2].sy) / 3.0f;
-          if (cx >= bx0 && cx <= bx1 && cy >= by0 && cy <= by1)
-              fprintf(stderr, "[sbox] f=%u cat=%d tex=%d tp=%d,%d cl=%d,%d bpp=%d bl=%d "
-                      "rgba=%08X,%08X,%08X v0=%.1f,%.1f,%.3f v1=%.1f,%.1f v2=%.1f,%.1f uv0=%.0f,%.0f\n",
-                      s_scene_frame, category, tri->textured, tri->tpage_x, tri->tpage_y,
-                      tri->clut_x, tri->clut_y, tri->bpp, tri->blend,
-                      tri->v[0].rgba, tri->v[1].rgba, tri->v[2].rgba,
-                      tri->v[0].sx, tri->v[0].sy, tri->v[0].z, tri->v[1].sx, tri->v[1].sy,
-                      tri->v[2].sx, tri->v[2].sy, tri->v[0].u, tri->v[0].v);
-      } }
     if (s_scene_n < MAX_SCENE_TRIS) {
         /* geometry+material prefix copy (the feeder tri IS the stored tri's
          * layout prefix — asserted at scene_tri_t), then stamp the routing
@@ -2143,6 +2166,7 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
                     opts->screenshot_intermediate_count <= 0 &&
                     !openpete_ident_audit_armed()) {
         OPL_WARN_F("native", "--renderer vk ignored under --headless (no screenshots requested)");
+        scene_box_note_inactive("native renderer not brought up (--headless without screenshots)");
         return 0;
     }
     s_nr.headless = headless;
@@ -3045,6 +3069,7 @@ int openpete_native_tercache_usable(void)
         && openpete_tercache_ready()
         && scene_delay_depth() == 0
         && !tag_split_dev()
+        && !scene_box_armed()
         && !s_vertex_snap
         /* fp64 in terrain.vert is what makes the mirror bit-exact vs the
          * CPU walk's double math — no fp64, no retained path. */
@@ -6640,6 +6665,91 @@ static void portal_cover_check(const scene_tri_t* sc, int n)
     }
 }
 
+/* VBL at which the scene the compose is reading was extracted (the ring
+ * slot's, the delayed history entry's, or the live accumulator's). */
+static unsigned scene_present_frame(void) {
+    if (s_ps_slot) return s_ps_slot->frame;
+    int depth = scene_delay_depth();
+    if (depth > 0 && depth <= s_scene_hist_count && s_scene_hist_head >= 0)
+        return s_scene_hist_frame[(s_scene_hist_head - (depth - 1) + SCENE_HIST * 4) % SCENE_HIST];
+    return s_scene_frame;
+}
+
+/* 1 when all four box corners lie strictly outside the edge a->b, on the side
+ * away from the third vertex c (a separating axis of the triangle). */
+static int box_outside_edge(const openpete_scene_vert *a, const openpete_scene_vert *b,
+                            const openpete_scene_vert *c, const scene_box_cfg_t *B) {
+    const float ex = b->sx - a->sx, ey = b->sy - a->sy;
+    const float sc = ex * (c->sy - a->sy) - ey * (c->sx - a->sx);
+    const float cx[4] = { B->x0, B->x1, B->x0, B->x1 };
+    const float cy[4] = { B->y0, B->y0, B->y1, B->y1 };
+    for (int k = 0; k < 4; k++) {
+        const float s = ex * (cy[k] - a->sy) - ey * (cx[k] - a->sx);
+        if (s * sc >= 0.0f) return 0;
+    }
+    return 1;
+}
+
+/* Separating-axis overlap of a screen triangle and the box: the box axes
+ * (bounding-box test) then the three edge normals. A zero-area triangle
+ * falls back to its bounding box. */
+static int tri_overlaps_box(const scene_tri_t *T, const scene_box_cfg_t *B) {
+    const openpete_scene_vert *v = T->v;
+    const float xmin = fminf(v[0].sx, fminf(v[1].sx, v[2].sx));
+    const float xmax = fmaxf(v[0].sx, fmaxf(v[1].sx, v[2].sx));
+    const float ymin = fminf(v[0].sy, fminf(v[1].sy, v[2].sy));
+    const float ymax = fmaxf(v[0].sy, fmaxf(v[1].sy, v[2].sy));
+    if (xmax < B->x0 || xmin > B->x1 || ymax < B->y0 || ymin > B->y1) return 0;
+    return !box_outside_edge(&v[0], &v[1], &v[2], B) &&
+           !box_outside_edge(&v[1], &v[2], &v[0], B) &&
+           !box_outside_edge(&v[2], &v[0], &v[1], B);
+}
+
+/* Tag path names, indexed by bits 31:28 (OPENPETE_TAG_* in the header). */
+static const char *const k_tag_path_name[16] = {
+    "untagged", "moby", "terrain", "player", "flame", "particle", "sky", "shadow",
+    "tracer", "portal", "p10", "p11", "p12", "p13", "p14", "p15" };
+
+static void scene_box_log_tri(unsigned f, int idx, const scene_tri_t *T) {
+    const uint32_t tag = T->tag, path = tag >> 28;
+    char who[96];
+    if (path == 2u)   /* terrain: sector, LP tier, env-anim, texture record */
+        snprintf(who, sizeof who, "terrain sec=%u lp=%u env=%u texrec=%u",
+                 tag & 0x1FFu, (tag >> 26) & 1u, (tag >> 27) & 1u, (tag >> 9) & 0x7Fu);
+    else
+        snprintf(who, sizeof who, "%s id=%u slot=%u", k_tag_path_name[path],
+                 tag & 0xFFFFu, (tag >> 16) & 0xFFFu);
+    fprintf(stderr, "[sbox] f=%u #%d cat=%d bl=%d tex=%d tp=%d,%d cl=%d,%d bpp=%d "
+            "tag=%08X %s mord=%d rank=%.0f koff=%.1f seq=%u prim=%08X "
+            "v=(%.1f,%.1f,z%.5f,%08X)(%.1f,%.1f,z%.5f,%08X)(%.1f,%.1f,z%.5f,%08X)\n",
+            f, idx, T->category, T->blend, T->textured, T->tpage_x, T->tpage_y,
+            T->clut_x, T->clut_y, T->bpp, tag, who, T->mordinal, (double)T->rank,
+            (double)T->koff, T->seq, T->prim,
+            (double)T->v[0].sx, (double)T->v[0].sy, (double)T->v[0].z, T->v[0].rgba,
+            (double)T->v[1].sx, (double)T->v[1].sy, (double)T->v[1].z, T->v[1].rgba,
+            (double)T->v[2].sx, (double)T->v[2].sy, (double)T->v[2].z, T->v[2].rgba);
+}
+
+/* The box instrument's per-present walk (spec at scene_box_cfg). The index
+ * is the triangle's position in the composed list. */
+static void scene_box_probe(const scene_tri_t *sc, int n) {
+    const scene_box_cfg_t *B = scene_box_cfg();
+    if (!B->armed) return;
+    const unsigned f = scene_present_frame();
+    if (f < B->fa || f > B->fb) return;
+    unsigned covering = 0;
+    for (int t = 0; t < n; t++) {
+        if (!tri_overlaps_box(&sc[t], B)) continue;
+        covering++;
+        scene_box_log_tri(f, t, &sc[t]);
+    }
+    s_box.presents++;
+    s_box.tested += (unsigned)n;
+    s_box.covering += covering;
+    fprintf(stderr, "[sbox] f=%u present tested=%d covering=%u retained_terrain=%d\n",
+            f, n, covering, openpete_tercache_frame_open() ? 1 : 0);
+}
+
 /* Per-PRESENT scene instruments. Hosted here rather than in
  * openpete_native_scene_begin_frame because that block is gated on the VBL
  * number changing, and sub-tick presents REUSE the current VBL number — so a
@@ -6697,6 +6807,7 @@ static void scene_probes(scene_tri_t* sc, int n)
         }
       } }
     portal_cover_check(sc, n);
+    scene_box_probe(sc, n);
 }
 
 static bool draw_native_scene(bool full_extent)
@@ -11367,6 +11478,7 @@ void openpete_native_render_record_flush(void)
 
 void openpete_native_render_shutdown(void)
 {
+    scene_box_summary();
     /* Sub-tick view engagement. Reported unconditionally because a run that
      * never opened it cannot support any claim about the sub-tick path, and
      * that fact is invisible in the pixels. */
