@@ -1165,20 +1165,18 @@ static void glow_build(CPUState* cpu) {
     }
 }
 
-/* Push the additive aura just behind its owning moby's body. The glow renderer
- * links the fan at its view-Z bucket, (MAC3 >> 7) + rec[+0x20]
- * (r_particles.s:988-990, the field is 0), while the moby render loop keys the
- * owner's faces at their bucket minus m_DepthOffset (4 on Sparx; the key
- * @8001F810..F828, the offset packed @8001F464..F46C), so the table draws the
- * aura under its owner. The native moby feed keeps each face at its true
- * depth, so at the fan's own view-Z the additive fan would paint over the
- * body; multiplying the fan's view-Z by this factor pushes it back behind its
- * owner. The push is kept small so that terrain the table draws under the
- * aura (terrain in a bucket behind the fan's) stays behind the pushed fan. */
-#define GLOW_AURA_BEHIND_MOBY_BIAS 1.10
-
 /* Feed the native glow fan tris into the scene — untextured gouraud, ADDITIVE
- * (blend 2). Display-only; the .s produced any verdict state headless. */
+ * (blend 2). Display-only; the .s produced any verdict state headless.
+ *
+ * The fan carries its own ordering-table key, (MAC3 >> 7) + rec[+0x20]
+ * (r_particles.s:988-990, the field is 0), and the aura rank sentinel, which
+ * puts its fragments on the key contest's aura arm: the fan is ordered
+ * against the bodies it overlaps by the table's own slots — the owner's
+ * bucket minus m_DepthOffset (4 on Sparx; the key @8001F810..F828, the offset
+ * packed @8001F464..F46C), the avatar's bucket minus sortDepth — while its
+ * stored depth stays true, so terrain still decides it by geometry. One
+ * stored depth cannot do both: a fan pushed behind its owner in world units
+ * sinks into whatever ground the table draws under it. */
 static void glow_feed_native(CPUState* cpu) {
     glow_build(cpu);
     if (s_gtri_n <= 0) return;
@@ -1187,11 +1185,7 @@ static void glow_feed_native(CPUState* cpu) {
         OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_GLOW, 0, 0));
     for (int i = 0; i < s_gtri_n; i++) {
         gtri* t = &s_gtri[i];
-        /* cz is full-world; the behind-moby push is an ordering BIAS, applied
-         * here as the original double-precision product (a float-typed
-         * openpete_worldvz_bias would round differently in the last ULP). */
-        float depth = openpete_native_depth_from_viewz(
-            openpete_worldvz_full((float)(t->cz * GLOW_AURA_BEHIND_MOBY_BIAS)));
+        float depth = openpete_native_depth_from_viewz(openpete_worldvz_full(t->cz));
         openpete_scene_tri st = {0};
         for (int k = 0; k < 3; k++) {
             st.v[k].sx = t->sx[k]; st.v[k].sy = t->sy[k]; st.v[k].z = depth;
@@ -1201,6 +1195,8 @@ static void glow_feed_native(CPUState* cpu) {
         st.textured = 0;
         st.tpage_x = st.tpage_y = st.clut_x = st.clut_y = st.bpp = 0;
         st.blend = 2;                                 /* ABR mode 1 (additive) */
+        st.koff = t->cz + 0.5f;                       /* the link key + sentinel */
+        st.rank = OPENPETE_SCENE_RANK_AURA;
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_WORLD, 0);
     }
     openpete_native_scene_set_tag(0);

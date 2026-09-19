@@ -62,6 +62,71 @@ float op_key_bucket(float tkey)
     return floor((tkey + res) / OP_KEY_SLOT);
 }
 
+/* ---- the player band of the actor key image ----------------------------
+ *
+ * The avatar's draw keys every part at max(0, (part-origin view-Z >> 7) -
+ * sortDepth) (r_pete.s 80023F8C, spyrodraw.s 8004215C/8003D148), an
+ * ordering key the native path does not mirror in stored depth: a body
+ * pulled slots nearer in world units would show through any wall within
+ * that distance. Only the additive glow fan needs the key, to be painted
+ * under the avatar the way the table paints it.
+ *
+ * The key rides the ACTOR key image in a reserved value band instead of a
+ * sixth image: its slot index is encoded linearly from OP_PKEY_BASE in
+ * steps of OP_PKEY_STEP. The band sits below every reachable real key —
+ * a key is floored at one world unit, which stores at 2.4e-4, five times
+ * the band's top — so the depth test that composes the image resolves a
+ * pixel both classes cover to the PLAYER, and every reader that is not
+ * the aura contest filters the band out through op_akey_contest() rather
+ * than decoding it as an impossibly near key. The player's faces raster
+ * only where an aura could read them (the key pass clips them to the aura
+ * footprint), so the actor key they displace is one no other contest
+ * reaches.
+ *
+ * OP_PKEY_STEP is four orders of magnitude above a 32-bit float's ulp at
+ * the band, so the rasteriser's plane interpolation of a flat value
+ * (see op_key_bucket) rounds back to the slot the writer encoded. */
+#define OP_PKEY_BASE 0.000001
+#define OP_PKEY_STEP 0.00000001
+#define OP_PKEY_MAX_SLOT 4095.0
+
+bool op_pkey_is(float stored)
+{
+    return stored > 0.0 &&
+           stored <= OP_PKEY_BASE + (OP_PKEY_MAX_SLOT + 0.5) * OP_PKEY_STEP;
+}
+
+float op_pkey_slot(float stored)
+{
+    return floor((stored - OP_PKEY_BASE) / OP_PKEY_STEP + 0.5);
+}
+
+/* The actor key image as every contest but the aura's sees it: a player
+ * texel is not a key, so it never wins a pixel from an actor or a terrain
+ * fragment. */
+float op_akey_contest(float stored)
+{
+    return op_pkey_is(stored) ? OP_KEY_NONE : op_key_from_stored(stored);
+}
+
+/* The additive glow fan's order against the bodies it overlaps. The fan is
+ * a flat billboard inserted at its own view-Z bucket and it writes no
+ * depth, so it occludes nothing: the only question is which of the two the
+ * table paints last. Both sides carry their ordering-table slot, so the
+ * verdict is the table's own — the fan loses a pixel whose actor or player
+ * key sits in its bucket or nearer, and keeps it otherwise. Terrain is not
+ * consulted: the fan's stored depth is true, and true depth is what decides
+ * it against the ground.
+ *
+ * akey_stored = the raw actor-key texel, the one reader that decodes the
+ * player band; own_key = the fan's own absolute key. */
+bool op_aura_loses(float akey_stored, float own_key)
+{
+    float own_slot = floor(own_key / OP_KEY_SLOT);
+    if (op_pkey_is(akey_stored)) return op_pkey_slot(akey_stored) <= own_slot;
+    return op_key_bucket(op_key_from_stored(akey_stored)) <= own_slot;
+}
+
 /* Same-moby painter select, scoped to near ties. The original renderer
  * paints a moby's faces in walk order, so a fragment loses its pixel when
  * a later-ranked face of the same moby covers it, regardless of depth.

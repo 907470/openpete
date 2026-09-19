@@ -633,6 +633,27 @@ int player_build_walk(CPUState* cpu) {
  * Native float vertices carry the geometry; the face stream carries topology,
  * per-vertex colour and texture; the texture itself comes from VRAM, a static
  * asset. */
+
+/* The ordering-table slot the draw inserts this face's part at:
+ * max(0, (part-origin view-Z >> 7) - sortDepth), one slot per 128 full-world
+ * units (r_pete.s 80023F8C lbu 0x27 / sra 7 / sub / floor at 0; spyrodraw.s
+ * 8004215C and 8003D148 read the same byte at 0x1E). Returned as the slot + 1
+ * so that 0 stays "no key" (openpete_scene_tri::pkey). The face's part is the
+ * part its first vertex was projected under; one face never spans two.
+ *
+ * The slot is an ordering key only: it never enters stored depth, which stays
+ * true per vertex. Its one reader is the additive glow fan, which the table
+ * paints under the avatar whenever his pulled slot is the nearer of the two. */
+static float player_part_key(int vidx, int sd)
+{
+    if (vidx < 0 || vidx >= s_sproj_n) return 0.0f;
+    int part = s_sproj[vidx].seg;
+    if (part < 0 || part >= PLAYER_PARTS_MAX || !s_xf[part].present) return 0.0f;
+    long slot = (long)floor(s_xf[part].TR[2]);
+    slot = (slot >> 7) - sd;
+    if (slot < 0) slot = 0;
+    return (float)(slot + 1);
+}
 static void player_feed_walk_ex(CPUState* cpu, int reproject) {
     if (reproject) player_project_all(cpu);
     player_build_walk(cpu);
@@ -653,10 +674,10 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
      * that value. OPENPETE_MOBY_OTBIAS=0 disables both. */
     double sp_pull = 0.0;
     double tie_pull = 0.0;
+    int sd = PL.sort_depth_off ? (int)(int8_t)cpu->read_byte(PL.base + PL.sort_depth_off) : 0;
     {
         static int s_on = -1;
         if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_OTBIAS"); s_on = (e && *e) ? (*e != '0') : 1; }
-        int sd = PL.sort_depth_off ? (int)(int8_t)cpu->read_byte(PL.base + PL.sort_depth_off) : 0;
         if (s_on && player_game.sort_depth_front && sd == player_game.sort_depth_front) {
             sp_pull = 128.0 * (double)sd;
             /* Cap the pull per tick so the nearest vertex lands ON the near
@@ -708,6 +729,7 @@ static void player_feed_walk_ex(CPUState* cpu, int reproject) {
           if (s_ut) w->textured = 0; }
         st.textured = w->textured; st.tpage_x = w->tpage_x; st.tpage_y = w->tpage_y;
         st.clut_x = w->clut_x; st.clut_y = w->clut_y; st.bpp = w->bpp; st.blend = w->blend;
+        st.pkey = w->blend == 0 ? player_part_key(w->v[0].idx, sd) : 0.0f;
         openpete_native_scene_add_tri(&st, OPENPETE_SCENE_PLAYER, 0);
     }
     /* OPENPETE_PLAYER_POSTRACE: the submitted screen-space centroid and

@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 6d60fb0eea66288359eb75f49492f0f4b4494b47
+# head: f13cd1f67dcc6310b03a54699cd5ed62c42d5e23
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -84,7 +84,6 @@ core/renderer/native_render.c	openpete_native_scene_add_tri_grouped	42	0
 core/renderer/native_render.c	openpete_native_scene_apply_overlay	98	0	
 core/renderer/native_render.c	openpete_native_scene_begin_frame	59	0	
 core/renderer/native_render.c	openpete_native_scene_capture_overlay	49	0	
-core/renderer/native_render.c	pack_terrain_key_batch	32	0	
 core/renderer/native_render.c	pc_note	38	0	
 core/renderer/native_render.c	portal_cover_check	142	0	
 core/renderer/native_render.c	pt_dump_maybe	59	0	
@@ -169,7 +168,7 @@ games/common/renderer/particles.c	part_census	36	0
 games/common/renderer/player.c	pair_lists	27	0	
 games/common/renderer/player.c	plane_emit	32	0	
 games/common/renderer/player.c	player_build_walk	80	0	
-games/common/renderer/player.c	player_feed_walk_ex	62	0	
+games/common/renderer/player.c	player_feed_walk_ex	64	0	
 games/common/renderer/player.c	player_records_epoch_commit	200	0	
 games/common/renderer/player.c	player_reextract_record	27	0	
 games/common/renderer/player.c	player_verify_report	109	0	

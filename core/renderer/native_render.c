@@ -287,6 +287,7 @@ typedef struct {
     int prop;       /* authored embedded prop — see openpete_scene_tri */
     float rank;     /* og OT paint rank — see openpete_scene_tri */
     int mordinal;   /* present-local moby ordinal — see openpete_scene_tri */
+    float pkey;     /* player ordering key — see openpete_scene_tri */
     int category;   /* draw layer (OPENPETE_SCENE_*) — add_tri's explicit arg */
     int carry;      /* 2D-UI sub-tick carry: 0/1 from add_tri; 2 = re-applied marker
                      * stamped by apply_overlay so the next canonical capture skips it */
@@ -4202,11 +4203,96 @@ typedef struct { int first, count; psx_material mat; } keytex_span_t;
 static int s_ktex_idx[MAX_SCENE_TRIS];
 static void tex_mat_sort(const scene_tri_t* scene, int* idx, int n);
 
+/* The screen boxes of this scene's keyed additive glow fans. The player's
+ * ordering key rasters only inside them: a player texel displaces the actor
+ * key under it in the shared image (psx_key_contest.glsl), and the fan is
+ * the only contest that reads it, so outside a fan's reach the stamp would
+ * move contests that must not move. A scene with no keyed fan (every game
+ * but Spyro 1, and Spyro 1 with no glow on screen) yields no boxes and
+ * stamps no player key at all. */
+#define KEY_AURA_BOX_MAX 64
+typedef struct { float x0, y0, x1, y1; } key_box_t;
+
+static key_box_t tri_box(const scene_tri_t* t)
+{
+    key_box_t b = { t->v[0].sx, t->v[0].sy, t->v[0].sx, t->v[0].sy };
+    for (int k = 1; k < 3; k++) {
+        if (t->v[k].sx < b.x0) b.x0 = t->v[k].sx;
+        if (t->v[k].sx > b.x1) b.x1 = t->v[k].sx;
+        if (t->v[k].sy < b.y0) b.y0 = t->v[k].sy;
+        if (t->v[k].sy > b.y1) b.y1 = t->v[k].sy;
+    }
+    return b;
+}
+
+static int scene_aura_boxes(const scene_tri_t* scene, int scene_n, key_box_t* out)
+{
+    int n = 0;
+    for (int t = 0; t < scene_n; t++) {
+        if (scene[t].blend != 2 || scene[t].koff <= 0.25f ||
+            scene[t].rank > OPENPETE_SCENE_RANK_AURA + 0.5f) continue;
+        key_box_t b = tri_box(&scene[t]);
+        if (n < KEY_AURA_BOX_MAX) { out[n++] = b; continue; }
+        /* Past the table, widen the last box: a superset keeps the rule
+         * (the fan still reads its own pixels) and never drops a stamp. */
+        key_box_t* l = &out[KEY_AURA_BOX_MAX - 1];
+        if (b.x0 < l->x0) l->x0 = b.x0;
+        if (b.y0 < l->y0) l->y0 = b.y0;
+        if (b.x1 > l->x1) l->x1 = b.x1;
+        if (b.y1 > l->y1) l->y1 = b.y1;
+    }
+    return n;
+}
+
+static int box_hits_any(key_box_t b, const key_box_t* boxes, int n)
+{
+    for (int i = 0; i < n; i++)
+        if (b.x0 <= boxes[i].x1 && b.x1 >= boxes[i].x0 &&
+            b.y0 <= boxes[i].y1 && b.y1 >= boxes[i].y0) return 1;
+    return 0;
+}
+
+/* Which key image a scene face rasters into, and with it which value the
+ * flat key carries: 0 = terrain keys, 1 = curated embedded props (true
+ * per-vertex depth), 2 = the actor image — keyed ACTOR faces plus, inside
+ * an aura box, the PLAYER's own ordering slot in the image's player band.
+ * Opaque faces only; a face with neither a key nor a player slot rasters
+ * nowhere. */
+static int key_batch_admits(const scene_tri_t* t, int prop_class,
+                            const key_box_t* aura, int naura)
+{
+    if (t->blend != 0) return 0;
+    if (prop_class == 1) return t->prop && t->koff > 0.25f;
+    if (prop_class == 2) {
+        if (t->category == OPENPETE_SCENE_ACTOR) return t->koff > 0.25f;
+        return t->category == OPENPETE_SCENE_PLAYER && t->pkey > 0.25f &&
+               box_hits_any(tri_box(t), aura, naura);
+    }
+    return t->category == OPENPETE_SCENE_WORLD && t->koff > 0.25f;
+}
+
+/* The player band's C mirror (psx_key_contest.glsl, op_pkey_is): slot s
+ * stores as OP_PKEY_BASE + s*OP_PKEY_STEP, below every reachable real key,
+ * so the band wins the image's depth test and every contest but the aura's
+ * filters it back out. */
+#define NR_PKEY_BASE 0.000001f
+#define NR_PKEY_STEP 0.00000001f
+#define NR_PKEY_MAX_SLOT 4095.0f
+
+static float pack_player_key_z(float pkey)
+{
+    float slot = pkey - 1.0f;                  /* the +1 that makes 0 "none" */
+    if (slot < 0.0f) slot = 0.0f;
+    if (slot > NR_PKEY_MAX_SLOT) slot = NR_PKEY_MAX_SLOT;
+    return NR_PKEY_BASE + slot * NR_PKEY_STEP;
+}
+
 static void pack_key_vert(const scene_tri_t* T, int prop_class, int tex,
                           rhi_vertex* out)
 {
     float K = T->koff - 0.5f;
-    float zflat = K / (K + OPENPETE_DEPTH_VIEWZ_SCALE);
+    float zflat = T->pkey > 0.25f ? pack_player_key_z(T->pkey)
+                                  : K / (K + OPENPETE_DEPTH_VIEWZ_SCALE);
     for (int k = 0; k < 3; k++) {
         float cx, cy;
         scene_to_clip(T->v[k].sx, T->v[k].sy, &cx, &cy);
@@ -4248,12 +4334,10 @@ static int pack_terrain_key_batch(const scene_tri_t* scene, int scene_n,
     s_render_full_extent = full_extent ? 1 : 0;
     int m = 0, tex_n = 0;
     *nspans = 0;
+    key_box_t aura[KEY_AURA_BOX_MAX];
+    int naura = prop_class == 2 ? scene_aura_boxes(scene, scene_n, aura) : 0;
     for (int t = 0; t < scene_n && m + 3 <= SCENE_VB_VERTS; t++) {
-        if (scene[t].blend != 0) continue;                       /* opaque only */
-        if (prop_class == 1 ? !scene[t].prop
-            : prop_class == 2 ? scene[t].category != OPENPETE_SCENE_ACTOR
-                              : scene[t].category != OPENPETE_SCENE_WORLD) continue;
-        if (scene[t].koff <= 0.25f) continue;   /* keyed faces / sky fans only */
+        if (!key_batch_admits(&scene[t], prop_class, aura, naura)) continue;
         if (scene[t].textured) {
             if (tex_n < MAX_SCENE_TRIS) s_ktex_idx[tex_n++] = t;
             continue;
@@ -6797,9 +6881,10 @@ static void scene_probes(scene_tri_t* sc, int n)
         fprintf(stderr, "[scenedump f=%u] n=%d\n", s_scene_frame, n);
         for (int ti = 0; ti < n; ti++) {
             const scene_tri_t* T = &sc[ti];
-            fprintf(stderr, "[sd] #%d cat=%d blend=%d tex=%d grp=%d ko=%.1f", ti,
+            fprintf(stderr, "[sd] #%d cat=%d blend=%d tex=%d grp=%d ko=%.1f "
+                            "rk=%.1f pk=%.1f tag=%08X", ti,
                     T->category, T->blend, T->textured, T->group,
-                    (double)T->koff);
+                    (double)T->koff, (double)T->rank, (double)T->pkey, T->tag);
             for (int k = 0; k < 3; k++)
                 fprintf(stderr, " (%.2f,%.2f,z%.6f,w%.1f,%08X)",
                         (double)T->v[k].sx, (double)T->v[k].sy,

@@ -593,7 +593,22 @@ typedef struct {
     int mordinal;/* present-local moby ordinal (1..255) identifying "same
                   * moby" in the rank image. Present-LOCAL only: a pool
                   * ordinal is not an identity across presents.            */
+    float pkey;  /* PLAYER ordering key: the avatar draw's own
+                  * max(0, (part-origin view-Z >> 7) - sortDepth) slot + 1
+                  * (0 = none). The face rasters that slot into the ACTOR
+                  * key image's player band (psx_key_contest.glsl), where
+                  * the additive glow fan is its only reader; the face
+                  * itself contests nothing — its koff stays 0 and its
+                  * stored depth stays true, so an ordering pull can never
+                  * show the avatar through geometry in front of him.     */
 } openpete_scene_tri;
+
+/* Rank sentinels for faces that are not ranked but must still be told
+ * apart by the key contest (openpete_scene_tri::rank): -1 = an opaque
+ * actor face, -2 = an additive glow fan. Every rank consumer reads both as
+ * unranked; the contest reads them as the class whose arm to run. */
+#define OPENPETE_SCENE_RANK_ACTOR (-1.0f)
+#define OPENPETE_SCENE_RANK_AURA  (-2.0f)
 
 /* ---- view-Z → depth-buffer conversion: the ONE named point (W0.7b) --------
  *

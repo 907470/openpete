@@ -42,9 +42,16 @@ void main()
         discard;
     /* Ranked faces skip the positive-koff contest — see psx_key_contest.glsl. */
     if (!ranked && abs(vKoff) > 0.25) {
-        if (op_key_loses(
+        /* The additive glow fan (rank -2) runs the aura contest instead: it
+         * orders against actor and player keys by ordering-table slot and
+         * against terrain by its own true depth. */
+        if (vRank.x < -1.5) {
+            if (op_aura_loses(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,
+                              vKoff - 0.5))
+                discard;
+        } else if (op_key_loses(
                 op_key_from_stored(texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r),
-                op_key_from_stored(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r),
+                op_akey_contest(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r),
                 op_key_from_stored(texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r),
                 own, vKoff,
                 vRank.x < -0.5,     /* unranked moby faces mark rank -1 */

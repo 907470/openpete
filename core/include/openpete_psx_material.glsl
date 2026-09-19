@@ -293,9 +293,15 @@ void main()
         op_rank_loses(texelFetch(op_moby_rank, ivec2(gl_FragCoord.xy), 0), vRank, own))
         discard;
     if (!ranked && abs(vKoff) > 0.25) {
-        if (op_key_loses(
+        /* The additive glow fan (rank -2) runs the aura contest instead —
+         * see psx_key_contest.glsl. */
+        if (vRank.x < -1.5) {
+            if (op_aura_loses(texelFetch(op_key_actor, ivec2(gl_FragCoord.xy), 0).r,
+                              vKoff - 0.5))
+                discard;
+        } else if (op_key_loses(
                 op_key_from_stored(texelFetch(op_key_terrain, ivec2(gl_FragCoord.xy), 0).r),
-                op_key_from_stored(texelFetch(op_key_actor,   ivec2(gl_FragCoord.xy), 0).r),
+                op_akey_contest(texelFetch(op_key_actor,   ivec2(gl_FragCoord.xy), 0).r),
                 op_key_from_stored(texelFetch(op_key_moby,    ivec2(gl_FragCoord.xy), 0).r),
                 own, vKoff,
                 vRank.x < -0.5,     /* unranked moby faces carry rank -1 */

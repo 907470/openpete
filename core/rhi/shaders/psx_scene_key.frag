@@ -107,9 +107,15 @@ void main()
      * the select kills everything under it (a hole to the clear). The face
      * still STAMPS its key, so keyed terrain keeps yielding to it. */
     if (!ranked && abs(vKoff) > 0.25) {
-        if (op_key_loses(
+        /* The additive glow fan (rank -2) runs the aura contest instead —
+         * see psx_key_contest.glsl. */
+        if (vRank.x < -1.5) {
+            if (op_aura_loses(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r,
+                              vKoff - 0.5))
+                discard;
+        } else if (op_key_loses(
                 op_key_from_stored(texelFetch(u_hpkey,    ivec2(gl_FragCoord.xy), 0).r),
-                op_key_from_stored(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r),
+                op_akey_contest(texelFetch(u_actorkey, ivec2(gl_FragCoord.xy), 0).r),
                 op_key_from_stored(texelFetch(u_mobykey,  ivec2(gl_FragCoord.xy), 0).r),
                 own, vKoff,
                 vRank.x < -0.5,     /* unranked moby faces mark rank -1 */
