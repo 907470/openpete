@@ -77,13 +77,15 @@ extern unsigned openpete_frame;
 /* ---- gamestate addresses (psx.map / recompiled C / r_environment.s) -------- */
 
 
-/* Sub-tick UV-scroll offsets (see tsc_scroll_refresh). The scrolling-texture
- * animation writes WHOLE TEXELS into the tiledef V bytes once per canonical
- * tick, so waterfalls step at 29.913 Hz while the world around them interpolates.
- * These tables carry the fractional V offset — in texels, relative to the
- * integer decode the game committed — for the tiles that scrolled this tick.
- * They are filled only on sub-tick re-extract builds and zeroed on the canonical
- * path, so the 30 Hz render stays byte-exact. */
+/* UV-scroll offsets (see tsc_scroll_desc). The scrolling-texture animation
+ * writes whole texels into the tiledef V bytes once per canonical tick, and
+ * its 7-bit accumulator advances faster than those writes resolve: the LQ V is
+ * accumulator>>2, so the texture holds three ticks and steps a texel on the
+ * fourth. These tables carry the V offset — in texels, relative to the integer
+ * decode the game committed — that puts the tile back on the exact fractional
+ * accumulator, plus, on a bracketed sub-tick present, the sweep back toward the
+ * previous accumulator. They are filled on every build, canonical included, so
+ * both place the same texel row. */
 static uint8_t s_tanim_act[128];      /* tile carries a fractional offset this build */
 static float   s_tanim_dvlq[128];     /* LQ per-quad tiledef  (game writes scroll>>2) */
 static float   s_tanim_dvhq[128][2];  /* HQ record entries 1-2 / 3-4 (scroll>>1) */
@@ -1002,7 +1004,7 @@ static void terrain_near_emit(tn_wctx* W, CPUState* cpu, uint32_t hqBase, int te
         decode_tiledef(cpu, e, abe, &mat, u, v);
         mat.texid = texid;                /* HQ quadrants share the record's id */
         tiledef_apply_ori(cpu, e, u, v);  /* rotated/flipped HQ tiles (word1>>25) */
-        /* Sub-tick UV scroll. Applied AFTER the orientation on purpose: the
+        /* UV scroll (env texture anim). Applied after the orientation: the
          * offset is a pure V translation in texel space and apply_ori never
          * moves V into U (its per-corner deltas only carry within the u/v byte
          * pair), so scrolling here is identical to scrolling the base entry —
@@ -2290,6 +2292,112 @@ static void tsc_vert_anim_refresh(CPUState* cpu, uint32_t sectorPtr, uint32_t se
  * neg-alpha floor). Extrapolate rather than clamp, or ~a quarter of all motion
  * arrives as a snap. */
 #define TSCROLL_ALPHA_MIN (-0.35)
+/* One descriptor's sub-tick sweep. */
+typedef struct {
+    double   off;     /* accumulator units back toward prev: 0 at the tick */
+    double   a;       /* sub-tick alpha the sweep landed on */
+    int      d;       /* signed accumulator advance prev → cur */
+    double   per_ms;  /* the bracketed interval */
+    uint32_t prv;     /* previous accumulator */
+} tscroll_sweep_t;
+
+/* Fill *S from the snapshot pair of scroller descriptor `desc`, whose tile is
+ * `ct` and whose committed accumulator is `cur`. Returns 1 when this present
+ * is bracketed by two distinct accumulator states of that one tile; returns 0
+ * otherwise, leaving the caller on the committed position. */
+static int tsc_scroll_sweep(uint32_t desc, uint32_t ct, uint32_t cur,
+                            op_time_t now, tscroll_sweep_t* S) {
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(desc);
+    /* curr_ns == prev_ns means the snapshot clock stood still between the
+     * two distinct accumulator states — there is no interval to sweep. It
+     * happens under deterministic capture with a frozen camera (the headless
+     * freecam legs): the deterministic object stamp is the direct ring's
+     * tick_ns, and a static camera dedupes that ring so it never advances.
+     * Windowed the stamp is the PLL virtual clock, which advances per tick
+     * regardless of camera motion, so a still camera still scrolls. */
+    if (!o || !o->have_prev || o->curr_ns <= o->prev_ns) return 0;
+    /* blob = the descriptor's u16 tile at +4 then u16 accumulator at +6 */
+    uint16_t ctile, ptile, ocur, prv;
+    memcpy(&ctile, o->curr + 0, 2); memcpy(&ocur, o->curr + 2, 2);
+    memcpy(&ptile, o->prev + 0, 2); memcpy(&prv, o->prev + 2, 2);
+    /* Identity: one tile at both ends, and the snapshot's near end is the
+     * accumulator the tiledef V bytes in RAM were written from. */
+    if (ptile != ctile || ctile != ct || (uint32_t)(ocur & 0x7Fu) != cur) return 0;
+    prv &= 0x7Fu;
+    /* Shortest path around the 7-bit ring: the accumulator wraps 127→0 mid
+     * animation, and a raw difference there would read as a full-window jump. */
+    int d = ((((int)cur - (int)prv) + 64) & 127) - 64;
+    if (d == 0 || d > TSCROLL_JUMP || d < -TSCROLL_JUMP) return 0;
+    op_time_t per = o->curr_ns - o->prev_ns;
+    if (per > TSCROLL_PERIOD_MAX) per = TSCROLL_PERIOD_MAX;
+    double a = (double)(now - o->curr_ns) / (double)per;
+    if (a < TSCROLL_ALPHA_MIN) a = TSCROLL_ALPHA_MIN; else if (a > 1.0) a = 1.0;
+    /* Rendered accumulator = lerp(prev,cur,a) = cur + (a-1)*d. */
+    S->off = (a - 1.0) * (double)d;
+    S->a = a; S->d = d; S->per_ms = (double)per / 1e6; S->prv = prv;
+    return 1;
+}
+
+/* One scroller descriptor: mark its tile live for the retained-GPU claim,
+ * carry the accumulator generation, and publish the tile's fractional V
+ * offsets for this build. Returns 1 when a sub-tick sweep was applied. */
+static int tsc_scroll_desc(CPUState* cpu, uint32_t desc, int pair,
+                           op_time_t now, int dbg) {
+    uint32_t ct = rd(cpu, desc + 4) & 0xFFFFu;
+    if (ct >= 128) return 0;
+    s_tscroll_tile[ct] = 1; s_tscroll_have = 1;
+    uint32_t cur = cpu->read_half(desc + 6) & 0x7Fu;
+    /* Accumulator-change generation: the scroller advances the HQ sibling
+     * record on ticks where the 16-byte LQ entry is byte-identical
+     * (scroll>>2 unchanged), so tsc_tile_gens alone would leave a stale GPU
+     * bake. Track the raw 7-bit accumulator and bump the tile generation on
+     * every advance (canonical builds only — it moves at tick boundaries);
+     * the re-decode is a no-op for the CPU path when the LQ bytes coincide,
+     * and texGen rebuilds the bake. */
+    static uint16_t s_tscroll_acc[128];
+    if (!s_vanim_sub && s_tscroll_acc[ct] != (uint16_t)cur) {
+        s_tscroll_acc[ct] = (uint16_t)cur;
+        s_tgen[ct]++; s_tgen_epoch++;
+    }
+    tscroll_sweep_t S = { 0.0, 1.0, 0, 0.0, cur };
+    int paired = pair ? tsc_scroll_sweep(desc, ct, cur, now, &S) : 0;
+    /* Render the exact fractional accumulator by adding back the low bits the
+     * game's >>2 / >>1 truncated away when it wrote the V bytes: LQ cur/4, HQ
+     * cur/2. Every build carries that term, so a sub-tick present and the tick
+     * it brackets place the same texel row and the scroll advances at a
+     * constant rate instead of holding for four (LQ) or two (HQ) ticks and
+     * stepping a whole texel. `off` is the sweep back toward the previous
+     * accumulator and is nonzero only on a bracketed sub-tick present. The
+     * window wrap keeps base+dv inside the scroll ring: the sampler truncates
+     * toward zero (psx_sample.frag), so a negative V would fetch the wrong
+     * row — and the content is periodic over the window by construction, since
+     * the game's own 31→0 accumulator wrap would otherwise be a visible jump
+     * every cycle. */
+    double dvq = S.off * 0.25 + (double)(cur & 3u) * 0.25;
+    double baseQ = (double)(cur >> 2);
+    if (baseQ + dvq < 0.0)        dvq += 32.0;
+    else if (baseQ + dvq >= 32.0) dvq -= 32.0;
+    s_tanim_dvlq[ct] = (float)dvq;
+    double dvh = S.off * 0.5 + (double)(cur & 1u) * 0.5;
+    double baseA = (double)(cur >> 1);                  /* HQ entries 1-2 */
+    double baseB = (double)(((cur >> 1) + 32u) & 63u);  /* HQ entries 3-4 (+0x20) */
+    double dvA = dvh, dvB = dvh;
+    if (baseA + dvA < 0.0)        dvA += 64.0;
+    else if (baseA + dvA >= 64.0) dvA -= 64.0;
+    if (baseB + dvB < 0.0)        dvB += 64.0;
+    else if (baseB + dvB >= 64.0) dvB -= 64.0;
+    s_tanim_dvhq[ct][0] = (float)dvA;
+    s_tanim_dvhq[ct][1] = (float)dvB;
+    s_tanim_act[ct] = 1;
+    s_tanim_have = 1;
+    if (dbg)
+        fprintf(stderr, "[tanim f=%u pres=%u] tile=%u prev=%u cur=%u d=%d per=%.1fms "
+                        "a=%.3f dvlq=%.3f dvhq=%.3f/%.3f paired=%d\n",
+                openpete_frame, s_vanim_pres, ct, S.prv, cur, S.d,
+                S.per_ms, S.a, dvq, dvA, dvB, paired);
+    return paired;
+}
+
 static void tsc_scroll_refresh(CPUState* cpu) {
     static int s_tdbg = -1;
     ENV_FLAG_LATCH(s_tdbg, "OPENPETE_TERRAIN_TANIMDBG");
@@ -2303,9 +2411,8 @@ static void tsc_scroll_refresh(CPUState* cpu) {
     uint32_t cnt  = rd(cpu, game_layout.env_anim.scroll);
     uint32_t base = rd(cpu, game_layout.env_anim.scroll + 4);
     if (!base || cnt == 0 || cnt > 1024) goto scan;
-    /* Fractional offsets exist only on sub-tick re-extract builds; the
-     * canonical path renders the committed whole-texel decode, byte-exact.
-     * The claim mask is filled regardless. */
+    /* The fractional position is published on every build; only the sweep
+     * toward the previous accumulator needs a bracketed sub-tick present. */
     int pair = (s_vanim_sub && s_tanim_en);
     op_time_t now = pair ? openpete_interp_present_now() : 0;
     if (pair && now <= 0) pair = 0;
@@ -2313,78 +2420,7 @@ static void tsc_scroll_refresh(CPUState* cpu) {
         uint32_t desc = rd(cpu, base + k * 4);
         if (!desc) continue;
         dbg_desc++;
-        {   uint32_t ct = rd(cpu, desc + 4) & 0xFFFFu;
-            if (ct < 128) {
-                s_tscroll_tile[ct] = 1; s_tscroll_have = 1;
-                /* Accumulator-change generation: the scroller advances the
-                 * HQ sibling record on ticks where the 16-byte LQ entry is
-                 * byte-identical (scroll>>2 unchanged), so tsc_tile_gens
-                 * alone would leave a stale GPU bake. Track the raw 7-bit
-                 * accumulator and bump the tile generation on every advance
-                 * (canonical builds only — it moves at tick boundaries);
-                 * the re-decode is a no-op for the CPU path when the LQ
-                 * bytes coincide, and texGen rebuilds the bake. */
-                static uint16_t s_tscroll_acc[128];
-                uint16_t acc = (uint16_t)(cpu->read_half(desc + 6) & 0x7Fu);
-                if (!s_vanim_sub && s_tscroll_acc[ct] != acc) {
-                    s_tscroll_acc[ct] = acc;
-                    s_tgen[ct]++; s_tgen_epoch++;
-                }
-            } }
-        if (!pair) continue;
-        const openpete_interp_obj_t* o = openpete_interp_objs_find(desc);
-        /* curr_ns == prev_ns means the snapshot clock stood still between the
-         * two distinct accumulator states — there is no interval to sweep. It
-         * happens under DETERMINISTIC capture with a frozen camera (the headless
-         * freecam legs): the deterministic object stamp is the DIRECT ring's
-         * tick_ns, and a static camera dedupes that ring so it never advances.
-         * Windowed the stamp is the PLL virtual clock, which advances per tick
-         * regardless of camera motion, so a still camera still scrolls. */
-        if (!o || !o->have_prev || o->curr_ns <= o->prev_ns) continue;
-        /* blob = the descriptor's u16 tile at +4 then u16 accumulator at +6 */
-        uint16_t ctile, ptile, cur, prv;
-        memcpy(&ctile, o->curr + 0, 2); memcpy(&cur, o->curr + 2, 2);
-        memcpy(&ptile, o->prev + 0, 2); memcpy(&prv, o->prev + 2, 2);
-        if (ctile >= 128 || ptile != ctile) continue;   /* identity: same tile both ends */
-        cur &= 0x7Fu; prv &= 0x7Fu;
-        /* Shortest path around the 7-bit ring: the accumulator wraps 127→0 mid
-         * animation, and a raw difference there would read as a full-window jump. */
-        int d = ((((int)cur - (int)prv) + 64) & 127) - 64;
-        if (d == 0 || d > TSCROLL_JUMP || d < -TSCROLL_JUMP) continue;
-        op_time_t per = o->curr_ns - o->prev_ns;
-        if (per > TSCROLL_PERIOD_MAX) per = TSCROLL_PERIOD_MAX;
-        double a = (double)(now - o->curr_ns) / (double)per;
-        if (a < TSCROLL_ALPHA_MIN) a = TSCROLL_ALPHA_MIN; else if (a > 1.0) a = 1.0;
-        /* Rendered accumulator = lerp(prev,cur,a) = cur + (a-1)*d. */
-        double off = (a - 1.0) * (double)d;
-        /* Land on the exact fractional position by adding back the low bits the
-         * game's >>2 / >>1 truncated away. The window wrap keeps base+dv inside
-         * the scroll ring: the sampler truncates toward zero (psx_sample.frag),
-         * so a negative V would fetch the wrong row — and the content is
-         * periodic over the window by construction, since the game's own 31→0
-         * accumulator wrap would otherwise be a visible jump every cycle. */
-        double dvq = off * 0.25 + (double)(cur & 3u) * 0.25;
-        double baseQ = (double)(cur >> 2);
-        if (baseQ + dvq < 0.0)        dvq += 32.0;
-        else if (baseQ + dvq >= 32.0) dvq -= 32.0;
-        s_tanim_dvlq[ctile] = (float)dvq;
-        double dvh = off * 0.5 + (double)(cur & 1u) * 0.5;
-        double baseA = (double)(cur >> 1);                  /* HQ entries 1-2 */
-        double baseB = (double)(((cur >> 1) + 32u) & 63u);  /* HQ entries 3-4 (+0x20) */
-        double dvA = dvh, dvB = dvh;
-        if (baseA + dvA < 0.0)        dvA += 64.0;
-        else if (baseA + dvA >= 64.0) dvA -= 64.0;
-        if (baseB + dvB < 0.0)        dvB += 64.0;
-        else if (baseB + dvB >= 64.0) dvB -= 64.0;
-        s_tanim_dvhq[ctile][0] = (float)dvA;
-        s_tanim_dvhq[ctile][1] = (float)dvB;
-        s_tanim_act[ctile] = 1;
-        s_tanim_have = 1;
-        dbg_paired++;
-        if (s_tdbg)
-            fprintf(stderr, "[tanim f=%u pres=%u] tile=%u prev=%u cur=%u d=%d per=%.1fms a=%.3f dvlq=%.3f dvhq=%.3f/%.3f\n",
-                    openpete_frame, s_vanim_pres, ctile, prv, cur, d,
-                    (double)per / 1e6, a, dvq, dvA, dvB);
+        dbg_paired += tsc_scroll_desc(cpu, desc, pair, now, s_tdbg);
     }
     }
 scan:
@@ -4849,7 +4885,7 @@ static void walk_sector(tn_wctx* W, tn_wcfg* G, int vi) {
                 rc2 = lp_grade_apply(SC, rc2);
                 if (quad) rc3 = lp_grade_apply(SC, rc3);
             }
-            /* Sub-tick UV scroll (env texture anim): translate every corner V by
+            /* UV scroll (env texture anim): translate every corner V by
              * the tile's fractional offset. One block covers GT4, GT3 (the
              * rotation below only permutes which corner feeds which slot, so a
              * uniform translation is permutation-invariant), both LOD halves
@@ -5345,9 +5381,10 @@ static void terrain_build(CPUState* cpu, int32_t occGroup) {
          * alpha; canonical (and unpaired) builds draw cur exactly. */
         tcg.vanim_alpha = (s_vanim_sub && s_vanim_on) ? s_vanim_alpha : 1.0;
         tcg.nearz = s_nearz;   /* near-variant clip plane (clip_push_tri) */
-        /* Per-tile UV-scroll offsets for this build (zero when the tile has
-         * no fractional offset — canonical builds render the committed
-         * whole-texel decode). */
+        /* Per-tile UV-scroll offsets for this build (zero for a tile that is
+         * not on the scroller list). The retained cache and the CPU walk read
+         * the same tables, so a sector drawn from a bake scrolls identically
+         * to one walked this build. */
         if (s_tanim_have)
             for (int t = 0; t < 128; t++)
                 if (s_tanim_act[t]) {

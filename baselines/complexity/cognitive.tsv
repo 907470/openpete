@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: 34964fded6f89840db020b44af7400ac9645dd0f
+# head: e041164f5f191806115bd53ad30da65c461a9c41
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -200,7 +200,6 @@ games/common/renderer/terrain.c	tgpu_pack_scan	41	0
 games/common/renderer/terrain.c	tsc_field_census	27	0	
 games/common/renderer/terrain.c	tsc_get	107	0	
 games/common/renderer/terrain.c	tsc_lp_grade	31	0	
-games/common/renderer/terrain.c	tsc_scroll_refresh	44	0	
 games/common/renderer/terrain.c	tsc_vert_anim_refresh	155	0	
 games/common/renderer/terrain.c	walk_sector	722	0	
 games/common/renderer/text_moby.c	emit_glyph	26	0	

@@ -811,7 +811,7 @@ void main()
      * faces: the LQ dv (both LOD halves share one offset — the game writes
      * the same scroll byte into all four V slots); HQ sub-quads: the
      * per-half dv (entries 1-2 vs 3-4 sit half a window apart in the
-     * scroll ring). Zero on canonical builds. */
+     * scroll ring). Zero for a tile that is not on the scroller list. */
     bool scrollOn = (f16 & 0x1000u) != 0u;
     float uvdv = 0.0;
     if (scrollOn) {
