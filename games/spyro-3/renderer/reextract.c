@@ -529,7 +529,7 @@ static void game_reextract_body(CPUState* cpu) {
     RX_CENSUS_STEP("player");
     shadow_reextract(cpu);          /* drop-shadows under mobys */
     RX_CENSUS_STEP("shadow");
-    particles_reextract(cpu);       /* the particle primitives the tick captured */
+    particles_reextract(cpu, bracketed, alpha);   /* the particle primitives the tick captured */
     RX_CENSUS_STEP("particles");
     flame_records_present(cpu, bracketed, 0, bracketed ? alpha : 0.0, NULL);
     RX_CENSUS_STEP("flame");

@@ -57,6 +57,13 @@ int game_interp_row_index(const char* name);
  * openpete_interp_objs_end_tick(); game_interp_register_common() does. */
 void game_interp_capture_moby_array(void);
 
+/* Snapshot one whole record per active slot of the game's particle pool
+ * (game_layout.particles: array_ptr, rec_stride, sel_off), keyed by the
+ * record's PSX address. A game whose particle renderer links its own
+ * primitives passes this as `extra_pools` below, so the sub-tick replay of
+ * those primitives has a previous state to rebase each record onto. */
+void game_interp_capture_particle_pool(void);
+
 /* Register a game's interp table and per-object capture in the shared shape:
  * the camera row (GAME_INTERP_CAM_ROW, `cam_length` bytes from
  * game_layout.cam.base, presented from the committed timeline under runahead)

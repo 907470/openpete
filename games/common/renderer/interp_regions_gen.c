@@ -175,6 +175,40 @@ void game_interp_capture_moby_array(void) {
     }
 }
 
+/* The particle pool of a game whose particle renderer links its own primitives
+ * (game_layout.particles). The renderer projects each record under the tick's
+ * camera, so a sub-tick present that replays those primitives needs the
+ * record's previous state to rebase them onto the pose it shows; the pool sits
+ * outside the moby array, so the shared walk above never reaches it.
+ *
+ * The walk is the routine's own: from the pool base, one record per
+ * `rec_stride`, reading the selector halfword whose sign marks an inactive
+ * slot and whose arithmetic shift by 8 is -1 at the end-of-pool sentinel. The
+ * key is the record's address, which is its slot; a slot a new record reuses
+ * is the consumer's pairing verdict, not this walk's. Read-only against guest
+ * RAM. */
+void game_interp_capture_particle_pool(void) {
+    if (!game_layout.particles.array_ptr || !game_layout.particles.rec_stride) return;
+    const uint32_t base = rd32(game_layout.particles.array_ptr);
+    if (base < 0x80000000u) return;
+    const uint32_t stride = game_layout.particles.rec_stride;
+    const uint32_t len = openpete_interp_objs_blob_bytes() < stride
+                             ? openpete_interp_objs_blob_bytes() : stride;
+    /* The pool is walked inside the room the moby walk leaves free above its
+     * own bound, so a full array can never crowd it out. */
+    for (uint32_t i = 0, rec = base; i < 512u; ++i, rec += stride) {
+        const void* host = openpete_psx_to_host_ptr(rec);
+        if (!host) break;
+        int16_t sel;
+        memcpy(&sel, (const uint8_t*)host + game_layout.particles.sel_off, 2);
+        if (sel < 0) {
+            if ((sel >> 8) == -1) break;              /* end of the pool */
+            continue;                                 /* inactive slot */
+        }
+        openpete_interp_objs_capture(rec, host, len);
+    }
+}
+
 /* Scrolling-texture env-anim descriptors (flowing water and waterfalls). The
  * update keeps each scroller's whole animation state in a 7-bit accumulator at
  * desc+6 and commits it to the tiledef V bytes as whole texels on a keyframe

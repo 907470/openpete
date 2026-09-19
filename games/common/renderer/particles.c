@@ -37,6 +37,7 @@
 #include "renderer/env_knob.h"
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
+#include "openpete_interp_objs.h"   /* the per-record prev/curr pool snapshots */
 #include "renderer/particles.h"
 #include "game_layout.h"
 
@@ -57,15 +58,52 @@ extern unsigned openpete_frame;
 
 #define PART_MAX_PRIMS 2048
 
+/* The class a two-point record draws as: the routine projects a second record
+ * point for it and the primitive's two endpoints are those two projections
+ * (partsdraw.s:636-652 reads +0xC for the second X/Y and the high half of +0x8
+ * for its Z, then stores the two screen points at polybuf +0x8 and +0x10).
+ * Every other paired class carries one record point.
+ *
+ * `PART_ROT_CLASS` is the class whose corner extents are a rotation of a fixed
+ * pair of view-space offsets around the record's own view position, all four
+ * corners sharing that position's Z (partsdraw.s:497-504 reads the angle,
+ * :545-566 builds the four offsets from the sine pair and :571-580 projects
+ * them with VZ 0 against the record's translation). A shared Z makes the
+ * perspective divide common to the four corners, so rotating their screen
+ * offsets about the projected record point is that construction exactly. The
+ * other class that reads an angle (partsdraw.s:225-228) rotates in world space
+ * and projects each corner on its own Z, which a screen-space rotation is not,
+ * so it rebases by translation alone. */
+#define PART_TWO_POINT_CLASS 1
+#define PART_ROT_CLASS       2
+
 typedef struct {
     ngte_prim p;
     float     depth;
-    float     psx, psy;   /* the record's own projected point, or the sentinel */
+    double    psx, psy;   /* the record's own projected point, or the sentinel */
+    double    psx2, psy2; /* the second record point of a two-point class */
     int       cls;        /* the record's class, or -1 when unpaired */
+    uint32_t  rec;        /* the record that appended it, 0 when unpaired */
+    uint32_t  w0, w1, w2; /* the record's position words as the tick read them */
 } part_item;
 
-static part_item s_item[PART_MAX_PRIMS];
-static int       s_item_n;
+/* The screen-space rebase of one captured primitive onto the sub-tick pose:
+ * the translation of each record point, and the rotation of the corner offsets
+ * about the first one. Inactive on a canonical feed, and zero-valued at the
+ * end of the tick's own interval, where the feed must reproduce the canonical
+ * primitive bit for bit. */
+typedef struct {
+    float dx, dy;         /* the first record point's screen displacement */
+    float dx2, dy2;       /* the second's, for a two-point class */
+    double rc, rs;        /* the corner rotation, cos/sin of the angle change */
+    float depth;          /* the depth of the re-projected record point */
+    uint8_t active;       /* 1 = translate the corners and take `depth` */
+    uint8_t rot;          /* 1 = rotate the corner offsets as well */
+} part_rebase;
+
+static part_item   s_item[PART_MAX_PRIMS];
+static part_rebase s_reb[PART_MAX_PRIMS];
+static int         s_item_n;
 
 static uint32_t s_code_hist[256];
 static uint32_t s_tag_hist[256];
@@ -76,8 +114,12 @@ static int part_prim_sink(void* ctx, const ngte_prim* s) {
     if (s_item_n >= PART_MAX_PRIMS) return 0;
     s_item[s_item_n].p = *s;
     s_item[s_item_n].depth = 0.0f;
-    s_item[s_item_n].psx = s_item[s_item_n].psy = 0.0f;
+    s_item[s_item_n].psx = s_item[s_item_n].psy = 0.0;
+    s_item[s_item_n].psx2 = s_item[s_item_n].psy2 = 0.0;
     s_item[s_item_n].cls = -1;
+    s_item[s_item_n].rec = 0u;
+    s_item[s_item_n].w0 = s_item[s_item_n].w1 = s_item[s_item_n].w2 = 0u;
+    memset(&s_reb[s_item_n], 0, sizeof s_reb[0]);
     s_item_n++;
     return 1;
 }
@@ -107,11 +149,33 @@ static void part_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
  * way every draw in this engine does: (camY - Y, camZ - Z, X - camX) with the
  * camera position shifted right by two, rotated by the camera matrix at
  * +0x00 with a zero translation. */
+/* The pool's position words, as the record packs them: X in the low half and Y
+ * in the high half of the first word, Z in the low half of the second
+ * (partsdraw.s:709-712). A two-point class's second point takes X and Y from
+ * the third word and Z from the high half of the second (partsdraw.s:636-652).
+ * `off` displaces the point in the pool's own quarter world units. */
+static void part_rec_point(const part_item* it, int second, const double off[3],
+                           double p[3]) {
+    const uint32_t wxy = second ? it->w2 : it->w0;
+    p[0] = (double)(wxy & 0xFFFFu);
+    p[1] = (double)((wxy >> 16) & 0xFFFFu);
+    p[2] = (double)(second ? ((it->w1 >> 16) & 0xFFFFu) : (it->w1 & 0xFFFFu));
+    if (off) { p[0] += off[0]; p[1] += off[1]; p[2] += off[2]; }
+}
+
+/* Project a pool point the way the routine does: the GTE vector is
+ * (camY - Y, camZ - Z, X - camX) with the camera position shifted right by
+ * two, rotated by the camera matrix at +0x00 with a zero translation. */
+static void part_project(const ngte_view* v, const double p[3], ngte_proj* o) {
+    const double cx = v->cam[0] / 4.0, cy = v->cam[1] / 4.0, cz = v->cam[2] / 4.0;
+    ngte_project_gte(v->cam_M, NULL, cy - p[1], cz - p[2], p[0] - cx,
+                     v->ofx, v->ofy, v, 0, o);
+}
+
 static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
     const uint32_t base = cpu->read_word(game_layout.particles.array_ptr);
     if (base < 0x80000000u || base >= 0x80800000u) return;
     const uint32_t stride = game_layout.particles.rec_stride;
-    const double cx = v->cam[0] / 4.0, cy = v->cam[1] / 4.0, cz = v->cam[2] / 4.0;
     /* The fixed front bucket is nearer than bucket 0, which the near guard in
      * openpete_native_depth_from_viewz already maps to the smallest depth the
      * pipeline carries. */
@@ -132,19 +196,28 @@ static void part_pair_depths(CPUState* cpu, const ngte_view* v) {
         }
         if (cpu->read_byte(rec + game_layout.particles.drawn_off) == 0) continue;
 
-        const uint32_t w0 = cpu->read_word(rec + game_layout.particles.pos_off);
-        const uint32_t w1 = cpu->read_word(rec + game_layout.particles.pos_off + 4u);
-        const double px = (double)(w0 & 0xFFFFu);
-        const double py = (double)((w0 >> 16) & 0xFFFFu);
-        const double pz = (double)(w1 & 0xFFFFu);
+        part_item* it = &s_item[i];
+        it->cls = cls;
+        it->rec = rec;
+        it->w0 = cpu->read_word(rec + game_layout.particles.pos_off);
+        it->w1 = cpu->read_word(rec + game_layout.particles.pos_off + 4u);
+        it->w2 = cpu->read_word(rec + game_layout.particles.pos_off + 8u);
+        double p[3];
         ngte_proj o;
-        ngte_project_gte(v->cam_M, NULL, cy - py, cz - pz, px - cx,
-                         v->ofx, v->ofy, v, 0, &o);
-        s_item[i].cls = cls;
-        s_item[i].psx = (float)o.sx;
-        s_item[i].psy = (float)o.sy;
-        s_item[i++].depth =
+        part_rec_point(it, 0, NULL, p);
+        part_project(v, p, &o);
+        it->psx = o.sx;
+        it->psy = o.sy;
+        it->depth =
             openpete_native_depth_from_viewz(openpete_worldvz_scaled((float)o.m3, 4.0f));
+        if (cls == PART_TWO_POINT_CLASS) {
+            ngte_proj o2;
+            part_rec_point(it, 1, NULL, p);
+            part_project(v, p, &o2);
+            it->psx2 = o2.sx;
+            it->psy2 = o2.sy;
+        }
+        i++;
     }
     /* A polybuf that filled mid-pool ends the routine early, so fewer
      * primitives than stamped records is normal; the loop above simply stops
@@ -158,6 +231,186 @@ static int part_feed_enabled(void) {
     static int v = -1;
     if (v < 0) { const char* e = getenv("OPENPETE_PARTICLES"); v = !(e && *e && *e == '0'); }
     return v;
+}
+
+/* ---- sub-tick rebase ------------------------------------------------------
+ *
+ * The primitives are the guest's own output, built under the tick's camera
+ * from the tick's pool, so a sub-tick present that re-feeds them shows every
+ * particle at the pose the tick drew: neither the camera's motion nor the
+ * record's own reaches them. The rebase measures each record point's screen
+ * displacement as the difference of two projections — the pool position the
+ * present shows under the staged camera, against the position the tick drew
+ * under the tick's camera — and moves the primitive by it. At the end of the
+ * tick's own interval the displaced position and the staged camera are the
+ * tick's, so both projections take identical inputs through identical
+ * arithmetic and the displacement is exactly zero. */
+
+/* A particle's speed ceiling, in the pool's quarter world units per tick. The
+ * table is keyed by slot address, so a slot a new record respawns into inside
+ * one tick pairs across two different particles and would lerp as a streak
+ * between them. The selector test below catches a reuse that changed class;
+ * this catches the rest, at a distance no particle covers in a tick. */
+#define PART_REUSE_CEILING 300.0
+
+/* A pair spanning more than this is a discontinuity rather than motion. */
+#define PART_PAIR_STALE_NS (g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2)
+
+/* The record's displacement between the pose the tick drew and the pose this
+ * present shows, in the pool's units, with the previous tick's angle byte.
+ * Returns 0 when the record has no usable pair — it spawned this tick, its
+ * slot was reused, or the two states are further apart than a particle
+ * travels — in which case the primitive holds the tick's pose in the world and
+ * only the camera's motion rebases it. */
+static int part_record_pair(const part_item* it, double alpha, double off[3],
+                            double* prev_ang) {
+    off[0] = off[1] = off[2] = 0.0;
+    const uint32_t pos = game_layout.particles.pos_off;
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(it->rec);
+    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
+    if ((uint32_t)o->blob_len < pos + 12u) return 0;
+    if (o->curr_ns - o->prev_ns > PART_PAIR_STALE_NS) return 0;
+    uint16_t psel, csel;
+    memcpy(&psel, o->prev + game_layout.particles.sel_off, 2);
+    memcpy(&csel, o->curr + game_layout.particles.sel_off, 2);
+    if (psel != csel) return 0;                       /* the slot took a new record */
+    uint32_t pw[3], cw[3];
+    memcpy(pw, o->prev + pos, 12);
+    memcpy(cw, o->curr + pos, 12);
+    const double d[3] = {
+        (double)(pw[0] & 0xFFFFu)        - (double)(cw[0] & 0xFFFFu),
+        (double)((pw[0] >> 16) & 0xFFFFu) - (double)((cw[0] >> 16) & 0xFFFFu),
+        (double)(pw[1] & 0xFFFFu)        - (double)(cw[1] & 0xFFFFu),
+    };
+    if (d[0]*d[0] + d[1]*d[1] + d[2]*d[2] > PART_REUSE_CEILING * PART_REUSE_CEILING)
+        return 0;
+    const double rest = 1.0 - alpha;
+    for (int k = 0; k < 3; k++) off[k] = d[k] * rest;
+    /* The angle the corner extents are built from is the top byte of the
+     * second position word (partsdraw.s:497-501 shifts it right by 23 and
+     * masks the halfword index to 0x1FE, which drops the low bit), and the
+     * shortest arc of the 256-step circle is the way round the record turned. */
+    const double pa = (double)((pw[1] >> 24) & 0xFFu);
+    const double ca = (double)((cw[1] >> 24) & 0xFFu);
+    double da = pa - ca;
+    while (da > 128.0) da -= 256.0;
+    while (da < -128.0) da += 256.0;
+    *prev_ang = ca + da * rest;
+    return 1;
+}
+
+/* The rotation carrying the corner extents from the angle the tick built them
+ * at to the angle this present shows, as the cos/sin of the change. The
+ * routine indexes the game's own sine table at (angle + 0x40) & 0x1FE and
+ * takes the quarter-circle entry 0x80 bytes on (partsdraw.s:497-504), so the
+ * extents ride the table's vector and the change is the rotation between the
+ * two table vectors: exact, whatever the table's phase and sense. */
+static int part_corner_rot(CPUState* cpu, double tick_ang, double show_ang,
+                           double* rc, double* rs) {
+    *rc = 1.0; *rs = 0.0;
+    if (show_ang == tick_ang) return 0;
+    double st, ct, sa, ca;
+    ngte_sincos_f(cpu, tick_ang + 32.0, &st, &ct);
+    ngte_sincos_f(cpu, show_ang + 32.0, &sa, &ca);
+    const double n = st * st + ct * ct;
+    if (n < 1.0) return 0;
+    *rc = (st * sa + ct * ca) / n;
+    *rs = (ct * sa - st * ca) / n;
+    return 1;
+}
+
+/* OPENPETE_PART_REBASE_DBG=1: the rebase's verdicts per second, by class. A
+ * class that only ever snaps has no pairs in the store; a run whose lerped
+ * count is zero rebased nothing and measured nothing. */
+static unsigned long s_reb_stat[3][16];   /* 0 lerped, 1 snapped, 2 rotated */
+static int s_reb_dbg;   /* 2 = one line per rebased primitive */
+
+static void part_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, int i) {
+    part_item* it = &s_item[i];
+    part_rebase* r = &s_reb[i];
+    memset(r, 0, sizeof *r);
+    if (it->cls < 0 || !it->rec) return;         /* the fixed front bucket */
+    double off[3], show_ang = -1.0;
+    const int paired = part_record_pair(it, alpha, off, &show_ang);
+    s_reb_stat[paired ? 0 : 1][it->cls & 0xF]++;
+    double p[3];
+    ngte_proj o;
+    part_rec_point(it, 0, off, p);
+    part_project(v, p, &o);
+    r->dx = (float)(o.sx - it->psx);
+    r->dy = (float)(o.sy - it->psy);
+    r->depth = openpete_native_depth_from_viewz(openpete_worldvz_scaled((float)o.m3, 4.0f));
+    r->active = 1;
+    if (it->cls == PART_TWO_POINT_CLASS) {
+        ngte_proj o2;
+        part_rec_point(it, 1, off, p);
+        part_project(v, p, &o2);
+        r->dx2 = (float)(o2.sx - it->psx2);
+        r->dy2 = (float)(o2.sy - it->psy2);
+    }
+    if (s_reb_dbg >= 2)
+        fprintf(stderr, "[part-reb f=%u rec=%08X c=%d pair=%d off=(%.2f,%.2f,%.2f) "
+                        "ps=(%.2f,%.2f) new=(%.2f,%.2f) d=(%.2f,%.2f)\n",
+                openpete_frame, it->rec, it->cls, paired, off[0], off[1], off[2],
+                it->psx, it->psy, o.sx, o.sy, (double)r->dx, (double)r->dy);
+    if (paired && it->cls == PART_ROT_CLASS) {
+        const double tick_ang = (double)((it->w1 >> 24) & 0xFFu);
+        r->rot = part_corner_rot(cpu, tick_ang, show_ang, &r->rc, &r->rs)
+                     ? 1u : 0u;
+        s_reb_stat[2][it->cls & 0xF] += r->rot;
+    }
+}
+
+static void part_view_dbg(const char* tag, const ngte_view* v) {
+    fprintf(stderr, "[part-view f=%u %s] cam=(%.2f,%.2f,%.2f) ram=(%.2f,%.2f,%.2f) "
+                    "interp=%d of=(%.3f,%.3f) H=%.2f/%.2f s=%.4f F=%.4f M0=(%d,%d,%d)\n",
+            openpete_frame, tag, v->cam[0], v->cam[1], v->cam[2],
+            v->cam_ram[0], v->cam_ram[1], v->cam_ram[2], v->cam_interp,
+            v->ofx, v->ofy, v->H_canon, v->H_eff, v->s, v->F,
+            v->cam_M[0][0], v->cam_M[0][1], v->cam_M[0][2]);
+}
+
+static void part_rebase_report(void) {
+    fprintf(stderr, "[part-rebase]");
+    for (int c = 0; c < 16; c++)
+        if (s_reb_stat[0][c] || s_reb_stat[1][c])
+            fprintf(stderr, " c%d:lerp=%lu snap=%lu rot=%lu", c,
+                    s_reb_stat[0][c], s_reb_stat[1][c], s_reb_stat[2][c]);
+    fprintf(stderr, "\n");
+}
+
+/* Rebase the captured set onto the pose this present shows. The staged camera
+ * resolves through the sub-tick view, so building a view here reads the
+ * interpolated transform the rest of the pass draws under. */
+static void part_rebase_all(CPUState* cpu, double alpha) {
+    if (s_item_n <= 0) return;
+    static int dbg = -1;
+    if (dbg < 0) {
+        const char* e = getenv("OPENPETE_PART_REBASE_DBG");
+        dbg = (e && *e && *e != '0');
+        s_reb_dbg = e ? atoi(e) : 0;
+        if (dbg) atexit(part_rebase_report);
+    }
+    ngte_view v;
+    ngte_view_build(cpu, &v);
+    if (s_reb_dbg >= 2) part_view_dbg("staged", &v);
+    for (int i = 0; i < s_item_n; i++) part_rebase_item(cpu, &v, alpha, i);
+}
+
+/* Carry one corner through its primitive's rebase: the corner keeps its offset
+ * from the record point through the rotation, then the primitive translates by
+ * that point's displacement. */
+static void part_rebase_xy(const part_item* it, const part_rebase* r, int second,
+                           float* x, float* y) {
+    if (!r->active) return;
+    if (r->rot) {
+        const double ox = (double)*x - it->psx;
+        const double oy = (double)*y - it->psy;
+        *x = (float)(it->psx + ox * r->rc + oy * r->rs);
+        *y = (float)(it->psy - ox * r->rs + oy * r->rc);
+    }
+    *x += second ? r->dx2 : r->dx;
+    *y += second ? r->dy2 : r->dy;
 }
 
 static void part_add_quad(const float x[4], const float y[4], const float u[4],
@@ -185,15 +438,22 @@ static void part_add_quad(const float x[4], const float y[4], const float u[4],
 
 /* A line primitive has no area, so it feeds as a one-pixel-wide quad across
  * its own perpendicular, the width the GPU rasterizes it at. */
-static void part_feed_line(const ngte_prim* p, float depth, int gouraud) {
+static void part_feed_line(const part_item* it, const part_rebase* r,
+                           float depth, int gouraud) {
+    const ngte_prim* p = &it->p;
     const uint32_t w1 = p->raw[1];
     const int stp = (int)((w1 >> 24) & 0x02u);
     const uint32_t rgb0 = w1 & 0xFFFFFFu;
     uint32_t xy0, xy1, rgb1;
     if (gouraud) { xy0 = p->raw[2]; rgb1 = p->raw[3] & 0xFFFFFFu; xy1 = p->raw[4]; }
     else         { xy0 = p->raw[2]; rgb1 = rgb0;                   xy1 = p->raw[3]; }
-    const float ax = (float)(int16_t)(xy0 & 0xFFFFu), ay = (float)(int16_t)(xy0 >> 16);
-    const float bx = (float)(int16_t)(xy1 & 0xFFFFu), by = (float)(int16_t)(xy1 >> 16);
+    float ax = (float)(int16_t)(xy0 & 0xFFFFu), ay = (float)(int16_t)(xy0 >> 16);
+    float bx = (float)(int16_t)(xy1 & 0xFFFFu), by = (float)(int16_t)(xy1 >> 16);
+    /* A two-point class's endpoints are two record points, each with its own
+     * displacement; every other class offsets both from the one point. */
+    const int two = (it->cls == PART_TWO_POINT_CLASS);
+    part_rebase_xy(it, r, 0, &ax, &ay);
+    part_rebase_xy(it, r, two, &bx, &by);
     float dx = bx - ax, dy = by - ay;
     float len = sqrtf(dx * dx + dy * dy);
     float ox = 0.5f, oy = 0.0f;
@@ -210,8 +470,10 @@ static void part_feed_native(void) {
     if (s_item_n <= 0) return;
     openpete_native_scene_begin_frame(openpete_frame);
     for (int i = 0; i < s_item_n; i++) {
-        const ngte_prim* p = &s_item[i].p;
-        const float depth = s_item[i].depth;
+        const part_item* it = &s_item[i];
+        const part_rebase* r = &s_reb[i];
+        const ngte_prim* p = &it->p;
+        const float depth = r->active ? r->depth : it->depth;
         if (p->nv == 4 || p->nv == 3) {
             openpete_native_scene_set_tag(
                 OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_QUAD, (uint32_t)p->code, 0));
@@ -225,8 +487,9 @@ static void part_feed_native(void) {
             }
             /* A triangle repeats its last corner, so one split covers both. */
             const int last = p->nv - 1;
-            const float x[4] = { p->x[0], p->x[1], p->x[2], p->x[last] };
-            const float y[4] = { p->y[0], p->y[1], p->y[2], p->y[last] };
+            float x[4] = { p->x[0], p->x[1], p->x[2], p->x[last] };
+            float y[4] = { p->y[0], p->y[1], p->y[2], p->y[last] };
+            for (int j = 0; j < 4; j++) part_rebase_xy(it, r, 0, &x[j], &y[j]);
             const float u[4] = { (float)p->u[0], (float)p->u[1], (float)p->u[2], (float)p->u[last] };
             const float vt[4] = { (float)p->v[0], (float)p->v[1], (float)p->v[2], (float)p->v[last] };
             const uint32_t c[4] = { p->rgb[0], p->rgb[1], p->rgb[2], p->rgb[last] };
@@ -234,7 +497,7 @@ static void part_feed_native(void) {
         } else if ((p->code & 0xF8u) == 0x40u || (p->code & 0xF8u) == 0x50u) {
             openpete_native_scene_set_tag(
                 OPENPETE_TAG_PARTICLE(OPENPETE_TAG_PART_LINE, (uint32_t)p->code, 0));
-            part_feed_line(p, depth, (p->code & 0x10u) != 0);
+            part_feed_line(it, r, depth, (p->code & 0x10u) != 0);
         }
     }
     openpete_native_scene_set_tag(0);
@@ -291,12 +554,14 @@ static void part_census(uint32_t start, uint32_t end, uint32_t fed_before) {
 
 /* Sub-tick re-extract. The primitives are the guest's own output and are gone
  * once the polybuf is reused, so the replay re-feeds the set the canonical tick
- * captured, at the depths paired then. Their screen positions are the tick's;
- * at alpha 1 the replay reproduces the canonical present exactly, which is what
- * the spine's identity leg measures. */
-void particles_reextract(CPUState* cpu) {
-    (void)cpu;
+ * captured, rebased onto the pose this present shows: each record point's
+ * screen displacement carries its primitive's corners and its depth. At the
+ * end of the tick's interval every term of the rebase is zero and the replay
+ * reproduces the canonical present exactly, which is what the spine's identity
+ * leg measures. */
+void particles_reextract(CPUState* cpu, int bracketed, double alpha) {
     if (!hook_reextract_ready(RP_PARTICLES)) return;
+    if (bracketed) part_rebase_all(cpu, alpha);
     part_feed_native();
 }
 
@@ -317,6 +582,7 @@ static int on_particles_draw(CPUState* cpu, uint32_t addr) {
         const uint32_t fed_before = s_fed_tris;
         ngte_view view;
         ngte_view_build(cpu, &view);
+        if (s_reb_dbg >= 2) part_view_dbg("tick", &view);
         part_pair_depths(cpu, &view);
         if (feed && render_path_enabled(RP_PARTICLES)) part_feed_native();
         part_census(startp, endp, fed_before);

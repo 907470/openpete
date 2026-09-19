@@ -9,8 +9,10 @@
  * position at +0x28, all rewritten once per tick before the draws read them.
  *
  * The per-object capture is the shared moby-array walk
- * (game_interp_capture_moby_array), installed by the same registration call;
- * Spyro 3 keeps no captured pool outside that array. */
+ * (game_interp_capture_moby_array) plus the particle pool
+ * (game_interp_capture_particle_pool), whose records the particle feeder's
+ * sub-tick replay rebases its captured primitives onto; both are installed by
+ * the same registration call. */
 #include "renderer/interp_regions_gen.h"
 #include "renderer/orchestrator.h"
 #include "game_layout.h"
@@ -52,9 +54,8 @@ void game_interp_register(void) {
     rows[NROWS - 1].ra_commit = 0;
 
     /* The camera's span is the draw-time transform [cam.base, cam.xform_end),
-     * computed from the layout descriptor rather than stated. Spyro 3 has no
-     * pools outside the moby array, so the shared walk is the whole capture. */
+     * computed from the layout descriptor rather than stated. */
     game_interp_register_common(rows, (unsigned)NROWS,
                                 game_layout.cam.xform_end - game_layout.cam.base,
-                                NULL);
+                                game_interp_capture_particle_pool);
 }
