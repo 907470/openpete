@@ -337,6 +337,26 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # Moby sub-tick continuity. Per row of
+    # games/<slug>/moby-subtick-corpus.manifest, two headless replays of one
+    # bk2 with the intermediate presents pinned at alpha 0 and at alpha 1, and
+    # every animated moby's keyframe pose and screen centroid read per
+    # present: the previous pose rebuilt at each leg must equal the pose the
+    # record of the tick before carries, and a leg where that record blends
+    # out of a clip must seam no worse than the same moby's other legs. Fails
+    # as vacuous when the row measures fewer bracketed or blending legs than
+    # its floor.
+    foreach(_subtick_game spyro-1 spyro-2 spyro-3)
+        add_test(NAME moby_subtick_${_subtick_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_moby_subtick.sh
+                         --game ${_subtick_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(moby_subtick_${_subtick_game} PROPERTIES
+            LABELS "presentation;moby"
+            TIMEOUT 900
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Retained-terrain GPU cache hole census, windowed on the machine's own
     # GPU. Per freecam-corpus row, two legs of one build on one device
     # differing only in --terrain-cache, and a count of the pixels the cached

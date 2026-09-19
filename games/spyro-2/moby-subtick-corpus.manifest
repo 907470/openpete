@@ -1,0 +1,10 @@
+# moby-subtick-corpus.manifest — rows of scripts/check_moby_subtick.sh.
+#   <bk2> | <lo>-<hi> | pairs=<n> class=<n> [dmax=<px>] [| leg|seam <vbl> <moby> <reason>]...
+#   bk2    a movie under games/spyro-2/bk2
+#   span   intermediate-capture VBLs, two apart; exclusions name the VBL the
+#          [moby-anim] trace prints
+# The first dialogue in Glimmer: Pogo (class 0x22a) blends out of animation 0
+# into animation 3 over trace VBLs 893-903, the two class 0x1f0 NPCs switch
+# animation at 989 and 1071, and classes 0x78 and 0x244 blend into keyframe 0
+# at their loop wraps.
+glimmer-pogo-dialogue.bk2 | 850-1086 | pairs=844 class=30

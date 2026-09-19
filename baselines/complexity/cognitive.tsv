@@ -2,7 +2,7 @@
 # tool: clang-tidy 14
 # options: Threshold=0 IgnoreMacros=true header-filter=.* cap=25
 # written-by: hook
-# head: ec0c8c6396a9e3ee95a93ffc147baeb000079f62
+# head: e5dfde9a2b21836ca2893c2a2f7bb518cab66dd3
 file	function	score	marked	accepted
 core/config/config.c	harvest_args	30	0	
 core/config/config.c	harvest_base	39	0	
@@ -142,14 +142,14 @@ games/common/renderer/moby.c	compare_walk_vs_prims	251	0
 games/common/renderer/moby.c	emit_wtri	26	0	
 games/common/renderer/moby.c	hex_dump	35	0	
 games/common/renderer/moby.c	moby_build_validate	51	0	
-games/common/renderer/moby.c	moby_decode_project	89	0	
+games/common/renderer/moby.c	moby_decode_project	83	0	
 games/common/renderer/moby.c	moby_native_pass	46	0	
 games/common/renderer/moby.c	moby_reextract	48	0	
 games/common/renderer/moby.c	moby_reveal_dbg	44	0	
 games/common/renderer/moby.c	project_all_records_inner	60	0	
 games/common/renderer/moby.c	project_all_shaded	190	0	
 games/common/renderer/moby.c	push_scene_moby	87	0	
-games/common/renderer/moby.c	reextract_record_pass	260	0	
+games/common/renderer/moby.c	reextract_record_pass	236	0	
 games/common/renderer/moby.c	shaded_color_ab	35	0	
 games/common/renderer/moby.c	shaded_compose_euler	54	0	
 games/common/renderer/moby.c	shaded_pcol_scratch_check	27	0	

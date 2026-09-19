@@ -1,0 +1,16 @@
+# moby-subtick-corpus.manifest — rows of scripts/check_moby_subtick.sh.
+#   <bk2> | <lo>-<hi> | pairs=<n> class=<n> [dmax=<px>] [| leg|seam <vbl> <moby> <reason>]...
+#   bk2    a movie under games/spyro-3/bk2
+#   span   intermediate-capture VBLs, two apart; exclusions name the VBL the
+#          [moby-anim] trace prints
+# Sheila (class 0x39) blends from animation 1 into 3 and from 3 into 14
+# (switches at trace VBLs 4499 and 4513); two class 0x7e NPCs walk and switch
+# animation at 4509, 4533 and 4541.
+# Three class legs are left out of the seam bound, each with its tuple exact.
+# At 4529 and 4531 the class 0x7e NPC turns (rotation byte 0x54, 0x59, 0x5e)
+# while it blends, and the record replay draws the current tick's rotation
+# from alpha 0; the seam without its translation term reads 0.25 px against
+# the moby's 0.15. At 4537 the seam is the translation term alone: the
+# centroid step (-0.750, -0.080) px equals H times the step of the view-space
+# translation over its depth, and 0.11 px remains against the moby's 0.19.
+sheilas-alp-sheila-water-invisible.bk2 | 4490-4556 | pairs=195 class=18 | seam 4529 801697e4 rotation step on the record replay | seam 4531 801697e4 rotation step on the record replay | seam 4537 80169734 translation floor of the record replay

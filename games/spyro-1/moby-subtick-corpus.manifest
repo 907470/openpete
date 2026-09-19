@@ -1,0 +1,12 @@
+# moby-subtick-corpus.manifest — rows of scripts/check_moby_subtick.sh.
+#   <bk2> | <lo>-<hi> | pairs=<n> class=<n> [dmax=<px>] [| leg|seam <vbl> <moby> <reason>]...
+#   bk2    a movie under games/spyro-1/bk2
+#   span   intermediate-capture VBLs, two apart; exclusions name the VBL the
+#          [moby-anim] trace prints
+# The Argus rescue in Artisans: several dragons and NPCs cross clip switches.
+# Spyro 1 rebuilds both poses host-side from the state bytes, so its seam
+# carries no integer-record floor and every leg reads D = 0.
+# 1828: 8016fa68 (class 0x0a) switches between animations of different
+# vertex counts, which returns no previous pose; the present shows the
+# current pose from alpha 0.
+artisans-rescue-argus.bk2 | 1714-1838 | pairs=618 class=17 dmax=0.0005 | leg 1828 8016fa68 clip switch across vertex counts returns no previous pose
