@@ -56,6 +56,13 @@ extern unsigned openpete_frame;
 #define PART_CLASS_MASK  0xF
 #define PART_POOL_END    (-1)   /* selector >> 8 at the end-of-pool sentinel */
 
+/* The record's age byte. The pool update advances it while a record lives and
+ * resets it when a slot takes a new record; the draw routine never reads it,
+ * which is why it is not among the layout descriptor's draw-side offsets. It is
+ * the only field that separates a continuing particle from a slot reuse that
+ * kept the selector's class and type, so the sub-tick pairing rests on it. */
+#define PART_AGE_OFF 0x02u
+
 #define PART_MAX_PRIMS 2048
 
 /* The class a two-point record draws as: the routine projects a second record
@@ -151,15 +158,23 @@ static void part_capture_prims(CPUState* cpu, uint32_t start, uint32_t end) {
  * +0x00 with a zero translation. */
 /* The pool's position words, as the record packs them: X in the low half and Y
  * in the high half of the first word, Z in the low half of the second
- * (partsdraw.s:709-712). A two-point class's second point takes X and Y from
- * the third word and Z from the high half of the second (partsdraw.s:636-652).
- * `off` displaces the point in the pool's own quarter world units. */
+ * (partsdraw.s:709-712). A two-point class's second point is packed one
+ * halfword on from the first: X in the high half of the second word
+ * (partsdraw.s:650-651 subtracts the camera X from it), Y in the low half and Z
+ * in the high half of the third (partsdraw.s:653-659 subtracts the camera Y and
+ * Z from those two). `off` displaces the point in the pool's own quarter world
+ * units. */
 static void part_rec_point(const part_item* it, int second, const double off[3],
                            double p[3]) {
-    const uint32_t wxy = second ? it->w2 : it->w0;
-    p[0] = (double)(wxy & 0xFFFFu);
-    p[1] = (double)((wxy >> 16) & 0xFFFFu);
-    p[2] = (double)(second ? ((it->w1 >> 16) & 0xFFFFu) : (it->w1 & 0xFFFFu));
+    if (second) {
+        p[0] = (double)((it->w1 >> 16) & 0xFFFFu);
+        p[1] = (double)(it->w2 & 0xFFFFu);
+        p[2] = (double)((it->w2 >> 16) & 0xFFFFu);
+    } else {
+        p[0] = (double)(it->w0 & 0xFFFFu);
+        p[1] = (double)((it->w0 >> 16) & 0xFFFFu);
+        p[2] = (double)(it->w1 & 0xFFFFu);
+    }
     if (off) { p[0] += off[0]; p[1] += off[1]; p[2] += off[2]; }
 }
 
@@ -256,24 +271,40 @@ static int part_feed_enabled(void) {
 /* A pair spanning more than this is a discontinuity rather than motion. */
 #define PART_PAIR_STALE_NS (g_openpete_tick_period_ns + g_openpete_tick_period_ns / 2)
 
+/* The verdict of the pairing: the primitive is lerped only on PART_PAIR_LERP,
+ * and holds its current pose otherwise. */
+enum { PART_PAIR_NONE = 0, PART_PAIR_LERP = 1, PART_PAIR_REUSE = 2 };
+
 /* The record's displacement between the pose the tick drew and the pose this
  * present shows, in the pool's units, with the previous tick's angle byte.
- * Returns 0 when the record has no usable pair — it spawned this tick, its
- * slot was reused, or the two states are further apart than a particle
- * travels — in which case the primitive holds the tick's pose in the world and
- * only the camera's motion rebases it. */
+ * Returns PART_PAIR_LERP only when the previous blob is the same particle. A
+ * record that spawned this tick, one whose two states are further apart than a
+ * tick's capture interval, and one whose slot was reused return otherwise, and
+ * the primitive then holds the tick's pose in the world with only the camera's
+ * motion rebasing it.
+ *
+ * The table is keyed by slot address, so a slot a new record respawns into
+ * pairs two different particles; lerping across that pair draws a line from the
+ * dead particle's position to the live one's. Three tests separate the reuse
+ * from a continuing particle, in order of what they catch: the selector
+ * halfword changing catches a reuse of a different class or type; the age byte
+ * falling catches a reuse that kept both, the pool update having reset it for
+ * the new record; the speed ceiling catches the rest, at a distance no particle
+ * covers in a tick. */
 static int part_record_pair(const part_item* it, double alpha, double off[3],
                             double* prev_ang) {
     off[0] = off[1] = off[2] = 0.0;
     const uint32_t pos = game_layout.particles.pos_off;
     const openpete_interp_obj_t* o = openpete_interp_objs_find(it->rec);
-    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns) return 0;
-    if ((uint32_t)o->blob_len < pos + 12u) return 0;
-    if (o->curr_ns - o->prev_ns > PART_PAIR_STALE_NS) return 0;
+    if (!o || !o->have_prev || o->prev_ns == 0 || o->curr_ns <= o->prev_ns)
+        return PART_PAIR_NONE;
+    if ((uint32_t)o->blob_len < pos + 12u) return PART_PAIR_NONE;
+    if (o->curr_ns - o->prev_ns > PART_PAIR_STALE_NS) return PART_PAIR_NONE;
     uint16_t psel, csel;
     memcpy(&psel, o->prev + game_layout.particles.sel_off, 2);
     memcpy(&csel, o->curr + game_layout.particles.sel_off, 2);
-    if (psel != csel) return 0;                       /* the slot took a new record */
+    if (psel != csel) return PART_PAIR_REUSE;         /* the slot took a new record */
+    if (o->curr[PART_AGE_OFF] < o->prev[PART_AGE_OFF]) return PART_PAIR_REUSE;
     uint32_t pw[3], cw[3];
     memcpy(pw, o->prev + pos, 12);
     memcpy(cw, o->curr + pos, 12);
@@ -283,7 +314,7 @@ static int part_record_pair(const part_item* it, double alpha, double off[3],
         (double)(pw[1] & 0xFFFFu)        - (double)(cw[1] & 0xFFFFu),
     };
     if (d[0]*d[0] + d[1]*d[1] + d[2]*d[2] > PART_REUSE_CEILING * PART_REUSE_CEILING)
-        return 0;
+        return PART_PAIR_REUSE;
     const double rest = 1.0 - alpha;
     for (int k = 0; k < 3; k++) off[k] = d[k] * rest;
     /* The angle the corner extents are built from is the top byte of the
@@ -296,7 +327,7 @@ static int part_record_pair(const part_item* it, double alpha, double off[3],
     while (da > 128.0) da -= 256.0;
     while (da < -128.0) da += 256.0;
     *prev_ang = ca + da * rest;
-    return 1;
+    return PART_PAIR_LERP;
 }
 
 /* The rotation carrying the corner extents from the angle the tick built them
@@ -319,10 +350,13 @@ static int part_corner_rot(CPUState* cpu, double tick_ang, double show_ang,
     return 1;
 }
 
-/* OPENPETE_PART_REBASE_DBG=1: the rebase's verdicts per second, by class. A
- * class that only ever snaps has no pairs in the store; a run whose lerped
- * count is zero rebased nothing and measured nothing. */
-static unsigned long s_reb_stat[3][16];   /* 0 lerped, 1 snapped, 2 rotated */
+/* OPENPETE_PART_REBASE_DBG=1: the rebase's verdicts per run, by class. A class
+ * that only ever snaps has no pairs in the store; a run whose lerped count is
+ * zero rebased nothing and measured nothing. `reuse` is the subset of the
+ * snapped whose slot was found holding a different record than the pair's
+ * previous blob, which is what a rising reuse count against a steady lerp count
+ * separates from a pool that is simply churning. */
+static unsigned long s_reb_stat[4][16];   /* 0 lerped, 1 snapped, 2 rotated, 3 reused */
 static int s_reb_dbg;   /* 2 = one line per rebased primitive */
 
 static void part_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, int i) {
@@ -331,8 +365,10 @@ static void part_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, in
     memset(r, 0, sizeof *r);
     if (it->cls < 0 || !it->rec) return;         /* the fixed front bucket */
     double off[3], show_ang = -1.0;
-    const int paired = part_record_pair(it, alpha, off, &show_ang);
+    const int verdict = part_record_pair(it, alpha, off, &show_ang);
+    const int paired = (verdict == PART_PAIR_LERP);
     s_reb_stat[paired ? 0 : 1][it->cls & 0xF]++;
+    if (verdict == PART_PAIR_REUSE) s_reb_stat[3][it->cls & 0xF]++;
     double p[3];
     ngte_proj o;
     part_rec_point(it, 0, off, p);
@@ -349,10 +385,11 @@ static void part_rebase_item(CPUState* cpu, const ngte_view* v, double alpha, in
         r->dy2 = (float)(o2.sy - it->psy2);
     }
     if (s_reb_dbg >= 2)
-        fprintf(stderr, "[part-reb f=%u rec=%08X c=%d pair=%d off=(%.2f,%.2f,%.2f) "
-                        "ps=(%.2f,%.2f) new=(%.2f,%.2f) d=(%.2f,%.2f)\n",
-                openpete_frame, it->rec, it->cls, paired, off[0], off[1], off[2],
-                it->psx, it->psy, o.sx, o.sy, (double)r->dx, (double)r->dy);
+        fprintf(stderr, "[part-reb f=%u rec=%08X c=%d v=%d off=(%.2f,%.2f,%.2f) "
+                        "ps=(%.2f,%.2f) new=(%.2f,%.2f) d=(%.2f,%.2f) d2=(%.2f,%.2f)\n",
+                openpete_frame, it->rec, it->cls, verdict, off[0], off[1], off[2],
+                it->psx, it->psy, o.sx, o.sy, (double)r->dx, (double)r->dy,
+                (double)r->dx2, (double)r->dy2);
     if (paired && it->cls == PART_ROT_CLASS) {
         const double tick_ang = (double)((it->w1 >> 24) & 0xFFu);
         r->rot = part_corner_rot(cpu, tick_ang, show_ang, &r->rc, &r->rs)
@@ -374,8 +411,9 @@ static void part_rebase_report(void) {
     fprintf(stderr, "[part-rebase]");
     for (int c = 0; c < 16; c++)
         if (s_reb_stat[0][c] || s_reb_stat[1][c])
-            fprintf(stderr, " c%d:lerp=%lu snap=%lu rot=%lu", c,
-                    s_reb_stat[0][c], s_reb_stat[1][c], s_reb_stat[2][c]);
+            fprintf(stderr, " c%d:lerp=%lu snap=%lu rot=%lu reuse=%lu", c,
+                    s_reb_stat[0][c], s_reb_stat[1][c], s_reb_stat[2][c],
+                    s_reb_stat[3][c]);
     fprintf(stderr, "\n");
 }
 
