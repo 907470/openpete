@@ -1281,6 +1281,133 @@ static int s23_cull_box_threshold(CPUState* cpu, uint32_t moby, unsigned drawn_b
     return (rad << 8) + (int)((drawn_bits & 3u) << 8);
 }
 
+/* Saturating narrow. Every intermediate the cull stores lands in an int16 GTE
+ * register or an int16 record field, which wraps once extended LOD reveals a
+ * moby past the range the cull could ever queue. Inside that range this is the
+ * identity, past it a saturated value stays at the end of the range instead of
+ * reappearing at the other end. */
+static int64_t s23_sat(int64_t v, int64_t lo, int64_t hi) {
+    return v < lo ? lo : (v > hi ? hi : v);
+}
+
+/* The animated record's translation: the quarter-world view-space centre
+ * shifted left 2 and right by the model's scale byte, then rescaled by the
+ * moby's size byte through a GPF whose product the GTE clamps to an int16
+ * before a shift of 5 (mobydraw.s:510,537-539,546-551,572-574). The cull drops
+ * a record whose result passes 63000 (mobydraw.s:546-551); that is a range
+ * limit, which is what extended LOD lifts, so it is not applied here. */
+static void s23_anim_translation(const moby_anim_fields_t* f, int scale, int size,
+                                 int32_t tr[3]) {
+    for (int i = 0; i < 3; i++) {
+        int64_t v = ((int64_t)f->centre[i] << 2) >> (int)s23_sat(scale, 0, 31);
+        if (size) v = s23_sat(s23_sat(v, -32768, 32767) * size, -32768, 32767) >> 5;
+        tr[i] = (int32_t)s23_sat(v, INT32_MIN, INT32_MAX);
+    }
+}
+
+/* Compose the animated record's 0x44 bytes, the inverse of s23_read_record.
+ * The flags word carries the cull's draw verdict in byte 0, the keyframe-blend
+ * byte in byte 1 (mobydraw.s:459-461,522) and the LOD verdict in its top half
+ * (mobydraw.s:501,918-921). The matrix is five words, and the ordering-table
+ * key shares the spare half of the last (mobydraw.s:344-348,559). The verdict
+ * byte is the near one: the far verdict only ever narrows what the record
+ * draws, and extended LOD is the rule that it is drawn. */
+static void s23_write_anim_record(uint32_t* w, const moby_anim_fields_t* f,
+                                  uint32_t moby, uint32_t material,
+                                  uint32_t frame_a, uint32_t patch,
+                                  int tier, int key, const int32_t tr[3]) {
+    const uint32_t L = game_layout.moby.rec_matrix_off / 4u;
+    w[0] = ((uint32_t)(tier & 0xFFFF) << 16) | (f->blend << 8) | 1u;
+    w[game_layout.moby.rec_header_off   / 4u] = f->header;
+    w[game_layout.moby.rec_header_b_off / 4u] = f->header_b;
+    w[game_layout.moby.rec_frame_a_off  / 4u] = frame_a;
+    w[game_layout.moby.rec_frame_b_off  / 4u] = f->frame_b;
+    w[0x14u / 4u]                             = patch;
+    for (int i = 0; i < 3; i++)
+        w[game_layout.moby.rec_tr_off / 4u + (uint32_t)i] = (uint32_t)tr[i];
+    w[L + 0u] = ((uint32_t)(f->M[0][1] & 0xFFFF) << 16) | (uint32_t)(f->M[0][0] & 0xFFFF);
+    w[L + 1u] = ((uint32_t)(f->M[1][0] & 0xFFFF) << 16) | (uint32_t)(f->M[0][2] & 0xFFFF);
+    w[L + 2u] = ((uint32_t)(f->M[1][2] & 0xFFFF) << 16) | (uint32_t)(f->M[1][1] & 0xFFFF);
+    w[L + 3u] = ((uint32_t)(f->M[2][1] & 0xFFFF) << 16) | (uint32_t)(f->M[2][0] & 0xFFFF);
+    w[L + 4u] = ((uint32_t)(uint16_t)key      << 16) | (uint32_t)(f->M[2][2] & 0xFFFF);
+    w[game_layout.moby.rec_material_off / 4u] = material;
+    w[game_layout.moby.rec_moby_off     / 4u] = moby;
+}
+
+/* The keyframe reference the record stores, and the faceblock patch list that
+ * rides with it. A record on the low-poly tier carries the keyframe word with
+ * its top bits set, which is how the draw skips the patch apply
+ * (mobydraw.s:501,504-505); otherwise the list is resolved through the Model's
+ * own table, whose base is Model+0x34, indexed by the keyframe word's top byte
+ * masked to 0x7C, and the word read there is the list's byte offset from that
+ * same base (mobydraw.s:511-517). */
+static uint32_t s23_anim_keyframe_ref(CPUState* cpu, const moby_anim_fields_t* f,
+                                      int tier, uint32_t* patch) {
+    *patch = 0u;
+    if (tier < 0) return f->frame_a | 0xFC000000u;
+    const uint32_t base = cpu->read_word(f->model + 0x34u);
+    if (base >= 0x80000000u)
+        *patch = base + cpu->read_word(base + ((f->frame_a >> 24) & 0x7Cu));
+    return f->frame_a;
+}
+
+/* Build the animated kind's cull record for one moby the box rejected, the way
+ * the cull composes it, and append it to the host copy of the cull's own
+ * record list. The regular walk reads that copy, so an appended record decodes
+ * through exactly the path a queued one does and a sub-tick present replays it
+ * with the rest.
+ *
+ * The LOD verdict the record carries is
+ *
+ *   tier = (Moby+0x4E low byte << 8) - the view-space depth before the
+ *          translation rescale                              (mobydraw.s:450-456)
+ *
+ * and its sign picks the low-poly vertex count and face list. The cull stores
+ * it in a halfword, which a revealed moby's depth overruns; a wrapped verdict
+ * re-enters the near band and re-fades a record that is unambiguously
+ * far-tier, so it saturates. The walk applies the extended model rule to the
+ * stored verdict per fed record, as it does for a queued one.
+ *
+ * The ordering-table key is the rescaled depth less 0x200 shifted by the
+ * model's span byte, halved (mobydraw.s:554-559). Like the far drop it is a
+ * range limit rather than paint order, so it saturates rather than wrapping;
+ * the native draw reads neither it nor the ordering-table slot, which the
+ * depth buffer replaces.
+ *
+ * Nothing here writes guest memory: the copy is the host's and the moby's own
+ * verdict byte stays the cull's. */
+static int s23_reveal_anim_record(CPUState* cpu, uint32_t moby, moby_reveal_reason_t* why) {
+    /* A moby whose colour word has bit 30 set takes a second composition path
+     * for its rotation and colour (mobydraw.s:228,633-640), which this builder
+     * does not compose. */
+    const uint32_t colour = cpu->read_word(moby + game_layout.moby.colour_off);
+    if (colour & 0x40000000u) { *why = MOBY_REVEAL_OTHER_FORM; return 0; }
+    moby_anim_fields_t f;
+    if (!moby_reveal_anim_fields(cpu, moby, &f)) { *why = MOBY_REVEAL_NO_POSE; return 0; }
+    if (moby_rec_holds_moby(cpu, moby)) { *why = MOBY_REVEAL_DUPLICATE; return 0; }
+    uint32_t* w = moby_rec_append(NULL);
+    if (!w) { *why = MOBY_REVEAL_QUEUE_FULL; return 0; }
+
+    const uint32_t lod = cpu->read_half(moby + 0x4Eu);   /* the LOD byte, then the size byte */
+    const int tier = (int)s23_sat(((int64_t)(lod & 0xFFu) << 8) - (int64_t)f.centre[2],
+                                  -32768, 32767);
+    int32_t tr[3];
+    s23_anim_translation(&f, (int)(cpu->read_byte(f.header + game_layout.moby.anim_scale_off) & 0xFFu),
+                         (int)((lod >> 8) & 0xFFu), tr);
+    uint32_t patch = 0u;
+    const uint32_t frame_a = s23_anim_keyframe_ref(cpu, &f, tier, &patch);
+    /* The span the ordering-table key subtracts is the larger of the two
+     * keyframes' own (mobydraw.s:495-498). */
+    int span = (int)cpu->read_byte(f.header + 0x03u);
+    const int span_b = (int)cpu->read_byte(f.header_b + 0x03u);
+    if (f.blend && span_b > span) span = span_b;
+    const int key = (int)s23_sat((((int64_t)tr[2] - ((int64_t)0x200 << (int)s23_sat(span, 0, 30))) >> 1),
+                                 -32768, 32767);
+    s23_write_anim_record(w, &f, moby, colour, frame_a, patch, tier, key, tr);
+    *why = MOBY_REVEAL_OK;
+    return 1;
+}
+
 /* Build the second kind's queue record for one moby the box rejected, the way
  * the cull composes it (mobydraw.s:604-630): the Moby, the three quarter-world
  * camera deltas — (moby - cam) >> 2 on the first component and (cam - moby)
@@ -1293,14 +1420,20 @@ static int s23_cull_box_threshold(CPUState* cpu, uint32_t moby, unsigned drawn_b
  * host-built record carries no range limit, which is what extended LOD means.
  * Nothing here writes guest memory — the queue is the host copy taken at the
  * cull hook, and the moby's own verdict byte stays the cull's. */
-static int s23_reveal_record(CPUState* cpu, uint32_t moby) {
-    if (s_simple_qn >= S23_SIMPLE_QCAP) return 0;
+static int s23_reveal_record(CPUState* cpu, uint32_t moby, moby_reveal_kind_t kind,
+                             moby_reveal_reason_t* why) {
     const uint32_t cls   = cpu->read_half(moby + game_layout.moby.class_off);
     const uint32_t model = cpu->read_word(game_layout.moby.model_table + cls * 4u);
-    if (model == 0u || (int32_t)model < 0) return 0;   /* absent, or the animated kind */
+    if (model == 0u) { *why = MOBY_REVEAL_NO_MODEL; return 0; }
+    if (s23_model_is_animated(cpu, model) != (kind == MOBY_REVEAL_ANIMATED)) {
+        *why = MOBY_REVEAL_OTHER_KIND; return 0;
+    }
+    if (kind == MOBY_REVEAL_ANIMATED) return s23_reveal_anim_record(cpu, moby, why);
+    if (s_simple_qn >= S23_SIMPLE_QCAP) { *why = MOBY_REVEAL_QUEUE_FULL; return 0; }
     /* The cull admits on more than the box, so a moby outside the box can
      * already hold a captured record; a second one would draw it twice. */
-    for (int k = 0; k < s_simple_qn; k++) if (s_simple_q[k][0] == moby) return 0;
+    for (int k = 0; k < s_simple_qn; k++)
+        if (s_simple_q[k][0] == moby) { *why = MOBY_REVEAL_DUPLICATE; return 0; }
     const uint32_t anim = cpu->read_word(moby + game_layout.moby.anim_state_off);
     const int32_t cx = (int32_t)cpu->read_word(game_layout.cam.position + 0u),
                   cy = (int32_t)cpu->read_word(game_layout.cam.position + 4u),
@@ -1337,7 +1470,7 @@ static int s23_simple_pass(CPUState* cpu) {
      * of the queue, so the records it rejected are rebuilt here and decoded
      * with the rest. The queue this appends to is the host copy above; the
      * game's own draw below still reads its own, unchanged. */
-    int revealed = moby_reveal_candidates(cpu);
+    int revealed = moby_reveal_candidates(cpu, MOBY_REVEAL_SIMPLE);
     for (int i = 0; i < 4; i++)
         s_flat_entry[i] = cpu->read_word(S23_FLAT_SCRATCH + (uint32_t)i * 4u);
     openpete_recomp_module_get()->dispatch(cpu, game_layout.moby.hook_draw_simple);

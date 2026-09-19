@@ -144,6 +144,13 @@ uint32_t moby_canon_rec_bytes(void) { return game_layout.moby.rec_base_polybuf_o
 static uint32_t s_rec_snap[REC_SNAP_WORDS];
 static uint32_t s_rec_snap_base;    /* guest address the copy starts at */
 static uint32_t s_rec_snap_words;   /* 0 = no copy; reads pass through */
+/* The records the cull itself wrote, and whether the copy reached the cull's
+ * terminator: the extended-LOD reveal appends its own records after them and
+ * has to be able to put the terminator back where the cull left it. */
+static uint32_t s_rec_snap_queued;
+static int      s_rec_snap_ended;
+static int      s_rec_snap_appended;
+static void moby_rec_append_reset(void);
 
 static void moby_rec_snapshot(CPUState* cpu) {
     s_rec_snap_words = 0;
@@ -168,6 +175,49 @@ static void moby_rec_snapshot(CPUState* cpu) {
     if (ended) s_rec_snap[n * sw] = 0u;
     s_rec_snap_base  = base;
     s_rec_snap_words = n * sw + (ended ? 1u : 0u);
+    s_rec_snap_queued = n;
+    s_rec_snap_ended  = ended;
+}
+
+/* Drop every appended record, leaving the copy exactly as the cull hook took
+ * it. The appends belong to one tick's reveal and are rebuilt on the next. */
+static void moby_rec_append_reset(void) {
+    if (!s_rec_snap_words) return;
+    const uint32_t sw = game_layout.moby.rec_stride / 4u;
+    s_rec_snap_words = s_rec_snap_queued * sw + (s_rec_snap_ended ? 1u : 0u);
+    if (s_rec_snap_ended) s_rec_snap[s_rec_snap_queued * sw] = 0u;
+    s_rec_snap_appended = 0;
+}
+
+uint32_t* moby_rec_append(uint32_t* addr) {
+    /* A copy that ran out of room ends on a live record, and the walk reads
+     * the records past it out of guest memory, where an appended one would be
+     * invisible. Only a copy that reached the cull's terminator has a tail
+     * this can extend. */
+    if (!s_rec_snap_words || !s_rec_snap_ended) return NULL;
+    const uint32_t stride = game_layout.moby.rec_stride;
+    const uint32_t sw = stride / 4u;
+    const uint32_t n = s_rec_snap_queued + (uint32_t)s_rec_snap_appended;
+    if (n >= REC_SNAP_RECS || (n + 2u) * sw > REC_SNAP_WORDS) return NULL;
+    uint32_t* w = &s_rec_snap[n * sw];
+    memset(w, 0, stride);
+    w[sw] = 0u;                                   /* the terminator moves past it */
+    s_rec_snap_words = (n + 1u) * sw + 1u;
+    s_rec_snap_appended++;
+    if (addr) *addr = s_rec_snap_base + n * stride;
+    return w;
+}
+
+int moby_rec_holds_moby(CPUState* cpu, uint32_t moby) {
+    if (!s_rec_snap_words || !moby_game.read_record) return 0;
+    const uint32_t stride = game_layout.moby.rec_stride;
+    const uint32_t n = s_rec_snap_queued + (uint32_t)s_rec_snap_appended;
+    for (uint32_t r = 0; r < n; r++) {
+        moby_record_t R;
+        if (!moby_game.read_record(cpu, s_rec_snap_base + r * stride, &R)) break;
+        if (R.moby == moby) return 1;
+    }
+    return 0;
 }
 
 uint32_t moby_rec_word(CPUState* cpu, uint32_t addr) {
@@ -1752,8 +1802,55 @@ static int append_revealed_regular_inner(CPUState* cpu) {
  * Nothing here writes guest memory: the moby's drawn-verdict byte, which
  * gameplay reads on the next tick, stays the canonical cull's. */
 static int moby_verify_enabled(void);
-int moby_reveal_candidates(CPUState* cpu) {
+
+int moby_reveal_anim_fields(CPUState* cpu, uint32_t moby, moby_anim_fields_t* f) {
+    const uint32_t cls   = cpu->read_half(moby + game_layout.moby.class_off);
+    const uint32_t model = cpu->read_word(game_layout.moby.model_table + cls * 4u);
+    if (model < 0x80000000u || !moby_game.model_is_animated(cpu, model)) return 0;
+    uint8_t st[5];
+    for (uint32_t k = 0; k < 5u; k++)
+        st[k] = cpu->read_byte(moby + game_layout.moby.anim_state_off + k);
+    moby_pose_t pose;
+    if (!moby_pose_derive(cpu, model, st, &pose)) return 0;
+    f->model    = model;
+    f->header   = pose.header;
+    f->header_b = pose.header_b;
+    f->frame_a  = pose.frame_a;
+    f->frame_b  = pose.frame_b;
+    f->blend    = pose.blend & 0xFFu;
+    /* The rotation the cull composes from the moby's three angle bytes,
+     * against the camera matrix this pass projects through. The byte-exact
+     * table lookup, not the present-interpolated angles: the record this
+     * builds is the tick's, and the sub-tick pass rebases it. */
+    int PM[3][3]; memcpy(PM, s_view.cam_M, sizeof PM);
+    ngte_euler_sc e;
+    ngte_euler_sincos(cpu, cpu->read_word(moby + game_layout.moby.angle_off), &e);
+    ngte_compose_euler(PM, &e, f->M);
+    /* The cull's own centre MVMVA over the quarter-world camera delta: IR1 is
+     * the Y delta, IR2 the Z, IR3 the X, MAC = (PM . IR) >> 12. Accumulated at
+     * 64 bits, since the products reach 4096*|V| and an int32 sum wraps once a
+     * component passes ~175 K view units — unreachable while a distance
+     * ceiling culled first, reachable now that extended LOD has none. */
+    const int32_t cx = (int32_t)s_view.cam_ram[0],
+                  cy = (int32_t)s_view.cam_ram[1],
+                  cz = (int32_t)s_view.cam_ram[2];
+    const int32_t mx = (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 0u),
+                  my = (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 4u),
+                  mz = (int32_t)cpu->read_word(moby + game_layout.moby.pos_off + 8u);
+    const int32_t Vy = (cy - my) >> 2, Vz = (cz - mz) >> 2, Vx = (mx - cx) >> 2;
+    for (int i = 0; i < 3; i++) {
+        int64_t acc = ((int64_t)PM[i][0]*Vy + (int64_t)PM[i][1]*Vz
+                     + (int64_t)PM[i][2]*Vx) >> 12;
+        f->centre[i] = (int32_t)(acc > INT32_MAX ? INT32_MAX
+                               : (acc < INT32_MIN ? INT32_MIN : acc));
+    }
+    return 1;
+}
+
+int moby_reveal_candidates(CPUState* cpu, moby_reveal_kind_t kind) {
     long seen = 0, canon = 0, occl = 0;
+    long declined[MOBY_REVEAL_REASONS]; memset(declined, 0, sizeof declined);
+    const char* kname = (kind == MOBY_REVEAL_ANIMATED) ? "anim" : "simple";
     if (!openpete_no_lod) return 0;          /* the extended-LOD clause only */
     if (!moby_game.cull_box_threshold || !moby_game.reveal_record) return 0;
     const uint32_t stride = game_layout.moby.array_stride;
@@ -1792,12 +1889,18 @@ int moby_reveal_candidates(CPUState* cpu) {
         if (inbox) { canon++; m += stride; continue; }
         if (rz <= 0) { m += stride; continue; }   /* behind the camera plane */
         if (occl_record_culled(cpu, m)) { occl++; m += stride; continue; }
-        if (moby_game.reveal_record(cpu, m)) added++;
+        moby_reveal_reason_t why = MOBY_REVEAL_OK;
+        if (moby_game.reveal_record(cpu, m, kind, &why)) added++;
+        else declined[why]++;
         m += stride;
     }
     if (moby_verify_enabled())
-        fprintf(stderr, "[moby-reveal vbl=%u] live=%ld canon=%ld occluded=%ld added=%d\n",
-                openpete_frame, seen, canon, occl, added);
+        fprintf(stderr, "[moby-reveal vbl=%u] kind=%s live=%ld canon=%ld occluded=%ld added=%d "
+                        "declined{nomodel=%ld otherkind=%ld dup=%ld nopose=%ld full=%ld}\n",
+                openpete_frame, kname, seen, canon, occl, added,
+                declined[MOBY_REVEAL_NO_MODEL], declined[MOBY_REVEAL_OTHER_KIND],
+                declined[MOBY_REVEAL_DUPLICATE], declined[MOBY_REVEAL_NO_POSE],
+                declined[MOBY_REVEAL_QUEUE_FULL]);
     return added;
 }
 
@@ -4344,6 +4447,20 @@ static int on_draw_regular(CPUState* cpu, uint32_t addr) {
     if (!moby_verify_enabled() && !openpete_native_scene_enabled() && !render_paths_active()) return 0;
     static int s_in = 0; if (s_in) return 0; s_in = 1;
     fade_snap_clear();                             /* refresh per-moby ZSF4 fade snapshot this canonical frame */
+    /* Extended LOD: the cull's distance box is what keeps a distant animated
+     * moby out of its record list, so the records it rejected are appended to
+     * the host copy of that list here and walked with the queued ones. The
+     * view is built first because the appended record's rotation and centre
+     * are view-space against the camera this pass projects through. */
+    if (moby_game.reveal_record) {
+        moby_view_build(cpu);
+        /* Last tick's appended records go first: the cull hook refilled the
+         * copy with the cull's own list, and a tick whose regular pass runs
+         * without a cull hook behind it rebuilds the appends rather than
+         * growing them. */
+        moby_rec_append_reset();
+        moby_reveal_candidates(cpu, MOBY_REVEAL_ANIMATED);
+    }
     moby_native_pass(cpu, game_layout.moby.hook_draw_regular, "REG");
     moby_reveal_dbg(cpu);                          /* widescreen-reveal sizing (env-gated) */
     s_in = 0;

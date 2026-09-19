@@ -127,6 +127,27 @@ typedef struct moby_record {
     int      tier;          /* LOD/colour-fade verdict */
 } moby_record_t;
 
+/* The two model kinds a reveal can build a record for, one per draw pass. A
+ * game with only one kind is offered candidates for that kind alone. */
+typedef enum moby_reveal_kind {
+    MOBY_REVEAL_ANIMATED = 0,   /* the keyframe-animated models, hook_draw_regular */
+    MOBY_REVEAL_SIMPLE   = 1,   /* the second, static geometry kind, hook_draw_simple */
+} moby_reveal_kind_t;
+
+/* Why a moby the cull's distance box rejected produced no record. The
+ * candidate walk tallies these per pass on its census line, so a class of
+ * moby that stays absent under extended LOD names the gate that dropped it. */
+typedef enum moby_reveal_reason {
+    MOBY_REVEAL_OK = 0,         /* a record was appended */
+    MOBY_REVEAL_NO_MODEL,       /* the moby's class names no model-table entry */
+    MOBY_REVEAL_OTHER_KIND,     /* the model is the other kind, drawn by the other pass */
+    MOBY_REVEAL_DUPLICATE,      /* the cull already queued a record for this moby */
+    MOBY_REVEAL_NO_POSE,        /* the model's animation state names no keyframe */
+    MOBY_REVEAL_OTHER_FORM,     /* the cull composes this moby's record another way */
+    MOBY_REVEAL_QUEUE_FULL,
+    MOBY_REVEAL_REASONS
+} moby_reveal_reason_t;
+
 typedef struct moby_game {
     /* ---- stream decoders --------------------------------------------- */
     /* Open one keyframe's vertex stream. `header` is the AnimationHeader, so
@@ -222,12 +243,14 @@ typedef struct moby_game {
      * exactly what the cull queued. */
     int  (*cull_box_threshold)(CPUState* cpu, uint32_t moby, unsigned drawn_bits);
     /* Append one record for a moby the cull's distance box rejected, built
-     * from that moby's gamestate in the game's own encoding, to whatever queue
-     * the game's pass decodes. Returns 1 when a record was appended, 0 when
-     * the moby carries no record of that pass's kind or the queue is full.
-     * Reads gamestate; writes no guest memory, so the cull's own verdict byte
-     * and the canonical queue are untouched. */
-    int  (*reveal_record)(CPUState* cpu, uint32_t moby);
+     * from that moby's gamestate in the game's own encoding, to the queue the
+     * named model kind's pass decodes. Returns 1 when a record was appended, 0
+     * otherwise, and writes the reason for a decline to `why`, which the
+     * candidate walk tallies per pass. Reads gamestate; writes no guest
+     * memory, so the cull's own verdict byte and the canonical queue are
+     * untouched. */
+    int  (*reveal_record)(CPUState* cpu, uint32_t moby, moby_reveal_kind_t kind,
+                          moby_reveal_reason_t* why);
 
     /* ---- identity ----------------------------------------------------- */
     /* The key the sub-tick interp ring stores a moby's prev/curr snapshots
@@ -298,6 +321,42 @@ extern const moby_game_t moby_game;
  * ngte_read_matrix, for every field it takes out of a record. */
 uint32_t moby_rec_word(CPUState* cpu, uint32_t addr);
 void     moby_rec_matrix(CPUState* cpu, uint32_t addr, int M[3][3]);
+
+/* The part of an animated cull record that carries no game-specific encoding,
+ * rebuilt from one moby's gamestate for a reveal: the keyframe pair the cull
+ * would have read out of the moby's animation state, the blend byte that pair
+ * carries, the model->view rotation composed from the moby's angle bytes, and
+ * the view-space centre in quarter-world units before the game's own
+ * translation rescale. A game's builder turns these into its record's bit
+ * layout. */
+typedef struct moby_anim_fields {
+    uint32_t model;                 /* the model-table entry the pose came from */
+    uint32_t header, header_b;      /* keyframe A's and B's AnimationHeader */
+    uint32_t frame_a, frame_b;      /* the keyframe references, in the record's form */
+    uint32_t blend;                 /* the record's keyframe-blend byte, 0 = frame A alone */
+    int      centre[3];             /* camera matrix applied to (moby - cam) >> 2 */
+    int      M[3][3];               /* model->view rotation, 1.0 = 4096 */
+} moby_anim_fields_t;
+
+/* Fill `f` for one moby from gamestate. Returns 0 when the moby's class names
+ * no animated model or its animation state names no keyframe. The centre is
+ * computed against the view the current pass projects through. */
+int moby_reveal_anim_fields(CPUState* cpu, uint32_t moby, moby_anim_fields_t* f);
+
+/* Reserve one record slot past the cull's own queue in the host copy taken at
+ * the cull hook, for a reveal that composes an animated record in the game's
+ * own encoding. Returns a zeroed array of rec_stride/4 words to compose into
+ * and leaves the guest address the slot shadows in `addr`; NULL when the copy
+ * is full. The copy's terminator moves past the new slot, so the walk reads
+ * the appended records after the queued ones, and every record reader
+ * resolves them through moby_rec_word. Writes no guest memory. */
+uint32_t* moby_rec_append(uint32_t* addr);
+
+/* Does the host copy already hold a record naming this moby, queued by the
+ * cull or appended by a reveal? A cull admits on more than its distance box,
+ * so a moby the box rejected can still carry a record, and a second one would
+ * draw it twice. */
+int moby_rec_holds_moby(CPUState* cpu, uint32_t moby);
 
 /* The current VBL (`openpete_frame`) lies inside the OPENPETE_MOBY_VERIFY
  * reporting window. Every probe line a game's moby provider prints under that

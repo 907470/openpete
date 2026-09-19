@@ -138,10 +138,10 @@ void moby_simple_tri(const double p[3][3], const uint32_t rgb[3],
  * or rejected it for a reason the box does not express.
  *
  * Returns the number of records appended. Reads gamestate only. Call from
- * inside the pass whose queue the game appends to, after that pass has
- * captured the cull's own records and before it decodes them. Inert unless
- * extended LOD is on and the game supplies both slots. */
-int moby_reveal_candidates(struct CPUState* cpu);
+ * inside the pass whose queue the game appends to, once per model kind, after
+ * that pass has captured the cull's own records and before it decodes them.
+ * Inert unless extended LOD is on and the game supplies both slots. */
+int moby_reveal_candidates(struct CPUState* cpu, moby_reveal_kind_t kind);
 
 /* ---- decode pieces shared with the player feeder -----------------------
  * The avatar draw and the moby draw are different routines, but they encode a
