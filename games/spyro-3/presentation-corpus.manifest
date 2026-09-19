@@ -83,6 +83,9 @@ title-demo|500|20||510
 # from the capture-time snapshot, which only a freeze-marked row maintains.
 # open-atlas 1000, 1200 and 1300 sit on cleared frames and are byte-identical
 # with the flag and without it.
+# The atlas pages at 1200 and 1300 hold vertical seams between the page's
+# POLY_FT4 tiles (a black column at 16:9 x 163 and fainter ones about 52 px
+# apart, each ending in a black dot) that the PSX does not draw.
 open-options|900|100|freeze|1200,1300
 open-atlas|900|100|freeze|1200,1300
 
