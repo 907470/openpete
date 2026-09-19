@@ -2456,14 +2456,15 @@ int openpete_native_render_init(const openpete_options_t *opts, int win_w, int w
      * so the decal's neighbour-texel NORMAL reconstruction is exact — the
      * canonical vz/(vz+4096) curve interpolates screen-linearly with a
      * distorted local gradient across large terrain tris (read flat floors as
-     * fronto-parallel). Colour writes remain ON but are currently unused: the
-     * seam-inpaint pass that sampled the pre-pass COLOUR attachment was removed
-     * (the LP↔HP handoff fix made it redundant), and no other consumer reads it
-     * — a depth-only pre-pass is a possible follow-up optimisation. */
+     * fronto-parallel). Depth only: nothing samples the pre-pass colour
+     * attachment (only its depth-aspect view is bound), so the fragment stage
+     * is the constant-output terrain_prepass.frag with the colour write mask
+     * off, the same pairing the retained terrain cache's pre-pass uses. */
     rhi_pipeline_desc prepass_desc = {
         .vert_spv = "prepass.vert.spv",
-        .frag_spv = "quad.frag.spv",
+        .frag_spv = "terrain_prepass.frag.spv",
         .blend = RHI_BLEND_NONE, .depth_test = true,
+        .color_write_off = true,
         .uses_vram = false, .push_const_size = 0,
     };
     /* Terrain HP KEY pass (P6b): rasterise opaque HP terrain with depth = the
