@@ -209,3 +209,6 @@ gnastys_loot | pos=(70303, 47226, 16489) yaw=3047 pitch=-24
 # used to win the near-band contest and poke it through. Broken = green
 # pixels on the wall's top face.
 artisans | pos=(99608, 40719, 8382) yaw=-1338 pitch=-181
+# Widescreen moby cull: the pad on the left, on the water, is visible at
+# 16:9 but is culled early (user report 2026-09-19); blessed pre-fix.
+artisans | pos=(69222, 48707, 7142) yaw=1706 pitch=138

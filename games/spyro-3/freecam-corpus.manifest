@@ -35,3 +35,6 @@ sunrise_spring | pos=(59755, 4990, 36743) yaw=1480 pitch=354
 # --lod extended: distant mobys keep the low-poly model and the distance fade
 # (50 of 54 simple records low-poly at the pose; the lodext tiles carry the defect)
 sunrise_spring | pos=(50900, 12500, 26900) yaw=1480 pitch=354
+# Widescreen moby cull: the basket on the right of the frame is visible at
+# 16:9 but is culled early (user report 2026-09-19); blessed pre-fix.
+sunrise_spring | pos=(39482, 20225, 17997) yaw=-201 pitch=-30

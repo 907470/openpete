@@ -73,17 +73,10 @@ pg_resolve() {
   PG_GOLDEN="tests/golden/$PG_GAME/presentation"
   PG_IDENT_BASELINE="$PG_GOLDEN/ident-baseline.tsv"
 
-  # Spyro 1's manifests keep their original scripts/ paths so the corpus they
-  # describe, and the golden captured from it, are untouched. A second game's
-  # manifests sit with the rest of its per-game data under games/<slug>/,
-  # where the oracle recipe and the state-region manifest already live.
-  if [[ "$PG_GAME" == "spyro-1" ]]; then
-    PG_CORPUS_MANIFEST="scripts/presentation-corpus.manifest"
-    PG_FREECAM_MANIFEST="scripts/freecam-corpus.manifest"
-  else
-    PG_CORPUS_MANIFEST="games/$PG_GAME/presentation-corpus.manifest"
-    PG_FREECAM_MANIFEST="games/$PG_GAME/freecam-corpus.manifest"
-  fi
+  # Every game's corpus manifests sit with the rest of its per-game data under
+  # games/<slug>/, where the oracle recipe and the state-region manifest live.
+  PG_CORPUS_MANIFEST="games/$PG_GAME/presentation-corpus.manifest"
+  PG_FREECAM_MANIFEST="games/$PG_GAME/freecam-corpus.manifest"
   return 0
 }
 

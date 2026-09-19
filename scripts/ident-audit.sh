@@ -50,7 +50,7 @@ done
 
 BIN="${OPENPETE_BIN:-$BUILD_DIR/games/spyro-1/openpete-spyro1}"
 DISC="${OPENPETE_DISC:-games/spyro-1/spyro-1/build/SCUS-94228.cue}"
-MANIFEST="scripts/presentation-corpus.manifest"
+MANIFEST="games/spyro-1/presentation-corpus.manifest"
 OUTDIR="build/ident-audit"
 
 # The LOD band each row is swept at. One run per row by default; set to

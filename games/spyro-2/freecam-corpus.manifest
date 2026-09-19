@@ -53,3 +53,7 @@ glimmer | pos=(83331, 23551, 43211) yaw=1636 pitch=448
 # reaches a portal pass that draws.
 autumn_plains | pos=(90130, 56523, 28297) yaw=1024 pitch=160
 winter_tundra | pos=(51217, 30497, 40037) yaw=752 pitch=160
+# Widescreen moby cull: the basket on the right of the frame is visible at
+# 16:9 on the PSX-projected view but is culled by the host reveal (user
+# report 2026-09-19); blessed pre-fix.
+glimmer | pos=(68754, 34233, 13267) yaw=215 pitch=12

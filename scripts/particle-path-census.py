@@ -120,7 +120,7 @@ def main():
     opts = ap.parse_args()
     os.makedirs(opts.out, exist_ok=True)
     jobs = []
-    for row in read_manifest(os.path.join(ROOT, "scripts/presentation-corpus.manifest")):
+    for row in read_manifest(os.path.join(ROOT, "games/spyro-1/presentation-corpus.manifest")):
         name = row[0]
         if opts.filter and opts.filter not in name:
             continue
