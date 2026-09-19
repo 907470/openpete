@@ -591,8 +591,18 @@ static int s23_model_is_animated(CPUState* cpu, uint32_t model) {
  * keyframe that patches NOTHING by setting the stored keyframe word's top bits
  * (mobydraw.s:532-534,561-568); the draw skips the apply on exactly that sign
  * (mobydraw.s:935). */
-static uint32_t s23_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t frame_a) {
+static uint32_t s23_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t model,
+                                     uint32_t frame_a) {
     if ((int32_t)frame_a < 0) return 0u;
+    if (model >= 0x80000000u) {
+        /* A keyframe no record names. Resolve the list the cull resolves:
+         * Model+0x34 is the table base, the keyframe word's top byte masked to
+         * 0x7C indexes it, and the word read there is the list's byte offset
+         * from that same base (mobydraw.s:563-569). */
+        uint32_t base = cpu->read_word(model + 0x34u);
+        if (base < 0x80000000u) return 0u;
+        return base + cpu->read_word(base + ((frame_a >> 24) & 0x7Cu));
+    }
     return moby_rec_word(cpu, rec + 0x14u);
 }
 

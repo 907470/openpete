@@ -842,6 +842,11 @@ typedef struct { uint32_t addr; int proj_off, proj_n; uint32_t header, header_b,
                  uint32_t frameA;
                  uint32_t frameA_p, header_p; float clr_alpha;
                  uint8_t spec_solo;
+                 uint32_t model_held; /* nonzero = this record's keyframe is a
+                                       * held previous pose, not the one the
+                                       * cull record names, so the game's
+                                       * keyframe patch list is resolved from
+                                       * this model instead of the record */
                  uint8_t heat;     /* m_SpecularMetalColor byte2 (moby+0x4E),
                                     * snapshotted at capture: the flame-heat
                                     * level (ApplyFlameHeat*) — consumed by the
@@ -1141,6 +1146,8 @@ static void special_census_face(const moby_wface_t* F, uint32_t mscol, uint32_t 
     if (openpete_frame >= s_cen_at + 200u) { s_cen_at = openpete_frame; special_census_report(); }
 }
 
+static void moby_animsw_census(CPUState* cpu, uint32_t moby);
+
 static int project_all_records_inner(CPUState* cpu) {
     s_proj_n = 0; s_max_blend = 0; s_nrecs = 0;
     s_special_faces[0] = s_special_faces[1] = s_special_faces[2] = 0;
@@ -1159,6 +1166,7 @@ static int project_all_records_inner(CPUState* cpu) {
          * Snapshotted into fade_snap below, so the sub-tick re-extract
          * inherits the (--no-lod-neutralized) tier too. */
         int zsf4 = record_zsf4(cpu, &R);
+        moby_animsw_census(cpu, R.moby);
         int got = moby_project_record(cpu, &R, zsf4, s_proj + s_proj_n, MAX_PROJ - s_proj_n);
         for (int j = 0; j < got; j++) s_proj[s_proj_n + j].rec = nrec;  /* tag source record */
         if (nrec < MAX_RECORDS) {
@@ -2407,17 +2415,19 @@ static const fcache_t* fpcache_get(CPUState* cpu, uint32_t fb, uint32_t header,
 /* Face decode for one (faceblock, header, keyframe) triple: the patched
  * decode when the keyframe carries a patch list under the .s gate (ZSF4 > 0
  * — the LP tier never patches), else the plain Tier-1 cache. */
-static const fcache_t* moby_faces_for(CPUState* cpu, uint32_t rec, uint32_t fb,
+static const fcache_t* moby_faces_for(CPUState* cpu, uint32_t rec, uint32_t model,
+                                      uint32_t fb,
                                       uint32_t header, uint32_t frameA, int zsf4) {
     if (zsf4 > 0 && header >= 0x80000000u && moby_pose_live(header, frameA)
         && moby_game.frame_patch_list) {
-        uint32_t list = moby_game.frame_patch_list(cpu, rec, frameA);
+        uint32_t list = moby_game.frame_patch_list(cpu, rec, model, frameA);
         if (list >= 0x80000000u) return fpcache_get(cpu, fb, header, frameA, list);
     }
     return fcache_get(cpu, fb);
 }
 static const fcache_t* moby_faces_for_record(CPUState* cpu, const rec_meta* R) {
-    return moby_faces_for(cpu, R->addr, R->faceblock, R->header, R->frameA, R->zsf4);
+    return moby_faces_for(cpu, R->addr, R->model_held, R->faceblock,
+                          R->header, R->frameA, R->zsf4);
 }
 /* PREV-keyframe faces for the sub-tick COLOUR crossfade (the faces the game
  * drew last tick, with last tick's patches). NULL = snap. Face-for-face
@@ -2432,7 +2442,7 @@ static const fcache_t* moby_faces_for_prev(CPUState* cpu, const rec_meta* R) {
             cpu->read_word(hp + ANIM_COL_HP)   != cpu->read_word(R->header + ANIM_COL_HP)   ||
             cpu->read_word(hp + ANIM_COL_FAR)  != cpu->read_word(R->header + ANIM_COL_FAR)) return NULL;
     }
-    return moby_faces_for(cpu, R->addr, R->faceblock, hp, R->frameA_p, R->zsf4);
+    return moby_faces_for(cpu, R->addr, 0u, R->faceblock, hp, R->frameA_p, R->zsf4);
 }
 /* Per-channel colour lerp (values are 0x00BBGGRR walk colours). */
 static inline uint32_t moby_clerp(uint32_t a, uint32_t b, float t) {
@@ -5608,10 +5618,13 @@ static int on_draw_simple(CPUState* cpu, uint32_t addr) {
 }
 
 /* Compute the PREV rendered keyframe pose for a moby — the second input to the
- * two-pass sub-tick SHAPE lerp in reextract_record_pass. Returns 1 (and fills
- * prev + alpha) when the moby has a lerpable prev snapshot; 0 when it should
- * snap to the curr pose: interp off, spawn / no prev interval, or a clip switch
- * into a DIFFERENT-topology animation. The pose is the one the cull drew from
+ * two-pass sub-tick SHAPE lerp in reextract_record_pass. Returns MOBY_PREV_LERP
+ * (and fills prev + alpha) when the moby has a lerpable prev snapshot;
+ * MOBY_PREV_HOLD (prev + alpha filled) when the two clips have no vertex
+ * correspondence, so the pass shows the prev pose whole until alpha 1;
+ * MOBY_PREV_SNAP when it should show the curr pose from alpha 0: interp off,
+ * spawn / no prev interval, or a cutscene path-follower's clip switch.
+ * The pose is the one the cull drew from
  * the prev snapshot's animation state bytes (moby_pose_derive, the rule the
  * live pose takes too), so on a tick where the moby blends into another
  * animation or into keyframe 0 the prev pose is that blend, keyframe B out of
@@ -5624,9 +5637,83 @@ static int on_draw_simple(CPUState* cpu, uint32_t addr) {
  * an equal count means vertex i is the same physical vertex in both keyframe tables,
  * and a model-space lerp prev→curr stays on-model (the fixed-topology argument that
  * makes Spyro's cross-clip lerp safe, applied per moby). When the counts differ the
- * meshes genuinely differ → snap. prev->header is the PREV clip's header so the
- * decoder can use its own ShortShift (the two clips' s5 may differ; the decoded
- * coords are real model-space either way). */
+ * meshes genuinely differ, and the pass HOLDS the prev pose whole — its own
+ * header, vertex count, face list and keyframe patch list — for every present
+ * below alpha 1, reaching the curr pose at alpha 1, where every other channel
+ * reaches its canonical value for this tick. prev->header is the previous clip's
+ * header so the decoder can use its own ShortShift (the two clips' s5 may
+ * differ; the decoded coords are real model-space either way). */
+/* What the sub-tick pass may do with a clip switch, shared by the pass and the
+ * census so both read one rule. CROSS: the two clips deform one shared mesh
+ * (equal vertex count), so vertex i is the same physical vertex in both and a
+ * model-space lerp prev→curr stays on-model. CUTPATH: a cutscene path-follower,
+ * whose flight clips carry large baked whole-body translation, so crossfading
+ * two spatially-distant poses lurches the whole model. COUNTSW: the clips have
+ * different vertex counts, so no vertex correspondence exists between them. */
+typedef enum { MOBY_CLIP_CROSS = 0, MOBY_CLIP_CUTPATH, MOBY_CLIP_COUNTSW } moby_clip_t;
+
+/* moby_prev_keyframe's verdict; also the prevkf field of the [moby-anim]
+ * trace, which the sub-tick harness bins on. */
+enum { MOBY_PREV_SNAP = 0, MOBY_PREV_LERP = 1, MOBY_PREV_HOLD = 2 };
+
+static moby_clip_t moby_clip_switch_kind(CPUState* cpu, uint32_t moby,
+                                         uint32_t header_prev, uint32_t header_curr,
+                                         int* count_p, int* count_c) {
+    *count_c = cpu->read_byte(header_curr + game_layout.moby.anim_vcount_hi) & 0xFFu;
+    *count_p = cpu->read_byte(header_prev + game_layout.moby.anim_vcount_hi) & 0xFFu;
+    if (moby_game.cutpath_actor && moby_game.cutpath_actor(moby)) return MOBY_CLIP_CUTPATH;
+    return (*count_p == *count_c) ? MOBY_CLIP_CROSS : MOBY_CLIP_COUNTSW;
+}
+
+/* OPENPETE_MOBY_ANIMSW_CENSUS=1: one line per queued record per canonical tick
+ * whose animation clip changed since the tick before, with the switch's kind
+ * and the two clips' vertex counts. Sits on the canonical pass, so one replay
+ * censuses every tick at replay speed; the sub-tick pass evaluates the same
+ * rule once per present instead. */
+static void moby_animsw_census(CPUState* cpu, uint32_t moby) {
+    static int s_on = -1;
+    if (s_on < 0) { const char* e = getenv("OPENPETE_MOBY_ANIMSW_CENSUS");
+                    s_on = (e && *e && *e != '0'); }
+    if (!s_on || moby < 0x80000000u) return;
+    /* Engagement tally: a census that reports no switch is only evidence once
+     * the stages it passed through are visible. */
+    static long n_rec = 0, n_obj = 0, n_prev = 0, n_cls = 0, n_pose = 0, n_sw = 0;
+    static unsigned at = 0;
+    n_rec++;
+    if (openpete_frame >= at + 400u) {
+        at = openpete_frame;
+        fprintf(stderr, "[moby-animsw-census vbl=%u] stage recs=%ld obj=%ld prev=%ld "
+                        "sameclass=%ld pose=%ld switches=%ld\n",
+                openpete_frame, n_rec, n_obj, n_prev, n_cls, n_pose, n_sw);
+    }
+    const openpete_interp_obj_t* o = openpete_interp_objs_find(moby_interp_key(moby));
+    if (!o) return;
+    n_obj++;
+    if (!o->have_prev) return;
+    n_prev++;
+    uint16_t pcls, ccls;
+    memcpy(&pcls, o->prev + 0x36, 2); memcpy(&ccls, o->curr + 0x36, 2);
+    if (pcls != ccls) return;
+    n_cls++;
+    uint32_t model = cpu->read_word(game_layout.moby.model_table + (uint32_t)ccls * 4u);
+    if (model < 0x80000000u) return;
+    moby_pose_t pp, pc;
+    if (!moby_pose_derive(cpu, model, o->prev + game_layout.moby.anim_state_off, &pp) ||
+        !moby_pose_derive(cpu, model, o->curr + game_layout.moby.anim_state_off, &pc)) return;
+    n_pose++;
+    if (pp.header == pc.header) return;
+    n_sw++;
+    int np = 0, nc = 0;
+    moby_clip_t k = moby_clip_switch_kind(cpu, moby, pp.header, pc.header, &np, &nc);
+    static const char* const kind[] = { "cross", "cutpath", "countsw" };
+    fprintf(stderr, "[moby-animsw-census vbl=%u] m=%08x cls=%03x kind=%s anim=%u->%u "
+                    "hdr=%08x->%08x n=%d->%d\n",
+            openpete_frame, moby, (unsigned)ccls, kind[k],
+            (unsigned)o->prev[game_layout.moby.anim_state_off],
+            (unsigned)o->curr[game_layout.moby.anim_state_off],
+            pp.header, pc.header, np, nc);
+}
+
 static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr,
                               moby_pose_t* prev, double* alpha) {
     if (!s_rot_now) return 0;                                  /* interp off → snap */
@@ -5652,25 +5739,20 @@ static int moby_prev_keyframe(CPUState* cpu, uint32_t moby, uint32_t header_curr
     uint32_t model = cpu->read_word(game_layout.moby.model_table + cls * 4u);
     if (model < 0x80000000u) return 0;
     if (!moby_pose_derive(cpu, model, o->prev + game_layout.moby.anim_state_off, prev)) return 0;
+    int verdict = MOBY_PREV_LERP;
     if (prev->header != header_curr) {                        /* clip switch */
-        /* Cutscene path-followers: SNAP the switch, as canonical does. Their
-         * flight clips carry large BAKED whole-body translation; crossfading
-         * two spatially-distant poses lurches the whole model for 1-2
-         * presents at every clip switch (the title-flyby "seizure" cluster
-         * at the anim 2→3 switch). */
-        if (moby_game.cutpath_actor && moby_game.cutpath_actor(moby)) {
-            s_animsw_snap++; return 0;
+        int count_p = 0, count_c = 0;
+        switch (moby_clip_switch_kind(cpu, moby, prev->header, header_curr,
+                                      &count_p, &count_c)) {
+        case MOBY_CLIP_CUTPATH: s_animsw_snap++;  return MOBY_PREV_SNAP;
+        case MOBY_CLIP_COUNTSW: s_animsw_snap++;  verdict = MOBY_PREV_HOLD; break;
+        default:                s_animsw_cross++; break;
         }
-        /* crossfade only when the two clips share vertex topology (same count) */
-        int count_c = cpu->read_byte(header_curr  + game_layout.moby.anim_vcount_hi) & 0xFFu;
-        int count_p = cpu->read_byte(prev->header + game_layout.moby.anim_vcount_hi) & 0xFFu;
-        if (count_c != count_p) { s_animsw_snap++; return 0; } /* different mesh → snap */
-        s_animsw_cross++;
     }
     double t = (double)(s_rot_now - o->curr_ns) / (double)(o->curr_ns - o->prev_ns);
     if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
     *alpha = t;
-    return 1;
+    return verdict;
 }
 
 /* ---- moby occlusion cull (native-side, display-only) ------------------------
@@ -6143,6 +6225,39 @@ static void record_rebase_to_present(CPUState* cpu, moby_fields* f, uint32_t mob
  * by the same rule as the live build — identical bytes when runahead is off
  * (curr was captured from this very moby at the tick). Same guards as
  * moby_prev_keyframe. */
+/* Overwrite a record's pose fields from a derived pose, keeping w0's other
+ * bytes: the m_DepthOffset OT pull in bits 16-23 and the GPF scale in the low
+ * byte both belong to the record, not to the pose. */
+static void moby_fields_set_pose(moby_fields* f, const moby_pose_t* p) {
+    f->header   = p->header;
+    f->header_b = p->header_b;
+    f->frameA   = p->frame_a;
+    f->frameB   = p->frame_b;
+    f->w0       = (f->w0 & ~0xFF00u) | ((p->blend & 0xFFu) << 8);
+}
+
+/* The pose a sub-tick present shows for a record whose moby switched into a
+ * clip with a different vertex count. No vertex correspondence exists between
+ * the two meshes, so there is no pose between them: show the tick before's
+ * pose whole: its own header, vertex count, face list and keyframe patch
+ * list — and reach this tick's pose at alpha 1, the instant every other
+ * channel reaches its canonical value for this tick. Translation and rotation
+ * keep interpolating: the keyframe stream is model-space only and the world
+ * position is the moby's own, which the guest steps per tick independently of
+ * the clip (the cutscene path-follower, whose clips DO carry baked whole-body
+ * translation, snaps to the current pose instead).
+ *
+ * Returns the model whose own table resolves that pose's keyframe patch list,
+ * for a game that hangs the list off the cull record, and 0 when the record
+ * keeps the pose it already carries. */
+static uint32_t moby_fields_hold_prev(CPUState* cpu, uint32_t moby, moby_fields* f,
+                                      const moby_pose_t* prev, int verdict, double alpha) {
+    if (verdict != MOBY_PREV_HOLD || alpha >= 1.0) return 0u;
+    moby_fields_set_pose(f, prev);
+    uint32_t cls = cpu->read_half(moby + game_layout.moby.class_off);
+    return cpu->read_word(game_layout.moby.model_table + cls * 4u);
+}
+
 static void moby_fields_pose_from_snapshot(CPUState* cpu, uint32_t moby, moby_fields* f) {
     if (!s_rot_now) return;
     const openpete_interp_obj_t* oc = openpete_interp_objs_find(moby_interp_key(moby));
@@ -6154,12 +6269,9 @@ static void moby_fields_pose_from_snapshot(CPUState* cpu, uint32_t moby, moby_fi
     moby_pose_t pose;
     if (model < 0x80000000u ||
         !moby_pose_derive(cpu, model, oc->curr + game_layout.moby.anim_state_off, &pose)) return;
-    f->header   = pose.header;
-    f->header_b = pose.header_b;
-    f->frameA   = pose.frame_a;
-    f->frameB   = pose.frame_b;
     /* keep the snapshot's m_DepthOffset in bits 16-23 (OT pull) */
-    f->w0 = (pose.blend << 8) | ((uint32_t)oc->curr[game_layout.moby.angle_off + 3u] << 16);
+    f->w0 = (uint32_t)oc->curr[game_layout.moby.angle_off + 3u] << 16;
+    moby_fields_set_pose(f, &pose);
 }
 
 static int reextract_record_pass(CPUState* cpu, const char* mat) {
@@ -6365,7 +6477,12 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
          * topology-changing clip switch. */
         moby_pose_t prev; double balpha = 0.0;
         int prevkf = moby_prev_keyframe(cpu, mobys[i], f.header, &prev, &balpha);
-        if (!prevkf) memset(&prev, 0, sizeof prev);
+        uint32_t model_held =
+            moby_fields_hold_prev(cpu, mobys[i], &f, &prev, prevkf, balpha);
+        /* The held pose decodes alone: it is the whole shape, not one end of a
+         * lerp. prevkf keeps the verdict for the trace. */
+        int lerp_prev = (prevkf == MOBY_PREV_LERP);
+        if (!lerp_prev) memset(&prev, 0, sizeof prev);
         /* OPENPETE_MOBY_POSTRACE_CLS=<class> (0xFFFF = every class) also
          * traces the anim channel here. This block sits in the sub-tick
          * re-extract pass, so a run that presents only canonical ticks prints
@@ -6376,13 +6493,14 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             uint16_t tcls2 = (uint16_t)cpu->read_half(mobys[i] + game_layout.moby.class_off);
             if (s_atcls >= 0 && (s_atcls == 0xFFFF || tcls2 == (uint16_t)s_atcls)) {
                 uint32_t mrot = cpu->read_word(mobys[i] + game_layout.moby.angle_off + 0u);
-                fprintf(stderr, "[moby-anim vbl=%u] m=%08x cls=%03x prevkf=%d balpha=%.3f curr(frm=%u nfrm=%u prog=%u anim=%u nid=%u) fa=%08x fb=%08x fap=%08x fbp=%08x w0=%04x w0p=%04x rot=%06x\n",
+                fprintf(stderr, "[moby-anim vbl=%u] m=%08x cls=%03x prevkf=%d balpha=%.3f curr(frm=%u nfrm=%u prog=%u anim=%u nid=%u) fa=%08x fb=%08x fap=%08x fbp=%08x w0=%04x w0p=%04x hdr=%08x hdrp=%08x rot=%06x\n",
                         openpete_frame, mobys[i], tcls2,
                         prevkf, balpha,
                         cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 2u), cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 3u),
                         cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 4u), cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 0u),
                         cpu->read_byte(mobys[i] + game_layout.moby.anim_state_off + 1u),
                         f.frameA, f.frameB, prev.frame_a, prev.frame_b, f.w0 & 0xFFFFu, (prev.blend << 8) & 0xFFFFu,
+                        f.header, prev.header,
                         mrot & 0xFFFFFFu);
             }
         }
@@ -6395,7 +6513,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
         int got;
         { uint64_t t0 = tier_dbg_on() ? openpete_phase_now_us() : 0;
           got = moby_decode_project(cpu, f.header, f.header_b, f.frameA, f.frameB, f.w0,
-                                    prevkf ? &prev : NULL, balpha, gpf_frac,
+                                    lerp_prev ? &prev : NULL, balpha, gpf_frac,
                                     f.TR_raw, f.TR_frac, f.M, zsf4, moby_record_view(mobys[i]),
                                     s_proj + s_proj_n, MAX_PROJ - s_proj_n);
           if (t0) s_us_dec += (long)(openpete_phase_now_us() - t0); }
@@ -6448,6 +6566,7 @@ static int reextract_record_pass(CPUState* cpu, const char* mat) {
             f.w0, f.metal, f.mscol, mobys[i], zsf4,
             atan2f((float)f.TR_raw[2], (float)f.TR_raw[0]), f.frameA,
             prev.frame_a, prev.header, (float)balpha };
+        s_recs[s_nrecs].model_held = model_held;
         memcpy(s_recs[s_nrecs].M, f.M, sizeof s_recs[s_nrecs].M);
         s_recs[s_nrecs].heat = (uint8_t)moby_heat_scalar(f.mscol);
         s_proj_n += got; s_nrecs++;

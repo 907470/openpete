@@ -22,6 +22,12 @@
 # (nextId different from id): the moby blending out of one clip into the
 # next.
 #
+# A second bin is the held leg, prevkf=2: the moby switched into a clip whose
+# vertex count differs from the one before, where no pose between the two
+# meshes exists and the pass shows the previous tick's pose whole until alpha
+# 1. Its interval therefore starts exactly where the one before ended, so its
+# D is required to be zero outright rather than bounded per moby.
+#
 # Input: games/<slug>/moby-subtick-corpus.manifest, rows
 #   <bk2> | <lo>-<hi> | <key>=<value> ... [| <exclusion>]...
 # The span is the intermediate-capture VBLs, two apart; the [moby-anim] and
@@ -29,6 +35,7 @@
 # VBL), which is what the exclusions use. Keys:
 #   pairs=<n>   floor on the bracketed legs measured
 #   class=<n>   floor on the defect-class legs measured
+#   hold=<n>    floor on the held (prevkf=2) legs measured
 #   dmax=<px>   optional: every leg's D at or below this bound
 # An exclusion is a known-open leg, named with its reason:
 #   leg <vbl> <moby> <reason>    left out of both checks
@@ -42,13 +49,14 @@
 #   [moby-screen vbl=<v>] leg=inter ... m=<moby> ... c=(x,y)
 #
 # Pass criterion, per row: 0 tuple mismatches; every class leg's D at or
-# below the largest D the same moby reads on its other legs; with dmax, every
-# leg's D at or below it. VACUOUS (exit 1) when the bracketed or the class
-# leg count is below the row's floor.
+# below the largest D the same moby reads on its other legs; every held leg's
+# D zero to HOLD_EPS; with dmax, every leg's D at or below it. VACUOUS
+# (exit 1) when the bracketed, the class or the held leg count is below the
+# row's floor.
 #
 # Verdict line per row:
-#   [moby-subtick] game=<g> bk2=<b> pairs=<n> class=<n> mismatches=<n>
-#                  snaps=<n> excluded=<n> verdict=PASS|FAIL
+#   [moby-subtick] game=<g> bk2=<b> pairs=<n> class=<n> hold=<n>
+#                  mismatches=<n> snaps=<n> excluded=<n> verdict=PASS|FAIL
 #
 # Usage: scripts/check_moby_subtick.sh [--game SLUG] [--build-dir=DIR]
 # Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, bk2, manifest or
@@ -142,7 +150,12 @@ for tok in keys.split():
     opts[k] = v
 min_pairs = int(opts.get('pairs', '1'))
 min_class = int(opts.get('class', '0'))
+min_hold = int(opts.get('hold', '0'))
 dmax = float(opts['dmax']) if 'dmax' in opts else None
+# A held leg reuses the pose of the tick before, so its centroid is that
+# tick's alpha-1 centroid recomputed from the same inputs: equal to the last
+# bit of the float format, not merely close.
+HOLD_EPS = 0.0005
 
 skip_leg, skip_seam = {}, {}
 for field in excl.split('|'):
@@ -173,16 +186,20 @@ def load(path):
     return anim, screen
 
 A0, S0 = load(log0)
-_, S1 = load(log1)
+# The alpha-1 leg is the identity leg: every present there shows the pose its
+# own tick drew. The alpha-0 leg does not, because a held leg shows the pose
+# of the tick BEFORE it, so the drawn pose of tick v - 2 is read from the
+# alpha-1 log and the rebuilt pose at tick v from the alpha-0 one.
+A1, S1 = load(log1)
 
 def blend(m, grp):
     return (int(m[grp], 16) >> 8) & 0xFF
 
-pairs = nclass = nsnap = 0
-bad, notes = [], []
+pairs = nclass = nhold = nsnap = 0
+bad, notes, holds = [], [], []
 per = collections.defaultdict(lambda: {'cls': [], 'other': 0.0, 'n': 0})
 for (v, mob), g in sorted(A0.items()):
-    p = A0.get((v - 2, mob))
+    p = A1.get((v - 2, mob))
     if p is None:
         continue
     if (v, mob) in skip_leg:
@@ -202,8 +219,16 @@ for (v, mob), g in sorted(A0.items()):
     D = ((x0 - x1) ** 2 + (y0 - y1) ** 2) ** 0.5
     in_class = bl != 0 and (int(p[7]) == 0 or (p[10] is not None and p[10] != p[9]))
     nclass += in_class
+    held = g[4] == '2'
+    nhold += held
     if (v, mob) in skip_seam:
         notes.append("excluded seam vbl=%d m=%s D=%.3f: %s" % (v, mob, D, skip_seam[(v, mob)]))
+        continue
+    if held:
+        holds.append((v, mob, g[3], D))
+        if D > HOLD_EPS:
+            bad.append("vbl=%d m=%s cls=%s held D=%.3f above %.4f: the held pose is not "
+                       "the pose the tick before drew" % (v, mob, g[3], D, HOLD_EPS))
         continue
     rec = per[(mob, g[3])]
     if in_class:
@@ -228,14 +253,16 @@ for (mob, c), rec in sorted(per.items()):
             bad.append("vbl=%d m=%s cls=%s classD=%.3f above the moby's non-class max %.3f"
                        % (v, mob, c, d, rec['other']))
 
-head = ("[moby-subtick] game=%s bk2=%s pairs=%d class=%d mismatches=%d snaps=%d excluded=%d"
-        % (game, bk2, pairs, nclass, sum(' tuple ' in b for b in bad), nsnap, len(notes)))
+head = ("[moby-subtick] game=%s bk2=%s pairs=%d class=%d hold=%d mismatches=%d snaps=%d excluded=%d"
+        % (game, bk2, pairs, nclass, nhold, sum(' tuple ' in b for b in bad), nsnap, len(notes)))
 for n in notes:
     print("[moby-subtick]   " + n)
-if pairs < min_pairs or nclass < min_class:
-    print(head + " VACUOUS: floor pairs>=%d class>=%d" % (min_pairs, min_class))
+if pairs < min_pairs or nclass < min_class or nhold < min_hold:
+    print(head + " VACUOUS: floor pairs>=%d class>=%d hold>=%d" % (min_pairs, min_class, min_hold))
     sys.exit(1)
 print(head + " verdict=%s" % ("FAIL" if bad else "PASS"))
+for v, mob, c, d in holds:
+    print("[moby-subtick]   held vbl=%d m=%s cls=%s D=%.3f" % (v, mob, c, d))
 for m in mobys:
     print("[moby-subtick]   " + m)
 for b in bad[:40]:

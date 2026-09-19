@@ -151,8 +151,14 @@ typedef struct moby_game {
      * high-poly faceblock) followed by `count` replacement words, ending with
      * the entry whose header word is not positive; the walk applies them in
      * place around the decode and restores the originals inside the same hook
-     * call. NULL where the game has no patch mechanism. */
-    uint32_t (*frame_patch_list)(CPUState* cpu, uint32_t rec, uint32_t frame_a);
+     * call. NULL where the game has no patch mechanism.
+     * `model` is the moby's model, passed only for a keyframe the record does
+     * not name (the previous pose a sub-tick present holds across a clip
+     * switch between meshes of different vertex counts); it is 0 whenever the
+     * keyframe is the record's own, and a game whose keyframe carries its own
+     * list ignores it. */
+    uint32_t (*frame_patch_list)(CPUState* cpu, uint32_t rec, uint32_t model,
+                                 uint32_t frame_a);
 
     /* The record's keyframe-blend byte (record word 0 bits 8-15, the numerator
      * the draw scales by 16) for a given value of the moby's animation-state

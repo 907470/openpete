@@ -237,8 +237,9 @@ static int s1_run_once_hidden(CPUState* cpu, uint32_t m, unsigned cls) {
 
 /* The keyframe's faceblock patch list: the keyframe's second word carries the
  * list's byte offset from the keyframe, scaled by four; zero means none. */
-static uint32_t s1_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t frame_a) {
-    (void)rec;
+static uint32_t s1_frame_patch_list(CPUState* cpu, uint32_t rec, uint32_t model,
+                                    uint32_t frame_a) {
+    (void)rec; (void)model;   /* the list is inside the keyframe, not the record */
     uint32_t off = (cpu->read_word(frame_a + 4u) & 0xFFFFu) << 2;
     return off ? frame_a + off : 0u;
 }

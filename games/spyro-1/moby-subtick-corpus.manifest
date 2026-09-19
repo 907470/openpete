@@ -6,7 +6,7 @@
 # The Argus rescue in Artisans: several dragons and NPCs cross clip switches.
 # Spyro 1 rebuilds both poses host-side from the state bytes, so its seam
 # carries no integer-record floor and every leg reads D = 0.
-# 1828: 8016fa68 (class 0x0a) switches between animations of different
-# vertex counts, which returns no previous pose; the present shows the
-# current pose from alpha 0.
-artisans-rescue-argus.bk2 | 1714-1838 | pairs=618 class=17 dmax=0.0005 | leg 1828 8016fa68 clip switch across vertex counts returns no previous pose
+# 1828: 8016fa68 (class 0x0a) switches from animation 1 (122 vertices) into
+# animation 3 (16), between which no pose exists; the held leg checks that
+# the present shows the 1826 pose until alpha 1.
+artisans-rescue-argus.bk2 | 1714-1838 | pairs=619 class=17 hold=1 dmax=0.0005
