@@ -32,17 +32,20 @@
 #
 # Instrument (stderr), OPENPETE_CARRY_CENSUS=1, one line per present:
 #   [carrycensus vbl=<v> present=<i> alpha=<a>] carried=<n> paired=<n>
-#     lerped=<n> far_both=<n> uv_mismatch=<n> crossed=<n> static_moved=<n> ...
+#     lerped=<n> far_both=<n> uv_mismatch=<n> crossed=<n> static_moved=<n>
+#     runs=<n> runs_lerped=<n> runs_snapped_disagree=<n> ambiguous_lerp=<n> ...
 # A present whose carry interpolated nothing prints NO-ENGAGEMENT rather than
 # a clean row, so an empty window cannot read as a pass.
 #
 # Pass criterion, per row: crossed = 0 summed over every present of every
 # alpha. VACUOUS (exit 1) when the row's summed `lerped` is below its floor.
-# far_both and static_moved are reported, not judged.
+# far_both, static_moved, ambiguous_lerp and the three run counts are reported,
+# not judged.
 #
 # Verdict line per row:
 #   [carry-subtick] game=<g> bk2=<b> presents=<n> lerped=<n> crossed=<n>
-#                   far_both=<n> static_moved=<n> verdict=PASS|FAIL
+#                   far_both=<n> static_moved=<n> runs=<n> runs_lerped=<n>
+#                   runs_snapped_disagree=<n> ambiguous_lerp=<n> verdict=PASS|FAIL
 #
 # Usage: scripts/check_carry_subtick.sh [--game SLUG] [--build-dir=DIR]
 # Exit 0 PASS, 1 FAIL or VACUOUS, 64 SKIP (binary, disc, bk2, manifest or
@@ -144,8 +147,11 @@ min_lerps = int(opts.get('lerps', '1'))
 
 row = re.compile(r'\[carrycensus vbl=(\d+) present=(\d+) alpha=([\d.]+)\] '
                  r'carried=(\d+) paired=(\d+) lerped=(\d+) far_both=(\d+) '
-                 r'uv_mismatch=(\d+) crossed=(\d+) static_moved=(\d+)(.*)')
+                 r'uv_mismatch=(\d+) crossed=(\d+) static_moved=(\d+) '
+                 r'runs=(\d+) runs_lerped=(\d+) runs_snapped_disagree=(\d+) '
+                 r'ambiguous_lerp=(\d+)(.*)')
 presents = lerped = crossed = far = stat = 0
+runs = runs_lerped = runs_dis = ambig = 0
 bad = []
 for path in sys.argv[4:]:
     for line in open(path, errors='replace'):
@@ -154,12 +160,17 @@ for path in sys.argv[4:]:
             continue
         presents += 1
         lerped += int(m[6]); far += int(m[7]); crossed += int(m[9]); stat += int(m[10])
+        runs += int(m[11]); runs_lerped += int(m[12]); runs_dis += int(m[13])
+        ambig += int(m[14])
         if int(m[9]):
             bad.append("vbl=%s present=%s alpha=%s crossed=%s of %s lerped: %s"
-                       % (m[1], m[2], m[3], m[9], m[6], m[11].strip()))
+                       % (m[1], m[2], m[3], m[9], m[6], m[15].strip()))
 
 head = ("[carry-subtick] game=%s bk2=%s presents=%d lerped=%d crossed=%d far_both=%d"
-        " static_moved=%d" % (game, bk2, presents, lerped, crossed, far, stat))
+        " static_moved=%d runs=%d runs_lerped=%d runs_snapped_disagree=%d"
+        " ambiguous_lerp=%d"
+        % (game, bk2, presents, lerped, crossed, far, stat,
+           runs, runs_lerped, runs_dis, ambig))
 if lerped < min_lerps:
     print(head + " VACUOUS: floor lerps>=%d" % min_lerps)
     sys.exit(1)

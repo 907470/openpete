@@ -20,3 +20,8 @@ sheilas-alp-sheila-water-invisible.bk2 | 4361-4381 | lerps=3000
 # the present at VBL 1245, 1290 the present at 1291).
 open-atlas-turn-pages.bk2 | 1241-1247 | lerps=1500
 open-atlas-turn-pages.bk2 | 1287-1293 | lerps=3000
+#
+# open-atlas-turn-pages 1271-1281: the page text re-flows between the brackets
+# of VBL 1276, so the glyph run's entries displace by different amounts and the
+# run must snap whole rather than carry its unique letters alone.
+open-atlas-turn-pages.bk2 | 1271-1281 | lerps=18000

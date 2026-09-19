@@ -17,3 +17,15 @@ open-guidebook.bk2 | 975-985 | lerps=3000
 # bars at y = 194, 195, 196, 205, 206, static across the brackets; the tile at
 # 16900 is the present at VBL 16901.
 attract-demo | 16895-16905 | lerps=100
+#
+# autumn-plains-skelos-badlands-portal-entry: the "Treasure Found" banner
+# scrolls while the rest of the 2D stands still, and the whole capture is one
+# run — pairing a body's unique letters and snapping its repeated ones tore the
+# word in half, so the row holds the mixed-displacement case where every entry
+# must move together or not at all.
+autumn-plains-skelos-badlands-portal-entry.bk2 | 1345-1355 | lerps=900
+#
+# glimmer-pogo-dialogue 895-905: the dialogue panel glides in from the edge,
+# and its body is repeated identical tiles — no tile is distinguishable from
+# its siblings, so only the run's rigid translation carries them.
+glimmer-pogo-dialogue.bk2 | 895-905 | lerps=750

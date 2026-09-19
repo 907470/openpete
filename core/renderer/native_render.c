@@ -1572,34 +1572,43 @@ void openpete_native_scene_capture_overlay(void) {
  * stride, so one primitive inserted earlier in the run shifts every later
  * address by a whole stride and the key space re-aligns onto neighbours.
  *
- * Identity is therefore the entry's content: draw layer, texture page and
+ * A 2D body moves as one. A line of text and the tiles of a dialogue panel are
+ * emitted consecutively and translate together, so the unit of identity is the
+ * run: a maximal contiguous span of carried entries, in feed order, sharing a
+ * draw layer, texturing and CLUT. A run pairs with the previous
+ * run holding the same multiset of content keys — the same glyphs and tiles, in
+ * any arrangement — nearest by centroid inside the move bound, and its entries
+ * pair by ordinal. That pairing is admitted only when it is a rigid
+ * translation: every entry's every vertex displaces by the run's centroid
+ * displacement within half a pixel. A run that scrolls displaces all its glyphs
+ * alike and glides; a run that re-flows (a page of text relaid, a word moving
+ * past its neighbour) displaces them by different amounts, fails the test, and
+ * snaps whole. The pairing is all or nothing: interpolating part of a body and
+ * snapping the rest tears the body.
+ *
+ * Identity for a single entry is its content: draw layer, texture page and
  * CLUT, colour depth, blend mode, the three vertices' texture coordinates, and
- * the screen width and height quantized to the pixel — with position deciding
- * between entries that share it. Within one content key each current entry
- * takes the nearest previous entry inside a 64 px bound, assigned greedily by
- * ascending distance, so an element that did not move pairs with itself at
- * 0 px before any twin 58 px away can claim it. An entry with no partner snaps
- * to its current position: a sprite that appeared this tick, or one whose
- * content changed, is discrete and has nothing to slide from.
+ * the screen width and height quantized to the pixel. A content key only names
+ * an element when it names one element, so an entry that is a whole run on its
+ * own pairs with the previous capture's sole holder of its key inside the move
+ * bound, and a key held by two or more entries on either side snaps every one
+ * of them: whichever a nearest rule picks is a guess. An entry with no partner
+ * snaps to its current position — a sprite that appeared this tick, or one
+ * whose content changed, is discrete and has nothing to slide from.
  *
- * Position beats content where both are available, so the match runs in two
- * passes. An entry standing exactly where an entry of its own layer stood last
- * tick is that slot's occupant and is paired with it whatever its content, a
- * pairing that moves nothing: a screen slot whose content changed (a countdown
- * timer's digit, a glyph swapped in a re-laid-out line of text) is a discrete
- * change, and pairing it by content instead would find the same glyph in the
- * slot it came from and sweep it across the line. Only entries left over —
- * those standing where nothing of their layer stood — are matched by content
- * key, which is where a genuine 2D slide lives.
+ * Between the two, position. An entry standing exactly where an entry of its
+ * own layer stood last tick is that slot's occupant and is paired with it
+ * whatever its content, a pairing that moves nothing: a screen slot whose
+ * content changed (a countdown timer's digit, a glyph swapped in a re-laid-out
+ * line of text) is a discrete change, and pairing it by content instead would
+ * find the same glyph in the slot it came from and sweep it across the line.
  *
- * A content key only names an element when it names one element. A key holding
- * two or more entries on either side is an identity the capture cannot tell
- * apart: whichever of them the rule picks is a guess, and picking the nearest
- * is the guess that looks right while a page of text re-flows and wrong once a
- * word moves past its neighbour — a letter then pairs with the same letter in
- * the next word and slides across it. Every entry of such a key therefore
- * snaps. The content pass pairs only a key with exactly one entry in each
- * capture, inside the move bound.
+ * The three passes run rigid run, then occupancy, then single entry. The run
+ * pass leads because a body translating by exactly one of its own tile periods
+ * would otherwise have every tile claimed by the neighbour standing where it
+ * lands and read as static; the rigid test over the whole body is the evidence
+ * that separates that slide from a body that did not move, and an entry a run
+ * did not take still reaches the occupancy pass.
  *
  * The content key of a tri fed with no primitive address (the fade overlay,
  * the letterbox bars) is its ordinal among the other address-less tris: that
@@ -1608,12 +1617,14 @@ void openpete_native_scene_capture_overlay(void) {
  *
  * Two carve-outs, both visible in the census as a snap rather than a sweep:
  * an element whose texture frame advances every tick while it translates (an
- * animated pickup sprite) changes content key each tick and snaps; and a set
- * of identical sprites that all move keeps its screen positions rather than
- * sliding, since no member of it is distinguishable from its siblings.
+ * animated pickup sprite) changes content key each tick, so its run's multiset
+ * changes and the run snaps; and a body whose members displace by different
+ * amounts — a re-flow, or a scroll that reveals one more glyph — snaps whole
+ * rather than tearing.
  */
 #define CARRY_KEY_SLOTS 2048            /* power of two > OVERLAY_CARRY_MAX */
 #define CARRY_MOVE_MAX  64.0f           /* per-tick move bound, px (billboard interp's) */
+#define CARRY_RIGID_TOL 0.5f            /* a run entry's agreement with the run's translation, px */
 /* Open-address table for the per-key multiplicities; power of two, loaded at
  * most half by one capture. */
 #define CARRY_COUNT_SLOTS 4096
@@ -1676,10 +1687,15 @@ static uint32_t carry_pos_slot_of(const scene_tri_t* tri, int dx, int dy) {
                           tri->category, tri->textured);
 }
 
+/* The content keys of one capture, in feed order. */
+static void carry_keys_build(const scene_tri_t* tris, int n, uint32_t* key) {
+    int zero_ord = 0;
+    for (int t = 0; t < n; t++) key[t] = carry_key_of(&tris[t], &zero_ord);
+}
+
 static void carry_map_build(carry_key_map_t* m, const scene_tri_t* prev, int prev_n) {
     for (int i = 0; i < CARRY_KEY_SLOTS; i++) { m->head[i] = -1; m->phead[i] = -1; }
-    int zero_ord = 0;
-    for (int t = 0; t < prev_n; t++) m->key[t] = carry_key_of(&prev[t], &zero_ord);
+    carry_keys_build(prev, prev_n, m->key);
     /* Chain each bucket in reverse so a walk visits entries in feed order. */
     for (int t = prev_n - 1; t >= 0; t--) {
         uint32_t b = m->key[t] & (CARRY_KEY_SLOTS - 1);
@@ -1719,15 +1735,136 @@ static void carry_key_counts(const uint32_t* key, int n, uint16_t* out) {
     for (int i = 0; i < n; i++) out[i] = slot_n[slot_of[i]];
 }
 
-/* The match one present's two passes build. `match[t]` is the previous-capture
+/* The match one present's three passes build. `match[t]` is the previous-capture
  * index paired to current entry `t`, or -1; `ckey[t]` its content key;
- * `occupied[t]` whether an entry of its layer stood on its slot. */
+ * `occupied[t]` whether an entry of its layer stood on its slot; `anchored[t]`
+ * whether the pair came from the rigid-run or the occupancy pass, both of which
+ * name the partner by evidence the capture holds rather than by content alone;
+ * `ambig[t]` whether the entry's content key is held by two or more entries in
+ * either capture. */
 typedef struct {
     int32_t  match[OVERLAY_CARRY_MAX];
     uint32_t ckey[OVERLAY_CARRY_MAX];
     int8_t   occupied[OVERLAY_CARRY_MAX];
     int8_t   prev_taken[OVERLAY_CARRY_MAX];
+    int8_t   anchored[OVERLAY_CARRY_MAX];
+    int8_t   ambig[OVERLAY_CARRY_MAX];
 } carry_match_t;
+
+/* The runs of one capture. `of[t]` is entry t's run; `lo` and `len` the run's
+ * span in feed order; `sig` an order-independent hash of its entries' content
+ * keys, so two runs sign alike exactly when they hold the same multiset;
+ * `cx`/`cy` the mean of its entries' vertex positions; `taken` whether a
+ * current run has already claimed this one. */
+typedef struct {
+    int32_t  lo[OVERLAY_CARRY_MAX];
+    int32_t  len[OVERLAY_CARRY_MAX];
+    uint32_t sig[OVERLAY_CARRY_MAX];
+    float    cx[OVERLAY_CARRY_MAX], cy[OVERLAY_CARRY_MAX];
+    int32_t  of[OVERLAY_CARRY_MAX];
+    int8_t   taken[OVERLAY_CARRY_MAX];
+    int      n;
+} carry_runs_t;
+
+/* Per-present run tallies for the census. */
+typedef struct { int runs, lerped, disagree; } carry_run_stats_t;
+
+/* Two adjacent entries belong to one run when they draw on the same layer
+ * through the same CLUT. The texture page is deliberately not part of this:
+ * a font's glyphs are spread over several pages, so one line of text steps
+ * through three or four of them and keying on the page would cut the line into
+ * single glyphs — the unit this pass exists to keep whole. The page is still
+ * part of each entry's content key, so it separates the run's members. */
+static int carry_run_joins(const scene_tri_t* a, const scene_tri_t* b) {
+    return a->category == b->category && a->textured == b->textured &&
+           a->clut_x == b->clut_x && a->clut_y == b->clut_y;
+}
+
+static void carry_runs_build(const scene_tri_t* tris, const uint32_t* key, int n,
+                             carry_runs_t* r) {
+    r->n = 0;
+    for (int t = 0; t < n; t++) {
+        if (t == 0 || !carry_run_joins(&tris[t - 1], &tris[t])) {
+            int s = r->n++;
+            r->lo[s] = t; r->len[s] = 0; r->sig[s] = 0u;
+            r->cx[s] = 0.0f; r->cy[s] = 0.0f; r->taken[s] = 0;
+        }
+        int s = r->n - 1;
+        r->of[t] = s;
+        r->len[s]++;
+        r->sig[s] += carry_hash(2166136261u, key[t]);   /* summed: order-independent */
+        for (int k = 0; k < 3; k++) {
+            r->cx[s] += tris[t].v[k].sx;
+            r->cy[s] += tris[t].v[k].sy;
+        }
+    }
+    for (int s = 0; s < r->n; s++) {
+        float m = 3.0f * (float)r->len[s];
+        r->cx[s] /= m; r->cy[s] /= m;
+    }
+}
+
+/* The previous run of the same length and content multiset whose centroid is
+ * nearest current run `ci`'s, inside the move bound, or -1. A nearest run that
+ * another current run has already claimed yields -1 rather than the next one
+ * out: a body emitted twice in one capture would otherwise send its second copy
+ * to a partner elsewhere and sweep it across the screen, where holding it still
+ * costs nothing — the first copy already draws where it belongs. */
+static int carry_run_partner(const carry_runs_t* pr, const carry_runs_t* cr, int ci) {
+    int best = -1;
+    float bd = CARRY_MOVE_MAX;
+    for (int q = 0; q < pr->n; q++) {
+        if (pr->len[q] != cr->len[ci] || pr->sig[q] != cr->sig[ci]) continue;
+        float dx = cr->cx[ci] - pr->cx[q], dy = cr->cy[ci] - pr->cy[q];
+        float d = sqrtf(dx * dx + dy * dy);
+        if (d < bd) { bd = d; best = q; }
+    }
+    return (best >= 0 && pr->taken[best]) ? -1 : best;
+}
+
+/* Whether the translation (dx, dy) carries every vertex of the previous run
+ * onto its ordinal partner in the current run, within CARRY_RIGID_TOL. */
+static int carry_run_rigid(const scene_tri_t* prev, int plo,
+                           const scene_tri_t* curr, int clo, int len,
+                           float dx, float dy) {
+    for (int k = 0; k < len; k++)
+        for (int j = 0; j < 3; j++) {
+            float ex = curr[clo + k].v[j].sx - prev[plo + k].v[j].sx - dx;
+            float ey = curr[clo + k].v[j].sy - prev[plo + k].v[j].sy - dy;
+            if (ex * ex + ey * ey > CARRY_RIGID_TOL * CARRY_RIGID_TOL) return 0;
+        }
+    return 1;
+}
+
+/* Rigid-run pass: each multi-entry run whose partner run carries it by one
+ * translation is paired by ordinal, whole. A run with no partner, or one whose
+ * entries displace by different amounts, takes no pairing at all and every one
+ * of its entries falls through to the passes below. */
+static int carry_pair_runs(const scene_tri_t* prev, carry_runs_t* pr,   /* pr->taken is written */
+                           const scene_tri_t* curr, const carry_runs_t* cr,
+                           carry_match_t* mt, carry_run_stats_t* st) {
+    int paired = 0;
+    st->runs = cr->n; st->lerped = 0; st->disagree = 0;
+    for (int i = 0; i < cr->n; i++) {
+        int len = cr->len[i];
+        if (len < 2) continue;
+        int q = carry_run_partner(pr, cr, i);
+        if (q < 0) continue;
+        float dx = cr->cx[i] - pr->cx[q], dy = cr->cy[i] - pr->cy[q];
+        if (!carry_run_rigid(prev, pr->lo[q], curr, cr->lo[i], len, dx, dy)) {
+            st->disagree++;
+            continue;
+        }
+        pr->taken[q] = 1;
+        for (int k = 0; k < len; k++) {
+            mt->match[cr->lo[i] + k] = pr->lo[q] + k;
+            mt->prev_taken[pr->lo[q] + k] = 1;
+            mt->anchored[cr->lo[i] + k] = 1;
+        }
+        paired += len; st->lerped++;
+    }
+    return paired;
+}
 
 /* Claim the unclaimed previous entry of `curr`'s layer standing on its slot, or
  * -1. Sets *occupied when the slot was occupied at all, claimed or not: the
@@ -1752,36 +1889,37 @@ static int carry_slot_take(const carry_key_map_t* m, const scene_tri_t* prev,
     return -1;
 }
 
-/* Occupancy pass: every current entry standing where an entry of its layer
- * stood, paired with that entry. Also stamps the content keys the second pass
- * reads. */
+/* Occupancy pass over the entries no run took: every current entry standing
+ * where an entry of its layer stood, paired with that entry. */
 static int carry_pair_occupancy(const carry_key_map_t* m, const scene_tri_t* prev,
                                 const scene_tri_t* curr, int curr_n,
                                 carry_match_t* mt) {
-    int zero_ord = 0, paired = 0;
+    int paired = 0;
     for (int t = 0; t < curr_n; t++) {
         mt->occupied[t] = 0;
-        mt->ckey[t] = carry_key_of(&curr[t], &zero_ord);
+        if (mt->match[t] >= 0) continue;
         mt->match[t] = carry_slot_take(m, prev, &curr[t], mt->prev_taken,
                                        &mt->occupied[t]);
-        if (mt->match[t] >= 0) paired++;
+        if (mt->match[t] >= 0) { mt->anchored[t] = 1; paired++; }
     }
     return paired;
 }
 
-/* Content pass over the entries the occupancy pass left standing on an empty
- * slot: every candidate pair of one content key inside the move bound, assigned
- * greedily by ascending distance. This is where a genuine 2D slide is matched. */
+/* Single-entry pass over the entries that are a whole run on their own and
+ * stand on an empty slot: the previous capture's sole holder of the entry's
+ * content key, inside the move bound. This is where a lone 2D element that
+ * slid is matched; a key held more than once on either side pairs nothing. */
 static int carry_pair_content(const carry_key_map_t* m,
                               const scene_tri_t* prev, int prev_n,
                               const scene_tri_t* curr, int curr_n,
-                              carry_match_t* mt) {
+                              const carry_runs_t* cr, carry_match_t* mt) {
     static uint16_t pcount[OVERLAY_CARRY_MAX], ccount[OVERLAY_CARRY_MAX];
     carry_key_counts(m->key, prev_n, pcount);
     carry_key_counts(mt->ckey, curr_n, ccount);
     int paired = 0;
     for (int t = 0; t < curr_n; t++) {
-        if (mt->match[t] >= 0 || mt->occupied[t] || ccount[t] != 1) continue;
+        if (mt->match[t] >= 0 || mt->occupied[t]) continue;
+        if (cr->len[cr->of[t]] != 1 || ccount[t] != 1) continue;
         for (int j = m->head[mt->ckey[t] & (CARRY_KEY_SLOTS - 1)]; j >= 0; j = m->next[j]) {
             if (m->key[j] != mt->ckey[t] || pcount[j] != 1) continue;
             if (mt->prev_taken[j]) break;   /* the one holder of the key is claimed */
@@ -1790,6 +1928,9 @@ static int carry_pair_content(const carry_key_map_t* m,
             break;
         }
     }
+    for (int t = 0; t < curr_n; t++)
+        mt->ambig[t] = (int8_t)(ccount[t] != 1 ||
+                                (mt->match[t] >= 0 && pcount[mt->match[t]] != 1));
     return paired;
 }
 
@@ -1797,10 +1938,16 @@ static int carry_pair_content(const carry_key_map_t* m,
 static int carry_pair_all(const carry_key_map_t* m,
                           const scene_tri_t* prev, int prev_n,
                           const scene_tri_t* curr, int curr_n,
-                          carry_match_t* mt) {
+                          carry_match_t* mt, carry_run_stats_t* st) {
+    static carry_runs_t s_prun, s_crun;
     for (int j = 0; j < prev_n; j++) mt->prev_taken[j] = 0;
-    int paired = carry_pair_occupancy(m, prev, curr, curr_n, mt);
-    return paired + carry_pair_content(m, prev, prev_n, curr, curr_n, mt);
+    for (int t = 0; t < curr_n; t++) { mt->match[t] = -1; mt->anchored[t] = 0; }
+    carry_keys_build(curr, curr_n, mt->ckey);
+    carry_runs_build(prev, m->key, prev_n, &s_prun);
+    carry_runs_build(curr, mt->ckey, curr_n, &s_crun);
+    int paired = carry_pair_runs(prev, &s_prun, curr, &s_crun, mt, st);
+    paired += carry_pair_occupancy(m, prev, curr, curr_n, mt);
+    return paired + carry_pair_content(m, prev, prev_n, curr, curr_n, &s_crun, mt);
 }
 
 /* OPENPETE_CARRY_CENSUS=1: per-present audit of the 2D carry's position lerp.
@@ -1814,15 +1961,23 @@ static int carry_pair_all(const carry_key_map_t* m,
  * another previous entry stands where this one stands now, so that entry is the
  * real predecessor — `crossed` over any entry of the same layer and texturing,
  * `static_moved` over an entry of this one's own content key, which is the
- * element itself standing still while the pairing sweeps it. Both count only a
- * pair that actually moves. One line per present, zero counts included, so a
- * present that carried no 2D reads as no engagement rather than as clean. */
+ * element itself standing still while the pairing sweeps it. `ambiguous_lerp`
+ * names the guess instead of its result: a moved pair taken from a content key
+ * that two or more entries of either capture hold, with neither the rigid-run
+ * nor the occupancy pass naming the partner. Both count only a pair that
+ * actually moves. The run counters are the population the rigid pass sorts:
+ * `runs` every run of the current capture, `runs_lerped` those carried by one
+ * translation, `runs_snapped_disagree` those with a same-multiset partner whose
+ * entries displaced by different amounts. One line per present, zero counts
+ * included, so a present that carried no 2D reads as no engagement rather than
+ * as clean. */
 typedef struct {
     int      lerped;        /* carried tris whose position the pairing moved */
     int      far_both;      /* of those, > 2 px from both brackets */
     int      uv_mismatch;   /* pairs whose first-vertex UV region differs */
     int      crossed;       /* pairs whose partner is another entry's predecessor */
     int      static_moved;  /* moved entries whose own content stood still */
+    int      ambiguous;     /* moved pairs taken from a repeated content key */
     float    worst;         /* largest min(d_prev, d_curr) seen */
     int      worst_far, worst_uvmm, worst_cross, worst_cat;
     uint32_t worst_seq;
@@ -1857,7 +2012,7 @@ static int carry_twin_of(const scene_tri_t* prev, const uint32_t* prev_key, int 
 
 static void carry_census_note(carry_census_t* cz, const scene_tri_t* prev,
                               const scene_tri_t* curr, const scene_tri_t* app,
-                              int crossed, int static_moved) {
+                              int crossed, int static_moved, int ambiguous) {
     float dp = tri_pos_dist(app, prev), dc = tri_pos_dist(app, curr);
     float m = dp < dc ? dp : dc;
     int far_both = (dp > 2.0f && dc > 2.0f);
@@ -1867,6 +2022,7 @@ static void carry_census_note(carry_census_t* cz, const scene_tri_t* prev,
     if (far_both) cz->far_both++;
     if (uvmm) cz->uv_mismatch++;
     if (crossed) cz->crossed++;
+    if (ambiguous) cz->ambiguous++;
     /* The element stood still (a previous entry of its own content key is where
      * it now stands) yet the applied position is off both brackets: the lerp put
      * it where neither canonical tick drew it. */
@@ -1882,14 +2038,16 @@ static void carry_census_note(carry_census_t* cz, const scene_tri_t* prev,
 }
 
 static void carry_census_flush(const carry_census_t* cz, int carried, int paired,
-                               double oalpha) {
+                               double oalpha, const carry_run_stats_t* st) {
     static uint32_t s_frame = 0xFFFFFFFFu;
     static int s_ix = 0;
     if (s_scene_frame != s_frame) { s_frame = s_scene_frame; s_ix = 0; }
     fprintf(stderr, "[carrycensus vbl=%u present=%d alpha=%.3f] carried=%d paired=%d"
-                    " lerped=%d far_both=%d uv_mismatch=%d crossed=%d static_moved=%d",
+                    " lerped=%d far_both=%d uv_mismatch=%d crossed=%d static_moved=%d"
+                    " runs=%d runs_lerped=%d runs_snapped_disagree=%d ambiguous_lerp=%d",
             s_scene_frame, s_ix++, oalpha, carried, paired,
-            cz->lerped, cz->far_both, cz->uv_mismatch, cz->crossed, cz->static_moved);
+            cz->lerped, cz->far_both, cz->uv_mismatch, cz->crossed, cz->static_moved,
+            st->runs, st->lerped, st->disagree, cz->ambiguous);
     if (cz->lerped == 0) { fprintf(stderr, " NO-ENGAGEMENT\n"); return; }
     fprintf(stderr, " worst=%.2f cat=%d seq=%u %s%s%sprev=(%.1f,%.1f)"
                     " curr=(%.1f,%.1f) applied=(%.1f,%.1f)\n",
@@ -1955,9 +2113,10 @@ void openpete_native_scene_apply_overlay(double alpha) {
     }
     static carry_key_map_t s_map;
     static carry_match_t   s_mt;
+    carry_run_stats_t rst = {0};
     carry_map_build(&s_map, s_overlay_prev, s_overlay_prev_n);
     int paired = carry_pair_all(&s_map, s_overlay_prev, s_overlay_prev_n,
-                                s_overlay_carry, s_overlay_carry_n, &s_mt);
+                                s_overlay_carry, s_overlay_carry_n, &s_mt, &rst);
     carry_census_t cz = {0};
     int census = carry_census_on();
     for (int t = 0; t < s_overlay_carry_n && s_scene_n < MAX_SCENE_TRIS; t++) {
@@ -1976,13 +2135,14 @@ void openpete_native_scene_apply_overlay(double alpha) {
                                   moves && carry_twin_of(s_overlay_prev, s_map.key,
                                                          s_overlay_prev_n, c, 0, pi) >= 0,
                                   moves && carry_twin_of(s_overlay_prev, s_map.key,
-                                                         s_overlay_prev_n, c, s_mt.ckey[t], pi) >= 0);
+                                                         s_overlay_prev_n, c, s_mt.ckey[t], pi) >= 0,
+                                  moves && !s_mt.anchored[t] && s_mt.ambig[t]);
             }
         }
         tri.carry = 2;                             /* mark re-applied so the next capture skips it */
         s_scene[s_scene_n++] = tri;
     }
-    if (census) carry_census_flush(&cz, s_overlay_carry_n, paired, oalpha);
+    if (census) carry_census_flush(&cz, s_overlay_carry_n, paired, oalpha, &rst);
     { static int pf = -2;
       if (pf == -2) { const char* e = getenv("OPENPETE_APPLY_PROBE"); pf = (e && *e) ? atoi(e) : -1; }
       if (pf >= 0 && (int)s_scene_frame >= pf - 4 && (int)s_scene_frame <= pf + 4) {
@@ -2002,8 +2162,9 @@ void openpete_native_scene_apply_overlay(double alpha) {
         fprintf(stderr, "\n");
         if ((int)s_scene_frame == pf) for (int t = 0; t < s_overlay_carry_n; t++) {
             const scene_tri_t* q = &s_overlay_carry[t];
-            fprintf(stderr, "[applytri %d] seq=%u prim=%08X cat=%d bl=%d tex=%d v=(%.0f,%.0f)(%.0f,%.0f)(%.0f,%.0f) rgba=%08X\n",
+            fprintf(stderr, "[applytri %d] seq=%u prim=%08X cat=%d bl=%d tex=%d tp=(%d,%d) cl=(%d,%d) v=(%.1f,%.1f)(%.1f,%.1f)(%.1f,%.1f) rgba=%08X\n",
                     t, q->seq, q->prim, q->category, q->blend, q->textured,
+                    q->tpage_x, q->tpage_y, q->clut_x, q->clut_y,
                     q->v[0].sx, q->v[0].sy, q->v[1].sx, q->v[1].sy, q->v[2].sx, q->v[2].sy, q->v[0].rgba); } } }
     s_scene_freeze = freeze_lerp(s_overlay_prev_freeze, s_overlay_carry_freeze, oalpha);
     s_scene_fade   = fade_lerp(s_fade_prev, s_fade_curr, oalpha);
