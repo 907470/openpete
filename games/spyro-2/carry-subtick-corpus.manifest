@@ -1,0 +1,19 @@
+# carry-subtick-corpus.manifest — rows for scripts/check_carry_subtick.sh.
+#
+# <bk2> | <lo>-<hi> | lerps=<floor on the interpolated carry triangles>
+#
+# glimmer: the same dialogue-box construction in a game whose semi-transparent
+# 2D population does not change composition tick to tick — the negative the
+# Spyro 3 row is read against.
+glimmer-pogo-dialogue.bk2 | 995-1015 | lerps=300
+#
+# open-guidebook: the guidebook page builds its 2D from a different count each
+# tick (556 entries against 476 at VBL 979), so the pairing must hold every
+# element of the repeated 16x40 column still; the presentation golden's
+# intermediate tile at 980 is that present.
+open-guidebook.bk2 | 975-985 | lerps=3000
+#
+# attract-demo: no movie, the plain boot. The DEMO MODE box is five untextured
+# bars at y = 194, 195, 196, 205, 206, static across the brackets; the tile at
+# 16900 is the present at VBL 16901.
+attract-demo | 16895-16905 | lerps=100
