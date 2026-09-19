@@ -26,6 +26,9 @@ idol_springs | pos=(115428, 98127, 14292) yaw=-1135 pitch=160
 # to either treatment moves this tile. summer_forest carries mode 0 alone.
 hurricos | pos=(19757, 33954, 15316) yaw=496 pitch=160
 sunny_beach | pos=(72260, 16288, 26067) yaw=1936 pitch=160
+# crushs_dungeon also holds the boss HUD at the bottom left: the icon above
+# the health bar draws as a black silhouette on both the native path and the
+# reference, so the tile, not the reference, carries the change that fixes it.
 crushs_dungeon | pos=(24218, 29700, 11221) yaw=96 pitch=160
 skelos_badlands | pos=(54371, 53353, 26580) yaw=400 pitch=160
 breeze_harbor | pos=(83855, 83763, 11221) yaw=-433 pitch=160
