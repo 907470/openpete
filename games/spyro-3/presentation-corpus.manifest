@@ -113,3 +113,8 @@ title-demo-glint2|4900|10||4910
 # the HUD fully extended. The flame's primitives are written at VBL 1066-1090
 # (peak 1078); 1080 is an intermediate leg inside the breath.
 crystal-islands-flame|1060|200||1074,1078,1080,1086
+
+# spikes-arena: the fight with Spike opens at ~VBL 4100. From 4120 the guest
+# draws the boss health bar at the bottom right, a green-to-red gradient
+# beside the boss icon; the pins 4140 and 4158 hold it on both legs.
+spikes-arena|4100|100||4140,4158
