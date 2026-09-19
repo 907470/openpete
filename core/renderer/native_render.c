@@ -16,7 +16,6 @@
 
 #include "openpete_glitch_mark.h"
 #include "openpete_native_render.h"
-#include "openpete_native_stp.h"   /* texel STP selection of a 2D split primitive */
 #include "openpete_present_thread.h"
 #include "openpete_pace_log.h"
 #include "openpete_perf_stats.h"

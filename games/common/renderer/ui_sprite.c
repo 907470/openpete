@@ -24,7 +24,6 @@
 #include "feature_registry.h"
 #include "psx_runtime_internal.h"
 #include "openpete_native_render.h"
-#include "openpete_native_stp.h"      /* texel STP split of ABR 1-3 textured primitives */
 #include "renderer/render_paths.h"
 #include "renderer/native_gte.h"      /* the shared texture-page decode */
 #include "renderer/ui_game.h"
