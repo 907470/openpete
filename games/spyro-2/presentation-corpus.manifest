@@ -59,3 +59,8 @@ open-guidebook|960|200||980,998
 # anim 1: the intermediate legs show whether the sub-tick pose is continuous
 # across a tick while the game blends toward the next animation.
 glimmer-pogo-dialogue|900|200||700,897,901,903,987,989,1000
+# Pause menu mid-level: the framebuffer window copies draw buffer 0 at VBL
+# 1469 and shrinks over 1454-1469 from full screen to the lower-left
+# quarter; pins at the first full-window frame, mid-shrink and settled.
+# Synthesized: idle to 1450 then Start (make_bk2.py --hold 1450:1460:Start).
+pause-menu-midlevel|1440|200||1454,1462,1500
