@@ -218,9 +218,10 @@ artisans | pos=(69222, 48707, 7142) yaw=1706 pitch=138
 artisans | pos=(69222, 48707, 7142) yaw=1685 pitch=135
 # town_square bull moby: disappears or shrinks when it changes animation
 # pose while interpolation is active (user report 2026-09-19, VBL ~1800;
-# pose corrected the same day); blessed pre-fix. The intermediate leg is
-# the defect's leg.
-town_square | pos=(109911, 108961, 10607) yaw=1026 pitch=75
+# pose corrected the same day); blessed pre-fix. Canonical at 1764 so the
+# intermediate leg lands on VBL 1814, the tick the bull turns 180 degrees
+# by a rotation step and a mirrored keyframe pair at once.
+town_square | pos=(109911, 108961, 10607) yaw=1026 pitch=75 | 1764
 # stone_hill sector 7 faces 0 and 1: the fill-tag pick session of 2026-09-19;
 # blessed pre-fix on the binary before the header regeneration.
 stone_hill | pos=(74035, 203225, 34658) yaw=6884 pitch=311
