@@ -25,3 +25,11 @@ open-atlas-turn-pages.bk2 | 1287-1293 | lerps=3000
 # of VBL 1276, so the glyph run's entries displace by different amounts and the
 # run must snap whole rather than carry its unique letters alone.
 open-atlas-turn-pages.bk2 | 1271-1281 | lerps=18000
+#
+# HUD glyph runs sliding in at level start (crystal-islands-flame, the gem
+# and egg counters at 1074-1080) and the mirror row's top-centre counter
+# (icy-peak 2000-2001), and the sunny-villa portal-entry banner at 2350: the
+# run pass carries each as one body; a repeated digit lerps with its run.
+crystal-islands-flame.bk2 | 1072-1082 | lerps=150
+icy-peak-reflective-mirror.bk2 | 1997-2003 | lerps=100
+sunrise-spring-sunny-villa-portal-entry.bk2 | 2347-2353 | lerps=500
