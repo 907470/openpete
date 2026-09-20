@@ -2,6 +2,8 @@
 # level	stone_hill
 # pose	spawn	exit=0	freecam=0	svc=1071/1	draws_retired=0	rebake=97
 # pose	topdown	exit=0	freecam=1	svc=1071/1	draws_retired=0	rebake=97
+# pose	bk2	movies=10	chest-destruction,chest-saturation,egg,exit-level,key,level-transition,level-transition-framebuffer,low-fps,moby-crossfade,stone-hill-distant-terrain
+# pose	demo	edges=8
 pose	arena	high	afail
 spawn	OPAQUE	91005	0
 spawn	ALPHA	0	0
@@ -33,3 +35,33 @@ topdown	N_ALPHA	0	0
 topdown	N_ADD	0	0
 topdown	N_SUB	0	0
 topdown	N_LP	0	0
+bk2	OPAQUE	225339	0
+bk2	ALPHA	0	0
+bk2	ADD	0	0
+bk2	SUB	0	0
+bk2	LP	15798	0
+bk2	A_OPAQUE	0	0
+bk2	A_ALPHA	0	0
+bk2	A_ADD	0	0
+bk2	A_SUB	0	0
+bk2	A_LP	0	0
+bk2	N_OPAQUE	192294	0
+bk2	N_ALPHA	0	0
+bk2	N_ADD	0	0
+bk2	N_SUB	0	0
+bk2	N_LP	10122	0
+demo	OPAQUE	237942	0
+demo	ALPHA	0	0
+demo	ADD	0	0
+demo	SUB	0	0
+demo	LP	20991	0
+demo	A_OPAQUE	0	0
+demo	A_ALPHA	0	0
+demo	A_ADD	0	0
+demo	A_SUB	0	0
+demo	A_LP	0	0
+demo	N_OPAQUE	163770	0
+demo	N_ALPHA	0	0
+demo	N_ADD	0	0
+demo	N_SUB	0	0
+demo	N_LP	12234	0

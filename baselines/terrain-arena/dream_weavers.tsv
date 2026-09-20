@@ -2,6 +2,7 @@
 # level	dream_weavers
 # pose	spawn	exit=0	freecam=0	svc=1071/1	draws_retired=0	rebake=56
 # pose	topdown	exit=0	freecam=1	svc=1071/1	draws_retired=0	rebake=56
+# pose	bk2	movies=1	dream-weavers-crash
 pose	arena	high	afail
 spawn	OPAQUE	103554	0
 spawn	ALPHA	0	0
@@ -33,3 +34,18 @@ topdown	N_ALPHA	0	0
 topdown	N_ADD	0	0
 topdown	N_SUB	0	0
 topdown	N_LP	0	0
+bk2	OPAQUE	105057	0
+bk2	ALPHA	0	0
+bk2	ADD	11736	0
+bk2	SUB	0	0
+bk2	LP	13872	0
+bk2	A_OPAQUE	8172	0
+bk2	A_ALPHA	0	0
+bk2	A_ADD	0	0
+bk2	A_SUB	0	0
+bk2	A_LP	612	0
+bk2	N_OPAQUE	73086	0
+bk2	N_ALPHA	0	0
+bk2	N_ADD	0	0
+bk2	N_SUB	0	0
+bk2	N_LP	9930	0

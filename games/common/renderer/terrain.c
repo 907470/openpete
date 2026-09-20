@@ -2979,6 +2979,11 @@ typedef struct {
                                        * drawn from the cache. */
     uint32_t first[OPTC_ARENA_COUNT];
     int      count[OPTC_ARENA_COUNT];
+    uint16_t bufbit;                  /* bit a = which buffer of arena a holds
+                                       * this slot's chunk (0 primary, 1 the
+                                       * arena's overflow buffer); each buffer
+                                       * numbers its vertices from 0, so the
+                                       * index goes with every first[a]       */
     uint32_t ownFrame;                /* VBL this slot last validated as GPU-owned */
     /* Pack/selector claim latches: the scan answers depend on the decoded
      * texmats (decodeGen/texGen) and on the pack registry / selector set
@@ -3004,6 +3009,9 @@ typedef struct {
                                        * build — a moved registry (new files
                                        * loaded) re-bakes so faces that now
                                        * match gain their entries */
+    uint32_t bakeAllocEpoch;          /* arena allocation epoch at build — an
+                                       * arena-full claim (unbuildable 1)
+                                       * retries when the arenas gain room   */
     uint32_t bakeHdEpoch;             /* HD fold: hdfold_epoch at build — a
                                        * fold-claimed (unbuildable=5) sector
                                        * retries when interns or an upload
@@ -3091,9 +3099,11 @@ static int s_otbias_on;               /* tentative: defined (=1) at the feed */
 
 static void tgpu_free_slot(tgpu_slot_t* T) {
     for (int a = 0; a < OPTC_ARENA_COUNT; a++) {
-        if (T->count[a] > 0) openpete_tercache_chunk_free(a, T->first[a], T->count[a]);
+        if (T->count[a] > 0)
+            openpete_tercache_chunk_free(a, (T->bufbit >> a) & 1, T->first[a], T->count[a]);
         T->count[a] = 0;
     }
+    T->bufbit = 0;
     T->s = 0;
 }
 
@@ -3127,6 +3137,16 @@ static long s_tgpu_rebake;
 static void tgpu_level_edge(int prev_level, int level) {
     tgpu_free_all_slots();
     if (prev_level >= 0) openpete_tercache_request_resize(level);
+    else openpete_tercache_set_level(level);
+}
+
+/* An arena-full claim is a transient: the cache asks the device-owning thread
+ * for an overflow buffer, and the sector belongs on the GPU again as soon as
+ * that buffer is in place. The allocation epoch steps at exactly the moments
+ * a refused chunk may now fit — an overflow buffer, or a level-edge
+ * replacement — so a claimed sector re-bakes then and at no other build. */
+static int tgpu_claim_retry(const tgpu_slot_t* T) {
+    return T->unbuildable == 1 && T->bakeAllocEpoch != openpete_tercache_alloc_epoch();
 }
 
 /* Run before the frame_begin that adopts fresh arena buffers: the adoption
@@ -3665,25 +3685,29 @@ static int tgpu_build_sector(CPUState* cpu, int slot, const tscache_t* SC,
     {
         tgpu_slot_t* S = &s_tgpu[slot];
         uint32_t first[OPTC_ARENA_COUNT] = {0};
+        int bufi[OPTC_ARENA_COUNT] = {0};
+        uint16_t bits = 0;
         int a;
         for (a = 0; a < OPTC_ARENA_COUNT; a++) {
             if (buf[a].n == 0) continue;
-            if (openpete_tercache_chunk_alloc(a, buf[a].n, &first[a]) != 0) break;
+            if (openpete_tercache_chunk_alloc(a, buf[a].n, &first[a], &bufi[a]) != 0) break;
         }
         if (a < OPTC_ARENA_COUNT) {   /* arena full: roll back this sector */
             for (int b = 0; b < a; b++)
-                if (buf[b].n) openpete_tercache_chunk_free(b, first[b], buf[b].n);
+                if (buf[b].n) openpete_tercache_chunk_free(b, bufi[b], first[b], buf[b].n);
             goto done;
         }
         for (a = 0; a < OPTC_ARENA_COUNT; a++) {
             if (buf[a].n == 0) { S->count[a] = 0; continue; }
-            openpete_tercache_chunk_write(a, first[a], buf[a].v, buf[a].n);
+            openpete_tercache_chunk_write(a, bufi[a], first[a], buf[a].v, buf[a].n);
             if (buf[a].anim)
-                openpete_tercache_chunk_write_prev(a, first[a], buf[a].pv, buf[a].n);
+                openpete_tercache_chunk_write_prev(a, bufi[a], first[a], buf[a].pv, buf[a].n);
             if (buf[a].nearv)
-                openpete_tercache_chunk_write_ctx(a, first[a], buf[a].cx, buf[a].n);
+                openpete_tercache_chunk_write_ctx(a, bufi[a], first[a], buf[a].cx, buf[a].n);
             S->first[a] = first[a]; S->count[a] = buf[a].n;
+            bits |= (uint16_t)(bufi[a] << a);
         }
+        S->bufbit = bits;
         ok = 1;
     }
 done:
@@ -3802,7 +3826,8 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
                    T->bakeHdEpoch != openpete_native_hdfold_epoch())))
              /* Material buckets are baked into the faces, so a selector set
               * that moved leaves them naming the wrong pass. */
-             || (T->bakeSelEpoch != T->selEpoch);
+             || (T->bakeSelEpoch != T->selEpoch)
+             || tgpu_claim_retry(T);
     if (!dirty && T->lastColFrame != openpete_frame) {
         /* Colour liveness once per VBL (colours can only change per tick). */
         uint32_t h;
@@ -3825,6 +3850,7 @@ static int tgpu_ensure(CPUState* cpu, const tscache_t* SC, uint32_t hqTable,
         T->animRoll = SC->vrollPres;
         T->bakeTpGen = T->tpGen;
         T->bakeHdEpoch = openpete_native_hdfold_epoch();
+        T->bakeAllocEpoch = openpete_tercache_alloc_epoch();
         T->bakeSelEpoch = T->selEpoch;
         T->lastColFrame = openpete_frame;
         if (tgpu_col_hash(SC, &T->colHash) != 0) { T->unbuildable = 3; return 3; }
@@ -3851,18 +3877,23 @@ static void tgpu_fmt_arenas(char* out, int cap, const uint32_t* num, const uint3
 }
 
 /* Per-arena high-water marks against their capacities, the sectors each
- * arena claimed back for want of room, and the level-edge replacement's
- * engagement (service calls / requests fulfilled). A `high` equal to its
- * `cap` is a clamp, not a demand figure. */
+ * arena claimed back for want of room, the overflow buffers each arena has
+ * taken on, the device bytes the live buffers hold, and the level-edge
+ * replacement's engagement (service calls / requests fulfilled). A `high`
+ * equal to its `cap` with no overflow behind it is a clamp, not a demand
+ * figure. */
 static void tgpu_arena_census_line(void) {
     openpete_tercache_stats_t st;
     openpete_tercache_get_stats(&st);
-    char hwm[768], afail[384];
+    char hwm[768], afail[384], ovf[384];
     tgpu_fmt_arenas(hwm, (int)sizeof hwm, st.high, st.cap);
     tgpu_fmt_arenas(afail, (int)sizeof afail, st.alloc_fail, NULL);
-    fprintf(stderr, "[ter-gpu f=%u] hwm=%s afail=%s svc=%u/%u draws-retired=%u rebake=%ld\n",
-            openpete_frame, hwm, afail, st.svc_calls, st.svc_fulfilled,
-            st.draws_retired, s_tgpu_rebake);
+    tgpu_fmt_arenas(ovf, (int)sizeof ovf, st.overflow_adopted, NULL);
+    fprintf(stderr, "[ter-gpu f=%u] hwm=%s afail=%s ovf=%s caps=%.1fMiB svc=%u/%u "
+            "draws-retired=%u rebake=%ld\n",
+            openpete_frame, hwm, afail, ovf,
+            (double)st.cap_bytes / (1024.0 * 1024.0),
+            st.svc_calls, st.svc_fulfilled, st.draws_retired, s_tgpu_rebake);
 }
 
 /* The arena line again at exit, so a run shorter than the census divider

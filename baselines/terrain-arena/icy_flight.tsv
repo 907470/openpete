@@ -2,6 +2,7 @@
 # level	icy_flight
 # pose	spawn	exit=0	freecam=0	svc=1071/1	draws_retired=0	rebake=51
 # pose	topdown	exit=0	freecam=1	svc=1071/1	draws_retired=0	rebake=51
+# pose	demo	edges=8
 pose	arena	high	afail
 spawn	OPAQUE	43500	0
 spawn	ALPHA	594	0
@@ -33,3 +34,18 @@ topdown	N_ALPHA	0	0
 topdown	N_ADD	0	0
 topdown	N_SUB	0	0
 topdown	N_LP	0	0
+demo	OPAQUE	208713	0
+demo	ALPHA	3642	0
+demo	ADD	23187	0
+demo	SUB	0	0
+demo	LP	26670	0
+demo	A_OPAQUE	0	0
+demo	A_ALPHA	0	0
+demo	A_ADD	0	0
+demo	A_SUB	0	0
+demo	A_LP	0	0
+demo	N_OPAQUE	168978	0
+demo	N_ALPHA	3762	0
+demo	N_ADD	21390	0
+demo	N_SUB	0	0
+demo	N_LP	24720	0

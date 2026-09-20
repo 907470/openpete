@@ -2,6 +2,7 @@
 # level	peace_keepers
 # pose	spawn	exit=0	freecam=0	svc=1071/1	draws_retired=0	rebake=115
 # pose	topdown	exit=0	freecam=1	svc=1071/1	draws_retired=0	rebake=115
+# pose	bk2	movies=2	artisans-balloonist,peace-keepers-terrain-culling
 pose	arena	high	afail
 spawn	OPAQUE	78573	0
 spawn	ALPHA	0	0
@@ -33,3 +34,18 @@ topdown	N_ALPHA	0	0
 topdown	N_ADD	0	0
 topdown	N_SUB	0	0
 topdown	N_LP	0	0
+bk2	OPAQUE	129774	0
+bk2	ALPHA	0	0
+bk2	ADD	0	0
+bk2	SUB	0	0
+bk2	LP	17445	0
+bk2	A_OPAQUE	57906	0
+bk2	A_ALPHA	0	0
+bk2	A_ADD	0	0
+bk2	A_SUB	0	0
+bk2	A_LP	2574	0
+bk2	N_OPAQUE	94188	0
+bk2	N_ALPHA	0	0
+bk2	N_ADD	0	0
+bk2	N_SUB	0	0
+bk2	N_LP	10956	0

@@ -292,22 +292,46 @@ void openpete_native_hdfold_prime(struct rhi_device *dev);
  * entry ids die with it, so callers must also rebake hd-baked sectors. */
 void openpete_native_hdfold_reset(void);
 
-/* Chunk management (builder side). alloc returns 0 on success and the first
- * vertex index in *out_first; write uploads packed vertices; free defers the
- * range's reuse by the frames-in-flight window and stamps its face_flags to
- * the dead slot so in-flight frames drop it. */
-int  openpete_tercache_chunk_alloc(int arena, int vert_count, uint32_t *out_first);
-void openpete_tercache_chunk_write(int arena, uint32_t first,
+/* Chunk management (builder side). alloc returns 0 on success, the first
+ * vertex index in *out_first and the arena buffer that index addresses in
+ * *out_buf; every later call for that chunk repeats the buffer index, since
+ * each buffer has its own vertex numbering from 0. write uploads packed
+ * vertices; free defers the range's reuse by the frames-in-flight window and
+ * stamps its face_flags to the dead slot so in-flight frames drop it.
+ *
+ * alloc returns -1 when every buffer of the arena is full. It then posts an
+ * overflow request for that arena (see below), so the caller's claim-back to
+ * the CPU walk lasts the presents the device thread needs to allocate. */
+int  openpete_tercache_chunk_alloc(int arena, int vert_count, uint32_t *out_first,
+                                   int *out_buf);
+void openpete_tercache_chunk_write(int arena, int buf, uint32_t first,
                                    const struct rhi_terrain_vertex *v, int count);
 /* Anim arenas only: upload the parallel previous-tick records for a chunk
  * written at the same [first, first+count) range. */
-void openpete_tercache_chunk_write_prev(int arena, uint32_t first,
+void openpete_tercache_chunk_write_prev(int arena, int buf, uint32_t first,
                                         const struct rhi_terrain_prev *p, int count);
 /* Near arenas only: upload the parallel emitted-tri member context for a chunk
  * written at the same [first, first+count) range. */
-void openpete_tercache_chunk_write_ctx(int arena, uint32_t first,
+void openpete_tercache_chunk_write_ctx(int arena, int buf, uint32_t first,
                                        const struct rhi_terrain_nearctx *c, int count);
-void openpete_tercache_chunk_free(int arena, uint32_t first, int count);
+void openpete_tercache_chunk_free(int arena, int buf, uint32_t first, int count);
+
+/* ---- overflow buffers ---------------------------------------------------
+ * An arena holds a primary buffer and, once it has run out, one overflow
+ * buffer sized from the level's own measured capacity, or from the refused
+ * chunk where that is larger, so one grant covers the level. The builder
+ * posts the request from chunk_alloc, the device-owning thread allocates it
+ * in present_service, and the builder installs it at its next frame_begin;
+ * from then on chunk_alloc serves from the overflow once the primary is full
+ * and the draw issues one rhi_draw per buffer. The vertex stage's only index
+ * use is gl_VertexIndex % 3, which restarts at every draw, so a second buffer
+ * needs no index translation and nothing is copied.
+ *
+ * One overflow per arena is outstanding at a time: a request raised while one
+ * is pending or already installed is dropped, and an allocation that fails
+ * logs once for that arena and stops the requests until the next level edge,
+ * where the replacement collapses both buffers into one fresh primary sized
+ * for the incoming level. */
 
 /* ---- level-edge arena replacement ---------------------------------------
  * `high` never falls and a freed range returns to the free list only after
@@ -331,6 +355,14 @@ void openpete_tercache_chunk_free(int arena, uint32_t first, int count);
  * resize_ready reports that moment. */
 void openpete_tercache_request_resize(int level_id);
 int  openpete_tercache_resize_ready(void);
+/* The level the arenas are being filled for, which is what sizes every buffer
+ * the cache allocates from here on. Set at every level latch, including the
+ * first of a session, where no replacement is owed. */
+void openpete_tercache_set_level(int level_id);
+/* Steps whenever an arena gains buffer room: a level-edge replacement or an
+ * overflow buffer. A sector claimed back because an arena was full is baked
+ * again when this moves, which is what keeps that claim a transient. */
+uint32_t openpete_tercache_alloc_epoch(void);
 /* Device-owning thread only, once per present windowed and once per VBL
  * headless: fulfil a pending request and destroy drained retire entries.
  * The only caller of rhi_destroy_buffer for arena buffers outside
@@ -363,13 +395,20 @@ typedef struct {
     uint32_t draws_last_present;
     uint32_t frees_pending;
     /* Per-arena, in OPTC_ARENA_* order. `high` is the arena's high-water
-     * vertex count (the draw range, and what a cap binds against); `cap` is
-     * the live buffer pair's capacity; `alloc_fail` counts chunk_alloc's -1
+     * vertex count summed over its buffers (the draw range, and what a cap
+     * binds against); `cap` is the summed capacity of its live buffers; `alloc_fail` counts chunk_alloc's -1
      * returns, which are the sectors the builder claimed back to the CPU
      * walk because the arena was full. */
     uint32_t high[OPTC_ARENA_COUNT];
     uint32_t cap[OPTC_ARENA_COUNT];
     uint32_t alloc_fail[OPTC_ARENA_COUNT];
+    /* Overflow buffers installed on each arena over the session. A non-zero
+     * count beside a settled `alloc_fail` is the arena that ran out and then
+     * grew; `high` and `cap` above sum the arena's buffers. */
+    uint32_t overflow_adopted[OPTC_ARENA_COUNT];
+    /* Device bytes the live buffers hold: every arena's capacity times its
+     * vertex stride plus its twin's. */
+    uint64_t cap_bytes;
     /* Level-edge replacement engagement: present_service calls and requests
      * fulfilled. Both zero means the service never ran, which makes every
      * arena figure below a pre-replacement figure. */

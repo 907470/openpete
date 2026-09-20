@@ -229,10 +229,9 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     # headless sweep: `regen` re-measures at a capacity no content reaches
     # and must reproduce baselines/terrain-arena/ exactly, with no censored
     # row (a high-water mark equal to its capacity) and no sector claimed
-    # back for want of arena room; `stock` repeats it at the shipped caps,
-    # where the claim-back assertion currently fails on the topdown pose of
-    # the levels whose poly-anim opaque demand exceeds OPTC_ARENA_A_OPAQUE,
-    # and passes once the arenas are sized per level from these baselines.
+    # back for want of arena room; `stock` repeats the static sweep at the
+    # generated caps, where no level at either pose may claim a sector back;
+    # `overflow` proves the growth path on a level squeezed below its demand.
     # Its own label: far too long for the per-build ctest run. Exit 64 = no
     # binary or disc.
     add_test(NAME terrain_arena_baseline
@@ -258,6 +257,20 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
     set_tests_properties(terrain_arena_demo PROPERTIES
         LABELS "slow;terrain-baseline"
         TIMEOUT 3600
+        SKIP_RETURN_CODE 64)
+
+    # Overflow-buffer row: one level whose arenas cannot hold it, against the
+    # same level at the generated caps. It asserts that a full arena claims
+    # sectors back only until the overflow buffer lands (afail rises, an
+    # overflow is installed, afail then stops rising), that the generated caps
+    # need neither, and that the squeezed run's image is identical to the
+    # stock-cap run's, which is what makes the claim-back invisible.
+    add_test(NAME terrain_arena_overflow
+             COMMAND python3 ${CMAKE_CURRENT_SOURCE_DIR}/scripts/baseline-terrain-arena.py overflow
+             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    set_tests_properties(terrain_arena_overflow PROPERTIES
+        LABELS "slow;terrain-baseline"
+        TIMEOUT 1800
         SKIP_RETURN_CODE 64)
 
     # Cognitive-complexity ratchet, the ctest spelling of the per-build

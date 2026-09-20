@@ -2,6 +2,7 @@
 # level	artisans
 # pose	spawn	exit=0	freecam=0	svc=1071/1	draws_retired=0	rebake=89
 # pose	topdown	exit=0	freecam=1	svc=1071/1	draws_retired=0	rebake=89
+# pose	bk2	movies=27	artisans-balloonist,artisans-bridge,artisans-bridge-hq,artisans-distant-water-gaps,artisans-distant-water-gaps-2,artisans-lp-waterfall,artisans-water-platform-missing-polys,camera-rotate-taps,cyclorama-portal,exit-level,flame,glide-flutter,hq-texture-switch,level-transition,level-transition-framebuffer,level-transition-gems,moving-terrain,nestor,pause-menu-text-moby-swim,portal-cyclorama-cull,portal-ground-disocclusion,roll-animation,rotation,spyro-dragon-pedastal-depth,sunny-flight-exit,town-square-portal-entry,widescreen-culling
 pose	arena	high	afail
 spawn	OPAQUE	73299	0
 spawn	ALPHA	0	0
@@ -33,3 +34,18 @@ topdown	N_ALPHA	0	0
 topdown	N_ADD	0	0
 topdown	N_SUB	0	0
 topdown	N_LP	0	0
+bk2	OPAQUE	157380	0
+bk2	ALPHA	0	0
+bk2	ADD	0	0
+bk2	SUB	0	0
+bk2	LP	13920	0
+bk2	A_OPAQUE	51666	0
+bk2	A_ALPHA	0	0
+bk2	A_ADD	0	0
+bk2	A_SUB	0	0
+bk2	A_LP	5535	0
+bk2	N_OPAQUE	139146	0
+bk2	N_ALPHA	0	0
+bk2	N_ADD	0	0
+bk2	N_SUB	0	0
+bk2	N_LP	10830	0
