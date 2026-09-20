@@ -35,6 +35,7 @@
 #include "openpete_rewind.h"
 #include "openpete_record.h"
 #include "openpete_native_render.h"
+#include "game_layout.h"
 #include "openpete_terrain_cache.h"
 #include "openpete_fb_snapshot.h"
 #include "openpete_ident_audit.h"
@@ -73,13 +74,13 @@
 #include <emscripten.h>  /* emscripten_sleep (Asyncify) */
 #endif
 
-#define WIN_W 640
-/* Window default matches Spyro's visible 224-line viewport (DRAWENV.clip.h)
- * rather than the full 240-line DISPENV (which has 8px overscan bands top
- * and bottom that the game never draws into). PsyCross renders to an
- * oversized FBO and crops those bands at present time so the window
- * displays the visible region 1:1. */
-#define WIN_H 448
+/* The default window comes from the game's own display environment
+ * (game_default_window_w/h, game_layout.h): its height is the visible
+ * DRAWENV clip height at two window rows per VRAM row, not the full DISPENV
+ * height, because the game never draws into the overscan bands and PsyCross
+ * crops them at present time. A game whose clip is shorter than Spyro 1's
+ * therefore opens a shorter window instead of letterboxing inside a fixed
+ * one. */
 
 #define CLEAR_R 0x10
 #define CLEAR_G 0x14
@@ -1109,8 +1110,11 @@ static int run_recomp_smoke_test(const openpete_options_t* opts) {
 #ifdef OPENPETE_HAS_PSYCROSS
     /* libgpu/libgte calls touch internal SDL/GL state that PsyX_Initialise
      * sets up. For the smoke-test path we still want PsyCross alive. */
-    OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window", WIN_W, WIN_H);
-    int psyx_ok = PsyX_Initialise((char*)opts->display_name, WIN_W, WIN_H,
+    OPL_INFO_F("boot", "PsyX_Initialise: opening %dx%d window",
+               game_default_window_w(), game_default_window_h());
+    int psyx_ok = PsyX_Initialise((char*)opts->display_name,
+                                  game_default_window_w(),
+                                  game_default_window_h(),
                                   /*fullscreen=*/0,
                                   /*startHidden=*/opts->headless ? 1 : 0);
     /* --headless still opens a GL context: PsyCross rasterizes the OT for the
@@ -2045,14 +2049,14 @@ static int run_host_init(const openpete_options_t* opts) {
      * broken mod is disabled with a log, never a failed launch. */
     openpete_mods_init(opts);
 
-    int win_w = (opts->window_w > 0) ? opts->window_w : WIN_W;
-    int win_h = (opts->window_h > 0) ? opts->window_h : WIN_H;
+    int win_w = (opts->window_w > 0) ? opts->window_w : game_default_window_w();
+    int win_h = (opts->window_h > 0) ? opts->window_h : game_default_window_h();
     /* If --aspect is set but the user didn't pin --window, scale the
      * default window so the *cropped* (post-overscan) src exactly fills
      * it — otherwise the present blit letterboxes the un-rendered
-     * disp/clip difference. Spyro's clip is 224 of 240 disp rows, so the
-     * cropped aspect = requested_aspect × 240/224. User-provided --window
-     * always wins. */
+     * disp/clip difference. The cropped aspect = requested_aspect ×
+     * game_display_crop_factor(), the game's own disp_h/clip_h.
+     * An explicit --window always wins. */
     if (opts->aspect_w_over_h > 0.0f &&
         opts->renderer == OPENPETE_RENDERER_PSYCROSS) {
         /* The PsyCross-mode Hor+ substitution stack was retired 2026-07-06
@@ -2064,9 +2068,9 @@ static int run_host_init(const openpete_options_t* opts) {
                    "reference renders canonical 4:3 — flag ignored");
     } else if (opts->aspect_w_over_h > 0.0f &&
         opts->window_w <= 0 && opts->window_h <= 0) {
-        const float crop_factor = 240.0f / 224.0f;
-        win_w = (int)((float)WIN_H * opts->aspect_w_over_h * crop_factor + 0.5f);
-        win_h = WIN_H;
+        const float crop_factor = game_display_crop_factor();
+        win_h = game_default_window_h();
+        win_w = (int)((float)win_h * opts->aspect_w_over_h * crop_factor + 0.5f);
         OPL_INFO_F("aspect", "auto window size %dx%d (--aspect=%.4f × crop %.4f)",
                    win_w, win_h, (double)opts->aspect_w_over_h, (double)crop_factor);
     }
@@ -6522,7 +6526,8 @@ int openpete_run(const openpete_options_t* opts) {
     /* SDL3: windows are shown by default; SDL_WINDOW_SHOWN is gone. */
     SDL_WindowFlags window_flags = opts->headless ? SDL_WINDOW_HIDDEN : 0;
     SDL_Window* window = SDL_CreateWindow(
-        opts->display_name, WIN_W, WIN_H, window_flags);
+        opts->display_name, game_default_window_w(), game_default_window_h(),
+        window_flags);
     if (!window) {
         OPL_ERROR_F("boot", "SDL_CreateWindow: %s", SDL_GetError());
         SDL_Quit();

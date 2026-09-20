@@ -23,6 +23,12 @@
 #define OVL_TITLESCREEN_AND_LOADING 34u
 
 const game_layout_t game_layout = {
+    .display = {
+        /* func_80011BBC: SetDefDrawEnv(a2=0xC, a3=0x200, sp+0x10=0xD8) and
+         * SetDefDispEnv(a3=0x200, sp+0x10=0xF0) (init.s:80011C00-80011C48) —
+         * a 512x216 clip inside a 512x240 display, 12 undrawn rows per side. */
+        .disp_w = 512, .disp_h = 240, .clip_h = 216,
+    },
     .sin_table = G_SIN,      /* 256 s16 1.12 entries; func_8001B61C interpolates
                               * it from a 12-bit angle (stdutil.s:308-318) and
                               * func_8001B6C8 pairs it with the cos table

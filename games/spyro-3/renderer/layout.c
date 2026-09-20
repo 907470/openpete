@@ -21,6 +21,11 @@ static uint32_t flame_cap_colour_off(CPUState* cpu) {
 }
 
 const game_layout_t game_layout = {
+    .display = {
+        /* warp.c func_80059038: SetDefDrawEnv(..., 0, 12, 512, 216) paired with
+         * SetDefDispEnv(..., 0, 0, 512, 240) — 12 undrawn rows per side. */
+        .disp_w = 512, .disp_h = 240, .clip_h = 216,
+    },
     .sin_table = G_SIN,     /* g_Sin (psx.map); cos = g_Cos 0x80065920 at +0x80.
                              * asm/stdutil.s func_8004E9E4 (sin) and func_8004EA2C
                              * (cos) `lh` from those two bases; func_8004F6C4 builds

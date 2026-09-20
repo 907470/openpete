@@ -3914,6 +3914,26 @@ void openpete_native_set_draw_clip(int x, int y, int w, int h)
     if (s_nr.enabled && (w != s_geom_in[6] || h != s_geom_in[7]))
         OPL_INFO_F("native", "draw clip %dx%d @ (%d,%d) [VRAM px] (overscan band=%d/side)",
                    w, h, x, y, s_geom_in[3] > 0 ? (s_geom_in[3] - h) / 2 : 0);
+    /* game_layout.display is a claim about the game, read from its source and
+     * used before boot to size the default window; these values are the truth.
+     * A disagreement means the constant is wrong for this build or this game
+     * changes its display environment at runtime. The window is not resized:
+     * the present blit fits the runtime clip either way, so the only symptom
+     * is bars. Once per run. */
+    static int s_clip_checked = 0;
+    if (s_nr.enabled && !s_clip_checked && w > 0 && h > 0) {
+        s_clip_checked = 1;
+        if (h != game_layout.display.clip_h ||
+            s_geom_in[2] != game_layout.display.disp_w ||
+            s_geom_in[3] != game_layout.display.disp_h)
+            OPL_WARN_F("native",
+                       "display env %dx%d disp / %d clip rows disagrees with the "
+                       "game layout %dx%d disp / %d clip rows; the default window "
+                       "was sized from the layout and may letterbox",
+                       s_geom_in[2], s_geom_in[3], h,
+                       game_layout.display.disp_w, game_layout.display.disp_h,
+                       game_layout.display.clip_h);
+    }
     s_geom_in[4] = x; s_geom_in[5] = y; s_geom_in[6] = w; s_geom_in[7] = h;
 }
 

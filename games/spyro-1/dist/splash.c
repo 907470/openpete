@@ -100,8 +100,9 @@ static int           s_done, s_total;
 static char          s_drop_path[4096];
 static int           s_req_w, s_req_h;  /* --window override (0 = default) */
 
-/* Logical layout space — matches the game window's default size (run.c
- * WIN_W/WIN_H), so the vk-mode window handoff needs no resize. An explicit
+/* Logical layout space — matches Spyro 1's default game-window size
+ * (game_default_window_w/h, game_layout.h), so the vk-mode window handoff
+ * needs no resize. An explicit
  * --window size is honored via s_req_w/h; SDL's logical presentation
  * scales this layout to whatever the real window size is. */
 #define SPLASH_W 640

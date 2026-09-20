@@ -66,6 +66,19 @@ typedef struct env_anim_sublist {
 } env_anim_sublist_t;
 
 typedef struct game_layout {
+    /* The game's display environment, in VRAM pixels, as its boot code hands
+     * it to SetDefDispEnv/SetDefDrawEnv. `disp_w` by `disp_h` is the region
+     * the GPU scans out; `clip_h` is the DRAWENV clip height, the rows the
+     * game actually draws into. The (disp_h - clip_h) rows are the overscan
+     * bands the game leaves black, which the present blit crops, so what
+     * reaches the screen is disp_w by clip_h. These are a claim about the
+     * game read from its source; the runtime values arrive from the guest's
+     * own PutDispEnv/PutDrawEnv and win wherever they disagree. */
+    struct {
+        int disp_w, disp_h;
+        int clip_h;
+    } display;
+
     /* The in-RAM sin/cos table: 256 entries per circle of s16 1.12 fixed
      * point, cos at +0x80 bytes into the same table, so a byte angle indexes
      * sin at (angle << 1) and cos at 0x80 + (angle << 1). 0 = unlocated, and
@@ -827,6 +840,36 @@ typedef struct game_layout {
 #define GAME_FONT_ONE_CLASS       2
 
 extern const game_layout_t game_layout;
+
+/* The default window size, in window pixels, for this game's display
+ * environment. Height: two window rows per drawn VRAM row, so the visible
+ * clip maps 1:1 at integer scale with no bars. Width: the DISPENV line is
+ * 512 VRAM pixels but not square — the PSX presents its `disp_h` rows at
+ * 4:3 — so the width is the 4:3 width of the doubled DISPENV height, and is
+ * independent of the clip height and of disp_w. Spyro 1 (clip 224 of 240
+ * rows) gets 640x448; Spyro 2 and Spyro 3 (clip 216 of 240) get 640x432.
+ * The aspect correction between the full display and the drawn clip is
+ * game_display_crop_factor(). */
+static inline int game_default_window_w(void)
+{
+    return (game_layout.display.disp_h * 2 * 4) / 3;
+}
+
+static inline int game_default_window_h(void)
+{
+    return game_layout.display.clip_h * 2;
+}
+
+/* disp_h / clip_h: how much taller the scanned-out display is than the drawn
+ * region. A window sized for a requested display aspect must be this much
+ * wider than the aspect alone implies, because the cropped source covers only
+ * clip_h of the disp_h rows that aspect describes. */
+static inline float game_display_crop_factor(void)
+{
+    return (game_layout.display.clip_h > 0)
+        ? (float)game_layout.display.disp_h / (float)game_layout.display.clip_h
+        : 1.0f;
+}
 
 #ifdef __cplusplus
 }

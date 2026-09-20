@@ -28,6 +28,7 @@
 #include "openpete_record.h"
 #include "openpete_rewind.h"
 #include "no_lod.h"
+#include "game_layout.h"
 
 #include <math.h>
 #include <stdio.h>
@@ -306,7 +307,8 @@ static void window_get_str(const knob_desc_t *k, char *buf, size_t cap) {
     if (g_opts && g_opts->window_w > 0)
         snprintf(buf, cap, "%dx%d", g_opts->window_w, g_opts->window_h);
     else
-        snprintf(buf, cap, "(default)");
+        snprintf(buf, cap, "%dx%d (default)",
+                 game_default_window_w(), game_default_window_h());
 }
 
 /* ---- Pacing ---- */
@@ -740,7 +742,8 @@ static const knob_desc_t g_builtin[] = {
       renderer_get, NULL, NULL, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
     { "window", "Window size", "Display", "--window", NULL,
-      "Launch window size (drag the window to resize live).",
+      "Launch window size (drag the window to resize live). The default is "
+      "the game's drawn viewport at two window rows per VRAM row.",
       KNOB_STRING, KNOB_RESTART_ONLY, NULL, 0, 0, 0,
       NULL, NULL, window_get_str, NULL, KNOB_SRC_DEFAULT, 0, {0}, 0 },
 
