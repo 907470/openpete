@@ -5754,6 +5754,10 @@ static void cover_rect(int full_extent, float *l, float *r, float *t, float *b)
  * scene index of each textured block-tri, in VB order, so the draw side can read
  * a tri's material and coalesce adjacent same-material runs into one draw. */
 static int s_txscene[MAX_SCENE_TRIS];
+/* Set for a scene triangle the untextured bucket build deferred into a mod
+ * material span. A deferred triangle draws from that span at its group's slot,
+ * so the emission-ordered blended-world block leaves it out. */
+static uint8_t s_bw_deferred[MAX_SCENE_TRIS];
 /* Flat-HUD within-layer painter order (see the bucket-6 build in render_scene):
  * back-to-front by centroid z, ties broken by submission index so equal-z runs
  * (all the 2D-UI content at z=0) keep submission order — a STABLE descending
@@ -7550,6 +7554,164 @@ static void scene_box_probe(const scene_tri_t *sc, int n) {
  * number changing, and sub-tick presents REUSE the current VBL number — so a
  * probe living there never observes an intermediate present, exactly where the
  * sub-tick re-extract path differs from the canonical one. */
+/* The blended world classes: ABR 0-3 (alpha, additive, subtractive,
+ * quarter-additive) outside the shadow decals, which own the depth-aware decal
+ * path, and outside the HUD layers, which draw depth-test off in their own
+ * passes. The guest links these into the ordering table interleaved and their
+ * equations do not commute once a channel clamps, so they are packed together
+ * in emission order rather than one class after another. Untextured tris of
+ * these classes exclude the HUD panel and textured ones exclude the portal
+ * guard, matching the buckets each replaced. */
+static int blended_world_tri(const scene_tri_t* s) {
+    int bl = s->blend; if (bl < 0 || bl > 4) bl = 0;
+    if (bl == 0) return 0;
+    const int c = s->category;
+    if (c == OPENPETE_SCENE_HUD || c == OPENPETE_SCENE_HUD3D) return 0;
+    if (s->textured) { if (c == OPENPETE_SCENE_PORTAL_GUARD) return 0; }
+    else if (c == OPENPETE_SCENE_HUD_PANEL) return 0;
+    if (bl == 3 && c == OPENPETE_SCENE_SHADOW) return 0;
+    return 1;
+}
+
+/* Draw one run of the emission-ordered blended-world block: one class, one
+ * texturing mode, hence one pipeline bind. A textured run still coalesces by
+ * material inside draw_tex_runs. The class tables are indexed by blend class
+ * minus one (alpha, additive, subtractive, quarter-additive); the last two
+ * classes have no HD replacement twin. */
+static void bw_draw_run(const scene_tri_t* scene, int tx_start, int first_vert,
+                        int vert_count, int bl, int textured) {
+    rhi_pipeline* const utp[4] = { s_nr.gouraud_blend_pipe, s_nr.gouraud_add_pipe,
+                                   s_nr.gouraud_sub_ztest_pipe, s_nr.gouraud_qadd_pipe };
+    rhi_pipeline* const txp[4] = { s_nr.scene_tex_blend_pipe, s_nr.scene_tex_add_pipe,
+                                   s_nr.scene_tex_sub_pipe, s_nr.scene_tex_qadd_pipe };
+    rhi_pipeline* const hdp[4] = { s_nr.hd_scene_blend_pipe, s_nr.hd_scene_add_pipe,
+                                   NULL, NULL };
+    const int c = (bl >= 1 && bl <= 4) ? bl - 1 : 0;
+    rhi_pipeline* pipe = textured ? txp[c] : utp[c];
+    if (!pipe || (textured && !s_nr.vram_tex)) return;
+    bind_scene_pipe(pipe);
+    /* The subtract pipes enable the dynamic depth bias the shadow decals set;
+     * subtractive world content draws at neutral bias. */
+    if (bl == 3) rhi_set_depth_bias(s_nr.dev, 0.0f, 0.0f, 0.0f);
+    if (!textured) {
+        rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+        rhi_draw(s_nr.dev, (uint32_t)vert_count, (uint32_t)first_vert);
+        return;
+    }
+    rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
+    rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
+    draw_tex_runs(first_vert, vert_count, tx_start, scene, &pipe, 1, hdp[c], 1, bl);
+}
+
+/* The retained terrain cache's blended class c (0 alpha, 1 additive,
+ * 2 subtractive). Cache geometry carries no emission ordinal, so it keeps the
+ * slot it held when the classes drew one after another. */
+static void bw_draw_tercache(int c, int tercache_on) {
+    static const int k_pass[3] = { OPTC_DRAW_ALPHA, OPTC_DRAW_ADD, OPTC_DRAW_SUB };
+    if (!tercache_on) return;
+    openpete_tercache_clip aff;
+    tercache_clip_params(&aff);
+    openpete_tercache_draw(k_pass[c], &aff, s_nr.vram_tex, 0,
+                           s_nr.terrain_key_depth, s_nr.moby_key_depth);
+}
+
+/* One ordered pass over the blended world classes, in place of one fixed class
+ * draw after another. The guest links these classes into the ordering table
+ * interleaved -- at the tracer mesh the subtractive pass is chained ahead of
+ * the additive pass over the same quads -- and the equations do not commute
+ * once a channel clamps, so a fixed class order composites something the GPU
+ * never produced. The block is packed in emission order; each maximal run of
+ * one class and one texturing mode is one bind and one draw range.
+ *
+ * A terrain-cache class draws after every run of a class at or before it in
+ * the class order and before the first run of a later class, which is its
+ * former slot; classes with no run at all still draw. */
+static void draw_blended_world(const scene_tri_t* scene, int tx_start,
+                               int first_vert, int vert_count, int tercache_on) {
+    const int base = (first_vert - tx_start) / 3, ntri = vert_count / 3;
+    int tc_done = 0, i = 0;
+    while (i < ntri) {
+        const scene_tri_t* s0 = &scene[s_txscene[base + i]];
+        const int bl = s0->blend, textured = s0->textured;
+        int run = 1;
+        while (i + run < ntri) {
+            const scene_tri_t* sn = &scene[s_txscene[base + i + run]];
+            if (sn->blend != bl || sn->textured != textured) break;
+            run++;
+        }
+        for (int c = 0; c < 3; c++)
+            if (c + 1 < bl && !(tc_done & (1 << c))) {
+                bw_draw_tercache(c, tercache_on);
+                tc_done |= 1 << c;
+            }
+        bw_draw_run(scene, tx_start, first_vert + i * 3, run * 3, bl, textured);
+        i += run;
+    }
+    for (int c = 0; c < 3; c++)
+        if (!(tc_done & (1 << c))) bw_draw_tercache(c, tercache_on);
+}
+
+/* Draw ranges one order costs over the blended-world classes of a scene: one
+ * per material run inside each class run when ordered by emission, one per
+ * material run inside each whole class when the classes draw one after
+ * another. The difference is the pipeline-switch cost of emission order,
+ * counted on the same scene so neither number depends on a second capture. */
+static int bw_draw_ranges(const scene_tri_t* sc, int n, int ordered) {
+    int draws = 0;
+    for (int bl = 1; bl <= 4; bl++)
+        for (int tex = 0; tex < 2; tex++) {
+            int prev = -1;
+            for (int t = 0; t < n; t++) {
+                if (!blended_world_tri(&sc[t]) || sc[t].blend != bl ||
+                    sc[t].textured != tex) continue;
+                /* Ordered: a triangle of another class between two of this one
+                 * ends the run, so the emission gap is the run break. */
+                /* An untextured run is one draw whatever its materials; a
+                 * textured one splits where draw_tex_runs splits. */
+                const int broke = prev < 0 || (ordered && t != prev + 1) ||
+                                  (tex && !tex_run_continues(&sc[prev], &sc[t], 0));
+                if (broke) draws++;
+                prev = t;
+            }
+        }
+    return draws;
+}
+
+/* OPENPETE_BLENDORDER=<frame>[-<frame>] — every blended-world triangle of each
+ * present in the range, in emission order, with the class run it falls in. One
+ * line per run: the emission index span, the blend class, the texturing mode
+ * and the triangle count, i.e. the order the ordered pass draws in; then the
+ * draw ranges the ordered and the fixed class order cost on that scene. A bare
+ * frame dumps the first present labelled at or after it. */
+static void blend_order_dump(const scene_tri_t* sc, int n) {
+    static int bo = -2; static unsigned bof = 0, bol = 0;
+    if (bo == -2) { const char* e = getenv("OPENPETE_BLENDORDER");
+        bo = (e && *e) ? 1 : -1;
+        unsigned a = 0, b = 0;
+        if (e && sscanf(e, "%u-%u", &a, &b) == 2) { bof = a; bol = b; }
+        else if (e && *e) { bof = (unsigned)atoi(e); bol = 0; }
+    }
+    if (bo != 1 || s_scene_frame < bof) return;
+    if (s_scene_frame >= bol) bo = -1;   /* past the range: one dump left */
+    int runs = 0, tris = 0, i = 0;
+    fprintf(stderr, "[blendorder f=%u] n=%d\n", s_scene_frame, n);
+    while (i < n) {
+        if (!blended_world_tri(&sc[i])) { i++; continue; }
+        const int bl = sc[i].blend, tex = sc[i].textured;
+        int j = i, cnt = 0;
+        while (j < n && blended_world_tri(&sc[j]) &&
+               sc[j].blend == bl && sc[j].textured == tex) { j++; cnt++; }
+        fprintf(stderr, "[bo] run=%d #%d..#%d blend=%d tex=%d tris=%d cat=%d "
+                        "rank=%.1f mord=%d\n",
+                runs, i, j - 1, bl, tex, cnt, sc[i].category,
+                (double)sc[i].rank, sc[i].mordinal);
+        runs++; tris += cnt; i = j;
+    }
+    fprintf(stderr, "[blendorder f=%u] runs=%d tris=%d draws_ordered=%d "
+                    "draws_fixed=%d\n", s_scene_frame, runs, tris,
+            bw_draw_ranges(sc, n, 1), bw_draw_ranges(sc, n, 0));
+}
+
 static void scene_probes(scene_tri_t* sc, int n)
 {
     /* OPENPETE_SCENECAT_TINT=<category>[,<rgb hex>] — recolour every
@@ -7602,6 +7764,7 @@ static void scene_probes(scene_tri_t* sc, int n)
             fprintf(stderr, "\n");
         }
       } }
+    blend_order_dump(sc, n);
     portal_cover_check(sc, n);
     scene_box_probe(sc, n);
 }
@@ -7783,6 +7946,7 @@ static bool draw_native_scene(bool full_extent)
 
     NR_PROF_BEGIN("cmp.build_ut");
     s_utmat_n = 0; s_utmemo_n = 0;
+    memset(s_bw_deferred, 0, (size_t)scene_n);
     for (int gi = 0; gi < 7; gi++) {
         const int utb = groups[gi].utb;
         ut_first[utb] = n;
@@ -7825,8 +7989,13 @@ static bool draw_native_scene(bool full_extent)
               } }
             if (defer_ok && scene[t].tag && ut_tag_resolves(scene[t].tag)) {
                 s_utdef_idx[dn++] = t;             /* appended after the plain span */
+                s_bw_deferred[t] = 1;
                 continue;
             }
+            /* The blended classes (alpha, additive, quarter-additive here;
+             * blend 3 outside the shadow decals is the same case) draw from the
+             * emission-ordered blended-world block, not from this bucket. */
+            if (gb == 1 || gb == 2 || gb == 4) continue;
             for (int k = 0; k < 3; k++) {
                 float cx, cy;
                 scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
@@ -8034,28 +8203,11 @@ static bool draw_native_scene(bool full_extent)
         n += 3;
     }
     ut_count[12] = n - ut_first[12];
-    /* SUBTRACT-WORLD untextured (slot 13): blend-3 content that is NOT a
-     * shadow decal (category != SHADOW; HUD layers excluded — the menu panel
-     * has its own blend-3 path). Drawn in the SUBTRACT slot with the plain
-     * z-test subtract pipe (neutral bias), never the shadow decal. */
+    /* Slot 13 is retired: untextured blend-3 content outside the shadow decals
+     * rides the emission-ordered blended-world block with the rest of its
+     * class, so it no longer has a bucket of its own. */
     ut_first[13] = n;
-    for (int t = 0; t < scene_n; t++) {
-        if (scene[t].textured || scene[t].blend != 3 || n + 3 > SCENE_VB_VERTS) continue;
-        int c13 = scene[t].category;
-        if (c13 == OPENPETE_SCENE_SHADOW || c13 == OPENPETE_SCENE_HUD ||
-            c13 == OPENPETE_SCENE_HUD3D || c13 == OPENPETE_SCENE_HUD_PANEL) continue;
-        for (int k = 0; k < 3; k++) {
-            float cx, cy;
-            scene_to_clip(scene[t].v[k].sx, scene[t].v[k].sy, &cx, &cy);
-            rhi_vertex *o = &buf[n + k];
-            o->x = cx; o->y = cy; o->z = scene[t].v[k].z; o->w = scene[t].v[k].pvz;
-            o->u = 0.0f; o->v = 0.0f;
-            o->rgba = scene[t].v[k].rgba; o->koff = scene[t].koff;
-                o->sx = scene[t].rank; o->sy = (float)scene[t].mordinal;
-        }
-        n += 3;
-    }
-    ut_count[13] = n - ut_first[13];
+    ut_count[13] = 0;
     /* ACTOR_FRONT untextured (opaque): the rescue actors' flat-shaded faces.
      * Same content class as ACTOR (blend 0, depth-tested opaque); split out so the
      * dragon-rescue pass can front-pass ONLY these. */
@@ -8154,16 +8306,24 @@ static bool draw_native_scene(bool full_extent)
     NR_PROF_END();   /* cmp.build_ut */
     NR_PROF_BEGIN("cmp.build_tex");
     int tx_start = n;
-    int txg_first[11], txg_count[11], txtri = 0;
-    for (int b = 0; b < 11; b++) {
+    int txg_first[12], txg_count[12], txtri = 0;
+    for (int b = 0; b < 12; b++) {
         txg_first[b] = tx_start + txtri * 3;
         int run_start = txtri;
         for (int t = 0; t < scene_n; t++) {
-            if (!scene[t].textured) continue;
             if (tx_start + (txtri + 1) * 3 > SCENE_VB_VERTS) break;
             int cat = scene[t].category;
             int belongs;
-            if (b == 6) belongs = (cat == OPENPETE_SCENE_HUD);
+            /* Bucket 11 is the emission-ordered blended-world block and is the
+             * one bucket that carries untextured triangles too, so its
+             * runs keep the order the guest linked the two texturing modes in.
+             * Buckets 4, 5, 8 and 10 — the former fixed per-class blended
+             * buckets — are empty; their content is here. */
+            if (b == 11) belongs = blended_world_tri(&scene[t]) &&
+                                   !(!scene[t].textured && s_bw_deferred[t]);
+            else if (!scene[t].textured) continue;
+            else if (b == 4 || b == 5 || b == 8 || b == 10) belongs = 0;
+            else if (b == 6) belongs = (cat == OPENPETE_SCENE_HUD);
             else if (b == 9) {
                 /* ACTOR_FRONT (opaque): the rescue actors' textured faces — same
                  * class as the ACTOR textured group (b==2), split for the front
@@ -8172,24 +8332,6 @@ static bool draw_native_scene(bool full_extent)
                 belongs = cat == OPENPETE_SCENE_ACTOR_FRONT && bl == 0;
             }
             else if (b == 7) belongs = (cat == OPENPETE_SCENE_PORTAL_GUARD);
-            else if (b == 8) {
-                /* SUBTRACT-WORLD (textured): blend-3 that is NOT a shadow
-                 * decal — the dragon-fragment smoke puffs (particle sel-2,
-                 * ABR 2) and any ABR-2 terrain/moby faces. Drawn in the
-                 * SUBTRACT slot with the plain z-test subtract pipe; the
-                 * decal path (bucket 1) is shadows only. */
-                int bl = scene[t].blend; if (bl < 0 || bl > 4) bl = 0;
-                belongs = bl == 3 && cat != OPENPETE_SCENE_SHADOW &&
-                          cat != OPENPETE_SCENE_HUD && cat != OPENPETE_SCENE_HUD3D &&
-                          cat != OPENPETE_SCENE_PORTAL_GUARD;
-            }
-            else if (b == 10) {
-                /* QUARTER-ADD (textured): ABR mode 3, the group's own bucket. */
-                int bl = scene[t].blend; if (bl < 0 || bl > 4) bl = 0;
-                belongs = bl == 4 && cat != OPENPETE_SCENE_HUD &&
-                          cat != OPENPETE_SCENE_HUD3D &&
-                          cat != OPENPETE_SCENE_PORTAL_GUARD;
-            }
             else {
                 int bl = scene[t].blend; if (bl < 0 || bl > 4) bl = 0;
                 belongs = cat != OPENPETE_SCENE_HUD && cat != OPENPETE_SCENE_HUD3D &&
@@ -8216,7 +8358,10 @@ static bool draw_native_scene(bool full_extent)
             scene_to_clip(st->v[k].sx, st->v[k].sy, &cx, &cy);
             rhi_vertex *o = &buf[tx_start + i * 3 + k];
             o->x = cx; o->y = cy; o->z = st->v[k].z; o->w = st->v[k].pvz;
-            o->u = st->v[k].u; o->v = st->v[k].v;
+            /* The blended-world block carries untextured triangles too; they
+             * draw through the gouraud pipes, which read no UV. */
+            o->u = st->textured ? st->v[k].u : 0.0f;
+            o->v = st->textured ? st->v[k].v : 0.0f;
             o->rgba = st->v[k].rgba; o->koff = st->koff;
             /* Location 3 carries the moby paint (rank, ordinal) pair for every
              * textured tri — psx_scene.vert forwards it to the same-moby
@@ -8748,64 +8893,13 @@ static bool draw_native_scene(bool full_extent)
             openpete_tercache_draw(OPTC_DRAW_FILL, &aff, s_nr.vram_tex, 0,
                                    s_nr.terrain_key_depth, s_nr.moby_key_depth);
         }
-        /* SUBTRACT-WORLD — genuinely subtractive content (blend 3, category
-         * != SHADOW): the smoke puffs (fragment shatter, flame-kill), ABR-2
-         * terrain/moby faces. Drawn LAST of the world-space stack (after the
-         * ALPHA/ADDITIVE groups, gi==5) through the PLAIN z-test subtract
-         * pipes at NEUTRAL bias:
-         *  - NOT the decal path (bucket 1): the ground-height discard ate the
-         *    sky-borne puffs and the range-uniform shadow-sprite material
-         *    sampled the wrong texture;
-         *  - NOT at gi==1 (the first attempt): smoke writes no depth, so the
-         *    ACTOR/PLAYER opaques drawn at gi==2/3 PAINTED OVER the already-
-         *    subtracted pixels — the burn smoke vanished exactly where og
-         *    shows it (on the flamed enemy). The .s renders particles at the
-         *    END of the frame; og's smoke darkens the flame glow too, so
-         *    after the ADD group is the faithful slot. */
-        /* Terrain-cache blend classes ride their groups' slots: ABR-0 alpha
-         * with the ALPHA group (gi==4), ABR-1 with ADDITIVE (gi==5, before
-         * the subtract-world slot below — og's smoke darkens the glow). */
-        if (gi == 4 && openpete_tercache_frame_open()) {
-            openpete_tercache_clip aff; tercache_clip_params(&aff);
-            openpete_tercache_draw(OPTC_DRAW_ALPHA, &aff, s_nr.vram_tex, 0,
-                                   s_nr.terrain_key_depth, s_nr.moby_key_depth);
-        }
-        if (gi == 5 && openpete_tercache_frame_open()) {
-            openpete_tercache_clip aff; tercache_clip_params(&aff);
-            openpete_tercache_draw(OPTC_DRAW_ADD, &aff, s_nr.vram_tex, 0,
-                                   s_nr.terrain_key_depth, s_nr.moby_key_depth);
-        }
-        if (gi == 5) {
-            { static int s_swd = -1;
-              if (s_swd < 0) { const char* e = getenv("OPENPETE_PLY_VBDBG"); s_swd = (e && *e && *e != '0'); }
-              if (s_swd) fprintf(stderr, "[subworld] ut13=%d txg8=%d utpipe=%d txpipe=%d vram=%d\n",
-                                 ut_count[13], txg_count[8],
-                                 s_nr.gouraud_sub_ztest_pipe != NULL,
-                                 s_nr.scene_tex_sub_pipe != NULL, s_nr.vram_tex != NULL); }
-            if (ut_count[13] > 0 && s_nr.gouraud_sub_ztest_pipe) {
-                bind_scene_pipe(s_nr.gouraud_sub_ztest_pipe);
-                rhi_set_depth_bias(s_nr.dev, 0.0f, 0.0f, 0.0f);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                rhi_draw(s_nr.dev, (uint32_t)ut_count[13], (uint32_t)ut_first[13]);
-            }
-            if (txg_count[8] > 0 && s_nr.vram_tex && s_nr.scene_tex_sub_pipe) {
-                bind_scene_pipe(s_nr.scene_tex_sub_pipe);
-                rhi_set_depth_bias(s_nr.dev, 0.0f, 0.0f, 0.0f);
-                rhi_bind_vram(s_nr.dev, s_nr.vram_tex);
-                rhi_bind_vertex_buffer(s_nr.dev, s_nr.scene_vb);
-                /* SD only (like the shadow group): the sub pipes ride the
-                 * caller's dynamic depth-bias state, which an HD rebind
-                 * would invalidate. */
-                draw_tex_runs(txg_first[8], txg_count[8], tx_start, scene,
-                              &s_nr.scene_tex_sub_pipe, 1, NULL, 1, 3);
-            }
-            /* Terrain-cache ABR-2 terrain faces: same SUBTRACT-WORLD slot. */
-            if (openpete_tercache_frame_open()) {
-                openpete_tercache_clip aff; tercache_clip_params(&aff);
-                openpete_tercache_draw(OPTC_DRAW_SUB, &aff, s_nr.vram_tex, 0,
-                                   s_nr.terrain_key_depth, s_nr.moby_key_depth);
-            }
-        }
+        /* The four blended world classes draw here, in the scene's own emission
+         * order, with the terrain cache's blended classes riding the slots they
+         * held when each class drew as one block. The per-class buckets the
+         * groups at gi 4, 5 and 6 used to draw are empty. */
+        if (gi == 4)
+            draw_blended_world(scene, tx_start, txg_first[11], txg_count[11],
+                               openpete_tercache_frame_open());
         /* Portal-sky previews: drawn AFTER the ACTOR group (gi==2), BEFORE the
          * PLAYER group — the native realization of the PSX sky bucket, which
          * painted over everything OT-behind it:
