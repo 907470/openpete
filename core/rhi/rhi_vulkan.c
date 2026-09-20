@@ -124,6 +124,13 @@
 
 #define RHI_LOG(...)  fprintf(stderr, "[rhi/vk] " __VA_ARGS__)
 
+/* Heap-balloon block size, the per-spec block cap (32 GiB of blocks) and the
+ * block-list length. The cap is per spec so a spec filling a second heap
+ * cannot be starved by the blocks an earlier spec already holds. */
+#define RHI_BALLOON_BLOCK_MIB  64u
+#define RHI_BALLOON_SPEC_CAP   512
+#define RHI_BALLOON_MAX_BLOCKS 1024
+
 /* Handler invoked on an unrecoverable VK_ERROR_DEVICE_LOST (registered by the
  * core layer, which owns the shutdown flag) instead of spinning failed frames
  * forever. A callback keeps openpete_rhi free of core-runtime symbols — the
@@ -206,6 +213,12 @@ struct rhi_device {
     VkPresentModeKHR         present_mode_granted; /* what the swapchain was
                                           * actually built with -- the requested
                                           * mode is not evidence of anything. */
+
+    /* Heap balloon (OPENPETE_RHI_BALLOON): device memory held, unmapped and
+     * unbound, so the driver refuses later allocations in that heap. Freed
+     * before the device is destroyed. */
+    VkDeviceMemory           balloon_blocks[RHI_BALLOON_MAX_BLOCKS];
+    int                      balloon_count;
 
     /* Swapchain */
     VkSwapchainKHR swapchain;
@@ -1783,6 +1796,136 @@ static bool recreate(rhi_device *dev)
 
 /* ------------------------------------------------------------------ */
 
+/* The device's memory table, one line per type: which properties a type
+ * carries and which heap it draws from. A harness that must name a heap
+ * reads it here instead of inferring it from an allocation's type index. */
+static void rhi_log_memory_types(rhi_device *dev)
+{
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(dev->phys, &mp);
+    for (uint32_t i = 0; i < mp.memoryHeapCount; i++)
+        RHI_LOG("memory heap %u: %llu MiB flags %x\n", i,
+                (unsigned long long)(mp.memoryHeaps[i].size >> 20),
+                (unsigned)mp.memoryHeaps[i].flags);
+    for (uint32_t i = 0; i < mp.memoryTypeCount; i++)
+        RHI_LOG("memory type %u: flags %x heap %u\n", i,
+                (unsigned)mp.memoryTypes[i].propertyFlags,
+                mp.memoryTypes[i].heapIndex);
+}
+
+/* First memory type drawing from `heap`, or -1 when the heap backs none. */
+static int balloon_heap_memtype(const VkPhysicalDeviceMemoryProperties *mp,
+                                uint32_t heap)
+{
+    for (uint32_t i = 0; i < mp->memoryTypeCount; i++)
+        if (mp->memoryTypes[i].heapIndex == heap) return (int)i;
+    return -1;
+}
+
+/* Allocates RHI_BALLOON_BLOCK_MIB blocks on `type` until `want_blocks` are
+ * held, or, when `want_blocks` is 0, until the driver refuses or this spec's
+ * own block cap is reached; then releases
+ * whole blocks totalling at least `release_mib`. Blocks are neither mapped
+ * nor bound to a buffer. Returns the driver's refusal code, VK_SUCCESS when
+ * none occurred, and writes the block count this call still holds. */
+static VkResult balloon_hold(rhi_device *dev, uint32_t type, int want_blocks,
+                             unsigned release_mib, int *out_blocks)
+{
+    const int first = dev->balloon_count;
+    int cap = first + RHI_BALLOON_SPEC_CAP;
+    if (cap > RHI_BALLOON_MAX_BLOCKS) cap = RHI_BALLOON_MAX_BLOCKS;
+    VkResult r = VK_SUCCESS;
+    while (dev->balloon_count < cap) {
+        if (want_blocks > 0 && dev->balloon_count - first >= want_blocks) break;
+        VkMemoryAllocateInfo mai = {
+            .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
+            .allocationSize = (VkDeviceSize)RHI_BALLOON_BLOCK_MIB << 20,
+            .memoryTypeIndex = type,
+        };
+        VkDeviceMemory m = VK_NULL_HANDLE;
+        r = vkAllocateMemory(dev->device, &mai, NULL, &m);
+        if (r != VK_SUCCESS) break;
+        dev->balloon_blocks[dev->balloon_count++] = m;
+    }
+    if (dev->balloon_count >= cap)
+        RHI_LOG("balloon: block cap %d reached\n", cap - first);
+    for (unsigned freed = 0; freed < release_mib && dev->balloon_count > first;
+         freed += RHI_BALLOON_BLOCK_MIB)
+        vkFreeMemory(dev->device, dev->balloon_blocks[--dev->balloon_count], NULL);
+    *out_blocks = dev->balloon_count - first;
+    return r;
+}
+
+/* One balloon spec: `<heap>:<MiB>` holds that many MiB, `<heap>:fill` holds
+ * until the driver refuses, `<heap>:fill-<MiB>` fills and then releases at
+ * least <MiB>, leaving a margin of free space in the heap. A heap that does
+ * not exist, or that backs no memory type, is reported and skipped. */
+static void balloon_spec(rhi_device *dev,
+                         const VkPhysicalDeviceMemoryProperties *mp,
+                         const char *spec)
+{
+    char *end = NULL;
+    unsigned long heap = strtoul(spec, &end, 10);
+    if (end == spec || *end != ':') {
+        RHI_LOG("balloon: spec '%s' is not <heap>:<MiB>|<heap>:fill[-<MiB>]\n", spec);
+        return;
+    }
+    if (heap >= mp->memoryHeapCount) {
+        RHI_LOG("balloon: heap %lu does not exist (%u heaps)\n", heap,
+                mp->memoryHeapCount);
+        return;
+    }
+    const int type = balloon_heap_memtype(mp, (uint32_t)heap);
+    if (type < 0) { RHI_LOG("balloon: heap %lu backs no memory type\n", heap); return; }
+
+    const char *amount = end + 1;
+    int want_blocks = 0;
+    unsigned release_mib = 0;
+    if (strncmp(amount, "fill", 4) == 0)
+        release_mib = amount[4] == '-' ? (unsigned)strtoul(amount + 5, NULL, 10) : 0u;
+    else
+        want_blocks = (int)((strtoul(amount, NULL, 10) + RHI_BALLOON_BLOCK_MIB - 1)
+                            / RHI_BALLOON_BLOCK_MIB);
+
+    int blocks = 0;
+    VkResult r = balloon_hold(dev, (uint32_t)type, want_blocks, release_mib, &blocks);
+    RHI_LOG("balloon heap %u type %u: %u MiB held in %d blocks, refusal %d\n",
+            (unsigned)heap, (unsigned)type,
+            (unsigned)blocks * RHI_BALLOON_BLOCK_MIB, blocks, (int)r);
+}
+
+/* OPENPETE_RHI_BALLOON=<spec>[,<spec>...] holds device memory so that every
+ * allocation made after device creation in the named heaps is refused by the
+ * driver, which is the condition rhi_create_vertex_buffer_device's memory-type
+ * retry exists for. A heap filled here is a fixed condition for the life of
+ * the process; the `fill-<MiB>` margin form covers a heap whose free space
+ * varies, where an allocation that fits early fails later. */
+static void rhi_balloon_init(rhi_device *dev)
+{
+    const char *env = getenv("OPENPETE_RHI_BALLOON");
+    if (!env || !*env) return;
+    VkPhysicalDeviceMemoryProperties mp;
+    vkGetPhysicalDeviceMemoryProperties(dev->phys, &mp);
+    for (const char *p = env; *p; ) {
+        char spec[64];
+        size_t n = strcspn(p, ",");
+        size_t keep = n < sizeof spec ? n : sizeof spec - 1;
+        memcpy(spec, p, keep);
+        spec[keep] = '\0';
+        balloon_spec(dev, &mp, spec);
+        p += n;
+        if (*p == ',') p++;
+    }
+}
+
+/* Releases every block the balloon holds. Called while the device is alive. */
+static void rhi_balloon_free(rhi_device *dev)
+{
+    for (int i = 0; i < dev->balloon_count; i++)
+        vkFreeMemory(dev->device, dev->balloon_blocks[i], NULL);
+    dev->balloon_count = 0;
+}
+
 static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_name,
                                    bool headless, uint32_t hl_w, uint32_t hl_h,
                                    int vsync)
@@ -1834,6 +1977,11 @@ static rhi_device *rhi_create_impl(struct SDL_Window *window, const char *app_na
     if (!create_descriptor_infra(dev))  goto fail;
     if (!create_gpu_timers(dev))        goto fail;
 
+    rhi_log_memory_types(dev);
+    /* After the RHI's own images, buffers and staging rings are resident, so a
+     * filled heap refuses only what the renderer allocates from here on. */
+    rhi_balloon_init(dev);
+
     RHI_LOG("device='%s'%s format=%d %ux%u images=%u\n",
             dev->device_name, headless ? " (headless)" : "", (int)dev->sc_format,
             dev->sc_extent.width, dev->sc_extent.height, dev->sc_count);
@@ -1869,7 +2017,7 @@ void rhi_destroy(rhi_device *dev)
                 (unsigned long long)s_ring_gen_bumps, (unsigned long long)s_ring_gen_overflows,
                 (unsigned long long)s_dbg_gw, (unsigned long long)s_dbg_gb);
     if (!dev) return;
-    if (dev->device) vkDeviceWaitIdle(dev->device);
+    if (dev->device) { vkDeviceWaitIdle(dev->device); rhi_balloon_free(dev); }
 
     if (dev->readback_buf) { rhi_destroy_buffer(dev, dev->readback_buf); dev->readback_buf = NULL; }
     for (int i = 0; i < RHI_FRAMES_IN_FLIGHT; i++) {
@@ -2932,22 +3080,41 @@ rhi_buffer *rhi_create_vertex_buffer(rhi_device *dev, size_t bytes)
                               /*prefer_cached=*/false);
 }
 
+/* Memory-type indices OPENPETE_RHI_FAIL_MEMTYPE=<index>[,<index>...] names,
+ * as a bit per index, read once. A device offers at most VK_MAX_MEMORY_TYPES
+ * (32) types, so one word holds the whole table. An index outside the table
+ * and a malformed element are ignored; an unset variable refuses nothing. */
+static uint32_t tc_fail_mask(void)
+{
+    static uint32_t mask;
+    static bool parsed;
+    if (!parsed) {
+        parsed = true;
+        const char *s = getenv("OPENPETE_RHI_FAIL_MEMTYPE");
+        while (s && *s) {
+            char *end = NULL;
+            long v = strtol(s, &end, 10);
+            if (end == s) break;
+            if (v >= 0 && v < (long)VK_MAX_MEMORY_TYPES) mask |= 1u << (unsigned)v;
+            if (*end != ',') break;
+            s = end + 1;
+        }
+    }
+    return mask;
+}
+
 /* One allocation attempt for a device vertex buffer, and the only
  * vkAllocateMemory call site of that path.
  *
- * OPENPETE_RHI_FAIL_MEMTYPE=<index> makes every attempt on that memory-type
- * index report VK_ERROR_OUT_OF_DEVICE_MEMORY without reaching the driver, so
- * the fallback order can be exercised on a device whose heaps do not run
- * out. The value is read once. */
+ * Every attempt on a memory-type index OPENPETE_RHI_FAIL_MEMTYPE names
+ * reports VK_ERROR_OUT_OF_DEVICE_MEMORY without reaching the driver, so the
+ * fallback order can be exercised on a device whose heaps do not run out, and
+ * a device with more host-visible candidates than a heap balloon can fill can
+ * have the remaining candidates refused here. */
 static VkResult tc_alloc_try(rhi_device *dev, const VkMemoryAllocateInfo *mai,
                              VkDeviceMemory *out)
 {
-    static int fail_type = -2;
-    if (fail_type == -2) {
-        const char *s = getenv("OPENPETE_RHI_FAIL_MEMTYPE");
-        fail_type = s ? atoi(s) : -1;
-    }
-    if (fail_type >= 0 && mai->memoryTypeIndex == (uint32_t)fail_type)
+    if (tc_fail_mask() & (1u << mai->memoryTypeIndex))
         return VK_ERROR_OUT_OF_DEVICE_MEMORY;
     return vkAllocateMemory(dev->device, mai, NULL, out);
 }

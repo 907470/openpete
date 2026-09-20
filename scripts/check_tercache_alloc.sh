@@ -18,7 +18,9 @@
 # Two legs of the same binary, one lever between them:
 #   inject   OPENPETE_RHI_FAIL_MEMTYPE=0 — every attempt on memory type 0
 #            (llvmpipe's only type) reports VK_ERROR_OUT_OF_DEVICE_MEMORY
-#            without reaching the driver
+#            without reaching the driver. The variable takes a comma-separated
+#            list of type indices; one index is named here because the device
+#            has one type.
 #   plain    no injection
 # Both run headless with OPENPETE_TERRAIN_CACHE_FORCE=1, which waives the
 # software-GPU exclusion so the cache initialises at all, and both take a
