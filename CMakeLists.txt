@@ -393,6 +393,26 @@ if(OPENPETE_BUILD_TESTS AND EXISTS "${CMAKE_CURRENT_SOURCE_DIR}/tests/unit/CMake
             WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
     endforeach()
 
+    # Freeze-backdrop source frame, windowed. Per row of
+    # games/<slug>/freeze-backdrop-corpus.manifest, one windowed replay of a
+    # bk2 that enters the pause menu, counting the composed presents the live
+    # path accepted as the backdrop's source frame. When that count is zero
+    # nothing is ever snapshotted and the pause backdrop is a flat fill of the
+    # clear colour. The source frame is chosen in the live compose, which no
+    # headless run executes, so the presentation golden cannot see the class
+    # and this check drives a real window. Skips (exit 64) without a display,
+    # a binary, a disc, the bk2 or the manifest.
+    foreach(_freeze_game spyro-1 spyro-2 spyro-3)
+        add_test(NAME freeze_backdrop_${_freeze_game}
+                 COMMAND ${CMAKE_CURRENT_SOURCE_DIR}/scripts/check_freeze_backdrop.sh
+                         --game ${_freeze_game} --build-dir=${CMAKE_BINARY_DIR})
+        set_tests_properties(freeze_backdrop_${_freeze_game} PROPERTIES
+            LABELS "presentation;freeze;windowed"
+            TIMEOUT 3600
+            SKIP_RETURN_CODE 64
+            WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR})
+    endforeach()
+
     # Retained-terrain GPU cache hole census, windowed on the machine's own
     # GPU. Per freecam-corpus row, two legs of one build on one device
     # differing only in --terrain-cache, and a count of the pixels the cached

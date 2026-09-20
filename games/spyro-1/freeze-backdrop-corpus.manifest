@@ -1,0 +1,28 @@
+# Freeze-backdrop source corpus — scripts/check_freeze_backdrop.sh
+#
+# One windowed replay per row, to the frame limit, counting the composed
+# presents that qualified as the freeze backdrop's source frame.
+#
+#   <bk2> | <frame-limit> | <launch tokens> | world_min=<n> presents_min=<n>
+#
+# `launch` takes the presentation-corpus convention: a whitespace-separated
+# token spelled KEY=VALUE with an upper-case key is an environment entry,
+# every other token a command-line argument. OPENPETE_TERRAIN_CACHE_FORCE=1
+# makes the retained terrain cache initialise on a software rasteriser, which
+# is what puts the source predicate's terrain clause under test at all.
+#
+# pause-menu-text-moby-swim enters the pause menu around VBL 1750 in artisans.
+# Under --vertex-precision integer the retained cache is unusable, so the
+# world's terrain reaches the present as scene triangles instead of retained
+# state; a source predicate that reads only the retained state then rejects
+# every present of the run and the pause backdrop is a flat green fill.
+# Measured over four runs of one build: 83, 25, 23, 82 qualifying presents of
+# 173, 70, 72, 172 composed. The floor sits at a third of the lowest of those,
+# because the count is proportional to the host's present throughput over the
+# run and the defect it separates reads zero at any throughput.
+pause-menu-text-moby-swim.bk2 | 1756 | --vertex-precision integer OPENPETE_TERRAIN_CACHE_FORCE=1 | world_min=8 presents_min=10
+# The same movie with the retained cache usable: the control leg, which the
+# defect never reached. It presents fewer frames than the integer leg, since
+# the retained path costs more per frame on a software rasteriser, and its
+# floor is set from its own measurements: 7, 7, 12, 12 of 30, 29, 78, 78.
+pause-menu-text-moby-swim.bk2 | 1756 | OPENPETE_TERRAIN_CACHE_FORCE=1 | world_min=3 presents_min=10
