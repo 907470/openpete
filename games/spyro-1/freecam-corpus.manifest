@@ -216,3 +216,7 @@ artisans | pos=(69222, 48707, 7142) yaw=1706 pitch=138
 # field while its centre lies outside; the reveal drops it (user report
 # 2026-09-19); blessed pre-fix.
 artisans | pos=(69222, 48707, 7142) yaw=1685 pitch=135
+# town_square bull moby: disappears or shrinks when it changes animation
+# pose while interpolation is active (user report 2026-09-19, VBL ~1800);
+# blessed pre-fix. The intermediate leg is the defect's leg.
+town_square | pos=(115541, 113920, 10893) yaw=2906 pitch=177
